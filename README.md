@@ -32,11 +32,18 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 
 ## 开发
 
+环境要求：Node.js `^20.19.0 || >=22.12.0`，pnpm 由 `packageManager` 固定版本（`corepack enable pnpm` 即可）。
+
 ```bash
 pnpm install
+pnpm run build       # 构建所有包（Vite library mode，输出 ESM + d.ts）
+pnpm run test        # 运行所有包测试（Vitest）
+pnpm run typecheck   # TypeScript 类型检查
+pnpm run lint        # ESLint
+pnpm run format      # Prettier 格式化
 ```
 
-> 若未全局安装 pnpm，可使用 `corepack pnpm <command>`，或先执行 `corepack enable pnpm`。
+Vite / Vitest / vite-plugin-dts 的版本通过 [pnpm catalog](pnpm-workspace.yaml) 统一管理，子包中用 `catalog:` 引用。CI 见 [.github/workflows/ci.yml](.github/workflows/ci.yml)，会依次执行格式检查、lint、类型检查、构建与测试。
 
 ## 许可证
 
