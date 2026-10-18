@@ -1,0 +1,10 @@
+{
+  "name": "mica-js",
+  "private": true,
+  "version": "0.0.0",
+  "license": "MIT",
+  "packageManager": "pnpm@12.14.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
