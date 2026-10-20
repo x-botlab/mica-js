@@ -53,6 +53,14 @@ export type { SchematicEditorOptions } from './edit/editor';
 export { applyViewCommand } from './edit/view';
 export type { ApplyViewCommandOptions, ViewCommand } from './edit/view';
 
+export { findJunctionCandidates, hitTestSchematic } from './edit/query';
+export type {
+  HitTestOptions,
+  JunctionCandidate,
+  JunctionCandidateOptions,
+  SchematicHit,
+} from './edit/query';
+
 export {
   LABEL_DEVICE,
   RESERVED_PACKAGE_NAMESPACE,
