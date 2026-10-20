@@ -219,6 +219,5 @@ function scaleFont(font: string, scale: number): string {
   if (match === null) {
     return font;
   }
-  const size = Number(match[1]) * Math.min(Math.max(scale, 0.5), 3);
-  return `${size.toFixed(1)}px${match[2]}`;
+  return `${(Number(match[1]) * Math.max(scale, 0.01)).toFixed(1)}px${match[2]}`;
 }

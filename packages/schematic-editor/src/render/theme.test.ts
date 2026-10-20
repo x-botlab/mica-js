@@ -39,8 +39,12 @@ describe('theme', () => {
     expect(variables['--mica-schematic-background']).toBe('#0a0a0a');
     expect(variables['--mica-schematic-ui-muted-text']).toBe('#a1a1a1');
     expect(variables['--mica-schematic-grid-size']).toBe('10');
-    expect(variables['--mica-schematic-font-size']).toBe('10');
+    expect(variables['--mica-schematic-font-size']).toBe('9');
     expect(variables['--mica-schematic-pin-font-size']).toBe('7');
+  });
+
+  it('draws the device name at the label font size', () => {
+    expect(DARK_SCHEMATIC_THEME.symbolFontSize).toBe(DARK_SCHEMATIC_THEME.fontSize);
   });
 
   it('keeps pin labels smaller than symbol text', () => {

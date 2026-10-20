@@ -87,9 +87,9 @@ export const DARK_SCHEMATIC_THEME: SchematicTheme = {
   focusRing: '#737373',
 
   fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
-  fontSize: 10,
+  fontSize: 9,
   pinFontSize: 7,
-  symbolFontSize: 10,
+  symbolFontSize: 9,
   gridSize: 10,
 };
 
