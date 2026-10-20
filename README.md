@@ -16,9 +16,30 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 
 ```text
 .
-├── apps/       # 应用
-└── packages/   # 可发布的库，如 @mica/core
+├── apps/
+│   └── sandbox-playground/   # 沙箱演示与手测面板
+└── packages/
+    ├── core/                 # @mica/core：仿真内核
+    └── sandbox/              # @mica/sandbox：iframe + Web Worker 通用 JS 沙箱
 ```
+
+## 沙箱
+
+`@mica/sandbox` 用于在相对隔离的环境中运行不可信的第三方代码（仿真器内核、2D Widget 等）：宿主页面 → `sandbox="allow-scripts"` iframe（不透明源）→ classic Web Worker → 客户代码。客户代码无 DOM、无存储、无网络，死循环不阻塞 UI 且可强制终止；渲染采用「客户离屏渲染 + 宿主合成 `ImageBitmap`」。
+
+```ts
+import { createSandbox } from '@mica/sandbox';
+
+const sandbox = await createSandbox({
+  source: { type: 'module', code: guestSource },
+  capabilities: { draw: (commands) => render(commands) },
+  canvas: document.querySelector('canvas'),
+});
+
+await sandbox.call('start');
+```
+
+默认的 `srcdoc` 模式会继承宿主 CSP，严格 CSP 站点请改用 `frameUrl` 模式。宿主 CSP 要求、API、离屏渲染与安全边界详见 [packages/sandbox/README.md](packages/sandbox/README.md)，可运行演示见 [apps/sandbox-playground](apps/sandbox-playground)。
 
 ## 开发路线
 

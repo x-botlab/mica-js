@@ -164,6 +164,9 @@ settings:
 
 catalogs:
   default:
+    rolldown:
+      specifier: ^1.2.14
+      version: 1.2.14
     typescript:
       specifier: ^6.0.3
       version: 6.0.3
@@ -200,8 +203,39 @@ importers:
         specifier: ^8.71.2
         version: 8.71.2(eslint@10.13.0)(typescript@6.0.3)
 
+  apps/sandbox-playground:
+    dependencies:
+      '@mica/sandbox':
+        specifier: workspace:*
+        version: link:../../packages/sandbox
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.4(@types/node@24.19.2)
+
   packages/core:
     devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.4(@types/node@24.19.2)
+      vite-plugin-dts:
+        specifier: 'catalog:'
+        version: 5.1.2(rolldown@1.2.14)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2))
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2))
+
+  packages/sandbox:
+    devDependencies:
+      rolldown:
+        specifier: 'catalog:'
+        version: 1.2.14
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
