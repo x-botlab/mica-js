@@ -35,6 +35,15 @@ export type {
   TopologyOptions,
 } from './topology/derive';
 
+export { loadSchematic, loadView } from './load/load';
+export type {
+  LoadSchematicOptions,
+  LoadViewOptions,
+  LoadedSchematic,
+  LoadedSchematicView,
+  ViewPlacement,
+} from './load/load';
+
 export {
   LABEL_DEVICE,
   RESERVED_PACKAGE_NAMESPACE,
