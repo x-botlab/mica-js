@@ -25,6 +25,16 @@ export { parseSchematic } from './format/parse-schematic';
 export { parseView } from './format/parse-view';
 export { serializeSchematic, serializeView } from './format/serialize';
 
+export { deriveSchematicTopology } from './topology/derive';
+export type {
+  DanglingWireEnd,
+  SchematicNet,
+  SchematicNetMember,
+  SchematicPinInstance,
+  SchematicTopology,
+  TopologyOptions,
+} from './topology/derive';
+
 export {
   LABEL_DEVICE,
   RESERVED_PACKAGE_NAMESPACE,
