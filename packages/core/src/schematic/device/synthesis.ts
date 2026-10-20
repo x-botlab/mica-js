@@ -20,10 +20,12 @@ export interface SymbolSynthesisOptions {
   readonly horizontalPadding?: number;
   /** Vertical padding above the first and below the last pin row. Defaults to 10. */
   readonly verticalPadding?: number;
-  /** Approximate glyph width of the device name. Defaults to 6.5. */
+  /** Approximate glyph width of the device name. Defaults to 5.5. */
   readonly characterWidth?: number;
-  /** Approximate glyph width of a pin name. Defaults to 5. */
+  /** Approximate glyph width of a pin name. Defaults to 4.5. */
   readonly labelCharacterWidth?: number;
+  /** Gap between the device name and the side pin labels. Defaults to 12. */
+  readonly nameGap?: number;
   /** Inset of a top/bottom pin label from the body edge. Defaults to 10. */
   readonly labelInset?: number;
 }
@@ -52,8 +54,9 @@ export function synthesizeDeviceSymbol(
   const minHeight = options.minHeight ?? 40;
   const horizontalPadding = options.horizontalPadding ?? 10;
   const verticalPadding = options.verticalPadding ?? 10;
-  const characterWidth = options.characterWidth ?? 6.5;
-  const labelCharacterWidth = options.labelCharacterWidth ?? 5;
+  const characterWidth = options.characterWidth ?? 5.5;
+  const labelCharacterWidth = options.labelCharacterWidth ?? 4.5;
+  const nameGap = options.nameGap ?? 12;
   const labelInset = options.labelInset ?? 10;
 
   const sides: Record<PinSide, string[]> = { left: [], right: [], top: [], bottom: [] };
@@ -83,7 +86,8 @@ export function synthesizeDeviceSymbol(
   const contentWidth =
     (leftText + rightText) * labelCharacterWidth +
     input.name.length * characterWidth +
-    horizontalPadding * 3;
+    horizontalPadding * 2 +
+    nameGap * 2;
   const bodyWidth = Math.ceil(Math.max(width, contentWidth) / pinPitch) * pinPitch;
   const bodyHeight = Math.ceil(height / pinPitch) * pinPitch;
 

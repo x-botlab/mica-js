@@ -43,6 +43,8 @@ export interface SchematicTheme {
   fontSize: number;
   /** Pin name text; smaller than `fontSize` so labels stay inside the body. */
   pinFontSize: number;
+  /** Device name drawn in the symbol centre. */
+  symbolFontSize: number;
   gridSize: number;
 }
 
@@ -85,8 +87,9 @@ export const DARK_SCHEMATIC_THEME: SchematicTheme = {
   focusRing: '#737373',
 
   fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
-  fontSize: 12,
-  pinFontSize: 8,
+  fontSize: 10,
+  pinFontSize: 7,
+  symbolFontSize: 10,
   gridSize: 10,
 };
 
@@ -127,6 +130,7 @@ export const LIGHT_SCHEMATIC_THEME: SchematicTheme = {
   fontFamily: DARK_SCHEMATIC_THEME.fontFamily,
   fontSize: DARK_SCHEMATIC_THEME.fontSize,
   pinFontSize: DARK_SCHEMATIC_THEME.pinFontSize,
+  symbolFontSize: DARK_SCHEMATIC_THEME.symbolFontSize,
   gridSize: DARK_SCHEMATIC_THEME.gridSize,
 };
 

@@ -105,6 +105,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
   const display = input.display ?? { grid: true, labels: true };
   const font = `${theme.fontSize}px ${theme.fontFamily}`;
   const pinFont = `${theme.pinFontSize}px ${theme.fontFamily}`;
+  const symbolFont = `${theme.symbolFontSize}px ${theme.fontFamily}`;
   const items: SceneItem[] = [];
 
   for (const wire of document.sheet.wires) {
@@ -177,7 +178,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
         color: theme.symbolPlaceholder,
         align: 'center',
         baseline: 'middle',
-        font,
+        font: symbolFont,
       });
       continue;
     }
@@ -202,7 +203,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
       color: theme.symbolText,
       align: 'center',
       baseline: 'middle',
-      font,
+      font: symbolFont,
     });
 
     for (const [pinId, anchor] of Object.entries(definition.pins)) {
