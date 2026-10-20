@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { ParseResult } from './result';
+import { SchematicError } from './errors';
 import { parseSchematic } from './parse-schematic';
 import { serializeSchematic } from './serialize';
+import { catchError, codesOf } from './test-helpers';
 import type { SchematicDocument } from './types';
 
 const SAMPLE = `{
@@ -29,23 +30,13 @@ const SAMPLE = `{
   }
 }`;
 
-function expectValue<T>(result: ParseResult<T>): T {
-  if (result.value === undefined) {
-    throw new Error(`expected a value, got diagnostics ${JSON.stringify(result.diagnostics)}`);
-  }
-  return result.value;
-}
-
 function codes(input: string | unknown): readonly string[] {
-  return parseSchematic(input).diagnostics.map((diagnostic) => diagnostic.code);
+  return codesOf(catchError(() => parseSchematic(input)).diagnostics);
 }
 
 describe('parseSchematic', () => {
   it('parses the issue #6 example', () => {
-    const result = parseSchematic(SAMPLE);
-    expect(result.ok).toBe(true);
-    expect(result.diagnostics).toEqual([]);
-    const document = expectValue(result);
+    const document = parseSchematic(SAMPLE);
     expect(document.version).toBe(1);
     expect(document.id).toBe('ct117e-m4-board');
     expect(document.sheet.symbols).toHaveLength(3);
@@ -54,9 +45,18 @@ describe('parseSchematic', () => {
   });
 
   it('accepts plain values as well as text', () => {
-    const document = expectValue(parseSchematic(SAMPLE));
-    const result = parseSchematic({ ...document, sheet: { ...document.sheet } });
-    expect(result.ok).toBe(true);
+    const document = parseSchematic(SAMPLE);
+    expect(parseSchematic({ ...document, sheet: { ...document.sheet } })).toEqual(document);
+  });
+
+  it('throws a SchematicError carrying every diagnostic', () => {
+    const error = catchError(() =>
+      parseSchematic(SAMPLE.replace('"id": "ct117e-m4-board"', '"id": 1')),
+    );
+    expect(error).toBeInstanceOf(SchematicError);
+    expect(codesOf(error.diagnostics)).toContain('schema/invalid-type');
+    expect(error.message).toContain('/id');
+    expect(error.code).toBe(error.diagnostics[0]?.code);
   });
 
   it('rejects a non-object document', () => {
@@ -64,9 +64,10 @@ describe('parseSchematic', () => {
   });
 
   it('rejects unknown fields', () => {
-    const result = parseSchematic(SAMPLE.replace('"sheet": {', '"extra": true,\n  "sheet": {'));
-    expect(result.ok).toBe(false);
-    expect(result.diagnostics).toContainEqual({
+    const error = catchError(() =>
+      parseSchematic(SAMPLE.replace('"sheet": {', '"extra": true,\n  "sheet": {')),
+    );
+    expect(error.diagnostics).toContainEqual({
       severity: 'error',
       code: 'schema/unknown-field',
       message: 'Unknown field "extra".',
@@ -75,11 +76,9 @@ describe('parseSchematic', () => {
   });
 
   it('rejects malformed JSON text', () => {
-    const result = parseSchematic('{"version":1,"id":"a",}');
-    expect(result.ok).toBe(false);
-    expect(result.value).toBeUndefined();
-    expect(result.diagnostics).toHaveLength(1);
-    expect(result.diagnostics[0]?.code).toBe('json/invalid');
+    const error = catchError(() => parseSchematic('{"version":1,"id":"a",}'));
+    expect(error.diagnostics).toHaveLength(1);
+    expect(error.diagnostics[0]?.code).toBe('json/invalid');
   });
 
   it('rejects unsupported and non-integer versions', () => {
@@ -95,30 +94,30 @@ describe('parseSchematic', () => {
   });
 
   it('rejects non-finite coordinates', () => {
-    const result = parseSchematic(SAMPLE.replace('"x": 480', '"x": 1e400'));
+    const error = catchError(() => parseSchematic(SAMPLE.replace('"x": 480', '"x": 1e400')));
     expect(
-      result.diagnostics.some((diagnostic) => diagnostic.pointer === '/sheet/symbols/0/x'),
+      error.diagnostics.some((diagnostic) => diagnostic.pointer === '/sheet/symbols/0/x'),
     ).toBe(true);
-    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
-      'schema/invalid-value',
-    );
+    expect(codesOf(error.diagnostics)).toContain('schema/invalid-value');
   });
 
   it('rejects wires with fewer than two points', () => {
-    const result = parseSchematic(
-      SAMPLE.replace(
-        '"points": [{ "x": 300, "y": 124 }, { "x": 300, "y": 100 }]',
-        '"points": [{ "x": 300, "y": 124 }]',
+    const error = catchError(() =>
+      parseSchematic(
+        SAMPLE.replace(
+          '"points": [{ "x": 300, "y": 124 }, { "x": 300, "y": 100 }]',
+          '"points": [{ "x": 300, "y": 124 }]',
+        ),
       ),
     );
-    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
-      'wire/invalid-points',
-    );
+    expect(codesOf(error.diagnostics)).toContain('wire/invalid-points');
   });
 
   it('rejects duplicate element ids', () => {
-    const result = parseSchematic(SAMPLE.replace('{ "id": "s-lcd"', '{ "id": "s-mcu"'));
-    expect(result.diagnostics).toContainEqual(
+    const error = catchError(() =>
+      parseSchematic(SAMPLE.replace('{ "id": "s-lcd"', '{ "id": "s-mcu"')),
+    );
+    expect(error.diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'id/duplicate',
         pointer: '/sheet/symbols/1/id',
@@ -128,45 +127,29 @@ describe('parseSchematic', () => {
   });
 
   it('rejects junctions that reference unknown or duplicate wires', () => {
-    const unknown = parseSchematic(
-      SAMPLE.replace('"wires": ["w-d0", "w-label-d0"]', '"wires": ["w-d0", "missing"]'),
+    const unknown = catchError(() =>
+      parseSchematic(
+        SAMPLE.replace('"wires": ["w-d0", "w-label-d0"]', '"wires": ["w-d0", "missing"]'),
+      ),
     );
-    expect(unknown.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
-      'junction/unknown-wire',
-    );
+    expect(codesOf(unknown.diagnostics)).toContain('junction/unknown-wire');
 
-    const duplicate = parseSchematic(
-      SAMPLE.replace('"wires": ["w-d0", "w-label-d0"]', '"wires": ["w-d0", "w-d0"]'),
+    const duplicate = catchError(() =>
+      parseSchematic(
+        SAMPLE.replace('"wires": ["w-d0", "w-label-d0"]', '"wires": ["w-d0", "w-d0"]'),
+      ),
     );
-    expect(duplicate.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
-      'junction/duplicate-wire',
-    );
+    expect(codesOf(duplicate.diagnostics)).toContain('junction/duplicate-wire');
   });
 
   it('rejects junctions with fewer than two wires', () => {
-    const result = parseSchematic(
-      SAMPLE.replace('"wires": ["w-d0", "w-label-d0"]', '"wires": ["w-d0"]'),
-    );
-    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+    expect(codes(SAMPLE.replace('"wires": ["w-d0", "w-label-d0"]', '"wires": ["w-d0"]'))).toContain(
       'schema/invalid-value',
     );
   });
 
   it('round-trips through serializeSchematic', () => {
-    const document = expectValue(parseSchematic(SAMPLE));
-    const reparsed = parseSchematic(serializeSchematic(document));
-    expect(reparsed.ok).toBe(true);
-    expect(reparsed.value).toEqual(document);
-  });
-});
-
-describe('schematic document model', () => {
-  it('keeps readonly nested arrays', () => {
-    const document: SchematicDocument = expectValue(parseSchematic(SAMPLE));
-    expect(document.sheet.symbols.map((symbol) => symbol.id)).toEqual([
-      's-mcu',
-      's-lcd',
-      'lcd-l-d0',
-    ]);
+    const document: SchematicDocument = parseSchematic(SAMPLE);
+    expect(parseSchematic(serializeSchematic(document))).toEqual(document);
   });
 });

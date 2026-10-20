@@ -19,8 +19,33 @@ export type {
   DiagnosticRelated,
   DiagnosticSeverity,
 } from './format/diagnostics';
-export type { ParseResult } from './format/result';
+export { SchematicError } from './format/errors';
 
 export { parseSchematic } from './format/parse-schematic';
 export { parseView } from './format/parse-view';
 export { serializeSchematic, serializeView } from './format/serialize';
+
+export {
+  LABEL_DEVICE,
+  RESERVED_PACKAGE_NAMESPACE,
+  formatDeviceReference,
+  isLabelDevice,
+  isReservedPackageId,
+  isValidPackageId,
+  parseDeviceReference,
+} from './device/reference';
+export type { DeviceReference } from './device/reference';
+export type {
+  DeviceSymbolDefinition,
+  DeviceSymbolGeometry,
+  DeviceSymbolProvider,
+  PinAnchor,
+} from './device/symbol';
+export { createDeviceRegistry } from './device/registry';
+export type {
+  DevicePackageRegistration,
+  DeviceRegisterOptions,
+  DeviceRegistrationEntry,
+  DeviceRegistry,
+  ResolvedDevice,
+} from './device/registry';

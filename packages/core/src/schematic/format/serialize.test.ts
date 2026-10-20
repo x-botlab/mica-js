@@ -58,9 +58,7 @@ describe('serializeSchematic', () => {
   });
 
   it('round-trips through parseSchematic', () => {
-    const reparsed = parseSchematic(serializeSchematic(DOCUMENT));
-    expect(reparsed.ok).toBe(true);
-    expect(reparsed.value).toEqual(DOCUMENT);
+    expect(parseSchematic(serializeSchematic(DOCUMENT))).toEqual(DOCUMENT);
   });
 
   it('does not mutate the input document', () => {

@@ -1,6 +1,6 @@
 import type { Diagnostic } from './diagnostics';
+import { SchematicError } from './errors';
 import { parseInput } from './input';
-import type { ParseResult } from './result';
 import type {
   Point,
   SchematicDocument,
@@ -25,15 +25,18 @@ import {
   type IdentifiedEntry,
 } from './validate';
 
-export function parseSchematic(input: string | unknown): ParseResult<SchematicDocument> {
+/** @throws {SchematicError} when the input does not match the `.sch` contract. */
+export function parseSchematic(input: string | unknown): SchematicDocument {
   const diagnostics: Diagnostic[] = [];
   const parsed = parseInput(input, diagnostics);
   if (!parsed.ok) {
-    return { ok: false, value: undefined, diagnostics };
+    throw new SchematicError(diagnostics);
   }
   const value = readDocument(parsed.value, diagnostics);
-  const ok = value !== undefined && !hasErrors(diagnostics);
-  return { ok, value: ok ? value : undefined, diagnostics };
+  if (value === undefined || hasErrors(diagnostics)) {
+    throw new SchematicError(diagnostics);
+  }
+  return value;
 }
 
 function readDocument(value: unknown, diagnostics: Diagnostic[]): SchematicDocument | undefined {
