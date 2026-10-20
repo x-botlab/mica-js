@@ -23,9 +23,14 @@ export interface Placement {
   readonly rotation: number;
 }
 
+/** Instance property value stored in `symbol.properties` (see #6 / #7). */
+export type PropertyValue = string | number | boolean;
+
 export interface SchematicSymbol extends Placement {
   readonly id: string;
   readonly device: string;
+  /** Instance property overrides; absent means "use device defaults". */
+  readonly properties?: Readonly<Record<string, PropertyValue>>;
 }
 
 export interface SchematicWire {

@@ -1,7 +1,12 @@
 import type { Diagnostic } from '../format/diagnostics';
 import { throwIfErrors } from '../format/errors';
 import type { Point, Rect, SchematicDocument } from '../format/types';
-import { isLabelDevice, parseDeviceReference } from '../device/reference';
+import {
+  builtinSymbolKind,
+  DEFAULT_GROUND_LABEL,
+  DEFAULT_POWER_LABEL,
+  parseDeviceReference,
+} from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
 import {
   boundsOfPoints,
@@ -24,10 +29,12 @@ export interface SchematicPinInstance {
 
 export type SchematicNetMember =
   | { readonly kind: 'pin'; readonly symbolId: string; readonly pinId: string }
-  | { readonly kind: 'label'; readonly symbolId: string };
+  | { readonly kind: 'label'; readonly symbolId: string }
+  | { readonly kind: 'power'; readonly symbolId: string }
+  | { readonly kind: 'ground'; readonly symbolId: string };
 
 export interface SchematicNet {
-  /** Label id when the net has exactly one label; `null` when anonymous. */
+  /** Name contributed by the single naming connection point; `null` when anonymous. */
   readonly name: string | null;
   readonly wireIds: readonly string[];
   readonly members: readonly SchematicNetMember[];
@@ -60,7 +67,13 @@ type Connection =
       readonly pinId: string;
       readonly point: Point;
     }
-  | { readonly kind: 'label'; readonly symbolId: string; readonly point: Point };
+  | {
+      readonly kind: 'label' | 'power' | 'ground';
+      readonly symbolId: string;
+      readonly point: Point;
+      /** Net name contributed by this connection point. */
+      readonly name: string;
+    };
 
 /**
  * Derives nets from wires, explicit junctions and symbol connection points (#6).
@@ -81,8 +94,14 @@ export function deriveSchematicTopology(
 
   for (const symbol of symbols) {
     bounds = unionBounds(bounds, { x: symbol.x, y: symbol.y, width: 0, height: 0 });
-    if (isLabelDevice(symbol.device)) {
-      connections.push({ kind: 'label', symbolId: symbol.id, point: { x: symbol.x, y: symbol.y } });
+    const builtin = builtinSymbolKind(symbol.device);
+    if (builtin !== undefined) {
+      connections.push({
+        kind: builtin,
+        symbolId: symbol.id,
+        point: { x: symbol.x, y: symbol.y },
+        name: builtinName(builtin, symbol),
+      });
       continue;
     }
 
@@ -209,22 +228,22 @@ export function deriveSchematicTopology(
     if (group.connections.length === 0 || !connected) {
       continue;
     }
-    const labels = group.connections
+    const names = group.connections
       .map((index) => connections[index])
       .filter(
-        (connection): connection is Extract<Connection, { kind: 'label' }> =>
-          connection?.kind === 'label',
+        (connection): connection is Extract<Connection, { kind: 'label' | 'power' | 'ground' }> =>
+          connection !== undefined && connection.kind !== 'pin',
       )
-      .map((connection) => connection.symbolId)
+      .map((connection) => connection.name)
       .sort();
     let name: string | null = null;
-    if (labels.length === 1) {
-      name = labels[0] as string;
-    } else if (labels.length > 1) {
+    if (names.length === 1) {
+      name = names[0] as string;
+    } else if (names.length > 1) {
       diagnostics.push({
         severity: 'error',
         code: 'net/naming-conflict',
-        message: `Net has conflicting labels: ${labels.map((label) => JSON.stringify(label)).join(', ')}.`,
+        message: `Net has conflicting names: ${names.map((item) => JSON.stringify(item)).join(', ')}.`,
       });
     }
 
@@ -236,7 +255,7 @@ export function deriveSchematicTopology(
         }
         return connection.kind === 'pin'
           ? { kind: 'pin', symbolId: connection.symbolId, pinId: connection.pinId }
-          : { kind: 'label', symbolId: connection.symbolId };
+          : { kind: connection.kind, symbolId: connection.symbolId };
       })
       .filter((member): member is SchematicNetMember => member !== undefined)
       .sort(compareMembers);
@@ -309,6 +328,22 @@ export function deriveSchematicTopology(
   };
 }
 
+const KIND_ORDER: readonly SchematicNetMember['kind'][] = ['label', 'power', 'ground', 'pin'];
+
+function builtinName(
+  kind: 'label' | 'power' | 'ground',
+  symbol: { readonly id: string; readonly properties?: Readonly<Record<string, unknown>> },
+): string {
+  if (kind === 'label') {
+    return symbol.id;
+  }
+  const label = symbol.properties?.['label'];
+  if (typeof label === 'string' && label.length > 0) {
+    return label;
+  }
+  return kind === 'power' ? DEFAULT_POWER_LABEL : DEFAULT_GROUND_LABEL;
+}
+
 function compareMembers(
   a: SchematicNetMember | undefined,
   b: SchematicNetMember | undefined,
@@ -317,7 +352,7 @@ function compareMembers(
     return a === undefined ? (b === undefined ? 0 : 1) : -1;
   }
   if (a.kind !== b.kind) {
-    return a.kind === 'label' ? -1 : 1;
+    return KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind);
   }
   const bySymbol = a.symbolId.localeCompare(b.symbolId);
   if (bySymbol !== 0) {

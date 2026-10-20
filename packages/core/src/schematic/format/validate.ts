@@ -1,5 +1,5 @@
 import type { Diagnostic, DiagnosticCode, DiagnosticEntity } from './diagnostics';
-import type { Placement, Point } from './types';
+import type { Placement, Point, PropertyValue } from './types';
 
 export function toPointer(path: readonly string[]): string {
   if (path.length === 0) {
@@ -200,6 +200,58 @@ export function readPlacement(
 export interface IdentifiedEntry {
   readonly id: string;
   readonly path: readonly string[];
+}
+
+/** Reads an optional `properties` map of scalar values (#6). */
+export function readProperties(
+  value: unknown,
+  path: readonly string[],
+  diagnostics: Diagnostic[],
+): Record<string, PropertyValue> | undefined {
+  if (!isRecord(value)) {
+    report(diagnostics, 'schema/invalid-type', 'Field "properties" must be an object.', path);
+    return undefined;
+  }
+  const properties: Record<string, PropertyValue> = Object.create(null);
+  let failed = false;
+  for (const [key, entry] of Object.entries(value)) {
+    if (key.length === 0) {
+      report(diagnostics, 'schema/invalid-value', 'Property keys must not be empty.', path);
+      failed = true;
+      continue;
+    }
+    const entryPath = [...path, key];
+    if (typeof entry === 'string') {
+      properties[key] = entry;
+      continue;
+    }
+    if (typeof entry === 'boolean') {
+      properties[key] = entry;
+      continue;
+    }
+    if (typeof entry === 'number') {
+      if (!Number.isFinite(entry)) {
+        report(
+          diagnostics,
+          'schema/invalid-value',
+          `Property "${key}" must be a finite number.`,
+          entryPath,
+        );
+        failed = true;
+        continue;
+      }
+      properties[key] = entry;
+      continue;
+    }
+    report(
+      diagnostics,
+      'schema/invalid-value',
+      `Property "${key}" must be a string, finite number or boolean.`,
+      entryPath,
+    );
+    failed = true;
+  }
+  return failed ? undefined : properties;
 }
 
 export function checkDuplicateIds(

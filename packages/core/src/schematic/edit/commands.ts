@@ -1,7 +1,14 @@
 import type { Diagnostic } from '../format/diagnostics';
 import { throwIfErrors } from '../format/errors';
 import { parseSchematic } from '../format/parse-schematic';
-import type { Point, SchematicDocument, SchematicJunction, SchematicWire } from '../format/types';
+import type {
+  Point,
+  PropertyValue,
+  SchematicDocument,
+  SchematicJunction,
+  SchematicSymbol,
+  SchematicWire,
+} from '../format/types';
 import { toPointer } from '../format/validate';
 import { parseDeviceReference } from '../device/reference';
 import type { TopologyOptions } from '../topology/derive';
@@ -16,6 +23,7 @@ export type SchematicCommand =
       readonly x: number;
       readonly y: number;
       readonly rotation?: number;
+      readonly properties?: Readonly<Record<string, PropertyValue>>;
     }
   | {
       readonly type: 'update-symbol';
@@ -24,8 +32,17 @@ export type SchematicCommand =
       readonly x?: number;
       readonly y?: number;
       readonly rotation?: number;
+      /** Replaces the whole property map when provided. */
+      readonly properties?: Readonly<Record<string, PropertyValue>>;
     }
   | { readonly type: 'remove-symbol'; readonly id: string }
+  | {
+      readonly type: 'set-symbol-property';
+      readonly id: string;
+      readonly key: string;
+      readonly value: PropertyValue;
+    }
+  | { readonly type: 'remove-symbol-property'; readonly id: string; readonly key: string }
   | { readonly type: 'add-wire'; readonly id?: string; readonly points: readonly Point[] }
   | { readonly type: 'set-wire-points'; readonly id: string; readonly points: readonly Point[] }
   | { readonly type: 'remove-wire'; readonly id: string }
@@ -81,14 +98,14 @@ export function applySchematicCommand(
     case 'add-symbol': {
       const device = requireDevice(command.device, diagnostics);
       const id = command.id ?? createId('symbol', draft());
+      const properties = normalizeProperties(command.properties, diagnostics);
       if (device !== undefined) {
-        symbols.push({
-          id,
-          device,
-          x: command.x,
-          y: command.y,
-          rotation: command.rotation ?? 0,
-        });
+        symbols.push(
+          withProperties(
+            { id, device, x: command.x, y: command.y, rotation: command.rotation ?? 0 },
+            properties,
+          ),
+        );
       }
       break;
     }
@@ -100,14 +117,21 @@ export function applySchematicCommand(
           command.device === undefined
             ? current.device
             : requireDevice(command.device, diagnostics);
+        const properties =
+          command.properties === undefined
+            ? current.properties
+            : normalizeProperties(command.properties, diagnostics);
         if (device !== undefined) {
-          symbols[index] = {
-            id: current.id,
-            device,
-            x: command.x ?? current.x,
-            y: command.y ?? current.y,
-            rotation: command.rotation ?? current.rotation,
-          };
+          symbols[index] = withProperties(
+            {
+              id: current.id,
+              device,
+              x: command.x ?? current.x,
+              y: command.y ?? current.y,
+              rotation: command.rotation ?? current.rotation,
+            },
+            properties,
+          );
         }
       }
       break;
@@ -116,6 +140,39 @@ export function applySchematicCommand(
       const index = findIndex(symbols, command.id, 'symbol', diagnostics);
       if (index !== -1) {
         symbols.splice(index, 1);
+      }
+      break;
+    }
+    case 'set-symbol-property': {
+      const index = findIndex(symbols, command.id, 'symbol', diagnostics);
+      const current = index === -1 ? undefined : symbols[index];
+      if (current !== undefined) {
+        const value = checkPropertyValue(command.key, command.value, diagnostics);
+        if (value !== undefined) {
+          symbols[index] = withProperties(baseOf(current), {
+            ...(current.properties ?? {}),
+            [command.key]: value,
+          });
+        }
+      }
+      break;
+    }
+    case 'remove-symbol-property': {
+      const index = findIndex(symbols, command.id, 'symbol', diagnostics);
+      const current = index === -1 ? undefined : symbols[index];
+      if (current !== undefined) {
+        const properties = { ...(current.properties ?? {}) };
+        if (!Object.prototype.hasOwnProperty.call(properties, command.key)) {
+          diagnostics.push({
+            severity: 'error',
+            code: 'edit/unknown-entity',
+            message: `Symbol "${current.id}" has no property ${JSON.stringify(command.key)}.`,
+            entity: { kind: 'symbol', id: current.id },
+          });
+        } else {
+          delete properties[command.key];
+          symbols[index] = withProperties(baseOf(current), properties);
+        }
       }
       break;
     }
@@ -295,6 +352,86 @@ function requireDevice(device: string, diagnostics: Diagnostic[]): string | unde
     return undefined;
   }
   return device;
+}
+
+function baseOf(symbol: SchematicSymbol): Omit<SchematicSymbol, 'properties'> {
+  return {
+    id: symbol.id,
+    device: symbol.device,
+    x: symbol.x,
+    y: symbol.y,
+    rotation: symbol.rotation,
+  };
+}
+
+function withProperties(
+  symbol: Omit<SchematicSymbol, 'properties'>,
+  properties: Readonly<Record<string, PropertyValue>> | undefined,
+): SchematicSymbol {
+  if (properties === undefined || Object.keys(properties).length === 0) {
+    return symbol;
+  }
+  return { ...symbol, properties };
+}
+
+function normalizeProperties(
+  properties: Readonly<Record<string, PropertyValue>> | undefined,
+  diagnostics: Diagnostic[],
+): Readonly<Record<string, PropertyValue>> | undefined {
+  if (properties === undefined) {
+    return undefined;
+  }
+  const normalized: Record<string, PropertyValue> = {};
+  for (const [key, value] of Object.entries(properties)) {
+    if (key.length === 0) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'schema/invalid-value',
+        message: 'Property keys must not be empty.',
+      });
+      continue;
+    }
+    const checked = checkPropertyValue(key, value, diagnostics);
+    if (checked !== undefined) {
+      normalized[key] = checked;
+    }
+  }
+  return normalized;
+}
+
+function checkPropertyValue(
+  key: string,
+  value: PropertyValue,
+  diagnostics: Diagnostic[],
+): PropertyValue | undefined {
+  if (key.length === 0) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'schema/invalid-value',
+      message: 'Property keys must not be empty.',
+    });
+    return undefined;
+  }
+  if (typeof value === 'string' || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'schema/invalid-value',
+        message: `Property "${key}" must be a finite number.`,
+      });
+      return undefined;
+    }
+    return value;
+  }
+  diagnostics.push({
+    severity: 'error',
+    code: 'schema/invalid-value',
+    message: `Property "${key}" must be a string, finite number or boolean.`,
+  });
+  return undefined;
 }
 
 function findIndex<T extends { readonly id: string }>(

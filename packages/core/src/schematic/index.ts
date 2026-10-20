@@ -2,6 +2,7 @@ export { SCHEMATIC_VERSION } from './format/types';
 export type {
   Placement,
   Point,
+  PropertyValue,
   Rect,
   SchematicDocument,
   SchematicJunction,
@@ -61,16 +62,25 @@ export type {
   SchematicHit,
 } from './edit/query';
 
+export { mergeWiresAtJunction, splitWireAt } from './edit/wires';
+export type { MergeWiresResult, SplitWireResult, WireEditOptions } from './edit/wires';
+
 export {
+  DEFAULT_GROUND_LABEL,
+  DEFAULT_POWER_LABEL,
+  GROUND_DEVICE,
   LABEL_DEVICE,
+  POWER_DEVICE,
   RESERVED_PACKAGE_NAMESPACE,
+  builtinSymbolKind,
   formatDeviceReference,
+  isBuiltinDevice,
   isLabelDevice,
   isReservedPackageId,
   isValidPackageId,
   parseDeviceReference,
 } from './device/reference';
-export type { DeviceReference } from './device/reference';
+export type { BuiltinSymbolKind, DeviceReference } from './device/reference';
 export type {
   DeviceSymbolDefinition,
   DeviceSymbolGeometry,

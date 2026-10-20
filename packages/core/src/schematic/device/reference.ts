@@ -1,5 +1,19 @@
 export const LABEL_DEVICE = 'builtin:label';
+export const POWER_DEVICE = 'builtin:power';
+export const GROUND_DEVICE = 'builtin:ground';
 export const RESERVED_PACKAGE_NAMESPACE = 'builtin';
+
+/** Builtin symbols recognised by the loader instead of the device registry. */
+export type BuiltinSymbolKind = 'label' | 'power' | 'ground';
+
+const BUILTIN_DEVICES: Readonly<Record<string, BuiltinSymbolKind>> = {
+  [LABEL_DEVICE]: 'label',
+  [POWER_DEVICE]: 'power',
+  [GROUND_DEVICE]: 'ground',
+};
+
+export const DEFAULT_POWER_LABEL = 'VCC';
+export const DEFAULT_GROUND_LABEL = 'GND';
 
 export interface DeviceReference {
   readonly raw: string;
@@ -58,6 +72,15 @@ export function isReservedPackageId(packageId: string): boolean {
 
 export function isLabelDevice(raw: string): boolean {
   return raw === LABEL_DEVICE;
+}
+
+/** Returns the builtin kind for `builtin:label` / `builtin:power` / `builtin:ground`. */
+export function builtinSymbolKind(raw: string): BuiltinSymbolKind | undefined {
+  return BUILTIN_DEVICES[raw];
+}
+
+export function isBuiltinDevice(raw: string): boolean {
+  return builtinSymbolKind(raw) !== undefined;
 }
 
 export function formatDeviceReference(packageId: string, deviceId: string): string {

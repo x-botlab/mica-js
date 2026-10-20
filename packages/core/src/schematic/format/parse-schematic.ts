@@ -20,6 +20,7 @@ import {
   readNumberField,
   readObjectField,
   readPoint,
+  readProperties,
   readStringField,
   report,
   type IdentifiedEntry,
@@ -161,12 +162,21 @@ function readSymbol(
     report(diagnostics, 'schema/invalid-type', 'Symbol must be an object.', path);
     return undefined;
   }
-  forbidUnknownFields(value, ['id', 'device', 'x', 'y', 'rotation'], path, diagnostics);
+  forbidUnknownFields(
+    value,
+    ['id', 'device', 'x', 'y', 'rotation', 'properties'],
+    path,
+    diagnostics,
+  );
   const id = readStringField(value, 'id', path, diagnostics, { nonEmpty: true });
   const device = readStringField(value, 'device', path, diagnostics, { nonEmpty: true });
   const x = readNumberField(value, 'x', path, diagnostics);
   const y = readNumberField(value, 'y', path, diagnostics);
   const rotation = readNumberField(value, 'rotation', path, diagnostics);
+  const properties =
+    value['properties'] === undefined
+      ? undefined
+      : readProperties(value['properties'], [...path, 'properties'], diagnostics);
   if (
     id === undefined ||
     device === undefined ||
@@ -176,7 +186,9 @@ function readSymbol(
   ) {
     return undefined;
   }
-  return { id, device, x, y, rotation };
+  return properties === undefined
+    ? { id, device, x, y, rotation }
+    : { id, device, x, y, rotation, properties };
 }
 
 function readWire(
