@@ -26,5 +26,10 @@ export default defineConfig(({ command }) => ({
       external: ['@mica/core', '@mica/core/schematic'],
     },
   },
-  plugins: [dts({ include: ['src'], exclude: ['src/**/*.test.ts', 'src/**/test-helpers.ts'] })],
+  plugins: [
+    dts({
+      tsconfigPath: './tsconfig.build.json',
+      entryRoot: 'src',
+    }),
+  ],
 }));
