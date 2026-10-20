@@ -4,9 +4,12 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   build: {
     lib: {
-      entry: 'src/index.ts',
+      entry: {
+        index: 'src/index.ts',
+        'schematic/index': 'src/schematic/index.ts',
+      },
       formats: ['es'],
-      fileName: 'index',
+      fileName: (_format, entryName) => `${entryName}.js`,
     },
     target: 'es2022',
     sourcemap: true,

@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./schematic": {
+      "types": "./dist/schematic/index.d.ts",
+      "import": "./dist/schematic/index.js"
     }
   },
   "files": [
