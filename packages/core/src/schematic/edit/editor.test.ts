@@ -130,4 +130,41 @@ describe('SchematicEditor', () => {
     expect(editor.topology().danglingWireEnds).toHaveLength(2);
     expect(parseSchematic(editor.toJSON())).toEqual(editor.document);
   });
+
+  it('drops junctions that no longer sit on their wires when replacing the document', () => {
+    const document = makeDocument();
+    const editor = new SchematicEditor({
+      ...document,
+      sheet: {
+        ...document.sheet,
+        wires: [
+          {
+            id: 'w1',
+            points: [
+              { x: 0, y: 0 },
+              { x: 10, y: 0 },
+            ],
+          },
+          {
+            id: 'w2',
+            points: [
+              { x: 5, y: 0 },
+              { x: 5, y: 10 },
+            ],
+          },
+        ],
+        junctions: [{ id: 'j1', x: 5, y: 0, wires: ['w1', 'w2'] }],
+      },
+    });
+    expect(editor.document.sheet.junctions).toHaveLength(1);
+
+    editor.replace({
+      ...document,
+      sheet: {
+        ...editor.document.sheet,
+        junctions: [{ id: 'j1', x: 5, y: 5, wires: ['w1', 'w2'] }],
+      },
+    });
+    expect(editor.document.sheet.junctions).toEqual([]);
+  });
 });

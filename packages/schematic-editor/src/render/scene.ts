@@ -101,7 +101,11 @@ export interface RenderInput {
   /** Rubber-band selection rectangle in page units. */
   readonly marquee?: Rect;
   /** Ghost of the symbol the current placement tool would insert. */
-  readonly placementPreview?: { readonly device: string; readonly position: Point };
+  readonly placementPreview?: {
+    readonly device: string;
+    readonly position: Point;
+    readonly rotation: number;
+  };
   /** Reference designator being dragged; drawn at this world position instead. */
   readonly referencePreview?: { readonly symbolId: string; readonly position: Point };
 }
@@ -110,6 +114,40 @@ const WIRE_WIDTH = 1.5;
 const SELECTED_WIDTH = 2.5;
 const JUNCTION_RADIUS = 3;
 const VERTEX_SIZE = 5;
+
+interface TextPlacement {
+  readonly align: 'left' | 'center' | 'right';
+  readonly baseline: 'top' | 'middle' | 'bottom';
+  readonly rotation: number;
+}
+
+const ALIGN_MIRROR: Readonly<Record<TextPlacement['align'], TextPlacement['align']>> = {
+  left: 'right',
+  center: 'center',
+  right: 'left',
+};
+
+const BASELINE_MIRROR: Readonly<Record<TextPlacement['baseline'], TextPlacement['baseline']>> = {
+  top: 'bottom',
+  middle: 'middle',
+  bottom: 'top',
+};
+
+/**
+ * Text turns with the symbol, except at half turns where it would read upside down: those flip
+ * back and mirror the anchor alignment so the glyphs stay on the same side of the anchor.
+ */
+function uprightText(
+  rotation: number,
+  align: TextPlacement['align'],
+  baseline: TextPlacement['baseline'],
+): TextPlacement {
+  const normalized = (((rotation % 360) + 540) % 360) - 180;
+  if (Math.abs(normalized) === 180) {
+    return { align: ALIGN_MIRROR[align], baseline: BASELINE_MIRROR[baseline], rotation: 0 };
+  }
+  return { align, baseline, rotation: normalized };
+}
 
 interface PreviewDrag {
   readonly wires: ReadonlyMap<string, readonly Point[]>;
@@ -259,7 +297,10 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
     const device = input.placementPreview.device;
     drawSymbol(items, {
       symbol: previewSymbol(device, input.placementPreview.position),
-      placement: { ...input.placementPreview.position, rotation: 0 },
+      placement: {
+        ...input.placementPreview.position,
+        rotation: input.placementPreview.rotation,
+      },
       theme,
       devices,
       labels: display.labels,
@@ -394,9 +435,7 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
       options.referenceOverride ?? referencePosition(placement, localBody, symbol.reference),
     text: symbol.id,
     color: options.referenceOverride === undefined ? annotation : theme.selection,
-    align: 'left',
-    baseline: 'bottom',
-    rotation: placement.rotation,
+    ...uprightText(placement.rotation, 'left', 'bottom'),
     font: fonts.pinFont,
   });
   items.push({
@@ -404,8 +443,7 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
     position: { x: body.x + body.width / 2, y: body.y + body.height / 2 },
     text: definition.name,
     color: highlight ?? theme.symbolText,
-    align: 'center',
-    baseline: 'middle',
+    ...uprightText(placement.rotation, 'center', 'middle'),
     font: fonts.symbolFont,
   });
 
@@ -429,9 +467,7 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
       position: symbolPinPosition(placement, label.position),
       text: pinId,
       color: highlight ?? theme.pinText,
-      align: label.align,
-      baseline: label.baseline,
-      rotation: placement.rotation + label.rotation,
+      ...uprightText(placement.rotation + label.rotation, label.align, label.baseline),
       font: fonts.pinFont,
     });
   }

@@ -61,6 +61,54 @@ function texts(items: readonly SceneItem[]): string[] {
   return items.filter((item) => item.kind === 'text').map((item) => item.text);
 }
 
+/** Four-sided symbol used by the rotation and pin-label tests. */
+function ne555Devices() {
+  return createDeviceRegistry([
+    {
+      packageId: 'pkg',
+      devices: [
+        {
+          id: 'ne555',
+          symbol: {
+            name: 'NE555',
+            bounds: { x: -40, y: -50, width: 80, height: 100 },
+            pins: {
+              TRIG: { x: -60, y: -20, side: 'left' },
+              OUT: { x: 60, y: 0, side: 'right' },
+              VCC: { x: 0, y: -70, side: 'top' },
+              GND: { x: 0, y: 70, side: 'bottom' },
+            },
+          },
+        },
+      ],
+    },
+  ]);
+}
+
+/** Scene of a single NE555 placed at `rotation`. */
+function sceneAt(rotation: number) {
+  return buildSchematicScene({
+    document: parseSchematic({
+      version: 1,
+      id: `rotated-${rotation}`,
+      sheet: {
+        symbols: [{ id: 'U1', device: 'pkg:ne555', x: 0, y: 0, rotation }],
+        wires: [],
+        junctions: [],
+      },
+    }),
+    devices: ne555Devices(),
+    theme: DARK_SCHEMATIC_THEME,
+  });
+}
+
+function textItem(rotation: number, text: string) {
+  const item = sceneAt(rotation).items.find(
+    (entry) => entry.kind === 'text' && entry.text === text,
+  );
+  return item?.kind === 'text' ? item : undefined;
+}
+
 describe('buildSchematicScene', () => {
   it('draws wires, symbols and builtin glyphs', () => {
     const scene = buildSchematicScene({ document, devices, theme: DARK_SCHEMATIC_THEME });
@@ -182,26 +230,7 @@ describe('buildSchematicScene', () => {
   });
 
   it('draws pin stubs and labels according to the declared side', () => {
-    const sided = createDeviceRegistry([
-      {
-        packageId: 'pkg',
-        devices: [
-          {
-            id: 'ne555',
-            symbol: {
-              name: 'NE555',
-              bounds: { x: -40, y: -50, width: 80, height: 100 },
-              pins: {
-                TRIG: { x: -60, y: -20, side: 'left' },
-                OUT: { x: 60, y: 0, side: 'right' },
-                VCC: { x: 0, y: -70, side: 'top' },
-                GND: { x: 0, y: 70, side: 'bottom' },
-              },
-            },
-          },
-        ],
-      },
-    ]);
+    const sided = ne555Devices();
     const scene = buildSchematicScene({
       document: parseSchematic({
         version: 1,
@@ -259,6 +288,35 @@ describe('buildSchematicScene', () => {
 
     const reference = scene.items.find((item) => item.kind === 'text' && item.text === 'U1');
     expect(reference).toMatchObject({ align: 'left', baseline: 'bottom' });
+  });
+
+  it('turns the device name with quarter turns and keeps text upright at half turns', () => {
+    expect(textItem(90, 'NE555')).toMatchObject({ rotation: 90 });
+    expect(textItem(270, 'NE555')).toMatchObject({ rotation: -90 });
+    expect(textItem(180, 'NE555')).toMatchObject({
+      rotation: 0,
+      align: 'center',
+      baseline: 'middle',
+    });
+  });
+
+  it('flips pin names instead of drawing them upside down', () => {
+    expect(textItem(0, 'TRIG')).toMatchObject({ rotation: 0, align: 'left' });
+    expect(textItem(90, 'TRIG')).toMatchObject({ rotation: 90, align: 'left' });
+    expect(textItem(180, 'TRIG')).toMatchObject({ rotation: 0, align: 'right' });
+    expect(textItem(270, 'TRIG')).toMatchObject({ rotation: -90, align: 'left' });
+    expect(textItem(180, 'VCC')).toMatchObject({ rotation: 90 });
+    expect(textItem(180, 'GND')).toMatchObject({ rotation: 90 });
+  });
+
+  it('flips the reference designator with the symbol', () => {
+    expect(textItem(90, 'U1')).toMatchObject({ rotation: 90, align: 'left', baseline: 'bottom' });
+    expect(textItem(180, 'U1')).toMatchObject({ rotation: 0, align: 'right', baseline: 'top' });
+    expect(textItem(270, 'U1')).toMatchObject({
+      rotation: -90,
+      align: 'left',
+      baseline: 'bottom',
+    });
   });
 
   it('infers the side when a pin omits it', () => {

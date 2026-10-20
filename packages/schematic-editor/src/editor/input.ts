@@ -63,6 +63,7 @@ export class EditorInput {
   #drag: Drag;
   #pendingWire: Point[] = [];
   #cursorPoint: Point | undefined;
+  #placementRotation = 0;
   #detached = false;
 
   constructor(deps: EditorInputDeps) {
@@ -104,12 +105,27 @@ export class EditorInput {
   }
 
   /** Placement ghost for the current tool, if the pointer is inside the canvas. */
-  get placementPreview(): { readonly device: string; readonly position: Point } | undefined {
+  get placementPreview():
+    { readonly device: string; readonly position: Point; readonly rotation: number } | undefined {
     const tool = this.#deps.controller.tool;
     if (this.#cursorPoint === undefined || !isPlacementTool(tool)) {
       return undefined;
     }
-    return { device: toolDevice(tool), position: this.#cursorPoint };
+    return {
+      device: toolDevice(tool),
+      position: this.#cursorPoint,
+      rotation: this.#placementRotation,
+    };
+  }
+
+  /** Rotates the ghost while a placement tool is active. */
+  rotatePlacement(degrees: number): boolean {
+    if (!isPlacementTool(this.#deps.controller.tool)) {
+      return false;
+    }
+    this.#placementRotation = (((this.#placementRotation + degrees) % 360) + 360) % 360;
+    this.#deps.onChange();
+    return true;
   }
 
   get pendingWireWithCursor(): readonly Point[] {
@@ -127,6 +143,7 @@ export class EditorInput {
   resetTransient(): void {
     this.#pendingWire = [];
     this.#cursorPoint = undefined;
+    this.#placementRotation = 0;
   }
 
   attach(): void {
@@ -244,11 +261,13 @@ export class EditorInput {
         device,
         x: point.x,
         y: point.y,
+        rotation: this.#placementRotation,
         ...(properties === undefined ? {} : { properties }),
       }),
     );
     this.#deps.controller.setTool('select');
     this.#cursorPoint = undefined;
+    this.#placementRotation = 0;
   }
 
   #startWireAtNode(page: Point): boolean {
@@ -513,6 +532,9 @@ export class EditorInput {
 
     if (event.key === ' ') {
       event.preventDefault();
+      if (this.rotatePlacement(90)) {
+        return;
+      }
       if (!readOnly) {
         this.#deps.run(() => controller.rotateSelection(90));
       }

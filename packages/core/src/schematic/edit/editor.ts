@@ -1,5 +1,6 @@
 import type { SchematicDocument } from '../format/types';
 import { parseSchematic } from '../format/parse-schematic';
+import { pointOnPolyline } from '../geometry/point';
 import { serializeSchematic } from '../format/serialize';
 import { deriveSchematicTopology, type SchematicTopology } from '../topology/derive';
 import {
@@ -53,11 +54,28 @@ export class SchematicEditor {
 
   /**
    * Records an already-derived document (for example a wire split) as one history step.
+   * Junctions that no longer lie on their wires are dropped, keeping the document consistent.
    *
    * @throws {SchematicError} when the document is invalid; the state stays untouched.
    */
   replace(document: SchematicDocument): void {
-    this.#record(parseSchematic(document));
+    const parsed = parseSchematic(document);
+    const tolerance = this.#options.tolerance ?? 0;
+    const wireById = new Map(parsed.sheet.wires.map((wire) => [wire.id, wire]));
+    const junctions = parsed.sheet.junctions.filter((junction) =>
+      junction.wires.every((wireId) => {
+        const wire = wireById.get(wireId);
+        return (
+          wire !== undefined &&
+          pointOnPolyline(wire.points, { x: junction.x, y: junction.y }, tolerance)
+        );
+      }),
+    );
+    this.#record(
+      junctions.length === parsed.sheet.junctions.length
+        ? parsed
+        : { ...parsed, sheet: { ...parsed.sheet, junctions } },
+    );
   }
 
   /** Applies several edits atomically; a failure rolls back every command in the block. */

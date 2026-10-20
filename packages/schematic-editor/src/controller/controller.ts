@@ -14,6 +14,7 @@ import {
   type Diagnostic,
   type ElementIdFactory,
   type HitTestOptions,
+  type Placement,
   type Point,
   type PropertyValue,
   type SchematicCommand,
@@ -64,6 +65,8 @@ export class SchematicEditorController {
   #listeners = new Set<(state: EditorState) => void>();
   #topology:
     { readonly document: SchematicDocument; readonly value: SchematicTopology } | undefined;
+  /** Symbols whose placement was edited: their schematic position wins over the view layout. */
+  #editedSymbols = new Set<string>();
 
   constructor(options: SchematicEditorControllerOptions) {
     this.#editor = new SchematicEditor(options.document, {
@@ -80,7 +83,7 @@ export class SchematicEditorController {
   get state(): EditorState {
     return {
       document: this.#editor.document,
-      view: this.#view,
+      view: this.renderView,
       selection: this.#selection,
       tool: this.#tool,
       display: this.#display,
@@ -89,6 +92,23 @@ export class SchematicEditorController {
       inspector: this.inspect(),
       lastError: this.#lastError,
     };
+  }
+
+  /**
+   * The view used for rendering: placement overrides are dropped for symbols edited here, so a
+   * rotation or move is visible instead of being masked by the read-only layout.
+   */
+  get renderView(): SchematicViewDocument | undefined {
+    if (this.#view === undefined || this.#editedSymbols.size === 0) {
+      return this.#view;
+    }
+    const layout: Record<string, Placement> = {};
+    for (const [id, placement] of Object.entries(this.#view.layout)) {
+      if (!this.#editedSymbols.has(id)) {
+        layout[id] = placement;
+      }
+    }
+    return { ...this.#view, layout };
   }
 
   get document(): SchematicDocument {
@@ -151,6 +171,7 @@ export class SchematicEditorController {
     this.#selection = [];
     this.#lastError = undefined;
     this.#topology = undefined;
+    this.#editedSymbols.clear();
     this.#emit();
   }
 
@@ -247,6 +268,7 @@ export class SchematicEditorController {
     if (preview === undefined) {
       return;
     }
+    this.#editedSymbols.add(symbol.id);
     const symbols = document.sheet.symbols.map((item) => {
       if (item.id === symbol.id) {
         return next;

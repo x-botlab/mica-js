@@ -500,6 +500,37 @@ describe('SchematicEditorController', () => {
     expect(controller.view).toBe(view);
   });
 
+  it('drops the layout override for symbols edited in the session', () => {
+    const view = {
+      version: 1 as const,
+      id: 'v1',
+      schematic: 'board.sch',
+      layout: {
+        s1: { x: 100, y: 100, rotation: 0 },
+        s2: { x: 200, y: 200, rotation: 90 },
+      },
+    };
+    const controller = new SchematicEditorController({
+      document: documentOf({
+        symbols: [
+          { id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 },
+          { id: 's2', device: 'pkg:mcu', x: 40, y: 0, rotation: 0 },
+        ],
+      }),
+      view,
+      devices,
+    });
+    expect(controller.state.view?.layout).toEqual(view.layout);
+
+    controller.setSelection([{ kind: 'symbol', id: 's1' }]);
+    controller.rotateSelection(90);
+    expect(controller.state.view?.layout).toEqual({ s2: view.layout.s2 });
+    expect(controller.view?.layout).toEqual(view.layout);
+
+    controller.reset(controller.document, { view });
+    expect(controller.state.view?.layout).toEqual(view.layout);
+  });
+
   it('applies grid display options without touching history', () => {
     const controller = createController(documentOf({}));
     controller.setDisplayOptions({ snap: false, gridSize: 20 });
