@@ -1,5 +1,7 @@
 import type { Point, Rect, SchematicDocument } from '../format/types';
 import {
+  GROUND_DEVICE,
+  POWER_DEVICE,
   isLabelDevice,
   isTextDevice,
   parseDeviceReference,
@@ -129,10 +131,28 @@ function annotationBounds(symbol: {
   readonly y: number;
   readonly properties?: Readonly<Record<string, unknown>>;
 }): { x: number; y: number; width: number; height: number } {
-  const isText = isTextDevice(symbol.device);
-  const content = isText
+  const device = symbol.device;
+  if (device === POWER_DEVICE) {
+    // Stem, bar and the label above them.
+    return {
+      x: symbol.x - POWER_HALF_WIDTH,
+      y: symbol.y - POWER_HEIGHT,
+      width: POWER_HALF_WIDTH * 2,
+      height: POWER_HEIGHT + ANNOTATION_HEIGHT / 2,
+    };
+  }
+  if (device === GROUND_DEVICE) {
+    // Stem, the three bars and the label below them.
+    return {
+      x: symbol.x - POWER_HALF_WIDTH,
+      y: symbol.y - ANNOTATION_HEIGHT / 2,
+      width: POWER_HALF_WIDTH * 2,
+      height: GROUND_HEIGHT,
+    };
+  }
+  const content = isTextDevice(device)
     ? textDeviceContent(symbol)
-    : isLabelDevice(symbol.device)
+    : isLabelDevice(device)
       ? symbol.id
       : '';
   if (content.length === 0) {
@@ -146,6 +166,12 @@ function annotationBounds(symbol: {
 
 const ANNOTATION_CHAR_WIDTH = 6;
 const ANNOTATION_HEIGHT = 12;
+/** Half width of the power/ground glyph box. */
+const POWER_HALF_WIDTH = 10;
+/** How far the power symbol (stem + bar + label) reaches above its anchor. */
+const POWER_HEIGHT = 24;
+/** How far the ground symbol (stem + bars + label) reaches below its anchor. */
+const GROUND_HEIGHT = 30;
 
 /** Hit box of a reference designator, positioned like the renderer draws it. */
 function referenceHit(
