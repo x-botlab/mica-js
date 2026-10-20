@@ -8,6 +8,9 @@ export function sameSelectionItem(left: EditorSelection, right: EditorSelection)
   if (left.kind === 'vertex' && right.kind === 'vertex') {
     return left.wireId === right.wireId && left.index === right.index;
   }
+  if (left.kind === 'reference' && right.kind === 'reference') {
+    return left.symbolId === right.symbolId;
+  }
   return 'id' in left && 'id' in right ? left.id === right.id : false;
 }
 
@@ -39,6 +42,8 @@ export function pruneSelection(
     switch (item.kind) {
       case 'symbol':
         return symbols.has(item.id);
+      case 'reference':
+        return symbols.has(item.symbolId);
       case 'wire':
         return wires.has(item.id);
       case 'junction':

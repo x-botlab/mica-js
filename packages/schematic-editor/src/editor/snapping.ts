@@ -48,6 +48,21 @@ export function snapToGrid(point: Point, display: DisplayOptions): Point {
   return { x: Math.round(point.x / size) * size, y: Math.round(point.y / size) * size };
 }
 
+/**
+ * Waypoints needed to reach `to` from `from` with horizontal/vertical segments only.
+ * Returns `[to]` when already aligned, otherwise an elbow plus `to` (long axis first).
+ */
+export function orthogonalWaypoints(from: Point, to: Point): readonly Point[] {
+  if (from.x === to.x || from.y === to.y) {
+    return [to];
+  }
+  const elbow =
+    Math.abs(to.x - from.x) >= Math.abs(to.y - from.y)
+      ? { x: to.x, y: from.y }
+      : { x: from.x, y: to.y };
+  return [elbow, to];
+}
+
 /** Snaps to a nearby connection node when there is one, otherwise to the grid. */
 export function snapForWire(context: SnapContext, point: Point): Point {
   return connectionNodeAt(context, point) ?? snapToGrid(point, context.controller.display);

@@ -19,6 +19,32 @@ export function symbolPinPosition(placement: Placement, anchor: PinAnchor): Poin
   return { x: placement.x + rotated.x, y: placement.y + rotated.y };
 }
 
+/** Distance between the reference default anchor and the body's top-left corner. */
+export const REFERENCE_DEFAULT_OFFSET = 4;
+
+/**
+ * Local anchor of a symbol's reference designator: the explicit override, else the body's
+ * top-left corner lifted by {@link REFERENCE_DEFAULT_OFFSET}.
+ */
+export function referenceAnchor(outline: Rect | undefined, override?: Point): Point {
+  if (override !== undefined) {
+    return { x: override.x, y: override.y };
+  }
+  if (outline === undefined) {
+    return { x: 0, y: -REFERENCE_DEFAULT_OFFSET };
+  }
+  return { x: outline.x, y: outline.y - REFERENCE_DEFAULT_OFFSET };
+}
+
+/** World position of a symbol's reference designator anchor. */
+export function referencePosition(
+  placement: Placement,
+  outline: Rect | undefined,
+  override?: Point,
+): Point {
+  return symbolPinPosition(placement, referenceAnchor(outline, override));
+}
+
 /** Bounding box of a symbol: its transformed outline, else its pins, else its origin. */
 export function symbolBounds(
   placement: Placement,

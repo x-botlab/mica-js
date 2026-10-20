@@ -164,7 +164,7 @@ function readSymbol(
   }
   forbidUnknownFields(
     value,
-    ['id', 'device', 'x', 'y', 'rotation', 'properties'],
+    ['id', 'device', 'x', 'y', 'rotation', 'properties', 'reference'],
     path,
     diagnostics,
   );
@@ -177,18 +177,29 @@ function readSymbol(
     value['properties'] === undefined
       ? undefined
       : readProperties(value['properties'], [...path, 'properties'], diagnostics);
+  const reference =
+    value['reference'] === undefined
+      ? undefined
+      : readPoint(value['reference'], [...path, 'reference'], diagnostics);
   if (
     id === undefined ||
     device === undefined ||
     x === undefined ||
     y === undefined ||
-    rotation === undefined
+    rotation === undefined ||
+    (value['reference'] !== undefined && reference === undefined)
   ) {
     return undefined;
   }
-  return properties === undefined
-    ? { id, device, x, y, rotation }
-    : { id, device, x, y, rotation, properties };
+  return {
+    id,
+    device,
+    x,
+    y,
+    rotation,
+    ...(properties === undefined ? {} : { properties }),
+    ...(reference === undefined ? {} : { reference }),
+  };
 }
 
 function readWire(
@@ -220,6 +231,21 @@ function readWire(
   }
   if (id === undefined || rawPoints === undefined) {
     return undefined;
+  }
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    if (previous === undefined || current === undefined) {
+      continue;
+    }
+    if (previous.x !== current.x && previous.y !== current.y) {
+      report(diagnostics, 'wire/not-orthogonal', 'Wire segments must be horizontal or vertical.', [
+        ...path,
+        'points',
+        String(index),
+      ]);
+      return undefined;
+    }
   }
   return { id, points };
 }

@@ -24,6 +24,8 @@ export type SchematicCommand =
       readonly y: number;
       readonly rotation?: number;
       readonly properties?: Readonly<Record<string, PropertyValue>>;
+      /** Reference designator anchor in symbol-local coordinates; `null` clears it. */
+      readonly reference?: Point | null;
     }
   | {
       readonly type: 'update-symbol';
@@ -34,6 +36,8 @@ export type SchematicCommand =
       readonly rotation?: number;
       /** Replaces the whole property map when provided. */
       readonly properties?: Readonly<Record<string, PropertyValue>>;
+      /** Reference designator anchor; `null` clears it, `undefined` keeps it. */
+      readonly reference?: Point | null;
     }
   | { readonly type: 'remove-symbol'; readonly id: string }
   | {
@@ -99,10 +103,23 @@ export function applySchematicCommand(
       const device = requireDevice(command.device, diagnostics);
       const id = command.id ?? createId('symbol', draft());
       const properties = normalizeProperties(command.properties, diagnostics);
+      const reference = resolveReference(
+        command.reference,
+        undefined,
+        ['sheet', 'symbols'],
+        diagnostics,
+      );
       if (device !== undefined) {
         symbols.push(
           withProperties(
-            { id, device, x: command.x, y: command.y, rotation: command.rotation ?? 0 },
+            {
+              id,
+              device,
+              x: command.x,
+              y: command.y,
+              rotation: command.rotation ?? 0,
+              ...(reference === undefined ? {} : { reference }),
+            },
             properties,
           ),
         );
@@ -121,6 +138,12 @@ export function applySchematicCommand(
           command.properties === undefined
             ? current.properties
             : normalizeProperties(command.properties, diagnostics);
+        const reference = resolveReference(
+          command.reference,
+          current.reference,
+          ['sheet', 'symbols', String(index)],
+          diagnostics,
+        );
         if (device !== undefined) {
           symbols[index] = withProperties(
             {
@@ -129,6 +152,7 @@ export function applySchematicCommand(
               x: command.x ?? current.x,
               y: command.y ?? current.y,
               rotation: command.rotation ?? current.rotation,
+              ...(reference === undefined ? {} : { reference }),
             },
             properties,
           );
@@ -354,7 +378,7 @@ function requireDevice(device: string, diagnostics: Diagnostic[]): string | unde
   return device;
 }
 
-function baseOf(symbol: SchematicSymbol): Omit<SchematicSymbol, 'properties'> {
+function baseOf(symbol: SchematicSymbol): Omit<SchematicSymbol, 'properties' | 'reference'> {
   return {
     id: symbol.id,
     device: symbol.device,
@@ -372,6 +396,31 @@ function withProperties(
     return symbol;
   }
   return { ...symbol, properties };
+}
+
+/** `reference: null` clears the override and falls back to the default anchor. */
+function resolveReference(
+  value: Point | null | undefined,
+  current: Point | undefined,
+  path: readonly string[],
+  diagnostics: Diagnostic[],
+): Point | undefined {
+  if (value === undefined) {
+    return current;
+  }
+  if (value === null) {
+    return undefined;
+  }
+  if (typeof value !== 'object' || !Number.isFinite(value.x) || !Number.isFinite(value.y)) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'schema/invalid-value',
+      message: 'Symbol reference must contain finite x and y numbers.',
+      pointer: toPointer([...path, 'reference']),
+    });
+    return undefined;
+  }
+  return { x: value.x, y: value.y };
 }
 
 function normalizeProperties(

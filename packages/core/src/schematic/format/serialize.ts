@@ -17,6 +17,9 @@ export function serializeSchematic(document: SchematicDocument): string {
         if (symbol.properties !== undefined && Object.keys(symbol.properties).length > 0) {
           serialized['properties'] = sortProperties(symbol.properties);
         }
+        if (symbol.reference !== undefined) {
+          serialized['reference'] = { x: symbol.reference.x, y: symbol.reference.y };
+        }
         return serialized;
       }),
       wires: document.sheet.wires.map((wire) => ({

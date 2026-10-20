@@ -1,4 +1,4 @@
-import type { Point, SchematicDocument } from '../format/types';
+import type { Point, Rect, SchematicDocument } from '../format/types';
 import {
   isLabelDevice,
   isTextDevice,
@@ -12,7 +12,7 @@ import {
   pointOnPolyline,
   pointsEqual,
 } from '../geometry/point';
-import { symbolBounds, symbolPinPosition } from '../geometry/transform';
+import { referencePosition, symbolBounds, symbolPinPosition } from '../geometry/transform';
 
 export interface HitTestOptions {
   readonly devices?: DeviceSymbolProvider;
@@ -23,13 +23,15 @@ export interface HitTestOptions {
 }
 
 export type SchematicHit =
+  | { readonly kind: 'reference'; readonly symbolId: string }
   | { readonly kind: 'junction'; readonly id: string }
   | { readonly kind: 'pin'; readonly symbolId: string; readonly pinId: string }
   | { readonly kind: 'wire'; readonly id: string; readonly segment: number }
   | { readonly kind: 'symbol'; readonly id: string };
 
 /**
- * Returns the topmost element at `point`, preferring junctions, then pins, wires and symbols.
+ * Returns the topmost element at `point`: reference labels, junctions, pins, wires, then
+ * symbol bodies.
  */
 export function hitTestSchematic(
   document: SchematicDocument,
@@ -38,6 +40,11 @@ export function hitTestSchematic(
 ): SchematicHit | undefined {
   const tolerance = options.tolerance ?? DEFAULT_TOLERANCE;
   const includeSymbols = options.includeSymbols ?? true;
+
+  const reference = referenceHit(document, point, options, tolerance);
+  if (reference !== undefined) {
+    return reference;
+  }
 
   const junctions = [...document.sheet.junctions].sort((a, b) => a.id.localeCompare(b.id));
   for (const junction of junctions) {
@@ -139,6 +146,44 @@ function annotationBounds(symbol: {
 
 const ANNOTATION_CHAR_WIDTH = 6;
 const ANNOTATION_HEIGHT = 12;
+
+/** Hit box of a reference designator, positioned like the renderer draws it. */
+function referenceHit(
+  document: SchematicDocument,
+  point: Point,
+  options: HitTestOptions,
+  tolerance: number,
+): SchematicHit | undefined {
+  const symbols = [...document.sheet.symbols]
+    .filter((symbol) => !isLabelDevice(symbol.device) && !isTextDevice(symbol.device))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  for (const symbol of symbols) {
+    const reference = parseDeviceReference(symbol.device);
+    const definition =
+      reference === undefined ? undefined : options.devices?.getDeviceSymbol(reference);
+    if (definition === undefined) {
+      // Only real components carry a reference designator.
+      continue;
+    }
+    const anchor = referencePosition(symbol, definition.bounds, symbol.reference);
+    const width = symbol.id.length * ANNOTATION_CHAR_WIDTH;
+    const box: Rect = {
+      x: anchor.x,
+      y: anchor.y - ANNOTATION_HEIGHT,
+      width,
+      height: ANNOTATION_HEIGHT,
+    };
+    const inside =
+      point.x >= box.x - tolerance &&
+      point.x <= box.x + box.width + tolerance &&
+      point.y >= box.y - tolerance &&
+      point.y <= box.y + box.height + tolerance;
+    if (inside) {
+      return { kind: 'reference', symbolId: symbol.id };
+    }
+  }
+  return undefined;
+}
 
 export interface JunctionCandidate {
   readonly point: Point;

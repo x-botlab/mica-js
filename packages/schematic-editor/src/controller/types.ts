@@ -10,6 +10,7 @@ export type EditorTool = 'select' | 'wire' | 'power' | 'ground' | 'label' | 'tex
 
 export type EditorSelection =
   | { readonly kind: 'symbol'; readonly id: string }
+  | { readonly kind: 'reference'; readonly symbolId: string }
   | { readonly kind: 'wire'; readonly id: string }
   | { readonly kind: 'junction'; readonly id: string }
   | { readonly kind: 'vertex'; readonly wireId: string; readonly index: number };

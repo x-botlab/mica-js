@@ -6,6 +6,7 @@ import {
   builtinSymbolKind,
   isTextDevice,
   parseDeviceReference,
+  referencePosition,
   symbolBounds,
   symbolPinPosition,
   textDeviceContent,
@@ -25,6 +26,8 @@ export interface SceneSelection {
   readonly wires?: ReadonlySet<string>;
   readonly junctions?: ReadonlySet<string>;
   readonly vertices?: readonly { readonly wireId: string; readonly index: number }[];
+  /** Preview offset applied to the selected symbols while dragging. */
+  readonly offset?: Point;
 }
 
 export interface SceneDisplayOptions {
@@ -98,6 +101,8 @@ export interface RenderInput {
   readonly marquee?: Rect;
   /** Ghost of the symbol the current placement tool would insert. */
   readonly placementPreview?: { readonly device: string; readonly position: Point };
+  /** Reference designator being dragged; drawn at this world position instead. */
+  readonly referencePreview?: { readonly symbolId: string; readonly position: Point };
 }
 
 const WIRE_WIDTH = 1.5;
@@ -141,12 +146,18 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
 
   for (const symbol of document.sheet.symbols) {
     const selected = selection.symbols?.has(symbol.id) ?? false;
-    const hovered = input.hover?.kind === 'symbol' && input.hover.id === symbol.id;
-    const placement = view?.layout[symbol.id] ?? {
+    const hovered =
+      (input.hover?.kind === 'symbol' && input.hover.id === symbol.id) ||
+      (input.hover?.kind === 'reference' && input.hover.symbolId === symbol.id);
+    const placed = view?.layout[symbol.id] ?? {
       x: symbol.x,
       y: symbol.y,
       rotation: symbol.rotation,
     };
+    const placement =
+      selected && selection.offset !== undefined
+        ? { ...placed, x: placed.x + selection.offset.x, y: placed.y + selection.offset.y }
+        : placed;
     const stroke = selected ? theme.selection : hovered ? theme.hover : theme.symbolStroke;
     const builtin = builtinSymbolKind(symbol.device);
 
@@ -165,6 +176,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
     }
 
     if (builtin !== undefined) {
+      const highlight = selected ? theme.selection : hovered ? theme.hover : undefined;
       drawBuiltin(items, {
         kind: builtin,
         position: placement,
@@ -173,8 +185,8 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
             ? symbol.id
             : ((symbol.properties?.['label'] as string | undefined) ??
               (builtin === 'power' ? DEFAULT_POWER_LABEL : DEFAULT_GROUND_LABEL)),
-        color: selected ? theme.selection : theme.labelText,
-        anchorColor: theme.labelAnchor,
+        color: highlight ?? theme.labelText,
+        anchorColor: highlight ?? theme.labelAnchor,
         font: builtin === 'label' ? font : pinFont,
       });
       continue;
@@ -209,11 +221,14 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
     const body = symbolBounds(placement, localBody, {}) ?? fallbackBounds(placement);
 
     items.push({ kind: 'rect', bounds: body, fill: theme.symbolFill, stroke, width: 1.5 });
+    const referenceOverride =
+      input.referencePreview?.symbolId === symbol.id ? input.referencePreview.position : undefined;
     items.push({
       kind: 'text',
-      position: symbolPinPosition(placement, { x: localBody.x, y: localBody.y - 4 }),
+      position: referenceOverride ?? referencePosition(placement, localBody, symbol.reference),
       text: symbol.id,
-      color: selected || hovered ? theme.selection : theme.labelText,
+      color:
+        referenceOverride !== undefined || selected || hovered ? theme.selection : theme.labelText,
       align: 'left',
       baseline: 'bottom',
       rotation: placement.rotation,

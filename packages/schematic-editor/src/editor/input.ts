@@ -1,5 +1,7 @@
 import {
   LABEL_DEVICE,
+  parseDeviceReference,
+  referencePosition,
   type DeviceSymbolProvider,
   type Point,
   type Rect,
@@ -15,6 +17,7 @@ import {
   connectionNodeAt,
   isPlacementTool,
   nextLabelName,
+  orthogonalWaypoints,
   placementProperties,
   snapForWire,
   snapToGrid,
@@ -40,6 +43,15 @@ export interface EditorInputDeps {
 type Drag =
   | { readonly mode: 'pan'; readonly lastX: number; readonly lastY: number }
   | { readonly mode: 'marquee'; readonly origin: Point; current: Point }
+  | { readonly mode: 'move'; readonly origin: Point; offset: Point }
+  | {
+      readonly mode: 'reference';
+      readonly symbolId: string;
+      /** Reference anchor when the drag started. */
+      readonly start: Point;
+      readonly origin: Point;
+      position: Point;
+    }
   | undefined;
 
 /**
@@ -52,7 +64,6 @@ export class EditorInput {
   #drag: Drag;
   #pendingWire: Point[] = [];
   #cursorPoint: Point | undefined;
-  #spaceHeld = false;
   #detached = false;
 
   constructor(deps: EditorInputDeps) {
@@ -77,6 +88,22 @@ export class EditorInput {
       : undefined;
   }
 
+  /** Live offset of the symbols being dragged. */
+  get dragOffset(): Point | undefined {
+    if (this.#drag?.mode !== 'move') {
+      return undefined;
+    }
+    const { offset } = this.#drag;
+    return offset.x === 0 && offset.y === 0 ? undefined : offset;
+  }
+
+  /** Reference designator being dragged, in world coordinates. */
+  get referencePreview(): { readonly symbolId: string; readonly position: Point } | undefined {
+    return this.#drag?.mode === 'reference'
+      ? { symbolId: this.#drag.symbolId, position: this.#drag.position }
+      : undefined;
+  }
+
   /** Placement ghost for the current tool, if the pointer is inside the canvas. */
   get placementPreview(): { readonly device: string; readonly position: Point } | undefined {
     const tool = this.#deps.controller.tool;
@@ -87,9 +114,14 @@ export class EditorInput {
   }
 
   get pendingWireWithCursor(): readonly Point[] {
-    return this.#cursorPoint === undefined
-      ? this.#pendingWire
-      : [...this.#pendingWire, this.#cursorPoint];
+    if (this.#cursorPoint === undefined) {
+      return this.#pendingWire;
+    }
+    const previous = this.#pendingWire[this.#pendingWire.length - 1];
+    if (previous === undefined) {
+      return [this.#cursorPoint];
+    }
+    return [...this.#pendingWire, ...orthogonalWaypoints(previous, this.#cursorPoint)];
   }
 
   /** Drops the in-progress wire; called when the tool changes. */
@@ -262,7 +294,7 @@ export class EditorInput {
     const screen = this.#screen(event);
     const page = this.#page(event);
 
-    if (event.button === 1 || (event.button === 0 && this.#spaceHeld)) {
+    if (event.button === 1) {
       event.preventDefault();
       this.#drag = { mode: 'pan', lastX: screen.x, lastY: screen.y };
       this.#deps.canvas.setPointerCapture(event.pointerId);
@@ -275,7 +307,11 @@ export class EditorInput {
     const tool = this.#deps.controller.tool;
     if (tool === 'wire') {
       const point = this.#snapWire(page);
-      this.#pendingWire = [...this.#pendingWire, point];
+      const previous = this.#pendingWire[this.#pendingWire.length - 1];
+      this.#pendingWire = [
+        ...this.#pendingWire,
+        ...(previous === undefined ? [point] : orthogonalWaypoints(previous, point)),
+      ];
       this.#cursorPoint = point;
       const host = this.#deps.controller.hitTest(point, {
         includeSymbols: false,
@@ -307,8 +343,40 @@ export class EditorInput {
       return;
     }
     this.#select(selection, event.shiftKey);
+    if (!this.#deps.readOnly && selection.kind === 'symbol') {
+      this.#drag = { mode: 'move', origin: page, offset: { x: 0, y: 0 } };
+      this.#deps.canvas.setPointerCapture(event.pointerId);
+    } else if (!this.#deps.readOnly && selection.kind === 'reference') {
+      const symbol = this.#deps.controller.document.sheet.symbols.find(
+        (item) => item.id === selection.symbolId,
+      );
+      if (symbol !== undefined) {
+        this.#drag = {
+          mode: 'reference',
+          symbolId: symbol.id,
+          start: this.#referenceWorldPosition(symbol),
+          origin: page,
+          position: this.#referenceWorldPosition(symbol),
+        };
+        this.#deps.canvas.setPointerCapture(event.pointerId);
+      }
+    }
     this.#deps.onChange();
   };
+
+  #referenceWorldPosition(symbol: {
+    readonly id: string;
+    readonly device: string;
+    readonly x: number;
+    readonly y: number;
+    readonly rotation: number;
+    readonly reference?: Point;
+  }): Point {
+    const reference = parseDeviceReference(symbol.device);
+    const definition =
+      reference === undefined ? undefined : this.#deps.devices?.getDeviceSymbol(reference);
+    return referencePosition(symbol, definition?.bounds, symbol.reference);
+  }
 
   #onPointerMove = (event: PointerEvent): void => {
     const screen = this.#screen(event);
@@ -322,6 +390,32 @@ export class EditorInput {
     }
     if (this.#drag?.mode === 'marquee') {
       this.#drag = { mode: 'marquee', origin: this.#drag.origin, current: page };
+      this.#deps.onChange();
+      return;
+    }
+    if (this.#drag?.mode === 'move') {
+      const display = this.#deps.controller.display;
+      const step = display.snap && display.gridSize > 0 ? display.gridSize : 1;
+      const dx = Math.round((page.x - this.#drag.origin.x) / step) * step;
+      const dy = Math.round((page.y - this.#drag.origin.y) / step) * step;
+      if (dx !== this.#drag.offset.x || dy !== this.#drag.offset.y) {
+        this.#drag = { mode: 'move', origin: this.#drag.origin, offset: { x: dx, y: dy } };
+        this.#deps.onChange();
+      }
+      return;
+    }
+    if (this.#drag?.mode === 'reference') {
+      const { start, origin, symbolId } = this.#drag;
+      this.#drag = {
+        mode: 'reference',
+        symbolId,
+        start,
+        origin,
+        position: {
+          x: start.x + (page.x - origin.x),
+          y: start.y + (page.y - origin.y),
+        },
+      };
       this.#deps.onChange();
       return;
     }
@@ -360,6 +454,22 @@ export class EditorInput {
         ),
       );
       return;
+    }
+    if (drag?.mode === 'move') {
+      const { offset } = drag;
+      if (offset.x !== 0 || offset.y !== 0) {
+        this.#deps.run(() => this.#deps.controller.moveSelectionBy(offset.x, offset.y));
+        return;
+      }
+    }
+    if (drag?.mode === 'reference') {
+      const { symbolId, start, position } = drag;
+      const dx = position.x - start.x;
+      const dy = position.y - start.y;
+      if (dx !== 0 || dy !== 0) {
+        this.#deps.run(() => this.#deps.controller.moveReferenceBy(symbolId, dx, dy));
+        return;
+      }
     }
     if (drag !== undefined) {
       this.#deps.onChange();
@@ -401,8 +511,10 @@ export class EditorInput {
     const readOnly = this.#deps.readOnly;
 
     if (event.key === ' ') {
-      this.#spaceHeld = true;
       event.preventDefault();
+      if (!readOnly) {
+        this.#deps.run(() => controller.rotateSelection(90));
+      }
       return;
     }
     if (event.key === 'Escape') {
@@ -473,10 +585,8 @@ export class EditorInput {
     }
   };
 
-  #onKeyUp = (event: KeyboardEvent): void => {
-    if (event.key === ' ') {
-      this.#spaceHeld = false;
-    }
+  #onKeyUp = (): void => {
+    // No key-up handling: Space now rotates instead of acting as a pan modifier.
   };
 }
 
@@ -484,6 +594,8 @@ function selectionFromHit(hit: SchematicHit): EditorSelection | undefined {
   switch (hit.kind) {
     case 'symbol':
       return { kind: 'symbol', id: hit.id };
+    case 'reference':
+      return { kind: 'reference', symbolId: hit.symbolId };
     case 'wire':
       return { kind: 'wire', id: hit.id };
     case 'junction':

@@ -43,10 +43,11 @@ export function buildInspector(
     const net = context.topology().nets.find((candidate) => candidate.wireIds.includes(wire.id));
     return { kind: 'wire', id: wire.id, netName: net?.name ?? null, points: wire.points };
   }
-  if (item.kind !== 'symbol') {
+  if (item.kind !== 'symbol' && item.kind !== 'reference') {
     return undefined;
   }
-  const symbol = document.sheet.symbols.find((candidate) => candidate.id === item.id);
+  const symbolId = item.kind === 'symbol' ? item.id : item.symbolId;
+  const symbol = document.sheet.symbols.find((candidate) => candidate.id === symbolId);
   if (symbol === undefined) {
     return undefined;
   }

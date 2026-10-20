@@ -5,7 +5,11 @@ import {
   deriveSchematicTopology,
   hitTestSchematic,
   mergeWiresAtJunction,
+  parseDeviceReference,
+  referenceAnchor,
+  rotatePoint,
   splitWireAt,
+  symbolPinPosition,
   type DeviceSymbolProvider,
   type Diagnostic,
   type ElementIdFactory,
@@ -200,8 +204,11 @@ export class SchematicEditorController {
             }
             break;
           }
+          case 'reference':
+            this.moveReferenceBy(item.symbolId, dx, dy);
+            break;
           case 'junction':
-            this.#moveJunction(item.id, dx, dy);
+            // Junctions are derived from wire geometry; moving one would break orthogonality.
             break;
           default:
             break;
@@ -215,20 +222,68 @@ export class SchematicEditorController {
       return;
     }
     this.#mutate(() => {
+      const document = this.#editor.document;
+      let symbols = [...document.sheet.symbols];
+      const moves: { readonly from: Point; readonly to: Point }[] = [];
+
       for (const item of this.#selection) {
         if (item.kind !== 'symbol') {
           continue;
         }
-        const symbol = this.#findSymbol(item.id);
+        const index = symbols.findIndex((symbol) => symbol.id === item.id);
+        const symbol = symbols[index];
         if (symbol === undefined) {
           continue;
         }
-        this.#editor.dispatch({
-          type: 'update-symbol',
-          id: symbol.id,
+        const rotated: SchematicSymbol = {
+          ...symbol,
           rotation: normalizeRotation(symbol.rotation + degrees),
-        });
+        };
+        symbols[index] = rotated;
+        // Pins carry their attached wire ends, junctions and anchors along with the rotation.
+        for (const anchor of Object.values(this.#pinAnchors(symbol))) {
+          const from = symbolPinPosition(symbol, anchor);
+          const to = symbolPinPosition(rotated, anchor);
+          if (!samePoint(from, to)) {
+            moves.push({ from, to });
+          }
+        }
       }
+      if (
+        moves.length === 0 &&
+        symbols.every((symbol, index) => symbol === document.sheet.symbols[index])
+      ) {
+        return;
+      }
+
+      const moved = (point: Point): Point | undefined => {
+        const match = moves.find((candidate) => samePoint(candidate.from, point));
+        return match === undefined ? undefined : { ...match.to };
+      };
+
+      symbols = symbols.map((symbol) => {
+        const next = moved({ x: symbol.x, y: symbol.y });
+        return next === undefined ? symbol : { ...symbol, x: next.x, y: next.y };
+      });
+      const wires = document.sheet.wires.map((wire) => {
+        // A wire end attached to a moving pin keeps orthogonal routing by gaining an elbow.
+        for (const move of moves) {
+          const rewired = rewireEndpoint(wire, move.from, move.to);
+          if (rewired !== undefined) {
+            return rewired;
+          }
+        }
+        return wire;
+      });
+      const junctions = document.sheet.junctions.map((junction) => {
+        const next = moved({ x: junction.x, y: junction.y });
+        return next === undefined ? junction : { ...junction, x: next.x, y: next.y };
+      });
+
+      this.#editor.replace({
+        ...document,
+        sheet: { ...document.sheet, symbols, wires, junctions },
+      });
     });
   }
 
@@ -311,6 +366,24 @@ export class SchematicEditorController {
       { reconcile: false },
     );
     return junctionId;
+  }
+
+  /** Moves a reference designator by a world-space delta; the offset is stored locally. */
+  moveReferenceBy(symbolId: string, dx: number, dy: number): void {
+    const symbol = this.#findSymbol(symbolId);
+    if (symbol === undefined || (dx === 0 && dy === 0)) {
+      return;
+    }
+    this.#mutate(() => {
+      const anchor = referenceAnchor(this.#outlineOf(symbol), symbol.reference);
+      // Offsets live in symbol-local space, so undo the rotation before moving.
+      const local = rotatePoint({ x: dx, y: dy }, -symbol.rotation);
+      this.#editor.dispatch({
+        type: 'update-symbol',
+        id: symbol.id,
+        reference: { x: anchor.x + local.x, y: anchor.y + local.y },
+      });
+    });
   }
 
   setSymbolProperty(symbolId: string, key: string, value: PropertyValue): void {
@@ -396,6 +469,22 @@ export class SchematicEditorController {
     return this.#editor.document.sheet.wires.find((wire) => wire.id === id);
   }
 
+  /** Device outline in symbol-local coordinates, used as the reference-designator default. */
+  #outlineOf(
+    symbol: SchematicSymbol,
+  ): { x: number; y: number; width: number; height: number } | undefined {
+    const reference = parseDeviceReference(symbol.device);
+    return reference === undefined ? undefined : this.#devices?.getDeviceSymbol(reference)?.bounds;
+  }
+
+  /** Pin anchors of a symbol in symbol-local coordinates. */
+  #pinAnchors(symbol: SchematicSymbol): Readonly<Record<string, { x: number; y: number }>> {
+    const reference = parseDeviceReference(symbol.device);
+    return (
+      (reference === undefined ? undefined : this.#devices?.getDeviceSymbol(reference)?.pins) ?? {}
+    );
+  }
+
   /** Removes a wire while keeping its junctions for the merge pass to collapse. */
   #removeWire(wireId: string): void {
     const attached = this.#editor.document.sheet.junctions.filter((junction) =>
@@ -410,29 +499,6 @@ export class SchematicEditorController {
       }
     }
     this.#editor.dispatch({ type: 'remove-wire', id: wireId });
-  }
-
-  #moveJunction(id: string, dx: number, dy: number): void {
-    const document = this.#editor.document;
-    const junction = document.sheet.junctions.find((candidate) => candidate.id === id);
-    if (junction === undefined) {
-      return;
-    }
-    const from = { x: junction.x, y: junction.y };
-    const to = { x: junction.x + dx, y: junction.y + dy };
-    // Coincident wire points follow the junction; otherwise it would detach from its wires.
-    const wires = document.sheet.wires.map((wire) =>
-      junction.wires.includes(wire.id)
-        ? {
-            ...wire,
-            points: wire.points.map((point) => (samePoint(point, from) ? { ...to } : point)),
-          }
-        : wire,
-    );
-    const junctions = document.sheet.junctions.map((candidate) =>
-      candidate.id === id ? { ...candidate, x: to.x, y: to.y } : candidate,
-    );
-    this.#editor.replace({ ...document, sheet: { ...document.sheet, wires, junctions } });
   }
 
   #hitTestWire(point: Point, excludeWireId: string): { wireId: string } | undefined {
@@ -551,6 +617,44 @@ function toSchematicError(error: unknown): SchematicError {
 
 function samePoint(left: Point, right: Point): boolean {
   return left.x === right.x && left.y === right.y;
+}
+
+/**
+ * Moves a wire endpoint from `from` to `to`, inserting an elbow when the new position is not
+ * aligned with the neighbouring point so the routing stays orthogonal.
+ */
+function rewireEndpoint(wire: SchematicWire, from: Point, to: Point): SchematicWire | undefined {
+  const points = wire.points;
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (first !== undefined && samePoint(first, from)) {
+    const neighbour = points[1];
+    const elbow = elbowPoint(to, neighbour);
+    return {
+      ...wire,
+      points: [to, ...(elbow === undefined ? [] : [elbow]), ...points.slice(1)],
+    };
+  }
+  if (last !== undefined && samePoint(last, from)) {
+    const neighbour = points[points.length - 2];
+    const elbow = elbowPoint(to, neighbour);
+    return {
+      ...wire,
+      points: [...points.slice(0, -1), ...(elbow === undefined ? [] : [elbow]), to],
+    };
+  }
+  return undefined;
+}
+
+/** Elbow that keeps `neighbour → moved` orthogonal, or `undefined` when already aligned. */
+function elbowPoint(moved: Point, neighbour: Point | undefined): Point | undefined {
+  if (neighbour === undefined) {
+    return undefined;
+  }
+  if (moved.x === neighbour.x || moved.y === neighbour.y) {
+    return undefined;
+  }
+  return { x: moved.x, y: neighbour.y };
 }
 
 function normalizeRotation(degrees: number): number {

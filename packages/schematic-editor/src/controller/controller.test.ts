@@ -2,6 +2,7 @@ import {
   POWER_DEVICE,
   SchematicError,
   createDeviceRegistry,
+  parseDeviceReference,
   parseSchematic,
   type Point,
   type SchematicDocument,
@@ -238,18 +239,37 @@ describe('SchematicEditorController', () => {
         ],
       }),
     );
-    controller.setSelection([{ kind: 'vertex', wireId: 'w1', index: 1 }]);
-    controller.moveSelectionBy(10, 10);
-    expect(wirePoints(controller, 'w1')[1]).toEqual({ x: 60, y: 10 });
+    controller.setSelection([{ kind: 'vertex', wireId: 'w1', index: 2 }]);
+    controller.moveSelectionBy(0, 10);
+    expect(wirePoints(controller, 'w1')[2]).toEqual({ x: 50, y: 60 });
 
     controller.deleteSelection();
     expect(wirePoints(controller, 'w1')).toEqual([
       { x: 0, y: 0 },
-      { x: 50, y: 50 },
+      { x: 50, y: 0 },
     ]);
   });
 
-  it('moves a junction together with the wire points that meet it', () => {
+  it('rejects edits that would make a wire diagonal', () => {
+    const controller = createController(
+      documentOf({
+        wires: [
+          {
+            id: 'w1',
+            points: [
+              { x: 0, y: 0 },
+              { x: 50, y: 0 },
+            ],
+          },
+        ],
+      }),
+    );
+    controller.setSelection([{ kind: 'vertex', wireId: 'w1', index: 1 }]);
+    expect(() => controller.moveSelectionBy(10, 10)).toThrow(SchematicError);
+    expect(wirePoints(controller, 'w1')[1]).toEqual({ x: 50, y: 0 });
+  });
+
+  it('leaves junctions in place because they derive from wire geometry', () => {
     const controller = createController(
       documentOf({
         wires: [
@@ -272,13 +292,12 @@ describe('SchematicEditorController', () => {
         junctions: [{ id: 'j1', x: 50, y: 0, wires: ['w1', 'w2'] }],
       }),
     );
+    const before = controller.document;
     controller.setSelection([{ kind: 'junction', id: 'j1' }]);
     controller.moveSelectionBy(0, 10);
 
-    const junction = controller.document.sheet.junctions[0];
-    expect(junction?.y).toBe(10);
-    expect(wirePoints(controller, 'w1')[1]).toEqual({ x: 50, y: 10 });
-    expect(wirePoints(controller, 'w2')[0]).toEqual({ x: 50, y: 10 });
+    expect(controller.document).toBe(before);
+    expect(controller.document.sheet.junctions[0]).toMatchObject({ x: 50, y: 0 });
   });
 
   it('rotates selected symbols in 90 degree steps', () => {
@@ -290,6 +309,39 @@ describe('SchematicEditorController', () => {
     expect(controller.document.sheet.symbols[0]?.rotation).toBe(90);
     controller.rotateSelection(-180);
     expect(controller.document.sheet.symbols[0]?.rotation).toBe(270);
+  });
+
+  it('carries connected wire ends, junctions and anchors around with the rotation', () => {
+    // Pin A sits on the left edge of the generated symbol; attach a wire to it.
+    const anchor = devices.getDeviceSymbol(parseDeviceReference('pkg:mcu')!);
+    const pin = anchor?.pins['A'];
+    expect(pin).toBeDefined();
+    const symbol = { id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 } as const;
+    const start = { x: symbol.x + (pin?.x ?? 0), y: symbol.y + (pin?.y ?? 0) };
+    const controller = createController(
+      documentOf({
+        symbols: [symbol, { id: 'vcc', device: POWER_DEVICE, x: start.x, y: start.y, rotation: 0 }],
+        wires: [{ id: 'w1', points: [start, { x: start.x - 40, y: start.y }] }],
+      }),
+    );
+
+    controller.setSelection([{ kind: 'symbol', id: 's1' }]);
+    controller.rotateSelection(90);
+
+    // Rotating 90° moves the left pin to the top: same distance, axis swapped.
+    const rotated = devices.getDeviceSymbol(parseDeviceReference('pkg:mcu')!)?.pins['A'];
+    const expected = {
+      x: -(rotated?.y ?? 0),
+      y: rotated?.x ?? 0,
+    };
+    expect(controller.document.sheet.wires[0]?.points[0]?.x).toBeCloseTo(expected.x, 9);
+    expect(controller.document.sheet.wires[0]?.points[0]?.y).toBeCloseTo(expected.y, 9);
+    const movedAnchor = controller.document.sheet.symbols[1];
+    expect(movedAnchor?.x).toBeCloseTo(expected.x, 9);
+    expect(movedAnchor?.y).toBeCloseTo(expected.y, 9);
+
+    controller.undo();
+    expect(controller.document.sheet.wires[0]?.points[0]).toEqual(start);
   });
 
   it('inspects symbols with declared property defaults and overrides', () => {

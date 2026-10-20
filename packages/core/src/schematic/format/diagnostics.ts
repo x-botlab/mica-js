@@ -19,6 +19,7 @@ export type DiagnosticCode =
   | 'device/unknown-pin'
   | 'device/no-symbol'
   | 'wire/invalid-points'
+  | 'wire/not-orthogonal'
   | 'junction/unknown-wire'
   | 'junction/duplicate-wire'
   | 'junction/off-wire'

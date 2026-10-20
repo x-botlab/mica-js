@@ -31,6 +31,11 @@ export interface SchematicSymbol extends Placement {
   readonly device: string;
   /** Instance property overrides; absent means "use device defaults". */
   readonly properties?: Readonly<Record<string, PropertyValue>>;
+  /**
+   * Reference designator anchor in symbol-local coordinates (unrotated, unplaced).
+   * Absent means the default position at the body's top-left corner.
+   */
+  readonly reference?: Point;
 }
 
 export interface SchematicWire {

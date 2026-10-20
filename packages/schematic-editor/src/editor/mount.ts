@@ -150,7 +150,10 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
       ...(state.view === undefined ? {} : { view: state.view }),
       ...(options.devices === undefined ? {} : { devices: options.devices }),
       theme,
-      selection: toSceneHighlight(state.selection),
+      selection: {
+        ...toSceneHighlight(state.selection),
+        ...(input.dragOffset === undefined ? {} : { offset: input.dragOffset }),
+      },
       ...(input.hover === undefined ? {} : { hover: input.hover }),
       tool: state.tool,
       display: {
@@ -161,6 +164,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
       ...(input.pendingWire.length === 0 ? {} : { pendingWire: input.pendingWireWithCursor }),
       ...(input.marquee === undefined ? {} : { marquee: input.marquee }),
       ...(input.placementPreview === undefined ? {} : { placementPreview: input.placementPreview }),
+      ...(input.referencePreview === undefined ? {} : { referencePreview: input.referencePreview }),
     });
     renderer.render(scene, viewport.state);
   }
