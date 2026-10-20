@@ -6,10 +6,10 @@ import {
   hitTestSchematic,
   mergeWiresAtJunction,
   parseDeviceReference,
+  previewSymbolDrag,
   referenceAnchor,
   rotatePoint,
   splitWireAt,
-  symbolPinPosition,
   type DeviceSymbolProvider,
   type Diagnostic,
   type ElementIdFactory,
@@ -238,43 +238,28 @@ export class SchematicEditorController {
   }
 
   /**
-   * Replaces a symbol's placement and drags everything anchored to its pins: wire ends (with an
-   * elbow when needed to keep orthogonal routing), junctions and attached builtin anchors.
+   * Replaces a symbol's placement and drags everything anchored to its pins: wire ends keep
+   * orthogonal routing, junctions and attached builtin anchors follow.
    */
   #repositionSymbol(symbol: SchematicSymbol, next: SchematicSymbol): void {
     const document = this.#editor.document;
-    const moves: { readonly from: Point; readonly to: Point }[] = [];
-    for (const anchor of Object.values(this.#pinAnchors(symbol))) {
-      const from = symbolPinPosition(symbol, anchor);
-      const to = symbolPinPosition(next, anchor);
-      if (!samePoint(from, to)) {
-        moves.push({ from, to });
-      }
+    const preview = previewSymbolDrag(document, this.#devices, symbol.id, next);
+    if (preview === undefined) {
+      return;
     }
-
-    const moved = (point: Point): Point | undefined => {
-      const match = moves.find((candidate) => samePoint(candidate.from, point));
-      return match === undefined ? undefined : { ...match.to };
-    };
-
     const symbols = document.sheet.symbols.map((item) => {
-      if (item.id === next.id) {
+      if (item.id === symbol.id) {
         return next;
       }
-      const target = moved({ x: item.x, y: item.y });
+      const target = preview.symbols.get(item.id);
       return target === undefined ? item : { ...item, x: target.x, y: target.y };
     });
     const wires = document.sheet.wires.map((wire) => {
-      for (const move of moves) {
-        const rewired = rewireEndpoint(wire, move.from, move.to);
-        if (rewired !== undefined) {
-          return rewired;
-        }
-      }
-      return wire;
+      const points = preview.wires.get(wire.id);
+      return points === undefined ? wire : { ...wire, points };
     });
     const junctions = document.sheet.junctions.map((junction) => {
-      const target = moved({ x: junction.x, y: junction.y });
+      const target = preview.junctions.get(junction.id);
       return target === undefined ? junction : { ...junction, x: target.x, y: target.y };
     });
 
@@ -389,6 +374,62 @@ export class SchematicEditorController {
     });
   }
 
+  /**
+   * Renames a symbol; its id is the reference designator, so it must stay unique in the sheet.
+   *
+   * @throws {SchematicError} when the new id is empty, taken or the symbol is unknown.
+   */
+  renameSymbol(symbolId: string, nextId: string): void {
+    const trimmed = nextId.trim();
+    if (trimmed.length === 0) {
+      throw new SchematicError([
+        {
+          severity: 'error',
+          code: 'schema/invalid-value',
+          message: 'Reference must not be empty.',
+        },
+      ]);
+    }
+    const document = this.#editor.document;
+    const symbol = document.sheet.symbols.find((candidate) => candidate.id === symbolId);
+    if (symbol === undefined) {
+      throw new SchematicError([
+        {
+          severity: 'error',
+          code: 'edit/unknown-entity',
+          message: `Unknown symbol "${symbolId}".`,
+          entity: { kind: 'symbol', id: symbolId },
+        },
+      ]);
+    }
+    if (trimmed === symbol.id) {
+      return;
+    }
+    if (document.sheet.symbols.some((candidate) => candidate.id === trimmed)) {
+      throw new SchematicError([
+        {
+          severity: 'error',
+          code: 'id/duplicate',
+          message: `Symbol id ${JSON.stringify(trimmed)} is already used.`,
+          entity: { kind: 'symbol', id: trimmed },
+        },
+      ]);
+    }
+    this.#mutate(() => {
+      const symbols = document.sheet.symbols.map((candidate) =>
+        candidate.id === symbolId ? { ...candidate, id: trimmed } : candidate,
+      );
+      this.#editor.replace({ ...document, sheet: { ...document.sheet, symbols } });
+      this.#selection = this.#selection.map((item) =>
+        item.kind === 'symbol' && item.id === symbolId
+          ? { kind: 'symbol', id: trimmed }
+          : item.kind === 'reference' && item.symbolId === symbolId
+            ? { kind: 'reference', symbolId: trimmed }
+            : item,
+      );
+    });
+  }
+
   removeSymbolProperty(symbolId: string, key: string): void {
     this.#mutate(() => {
       this.#editor.dispatch({ type: 'remove-symbol-property', id: symbolId, key });
@@ -472,14 +513,6 @@ export class SchematicEditorController {
   ): { x: number; y: number; width: number; height: number } | undefined {
     const reference = parseDeviceReference(symbol.device);
     return reference === undefined ? undefined : this.#devices?.getDeviceSymbol(reference)?.bounds;
-  }
-
-  /** Pin anchors of a symbol in symbol-local coordinates. */
-  #pinAnchors(symbol: SchematicSymbol): Readonly<Record<string, { x: number; y: number }>> {
-    const reference = parseDeviceReference(symbol.device);
-    return (
-      (reference === undefined ? undefined : this.#devices?.getDeviceSymbol(reference)?.pins) ?? {}
-    );
   }
 
   /** Removes a wire while keeping its junctions for the merge pass to collapse. */
@@ -614,44 +647,6 @@ function toSchematicError(error: unknown): SchematicError {
 
 function samePoint(left: Point, right: Point): boolean {
   return left.x === right.x && left.y === right.y;
-}
-
-/**
- * Moves a wire endpoint from `from` to `to`, inserting an elbow when the new position is not
- * aligned with the neighbouring point so the routing stays orthogonal.
- */
-function rewireEndpoint(wire: SchematicWire, from: Point, to: Point): SchematicWire | undefined {
-  const points = wire.points;
-  const first = points[0];
-  const last = points[points.length - 1];
-  if (first !== undefined && samePoint(first, from)) {
-    const neighbour = points[1];
-    const elbow = elbowPoint(to, neighbour);
-    return {
-      ...wire,
-      points: [to, ...(elbow === undefined ? [] : [elbow]), ...points.slice(1)],
-    };
-  }
-  if (last !== undefined && samePoint(last, from)) {
-    const neighbour = points[points.length - 2];
-    const elbow = elbowPoint(to, neighbour);
-    return {
-      ...wire,
-      points: [...points.slice(0, -1), ...(elbow === undefined ? [] : [elbow]), to],
-    };
-  }
-  return undefined;
-}
-
-/** Elbow that keeps `neighbour → moved` orthogonal, or `undefined` when already aligned. */
-function elbowPoint(moved: Point, neighbour: Point | undefined): Point | undefined {
-  if (neighbour === undefined) {
-    return undefined;
-  }
-  if (moved.x === neighbour.x || moved.y === neighbour.y) {
-    return undefined;
-  }
-  return { x: moved.x, y: neighbour.y };
 }
 
 function normalizeRotation(degrees: number): number {

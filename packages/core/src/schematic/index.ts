@@ -72,6 +72,10 @@ export {
   symbolBounds,
   symbolPinPosition,
 } from './geometry/transform';
+export { rerouteWireEndpoint } from './geometry/reroute';
+export type { PointMove, ReroutedWire } from './geometry/reroute';
+export { previewSymbolDrag } from './edit/preview';
+export type { SymbolDragPreview } from './edit/preview';
 
 export {
   DEFAULT_GROUND_LABEL,

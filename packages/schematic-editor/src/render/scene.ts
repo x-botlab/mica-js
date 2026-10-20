@@ -1,24 +1,25 @@
 import {
   DEFAULT_GROUND_LABEL,
   DEFAULT_POWER_LABEL,
-  GROUND_DEVICE,
-  POWER_DEVICE,
+  DEFAULT_TEXT_CONTENT,
   builtinSymbolKind,
   isTextDevice,
   parseDeviceReference,
+  previewSymbolDrag,
   referencePosition,
   symbolBounds,
   symbolPinPosition,
   textDeviceContent,
   type DeviceSymbolProvider,
+  type Placement,
   type Point,
   type Rect,
   type SchematicDocument,
   type SchematicHit,
+  type SchematicSymbol,
   type SchematicViewDocument,
 } from '@mica/core/schematic';
 import type { SchematicTheme } from './theme';
-
 export type SceneTool = 'select' | 'wire' | 'power' | 'ground' | 'label' | 'text';
 
 export interface SceneSelection {
@@ -110,6 +111,59 @@ const SELECTED_WIDTH = 2.5;
 const JUNCTION_RADIUS = 3;
 const VERTEX_SIZE = 5;
 
+interface PreviewDrag {
+  readonly wires: ReadonlyMap<string, readonly Point[]>;
+  readonly junctions: ReadonlyMap<string, Point>;
+  readonly symbols: ReadonlyMap<string, Point>;
+}
+
+const NO_PREVIEW: PreviewDrag = { wires: new Map(), junctions: new Map(), symbols: new Map() };
+
+/** Live preview of the dragged symbols: wires, junctions and anchors follow their pins. */
+function previewDrag(
+  document: SchematicDocument,
+  devices: DeviceSymbolProvider | undefined,
+  view: SchematicViewDocument | undefined,
+  selection: SceneSelection,
+): PreviewDrag {
+  const offset = selection.offset;
+  if (offset === undefined || selection.symbols === undefined) {
+    return NO_PREVIEW;
+  }
+  const wires = new Map<string, readonly Point[]>();
+  const junctions = new Map<string, Point>();
+  const symbols = new Map<string, Point>();
+  for (const symbol of document.sheet.symbols) {
+    if (!selection.symbols.has(symbol.id)) {
+      continue;
+    }
+    const placed = view?.layout[symbol.id] ?? {
+      x: symbol.x,
+      y: symbol.y,
+      rotation: symbol.rotation,
+    };
+    const preview = previewSymbolDrag(document, devices, symbol.id, {
+      ...placed,
+      x: placed.x + offset.x,
+      y: placed.y + offset.y,
+    });
+    if (preview === undefined) {
+      continue;
+    }
+    for (const [id, points] of preview.wires) {
+      wires.set(id, points);
+    }
+    for (const [id, point] of preview.junctions) {
+      junctions.set(id, point);
+    }
+    for (const [id, point] of preview.symbols) {
+      symbols.set(id, point);
+    }
+    symbols.set(symbol.id, { x: placed.x + offset.x, y: placed.y + offset.y });
+  }
+  return { wires, junctions, symbols };
+}
+
 /** Builds a flat, drawable scene. Every color comes from `theme`. */
 export function buildSchematicScene(input: RenderInput): SchematicScene {
   const { document, view, devices, theme } = input;
@@ -120,13 +174,14 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
   const pinFont = `${theme.pinFontSize}px ${theme.fontFamily}`;
   const symbolFont = `${theme.symbolFontSize}px ${theme.fontFamily}`;
   const items: SceneItem[] = [];
+  const drag = previewDrag(document, devices, view, selection);
 
   for (const wire of document.sheet.wires) {
     const selected = selection.wires?.has(wire.id) ?? false;
     const hovered = input.hover?.kind === 'wire' && input.hover.id === wire.id;
     items.push({
       kind: 'polyline',
-      points: wire.points,
+      points: drag.wires.get(wire.id) ?? wire.points,
       color: selected ? theme.wireSelected : hovered ? theme.hover : theme.wire,
       width: selected ? SELECTED_WIDTH : WIRE_WIDTH,
     });
@@ -135,9 +190,10 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
   for (const junction of document.sheet.junctions) {
     const selected = selection.junctions?.has(junction.id) ?? false;
     const hovered = input.hover?.kind === 'junction' && input.hover.id === junction.id;
+    const center = drag.junctions.get(junction.id) ?? { x: junction.x, y: junction.y };
     items.push({
       kind: 'circle',
-      center: { x: junction.x, y: junction.y },
+      center,
       radius: JUNCTION_RADIUS,
       fill: selected ? theme.junctionSelected : hovered ? theme.hover : theme.junction,
       width: 0,
@@ -154,116 +210,20 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
       y: symbol.y,
       rotation: symbol.rotation,
     };
-    const placement =
-      selected && selection.offset !== undefined
-        ? { ...placed, x: placed.x + selection.offset.x, y: placed.y + selection.offset.y }
-        : placed;
-    const stroke = selected ? theme.selection : hovered ? theme.hover : theme.symbolStroke;
-    const builtin = builtinSymbolKind(symbol.device);
-
-    if (isTextDevice(symbol.device)) {
-      items.push({
-        kind: 'text',
-        position: placement,
-        text: textDeviceContent(symbol),
-        color: selected || hovered ? theme.selection : theme.labelText,
-        align: 'left',
-        baseline: 'middle',
-        font: symbolFont,
-        rotation: placement.rotation,
-      });
-      continue;
-    }
-
-    if (builtin !== undefined) {
-      const highlight = selected ? theme.selection : hovered ? theme.hover : undefined;
-      drawBuiltin(items, {
-        kind: builtin,
-        position: placement,
-        text:
-          builtin === 'label'
-            ? symbol.id
-            : ((symbol.properties?.['label'] as string | undefined) ??
-              (builtin === 'power' ? DEFAULT_POWER_LABEL : DEFAULT_GROUND_LABEL)),
-        color: highlight ?? theme.labelText,
-        anchorColor: highlight ?? theme.labelAnchor,
-        font: builtin === 'label' ? font : pinFont,
-      });
-      continue;
-    }
-
-    const reference = parseDeviceReference(symbol.device);
-    const definition = reference === undefined ? undefined : devices?.getDeviceSymbol(reference);
-
-    if (definition === undefined) {
-      const half = 12;
-      items.push({
-        kind: 'rect',
-        bounds: { x: placement.x - half, y: placement.y - half, width: half * 2, height: half * 2 },
-        stroke: theme.symbolPlaceholder,
-        width: 1,
-        dash: [4, 3],
-      });
-      items.push({
-        kind: 'text',
-        position: { x: placement.x, y: placement.y },
-        text:
-          (reference === undefined ? undefined : devices?.getDeviceName(reference)) ?? symbol.id,
-        color: theme.symbolPlaceholder,
-        align: 'center',
-        baseline: 'middle',
-        font: symbolFont,
-      });
-      continue;
-    }
-
-    const localBody = definition.bounds ?? pinsBounds(definition.pins);
-    const body = symbolBounds(placement, localBody, {}) ?? fallbackBounds(placement);
-
-    items.push({ kind: 'rect', bounds: body, fill: theme.symbolFill, stroke, width: 1.5 });
-    const referenceOverride =
-      input.referencePreview?.symbolId === symbol.id ? input.referencePreview.position : undefined;
-    items.push({
-      kind: 'text',
-      position: referenceOverride ?? referencePosition(placement, localBody, symbol.reference),
-      text: symbol.id,
-      color:
-        referenceOverride !== undefined || selected || hovered ? theme.selection : theme.labelText,
-      align: 'left',
-      baseline: 'bottom',
-      rotation: placement.rotation,
-      font: pinFont,
+    const dragged = drag.symbols.get(symbol.id);
+    drawSymbol(items, {
+      symbol,
+      placement: dragged === undefined ? placed : { ...placed, x: dragged.x, y: dragged.y },
+      theme,
+      devices,
+      labels: display.labels,
+      fonts: { font, pinFont, symbolFont },
+      selected,
+      hovered,
+      ...(input.referencePreview?.symbolId === symbol.id
+        ? { referenceOverride: input.referencePreview.position }
+        : {}),
     });
-    items.push({
-      kind: 'text',
-      position: { x: body.x + body.width / 2, y: body.y + body.height / 2 },
-      text: definition.name,
-      color: theme.symbolText,
-      align: 'center',
-      baseline: 'middle',
-      font: symbolFont,
-    });
-
-    for (const [pinId, anchor] of Object.entries(definition.pins)) {
-      const side = anchor.side ?? inferSide(anchor, localBody);
-      const pinPosition = symbolPinPosition(placement, anchor);
-      const edge = symbolPinPosition(placement, stubEdge(localBody, anchor, side));
-      items.push({ kind: 'line', from: edge, to: pinPosition, color: theme.pin, width: 1.2 });
-      if (!display.labels) {
-        continue;
-      }
-      const label = pinLabel(localBody, side, anchor);
-      items.push({
-        kind: 'text',
-        position: symbolPinPosition(placement, label.position),
-        text: pinId,
-        color: theme.pinText,
-        align: label.align,
-        baseline: label.baseline,
-        rotation: placement.rotation + label.rotation,
-        font: pinFont,
-      });
-    }
   }
   for (const vertex of selection.vertices ?? []) {
     const wire = document.sheet.wires.find((candidate) => candidate.id === vertex.wireId);
@@ -296,23 +256,17 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
   }
 
   if (input.placementPreview !== undefined) {
-    drawBuiltin(items, {
-      kind:
-        input.placementPreview.device === POWER_DEVICE
-          ? 'power'
-          : input.placementPreview.device === GROUND_DEVICE
-            ? 'ground'
-            : 'label',
-      position: { x: input.placementPreview.position.x, y: input.placementPreview.position.y },
-      text:
-        input.placementPreview.device === POWER_DEVICE
-          ? DEFAULT_POWER_LABEL
-          : input.placementPreview.device === GROUND_DEVICE
-            ? DEFAULT_GROUND_LABEL
-            : 'Net',
-      color: theme.hover,
-      anchorColor: theme.hover,
-      font: pinFont,
+    const device = input.placementPreview.device;
+    drawSymbol(items, {
+      symbol: previewSymbol(device, input.placementPreview.position),
+      placement: { ...input.placementPreview.position, rotation: 0 },
+      theme,
+      devices,
+      labels: display.labels,
+      fonts: { font, pinFont, symbolFont },
+      selected: false,
+      hovered: false,
+      ghost: true,
     });
   }
 
@@ -342,6 +296,154 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
           },
     items,
   };
+}
+
+interface SymbolFonts {
+  readonly font: string;
+  readonly pinFont: string;
+  readonly symbolFont: string;
+}
+
+interface DrawSymbolOptions {
+  readonly symbol: SchematicSymbol;
+  readonly placement: Placement;
+  readonly theme: SchematicTheme;
+  readonly devices: DeviceSymbolProvider | undefined;
+  readonly labels: boolean;
+  readonly fonts: SymbolFonts;
+  readonly selected: boolean;
+  readonly hovered: boolean;
+  /** Drawn as a placement ghost (hover color, no reference override). */
+  readonly ghost?: boolean;
+  readonly referenceOverride?: Point;
+}
+
+/**
+ * Draws one symbol: the single code path shared by placed symbols and the placement preview,
+ * so what follows the cursor is exactly what will be inserted.
+ */
+function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
+  const { symbol, placement, theme, devices, fonts, selected, hovered } = options;
+  const ghost = options.ghost ?? false;
+  const highlight = selected ? theme.selection : hovered || ghost ? theme.hover : undefined;
+  const stroke = highlight ?? theme.symbolStroke;
+  const annotation = highlight ?? theme.labelText;
+
+  if (isTextDevice(symbol.device)) {
+    items.push({
+      kind: 'text',
+      position: placement,
+      text: textDeviceContent(symbol),
+      color: annotation,
+      align: 'left',
+      baseline: 'middle',
+      font: fonts.symbolFont,
+      rotation: placement.rotation,
+    });
+    return;
+  }
+
+  const builtin = builtinSymbolKind(symbol.device);
+  if (builtin !== undefined) {
+    drawBuiltin(items, {
+      kind: builtin,
+      position: placement,
+      text:
+        builtin === 'label'
+          ? symbol.id
+          : ((symbol.properties?.['label'] as string | undefined) ??
+            (builtin === 'power' ? DEFAULT_POWER_LABEL : DEFAULT_GROUND_LABEL)),
+      color: annotation,
+      anchorColor: highlight ?? theme.labelAnchor,
+      font: builtin === 'label' ? fonts.font : fonts.pinFont,
+    });
+    return;
+  }
+
+  const reference = parseDeviceReference(symbol.device);
+  const definition = reference === undefined ? undefined : devices?.getDeviceSymbol(reference);
+
+  if (definition === undefined) {
+    const half = 12;
+    items.push({
+      kind: 'rect',
+      bounds: { x: placement.x - half, y: placement.y - half, width: half * 2, height: half * 2 },
+      stroke: theme.symbolPlaceholder,
+      width: 1,
+      dash: [4, 3],
+    });
+    items.push({
+      kind: 'text',
+      position: { x: placement.x, y: placement.y },
+      text: (reference === undefined ? undefined : devices?.getDeviceName(reference)) ?? symbol.id,
+      color: theme.symbolPlaceholder,
+      align: 'center',
+      baseline: 'middle',
+      font: fonts.symbolFont,
+    });
+    return;
+  }
+
+  const localBody = definition.bounds ?? pinsBounds(definition.pins);
+  const body = symbolBounds(placement, localBody, {}) ?? fallbackBounds(placement);
+
+  items.push({ kind: 'rect', bounds: body, fill: theme.symbolFill, stroke, width: 1.5 });
+  items.push({
+    kind: 'text',
+    position:
+      options.referenceOverride ?? referencePosition(placement, localBody, symbol.reference),
+    text: symbol.id,
+    color: options.referenceOverride === undefined ? annotation : theme.selection,
+    align: 'left',
+    baseline: 'bottom',
+    rotation: placement.rotation,
+    font: fonts.pinFont,
+  });
+  items.push({
+    kind: 'text',
+    position: { x: body.x + body.width / 2, y: body.y + body.height / 2 },
+    text: definition.name,
+    color: highlight ?? theme.symbolText,
+    align: 'center',
+    baseline: 'middle',
+    font: fonts.symbolFont,
+  });
+
+  for (const [pinId, anchor] of Object.entries(definition.pins)) {
+    const side = anchor.side ?? inferSide(anchor, localBody);
+    const pinPosition = symbolPinPosition(placement, anchor);
+    const edge = symbolPinPosition(placement, stubEdge(localBody, anchor, side));
+    items.push({
+      kind: 'line',
+      from: edge,
+      to: pinPosition,
+      color: highlight ?? theme.pin,
+      width: 1.2,
+    });
+    if (!options.labels) {
+      continue;
+    }
+    const label = pinLabel(localBody, side, anchor);
+    items.push({
+      kind: 'text',
+      position: symbolPinPosition(placement, label.position),
+      text: pinId,
+      color: highlight ?? theme.pinText,
+      align: label.align,
+      baseline: label.baseline,
+      rotation: placement.rotation + label.rotation,
+      font: fonts.pinFont,
+    });
+  }
+}
+
+/** Synthetic symbol used to preview the current placement tool. */
+function previewSymbol(device: string, position: Point): SchematicSymbol {
+  const base: SchematicSymbol = { id: 'N', device, x: position.x, y: position.y, rotation: 0 };
+  if (isTextDevice(device)) {
+    return { ...base, properties: { text: DEFAULT_TEXT_CONTENT } };
+  }
+  return base;
 }
 
 function pinsBounds(

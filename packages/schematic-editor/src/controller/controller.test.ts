@@ -266,14 +266,12 @@ describe('SchematicEditorController', () => {
     controller.setSelection([{ kind: 'symbol', id: 's1' }]);
     controller.moveSelectionBy(10, 20);
 
+    // The whole horizontal run shifts with the pin; the wire keeps its two points.
     const points = wirePoints(controller, 'w1');
-    expect(points[0]).toEqual({ x: start.x + 10, y: start.y + 20 });
-    expect(points[points.length - 1]).toEqual(tail);
-    for (let index = 1; index < points.length; index += 1) {
-      const previous = points[index - 1];
-      const current = points[index];
-      expect(previous?.x === current?.x || previous?.y === current?.y).toBe(true);
-    }
+    expect(points).toEqual([
+      { x: start.x + 10, y: start.y + 20 },
+      { x: tail.x, y: start.y + 20 },
+    ]);
 
     controller.undo();
     expect(wirePoints(controller, 'w1')).toEqual([start, tail]);

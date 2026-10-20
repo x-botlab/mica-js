@@ -1,10 +1,16 @@
-import type { PropertyValue } from '@mica/core/schematic';
+import {
+  GROUND_DEVICE,
+  POWER_DEVICE,
+  isTextDevice,
+  type PropertyValue,
+} from '@mica/core/schematic';
 import type { Inspector, PropertyField } from '../controller/types';
 
 export interface PropertyPanelOptions {
   readonly readOnly: boolean;
   readonly onPropertyChange: (symbolId: string, key: string, value: PropertyValue) => void;
   readonly onPropertyReset: (symbolId: string, key: string) => void;
+  readonly onRename: (symbolId: string, nextId: string) => void;
 }
 
 const EMPTY_HINT = '未选择图元';
@@ -44,6 +50,7 @@ export class PropertyPanel {
 
     element.append(section(`器件 ${inspector.id}`));
     element.append(
+      this.#referenceField(inspector.id, inspector.device),
       row('器件', inspector.device),
       row('名称', inspector.name ?? '—'),
       row('位置', `${formatNumber(inspector.x)}, ${formatNumber(inspector.y)}`),
@@ -57,6 +64,31 @@ export class PropertyPanel {
     for (const field of inspector.properties) {
       element.append(this.#field(inspector.id, field));
     }
+  }
+
+  #referenceField(symbolId: string, device: string): HTMLElement {
+    const wrapper = document.createElement('label');
+    wrapper.className = 'mica-schematic__field';
+    const label = document.createElement('span');
+    label.className = 'mica-schematic__field-label';
+    label.textContent = '位号';
+    // The id is the reference designator; for net labels it doubles as the net name.
+    const editable = device !== POWER_DEVICE && device !== GROUND_DEVICE && !isTextDevice(device);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = symbolId;
+    input.disabled = this.#options.readOnly || !editable;
+    input.className = 'mica-schematic__field-input';
+    input.addEventListener('change', () => {
+      const next = input.value.trim();
+      if (next === '' || next === symbolId) {
+        input.value = symbolId;
+        return;
+      }
+      this.#options.onRename(symbolId, next);
+    });
+    wrapper.append(label, input);
+    return wrapper;
   }
 
   #field(symbolId: string, field: PropertyField): HTMLElement {

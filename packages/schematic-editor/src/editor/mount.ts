@@ -93,6 +93,11 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
         run(() => controller.removeSymbolProperty(symbolId, key));
       }
     },
+    onRename: (symbolId, nextId) => {
+      if (!readOnly) {
+        run(() => controller.renameSymbol(symbolId, nextId));
+      }
+    },
   });
   if (showPanel) {
     shell.root.append(panel.element);

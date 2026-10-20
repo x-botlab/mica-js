@@ -238,7 +238,8 @@ export class EditorInput {
 
   #place(page: Point): void {
     const tool = this.#deps.controller.tool;
-    const point = this.#snap(page);
+    // Snap to a pin/anchor/wire end first so placements land exactly on connection points.
+    const point = this.#snapWire(page);
     const device = toolDevice(tool);
     const properties = placementProperties(tool);
     this.#deps.run(() =>
