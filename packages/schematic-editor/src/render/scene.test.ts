@@ -258,7 +258,7 @@ describe('buildSchematicScene', () => {
     expect(rotationOf('GND')).toBe(-90);
 
     const reference = scene.items.find((item) => item.kind === 'text' && item.text === 'U1');
-    expect(reference).toMatchObject({ align: 'center', baseline: 'bottom' });
+    expect(reference).toMatchObject({ align: 'left', baseline: 'bottom' });
   });
 
   it('infers the side when a pin omits it', () => {

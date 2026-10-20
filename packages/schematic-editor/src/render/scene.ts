@@ -155,7 +155,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
         kind: 'text',
         position: placement,
         text: textDeviceContent(symbol),
-        color: selected || hovered ? theme.selection : theme.symbolText,
+        color: selected || hovered ? theme.selection : theme.labelText,
         align: 'left',
         baseline: 'middle',
         font: symbolFont,
@@ -175,7 +175,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
               (builtin === 'power' ? DEFAULT_POWER_LABEL : DEFAULT_GROUND_LABEL)),
         color: selected ? theme.selection : theme.labelText,
         anchorColor: theme.labelAnchor,
-        font,
+        font: builtin === 'label' ? font : pinFont,
       });
       continue;
     }
@@ -211,12 +211,13 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
     items.push({ kind: 'rect', bounds: body, fill: theme.symbolFill, stroke, width: 1.5 });
     items.push({
       kind: 'text',
-      position: { x: body.x + body.width / 2, y: body.y - 12 },
+      position: symbolPinPosition(placement, { x: localBody.x, y: localBody.y - 4 }),
       text: symbol.id,
-      color: theme.symbolText,
-      align: 'center',
+      color: selected || hovered ? theme.selection : theme.labelText,
+      align: 'left',
       baseline: 'bottom',
-      font,
+      rotation: placement.rotation,
+      font: pinFont,
     });
     items.push({
       kind: 'text',
@@ -469,11 +470,11 @@ function drawBuiltin(
     });
     items.push({
       kind: 'text',
-      position: { x: position.x + 9, y: position.y - 10 },
+      position: { x: position.x, y: position.y - 13 },
       text: input.text,
       color,
-      align: 'left',
-      baseline: 'middle',
+      align: 'center',
+      baseline: 'bottom',
       font,
     });
     return;
@@ -502,11 +503,11 @@ function drawBuiltin(
     }
     items.push({
       kind: 'text',
-      position: { x: position.x + 9, y: position.y + 9 },
+      position: { x: position.x, y: position.y + 16 },
       text: input.text,
       color,
-      align: 'left',
-      baseline: 'middle',
+      align: 'center',
+      baseline: 'top',
       font,
     });
     return;

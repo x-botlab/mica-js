@@ -64,7 +64,7 @@ export const DARK_SCHEMATIC_THEME: SchematicTheme = {
   pendingWire: '#fafafa',
 
   symbolFill: '#171717',
-  symbolStroke: '#a1a1a1',
+  symbolStroke: '#737373',
   symbolText: '#fafafa',
   symbolPlaceholder: 'rgba(250, 250, 250, 0.28)',
   pin: '#737373',
@@ -72,7 +72,7 @@ export const DARK_SCHEMATIC_THEME: SchematicTheme = {
   pinOpen: '#e5e5e5',
 
   labelAnchor: '#737373',
-  labelText: '#fafafa',
+  labelText: '#a1a1a1',
 
   selection: '#fafafa',
   hover: '#a1a1a1',
@@ -105,7 +105,7 @@ export const LIGHT_SCHEMATIC_THEME: SchematicTheme = {
   pendingWire: '#0a0a0a',
 
   symbolFill: '#fafafa',
-  symbolStroke: '#525252',
+  symbolStroke: '#a1a1a1',
   symbolText: '#0a0a0a',
   symbolPlaceholder: 'rgba(10, 10, 10, 0.3)',
   pin: '#a1a1a1',
@@ -113,7 +113,7 @@ export const LIGHT_SCHEMATIC_THEME: SchematicTheme = {
   pinOpen: '#262626',
 
   labelAnchor: '#a1a1a1',
-  labelText: '#0a0a0a',
+  labelText: '#525252',
 
   selection: '#0a0a0a',
   hover: '#525252',
