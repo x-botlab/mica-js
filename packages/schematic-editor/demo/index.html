@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mica 原理图编辑器 — 渲染预览</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: var(--mica-schematic-ui-background, #0a0a0a);
+        --surface: var(--mica-schematic-ui-surface, #171717);
+        --border: var(--mica-schematic-ui-border, rgba(250, 250, 250, 0.1));
+        --text: var(--mica-schematic-ui-text, #fafafa);
+        --muted: var(--mica-schematic-ui-muted-text, #a1a1a1);
+        --accent: var(--mica-schematic-ui-accent, #e5e5e5);
+        --accent-text: var(--mica-schematic-ui-accent-text, #171717);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 44px;
+        padding: 0 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      header h1 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 500;
+      }
+      header .hint {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      button {
+        height: 26px;
+        padding: 0 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--text);
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--muted);
+      }
+      button[aria-pressed='true'] {
+        background: var(--accent);
+        color: var(--accent-text);
+        border-color: var(--accent);
+      }
+      main {
+        flex: 1;
+        min-height: 0;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        cursor: grab;
+      }
+      canvas:active {
+        cursor: grabbing;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Mica 原理图预览</h1>
+      <button id="theme" type="button">切换主题</button>
+      <button id="fit" type="button">适应内容</button>
+      <span class="hint">滚轮缩放 · 拖拽平移 · 无外部依赖</span>
+    </header>
+    <main id="host"></main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

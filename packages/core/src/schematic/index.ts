@@ -65,6 +65,8 @@ export type {
 export { mergeWiresAtJunction, splitWireAt } from './edit/wires';
 export type { MergeWiresResult, SplitWireResult, WireEditOptions } from './edit/wires';
 
+export { rotatePoint, symbolBounds, symbolPinPosition } from './geometry/transform';
+
 export {
   DEFAULT_GROUND_LABEL,
   DEFAULT_POWER_LABEL,
