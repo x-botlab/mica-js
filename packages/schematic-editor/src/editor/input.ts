@@ -313,12 +313,16 @@ export class EditorInput {
         ...(previous === undefined ? [point] : orthogonalWaypoints(previous, point)),
       ];
       this.#cursorPoint = point;
+      // Landing on another endpoint (pin, anchor, wire end) or an existing wire closes the run.
+      const node = connectionNodeAt(this.#snapContext(), point);
       const host = this.#deps.controller.hitTest(point, {
         includeSymbols: false,
         tolerance: this.#tolerance(),
       });
-      if (host?.kind === 'wire' && this.#pendingWire.length >= 2) {
+      const closes = node !== undefined || host?.kind === 'wire';
+      if (closes && this.#pendingWire.length >= 2) {
         this.#finishWire();
+        this.#deps.controller.setTool('select');
       } else {
         this.#deps.onChange();
       }

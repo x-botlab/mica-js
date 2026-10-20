@@ -78,7 +78,26 @@ export function connectionNodeAt(context: SnapContext, point: Point): Point | un
     return pinPosition(context, hit);
   }
   const anchor = anchorSymbolAt(context, point);
-  return anchor === undefined ? undefined : { x: anchor.x, y: anchor.y };
+  if (anchor !== undefined) {
+    return { x: anchor.x, y: anchor.y };
+  }
+  return wireEndpointAt(context, point);
+}
+
+/** Endpoint of an existing wire under `point`; used to close a connection. */
+export function wireEndpointAt(context: SnapContext, point: Point): Point | undefined {
+  for (const wire of context.controller.document.sheet.wires) {
+    for (const endpoint of [wire.points[0], wire.points[wire.points.length - 1]]) {
+      if (
+        endpoint !== undefined &&
+        Math.abs(endpoint.x - point.x) <= context.tolerance * 2 &&
+        Math.abs(endpoint.y - point.y) <= context.tolerance * 2
+      ) {
+        return { x: endpoint.x, y: endpoint.y };
+      }
+    }
+  }
+  return undefined;
 }
 
 /** Builtin connection symbol (label / power / ground) anchored under `point`. */

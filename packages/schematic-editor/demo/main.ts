@@ -208,7 +208,7 @@ const editor = mountSchematicEditor({
     }
     hint.textContent =
       state.lastError === undefined
-        ? '导线 / 电源 / 地 · Delete 删除 · R 旋转 · Ctrl+Z 撤销 · 拖拽空白平移 · 滚轮缩放'
+        ? '拖拽空白框选 · 空格旋转 · Delete 删除 · Ctrl+Z 撤销 · 中键平移 · 滚轮缩放'
         : state.lastError.message;
   },
 });

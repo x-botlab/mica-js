@@ -181,9 +181,8 @@ export class SchematicEditorController {
           case 'symbol': {
             const symbol = this.#findSymbol(item.id);
             if (symbol !== undefined) {
-              this.#editor.dispatch({
-                type: 'update-symbol',
-                id: symbol.id,
+              this.#repositionSymbol(symbol, {
+                ...symbol,
                 x: symbol.x + dx,
                 y: symbol.y + dy,
               });
@@ -222,68 +221,66 @@ export class SchematicEditorController {
       return;
     }
     this.#mutate(() => {
-      const document = this.#editor.document;
-      let symbols = [...document.sheet.symbols];
-      const moves: { readonly from: Point; readonly to: Point }[] = [];
-
       for (const item of this.#selection) {
         if (item.kind !== 'symbol') {
           continue;
         }
-        const index = symbols.findIndex((symbol) => symbol.id === item.id);
-        const symbol = symbols[index];
+        const symbol = this.#findSymbol(item.id);
         if (symbol === undefined) {
           continue;
         }
-        const rotated: SchematicSymbol = {
+        this.#repositionSymbol(symbol, {
           ...symbol,
           rotation: normalizeRotation(symbol.rotation + degrees),
-        };
-        symbols[index] = rotated;
-        // Pins carry their attached wire ends, junctions and anchors along with the rotation.
-        for (const anchor of Object.values(this.#pinAnchors(symbol))) {
-          const from = symbolPinPosition(symbol, anchor);
-          const to = symbolPinPosition(rotated, anchor);
-          if (!samePoint(from, to)) {
-            moves.push({ from, to });
-          }
+        });
+      }
+    });
+  }
+
+  /**
+   * Replaces a symbol's placement and drags everything anchored to its pins: wire ends (with an
+   * elbow when needed to keep orthogonal routing), junctions and attached builtin anchors.
+   */
+  #repositionSymbol(symbol: SchematicSymbol, next: SchematicSymbol): void {
+    const document = this.#editor.document;
+    const moves: { readonly from: Point; readonly to: Point }[] = [];
+    for (const anchor of Object.values(this.#pinAnchors(symbol))) {
+      const from = symbolPinPosition(symbol, anchor);
+      const to = symbolPinPosition(next, anchor);
+      if (!samePoint(from, to)) {
+        moves.push({ from, to });
+      }
+    }
+
+    const moved = (point: Point): Point | undefined => {
+      const match = moves.find((candidate) => samePoint(candidate.from, point));
+      return match === undefined ? undefined : { ...match.to };
+    };
+
+    const symbols = document.sheet.symbols.map((item) => {
+      if (item.id === next.id) {
+        return next;
+      }
+      const target = moved({ x: item.x, y: item.y });
+      return target === undefined ? item : { ...item, x: target.x, y: target.y };
+    });
+    const wires = document.sheet.wires.map((wire) => {
+      for (const move of moves) {
+        const rewired = rewireEndpoint(wire, move.from, move.to);
+        if (rewired !== undefined) {
+          return rewired;
         }
       }
-      if (
-        moves.length === 0 &&
-        symbols.every((symbol, index) => symbol === document.sheet.symbols[index])
-      ) {
-        return;
-      }
+      return wire;
+    });
+    const junctions = document.sheet.junctions.map((junction) => {
+      const target = moved({ x: junction.x, y: junction.y });
+      return target === undefined ? junction : { ...junction, x: target.x, y: target.y };
+    });
 
-      const moved = (point: Point): Point | undefined => {
-        const match = moves.find((candidate) => samePoint(candidate.from, point));
-        return match === undefined ? undefined : { ...match.to };
-      };
-
-      symbols = symbols.map((symbol) => {
-        const next = moved({ x: symbol.x, y: symbol.y });
-        return next === undefined ? symbol : { ...symbol, x: next.x, y: next.y };
-      });
-      const wires = document.sheet.wires.map((wire) => {
-        // A wire end attached to a moving pin keeps orthogonal routing by gaining an elbow.
-        for (const move of moves) {
-          const rewired = rewireEndpoint(wire, move.from, move.to);
-          if (rewired !== undefined) {
-            return rewired;
-          }
-        }
-        return wire;
-      });
-      const junctions = document.sheet.junctions.map((junction) => {
-        const next = moved({ x: junction.x, y: junction.y });
-        return next === undefined ? junction : { ...junction, x: next.x, y: next.y };
-      });
-
-      this.#editor.replace({
-        ...document,
-        sheet: { ...document.sheet, symbols, wires, junctions },
-      });
+    this.#editor.replace({
+      ...document,
+      sheet: { ...document.sheet, symbols, wires, junctions },
     });
   }
 

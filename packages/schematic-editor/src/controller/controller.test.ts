@@ -250,6 +250,35 @@ describe('SchematicEditorController', () => {
     ]);
   });
 
+  it('drags attached wire ends along when a symbol is moved', () => {
+    const definition = devices.getDeviceSymbol(parseDeviceReference('pkg:mcu')!);
+    const pin = definition?.pins['A'];
+    expect(pin).toBeDefined();
+    const start = { x: pin?.x ?? 0, y: pin?.y ?? 0 };
+    const tail = { x: start.x - 40, y: start.y };
+    const controller = createController(
+      documentOf({
+        symbols: [{ id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 }],
+        wires: [{ id: 'w1', points: [start, tail] }],
+      }),
+    );
+
+    controller.setSelection([{ kind: 'symbol', id: 's1' }]);
+    controller.moveSelectionBy(10, 20);
+
+    const points = wirePoints(controller, 'w1');
+    expect(points[0]).toEqual({ x: start.x + 10, y: start.y + 20 });
+    expect(points[points.length - 1]).toEqual(tail);
+    for (let index = 1; index < points.length; index += 1) {
+      const previous = points[index - 1];
+      const current = points[index];
+      expect(previous?.x === current?.x || previous?.y === current?.y).toBe(true);
+    }
+
+    controller.undo();
+    expect(wirePoints(controller, 'w1')).toEqual([start, tail]);
+  });
+
   it('rejects edits that would make a wire diagonal', () => {
     const controller = createController(
       documentOf({
