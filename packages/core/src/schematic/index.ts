@@ -44,6 +44,15 @@ export type {
   ViewPlacement,
 } from './load/load';
 
+export { applySchematicCommand } from './edit/commands';
+export type { EditEffect, SchematicCommand, SchematicEditOptions } from './edit/commands';
+export { defaultElementIdFactory } from './edit/ids';
+export type { ElementIdFactory, ElementKind } from './edit/ids';
+export { SchematicEditor } from './edit/editor';
+export type { SchematicEditorOptions } from './edit/editor';
+export { applyViewCommand } from './edit/view';
+export type { ApplyViewCommandOptions, ViewCommand } from './edit/view';
+
 export {
   LABEL_DEVICE,
   RESERVED_PACKAGE_NAMESPACE,
