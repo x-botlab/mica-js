@@ -1,9 +1,15 @@
 import type { Rect } from '../format/types';
 import type { DeviceReference } from './reference';
 
+/** Side of the symbol body a pin is drawn on; controls stub direction and label placement. */
+export type PinSide = 'left' | 'right' | 'top' | 'bottom';
+
 export interface PinAnchor {
+  /** Connection point (outer end of the pin stub) in symbol space. */
   readonly x: number;
   readonly y: number;
+  /** Side the pin is displayed on; inferred from the position when omitted. */
+  readonly side?: PinSide;
 }
 
 export interface DeviceSymbolDefinition {

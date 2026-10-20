@@ -180,4 +180,122 @@ describe('buildSchematicScene', () => {
     const scene = buildSchematicScene({ document, theme: DARK_SCHEMATIC_THEME });
     expect(scene.items.length).toBeGreaterThan(0);
   });
+
+  it('draws pin stubs and labels according to the declared side', () => {
+    const sided = createDeviceRegistry([
+      {
+        packageId: 'pkg',
+        devices: [
+          {
+            id: 'ne555',
+            symbol: {
+              name: 'NE555',
+              bounds: { x: -40, y: -50, width: 80, height: 100 },
+              pins: {
+                TRIG: { x: -60, y: -20, side: 'left' },
+                OUT: { x: 60, y: 0, side: 'right' },
+                VCC: { x: 0, y: -70, side: 'top' },
+                GND: { x: 0, y: 70, side: 'bottom' },
+              },
+            },
+          },
+        ],
+      },
+    ]);
+    const scene = buildSchematicScene({
+      document: parseSchematic({
+        version: 1,
+        id: 'sided',
+        sheet: {
+          symbols: [{ id: 'U1', device: 'pkg:ne555', x: 0, y: 0, rotation: 0 }],
+          wires: [],
+          junctions: [],
+        },
+      }),
+      devices: sided,
+      theme: DARK_SCHEMATIC_THEME,
+    });
+
+    const lines = scene.items.filter((item) => item.kind === 'line');
+    // Left stub: from the body edge (x = -40) to the anchor (x = -60), at the pin's y.
+    expect(lines).toContainEqual({
+      kind: 'line',
+      from: { x: -40, y: -20 },
+      to: { x: -60, y: -20 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+    // Right stub.
+    expect(lines).toContainEqual({
+      kind: 'line',
+      from: { x: 40, y: 0 },
+      to: { x: 60, y: 0 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+    // Top and bottom stubs are vertical.
+    expect(lines).toContainEqual({
+      kind: 'line',
+      from: { x: 0, y: -50 },
+      to: { x: 0, y: -70 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+    expect(lines).toContainEqual({
+      kind: 'line',
+      from: { x: 0, y: 50 },
+      to: { x: 0, y: 70 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+
+    const rotationOf = (text: string): number | undefined => {
+      const item = scene.items.find((entry) => entry.kind === 'text' && entry.text === text);
+      return item?.kind === 'text' ? item.rotation : undefined;
+    };
+    expect(rotationOf('TRIG')).toBe(0);
+    expect(rotationOf('VCC')).toBe(-90);
+    expect(rotationOf('GND')).toBe(-90);
+
+    const reference = scene.items.find((item) => item.kind === 'text' && item.text === 'U1');
+    expect(reference).toMatchObject({ align: 'center', baseline: 'bottom' });
+  });
+
+  it('infers the side when a pin omits it', () => {
+    const inferred = createDeviceRegistry([
+      {
+        packageId: 'pkg',
+        devices: [
+          {
+            id: 'plain',
+            symbol: {
+              name: 'PLAIN',
+              bounds: { x: -20, y: -20, width: 40, height: 40 },
+              pins: { P: { x: -40, y: 0 } },
+            },
+          },
+        ],
+      },
+    ]);
+    const scene = buildSchematicScene({
+      document: parseSchematic({
+        version: 1,
+        id: 'inferred',
+        sheet: {
+          symbols: [{ id: 'U1', device: 'pkg:plain', x: 0, y: 0, rotation: 0 }],
+          wires: [],
+          junctions: [],
+        },
+      }),
+      devices: inferred,
+      theme: DARK_SCHEMATIC_THEME,
+    });
+    expect(scene.items.filter((item) => item.kind === 'line')).toContainEqual({
+      kind: 'line',
+      from: { x: -20, y: 0 },
+      to: { x: -40, y: 0 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+  });
 });

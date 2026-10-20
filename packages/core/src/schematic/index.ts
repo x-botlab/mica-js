@@ -88,6 +88,7 @@ export type {
   DeviceSymbolGeometry,
   DeviceSymbolProvider,
   PinAnchor,
+  PinSide,
 } from './device/symbol';
 export { createDeviceRegistry } from './device/registry';
 export type {

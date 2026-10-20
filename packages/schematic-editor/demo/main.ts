@@ -24,11 +24,12 @@ const schematicText = `{
   "id": "ct117e-m4-board",
   "sheet": {
     "symbols": [
-      { "id": "s-mcu", "device": "stm32-package:stm32g431rbt6-lqfp64", "x": 480, "y": 160, "rotation": 0, "properties": { "label": "MCU" } },
+      { "id": "s-mcu", "device": "stm32-package:stm32g431rbt6-lqfp64", "x": 480, "y": 200, "rotation": 0, "properties": { "label": "MCU" } },
       { "id": "s-lcd", "device": "lcd-package:ct117e-m4-tft-lcd-2-4", "x": 136, "y": 55, "rotation": 0 },
+      { "id": "u2", "device": "timer-package:ne555", "x": 300, "y": 340, "rotation": 0 },
       { "id": "lcd-l-d0", "device": "builtin:label", "x": 300, "y": 100, "rotation": 0 },
-      { "id": "p3v3", "device": "builtin:power", "x": 480, "y": 260, "rotation": 0, "properties": { "label": "3V3" } },
-      { "id": "gnd", "device": "builtin:ground", "x": 380, "y": 300, "rotation": 0 }
+      { "id": "p3v3", "device": "builtin:power", "x": 480, "y": 330, "rotation": 0, "properties": { "label": "3V3" } },
+      { "id": "gnd", "device": "builtin:ground", "x": 380, "y": 460, "rotation": 0 }
     ],
     "wires": [
       {
@@ -36,8 +37,8 @@ const schematicText = `{
         "points": [{ "x": 480, "y": 160 }, { "x": 300, "y": 160 }, { "x": 300, "y": 55 }, { "x": 136, "y": 55 }]
       },
       { "id": "w-label-d0", "points": [{ "x": 300, "y": 124 }, { "x": 300, "y": 100 }] },
-      { "id": "w-vcc", "points": [{ "x": 480, "y": 260 }, { "x": 480, "y": 220 }] },
-      { "id": "w-gnd", "points": [{ "x": 380, "y": 300 }, { "x": 380, "y": 330 }] }
+      { "id": "w-vcc", "points": [{ "x": 480, "y": 330 }, { "x": 480, "y": 300 }] },
+      { "id": "w-gnd", "points": [{ "x": 380, "y": 460 }, { "x": 380, "y": 490 }] }
     ],
     "junctions": [{ "id": "j-d0", "x": 300, "y": 124, "wires": ["w-d0", "w-label-d0"] }]
   }
@@ -61,14 +62,17 @@ const devices = createDeviceRegistry([
         id: 'stm32g431rbt6-lqfp64',
         displayName: 'STM32G431RBT6',
         symbol: {
-          name: 'MCU',
-          bounds: { x: -30, y: -30, width: 60, height: 60 },
+          name: 'STM32G431',
+          bounds: { x: -60, y: -50, width: 120, height: 100 },
           pins: {
-            PC0: { x: -30, y: 0 },
-            PC1: { x: -30, y: 10 },
-            PA0: { x: 30, y: 0 },
-            VDD: { x: 0, y: 30 },
-            VSS: { x: 0, y: -30 },
+            PC0: { x: -80, y: -30, side: 'left' },
+            PC1: { x: -80, y: -10, side: 'left' },
+            PA0: { x: -80, y: 10, side: 'left' },
+            PA1: { x: -80, y: 30, side: 'left' },
+            PB6: { x: 80, y: -30, side: 'right' },
+            PB7: { x: 80, y: -10, side: 'right' },
+            VDD: { x: 0, y: -70, side: 'top' },
+            VSS: { x: 0, y: 70, side: 'bottom' },
           },
         },
       },
@@ -82,12 +86,36 @@ const devices = createDeviceRegistry([
         displayName: 'TFT LCD 2.4"',
         symbol: {
           name: 'LCD',
-          bounds: { x: -50, y: -35, width: 100, height: 70 },
+          bounds: { x: -55, y: -40, width: 110, height: 80 },
           pins: {
-            D0: { x: 50, y: 0 },
-            D1: { x: 50, y: 10 },
-            VCC: { x: 0, y: 35 },
-            GND: { x: 0, y: -35 },
+            D0: { x: -75, y: -20, side: 'left' },
+            D1: { x: -75, y: 0, side: 'left' },
+            D2: { x: -75, y: 20, side: 'left' },
+            VCC: { x: 0, y: -60, side: 'top' },
+            GND: { x: 0, y: 60, side: 'bottom' },
+          },
+        },
+      },
+    ],
+  },
+  {
+    packageId: 'timer-package',
+    devices: [
+      {
+        id: 'ne555',
+        displayName: 'NE555',
+        symbol: {
+          name: 'NE555',
+          bounds: { x: -70, y: -60, width: 140, height: 120 },
+          pins: {
+            TRIG: { x: -95, y: -40, side: 'left' },
+            RESET: { x: -95, y: -20, side: 'left' },
+            CONT: { x: -95, y: 0, side: 'left' },
+            THRES: { x: -95, y: 20, side: 'left' },
+            DISCHG: { x: -95, y: 40, side: 'left' },
+            OUT: { x: 95, y: 0, side: 'right' },
+            VCC: { x: 0, y: -80, side: 'top' },
+            GND: { x: 0, y: 80, side: 'bottom' },
           },
         },
       },

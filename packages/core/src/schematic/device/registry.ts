@@ -14,7 +14,10 @@ import type {
   DeviceSymbolGeometry,
   DeviceSymbolProvider,
   PinAnchor,
+  PinSide,
 } from './symbol';
+
+const PIN_SIDES: readonly PinSide[] = ['left', 'right', 'top', 'bottom'];
 
 export interface DeviceRegistrationEntry {
   /** Device id, unique within the package. */
@@ -290,7 +293,20 @@ function readPins(
       failed = true;
       continue;
     }
-    pins[pinId] = { x: anchor.x as number, y: anchor.y as number };
+    const side = anchor.side;
+    if (side !== undefined && !PIN_SIDES.includes(side as PinSide)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'device/invalid-description',
+        message: `Device ${JSON.stringify(devicePath)} pin ${JSON.stringify(pinId)} has invalid side ${JSON.stringify(side)}.`,
+      });
+      failed = true;
+      continue;
+    }
+    pins[pinId] =
+      side === undefined
+        ? { x: anchor.x as number, y: anchor.y as number }
+        : { x: anchor.x as number, y: anchor.y as number, side: side as PinSide };
   }
   return failed ? undefined : pins;
 }

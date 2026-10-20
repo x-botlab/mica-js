@@ -129,6 +129,39 @@ describe('createDeviceRegistry', () => {
     expect(registry.diagnostics).toEqual([]);
   });
 
+  it('keeps pin sides and rejects invalid ones', () => {
+    const registry = createDeviceRegistry([
+      packageOf([
+        {
+          id: 'sided',
+          symbol: {
+            pins: {
+              A: { x: -10, y: 0, side: 'left' },
+              B: { x: 0, y: -10, side: 'top' },
+            },
+          },
+        },
+      ]),
+    ]);
+    expect(registry.resolve('stm32-package:sided')?.symbol?.pins).toEqual({
+      A: { x: -10, y: 0, side: 'left' },
+      B: { x: 0, y: -10, side: 'top' },
+    });
+
+    expect(
+      codesOfRegister(() =>
+        createDeviceRegistry([
+          packageOf([
+            {
+              id: 'bad',
+              symbol: { pins: { A: { x: 0, y: 0, side: 'middle' as never } } },
+            },
+          ]),
+        ]),
+      ),
+    ).toContain('device/invalid-description');
+  });
+
   it('rejects malformed symbol geometry', () => {
     expect(
       codesOfRegister(() =>

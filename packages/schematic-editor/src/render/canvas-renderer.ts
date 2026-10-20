@@ -185,7 +185,15 @@ export class CanvasSchematicRenderer {
         context.font = scaleFont(item.font, viewport.scale);
         context.textAlign = item.align;
         context.textBaseline = item.baseline;
-        context.fillText(item.text, position.x, position.y);
+        if (item.rotation === undefined || item.rotation === 0) {
+          context.fillText(item.text, position.x, position.y);
+          break;
+        }
+        context.save();
+        context.translate(position.x, position.y);
+        context.rotate((item.rotation * Math.PI) / 180);
+        context.fillText(item.text, 0, 0);
+        context.restore();
         break;
       }
       default:

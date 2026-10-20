@@ -69,6 +69,8 @@ export type SceneItem =
       readonly align: 'left' | 'center' | 'right';
       readonly baseline: 'top' | 'middle' | 'bottom';
       readonly font: string;
+      /** Degrees, clockwise around `position`. */
+      readonly rotation?: number;
     };
 
 export interface SchematicScene {
@@ -92,7 +94,6 @@ export interface RenderInput {
 
 const WIRE_WIDTH = 1.5;
 const SELECTED_WIDTH = 2.5;
-const PIN_RADIUS = 1.6;
 const JUNCTION_RADIUS = 3;
 const VERTEX_SIZE = 5;
 
@@ -180,13 +181,22 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
       continue;
     }
 
-    const bounds = symbolBounds(placement, definition.bounds, definition.pins);
-    if (bounds !== undefined) {
-      items.push({ kind: 'rect', bounds, fill: theme.symbolFill, stroke, width: 1.2 });
-    }
+    const localBody = definition.bounds ?? pinsBounds(definition.pins);
+    const body = symbolBounds(placement, localBody, {}) ?? fallbackBounds(placement);
+
+    items.push({ kind: 'rect', bounds: body, fill: theme.symbolFill, stroke, width: 1.5 });
     items.push({
       kind: 'text',
-      position: { x: placement.x, y: placement.y },
+      position: { x: body.x + body.width / 2, y: body.y - 12 },
+      text: symbol.id,
+      color: theme.symbolText,
+      align: 'center',
+      baseline: 'bottom',
+      font,
+    });
+    items.push({
+      kind: 'text',
+      position: { x: body.x + body.width / 2, y: body.y + body.height / 2 },
       text: definition.name,
       color: theme.symbolText,
       align: 'center',
@@ -195,37 +205,26 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
     });
 
     for (const [pinId, anchor] of Object.entries(definition.pins)) {
+      const side = anchor.side ?? inferSide(anchor, localBody);
       const pinPosition = symbolPinPosition(placement, anchor);
-      items.push({
-        kind: 'circle',
-        center: pinPosition,
-        radius: PIN_RADIUS,
-        fill: theme.pin,
-        width: 0,
-      });
+      const edge = symbolPinPosition(placement, stubEdge(localBody, anchor, side));
+      items.push({ kind: 'line', from: edge, to: pinPosition, color: theme.pin, width: 1.2 });
       if (!display.labels) {
         continue;
       }
-      const direction = symbolPinPosition({ x: 0, y: 0, rotation: placement.rotation }, anchor);
-      const outward = {
-        x: Math.abs(direction.x) >= Math.abs(direction.y) ? Math.sign(direction.x) : 0,
-        y: Math.abs(direction.y) > Math.abs(direction.x) ? Math.sign(direction.y) : 0,
-      };
+      const label = pinLabel(localBody, side, anchor);
       items.push({
         kind: 'text',
-        position: {
-          x: pinPosition.x + outward.x * 4,
-          y: pinPosition.y + outward.y * 4,
-        },
+        position: symbolPinPosition(placement, label.position),
         text: pinId,
         color: theme.pinText,
-        align: outward.x > 0 ? 'left' : outward.x < 0 ? 'right' : 'center',
-        baseline: outward.y > 0 ? 'top' : outward.y < 0 ? 'bottom' : 'middle',
+        align: label.align,
+        baseline: label.baseline,
+        rotation: placement.rotation + label.rotation,
         font,
       });
     }
   }
-
   for (const vertex of selection.vertices ?? []) {
     const wire = document.sheet.wires.find((candidate) => candidate.id === vertex.wireId);
     const point = wire?.points[vertex.index];
@@ -271,6 +270,116 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
           },
     items,
   };
+}
+
+function pinsBounds(
+  pins: Readonly<Record<string, { readonly x: number; readonly y: number }>>,
+): Rect {
+  const points = Object.values(pins);
+  if (points.length === 0) {
+    return { x: -12, y: -12, width: 24, height: 24 };
+  }
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+function fallbackBounds(placement: { readonly x: number; readonly y: number }): Rect {
+  return { x: placement.x - 12, y: placement.y - 12, width: 24, height: 24 };
+}
+
+function inferSide(
+  anchor: { readonly x: number; readonly y: number },
+  body: Rect,
+): 'left' | 'right' | 'top' | 'bottom' {
+  const centerX = body.x + body.width / 2;
+  const centerY = body.y + body.height / 2;
+  const dx = (anchor.x - centerX) / Math.max(body.width / 2, 1e-6);
+  const dy = (anchor.y - centerY) / Math.max(body.height / 2, 1e-6);
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0 ? 'right' : 'left';
+  }
+  return dy >= 0 ? 'bottom' : 'top';
+}
+
+function stubEdge(
+  body: Rect,
+  anchor: { readonly x: number; readonly y: number },
+  side: 'left' | 'right' | 'top' | 'bottom',
+): Point {
+  switch (side) {
+    case 'left':
+      return { x: body.x, y: anchor.y };
+    case 'right':
+      return { x: body.x + body.width, y: anchor.y };
+    case 'top':
+      return { x: anchor.x, y: body.y };
+    case 'bottom':
+      return { x: anchor.x, y: body.y + body.height };
+    default:
+      return anchor;
+  }
+}
+
+function pinLabel(
+  body: Rect,
+  side: 'left' | 'right' | 'top' | 'bottom',
+  anchor: { readonly x: number; readonly y: number },
+): {
+  position: Point;
+  align: 'left' | 'center' | 'right';
+  baseline: 'top' | 'middle' | 'bottom';
+  rotation: number;
+} {
+  const centerX = body.x + body.width / 2;
+  const centerY = body.y + body.height / 2;
+  const clampX = Math.min(Math.max(anchor.x, body.x), body.x + body.width);
+  const clampY = Math.min(Math.max(anchor.y, body.y), body.y + body.height);
+  switch (side) {
+    case 'left':
+      return {
+        position: { x: body.x + 6, y: clampY },
+        align: 'left',
+        baseline: 'middle',
+        rotation: 0,
+      };
+    case 'right':
+      return {
+        position: { x: body.x + body.width - 6, y: clampY },
+        align: 'right',
+        baseline: 'middle',
+        rotation: 0,
+      };
+    case 'top':
+      return {
+        position: { x: clampX, y: body.y + 14 },
+        align: 'center',
+        baseline: 'middle',
+        rotation: -90,
+      };
+    case 'bottom':
+      return {
+        position: { x: clampX, y: body.y + body.height - 14 },
+        align: 'center',
+        baseline: 'middle',
+        rotation: -90,
+      };
+    default:
+      return {
+        position: { x: centerX, y: centerY },
+        align: 'center',
+        baseline: 'middle',
+        rotation: 0,
+      };
+  }
 }
 
 function drawBuiltin(
