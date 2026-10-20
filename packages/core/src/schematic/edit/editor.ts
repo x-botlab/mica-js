@@ -1,4 +1,5 @@
 import type { SchematicDocument } from '../format/types';
+import { parseSchematic } from '../format/parse-schematic';
 import { serializeSchematic } from '../format/serialize';
 import { deriveSchematicTopology, type SchematicTopology } from '../topology/derive';
 import {
@@ -48,6 +49,15 @@ export class SchematicEditor {
   dispatch(command: SchematicCommand): void {
     const next = applySchematicCommand(this.#document, command, this.#options);
     this.#record(next);
+  }
+
+  /**
+   * Records an already-derived document (for example a wire split) as one history step.
+   *
+   * @throws {SchematicError} when the document is invalid; the state stays untouched.
+   */
+  replace(document: SchematicDocument): void {
+    this.#record(parseSchematic(document));
   }
 
   /** Applies several edits atomically; a failure rolls back every command in the block. */

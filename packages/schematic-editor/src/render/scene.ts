@@ -1,10 +1,14 @@
 import {
   DEFAULT_GROUND_LABEL,
   DEFAULT_POWER_LABEL,
+  GROUND_DEVICE,
+  POWER_DEVICE,
   builtinSymbolKind,
+  isTextDevice,
   parseDeviceReference,
   symbolBounds,
   symbolPinPosition,
+  textDeviceContent,
   type DeviceSymbolProvider,
   type Point,
   type Rect,
@@ -14,7 +18,7 @@ import {
 } from '@mica/core/schematic';
 import type { SchematicTheme } from './theme';
 
-export type SceneTool = 'select' | 'wire' | 'power' | 'ground';
+export type SceneTool = 'select' | 'wire' | 'power' | 'ground' | 'label' | 'text';
 
 export interface SceneSelection {
   readonly symbols?: ReadonlySet<string>;
@@ -90,6 +94,10 @@ export interface RenderInput {
   readonly tool?: SceneTool;
   readonly display?: SceneDisplayOptions;
   readonly pendingWire?: readonly Point[];
+  /** Rubber-band selection rectangle in page units. */
+  readonly marquee?: Rect;
+  /** Ghost of the symbol the current placement tool would insert. */
+  readonly placementPreview?: { readonly device: string; readonly position: Point };
 }
 
 const WIRE_WIDTH = 1.5;
@@ -141,6 +149,20 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
     };
     const stroke = selected ? theme.selection : hovered ? theme.hover : theme.symbolStroke;
     const builtin = builtinSymbolKind(symbol.device);
+
+    if (isTextDevice(symbol.device)) {
+      items.push({
+        kind: 'text',
+        position: placement,
+        text: textDeviceContent(symbol),
+        color: selected || hovered ? theme.selection : theme.symbolText,
+        align: 'left',
+        baseline: 'middle',
+        font: symbolFont,
+        rotation: placement.rotation,
+      });
+      continue;
+    }
 
     if (builtin !== undefined) {
       drawBuiltin(items, {
@@ -233,16 +255,48 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
     if (point === undefined) {
       continue;
     }
+    const center = point;
     items.push({
       kind: 'rect',
       bounds: {
-        x: point.x - VERTEX_SIZE / 2,
-        y: point.y - VERTEX_SIZE / 2,
+        x: center.x - VERTEX_SIZE / 2,
+        y: center.y - VERTEX_SIZE / 2,
         width: VERTEX_SIZE,
         height: VERTEX_SIZE,
       },
       fill: theme.selection,
       width: 0,
+    });
+  }
+
+  if (input.marquee !== undefined) {
+    items.push({
+      kind: 'rect',
+      bounds: input.marquee,
+      stroke: theme.selection,
+      width: 1,
+      dash: [4, 3],
+    });
+  }
+
+  if (input.placementPreview !== undefined) {
+    drawBuiltin(items, {
+      kind:
+        input.placementPreview.device === POWER_DEVICE
+          ? 'power'
+          : input.placementPreview.device === GROUND_DEVICE
+            ? 'ground'
+            : 'label',
+      position: { x: input.placementPreview.position.x, y: input.placementPreview.position.y },
+      text:
+        input.placementPreview.device === POWER_DEVICE
+          ? DEFAULT_POWER_LABEL
+          : input.placementPreview.device === GROUND_DEVICE
+            ? DEFAULT_GROUND_LABEL
+            : 'Net',
+      color: theme.hover,
+      anchorColor: theme.hover,
+      font: pinFont,
     });
   }
 

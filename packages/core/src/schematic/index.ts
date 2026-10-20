@@ -70,17 +70,21 @@ export { rotatePoint, symbolBounds, symbolPinPosition } from './geometry/transfo
 export {
   DEFAULT_GROUND_LABEL,
   DEFAULT_POWER_LABEL,
+  DEFAULT_TEXT_CONTENT,
   GROUND_DEVICE,
   LABEL_DEVICE,
   POWER_DEVICE,
   RESERVED_PACKAGE_NAMESPACE,
+  TEXT_DEVICE,
   builtinSymbolKind,
   formatDeviceReference,
   isBuiltinDevice,
   isLabelDevice,
   isReservedPackageId,
+  isTextDevice,
   isValidPackageId,
   parseDeviceReference,
+  textDeviceContent,
 } from './device/reference';
 export type { BuiltinSymbolKind, DeviceReference } from './device/reference';
 export type {

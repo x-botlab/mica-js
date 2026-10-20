@@ -1,27 +1,16 @@
 import {
   createDeviceRegistry,
-  deriveSchematicTopology,
   parseDeviceReference,
   parseSchematic,
   parseView,
-  serializeSchematic,
-  serializeView,
   symbolPinPosition,
   type Placement,
   type Point,
   type SchematicDocument,
-  type SchematicHit,
   type SchematicViewDocument,
 } from '@mica/core/schematic';
-import { CanvasSchematicRenderer } from '../src/render/canvas-renderer';
-import { buildSchematicScene } from '../src/render/scene';
-import {
-  DARK_SCHEMATIC_THEME,
-  LIGHT_SCHEMATIC_THEME,
-  resolveSchematicTheme,
-  themeToCssVariables,
-} from '../src/render/theme';
-import { fitBounds, panBy, screenToPage, zoomAt, type ViewportState } from '../src/render/viewport';
+import { mountSchematicEditor } from '../src';
+import { DARK_SCHEMATIC_THEME, LIGHT_SCHEMATIC_THEME, themeToCssVariables } from '../src';
 
 const devices = createDeviceRegistry([
   {
@@ -40,6 +29,11 @@ const devices = createDeviceRegistry([
             PB7: { side: 'right' },
             VDD: { side: 'top' },
             VSS: { side: 'bottom' },
+          },
+          properties: {
+            label: { type: 'string', default: 'MCU' },
+            speed: { type: 'number', default: 72 },
+            enabled: { type: 'boolean', default: true },
           },
         },
       },
@@ -93,7 +87,7 @@ const TIMER = 'timer-package:ne555';
 const placements = {
   mcu: { x: 480, y: 200, rotation: 0 },
   lcd: { x: 136, y: 60, rotation: 0 },
-  timer: { x: 300, y: 360, rotation: 0 },
+  timer: { x: 300, y: 380, rotation: 0 },
   label: { x: 268, y: 150, rotation: 0 },
   power: { x: 480, y: 120, rotation: 0 },
   ground: { x: 480, y: 300, rotation: 0 },
@@ -110,7 +104,6 @@ function pin(device: string, pinId: string, placement: Placement): Point {
   return symbolPinPosition(placement, anchor);
 }
 
-/** Point form of a placement, for wire endpoints. */
 function at(placement: Placement): Point {
   return { x: placement.x, y: placement.y };
 }
@@ -160,8 +153,8 @@ const schematicText = JSON.stringify(
           points: [
             timerOut,
             { x: 420, y: timerOut.y },
-            { x: 420, y: 440 },
-            { x: 60, y: 440 },
+            { x: 420, y: 470 },
+            { x: 60, y: 470 },
             { x: 60, y: lcdD1.y },
             lcdD1,
           ],
@@ -203,115 +196,37 @@ if (host === null) {
   throw new Error('missing host');
 }
 
-const canvas = document.createElement('canvas');
-host.append(canvas);
-
-let theme = DARK_SCHEMATIC_THEME;
-const renderer = new CanvasSchematicRenderer(canvas, { theme });
-let viewport: ViewportState = { scale: 1, offsetX: 0, offsetY: 0 };
-
-function fit(): void {
-  const topology = deriveSchematicTopology(schematic, { devices });
-  const bounds = topology.bounds ?? { x: 0, y: 0, width: 100, height: 100 };
-  viewport = fitBounds(bounds, { width: canvas.clientWidth, height: canvas.clientHeight }, 60);
-  draw();
-}
-
-function draw(): void {
-  const scene = buildSchematicScene({
-    document: schematic,
-    view,
-    devices,
-    theme,
-    display: { grid: true, labels: true },
-  });
-  renderer.render(scene, viewport);
-}
-
-const hovered: SchematicHit | undefined = undefined;
-void hovered;
-
-let dragging = false;
-let lastX = 0;
-let lastY = 0;
-
-canvas.addEventListener('pointerdown', (event) => {
-  dragging = true;
-  lastX = event.clientX;
-  lastY = event.clientY;
-  canvas.setPointerCapture(event.pointerId);
-});
-
-canvas.addEventListener('pointermove', (event) => {
-  if (!dragging) {
-    return;
-  }
-  viewport = panBy(viewport, event.clientX - lastX, event.clientY - lastY);
-  lastX = event.clientX;
-  lastY = event.clientY;
-  draw();
-});
-
-canvas.addEventListener('pointerup', (event) => {
-  dragging = false;
-  canvas.releasePointerCapture(event.pointerId);
-});
-
-canvas.addEventListener(
-  'wheel',
-  (event) => {
-    event.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
-    viewport = zoomAt(
-      viewport,
-      { x: event.clientX - rect.left, y: event.clientY - rect.top },
-      factor,
-    );
-    draw();
+const editor = mountSchematicEditor({
+  container: host,
+  schematic,
+  view,
+  devices,
+  onChange: (state) => {
+    const hint = document.querySelector<HTMLElement>('#hint');
+    if (hint === null) {
+      return;
+    }
+    hint.textContent =
+      state.lastError === undefined
+        ? '导线 / 电源 / 地 · Delete 删除 · R 旋转 · Ctrl+Z 撤销 · 拖拽空白平移 · 滚轮缩放'
+        : state.lastError.message;
   },
-  { passive: false },
-);
+});
 
-function resize(): void {
-  const ratio = window.devicePixelRatio || 1;
-  renderer.resize(canvas.clientWidth, canvas.clientHeight, ratio);
-  draw();
-}
-
-new ResizeObserver(resize).observe(host);
-window.addEventListener('resize', resize);
-
-function applyThemeToPage(): void {
-  const variables = themeToCssVariables(theme);
-  const root = document.documentElement;
-  for (const [name, value] of Object.entries(variables)) {
-    root.style.setProperty(name, value);
-  }
-  root.style.colorScheme = theme === DARK_SCHEMATIC_THEME ? 'dark' : 'light';
-}
-
+let dark = true;
 document.querySelector('#theme')?.addEventListener('click', () => {
-  theme = theme === DARK_SCHEMATIC_THEME ? LIGHT_SCHEMATIC_THEME : DARK_SCHEMATIC_THEME;
-  renderer.setTheme(theme);
-  applyThemeToPage();
-  draw();
+  dark = !dark;
+  const nextTheme = dark ? DARK_SCHEMATIC_THEME : LIGHT_SCHEMATIC_THEME;
+  editor.setTheme(nextTheme);
+  // Mirror the tokens on `:root` so the demo chrome follows the editor theme.
+  for (const [name, value] of Object.entries(themeToCssVariables(nextTheme))) {
+    document.documentElement.style.setProperty(name, value);
+  }
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
 });
 
-document.querySelector('#fit')?.addEventListener('click', fit);
-
-// Helpful when comparing serialization round-trips in the console.
-Object.assign(globalThis, {
-  mica: {
-    schematic,
-    view,
-    serializeSchematic,
-    serializeView,
-    resolveSchematicTheme,
-    screenToPage,
-  },
+document.querySelector('#fit')?.addEventListener('click', () => {
+  editor.fitToContent();
 });
 
-applyThemeToPage();
-resize();
-fit();
+Object.assign(globalThis, { mica: editor });

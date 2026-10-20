@@ -36,10 +36,9 @@ export class CanvasSchematicRenderer {
     this.#width = width;
     this.#height = height;
     this.#pixelRatio = pixelRatio;
+    // Only the bitmap size is set here; CSS keeps ownership of the display size.
     this.#canvas.width = Math.max(1, Math.round(width * pixelRatio));
     this.#canvas.height = Math.max(1, Math.round(height * pixelRatio));
-    this.#canvas.style.width = `${width}px`;
-    this.#canvas.style.height = `${height}px`;
   }
 
   render(scene: SchematicScene, viewport: ViewportState): void {

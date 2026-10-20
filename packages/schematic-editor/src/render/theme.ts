@@ -64,7 +64,7 @@ export const DARK_SCHEMATIC_THEME: SchematicTheme = {
   pendingWire: '#fafafa',
 
   symbolFill: '#171717',
-  symbolStroke: '#737373',
+  symbolStroke: '#a1a1a1',
   symbolText: '#fafafa',
   symbolPlaceholder: 'rgba(250, 250, 250, 0.28)',
   pin: '#737373',
@@ -105,7 +105,7 @@ export const LIGHT_SCHEMATIC_THEME: SchematicTheme = {
   pendingWire: '#0a0a0a',
 
   symbolFill: '#fafafa',
-  symbolStroke: '#a1a1a1',
+  symbolStroke: '#525252',
   symbolText: '#0a0a0a',
   symbolPlaceholder: 'rgba(10, 10, 10, 0.3)',
   pin: '#a1a1a1',

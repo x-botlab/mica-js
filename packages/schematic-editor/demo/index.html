@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Mica 原理图编辑器 — 渲染预览</title>
+    <title>Mica 原理图编辑器 — Demo</title>
     <style>
       :root {
         color-scheme: dark;
@@ -12,8 +12,6 @@
         --border: var(--mica-schematic-ui-border, rgba(250, 250, 250, 0.1));
         --text: var(--mica-schematic-ui-text, #fafafa);
         --muted: var(--mica-schematic-ui-muted-text, #a1a1a1);
-        --accent: var(--mica-schematic-ui-accent, #e5e5e5);
-        --accent-text: var(--mica-schematic-ui-accent-text, #171717);
       }
       * {
         box-sizing: border-box;
@@ -48,12 +46,7 @@
         font-size: 13px;
         font-weight: 500;
       }
-      header .hint {
-        margin-left: auto;
-        font-size: 12px;
-        color: var(--muted);
-      }
-      button {
+      header button {
         height: 26px;
         padding: 0 10px;
         border: 1px solid var(--border);
@@ -64,35 +57,28 @@
         font-size: 12px;
         cursor: pointer;
       }
-      button:hover {
+      header button:hover {
         border-color: var(--muted);
       }
-      button[aria-pressed='true'] {
-        background: var(--accent);
-        color: var(--accent-text);
-        border-color: var(--accent);
+      header .hint {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--muted);
       }
       main {
         flex: 1;
         min-height: 0;
       }
-      canvas {
-        display: block;
-        width: 100%;
-        height: 100%;
-        cursor: grab;
-      }
-      canvas:active {
-        cursor: grabbing;
-      }
     </style>
   </head>
   <body>
     <header>
-      <h1>Mica 原理图预览</h1>
+      <h1>Mica 原理图编辑器</h1>
       <button id="theme" type="button">切换主题</button>
       <button id="fit" type="button">适应内容</button>
-      <span class="hint">滚轮缩放 · 拖拽平移 · 无外部依赖</span>
+      <span class="hint" id="hint"
+        >导线 / 电源 / 地 · Delete 删除 · R 旋转 · Ctrl+Z 撤销 · 拖拽空白平移 · 滚轮缩放</span
+      >
     </header>
     <main id="host"></main>
     <script type="module" src="./main.ts"></script>

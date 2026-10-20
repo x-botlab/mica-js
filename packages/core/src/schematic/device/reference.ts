@@ -1,6 +1,8 @@
 export const LABEL_DEVICE = 'builtin:label';
 export const POWER_DEVICE = 'builtin:power';
 export const GROUND_DEVICE = 'builtin:ground';
+/** Free-standing annotation; it is not a connection point and never joins a net. */
+export const TEXT_DEVICE = 'builtin:text';
 export const RESERVED_PACKAGE_NAMESPACE = 'builtin';
 
 /** Builtin symbols recognised by the loader instead of the device registry. */
@@ -14,6 +16,7 @@ const BUILTIN_DEVICES: Readonly<Record<string, BuiltinSymbolKind>> = {
 
 export const DEFAULT_POWER_LABEL = 'VCC';
 export const DEFAULT_GROUND_LABEL = 'GND';
+export const DEFAULT_TEXT_CONTENT = '文本';
 
 export interface DeviceReference {
   readonly raw: string;
@@ -72,6 +75,19 @@ export function isReservedPackageId(packageId: string): boolean {
 
 export function isLabelDevice(raw: string): boolean {
   return raw === LABEL_DEVICE;
+}
+
+/** True for the free-standing text annotation (`builtin:text`). */
+export function isTextDevice(raw: string): boolean {
+  return raw === TEXT_DEVICE;
+}
+
+/** Text of a `builtin:text` symbol, falling back to a placeholder. */
+export function textDeviceContent(symbol: {
+  readonly properties?: Readonly<Record<string, unknown>>;
+}): string {
+  const text = symbol.properties?.['text'];
+  return typeof text === 'string' && text.length > 0 ? text : DEFAULT_TEXT_CONTENT;
 }
 
 /** Returns the builtin kind for `builtin:label` / `builtin:power` / `builtin:ground`. */

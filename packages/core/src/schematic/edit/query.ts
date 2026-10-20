@@ -1,5 +1,10 @@
 import type { Point, SchematicDocument } from '../format/types';
-import { isLabelDevice, parseDeviceReference } from '../device/reference';
+import {
+  isLabelDevice,
+  isTextDevice,
+  parseDeviceReference,
+  textDeviceContent,
+} from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
 import {
   DEFAULT_TOLERANCE,
@@ -91,7 +96,7 @@ export function hitTestSchematic(
       reference === undefined ? undefined : options.devices?.getDeviceSymbol(reference);
     const bounds =
       definition === undefined
-        ? { x: symbol.x, y: symbol.y, width: 0, height: 0 }
+        ? annotationBounds(symbol)
         : symbolBounds(symbol, definition.bounds, definition.pins);
     if (bounds === undefined) {
       continue;
@@ -109,11 +114,36 @@ export function hitTestSchematic(
   return undefined;
 }
 
+/** Approximate clickable box for symbols without device geometry (labels, text annotations). */
+function annotationBounds(symbol: {
+  readonly id: string;
+  readonly device: string;
+  readonly x: number;
+  readonly y: number;
+  readonly properties?: Readonly<Record<string, unknown>>;
+}): { x: number; y: number; width: number; height: number } {
+  const isText = isTextDevice(symbol.device);
+  const content = isText
+    ? textDeviceContent(symbol)
+    : isLabelDevice(symbol.device)
+      ? symbol.id
+      : '';
+  if (content.length === 0) {
+    return { x: symbol.x, y: symbol.y, width: 0, height: 0 };
+  }
+  const width = content.length * ANNOTATION_CHAR_WIDTH;
+  const height = ANNOTATION_HEIGHT;
+  // Labels anchor at their connection point (left edge); text is drawn from its origin too.
+  return { x: symbol.x, y: symbol.y - height / 2, width, height };
+}
+
+const ANNOTATION_CHAR_WIDTH = 6;
+const ANNOTATION_HEIGHT = 12;
+
 export interface JunctionCandidate {
   readonly point: Point;
   readonly wireIds: readonly string[];
 }
-
 export interface JunctionCandidateOptions {
   readonly tolerance?: number;
 }

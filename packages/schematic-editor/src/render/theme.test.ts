@@ -12,7 +12,7 @@ describe('theme', () => {
     expect(DARK_SCHEMATIC_THEME.background).toBe('#0a0a0a');
     expect(DARK_SCHEMATIC_THEME.symbolText).toBe('#fafafa');
     expect(DARK_SCHEMATIC_THEME.pinText).toBe('#a1a1a1');
-    expect(DARK_SCHEMATIC_THEME.symbolStroke).toBe('#737373');
+    expect(DARK_SCHEMATIC_THEME.symbolStroke).toBe(DARK_SCHEMATIC_THEME.wire);
   });
 
   it('resolves partial overrides onto the dark baseline', () => {
