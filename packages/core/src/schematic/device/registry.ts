@@ -16,6 +16,7 @@ import type {
   PinAnchor,
   PinSide,
 } from './symbol';
+import { synthesizeDeviceSymbol, type DevicePinDeclaration } from './synthesis';
 
 const PIN_SIDES: readonly PinSide[] = ['left', 'right', 'top', 'bottom'];
 
@@ -210,15 +211,27 @@ function readSymbolGeometry(
   diagnostics: Diagnostic[],
   reportedUnknownPins: Set<string>,
 ): DeviceSymbolDefinition | undefined {
+  const displayName =
+    typeof entry.displayName === 'string' && entry.displayName.length > 0
+      ? entry.displayName
+      : entry.id;
   const symbol = entry.symbol;
+
   if (symbol === undefined) {
-    diagnostics.push({
-      severity: 'warning',
-      code: 'device/no-symbol',
-      message: `Device ${JSON.stringify(devicePath)} has no symbol geometry.`,
-    });
-    return undefined;
+    // No explicit geometry: derive it from the #5 / #11 pin declaration.
+    const declarations = readPinDeclarations(raw['pins']);
+    if (declarations === undefined) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'device/no-symbol',
+        message: `Device ${JSON.stringify(devicePath)} has neither symbol geometry nor pin declarations.`,
+      });
+      return undefined;
+    }
+    const synthesized = synthesizeDeviceSymbol({ name: displayName, pins: declarations });
+    return synthesized;
   }
+
   if (!isRecord(symbol)) {
     diagnostics.push({
       severity: 'error',
@@ -250,13 +263,29 @@ function readSymbolGeometry(
   const bounds = readBounds(symbol.bounds, devicePath, diagnostics);
   const declaredName =
     typeof symbol.name === 'string' && symbol.name.length > 0 ? symbol.name : undefined;
-  const displayName =
-    typeof entry.displayName === 'string' && entry.displayName.length > 0
-      ? entry.displayName
-      : entry.id;
   const name = declaredName ?? displayName;
 
   return bounds === undefined ? { name, pins } : { name, pins, bounds };
+}
+
+function readPinDeclarations(value: unknown): Record<string, DevicePinDeclaration> | undefined {
+  if (!isRecord(value) || Object.keys(value).length === 0) {
+    return undefined;
+  }
+  const declarations: Record<string, DevicePinDeclaration> = Object.create(null);
+  for (const [pinId, pin] of Object.entries(value)) {
+    if (pinId.length === 0 || !isRecord(pin)) {
+      return undefined;
+    }
+    const declaration: {
+      -readonly [K in keyof DevicePinDeclaration]: DevicePinDeclaration[K];
+    } = {};
+    if (PIN_SIDES.includes(pin.side as PinSide)) {
+      declaration.side = pin.side as PinSide;
+    }
+    declarations[pinId] = declaration;
+  }
+  return declarations;
 }
 
 function readPins(

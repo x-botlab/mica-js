@@ -104,6 +104,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
   const tool = input.tool ?? 'select';
   const display = input.display ?? { grid: true, labels: true };
   const font = `${theme.fontSize}px ${theme.fontFamily}`;
+  const pinFont = `${theme.pinFontSize}px ${theme.fontFamily}`;
   const items: SceneItem[] = [];
 
   for (const wire of document.sheet.wires) {
@@ -221,7 +222,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
         align: label.align,
         baseline: label.baseline,
         rotation: placement.rotation + label.rotation,
-        font,
+        font: pinFont,
       });
     }
   }
@@ -346,28 +347,28 @@ function pinLabel(
   switch (side) {
     case 'left':
       return {
-        position: { x: body.x + 6, y: clampY },
+        position: { x: body.x + 5, y: clampY },
         align: 'left',
         baseline: 'middle',
         rotation: 0,
       };
     case 'right':
       return {
-        position: { x: body.x + body.width - 6, y: clampY },
+        position: { x: body.x + body.width - 5, y: clampY },
         align: 'right',
         baseline: 'middle',
         rotation: 0,
       };
     case 'top':
       return {
-        position: { x: clampX, y: body.y + 14 },
+        position: { x: clampX, y: body.y + 10 },
         align: 'center',
         baseline: 'middle',
         rotation: -90,
       };
     case 'bottom':
       return {
-        position: { x: clampX, y: body.y + body.height - 14 },
+        position: { x: clampX, y: body.y + body.height - 10 },
         align: 'center',
         baseline: 'middle',
         rotation: -90,

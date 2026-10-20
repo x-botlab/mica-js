@@ -90,6 +90,12 @@ export type {
   PinAnchor,
   PinSide,
 } from './device/symbol';
+export { synthesizeDeviceSymbol } from './device/synthesis';
+export type {
+  DevicePinDeclaration,
+  SymbolSynthesisInput,
+  SymbolSynthesisOptions,
+} from './device/synthesis';
 export { createDeviceRegistry } from './device/registry';
 export type {
   DevicePackageRegistration,

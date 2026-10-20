@@ -40,5 +40,10 @@ describe('theme', () => {
     expect(variables['--mica-schematic-ui-muted-text']).toBe('#a1a1a1');
     expect(variables['--mica-schematic-grid-size']).toBe('10');
     expect(variables['--mica-schematic-font-size']).toBe('12');
+    expect(variables['--mica-schematic-pin-font-size']).toBe('8');
+  });
+
+  it('keeps pin labels smaller than symbol text', () => {
+    expect(DARK_SCHEMATIC_THEME.pinFontSize).toBeLessThan(DARK_SCHEMATIC_THEME.fontSize);
   });
 });

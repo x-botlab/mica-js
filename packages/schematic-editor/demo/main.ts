@@ -1,10 +1,14 @@
 import {
   createDeviceRegistry,
   deriveSchematicTopology,
+  parseDeviceReference,
   parseSchematic,
   parseView,
   serializeSchematic,
   serializeView,
+  symbolPinPosition,
+  type Placement,
+  type Point,
   type SchematicDocument,
   type SchematicHit,
   type SchematicViewDocument,
@@ -19,60 +23,23 @@ import {
 } from '../src/render/theme';
 import { fitBounds, panBy, screenToPage, zoomAt, type ViewportState } from '../src/render/viewport';
 
-const schematicText = `{
-  "version": 1,
-  "id": "ct117e-m4-board",
-  "sheet": {
-    "symbols": [
-      { "id": "s-mcu", "device": "stm32-package:stm32g431rbt6-lqfp64", "x": 480, "y": 200, "rotation": 0, "properties": { "label": "MCU" } },
-      { "id": "s-lcd", "device": "lcd-package:ct117e-m4-tft-lcd-2-4", "x": 136, "y": 55, "rotation": 0 },
-      { "id": "u2", "device": "timer-package:ne555", "x": 300, "y": 340, "rotation": 0 },
-      { "id": "lcd-l-d0", "device": "builtin:label", "x": 300, "y": 100, "rotation": 0 },
-      { "id": "p3v3", "device": "builtin:power", "x": 480, "y": 330, "rotation": 0, "properties": { "label": "3V3" } },
-      { "id": "gnd", "device": "builtin:ground", "x": 380, "y": 460, "rotation": 0 }
-    ],
-    "wires": [
-      {
-        "id": "w-d0",
-        "points": [{ "x": 480, "y": 160 }, { "x": 300, "y": 160 }, { "x": 300, "y": 55 }, { "x": 136, "y": 55 }]
-      },
-      { "id": "w-label-d0", "points": [{ "x": 300, "y": 124 }, { "x": 300, "y": 100 }] },
-      { "id": "w-vcc", "points": [{ "x": 480, "y": 330 }, { "x": 480, "y": 300 }] },
-      { "id": "w-gnd", "points": [{ "x": 380, "y": 460 }, { "x": 380, "y": 490 }] }
-    ],
-    "junctions": [{ "id": "j-d0", "x": 300, "y": 124, "wires": ["w-d0", "w-label-d0"] }]
-  }
-}`;
-
-const viewText = `{
-  "version": 1,
-  "id": "ct117e-m4-board-2d",
-  "schematic": "schematic.sch",
-  "layout": {
-    "s-mcu": { "x": 480, "y": 160, "rotation": 0 },
-    "s-lcd": { "x": 136, "y": 55, "rotation": 0 }
-  }
-}`;
-
 const devices = createDeviceRegistry([
   {
     packageId: 'stm32-package',
     devices: [
       {
         id: 'stm32g431rbt6-lqfp64',
-        displayName: 'STM32G431RBT6',
-        symbol: {
-          name: 'STM32G431',
-          bounds: { x: -60, y: -50, width: 120, height: 100 },
+        displayName: 'STM32G431',
+        raw: {
           pins: {
-            PC0: { x: -80, y: -30, side: 'left' },
-            PC1: { x: -80, y: -10, side: 'left' },
-            PA0: { x: -80, y: 10, side: 'left' },
-            PA1: { x: -80, y: 30, side: 'left' },
-            PB6: { x: 80, y: -30, side: 'right' },
-            PB7: { x: 80, y: -10, side: 'right' },
-            VDD: { x: 0, y: -70, side: 'top' },
-            VSS: { x: 0, y: 70, side: 'bottom' },
+            PC0: { side: 'left' },
+            PC1: { side: 'left' },
+            PA0: { side: 'left' },
+            PA1: { side: 'left' },
+            PB6: { side: 'right' },
+            PB7: { side: 'right' },
+            VDD: { side: 'top' },
+            VSS: { side: 'bottom' },
           },
         },
       },
@@ -84,15 +51,13 @@ const devices = createDeviceRegistry([
       {
         id: 'ct117e-m4-tft-lcd-2-4',
         displayName: 'TFT LCD 2.4"',
-        symbol: {
-          name: 'LCD',
-          bounds: { x: -55, y: -40, width: 110, height: 80 },
+        raw: {
           pins: {
-            D0: { x: -75, y: -20, side: 'left' },
-            D1: { x: -75, y: 0, side: 'left' },
-            D2: { x: -75, y: 20, side: 'left' },
-            VCC: { x: 0, y: -60, side: 'top' },
-            GND: { x: 0, y: 60, side: 'bottom' },
+            D0: { side: 'left' },
+            D1: { side: 'left' },
+            D2: { side: 'left' },
+            VCC: { side: 'top' },
+            GND: { side: 'bottom' },
           },
         },
       },
@@ -104,24 +69,131 @@ const devices = createDeviceRegistry([
       {
         id: 'ne555',
         displayName: 'NE555',
-        symbol: {
-          name: 'NE555',
-          bounds: { x: -70, y: -60, width: 140, height: 120 },
+        raw: {
           pins: {
-            TRIG: { x: -95, y: -40, side: 'left' },
-            RESET: { x: -95, y: -20, side: 'left' },
-            CONT: { x: -95, y: 0, side: 'left' },
-            THRES: { x: -95, y: 20, side: 'left' },
-            DISCHG: { x: -95, y: 40, side: 'left' },
-            OUT: { x: 95, y: 0, side: 'right' },
-            VCC: { x: 0, y: -80, side: 'top' },
-            GND: { x: 0, y: 80, side: 'bottom' },
+            TRIG: { side: 'left' },
+            RESET: { side: 'left' },
+            CONT: { side: 'left' },
+            THRES: { side: 'left' },
+            DISCHG: { side: 'left' },
+            OUT: { side: 'right' },
+            VCC: { side: 'top' },
+            GND: { side: 'bottom' },
           },
         },
       },
     ],
   },
 ]);
+
+const MCU = 'stm32-package:stm32g431rbt6-lqfp64';
+const LCD = 'lcd-package:ct117e-m4-tft-lcd-2-4';
+const TIMER = 'timer-package:ne555';
+
+const placements = {
+  mcu: { x: 480, y: 200, rotation: 0 },
+  lcd: { x: 136, y: 60, rotation: 0 },
+  timer: { x: 300, y: 360, rotation: 0 },
+  label: { x: 268, y: 150, rotation: 0 },
+  power: { x: 480, y: 120, rotation: 0 },
+  ground: { x: 480, y: 300, rotation: 0 },
+} as const satisfies Record<string, Placement>;
+
+/** Resolves a placed pin through the synthesized symbol, so wiring never hardcodes geometry. */
+function pin(device: string, pinId: string, placement: Placement): Point {
+  const reference = parseDeviceReference(device);
+  const anchor =
+    reference === undefined ? undefined : devices.getDeviceSymbol(reference)?.pins[pinId];
+  if (anchor === undefined) {
+    throw new Error(`Device ${device} has no pin ${pinId}.`);
+  }
+  return symbolPinPosition(placement, anchor);
+}
+
+/** Point form of a placement, for wire endpoints. */
+function at(placement: Placement): Point {
+  return { x: placement.x, y: placement.y };
+}
+
+const mcuD0 = pin(MCU, 'PC0', placements.mcu);
+const lcdD0 = pin(LCD, 'D0', placements.lcd);
+const lcdD1 = pin(LCD, 'D1', placements.lcd);
+const mcuVdd = pin(MCU, 'VDD', placements.mcu);
+const mcuVss = pin(MCU, 'VSS', placements.mcu);
+const timerOut = pin(TIMER, 'OUT', placements.timer);
+const trunkX = 250;
+
+const schematicText = JSON.stringify(
+  {
+    version: 1,
+    id: 'ct117e-m4-board',
+    sheet: {
+      symbols: [
+        { id: 's-mcu', device: MCU, ...placements.mcu, properties: { label: 'MCU' } },
+        { id: 's-lcd', device: LCD, ...placements.lcd },
+        { id: 'u2', device: TIMER, ...placements.timer },
+        {
+          id: 'lcd-l-d2',
+          device: 'builtin:label',
+          ...placements.label,
+          properties: { label: 'D2' },
+        },
+        { id: 'p3v3', device: 'builtin:power', ...placements.power, properties: { label: '3V3' } },
+        { id: 'gnd', device: 'builtin:ground', ...placements.ground },
+      ],
+      wires: [
+        {
+          id: 'w-d0',
+          points: [mcuD0, { x: trunkX, y: mcuD0.y }, { x: trunkX, y: lcdD0.y }, lcdD0],
+        },
+        {
+          id: 'w-label',
+          points: [
+            { x: trunkX, y: placements.label.y },
+            { x: placements.label.x, y: placements.label.y },
+          ],
+        },
+        { id: 'w-vcc', points: [mcuVdd, at(placements.power)] },
+        { id: 'w-gnd', points: [mcuVss, at(placements.ground)] },
+        {
+          id: 'w-out',
+          points: [
+            timerOut,
+            { x: 420, y: timerOut.y },
+            { x: 420, y: 440 },
+            { x: 60, y: 440 },
+            { x: 60, y: lcdD1.y },
+            lcdD1,
+          ],
+        },
+      ],
+      junctions: [
+        {
+          id: 'j-label',
+          x: trunkX,
+          y: placements.label.y,
+          wires: ['w-d0', 'w-label'],
+        },
+      ],
+    },
+  },
+  null,
+  2,
+);
+
+const viewText = JSON.stringify(
+  {
+    version: 1,
+    id: 'ct117e-m4-board-2d',
+    schematic: 'schematic.sch',
+    layout: {
+      's-mcu': { x: 480, y: 200, rotation: 0 },
+      's-lcd': { x: 136, y: 60, rotation: 0 },
+    },
+  },
+  null,
+  2,
+);
 
 const schematic: SchematicDocument = parseSchematic(schematicText);
 const view: SchematicViewDocument = parseView(viewText);

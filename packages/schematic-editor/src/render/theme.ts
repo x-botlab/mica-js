@@ -41,6 +41,8 @@ export interface SchematicTheme {
 
   fontFamily: string;
   fontSize: number;
+  /** Pin name text; smaller than `fontSize` so labels stay inside the body. */
+  pinFontSize: number;
   gridSize: number;
 }
 
@@ -84,6 +86,7 @@ export const DARK_SCHEMATIC_THEME: SchematicTheme = {
 
   fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
   fontSize: 12,
+  pinFontSize: 8,
   gridSize: 10,
 };
 
@@ -123,6 +126,7 @@ export const LIGHT_SCHEMATIC_THEME: SchematicTheme = {
 
   fontFamily: DARK_SCHEMATIC_THEME.fontFamily,
   fontSize: DARK_SCHEMATIC_THEME.fontSize,
+  pinFontSize: DARK_SCHEMATIC_THEME.pinFontSize,
   gridSize: DARK_SCHEMATIC_THEME.gridSize,
 };
 

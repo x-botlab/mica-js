@@ -162,6 +162,41 @@ describe('createDeviceRegistry', () => {
     ).toContain('device/invalid-description');
   });
 
+  it('derives symbol geometry from the pin declaration when no symbol is authored', () => {
+    const registry = createDeviceRegistry([
+      packageOf([
+        {
+          id: 'ldo',
+          displayName: 'LDO',
+          raw: {
+            pins: {
+              VIN: { side: 'top' },
+              GND: { side: 'bottom' },
+              EN: { side: 'left' },
+              VOUT: { side: 'right' },
+            },
+          },
+        },
+      ]),
+    ]);
+    const symbol = registry.resolve('stm32-package:ldo')?.symbol;
+    expect(symbol?.name).toBe('LDO');
+    expect(symbol?.bounds).toBeDefined();
+    expect(symbol?.pins['VIN']?.side).toBe('top');
+    expect(symbol?.pins['GND']?.side).toBe('bottom');
+    expect(symbol?.pins['EN']?.side).toBe('left');
+    expect(symbol?.pins['VOUT']?.side).toBe('right');
+    expect(registry.diagnostics).toEqual([]);
+  });
+
+  it('prefers authored symbol geometry over synthesis', () => {
+    const registry = createDeviceRegistry([packageOf([MCU])]);
+    expect(registry.resolve('stm32-package:stm32g431rbt6-lqfp64')?.symbol?.pins['PC0']).toEqual({
+      x: -20,
+      y: 0,
+    });
+  });
+
   it('rejects malformed symbol geometry', () => {
     expect(
       codesOfRegister(() =>
