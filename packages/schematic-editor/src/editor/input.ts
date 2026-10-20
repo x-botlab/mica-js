@@ -20,7 +20,6 @@ import {
   orthogonalWaypoints,
   placementProperties,
   snapForWire,
-  snapToGrid,
   toolDevice,
 } from './snapping';
 import type { EditorViewport } from './viewport-state';
@@ -189,10 +188,6 @@ export class EditorInput {
       devices: this.#deps.devices,
       tolerance: this.#tolerance(),
     };
-  }
-
-  #snap(page: Point): Point {
-    return snapToGrid(page, this.#deps.controller.display);
   }
 
   #snapWire(page: Point): Point {
@@ -432,7 +427,8 @@ export class EditorInput {
       return;
     }
     if (isPlacementTool(tool)) {
-      this.#cursorPoint = this.#snap(page);
+      // Same snapping as `#place` so the ghost already shows where the symbol will land.
+      this.#cursorPoint = this.#snapWire(page);
       this.#deps.onChange();
       return;
     }
