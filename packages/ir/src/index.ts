@@ -2,6 +2,8 @@ export { createIRModule } from './module';
 export { createIRInterpreter, IRExecutionError } from './interpreter';
 export type {
   IRInterpreterOptions,
+  IREventHost,
+  IRStepObserver,
   IRInterpreter,
   IRExecutionContext,
   IRExecutionResult,
@@ -65,6 +67,7 @@ export type {
   EdgeDefinition,
   Endian,
   EntryRef,
+  EventOperations,
   FloatBits,
   FloatOperations,
   FloatType,

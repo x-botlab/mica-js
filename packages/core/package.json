@@ -37,6 +37,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "dependencies": {
+    "@mica-js/ir": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "catalog:",
     "vite": "catalog:",

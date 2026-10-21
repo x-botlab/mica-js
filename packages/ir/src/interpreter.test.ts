@@ -752,32 +752,29 @@ describe('static validation, snapshots and unsupported execution', () => {
     error(() => createIRInterpreter(missing, { validation: policy(missing) }), 'validation-failed');
   });
 
-  it.each(['event.now', 'device.effect'])(
-    'rejects %s even when an extension validator accepts it',
-    (op) => {
-      const module = createIRModule();
-      const state = module.state('state', 'u32', 0);
-      const extension = module.domainInstruction(op, { operands: [], results: [] });
-      const run = module.func('run', { params: [], results: [] });
-      run.body((b) => {
-        b.state.store(state, b.const('u32', 1));
-        b.invoke(extension, []);
-        b.return([]);
-      });
-      const validation = policy(module, {
-        supportedInstructions: [...CORE_INSTRUCTION_NAMES, op],
-        authorizedInstructions: [...CORE_INSTRUCTION_NAMES, op],
-        validators: [{ op, validate: () => [] }],
-      });
-      expect(validateIR(module, validation)).toEqual({ ok: true, diagnostics: [] });
-      const failure = error(
-        () => createIRInterpreter(module, { validation }),
-        'unsupported-instruction',
-      );
-      expect(failure.message).toContain(op);
-      expect(failure.location).toMatchObject({ functionName: 'run', instructionIndex: 2 });
-    },
-  );
+  it.each(['device.effect'])('rejects %s even when an extension validator accepts it', (op) => {
+    const module = createIRModule();
+    const state = module.state('state', 'u32', 0);
+    const extension = module.domainInstruction(op, { operands: [], results: [] });
+    const run = module.func('run', { params: [], results: [] });
+    run.body((b) => {
+      b.state.store(state, b.const('u32', 1));
+      b.invoke(extension, []);
+      b.return([]);
+    });
+    const validation = policy(module, {
+      supportedInstructions: [...CORE_INSTRUCTION_NAMES, op],
+      authorizedInstructions: [...CORE_INSTRUCTION_NAMES, op],
+      validators: [{ op, validate: () => [] }],
+    });
+    expect(validateIR(module, validation)).toEqual({ ok: true, diagnostics: [] });
+    const failure = error(
+      () => createIRInterpreter(module, { validation }),
+      'unsupported-instruction',
+    );
+    expect(failure.message).toContain(op);
+    expect(failure.location).toMatchObject({ functionName: 'run', instructionIndex: 2 });
+  });
 
   it.each(['resource.update', 'resource.fill', 'provider.invoke', 'checkpoint.save'])(
     'keeps reserved capability %s statically rejected',

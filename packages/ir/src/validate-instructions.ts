@@ -199,6 +199,18 @@ export function validateInstruction(
       results(node, state, []);
       return;
     }
+    case 'event.now':
+      if (operands(node, state, [])) results(node, state, ['f64']);
+      return;
+    case 'event.cancel':
+      if (operands(node, state, ['ssa'])) {
+        value(node, state, 0, 'u32');
+        results(node, state, []);
+      }
+      return;
+    case 'event.at':
+      eventAt(node, state);
+      return;
     case 'call':
       call(node, state);
       return;
@@ -500,6 +512,28 @@ function byteMemory(node: InstructionNode, state: InstructionValidationState): v
   } else {
     resultCount(node, state, store ? 0 : 1);
   }
+}
+
+function eventAt(node: InstructionNode, state: InstructionValidationState): void {
+  const operand = node.operands[0];
+  if (operand?.kind !== 'static') {
+    state.report('invalid-call-target', 'event.at requires a static ordinary entry target');
+    return;
+  }
+  const target = state.functions.get(operand.ref);
+  if (target === undefined) {
+    state.report('invalid-static-reference', 'event.at target must be listed in this module');
+    return;
+  }
+  if (target.category !== 'entry' || operand.ref[refKind] !== 'entry') {
+    state.report('invalid-call-target', 'event.at target must be an ordinary entry');
+  }
+  if (!operands(node, state, ['static', 'ssa', ...target.params.map(() => 'ssa' as const)])) {
+    return;
+  }
+  value(node, state, 1, 'f64');
+  target.params.forEach((type, index) => value(node, state, index + 2, type));
+  results(node, state, ['u32']);
 }
 
 function call(node: InstructionNode, state: InstructionValidationState): void {
