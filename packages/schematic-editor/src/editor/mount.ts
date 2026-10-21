@@ -10,6 +10,7 @@ import { PropertyPanel } from '../panel/property-panel';
 import { CanvasSchematicRenderer } from '../render/canvas-renderer';
 import { buildSchematicScene } from '../render/scene';
 import { resolveSchematicTheme, themeToCssVariables, type SchematicTheme } from '../render/theme';
+import { resolveViewportLimits, type ViewportLimits } from '../render/viewport';
 import { EditorInput } from './input';
 import { toSceneHighlight } from './scene-input';
 import { createShell } from './shell';
@@ -25,6 +26,8 @@ export interface MountSchematicEditorOptions {
   readonly display?: Partial<DisplayOptions>;
   readonly tolerance?: number;
   readonly historyLimit?: number;
+  /** Zoom range for wheel, fit and `zoomTo`; defaults to 0.25×–4×. */
+  readonly zoomLimits?: Partial<ViewportLimits>;
   /** Disables the built-in interactions and property editing; the controller stays writable. */
   readonly readOnly?: boolean;
   /** Defaults to true. */
@@ -108,7 +111,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     shell.root.append(panel.element);
   }
 
-  const viewport = new EditorViewport();
+  const viewport = new EditorViewport(resolveViewportLimits(options.zoomLimits));
   const renderer = new CanvasSchematicRenderer(shell.canvas, {
     theme: resolveSchematicTheme(options.theme),
   });

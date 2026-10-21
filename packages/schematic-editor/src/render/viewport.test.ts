@@ -4,6 +4,7 @@ import {
   fitBounds,
   panBy,
   pageToScreen,
+  resolveViewportLimits,
   screenToPage,
   zoomAt,
 } from './viewport';
@@ -55,5 +56,28 @@ describe('viewport', () => {
     const fitted = fitBounds({ x: 5, y: 5, width: 0, height: 0 }, { width: 100, height: 100 });
     expect(fitted.scale).toBeLessThanOrEqual(DEFAULT_VIEWPORT_LIMITS.maxScale);
     expect(Number.isFinite(fitted.offsetX)).toBe(true);
+  });
+
+  it('merges partial limits onto the defaults', () => {
+    expect(resolveViewportLimits()).toEqual(DEFAULT_VIEWPORT_LIMITS);
+    expect(resolveViewportLimits({ maxScale: 2 })).toEqual({
+      minScale: DEFAULT_VIEWPORT_LIMITS.minScale,
+      maxScale: 2,
+    });
+  });
+
+  it('rejects nonsensical limits', () => {
+    expect(resolveViewportLimits({ minScale: 0, maxScale: -1 })).toEqual(DEFAULT_VIEWPORT_LIMITS);
+    expect(resolveViewportLimits({ minScale: Number.NaN })).toEqual(DEFAULT_VIEWPORT_LIMITS);
+    expect(resolveViewportLimits({ minScale: 4, maxScale: 0.5 })).toEqual({
+      minScale: 0.5,
+      maxScale: 4,
+    });
+  });
+
+  it('honours custom limits when zooming', () => {
+    const limits = { minScale: 0.5, maxScale: 2 };
+    expect(zoomAt(viewport, { x: 0, y: 0 }, 100, limits).scale).toBe(2);
+    expect(zoomAt(viewport, { x: 0, y: 0 }, 0.0001, limits).scale).toBe(0.5);
   });
 });

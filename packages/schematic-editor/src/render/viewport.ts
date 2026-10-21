@@ -11,7 +11,27 @@ export interface ViewportLimits {
   readonly maxScale: number;
 }
 
-export const DEFAULT_VIEWPORT_LIMITS: ViewportLimits = { minScale: 0.1, maxScale: 8 };
+export const DEFAULT_VIEWPORT_LIMITS: ViewportLimits = { minScale: 0.25, maxScale: 4 };
+
+/** Merges partial overrides onto the defaults; rejects non-positive and inverted ranges. */
+export function resolveViewportLimits(limits?: Partial<ViewportLimits>): ViewportLimits {
+  const minScale = limits?.minScale;
+  const maxScale = limits?.maxScale;
+  const resolved: ViewportLimits = {
+    minScale:
+      minScale !== undefined && Number.isFinite(minScale) && minScale > 0
+        ? minScale
+        : DEFAULT_VIEWPORT_LIMITS.minScale,
+    maxScale:
+      maxScale !== undefined && Number.isFinite(maxScale) && maxScale > 0
+        ? maxScale
+        : DEFAULT_VIEWPORT_LIMITS.maxScale,
+  };
+  if (resolved.minScale > resolved.maxScale) {
+    return { minScale: resolved.maxScale, maxScale: resolved.minScale };
+  }
+  return resolved;
+}
 
 export const IDENTITY_VIEWPORT: ViewportState = { scale: 1, offsetX: 0, offsetY: 0 };
 

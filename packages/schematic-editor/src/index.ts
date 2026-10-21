@@ -23,3 +23,9 @@ export {
   themeToCssVariables,
 } from './render/theme';
 export type { SchematicTheme, ThemeColor } from './render/theme';
+export {
+  DEFAULT_VIEWPORT_LIMITS,
+  resolveViewportLimits,
+  type ViewportLimits,
+  type ViewportState,
+} from './render/viewport';

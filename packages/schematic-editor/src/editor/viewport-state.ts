@@ -1,9 +1,12 @@
 import type { Point, Rect } from '@mica/core/schematic';
 import {
+  DEFAULT_VIEWPORT_LIMITS,
   IDENTITY_VIEWPORT,
   fitBounds,
   panBy,
+  resolveViewportLimits,
   zoomAt,
+  type ViewportLimits,
   type ViewportState,
 } from '../render/viewport';
 
@@ -14,9 +17,18 @@ import {
 export class EditorViewport {
   #state: ViewportState = IDENTITY_VIEWPORT;
   #autoFit = true;
+  readonly #limits: ViewportLimits;
+
+  constructor(limits: ViewportLimits = DEFAULT_VIEWPORT_LIMITS) {
+    this.#limits = resolveViewportLimits(limits);
+  }
 
   get state(): ViewportState {
     return this.#state;
+  }
+
+  get limits(): ViewportLimits {
+    return this.#limits;
   }
 
   get autoFit(): boolean {
@@ -28,7 +40,12 @@ export class EditorViewport {
     if (size.width === 0 || size.height === 0) {
       return;
     }
-    this.#state = fitBounds(bounds ?? { x: -50, y: -50, width: 100, height: 100 }, size, 48);
+    this.#state = fitBounds(
+      bounds ?? { x: -50, y: -50, width: 100, height: 100 },
+      size,
+      48,
+      this.#limits,
+    );
     this.#autoFit = true;
   }
 
@@ -39,7 +56,7 @@ export class EditorViewport {
 
   zoomAt(screenPoint: Point, factor: number): void {
     this.#autoFit = false;
-    this.#state = zoomAt(this.#state, screenPoint, factor);
+    this.#state = zoomAt(this.#state, screenPoint, factor, this.#limits);
   }
 
   zoomTo(scale: number, center: Point): void {
@@ -47,7 +64,7 @@ export class EditorViewport {
       return;
     }
     this.#autoFit = false;
-    this.#state = zoomAt(this.#state, center, scale / this.#state.scale);
+    this.#state = zoomAt(this.#state, center, scale / this.#state.scale, this.#limits);
   }
 
   /** Turns off auto fit when the user interacts with the view. */
