@@ -1,4 +1,5 @@
 import type {
+  DesignatorFactory,
   DeviceSymbolProvider,
   SchematicDocument,
   SchematicError,
@@ -33,6 +34,8 @@ export interface MountSchematicEditorOptions {
   readonly display?: Partial<DisplayOptions>;
   readonly tolerance?: number;
   readonly historyLimit?: number;
+  /** Reference designator policy for placed components; defaults to `U1`, `U2`, … */
+  readonly createDesignator?: DesignatorFactory;
   /** Zoom range for wheel, fit and `zoomTo`; defaults to 0.25×–4×. */
   readonly zoomLimits?: Partial<ViewportLimits>;
   /** Disables the built-in interactions and property editing; the controller stays writable. */
@@ -66,6 +69,15 @@ export interface MountedSchematicEditor {
   getTheme(): SchematicTheme;
   setDisplayOptions(patch: Partial<DisplayOptions>): void;
   setTool(tool: EditorTool): void;
+  /**
+   * Arms placement of `device`: the next canvas click inserts it. Hosts drive this from their own
+   * device list, so the editor never needs to know where the parts come from.
+   *
+   * @throws {SchematicError} when the device reference is malformed.
+   */
+  placeDevice(device: string): void;
+  /** Disarms a pending placement without touching the document. */
+  cancelPlacement(): void;
   fitToContent(): void;
   zoomTo(scale: number): void;
   /** Current zoom/pan; safe to persist and hand back to {@link setViewport}. */
@@ -97,6 +109,9 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     ...(options.display === undefined ? {} : { display: options.display }),
     ...(options.tolerance === undefined ? {} : { tolerance: options.tolerance }),
     ...(options.historyLimit === undefined ? {} : { historyLimit: options.historyLimit }),
+    ...(options.createDesignator === undefined
+      ? {}
+      : { createDesignator: options.createDesignator }),
   });
 
   const shell = createShell({
@@ -145,6 +160,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
   let disposed = false;
   let lastSelection: readonly EditorSelection[] = [];
   let lastTool: EditorTool = controller.tool;
+  let lastPlacing: string | undefined = controller.placingDevice;
   let lastError: SchematicError | undefined = controller.state.lastError;
   let lastViewport: ViewportState | undefined = viewport.state;
 
@@ -217,15 +233,17 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
   function sync(state: EditorState): void {
     panel.update(state.inspector);
     shell.setToolActive(state.tool);
-    shell.canvas.style.cursor = state.tool === 'select' ? 'default' : 'crosshair';
+    shell.canvas.style.cursor =
+      state.tool === 'select' && state.placingDevice === undefined ? 'default' : 'crosshair';
     shell.toast.textContent = state.lastError?.message ?? '';
     shell.toast.hidden = state.lastError === undefined;
     if (state.lastError !== lastError) {
       lastError = state.lastError;
       options.onError?.(state.lastError);
     }
-    if (state.tool !== lastTool) {
+    if (state.tool !== lastTool || state.placingDevice !== lastPlacing) {
       lastTool = state.tool;
+      lastPlacing = state.placingDevice;
       input.resetTransient();
       options.onToolChange?.(state.tool);
     }
@@ -298,6 +316,13 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     },
     setTool(tool: EditorTool): void {
       controller.setTool(tool);
+    },
+    placeDevice(device: string): void {
+      controller.placeDevice(device);
+      shell.root.focus();
+    },
+    cancelPlacement(): void {
+      controller.cancelPlacement();
     },
     fitToContent,
     zoomTo(scale: number): void {

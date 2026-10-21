@@ -595,4 +595,49 @@ describe('SchematicEditorController', () => {
     expect(controller.moveSelectionBy(1, 1)).toBeUndefined();
     expect(controller.dispatch({ type: 'remove-symbol', id: 's1' })).toBeUndefined();
   });
+
+  describe('device placement', () => {
+    it('arms a device until the tool changes or the placement is cancelled', () => {
+      const controller = createController(documentOf({}));
+      controller.setTool('wire');
+
+      controller.placeDevice('pkg:mcu');
+      expect(controller.placingDevice).toBe('pkg:mcu');
+      // Arming leaves the tool in select mode so the click places instead of drawing.
+      expect(controller.tool).toBe('select');
+
+      controller.cancelPlacement();
+      expect(controller.placingDevice).toBeUndefined();
+
+      controller.placeDevice('pkg:mcu');
+      controller.setTool('wire');
+      expect(controller.placingDevice).toBeUndefined();
+      expect(controller.tool).toBe('wire');
+    });
+
+    it('rejects malformed device references without arming', () => {
+      const controller = createController(documentOf({}));
+      expect(() => controller.placeDevice('nonsense')).toThrow(SchematicError);
+      expect(controller.placingDevice).toBeUndefined();
+    });
+
+    it('picks the first unused designator through the host factory', () => {
+      const controller = createController(
+        documentOf({
+          symbols: [
+            { id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0, designator: 'U1' },
+            { id: 's2', device: 'pkg:mcu', x: 20, y: 0, rotation: 0, designator: 'U3' },
+          ],
+        }),
+      );
+      expect(controller.nextDesignator('pkg:mcu')).toBe('U2');
+
+      const custom = new SchematicEditorController({
+        document: documentOf({}),
+        devices,
+        createDesignator: (device) => (device === 'pkg:mcu' ? 'IC1' : 'X1'),
+      });
+      expect(custom.nextDesignator('pkg:mcu')).toBe('IC1');
+    });
+  });
 });

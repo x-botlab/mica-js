@@ -72,6 +72,8 @@ export interface EditorState {
   readonly view: SchematicViewDocument | undefined;
   readonly selection: readonly EditorSelection[];
   readonly tool: EditorTool;
+  /** Device armed for placement by the host's device list; `undefined` when idle. */
+  readonly placingDevice: string | undefined;
   readonly display: DisplayOptions;
   readonly canUndo: boolean;
   readonly canRedo: boolean;

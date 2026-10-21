@@ -119,6 +119,12 @@ export type {
   SymbolSynthesisOptions,
 } from './device/synthesis';
 export { createDeviceRegistry } from './device/registry';
+export {
+  DEFAULT_DESIGNATOR_PREFIX,
+  defaultDesignatorFactory,
+  nextDesignator,
+} from './device/designator';
+export type { DesignatorFactory } from './device/designator';
 export type {
   DevicePackageRegistration,
   DeviceRegisterOptions,

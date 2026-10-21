@@ -2,6 +2,7 @@ import {
   LABEL_DEVICE,
   parseDeviceReference,
   referencePosition,
+  symbolRole,
   type DeviceSymbolProvider,
   type Point,
   type Rect,
@@ -21,6 +22,7 @@ import {
   orthogonalWaypoints,
   placementProperties,
   snapForWire,
+  snapToGrid,
   toolDevice,
   type LabelStub,
 } from './snapping';
@@ -106,7 +108,7 @@ export class EditorInput {
       : undefined;
   }
 
-  /** Placement ghost for the current tool, if the pointer is inside the canvas. */
+  /** Placement ghost for the current tool or armed device, if the pointer is inside the canvas. */
   get placementPreview():
     | {
         readonly device: string;
@@ -115,17 +117,27 @@ export class EditorInput {
         readonly wire?: readonly Point[];
       }
     | undefined {
-    const tool = this.#deps.controller.tool;
-    if (this.#cursorPoint === undefined || !isPlacementTool(tool)) {
+    const device = this.#placementDevice();
+    if (this.#cursorPoint === undefined || device === undefined) {
       return undefined;
     }
-    const stub = this.#labelStub(this.#cursorPoint);
+    const stub = this.#labelStub(device, this.#cursorPoint);
     return {
-      device: toolDevice(tool),
+      device,
       position: stub?.anchor ?? this.#cursorPoint,
       rotation: this.#placeRotation(stub),
       ...(stub?.wire === undefined ? {} : { wire: stub.wire }),
     };
+  }
+
+  /** Device the next click inserts: the host's armed device wins over the toolbar tool. */
+  #placementDevice(): string | undefined {
+    const armed = this.#deps.controller.placingDevice;
+    if (armed !== undefined) {
+      return armed;
+    }
+    const tool = this.#deps.controller.tool;
+    return isPlacementTool(tool) ? toolDevice(tool) : undefined;
   }
 
   /** Ghost rotation: the pin lead picks a readable angle unless the user rotated it. */
@@ -136,15 +148,13 @@ export class EditorInput {
   }
 
   /** Lead a label placement adds when the pointer is on a pin; shares the commit path's rules. */
-  #labelStub(point: Point): LabelStub | undefined {
-    return this.#deps.controller.tool === 'label'
-      ? labelStubAt(this.#snapContext(), point)
-      : undefined;
+  #labelStub(device: string, point: Point): LabelStub | undefined {
+    return device === LABEL_DEVICE ? labelStubAt(this.#snapContext(), point) : undefined;
   }
 
   /** Rotates the ghost while a placement tool is active. */
   rotatePlacement(degrees: number): boolean {
-    if (!isPlacementTool(this.#deps.controller.tool)) {
+    if (this.#placementDevice() === undefined) {
       return false;
     }
     this.#placementRotation = (((this.#placementRotation + degrees) % 360) + 360) % 360;
@@ -274,14 +284,19 @@ export class EditorInput {
 
   #place(page: Point): void {
     const controller = this.#deps.controller;
-    const tool = controller.tool;
-    // Snap to a pin/anchor/wire end first so placements land exactly on connection points.
-    const device = toolDevice(tool);
-    const properties = placementProperties(tool);
+    const device = this.#placementDevice();
+    if (device === undefined) {
+      return;
+    }
+    const role = symbolRole(device);
+    // Connection points snap to pins and wire ends; components only snap to the grid.
+    const snapped =
+      role === 'component' ? snapToGrid(page, controller.display) : this.#snapWire(page);
     // A label dropped on a pin hangs off a short lead instead of sitting on the pin.
-    const snapped = this.#snapWire(page);
-    const stub = this.#labelStub(snapped);
+    const stub = this.#labelStub(device, snapped);
     const point = stub?.anchor ?? snapped;
+    const properties = placementProperties(device);
+    const designator = role === 'component' ? controller.nextDesignator(device) : undefined;
     this.#deps.run(() =>
       controller.transaction(() => {
         if (stub?.wire !== undefined) {
@@ -290,6 +305,7 @@ export class EditorInput {
         controller.dispatch({
           type: 'add-symbol',
           ...(device === LABEL_DEVICE ? { net: nextNetName(controller.document) } : {}),
+          ...(designator === undefined ? {} : { designator }),
           device,
           x: point.x,
           y: point.y,
@@ -377,7 +393,7 @@ export class EditorInput {
       return;
     }
 
-    if (isPlacementTool(tool)) {
+    if (this.#placementDevice() !== undefined) {
       this.#place(page);
       return;
     }
@@ -478,9 +494,13 @@ export class EditorInput {
       this.#deps.onChange();
       return;
     }
-    if (isPlacementTool(tool)) {
+    const device = this.#placementDevice();
+    if (device !== undefined) {
       // Same snapping as `#place` so the ghost already shows where the symbol will land.
-      this.#cursorPoint = this.#snapWire(page);
+      this.#cursorPoint =
+        symbolRole(device) === 'component'
+          ? snapToGrid(page, this.#deps.controller.display)
+          : this.#snapWire(page);
       this.#deps.onChange();
       return;
     }
@@ -574,6 +594,9 @@ export class EditorInput {
       return;
     }
     if (event.key === 'Escape') {
+      if (controller.placingDevice !== undefined) {
+        controller.cancelPlacement();
+      }
       this.resetTransient();
       controller.setSelection([]);
       controller.setTool('select');

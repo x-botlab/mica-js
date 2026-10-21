@@ -21,6 +21,7 @@ const editor = mountSchematicEditor({
   display, // 可选；Partial<DisplayOptions>
   tolerance, // 可选；命中/几何容差（页面单位）
   historyLimit, // 可选；撤销栈上限
+  createDesignator, // 可选；(device, document) => string，新器件位号策略，默认 U1、U2…
   zoomLimits, // 可选；{ minScale, maxScale }，默认 0.25–4
   readOnly, // 可选；禁用内建交互与属性编辑，controller 仍可写
   toolbar, // 可选；默认 true
@@ -44,6 +45,8 @@ const editor = mountSchematicEditor({
 | `setTheme(partial)` / `getTheme()`         | 增量换主题 / 读回当前主题                                              |
 | `setDisplayOptions(patch)`                 | 网格、吸附、引脚标签、网格尺寸                                         |
 | `setTool(tool)`                            | `select` / `wire` / `power` / `ground` / `label` / `text`              |
+| `placeDevice(device)`                      | 抓取一个器件：下一次点击画布插入它，位号自动分配（见下）               |
+| `cancelPlacement()`                        | 取消抓取，文档不变                                                     |
 | `fitToContent()` / `zoomTo(scale)`         | 视图缩放，`zoomTo` 会夹到 `zoomLimits`                                 |
 | `getViewport()` / `setViewport(state)`     | 读回/恢复缩放与平移；恢复时按画布中心夹取比例                          |
 | `toJSON()`                                 | 序列化为 `.sch` JSON                                                   |
@@ -55,12 +58,28 @@ const editor = mountSchematicEditor({
 
 编辑错误：编辑器内建交互（拖拽、工具栏、属性面板）产生的错误不会抛给宿主，只会触发 `onError` 并写入 `state.lastError`；但直接调用 `controller.dispatch()` 等方法时仍会抛出 `SchematicError`，宿主自行 `try/catch` 即可（`onError` 同样会先触发）。
 
+### 器件放置
+
+编辑器不内建器件库，器件列表由宿主提供，编辑器只负责「抓取」：
+
+```ts
+deviceList.addEventListener('click', (event) => {
+  editor.placeDevice('mylib:stm32f103'); // 下一次左键点击就会放下它
+});
+```
+
+- 抓取后画布光标变为十字，幽灵随指针移动（只吸附网格；`builtin:label` / `power` / `ground` 仍吸附引脚并自动引出一段导线）。
+- 空格旋转幽灵，`Esc` 或再次点击列表项调 `cancelPlacement()` 取消。
+- 放下后自动切回 `select`，一次抓取只放一个器件；需要连续放置时由宿主在 `onChange` 里重新调用 `placeDevice`。
+- 位号由 `createDesignator(device, document)` 决定，默认取最小的未占用 `Un`；宿主可按器件类别给出 `R` / `C` / `Q` 等前缀。
+- 非法的器件引用（缺少 `pkg:id` 形式）会直接抛 `SchematicError`，且不会进入抓取态。
+
 ## 控制器
 
 `SchematicEditorController` 不依赖 DOM，可单独用于批量编辑或 Node 环境：
 
 - 读状态：`state`、`document`、`view`、`renderView`、`selection`、`tool`、`display`、`canUndo`、`canRedo`。
-- 视图与工具：`setTool`、`setSelection`、`setDisplayOptions`、`setView`、`reset`、`replace`。
+- 视图与工具：`setTool`、`placeDevice`、`cancelPlacement`、`nextDesignator`、`setSelection`、`setDisplayOptions`、`setView`、`reset`、`replace`。
 - 编辑：`dispatch`、`transaction`、`undo`、`redo`、`moveSelectionBy`、`rotateSelection`、`deleteSelection`、`addWire`、`connectWireAt`、`moveReferenceBy`、`setSymbolProperty`、`removeSymbolProperty`、`renameDesignator`、`renameNet`。
 - 查询：`inspect`、`topology`、`hitTest`、`subscribe`。
 

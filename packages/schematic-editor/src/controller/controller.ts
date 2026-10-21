@@ -2,6 +2,7 @@ import {
   SchematicEditor,
   SchematicError,
   defaultElementIdFactory,
+  defaultDesignatorFactory,
   deriveSchematicTopology,
   designatorOf,
   hasDesignator,
@@ -17,6 +18,7 @@ import {
   splitWireAt,
   symbolRole,
   type DeviceSymbolProvider,
+  type DesignatorFactory,
   type Diagnostic,
   type ElementIdFactory,
   type HitTestOptions,
@@ -50,6 +52,8 @@ export interface SchematicEditorControllerOptions {
   readonly historyLimit?: number;
   readonly display?: Partial<DisplayOptions>;
   readonly createId?: ElementIdFactory;
+  /** Designator policy for placed components; defaults to the smallest free `U<n>`. */
+  readonly createDesignator?: DesignatorFactory;
 }
 
 const MAX_MERGE_PASSES = 64;
@@ -68,6 +72,8 @@ export class SchematicEditorController {
   #devices: DeviceSymbolProvider | undefined;
   #tolerance: number | undefined;
   #createId: ElementIdFactory;
+  #createDesignator: DesignatorFactory;
+  #placingDevice: string | undefined;
   #listeners = new Set<(state: EditorState) => void>();
   #topology:
     { readonly document: SchematicDocument; readonly value: SchematicTopology } | undefined;
@@ -83,6 +89,7 @@ export class SchematicEditorController {
     this.#devices = options.devices;
     this.#tolerance = options.tolerance;
     this.#createId = options.createId ?? defaultElementIdFactory;
+    this.#createDesignator = options.createDesignator ?? defaultDesignatorFactory;
     this.#display = { ...DEFAULT_DISPLAY_OPTIONS, ...options.display };
   }
 
@@ -92,6 +99,7 @@ export class SchematicEditorController {
       view: this.renderView,
       selection: this.#selection,
       tool: this.#tool,
+      placingDevice: this.#placingDevice,
       display: this.#display,
       canUndo: this.#editor.canUndo,
       canRedo: this.#editor.canRedo,
@@ -145,11 +153,51 @@ export class SchematicEditorController {
     return this.#editor.canRedo;
   }
 
+  /** Device armed for placement by the host's device list; `undefined` when idle. */
+  get placingDevice(): string | undefined {
+    return this.#placingDevice;
+  }
+
+  /**
+   * Arms placement of `device`: the next canvas click inserts it and disarms again. Hosts drive
+   * this from their own device list — the editor ships no library browser.
+   *
+   * @throws {SchematicError} when the device reference is malformed.
+   */
+  placeDevice(device: string): void {
+    if (parseDeviceReference(device) === undefined) {
+      throw new SchematicError([
+        {
+          severity: 'error',
+          code: 'device/invalid-reference',
+          message: `Invalid device reference ${JSON.stringify(device)}.`,
+        },
+      ]);
+    }
+    this.#placingDevice = device;
+    this.#tool = 'select';
+    this.#emit();
+  }
+
+  cancelPlacement(): void {
+    if (this.#placingDevice === undefined) {
+      return;
+    }
+    this.#placingDevice = undefined;
+    this.#emit();
+  }
+
+  /** Reference designator the next placed component gets, per the host's policy. */
+  nextDesignator(device: string): string {
+    return this.#createDesignator(device, this.#editor.document);
+  }
+
   setTool(tool: EditorTool): void {
-    if (this.#tool === tool) {
+    if (this.#tool === tool && this.#placingDevice === undefined) {
       return;
     }
     this.#tool = tool;
+    this.#placingDevice = undefined;
     this.#emit();
   }
 
@@ -177,6 +225,7 @@ export class SchematicEditorController {
     this.#selection = [];
     this.#lastError = undefined;
     this.#topology = undefined;
+    this.#placingDevice = undefined;
     this.#editedSymbols.clear();
     this.#emit();
   }

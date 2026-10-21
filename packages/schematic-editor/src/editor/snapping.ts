@@ -4,6 +4,7 @@ import {
   LABEL_DEVICE,
   POWER_DEVICE,
   TEXT_DEVICE,
+  isTextDevice,
   netNameOf,
   parseDeviceReference,
   pinSide,
@@ -239,7 +240,7 @@ function pinOutward(
   return local === undefined ? undefined : rotatePoint(local, symbol.rotation);
 }
 
-/** Extra properties written when a placement tool inserts a builtin symbol. */
-export function placementProperties(tool: EditorTool): Record<string, string> | undefined {
-  return tool === 'text' ? { text: DEFAULT_TEXT_CONTENT } : undefined;
+/** Extra properties written when a placement inserts a builtin symbol. */
+export function placementProperties(device: string): Record<string, string> | undefined {
+  return isTextDevice(device) ? { text: DEFAULT_TEXT_CONTENT } : undefined;
 }
