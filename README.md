@@ -51,6 +51,8 @@ editor.placeDevice('stm32-package:stm32g431rbt6-lqfp64'); // 抓到光标上，�
 
 宿主 API、器件放置与回调时序见 [packages/schematic-editor/README.md](packages/schematic-editor/README.md)，可运行示例见 [apps/playground](apps/playground)。
 
+`@mica-js/core` 当前提供理想电压驱动/弱偏置的公共网络求值、冲突现场及 `mica-floating-v2` 确定性浮空模拟取值。它接收已连接网络的引脚快照；电气模块本身不实现拓扑、电源生命周期或事件调度（调度由同包提供），也不求解连续电路。接口、集成责任及验证见 [packages/core/README.md](packages/core/README.md)。
+
 ## 沙箱
 
 `@mica-js/sandbox` 用于在相对隔离的环境中运行不可信的第三方代码（仿真器内核、2D Widget 等）：宿主页面 → `sandbox="allow-scripts"` iframe（不透明源）→ classic Web Worker → 客户代码。客户代码无 DOM、无存储、无网络，死循环不阻塞 UI 且可强制终止；渲染采用「客户离屏渲染 + 宿主合成 `ImageBitmap`」。

@@ -18,3 +18,14 @@ export type {
   SchedulerRunResult,
   SchedulerTarget,
 } from './scheduler/scheduler-types';
+
+export type {
+  ElectricalPinInput,
+  ElectricalNetworkInput,
+  ElectricalContribution,
+  ElectricalNetworkResult,
+  FloatingInputSample,
+  FloatingInput,
+} from './electrical/electrical-types';
+export { ElectricalConflictError, resolveElectricalNetwork } from './electrical/electrical';
+export { createFloatingInput } from './electrical/floating-input';
