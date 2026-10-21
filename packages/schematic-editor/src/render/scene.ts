@@ -6,6 +6,7 @@ import {
   netNameOf,
   parseDeviceReference,
   pinSide,
+  pinStubEnd,
   pinsBounds,
   previewSymbolDrag,
   referencePosition,
@@ -113,6 +114,8 @@ export interface RenderInput {
   };
   /** Reference designator being dragged; drawn at this world position instead. */
   readonly referencePreview?: { readonly symbolId: string; readonly position: Point };
+  /** Wire being reshaped by a segment drag; drawn with these points instead of the document's. */
+  readonly wirePreview?: { readonly wireId: string; readonly points: readonly Point[] };
 }
 
 const WIRE_WIDTH = 1.5;
@@ -222,9 +225,14 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
   for (const wire of document.sheet.wires) {
     const selected = selection.wires?.has(wire.id) ?? false;
     const hovered = input.hover?.kind === 'wire' && input.hover.id === wire.id;
+    const preview = input.wirePreview;
+    const points =
+      preview !== undefined && preview.wireId === wire.id
+        ? preview.points
+        : (drag.wires.get(wire.id) ?? wire.points);
     items.push({
       kind: 'polyline',
-      points: drag.wires.get(wire.id) ?? wire.points,
+      points,
       color: selected ? theme.wireSelected : hovered ? theme.hover : theme.wire,
       width: selected ? SELECTED_WIDTH : WIRE_WIDTH,
     });
@@ -451,7 +459,7 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
   for (const [pinId, anchor] of Object.entries(definition.pins)) {
     const side = pinSide(anchor, localBody) ?? 'left';
     const pinPosition = symbolPinPosition(placement, anchor);
-    const edge = symbolPinPosition(placement, stubEdge(localBody, anchor, side));
+    const edge = symbolPinPosition(placement, pinStubEnd(localBody, anchor, side));
     items.push({
       kind: 'line',
       from: edge,
@@ -485,25 +493,6 @@ function previewSymbol(device: string, position: Point): SchematicSymbol {
 
 function fallbackBounds(placement: { readonly x: number; readonly y: number }): Rect {
   return { x: placement.x - 12, y: placement.y - 12, width: 24, height: 24 };
-}
-
-function stubEdge(
-  body: Rect,
-  anchor: { readonly x: number; readonly y: number },
-  side: 'left' | 'right' | 'top' | 'bottom',
-): Point {
-  switch (side) {
-    case 'left':
-      return { x: body.x, y: anchor.y };
-    case 'right':
-      return { x: body.x + body.width, y: anchor.y };
-    case 'top':
-      return { x: anchor.x, y: body.y };
-    case 'bottom':
-      return { x: anchor.x, y: body.y + body.height };
-    default:
-      return anchor;
-  }
 }
 
 function pinLabel(

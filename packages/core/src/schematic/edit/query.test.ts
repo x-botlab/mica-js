@@ -77,6 +77,29 @@ describe('hitTestSchematic', () => {
     });
   });
 
+  it('grabs the whole pin stub, not just the anchor', () => {
+    const document = makeDocument({
+      symbols: [{ id: 's1', device: 'pkg:chip', x: 0, y: 0, rotation: 0 }],
+      wires: [],
+      junctions: [],
+    });
+    // Body spans -5…15; pin A reaches in from -5, pin B from 15.
+    expect(hitTestSchematic(document, { x: -3, y: 0 }, { devices })).toEqual({
+      kind: 'pin',
+      symbolId: 's1',
+      pinId: 'A',
+    });
+    expect(hitTestSchematic(document, { x: 13, y: 0 }, { devices })).toEqual({
+      kind: 'pin',
+      symbolId: 's1',
+      pinId: 'B',
+    });
+    expect(hitTestSchematic(document, { x: 5, y: 3 }, { devices })).toEqual({
+      kind: 'symbol',
+      id: 's1',
+    });
+  });
+
   it('reports the wire segment index', () => {
     expect(hitTestSchematic(makeDocument(), { x: 10, y: 5 }, { devices })).toEqual({
       kind: 'wire',

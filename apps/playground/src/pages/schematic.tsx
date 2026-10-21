@@ -100,6 +100,10 @@ export function SchematicPage({ dark }: SchematicPageProps) {
     editorRef.current = editor;
     setState(editor.controller.state);
     setZoom(editor.getViewport().scale);
+    if (import.meta.env.DEV) {
+      // Console handle for poking at the mounted editor while developing the playground.
+      Object.assign(globalThis, { mica: editor });
+    }
     if (!mountLogged.current) {
       mountLogged.current = true;
       pushLog('mountSchematicEditor() · 已挂载');
@@ -278,7 +282,7 @@ export function SchematicPage({ dark }: SchematicPageProps) {
           </Button>
           <div className="text-muted-foreground ml-auto flex items-center gap-2 text-[11px]">
             <span className="font-mono">{zoom.toFixed(2)}×</span>
-            <span>空格旋转 · Esc 取消 · 滚轮缩放</span>
+            <span>拖动导线段 · 空格旋转 · Esc 取消 · 滚轮缩放</span>
           </div>
         </div>
         <div ref={hostRef} className="bg-card min-h-0 flex-1 overflow-hidden rounded-xl border" />

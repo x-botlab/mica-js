@@ -55,6 +55,13 @@ type Drag =
       readonly origin: Point;
       position: Point;
     }
+  | {
+      readonly mode: 'segment';
+      readonly wireId: string;
+      readonly segment: number;
+      readonly origin: Point;
+      delta: Point;
+    }
   | undefined;
 
 /**
@@ -99,6 +106,16 @@ export class EditorInput {
     }
     const { offset } = this.#drag;
     return offset.x === 0 && offset.y === 0 ? undefined : offset;
+  }
+
+  /** Wire being reshaped by a segment drag, so the renderer can show it before the commit. */
+  get wirePreview(): { readonly wireId: string; readonly points: readonly Point[] } | undefined {
+    const drag = this.#drag;
+    if (drag?.mode !== 'segment') {
+      return undefined;
+    }
+    const points = this.#deps.controller.previewWireSegment(drag.wireId, drag.segment, drag.delta);
+    return points === undefined ? undefined : { wireId: drag.wireId, points };
   }
 
   /** Reference designator being dragged, in world coordinates. */
@@ -178,7 +195,49 @@ export class EditorInput {
     this.#pendingWire = [];
     this.#cursorPoint = undefined;
     this.#placementRotation = 0;
+    this.#drag = undefined;
   }
+
+  /**
+   * Esc: cancel placement, the pending wire, a drag or the active tool and clear the selection.
+   * Returns whether there was anything to cancel.
+   */
+  #cancelInteraction(): boolean {
+    const controller = this.#deps.controller;
+    const active =
+      controller.placingDevice !== undefined ||
+      controller.tool !== 'select' ||
+      controller.selection.length > 0 ||
+      this.#pendingWire.length > 0 ||
+      this.#drag !== undefined;
+    if (!active) {
+      return false;
+    }
+    if (controller.placingDevice !== undefined) {
+      controller.cancelPlacement();
+    }
+    this.resetTransient();
+    controller.setSelection([]);
+    controller.setTool('select');
+    this.#deps.onChange();
+    return true;
+  }
+
+  /**
+   * Esc fallback for hosts that arm placement from their own UI: the event may never reach the
+   * editor root, so listen on the document while an interaction is pending.
+   */
+  #onDocumentKeyDown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || event.defaultPrevented) {
+      return;
+    }
+    if (this.#deps.root.contains(event.target as Node | null)) {
+      return;
+    }
+    if (this.#cancelInteraction()) {
+      event.preventDefault();
+    }
+  };
 
   attach(): void {
     const { canvas, root } = this.#deps;
@@ -192,6 +251,7 @@ export class EditorInput {
     canvas.addEventListener('contextmenu', this.#onContextMenu);
     root.addEventListener('keydown', this.#onKeyDown);
     root.addEventListener('keyup', this.#onKeyUp);
+    this.#deps.root.ownerDocument.addEventListener('keydown', this.#onDocumentKeyDown);
   }
 
   detach(): void {
@@ -210,6 +270,7 @@ export class EditorInput {
     canvas.removeEventListener('contextmenu', this.#onContextMenu);
     root.removeEventListener('keydown', this.#onKeyDown);
     root.removeEventListener('keyup', this.#onKeyUp);
+    root.ownerDocument.removeEventListener('keydown', this.#onDocumentKeyDown);
   }
 
   #viewport(): ViewportState {
@@ -327,9 +388,10 @@ export class EditorInput {
     if (node === undefined) {
       return false;
     }
+    // Switch the tool first: the tool change resets transient state, which must not eat the anchor.
+    this.#deps.controller.setTool('wire');
     this.#pendingWire = [node];
     this.#cursorPoint = node;
-    this.#deps.controller.setTool('wire');
     this.#deps.onChange();
     return true;
   }
@@ -428,6 +490,22 @@ export class EditorInput {
         };
         this.#deps.canvas.setPointerCapture(event.pointerId);
       }
+    } else if (!this.#deps.readOnly && selection.kind === 'wire') {
+      // Dragging the body of a segment reshapes the wire; vertices are handled by `#vertexAt`.
+      const hit = this.#deps.controller.hitTest(page, {
+        includeSymbols: false,
+        tolerance: this.#tolerance(),
+      });
+      if (hit?.kind === 'wire' && hit.id === selection.id) {
+        this.#drag = {
+          mode: 'segment',
+          wireId: hit.id,
+          segment: hit.segment,
+          origin: page,
+          delta: { x: 0, y: 0 },
+        };
+        this.#deps.canvas.setPointerCapture(event.pointerId);
+      }
     }
     this.#deps.onChange();
   };
@@ -487,6 +565,31 @@ export class EditorInput {
       this.#deps.onChange();
       return;
     }
+    if (this.#drag?.mode === 'segment') {
+      const { wireId, segment, origin, delta } = this.#drag;
+      const wire = this.#deps.controller.document.sheet.wires.find((item) => item.id === wireId);
+      const start = wire?.points[segment];
+      const end = wire?.points[segment + 1];
+      if (wire !== undefined && start !== undefined && end !== undefined) {
+        // Segments only slide along their normal, so the wire stays orthogonal. The moved vertex
+        // is snapped (not the delta) so dragged segments land on grid lines.
+        const horizontal = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y);
+        const target = snapToGrid(
+          horizontal
+            ? { x: start.x, y: start.y + (page.y - origin.y) }
+            : { x: start.x + (page.x - origin.x), y: start.y },
+          this.#deps.controller.display,
+        );
+        const candidate = horizontal
+          ? { x: 0, y: target.y - start.y }
+          : { x: target.x - start.x, y: 0 };
+        if (candidate.x !== delta.x || candidate.y !== delta.y) {
+          this.#drag = { mode: 'segment', wireId, segment, origin, delta: candidate };
+          this.#deps.onChange();
+        }
+      }
+      return;
+    }
 
     const tool = this.#deps.controller.tool;
     if (tool === 'wire') {
@@ -544,6 +647,13 @@ export class EditorInput {
         return;
       }
     }
+    if (drag?.mode === 'segment') {
+      const { wireId, segment, delta } = drag;
+      if (delta.x !== 0 || delta.y !== 0) {
+        this.#deps.run(() => this.#deps.controller.moveWireSegment(wireId, segment, delta));
+        return;
+      }
+    }
     if (drag !== undefined) {
       this.#deps.onChange();
     }
@@ -594,13 +704,7 @@ export class EditorInput {
       return;
     }
     if (event.key === 'Escape') {
-      if (controller.placingDevice !== undefined) {
-        controller.cancelPlacement();
-      }
-      this.resetTransient();
-      controller.setSelection([]);
-      controller.setTool('select');
-      this.#deps.onChange();
+      this.#cancelInteraction();
       return;
     }
     if (event.key === 'Enter') {

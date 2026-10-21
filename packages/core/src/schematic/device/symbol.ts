@@ -69,3 +69,24 @@ export function pinSide(pin: PinAnchor, outline: Rect | undefined): PinSide | un
   }
   return dy >= 0 ? 'bottom' : 'top';
 }
+
+/**
+ * Inner end of a pin stub, where it meets the body outline. Together with the anchor it forms the
+ * grabbable pin: rendering draws that line and hit testing accepts clicks anywhere along it.
+ */
+export function pinStubEnd(
+  body: Rect,
+  anchor: { readonly x: number; readonly y: number },
+  side: PinSide,
+): { readonly x: number; readonly y: number } {
+  switch (side) {
+    case 'left':
+      return { x: body.x, y: anchor.y };
+    case 'right':
+      return { x: body.x + body.width, y: anchor.y };
+    case 'top':
+      return { x: anchor.x, y: body.y };
+    case 'bottom':
+      return { x: anchor.x, y: body.y + body.height };
+  }
+}

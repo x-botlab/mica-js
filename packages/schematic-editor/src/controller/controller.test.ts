@@ -4,6 +4,7 @@ import {
   createDeviceRegistry,
   parseDeviceReference,
   parseSchematic,
+  symbolPinPosition,
   type Point,
   type SchematicDocument,
 } from '@mica/core/schematic';
@@ -594,6 +595,91 @@ describe('SchematicEditorController', () => {
     controller.setSelection(selection);
     expect(controller.moveSelectionBy(1, 1)).toBeUndefined();
     expect(controller.dispatch({ type: 'remove-symbol', id: 's1' })).toBeUndefined();
+  });
+
+  describe('wire segment drag', () => {
+    it('slides a free segment with both of its vertices', () => {
+      const controller = createController(
+        documentOf({
+          wires: [
+            {
+              id: 'w1',
+              points: [
+                { x: 0, y: 0 },
+                { x: 50, y: 0 },
+                { x: 50, y: 40 },
+              ],
+            },
+          ],
+        }),
+      );
+
+      controller.moveWireSegment('w1', 0, { x: 0, y: 10 });
+
+      expect(wirePoints(controller, 'w1')).toEqual([
+        { x: 0, y: 10 },
+        { x: 50, y: 10 },
+        { x: 50, y: 40 },
+      ]);
+      controller.undo();
+      expect(wirePoints(controller, 'w1')[0]).toEqual({ x: 0, y: 0 });
+    });
+
+    it('keeps a pin-attached end and bends the wire into a dogleg', () => {
+      const symbol = { id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 };
+      const reference = parseDeviceReference('pkg:mcu');
+      if (reference === undefined) {
+        throw new Error('The test device reference must parse.');
+      }
+      const anchor = devices.getDeviceSymbol(reference)?.pins['A'];
+      expect(anchor).toBeDefined();
+      const pin = symbolPinPosition(symbol, anchor ?? { x: 0, y: 0 });
+      const controller = createController(
+        documentOf({
+          symbols: [symbol],
+          wires: [
+            {
+              id: 'w1',
+              points: [pin, { x: pin.x + 40, y: pin.y }, { x: pin.x + 40, y: pin.y + 40 }],
+            },
+          ],
+        }),
+      );
+
+      const expected = [
+        pin,
+        { x: pin.x, y: pin.y + 10 },
+        { x: pin.x + 40, y: pin.y + 10 },
+        { x: pin.x + 40, y: pin.y + 40 },
+      ];
+      expect(controller.previewWireSegment('w1', 0, { x: 0, y: 10 })).toEqual(expected);
+      expect(controller.previewWireSegment('w1', 0, { x: 0, y: 0 })).toBeUndefined();
+
+      controller.moveWireSegment('w1', 0, { x: 0, y: 10 });
+      expect(wirePoints(controller, 'w1')).toEqual(expected);
+    });
+
+    it('ignores unknown wires and segments', () => {
+      const controller = createController(
+        documentOf({
+          wires: [
+            {
+              id: 'w1',
+              points: [
+                { x: 0, y: 0 },
+                { x: 10, y: 0 },
+              ],
+            },
+          ],
+        }),
+      );
+      expect(() => controller.moveWireSegment('nope', 0, { x: 0, y: 10 })).not.toThrow();
+      expect(() => controller.moveWireSegment('w1', 5, { x: 0, y: 10 })).not.toThrow();
+      expect(wirePoints(controller, 'w1')).toEqual([
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+      ]);
+    });
   });
 
   describe('device placement', () => {

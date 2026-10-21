@@ -222,6 +222,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
       ...(input.marquee === undefined ? {} : { marquee: input.marquee }),
       ...(input.placementPreview === undefined ? {} : { placementPreview: input.placementPreview }),
       ...(input.referencePreview === undefined ? {} : { referencePreview: input.referencePreview }),
+      ...(input.wirePreview === undefined ? {} : { wirePreview: input.wirePreview }),
     });
     renderer.render(scene, viewport.state);
     if (!sameViewport(viewport.state, lastViewport)) {

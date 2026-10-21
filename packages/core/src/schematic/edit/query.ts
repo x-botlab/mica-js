@@ -12,6 +12,7 @@ import {
   textDeviceContent,
 } from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
+import { pinSide, pinStubEnd, pinsBounds } from '../device/symbol';
 import {
   DEFAULT_TOLERANCE,
   distanceToSegment,
@@ -75,13 +76,25 @@ export function hitTestSchematic(
       if (definition === undefined) {
         continue;
       }
+      const body = definition.bounds ??
+        pinsBounds(definition.pins) ?? { x: -12, y: -12, width: 24, height: 24 };
       const pinIds = Object.keys(definition.pins).sort();
       for (const pinId of pinIds) {
         const anchor = definition.pins[pinId];
         if (anchor === undefined) {
           continue;
         }
-        if (pointsEqual(symbolPinPosition(symbol, anchor), point, tolerance)) {
+        const end = symbolPinPosition(symbol, anchor);
+        if (pointsEqual(end, point, tolerance)) {
+          return { kind: 'pin', symbolId: symbol.id, pinId };
+        }
+        // The whole pin stub is grabbable, so clicking the drawn pin starts a wire at its end.
+        const side = pinSide(anchor, body);
+        if (side === undefined) {
+          continue;
+        }
+        const start = symbolPinPosition(symbol, pinStubEnd(body, anchor, side));
+        if (distanceToSegment(point, start, end) <= tolerance) {
           return { kind: 'pin', symbolId: symbol.id, pinId };
         }
       }

@@ -74,13 +74,20 @@ deviceList.addEventListener('click', (event) => {
 - 位号由 `createDesignator(device, document)` 决定，默认取最小的未占用 `Un`；宿主可按器件类别给出 `R` / `C` / `Q` 等前缀。
 - 非法的器件引用（缺少 `pkg:id` 形式）会直接抛 `SchematicError`，且不会进入抓取态。
 
+### 指针与键盘
+
+- 单击引脚（整条引脚线，不只是端点）直接以引脚端为起点开始画导线；`Esc` 取消。
+- 拖动导线段沿其法线移动（吸附网格）；端点连着引脚、锚点、交点或别的导线时保持不动，导线自动折出 dogleg，一次拖动只有一步历史。
+- 拖动器件、拖动位号、框选空白、双击或 `Enter` 结束导线、`Delete` 删除、空格或 `R` 旋转、`F` 适应内容、`Ctrl/Cmd+Z` 撤销、`Ctrl/Cmd+Shift+Z` 重做、滚轮缩放、中键或空格拖拽平移。
+- `Esc` 同时作用于放置模式与正在绘制的导线；宿主在自己的 UI 里抓取器件时（焦点不在编辑器内），编辑器会在 document 上兜底监听 `Esc`。
+
 ## 控制器
 
 `SchematicEditorController` 不依赖 DOM，可单独用于批量编辑或 Node 环境：
 
 - 读状态：`state`、`document`、`view`、`renderView`、`selection`、`tool`、`display`、`canUndo`、`canRedo`。
 - 视图与工具：`setTool`、`placeDevice`、`cancelPlacement`、`nextDesignator`、`setSelection`、`setDisplayOptions`、`setView`、`reset`、`replace`。
-- 编辑：`dispatch`、`transaction`、`undo`、`redo`、`moveSelectionBy`、`rotateSelection`、`deleteSelection`、`addWire`、`connectWireAt`、`moveReferenceBy`、`setSymbolProperty`、`removeSymbolProperty`、`renameDesignator`、`renameNet`。
+- 编辑：`dispatch`、`transaction`、`undo`、`redo`、`moveSelectionBy`、`rotateSelection`、`deleteSelection`、`addWire`、`connectWireAt`、`moveWireSegment`、`previewWireSegment`、`moveReferenceBy`、`setSymbolProperty`、`removeSymbolProperty`、`renameDesignator`、`renameNet`。
 - 查询：`inspect`、`topology`、`hitTest`、`subscribe`。
 
 ## 开发

@@ -16,6 +16,7 @@ import {
   referenceAnchor,
   rotatePoint,
   splitWireAt,
+  symbolPinPosition,
   symbolRole,
   type DeviceSymbolProvider,
   type DesignatorFactory,
@@ -442,6 +443,90 @@ export class SchematicEditorController {
       { reconcile: false },
     );
     return junctionId;
+  }
+
+  /**
+   * Slides one wire segment by `delta`, carrying its two vertices along. Vertices that already
+   * connect to a pin, an anchor, a junction or another wire stay put, so the wire gains a dogleg
+   * instead of detaching.
+   */
+  moveWireSegment(wireId: string, segment: number, delta: Point): void {
+    const wire = this.#findWire(wireId);
+    const points = wire === undefined ? undefined : this.#segmentDragPoints(wire, segment, delta);
+    if (wire === undefined || points === undefined) {
+      return;
+    }
+    this.#mutate(() => {
+      this.#editor.dispatch({ type: 'set-wire-points', id: wire.id, points });
+    });
+  }
+
+  /** Wire points a segment drag would produce; the renderer previews them before the commit. */
+  previewWireSegment(wireId: string, segment: number, delta: Point): readonly Point[] | undefined {
+    const wire = this.#findWire(wireId);
+    return wire === undefined ? undefined : this.#segmentDragPoints(wire, segment, delta);
+  }
+
+  #segmentDragPoints(
+    wire: SchematicWire,
+    segment: number,
+    delta: Point,
+  ): readonly Point[] | undefined {
+    const start = wire.points[segment];
+    const end = wire.points[segment + 1];
+    if (start === undefined || end === undefined || (delta.x === 0 && delta.y === 0)) {
+      return undefined;
+    }
+    const shift = (point: Point): Point => ({ x: point.x + delta.x, y: point.y + delta.y });
+    const replacement: Point[] = [];
+    if (this.#isConnectedVertex(start, wire.id)) {
+      replacement.push(start, shift(start));
+    } else {
+      replacement.push(shift(start));
+    }
+    replacement.push(shift(end));
+    const endAnchored = this.#isConnectedVertex(end, wire.id);
+    if (endAnchored) {
+      replacement.push(end);
+    }
+    return [...wire.points.slice(0, segment), ...replacement, ...wire.points.slice(segment + 2)];
+  }
+
+  /** True when something other than this wire is attached at `point`. */
+  #isConnectedVertex(point: Point, wireId: string): boolean {
+    const document = this.#editor.document;
+    const same = (candidate: Point): boolean => candidate.x === point.x && candidate.y === point.y;
+    for (const junction of document.sheet.junctions) {
+      if (same(junction)) {
+        return true;
+      }
+    }
+    for (const wire of document.sheet.wires) {
+      if (wire.id !== wireId && wire.points.some(same)) {
+        return true;
+      }
+    }
+    for (const symbol of document.sheet.symbols) {
+      const role = symbolRole(symbol.device);
+      if (role !== 'component') {
+        if (same({ x: symbol.x, y: symbol.y })) {
+          return true;
+        }
+        continue;
+      }
+      const reference = parseDeviceReference(symbol.device);
+      const definition =
+        reference === undefined ? undefined : this.#devices?.getDeviceSymbol(reference);
+      if (definition === undefined) {
+        continue;
+      }
+      for (const anchor of Object.values(definition.pins)) {
+        if (same(symbolPinPosition(symbol, anchor))) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /** Moves a reference designator by a world-space delta; the offset is stored locally. */
