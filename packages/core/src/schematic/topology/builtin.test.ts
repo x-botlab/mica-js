@@ -7,7 +7,7 @@ function documentWith(
   symbols: SchematicDocument['sheet']['symbols'],
   wires: SchematicDocument['sheet']['wires'] = [],
 ): SchematicDocument {
-  return { version: 1, id: 'builtin', sheet: { symbols, wires, junctions: [] } };
+  return { version: 1, sheet: { symbols, wires, junctions: [] } };
 }
 
 const WIRE = [

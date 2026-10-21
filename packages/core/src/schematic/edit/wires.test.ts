@@ -6,7 +6,6 @@ import { mergeWiresAtJunction, splitWireAt } from './wires';
 function makeDocument(): SchematicDocument {
   return {
     version: 1,
-    id: 'wires',
     sheet: {
       symbols: [],
       wires: [
@@ -52,7 +51,6 @@ describe('splitWireAt', () => {
   it('re-points junctions that only lie on the second half', () => {
     const document: SchematicDocument = {
       version: 1,
-      id: 'split',
       sheet: {
         symbols: [],
         wires: [
@@ -124,7 +122,6 @@ describe('mergeWiresAtJunction', () => {
     const split = splitWireAt(
       {
         version: 1,
-        id: 'merge',
         sheet: {
           symbols: [],
           wires: [
@@ -192,7 +189,6 @@ describe('mergeWiresAtJunction', () => {
   it('does not merge non-collinear wires', () => {
     const document: SchematicDocument = {
       version: 1,
-      id: 'bend',
       sheet: {
         symbols: [],
         wires: [

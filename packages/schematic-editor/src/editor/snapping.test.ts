@@ -36,7 +36,6 @@ function contextAt(rotation: number, wires: readonly unknown[] = []): SnapContex
     controller: new SchematicEditorController({
       document: parseSchematic({
         version: 1,
-        id: 'stub',
         sheet: {
           symbols: [{ id: 'U1', device: 'pkg:ne555', x: 100, y: 100, rotation }],
           wires,

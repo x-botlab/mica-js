@@ -52,14 +52,13 @@ function readDocument(value: unknown, diagnostics: Diagnostic[]): SchematicDocum
     report(diagnostics, 'json/not-object', 'Schematic must be a JSON object.', []);
     return undefined;
   }
-  forbidUnknownFields(value, ['version', 'id', 'sheet'], [], diagnostics);
+  forbidUnknownFields(value, ['version', 'sheet'], [], diagnostics);
   const version = readVersion(value, diagnostics);
-  const id = readStringField(value, 'id', [], diagnostics, { nonEmpty: true });
   const sheet = readSheet(readObjectField(value, 'sheet', [], diagnostics), diagnostics);
-  if (version === undefined || id === undefined || sheet === undefined) {
+  if (version === undefined || sheet === undefined) {
     return undefined;
   }
-  return { version, id, sheet };
+  return { version, sheet };
 }
 
 function readVersion(

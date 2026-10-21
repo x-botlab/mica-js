@@ -45,7 +45,6 @@ function documentOf(sheet: {
 }): SchematicDocument {
   return parseSchematic({
     version: 1,
-    id: 'board',
     sheet: {
       symbols: sheet.symbols ?? [],
       wires: sheet.wires ?? [],

@@ -29,7 +29,6 @@ const devices = createDeviceRegistry([
 
 const document: SchematicDocument = parseSchematic({
   version: 1,
-  id: 'scene',
   sheet: {
     symbols: [
       { id: 'u1', device: 'pkg:mcu', x: 100, y: 100, rotation: 0 },
@@ -97,7 +96,6 @@ function sceneAt(rotation: number) {
   return buildSchematicScene({
     document: parseSchematic({
       version: 1,
-      id: `rotated-${rotation}`,
       sheet: {
         symbols: [{ id: 'U1', device: 'pkg:ne555', x: 0, y: 0, rotation }],
         wires: [],
@@ -280,7 +278,6 @@ describe('buildSchematicScene', () => {
     const scene = buildSchematicScene({
       document: parseSchematic({
         version: 1,
-        id: 'sided',
         sheet: {
           symbols: [{ id: 'U1', device: 'pkg:ne555', x: 0, y: 0, rotation: 0 }],
           wires: [],
@@ -370,7 +367,6 @@ describe('buildSchematicScene', () => {
       buildSchematicScene({
         document: parseSchematic({
           version: 1,
-          id: `power-${rotation}`,
           sheet: {
             symbols: [{ id: 'P1', device: POWER_DEVICE, net: 'VCC', x: 0, y: 0, rotation }],
             wires: [],
@@ -412,7 +408,6 @@ describe('buildSchematicScene', () => {
       buildSchematicScene({
         document: parseSchematic({
           version: 1,
-          id: `label-${rotation}`,
           sheet: {
             symbols: [{ id: 'lbl', device: LABEL_DEVICE, net: 'N1', x: 0, y: 0, rotation }],
             wires: [],
@@ -447,7 +442,6 @@ describe('buildSchematicScene', () => {
       buildSchematicScene({
         document: parseSchematic({
           version: 1,
-          id: 'anchors',
           sheet: {
             symbols: [{ id: 'A1', device, net: 'A1', x: 0, y: 0, rotation: 0 }],
             wires: [],
@@ -499,7 +493,6 @@ describe('buildSchematicScene', () => {
     const scene = buildSchematicScene({
       document: parseSchematic({
         version: 1,
-        id: 'inferred',
         sheet: {
           symbols: [{ id: 'U1', device: 'pkg:plain', x: 0, y: 0, rotation: 0 }],
           wires: [],

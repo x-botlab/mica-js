@@ -22,7 +22,6 @@ const devices = createDeviceRegistry([
 
 const SAMPLE: SchematicDocument = {
   version: 1,
-  id: 'ct117e-m4-board',
   sheet: {
     symbols: [
       { id: 's-mcu', device: 'stm32-package:stm32g431rbt6-lqfp64', x: 480, y: 160, rotation: 0 },

@@ -14,7 +14,6 @@ const devices: DeviceSymbolProvider = {
 function makeDocument(): SchematicDocument {
   return {
     version: 1,
-    id: 'preview',
     sheet: {
       symbols: [{ id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 }],
       wires: [

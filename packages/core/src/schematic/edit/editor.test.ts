@@ -7,7 +7,6 @@ import { parseSchematic } from '../format/parse-schematic';
 function makeDocument(): SchematicDocument {
   return {
     version: 1,
-    id: 'board',
     sheet: {
       symbols: [{ id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 }],
       wires: [

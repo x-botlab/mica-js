@@ -12,7 +12,6 @@ import { createDeviceRegistry } from './registry';
 function documentWith(designators: readonly (string | undefined)[]): SchematicDocument {
   return {
     version: 1,
-    id: 'designators',
     sheet: {
       symbols: designators.map((designator, index) => ({
         id: `s${index}`,
@@ -46,7 +45,6 @@ describe('nextDesignator', () => {
   it('ignores net-naming symbols, which carry no designator', () => {
     const document: SchematicDocument = {
       version: 1,
-      id: 'mixed',
       sheet: {
         symbols: [{ id: 'l1', device: 'builtin:label', net: 'N1', x: 0, y: 0, rotation: 0 }],
         wires: [],

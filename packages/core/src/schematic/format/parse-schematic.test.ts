@@ -7,7 +7,6 @@ import type { SchematicDocument } from './types';
 
 const SAMPLE = `{
   "version": 1,
-  "id": "ct117e-m4-board",
   "sheet": {
     "symbols": [
       { "id": "s-mcu", "device": "stm32-package:stm32g431rbt6-lqfp64", "x": 480, "y": 160, "rotation": 0 },
@@ -38,7 +37,7 @@ describe('parseSchematic', () => {
   it('parses the issue #6 example', () => {
     const document = parseSchematic(SAMPLE);
     expect(document.version).toBe(1);
-    expect(document.id).toBe('ct117e-m4-board');
+    expect(Object.keys(document)).toEqual(['version', 'sheet']);
     expect(document.sheet.symbols).toHaveLength(3);
     expect(document.sheet.wires[0]?.points).toHaveLength(4);
     expect(document.sheet.junctions[0]?.wires).toEqual(['w-d0', 'w-label-d0']);
@@ -51,11 +50,11 @@ describe('parseSchematic', () => {
 
   it('throws a SchematicError carrying every diagnostic', () => {
     const error = catchError(() =>
-      parseSchematic(SAMPLE.replace('"id": "ct117e-m4-board"', '"id": 1')),
+      parseSchematic(SAMPLE.replace('"version": 1', '"version": "1"')),
     );
     expect(error).toBeInstanceOf(SchematicError);
     expect(codesOf(error.diagnostics)).toContain('schema/invalid-type');
-    expect(error.message).toContain('/id');
+    expect(error.message).toContain('/version');
     expect(error.code).toBe(error.diagnostics[0]?.code);
   });
 
@@ -75,8 +74,16 @@ describe('parseSchematic', () => {
     });
   });
 
+  it('rejects a document-level id', () => {
+    const error = catchError(() =>
+      parseSchematic(SAMPLE.replace('"version": 1,', '"version": 1,\n  "id": "board",')),
+    );
+    expect(codesOf(error.diagnostics)).toContain('schema/unknown-field');
+    expect(error.message).toContain('/id');
+  });
+
   it('rejects malformed JSON text', () => {
-    const error = catchError(() => parseSchematic('{"version":1,"id":"a",}'));
+    const error = catchError(() => parseSchematic('{"version":1,"sheet":{},}'));
     expect(error.diagnostics).toHaveLength(1);
     expect(error.diagnostics[0]?.code).toBe('json/invalid');
   });

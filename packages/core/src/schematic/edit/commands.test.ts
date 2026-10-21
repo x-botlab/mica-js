@@ -10,7 +10,6 @@ const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 function makeDocument(): SchematicDocument {
   return {
     version: 1,
-    id: 'board',
     sheet: {
       symbols: [
         { id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 },

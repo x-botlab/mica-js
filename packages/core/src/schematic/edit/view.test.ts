@@ -5,7 +5,6 @@ import { applyViewCommand } from './view';
 
 const schematic: SchematicDocument = {
   version: 1,
-  id: 'board',
   sheet: {
     symbols: [{ id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 }],
     wires: [],

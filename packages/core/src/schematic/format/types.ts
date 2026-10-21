@@ -68,9 +68,9 @@ export interface SchematicSheet {
   readonly junctions: readonly SchematicJunction[];
 }
 
+/** Root of a `.sch` file; the file name is the schematic's identity. */
 export interface SchematicDocument {
   readonly version: SchematicVersion;
-  readonly id: string;
   readonly sheet: SchematicSheet;
 }
 

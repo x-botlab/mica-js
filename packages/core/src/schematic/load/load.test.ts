@@ -14,7 +14,6 @@ const devices = createDeviceRegistry([
 
 const SCH_TEXT = `{
   "version": 1,
-  "id": "board",
   "sheet": {
     "symbols": [
       { "id": "s-mcu", "device": "stm32-package:mcu", "x": 0, "y": 0, "rotation": 0 }
@@ -28,7 +27,6 @@ const SCH_TEXT = `{
 
 const schematic: SchematicDocument = {
   version: 1,
-  id: 'board',
   sheet: {
     symbols: [
       { id: 's-mcu', device: 'stm32-package:mcu', x: 0, y: 0, rotation: 0 },
@@ -52,7 +50,7 @@ const VIEW_TEXT = `{
 describe('loadSchematic', () => {
   it('parses and derives topology from text', () => {
     const loaded = loadSchematic(SCH_TEXT, { devices });
-    expect(loaded.document.id).toBe('board');
+    expect(loaded.document.sheet.symbols).toHaveLength(1);
     expect(loaded.topology.nets).toEqual([
       { name: null, wireIds: ['w'], members: [{ kind: 'pin', symbolId: 's-mcu', pinId: 'PC0' }] },
     ]);

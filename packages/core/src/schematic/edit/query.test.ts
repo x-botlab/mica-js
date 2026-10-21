@@ -22,7 +22,6 @@ const devices = createDeviceRegistry([
 function makeDocument(overrides: Partial<SchematicDocument['sheet']> = {}): SchematicDocument {
   return {
     version: 1,
-    id: 'hit',
     sheet: {
       symbols: [{ id: 's1', device: 'pkg:chip', x: 100, y: 100, rotation: 0 }],
       wires: [

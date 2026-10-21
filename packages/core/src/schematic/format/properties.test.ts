@@ -6,7 +6,6 @@ import { catchError, codesOf } from './test-helpers';
 
 const BASE = {
   version: 1,
-  id: 'props',
   sheet: {
     symbols: [{ id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 }],
     wires: [],

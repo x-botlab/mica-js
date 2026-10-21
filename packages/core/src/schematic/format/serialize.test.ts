@@ -5,7 +5,6 @@ import type { SchematicDocument } from './types';
 
 const DOCUMENT: SchematicDocument = {
   version: 1,
-  id: 'demo',
   sheet: {
     symbols: [{ id: 's1', device: 'pkg:dev', x: 1.5, y: 2, rotation: 90 }],
     wires: [
@@ -25,7 +24,6 @@ describe('serializeSchematic', () => {
   it('writes the fixed field order with two-space indentation and a trailing newline', () => {
     expect(serializeSchematic(DOCUMENT)).toBe(`{
   "version": 1,
-  "id": "demo",
   "sheet": {
     "symbols": [
       {

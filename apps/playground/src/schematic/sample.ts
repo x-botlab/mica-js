@@ -136,7 +136,6 @@ const trunkX = 250;
 const schematicText = JSON.stringify(
   {
     version: 1,
-    id: 'ct117e-m4-board',
     sheet: {
       symbols: [
         { id: 's-mcu', device: MCU, ...placements.mcu, properties: { label: 'MCU' } },

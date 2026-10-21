@@ -4,7 +4,6 @@ import type { PropertyValue, SchematicDocument, SchematicViewDocument } from './
 export function serializeSchematic(document: SchematicDocument): string {
   const serializable = {
     version: document.version,
-    id: document.id,
     sheet: {
       symbols: document.sheet.symbols.map((symbol) => {
         const serialized: Record<string, unknown> = {
