@@ -7,8 +7,8 @@ import {
   type IRValidationOptions,
   type RuntimeScalar,
 } from '@mica-js/ir';
-import { createIRSchedulerInstance, createScheduler, SchedulerError } from './index';
-import type { SchedulerErrorCode } from './index';
+import { createIRSchedulerInstance, createScheduler, SchedulerError } from '../index';
+import type { SchedulerErrorCode } from '../index';
 
 function policy(module: IRModule): IRValidationOptions {
   const instructions = new Set(['return', 'jump', 'branch', 'trap']);
