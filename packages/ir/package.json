@@ -1,7 +1,7 @@
 {
   "name": "@mica/ir",
   "version": "0.0.0",
-  "description": "Domain-independent IR package foundation for Mica",
+  "description": "Domain-independent IR model and typed builder for Mica",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "build": "vite build",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "publishConfig": {
@@ -24,6 +25,7 @@
   "devDependencies": {
     "typescript": "catalog:",
     "vite": "catalog:",
-    "vite-plugin-dts": "catalog:"
+    "vite-plugin-dts": "catalog:",
+    "vitest": "catalog:"
   }
 }
