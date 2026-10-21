@@ -280,11 +280,11 @@ export function SchematicPage({ dark }: SchematicPageProps) {
           </CardHeader>
           <CardContent className="text-muted-foreground flex flex-col gap-1 text-[11px]">
             <span className="text-foreground">STM32G431</span>
-            <span className="font-mono text-[10px]">
-              string / number / integer / boolean / binary
-            </span>
+            <span className="font-mono text-[10px]">string / binary</span>
+            <span className="text-foreground">AT89C52</span>
+            <span className="font-mono text-[10px]">number / integer</span>
             <span className="text-foreground">TFT LCD</span>
-            <span className="font-mono text-[10px]">image / enum / color</span>
+            <span className="font-mono text-[10px]">image / enum / color / boolean</span>
             <span className="mt-1">
               image / binary 的值是资源引用{' '}
               <span className="font-mono text-[10px]">src + mode</span>，示例指向{' '}
@@ -409,7 +409,7 @@ export function SchematicPage({ dark }: SchematicPageProps) {
                     : `${state.document.sheet.symbols.length} 器件 · ${state.document.sheet.wires.length} 导线`}
                 </span>
                 <span className="text-muted-foreground">错误</span>
-                <span className="truncate">{state?.lastError?.message ?? '—'}</span>
+                <span className="break-words">{state?.lastError?.message ?? '—'}</span>
               </CardContent>
             </Card>
 

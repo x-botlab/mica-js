@@ -11,6 +11,7 @@ import {
 } from '@mica-js/core/schematic';
 
 const MCU = 'stm32-package:stm32g431rbt6-lqfp64';
+const MCU8051 = 'at89-package:at89c52';
 const LCD = 'lcd-package:ct117e-m4-tft-lcd-2-4';
 const TIMER = 'timer-package:ne555';
 
@@ -36,23 +37,56 @@ export const devices = createDeviceRegistry([
           },
           properties: {
             label: { type: 'string', title: '名称', default: 'MCU', maxLength: 24 },
-            speed: {
-              type: 'number',
-              title: '主频',
-              default: 72,
-              min: 1,
-              max: 170,
-              step: 1,
-              unit: 'MHz',
-            },
-            cores: { type: 'integer', title: '核心数', default: 1, min: 1, max: 2 },
-            enabled: { type: 'boolean', title: '启用', default: true },
             firmware: {
               type: 'binary',
               title: '固件',
               default: { src: 'assets/firmware/m4-demo.bin', mode: 'file' },
               maxBytes: 1048576,
             },
+          },
+        },
+      },
+    ],
+  },
+  {
+    packageId: 'at89-package',
+    devices: [
+      {
+        id: 'at89c52',
+        displayName: 'AT89C52',
+        designatorPrefix: 'U',
+        raw: {
+          pins: {
+            'P0.0': { side: 'left' },
+            'P0.1': { side: 'left' },
+            'P0.2': { side: 'left' },
+            'P0.3': { side: 'left' },
+            'P2.0': { side: 'right' },
+            'P2.1': { side: 'right' },
+            'P2.2': { side: 'right' },
+            'P2.3': { side: 'right' },
+            RXD: { side: 'right' },
+            TXD: { side: 'right' },
+            VCC: { side: 'top' },
+            EA: { side: 'top' },
+            RST: { side: 'top' },
+            GND: { side: 'bottom' },
+            XTAL1: { side: 'bottom' },
+            XTAL2: { side: 'bottom' },
+          },
+          // 8051 的主频由外部晶振决定，因此这里声明为器件属性而不是固定的 RCC 配置。
+          properties: {
+            label: { type: 'string', title: '名称', default: '8051', maxLength: 24 },
+            speed: {
+              type: 'number',
+              title: '主频',
+              default: 11.0592,
+              min: 1,
+              max: 24,
+              step: 0.0001,
+              unit: 'MHz',
+            },
+            baud: { type: 'integer', title: '波特率', default: 9600, min: 1200, max: 115200 },
           },
         },
       },
@@ -91,6 +125,7 @@ export const devices = createDeviceRegistry([
               ],
             },
             backlight: { type: 'color', title: '背光', default: '#FFFFFF', alpha: true },
+            touch: { type: 'boolean', title: '触摸', default: false },
           },
         },
       },
@@ -131,12 +166,14 @@ export interface DeviceEntry {
 
 export const DEVICE_LIBRARY: readonly DeviceEntry[] = [
   { device: MCU, name: 'STM32G431RB', note: 'stm32-package', prefix: 'U' },
+  { device: MCU8051, name: 'AT89C52', note: 'at89-package', prefix: 'U' },
   { device: LCD, name: 'TFT LCD 2.4"', note: 'lcd-package', prefix: 'DS' },
   { device: TIMER, name: 'NE555', note: 'timer-package', prefix: 'U' },
 ];
 
 const placements = {
   mcu: { x: 480, y: 200, rotation: 0 },
+  mcu8051: { x: 760, y: 380, rotation: 0 },
   lcd: { x: 136, y: 60, rotation: 0 },
   timer: { x: 300, y: 380, rotation: 0 },
   label: { x: 268, y: 150, rotation: 0 },
@@ -178,9 +215,14 @@ const schematicText = JSON.stringify(
           ...placements.mcu,
           properties: {
             label: 'MCU',
-            speed: 168,
             firmware: { src: 'assets/firmware/m4-demo.bin', mode: 'file' },
           },
+        },
+        {
+          id: 'u3',
+          device: MCU8051,
+          ...placements.mcu8051,
+          properties: { speed: 12 },
         },
         {
           id: 's-lcd',

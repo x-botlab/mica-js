@@ -42,21 +42,28 @@ createDeviceRegistry([
     note: '属性类型与约束来自器件定义（#7），随 state.inspector 下发，宿主只负责渲染控件。',
     code: `// 器件定义：类型、默认值与约束都声明在 properties 里
 createDeviceRegistry([{
-  packageId: 'stm32-package',
+  packageId: 'at89-package',
   devices: [{
-    id: 'stm32g431rbt6-lqfp64',
+    id: 'at89c52',
     raw: {
       properties: {
-        speed: { type: 'number', title: '主频', default: 72, min: 1, max: 170, unit: 'MHz' },
-        firmware: {
-          type: 'binary',
-          default: { src: 'assets/firmware/m4-demo.bin', mode: 'file' },
-          maxBytes: 1048576,
+        speed: {
+          type: 'number',
+          title: '主频',
+          default: 11.0592,
+          min: 1,
+          max: 24,
+          step: 0.0001,
+          unit: 'MHz',
         },
+        baud: { type: 'integer', title: '波特率', default: 9600, min: 1200, max: 115200 },
       },
     },
   }],
 }]);
+
+// 二进制属性引用工程文件，而不是内联字节
+{ firmware: { src: 'assets/firmware/m4-demo.bin', mode: 'file' } }
 
 // 宿主渲染 state.inspector.properties（PropertyField[]）
 for (const field of inspector.properties) {
@@ -66,7 +73,7 @@ for (const field of inspector.properties) {
   field.min; field.max; field.step; field.unit; // 数值约束
 }
 
-controller.setSymbolProperty(id, 'speed', 168); // 按声明校验，越界会被拒绝
+controller.setSymbolProperty(id, 'speed', 12); // 按声明校验，越界会被拒绝
 controller.removeSymbolProperty(id, 'speed'); // 恢复默认`,
   },
   {
