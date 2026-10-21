@@ -1,0 +1,45 @@
+# @mica/playground
+
+Mica 各包的可交互示例站点：React + Vite + Tailwind v4 + [shadcn/ui](https://ui.shadcn.com/)，哈希路由单入口，页面直接引用 workspace 包源码。
+
+```bash
+pnpm --filter @mica/playground dev        # http://localhost:5173
+pnpm --filter @mica/playground run typecheck
+pnpm --filter @mica/playground run build
+```
+
+## 页面
+
+| 路由          | 页面         | 演示内容                                                       |
+| ------------- | ------------ | -------------------------------------------------------------- |
+| `#/`          | 概览         | 页面导航、workspace 命令速查                                   |
+| `#/schematic` | 原理图编辑器 | `@mica/schematic-editor`：器件库、放置、工具、显示、回调事件流 |
+| `#/sandbox`   | 沙箱         | `@mica/sandbox`：guest 代码编辑、启动/终止、调用与日志         |
+
+新增页面：在 `src/components/app-shell.tsx` 的 `PAGES` 里加一项（`id` 同时是路由），在 `src/App.tsx` 里渲染对应组件即可。
+
+## 目录
+
+```text
+src/components/app-shell.tsx   侧边导航 + 顶栏 + 主题切换
+src/components/ui/             shadcn/ui 组件（button / card / badge / textarea / separator）
+src/lib/router.ts              哈希路由（useHashRoute / navigate）
+src/lib/utils.ts               cn()
+src/pages/home.tsx             概览
+src/pages/schematic.tsx        原理图编辑器页：挂载编辑器并把宿主 UI 接上
+src/pages/sandbox.tsx          沙箱页：createSandbox + 调用 + 日志
+src/schematic/sample.ts        器件注册表、示例 .sch / .view、位号策略
+src/schematic/snippets.ts      编辑器页「用法」面板里的代码片段
+src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）
+```
+
+## 主题
+
+`index.css` 用 shadcn 的 oklch token；顶栏切换 `.dark` 类。原理图页同时把 `@mica/schematic-editor` 的主题（`DARK_SCHEMATIC_THEME` / `LIGHT_SCHEMATIC_THEME`）传给编辑器，使 Canvas 与页面 chrome 一起切换。
+
+## 别名
+
+`vite.config.ts` 与 `tsconfig.json` 各自声明了同一组别名：
+
+- `@/*` → `src/*`（shadcn 约定）
+- `@mica/core/schematic`、`@mica/schematic-editor`、`@mica/sandbox` → 对应包的 `src`，所以改包源码后刷新即生效，无需先构建。

@@ -17,11 +17,32 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 ```text
 .
 ├── apps/
+│   ├── playground/           # 各包示例站点（原理图编辑器、沙箱）
 │   └── sandbox-playground/   # 沙箱演示与手测面板
 └── packages/
     ├── core/                 # @mica/core：仿真内核
+    ├── schematic-editor/     # @mica/schematic-editor：Canvas 原理图编辑器
     └── sandbox/              # @mica/sandbox：iframe + Web Worker 通用 JS 沙箱
 ```
+
+## 原理图编辑器
+
+`@mica/schematic-editor` 把 `@mica/core/schematic` 的 `.sch` / `.view` 文档渲染成可编辑的 Canvas 画布：给一个容器元素即可挂载，工具栏、属性面板与交互都在包内，主题、显示选项、视口与历史通过返回值控制。
+
+```ts
+import { mountSchematicEditor } from '@mica/schematic-editor';
+
+const editor = mountSchematicEditor({
+  container: document.querySelector('#host'),
+  schematic,
+  devices, // 器件外形由宿主的 DeviceSymbolProvider 提供
+  onChange: (state) => setStatus(state),
+});
+
+editor.placeDevice('stm32-package:stm32g431rbt6-lqfp64'); // 抓到光标上，下一次点击落地
+```
+
+宿主 API、器件放置与回调时序见 [packages/schematic-editor/README.md](packages/schematic-editor/README.md)，可运行示例见 [apps/playground](apps/playground)。
 
 ## 沙箱
 
@@ -40,6 +61,16 @@ await sandbox.call('start');
 ```
 
 默认的 `srcdoc` 模式会继承宿主 CSP，严格 CSP 站点请改用 `frameUrl` 模式。宿主 CSP 要求、API、离屏渲染与安全边界详见 [packages/sandbox/README.md](packages/sandbox/README.md)，可运行演示见 [apps/sandbox-playground](apps/sandbox-playground)。
+
+## Playground
+
+[apps/playground](apps/playground) 是各包的可交互示例站点：React + Vite + Tailwind v4 + shadcn/ui，哈希路由单入口，页面直接引用包源码。目前包含概览、原理图编辑器（含宿主驱动器件放置与回调事件流）与沙箱（guest 代码执行与调用日志）三个页面。
+
+```bash
+pnpm --filter @mica/playground dev
+```
+
+新增页面只需在 `src/components/app-shell.tsx` 的 `PAGES` 里加一项，并在 `src/App.tsx` 中渲染对应组件。
 
 ## 开发路线
 

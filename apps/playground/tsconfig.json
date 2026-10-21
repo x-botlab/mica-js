@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@mica/core/schematic": ["../../packages/core/src/schematic/index.ts"],
+      "@mica/schematic-editor": ["../../packages/schematic-editor/src/index.ts"],
+      "@mica/sandbox": ["../../packages/sandbox/src/index.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}

@@ -86,8 +86,10 @@ deviceList.addEventListener('click', (event) => {
 ## 开发
 
 ```bash
-pnpm --filter @mica/schematic-editor run dev        # 打开 demo 预览
+pnpm --filter @mica/playground dev                  # 浏览器 playground（示例与用法）
 pnpm --filter @mica/schematic-editor run test
 pnpm --filter @mica/schematic-editor run typecheck
 pnpm --filter @mica/schematic-editor run build
 ```
+
+可运行的示例、宿主侧器件列表与事件回调演示见 [apps/playground](../../apps/playground)。
