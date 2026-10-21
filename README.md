@@ -99,42 +99,6 @@ pnpm run format       # Prettier 格式化
 
 Vite / Vitest / vite-plugin-dts 的版本通过 [pnpm catalog](pnpm-workspace.yaml) 统一管理，子包中用 `catalog:` 引用。CI 见 [.github/workflows/ci.yml](.github/workflows/ci.yml)，会依次执行格式检查、lint、类型检查、构建、单元测试与 Playground 的 Playwright 冒烟测试。
 
-## 发布
-
-版本与发布由 [Changesets](https://changesets.dev) 管理，配置在 [.changeset/config.json](.changeset/config.json)。
-
-```bash
-pnpm changeset            # 描述本次改动：涉及哪些包、patch / minor / major
-pnpm run version-packages # 汇总 changesets：改版本号、写 CHANGELOG、同步 lockfile
-pnpm run build            # changeset publish 不构建，发布前先构建产物
-pnpm run release          # 发布所有新版本，并创建 pkg@x.y.z 形式的 git tag
-```
-
-推送到 `main` 后 [.github/workflows/release.yml](.github/workflows/release.yml) 自动执行：
-
-1. 有未消费的 changeset 时，创建或更新 `chore(release): version packages` PR；
-2. 该 PR 合并后，构建并发布到 npm，同时创建 git tag 与 GitHub Release。
-
-仓库需要配置：
-
-| 配置                                                                                          | 用途                                                                        |
-| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| npm 包的 **Trusted Publisher**                                                                | 每个包在 npmjs.com → Settings → Trusted Publisher 绑定本仓库的 release 流程 |
-| `RELEASE_TOKEN` secret（可选）                                                                | 有 `repo` 权限的 PAT；用它创建的 PR 才会触发 CI，否则用默认 `GITHUB_TOKEN`  |
-| `Settings → Actions → General` 的「Allow GitHub Actions to create and approve pull requests」 | 允许 action 创建版本 PR                                                     |
-
-Trusted Publisher 按包配置，四个可发布包各填一次：
-
-| 字段              | 值                                              |
-| ----------------- | ----------------------------------------------- |
-| Provider          | GitHub Actions                                  |
-| Organization      | `x-botlab`                                      |
-| Repository        | `mica-js`                                       |
-| Workflow filename | `release.yml`                                   |
-| Allowed actions   | 勾选 **npm publish**（否则只能 staged publish） |
-
-发布时不需要任何 npm token：workflow 用 `id-token: write` 向 GitHub 申请 OIDC 令牌，pnpm 用它换取短时 npm 凭据并自动附带 provenance。这也是 npm 在 2FA-bypass token 弃用后推荐的方式。
-
 ## 许可证
 
 [MIT](LICENSE)

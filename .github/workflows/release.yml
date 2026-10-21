@@ -1,5 +1,16 @@
 name: Release
 
+# 版本与发布由 Changesets 驱动（配置见 .changeset/config.json）：
+#   - 有未消费的 changeset 时，创建/更新 "Version Packages" PR；
+#   - 该 PR 合并后，构建并发布到 npm，同时创建 git tag 与 GitHub Release。
+#
+# 发布走 npm trusted publishing（OIDC），不需要任何 npm token。每个可发布包需在
+# npmjs.com → Settings → Trusted Publisher 绑定：
+#   Provider = GitHub Actions / Organization = x-botlab / Repository = mica-js
+#   Workflow filename = release.yml / Allowed actions 勾选 npm publish
+# 仓库还需允许 actions 创建 PR（Settings → Actions → General）。
+# 可选：用 RELEASE_TOKEN（有 repo 权限的 PAT）创建版本 PR，让 PR 自身也能触发 CI。
+
 on:
   push:
     branches: [main]
