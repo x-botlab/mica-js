@@ -11,6 +11,13 @@ export interface ToolIcon {
 /** Toolbar entries, in display order. */
 export const TOOL_ICONS: readonly ToolIcon[] = [
   {
+    // Classic pointer arrow: the select tool the other tools fall back to.
+    tool: 'select',
+    label: '选择',
+    segments: ['M4 2.5 L4 12.5 L6.6 10.1 L8.4 13.5 L10 12.7 L8.2 9.4 L11.8 9.4 Z'],
+    dots: [],
+  },
+  {
     tool: 'wire',
     label: '导线',
     segments: ['M3.5 12.5 L12.5 3.5'],

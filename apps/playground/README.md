@@ -10,11 +10,11 @@ pnpm --filter @mica-js/playground run build
 
 ## 页面
 
-| 路由          | 页面         | 演示内容                                                          |
-| ------------- | ------------ | ----------------------------------------------------------------- |
-| `#/`          | 概览         | 页面导航、workspace 命令速查                                      |
-| `#/schematic` | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、放置、工具、显示、回调事件流 |
-| `#/sandbox`   | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动/终止、调用与日志         |
+| 路由          | 页面         | 演示内容                                                                |
+| ------------- | ------------ | ----------------------------------------------------------------------- |
+| `#/`          | 概览         | 页面导航、workspace 命令速查                                            |
+| `#/schematic` | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、宿主属性面板、显示开关、回调事件流 |
+| `#/sandbox`   | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动/终止、调用与日志               |
 
 新增页面：在 `src/components/app-shell.tsx` 的 `PAGES` 里加一项（`id` 同时是路由），在 `src/App.tsx` 里渲染对应组件即可。
 
@@ -22,7 +22,8 @@ pnpm --filter @mica-js/playground run build
 
 ```text
 src/components/app-shell.tsx   侧边导航 + 顶栏 + 主题切换
-src/components/ui/             shadcn/ui 组件（button / card / badge / textarea / separator）
+src/components/property-panel.tsx  宿主实现的属性面板（state.inspector → controller）
+src/components/ui/             shadcn/ui 组件（button / card / badge / input / textarea / separator）
 src/lib/router.ts              哈希路由（useHashRoute / navigate）
 src/lib/utils.ts               cn()
 src/pages/home.tsx             概览

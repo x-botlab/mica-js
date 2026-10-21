@@ -104,6 +104,30 @@ describe('SchematicEditorController', () => {
     expect(controller.state.lastError).toBeUndefined();
   });
 
+  it('records validation rejections in state.lastError', () => {
+    const controller = createController(
+      documentOf({
+        symbols: [
+          { id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 },
+          { id: 's2', device: 'pkg:mcu', x: 20, y: 0, rotation: 0, designator: 'U2' },
+        ],
+      }),
+    );
+    // Duplicate designator: rejected before any mutation happened.
+    expect(() => controller.renameDesignator('s1', 'U2')).toThrow(SchematicError);
+    expect(controller.state.lastError?.message).toContain('already used');
+    expect(controller.nextDesignator('pkg:mcu')).toBe('U1');
+
+    // Rejections outside a transaction (bad reference, short wire) report the same way.
+    expect(() => controller.placeDevice('nonsense')).toThrow(SchematicError);
+    expect(controller.state.lastError?.message).toContain('Invalid device reference');
+    expect(() => controller.addWire([{ x: 0, y: 0 }])).toThrow(SchematicError);
+    expect(controller.state.lastError?.message).toContain('two points');
+
+    controller.renameDesignator('s1', 'U1');
+    expect(controller.state.lastError).toBeUndefined();
+  });
+
   it('drops selection entries that no longer exist', () => {
     const controller = createController(
       documentOf({

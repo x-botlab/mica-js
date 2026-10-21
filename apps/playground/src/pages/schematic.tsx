@@ -4,25 +4,17 @@ import {
   mountSchematicEditor,
   type EditorSelection,
   type EditorState,
-  type EditorTool,
   type MountedSchematicEditor,
 } from '@mica-js/schematic-editor';
+import type { PropertyValue } from '@mica-js/core/schematic';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { PropertyPanel } from '@/components/property-panel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { DEVICE_LIBRARY, devices, schematic, view } from '@/schematic/sample';
 import { USAGE_SNIPPETS } from '@/schematic/snippets';
-
-const BUILTIN_TOOLS: readonly { readonly tool: EditorTool; readonly label: string }[] = [
-  { tool: 'select', label: '选择' },
-  { tool: 'wire', label: '导线' },
-  { tool: 'label', label: '网络标签' },
-  { tool: 'power', label: '电源' },
-  { tool: 'ground', label: '地' },
-  { tool: 'text', label: '文本' },
-];
 
 const SELECTION_LABELS: Readonly<Record<EditorSelection['kind'], string>> = {
   symbol: '器件',
@@ -47,6 +39,15 @@ function describeSelection(selection: readonly EditorSelection[]): string {
     counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
   }
   return [...counts].map(([kind, count]) => `${SELECTION_LABELS[kind]} ×${count}`).join(' · ');
+}
+
+/** Host-side guard: controller edits still throw, but the error already reached `onError`. */
+function run(edit: () => void): void {
+  try {
+    edit();
+  } catch {
+    // Surface through `state.lastError` / `onError`; the reference host keeps the page alive.
+  }
 }
 
 export interface SchematicPageProps {
@@ -120,20 +121,8 @@ export function SchematicPage({ dark }: SchematicPageProps) {
   }, [dark]);
 
   const placeDevice = (device: string): void => {
-    editorRef.current?.placeDevice(device);
+    run(() => editorRef.current?.placeDevice(device));
     pushLog(`placeDevice('${device}')`);
-  };
-
-  const selectTool = (tool: EditorTool): void => {
-    const editor = editorRef.current;
-    if (editor === null) {
-      return;
-    }
-    const idle = editor.controller.placingDevice === undefined;
-    const next = idle && editor.controller.tool === tool ? 'select' : tool;
-    editor.cancelPlacement();
-    editor.setTool(next);
-    pushLog(`setTool('${next}')`);
   };
 
   const setDisplay = (patch: {
@@ -160,16 +149,30 @@ export function SchematicPage({ dark }: SchematicPageProps) {
     pushLog('toJSON() → schematic.sch');
   };
 
+  const updateProperty = (symbolId: string, key: string, value: PropertyValue): void => {
+    run(() => editorRef.current?.controller.setSymbolProperty(symbolId, key, value));
+    pushLog(`setSymbolProperty('${key}', ${JSON.stringify(value)})`);
+  };
+
+  const resetProperty = (symbolId: string, key: string): void => {
+    run(() => editorRef.current?.controller.removeSymbolProperty(symbolId, key));
+    pushLog(`removeSymbolProperty('${key}')`);
+  };
+
+  const renameDesignator = (symbolId: string, next: string): void => {
+    run(() => editorRef.current?.controller.renameDesignator(symbolId, next));
+    pushLog(`renameDesignator('${next}')`);
+  };
+
+  const renameNet = (symbolId: string, next: string): void => {
+    run(() => editorRef.current?.controller.renameNet(symbolId, next));
+    pushLog(`renameNet('${next}')`);
+  };
+
   const placingDevice = state?.placingDevice;
-  const activeTool = placingDevice === undefined ? state?.tool : undefined;
 
   return (
-    <div
-      className={cn(
-        'grid h-full min-h-0 grid-rows-[minmax(0,1fr)] gap-3 p-3',
-        infoOpen ? 'grid-cols-[204px_minmax(0,1fr)_324px]' : 'grid-cols-[204px_minmax(0,1fr)]',
-      )}
-    >
+    <div className="grid h-full min-h-0 grid-cols-[204px_minmax(0,1fr)_324px] grid-rows-[minmax(0,1fr)] gap-3 p-3">
       <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
         <Card className="gap-2 py-3">
           <CardHeader>
@@ -201,20 +204,17 @@ export function SchematicPage({ dark }: SchematicPageProps) {
 
         <Card className="gap-2 py-3">
           <CardHeader>
-            <CardTitle>内置符号</CardTitle>
-            <CardDescription>只是 setTool 的另一种入口</CardDescription>
+            <CardTitle>工具条</CardTitle>
+            <CardDescription>内建工具条悬浮在画布右上角，可用 toolbar: false 关掉</CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-wrap gap-1">
-            {BUILTIN_TOOLS.map(({ tool, label }) => (
-              <Button
-                key={tool}
-                size="xs"
-                variant={activeTool === tool ? 'default' : 'outline'}
-                onClick={() => selectTool(tool)}
-              >
-                {label}
-              </Button>
-            ))}
+          <CardContent className="text-muted-foreground flex flex-col gap-1 text-[11px]">
+            <span>
+              当前工具：<span className="text-foreground font-mono">{state?.tool ?? '—'}</span>
+            </span>
+            <span>
+              抓取中：
+              <span className="text-foreground font-mono">{placingDevice ?? '—'}</span>
+            </span>
           </CardContent>
         </Card>
 
@@ -309,74 +309,115 @@ export function SchematicPage({ dark }: SchematicPageProps) {
         <div ref={hostRef} className="bg-card min-h-0 flex-1 overflow-hidden rounded-xl border" />
       </div>
 
-      {infoOpen ? (
-        <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pl-1">
-          <Card className="gap-2 py-3">
-            <CardHeader>
-              <CardTitle>用法</CardTitle>
-              <CardDescription>这段代码就是本页做的事</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-1.5">
-              {USAGE_SNIPPETS.map((snippet, index) => (
-                <details
-                  key={snippet.title}
-                  open={index === 0}
-                  className="group rounded-md border px-2 py-1.5"
-                >
-                  <summary className="cursor-pointer text-xs font-medium">{snippet.title}</summary>
-                  <p className="text-muted-foreground mt-1 text-[11px]">{snippet.note}</p>
-                  <pre className="mt-1.5 overflow-x-auto font-mono text-[10.5px] leading-[1.6]">
-                    {snippet.code}
-                  </pre>
-                </details>
-              ))}
-            </CardContent>
-          </Card>
+      <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pl-1">
+        <PropertyPanel
+          inspector={state?.inspector}
+          readOnly={false}
+          onPropertyChange={updateProperty}
+          onPropertyReset={resetProperty}
+          onDesignatorChange={renameDesignator}
+          onNetChange={renameNet}
+        />
 
-          <Card className="gap-2 py-3">
-            <CardHeader>
-              <CardTitle>状态</CardTitle>
-            </CardHeader>
-            <CardContent className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-              <span className="text-muted-foreground">工具</span>
-              <span className="font-mono">{state?.tool ?? '—'}</span>
-              <span className="text-muted-foreground">抓取</span>
-              <span className="truncate font-mono">{placingDevice ?? '—'}</span>
-              <span className="text-muted-foreground">选中</span>
-              <span>{state === null ? '—' : describeSelection(state.selection)}</span>
-              <span className="text-muted-foreground">图元</span>
-              <span className="font-mono">
-                {state === null
-                  ? '—'
-                  : `${state.document.sheet.symbols.length} 器件 · ${state.document.sheet.wires.length} 导线`}
-              </span>
-              <span className="text-muted-foreground">错误</span>
-              <span className="truncate">{state?.lastError?.message ?? '—'}</span>
-            </CardContent>
-          </Card>
+        <Card className="gap-2 py-3">
+          <CardHeader>
+            <CardTitle>状态</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+            <span className="text-muted-foreground">工具</span>
+            <span className="font-mono">{state?.tool ?? '—'}</span>
+            <span className="text-muted-foreground">抓取</span>
+            <span className="truncate font-mono">{placingDevice ?? '—'}</span>
+            <span className="text-muted-foreground">选中</span>
+            <span>{state === null ? '—' : describeSelection(state.selection)}</span>
+            <span className="text-muted-foreground">图元</span>
+            <span className="font-mono">
+              {state === null
+                ? '—'
+                : `${state.document.sheet.symbols.length} 器件 · ${state.document.sheet.wires.length} 导线`}
+            </span>
+            <span className="text-muted-foreground">错误</span>
+            <span className="truncate">{state?.lastError?.message ?? '—'}</span>
+          </CardContent>
+        </Card>
 
-          <Card className="gap-2 py-3">
-            <CardHeader>
-              <CardTitle className="flex items-center justify-between">
-                事件
-                <Badge variant="muted">{log.length}</Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex max-h-72 flex-col gap-1 overflow-y-auto font-mono text-[10.5px]">
-              {log.length === 0 ? (
-                <span className="text-muted-foreground">等待交互…</span>
-              ) : (
-                log.map((entry) => (
-                  <div key={entry.id} className="flex gap-2">
-                    <span className="text-muted-foreground/70 shrink-0">{entry.time}</span>
-                    <span className="break-all">{entry.text}</span>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
+        {infoOpen ? (
+          <>
+            <Card className="gap-2 py-3">
+              <CardHeader>
+                <CardTitle>用法</CardTitle>
+                <CardDescription>这段代码就是本页做的事</CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-1.5">
+                {USAGE_SNIPPETS.map((snippet, index) => (
+                  <details
+                    key={snippet.title}
+                    open={index === 0}
+                    className="group rounded-md border px-2 py-1.5"
+                  >
+                    <summary className="cursor-pointer text-xs font-medium">
+                      {snippet.title}
+                    </summary>
+                    <p className="text-muted-foreground mt-1 text-[11px]">{snippet.note}</p>
+                    <pre className="mt-1.5 overflow-x-auto font-mono text-[10.5px] leading-[1.6]">
+                      {snippet.code}
+                    </pre>
+                  </details>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card className="gap-2 py-3">
+              <CardHeader>
+                <CardTitle>状态</CardTitle>
+              </CardHeader>
+              <CardContent className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+                <span className="text-muted-foreground">工具</span>
+                <span className="font-mono">{state?.tool ?? '—'}</span>
+                <span className="text-muted-foreground">抓取</span>
+                <span className="truncate font-mono">{placingDevice ?? '—'}</span>
+                <span className="text-muted-foreground">选中</span>
+                <span>{state === null ? '—' : describeSelection(state.selection)}</span>
+                <span className="text-muted-foreground">图元</span>
+                <span className="font-mono">
+                  {state === null
+                    ? '—'
+                    : `${state.document.sheet.symbols.length} 器件 · ${state.document.sheet.wires.length} 导线`}
+                </span>
+                <span className="text-muted-foreground">错误</span>
+                <span className="truncate">{state?.lastError?.message ?? '—'}</span>
+              </CardContent>
+            </Card>
+
+            <Card className="gap-2 py-3">
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between">
+                  事件
+                  <Badge variant="muted">{log.length}</Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex max-h-72 flex-col gap-1 overflow-y-auto font-mono text-[10.5px]">
+                {log.length === 0 ? (
+                  <span className="text-muted-foreground">等待交互…</span>
+                ) : (
+                  log.map((entry) => (
+                    <div key={entry.id} className="flex gap-2">
+                      <span className="text-muted-foreground/70 shrink-0">{entry.time}</span>
+                      <span className="break-all">{entry.text}</span>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+          </>
+        ) : null}
+      </div>
+
+      {state?.lastError === undefined ? null : (
+        <div className="bg-card pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-md border px-3 py-1.5 text-xs shadow-lg">
+          {state.lastError.message}
         </div>
-      ) : null}
+      )}
     </div>
   );
 }

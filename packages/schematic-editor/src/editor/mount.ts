@@ -1,6 +1,7 @@
 import type {
   DesignatorFactory,
   DeviceSymbolProvider,
+  Point,
   SchematicDocument,
   SchematicError,
   SchematicViewDocument,
@@ -9,13 +10,14 @@ import { serializeSchematic } from '@mica-js/core/schematic';
 import { SchematicEditorController } from '../controller/controller';
 import { sameSelection } from '../controller/selection';
 import type { DisplayOptions, EditorSelection, EditorState, EditorTool } from '../controller/types';
-import { PropertyPanel } from '../panel/property-panel';
 import { CanvasSchematicRenderer } from '../render/canvas-renderer';
 import { buildSchematicScene } from '../render/scene';
 import { resolveSchematicTheme, themeToCssVariables, type SchematicTheme } from '../render/theme';
 import {
   resolveViewportLimits,
   clampViewport,
+  pageToScreen,
+  screenToPage,
   type ViewportLimits,
   type ViewportState,
 } from '../render/viewport';
@@ -38,12 +40,10 @@ export interface MountSchematicEditorOptions {
   readonly createDesignator?: DesignatorFactory;
   /** Zoom range for wheel, fit and `zoomTo`; defaults to 0.25×–4×. */
   readonly zoomLimits?: Partial<ViewportLimits>;
-  /** Disables the built-in interactions and property editing; the controller stays writable. */
+  /** Disables the built-in interactions; the controller stays writable. */
   readonly readOnly?: boolean;
-  /** Defaults to true. */
+  /** Renders the floating tool strip in the canvas corner; defaults to true. */
   readonly toolbar?: boolean;
-  /** Defaults to true; the right-hand inspector column. */
-  readonly propertiesPanel?: boolean;
   readonly onChange?: (state: EditorState) => void;
   readonly onSelectionChange?: (selection: readonly EditorSelection[]) => void;
   readonly onToolChange?: (tool: EditorTool) => void;
@@ -57,7 +57,6 @@ export interface MountedSchematicEditor {
   readonly controller: SchematicEditorController;
   readonly root: HTMLElement;
   readonly canvas: HTMLCanvasElement;
-  readonly propertiesPanel: HTMLElement;
 
   /**
    * Loads another document. By default history and selection start over; `keepHistory` records
@@ -86,6 +85,12 @@ export interface MountedSchematicEditor {
   setViewport(viewport: ViewportState): void;
   /** Serializes the current document as `.sch` JSON. */
   toJSON(): string;
+  /** Moves keyboard focus to the canvas surface; call after host toolbar interactions. */
+  focus(): void;
+  /** Canvas-relative client coordinates → page coordinates (for host overlays). */
+  toPage(clientPoint: Point): Point;
+  /** Page coordinates → canvas-relative CSS pixels (for host overlays). */
+  toScreen(pagePoint: Point): Point;
   /** Re-measures the container; call after showing a previously hidden editor. */
   resize(): void;
   /** Repaints without touching layout (e.g. after a device-pixel-ratio change). */
@@ -100,7 +105,6 @@ export interface MountedSchematicEditor {
 export function mountSchematicEditor(options: MountSchematicEditorOptions): MountedSchematicEditor {
   const doc = options.container.ownerDocument;
   const readOnly = options.readOnly ?? false;
-  const showPanel = options.propertiesPanel !== false;
 
   const controller = new SchematicEditorController({
     document: options.schematic,
@@ -118,39 +122,11 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     document: doc,
     readOnly,
     toolbar: options.toolbar !== false,
-    propertiesPanel: showPanel,
     onToolClick: (tool) => {
       controller.setTool(controller.tool === tool ? 'select' : tool);
       shell.root.focus();
     },
   });
-
-  const panel = new PropertyPanel({
-    readOnly,
-    onPropertyChange: (symbolId, key, value) => {
-      if (!readOnly) {
-        run(() => controller.setSymbolProperty(symbolId, key, value));
-      }
-    },
-    onPropertyReset: (symbolId, key) => {
-      if (!readOnly) {
-        run(() => controller.removeSymbolProperty(symbolId, key));
-      }
-    },
-    onDesignatorChange: (symbolId, next) => {
-      if (!readOnly) {
-        run(() => controller.renameDesignator(symbolId, next));
-      }
-    },
-    onNetChange: (symbolId, next) => {
-      if (!readOnly) {
-        run(() => controller.renameNet(symbolId, next));
-      }
-    },
-  });
-  if (showPanel) {
-    shell.root.append(panel.element);
-  }
 
   const viewport = new EditorViewport(resolveViewportLimits(options.zoomLimits));
   const renderer = new CanvasSchematicRenderer(shell.canvas, {
@@ -186,7 +162,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     try {
       edit();
     } catch {
-      // Errors surface through `state.lastError` and the toast; the document stays untouched.
+      // Errors surface through `state.lastError` / `onError`; the document stays untouched.
     }
   }
 
@@ -233,12 +209,9 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
   }
 
   function sync(state: EditorState): void {
-    panel.update(state.inspector);
     shell.setToolActive(state.tool);
     shell.canvas.style.cursor =
       state.tool === 'select' && state.placingDevice === undefined ? 'default' : 'crosshair';
-    shell.toast.textContent = state.lastError?.message ?? '';
-    shell.toast.hidden = state.lastError === undefined;
     if (state.lastError !== lastError) {
       lastError = state.lastError;
       options.onError?.(state.lastError);
@@ -293,7 +266,6 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     controller,
     root: shell.root,
     canvas: shell.canvas,
-    propertiesPanel: panel.element,
     setSchematic(document: SchematicDocument, setOptions: { keepHistory?: boolean } = {}): void {
       if (setOptions.keepHistory === true) {
         run(() => controller.replace(document));
@@ -349,6 +321,19 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     },
     toJSON(): string {
       return serializeSchematic(controller.document);
+    },
+    focus(): void {
+      shell.root.focus();
+    },
+    toPage(clientPoint: Point): Point {
+      const rect = shell.canvas.getBoundingClientRect();
+      return screenToPage(viewport.state, {
+        x: clientPoint.x - rect.left,
+        y: clientPoint.y - rect.top,
+      });
+    },
+    toScreen(pagePoint: Point): Point {
+      return pageToScreen(viewport.state, pagePoint);
     },
     resize,
     invalidate: render,

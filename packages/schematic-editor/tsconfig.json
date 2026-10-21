@@ -6,5 +6,5 @@
       "@mica-js/core/schematic": ["../core/src/schematic/index.ts"]
     }
   },
-  "include": ["src", "demo"]
+  "include": ["src"]
 }

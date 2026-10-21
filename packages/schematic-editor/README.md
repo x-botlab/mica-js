@@ -23,9 +23,8 @@ const editor = mountSchematicEditor({
   historyLimit, // 可选；撤销栈上限
   createDesignator, // 可选；(device, document) => string，完全接管新器件位号；默认用器件定义里的 designatorPrefix
   zoomLimits, // 可选；{ minScale, maxScale }，默认 0.25–4
-  readOnly, // 可选；禁用内建交互与属性编辑，controller 仍可写
-  toolbar, // 可选；默认 true
-  propertiesPanel, // 可选；默认 true
+  readOnly, // 可选；禁用内建交互，controller 仍可写
+  toolbar, // 可选；默认 true，画布右上角的悬浮工具条
   onChange, // (state: EditorState) => void
   onSelectionChange, // (selection: EditorSelection[]) => void
   onToolChange, // (tool: EditorTool) => void
@@ -39,7 +38,7 @@ const editor = mountSchematicEditor({
 | 成员                                       | 说明                                                                   |
 | ------------------------------------------ | ---------------------------------------------------------------------- |
 | `controller`                               | 无 DOM 的 `SchematicEditorController`，可直接驱动文档                  |
-| `root` / `canvas` / `propertiesPanel`      | 三个可定位的 DOM 节点                                                  |
+| `root` / `canvas`                          | 画布容器与 canvas；编辑器只输出这两个 DOM 节点                         |
 | `setSchematic(document, { keepHistory? })` | 换文档；默认清空历史并重新适应内容，`keepHistory` 时作为一次可撤销编辑 |
 | `setView(view \| undefined)`               | 换只读视图覆盖                                                         |
 | `setTheme(partial)` / `getTheme()`         | 增量换主题 / 读回当前主题                                              |
@@ -49,14 +48,36 @@ const editor = mountSchematicEditor({
 | `cancelPlacement()`                        | 取消抓取，文档不变                                                     |
 | `fitToContent()` / `zoomTo(scale)`         | 视图缩放，`zoomTo` 会夹到 `zoomLimits`                                 |
 | `getViewport()` / `setViewport(state)`     | 读回/恢复缩放与平移；恢复时按画布中心夹取比例                          |
+| `toPage(clientPoint)` / `toScreen(point)`  | 客户端坐标 ↔ 页面坐标，宿主定位浮层时用                                |
 | `toJSON()`                                 | 序列化为 `.sch` JSON                                                   |
+| `focus()`                                  | 把键盘焦点交还画布（宿主点完自己的按钮后调用）                         |
 | `resize()` / `invalidate()`                | 容器显隐后重新测量 / 只重绘不改布局                                    |
 | `undo()` / `redo()`                        | 历史                                                                   |
 | `dispose()`                                | 解绑监听、断开 `ResizeObserver`、移除 root                             |
 
-回调时序：控制器发状态 → 面板/工具条/错误提示更新 → `onSelectionChange` / `onToolChange` / `onError`（仅在变化时）→ `onChange(state)` → 重绘 → `onViewportChange`（仅在视口变化时）。
+回调时序：控制器发状态 → 工具条与光标更新 → `onSelectionChange` / `onToolChange` / `onError`（仅在变化时）→ `onChange(state)` → 重绘 → `onViewportChange`（仅在视口变化时）。
 
-编辑错误：编辑器内建交互（拖拽、工具栏、属性面板）产生的错误不会抛给宿主，只会触发 `onError` 并写入 `state.lastError`；但直接调用 `controller.dispatch()` 等方法时仍会抛出 `SchematicError`，宿主自行 `try/catch` 即可（`onError` 同样会先触发）。
+编辑错误：所有被拒绝的编辑都会写入 `state.lastError` 并触发 `onError`，内建交互不会中断页面；直接调用 `controller.*` 时错误仍会抛出，宿主 `try/catch` 即可（`onError` 会先触发）。
+
+## 宿主 UI 合同
+
+编辑器只内建**画布**与**右下角悬浮工具条**；属性面板、器件库、文件操作、错误提示都由宿主实现，以便与宿主的外观保持一致。
+
+| 宿主 UI        | 读                                  | 写                                                                                         |
+| -------------- | ----------------------------------- | ------------------------------------------------------------------------------------------ |
+| 工具条（可选） | `state.tool`、`state.placingDevice` | `setTool()` / `placeDevice()` / `cancelPlacement()`（`toolbar: false` 时自建）             |
+| 撤销 / 重做    | `state.canUndo` / `state.canRedo`   | `undo()` / `redo()`                                                                        |
+| 缩放 / 适应    | `onViewportChange`、`getViewport()` | `zoomTo()` / `fitToContent()` / `setViewport()`                                            |
+| 网格与吸附     | `state.display`                     | `setDisplayOptions()`                                                                      |
+| 属性面板       | `state.inspector`                   | `controller.setSymbolProperty` / `removeSymbolProperty` / `renameDesignator` / `renameNet` |
+| 错误提示       | `state.lastError`、`onError`        | —                                                                                          |
+
+`state.inspector` 的渲染约定（参考实现见 [apps/playground](../../apps/playground/src/components/property-panel.tsx)）：
+
+- `kind === 'wire'`：只读信息（`id`、`netName`、`points`）。
+- 其它情况是 `SymbolInspector`：`role` 决定标题，`designator`（仅器件）与 `net`（网标/电源/地）可编辑，`x`/`y`/`rotation` 只读。
+- `properties` 是 `PropertyField[]`：`type` 为 `string` / `number` / `boolean`，`value === undefined` 表示继承 `defaultValue`；清空输入 → `removeSymbolProperty`，写值 → `setSymbolProperty`。
+- 属性面板只在单选时有内容；多选、空选、选中交点时为 `undefined`（交点没有可编辑字段）。
 
 ### 网格与吸附
 

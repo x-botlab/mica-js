@@ -167,13 +167,15 @@ export class SchematicEditorController {
    */
   placeDevice(device: string): void {
     if (parseDeviceReference(device) === undefined) {
-      throw new SchematicError([
-        {
-          severity: 'error',
-          code: 'device/invalid-reference',
-          message: `Invalid device reference ${JSON.stringify(device)}.`,
-        },
-      ]);
+      this.#reject(
+        new SchematicError([
+          {
+            severity: 'error',
+            code: 'device/invalid-reference',
+            message: `Invalid device reference ${JSON.stringify(device)}.`,
+          },
+        ]),
+      );
     }
     this.#placingDevice = device;
     this.#tool = 'select';
@@ -407,9 +409,11 @@ export class SchematicEditorController {
    */
   addWire(points: readonly Point[]): void {
     if (points.length < 2) {
-      throw new SchematicError([
-        { severity: 'error', code: 'wire/invalid-points', message: 'A wire needs two points.' },
-      ]);
+      this.#reject(
+        new SchematicError([
+          { severity: 'error', code: 'wire/invalid-points', message: 'A wire needs two points.' },
+        ]),
+      );
     }
     this.#mutate(
       () => {
@@ -630,23 +634,27 @@ export class SchematicEditorController {
     const symbol = this.#requireSymbol(symbolId);
     const role = symbolRole(symbol.device);
     if (!hasDesignator(role)) {
-      throw new SchematicError([
-        {
-          severity: 'error',
-          code: 'symbol/unsupported-field',
-          message: `Symbols of role "${role}" carry no reference designator.`,
-          entity: { kind: 'symbol', id: symbolId },
-        },
-      ]);
+      this.#reject(
+        new SchematicError([
+          {
+            severity: 'error',
+            code: 'symbol/unsupported-field',
+            message: `Symbols of role "${role}" carry no reference designator.`,
+            entity: { kind: 'symbol', id: symbolId },
+          },
+        ]),
+      );
     }
     if (trimmed.length === 0) {
-      throw new SchematicError([
-        {
-          severity: 'error',
-          code: 'schema/invalid-value',
-          message: 'Reference designator must not be empty.',
-        },
-      ]);
+      this.#reject(
+        new SchematicError([
+          {
+            severity: 'error',
+            code: 'schema/invalid-value',
+            message: 'Reference designator must not be empty.',
+          },
+        ]),
+      );
     }
     if (trimmed === designatorOf(symbol)) {
       return;
@@ -655,14 +663,16 @@ export class SchematicEditorController {
       (candidate) => candidate.id !== symbolId && designatorOf(candidate) === trimmed,
     );
     if (duplicate !== undefined) {
-      throw new SchematicError([
-        {
-          severity: 'error',
-          code: 'symbol/designator-duplicate',
-          message: `Reference designator ${JSON.stringify(trimmed)} is already used.`,
-          entity: { kind: 'symbol', id: duplicate.id },
-        },
-      ]);
+      this.#reject(
+        new SchematicError([
+          {
+            severity: 'error',
+            code: 'symbol/designator-duplicate',
+            message: `Reference designator ${JSON.stringify(trimmed)} is already used.`,
+            entity: { kind: 'symbol', id: duplicate.id },
+          },
+        ]),
+      );
     }
     this.#mutate(() => {
       this.#editor.dispatch({ type: 'update-symbol', id: symbolId, designator: trimmed });
@@ -680,23 +690,27 @@ export class SchematicEditorController {
     const symbol = this.#requireSymbol(symbolId);
     const role = symbolRole(symbol.device);
     if (!namesNet(role)) {
-      throw new SchematicError([
-        {
-          severity: 'error',
-          code: 'symbol/unsupported-field',
-          message: `Symbols of role "${role}" name no net.`,
-          entity: { kind: 'symbol', id: symbolId },
-        },
-      ]);
+      this.#reject(
+        new SchematicError([
+          {
+            severity: 'error',
+            code: 'symbol/unsupported-field',
+            message: `Symbols of role "${role}" name no net.`,
+            entity: { kind: 'symbol', id: symbolId },
+          },
+        ]),
+      );
     }
     if (trimmed.length === 0) {
-      throw new SchematicError([
-        {
-          severity: 'error',
-          code: 'schema/invalid-value',
-          message: 'Net name must not be empty.',
-        },
-      ]);
+      this.#reject(
+        new SchematicError([
+          {
+            severity: 'error',
+            code: 'schema/invalid-value',
+            message: 'Net name must not be empty.',
+          },
+        ]),
+      );
     }
     if (trimmed === netNameOf(symbol)) {
       return;
@@ -711,16 +725,25 @@ export class SchematicEditorController {
       (candidate) => candidate.id === symbolId,
     );
     if (symbol === undefined) {
-      throw new SchematicError([
-        {
-          severity: 'error',
-          code: 'edit/unknown-entity',
-          message: `Unknown symbol "${symbolId}".`,
-          entity: { kind: 'symbol', id: symbolId },
-        },
-      ]);
+      this.#reject(
+        new SchematicError([
+          {
+            severity: 'error',
+            code: 'edit/unknown-entity',
+            message: `Unknown symbol "${symbolId}".`,
+            entity: { kind: 'symbol', id: symbolId },
+          },
+        ]),
+      );
     }
     return symbol;
+  }
+
+  /** Records a rejected edit in `state.lastError`, notifies listeners, then rethrows. */
+  #reject(error: SchematicError): never {
+    this.#lastError = error;
+    this.#emit();
+    throw error;
   }
 
   removeSymbolProperty(symbolId: string, key: string): void {
