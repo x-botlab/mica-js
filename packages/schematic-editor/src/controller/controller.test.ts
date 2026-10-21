@@ -625,6 +625,33 @@ describe('SchematicEditorController', () => {
       expect(wirePoints(controller, 'w1')[0]).toEqual({ x: 0, y: 0 });
     });
 
+    it('slides the whole run of parallel segments so none of them goes diagonal', () => {
+      const controller = createController(
+        documentOf({
+          wires: [
+            {
+              id: 'w1',
+              points: [
+                { x: 0, y: 0 },
+                { x: 10, y: 0 },
+                { x: 20, y: 0 },
+                { x: 20, y: 30 },
+              ],
+            },
+          ],
+        }),
+      );
+
+      controller.moveWireSegment('w1', 0, { x: 0, y: 5 });
+
+      expect(wirePoints(controller, 'w1')).toEqual([
+        { x: 0, y: 5 },
+        { x: 10, y: 5 },
+        { x: 20, y: 5 },
+        { x: 20, y: 30 },
+      ]);
+    });
+
     it('keeps a pin-attached end and bends the wire into a dogleg', () => {
       const symbol = { id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 };
       const reference = parseDeviceReference('pkg:mcu');

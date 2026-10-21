@@ -446,9 +446,10 @@ export class SchematicEditorController {
   }
 
   /**
-   * Slides one wire segment by `delta`, carrying its two vertices along. Vertices that already
-   * connect to a pin, an anchor, a junction or another wire stay put, so the wire gains a dogleg
-   * instead of detaching.
+   * Slides one wire segment by `delta` along its normal. The whole run of segments parallel to it
+   * moves along, so no neighbour is left diagonal; where that run ends at a pin, an anchor, a
+   * junction or another wire, the vertex stays put and the wire gains a dogleg. Junctions left
+   * behind on the old geometry let go of this wire instead of failing the edit.
    */
   moveWireSegment(wireId: string, segment: number, delta: Point): void {
     const wire = this.#findWire(wireId);
@@ -457,6 +458,7 @@ export class SchematicEditorController {
       return;
     }
     this.#mutate(() => {
+      this.#releaseJunctions(wire.id, points);
       this.#editor.dispatch({ type: 'set-wire-points', id: wire.id, points });
     });
   }
@@ -472,24 +474,88 @@ export class SchematicEditorController {
     segment: number,
     delta: Point,
   ): readonly Point[] | undefined {
-    const start = wire.points[segment];
-    const end = wire.points[segment + 1];
+    const points = wire.points;
+    const start = points[segment];
+    const end = points[segment + 1];
     if (start === undefined || end === undefined || (delta.x === 0 && delta.y === 0)) {
       return undefined;
     }
+    if (start.x === end.x && start.y === end.y) {
+      return undefined;
+    }
+    // Dragging a horizontal segment moves its run vertically; the run only breaks at a segment
+    // pointing the other way (it just stretches) or at a connected vertex (it needs a dogleg).
+    const horizontal = start.y === end.y;
+    const isParallel = (from: Point, to: Point): boolean =>
+      horizontal ? from.y === to.y : from.x === to.x;
+
+    let first = segment;
+    while (first > 0) {
+      const previous = points[first - 1];
+      const current = points[first];
+      if (
+        previous === undefined ||
+        current === undefined ||
+        !isParallel(previous, current) ||
+        this.#isConnectedVertex(current, wire.id)
+      ) {
+        break;
+      }
+      first -= 1;
+    }
+    let last = segment + 1;
+    while (last < points.length - 1) {
+      const current = points[last];
+      const next = points[last + 1];
+      if (
+        current === undefined ||
+        next === undefined ||
+        !isParallel(current, next) ||
+        this.#isConnectedVertex(current, wire.id)
+      ) {
+        break;
+      }
+      last += 1;
+    }
+
+    const firstPoint = points[first];
+    const lastPoint = points[last];
+    if (firstPoint === undefined || lastPoint === undefined) {
+      return undefined;
+    }
     const shift = (point: Point): Point => ({ x: point.x + delta.x, y: point.y + delta.y });
-    const replacement: Point[] = [];
-    if (this.#isConnectedVertex(start, wire.id)) {
-      replacement.push(start, shift(start));
-    } else {
-      replacement.push(shift(start));
+    const moved: Point[] = [];
+    for (let index = first; index <= last; index += 1) {
+      const point = points[index];
+      if (point !== undefined) {
+        moved.push(shift(point));
+      }
     }
-    replacement.push(shift(end));
-    const endAnchored = this.#isConnectedVertex(end, wire.id);
-    if (endAnchored) {
-      replacement.push(end);
+    if (this.#isConnectedVertex(firstPoint, wire.id)) {
+      moved.unshift(firstPoint);
     }
-    return [...wire.points.slice(0, segment), ...replacement, ...wire.points.slice(segment + 2)];
+    if (this.#isConnectedVertex(lastPoint, wire.id)) {
+      moved.push(lastPoint);
+    }
+    return [...points.slice(0, first), ...moved, ...points.slice(last + 1)];
+  }
+
+  /** Drops this wire from junctions that no longer lie on its new geometry. */
+  #releaseJunctions(wireId: string, points: readonly Point[]): void {
+    for (const junction of [...this.#editor.document.sheet.junctions]) {
+      if (!junction.wires.includes(wireId)) {
+        continue;
+      }
+      if (pointOnPolyline(points, { x: junction.x, y: junction.y })) {
+        continue;
+      }
+      const remaining = junction.wires.filter((id) => id !== wireId);
+      if (remaining.length < 2) {
+        this.#editor.dispatch({ type: 'remove-junction', id: junction.id });
+      } else {
+        this.#editor.dispatch({ type: 'update-junction', id: junction.id, wires: remaining });
+      }
+    }
   }
 
   /** True when something other than this wire is attached at `point`. */

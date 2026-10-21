@@ -573,7 +573,7 @@ export class EditorInput {
       if (wire !== undefined && start !== undefined && end !== undefined) {
         // Segments only slide along their normal, so the wire stays orthogonal. The moved vertex
         // is snapped (not the delta) so dragged segments land on grid lines.
-        const horizontal = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y);
+        const horizontal = start.y === end.y;
         const target = snapToGrid(
           horizontal
             ? { x: start.x, y: start.y + (page.y - origin.y) }
