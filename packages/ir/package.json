@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "build": "vite build",
+    "prepack": "pnpm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

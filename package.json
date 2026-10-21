@@ -16,7 +16,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint:package": "pnpm --filter \"@mica-js/core\" --filter \"@mica-js/ir\" --filter \"@mica-js/sandbox\" --filter \"@mica-js/schematic-editor\" exec publint && pnpm --filter \"@mica-js/core\" --filter \"@mica-js/ir\" --filter \"@mica-js/schematic-editor\" exec attw --pack . --profile esm-only && pnpm --filter \"@mica-js/sandbox\" exec attw --pack . --profile esm-only --exclude-entrypoints ./frame.html",
+    "lint:package": "pnpm -r --filter \"./packages/*\" build && pnpm --filter \"@mica-js/core\" --filter \"@mica-js/ir\" --filter \"@mica-js/sandbox\" --filter \"@mica-js/schematic-editor\" exec publint && pnpm --filter \"@mica-js/core\" --filter \"@mica-js/ir\" --filter \"@mica-js/schematic-editor\" exec attw --pack . --profile esm-only && pnpm --filter \"@mica-js/sandbox\" exec attw --pack . --profile esm-only --exclude-entrypoints ./frame.html",
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm install --lockfile-only",
     "release": "changeset publish"
