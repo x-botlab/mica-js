@@ -69,7 +69,7 @@ function createFixture() {
   };
 }
 
-describe('@mica/ir storage', () => {
+describe('@mica-js/ir storage', () => {
   it('copies declared initial values for every supported layout', () => {
     const module = createIRModule();
     const flag = module.state('flag', 'bool', true);

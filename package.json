@@ -10,17 +10,22 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter \"@mica-js/playground\" test:e2e",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "lint:package": "pnpm --filter \"@mica-js/core\" --filter \"@mica-js/schematic-editor\" exec publint && pnpm --filter \"@mica-js/core\" --filter \"@mica-js/schematic-editor\" exec attw --pack . --profile esm-only"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
     "@eslint/js": "^10.0.1",
+    "@microsoft/api-extractor": "^7.59.4",
     "@types/node": "^24.19.2",
     "eslint": "^10.13.0",
     "prettier": "^3.9.10",
+    "publint": "^0.3.25",
     "typescript": "catalog:",
     "typescript-eslint": "^8.71.2"
   }

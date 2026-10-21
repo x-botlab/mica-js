@@ -1,4 +1,4 @@
-# @mica/sandbox
+# @mica-js/sandbox
 
 在**相对隔离**的环境中运行不可信的第三方 JavaScript（仿真器内核、2D Widget 等）。
 
@@ -16,7 +16,7 @@
 ## 快速上手
 
 ```ts
-import { createSandbox } from '@mica/sandbox';
+import { createSandbox } from '@mica-js/sandbox';
 
 const sandbox = await createSandbox({
   name: 'gauge',
@@ -80,7 +80,7 @@ frame-src 'self';
 帧文档由包提供：`dist/sandbox-frame.html`（也可用 `SANDBOX_FRAME_HTML` 动态返回，便于附加自己的响应头）：
 
 ```ts
-import { SANDBOX_FRAME_HTML } from '@mica/sandbox';
+import { SANDBOX_FRAME_HTML } from '@mica-js/sandbox';
 
 app.get('/mica-sandbox-frame.html', (_req, res) => {
   res
@@ -253,7 +253,7 @@ export function setup(ctx) {
 ## 错误与生命周期
 
 ```ts
-import { SandboxError } from '@mica/sandbox';
+import { SandboxError } from '@mica-js/sandbox';
 
 try {
   await sandbox.call('step', 1_000_000);
@@ -299,10 +299,10 @@ try {
 ## 开发
 
 ```bash
-pnpm --filter @mica/sandbox build      # 构建（内联 Worker 运行时 + 生成 sandbox-frame.html）
-pnpm --filter @mica/sandbox test       # Node 单测
-pnpm --filter @mica/sandbox typecheck
-pnpm --filter @mica/sandbox-playground dev   # 浏览器手测面板
+pnpm --filter @mica-js/sandbox build      # 构建（内联 Worker 运行时 + 生成 sandbox-frame.html）
+pnpm --filter @mica-js/sandbox test       # Node 单测
+pnpm --filter @mica-js/sandbox typecheck
+pnpm --filter @mica-js/sandbox-playground dev   # 浏览器手测面板
 ```
 
 `apps/sandbox-playground` 覆盖基础调用、capability、离屏 2D/WebGL、事件日志、错误、超时终止、隔离自检、classic script，以及 `inline` / `url` 两种模式切换。
