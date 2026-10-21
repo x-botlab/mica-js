@@ -29,3 +29,19 @@ export type {
 } from './electrical/electrical-types';
 export { ElectricalConflictError, resolveElectricalNetwork } from './electrical/electrical';
 export { createFloatingInput } from './electrical/floating-input';
+
+export { createTopologyRuntime } from './topology/topology';
+export type {
+  ConnectionState,
+  TopologyConnectionDeclaration,
+  TopologyConnectionPatch,
+  TopologyConnectionUpdate,
+  TopologyDefinition,
+  TopologyExternalWire,
+  TopologyFloatingOptions,
+  TopologyNetwork,
+  TopologyOptions,
+  TopologyPinDeclaration,
+  TopologyPinRef,
+  TopologyRuntime,
+} from './topology/topology-types';
