@@ -27,7 +27,7 @@ import {
   type ViewportLimits,
   type ViewportState,
 } from '../render/viewport';
-import { EditorInput } from './input';
+import { EditorInput } from './interactions/input';
 import { toSceneHighlight } from './scene-input';
 import { createShell } from './shell';
 import { EditorViewport } from './viewport-state';

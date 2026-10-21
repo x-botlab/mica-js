@@ -129,6 +129,16 @@ deviceList.addEventListener('click', (event) => {
 - 编辑：`dispatch`、`transaction`、`undo`、`redo`、`moveSelectionBy`、`rotateSelection`、`deleteSelection`、`addWire`、`connectWireAt`、`moveWireSegment`、`previewWireSegment`、`moveReferenceBy`、`setSymbolProperty`、`removeSymbolProperty`、`renameDesignator`、`renameNet`。
 - 查询：`inspect`、`topology`、`hitTest`、`subscribe`。
 
+## 内部结构
+
+| 目录                   | 职责                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| `controller/`          | 会话状态与命令桥接：选择、工具、历史、`.view` 覆盖（`view.ts`）、inspector   |
+| `editor/interactions/` | 指针与键盘状态机：`input.ts` 分发，`move` / `segment` / `wire` / `placement` |
+| `editor/snapping/`     | 吸附与放置辅助（节点、导线本体、网格、label stub），全部是无 DOM 的纯函数    |
+| `render/`              | 场景构建（`scene.ts`）与 canvas 绘制（`canvas-renderer.ts`）                 |
+| `styles/`              | 编辑器自带的极少量 CSS（工具条与画布容器）                                   |
+
 ## 开发
 
 ```bash
