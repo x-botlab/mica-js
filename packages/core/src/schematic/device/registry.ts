@@ -16,6 +16,7 @@ import type {
   PinAnchor,
   PinSide,
 } from './symbol';
+import { readPropertyDescriptors, type PropertyDescriptor } from './properties';
 import { synthesizeDeviceSymbol, type DevicePinDeclaration } from './synthesis';
 
 const PIN_SIDES: readonly PinSide[] = ['left', 'right', 'top', 'bottom'];
@@ -51,6 +52,8 @@ export interface ResolvedDevice {
   readonly description: string | undefined;
   /** Designator prefix declared by the device description; `undefined` when it declares none. */
   readonly designatorPrefix: string | undefined;
+  /** Property descriptors declared by `properties` (#7), keyed by property key. */
+  readonly propertyDescriptors: ReadonlyMap<string, PropertyDescriptor>;
   readonly symbol: DeviceSymbolDefinition | undefined;
   readonly raw: Readonly<Record<string, unknown>>;
 }
@@ -163,6 +166,7 @@ export function createDeviceRegistry(
           displayName,
           description: typeof entry.description === 'string' ? entry.description : undefined,
           designatorPrefix,
+          propertyDescriptors: readPropertyDescriptors(raw['properties']),
           symbol,
           raw,
         });
@@ -203,6 +207,10 @@ export function createDeviceRegistry(
 
     getDeviceDesignatorPrefix(reference) {
       return lookup(reference)?.designatorPrefix;
+    },
+
+    getDevicePropertyDescriptors(reference) {
+      return lookup(reference)?.propertyDescriptors;
     },
 
     get diagnostics() {

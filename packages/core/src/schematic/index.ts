@@ -1,5 +1,7 @@
 export { SCHEMATIC_VERSION } from './format/types';
 export type {
+  AssetMode,
+  AssetReference,
   Placement,
   Point,
   PropertyValue,
@@ -12,6 +14,14 @@ export type {
   SchematicViewDocument,
   SchematicWire,
 } from './format/types';
+
+export {
+  ASSET_MODES,
+  assetPathError,
+  base64Error,
+  isAssetMode,
+  isAssetReference,
+} from './format/asset';
 
 export type {
   Diagnostic,
@@ -119,6 +129,21 @@ export type {
   SymbolSynthesisOptions,
 } from './device/synthesis';
 export { createDeviceRegistry } from './device/registry';
+export {
+  PROPERTY_TYPES,
+  isPropertyType,
+  normalizeColor,
+  normalizePropertyValue,
+  parsePropertyDescriptor,
+  propertyValueProblem,
+  readPropertyDescriptors,
+} from './device/properties';
+export type {
+  PropertyDescriptor,
+  PropertyOption,
+  PropertyType,
+  PropertyValueProblem,
+} from './device/properties';
 export {
   DEFAULT_DESIGNATOR_PREFIX,
   createDesignatorFactory,

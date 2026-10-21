@@ -1,5 +1,6 @@
 import type { Diagnostic, DiagnosticCode, DiagnosticEntity } from './diagnostics';
-import type { Placement, Point, PropertyValue } from './types';
+import type { AssetMode, AssetReference, Placement, Point, PropertyValue } from './types';
+import { assetSrcError, isAssetMode } from './asset';
 
 export function toPointer(path: readonly string[]): string {
   if (path.length === 0) {
@@ -202,7 +203,49 @@ export interface IdentifiedEntry {
   readonly path: readonly string[];
 }
 
-/** Reads an optional `properties` map of scalar values (#6). */
+/**
+ * Reads an `image` / `binary` property value: a resource reference `{ "src", "mode" }` (#7).
+ * `src` is checked against the rules of its mode; content itself lives outside the document.
+ */
+export function readAssetReference(
+  value: unknown,
+  path: readonly string[],
+  diagnostics: Diagnostic[],
+): AssetReference | undefined {
+  if (!isRecord(value)) {
+    report(diagnostics, 'schema/invalid-type', 'Resource reference must be an object.', path);
+    return undefined;
+  }
+  forbidUnknownFields(value, ['src', 'mode'], path, diagnostics);
+  const src = readStringField(value, 'src', path, diagnostics, { nonEmpty: true });
+  let mode: AssetMode | undefined;
+  if (!Object.prototype.hasOwnProperty.call(value, 'mode')) {
+    report(diagnostics, 'schema/missing-field', 'Missing required field "mode".', [
+      ...path,
+      'mode',
+    ]);
+  } else if (isAssetMode(value['mode'])) {
+    mode = value['mode'];
+  } else {
+    report(
+      diagnostics,
+      'schema/invalid-value',
+      'Field "mode" must be "file", "inline" or "store".',
+      [...path, 'mode'],
+    );
+  }
+  if (src === undefined || mode === undefined) {
+    return undefined;
+  }
+  const srcError = assetSrcError(mode, src);
+  if (srcError !== undefined) {
+    report(diagnostics, 'schema/invalid-value', `Field "src" ${srcError}.`, [...path, 'src']);
+    return undefined;
+  }
+  return { src, mode };
+}
+
+/** Reads an optional `properties` map of scalars, resource references and explicit nulls (#6). */
 export function readProperties(
   value: unknown,
   path: readonly string[],
@@ -221,12 +264,12 @@ export function readProperties(
       continue;
     }
     const entryPath = [...path, key];
-    if (typeof entry === 'string') {
+    if (typeof entry === 'string' || typeof entry === 'boolean') {
       properties[key] = entry;
       continue;
     }
-    if (typeof entry === 'boolean') {
-      properties[key] = entry;
+    if (entry === null) {
+      properties[key] = null;
       continue;
     }
     if (typeof entry === 'number') {
@@ -243,10 +286,19 @@ export function readProperties(
       properties[key] = entry;
       continue;
     }
+    if (typeof entry === 'object' && !Array.isArray(entry)) {
+      const reference = readAssetReference(entry, entryPath, diagnostics);
+      if (reference === undefined) {
+        failed = true;
+        continue;
+      }
+      properties[key] = reference;
+      continue;
+    }
     report(
       diagnostics,
       'schema/invalid-value',
-      `Property "${key}" must be a string, finite number or boolean.`,
+      `Property "${key}" must be a string, finite number, boolean, resource reference or null.`,
       entryPath,
     );
     failed = true;

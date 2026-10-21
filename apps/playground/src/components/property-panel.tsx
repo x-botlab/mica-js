@@ -4,7 +4,10 @@ import type {
   SymbolInspector,
   WireInspector,
 } from '@mica-js/schematic-editor';
+import { useEffect, useState } from 'react';
 import type { PropertyValue } from '@mica-js/core/schematic';
+import type { AssetMode, PropertyType } from '@mica-js/core/schematic';
+import { base64Error, isAssetReference } from '@mica-js/core/schematic';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
@@ -19,6 +22,16 @@ const ROLE_TITLES: Readonly<Record<SymbolInspector['role'], string>> = {
 
 function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(2);
+}
+
+function formatBytes(value: number): string {
+  if (value >= 1024 * 1024) {
+    return `${Number((value / (1024 * 1024)).toFixed(1))} MiB`;
+  }
+  if (value >= 1024) {
+    return `${Number((value / 1024).toFixed(1))} KiB`;
+  }
+  return `${value} B`;
 }
 
 function formatPoint(point: { readonly x: number; readonly y: number } | undefined): string {
@@ -78,70 +91,354 @@ interface PropertyInputProps {
   readonly onReset: () => void;
 }
 
+const TYPE_TITLES: Readonly<Record<PropertyType, string>> = {
+  string: 'string',
+  integer: 'integer',
+  number: 'number',
+  boolean: 'boolean',
+  color: 'color',
+  enum: 'enum',
+  image: 'image',
+  binary: 'binary',
+};
+
+const ASSET_MODE_HINTS: Readonly<Record<AssetMode, string>> = {
+  file: '工程根相对路径，宿主解析',
+  inline: 'base64 内联',
+  store: '宿主资源标识',
+};
+
+function assetText(value: PropertyValue | undefined): string {
+  if (value === undefined) {
+    return '未声明';
+  }
+  if (value === null) {
+    return 'null';
+  }
+  if (isAssetReference(value)) {
+    return `${value.mode}:${value.src}`;
+  }
+  return String(value);
+}
+
+/** One property row: title, the control matching `field.type`, and a reset-to-default button. */
 function PropertyInput({ field, disabled, onChange, onReset }: PropertyInputProps) {
   const inherited = field.value === undefined;
-  const placeholder = inherited
-    ? field.defaultValue === undefined
-      ? '未设置'
-      : `${String(field.defaultValue)}（默认）`
-    : undefined;
-
-  if (field.type === 'boolean') {
-    const checked = field.value === true || (inherited && field.defaultValue === true);
-    return (
-      <div className="grid grid-cols-[56px_1fr_auto] items-center gap-2 text-[11px]">
-        <span className="text-muted-foreground">{field.key}</span>
-        <input
-          type="checkbox"
-          className="accent-primary size-3.5"
-          checked={checked}
-          disabled={disabled}
-          onChange={(event) => onChange(event.target.checked)}
-        />
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-dashed px-1.5 py-1">
+      <div className="flex items-center gap-1">
+        <span className="truncate text-[11px]" title={field.description ?? field.key}>
+          {field.title ?? field.key}
+        </span>
+        <span className="text-muted-foreground font-mono text-[9px]">{field.key}</span>
+        <span className="bg-muted text-muted-foreground ml-auto rounded px-1 font-mono text-[9px]">
+          {TYPE_TITLES[field.type]}
+        </span>
+        {inherited ? <span className="text-muted-foreground text-[9px]">继承</span> : null}
         <ResetButton inherited={inherited} disabled={disabled} onReset={onReset} />
       </div>
-    );
-  }
+      <PropertyControl field={field} disabled={disabled} onChange={onChange} onReset={onReset} />
+    </div>
+  );
+}
 
+function PropertyControl({ field, disabled, onChange, onReset }: PropertyInputProps) {
+  switch (field.type) {
+    case 'boolean':
+      return (
+        <BooleanControl field={field} disabled={disabled} onChange={onChange} onReset={onReset} />
+      );
+    case 'integer':
+    case 'number':
+      return (
+        <NumberControl field={field} disabled={disabled} onChange={onChange} onReset={onReset} />
+      );
+    case 'color':
+      return (
+        <ColorControl field={field} disabled={disabled} onChange={onChange} onReset={onReset} />
+      );
+    case 'enum':
+      return (
+        <EnumControl field={field} disabled={disabled} onChange={onChange} onReset={onReset} />
+      );
+    case 'image':
+    case 'binary':
+      return (
+        <AssetControl field={field} disabled={disabled} onChange={onChange} onReset={onReset} />
+      );
+    case 'string':
+      return (
+        <StringControl field={field} disabled={disabled} onChange={onChange} onReset={onReset} />
+      );
+  }
+}
+
+function commitOnEnter(event: React.KeyboardEvent<HTMLInputElement>): void {
+  if (event.key === 'Enter') {
+    event.currentTarget.blur();
+  }
+}
+
+function StringControl({ field, disabled, onChange, onReset }: PropertyInputProps) {
+  const inherited = field.value === undefined;
+  const current = typeof field.value === 'string' ? field.value : '';
   return (
-    <div className="grid grid-cols-[56px_1fr_auto] items-center gap-2 text-[11px]">
-      <span className="text-muted-foreground">{field.key}</span>
+    <Input
+      key={`${field.key}:${current}`}
+      aria-label={field.key}
+      defaultValue={current}
+      placeholder={inherited ? `默认：${assetText(field.defaultValue)}` : undefined}
+      maxLength={field.maxLength}
+      disabled={disabled}
+      onBlur={(event) => {
+        const input = event.currentTarget;
+        const next = input.value;
+        if (next === '') {
+          if (!inherited) {
+            onReset();
+          }
+          return;
+        }
+        if (next === current) {
+          return;
+        }
+        onChange(next);
+        input.value = current;
+      }}
+      onKeyDown={commitOnEnter}
+    />
+  );
+}
+
+function NumberControl({ field, disabled, onChange, onReset }: PropertyInputProps) {
+  const inherited = field.value === undefined;
+  const current = typeof field.value === 'number' ? String(field.value) : '';
+  return (
+    <div className="flex items-center gap-1">
       <Input
-        type={field.type === 'number' ? 'number' : 'text'}
-        key={`${field.key}:${String(field.value)}`}
-        defaultValue={field.value === undefined ? '' : String(field.value)}
-        placeholder={placeholder}
+        type="number"
+        key={`${field.key}:${current}`}
+        aria-label={field.key}
+        defaultValue={current}
+        placeholder={inherited ? `默认：${assetText(field.defaultValue)}` : undefined}
+        min={field.min ?? field.exclusiveMin}
+        max={field.max}
+        step={field.step ?? (field.type === 'integer' ? 1 : 'any')}
         disabled={disabled}
         onBlur={(event) => {
           const input = event.currentTarget;
           const text = input.value.trim();
-          const authoritative = field.value === undefined ? '' : String(field.value);
           if (text === '') {
             if (!inherited) {
               onReset();
             }
             return;
           }
-          if (field.type === 'number') {
-            const parsed = Number(text);
-            if (!Number.isFinite(parsed)) {
-              input.value = authoritative;
+          const parsed = Number(text);
+          if (
+            !Number.isFinite(parsed) ||
+            (field.type === 'integer' && !Number.isSafeInteger(parsed))
+          ) {
+            input.value = current;
+            return;
+          }
+          if (String(parsed) === current) {
+            return;
+          }
+          onChange(parsed);
+          input.value = current;
+        }}
+        onKeyDown={commitOnEnter}
+      />
+      {field.unit === undefined ? null : (
+        <span className="text-muted-foreground text-[10px]">{field.unit}</span>
+      )}
+    </div>
+  );
+}
+
+function BooleanControl({ field, disabled, onChange }: PropertyInputProps) {
+  const inherited = field.value === undefined;
+  const checked = field.value === true || (inherited && field.defaultValue === true);
+  return (
+    <label className="flex items-center gap-2 text-[11px]">
+      <input
+        type="checkbox"
+        aria-label={field.key}
+        className="accent-primary size-3.5"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+      <span className="text-muted-foreground">
+        {inherited ? `默认：${checked ? 'true' : 'false'}` : checked ? 'true' : 'false'}
+      </span>
+    </label>
+  );
+}
+
+function ColorControl({ field, disabled, onChange, onReset }: PropertyInputProps) {
+  const inherited = field.value === undefined;
+  const current =
+    typeof field.value === 'string'
+      ? field.value.toUpperCase()
+      : typeof field.defaultValue === 'string'
+        ? field.defaultValue.toUpperCase()
+        : '#000000';
+  const base = current.length === 9 ? current.slice(0, 7) : current;
+  return (
+    <div className="flex items-center gap-1">
+      <input
+        type="color"
+        aria-label={field.key}
+        className="bg-background h-6 w-8 rounded border"
+        value={base}
+        disabled={disabled}
+        onChange={(event) =>
+          onChange(
+            field.alpha === true
+              ? `${event.target.value.toUpperCase()}${current.length === 9 ? current.slice(7) : 'FF'}`
+              : event.target.value.toUpperCase(),
+          )
+        }
+      />
+      {field.alpha === true ? (
+        <Input
+          key={`${field.key}:${current}`}
+          aria-label={`${field.key} hex`}
+          defaultValue={current}
+          disabled={disabled}
+          className="font-mono text-[10px]"
+          onBlur={(event) => {
+            const input = event.currentTarget;
+            const next = input.value.trim().toUpperCase();
+            if (next === '') {
+              if (!inherited) {
+                onReset();
+              }
               return;
             }
-            onChange(parsed);
-          } else {
-            onChange(text);
+            if (next !== current) {
+              onChange(next);
+            }
+            input.value = current;
+          }}
+          onKeyDown={commitOnEnter}
+        />
+      ) : (
+        <span className="font-mono text-[10px]">{base}</span>
+      )}
+    </div>
+  );
+}
+
+function EnumControl({ field, disabled, onChange, onReset }: PropertyInputProps) {
+  const inherited = field.value === undefined;
+  const options = field.options ?? [];
+  return (
+    <select
+      aria-label={field.key}
+      className="bg-background h-7 w-full rounded-md border px-1.5 text-[11px]"
+      value={inherited ? '' : String(field.value)}
+      disabled={disabled}
+      onChange={(event) => {
+        const next = event.target.value;
+        if (next === '') {
+          onReset();
+          return;
+        }
+        onChange(next);
+      }}
+    >
+      <option value="">{inherited ? `默认：${assetText(field.defaultValue)}` : '继承默认'}</option>
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function AssetControl({ field, disabled, onChange, onReset }: PropertyInputProps) {
+  const inherited = field.value === undefined;
+  const override = isAssetReference(field.value) ? field.value : undefined;
+  const fallback = isAssetReference(field.defaultValue) ? field.defaultValue : undefined;
+  const shown = override ?? fallback;
+  const declaredMode = shown?.mode ?? 'file';
+  const src = shown?.src ?? '';
+  // Mode is edited locally: switching it must not re-reference the path of the previous mode.
+  const [mode, setMode] = useState<AssetMode>(declaredMode);
+  useEffect(() => setMode(declaredMode), [declaredMode, field.key]);
+  const commit = (nextSrc: string, nextMode: AssetMode): void => {
+    if (nextSrc.length === 0) {
+      return;
+    }
+    onChange({ src: nextSrc, mode: nextMode });
+  };
+  const preview =
+    field.type === 'image' && src.length > 0
+      ? mode === 'inline'
+        ? base64Error(src) === undefined
+          ? `data:image/*;base64,${src}`
+          : undefined
+        : mode === 'file'
+          ? `/${src}`
+          : undefined
+      : undefined;
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1">
+        <select
+          aria-label={`${field.key} mode`}
+          className="bg-background h-6 rounded-md border px-1 font-mono text-[10px]"
+          value={mode}
+          disabled={disabled}
+          onChange={(event) => setMode(event.target.value as AssetMode)}
+        >
+          <option value="file">file</option>
+          <option value="inline">inline</option>
+          <option value="store">store</option>
+        </select>
+        <span className="text-muted-foreground truncate text-[10px]">{ASSET_MODE_HINTS[mode]}</span>
+      </div>
+      <Input
+        key={`${field.key}:${mode}:${src}`}
+        aria-label={field.key}
+        defaultValue={src}
+        placeholder={inherited ? '继承默认，输入路径或标识覆盖' : undefined}
+        disabled={disabled}
+        className="font-mono text-[10px]"
+        onBlur={(event) => {
+          const input = event.currentTarget;
+          const next = input.value.trim();
+          if (next === '') {
+            if (!inherited) {
+              onReset();
+            }
+            return;
           }
-          // Accepted edits re-render with the new value; rejected ones fall back.
-          input.value = authoritative;
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') {
-            event.currentTarget.blur();
+          if (next !== src) {
+            commit(next, mode);
           }
+          input.value = src;
         }}
+        onKeyDown={commitOnEnter}
       />
-      <ResetButton inherited={inherited} disabled={disabled} onReset={onReset} />
+      {preview === undefined ? null : (
+        <img
+          src={preview}
+          alt={field.key}
+          className="bg-background h-14 w-full rounded border object-contain"
+        />
+      )}
+      <div className="text-muted-foreground flex items-center gap-2 text-[10px]">
+        {mode === 'inline' ? (
+          <span>{formatBytes(Math.floor((src.length * 3) / 4))}（内联）</span>
+        ) : null}
+        {field.maxBytes === undefined ? null : <span>≤ {formatBytes(field.maxBytes)}</span>}
+        {field.maxPixels === undefined ? null : <span>≤ {field.maxPixels} px</span>}
+      </div>
     </div>
   );
 }

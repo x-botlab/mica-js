@@ -1,3 +1,4 @@
+import { isAssetReference } from '../format/asset';
 import type { Diagnostic } from '../format/diagnostics';
 import { throwIfErrors } from '../format/errors';
 import { parseSchematic } from '../format/parse-schematic';
@@ -10,6 +11,11 @@ import type {
   SchematicWire,
 } from '../format/types';
 import { toPointer } from '../format/validate';
+import {
+  normalizePropertyValue,
+  propertyValueProblem,
+  type PropertyDescriptor,
+} from '../device/properties';
 import { parseDeviceReference } from '../device/reference';
 import { defaultNetName, hasDesignator, namesNet, symbolRole } from '../device/reference';
 import type { SymbolRole } from '../device/reference';
@@ -112,7 +118,11 @@ export function applySchematicCommand(
     case 'add-symbol': {
       const device = requireDevice(command.device, diagnostics);
       const id = command.id ?? createId('symbol', draft());
-      const properties = normalizeProperties(command.properties, diagnostics);
+      const properties = normalizeProperties(
+        command.properties,
+        deviceDescriptors(device, options),
+        diagnostics,
+      );
       const reference = resolveReference(
         command.reference,
         undefined,
@@ -152,7 +162,11 @@ export function applySchematicCommand(
         const properties =
           command.properties === undefined
             ? current.properties
-            : normalizeProperties(command.properties, diagnostics);
+            : normalizeProperties(
+                command.properties,
+                deviceDescriptors(device, options),
+                diagnostics,
+              );
         const reference = resolveReference(
           command.reference,
           current.reference,
@@ -203,7 +217,12 @@ export function applySchematicCommand(
       const index = findIndex(symbols, command.id, 'symbol', diagnostics);
       const current = index === -1 ? undefined : symbols[index];
       if (current !== undefined) {
-        const value = checkPropertyValue(command.key, command.value, diagnostics);
+        const value = checkPropertyValue(
+          command.key,
+          command.value,
+          deviceDescriptors(current.device, options)?.get(command.key),
+          diagnostics,
+        );
         if (value !== undefined) {
           symbols[index] = withProperties(baseOf(current), {
             ...(current.properties ?? {}),
@@ -546,8 +565,20 @@ function resolveReference(
   return { x: value.x, y: value.y };
 }
 
+/** Property descriptors of `device`, when the caller supplied a device registry (#7). */
+function deviceDescriptors(
+  device: string | undefined,
+  options: SchematicEditOptions,
+): ReadonlyMap<string, PropertyDescriptor> | undefined {
+  const reference = device === undefined ? undefined : parseDeviceReference(device);
+  return reference === undefined
+    ? undefined
+    : options.devices?.getDevicePropertyDescriptors?.(reference);
+}
+
 function normalizeProperties(
   properties: Readonly<Record<string, PropertyValue>> | undefined,
+  descriptors: ReadonlyMap<string, PropertyDescriptor> | undefined,
   diagnostics: Diagnostic[],
 ): Readonly<Record<string, PropertyValue>> | undefined {
   if (properties === undefined) {
@@ -563,7 +594,7 @@ function normalizeProperties(
       });
       continue;
     }
-    const checked = checkPropertyValue(key, value, diagnostics);
+    const checked = checkPropertyValue(key, value, descriptors?.get(key), diagnostics);
     if (checked !== undefined) {
       normalized[key] = checked;
     }
@@ -574,6 +605,7 @@ function normalizeProperties(
 function checkPropertyValue(
   key: string,
   value: PropertyValue,
+  descriptor: PropertyDescriptor | undefined,
   diagnostics: Diagnostic[],
 ): PropertyValue | undefined {
   if (key.length === 0) {
@@ -584,7 +616,15 @@ function checkPropertyValue(
     });
     return undefined;
   }
-  if (typeof value === 'string' || typeof value === 'boolean') {
+  if (descriptor !== undefined) {
+    const problem = propertyValueProblem(descriptor, value);
+    if (problem !== undefined) {
+      diagnostics.push({ severity: 'error', code: problem.code, message: problem.message });
+      return undefined;
+    }
+    return normalizePropertyValue(descriptor, value);
+  }
+  if (typeof value === 'string' || typeof value === 'boolean' || value === null) {
     return value;
   }
   if (typeof value === 'number') {
@@ -598,10 +638,13 @@ function checkPropertyValue(
     }
     return value;
   }
+  if (isAssetReference(value)) {
+    return value;
+  }
   diagnostics.push({
     severity: 'error',
     code: 'schema/invalid-value',
-    message: `Property "${key}" must be a string, finite number or boolean.`,
+    message: `Property "${key}" must be a string, finite number, boolean, resource reference or null.`,
   });
   return undefined;
 }

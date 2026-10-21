@@ -38,6 +38,38 @@ createDeviceRegistry([
 ]);`,
   },
   {
+    title: '属性面板',
+    note: '属性类型与约束来自器件定义（#7），随 state.inspector 下发，宿主只负责渲染控件。',
+    code: `// 器件定义：类型、默认值与约束都声明在 properties 里
+createDeviceRegistry([{
+  packageId: 'stm32-package',
+  devices: [{
+    id: 'stm32g431rbt6-lqfp64',
+    raw: {
+      properties: {
+        speed: { type: 'number', title: '主频', default: 72, min: 1, max: 170, unit: 'MHz' },
+        firmware: {
+          type: 'binary',
+          default: { src: 'assets/firmware/m4-demo.bin', mode: 'file' },
+          maxBytes: 1048576,
+        },
+      },
+    },
+  }],
+}]);
+
+// 宿主渲染 state.inspector.properties（PropertyField[]）
+for (const field of inspector.properties) {
+  field.type; // string | integer | number | boolean | color | enum | image | binary
+  field.value; // 实例覆盖值；undefined 表示继承 field.defaultValue
+  field.options; // enum 选项
+  field.min; field.max; field.step; field.unit; // 数值约束
+}
+
+controller.setSymbolProperty(id, 'speed', 168); // 按声明校验，越界会被拒绝
+controller.removeSymbolProperty(id, 'speed'); // 恢复默认`,
+  },
+  {
     title: '事件回调',
     note: '文档、选择、工具、错误、视口各自独立通知，宿主据此刷新自己的界面。',
     code: `mountSchematicEditor({

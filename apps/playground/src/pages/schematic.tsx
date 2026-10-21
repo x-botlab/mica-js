@@ -100,6 +100,8 @@ export function SchematicPage({ dark }: SchematicPageProps) {
     editorRef.current = editor;
     setState(editor.controller.state);
     setZoom(editor.getViewport().scale);
+    // Demo default: preselect the MCU so the host property panel shows the #7 property types.
+    editor.controller.setSelection([{ kind: 'symbol', id: 's-mcu' }]);
     if (import.meta.env.DEV) {
       // Console handle for poking at the mounted editor while developing the playground.
       Object.assign(globalThis, { mica: editor });
@@ -266,6 +268,28 @@ export function SchematicPage({ dark }: SchematicPageProps) {
                 ))}
               </select>
             </label>
+          </CardContent>
+        </Card>
+
+        <Card className="gap-2 py-3">
+          <CardHeader>
+            <CardTitle>属性类型</CardTitle>
+            <CardDescription>
+              选中器件后在右侧面板编辑；清空输入即恢复器件定义的默认值
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-muted-foreground flex flex-col gap-1 text-[11px]">
+            <span className="text-foreground">STM32G431</span>
+            <span className="font-mono text-[10px]">
+              string / number / integer / boolean / binary
+            </span>
+            <span className="text-foreground">TFT LCD</span>
+            <span className="font-mono text-[10px]">image / enum / color</span>
+            <span className="mt-1">
+              image / binary 的值是资源引用{' '}
+              <span className="font-mono text-[10px]">src + mode</span>，示例指向{' '}
+              <span className="font-mono text-[10px]">public/assets</span> 下的文件，由宿主解析。
+            </span>
           </CardContent>
         </Card>
       </div>

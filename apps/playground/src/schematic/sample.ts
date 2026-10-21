@@ -35,9 +35,24 @@ export const devices = createDeviceRegistry([
             VSS: { side: 'bottom' },
           },
           properties: {
-            label: { type: 'string', default: 'MCU' },
-            speed: { type: 'number', default: 72 },
-            enabled: { type: 'boolean', default: true },
+            label: { type: 'string', title: '名称', default: 'MCU', maxLength: 24 },
+            speed: {
+              type: 'number',
+              title: '主频',
+              default: 72,
+              min: 1,
+              max: 170,
+              step: 1,
+              unit: 'MHz',
+            },
+            cores: { type: 'integer', title: '核心数', default: 1, min: 1, max: 2 },
+            enabled: { type: 'boolean', title: '启用', default: true },
+            firmware: {
+              type: 'binary',
+              title: '固件',
+              default: { src: 'assets/firmware/m4-demo.bin', mode: 'file' },
+              maxBytes: 1048576,
+            },
           },
         },
       },
@@ -57,6 +72,25 @@ export const devices = createDeviceRegistry([
             D2: { side: 'left' },
             VCC: { side: 'top' },
             GND: { side: 'bottom' },
+          },
+          properties: {
+            panel: {
+              type: 'image',
+              title: '面板图',
+              default: { src: 'assets/panel.png', mode: 'file' },
+              maxBytes: 65536,
+              maxPixels: 4096,
+            },
+            orientation: {
+              type: 'enum',
+              title: '方向',
+              default: 'landscape',
+              options: [
+                { value: 'landscape', label: '横向' },
+                { value: 'portrait', label: '纵向' },
+              ],
+            },
+            backlight: { type: 'color', title: '背光', default: '#FFFFFF', alpha: true },
           },
         },
       },
@@ -138,8 +172,22 @@ const schematicText = JSON.stringify(
     version: 1,
     sheet: {
       symbols: [
-        { id: 's-mcu', device: MCU, ...placements.mcu, properties: { label: 'MCU' } },
-        { id: 's-lcd', device: LCD, ...placements.lcd },
+        {
+          id: 's-mcu',
+          device: MCU,
+          ...placements.mcu,
+          properties: {
+            label: 'MCU',
+            speed: 168,
+            firmware: { src: 'assets/firmware/m4-demo.bin', mode: 'file' },
+          },
+        },
+        {
+          id: 's-lcd',
+          device: LCD,
+          ...placements.lcd,
+          properties: { panel: { src: 'assets/panel.png', mode: 'file' }, orientation: 'portrait' },
+        },
         { id: 'u2', device: TIMER, ...placements.timer },
         { id: 'lcd-l-d2', device: 'builtin:label', ...placements.label, net: 'D2' },
         { id: 'p3v3', device: 'builtin:power', ...placements.power, net: '3V3' },

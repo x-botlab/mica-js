@@ -5,18 +5,19 @@ import {
   namesNet,
   netNameOf,
   parseDeviceReference,
+  propertyValueProblem,
+  readPropertyDescriptors,
   symbolRole,
   textDeviceContent,
   type DeviceReference,
   type DeviceSymbolProvider,
+  type PropertyDescriptor,
   type PropertyValue,
   type SchematicDocument,
   type SchematicSymbol,
   type SchematicTopology,
 } from '@mica-js/core/schematic';
 import type { EditorSelection, Inspector, PropertyField, SymbolInspector } from './types';
-
-const PROPERTY_TYPES = ['string', 'number', 'boolean'] as const;
 
 export interface InspectorContext {
   readonly devices: DeviceSymbolProvider | undefined;
@@ -85,55 +86,63 @@ function propertyFields(
   symbol: SchematicSymbol,
   devices: DeviceSymbolProvider | undefined,
 ): readonly PropertyField[] {
-  const fields: PropertyField[] = [];
   const overrides = symbol.properties ?? {};
 
   if (isTextDevice(symbol.device)) {
-    fields.push({
-      key: 'text',
-      type: 'string',
-      value: typeof overrides['text'] === 'string' ? (overrides['text'] as string) : undefined,
-      defaultValue: DEFAULT_TEXT_CONTENT,
-    });
-    return fields;
+    const override = overrides['text'];
+    return [toField(TEXT_DESCRIPTOR, typeof override === 'string' ? override : undefined)];
   }
 
   // Net-naming symbols expose their net name as a dedicated inspector row, not as a property.
   if (namesNet(symbolRole(symbol.device))) {
-    return fields;
+    return [];
   }
 
-  const declared = deviceProperties(symbol, devices);
-  for (const [key, value] of Object.entries(declared)) {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-      continue;
-    }
-    const type = (value as { type?: unknown }).type;
-    if (typeof type !== 'string' || !isPropertyType(type)) {
-      continue;
-    }
-    const fallback = (value as { default?: unknown }).default;
-    const override = overrides[key];
-    fields.push({
-      key,
-      type,
-      value: isPropertyValue(override, type) ? override : undefined,
-      defaultValue: isPropertyValue(fallback, type) ? fallback : undefined,
-    });
+  const fields: PropertyField[] = [];
+  for (const descriptor of devicePropertyDescriptors(symbol, devices).values()) {
+    const override = overrides[descriptor.key];
+    const valid =
+      override !== undefined && propertyValueProblem(descriptor, override) === undefined;
+    fields.push(toField(descriptor, valid ? override : undefined));
   }
   return fields;
 }
 
-function deviceProperties(
+/** Moves the declared default to `defaultValue` so hosts can tell it apart from the instance value. */
+function toField(descriptor: PropertyDescriptor, value: PropertyValue | undefined): PropertyField {
+  const { default: defaultValue, ...rest } = descriptor;
+  return {
+    ...rest,
+    ...(defaultValue === undefined ? {} : { defaultValue }),
+    ...(value === undefined ? {} : { value }),
+  };
+}
+
+function devicePropertyDescriptors(
   symbol: SchematicSymbol,
   devices: DeviceSymbolProvider | undefined,
-): Readonly<Record<string, unknown>> {
+): ReadonlyMap<string, PropertyDescriptor> {
   const reference = parseDeviceReference(symbol.device);
-  const raw = reference === undefined ? undefined : deviceRaw(reference, devices);
+  if (reference === undefined) {
+    return new Map();
+  }
+  const declared = devices?.getDevicePropertyDescriptors?.(reference);
+  if (declared !== undefined) {
+    return declared;
+  }
+  // Providers that only expose the raw description still get the #7 declarations parsed here.
+  return readPropertyDescriptors(deviceProperties(reference, devices)?.['properties']);
+}
+
+function deviceProperties(
+  reference: DeviceReference,
+  devices: DeviceSymbolProvider | undefined,
+): Readonly<Record<string, unknown>> | undefined {
+  const raw = deviceRaw(reference, devices);
   const declared = raw?.['properties'];
   return typeof declared === 'object' && declared !== null && !Array.isArray(declared)
     ? (declared as Readonly<Record<string, unknown>>)
-    : {};
+    : undefined;
 }
 
 function deviceRaw(
@@ -155,13 +164,10 @@ function builtinName(symbol: SchematicSymbol): string | undefined {
   return netNameOf(symbol);
 }
 
-function isPropertyType(value: string): value is 'string' | 'number' | 'boolean' {
-  return (PROPERTY_TYPES as readonly string[]).includes(value);
-}
-
-function isPropertyValue(
-  value: unknown,
-  type: 'string' | 'number' | 'boolean',
-): value is PropertyValue {
-  return typeof value === type && (type !== 'number' || Number.isFinite(value));
-}
+/** `builtin:text` carries its content in one string property, described like any other (#7). */
+const TEXT_DESCRIPTOR: PropertyDescriptor = {
+  key: 'text',
+  type: 'string',
+  title: '文本',
+  default: DEFAULT_TEXT_CONTENT,
+};

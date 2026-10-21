@@ -1,4 +1,5 @@
 import type { Rect } from '../format/types';
+import type { PropertyDescriptor } from './properties';
 import type { DeviceReference } from './reference';
 
 /** Side of the symbol body a pin is drawn on; controls stub direction and label placement. */
@@ -38,6 +39,13 @@ export interface DeviceSymbolProvider {
    * provider does not describe one, in which case placement falls back to the global default.
    */
   getDeviceDesignatorPrefix?(reference: DeviceReference): string | undefined;
+  /**
+   * Property descriptors the device declares (#7); `undefined` when the provider does not describe
+   * them, in which case property editing is restricted to structural validation only.
+   */
+  getDevicePropertyDescriptors?(
+    reference: DeviceReference,
+  ): ReadonlyMap<string, PropertyDescriptor> | undefined;
 }
 
 /** Bounding box of a device's pins; `undefined` when it declares none. */

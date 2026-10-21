@@ -24,7 +24,8 @@ const devices = createDeviceRegistry([
           pins: { A: { side: 'left' }, B: { side: 'right' } },
           properties: {
             label: { type: 'string', default: 'U1' },
-            speed: { type: 'number', default: 72 },
+            speed: { type: 'number', default: 72, min: 1, max: 170, unit: 'MHz' },
+            cores: { type: 'integer', default: 1, min: 1, max: 2 },
           },
         },
       },
@@ -429,8 +430,9 @@ describe('SchematicEditorController', () => {
       rotation: 90,
     });
     expect(inspector.properties).toEqual([
-      { key: 'label', type: 'string', value: 'CPU', defaultValue: 'U1' },
-      { key: 'speed', type: 'number', value: undefined, defaultValue: 72 },
+      { key: 'label', type: 'string', defaultValue: 'U1', value: 'CPU' },
+      { key: 'speed', type: 'number', defaultValue: 72, min: 1, max: 170, unit: 'MHz' },
+      { key: 'cores', type: 'integer', defaultValue: 1, min: 1, max: 2 },
     ]);
   });
 
@@ -497,6 +499,18 @@ describe('SchematicEditorController', () => {
     controller.removeSymbolProperty('s1', 'speed');
     expect(controller.document.sheet.symbols[0]?.properties).toBeUndefined();
     expect(() => controller.removeSymbolProperty('s1', 'speed')).toThrow(SchematicError);
+  });
+
+  it('rejects property values that break the device declaration', () => {
+    const controller = createController(
+      documentOf({ symbols: [{ id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 }] }),
+    );
+    expect(() => controller.setSymbolProperty('s1', 'speed', 999)).toThrow(SchematicError);
+    expect(controller.state.lastError?.message).toContain('at most 170');
+    expect(controller.document.sheet.symbols[0]?.properties).toBeUndefined();
+
+    expect(() => controller.setSymbolProperty('s1', 'cores', 1.5)).toThrow(SchematicError);
+    expect(controller.state.lastError?.message).toContain('safe integer');
   });
 
   it('notifies subscribers and stops after unsubscribing', () => {

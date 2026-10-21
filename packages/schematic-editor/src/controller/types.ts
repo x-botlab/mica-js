@@ -1,5 +1,6 @@
 import type {
   Point,
+  PropertyDescriptor,
   PropertyValue,
   SchematicDocument,
   SchematicError,
@@ -34,13 +35,18 @@ export const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
   gridSubdivisions: 2,
 };
 
-export interface PropertyField {
-  readonly key: string;
-  readonly type: 'string' | 'number' | 'boolean';
-  /** Instance override; `undefined` when the instance inherits the default. */
-  readonly value: PropertyValue | undefined;
-  readonly defaultValue: PropertyValue | undefined;
-}
+/**
+ * One editable property of the selected symbol, described by its device (#7).
+ *
+ * `type` selects the control a host renders; the remaining constraint fields (`options`, `min`,
+ * `max`, `step`, `unit`, `maxLength`, `alpha`, `maxBytes`, `maxPixels`) come from the declaration.
+ */
+export type PropertyField = Omit<PropertyDescriptor, 'default'> & {
+  /** Declared default; absent when the device declares none. */
+  readonly defaultValue?: PropertyValue;
+  /** Instance override; absent when the instance inherits the default, `null` when cleared. */
+  readonly value?: PropertyValue;
+};
 
 export interface SymbolInspector {
   readonly kind: 'symbol';

@@ -37,22 +37,62 @@ describe('symbol properties', () => {
     expect(parseSchematic(BASE).sheet.symbols[0]?.properties).toBeUndefined();
   });
 
-  it('rejects null, arrays, objects and non-finite numbers', () => {
-    expect(
-      codesOf(catchError(() => parseSchematic(withProperties({ a: null }))).diagnostics),
-    ).toContain('schema/invalid-value');
+  it('parses resource references and explicit null values', () => {
+    const document = parseSchematic(
+      withProperties({
+        firmware: { src: 'assets/fw.bin', mode: 'file' },
+        logo: { src: 'iVBORw0KGgo=', mode: 'inline' },
+        saved: null,
+      }),
+    );
+    expect(document.sheet.symbols[0]?.properties).toEqual({
+      firmware: { src: 'assets/fw.bin', mode: 'file' },
+      logo: { src: 'iVBORw0KGgo=', mode: 'inline' },
+      saved: null,
+    });
+  });
+
+  it('rejects arrays, plain objects and non-finite numbers', () => {
     expect(
       codesOf(catchError(() => parseSchematic(withProperties({ a: [1] }))).diagnostics),
     ).toContain('schema/invalid-value');
     expect(
       codesOf(catchError(() => parseSchematic(withProperties({ a: { b: 1 } }))).diagnostics),
-    ).toContain('schema/invalid-value');
+    ).toContain('schema/missing-field');
     expect(
       codesOf(
         catchError(() => parseSchematic(withProperties({ a: Number.POSITIVE_INFINITY })))
           .diagnostics,
       ),
     ).toContain('schema/invalid-value');
+  });
+
+  it('rejects resource references that break the #7 rules', () => {
+    const rejected = (reference: unknown): readonly string[] =>
+      codesOf(catchError(() => parseSchematic(withProperties({ asset: reference }))).diagnostics);
+    for (const src of [
+      '../escape.bin',
+      '/abs.bin',
+      'C:/drive.bin',
+      'https://x/y.bin',
+      'a\\b.bin',
+    ]) {
+      expect(rejected({ src, mode: 'file' })).toContain('schema/invalid-value');
+    }
+    expect(rejected({ src: 'oops', mode: 'nope' })).toContain('schema/invalid-value');
+    expect(rejected({ src: 'a.bin' })).toContain('schema/missing-field');
+    expect(rejected({ src: '', mode: 'file' })).toContain('schema/invalid-value');
+    expect(rejected({ src: 'a.bin', mode: 'file', extra: 1 })).toContain('schema/unknown-field');
+    expect(rejected([{ src: 'a.bin', mode: 'file' }])).toContain('schema/invalid-value');
+  });
+
+  it('round-trips resource references', () => {
+    const document = parseSchematic(
+      withProperties({ firmware: { src: 'assets/fw.bin', mode: 'file' }, saved: null }),
+    );
+    const text = serializeSchematic(document);
+    expect(text).toContain('"mode": "file"');
+    expect(parseSchematic(text)).toEqual(document);
   });
 
   it('rejects empty keys', () => {

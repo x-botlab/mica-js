@@ -10,11 +10,11 @@ pnpm --filter @mica-js/playground run build
 
 ## 页面
 
-| 路由          | 页面         | 演示内容                                                                |
-| ------------- | ------------ | ----------------------------------------------------------------------- |
-| `#/`          | 概览         | 页面导航、workspace 命令速查                                            |
-| `#/schematic` | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、宿主属性面板、显示开关、回调事件流 |
-| `#/sandbox`   | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动/终止、调用与日志               |
+| 路由          | 页面         | 演示内容                                                                                   |
+| ------------- | ------------ | ------------------------------------------------------------------------------------------ |
+| `#/`          | 概览         | 页面导航、workspace 命令速查                                                               |
+| `#/schematic` | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、宿主属性面板（#7 全部属性类型）、显示开关、回调事件流 |
+| `#/sandbox`   | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动/终止、调用与日志                                  |
 
 新增页面：在 `src/components/app-shell.tsx` 的 `PAGES` 里加一项（`id` 同时是路由），在 `src/App.tsx` 里渲染对应组件即可。
 
@@ -29,8 +29,9 @@ src/lib/utils.ts               cn()
 src/pages/home.tsx             概览
 src/pages/schematic.tsx        原理图编辑器页：挂载编辑器并把宿主 UI 接上
 src/pages/sandbox.tsx          沙箱页：createSandbox + 调用 + 日志
-src/schematic/sample.ts        器件注册表（含 designatorPrefix）、示例 .sch / .view
+src/schematic/sample.ts        器件注册表（含 designatorPrefix 与 #7 属性描述）、示例 .sch / .view
 src/schematic/snippets.ts      编辑器页「用法」面板里的代码片段
+public/assets/                 示例资源：panel.png（image）与 firmware/m4-demo.bin（binary）
 src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）
 ```
 

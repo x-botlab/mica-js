@@ -76,7 +76,8 @@ const editor = mountSchematicEditor({
 
 - `kind === 'wire'`：只读信息（`id`、`netName`、`points`）。
 - 其它情况是 `SymbolInspector`：`role` 决定标题，`designator`（仅器件）与 `net`（网标/电源/地）可编辑，`x`/`y`/`rotation` 只读。
-- `properties` 是 `PropertyField[]`：`type` 为 `string` / `number` / `boolean`，`value === undefined` 表示继承 `defaultValue`；清空输入 → `removeSymbolProperty`，写值 → `setSymbolProperty`。
+- `properties` 是 `PropertyField[]`：字段直接对应器件声明（#7）——`type` 为 `string` / `integer` / `number` / `boolean` / `color` / `enum` / `image` / `binary`，并带上 `title`、`description`、`options`、`min` / `max` / `exclusiveMin` / `step` / `unit`、`maxLength`、`alpha`、`maxBytes` / `maxPixels` 等约束；`value` 缺省表示继承 `defaultValue`，`value === null` 表示显式 null（仅 `nullable` 属性）。清空输入 → `removeSymbolProperty`，写值 → `setSymbolProperty`（越界或类型不符会被拒绝并写入 `state.lastError`）。
+- `image` / `binary` 的值是资源引用 `{ "src", "mode" }`：`file` 是工程根相对 POSIX 路径，`inline` 是 base64，`store` 是宿主资源标识；编辑器只传递引用，读取与预览由宿主负责。
 - 属性面板只在单选时有内容；多选、空选、选中交点时为 `undefined`（交点没有可编辑字段）。
 
 ### 网格与吸附

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { applySchematicCommand, type SchematicCommand } from './commands';
 import type { EditEffect } from './commands';
+import { createDeviceRegistry } from '../device/registry';
 import type { SchematicDocument } from '../format/types';
 import { catchError, codesOf } from '../format/test-helpers';
 
@@ -227,5 +228,103 @@ describe('applySchematicCommand', () => {
     expect(codesOfCommand(makeDocument(), { type: 'nope' } as unknown as SchematicCommand)).toEqual(
       ['edit/invalid-command'],
     );
+  });
+});
+
+describe('property declaration checks', () => {
+  const devices = createDeviceRegistry([
+    {
+      packageId: 'pkg',
+      devices: [
+        {
+          id: 'a',
+          raw: {
+            pins: { P1: { side: 'left' } },
+            properties: {
+              speed: { type: 'number', default: 72, min: 1, max: 170, unit: 'MHz' },
+              cores: { type: 'integer', default: 1, min: 1, max: 2 },
+              accent: { type: 'color', default: '#3B82F6' },
+              firmware: { type: 'binary', maxBytes: 1024 },
+              saved: { type: 'string', nullable: true },
+            },
+          },
+        },
+      ],
+    },
+  ]);
+  const options = { devices };
+
+  function documentWithSymbol(): SchematicDocument {
+    return {
+      version: 1,
+      sheet: {
+        symbols: [{ id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 }],
+        wires: [],
+        junctions: [],
+      },
+    };
+  }
+
+  it('rejects values outside the declared type or range', () => {
+    const codes = codesOfCommand(
+      documentWithSymbol(),
+      { type: 'set-symbol-property', id: 's1', key: 'speed', value: 999 },
+      options,
+    );
+    expect(codes).toEqual(['schema/invalid-value']);
+    expect(
+      codesOfCommand(
+        documentWithSymbol(),
+        { type: 'set-symbol-property', id: 's1', key: 'cores', value: 1.5 },
+        options,
+      ),
+    ).toEqual(['schema/invalid-type']);
+    expect(
+      codesOfCommand(
+        documentWithSymbol(),
+        { type: 'set-symbol-property', id: 's1', key: 'accent', value: 'blue' },
+        options,
+      ),
+    ).toEqual(['schema/invalid-value']);
+  });
+
+  it('accepts values that satisfy the declaration and canonicalizes colors', () => {
+    const result = applySchematicCommand(
+      documentWithSymbol(),
+      { type: 'set-symbol-property', id: 's1', key: 'accent', value: '#ff8800' },
+      options,
+    );
+    expect(result.sheet.symbols[0]?.properties).toEqual({ accent: '#FF8800' });
+
+    const firmware = applySchematicCommand(
+      result,
+      {
+        type: 'set-symbol-property',
+        id: 's1',
+        key: 'firmware',
+        value: { src: 'assets/fw.bin', mode: 'file' },
+      },
+      options,
+    );
+    expect(firmware.sheet.symbols[0]?.properties).toMatchObject({
+      firmware: { src: 'assets/fw.bin', mode: 'file' },
+    });
+
+    const cleared = applySchematicCommand(
+      firmware,
+      { type: 'set-symbol-property', id: 's1', key: 'saved', value: null },
+      options,
+    );
+    expect(cleared.sheet.symbols[0]?.properties).toMatchObject({ saved: null });
+  });
+
+  it('checks properties passed to add-symbol', () => {
+    expect(
+      codesOfCommand(
+        documentWithSymbol(),
+        { type: 'add-symbol', device: 'pkg:a', x: 0, y: 0, properties: { cores: 5 } },
+        options,
+      ),
+    ).toEqual(['schema/invalid-value']);
   });
 });
