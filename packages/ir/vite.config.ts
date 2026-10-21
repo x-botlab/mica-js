@@ -1,5 +1,5 @@
 import dts from 'vite-plugin-dts';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   build: {
@@ -12,5 +12,5 @@ export default defineConfig({
     sourcemap: true,
     minify: false,
   },
-  plugins: [dts({ include: ['src'], exclude: ['src/**/*.test.ts'] })],
+  plugins: [dts({ include: ['src'], exclude: ['src/**/*.test.ts', 'src/**/*.type-test.ts'] })],
 });

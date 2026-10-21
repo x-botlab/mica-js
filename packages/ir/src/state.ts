@@ -1,0 +1,90 @@
+import type {
+  BlockDefinition,
+  DomainInstructionDefinition,
+  FunctionBodyDefinition,
+  FunctionCategory,
+  FunctionDefinition,
+  FunctionRef,
+  InstructionNode,
+  MemoryDefinition,
+  ScalarType,
+  Terminator,
+  Value,
+} from './types';
+
+export interface ModuleState {
+  readonly memories: MemoryState[];
+  readonly functions: FunctionDeclarationState[];
+  readonly domainDeclarations: DomainDeclarationState[];
+  readonly instructions: DomainInstructionState[];
+  readonly names: Set<string>;
+  readonly instructionNames: Set<string>;
+  bodyDepth: number;
+}
+
+export interface MemoryState {
+  readonly module: ModuleState;
+  definition: MemoryDefinition;
+}
+
+export interface FunctionDeclarationState {
+  readonly module: ModuleState;
+  readonly name: string;
+  readonly category: FunctionCategory;
+  readonly params: readonly ScalarType[];
+  readonly results: readonly ScalarType[];
+  ref: FunctionRef;
+  body: FunctionBodyDefinition | undefined;
+  defining: boolean;
+}
+
+export interface DomainDeclarationState {
+  readonly module: ModuleState;
+  readonly kind: string;
+  readonly name: string;
+}
+
+export interface DomainInstructionState {
+  readonly module: ModuleState;
+  readonly name: string;
+  readonly definition: DomainInstructionDefinition;
+}
+
+export interface BuilderState {
+  readonly module: ModuleState;
+  readonly declaration: FunctionDeclarationState;
+  readonly entry: BlockState;
+  readonly blocks: BlockState[];
+  readonly insertion: BlockState[];
+  valueSeq: number;
+  blockSeq: number;
+  finished: boolean;
+  invalidated: boolean;
+}
+
+export class BlockState implements BlockDefinition {
+  readonly id: number;
+  readonly paramTypes: readonly ScalarType[];
+  readonly owner: BuilderState;
+  params: Value[] = [];
+  instructions: InstructionNode[] = [];
+  terminator: Terminator | undefined = undefined;
+  defined = false;
+  defining = false;
+
+  constructor(owner: BuilderState, id: number, paramTypes: readonly ScalarType[]) {
+    this.owner = owner;
+    this.id = id;
+    this.paramTypes = paramTypes;
+  }
+}
+
+export function toFunctionDefinition(state: FunctionDeclarationState): FunctionDefinition {
+  return {
+    name: state.name,
+    category: state.category,
+    params: state.params,
+    results: state.results,
+    body: state.body,
+  };
+}
