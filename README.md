@@ -20,11 +20,11 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 │   └── sandbox-playground/   # 沙箱演示与手测面板
 └── packages/
     ├── core/                 # @mica/core：仿真内核
-    ├── ir/                   # @mica/ir：IR 模型、建图、校验与整数/布尔逐指令语义
+    ├── ir/                   # @mica/ir：IR 模型、建图、校验、标量逐指令语义与实例存储
     └── sandbox/              # @mica/sandbox：iframe + Web Worker 通用 JS 沙箱
 ```
 
-`@mica/ir` 当前提供内存 IR 模型、同步类型化建图器、静态校验/链接诊断及整数/布尔逐指令求值，可声明资源、函数、基本块和显式终结指令，并检查 SSA、控制流、调用图、资源授权和后端能力。标量求值复用现有指令节点，不执行函数或控制流；尚无完整解释器、浮点执行、Provider 或资源更新语义。职责边界、非目标与验证方式见 [packages/ir/README.md](packages/ir/README.md)。
+`@mica/ir` 当前提供内存 IR 模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令求值和实例存储，可声明资源、函数、基本块和显式终结指令，建立独立的状态、数组、字节区与输入槽位存储，并检查 SSA、控制流、调用图、资源授权和后端能力。标量求值复用现有指令节点，不执行函数或控制流；尚无完整解释器、Provider 或资源版本化更新语义。职责边界、非目标与验证方式见 [packages/ir/README.md](packages/ir/README.md)。
 
 ## 沙箱
 

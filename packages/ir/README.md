@@ -1,14 +1,15 @@
 # @mica/ir
 
-领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断与整数/布尔逐指令语义，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
+领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令语义与实例存储，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
 
-本包负责**建图、静态校验/链接诊断及可复用的标量运算**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。`evaluateScalarInstruction` 求值单个整数/布尔节点，`evaluateFloatInstruction` 提供独立的浮点单指令语义（见下文）；两者均不执行函数或控制流，不提供完整解释器、存储语义、资源更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
+本包负责**建图、实例存储、静态校验/链接诊断及可复用的标量运算**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，为每个实例建立独立的声明资源存储，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。`evaluateScalarInstruction` 求值单个整数/布尔节点，`evaluateFloatInstruction` 提供独立的浮点单指令语义（见下文）；两者均不执行函数或控制流，不提供完整解释器、资源版本化更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
 
 ## 公共入口
 
 唯一公开入口为 `@mica/ir`，构建生成 `dist/index.js`（ESM）与声明文件。主要导出：
 
 - `createIRModule()`：创建独立的模块声明/建图上下文，返回 `IRModule`。
+- `createIRStorage(module)`：为模块的声明资源创建一份独立实例存储，返回 `IRStorage`；每次调用互不别名。
 - `validateIR(input, options)`：返回 `IRValidationResult`，通过 `IRDiagnostic` / `IRDiagnosticLocation` 报告静态错误；能力策略及领域扩展类型见下文。
 - `evaluateScalarInstruction(instruction, operands)`：求值单个整数/布尔节点，失败抛出 `IRScalarEvaluationError`；范围与错误码见下文。
 - `IRDeclarations`：`state`、`array`、`bytes`、`inbox`、`func`、`entry`、`lifecycle` 静态声明。
@@ -100,6 +101,39 @@ choose.body((b, [condition]) => {
 
 `module.memories` 暴露该统一模型。它是当前实现的内存表示，不是已冻结的持久化格式。
 
+## 实例存储
+
+`createIRStorage(module)` 按声明初值建立固定容量的实例存储。底层 buffer 不公开，读写只能经过带完整校验的方法：
+
+```ts
+import { createIRModule, createIRStorage } from '@mica/ir';
+
+const ir = createIRModule();
+const counter = ir.state('counter', 'u32', 0);
+const samples = ir.array('samples', 'u16', [10, 20]);
+const ram = ir.bytes('ram', new Uint8Array(16), { readonly: false });
+const input = ir.inbox('input', 8);
+
+const storage = createIRStorage(ir);
+storage.storeState(counter, 1);
+storage.storeArray(samples, 1, 30);
+storage.storeBytes('u16', 'little', ram, 1, 0x1234);
+const word = storage.loadBytes('u16', 'big', ram, 1);
+storage.copy(ram, 4, input, 0, 8);
+storage.copy(ram, 5, ram, 4, 4);
+```
+
+- 索引、偏移和长度在运行期按 u32 检查；多字节访问先验证完整范围，非对齐访问合法，不通过回绕绕过边界。
+- 单次操作先完成资源类别、权限、范围和值校验，再提交字节；失败不会留下本操作的部分写入。此前已成功的写入不回滚。
+- `bytes.copy` 先建立源字节快照，再写入目标；同资源重叠复制按复制前的源字节取值。零长度仍校验两侧 offset 在 `[0, 容量]` 内以及目标可写。
+- `readonly` 字节区与 `inbox` 可以读取或作为 `bytes.copy` 源；普通 `bytes.store` / `bytes.copy` 写入会被拒绝。`state` / `array` 的写入目标是固定可写的声明资源。
+- 每次 `createIRStorage` 都从声明初值复制独立 buffer；两个实例、两个声明以及原始 `Uint8Array` 输入之间互不别名。
+- 普通 `store` / `copy` 只改变内容，不维护或更新任何资源版本；版本化更新由后续 [#47](https://github.com/x-botlab/mica-js/issues/47) 提供。
+- `state.load` / `array.load` / `bytes.load` 返回 `StorageValue<T>`：`bool` 为 `boolean`、整数为 `number`、浮点为 `FloatBits`。浮点 load 返回原始位模式，移动不会解码/重编码 NaN；`store` 接受 `number`（数值入口，NaN 使用规范编码）或同类型 `FloatBits`。
+- 失败抛出 `IRStorageError`，`code` 为 `invalid-resource`、`invalid-value`、`invalid-argument`、`out-of-bounds`、`readonly-resource` 或 `allocation-failure`。资源授权仍由 `validateIR` 的 `resources` 静态核验；存储负责运行期的类别、可写性和范围检查，二者互不替代。
+
+`FloatBits` 与 `RuntimeScalar` 是共享的值表示：`FloatBits` 的 `bits` 使用 `0x` 加固定 8/16 位小写十六进制。存储不会把 `DataView.getFloat32/64` 的数值结果当作原始载荷的替代。
+
 ## 领域扩展
 
 领域模块可以在自己的包中声明静态句柄和显式指令，核心不导入引脚、电源、连接等域类型：
@@ -189,9 +223,7 @@ const result = evaluateFloatInstruction(instruction, [1 + 2 ** -23, 1 - 2 ** -23
 
 以下能力属于后续任务，本包明确不实现：
 
-- 整数/布尔运算及整数内部转换的执行语义（#43）。
-- 状态、数组、普通字节存储的执行语义（#45）。
-- 参考解释器、预算和异常定位（#46）。
+- 将标量运算与存储接入参考解释器、预算和异常定位（#46）。
 - `resource.updateBytes` / `resource.fillBytes` 的版本化更新（#47）。
 - 事件、输出、消息桥接、Provider 生成/checkpoint 与 JIT。
 
@@ -202,8 +234,8 @@ const result = evaluateFloatInstruction(instruction, [1 + 2 ** -23, 1 - 2 ** -23
 使用仓库现有 pnpm catalog、TypeScript、Vite、vite-plugin-dts 与 Vitest：
 
 ```bash
-pnpm --filter @mica/ir typecheck   # 包含 src/api.type-test.ts 的正反类型用例
-pnpm --filter @mica/ir test        # 运行期模型与建图结构测试
+pnpm --filter @mica/ir typecheck   # 包含 src/api.type-test.ts、src/storage.type-test.ts 的正反类型用例
+pnpm --filter @mica/ir test        # 运行期模型、建图结构与实例存储测试
 pnpm --filter @mica/ir build
 ```
 
