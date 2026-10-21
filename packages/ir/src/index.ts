@@ -1,4 +1,6 @@
 export { createIRModule } from './module';
+export { createIRStorage, IRStorageError } from './storage';
+export type { IRStorage, IRStorageErrorCode, StorageValue } from './storage';
 export { validateIR } from './validate';
 export type {
   IRDiagnosticCode,
@@ -41,6 +43,7 @@ export type {
   EdgeDefinition,
   Endian,
   EntryRef,
+  FloatBits,
   FloatOperations,
   FloatType,
   FunctionBody,
@@ -70,6 +73,7 @@ export type {
   Predicate,
   ReadableBytesRef,
   ResourceRef,
+  RuntimeScalar,
   ScalarArgs,
   ScalarType,
   SignedIntegerType,
