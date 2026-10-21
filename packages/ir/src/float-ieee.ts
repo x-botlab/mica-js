@@ -1,12 +1,4 @@
-import type { FloatType, HexBits } from './types';
-
-/** Exact floating data for movement; never decode/re-encode a NaN to copy it. */
-export interface FloatBits {
-  readonly type: FloatType;
-  readonly bits: HexBits;
-}
-
-export type RuntimeScalar = boolean | number | FloatBits;
+import type { FloatBits, FloatType, HexBits } from './types';
 
 type Format = {
   fraction: number;

@@ -1,8 +1,13 @@
 import { arithmetic, decode, fromNumber, pack, round, special, toNumber } from './float-ieee';
-import type { FloatBits, RuntimeScalar } from './float-ieee';
-import type { FloatType, InstructionNode, IntegerType, Predicate, ScalarType } from './types';
-
-export type { FloatBits, RuntimeScalar } from './float-ieee';
+import type {
+  FloatBits,
+  FloatType,
+  InstructionNode,
+  IntegerType,
+  Predicate,
+  RuntimeScalar,
+  ScalarType,
+} from './types';
 
 export class IRFloatEvaluationError extends Error {
   override readonly name = 'IRFloatEvaluationError';

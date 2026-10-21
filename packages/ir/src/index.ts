@@ -41,6 +41,7 @@ export type {
   EdgeDefinition,
   Endian,
   EntryRef,
+  FloatBits,
   FloatOperations,
   FloatType,
   FunctionBody,
@@ -70,6 +71,7 @@ export type {
   Predicate,
   ReadableBytesRef,
   ResourceRef,
+  RuntimeScalar,
   ScalarArgs,
   ScalarType,
   SignedIntegerType,
@@ -83,4 +85,3 @@ export type {
   WritableBytesRef,
 } from './types';
 export { evaluateFloatInstruction, IRFloatEvaluationError } from './float';
-export type { FloatBits, RuntimeScalar } from './float';

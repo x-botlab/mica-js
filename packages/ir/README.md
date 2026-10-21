@@ -134,7 +134,7 @@ SSA 值和静态句柄以对象身份关联，块边目标必须是本函数 `bo
 
 `evaluateFloatInstruction(instruction: InstructionNode, operands: readonly RuntimeScalar[]): RuntimeScalar` 复用建图器/校验器的指令模型，不解释函数、分支或存储。`operands` 仅含 SSA 操作数的运行值，按其在指令中的顺序排列；谓词、目标类型、常量等 literal 已在指令节点中，不重复传入。
 
-- `FloatBits = { readonly type: FloatType; readonly bits: HexBits }` 保存原始位，f32 必须恰好 8 个十六进制位，f64 恰好 16 位，均以 `0x` 开头。`RuntimeScalar = boolean | number | FloatBits` 是语义层值，不改变作者层 `Value` / `JSScalar` 或声明初值合同，也不引入 u64 算术。
+- `FloatBits = { readonly type: FloatType; readonly bits: HexBits }` 保存原始位，f32 必须恰好 8 个十六进制位，f64 恰好 16 位，均以 `0x` 开头。`RuntimeScalar = boolean | number | FloatBits` 是语义层值；两者统一定义在 `src/types.ts`，从包入口导出，供浮点与存储共用。不改变作者层 `Value` / `JSScalar` 或声明初值合同，也不引入 u64 算术。
 - 所有浮点结果均为 `FloatBits`，整数/布尔结果仍为 number/boolean。浮点 number 输入按 SSA 声明精度量化，仅用于数值入口；需要保留 NaN 载荷/符号/信号位必须传 `FloatBits`，不得经过 JS number 往返。
 - 支持浮点 `const` / `const.bits` / `select`、`float.add/sub/mul/div/fma/cmp/isNaN/isFinite`、`convert.intToFloat/floatToInt/float` 及仅 f32 与 u32/i32 间的 `bitcast`。这里采用模型中的 camelCase 操作名，不另造文本 IR 解析器。
 - 内部使用无依赖的 BigInt 精确二进制整数/有理数计算，四则及 FMA 直接按目标精度最近值、居中取偶数舍入。每个 f32 操作独立舍入，FMA 不舍入中间乘积，保留次正规数及正确的有符号零；不会用 `a*b+c` 或 f64 中间结果冒充融合运算。
