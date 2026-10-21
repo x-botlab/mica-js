@@ -227,7 +227,7 @@ describe('SchematicEditorController', () => {
     expect(controller.document.sheet.junctions).toHaveLength(1);
   });
 
-  it('drags the connected wire end when a net label moves', () => {
+  it('stretches the connected wire when a net label moves', () => {
     const controller = createController(
       documentOf({
         symbols: [{ id: 'l1', device: LABEL_DEVICE, net: 'D0', x: 0, y: 0, rotation: 0 }],
@@ -244,12 +244,22 @@ describe('SchematicEditorController', () => {
     );
 
     controller.setSelection([{ kind: 'symbol', id: 'l1' }]);
+    // Perpendicular: the original run stays and the label gets its own segment.
     controller.moveSelectionBy(0, -10);
-
     expect(controller.document.sheet.symbols[0]).toMatchObject({ x: 0, y: -10 });
     expect(controller.document.sheet.wires[0]?.points).toEqual([
       { x: 0, y: -10 },
-      { x: 50, y: -10 },
+      { x: 0, y: 0 },
+      { x: 50, y: 0 },
+    ]);
+
+    // Along the wire: only the length changes.
+    controller.moveSelectionBy(-10, 0);
+    expect(controller.document.sheet.wires[0]?.points).toEqual([
+      { x: -10, y: -10 },
+      { x: 0, y: -10 },
+      { x: 0, y: 0 },
+      { x: 50, y: 0 },
     ]);
   });
 

@@ -82,7 +82,7 @@ export {
   symbolBounds,
   symbolPinPosition,
 } from './geometry/transform';
-export { rerouteWireEndpoint } from './geometry/reroute';
+export { rerouteWireEndpoint, stretchWireEndpoint } from './geometry/reroute';
 export type { PointMove, ReroutedWire } from './geometry/reroute';
 export { DEFAULT_TOLERANCE, pointOnPolyline, pointsEqual } from './geometry/point';
 export { previewSymbolDrag } from './edit/preview';

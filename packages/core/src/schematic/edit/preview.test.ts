@@ -100,7 +100,7 @@ describe('previewSymbolDrag', () => {
     expect(preview?.symbols.get('l1')).toEqual({ x: 4, y: 6 });
   });
 
-  it('drags the wire end attached to a moving net label', () => {
+  it('drag the wire end attached to a moving net label', () => {
     const document = makeDocument();
     const sheet = {
       ...document.sheet,
@@ -116,14 +116,28 @@ describe('previewSymbolDrag', () => {
       ],
       junctions: [],
     };
-    const preview = previewSymbolDrag({ ...document, sheet }, devices, 'l1', {
-      x: 0,
-      y: -5,
-      rotation: 0,
-    });
-    expect(preview?.wires.get('w1')).toEqual([
+    const drag = (to: { x: number; y: number }) =>
+      previewSymbolDrag({ ...document, sheet }, devices, 'l1', { ...to, rotation: 0 })?.wires.get(
+        'w1',
+      );
+
+    // Along the wire: only the length changes.
+    expect(drag({ x: -5, y: 0 })).toEqual([
+      { x: -5, y: 0 },
+      { x: 10, y: 0 },
+    ]);
+    // Perpendicular: the original run stays and a new segment is folded in at the label.
+    expect(drag({ x: 0, y: -5 })).toEqual([
       { x: 0, y: -5 },
-      { x: 10, y: -5 },
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+    ]);
+    // Diagonal: one elbow connects the label to the original anchor.
+    expect(drag({ x: -5, y: -5 })).toEqual([
+      { x: -5, y: -5 },
+      { x: 0, y: -5 },
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
     ]);
   });
 

@@ -132,6 +132,19 @@ describe('snapDragOffset', () => {
       y: 30,
     });
   });
+
+  it('keeps an off-grid anchor in its row when the drag is horizontal', () => {
+    // Anchor at y = 197 must not snap to 200 just because the pointer wobbled by 1 unit.
+    expect(snapDragOffset({ x: 483, y: 197 }, { x: 10, y: 10 }, { x: 58, y: 11 }, display)).toEqual(
+      { x: 47, y: 0 },
+    );
+  });
+
+  it('keeps an off-grid anchor in its column when the drag is vertical', () => {
+    expect(snapDragOffset({ x: 483, y: 197 }, { x: 10, y: 10 }, { x: 12, y: 53 }, display)).toEqual(
+      { x: 0, y: 43 },
+    );
+  });
 });
 
 describe('snapForWire', () => {

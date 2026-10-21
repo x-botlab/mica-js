@@ -93,6 +93,69 @@ function dropRepeatedPoints(points: readonly Point[]): readonly Point[] {
   return result.length >= 2 ? result : points;
 }
 
+/**
+ * Moves a wire endpoint to `to` by stretching or bending it, leaving the original run in place.
+ *
+ * Unlike {@link rerouteWireEndpoint}, which absorbs the move by shifting the neighbouring points,
+ * this keeps every existing point: a move along the attached segment only changes its length, and a
+ * perpendicular move appends an orthogonal fold at the moved end. That is the behaviour net labels
+ * and power ports need while being dragged — the wire follows them instead of sliding away.
+ */
+export function stretchWireEndpoint(
+  wire: SchematicWire,
+  from: Point,
+  to: Point,
+): ReroutedWire | undefined {
+  const points = wire.points;
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (first === undefined || last === undefined) {
+    return undefined;
+  }
+  if (samePoint(first, from)) {
+    return stretchAt(points, to, 'start');
+  }
+  if (samePoint(last, from)) {
+    return stretchAt(points, to, 'end');
+  }
+  return undefined;
+}
+
+function stretchAt(points: readonly Point[], target: Point, end: 'start' | 'end'): ReroutedWire {
+  const anchor = end === 'start' ? points[0] : points[points.length - 1];
+  const neighbor = end === 'start' ? points[1] : points[points.length - 2];
+  if (anchor === undefined) {
+    return { points, moves: [] };
+  }
+  if (neighbor === undefined) {
+    const next = points.map((point) => ({ x: point.x, y: point.y }));
+    if (end === 'start') {
+      next[0] = { x: target.x, y: target.y };
+    } else {
+      next[next.length - 1] = { x: target.x, y: target.y };
+    }
+    return { points: next, moves: [{ from: anchor, to: target }] };
+  }
+
+  const horizontal = neighbor.y === anchor.y;
+  const perpendicular = horizontal ? target.y !== anchor.y : target.x !== anchor.x;
+  if (!perpendicular) {
+    const next = points.map((point) => ({ x: point.x, y: point.y }));
+    if (end === 'start') {
+      next[0] = { x: target.x, y: target.y };
+    } else {
+      next[next.length - 1] = { x: target.x, y: target.y };
+    }
+    return { points: dropRepeatedPoints(next), moves: [{ from: anchor, to: target }] };
+  }
+
+  // Turn at the anchor first, then run perpendicular; a pure perpendicular move adds one segment.
+  const elbow = horizontal ? { x: anchor.x, y: target.y } : { x: target.x, y: anchor.y };
+  const turn = samePoint(elbow, target) ? [] : [elbow];
+  const next = end === 'start' ? [target, ...turn, ...points] : [...points, ...turn, target];
+  return { points: dropRepeatedPoints(next), moves: [] };
+}
+
 function samePoint(left: Point, right: Point): boolean {
   return left.x === right.x && left.y === right.y;
 }

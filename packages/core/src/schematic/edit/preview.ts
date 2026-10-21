@@ -2,7 +2,7 @@ import { namesNet, symbolRole } from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
 import type { Placement, Point, SchematicDocument } from '../format/types';
 import { symbolPinPosition } from '../geometry/transform';
-import { rerouteWireEndpoint } from '../geometry/reroute';
+import { rerouteWireEndpoint, stretchWireEndpoint } from '../geometry/reroute';
 
 export interface SymbolDragPreview {
   /** New point lists for wires whose endpoint is attached to a moving pin. */
@@ -28,6 +28,8 @@ export function previewSymbolDrag(
     return undefined;
   }
 
+  // Net labels and ports stretch their wire; component pins keep the run attached to the pin.
+  const stretches = isNetAnchor(symbol.device);
   const definition = connectionAnchors(devices, symbol.device);
   const moves: { readonly from: Point; readonly to: Point }[] = [];
   for (const anchor of Object.values(definition)) {
@@ -48,7 +50,9 @@ export function previewSymbolDrag(
   const pointMoves = [...moves];
   for (const wire of document.sheet.wires) {
     for (const move of moves) {
-      const rerouted = rerouteWireEndpoint(wire, move.from, move.to);
+      const rerouted = stretches
+        ? stretchWireEndpoint(wire, move.from, move.to)
+        : rerouteWireEndpoint(wire, move.from, move.to);
       if (rerouted === undefined) {
         continue;
       }
@@ -140,6 +144,11 @@ function projectSegment(points: readonly Point[], segment: number, t: number): P
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
+/** True for the builtin anchors that name a net: net labels, power and ground. */
+function isNetAnchor(device: string): boolean {
+  return namesNet(symbolRole(device));
+}
+
 /**
  * Connection points of a device in symbol-local space. Net labels, power and ground symbols connect
  * at their own anchor, so they report one at the origin and drag their wire end like a pin does.
@@ -148,10 +157,12 @@ function connectionAnchors(
   devices: DeviceSymbolProvider | undefined,
   device: string,
 ): Readonly<Record<string, Point>> {
-  const role = symbolRole(device);
-  if (role !== 'component') {
-    // Net-naming symbols connect at their own anchor; text symbols connect nowhere.
-    return namesNet(role) ? { net: { x: 0, y: 0 } } : {};
+  if (isNetAnchor(device)) {
+    return { net: { x: 0, y: 0 } };
+  }
+  if (symbolRole(device) !== 'component') {
+    // Text symbols connect nowhere.
+    return {};
   }
   const separator = device.indexOf(':');
   if (separator <= 0 || devices === undefined) {
