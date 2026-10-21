@@ -438,6 +438,35 @@ describe('deterministic segmented driving and destruction', () => {
       expect(scheduler.start()).toEqual({ timePs: 0, executed: 0, reason: 'empty' });
     },
   );
+
+  it.skipIf(gc === undefined)(
+    'releases a destroyed instance whose only queued work is a control entry',
+    async () => {
+      const scheduler = createScheduler();
+      const references = (() => {
+        const target = control('P');
+        const executor = { execute() {} };
+        const instance = scheduler.addInstance({
+          instanceId: 'control-collected',
+          targets: [target],
+          executor,
+        });
+        scheduler.enqueueControl(instance, target, []);
+        scheduler.destroyInstance(instance);
+        return [new WeakRef(executor), new WeakRef(target), new WeakRef(instance)] as const;
+      })();
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        gc!();
+        await new Promise<void>((resolve) => setTimeout(() => resolve(), 0));
+      }
+      expect(references.map((reference) => reference.deref())).toEqual([
+        undefined,
+        undefined,
+        undefined,
+      ]);
+      expect(scheduler.start()).toEqual({ timePs: 0, executed: 0, reason: 'empty' });
+    },
+  );
 });
 
 describe('deterministic budgets and global faults', () => {

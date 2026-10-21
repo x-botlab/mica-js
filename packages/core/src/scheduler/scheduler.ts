@@ -450,9 +450,11 @@ class DeterministicScheduler implements Scheduler {
       this.#instances.delete(instance.handle);
     }
     this.#destruction.clear();
-    // Purge cancelled records now; otherwise a queue that is never driven again
-    // would keep their targets, executor, and interpreter/storage reachable.
-    this.#queue.retain((work) => work.status === 'pending');
+    // Purge cancelled and destroyed-instance records now; control work has no ID and is
+    // not in `active`, so the destroyed flag is the authoritative filter. Otherwise a
+    // queue that is never driven again would keep targets, executors, and interpreter
+    // or topology state reachable.
+    this.#queue.retain((work) => work.status === 'pending' && !work.instance.destroyed);
   }
 
   #problem(code: SchedulerErrorCode, message: string, cause?: unknown): SchedulerError {

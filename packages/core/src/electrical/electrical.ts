@@ -63,7 +63,8 @@ function snapshotModel(value: unknown, path: string): ElectricalPinInput['model'
   return Object.freeze({ kind, minVoltage, maxVoltage, lowVoltage, highVoltage });
 }
 
-function snapshotPin(value: unknown, path: string): ElectricalPinInput {
+/** Internal value capture shared with the topology layer; not exported from the package root. */
+export function snapshotElectricalPin(value: unknown, path: string): ElectricalPinInput {
   checkRecord(value, path, PIN_FIELDS);
   // Read every field exactly once; the frozen snapshot below is the only value
   // later evaluation sees, including for models supplied through getters or prototypes.
@@ -112,7 +113,7 @@ function snapshotNetwork(input: ElectricalNetworkInput): ElectricalNetworkInput 
   const pins: ElectricalPinInput[] = [];
   for (let index = 0; index < input.pins.length; index += 1) {
     const path = `network.pins[${index}]`;
-    const pin = snapshotPin(input.pins[index], path);
+    const pin = snapshotElectricalPin(input.pins[index], path);
     const names = sources.get(pin.instanceId) ?? new Set<string>();
     if (names.has(pin.pinName)) {
       invalidType(`${path}.pinName`, pin.pinName, `be unique within instance ${pin.instanceId}`);

@@ -12,7 +12,7 @@ pnpm add @mica-js/core
 
 | 入口                      | 内容                                              |
 | ------------------------- | ------------------------------------------------- |
-| `@mica-js/core`           | 仿真内核（虚拟时间与事件调度、公共电气网络求值）  |
+| `@mica-js/core`           | 仿真内核（时间调度、电气网络求值、连接拓扑提交）  |
 | `@mica-js/core/schematic` | 原理图 `.sch`：解析、拓扑推导、编辑命令与属性系统 |
 | `@mica-js/core/canvas`    | 画布 `.cnv`：与 `.sch` 绑定的 2D 摆放（`layout`） |
 
@@ -241,11 +241,102 @@ const value = floating.sample(3.3, 100);
 
 严格采用 #24 的 `mica-floating-v2`：JSON + UTF-8 身份编码，FNV-1a 阶段种子（零替换为 1），xorshift32 初始电压，完整整数皮秒的 low/high 位经 mix32 决定 [-0.1, +0.1) V 噪声，最终限幅到当前 [0, VDD]。同阶段的 V0 固定；供电变化仅改变限幅，不重新缩放 V0。重复取值、观察者数量、其他引脚取值及事件执行序号不改变结果。networkId 不参与随机，拓扑合并/拆分不能将网络 ID 代替实体引脚身份。
 
-**接线责任：** 调用方持续跟踪确定/浮空转换，即使采样门控关闭也逐次调用 beginFloating；不能按读取次数重建阶段。未初始化阶段恢复就绪时，必须在恢复的解析点调用 sample 完成 V0 初始化，不能推迟到首次业务读取。此对象不自动检测网络转换，也不产生事件。后续 #50 负责拓扑/供电生命周期接线。
+**接线责任：** 调用方持续跟踪确定/浮空转换，即使采样门控关闭也逐次调用 beginFloating；不能按读取次数重建阶段。未初始化阶段恢复就绪时，必须在恢复的解析点调用 sample 完成 V0 初始化，不能推迟到首次业务读取。此对象不自动检测网络转换，也不产生事件；#50 的连接拓扑层负责按解析点登记与初始化。
+
+## 拓扑与内部连接
+
+`createTopologyRuntime(scheduler, definition, options)` 管理实例内部连接状态、外部导线输入和网络连通分量，并在合法控制阶段原子提交连接 patch 后只重算受影响网络。对应 [#50](https://github.com/x-botlab/mica-js/issues/50)，方向依据 [#14](https://github.com/x-botlab/mica-js/issues/14)；公共合同已[逐项批准](https://github.com/x-botlab/mica-js/issues/50#issuecomment-6324248869)。源码位于 `src/topology/`，与 `src/scheduler/`、`src/electrical/` 并列。
+
+```typescript
+import { createScheduler, createTopologyRuntime } from '@mica-js/core';
+
+const scheduler = createScheduler();
+const runtime = createTopologyRuntime(
+  scheduler,
+  {
+    pins: [
+      { instanceId: 'sw', pinName: 'A', kind: 'signal' },
+      { instanceId: 'sw', pinName: 'B', kind: 'signal' },
+      { instanceId: 'mcu', pinName: 'P0', kind: 'signal' },
+    ],
+    wires: [
+      {
+        wireId: 'w1',
+        pins: [
+          { instanceId: 'sw', pinName: 'B' },
+          { instanceId: 'mcu', pinName: 'P0' },
+        ],
+      },
+    ],
+    connections: [{ instanceId: 'sw', connectionId: 'contact', pins: ['A', 'B'], initial: 'open' }],
+  },
+  {
+    instanceId: 'topology',
+    pinStates: [
+      {
+        instanceId: 'sw',
+        pinName: 'A',
+        powerReady: true,
+        mode: 'high-z',
+        outputEnabled: false,
+        pull: 'none',
+        model: {
+          kind: 'ideal-voltage',
+          minVoltage: 0,
+          maxVoltage: 3.3,
+          lowVoltage: 0,
+          highVoltage: 3.3,
+        },
+      },
+      // 其余声明引脚各一份已提交状态
+    ],
+    floating: { seed: 12345, supplyVoltage: () => 3.3 },
+  },
+);
+
+runtime.submit({
+  instanceId: 'sw',
+  connections: [{ connectionId: 'contact', state: 'closed' }],
+});
+scheduler.start(); // 控制阶段整批提交并重算受影响网络
+```
+
+示例中的 `pinStates` 为节选；构造时会校验并拒绝缺失的声明引脚状态。
+
+### 定义与连通分量
+
+- `pins`：非空实例身份与引脚名、`signal/power/gnd` 类别；同一 `(instanceId, pinName)` 只能声明一次。
+- `wires`：外部导线不可在运行期增删。每条导线把 `pins` 成员连成同一网络（成员团边），支持跨实例、环路与并行路径；`globalGnd: true` 表示该导线接显式全局 GND。
+- `connections`：实例内部可控触点，端点必须是该实例已声明的两个互异引脚；`initial` 缺省 `open`，只允许 `open/closed`。
+- 未被导线或闭合触点连接的引脚仍是单引脚网络。分量按导线与 `closed` 连接取并查集；合并、拆分、环及并行导通路径均按实际连通性处理。
+- `networkId` 由分量内 UTF-16 字典序最小的 `(instanceId, pinName)` 生成，格式 `net:<instanceId>/<pinName>`，其中两段均把 `%` 转义为 `%25`、`/` 转义为 `%2F`；因此含 `/`、`%` 的原始身份不会碰撞，成员与网络排序固定。网络身份只用于诊断/查询，不参与浮空随机。
+- `groundReady` 仅在分量同时含 `kind: 'gnd'` 引脚和 `globalGnd: true` 导线时为 true。电源域、阈值与门控仍属于后续能力。
+
+### 原子 patch 与调度
+
+- `submit` 在调用时整批校验并按值捕获：空列表、重复连接、未知实例/连接、非法状态或非法声明直接抛 `TypeError`/`RangeError`，不产生队列项、不改状态。
+- 校验通过后向同一 scheduler 登记一个零参数 `control` 目标并入 FIFO 队列。每个 patch 对应一个控制入口，在控制阶段整批写入连接状态、重建分量并只重算受影响网络；同刻按提交顺序执行。
+- 提交不表示已生效：普通入口内的 patch 在该入口返回后、下一普通入口前应用；控制入口内的 patch 进入后续控制轮次，不递归、不同步重入器件入口。全幂等 patch 是 no-op。
+- `updatePinStates(states)` 以部分更新方式按值捕获引脚状态并入控制队列；`refresh(pins?)` 在供电/采样门控条件变化但引脚快照未变时请求解析点，缺省重算全部网络。两者都不立即修改可见拓扑。
+- `connectionState`、`networks()`、`networkOf(pin)` 只返回已提交结果；`floatingInput(pin)` 返回该引脚的 #49 浮空对象。
+
+### 电气求值与故障
+
+每个网络按成员组装 `ElectricalNetworkInput` 调用 `resolveElectricalNetwork`，不复制驱动、偏置或浮空算法。驱动冲突时先保留已提交连接状态与新分量，受影响网络的 `result` 为 `undefined`，随后 `ElectricalConflictError` 逃出控制入口，由 scheduler 进入 `faulted`（`SchedulerError.code = 'execution-failed'`，`cause` 保存冲突现场）。已经提交的连接状态与此前效果不会回滚；如需恢复必须重建仿真。
+
+scheduler 已处于 `faulted` 时，`runtime.destroy()` 会按调度器边界拒绝并抛 `scheduler-faulted`；该状态本来就不能继续运行，宿主应整体丢弃 runtime 与 scheduler，而不是依赖清理调用恢复。
+
+### 浮空接线
+
+启用 `floating` 后，每个引脚惰性建立独立 `createFloatingInput(seed, instanceId, pinName)`。网络每次从非浮空进入浮空即调用 `beginFloating`；供电阻断或采样门控关闭时省略供电参数，但阶段仍计数。仍为浮空且 V0 待初始化时，在该解析点若供电已知且采样启用则调用 `sample` 完成 V0 初始化并丢弃返回值；业务读取通过 `floatingInput(pin).sample(...)` 自行取值。网络合并/拆分不会重建阶段。
+
+### 支持边界
+
+连接拓扑层不解析原理图、不实现 IR `connection.apply` 指令、作者 JS API、外部导线运行期增删、#51 电源域/门控或协议；它只消费宿主已提交的引脚快照与静态外部导线。
 
 ## 支持边界与验证
 
-此实现只支持理想强电压与弱偏置的贡献解析，不支持连续电路求解、电阻、阻抗、负载或积分。电气模块自身不实现拓扑提交、电源生命周期、事件调度或 IR 领域指令接线，也不导入调度器；时间与调度由同包 `src/scheduler/` 提供，#50 后续接线负责组合两者。
+此实现只支持理想强电压与弱偏置的贡献解析，不支持连续电路求解、电阻、阻抗、负载或积分。电气模块自身不实现拓扑提交、电源生命周期、事件调度或 IR 领域指令接线，也不导入调度器；时间与调度由同包 `src/scheduler/` 提供，连接拓扑由 `src/topology/` 组合两者。
 
 在仓库根目录运行：
 
@@ -255,7 +346,7 @@ pnpm --filter @mica-js/core typecheck
 pnpm --filter @mica-js/core build
 ```
 
-Vitest 覆盖公共组合矩阵、释放/门控/readiness、冲突/浮空、f64 电压边界、冻结故障现场、顺序/网络隔离、v2 重放向量、独立 BigInt 算法对照、时间高位、供电限幅、门控阶段与恢复初始化；TypeScript 检查根入口合同。测试直接调用生产求值函数，不用构建或子进程冒充单元测试。
+Vitest 覆盖公共组合矩阵、释放/门控/readiness、冲突/浮空、f64 电压边界、冻结故障现场、顺序/网络隔离、v2 重放向量、独立 BigInt 算法对照、时间高位、供电限幅、门控阶段与恢复初始化；拓扑层覆盖连接环/并行路径、合并/拆分、GND、原子 patch、非法列表不部分提交、同刻顺序、反馈阶段、冲突不回滚、浮空登记/恢复及与时间推进的交互。TypeScript 检查根入口合同。测试直接调用生产求值函数与真实 scheduler，不用构建或子进程冒充单元测试。
 
 ## 开发
 
