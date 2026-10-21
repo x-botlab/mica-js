@@ -351,8 +351,53 @@ export function assertCapacity(value: unknown, label: string): asserts value is 
   }
 }
 
-export function assertSyncCallbackResult(result: unknown, label: string): void {
-  if (result !== undefined) {
-    fail(`${label} must be synchronous and return undefined`);
+export function assertSynchronousCallback(
+  callback: unknown,
+  label: string,
+): asserts callback is (...args: unknown[]) => unknown {
+  if (typeof callback !== 'function') {
+    fail(`${label} must be a synchronous function`);
   }
+  const kind = Object.prototype.toString.call(callback);
+  if (
+    kind === '[object AsyncFunction]' ||
+    kind === '[object GeneratorFunction]' ||
+    kind === '[object AsyncGeneratorFunction]'
+  ) {
+    fail(`${label} must be synchronous; async and generator callbacks are not supported`);
+  }
+}
+
+export function invokeSynchronousCallback(
+  callback: (...args: unknown[]) => unknown,
+  args: readonly unknown[],
+  label: string,
+): undefined {
+  assertSynchronousCallback(callback, label);
+  const result = callback(...args);
+  if (result === undefined) {
+    return undefined;
+  }
+  if (isThenable(result)) {
+    // The callback already returned a Promise. Consume a later rejection before
+    // reporting the synchronous-contract violation; never turn this into async
+    // construction or let the rejected Promise escape as unhandled.
+    consumeRejectedPromise(result);
+  }
+  fail(`${label} must be synchronous and return undefined`);
+}
+
+function isThenable(value: unknown): boolean {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return false;
+  }
+  try {
+    return typeof (value as { readonly then?: unknown }).then === 'function';
+  } catch {
+    return false;
+  }
+}
+
+function consumeRejectedPromise(value: unknown): void {
+  void Promise.resolve(value).catch(() => undefined);
 }

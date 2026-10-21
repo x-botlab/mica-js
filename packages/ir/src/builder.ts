@@ -21,7 +21,7 @@ import {
   assertScalarType,
   assertScalarTypeList,
   assertStaticRef,
-  assertSyncCallbackResult,
+  assertSynchronousCallback,
   assertValue,
   assertValueList,
   createBlockRef,
@@ -32,6 +32,7 @@ import {
   getValueMetadata,
   isFloatType,
   isIntegerType,
+  invokeSynchronousCallback,
   isNumericType,
   isSignedIntegerType,
   normalizeScalarLiteral,
@@ -110,29 +111,37 @@ export function defineFunctionBody(declaration: FunctionDeclarationState, callba
   if (declaration.defining) {
     fail(`Function "${declaration.name}" is already being defined`);
   }
-  if (typeof callback !== 'function') {
-    fail(`Function "${declaration.name}" requires a synchronous body callback`);
-  }
+  const bodyLabel = `Body callback for "${declaration.name}"`;
+  assertSynchronousCallback(callback, bodyLabel);
   if (declaration.module.bodyDepth > 0) {
     fail(`Cannot define function "${declaration.name}" inside another function body`);
   }
 
   declaration.defining = true;
   declaration.module.bodyDepth += 1;
+  let state: BuilderState | undefined;
   try {
-    const state = createBuilderState(declaration);
-    const builder = createBuilderObject(state) as FunctionBuilder;
-    const params = declaration.params.map((type, index) => createValue(state, type, index));
-    state.entry.params.push(...params);
-    state.valueSeq = params.length;
+    const currentState = createBuilderState(declaration);
+    state = currentState;
+    const builder = createBuilderObject(currentState) as FunctionBuilder;
+    const params = declaration.params.map((type, index) => createValue(currentState, type, index));
+    currentState.entry.params.push(...params);
+    currentState.valueSeq = params.length;
 
-    const result = (callback as (...args: unknown[]) => unknown)(builder, params);
-    assertSyncCallbackResult(result, `Body callback for "${declaration.name}"`);
-    finishBody(state);
+    invokeSynchronousCallback(callback, [builder, params], bodyLabel);
+    if (currentState.invalidated) {
+      fail(`Function "${declaration.name}" cannot be committed after a failed block definition`);
+    }
+    finishBody(currentState);
     declaration.body = {
-      entry: state.entry,
-      blocks: state.blocks,
+      entry: currentState.entry,
+      blocks: currentState.blocks,
     };
+  } catch (error) {
+    if (state !== undefined) {
+      state.invalidated = true;
+    }
+    throw error;
   } finally {
     declaration.defining = false;
     declaration.module.bodyDepth -= 1;
@@ -149,6 +158,7 @@ function createBuilderState(declaration: FunctionDeclarationState): BuilderState
     valueSeq: 0,
     blockSeq: 1,
     finished: false,
+    invalidated: false,
   };
   const entry = new Block(state, 0, []);
   entry.defined = true;
@@ -159,6 +169,11 @@ function createBuilderState(declaration: FunctionDeclarationState): BuilderState
 }
 
 function finishBody(state: BuilderState): void {
+  if (state.invalidated) {
+    fail(
+      `Function "${state.declaration.name}" cannot be committed after a failed block definition`,
+    );
+  }
   if (state.entry.terminator === undefined) {
     fail(`Entry block of "${state.declaration.name}" must end with a terminator`);
   }
@@ -177,6 +192,9 @@ function createBuilderObject(state: BuilderState): unknown {
   const module = state.module;
 
   const current = (operation: string): BlockState => {
+    if (state.invalidated) {
+      fail(`Function "${state.declaration.name}" cannot continue after a failed block definition`);
+    }
     if (state.finished) {
       fail(`Cannot add ${operation} after the function body has finished`);
     }
@@ -684,6 +702,9 @@ function createBuilderObject(state: BuilderState): unknown {
   };
 
   const makeBlock = (types: readonly ScalarType[]): BlockRef => {
+    if (state.invalidated) {
+      fail(`Function "${state.declaration.name}" cannot continue after a failed block definition`);
+    }
     if (state.finished) {
       fail('Cannot create a block after the function body has finished');
     }
@@ -697,6 +718,9 @@ function createBuilderObject(state: BuilderState): unknown {
     ref: BlockRef,
     callback: (builder: unknown, params: Value[]) => unknown,
   ): undefined => {
+    if (state.invalidated) {
+      fail(`Function "${state.declaration.name}" cannot continue after a failed block definition`);
+    }
     if (state.finished) {
       fail('Cannot define a block after the function body has finished');
     }
@@ -704,19 +728,24 @@ function createBuilderObject(state: BuilderState): unknown {
     if (block.defined || block.defining) {
       fail(`Block ${block.id} is already defined`);
     }
-    if (typeof callback !== 'function') {
-      fail(`Block ${block.id} requires a synchronous body callback`);
-    }
+    const label = `Block ${block.id} callback`;
+    assertSynchronousCallback(callback, label);
     block.defining = true;
     block.params = block.paramTypes.map((type) => createValue(state, type, state.valueSeq++));
     state.insertion.push(block);
     try {
-      const result = callback(createBuilderObject(state), block.params);
-      assertSyncCallbackResult(result, `Block ${block.id} callback`);
+      invokeSynchronousCallback(callback, [createBuilderObject(state), block.params], label);
+      if (state.invalidated) {
+        fail(`Block ${block.id} cannot be committed after a nested failure`);
+      }
       if (block.terminator === undefined) {
+        state.invalidated = true;
         fail(`Block ${block.id} must end with a terminator`);
       }
       block.defined = true;
+    } catch (error) {
+      state.invalidated = true;
+      throw error;
     } finally {
       state.insertion.pop();
       block.defining = false;

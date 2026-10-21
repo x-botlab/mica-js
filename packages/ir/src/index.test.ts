@@ -43,6 +43,42 @@ function expectConstructionError(run: () => unknown, pattern: RegExp): void {
   expect(String(error)).toMatch(pattern);
 }
 
+interface UnhandledRejectionHost {
+  on(event: 'unhandledRejection', listener: (reason: unknown) => void): void;
+  off(event: 'unhandledRejection', listener: (reason: unknown) => void): void;
+}
+
+const runtime = globalThis as unknown as {
+  process?: UnhandledRejectionHost;
+  setTimeout: (callback: () => void, delay?: number) => unknown;
+};
+
+async function flushRejectionEvents(): Promise<void> {
+  await Promise.resolve();
+  await new Promise<void>((resolve) => {
+    runtime.setTimeout(resolve, 0);
+  });
+  await Promise.resolve();
+}
+
+async function expectConstructionErrorWithoutUnhandledRejection(
+  run: () => unknown,
+  pattern: RegExp,
+): Promise<void> {
+  const unhandled: unknown[] = [];
+  const listener = (reason: unknown): void => {
+    unhandled.push(reason);
+  };
+  runtime.process?.on('unhandledRejection', listener);
+  try {
+    expectConstructionError(run, pattern);
+    await flushRejectionEvents();
+  } finally {
+    runtime.process?.off('unhandledRejection', listener);
+  }
+  expect(unhandled).toEqual([]);
+}
+
 describe('@mica/ir model and builder', () => {
   it('builds constants, state, calls, and multiple results', () => {
     const module = createIRModule();
@@ -392,6 +428,159 @@ describe('@mica/ir model and builder', () => {
         }),
       /another function/,
     );
+  });
+
+  it('rejects async and Promise-returning callbacks without leaking rejections', async () => {
+    const module = createIRModule();
+    const entry = module.entry('run', []);
+
+    let asyncBodyRan = false;
+    const asyncBody = async (): Promise<void> => {
+      asyncBodyRan = true;
+      throw new Error('boom');
+    };
+    await expectConstructionErrorWithoutUnhandledRejection(
+      () => entry.body(asyncBody as never),
+      /synchronous/,
+    );
+    expect(asyncBodyRan).toBe(false);
+
+    await expectConstructionErrorWithoutUnhandledRejection(
+      () => entry.body((() => Promise.resolve()) as never),
+      /synchronous/,
+    );
+    await expectConstructionErrorWithoutUnhandledRejection(
+      () => entry.body((() => Promise.reject(new Error('boom'))) as never),
+      /synchronous/,
+    );
+    await expectConstructionErrorWithoutUnhandledRejection(
+      () =>
+        entry.body(
+          (() =>
+            new Promise<void>((_resolve, reject) => {
+              runtime.setTimeout(() => reject(new Error('later')), 0);
+            })) as never,
+        ),
+      /synchronous/,
+    );
+
+    let asyncBlockRan = false;
+    const asyncBlock = async (): Promise<void> => {
+      asyncBlockRan = true;
+      throw new Error('boom');
+    };
+    await expectConstructionErrorWithoutUnhandledRejection(
+      () =>
+        entry.body((b) => {
+          const target = b.block([]);
+          b.at(target, asyncBlock as never);
+        }),
+      /synchronous/,
+    );
+    expect(asyncBlockRan).toBe(false);
+
+    await expectConstructionErrorWithoutUnhandledRejection(
+      () =>
+        entry.body((b) => {
+          const target = b.block([]);
+          b.at(target, (() => Promise.resolve()) as never);
+        }),
+      /synchronous/,
+    );
+    await expectConstructionErrorWithoutUnhandledRejection(
+      () =>
+        entry.body((b) => {
+          const target = b.block([]);
+          b.at(target, (() => Promise.reject(new Error('boom'))) as never);
+        }),
+      /synchronous/,
+    );
+
+    expect(functionByName(module, 'run').body).toBeUndefined();
+  });
+
+  it('invalidates a function build when a block callback fails', () => {
+    const module = createIRModule();
+    const retry = module.func('retry', { params: [], results: ['u32'] });
+    let leakedBlock: BlockRef | undefined;
+
+    expectConstructionError(
+      () =>
+        retry.body((b) => {
+          const target = b.block(['u32']);
+          leakedBlock = target;
+          b.jump(target, [b.const('u32', 1)]);
+          try {
+            b.at(target, (inner, [value]) => {
+              inner.int.add(value, value);
+            });
+          } catch {
+            // A failed block definition must not leave a retryable partial block.
+          }
+          b.at(target, (inner, [value]) => inner.return([value]));
+        }),
+      /cannot continue after a failed block definition/,
+    );
+    expect(functionByName(module, 'retry').body).toBeUndefined();
+    expect(leakedBlock).toBeDefined();
+
+    const second = module.func('second', { params: [], results: [] });
+    expectConstructionError(
+      () =>
+        second.body((b) => {
+          b.jump(leakedBlock as BlockRef, []);
+          b.return([]);
+        }),
+      /another function/,
+    );
+
+    retry.body((b) => {
+      const target = b.block(['u32']);
+      b.jump(target, [b.const('u32', 1)]);
+      b.at(target, (inner, [value]) => inner.return([value]));
+    });
+    expect(blockOperations(functionByName(module, 'retry').body?.blocks[1])).toEqual(['return']);
+
+    const thrown = module.func('thrown', { params: [], results: [] });
+    expectConstructionError(
+      () =>
+        thrown.body((b) => {
+          const target = b.block([]);
+          try {
+            b.at(target, (inner) => {
+              inner.const('u32', 1);
+              throw new Error('boom');
+            });
+          } catch {
+            // The thrown callback is also a failed block definition.
+          }
+          b.return([]);
+        }),
+      /cannot continue after a failed block definition/,
+    );
+    expect(functionByName(module, 'thrown').body).toBeUndefined();
+
+    const nested = module.func('nested', { params: [], results: [] });
+    expectConstructionError(
+      () =>
+        nested.body((b) => {
+          const outer = b.block([]);
+          const inner = b.block([]);
+          b.jump(outer, []);
+          try {
+            b.at(outer, (outerBuilder) => {
+              outerBuilder.at(inner, () => {
+                throw new Error('boom');
+              });
+            });
+          } catch {
+            // A nested failure invalidates the whole function build.
+          }
+          b.return([]);
+        }),
+      /cannot continue after a failed block definition/,
+    );
+    expect(functionByName(module, 'nested').body).toBeUndefined();
   });
 
   it('keeps constants within declared scalar types and rounds f32 at the boundary', () => {

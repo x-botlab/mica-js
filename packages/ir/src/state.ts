@@ -59,6 +59,7 @@ export interface BuilderState {
   valueSeq: number;
   blockSeq: number;
   finished: boolean;
+  invalidated: boolean;
 }
 
 export class BlockState implements BlockDefinition {
