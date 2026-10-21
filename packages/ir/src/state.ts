@@ -8,6 +8,7 @@ import type {
   InstructionNode,
   MemoryDefinition,
   ScalarType,
+  StaticRef,
   Terminator,
   Value,
 } from './types';
@@ -42,6 +43,7 @@ export interface DomainDeclarationState {
   readonly module: ModuleState;
   readonly kind: string;
   readonly name: string;
+  ref: StaticRef;
 }
 
 export interface DomainInstructionState {
@@ -81,6 +83,7 @@ export class BlockState implements BlockDefinition {
 
 export function toFunctionDefinition(state: FunctionDeclarationState): FunctionDefinition {
   return {
+    ref: state.ref,
     name: state.name,
     category: state.category,
     params: state.params,

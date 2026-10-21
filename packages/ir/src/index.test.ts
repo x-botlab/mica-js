@@ -634,7 +634,7 @@ describe('@mica/ir model and builder', () => {
       b.return([]);
     });
 
-    expect(module.domainDeclarations).toEqual([{ kind: 'led', name: 'status' }]);
+    expect(module.domainDeclarations).toEqual([{ kind: 'led', name: 'status', ref: led }]);
     expect(module.instructions).toEqual([
       {
         name: 'led.set',

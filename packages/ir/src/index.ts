@@ -1,4 +1,15 @@
 export { createIRModule } from './module';
+export { validateIR } from './validate';
+export type {
+  IRDiagnosticCode,
+  IRDiagnosticLocation,
+  IRDiagnostic,
+  IRValidationResult,
+  IRResourcePermission,
+  IRInstructionValidationContext,
+  IRInstructionValidator,
+  IRValidationOptions,
+} from './validation-types';
 export { IRConstructionError } from './errors';
 export {
   SCALAR_TYPES,
