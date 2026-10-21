@@ -54,6 +54,23 @@ export function snapToGrid(point: Point, display: DisplayOptions): Point {
 }
 
 /**
+ * Offset for dragging something anchored at `anchor` from `from` to `to`: the result is snapped,
+ * not the raw pointer delta, so an off-grid symbol lands on the grid.
+ */
+export function snapDragOffset(
+  anchor: Point,
+  from: Point,
+  to: Point,
+  display: DisplayOptions,
+): Point {
+  const target = snapToGrid(
+    { x: anchor.x + (to.x - from.x), y: anchor.y + (to.y - from.y) },
+    display,
+  );
+  return { x: target.x - anchor.x, y: target.y - anchor.y };
+}
+
+/**
  * Waypoints needed to reach `to` from `from` with horizontal/vertical segments only.
  * Returns `[to]` when already aligned, otherwise an elbow plus `to` (long axis first).
  */

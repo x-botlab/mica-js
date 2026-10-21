@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { LABEL_STUB_LENGTH, labelStubAt, orthogonalWaypoints, type SnapContext } from './snapping';
+import {
+  LABEL_STUB_LENGTH,
+  labelStubAt,
+  orthogonalWaypoints,
+  snapDragOffset,
+  type SnapContext,
+} from './snapping';
 import { SchematicEditorController } from '../controller/controller';
 import { createDeviceRegistry, parseSchematic } from '@mica/core/schematic';
+import { DEFAULT_DISPLAY_OPTIONS } from '../controller/types';
 
 const devices = createDeviceRegistry([
   {
@@ -94,6 +101,35 @@ describe('labelStubAt', () => {
     );
     expect(stub?.anchor).toEqual({ x: 40 - LABEL_STUB_LENGTH, y: 80 });
     expect(stub?.wire).toBeUndefined();
+  });
+});
+
+describe('snapDragOffset', () => {
+  const display = { ...DEFAULT_DISPLAY_OPTIONS, gridSize: 10 };
+
+  it('lands the dragged anchor on the nearest grid intersection', () => {
+    // Anchor starts off-grid at 483,197 and is dragged by (48,43).
+    expect(snapDragOffset({ x: 483, y: 197 }, { x: 10, y: 10 }, { x: 58, y: 53 }, display)).toEqual(
+      {
+        x: 47,
+        y: 43,
+      },
+    );
+  });
+
+  it('returns the raw delta when snapping is off', () => {
+    const loose = { ...display, snap: false };
+    expect(snapDragOffset({ x: 483, y: 197 }, { x: 10, y: 10 }, { x: 58, y: 53 }, loose)).toEqual({
+      x: 48,
+      y: 43,
+    });
+  });
+
+  it('stays exact when the anchor is already on the grid', () => {
+    expect(snapDragOffset({ x: 480, y: 200 }, { x: 0, y: 0 }, { x: 20, y: 30 }, display)).toEqual({
+      x: 20,
+      y: 30,
+    });
   });
 });
 

@@ -21,6 +21,7 @@ import {
   nextNetName,
   orthogonalWaypoints,
   placementProperties,
+  snapDragOffset,
   snapForWire,
   snapToGrid,
   toolDevice,
@@ -46,7 +47,13 @@ export interface EditorInputDeps {
 type Drag =
   | { readonly mode: 'pan'; readonly lastX: number; readonly lastY: number }
   | { readonly mode: 'marquee'; readonly origin: Point; current: Point }
-  | { readonly mode: 'move'; readonly origin: Point; offset: Point }
+  | {
+      readonly mode: 'move';
+      readonly origin: Point;
+      /** World position of the dragged anchor symbol when the drag started. */
+      readonly anchor: Point;
+      offset: Point;
+    }
   | {
       readonly mode: 'reference';
       readonly symbolId: string;
@@ -474,7 +481,15 @@ export class EditorInput {
     }
     this.#select(selection, event.shiftKey);
     if (!this.#deps.readOnly && selection.kind === 'symbol') {
-      this.#drag = { mode: 'move', origin: page, offset: { x: 0, y: 0 } };
+      const anchor = this.#deps.controller.document.sheet.symbols.find(
+        (item) => item.id === selection.id,
+      );
+      this.#drag = {
+        mode: 'move',
+        origin: page,
+        anchor: anchor === undefined ? page : { x: anchor.x, y: anchor.y },
+        offset: { x: 0, y: 0 },
+      };
       this.#deps.canvas.setPointerCapture(event.pointerId);
     } else if (!this.#deps.readOnly && selection.kind === 'reference') {
       const symbol = this.#deps.controller.document.sheet.symbols.find(
@@ -540,12 +555,11 @@ export class EditorInput {
       return;
     }
     if (this.#drag?.mode === 'move') {
-      const display = this.#deps.controller.display;
-      const step = display.snap && display.gridSize > 0 ? display.gridSize : 1;
-      const dx = Math.round((page.x - this.#drag.origin.x) / step) * step;
-      const dy = Math.round((page.y - this.#drag.origin.y) / step) * step;
-      if (dx !== this.#drag.offset.x || dy !== this.#drag.offset.y) {
-        this.#drag = { mode: 'move', origin: this.#drag.origin, offset: { x: dx, y: dy } };
+      const { origin, anchor, offset } = this.#drag;
+      // Snap where the symbol lands, not the raw pointer delta, so it always sits on the grid.
+      const next = snapDragOffset(anchor, origin, page, this.#deps.controller.display);
+      if (next.x !== offset.x || next.y !== offset.y) {
+        this.#drag = { mode: 'move', origin, anchor, offset: next };
         this.#deps.onChange();
       }
       return;
