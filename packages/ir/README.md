@@ -1,8 +1,8 @@
 # @mica/ir
 
-领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令语义与实例存储，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
+领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令语义、实例存储与参考解释器，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)、[#46](https://github.com/x-botlab/mica-js/issues/46)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
 
-本包负责**建图、实例存储、静态校验/链接诊断及可复用的标量运算**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，为每个实例建立独立的声明资源存储，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。`evaluateScalarInstruction` 求值单个整数/布尔节点，`evaluateFloatInstruction` 提供独立的浮点单指令语义（见下文）；两者均不执行函数或控制流，不提供完整解释器、资源版本化更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
+本包负责**建图、实例存储、静态校验/链接诊断、可复用标量运算与参考执行**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。`evaluateScalarInstruction` 和 `evaluateFloatInstruction` 仍是独立的单节点求值入口；`createIRInterpreter` 在固定快照并校验后复用它们及现有 storage，执行控制流与普通同步调用。本包不提供事件调度、资源版本化更新、Provider、消息桥接或 JIT。校验通过不代表已经执行，尚未实现的能力不会以空操作伪装为成功。
 
 ## 公共入口
 
@@ -10,6 +10,7 @@
 
 - `createIRModule()`：创建独立的模块声明/建图上下文，返回 `IRModule`。
 - `createIRStorage(module)`：为模块的声明资源创建一份独立实例存储，返回 `IRStorage`；每次调用互不别名。
+- `createIRInterpreter(module, options)`：创建经过快照与校验的参考解释器，拥有独立 `storage`，通过 `execute(target, args, context)` 同步执行；预算、诊断及拒绝边界见下文。
 - `validateIR(input, options)`：返回 `IRValidationResult`，通过 `IRDiagnostic` / `IRDiagnosticLocation` 报告静态错误；能力策略及领域扩展类型见下文。
 - `evaluateScalarInstruction(instruction, operands)`：求值单个整数/布尔节点，失败抛出 `IRScalarEvaluationError`；范围与错误码见下文。
 - `IRDeclarations`：`state`、`array`、`bytes`、`inbox`、`func`、`entry`、`lifecycle` 静态声明。
@@ -44,7 +45,7 @@ evaluateScalarInstruction(multiply, [4294967295, 4294967295]); // 1
 
 失败抛出 `IRScalarEvaluationError`，其只读 `code: IRScalarEvaluationErrorCode` 为：`unsupported-instruction`（尚未实现）、`invalid-instruction`（布局/签名错误）、`invalid-operand`（SSA 实参数目/类型/值域错误）、`division-by-zero`。批准的错误联合还保留 `conversion-out-of-range`，本项整数内部转换不会产生该错误。不支持的运算显式拒绝；所有浮点运算、整数↔浮点数值转换、`convert.float`、`const.bits`、bitcast 和浮点 select 由 [#44](https://github.com/x-botlab/mica-js/issues/44) 实现，本项不执行它们。
 
-此入口检查单节点签名和值域，不替代 `validateIR` 对 SSA 定义/支配、静态引用、控制流和授权的整图检查。后续参考解释器应完成验证、解析 SSA 标量后复用此入口，并在调用方附加执行位置；不得把静态校验成功当作执行成功。现有 `IRConstructionError` 与 #42 静态诊断合同不变。
+此入口检查单节点签名和值域，不替代 `validateIR` 对 SSA 定义/支配、静态引用、控制流和授权的整图检查。参考解释器完成验证、解析 SSA 标量后复用此入口，并附加执行位置；不得把静态校验成功当作执行成功。现有 `IRConstructionError` 与 #42 静态诊断合同不变。
 
 ## 建图示例
 
@@ -192,7 +193,7 @@ SSA 值和静态句柄以对象身份关联，块边目标必须是本函数 `bo
 
 诊断具有稳定的 `code`、`message`、`location`。`location.path` 总是存在，例如 `functions[0].body.blocks[1].instructions[2]`；函数/块/指令使用从 0 开始的 `functionIndex`、`blockIndex`、`instructionIndex`，并附 `functionName`、`blockId`。终结位置使用 `.terminator` 路径与 `terminator: true`，不伪造指令序号。声明、策略或畸形外围上下文中不存在的字段会省略；读取输入抛错时定位为 `$`。稀疏数组和错误结构明确拒绝。
 
-返回值仅针对本次稳定输入和策略有效，不是冻结的已链接产物或运行授权令牌。调用方必须在任何安装/执行前检查 `ok`，输入、策略或后端变化后重新检查；未来执行器仍需承担动态约束与运行故障处理。本包目前没有安装/执行入口，不把后端支持列表当作执行实现。
+返回值仅针对本次稳定输入和策略有效，不是冻结的已链接产物或运行授权令牌。调用方必须在任何安装/执行前检查 `ok`，输入、策略或后端变化后重新检查。`createIRInterpreter` 自行捕获并校验执行快照，承担动态约束与运行故障处理，且额外拒绝无执行实现的指令；不把后端支持列表当作执行实现。
 
 ## 浮点单指令语义（#44）
 
@@ -219,11 +220,79 @@ const result = evaluateFloatInstruction(instruction, [1 + 2 ** -23, 1 - 2 ** -23
 
 `src/float.test.ts` 包含可复用的表驱动边界向量，包括融合/非融合、f32 经 f64 的双舍入差异、溢出抵消、次正规数、转换范围及带载荷 NaN 位移动，并使用真实 builder 节点与 `validateIR` 联合检查。`src/float.type-test.ts` 检查上述公开合同。
 
+## 参考解释器（#46）
+
+公共合同经[逐项审批](https://github.com/x-botlab/mica-js/issues/46#issuecomment-6320397762)确认。
+
+```typescript
+import { createIRInterpreter, createIRModule } from '@mica/ir';
+
+const module = createIRModule();
+const count = module.state('count', 'u32', 0);
+const increment = module.func('increment', { params: ['u32'], results: ['u32'] });
+increment.body((b, [delta]) => {
+  const next = b.int.add(b.state.load(count), delta);
+  b.state.store(count, next);
+  b.return([next]);
+});
+
+const runtime = createIRInterpreter(module, {
+  validation: {
+    supportedInstructions: ['state.load', 'int.add', 'state.store', 'return'],
+    authorizedInstructions: ['state.load', 'int.add', 'state.store', 'return'],
+    resources: [{ ref: count, access: 'read-write' }],
+  },
+  maxSteps: 1_000_000,
+});
+const result = runtime.execute(increment, [3], { instanceId: 'counter', virtualTime: 1000 });
+// result: { values: [3], steps: 4 }
+runtime.storage.loadState(count); // 3
+```
+
+`createIRInterpreter(module: IRModule, options: IRInterpreterOptions): IRInterpreter` 捕获私有执行快照，调用现有 `validateIR`，再用现有 `createIRStorage` 创建独占存储。`IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`。执行图的节点、SSA 类型、块边与签名在捕获后不再读取原模型；静态句柄保留身份，资源内容由 storage 独立捕获。原模型后续添加函数或修改指令不会改变已创建解释器；要使用新程序须重新创建。不修改/冻结调用方原模型，不接受外部 storage；多次构造同一模块得到互不别名的实例，现有独立 `createIRStorage` 不受影响。API 面向可信宿主，不是执行任意恶意 JS getter/validator 的隔离沙箱。
+
+`IRInterpreter` 的只读 `storage: IRStorage` 供宿主检查和受控访问；IR 的访问权限仍来自必填 validation 策略，不能通过普通 call 扩权。`execute(target: FunctionRef | EntryRef | LifecycleRef, args: readonly RuntimeScalar[], context: IRExecutionContext): IRExecutionResult` 同步执行，结果为 `{ readonly values: readonly RuntimeScalar[]; readonly steps: number }`，包括零、单、多结果。可信宿主可直接选择这三类目标；IR 内 `call` 只允许同模块普通函数，不得调用入口/生命周期或跨实例目标。实例存储跨成功执行保留，每次 execute 使用独立预算。
+
+`IRExecutionContext = { readonly instanceId: string; readonly virtualTime: number }` 必须显式提供；实例标识非空，时间为非负安全整数皮秒，用于诊断，不读取墙钟。参数数量、bool/整数值域和 FloatBits 精度/位宽严格检查。浮点 number 输入通过现有浮点求值器按声明精度量化，FloatBits 输入按值捕获；浮点输出始终是 FloatBits。块边先捕获全部实参再同时绑定，回边交换参数不会被顺序覆盖。块跳转和普通 call 不推进虚拟时间、不创建事件、不形成等待或恢复对象；调用帧是本次同步执行的内部帧，非保存的等待栈。
+
+### 确定预算
+
+- `maxSteps` 默认为 1,000,000，必须是非负安全整数；0 在首步前拒绝。
+- 每条规范化 InstructionNode 和每条 terminator 各计一步，包含 const、call、return、jump、branch、trap。函数入参/块参数绑定、调用帧压入/弹出无额外计费；被执行到的常量照常计费，未选分支不计。
+- 普通调用共享本次顶层 execute 的剩余预算；先检查再开始下一步，最多开始 `maxSteps` 步，不执行预算外操作。`steps` 计已开始步骤，因此发生运算/存储/trap 故障的步骤计入；被预算拦截的步骤不计入。
+- 块循环、快照复制和普通调用帧均迭代处理，不依赖 JS 栈溢出或机器运行时长终止。每同一时刻入口执行次数的全局限制归后续调度器，本包不另造调度器。
+
+### 错误与提交
+
+`IRExecutionError` 构造签名为 `(code: IRExecutionErrorCode, message: string, details?: IRExecutionErrorDetails)`，只读 `code`、`context`、`location`、`callStack`、`steps`、`diagnostics` 与 `cause` 描述失败；无对应上下文/位置/cause 时为 undefined，callStack/diagnostics 默认空数组，steps 默认 0。`IRExecutionErrorDetails` 为上述后六项的可选字段，`cause: unknown` 保留原异常。
+
+`IRExecutionLocation` 包含从 0 开始的 `functionIndex`、`blockIndex`、`instructionIndex?`，以及 `functionName`、`blockId`、`terminator?: true`；终结位置不伪造 instructionIndex。callStack 外层到内层排列，外层位置为调用点，最内层为失败点，与 location 对应。构造/调用前错误可能没有执行位置。静态失败在 diagnostics 保留现有 IRDiagnostic；运算或存储失败在 cause 保留 IRScalarEvaluationError、IRFloatEvaluationError 或 IRStorageError，明确错误原因而不改变既有错误码。trap 的模型 code 包含在 message 中。
+
+| IRExecutionErrorCode      | 含义                                   |
+| ------------------------- | -------------------------------------- |
+| `invalid-options`         | 非法解释器配置/预算                    |
+| `validation-failed`       | 模型或显式策略未通过静态校验           |
+| `invalid-target`          | 顶层目标不属于此解释器的模块快照       |
+| `invalid-argument`        | 执行前实参或上下文非法                 |
+| `budget-exhausted`        | 下一参考 IR 步骤超出预算               |
+| `trap`                    | 模型显式终结异常                       |
+| `evaluation-failed`       | 单节点运算失败                         |
+| `storage-failed`          | 存储分配或访问失败                     |
+| `unsupported-instruction` | 静态扩展合法但本解释器没有执行实现     |
+| `instance-faulted`        | 实例此前已发生执行故障，不允许再次执行 |
+
+每项存储操作复用原有完整范围校验与原子提交，失败操作自身不产生部分写入，此前已提交效果不回滚。执行中的预算、求值、存储或 trap 故障锁定实例，storage 仍可检查；后续 execute 抛 instance-faulted，无 reset/resume，也不支持失败入口中途恢复。非法目标、参数或 context 等调用前错误不消耗步骤、不锁定实例。解释器停止并抛错，整个仿真及其他实例的暂停由宿主负责，不由本包擅自调度或销毁。
+
+### 能力边界
+
+执行范围为现有整数/布尔/浮点/存储指令、普通 call 及 return/jump/branch/trap。调用无用户执行回调；新增能力必须在解释器明确分发点接入并另行审批，不能靠增加 supportedInstructions 或静态 validator 自动获得执行实现。构造时也检查不可达块/未调用函数：扩展静态校验即使通过，event、domain 等未实现执行能力仍在任何 IR 效果发生前拒绝；dispatch、Provider/checkpoint、resource.update/fill 等保留能力沿用静态拒绝。资源固有只读性、资源身份及调用类别不能被策略放宽。
+
+`src/interpreter.test.ts` 使用真实 builder、validateIR、既有求值器与 storage，覆盖 identity、分支合流、sum 循环、同时绑定回边、4096 层调用、多结果、精确预算、错误调用链、失败操作原子性、独立实例、浮点载荷/负零移动及拒绝路径。`src/interpreter.type-test.ts` 检查公共签名。
+
 ## 当前限制
 
 以下能力属于后续任务，本包明确不实现：
 
-- 将标量运算与存储接入参考解释器、预算和异常定位（#46）。
 - `resource.updateBytes` / `resource.fillBytes` 的版本化更新（#47）。
 - 事件、输出、消息桥接、Provider 生成/checkpoint 与 JIT。
 
@@ -234,8 +303,8 @@ const result = evaluateFloatInstruction(instruction, [1 + 2 ** -23, 1 - 2 ** -23
 使用仓库现有 pnpm catalog、TypeScript、Vite、vite-plugin-dts 与 Vitest：
 
 ```bash
-pnpm --filter @mica/ir typecheck   # 包含 src/api.type-test.ts、src/storage.type-test.ts 的正反类型用例
-pnpm --filter @mica/ir test        # 运行期模型、建图结构与实例存储测试
+pnpm --filter @mica/ir typecheck   # 包含 builder、storage、interpreter 等正反类型用例
+pnpm --filter @mica/ir test        # 模型、建图、校验、标量、存储与参考解释器测试
 pnpm --filter @mica/ir build
 ```
 
