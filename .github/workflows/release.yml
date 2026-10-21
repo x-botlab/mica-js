@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Start from no permissions and grant them per job.
+permissions: {}
+
+# Never cancel a release halfway through.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # commit version bumps, create tags and GitHub releases
+      pull-requests: write # create / update the "Version Packages" pull request
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.14.0
+
+      # No `registry-url`: it would write an `.npmrc` token reference that trusted publishing
+      # does not use. pnpm requests its own short-lived npm token through GitHub's OIDC endpoint.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - run: pnpm install --frozen-lockfile
+
+      # `changeset publish` does not build, so packages must be built before publishing.
+      - run: pnpm run build
+
+      - name: Version packages or publish
+        uses: changesets/action@v2
+        with:
+          version-script: pnpm run version-packages
+          publish-script: pnpm run release
+          commit-message: 'chore(release): version packages'
+          pr-title: 'chore(release): version packages'
+          # A PAT (`RELEASE_TOKEN`) makes CI run on the changesets pull request itself;
+          # without it the default GITHUB_TOKEN works, but pushes it makes do not trigger workflows.
+          github-token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
