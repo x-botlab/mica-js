@@ -18,7 +18,7 @@ function codes(input: string): readonly string[] {
 }
 
 describe('parseView', () => {
-  it('parses the issue #6 example', () => {
+  it('parses the 2D view example from the proposal', () => {
     const view = parseView(SAMPLE);
     expect(view.version).toBe(1);
     expect(view.id).toBe('ct117e-m4-board-2d');

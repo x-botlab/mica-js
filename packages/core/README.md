@@ -7,7 +7,7 @@ Mica 仿真内核（虚拟时间与确定性事件调度），并提供原理图
 - `@mica-js/core`：仿真内核
 - `@mica-js/core/schematic`：`.sch` / `.view` 文档格式
 
-文件合同见 [x-botlab/mica-js#6](https://github.com/x-botlab/mica-js/issues/6)。
+文件合同：#6 规定原理图 `.sch`，#67 规定 2D 视图 `.view`。
 
 ## 开发
 

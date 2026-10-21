@@ -1,5 +1,6 @@
 /**
- * Schema version of the `.sch` and `.view` file contracts (see x-botlab/mica-js#6).
+ * Schema version of the `.sch` contract (see x-botlab/mica-js#6) and the `.view` contract
+ * (see x-botlab/mica-js#67).
  */
 export const SCHEMATIC_VERSION = 1;
 
