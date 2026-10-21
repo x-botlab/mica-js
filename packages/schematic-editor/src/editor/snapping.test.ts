@@ -1,5 +1,101 @@
 import { describe, expect, it } from 'vitest';
-import { orthogonalWaypoints } from './snapping';
+import { LABEL_STUB_LENGTH, labelStubAt, orthogonalWaypoints, type SnapContext } from './snapping';
+import { SchematicEditorController } from '../controller/controller';
+import { createDeviceRegistry, parseSchematic } from '@mica/core/schematic';
+
+const devices = createDeviceRegistry([
+  {
+    packageId: 'pkg',
+    devices: [
+      {
+        id: 'ne555',
+        symbol: {
+          name: 'NE555',
+          bounds: { x: -40, y: -50, width: 80, height: 100 },
+          pins: {
+            TRIG: { x: -60, y: -20, side: 'left' },
+            OUT: { x: 60, y: 0, side: 'right' },
+            VCC: { x: 0, y: -70, side: 'top' },
+            GND: { x: 0, y: 70 },
+          },
+        },
+      },
+    ],
+  },
+]);
+
+function contextAt(rotation: number, wires: readonly unknown[] = []): SnapContext {
+  return {
+    controller: new SchematicEditorController({
+      document: parseSchematic({
+        version: 1,
+        id: 'stub',
+        sheet: {
+          symbols: [{ id: 'U1', device: 'pkg:ne555', x: 100, y: 100, rotation }],
+          wires,
+          junctions: [],
+        },
+      }),
+      devices,
+    }),
+    devices,
+    tolerance: 4,
+  };
+}
+
+describe('labelStubAt', () => {
+  it('adds a lead in the pin direction when a label lands on a pin', () => {
+    // TRIG sits on the left edge, so the lead grows to the left.
+    expect(labelStubAt(contextAt(0), { x: 40, y: 80 })).toEqual({
+      pin: { x: 40, y: 80 },
+      anchor: { x: 40 - LABEL_STUB_LENGTH, y: 80 },
+      // Text grows to the left so it never lands on the symbol.
+      rotation: 180,
+      wire: [
+        { x: 40, y: 80 },
+        { x: 40 - LABEL_STUB_LENGTH, y: 80 },
+      ],
+    });
+  });
+
+  it('follows the symbol rotation', () => {
+    // Rotated 90° the left pin points up, so the lead grows upwards.
+    const stub = labelStubAt(contextAt(90), { x: 120, y: 40 });
+    expect(stub?.pin).toEqual({ x: 120, y: 40 });
+    expect(stub?.anchor.x).toBeCloseTo(120, 9);
+    expect(stub?.anchor.y).toBeCloseTo(40 - LABEL_STUB_LENGTH, 9);
+    expect(stub?.rotation).toBe(270);
+  });
+
+  it('infers the side for pins that do not declare one', () => {
+    // GND sits on the bottom edge without an explicit side.
+    const stub = labelStubAt(contextAt(0), { x: 100, y: 170 });
+    expect(stub?.anchor).toEqual({ x: 100, y: 170 + LABEL_STUB_LENGTH });
+    expect(stub?.rotation).toBe(90);
+  });
+
+  it('returns undefined away from pins', () => {
+    expect(labelStubAt(contextAt(0), { x: 100, y: 100 })).toBeUndefined();
+  });
+
+  it('skips the lead when a wire already reaches the anchor', () => {
+    // The existing wire covers the whole lead, so the label just binds to it.
+    const stub = labelStubAt(
+      contextAt(0, [
+        {
+          id: 'w1',
+          points: [
+            { x: 40, y: 80 },
+            { x: 0, y: 80 },
+          ],
+        },
+      ]),
+      { x: 40, y: 80 },
+    );
+    expect(stub?.anchor).toEqual({ x: 40 - LABEL_STUB_LENGTH, y: 80 });
+    expect(stub?.wire).toBeUndefined();
+  });
+});
 
 describe('orthogonalWaypoints', () => {
   it('returns the target alone when already aligned', () => {

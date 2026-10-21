@@ -34,3 +34,38 @@ export interface DeviceSymbolProvider {
   /** Name rendered on the symbol: the symbol name, else the display name. `undefined` when unknown. */
   getDeviceName(reference: DeviceReference): string | undefined;
 }
+
+/** Bounding box of a device's pins; `undefined` when it declares none. */
+export function pinsBounds(pins: Readonly<Record<string, PinAnchor>>): Rect | undefined {
+  const points = Object.values(pins);
+  if (points.length === 0) {
+    return undefined;
+  }
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const point of points) {
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/** Side a pin is drawn on: its declared side, else the closest edge of the body outline. */
+export function pinSide(pin: PinAnchor, outline: Rect | undefined): PinSide | undefined {
+  if (pin.side !== undefined) {
+    return pin.side;
+  }
+  if (outline === undefined) {
+    return undefined;
+  }
+  const dx = (pin.x - (outline.x + outline.width / 2)) / Math.max(outline.width / 2, 1e-6);
+  const dy = (pin.y - (outline.y + outline.height / 2)) / Math.max(outline.height / 2, 1e-6);
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return dx >= 0 ? 'right' : 'left';
+  }
+  return dy >= 0 ? 'bottom' : 'top';
+}

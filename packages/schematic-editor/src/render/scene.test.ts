@@ -368,8 +368,43 @@ describe('buildSchematicScene', () => {
     expect(flipped).toMatchObject({ rotation: 0, align: 'center', baseline: 'top' });
   });
 
+  it('keeps the label name off the wire it marks', () => {
+    const labelAt = (rotation: number) =>
+      buildSchematicScene({
+        document: parseSchematic({
+          version: 1,
+          id: `label-${rotation}`,
+          sheet: {
+            symbols: [{ id: 'N1', device: LABEL_DEVICE, x: 0, y: 0, rotation }],
+            wires: [],
+            junctions: [],
+          },
+        }),
+        devices,
+        theme: DARK_SCHEMATIC_THEME,
+      }).items.find((item) => item.kind === 'text');
+
+    // Horizontal label: the name sits just above the wire, not on it.
+    expect(labelAt(0)).toMatchObject({
+      position: { x: 4, y: -1 },
+      align: 'left',
+      baseline: 'bottom',
+    });
+    expect(labelAt(180)).toMatchObject({ position: { x: -4, y: -1 }, align: 'right' });
+    // Vertical label: the name sits beside the wire, level with the cross.
+    expect(labelAt(90)).toMatchObject({
+      position: { x: 4, y: 0 },
+      align: 'left',
+      baseline: 'middle',
+    });
+    expect(labelAt(270)).toMatchObject({
+      position: { x: 4, y: 0 },
+      baseline: 'middle',
+    });
+  });
+
   it('omits the anchor dot on power and ground symbols', () => {
-    const circles = (device: string) =>
+    const itemsOf = (device: string) =>
       buildSchematicScene({
         document: parseSchematic({
           version: 1,
@@ -382,11 +417,28 @@ describe('buildSchematicScene', () => {
         }),
         devices,
         theme: DARK_SCHEMATIC_THEME,
-      }).items.filter((item) => item.kind === 'circle');
+      }).items;
 
-    expect(circles(POWER_DEVICE)).toHaveLength(0);
-    expect(circles(GROUND_DEVICE)).toHaveLength(0);
-    expect(circles(LABEL_DEVICE)).toHaveLength(1);
+    for (const device of [POWER_DEVICE, GROUND_DEVICE, LABEL_DEVICE]) {
+      expect(itemsOf(device).filter((item) => item.kind === 'circle')).toHaveLength(0);
+    }
+
+    // The label marks its connection point with a small cross instead.
+    const cross = itemsOf(LABEL_DEVICE).filter((item) => item.kind === 'line');
+    expect(cross).toContainEqual({
+      kind: 'line',
+      from: { x: -3, y: 0 },
+      to: { x: 3, y: 0 },
+      color: DARK_SCHEMATIC_THEME.labelAnchor,
+      width: 1.2,
+    });
+    expect(cross).toContainEqual({
+      kind: 'line',
+      from: { x: 0, y: -3 },
+      to: { x: 0, y: 3 },
+      color: DARK_SCHEMATIC_THEME.labelAnchor,
+      width: 1.2,
+    });
   });
 
   it('infers the side when a pin omits it', () => {

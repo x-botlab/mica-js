@@ -16,11 +16,13 @@ import {
   MIN_HIT_PIXELS,
   connectionNodeAt,
   isPlacementTool,
+  labelStubAt,
   nextLabelName,
   orthogonalWaypoints,
   placementProperties,
   snapForWire,
   toolDevice,
+  type LabelStub,
 } from './snapping';
 import type { EditorViewport } from './viewport-state';
 
@@ -106,16 +108,38 @@ export class EditorInput {
 
   /** Placement ghost for the current tool, if the pointer is inside the canvas. */
   get placementPreview():
-    { readonly device: string; readonly position: Point; readonly rotation: number } | undefined {
+    | {
+        readonly device: string;
+        readonly position: Point;
+        readonly rotation: number;
+        readonly wire?: readonly Point[];
+      }
+    | undefined {
     const tool = this.#deps.controller.tool;
     if (this.#cursorPoint === undefined || !isPlacementTool(tool)) {
       return undefined;
     }
+    const stub = this.#labelStub(this.#cursorPoint);
     return {
       device: toolDevice(tool),
-      position: this.#cursorPoint,
-      rotation: this.#placementRotation,
+      position: stub?.anchor ?? this.#cursorPoint,
+      rotation: this.#placeRotation(stub),
+      ...(stub?.wire === undefined ? {} : { wire: stub.wire }),
     };
+  }
+
+  /** Ghost rotation: the pin lead picks a readable angle unless the user rotated it. */
+  #placeRotation(stub: LabelStub | undefined): number {
+    return this.#placementRotation === 0 && stub !== undefined
+      ? stub.rotation
+      : this.#placementRotation;
+  }
+
+  /** Lead a label placement adds when the pointer is on a pin; shares the commit path's rules. */
+  #labelStub(point: Point): LabelStub | undefined {
+    return this.#deps.controller.tool === 'label'
+      ? labelStubAt(this.#snapContext(), point)
+      : undefined;
   }
 
   /** Rotates the ghost while a placement tool is active. */
@@ -249,23 +273,32 @@ export class EditorInput {
   }
 
   #place(page: Point): void {
-    const tool = this.#deps.controller.tool;
+    const controller = this.#deps.controller;
+    const tool = controller.tool;
     // Snap to a pin/anchor/wire end first so placements land exactly on connection points.
-    const point = this.#snapWire(page);
     const device = toolDevice(tool);
     const properties = placementProperties(tool);
+    // A label dropped on a pin hangs off a short lead instead of sitting on the pin.
+    const snapped = this.#snapWire(page);
+    const stub = this.#labelStub(snapped);
+    const point = stub?.anchor ?? snapped;
     this.#deps.run(() =>
-      this.#deps.controller.dispatch({
-        type: 'add-symbol',
-        ...(device === LABEL_DEVICE ? { id: nextLabelName(this.#deps.controller.document) } : {}),
-        device,
-        x: point.x,
-        y: point.y,
-        rotation: this.#placementRotation,
-        ...(properties === undefined ? {} : { properties }),
+      controller.transaction(() => {
+        if (stub?.wire !== undefined) {
+          controller.addWire(stub.wire);
+        }
+        controller.dispatch({
+          type: 'add-symbol',
+          ...(device === LABEL_DEVICE ? { id: nextLabelName(controller.document) } : {}),
+          device,
+          x: point.x,
+          y: point.y,
+          rotation: this.#placeRotation(stub),
+          ...(properties === undefined ? {} : { properties }),
+        });
       }),
     );
-    this.#deps.controller.setTool('select');
+    controller.setTool('select');
     this.#cursorPoint = undefined;
     this.#placementRotation = 0;
   }

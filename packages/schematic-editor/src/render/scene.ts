@@ -5,6 +5,8 @@ import {
   builtinSymbolKind,
   isTextDevice,
   parseDeviceReference,
+  pinSide,
+  pinsBounds,
   previewSymbolDrag,
   referencePosition,
   rotatePoint,
@@ -106,6 +108,8 @@ export interface RenderInput {
     readonly device: string;
     readonly position: Point;
     readonly rotation: number;
+    /** Stub wire the placement will add, e.g. when a label lands on a pin. */
+    readonly wire?: readonly Point[];
   };
   /** Reference designator being dragged; drawn at this world position instead. */
   readonly referencePreview?: { readonly symbolId: string; readonly position: Point };
@@ -295,13 +299,13 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
   }
 
   if (input.placementPreview !== undefined) {
-    const device = input.placementPreview.device;
+    const { device, position, rotation, wire } = input.placementPreview;
+    if (wire !== undefined) {
+      items.push({ kind: 'polyline', points: wire, color: theme.hover, width: WIRE_WIDTH });
+    }
     drawSymbol(items, {
-      symbol: previewSymbol(device, input.placementPreview.position),
-      placement: {
-        ...input.placementPreview.position,
-        rotation: input.placementPreview.rotation,
-      },
+      symbol: previewSymbol(device, position),
+      placement: { ...position, rotation },
       theme,
       devices,
       labels: display.labels,
@@ -424,7 +428,8 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
     return;
   }
 
-  const localBody = definition.bounds ?? pinsBounds(definition.pins);
+  const localBody = definition.bounds ??
+    pinsBounds(definition.pins) ?? { x: -12, y: -12, width: 24, height: 24 };
   const body = symbolBounds(placement, localBody, {}) ?? fallbackBounds(placement);
 
   items.push({ kind: 'rect', bounds: body, fill: theme.symbolFill, stroke, width: 1.5 });
@@ -447,7 +452,7 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
   });
 
   for (const [pinId, anchor] of Object.entries(definition.pins)) {
-    const side = anchor.side ?? inferSide(anchor, localBody);
+    const side = pinSide(anchor, localBody) ?? 'left';
     const pinPosition = symbolPinPosition(placement, anchor);
     const edge = symbolPinPosition(placement, stubEdge(localBody, anchor, side));
     items.push({
@@ -481,42 +486,8 @@ function previewSymbol(device: string, position: Point): SchematicSymbol {
   return base;
 }
 
-function pinsBounds(
-  pins: Readonly<Record<string, { readonly x: number; readonly y: number }>>,
-): Rect {
-  const points = Object.values(pins);
-  if (points.length === 0) {
-    return { x: -12, y: -12, width: 24, height: 24 };
-  }
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  for (const point of points) {
-    minX = Math.min(minX, point.x);
-    minY = Math.min(minY, point.y);
-    maxX = Math.max(maxX, point.x);
-    maxY = Math.max(maxY, point.y);
-  }
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
-}
-
 function fallbackBounds(placement: { readonly x: number; readonly y: number }): Rect {
   return { x: placement.x - 12, y: placement.y - 12, width: 24, height: 24 };
-}
-
-function inferSide(
-  anchor: { readonly x: number; readonly y: number },
-  body: Rect,
-): 'left' | 'right' | 'top' | 'bottom' {
-  const centerX = body.x + body.width / 2;
-  const centerY = body.y + body.height / 2;
-  const dx = (anchor.x - centerX) / Math.max(body.width / 2, 1e-6);
-  const dy = (anchor.y - centerY) / Math.max(body.height / 2, 1e-6);
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    return dx >= 0 ? 'right' : 'left';
-  }
-  return dy >= 0 ? 'bottom' : 'top';
 }
 
 function stubEdge(
@@ -618,10 +589,23 @@ function drawBuiltin(
     });
   };
 
-  // Power and ground marks their connection point with the stem itself; only free-standing
-  // labels need an anchor dot.
+  // Power and ground mark their connection point with the stem itself; only free-standing
+  // labels need a marker, drawn as a small cross.
   if (input.kind === 'label') {
-    items.push({ kind: 'circle', center: at(0, 0), radius: 2.5, fill: anchorColor, width: 0 });
+    items.push({ kind: 'line', from: at(-3, 0), to: at(3, 0), color: anchorColor, width: 1.2 });
+    items.push({ kind: 'line', from: at(0, -3), to: at(0, 3), color: anchorColor, width: 1.2 });
+    // The name sits beside the cross, off the wire it names, so the wire never crosses the text.
+    const layout = LABEL_TEXT_LAYOUTS[quarterTurns(placement.rotation)];
+    items.push({
+      kind: 'text',
+      position: { x: placement.x + layout.offset.x, y: placement.y + layout.offset.y },
+      text: input.text,
+      color,
+      align: layout.align,
+      baseline: layout.baseline,
+      font,
+    });
+    return;
   }
 
   if (input.kind === 'power') {
@@ -647,11 +631,47 @@ function drawBuiltin(
       });
     }
     push(0, 16);
-    return;
   }
-
-  push(6, 0);
 }
+
+/** Rotation snapped to the 90° steps builtin glyphs support. */
+function quarterTurns(rotation: number): 0 | 90 | 180 | 270 {
+  const normalized = ((((rotation % 360) + 360) % 360) + 45) % 360;
+  return (Math.floor(normalized / 90) * 90) as 0 | 90 | 180 | 270;
+}
+
+/** Distance between a label's name and the wire it names. */
+const LABEL_TEXT_GAP = 1;
+/** Clearance from the anchor cross, so the name starts just past its arms. */
+const LABEL_TEXT_INSET = 4;
+
+/**
+ * Where a label's name goes for each rotation: right above the wire for horizontal labels and
+ * just past its tip for vertical ones, clear of the anchor cross.
+ */
+const LABEL_TEXT_LAYOUTS: Readonly<
+  Record<
+    0 | 90 | 180 | 270,
+    {
+      readonly offset: Point;
+      readonly align: TextPlacement['align'];
+      readonly baseline: TextPlacement['baseline'];
+    }
+  >
+> = {
+  0: {
+    offset: { x: LABEL_TEXT_INSET, y: -LABEL_TEXT_GAP },
+    align: 'left',
+    baseline: 'bottom',
+  },
+  90: { offset: { x: LABEL_TEXT_INSET, y: 0 }, align: 'left', baseline: 'middle' },
+  180: {
+    offset: { x: -LABEL_TEXT_INSET, y: -LABEL_TEXT_GAP },
+    align: 'right',
+    baseline: 'bottom',
+  },
+  270: { offset: { x: LABEL_TEXT_INSET, y: 0 }, align: 'left', baseline: 'middle' },
+};
 
 /** Horizontal text starting at `offset` (already rotated) and growing away from the origin. */
 function outwardLabel(offset: Point): TextPlacement {

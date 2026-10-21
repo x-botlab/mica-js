@@ -549,6 +549,22 @@ describe('SchematicEditorController', () => {
     expect(controller.document.sheet.wires).toEqual([]);
   });
 
+  it('groups edits into one history step with transaction', () => {
+    const controller = createController(documentOf({}));
+    controller.transaction(() => {
+      controller.addWire([
+        { x: 0, y: 0 },
+        { x: 10, y: 0 },
+      ]);
+      controller.dispatch({ type: 'add-symbol', device: 'pkg:mcu', x: 10, y: 0 });
+    });
+    expect(controller.document.sheet.wires).toHaveLength(1);
+    expect(controller.document.sheet.symbols).toHaveLength(1);
+    controller.undo();
+    expect(controller.document.sheet.wires).toHaveLength(0);
+    expect(controller.document.sheet.symbols).toHaveLength(0);
+  });
+
   it('returns void from command methods', () => {
     const controller = createController(
       documentOf({ symbols: [{ id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 }] }),

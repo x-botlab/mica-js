@@ -182,6 +182,11 @@ export class SchematicEditorController {
     });
   }
 
+  /** Runs several edits as one history step; a failure rolls all of them back. */
+  transaction(run: () => void): void {
+    this.#mutate(run);
+  }
+
   undo(): void {
     this.#editor.undo();
     this.#afterHistoryChange();

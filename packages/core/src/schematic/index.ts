@@ -105,6 +105,7 @@ export type {
   PinSide,
 } from './device/symbol';
 export { synthesizeDeviceSymbol } from './device/synthesis';
+export { pinSide, pinsBounds } from './device/symbol';
 export type {
   DevicePinDeclaration,
   SymbolSynthesisInput,
