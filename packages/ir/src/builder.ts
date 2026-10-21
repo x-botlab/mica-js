@@ -92,6 +92,8 @@ const CORE_OPERATIONS = [
   'bytes.load',
   'bytes.store',
   'bytes.copy',
+  'resource.update_bytes',
+  'resource.fill_bytes',
   'call',
   'return',
   'jump',
@@ -688,6 +690,55 @@ function createBuilderObject(state: BuilderState): unknown {
     },
   };
 
+  const resourceOperations = {
+    updateBytes(
+      destination: StaticRef,
+      destinationOffset: Value,
+      source: StaticRef,
+      sourceOffset: Value,
+      length: Value,
+    ) {
+      requireByteLayout(
+        requireMemory(destination, 'bytes', 'resource.update_bytes destination'),
+        'resource.update_bytes destination',
+      );
+      requireByteLayout(
+        requireByteMemory(source, 'resource.update_bytes source'),
+        'resource.update_bytes source',
+      );
+      requireU32(destinationOffset, 'resource.update_bytes destinationOffset');
+      requireU32(sourceOffset, 'resource.update_bytes sourceOffset');
+      requireU32(length, 'resource.update_bytes length');
+      emit(
+        'resource.update_bytes',
+        [
+          staticOperand(destination),
+          ssa(destinationOffset),
+          staticOperand(source),
+          ssa(sourceOffset),
+          ssa(length),
+        ],
+        [],
+      );
+      return undefined;
+    },
+    fillBytes(destination: StaticRef, offset: Value, length: Value, value: Value) {
+      requireByteLayout(
+        requireMemory(destination, 'bytes', 'resource.fill_bytes destination'),
+        'resource.fill_bytes destination',
+      );
+      requireU32(offset, 'resource.fill_bytes offset');
+      requireU32(length, 'resource.fill_bytes length');
+      assertValue(value, state, 'u8', 'resource.fill_bytes value');
+      emit(
+        'resource.fill_bytes',
+        [staticOperand(destination), ssa(offset), ssa(length), ssa(value)],
+        [],
+      );
+      return undefined;
+    },
+  };
+
   const call = (target: FunctionRef, args: readonly Value[]): Value[] => {
     const declaration = requireCallable(target, 'call target');
     assertValueList(args, state, declaration.params, 'call args');
@@ -869,6 +920,7 @@ function createBuilderObject(state: BuilderState): unknown {
     state: stateOperations,
     array: arrayOperations,
     bytes: bytesOperations,
+    resource: resourceOperations,
     call(target: FunctionRef, args: readonly Value[]): Value[] {
       return call(target, args);
     },

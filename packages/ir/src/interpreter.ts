@@ -7,6 +7,7 @@ import type { IRStorage } from './storage';
 import type {
   ArrayRef,
   BlockDefinition,
+  BytesRef,
   Endian,
   EntryRef,
   FunctionDefinition,
@@ -138,7 +139,9 @@ export function createIRInterpreter(
   }
   let source: Model;
   let model: Model;
+  let validationOptions: IRValidationOptions;
   try {
+    validationOptions = captureValidationOptions(options.validation);
     source = {
       memories: module.memories,
       functions: module.functions,
@@ -158,7 +161,7 @@ export function createIRInterpreter(
       ],
     });
   }
-  const validation = validateIR(model, options.validation);
+  const validation = validateIR(model, validationOptions);
   if (!validation.ok) {
     throw new IRExecutionError('validation-failed', 'IR validation failed', {
       diagnostics: validation.diagnostics,
@@ -191,11 +194,31 @@ export function createIRInterpreter(
   }
   let storage: IRStorage;
   try {
-    storage = createIRStorage(source as IRModule);
+    storage = createIRStorage(source as IRModule, {
+      updateResources: validationOptions.resources
+        .filter((permission) => permission.access === 'update')
+        .map((permission) => permission.ref as BytesRef),
+    });
   } catch (cause) {
     throw new IRExecutionError('storage-failed', 'Could not allocate instance storage', { cause });
   }
   return new Interpreter(model.functions, storage, maxSteps);
+}
+
+function captureValidationOptions(options: IRValidationOptions): IRValidationOptions {
+  // Freeze policy data, not trusted validator objects: their existing callback
+  // receiver and synchronous-callback checks must remain unchanged.
+  return Object.freeze({
+    ...options,
+    supportedInstructions: Object.freeze([...options.supportedInstructions]),
+    authorizedInstructions: Object.freeze([...options.authorizedInstructions]),
+    resources: Object.freeze(
+      options.resources.map((permission) => Object.freeze({ ...permission })),
+    ),
+    ...(options.validators === undefined
+      ? {}
+      : { validators: Object.freeze([...options.validators]) }),
+  });
 }
 
 /** Clone iteratively: backedges and long call/block graphs must not use the JS stack. */
@@ -487,6 +510,23 @@ function evaluateInstruction(
         reference(node, 2) as WritableBytesRef,
         args[0] as number,
         args[1]!,
+      );
+      return [];
+    case 'resource.fill_bytes':
+      storage.fillBytes(
+        reference(node, 0) as BytesRef,
+        args[0] as number,
+        args[1] as number,
+        args[2] as number,
+      );
+      return [];
+    case 'resource.update_bytes':
+      storage.updateBytes(
+        reference(node, 0) as BytesRef,
+        args[0] as number,
+        reference(node, 2) as ReadableBytesRef,
+        args[1] as number,
+        args[2] as number,
       );
       return [];
     case 'bytes.copy':

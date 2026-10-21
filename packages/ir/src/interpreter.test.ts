@@ -779,7 +779,7 @@ describe('static validation, snapshots and unsupported execution', () => {
     },
   );
 
-  it.each(['resource.update_bytes', 'resource.fill_bytes', 'provider.invoke', 'checkpoint.save'])(
+  it.each(['resource.update', 'resource.fill', 'provider.invoke', 'checkpoint.save'])(
     'keeps reserved capability %s statically rejected',
     (op) => {
       const module = createIRModule();
