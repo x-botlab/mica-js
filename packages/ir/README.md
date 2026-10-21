@@ -1,14 +1,15 @@
 # @mica/ir
 
-领域无关的 IR 数据模型与同步类型化建图器，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
+领域无关的 IR 数据模型、同步类型化建图器与静态校验/链接诊断，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
 
-本包目前只负责**建图**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，并保留可由内存读取的模块模型。它不校验支配关系或调用图，不执行 IR，也不提供解释器、存储语义、资源更新、Provider、消息桥接或 JIT。尚未实现的能力不会以空操作伪装为成功。
+本包负责**建图与静态校验/链接诊断**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。它不执行 IR，也不提供解释器、存储语义、资源更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
 
 ## 公共入口
 
 唯一公开入口为 `@mica/ir`，构建生成 `dist/index.js`（ESM）与声明文件。主要导出：
 
 - `createIRModule()`：创建独立的模块声明/建图上下文，返回 `IRModule`。
+- `validateIR(input, options)`：返回 `IRValidationResult`，通过 `IRDiagnostic` / `IRDiagnosticLocation` 报告静态错误；能力策略及领域扩展类型见下文。
 - `IRDeclarations`：`state`、`array`、`bytes`、`inbox`、`func`、`entry`、`lifecycle` 静态声明。
 - `FunctionBuilder<R>`：常量、标量运算、资源访问、普通 `call`、基本块、分支、循环与终结指令。
 - `IRModule`：除声明方法外，提供只读的 `memories`、`functions`、`domainDeclarations`、`instructions` 模型视图。
@@ -92,18 +93,54 @@ enable.body((b, [on]) => {
 
 `invoke` 只生成模块中已声明的显式指令，并校验操作数类别、标量类型和结果布局。不提供 `call(hostFunction)` 或任意运行期 JS 回调扩展。域模块仍可自行增加类型化包装方法；本包负责底层静态声明、指令和建图原语。
 
+## 校验与链接诊断
+
+`validateIR(input: unknown, options: IRValidationOptions): IRValidationResult` 是统一静态检查入口（[#42](https://github.com/x-botlab/mica-js/issues/42)）。`input` 必须具有 `memories`、`functions`、`domainDeclarations`、`instructions` 四个列表，可直接传入 `IRModule`。它校验传入的当前表示，不调用建图方法，也不以 builder 的隐藏 WeakMap 记录代替检查。每次调用仅读取一次这四个列表，保持 getter 生成的声明视图在各校验阶段和领域回调上下文中一致；下一次调用会重新读取。
+
+```ts
+import { createIRModule, validateIR } from '@mica/ir';
+
+const ir = createIRModule();
+const count = ir.state('count', 'u32', 0);
+ir.entry('run', []).body((b) => {
+  b.state.store(count, b.const('u32', 1));
+  b.return([]);
+});
+
+const result = validateIR(ir, {
+  supportedInstructions: ['const', 'state.store', 'return'],
+  authorizedInstructions: ['const', 'state.store', 'return'],
+  resources: [{ ref: count, access: 'write' }],
+});
+// result.ok 为 true；否则读取 result.diagnostics。
+```
+
+策略必须由可信宿主提供，不应采信客体自己声称的能力：
+
+- `supportedInstructions` 是目标后端明确支持的指令名；`authorizedInstructions` 是实例获准使用的指令名。两者均精确匹配，并包含所用终结名 `return` / `jump` / `branch` / `trap`。没有默认全支持、通配符或自动授权。
+- `resources` 按句柄身份授予 `read`、`write` 或 `read-write`。读取/写入逐条核验；写权限不能突破资源固有只读性，也不能授权输入外的资源。同名不等于同一资源。
+- 领域指令还必须存在声明、匹配操作数/结果布局，并通过 `validators` 中对应 `op` 的独立扩展校验器。`validate(context)` 返回只读字符串消息列表；空列表表示领域静态规则通过，消息产生 `domain-validation`。上下文提供模块、函数、块、指令、定位与资源授权；具体领域读写约束由可信扩展核验。回调只能同步运行；async/generator 在调用前拒绝，抛错、Promise 或非法返回产生 `extension-error`。
+- 核心不导入任何领域包。扩展不能替换核心指令，也不能启用保留的 Provider/checkpoint/dispatch、资源版本更新或 kernel-only 指令。
+
+SSA 值和静态句柄以对象身份关联，块边目标必须是本函数 `body.blocks` 中的实际对象；块 ID 在函数内唯一。`FunctionDefinition.ref` 和 `DomainDeclaration.ref` 显式保存声明句柄。校验交叉核验句柄类别、函数签名、资源布局及初值，拒绝重复身份、布局不一致与跨函数使用。对象的附加调试字段不充当 SSA ID；内存模型仍不是冻结的序列化格式。
+
+函数入口块参数对应函数参数；参数在全函数内有效。其余定义必须支配使用，同块必须先定义后使用。循环回边允许；不可达块仍完整校验，其局部定义只保证支配本块，不允许跨不可达块借用值（函数参数除外）。每个函数都必须有函数体，每个块必须已定义且具有合法终结；包括未被入口调用的函数和不可达块。
+
+诊断具有稳定的 `code`、`message`、`location`。`location.path` 总是存在，例如 `functions[0].body.blocks[1].instructions[2]`；函数/块/指令使用从 0 开始的 `functionIndex`、`blockIndex`、`instructionIndex`，并附 `functionName`、`blockId`。终结位置使用 `.terminator` 路径与 `terminator: true`，不伪造指令序号。声明、策略或畸形外围上下文中不存在的字段会省略；读取输入抛错时定位为 `$`。稀疏数组和错误结构明确拒绝。
+
+返回值仅针对本次稳定输入和策略有效，不是冻结的已链接产物或运行授权令牌。调用方必须在任何安装/执行前检查 `ok`，输入、策略或后端变化后重新检查；未来执行器仍需承担动态约束与运行故障处理。本包目前没有安装/执行入口，不把后端支持列表当作执行实现。
+
 ## 当前限制
 
 以下能力属于后续任务，本包明确不实现：
 
-- 类型/SSA 支配、调用图递归、块边完整性和资源授权校验（#42）。
 - 整数/布尔/浮点运算的执行语义（#43、#44）。
 - 状态、数组、普通字节存储的执行语义（#45）。
 - 参考解释器、预算和异常定位（#46）。
 - `resource.updateBytes` / `resource.fillBytes` 的版本化更新（#47）。
 - 事件、输出、消息桥接、Provider 生成/checkpoint 与 JIT。
 
-`module.functions` 中的函数体在 `.body` 成功返回后可见；尚未定义的函数保持 `body: undefined`。是否可安装、是否满足链接条件由后续校验器决定，本包不会把“可构建”等同于“可执行”。
+`module.functions` 中的函数体在 `.body` 成功返回后可见；尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。本包不会把“可构建”或“静态检查通过”等同于“可执行”。
 
 ## 开发与验证
 

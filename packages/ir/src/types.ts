@@ -415,6 +415,7 @@ export interface MemoryDefinition {
 export interface DomainDeclaration {
   readonly kind: string;
   readonly name: string;
+  readonly ref: StaticRef;
 }
 
 export type InstructionOperand =
@@ -462,6 +463,7 @@ export interface FunctionBodyDefinition {
 }
 
 export interface FunctionDefinition {
+  readonly ref: FunctionRef | EntryRef | LifecycleRef;
   readonly name: string;
   readonly category: FunctionCategory;
   readonly params: readonly ScalarType[];

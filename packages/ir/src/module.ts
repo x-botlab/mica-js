@@ -73,7 +73,7 @@ class IRModuleImpl implements IRModule {
   }
 
   get domainDeclarations(): readonly DomainDeclaration[] {
-    return this.core.domainDeclarations.map(({ kind, name }) => ({ kind, name }));
+    return this.core.domainDeclarations.map(({ kind, name, ref }) => ({ kind, name, ref }));
   }
 
   get instructions(): readonly DeclaredInstruction[] {
@@ -227,9 +227,12 @@ class IRModuleImpl implements IRModule {
       module: this.core,
       kind,
       name,
+      ref: undefined as unknown as StaticRef<Kind>,
     };
+    const ref = createDomainStaticRef<Kind>(state);
+    state.ref = ref;
     this.core.domainDeclarations.push(state);
-    return createDomainStaticRef<Kind>(state);
+    return ref;
   }
 
   domainInstruction<
