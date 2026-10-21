@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/ir",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Domain-independent IR model and typed builder for Mica",
   "license": "MIT",
   "type": "module",
