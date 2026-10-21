@@ -27,6 +27,14 @@ export type HexBits = `0x${string}`;
 
 export type JSScalar<T extends ScalarType> = T extends 'bool' ? boolean : number;
 
+/** Exact floating data for movement; never decode/re-encode a NaN to copy it. */
+export interface FloatBits {
+  readonly type: FloatType;
+  readonly bits: HexBits;
+}
+
+export type RuntimeScalar = boolean | number | FloatBits;
+
 export type ScalarArgs<P extends readonly ScalarType[]> = {
   readonly [I in keyof P]: JSScalar<P[I]>;
 };
