@@ -21,12 +21,9 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 │   └── sandbox-playground/   # 沙箱演示与手测面板
 └── packages/
     ├── core/                 # @mica-js/core：仿真内核
-    ├── ir/                   # @mica-js/ir：IR 模型、建图、校验、标量语义、实例存储与参考解释器
     ├── schematic-editor/     # @mica-js/schematic-editor：Canvas 原理图编辑器
     └── sandbox/              # @mica-js/sandbox：iframe + Web Worker 通用 JS 沙箱
 ```
-
-`@mica-js/ir` 当前提供内存 IR 模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令求值、实例存储和参考解释器。解释器固定并校验模块快照，复用既有标量与存储语义，执行基本块、循环、普通调用及多结果返回，提供确定预算与调用链诊断；不推进时间或创建事件，未实现的领域指令明确拒绝。显式资源更新已支持独立授权、原子内容/版本提交与一致读取验证；尚无事件执行、Provider 缓存或运行中恢复。职责边界、非目标与验证方式见 [packages/ir/README.md](packages/ir/README.md)。
 
 ## 原理图编辑器
 
