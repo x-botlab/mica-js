@@ -1,6 +1,8 @@
 export { createIRModule } from './module';
 export { createIRStorage, IRStorageError } from './storage';
 export type { IRStorage, IRStorageErrorCode, StorageValue } from './storage';
+export { evaluateScalarInstruction, IRScalarEvaluationError } from './scalar';
+export type { IRScalarEvaluationErrorCode } from './scalar';
 export { validateIR } from './validate';
 export type {
   IRDiagnosticCode,
@@ -86,3 +88,4 @@ export type {
   Wider,
   WritableBytesRef,
 } from './types';
+export { evaluateFloatInstruction, IRFloatEvaluationError } from './float';

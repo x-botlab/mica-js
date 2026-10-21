@@ -1,8 +1,8 @@
 # @mica/ir
 
-领域无关的 IR 数据模型、同步类型化建图器、实例存储与静态校验/链接诊断，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#45](https://github.com/x-botlab/mica-js/issues/45)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
+领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令语义与实例存储，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
 
-本包负责**建图、实例存储与静态校验/链接诊断**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，为每个实例建立独立的声明资源存储，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。它不执行 IR，也不提供解释器、资源版本化更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
+本包负责**建图、实例存储、静态校验/链接诊断及可复用的标量运算**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，为每个实例建立独立的声明资源存储，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。`evaluateScalarInstruction` 求值单个整数/布尔节点，`evaluateFloatInstruction` 提供独立的浮点单指令语义（见下文）；两者均不执行函数或控制流，不提供完整解释器、资源版本化更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
 
 ## 公共入口
 
@@ -11,10 +11,40 @@
 - `createIRModule()`：创建独立的模块声明/建图上下文，返回 `IRModule`。
 - `createIRStorage(module)`：为模块的声明资源创建一份独立实例存储，返回 `IRStorage`；每次调用互不别名。
 - `validateIR(input, options)`：返回 `IRValidationResult`，通过 `IRDiagnostic` / `IRDiagnosticLocation` 报告静态错误；能力策略及领域扩展类型见下文。
+- `evaluateScalarInstruction(instruction, operands)`：求值单个整数/布尔节点，失败抛出 `IRScalarEvaluationError`；范围与错误码见下文。
 - `IRDeclarations`：`state`、`array`、`bytes`、`inbox`、`func`、`entry`、`lifecycle` 静态声明。
 - `FunctionBuilder<R>`：常量、标量运算、资源访问、普通 `call`、基本块、分支、循环与终结指令。
 - `IRModule`：除声明方法外，提供只读的 `memories`、`functions`、`domainDeclarations`、`instructions` 模型视图。
 - 类型边界：`FunctionRef`、`EntryRef`、`LifecycleRef`、`BlockRef` 使用独立引用类别；`StateRef`、`ArrayRef`、`BytesRef`、`InboxRef` 不可互换。
+
+## 整数与布尔逐指令求值
+
+`evaluateScalarInstruction(instruction: InstructionNode, operands: readonly (boolean | number)[]): boolean | number` 消费现有建图器/内存模型的节点，不引入另一套指令类型。`operands` 按 `instruction.operands` 中 **SSA 操作数出现的顺序**提供已求值标量；节点内的 literal（例如比较 predicate、转换目标或常量）不占该数组位置。返回节点唯一结果的标量值，不写回 SSA 表，也不访问存储或执行控制流。
+
+```ts
+import { createIRModule, evaluateScalarInstruction } from '@mica/ir';
+
+const ir = createIRModule();
+ir.func('multiply', { params: ['u32', 'u32'], results: ['u32'] }).body((b, [a, c]) =>
+  b.return([b.int.mul(a, c)]),
+);
+const multiply = ir.functions[0]!.body!.entry.instructions[0]!;
+evaluateScalarInstruction(multiply, [4294967295, 4294967295]); // 1
+```
+
+支持范围：
+
+- `u8/i8/u16/i16/u32/i32` 的 `int.add/sub/mul/div/rem/and/or/xor/not`、`int.cmp` 全部六种 predicate、`int.shl/lshr/ashr` 及 `int.zext/sext/trunc/reinterpret`。
+- `bool.not/and/or/xor`，以及整数/bool 的 `const`、`select`。`select` 的两个候选值均须已求值且合法；它不短路，也不能屏蔽先前的除零异常。
+- 加减乘及有符号商溢出按位宽回绕；除法向零截断，余数随被除数或为零。除零/取余零均报错；整数零规范化为正零。
+- 移位数严格为 `u32`，不对位宽取模。`count >= width` 时左移/逻辑右移为零；算术右移按符号填充为零或 -1。`ashr` 只接受有符号来源。
+- 扩位/截断严格检查宽度关系；`sext` 只接受有符号来源，允许无符号目标；`zext` 对来源位模式补零；`reinterpret` 只允许同宽、异符号。常量和输入值必须先处于其声明类型值域，不以截断代替验证。
+
+实现内部使用精确 `bigint` 和显式定宽归一化，避免 JS 位运算的 32 位隐式截断、移位数取模及 u32 乘法精度损失；公开标量仍为 `number | boolean`，不接受 bigint、真假值强制转换或混型运算。
+
+失败抛出 `IRScalarEvaluationError`，其只读 `code: IRScalarEvaluationErrorCode` 为：`unsupported-instruction`（尚未实现）、`invalid-instruction`（布局/签名错误）、`invalid-operand`（SSA 实参数目/类型/值域错误）、`division-by-zero`。批准的错误联合还保留 `conversion-out-of-range`，本项整数内部转换不会产生该错误。不支持的运算显式拒绝；所有浮点运算、整数↔浮点数值转换、`convert.float`、`const.bits`、bitcast 和浮点 select 由 [#44](https://github.com/x-botlab/mica-js/issues/44) 实现，本项不执行它们。
+
+此入口检查单节点签名和值域，不替代 `validateIR` 对 SSA 定义/支配、静态引用、控制流和授权的整图检查。后续参考解释器应完成验证、解析 SSA 标量后复用此入口，并在调用方附加执行位置；不得把静态校验成功当作执行成功。现有 `IRConstructionError` 与 #42 静态诊断合同不变。
 
 ## 建图示例
 
@@ -164,12 +194,36 @@ SSA 值和静态句柄以对象身份关联，块边目标必须是本函数 `bo
 
 返回值仅针对本次稳定输入和策略有效，不是冻结的已链接产物或运行授权令牌。调用方必须在任何安装/执行前检查 `ok`，输入、策略或后端变化后重新检查；未来执行器仍需承担动态约束与运行故障处理。本包目前没有安装/执行入口，不把后端支持列表当作执行实现。
 
+## 浮点单指令语义（#44）
+
+`evaluateFloatInstruction(instruction: InstructionNode, operands: readonly RuntimeScalar[]): RuntimeScalar` 复用建图器/校验器的指令模型，不解释函数、分支或存储。`operands` 仅含 SSA 操作数的运行值，按其在指令中的顺序排列；谓词、目标类型、常量等 literal 已在指令节点中，不重复传入。
+
+- `FloatBits = { readonly type: FloatType; readonly bits: HexBits }` 保存原始位，f32 必须恰好 8 个十六进制位，f64 恰好 16 位，均以 `0x` 开头。`RuntimeScalar = boolean | number | FloatBits` 是语义层值；两者统一定义在 `src/types.ts`，从包入口导出，供浮点与存储共用。不改变作者层 `Value` / `JSScalar` 或声明初值合同，也不引入 u64 算术。
+- 所有浮点结果均为 `FloatBits`，整数/布尔结果仍为 number/boolean。浮点 number 输入按 SSA 声明精度量化，仅用于数值入口；需要保留 NaN 载荷/符号/信号位必须传 `FloatBits`，不得经过 JS number 往返。
+- 支持浮点 `const` / `const.bits` / `select`、`float.add/sub/mul/div/fma/cmp/isNaN/isFinite`、`convert.intToFloat/floatToInt/float` 及仅 f32 与 u32/i32 间的 `bitcast`。这里采用模型中的 camelCase 操作名，不另造文本 IR 解析器。
+- 内部使用无依赖的 BigInt 精确二进制整数/有理数计算，四则及 FMA 直接按目标精度最近值、居中取偶数舍入。每个 f32 操作独立舍入，FMA 不舍入中间乘积，保留次正规数及正确的有符号零；不会用 `a*b+c` 或 f64 中间结果冒充融合运算。
+- 算术与浮点精度转换得到的 NaN 分别规范为 `0x7fc00000` / `0x7ff8000000000000`；`const.bits`、浮点选择与 bitcast 保留原始位。后续状态/数组/字节移动应直接搬运此位值，不将其解码为 number 再编码。此项未实现存储或公共总 dispatcher；#43 的 number-only 标量入口保持独立，不作为原始浮点位传输路径。
+- 整数到浮点先验证来源整数范围，再按目标精度舍入；浮点到整数先按来源精度读取并向零截断，再严格检查目标范围，整数零规范为 number `0`。NaN、无穷或越界抛 `IRFloatEvaluationError`，`code` 为 `integer-overflow`；错误布局为 `invalid-instruction`，错误运行值为 `invalid-operand`，未实现的操作为 `unsupported-operation`。这些执行错误不复用静态校验诊断。
+
+```typescript
+import { createIRModule, evaluateFloatInstruction } from '@mica/ir';
+
+const module = createIRModule();
+module
+  .func('fused', { params: ['f32', 'f32', 'f32'], results: ['f32'] })
+  .body((b, [a, c, d]) => b.return([b.float.fma(a, c, d)]));
+const instruction = module.functions[0]!.body!.entry.instructions[0]!;
+const result = evaluateFloatInstruction(instruction, [1 + 2 ** -23, 1 - 2 ** -23, -1]);
+// result: { type: 'f32', bits: '0xa8800000' }，即 -2^-46；非融合结果为正零。
+```
+
+`src/float.test.ts` 包含可复用的表驱动边界向量，包括融合/非融合、f32 经 f64 的双舍入差异、溢出抵消、次正规数、转换范围及带载荷 NaN 位移动，并使用真实 builder 节点与 `validateIR` 联合检查。`src/float.type-test.ts` 检查上述公开合同。
+
 ## 当前限制
 
 以下能力属于后续任务，本包明确不实现：
 
-- 整数/布尔/浮点运算的执行语义（#43、#44）。
-- 将存储接入参考解释器、预算和异常定位（#46）。
+- 将标量运算与存储接入参考解释器、预算和异常定位（#46）。
 - `resource.updateBytes` / `resource.fillBytes` 的版本化更新（#47）。
 - 事件、输出、消息桥接、Provider 生成/checkpoint 与 JIT。
 
