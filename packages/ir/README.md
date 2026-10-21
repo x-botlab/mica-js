@@ -249,7 +249,7 @@ const result = runtime.execute(increment, [3], { instanceId: 'counter', virtualT
 runtime.storage.loadState(count); // 3
 ```
 
-`createIRInterpreter(module: IRModule, options: IRInterpreterOptions): IRInterpreter` 捕获私有执行快照，调用现有 `validateIR`，再用现有 `createIRStorage` 创建独占存储。`IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`。执行图的节点、SSA 类型、块边与签名在捕获后不再读取原模型；静态句柄保留身份，资源内容由 storage 独立捕获。原模型后续添加函数或修改指令不会改变已创建解释器；要使用新程序须重新创建。不修改/冻结调用方原模型，不接受外部 storage；多次构造同一模块得到互不别名的实例，现有独立 `createIRStorage` 不受影响。API 面向可信宿主，不是执行任意恶意 JS getter/validator 的隔离沙箱。
+`createIRInterpreter(module: IRModule, options: IRInterpreterOptions): IRInterpreter` 捕获私有执行快照，调用现有 `validateIR`，再用现有 `createIRStorage` 创建独占存储。`IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`stepObserver: IRStepObserver`。执行图的节点、SSA 类型、块边与签名在捕获后不再读取原模型；静态句柄保留身份，资源内容由 storage 独立捕获。原模型后续添加函数或修改指令不会改变已创建解释器；要使用新程序须重新创建。不修改/冻结调用方原模型，不接受外部 storage；多次构造同一模块得到互不别名的实例，现有独立 `createIRStorage` 不受影响。API 面向可信宿主，不是执行任意恶意 JS getter/validator 的隔离沙箱。
 
 `IRInterpreter` 的只读 `storage: IRStorage` 供宿主检查和受控访问；IR 的访问权限仍来自必填 validation 策略，不能通过普通 call 扩权。`execute(target: FunctionRef | EntryRef | LifecycleRef, args: readonly RuntimeScalar[], context: IRExecutionContext): IRExecutionResult` 同步执行，结果为 `{ readonly values: readonly RuntimeScalar[]; readonly steps: number }`，包括零、单、多结果。可信宿主可直接选择这三类目标；IR 内 `call` 只允许同模块普通函数，不得调用入口/生命周期或跨实例目标。实例存储跨成功执行保留，每次 execute 使用独立预算。
 
@@ -285,9 +285,43 @@ runtime.storage.loadState(count); // 3
 
 ### 能力边界
 
-执行范围为现有整数/布尔/浮点/存储指令、`resource.update_bytes/fill_bytes`、普通 call 及 return/jump/branch/trap。调用无用户执行回调；新增能力必须在解释器明确分发点接入并另行审批，不能靠增加 supportedInstructions 或静态 validator 自动获得执行实现。构造时也检查不可达块/未调用函数：扩展静态校验即使通过，event、domain 等未实现执行能力仍在任何 IR 效果发生前拒绝；dispatch、Provider/checkpoint、其他 resource 更新拼写及保留能力沿用静态拒绝。普通写入不能突破 readonly；独立更新授权不受 readonly 限制，但仍核验资源身份与类别。
+执行范围为现有整数/布尔/浮点/存储指令、`resource.update_bytes/fill_bytes`、核心 `event.now/at/cancel`、普通 call 及 return/jump/branch/trap。调用无用户执行回调；新增能力必须在解释器明确分发点接入并另行审批，不能靠增加 supportedInstructions 或静态 validator 自动获得执行实现。构造时也检查不可达块/未调用函数：扩展静态校验即使通过，未实现的 domain 执行能力仍在任何 IR 效果发生前拒绝；核心 event 指令缺少 eventHost 时也在构造阶段带位置拒绝；dispatch、Provider/checkpoint、其他 resource 更新拼写及保留能力沿用静态拒绝。普通写入不能突破 readonly；独立更新授权不受 readonly 限制，但仍核验资源身份与类别。
 
 `src/interpreter.test.ts` 使用真实 builder、validateIR、既有求值器与 storage，覆盖 identity、分支合流、sum 循环、同时绑定回边、4096 层调用、多结果、精确预算、错误调用链、失败操作原子性、独立实例、浮点载荷/负零移动及拒绝路径。`src/interpreter.type-test.ts` 检查公共签名。
+
+## Event Host Bridge (#48)
+
+`FunctionBuilder.event: EventOperations` provides core operations (also inherited by `GeneratedFunctionBuilder`):
+
+```ts
+interface EventOperations {
+  now(): Value<'f64'>;
+  at<const P extends readonly ScalarType[]>(
+    target: EntryRef<P>,
+    deadline: Value<'f64'>,
+    args: Values<NoInfer<P>>,
+  ): Value<'u32'>;
+  cancel(id: Value<'u32'>): void;
+}
+interface IREventHost {
+  now(): number;
+  at(target: EntryRef, deadline: number, args: readonly RuntimeScalar[]): number;
+  cancel(id: number): void;
+}
+interface IRStepObserver {
+  beforeStep(context: IRExecutionContext): void;
+}
+```
+
+`event.now` has no operands and returns f64; `event.at` encodes a static ordinary entry, an SSA f64 deadline, and SSA arguments, returning u32; `event.cancel` takes one SSA u32 and has no results. Targets must belong to the same module and match the entry parameter signature; lifecycle and ordinary function targets are rejected. These names cannot be redefined by domain declarations or extension validators. All three still require explicit supportedInstructions and authorizedInstructions grants.
+
+The optional interpreter `eventHost` is a trusted synchronous scheduler bridge, not an arbitrary domain instruction executor. Every event node, including unreachable ones, requires a host at interpreter creation; otherwise `unsupported-instruction` includes its IR location. The interpreter does not import core. `event.now` validates host time; `event.at` validates the complete target, captures all scalar arguments by value (including exact FloatBits), decodes f64 deadlines using the existing IEEE representation, rejects past deadlines against host.now(), and checks the returned ID is a nonzero u32. `event.cancel` validates u32 and passes 0 through; the host owns its no-op behavior and event queue/ID lifecycle.
+
+Time validation applies only at this event boundary, not to ordinary f64 values: time must be a finite integer number in `[0, 7_200_000_000_000_000]` picoseconds, with negative zero normalized to zero. Non-number/non-finite/fractional values cause TypeError before range checking; out-of-range or past times cause RangeError, retained as the evaluation failure cause.
+
+The optional `stepObserver.beforeStep` runs once before each reference step effect, including calls and terminators, using the captured execution context. Existing maxSteps checks and the default 1,000,000-step budget are unchanged; no observer is invoked for a step blocked by maxSteps. Hook method identities, receivers, and option values are captured at creation without executing hooks. Async/generator methods are rejected as invalid-options; Promise/thenable or generator results and thrown hook errors fail execution with existing error codes, retaining cause, location, and IR callStack. Previously committed effects remain and the interpreter faults as usual. A host must implement its own operations atomically when required.
+
+`src/event.test.ts` tests real IR execution, validation, capture, time/ID boundaries, synchronous hooks, and step effects; `src/event.type-test.ts` checks the approved API and invalid signatures.
 
 ## 版本化资源更新（#47）
 
@@ -356,7 +390,7 @@ validateDependencies(dependencies: readonly IRResourceDependency[]): boolean;
 
 以下能力属于后续任务，本包明确不实现：
 
-- 事件、输出、消息桥接及 JS 作者侧 `api.updateBytes` 请求队列。
+- 事件队列/调度器本身（核心 event 指令通过上述可信宿主桥接）、输出、消息桥接及 JS 作者侧 `api.updateBytes` 请求队列。
 - Provider 生成缓存（#60）、运行中恢复/checkpoint（#61）与 JIT。
 
 `module.functions` 中的函数体在 `.body` 成功返回后可见；尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。本包不会把“可构建”或“静态检查通过”等同于“可执行”。

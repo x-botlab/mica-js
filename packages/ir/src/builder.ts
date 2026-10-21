@@ -3,6 +3,7 @@ import type {
   ArrayRef,
   BlockRef,
   DomainInstruction,
+  EntryRef,
   FunctionBuilder,
   FunctionRef,
   InstructionOperand,
@@ -95,6 +96,9 @@ const CORE_OPERATIONS = [
   'resource.update_bytes',
   'resource.fill_bytes',
   'call',
+  'event.now',
+  'event.at',
+  'event.cancel',
   'return',
   'jump',
   'branch',
@@ -921,6 +925,24 @@ function createBuilderObject(state: BuilderState): unknown {
     array: arrayOperations,
     bytes: bytesOperations,
     resource: resourceOperations,
+    event: {
+      now(): Value<'f64'> {
+        return emitOne('event.now', [], 'f64');
+      },
+      at(target: EntryRef, deadline: Value<'f64'>, args: readonly Value[]): Value<'u32'> {
+        const declaration = requireEntry(target, 'event.at target');
+        if (declaration.category !== 'entry') {
+          fail('event.at target must be an ordinary entry');
+        }
+        assertValue(deadline, state, 'f64', 'event.at deadline');
+        assertValueList(args, state, declaration.params, 'event.at arguments');
+        return emitOne('event.at', [staticOperand(target), ssa(deadline), ...args.map(ssa)], 'u32');
+      },
+      cancel(id: Value<'u32'>): void {
+        requireU32(id, 'event.cancel id');
+        emit('event.cancel', [ssa(id)], []);
+      },
+    },
     call(target: FunctionRef, args: readonly Value[]): Value[] {
       return call(target, args);
     },

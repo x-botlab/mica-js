@@ -23,6 +23,9 @@
   "publishConfig": {
     "access": "public"
   },
+  "dependencies": {
+    "@mica/ir": "workspace:*"
+  },
   "devDependencies": {
     "typescript": "catalog:",
     "vite": "catalog:",

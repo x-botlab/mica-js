@@ -11,6 +11,7 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: true,
     minify: false,
+    rollupOptions: { external: ['@mica/ir'] },
   },
-  plugins: [dts({ include: ['src'], exclude: ['src/**/*.test.ts'] })],
+  plugins: [dts({ include: ['src'], exclude: ['src/**/*.test.ts', 'src/**/*.type-test.ts'] })],
 });

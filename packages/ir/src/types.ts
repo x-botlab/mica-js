@@ -356,6 +356,16 @@ export interface BytesOptions<ReadonlyBytes extends boolean> {
   readonly unitBytes?: number;
 }
 
+export interface EventOperations {
+  now(): Value<'f64'>;
+  at<const P extends readonly ScalarType[]>(
+    target: EntryRef<P>,
+    deadline: Value<'f64'>,
+    args: Values<NoInfer<P>>,
+  ): Value<'u32'>;
+  cancel(id: Value<'u32'>): void;
+}
+
 export interface FunctionBuilder<R extends readonly ScalarType[] = readonly []> {
   const<T extends ScalarType>(type: T, literal: JSScalar<NoInfer<T>>): Value<T>;
   bits<T extends FloatType>(type: T, bits: HexBits): Value<T>;
@@ -376,6 +386,7 @@ export interface FunctionBuilder<R extends readonly ScalarType[] = readonly []> 
   readonly array: ArrayOperations;
   readonly bytes: BytesOperations;
   readonly resource: ResourceOperations;
+  readonly event: EventOperations;
   call<P extends readonly ScalarType[], Results extends readonly ScalarType[]>(
     target: FunctionRef<P, Results>,
     args: Values<NoInfer<P>>,
