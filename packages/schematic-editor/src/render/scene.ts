@@ -21,7 +21,6 @@ import {
   type SchematicDocument,
   type SchematicHit,
   type SchematicSymbol,
-  type SchematicViewDocument,
 } from '@mica-js/core/schematic';
 import type { SchematicTheme } from './theme';
 export type SceneTool = 'select' | 'wire' | 'power' | 'ground' | 'label' | 'text';
@@ -103,7 +102,6 @@ export interface SchematicScene {
 
 export interface RenderInput {
   readonly document: SchematicDocument;
-  readonly view?: SchematicViewDocument;
   readonly devices?: DeviceSymbolProvider;
   readonly theme: SchematicTheme;
   readonly selection?: SceneSelection;
@@ -183,7 +181,6 @@ const NO_PREVIEW: PreviewDrag = { wires: new Map(), junctions: new Map(), symbol
 function previewDrag(
   document: SchematicDocument,
   devices: DeviceSymbolProvider | undefined,
-  view: SchematicViewDocument | undefined,
   selection: SceneSelection,
 ): PreviewDrag {
   const offset = selection.offset;
@@ -197,11 +194,7 @@ function previewDrag(
     if (!selection.symbols.has(symbol.id)) {
       continue;
     }
-    const placed = view?.layout[symbol.id] ?? {
-      x: symbol.x,
-      y: symbol.y,
-      rotation: symbol.rotation,
-    };
+    const placed = { x: symbol.x, y: symbol.y, rotation: symbol.rotation };
     const preview = previewSymbolDrag(document, devices, symbol.id, {
       ...placed,
       x: placed.x + offset.x,
@@ -226,7 +219,7 @@ function previewDrag(
 
 /** Builds a flat, drawable scene. Every color comes from `theme`. */
 export function buildSchematicScene(input: RenderInput): SchematicScene {
-  const { document, view, devices, theme } = input;
+  const { document, devices, theme } = input;
   const selection = input.selection ?? {};
   const tool = input.tool ?? 'select';
   const display = input.display ?? { grid: true, labels: true };
@@ -234,7 +227,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
   const pinFont = `${theme.pinFontSize}px ${theme.fontFamily}`;
   const symbolFont = `${theme.symbolFontSize}px ${theme.fontFamily}`;
   const items: SceneItem[] = [];
-  const drag = previewDrag(document, devices, view, selection);
+  const drag = previewDrag(document, devices, selection);
 
   for (const wire of document.sheet.wires) {
     const selected = selection.wires?.has(wire.id) ?? false;
@@ -270,11 +263,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
     const hovered =
       (input.hover?.kind === 'symbol' && input.hover.id === symbol.id) ||
       (input.hover?.kind === 'reference' && input.hover.symbolId === symbol.id);
-    const placed = view?.layout[symbol.id] ?? {
-      x: symbol.x,
-      y: symbol.y,
-      rotation: symbol.rotation,
-    };
+    const placed = { x: symbol.x, y: symbol.y, rotation: symbol.rotation };
     const dragged = drag.symbols.get(symbol.id);
     drawSymbol(items, {
       symbol,

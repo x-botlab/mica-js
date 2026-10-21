@@ -1,21 +1,21 @@
-import type { Diagnostic } from './diagnostics';
-import { SchematicError } from './errors';
-import { parseInput } from './input';
-import type { Placement, SchematicViewDocument } from './types';
-import { SCHEMATIC_VERSION } from './types';
+import type { Diagnostic } from '../../schematic/format/diagnostics';
+import { SchematicError } from '../../schematic/format/errors';
+import { parseInput } from '../../schematic/format/input';
 import {
   forbidUnknownFields,
   hasErrors,
   isRecord,
   readIntegerField,
+  readNumberField,
   readObjectField,
-  readPlacement,
   readStringField,
   report,
-} from './validate';
+} from '../../schematic/format/validate';
+import type { CanvasDocument, CanvasPlacement } from './types';
+import { CANVAS_VERSION } from './types';
 
-/** @throws {SchematicError} when the input does not match the `.view` contract. */
-export function parseView(input: string | unknown): SchematicViewDocument {
+/** @throws {SchematicError} when the input does not match the `.cnv` contract. */
+export function parseCanvas(input: string | unknown): CanvasDocument {
   const diagnostics: Diagnostic[] = [];
   const parsed = parseInput(input, diagnostics);
   if (!parsed.ok) {
@@ -28,12 +28,9 @@ export function parseView(input: string | unknown): SchematicViewDocument {
   return value;
 }
 
-function readDocument(
-  value: unknown,
-  diagnostics: Diagnostic[],
-): SchematicViewDocument | undefined {
+function readDocument(value: unknown, diagnostics: Diagnostic[]): CanvasDocument | undefined {
   if (!isRecord(value)) {
-    report(diagnostics, 'json/not-object', 'View must be a JSON object.', []);
+    report(diagnostics, 'json/not-object', 'Canvas must be a JSON object.', []);
     return undefined;
   }
   forbidUnknownFields(value, ['version', 'id', 'schematic', 'layout'], [], diagnostics);
@@ -55,31 +52,31 @@ function readDocument(
 function readVersion(
   value: Record<string, unknown>,
   diagnostics: Diagnostic[],
-): typeof SCHEMATIC_VERSION | undefined {
+): typeof CANVAS_VERSION | undefined {
   const version = readIntegerField(value, 'version', [], diagnostics);
   if (version === undefined) {
     return undefined;
   }
-  if (version !== SCHEMATIC_VERSION) {
+  if (version !== CANVAS_VERSION) {
     report(
       diagnostics,
       'schema/unsupported-version',
-      `Unsupported version ${version}; expected ${SCHEMATIC_VERSION}.`,
+      `Unsupported version ${version}; expected ${CANVAS_VERSION}.`,
       ['version'],
     );
     return undefined;
   }
-  return SCHEMATIC_VERSION;
+  return CANVAS_VERSION;
 }
 
 function readLayout(
   value: Record<string, unknown> | undefined,
   diagnostics: Diagnostic[],
-): Readonly<Record<string, Placement>> | undefined {
+): Readonly<Record<string, CanvasPlacement>> | undefined {
   if (value === undefined) {
     return undefined;
   }
-  const layout: Record<string, Placement> = Object.create(null);
+  const layout: Record<string, CanvasPlacement> = Object.create(null);
   for (const symbolId of Object.keys(value)) {
     const path = ['layout', symbolId];
     if (symbolId.length === 0) {
@@ -92,4 +89,23 @@ function readLayout(
     }
   }
   return layout;
+}
+
+function readPlacement(
+  value: unknown,
+  path: readonly string[],
+  diagnostics: Diagnostic[],
+): CanvasPlacement | undefined {
+  if (!isRecord(value)) {
+    report(diagnostics, 'schema/invalid-type', 'Placement must be an object.', path);
+    return undefined;
+  }
+  forbidUnknownFields(value, ['x', 'y', 'rotation'], path, diagnostics);
+  const x = readNumberField(value, 'x', path, diagnostics);
+  const y = readNumberField(value, 'y', path, diagnostics);
+  const rotation = readNumberField(value, 'rotation', path, diagnostics);
+  if (x === undefined || y === undefined || rotation === undefined) {
+    return undefined;
+  }
+  return { x, y, rotation };
 }

@@ -1,5 +1,5 @@
 import type { Diagnostic, DiagnosticCode, DiagnosticEntity } from './diagnostics';
-import type { AssetMode, AssetReference, Placement, Point, PropertyValue } from './types';
+import type { AssetMode, AssetReference, Point, PropertyValue } from './types';
 import { assetSrcError, isAssetMode } from './asset';
 
 export function toPointer(path: readonly string[]): string {
@@ -177,25 +177,6 @@ export function readPoint(
     return undefined;
   }
   return { x, y };
-}
-
-export function readPlacement(
-  value: unknown,
-  path: readonly string[],
-  diagnostics: Diagnostic[],
-): Placement | undefined {
-  if (!isRecord(value)) {
-    report(diagnostics, 'schema/invalid-type', 'Placement must be an object.', path);
-    return undefined;
-  }
-  forbidUnknownFields(value, ['x', 'y', 'rotation'], path, diagnostics);
-  const x = readNumberField(value, 'x', path, diagnostics);
-  const y = readNumberField(value, 'y', path, diagnostics);
-  const rotation = readNumberField(value, 'rotation', path, diagnostics);
-  if (x === undefined || y === undefined || rotation === undefined) {
-    return undefined;
-  }
-  return { x, y, rotation };
 }
 
 export interface IdentifiedEntry {

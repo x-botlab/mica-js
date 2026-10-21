@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { readHashParams } from '@/lib/router';
 import { cn } from '@/lib/utils';
-import { DEVICE_LIBRARY, devices, schematic, view } from '@/schematic/sample';
+import { DEVICE_LIBRARY, devices, schematic } from '@/schematic/sample';
 import { USAGE_SNIPPETS } from '@/schematic/snippets';
 
 const SELECTION_LABELS: Readonly<Record<EditorSelection['kind'], string>> = {
@@ -94,7 +94,6 @@ export function SchematicPage({ dark }: SchematicPageProps) {
     const editor = mountSchematicEditor({
       container: host,
       schematic,
-      view,
       devices,
       theme: dark ? DARK_SCHEMATIC_THEME : LIGHT_SCHEMATIC_THEME,
       readOnly,

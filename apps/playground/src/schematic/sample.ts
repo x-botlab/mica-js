@@ -2,12 +2,10 @@ import {
   createDeviceRegistry,
   parseDeviceReference,
   parseSchematic,
-  parseView,
   symbolPinPosition,
   type Placement,
   type Point,
   type SchematicDocument,
-  type SchematicViewDocument,
 } from '@mica-js/core/schematic';
 
 const MCU = 'stm32-package:stm32g431rbt6-lqfp64';
@@ -267,19 +265,4 @@ const schematicText = JSON.stringify(
   2,
 );
 
-const viewText = JSON.stringify(
-  {
-    version: 1,
-    id: 'ct117e-m4-board-2d',
-    schematic: 'schematic.sch',
-    layout: {
-      's-mcu': { x: 480, y: 200, rotation: 0 },
-      's-lcd': { x: 136, y: 60, rotation: 0 },
-    },
-  },
-  null,
-  2,
-);
-
 export const schematic: SchematicDocument = parseSchematic(schematicText);
-export const view: SchematicViewDocument = parseView(viewText);

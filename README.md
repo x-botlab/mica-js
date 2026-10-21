@@ -27,7 +27,7 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 
 ## 原理图编辑器
 
-`@mica-js/schematic-editor` 把 `@mica-js/core/schematic` 的 `.sch` / `.view` 文档渲染成可编辑的 Canvas 画布：给一个容器元素即可挂载，画布交互与悬浮工具条在包内，属性面板等宿主 UI 通过 `state.inspector` 与 controller 自行实现，主题、显示选项、视口与历史通过返回值控制。
+`@mica-js/schematic-editor` 把 `@mica-js/core/schematic` 的 `.sch` 文档渲染成可编辑的 Canvas 画布：给一个容器元素即可挂载，画布交互与悬浮工具条在包内，属性面板等宿主 UI 通过 `state.inspector` 与 controller 自行实现，主题、显示选项、视口与历史通过返回值控制。
 
 ```ts
 import { mountSchematicEditor } from '@mica-js/schematic-editor';

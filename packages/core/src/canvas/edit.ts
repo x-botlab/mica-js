@@ -1,9 +1,10 @@
-import type { Diagnostic } from '../format/diagnostics';
-import { SchematicError } from '../format/errors';
-import type { Placement, SchematicDocument, SchematicViewDocument } from '../format/types';
-import { toPointer } from '../format/validate';
+import type { Diagnostic } from '../schematic/format/diagnostics';
+import { SchematicError } from '../schematic/format/errors';
+import type { SchematicDocument } from '../schematic/format/types';
+import { toPointer } from '../schematic/format/validate';
+import type { CanvasDocument, CanvasPlacement } from './format/types';
 
-export type ViewCommand =
+export type CanvasCommand =
   | {
       readonly type: 'set-placement';
       readonly symbolId: string;
@@ -14,23 +15,23 @@ export type ViewCommand =
   | { readonly type: 'remove-placement'; readonly symbolId: string }
   | { readonly type: 'bind-schematic'; readonly schematic: string };
 
-export interface ApplyViewCommandOptions {
+export interface ApplyCanvasCommandOptions {
   /** Bound schematic; symbol references are validated against it when provided. */
   readonly schematic?: SchematicDocument;
 }
 
 /**
- * Applies a view command to a copy of `view`.
+ * Applies a canvas command to a copy of `canvas`.
  *
- * @throws {SchematicError} when the command is invalid; the input view is never mutated.
+ * @throws {SchematicError} when the command is invalid; the input canvas is never mutated.
  */
-export function applyViewCommand(
-  view: SchematicViewDocument,
-  command: ViewCommand,
-  options: ApplyViewCommandOptions = {},
-): SchematicViewDocument {
+export function applyCanvasCommand(
+  canvas: CanvasDocument,
+  command: CanvasCommand,
+  options: ApplyCanvasCommandOptions = {},
+): CanvasDocument {
   const diagnostics: Diagnostic[] = [];
-  const layout: Record<string, Placement> = { ...view.layout };
+  const layout: Record<string, CanvasPlacement> = { ...canvas.layout };
 
   switch (command.type) {
     case 'set-placement': {
@@ -57,7 +58,7 @@ export function applyViewCommand(
         diagnostics.push({
           severity: 'error',
           code: 'edit/unknown-entity',
-          message: `View has no placement for symbol "${command.symbolId}".`,
+          message: `Canvas has no placement for symbol "${command.symbolId}".`,
           pointer: toPointer(['layout', command.symbolId]),
         });
         break;
@@ -76,7 +77,7 @@ export function applyViewCommand(
         break;
       }
       if (diagnostics.length === 0) {
-        return { ...view, schematic: command.schematic };
+        return { ...canvas, schematic: command.schematic };
       }
       break;
     }
@@ -84,7 +85,7 @@ export function applyViewCommand(
       diagnostics.push({
         severity: 'error',
         code: 'edit/invalid-command',
-        message: `Unsupported view command ${JSON.stringify((command as { type?: unknown }).type)}.`,
+        message: `Unsupported canvas command ${JSON.stringify((command as { type?: unknown }).type)}.`,
       });
     }
   }
@@ -92,12 +93,12 @@ export function applyViewCommand(
   if (diagnostics.length > 0) {
     throw new SchematicError(diagnostics);
   }
-  return { ...view, layout };
+  return { ...canvas, layout };
 }
 
 function requireKnownSymbol(
   symbolId: string,
-  options: ApplyViewCommandOptions,
+  options: ApplyCanvasCommandOptions,
   diagnostics: Diagnostic[],
 ): void {
   if (options.schematic === undefined) {
@@ -108,8 +109,8 @@ function requireKnownSymbol(
   }
   diagnostics.push({
     severity: 'error',
-    code: 'view/unknown-symbol',
-    message: `View layout references symbol ${JSON.stringify(symbolId)} which is absent from the bound schematic.`,
+    code: 'canvas/unknown-symbol',
+    message: `Canvas layout references symbol ${JSON.stringify(symbolId)} which is absent from the bound schematic.`,
     pointer: toPointer(['layout', symbolId]),
   });
 }

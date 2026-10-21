@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createDeviceRegistry } from '../device/registry';
 import { SchematicError } from '../format/errors';
-import type { SchematicDocument, SchematicViewDocument } from '../format/types';
+import type { SchematicDocument } from '../format/types';
 import { catchError, codesOf } from '../format/test-helpers';
-import { loadSchematic, loadView } from './load';
+import { loadSchematic } from './load';
 
 const devices = createDeviceRegistry([
   {
@@ -37,16 +37,6 @@ const schematic: SchematicDocument = {
   },
 };
 
-const VIEW_TEXT = `{
-  "version": 1,
-  "id": "board-2d",
-  "schematic": "schematic.sch",
-  "layout": {
-    "s-mcu": { "x": 100, "y": 220, "rotation": 0 },
-    "s-lcd": { "x": 10, "y": 20, "rotation": 90 }
-  }
-}`;
-
 describe('loadSchematic', () => {
   it('parses and derives topology from text', () => {
     const loaded = loadSchematic(SCH_TEXT, { devices });
@@ -77,60 +67,5 @@ describe('loadSchematic', () => {
     expect(codesOf(catchError(() => loadSchematic(ghost, { devices })).diagnostics)).toContain(
       'device/unresolved',
     );
-  });
-});
-
-describe('loadView', () => {
-  it('returns placements sorted by symbol id', () => {
-    const loaded = loadView(VIEW_TEXT, { schematic });
-    expect(loaded.document.id).toBe('board-2d');
-    expect(loaded.placements).toEqual([
-      { symbolId: 's-lcd', placement: { x: 10, y: 20, rotation: 90 } },
-      { symbolId: 's-mcu', placement: { x: 100, y: 220, rotation: 0 } },
-    ]);
-  });
-
-  it('skips symbol validation when no schematic is provided', () => {
-    const view: SchematicViewDocument = {
-      version: 1,
-      id: 'v',
-      schematic: 'schematic.sch',
-      layout: {
-        anything: { x: 0, y: 0, rotation: 0 },
-      },
-    };
-    expect(loadView(view).placements).toHaveLength(1);
-  });
-
-  it('rejects layout keys absent from the bound schematic', () => {
-    const error = catchError(() =>
-      loadView(
-        {
-          version: 1,
-          id: 'v',
-          schematic: 'schematic.sch',
-          layout: {
-            missing: { x: 0, y: 0, rotation: 0 },
-            's-mcu': { x: 1, y: 1, rotation: 0 },
-          },
-        },
-        { schematic },
-      ),
-    );
-    expect(error.diagnostics).toEqual([
-      {
-        severity: 'error',
-        code: 'view/unknown-symbol',
-        message:
-          'View layout references symbol "missing" which is absent from the bound schematic.',
-        pointer: '/layout/missing',
-      },
-    ]);
-  });
-
-  it('rejects an empty schematic reference', () => {
-    expect(
-      codesOf(catchError(() => loadView(VIEW_TEXT.replace('"schematic.sch"', '""'))).diagnostics),
-    ).toContain('schema/invalid-value');
   });
 });

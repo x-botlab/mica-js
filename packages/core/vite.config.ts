@@ -7,6 +7,7 @@ export default defineConfig({
       entry: {
         index: 'src/index.ts',
         'schematic/index': 'src/schematic/index.ts',
+        'canvas/index': 'src/canvas/index.ts',
       },
       formats: ['es'],
       fileName: (_format, entryName) => `${entryName}.js`,

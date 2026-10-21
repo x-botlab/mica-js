@@ -4,7 +4,6 @@ import type {
   Point,
   SchematicDocument,
   SchematicError,
-  SchematicViewDocument,
 } from '@mica-js/core/schematic';
 import { serializeSchematic } from '@mica-js/core/schematic';
 import { SchematicEditorController } from '../controller/controller';
@@ -36,7 +35,6 @@ export interface MountSchematicEditorOptions {
   /** Caller-provided container; the editor only appends and removes its own root. */
   readonly container: HTMLElement;
   readonly schematic: SchematicDocument;
-  readonly view?: SchematicViewDocument;
   readonly devices?: DeviceSymbolProvider;
   readonly theme?: Partial<SchematicTheme>;
   readonly display?: Partial<DisplayOptions>;
@@ -69,7 +67,6 @@ export interface MountedSchematicEditor {
    * the swap as one undoable edit instead.
    */
   setSchematic(document: SchematicDocument, options?: { readonly keepHistory?: boolean }): void;
-  setView(view: SchematicViewDocument | undefined): void;
   setTheme(theme: Partial<SchematicTheme>): void;
   getTheme(): SchematicTheme;
   setDisplayOptions(patch: Partial<DisplayOptions>): void;
@@ -114,7 +111,6 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
 
   const controller = new SchematicEditorController({
     document: options.schematic,
-    ...(options.view === undefined ? {} : { view: options.view }),
     ...(options.devices === undefined ? {} : { devices: options.devices }),
     ...(options.display === undefined ? {} : { display: options.display }),
     ...(options.tolerance === undefined ? {} : { tolerance: options.tolerance }),
@@ -185,7 +181,6 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     }
     const scene = buildSchematicScene({
       document: state.document,
-      ...(state.view === undefined ? {} : { view: state.view }),
       ...(options.devices === undefined ? {} : { devices: options.devices }),
       theme,
       selection: {
@@ -279,9 +274,6 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
       }
       controller.reset(document);
       fitToContent();
-    },
-    setView(view: SchematicViewDocument | undefined): void {
-      controller.setView(view);
     },
     setTheme(next: Partial<SchematicTheme>): void {
       theme = resolveSchematicTheme(next);

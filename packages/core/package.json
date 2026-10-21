@@ -13,6 +13,10 @@
     "./schematic": {
       "types": "./dist/schematic/index.d.ts",
       "import": "./dist/schematic/index.js"
+    },
+    "./canvas": {
+      "types": "./dist/canvas/index.d.ts",
+      "import": "./dist/canvas/index.js"
     }
   },
   "files": [
