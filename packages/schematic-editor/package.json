@@ -1,8 +1,13 @@
 {
   "name": "@mica-js/schematic-editor",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Mica schematic editor: canvas renderer and interaction",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/schematic-editor"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {

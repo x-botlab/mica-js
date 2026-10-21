@@ -1,8 +1,13 @@
 {
   "name": "@mica-js/sandbox",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Mica sandbox: run untrusted guest JavaScript in an iframe + Web Worker isolated environment",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/sandbox"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {

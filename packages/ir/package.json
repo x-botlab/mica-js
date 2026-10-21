@@ -1,8 +1,13 @@
 {
   "name": "@mica-js/ir",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Domain-independent IR model and typed builder for Mica",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/ir"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {

@@ -1,0 +1,115 @@
+name: Bump
+
+# 手动创建一个 changeset：选好包和升级幅度，workflow 生成 .changeset/*.md 并开 PR。
+# 合并该 PR 后，Release workflow 会照常产出 "Version Packages" PR，合并即发布。
+# 日常贡献也可以用 `pnpm changeset` 在本地生成同样的文件。
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: '升级幅度'
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      packages:
+        description: '目标包（逗号分隔的包名，或 all 表示全部可发布包）'
+        type: string
+        default: all
+      message:
+        description: '变更说明（写入 CHANGELOG；留空则自动生成）'
+        type: string
+        required: false
+      base:
+        description: '目标分支'
+        type: string
+        default: main
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  changeset:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # 推送 changeset 分支
+      pull-requests: write # 创建 PR
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.base }}
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.14.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate changeset
+        id: changeset
+        env:
+          BUMP: ${{ inputs.bump }}
+          PACKAGES: ${{ inputs.packages }}
+          SUMMARY: ${{ inputs.message }}
+        run: |
+          set -euo pipefail
+
+          if [ "$PACKAGES" = "all" ]; then
+            PACKAGES=$(node -e "
+              const fs = require('node:fs');
+              const names = fs.readdirSync('packages').flatMap((dir) => {
+                try {
+                  const manifest = JSON.parse(fs.readFileSync('packages/' + dir + '/package.json', 'utf8'));
+                  return manifest.private === true ? [] : [manifest.name];
+                } catch {
+                  return [];
+                }
+              });
+              console.log(names.sort().join(','));
+            ")
+          fi
+
+          if [ -z "$PACKAGES" ]; then
+            echo "::error::没有匹配到可发布的包"
+            exit 1
+          fi
+
+          message="${SUMMARY:-chore(release): ${BUMP} bump via workflow}"
+          pnpm changeset add "--${BUMP}" "$PACKAGES" --message "$message"
+
+          file=$(ls -t .changeset/*.md | grep -v README.md | head -n 1)
+          echo "changeset: $file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          BUMP: ${{ inputs.bump }}
+          BASE: ${{ inputs.base }}
+          FILE: ${{ steps.changeset.outputs.file }}
+        run: |
+          set -euo pipefail
+
+          branch="chore/bump-${BUMP}-$(date -u +%Y%m%d%H%M%S)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add .changeset
+          git commit -m "chore(release): ${BUMP} changeset"
+          git push -u origin "$branch"
+
+          gh pr create \
+            --base "$BASE" \
+            --head "$branch" \
+            --title "chore(release): ${BUMP} bump" \
+            --body "由 **Bump** workflow 生成，changeset 文件：\`${FILE}\`。
+
+          合并后 Release workflow 会创建 Version Packages PR，合并该 PR 即发布到 npm。"

@@ -16,10 +16,14 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint:package": "pnpm --filter \"@mica-js/core\" --filter \"@mica-js/ir\" --filter \"@mica-js/sandbox\" --filter \"@mica-js/schematic-editor\" exec publint && pnpm --filter \"@mica-js/core\" --filter \"@mica-js/ir\" --filter \"@mica-js/schematic-editor\" exec attw --pack . --profile esm-only && pnpm --filter \"@mica-js/sandbox\" exec attw --pack . --profile esm-only --exclude-entrypoints ./frame.html"
+    "lint:package": "pnpm --filter \"@mica-js/core\" --filter \"@mica-js/ir\" --filter \"@mica-js/sandbox\" --filter \"@mica-js/schematic-editor\" exec publint && pnpm --filter \"@mica-js/core\" --filter \"@mica-js/ir\" --filter \"@mica-js/schematic-editor\" exec attw --pack . --profile esm-only && pnpm --filter \"@mica-js/sandbox\" exec attw --pack . --profile esm-only --exclude-entrypoints ./frame.html",
+    "changeset": "changeset",
+    "version-packages": "changeset version && pnpm install --lockfile-only",
+    "release": "changeset publish"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "@changesets/cli": "^3.0.3",
     "@eslint/js": "^10.0.1",
     "@microsoft/api-extractor": "^7.59.4",
     "@types/node": "^24.19.2",
