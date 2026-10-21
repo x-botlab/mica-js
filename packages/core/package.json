@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "description": "Mica circuit simulator core: virtual time and deterministic event scheduling",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/core"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {
