@@ -33,12 +33,11 @@ type PublicExports = keyof typeof IrModule; // 当前为 never
 
 ## 开发与验证
 
-使用仓库现有 pnpm catalog、TypeScript、Vite、vite-plugin-dts 与 Vitest：
+使用仓库现有 pnpm catalog、TypeScript、Vite 与 vite-plugin-dts：
 
 ```bash
-pnpm --filter @mica/ir test
 pnpm --filter @mica/ir typecheck
 pnpm --filter @mica/ir build
 ```
 
-单元测试仅检查公共入口当前不暴露占位 API，不启动构建、子进程或临时消费方；实际 JS 与声明文件消费在发布前单独验证。
+当前入口尚无行为，暂不设置测试；实现公共 API 后应补充验证其实际行为的测试。
