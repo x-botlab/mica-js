@@ -324,6 +324,8 @@ scheduler.start(); // 控制阶段整批提交并重算受影响网络
 
 每个网络按成员组装 `ElectricalNetworkInput` 调用 `resolveElectricalNetwork`，不复制驱动、偏置或浮空算法。驱动冲突时先保留已提交连接状态与新分量，受影响网络的 `result` 为 `undefined`，随后 `ElectricalConflictError` 逃出控制入口，由 scheduler 进入 `faulted`（`SchedulerError.code = 'execution-failed'`，`cause` 保存冲突现场）。已经提交的连接状态与此前效果不会回滚；如需恢复必须重建仿真。
 
+scheduler 已处于 `faulted` 时，`runtime.destroy()` 会按调度器边界拒绝并抛 `scheduler-faulted`；该状态本来就不能继续运行，宿主应整体丢弃 runtime 与 scheduler，而不是依赖清理调用恢复。
+
 ### 浮空接线
 
 启用 `floating` 后，每个引脚惰性建立独立 `createFloatingInput(seed, instanceId, pinName)`。网络每次从非浮空进入浮空即调用 `beginFloating`；供电阻断或采样门控关闭时省略供电参数，但阶段仍计数。仍为浮空且 V0 待初始化时，在该解析点若供电已知且采样启用则调用 `sample` 完成 V0 初始化并丢弃返回值；业务读取通过 `floatingInput(pin).sample(...)` 自行取值。网络合并/拆分不会重建阶段。

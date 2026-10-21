@@ -13,6 +13,10 @@ import type {
   TopologyRuntime,
 } from './topology-types';
 
+// Core tests carry no Node/DOM ambient types; this only yields to a new task so GC can clear WeakRefs.
+declare function setTimeout(callback: () => void, delay?: number): unknown;
+const gc = (globalThis as unknown as { gc?: () => void }).gc;
+
 const MODEL = Object.freeze({
   kind: 'ideal-voltage' as const,
   minVoltage: 0,
@@ -939,4 +943,38 @@ describe('topology validation and lifecycle', () => {
     runtime.destroy();
     expect(() => runtime.refresh()).toThrow(SchedulerError);
   });
+
+  it.skipIf(gc === undefined)(
+    'releases the runtime after destroy without driving the scheduler',
+    async () => {
+      const scheduler = createScheduler();
+      const reference = (() => {
+        const definition: TopologyDefinition = {
+          pins: [
+            { instanceId: 'a', pinName: 'A', kind: 'signal' },
+            { instanceId: 'a', pinName: 'B', kind: 'signal' },
+          ],
+          wires: [],
+          connections: [{ instanceId: 'a', connectionId: 'sw', pins: ['A', 'B'] }],
+        };
+        const runtime = createTopologyRuntime(scheduler, definition, {
+          instanceId: 'topology',
+          pinStates: [pinState('a', 'A'), pinState('a', 'B')],
+          floating: { seed: 12345, supplyVoltage: () => 3.3 },
+        });
+        runtime.submit({
+          instanceId: 'a',
+          connections: [{ connectionId: 'sw', state: 'closed' }],
+        });
+        runtime.destroy();
+        return new WeakRef(runtime);
+      })();
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        gc!();
+        await new Promise<void>((resolve) => setTimeout(() => resolve(), 0));
+      }
+      expect(reference.deref()).toBeUndefined();
+      expect(scheduler.start()).toEqual({ timePs: 0, executed: 0, reason: 'empty' });
+    },
+  );
 });
