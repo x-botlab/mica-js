@@ -6,21 +6,25 @@ Mica 各包的可交互示例站点：React + Vite + Tailwind v4 + [shadcn/ui](h
 pnpm --filter @mica-js/playground dev        # http://localhost:5173
 pnpm --filter @mica-js/playground run typecheck
 pnpm --filter @mica-js/playground run build
+pnpm --filter @mica-js/playground run test:e2e   # Playwright 冒烟，自带 4174 端口的 dev server
 ```
 
 ## 页面
 
-| 路由          | 页面         | 演示内容                                                                                   |
-| ------------- | ------------ | ------------------------------------------------------------------------------------------ |
-| `#/`          | 概览         | 页面导航、workspace 命令速查                                                               |
-| `#/schematic` | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、宿主属性面板（#7 全部属性类型）、显示开关、回调事件流 |
-| `#/sandbox`   | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动/终止、调用与日志                                  |
+| 路由                   | 页面         | 演示内容                                                                                   |
+| ---------------------- | ------------ | ------------------------------------------------------------------------------------------ |
+| `#/`                   | 概览         | 页面导航、workspace 命令速查                                                               |
+| `#/schematic`          | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、宿主属性面板（#7 全部属性类型）、显示开关、回调事件流 |
+| `#/schematic?readonly` | 只读查看器   | 同一页以 `readOnly: true` 挂载：选择与缩放可用，编辑全部被拒                               |
+| `#/sandbox`            | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动/终止、调用与日志                                  |
 
 新增页面：在 `src/components/app-shell.tsx` 的 `PAGES` 里加一项（`id` 同时是路由），在 `src/App.tsx` 里渲染对应组件即可。
 
 ## 目录
 
 ```text
+e2e/editor.spec.ts             Playwright 冒烟：渲染、网标拖动折线、导线 T 接入、只读守卫
+playwright.config.ts           e2e 配置（webServer 跑 127.0.0.1:4174 的 dev server）
 src/components/app-shell.tsx   侧边导航 + 顶栏 + 主题切换
 src/components/property-panel.tsx  宿主实现的属性面板（state.inspector → controller）
 src/components/ui/             shadcn/ui 组件（button / card / badge / input / textarea / separator）

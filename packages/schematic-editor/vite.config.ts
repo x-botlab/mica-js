@@ -1,18 +1,7 @@
-import { fileURLToPath } from 'node:url';
 import dts from 'vite-plugin-dts';
 import { defineConfig } from 'vitest/config';
 
-const coreSchematic = fileURLToPath(new URL('../core/src/schematic/index.ts', import.meta.url));
-
-export default defineConfig(({ command }) => ({
-  resolve:
-    command === 'serve'
-      ? {
-          alias: {
-            '@mica-js/core/schematic': coreSchematic,
-          },
-        }
-      : undefined,
+export default defineConfig({
   build: {
     lib: {
       entry: 'src/index.ts',
@@ -30,6 +19,7 @@ export default defineConfig(({ command }) => ({
     dts({
       tsconfigPath: './tsconfig.build.json',
       entryRoot: 'src',
+      bundleTypes: true,
     }),
   ],
-}));
+});

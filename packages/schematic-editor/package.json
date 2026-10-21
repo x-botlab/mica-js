@@ -16,7 +16,6 @@
   ],
   "scripts": {
     "build": "vite build",
-    "dev": "vite --open /demo/",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

@@ -88,14 +88,16 @@ pnpm --filter @mica-js/playground dev
 
 ```bash
 pnpm install
-pnpm run build       # 构建所有包（Vite library mode，输出 ESM + d.ts）
-pnpm run test        # 运行所有包测试（Vitest）
-pnpm run typecheck   # TypeScript 类型检查
-pnpm run lint        # ESLint
-pnpm run format      # Prettier 格式化
+pnpm run build        # 构建所有包（Vite library mode，输出 ESM + d.ts）
+pnpm run test         # 运行所有包测试（Vitest）
+pnpm run test:e2e     # Playground 冒烟测试（Playwright，自带独立端口的 dev server）
+pnpm run typecheck    # TypeScript 类型检查
+pnpm run lint         # ESLint
+pnpm run lint:package # 包产物检查（publint + arethetypeswrong）
+pnpm run format       # Prettier 格式化
 ```
 
-Vite / Vitest / vite-plugin-dts 的版本通过 [pnpm catalog](pnpm-workspace.yaml) 统一管理，子包中用 `catalog:` 引用。CI 见 [.github/workflows/ci.yml](.github/workflows/ci.yml)，会依次执行格式检查、lint、类型检查、构建与测试。
+Vite / Vitest / vite-plugin-dts 的版本通过 [pnpm catalog](pnpm-workspace.yaml) 统一管理，子包中用 `catalog:` 引用。CI 见 [.github/workflows/ci.yml](.github/workflows/ci.yml)，会依次执行格式检查、lint、类型检查、构建、单元测试与 Playground 的 Playwright 冒烟测试。
 
 ## 许可证
 

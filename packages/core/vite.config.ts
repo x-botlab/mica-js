@@ -19,6 +19,9 @@ export default defineConfig({
     dts({
       include: ['src'],
       exclude: ['src/**/*.test.ts', 'src/**/test-helpers.ts'],
+      // One flattened declaration per entry, so consumers with node16 resolution never have to
+      // follow extensionless imports inside the package.
+      bundleTypes: true,
     }),
   ],
 });

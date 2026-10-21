@@ -12,6 +12,7 @@ import { PropertyPanel } from '@/components/property-panel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { readHashParams } from '@/lib/router';
 import { cn } from '@/lib/utils';
 import { DEVICE_LIBRARY, devices, schematic, view } from '@/schematic/sample';
 import { USAGE_SNIPPETS } from '@/schematic/snippets';
@@ -58,10 +59,19 @@ export function SchematicPage({ dark }: SchematicPageProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<MountedSchematicEditor | null>(null);
   const mountLogged = useRef(false);
+  // `#/schematic?readonly` mounts a viewer: the editor refuses every edit and the host hides its
+  // own editing affordances.
+  const [readOnly, setReadOnly] = useState(() => readHashParams().has('readonly'));
   const [state, setState] = useState<EditorState | null>(null);
   const [zoom, setZoom] = useState(1);
   const [log, setLog] = useState<readonly LogEntry[]>([]);
   const [infoOpen, setInfoOpen] = useState(false);
+
+  useEffect(() => {
+    const sync = (): void => setReadOnly(readHashParams().has('readonly'));
+    globalThis.addEventListener('hashchange', sync);
+    return () => globalThis.removeEventListener('hashchange', sync);
+  }, []);
 
   const pushLog = useCallback((text: string) => {
     setLog((entries) =>
@@ -87,6 +97,7 @@ export function SchematicPage({ dark }: SchematicPageProps) {
       view,
       devices,
       theme: dark ? DARK_SCHEMATIC_THEME : LIGHT_SCHEMATIC_THEME,
+      readOnly,
       onChange: (next) => {
         setState(next);
         pushLog(`onChange · ${next.tool} · ${describeSelection(next.selection)}`);
@@ -115,8 +126,9 @@ export function SchematicPage({ dark }: SchematicPageProps) {
       editor.dispose();
       editorRef.current = null;
     };
-    // Mount once: `pushLog` is a stable callback, and the theme has its own effect below.
-  }, [pushLog]);
+    // The theme updates through its own effect below; `readOnly` remounts the editor, because the
+    // mode is fixed at mount time.
+  }, [pushLog, readOnly]);
 
   useEffect(() => {
     editorRef.current?.setTheme(dark ? DARK_SCHEMATIC_THEME : LIGHT_SCHEMATIC_THEME);
@@ -188,6 +200,7 @@ export function SchematicPage({ dark }: SchematicPageProps) {
                 type="button"
                 onClick={() => placeDevice(entry.device)}
                 title={entry.device}
+                disabled={readOnly}
                 aria-pressed={placingDevice === entry.device}
                 className={cn(
                   'flex flex-col items-start gap-0.5 rounded-md border px-2 py-1.5 text-left transition-colors',
@@ -326,6 +339,7 @@ export function SchematicPage({ dark }: SchematicPageProps) {
             用法与事件
           </Button>
           <div className="text-muted-foreground ml-auto flex items-center gap-2 text-[11px]">
+            {readOnly ? <Badge variant="muted">只读</Badge> : null}
             <span className="font-mono">{zoom.toFixed(2)}×</span>
             <span>拖动导线段 · 空格旋转 · Esc 取消 · 滚轮缩放</span>
           </div>
@@ -336,7 +350,7 @@ export function SchematicPage({ dark }: SchematicPageProps) {
       <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pl-1">
         <PropertyPanel
           inspector={state?.inspector}
-          readOnly={false}
+          readOnly={readOnly}
           onPropertyChange={updateProperty}
           onPropertyReset={resetProperty}
           onDesignatorChange={renameDesignator}
