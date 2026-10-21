@@ -31,12 +31,11 @@ editor.fitToContent();`,
 
 editor.cancelPlacement(); // Esc 同样可以取消
 
-// 新器件位号策略：默认最小未占用的 U1、U2…
-mountSchematicEditor({
-  container,
-  schematic,
-  createDesignator: (device, document) => nextDesignator(document, prefixOf(device)),
-});`,
+// 位号来自器件定义：{ id: 'ne555', designatorPrefix: 'U', ... } → U1、U2…
+// 器件没声明前缀时回退到 U；也可以用 createDesignator 完全接管。
+createDeviceRegistry([
+  { packageId: 'timer-package', devices: [{ id: 'ne555', designatorPrefix: 'U' }] },
+]);`,
   },
   {
     title: '事件回调',

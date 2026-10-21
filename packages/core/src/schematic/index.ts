@@ -121,7 +121,9 @@ export type {
 export { createDeviceRegistry } from './device/registry';
 export {
   DEFAULT_DESIGNATOR_PREFIX,
+  createDesignatorFactory,
   defaultDesignatorFactory,
+  designatorPrefixOf,
   nextDesignator,
 } from './device/designator';
 export type { DesignatorFactory } from './device/designator';

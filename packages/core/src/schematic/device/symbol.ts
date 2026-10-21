@@ -33,6 +33,11 @@ export interface DeviceSymbolProvider {
   getDeviceSymbol(reference: DeviceReference): DeviceSymbolDefinition | undefined;
   /** Name rendered on the symbol: the symbol name, else the display name. `undefined` when unknown. */
   getDeviceName(reference: DeviceReference): string | undefined;
+  /**
+   * Reference-designator prefix the device declares (`U`, `R`, `DS`, …); `undefined` when the
+   * provider does not describe one, in which case placement falls back to the global default.
+   */
+  getDeviceDesignatorPrefix?(reference: DeviceReference): string | undefined;
 }
 
 /** Bounding box of a device's pins; `undefined` when it declares none. */

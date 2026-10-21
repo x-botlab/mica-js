@@ -2,7 +2,7 @@ import {
   SchematicEditor,
   SchematicError,
   defaultElementIdFactory,
-  defaultDesignatorFactory,
+  createDesignatorFactory,
   deriveSchematicTopology,
   designatorOf,
   hasDesignator,
@@ -53,7 +53,7 @@ export interface SchematicEditorControllerOptions {
   readonly historyLimit?: number;
   readonly display?: Partial<DisplayOptions>;
   readonly createId?: ElementIdFactory;
-  /** Designator policy for placed components; defaults to the smallest free `U<n>`. */
+  /** Designator policy; defaults to the device's `designatorPrefix` (`U` when it declares none). */
   readonly createDesignator?: DesignatorFactory;
 }
 
@@ -90,7 +90,7 @@ export class SchematicEditorController {
     this.#devices = options.devices;
     this.#tolerance = options.tolerance;
     this.#createId = options.createId ?? defaultElementIdFactory;
-    this.#createDesignator = options.createDesignator ?? defaultDesignatorFactory;
+    this.#createDesignator = options.createDesignator ?? createDesignatorFactory(options.devices);
     this.#display = { ...DEFAULT_DISPLAY_OPTIONS, ...options.display };
   }
 

@@ -1,6 +1,5 @@
 import {
   createDeviceRegistry,
-  nextDesignator,
   parseDeviceReference,
   parseSchematic,
   parseView,
@@ -23,6 +22,7 @@ export const devices = createDeviceRegistry([
       {
         id: 'stm32g431rbt6-lqfp64',
         displayName: 'STM32G431',
+        designatorPrefix: 'U',
         raw: {
           pins: {
             PC0: { side: 'left' },
@@ -49,6 +49,7 @@ export const devices = createDeviceRegistry([
       {
         id: 'ct117e-m4-tft-lcd-2-4',
         displayName: 'TFT LCD 2.4"',
+        designatorPrefix: 'DS',
         raw: {
           pins: {
             D0: { side: 'left' },
@@ -67,6 +68,7 @@ export const devices = createDeviceRegistry([
       {
         id: 'ne555',
         displayName: 'NE555',
+        designatorPrefix: 'U',
         raw: {
           pins: {
             TRIG: { side: 'left' },
@@ -89,7 +91,7 @@ export interface DeviceEntry {
   readonly device: string;
   readonly name: string;
   readonly note: string;
-  /** Prefix the host hands to `nextDesignator` for this part. */
+  /** Prefix shown in the list; it comes from the device definition (`designatorPrefix`). */
   readonly prefix: string;
 }
 
@@ -98,15 +100,6 @@ export const DEVICE_LIBRARY: readonly DeviceEntry[] = [
   { device: LCD, name: 'TFT LCD 2.4"', note: 'lcd-package', prefix: 'DS' },
   { device: TIMER, name: 'NE555', note: 'timer-package', prefix: 'U' },
 ];
-
-/**
- * Reference-designator policy per module: the host knows its own library, so it picks the
- * prefix (`U` for IC modules, `DS` for displays) instead of the editor guessing.
- */
-export function createDesignator(device: string, document: SchematicDocument): string {
-  const prefix = DEVICE_LIBRARY.find((entry) => entry.device === device)?.prefix ?? 'U';
-  return nextDesignator(document, prefix);
-}
 
 const placements = {
   mcu: { x: 480, y: 200, rotation: 0 },

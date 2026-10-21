@@ -21,7 +21,7 @@ const editor = mountSchematicEditor({
   display, // 可选；Partial<DisplayOptions>
   tolerance, // 可选；命中/几何容差（页面单位）
   historyLimit, // 可选；撤销栈上限
-  createDesignator, // 可选；(device, document) => string，新器件位号策略，默认 U1、U2…
+  createDesignator, // 可选；(device, document) => string，完全接管新器件位号；默认用器件定义里的 designatorPrefix
   zoomLimits, // 可选；{ minScale, maxScale }，默认 0.25–4
   readOnly, // 可选；禁用内建交互与属性编辑，controller 仍可写
   toolbar, // 可选；默认 true
@@ -86,7 +86,7 @@ deviceList.addEventListener('click', (event) => {
 - 抓取后画布光标变为十字，幽灵随指针移动（只吸附网格；`builtin:label` / `power` / `ground` 仍吸附引脚并自动引出一段导线）。
 - 空格旋转幽灵，`Esc` 或再次点击列表项调 `cancelPlacement()` 取消。
 - 放下后自动切回 `select`，一次抓取只放一个器件；需要连续放置时由宿主在 `onChange` 里重新调用 `placeDevice`。
-- 位号由 `createDesignator(device, document)` 决定，默认取最小的未占用 `Un`；宿主可按器件类别给出 `R` / `C` / `Q` 等前缀。
+- 位号来自**器件定义**：`createDeviceRegistry` 里的 `designatorPrefix`（如 `U` / `R` / `DS`），取该前缀下最小的未占用编号；器件没声明时回退到 `U`。宿主也可以用 `createDesignator(device, document)` 完全接管命名规则。
 - 非法的器件引用（缺少 `pkg:id` 形式）会直接抛 `SchematicError`，且不会进入抓取态。
 
 ### 指针与键盘

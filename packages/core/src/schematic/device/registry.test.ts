@@ -272,4 +272,24 @@ describe('createDeviceRegistry', () => {
     ]);
     expect(registry.resolve('stm32-package:dev')?.raw).toEqual({});
   });
+
+  it('reads the designator prefix from the entry or the description', () => {
+    const registry = createDeviceRegistry([
+      packageOf([
+        { id: 'resistor', designatorPrefix: ' R ' },
+        { id: 'display', raw: { designatorPrefix: 'DS' } },
+        { id: 'chip' },
+        { id: 'blank', designatorPrefix: '   ' },
+      ]),
+    ]);
+    const prefix = (deviceId: string): string | undefined => {
+      const reference = parseDeviceReference(`stm32-package:${deviceId}`);
+      return reference === undefined ? undefined : registry.getDeviceDesignatorPrefix?.(reference);
+    };
+    expect(prefix('resistor')).toBe('R');
+    expect(prefix('display')).toBe('DS');
+    expect(prefix('chip')).toBeUndefined();
+    expect(prefix('blank')).toBeUndefined();
+    expect(prefix('missing')).toBeUndefined();
+  });
 });

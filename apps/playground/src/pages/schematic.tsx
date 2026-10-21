@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
-import { DEVICE_LIBRARY, createDesignator, devices, schematic, view } from '@/schematic/sample';
+import { DEVICE_LIBRARY, devices, schematic, view } from '@/schematic/sample';
 import { USAGE_SNIPPETS } from '@/schematic/snippets';
 
 const BUILTIN_TOOLS: readonly { readonly tool: EditorTool; readonly label: string }[] = [
@@ -85,7 +85,6 @@ export function SchematicPage({ dark }: SchematicPageProps) {
       schematic,
       view,
       devices,
-      createDesignator,
       theme: dark ? DARK_SCHEMATIC_THEME : LIGHT_SCHEMATIC_THEME,
       onChange: (next) => {
         setState(next);

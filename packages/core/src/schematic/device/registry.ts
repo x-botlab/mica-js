@@ -26,6 +26,11 @@ export interface DeviceRegistrationEntry {
   /** Display name; defaults to the device id. */
   readonly displayName?: string;
   readonly description?: string;
+  /**
+   * Reference-designator prefix used when the device is placed (`U1`, `R3`, `DS2`, …).
+   * Falls back to `raw.designatorPrefix`, then to the global default `U`.
+   */
+  readonly designatorPrefix?: string;
   /** Schematic symbol; omitted when the device has no geometry yet. */
   readonly symbol?: DeviceSymbolGeometry;
   /** Remaining device description fields (#5 pins, #7 properties, #10 ports, ...), kept as-is. */
@@ -44,6 +49,8 @@ export interface ResolvedDevice {
   readonly deviceId: string;
   readonly displayName: string;
   readonly description: string | undefined;
+  /** Designator prefix declared by the device description; `undefined` when it declares none. */
+  readonly designatorPrefix: string | undefined;
   readonly symbol: DeviceSymbolDefinition | undefined;
   readonly raw: Readonly<Record<string, unknown>>;
 }
@@ -143,6 +150,7 @@ export function createDeviceRegistry(
             ? entry.displayName
             : deviceId;
         const symbol = readSymbolGeometry(entry, raw, devicePath, diagnostics, reportedUnknownPins);
+        const designatorPrefix = readDesignatorPrefix(entry, raw);
 
         devices.set(deviceId, {
           reference: {
@@ -154,6 +162,7 @@ export function createDeviceRegistry(
           deviceId,
           displayName,
           description: typeof entry.description === 'string' ? entry.description : undefined,
+          designatorPrefix,
           symbol,
           raw,
         });
@@ -192,6 +201,10 @@ export function createDeviceRegistry(
 
     getDeviceName,
 
+    getDeviceDesignatorPrefix(reference) {
+      return lookup(reference)?.designatorPrefix;
+    },
+
     get diagnostics() {
       return registrationDiagnostics;
     },
@@ -202,6 +215,19 @@ export function createDeviceRegistry(
   }
 
   return registry;
+}
+
+/** Designator prefix declared on the entry, else inside `raw`, else `undefined` (caller defaults). */
+function readDesignatorPrefix(
+  entry: DeviceRegistrationEntry,
+  raw: Readonly<Record<string, unknown>>,
+): string | undefined {
+  const declared = entry.designatorPrefix ?? raw['designatorPrefix'];
+  if (typeof declared !== 'string') {
+    return undefined;
+  }
+  const trimmed = declared.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
 }
 
 function readSymbolGeometry(

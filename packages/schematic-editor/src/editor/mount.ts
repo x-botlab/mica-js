@@ -34,7 +34,7 @@ export interface MountSchematicEditorOptions {
   readonly display?: Partial<DisplayOptions>;
   readonly tolerance?: number;
   readonly historyLimit?: number;
-  /** Reference designator policy for placed components; defaults to `U1`, `U2`, … */
+  /** Reference designator policy; defaults to the device's `designatorPrefix`, then `U`. */
   readonly createDesignator?: DesignatorFactory;
   /** Zoom range for wheel, fit and `zoomTo`; defaults to 0.25×–4×. */
   readonly zoomLimits?: Partial<ViewportLimits>;

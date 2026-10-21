@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { SchematicDocument } from '../format/types';
-import { DEFAULT_DESIGNATOR_PREFIX, defaultDesignatorFactory, nextDesignator } from './designator';
+import {
+  DEFAULT_DESIGNATOR_PREFIX,
+  createDesignatorFactory,
+  defaultDesignatorFactory,
+  designatorPrefixOf,
+  nextDesignator,
+} from './designator';
+import { createDeviceRegistry } from './registry';
 
 function documentWith(designators: readonly (string | undefined)[]): SchematicDocument {
   return {
@@ -54,5 +61,37 @@ describe('defaultDesignatorFactory', () => {
   it('uses the U prefix regardless of the device', () => {
     expect(defaultDesignatorFactory('pkg:ne555', documentWith(['U1']))).toBe('U2');
     expect(defaultDesignatorFactory('pkg:ne555', documentWith([]))).toBe('U1');
+  });
+});
+
+describe('createDesignatorFactory', () => {
+  const devices = createDeviceRegistry([
+    {
+      packageId: 'pkg',
+      devices: [
+        { id: 'resistor', designatorPrefix: 'R' },
+        { id: 'display', designatorPrefix: 'DS' },
+        { id: 'chip' },
+      ],
+    },
+  ]);
+
+  it('reads the prefix from the device definition', () => {
+    const factory = createDesignatorFactory(devices);
+    expect(factory('pkg:resistor', documentWith(['R1', 'R2']))).toBe('R3');
+    expect(factory('pkg:display', documentWith(['DS1']))).toBe('DS2');
+  });
+
+  it('falls back to the global prefix for devices without one or unknown devices', () => {
+    const factory = createDesignatorFactory(devices);
+    expect(factory('pkg:chip', documentWith(['U1']))).toBe('U2');
+    expect(factory('pkg:missing', documentWith([]))).toBe('U1');
+    expect(createDesignatorFactory(undefined)('pkg:resistor', documentWith([]))).toBe('U1');
+  });
+
+  it('reports the resolved prefix', () => {
+    expect(designatorPrefixOf(devices, 'pkg:resistor')).toBe('R');
+    expect(designatorPrefixOf(devices, 'pkg:chip')).toBe(DEFAULT_DESIGNATOR_PREFIX);
+    expect(designatorPrefixOf(undefined, 'pkg:resistor')).toBe(DEFAULT_DESIGNATOR_PREFIX);
   });
 });

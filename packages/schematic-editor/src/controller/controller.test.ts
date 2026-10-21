@@ -19,6 +19,7 @@ const devices = createDeviceRegistry([
       {
         id: 'mcu',
         displayName: 'MCU',
+        designatorPrefix: 'U',
         raw: {
           pins: { A: { side: 'left' }, B: { side: 'right' } },
           properties: {
@@ -26,6 +27,12 @@ const devices = createDeviceRegistry([
             speed: { type: 'number', default: 72 },
           },
         },
+      },
+      {
+        id: 'resistor',
+        displayName: 'Resistor',
+        designatorPrefix: 'R',
+        raw: { pins: { '1': { side: 'left' }, '2': { side: 'right' } } },
       },
     ],
   },
@@ -752,6 +759,21 @@ describe('SchematicEditorController', () => {
         createDesignator: (device) => (device === 'pkg:mcu' ? 'IC1' : 'X1'),
       });
       expect(custom.nextDesignator('pkg:mcu')).toBe('IC1');
+    });
+
+    it('takes the prefix from the device definition by default', () => {
+      const controller = createController(
+        documentOf({
+          symbols: [
+            { id: 's1', device: 'pkg:resistor', x: 0, y: 0, rotation: 0, designator: 'R1' },
+            { id: 's2', device: 'pkg:resistor', x: 20, y: 0, rotation: 0, designator: 'R2' },
+          ],
+        }),
+      );
+      expect(controller.nextDesignator('pkg:resistor')).toBe('R3');
+      expect(controller.nextDesignator('pkg:mcu')).toBe('U1');
+      // Unknown devices still get the global default prefix.
+      expect(controller.nextDesignator('pkg:unknown')).toBe('U1');
     });
   });
 });
