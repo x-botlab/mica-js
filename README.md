@@ -20,8 +20,11 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 │   └── sandbox-playground/   # 沙箱演示与手测面板
 └── packages/
     ├── core/                 # @mica/core：仿真内核
+    ├── ir/                   # @mica/ir：领域无关 IR 包基础（尚无构建或执行 API）
     └── sandbox/              # @mica/sandbox：iframe + Web Worker 通用 JS 沙箱
 ```
+
+`@mica/ir` 当前仅提供可构建、可导入的 ESM 与声明文件入口，不代表已实现 IR 模型、构建器或解释器。职责边界、非目标与验证方式见 [packages/ir/README.md](packages/ir/README.md)。
 
 ## 沙箱
 
