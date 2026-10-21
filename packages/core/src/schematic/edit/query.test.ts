@@ -119,6 +119,20 @@ describe('hitTestSchematic', () => {
       id: 's1',
     });
   });
+
+  it('follows the rotation of builtin annotations', () => {
+    const document = makeDocument({
+      symbols: [{ id: 'P1', device: 'builtin:power', x: 100, y: 100, rotation: 90 }],
+      wires: [],
+      junctions: [],
+    });
+    // At 90° the stem and label extend to the right of the anchor instead of above it.
+    expect(hitTestSchematic(document, { x: 120, y: 100 })).toEqual({
+      kind: 'symbol',
+      id: 'P1',
+    });
+    expect(hitTestSchematic(document, { x: 100, y: 80 })).toBeUndefined();
+  });
 });
 
 describe('findJunctionCandidates', () => {

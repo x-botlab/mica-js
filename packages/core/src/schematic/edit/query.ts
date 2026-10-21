@@ -14,7 +14,12 @@ import {
   pointOnPolyline,
   pointsEqual,
 } from '../geometry/point';
-import { referencePosition, symbolBounds, symbolPinPosition } from '../geometry/transform';
+import {
+  referencePosition,
+  rotatePoint,
+  symbolBounds,
+  symbolPinPosition,
+} from '../geometry/transform';
 
 export interface HitTestOptions {
   readonly devices?: DeviceSymbolProvider;
@@ -129,26 +134,27 @@ function annotationBounds(symbol: {
   readonly device: string;
   readonly x: number;
   readonly y: number;
+  readonly rotation: number;
   readonly properties?: Readonly<Record<string, unknown>>;
-}): { x: number; y: number; width: number; height: number } {
+}): Rect {
   const device = symbol.device;
   if (device === POWER_DEVICE) {
     // Stem, bar and the label above them.
-    return {
-      x: symbol.x - POWER_HALF_WIDTH,
-      y: symbol.y - POWER_HEIGHT,
+    return rotatedBounds(symbol, {
+      x: -POWER_HALF_WIDTH,
+      y: -POWER_HEIGHT,
       width: POWER_HALF_WIDTH * 2,
       height: POWER_HEIGHT + ANNOTATION_HEIGHT / 2,
-    };
+    });
   }
   if (device === GROUND_DEVICE) {
     // Stem, the three bars and the label below them.
-    return {
-      x: symbol.x - POWER_HALF_WIDTH,
-      y: symbol.y - ANNOTATION_HEIGHT / 2,
+    return rotatedBounds(symbol, {
+      x: -POWER_HALF_WIDTH,
+      y: -ANNOTATION_HEIGHT / 2,
       width: POWER_HALF_WIDTH * 2,
       height: GROUND_HEIGHT,
-    };
+    });
   }
   const content = isTextDevice(device)
     ? textDeviceContent(symbol)
@@ -158,10 +164,43 @@ function annotationBounds(symbol: {
   if (content.length === 0) {
     return { x: symbol.x, y: symbol.y, width: 0, height: 0 };
   }
-  const width = content.length * ANNOTATION_CHAR_WIDTH;
   const height = ANNOTATION_HEIGHT;
   // Labels anchor at their connection point (left edge); text is drawn from its origin too.
-  return { x: symbol.x, y: symbol.y - height / 2, width, height };
+  return rotatedBounds(symbol, {
+    x: 0,
+    y: -height / 2,
+    width: content.length * ANNOTATION_CHAR_WIDTH,
+    height,
+  });
+}
+
+/** Axis-aligned box of a symbol-local rectangle after applying the symbol's rotation. */
+function rotatedBounds(
+  symbol: { readonly x: number; readonly y: number; readonly rotation: number },
+  local: Rect,
+): Rect {
+  if (symbol.rotation % 360 === 0) {
+    return {
+      x: symbol.x + local.x,
+      y: symbol.y + local.y,
+      width: local.width,
+      height: local.height,
+    };
+  }
+  const corners = [
+    { x: local.x, y: local.y },
+    { x: local.x + local.width, y: local.y },
+    { x: local.x, y: local.y + local.height },
+    { x: local.x + local.width, y: local.y + local.height },
+  ].map((corner) => {
+    const rotated = rotatePoint(corner, symbol.rotation);
+    return { x: symbol.x + rotated.x, y: symbol.y + rotated.y };
+  });
+  const xs = corners.map((corner) => corner.x);
+  const ys = corners.map((corner) => corner.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  return { x: minX, y: minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
 }
 
 const ANNOTATION_CHAR_WIDTH = 6;

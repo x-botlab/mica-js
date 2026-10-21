@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createDeviceRegistry, parseSchematic, type SchematicDocument } from '@mica/core/schematic';
+import {
+  POWER_DEVICE,
+  createDeviceRegistry,
+  parseSchematic,
+  type SchematicDocument,
+} from '@mica/core/schematic';
 import { buildSchematicScene, type SceneItem } from './scene';
 import { DARK_SCHEMATIC_THEME, LIGHT_SCHEMATIC_THEME } from './theme';
 
@@ -317,6 +322,48 @@ describe('buildSchematicScene', () => {
       align: 'left',
       baseline: 'bottom',
     });
+  });
+
+  it('rotates the power glyph and keeps its label upright', () => {
+    const scene = (rotation: number) =>
+      buildSchematicScene({
+        document: parseSchematic({
+          version: 1,
+          id: `power-${rotation}`,
+          sheet: {
+            symbols: [{ id: 'P1', device: POWER_DEVICE, x: 0, y: 0, rotation }],
+            wires: [],
+            junctions: [],
+          },
+        }),
+        devices,
+        theme: DARK_SCHEMATIC_THEME,
+      });
+    // The bar is horizontal at 0° and vertical at 90°.
+    const bar = (rotation: number) => {
+      const lines = scene(rotation).items.filter((item) => item.kind === 'line');
+      const item = lines[1];
+      if (item?.kind !== 'line') {
+        throw new Error('missing bar line');
+      }
+      return item;
+    };
+    expect(bar(0)).toMatchObject({ from: { x: -6, y: -10 }, to: { x: 6, y: -10 } });
+    expect(bar(90).from.x).toBeCloseTo(10, 9);
+    expect(bar(90).to.x).toBeCloseTo(10, 9);
+    expect(bar(90).from.y - bar(90).to.y).toBeCloseTo(-12, 9);
+
+    const label = scene(90).items.find((item) => item.kind === 'text');
+    expect(label).toMatchObject({
+      text: 'VCC',
+      rotation: 0,
+      align: 'left',
+      baseline: 'middle',
+    });
+    expect(label?.kind === 'text' ? label.position.x : 0).toBeCloseTo(13, 9);
+    expect(label?.kind === 'text' ? label.position.y : 1).toBeCloseTo(0, 9);
+    const flipped = scene(180).items.find((item) => item.kind === 'text');
+    expect(flipped).toMatchObject({ rotation: 0, align: 'center', baseline: 'top' });
   });
 
   it('infers the side when a pin omits it', () => {

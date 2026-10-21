@@ -7,6 +7,7 @@ import {
   parseDeviceReference,
   previewSymbolDrag,
   referencePosition,
+  rotatePoint,
   symbolBounds,
   symbolPinPosition,
   textDeviceContent,
@@ -376,10 +377,8 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
       position: placement,
       text: textDeviceContent(symbol),
       color: annotation,
-      align: 'left',
-      baseline: 'middle',
+      ...uprightText(placement.rotation, 'left', 'middle'),
       font: fonts.symbolFont,
-      rotation: placement.rotation,
     });
     return;
   }
@@ -388,7 +387,7 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
   if (builtin !== undefined) {
     drawBuiltin(items, {
       kind: builtin,
-      position: placement,
+      placement,
       text:
         builtin === 'label'
           ? symbol.id
@@ -596,51 +595,40 @@ function drawBuiltin(
   items: SceneItem[],
   input: {
     readonly kind: 'label' | 'power' | 'ground';
-    readonly position: Point;
+    readonly placement: Placement;
     readonly text: string;
     readonly color: string;
     readonly anchorColor: string;
     readonly font: string;
   },
 ): void {
-  const { position, color, anchorColor, font } = input;
-  items.push({ kind: 'circle', center: position, radius: 2.5, fill: anchorColor, width: 0 });
-
-  if (input.kind === 'power') {
-    items.push({
-      kind: 'line',
-      from: position,
-      to: { x: position.x, y: position.y - 10 },
-      color,
-      width: 1.5,
-    });
-    items.push({
-      kind: 'line',
-      from: { x: position.x - 6, y: position.y - 10 },
-      to: { x: position.x + 6, y: position.y - 10 },
-      color,
-      width: 1.5,
-    });
+  const { placement, color, anchorColor, font } = input;
+  const at = (x: number, y: number): Point => symbolPinPosition(placement, { x, y });
+  // Annotation text keeps its orientation and grows away from the glyph, so it stays readable
+  // whatever the rotation.
+  const push = (x: number, y: number): void => {
+    const rotated = rotatePoint({ x, y }, placement.rotation);
     items.push({
       kind: 'text',
-      position: { x: position.x, y: position.y - 13 },
+      position: { x: placement.x + rotated.x, y: placement.y + rotated.y },
       text: input.text,
       color,
-      align: 'center',
-      baseline: 'bottom',
+      ...outwardLabel(rotated),
       font,
     });
+  };
+
+  items.push({ kind: 'circle', center: at(0, 0), radius: 2.5, fill: anchorColor, width: 0 });
+
+  if (input.kind === 'power') {
+    items.push({ kind: 'line', from: at(0, 0), to: at(0, -10), color, width: 1.5 });
+    items.push({ kind: 'line', from: at(-6, -10), to: at(6, -10), color, width: 1.5 });
+    push(0, -13);
     return;
   }
 
   if (input.kind === 'ground') {
-    items.push({
-      kind: 'line',
-      from: position,
-      to: { x: position.x, y: position.y + 6 },
-      color,
-      width: 1.5,
-    });
+    items.push({ kind: 'line', from: at(0, 0), to: at(0, 6), color, width: 1.5 });
     for (const [offset, width] of [
       [6, 12],
       [9, 8],
@@ -648,31 +636,23 @@ function drawBuiltin(
     ] as const) {
       items.push({
         kind: 'line',
-        from: { x: position.x - width / 2, y: position.y + offset },
-        to: { x: position.x + width / 2, y: position.y + offset },
+        from: at(-width / 2, offset),
+        to: at(width / 2, offset),
         color,
         width: 1.5,
       });
     }
-    items.push({
-      kind: 'text',
-      position: { x: position.x, y: position.y + 16 },
-      text: input.text,
-      color,
-      align: 'center',
-      baseline: 'top',
-      font,
-    });
+    push(0, 16);
     return;
   }
 
-  items.push({
-    kind: 'text',
-    position: { x: position.x + 6, y: position.y },
-    text: input.text,
-    color,
-    align: 'left',
-    baseline: 'middle',
-    font,
-  });
+  push(6, 0);
+}
+
+/** Horizontal text starting at `offset` (already rotated) and growing away from the origin. */
+function outwardLabel(offset: Point): TextPlacement {
+  if (Math.abs(offset.x) >= Math.abs(offset.y)) {
+    return { align: offset.x >= 0 ? 'left' : 'right', baseline: 'middle', rotation: 0 };
+  }
+  return { align: 'center', baseline: offset.y >= 0 ? 'top' : 'bottom', rotation: 0 };
 }
