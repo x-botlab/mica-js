@@ -1,4 +1,14 @@
 export { createIRModule } from './module';
+export { createIRInterpreter, IRExecutionError } from './interpreter';
+export type {
+  IRInterpreterOptions,
+  IRInterpreter,
+  IRExecutionContext,
+  IRExecutionResult,
+  IRExecutionErrorCode,
+  IRExecutionLocation,
+  IRExecutionErrorDetails,
+} from './interpreter';
 export { createIRStorage, IRStorageError } from './storage';
 export type { IRStorage, IRStorageErrorCode, StorageValue } from './storage';
 export { evaluateScalarInstruction, IRScalarEvaluationError } from './scalar';
