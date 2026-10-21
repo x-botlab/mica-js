@@ -82,3 +82,5 @@ export type {
   Wider,
   WritableBytesRef,
 } from './types';
+export { evaluateFloatInstruction, IRFloatEvaluationError } from './float';
+export type { FloatBits, RuntimeScalar } from './float';

@@ -2,7 +2,7 @@
 
 领域无关的 IR 数据模型、同步类型化建图器与静态校验/链接诊断，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
 
-本包负责**建图与静态校验/链接诊断**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。它不执行 IR，也不提供解释器、存储语义、资源更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
+本包负责**建图与静态校验/链接诊断**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。另提供独立的浮点单指令语义求值（见下文），但不运行整个 IR，也不提供解释器、存储语义、资源更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
 
 ## 公共入口
 
@@ -130,11 +130,36 @@ SSA 值和静态句柄以对象身份关联，块边目标必须是本函数 `bo
 
 返回值仅针对本次稳定输入和策略有效，不是冻结的已链接产物或运行授权令牌。调用方必须在任何安装/执行前检查 `ok`，输入、策略或后端变化后重新检查；未来执行器仍需承担动态约束与运行故障处理。本包目前没有安装/执行入口，不把后端支持列表当作执行实现。
 
+## 浮点单指令语义（#44）
+
+`evaluateFloatInstruction(instruction: InstructionNode, operands: readonly RuntimeScalar[]): RuntimeScalar` 复用建图器/校验器的指令模型，不解释函数、分支或存储。`operands` 仅含 SSA 操作数的运行值，按其在指令中的顺序排列；谓词、目标类型、常量等 literal 已在指令节点中，不重复传入。
+
+- `FloatBits = { readonly type: FloatType; readonly bits: HexBits }` 保存原始位，f32 必须恰好 8 个十六进制位，f64 恰好 16 位，均以 `0x` 开头。`RuntimeScalar = boolean | number | FloatBits` 是语义层值，不改变作者层 `Value` / `JSScalar` 或声明初值合同，也不引入 u64 算术。
+- 所有浮点结果均为 `FloatBits`，整数/布尔结果仍为 number/boolean。浮点 number 输入按 SSA 声明精度量化，仅用于数值入口；需要保留 NaN 载荷/符号/信号位必须传 `FloatBits`，不得经过 JS number 往返。
+- 支持浮点 `const` / `const.bits` / `select`、`float.add/sub/mul/div/fma/cmp/isNaN/isFinite`、`convert.intToFloat/floatToInt/float` 及仅 f32 与 u32/i32 间的 `bitcast`。这里采用模型中的 camelCase 操作名，不另造文本 IR 解析器。
+- 内部使用无依赖的 BigInt 精确二进制整数/有理数计算，四则及 FMA 直接按目标精度最近值、居中取偶数舍入。每个 f32 操作独立舍入，FMA 不舍入中间乘积，保留次正规数及正确的有符号零；不会用 `a*b+c` 或 f64 中间结果冒充融合运算。
+- 算术与浮点精度转换得到的 NaN 分别规范为 `0x7fc00000` / `0x7ff8000000000000`；`const.bits`、浮点选择与 bitcast 保留原始位。后续状态/数组/字节移动应直接搬运此位值，不将其解码为 number 再编码。此项未实现存储或公共总 dispatcher；#43 的 number-only 标量入口保持独立，不作为原始浮点位传输路径。
+- 整数到浮点先验证来源整数范围，再按目标精度舍入；浮点到整数先按来源精度读取并向零截断，再严格检查目标范围，整数零规范为 number `0`。NaN、无穷或越界抛 `IRFloatEvaluationError`，`code` 为 `integer-overflow`；错误布局为 `invalid-instruction`，错误运行值为 `invalid-operand`，未实现的操作为 `unsupported-operation`。这些执行错误不复用静态校验诊断。
+
+```typescript
+import { createIRModule, evaluateFloatInstruction } from '@mica/ir';
+
+const module = createIRModule();
+module
+  .func('fused', { params: ['f32', 'f32', 'f32'], results: ['f32'] })
+  .body((b, [a, c, d]) => b.return([b.float.fma(a, c, d)]));
+const instruction = module.functions[0]!.body!.entry.instructions[0]!;
+const result = evaluateFloatInstruction(instruction, [1 + 2 ** -23, 1 - 2 ** -23, -1]);
+// result: { type: 'f32', bits: '0xa8800000' }，即 -2^-46；非融合结果为正零。
+```
+
+`src/float.test.ts` 包含可复用的表驱动边界向量，包括融合/非融合、f32 经 f64 的双舍入差异、溢出抵消、次正规数、转换范围及带载荷 NaN 位移动，并使用真实 builder 节点与 `validateIR` 联合检查。`src/float.type-test.ts` 检查上述公开合同。
+
 ## 当前限制
 
 以下能力属于后续任务，本包明确不实现：
 
-- 整数/布尔/浮点运算的执行语义（#43、#44）。
+- 整数/布尔运算及整数内部转换的执行语义（#43）。
 - 状态、数组、普通字节存储的执行语义（#45）。
 - 参考解释器、预算和异常定位（#46）。
 - `resource.updateBytes` / `resource.fillBytes` 的版本化更新（#47）。
