@@ -23,7 +23,6 @@ import {
   type Diagnostic,
   type ElementIdFactory,
   type HitTestOptions,
-  type Placement,
   type Point,
   type PropertyValue,
   type SchematicCommand,
@@ -39,11 +38,13 @@ import { pruneSelection } from './selection';
 import {
   DEFAULT_DISPLAY_OPTIONS,
   type DisplayOptions,
+  type EditorRenderState,
   type EditorSelection,
   type EditorState,
   type EditorTool,
   type Inspector,
 } from './types';
+import { ViewOverlay } from './view';
 
 export interface SchematicEditorControllerOptions {
   readonly document: SchematicDocument;
@@ -65,7 +66,7 @@ const MAX_MERGE_PASSES = 64;
  */
 export class SchematicEditorController {
   #editor: SchematicEditor;
-  #view: SchematicViewDocument | undefined;
+  #overlay: ViewOverlay;
   #selection: readonly EditorSelection[] = [];
   #tool: EditorTool = 'select';
   #display: DisplayOptions;
@@ -78,15 +79,15 @@ export class SchematicEditorController {
   #listeners = new Set<(state: EditorState) => void>();
   #topology:
     { readonly document: SchematicDocument; readonly value: SchematicTopology } | undefined;
-  /** Symbols whose placement was edited: their schematic position wins over the view layout. */
-  #editedSymbols = new Set<string>();
+  #stateCache: EditorState | undefined;
+  #renderCache: EditorRenderState | undefined;
 
   constructor(options: SchematicEditorControllerOptions) {
     this.#editor = new SchematicEditor(options.document, {
       ...deriveOptions(options.devices, options.tolerance),
       ...(options.historyLimit === undefined ? {} : { historyLimit: options.historyLimit }),
     });
-    this.#view = options.view;
+    this.#overlay = new ViewOverlay(options.view);
     this.#devices = options.devices;
     this.#tolerance = options.tolerance;
     this.#createId = options.createId ?? defaultElementIdFactory;
@@ -94,19 +95,39 @@ export class SchematicEditorController {
     this.#display = { ...DEFAULT_DISPLAY_OPTIONS, ...options.display };
   }
 
+  /**
+   * Full editor state. Cached until the next change so hosts can compare references, and so a
+   * repaint does not rebuild the inspector payload.
+   */
   get state(): EditorState {
-    return {
-      document: this.#editor.document,
-      view: this.renderView,
-      selection: this.#selection,
-      tool: this.#tool,
+    if (this.#stateCache !== undefined) {
+      return this.#stateCache;
+    }
+    const render = this.renderState;
+    this.#stateCache = {
+      ...render,
       placingDevice: this.#placingDevice,
-      display: this.#display,
       canUndo: this.#editor.canUndo,
       canRedo: this.#editor.canRedo,
       inspector: this.inspect(),
       lastError: this.#lastError,
     };
+    return this.#stateCache;
+  }
+
+  /** Everything the canvas draws from; never builds the inspector. */
+  get renderState(): EditorRenderState {
+    if (this.#renderCache !== undefined) {
+      return this.#renderCache;
+    }
+    this.#renderCache = {
+      document: this.#editor.document,
+      view: this.#overlay.renderView,
+      selection: this.#selection,
+      tool: this.#tool,
+      display: this.#display,
+    };
+    return this.#renderCache;
   }
 
   /**
@@ -114,16 +135,7 @@ export class SchematicEditorController {
    * rotation or move is visible instead of being masked by the read-only layout.
    */
   get renderView(): SchematicViewDocument | undefined {
-    if (this.#view === undefined || this.#editedSymbols.size === 0) {
-      return this.#view;
-    }
-    const layout: Record<string, Placement> = {};
-    for (const [id, placement] of Object.entries(this.#view.layout)) {
-      if (!this.#editedSymbols.has(id)) {
-        layout[id] = placement;
-      }
-    }
-    return { ...this.#view, layout };
+    return this.#overlay.renderView;
   }
 
   get document(): SchematicDocument {
@@ -131,7 +143,7 @@ export class SchematicEditorController {
   }
 
   get view(): SchematicViewDocument | undefined {
-    return this.#view;
+    return this.#overlay.view;
   }
 
   get selection(): readonly EditorSelection[] {
@@ -217,19 +229,22 @@ export class SchematicEditorController {
 
   /** Replaces the read-only view document; it never takes part in editing or history. */
   setView(view: SchematicViewDocument | undefined): void {
-    this.#view = view;
+    this.#overlay.setView(view);
     this.#emit();
   }
 
   /** Swaps the edited document and clears history, selection and errors. */
   reset(document: SchematicDocument, options: { view?: SchematicViewDocument } = {}): void {
     this.#editor = new SchematicEditor(document, deriveOptions(this.#devices, this.#tolerance));
-    this.#view = options.view ?? this.#view;
+    if (options.view === undefined) {
+      this.#overlay.clearMarkers();
+    } else {
+      this.#overlay.setView(options.view);
+    }
     this.#selection = [];
     this.#lastError = undefined;
     this.#topology = undefined;
     this.#placingDevice = undefined;
-    this.#editedSymbols.clear();
     this.#emit();
   }
 
@@ -258,12 +273,20 @@ export class SchematicEditorController {
   }
 
   undo(): void {
+    if (!this.#editor.canUndo) {
+      return;
+    }
     this.#editor.undo();
+    this.#overlay.undo();
     this.#afterHistoryChange();
   }
 
   redo(): void {
+    if (!this.#editor.canRedo) {
+      return;
+    }
     this.#editor.redo();
+    this.#overlay.redo();
     this.#afterHistoryChange();
   }
 
@@ -343,7 +366,7 @@ export class SchematicEditorController {
     if (preview === undefined) {
       return;
     }
-    this.#editedSymbols.add(symbol.id);
+    this.#overlay.markEdited(symbol.id);
     const symbols = document.sheet.symbols.map((item) => {
       if (item.id === symbol.id) {
         return next;
@@ -802,6 +825,8 @@ export class SchematicEditorController {
   }
 
   #emit(): void {
+    this.#stateCache = undefined;
+    this.#renderCache = undefined;
     const state = this.state;
     for (const listener of [...this.#listeners]) {
       listener(state);
@@ -809,6 +834,8 @@ export class SchematicEditorController {
   }
 
   #mutate(run: () => void, options: { reconcile?: boolean } = {}): void {
+    const document = this.#editor.document;
+    const markers = this.#overlay.snapshot();
     try {
       this.#editor.transaction(() => {
         run();
@@ -820,6 +847,10 @@ export class SchematicEditorController {
       this.#lastError = toSchematicError(error);
       this.#emit();
       throw error;
+    }
+    if (this.#editor.document !== document) {
+      // One document history step, so the marker set keeps one snapshot per step.
+      this.#overlay.commit(markers);
     }
     this.#lastError = undefined;
     this.#pruneSelection();

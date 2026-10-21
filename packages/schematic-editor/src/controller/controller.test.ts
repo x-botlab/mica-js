@@ -55,8 +55,17 @@ function documentOf(sheet: {
   });
 }
 
-function createController(document = documentOf({})): SchematicEditorController {
-  return new SchematicEditorController({ document, devices });
+function createController(
+  document = documentOf({}),
+  view?: { readonly layout: Record<string, { x: number; y: number; rotation: number }> },
+): SchematicEditorController {
+  return new SchematicEditorController({
+    document,
+    devices,
+    ...(view === undefined
+      ? {}
+      : { view: { version: 1, id: 'view', schematic: 'schematic.sch', layout: view.layout } }),
+  });
 }
 
 function wirePoints(controller: SchematicEditorController, id: string): readonly Point[] {
@@ -225,6 +234,55 @@ describe('SchematicEditorController', () => {
     controller.undo();
     expect(controller.document.sheet.wires).toHaveLength(wiresAfterAdd);
     expect(controller.document.sheet.junctions).toHaveLength(1);
+  });
+
+  it('drops the view layout of an edited symbol and restores it on undo', () => {
+    const controller = createController(
+      documentOf({ symbols: [{ id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 }] }),
+      { layout: { s1: { x: 10, y: 20, rotation: 0 } } },
+    );
+    expect(controller.renderView?.layout).toEqual({ s1: { x: 10, y: 20, rotation: 0 } });
+
+    controller.setSelection([{ kind: 'symbol', id: 's1' }]);
+    controller.moveSelectionBy(10, 10);
+    expect(controller.renderView?.layout).toEqual({});
+
+    controller.undo();
+    expect(controller.renderView?.layout).toEqual({ s1: { x: 10, y: 20, rotation: 0 } });
+
+    controller.redo();
+    expect(controller.renderView?.layout).toEqual({});
+  });
+
+  it('takes a new host view as authoritative again', () => {
+    const controller = createController(
+      documentOf({ symbols: [{ id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 }] }),
+      { layout: { s1: { x: 10, y: 20, rotation: 0 } } },
+    );
+    controller.setSelection([{ kind: 'symbol', id: 's1' }]);
+    controller.moveSelectionBy(10, 10);
+    expect(controller.renderView?.layout).toEqual({});
+
+    controller.setView({
+      version: 1,
+      id: 'view',
+      schematic: 'schematic.sch',
+      layout: { s1: { x: 30, y: 40, rotation: 0 } },
+    });
+    expect(controller.renderView?.layout).toEqual({ s1: { x: 30, y: 40, rotation: 0 } });
+  });
+
+  it('caches state until something changes', () => {
+    const controller = createController(
+      documentOf({ symbols: [{ id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 }] }),
+    );
+    expect(controller.state).toBe(controller.state);
+    expect(controller.renderState).toBe(controller.renderState);
+    expect(controller.renderState.document).toBe(controller.document);
+
+    const before = controller.state;
+    controller.setSelection([{ kind: 'symbol', id: 's1' }]);
+    expect(controller.state).not.toBe(before);
   });
 
   it('stretches the connected wire when a net label moves', () => {

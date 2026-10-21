@@ -375,7 +375,7 @@ export class EditorInput {
     this.#pendingWire = [];
     this.#cursorPoint = undefined;
     this.#hover = undefined;
-    if (points.length < 2) {
+    if (points.length < 2 || this.#deps.readOnly) {
       this.#deps.onChange();
       return;
     }
@@ -385,7 +385,7 @@ export class EditorInput {
   #place(page: Point): void {
     const controller = this.#deps.controller;
     const device = this.#placementDevice();
-    if (device === undefined) {
+    if (device === undefined || this.#deps.readOnly) {
       return;
     }
     const role = symbolRole(device);
@@ -420,7 +420,7 @@ export class EditorInput {
   }
 
   #startWireAtNode(page: Point): boolean {
-    if (this.#deps.controller.tool !== 'select') {
+    if (this.#deps.controller.tool !== 'select' || this.#deps.readOnly) {
       return false;
     }
     // Net labels, ports and text are selection/drag targets, so a tap on their body must not be
@@ -475,7 +475,7 @@ export class EditorInput {
     }
 
     const tool = this.#deps.controller.tool;
-    if (tool === 'wire') {
+    if (tool === 'wire' && !this.#deps.readOnly) {
       const point = this.#snapWire(page);
       const previous = this.#pendingWire[this.#pendingWire.length - 1];
       this.#pendingWire = [
@@ -501,7 +501,7 @@ export class EditorInput {
       return;
     }
 
-    if (this.#placementDevice() !== undefined) {
+    if (!this.#deps.readOnly && this.#placementDevice() !== undefined) {
       this.#place(page);
       return;
     }
@@ -791,6 +791,9 @@ export class EditorInput {
     }
     if ((event.ctrlKey || event.metaKey) && (event.key === 'z' || event.key === 'Z')) {
       event.preventDefault();
+      if (readOnly) {
+        return;
+      }
       if (event.shiftKey) {
         controller.redo();
       } else {

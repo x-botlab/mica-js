@@ -9,7 +9,13 @@ import type {
 import { serializeSchematic } from '@mica-js/core/schematic';
 import { SchematicEditorController } from '../controller/controller';
 import { sameSelection } from '../controller/selection';
-import type { DisplayOptions, EditorSelection, EditorState, EditorTool } from '../controller/types';
+import type {
+  DisplayOptions,
+  EditorRenderState,
+  EditorSelection,
+  EditorState,
+  EditorTool,
+} from '../controller/types';
 import { CanvasSchematicRenderer } from '../render/canvas-renderer';
 import { buildSchematicScene } from '../render/scene';
 import { resolveSchematicTheme, themeToCssVariables, type SchematicTheme } from '../render/theme';
@@ -173,11 +179,10 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     renderer.setTheme(theme);
   }
 
-  function render(): void {
+  function render(state: EditorRenderState = controller.renderState): void {
     if (disposed) {
       return;
     }
-    const state = controller.state;
     const scene = buildSchematicScene({
       document: state.document,
       ...(state.view === undefined ? {} : { view: state.view }),
@@ -227,7 +232,8 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
       options.onSelectionChange?.(state.selection);
     }
     options.onChange?.(state);
-    render();
+    // The state came from this emit: reuse it instead of building another one for the repaint.
+    render(state);
   }
 
   function resize(): void {
@@ -292,6 +298,10 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
       controller.setTool(tool);
     },
     placeDevice(device: string): void {
+      // Read-only editors cannot place: the canvas would have nowhere to commit the symbol.
+      if (readOnly) {
+        return;
+      }
       controller.placeDevice(device);
       shell.root.focus();
     },

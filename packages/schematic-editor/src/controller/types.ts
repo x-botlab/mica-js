@@ -77,6 +77,18 @@ export interface WireInspector {
 
 export type Inspector = SymbolInspector | WireInspector | undefined;
 
+/**
+ * Field subset the canvas needs. Reading it never builds the inspector, so a repaint (pointer
+ * hover, drag preview) stays cheap.
+ */
+export interface EditorRenderState {
+  readonly document: SchematicDocument;
+  readonly view: SchematicViewDocument | undefined;
+  readonly selection: readonly EditorSelection[];
+  readonly tool: EditorTool;
+  readonly display: DisplayOptions;
+}
+
 export interface EditorState {
   readonly document: SchematicDocument;
   readonly view: SchematicViewDocument | undefined;
