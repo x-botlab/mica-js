@@ -1,4 +1,26 @@
-# @mica/core
+# @mica-js/core
+
+Mica 仿真内核（虚拟时间与确定性事件调度），并提供原理图与画布（canvas）的文档格式子路径。
+
+## 入口
+
+- `@mica-js/core`：仿真内核
+- `@mica-js/core/schematic`：原理图 `.sch` 文档格式
+- `@mica-js/core/canvas`：画布 `.cnv` 文档格式
+
+文件合同：#6 规定原理图 `.sch`，#67 规定画布 `.cnv`。画布只保存与 `.sch` 绑定的 2D 摆放（`layout`），原理图编辑器不依赖它。
+
+属性值支持标量、`image` / `binary` 的资源引用 `{ "src", "mode" }`（#7）与 nullable 属性的显式 `null`；器件属性描述由 `readPropertyDescriptors` 解析，编辑命令按描述校验并归一化颜色。
+
+## 开发
+
+```bash
+pnpm --filter @mica-js/core run test
+pnpm --filter @mica-js/core run typecheck
+pnpm --filter @mica-js/core run build
+```
+
+## 电气模块
 
 当前实现公共电气网络的纯求值与 `mica-floating-v2` 浮空模拟取值。公共合同经 [#49 逐项批准](https://github.com/x-botlab/mica-js/issues/49#issuecomment-6322043409)，依据 [#12 引脚状态](https://github.com/x-botlab/mica-js/issues/12)、[#24 电气模型](https://github.com/x-botlab/mica-js/issues/24) 和 [#23 整数皮秒时间](https://github.com/x-botlab/mica-js/issues/23)。既有 `MICA_CORE_VERSION` 保留。
 
@@ -7,7 +29,7 @@
 `resolveElectricalNetwork(input: ElectricalNetworkInput): ElectricalNetworkResult` 接收拓扑层已经连接到同一网络的完整引脚快照，不读取原理图、创建连接或维护拓扑。断开的引脚由调用方从 `pins` 移除。
 
 ```typescript
-import { resolveElectricalNetwork, type ElectricalPinInput } from '@mica/core';
+import { resolveElectricalNetwork, type ElectricalPinInput } from '@mica-js/core';
 
 const output: ElectricalPinInput = {
   instanceId: 'device-1',
@@ -73,7 +95,7 @@ const result = resolveElectricalNetwork({ networkId: 'data', pins: [output] });
 `createFloatingInput(seed: number, instanceId: string, pinName: string): FloatingInput` 为一个实体引脚建立独立状态，根入口同时导出 `FloatingInput` 与 `FloatingInputSample`。
 
 ```typescript
-import { createFloatingInput } from '@mica/core';
+import { createFloatingInput } from '@mica-js/core';
 
 const floating = createFloatingInput(12345, 'device-1', 'AIN');
 floating.beginFloating(3.3);
@@ -96,9 +118,9 @@ const value = floating.sample(3.3, 100);
 在仓库根目录运行：
 
 ```powershell
-pnpm --filter @mica/core test
-pnpm --filter @mica/core typecheck
-pnpm --filter @mica/core build
+pnpm --filter @mica-js/core test
+pnpm --filter @mica-js/core typecheck
+pnpm --filter @mica-js/core build
 ```
 
 Vitest 覆盖公共组合矩阵、释放/门控/readiness、冲突/浮空、f64 电压边界、冻结故障现场、顺序/网络隔离、v2 重放向量、独立 BigInt 算法对照、时间高位、供电限幅、门控阶段与恢复初始化；TypeScript 检查根入口合同。测试直接调用生产求值函数，不用构建或子进程冒充单元测试。

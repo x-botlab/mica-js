@@ -1,4 +1,4 @@
-# @mica/ir
+# @mica-js/ir
 
 领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令语义、实例存储与参考解释器，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)、[#46](https://github.com/x-botlab/mica-js/issues/46)、[#47](https://github.com/x-botlab/mica-js/issues/47)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
 
@@ -6,7 +6,7 @@
 
 ## 公共入口
 
-唯一公开入口为 `@mica/ir`，构建生成 `dist/index.js`（ESM）与声明文件。主要导出：
+唯一公开入口为 `@mica-js/ir`，构建生成 `dist/index.js`（ESM）与声明文件。主要导出：
 
 - `createIRModule()`：创建独立的模块声明/建图上下文，返回 `IRModule`。
 - `createIRStorage(module, options?)`：为模块的声明资源创建一份独立实例存储，返回 `IRStorage`；每次调用互不别名。可选 `IRStorageOptions.updateResources` 显式授予字节更新权限，默认无授权。
@@ -23,7 +23,7 @@
 `evaluateScalarInstruction(instruction: InstructionNode, operands: readonly (boolean | number)[]): boolean | number` 消费现有建图器/内存模型的节点，不引入另一套指令类型。`operands` 按 `instruction.operands` 中 **SSA 操作数出现的顺序**提供已求值标量；节点内的 literal（例如比较 predicate、转换目标或常量）不占该数组位置。返回节点唯一结果的标量值，不写回 SSA 表，也不访问存储或执行控制流。
 
 ```ts
-import { createIRModule, evaluateScalarInstruction } from '@mica/ir';
+import { createIRModule, evaluateScalarInstruction } from '@mica-js/ir';
 
 const ir = createIRModule();
 ir.func('multiply', { params: ['u32', 'u32'], results: ['u32'] }).body((b, [a, c]) =>
@@ -50,7 +50,7 @@ evaluateScalarInstruction(multiply, [4294967295, 4294967295]); // 1
 ## 建图示例
 
 ```ts
-import { createIRModule } from '@mica/ir';
+import { createIRModule } from '@mica-js/ir';
 
 const ir = createIRModule();
 const count = ir.state('count', 'u32', 0);
@@ -107,7 +107,7 @@ choose.body((b, [condition]) => {
 `createIRStorage(module)` 按声明初值建立固定容量的实例存储。底层 buffer 不公开，读写只能经过带完整校验的方法：
 
 ```ts
-import { createIRModule, createIRStorage } from '@mica/ir';
+import { createIRModule, createIRStorage } from '@mica-js/ir';
 
 const ir = createIRModule();
 const counter = ir.state('counter', 'u32', 0);
@@ -163,7 +163,7 @@ enable.body((b, [on]) => {
 `validateIR(input: unknown, options: IRValidationOptions): IRValidationResult` 是统一静态检查入口（[#42](https://github.com/x-botlab/mica-js/issues/42)）。`input` 必须具有 `memories`、`functions`、`domainDeclarations`、`instructions` 四个列表，可直接传入 `IRModule`。它校验传入的当前表示，不调用建图方法，也不以 builder 的隐藏 WeakMap 记录代替检查。每次调用仅读取一次这四个列表，保持 getter 生成的声明视图在各校验阶段和领域回调上下文中一致；下一次调用会重新读取。
 
 ```ts
-import { createIRModule, validateIR } from '@mica/ir';
+import { createIRModule, validateIR } from '@mica-js/ir';
 
 const ir = createIRModule();
 const count = ir.state('count', 'u32', 0);
@@ -207,7 +207,7 @@ SSA 值和静态句柄以对象身份关联，块边目标必须是本函数 `bo
 - 整数到浮点先验证来源整数范围，再按目标精度舍入；浮点到整数先按来源精度读取并向零截断，再严格检查目标范围，整数零规范为 number `0`。NaN、无穷或越界抛 `IRFloatEvaluationError`，`code` 为 `integer-overflow`；错误布局为 `invalid-instruction`，错误运行值为 `invalid-operand`，未实现的操作为 `unsupported-operation`。这些执行错误不复用静态校验诊断。
 
 ```typescript
-import { createIRModule, evaluateFloatInstruction } from '@mica/ir';
+import { createIRModule, evaluateFloatInstruction } from '@mica-js/ir';
 
 const module = createIRModule();
 module
@@ -225,7 +225,7 @@ const result = evaluateFloatInstruction(instruction, [1 + 2 ** -23, 1 - 2 ** -23
 公共合同经[逐项审批](https://github.com/x-botlab/mica-js/issues/46#issuecomment-6320397762)确认。
 
 ```typescript
-import { createIRInterpreter, createIRModule } from '@mica/ir';
+import { createIRInterpreter, createIRModule } from '@mica-js/ir';
 
 const module = createIRModule();
 const count = module.state('count', 'u32', 0);
@@ -303,7 +303,7 @@ fillBytes(destination: BytesRef, offset: Value<'u32'>,
 它们分别产生无结果的 `resource.update_bytes` / `resource.fill_bytes`。目标是静态字节区（可 readonly，不可 inbox）；源可为字节区或 inbox。独立 `update` grant、源 `read` grant、操作支持/授权分别核验。完整范围检查先于任何提交，重叠更新使用源快照；零长度仍检查权限、端点和填充值，不读写字节或改版本。非零同值更新也保守失效，跨单元内容与覆盖版本同步提交。失败无本操作部分提交，此前成功效果不回滚。无 writer/flush、自动时间推进、事件、NOR 编程规则或 BUSY 状态。
 
 ```typescript
-import { createIRInterpreter, createIRModule } from '@mica/ir';
+import { createIRInterpreter, createIRModule } from '@mica-js/ir';
 
 const module = createIRModule();
 const firmware = module.bytes('firmware', new Uint8Array(8).fill(255), {
@@ -366,9 +366,9 @@ validateDependencies(dependencies: readonly IRResourceDependency[]): boolean;
 使用仓库现有 pnpm catalog、TypeScript、Vite、vite-plugin-dts 与 Vitest：
 
 ```bash
-pnpm --filter @mica/ir typecheck   # 包含 builder、storage、interpreter 等正反类型用例
-pnpm --filter @mica/ir test        # 模型、建图、校验、标量、存储与参考解释器测试
-pnpm --filter @mica/ir build
+pnpm --filter @mica-js/ir typecheck   # 包含 builder、storage、interpreter 等正反类型用例
+pnpm --filter @mica-js/ir test        # 模型、建图、校验、标量、存储与参考解释器测试
+pnpm --filter @mica-js/ir build
 ```
 
 类型测试只做编译期检查，不执行构建、不创建子进程或临时消费方。

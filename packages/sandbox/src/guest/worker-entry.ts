@@ -88,7 +88,7 @@ async function boot(init: WorkerInitMessage): Promise<void> {
     scope.postMessage({ type: 'mica:worker-ready' });
   } catch (error) {
     activePeer.postBootError(error);
-    nativeConsole.error('[@mica/sandbox] guest failed to start', error);
+    nativeConsole.error('[@mica-js/sandbox] guest failed to start', error);
   }
 }
 
@@ -135,7 +135,7 @@ async function shutdown(): Promise<void> {
   try {
     await pendingDispose?.();
   } catch (error) {
-    nativeConsole.error('[@mica/sandbox] guest dispose() threw', error);
+    nativeConsole.error('[@mica-js/sandbox] guest dispose() threw', error);
   }
 }
 

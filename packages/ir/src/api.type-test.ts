@@ -1,5 +1,5 @@
 // Compile-only contract checks. This file is not executed and is excluded from
-// the package build; `pnpm --filter @mica/ir typecheck` is the test runner.
+// the package build; `pnpm --filter @mica-js/ir typecheck` is the test runner.
 import type {
   EntryRef,
   FunctionBuilder,
