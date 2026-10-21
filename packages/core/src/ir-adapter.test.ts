@@ -6,7 +6,7 @@ import {
   type IRModule,
   type IRValidationOptions,
   type RuntimeScalar,
-} from '@mica/ir';
+} from '@mica-js/ir';
 import { createIRSchedulerInstance, createScheduler, SchedulerError } from './index';
 import type { SchedulerErrorCode } from './index';
 

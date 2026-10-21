@@ -1,4 +1,4 @@
-import type { RuntimeScalar, ScalarType } from '@mica/ir';
+import type { RuntimeScalar, ScalarType } from '@mica-js/ir';
 import type { SchedulerError } from './scheduler-error';
 import type { TimePs } from './time';
 

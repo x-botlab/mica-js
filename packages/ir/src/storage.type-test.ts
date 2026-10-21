@@ -1,5 +1,5 @@
 // Compile-only storage contract checks. This file is not executed and is
-// excluded from the package build; `pnpm --filter @mica/ir typecheck` runs it.
+// excluded from the package build; `pnpm --filter @mica-js/ir typecheck` runs it.
 import type {
   ArrayRef,
   BytesRef,

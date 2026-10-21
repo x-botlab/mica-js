@@ -3,7 +3,7 @@
   "compilerOptions": {
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "paths": {
-      "@mica/sandbox": ["../../packages/sandbox/src/index.ts"]
+      "@mica-js/sandbox": ["../../packages/sandbox/src/index.ts"]
     }
   },
   "include": ["src", "vite.config.ts"]

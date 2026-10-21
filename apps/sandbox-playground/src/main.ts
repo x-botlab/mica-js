@@ -1,10 +1,10 @@
-import { SandboxError, createSandbox } from '@mica/sandbox';
+import { SandboxError, createSandbox } from '@mica-js/sandbox';
 import type {
   SandboxCapabilities,
   SandboxHandle,
   SandboxLogEntry,
   SandboxSource,
-} from '@mica/sandbox';
+} from '@mica-js/sandbox';
 import {
   basicsGuest,
   brokenGuest,

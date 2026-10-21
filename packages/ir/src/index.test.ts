@@ -79,7 +79,7 @@ async function expectConstructionErrorWithoutUnhandledRejection(
   expect(unhandled).toEqual([]);
 }
 
-describe('@mica/ir model and builder', () => {
+describe('@mica-js/ir model and builder', () => {
   it('builds constants, state, calls, and multiple results', () => {
     const module = createIRModule();
     const count = module.state('count', 'u32', 0);

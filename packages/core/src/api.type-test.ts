@@ -1,4 +1,4 @@
-import type { EntryRef, LifecycleRef, ScalarType } from '@mica/ir';
+import type { EntryRef, LifecycleRef, ScalarType } from '@mica-js/ir';
 import {
   addTime,
   createIRSchedulerInstance,

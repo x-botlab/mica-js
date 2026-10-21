@@ -54,7 +54,7 @@ function expectStableIdentities(
   }
 }
 
-describe('@mica/ir standalone resource storage', () => {
+describe('@mica-js/ir standalone resource storage', () => {
   it('requires explicit update authorization independently of ordinary writability', () => {
     const { module, ram, rom, inbox } = fixture();
     for (const storage of [createIRStorage(module), createIRStorage(module, {})]) {

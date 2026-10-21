@@ -1,4 +1,4 @@
-import type { RuntimeScalar } from '@mica/ir';
+import type { RuntimeScalar } from '@mica-js/ir';
 import { SchedulerError } from './scheduler-error';
 import type { SchedulerErrorCode } from './scheduler-error';
 import { EventIdPool, MinHeap } from './scheduler-queue';

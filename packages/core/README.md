@@ -1,6 +1,26 @@
-# @mica/core
+# @mica-js/core
 
-整数皮秒虚拟时间、确定性普通事件与公共控制调度，对应 [#48](https://github.com/x-botlab/mica-js/issues/48)。依据 [#23](https://github.com/x-botlab/mica-js/issues/23)、[#26](https://github.com/x-botlab/mica-js/issues/26)；已批准的公共合同及执行边界见 [调度合同](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322004590)、[IR 接入补充](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322166225) 和 [审批记录](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322233200)。唯一公共入口为 `@mica/core`，既有 `MICA_CORE_VERSION` 保留。
+Mica 仿真内核（虚拟时间与确定性事件调度），并提供原理图 `.sch` 与画布 `.cnv` 的文档格式子路径。
+
+## 安装
+
+```bash
+pnpm add @mica-js/core
+```
+
+## 入口
+
+| 入口                      | 内容                                              |
+| ------------------------- | ------------------------------------------------- |
+| `@mica-js/core`           | 仿真内核（虚拟时间与事件调度）                    |
+| `@mica-js/core/schematic` | 原理图 `.sch`：解析、拓扑推导、编辑命令与属性系统 |
+| `@mica-js/core/canvas`    | 画布 `.cnv`：与 `.sch` 绑定的 2D 摆放（`layout`） |
+
+文件合同：`.sch` 见 [#6](https://github.com/x-botlab/mica-js/issues/6)，`.cnv` 见 [#67](https://github.com/x-botlab/mica-js/issues/67)。
+
+## 仿真调度
+
+整数皮秒虚拟时间、确定性普通事件与公共控制调度，对应 [#48](https://github.com/x-botlab/mica-js/issues/48)。依据 [#23](https://github.com/x-botlab/mica-js/issues/23)、[#26](https://github.com/x-botlab/mica-js/issues/26)；已批准的公共合同及执行边界见 [调度合同](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322004590)、[IR 接入补充](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322166225) 和 [审批记录](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322233200)。上游发布命名及多入口集成已[另行批准](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322661335)。仿真 API 入口为 `@mica-js/core`，既有 `MICA_CORE_VERSION` 与原理图/画布子入口保留。
 
 ## 时间
 
@@ -12,11 +32,11 @@
 
 ## 真实 IR 执行
 
-`createIRSchedulerInstance(scheduler, { instanceId, module, validation })` 创建一份既有 `@mica/ir` 参考解释器及独立存储，将 `event.now/at/cancel` 接入**同一个**调度队列和 ID 分配器，不另造解释器或调度器。`validation` 的指令支持/授权与资源权限仍显式提供，不会自动放宽。
+`createIRSchedulerInstance(scheduler, { instanceId, module, validation })` 创建一份既有 `@mica-js/ir` 参考解释器及独立存储，将 `event.now/at/cancel` 接入**同一个**调度队列和 ID 分配器，不另造解释器或调度器。`validation` 的指令支持/授权与资源权限仍显式提供，不会自动放宽。
 
 ```ts
-import { createIRModule } from '@mica/ir';
-import { createIRSchedulerInstance, createScheduler } from '@mica/core';
+import { createIRModule } from '@mica-js/ir';
+import { createIRSchedulerInstance, createScheduler } from '@mica-js/core';
 
 const module = createIRModule();
 const received = module.state('received', 'u32', 0);
@@ -72,7 +92,7 @@ instance.storage.loadState(received); // 7
 
 ## 可信执行接入
 
-低层 `addInstance({ instanceId, targets, executor })` 返回 `SchedulerInstance`（`instanceId/at/cancel`）。`SchedulerTarget` 声明 `name`、`kind: 'event' | 'control'`、`params: readonly ScalarType[]`；按登记对象身份接纳并固定元数据，不按名称匹配外来对象。后端收到不可变的目标视图。参数复用 `@mica/ir` 的 `RuntimeScalar`，不接受对象闭包或存储别名。
+低层 `addInstance({ instanceId, targets, executor })` 返回 `SchedulerInstance`（`instanceId/at/cancel`）。`SchedulerTarget` 声明 `name`、`kind: 'event' | 'control'`、`params: readonly ScalarType[]`；按登记对象身份接纳并固定元数据，不按名称匹配外来对象。后端收到不可变的目标视图。参数复用 `@mica-js/ir` 的 `RuntimeScalar`，不接受对象闭包或存储别名。
 
 `SchedulerExecutor.execute(target, args, context): void` 是**可信内核后端合同，不是任意作者 JS 回调协议或安全沙箱**。`context` 提供 `instanceId/timePs/phase/eventId/remainingSteps`（控制 eventId 为 0）及 `consumeSteps(count = 1)`；后端必须在每个参考 IR 步骤效果提交前计数，包含普通同步调用及终结指令，不得以优化后机器指令数替代。它不能抢占任意 JS 死循环。拒绝 async/generator、Promise/thenable 结果及重入执行；可识别的异步函数在调用前拒绝，普通函数返回 Promise 前已提交的效果不回滚。
 
@@ -92,13 +112,55 @@ IR 适配器通过 `stepObserver.beforeStep` 逐步连接 `consumeSteps`。其�
 
 ## 验证与边界
 
-使用现有 Vitest/TypeScript/Vite/ESLint/Prettier。测试直接执行调度及真实 IR 的状态/数组效果，覆盖时间边界、A/C/B、A/P/C、值捕获、取消/复用/旧项隔离、分段确定性、长反馈、预算/异常及前序效果保留。没有用构建、子进程或临时消费者作为单测。core 将 `@mica/ir` 保留为构建外部依赖，避免复制其引用符号/解释器身份。
+使用现有 Vitest/TypeScript/Vite/ESLint/Prettier。测试直接执行调度及真实 IR 的状态/数组效果，覆盖时间边界、A/C/B、A/P/C、值捕获、取消/复用/旧项隔离、分段确定性、长反馈、预算/异常及前序效果保留。没有用构建、子进程或临时消费者作为单测。core 将 `@mica-js/ir` 保留为构建外部依赖，避免复制其引用符号/解释器身份。
 
 ```powershell
-pnpm --filter @mica/ir build
-pnpm --filter @mica/core test
-pnpm --filter @mica/core typecheck
-pnpm --filter @mica/core build
+pnpm --filter @mica-js/ir build
+pnpm --filter @mica-js/core test
+pnpm --filter @mica-js/core typecheck
+pnpm --filter @mica-js/core build
 ```
 
 不提供电气求值、器件作者回调协议、消息桥、Provider 缓存、JIT、I2C/SPI 协议库、持久化调度快照或墙钟运行器。未实现能力不会以空实现或仅记录指令冒充完成。
+
+## 原理图（`./schematic`）
+
+```ts
+import { loadSchematic, parseSchematic, serializeSchematic } from '@mica-js/core/schematic';
+
+const loaded = loadSchematic(text, { devices }); // { document, topology }
+const document = parseSchematic(text); // 解析 + 校验，失败抛 SchematicError
+serializeSchematic(document); // 固定字段顺序的 .sch JSON
+```
+
+- 文件名即原理图标识，顶层没有 `id`；`symbols` / `wires` / `junctions` 使用不透明的稳定 `id`。
+- 拓扑按位号、网名与连接关系合并网络；纯绘图分量保留为几何数据。
+- 编辑命令、undo/redo、命中测试、导线段拖动与交点合并都是纯函数，编辑器只做编排。
+- `createDeviceRegistry` 把器件的 `designatorPrefix` 与引脚声明合成为符号几何与位号。
+- 属性（#7）：`string` / `number` / `integer` / `boolean` / `enum` / `color` / `image` / `binary`；`image` / `binary` 的值是资源引用 `{ src, mode }`（`file` 为工程根相对路径，`inline` 为 base64，`store` 为宿主资源标识）。
+
+## 画布（`./canvas`）
+
+```ts
+import { loadCanvas, parseCanvas, serializeCanvas } from '@mica-js/core/canvas';
+
+const canvas = parseCanvas(text); // version / id / schematic / layout
+const { placements } = loadCanvas(canvas, { schematic: document }); // layout 键须属于该 .sch
+serializeCanvas(canvas);
+```
+
+`layout` 以 symbol 的稳定 `id` 为键，值为 `{ x, y, rotation }`；引用绑定原理图中不存在的实例时报 `canvas/unknown-symbol`。原理图编辑器不依赖这个入口。
+
+## 开发
+
+```bash
+pnpm --filter @mica-js/core run test
+pnpm --filter @mica-js/core run typecheck
+pnpm --filter @mica-js/core run build
+```
+
+## 相关提案
+
+- 原理图格式：[#6](https://github.com/x-botlab/mica-js/issues/6)
+- 属性定义：[#7](https://github.com/x-botlab/mica-js/issues/7)
+- 画布格式：[#67](https://github.com/x-botlab/mica-js/issues/67)

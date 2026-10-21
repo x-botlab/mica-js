@@ -1,4 +1,4 @@
-import { createIRInterpreter } from '@mica/ir';
+import { createIRInterpreter } from '@mica-js/ir';
 import type {
   EntryRef,
   IRModule,
@@ -6,7 +6,7 @@ import type {
   IRValidationOptions,
   LifecycleRef,
   RuntimeScalar,
-} from '@mica/ir';
+} from '@mica-js/ir';
 import { SchedulerError } from './scheduler-error';
 import type {
   Scheduler,

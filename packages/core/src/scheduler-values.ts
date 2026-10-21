@@ -1,5 +1,5 @@
-import { evaluateFloatInstruction, evaluateScalarInstruction, SCALAR_TYPES } from '@mica/ir';
-import type { RuntimeScalar, ScalarType, Value } from '@mica/ir';
+import { evaluateFloatInstruction, evaluateScalarInstruction, SCALAR_TYPES } from '@mica-js/ir';
+import type { RuntimeScalar, ScalarType, Value } from '@mica-js/ir';
 
 export function scalarType(value: unknown): value is ScalarType {
   return typeof value === 'string' && (SCALAR_TYPES as readonly string[]).includes(value);

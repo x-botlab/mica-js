@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["vite/client", "node"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@mica-js/core/schematic": ["../../packages/core/src/schematic/index.ts"],
+      "@mica-js/schematic-editor": ["../../packages/schematic-editor/src/index.ts"],
+      "@mica-js/sandbox": ["../../packages/sandbox/src/index.ts"]
+    }
+  },
+  "include": ["src", "e2e", "vite.config.ts", "playwright.config.ts"]
+}

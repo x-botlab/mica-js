@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FloatBits, RuntimeScalar } from '@mica/ir';
+import type { FloatBits, RuntimeScalar } from '@mica-js/ir';
 import { createScheduler } from './scheduler';
 import { SchedulerError } from './scheduler-error';
 import type { SchedulerErrorCode } from './scheduler-error';
