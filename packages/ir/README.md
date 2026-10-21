@@ -1,15 +1,15 @@
 # @mica/ir
 
-领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令语义、实例存储与参考解释器，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)、[#46](https://github.com/x-botlab/mica-js/issues/46)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
+领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令语义、实例存储与参考解释器，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)、[#46](https://github.com/x-botlab/mica-js/issues/46)、[#47](https://github.com/x-botlab/mica-js/issues/47)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
 
-本包负责**建图、实例存储、静态校验/链接诊断、可复用标量运算与参考执行**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。`evaluateScalarInstruction` 和 `evaluateFloatInstruction` 仍是独立的单节点求值入口；`createIRInterpreter` 在固定快照并校验后复用它们及现有 storage，执行控制流与普通同步调用。本包不提供事件调度、资源版本化更新、Provider、消息桥接或 JIT。校验通过不代表已经执行，尚未实现的能力不会以空操作伪装为成功。
+本包负责**建图、实例存储、静态校验/链接诊断、可复用标量运算与参考执行**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。`evaluateScalarInstruction` 和 `evaluateFloatInstruction` 仍是独立的单节点求值入口；`createIRInterpreter` 在固定快照并校验后复用它们及现有 storage，执行控制流与普通同步调用。`b.resource` 显式更新复用同一存储，原子维护内容与版本，并提供未来 Provider 所需的一致读取/依赖验证基础。本包不提供事件调度、Provider 缓存/运行恢复、消息桥接或 JIT。校验通过不代表已经执行，尚未实现的能力不会以空操作伪装为成功。
 
 ## 公共入口
 
 唯一公开入口为 `@mica/ir`，构建生成 `dist/index.js`（ESM）与声明文件。主要导出：
 
 - `createIRModule()`：创建独立的模块声明/建图上下文，返回 `IRModule`。
-- `createIRStorage(module)`：为模块的声明资源创建一份独立实例存储，返回 `IRStorage`；每次调用互不别名。
+- `createIRStorage(module, options?)`：为模块的声明资源创建一份独立实例存储，返回 `IRStorage`；每次调用互不别名。可选 `IRStorageOptions.updateResources` 显式授予字节更新权限，默认无授权。
 - `createIRInterpreter(module, options)`：创建经过快照与校验的参考解释器，拥有独立 `storage`，通过 `execute(target, args, context)` 同步执行；预算、诊断及拒绝边界见下文。
 - `validateIR(input, options)`：返回 `IRValidationResult`，通过 `IRDiagnostic` / `IRDiagnosticLocation` 报告静态错误；能力策略及领域扩展类型见下文。
 - `evaluateScalarInstruction(instruction, operands)`：求值单个整数/布尔节点，失败抛出 `IRScalarEvaluationError`；范围与错误码见下文。
@@ -129,9 +129,9 @@ storage.copy(ram, 5, ram, 4, 4);
 - `bytes.copy` 先建立源字节快照，再写入目标；同资源重叠复制按复制前的源字节取值。零长度仍校验两侧 offset 在 `[0, 容量]` 内以及目标可写。
 - `readonly` 字节区与 `inbox` 可以读取或作为 `bytes.copy` 源；普通 `bytes.store` / `bytes.copy` 写入会被拒绝。`state` / `array` 的写入目标是固定可写的声明资源。
 - 每次 `createIRStorage` 都从声明初值复制独立 buffer；两个实例、两个声明以及原始 `Uint8Array` 输入之间互不别名。
-- 普通 `store` / `copy` 只改变内容，不维护或更新任何资源版本；版本化更新由后续 [#47](https://github.com/x-botlab/mica-js/issues/47) 提供。
+- 普通 `store` / `copy` 只改变内容，不更新资源版本；版本化更新必须通过下述独立授权路径。
 - `state.load` / `array.load` / `bytes.load` 返回 `StorageValue<T>`：`bool` 为 `boolean`、整数为 `number`、浮点为 `FloatBits`。浮点 load 返回原始位模式，移动不会解码/重编码 NaN；`store` 接受 `number`（数值入口，NaN 使用规范编码）或同类型 `FloatBits`。
-- 失败抛出 `IRStorageError`，`code` 为 `invalid-resource`、`invalid-value`、`invalid-argument`、`out-of-bounds`、`readonly-resource` 或 `allocation-failure`。资源授权仍由 `validateIR` 的 `resources` 静态核验；存储负责运行期的类别、可写性和范围检查，二者互不替代。
+- 失败抛出 `IRStorageError`，`code` 为 `invalid-resource`、`invalid-value`、`invalid-argument`、`out-of-bounds`、`readonly-resource`、`unauthorized-resource`（缺少独立更新授权）或 `allocation-failure`。`validateIR` 静态核验 `resources`；存储负责运行期类别、可写性、独立更新权限和范围检查，二者互不替代。既有直接存储读取/普通写入的权限模型不变。
 
 `FloatBits` 与 `RuntimeScalar` 是共享的值表示：`FloatBits` 的 `bits` 使用 `0x` 加固定 8/16 位小写十六进制。存储不会把 `DataView.getFloat32/64` 的数值结果当作原始载荷的替代。
 
@@ -183,9 +183,9 @@ const result = validateIR(ir, {
 策略必须由可信宿主提供，不应采信客体自己声称的能力：
 
 - `supportedInstructions` 是目标后端明确支持的指令名；`authorizedInstructions` 是实例获准使用的指令名。两者均精确匹配，并包含所用终结名 `return` / `jump` / `branch` / `trap`。没有默认全支持、通配符或自动授权。
-- `resources` 按句柄身份授予 `read`、`write` 或 `read-write`。读取/写入逐条核验；写权限不能突破资源固有只读性，也不能授权输入外的资源。同名不等于同一资源。
+- `resources` 按句柄身份授予 `read`、`write`、`read-write` 或独立的 `update`。同一资源可分多条不同权限 grant（相同权限的重复条目仍拒绝）；`read-write` 不授予更新，`update` 不授予普通读写。读取/写入逐条核验；普通写权限不能突破资源固有只读性，`update` 则不受 readonly 限制，但目标必须是字节区、不能是 inbox。同名不等于同一资源，也不能授权输入外的资源。
 - 领域指令还必须存在声明、匹配操作数/结果布局，并通过 `validators` 中对应 `op` 的独立扩展校验器。`validate(context)` 返回只读字符串消息列表；空列表表示领域静态规则通过，消息产生 `domain-validation`。上下文提供模块、函数、块、指令、定位与资源授权；具体领域读写约束由可信扩展核验。回调只能同步运行；async/generator 在调用前拒绝，抛错、Promise 或非法返回产生 `extension-error`。
-- 核心不导入任何领域包。扩展不能替换核心指令，也不能启用保留的 Provider/checkpoint/dispatch、资源版本更新或 kernel-only 指令。
+- 核心不导入任何领域包。扩展不能替换核心指令（包括已实现的 `resource.update_bytes/fill_bytes`），也不能启用其他保留的资源操作、Provider/checkpoint/dispatch 或 kernel-only 指令。
 
 SSA 值和静态句柄以对象身份关联，块边目标必须是本函数 `body.blocks` 中的实际对象；块 ID 在函数内唯一。`FunctionDefinition.ref` 和 `DomainDeclaration.ref` 显式保存声明句柄。校验交叉核验句柄类别、函数签名、资源布局及初值，拒绝重复身份、布局不一致与跨函数使用。对象的附加调试字段不充当 SSA ID；内存模型仍不是冻结的序列化格式。
 
@@ -285,16 +285,79 @@ runtime.storage.loadState(count); // 3
 
 ### 能力边界
 
-执行范围为现有整数/布尔/浮点/存储指令、普通 call 及 return/jump/branch/trap。调用无用户执行回调；新增能力必须在解释器明确分发点接入并另行审批，不能靠增加 supportedInstructions 或静态 validator 自动获得执行实现。构造时也检查不可达块/未调用函数：扩展静态校验即使通过，event、domain 等未实现执行能力仍在任何 IR 效果发生前拒绝；dispatch、Provider/checkpoint、resource.update/fill 等保留能力沿用静态拒绝。资源固有只读性、资源身份及调用类别不能被策略放宽。
+执行范围为现有整数/布尔/浮点/存储指令、`resource.update_bytes/fill_bytes`、普通 call 及 return/jump/branch/trap。调用无用户执行回调；新增能力必须在解释器明确分发点接入并另行审批，不能靠增加 supportedInstructions 或静态 validator 自动获得执行实现。构造时也检查不可达块/未调用函数：扩展静态校验即使通过，event、domain 等未实现执行能力仍在任何 IR 效果发生前拒绝；dispatch、Provider/checkpoint、其他 resource 更新拼写及保留能力沿用静态拒绝。普通写入不能突破 readonly；独立更新授权不受 readonly 限制，但仍核验资源身份与类别。
 
 `src/interpreter.test.ts` 使用真实 builder、validateIR、既有求值器与 storage，覆盖 identity、分支合流、sum 循环、同时绑定回边、4096 层调用、多结果、精确预算、错误调用链、失败操作原子性、独立实例、浮点载荷/负零移动及拒绝路径。`src/interpreter.type-test.ts` 检查公共签名。
+
+## 版本化资源更新（#47）
+
+公共合同经[五项逐一审批](https://github.com/x-botlab/mica-js/issues/47#issuecomment-6321258164)确认。`FunctionBuilder.resource: ResourceOperations` 和继承它的 `GeneratedFunctionBuilder` 提供：
+
+```typescript
+updateBytes(destination: BytesRef, destinationOffset: Value<'u32'>,
+  source: ReadableBytesRef, sourceOffset: Value<'u32'>, length: Value<'u32'>): undefined;
+fillBytes(destination: BytesRef, offset: Value<'u32'>,
+  length: Value<'u32'>, value: Value<'u8'>): undefined;
+```
+
+它们分别产生无结果的 `resource.update_bytes` / `resource.fill_bytes`。目标是静态字节区（可 readonly，不可 inbox）；源可为字节区或 inbox。独立 `update` grant、源 `read` grant、操作支持/授权分别核验。完整范围检查先于任何提交，重叠更新使用源快照；零长度仍检查权限、端点和填充值，不读写字节或改版本。非零同值更新也保守失效，跨单元内容与覆盖版本同步提交。失败无本操作部分提交，此前成功效果不回滚。无 writer/flush、自动时间推进、事件、NOR 编程规则或 BUSY 状态。
+
+```typescript
+import { createIRInterpreter, createIRModule } from '@mica/ir';
+
+const module = createIRModule();
+const firmware = module.bytes('firmware', new Uint8Array(8).fill(255), {
+  readonly: true,
+  unitBytes: 4,
+});
+const patch = module.bytes('patch', new Uint8Array([11, 22, 33, 44]), { readonly: true });
+const apply = module.func('apply', { params: ['u32', 'u32', 'u32'], results: [] });
+apply.body((b, [dst, src, length]) => {
+  b.resource.updateBytes(firmware, dst, patch, src, length);
+  b.return([]);
+});
+const runtime = createIRInterpreter(module, {
+  validation: {
+    supportedInstructions: ['resource.update_bytes', 'return'],
+    authorizedInstructions: ['resource.update_bytes', 'return'],
+    resources: [
+      { ref: firmware, access: 'update' },
+      { ref: patch, access: 'read' },
+    ],
+  },
+});
+const before = runtime.storage.readVersionedBytes(firmware, 0, 8);
+runtime.execute(apply, [2, 0, 4], { instanceId: 'flash', virtualTime: 0 });
+const after = runtime.storage.readVersionedBytes(firmware, 0, 8);
+// after.bytes: [255, 255, 11, 22, 33, 44, 255, 255]；两个单元均已更新。
+runtime.storage.validateDependencies(before.dependencies); // false
+runtime.storage.validateDependencies(after.dependencies); // true
+```
+
+独立存储通过 `createIRStorage(module: IRModule, options?: IRStorageOptions): IRStorage` 创建；`IRStorageOptions = { readonly updateResources?: readonly BytesRef[] }`，构造时捕获名单、拒绝 inbox/外模块资源；默认不允许更新。解释器从自己的私有验证策略快照提取 update grants，配置独占存储，不接受外部 storage 或新增执行回调。宿主直接存储接口不重复普通读取授权；IR 源读取仍由 validator 独立核验。
+
+`IRStorage` 新增以下方法；所有偏移/长度严格为 u32，填充值为 u8：
+
+```typescript
+updateBytes(destination: BytesRef, destinationOffset: number,
+  source: ReadableBytesRef, sourceOffset: number, length: number): void;
+fillBytes(destination: BytesRef, offset: number, length: number, value: number): void;
+readVersionedBytes(ref: ReadableBytesRef, offset: number, length: number): IRVersionedBytes;
+validateDependencies(dependencies: readonly IRResourceDependency[]): boolean;
+```
+
+`IRVersionedBytes = { readonly bytes: Uint8Array; readonly dependencies: readonly IRResourceDependency[] }` 同步捕获字节副本与覆盖全部单元的依赖；零长仍验端点且依赖为空。副本可修改但不影响存储，返回外壳、依赖数组及依赖对象不可修改。`IRResourceDependency = { readonly resource: IRResourceIdentity; readonly unit: IRVersionUnitIdentity; readonly version: IRResourceVersion }`，三个字段都是不透明、不可修改的对象 token，无公共构造器/数值计数器。验证仅接受本实例读取所产生的依赖对象；过期、伪造（包括复制依赖外壳）、跨资源/实例或非法形状返回 false，空集合 true。
+
+每个存储实例的各资源有独立身份；单元边界为 `floor(offset / unitBytes)`，声明后固定。尾部短单元、unitBytes 大于容量合法；零容量没有单元（默认 unitBytes 为 0，显式 unitBytes 仍须正安全整数）。单元身份固定，非零更新为每个覆盖单元产生新版本 token，未覆盖单元/其他资源保持不变，无数值溢出、回绕或身份复用。token 只在当前进程/实例有效，不是序列化或持久化格式。
+
+普通 store/copy **不改变版本**；把可变 RAM 用于 Provider 生成时，未来必须配置覆盖所有写入来源的版本化路径，不能仅凭 unitBytes 或此读取接口宣称缓存正确。这里仅实现资源基础，不创建 Provider 缓存（#60），也不校验/恢复正在运行的旧生成产物（#61）。执行错误、定位、预算与故障锁定继续沿用 #46。`resource.test.ts` 覆盖真实 builder→validateIR→interpreter 集成，`resource-storage.test.ts` 覆盖存储边界/原子性/身份隔离，`resource.type-test.ts` 覆盖正反公共类型合同。
 
 ## 当前限制
 
 以下能力属于后续任务，本包明确不实现：
 
-- `resource.updateBytes` / `resource.fillBytes` 的版本化更新（#47）。
-- 事件、输出、消息桥接、Provider 生成/checkpoint 与 JIT。
+- 事件、输出、消息桥接及 JS 作者侧 `api.updateBytes` 请求队列。
+- Provider 生成缓存（#60）、运行中恢复/checkpoint（#61）与 JIT。
 
 `module.functions` 中的函数体在 `.body` 成功返回后可见；尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。本包不会把“可构建”或“静态检查通过”等同于“可执行”。
 

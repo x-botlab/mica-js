@@ -34,7 +34,7 @@ const INTEGER_WIDTH: Readonly<Record<string, number>> = {
 };
 
 type OperandKind = InstructionOperand['kind'];
-type Access = 'read' | 'write';
+type Access = 'read' | 'write' | 'update';
 type TypePredicate = (type: unknown) => boolean;
 
 export function validateInstruction(
@@ -177,15 +177,25 @@ export function validateInstruction(
     case 'bytes.store':
       byteMemory(node, state);
       return;
+    case 'resource.update_bytes':
     case 'bytes.copy': {
       if (!operands(node, state, ['static', 'ssa', 'static', 'ssa', 'ssa'])) {
         return;
       }
-      memory(node, state, 0, ['bytes'], 'write');
+      memory(node, state, 0, ['bytes'], node.op === 'bytes.copy' ? 'write' : 'update');
       memory(node, state, 2, ['bytes', 'inbox'], 'read');
       value(node, state, 1, 'u32');
       value(node, state, 3, 'u32');
       value(node, state, 4, 'u32');
+      results(node, state, []);
+      return;
+    }
+    case 'resource.fill_bytes': {
+      if (!operands(node, state, ['static', 'ssa', 'ssa', 'ssa'])) return;
+      memory(node, state, 0, ['bytes'], 'update');
+      value(node, state, 1, 'u32');
+      value(node, state, 2, 'u32');
+      value(node, state, 3, 'u8');
       results(node, state, []);
       return;
     }
@@ -393,7 +403,9 @@ function hasGrant(state: InstructionValidationState, ref: StaticRef, access?: Ac
   return state.options.resources.some(
     (permission) =>
       permission.ref === ref &&
-      (access === undefined || permission.access === access || permission.access === 'read-write'),
+      (access === undefined ||
+        permission.access === access ||
+        (access !== 'update' && permission.access === 'read-write')),
   );
 }
 

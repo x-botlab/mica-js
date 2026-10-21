@@ -1,6 +1,7 @@
 import { getMemoryMetadata, integerRange, isNumericType, isScalarType } from './runtime';
 import type {
   ArrayRef,
+  BytesRef,
   Endian,
   FloatBits,
   FloatType,
@@ -23,6 +24,7 @@ export type IRStorageErrorCode =
   | 'invalid-argument'
   | 'out-of-bounds'
   | 'readonly-resource'
+  | 'unauthorized-resource'
   | 'allocation-failure';
 
 export class IRStorageError extends Error {
@@ -41,6 +43,29 @@ export type StorageValue<T extends ScalarType> = T extends 'bool'
   : T extends FloatType
     ? FloatBits
     : number;
+
+declare const resourceIdentity: unique symbol;
+declare const versionUnitIdentity: unique symbol;
+declare const resourceVersion: unique symbol;
+
+export type IRResourceIdentity = Readonly<{ [resourceIdentity]: true }>;
+export type IRVersionUnitIdentity = Readonly<{ [versionUnitIdentity]: true }>;
+export type IRResourceVersion = Readonly<{ [resourceVersion]: true }>;
+
+export interface IRResourceDependency {
+  readonly resource: IRResourceIdentity;
+  readonly unit: IRVersionUnitIdentity;
+  readonly version: IRResourceVersion;
+}
+
+export interface IRVersionedBytes {
+  readonly bytes: Uint8Array;
+  readonly dependencies: readonly IRResourceDependency[];
+}
+
+export interface IRStorageOptions {
+  readonly updateResources?: readonly BytesRef[];
+}
 
 /**
  * Per-instance storage for declared state, arrays, byte regions, and inboxes.
@@ -74,6 +99,16 @@ export interface IRStorage {
     sourceOffset: number,
     length: number,
   ): void;
+  updateBytes(
+    destination: BytesRef,
+    destinationOffset: number,
+    source: ReadableBytesRef,
+    sourceOffset: number,
+    length: number,
+  ): void;
+  fillBytes(destination: BytesRef, offset: number, length: number, value: number): void;
+  readVersionedBytes(ref: ReadableBytesRef, offset: number, length: number): IRVersionedBytes;
+  validateDependencies(dependencies: readonly IRResourceDependency[]): boolean;
 }
 
 interface BaseRecord {
@@ -92,6 +127,9 @@ interface ScalarRecord extends BaseRecord {
 
 interface ByteRecord extends BaseRecord {
   readonly length: number;
+  readonly unitBytes: number;
+  readonly identity: IRResourceIdentity;
+  units: ReadonlyMap<number, IRResourceDependency>;
 }
 
 type MemoryRecord = ScalarRecord | ByteRecord;
@@ -101,7 +139,7 @@ const CANONICAL_NAN: Readonly<Record<FloatType, bigint>> = {
   f64: 0x7ff8000000000000n,
 };
 
-export function createIRStorage(module: IRModule): IRStorage {
+export function createIRStorage(module: IRModule, options?: IRStorageOptions): IRStorage {
   if (!isRecord(module) || !Array.isArray(module.memories)) {
     throw new IRStorageError('invalid-resource', 'createIRStorage requires an IR module');
   }
@@ -113,14 +151,34 @@ export function createIRStorage(module: IRModule): IRStorage {
     }
     records.set(record.ref, record);
   }
-  return new Storage(records);
+  if (options !== undefined && !isRecord(options)) {
+    throw new IRStorageError('invalid-argument', 'Expected storage options');
+  }
+  const updates = options?.updateResources === undefined ? [] : options.updateResources;
+  if (!Array.isArray(updates)) {
+    throw new IRStorageError('invalid-argument', 'updateResources must be an array');
+  }
+  const updateResources = new Set<object>();
+  for (const ref of updates) {
+    if (records.get(ref)?.kind !== 'bytes') {
+      throw new IRStorageError(
+        'invalid-resource',
+        'Update authorization requires a listed byte resource',
+      );
+    }
+    updateResources.add(ref);
+  }
+  return new Storage(records, updateResources);
 }
 
 class Storage implements IRStorage {
   readonly #records: ReadonlyMap<object, MemoryRecord>;
+  readonly #updateResources: ReadonlySet<object>;
+  readonly #dependencies = new WeakMap<object, { record: ByteRecord; index: number }>();
 
-  constructor(records: ReadonlyMap<object, MemoryRecord>) {
+  constructor(records: ReadonlyMap<object, MemoryRecord>, updateResources: ReadonlySet<object>) {
     this.#records = records;
+    this.#updateResources = updateResources;
     Object.freeze(this);
   }
 
@@ -209,6 +267,128 @@ class Storage implements IRStorage {
     target.bytes.set(snapshot, targetStart);
   }
 
+  updateBytes(
+    destination: BytesRef,
+    destinationOffset: number,
+    source: ReadableBytesRef,
+    sourceOffset: number,
+    length: number,
+  ): void {
+    const target = this.#updateTarget(destination);
+    const origin = this.#byte(source, false, 'resource.update_bytes source');
+    const count = unsigned32(length, 'resource.update_bytes length');
+    const start = byteOffset(
+      target,
+      destinationOffset,
+      count,
+      'resource.update_bytes destinationOffset',
+    );
+    const sourceStart = byteOffset(
+      origin,
+      sourceOffset,
+      count,
+      'resource.update_bytes sourceOffset',
+    );
+    if (count === 0) return;
+    try {
+      const bytes = origin.bytes.slice(sourceStart, sourceStart + count);
+      const units = this.#prepareUnits(target, start, count, true);
+      // No allocation, callbacks, or validation may intervene in this commit.
+      target.bytes.set(bytes, start);
+      target.units = units;
+    } catch {
+      throw new IRStorageError(
+        'allocation-failure',
+        'resource.update_bytes could not prepare its update',
+      );
+    }
+  }
+
+  fillBytes(destination: BytesRef, offset: number, length: number, value: number): void {
+    const target = this.#updateTarget(destination);
+    const count = unsigned32(length, 'resource.fill_bytes length');
+    const start = byteOffset(target, offset, count, 'resource.fill_bytes offset');
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 0xff) {
+      throw new IRStorageError('invalid-value', 'resource.fill_bytes value must be a u8');
+    }
+    if (count === 0) return;
+    try {
+      const units = this.#prepareUnits(target, start, count, true);
+      target.bytes.fill(value, start, start + count);
+      target.units = units;
+    } catch {
+      throw new IRStorageError(
+        'allocation-failure',
+        'resource.fill_bytes could not prepare its update',
+      );
+    }
+  }
+
+  readVersionedBytes(ref: ReadableBytesRef, offset: number, length: number): IRVersionedBytes {
+    const record = this.#byte(ref, false, 'readVersionedBytes resource');
+    const count = unsigned32(length, 'readVersionedBytes length');
+    const start = byteOffset(record, offset, count, 'readVersionedBytes offset');
+    try {
+      const bytes = record.bytes.slice(start, start + count);
+      const units = this.#prepareUnits(record, start, count, false);
+      const dependencies: IRResourceDependency[] = [];
+      for (const index of coveredUnits(record, start, count)) dependencies.push(units.get(index)!);
+      const result = Object.freeze({ bytes, dependencies: Object.freeze(dependencies) });
+      record.units = units;
+      return result;
+    } catch {
+      throw new IRStorageError('allocation-failure', 'Could not capture versioned bytes');
+    }
+  }
+
+  validateDependencies(dependencies: readonly IRResourceDependency[]): boolean {
+    if (!Array.isArray(dependencies)) return false;
+    // Index iteration deliberately rejects holes as malformed dependencies.
+    for (const dependency of dependencies) {
+      if (dependency === null || typeof dependency !== 'object') return false;
+      const metadata = this.#dependencies.get(dependency);
+      if (metadata === undefined || metadata.record.units.get(metadata.index) !== dependency)
+        return false;
+    }
+    return true;
+  }
+
+  #updateTarget(ref: object): ByteRecord {
+    const record = this.#byte(ref, false, 'resource update destination');
+    if (record.kind !== 'bytes') {
+      throw new IRStorageError('invalid-resource', 'An inbox cannot be an update destination');
+    }
+    if (!this.#updateResources.has(ref)) {
+      throw new IRStorageError(
+        'unauthorized-resource',
+        'Resource has no independent update authorization',
+      );
+    }
+    return record;
+  }
+
+  #prepareUnits(
+    record: ByteRecord,
+    start: number,
+    count: number,
+    update: boolean,
+  ): ReadonlyMap<number, IRResourceDependency> {
+    if (count === 0) return record.units;
+    const units = new Map(record.units);
+    for (const index of coveredUnits(record, start, count)) {
+      const previous = units.get(index);
+      if (!update && previous !== undefined) continue;
+      const dependency: IRResourceDependency = Object.freeze({
+        resource: record.identity,
+        unit: previous?.unit ?? (Object.freeze({}) as IRVersionUnitIdentity),
+        version: Object.freeze({}) as IRResourceVersion,
+      });
+      units.set(index, dependency);
+      this.#dependencies.set(dependency, { record, index });
+    }
+    return units;
+  }
+
   #scalar(ref: object, kind: 'state' | 'array', label: string, write = false): ScalarRecord {
     const record = this.#record(ref, label);
     if (record.kind !== kind || !('scalarType' in record)) {
@@ -222,7 +402,7 @@ class Storage implements IRStorage {
 
   #byte(ref: object, write: boolean, label: string): ByteRecord {
     const record = this.#record(ref, label);
-    if (record.kind !== 'bytes' && record.kind !== 'inbox') {
+    if ((record.kind !== 'bytes' && record.kind !== 'inbox') || !('unitBytes' in record)) {
       throw new IRStorageError('invalid-resource', `${label} must be a byte resource`);
     }
     if (write && (record.kind !== 'bytes' || !record.writable)) {
@@ -360,6 +540,9 @@ function createRecord(definition: MemoryDefinition): MemoryRecord {
       writable: definition.writable,
       bytes,
       length,
+      unitBytes,
+      identity: Object.freeze({}) as IRResourceIdentity,
+      units: new Map(),
     };
   }
 
@@ -391,6 +574,13 @@ function byteOffset(record: ByteRecord, offset: number, width: number, label: st
     );
   }
   return position;
+}
+
+function* coveredUnits(record: ByteRecord, start: number, count: number): Generator<number> {
+  if (count === 0) return;
+  const first = Math.floor(start / record.unitBytes);
+  const last = Math.floor((start + count - 1) / record.unitBytes);
+  for (let index = first; index <= last; index += 1) yield index;
 }
 
 function unsigned32(value: unknown, label: string): number {

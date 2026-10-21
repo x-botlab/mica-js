@@ -49,7 +49,7 @@ export interface IRValidationResult {
 
 export interface IRResourcePermission {
   readonly ref: StaticRef;
-  readonly access: 'read' | 'write' | 'read-write';
+  readonly access: 'read' | 'write' | 'read-write' | 'update';
 }
 
 export interface IRInstructionValidationContext {

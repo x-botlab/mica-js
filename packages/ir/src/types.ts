@@ -266,6 +266,22 @@ export interface BytesOperations {
   ): undefined;
 }
 
+export interface ResourceOperations {
+  updateBytes(
+    destination: BytesRef,
+    destinationOffset: Value<'u32'>,
+    source: ReadableBytesRef,
+    sourceOffset: Value<'u32'>,
+    length: Value<'u32'>,
+  ): undefined;
+  fillBytes(
+    destination: BytesRef,
+    offset: Value<'u32'>,
+    length: Value<'u32'>,
+    value: Value<'u8'>,
+  ): undefined;
+}
+
 export type DomainOperandType =
   | { readonly kind: 'value'; readonly type: ScalarType }
   | { readonly kind: 'static'; readonly category: string }
@@ -359,6 +375,7 @@ export interface FunctionBuilder<R extends readonly ScalarType[] = readonly []> 
   readonly state: StateOperations;
   readonly array: ArrayOperations;
   readonly bytes: BytesOperations;
+  readonly resource: ResourceOperations;
   call<P extends readonly ScalarType[], Results extends readonly ScalarType[]>(
     target: FunctionRef<P, Results>,
     args: Values<NoInfer<P>>,

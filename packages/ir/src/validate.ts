@@ -9,6 +9,7 @@ import type {
   FunctionDefinition,
   MemoryDefinition,
   ScalarType,
+  StaticRef,
   Value,
 } from './types';
 import type {
@@ -145,16 +146,25 @@ class Validator {
       }
     }
     if (this.array(input.resources, at('resources'))) {
-      const refs = new Set<object>();
+      const refs = new Map<object, Set<unknown>>();
       input.resources.forEach((grant, i) => {
         const location = at(`resources[${i}]`);
         if (!this.record(grant, location)) return;
         if (this.ref(grant.ref, location)) {
-          if (refs.has(grant.ref as object))
+          const accesses = refs.get(grant.ref as object) ?? new Set<unknown>();
+          if (accesses.has(grant.access))
             this.report('malformed-input', 'Duplicate resource grant', location);
-          refs.add(grant.ref as object);
+          accesses.add(grant.access);
+          refs.set(grant.ref as object, accesses);
+          if (grant.access === 'update' && (grant.ref as StaticRef)[refKind] !== 'bytes') {
+            this.report(
+              'invalid-resource',
+              'Update authorization requires a byte resource',
+              location,
+            );
+          }
         }
-        if (!['read', 'write', 'read-write'].includes(grant.access as string)) {
+        if (!['read', 'write', 'read-write', 'update'].includes(grant.access as string)) {
           this.report('malformed-input', 'Invalid resource access permission', location);
         }
       });
