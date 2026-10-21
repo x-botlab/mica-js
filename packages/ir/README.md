@@ -220,8 +220,9 @@ runtime.storage.loadState(count); // 3
 ```
 
 - `createIRInterpreter` 捕获私有执行快照，调用 `validateIR`，再用 `createIRStorage` 建独占存储；原模型后续修改不影响已创建的实例。
+- `IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`stepObserver: IRStepObserver`；API 面向可信宿主，不是隔离恶意 JS getter/validator 的沙箱。
 - `execute(target, args, context)` 同步执行 `FunctionRef` / `EntryRef` / `LifecycleRef`，返回 `{ values, steps }`。`context = { instanceId, virtualTime }` 必填：实例标识非空，虚拟时间为非负安全整数皮秒，仅用于诊断。
-- 存储跨成功执行保留；每次 `execute` 使用独立预算。不推进虚拟时间、不创建事件、不形成等待/恢复对象。
+- 存储跨成功执行保留；每次 `execute` 使用独立预算。普通调用和块跳转不推进虚拟时间、不创建事件、不形成等待/恢复对象；显式 event 指令通过下述可信宿主桥接。
 
 ### 确定预算
 
@@ -249,7 +250,41 @@ runtime.storage.loadState(count); // 3
 - 存储操作沿用完整范围校验与原子提交：失败操作无部分写入，已提交效果不回滚。
 - 预算、求值、存储或 trap 故障会锁定实例，后续 `execute` 抛 `instance-faulted`；无 reset/resume，也不支持失败入口中途恢复。
 - 非法目标、参数或 context 等调用前错误不消耗步骤、不锁定实例。
-- 执行能力限于现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、普通 `call` 及 `return/jump/branch/trap`；扩展静态校验通过也不会自动获得执行实现。
+- 执行能力限于现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、核心 `event.now/at/cancel`、普通 `call` 及 `return/jump/branch/trap`；扩展静态校验通过也不会自动获得执行实现。未实现领域指令在执行前拒绝；dispatch、Provider/checkpoint 与其他保留能力仍静态拒绝。
+
+### 事件与宿主桥接（#48）
+
+`FunctionBuilder.event: EventOperations` provides core operations (also inherited by `GeneratedFunctionBuilder`):
+
+```ts
+interface EventOperations {
+  now(): Value<'f64'>;
+  at<const P extends readonly ScalarType[]>(
+    target: EntryRef<P>,
+    deadline: Value<'f64'>,
+    args: Values<NoInfer<P>>,
+  ): Value<'u32'>;
+  cancel(id: Value<'u32'>): void;
+}
+interface IREventHost {
+  now(): number;
+  at(target: EntryRef, deadline: number, args: readonly RuntimeScalar[]): number;
+  cancel(id: number): void;
+}
+interface IRStepObserver {
+  beforeStep(context: IRExecutionContext): void;
+}
+```
+
+`event.now` has no operands and returns f64; `event.at` encodes a static ordinary entry, an SSA f64 deadline, and SSA arguments, returning u32; `event.cancel` takes one SSA u32 and has no results. Targets must belong to the same module and match the entry parameter signature; lifecycle and ordinary function targets are rejected. These names cannot be redefined by domain declarations or extension validators. All three still require explicit supportedInstructions and authorizedInstructions grants.
+
+The optional interpreter `eventHost` is a trusted synchronous scheduler bridge, not an arbitrary domain instruction executor. Every event node, including unreachable ones, requires a host at interpreter creation; otherwise `unsupported-instruction` includes its IR location. The interpreter does not import core. `event.now` validates host time; `event.at` validates the complete target, captures all scalar arguments by value (including exact FloatBits), decodes f64 deadlines using the existing IEEE representation, rejects past deadlines against host.now(), and checks the returned ID is a nonzero u32. `event.cancel` validates u32 and passes 0 through; the host owns its no-op behavior and event queue/ID lifecycle.
+
+Time validation applies only at this event boundary, not to ordinary f64 values: time must be a finite integer number in `[0, 7_200_000_000_000_000]` picoseconds, with negative zero normalized to zero. Non-number/non-finite/fractional values cause TypeError before range checking; out-of-range or past times cause RangeError, retained as the evaluation failure cause.
+
+The optional `stepObserver.beforeStep` runs once before each reference step effect, including calls and terminators, using the captured execution context. Existing maxSteps checks and the default 1,000,000-step budget are unchanged; no observer is invoked for a step blocked by maxSteps. Hook method identities, receivers, and option values are captured at creation without executing hooks. Async/generator methods are rejected as invalid-options; Promise/thenable or generator results and thrown hook errors fail execution with existing error codes, retaining cause, location, and IR callStack. Previously committed effects remain and the interpreter faults as usual. A host must implement its own operations atomically when required.
+
+`src/event.test.ts` tests real IR execution, validation, capture, time/ID boundaries, synchronous hooks, and step effects; `src/event.type-test.ts` checks the approved API and invalid signatures.
 
 ## 版本化资源更新
 
@@ -329,7 +364,7 @@ type IRResourceDependency = {
 
 ## 当前限制
 
-- 事件、输出、消息桥接及 JS 作者侧 `api.updateBytes` 请求队列。
+- 事件队列/调度器本身（核心 event 指令通过上述可信宿主桥接）、输出、消息桥接及 JS 作者侧 `api.updateBytes` 请求队列。
 - Provider 生成缓存（#60）、运行中恢复/checkpoint（#61）与 JIT。
 - 尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。
 

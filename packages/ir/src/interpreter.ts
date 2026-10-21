@@ -1,6 +1,7 @@
 import { CORE_INSTRUCTION_NAMES } from './builder';
 import { evaluateFloatInstruction } from './float';
-import { isFloatType } from './runtime';
+import { toNumber } from './float-ieee';
+import { assertSynchronousCallback, isFloatType } from './runtime';
 import { evaluateScalarInstruction } from './scalar';
 import { createIRStorage, IRStorageError } from './storage';
 import type { IRStorage } from './storage';
@@ -30,9 +31,21 @@ import type { IRDiagnostic, IRValidationOptions } from './validation-types';
 
 type Target = FunctionRef | EntryRef | LifecycleRef;
 
+export interface IREventHost {
+  now(): number;
+  at(target: EntryRef, deadline: number, args: readonly RuntimeScalar[]): number;
+  cancel(id: number): void;
+}
+
+export interface IRStepObserver {
+  beforeStep(context: IRExecutionContext): void;
+}
+
 export interface IRInterpreterOptions {
   readonly validation: IRValidationOptions;
   readonly maxSteps?: number;
+  readonly eventHost?: IREventHost;
+  readonly stepObserver?: IRStepObserver;
 }
 
 export interface IRExecutionContext {
@@ -137,6 +150,26 @@ export function createIRInterpreter(
   if (!Number.isSafeInteger(maxSteps) || maxSteps < 0) {
     throw new IRExecutionError('invalid-options', 'maxSteps must be a non-negative safe integer');
   }
+  let eventHost: IREventHost | undefined;
+  let stepObserver: IRStepObserver | undefined;
+  try {
+    const host = options.eventHost;
+    const observer = options.stepObserver;
+    if (host !== undefined) {
+      eventHost = Object.freeze({
+        now: captureHook(host, 'now'),
+        at: captureHook(host, 'at'),
+        cancel: captureHook(host, 'cancel'),
+      });
+    }
+    if (observer !== undefined) {
+      stepObserver = Object.freeze({ beforeStep: captureHook(observer, 'beforeStep') });
+    }
+  } catch (cause) {
+    throw new IRExecutionError('invalid-options', 'Expected synchronous interpreter hooks', {
+      cause,
+    });
+  }
   let source: Model;
   let model: Model;
   let validationOptions: IRValidationOptions;
@@ -170,7 +203,7 @@ export function createIRInterpreter(
   for (const [functionIndex, fn] of model.functions.entries()) {
     for (const [blockIndex, block] of fn.body!.blocks.entries()) {
       for (const [instructionIndex, node] of block.instructions.entries()) {
-        if (!supported.has(node.op)) {
+        if (!supported.has(node.op) || (node.op.startsWith('event.') && eventHost === undefined)) {
           throw new IRExecutionError('unsupported-instruction', `No executor for ${node.op}`, {
             location: {
               functionIndex,
@@ -202,7 +235,49 @@ export function createIRInterpreter(
   } catch (cause) {
     throw new IRExecutionError('storage-failed', 'Could not allocate instance storage', { cause });
   }
-  return new Interpreter(model.functions, storage, maxSteps);
+  return new Interpreter(model.functions, storage, maxSteps, eventHost, stepObserver);
+}
+
+function captureHook<T, K extends keyof T>(receiver: T, key: K): T[K] {
+  if (receiver === null || typeof receiver !== 'object') {
+    throw new TypeError('Expected a hook object');
+  }
+  const method = receiver[key];
+  assertSynchronousCallback(method, String(key));
+  return ((...args: unknown[]) => {
+    const result: unknown = Reflect.apply(method, receiver, args);
+    if (result !== null && (typeof result === 'object' || typeof result === 'function')) {
+      if (typeof (result as { then?: unknown }).then === 'function') {
+        void Promise.resolve(result).catch(() => undefined);
+        throw new TypeError(`${String(key)} must not return a Promise or thenable`);
+      }
+      const kind = Object.prototype.toString.call(result);
+      if (kind === '[object Generator]' || kind === '[object AsyncGenerator]') {
+        throw new TypeError(`${String(key)} must not return a generator`);
+      }
+    }
+    return result;
+  }) as T[K];
+}
+
+function eventTime(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new TypeError('Event time must be a finite integer number of picoseconds');
+  }
+  if (value < 0 || value > 7_200_000_000_000_000) {
+    throw new RangeError('Event time is outside [0, 7_200_000_000_000_000]');
+  }
+  return value === 0 ? 0 : value;
+}
+
+function eventId(value: unknown, allowZero: boolean): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new TypeError('Event ID must be a u32 integer');
+  }
+  if (value < (allowZero ? 0 : 1) || value > 0xffffffff) {
+    throw new RangeError('Event ID is outside its u32 range');
+  }
+  return value === 0 ? 0 : value;
 }
 
 function captureValidationOptions(options: IRValidationOptions): IRValidationOptions {
@@ -288,13 +363,19 @@ class Interpreter implements IRInterpreter {
   readonly #functions: ReadonlyMap<Target, FunctionDefinition>;
   readonly #indices: ReadonlyMap<FunctionDefinition, number>;
   readonly #maxSteps: number;
+  readonly #eventHost: IREventHost | undefined;
+  readonly #stepObserver: IRStepObserver | undefined;
   #faulted = false;
 
   constructor(
     functions: readonly FunctionDefinition[],
     readonly storage: IRStorage,
     maxSteps: number,
+    eventHost: IREventHost | undefined,
+    stepObserver: IRStepObserver | undefined,
   ) {
+    this.#eventHost = eventHost;
+    this.#stepObserver = stepObserver;
     this.#functions = new Map(functions.map((fn) => [fn.ref, fn]));
     this.#indices = new Map(functions.map((fn, index) => [fn, index]));
     this.#maxSteps = maxSteps;
@@ -356,6 +437,7 @@ class Interpreter implements IRInterpreter {
             `Execution exceeded ${this.#maxSteps} reference IR steps`,
           );
         }
+        this.#stepObserver?.beforeStep(capturedContext);
         steps += 1;
         const node = frame.block.instructions[frame.position];
         if (node !== undefined) {
@@ -366,7 +448,9 @@ class Interpreter implements IRInterpreter {
             const callee = this.#functions.get(reference(node, 0) as FunctionRef)!;
             frames.push(this.frame(callee, operands));
           } else {
-            const values = evaluateInstruction(node, operands, this.storage);
+            const values = node.op.startsWith('event.')
+              ? this.event(node, operands)
+              : evaluateInstruction(node, operands, this.storage);
             node.results.forEach((value, index) => frame.values.set(value, values[index]!));
             frame.position += 1;
           }
@@ -418,6 +502,32 @@ class Interpreter implements IRInterpreter {
           cause,
         },
       );
+    }
+  }
+
+  private event(node: InstructionNode, args: readonly RuntimeScalar[]): readonly RuntimeScalar[] {
+    const host = this.#eventHost!;
+    switch (node.op) {
+      case 'event.now':
+        return [captureArgument('f64', eventTime(host.now()))];
+      case 'event.at': {
+        const target = reference(node, 0) as EntryRef;
+        const fn = this.#functions.get(target)!;
+        const captured = Object.freeze(
+          fn.params.map((type, index) => captureArgument(type, args[index + 1]!)),
+        );
+        const raw = captureArgument('f64', args[0]!);
+        const deadline = eventTime(typeof raw === 'object' ? toNumber(raw) : raw);
+        if (deadline < eventTime(host.now())) {
+          throw new RangeError('Event deadline cannot be before host.now()');
+        }
+        return [eventId(host.at(target, deadline, captured), false)];
+      }
+      case 'event.cancel':
+        host.cancel(eventId(args[0], true));
+        return [];
+      default:
+        throw new Error('Expected a core event instruction');
     }
   }
 

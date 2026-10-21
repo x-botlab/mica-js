@@ -50,9 +50,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # `changeset publish` does not build, so packages must be built before publishing.
-      - run: pnpm run build
-
+      # No global build: each package's `prepack` builds what it ships (the editor also builds
+      # its `@mica-js/core` dependency first), so only the packages being published are built.
       - name: Version packages or publish
         uses: changesets/action@v2
         with:

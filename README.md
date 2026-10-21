@@ -21,9 +21,16 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 │   └── sandbox-playground/   # 沙箱演示与手测面板
 └── packages/
     ├── core/                 # @mica-js/core：仿真内核
+    ├── ir/                   # @mica-js/ir：IR 建图、校验、存储与参考解释器
     ├── schematic-editor/     # @mica-js/schematic-editor：Canvas 原理图编辑器
     └── sandbox/              # @mica-js/sandbox：iframe + Web Worker 通用 JS 沙箱
 ```
+
+## 仿真内核与 IR
+
+`@mica-js/ir` 当前提供内存 IR 模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令求值、实例存储和参考解释器。解释器固定并校验模块快照，复用既有标量与存储语义，执行基本块、循环、普通调用及多结果返回，提供确定预算与调用链诊断。显式资源更新支持独立授权、原子内容/版本提交与一致读取验证；事件建图和可信内核桥接支持 `event.now/at/cancel`，未接入宿主时明确拒绝事件模块。尚无 Provider 缓存或运行中恢复。职责边界、非目标与验证方式见 [packages/ir/README.md](packages/ir/README.md)。
+
+`@mica-js/core` 提供合法整数皮秒时间、稳定普通/公共控制调度、FIFO 事件 ID 复用及确定预算；通过真实 IR 适配器连接同一解释器和事件队列。支持同步开始、入口边界暂停、步进及分段驱动，不提供墙钟后台运行器或电气求值。接口及边界见 [packages/core/README.md](packages/core/README.md)。
 
 ## 原理图编辑器
 
@@ -44,7 +51,7 @@ editor.placeDevice('stm32-package:stm32g431rbt6-lqfp64'); // 抓到光标上，�
 
 宿主 API、器件放置与回调时序见 [packages/schematic-editor/README.md](packages/schematic-editor/README.md)，可运行示例见 [apps/playground](apps/playground)。
 
-`@mica-js/core` 当前提供理想电压驱动/弱偏置的公共网络求值、冲突现场及 `mica-floating-v2` 确定性浮空模拟取值。它接收已连接网络的引脚快照，不实现拓扑、电源生命周期、调度器或连续电路求解；接口、集成责任及验证见 [packages/core/README.md](packages/core/README.md)。
+`@mica-js/core` 当前提供理想电压驱动/弱偏置的公共网络求值、冲突现场及 `mica-floating-v2` 确定性浮空模拟取值。它接收已连接网络的引脚快照；电气模块本身不实现拓扑、电源生命周期或事件调度（调度由同包提供），也不求解连续电路。接口、集成责任及验证见 [packages/core/README.md](packages/core/README.md)。
 
 ## 沙箱
 

@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "build": "vite build",
+    "prepack": "pnpm -r --filter \"@mica-js/schematic-editor...\" build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

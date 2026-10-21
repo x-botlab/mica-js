@@ -1,8 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "src",
-    "lib": ["ES2023", "DOM"]
+    "lib": ["ES2023", "DOM"],
+    "paths": {
+      "@mica-js/ir": ["../ir/src/index.ts"]
+    }
   },
   "include": ["src"]
 }
