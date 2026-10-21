@@ -41,4 +41,4 @@ pnpm --filter @mica/ir typecheck
 pnpm --filter @mica/ir build
 ```
 
-测试独立构建临时包，以真实 Node.js ESM 消费入口，并用 TypeScript NodeNext 解析生成的声明；同时检查未实现的命名导出与内部子路径被拒绝。测试不依赖预先存在的 `dist`，结束后清理临时文件。
+单元测试仅检查公共入口当前不暴露占位 API，不启动构建、子进程或临时消费方；实际 JS 与声明文件消费在发布前单独验证。
