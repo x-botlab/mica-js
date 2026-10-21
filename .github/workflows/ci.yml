@@ -3,7 +3,30 @@ name: CI
 on:
   push:
     branches: [main]
+    # Only code that this workflow verifies; docs / changeset-only pushes stay quiet.
+    paths:
+      - 'packages/**'
+      - 'apps/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig*.json'
+      - 'eslint.config.mjs'
+      - '.prettierrc.json'
+      - '.prettierignore'
+      - '.github/workflows/ci.yml'
   pull_request:
+    paths:
+      - 'packages/**'
+      - 'apps/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig*.json'
+      - 'eslint.config.mjs'
+      - '.prettierrc.json'
+      - '.prettierignore'
+      - '.github/workflows/ci.yml'
 
 jobs:
   verify:
