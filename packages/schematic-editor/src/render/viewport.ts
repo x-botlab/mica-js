@@ -56,8 +56,32 @@ export function clampScale(
   return Math.min(limits.maxScale, Math.max(limits.minScale, scale));
 }
 
-/** Zooms around a screen-space point so the page point under the cursor stays fixed. */
-export function zoomAt(
+/**
+ * Clamps a viewport to `limits` while keeping the page point at the centre of `size` in place,
+ * so restoring a saved view can never jump the content off screen.
+ */
+export function clampViewport(
+  viewport: ViewportState,
+  size: { readonly width: number; readonly height: number },
+  limits: ViewportLimits = DEFAULT_VIEWPORT_LIMITS,
+): ViewportState {
+  const scale = clampScale(
+    Number.isFinite(viewport.scale) && viewport.scale > 0 ? viewport.scale : limits.minScale,
+    limits,
+  );
+  if (scale === viewport.scale) {
+    return viewport;
+  }
+  const center = { x: size.width / 2, y: size.height / 2 };
+  const anchor = screenToPage(viewport, center);
+  return {
+    scale,
+    offsetX: center.x - anchor.x * scale,
+    offsetY: center.y - anchor.y * scale,
+  };
+}
+
+/** Zooms around a screen-space point so the page point under the cursor stays fixed. */ export function zoomAt(
   viewport: ViewportState,
   screenPoint: Point,
   factor: number,

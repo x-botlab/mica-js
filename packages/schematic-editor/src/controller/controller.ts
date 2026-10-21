@@ -188,6 +188,18 @@ export class SchematicEditorController {
     });
   }
 
+  /**
+   * Swaps the whole document as one undoable edit, so a host can reload a file without losing
+   * the history it already has.
+   *
+   * @throws {SchematicError} when the document is invalid; the state stays untouched.
+   */
+  replace(document: SchematicDocument): void {
+    this.#mutate(() => {
+      this.#editor.replace(document);
+    });
+  }
+
   /** Runs several edits as one history step; a failure rolls all of them back. */
   transaction(run: () => void): void {
     this.#mutate(run);

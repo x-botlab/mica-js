@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_VIEWPORT_LIMITS,
+  clampViewport,
   fitBounds,
   panBy,
   pageToScreen,
@@ -79,5 +80,26 @@ describe('viewport', () => {
     const limits = { minScale: 0.5, maxScale: 2 };
     expect(zoomAt(viewport, { x: 0, y: 0 }, 100, limits).scale).toBe(2);
     expect(zoomAt(viewport, { x: 0, y: 0 }, 0.0001, limits).scale).toBe(0.5);
+  });
+
+  it('clamps a restored viewport around the canvas centre', () => {
+    const size = { width: 400, height: 300 };
+    const centre = { x: 200, y: 150 };
+    const restored = { scale: 20, offsetX: -40, offsetY: 10 };
+    const anchorBefore = screenToPage(restored, centre);
+    const clamped = clampViewport(restored, size);
+    expect(clamped.scale).toBe(DEFAULT_VIEWPORT_LIMITS.maxScale);
+    const anchorAfter = screenToPage(clamped, centre);
+    expect(anchorAfter.x).toBeCloseTo(anchorBefore.x);
+    expect(anchorAfter.y).toBeCloseTo(anchorBefore.y);
+  });
+
+  it('leaves an in-range viewport untouched and repairs broken scales', () => {
+    const size = { width: 400, height: 300 };
+    const inRange = { scale: 2, offsetX: 30, offsetY: 40 };
+    expect(clampViewport(inRange, size)).toBe(inRange);
+    expect(clampViewport({ scale: 0, offsetX: 0, offsetY: 0 }, size).scale).toBe(
+      DEFAULT_VIEWPORT_LIMITS.minScale,
+    );
   });
 });

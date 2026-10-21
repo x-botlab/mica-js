@@ -67,6 +67,12 @@ export class EditorViewport {
     this.#state = zoomAt(this.#state, center, scale / this.#state.scale, this.#limits);
   }
 
+  /** Restores a saved viewport (already clamped by the caller); turns auto fit off. */
+  setState(state: ViewportState): void {
+    this.#autoFit = false;
+    this.#state = state;
+  }
+
   /** Turns off auto fit when the user interacts with the view. */
   takeOver(): void {
     this.#autoFit = false;

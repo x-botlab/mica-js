@@ -554,6 +554,22 @@ describe('SchematicEditorController', () => {
     expect(controller.document.sheet.wires).toEqual([]);
   });
 
+  it('swaps the document as one undoable edit through replace', () => {
+    const controller = createController(
+      documentOf({ symbols: [{ id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 }] }),
+    );
+    const next = documentOf({
+      symbols: [{ id: 's2', device: 'pkg:mcu', x: 50, y: 0, rotation: 0 }],
+    });
+
+    controller.replace(next);
+    expect(controller.document.sheet.symbols.map((symbol) => symbol.id)).toEqual(['s2']);
+    expect(controller.canUndo).toBe(true);
+
+    controller.undo();
+    expect(controller.document.sheet.symbols.map((symbol) => symbol.id)).toEqual(['s1']);
+  });
+
   it('groups edits into one history step with transaction', () => {
     const controller = createController(documentOf({}));
     controller.transaction(() => {
