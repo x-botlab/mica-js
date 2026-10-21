@@ -4,6 +4,8 @@ import {
   labelStubAt,
   orthogonalWaypoints,
   snapDragOffset,
+  snapForWire,
+  wireWaypoints,
   type SnapContext,
 } from './snapping';
 import { SchematicEditorController } from '../controller/controller';
@@ -129,6 +131,66 @@ describe('snapDragOffset', () => {
       x: 20,
       y: 30,
     });
+  });
+});
+
+describe('snapForWire', () => {
+  function wireContext(wires: readonly unknown[]): SnapContext {
+    return {
+      controller: new SchematicEditorController({
+        document: parseSchematic({
+          version: 1,
+          sheet: { symbols: [], wires, junctions: [] },
+        }),
+        devices,
+      }),
+      devices,
+      tolerance: 4,
+    };
+  }
+
+  const wire = {
+    id: 'w1',
+    points: [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+    ],
+  };
+
+  it('projects onto the closest point of a nearby wire', () => {
+    // 3 units above the run: inside the 8-unit snap radius, so it lands on the wire (y = 0).
+    expect(snapForWire(wireContext([wire]), { x: 47, y: 3 })).toEqual({ x: 47, y: 0 });
+  });
+
+  it('keeps the grid when no wire is near', () => {
+    expect(snapForWire(wireContext([wire]), { x: 47, y: 30 })).toEqual({ x: 50, y: 30 });
+  });
+
+  it('prefers a wire endpoint over the wire body', () => {
+    expect(snapForWire(wireContext([wire]), { x: 2, y: 1 })).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('wireWaypoints', () => {
+  it('matches the plain elbow when no wire is under the target', () => {
+    expect(wireWaypoints({ x: 0, y: 0 }, { x: 60, y: 20 }, undefined)).toEqual(
+      orthogonalWaypoints({ x: 0, y: 0 }, { x: 60, y: 20 }),
+    );
+  });
+
+  it('approaches a vertical wire horizontally', () => {
+    // Landing on x = 60 must keep the last leg horizontal so it taps in perpendicularly.
+    expect(wireWaypoints({ x: 0, y: 0 }, { x: 60, y: 25 }, 'vertical')).toEqual([
+      { x: 0, y: 25 },
+      { x: 60, y: 25 },
+    ]);
+  });
+
+  it('approaches a horizontal wire vertically', () => {
+    expect(wireWaypoints({ x: 0, y: 0 }, { x: 60, y: 25 }, 'horizontal')).toEqual([
+      { x: 60, y: 0 },
+      { x: 60, y: 25 },
+    ]);
   });
 });
 

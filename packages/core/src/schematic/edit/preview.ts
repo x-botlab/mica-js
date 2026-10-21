@@ -1,3 +1,4 @@
+import { namesNet, symbolRole } from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
 import type { Placement, Point, SchematicDocument } from '../format/types';
 import { symbolPinPosition } from '../geometry/transform';
@@ -27,7 +28,7 @@ export function previewSymbolDrag(
     return undefined;
   }
 
-  const definition = pinAnchors(document, devices, symbol.device);
+  const definition = connectionAnchors(devices, symbol.device);
   const moves: { readonly from: Point; readonly to: Point }[] = [];
   for (const anchor of Object.values(definition)) {
     const from = symbolPinPosition(symbol, anchor);
@@ -139,11 +140,19 @@ function projectSegment(points: readonly Point[], segment: number, t: number): P
   return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
-function pinAnchors(
-  document: SchematicDocument,
+/**
+ * Connection points of a device in symbol-local space. Net labels, power and ground symbols connect
+ * at their own anchor, so they report one at the origin and drag their wire end like a pin does.
+ */
+function connectionAnchors(
   devices: DeviceSymbolProvider | undefined,
   device: string,
 ): Readonly<Record<string, Point>> {
+  const role = symbolRole(device);
+  if (role !== 'component') {
+    // Net-naming symbols connect at their own anchor; text symbols connect nowhere.
+    return namesNet(role) ? { net: { x: 0, y: 0 } } : {};
+  }
   const separator = device.indexOf(':');
   if (separator <= 0 || devices === undefined) {
     return {};

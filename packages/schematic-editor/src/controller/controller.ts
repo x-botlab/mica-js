@@ -404,8 +404,8 @@ export class SchematicEditorController {
   }
 
   /**
-   * Appends a wire. Endpoints that land inside another wire split it and create a junction,
-   * so the new wire is electrically connected.
+   * Appends a wire. Endpoints that land inside another wire split it and create a junction, and
+   * endpoints that land on an existing junction join it, so the new wire is electrically connected.
    */
   addWire(points: readonly Point[]): void {
     if (points.length < 2) {
@@ -426,11 +426,28 @@ export class SchematicEditorController {
           const host = this.#hitTestWire(point, id);
           if (host !== undefined) {
             this.#splitInto(id, host.wireId, point);
+            continue;
           }
+          this.#joinJunction(id, point);
         }
       },
       { reconcile: false },
     );
+  }
+
+  /** Adds a wire that ends on an existing junction to that junction's participants. */
+  #joinJunction(wireId: string, point: Point): void {
+    const junction = this.#editor.document.sheet.junctions.find(
+      (item) => item.x === point.x && item.y === point.y,
+    );
+    if (junction === undefined || junction.wires.includes(wireId)) {
+      return;
+    }
+    this.#editor.dispatch({
+      type: 'update-junction',
+      id: junction.id,
+      wires: [...junction.wires, wireId],
+    });
   }
 
   /**

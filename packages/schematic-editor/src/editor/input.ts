@@ -19,13 +19,14 @@ import {
   isPlacementTool,
   labelStubAt,
   nextNetName,
-  orthogonalWaypoints,
   placementProperties,
   snapDragOffset,
   snapForWire,
   snapToGrid,
   toolDevice,
+  wireWaypoints,
   type LabelStub,
+  type WireAxis,
 } from './snapping';
 import type { EditorViewport } from './viewport-state';
 
@@ -194,7 +195,10 @@ export class EditorInput {
     if (previous === undefined) {
       return [this.#cursorPoint];
     }
-    return [...this.#pendingWire, ...orthogonalWaypoints(previous, this.#cursorPoint)];
+    return [
+      ...this.#pendingWire,
+      ...wireWaypoints(previous, this.#cursorPoint, this.#hostAxisAt(this.#cursorPoint)),
+    ];
   }
 
   /** Drops the in-progress wire; called when the tool changes. */
@@ -313,6 +317,34 @@ export class EditorInput {
     return snapForWire(this.#snapContext(), page);
   }
 
+  /** True when the pointer is over a builtin annotation (label / power / ground / text). */
+  #annotationSymbolAt(page: Point): boolean {
+    const hit = this.#deps.controller.hitTest(page, { tolerance: this.#tolerance() });
+    if (hit?.kind !== 'symbol') {
+      return false;
+    }
+    const symbol = this.#deps.controller.document.sheet.symbols.find((item) => item.id === hit.id);
+    return symbol !== undefined && symbolRole(symbol.device) !== 'component';
+  }
+
+  /** Orientation of the existing wire under `point`, so a branch can approach it perpendicularly. */
+  #hostAxisAt(point: Point): WireAxis | undefined {
+    const hit = this.#deps.controller.hitTest(point, {
+      includeSymbols: false,
+      tolerance: this.#tolerance(),
+    });
+    if (hit?.kind !== 'wire') {
+      return undefined;
+    }
+    const wire = this.#deps.controller.document.sheet.wires.find((item) => item.id === hit.id);
+    const a = wire?.points[hit.segment];
+    const b = wire?.points[hit.segment + 1];
+    if (a === undefined || b === undefined) {
+      return undefined;
+    }
+    return a.y === b.y ? 'horizontal' : a.x === b.x ? 'vertical' : undefined;
+  }
+
   #selectionAt(page: Point): EditorSelection | undefined {
     const vertex = this.#vertexAt(page);
     if (vertex !== undefined) {
@@ -391,6 +423,11 @@ export class EditorInput {
     if (this.#deps.controller.tool !== 'select') {
       return false;
     }
+    // Net labels, ports and text are selection/drag targets, so a tap on their body must not be
+    // eaten by a new wire; the wire tool still connects to their anchors by snapping to them.
+    if (this.#annotationSymbolAt(page)) {
+      return false;
+    }
     const node = connectionNodeAt(this.#snapContext(), page);
     if (node === undefined) {
       return false;
@@ -443,7 +480,9 @@ export class EditorInput {
       const previous = this.#pendingWire[this.#pendingWire.length - 1];
       this.#pendingWire = [
         ...this.#pendingWire,
-        ...(previous === undefined ? [point] : orthogonalWaypoints(previous, point)),
+        ...(previous === undefined
+          ? [point]
+          : wireWaypoints(previous, point, this.#hostAxisAt(point))),
       ];
       this.#cursorPoint = point;
       // Landing on another endpoint (pin, anchor, wire end) or an existing wire closes the run.

@@ -100,6 +100,57 @@ describe('previewSymbolDrag', () => {
     expect(preview?.symbols.get('l1')).toEqual({ x: 4, y: 6 });
   });
 
+  it('drags the wire end attached to a moving net label', () => {
+    const document = makeDocument();
+    const sheet = {
+      ...document.sheet,
+      symbols: [{ id: 'l1', device: 'builtin:label', net: 'D0', x: 0, y: 0, rotation: 0 }],
+      wires: [
+        {
+          id: 'w1',
+          points: [
+            { x: 0, y: 0 },
+            { x: 10, y: 0 },
+          ],
+        },
+      ],
+      junctions: [],
+    };
+    const preview = previewSymbolDrag({ ...document, sheet }, devices, 'l1', {
+      x: 0,
+      y: -5,
+      rotation: 0,
+    });
+    expect(preview?.wires.get('w1')).toEqual([
+      { x: 0, y: -5 },
+      { x: 10, y: -5 },
+    ]);
+  });
+
+  it('leaves wires alone when a text symbol moves', () => {
+    const document = makeDocument();
+    const sheet = {
+      ...document.sheet,
+      symbols: [{ id: 't1', device: 'builtin:text', x: 0, y: 0, rotation: 0 }],
+      wires: [
+        {
+          id: 'w1',
+          points: [
+            { x: 0, y: 0 },
+            { x: 10, y: 0 },
+          ],
+        },
+      ],
+      junctions: [],
+    };
+    const preview = previewSymbolDrag({ ...document, sheet }, devices, 't1', {
+      x: 0,
+      y: -5,
+      rotation: 0,
+    });
+    expect(preview?.wires.size).toBe(0);
+  });
+
   it('returns an empty preview when nothing moves', () => {
     const preview = previewSymbolDrag(makeDocument(), devices, 's1', { x: 0, y: 0, rotation: 0 });
     expect(preview?.wires.size).toBe(0);

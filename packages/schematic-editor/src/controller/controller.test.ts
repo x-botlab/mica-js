@@ -1,4 +1,5 @@
 import {
+  LABEL_DEVICE,
   POWER_DEVICE,
   SchematicError,
   createDeviceRegistry,
@@ -224,6 +225,68 @@ describe('SchematicEditorController', () => {
     controller.undo();
     expect(controller.document.sheet.wires).toHaveLength(wiresAfterAdd);
     expect(controller.document.sheet.junctions).toHaveLength(1);
+  });
+
+  it('drags the connected wire end when a net label moves', () => {
+    const controller = createController(
+      documentOf({
+        symbols: [{ id: 'l1', device: LABEL_DEVICE, net: 'D0', x: 0, y: 0, rotation: 0 }],
+        wires: [
+          {
+            id: 'w1',
+            points: [
+              { x: 0, y: 0 },
+              { x: 50, y: 0 },
+            ],
+          },
+        ],
+      }),
+    );
+
+    controller.setSelection([{ kind: 'symbol', id: 'l1' }]);
+    controller.moveSelectionBy(0, -10);
+
+    expect(controller.document.sheet.symbols[0]).toMatchObject({ x: 0, y: -10 });
+    expect(controller.document.sheet.wires[0]?.points).toEqual([
+      { x: 0, y: -10 },
+      { x: 50, y: -10 },
+    ]);
+  });
+
+  it('joins an existing junction when a new wire ends on it', () => {
+    const controller = createController(
+      documentOf({
+        wires: [
+          {
+            id: 'w1',
+            points: [
+              { x: 0, y: 0 },
+              { x: 50, y: 0 },
+            ],
+          },
+          {
+            id: 'w2',
+            points: [
+              { x: 50, y: 0 },
+              { x: 50, y: 50 },
+            ],
+          },
+        ],
+        junctions: [{ id: 'j1', x: 50, y: 0, wires: ['w1', 'w2'] }],
+      }),
+    );
+
+    controller.addWire([
+      { x: 50, y: 0 },
+      { x: 100, y: 0 },
+    ]);
+
+    const branchId = controller.document.sheet.wires.at(-1)?.id;
+    expect(branchId).toBeDefined();
+    expect(controller.document.sheet.junctions).toEqual([
+      { id: 'j1', x: 50, y: 0, wires: ['w1', 'w2', branchId] },
+    ]);
+    expect(controller.document.sheet.wires).toHaveLength(3);
   });
 
   it('creates a junction on an existing wire through connectWireAt', () => {
