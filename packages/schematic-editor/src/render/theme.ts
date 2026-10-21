@@ -65,7 +65,8 @@ export const DARK_SCHEMATIC_THEME: SchematicTheme = {
 
   symbolFill: '#171717',
   symbolStroke: '#737373',
-  symbolText: '#fafafa',
+  /** Device name in the symbol centre: quiet until the symbol is hovered or selected. */
+  symbolText: '#a1a1a1',
   symbolPlaceholder: 'rgba(250, 250, 250, 0.28)',
   pin: '#737373',
   pinText: '#a1a1a1',
@@ -106,7 +107,8 @@ export const LIGHT_SCHEMATIC_THEME: SchematicTheme = {
 
   symbolFill: '#fafafa',
   symbolStroke: '#a1a1a1',
-  symbolText: '#0a0a0a',
+  /** Device name in the symbol centre: quiet until the symbol is hovered or selected. */
+  symbolText: '#525252',
   symbolPlaceholder: 'rgba(10, 10, 10, 0.3)',
   pin: '#a1a1a1',
   pinText: '#525252',

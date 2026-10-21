@@ -10,7 +10,7 @@ import {
 describe('theme', () => {
   it('defaults to a dark, neutral palette', () => {
     expect(DARK_SCHEMATIC_THEME.background).toBe('#0a0a0a');
-    expect(DARK_SCHEMATIC_THEME.symbolText).toBe('#fafafa');
+    expect(DARK_SCHEMATIC_THEME.symbolText).toBe('#a1a1a1');
     expect(DARK_SCHEMATIC_THEME.pinText).toBe('#a1a1a1');
     expect(DARK_SCHEMATIC_THEME.symbolStroke).not.toBe(DARK_SCHEMATIC_THEME.wire);
     expect(DARK_SCHEMATIC_THEME.selection).not.toBe(DARK_SCHEMATIC_THEME.symbolStroke);

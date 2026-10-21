@@ -442,7 +442,8 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
     kind: 'text',
     position: { x: body.x + body.width / 2, y: body.y + body.height / 2 },
     text: definition.name,
-    color: highlight ?? theme.symbolText,
+    // Inverted on purpose: the name is quiet by default and lights up on hover / selection.
+    color: selected || hovered ? theme.selection : theme.symbolText,
     ...uprightText(placement.rotation, 'center', 'middle'),
     font: fonts.symbolFont,
   });

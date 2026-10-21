@@ -167,6 +167,25 @@ describe('buildSchematicScene', () => {
     expect(hovered).toBeDefined();
   });
 
+  it('lights up the device name only when the symbol is hovered or selected', () => {
+    const nameOf = (input: { selected?: boolean; hovered?: boolean }) => {
+      const scene = buildSchematicScene({
+        document,
+        devices,
+        theme: DARK_SCHEMATIC_THEME,
+        ...(input.selected === true ? { selection: { symbols: new Set(['u1']) } } : {}),
+        ...(input.hovered === true ? { hover: { kind: 'symbol', id: 'u1' } } : {}),
+      });
+      const name = scene.items.find((item) => item.kind === 'text' && item.text === 'MCU');
+      return name?.kind === 'text' ? name.color : undefined;
+    };
+
+    expect(nameOf({})).toBe(DARK_SCHEMATIC_THEME.symbolText);
+    expect(nameOf({})).not.toBe(DARK_SCHEMATIC_THEME.selection);
+    expect(nameOf({ selected: true })).toBe(DARK_SCHEMATIC_THEME.selection);
+    expect(nameOf({ hovered: true })).toBe(DARK_SCHEMATIC_THEME.selection);
+  });
+
   it('draws the pending wire only in wire mode', () => {
     const pendingWire = [
       { x: 0, y: 0 },
