@@ -17,7 +17,7 @@ import {
   connectionNodeAt,
   isPlacementTool,
   labelStubAt,
-  nextLabelName,
+  nextNetName,
   orthogonalWaypoints,
   placementProperties,
   snapForWire,
@@ -289,7 +289,7 @@ export class EditorInput {
         }
         controller.dispatch({
           type: 'add-symbol',
-          ...(device === LABEL_DEVICE ? { id: nextLabelName(controller.document) } : {}),
+          ...(device === LABEL_DEVICE ? { net: nextNetName(controller.document) } : {}),
           device,
           x: point.x,
           y: point.y,

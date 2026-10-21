@@ -4,6 +4,7 @@ import type {
   SchematicDocument,
   SchematicError,
   SchematicViewDocument,
+  SymbolRole,
 } from '@mica/core/schematic';
 
 export type EditorTool = 'select' | 'wire' | 'power' | 'ground' | 'label' | 'text';
@@ -40,10 +41,16 @@ export interface PropertyField {
 export interface SymbolInspector {
   readonly kind: 'symbol';
   readonly id: string;
+  /** What the symbol is for; drives which fields the panel shows. */
+  readonly role: SymbolRole;
   readonly device: string;
   readonly name: string | undefined;
   /** True for the builtin symbols (`label` / `power` / `ground` / `text`). */
   readonly builtin: boolean;
+  /** Reference designator; absent for symbols that carry none. */
+  readonly designator?: string;
+  /** Net name; absent for symbols that name no net. */
+  readonly net?: string;
   readonly x: number;
   readonly y: number;
   readonly rotation: number;

@@ -1,9 +1,9 @@
 import {
-  DEFAULT_GROUND_LABEL,
-  DEFAULT_POWER_LABEL,
   DEFAULT_TEXT_CONTENT,
   builtinSymbolKind,
+  designatorOf,
   isTextDevice,
+  netNameOf,
   parseDeviceReference,
   pinSide,
   pinsBounds,
@@ -392,11 +392,7 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
     drawBuiltin(items, {
       kind: builtin,
       placement,
-      text:
-        builtin === 'label'
-          ? symbol.id
-          : ((symbol.properties?.['label'] as string | undefined) ??
-            (builtin === 'power' ? DEFAULT_POWER_LABEL : DEFAULT_GROUND_LABEL)),
+      text: netNameOf(symbol) ?? symbol.id,
       color: annotation,
       anchorColor: highlight ?? theme.labelAnchor,
       font: builtin === 'label' ? fonts.font : fonts.pinFont,
@@ -437,7 +433,7 @@ function drawSymbol(items: SceneItem[], options: DrawSymbolOptions): void {
     kind: 'text',
     position:
       options.referenceOverride ?? referencePosition(placement, localBody, symbol.reference),
-    text: symbol.id,
+    text: designatorOf(symbol) ?? symbol.id,
     color: options.referenceOverride === undefined ? annotation : theme.selection,
     ...uprightText(placement.rotation, 'left', 'bottom'),
     font: fonts.pinFont,

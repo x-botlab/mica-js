@@ -27,7 +27,7 @@ const SAMPLE: SchematicDocument = {
     symbols: [
       { id: 's-mcu', device: 'stm32-package:stm32g431rbt6-lqfp64', x: 480, y: 160, rotation: 0 },
       { id: 's-lcd', device: 'lcd-package:ct117e-m4-tft-lcd-2-4', x: 136, y: 55, rotation: 0 },
-      { id: 'lcd-l-d0', device: 'builtin:label', x: 300, y: 100, rotation: 0 },
+      { id: 'lcd-l-d0', device: 'builtin:label', net: 'lcd-l-d0', x: 300, y: 100, rotation: 0 },
     ],
     wires: [
       {
@@ -102,8 +102,8 @@ describe('deriveSchematicTopology', () => {
   it('reports conflicting labels on one net', () => {
     const document = documentWith({
       symbols: [
-        { id: 'a', device: 'builtin:label', x: 0, y: 0, rotation: 0 },
-        { id: 'b', device: 'builtin:label', x: 10, y: 0, rotation: 0 },
+        { id: 'a', device: 'builtin:label', net: 'A', x: 0, y: 0, rotation: 0 },
+        { id: 'b', device: 'builtin:label', net: 'B', x: 10, y: 0, rotation: 0 },
       ],
       wires: [
         {
@@ -206,19 +206,19 @@ describe('deriveSchematicTopology', () => {
         },
       ],
       symbols: [
-        { id: 'l1', device: 'builtin:label', x: 10, y: 0, rotation: 0 },
-        { id: 'l2', device: 'builtin:label', x: 5, y: 5, rotation: 0 },
+        { id: 'l1', device: 'builtin:label', net: 'L1', x: 10, y: 0, rotation: 0 },
+        { id: 'l2', device: 'builtin:label', net: 'L2', x: 5, y: 5, rotation: 0 },
       ],
     });
     const topology = deriveSchematicTopology(document, { devices });
-    expect(topology.nets.map((net) => net.name)).toEqual(['l1', 'l2']);
+    expect(topology.nets.map((net) => net.name)).toEqual(['L1', 'L2']);
   });
 
   it('keeps isolated pins open and reports dangling ends', () => {
     const document = documentWith({
       symbols: [
         { id: 's', device: 'stm32-package:stm32g431rbt6-lqfp64', x: 100, y: 100, rotation: 0 },
-        { id: 'l', device: 'builtin:label', x: 0, y: 0, rotation: 0 },
+        { id: 'l', device: 'builtin:label', net: 'L', x: 0, y: 0, rotation: 0 },
       ],
       wires: [
         {
@@ -241,7 +241,7 @@ describe('deriveSchematicTopology', () => {
       },
     ]);
     expect(topology.nets).toEqual([
-      { name: 'l', wireIds: ['w'], members: [{ kind: 'label', symbolId: 'l' }] },
+      { name: 'L', wireIds: ['w'], members: [{ kind: 'label', symbolId: 'l' }] },
     ]);
     expect(topology.danglingWireEnds.map((item) => item.point)).toEqual([{ x: 10, y: 0 }]);
   });

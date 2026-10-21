@@ -1,12 +1,7 @@
 import type { Diagnostic } from '../format/diagnostics';
 import { throwIfErrors } from '../format/errors';
 import type { Point, Rect, SchematicDocument } from '../format/types';
-import {
-  builtinSymbolKind,
-  DEFAULT_GROUND_LABEL,
-  DEFAULT_POWER_LABEL,
-  parseDeviceReference,
-} from '../device/reference';
+import { builtinSymbolKind, netNameOf, parseDeviceReference } from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
 import {
   boundsOfPoints,
@@ -96,12 +91,15 @@ export function deriveSchematicTopology(
     bounds = unionBounds(bounds, { x: symbol.x, y: symbol.y, width: 0, height: 0 });
     const builtin = builtinSymbolKind(symbol.device);
     if (builtin !== undefined) {
-      connections.push({
-        kind: builtin,
-        symbolId: symbol.id,
-        point: { x: symbol.x, y: symbol.y },
-        name: builtinName(builtin, symbol),
-      });
+      const net = netNameOf(symbol);
+      if (net !== undefined) {
+        connections.push({
+          kind: builtin,
+          symbolId: symbol.id,
+          point: { x: symbol.x, y: symbol.y },
+          name: net,
+        });
+      }
       continue;
     }
 
@@ -223,29 +221,12 @@ export function deriveSchematicTopology(
 
   const netOfConnection = new Map<number, SchematicNet>();
   const nets: SchematicNet[] = [];
-  for (const group of groups.values()) {
+  for (const group of mergeGroupsByName(groups, connections, diagnostics)) {
     const connected = group.wires.length > 0 || group.connections.length >= 2;
     if (group.connections.length === 0 || !connected) {
       continue;
     }
-    const names = group.connections
-      .map((index) => connections[index])
-      .filter(
-        (connection): connection is Extract<Connection, { kind: 'label' | 'power' | 'ground' }> =>
-          connection !== undefined && connection.kind !== 'pin',
-      )
-      .map((connection) => connection.name)
-      .sort();
-    let name: string | null = null;
-    if (names.length === 1) {
-      name = names[0] as string;
-    } else if (names.length > 1) {
-      diagnostics.push({
-        severity: 'error',
-        code: 'net/naming-conflict',
-        message: `Net has conflicting names: ${names.map((item) => JSON.stringify(item)).join(', ')}.`,
-      });
-    }
+    const name = group.name;
 
     const members: SchematicNetMember[] = group.connections
       .map((index) => connections[index])
@@ -328,21 +309,62 @@ export function deriveSchematicTopology(
   };
 }
 
-const KIND_ORDER: readonly SchematicNetMember['kind'][] = ['label', 'power', 'ground', 'pin'];
-
-function builtinName(
-  kind: 'label' | 'power' | 'ground',
-  symbol: { readonly id: string; readonly properties?: Readonly<Record<string, unknown>> },
-): string {
-  if (kind === 'label') {
-    return symbol.id;
-  }
-  const label = symbol.properties?.['label'];
-  if (typeof label === 'string' && label.length > 0) {
-    return label;
-  }
-  return kind === 'power' ? DEFAULT_POWER_LABEL : DEFAULT_GROUND_LABEL;
+/** A connected group of wires and connection points, named by the labels attached to it. */
+interface NetGroup {
+  readonly wires: number[];
+  readonly connections: number[];
+  readonly name: string | null;
 }
+
+/**
+ * Folds groups that carry the same net name into one group: net names are the merge key, so two
+ * `VCC` ports on separate wires are the same net (KiCad-style name-based connectivity).
+ * A group that declares two different names is an error.
+ */
+function mergeGroupsByName(
+  groups: ReadonlyMap<number, { wires: number[]; connections: number[] }>,
+  connections: readonly Connection[],
+  diagnostics: Diagnostic[],
+): readonly NetGroup[] {
+  const byName = new Map<string, { wires: number[]; connections: number[] }>();
+  const merged: NetGroup[] = [];
+  for (const group of groups.values()) {
+    const names = group.connections
+      .map((index) => connections[index])
+      .filter(
+        (connection): connection is Extract<Connection, { kind: 'label' | 'power' | 'ground' }> =>
+          connection !== undefined && connection.kind !== 'pin',
+      )
+      .map((connection) => connection.name)
+      .sort();
+    if (names.length > 1) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'net/naming-conflict',
+        message: `Net has conflicting names: ${names.map((item) => JSON.stringify(item)).join(', ')}.`,
+      });
+    }
+    const name = names.length === 1 ? (names[0] as string) : null;
+    // Only groups that already connect something are folded together: merging is about joining
+    // nets, not about giving free-floating labels a net of their own.
+    if (name === null || (group.wires.length === 0 && group.connections.length < 2)) {
+      merged.push({ wires: group.wires, connections: group.connections, name });
+      continue;
+    }
+    const existing = byName.get(name);
+    if (existing === undefined) {
+      const created = { wires: [...group.wires], connections: [...group.connections] };
+      byName.set(name, created);
+      merged.push({ ...created, name });
+      continue;
+    }
+    existing.wires.push(...group.wires);
+    existing.connections.push(...group.connections);
+  }
+  return merged;
+}
+
+const KIND_ORDER: readonly SchematicNetMember['kind'][] = ['label', 'power', 'ground', 'pin'];
 
 function compareMembers(
   a: SchematicNetMember | undefined,

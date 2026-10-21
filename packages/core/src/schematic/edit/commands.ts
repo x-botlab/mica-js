@@ -11,6 +11,8 @@ import type {
 } from '../format/types';
 import { toPointer } from '../format/validate';
 import { parseDeviceReference } from '../device/reference';
+import { defaultNetName, hasDesignator, namesNet, symbolRole } from '../device/reference';
+import type { SymbolRole } from '../device/reference';
 import type { TopologyOptions } from '../topology/derive';
 import { DEFAULT_TOLERANCE, pointOnPolyline } from '../geometry/point';
 import { defaultElementIdFactory, type ElementIdFactory } from './ids';
@@ -24,6 +26,10 @@ export type SchematicCommand =
       readonly y: number;
       readonly rotation?: number;
       readonly properties?: Readonly<Record<string, PropertyValue>>;
+      /** Component reference designator; defaults to the new symbol's id. */
+      readonly designator?: string;
+      /** Net name for labels / power / ground; power and ground fall back to VCC / GND. */
+      readonly net?: string;
       /** Reference designator anchor in symbol-local coordinates; `null` clears it. */
       readonly reference?: Point | null;
     }
@@ -36,6 +42,10 @@ export type SchematicCommand =
       readonly rotation?: number;
       /** Replaces the whole property map when provided. */
       readonly properties?: Readonly<Record<string, PropertyValue>>;
+      /** Reference designator; `null` clears the override, `undefined` keeps it. */
+      readonly designator?: string | null;
+      /** Net name; `null` clears it, `undefined` keeps it. */
+      readonly net?: string | null;
       /** Reference designator anchor; `null` clears it, `undefined` keeps it. */
       readonly reference?: Point | null;
     }
@@ -110,6 +120,9 @@ export function applySchematicCommand(
         diagnostics,
       );
       if (device !== undefined) {
+        const role = symbolRole(device);
+        const designator = resolveDesignator(command.designator, role, id, diagnostics);
+        const net = resolveNet(command.net, role, diagnostics);
         symbols.push(
           withProperties(
             {
@@ -118,7 +131,9 @@ export function applySchematicCommand(
               x: command.x,
               y: command.y,
               rotation: command.rotation ?? 0,
-              ...(reference === undefined ? {} : { reference }),
+              ...(designator === undefined ? {} : { designator }),
+              ...(net === undefined ? {} : { net }),
+              ...(hasDesignator(role) && reference !== undefined ? { reference } : {}),
             },
             properties,
           ),
@@ -145,6 +160,21 @@ export function applySchematicCommand(
           diagnostics,
         );
         if (device !== undefined) {
+          const role = symbolRole(device);
+          const designator = resolveOptionalText(
+            command.designator,
+            current.designator,
+            hasDesignator(role),
+            'designator',
+            diagnostics,
+          );
+          const net = resolveOptionalText(
+            command.net,
+            current.net,
+            namesNet(role),
+            'net',
+            diagnostics,
+          );
           symbols[index] = withProperties(
             {
               id: current.id,
@@ -152,7 +182,9 @@ export function applySchematicCommand(
               x: command.x ?? current.x,
               y: command.y ?? current.y,
               rotation: command.rotation ?? current.rotation,
-              ...(reference === undefined ? {} : { reference }),
+              ...(designator === undefined ? {} : { designator }),
+              ...(net === undefined ? {} : { net }),
+              ...(hasDesignator(role) && reference !== undefined ? { reference } : {}),
             },
             properties,
           );
@@ -385,7 +417,98 @@ function baseOf(symbol: SchematicSymbol): Omit<SchematicSymbol, 'properties' | '
     x: symbol.x,
     y: symbol.y,
     rotation: symbol.rotation,
+    ...(symbol.designator === undefined ? {} : { designator: symbol.designator }),
+    ...(symbol.net === undefined ? {} : { net: symbol.net }),
   };
+}
+
+/**
+ * Reference designator for a new symbol: components keep `undefined` (the id doubles as the
+ * default designator), everything else must not have one.
+ */
+function resolveDesignator(
+  value: string | undefined,
+  role: SymbolRole,
+  id: string,
+  diagnostics: Diagnostic[],
+): string | undefined {
+  if (!hasDesignator(role)) {
+    if (value !== undefined) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'symbol/unsupported-field',
+        message: `Symbols of role "${role}" carry no reference designator.`,
+      });
+    }
+    return undefined;
+  }
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 || trimmed === id ? undefined : trimmed;
+}
+
+/** Net name for a new symbol; labels need one, power and ground fall back to their default. */
+function resolveNet(
+  value: string | undefined,
+  role: SymbolRole,
+  diagnostics: Diagnostic[],
+): string | undefined {
+  if (!namesNet(role)) {
+    if (value !== undefined) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'symbol/unsupported-field',
+        message: `Symbols of role "${role}" name no net.`,
+      });
+    }
+    return undefined;
+  }
+  const trimmed = value?.trim();
+  if (trimmed !== undefined && trimmed.length > 0) {
+    return trimmed;
+  }
+  const fallback = defaultNetName(role);
+  if (fallback === undefined) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'symbol/missing-net',
+      message: `Symbols of role "${role}" must name the net they attach to.`,
+    });
+  }
+  return fallback;
+}
+
+/** `null` clears the field, `undefined` keeps it, and unsupported roles cannot set it. */
+function resolveOptionalText(
+  value: string | null | undefined,
+  current: string | undefined,
+  supported: boolean,
+  field: 'designator' | 'net',
+  diagnostics: Diagnostic[],
+): string | undefined {
+  if (value === undefined) {
+    return current;
+  }
+  if (!supported) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'symbol/unsupported-field',
+      message: `This symbol must not declare "${field}".`,
+    });
+    return undefined;
+  }
+  if (value === null) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'schema/invalid-value',
+      message: `${field === 'net' ? 'Net name' : 'Reference designator'} must not be empty.`,
+    });
+    return undefined;
+  }
+  return trimmed;
 }
 
 function withProperties(

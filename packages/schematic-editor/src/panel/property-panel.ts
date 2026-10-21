@@ -1,20 +1,24 @@
-import {
-  GROUND_DEVICE,
-  POWER_DEVICE,
-  isTextDevice,
-  type PropertyValue,
-} from '@mica/core/schematic';
+import type { PropertyValue, SymbolRole } from '@mica/core/schematic';
 import type { Inspector, PropertyField } from '../controller/types';
 
 export interface PropertyPanelOptions {
   readonly readOnly: boolean;
   readonly onPropertyChange: (symbolId: string, key: string, value: PropertyValue) => void;
   readonly onPropertyReset: (symbolId: string, key: string) => void;
-  readonly onRename: (symbolId: string, nextId: string) => void;
+  readonly onDesignatorChange: (symbolId: string, next: string) => void;
+  readonly onNetChange: (symbolId: string, next: string) => void;
 }
 
 const EMPTY_HINT = '未选择图元';
 const EMPTY_TIP = '选择器件或导线后在此查看与编辑';
+
+const ROLE_TITLES: Readonly<Record<SymbolRole, string>> = {
+  component: '器件',
+  'net-label': '网络标签',
+  power: '电源',
+  ground: '地',
+  text: '文本',
+};
 
 /** Right-hand inspector column. Reads `controller.inspect()` and writes through callbacks. */
 export class PropertyPanel {
@@ -48,9 +52,15 @@ export class PropertyPanel {
       return;
     }
 
-    element.append(section(`器件 ${inspector.id}`));
+    const title = ROLE_TITLES[inspector.role];
+    element.append(section(`${title} ${inspector.designator ?? inspector.net ?? inspector.id}`));
+    if (inspector.designator !== undefined) {
+      element.append(this.#referenceField(inspector.id, inspector.designator));
+    }
+    if (inspector.net !== undefined) {
+      element.append(this.#netField(inspector.id, inspector.net));
+    }
     element.append(
-      this.#referenceField(inspector.id, inspector.device),
       row('器件', inspector.device),
       row('名称', inspector.name ?? '—'),
       row('位置', `${formatNumber(inspector.x)}, ${formatNumber(inspector.y)}`),
@@ -66,26 +76,41 @@ export class PropertyPanel {
     }
   }
 
-  #referenceField(symbolId: string, device: string): HTMLElement {
+  #referenceField(symbolId: string, designator: string): HTMLElement {
+    return this.#textField('位号', symbolId, designator, (next) =>
+      this.#options.onDesignatorChange(symbolId, next),
+    );
+  }
+
+  #netField(symbolId: string, net: string): HTMLElement {
+    return this.#textField('网络', symbolId, net, (next) =>
+      this.#options.onNetChange(symbolId, next),
+    );
+  }
+
+  #textField(
+    title: string,
+    symbolId: string,
+    value: string,
+    commit: (next: string) => void,
+  ): HTMLElement {
     const wrapper = document.createElement('label');
     wrapper.className = 'mica-schematic__field';
     const label = document.createElement('span');
     label.className = 'mica-schematic__field-label';
-    label.textContent = '位号';
-    // The id is the reference designator; for net labels it doubles as the net name.
-    const editable = device !== POWER_DEVICE && device !== GROUND_DEVICE && !isTextDevice(device);
+    label.textContent = title;
     const input = document.createElement('input');
     input.type = 'text';
-    input.value = symbolId;
-    input.disabled = this.#options.readOnly || !editable;
+    input.value = value;
+    input.disabled = this.#options.readOnly;
     input.className = 'mica-schematic__field-input';
     input.addEventListener('change', () => {
       const next = input.value.trim();
-      if (next === '' || next === symbolId) {
-        input.value = symbolId;
+      if (next === '' || next === value) {
+        input.value = value;
         return;
       }
-      this.#options.onRename(symbolId, next);
+      commit(next);
     });
     wrapper.append(label, input);
     return wrapper;

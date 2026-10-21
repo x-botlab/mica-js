@@ -93,9 +93,14 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
         run(() => controller.removeSymbolProperty(symbolId, key));
       }
     },
-    onRename: (symbolId, nextId) => {
+    onDesignatorChange: (symbolId, next) => {
       if (!readOnly) {
-        run(() => controller.renameSymbol(symbolId, nextId));
+        run(() => controller.renameDesignator(symbolId, next));
+      }
+    },
+    onNetChange: (symbolId, next) => {
+      if (!readOnly) {
+        run(() => controller.renameNet(symbolId, next));
       }
     },
   });

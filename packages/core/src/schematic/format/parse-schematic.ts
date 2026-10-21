@@ -11,6 +11,13 @@ import type {
 } from './types';
 import { SCHEMATIC_VERSION } from './types';
 import {
+  designatorOf,
+  hasDesignator,
+  namesNet,
+  symbolRole,
+  type SymbolRole,
+} from '../device/reference';
+import {
   checkDuplicateIds,
   forbidUnknownFields,
   hasErrors,
@@ -147,10 +154,36 @@ function readSheet(
   });
 
   checkDuplicateIds(symbolIds, 'symbol', diagnostics);
+  checkDuplicateDesignators(symbols, diagnostics);
   checkDuplicateIds(wireIds, 'wire', diagnostics);
   checkDuplicateIds(junctionIds, 'junction', diagnostics);
 
   return { symbols, wires, junctions };
+}
+
+/** Two components must not share a reference designator. */
+function checkDuplicateDesignators(
+  symbols: readonly SchematicSymbol[],
+  diagnostics: Diagnostic[],
+): void {
+  const seen = new Set<string>();
+  symbols.forEach((symbol, index) => {
+    const designator = designatorOf(symbol);
+    if (designator === undefined) {
+      return;
+    }
+    if (seen.has(designator)) {
+      report(
+        diagnostics,
+        'symbol/designator-duplicate',
+        `Reference designator ${JSON.stringify(designator)} is used more than once.`,
+        ['sheet', 'symbols', String(index), 'designator'],
+        { kind: 'symbol', id: symbol.id },
+      );
+      return;
+    }
+    seen.add(designator);
+  });
 }
 
 function readSymbol(
@@ -164,7 +197,7 @@ function readSymbol(
   }
   forbidUnknownFields(
     value,
-    ['id', 'device', 'x', 'y', 'rotation', 'properties', 'reference'],
+    ['id', 'device', 'x', 'y', 'rotation', 'properties', 'designator', 'net', 'reference'],
     path,
     diagnostics,
   );
@@ -181,6 +214,27 @@ function readSymbol(
     value['reference'] === undefined
       ? undefined
       : readPoint(value['reference'], [...path, 'reference'], diagnostics);
+  const designator = readRoleField(value, 'designator', device, path, diagnostics, hasDesignator);
+  const net = readRoleField(value, 'net', device, path, diagnostics, namesNet);
+  if (device !== undefined) {
+    const role = symbolRole(device);
+    if (namesNet(role) && net === undefined && value['net'] === undefined) {
+      report(
+        diagnostics,
+        'symbol/missing-net',
+        `Symbols of role "${role}" must name the net they attach to.`,
+        [...path, 'net'],
+      );
+    }
+    if (!hasDesignator(role) && value['reference'] !== undefined) {
+      report(
+        diagnostics,
+        'symbol/unsupported-field',
+        `Symbols of role "${role}" carry no reference designator.`,
+        [...path, 'reference'],
+      );
+    }
+  }
   if (
     id === undefined ||
     device === undefined ||
@@ -198,8 +252,39 @@ function readSymbol(
     y,
     rotation,
     ...(properties === undefined ? {} : { properties }),
+    ...(designator === undefined ? {} : { designator }),
+    ...(net === undefined ? {} : { net }),
     ...(reference === undefined ? {} : { reference }),
   };
+}
+
+/**
+ * Reads a field that only some symbol roles may carry, so the format cannot describe a power
+ * symbol with a reference designator or a resistor with a net name.
+ */
+function readRoleField(
+  value: Record<string, unknown>,
+  field: 'designator' | 'net',
+  device: string | undefined,
+  path: readonly string[],
+  diagnostics: Diagnostic[],
+  allowed: (role: SymbolRole) => boolean,
+): string | undefined {
+  const raw = value[field];
+  if (raw === undefined || device === undefined) {
+    return undefined;
+  }
+  const role = symbolRole(device);
+  if (!allowed(role)) {
+    report(
+      diagnostics,
+      'symbol/unsupported-field',
+      `Symbols of role "${role}" must not declare "${field}".`,
+      [...path, field],
+    );
+    return undefined;
+  }
+  return readStringField(value, field, path, diagnostics, { nonEmpty: true });
 }
 
 function readWire(

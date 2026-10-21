@@ -2,9 +2,13 @@ import type { Point, Rect, SchematicDocument } from '../format/types';
 import {
   GROUND_DEVICE,
   POWER_DEVICE,
+  designatorOf,
+  hasDesignator,
   isLabelDevice,
   isTextDevice,
+  netNameOf,
   parseDeviceReference,
+  symbolRole,
   textDeviceContent,
 } from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
@@ -135,6 +139,7 @@ function annotationBounds(symbol: {
   readonly x: number;
   readonly y: number;
   readonly rotation: number;
+  readonly net?: string;
   readonly properties?: Readonly<Record<string, unknown>>;
 }): Rect {
   const device = symbol.device;
@@ -159,7 +164,7 @@ function annotationBounds(symbol: {
   const content = isTextDevice(device)
     ? textDeviceContent(symbol)
     : isLabelDevice(device)
-      ? symbol.id
+      ? (netNameOf(symbol) ?? '')
       : '';
   if (content.length === 0) {
     return { x: symbol.x, y: symbol.y, width: 0, height: 0 };
@@ -220,18 +225,18 @@ function referenceHit(
   tolerance: number,
 ): SchematicHit | undefined {
   const symbols = [...document.sheet.symbols]
-    .filter((symbol) => !isLabelDevice(symbol.device) && !isTextDevice(symbol.device))
+    .filter((symbol) => hasDesignator(symbolRole(symbol.device)))
     .sort((a, b) => a.id.localeCompare(b.id));
   for (const symbol of symbols) {
     const reference = parseDeviceReference(symbol.device);
     const definition =
       reference === undefined ? undefined : options.devices?.getDeviceSymbol(reference);
     if (definition === undefined) {
-      // Only real components carry a reference designator.
       continue;
     }
+    const designator = designatorOf(symbol) ?? symbol.id;
     const anchor = referencePosition(symbol, definition.bounds, symbol.reference);
-    const width = symbol.id.length * ANNOTATION_CHAR_WIDTH;
+    const width = designator.length * ANNOTATION_CHAR_WIDTH;
     const box: Rect = {
       x: anchor.x,
       y: anchor.y - ANNOTATION_HEIGHT,

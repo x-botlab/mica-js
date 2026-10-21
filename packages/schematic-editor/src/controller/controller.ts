@@ -3,13 +3,19 @@ import {
   SchematicError,
   defaultElementIdFactory,
   deriveSchematicTopology,
+  designatorOf,
+  hasDesignator,
   hitTestSchematic,
   mergeWiresAtJunction,
+  namesNet,
+  netNameOf,
   parseDeviceReference,
+  pointOnPolyline,
   previewSymbolDrag,
   referenceAnchor,
   rotatePoint,
   splitWireAt,
+  symbolRole,
   type DeviceSymbolProvider,
   type Diagnostic,
   type ElementIdFactory,
@@ -402,23 +408,96 @@ export class SchematicEditorController {
   }
 
   /**
-   * Renames a symbol; its id is the reference designator, so it must stay unique in the sheet.
+   * Sets a component's reference designator. The symbol id stays untouched, so selections and
+   * `.view` layout keys keep pointing at the same element.
    *
-   * @throws {SchematicError} when the new id is empty, taken or the symbol is unknown.
+   * @throws {SchematicError} when the new designator is empty, taken or the symbol is unknown.
    */
-  renameSymbol(symbolId: string, nextId: string): void {
-    const trimmed = nextId.trim();
+  renameDesignator(symbolId: string, nextDesignator: string): void {
+    const trimmed = nextDesignator.trim();
+    const symbol = this.#requireSymbol(symbolId);
+    const role = symbolRole(symbol.device);
+    if (!hasDesignator(role)) {
+      throw new SchematicError([
+        {
+          severity: 'error',
+          code: 'symbol/unsupported-field',
+          message: `Symbols of role "${role}" carry no reference designator.`,
+          entity: { kind: 'symbol', id: symbolId },
+        },
+      ]);
+    }
     if (trimmed.length === 0) {
       throw new SchematicError([
         {
           severity: 'error',
           code: 'schema/invalid-value',
-          message: 'Reference must not be empty.',
+          message: 'Reference designator must not be empty.',
         },
       ]);
     }
-    const document = this.#editor.document;
-    const symbol = document.sheet.symbols.find((candidate) => candidate.id === symbolId);
+    if (trimmed === designatorOf(symbol)) {
+      return;
+    }
+    const duplicate = this.#editor.document.sheet.symbols.find(
+      (candidate) => candidate.id !== symbolId && designatorOf(candidate) === trimmed,
+    );
+    if (duplicate !== undefined) {
+      throw new SchematicError([
+        {
+          severity: 'error',
+          code: 'symbol/designator-duplicate',
+          message: `Reference designator ${JSON.stringify(trimmed)} is already used.`,
+          entity: { kind: 'symbol', id: duplicate.id },
+        },
+      ]);
+    }
+    this.#mutate(() => {
+      this.#editor.dispatch({ type: 'update-symbol', id: symbolId, designator: trimmed });
+    });
+  }
+
+  /**
+   * Sets the net name of a label / power / ground symbol. Same-named ports are one net, so
+   * duplicates are allowed.
+   *
+   * @throws {SchematicError} when the name is empty or the symbol names no net.
+   */
+  renameNet(symbolId: string, nextNet: string): void {
+    const trimmed = nextNet.trim();
+    const symbol = this.#requireSymbol(symbolId);
+    const role = symbolRole(symbol.device);
+    if (!namesNet(role)) {
+      throw new SchematicError([
+        {
+          severity: 'error',
+          code: 'symbol/unsupported-field',
+          message: `Symbols of role "${role}" name no net.`,
+          entity: { kind: 'symbol', id: symbolId },
+        },
+      ]);
+    }
+    if (trimmed.length === 0) {
+      throw new SchematicError([
+        {
+          severity: 'error',
+          code: 'schema/invalid-value',
+          message: 'Net name must not be empty.',
+        },
+      ]);
+    }
+    if (trimmed === netNameOf(symbol)) {
+      return;
+    }
+    this.#mutate(() => {
+      this.#editor.dispatch({ type: 'update-symbol', id: symbolId, net: trimmed });
+    });
+  }
+
+  #requireSymbol(symbolId: string): SchematicSymbol {
+    const symbol = this.#editor.document.sheet.symbols.find(
+      (candidate) => candidate.id === symbolId,
+    );
     if (symbol === undefined) {
       throw new SchematicError([
         {
@@ -429,32 +508,7 @@ export class SchematicEditorController {
         },
       ]);
     }
-    if (trimmed === symbol.id) {
-      return;
-    }
-    if (document.sheet.symbols.some((candidate) => candidate.id === trimmed)) {
-      throw new SchematicError([
-        {
-          severity: 'error',
-          code: 'id/duplicate',
-          message: `Symbol id ${JSON.stringify(trimmed)} is already used.`,
-          entity: { kind: 'symbol', id: trimmed },
-        },
-      ]);
-    }
-    this.#mutate(() => {
-      const symbols = document.sheet.symbols.map((candidate) =>
-        candidate.id === symbolId ? { ...candidate, id: trimmed } : candidate,
-      );
-      this.#editor.replace({ ...document, sheet: { ...document.sheet, symbols } });
-      this.#selection = this.#selection.map((item) =>
-        item.kind === 'symbol' && item.id === symbolId
-          ? { kind: 'symbol', id: trimmed }
-          : item.kind === 'reference' && item.symbolId === symbolId
-            ? { kind: 'reference', symbolId: trimmed }
-            : item,
-      );
-    });
+    return symbol;
   }
 
   removeSymbolProperty(symbolId: string, key: string): void {
@@ -559,22 +613,22 @@ export class SchematicEditorController {
   }
 
   #hitTestWire(point: Point, excludeWireId: string): { wireId: string } | undefined {
-    const hit = this.hitTest(point, { includeSymbols: false });
-    if (hit?.kind !== 'wire' || hit.id === excludeWireId) {
-      return undefined;
+    // Scanned directly instead of through `hitTest`: the point sits on both the new wire and the
+    // host, and which one a plain hit reports depends on element order.
+    for (const wire of this.#editor.document.sheet.wires) {
+      if (wire.id === excludeWireId || !pointOnPolyline(wire.points, point, this.#tolerance ?? 0)) {
+        continue;
+      }
+      const [first, last] = [wire.points[0], wire.points[wire.points.length - 1]];
+      if (first === undefined || last === undefined) {
+        continue;
+      }
+      if (samePoint(first, point) || samePoint(last, point)) {
+        continue;
+      }
+      return { wireId: wire.id };
     }
-    const wire = this.#findWire(hit.id);
-    if (wire === undefined) {
-      return undefined;
-    }
-    const [first, last] = [wire.points[0], wire.points[wire.points.length - 1]];
-    if (first === undefined || last === undefined) {
-      return undefined;
-    }
-    if (samePoint(first, point) || samePoint(last, point)) {
-      return undefined;
-    }
-    return { wireId: wire.id };
+    return undefined;
   }
 
   #splitInto(

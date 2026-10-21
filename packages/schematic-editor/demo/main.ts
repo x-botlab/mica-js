@@ -129,10 +129,10 @@ const schematicText = JSON.stringify(
           id: 'lcd-l-d2',
           device: 'builtin:label',
           ...placements.label,
-          properties: { label: 'D2' },
+          net: 'D2',
         },
-        { id: 'p3v3', device: 'builtin:power', ...placements.power, properties: { label: '3V3' } },
-        { id: 'gnd', device: 'builtin:ground', ...placements.ground },
+        { id: 'p3v3', device: 'builtin:power', ...placements.power, net: '3V3' },
+        { id: 'gnd', device: 'builtin:ground', ...placements.ground, net: 'GND' },
       ],
       wires: [
         {

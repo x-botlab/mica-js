@@ -4,6 +4,9 @@ import type { EditEffect } from './commands';
 import type { SchematicDocument } from '../format/types';
 import { catchError, codesOf } from '../format/test-helpers';
 
+/** Ids are generated as UUID v4 so they never collide with user-facing names. */
+const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 function makeDocument(): SchematicDocument {
   return {
     version: 1,
@@ -57,13 +60,10 @@ describe('applySchematicCommand', () => {
       x: 1,
       y: 2,
     });
-    expect(result.sheet.symbols.at(-1)).toEqual({
-      id: 's3',
-      device: 'pkg:c',
-      x: 1,
-      y: 2,
-      rotation: 0,
-    });
+    const added = result.sheet.symbols.at(-1);
+    expect(added).toMatchObject({ device: 'pkg:c', x: 1, y: 2, rotation: 0 });
+    expect(added?.id).toMatch(UUID_V4);
+    expect(result.sheet.symbols.filter((symbol) => symbol.id === added?.id)).toHaveLength(1);
   });
 
   it('adds wires and junctions', () => {
@@ -74,7 +74,9 @@ describe('applySchematicCommand', () => {
         { x: 30, y: 0 },
       ],
     });
-    expect(withWire.sheet.wires.at(-1)?.id).toBe('w3');
+    const wireId = withWire.sheet.wires.at(-1)?.id;
+    expect(wireId).toMatch(UUID_V4);
+    expect(['w1', 'w2']).not.toContain(wireId);
 
     const withJunction = applySchematicCommand(withWire, {
       type: 'add-junction',
@@ -82,7 +84,9 @@ describe('applySchematicCommand', () => {
       y: 0,
       wires: ['w1', 'w2'],
     });
-    expect(withJunction.sheet.junctions.at(-1)?.id).toBe('j2');
+    const junctionId = withJunction.sheet.junctions.at(-1)?.id;
+    expect(junctionId).toMatch(UUID_V4);
+    expect(junctionId).not.toBe('j1');
   });
 
   it('updates and removes symbols, wires and junctions', () => {

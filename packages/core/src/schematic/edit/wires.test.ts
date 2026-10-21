@@ -35,9 +35,9 @@ describe('splitWireAt', () => {
   it('splits a wire and keeps the original id on the first half', () => {
     const result = splitWireAt(makeDocument(), 'w1', { x: 10, y: 5 });
     expect(result.firstWireId).toBe('w1');
-    expect(result.secondWireId).toBe('w3');
+    expect(result.secondWireId).not.toBe('w1');
     const first = result.document.sheet.wires.find((wire) => wire.id === 'w1');
-    const second = result.document.sheet.wires.find((wire) => wire.id === 'w3');
+    const second = result.document.sheet.wires.find((wire) => wire.id === result.secondWireId);
     expect(first?.points).toEqual([
       { x: 0, y: 0 },
       { x: 10, y: 0 },
@@ -77,7 +77,7 @@ describe('splitWireAt', () => {
     };
     const result = splitWireAt(document, 'w1', { x: 10, y: 2 });
     const junction = result.document.sheet.junctions.find((item) => item.id === 'j1');
-    expect(junction?.wires).toEqual(['w3', 'w2']);
+    expect(junction?.wires).toEqual([result.secondWireId, 'w2']);
   });
 
   it('keeps junctions that lie on the first half', () => {
@@ -89,7 +89,7 @@ describe('splitWireAt', () => {
   it('connects both halves when the junction sits exactly on the split point', () => {
     const result = splitWireAt(makeDocument(), 'w1', { x: 5, y: 0 });
     const junction = result.document.sheet.junctions.find((item) => item.id === 'j1');
-    expect(junction?.wires).toEqual(['w1', 'w3', 'w2']);
+    expect(junction?.wires).toEqual(['w1', result.secondWireId, 'w2']);
   });
 
   it('rejects unknown wires and non-interior points', () => {

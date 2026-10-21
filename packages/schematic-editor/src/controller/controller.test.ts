@@ -176,8 +176,10 @@ describe('SchematicEditorController', () => {
       { x: 50, y: 0 },
     ]);
     const wiresAfterAdd = controller.document.sheet.wires.length;
+    const branchId = controller.document.sheet.wires.at(-1)?.id ?? '';
+    expect(branchId).not.toBe('w1');
 
-    controller.setSelection([{ kind: 'wire', id: 'w2' }]);
+    controller.setSelection([{ kind: 'wire', id: branchId }]);
     controller.deleteSelection();
 
     expect(controller.document.sheet.junctions).toEqual([]);
@@ -347,7 +349,10 @@ describe('SchematicEditorController', () => {
     const start = { x: symbol.x + (pin?.x ?? 0), y: symbol.y + (pin?.y ?? 0) };
     const controller = createController(
       documentOf({
-        symbols: [symbol, { id: 'vcc', device: POWER_DEVICE, x: start.x, y: start.y, rotation: 0 }],
+        symbols: [
+          symbol,
+          { id: 'vcc', device: POWER_DEVICE, net: 'VCC', x: start.x, y: start.y, rotation: 0 },
+        ],
         wires: [{ id: 'w1', points: [start, { x: start.x - 40, y: start.y }] }],
       }),
     );
@@ -401,7 +406,7 @@ describe('SchematicEditorController', () => {
   it('inspects wires with their net name', () => {
     const controller = createController(
       documentOf({
-        symbols: [{ id: 'vcc', device: POWER_DEVICE, x: 0, y: 0, rotation: 0, properties: {} }],
+        symbols: [{ id: 'vcc', device: POWER_DEVICE, net: 'VCC', x: 0, y: 0, rotation: 0 }],
         wires: [
           {
             id: 'w1',

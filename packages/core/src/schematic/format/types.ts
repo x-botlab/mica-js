@@ -27,10 +27,21 @@ export interface Placement {
 export type PropertyValue = string | number | boolean;
 
 export interface SchematicSymbol extends Placement {
+  /** Stable identity used by selections, undo and `.view` layout keys. */
   readonly id: string;
   readonly device: string;
   /** Instance property overrides; absent means "use device defaults". */
   readonly properties?: Readonly<Record<string, PropertyValue>>;
+  /**
+   * Reference designator of a component (`U1`, `R2`); defaults to {@link id}.
+   * Only components carry one — the format rejects it elsewhere.
+   */
+  readonly designator?: string;
+  /**
+   * Net name of a net label, power or ground symbol (`VCC`, `N1`). It is the text drawn next to
+   * the anchor and the key same-named ports merge on. Only net-naming symbols carry one.
+   */
+  readonly net?: string;
   /**
    * Reference designator anchor in symbol-local coordinates (unrotated, unplaced).
    * Absent means the default position at the body's top-left corner.

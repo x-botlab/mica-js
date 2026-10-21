@@ -12,7 +12,7 @@ const SAMPLE = `{
     "symbols": [
       { "id": "s-mcu", "device": "stm32-package:stm32g431rbt6-lqfp64", "x": 480, "y": 160, "rotation": 0 },
       { "id": "s-lcd", "device": "lcd-package:ct117e-m4-tft-lcd-2-4", "x": 136, "y": 55, "rotation": 0 },
-      { "id": "lcd-l-d0", "device": "builtin:label", "x": 300, "y": 100, "rotation": 0 }
+      { "id": "lcd-l-d0", "device": "builtin:label", "net": "lcd-l-d0", "x": 300, "y": 100, "rotation": 0 }
     ],
     "wires": [
       {

@@ -17,6 +17,13 @@ export function serializeSchematic(document: SchematicDocument): string {
         if (symbol.properties !== undefined && Object.keys(symbol.properties).length > 0) {
           serialized['properties'] = sortProperties(symbol.properties);
         }
+        // Role-scoped fields are written explicitly so the file states what the symbol is for.
+        if (symbol.designator !== undefined) {
+          serialized['designator'] = symbol.designator;
+        }
+        if (symbol.net !== undefined) {
+          serialized['net'] = symbol.net;
+        }
         if (symbol.reference !== undefined) {
           serialized['reference'] = { x: symbol.reference.x, y: symbol.reference.y };
         }

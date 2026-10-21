@@ -4,6 +4,7 @@ import {
   LABEL_DEVICE,
   POWER_DEVICE,
   TEXT_DEVICE,
+  netNameOf,
   parseDeviceReference,
   pinSide,
   pinsBounds,
@@ -140,9 +141,13 @@ export function pinPosition(
   return anchor === undefined ? undefined : symbolPinPosition(symbol, anchor);
 }
 
-/** Smallest unused `N<n>` id; a label's id is its net name. */
-export function nextLabelName(document: SchematicDocument): string {
-  const used = new Set(document.sheet.symbols.map((symbol) => symbol.id));
+/** Smallest unused `N<n>` net name for a freshly placed net label. */
+export function nextNetName(document: SchematicDocument): string {
+  const used = new Set(
+    document.sheet.symbols
+      .map((symbol) => netNameOf(symbol))
+      .filter((name): name is string => name !== undefined),
+  );
   for (let index = 1; index < Number.MAX_SAFE_INTEGER; index += 1) {
     const candidate = `N${index}`;
     if (!used.has(candidate)) {

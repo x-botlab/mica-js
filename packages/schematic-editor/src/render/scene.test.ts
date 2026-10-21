@@ -33,9 +33,9 @@ const document: SchematicDocument = parseSchematic({
   sheet: {
     symbols: [
       { id: 'u1', device: 'pkg:mcu', x: 100, y: 100, rotation: 0 },
-      { id: 'L1', device: 'builtin:label', x: 200, y: 100, rotation: 0 },
-      { id: 'P1', device: 'builtin:power', x: 0, y: 0, rotation: 0, properties: { label: '3V3' } },
-      { id: 'G1', device: 'builtin:ground', x: 0, y: 60, rotation: 0 },
+      { id: 'L1', device: 'builtin:label', net: 'L1', x: 200, y: 100, rotation: 0 },
+      { id: 'P1', device: 'builtin:power', x: 0, y: 0, rotation: 0, net: '3V3' },
+      { id: 'G1', device: 'builtin:ground', x: 0, y: 60, rotation: 0, net: 'GND' },
     ],
     wires: [
       {
@@ -333,7 +333,7 @@ describe('buildSchematicScene', () => {
           version: 1,
           id: `power-${rotation}`,
           sheet: {
-            symbols: [{ id: 'P1', device: POWER_DEVICE, x: 0, y: 0, rotation }],
+            symbols: [{ id: 'P1', device: POWER_DEVICE, net: 'VCC', x: 0, y: 0, rotation }],
             wires: [],
             junctions: [],
           },
@@ -375,7 +375,7 @@ describe('buildSchematicScene', () => {
           version: 1,
           id: `label-${rotation}`,
           sheet: {
-            symbols: [{ id: 'N1', device: LABEL_DEVICE, x: 0, y: 0, rotation }],
+            symbols: [{ id: 'lbl', device: LABEL_DEVICE, net: 'N1', x: 0, y: 0, rotation }],
             wires: [],
             junctions: [],
           },
@@ -410,7 +410,7 @@ describe('buildSchematicScene', () => {
           version: 1,
           id: 'anchors',
           sheet: {
-            symbols: [{ id: 'A1', device, x: 0, y: 0, rotation: 0 }],
+            symbols: [{ id: 'A1', device, net: 'A1', x: 0, y: 0, rotation: 0 }],
             wires: [],
             junctions: [],
           },

@@ -99,6 +99,71 @@ export function isBuiltinDevice(raw: string): boolean {
   return builtinSymbolKind(raw) !== undefined;
 }
 
+/** What a placed symbol is for: the single question the rest of the code asks about it. */
+export type SymbolRole = 'component' | 'net-label' | 'power' | 'ground' | 'text';
+
+/** Role of a symbol, derived from its device reference; unknown devices are components. */
+export function symbolRole(device: string): SymbolRole {
+  switch (builtinSymbolKind(device)) {
+    case 'label':
+      return 'net-label';
+    case 'power':
+      return 'power';
+    case 'ground':
+      return 'ground';
+    default:
+      return isTextDevice(device) ? 'text' : 'component';
+  }
+}
+
+/** Only components are annotated with a reference designator. */
+export function hasDesignator(role: SymbolRole): boolean {
+  return role === 'component';
+}
+
+/** Net labels, power and ground ports name the net they attach to. */
+export function namesNet(role: SymbolRole): boolean {
+  return role === 'net-label' || role === 'power' || role === 'ground';
+}
+
+/** Reference designator of a component; `undefined` for symbols that have none. */
+export function designatorOf(symbol: {
+  readonly id: string;
+  readonly device: string;
+  readonly designator?: string;
+}): string | undefined {
+  return hasDesignator(symbolRole(symbol.device)) ? (symbol.designator ?? symbol.id) : undefined;
+}
+
+/** Net name of a label / power / ground symbol; `undefined` when the symbol names no net. */
+export function netNameOf(symbol: {
+  readonly device: string;
+  readonly net?: string;
+}): string | undefined {
+  switch (symbolRole(symbol.device)) {
+    case 'power':
+      return symbol.net ?? DEFAULT_POWER_LABEL;
+    case 'ground':
+      return symbol.net ?? DEFAULT_GROUND_LABEL;
+    case 'net-label':
+      return symbol.net;
+    default:
+      return undefined;
+  }
+}
+
+/** Net name a freshly placed symbol of `role` gets when none is given. */
+export function defaultNetName(role: SymbolRole): string | undefined {
+  switch (role) {
+    case 'power':
+      return DEFAULT_POWER_LABEL;
+    case 'ground':
+      return DEFAULT_GROUND_LABEL;
+    default:
+      return undefined;
+  }
+}
+
 export function formatDeviceReference(packageId: string, deviceId: string): string {
   return `${packageId}:${deviceId}`;
 }

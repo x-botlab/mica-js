@@ -1,10 +1,11 @@
 import {
-  DEFAULT_GROUND_LABEL,
-  DEFAULT_POWER_LABEL,
   DEFAULT_TEXT_CONTENT,
-  builtinSymbolKind,
+  designatorOf,
   isTextDevice,
+  namesNet,
+  netNameOf,
   parseDeviceReference,
+  symbolRole,
   textDeviceContent,
   type DeviceReference,
   type DeviceSymbolProvider,
@@ -59,14 +60,20 @@ function symbolInspector(
   devices: DeviceSymbolProvider | undefined,
 ): SymbolInspector {
   const reference = parseDeviceReference(symbol.device);
+  const role = symbolRole(symbol.device);
+  const designator = designatorOf(symbol);
+  const net = netNameOf(symbol);
   return {
     kind: 'symbol',
     id: symbol.id,
+    role,
     device: symbol.device,
     name:
       (reference === undefined ? undefined : devices?.getDeviceName(reference)) ??
       builtinName(symbol),
-    builtin: builtinSymbolKind(symbol.device) !== undefined || isTextDevice(symbol.device),
+    builtin: role !== 'component',
+    ...(designator === undefined ? {} : { designator }),
+    ...(net === undefined ? {} : { net }),
     x: symbol.x,
     y: symbol.y,
     rotation: symbol.rotation,
@@ -91,19 +98,8 @@ function propertyFields(
     return fields;
   }
 
-  const builtin = builtinSymbolKind(symbol.device);
-  if (builtin !== undefined) {
-    fields.push({
-      key: 'label',
-      type: 'string',
-      value: typeof overrides['label'] === 'string' ? (overrides['label'] as string) : undefined,
-      defaultValue:
-        builtin === 'power'
-          ? DEFAULT_POWER_LABEL
-          : builtin === 'ground'
-            ? DEFAULT_GROUND_LABEL
-            : symbol.id,
-    });
+  // Net-naming symbols expose their net name as a dedicated inspector row, not as a property.
+  if (namesNet(symbolRole(symbol.device))) {
     return fields;
   }
 
@@ -156,21 +152,7 @@ function builtinName(symbol: SchematicSymbol): string | undefined {
   if (isTextDevice(symbol.device)) {
     return textDeviceContent(symbol);
   }
-  const builtin = builtinSymbolKind(symbol.device);
-  if (builtin === undefined) {
-    return undefined;
-  }
-  const label = symbol.properties?.['label'];
-  if (typeof label === 'string') {
-    return label;
-  }
-  if (builtin === 'power') {
-    return DEFAULT_POWER_LABEL;
-  }
-  if (builtin === 'ground') {
-    return DEFAULT_GROUND_LABEL;
-  }
-  return symbol.id;
+  return netNameOf(symbol);
 }
 
 function isPropertyType(value: string): value is 'string' | 'number' | 'boolean' {

@@ -74,6 +74,7 @@ export {
 } from './geometry/transform';
 export { rerouteWireEndpoint } from './geometry/reroute';
 export type { PointMove, ReroutedWire } from './geometry/reroute';
+export { DEFAULT_TOLERANCE, pointOnPolyline, pointsEqual } from './geometry/point';
 export { previewSymbolDrag } from './edit/preview';
 export type { SymbolDragPreview } from './edit/preview';
 
@@ -87,16 +88,22 @@ export {
   RESERVED_PACKAGE_NAMESPACE,
   TEXT_DEVICE,
   builtinSymbolKind,
+  defaultNetName,
+  designatorOf,
   formatDeviceReference,
+  hasDesignator,
   isBuiltinDevice,
   isLabelDevice,
   isReservedPackageId,
   isTextDevice,
   isValidPackageId,
+  namesNet,
+  netNameOf,
   parseDeviceReference,
+  symbolRole,
   textDeviceContent,
 } from './device/reference';
-export type { BuiltinSymbolKind, DeviceReference } from './device/reference';
+export type { BuiltinSymbolKind, DeviceReference, SymbolRole } from './device/reference';
 export type {
   DeviceSymbolDefinition,
   DeviceSymbolGeometry,

@@ -33,7 +33,7 @@ describe('builtin power and ground symbols', () => {
     expect(gnd.nets[0]?.name).toBe('GND');
   });
 
-  it('uses properties.label when provided', () => {
+  it('uses the declared net name when provided', () => {
     const topology = deriveSchematicTopology(
       documentWith(
         [
@@ -43,7 +43,7 @@ describe('builtin power and ground symbols', () => {
             x: 0,
             y: 0,
             rotation: 0,
-            properties: { label: '3V3' },
+            net: '3V3',
           },
         ],
         WIRE,
@@ -70,12 +70,53 @@ describe('builtin power and ground symbols', () => {
     expect(error.message).toContain('GND');
   });
 
-  it('keeps labels unchanged', () => {
+  it('names the net with the label net name', () => {
     const topology = deriveSchematicTopology(
-      documentWith([{ id: 'L1', device: 'builtin:label', x: 0, y: 0, rotation: 0 }], WIRE),
+      documentWith(
+        [{ id: 'L1', device: 'builtin:label', x: 0, y: 0, rotation: 0, net: 'SCL' }],
+        WIRE,
+      ),
     );
-    expect(topology.nets[0]?.name).toBe('L1');
+    expect(topology.nets[0]?.name).toBe('SCL');
     expect(topology.nets[0]?.members).toEqual([{ kind: 'label', symbolId: 'L1' }]);
+  });
+
+  it('merges ports that share a net name across separate wires', () => {
+    const topology = deriveSchematicTopology(
+      documentWith(
+        [
+          { id: 'p1', device: 'builtin:power', net: 'VCC', x: 0, y: 0, rotation: 0 },
+          { id: 'p2', device: 'builtin:power', net: 'VCC', x: 100, y: 0, rotation: 0 },
+        ],
+        [
+          ...WIRE,
+          {
+            id: 'w2',
+            points: [
+              { x: 100, y: 0 },
+              { x: 140, y: 0 },
+            ],
+          },
+        ],
+      ),
+    );
+    expect(topology.nets).toHaveLength(1);
+    expect(topology.nets[0]?.name).toBe('VCC');
+    expect(topology.nets[0]?.wireIds).toHaveLength(2);
+    expect(topology.nets[0]?.members).toEqual([
+      { kind: 'power', symbolId: 'p1' },
+      { kind: 'power', symbolId: 'p2' },
+    ]);
+  });
+
+  it('keeps same-named labels without any wire out of the netlist', () => {
+    const topology = deriveSchematicTopology(
+      documentWith([
+        { id: 'l1', device: 'builtin:label', net: 'SPARE', x: 0, y: 0, rotation: 0 },
+        { id: 'l2', device: 'builtin:label', net: 'SPARE', x: 40, y: 0, rotation: 0 },
+      ]),
+    );
+    expect(topology.nets).toEqual([]);
   });
 
   it('orders members label, power, ground, pin', () => {
