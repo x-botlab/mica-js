@@ -9,7 +9,7 @@ import {
   type ElectricalPinInput,
   type FloatingInput,
   type FloatingInputSample,
-} from './index';
+} from '../index';
 
 it('preserves the approved root-entrypoint signatures and discriminated physical states', () => {
   expectTypeOf(resolveElectricalNetwork).parameters.toEqualTypeOf<[ElectricalNetworkInput]>();

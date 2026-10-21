@@ -58,8 +58,13 @@ export function checkBoolean(value: unknown, path: string): asserts value is boo
   if (typeof value !== 'boolean') invalidType(path, value, 'be a boolean');
 }
 
-export function checkChoice(value: unknown, choices: readonly string[], path: string): void {
-  if (typeof value !== 'string' || !choices.includes(value)) {
+export function checkChoice<T extends string>(
+  value: unknown,
+  choices: readonly T[],
+  path: string,
+): T {
+  if (typeof value !== 'string' || !choices.includes(value as T)) {
     invalidType(path, value, `be one of ${choices.join(', ')}`);
   }
+  return value as T;
 }

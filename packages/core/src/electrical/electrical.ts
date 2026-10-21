@@ -25,55 +25,83 @@ function compareSources(
   return compareText(left.instanceId, right.instanceId) || compareText(left.pinName, right.pinName);
 }
 
-function validatePin(pin: unknown, path: string): asserts pin is ElectricalPinInput {
-  checkRecord(pin, path, [
-    'instanceId',
-    'pinName',
-    'powerReady',
-    'mode',
-    'outputEnabled',
-    'pull',
-    'digitalIntent',
-    'voltageIntent',
-    'model',
-  ]);
-  checkIdentity(pin.instanceId, `${path}.instanceId`);
-  checkIdentity(pin.pinName, `${path}.pinName`);
-  checkBoolean(pin.powerReady, `${path}.powerReady`);
-  checkBoolean(pin.outputEnabled, `${path}.outputEnabled`);
-  checkChoice(pin.mode, ['high-z', 'push-pull', 'open-drain', 'analog'], `${path}.mode`);
-  checkChoice(pin.pull, ['none', 'up', 'down'], `${path}.pull`);
-  const modelPath = `${path}.model`;
-  checkRecord(pin.model, modelPath, [
-    'kind',
-    'minVoltage',
-    'maxVoltage',
-    'lowVoltage',
-    'highVoltage',
-  ]);
-  const model = pin.model;
-  checkChoice(model.kind, ['ideal-voltage'], `${modelPath}.kind`);
-  checkFinite(model.minVoltage, `${modelPath}.minVoltage`);
-  checkFinite(model.maxVoltage, `${modelPath}.maxVoltage`);
-  if (model.minVoltage > model.maxVoltage) {
-    throw new RangeError(
-      `${modelPath}.minVoltage: ${model.minVoltage} must be <= maxVoltage ${model.maxVoltage}`,
-    );
+const PIN_FIELDS = [
+  'instanceId',
+  'pinName',
+  'powerReady',
+  'mode',
+  'outputEnabled',
+  'pull',
+  'digitalIntent',
+  'voltageIntent',
+  'model',
+] as const;
+const MODEL_FIELDS = ['kind', 'minVoltage', 'maxVoltage', 'lowVoltage', 'highVoltage'] as const;
+const PIN_MODES = ['high-z', 'push-pull', 'open-drain', 'analog'] as const;
+const PULLS = ['none', 'up', 'down'] as const;
+const VOLTAGE_MODELS = ['ideal-voltage'] as const;
+
+function snapshotModel(value: unknown, path: string): ElectricalPinInput['model'] {
+  checkRecord(value, path, MODEL_FIELDS);
+  const kind = checkChoice(value.kind, VOLTAGE_MODELS, `${path}.kind`);
+  const minVoltage = value.minVoltage;
+  const maxVoltage = value.maxVoltage;
+  const lowVoltage = value.lowVoltage;
+  const highVoltage = value.highVoltage;
+  checkFinite(minVoltage, `${path}.minVoltage`);
+  checkFinite(maxVoltage, `${path}.maxVoltage`);
+  if (minVoltage > maxVoltage) {
+    throw new RangeError(`${path}.minVoltage: ${minVoltage} must be <= maxVoltage ${maxVoltage}`);
   }
-  checkFinite(model.lowVoltage, `${modelPath}.lowVoltage`);
-  checkFinite(model.highVoltage, `${modelPath}.highVoltage`);
-  checkRange(model.lowVoltage, model.minVoltage, model.maxVoltage, `${modelPath}.lowVoltage`);
-  checkRange(model.highVoltage, model.minVoltage, model.maxVoltage, `${modelPath}.highVoltage`);
-  if (model.lowVoltage > model.highVoltage) {
-    throw new RangeError(
-      `${modelPath}.lowVoltage: ${model.lowVoltage} must be <= highVoltage ${model.highVoltage}`,
-    );
+  checkFinite(lowVoltage, `${path}.lowVoltage`);
+  checkFinite(highVoltage, `${path}.highVoltage`);
+  checkRange(lowVoltage, minVoltage, maxVoltage, `${path}.lowVoltage`);
+  checkRange(highVoltage, minVoltage, maxVoltage, `${path}.highVoltage`);
+  if (lowVoltage > highVoltage) {
+    throw new RangeError(`${path}.lowVoltage: ${lowVoltage} must be <= highVoltage ${highVoltage}`);
   }
-  if ('digitalIntent' in pin) checkBoolean(pin.digitalIntent, `${path}.digitalIntent`);
-  if ('voltageIntent' in pin) {
-    checkFinite(pin.voltageIntent, `${path}.voltageIntent`);
-    checkRange(pin.voltageIntent, model.minVoltage, model.maxVoltage, `${path}.voltageIntent`);
+  return Object.freeze({ kind, minVoltage, maxVoltage, lowVoltage, highVoltage });
+}
+
+function snapshotPin(value: unknown, path: string): ElectricalPinInput {
+  checkRecord(value, path, PIN_FIELDS);
+  // Read every field exactly once; the frozen snapshot below is the only value
+  // later evaluation sees, including for models supplied through getters or prototypes.
+  const instanceId = value.instanceId;
+  const pinName = value.pinName;
+  const powerReady = value.powerReady;
+  const outputEnabled = value.outputEnabled;
+  const mode = checkChoice(value.mode, PIN_MODES, `${path}.mode`);
+  const pull = checkChoice(value.pull, PULLS, `${path}.pull`);
+  checkIdentity(instanceId, `${path}.instanceId`);
+  checkIdentity(pinName, `${path}.pinName`);
+  checkBoolean(powerReady, `${path}.powerReady`);
+  checkBoolean(outputEnabled, `${path}.outputEnabled`);
+  const model = snapshotModel(value.model, `${path}.model`);
+  let digitalIntent: boolean | undefined;
+  if ('digitalIntent' in value) {
+    const candidate = value.digitalIntent;
+    checkBoolean(candidate, `${path}.digitalIntent`);
+    digitalIntent = candidate;
   }
+  let voltageIntent: number | undefined;
+  if ('voltageIntent' in value) {
+    const candidate = value.voltageIntent;
+    checkFinite(candidate, `${path}.voltageIntent`);
+    checkRange(candidate, model.minVoltage, model.maxVoltage, `${path}.voltageIntent`);
+    voltageIntent = candidate;
+  }
+  return Object.freeze({
+    instanceId,
+    pinName,
+    powerReady,
+    mode,
+    outputEnabled,
+    pull,
+    ...(digitalIntent === undefined ? {} : { digitalIntent }),
+    ...(voltageIntent === undefined ? {} : { voltageIntent }),
+    model,
+  });
 }
 
 function snapshotNetwork(input: ElectricalNetworkInput): ElectricalNetworkInput {
@@ -83,28 +111,15 @@ function snapshotNetwork(input: ElectricalNetworkInput): ElectricalNetworkInput 
   const sources = new Map<string, Set<string>>();
   const pins: ElectricalPinInput[] = [];
   for (let index = 0; index < input.pins.length; index += 1) {
-    const pin: unknown = input.pins[index];
     const path = `network.pins[${index}]`;
-    validatePin(pin, path);
+    const pin = snapshotPin(input.pins[index], path);
     const names = sources.get(pin.instanceId) ?? new Set<string>();
     if (names.has(pin.pinName)) {
       invalidType(`${path}.pinName`, pin.pinName, `be unique within instance ${pin.instanceId}`);
     }
     names.add(pin.pinName);
     sources.set(pin.instanceId, names);
-    pins.push(
-      Object.freeze({
-        instanceId: pin.instanceId,
-        pinName: pin.pinName,
-        powerReady: pin.powerReady,
-        mode: pin.mode,
-        outputEnabled: pin.outputEnabled,
-        pull: pin.pull,
-        ...(pin.digitalIntent === undefined ? {} : { digitalIntent: pin.digitalIntent }),
-        ...(pin.voltageIntent === undefined ? {} : { voltageIntent: pin.voltageIntent }),
-        model: Object.freeze({ ...pin.model }),
-      }),
-    );
+    pins.push(pin);
   }
   return Object.freeze({
     networkId: input.networkId,
@@ -117,7 +132,15 @@ function snapshotContributions(
 ): readonly ElectricalContribution[] {
   return Object.freeze(
     contributions
-      .map((contribution) => Object.freeze({ ...contribution }))
+      .map((contribution) =>
+        Object.freeze({
+          instanceId: contribution.instanceId,
+          pinName: contribution.pinName,
+          kind: contribution.kind,
+          strength: contribution.strength,
+          voltage: contribution.voltage,
+        }),
+      )
       .sort((left, right) => compareSources(left, right) || compareText(left.kind, right.kind)),
   );
 }

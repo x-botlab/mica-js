@@ -56,7 +56,7 @@ pnpm --filter @mica-js/core run build
 
 ## 电气模块
 
-当前实现公共电气网络的纯求值与 `mica-floating-v2` 浮空模拟取值。公共合同经 [#49 逐项批准](https://github.com/x-botlab/mica-js/issues/49#issuecomment-6322043409)，依据 [#12 引脚状态](https://github.com/x-botlab/mica-js/issues/12)、[#24 电气模型](https://github.com/x-botlab/mica-js/issues/24) 和 [#23 整数皮秒时间](https://github.com/x-botlab/mica-js/issues/23)。既有 `MICA_CORE_VERSION` 保留。
+当前实现公共电气网络的纯求值与 `mica-floating-v2` 浮空模拟取值。公共合同经 [#49 逐项批准](https://github.com/x-botlab/mica-js/issues/49#issuecomment-6322043409)，依据 [#12 引脚状态](https://github.com/x-botlab/mica-js/issues/12)、[#24 电气模型](https://github.com/x-botlab/mica-js/issues/24) 和 [#23 整数皮秒时间](https://github.com/x-botlab/mica-js/issues/23)。既有 `MICA_CORE_VERSION` 保留。实现位于 `src/electrical/`，与 `src/schematic/`、`src/canvas/` 并列。
 
 ## 网络求值
 
@@ -120,6 +120,7 @@ const result = resolveElectricalNetwork({ networkId: 'data', pins: [output] });
 - 模型仅接受 `kind: 'ideal-voltage'`。min/max 必须有限且 min <= max，允许负电压；low/high 必须在此范围内且 low <= high；就绪 voltageIntent 必须有限且在范围内。
 - 未知字段/模型（包括电阻、阻抗字段）、枚举或类型错误、非有限数值抛 `TypeError`。显式 undefined 意图不等同于缺省字段。
 - 合法数值超范围或范围倒置抛 `RangeError`。校验消息包含字段路径、值和约束。
+- 每个引脚及其模型的字段各读取一次，校验后的值直接构成冻结的纯数据快照，后续求值只使用该快照。字段可由普通数据属性、getter 或原型提供，但快照不保留原型与访问器；未知的自身字段仍被拒绝。冲突错误的 `network` 与 `contributions` 同样按已知字段规范化，因此类 getter、非枚举自身属性和原型属性不会在复制时丢失。
 - 驱动或偏置不相容时当次同步抛 `ElectricalConflictError`，无新增错误码。其 `network` 保存冻结完整输入现场，`contributions` 保存冻结贡献；构造签名为 `(network: ElectricalNetworkInput, contributions: readonly ElectricalContribution[])`。
 
 **冲突不是浮空。** 本模块没有仿真循环，不能自行暂停整个仿真或提交效果。后续 #50 集成必须捕获冲突、暂停整个仿真并保留此前已提交效果；此处不宣称该接线已经完成。

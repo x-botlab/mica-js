@@ -4,7 +4,7 @@ import {
   resolveElectricalNetwork,
   type ElectricalNetworkInput,
   type ElectricalPinInput,
-} from './index';
+} from '../index';
 
 function pin(overrides: Partial<ElectricalPinInput> = {}): ElectricalPinInput {
   return {
@@ -556,5 +556,141 @@ describe('runtime contract validation', () => {
       pin({ instanceId: 'e\u0301', pull: 'up' }),
     ];
     expect(resolveElectricalNetwork(network(pins)).contributions).toHaveLength(5);
+  });
+});
+
+class GetterModel {
+  get kind(): 'ideal-voltage' {
+    return 'ideal-voltage';
+  }
+  get minVoltage(): number {
+    return 0;
+  }
+  get maxVoltage(): number {
+    return 5;
+  }
+  get lowVoltage(): number {
+    return 0;
+  }
+  get highVoltage(): number {
+    return 3.3;
+  }
+}
+
+function ownGetterModel(): ElectricalPinInput['model'] {
+  const values = {
+    kind: 'ideal-voltage',
+    minVoltage: 0,
+    maxVoltage: 5,
+    lowVoltage: 0,
+    highVoltage: 3.3,
+  };
+  return Object.defineProperties(
+    {},
+    Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [key, { get: () => value, enumerable: false }]),
+    ),
+  ) as ElectricalPinInput['model'];
+}
+
+function getterPin(): ElectricalPinInput {
+  const values = pin({ ...output, digitalIntent: true, pull: 'down' });
+  const accessors: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(values)) {
+    Object.defineProperty(accessors, key, { get: () => value, enumerable: false });
+  }
+  return accessors as unknown as ElectricalPinInput;
+}
+
+const modelSources = [
+  ['own non-enumerable getters', ownGetterModel],
+  ['class prototype getters', () => new GetterModel()],
+] as const;
+
+describe('snapshot field capture', () => {
+  it.each(modelSources)('detects real drive conflicts for %s models', (_name, createModel) => {
+    const input = network([
+      pin({ ...output, pinName: 'A', digitalIntent: true, model: createModel() }),
+      pin({ ...output, pinName: 'B', digitalIntent: false, model: createModel() }),
+    ]);
+    let failure: ElectricalConflictError | undefined;
+    try {
+      resolveElectricalNetwork(input);
+    } catch (error) {
+      expect(error).toBeInstanceOf(ElectricalConflictError);
+      failure = error as ElectricalConflictError;
+    }
+    expect(failure).toBeDefined();
+    expect(failure!.contributions.map((contribution) => contribution.voltage)).toEqual([3.3, 0]);
+    expect(failure!.network.pins[0]!.model).toEqual({
+      kind: 'ideal-voltage',
+      minVoltage: 0,
+      maxVoltage: 5,
+      lowVoltage: 0,
+      highVoltage: 3.3,
+    });
+    expect(Object.isFrozen(failure!.network.pins[0]!.model)).toBe(true);
+  });
+
+  it.each(modelSources)(
+    'keeps finite strong voltage and pull bias for %s models',
+    (_name, createModel) => {
+      const result = resolveElectricalNetwork(
+        network([pin({ ...output, digitalIntent: true, pull: 'up', model: createModel() })]),
+      );
+      expect(result).toEqual({
+        state: 'driven',
+        voltage: 3.3,
+        strength: 'strong',
+        contributions: [
+          { instanceId: 'device', pinName: 'P', kind: 'drive', strength: 'strong', voltage: 3.3 },
+          { instanceId: 'device', pinName: 'P', kind: 'pull', strength: 'weak', voltage: 3.3 },
+        ],
+      });
+    },
+  );
+
+  it('reads pin-level getter fields once and snapshots them as data', () => {
+    const source = getterPin();
+    const result = resolveElectricalNetwork(network([source]));
+    expect(result).toMatchObject({ state: 'driven', voltage: 3.3, strength: 'strong' });
+    expect(result.contributions).toHaveLength(2);
+    const failure = new ElectricalConflictError(network([getterPin()]), [
+      Object.create({
+        get instanceId() {
+          return 'device';
+        },
+        get pinName() {
+          return 'P';
+        },
+        get kind() {
+          return 'drive';
+        },
+        get strength() {
+          return 'strong';
+        },
+        get voltage() {
+          return 0;
+        },
+      }) as unknown as ElectricalConflictError['contributions'][number],
+    ]);
+    expect(failure.contributions).toEqual([
+      { instanceId: 'device', pinName: 'P', kind: 'drive', strength: 'strong', voltage: 0 },
+    ]);
+    expect(Object.keys(failure.contributions[0]!).sort()).toEqual([
+      'instanceId',
+      'kind',
+      'pinName',
+      'strength',
+      'voltage',
+    ]);
+    expect(Object.isFrozen(failure.contributions[0])).toBe(true);
+  });
+
+  it.each(modelSources)('rejects unsupported fields from %s models', (_name, createModel) => {
+    const model = Object.create(createModel());
+    Object.defineProperty(model, 'resistance', { value: 10, enumerable: false });
+    expect(() => resolveElectricalNetwork(network([pin({ model })]))).toThrow(TypeError);
+    expect(() => resolveElectricalNetwork(network([pin({ model })]))).toThrow('resistance');
   });
 });

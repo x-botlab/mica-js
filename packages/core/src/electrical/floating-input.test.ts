@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createFloatingInput, resolveElectricalNetwork, type FloatingInputSample } from './index';
+import { createFloatingInput, resolveElectricalNetwork, type FloatingInputSample } from '../index';
 
 function voltage(sample: FloatingInputSample): number {
   expect(sample.state).toBe('ready');

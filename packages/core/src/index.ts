@@ -7,6 +7,6 @@ export type {
   ElectricalNetworkResult,
   FloatingInputSample,
   FloatingInput,
-} from './electrical-types';
-export { ElectricalConflictError, resolveElectricalNetwork } from './electrical';
-export { createFloatingInput } from './floating-input';
+} from './electrical/electrical-types';
+export { ElectricalConflictError, resolveElectricalNetwork } from './electrical/electrical';
+export { createFloatingInput } from './electrical/floating-input';
