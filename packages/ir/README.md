@@ -1,8 +1,8 @@
 # @mica/ir
 
-领域无关的 IR 数据模型、同步类型化建图器与静态校验/链接诊断，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
+领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断与整数/布尔逐指令语义，对应 [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)。规范依据为 [IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26) 与 [器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)。
 
-本包负责**建图与静态校验/链接诊断**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。它不执行 IR，也不提供解释器、存储语义、资源更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
+本包负责**建图、静态校验/链接诊断及可复用的标量运算**：声明标量资源与函数、构造 SSA 值、基本块和终结指令，并通过 `validateIR` 检查实际内存模型、控制流与能力策略。`evaluateScalarInstruction` 仅求值一个支持的整数/布尔节点，不执行函数或控制流；不提供完整解释器、存储语义、资源更新、Provider、消息桥接或 JIT。校验通过不代表已经安装或执行，尚未实现的能力不会以空操作伪装为成功。
 
 ## 公共入口
 
@@ -10,10 +10,40 @@
 
 - `createIRModule()`：创建独立的模块声明/建图上下文，返回 `IRModule`。
 - `validateIR(input, options)`：返回 `IRValidationResult`，通过 `IRDiagnostic` / `IRDiagnosticLocation` 报告静态错误；能力策略及领域扩展类型见下文。
+- `evaluateScalarInstruction(instruction, operands)`：求值单个整数/布尔节点，失败抛出 `IRScalarEvaluationError`；范围与错误码见下文。
 - `IRDeclarations`：`state`、`array`、`bytes`、`inbox`、`func`、`entry`、`lifecycle` 静态声明。
 - `FunctionBuilder<R>`：常量、标量运算、资源访问、普通 `call`、基本块、分支、循环与终结指令。
 - `IRModule`：除声明方法外，提供只读的 `memories`、`functions`、`domainDeclarations`、`instructions` 模型视图。
 - 类型边界：`FunctionRef`、`EntryRef`、`LifecycleRef`、`BlockRef` 使用独立引用类别；`StateRef`、`ArrayRef`、`BytesRef`、`InboxRef` 不可互换。
+
+## 整数与布尔逐指令求值
+
+`evaluateScalarInstruction(instruction: InstructionNode, operands: readonly (boolean | number)[]): boolean | number` 消费现有建图器/内存模型的节点，不引入另一套指令类型。`operands` 按 `instruction.operands` 中 **SSA 操作数出现的顺序**提供已求值标量；节点内的 literal（例如比较 predicate、转换目标或常量）不占该数组位置。返回节点唯一结果的标量值，不写回 SSA 表，也不访问存储或执行控制流。
+
+```ts
+import { createIRModule, evaluateScalarInstruction } from '@mica/ir';
+
+const ir = createIRModule();
+ir.func('multiply', { params: ['u32', 'u32'], results: ['u32'] }).body((b, [a, c]) =>
+  b.return([b.int.mul(a, c)]),
+);
+const multiply = ir.functions[0]!.body!.entry.instructions[0]!;
+evaluateScalarInstruction(multiply, [4294967295, 4294967295]); // 1
+```
+
+支持范围：
+
+- `u8/i8/u16/i16/u32/i32` 的 `int.add/sub/mul/div/rem/and/or/xor/not`、`int.cmp` 全部六种 predicate、`int.shl/lshr/ashr` 及 `int.zext/sext/trunc/reinterpret`。
+- `bool.not/and/or/xor`，以及整数/bool 的 `const`、`select`。`select` 的两个候选值均须已求值且合法；它不短路，也不能屏蔽先前的除零异常。
+- 加减乘及有符号商溢出按位宽回绕；除法向零截断，余数随被除数或为零。除零/取余零均报错；整数零规范化为正零。
+- 移位数严格为 `u32`，不对位宽取模。`count >= width` 时左移/逻辑右移为零；算术右移按符号填充为零或 -1。`ashr` 只接受有符号来源。
+- 扩位/截断严格检查宽度关系；`sext` 只接受有符号来源，允许无符号目标；`zext` 对来源位模式补零；`reinterpret` 只允许同宽、异符号。常量和输入值必须先处于其声明类型值域，不以截断代替验证。
+
+实现内部使用精确 `bigint` 和显式定宽归一化，避免 JS 位运算的 32 位隐式截断、移位数取模及 u32 乘法精度损失；公开标量仍为 `number | boolean`，不接受 bigint、真假值强制转换或混型运算。
+
+失败抛出 `IRScalarEvaluationError`，其只读 `code: IRScalarEvaluationErrorCode` 为：`unsupported-instruction`（尚未实现）、`invalid-instruction`（布局/签名错误）、`invalid-operand`（SSA 实参数目/类型/值域错误）、`division-by-zero`。批准的错误联合还保留 `conversion-out-of-range`，本项整数内部转换不会产生该错误。不支持的运算显式拒绝；所有浮点运算、整数↔浮点数值转换、`convert.float`、`const.bits`、bitcast 和浮点 select 由 [#44](https://github.com/x-botlab/mica-js/issues/44) 实现，本项不执行它们。
+
+此入口检查单节点签名和值域，不替代 `validateIR` 对 SSA 定义/支配、静态引用、控制流和授权的整图检查。后续参考解释器应完成验证、解析 SSA 标量后复用此入口，并在调用方附加执行位置；不得把静态校验成功当作执行成功。现有 `IRConstructionError` 与 #42 静态诊断合同不变。
 
 ## 建图示例
 
