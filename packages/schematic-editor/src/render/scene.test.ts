@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GROUND_DEVICE,
+  LABEL_DEVICE,
   POWER_DEVICE,
   createDeviceRegistry,
   parseSchematic,
@@ -364,6 +366,27 @@ describe('buildSchematicScene', () => {
     expect(label?.kind === 'text' ? label.position.y : 1).toBeCloseTo(0, 9);
     const flipped = scene(180).items.find((item) => item.kind === 'text');
     expect(flipped).toMatchObject({ rotation: 0, align: 'center', baseline: 'top' });
+  });
+
+  it('omits the anchor dot on power and ground symbols', () => {
+    const circles = (device: string) =>
+      buildSchematicScene({
+        document: parseSchematic({
+          version: 1,
+          id: 'anchors',
+          sheet: {
+            symbols: [{ id: 'A1', device, x: 0, y: 0, rotation: 0 }],
+            wires: [],
+            junctions: [],
+          },
+        }),
+        devices,
+        theme: DARK_SCHEMATIC_THEME,
+      }).items.filter((item) => item.kind === 'circle');
+
+    expect(circles(POWER_DEVICE)).toHaveLength(0);
+    expect(circles(GROUND_DEVICE)).toHaveLength(0);
+    expect(circles(LABEL_DEVICE)).toHaveLength(1);
   });
 
   it('infers the side when a pin omits it', () => {

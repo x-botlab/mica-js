@@ -618,7 +618,11 @@ function drawBuiltin(
     });
   };
 
-  items.push({ kind: 'circle', center: at(0, 0), radius: 2.5, fill: anchorColor, width: 0 });
+  // Power and ground marks their connection point with the stem itself; only free-standing
+  // labels need an anchor dot.
+  if (input.kind === 'label') {
+    items.push({ kind: 'circle', center: at(0, 0), radius: 2.5, fill: anchorColor, width: 0 });
+  }
 
   if (input.kind === 'power') {
     items.push({ kind: 'line', from: at(0, 0), to: at(0, -10), color, width: 1.5 });
