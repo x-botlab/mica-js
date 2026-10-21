@@ -13,7 +13,15 @@ export default defineConfig({
     sourcemap: true,
     minify: false,
   },
-  plugins: [...micaSandboxPlugins(), dts({ include: ['src'], exclude: ['src/**/*.test.ts'] })],
+  plugins: [
+    ...micaSandboxPlugins(),
+    dts({
+      include: ['src'],
+      exclude: ['src/**/*.test.ts'],
+      // One flattened declaration, so node16 consumers never follow extensionless imports.
+      bundleTypes: true,
+    }),
+  ],
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',

@@ -12,5 +12,12 @@ export default defineConfig({
     sourcemap: true,
     minify: false,
   },
-  plugins: [dts({ include: ['src'], exclude: ['src/**/*.test.ts', 'src/**/*.type-test.ts'] })],
+  plugins: [
+    dts({
+      include: ['src'],
+      exclude: ['src/**/*.test.ts', 'src/**/*.type-test.ts'],
+      // One flattened declaration, so node16 consumers never follow extensionless imports.
+      bundleTypes: true,
+    }),
+  ],
 });
