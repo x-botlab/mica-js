@@ -86,7 +86,6 @@ export const devices = createDeviceRegistry([
               step: 0.0001,
               unit: 'MHz',
             },
-            baud: { type: 'integer', title: '波特率', default: 9600, min: 1200, max: 115200 },
           },
         },
       },

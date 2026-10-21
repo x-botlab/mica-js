@@ -282,7 +282,7 @@ export function SchematicPage({ dark }: SchematicPageProps) {
             <span className="text-foreground">STM32G431</span>
             <span className="font-mono text-[10px]">string / binary</span>
             <span className="text-foreground">AT89C52</span>
-            <span className="font-mono text-[10px]">number / integer</span>
+            <span className="font-mono text-[10px]">number</span>
             <span className="text-foreground">TFT LCD</span>
             <span className="font-mono text-[10px]">image / enum / color / boolean</span>
             <span className="mt-1">
