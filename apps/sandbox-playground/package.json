@@ -1,5 +1,5 @@
 {
-  "name": "@mica/sandbox-playground",
+  "name": "@mica-js/sandbox-playground",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mica/sandbox": "workspace:*"
+    "@mica-js/sandbox": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

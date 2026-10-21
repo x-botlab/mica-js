@@ -18,9 +18,9 @@ describe('parseDeviceReference', () => {
   });
 
   it('accepts scoped package ids', () => {
-    expect(parseDeviceReference('@mica/devices:lcd')).toEqual({
-      raw: '@mica/devices:lcd',
-      packageId: '@mica/devices',
+    expect(parseDeviceReference('@mica-js/devices:lcd')).toEqual({
+      raw: '@mica-js/devices:lcd',
+      packageId: '@mica-js/devices',
       deviceId: 'lcd',
     });
   });
@@ -53,7 +53,7 @@ describe('parseDeviceReference', () => {
 describe('package id helpers', () => {
   it('validates package ids', () => {
     expect(isValidPackageId('stm32-package')).toBe(true);
-    expect(isValidPackageId('@mica/devices')).toBe(true);
+    expect(isValidPackageId('@mica-js/devices')).toBe(true);
     expect(isValidPackageId('@mica')).toBe(false);
     expect(isValidPackageId('')).toBe(false);
   });

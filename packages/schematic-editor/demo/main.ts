@@ -8,7 +8,7 @@ import {
   type Point,
   type SchematicDocument,
   type SchematicViewDocument,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 import { mountSchematicEditor } from '../src';
 import { DARK_SCHEMATIC_THEME, LIGHT_SCHEMATIC_THEME, themeToCssVariables } from '../src';
 

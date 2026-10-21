@@ -3,7 +3,7 @@ import {
   createSandbox,
   type SandboxContract,
   type SandboxHandle,
-} from '@mica/sandbox';
+} from '@mica-js/sandbox';
 import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';

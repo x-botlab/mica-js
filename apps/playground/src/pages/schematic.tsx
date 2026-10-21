@@ -6,7 +6,7 @@ import {
   type EditorState,
   type EditorTool,
   type MountedSchematicEditor,
-} from '@mica/schematic-editor';
+} from '@mica-js/schematic-editor';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';

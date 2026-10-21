@@ -1,4 +1,4 @@
-import type { Point, Rect } from '@mica/core/schematic';
+import type { Point, Rect } from '@mica-js/core/schematic';
 import {
   DEFAULT_VIEWPORT_LIMITS,
   IDENTITY_VIEWPORT,

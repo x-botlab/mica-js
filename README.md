@@ -20,17 +20,17 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 │   ├── playground/           # 各包示例站点（原理图编辑器、沙箱）
 │   └── sandbox-playground/   # 沙箱演示与手测面板
 └── packages/
-    ├── core/                 # @mica/core：仿真内核
-    ├── schematic-editor/     # @mica/schematic-editor：Canvas 原理图编辑器
-    └── sandbox/              # @mica/sandbox：iframe + Web Worker 通用 JS 沙箱
+    ├── core/                 # @mica-js/core：仿真内核
+    ├── schematic-editor/     # @mica-js/schematic-editor：Canvas 原理图编辑器
+    └── sandbox/              # @mica-js/sandbox：iframe + Web Worker 通用 JS 沙箱
 ```
 
 ## 原理图编辑器
 
-`@mica/schematic-editor` 把 `@mica/core/schematic` 的 `.sch` / `.view` 文档渲染成可编辑的 Canvas 画布：给一个容器元素即可挂载，工具栏、属性面板与交互都在包内，主题、显示选项、视口与历史通过返回值控制。
+`@mica-js/schematic-editor` 把 `@mica-js/core/schematic` 的 `.sch` / `.view` 文档渲染成可编辑的 Canvas 画布：给一个容器元素即可挂载，工具栏、属性面板与交互都在包内，主题、显示选项、视口与历史通过返回值控制。
 
 ```ts
-import { mountSchematicEditor } from '@mica/schematic-editor';
+import { mountSchematicEditor } from '@mica-js/schematic-editor';
 
 const editor = mountSchematicEditor({
   container: document.querySelector('#host'),
@@ -46,10 +46,10 @@ editor.placeDevice('stm32-package:stm32g431rbt6-lqfp64'); // 抓到光标上，�
 
 ## 沙箱
 
-`@mica/sandbox` 用于在相对隔离的环境中运行不可信的第三方代码（仿真器内核、2D Widget 等）：宿主页面 → `sandbox="allow-scripts"` iframe（不透明源）→ classic Web Worker → 客户代码。客户代码无 DOM、无存储、无网络，死循环不阻塞 UI 且可强制终止；渲染采用「客户离屏渲染 + 宿主合成 `ImageBitmap`」。
+`@mica-js/sandbox` 用于在相对隔离的环境中运行不可信的第三方代码（仿真器内核、2D Widget 等）：宿主页面 → `sandbox="allow-scripts"` iframe（不透明源）→ classic Web Worker → 客户代码。客户代码无 DOM、无存储、无网络，死循环不阻塞 UI 且可强制终止；渲染采用「客户离屏渲染 + 宿主合成 `ImageBitmap`」。
 
 ```ts
-import { createSandbox } from '@mica/sandbox';
+import { createSandbox } from '@mica-js/sandbox';
 
 const sandbox = await createSandbox({
   source: { type: 'module', code: guestSource },
@@ -67,16 +67,16 @@ await sandbox.call('start');
 [apps/playground](apps/playground) 是各包的可交互示例站点：React + Vite + Tailwind v4 + shadcn/ui，哈希路由单入口，页面直接引用包源码。目前包含概览、原理图编辑器（含宿主驱动器件放置与回调事件流）与沙箱（guest 代码执行与调用日志）三个页面。
 
 ```bash
-pnpm --filter @mica/playground dev
+pnpm --filter @mica-js/playground dev
 ```
 
 新增页面只需在 `src/components/app-shell.tsx` 的 `PAGES` 里加一项，并在 `src/App.tsx` 中渲染对应组件。
 
 ## 开发路线
 
-当前开发阶段：**优先实现 `@mica/core` 的虚拟时间与确定性事件调度器**，再逐步加入数字网络求解、Peer、CPU 解释器和 JIT。
+当前开发阶段：**优先实现 `@mica-js/core` 的虚拟时间与确定性事件调度器**，再逐步加入数字网络求解、Peer、CPU 解释器和 JIT。
 
-1. `@mica/core`：虚拟时间与确定性事件调度器
+1. `@mica-js/core`：虚拟时间与确定性事件调度器
 2. 数字网络求解
 3. Peer
 4. CPU 解释器

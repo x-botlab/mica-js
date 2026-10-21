@@ -13,7 +13,7 @@ import {
   type SchematicDocument,
   type SchematicSymbol,
   type SchematicTopology,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 import type { EditorSelection, Inspector, PropertyField, SymbolInspector } from './types';
 
 const PROPERTY_TYPES = ['string', 'number', 'boolean'] as const;

@@ -1,4 +1,4 @@
-import type { Point } from '@mica/core/schematic';
+import type { Point } from '@mica-js/core/schematic';
 import type { EditorSelection } from '../controller/types';
 
 export interface SceneHighlight {

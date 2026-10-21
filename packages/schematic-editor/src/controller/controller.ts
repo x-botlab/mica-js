@@ -33,7 +33,7 @@ import {
   type SchematicTopology,
   type SchematicViewDocument,
   type SchematicWire,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 import { buildInspector } from './inspector';
 import { pruneSelection } from './selection';
 import {

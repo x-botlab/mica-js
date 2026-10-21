@@ -1,4 +1,4 @@
-import type { Point } from '@mica/core/schematic';
+import type { Point } from '@mica-js/core/schematic';
 import type { SchematicScene, SceneItem } from './scene';
 import { resolveSchematicTheme, type SchematicTheme } from './theme';
 import { pageToScreen, type ViewportState } from './viewport';

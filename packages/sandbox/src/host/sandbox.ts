@@ -319,7 +319,7 @@ export class SandboxSession<
       try {
         listener(payload);
       } catch (error) {
-        console.error(`[@mica/sandbox] listener for "${type}" threw`, error);
+        console.error(`[@mica-js/sandbox] listener for "${type}" threw`, error);
       }
     }
   }

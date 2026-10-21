@@ -1,4 +1,4 @@
-import type { PropertyValue, SymbolRole } from '@mica/core/schematic';
+import type { PropertyValue, SymbolRole } from '@mica-js/core/schematic';
 import type { Inspector, PropertyField } from '../controller/types';
 
 export interface PropertyPanelOptions {

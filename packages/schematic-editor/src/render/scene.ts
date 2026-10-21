@@ -22,7 +22,7 @@ import {
   type SchematicHit,
   type SchematicSymbol,
   type SchematicViewDocument,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 import type { SchematicTheme } from './theme';
 export type SceneTool = 'select' | 'wire' | 'power' | 'ground' | 'label' | 'text';
 

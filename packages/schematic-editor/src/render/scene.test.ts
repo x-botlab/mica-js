@@ -6,7 +6,7 @@ import {
   createDeviceRegistry,
   parseSchematic,
   type SchematicDocument,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 import { buildSchematicScene, type SceneItem } from './scene';
 import { DARK_SCHEMATIC_THEME, LIGHT_SCHEMATIC_THEME } from './theme';
 

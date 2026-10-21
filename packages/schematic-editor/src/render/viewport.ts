@@ -1,4 +1,4 @@
-import type { Point, Rect } from '@mica/core/schematic';
+import type { Point, Rect } from '@mica-js/core/schematic';
 
 export interface ViewportState {
   readonly scale: number;

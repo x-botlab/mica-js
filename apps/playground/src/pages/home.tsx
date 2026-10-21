@@ -10,14 +10,14 @@ const PAGES = [
     icon: CircuitBoard,
     title: '原理图编辑器',
     summary: '挂载 Canvas 编辑器：器件库、放置、连线、属性面板与宿主回调。',
-    tags: ['@mica/schematic-editor', '@mica/core/schematic'],
+    tags: ['@mica-js/schematic-editor', '@mica-js/core/schematic'],
   },
   {
     id: 'sandbox',
     icon: ShieldCheck,
     title: '沙箱',
     summary: 'iframe + Worker 里跑不可信代码：调用 guest 方法、看日志与错误。',
-    tags: ['@mica/sandbox'],
+    tags: ['@mica-js/sandbox'],
   },
 ] as const;
 
@@ -65,7 +65,7 @@ export function HomePage() {
             <CardDescription>pnpm workspace，页面直接引用包源码，改完刷新即可</CardDescription>
           </CardHeader>
           <CardContent>
-            <pre className="overflow-x-auto font-mono text-[11px] leading-[1.7]">{`pnpm --filter @mica/playground dev   # 本页
+            <pre className="overflow-x-auto font-mono text-[11px] leading-[1.7]">{`pnpm --filter @mica-js/playground dev   # 本页
 pnpm -r test                          # 所有包测试
 pnpm -r typecheck                     # 所有包类型检查
 pnpm run build                        # 所有包构建`}</pre>

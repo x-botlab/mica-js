@@ -9,7 +9,7 @@ export default defineConfig(({ command }) => ({
     command === 'serve'
       ? {
           alias: {
-            '@mica/core/schematic': coreSchematic,
+            '@mica-js/core/schematic': coreSchematic,
           },
         }
       : undefined,
@@ -23,7 +23,7 @@ export default defineConfig(({ command }) => ({
     sourcemap: true,
     minify: false,
     rollupOptions: {
-      external: ['@mica/core', '@mica/core/schematic'],
+      external: ['@mica-js/core', '@mica-js/core/schematic'],
     },
   },
   plugins: [

@@ -1,6 +1,6 @@
-# @mica/schematic-editor
+# @mica-js/schematic-editor
 
-原理图与 2D 视图的 Canvas 编辑器，渲染 `@mica/core/schematic` 的文档。
+原理图与 2D 视图的 Canvas 编辑器，渲染 `@mica-js/core/schematic` 的文档。
 
 ## 入口
 
@@ -10,7 +10,7 @@
 ## 宿主 API
 
 ```ts
-import { mountSchematicEditor } from '@mica/schematic-editor';
+import { mountSchematicEditor } from '@mica-js/schematic-editor';
 
 const editor = mountSchematicEditor({
   container, // 必填；编辑器只往里 append 自己的 root
@@ -108,10 +108,10 @@ deviceList.addEventListener('click', (event) => {
 ## 开发
 
 ```bash
-pnpm --filter @mica/playground dev                  # 浏览器 playground（示例与用法）
-pnpm --filter @mica/schematic-editor run test
-pnpm --filter @mica/schematic-editor run typecheck
-pnpm --filter @mica/schematic-editor run build
+pnpm --filter @mica-js/playground dev                  # 浏览器 playground（示例与用法）
+pnpm --filter @mica-js/schematic-editor run test
+pnpm --filter @mica-js/schematic-editor run typecheck
+pnpm --filter @mica-js/schematic-editor run build
 ```
 
 可运行的示例、宿主侧器件列表与事件回调演示见 [apps/playground](../../apps/playground)。

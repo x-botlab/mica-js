@@ -7,7 +7,7 @@ import {
   type Point,
   type Rect,
   type SchematicHit,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 import type { SchematicEditorController } from '../controller/controller';
 import { sameSelectionItem } from '../controller/selection';
 import type { EditorSelection } from '../controller/types';

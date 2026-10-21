@@ -1,5 +1,5 @@
 {
-  "name": "@mica/core",
+  "name": "@mica-js/core",
   "version": "0.0.0",
   "description": "Mica circuit simulator core: virtual time and deterministic event scheduling",
   "license": "MIT",

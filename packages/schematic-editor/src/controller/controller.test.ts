@@ -7,7 +7,7 @@ import {
   symbolPinPosition,
   type Point,
   type SchematicDocument,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 import { describe, expect, it } from 'vitest';
 import { SchematicEditorController } from './controller';
 import type { EditorSelection } from './types';

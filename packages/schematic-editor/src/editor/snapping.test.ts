@@ -7,7 +7,7 @@ import {
   type SnapContext,
 } from './snapping';
 import { SchematicEditorController } from '../controller/controller';
-import { createDeviceRegistry, parseSchematic } from '@mica/core/schematic';
+import { createDeviceRegistry, parseSchematic } from '@mica-js/core/schematic';
 import { DEFAULT_DISPLAY_OPTIONS } from '../controller/types';
 
 const devices = createDeviceRegistry([

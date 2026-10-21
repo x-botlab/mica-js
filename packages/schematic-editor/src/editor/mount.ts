@@ -4,8 +4,8 @@ import type {
   SchematicDocument,
   SchematicError,
   SchematicViewDocument,
-} from '@mica/core/schematic';
-import { serializeSchematic } from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
+import { serializeSchematic } from '@mica-js/core/schematic';
 import { SchematicEditorController } from '../controller/controller';
 import { sameSelection } from '../controller/selection';
 import type { DisplayOptions, EditorSelection, EditorState, EditorTool } from '../controller/types';

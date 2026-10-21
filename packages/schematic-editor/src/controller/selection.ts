@@ -1,4 +1,4 @@
-import type { SchematicDocument } from '@mica/core/schematic';
+import type { SchematicDocument } from '@mica-js/core/schematic';
 import type { EditorSelection } from './types';
 
 export function sameSelectionItem(left: EditorSelection, right: EditorSelection): boolean {

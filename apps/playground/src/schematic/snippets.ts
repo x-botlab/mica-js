@@ -9,7 +9,7 @@ export const USAGE_SNIPPETS: readonly UsageSnippet[] = [
   {
     title: '挂载编辑器',
     note: '给一个容器元素即可，编辑器只追加自己的 DOM。',
-    code: `import { mountSchematicEditor } from '@mica/schematic-editor';
+    code: `import { mountSchematicEditor } from '@mica-js/schematic-editor';
 
 const editor = mountSchematicEditor({
   container: document.querySelector('#host'),

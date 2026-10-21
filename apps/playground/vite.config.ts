@@ -10,13 +10,13 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
-      '@mica/core/schematic': fileURLToPath(
+      '@mica-js/core/schematic': fileURLToPath(
         new URL('../../packages/core/src/schematic/index.ts', import.meta.url),
       ),
-      '@mica/schematic-editor': fileURLToPath(
+      '@mica-js/schematic-editor': fileURLToPath(
         new URL('../../packages/schematic-editor/src/index.ts', import.meta.url),
       ),
-      '@mica/sandbox': fileURLToPath(
+      '@mica-js/sandbox': fileURLToPath(
         new URL('../../packages/sandbox/src/index.ts', import.meta.url),
       ),
     },

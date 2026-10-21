@@ -14,7 +14,7 @@ import {
   type DeviceSymbolProvider,
   type Point,
   type SchematicDocument,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 import type { SchematicEditorController } from '../controller/controller';
 import type { DisplayOptions, EditorTool } from '../controller/types';
 

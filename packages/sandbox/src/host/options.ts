@@ -34,7 +34,7 @@ export function assertBrowserEnvironment(): void {
   if (typeof document === 'undefined' || typeof window === 'undefined') {
     throw new SandboxError(
       'unsupported-environment',
-      '@mica/sandbox can only run in a browser: no document is available',
+      '@mica-js/sandbox can only run in a browser: no document is available',
     );
   }
 }

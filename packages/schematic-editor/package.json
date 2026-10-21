@@ -1,5 +1,5 @@
 {
-  "name": "@mica/schematic-editor",
+  "name": "@mica-js/schematic-editor",
   "version": "0.0.0",
   "description": "Mica schematic and 2D view editor: canvas renderer and interaction",
   "license": "MIT",
@@ -25,7 +25,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@mica/core": "workspace:*"
+    "@mica-js/core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

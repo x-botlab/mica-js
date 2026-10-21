@@ -9,7 +9,7 @@ import {
   type Point,
   type SchematicDocument,
   type SchematicViewDocument,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 
 const MCU = 'stm32-package:stm32g431rbt6-lqfp64';
 const LCD = 'lcd-package:ct117e-m4-tft-lcd-2-4';

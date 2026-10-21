@@ -36,7 +36,7 @@ export default defineConfig({
   plugins: [...micaSandboxPlugins(), frameRoutePlugin()],
   resolve: {
     alias: {
-      '@mica/sandbox': fileURLToPath(
+      '@mica-js/sandbox': fileURLToPath(
         new URL('../../packages/sandbox/src/index.ts', import.meta.url),
       ),
     },

@@ -205,13 +205,13 @@ importers:
 
   apps/playground:
     dependencies:
-      '@mica/core':
+      '@mica-js/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@mica/sandbox':
+      '@mica-js/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
-      '@mica/schematic-editor':
+      '@mica-js/schematic-editor':
         specifier: workspace:*
         version: link:../../packages/schematic-editor
       '@radix-ui/react-slot':
@@ -260,7 +260,7 @@ importers:
 
   apps/sandbox-playground:
     dependencies:
-      '@mica/sandbox':
+      '@mica-js/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
     devDependencies:
@@ -306,7 +306,7 @@ importers:
 
   packages/schematic-editor:
     dependencies:
-      '@mica/core':
+      '@mica-js/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:

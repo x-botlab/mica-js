@@ -5,7 +5,7 @@ import type {
   SchematicError,
   SchematicViewDocument,
   SymbolRole,
-} from '@mica/core/schematic';
+} from '@mica-js/core/schematic';
 
 export type EditorTool = 'select' | 'wire' | 'power' | 'ground' | 'label' | 'text';
 

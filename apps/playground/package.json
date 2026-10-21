@@ -1,5 +1,5 @@
 {
-  "name": "@mica/playground",
+  "name": "@mica-js/playground",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,9 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mica/core": "workspace:*",
-    "@mica/sandbox": "workspace:*",
-    "@mica/schematic-editor": "workspace:*",
+    "@mica-js/core": "workspace:*",
+    "@mica-js/sandbox": "workspace:*",
+    "@mica-js/schematic-editor": "workspace:*",
     "@radix-ui/react-slot": "^1.2.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
