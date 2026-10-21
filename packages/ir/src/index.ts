@@ -1,4 +1,6 @@
 export { createIRModule } from './module';
+export { evaluateScalarInstruction, IRScalarEvaluationError } from './scalar';
+export type { IRScalarEvaluationErrorCode } from './scalar';
 export { validateIR } from './validate';
 export type {
   IRDiagnosticCode,
