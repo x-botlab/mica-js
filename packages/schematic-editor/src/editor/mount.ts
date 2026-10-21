@@ -217,6 +217,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
         grid: state.display.grid,
         labels: state.display.labels,
         gridSize: state.display.gridSize,
+        gridSubdivisions: state.display.gridSubdivisions,
       },
       ...(input.pendingWire.length === 0 ? {} : { pendingWire: input.pendingWireWithCursor }),
       ...(input.marquee === undefined ? {} : { marquee: input.marquee }),

@@ -8,6 +8,10 @@ export interface CanvasRendererOptions {
 }
 
 const MAJOR_GRID_INTERVAL = 5;
+/** Sub-grid lines are hidden once they get closer together than this (CSS pixels). */
+const MIN_GRID_PIXELS = 4;
+/** Emphasised lines are stretched to stay at least this far apart (CSS pixels). */
+const MIN_MAJOR_GRID_PIXELS = 20;
 
 /** Draws a {@link SchematicScene} onto a canvas, honoring device pixel ratio. */
 export class CanvasSchematicRenderer {
@@ -74,9 +78,26 @@ export class CanvasSchematicRenderer {
     if (grid === undefined) {
       return;
     }
-    const step = grid.size * viewport.scale;
-    if (!Number.isFinite(step) || step <= 0) {
+    const cell = grid.size * viewport.scale;
+    if (!Number.isFinite(cell) || cell <= 0) {
       return;
+    }
+    // Too fine to read at this zoom: drop subdivisions, then fall back to emphasised lines only.
+    let subdivisions = grid.subdivisions;
+    while (subdivisions > 1 && cell / subdivisions < MIN_GRID_PIXELS) {
+      subdivisions = Math.max(1, Math.round(subdivisions / 2));
+    }
+    let step = cell / subdivisions;
+    if (step < MIN_GRID_PIXELS) {
+      step = cell;
+    }
+    let majorSpacing = cell * MAJOR_GRID_INTERVAL;
+    while (majorSpacing < MIN_MAJOR_GRID_PIXELS) {
+      majorSpacing *= 2;
+    }
+    const majorOnly = step < MIN_GRID_PIXELS;
+    if (majorOnly) {
+      step = majorSpacing;
     }
 
     const origin = pageToScreen(viewport, { x: 0, y: 0 });
@@ -84,24 +105,23 @@ export class CanvasSchematicRenderer {
     const startY = origin.y - Math.ceil(origin.y / step) * step;
 
     context.lineWidth = 1;
-    for (let x = startX, index = 0; x <= this.#width; x += step, index += 1) {
+    for (let x = startX; x <= this.#width; x += step) {
       if (x < 0) {
         continue;
       }
-      const major = isMajorGridLine(x, origin.x, step);
+      const major = majorOnly || isMajorGridLine(x - origin.x, majorSpacing);
       context.strokeStyle = major ? grid.major : grid.minor;
       strokeLine(
         context,
         { x: Math.round(x) + 0.5, y: 0 },
         { x: Math.round(x) + 0.5, y: this.#height },
       );
-      void index;
     }
     for (let y = startY; y <= this.#height; y += step) {
       if (y < 0) {
         continue;
       }
-      const major = isMajorGridLine(y, origin.y, step);
+      const major = majorOnly || isMajorGridLine(y - origin.y, majorSpacing);
       context.strokeStyle = major ? grid.major : grid.minor;
       strokeLine(
         context,
@@ -208,9 +228,12 @@ function strokeLine(context: CanvasRenderingContext2D, from: Point, to: Point): 
   context.stroke();
 }
 
-function isMajorGridLine(position: number, origin: number, step: number): boolean {
-  const index = Math.round((position - origin) / step);
-  return index % MAJOR_GRID_INTERVAL === 0;
+function isMajorGridLine(offset: number, spacing: number): boolean {
+  if (!Number.isFinite(spacing) || spacing <= 0) {
+    return false;
+  }
+  const remainder = Math.abs(offset % spacing);
+  return remainder < 0.5 || spacing - remainder < 0.5;
 }
 
 function scaleFont(font: string, scale: number): string {

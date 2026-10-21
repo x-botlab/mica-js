@@ -137,7 +137,12 @@ export function SchematicPage({ dark }: SchematicPageProps) {
     pushLog(`setTool('${next}')`);
   };
 
-  const setDisplay = (patch: { grid?: boolean; snap?: boolean; labels?: boolean }): void => {
+  const setDisplay = (patch: {
+    grid?: boolean;
+    snap?: boolean;
+    labels?: boolean;
+    gridSubdivisions?: number;
+  }): void => {
     editorRef.current?.setDisplayOptions(patch);
     pushLog(`setDisplayOptions(${JSON.stringify(patch)})`);
   };
@@ -245,6 +250,23 @@ export function SchematicPage({ dark }: SchematicPageProps) {
                 {label}
               </label>
             ))}
+            <label className="mt-1 flex items-center justify-between gap-2 text-xs">
+              网格细分
+              <select
+                className="bg-background rounded-md border px-1.5 py-0.5 text-[11px]"
+                value={state?.display.gridSubdivisions ?? 2}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  setDisplay({ gridSubdivisions: value });
+                }}
+              >
+                {[1, 2, 4, 5].map((value) => (
+                  <option key={value} value={value}>
+                    ×{value}
+                  </option>
+                ))}
+              </select>
+            </label>
           </CardContent>
         </Card>
       </div>

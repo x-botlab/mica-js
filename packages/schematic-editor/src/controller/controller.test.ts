@@ -539,12 +539,13 @@ describe('SchematicEditorController', () => {
 
   it('applies grid display options without touching history', () => {
     const controller = createController(documentOf({}));
-    controller.setDisplayOptions({ snap: false, gridSize: 20 });
+    controller.setDisplayOptions({ snap: false, gridSize: 20, gridSubdivisions: 4 });
     expect(controller.state.display).toEqual({
       grid: true,
       snap: false,
       labels: true,
       gridSize: 20,
+      gridSubdivisions: 4,
     });
     expect(controller.canUndo).toBe(false);
   });

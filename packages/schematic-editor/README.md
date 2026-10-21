@@ -43,7 +43,7 @@ const editor = mountSchematicEditor({
 | `setSchematic(document, { keepHistory? })` | 换文档；默认清空历史并重新适应内容，`keepHistory` 时作为一次可撤销编辑 |
 | `setView(view \| undefined)`               | 换只读视图覆盖                                                         |
 | `setTheme(partial)` / `getTheme()`         | 增量换主题 / 读回当前主题                                              |
-| `setDisplayOptions(patch)`                 | 网格、吸附、引脚标签、网格尺寸                                         |
+| `setDisplayOptions(patch)`                 | 网格、吸附、引脚标签、网格尺寸与网格细分                               |
 | `setTool(tool)`                            | `select` / `wire` / `power` / `ground` / `label` / `text`              |
 | `placeDevice(device)`                      | 抓取一个器件：下一次点击画布插入它，位号自动分配（见下）               |
 | `cancelPlacement()`                        | 取消抓取，文档不变                                                     |
@@ -57,6 +57,21 @@ const editor = mountSchematicEditor({
 回调时序：控制器发状态 → 面板/工具条/错误提示更新 → `onSelectionChange` / `onToolChange` / `onError`（仅在变化时）→ `onChange(state)` → 重绘 → `onViewportChange`（仅在视口变化时）。
 
 编辑错误：编辑器内建交互（拖拽、工具栏、属性面板）产生的错误不会抛给宿主，只会触发 `onError` 并写入 `state.lastError`；但直接调用 `controller.dispatch()` 等方法时仍会抛出 `SchematicError`，宿主自行 `try/catch` 即可（`onError` 同样会先触发）。
+
+### 网格与吸附
+
+`DisplayOptions` 里两个数各管一件事：
+
+| 选项               | 默认 | 作用                                       |
+| ------------------ | ---- | ------------------------------------------ |
+| `gridSize`         | `10` | 吸附步长（页面单位），也决定每格的大小     |
+| `gridSubdivisions` | `2`  | 每格画几条可见网格线，`1` 表示只画吸附网格 |
+
+```ts
+editor.setDisplayOptions({ gridSubdivisions: 4 }); // 更密的视觉网格，吸附仍按 gridSize
+```
+
+强调线每 5 格一条（`gridSize * 5`）。缩得太小时渲染器会自动丢细分、再拉大强调间距，避免糊成一片灰。
 
 ### 器件放置
 

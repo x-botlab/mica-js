@@ -38,6 +38,8 @@ export interface SceneSelection {
 export interface SceneDisplayOptions {
   readonly grid: boolean;
   readonly gridSize?: number;
+  /** Visible grid lines per snap cell; `1` draws only the snap grid. */
+  readonly gridSubdivisions?: number;
   readonly labels: boolean;
 }
 
@@ -88,7 +90,14 @@ export type SceneItem =
 export interface SchematicScene {
   readonly background: string;
   readonly grid:
-    { readonly size: number; readonly minor: string; readonly major: string } | undefined;
+    | {
+        readonly size: number;
+        /** Minor lines drawn per snap cell; `1` means the cell size is the only step. */
+        readonly subdivisions: number;
+        readonly minor: string;
+        readonly major: string;
+      }
+    | undefined;
   readonly items: readonly SceneItem[];
 }
 
@@ -122,6 +131,11 @@ const WIRE_WIDTH = 1.5;
 const SELECTED_WIDTH = 2.5;
 const JUNCTION_RADIUS = 3;
 const VERTEX_SIZE = 5;
+
+/** Visible grid lines per snap cell; anything unset or invalid falls back to the snap grid. */
+function gridSubdivisions(value: number | undefined): number {
+  return value !== undefined && Number.isFinite(value) && value >= 1 ? Math.round(value) : 1;
+}
 
 interface TextPlacement {
   readonly align: 'left' | 'center' | 'right';
@@ -345,6 +359,7 @@ export function buildSchematicScene(input: RenderInput): SchematicScene {
         ? undefined
         : {
             size: display.gridSize ?? theme.gridSize,
+            subdivisions: gridSubdivisions(display.gridSubdivisions),
             minor: theme.grid,
             major: theme.gridMajor,
           },

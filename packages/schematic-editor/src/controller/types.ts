@@ -20,7 +20,10 @@ export interface DisplayOptions {
   readonly grid: boolean;
   readonly snap: boolean;
   readonly labels: boolean;
+  /** Snap step in page units. */
   readonly gridSize: number;
+  /** Visible grid lines per snap cell; `1` shows only the snap grid. */
+  readonly gridSubdivisions: number;
 }
 
 export const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
@@ -28,6 +31,7 @@ export const DEFAULT_DISPLAY_OPTIONS: DisplayOptions = {
   snap: true,
   labels: true,
   gridSize: 10,
+  gridSubdivisions: 2,
 };
 
 export interface PropertyField {

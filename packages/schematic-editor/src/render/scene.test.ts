@@ -238,6 +238,7 @@ describe('buildSchematicScene', () => {
     const scene = buildSchematicScene({ document, devices, theme: DARK_SCHEMATIC_THEME });
     expect(scene.grid).toEqual({
       size: DARK_SCHEMATIC_THEME.gridSize,
+      subdivisions: 1,
       minor: DARK_SCHEMATIC_THEME.grid,
       major: DARK_SCHEMATIC_THEME.gridMajor,
     });
@@ -248,6 +249,25 @@ describe('buildSchematicScene', () => {
       display: { grid: false, labels: false },
     });
     expect(hidden.grid).toBeUndefined();
+  });
+
+  it('subdivides the grid when asked and clamps invalid densities', () => {
+    const dense = buildSchematicScene({
+      document,
+      devices,
+      theme: DARK_SCHEMATIC_THEME,
+      display: { grid: true, labels: false, gridSize: 10, gridSubdivisions: 4 },
+    });
+    expect(dense.grid?.size).toBe(10);
+    expect(dense.grid?.subdivisions).toBe(4);
+
+    const invalid = buildSchematicScene({
+      document,
+      devices,
+      theme: DARK_SCHEMATIC_THEME,
+      display: { grid: true, labels: false, gridSubdivisions: 0 },
+    });
+    expect(invalid.grid?.subdivisions).toBe(1);
   });
 
   it('renders without a device provider', () => {
