@@ -26,6 +26,8 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 
 `@mica/ir` 当前提供内存 IR 模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令求值、实例存储和参考解释器。解释器固定并校验模块快照，复用既有标量与存储语义，执行基本块、循环、普通调用及多结果返回，提供确定预算与调用链诊断；不推进时间或创建事件，未实现的领域指令明确拒绝。显式资源更新已支持独立授权、原子内容/版本提交与一致读取验证；尚无事件执行、Provider 缓存或运行中恢复。职责边界、非目标与验证方式见 [packages/ir/README.md](packages/ir/README.md)。
 
+`@mica/core` 当前提供理想电压驱动/弱偏置的公共网络求值、冲突现场及 `mica-floating-v2` 确定性浮空模拟取值。它接收已连接网络的引脚快照，不实现拓扑、电源生命周期、调度器或连续电路求解；接口、集成责任及验证见 [packages/core/README.md](packages/core/README.md)。
+
 ## 沙箱
 
 `@mica/sandbox` 用于在相对隔离的环境中运行不可信的第三方代码（仿真器内核、2D Widget 等）：宿主页面 → `sandbox="allow-scripts"` iframe（不透明源）→ classic Web Worker → 客户代码。客户代码无 DOM、无存储、无网络，死循环不阻塞 UI 且可强制终止；渲染采用「客户离屏渲染 + 宿主合成 `ImageBitmap`」。
