@@ -5,6 +5,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     alias: { '@mica-js/ir': fileURLToPath(new URL('../ir/src/index.ts', import.meta.url)) },
+    // The memory-release regression test observes WeakRef clearing after destroy.
+    execArgv: ['--expose-gc'],
   },
   build: {
     lib: {

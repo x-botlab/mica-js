@@ -447,15 +447,20 @@ class DeterministicScheduler implements Scheduler {
       }
       instance.active.clear();
       instance.destroyed = true;
+      this.#instances.delete(instance.handle);
     }
     this.#destruction.clear();
+    // Purge cancelled records now; otherwise a queue that is never driven again
+    // would keep their targets, executor, and interpreter/storage reachable.
+    this.#queue.retain((work) => work.status === 'pending');
   }
 
   #problem(code: SchedulerErrorCode, message: string, cause?: unknown): SchedulerError {
     const current = this.#current;
     return new SchedulerError(code, message, {
       timePs: this.#now,
-      steps: this.#steps,
+      // Boundary failures outside an entry must not inherit the previous entry's count.
+      steps: current === undefined ? 0 : this.#steps,
       entriesAtTime: this.#entries,
       cause,
       ...(current === undefined

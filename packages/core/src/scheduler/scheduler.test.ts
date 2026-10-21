@@ -13,6 +13,9 @@ import { MAX_TIME_PS } from './time';
 const event = (name: string): SchedulerTarget => ({ name, kind: 'event', params: [] });
 const control = (name: string): SchedulerTarget => ({ name, kind: 'control', params: [] });
 
+// Core tests carry no Node/DOM ambient types; this only yields to a new task so GC can clear WeakRefs.
+declare function setTimeout(callback: () => void, delay?: number): unknown;
+
 function fixture(options?: SchedulerOptions) {
   const scheduler = createScheduler(options);
   const targets = {
@@ -395,6 +398,46 @@ describe('deterministic segmented driving and destruction', () => {
     failure(() => instance.cancel(0), 'invalid-instance');
     failure(() => scheduler.destroyInstance(instance), 'invalid-instance');
   });
+
+  const gc = (globalThis as unknown as { gc?: () => void }).gc;
+
+  it.skipIf(gc === undefined)(
+    'releases destroyed instance records, queued work, and executor for collection',
+    async () => {
+      const scheduler = createScheduler();
+      const references = (() => {
+        const target = event('A');
+        const executor = { execute() {} };
+        const instance = scheduler.addInstance({
+          instanceId: 'collected',
+          targets: [target],
+          executor,
+        });
+        instance.at(target, 50, []);
+        scheduler.destroyInstance(instance);
+        return [new WeakRef(executor), new WeakRef(target), new WeakRef(instance)] as const;
+      })();
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        gc!();
+        await new Promise<void>((resolve) => setTimeout(() => resolve(), 0));
+      }
+      expect(references.map((reference) => reference.deref())).toEqual([
+        undefined,
+        undefined,
+        undefined,
+      ]);
+      failure(
+        () =>
+          scheduler.addInstance({
+            instanceId: 'collected',
+            targets: [],
+            executor: { execute() {} },
+          }),
+        'invalid-instance',
+      );
+      expect(scheduler.start()).toEqual({ timePs: 0, executed: 0, reason: 'empty' });
+    },
+  );
 });
 
 describe('deterministic budgets and global faults', () => {
@@ -439,6 +482,28 @@ describe('deterministic budgets and global faults', () => {
     failure(() => scheduler.start(), 'time-budget-exhausted');
     expect(trace).toHaveLength(30);
     expect(trace.every((value) => value === 'P@0:control')).toBe(true);
+  });
+
+  it('does not report previous entry steps on boundary failures', () => {
+    const { scheduler, instance, targets, actions } = fixture();
+    actions.set('A', (context) => {
+      context.consumeSteps();
+      context.consumeSteps();
+    });
+    instance.at(targets.A, 0, []);
+    expect(scheduler.start()).toEqual({ timePs: 0, executed: 1, reason: 'empty' });
+    const cases = [
+      [() => instance.at(targets.A, 0, [true]), 'invalid-argument'],
+      [() => instance.at(targets.P, 0, []), 'invalid-target'],
+      [() => scheduler.enqueueControl(instance, targets.A, []), 'invalid-target'],
+    ] as const;
+    for (const [run, code] of cases) {
+      const error = failure(run, code);
+      expect(error.steps).toBe(0);
+      expect(error.instanceId).toBeUndefined();
+      expect(error.targetName).toBeUndefined();
+      expect(error.phase).toBeUndefined();
+    }
   });
 
   it('retains earlier committed effects and scheduled work when a later reference step fails', () => {

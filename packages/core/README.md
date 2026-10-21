@@ -88,7 +88,7 @@ instance.storage.loadState(received); // 7
 
 `cancel(0)`、取消已释放未复用 ID 和取消正在执行事件均为 no-op。未分配过或非法 ID 报错。到期但尚未执行的事件仍可取消。旧数字副本若已复用，取消的是当前新事件，不提供公开代际保护；模型应清空过期编号。内核队列持有具体记录及状态，取消残留项绝不因数字 ID 复用而运行新事件或修改新期限。
 
-`destroyInstance(handle)` 在入口边界停止输入并取消普通/控制待执行工作，不中断当前入口。实例身份永不复用，旧句柄不能转投新实例；不把 reset 当作 destroy。这里只处理时间/事件，不替领域资源执行电气传播或清理协议。
+`destroyInstance(handle)` 在入口边界停止输入并取消普通/控制待执行工作，不中断当前入口。销毁完成后调度器删除该实例的内部记录，并从队列清除其待执行项，释放 target、executor 及（IR 适配器）解释器与存储引用，反复创建/销毁不再累积；被取消的队列项即使调度器不再驱动也不会保留引用。实例身份与 ID 编号空间仍永久保留、不复用，外部保留的旧句柄只能得到 `invalid-instance`；不把 reset 当作 destroy。这里只处理时间/事件，不替领域资源执行电气传播或清理协议。
 
 ## 可信执行接入
 
@@ -104,7 +104,7 @@ instance.storage.loadState(received); // 7
 
 IR 适配器通过 `stepObserver.beforeStep` 逐步连接 `consumeSteps`。其内部解释器 `maxSteps` 设为 `Number.MAX_SAFE_INTEGER`，实际预算由 scheduler 控制，避免独立解释器的默认一百万覆盖用户更高配置；独立解释器默认行为不变。
 
-宿主边界输入失败无队列/ID 副作用，不污染仿真。入口内模型错误使整个 scheduler `faulted`，保留此前已提交状态、已安排队列及失败入口占用的 ID，不继续执行其他实例；后端捕获错误也不能清除全局故障。不支持入口中途恢复或检查点恢复，必须重建/合法重放。`pause()` 不清除故障。
+宿主边界输入失败无队列/ID 副作用，不污染仿真。入口外的边界错误 `steps` 为 0，且不填 `instanceId/targetName/phase/eventId`，不继承上一入口的计数；入口内故障仍报告失败入口的步数与位置。入口内模型错误使整个 scheduler `faulted`，保留此前已提交状态、已安排队列及失败入口占用的 ID，不继续执行其他实例；后端捕获错误也不能清除全局故障。不支持入口中途恢复或检查点恢复，必须重建/合法重放。`pause()` 不清除故障。
 
 时间错误仍是 `TypeError/RangeError`；执行时包装为 `SchedulerError` 并保留 `cause`。其只读字段包括 `code/instanceId/targetName/timePs/phase/eventId/steps/entriesAtTime/cause`；IR 原始错误、调用链与位置留在 cause。
 

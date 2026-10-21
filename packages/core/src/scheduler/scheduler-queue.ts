@@ -7,6 +7,13 @@ export class MinHeap<T> {
     return this.#items[0];
   }
 
+  /** Drops non-matching items so callers can release references while preserving heap order. */
+  retain(predicate: (item: T) => boolean): void {
+    const kept = this.#items.filter(predicate);
+    this.#items.length = 0;
+    for (const item of kept) this.push(item);
+  }
+
   push(item: T): void {
     const items = this.#items;
     let index = items.length;
