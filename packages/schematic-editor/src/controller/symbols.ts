@@ -123,7 +123,6 @@ export function repositionSymbol(
   if (preview === undefined) {
     return;
   }
-  session.overlay.markEdited(symbol.id);
   const symbols = document.sheet.symbols.map((item) => {
     if (item.id === symbol.id) {
       return next;
@@ -225,7 +224,7 @@ export function removeSymbolProperty(session: EditorSession, symbolId: string, k
 
 /**
  * Sets a component's reference designator. The symbol id stays untouched, so selections and
- * `.view` layout keys keep pointing at the same element.
+ * Stable ids keep references pointing at the same element.
  */
 export function renameDesignator(
   session: EditorSession,

@@ -1,6 +1,8 @@
 /**
- * Schema version of the `.sch` contract (see x-botlab/mica-js#6) and the `.view` contract
- * (see x-botlab/mica-js#67).
+ * Schema version of the `.sch` contract (see x-botlab/mica-js#6).
+ *
+ * 2D placement lives in the separate `.cnv` canvas contract (see x-botlab/mica-js#67 and
+ * `@mica-js/core/canvas`).
  */
 export const SCHEMATIC_VERSION = 1;
 
@@ -87,11 +89,4 @@ export interface SchematicSheet {
 export interface SchematicDocument {
   readonly version: SchematicVersion;
   readonly sheet: SchematicSheet;
-}
-
-export interface SchematicViewDocument {
-  readonly version: SchematicVersion;
-  readonly id: string;
-  readonly schematic: string;
-  readonly layout: Readonly<Record<string, Placement>>;
 }

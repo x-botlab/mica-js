@@ -1,6 +1,6 @@
 # @mica-js/schematic-editor
 
-原理图与 2D 视图的 Canvas 编辑器，渲染 `@mica-js/core/schematic` 的文档。
+原理图编辑器，把 `@mica-js/core/schematic` 的 `.sch` 文档渲染成可编辑的 Canvas 画布。
 
 ## 入口
 
@@ -15,7 +15,6 @@ import { mountSchematicEditor } from '@mica-js/schematic-editor';
 const editor = mountSchematicEditor({
   container, // 必填；编辑器只往里 append 自己的 root
   schematic, // 必填；SchematicDocument
-  view, // 可选；.view 文档，仅作为渲染覆盖
   devices, // 可选；DeviceSymbolProvider
   theme, // 可选；Partial<SchematicTheme>
   display, // 可选；Partial<DisplayOptions>
@@ -40,7 +39,6 @@ const editor = mountSchematicEditor({
 | `controller`                               | 无 DOM 的 `SchematicEditorController`，可直接驱动文档                  |
 | `root` / `canvas`                          | 画布容器与 canvas；编辑器只输出这两个 DOM 节点                         |
 | `setSchematic(document, { keepHistory? })` | 换文档；默认清空历史并重新适应内容，`keepHistory` 时作为一次可撤销编辑 |
-| `setView(view \| undefined)`               | 换只读视图覆盖                                                         |
 | `setTheme(partial)` / `getTheme()`         | 增量换主题 / 读回当前主题                                              |
 | `setDisplayOptions(patch)`                 | 网格、吸附、引脚标签、网格尺寸与网格细分                               |
 | `setTool(tool)`                            | `select` / `wire` / `power` / `ground` / `label` / `text`              |
@@ -124,8 +122,8 @@ deviceList.addEventListener('click', (event) => {
 
 `SchematicEditorController` 不依赖 DOM，可单独用于批量编辑或 Node 环境：
 
-- 读状态：`state`、`document`、`view`、`renderView`、`selection`、`tool`、`display`、`canUndo`、`canRedo`。
-- 视图与工具：`setTool`、`placeDevice`、`cancelPlacement`、`nextDesignator`、`setSelection`、`setDisplayOptions`、`setView`、`reset`、`replace`。
+- 读状态：`state`、`document`、`selection`、`tool`、`display`、`canUndo`、`canRedo`。
+- 视图与工具：`setTool`、`placeDevice`、`cancelPlacement`、`nextDesignator`、`setSelection`、`setDisplayOptions`、`reset`、`replace`。
 - 编辑：`dispatch`、`transaction`、`undo`、`redo`、`moveSelectionBy`、`rotateSelection`、`deleteSelection`、`addWire`、`connectWireAt`、`moveWireSegment`、`previewWireSegment`、`moveReferenceBy`、`setSymbolProperty`、`removeSymbolProperty`、`renameDesignator`、`renameNet`。
 - 查询：`inspect`、`topology`、`hitTest`、`subscribe`。
 
@@ -133,7 +131,7 @@ deviceList.addEventListener('click', (event) => {
 
 | 目录                   | 职责                                                                         |
 | ---------------------- | ---------------------------------------------------------------------------- |
-| `controller/`          | 会话状态与命令桥接：选择、工具、历史、`.view` 覆盖（`view.ts`）、inspector   |
+| `controller/`          | 会话状态与命令桥接：选择、工具、历史、inspector                              |
 | `editor/interactions/` | 指针与键盘状态机：`input.ts` 分发，`move` / `segment` / `wire` / `placement` |
 | `editor/snapping/`     | 吸附与放置辅助（节点、导线本体、网格、label stub），全部是无 DOM 的纯函数    |
 | `render/`              | 场景构建（`scene.ts`）与 canvas 绘制（`canvas-renderer.ts`）                 |

@@ -33,7 +33,7 @@ src/lib/utils.ts               cn()
 src/pages/home.tsx             概览
 src/pages/schematic.tsx        原理图编辑器页：挂载编辑器并把宿主 UI 接上
 src/pages/sandbox.tsx          沙箱页：createSandbox + 调用 + 日志
-src/schematic/sample.ts        器件注册表（含 designatorPrefix 与 #7 属性描述）、示例 .sch / .view
+src/schematic/sample.ts        器件注册表（含 designatorPrefix 与 #7 属性描述）、示例 .sch
 src/schematic/snippets.ts      编辑器页「用法」面板里的代码片段
 public/assets/                 示例资源：panel.png（image）与 firmware/m4-demo.bin（binary）
 src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）

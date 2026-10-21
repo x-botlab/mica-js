@@ -4,7 +4,6 @@ import type {
   PropertyValue,
   SchematicDocument,
   SchematicError,
-  SchematicViewDocument,
   SymbolRole,
 } from '@mica-js/core/schematic';
 
@@ -83,7 +82,6 @@ export type Inspector = SymbolInspector | WireInspector | undefined;
  */
 export interface EditorRenderState {
   readonly document: SchematicDocument;
-  readonly view: SchematicViewDocument | undefined;
   readonly selection: readonly EditorSelection[];
   readonly tool: EditorTool;
   readonly display: DisplayOptions;
@@ -91,7 +89,6 @@ export interface EditorRenderState {
 
 export interface EditorState {
   readonly document: SchematicDocument;
-  readonly view: SchematicViewDocument | undefined;
   readonly selection: readonly EditorSelection[];
   readonly tool: EditorTool;
   /** Device armed for placement by the host's device list; `undefined` when idle. */

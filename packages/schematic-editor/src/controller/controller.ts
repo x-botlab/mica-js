@@ -4,7 +4,6 @@ import type {
   SchematicDocument,
   SchematicHit,
   SchematicTopology,
-  SchematicViewDocument,
 } from '@mica-js/core/schematic';
 import type { PropertyValue } from '@mica-js/core/schematic';
 import { EditorSession, type EditorSessionOptions } from './session';
@@ -42,20 +41,8 @@ export class SchematicEditorController {
     return this.#session.renderState();
   }
 
-  /**
-   * The view used for rendering: placement overrides are dropped for symbols edited here, so a
-   * rotation or move is visible instead of being masked by the read-only layout.
-   */
-  get renderView(): SchematicViewDocument | undefined {
-    return this.#session.renderView;
-  }
-
   get document(): SchematicDocument {
     return this.#session.document;
-  }
-
-  get view(): SchematicViewDocument | undefined {
-    return this.#session.view;
   }
 
   get selection(): readonly EditorSelection[] {
@@ -103,15 +90,9 @@ export class SchematicEditorController {
     this.#session.emit();
   }
 
-  /** Replaces the read-only view document; it never takes part in editing or history. */
-  setView(view: SchematicViewDocument | undefined): void {
-    this.#session.overlay.setView(view);
-    this.#session.emit();
-  }
-
   /** Swaps the edited document and clears history, selection and errors. */
-  reset(document: SchematicDocument, options: { view?: SchematicViewDocument } = {}): void {
-    this.#session.reset(document, options);
+  reset(document: SchematicDocument): void {
+    this.#session.reset(document);
   }
 
   /** @throws {SchematicError} leaving document, history and selection untouched. */

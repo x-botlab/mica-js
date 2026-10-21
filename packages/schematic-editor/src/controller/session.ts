@@ -15,7 +15,6 @@ import {
   type SchematicHit,
   type SchematicSymbol,
   type SchematicTopology,
-  type SchematicViewDocument,
   type SchematicWire,
 } from '@mica-js/core/schematic';
 import { buildInspector } from './inspector';
@@ -29,13 +28,11 @@ import {
   type EditorTool,
   type Inspector,
 } from './types';
-import { ViewOverlay } from './view';
 
 const MAX_MERGE_PASSES = 64;
 
 export interface EditorSessionOptions {
   readonly document: SchematicDocument;
-  readonly view?: SchematicViewDocument;
   readonly devices?: DeviceSymbolProvider;
   readonly tolerance?: number;
   readonly historyLimit?: number;
@@ -46,13 +43,12 @@ export interface EditorSessionOptions {
 }
 
 /**
- * Editing session: the document editor, the read-only view overlay, the session-level state
- * (selection, tool, display, errors), the caches derived from them and the mutation plumbing.
+ * Editing session: the document editor, the session-level state (selection, tool, display,
+ * errors), the caches derived from them and the mutation plumbing.
  * Actions in `symbols.ts` / `wires.ts` operate on it; the controller is only a façade.
  */
 export class EditorSession {
   editor: SchematicEditor;
-  readonly overlay: ViewOverlay;
   readonly devices: DeviceSymbolProvider | undefined;
   readonly tolerance: number | undefined;
   readonly createId: ElementIdFactory;
@@ -73,7 +69,6 @@ export class EditorSession {
       ...deriveOptions(options.devices, options.tolerance),
       ...(options.historyLimit === undefined ? {} : { historyLimit: options.historyLimit }),
     });
-    this.overlay = new ViewOverlay(options.view);
     this.devices = options.devices;
     this.tolerance = options.tolerance;
     this.createId = options.createId ?? defaultElementIdFactory;
@@ -83,14 +78,6 @@ export class EditorSession {
 
   get document(): SchematicDocument {
     return this.editor.document;
-  }
-
-  get view(): SchematicViewDocument | undefined {
-    return this.overlay.view;
-  }
-
-  get renderView(): SchematicViewDocument | undefined {
-    return this.overlay.renderView;
   }
 
   /** Editing options for core calls (`exactOptionalPropertyTypes` friendly). */
@@ -124,7 +111,6 @@ export class EditorSession {
     }
     this.#renderCache = {
       document: this.editor.document,
-      view: this.overlay.renderView,
       selection: this.selection,
       tool: this.tool,
       display: this.display,
@@ -153,8 +139,6 @@ export class EditorSession {
    * `lastError` and rethrown; the document stays untouched.
    */
   mutate(run: () => void, options: { reconcile?: boolean } = {}): void {
-    const document = this.editor.document;
-    const markers = this.overlay.snapshot();
     try {
       this.editor.transaction(() => {
         run();
@@ -166,10 +150,6 @@ export class EditorSession {
       this.lastError = toSchematicError(error);
       this.emit();
       throw error;
-    }
-    if (this.editor.document !== document) {
-      // One document history step, so the marker set keeps one snapshot per step.
-      this.overlay.commit(markers);
     }
     this.lastError = undefined;
     this.pruneSelection();
@@ -194,7 +174,6 @@ export class EditorSession {
       return;
     }
     this.editor.undo();
-    this.overlay.undo();
     this.afterHistoryChange();
   }
 
@@ -203,18 +182,12 @@ export class EditorSession {
       return;
     }
     this.editor.redo();
-    this.overlay.redo();
     this.afterHistoryChange();
   }
 
   /** Swaps the edited document and clears history, selection and errors. */
-  reset(document: SchematicDocument, options: { view?: SchematicViewDocument } = {}): void {
+  reset(document: SchematicDocument): void {
     this.editor = new SchematicEditor(document, deriveOptions(this.devices, this.tolerance));
-    if (options.view === undefined) {
-      this.overlay.clearMarkers();
-    } else {
-      this.overlay.setView(options.view);
-    }
     this.selection = [];
     this.lastError = undefined;
     this.#topology = undefined;

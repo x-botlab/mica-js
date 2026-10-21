@@ -1,4 +1,4 @@
-import type { PropertyValue, SchematicDocument, SchematicViewDocument } from './types';
+import type { PropertyValue, SchematicDocument } from './types';
 
 /** Serializes with a fixed field order and 2-space indentation, matching the examples in #6. */
 export function serializeSchematic(document: SchematicDocument): string {
@@ -54,22 +54,4 @@ function sortProperties(
     }
   }
   return sorted;
-}
-
-export function serializeView(view: SchematicViewDocument): string {
-  const layout: Record<string, { x: number; y: number; rotation: number }> = Object.create(null);
-  for (const symbolId of Object.keys(view.layout).sort()) {
-    const placement = view.layout[symbolId];
-    if (placement === undefined) {
-      continue;
-    }
-    layout[symbolId] = { x: placement.x, y: placement.y, rotation: placement.rotation };
-  }
-  const serializable = {
-    version: view.version,
-    id: view.id,
-    schematic: view.schematic,
-    layout,
-  };
-  return `${JSON.stringify(serializable, null, 2)}\n`;
 }

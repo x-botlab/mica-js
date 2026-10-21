@@ -27,7 +27,6 @@ export type DiagnosticCode =
   | 'symbol/unsupported-field'
   | 'symbol/designator-duplicate'
   | 'net/naming-conflict'
-  | 'view/unknown-symbol'
   | 'edit/unknown-entity'
   | 'edit/invalid-command';
 

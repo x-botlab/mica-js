@@ -11,7 +11,6 @@ export type {
   SchematicSheet,
   SchematicSymbol,
   SchematicVersion,
-  SchematicViewDocument,
   SchematicWire,
 } from './format/types';
 
@@ -33,8 +32,7 @@ export type {
 export { SchematicError } from './format/errors';
 
 export { parseSchematic } from './format/parse-schematic';
-export { parseView } from './format/parse-view';
-export { serializeSchematic, serializeView } from './format/serialize';
+export { serializeSchematic } from './format/serialize';
 
 export { deriveSchematicTopology } from './topology/derive';
 export type {
@@ -46,14 +44,8 @@ export type {
   TopologyOptions,
 } from './topology/derive';
 
-export { loadSchematic, loadView } from './load/load';
-export type {
-  LoadSchematicOptions,
-  LoadViewOptions,
-  LoadedSchematic,
-  LoadedSchematicView,
-  ViewPlacement,
-} from './load/load';
+export { loadSchematic } from './load/load';
+export type { LoadSchematicOptions, LoadedSchematic } from './load/load';
 
 export { applySchematicCommand } from './edit/commands';
 export type { EditEffect, SchematicCommand, SchematicEditOptions } from './edit/commands';
@@ -61,8 +53,6 @@ export { defaultElementIdFactory } from './edit/ids';
 export type { ElementIdFactory, ElementKind } from './edit/ids';
 export { SchematicEditor } from './edit/editor';
 export type { SchematicEditorOptions } from './edit/editor';
-export { applyViewCommand } from './edit/view';
-export type { ApplyViewCommandOptions, ViewCommand } from './edit/view';
 
 export { findJunctionCandidates, hitTestSchematic } from './edit/query';
 export { isConnectedVertex, planSegmentDrag } from './edit/segment-drag';

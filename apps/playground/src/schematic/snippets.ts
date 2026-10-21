@@ -14,7 +14,6 @@ export const USAGE_SNIPPETS: readonly UsageSnippet[] = [
 const editor = mountSchematicEditor({
   container: document.querySelector('#host'),
   schematic, // SchematicDocument（.sch）
-  view, // 可选：.view 布局覆盖
   devices, // DeviceSymbolProvider，画布按它合成器件外形
   theme: LIGHT_SCHEMATIC_THEME, // 可选，默认深色
 });
