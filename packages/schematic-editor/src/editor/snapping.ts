@@ -9,6 +9,7 @@ import {
   parseDeviceReference,
   pinSide,
   pinsBounds,
+  projectOnSegment,
   rotatePoint,
   symbolPinPosition,
   type DeviceSymbolProvider,
@@ -134,27 +135,15 @@ export function wireBodyPointAt(context: SnapContext, point: Point): Point | und
       if (a === undefined || b === undefined) {
         continue;
       }
-      const projected = projectOnSegment(a, b, point);
+      const projected = projectOnSegment(point, a, b);
       const distance = Math.hypot(projected.x - point.x, projected.y - point.y);
       if (distance > radius || (best !== undefined && distance >= best.distance)) {
         continue;
       }
-      best = { point: projected, distance };
+      best = { point: { x: projected.x, y: projected.y }, distance };
     }
   }
   return best?.point;
-}
-
-/** Closest point of segment `a`→`b`, clamped to the segment ends. */
-function projectOnSegment(a: Point, b: Point, point: Point): Point {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared === 0) {
-    return { x: a.x, y: a.y };
-  }
-  const t = Math.min(1, Math.max(0, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared));
-  return { x: a.x + dx * t, y: a.y + dy * t };
 }
 
 /** World position of a pin / label / power / ground anchor under `point`. */

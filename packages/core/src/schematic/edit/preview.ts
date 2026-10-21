@@ -2,6 +2,12 @@ import { namesNet, symbolRole } from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
 import type { Placement, Point, SchematicDocument } from '../format/types';
 import { symbolPinPosition } from '../geometry/transform';
+import {
+  nearestPointOnPolyline,
+  pointOnPolyline,
+  pointOnPolylineAt,
+  samePoint,
+} from '../geometry/point';
 import { rerouteWireEndpoint, stretchWireEndpoint } from '../geometry/reroute';
 
 export interface SymbolDragPreview {
@@ -71,7 +77,7 @@ export function previewSymbolDrag(
     const point = { x: junction.x, y: junction.y };
     const attached = junction.wires.every((wireId) => {
       const points = wires.get(wireId) ?? document.sheet.wires.find((w) => w.id === wireId)?.points;
-      return points !== undefined && liesOnPolyline(points, point);
+      return points !== undefined && pointOnPolyline(points, point, ON_WIRE_EPSILON);
     });
     if (attached) {
       continue;
@@ -82,11 +88,15 @@ export function previewSymbolDrag(
       if (before === undefined || after === undefined) {
         continue;
       }
-      const projected = projectOntoPolyline(before.points, point);
-      if (projected === undefined) {
+      const projected = nearestPointOnPolyline(before.points, point);
+      const moved =
+        projected === undefined
+          ? undefined
+          : pointOnPolylineAt(after, projected.segment, projected.t);
+      if (moved === undefined) {
         continue;
       }
-      junctions.set(junction.id, projectSegment(after, projected.segment, projected.t));
+      junctions.set(junction.id, moved);
       break;
     }
   }
@@ -105,43 +115,6 @@ export function previewSymbolDrag(
   }
 
   return { wires, junctions, symbols };
-}
-
-/** Segment index plus position along it for the closest point on a polyline. */
-function projectOntoPolyline(
-  points: readonly Point[],
-  point: Point,
-): { readonly segment: number; readonly t: number } | undefined {
-  let best: { segment: number; t: number; distance: number } | undefined;
-  for (let index = 1; index < points.length; index += 1) {
-    const a = points[index - 1];
-    const b = points[index];
-    if (a === undefined || b === undefined) {
-      continue;
-    }
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const lengthSquared = dx * dx + dy * dy;
-    const t =
-      lengthSquared === 0
-        ? 0
-        : Math.min(1, Math.max(0, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared));
-    const projected = { x: a.x + dx * t, y: a.y + dy * t };
-    const distance = Math.hypot(projected.x - point.x, projected.y - point.y);
-    if (best === undefined || distance < best.distance) {
-      best = { segment: index - 1, t, distance };
-    }
-  }
-  return best === undefined ? undefined : { segment: best.segment, t: best.t };
-}
-
-function projectSegment(points: readonly Point[], segment: number, t: number): Point {
-  const a = points[segment];
-  const b = points[segment + 1] ?? a;
-  if (a === undefined || b === undefined) {
-    return { x: 0, y: 0 };
-  }
-  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
 /** True for the builtin anchors that name a net: net labels, power and ground. */
@@ -173,36 +146,4 @@ function connectionAnchors(
   return devices.getDeviceSymbol({ raw: device, packageId, deviceId })?.pins ?? {};
 }
 
-function samePoint(left: Point, right: Point): boolean {
-  return left.x === right.x && left.y === right.y;
-}
-
 const ON_WIRE_EPSILON = 1e-6;
-
-function liesOnPolyline(points: readonly Point[], point: Point): boolean {
-  for (let index = 1; index < points.length; index += 1) {
-    const a = points[index - 1];
-    const b = points[index];
-    if (a === undefined || b === undefined) {
-      continue;
-    }
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const lengthSquared = dx * dx + dy * dy;
-    const cross = (point.x - a.x) * dy - (point.y - a.y) * dx;
-    if (lengthSquared === 0) {
-      if (Math.hypot(point.x - a.x, point.y - a.y) <= ON_WIRE_EPSILON) {
-        return true;
-      }
-      continue;
-    }
-    if (Math.abs(cross) / Math.sqrt(lengthSquared) > ON_WIRE_EPSILON) {
-      continue;
-    }
-    const t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared;
-    if (t >= -ON_WIRE_EPSILON && t <= 1 + ON_WIRE_EPSILON) {
-      return true;
-    }
-  }
-  return false;
-}

@@ -65,6 +65,10 @@ export { applyViewCommand } from './edit/view';
 export type { ApplyViewCommandOptions, ViewCommand } from './edit/view';
 
 export { findJunctionCandidates, hitTestSchematic } from './edit/query';
+export { isConnectedVertex, planSegmentDrag } from './edit/segment-drag';
+export type { SegmentDragOptions } from './edit/segment-drag';
+export { joinJunctionAt, planJunctionRelease } from './edit/junctions';
+export type { JunctionJoin, JunctionRelease, JunctionReleaseOptions } from './edit/junctions';
 export type {
   HitTestOptions,
   JunctionCandidate,
@@ -84,7 +88,17 @@ export {
 } from './geometry/transform';
 export { rerouteWireEndpoint, stretchWireEndpoint } from './geometry/reroute';
 export type { PointMove, ReroutedWire } from './geometry/reroute';
-export { DEFAULT_TOLERANCE, pointOnPolyline, pointsEqual } from './geometry/point';
+export {
+  DEFAULT_TOLERANCE,
+  distanceToSegment,
+  nearestPointOnPolyline,
+  pointOnPolyline,
+  pointOnPolylineAt,
+  pointsEqual,
+  projectOnSegment,
+  samePoint,
+} from './geometry/point';
+export type { SegmentProjection } from './geometry/point';
 export { previewSymbolDrag } from './edit/preview';
 export type { SymbolDragPreview } from './edit/preview';
 

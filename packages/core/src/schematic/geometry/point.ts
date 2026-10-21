@@ -7,8 +7,83 @@ export function distance(a: Point, b: Point): number {
   return Math.hypot(b.x - a.x, b.y - a.y);
 }
 
+export function samePoint(a: Point, b: Point): boolean {
+  return a.x === b.x && a.y === b.y;
+}
+
 export function pointsEqual(a: Point, b: Point, tolerance = DEFAULT_TOLERANCE): boolean {
   return distance(a, b) <= tolerance;
+}
+
+/** Closest point on the closed segment `a`–`b`, plus its position `t` in `[0, 1]`. */
+export function projectOnSegment(
+  point: Point,
+  a: Point,
+  b: Point,
+): { readonly x: number; readonly y: number; readonly t: number } {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) {
+    return { x: a.x, y: a.y, t: 0 };
+  }
+  const raw = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared;
+  const t = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+  return { x: a.x + dx * t, y: a.y + dy * t, t };
+}
+
+export interface SegmentProjection {
+  /** Closest point of the polyline. */
+  readonly point: Point;
+  /** Index of the segment that holds the closest point. */
+  readonly segment: number;
+  /** Position along that segment, in `[0, 1]`. */
+  readonly t: number;
+  readonly distance: number;
+}
+
+/** Closest point on a polyline, with the segment it belongs to; `undefined` when empty. */
+export function nearestPointOnPolyline(
+  points: readonly Point[],
+  point: Point,
+): SegmentProjection | undefined {
+  let best: SegmentProjection | undefined;
+  for (let index = 1; index < points.length; index += 1) {
+    const a = points[index - 1];
+    const b = points[index];
+    if (a === undefined || b === undefined) {
+      continue;
+    }
+    const projected = projectOnSegment(point, a, b);
+    const candidate: SegmentProjection = {
+      point: { x: projected.x, y: projected.y },
+      segment: index - 1,
+      t: projected.t,
+      distance: distance(point, projected),
+    };
+    if (best === undefined || candidate.distance < best.distance) {
+      best = candidate;
+    }
+  }
+  const only = points[0];
+  if (best === undefined && only !== undefined) {
+    return { point: only, segment: 0, t: 0, distance: distance(point, only) };
+  }
+  return best;
+}
+
+/** Point at position `t` along segment `segment` of a polyline. */
+export function pointOnPolylineAt(
+  points: readonly Point[],
+  segment: number,
+  t: number,
+): Point | undefined {
+  const a = points[segment];
+  if (a === undefined) {
+    return undefined;
+  }
+  const b = points[segment + 1] ?? a;
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
 }
 
 /** True when `point` lies on the closed segment `a`–`b`, within `tolerance`. */

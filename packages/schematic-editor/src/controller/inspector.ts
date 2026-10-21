@@ -6,10 +6,8 @@ import {
   netNameOf,
   parseDeviceReference,
   propertyValueProblem,
-  readPropertyDescriptors,
   symbolRole,
   textDeviceContent,
-  type DeviceReference,
   type DeviceSymbolProvider,
   type PropertyDescriptor,
   type PropertyValue,
@@ -126,35 +124,7 @@ function devicePropertyDescriptors(
   if (reference === undefined) {
     return new Map();
   }
-  const declared = devices?.getDevicePropertyDescriptors?.(reference);
-  if (declared !== undefined) {
-    return declared;
-  }
-  // Providers that only expose the raw description still get the #7 declarations parsed here.
-  return readPropertyDescriptors(deviceProperties(reference, devices)?.['properties']);
-}
-
-function deviceProperties(
-  reference: DeviceReference,
-  devices: DeviceSymbolProvider | undefined,
-): Readonly<Record<string, unknown>> | undefined {
-  const raw = deviceRaw(reference, devices);
-  const declared = raw?.['properties'];
-  return typeof declared === 'object' && declared !== null && !Array.isArray(declared)
-    ? (declared as Readonly<Record<string, unknown>>)
-    : undefined;
-}
-
-function deviceRaw(
-  reference: DeviceReference,
-  devices: DeviceSymbolProvider | undefined,
-): Readonly<Record<string, unknown>> | undefined {
-  const provider = devices as
-    { resolve?: (value: DeviceReference) => { raw?: unknown } } | undefined;
-  const raw = provider?.resolve?.(reference)?.raw;
-  return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
-    ? (raw as Readonly<Record<string, unknown>>)
-    : undefined;
+  return devices?.getDevicePropertyDescriptors?.(reference) ?? new Map();
 }
 
 function builtinName(symbol: SchematicSymbol): string | undefined {

@@ -3,9 +3,13 @@ import type { Point } from '../format/types';
 import {
   boundsOfPoints,
   distanceToSegment,
+  nearestPointOnPolyline,
   pointOnPolyline,
+  pointOnPolylineAt,
   pointOnSegment,
   pointsEqual,
+  projectOnSegment,
+  samePoint,
   unionBounds,
 } from './point';
 
@@ -63,5 +67,51 @@ describe('geometry primitives', () => {
       width: 4,
       height: 6,
     });
+  });
+});
+
+describe('projection helpers', () => {
+  it('compares exact points', () => {
+    expect(samePoint({ x: 1, y: 2 }, { x: 1, y: 2 })).toBe(true);
+    expect(samePoint({ x: 1, y: 2 }, { x: 1.000001, y: 2 })).toBe(false);
+  });
+
+  it('projects onto a segment and clamps to its ends', () => {
+    expect(projectOnSegment({ x: 5, y: 5 }, { x: 0, y: 0 }, { x: 10, y: 0 })).toEqual({
+      x: 5,
+      y: 0,
+      t: 0.5,
+    });
+    expect(projectOnSegment({ x: -5, y: 0 }, { x: 0, y: 0 }, { x: 10, y: 0 })).toEqual({
+      x: 0,
+      y: 0,
+      t: 0,
+    });
+    expect(projectOnSegment({ x: 4, y: 4 }, { x: 2, y: 2 }, { x: 2, y: 2 })).toEqual({
+      x: 2,
+      y: 2,
+      t: 0,
+    });
+  });
+
+  it('finds the closest polyline point with its segment', () => {
+    expect(nearestPointOnPolyline(line, { x: 12, y: 6 })).toEqual({
+      point: { x: 10, y: 6 },
+      segment: 1,
+      t: 0.6,
+      distance: 2,
+    });
+    expect(nearestPointOnPolyline([{ x: 3, y: 4 }], { x: 0, y: 0 })).toEqual({
+      point: { x: 3, y: 4 },
+      segment: 0,
+      t: 0,
+      distance: 5,
+    });
+    expect(nearestPointOnPolyline([], { x: 0, y: 0 })).toBeUndefined();
+  });
+
+  it('reads a point at a position along a segment', () => {
+    expect(pointOnPolylineAt(line, 1, 0.5)).toEqual({ x: 10, y: 5 });
+    expect(pointOnPolylineAt(line, 9, 0.5)).toBeUndefined();
   });
 });

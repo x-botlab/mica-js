@@ -7,7 +7,10 @@ import {
   designatorOf,
   hasDesignator,
   hitTestSchematic,
+  joinJunctionAt,
   mergeWiresAtJunction,
+  planJunctionRelease,
+  planSegmentDrag,
   namesNet,
   netNameOf,
   parseDeviceReference,
@@ -16,7 +19,6 @@ import {
   referenceAnchor,
   rotatePoint,
   splitWireAt,
-  symbolPinPosition,
   symbolRole,
   type DeviceSymbolProvider,
   type DesignatorFactory,
@@ -451,26 +453,14 @@ export class SchematicEditorController {
             this.#splitInto(id, host.wireId, point);
             continue;
           }
-          this.#joinJunction(id, point);
+          const join = joinJunctionAt(this.#editor.document, id, point);
+          if (join !== undefined) {
+            this.#editor.dispatch({ type: 'update-junction', id: join.id, wires: join.wires });
+          }
         }
       },
       { reconcile: false },
     );
-  }
-
-  /** Adds a wire that ends on an existing junction to that junction's participants. */
-  #joinJunction(wireId: string, point: Point): void {
-    const junction = this.#editor.document.sheet.junctions.find(
-      (item) => item.x === point.x && item.y === point.y,
-    );
-    if (junction === undefined || junction.wires.includes(wireId)) {
-      return;
-    }
-    this.#editor.dispatch({
-      type: 'update-junction',
-      id: junction.id,
-      wires: [...junction.wires, wireId],
-    });
   }
 
   /**
@@ -496,147 +486,32 @@ export class SchematicEditorController {
    * behind on the old geometry let go of this wire instead of failing the edit.
    */
   moveWireSegment(wireId: string, segment: number, delta: Point): void {
-    const wire = this.#findWire(wireId);
-    const points = wire === undefined ? undefined : this.#segmentDragPoints(wire, segment, delta);
-    if (wire === undefined || points === undefined) {
+    const points = this.previewWireSegment(wireId, segment, delta);
+    if (points === undefined) {
       return;
     }
     this.#mutate(() => {
-      this.#releaseJunctions(wire.id, points);
-      this.#editor.dispatch({ type: 'set-wire-points', id: wire.id, points });
+      for (const release of planJunctionRelease(this.#editor.document, wireId, points)) {
+        this.#editor.dispatch(
+          release.wires === undefined
+            ? { type: 'remove-junction', id: release.id }
+            : { type: 'update-junction', id: release.id, wires: release.wires },
+        );
+      }
+      this.#editor.dispatch({ type: 'set-wire-points', id: wireId, points });
     });
   }
 
   /** Wire points a segment drag would produce; the renderer previews them before the commit. */
   previewWireSegment(wireId: string, segment: number, delta: Point): readonly Point[] | undefined {
-    const wire = this.#findWire(wireId);
-    return wire === undefined ? undefined : this.#segmentDragPoints(wire, segment, delta);
-  }
-
-  #segmentDragPoints(
-    wire: SchematicWire,
-    segment: number,
-    delta: Point,
-  ): readonly Point[] | undefined {
-    const points = wire.points;
-    const start = points[segment];
-    const end = points[segment + 1];
-    if (start === undefined || end === undefined || (delta.x === 0 && delta.y === 0)) {
-      return undefined;
-    }
-    if (start.x === end.x && start.y === end.y) {
-      return undefined;
-    }
-    // Dragging a horizontal segment moves its run vertically; the run only breaks at a segment
-    // pointing the other way (it just stretches) or at a connected vertex (it needs a dogleg).
-    const horizontal = start.y === end.y;
-    const isParallel = (from: Point, to: Point): boolean =>
-      horizontal ? from.y === to.y : from.x === to.x;
-
-    let first = segment;
-    while (first > 0) {
-      const previous = points[first - 1];
-      const current = points[first];
-      if (
-        previous === undefined ||
-        current === undefined ||
-        !isParallel(previous, current) ||
-        this.#isConnectedVertex(current, wire.id)
-      ) {
-        break;
-      }
-      first -= 1;
-    }
-    let last = segment + 1;
-    while (last < points.length - 1) {
-      const current = points[last];
-      const next = points[last + 1];
-      if (
-        current === undefined ||
-        next === undefined ||
-        !isParallel(current, next) ||
-        this.#isConnectedVertex(current, wire.id)
-      ) {
-        break;
-      }
-      last += 1;
-    }
-
-    const firstPoint = points[first];
-    const lastPoint = points[last];
-    if (firstPoint === undefined || lastPoint === undefined) {
-      return undefined;
-    }
-    const shift = (point: Point): Point => ({ x: point.x + delta.x, y: point.y + delta.y });
-    const moved: Point[] = [];
-    for (let index = first; index <= last; index += 1) {
-      const point = points[index];
-      if (point !== undefined) {
-        moved.push(shift(point));
-      }
-    }
-    if (this.#isConnectedVertex(firstPoint, wire.id)) {
-      moved.unshift(firstPoint);
-    }
-    if (this.#isConnectedVertex(lastPoint, wire.id)) {
-      moved.push(lastPoint);
-    }
-    return [...points.slice(0, first), ...moved, ...points.slice(last + 1)];
-  }
-
-  /** Drops this wire from junctions that no longer lie on its new geometry. */
-  #releaseJunctions(wireId: string, points: readonly Point[]): void {
-    for (const junction of [...this.#editor.document.sheet.junctions]) {
-      if (!junction.wires.includes(wireId)) {
-        continue;
-      }
-      if (pointOnPolyline(points, { x: junction.x, y: junction.y })) {
-        continue;
-      }
-      const remaining = junction.wires.filter((id) => id !== wireId);
-      if (remaining.length < 2) {
-        this.#editor.dispatch({ type: 'remove-junction', id: junction.id });
-      } else {
-        this.#editor.dispatch({ type: 'update-junction', id: junction.id, wires: remaining });
-      }
-    }
-  }
-
-  /** True when something other than this wire is attached at `point`. */
-  #isConnectedVertex(point: Point, wireId: string): boolean {
-    const document = this.#editor.document;
-    const same = (candidate: Point): boolean => candidate.x === point.x && candidate.y === point.y;
-    for (const junction of document.sheet.junctions) {
-      if (same(junction)) {
-        return true;
-      }
-    }
-    for (const wire of document.sheet.wires) {
-      if (wire.id !== wireId && wire.points.some(same)) {
-        return true;
-      }
-    }
-    for (const symbol of document.sheet.symbols) {
-      const role = symbolRole(symbol.device);
-      if (role !== 'component') {
-        if (same({ x: symbol.x, y: symbol.y })) {
-          return true;
-        }
-        continue;
-      }
-      const reference = parseDeviceReference(symbol.device);
-      const definition =
-        reference === undefined ? undefined : this.#devices?.getDeviceSymbol(reference);
-      if (definition === undefined) {
-        continue;
-      }
-      for (const anchor of Object.values(definition.pins)) {
-        if (same(symbolPinPosition(symbol, anchor))) {
-          return true;
-        }
-      }
-    }
-    return false;
+    const devices = this.#devices;
+    return planSegmentDrag(
+      this.#editor.document,
+      wireId,
+      segment,
+      delta,
+      devices === undefined ? {} : { devices },
+    );
   }
 
   /** Moves a reference designator by a world-space delta; the offset is stored locally. */
