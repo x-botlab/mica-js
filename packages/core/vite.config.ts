@@ -1,7 +1,11 @@
+import { fileURLToPath } from 'node:url';
 import dts from 'vite-plugin-dts';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  test: {
+    alias: { '@mica-js/ir': fileURLToPath(new URL('../ir/src/index.ts', import.meta.url)) },
+  },
   build: {
     lib: {
       entry: {
@@ -19,6 +23,8 @@ export default defineConfig({
   },
   plugins: [
     dts({
+      tsconfigPath: './tsconfig.build.json',
+      entryRoot: 'src',
       include: ['src'],
       exclude: ['src/**/*.test.ts', 'src/**/*.type-test.ts', 'src/**/test-helpers.ts'],
       // One flattened declaration per entry, so consumers with node16 resolution never have to

@@ -112,7 +112,7 @@ IR 适配器通过 `stepObserver.beforeStep` 逐步连接 `consumeSteps`。其�
 
 ## 验证与边界
 
-使用现有 Vitest/TypeScript/Vite/ESLint/Prettier。测试直接执行调度及真实 IR 的状态/数组效果，覆盖时间边界、A/C/B、A/P/C、值捕获、取消/复用/旧项隔离、分段确定性、长反馈、预算/异常及前序效果保留。没有用构建、子进程或临时消费者作为单测。core 将 `@mica-js/ir` 保留为构建外部依赖，避免复制其引用符号/解释器身份。
+使用现有 Vitest/TypeScript/Vite/ESLint/Prettier。测试直接执行调度及真实 IR 的状态/数组效果，覆盖时间边界、A/C/B、A/P/C、值捕获、取消/复用/旧项隔离、分段确定性、长反馈、预算/异常及前序效果保留。没有用构建、子进程或临时消费者作为单测。源码 typecheck 与 Vitest 直接解析 workspace IR 源码，干净 checkout 无需先构建即可验证；发布构建使用独立 `tsconfig.build.json`，仍将 `@mica-js/ir` 保留为外部依赖，避免复制其引用符号/解释器身份。
 
 ```powershell
 pnpm --filter @mica-js/ir build
