@@ -296,6 +296,44 @@ function captureDefinition(value: unknown): CapturedDefinition {
   });
 }
 
+/**
+ * Internal single-read snapshot shared with the power layer; not exported from the package root.
+ * Passing this frozen value to `createTopologyRuntime` cannot observe later input mutation.
+ */
+export function captureTopologyDefinition(value: unknown): TopologyDefinition {
+  const captured = captureDefinition(value);
+  return Object.freeze({
+    pins: Object.freeze(
+      captured.pins.map((pin) =>
+        Object.freeze({
+          instanceId: pin.instanceId,
+          pinName: pin.pinName,
+          kind: pin.kind,
+        }),
+      ),
+    ),
+    wires: Object.freeze(
+      captured.wires.map((wire) =>
+        Object.freeze({
+          wireId: wire.wireId,
+          pins: Object.freeze(wire.pins.map((pin) => pin.ref)),
+          globalGnd: wire.globalGnd,
+        }),
+      ),
+    ),
+    connections: Object.freeze(
+      captured.connections.map((connection) =>
+        Object.freeze({
+          instanceId: connection.instanceId,
+          connectionId: connection.connectionId,
+          pins: Object.freeze([connection.pinA.pinName, connection.pinB.pinName] as const),
+          initial: connection.initial,
+        }),
+      ),
+    ),
+  });
+}
+
 function capturePatch(value: unknown, definition: CapturedDefinition): CapturedPatch {
   checkRecord(value, 'patch', ['instanceId', 'connections']);
   const instanceId = value.instanceId;

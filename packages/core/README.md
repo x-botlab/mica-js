@@ -10,11 +10,11 @@ pnpm add @mica-js/core
 
 ## 入口
 
-| 入口                      | 内容                                              |
-| ------------------------- | ------------------------------------------------- |
-| `@mica-js/core`           | 仿真内核（时间调度、电气网络求值、连接拓扑提交）  |
-| `@mica-js/core/schematic` | 原理图 `.sch`：解析、拓扑推导、编辑命令与属性系统 |
-| `@mica-js/core/canvas`    | 画布 `.cnv`：与 `.sch` 绑定的 2D 摆放（`layout`） |
+| 入口                      | 内容                                                     |
+| ------------------------- | -------------------------------------------------------- |
+| `@mica-js/core`           | 仿真内核（时间调度、电气网络求值、连接拓扑、电源域门控） |
+| `@mica-js/core/schematic` | 原理图 `.sch`：解析、拓扑推导、编辑命令与属性系统        |
+| `@mica-js/core/canvas`    | 画布 `.cnv`：与 `.sch` 绑定的 2D 摆放（`layout`）        |
 
 文件合同：`.sch` 见 [#6](https://github.com/x-botlab/mica-js/issues/6)，`.cnv` 见 [#67](https://github.com/x-botlab/mica-js/issues/67)。
 
@@ -332,7 +332,125 @@ scheduler 已处于 `faulted` 时，`runtime.destroy()` 会按调度器边界拒
 
 ### 支持边界
 
-连接拓扑层不解析原理图、不实现 IR `connection.apply` 指令、作者 JS API、外部导线运行期增删、#51 电源域/门控或协议；它只消费宿主已提交的引脚快照与静态外部导线。
+连接拓扑层不解析原理图、不实现 IR `connection.apply` 指令、作者 JS API 或外部导线运行期增删；它只消费宿主已提交的引脚快照与静态外部导线。电源域、阈值、就绪与引脚门控由其上的 `src/power/` 组合，拓扑本身不计算域状态。
+
+## 电源域与引脚门控
+
+`createPowerRuntime(scheduler, definition, options)` 在 #50 拓扑层之上实现 #13 的电源域供电/接地条件、迟滞就绪状态、引脚驱动/采样门控与器件通知。对应 [#51](https://github.com/x-botlab/mica-js/issues/51)，公共合同已[逐项批准](https://github.com/x-botlab/mica-js/issues/51#issuecomment-6338138144)，依赖批量计算与收敛补充见[批准记录](https://github.com/x-botlab/mica-js/issues/51#issuecomment-6338170525)。源码位于 `src/power/`，与 `src/topology/`、`src/electrical/`、`src/scheduler/` 并列。
+
+```typescript
+import { createPowerRuntime, createScheduler } from '@mica-js/core';
+
+const scheduler = createScheduler();
+const power = createPowerRuntime(
+  scheduler,
+  {
+    topology: {
+      pins: [
+        { instanceId: 'psu', pinName: 'VCC', kind: 'power' },
+        { instanceId: 'psu', pinName: 'GND', kind: 'gnd' },
+        { instanceId: 'mcu', pinName: 'VDD', kind: 'power' },
+        { instanceId: 'mcu', pinName: 'GND', kind: 'gnd' },
+        { instanceId: 'mcu', pinName: 'P0', kind: 'signal' },
+      ],
+      wires: [
+        {
+          wireId: 'vcc',
+          pins: [
+            { instanceId: 'psu', pinName: 'VCC' },
+            { instanceId: 'mcu', pinName: 'VDD' },
+          ],
+        },
+        {
+          wireId: 'gnd',
+          pins: [
+            { instanceId: 'psu', pinName: 'GND' },
+            { instanceId: 'mcu', pinName: 'GND' },
+          ],
+          globalGnd: true,
+        },
+      ],
+      connections: [],
+    },
+    devices: [
+      {
+        instanceId: 'mcu',
+        powerDomains: {
+          core: { supply: 'VDD', ground: 'GND', voltage: { turnOn: 3, turnOff: 2 } },
+        },
+        pins: { P0: { powerDomain: 'core', levels: { low: 0.3, high: 0.7 } } },
+      },
+    ],
+  },
+  {
+    instanceId: 'power',
+    pinStates: [
+      {
+        instanceId: 'psu',
+        pinName: 'VCC',
+        powerReady: true,
+        mode: 'analog',
+        outputEnabled: true,
+        voltageIntent: 5,
+        model: {
+          kind: 'ideal-voltage',
+          minVoltage: 0,
+          maxVoltage: 5,
+          lowVoltage: 0,
+          highVoltage: 5,
+        },
+      },
+      // 其余 4 个声明引脚各一份完整 ElectricalPinInput；域引脚初始由运行时关闭。
+    ],
+    observer: {
+      onPowerDomainChange(changes, snapshot) {
+        // 公共控制阶段通知；此处只能入队，不能同步重入器件入口
+      },
+    },
+  },
+);
+
+scheduler.start(); // 初始化域、通知 off→on、恢复门控并继续网络解析
+```
+
+### 声明与静态校验
+
+- `PowerDefinition.topology` 即 #50 定义；`devices` 按实例声明 `powerDomains` 与信号引脚绑定。域 ID 在器件内稳定、唯一、大小写敏感。
+- `supply`/`ground` 必须是同一实例的 `power`/`gnd` 引脚；`turnOn > turnOff >= 0` 且均为有限数；`dependsOn` 仅引用同一器件域、唯一、无自依赖且必须无环。
+- `pins.<id>.powerDomain` 仅用于 `signal` 引脚；`levels` 必须与 `powerDomain` 同时提供，且 `0 <= low < high <= 1`。
+- 未知字段/类型/枚举/非有限数值抛 `TypeError`；越界、引用缺失、kind 不匹配或依赖环抛 `RangeError`。定义按值只读取一次，快照直接交给 #50。
+
+### 域状态、迟滞与接地
+
+每个域维护 `{ state, voltage, groundReady, dependenciesReady }`。`groundReady` 由 `ground` 引脚所在分量是否接入显式全局 GND 网络决定；全局 GND 固定 0 V。接地就绪且 supply 网络为确定驱动电压时 `voltage` 取该电压；接地失效或供电待确定时 `voltage === null` 且域为 `off`。依赖关闭不把 `voltage` 置 null。
+
+状态按 #13 优先级计算：接地未就绪 / 电压为 null / 任一依赖 off → `off`；`voltage <= turnOff` → `off`；`voltage >= turnOn` → `on`；迟滞区间保持原状态。边界含等号。同一批网络/供电更新只读取一次已提交拓扑快照，全部域按依赖拓扑顺序一次求值后统一应用门控。下电原因保留 `ground-not-ready`/`supply-indeterminate`/`dependency-off`/`below-turn-off`。
+
+### 门控、持有意图与实际网络
+
+- 绑定域的 signal 引脚由运行时拥有 `powerReady`，宿主提交的该字段被忽略。域 `off` 时提交 `powerReady: false`，由 #49 释放主动驱动与内部上下拉；配置和两类输出意图继续保存。域 `on` 时以最新持有意图提交 `powerReady: true` 恢复驱动。
+- `pinIntent(pin)` 返回最后提交的持有意图，`networkOf(pin)` 返回实际网络结果，两者分离。无域绑定引脚沿用宿主 `powerReady`。
+- 上电时先完成观察者通知，再把门控更新排入后续 topology 控制轮次；在后续解析完成前 `pinGate(pin).ready === false`（`opening`）。域 off 为 `domain-off`，无域为 `no-domain`，就绪为 `powered`。
+- `submit/updatePinStates/refresh` 都在公共控制阶段提交，不在调用中同步重入器件；引脚更新先整批校验，失败时不部分写入。
+
+### 数字输入与采样
+
+- 有 `levels` 的引脚按当前域电压取 `low * V_D`/`high * V_D` 门限；无 `levels` 的引脚使用已提交引脚 model 的绝对 `lowVoltage/highVoltage`（#24 器件电气模型规则）。
+- 默认三态：`<= low` 为 0，`>= high` 为 1，区间返回该引脚的逻辑记忆并标记 `threshold-range`；可选 `two-state` 以 `high` 为唯一分界。逻辑记忆初值 0，只有确定低/高（以及二态判定）更新。
+- 门控采样数字返回 `{ value: 0, ready: false, source: 'gated' }`，模拟返回 `{ voltage: +0, ready: false, source: 'gated' }`；浮空数字返回 0 且 `source: 'floating'`，逻辑记忆保持不变。
+- 浮空模拟通过 #50 `floatingInput(pin).sample(V_D, scheduler.now)` 取得 `mica-floating-v2` 合成值；未配置 `floating.seed` 时明确拒绝。无域绑定的浮空模拟引脚以引脚 model 的 `maxVoltage` 作为供电上限。
+- 采样 power/gnd 引脚明确抛 `RangeError`。ADC 量化、滤波、PWM 平均等器件行为仍由器件模型表达。
+
+### 通知顺序、控制阶段与预算
+
+- 每批变化只回调一次 `PowerDomainObserver.onPowerDomainChange(changes, snapshot)`。先全部下电、再全部上电；下电依赖方优先（深度降序），上电前置域优先（深度升序）；同级按域 ID、跨实例按实例 ID 的 UTF-16 字典序。完整快照按 `(instanceId, domainId)` 排序。
+- 普通入口返回后、下一普通入口前：topology 控制阶段提交网络/引脚并解析；power 控制阶段计算域状态、释放下电域、通知、开放上电域并继续后续网络解析。观察者回调中只能入队；不会同步重入器件入口。
+- 同一虚拟时间最多 `maxPropagationRounds`（默认 10000）个 power 传播入口。超限从控制入口抛 `PowerFeedbackError`（含 `timePs`、`rounds`、`maxRounds`、完整域快照），scheduler 进入 `faulted`（`SchedulerError.code === 'execution-failed'`，`cause` 为 `PowerFeedbackError`），已提交状态与意图不被静默丢弃。
+- 与拓扑层一致，scheduler 已处于 `faulted` 时 `destroy()` 会按调度器边界拒绝并抛 `scheduler-faulted`；宿主应整体丢弃 power runtime 与 scheduler，而不是依赖清理调用恢复。
+
+### 支持边界
+
+本层不实现 #55 的 IR `pin.*` 指令与标量布局、#56 的观察投递、UART/SPI/I²C 等协议、JIT、掉电后的器件寄存器/Flash/reset 语义，也不实现连续电路、电阻、阻抗或负载求解。器件内部的状态保留、复位、通信状态机与业务就绪仍由器件 IR/模型表达；本层只提供域状态、门控、输入解释和通知接口。
 
 ## 支持边界与验证
 
@@ -346,7 +464,7 @@ pnpm --filter @mica-js/core typecheck
 pnpm --filter @mica-js/core build
 ```
 
-Vitest 覆盖公共组合矩阵、释放/门控/readiness、冲突/浮空、f64 电压边界、冻结故障现场、顺序/网络隔离、v2 重放向量、独立 BigInt 算法对照、时间高位、供电限幅、门控阶段与恢复初始化；拓扑层覆盖连接环/并行路径、合并/拆分、GND、原子 patch、非法列表不部分提交、同刻顺序、反馈阶段、冲突不回滚、浮空登记/恢复及与时间推进的交互。TypeScript 检查根入口合同。测试直接调用生产求值函数与真实 scheduler，不用构建或子进程冒充单元测试。
+Vitest 覆盖公共组合矩阵、释放/门控/readiness、冲突/浮空、f64 电压边界、冻结故障现场、顺序/网络隔离、v2 重放向量、独立 BigInt 算法对照、时间高位、供电限幅、门控阶段与恢复初始化；拓扑层覆盖连接环/并行路径、合并/拆分、GND、原子 patch、非法列表不部分提交、同刻顺序、反馈阶段、冲突不回滚、浮空登记/恢复及与时间推进的交互；电源层覆盖上电/欠压/掉电/失地及恢复、迟滞与依赖通知顺序、持有意图与实际网络分离、驱动/偏置/模拟释放与恢复、三态/二态门限与逻辑记忆、门控/浮空采样、控制阶段顺序、无同步重入、反馈预算诊断及定义/选项校验。TypeScript 检查根入口合同。测试直接调用生产求值函数、真实 topology 与 scheduler，不用构建或子进程冒充单元测试。
 
 ## 开发
 
