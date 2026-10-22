@@ -118,7 +118,7 @@ module = createIRModule({ builderExtensions: [extension] });
 // 领域类型模块可在自己的 d.ts 中增强 FunctionBuilder，使 b.pin.sample() 获得类型。
 ```
 
-命名空间不得与内建成员冲突，同一模块内不得重复；`create` 必须同步，返回的方法也必须是同步函数。扩展可以对每个普通、生命周期及嵌套块构建器分别创建命名空间，因而可共享模块级指令声明。
+命名空间不得与内建成员冲突，同一模块内不得重复；`create` 必须同步，返回的方法也必须是同步函数。扩展可以对每个普通、生命周期及嵌套块构建器分别创建命名空间，因而可共享模块级指令声明。`event.` 是核心事件指令的保留命名空间，领域指令与执行器都不得使用。
 
 参考解释器通过 `IRInterpreterOptions.instructionExecutors` 接收可信的领域指令执行器：
 

@@ -165,6 +165,10 @@ interface CapturedExecutor {
   readonly execute: (context: IRInstructionExecutorContext) => unknown;
 }
 
+function isEventNamespace(op: string): boolean {
+  return op === 'event' || op.startsWith('event.');
+}
+
 function captureInstructionExecutors(
   input: unknown,
   declarations: IRModule['instructions'],
@@ -185,7 +189,7 @@ function captureInstructionExecutors(
     if (typeof op !== 'string' || op.length === 0) {
       throw new TypeError(`instructionExecutors[${index}].op must be a non-empty string`);
     }
-    if (coreInstructions.has(op) || isReservedOperation(op)) {
+    if (coreInstructions.has(op) || isReservedOperation(op) || isEventNamespace(op)) {
       throw new TypeError(
         `instructionExecutors[${index}].op "${op}" cannot replace a core or reserved operation`,
       );

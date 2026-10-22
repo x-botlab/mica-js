@@ -223,6 +223,46 @@ describe('IR instruction executors', () => {
     ).toThrow(IRExecutionError);
   });
 
+  it('reserves the event namespace for core event instructions', () => {
+    const module = createIRModule();
+    expect(() => module.domainInstruction('event.foo', { operands: [], results: [] })).toThrow(
+      IRConstructionError,
+    );
+    expect(() => module.domainInstruction('event', { operands: [], results: [] })).toThrow(
+      IRConstructionError,
+    );
+    expect(() => module.domainInstruction('event.now', { operands: [], results: [] })).toThrow(
+      IRConstructionError,
+    );
+  });
+
+  it('rejects event namespace executors even for a hand-built module', () => {
+    const module = createIRModule();
+    module.entry('run', []).body((b) => b.return([]));
+    const fake = {
+      memories: module.memories,
+      functions: module.functions,
+      domainDeclarations: module.domainDeclarations,
+      instructions: [{ name: 'event.foo', operands: [], results: [] }],
+    } as unknown as IRModule;
+    const names = [...CORE_INSTRUCTION_NAMES, 'event.foo'];
+    const error = executionFailure(
+      () =>
+        createIRInterpreter(fake, {
+          validation: {
+            supportedInstructions: names,
+            authorizedInstructions: names,
+            resources: [],
+            validators: [{ op: 'event.foo', validate: () => [] }],
+          },
+          instructionExecutors: [{ op: 'event.foo', execute: () => [] }],
+          eventHost: { now: () => 0, at: () => 1, cancel: () => undefined },
+        }),
+      'invalid-options',
+    );
+    expect(error.cause).toBeInstanceOf(TypeError);
+  });
+
   it('rejects result layout mismatches and faults after an executor error', () => {
     const { module, executor } = executorFixture();
     const validation = domainPolicy(module, 'led.set', 'led.read');

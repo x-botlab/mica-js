@@ -151,7 +151,9 @@ function readLoadedModule(value: unknown): LoadedModule {
     !isPlainRecord(description) ||
     typeof description['name'] !== 'string' ||
     !(description['properties'] instanceof Map) ||
-    !(description['ports'] instanceof Map)
+    !(description['ports'] instanceof Map) ||
+    !(description['pins'] instanceof Map) ||
+    !(description['pinGroups'] instanceof Map)
   ) {
     throw instanceError(
       `Device ${JSON.stringify(deviceId)} instance requires a parsed device description.`,

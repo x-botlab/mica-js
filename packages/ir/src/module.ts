@@ -272,6 +272,9 @@ class IRModuleImpl implements IRModule {
     const R extends readonly ScalarType[],
   >(name: string, definition: DomainInstructionDefinition<O, R>): DomainInstruction<O, R> {
     assertName(name, 'Instruction');
+    if (name === 'event' || name.startsWith('event.')) {
+      fail(`Instruction "${name}" uses the reserved event namespace`);
+    }
     if (this.core.instructionNames.has(name)) {
       fail(`Instruction "${name}" is already declared or reserved by the core`);
     }
