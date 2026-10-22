@@ -195,12 +195,22 @@ class DeterministicScheduler implements Scheduler {
   }
 
   destroyInstance(handle: SchedulerInstance): void {
-    this.#boundary(() => {
-      const instance = this.#instance(handle);
-      instance.destroyRequested = true;
-      this.#destruction.add(instance);
-      if (this.#current === undefined) this.#flushDestruction();
-    });
+    // Cleanup is not a resume: a faulted scheduler must still release a live instance's
+    // queued work and backend references. start/step/cancel keep rejecting while faulted.
+    const instance = this.#instances.get(handle);
+    if (instance === undefined || instance.destroyed || instance.destroyRequested) {
+      if (this.#error !== undefined) {
+        throw this.#problem(
+          'scheduler-faulted',
+          'Scheduler faulted; rebuild instead of resuming',
+          this.#error,
+        );
+      }
+      throw this.#problem('invalid-instance', 'Instance is foreign, destroyed, or stopping');
+    }
+    instance.destroyRequested = true;
+    this.#destruction.add(instance);
+    if (this.#current === undefined) this.#flushDestruction();
   }
 
   start(options: SchedulerRunOptions = {}): SchedulerRunResult {
