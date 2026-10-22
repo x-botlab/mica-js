@@ -4,6 +4,7 @@ import {
   type PropertyValue,
 } from '@mica-js/core/schematic';
 import { DeviceError } from './errors';
+import { isPlainRecord } from './internal/records';
 import type { DeviceDescription, DevicePropertySnapshot } from './types';
 
 /**
@@ -20,7 +21,7 @@ export function resolveDeviceProperties(
   description: DeviceDescription,
   overrides: Readonly<Record<string, PropertyValue>> = {},
 ): DevicePropertySnapshot {
-  if (!isRecord(overrides)) {
+  if (!isPlainRecord(overrides)) {
     throw new DeviceError('schema/invalid-type', 'Property overrides must be an object.', {
       deviceId: description.name,
       pointer: '/overrides',
@@ -66,10 +67,6 @@ export function deepFreezeClone(value: unknown): unknown {
     copy[key] = deepFreezeClone(entry);
   }
   return Object.freeze(copy);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function escapePointer(segment: string): string {

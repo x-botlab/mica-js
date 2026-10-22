@@ -35,7 +35,7 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 
 ## 器件层
 
-`@mica-js/device` 当前提供器件描述对象解析、`IDeviceProvider` 加载合同、同步 JS 工厂导出校验，以及每实例独立、递归只读的属性快照。文件定位、读取、缺失文件诊断与 JSON 语法错误由宿主 provider 负责；本包不提供 WASM 回退或第二实现加载来源。工厂上下文、生命周期、消息桥接、引脚 I/O、观察与连接分别留给后续器件层任务（#53–#57），不在此以空实现冒充完成。接口与边界见 [packages/device/README.md](packages/device/README.md)。
+`@mica-js/device` 当前提供器件描述对象解析、`IDeviceProvider` 加载合同、同步 JS 工厂导出校验，以及每实例独立、递归只读的属性快照。文件定位、读取、缺失文件诊断与 JSON 语法错误由宿主 provider 负责；本包不提供 WASM 回退或第二实现加载来源。同一 provider 实例内一个 device id 只加载一次模块；`loadDeviceModule` 在宿主 realm 执行 provider 代码，不是沙箱，#59 沙箱适配落地前器件包必须可信。工厂上下文、生命周期、消息桥接、引脚 I/O、观察与连接分别留给后续器件层任务（#53–#57），不在此以空实现冒充完成。接口与边界见 [packages/device/README.md](packages/device/README.md)。
 
 ## 原理图编辑器
 

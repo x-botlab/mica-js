@@ -1,4 +1,5 @@
 import { DeviceError } from './errors';
+import { isObjectLike, isPlainRecord } from './internal/records';
 import type {
   DeviceDefinition,
   DeviceDescription,
@@ -6,6 +7,11 @@ import type {
   IDeviceProvider,
   LoadedDeviceModule,
 } from './types';
+
+const providerCaches = new WeakMap<IDeviceProvider, Map<string, Promise<LoadedDeviceModule>>>();
+const providerIds = new WeakMap<IDeviceProvider, number>();
+let nextProviderId = 1;
+let nextLoadId = 1;
 
 /**
  * Loads one device module through a host provider.
@@ -15,25 +21,86 @@ import type {
  * module, and validates its default export. It never invokes the factory: the instance context
  * and lifecycle belong to #53.
  *
+ * Module identity: within one provider instance a device id is loaded at most once. Repeated and
+ * concurrent calls share the same `LoadedDeviceModule` and factory; failed loads are not cached.
+ * A new provider instance is required to reload changed implementation code.
+ *
  * @throws {DeviceError} when the provider or implementation violates the device contract.
  */
 export async function loadDeviceModule(
   deviceId: string,
   provider: IDeviceProvider,
 ): Promise<LoadedDeviceModule> {
+  validateRequest(deviceId, provider);
+  const cache = cacheFor(provider);
+  const cached = cache.get(deviceId);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const pending = loadDeviceModuleUncached(
+    deviceId,
+    provider,
+    providerIdOf(provider),
+    nextLoadId,
+  ).catch((error: unknown) => {
+    cache.delete(deviceId);
+    throw error;
+  });
+  nextLoadId += 1;
+  cache.set(deviceId, pending);
+  return pending;
+}
+
+function validateRequest(deviceId: string, provider: IDeviceProvider): void {
   if (typeof deviceId !== 'string' || deviceId.trim().length === 0) {
     throw new DeviceError('device/device-unknown', 'Device id must be a non-empty string.', {
       deviceId,
     });
   }
-  if (provider === null || typeof provider !== 'object' || typeof provider.resolve !== 'function') {
+  let resolve: unknown;
+  try {
+    resolve = provider === null || typeof provider !== 'object' ? undefined : provider.resolve;
+  } catch (cause) {
+    throw new DeviceError(
+      'device/provider-failed',
+      `Device provider for ${JSON.stringify(deviceId)} could not be inspected.`,
+      { deviceId, cause },
+    );
+  }
+  if (typeof resolve !== 'function') {
     throw new DeviceError(
       'device/provider-failed',
       `Device provider for ${JSON.stringify(deviceId)} must implement resolve().`,
       { deviceId },
     );
   }
+}
 
+function cacheFor(provider: IDeviceProvider): Map<string, Promise<LoadedDeviceModule>> {
+  let cache = providerCaches.get(provider);
+  if (cache === undefined) {
+    cache = new Map();
+    providerCaches.set(provider, cache);
+  }
+  return cache;
+}
+
+function providerIdOf(provider: IDeviceProvider): number {
+  let id = providerIds.get(provider);
+  if (id === undefined) {
+    id = nextProviderId;
+    nextProviderId += 1;
+    providerIds.set(provider, id);
+  }
+  return id;
+}
+
+async function loadDeviceModuleUncached(
+  deviceId: string,
+  provider: IDeviceProvider,
+  providerId: number,
+  loadId: number,
+): Promise<LoadedDeviceModule> {
   let resolved: DeviceDefinition | undefined;
   try {
     resolved = await provider.resolve(deviceId);
@@ -53,7 +120,7 @@ export async function loadDeviceModule(
       deviceId,
     });
   }
-  if (!isRecord(resolved)) {
+  if (!isPlainRecord(resolved)) {
     throw new DeviceError(
       'device/provider-failed',
       `Device provider returned an invalid definition for ${JSON.stringify(deviceId)}.`,
@@ -78,13 +145,19 @@ export async function loadDeviceModule(
     );
   }
 
-  const implementation = await importModuleSource(code, deviceId);
+  const implementation = await importModuleSource(code, deviceId, providerId, loadId);
   return { deviceId, description, factory: readFactory(implementation, deviceId) };
 }
 
-async function importModuleSource(code: string, deviceId: string): Promise<unknown> {
-  const url = createModuleUrl(code);
+async function importModuleSource(
+  code: string,
+  deviceId: string,
+  providerId: number,
+  loadId: number,
+): Promise<unknown> {
+  let url: string | undefined;
   try {
+    url = createModuleUrl(code, deviceId, providerId, loadId);
     return await import(/* @vite-ignore */ url);
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : String(cause);
@@ -94,27 +167,55 @@ async function importModuleSource(code: string, deviceId: string): Promise<unkno
       { deviceId, cause },
     );
   } finally {
-    if (url.startsWith('blob:')) {
-      URL.revokeObjectURL(url);
+    if (
+      url?.startsWith('blob:') === true &&
+      typeof URL !== 'undefined' &&
+      typeof URL.revokeObjectURL === 'function'
+    ) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        // Revocation failure must not replace the loading error.
+      }
     }
   }
 }
 
-function createModuleUrl(code: string): string {
-  const isBrowserLike = typeof window !== 'undefined' || typeof self !== 'undefined';
-  if (
-    isBrowserLike &&
+function createModuleUrl(
+  code: string,
+  deviceId: string,
+  providerId: number,
+  loadId: number,
+): string {
+  if (shouldUseBlobUrl()) {
+    return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+  }
+  // The fragment makes the module identity explicit in Node's ESM cache: one provider instance
+  // plus one device id maps to one module while the successful load is cached. A failed load
+  // uses a fresh load id so a retry is not served from Node's failed-module cache.
+  return `data:text/javascript;charset=utf-8,${encodeURIComponent(code)}#${String(providerId)}:${String(loadId)}:${encodeURIComponent(deviceId)}`;
+}
+
+function shouldUseBlobUrl(): boolean {
+  if (isNodeRuntime()) {
+    return false;
+  }
+  return (
     typeof Blob !== 'undefined' &&
     typeof URL !== 'undefined' &&
     typeof URL.createObjectURL === 'function'
-  ) {
-    return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
-  }
-  return `data:text/javascript;charset=utf-8,${encodeURIComponent(code)}`;
+  );
+}
+
+function isNodeRuntime(): boolean {
+  const candidate = globalThis as {
+    process?: { versions?: { node?: unknown } };
+  };
+  return typeof candidate.process?.versions?.node === 'string';
 }
 
 function readFactory(implementation: unknown, deviceId: string): DeviceFactory {
-  if (!isRecord(implementation) || !('default' in implementation)) {
+  if (!isObjectLike(implementation) || !('default' in implementation)) {
     throw new DeviceError(
       'device/implementation-export',
       `Device ${JSON.stringify(deviceId)} implementation must have a default export.`,
@@ -149,12 +250,12 @@ function readFactory(implementation: unknown, deviceId: string): DeviceFactory {
 
 function isClass(candidate: unknown): boolean {
   const source = Function.prototype.toString.call(candidate).trimStart();
-  return /^class(?:\s|\{)/.test(source);
+  return /^class\b/.test(source);
 }
 
 function isDeviceDescription(value: unknown): value is DeviceDescription {
   return (
-    isRecord(value) &&
+    isPlainRecord(value) &&
     typeof value['name'] === 'string' &&
     typeof value['displayName'] === 'string' &&
     (value['description'] === undefined || typeof value['description'] === 'string') &&
@@ -162,8 +263,4 @@ function isDeviceDescription(value: unknown): value is DeviceDescription {
     value['ports'] instanceof Map &&
     (value['designatorPrefix'] === undefined || typeof value['designatorPrefix'] === 'string')
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

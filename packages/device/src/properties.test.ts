@@ -154,6 +154,23 @@ describe('resolveDeviceProperties', () => {
         resolveDeviceProperties(descriptionOf(), [] as unknown as Record<string, PropertyValue>),
       'schema/invalid-type',
     );
+    expectCode(
+      () =>
+        resolveDeviceProperties(
+          descriptionOf(),
+          new Map([['label', 'LCD']]) as unknown as Record<string, PropertyValue>,
+        ),
+      'schema/invalid-type',
+      '/overrides',
+    );
+    expectCode(
+      () =>
+        resolveDeviceProperties(
+          descriptionOf(),
+          new Set() as unknown as Record<string, PropertyValue>,
+        ),
+      'schema/invalid-type',
+    );
   });
 
   it('returns independent snapshots for separate instances', () => {

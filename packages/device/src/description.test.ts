@@ -1,3 +1,4 @@
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { DeviceError, type DeviceErrorCode } from './errors';
 import { parseDeviceDescription } from './description';
@@ -206,6 +207,53 @@ describe('parseDeviceDescription', () => {
       () => parseDeviceDescription({ designatorPrefix: 42 }, METADATA),
       'device/description-schema',
       '/designatorPrefix',
+    );
+  });
+
+  it('rejects non-plain objects instead of treating them as empty records', () => {
+    expectCode(() => parseDeviceDescription(new Map(), METADATA), 'device/description-schema', '');
+    expectCode(() => parseDeviceDescription(new Date(), METADATA), 'device/description-schema', '');
+    expectCode(
+      () => parseDeviceDescription({ properties: new Map() }, METADATA),
+      'device/description-schema',
+      '/properties',
+    );
+    expectCode(
+      () => parseDeviceDescription({ properties: new Set() }, METADATA),
+      'device/description-schema',
+      '/properties',
+    );
+    expectCode(
+      () => parseDeviceDescription({ ports: new Map() }, METADATA),
+      'device/description-schema',
+      '/ports',
+    );
+    expectCode(
+      () => parseDeviceDescription({ ports: { p: new Map() } }, METADATA),
+      'schema/invalid-type',
+      '/ports/p',
+    );
+  });
+
+  it('accepts null-prototype and cross-realm plain objects, but rejects class instances', () => {
+    const properties = Object.assign(Object.create(null), {
+      label: { type: 'string', default: 'x' },
+    });
+    const definition = Object.assign(Object.create(null), { properties });
+    expect(parseDeviceDescription(definition, METADATA).properties.get('label')?.default).toBe('x');
+
+    const foreign: unknown = runInNewContext(
+      '({ properties: { label: { type: "string", default: "y" } } })',
+    );
+    expect(parseDeviceDescription(foreign, METADATA).properties.get('label')?.default).toBe('y');
+
+    class Holder {
+      readonly properties = {};
+    }
+    expectCode(
+      () => parseDeviceDescription(new Holder(), METADATA),
+      'device/description-schema',
+      '',
     );
   });
 

@@ -78,6 +78,7 @@ const description = parseDeviceDescription(
 - `ports` 按 #10 校验：方向必须是 `input` / `output`，载荷类型取自封闭清单，未知字段报 `schema/unknown-field`，未知类型报 `type/unknown`。
 - `designatorPrefix` 去除首尾空白；空字符串视为未声明。
 - 顶层未知字段被忽略；定义对象只接受已解析对象，JSON 文本与语法错误属于 provider。
+- 定义、`properties`、`ports`、单端口与属性覆盖都必须是纯对象；`Map`、`Set`、`Date`、class 实例不会被当作空记录。`Object.create(null)` 与跨 realm 的普通对象仍被接受。
 
 ## 属性快照
 
@@ -103,24 +104,28 @@ const loaded = await loadDeviceModule('acme:display', provider);
 ```
 
 - 浏览器使用 Blob URL、Node 使用 `data:` URL 动态 import 代码字符串。
-- 默认导出必须是普通同步函数；`async` / async generator 报 `device/implementation-async`；非函数、generator、class 报 `device/implementation-export`；模块语法或求值失败报 `device/implementation-import`。
+- **模块身份**：同一 provider 实例内，一个 device id 只加载一次；并发与重复调用返回同一 `LoadedDeviceModule` 和 factory。不同 provider 或不同 device id 独立加载；失败不缓存，下一次调用重试。需要重新加载实现时创建新的 provider 实例。Node 的 data URL 以 provider/device/load 片段区分模块（失败重试使用新的 load），浏览器路径使用同一缓存。
+- **浏览器 CSP**：Blob URL 动态 import 要求 `script-src` 允许 `blob:`（例如 `script-src 'self' blob:`）。仅 `script-src 'self'` 时 Chromium 会报 “Failed to fetch dynamically imported module”，本包归为 `device/implementation-import`。D01 不提供受支持的 fallback：宿主必须放行 `blob:`，或在 #59 适配层预导入模块后绕过本包的 code 字符串路径。
+- **信任边界**：`loadDeviceModule` 在宿主 realm 中执行 provider 提供的代码，它不是沙箱；#59 沙箱适配落地前，器件包必须可信。
+- 默认导出必须是普通同步函数；`async` / async generator 报 `device/implementation-async`；非函数、generator、class 报 `device/implementation-export`；模块语法/求值或 URL 构造失败报 `device/implementation-import`。带注释的 class（如 `class/*x*/ {}`）也会在加载期拒绝；bound class（`(class {}).bind(null)`）无法从源码静态识别，留给 #53 调用期失败。
 - **不调用工厂**。工厂上下文与生命周期由 #53 实现；同步函数返回 Promise 无法在加载期静态识别，留给 #53 在调用期拒绝。
+- provider 的缺失文件/IO 异常（例如 `ENOENT`）统一包装为 `device/provider-failed` 并保留 `cause`；本包不新增独立的缺失文件错误码。
 - 不提供 WASM 兼容分支或第二个实现加载来源。
 
 ## 错误码
 
-| 错误码                         | 含义                                                     |
-| ------------------------------ | -------------------------------------------------------- |
-| `device/device-unknown`        | provider 返回 `undefined`，或 device id 为空             |
-| `device/provider-failed`       | provider 抛非 `DeviceError`、未实现 `resolve` 或结果违约 |
-| `device/description-schema`    | 定义容器、metadata 或 `designatorPrefix` 形状错误        |
-| `device/implementation-import` | 代码字符串不是可加载的 ES 模块                           |
-| `device/implementation-export` | 默认导出不是普通同步函数（含 generator / class）         |
-| `device/implementation-async`  | 默认导出声明为 async / async generator                   |
-| `schema/invalid-type`          | #7/#10 字段类型错误                                      |
-| `schema/invalid-value`         | #7/#10 字段取值错误                                      |
-| `schema/unknown-field`         | #10 端口声明出现未知字段                                 |
-| `type/unknown`                 | #10 端口载荷类型不在封闭清单                             |
+| 错误码                         | 含义                                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------ |
+| `device/device-unknown`        | provider 返回 `undefined`，或 device id 为空                                   |
+| `device/provider-failed`       | provider 抛非 `DeviceError`、未实现 `resolve` 或结果违约；`cause` 保留原始异常 |
+| `device/description-schema`    | 定义容器、metadata 或 `designatorPrefix` 形状错误                              |
+| `device/implementation-import` | 代码字符串不是可加载的 ES 模块                                                 |
+| `device/implementation-export` | 默认导出不是普通同步函数（含 generator / class）                               |
+| `device/implementation-async`  | 默认导出声明为 async / async generator                                         |
+| `schema/invalid-type`          | #7/#10 字段类型错误                                                            |
+| `schema/invalid-value`         | #7/#10 字段取值错误                                                            |
+| `schema/unknown-field`         | #10 端口声明出现未知字段                                                       |
+| `type/unknown`                 | #10 端口载荷类型不在封闭清单                                                   |
 
 `DeviceError` 的 `pointer` 使用 JSON Pointer 指向失败位置，便于宿主定位。
 
@@ -139,7 +144,7 @@ pnpm --filter @mica-js/device typecheck
 pnpm --filter @mica-js/device build
 ```
 
-Vitest 使用真实临时目录中的 `.json` / `.js` 配对文件验证 provider 加载；覆盖所有 #7 属性类型、默认值、覆盖校验、未知键忽略、嵌套对象/数组冻结、外部别名变更、运行期写入拒绝、独立实例快照、#10 端口校验、各类导出错误与 provider 失败。跨包集成用例把解析结果送入 `@mica-js/core/schematic` 的 `createDeviceRegistry`，确认没有重复维护属性 schema。测试直接调用生产函数，不用构建或子进程冒充单元测试。
+Vitest 使用真实临时目录中的 `.json` / `.js` 配对文件验证 provider 加载；覆盖所有 #7 属性类型、默认值、覆盖校验、未知键忽略、嵌套对象/数组冻结、外部别名变更、运行期写入拒绝、独立实例快照、#10 端口校验、各类导出错误、provider 失败、纯对象容器拒绝、带注释 class、URL 构造失败、Node DOM shim 判定及 provider+device id 模块缓存语义。跨包集成用例把解析结果送入 `@mica-js/core/schematic` 的 `createDeviceRegistry`，确认没有重复维护属性 schema。测试直接调用生产函数，不用构建或子进程冒充单元测试。
 
 ## 相关提案
 

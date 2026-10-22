@@ -1,5 +1,6 @@
 import { readPropertyDescriptors, type PropertyDescriptor } from '@mica-js/core/schematic';
 import { DeviceError } from './errors';
+import { isPlainRecord } from './internal/records';
 import {
   TOPIC_PAYLOAD_TYPES,
   type DeviceDescription,
@@ -25,7 +26,7 @@ export function parseDeviceDescription(
   metadata: DeviceDescriptionMetadata,
 ): DeviceDescription {
   const { name, displayName, description } = readMetadata(metadata);
-  if (!isRecord(definition)) {
+  if (!isPlainRecord(definition)) {
     throw new DeviceError('device/description-schema', 'Device description must be an object.', {
       pointer: '',
     });
@@ -45,7 +46,7 @@ function readMetadata(metadata: DeviceDescriptionMetadata): {
   readonly displayName: string;
   readonly description: string | undefined;
 } {
-  if (!isRecord(metadata)) {
+  if (!isPlainRecord(metadata)) {
     throw new DeviceError('device/description-schema', 'Device metadata must be an object.', {
       pointer: '/metadata',
     });
@@ -92,7 +93,7 @@ function readProperties(value: unknown): ReadonlyMap<string, PropertyDescriptor>
   if (value === undefined) {
     return new Map();
   }
-  if (!isRecord(value)) {
+  if (!isPlainRecord(value)) {
     throw new DeviceError('device/description-schema', 'Device properties must be an object.', {
       pointer: '/properties',
     });
@@ -104,7 +105,7 @@ function readPorts(value: unknown): ReadonlyMap<string, DevicePortDescriptor> {
   if (value === undefined) {
     return new Map();
   }
-  if (!isRecord(value)) {
+  if (!isPlainRecord(value)) {
     throw new DeviceError('device/description-schema', 'Device ports must be an object.', {
       pointer: '/ports',
     });
@@ -123,7 +124,7 @@ function readPorts(value: unknown): ReadonlyMap<string, DevicePortDescriptor> {
 
 function readPort(key: string, value: unknown): DevicePortDescriptor {
   const pointer = `/ports/${escapePointer(key)}`;
-  if (!isRecord(value)) {
+  if (!isPlainRecord(value)) {
     throw new DeviceError('schema/invalid-type', `Port "${key}" must be an object.`, { pointer });
   }
   for (const field of Object.keys(value)) {
@@ -194,10 +195,6 @@ function readOptionalText(value: unknown, pointer: string, label: string): strin
   }
   const trimmed = value.trim();
   return trimmed.length === 0 ? undefined : trimmed;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function escapePointer(segment: string): string {

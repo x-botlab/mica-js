@@ -3,7 +3,7 @@ import { parseDeviceDescription } from './description';
 import { DeviceError, type DeviceErrorCode } from './errors';
 import { loadDeviceModule } from './loader';
 import { createTempDevice } from './test-helpers';
-import type { DeviceDefinition, DeviceDescription, IDeviceProvider } from './types';
+import type { DeviceDefinition, DeviceDescription, DeviceFactory, IDeviceProvider } from './types';
 
 const DESCRIPTION = parseDeviceDescription(
   { properties: { label: { type: 'string', default: 'Display' } } },
@@ -12,6 +12,10 @@ const DESCRIPTION = parseDeviceDescription(
 
 function providerOf(definition: DeviceDescription, code: string): IDeviceProvider {
   return { resolve: () => ({ definition, code }) };
+}
+
+function callFactory(factory: DeviceFactory): unknown {
+  return (factory as unknown as () => unknown)();
 }
 
 async function expectCode(promise: Promise<unknown>, code: DeviceErrorCode): Promise<DeviceError> {
@@ -182,6 +186,13 @@ describe('loadDeviceModule', () => {
       loadDeviceModule('acme:demo', providerOf(DESCRIPTION, 'export default class Device {}')),
       'device/implementation-export',
     );
+    await expectCode(
+      loadDeviceModule(
+        'acme:demo',
+        providerOf(DESCRIPTION, 'export default class/* comment */ Device {}'),
+      ),
+      'device/implementation-export',
+    );
   });
 
   it('rejects module syntax and evaluation failures', async () => {
@@ -199,6 +210,148 @@ describe('loadDeviceModule', () => {
       ),
       'device/implementation-import',
     );
+  });
+
+  it('wraps module URL construction failures as implementation-import', async () => {
+    await expectCode(
+      loadDeviceModule('acme:demo', providerOf(DESCRIPTION, '\uD800')),
+      'device/implementation-import',
+    );
+  });
+
+  it('uses data URLs in Node even when DOM globals exist', async () => {
+    const globals = globalThis as Record<string, unknown>;
+    const hadWindow = Object.prototype.hasOwnProperty.call(globals, 'window');
+    const hadSelf = Object.prototype.hasOwnProperty.call(globals, 'self');
+    const previousWindow = globals['window'];
+    const previousSelf = globals['self'];
+    globals['window'] = {};
+    globals['self'] = {};
+    try {
+      const loaded = await loadDeviceModule(
+        'dom-shim',
+        providerOf(DESCRIPTION, 'export default function createDevice() {}'),
+      );
+      expect(typeof loaded.factory).toBe('function');
+    } finally {
+      if (hadWindow) {
+        globals['window'] = previousWindow;
+      } else {
+        Reflect.deleteProperty(globals, 'window');
+      }
+      if (hadSelf) {
+        globals['self'] = previousSelf;
+      } else {
+        Reflect.deleteProperty(globals, 'self');
+      }
+    }
+  });
+
+  it('loads one module per provider and device id', async () => {
+    let resolveCount = 0;
+    const provider: IDeviceProvider = {
+      resolve: () => {
+        resolveCount += 1;
+        return { definition: DESCRIPTION, code: 'export default function createDevice() {}' };
+      },
+    };
+    const [first, second] = await Promise.all([
+      loadDeviceModule('shared-module', provider),
+      loadDeviceModule('shared-module', provider),
+    ]);
+    expect(second).toBe(first);
+    expect(resolveCount).toBe(1);
+    expect(await loadDeviceModule('shared-module', provider)).toBe(first);
+    expect(resolveCount).toBe(1);
+  });
+
+  it('loads distinct modules for distinct device ids with the same code', async () => {
+    const code =
+      'let count = 0; export default function createDevice() { count += 1; return count; }';
+    const provider = providerOf(DESCRIPTION, code);
+    const first = await loadDeviceModule('module-a', provider);
+    const second = await loadDeviceModule('module-b', provider);
+    expect(first.factory).not.toBe(second.factory);
+    expect(callFactory(first.factory)).toBe(1);
+    expect(callFactory(second.factory)).toBe(1);
+  });
+
+  it('loads distinct modules for distinct providers with the same device id and code', async () => {
+    const code =
+      'let count = 0; export default function createDevice() { count += 1; return count; }';
+    const first = await loadDeviceModule('module-c', providerOf(DESCRIPTION, code));
+    const second = await loadDeviceModule('module-c', providerOf(DESCRIPTION, code));
+    expect(first.factory).not.toBe(second.factory);
+    expect(callFactory(first.factory)).toBe(1);
+    expect(callFactory(second.factory)).toBe(1);
+  });
+
+  it('does not cache failed loads', async () => {
+    let attempts = 0;
+    const provider: IDeviceProvider = {
+      resolve: () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error('transient');
+        }
+        return { definition: DESCRIPTION, code: 'export default function createDevice() {}' };
+      },
+    };
+    await expectCode(loadDeviceModule('retry-module', provider), 'device/provider-failed');
+    const loaded = await loadDeviceModule('retry-module', provider);
+    expect(typeof loaded.factory).toBe('function');
+    expect(attempts).toBe(2);
+  });
+
+  it('retries module evaluation failures with a fresh module', async () => {
+    let attempts = 0;
+    const provider: IDeviceProvider = {
+      resolve: () => {
+        attempts += 1;
+        return {
+          definition: DESCRIPTION,
+          code:
+            attempts === 1
+              ? 'export default function ('
+              : 'export default function createDevice() {}',
+        };
+      },
+    };
+    await expectCode(
+      loadDeviceModule('retry-module-eval', provider),
+      'device/implementation-import',
+    );
+    const loaded = await loadDeviceModule('retry-module-eval', provider);
+    expect(typeof loaded.factory).toBe('function');
+    expect(attempts).toBe(2);
+  });
+
+  it('rejects non-plain provider results and descriptions', async () => {
+    await expectCode(
+      loadDeviceModule('acme:demo', {
+        resolve: () => new Map() as unknown as DeviceDefinition,
+      }),
+      'device/provider-failed',
+    );
+    await expectCode(
+      loadDeviceModule('acme:demo', {
+        resolve: () => ({ definition: new Map(), code: '' }) as unknown as DeviceDefinition,
+      }),
+      'device/provider-failed',
+    );
+  });
+
+  it('wraps provider I/O errors as provider-failed with the cause', async () => {
+    const cause = Object.assign(new Error('ENOENT: missing device.json'), { code: 'ENOENT' });
+    const error = await expectCode(
+      loadDeviceModule('missing-device', {
+        resolve: () => {
+          throw cause;
+        },
+      }),
+      'device/provider-failed',
+    );
+    expect(error.cause).toBe(cause);
   });
 
   it('defers a Promise-returning synchronous factory to the invocation stage', async () => {
