@@ -231,11 +231,11 @@ function createHandle(
   };
 
   const reset = (): void => {
-    if (destroyed) {
-      throw destroyedError(definition.deviceId, 'reset');
-    }
     if (destroying) {
       throw busyError(definition.deviceId, 'reset', 'the instance is being destroyed');
+    }
+    if (destroyed) {
+      throw destroyedError(definition.deviceId, 'reset');
     }
     const current = state();
     if (current === 'initializing') {
