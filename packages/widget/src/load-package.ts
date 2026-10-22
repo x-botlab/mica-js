@@ -1,5 +1,6 @@
 import { parsePayloadType } from '@mica-js/core/canvas';
 import { WidgetLoadError, type WidgetLoadErrorCode } from './errors';
+import { moduleReferenceProblem } from './self-contained';
 import type { PortDefinition, PropertyDefinition, WidgetDefinition, WidgetModule } from './types';
 
 /** Read-only view of the files that make up one package. */
@@ -425,82 +426,14 @@ function decode(bytes: Uint8Array): string {
 }
 
 function assertSelfContained(code: string, packageId: string, path: string): void {
-  const source = stripCommentsAndLiterals(code);
-  if (STATIC_IMPORT.test(source) || REEXPORT_FROM.test(source)) {
+  const problem = moduleReferenceProblem(code);
+  if (problem !== undefined) {
     throw new WidgetLoadError(
       'widget/not-self-contained',
-      `Implementation ${JSON.stringify(path)} must be a self-contained module: import and re-export statements are not allowed.`,
+      `Implementation ${JSON.stringify(path)} must be self-contained: ${problem}.`,
       { packageId, path },
     );
   }
-  if (!DEFAULT_EXPORT.test(source)) {
-    throw new WidgetLoadError(
-      'widget/load-failed',
-      `Implementation ${JSON.stringify(path)} must export a default widget factory.`,
-      { packageId, path },
-    );
-  }
-}
-
-const STATIC_IMPORT = /(?:^|[^\w$.])import\s*(?:\(|[\w$*{'"])/;
-const REEXPORT_FROM =
-  /(?:^|[^\w$.])export\s+(?:\*(?:\s+as\s+[\w$]+)?|\{[\s\S]*?\}|[A-Za-z_$][\w$]*\s*,\s*\{[\s\S]*?\})\s*from\b/;
-const DEFAULT_EXPORT =
-  /(?:^|[^\w$.])export\s+default\b|(?:^|[^\w$.])export\s*\{[^}]*\bdefault\b[^}]*\}/;
-
-/**
- * Blanks comments and string/template contents so keyword checks cannot match their text.
- * Quote characters are kept, so `import 'x'` still reads as an import.
- */
-function stripCommentsAndLiterals(code: string): string {
-  let result = '';
-  let index = 0;
-
-  while (index < code.length) {
-    const char = code[index] ?? '';
-    const next = code[index + 1];
-
-    if (char === '/' && next === '/') {
-      while (index < code.length && code[index] !== '\n') {
-        index += 1;
-      }
-      continue;
-    }
-
-    if (char === '/' && next === '*') {
-      index += 2;
-      while (index < code.length && !(code[index] === '*' && code[index + 1] === '/')) {
-        result += code[index] === '\n' ? '\n' : ' ';
-        index += 1;
-      }
-      index += 2;
-      continue;
-    }
-
-    if (char === "'" || char === '"' || char === '`') {
-      result += char;
-      index += 1;
-      while (index < code.length && code[index] !== char) {
-        if (code[index] === '\\') {
-          result += '  ';
-          index += 2;
-          continue;
-        }
-        result += code[index] === '\n' ? '\n' : ' ';
-        index += 1;
-      }
-      if (index < code.length) {
-        result += char;
-        index += 1;
-      }
-      continue;
-    }
-
-    result += char;
-    index += 1;
-  }
-
-  return result;
 }
 
 async function sha256Hex(text: string, packageId: string): Promise<string> {

@@ -115,22 +115,21 @@ interface WidgetProvider {
 - 条目必须有 `path`，可选 `displayName` / `description`；后者写入 `WidgetDefinition`。
 - 路径必须是包内相对 POSIX 路径：绝对路径、盘符、反斜杠与 `..` 片段一律报 `widget/invalid-manifest`。
 - 实现路径由描述路径把 `.json` 换成 `.js` 得到；缺少实现报 `widget/no-implementation`。
-- 实现必须是单文件自包含 ESM：`import`、动态 `import()`、`export ... from` 一律报 `widget/not-self-contained`；`export default` 不受限制。注释与字符串中的同名文本不算。
-- 实现必须默认导出 Widget 工厂（#2）；缺少 `export default` 报 `widget/load-failed`。
+- 实现必须是单文件自包含 ESM：任何 `import`（`import.meta` 除外）、动态 `import()`、`export ... from` 一律报 `widget/not-self-contained`。检查按词法 token 进行，注释、字符串、模板与正则字面量中的同名文本不算，`export default`、`export const`、`export { a }` 等正常导出不受限制。
 - `contentHash` 是「按 Widget ID 排序后拼接全部源码」的 SHA-256 十六进制，用于判断包内容是否变化。
 
 ## 错误
 
 `WidgetLoadError` 的 `code` 是稳定契约，`packageId` 与 `path` 指向出错的包和包内路径：
 
-| `code`                      | 场景                                                        |
-| --------------------------- | ----------------------------------------------------------- |
-| `widget/package-not-found`  | `package.json` 缺失或不可读                                 |
-| `widget/invalid-manifest`   | 清单或 `widgets` 索引非法、路径越界、描述文件缺失           |
-| `widget/invalid-definition` | 描述不是对象/非法 JSON，或 `ports` 类型不合法               |
-| `widget/no-implementation`  | 同名 `.js` 实现缺失或不可读                                 |
-| `widget/not-self-contained` | 实现包含 `import` 或 `export ... from`                      |
-| `widget/load-failed`        | 实现没有默认导出，或环境缺少 `crypto.subtle` 等其它加载失败 |
+| `code`                      | 场景                                                    |
+| --------------------------- | ------------------------------------------------------- |
+| `widget/package-not-found`  | `package.json` 缺失或不可读                             |
+| `widget/invalid-manifest`   | 清单或 `widgets` 索引非法、路径越界、描述文件缺失       |
+| `widget/invalid-definition` | 描述不是对象/非法 JSON，或 `ports` 类型不合法           |
+| `widget/no-implementation`  | 同名 `.js` 实现缺失或不可读                             |
+| `widget/not-self-contained` | 实现包含 `import`、动态 `import()` 或 `export ... from` |
+| `widget/load-failed`        | 其它加载失败（例如环境缺少 `crypto.subtle`）            |
 
 ## 边界
 

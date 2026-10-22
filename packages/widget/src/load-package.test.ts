@@ -168,17 +168,6 @@ describe('loadWidgetPackage', () => {
     });
   });
 
-  it('reports an implementation without a default export', async () => {
-    const entries = demoEntries();
-    entries['widgets/gauge.js'] = 'export function createGauge() {\n  return 2;\n}\n';
-
-    await expect(loadWidgetPackage(createMemoryFiles(entries))).rejects.toMatchObject({
-      code: 'widget/load-failed',
-      packageId: 'demo-package',
-      path: 'widgets/gauge.js',
-    });
-  });
-
   it.each([
     ['a static import', "import value from './value.js';\nexport default value;\n"],
     ['a side-effect import', "import './style.js';\nexport default 1;\n"],
@@ -186,6 +175,16 @@ describe('loadWidgetPackage', () => {
     ['a dynamic import', "export default () => import('./other.js');\n"],
     ['a re-export', "export { value } from './value.js';\n"],
     ['a namespace re-export', "export * from './all.js';\n"],
+    ['an import with no space before the source', "import'./x.js';\n"],
+    ['an import with a comment before the source', "import/*c*/'./x.js';\n"],
+    ['an import with no space before named bindings', "import{a}from'./x.js';\n"],
+    ['an awaited dynamic import', "await import('./x.js');\n"],
+    ['a dynamic import inside a template substitution', "export default `${import('./x.js')}`;\n"],
+    ['a re-export with no spaces', "export{a}from'./x.js';\n"],
+    ['a re-export with a partial space', "export {a}from'./x.js';\n"],
+    ['a namespace re-export with no spaces', "export*from'./x.js';\n"],
+    ['a renamed re-export with no spaces', "export{a as default}from'./x.js';\n"],
+    ['a re-export after another export', "export default 1;\nexport{a}from'./x.js';\n"],
   ])('rejects an implementation with %s', async (_label, code) => {
     const entries = demoEntries();
     entries['widgets/gauge.js'] = code;
@@ -195,6 +194,31 @@ describe('loadWidgetPackage', () => {
       packageId: 'demo-package',
       path: 'widgets/gauge.js',
     });
+  });
+
+  it.each([
+    ['a regex literal holding quotes', `const re = /['"]/;\nexport default () => re.test('a');`],
+    ['a regex literal holding a double quote', 'const re = /"/; export default () => re;'],
+    [
+      'a regex literal looking like a line comment',
+      'const re = /\\/\\/not-a-comment/; export default () => re;',
+    ],
+    [
+      'a template substitution',
+      'export default () => { const s = `tpl ${1 + 1} done`; return s; };',
+    ],
+    ['a division', 'export default () => 1 / 2;'],
+    ['a division after an increment', 'export default () => { let i = 0; return i++ / 2; };'],
+    ['an object key named import', 'const o = { import: 1 }; export default o;'],
+    ['an export list', 'export { a }; const a = 1;'],
+    ['import.meta', 'export default function () { return import.meta; }'],
+    ['a comment-only mention of imports', '// import x from "y";\nexport default 1;'],
+  ])('accepts an implementation with %s', async (_label, code) => {
+    const entries = demoEntries();
+    entries['widgets/gauge.js'] = code;
+
+    const widgetPackage = await loadWidgetPackage(createMemoryFiles(entries));
+    expect(widgetPackage.modules['gauge']?.code).toBe(code);
   });
 
   it('allows import-like text inside comments and strings', async () => {
