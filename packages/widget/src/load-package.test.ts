@@ -168,6 +168,39 @@ describe('loadWidgetPackage', () => {
     });
   });
 
+  it.each([
+    ['displayName', { displayName: 42 }],
+    ['description', { description: ['not', 'text'] }],
+  ])('reports a non-string %s against package.json', async (_label, extra) => {
+    const entries = demoEntries();
+    entries['package.json'] = JSON.stringify({
+      ...DEMO_MANIFEST,
+      widgets: { gauge: { path: 'widgets/gauge.json', ...extra } },
+    });
+
+    const failure = await loadWidgetPackage(createMemoryFiles(entries)).catch(
+      (cause: unknown) => cause,
+    );
+
+    expect(failure).toMatchObject({
+      code: 'widget/invalid-manifest',
+      packageId: 'demo-package',
+      path: 'package.json',
+    });
+    expect((failure as Error).message).toContain('in package.json');
+    expect((failure as Error).message).not.toContain('widgets/gauge.json');
+  });
+
+  it('passes implementation source through untouched', async () => {
+    const entries = demoEntries();
+    const code = "import x from './y.js';\nexport default x;\n";
+    entries['widgets/gauge.js'] = code;
+
+    const widgetPackage = await loadWidgetPackage(createMemoryFiles(entries));
+
+    expect(widgetPackage.modules['gauge']?.code).toBe(code);
+  });
+
   it('reads only the manifest, definitions and implementations', async () => {
     const reads: string[] = [];
     await loadWidgetPackage(createMemoryFiles(demoEntries(), { reads }));

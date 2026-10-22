@@ -161,8 +161,8 @@ function readEntry(value: unknown, widgetId: string, packageId: string): WidgetE
   return {
     id: widgetId,
     path,
-    displayName: optionalString(entry, 'displayName', packageId, path),
-    description: optionalString(entry, 'description', packageId, path),
+    displayName: optionalString(entry, 'displayName', widgetId, packageId),
+    description: optionalString(entry, 'description', widgetId, packageId),
   };
 }
 
@@ -344,11 +344,12 @@ function toImplementationPath(definitionPath: string): string {
   return definitionPath.slice(0, -JSON_EXTENSION.length) + IMPLEMENTATION_EXTENSION;
 }
 
+/** Reads an optional manifest field; failures always point at `package.json`, where the field lives. */
 function optionalString(
   record: Record<string, unknown>,
-  key: string,
+  key: 'displayName' | 'description',
+  widgetId: string,
   packageId: string,
-  path: string,
 ): string | undefined {
   const value = record[key];
   if (value === undefined) {
@@ -357,8 +358,8 @@ function optionalString(
   if (typeof value !== 'string') {
     throw new WidgetLoadError(
       'widget/invalid-manifest',
-      `"${key}" in ${JSON.stringify(path)} must be a string.`,
-      { packageId, path },
+      `Widget ${JSON.stringify(widgetId)} "${key}" in ${PACKAGE_JSON} must be a string.`,
+      { packageId, path: PACKAGE_JSON },
     );
   }
   return value;
