@@ -14,8 +14,7 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./frame.html": "./dist/sandbox-frame.html"
+    }
   },
   "files": [
     "dist"

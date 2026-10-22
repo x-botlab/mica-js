@@ -21,6 +21,7 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 │   └── sandbox-playground/   # 沙箱演示与手测面板
 └── packages/
     ├── core/                 # @mica-js/core：仿真内核
+    ├── device/               # @mica-js/device：器件描述加载与固定属性
     ├── ir/                   # @mica-js/ir：IR 建图、校验、存储与参考解释器
     ├── schematic-editor/     # @mica-js/schematic-editor：Canvas 原理图编辑器
     └── sandbox/              # @mica-js/sandbox：iframe + Web Worker 通用 JS 沙箱
@@ -31,6 +32,10 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 `@mica-js/ir` 当前提供内存 IR 模型、同步类型化建图器、静态校验/链接诊断、整数/布尔及浮点逐指令求值、实例存储和参考解释器。解释器固定并校验模块快照，复用既有标量与存储语义，执行基本块、循环、普通调用及多结果返回，提供确定预算与调用链诊断。显式资源更新支持独立授权、原子内容/版本提交与一致读取验证；事件建图和可信内核桥接支持 `event.now/at/cancel`，未接入宿主时明确拒绝事件模块。尚无 Provider 缓存或运行中恢复。职责边界、非目标与验证方式见 [packages/ir/README.md](packages/ir/README.md)。
 
 `@mica-js/core` 提供合法整数皮秒时间、稳定普通/公共控制调度、FIFO 事件 ID 复用及确定预算；通过真实 IR 适配器连接同一解释器和事件队列。连接拓扑层管理实例内部连接、外部导线与网络分量，在控制阶段原子提交 patch 并复用电气求值；电源层在同一组合上实现供电/接地条件、迟滞就绪状态、引脚驱动/采样门控、依赖顺序通知与反馈预算。支持同步开始、入口边界暂停、步进及分段驱动，不提供墙钟后台运行器。接口及边界见 [packages/core/README.md](packages/core/README.md)。
+
+## 器件层
+
+`@mica-js/device` 当前提供器件描述对象解析、`IDeviceProvider` 加载合同、同步 JS 工厂导出校验，以及每实例独立、递归只读的属性快照。文件定位、读取、缺失文件诊断与 JSON 语法错误由宿主 provider 负责；本包不提供 WASM 回退或第二实现加载来源。工厂上下文、生命周期、消息桥接、引脚 I/O、观察与连接分别留给后续器件层任务（#53–#57），不在此以空实现冒充完成。接口与边界见 [packages/device/README.md](packages/device/README.md)。
 
 ## 原理图编辑器
 
