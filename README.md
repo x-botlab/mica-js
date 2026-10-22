@@ -115,6 +115,8 @@ pnpm run format       # Prettier 格式化
 
 Vite / Vitest / vite-plugin-dts 的版本通过 [pnpm catalog](pnpm-workspace.yaml) 统一管理，子包中用 `catalog:` 引用。CI 见 [.github/workflows/ci.yml](.github/workflows/ci.yml)，会依次执行格式检查、lint、类型检查、构建、单元测试与 Playground 的 Playwright 冒烟测试。
 
+提交前钩子由 [husky](.husky/pre-commit) 安装，`pnpm install` 时自动启用：暂存的文件会先经过 `eslint --fix` 再交给 `prettier --write`，规则见 [.lintstagedrc.json](.lintstagedrc.json)。存在无法自动修复的 lint 错误时提交会被拒绝。跳过钩子用 `git commit --no-verify`。
+
 ## 许可证
 
 [MIT](LICENSE)
