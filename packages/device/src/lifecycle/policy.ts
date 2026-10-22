@@ -14,8 +14,9 @@ import type { DeviceConnectionDescriptor } from '../connection/types';
  * Every instruction used by the factory is offered to validation; declared domain instructions
  * without a trusted validator still fail at link time. Writable byte resources additionally
  * receive the independent update grant required by `resource.update_bytes` /
- * `resource.fill_bytes`. Pin declarations receive a read-write grant; connection declarations
- * receive a write grant only when the device description declares the same id.
+ * `resource.fill_bytes`. Pin declarations receive a read-write grant; observation declarations
+ * receive a write grant; connection declarations receive a write grant only when the device
+ * description declares the same id.
  */
 export function createValidationPolicy(
   module: IRModule,
@@ -47,6 +48,10 @@ export function createValidationPolicy(
   for (const declaration of module.domainDeclarations) {
     if (declaration.kind === 'pin') {
       resources.push({ ref: declaration.ref, access: 'read-write' });
+      continue;
+    }
+    if (declaration.kind === 'observe') {
+      resources.push({ ref: declaration.ref, access: 'write' });
       continue;
     }
     if (declaration.kind !== 'connection' || !connections.has(declaration.name)) continue;

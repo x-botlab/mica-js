@@ -50,6 +50,8 @@ export { createPowerRuntime, PowerFeedbackError } from './power/runtime';
 export type {
   PowerDefinition,
   PowerDeviceDefinition,
+  PowerDigitalPinChange,
+  PowerDigitalPinObserver,
   PowerDigitalSample,
   PowerDigitalSource,
   PowerDomainChange,

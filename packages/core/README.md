@@ -454,6 +454,14 @@ scheduler.start(); // 初始化域、通知 off→on、恢复门控并继续网�
 - 浮空模拟通过 #50 `floatingInput(pin).sample(V_D, scheduler.now)` 取得 `mica-floating-v2` 合成值；未配置 `floating.seed` 时明确拒绝。无域绑定的浮空模拟引脚以引脚 model 的 `maxVoltage` 作为供电上限。
 - 采样 power/gnd 引脚明确抛 `RangeError`。ADC 量化、滤波、PWM 平均等器件行为仍由器件模型表达。
 
+### 数字引脚变化观察
+
+- `power.addDigitalPinObserver(observer)` 注册变化观察者，返回幂等 disposer；可同时注册多个，按注册顺序调用。`destroy()` 清除全部观察者，之后注册明确拒绝。
+- 每次完成电气解析阶段后同步通知一次，只包含 `(value, ready, source)` 发生变化的 signal 引脚，按拓扑声明顺序稳定排列。没有变化时不调用。
+- 通知不重放当前值；当前状态继续用 `sampleDigital` 读取。回调只能入队或读取，不得同步重入器件入口。
+- 观察者异常采用 fail-fast：立即停止后续观察者通知并向当前 scheduler 入口传播；此前观察者已经入队的消息不回滚。
+- 该接口不改变 #51 已批准的 `observe(observer)` 电源域通知；域门控变化表现为 `ready`/`source` 变化，供 #56 观察层重建基线。
+
 ### 通知顺序、控制阶段与预算
 
 - 每批变化只回调一次 `PowerDomainObserver.onPowerDomainChange(changes, snapshot)`。先全部下电、再全部上电；下电依赖方优先（深度降序），上电前置域优先（深度升序）；同级按域 ID、跨实例按实例 ID 的 UTF-16 字典序。完整快照按 `(instanceId, domainId)` 排序。

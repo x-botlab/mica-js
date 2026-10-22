@@ -11,6 +11,7 @@ import type { ElectricalPinInput } from '../electrical/types';
 import type { TopologyDefinition, TopologyPinRef } from '../topology/types';
 import { captureTopologyDefinition } from '../topology/runtime';
 import type {
+  PowerDigitalPinObserver,
   PowerDomainObserver,
   PowerFloatingOptions,
   PowerInputMode,
@@ -79,6 +80,11 @@ export interface CapturedPowerDefinition {
 export interface CapturedObserver {
   readonly receiver: PowerDomainObserver;
   readonly notify: PowerDomainObserver['onPowerDomainChange'];
+}
+
+export interface CapturedDigitalPinObserver {
+  readonly receiver: PowerDigitalPinObserver;
+  readonly notify: PowerDigitalPinObserver['onDigitalPinChange'];
 }
 
 export interface CapturedPowerOptions {
@@ -463,6 +469,23 @@ export function captureObserver(value: unknown, path: string): CapturedObserver 
   return Object.freeze({
     receiver: value as PowerDomainObserver,
     notify: notify as PowerDomainObserver['onPowerDomainChange'],
+  });
+}
+
+export function captureDigitalPinObserver(
+  value: unknown,
+  path: string,
+): CapturedDigitalPinObserver {
+  if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+    invalidType(path, value, 'be an object');
+  }
+  const notify = Reflect.get(value, 'onDigitalPinChange');
+  if (typeof notify !== 'function') {
+    invalidType(`${path}.onDigitalPinChange`, notify, 'be a function');
+  }
+  return Object.freeze({
+    receiver: value as PowerDigitalPinObserver,
+    notify: notify as PowerDigitalPinObserver['onDigitalPinChange'],
   });
 }
 

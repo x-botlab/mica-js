@@ -33,6 +33,4 @@ builder.pin.configure(pin, { mode: 'totally-invalid', outputEnabled: true, pull:
 // The merged connection author surface from #57 remains available alongside pins.
 const connection = api.ir.connection('contact');
 void connection;
-// @ts-expect-error observation belongs to #56
-void api.ir.observeDigital;
 void wrongSample;

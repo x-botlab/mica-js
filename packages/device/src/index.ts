@@ -1,4 +1,5 @@
 import './pins/augment';
+import './observe/augment';
 
 export { DeviceError } from './errors';
 export type { DeviceErrorCode, DeviceErrorOptions } from './errors';
@@ -18,6 +19,7 @@ export type {
 } from './connection/types';
 
 export type {
+  CapturedPinTypes,
   DeviceAPI,
   DeviceBindings,
   DeviceDefinition,
@@ -39,6 +41,11 @@ export type {
   IROutputMetadata,
   LoadedDeviceModule,
   MessageCallback,
+  ObserveConfig,
+  ObserveDigitalDescriptor,
+  ObserveEdge,
+  ObserveOperations,
+  ObserverRef,
   PinConfig,
   PinKind,
   PinOperations,

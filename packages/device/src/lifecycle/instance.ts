@@ -18,6 +18,8 @@ import { createFactoryContext } from '../factory/context';
 import { callableKind, consumeThenable, isThenable } from '../internal/functions';
 import { isObjectLike, isPlainRecord } from '../internal/records';
 import { MessagingController } from '../messaging/controller';
+import { ObserveDomain } from '../observe/domain';
+import type { ObserveRuntime } from '../observe/runtime';
 import { PinDomain } from '../pins/domain';
 import type { PinRuntime } from '../pins/runtime';
 import { resolveDeviceProperties } from '../properties';
@@ -71,7 +73,19 @@ export function createDeviceInstance(
     },
     definition.deviceId,
   );
-  const module = createIRModule({ builderExtensions: [pins.extension] });
+  const observes = new ObserveDomain(
+    pins.catalog,
+    () => {
+      if (moduleRef.current === undefined) {
+        throw new Error('Observation domain used before the IR module was created');
+      }
+      return moduleRef.current;
+    },
+    definition.deviceId,
+  );
+  const module = createIRModule({
+    builderExtensions: [pins.extension, observes.extension],
+  });
   moduleRef.current = module;
   pins.instructions();
   const messaging = createMessaging(definition, module, options);
@@ -81,6 +95,7 @@ export function createDeviceInstance(
     definition.deviceId,
     messaging,
     pins,
+    observes,
     definition.description.connections,
   );
   let rawBindings: unknown;
@@ -114,20 +129,25 @@ export function createDeviceInstance(
   let setup: {
     readonly policy: ReturnType<typeof createValidationPolicy>;
     readonly pinRuntime: PinRuntime;
+    readonly observeRuntime: ObserveRuntime;
     readonly references: readonly string[];
     readonly executors: readonly IRInstructionExecutor[];
     readonly tracking: ReturnType<typeof createLifecycleScheduler>;
   };
   let createdPinRuntime: PinRuntime | undefined;
   try {
-    const policy = createValidationPolicy(
-      module,
-      definition.description.connections,
-      pins.validators(),
-    );
+    const policy = createValidationPolicy(module, definition.description.connections, [
+      ...pins.validators(),
+      ...observes.validators(),
+    ]);
     const pinRuntime = pins.createRuntime(instanceId, pinHost);
     createdPinRuntime = pinRuntime;
-    const references = pins.references(module);
+    observes.assertReady(module);
+    const observeRuntime = observes.createRuntime(instanceId, pinHost);
+    observeRuntime.assertReady();
+    const references = Object.freeze(
+      [...new Set([...pins.references(module), ...observeRuntime.pinReferences()])].sort(),
+    );
     pinRuntime.assertReady(references);
     const connectionExecutor = prepareConnectionExecution({
       module,
@@ -138,6 +158,7 @@ export function createDeviceInstance(
     });
     const executors = [
       ...pinRuntime.executors(),
+      ...observeRuntime.executors(),
       ...(connectionExecutor === undefined ? [] : [connectionExecutor]),
     ];
     const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name, {
@@ -145,13 +166,13 @@ export function createDeviceInstance(
       afterEntry: (entryContext, failure) => messaging.completeEntry(entryContext, failure),
       onInitializeComplete: () => messaging.markReady(),
     });
-    setup = { policy, pinRuntime, references, executors, tracking };
+    setup = { policy, pinRuntime, observeRuntime, references, executors, tracking };
   } catch (cause) {
     messaging.abort();
     createdPinRuntime?.release();
     throw cause;
   }
-  const { policy, pinRuntime, references, executors, tracking } = setup;
+  const { policy, pinRuntime, observeRuntime, references, executors, tracking } = setup;
   let core: IRSchedulerInstance;
   try {
     core = createIRSchedulerInstance(tracking.scheduler, {
@@ -172,9 +193,14 @@ export function createDeviceInstance(
       enqueueMessage: (target, args) => core.enqueueMessage(target, args),
       isFaulted: () => scheduler.error !== undefined,
     });
+    observeRuntime.attach({
+      enqueueMessage: (target, args) => core.enqueueMessage(target, args),
+    });
+    observeRuntime.register();
     pinRuntime.prepare(references);
   } catch (cause) {
     messaging.abort();
+    observeRuntime.release();
     pinRuntime.release();
     try {
       scheduler.destroyInstance(core.instance);
@@ -189,6 +215,7 @@ export function createDeviceInstance(
       core.enqueueControl(bindings.initialize.ref, []);
     } catch (cause) {
       messaging.abort();
+      observeRuntime.release();
       pinRuntime.release();
       try {
         scheduler.destroyInstance(core.instance);
@@ -215,6 +242,7 @@ export function createDeviceInstance(
     scheduler,
     bindings,
     pinRuntime,
+    observeRuntime,
     tracking.isInitialized,
     messaging,
   );
@@ -438,6 +466,7 @@ function createHandle(
   scheduler: Scheduler,
   bindings: ValidatedBindings,
   pinRuntime: PinRuntime,
+  observeRuntime: ObserveRuntime,
   isInitialized: () => boolean,
   messaging: MessagingController,
 ): DeviceInstance {
@@ -493,6 +522,7 @@ function createHandle(
       );
     }
     destroying = true;
+    observeRuntime.release();
     pinRuntime.release();
     try {
       scheduler.destroyInstance(core.instance);

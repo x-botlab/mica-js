@@ -12,6 +12,7 @@ import type {
 import { createPowerRuntime, PowerFeedbackError } from './runtime';
 import type {
   PowerDefinition,
+  PowerDigitalPinChange,
   PowerDigitalSample,
   PowerDomainChange,
   PowerDomainObserver,
@@ -959,6 +960,129 @@ describe('power input interpretation and sampling', () => {
     run(scheduler);
     expect(() => power.sampleDigital(signal('mcu', 'VDD'))).toThrow(/kind 'signal'/);
     expect(() => power.sampleVoltage(signal('mcu', 'GND'))).toThrow(/kind 'signal'/);
+  });
+});
+
+describe('power digital pin observers', () => {
+  function changesOn(
+    changes: readonly PowerDigitalPinChange[],
+    instanceId: string,
+    pinName: string,
+  ): PowerDigitalPinChange | undefined {
+    return changes.find((change) => change.instanceId === instanceId && change.pinName === pinName);
+  }
+
+  it('notifies only changed pins after a completed resolution phase', () => {
+    const { scheduler, power } = fixture();
+    run(scheduler);
+    const phases: (readonly PowerDigitalPinChange[])[] = [];
+    const dispose = power.addDigitalPinObserver({
+      onDigitalPinChange(changes) {
+        phases.push(changes);
+      },
+    });
+
+    setState(power, scheduler, analog('psu', 'D', 3.5));
+    expect(phases).toHaveLength(1);
+    expect(changesOn(phases[0]!, 'mcu', 'DIN')).toEqual({
+      instanceId: 'mcu',
+      pinName: 'DIN',
+      sample: { value: 1, ready: true, source: 'sampled' },
+    });
+    expect(changesOn(phases[0]!, 'mcu', 'P0')).toBeUndefined();
+
+    setState(power, scheduler, analog('psu', 'D', 3.6));
+    expect(phases).toHaveLength(1);
+
+    dispose();
+    dispose();
+    setState(power, scheduler, analog('psu', 'D', 1.5));
+    expect(phases).toHaveLength(1);
+  });
+
+  it('reports gating and threshold changes as sample changes', () => {
+    const { scheduler, power } = fixture();
+    run(scheduler);
+    const phases: (readonly PowerDigitalPinChange[])[] = [];
+    power.addDigitalPinObserver({
+      onDigitalPinChange(changes) {
+        phases.push(changes);
+      },
+    });
+
+    setState(power, scheduler, analog('psu', 'VCC', 0));
+    const gated = changesOn(phases.at(-1)!, 'mcu', 'DIN');
+    expect(gated?.sample).toEqual({ value: 0, ready: false, source: 'gated' });
+
+    setState(power, scheduler, analog('psu', 'VCC', 5));
+    const recovered = changesOn(phases.at(-1)!, 'mcu', 'DIN');
+    expect(recovered?.sample).toEqual({ value: 0, ready: true, source: 'sampled' });
+
+    setState(power, scheduler, analog('psu', 'D', 2.5));
+    const indeterminate = changesOn(phases.at(-1)!, 'mcu', 'DIN');
+    expect(indeterminate?.sample).toEqual({ value: 0, ready: true, source: 'threshold-range' });
+  });
+
+  it('calls observers in registration order and unsubscribes independently', () => {
+    const { scheduler, power } = fixture();
+    run(scheduler);
+    const calls: string[] = [];
+    const disposeFirst = power.addDigitalPinObserver({
+      onDigitalPinChange() {
+        calls.push('first');
+      },
+    });
+    power.addDigitalPinObserver({
+      onDigitalPinChange() {
+        calls.push('second');
+      },
+    });
+
+    setState(power, scheduler, analog('psu', 'D', 3.5));
+    expect(calls).toEqual(['first', 'second']);
+    calls.length = 0;
+    disposeFirst();
+    disposeFirst();
+    setState(power, scheduler, analog('psu', 'D', 1.5));
+    expect(calls).toEqual(['second']);
+  });
+
+  it('calls observers in registration order and stops after the first failure', () => {
+    const { scheduler, power } = fixture();
+    run(scheduler);
+    const calls: string[] = [];
+    power.addDigitalPinObserver({
+      onDigitalPinChange() {
+        calls.push('first');
+        throw new Error('observer failed');
+      },
+    });
+    power.addDigitalPinObserver({
+      onDigitalPinChange() {
+        calls.push('second');
+      },
+    });
+
+    power.updatePinStates([analog('psu', 'D', 3.5)]);
+    expect(() => scheduler.start()).toThrow(/observer failed/);
+    expect(calls).toEqual(['first']);
+    expect(scheduler.error?.code).toBe('execution-failed');
+    expect(power.sampleDigital(signal('mcu', 'DIN'))).toMatchObject({ value: 1 });
+  });
+
+  it('clears observers on destroy and rejects later registration', () => {
+    const { scheduler, power } = fixture();
+    run(scheduler);
+    let calls = 0;
+    power.addDigitalPinObserver({
+      onDigitalPinChange() {
+        calls += 1;
+      },
+    });
+    power.destroy();
+    expect(() => power.addDigitalPinObserver({ onDigitalPinChange() {} })).toThrow(/destroyed/);
+    expect(calls).toBe(0);
+    expect(() => scheduler.start()).not.toThrow();
   });
 });
 

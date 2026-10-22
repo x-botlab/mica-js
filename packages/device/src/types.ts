@@ -1,5 +1,10 @@
 import type { PropertyDescriptor, PropertyValue } from '@mica-js/core/schematic';
-import type { ElectricalPinInput, PowerDigitalSample, TopologyPinRef } from '@mica-js/core';
+import type {
+  ElectricalPinInput,
+  PowerDigitalPinObserver,
+  PowerDigitalSample,
+  TopologyPinRef,
+} from '@mica-js/core';
 import type {
   BytesOutputRef,
   BytesRef,
@@ -140,10 +145,44 @@ export interface PinOperations {
   sampleDigital(pin: PinRef): Value<'u32'>;
 }
 
+/** Trigger selection for a digital edge observation binding (#8 / #25). */
+export type ObserveEdge = 'rising' | 'falling' | 'both';
+
+export interface ObserveConfig {
+  readonly enabled: boolean;
+  readonly edges: ObserveEdge;
+}
+
+/** Digital observation control attached to every IR function builder (#8 / #25). */
+export interface ObserveOperations {
+  configure(observer: ObserverRef, config: ObserveConfig): undefined;
+}
+
+/** Static handle for one observation binding declared by the device factory (#8 / #25). */
+export type ObserverRef = StaticRef<'observe'>;
+
+export type CapturedPinTypes<P extends readonly PinRef[]> = {
+  readonly [I in keyof P]: 'u32';
+};
+
+/**
+ * Static digital edge observation declaration. The target entry receives one `u8` edge code
+ * followed by one `u32` per captured pin, in declaration order.
+ */
+export interface ObserveDigitalDescriptor<P extends readonly PinRef[]> {
+  readonly trigger: PinRef;
+  readonly captures: P;
+  readonly target: EntryRef<NoInfer<readonly ['u8', ...CapturedPinTypes<P>]>>;
+}
+
 /** Instance declaration surface: core declarations plus this device's pins and connections. */
 export interface DeviceIRDeclarations extends IRDeclarations {
   pin(id: string): PinRef;
   connection(id: string): ConnectionRef;
+  observeDigital<const P extends readonly PinRef[]>(
+    name: string,
+    descriptor: ObserveDigitalDescriptor<P>,
+  ): ObserverRef;
 }
 
 /** Instance-level factory context (#8): fixed props, declarations and message bridge. */
@@ -196,9 +235,8 @@ export interface DeviceBindings {
 
 /**
  * Synchronous device factory. It runs once per instance, builds the static IR, registers message
- * listeners and returns the lifecycle bindings. Observation APIs belong to a later device-layer
- * task; the pin and connection author surfaces are exposed through {@link DeviceAPI.ir} and the
- * builder.
+ * listeners and returns the lifecycle bindings. Pin, observation and connection author surfaces
+ * are exposed through {@link DeviceAPI.ir} and the builder.
  */
 export type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
 
@@ -233,6 +271,11 @@ export interface DevicePinHost {
   pinIntent(pin: TopologyPinRef): ElectricalPinInput;
   updatePinStates(states: readonly ElectricalPinInput[]): void;
   sampleDigital(pin: TopologyPinRef): PowerDigitalSample;
+  /**
+   * Change-only digital pin notification required by observation bindings. The returned disposer
+   * must be idempotent. Hosts without observation support may omit it.
+   */
+  addDigitalPinObserver?(observer: PowerDigitalPinObserver): () => void;
 }
 
 /** Host options for {@link createDeviceInstance}. */

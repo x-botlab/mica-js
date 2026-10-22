@@ -12,11 +12,13 @@ import { createConnectionSupport } from '../connection/builder';
 import type { DeviceConnectionDescriptor } from '../connection/types';
 import { DeviceError } from '../errors';
 import type { MessagingController } from '../messaging/controller';
+import type { ObserveDomain } from '../observe/domain';
 import type { PinDomain } from '../pins/domain';
 import type {
   DeviceAPI,
   DeviceIRDeclarations,
   DevicePropertySnapshot,
+  ObserverRef,
   PinRef,
   TopicPayload,
 } from '../types';
@@ -49,6 +51,7 @@ export function createFactoryContext(
   deviceId: string,
   messaging: MessagingController,
   pins: PinDomain,
+  observes: ObserveDomain,
   connections: ReadonlyMap<string, DeviceConnectionDescriptor>,
 ): FactoryContext {
   let open = true;
@@ -68,6 +71,14 @@ export function createFactoryContext(
             return failClosed('pin');
           }
           return pins.catalog.declare(module, id, deviceId);
+        };
+      }
+      if (property === 'observeDigital') {
+        return (...args: unknown[]): ObserverRef => {
+          if (!open) {
+            return failClosed('observeDigital');
+          }
+          return observes.declare(module, args[0], args[1]);
         };
       }
       if (property === 'connection') {
