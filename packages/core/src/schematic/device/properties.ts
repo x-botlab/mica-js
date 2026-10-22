@@ -1,6 +1,6 @@
-import { isAssetReference } from '../format/asset';
-import type { PropertyValue } from '../format/types';
-import { isRecord } from '../format/validate';
+import { isAssetReference } from '../../format/value';
+import type { PropertyValue } from '../../format/value';
+import { isRecord } from '../../format/validate';
 
 /** Property value types a device may declare (#7). */
 export const PROPERTY_TYPES = [

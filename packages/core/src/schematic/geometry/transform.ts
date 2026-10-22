@@ -1,4 +1,5 @@
-import type { Placement, Point, Rect } from '../format/types';
+import type { Placement, Rect } from '../../format/types';
+import type { Point } from '../../format/value';
 import type { PinAnchor } from '../device/symbol';
 import { boundsOfPoints } from './point';
 

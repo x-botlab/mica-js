@@ -1,4 +1,4 @@
-import type { Rect } from '../format/types';
+import type { Rect } from '../../format/types';
 import type { PropertyDescriptor } from './properties';
 import type { DeviceReference } from './reference';
 

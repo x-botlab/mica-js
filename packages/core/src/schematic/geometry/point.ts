@@ -1,4 +1,5 @@
-import type { Point, Rect } from '../format/types';
+import type { Rect } from '../../format/types';
+import type { Point } from '../../format/value';
 
 /** Default comparison tolerance, in page units. */
 export const DEFAULT_TOLERANCE = 0;

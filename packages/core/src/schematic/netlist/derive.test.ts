@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createDeviceRegistry } from '../device/registry';
-import type { SchematicDocument } from '../format/types';
-import { catchError, codesOf } from '../format/test-helpers';
+import type { SchematicDocument } from '../../format/types';
+import { catchError, codesOf } from '../../format/test-helpers';
 import { deriveSchematicTopology } from './derive';
 
 const devices = createDeviceRegistry([

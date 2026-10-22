@@ -1,4 +1,5 @@
-import type { PropertyValue, SchematicDocument } from './types';
+import type { SchematicDocument } from '../../format/types';
+import type { PropertyValue } from '../../format/value';
 
 /** Serializes with a fixed field order and 2-space indentation, matching the examples in #6. */
 export function serializeSchematic(document: SchematicDocument): string {

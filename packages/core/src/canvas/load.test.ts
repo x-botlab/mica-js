@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { SchematicError } from '../schematic/format/errors';
-import { catchError, codesOf } from '../schematic/format/test-helpers';
-import type { SchematicDocument } from '../schematic/format/types';
+import { SchematicError } from '../format/errors';
+import { catchError, codesOf } from '../format/test-helpers';
+import type { SchematicDocument } from '../format/types';
 import { loadCanvas } from './load';
 
 const schematic: SchematicDocument = {

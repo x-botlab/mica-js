@@ -1,6 +1,6 @@
 import type { Diagnostic, DiagnosticCode, DiagnosticEntity } from './diagnostics';
-import type { AssetMode, AssetReference, Point, PropertyValue } from './types';
-import { assetSrcError, isAssetMode } from './asset';
+import type { AssetMode, AssetReference, Point, PropertyValue } from './value';
+import { assetSrcError, isAssetMode } from './value';
 
 export function toPointer(path: readonly string[]): string {
   if (path.length === 0) {

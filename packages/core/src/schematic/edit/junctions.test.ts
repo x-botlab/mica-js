@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SchematicDocument } from '../format/types';
+import type { SchematicDocument } from '../../format/types';
 import { joinJunctionAt, planJunctionRelease } from './junctions';
 
 function documentOf(sheet: {

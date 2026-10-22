@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createDeviceRegistry } from '../device/registry';
-import { SchematicError } from '../format/errors';
-import type { SchematicDocument } from '../format/types';
-import { catchError, codesOf } from '../format/test-helpers';
+import { SchematicError } from '../../format/errors';
+import type { SchematicDocument } from '../../format/types';
+import { catchError, codesOf } from '../../format/test-helpers';
 import { loadSchematic } from './load';
 
 const devices = createDeviceRegistry([

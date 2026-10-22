@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { SchematicError } from './errors';
+import { SchematicError } from '../../format/errors';
 import { parseSchematic } from './parse-schematic';
 import { serializeSchematic } from './serialize';
-import { catchError, codesOf } from './test-helpers';
-import type { SchematicDocument } from './types';
+import { catchError, codesOf } from '../../format/test-helpers';
+import type { SchematicDocument } from '../../format/types';
 
 const SAMPLE = `{
   "version": 1,

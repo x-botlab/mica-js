@@ -1,6 +1,7 @@
-import { SchematicError } from '../format/errors';
+import { SchematicError } from '../../format/errors';
 import { parseSchematic } from '../format/parse-schematic';
-import type { Point, SchematicDocument, SchematicJunction, SchematicWire } from '../format/types';
+import type { SchematicDocument, SchematicJunction, SchematicWire } from '../../format/types';
+import type { Point } from '../../format/value';
 import { DEFAULT_TOLERANCE, pointOnPolyline, pointsEqual } from '../geometry/point';
 import { defaultElementIdFactory, type ElementIdFactory } from './ids';
 

@@ -1,15 +1,15 @@
-import type { Diagnostic } from './diagnostics';
-import { SchematicError } from './errors';
-import { parseInput } from './input';
+import type { Diagnostic } from '../../format/diagnostics';
+import { SchematicError } from '../../format/errors';
+import { parseInput } from '../../format/input';
 import type {
-  Point,
   SchematicDocument,
   SchematicJunction,
   SchematicSheet,
   SchematicSymbol,
   SchematicWire,
-} from './types';
-import { SCHEMATIC_VERSION } from './types';
+} from '../../format/types';
+import { SCHEMATIC_VERSION } from '../../format/types';
+import type { Point } from '../../format/value';
 import {
   designatorOf,
   hasDesignator,
@@ -31,7 +31,7 @@ import {
   readStringField,
   report,
   type IdentifiedEntry,
-} from './validate';
+} from '../../format/validate';
 
 /** @throws {SchematicError} when the input does not match the `.sch` contract. */
 export function parseSchematic(input: string | unknown): SchematicDocument {

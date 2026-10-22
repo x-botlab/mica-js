@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { catchError, codesOf } from '../schematic/format/test-helpers';
-import type { SchematicDocument } from '../schematic/format/types';
+import { catchError, codesOf } from '../format/test-helpers';
+import type { SchematicDocument } from '../format/types';
 import { applyCanvasCommand } from './edit';
 import type { CanvasDocument } from './format/types';
 

@@ -1,4 +1,4 @@
-import type { SchematicDocument } from '../format/types';
+import type { SchematicDocument } from '../../format/types';
 import { designatorOf, parseDeviceReference } from './reference';
 import type { DeviceSymbolProvider } from './symbol';
 

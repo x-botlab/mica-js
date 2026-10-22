@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SchematicEditor } from './editor';
-import type { SchematicDocument } from '../format/types';
-import { catchError } from '../format/test-helpers';
+import type { SchematicDocument } from '../../format/types';
+import { catchError } from '../../format/test-helpers';
 import { parseSchematic } from '../format/parse-schematic';
 
 function makeDocument(): SchematicDocument {

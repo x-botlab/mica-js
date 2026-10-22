@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { applySchematicCommand, type SchematicCommand } from './commands';
 import type { EditEffect } from './commands';
 import { createDeviceRegistry } from '../device/registry';
-import type { SchematicDocument } from '../format/types';
-import { catchError, codesOf } from '../format/test-helpers';
+import type { SchematicDocument } from '../../format/types';
+import { catchError, codesOf } from '../../format/test-helpers';
 
 /** Ids are generated as UUID v4 so they never collide with user-facing names. */
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;

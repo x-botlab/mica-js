@@ -1,3 +1,5 @@
+import type { Point, PropertyValue } from './value';
+
 /**
  * Schema version of the `.sch` contract (see x-botlab/mica-js#6).
  *
@@ -7,11 +9,6 @@
 export const SCHEMATIC_VERSION = 1;
 
 export type SchematicVersion = typeof SCHEMATIC_VERSION;
-
-export interface Point {
-  readonly x: number;
-  readonly y: number;
-}
 
 export interface Rect {
   readonly x: number;
@@ -25,24 +22,6 @@ export interface Placement {
   readonly y: number;
   readonly rotation: number;
 }
-
-/** Where an image / binary property value lives (#7). */
-export type AssetMode = 'file' | 'inline' | 'store';
-
-/**
- * Reference to a project asset instead of inline bytes (#7): `file` is a project-root relative
- * POSIX path, `inline` is base64 text and `store` is a host resource identifier.
- */
-export interface AssetReference {
-  readonly src: string;
-  readonly mode: AssetMode;
-}
-
-/**
- * Instance property value stored in `symbol.properties` (see #6 / #7): a scalar, a resource
- * reference for `image` / `binary` properties, or `null` for an explicitly cleared nullable one.
- */
-export type PropertyValue = string | number | boolean | AssetReference | null;
 
 export interface SchematicSymbol extends Placement {
   /** Stable identity used by selections, undo and `.view` layout keys. */

@@ -1,4 +1,4 @@
-import type { Rect } from '../format/types';
+import type { Rect } from '../../format/types';
 import type { DeviceSymbolDefinition, PinAnchor, PinSide } from './symbol';
 
 /** Pin declaration subset used for symbol synthesis (see #11 / #12). */
