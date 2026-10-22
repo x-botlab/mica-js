@@ -393,7 +393,13 @@ importers:
       '@mica-js/core':
         specifier: workspace:*
         version: link:../core
+      '@mica-js/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
     devDependencies:
+      rolldown:
+        specifier: 'catalog:'
+        version: 1.2.14
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
