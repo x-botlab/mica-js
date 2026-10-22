@@ -2,7 +2,7 @@ import type { SchematicDocument } from '../format/types';
 import { parseSchematic } from '../format/parse-schematic';
 import { pointOnPolyline } from '../geometry/point';
 import { serializeSchematic } from '../format/serialize';
-import { deriveSchematicTopology, type SchematicTopology } from '../topology/derive';
+import { deriveSchematicTopology, type SchematicTopology } from '../netlist/derive';
 import {
   applySchematicCommand,
   type SchematicCommand,
