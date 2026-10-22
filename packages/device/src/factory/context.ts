@@ -1,9 +1,25 @@
-import type { IRModule } from '@mica-js/ir';
+import type {
+  BytesOutputRef,
+  BytesRef,
+  EntryRef,
+  InboxRef,
+  IRModule,
+  OutputRef,
+  ScalarArgs,
+  ScalarType,
+} from '@mica-js/ir';
 import { createConnectionSupport } from '../connection/builder';
 import type { DeviceConnectionDescriptor } from '../connection/types';
 import { DeviceError } from '../errors';
+import type { MessagingController } from '../messaging/controller';
 import type { PinDomain } from '../pins/domain';
-import type { DeviceAPI, DeviceIRDeclarations, DevicePropertySnapshot, PinRef } from '../types';
+import type {
+  DeviceAPI,
+  DeviceIRDeclarations,
+  DevicePropertySnapshot,
+  PinRef,
+  TopicPayload,
+} from '../types';
 
 const DECLARATION_METHODS = new Set<PropertyKey>([
   'state',
@@ -13,6 +29,8 @@ const DECLARATION_METHODS = new Set<PropertyKey>([
   'func',
   'entry',
   'lifecycle',
+  'output',
+  'outputBytes',
 ]);
 
 /** A factory context plus the kernel-side seal used after the factory returns or throws. */
@@ -29,6 +47,7 @@ export function createFactoryContext(
   props: DevicePropertySnapshot,
   module: IRModule,
   deviceId: string,
+  messaging: MessagingController,
   pins: PinDomain,
   connections: ReadonlyMap<string, DeviceConnectionDescriptor>,
 ): FactoryContext {
@@ -97,11 +116,22 @@ export function createFactoryContext(
   const api: DeviceAPI = Object.freeze({
     props,
     ir: ir as unknown as DeviceIRDeclarations,
+    subscribe: (port: string, callback: unknown) => messaging.subscribe(port, callback),
+    publish: (port: string, payload: TopicPayload) => messaging.publish(port, payload),
+    post: <P extends readonly ScalarType[]>(entry: EntryRef<P>, args: ScalarArgs<P>) =>
+      messaging.post(entry, args),
+    postBytes: (entry: EntryRef<readonly ['u32', 'u32']>, inbox: InboxRef, bytes: Uint8Array) =>
+      messaging.postBytes(entry, inbox, bytes),
+    onOutput: ((output: OutputRef | BytesOutputRef, callback: unknown) =>
+      messaging.onOutput(output, callback)) as DeviceAPI['onOutput'],
+    updateBytes: (resource: BytesRef, offset: number, bytes: Uint8Array) =>
+      messaging.updateBytes(resource, offset, bytes),
   });
   return {
     api,
     close() {
       open = false;
+      messaging.closeRegistrations();
     },
   };
 }

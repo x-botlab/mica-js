@@ -36,7 +36,7 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 
 ## 器件层
 
-`@mica-js/device` 当前提供器件描述对象解析、`IDeviceProvider` 加载合同、同步 JS 工厂导出校验、每实例独立、递归只读的属性快照，以及 `createDeviceInstance` 的实例级 `api.ir` / `api.props` 上下文与 initialize/reset/onDispose 生命周期。工厂返回后声明封闭；initialize 由现有公共控制阶段驱动，reset 不重建实例，故障暂停不自动销毁，destroy 清理后通知 `onDispose`。文件定位、读取、缺失文件诊断与 JSON 语法错误由宿主 provider 负责；本包不提供 WASM 回退或第二实现加载来源。同一 provider 实例内一个 device id 只加载一次模块；`loadDeviceModule` 在宿主 realm 执行 provider 代码，不是沙箱，#59 沙箱适配落地前器件包必须可信。连接作者接口已由 #57 接入：`api.ir.connection` / `b.connection.apply` 把建图时固定的补丁降低为静态连接引用与 bool SSA，并通过 `DeviceInstanceOptions.connections.topology` 在控制阶段原子提交；消息桥接、引脚 I/O 与观察仍分别留给 #54–#56，不在此以空实现冒充完成。接口与边界见 [packages/device/README.md](packages/device/README.md)。
+`@mica-js/device` 当前提供器件描述对象解析、`IDeviceProvider` 加载合同、同步 JS 工厂导出校验、每实例独立、递归只读的属性快照，以及 `createDeviceInstance` 的实例级 `api.ir` / `api.props` 上下文、initialize/reset/onDispose 生命周期与话题/IR 输出消息桥接。工厂返回后声明与监听登记封闭；initialize 由现有公共控制阶段驱动，reset 不重建实例，故障暂停不自动销毁，destroy 清理后通知 `onDispose`。消息桥接覆盖 `subscribe/publish/post/postBytes/onOutput/updateBytes`、IR 标量/字节输出、有界队列、初始化暂存与 `BackpressureError`。文件定位、读取、缺失文件诊断与 JSON 语法错误由宿主 provider 负责；本包不提供 WASM 回退或第二实现加载来源。同一 provider 实例内一个 device id 只加载一次模块；`loadDeviceModule` 在宿主 realm 执行 provider 代码，不是沙箱，#59 沙箱适配落地前器件包必须可信。连接作者接口已由 #57 接入：`api.ir.connection` / `b.connection.apply` 把建图时固定的补丁降低为静态连接引用与 bool SSA，并通过 `DeviceInstanceOptions.connections.topology` 在控制阶段原子提交；引脚 I/O 与观察仍留给 #55/#56，不在此以空实现冒充完成。接口与边界见 [packages/device/README.md](packages/device/README.md)。
 
 ## 原理图编辑器
 

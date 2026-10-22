@@ -1,6 +1,7 @@
 export { createIRModule } from './module';
 export { createIRInterpreter, IRExecutionError } from './interpreter';
 export type {
+  IRBridgeHost,
   IRInterpreterOptions,
   IREventHost,
   IRStepObserver,
@@ -56,6 +57,8 @@ export type {
   BooleanOperations,
   BytesOperations,
   BytesOptions,
+  BytesOutputDefinition,
+  BytesOutputRef,
   BytesRef,
   ConversionOperations,
   DeclaredInstruction,
@@ -99,10 +102,13 @@ export type {
   Narrower,
   NumericType,
   OppositeSign,
+  OutputDefinition,
+  OutputRef,
   Predicate,
   ReadableBytesRef,
   ResourceRef,
   ResourceOperations,
+  ScalarOutputDefinition,
   RuntimeScalar,
   ScalarArgs,
   ScalarType,

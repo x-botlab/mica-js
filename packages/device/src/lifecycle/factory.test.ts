@@ -60,16 +60,17 @@ describe('device factory context', () => {
     const surface = api as unknown as Record<string, unknown>;
     const ir = api!.ir as unknown as Record<string, unknown>;
     expect(surface['module']).toBeUndefined();
-    expect(surface['subscribe']).toBeUndefined();
-    expect(surface['publish']).toBeUndefined();
-    expect(surface['post']).toBeUndefined();
-    expect(surface['onOutput']).toBeUndefined();
-    expect(surface['updateBytes']).toBeUndefined();
+    expect(surface['subscribe']).toBeTypeOf('function');
+    expect(surface['publish']).toBeTypeOf('function');
+    expect(surface['post']).toBeTypeOf('function');
+    expect(surface['postBytes']).toBeTypeOf('function');
+    expect(surface['onOutput']).toBeTypeOf('function');
+    expect(surface['updateBytes']).toBeTypeOf('function');
     expect(ir['functions']).toBeUndefined();
     expect(ir['domainInstruction']).toBeUndefined();
     expect(ir['provider']).toBeUndefined();
-    expect(ir['output']).toBeUndefined();
-    expect(ir['outputBytes']).toBeUndefined();
+    expect(ir['output']).toBeTypeOf('function');
+    expect(ir['outputBytes']).toBeTypeOf('function');
     expect(() => {
       (ir as Record<string, unknown>)['state'] = () => undefined;
     }).toThrow(TypeError);

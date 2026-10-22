@@ -25,6 +25,7 @@ interface InstanceState {
   readonly active: Map<number, Work>;
   destroyRequested: boolean;
   destroyed: boolean;
+  nextMessageId: number;
 }
 
 interface Work {
@@ -35,6 +36,7 @@ interface Work {
   readonly round: bigint;
   readonly sequence: bigint;
   readonly id: number;
+  readonly messageId: number;
   status: 'pending' | 'running' | 'cancelled' | 'completed' | 'failed';
 }
 
@@ -165,6 +167,7 @@ class DeterministicScheduler implements Scheduler {
         active: new Map(),
         destroyRequested: false,
         destroyed: false,
+        nextMessageId: 1,
       };
       this.#identities.add(instanceId);
       this.#instances.set(handle, instance);
@@ -189,8 +192,38 @@ class DeterministicScheduler implements Scheduler {
         round: this.#controlStarted ? this.#controlRound + 1n : 0n,
         sequence: this.#sequence++,
         id: 0,
+        messageId: 0,
         status: 'pending',
       });
+    });
+  }
+
+  enqueueMessage(
+    handle: SchedulerInstance,
+    target: SchedulerTarget,
+    args: readonly RuntimeScalar[],
+  ): number {
+    return this.#boundary(() => {
+      const instance = this.#instance(handle);
+      const captured = this.#target(instance, target, 'event');
+      const inputs = this.#arguments(captured, args);
+      const messageId = instance.nextMessageId;
+      if (!Number.isSafeInteger(messageId)) {
+        throw this.#problem('invalid-instance', 'Message ID space is exhausted');
+      }
+      instance.nextMessageId = messageId + 1;
+      this.#queue.push({
+        instance,
+        target: captured,
+        args: inputs,
+        time: this.#now,
+        round: this.#ordinaryStarted ? this.#ordinaryRound + 1n : 0n,
+        sequence: this.#sequence++,
+        id: 0,
+        messageId,
+        status: 'pending',
+      });
+      return messageId;
     });
   }
 
@@ -280,6 +313,7 @@ class DeterministicScheduler implements Scheduler {
       round: time === this.#now && this.#ordinaryStarted ? this.#ordinaryRound + 1n : 0n,
       sequence: this.#sequence++,
       id,
+      messageId: 0,
       status: 'pending',
     };
     instance.active.set(id, work);
@@ -397,6 +431,7 @@ class DeterministicScheduler implements Scheduler {
         timePs: this.#now,
         phase: work.target.kind,
         eventId: work.id,
+        messageId: work.messageId,
         get remainingSteps() {
           return remainingSteps();
         },

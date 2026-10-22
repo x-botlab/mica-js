@@ -251,6 +251,9 @@ function wrappedScheduler(
       }
       real.enqueueControl(instance, target, args);
     },
+    enqueueMessage(instance, target, args) {
+      return real.enqueueMessage(instance, target, args);
+    },
     destroyInstance(instance) {
       destroyed.push(instance.instanceId);
       real.destroyInstance(instance);

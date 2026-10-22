@@ -76,6 +76,16 @@ export interface InboxRef extends StaticRef<'inbox'> {
   readonly [byteReadonly]: true;
 }
 
+/** Static scalar output endpoint declared by `ir.output` (#8 / #54). */
+export interface OutputRef<
+  P extends readonly ScalarType[] = readonly ScalarType[],
+> extends StaticRef<'scalar-output'> {
+  readonly [signature]: FunctionSignature<P, readonly []>;
+}
+
+/** Static byte output endpoint declared by `ir.outputBytes` (#8 / #54). */
+export type BytesOutputRef = StaticRef<'bytes-output'>;
+
 export type ReadableBytesRef = BytesRef | InboxRef;
 export type WritableBytesRef = BytesRef<false>;
 export type ResourceRef = StateRef | ArrayRef | ReadableBytesRef;
@@ -357,6 +367,24 @@ export interface IRModuleOptions {
  * handles and instructions here; the core never imports a domain module and
  * never turns a host JavaScript callback into an instruction.
  */
+export interface ScalarOutputDefinition {
+  readonly kind: 'scalar-output';
+  readonly name: string;
+  readonly ref: OutputRef;
+  readonly params: readonly ScalarType[];
+  readonly capacity: number;
+}
+
+export interface BytesOutputDefinition {
+  readonly kind: 'bytes-output';
+  readonly name: string;
+  readonly ref: BytesOutputRef;
+  readonly capacity: number;
+  readonly maxBytes: number;
+}
+
+export type OutputDefinition = ScalarOutputDefinition | BytesOutputDefinition;
+
 export interface IRDeclarations {
   state<T extends ScalarType>(name: string, type: T, initial: JSScalar<NoInfer<T>>): StateRef<T>;
   array<T extends ScalarType>(
@@ -376,6 +404,14 @@ export interface IRDeclarations {
   ): FunctionRef<P, R>;
   entry<const P extends readonly ScalarType[]>(name: string, params: P): EntryRef<P>;
   lifecycle<const P extends readonly ScalarType[]>(name: string, params: P): LifecycleRef<P>;
+  output<const P extends readonly ScalarType[]>(
+    name: string,
+    descriptor: { readonly params: P; readonly capacity: number },
+  ): OutputRef<P>;
+  outputBytes(
+    name: string,
+    descriptor: { readonly maxBytes: number; readonly capacity: number },
+  ): BytesOutputRef;
 }
 
 export interface BytesOptions<ReadonlyBytes extends boolean> {
@@ -418,6 +454,16 @@ export interface FunctionBuilder<R extends readonly ScalarType[] = readonly []> 
     target: FunctionRef<P, Results>,
     args: Values<NoInfer<P>>,
   ): Values<Results>;
+  output<P extends readonly ScalarType[]>(
+    output: OutputRef<P>,
+    args: Values<NoInfer<P>>,
+  ): Value<'bool'>;
+  outputBytes(
+    output: BytesOutputRef,
+    region: ReadableBytesRef,
+    offset: Value<'u32'>,
+    length: Value<'u32'>,
+  ): Value<'bool'>;
   block<const P extends readonly ScalarType[]>(types: P): BlockRef<P>;
   at<P extends readonly ScalarType[]>(
     block: BlockRef<P>,
@@ -541,6 +587,7 @@ export interface IRModule extends IRDeclarations {
   readonly functions: readonly FunctionDefinition[];
   readonly domainDeclarations: readonly DomainDeclaration[];
   readonly instructions: readonly DeclaredInstruction[];
+  readonly outputs: readonly OutputDefinition[];
   domainDeclaration<Kind extends string>(kind: Kind, name: string): StaticRef<Kind>;
   domainInstruction<
     const O extends readonly DomainOperandType[],

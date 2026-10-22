@@ -1,6 +1,7 @@
 import { createIRInterpreter } from '@mica-js/ir';
 import type {
   EntryRef,
+  IRBridgeHost,
   IRInstructionExecutor,
   IRModule,
   IRStorage,
@@ -20,6 +21,7 @@ export interface IRSchedulerInstanceDefinition {
   readonly instanceId: string;
   readonly module: IRModule;
   readonly validation: IRValidationOptions;
+  readonly bridge?: IRBridgeHost;
   /** Trusted synchronous executors for declared domain instructions. */
   readonly executors?: readonly IRInstructionExecutor[];
 }
@@ -30,6 +32,7 @@ export interface IRSchedulerInstance {
   at(target: EntryRef, deadline: number, args: readonly RuntimeScalar[]): number;
   cancel(id: number): void;
   enqueueControl(target: LifecycleRef, args: readonly RuntimeScalar[]): void;
+  enqueueMessage(target: EntryRef, args: readonly RuntimeScalar[]): number;
 }
 
 const unknownTarget: SchedulerTarget = Object.freeze({
@@ -53,6 +56,7 @@ export function createIRSchedulerInstance(
     functions: module.functions,
     domainDeclarations: module.domainDeclarations,
     instructions: module.instructions,
+    outputs: module.outputs,
   } as IRModule;
   const targets = new Map<EntryRef | LifecycleRef, SchedulerTarget>();
   const entries = new Map<string, EntryRef | LifecycleRef>();
@@ -80,6 +84,7 @@ export function createIRSchedulerInstance(
   const interpreter = createIRInterpreter(captured, {
     validation,
     maxSteps: Number.MAX_SAFE_INTEGER,
+    ...(definition.bridge === undefined ? {} : { bridge: definition.bridge }),
     eventHost: {
       now: () => context().timePs,
       at: (target, deadline, args) => {
@@ -119,5 +124,7 @@ export function createIRSchedulerInstance(
     cancel: (id: number) => instance.cancel(id),
     enqueueControl: (target: LifecycleRef, args: readonly RuntimeScalar[]) =>
       scheduler.enqueueControl(instance, targets.get(target) ?? unknownTarget, args),
+    enqueueMessage: (target: EntryRef, args: readonly RuntimeScalar[]) =>
+      scheduler.enqueueMessage(instance, targets.get(target) ?? unknownTarget, args),
   });
 }

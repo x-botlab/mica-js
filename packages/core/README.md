@@ -66,7 +66,7 @@ scheduler.start();
 instance.storage.loadState(received); // 7
 ```
 
-适配器返回只读 `instance: SchedulerInstance`、`storage: IRStorage`，以及 `at(EntryRef, deadline, args): number`、`cancel(id): void`、`enqueueControl(LifecycleRef, args): void`。生命周期不能用 `at` 提升优先级；控制接入仅供可信内核，不向器件开放创建特权工作能力。销毁使用 `scheduler.destroyInstance(instance.instance)`。
+适配器返回只读 `instance: SchedulerInstance`、`storage: IRStorage`，以及 `at(EntryRef, deadline, args): number`、`cancel(id): void`、`enqueueControl(LifecycleRef, args): void`、`enqueueMessage(EntryRef, args): number`。生命周期不能用 `at` 提升优先级；控制接入仅供可信内核，不向器件开放创建特权工作能力。销毁使用 `scheduler.destroyInstance(instance.instance)`。
 
 领域执行器只接收解释器快照中的节点、按值解析的 SSA 操作数与执行上下文；它们只应在当前调度入口内同步工作。`connection.apply` 使用这一扩展把捕获的 bool 列表一次性提交给 `TopologyRuntime.submit()`，由拓扑在下一个控制阶段原子应用；核心不导入连接领域类型。
 
@@ -96,9 +96,11 @@ instance.storage.loadState(received); // 7
 
 低层 `addInstance({ instanceId, targets, executor })` 返回 `SchedulerInstance`（`instanceId/at/cancel`）。`SchedulerTarget` 声明 `name`、`kind: 'event' | 'control'`、`params: readonly ScalarType[]`；按登记对象身份接纳并固定元数据，不按名称匹配外来对象。后端收到不可变的目标视图。参数复用 `@mica-js/ir` 的 `RuntimeScalar`，不接受对象闭包或存储别名。
 
-`SchedulerExecutor.execute(target, args, context): void` 是**可信内核后端合同，不是任意作者 JS 回调协议或安全沙箱**。`context` 提供 `instanceId/timePs/phase/eventId/remainingSteps`（控制 eventId 为 0）及 `consumeSteps(count = 1)`；后端必须在每个参考 IR 步骤效果提交前计数，包含普通同步调用及终结指令，不得以优化后机器指令数替代。它不能抢占任意 JS 死循环。拒绝 async/generator、Promise/thenable 结果及重入执行；可识别的异步函数在调用前拒绝，普通函数返回 Promise 前已提交的效果不回滚。
+`SchedulerExecutor.execute(target, args, context): void` 是**可信内核后端合同，不是任意作者 JS 回调协议或安全沙箱**。`context` 提供 `instanceId/timePs/phase/eventId/messageId/remainingSteps`（控制 eventId 为 0；普通事件与控制工作的 messageId 为 0）及 `consumeSteps(count = 1)`；后端必须在每个参考 IR 步骤效果提交前计数，包含普通同步调用及终结指令，不得以优化后机器指令数替代。它不能抢占任意 JS 死循环。拒绝 async/generator、Promise/thenable 结果及重入执行；可识别的异步函数在调用前拒绝，普通函数返回 Promise 前已提交的效果不回滚。
 
 `enqueueControl(instance, target, args)` 仅是可信内核的控制入口；器件、Provider 无权自行创建控制工作。此接口不定义电气或其他领域的具体触发规则。
+
+`enqueueMessage(instance, target, args)` 接纳普通 `event` 类别入口的普通消息：时间固定为当前虚拟时间，不分配事件 ID、不可取消、不推进时间；返回实例内单调递增的正 message ID，并通过 `context.messageId` 传给后端，供 device 层释放 inbox 预留或统计在途请求。消息在当前普通轮次之后按 `(timePs, round, sequence)` 排序执行；faulted/destroyed 实例拒绝。它不形成等待栈，也不改变控制工作优先级。
 
 ## 预算与故障
 
@@ -123,7 +125,7 @@ pnpm --filter @mica-js/core typecheck
 pnpm --filter @mica-js/core build
 ```
 
-不提供电气求值、器件作者回调协议、消息桥、Provider 缓存、JIT、I2C/SPI 协议库、持久化调度快照或墙钟运行器。未实现能力不会以空实现或仅记录指令冒充完成。
+不提供电气求值、器件作者回调协议、话题路由/JS 消息桥、Provider 缓存、JIT、I2C/SPI 协议库、持久化调度快照或墙钟运行器。未实现能力不会以空实现或仅记录指令冒充完成。
 
 ## 原理图（`./schematic`）
 

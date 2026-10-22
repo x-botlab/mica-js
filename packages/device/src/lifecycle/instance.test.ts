@@ -625,6 +625,26 @@ describe('creation failures', () => {
       () => createForTest(factory, {}, {} as unknown as Scheduler),
       'device/instance-invalid',
     );
+    const schedulerFields = {
+      now: 0,
+      state: 'paused',
+      error: undefined,
+      addInstance: () => undefined,
+      enqueueControl: () => undefined,
+      enqueueMessage: () => 1,
+      destroyInstance: () => undefined,
+      start: () => ({ timePs: 0, executed: 0, reason: 'empty' }),
+      pause: () => undefined,
+      step: () => ({ timePs: 0, executed: 0, reason: 'empty' }),
+    };
+    for (const property of ['enqueueMessage', 'now', 'state', 'error', 'pause'] as const) {
+      const incomplete = { ...schedulerFields };
+      Reflect.deleteProperty(incomplete, property);
+      expectDeviceError(
+        () => createForTest(factory, {}, incomplete as unknown as Scheduler),
+        'device/instance-invalid',
+      );
+    }
     const scheduler = createScheduler();
     const first = createForTest(factory, { instanceId: 'duplicate' }, scheduler);
     expectDeviceError(
@@ -669,6 +689,9 @@ function hookExecutor(inner: Scheduler, hook: () => void): Scheduler {
     },
     enqueueControl(instance, target, args): void {
       inner.enqueueControl(instance, target, args);
+    },
+    enqueueMessage(instance, target, args): number {
+      return inner.enqueueMessage(instance, target, args);
     },
     destroyInstance(instance): void {
       inner.destroyInstance(instance);

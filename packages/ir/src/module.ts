@@ -3,6 +3,7 @@ import { fail } from './errors';
 import type {
   ArrayRef,
   BytesOptions,
+  BytesOutputRef,
   BytesRef,
   DeclaredInstruction,
   DomainDeclaration,
@@ -19,6 +20,8 @@ import type {
   JSScalar,
   LifecycleRef,
   MemoryDefinition,
+  OutputDefinition,
+  OutputRef,
   ScalarType,
   StateRef,
   StaticRef,
@@ -30,6 +33,7 @@ import type {
   FunctionDeclarationState,
   MemoryState,
   ModuleState,
+  OutputState,
 } from './state';
 import { toFunctionDefinition } from './state';
 import {
@@ -38,11 +42,13 @@ import {
   assertScalarType,
   assertScalarTypeList,
   createArrayRef,
+  createBytesOutputRef,
   createBytesRef,
   createDomainInstructionRef,
   createDomainStaticRef,
   createFunctionRef,
   createInboxRef,
+  createOutputRef,
   createStateRef,
   normalizeScalarLiteral,
   assertSynchronousCallback,
@@ -99,6 +105,7 @@ class IRModuleImpl implements IRModule {
       functions: [],
       domainDeclarations: [],
       instructions: [],
+      outputs: [],
       builderExtensions: captureBuilderExtensions(options),
       names: new Set(),
       instructionNames: new Set(CORE_INSTRUCTION_NAMES),
@@ -124,6 +131,10 @@ class IRModuleImpl implements IRModule {
       operands: definition.operands,
       results: definition.results,
     }));
+  }
+
+  get outputs(): readonly OutputDefinition[] {
+    return this.core.outputs.map((output) => output.definition);
   }
 
   state<T extends ScalarType>(name: string, type: T, initial: JSScalar<NoInfer<T>>): StateRef<T> {
@@ -260,6 +271,61 @@ class IRModuleImpl implements IRModule {
     return declaration.ref as unknown as LifecycleRef<P>;
   }
 
+  output<const P extends readonly ScalarType[]>(
+    name: string,
+    descriptor: { readonly params: P; readonly capacity: number },
+  ): OutputRef<P> {
+    this.declareName(name);
+    if (typeof descriptor !== 'object' || descriptor === null) {
+      fail(`Output "${name}" requires a descriptor`);
+    }
+    const params = assertScalarTypeList(descriptor.params, `Output "${name}" params`);
+    assertPositiveCapacity(descriptor.capacity, `Output "${name}" capacity`);
+    const state: OutputState = {
+      module: this.core,
+      definition: undefined as unknown as OutputDefinition,
+    };
+    const ref = createOutputRef<P>(state, params);
+    state.definition = {
+      kind: 'scalar-output',
+      name,
+      ref,
+      params,
+      capacity: descriptor.capacity,
+    };
+    this.core.outputs.push(state);
+    return ref;
+  }
+
+  outputBytes(
+    name: string,
+    descriptor: { readonly maxBytes: number; readonly capacity: number },
+  ): BytesOutputRef {
+    this.declareName(name);
+    if (typeof descriptor !== 'object' || descriptor === null) {
+      fail(`Bytes output "${name}" requires a descriptor`);
+    }
+    const maxBytes = descriptor.maxBytes;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      fail(`Bytes output "${name}" maxBytes must be a non-negative safe integer`);
+    }
+    assertPositiveCapacity(descriptor.capacity, `Bytes output "${name}" capacity`);
+    const state: OutputState = {
+      module: this.core,
+      definition: undefined as unknown as OutputDefinition,
+    };
+    const ref = createBytesOutputRef(state);
+    state.definition = {
+      kind: 'bytes-output',
+      name,
+      ref,
+      capacity: descriptor.capacity,
+      maxBytes,
+    };
+    this.core.outputs.push(state);
+    return ref;
+  }
+
   domainDeclaration<Kind extends string>(kind: Kind, name: string): StaticRef<Kind> {
     if (typeof kind !== 'string' || kind.length === 0) {
       fail('Domain declaration kind must be a non-empty string');
@@ -376,6 +442,12 @@ class IRModuleImpl implements IRModule {
       fail(`Declaration "${name}" is already declared in this module`);
     }
     this.core.names.add(name);
+  }
+}
+
+function assertPositiveCapacity(value: unknown, label: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    fail(`${label} must be a positive safe integer`);
   }
 }
 

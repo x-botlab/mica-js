@@ -1,6 +1,19 @@
 import type { PropertyDescriptor, PropertyValue } from '@mica-js/core/schematic';
 import type { ElectricalPinInput, PowerDigitalSample, TopologyPinRef } from '@mica-js/core';
-import type { IRDeclarations, IRStorage, LifecycleRef, StaticRef, Value } from '@mica-js/ir';
+import type {
+  BytesOutputRef,
+  BytesRef,
+  EntryRef,
+  InboxRef,
+  IRDeclarations,
+  IRStorage,
+  LifecycleRef,
+  OutputRef,
+  ScalarArgs,
+  ScalarType,
+  StaticRef,
+  Value,
+} from '@mica-js/ir';
 import type {
   ConnectionRef,
   DeviceConnectionDescriptor,
@@ -20,6 +33,32 @@ export const TOPIC_PAYLOAD_TYPES = [
 ] as const;
 
 export type TopicPayloadType = (typeof TOPIC_PAYLOAD_TYPES)[number];
+
+export interface Vec2d {
+  readonly x: number;
+  readonly y: number;
+}
+
+export interface Vec3d extends Vec2d {
+  readonly z: number;
+}
+
+/** Runtime payload accepted by #10 ports. Tagged byte layouts remain a host concern. */
+export type TopicPayload = boolean | number | string | Vec2d | Vec3d | Uint8Array;
+
+/** Topic delivery metadata supplied by the host (#10 envelope). */
+export interface TopicMetadata {
+  readonly simTime: number;
+}
+
+/** IR output metadata: virtual time captured at the `bridge.send` operation. */
+export interface IROutputMetadata {
+  readonly timePs: number;
+}
+
+export type Unsubscribe = () => void;
+
+export type MessageCallback<T, M> = (payload: T, meta: M) => void | Promise<void>;
 
 /** One logical topic port declared by a device description (#10). */
 export interface DevicePortDescriptor {
@@ -107,12 +146,45 @@ export interface DeviceIRDeclarations extends IRDeclarations {
   connection(id: string): ConnectionRef;
 }
 
-/** Instance-level factory context (#8). Only static declarations and the fixed props exist here. */
+/** Instance-level factory context (#8): fixed props, declarations and message bridge. */
 export interface DeviceAPI {
   /** Independent, recursively frozen property snapshot fixed for this instance. */
   readonly props: DevicePropertySnapshot;
   /** Static IR declaration surface; closed as soon as the synchronous factory returns. */
   readonly ir: DeviceIRDeclarations;
+
+  /** Subscribe to a declared input topic port. Registration is only allowed during the factory. */
+  subscribe(port: string, callback: MessageCallback<TopicPayload, TopicMetadata>): Unsubscribe;
+
+  /** Publish to a declared output topic port. Returns void after synchronous admission. */
+  publish(port: string, payload: TopicPayload): void;
+
+  /** Request an ordinary entry. Resolution means accepted, not executed. */
+  post<P extends readonly ScalarType[]>(
+    entry: EntryRef<P>,
+    args: ScalarArgs<NoInfer<P>>,
+  ): Promise<void>;
+
+  /** Admit a captured byte message into a declared inbox and request its ordinary entry. */
+  postBytes(
+    entry: EntryRef<readonly ['u32', 'u32']>,
+    inbox: InboxRef,
+    bytes: Uint8Array,
+  ): Promise<void>;
+
+  /** Register the single consumer of an IR scalar output endpoint. */
+  onOutput<P extends readonly ScalarType[]>(
+    output: OutputRef<P>,
+    callback: MessageCallback<ScalarArgs<NoInfer<P>>, IROutputMetadata>,
+  ): Unsubscribe;
+  /** Register the single consumer of an IR byte output endpoint. */
+  onOutput(
+    output: BytesOutputRef,
+    callback: MessageCallback<Uint8Array, IROutputMetadata>,
+  ): Unsubscribe;
+
+  /** Request a versioned byte update. Resolution means content and versions are visible. */
+  updateBytes(resource: BytesRef, offset: number, bytes: Uint8Array): Promise<void>;
 }
 
 /** Flat lifecycle bindings returned by a device factory (#8). */
@@ -123,14 +195,35 @@ export interface DeviceBindings {
 }
 
 /**
- * Synchronous device factory. It runs once per instance, builds the static IR and returns the
- * lifecycle bindings. Message bridge and observation APIs belong to later device-layer tasks; the
- * pin and connection author surfaces are exposed through {@link DeviceAPI.ir} and the builder.
+ * Synchronous device factory. It runs once per instance, builds the static IR, registers message
+ * listeners and returns the lifecycle bindings. Observation APIs belong to a later device-layer
+ * task; the pin and connection author surfaces are exposed through {@link DeviceAPI.ir} and the
+ * builder.
  */
 export type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
 
 /** Observable lifecycle state of an installed device instance. */
 export type DeviceInstanceState = 'initializing' | 'ready' | 'faulted' | 'destroying' | 'destroyed';
+
+/** Bounded admission limits for the instance's messaging bridge. */
+export interface DeviceMessagingOptions {
+  /** In-flight `post` + `postBytes` entries; default 64. */
+  readonly postCapacity?: number;
+  /** Accepted-but-unconsumed `publish` messages; default 64. */
+  readonly publishCapacity?: number;
+  /** Input topic messages waiting for activation or a legal boundary; default 64. */
+  readonly deliveryCapacity?: number;
+  /** Pending `updateBytes` requests; default 64. */
+  readonly updateCapacity?: number;
+  /** Total captured byte-output payload budget; default 65536. */
+  readonly outputByteBudget?: number;
+}
+
+/** One accepted `api.publish` message delivered to the host sink. */
+export interface DeviceTopicMessage {
+  readonly port: string;
+  readonly payload: TopicPayload;
+}
 
 /**
  * Public power/electrical capabilities consumed by pin I/O (#51). `PowerRuntime` satisfies this
@@ -148,6 +241,10 @@ export interface DeviceInstanceOptions {
   readonly instanceId: string;
   /** Instance property overrides resolved against the device description. */
   readonly properties?: Readonly<Record<string, PropertyValue>>;
+  /** Bounded messaging limits; omitted values use the documented defaults. */
+  readonly messaging?: DeviceMessagingOptions;
+  /** Synchronous host consumer for `api.publish`; omitted messages are dropped at a boundary. */
+  readonly onTopic?: (message: DeviceTopicMessage) => void;
   /** Held-intent and gated-sampling source for declared pins; required by pin instructions. */
   readonly pinHost?: DevicePinHost;
   /**
@@ -159,7 +256,7 @@ export interface DeviceInstanceOptions {
 
 /**
  * Installed device instance. The kernel owns IR execution; the host drives the scheduler passed
- * to {@link createDeviceInstance}. Subscriptions and output listeners are not part of #53.
+ * to {@link createDeviceInstance} and delivers input topics through {@link deliver}.
  */
 export interface DeviceInstance {
   readonly instanceId: string;
@@ -177,6 +274,11 @@ export interface DeviceInstance {
   reset(): void;
   /** Destroy the kernel instance, release its work/storage and notify `onDispose` once. */
   destroy(): void;
+  /**
+   * Deliver one input topic message. During initialization it is staged in the bounded input
+   * queue; after activation listeners start in acceptance order.
+   */
+  deliver(port: string, payload: TopicPayload, meta: TopicMetadata): void;
 }
 
 /**

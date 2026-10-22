@@ -6,6 +6,7 @@ import type {
   FloatBits,
   FloatType,
   HexBits,
+  InboxRef,
   IntegerType,
   IRModule,
   MemoryDefinition,
@@ -107,6 +108,10 @@ export interface IRStorage {
     length: number,
   ): void;
   fillBytes(destination: BytesRef, offset: number, length: number, value: number): void;
+  /** Host-only inbox admission; ordinary IR writes remain rejected. */
+  writeInbox(ref: InboxRef, offset: number, bytes: Uint8Array): void;
+  /** Host-only versioned update from captured bytes; content and units commit atomically. */
+  updateBytesFromBytes(ref: BytesRef, offset: number, bytes: Uint8Array): void;
   readVersionedBytes(ref: ReadableBytesRef, offset: number, length: number): IRVersionedBytes;
   validateDependencies(dependencies: readonly IRResourceDependency[]): boolean;
 }
@@ -320,6 +325,35 @@ class Storage implements IRStorage {
       throw new IRStorageError(
         'allocation-failure',
         'resource.fill_bytes could not prepare its update',
+      );
+    }
+  }
+
+  writeInbox(ref: InboxRef, offset: number, bytes: Uint8Array): void {
+    const record = this.#byte(ref, false, 'writeInbox resource');
+    if (record.kind !== 'inbox') {
+      throw new IRStorageError('invalid-resource', 'writeInbox requires an inbox resource');
+    }
+    const snapshot = captureBytes(bytes, 'writeInbox bytes');
+    const start = byteOffset(record, offset, snapshot.length, 'writeInbox offset');
+    if (snapshot.length === 0) return;
+    record.bytes.set(snapshot, start);
+  }
+
+  updateBytesFromBytes(ref: BytesRef, offset: number, bytes: Uint8Array): void {
+    const target = this.#updateTarget(ref);
+    const snapshot = captureBytes(bytes, 'updateBytesFromBytes bytes');
+    const start = byteOffset(target, offset, snapshot.length, 'updateBytesFromBytes offset');
+    if (snapshot.length === 0) return;
+    try {
+      const units = this.#prepareUnits(target, start, snapshot.length, true);
+      // No allocation, callbacks, or validation may intervene in this commit.
+      target.bytes.set(snapshot, start);
+      target.units = units;
+    } catch {
+      throw new IRStorageError(
+        'allocation-failure',
+        'updateBytesFromBytes could not prepare its update',
       );
     }
   }
@@ -581,6 +615,17 @@ function* coveredUnits(record: ByteRecord, start: number, count: number): Genera
   const first = Math.floor(start / record.unitBytes);
   const last = Math.floor((start + count - 1) / record.unitBytes);
   for (let index = first; index <= last; index += 1) yield index;
+}
+
+function captureBytes(value: unknown, label: string): Uint8Array {
+  if (!(value instanceof Uint8Array)) {
+    throw new IRStorageError('invalid-argument', `${label} must be a Uint8Array`);
+  }
+  try {
+    return value.slice();
+  } catch {
+    throw new IRStorageError('allocation-failure', `${label} could not be captured`);
+  }
 }
 
 function unsigned32(value: unknown, label: string): number {

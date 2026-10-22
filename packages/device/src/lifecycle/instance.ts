@@ -1,4 +1,9 @@
-import { createIRModule, type IRModule, type IRStorage } from '@mica-js/ir';
+import {
+  createIRModule,
+  type IRInstructionExecutor,
+  type IRModule,
+  type IRStorage,
+} from '@mica-js/ir';
 import {
   createIRSchedulerInstance,
   SchedulerError,
@@ -12,6 +17,7 @@ import { readDeviceBindings, type ValidatedBindings } from '../factory/bindings'
 import { createFactoryContext } from '../factory/context';
 import { callableKind, consumeThenable, isThenable } from '../internal/functions';
 import { isObjectLike, isPlainRecord } from '../internal/records';
+import { MessagingController } from '../messaging/controller';
 import { PinDomain } from '../pins/domain';
 import type { PinRuntime } from '../pins/runtime';
 import { resolveDeviceProperties } from '../properties';
@@ -25,6 +31,8 @@ import type {
   DevicePinHost,
   DevicePropertySnapshot,
   LoadedDeviceModule,
+  TopicMetadata,
+  TopicPayload,
 } from '../types';
 import { createValidationPolicy } from './policy';
 import { createLifecycleScheduler } from './scheduler';
@@ -66,61 +74,112 @@ export function createDeviceInstance(
   const module = createIRModule({ builderExtensions: [pins.extension] });
   moduleRef.current = module;
   pins.instructions();
+  const messaging = createMessaging(definition, module, options);
   const context = createFactoryContext(
     props,
     module,
     definition.deviceId,
+    messaging,
     pins,
     definition.description.connections,
   );
   let rawBindings: unknown;
   try {
     rawBindings = invokeFactory(definition.factory, context.api, definition.deviceId);
+  } catch (cause) {
+    messaging.abort();
+    throw cause;
   } finally {
     context.close();
   }
 
-  const bindings = readDeviceBindings(rawBindings, module, definition.deviceId);
-  const policy = createValidationPolicy(
-    module,
-    definition.description.connections,
-    pins.validators(),
-  );
-  const pinRuntime = pins.createRuntime(instanceId, pinHost);
-  const references = pins.references(module);
-  pinRuntime.assertReady(references);
-  const connectionExecutor = prepareConnectionExecution({
-    module,
-    description: definition.description.connections,
-    instanceId,
-    deviceId: definition.deviceId,
-    topology: connectionOptions?.topology,
-  });
-  const executors = [
-    ...pinRuntime.executors(),
-    ...(connectionExecutor === undefined ? [] : [connectionExecutor]),
-  ];
-  const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name);
+  try {
+    messaging.bindDeclarations();
+  } catch (cause) {
+    messaging.abort();
+    throw new DeviceError(
+      'device/instance-invalid',
+      `Device ${JSON.stringify(definition.deviceId)} messaging declarations are invalid.`,
+      { deviceId: definition.deviceId, cause },
+    );
+  }
+
+  let bindings: ValidatedBindings;
+  try {
+    bindings = readDeviceBindings(rawBindings, module, definition.deviceId);
+  } catch (cause) {
+    messaging.abort();
+    throw cause;
+  }
+  let setup: {
+    readonly policy: ReturnType<typeof createValidationPolicy>;
+    readonly pinRuntime: PinRuntime;
+    readonly references: readonly string[];
+    readonly executors: readonly IRInstructionExecutor[];
+    readonly tracking: ReturnType<typeof createLifecycleScheduler>;
+  };
+  let createdPinRuntime: PinRuntime | undefined;
+  try {
+    const policy = createValidationPolicy(
+      module,
+      definition.description.connections,
+      pins.validators(),
+    );
+    const pinRuntime = pins.createRuntime(instanceId, pinHost);
+    createdPinRuntime = pinRuntime;
+    const references = pins.references(module);
+    pinRuntime.assertReady(references);
+    const connectionExecutor = prepareConnectionExecution({
+      module,
+      description: definition.description.connections,
+      instanceId,
+      deviceId: definition.deviceId,
+      topology: connectionOptions?.topology,
+    });
+    const executors = [
+      ...pinRuntime.executors(),
+      ...(connectionExecutor === undefined ? [] : [connectionExecutor]),
+    ];
+    const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name, {
+      beforeEntry: () => messaging.beforeEntry(),
+      afterEntry: (entryContext, failure) => messaging.completeEntry(entryContext, failure),
+      onInitializeComplete: () => messaging.markReady(),
+    });
+    setup = { policy, pinRuntime, references, executors, tracking };
+  } catch (cause) {
+    messaging.abort();
+    createdPinRuntime?.release();
+    throw cause;
+  }
+  const { policy, pinRuntime, references, executors, tracking } = setup;
   let core: IRSchedulerInstance;
   try {
     core = createIRSchedulerInstance(tracking.scheduler, {
       instanceId,
       module,
       validation: policy,
+      bridge: messaging.bridge,
       ...(executors.length === 0 ? {} : { executors }),
     });
   } catch (cause) {
+    messaging.abort();
     throw linkError(definition.deviceId, cause);
   }
 
   try {
+    messaging.attach({
+      storage: core.storage,
+      enqueueMessage: (target, args) => core.enqueueMessage(target, args),
+      isFaulted: () => scheduler.error !== undefined,
+    });
     pinRuntime.prepare(references);
   } catch (cause) {
+    messaging.abort();
     pinRuntime.release();
     try {
       scheduler.destroyInstance(core.instance);
     } catch {
-      // The pin-host diagnostic is the useful failure.
+      // The setup failure is the useful diagnostic.
     }
     throw cause;
   }
@@ -129,6 +188,7 @@ export function createDeviceInstance(
     try {
       core.enqueueControl(bindings.initialize.ref, []);
     } catch (cause) {
+      messaging.abort();
       pinRuntime.release();
       try {
         scheduler.destroyInstance(core.instance);
@@ -143,6 +203,10 @@ export function createDeviceInstance(
     }
   }
 
+  if (bindings.initialize === undefined) {
+    messaging.markReady();
+  }
+
   return createHandle(
     definition,
     instanceId,
@@ -152,7 +216,33 @@ export function createDeviceInstance(
     bindings,
     pinRuntime,
     tracking.isInitialized,
+    messaging,
   );
+}
+
+function createMessaging(
+  definition: LoadedModule,
+  module: ReturnType<typeof createIRModule>,
+  options: DeviceInstanceOptions,
+): MessagingController {
+  try {
+    return new MessagingController({
+      module,
+      description: definition.description,
+      deviceId: definition.deviceId,
+      ...(options.messaging === undefined ? {} : { options: options.messaging }),
+      ...(options.onTopic === undefined ? {} : { onTopic: options.onTopic }),
+    });
+  } catch (cause) {
+    if (cause instanceof DeviceError) {
+      throw cause;
+    }
+    throw new DeviceError(
+      'device/instance-invalid',
+      `Device ${JSON.stringify(definition.deviceId)} messaging options are invalid.`,
+      { deviceId: definition.deviceId, cause },
+    );
+  }
 }
 
 interface LoadedModule {
@@ -198,10 +288,28 @@ function validateScheduler(value: unknown): asserts value is Scheduler {
   if (!isObjectLike(value)) {
     throw instanceError('Device instance requires a scheduler.');
   }
-  for (const method of ['addInstance', 'enqueueControl', 'destroyInstance', 'start', 'step']) {
+  for (const method of [
+    'addInstance',
+    'enqueueControl',
+    'enqueueMessage',
+    'destroyInstance',
+    'start',
+    'pause',
+    'step',
+  ]) {
     if (typeof value[method] !== 'function') {
       throw instanceError(`Device instance scheduler must implement ${method}().`);
     }
+  }
+  if (!Number.isSafeInteger(value['now']) || (value['now'] as number) < 0) {
+    throw instanceError('Device instance scheduler must expose a non-negative integer now.');
+  }
+  const state = value['state'];
+  if (state !== 'paused' && state !== 'running' && state !== 'faulted') {
+    throw instanceError('Device instance scheduler must expose a valid state.');
+  }
+  if (!('error' in value) || (value['error'] !== undefined && !isObjectLike(value['error']))) {
+    throw instanceError('Device instance scheduler must expose undefined or an error object.');
   }
 }
 
@@ -331,6 +439,7 @@ function createHandle(
   bindings: ValidatedBindings,
   pinRuntime: PinRuntime,
   isInitialized: () => boolean,
+  messaging: MessagingController,
 ): DeviceInstance {
   const guardedStorage = new LifecycleStorage(core.storage, definition.deviceId);
   let destroyed = false;
@@ -339,7 +448,7 @@ function createHandle(
   const state = (): DeviceInstanceState => {
     if (destroying) return 'destroying';
     if (destroyed) return 'destroyed';
-    if (scheduler.error !== undefined) return 'faulted';
+    if (scheduler.error !== undefined || messaging.isFaulted()) return 'faulted';
     if (bindings.initialize !== undefined && !isInitialized()) return 'initializing';
     return 'ready';
   };
@@ -396,7 +505,13 @@ function createHandle(
       );
     }
     destroyed = true;
-    guardedStorage.release();
+    try {
+      messaging.destroy();
+    } catch {
+      // Messaging cleanup must not prevent kernel resource release or onDispose.
+    } finally {
+      guardedStorage.release();
+    }
     const onDispose = bindings.onDispose;
     if (onDispose === undefined) {
       destroying = false;
@@ -435,6 +550,15 @@ function createHandle(
         throw destroyedError(definition.deviceId, 'storage');
       }
       return guardedStorage;
+    },
+    deliver(port: string, payload: TopicPayload, meta: TopicMetadata): void {
+      if (destroying) {
+        throw busyError(definition.deviceId, 'deliver', 'the instance is being destroyed');
+      }
+      if (destroyed) {
+        throw destroyedError(definition.deviceId, 'deliver');
+      }
+      messaging.deliver(port, payload, meta);
     },
     reset,
     destroy,

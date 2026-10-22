@@ -13,6 +13,8 @@ export interface SchedulerExecutionContext {
   readonly timePs: TimePs;
   readonly phase: 'event' | 'control';
   readonly eventId: number;
+  /** Positive for ordinary messages admitted through `enqueueMessage`, otherwise 0. */
+  readonly messageId: number;
   readonly remainingSteps: number;
   consumeSteps(count?: number): void;
 }
@@ -63,6 +65,15 @@ export interface Scheduler {
     target: SchedulerTarget,
     args: readonly RuntimeScalar[],
   ): void;
+  /**
+   * Admit an ordinary message entry at the current virtual time. No event ID is allocated and
+   * the work is not cancellable. Returns a positive message ID unique within the instance.
+   */
+  enqueueMessage(
+    instance: SchedulerInstance,
+    target: SchedulerTarget,
+    args: readonly RuntimeScalar[],
+  ): number;
   destroyInstance(instance: SchedulerInstance): void;
   start(options?: SchedulerRunOptions): SchedulerRunResult;
   pause(): void;

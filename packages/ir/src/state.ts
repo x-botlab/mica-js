@@ -9,6 +9,7 @@ import type {
   IRBuilderExtension,
   InstructionNode,
   MemoryDefinition,
+  OutputDefinition,
   ScalarType,
   StaticRef,
   Terminator,
@@ -27,6 +28,7 @@ export interface ModuleState {
   readonly functions: FunctionDeclarationState[];
   readonly domainDeclarations: DomainDeclarationState[];
   readonly instructions: DomainInstructionState[];
+  readonly outputs: OutputState[];
   readonly builderExtensions: readonly BuilderExtensionState[];
   readonly names: Set<string>;
   readonly instructionNames: Set<string>;
@@ -54,6 +56,11 @@ export interface DomainDeclarationState {
   readonly kind: string;
   readonly name: string;
   ref: StaticRef;
+}
+
+export interface OutputState {
+  readonly module: ModuleState;
+  definition: OutputDefinition;
 }
 
 export interface DomainInstructionState {

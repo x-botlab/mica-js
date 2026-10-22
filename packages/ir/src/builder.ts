@@ -2,18 +2,27 @@ import { fail } from './errors';
 import type {
   ArrayRef,
   BlockRef,
+  BytesOutputRef,
   DomainInstruction,
   EntryRef,
   FunctionBuilder,
   FunctionRef,
   InstructionOperand,
+  OutputRef,
+  ReadableBytesRef,
   ScalarType,
   StateRef,
   StaticRef,
   Value,
 } from './types';
 import { refKind, scalarType, INTEGER_TYPES } from './types';
-import type { BlockState, BuilderState, FunctionDeclarationState, MemoryState } from './state';
+import type {
+  BlockState,
+  BuilderState,
+  FunctionDeclarationState,
+  MemoryState,
+  OutputState,
+} from './state';
 import { BlockState as Block } from './state';
 import {
   assertEdgeLayout,
@@ -30,6 +39,7 @@ import {
   getFunctionMetadata,
   getInstructionMetadata,
   getMemoryMetadata,
+  getOutputMetadata,
   getValueMetadata,
   isFloatType,
   isIntegerType,
@@ -95,6 +105,8 @@ const CORE_OPERATIONS = [
   'bytes.copy',
   'resource.update_bytes',
   'resource.fill_bytes',
+  'bridge.send',
+  'bridge.send_bytes',
   'call',
   'event.now',
   'event.at',
@@ -280,6 +292,24 @@ function createBuilderObject(state: BuilderState): unknown {
       fail(`${label} is not a declared byte resource`);
     }
     return memory;
+  };
+
+  const requireOutput = (
+    ref: StaticRef,
+    kind: 'scalar-output' | 'bytes-output',
+    label: string,
+  ): OutputState => {
+    if (typeof ref !== 'object' || ref === null) {
+      fail(`${label} must be an output reference`);
+    }
+    if (ref[refKind] !== kind) {
+      fail(`${label} must be a ${kind} reference, received ${String(ref[refKind])}`);
+    }
+    const output = getOutputMetadata(ref);
+    if (output === undefined || output.module !== module) {
+      fail(`${label} is not an output declared by this module`);
+    }
+    return output;
   };
 
   const requireEntry = (ref: StaticRef, label: string): FunctionDeclarationState => {
@@ -743,6 +773,41 @@ function createBuilderObject(state: BuilderState): unknown {
     },
   };
 
+  const outputOperations = {
+    output(ref: OutputRef, args: readonly Value[]): Value<'bool'> {
+      const output = requireOutput(ref, 'scalar-output', 'output target');
+      if (output.definition.kind !== 'scalar-output') {
+        fail('output target does not describe a scalar output');
+      }
+      assertValueList(args, state, output.definition.params, 'output args');
+      return emitOne(
+        'bridge.send',
+        [staticOperand(ref), ...args.map((value) => ssa(value))],
+        'bool',
+      );
+    },
+    outputBytes(
+      ref: BytesOutputRef,
+      region: ReadableBytesRef,
+      offset: Value,
+      length: Value,
+    ): Value<'bool'> {
+      requireOutput(ref, 'bytes-output', 'outputBytes target');
+      const sourceKind = region[refKind];
+      if (sourceKind !== 'bytes' && sourceKind !== 'inbox') {
+        fail('outputBytes region must be a readable byte resource');
+      }
+      requireByteLayout(requireByteMemory(region, 'outputBytes region'), 'outputBytes region');
+      requireU32(offset, 'outputBytes offset');
+      requireU32(length, 'outputBytes length');
+      return emitOne(
+        'bridge.send_bytes',
+        [staticOperand(ref), staticOperand(region), ssa(offset), ssa(length)],
+        'bool',
+      );
+    },
+  };
+
   const call = (target: FunctionRef, args: readonly Value[]): Value[] => {
     const declaration = requireCallable(target, 'call target');
     assertValueList(args, state, declaration.params, 'call args');
@@ -983,6 +1048,17 @@ function createBuilderObject(state: BuilderState): unknown {
     },
     call(target: FunctionRef, args: readonly Value[]): Value[] {
       return call(target, args);
+    },
+    output(ref: OutputRef, args: readonly Value[]): Value<'bool'> {
+      return outputOperations.output(ref, args);
+    },
+    outputBytes(
+      ref: BytesOutputRef,
+      region: ReadableBytesRef,
+      offset: Value,
+      length: Value,
+    ): Value<'bool'> {
+      return outputOperations.outputBytes(ref, region, offset, length);
     },
     block(types: readonly ScalarType[]): BlockRef {
       return makeBlock(types);
