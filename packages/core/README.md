@@ -437,6 +437,7 @@ scheduler.start(); // 初始化域、通知 off→on、恢复门控并继续网�
 
 - 有 `levels` 的引脚按当前域电压取 `low * V_D`/`high * V_D` 门限；无 `levels` 的引脚使用已提交引脚 model 的绝对 `lowVoltage/highVoltage`（#24 器件电气模型规则）。
 - 默认三态：`<= low` 为 0，`>= high` 为 1，区间返回该引脚的逻辑记忆并标记 `threshold-range`；可选 `two-state` 以 `high` 为唯一分界。逻辑记忆初值 0，只有确定低/高（以及二态判定）更新。
+- 解释只在已提交的 topology 快照与引脚模型一致时执行；排队的引脚更新由后续解析点解释，不会用未提交网络写入逻辑记忆。采样读取该解析结果。
 - 门控采样数字返回 `{ value: 0, ready: false, source: 'gated' }`，模拟返回 `{ voltage: +0, ready: false, source: 'gated' }`；浮空数字返回 0 且 `source: 'floating'`，逻辑记忆保持不变。
 - 浮空模拟通过 #50 `floatingInput(pin).sample(V_D, scheduler.now)` 取得 `mica-floating-v2` 合成值；未配置 `floating.seed` 时明确拒绝。无域绑定的浮空模拟引脚以引脚 model 的 `maxVoltage` 作为供电上限。
 - 采样 power/gnd 引脚明确抛 `RangeError`。ADC 量化、滤波、PWM 平均等器件行为仍由器件模型表达。
@@ -445,8 +446,9 @@ scheduler.start(); // 初始化域、通知 off→on、恢复门控并继续网�
 
 - 每批变化只回调一次 `PowerDomainObserver.onPowerDomainChange(changes, snapshot)`。先全部下电、再全部上电；下电依赖方优先（深度降序），上电前置域优先（深度升序）；同级按域 ID、跨实例按实例 ID 的 UTF-16 字典序。完整快照按 `(instanceId, domainId)` 排序。
 - 普通入口返回后、下一普通入口前：topology 控制阶段提交网络/引脚并解析；power 控制阶段计算域状态、释放下电域、通知、开放上电域并继续后续网络解析。观察者回调中只能入队；不会同步重入器件入口。
+- 通知命令在真正执行时按最新已提交域快照重新计算变化；同一批次内被后续拓扑或引脚更新覆盖的中间状态不会重复通知，`previousState`、`reasons`、`changes` 与 `snapshot` 来自同一时刻。上电域即使在批内经历 off→on 也会重新施加最新持有意图。
 - 同一虚拟时间最多 `maxPropagationRounds`（默认 10000）个 power 传播入口。超限从控制入口抛 `PowerFeedbackError`（含 `timePs`、`rounds`、`maxRounds`、完整域快照），scheduler 进入 `faulted`（`SchedulerError.code === 'execution-failed'`，`cause` 为 `PowerFeedbackError`），已提交状态与意图不被静默丢弃。
-- 与拓扑层一致，scheduler 已处于 `faulted` 时 `destroy()` 会按调度器边界拒绝并抛 `scheduler-faulted`；宿主应整体丢弃 power runtime 与 scheduler，而不是依赖清理调用恢复。
+- `destroy()` 清除观察者引用；destroy 后调用 `observe` 会抛错。与拓扑层一致，scheduler 已处于 `faulted` 时 `destroy()` 会按调度器边界拒绝并抛 `scheduler-faulted`；宿主应整体丢弃 power runtime 与 scheduler，而不是依赖清理调用恢复。
 
 ### 支持边界
 

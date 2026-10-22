@@ -36,7 +36,6 @@ import {
   type CapturedObserver,
   type CapturedPin,
   type CapturedPowerDefinition,
-  type CapturedPowerOptions,
 } from './power-validation';
 
 const NO_OPENED: readonly string[] = Object.freeze([]);
@@ -53,8 +52,12 @@ const GATED_VOLTAGE: PowerVoltageSample = Object.freeze({
 });
 
 type Command =
-  | { readonly kind: 'propagate'; readonly opened: readonly string[] }
-  | { readonly kind: 'notify'; readonly changes: readonly PowerDomainChange[] };
+  | {
+      readonly kind: 'propagate';
+      readonly epoch: number;
+      readonly opened: readonly string[];
+    }
+  | { readonly kind: 'notify' };
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -154,14 +157,15 @@ export class PowerFeedbackError extends Error {
 class PowerRuntimeImpl implements PowerRuntime {
   readonly #scheduler: Scheduler;
   readonly #definition: CapturedPowerDefinition;
-  readonly #options: CapturedPowerOptions;
   readonly #topology: TopologyRuntime;
   readonly #target: SchedulerTarget;
   readonly #instance: SchedulerInstance;
+  readonly #inputMode: PowerInputMode;
+  readonly #maxPropagationRounds: number;
   readonly #signalPins: readonly CapturedPin[];
-  readonly #pinsByDomain: ReadonlyMap<string, readonly CapturedPin[]>;
   readonly #intents: Map<string, ElectricalPinInput>;
   readonly #effective: Map<string, ElectricalPinInput>;
+  readonly #submittedGate: Map<string, boolean>;
   readonly #notified = new Map<string, PowerDomainState>();
   readonly #pendingOpen = new Set<string>();
   readonly #digital = new Map<string, PowerDigitalSample>();
@@ -174,60 +178,84 @@ class PowerRuntimeImpl implements PowerRuntime {
   #destroyed = false;
   #budgetTime: TimePs | undefined;
   #rounds = 0;
+  #topologyEpoch = 0;
+  #appliedEpoch = 0;
 
   constructor(scheduler: Scheduler, definitionInput: unknown, optionsInput: unknown) {
     const definition = capturePowerDefinition(definitionInput);
     const options = capturePowerOptions(optionsInput, definition);
     this.#scheduler = scheduler;
     this.#definition = definition;
-    this.#options = options;
+    this.#inputMode = options.inputMode;
+    this.#maxPropagationRounds = options.maxPropagationRounds;
     this.#observer = options.observer;
     this.#intents = new Map(options.intents);
     this.#effective = new Map(
       options.initialStates.map((state) => [pinKey(state.instanceId, state.pinName), state]),
     );
+    this.#submittedGate = new Map(
+      options.initialStates.map((state) => [
+        pinKey(state.instanceId, state.pinName),
+        state.powerReady,
+      ]),
+    );
     this.#signalPins = Object.freeze(definition.pins.filter((pin) => pin.kind === 'signal'));
-    const pinsByDomain = new Map<string, CapturedPin[]>();
-    for (const pin of definition.pins) {
-      if (pin.domain === undefined) continue;
-      const list = pinsByDomain.get(pin.domain.key);
-      if (list === undefined) pinsByDomain.set(pin.domain.key, [pin]);
-      else list.push(pin);
-    }
-    this.#pinsByDomain = pinsByDomain;
     for (const pin of this.#signalPins) this.#memory.set(pin.key, 0);
     for (const domain of definition.domainsInOrder) this.#notified.set(domain.key, 'off');
 
-    this.#topology = createTopologyRuntime(scheduler, definition.topology, {
-      instanceId: options.topologyInstanceId,
-      pinStates: options.initialStates,
-      ...(options.floating === undefined
-        ? {}
-        : {
-            floating: {
-              seed: options.floating.seed,
-              supplyVoltage: (pin: TopologyPinRef) => this.#floatingSupply(pin),
-              samplingEnabled: (pin: TopologyPinRef) => this.#floatingSamplingEnabled(pin),
-            },
-          }),
-    });
-    this.#domains = this.#computeDomains();
-    for (const domain of definition.domainsInOrder) {
-      if (this.#domains.get(domain.key)?.state === 'on') this.#pendingOpen.add(domain.key);
-    }
-    this.#topologyReady = true;
-    this.#interpretPins();
     this.#target = Object.freeze({
       name: 'power.propagate',
       kind: 'control',
       params: Object.freeze([]),
     });
-    this.#instance = scheduler.addInstance({
-      instanceId: options.instanceId,
-      targets: [this.#target],
-      executor: { execute: () => this.#runNextCommand() },
-    });
-    this.#enqueue(Object.freeze({ kind: 'propagate', opened: NO_OPENED }));
+    let instance: SchedulerInstance | undefined;
+    let topology: TopologyRuntime | undefined;
+    try {
+      // Reserve the power identity first: a duplicate id must not create a topology orphan.
+      instance = scheduler.addInstance({
+        instanceId: options.instanceId,
+        targets: [this.#target],
+        executor: { execute: () => this.#runNextCommand() },
+      });
+      this.#instance = instance;
+      topology = createTopologyRuntime(scheduler, definition.topology, {
+        instanceId: options.topologyInstanceId,
+        pinStates: options.initialStates,
+        ...(options.floating === undefined
+          ? {}
+          : {
+              floating: {
+                seed: options.floating.seed,
+                supplyVoltage: (pin: TopologyPinRef) => this.#floatingSupply(pin),
+                samplingEnabled: (pin: TopologyPinRef) => this.#floatingSamplingEnabled(pin),
+              },
+            }),
+      });
+      this.#topology = topology;
+      this.#domains = this.#computeDomains();
+      for (const domain of definition.domainsInOrder) {
+        if (this.#domains.get(domain.key)?.state === 'on') this.#pendingOpen.add(domain.key);
+      }
+      this.#topologyReady = true;
+      this.#interpretPins();
+      this.#enqueuePropagate(0, NO_OPENED);
+    } catch (cause) {
+      if (topology !== undefined) {
+        try {
+          topology.destroy();
+        } catch {
+          // Preserve the construction failure; the orphan cleanup is best effort.
+        }
+      }
+      if (instance !== undefined) {
+        try {
+          scheduler.destroyInstance(instance);
+        } catch {
+          // Preserve the construction failure; the orphan cleanup is best effort.
+        }
+      }
+      throw cause;
+    }
     Object.freeze(this);
   }
 
@@ -236,13 +264,14 @@ class PowerRuntimeImpl implements PowerRuntime {
   }
 
   get inputMode(): PowerInputMode {
-    return this.#options.inputMode;
+    return this.#inputMode;
   }
 
   submit(patch: TopologyConnectionPatch): void {
     this.#assertAlive();
     this.#topology.submit(patch);
-    this.#enqueue(Object.freeze({ kind: 'propagate', opened: NO_OPENED }));
+    this.#topologyEpoch += 1;
+    this.#enqueuePropagate(this.#topologyEpoch, NO_OPENED);
   }
 
   updatePinStates(states: readonly ElectricalPinInput[]): void {
@@ -273,7 +302,7 @@ class PowerRuntimeImpl implements PowerRuntime {
       this.#intents.set(update.key, update.state);
       this.#dirty.add(update.key);
     }
-    this.#enqueue(Object.freeze({ kind: 'propagate', opened: NO_OPENED }));
+    this.#enqueuePropagate(this.#topologyEpoch, NO_OPENED);
   }
 
   refresh(pins?: readonly TopologyPinRef[]): void {
@@ -283,7 +312,8 @@ class PowerRuntimeImpl implements PowerRuntime {
       if (pins.length === 0) return;
     }
     this.#topology.refresh(pins);
-    this.#enqueue(Object.freeze({ kind: 'propagate', opened: NO_OPENED }));
+    this.#topologyEpoch += 1;
+    this.#enqueuePropagate(this.#topologyEpoch, NO_OPENED);
   }
 
   connectionState(instanceId: string, connectionId: string): ConnectionState {
@@ -389,12 +419,14 @@ class PowerRuntimeImpl implements PowerRuntime {
   }
 
   observe(observer: PowerDomainObserver | undefined): void {
+    this.#assertAlive();
     this.#observer = observer === undefined ? undefined : captureObserver(observer, 'observer');
   }
 
   destroy(): void {
     if (this.#destroyed) return;
     this.#destroyed = true;
+    this.#observer = undefined;
     this.#commands.length = 0;
     this.#topology.destroy();
     this.#scheduler.destroyInstance(this.#instance);
@@ -414,40 +446,118 @@ class PowerRuntimeImpl implements PowerRuntime {
     }
   }
 
+  #enqueuePropagate(epoch: number, opened: readonly string[]): void {
+    this.#enqueue(Object.freeze({ kind: 'propagate', epoch, opened }));
+  }
+
   #runNextCommand(): void {
     const command = this.#commands.shift();
     if (command === undefined) {
       throw new Error('Power control entry has no pending command');
     }
     if (command.kind === 'notify') {
-      this.#completeBatch(command.changes, true);
+      this.#notify();
       return;
     }
-    this.#propagate(command.opened);
+    this.#propagate(command.epoch, command.opened);
   }
 
-  #propagate(opened: readonly string[]): void {
+  #propagate(epoch: number, opened: readonly string[]): void {
     const now = this.#scheduler.now;
     if (this.#budgetTime !== now) {
       this.#budgetTime = now;
       this.#rounds = 0;
     }
     this.#rounds += 1;
-    if (this.#rounds > this.#options.maxPropagationRounds) {
+    if (this.#rounds > this.#maxPropagationRounds) {
       throw new PowerFeedbackError(
         now,
         this.#rounds,
-        this.#options.maxPropagationRounds,
+        this.#maxPropagationRounds,
         this.#snapshots(),
       );
     }
+    if (epoch > this.#appliedEpoch) this.#appliedEpoch = epoch;
+    if (this.#appliedEpoch < this.#topologyEpoch) {
+      // A newer topology commit is queued after this entry; wait before reading its state.
+      this.#enqueuePropagate(this.#topologyEpoch, opened);
+      return;
+    }
     for (const key of opened) this.#pendingOpen.delete(key);
 
-    const next = this.#computeDomains();
+    this.#domains = this.#computeDomains();
+    const updates = this.#desiredUpdates();
+    if (updates.off.size > 0) {
+      this.#submitUpdates(updates.off, false);
+      this.#enqueuePropagate(this.#topologyEpoch, NO_OPENED);
+      return;
+    }
+    if (this.#hasNotificationChange()) {
+      this.#enqueue(Object.freeze({ kind: 'notify' }));
+      return;
+    }
+    if (updates.on.size > 0) {
+      const openedDomains = this.#submitUpdates(updates.on, true);
+      this.#enqueuePropagate(this.#topologyEpoch, openedDomains);
+      return;
+    }
+    this.#interpretPins();
+  }
+
+  #notify(): void {
+    if (this.#appliedEpoch < this.#topologyEpoch) {
+      this.#enqueuePropagate(this.#topologyEpoch, NO_OPENED);
+      return;
+    }
+    let updates = this.#desiredUpdates();
+    if (updates.off.size > 0) {
+      this.#submitUpdates(updates.off, false);
+      this.#enqueuePropagate(this.#topologyEpoch, NO_OPENED);
+      return;
+    }
+
+    const changes = this.#notificationChanges();
+    const opened = new Set<string>();
+    for (const change of changes) {
+      const key = domainKey(change.instanceId, change.domainId);
+      if (change.state === 'on') {
+        // The observer must see the gate as opening until this notification returns.
+        this.#pendingOpen.add(key);
+        opened.add(key);
+      } else {
+        this.#pendingOpen.delete(key);
+      }
+    }
+    if (changes.length > 0) {
+      this.#interpretPins();
+      const ordered = sortChanges(changes, this.#definition.domainsByKey);
+      if (this.#observer !== undefined) {
+        this.#observer.notify.call(this.#observer.receiver, ordered, this.#snapshots());
+      }
+      for (const change of changes) {
+        this.#notified.set(domainKey(change.instanceId, change.domainId), change.state);
+      }
+    }
+
+    // Recompute after the observer so intents submitted during the callback win.
+    updates = this.#desiredUpdates();
+    if (updates.off.size > 0) this.#submitUpdates(updates.off, false);
+    if (updates.on.size > 0) {
+      for (const key of this.#submitUpdates(updates.on, true)) opened.add(key);
+    }
+    if (opened.size > 0 || updates.on.size > 0 || updates.off.size > 0) {
+      this.#enqueuePropagate(this.#topologyEpoch, Object.freeze([...opened].sort(compareText)));
+      return;
+    }
+    this.#interpretPins();
+  }
+
+  #notificationChanges(): readonly PowerDomainChange[] {
     const changes: PowerDomainChange[] = [];
+    const now = this.#scheduler.now;
     for (const domain of this.#definition.domainsInOrder) {
       const previous = this.#notified.get(domain.key) ?? 'off';
-      const snapshot = next.get(domain.key) as PowerDomainSnapshot;
+      const snapshot = this.#domains.get(domain.key) as PowerDomainSnapshot;
       if (snapshot.state === previous) continue;
       changes.push(
         Object.freeze({
@@ -458,86 +568,63 @@ class PowerRuntimeImpl implements PowerRuntime {
         }),
       );
     }
-    this.#domains = next;
-    for (const change of changes) {
-      const key = domainKey(change.instanceId, change.domainId);
-      if (change.state === 'on') this.#pendingOpen.add(key);
-      else this.#pendingOpen.delete(key);
-    }
-
-    const offStates = new Map<string, ElectricalPinInput>();
-    for (const change of changes) {
-      if (change.state !== 'off') continue;
-      const key = domainKey(change.instanceId, change.domainId);
-      for (const pin of this.#pinsByDomain.get(key) ?? []) {
-        const intent = this.#intents.get(pin.key) as ElectricalPinInput;
-        const state = Object.freeze({ ...intent, powerReady: false });
-        offStates.set(pin.key, state);
-        this.#effective.set(pin.key, state);
-      }
-    }
-    if (offStates.size > 0) this.#topology.updatePinStates(sortStates(offStates));
-    this.#interpretPins();
-
-    if (offStates.size > 0) {
-      this.#enqueue(Object.freeze({ kind: 'notify', changes: Object.freeze(changes) }));
-      return;
-    }
-    this.#completeBatch(changes, false);
+    return changes;
   }
 
-  #completeBatch(changes: readonly PowerDomainChange[], recheck: boolean): void {
-    if (changes.length > 0) {
-      const ordered = sortChanges(changes, this.#definition.domainsByKey);
-      if (this.#observer !== undefined) {
-        this.#observer.notify.call(this.#observer.receiver, ordered, this.#snapshots());
-      }
-      for (const change of changes) {
-        this.#notified.set(domainKey(change.instanceId, change.domainId), change.state);
-      }
+  #hasNotificationChange(): boolean {
+    for (const domain of this.#definition.domainsInOrder) {
+      const previous = this.#notified.get(domain.key) ?? 'off';
+      if ((this.#domains.get(domain.key) as PowerDomainSnapshot).state !== previous) return true;
     }
+    return false;
+  }
 
-    const post = new Map<string, ElectricalPinInput>();
-    for (const change of changes) {
-      if (change.state !== 'on') continue;
-      const key = domainKey(change.instanceId, change.domainId);
-      for (const pin of this.#pinsByDomain.get(key) ?? []) {
-        const intent = this.#intents.get(pin.key) as ElectricalPinInput;
-        post.set(pin.key, Object.freeze({ ...intent, powerReady: true }));
-      }
-    }
-    for (const key of this.#dirty) {
-      const pin = this.#definition.pinsByKey.get(key);
-      const intent = this.#intents.get(key);
-      if (pin === undefined || intent === undefined) {
-        throw new Error(`Invariant: dirty pin ${key} is not declared`);
-      }
-      post.set(
-        key,
+  #desiredUpdates(): {
+    readonly off: ReadonlyMap<string, ElectricalPinInput>;
+    readonly on: ReadonlyMap<string, ElectricalPinInput>;
+  } {
+    const off = new Map<string, ElectricalPinInput>();
+    const on = new Map<string, ElectricalPinInput>();
+    for (const pin of this.#definition.pins) {
+      const intent = this.#intents.get(pin.key) as ElectricalPinInput;
+      const desired =
         pin.domain === undefined
-          ? intent
-          : Object.freeze({
-              ...intent,
-              powerReady: this.#domains.get(pin.domain.key)?.state === 'on',
-            }),
-      );
+          ? intent.powerReady
+          : this.#domains.get(pin.domain.key)?.state === 'on';
+      if (!this.#dirty.has(pin.key) && this.#submittedGate.get(pin.key) === desired) continue;
+      const state =
+        pin.domain === undefined ? intent : Object.freeze({ ...intent, powerReady: desired });
+      if (desired) on.set(pin.key, state);
+      else off.set(pin.key, state);
     }
-    this.#dirty.clear();
+    return { off, on };
+  }
 
-    const hasOn = changes.some((change) => change.state === 'on');
-    if (post.size > 0) {
-      for (const [key, state] of post) this.#effective.set(key, state);
-      this.#topology.updatePinStates(sortStates(post));
+  #submitUpdates(
+    updates: ReadonlyMap<string, ElectricalPinInput>,
+    desired: boolean,
+  ): readonly string[] {
+    if (updates.size === 0) return NO_OPENED;
+    const opened = new Set<string>();
+    for (const [key, state] of updates) {
+      const pin = this.#definition.pinsByKey.get(key) as CapturedPin;
+      const wasSubmitted = this.#submittedGate.get(key) === true;
+      this.#effective.set(key, state);
+      this.#submittedGate.set(key, desired);
+      this.#dirty.delete(key);
+      if (pin.domain === undefined) continue;
+      if (desired) {
+        if (!wasSubmitted) {
+          this.#pendingOpen.add(pin.domain.key);
+          opened.add(pin.domain.key);
+        }
+      } else {
+        this.#pendingOpen.delete(pin.domain.key);
+      }
     }
-    if (post.size > 0 || hasOn || recheck) {
-      const opened = Object.freeze(
-        changes
-          .filter((change) => change.state === 'on')
-          .map((change) => domainKey(change.instanceId, change.domainId)),
-      );
-      this.#enqueue(Object.freeze({ kind: 'propagate', opened }));
-    }
-    this.#interpretPins();
+    this.#topology.updatePinStates(sortStates(updates));
+    this.#topologyEpoch += 1;
+    return Object.freeze([...opened].sort(compareText));
   }
 
   #computeDomains(): Map<string, PowerDomainSnapshot> {
@@ -626,7 +713,7 @@ class PowerRuntimeImpl implements PowerRuntime {
     } else if (voltage >= high) {
       value = 1;
       source = 'sampled';
-    } else if (this.#options.inputMode === 'three-state') {
+    } else if (this.#inputMode === 'three-state') {
       value = this.#memory.get(pin.key) ?? 0;
       source = 'threshold-range';
     } else {

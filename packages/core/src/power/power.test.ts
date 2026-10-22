@@ -12,8 +12,12 @@ import type {
 import { createPowerRuntime, PowerFeedbackError } from './power';
 import type {
   PowerDefinition,
+  PowerDigitalSample,
+  PowerDomainChange,
   PowerDomainObserver,
+  PowerDomainSnapshot,
   PowerInputMode,
+  PowerOptions,
   PowerRuntime,
 } from './power-types';
 
@@ -181,6 +185,103 @@ function run(scheduler: Scheduler): void {
 function setState(power: PowerRuntime, scheduler: Scheduler, state: ElectricalPinInput): void {
   power.updatePinStates([state]);
   run(scheduler);
+}
+
+function minimalInputs(): { definition: PowerDefinition; options: PowerOptions } {
+  const definition: PowerDefinition = {
+    topology: {
+      pins: [
+        { instanceId: 'd', pinName: 'VCC', kind: 'power' },
+        { instanceId: 'd', pinName: 'GND', kind: 'gnd' },
+        { instanceId: 'd', pinName: 'P0', kind: 'signal' },
+      ],
+      wires: [
+        { wireId: 'vcc', pins: [signal('d', 'VCC')] },
+        { wireId: 'gnd', pins: [signal('d', 'GND')], globalGnd: true },
+      ],
+      connections: [],
+    },
+    devices: [
+      {
+        instanceId: 'd',
+        powerDomains: {
+          core: { supply: 'VCC', ground: 'GND', voltage: { turnOn: 3, turnOff: 2 } },
+        },
+        pins: { P0: { powerDomain: 'core' } },
+      },
+    ],
+  };
+  const options: PowerOptions = {
+    instanceId: 'power',
+    pinStates: [pinState('d', 'VCC'), pinState('d', 'GND'), pinState('d', 'P0')],
+  };
+  return { definition, options };
+}
+
+function wrappedScheduler(
+  real: Scheduler,
+  failEnqueue = 0,
+): {
+  scheduler: Scheduler;
+  created: string[];
+  destroyed: string[];
+} {
+  const created: string[] = [];
+  const destroyed: string[] = [];
+  let remainingFailures = failEnqueue;
+  const scheduler: Scheduler = {
+    get now() {
+      return real.now;
+    },
+    get state() {
+      return real.state;
+    },
+    get error() {
+      return real.error;
+    },
+    addInstance(definition) {
+      const handle = real.addInstance(definition);
+      created.push(definition.instanceId);
+      return handle;
+    },
+    enqueueControl(instance, target, args) {
+      if (remainingFailures > 0) {
+        remainingFailures -= 1;
+        throw new Error('enqueue failed');
+      }
+      real.enqueueControl(instance, target, args);
+    },
+    destroyInstance(instance) {
+      destroyed.push(instance.instanceId);
+      real.destroyInstance(instance);
+    },
+    start(options) {
+      return real.start(options);
+    },
+    pause() {
+      real.pause();
+    },
+    step() {
+      return real.step();
+    },
+  };
+  return { scheduler, created, destroyed };
+}
+
+declare function setTimeout(callback: () => void, delay?: number): unknown;
+const gc = (globalThis as unknown as { gc?: () => void }).gc;
+
+async function collectGarbage(): Promise<void> {
+  for (let index = 0; index < 5; index += 1) {
+    gc?.();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  }
+}
+
+function weakObserver(): WeakRef<PowerDomainObserver> {
+  return new WeakRef({ onPowerDomainChange() {} });
 }
 
 describe('power domains', () => {
@@ -749,6 +850,84 @@ describe('power input interpretation and sampling', () => {
     expect(power.sampleDigital(din)).toEqual({ value: 1, ready: true, source: 'threshold-range' });
   });
 
+  it('does not write logic memory from an uncommitted queued pin update', () => {
+    const pins: TopologyPinDeclaration[] = [
+      { instanceId: 'src', pinName: 'VCC', kind: 'power' },
+      { instanceId: 'src', pinName: 'GND', kind: 'gnd' },
+      { instanceId: 'src', pinName: 'A', kind: 'signal' },
+      { instanceId: 'dut', pinName: 'VDD', kind: 'power' },
+      { instanceId: 'dut', pinName: 'GND', kind: 'gnd' },
+      { instanceId: 'dut', pinName: 'D', kind: 'signal' },
+      { instanceId: 'dut', pinName: 'PULL', kind: 'signal' },
+    ];
+    const wires: TopologyExternalWire[] = [
+      { wireId: 'vcc', pins: [signal('src', 'VCC'), signal('dut', 'VDD')] },
+      { wireId: 'gnd', pins: [signal('src', 'GND'), signal('dut', 'GND')], globalGnd: true },
+      {
+        wireId: 'data',
+        pins: [signal('src', 'A'), signal('dut', 'D'), signal('dut', 'PULL')],
+      },
+    ];
+    const definition: PowerDefinition = {
+      topology: { pins, wires, connections: [] },
+      devices: [
+        {
+          instanceId: 'dut',
+          powerDomains: {
+            core: { supply: 'VDD', ground: 'GND', voltage: { turnOn: 3, turnOff: 2 } },
+          },
+          pins: { D: { powerDomain: 'core' }, PULL: { powerDomain: 'core' } },
+        },
+      ],
+    };
+    const scheduler = createScheduler();
+    const power = createPowerRuntime(scheduler, definition, {
+      instanceId: 'power',
+      pinStates: [
+        analog('src', 'VCC', 5),
+        pinState('src', 'GND'),
+        analog('src', 'A', 2),
+        pinState('dut', 'VDD'),
+        pinState('dut', 'GND'),
+        pinState('dut', 'D'),
+        pinState('dut', 'PULL', {
+          pull: 'up',
+          model: {
+            kind: 'ideal-voltage',
+            minVoltage: 0,
+            maxVoltage: 5,
+            lowVoltage: 0,
+            highVoltage: 1.5,
+          },
+        }),
+      ],
+    });
+    run(scheduler);
+    const d = signal('dut', 'D');
+    expect(power.sampleDigital(d)).toEqual({ value: 0, ready: true, source: 'threshold-range' });
+
+    power.updatePinStates([
+      pinState('src', 'A'),
+      pinState('dut', 'D', {
+        model: {
+          kind: 'ideal-voltage',
+          minVoltage: 0,
+          maxVoltage: 5,
+          lowVoltage: 0,
+          highVoltage: 1.9,
+        },
+      }),
+    ]);
+    run(scheduler);
+
+    expect(network(power, 'dut', 'D').result).toMatchObject({
+      state: 'driven',
+      voltage: 1.5,
+      strength: 'weak',
+    });
+    expect(power.sampleDigital(d)).toEqual({ value: 0, ready: true, source: 'threshold-range' });
+  });
+
   it('returns the deterministic floating analog value and gates it while off', () => {
     const { scheduler, power } = fixture({ floating: true });
     run(scheduler);
@@ -781,6 +960,149 @@ describe('power input interpretation and sampling', () => {
 });
 
 describe('power propagation order and budgets', () => {
+  it('coalesces a delayed power-down notification with a queued pin update', () => {
+    const seen: {
+      state: string;
+      snapshotState: string;
+      gate: string;
+      sample: PowerDigitalSample;
+    }[] = [];
+    const { scheduler, power } = fixture({
+      observer: {
+        onPowerDomainChange(changes, snapshot) {
+          for (const change of changes) {
+            const current = snapshot.find(
+              (domain) =>
+                domain.instanceId === change.instanceId && domain.domainId === change.domainId,
+            ) as PowerDomainSnapshot;
+            seen.push({
+              state: change.state,
+              snapshotState: current.state,
+              gate: power.pinGate(signal('mcu', 'P0')).reason,
+              sample: power.sampleDigital(signal('mcu', 'P0')),
+            });
+          }
+        },
+      },
+    });
+    run(scheduler);
+    seen.length = 0;
+
+    power.submit({
+      instanceId: 'mcu',
+      connections: [{ connectionId: 'gndLink', state: 'open' }],
+    });
+    power.updatePinStates([pushPull('mcu', 'P0', false)]);
+    run(scheduler);
+
+    expect(seen).toEqual([
+      {
+        state: 'off',
+        snapshotState: 'off',
+        gate: 'domain-off',
+        sample: { value: 0, ready: false, source: 'gated' },
+      },
+    ]);
+    expect(network(power, 'mcu', 'P0').result?.state).toBe('floating');
+    expect(power.domain('mcu', 'core').state).toBe('off');
+    expect(power.pinIntent(signal('mcu', 'P0')).digitalIntent).toBe(false);
+  });
+
+  it('does not notify an off state overwritten later in the same batch', () => {
+    const callbacks: {
+      changes: readonly PowerDomainChange[];
+      snapshot: readonly PowerDomainSnapshot[];
+    }[] = [];
+    const { scheduler, power } = fixture({
+      observer: {
+        onPowerDomainChange(changes, snapshot) {
+          callbacks.push({ changes: [...changes], snapshot: [...snapshot] });
+        },
+      },
+    });
+    run(scheduler);
+    callbacks.length = 0;
+
+    power.submit({
+      instanceId: 'mcu',
+      connections: [{ connectionId: 'gndLink', state: 'open' }],
+    });
+    power.submit({
+      instanceId: 'mcu',
+      connections: [{ connectionId: 'gndLink', state: 'closed' }],
+    });
+    run(scheduler);
+
+    expect(power.domain('mcu', 'core')).toMatchObject({
+      state: 'on',
+      voltage: 5,
+      groundReady: true,
+    });
+    expect(network(power, 'mcu', 'P0').result).toMatchObject({ state: 'driven', voltage: 5 });
+    expect(callbacks).toEqual([]);
+  });
+
+  it('reapplies the latest held intent when a batch ends on', () => {
+    const { scheduler, power } = fixture();
+    run(scheduler);
+
+    power.submit({
+      instanceId: 'mcu',
+      connections: [{ connectionId: 'gndLink', state: 'open' }],
+    });
+    power.updatePinStates([pushPull('mcu', 'P0', false)]);
+    power.submit({
+      instanceId: 'mcu',
+      connections: [{ connectionId: 'gndLink', state: 'closed' }],
+    });
+    run(scheduler);
+
+    expect(power.domain('mcu', 'core').state).toBe('on');
+    expect(power.pinIntent(signal('mcu', 'P0')).digitalIntent).toBe(false);
+    expect(network(power, 'mcu', 'P0').result).toMatchObject({ state: 'driven', voltage: 0 });
+  });
+
+  it('keeps every notified change consistent with its snapshot', () => {
+    const callbacks: {
+      changes: readonly PowerDomainChange[];
+      snapshot: readonly PowerDomainSnapshot[];
+    }[] = [];
+    const { scheduler, power } = fixture({
+      observer: {
+        onPowerDomainChange(changes, snapshot) {
+          callbacks.push({ changes: [...changes], snapshot: [...snapshot] });
+        },
+      },
+    });
+    run(scheduler);
+    callbacks.length = 0;
+
+    power.submit({
+      instanceId: 'mcu',
+      connections: [{ connectionId: 'gndLink', state: 'open' }],
+    });
+    power.updatePinStates([analog('psu', 'VCC', 2.5)]);
+    run(scheduler);
+
+    for (const callback of callbacks) {
+      for (const change of callback.changes) {
+        const current = callback.snapshot.find(
+          (domain) =>
+            domain.instanceId === change.instanceId && domain.domainId === change.domainId,
+        ) as PowerDomainSnapshot;
+        expect(change.state).toBe(current.state);
+        expect(change.voltage).toBe(current.voltage);
+        expect(change.groundReady).toBe(current.groundReady);
+        expect(change.dependenciesReady).toBe(current.dependenciesReady);
+      }
+    }
+    const downStates = callbacks
+      .flatMap((callback) => [...callback.changes])
+      .filter((change) => change.state === 'off');
+    expect(downStates).toHaveLength(1);
+    expect(new Set(downStates.map((change) => change.previousState))).toEqual(new Set(['on']));
+  });
+
   it('runs network update, power notification and ordinary work in a deterministic order', () => {
     const log: string[] = [];
     const { scheduler, power } = fixture({
@@ -1034,5 +1356,72 @@ describe('power runtime queries and lifecycle', () => {
     power.destroy();
     expect(scheduler.state).toBe('paused');
     expect(scheduler.start()).toMatchObject({ executed: 0, reason: 'empty' });
+  });
+
+  it('does not create a topology instance when the power instance id is taken', () => {
+    const real = createScheduler();
+    const dummyTarget: SchedulerTarget = { name: 'dummy', kind: 'control', params: [] };
+    real.addInstance({
+      instanceId: 'power',
+      targets: [dummyTarget],
+      executor: { execute() {} },
+    });
+    const { scheduler, created, destroyed } = wrappedScheduler(real);
+    const inputs = minimalInputs();
+
+    expect(() =>
+      createPowerRuntime(scheduler, inputs.definition, {
+        ...inputs.options,
+        instanceId: 'power',
+        topologyInstanceId: 'orphan-topology',
+      }),
+    ).toThrow(SchedulerError);
+    expect(created).toEqual([]);
+    expect(destroyed).toEqual([]);
+    expect(real.start()).toMatchObject({ executed: 0, reason: 'empty' });
+  });
+
+  it('destroys both instances when the initial control enqueue fails', () => {
+    const real = createScheduler();
+    const { scheduler, created, destroyed } = wrappedScheduler(real, 1);
+    const inputs = minimalInputs();
+
+    expect(() =>
+      createPowerRuntime(scheduler, inputs.definition, {
+        ...inputs.options,
+        topologyInstanceId: 'orphan-topology',
+      }),
+    ).toThrow(/enqueue failed/);
+    expect(created).toEqual(['power', 'orphan-topology']);
+    expect([...destroyed].sort()).toEqual(['orphan-topology', 'power'].sort());
+    expect(real.start()).toMatchObject({ executed: 0, reason: 'empty' });
+  });
+
+  it('releases the construction observer after observe(undefined)', async () => {
+    const weak = weakObserver();
+    const inputs = minimalInputs();
+    const power = createPowerRuntime(createScheduler(), inputs.definition, {
+      ...inputs.options,
+      observer: weak.deref()!,
+    });
+
+    power.observe(undefined);
+    await collectGarbage();
+    expect(weak.deref()).toBeUndefined();
+    power.destroy();
+  });
+
+  it('clears the observer on destroy and rejects observe afterwards', async () => {
+    const weak = weakObserver();
+    const inputs = minimalInputs();
+    const power = createPowerRuntime(createScheduler(), inputs.definition, {
+      ...inputs.options,
+      observer: weak.deref()!,
+    });
+    power.destroy();
+    expect(() => power.observe(weak.deref()!)).toThrow(/destroyed/);
+
+    await collectGarbage();
+    expect(weak.deref()).toBeUndefined();
   });
 });
