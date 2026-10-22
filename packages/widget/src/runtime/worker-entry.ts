@@ -1,5 +1,7 @@
 import type { GuestContext } from '@mica-js/sandbox';
+import type { PropertyDefinition, WidgetDefinition } from '../types';
 import {
+  WIDGET_ASSET_FAILED_EVENT,
   WIDGET_DELIVER_METHOD,
   WIDGET_ERROR_EVENT,
   WIDGET_FRAME_EVENT,
@@ -12,6 +14,7 @@ import {
   WIDGET_UNMOUNT_METHOD,
 } from './protocol';
 import type {
+  WidgetAssetFailedMessage,
   WidgetErrorMessage,
   WidgetErrorPhase,
   WidgetFrameMessage,
@@ -20,6 +23,7 @@ import type {
   WidgetMountRequest,
   WidgetPublishMessage,
 } from './protocol';
+import { mergeProperties } from './props';
 import type {
   WidgetDeliveryMeta,
   WidgetFactory,
@@ -54,6 +58,11 @@ interface Session {
   height: number;
   dpr: number;
   props: Readonly<Record<string, unknown>>;
+  /** Property descriptors of the mounted widget, used to merge defaults again on updates. */
+  readonly properties: Readonly<Record<string, PropertyDefinition>>;
+  readonly assets: Map<string, Uint8Array>;
+  /** Assets already reported missing, so repeated reads do not flood diagnostics. */
+  readonly reportedAssets: Set<string>;
   readonly canvas: OffscreenCanvas;
   readonly context: OffscreenCanvasRenderingContext2D;
   readonly subscriptions: Map<string, Set<WidgetPortListener>>;
@@ -103,6 +112,7 @@ export function createWidgetRuntime(
 ): WidgetRuntime {
   const importModule = options.importModule ?? importBlobModule;
   const factories = new Map<string, WidgetFactory>();
+  const definitions = new Map<string, WidgetDefinition>();
   const pendingFactories = new Map<string, Promise<WidgetFactory>>();
   const sessions = new Map<string, Session>();
   const dirty = new Set<Session>();
@@ -196,14 +206,21 @@ export function createWidgetRuntime(
     return session;
   }
 
-  function createSession(request: WidgetMountRequest): Session {
+  function createSession(
+    request: WidgetMountRequest,
+    definition: WidgetDefinition | undefined,
+  ): Session {
     const canvas = createCanvas(request.width, request.height, request.dpr);
+    const properties = definition?.properties ?? {};
     return {
       instanceId: request.instanceId,
       width: toLogicalSize(request.width),
       height: toLogicalSize(request.height),
       dpr: toDpr(request.dpr),
-      props: freezeProps(request.props),
+      props: mergeProperties(properties, request.props),
+      properties,
+      assets: toAssetMap(request.assets),
+      reportedAssets: new Set(),
       canvas,
       context: contextOf(canvas),
       subscriptions: new Map(),
@@ -211,6 +228,39 @@ export function createWidgetRuntime(
       failed: false,
       disposed: false,
     };
+  }
+
+  function reportAssetFailure(session: Session, src: string, message: string): void {
+    if (session.disposed || disposed || session.reportedAssets.has(src)) return;
+    session.reportedAssets.add(src);
+    const payload: WidgetAssetFailedMessage = {
+      instanceId: session.instanceId,
+      src,
+      error: { name: 'Error', message },
+    };
+    try {
+      ctx.emit(WIDGET_ASSET_FAILED_EVENT, payload);
+    } catch {
+      // The sandbox is already gone; the rejection still reaches the widget.
+    }
+  }
+
+  function readAsset(session: Session, src: string): Promise<Uint8Array> {
+    if (typeof src !== 'string') {
+      return Promise.reject(new TypeError('Widget asset src must be a string'));
+    }
+    const bytes = session.assets.get(src);
+    if (bytes !== undefined && !session.disposed && !disposed) {
+      // Hand out a copy: widgets are untrusted and must not mutate the shared prefetch buffer.
+      return Promise.resolve(new Uint8Array(bytes));
+    }
+
+    const message = `Widget asset ${JSON.stringify(src)} was not prefetched`;
+    if (session.disposed || disposed) {
+      return Promise.reject(new Error(message));
+    }
+    reportAssetFailure(session, src, message);
+    return Promise.reject(new Error(message));
   }
 
   function createApi(session: Session): WidgetInstanceApi {
@@ -225,6 +275,9 @@ export function createWidgetRuntime(
       get props() {
         return session.props;
       },
+      assets: {
+        readBinary: (src: string) => readAsset(session, src),
+      },
       subscribe(port: string, listener: WidgetPortListener) {
         if (session.disposed || typeof listener !== 'function') return () => {};
         let listeners = session.subscriptions.get(port);
@@ -237,9 +290,14 @@ export function createWidgetRuntime(
           session.subscriptions.get(port)?.delete(listener);
         };
       },
-      publish(port: string, payload: unknown) {
+      publish(port: string, payload: unknown, simTime?: number) {
         if (session.disposed || disposed) return;
-        const message: WidgetPublishMessage = { instanceId: session.instanceId, port, payload };
+        const message: WidgetPublishMessage = {
+          instanceId: session.instanceId,
+          port,
+          payload,
+          simTime: toSimTime(simTime),
+        };
         try {
           ctx.emit(WIDGET_PUBLISH_EVENT, message);
         } catch (error) {
@@ -266,6 +324,7 @@ export function createWidgetRuntime(
       }
     }
     // Drop the backing store right away instead of waiting for the worker to be torn down.
+    session.assets.clear();
     session.canvas.width = 1;
     session.canvas.height = 1;
   }
@@ -303,6 +362,7 @@ export function createWidgetRuntime(
               pendingFactories.set(ref, pending);
             }
             factories.set(ref, await pending);
+            definitions.set(ref, widgetModule.definition);
           } catch (error) {
             if (!failed) {
               failure = error;
@@ -328,7 +388,7 @@ export function createWidgetRuntime(
         throw new Error(`Widget ${JSON.stringify(widget)} is not loaded`);
       }
 
-      const session = createSession(request);
+      const session = createSession(request, definitions.get(widget));
       sessions.set(instanceId, session);
 
       try {
@@ -367,7 +427,7 @@ export function createWidgetRuntime(
 
     setProperties(instanceId, props) {
       const session = requireSession(instanceId);
-      session.props = freezeProps(props);
+      session.props = mergeProperties(session.properties, props);
       invalidate(session);
     },
 
@@ -407,6 +467,7 @@ export function createWidgetRuntime(
       }
       sessions.clear();
       factories.clear();
+      definitions.clear();
       pendingFactories.clear();
     },
   };
@@ -440,10 +501,22 @@ function toPixelSize(logical: number, dpr: number): number {
   return Math.max(1, Math.round(toLogicalSize(logical) * toDpr(dpr)));
 }
 
-function freezeProps(
-  props: Readonly<Record<string, unknown>> | undefined,
-): Readonly<Record<string, unknown>> {
-  return Object.freeze({ ...(props ?? {}) });
+function toAssetMap(
+  assets: Readonly<Record<string, Uint8Array>> | undefined,
+): Map<string, Uint8Array> {
+  const map = new Map<string, Uint8Array>();
+  if (typeof assets !== 'object' || assets === null) return map;
+  for (const key of Object.keys(assets)) {
+    const bytes = assets[key];
+    // The mount message is structured-cloned, but copy anyway so the widget's API never shares
+    // a buffer with whatever the host sent.
+    if (bytes instanceof Uint8Array) map.set(key, new Uint8Array(bytes));
+  }
+  return map;
+}
+
+function toSimTime(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function closeBitmap(bitmap: ImageBitmap): void {

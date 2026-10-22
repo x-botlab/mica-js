@@ -1,5 +1,7 @@
 import type { WidgetProvider } from '../types';
-import type { WidgetInputEvent } from '../runtime/types';
+import type { WidgetAssetRef, WidgetInputEvent } from '../runtime/types';
+
+export type { WidgetAssetRef } from '../runtime/types';
 
 /** Logical widget size; the device pixel ratio is a host-wide concern. */
 export interface WidgetSize {
@@ -38,11 +40,22 @@ export interface WidgetLayers {
   subscribe(listener: (change: WidgetLayerChange) => void): () => void;
 }
 
+/** Reads bytes for image / binary property values; the host prefetches them at mount time. */
+export interface WidgetAssetSource {
+  /**
+   * Resolves to the resource bytes. `inline` references are base64-decoded here, on the host, so
+   * the guest never sees encoded data. A rejection only skips this resource.
+   */
+  read(ref: WidgetAssetRef): Promise<Uint8Array>;
+}
+
 /** Port payload a widget published; routing belongs to a later layer. */
 export interface WidgetPublish {
   readonly instanceId: string;
   readonly port: string;
   readonly payload: unknown;
+  /** Simulation time the widget attached; `0` when it did not pass one. */
+  readonly simTime: number;
 }
 
 export interface WidgetHost {
@@ -75,7 +88,8 @@ export type WidgetDiagnosticCode =
   | 'widget/instance-not-found'
   | 'widget/mount-failed'
   | 'widget/render-failed'
-  | 'widget/deliver-failed';
+  | 'widget/deliver-failed'
+  | 'widget/asset-failed';
 
 export interface WidgetDiagnostic {
   readonly code: WidgetDiagnosticCode;
@@ -111,6 +125,11 @@ export interface WidgetHostOptions {
   readonly onDiagnostic?: (diagnostic: WidgetDiagnostic) => void;
   /** Receives port payloads published by widgets; topic routing is out of scope here. */
   readonly onPublish?: (publish: WidgetPublish) => void;
+  /**
+   * Prefetches image / binary property values when an instance mounts. Without it nothing is
+   * prefetched and `api.assets.readBinary` rejects.
+   */
+  readonly assets?: WidgetAssetSource;
   /** Replaces the sandbox implementation; the default starts `@mica-js/sandbox` lazily. */
   readonly sandbox?: WidgetSandboxFactory;
 }

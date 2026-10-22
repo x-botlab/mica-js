@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { createStaticWidgetProvider } from '../provider/static';
 import { WIDGET_ERROR_EVENT, WIDGET_FRAME_EVENT, WIDGET_PUBLISH_EVENT } from '../runtime/protocol';
+import type { WidgetAssetRef } from '../runtime/types';
 import type { WidgetModule } from '../types';
 import { createWidgetHost } from './create-widget-host';
-import type { WidgetDiagnostic, WidgetLayerChange, WidgetPublish, WidgetSandbox } from './types';
+import type {
+  WidgetAssetSource,
+  WidgetDiagnostic,
+  WidgetLayerChange,
+  WidgetPublish,
+  WidgetSandbox,
+} from './types';
 
 interface FakeBitmap {
   readonly instanceId: string;
@@ -147,20 +154,29 @@ interface Harness {
   readonly starts: () => number;
 }
 
-function createHarness(sandbox = new FakeSandbox()): Harness {
+interface HarnessOptions {
+  readonly module?: WidgetModule;
+  readonly assets?: WidgetAssetSource;
+}
+
+function createHarness(sandbox = new FakeSandbox(), options: HarnessOptions = {}): Harness {
   const diagnostics: WidgetDiagnostic[] = [];
   const changes: WidgetLayerChange[] = [];
   const publishes: WidgetPublish[] = [];
   let starts = 0;
 
   const host = createWidgetHost({
-    provider,
+    provider:
+      options.module === undefined
+        ? provider
+        : createStaticWidgetProvider({ 'demo:indicator': options.module }),
     sandbox: () => {
       starts += 1;
       return Promise.resolve(sandbox);
     },
     onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     onPublish: (publish) => publishes.push(publish),
+    ...(options.assets === undefined ? {} : { assets: options.assets }),
   });
   host.layers.subscribe((change) => changes.push(change));
 
@@ -180,6 +196,34 @@ function mount(host: Harness['host'], overrides: Record<string, unknown> = {}): 
 function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+/** Mount request the host sent, by mount order. */
+function mountRequest(sandbox: FakeSandbox, index = 0): Record<string, unknown> | undefined {
+  return sandbox.calls.filter((call) => call.method === 'mount')[index]?.args[0] as
+    Record<string, unknown> | undefined;
+}
+
+const defaultsModule: WidgetModule = {
+  definition: {
+    properties: {
+      color: { type: 'color', default: '#22AA55FF' },
+      label: { type: 'string', default: null },
+      hidden: { type: 'boolean' },
+    },
+    ports: {},
+  },
+  code: 'export default () => ({});',
+};
+
+const assetModule: WidgetModule = {
+  definition: {
+    properties: {
+      texture: { type: 'image', default: { src: 'default.png', mode: 'file' } },
+    },
+    ports: {},
+  },
+  code: 'export default () => ({});',
+};
 
 describe('createWidgetHost', () => {
   it('does not start the sandbox until the first mount', async () => {
@@ -225,6 +269,80 @@ describe('createWidgetHost', () => {
     expect(harness.sandbox.argsOf('mount')).toEqual([
       { instanceId: 'a', widget: 'demo:indicator', width: 20, height: 10, dpr: 1, props: {} },
     ]);
+  });
+
+  it('fills definition defaults into the mount request and lets document props win', async () => {
+    const harness = createHarness(undefined, { module: defaultsModule });
+
+    await mount(harness.host);
+    const fromDefaults = mountRequest(harness.sandbox)?.props as Record<string, unknown>;
+    expect(fromDefaults).toEqual({ color: '#22AA55FF', label: null });
+    expect(Object.hasOwn(fromDefaults, 'hidden')).toBe(false);
+
+    await mount(harness.host, { instanceId: 'b', props: { color: 'red' } });
+    expect(mountRequest(harness.sandbox, 1)?.props).toEqual({ color: 'red', label: null });
+  });
+
+  it('prefetches nested asset references from merged props', async () => {
+    const reads: WidgetAssetRef[] = [];
+    const assets: WidgetAssetSource = {
+      read: async (ref) => {
+        reads.push(ref);
+        return new TextEncoder().encode(`bytes:${ref.src}`);
+      },
+    };
+    const harness = createHarness(undefined, { module: assetModule, assets });
+
+    await mount(harness.host, {
+      props: {
+        background: { src: 'bg.png', mode: 'inline' },
+        layers: [{ image: { src: 'layer.png', mode: 'store' } }, { src: 'bg.png', mode: 'inline' }],
+        label: 'not an asset',
+      },
+    });
+
+    expect(reads).toEqual([
+      { src: 'default.png', mode: 'file' },
+      { src: 'bg.png', mode: 'inline' },
+      { src: 'layer.png', mode: 'store' },
+    ]);
+    const assetsSent = mountRequest(harness.sandbox)?.assets as Record<string, Uint8Array>;
+    expect(Object.keys(assetsSent).sort()).toEqual(['bg.png', 'default.png', 'layer.png']);
+    expect(new TextDecoder().decode(assetsSent['bg.png'])).toBe('bytes:bg.png');
+  });
+
+  it('mounts without the failed asset and reports widget/asset-failed', async () => {
+    const assets: WidgetAssetSource = {
+      read: async (ref) => {
+        if (ref.src === 'missing.png') throw new Error('ENOENT');
+        return new Uint8Array([1, 2]);
+      },
+    };
+    const harness = createHarness(undefined, { module: assetModule, assets });
+
+    await mount(harness.host, {
+      props: { texture: { src: 'missing.png', mode: 'file' }, ok: { src: 'ok.png', mode: 'file' } },
+    });
+
+    expect(harness.host.layers.get('a')).toBeDefined();
+    expect(harness.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'widget/asset-failed',
+        instanceId: 'a',
+        widget: 'demo:indicator',
+      }),
+    ]);
+    expect(mountRequest(harness.sandbox)?.assets).toEqual({ 'ok.png': new Uint8Array([1, 2]) });
+  });
+
+  it('does not prefetch or report when no asset source is configured', async () => {
+    const harness = createHarness(undefined, { module: assetModule });
+
+    await mount(harness.host, { props: { texture: { src: 'missing.png', mode: 'file' } } });
+
+    expect(harness.diagnostics).toEqual([]);
+    expect(mountRequest(harness.sandbox)).not.toHaveProperty('assets');
+    expect(harness.host.layers.get('a')).toBeDefined();
   });
 
   it('applies geometry synchronously without touching the frame sequence', async () => {
@@ -360,9 +478,18 @@ describe('createWidgetHost', () => {
       instanceId: 'a',
       port: 'value',
       payload: 3,
+      simTime: 1280,
+    });
+    harness.sandbox.emit(WIDGET_PUBLISH_EVENT, {
+      instanceId: 'a',
+      port: 'value',
+      payload: 4,
     });
 
-    expect(harness.publishes).toEqual([{ instanceId: 'a', port: 'value', payload: 3 }]);
+    expect(harness.publishes).toEqual([
+      { instanceId: 'a', port: 'value', payload: 3, simTime: 1280 },
+      { instanceId: 'a', port: 'value', payload: 4, simTime: 0 },
+    ]);
   });
 
   it('removes the layer and closes its bitmap on unmount', async () => {

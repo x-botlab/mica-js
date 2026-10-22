@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GuestContext } from '@mica-js/sandbox';
-import { WIDGET_ERROR_EVENT, WIDGET_FRAME_EVENT, WIDGET_PUBLISH_EVENT } from './protocol';
-import type { WidgetErrorMessage, WidgetFrameMessage } from './protocol';
+import type { WidgetDefinition } from '../types';
+import {
+  WIDGET_ASSET_FAILED_EVENT,
+  WIDGET_ERROR_EVENT,
+  WIDGET_FRAME_EVENT,
+  WIDGET_PUBLISH_EVENT,
+} from './protocol';
+import type { WidgetAssetFailedMessage, WidgetErrorMessage, WidgetFrameMessage } from './protocol';
 import type { WidgetInputEvent, WidgetInstance, WidgetInstanceApi } from './types';
 import { createWidgetRuntime, setup } from './worker-entry';
 import type { WidgetRuntime } from './worker-entry';
@@ -98,10 +104,21 @@ function createHarness(factories: Readonly<Record<string, Factory>>): Harness {
   return { runtime, handlers, events, context: context as unknown as GuestContext, imports };
 }
 
-const definition = { properties: {}, ports: {} };
+const definition: WidgetDefinition = { properties: {}, ports: {} };
 
-function loadRequest(code: string) {
-  return { packages: [{ id: 'demo', modules: { indicator: { definition, code } } }] };
+const defaultsDefinition: WidgetDefinition = {
+  properties: {
+    color: { type: 'color', default: '#22AA55FF' },
+    label: { type: 'string', default: null },
+    hidden: { type: 'boolean' },
+  },
+  ports: {},
+};
+
+function loadRequest(code: string, widgetDefinition: WidgetDefinition = definition) {
+  return {
+    packages: [{ id: 'demo', modules: { indicator: { definition: widgetDefinition, code } } }],
+  };
 }
 
 function mountRequest(extra: Record<string, unknown> = {}) {
@@ -241,6 +258,103 @@ describe('widget guest runtime', () => {
     expect(events.filter((event) => event.type === WIDGET_FRAME_EVENT)).toHaveLength(2);
   });
 
+  it('merges property defaults on mount and set-properties, keeping null distinct', async () => {
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+    const seen: Readonly<Record<string, unknown>>[] = [];
+    const { runtime } = createHarness({
+      widget: (api) => ({
+        render: () => {
+          seen.push(api.props);
+        },
+      }),
+    });
+
+    await runtime.load(loadRequest('widget', defaultsDefinition));
+    runtime.mount(mountRequest());
+    runtime.setProperties('a', { color: 'red' });
+    await tick();
+
+    expect(seen[0]).toEqual({ color: '#22AA55FF', label: null });
+    expect(Object.hasOwn(seen[0] as object, 'hidden')).toBe(false);
+    expect(seen[1]).toEqual({ color: 'red', label: null });
+  });
+
+  it('deep-clones and freezes defaults per instance', async () => {
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+    const defaults = { nested: { list: [1, 2] } };
+    const configurable: WidgetDefinition = {
+      properties: { config: { type: 'object', default: defaults } },
+      ports: {},
+    };
+    const seen: Record<string, unknown>[] = [];
+    const { runtime } = createHarness({
+      widget: (api) => {
+        seen.push(api.props.config as Record<string, unknown>);
+        return {};
+      },
+    });
+
+    await runtime.load(loadRequest('widget', configurable));
+    runtime.mount(mountRequest({ instanceId: 'a' }));
+    runtime.mount(mountRequest({ instanceId: 'b' }));
+
+    const [first, second] = seen;
+    expect(first).not.toBe(second);
+    expect(first).not.toBe(defaults);
+    expect(Object.isFrozen(first)).toBe(true);
+    expect(Object.isFrozen(first?.nested)).toBe(true);
+    expect(Object.isFrozen((first?.nested as { list: number[] }).list)).toBe(true);
+    expect(() => (first?.nested as { list: number[] }).list.push(3)).toThrow(TypeError);
+    expect(defaults.nested.list).toEqual([1, 2]);
+    expect((second?.nested as { list: number[] }).list).toEqual([1, 2]);
+  });
+
+  it('returns a copy of prefetched asset bytes on every read', async () => {
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+    let api: WidgetInstanceApi | undefined;
+    const { runtime } = createHarness({
+      widget: (instanceApi) => {
+        api = instanceApi;
+        return {};
+      },
+    });
+
+    await runtime.load(loadRequest('widget'));
+    runtime.mount(mountRequest({ assets: { 'a.png': new Uint8Array([1, 2, 3]) } }));
+
+    const first = await api?.assets.readBinary('a.png');
+    expect([...(first as Uint8Array)]).toEqual([1, 2, 3]);
+    (first as Uint8Array)[0] = 9;
+
+    const second = await api?.assets.readBinary('a.png');
+    expect(second).not.toBe(first);
+    expect([...(second as Uint8Array)]).toEqual([1, 2, 3]);
+  });
+
+  it('rejects unprefetched assets and reports each src once', async () => {
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+    let api: WidgetInstanceApi | undefined;
+    const { runtime, events } = createHarness({
+      widget: (instanceApi) => {
+        api = instanceApi;
+        return {};
+      },
+    });
+
+    await runtime.load(loadRequest('widget'));
+    runtime.mount(mountRequest());
+
+    await expect(api?.assets.readBinary('missing.png')).rejects.toThrow('not prefetched');
+    await expect(api?.assets.readBinary('missing.png')).rejects.toThrow('not prefetched');
+    await expect(api?.assets.readBinary('other.png')).rejects.toThrow('not prefetched');
+
+    const failures = events
+      .filter((event) => event.type === WIDGET_ASSET_FAILED_EVENT)
+      .map((event) => event.payload as WidgetAssetFailedMessage);
+    expect(failures.map((failure) => failure.src)).toEqual(['missing.png', 'other.png']);
+    expect(failures[0]).toMatchObject({ instanceId: 'a' });
+  });
+
   it('rebuilds the canvas and commits on resize', async () => {
     vi.stubGlobal('OffscreenCanvas', FakeCanvas);
     const { runtime, events } = createHarness({ widget: () => ({}) });
@@ -351,11 +465,17 @@ describe('widget guest runtime', () => {
     await runtime.load(loadRequest('widget'));
     runtime.mount(mountRequest());
     api?.publish('value', 7);
+    api?.publish('value', 8, 1280);
 
     expect(events.filter((event) => event.type === WIDGET_PUBLISH_EVENT)).toEqual([
       {
         type: WIDGET_PUBLISH_EVENT,
-        payload: { instanceId: 'a', port: 'value', payload: 7 },
+        payload: { instanceId: 'a', port: 'value', payload: 7, simTime: 0 },
+        transfer: undefined,
+      },
+      {
+        type: WIDGET_PUBLISH_EVENT,
+        payload: { instanceId: 'a', port: 'value', payload: 8, simTime: 1280 },
         transfer: undefined,
       },
     ]);
