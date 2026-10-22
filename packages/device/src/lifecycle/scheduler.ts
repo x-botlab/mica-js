@@ -1,5 +1,6 @@
 import type {
   Scheduler,
+  SchedulerExecutionContext,
   SchedulerInstance,
   SchedulerInstanceDefinition,
   SchedulerRunOptions,
@@ -7,6 +8,12 @@ import type {
   SchedulerTarget,
 } from '@mica-js/core';
 import type { RuntimeScalar } from '@mica-js/ir';
+
+export interface LifecycleEntryHooks {
+  beforeEntry(context: SchedulerExecutionContext): void;
+  afterEntry(context: SchedulerExecutionContext, failure: unknown): void;
+  onInitializeComplete(): void;
+}
 
 export interface LifecycleScheduler {
   readonly scheduler: Scheduler;
@@ -20,6 +27,7 @@ export interface LifecycleScheduler {
 export function createLifecycleScheduler(
   inner: Scheduler,
   initializeName: string | undefined,
+  hooks?: LifecycleEntryHooks,
 ): LifecycleScheduler {
   let initialized = initializeName === undefined;
   const scheduler: Scheduler = {
@@ -42,13 +50,28 @@ export function createLifecycleScheduler(
             args: readonly RuntimeScalar[],
             context: Parameters<SchedulerInstanceDefinition['executor']['execute']>[2],
           ): void {
-            Reflect.apply(definition.executor.execute, definition.executor, [
-              target,
-              args,
-              context,
-            ]);
-            if (target.name === initializeName) {
-              initialized = true;
+            let failure: unknown;
+            try {
+              hooks?.beforeEntry(context);
+              Reflect.apply(definition.executor.execute, definition.executor, [
+                target,
+                args,
+                context,
+              ]);
+              if (target.name === initializeName) {
+                initialized = true;
+                hooks?.onInitializeComplete();
+              }
+            } catch (cause) {
+              failure = cause;
+            }
+            try {
+              hooks?.afterEntry(context, failure);
+            } catch (cause) {
+              failure ??= cause;
+            }
+            if (failure !== undefined) {
+              throw failure;
             }
           },
         },
@@ -60,6 +83,13 @@ export function createLifecycleScheduler(
       args: readonly RuntimeScalar[],
     ): void {
       inner.enqueueControl(instance, target, args);
+    },
+    enqueueMessage(
+      instance: SchedulerInstance,
+      target: SchedulerTarget,
+      args: readonly RuntimeScalar[],
+    ): number {
+      return inner.enqueueMessage(instance, target, args);
     },
     destroyInstance(instance: SchedulerInstance): void {
       inner.destroyInstance(instance);

@@ -1,8 +1,10 @@
 import { fail } from './errors';
 import type {
   BlockRef,
+  BytesOutputRef,
   DomainInstruction,
   FunctionRef,
+  OutputRef,
   ScalarType,
   StateRef,
   StaticRef,
@@ -31,6 +33,7 @@ import type {
   FunctionDeclarationState,
   MemoryState,
   ModuleState,
+  OutputState,
 } from './state';
 
 interface ValueMetadata {
@@ -48,6 +51,7 @@ const valueMetadata = new WeakMap<object, ValueMetadata>();
 const blockMetadata = new WeakMap<object, BlockMetadata>();
 const memoryMetadata = new WeakMap<object, MemoryState>();
 const functionMetadata = new WeakMap<object, FunctionDeclarationState>();
+const outputMetadata = new WeakMap<object, OutputState>();
 const staticMetadata = new WeakMap<object, DomainDeclarationState>();
 const instructionMetadata = new WeakMap<object, DomainInstructionState>();
 
@@ -89,6 +93,24 @@ export function createBytesRef<ReadonlyBytes extends boolean>(
 export function createInboxRef(memory: MemoryState): InboxRef {
   const ref = { [refKind]: 'inbox', [byteReadonly]: true } as InboxRef;
   memoryMetadata.set(ref, memory);
+  return ref;
+}
+
+export function createOutputRef<P extends readonly ScalarType[]>(
+  output: OutputState,
+  params: readonly ScalarType[],
+): OutputRef<P> {
+  const ref = {
+    [refKind]: 'scalar-output',
+    [signature]: { params, results: [] },
+  } as unknown as OutputRef<P>;
+  outputMetadata.set(ref, output);
+  return ref;
+}
+
+export function createBytesOutputRef(output: OutputState): BytesOutputRef {
+  const ref = { [refKind]: 'bytes-output' } as BytesOutputRef;
+  outputMetadata.set(ref, output);
   return ref;
 }
 
@@ -148,6 +170,10 @@ export function getFunctionMetadata(ref: object): FunctionDeclarationState | und
   return functionMetadata.get(ref);
 }
 
+export function getOutputMetadata(ref: object): OutputState | undefined {
+  return outputMetadata.get(ref);
+}
+
 export function getDomainStaticMetadata(ref: object): DomainDeclarationState | undefined {
   return staticMetadata.get(ref);
 }
@@ -160,6 +186,7 @@ export function getRefModule(ref: StaticRef): ModuleState | undefined {
   return (
     memoryMetadata.get(ref)?.module ??
     functionMetadata.get(ref)?.module ??
+    outputMetadata.get(ref)?.module ??
     staticMetadata.get(ref)?.module ??
     instructionMetadata.get(ref)?.module
   );

@@ -10,6 +10,7 @@ import { readDeviceBindings, type ValidatedBindings } from '../factory/bindings'
 import { createFactoryContext } from '../factory/context';
 import { callableKind, consumeThenable, isThenable } from '../internal/functions';
 import { isObjectLike, isPlainRecord } from '../internal/records';
+import { MessagingController } from '../messaging/controller';
 import { resolveDeviceProperties } from '../properties';
 import type {
   DeviceAPI,
@@ -20,6 +21,8 @@ import type {
   DeviceFactory,
   DevicePropertySnapshot,
   LoadedDeviceModule,
+  TopicMetadata,
+  TopicPayload,
 } from '../types';
 import { createValidationPolicy } from './policy';
 import { createLifecycleScheduler } from './scheduler';
@@ -46,32 +49,76 @@ export function createDeviceInstance(
   );
 
   const module = createIRModule();
-  const context = createFactoryContext(props, module, definition.deviceId);
+  const messaging = createMessaging(definition, module, options);
+  const context = createFactoryContext(props, module, definition.deviceId, messaging);
   let rawBindings: unknown;
   try {
     rawBindings = invokeFactory(definition.factory, context.api, definition.deviceId);
+  } catch (cause) {
+    messaging.abort();
+    throw cause;
   } finally {
     context.close();
   }
 
-  const bindings = readDeviceBindings(rawBindings, module, definition.deviceId);
+  try {
+    messaging.bindDeclarations();
+  } catch (cause) {
+    messaging.abort();
+    throw new DeviceError(
+      'device/instance-invalid',
+      `Device ${JSON.stringify(definition.deviceId)} messaging declarations are invalid.`,
+      { deviceId: definition.deviceId, cause },
+    );
+  }
+
+  let bindings: ValidatedBindings;
+  try {
+    bindings = readDeviceBindings(rawBindings, module, definition.deviceId);
+  } catch (cause) {
+    messaging.abort();
+    throw cause;
+  }
   const policy = createValidationPolicy(module);
-  const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name);
+  const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name, {
+    beforeEntry: () => messaging.beforeEntry(),
+    afterEntry: (entryContext, failure) => messaging.completeEntry(entryContext, failure),
+    onInitializeComplete: () => messaging.markReady(),
+  });
   let core: IRSchedulerInstance;
   try {
     core = createIRSchedulerInstance(tracking.scheduler, {
       instanceId,
       module,
       validation: policy,
+      bridge: messaging.bridge,
     });
   } catch (cause) {
+    messaging.abort();
     throw linkError(definition.deviceId, cause);
+  }
+
+  try {
+    messaging.attach({
+      storage: core.storage,
+      enqueueMessage: (target, args) => core.enqueueMessage(target, args),
+      isFaulted: () => scheduler.error !== undefined,
+    });
+  } catch (cause) {
+    messaging.abort();
+    try {
+      scheduler.destroyInstance(core.instance);
+    } catch {
+      // The attach failure is the useful diagnostic.
+    }
+    throw cause;
   }
 
   if (bindings.initialize !== undefined) {
     try {
       core.enqueueControl(bindings.initialize.ref, []);
     } catch (cause) {
+      messaging.abort();
       try {
         scheduler.destroyInstance(core.instance);
       } catch {
@@ -85,6 +132,10 @@ export function createDeviceInstance(
     }
   }
 
+  if (bindings.initialize === undefined) {
+    messaging.markReady();
+  }
+
   return createHandle(
     definition,
     instanceId,
@@ -93,7 +144,33 @@ export function createDeviceInstance(
     scheduler,
     bindings,
     tracking.isInitialized,
+    messaging,
   );
+}
+
+function createMessaging(
+  definition: LoadedModule,
+  module: ReturnType<typeof createIRModule>,
+  options: DeviceInstanceOptions,
+): MessagingController {
+  try {
+    return new MessagingController({
+      module,
+      description: definition.description,
+      deviceId: definition.deviceId,
+      ...(options.messaging === undefined ? {} : { options: options.messaging }),
+      ...(options.onTopic === undefined ? {} : { onTopic: options.onTopic }),
+    });
+  } catch (cause) {
+    if (cause instanceof DeviceError) {
+      throw cause;
+    }
+    throw new DeviceError(
+      'device/instance-invalid',
+      `Device ${JSON.stringify(definition.deviceId)} messaging options are invalid.`,
+      { deviceId: definition.deviceId, cause },
+    );
+  }
 }
 
 interface LoadedModule {
@@ -217,6 +294,7 @@ function createHandle(
   scheduler: Scheduler,
   bindings: ValidatedBindings,
   isInitialized: () => boolean,
+  messaging: MessagingController,
 ): DeviceInstance {
   const guardedStorage = new LifecycleStorage(core.storage, definition.deviceId);
   let destroyed = false;
@@ -225,7 +303,7 @@ function createHandle(
   const state = (): DeviceInstanceState => {
     if (destroying) return 'destroying';
     if (destroyed) return 'destroyed';
-    if (scheduler.error !== undefined) return 'faulted';
+    if (scheduler.error !== undefined || messaging.isFaulted()) return 'faulted';
     if (bindings.initialize !== undefined && !isInitialized()) return 'initializing';
     return 'ready';
   };
@@ -281,7 +359,13 @@ function createHandle(
       );
     }
     destroyed = true;
-    guardedStorage.release();
+    try {
+      messaging.destroy();
+    } catch {
+      // Messaging cleanup must not prevent kernel resource release or onDispose.
+    } finally {
+      guardedStorage.release();
+    }
     const onDispose = bindings.onDispose;
     if (onDispose === undefined) {
       destroying = false;
@@ -320,6 +404,15 @@ function createHandle(
         throw destroyedError(definition.deviceId, 'storage');
       }
       return guardedStorage;
+    },
+    deliver(port: string, payload: TopicPayload, meta: TopicMetadata): void {
+      if (destroying) {
+        throw busyError(definition.deviceId, 'deliver', 'the instance is being destroyed');
+      }
+      if (destroyed) {
+        throw destroyedError(definition.deviceId, 'deliver');
+      }
+      messaging.deliver(port, payload, meta);
     },
     reset,
     destroy,

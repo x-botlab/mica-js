@@ -45,6 +45,8 @@ export function createForTest(
   const instance = createDeviceInstance(loadedModule(factory, description), scheduler, {
     instanceId: options.instanceId ?? 'device-instance',
     ...(options.properties === undefined ? {} : { properties: options.properties }),
+    ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
+    ...(options.onTopic === undefined ? {} : { onTopic: options.onTopic }),
   });
   return { instance, scheduler, description };
 }

@@ -199,6 +199,12 @@ export function validateInstruction(
       results(node, state, []);
       return;
     }
+    case 'bridge.send':
+      bridgeSend(node, state);
+      return;
+    case 'bridge.send_bytes':
+      bridgeSendBytes(node, state);
+      return;
     case 'event.now':
       if (operands(node, state, [])) results(node, state, ['f64']);
       return;
@@ -512,6 +518,62 @@ function byteMemory(node: InstructionNode, state: InstructionValidationState): v
   } else {
     resultCount(node, state, store ? 0 : 1);
   }
+}
+
+function bridgeSend(node: InstructionNode, state: InstructionValidationState): void {
+  const operand = node.operands[0];
+  if (operand?.kind !== 'static') {
+    state.report('invalid-static-reference', 'bridge.send requires a static scalar output target');
+    return;
+  }
+  const output = state.outputs.get(operand.ref);
+  if (
+    output === undefined ||
+    output.kind !== 'scalar-output' ||
+    operand.ref[refKind] !== 'scalar-output'
+  ) {
+    state.report(
+      'invalid-static-reference',
+      'bridge.send target must be a scalar output declared by this module',
+    );
+    return;
+  }
+  const kinds: OperandKind[] = ['static', ...output.params.map(() => 'ssa' as const)];
+  if (!operands(node, state, kinds)) {
+    return;
+  }
+  output.params.forEach((type, index) => value(node, state, index + 1, type));
+  results(node, state, ['bool']);
+}
+
+function bridgeSendBytes(node: InstructionNode, state: InstructionValidationState): void {
+  if (!operands(node, state, ['static', 'static', 'ssa', 'ssa'])) {
+    return;
+  }
+  const operand = node.operands[0];
+  if (operand?.kind !== 'static') {
+    state.report(
+      'invalid-static-reference',
+      'bridge.send_bytes target must be a bytes output declared by this module',
+    );
+    return;
+  }
+  const output = state.outputs.get(operand.ref);
+  if (
+    output === undefined ||
+    output.kind !== 'bytes-output' ||
+    operand.ref[refKind] !== 'bytes-output'
+  ) {
+    state.report(
+      'invalid-static-reference',
+      'bridge.send_bytes target must be a bytes output declared by this module',
+    );
+    return;
+  }
+  memory(node, state, 1, ['bytes', 'inbox'], 'read');
+  value(node, state, 2, 'u32');
+  value(node, state, 3, 'u32');
+  results(node, state, ['bool']);
 }
 
 function eventAt(node: InstructionNode, state: InstructionValidationState): void {

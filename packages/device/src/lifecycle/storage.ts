@@ -2,6 +2,7 @@ import type {
   ArrayRef,
   BytesRef,
   Endian,
+  InboxRef,
   IRResourceDependency,
   IRStorage,
   IRVersionedBytes,
@@ -98,6 +99,12 @@ export class LifecycleStorage implements IRStorage {
   }
   fillBytes(destination: BytesRef, offset: number, length: number, value: number): void {
     this.#live('fillBytes').fillBytes(destination, offset, length, value);
+  }
+  writeInbox(ref: InboxRef, offset: number, bytes: Uint8Array): void {
+    this.#live('writeInbox').writeInbox(ref, offset, bytes);
+  }
+  updateBytesFromBytes(ref: BytesRef, offset: number, bytes: Uint8Array): void {
+    this.#live('updateBytesFromBytes').updateBytesFromBytes(ref, offset, bytes);
   }
   readVersionedBytes(ref: ReadableBytesRef, offset: number, length: number): IRVersionedBytes {
     return this.#live('readVersionedBytes').readVersionedBytes(ref, offset, length);

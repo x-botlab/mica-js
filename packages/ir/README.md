@@ -2,7 +2,7 @@
 
 领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔/浮点逐指令语义、实例存储与参考解释器。
 
-本包负责**建图、实例存储、静态校验与参考执行**：声明标量资源与函数、构造 SSA 值、基本块与终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。不提供事件调度、Provider 生成缓存、运行中恢复、消息桥接或 JIT；校验通过不代表已经执行，未实现的能力显式拒绝，不以空操作伪装成功。
+本包负责**建图、实例存储、静态校验与参考执行**：声明标量资源与函数、构造 SSA 值、基本块与终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。提供显式 IR 输出端点与 `bridge.send` / `bridge.send_bytes` 的宿主桥接，但不提供事件调度、话题路由/通知队列、Provider 生成缓存、运行中恢复或 JIT；校验通过不代表已经执行，未实现的能力显式拒绝，不以空操作伪装成功。
 
 ## 安装
 
@@ -24,7 +24,7 @@ pnpm add @mica-js/ir
 | `evaluateFloatInstruction(instruction, ops)`  | 求值单个浮点节点，失败抛 `IRFloatEvaluationError`                                                          |
 | 类型                                          | `IRDeclarations`、`FunctionBuilder<R>`、`IRModule`、`FunctionRef` / `EntryRef` / `LifecycleRef` 等引用类别 |
 
-`StateRef`、`ArrayRef`、`BytesRef`、`InboxRef` 不可互换；`EntryRef`、`LifecycleRef` 与普通 `FunctionRef` 在类型和运行期都保持独立。
+`StateRef`、`ArrayRef`、`BytesRef`、`InboxRef` 不可互换；`EntryRef`、`LifecycleRef` 与普通 `FunctionRef` 在类型和运行期都保持独立，`OutputRef` 与 `BytesOutputRef` 也是独立的静态类别。
 
 ## 建图
 
@@ -220,7 +220,7 @@ runtime.storage.loadState(count); // 3
 ```
 
 - `createIRInterpreter` 捕获私有执行快照，调用 `validateIR`，再用 `createIRStorage` 建独占存储；原模型后续修改不影响已创建的实例。
-- `IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`stepObserver: IRStepObserver`；API 面向可信宿主，不是隔离恶意 JS getter/validator 的沙箱。
+- `IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`bridge: IRBridgeHost`、`stepObserver: IRStepObserver`；API 面向可信宿主，不是隔离恶意 JS getter/validator 的沙箱。
 - `execute(target, args, context)` 同步执行 `FunctionRef` / `EntryRef` / `LifecycleRef`，返回 `{ values, steps }`。`context = { instanceId, virtualTime }` 必填：实例标识非空，虚拟时间为非负安全整数皮秒，仅用于诊断。
 - 存储跨成功执行保留；每次 `execute` 使用独立预算。普通调用和块跳转不推进虚拟时间、不创建事件、不形成等待/恢复对象；显式 event 指令通过下述可信宿主桥接。
 
@@ -250,7 +250,7 @@ runtime.storage.loadState(count); // 3
 - 存储操作沿用完整范围校验与原子提交：失败操作无部分写入，已提交效果不回滚。
 - 预算、求值、存储或 trap 故障会锁定实例，后续 `execute` 抛 `instance-faulted`；无 reset/resume，也不支持失败入口中途恢复。
 - 非法目标、参数或 context 等调用前错误不消耗步骤、不锁定实例。
-- 执行能力限于现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、核心 `event.now/at/cancel`、普通 `call` 及 `return/jump/branch/trap`；扩展静态校验通过也不会自动获得执行实现。未实现领域指令在执行前拒绝；dispatch、Provider/checkpoint 与其他保留能力仍静态拒绝。
+- 执行能力限于现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、核心 `event.now/at/cancel`、`bridge.send` / `bridge.send_bytes`、普通 `call` 及 `return/jump/branch/trap`；扩展静态校验通过也不会自动获得执行实现。未实现领域指令在执行前拒绝；dispatch、Provider/checkpoint 与其他保留能力仍静态拒绝。
 
 ### 事件与宿主桥接（#48）
 
@@ -285,6 +285,33 @@ Time validation applies only at this event boundary, not to ordinary f64 values:
 The optional `stepObserver.beforeStep` runs once before each reference step effect, including calls and terminators, using the captured execution context. Existing maxSteps checks and the default 1,000,000-step budget are unchanged; no observer is invoked for a step blocked by maxSteps. Hook method identities, receivers, and option values are captured at creation without executing hooks. Async/generator methods are rejected as invalid-options; Promise/thenable or generator results and thrown hook errors fail execution with existing error codes, retaining cause, location, and IR callStack. Previously committed effects remain and the interpreter faults as usual. A host must implement its own operations atomically when required.
 
 `src/event.test.ts` tests real IR execution, validation, capture, time/ID boundaries, synchronous hooks, and step effects; `src/event.type-test.ts` checks the approved API and invalid signatures.
+
+### 输出与消息桥接（#54）
+
+`IRDeclarations.output` / `IRDeclarations.outputBytes` 声明静态、有界的输出端点；`IRModule.outputs` 返回 `OutputDefinition` 列表。`FunctionBuilder` 增加：
+
+```ts
+output<P extends readonly ScalarType[]>(output: OutputRef<P>, args: Values<P>): Value<'bool'>;
+outputBytes(
+  output: BytesOutputRef,
+  region: ReadableBytesRef,
+  offset: Value<'u32'>,
+  length: Value<'u32'>,
+): Value<'bool'>;
+```
+
+它们分别降低为 `bridge.send`（`[static scalar-output, ...ssa params]` → `bool`）与 `bridge.send_bytes`（`[static bytes-output, static readable bytes/inbox, ssa u32 offset, ssa u32 length]` → `bool`）。静态引用、操作数数量与 SSA 类型由 `validateIR` 检查；这些指令属于核心保留名称，不能被 domain 声明覆盖。
+
+```ts
+interface IRBridgeHost {
+  send(output: OutputRef, payload: readonly (boolean | number)[], timePs: number): boolean;
+  sendBytes(output: BytesOutputRef, bytes: Uint8Array, timePs: number): boolean;
+}
+```
+
+可选 `IRInterpreterOptions.bridge` 在指令位置同步接收已捕获数据与虚拟时间；没有 bridge host 的解释器在创建时拒绝含 bridge 指令的模块。标量输出参数在 host 边界转换为 JS `boolean`/`number`（浮点解码为 number），字节输出先校验读取范围与 `maxBytes` 再快照。完整范围、读取权限与 `maxBytes` 非法是模型错误；只有合法载荷下的队列/字节预算不足由 host 返回 `false`。解释器不执行 JS，队列与通知时机由 device 层负责。
+
+`src/output.test.ts` 覆盖真实 builder/validate/interpreter 链、标量/字节捕获、零长度、`false` 结果、范围与 `maxBytes` 拒绝；`src/output.type-test.ts` 检查正反类型签名。
 
 ## 版本化资源更新
 
@@ -346,6 +373,10 @@ interface IRStorage {
     length: number,
   ): void;
   fillBytes(destination: BytesRef, offset: number, length: number, value: number): void;
+  /** Host-only inbox admission; ordinary IR writes remain rejected. */
+  writeInbox(ref: InboxRef, offset: number, bytes: Uint8Array): void;
+  /** Host-only versioned update from captured bytes; content and units commit atomically. */
+  updateBytesFromBytes(ref: BytesRef, offset: number, bytes: Uint8Array): void;
   readVersionedBytes(ref: ReadableBytesRef, offset: number, length: number): IRVersionedBytes;
   validateDependencies(dependencies: readonly IRResourceDependency[]): boolean;
 }
@@ -364,7 +395,7 @@ type IRResourceDependency = {
 
 ## 当前限制
 
-- 事件队列/调度器本身（核心 event 指令通过上述可信宿主桥接）、输出、消息桥接及 JS 作者侧 `api.updateBytes` 请求队列。
+- 事件队列/调度器本身（核心 event 指令通过上述可信宿主桥接）；输出队列、话题路由与 JS 作者侧 `api.updateBytes` 请求队列由 `@mica-js/device` 持有。
 - Provider 生成缓存（#60）、运行中恢复/checkpoint（#61）与 JIT。
 - 尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。
 

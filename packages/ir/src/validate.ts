@@ -59,6 +59,7 @@ class Validator {
               functions: input.functions,
               domainDeclarations: input.domainDeclarations,
               instructions: input.instructions,
+              outputs: input.outputs,
             }
           : input;
         if (this.moduleShape(model)) {
@@ -214,6 +215,37 @@ class Validator {
       this.name(declaration.kind, location);
       this.ref(declaration.ref, location);
     });
+    if (input.outputs !== undefined) {
+      this.array(input.outputs, { path: 'outputs' });
+      (input.outputs as unknown[]).forEach((output, i) => {
+        const location = { path: `outputs[${i}]` };
+        if (!this.record(output, location)) return;
+        this.name(output.name, location);
+        this.ref(output.ref, location);
+        if (output.kind === 'scalar-output') {
+          this.types(output.params, location);
+        } else if (output.kind !== 'bytes-output') {
+          this.report('malformed-input', 'Invalid output kind', location);
+        }
+        if (!Number.isSafeInteger(output.capacity) || (output.capacity as number) < 1) {
+          this.report(
+            'malformed-input',
+            'Output capacity must be a positive safe integer',
+            location,
+          );
+        }
+        if (
+          output.kind === 'bytes-output' &&
+          (!Number.isSafeInteger(output.maxBytes) || (output.maxBytes as number) < 0)
+        ) {
+          this.report(
+            'malformed-input',
+            'Bytes output maxBytes must be a non-negative safe integer',
+            location,
+          );
+        }
+      });
+    }
     (input.instructions as unknown[]).forEach((instruction, i) => {
       const location = { path: `instructions[${i}]` };
       if (!this.record(instruction, location)) return;
@@ -319,6 +351,46 @@ class Validator {
       register(memory.name, memory.ref, location);
       this.memory(memory, location);
     });
+    (module.outputs ?? []).forEach((output, i) => {
+      const location = { path: `outputs[${i}]` };
+      register(output.name, output.ref, location);
+      if (output.ref[refKind] !== output.kind) {
+        this.report(
+          'invalid-static-reference',
+          'Output reference category differs from its declaration',
+          location,
+        );
+      }
+      if (!Number.isSafeInteger(output.capacity) || output.capacity < 1) {
+        this.report(
+          'invalid-resource',
+          'Output capacity must be a positive safe integer',
+          location,
+        );
+      }
+      if (output.kind === 'scalar-output') {
+        const layout = output.ref[signature];
+        if (
+          !isRecord(layout) ||
+          !Array.isArray(layout.params) ||
+          !Array.isArray(layout.results) ||
+          !sameTypes(layout.params, output.params) ||
+          layout.results.length !== 0
+        ) {
+          this.report(
+            'signature-mismatch',
+            'Scalar output reference signature differs from the actual declaration',
+            location,
+          );
+        }
+      } else if (!Number.isSafeInteger(output.maxBytes) || output.maxBytes < 0) {
+        this.report(
+          'invalid-resource',
+          'Bytes output maxBytes must be a non-negative safe integer',
+          location,
+        );
+      }
+    });
     module.domainDeclarations.forEach((domain, i) => {
       const location = { path: `domainDeclarations[${i}]` };
       register(domain.name, domain.ref, location);
@@ -405,6 +477,7 @@ class Validator {
     const memories = new Map(module.memories.map((memory) => [memory.ref, memory]));
     const functions = new Map(module.functions.map((fn) => [fn.ref, fn]));
     const domains = new Map(module.domainDeclarations.map((domain) => [domain.ref, domain]));
+    const outputs = new Map((module.outputs ?? []).map((output) => [output.ref, output]));
     const declarations = new Map(
       module.instructions.map((declaration) => [declaration.name, declaration]),
     );
@@ -452,6 +525,7 @@ class Validator {
             memories,
             functions,
             domains,
+            outputs,
             declarations,
             validators,
             report: (code, message) => this.report(code, message, at),

@@ -35,6 +35,12 @@ scheduler.enqueueControl(instance, { name: 'P', kind: 'control', params: [] }, [
 const id: number = irInstance.at(ordinary, 0, []);
 irInstance.cancel(id);
 irInstance.enqueueControl(lifecycle, []);
+const messageId: number = scheduler.enqueueMessage(instance, target, [true, 1]);
+const irMessageId: number = irInstance.enqueueMessage(ordinary, []);
+const contextMessageId: number = context.messageId;
+void [messageId, irMessageId, contextMessageId];
+// @ts-expect-error Lifecycle references cannot enter the ordinary message queue.
+irInstance.enqueueMessage(lifecycle, []);
 // @ts-expect-error Lifecycle references are not ordinary event references.
 irInstance.at(lifecycle, 0, []);
 // @ts-expect-error Ordinary entries cannot enter the privileged control phase.

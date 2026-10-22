@@ -628,6 +628,9 @@ function hookExecutor(inner: Scheduler, hook: () => void): Scheduler {
     enqueueControl(instance, target, args): void {
       inner.enqueueControl(instance, target, args);
     },
+    enqueueMessage(instance, target, args): number {
+      return inner.enqueueMessage(instance, target, args);
+    },
     destroyInstance(instance): void {
       inner.destroyInstance(instance);
     },

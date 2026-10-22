@@ -6,6 +6,7 @@ import type {
   InstructionNode,
   IRModule,
   MemoryDefinition,
+  OutputDefinition,
 } from './types';
 import type {
   IRDiagnosticCode,
@@ -17,7 +18,9 @@ import type {
 export type ModuleModel = Pick<
   IRModule,
   'memories' | 'functions' | 'domainDeclarations' | 'instructions'
->;
+> & {
+  readonly outputs?: readonly OutputDefinition[];
+};
 
 export interface InstructionValidationState {
   readonly module: ModuleModel;
@@ -28,6 +31,7 @@ export interface InstructionValidationState {
   readonly memories: ReadonlyMap<object, MemoryDefinition>;
   readonly functions: ReadonlyMap<object, FunctionDefinition>;
   readonly domains: ReadonlyMap<object, DomainDeclaration>;
+  readonly outputs: ReadonlyMap<object, OutputDefinition>;
   readonly declarations: ReadonlyMap<string, DeclaredInstruction>;
   readonly validators: ReadonlyMap<string, IRInstructionValidator>;
   report(code: IRDiagnosticCode, message: string): void;

@@ -8,6 +8,7 @@ import type { IRStorage } from './storage';
 import type {
   ArrayRef,
   BlockDefinition,
+  BytesOutputRef,
   BytesRef,
   Endian,
   EntryRef,
@@ -18,6 +19,8 @@ import type {
   LifecycleRef,
   MemoryDefinition,
   NumericType,
+  OutputDefinition,
+  OutputRef,
   ReadableBytesRef,
   RuntimeScalar,
   ScalarType,
@@ -41,11 +44,22 @@ export interface IRStepObserver {
   beforeStep(context: IRExecutionContext): void;
 }
 
+/**
+ * Host-side sink for the explicit `bridge.send` / `bridge.send_bytes` instructions.
+ * Calls happen at the instruction, after the payload and virtual time are captured;
+ * the host owns bounded queues and returns `false` when they are full.
+ */
+export interface IRBridgeHost {
+  send(output: OutputRef, payload: readonly (boolean | number)[], timePs: number): boolean;
+  sendBytes(output: BytesOutputRef, bytes: Uint8Array, timePs: number): boolean;
+}
+
 export interface IRInterpreterOptions {
   readonly validation: IRValidationOptions;
   readonly maxSteps?: number;
   readonly eventHost?: IREventHost;
   readonly stepObserver?: IRStepObserver;
+  readonly bridge?: IRBridgeHost;
 }
 
 export interface IRExecutionContext {
@@ -126,6 +140,7 @@ interface Model {
   readonly functions: readonly FunctionDefinition[];
   readonly domainDeclarations: IRModule['domainDeclarations'];
   readonly instructions: IRModule['instructions'];
+  readonly outputs: IRModule['outputs'];
 }
 
 interface Frame {
@@ -152,9 +167,11 @@ export function createIRInterpreter(
   }
   let eventHost: IREventHost | undefined;
   let stepObserver: IRStepObserver | undefined;
+  let bridge: IRBridgeHost | undefined;
   try {
     const host = options.eventHost;
     const observer = options.stepObserver;
+    const bridgeHost = options.bridge;
     if (host !== undefined) {
       eventHost = Object.freeze({
         now: captureHook(host, 'now'),
@@ -164,6 +181,12 @@ export function createIRInterpreter(
     }
     if (observer !== undefined) {
       stepObserver = Object.freeze({ beforeStep: captureHook(observer, 'beforeStep') });
+    }
+    if (bridgeHost !== undefined) {
+      bridge = Object.freeze({
+        send: captureHook(bridgeHost, 'send'),
+        sendBytes: captureHook(bridgeHost, 'sendBytes'),
+      });
     }
   } catch (cause) {
     throw new IRExecutionError('invalid-options', 'Expected synchronous interpreter hooks', {
@@ -180,6 +203,7 @@ export function createIRInterpreter(
       functions: module.functions,
       domainDeclarations: module.domainDeclarations,
       instructions: module.instructions,
+      outputs: module.outputs ?? [],
     };
     model = snapshot(source);
   } catch (cause) {
@@ -203,7 +227,11 @@ export function createIRInterpreter(
   for (const [functionIndex, fn] of model.functions.entries()) {
     for (const [blockIndex, block] of fn.body!.blocks.entries()) {
       for (const [instructionIndex, node] of block.instructions.entries()) {
-        if (!supported.has(node.op) || (node.op.startsWith('event.') && eventHost === undefined)) {
+        if (
+          !supported.has(node.op) ||
+          (node.op.startsWith('event.') && eventHost === undefined) ||
+          (node.op.startsWith('bridge.') && bridge === undefined)
+        ) {
           throw new IRExecutionError('unsupported-instruction', `No executor for ${node.op}`, {
             location: {
               functionIndex,
@@ -235,7 +263,15 @@ export function createIRInterpreter(
   } catch (cause) {
     throw new IRExecutionError('storage-failed', 'Could not allocate instance storage', { cause });
   }
-  return new Interpreter(model.functions, storage, maxSteps, eventHost, stepObserver);
+  return new Interpreter(
+    model.functions,
+    storage,
+    maxSteps,
+    eventHost,
+    stepObserver,
+    bridge,
+    model.outputs,
+  );
 }
 
 function captureHook<T, K extends keyof T>(receiver: T, key: K): T[K] {
@@ -365,6 +401,8 @@ class Interpreter implements IRInterpreter {
   readonly #maxSteps: number;
   readonly #eventHost: IREventHost | undefined;
   readonly #stepObserver: IRStepObserver | undefined;
+  readonly #bridge: IRBridgeHost | undefined;
+  readonly #outputs: ReadonlyMap<object, OutputDefinition>;
   #faulted = false;
 
   constructor(
@@ -373,9 +411,13 @@ class Interpreter implements IRInterpreter {
     maxSteps: number,
     eventHost: IREventHost | undefined,
     stepObserver: IRStepObserver | undefined,
+    bridge: IRBridgeHost | undefined,
+    outputs: readonly OutputDefinition[],
   ) {
     this.#eventHost = eventHost;
     this.#stepObserver = stepObserver;
+    this.#bridge = bridge;
+    this.#outputs = new Map(outputs.map((output) => [output.ref, output]));
     this.#functions = new Map(functions.map((fn) => [fn.ref, fn]));
     this.#indices = new Map(functions.map((fn, index) => [fn, index]));
     this.#maxSteps = maxSteps;
@@ -450,7 +492,9 @@ class Interpreter implements IRInterpreter {
           } else {
             const values = node.op.startsWith('event.')
               ? this.event(node, operands)
-              : evaluateInstruction(node, operands, this.storage);
+              : node.op.startsWith('bridge.')
+                ? this.output(node, operands, capturedContext)
+                : evaluateInstruction(node, operands, this.storage);
             node.results.forEach((value, index) => frame.values.set(value, values[index]!));
             frame.position += 1;
           }
@@ -529,6 +573,51 @@ class Interpreter implements IRInterpreter {
       default:
         throw new Error('Expected a core event instruction');
     }
+  }
+
+  private output(
+    node: InstructionNode,
+    args: readonly RuntimeScalar[],
+    context: IRExecutionContext,
+  ): readonly RuntimeScalar[] {
+    const host = this.#bridge!;
+    const ref = reference(node, 0);
+    const definition = this.#outputs.get(ref);
+    if (definition === undefined) {
+      throw new Error('Bridge output is not declared in this module');
+    }
+    if (node.op === 'bridge.send') {
+      if (definition.kind !== 'scalar-output') {
+        throw new Error('bridge.send requires a scalar output');
+      }
+      if (args.length !== definition.params.length) {
+        throw new Error('bridge.send arguments do not match its output signature');
+      }
+      const payload = args.map((value, index) => {
+        const type = definition.params[index]!;
+        return type === 'f32' || type === 'f64'
+          ? typeof value === 'object'
+            ? toNumber(value)
+            : value
+          : (value as boolean | number);
+      });
+      return [host.send(ref as OutputRef, Object.freeze(payload), context.virtualTime)];
+    }
+    if (definition.kind !== 'bytes-output') {
+      throw new Error('bridge.send_bytes requires a bytes output');
+    }
+    const length = args[1] as number;
+    if (length > definition.maxBytes) {
+      throw new RangeError(
+        `bridge.send_bytes length ${length} exceeds maxBytes ${definition.maxBytes}`,
+      );
+    }
+    const bytes = this.storage.readVersionedBytes(
+      reference(node, 1) as ReadableBytesRef,
+      args[0] as number,
+      length,
+    ).bytes;
+    return [host.sendBytes(ref as BytesOutputRef, bytes, context.virtualTime)];
   }
 
   private frame(fn: FunctionDefinition, args: readonly RuntimeScalar[]): Frame {
