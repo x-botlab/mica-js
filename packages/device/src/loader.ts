@@ -261,6 +261,9 @@ function isDeviceDescription(value: unknown): value is DeviceDescription {
     (value['description'] === undefined || typeof value['description'] === 'string') &&
     value['properties'] instanceof Map &&
     value['ports'] instanceof Map &&
+    value['pins'] instanceof Map &&
+    value['pinGroups'] instanceof Map &&
+    value['connections'] instanceof Map &&
     (value['designatorPrefix'] === undefined || typeof value['designatorPrefix'] === 'string')
   );
 }

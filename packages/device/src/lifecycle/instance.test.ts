@@ -11,7 +11,7 @@ import {
 } from '@mica-js/core';
 import type { ArrayRef, BytesRef, InboxRef, StateRef } from '@mica-js/ir';
 import { DeviceError } from '../errors';
-import type { DeviceAPI, DeviceFactory } from '../types';
+import type { DeviceAPI, DeviceDescription, DeviceFactory } from '../types';
 import { createDeviceInstance } from './instance';
 import { createForTest, expectDeviceError, loadedModule, testDescription } from './test-helpers';
 
@@ -574,6 +574,48 @@ describe('creation failures', () => {
     expect(first.storage.loadState(refs[0]!)).toBe(1);
     expect(second.storage.loadState(refs[1]!)).toBe(2);
     expect(first.props).not.toBe(second.props);
+  });
+
+  it('rejects loaded descriptions without parsed pin maps', () => {
+    const factory: DeviceFactory = () => ({});
+    const base = testDescription();
+    const withoutPins = {
+      name: base.name,
+      displayName: base.displayName,
+      description: base.description,
+      properties: base.properties,
+      ports: base.ports,
+      pinGroups: base.pinGroups,
+      connections: base.connections,
+      designatorPrefix: base.designatorPrefix,
+    } as unknown as DeviceDescription;
+    const withoutPinGroups = {
+      name: base.name,
+      displayName: base.displayName,
+      description: base.description,
+      properties: base.properties,
+      ports: base.ports,
+      pins: base.pins,
+      connections: base.connections,
+      designatorPrefix: base.designatorPrefix,
+    } as unknown as DeviceDescription;
+    const cases: readonly DeviceDescription[] = [
+      withoutPins,
+      withoutPinGroups,
+      { ...base, pins: {} as unknown as DeviceDescription['pins'] },
+      { ...base, pins: [] as unknown as DeviceDescription['pins'] },
+      { ...base, pinGroups: {} as unknown as DeviceDescription['pinGroups'] },
+      { ...base, connections: {} as unknown as DeviceDescription['connections'] },
+    ];
+    for (const description of cases) {
+      expectDeviceError(
+        () =>
+          createDeviceInstance({ deviceId: 'acme:test', description, factory }, createScheduler(), {
+            instanceId: 'pin-maps',
+          }),
+        'device/instance-invalid',
+      );
+    }
   });
 
   it('rejects invalid options, schedulers and duplicate instance ids', () => {

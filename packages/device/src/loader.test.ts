@@ -50,6 +50,10 @@ describe('loadDeviceModule', () => {
       expect(loaded.description.displayName).toBe('acme:demo');
       expect(loaded.description.properties.get('label')?.default).toBe('Display');
       expect(loaded.description.ports.get('frame')?.type).toBe('bytes<rgb565>');
+      expect(loaded.description.pins).toBeInstanceOf(Map);
+      expect(loaded.description.pins.size).toBe(0);
+      expect(loaded.description.pinGroups).toBeInstanceOf(Map);
+      expect(loaded.description.pinGroups.size).toBe(0);
       expect(loaded.description.designatorPrefix).toBe('U');
       expect(typeof loaded.factory).toBe('function');
     } finally {
@@ -339,6 +343,56 @@ describe('loadDeviceModule', () => {
       }),
       'device/provider-failed',
     );
+  });
+
+  it('rejects descriptions without parsed pin maps', async () => {
+    const code = 'export default function createDevice() {}';
+    const withoutPins = {
+      name: DESCRIPTION.name,
+      displayName: DESCRIPTION.displayName,
+      description: DESCRIPTION.description,
+      properties: DESCRIPTION.properties,
+      ports: DESCRIPTION.ports,
+      pinGroups: DESCRIPTION.pinGroups,
+      connections: DESCRIPTION.connections,
+      designatorPrefix: DESCRIPTION.designatorPrefix,
+    } as unknown as DeviceDescription;
+    const withoutPinGroups = {
+      name: DESCRIPTION.name,
+      displayName: DESCRIPTION.displayName,
+      description: DESCRIPTION.description,
+      properties: DESCRIPTION.properties,
+      ports: DESCRIPTION.ports,
+      pins: DESCRIPTION.pins,
+      connections: DESCRIPTION.connections,
+      designatorPrefix: DESCRIPTION.designatorPrefix,
+    } as unknown as DeviceDescription;
+    const cases: readonly DeviceDescription[] = [
+      withoutPins,
+      withoutPinGroups,
+      {
+        ...DESCRIPTION,
+        pins: {} as unknown as DeviceDescription['pins'],
+      },
+      {
+        ...DESCRIPTION,
+        pins: [] as unknown as DeviceDescription['pins'],
+      },
+      {
+        ...DESCRIPTION,
+        pinGroups: {} as unknown as DeviceDescription['pinGroups'],
+      },
+      {
+        ...DESCRIPTION,
+        connections: {} as unknown as DeviceDescription['connections'],
+      },
+    ];
+    for (const definition of cases) {
+      await expectCode(
+        loadDeviceModule('acme:demo', providerOf(definition, code)),
+        'device/provider-failed',
+      );
+    }
   });
 
   it('wraps provider I/O errors as provider-failed with the cause', async () => {

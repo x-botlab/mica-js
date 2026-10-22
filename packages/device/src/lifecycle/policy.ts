@@ -14,12 +14,13 @@ import type { DeviceConnectionDescriptor } from '../connection/types';
  * Every instruction used by the factory is offered to validation; declared domain instructions
  * without a trusted validator still fail at link time. Writable byte resources additionally
  * receive the independent update grant required by `resource.update_bytes` /
- * `resource.fill_bytes`. Connection declarations receive a write grant only when the device
- * description declares the same id.
+ * `resource.fill_bytes`. Pin declarations receive a read-write grant; connection declarations
+ * receive a write grant only when the device description declares the same id.
  */
 export function createValidationPolicy(
   module: IRModule,
   connections: ReadonlyMap<string, DeviceConnectionDescriptor> = new Map(),
+  pinValidators: readonly IRInstructionValidator[] = [],
 ): IRValidationOptions {
   const instructions = new Set<string>();
   for (const fn of module.functions) {
@@ -44,11 +45,15 @@ export function createValidationPolicy(
     }
   }
   for (const declaration of module.domainDeclarations) {
+    if (declaration.kind === 'pin') {
+      resources.push({ ref: declaration.ref, access: 'read-write' });
+      continue;
+    }
     if (declaration.kind !== 'connection' || !connections.has(declaration.name)) continue;
     resources.push({ ref: declaration.ref, access: 'write' });
   }
   const names = Object.freeze([...instructions]);
-  const validators: IRInstructionValidator[] = [];
+  const validators: IRInstructionValidator[] = [...pinValidators];
   if (instructions.has('connection.apply')) {
     validators.push(connectionValidator(module, connections));
   }

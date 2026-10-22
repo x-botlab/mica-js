@@ -1,3 +1,5 @@
+import './pins/augment';
+
 export { DeviceError } from './errors';
 export type { DeviceErrorCode, DeviceErrorOptions } from './errors';
 
@@ -11,7 +13,6 @@ export type {
   ConnectionRef,
   DeviceConnectionDescriptor,
   DeviceConnectionOptions,
-  DeviceIRDeclarations,
 } from './connection/types';
 
 export type {
@@ -24,9 +25,18 @@ export type {
   DeviceInstance,
   DeviceInstanceOptions,
   DeviceInstanceState,
+  DeviceIRDeclarations,
+  DevicePinDescriptor,
+  DevicePinGroupDescriptor,
+  DevicePinHost,
   DevicePortDescriptor,
   DevicePropertySnapshot,
   IDeviceProvider,
   LoadedDeviceModule,
+  PinConfig,
+  PinKind,
+  PinOperations,
+  PinRef,
+  PinSide,
   TopicPayloadType,
 } from './types';
