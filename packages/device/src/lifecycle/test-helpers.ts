@@ -46,6 +46,7 @@ export function createForTest(
     instanceId: options.instanceId ?? 'device-instance',
     ...(options.properties === undefined ? {} : { properties: options.properties }),
     ...(options.pinHost === undefined ? {} : { pinHost: options.pinHost }),
+    ...(options.connections === undefined ? {} : { connections: options.connections }),
   });
   return { instance, scheduler, description };
 }

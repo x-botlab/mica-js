@@ -89,8 +89,8 @@ function interpreterFor(module: IRModule, domain: PinDomain, host: DevicePinHost
   return {
     runtime,
     interpreter: createIRInterpreter(module, {
-      validation: createValidationPolicy(module, domain.validators()),
-      instructionExecutors: runtime.executors(),
+      validation: createValidationPolicy(module, new Map(), domain.validators()),
+      executors: runtime.executors(),
     }),
   };
 }
@@ -224,7 +224,7 @@ describe('pin declarations and builder operations', () => {
       b.invoke(instructions.sampleDigital, [vdd]);
       b.return([]);
     });
-    const validation = createValidationPolicy(module, domain.validators());
+    const validation = createValidationPolicy(module, new Map(), domain.validators());
     try {
       createIRInterpreter(module, { validation });
       throw new Error('Expected validation failure');

@@ -2,8 +2,8 @@ import {
   createIRInterpreter,
   createIRModule,
   type IRBuilderExtension,
+  type IRInstructionExecution,
   type IRInstructionExecutor,
-  type IRInstructionExecutorContext,
   type IRInterpreterOptions,
   type IRModuleOptions,
   type IRValidationOptions,
@@ -23,11 +23,11 @@ const module = createIRModule(moduleOptions);
 
 const executor: IRInstructionExecutor = {
   op: 'pin.sample',
-  execute: (context: IRInstructionExecutorContext): readonly RuntimeScalar[] => context.operands,
+  execute: (request: IRInstructionExecution): readonly RuntimeScalar[] => request.operands,
 };
 const options: IRInterpreterOptions = {
   validation,
-  instructionExecutors: [executor],
+  executors: [executor],
 };
 createIRInterpreter(module, options);
 
@@ -37,6 +37,6 @@ const missingNamespace: IRBuilderExtension = { create: () => ({}) };
 const invalidCreate: IRBuilderExtension = { namespace: 'pin', create: () => 1 };
 // @ts-expect-error an executor must return scalar results
 const invalidExecutor: IRInstructionExecutor = { op: 'pin.sample', execute: () => 'nope' };
-// @ts-expect-error instructionExecutors accepts only executors
-createIRInterpreter(module, { validation, instructionExecutors: [{}] });
+// @ts-expect-error executors accepts only executor objects
+createIRInterpreter(module, { validation, executors: [{}] });
 void [missingNamespace, invalidCreate, invalidExecutor];

@@ -1,6 +1,11 @@
 import type { PropertyDescriptor, PropertyValue } from '@mica-js/core/schematic';
 import type { ElectricalPinInput, PowerDigitalSample, TopologyPinRef } from '@mica-js/core';
 import type { IRDeclarations, IRStorage, LifecycleRef, StaticRef, Value } from '@mica-js/ir';
+import type {
+  ConnectionRef,
+  DeviceConnectionDescriptor,
+  DeviceConnectionOptions,
+} from './connection/types';
 
 /** Payload types of logical topic ports (#10). */
 export const TOPIC_PAYLOAD_TYPES = [
@@ -68,6 +73,7 @@ export interface DeviceDescription {
   readonly ports: ReadonlyMap<string, DevicePortDescriptor>;
   readonly pins: ReadonlyMap<string, DevicePinDescriptor>;
   readonly pinGroups: ReadonlyMap<string, DevicePinGroupDescriptor>;
+  readonly connections: ReadonlyMap<string, DeviceConnectionDescriptor>;
   readonly designatorPrefix: string | undefined;
 }
 
@@ -95,9 +101,10 @@ export interface PinOperations {
   sampleDigital(pin: PinRef): Value<'u32'>;
 }
 
-/** Instance declaration surface: core declarations plus this device's physical pins. */
+/** Instance declaration surface: core declarations plus this device's pins and connections. */
 export interface DeviceIRDeclarations extends IRDeclarations {
   pin(id: string): PinRef;
+  connection(id: string): ConnectionRef;
 }
 
 /** Instance-level factory context (#8). Only static declarations and the fixed props exist here. */
@@ -117,8 +124,8 @@ export interface DeviceBindings {
 
 /**
  * Synchronous device factory. It runs once per instance, builds the static IR and returns the
- * lifecycle bindings. Message bridge, observation and connection APIs belong to later
- * device-layer tasks and are intentionally absent from {@link DeviceAPI}.
+ * lifecycle bindings. Message bridge and observation APIs belong to later device-layer tasks; the
+ * pin and connection author surfaces are exposed through {@link DeviceAPI.ir} and the builder.
  */
 export type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
 
@@ -143,6 +150,11 @@ export interface DeviceInstanceOptions {
   readonly properties?: Readonly<Record<string, PropertyValue>>;
   /** Held-intent and gated-sampling source for declared pins; required by pin instructions. */
   readonly pinHost?: DevicePinHost;
+  /**
+   * Connection topology bound to this instance. Required when the IR applies connections;
+   * the topology must share this instance's scheduler and outlive the instance.
+   */
+  readonly connections?: DeviceConnectionOptions;
 }
 
 /**

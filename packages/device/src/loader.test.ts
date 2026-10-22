@@ -354,6 +354,7 @@ describe('loadDeviceModule', () => {
       properties: DESCRIPTION.properties,
       ports: DESCRIPTION.ports,
       pinGroups: DESCRIPTION.pinGroups,
+      connections: DESCRIPTION.connections,
       designatorPrefix: DESCRIPTION.designatorPrefix,
     } as unknown as DeviceDescription;
     const withoutPinGroups = {
@@ -363,6 +364,7 @@ describe('loadDeviceModule', () => {
       properties: DESCRIPTION.properties,
       ports: DESCRIPTION.ports,
       pins: DESCRIPTION.pins,
+      connections: DESCRIPTION.connections,
       designatorPrefix: DESCRIPTION.designatorPrefix,
     } as unknown as DeviceDescription;
     const cases: readonly DeviceDescription[] = [
@@ -379,6 +381,10 @@ describe('loadDeviceModule', () => {
       {
         ...DESCRIPTION,
         pinGroups: {} as unknown as DeviceDescription['pinGroups'],
+      },
+      {
+        ...DESCRIPTION,
+        connections: {} as unknown as DeviceDescription['connections'],
       },
     ];
     for (const definition of cases) {

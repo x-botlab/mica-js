@@ -80,6 +80,16 @@ export function createIRModule(options?: IRModuleOptions): IRModule {
   return new IRModuleImpl(options);
 }
 
+function listLength(value: unknown, name: string, index: number): { readonly minLength?: number } {
+  if (value === undefined) {
+    return {};
+  }
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    fail(`Instruction "${name}" operand ${index} minLength must be a non-negative integer`);
+  }
+  return { minLength: value as number };
+}
+
 class IRModuleImpl implements IRModule {
   private readonly core: ModuleState;
 
@@ -272,9 +282,6 @@ class IRModuleImpl implements IRModule {
     const R extends readonly ScalarType[],
   >(name: string, definition: DomainInstructionDefinition<O, R>): DomainInstruction<O, R> {
     assertName(name, 'Instruction');
-    if (name === 'event' || name.startsWith('event.')) {
-      fail(`Instruction "${name}" uses the reserved event namespace`);
-    }
     if (this.core.instructionNames.has(name)) {
       fail(`Instruction "${name}" is already declared or reserved by the core`);
     }
@@ -299,6 +306,22 @@ class IRModuleImpl implements IRModule {
           return { kind: 'static' as const, category: operand.category };
         case 'literal':
           return { kind: 'literal' as const };
+        case 'value-list':
+          assertScalarType(operand.type, `Instruction "${name}" operand ${index} type`);
+          return {
+            kind: 'value-list' as const,
+            type: operand.type,
+            ...listLength(operand.minLength, name, index),
+          };
+        case 'static-list':
+          if (typeof operand.category !== 'string' || operand.category.length === 0) {
+            fail(`Instruction "${name}" operand ${index} static category must be non-empty`);
+          }
+          return {
+            kind: 'static-list' as const,
+            category: operand.category,
+            ...listLength(operand.minLength, name, index),
+          };
         default:
           fail(`Instruction "${name}" operand ${index} has an unknown kind`);
       }

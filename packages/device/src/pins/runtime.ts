@@ -1,5 +1,5 @@
 import type { ElectricalPinInput } from '@mica-js/core';
-import type { IRInstructionExecutor, IRInstructionExecutorContext, IRModule } from '@mica-js/ir';
+import type { IRInstructionExecution, IRInstructionExecutor, IRModule } from '@mica-js/ir';
 import { DeviceError } from '../errors';
 import type { DevicePinHost, PinRef } from '../types';
 import type { PinCatalog } from './catalog';
@@ -107,7 +107,7 @@ export class PinRuntime {
     this.#states.clear();
   }
 
-  #configure(context: IRInstructionExecutorContext): readonly [] {
+  #configure(context: IRInstructionExecution): readonly [] {
     const key = this.#key(context);
     const mode = literal(context, 1);
     const outputEnabled = literal(context, 2);
@@ -132,7 +132,7 @@ export class PinRuntime {
     return [];
   }
 
-  #writeDigital(context: IRInstructionExecutorContext): readonly [] {
+  #writeDigital(context: IRInstructionExecution): readonly [] {
     const key = this.#key(context);
     const level = context.operands[0];
     if (typeof level !== 'boolean') {
@@ -148,7 +148,7 @@ export class PinRuntime {
     return [];
   }
 
-  #sampleDigital(context: IRInstructionExecutorContext): readonly [number] {
+  #sampleDigital(context: IRInstructionExecution): readonly [number] {
     const key = this.#key(context);
     const host = this.#host;
     if (host === undefined) {
@@ -158,7 +158,7 @@ export class PinRuntime {
     return [sample.value];
   }
 
-  #key(context: IRInstructionExecutorContext): string {
+  #key(context: IRInstructionExecution): string {
     const operand = context.instruction.operands[0];
     if (operand?.kind !== 'static') {
       throw new TypeError('pin instruction requires a static pin reference');
@@ -222,7 +222,7 @@ const MODES: readonly ElectricalPinInput['mode'][] = [
 const PULLS: readonly ElectricalPinInput['pull'][] = ['none', 'up', 'down'];
 
 function literal(
-  context: IRInstructionExecutorContext,
+  context: IRInstructionExecution,
   index: number,
 ): boolean | number | string | undefined {
   const operand = context.instruction.operands[index];

@@ -586,6 +586,7 @@ describe('creation failures', () => {
       properties: base.properties,
       ports: base.ports,
       pinGroups: base.pinGroups,
+      connections: base.connections,
       designatorPrefix: base.designatorPrefix,
     } as unknown as DeviceDescription;
     const withoutPinGroups = {
@@ -595,6 +596,7 @@ describe('creation failures', () => {
       properties: base.properties,
       ports: base.ports,
       pins: base.pins,
+      connections: base.connections,
       designatorPrefix: base.designatorPrefix,
     } as unknown as DeviceDescription;
     const cases: readonly DeviceDescription[] = [
@@ -603,6 +605,7 @@ describe('creation failures', () => {
       { ...base, pins: {} as unknown as DeviceDescription['pins'] },
       { ...base, pins: [] as unknown as DeviceDescription['pins'] },
       { ...base, pinGroups: {} as unknown as DeviceDescription['pinGroups'] },
+      { ...base, connections: {} as unknown as DeviceDescription['connections'] },
     ];
     for (const description of cases) {
       expectDeviceError(

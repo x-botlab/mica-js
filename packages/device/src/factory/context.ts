@@ -1,4 +1,6 @@
 import type { IRModule } from '@mica-js/ir';
+import { createConnectionSupport } from '../connection/builder';
+import type { DeviceConnectionDescriptor } from '../connection/types';
 import { DeviceError } from '../errors';
 import type { PinDomain } from '../pins/domain';
 import type { DeviceAPI, DeviceIRDeclarations, DevicePropertySnapshot, PinRef } from '../types';
@@ -28,6 +30,7 @@ export function createFactoryContext(
   module: IRModule,
   deviceId: string,
   pins: PinDomain,
+  connections: ReadonlyMap<string, DeviceConnectionDescriptor>,
 ): FactoryContext {
   let open = true;
   const failClosed = (operation: string): never => {
@@ -37,6 +40,7 @@ export function createFactoryContext(
       { deviceId },
     );
   };
+  const connectionSupport = createConnectionSupport(module, connections, deviceId);
   const ir = new Proxy(module, {
     get(target, property) {
       if (property === 'pin') {
@@ -45,6 +49,14 @@ export function createFactoryContext(
             return failClosed('pin');
           }
           return pins.catalog.declare(module, id, deviceId);
+        };
+      }
+      if (property === 'connection') {
+        return (...args: unknown[]): unknown => {
+          if (!open) {
+            return failClosed(property);
+          }
+          return connectionSupport.declare(args[0]);
         };
       }
       if (typeof property !== 'string' || !DECLARATION_METHODS.has(property)) {
@@ -58,7 +70,15 @@ export function createFactoryContext(
         if (!open) {
           return failClosed(property);
         }
-        return Reflect.apply(method, target, args);
+        const result = Reflect.apply(method, target, args);
+        if (
+          (property === 'func' || property === 'entry' || property === 'lifecycle') &&
+          typeof result === 'object' &&
+          result !== null
+        ) {
+          connectionSupport.decorateFunctionRef(result);
+        }
+        return result;
       };
     },
     set(_target, property) {

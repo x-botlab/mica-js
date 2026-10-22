@@ -6,6 +6,8 @@ import type {
   FunctionRef,
   GeneratedFunctionBuilder,
   IRDeclarations,
+  IRInstructionExecution,
+  IRInstructionExecutor,
   IRModule,
   LifecycleRef,
   ScalarType,
@@ -106,6 +108,33 @@ const setLed = module.domainInstruction('led.set', {
   results: [],
 });
 b.invoke(setLed, [led, bool]);
+
+const listInstruction = module.domainInstruction('led.lists', {
+  operands: [
+    { kind: 'static-list', category: 'led', minLength: 1 },
+    { kind: 'value-list', type: 'bool', minLength: 1 },
+  ],
+  results: [],
+});
+b.invoke(listInstruction, [
+  [led, led],
+  [bool, bool],
+]);
+// @ts-expect-error Static-list elements must match the declared category.
+b.invoke(listInstruction, [[led, u32], [bool]]);
+// @ts-expect-error Value-list elements must match the declared scalar type.
+b.invoke(listInstruction, [[led], [u32]]);
+// @ts-expect-error A scalar operand is not an operand list.
+b.invoke(listInstruction, [led, bool]);
+
+const executor: IRInstructionExecutor = {
+  op: 'led.lists',
+  execute(request: IRInstructionExecution): readonly [] {
+    expectType<readonly (boolean | number | object)[]>(request.operands);
+    return [];
+  },
+};
+void executor;
 
 // @ts-expect-error A lifecycle reference is not an ordinary entry.
 const lifecycleAsEntry: EntryRef<readonly []> = initialize;

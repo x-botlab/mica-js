@@ -102,6 +102,13 @@ class Validator {
     return false;
   }
 
+  private minimum(value: unknown, location: IRDiagnosticLocation): boolean {
+    if (value === undefined) return true;
+    if (Number.isSafeInteger(value) && (value as number) >= 0) return true;
+    this.report('malformed-input', 'Expected a non-negative integer list length', location);
+    return false;
+  }
+
   private types(value: unknown, location: IRDiagnosticLocation): boolean {
     if (!this.array(value, location)) return false;
     for (const type of value) {
@@ -222,11 +229,13 @@ class Validator {
       if (this.array(instruction.operands, location)) {
         for (const operand of instruction.operands) {
           if (!this.record(operand, location)) continue;
-          if (operand.kind === 'value') {
+          if (operand.kind === 'value' || operand.kind === 'value-list') {
             if (!isScalarType(operand.type))
               this.report('type-mismatch', 'Invalid operand scalar type', location);
-          } else if (operand.kind === 'static') {
+            if (operand.kind === 'value-list') this.minimum(operand.minLength, location);
+          } else if (operand.kind === 'static' || operand.kind === 'static-list') {
             this.name(operand.category, location);
+            if (operand.kind === 'static-list') this.minimum(operand.minLength, location);
           } else if (operand.kind !== 'literal') {
             this.report('malformed-input', 'Invalid operand schema', location);
           }
@@ -271,7 +280,15 @@ class Validator {
               if (!this.record(operand, at)) continue;
               if (operand.kind === 'ssa') this.value(operand.value, at);
               else if (operand.kind === 'static') this.ref(operand.ref, at);
-              else if (
+              else if (operand.kind === 'ssa-list') {
+                if (this.array(operand.values, at)) {
+                  for (const value of operand.values) this.value(value, at);
+                }
+              } else if (operand.kind === 'static-list') {
+                if (this.array(operand.refs, at)) {
+                  for (const ref of operand.refs) this.ref(ref, at);
+                }
+              } else if (
                 operand.kind !== 'literal' ||
                 !['boolean', 'number', 'string'].includes(typeof operand.value)
               ) {
@@ -433,8 +450,12 @@ class Validator {
             path: `${location.path}.instructions[${ii}]`,
             instructionIndex: ii,
           };
-          for (const operand of node.operands)
+          for (const operand of node.operands) {
             if (operand.kind === 'ssa') use(operand.value, ii, at);
+            else if (operand.kind === 'ssa-list') {
+              for (const value of operand.values) use(value, ii, at);
+            }
+          }
           if (terminators.has(node.op)) {
             this.report(
               'invalid-terminator',

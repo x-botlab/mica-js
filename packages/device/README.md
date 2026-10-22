@@ -2,7 +2,7 @@
 
 器件层入口：解析已加载的器件描述、通过宿主 `IDeviceProvider` 加载同步 JS 工厂，并为每个实例提供独立、递归只读的属性快照、工厂上下文与内核驱动的生命周期。
 
-本包负责**描述对象解析、#10 端口校验、#7 属性默认值/值校验、#12 引脚与固定组声明、#25 数字引脚 I/O、JS 工厂导出形式校验、属性快照、实例级 `api.ir` / `api.props` 上下文及 initialize/reset/onDispose 生命周期**。不负责文件定位、文件读取、缺失文件诊断或 JSON 语法解析；这些由宿主 `IDeviceProvider` 实现。消息桥接、观察与连接分别留给 #54、#56、#57。
+本包负责**描述对象解析、#10 端口校验、#7 属性默认值/值校验、#12 引脚与固定组声明、#25 数字引脚 I/O、JS 工厂导出形式校验、属性快照、实例级 `api.ir` / `api.props` 上下文、initialize/reset/onDispose 生命周期，以及 #57 的连接作者接口与拓扑接入**。不负责文件定位、文件读取、缺失文件诊断或 JSON 语法解析；这些由宿主 `IDeviceProvider` 实现。消息桥接与观察分别留给 #54 与 #56。
 
 ## 安装
 
@@ -26,7 +26,9 @@ pnpm add @mica-js/device
 | `DeviceInstance` / `DeviceInstanceOptions` / `DeviceInstanceState` | 宿主实例句柄、pin host 注入与状态                             |
 | `DevicePinHost`                                                    | 消费 #51 `pinIntent` / `updatePinStates` / `sampleDigital`    |
 | `PinRef` / `PinConfig` / `PinOperations`                           | 引脚静态引用、配置与 `b.pin` 建图类型                         |
-| `DeviceDescription` 等类型                                         | 描述、端口、引脚、工厂与加载结果                              |
+| `DeviceDescription` 等类型                                         | 描述、端口、引脚、连接、工厂与加载结果                        |
+| `DeviceConnectionDescriptor` / `DeviceConnectionOptions`           | 连接声明与实例的 topology 绑定                                |
+| `ConnectionRef` / `ConnectionOperations`                           | `api.ir.connection` 的静态句柄与 `b.connection` 操作组        |
 
 不导出文件路径 helper、文件缺失错误码、JSON 语法错误码或属性更新接口。
 
@@ -75,10 +77,15 @@ const description = parseDeviceDescription(
     pins: {
       VDD: { kind: 'power', side: 'top' },
       GND: { kind: 'gnd', side: 'bottom' },
+      A: { kind: 'signal' },
+      B: { kind: 'signal' },
       OUT: { kind: 'signal', side: 'right' },
       IN: { kind: 'signal', powerDomain: 'io', levels: { low: 0.3, high: 0.7 } },
     },
     pinGroups: { data: { pins: ['OUT', 'IN'] } },
+    connections: {
+      contact: { pins: ['A', 'B'], initial: 'open' },
+    },
     designatorPrefix: 'U',
   },
   { name: 'acme:display', displayName: '显示屏', description: '示例显示器件' },
@@ -90,9 +97,10 @@ const description = parseDeviceDescription(
 - `ports` 按 #10 校验：方向必须是 `input` / `output`，载荷类型取自封闭清单，未知字段报 `schema/unknown-field`，未知类型报 `type/unknown`。
 - `pins` 按 #12 校验：`kind` 必须是 `power` / `gnd` / `signal`，`side` 缺省 `left`；`powerDomain` 只允许出现在 `signal` 引脚，`levels` 必须与 `powerDomain` 同时出现并满足 `0 <= low < high <= 1`。引脚键与成员名大小写精确、不得为空。
 - `pinGroups` 按 #12 校验：成员非空、唯一且必须引用已声明引脚；组本身只保存固定顺序，不做电气推断。
+- `connections` 按 #14 校验：键非空；每项是纯对象且只含 `pins` / `initial`；`pins` 必须是两个互异、已在同一描述 `pins` 键声明的引脚 ID；`initial` 取 `open` / `closed`，省略时为 `open`。引脚描述本身（`kind` 等）由 #55 校验，本层只读取引脚键用于连接端点检查。
 - `designatorPrefix` 去除首尾空白；空字符串视为未声明。
 - 顶层未知字段被忽略；定义对象只接受已解析对象，JSON 文本与语法错误属于 provider。
-- 定义、`properties`、`ports`、单端口与属性覆盖都必须是纯对象；`Map`、`Set`、`Date`、class 实例不会被当作空记录。`Object.create(null)` 与跨 realm 的普通对象仍被接受。
+- 定义、`properties`、`ports`、单端口、引脚、连接与属性覆盖都必须是纯对象；`Map`、`Set`、`Date`、class 实例不会被当作空记录。`Object.create(null)` 与跨 realm 的普通对象仍被接受。
 
 ## 属性快照
 
@@ -139,6 +147,8 @@ const instance = createDeviceInstance(loaded, scheduler, {
   properties: { label: 'LCD' },
   // 声明并使用引脚时必填；PowerRuntime 结构上满足 DevicePinHost。
   // pinHost: powerRuntime,
+  // 仅当器件 IR 使用 connection.apply 时需要；topology 必须使用同一 scheduler。
+  // connections: { topology },
 });
 
 expect(instance.state).toBe('initializing');
@@ -151,7 +161,7 @@ expect(instance.state).toBe('ready');
 ```ts
 interface DeviceAPI {
   readonly props: DevicePropertySnapshot;
-  readonly ir: DeviceIRDeclarations; // IRDeclarations & { pin(id: string): PinRef }
+  readonly ir: DeviceIRDeclarations;
 }
 interface DeviceBindings {
   readonly initialize?: LifecycleRef<readonly []>;
@@ -161,8 +171,8 @@ interface DeviceBindings {
 type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
 ```
 
-- 同步工厂每次创建只调用一次。`api.ir` 暴露 `state/array/bytes/inbox/func/entry/lifecycle` 与本器件声明的 `pin(id)`；工厂返回**或抛出**后立即封闭，任何后续声明或结构写入报 `device/factory-closed`。工厂不能通过上下文取得原始 `IRModule`、执行器或调度器。
-- `b.pin` 通过 `@mica-js/ir` 的 `FunctionBuilder` 模块增强获得类型；运行期由本包为 device 模块注册的 builder extension 提供，普通函数、生命周期与嵌套块共用同一组方法。直接使用裸 `createIRModule()` 的模块不会自动获得该命名空间。
+- 同步工厂每次创建只调用一次。`api.ir` 暴露 `state/array/bytes/inbox/func/entry/lifecycle` 与本器件声明的 `pin(id)` / `connection(id)`；工厂返回**或抛出**后立即封闭，任何后续声明或结构写入报 `device/factory-closed`。工厂不能通过上下文取得原始 `IRModule`、执行器或调度器。
+- `b.pin` 通过 `@mica-js/ir` 的 `FunctionBuilder` 模块增强获得类型；运行期由本包为 device 模块注册的 builder extension 提供，普通函数、生命周期与嵌套块共用同一组方法。`b.connection` 由 #57 的装饰路径提供。直接使用裸 `createIRModule()` 的模块不会自动获得这些命名空间。
 - `api.props` 是创建时解析默认值后的独立、递归只读快照；运行期不可修改，不提供更新接口、自动重建或 `onPropsChanged`。需要另一组属性时由宿主显式创建新实例。
 - 工厂返回值必须是纯对象，只允许 `initialize` / `reset` / `onDispose` 三个字段。生命周期引用必须属于本次工厂声明的模块、类别为 `lifecycle`、零参数；同一引用同时绑定 initialize 与 reset 拒绝。`onDispose` 必须是同步普通函数（拒绝 async/generator/class），运行时还要求返回 `undefined`。
 - 工厂返回 Promise/thenable 或默认导出为 async/async generator 报 `device/factory-async`；普通函数抛出、非普通函数或非法返回形状分别报 `device/factory-failed` / `device/lifecycle-binding`。
@@ -175,7 +185,7 @@ type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
 - `instance.storage` 是受控句柄；销毁后 getter 与所有存储访问器都抛 `device/instance-destroyed`，且句柄释放自身对内核存储的引用。
 - `instance.state` 为 `initializing | ready | faulted | destroying | destroyed`，作为后续 #54 订阅/输出监听激活的门控基础。
 
-#53 **不实现** `api.subscribe/publish/post/postBytes/onOutput/updateBytes`、IR output / `bridge.send` 或有界外发队列；这些由 #54 接入。初始化期间的外发暂存与监听派发因此尚不存在，本包不以空实现冒充。`api.ir` 也不暴露原始 `IRModule.functions/memories` 或 domain 声明/指令面；引脚领域由 #55 接入，观察与连接分别留给 #56/#57。
+#53 **不实现** `api.subscribe/publish/post/postBytes/onOutput/updateBytes`、IR output / `bridge.send` 或有界外发队列；这些由 #54 接入。初始化期间的外发暂存与监听派发因此尚不存在，本包不以空实现冒充。`api.ir` 也不暴露原始 `IRModule.functions/memories` 或通用 domain 声明/指令面；引脚领域由 #55 接入，观察能力留给 #56。
 
 ## 引脚声明与数字 I/O
 
@@ -207,38 +217,61 @@ const factory: DeviceFactory = (api) => {
 - 销毁时按链接期捕获的宿主意图尽力恢复被引用引脚，避免已销毁实例继续驱动电路。
 - #25 的电压写入/采样、`set_*` / `get_*`、引脚组 `port.*` I/O、观察与连接不在本批作者面；这些能力不会被静默降级为空操作。
 
+## 连接作者接口与拓扑提交
+
+```ts
+const initialize = api.ir.lifecycle('initialize', []);
+const pressed = api.ir.state('pressed', 'bool', false);
+const contact = api.ir.connection('contact');
+
+initialize.body((b) => {
+  b.connection.apply([{ connection: contact, closed: b.state.load(pressed) }]);
+  b.return([]);
+});
+```
+
+- `api.ir.connection(id)` 只解析描述中已声明的连接，返回静态 `ConnectionRef`；重复调用返回同一句柄。不存在、空 ID 或在工厂封闭后调用分别报 `device/connection-unknown` / `device/connection-invalid` / `device/factory-closed`。没有状态查询或直接更新入口。
+- `b.connection.apply([{ connection, closed }])` 把建图时固定的对象列表降低为一份 `connection.apply` 指令：`static-list` 连接引用与等长 `value-list` bool SSA。普通函数、生命周期及嵌套块使用同一写法。空列表、同一 patch 重复连接、非 bool SSA、跨实例句柄与未知连接在提交前拒绝（`device/connection-invalid` / `device/connection-unknown`）。
+- 未绑定 `DeviceInstanceOptions.connections.topology` 时，含 `connection.apply` 的程序在链接期报 `device/connection-unavailable`。绑定时，使用的连接必须由该 topology 为当前 `instanceId` 声明，否则报 `device/connection-unknown`。
+- 执行 apply 时按值捕获全部 bool，只调用一次 `topology.submit({ instanceId, connections })`；不在入口中推进时间、创建事件或重入 JS。拓扑在下一个合法控制阶段整体应用；同一入口的后续指令不能假定新拓扑已解析。
+- 多触点 patch 不暴露中间拓扑；同刻多份 patch 按提交顺序稳定执行。电气冲突或拓扑控制失败不回滚已提交的拓扑状态，按 #50 的 fault 语义上抛。
+- topology 被销毁后继续提交报 `device/connection-unavailable`；实例销毁会移除其待执行入口，不再提交连接。`destroy()` 不会销毁宿主拥有的 topology。
+
 ## 错误码
 
-| 错误码                         | 含义                                                                           |
-| ------------------------------ | ------------------------------------------------------------------------------ |
-| `device/device-unknown`        | provider 返回 `undefined`，或 device id 为空                                   |
-| `device/provider-failed`       | provider 抛非 `DeviceError`、未实现 `resolve` 或结果违约；`cause` 保留原始异常 |
-| `device/description-schema`    | 定义容器、metadata 或 `designatorPrefix` 形状错误                              |
-| `device/implementation-import` | 代码字符串不是可加载的 ES 模块                                                 |
-| `device/implementation-export` | 默认导出不是普通同步函数（含 generator / class）                               |
-| `device/implementation-async`  | 默认导出声明为 async / async generator                                         |
-| `device/factory-failed`        | 工厂抛出非 `DeviceError`、不是普通函数或调用失败；`cause` 保留原始异常         |
-| `device/factory-async`         | 工厂为 async/async generator，或返回 Promise/thenable                          |
-| `device/factory-closed`        | 工厂返回/抛出后尝试继续声明或写入 `api.ir`                                     |
-| `device/lifecycle-binding`     | 返回值/字段/生命周期引用/重复绑定/`onDispose` 形状不合法                       |
-| `device/lifecycle-unsupported` | 未绑定 reset 却请求复位                                                        |
-| `device/pin-unknown`           | `api.ir.pin` 引用未声明或空的引脚 id                                           |
-| `device/pin-io-unavailable`    | 使用引脚 I/O 但缺少 pin host，或宿主未声明/拒绝被引用引脚                      |
-| `device/link-failed`           | IR 校验、链接或不支持的指令；`cause` 保留 `IRExecutionError`                   |
-| `device/instance-invalid`      | 创建选项、已加载模块、scheduler 或实例标识不合法                               |
-| `device/instance-busy`         | 非法生命周期操作或重入冲突（初始化未完成、故障、运行中销毁等）                 |
-| `device/instance-destroyed`    | 销毁后访问 `storage` 或请求 reset                                              |
-| `device/dispose-failed`        | 内核清理完成后 `onDispose` 抛错、返回 Promise 或非 `undefined`                 |
-| `schema/invalid-type`          | #7/#10/#12 字段类型错误                                                        |
-| `schema/invalid-value`         | #7/#10/#12 字段取值错误                                                        |
-| `schema/unknown-field`         | #10/#12 声明出现未知字段                                                       |
-| `type/unknown`                 | #10 端口载荷类型不在封闭清单                                                   |
+| 错误码                          | 含义                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------ |
+| `device/device-unknown`         | provider 返回 `undefined`，或 device id 为空                                   |
+| `device/provider-failed`        | provider 抛非 `DeviceError`、未实现 `resolve` 或结果违约；`cause` 保留原始异常 |
+| `device/description-schema`     | 定义容器、metadata 或 `designatorPrefix` 形状错误                              |
+| `device/implementation-import`  | 代码字符串不是可加载的 ES 模块                                                 |
+| `device/implementation-export`  | 默认导出不是普通同步函数（含 generator / class）                               |
+| `device/implementation-async`   | 默认导出声明为 async / async generator                                         |
+| `device/factory-failed`         | 工厂抛出非 `DeviceError`、不是普通函数或调用失败；`cause` 保留原始异常         |
+| `device/factory-async`          | 工厂为 async/async generator，或返回 Promise/thenable                          |
+| `device/factory-closed`         | 工厂返回/抛出后尝试继续声明或写入 `api.ir`                                     |
+| `device/lifecycle-binding`      | 返回值/字段/生命周期引用/重复绑定/`onDispose` 形状不合法                       |
+| `device/lifecycle-unsupported`  | 未绑定 reset 却请求复位                                                        |
+| `device/pin-unknown`            | `api.ir.pin` 引用未声明或空的引脚 id                                           |
+| `device/pin-io-unavailable`     | 使用引脚 I/O 但缺少 pin host，或宿主未声明/拒绝被引用引脚                      |
+| `device/link-failed`            | IR 校验、链接或不支持的指令；`cause` 保留 `IRExecutionError`                   |
+| `device/instance-invalid`       | 创建选项、已加载模块、scheduler 或实例标识不合法                               |
+| `device/instance-busy`          | 非法生命周期操作或重入冲突（初始化未完成、故障、运行中销毁等）                 |
+| `device/instance-destroyed`     | 销毁后访问 `storage` 或请求 reset                                              |
+| `device/dispose-failed`         | 内核清理完成后 `onDispose` 抛错、返回 Promise 或非 `undefined`                 |
+| `device/connection-invalid`     | 空/重复 patch、非 bool、跨实例句柄、重复声明或连接执行参数不合法               |
+| `device/connection-unknown`     | 连接 ID 未由描述或绑定的 topology 为该实例声明                                 |
+| `device/connection-unavailable` | 使用 `connection.apply` 但未绑定 topology，或 topology 已销毁/拒绝提交         |
+| `schema/invalid-type`           | #7/#10/#12/#14 字段类型错误                                                    |
+| `schema/invalid-value`          | #7/#10/#12/#14 字段取值错误（含非法连接引脚对）                                |
+| `schema/unknown-field`          | #10/#12/#14 声明出现未知字段                                                   |
+| `type/unknown`                  | #10 端口载荷类型不在封闭清单                                                   |
 
 `DeviceError` 的 `pointer` 使用 JSON Pointer 指向失败位置，便于宿主定位。
 
 ## 支持边界
 
-本层已实现 #53 的工厂上下文与实例生命周期，以及 #55 的引脚声明与数字 I/O 指令。不实现 #54 的消息桥接、#56 的观察投递、#57 的 `connection.apply`、#59 的 sandbox 执行适配，也不实现 #60/#61 的 Provider/checkpoint。引脚电压指令、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
+本层已实现 #53 的工厂上下文与实例生命周期、#55 的引脚声明与数字 I/O，以及 #57 的 `api.ir.connection` / `b.connection.apply` 与 core topology 提交接入。不实现 #54 的消息桥接、#56 的观察投递、#59 的 sandbox 执行适配，也不实现 #60/#61 的 Provider/checkpoint；不提供连接状态查询、JS 直接更新入口、复数别名或外部导线运行时增删。引脚电压指令、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
 
 ## 验证
 
@@ -250,7 +283,7 @@ pnpm --filter @mica-js/device test
 pnpm --filter @mica-js/device typecheck
 ```
 
-Vitest 使用真实临时目录中的 `.json` / `.js` 配对文件验证 provider 加载；覆盖所有 #7 属性类型、默认值、覆盖校验、未知键忽略、嵌套对象/数组冻结、外部别名变更、运行期写入拒绝、独立实例快照、#10 端口校验、各类导出错误、provider 失败、纯对象容器拒绝、带注释 class、URL 构造失败、Node DOM shim 判定及 provider+device id 模块缓存语义。生命周期用例使用真实工厂、真实 `createIRModule`、`createIRSchedulerInstance` 与现有 scheduler，覆盖工厂一次调用与声明封闭、同步/Promise/async 拒绝、绑定与重复绑定、链接失败零残留、initialize 控制阶段完成判据、reset 语义与缺失诊断、事件 `now/at/cancel`、故障暂停与故障后销毁、destroy 顺序/幂等/重入、`onDispose` 限制与异常、storage 销毁守卫。跨包集成用例把解析结果送入 `@mica-js/core/schematic` 的 `createDeviceRegistry`，并用真实临时 provider 完成 `loadDeviceModule → createDeviceInstance → scheduler` 闭环。引脚用例使用真实 `createPowerRuntime`、scheduler 与 IR 解释器，覆盖 `pins` / `pinGroups` 解析与拒绝、未知/跨实例/非 signal 引用、builder 类型与配置编码、初始状态提交、同入口写后采样的控制阶段可见性、驱动意图与实际网络分离、掉电/欠压/失地/恢复及持有意图重放、门控采样返回 0、驱动冲突 `ElectricalConflictError`、缺少 host/引脚拒绝与销毁恢复；不使用手写电气算法替代 #49/#51。测试直接调用生产函数，不用构建或子进程冒充单元测试。
+Vitest 使用真实临时目录中的 `.json` / `.js` 配对文件验证 provider 加载；覆盖所有 #7 属性类型、默认值、覆盖校验、未知键忽略、嵌套对象/数组冻结、外部别名变更、运行期写入拒绝、独立实例快照、#10 端口校验、#12 引脚/固定组声明、#14 连接声明、各类导出错误、provider 失败、纯对象容器拒绝、带注释 class、URL 构造失败、Node DOM shim 判定及 provider+device id 模块缓存语义。引脚用例使用真实 `createPowerRuntime`、scheduler 与 IR 解释器，覆盖 `pins` / `pinGroups` 解析与拒绝、未知/跨实例/非 signal 引用、builder 类型与配置编码、初始状态提交、同入口写后采样的控制阶段可见性、驱动意图与实际网络分离、掉电/欠压/失地/恢复及持有意图重放、门控采样返回 0、驱动冲突 `ElectricalConflictError`、缺少 host/引脚拒绝与销毁恢复；不使用手写电气算法替代 #49/#51。连接用例走真实 builder → `validateIR` → 解释器/调度器 → 实例生命周期 → core topology，覆盖单触点/双触点、控制阶段延迟、SSA 按值捕获、bool 分支选择 patch、同刻顺序、冲突不回滚、销毁与未知/跨实例诊断。生命周期用例使用真实工厂、真实 `createIRModule`、`createIRSchedulerInstance` 与现有 scheduler，覆盖工厂一次调用与声明封闭、同步/Promise/async 拒绝、绑定与重复绑定、链接失败零残留、initialize 控制阶段完成判据、reset 语义与缺失诊断、事件 `now/at/cancel`、故障暂停与故障后销毁、destroy 顺序/幂等/重入、`onDispose` 限制与异常、storage 销毁守卫。跨包集成用例把解析结果送入 `@mica-js/core/schematic` 的 `createDeviceRegistry`，并用真实临时 provider 完成 `loadDeviceModule → createDeviceInstance → scheduler` 闭环。测试直接调用生产函数，不用构建或子进程冒充单元测试。
 
 ## 相关提案
 
@@ -260,5 +293,6 @@ Vitest 使用真实临时目录中的 `.json` / `.js` 配对文件验证 provide
 - 器件定义：[#11](https://github.com/x-botlab/mica-js/issues/11)
 - 引脚声明与运行时配置：[#12](https://github.com/x-botlab/mica-js/issues/12)
 - 电源域与引脚门控：[#13](https://github.com/x-botlab/mica-js/issues/13)
+- 内部可控连接与拓扑切换：[#14](https://github.com/x-botlab/mica-js/issues/14)
 - 公共电气模型：[#24](https://github.com/x-botlab/mica-js/issues/24)
 - IR 引脚 I/O、采样与观察合同：[#25](https://github.com/x-botlab/mica-js/issues/25)

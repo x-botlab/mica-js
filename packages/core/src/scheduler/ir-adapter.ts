@@ -20,8 +20,8 @@ export interface IRSchedulerInstanceDefinition {
   readonly instanceId: string;
   readonly module: IRModule;
   readonly validation: IRValidationOptions;
-  /** Trusted domain instruction executors passed to the same reference interpreter. */
-  readonly instructionExecutors?: readonly IRInstructionExecutor[];
+  /** Trusted synchronous executors for declared domain instructions. */
+  readonly executors?: readonly IRInstructionExecutor[];
 }
 
 export interface IRSchedulerInstance {
@@ -47,7 +47,7 @@ export function createIRSchedulerInstance(
       timePs: scheduler.now,
     });
   }
-  const { instanceId, module, validation, instructionExecutors } = definition;
+  const { instanceId, module, validation, executors } = definition;
   const captured = {
     memories: module.memories,
     functions: module.functions,
@@ -80,7 +80,6 @@ export function createIRSchedulerInstance(
   const interpreter = createIRInterpreter(captured, {
     validation,
     maxSteps: Number.MAX_SAFE_INTEGER,
-    ...(instructionExecutors === undefined ? {} : { instructionExecutors }),
     eventHost: {
       now: () => context().timePs,
       at: (target, deadline, args) => {
@@ -93,6 +92,7 @@ export function createIRSchedulerInstance(
       },
     },
     stepObserver: { beforeStep: () => context().consumeSteps() },
+    ...(executors === undefined ? {} : { executors }),
   });
   const instance = scheduler.addInstance({
     instanceId,

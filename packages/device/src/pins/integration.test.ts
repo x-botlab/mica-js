@@ -343,6 +343,37 @@ describe('device pin I/O with the real scheduler, IR and power runtime', () => {
     expect(load(instance, refs[1]!)).toBe(1);
   });
 
+  it('keeps pin operations when the connection surface decorates function bodies', () => {
+    const scheduler = createScheduler();
+    const power = powerFor(scheduler);
+    const factory: DeviceFactory = (api) => {
+      const out = api.ir.pin('OUT');
+      const contact = api.ir.connection('contact');
+      void contact;
+      const initialize = api.ir.lifecycle('initialize', []);
+      initialize.body((b) => {
+        b.pin.configure(out, { mode: 'push-pull', outputEnabled: true, pull: 'none' });
+        b.pin.writeDigital(out, b.const('bool', true));
+        b.return([]);
+      });
+      return { initialize };
+    };
+    const description = testDescription(
+      {
+        pins: DEVICE_PINS,
+        connections: { contact: { pins: ['OUT', 'IN'], initial: 'open' } },
+      },
+      'acme:mcu-pins-connection',
+    );
+    createForTest(factory, { instanceId: 'dev', pinHost: power }, scheduler, description);
+    scheduler.start({ until: 1000 });
+    expect(power.pinIntent({ instanceId: 'dev', pinName: 'OUT' })).toMatchObject({
+      mode: 'push-pull',
+      outputEnabled: true,
+      digitalIntent: true,
+    });
+  });
+
   it('reports conflicting strong drivers through ElectricalConflictError', () => {
     const scheduler = createScheduler();
     const power = powerFor(scheduler, true);

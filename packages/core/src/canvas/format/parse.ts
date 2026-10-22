@@ -122,7 +122,11 @@ function readWidgets(
   return widgets;
 }
 
-function readWidget(
+/**
+ * @internal Shared with the canvas edit commands so added instances obey the same rules as parsed
+ * ones; not re-exported from `canvas/index.ts`.
+ */
+export function readWidget(
   value: unknown,
   path: readonly string[],
   diagnostics: Diagnostic[],
@@ -220,6 +224,22 @@ function readPlacement(
   return { x, y, width, height, rotation };
 }
 
+/**
+ * @internal Shared with the canvas edit commands so a replacement placement is validated like a
+ * parsed one.
+ */
+export function readWidgetPlacement(
+  value: unknown,
+  path: readonly string[],
+  diagnostics: Diagnostic[],
+): WidgetPlacement | undefined {
+  if (!isRecord(value)) {
+    report(diagnostics, 'schema/invalid-type', 'Placement must be an object.', path);
+    return undefined;
+  }
+  return readPlacement(value, path, diagnostics);
+}
+
 function readPositiveNumber(
   value: Record<string, unknown>,
   key: string,
@@ -266,8 +286,13 @@ function readProperties(
   return failed ? undefined : properties;
 }
 
-/** Values are copied so the parsed document never aliases the caller's input object. */
-function clonePropertyValue(value: unknown): unknown {
+/**
+ * Values are copied so the parsed document never aliases the caller's input object.
+ *
+ * @internal Shared with the canvas edit commands so a written property value has the same
+ * ownership semantics as a parsed one; not re-exported from `canvas/index.ts`.
+ */
+export function clonePropertyValue(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(clonePropertyValue);
   }
@@ -310,7 +335,8 @@ function readBindings(
   return failed ? undefined : bindings;
 }
 
-function readBindingTarget(
+/** @internal Shared with the canvas edit commands for structural binding checks. */
+export function readBindingTarget(
   value: unknown,
   path: readonly string[],
   diagnostics: Diagnostic[],

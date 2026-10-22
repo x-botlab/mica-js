@@ -5,6 +5,8 @@ import {
   type IRSchedulerInstance,
   type Scheduler,
 } from '@mica-js/core';
+import { prepareConnectionExecution } from '../connection/executor';
+import type { DeviceConnectionOptions } from '../connection/types';
 import { DeviceError } from '../errors';
 import { readDeviceBindings, type ValidatedBindings } from '../factory/bindings';
 import { createFactoryContext } from '../factory/context';
@@ -43,6 +45,7 @@ export function createDeviceInstance(
   const definition = readLoadedModule(loaded);
   validateScheduler(scheduler);
   const instanceId = readInstanceId(options);
+  const connectionOptions = readConnectionOptions(options);
   const props = resolveDeviceProperties(
     definition.description,
     isPlainRecord(options) && options.properties !== undefined ? options.properties : {},
@@ -63,7 +66,13 @@ export function createDeviceInstance(
   const module = createIRModule({ builderExtensions: [pins.extension] });
   moduleRef.current = module;
   pins.instructions();
-  const context = createFactoryContext(props, module, definition.deviceId, pins);
+  const context = createFactoryContext(
+    props,
+    module,
+    definition.deviceId,
+    pins,
+    definition.description.connections,
+  );
   let rawBindings: unknown;
   try {
     rawBindings = invokeFactory(definition.factory, context.api, definition.deviceId);
@@ -72,10 +81,25 @@ export function createDeviceInstance(
   }
 
   const bindings = readDeviceBindings(rawBindings, module, definition.deviceId);
-  const policy = createValidationPolicy(module, pins.validators());
+  const policy = createValidationPolicy(
+    module,
+    definition.description.connections,
+    pins.validators(),
+  );
   const pinRuntime = pins.createRuntime(instanceId, pinHost);
   const references = pins.references(module);
   pinRuntime.assertReady(references);
+  const connectionExecutor = prepareConnectionExecution({
+    module,
+    description: definition.description.connections,
+    instanceId,
+    deviceId: definition.deviceId,
+    topology: connectionOptions?.topology,
+  });
+  const executors = [
+    ...pinRuntime.executors(),
+    ...(connectionExecutor === undefined ? [] : [connectionExecutor]),
+  ];
   const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name);
   let core: IRSchedulerInstance;
   try {
@@ -83,7 +107,7 @@ export function createDeviceInstance(
       instanceId,
       module,
       validation: policy,
-      instructionExecutors: pinRuntime.executors(),
+      ...(executors.length === 0 ? {} : { executors }),
     });
   } catch (cause) {
     throw linkError(definition.deviceId, cause);
@@ -153,7 +177,8 @@ function readLoadedModule(value: unknown): LoadedModule {
     !(description['properties'] instanceof Map) ||
     !(description['ports'] instanceof Map) ||
     !(description['pins'] instanceof Map) ||
-    !(description['pinGroups'] instanceof Map)
+    !(description['pinGroups'] instanceof Map) ||
+    !(description['connections'] instanceof Map)
   ) {
     throw instanceError(
       `Device ${JSON.stringify(deviceId)} instance requires a parsed device description.`,
@@ -211,6 +236,35 @@ function readPinHost(options: unknown): DevicePinHost | undefined {
     }
   }
   return value as unknown as DevicePinHost;
+}
+
+function readConnectionOptions(options: unknown): DeviceConnectionOptions | undefined {
+  if (!isPlainRecord(options)) {
+    return undefined;
+  }
+  const connections = options['connections'];
+  if (connections === undefined) {
+    return undefined;
+  }
+  if (!isPlainRecord(connections)) {
+    throw instanceError('Device instance connections must be an object.');
+  }
+  for (const field of Object.keys(connections)) {
+    if (field !== 'topology') {
+      throw instanceError(
+        `Device instance connections has unknown field ${JSON.stringify(field)}.`,
+      );
+    }
+  }
+  const topology = connections['topology'];
+  if (
+    !isObjectLike(topology) ||
+    typeof topology['submit'] !== 'function' ||
+    typeof topology['connectionState'] !== 'function'
+  ) {
+    throw instanceError('Device instance connections.topology must be a topology runtime.');
+  }
+  return { topology: topology as unknown as DeviceConnectionOptions['topology'] };
 }
 
 function invokeFactory(factory: DeviceFactory, api: DeviceAPI, deviceId: string): unknown {

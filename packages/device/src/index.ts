@@ -9,6 +9,13 @@ export { loadDeviceModule } from './loader';
 export { createDeviceInstance } from './lifecycle/instance';
 
 export type {
+  ConnectionOperations,
+  ConnectionRef,
+  DeviceConnectionDescriptor,
+  DeviceConnectionOptions,
+} from './connection/types';
+
+export type {
   DeviceAPI,
   DeviceBindings,
   DeviceDefinition,
