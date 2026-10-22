@@ -27,6 +27,7 @@ import type {
   WritableBytesRef,
 } from './types';
 import { validateIR } from './validate';
+import { isReservedOperation } from './validation-internal';
 import type { IRDiagnostic, IRValidationOptions } from './validation-types';
 
 type Target = FunctionRef | EntryRef | LifecycleRef;
@@ -41,11 +42,31 @@ export interface IRStepObserver {
   beforeStep(context: IRExecutionContext): void;
 }
 
+/**
+ * Trusted executor for one explicitly declared domain instruction. The result must match the
+ * declared result layout exactly; executors cannot replace core instructions or terminators.
+ */
+export interface IRInstructionExecutor {
+  readonly op: string;
+  execute(context: IRInstructionExecutorContext): readonly RuntimeScalar[];
+}
+
+export interface IRInstructionExecutorContext {
+  readonly module: Pick<IRModule, 'memories' | 'functions' | 'domainDeclarations' | 'instructions'>;
+  readonly fn: FunctionDefinition;
+  readonly block: BlockDefinition;
+  readonly instruction: InstructionNode;
+  readonly location: IRExecutionLocation;
+  readonly execution: IRExecutionContext;
+  readonly operands: readonly RuntimeScalar[];
+}
+
 export interface IRInterpreterOptions {
   readonly validation: IRValidationOptions;
   readonly maxSteps?: number;
   readonly eventHost?: IREventHost;
   readonly stepObserver?: IRStepObserver;
+  readonly instructionExecutors?: readonly IRInstructionExecutor[];
 }
 
 export interface IRExecutionContext {
@@ -136,7 +157,53 @@ interface Frame {
   position: number;
 }
 
-const supported = new Set(CORE_INSTRUCTION_NAMES);
+const coreInstructions = new Set(CORE_INSTRUCTION_NAMES);
+
+interface CapturedExecutor {
+  readonly op: string;
+  readonly receiver: IRInstructionExecutor;
+  readonly execute: (context: IRInstructionExecutorContext) => unknown;
+}
+
+function captureInstructionExecutors(
+  input: unknown,
+  declarations: IRModule['instructions'],
+): ReadonlyMap<string, CapturedExecutor> {
+  const executors = new Map<string, CapturedExecutor>();
+  if (input === undefined) {
+    return executors;
+  }
+  if (!Array.isArray(input)) {
+    throw new TypeError('instructionExecutors must be an array');
+  }
+  const declared = new Set(declarations.map((declaration) => declaration.name));
+  input.forEach((executor, index) => {
+    if (typeof executor !== 'object' || executor === null) {
+      throw new TypeError(`instructionExecutors[${index}] must be an executor object`);
+    }
+    const op = executor.op;
+    if (typeof op !== 'string' || op.length === 0) {
+      throw new TypeError(`instructionExecutors[${index}].op must be a non-empty string`);
+    }
+    if (coreInstructions.has(op) || isReservedOperation(op)) {
+      throw new TypeError(
+        `instructionExecutors[${index}].op "${op}" cannot replace a core or reserved operation`,
+      );
+    }
+    if (!declared.has(op)) {
+      throw new TypeError(
+        `instructionExecutors[${index}].op "${op}" must reference a declared instruction`,
+      );
+    }
+    if (executors.has(op)) {
+      throw new TypeError(`Duplicate instruction executor for "${op}"`);
+    }
+    const execute = executor.execute;
+    assertSynchronousCallback(execute, `Instruction executor "${op}"`);
+    executors.set(op, Object.freeze({ op, receiver: executor, execute }));
+  });
+  return executors;
+}
 
 export function createIRInterpreter(
   module: IRModule,
@@ -194,6 +261,12 @@ export function createIRInterpreter(
       ],
     });
   }
+  let executors: ReadonlyMap<string, CapturedExecutor>;
+  try {
+    executors = captureInstructionExecutors(options.instructionExecutors, source.instructions);
+  } catch (cause) {
+    throw new IRExecutionError('invalid-options', 'Invalid instruction executors', { cause });
+  }
   const validation = validateIR(model, validationOptions);
   if (!validation.ok) {
     throw new IRExecutionError('validation-failed', 'IR validation failed', {
@@ -203,7 +276,10 @@ export function createIRInterpreter(
   for (const [functionIndex, fn] of model.functions.entries()) {
     for (const [blockIndex, block] of fn.body!.blocks.entries()) {
       for (const [instructionIndex, node] of block.instructions.entries()) {
-        if (!supported.has(node.op) || (node.op.startsWith('event.') && eventHost === undefined)) {
+        if (
+          (!coreInstructions.has(node.op) && !executors.has(node.op)) ||
+          (node.op.startsWith('event.') && eventHost === undefined)
+        ) {
           throw new IRExecutionError('unsupported-instruction', `No executor for ${node.op}`, {
             location: {
               functionIndex,
@@ -235,7 +311,7 @@ export function createIRInterpreter(
   } catch (cause) {
     throw new IRExecutionError('storage-failed', 'Could not allocate instance storage', { cause });
   }
-  return new Interpreter(model.functions, storage, maxSteps, eventHost, stepObserver);
+  return new Interpreter(model, storage, maxSteps, eventHost, stepObserver, executors);
 }
 
 function captureHook<T, K extends keyof T>(receiver: T, key: K): T[K] {
@@ -360,24 +436,29 @@ function sameMemories(
 }
 
 class Interpreter implements IRInterpreter {
+  readonly #model: Model;
   readonly #functions: ReadonlyMap<Target, FunctionDefinition>;
   readonly #indices: ReadonlyMap<FunctionDefinition, number>;
   readonly #maxSteps: number;
   readonly #eventHost: IREventHost | undefined;
   readonly #stepObserver: IRStepObserver | undefined;
+  readonly #executors: ReadonlyMap<string, CapturedExecutor>;
   #faulted = false;
 
   constructor(
-    functions: readonly FunctionDefinition[],
+    model: Model,
     readonly storage: IRStorage,
     maxSteps: number,
     eventHost: IREventHost | undefined,
     stepObserver: IRStepObserver | undefined,
+    executors: ReadonlyMap<string, CapturedExecutor>,
   ) {
+    this.#model = model;
     this.#eventHost = eventHost;
     this.#stepObserver = stepObserver;
-    this.#functions = new Map(functions.map((fn) => [fn.ref, fn]));
-    this.#indices = new Map(functions.map((fn, index) => [fn, index]));
+    this.#executors = executors;
+    this.#functions = new Map(model.functions.map((fn) => [fn.ref, fn]));
+    this.#indices = new Map(model.functions.map((fn, index) => [fn, index]));
     this.#maxSteps = maxSteps;
     Object.freeze(this);
   }
@@ -450,7 +531,9 @@ class Interpreter implements IRInterpreter {
           } else {
             const values = node.op.startsWith('event.')
               ? this.event(node, operands)
-              : evaluateInstruction(node, operands, this.storage);
+              : this.#executors.has(node.op)
+                ? this.domain(node, operands, frame, capturedContext)
+                : evaluateInstruction(node, operands, this.storage);
             node.results.forEach((value, index) => frame.values.set(value, values[index]!));
             frame.position += 1;
           }
@@ -503,6 +586,38 @@ class Interpreter implements IRInterpreter {
         },
       );
     }
+  }
+
+  private domain(
+    node: InstructionNode,
+    args: readonly RuntimeScalar[],
+    frame: Frame,
+    execution: IRExecutionContext,
+  ): readonly RuntimeScalar[] {
+    const entry = this.#executors.get(node.op)!;
+    const context = Object.freeze({
+      module: this.#model,
+      fn: frame.fn,
+      block: frame.block,
+      instruction: node,
+      location: location(frame),
+      execution,
+      operands: Object.freeze([...args]),
+    });
+    const result: unknown = Reflect.apply(entry.execute, entry.receiver, [context]);
+    if (!Array.isArray(result)) {
+      throw new TypeError(`Executor for "${node.op}" must return an array of scalar results`);
+    }
+    if (result.length !== node.results.length) {
+      throw new TypeError(
+        `Executor for "${node.op}" returned ${result.length} result(s), expected ${node.results.length}`,
+      );
+    }
+    return Object.freeze(
+      node.results.map((value, index) =>
+        captureArgument(value.type, result[index] as RuntimeScalar),
+      ),
+    );
   }
 
   private event(node: InstructionNode, args: readonly RuntimeScalar[]): readonly RuntimeScalar[] {

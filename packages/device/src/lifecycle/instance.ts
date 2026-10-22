@@ -1,4 +1,4 @@
-import { createIRModule, type IRStorage } from '@mica-js/ir';
+import { createIRModule, type IRModule, type IRStorage } from '@mica-js/ir';
 import {
   createIRSchedulerInstance,
   SchedulerError,
@@ -10,6 +10,8 @@ import { readDeviceBindings, type ValidatedBindings } from '../factory/bindings'
 import { createFactoryContext } from '../factory/context';
 import { callableKind, consumeThenable, isThenable } from '../internal/functions';
 import { isObjectLike, isPlainRecord } from '../internal/records';
+import { PinDomain } from '../pins/domain';
+import type { PinRuntime } from '../pins/runtime';
 import { resolveDeviceProperties } from '../properties';
 import type {
   DeviceAPI,
@@ -18,6 +20,7 @@ import type {
   DeviceInstanceOptions,
   DeviceInstanceState,
   DeviceFactory,
+  DevicePinHost,
   DevicePropertySnapshot,
   LoadedDeviceModule,
 } from '../types';
@@ -44,9 +47,23 @@ export function createDeviceInstance(
     definition.description,
     isPlainRecord(options) && options.properties !== undefined ? options.properties : {},
   );
+  const pinHost = readPinHost(options);
 
-  const module = createIRModule();
-  const context = createFactoryContext(props, module, definition.deviceId);
+  const moduleRef: { current?: IRModule } = {};
+  const pins = new PinDomain(
+    definition.description.pins,
+    () => {
+      if (moduleRef.current === undefined) {
+        throw new Error('Pin domain used before the IR module was created');
+      }
+      return moduleRef.current;
+    },
+    definition.deviceId,
+  );
+  const module = createIRModule({ builderExtensions: [pins.extension] });
+  moduleRef.current = module;
+  pins.instructions();
+  const context = createFactoryContext(props, module, definition.deviceId, pins);
   let rawBindings: unknown;
   try {
     rawBindings = invokeFactory(definition.factory, context.api, definition.deviceId);
@@ -55,7 +72,10 @@ export function createDeviceInstance(
   }
 
   const bindings = readDeviceBindings(rawBindings, module, definition.deviceId);
-  const policy = createValidationPolicy(module);
+  const policy = createValidationPolicy(module, pins.validators());
+  const pinRuntime = pins.createRuntime(instanceId, pinHost);
+  const references = pins.references(module);
+  pinRuntime.assertReady(references);
   const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name);
   let core: IRSchedulerInstance;
   try {
@@ -63,15 +83,29 @@ export function createDeviceInstance(
       instanceId,
       module,
       validation: policy,
+      instructionExecutors: pinRuntime.executors(),
     });
   } catch (cause) {
     throw linkError(definition.deviceId, cause);
+  }
+
+  try {
+    pinRuntime.prepare(references);
+  } catch (cause) {
+    pinRuntime.release();
+    try {
+      scheduler.destroyInstance(core.instance);
+    } catch {
+      // The pin-host diagnostic is the useful failure.
+    }
+    throw cause;
   }
 
   if (bindings.initialize !== undefined) {
     try {
       core.enqueueControl(bindings.initialize.ref, []);
     } catch (cause) {
+      pinRuntime.release();
       try {
         scheduler.destroyInstance(core.instance);
       } catch {
@@ -92,6 +126,7 @@ export function createDeviceInstance(
     core,
     scheduler,
     bindings,
+    pinRuntime,
     tracking.isInitialized,
   );
 }
@@ -152,6 +187,28 @@ function readInstanceId(options: unknown): string {
     throw instanceError('Device instance id must be a non-empty string.');
   }
   return instanceId;
+}
+
+function readPinHost(options: unknown): DevicePinHost | undefined {
+  const value = isPlainRecord(options) ? options['pinHost'] : undefined;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isObjectLike(value)) {
+    throw new DeviceError(
+      'device/pin-io-unavailable',
+      'Device instance pinHost must be an object.',
+    );
+  }
+  for (const method of ['pinIntent', 'updatePinStates', 'sampleDigital'] as const) {
+    if (typeof value[method] !== 'function') {
+      throw new DeviceError(
+        'device/pin-io-unavailable',
+        `Device instance pinHost must implement ${method}().`,
+      );
+    }
+  }
+  return value as unknown as DevicePinHost;
 }
 
 function invokeFactory(factory: DeviceFactory, api: DeviceAPI, deviceId: string): unknown {
@@ -216,6 +273,7 @@ function createHandle(
   core: IRSchedulerInstance,
   scheduler: Scheduler,
   bindings: ValidatedBindings,
+  pinRuntime: PinRuntime,
   isInitialized: () => boolean,
 ): DeviceInstance {
   const guardedStorage = new LifecycleStorage(core.storage, definition.deviceId);
@@ -270,6 +328,7 @@ function createHandle(
       );
     }
     destroying = true;
+    pinRuntime.release();
     try {
       scheduler.destroyInstance(core.instance);
     } catch (cause) {

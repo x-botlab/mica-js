@@ -94,7 +94,42 @@ ir.entry('enable', ['bool']).body((b, [on]) => {
 });
 ```
 
-`invoke` 只生成已声明的显式指令，并校验操作数类别、标量类型与结果布局；不提供 `call(hostFunction)` 或任意运行期 JS 回调扩展。
+`invoke` 只生成已声明的显式指令，并校验操作数类别、标量类型与结果布局；不提供 `call(hostFunction)` 或任意运行期 JS 回调扩展。领域静态引用与普通资源一样需要显式授权；静态链接时还须由后端提供可信的 `IRInstructionValidator`，否则按 `unsupported-instruction` 拒绝。
+
+领域模块可以通过 `createIRModule({ builderExtensions })` 在自己的包内为每个构建器附加命名空间，核心不导入领域类型：
+
+```ts
+let module: IRModule;
+let pin: StaticRef<'pin'> | undefined;
+let sample: DomainInstruction | undefined;
+const extension: IRBuilderExtension = {
+  namespace: 'pin',
+  create(b) {
+    // 指令与静态句柄在每个模块内只声明一次；扩展可在首次创建构建器时惰性声明。
+    pin ??= module.domainDeclaration('pin', 'OUT');
+    sample ??= module.domainInstruction('pin.sample', {
+      operands: [{ kind: 'static', category: 'pin' }],
+      results: ['u32'],
+    });
+    return { sample: () => b.invoke(sample!, [pin!])[0] };
+  },
+};
+module = createIRModule({ builderExtensions: [extension] });
+// 领域类型模块可在自己的 d.ts 中增强 FunctionBuilder，使 b.pin.sample() 获得类型。
+```
+
+命名空间不得与内建成员冲突，同一模块内不得重复；`create` 必须同步，返回的方法也必须是同步函数。扩展可以对每个普通、生命周期及嵌套块构建器分别创建命名空间，因而可共享模块级指令声明。
+
+参考解释器通过 `IRInterpreterOptions.instructionExecutors` 接收可信的领域指令执行器：
+
+```ts
+interface IRInstructionExecutor {
+  readonly op: string;
+  execute(context: IRInstructionExecutorContext): readonly RuntimeScalar[];
+}
+```
+
+`op` 必须是本模块已声明且非核心、非保留的指令，同名执行器只能注册一次；执行方法按创建时捕获的接收者同步调用。`context.operands` 只包含按指令顺序展开的 SSA 运行时值；静态引用与字面量从 `context.instruction.operands` 读取。结果数量与类型必须精确匹配指令声明，否则以 `evaluation-failed` 失败并保留 cause、位置与调用栈；没有执行器的声明指令仍按 `unsupported-instruction` 拒绝。核心指令、终结指令和 `eventHost` 不能被领域执行器替换。
 
 ## 实例存储
 
@@ -220,7 +255,7 @@ runtime.storage.loadState(count); // 3
 ```
 
 - `createIRInterpreter` 捕获私有执行快照，调用 `validateIR`，再用 `createIRStorage` 建独占存储；原模型后续修改不影响已创建的实例。
-- `IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`stepObserver: IRStepObserver`；API 面向可信宿主，不是隔离恶意 JS getter/validator 的沙箱。
+- `IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`stepObserver: IRStepObserver`、`instructionExecutors: readonly IRInstructionExecutor[]`；API 面向可信宿主，不是隔离恶意 JS getter/validator 的沙箱。
 - `execute(target, args, context)` 同步执行 `FunctionRef` / `EntryRef` / `LifecycleRef`，返回 `{ values, steps }`。`context = { instanceId, virtualTime }` 必填：实例标识非空，虚拟时间为非负安全整数皮秒，仅用于诊断。
 - 存储跨成功执行保留；每次 `execute` 使用独立预算。普通调用和块跳转不推进虚拟时间、不创建事件、不形成等待/恢复对象；显式 event 指令通过下述可信宿主桥接。
 
@@ -278,7 +313,7 @@ interface IRStepObserver {
 
 `event.now` has no operands and returns f64; `event.at` encodes a static ordinary entry, an SSA f64 deadline, and SSA arguments, returning u32; `event.cancel` takes one SSA u32 and has no results. Targets must belong to the same module and match the entry parameter signature; lifecycle and ordinary function targets are rejected. These names cannot be redefined by domain declarations or extension validators. All three still require explicit supportedInstructions and authorizedInstructions grants.
 
-The optional interpreter `eventHost` is a trusted synchronous scheduler bridge, not an arbitrary domain instruction executor. Every event node, including unreachable ones, requires a host at interpreter creation; otherwise `unsupported-instruction` includes its IR location. The interpreter does not import core. `event.now` validates host time; `event.at` validates the complete target, captures all scalar arguments by value (including exact FloatBits), decodes f64 deadlines using the existing IEEE representation, rejects past deadlines against host.now(), and checks the returned ID is a nonzero u32. `event.cancel` validates u32 and passes 0 through; the host owns its no-op behavior and event queue/ID lifecycle.
+The optional interpreter `eventHost` is a trusted synchronous scheduler bridge; domain instructions use the separate, explicitly registered `instructionExecutors` option and are never routed through `eventHost`. Every event node, including unreachable ones, requires a host at interpreter creation; otherwise `unsupported-instruction` includes its IR location. The interpreter does not import core. `event.now` validates host time; `event.at` validates the complete target, captures all scalar arguments by value (including exact FloatBits), decodes f64 deadlines using the existing IEEE representation, rejects past deadlines against host.now(), and checks the returned ID is a nonzero u32. `event.cancel` validates u32 and passes 0 through; the host owns its no-op behavior and event queue/ID lifecycle.
 
 Time validation applies only at this event boundary, not to ordinary f64 values: time must be a finite integer number in `[0, 7_200_000_000_000_000]` picoseconds, with negative zero normalized to zero. Non-number/non-finite/fractional values cause TypeError before range checking; out-of-range or past times cause RangeError, retained as the evaluation failure cause.
 

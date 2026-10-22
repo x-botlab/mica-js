@@ -996,6 +996,38 @@ function createBuilderObject(state: BuilderState): unknown {
     },
   };
 
+  for (const extension of state.module.builderExtensions) {
+    const label = `Builder extension "${extension.namespace}"`;
+    let namespace: unknown;
+    try {
+      namespace = extension.create.call(extension.receiver, builder as unknown as FunctionBuilder);
+    } catch (error) {
+      fail(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (typeof namespace !== 'object' || namespace === null || Array.isArray(namespace)) {
+      fail(`${label} must return a namespace object`);
+    }
+    for (const key of Object.keys(namespace)) {
+      const member = (namespace as Record<string, unknown>)[key];
+      if (typeof member !== 'function') {
+        fail(`${label} member "${key}" must be a function`);
+      }
+      assertSynchronousCallback(member, `${label} member "${key}"`);
+    }
+    let frozen: unknown;
+    try {
+      frozen = Object.freeze(namespace);
+    } catch {
+      fail(`${label} must return a freezeable object`);
+    }
+    Object.defineProperty(builder, extension.namespace, {
+      value: frozen,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+  }
+
   return builder;
 }
 

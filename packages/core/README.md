@@ -32,7 +32,7 @@ pnpm add @mica-js/core
 
 ## 真实 IR 执行
 
-`createIRSchedulerInstance(scheduler, { instanceId, module, validation })` 创建一份既有 `@mica-js/ir` 参考解释器及独立存储，将 `event.now/at/cancel` 接入**同一个**调度队列和 ID 分配器，不另造解释器或调度器。`validation` 的指令支持/授权与资源权限仍显式提供，不会自动放宽。
+`createIRSchedulerInstance(scheduler, { instanceId, module, validation, instructionExecutors? })` 创建一份既有 `@mica-js/ir` 参考解释器及独立存储，将 `event.now/at/cancel` 接入**同一个**调度队列和 ID 分配器，不另造解释器或调度器。`validation` 的指令支持/授权与资源权限仍显式提供，不会自动放宽；`instructionExecutors` 仅透传给同一解释器的领域指令执行器，不改变调度阶段或时间语义。
 
 ```ts
 import { createIRModule } from '@mica-js/ir';

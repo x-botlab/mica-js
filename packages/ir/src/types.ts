@@ -326,6 +326,19 @@ export interface DeclaredInstruction {
 }
 
 /**
+ * Builder namespace contributed by a domain module. The namespace object is created once per
+ * builder (including each nested block builder) and attached read-only to that builder.
+ */
+export interface IRBuilderExtension {
+  readonly namespace: string;
+  create(builder: FunctionBuilder): Readonly<Record<string, unknown>>;
+}
+
+export interface IRModuleOptions {
+  readonly builderExtensions?: readonly IRBuilderExtension[];
+}
+
+/**
  * Explicit instruction extension surface. Domain modules declare static
  * handles and instructions here; the core never imports a domain module and
  * never turns a host JavaScript callback into an instruction.

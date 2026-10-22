@@ -1,6 +1,7 @@
-import type { IRDeclarations, IRModule } from '@mica-js/ir';
+import type { IRModule } from '@mica-js/ir';
 import { DeviceError } from '../errors';
-import type { DeviceAPI, DevicePropertySnapshot } from '../types';
+import type { PinDomain } from '../pins/domain';
+import type { DeviceAPI, DeviceIRDeclarations, DevicePropertySnapshot, PinRef } from '../types';
 
 const DECLARATION_METHODS = new Set<PropertyKey>([
   'state',
@@ -26,6 +27,7 @@ export function createFactoryContext(
   props: DevicePropertySnapshot,
   module: IRModule,
   deviceId: string,
+  pins: PinDomain,
 ): FactoryContext {
   let open = true;
   const failClosed = (operation: string): never => {
@@ -37,6 +39,14 @@ export function createFactoryContext(
   };
   const ir = new Proxy(module, {
     get(target, property) {
+      if (property === 'pin') {
+        return (id: unknown): PinRef => {
+          if (!open) {
+            return failClosed('pin');
+          }
+          return pins.catalog.declare(module, id, deviceId);
+        };
+      }
       if (typeof property !== 'string' || !DECLARATION_METHODS.has(property)) {
         return undefined;
       }
@@ -66,7 +76,7 @@ export function createFactoryContext(
   });
   const api: DeviceAPI = Object.freeze({
     props,
-    ir: ir as unknown as IRDeclarations,
+    ir: ir as unknown as DeviceIRDeclarations,
   });
   return {
     api,
