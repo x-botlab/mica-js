@@ -1,8 +1,8 @@
 # @mica-js/widget
 
-Mica Widget 的纯数据契约：Widget 定义、端口/属性描述，以及把包内脚本解析为 `WidgetModule` 的加载器。
+Mica Widget 的契约与运行时：Widget 定义、端口/属性描述、把包内脚本解析为 `WidgetModule` 的加载器，以及在沙箱 guest 侧执行脚本、在宿主侧管理实例生命周期与层位图缓存的 `WidgetHost`。
 
-本包只负责**把 Widget 变成纯数据**，不执行脚本、不创建画布、不访问网络。运行时与编辑器只认识 `WidgetProvider`；「包」只是分发方式，解析逻辑收敛在 provider 实现里，不向上层泄漏。
+本包把 **Widget 变成纯数据**（定义 + 单文件源码），也负责**把纯数据跑起来**：运行时只认识 `WidgetProvider`；「包」只是分发方式，解析逻辑收敛在 provider 实现里，不向上层泄漏。执行隔离完全交给 `@mica-js/sandbox`，本包不改动它的协议。
 
 ## 安装
 
@@ -14,18 +14,28 @@ pnpm add @mica-js/widget
 
 唯一公开入口为 `@mica-js/widget`，构建生成 `dist/index.js`（ESM）与声明文件。
 
-| 导出                                     | 作用                                                                 |
-| ---------------------------------------- | -------------------------------------------------------------------- |
-| `WidgetModule`                           | `{ definition, code }`：定义与单文件 ESM 源码                        |
-| `WidgetDefinition`                       | `properties`、`ports` 及可选的 `displayName` / `description`         |
-| `PropertyDefinition`                     | 属性描述（#7），除 `type` 外字段原样透传                             |
-| `PortDefinition`                         | 话题端口描述（#10）：`direction`、`type`，可选 `title`/`description` |
-| `WidgetProvider`                         | 唯一方法 `resolve(ref): Promise<WidgetModule \| undefined>`          |
-| `createStaticWidgetProvider(modules)`    | 固定模块表，用于内置 Widget 与测试                                   |
-| `createPackageWidgetProvider({ files })` | 读取包并建立 `<包ID>:<widgetID>` 索引                                |
-| `loadWidgetPackage(files)`               | 把单个包的字节来源解析为 `WidgetPackage`                             |
-| `PackageFiles` / `WidgetPackage`         | 字节读取抽象与包解析结果                                             |
-| `WidgetLoadError`                        | 带 `code`、`packageId`、`path` 的加载错误                            |
+| 导出                                        | 作用                                                                 |
+| ------------------------------------------- | -------------------------------------------------------------------- |
+| `WidgetModule`                              | `{ definition, code }`：定义与单文件 ESM 源码                        |
+| `WidgetDefinition`                          | `properties`、`ports` 及可选的 `displayName` / `description`         |
+| `PropertyDefinition`                        | 属性描述（#7），除 `type` 外字段原样透传                             |
+| `PortDefinition`                            | 话题端口描述（#10）：`direction`、`type`，可选 `title`/`description` |
+| `WidgetProvider`                            | 唯一方法 `resolve(ref): Promise<WidgetModule \| undefined>`          |
+| `createStaticWidgetProvider(modules)`       | 固定模块表，用于内置 Widget 与测试                                   |
+| `createPackageWidgetProvider({ files })`    | 读取包并建立 `<包ID>:<widgetID>` 索引                                |
+| `loadWidgetPackage(files)`                  | 把单个包的字节来源解析为 `WidgetPackage`                             |
+| `PackageFiles` / `WidgetPackage`            | 字节读取抽象与包解析结果                                             |
+| `WidgetLoadError`                           | 带 `code`、`packageId`、`path` 的加载错误                            |
+| `createWidgetHost({ provider, ... })`       | 创建 `WidgetHost`；沙箱在首次 `mount` 时惰性启动                     |
+| `WidgetHost` / `WidgetMountSpec`            | 实例生命周期、属性、投递、输入分发与 `dispose`                       |
+| `WidgetLayers` / `WidgetLayer`              | 按挂载顺序的层位图与 `sequence`，供宿主或编辑器合成                  |
+| `WidgetLayerChange`                         | `added` / `updated` / `removed` 订阅事件                             |
+| `WidgetDiagnostic` / `WidgetDiagnosticCode` | 不打断调用方的失败上报                                               |
+| `WidgetInputEvent`                          | 转发给实例的指针 / 键盘事件                                          |
+| `WidgetInstanceApi` / `WidgetInstance`      | Widget 工厂收到的实例 API 与可选钩子                                 |
+| `WidgetFactory` / `WidgetDeliveryMeta`      | 模块默认导出的工厂类型与端口投递元数据                               |
+| `WidgetSandbox` / `WidgetSandboxFactory`    | 可注入的最小沙箱接口（`call` / `on` / `terminate`）                  |
+| `WIDGET_RUNTIME_SOURCE`                     | 构建期内联的 guest 运行时 ESM 源码                                   |
 
 `PayloadType` 由 `@mica-js/core/canvas` 提供，本包不重复定义。
 
@@ -52,6 +62,101 @@ if (widget === undefined) {
 ```
 
 包只在构造 provider 时读取；之后每次 `resolve` 都命中内存索引，不再访问文件系统。坏包在构造阶段抛 `WidgetLoadError`，未知引用返回 `undefined`。
+
+## 运行时（`WidgetHost`）
+
+```ts
+import { createStaticWidgetProvider, createWidgetHost } from '@mica-js/widget';
+
+const host = createWidgetHost({
+  provider: createStaticWidgetProvider({ 'gauge:brightness': widgetModule }),
+  onDiagnostic: (diagnostic) => console.warn(diagnostic.code, diagnostic.message),
+});
+
+await host.mount({
+  instanceId: 'gauge-1',
+  widget: 'gauge:brightness',
+  width: 160,
+  height: 48,
+});
+
+host.layers.subscribe((change) => {
+  // { type: 'added' | 'updated' | 'removed', instanceId }
+});
+host.setProperties('gauge-1', { color: '#22AA55FF' });
+host.deliver('gauge-1', 'brightness', 0.42, 1280);
+host.dispatch('gauge-1', { type: 'pointerdown', x: 12, y: 8 });
+host.update('gauge-1', { width: 320, height: 96 });
+
+const layer = host.layers.get('gauge-1');
+// { instanceId, width, height, dpr, bitmap, sequence }
+
+host.unmount('gauge-1');
+await host.dispose();
+```
+
+### 执行模型
+
+- 全部实例共用一个 `createSandbox()`；widget 代码以文本经 guest 方法 `load` 注入，guest 用 blob URL + `import()` 求值并缓存默认导出的工厂。
+- 每个实例有自己的 `OffscreenCanvas`（`round(width * dpr) × round(height * dpr)`），2D 上下文按 `dpr` 缩放，widget 始终使用逻辑尺寸绘制。
+- guest 自建画布，通过自定义事件把 `ImageBitmap` **转移**给宿主，不使用沙箱的 `GuestSurface`：一个 guest 一块整幅表面的模型没有 surface 标识，多个实例分不清来源。
+- 事件使用 `widget:` 命名空间：`widget:frame`、`widget:publish`、`widget:error`。沙箱保留了 `mica:` 前缀（guest 侧 `mica:` 事件会被丢弃，`sandbox.on('mica:...')` 会抛错），因此不能使用 `mica:widget-frame`。
+- 只在需要时提交：`invalidate()`、首次挂载、`resize`、`set-properties`；同一 tick 内多次 `invalidate()` 合并为一帧。
+
+### 启动时机
+
+`createWidgetHost()` 同步返回，sandbox 在**首次 `mount()`** 时才启动，并发的 `mount()` 共享同一次启动。没有实例的宿主不必承担 iframe + worker 的启动成本；`mount()` 本身是异步的，因此懒启动对调用方不可见。
+
+### 层（`WidgetLayers`）
+
+`layers.list()` 按挂载顺序返回（即绘制顺序），`get()` 返回**同一份活对象**：`update()` 立即改变 `width`/`height`（位图异步到达，`sequence` 不变），新帧到达时 `sequence` 递增并把上一帧 `close()`。`unmount` 关闭当前帧，`dispose` 关闭全部帧。
+
+### 诊断
+
+失败通过 `onDiagnostic` 上报，不抛给调用方；只有 `mount()` 会 reject。重复实例、未知实例、未知 widget 这类校验失败只上报并返回。
+
+| `code`                      | 场景                                                   |
+| --------------------------- | ------------------------------------------------------ |
+| `widget/runtime-failed`     | sandbox 启动失败或运行中终止（层被清空）               |
+| `widget/unknown-widget`     | provider 未注册该引用，或引用不是 `<包>:<widget>`      |
+| `widget/instance-exists`    | 同一 `instanceId` 重复 `mount`                         |
+| `widget/instance-not-found` | 对未挂载实例调用实例作用域方法                         |
+| `widget/mount-failed`       | 工厂或 guest `mount` 抛出（`mount()` 同时 reject）     |
+| `widget/render-failed`      | `render` 抛错，或 `resize` / `set-properties` 调用失败 |
+| `widget/deliver-failed`     | 订阅回调、输入回调或 `deliver` 调用抛错                |
+
+guest 的 `mount` 阶段错误通过 `mount()` 的 rejection 呈现，因此一次失败只产生一条诊断。
+
+`instanceId` 在 `mount()` 入口**同步预留**，所以并发挂载同一 id 时只有一个会真正启动，另一个立即得到 `widget/instance-exists`。若实例在挂载完成前被 `unmount()`（或宿主被 `dispose()`），该次 `mount()` 以 `name === 'WidgetMountCancelledError'` 的 `Error` reject，并清理 guest 侧已创建或即将创建的会话——不会留下无 layer 的「已挂载」假象，也不会误删同一 id 的新挂载记录。这类取消属于调用方的主动行为，不产生诊断。
+
+### 崩溃与重建
+
+sandbox 终止时不自动重建实例：`dispose()` 主动终止沙箱；其它终止在**下一次调用**被发现（`SandboxHandle` 没有终止事件），此时清空 `layers` 并上报 `widget/runtime-failed`。之后再次 `mount()` 会启动新的 sandbox 并重新 `load`，但不会恢复先前的实例——自动重建留给后续增强。
+
+### 编写 widget
+
+```js
+export default function indicator(api) {
+  let value = 0;
+  api.subscribe('brightness', (payload) => {
+    value = Number(payload) || 0;
+    api.invalidate();
+  });
+
+  return {
+    render(ctx) {
+      ctx.fillStyle = api.props.color ?? '#22AA55FF';
+      ctx.fillRect(0, 0, api.width * value, api.height);
+    },
+    input(event) {
+      if (event.type === 'pointerdown') api.publish('clicked', { x: event.x, y: event.y });
+    },
+    dispose() {},
+  };
+}
+```
+
+`render`、`input`、`dispose` 都可省略，纯逻辑 widget 不提供 `render`。工厂抛错、`render` 抛错、订阅回调抛错都在实例边界捕获：该实例停止渲染，其余实例继续工作。
 
 ## 类型
 
@@ -133,7 +238,11 @@ interface WidgetProvider {
 
 ## 边界
 
-- 本包不执行源码、不创建 Worker、不校验脚本行为；执行与隔离属于沙箱。
-- 不解析实现源码：`import`、`export` 是否合法留给执行侧决定，加载器只负责取字节与纯数据定义。
+- 加载器不执行源码、不创建 Worker；执行与隔离由 `WidgetHost` 交给 `@mica-js/sandbox`，本包不改动它的协议。
+- 不解析实现源码：`import`、`export` 是否合法留给 guest 的 `import()` 决定，加载器只负责取字节与纯数据定义。
 - 不解析属性字段语义、不建立端口连接、不持久化实例配置。
+- 不做话题路由：`publish` 只经 `onPublish` 原样交给调用方，`deliver` 的 `simTime` 由调用方提供。
+- **不按端口声明校验 `publish` / `subscribe`**：这两个方法目前接受任意端口名，`WidgetDefinition.ports` 在运行时基本未被使用。因此 widget 可以伪造任意端口的消息，宿主侧的 `onPublish` 也会原样收到。**#99 必须补上校验**：按该实例解析到的 `definition.ports` 检查 `publish` 的端口存在且 `direction === 'output'`，对未声明的端口丢弃并上报诊断（`subscribe` 同理，方向为 `input`）。校验必须放在 guest 侧（不可信代码就在那里）或以 definition 为准在宿主侧过滤，且不能在 `WidgetHost` 公开接口里引入编辑器概念。
+- 不合成多层位图、不读写画布文档：`WidgetLayers` 只给位图与挂载顺序。
+- 不自动重建终止后的实例（见「崩溃与重建」）。
 - 不枚举包目录，不跟随重定向或符号链接；读取哪些文件完全由清单决定。
