@@ -238,6 +238,40 @@ describe('real IR event execution through the public core entry', () => {
     },
   );
 
+  it('destroys a faulted instance without resuming or clearing the fault', () => {
+    const module = createIRModule();
+    const committed = module.state('committed', 'u32', 0);
+    const later = module.entry('later', []);
+    later.body((b) => {
+      b.state.store(committed, b.const('u32', 2));
+      b.return([]);
+    });
+    const bad = module.entry('bad', []);
+    bad.body((b) => {
+      b.state.store(committed, b.const('u32', 1));
+      b.trap('boom');
+    });
+    const scheduler = createScheduler();
+    const instance = createIRSchedulerInstance(scheduler, {
+      instanceId: 'fault-destroy',
+      module,
+      validation: policy(module),
+    });
+    instance.at(later, 10, []);
+    instance.at(bad, 0, []);
+    const error = failure(() => scheduler.start(), 'execution-failed');
+    expect(scheduler.state).toBe('faulted');
+    expect(scheduler.now).toBe(0);
+    expect(instance.storage.loadState(committed)).toBe(1);
+
+    expect(() => scheduler.destroyInstance(instance.instance)).not.toThrow();
+    expect(scheduler.state).toBe('faulted');
+    expect(scheduler.error?.code).toBe(error.code);
+    failure(() => scheduler.destroyInstance(instance.instance), 'scheduler-faulted');
+    failure(() => scheduler.step(), 'scheduler-faulted');
+    expect(instance.storage.loadState(committed)).toBe(1);
+  });
+
   it('preserves original IR trap and calling position after prior effects', () => {
     const module = createIRModule();
     const committed = module.state('committed', 'u32', 0);

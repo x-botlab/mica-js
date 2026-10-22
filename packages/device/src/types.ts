@@ -1,4 +1,5 @@
 import type { PropertyDescriptor, PropertyValue } from '@mica-js/core/schematic';
+import type { IRDeclarations, IRStorage, LifecycleRef } from '@mica-js/ir';
 
 /** Payload types of logical topic ports (#10). */
 export const TOPIC_PAYLOAD_TYPES = [
@@ -53,6 +54,61 @@ export interface DeviceDefinition {
   readonly code: string;
 }
 
+/** Instance-level factory context (#8). Only static declarations and the fixed props exist here. */
+export interface DeviceAPI {
+  /** Independent, recursively frozen property snapshot fixed for this instance. */
+  readonly props: DevicePropertySnapshot;
+  /** Static IR declaration surface; closed as soon as the synchronous factory returns. */
+  readonly ir: IRDeclarations;
+}
+
+/** Flat lifecycle bindings returned by a device factory (#8). */
+export interface DeviceBindings {
+  readonly initialize?: LifecycleRef<readonly []>;
+  readonly reset?: LifecycleRef<readonly []>;
+  readonly onDispose?: () => void;
+}
+
+/**
+ * Synchronous device factory. It runs once per instance, builds the static IR and returns the
+ * lifecycle bindings. Message bridge, pin I/O, observation and connection APIs belong to later
+ * device-layer tasks and are intentionally absent from {@link DeviceAPI}.
+ */
+export type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
+
+/** Observable lifecycle state of an installed device instance. */
+export type DeviceInstanceState = 'initializing' | 'ready' | 'faulted' | 'destroying' | 'destroyed';
+
+/** Host options for {@link createDeviceInstance}. */
+export interface DeviceInstanceOptions {
+  /** Scheduler instance identity; must be unique for the scheduler's lifetime. */
+  readonly instanceId: string;
+  /** Instance property overrides resolved against the device description. */
+  readonly properties?: Readonly<Record<string, PropertyValue>>;
+}
+
+/**
+ * Installed device instance. The kernel owns IR execution; the host drives the scheduler passed
+ * to {@link createDeviceInstance}. Subscriptions and output listeners are not part of #53.
+ */
+export interface DeviceInstance {
+  readonly instanceId: string;
+  readonly deviceId: string;
+  readonly description: DeviceDescription;
+  readonly props: DevicePropertySnapshot;
+  readonly state: DeviceInstanceState;
+  /**
+   * Guarded access to the instance's kernel storage. Every accessor throws
+   * `device/instance-destroyed` after destruction, and the guard drops its own reference so a
+   * retained handle cannot keep the kernel storage reachable.
+   */
+  readonly storage: IRStorage;
+  /** Request the bound reset lifecycle work. Rejects unsupported or illegal states. */
+  reset(): void;
+  /** Destroy the kernel instance, release its work/storage and notify `onDispose` once. */
+  destroy(): void;
+}
+
 /**
  * Host-side source of device modules. The provider owns device id resolution, file location,
  * reading and missing-file diagnostics; the device package never scans or locates files.
@@ -62,12 +118,7 @@ export interface IDeviceProvider {
   resolve(deviceId: string): DeviceDefinition | undefined | Promise<DeviceDefinition | undefined>;
 }
 
-/**
- * Synchronous device factory. Its context contract is authored by #53; until then the parameter
- * is intentionally `never` so this package does not invent an instance API.
- */
-export type DeviceFactory = (api: never) => unknown;
-
+/** Result of loading one device module through a provider. */
 export interface LoadedDeviceModule {
   readonly deviceId: string;
   readonly description: DeviceDescription;
