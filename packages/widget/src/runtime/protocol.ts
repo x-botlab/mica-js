@@ -9,6 +9,8 @@ import type { WidgetInputEvent } from './types';
 export const WIDGET_FRAME_EVENT = 'widget:frame';
 export const WIDGET_PUBLISH_EVENT = 'widget:publish';
 export const WIDGET_ERROR_EVENT = 'widget:error';
+/** A resource the guest could not hand to a widget; non-fatal, the instance keeps running. */
+export const WIDGET_ASSET_FAILED_EVENT = 'widget:asset-failed';
 
 /** Guest methods the host reaches through `sandbox.call()`. */
 export const WIDGET_LOAD_METHOD = 'load';
@@ -42,6 +44,15 @@ export interface WidgetPublishMessage {
   readonly instanceId: string;
   readonly port: string;
   readonly payload: unknown;
+  /** Simulation time supplied by the widget; `0` when it did not pass one. */
+  readonly simTime: number;
+}
+
+/** Asset read that failed inside the guest; reported once per instance and `src`. */
+export interface WidgetAssetFailedMessage {
+  readonly instanceId: string;
+  readonly src: string;
+  readonly error: SerializedWidgetError;
 }
 
 /** Failure contained to one instance; the guest keeps every other instance running. */
@@ -72,6 +83,8 @@ export interface WidgetMountRequest {
   readonly height: number;
   readonly dpr: number;
   readonly props?: Readonly<Record<string, unknown>>;
+  /** Bytes the host prefetched for this instance, keyed by `WidgetAssetRef.src`. */
+  readonly assets?: Readonly<Record<string, Uint8Array>>;
 }
 
 export interface WidgetPointerRequest {

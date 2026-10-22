@@ -1,4 +1,5 @@
 import {
+  WIDGET_ASSET_FAILED_EVENT,
   WIDGET_DELIVER_METHOD,
   WIDGET_ERROR_EVENT,
   WIDGET_FRAME_EVENT,
@@ -11,15 +12,18 @@ import {
   WIDGET_UNMOUNT_METHOD,
 } from '../runtime/protocol';
 import type {
+  WidgetAssetFailedMessage,
   WidgetErrorMessage,
   WidgetFrameMessage,
   WidgetPublishMessage,
 } from '../runtime/protocol';
+import { collectAssetRefs, mergeProperties } from '../runtime/props';
 import type { WidgetInputEvent } from '../runtime/types';
 import type { WidgetModule } from '../types';
 import { WidgetLayerStore } from './layers';
 import { createDefaultWidgetSandbox } from './sandbox';
 import type {
+  WidgetAssetSource,
   WidgetDiagnostic,
   WidgetDiagnosticCode,
   WidgetHost,
@@ -76,6 +80,7 @@ class WidgetHostImpl implements WidgetHost {
   readonly #container: HTMLElement | undefined;
   readonly #onDiagnostic: ((diagnostic: WidgetDiagnostic) => void) | undefined;
   readonly #onPublish: ((publish: WidgetPublish) => void) | undefined;
+  readonly #assets: WidgetAssetSource | undefined;
   readonly #createSandbox: WidgetSandboxFactory;
   readonly #layerStore = new WidgetLayerStore();
   readonly #instances = new Map<string, InstanceRecord>();
@@ -93,6 +98,7 @@ class WidgetHostImpl implements WidgetHost {
     this.#container = options.container;
     this.#onDiagnostic = options.onDiagnostic;
     this.#onPublish = options.onPublish;
+    this.#assets = options.assets;
     this.#createSandbox = options.sandbox ?? createDefaultWidgetSandbox;
     this.#dpr = options.dpr ?? currentDevicePixelRatio();
   }
@@ -187,6 +193,12 @@ class WidgetHostImpl implements WidgetHost {
       });
       this.#requireOwnership(instanceId, record);
 
+      // The guest merges defaults again on its own, so a definition that changes between load and
+      // mount still behaves the same on both sides of the boundary.
+      const props = mergeProperties(module.definition?.properties, record.props);
+      const assets = await this.#prefetchAssets(instanceId, ref, props);
+      this.#requireOwnership(instanceId, record);
+
       const layer = this.#layerStore.get(instanceId);
       if (!layer) throw new WidgetMountCancelledError(instanceId);
       await sandbox.call(WIDGET_MOUNT_METHOD, {
@@ -195,7 +207,8 @@ class WidgetHostImpl implements WidgetHost {
         width: layer.width,
         height: layer.height,
         dpr: layer.dpr,
-        props: record.props,
+        props,
+        ...(assets === undefined ? {} : { assets }),
       });
     } catch (error) {
       if (error instanceof WidgetRuntimeError) throw error;
@@ -373,11 +386,49 @@ class WidgetHostImpl implements WidgetHost {
     return this.#starting;
   }
 
+  /**
+   * Reads every asset reference found in the merged props. Failures are reported and skipped:
+   * a missing image must not stop the instance from mounting.
+   */
+  async #prefetchAssets(
+    instanceId: string,
+    ref: string,
+    props: Readonly<Record<string, unknown>>,
+  ): Promise<Record<string, Uint8Array> | undefined> {
+    const source = this.#assets;
+    if (!source) return undefined;
+
+    const refs = collectAssetRefs(props);
+    const entries = await Promise.all(
+      [...refs.values()].map(async (assetRef): Promise<[string, Uint8Array] | undefined> => {
+        try {
+          const bytes = await source.read(assetRef);
+          if (!(bytes instanceof Uint8Array)) {
+            throw new TypeError('WidgetAssetSource.read() must resolve to a Uint8Array');
+          }
+          return [assetRef.src, bytes];
+        } catch (error) {
+          this.#report(
+            'widget/asset-failed',
+            `Widget asset "${assetRef.src}" for "${ref}" could not be read: ${describeError(error)}`,
+            { instanceId, widget: ref },
+          );
+          return undefined;
+        }
+      }),
+    );
+
+    return Object.fromEntries(
+      entries.filter((entry): entry is [string, Uint8Array] => entry !== undefined),
+    );
+  }
+
   #attach(sandbox: WidgetSandbox): void {
     this.#detachers.push(
       sandbox.on(WIDGET_FRAME_EVENT, (payload) => this.#onFrame(payload)),
       sandbox.on(WIDGET_PUBLISH_EVENT, (payload) => this.#onPublishMessage(payload)),
       sandbox.on(WIDGET_ERROR_EVENT, (payload) => this.#onErrorMessage(payload)),
+      sandbox.on(WIDGET_ASSET_FAILED_EVENT, (payload) => this.#onAssetFailedMessage(payload)),
     );
   }
 
@@ -406,7 +457,30 @@ class WidgetHostImpl implements WidgetHost {
       instanceId: message.instanceId,
       port: message.port,
       payload: message.payload,
+      // The host has no simulation clock yet; a widget that knows its simTime passes one.
+      simTime:
+        typeof message.simTime === 'number' && Number.isFinite(message.simTime)
+          ? message.simTime
+          : 0,
     });
+  }
+
+  #onAssetFailedMessage(payload: unknown): void {
+    const message = payload as Partial<WidgetAssetFailedMessage> | null | undefined;
+    if (!message || typeof message !== 'object') return;
+    if (typeof message.instanceId !== 'string') return;
+
+    const src = typeof message.src === 'string' ? message.src : 'unknown';
+    const name = message.error?.name ?? 'Error';
+    const text = message.error?.message ?? 'Unknown asset failure';
+    this.#report(
+      'widget/asset-failed',
+      `Widget "${message.instanceId}" could not read asset "${src}": ${name}: ${text}`,
+      {
+        instanceId: message.instanceId,
+        widget: this.#instances.get(message.instanceId)?.widget,
+      },
+    );
   }
 
   #onErrorMessage(payload: unknown): void {
