@@ -17,6 +17,10 @@ export { serializeCanvas } from './format/serialize';
 export { applyCanvasCommand } from './edit/commands';
 export type { CanvasCommand } from './edit/commands';
 
+export { assertCanvasBindings, validateCanvasBindings } from './bindings/validate';
+export type { CanvasBindingCatalog, CanvasPortDescriptor } from './bindings/catalog';
+export type { ValidateCanvasBindingsOptions } from './bindings/validate';
+
 // The `.cnv` contract shares the format error and diagnostic types with the `.sch` contract, so a
 // host can handle both files with one error type.
 export { SchematicError } from '../format/errors';
