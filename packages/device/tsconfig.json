@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "types": ["node"],
+    "paths": {
+      "@mica-js/core/schematic": ["../core/src/schematic/index.ts"]
+    }
+  },
+  "include": ["src"]
+}

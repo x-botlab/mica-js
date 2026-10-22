@@ -72,7 +72,7 @@ worker-src blob:;
 
 ### 严格 CSP：用 `frameUrl`
 
-从真实 URL 加载的帧文档**不继承**宿主 CSP，只需 `frame-src 'self';`。帧文档由包提供（`dist/sandbox-frame.html`），也可用 `SANDBOX_FRAME_HTML` 动态返回：
+从真实 URL 加载的帧文档**不继承**宿主 CSP，只需 `frame-src 'self';`。宿主可用 `SANDBOX_FRAME_HTML` 动态返回该文档（或自行托管同一内容）：
 
 ```ts
 import { SANDBOX_FRAME_HTML } from '@mica-js/sandbox';
