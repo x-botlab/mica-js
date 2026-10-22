@@ -161,6 +161,8 @@ canvas 是独立画布：`widgets` 是 widget 实例数组，数组顺序即绘�
 
 编辑命令（#96）：`add-instance` / `remove-instance`、`set-placement` / `set-z`、`set-property` / `unset-property`、`set-binding`（`target: null` 解绑）、`set-schematic`（`null` 清除）。命令是纯函数，失败抛 `SchematicError` 并一次带回全部诊断；本层只做结构校验，端点存在性、方向与载荷类型由绑定装载负责。
 
+绑定校验（#99）：`validateCanvasBindings(document, { catalog })` 收集诊断、从不抛错；`assertCanvasBindings` 在有 error 时抛 `SchematicError` 并带回全部诊断。`CanvasBindingCatalog` 由宿主注入（widget 定义、已加载的 `.sch`、符号与器件端口），未提供 `catalog` 时跳过引用校验以保持向后兼容；`skipWidgets` 只校验器件侧，文档缺少 `schematic` 时只校验 widget 侧。方向必须互补（widget `input` 接器件 `output`，widget `output` 接器件 `input`），载荷类型必须相同，否则报 `topic/type-mismatch`。诊断码还包括 `canvas/unknown-schematic`、`canvas/unknown-widget`、`canvas/unknown-property`、`canvas/unknown-port`、`canvas/unknown-symbol` 与 `canvas/unknown-target-port`；原理图未加载时只报一次 `canvas/unknown-schematic`，不再级联符号错误。
+
 ## 电气模块
 
 当前实现公共电气网络的纯求值与 `mica-floating-v2` 浮空模拟取值。公共合同经 [#49 逐项批准](https://github.com/x-botlab/mica-js/issues/49#issuecomment-6322043409)，依据 [#12 引脚状态](https://github.com/x-botlab/mica-js/issues/12)、[#24 电气模型](https://github.com/x-botlab/mica-js/issues/24) 和 [#23 整数皮秒时间](https://github.com/x-botlab/mica-js/issues/23)。既有 `MICA_CORE_VERSION` 保留。实现位于 `src/electrical/`，与 `src/schematic/`、`src/canvas/` 并列。
