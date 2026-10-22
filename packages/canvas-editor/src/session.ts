@@ -37,8 +37,12 @@ export const ROTATE_HANDLE_OFFSET = 20;
 /** Document units moved by an arrow key, and by `Shift` + arrow key. */
 export const NUDGE_STEP = 1;
 export const NUDGE_STEP_LARGE = 10;
-/** Exponent factor of one wheel notch: `scale * Math.exp(-deltaY * step)`. */
+/** Exponent factor of one wheel notch: `scale * Math.exp(-pixels * step)`. */
 export const WHEEL_ZOOM_STEP = 0.0015;
+/** CSS pixels per line, for `DOM_DELTA_LINE` wheel events (Firefox reports ~3 lines per notch). */
+export const WHEEL_LINE_HEIGHT = 16;
+/** Fallback page height when the host does not report the viewport size. */
+export const WHEEL_PAGE_HEIGHT = 800;
 
 export interface PointerInput {
   /** Canvas-relative CSS pixels. */
@@ -46,6 +50,8 @@ export interface PointerInput {
   readonly y: number;
   readonly button?: number;
   readonly buttons?: number;
+  /** DOM `PointerEvent.pointerId`; input from other pointers is ignored mid-gesture. */
+  readonly pointerId?: number;
   readonly shiftKey?: boolean;
   readonly ctrlKey?: boolean;
   readonly altKey?: boolean;
@@ -69,6 +75,10 @@ export interface WheelInput {
   readonly y: number;
   readonly deltaX: number;
   readonly deltaY: number;
+  /** DOM `WheelEvent.deltaMode`: `0` = pixels, `1` = lines, `2` = pages. */
+  readonly deltaMode?: number;
+  /** Viewport height in CSS pixels, used to convert `DOM_DELTA_PAGE` deltas. */
+  readonly pageSize?: number;
   readonly shiftKey?: boolean;
 }
 
@@ -129,7 +139,12 @@ export class CanvasInteractionSession {
   #viewport: ViewportState;
   #interaction: Interaction = { kind: 'idle' };
   #previews = new Map<string, WidgetPlacement>();
-  #activeInstanceId: string | undefined;
+  /** Run-mode instance that took the current press; only set while a pointer is down. */
+  #pointerTargetId: string | undefined;
+  /** Run-mode instance the pointer last hit; keyboard input goes there. */
+  #keyboardTargetId: string | undefined;
+  /** DOM pointer that owns the gesture in flight; other pointers are ignored until it ends. */
+  #pointerId: number | undefined;
   #lastPointer: Point = { x: 0, y: 0 };
 
   constructor(options: CanvasInteractionSessionOptions = {}) {
@@ -154,9 +169,19 @@ export class CanvasInteractionSession {
     return this.#interaction.kind;
   }
 
-  /** Instance that received the last run-mode pointer hit; keyboard input goes there. */
+  /** Instance that received the last run-mode hit; keyboard input goes there. */
   get activeInstanceId(): string | undefined {
-    return this.#activeInstanceId;
+    return this.#keyboardTargetId;
+  }
+
+  /** Instance receiving the current run-mode press, `undefined` between presses. */
+  get pointerTargetId(): string | undefined {
+    return this.#pointerTargetId;
+  }
+
+  /** DOM pointer owning the gesture in flight, for hosts that route multi-touch input. */
+  get pointerId(): number | undefined {
+    return this.#pointerId;
   }
 
   /** In-progress geometry, keyed by instance id. Empty while idle. */
@@ -176,30 +201,45 @@ export class CanvasInteractionSession {
     this.#viewport = viewport;
   }
 
+  /** Drops both run-mode routing targets: no instance receives further pointer or keyboard input. */
   clearActiveInstance(): void {
-    this.#activeInstanceId = undefined;
+    this.#pointerTargetId = undefined;
+    this.#keyboardTargetId = undefined;
   }
 
   /** Drops the gesture and its previews without emitting a command. */
   cancelInteraction(): void {
     this.#interaction = { kind: 'idle' };
     this.#previews.clear();
+    this.#pointerTargetId = undefined;
   }
 
   pointerDown(document: CanvasDocument, input: PointerInput): InteractionResult {
     this.#lastPointer = { x: input.x, y: input.y };
+
+    if (!this.#ownsPointer(input.pointerId)) {
+      // A second pointer never hijacks the pointer already down: an edit gesture is abandoned
+      // without a command, and the newcomer is ignored until the original pointer is released.
+      return this.#result(this.#mode === 'edit' && this.#abandonGesture());
+    }
+
     if (this.#mode === 'run') {
+      this.#pointerId = input.pointerId;
       return this.#runPointer(document, 'pointerdown', input);
     }
 
+    // Every press starts from a clean slate, so geometry left over from an abandoned gesture can
+    // never be committed by this one.
+    const stalePreviews = this.#clearPreviews();
     const point = this.#lastPointer;
     // Middle button and Space + drag pan; they never touch the selection.
     if (input.button === 1 || input.spaceKey === true) {
+      this.#pointerId = input.pointerId;
       this.#interaction = { kind: 'panning', origin: point, start: this.#viewport };
-      return this.#result(false);
+      return this.#result(stalePreviews);
     }
     if (input.button !== undefined && input.button !== 0) {
-      return this.#result(false);
+      return this.#result(stalePreviews);
     }
 
     const documentPoint = screenToDocument(this.#viewport, point);
@@ -208,6 +248,7 @@ export class CanvasInteractionSession {
       const instance = findInstance(document, handle.instanceId);
       if (instance !== undefined) {
         const start = toPlacement(instance);
+        this.#pointerId = input.pointerId;
         this.#interaction =
           handle.handle === 'rotate'
             ? {
@@ -218,7 +259,7 @@ export class CanvasInteractionSession {
                   start.rotation - (pointerAngle(placementCenter(start), documentPoint) + 90),
               }
             : { kind: 'scaling', instanceId: instance.id, handle: handle.handle, start };
-        return this.#result(false);
+        return this.#result(stalePreviews);
       }
     }
 
@@ -241,12 +282,16 @@ export class CanvasInteractionSession {
 
     // A shift-click that removed the instance leaves nothing to drag.
     const targetId = hit !== undefined && this.#selection.includes(hit.id) ? hit.id : undefined;
+    this.#pointerId = input.pointerId;
     this.#interaction = { kind: 'pressed', origin: point, targetId };
-    return this.#result(changed);
+    return this.#result(changed || stalePreviews);
   }
 
   pointerMove(document: CanvasDocument, input: PointerInput): InteractionResult {
     this.#lastPointer = { x: input.x, y: input.y };
+    if (!this.#ownsPointer(input.pointerId)) {
+      return this.#result(false);
+    }
     if (this.#mode === 'run') {
       return this.#runPointer(document, 'pointermove', input);
     }
@@ -285,26 +330,12 @@ export class CanvasInteractionSession {
           }
         }
         this.#interaction = { kind: 'dragging', origin: interaction.origin, start };
-        return this.#drag(point);
+        return this.#updateGeometry(document, point, input);
       }
       case 'dragging':
-        return this.#drag(point);
-      case 'scaling': {
-        const documentPoint = screenToDocument(this.#viewport, point);
-        const next = resizePlacement(interaction.start, interaction.handle, documentPoint, {
-          keepAspect: input.shiftKey === true,
-        });
-        return this.#result(this.#setPreviews(new Map([[interaction.instanceId, next]])));
-      }
-      case 'rotating': {
-        const documentPoint = screenToDocument(this.#viewport, point);
-        const rotation = rotationFromPointer(placementCenter(interaction.start), documentPoint, {
-          grabOffset: interaction.grabOffset,
-          snap: input.shiftKey === true,
-        });
-        const next = { ...interaction.start, rotation };
-        return this.#result(this.#setPreviews(new Map([[interaction.instanceId, next]])));
-      }
+      case 'scaling':
+      case 'rotating':
+        return this.#updateGeometry(document, point, input);
       default:
         return this.#result(false);
     }
@@ -312,19 +343,46 @@ export class CanvasInteractionSession {
 
   pointerUp(document: CanvasDocument, input: PointerInput): InteractionResult {
     this.#lastPointer = { x: input.x, y: input.y };
+    if (!this.#ownsPointer(input.pointerId)) {
+      return this.#result(false);
+    }
     if (this.#mode === 'run') {
+      this.#pointerId = undefined;
       return this.#runPointer(document, 'pointerup', input);
     }
 
+    this.#pointerId = undefined;
     const interaction = this.#interaction;
-    this.#interaction = { kind: 'idle' };
+    const point = this.#lastPointer;
+
+    if (interaction.kind === 'panning') {
+      this.#interaction = { kind: 'idle' };
+      const next = panBy(
+        interaction.start,
+        point.x - interaction.origin.x,
+        point.y - interaction.origin.y,
+      );
+      const changed = !sameViewport(next, this.#viewport);
+      this.#viewport = next;
+      const hadPreview = this.#clearPreviews();
+      return this.#result(changed || hadPreview);
+    }
+
     if (
       interaction.kind !== 'dragging' &&
       interaction.kind !== 'scaling' &&
       interaction.kind !== 'rotating'
     ) {
-      return this.#result(false);
+      // Nothing can be committed here (click, shift-click, or an abandoned gesture): drop any
+      // leftover preview so it can never be painted or committed later.
+      this.#interaction = { kind: 'idle' };
+      return this.#result(this.#clearPreviews());
     }
+
+    // Re-run the gesture update with the release coordinates: a fast flick may end without a final
+    // `pointermove`, so the committed geometry must follow the pointer's last known position.
+    this.#updateGeometry(document, point, input);
+    this.#interaction = { kind: 'idle' };
 
     // One `set-placement` per changed instance, built from the final preview only: the intermediate
     // geometry of the gesture never reaches the document.
@@ -339,27 +397,39 @@ export class CanvasInteractionSession {
     return this.#result(redraw, commands);
   }
 
-  pointerCancel(document: CanvasDocument): InteractionResult {
-    if (this.#mode === 'run' && this.#activeInstanceId !== undefined) {
-      const instance = findInstance(document, this.#activeInstanceId);
-      if (instance !== undefined) {
-        return this.#result(
-          false,
-          [],
-          [
-            {
-              instanceId: instance.id,
-              event: pointerEvent(
-                'pointercancel',
-                instance,
-                screenToDocument(this.#viewport, this.#lastPointer),
-                {},
-              ),
-            },
-          ],
-        );
+  pointerCancel(document: CanvasDocument, input?: PointerInput): InteractionResult {
+    if (input !== undefined) {
+      this.#lastPointer = { x: input.x, y: input.y };
+      if (!this.#ownsPointer(input.pointerId)) {
+        return this.#result(false);
       }
     }
+    this.#pointerId = undefined;
+
+    if (this.#mode === 'run') {
+      const instanceId = this.#pointerTargetId;
+      this.#pointerTargetId = undefined;
+      const instance = instanceId === undefined ? undefined : findInstance(document, instanceId);
+      if (instance === undefined) {
+        return this.#result(false);
+      }
+      return this.#result(
+        false,
+        [],
+        [
+          {
+            instanceId: instance.id,
+            event: pointerEvent(
+              'pointercancel',
+              instance,
+              screenToDocument(this.#viewport, this.#lastPointer),
+              {},
+            ),
+          },
+        ],
+      );
+    }
+
     const redraw = this.#interaction.kind !== 'idle' || this.#previews.size > 0;
     this.cancelInteraction();
     return this.#result(redraw);
@@ -370,10 +440,13 @@ export class CanvasInteractionSession {
       return this.#result(false);
     }
     const point = { x: input.x, y: input.y };
+    // `WheelEvent.deltaMode` decides the unit: Firefox reports lines, some devices report pages.
+    const deltaX = normalizeWheelDelta(input.deltaX, input.deltaMode, input.pageSize);
+    const deltaY = normalizeWheelDelta(input.deltaY, input.deltaMode, input.pageSize);
     const next =
       input.shiftKey === true
-        ? panBy(this.#viewport, -(input.deltaX !== 0 ? input.deltaX : input.deltaY), 0)
-        : zoomAt(this.#viewport, point, Math.exp(-input.deltaY * WHEEL_ZOOM_STEP));
+        ? panBy(this.#viewport, -(deltaX !== 0 ? deltaX : deltaY), 0)
+        : zoomAt(this.#viewport, point, Math.exp(-deltaY * WHEEL_ZOOM_STEP));
     if (sameViewport(next, this.#viewport)) {
       return this.#result(false);
     }
@@ -437,18 +510,45 @@ export class CanvasInteractionSession {
     return this.#runKey('keyup', document, key);
   }
 
-  #drag(point: Point): InteractionResult {
+  /**
+   * Recomputes the preview geometry of the gesture in flight for `point`. Shared by `pointermove`
+   * and by `pointerup`, so the committed geometry always matches the last known pointer position.
+   */
+  #updateGeometry(
+    document: CanvasDocument,
+    point: Point,
+    modifiers: Pick<PointerInput, 'shiftKey'>,
+  ): InteractionResult {
     const interaction = this.#interaction;
-    if (interaction.kind !== 'dragging') {
-      return this.#result(false);
+    switch (interaction.kind) {
+      case 'dragging': {
+        const dx = (point.x - interaction.origin.x) / this.#viewport.scale;
+        const dy = (point.y - interaction.origin.y) / this.#viewport.scale;
+        const previews = new Map<string, WidgetPlacement>();
+        for (const [id, placement] of interaction.start) {
+          previews.set(id, { ...placement, x: placement.x + dx, y: placement.y + dy });
+        }
+        return this.#result(this.#setPreviews(previews));
+      }
+      case 'scaling': {
+        const documentPoint = screenToDocument(this.#viewport, point);
+        const next = resizePlacement(interaction.start, interaction.handle, documentPoint, {
+          keepAspect: modifiers.shiftKey === true,
+        });
+        return this.#result(this.#setPreviews(new Map([[interaction.instanceId, next]])));
+      }
+      case 'rotating': {
+        const documentPoint = screenToDocument(this.#viewport, point);
+        const rotation = rotationFromPointer(placementCenter(interaction.start), documentPoint, {
+          grabOffset: interaction.grabOffset,
+          snap: modifiers.shiftKey === true,
+        });
+        const next = { ...interaction.start, rotation };
+        return this.#result(this.#setPreviews(new Map([[interaction.instanceId, next]])));
+      }
+      default:
+        return this.#result(false);
     }
-    const dx = (point.x - interaction.origin.x) / this.#viewport.scale;
-    const dy = (point.y - interaction.origin.y) / this.#viewport.scale;
-    const previews = new Map<string, WidgetPlacement>();
-    for (const [id, placement] of interaction.start) {
-      previews.set(id, { ...placement, x: placement.x + dx, y: placement.y + dy });
-    }
-    return this.#result(this.#setPreviews(previews));
   }
 
   #runPointer(
@@ -457,9 +557,13 @@ export class CanvasInteractionSession {
     input: PointerInput,
   ): InteractionResult {
     const documentPoint = screenToDocument(this.#viewport, this.#lastPointer);
+    const hit = hitTestTopmost(document.widgets, documentPoint);
+    if (hit !== undefined) {
+      this.#keyboardTargetId = hit.id;
+    }
+
     if (type === 'pointerdown') {
-      const hit = hitTestTopmost(document.widgets, documentPoint);
-      this.#activeInstanceId = hit?.id;
+      this.#pointerTargetId = hit?.id;
       if (hit === undefined) {
         return this.#result(false);
       }
@@ -470,14 +574,28 @@ export class CanvasInteractionSession {
       );
     }
 
-    // Moves follow the instance that took the press; hover moves go to whatever is under the
-    // pointer, so widgets can highlight themselves before a press.
-    const target =
-      this.#activeInstanceId === undefined
-        ? type === 'pointermove'
-          ? hitTestTopmost(document.widgets, documentPoint)
-          : undefined
-        : findInstance(document, this.#activeInstanceId);
+    if (type === 'pointerup') {
+      // The release goes to the instance that took the press, even if the pointer has left it.
+      const targetId = this.#pointerTargetId;
+      this.#pointerTargetId = undefined;
+      const target = targetId === undefined ? undefined : findInstance(document, targetId);
+      if (target === undefined) {
+        return this.#result(false);
+      }
+      return this.#result(
+        false,
+        [],
+        [{ instanceId: target.id, event: pointerEvent(type, target, documentPoint, input) }],
+      );
+    }
+
+    // While a press is in flight the pressed instance keeps the input; otherwise every move is
+    // hit-tested again, so hover input follows whatever is under the pointer right now.
+    const pressed =
+      this.#pointerTargetId === undefined
+        ? undefined
+        : findInstance(document, this.#pointerTargetId);
+    const target = pressed ?? hit;
     if (target === undefined) {
       return this.#result(false);
     }
@@ -489,13 +607,13 @@ export class CanvasInteractionSession {
   }
 
   #runKey(type: 'keydown' | 'keyup', document: CanvasDocument, key: KeyInput): InteractionResult {
-    const instanceId = this.#activeInstanceId;
+    const instanceId = this.#keyboardTargetId;
     if (instanceId === undefined) {
       return this.#result(false);
     }
     const instance = findInstance(document, instanceId);
     if (instance === undefined) {
-      this.#activeInstanceId = undefined;
+      this.#keyboardTargetId = undefined;
       return this.#result(false);
     }
     return this.#result(
@@ -524,6 +642,21 @@ export class CanvasInteractionSession {
     point: Point,
   ): { readonly instanceId: string; readonly handle: CanvasHandle } | undefined {
     return handleUnderPointer(document, this.#selection, this.#viewport, point);
+  }
+
+  /** Whether `pointerId` belongs to the gesture in flight; an absent id accepts every pointer. */
+  #ownsPointer(pointerId: number | undefined): boolean {
+    return (
+      pointerId === undefined || this.#pointerId === undefined || pointerId === this.#pointerId
+    );
+  }
+
+  /** Ends the gesture without committing it; returns whether the canvas must repaint. */
+  #abandonGesture(): boolean {
+    const redraw = this.#interaction.kind !== 'idle' || this.#previews.size > 0;
+    this.#interaction = { kind: 'idle' };
+    this.#previews.clear();
+    return redraw;
   }
 
   #setPreviews(next: ReadonlyMap<string, WidgetPlacement>): boolean {
@@ -616,6 +749,28 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
 
 function sameViewport(left: ViewportState, right: ViewportState): boolean {
   return left.x === right.x && left.y === right.y && left.scale === right.scale;
+}
+
+/**
+ * Converts a `WheelEvent` delta to CSS pixels. Without this a `DOM_DELTA_LINE` notch (Firefox
+ * reports ~3 lines) would zoom roughly 16× less than the same notch expressed in pixels.
+ */
+function normalizeWheelDelta(
+  delta: number,
+  deltaMode: number | undefined,
+  pageSize: number | undefined,
+): number {
+  if (!Number.isFinite(delta)) {
+    return 0;
+  }
+  switch (deltaMode) {
+    case 1:
+      return delta * WHEEL_LINE_HEIGHT;
+    case 2:
+      return delta * (pageSize !== undefined && pageSize > 0 ? pageSize : WHEEL_PAGE_HEIGHT);
+    default:
+      return delta;
+  }
 }
 
 function arrowDelta(key: string, step: number): Point | undefined {

@@ -253,6 +253,7 @@ export function mountCanvasEditor(options: MountCanvasEditorOptions): CanvasEdit
       y: point.y,
       button: event.button,
       buttons: event.buttons,
+      pointerId: event.pointerId,
       shiftKey: event.shiftKey,
       ctrlKey: event.ctrlKey || event.metaKey,
       altKey: event.altKey,
@@ -325,7 +326,7 @@ export function mountCanvasEditor(options: MountCanvasEditorOptions): CanvasEdit
       return;
     }
     releasePointer(event.pointerId);
-    applyResult(session.pointerCancel(currentDocument));
+    applyResult(session.pointerCancel(currentDocument, toPointerInput(event)));
     updateCursor();
   }
 
@@ -341,6 +342,9 @@ export function mountCanvasEditor(options: MountCanvasEditorOptions): CanvasEdit
         y: point.y,
         deltaX: event.deltaX,
         deltaY: event.deltaY,
+        // Firefox reports lines and some devices pages; the session normalizes both to pixels.
+        deltaMode: event.deltaMode,
+        pageSize: canvas.clientHeight,
         shiftKey: event.shiftKey,
       }),
     );
@@ -375,11 +379,16 @@ export function mountCanvasEditor(options: MountCanvasEditorOptions): CanvasEdit
   }
 
   function handleBlur(): void {
-    if (!spaceHeld) {
+    if (disposed) {
       return;
     }
-    spaceHeld = false;
-    updateCursor();
+    if (spaceHeld) {
+      spaceHeld = false;
+      updateCursor();
+    }
+    // A pointer that is lost (window switch, stolen capture) must never leave a gesture stuck: the
+    // cancel drops the preview without a command and releases the pointer for the next press.
+    applyResult(session.pointerCancel(currentDocument));
   }
 
   const preventDefault = (event: Event): void => {

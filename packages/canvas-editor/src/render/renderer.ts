@@ -5,9 +5,8 @@ import { ROTATE_HANDLE_OFFSET } from '../session';
 import type { CanvasTheme } from '../theme';
 import type { CanvasEditorDiagnostic, CanvasMode } from '../types';
 import { screenToDocument, type ViewportState } from '../viewport';
+import { isMajorGridLine, resolveGridStep } from './grid';
 
-/** Minimum distance, in screen pixels, between two grid lines before subdivisions drop out. */
-const MIN_GRID_GAP = 6;
 /** Screen-space size of a square resize handle. */
 const HANDLE_SIZE = 7;
 /** Screen-space radius of the round rotation handle. */
@@ -100,28 +99,28 @@ export class CanvasFrameRenderer {
 
   #drawGrid(context: CanvasRenderingContext2D, frame: CanvasFrame): void {
     const { viewport } = frame;
+    // `theme.gridSize <= 0` is how a host hides the grid; the helper also keeps the step finite, so
+    // a degenerate theme can never stall the render loop.
+    const step = resolveGridStep(this.#theme.gridSize, viewport.scale);
+    if (step === undefined) {
+      return;
+    }
     const topLeft = screenToDocument(viewport, { x: 0, y: 0 });
     const bottomRight = screenToDocument(viewport, { x: this.#width, y: this.#height });
-
-    let step = this.#theme.gridSize;
-    // Keep the visible density readable: drop to every 5th line while zoomed out.
-    while (step * viewport.scale < MIN_GRID_GAP && step < 1e6) {
-      step *= 5;
-    }
     const startX = Math.floor(topLeft.x / step) * step;
     const startY = Math.floor(topLeft.y / step) * step;
 
     const stroke = (major: boolean): void => {
       context.beginPath();
       for (let x = startX; x <= bottomRight.x; x += step) {
-        if (isMajorLine(x, step) !== major) {
+        if (isMajorGridLine(x, step) !== major) {
           continue;
         }
         context.moveTo(x, topLeft.y);
         context.lineTo(x, bottomRight.y);
       }
       for (let y = startY; y <= bottomRight.y; y += step) {
-        if (isMajorLine(y, step) !== major) {
+        if (isMajorGridLine(y, step) !== major) {
           continue;
         }
         context.moveTo(topLeft.x, y);
@@ -275,8 +274,4 @@ function findInstance(
   instanceId: string,
 ): CanvasWidgetInstance | undefined {
   return document.widgets.find((widget) => widget.id === instanceId);
-}
-
-function isMajorLine(value: number, step: number): boolean {
-  return Math.round(value / step) % 5 === 0;
 }

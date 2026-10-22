@@ -248,6 +248,37 @@ describe('CanvasInteractionSession', () => {
       expect(session.viewport).toEqual({ x: -40, y: 0, scale: 1 });
     });
 
+    it('normalizes line and page wheel deltas to pixels', () => {
+      // One Firefox notch: 3 lines × 16 px behaves exactly like a 48 px pixel delta.
+      const lines = new CanvasInteractionSession();
+      lines.wheel({ x: 0, y: 0, deltaX: 0, deltaY: 3, deltaMode: 1 });
+      const pixels = new CanvasInteractionSession();
+      pixels.wheel({ x: 0, y: 0, deltaX: 0, deltaY: 48 });
+      expect(lines.viewport.scale).toBeCloseTo(pixels.viewport.scale);
+
+      const pages = new CanvasInteractionSession();
+      pages.wheel({ x: 0, y: 0, deltaX: 0, deltaY: 1, deltaMode: 2, pageSize: 800 });
+      const pageInPixels = new CanvasInteractionSession();
+      pageInPixels.wheel({ x: 0, y: 0, deltaX: 0, deltaY: 800 });
+      expect(pages.viewport.scale).toBeCloseTo(pageInPixels.viewport.scale);
+    });
+
+    it('zooms a line-mode notch as much as a pixel notch', () => {
+      const session = new CanvasInteractionSession();
+      session.wheel({ x: 0, y: 0, deltaX: 0, deltaY: 3, deltaMode: 1 });
+      // ≈ 7 % for 48 px, the same order as a pixel notch (≈ 14 % for 100 px). Without the
+      // conversion a line notch would zoom ≈ 0.45 %, so both bounds matter.
+      const zoomed = 1 - session.viewport.scale;
+      expect(zoomed).toBeGreaterThan(0.05);
+      expect(zoomed).toBeLessThan(0.1);
+    });
+
+    it('pans by the normalized delta with Shift + wheel in line mode', () => {
+      const session = new CanvasInteractionSession();
+      session.wheel({ x: 0, y: 0, deltaX: 0, deltaY: 2, deltaMode: 1, shiftKey: true });
+      expect(session.viewport).toEqual({ x: -32, y: 0, scale: 1 });
+    });
+
     it('clamps the scale to the supported range', () => {
       const session = new CanvasInteractionSession();
       session.wheel({ x: 0, y: 0, deltaX: 0, deltaY: -100000 });
@@ -272,6 +303,99 @@ describe('CanvasInteractionSession', () => {
 
       session.pointerDown(drawing, { x: 0, y: 0, button: 1 });
       expect(session.interaction).toBe('panning');
+    });
+  });
+
+  describe('release position', () => {
+    it('commits the geometry under the release point, not the last move', () => {
+      const session = new CanvasInteractionSession();
+      session.pointerDown(drawing, { x: 50, y: 25 });
+      session.pointerMove(drawing, { x: 80, y: 45 });
+
+      // A fast flick ends here, without a final `pointermove`.
+      const released = session.pointerUp(drawing, { x: 130, y: 80 });
+
+      expect(released.commands).toEqual([
+        {
+          type: 'set-placement',
+          instanceId: 'a',
+          placement: { x: 80, y: 55, width: 100, height: 50, rotation: 0 },
+        },
+      ]);
+      expect(session.previews.size).toBe(0);
+    });
+
+    it('applies the release point to a resize without an intermediate move', () => {
+      const session = new CanvasInteractionSession({ selection: ['a'] });
+      session.pointerDown(drawing, { x: 100, y: 50 });
+
+      const released = session.pointerUp(drawing, { x: 180, y: 120 });
+
+      expect(released.commands).toEqual([
+        {
+          type: 'set-placement',
+          instanceId: 'a',
+          placement: { x: 0, y: 0, width: 180, height: 120, rotation: 0 },
+        },
+      ]);
+    });
+
+    it('finishes a pan at the release point', () => {
+      const session = new CanvasInteractionSession();
+      session.pointerDown(drawing, { x: 10, y: 10, spaceKey: true });
+      session.pointerMove(drawing, { x: 40, y: 30 });
+
+      const released = session.pointerUp(drawing, { x: 50, y: 50 });
+
+      expect(released.commands).toEqual([]);
+      expect(session.viewport).toEqual({ x: 40, y: 40, scale: 1 });
+    });
+  });
+
+  describe('abandoned gestures', () => {
+    it('abandons the gesture when a second pointer presses, without committing it', () => {
+      const session = new CanvasInteractionSession();
+      session.pointerDown(drawing, { x: 50, y: 25, pointerId: 1 });
+      session.pointerMove(drawing, { x: 80, y: 45, pointerId: 1 });
+      expect(session.previews.size).toBe(1);
+
+      const second = session.pointerDown(drawing, { x: 500, y: 500, pointerId: 2 });
+
+      expect(second.commands).toEqual([]);
+      expect(second.redraw).toBe(true);
+      expect(session.previews.size).toBe(0);
+      // The abandoned gesture must not keep editing the selection either.
+      expect(session.selection).toEqual(['a']);
+
+      expect(session.pointerUp(drawing, { x: 500, y: 500, pointerId: 2 }).commands).toEqual([]);
+      expect(session.pointerUp(drawing, { x: 80, y: 45, pointerId: 1 }).commands).toEqual([]);
+      expect(session.previews.size).toBe(0);
+    });
+
+    it('never commits a preview left behind by an abandoned gesture', () => {
+      const session = new CanvasInteractionSession();
+      session.pointerDown(drawing, { x: 50, y: 25, pointerId: 1 });
+      session.pointerMove(drawing, { x: 80, y: 45, pointerId: 1 });
+      session.pointerDown(drawing, { x: 500, y: 500, pointerId: 2 });
+      session.pointerUp(drawing, { x: 500, y: 500, pointerId: 2 });
+      session.pointerUp(drawing, { x: 80, y: 45, pointerId: 1 });
+
+      // Pressing and releasing another instance's handle in place must stay a no-op.
+      session.setSelection(['b']);
+      expect(session.pointerDown(drawing, { x: 300, y: 50, pointerId: 3 }).commands).toEqual([]);
+      expect(session.pointerUp(drawing, { x: 300, y: 50, pointerId: 3 }).commands).toEqual([]);
+      expect(session.previews.size).toBe(0);
+    });
+
+    it('does not commit a placement when a handle is pressed and released in place', () => {
+      const session = new CanvasInteractionSession({ selection: ['a'] });
+
+      expect(session.pointerDown(drawing, { x: 100, y: 50 }).commands).toEqual([]);
+      expect(session.interaction).toBe('scaling');
+      const released = session.pointerUp(drawing, { x: 100, y: 50 });
+
+      expect(released.commands).toEqual([]);
+      expect(session.previews.size).toBe(0);
     });
   });
 
@@ -336,6 +460,67 @@ describe('CanvasInteractionSession', () => {
       expect(session.keyDown(running, { key: 'ArrowRight' }).commands).toEqual([]);
       expect(session.wheel({ x: 0, y: 0, deltaX: 0, deltaY: -100 }).commands).toEqual([]);
       expect(session.viewport.scale).toBe(1);
+    });
+  });
+
+  describe('run mode pointer routing', () => {
+    const stage = canvasDocument(widget('a', { x: 100, y: 50 }), widget('b', { x: 300, y: 50 }));
+
+    it('stops routing to the pressed instance once the pointer is released', () => {
+      const session = new CanvasInteractionSession({ mode: 'run' });
+      expect(
+        session.pointerDown(stage, { x: 150, y: 75, pointerId: 1 }).events[0]?.instanceId,
+      ).toBe('a');
+      expect(session.pointerTargetId).toBe('a');
+
+      session.pointerUp(stage, { x: 150, y: 75, pointerId: 1 });
+      expect(session.pointerTargetId).toBeUndefined();
+
+      // Nothing is pressed any more, so blank space must stay silent.
+      expect(session.pointerMove(stage, { x: 10, y: 10, pointerId: 1 }).events).toEqual([]);
+
+      // Hovering another widget reaches that widget, not the one pressed before.
+      const hovered = session.pointerMove(stage, { x: 350, y: 75, pointerId: 1 });
+      expect(hovered.events[0]?.instanceId).toBe('b');
+    });
+
+    it('keeps routing to the pressed instance while the button is down', () => {
+      const session = new CanvasInteractionSession({ mode: 'run' });
+      session.pointerDown(stage, { x: 150, y: 75, pointerId: 1 });
+      // Dragged over widget b: the press keeps the input until it is released.
+      const moved = session.pointerMove(stage, { x: 350, y: 75, pointerId: 1 });
+      expect(moved.events[0]?.instanceId).toBe('a');
+
+      const released = session.pointerUp(stage, { x: 350, y: 75, pointerId: 1 });
+      expect(released.events[0]?.instanceId).toBe('a');
+    });
+
+    it('forwards input only for the pointer that started the press', () => {
+      const session = new CanvasInteractionSession({ mode: 'run' });
+      session.pointerDown(stage, { x: 150, y: 75, pointerId: 1 });
+
+      expect(session.pointerDown(stage, { x: 350, y: 75, pointerId: 2 }).events).toEqual([]);
+      expect(session.pointerMove(stage, { x: 350, y: 75, pointerId: 2 }).events).toEqual([]);
+      expect(session.pointerUp(stage, { x: 350, y: 75, pointerId: 2 }).events).toEqual([]);
+
+      expect(session.pointerTargetId).toBe('a');
+      expect(
+        session.pointerMove(stage, { x: 160, y: 75, pointerId: 1 }).events[0]?.instanceId,
+      ).toBe('a');
+    });
+
+    it('routes keyboard input to the last hit instance and drops it when cleared', () => {
+      const session = new CanvasInteractionSession({ mode: 'run' });
+      session.pointerDown(stage, { x: 150, y: 75, pointerId: 1 });
+      session.pointerUp(stage, { x: 150, y: 75, pointerId: 1 });
+      expect(session.activeInstanceId).toBe('a');
+
+      // The pointer route is gone, but the keyboard target survives the release.
+      expect(session.keyDown(stage, { key: 'Enter' }).events[0]?.instanceId).toBe('a');
+
+      session.clearActiveInstance();
+      expect(session.activeInstanceId).toBeUndefined();
+      expect(session.keyDown(stage, { key: 'Enter' }).events).toEqual([]);
     });
   });
 });
