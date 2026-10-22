@@ -2,8 +2,8 @@ import type {
   ElectricalNetworkResult,
   ElectricalPinInput,
   FloatingInput,
-} from '../electrical/electrical-types';
-import type { Scheduler, SchedulerInstance } from '../scheduler/scheduler-types';
+} from '../electrical/types';
+import type { Scheduler, SchedulerInstance } from '../scheduler/types';
 
 /** Declared state of one internal connection. */
 export type ConnectionState = 'open' | 'closed';

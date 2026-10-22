@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { EventIdPool, MinHeap } from './scheduler-queue';
+import { EventIdPool, MinHeap } from './queue';
 
 it('orders a long queue iteratively and handles empty pops', () => {
   const heap = new MinHeap<number>((a, b) => a - b);

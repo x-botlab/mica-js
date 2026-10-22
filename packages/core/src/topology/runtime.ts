@@ -2,8 +2,8 @@ import type {
   ElectricalNetworkResult,
   ElectricalPinInput,
   FloatingInput,
-} from '../electrical/electrical-types';
-import { resolveElectricalNetwork, snapshotElectricalPin } from '../electrical/electrical';
+} from '../electrical/types';
+import { resolveElectricalNetwork, snapshotElectricalPin } from '../electrical/network';
 import {
   checkBoolean,
   checkChoice,
@@ -11,9 +11,9 @@ import {
   checkInteger,
   checkRecord,
   invalidType,
-} from '../electrical/electrical-validation';
+} from '../electrical/validation';
 import { createFloatingInput } from '../electrical/floating-input';
-import type { Scheduler, SchedulerInstance, SchedulerTarget } from '../scheduler/scheduler-types';
+import type { Scheduler, SchedulerInstance, SchedulerTarget } from '../scheduler/types';
 import type {
   ConnectionState,
   TopologyConnectionPatch,
@@ -22,7 +22,7 @@ import type {
   TopologyOptions,
   TopologyPinRef,
   TopologyRuntime,
-} from './topology-types';
+} from './types';
 
 const PIN_KINDS = ['signal', 'power', 'gnd'] as const;
 const CONNECTION_STATES = ['open', 'closed'] as const;

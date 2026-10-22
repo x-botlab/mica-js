@@ -1,5 +1,5 @@
-import type { FloatingInput, FloatingInputSample } from './electrical-types';
-import { checkBoolean, checkIdentity, checkInteger, checkSupply } from './electrical-validation';
+import type { FloatingInput, FloatingInputSample } from './types';
+import { checkBoolean, checkIdentity, checkInteger, checkSupply } from './validation';
 
 function hash32(text: string): number {
   let hash = 0x811c9dc5;

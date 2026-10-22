@@ -3,7 +3,7 @@ import type {
   ElectricalNetworkInput,
   ElectricalNetworkResult,
   ElectricalPinInput,
-} from './electrical-types';
+} from './types';
 import {
   checkBoolean,
   checkChoice,
@@ -12,7 +12,7 @@ import {
   checkRange,
   checkRecord,
   invalidType,
-} from './electrical-validation';
+} from './validation';
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;

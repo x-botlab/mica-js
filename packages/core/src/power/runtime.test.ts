@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import type { ElectricalPinInput } from '../electrical/electrical-types';
-import { createScheduler } from '../scheduler/scheduler';
-import { SchedulerError } from '../scheduler/scheduler-error';
-import type { Scheduler, SchedulerTarget } from '../scheduler/scheduler-types';
+import type { ElectricalPinInput } from '../electrical/types';
+import { createScheduler } from '../scheduler/runtime';
+import { SchedulerError } from '../scheduler/errors';
+import type { Scheduler, SchedulerTarget } from '../scheduler/types';
 import type {
   TopologyDefinition,
   TopologyExternalWire,
   TopologyPinDeclaration,
   TopologyPinRef,
-} from '../topology/topology-types';
-import { createPowerRuntime, PowerFeedbackError } from './power';
+} from '../topology/types';
+import { createPowerRuntime, PowerFeedbackError } from './runtime';
 import type {
   PowerDefinition,
   PowerDigitalSample,
@@ -19,7 +19,7 @@ import type {
   PowerInputMode,
   PowerOptions,
   PowerRuntime,
-} from './power-types';
+} from './types';
 
 const MODEL = Object.freeze({
   kind: 'ideal-voltage' as const,

@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { FloatBits, RuntimeScalar } from '@mica-js/ir';
-import { createScheduler } from './scheduler';
-import { SchedulerError } from './scheduler-error';
-import type { SchedulerErrorCode } from './scheduler-error';
-import type {
-  SchedulerExecutionContext,
-  SchedulerOptions,
-  SchedulerTarget,
-} from './scheduler-types';
+import { createScheduler } from './runtime';
+import { SchedulerError } from './errors';
+import type { SchedulerErrorCode } from './errors';
+import type { SchedulerExecutionContext, SchedulerOptions, SchedulerTarget } from './types';
 import { MAX_TIME_PS } from './time';
 
 const event = (name: string): SchedulerTarget => ({ name, kind: 'event', params: [] });

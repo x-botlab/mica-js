@@ -1,5 +1,5 @@
-import type { ElectricalPinInput, FloatingInput } from '../electrical/electrical-types';
-import type { SchedulerInstance } from '../scheduler/scheduler-types';
+import type { ElectricalPinInput, FloatingInput } from '../electrical/types';
+import type { SchedulerInstance } from '../scheduler/types';
 import type { TimePs } from '../scheduler/time';
 import type {
   ConnectionState,
@@ -7,7 +7,7 @@ import type {
   TopologyDefinition,
   TopologyNetwork,
   TopologyPinRef,
-} from '../topology/topology-types';
+} from '../topology/types';
 
 export type PowerInputMode = 'two-state' | 'three-state';
 

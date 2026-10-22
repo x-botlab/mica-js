@@ -1,17 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { ElectricalConflictError } from '../electrical/electrical';
-import type { ElectricalPinInput } from '../electrical/electrical-types';
+import { ElectricalConflictError } from '../electrical/network';
+import type { ElectricalPinInput } from '../electrical/types';
 import { createFloatingInput } from '../electrical/floating-input';
-import { createScheduler } from '../scheduler/scheduler';
-import { SchedulerError } from '../scheduler/scheduler-error';
-import type { Scheduler, SchedulerTarget } from '../scheduler/scheduler-types';
-import { createTopologyRuntime } from './topology';
+import { createScheduler } from '../scheduler/runtime';
+import { SchedulerError } from '../scheduler/errors';
+import type { Scheduler, SchedulerTarget } from '../scheduler/types';
+import { createTopologyRuntime } from './runtime';
 import type {
   ConnectionState,
   TopologyDefinition,
   TopologyOptions,
   TopologyRuntime,
-} from './topology-types';
+} from './types';
 
 // Core tests carry no Node/DOM ambient types; this only yields to a new task so GC can clear WeakRefs.
 declare function setTimeout(callback: () => void, delay?: number): unknown;

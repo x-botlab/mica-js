@@ -1,16 +1,16 @@
-import type { ElectricalPinInput, FloatingInput } from '../electrical/electrical-types';
-import { snapshotElectricalPin } from '../electrical/electrical';
-import { checkIdentity, checkRecord, invalidType } from '../electrical/electrical-validation';
-import type { Scheduler, SchedulerInstance, SchedulerTarget } from '../scheduler/scheduler-types';
+import type { ElectricalPinInput, FloatingInput } from '../electrical/types';
+import { snapshotElectricalPin } from '../electrical/network';
+import { checkIdentity, checkRecord, invalidType } from '../electrical/validation';
+import type { Scheduler, SchedulerInstance, SchedulerTarget } from '../scheduler/types';
 import type { TimePs } from '../scheduler/time';
-import { createTopologyRuntime } from '../topology/topology';
+import { createTopologyRuntime } from '../topology/runtime';
 import type {
   ConnectionState,
   TopologyConnectionPatch,
   TopologyNetwork,
   TopologyPinRef,
   TopologyRuntime,
-} from '../topology/topology-types';
+} from '../topology/types';
 import type {
   PowerDefinition,
   PowerDigitalSample,
@@ -25,7 +25,7 @@ import type {
   PowerPinGateReason,
   PowerRuntime,
   PowerVoltageSample,
-} from './power-types';
+} from './types';
 import {
   captureObserver,
   capturePowerDefinition,
@@ -36,7 +36,7 @@ import {
   type CapturedObserver,
   type CapturedPin,
   type CapturedPowerDefinition,
-} from './power-validation';
+} from './validation';
 
 const NO_OPENED: readonly string[] = Object.freeze([]);
 const NO_REASONS: readonly PowerDownReason[] = Object.freeze([]);
