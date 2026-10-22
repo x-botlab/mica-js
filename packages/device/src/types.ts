@@ -1,3 +1,4 @@
+import type { PayloadType } from '@mica-js/core/canvas';
 import type { PropertyDescriptor, PropertyValue } from '@mica-js/core/schematic';
 import type { ElectricalPinInput, PowerDigitalSample, TopologyPinRef } from '@mica-js/core';
 import type { IRDeclarations, IRStorage, LifecycleRef, StaticRef, Value } from '@mica-js/ir';
@@ -7,19 +8,8 @@ import type {
   DeviceConnectionOptions,
 } from './connection/types';
 
-/** Payload types of logical topic ports (#10). */
-export const TOPIC_PAYLOAD_TYPES = [
-  'boolean',
-  'number',
-  'string',
-  'vec2d',
-  'vec3d',
-  'bytes',
-  'bytes<rgb565>',
-  'bytes<segments>',
-] as const;
-
-export type TopicPayloadType = (typeof TOPIC_PAYLOAD_TYPES)[number];
+/** Payload types of logical topic ports (#10), shared with the canvas format. */
+export type TopicPayloadType = PayloadType;
 
 /** One logical topic port declared by a device description (#10). */
 export interface DevicePortDescriptor {

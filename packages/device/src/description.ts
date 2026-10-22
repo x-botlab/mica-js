@@ -1,14 +1,13 @@
+import { parsePayloadType } from '@mica-js/core/canvas';
 import { readPropertyDescriptors, type PropertyDescriptor } from '@mica-js/core/schematic';
 import { readConnections } from './connection/description';
 import { DeviceError } from './errors';
 import { isPlainRecord } from './internal/records';
 import { readPinGroups, readPins } from './pins/parse';
 import {
-  TOPIC_PAYLOAD_TYPES,
   type DeviceDescription,
   type DeviceDescriptionMetadata,
   type DevicePortDescriptor,
-  type TopicPayloadType,
 } from './types';
 
 const PORT_FIELDS = new Set(['title', 'description', 'direction', 'type']);
@@ -155,10 +154,8 @@ function readPort(key: string, value: unknown): DevicePortDescriptor {
     );
   }
   const payloadType = value['type'];
-  if (
-    typeof payloadType !== 'string' ||
-    !(TOPIC_PAYLOAD_TYPES as readonly string[]).includes(payloadType)
-  ) {
+  const type = typeof payloadType === 'string' ? parsePayloadType(payloadType) : undefined;
+  if (type === undefined) {
     throw new DeviceError(
       'type/unknown',
       `Port "${key}" has unknown payload type ${JSON.stringify(payloadType)}.`,
@@ -167,7 +164,7 @@ function readPort(key: string, value: unknown): DevicePortDescriptor {
   }
   const port: {
     -readonly [K in keyof DevicePortDescriptor]: DevicePortDescriptor[K];
-  } = { key, direction, type: payloadType as TopicPayloadType };
+  } = { key, direction, type };
   if (title !== undefined) {
     port.title = title;
   }

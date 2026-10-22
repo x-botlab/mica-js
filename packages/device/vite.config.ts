@@ -5,6 +5,9 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     alias: {
+      '@mica-js/core/canvas': fileURLToPath(
+        new URL('../core/src/canvas/index.ts', import.meta.url),
+      ),
       '@mica-js/core/schematic': fileURLToPath(
         new URL('../core/src/schematic/index.ts', import.meta.url),
       ),
@@ -21,7 +24,9 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: true,
     minify: false,
-    rollupOptions: { external: ['@mica-js/core', '@mica-js/core/schematic', '@mica-js/ir'] },
+    rollupOptions: {
+      external: ['@mica-js/core', '@mica-js/core/canvas', '@mica-js/core/schematic', '@mica-js/ir'],
+    },
   },
   plugins: [
     dts({

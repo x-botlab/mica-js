@@ -1,8 +1,8 @@
 import { runInNewContext } from 'node:vm';
+import { PAYLOAD_TYPES } from '@mica-js/core/canvas';
 import { describe, expect, it } from 'vitest';
 import { DeviceError, type DeviceErrorCode } from './errors';
 import { parseDeviceDescription } from './description';
-import { TOPIC_PAYLOAD_TYPES } from './types';
 
 const METADATA = {
   name: 'acme:demo',
@@ -111,7 +111,7 @@ describe('parseDeviceDescription', () => {
 
   it('parses every #10 port field and payload type', () => {
     const ports: Record<string, unknown> = {};
-    for (const [index, type] of TOPIC_PAYLOAD_TYPES.entries()) {
+    for (const [index, type] of PAYLOAD_TYPES.entries()) {
       ports[`port${String(index)}`] = {
         title: `Port ${String(index)}`,
         description: `Payload ${type}`,
@@ -120,8 +120,8 @@ describe('parseDeviceDescription', () => {
       };
     }
     const description = parseDeviceDescription({ ports }, METADATA);
-    expect(description.ports.size).toBe(TOPIC_PAYLOAD_TYPES.length);
-    for (const [index, type] of TOPIC_PAYLOAD_TYPES.entries()) {
+    expect(description.ports.size).toBe(PAYLOAD_TYPES.length);
+    for (const [index, type] of PAYLOAD_TYPES.entries()) {
       const port = description.ports.get(`port${String(index)}`);
       expect(port?.type).toBe(type);
       expect(port?.direction).toBe(index % 2 === 0 ? 'input' : 'output');

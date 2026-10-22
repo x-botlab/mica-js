@@ -14,7 +14,7 @@ function documentWith(designators: readonly (string | undefined)[]): SchematicDo
     version: 1,
     sheet: {
       symbols: designators.map((designator, index) => ({
-        id: `s${index}`,
+        id: `00000000-0000-4000-8000-00000000000${String(index)}`,
         device: 'pkg:a',
         x: 0,
         y: 0,
@@ -46,7 +46,16 @@ describe('nextDesignator', () => {
     const document: SchematicDocument = {
       version: 1,
       sheet: {
-        symbols: [{ id: 'l1', device: 'builtin:label', net: 'N1', x: 0, y: 0, rotation: 0 }],
+        symbols: [
+          {
+            id: '00000001-58c8-4974-8943-b00f84be79fc',
+            device: 'builtin:label',
+            net: 'N1',
+            x: 0,
+            y: 0,
+            rotation: 0,
+          },
+        ],
         wires: [],
         junctions: [],
       },

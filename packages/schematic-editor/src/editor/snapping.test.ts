@@ -39,7 +39,15 @@ function contextAt(rotation: number, wires: readonly unknown[] = []): SnapContex
       document: parseSchematic({
         version: 1,
         sheet: {
-          symbols: [{ id: 'U1', device: 'pkg:ne555', x: 100, y: 100, rotation }],
+          symbols: [
+            {
+              id: '00000001-a735-469a-8b9b-a233ec702fe3',
+              device: 'pkg:ne555',
+              x: 100,
+              y: 100,
+              rotation,
+            },
+          ],
           wires,
           junctions: [],
         },
@@ -91,7 +99,7 @@ describe('labelStubAt', () => {
     const stub = labelStubAt(
       contextAt(0, [
         {
-          id: 'w1',
+          id: '00000002-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 40, y: 80 },
             { x: 0, y: 80 },
@@ -163,7 +171,7 @@ describe('snapForWire', () => {
   }
 
   const wire = {
-    id: 'w1',
+    id: '00000002-9cf4-407f-8900-09a16d33a38c',
     points: [
       { x: 0, y: 0 },
       { x: 100, y: 0 },

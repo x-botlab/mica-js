@@ -157,7 +157,12 @@ test('renders the sample schematic', async ({ page }) => {
   await openEditor(page);
   const snapshot = await readSnapshot(page);
   expect(snapshot.symbols.map((symbol) => symbol.id)).toEqual(
-    expect.arrayContaining(['s-mcu', 'u3', 's-lcd', 'lcd-l-d2']),
+    expect.arrayContaining([
+      '00000006-2dc0-44c6-8963-e4ea065d722b',
+      '00000008-9054-4323-8487-62af20580a94',
+      '00000005-c16f-4700-81a9-7ef80c62a850',
+      '00000003-4d70-4c65-8b59-601eaeb86945',
+    ]),
   );
   expect(snapshot.wires).toHaveLength(5);
   expect(snapshot.junctions).toHaveLength(1);
@@ -166,14 +171,21 @@ test('renders the sample schematic', async ({ page }) => {
 test('dragging a net label keeps its wire connected with a fold', async ({ page }) => {
   await openEditor(page);
   const before = await readSnapshot(page);
-  const label = before.symbols.find((symbol) => symbol.id === 'lcd-l-d2');
+  const label = before.symbols.find(
+    (symbol) => symbol.id === '00000003-4d70-4c65-8b59-601eaeb86945',
+  );
   expect(label).toBeDefined();
-  const wire = before.wires.find((candidate) => candidate.id === 'w-label');
+  const wire = before.wires.find(
+    (candidate) => candidate.id === '0000000b-3b70-43f3-8425-482db6f77ef2',
+  );
   expect(wire?.points).toHaveLength(2);
 
   // Zooming past the wire-endpoint tolerance makes the label body itself grabbable.
   await focusOn(page, label ?? { x: 0, y: 0 }, 2);
-  const grab = await hitPoint(page, label ?? { x: 0, y: 0 }, { kind: 'symbol', id: 'lcd-l-d2' });
+  const grab = await hitPoint(page, label ?? { x: 0, y: 0 }, {
+    kind: 'symbol',
+    id: '00000003-4d70-4c65-8b59-601eaeb86945',
+  });
   expect(grab).toBeDefined();
   const origin = grab ?? { x: 0, y: 0 };
   await drag(
@@ -183,13 +195,18 @@ test('dragging a net label keeps its wire connected with a fold', async ({ page 
   );
 
   const after = await readSnapshot(page);
-  const moved = after.symbols.find((symbol) => symbol.id === 'lcd-l-d2');
+  const moved = after.symbols.find(
+    (symbol) => symbol.id === '00000003-4d70-4c65-8b59-601eaeb86945',
+  );
   expect(moved?.y).toBeLessThan(label?.y ?? 0);
   // Perpendicular drag: the wire gains a fold instead of moving as a whole.
   expect(
-    after.wires.find((candidate) => candidate.id === 'w-label')?.points.length,
+    after.wires.find((candidate) => candidate.id === '0000000b-3b70-43f3-8425-482db6f77ef2')?.points
+      .length,
   ).toBeGreaterThan(2);
-  const folded = after.wires.find((candidate) => candidate.id === 'w-label');
+  const folded = after.wires.find(
+    (candidate) => candidate.id === '0000000b-3b70-43f3-8425-482db6f77ef2',
+  );
   expect(folded?.points[0]).toEqual(wire?.points[0]);
   expect(folded?.points.at(-1)).toEqual({ x: moved?.x, y: moved?.y });
 });
@@ -198,7 +215,9 @@ test('wire mode taps into an existing wire and creates a junction', async ({ pag
   await openEditor(page);
   const tap = { x: 240, y: 470 };
   const before = await readSnapshot(page);
-  const trunk = before.wires.find((candidate) => candidate.id === 'w-out');
+  const trunk = before.wires.find(
+    (candidate) => candidate.id === '0000000c-804d-489f-8062-db22ac5215dc',
+  );
   expect(trunk).toBeDefined();
   expect(trunk?.points.some((point) => point.y === tap.y)).toBe(true);
 
@@ -230,7 +249,8 @@ test('read-only editors reject every edit', async ({ page }) => {
   const before = await readSnapshot(page);
 
   // Pins start wires normally; read-only only selects.
-  const pin = before.wires.find((wire) => wire.id === 'w-vcc')?.points[0] ?? { x: 0, y: 0 };
+  const pin = before.wires.find((wire) => wire.id === '0000000d-84a6-479f-8077-5f49f0d1efba')
+    ?.points[0] ?? { x: 0, y: 0 };
   const pinClient = await clientOf(page, pin);
   await page.mouse.click(pinClient.x, pinClient.y);
   await page.waitForTimeout(150);

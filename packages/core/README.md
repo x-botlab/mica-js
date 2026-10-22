@@ -135,7 +135,7 @@ const document = parseSchematic(text); // 解析 + 校验，失败抛 SchematicE
 serializeSchematic(document); // 固定字段顺序的 .sch JSON
 ```
 
-- 文件名即原理图标识，顶层没有 `id`；`symbols` / `wires` / `junctions` 使用不透明的稳定 `id`。
+- 文件名即原理图标识，顶层没有 `id`；`symbols` / `wires` / `junctions` 的 `id` 必须是 UUID v4，非 v4 报 `schema/invalid-value`。
 - 拓扑按位号、网名与连接关系合并网络；纯绘图分量保留为几何数据。
 - 编辑命令、undo/redo、命中测试、导线段拖动与交点合并都是纯函数，编辑器只做编排。
 - `createDeviceRegistry` 把器件的 `designatorPrefix` 与引脚声明合成为符号几何与位号。

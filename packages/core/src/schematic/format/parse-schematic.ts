@@ -1,6 +1,7 @@
 import type { Diagnostic } from '../../format/diagnostics';
 import { SchematicError } from '../../format/errors';
 import { parseInput } from '../../format/input';
+import { isUuidV4 } from '../../format/uuid';
 import type {
   SchematicDocument,
   SchematicJunction,
@@ -200,7 +201,7 @@ function readSymbol(
     path,
     diagnostics,
   );
-  const id = readStringField(value, 'id', path, diagnostics, { nonEmpty: true });
+  const id = readId(value, path, diagnostics);
   const device = readStringField(value, 'device', path, diagnostics, { nonEmpty: true });
   const x = readNumberField(value, 'x', path, diagnostics);
   const y = readNumberField(value, 'y', path, diagnostics);
@@ -296,7 +297,7 @@ function readWire(
     return undefined;
   }
   forbidUnknownFields(value, ['id', 'points'], path, diagnostics);
-  const id = readStringField(value, 'id', path, diagnostics, { nonEmpty: true });
+  const id = readId(value, path, diagnostics);
   const rawPoints = readArrayField(value, 'points', path, diagnostics);
   const points: Point[] = [];
   if (rawPoints !== undefined) {
@@ -344,7 +345,7 @@ function readJunction(
     return undefined;
   }
   forbidUnknownFields(value, ['id', 'x', 'y', 'wires'], path, diagnostics);
-  const id = readStringField(value, 'id', path, diagnostics, { nonEmpty: true });
+  const id = readId(value, path, diagnostics);
   const x = readNumberField(value, 'x', path, diagnostics);
   const y = readNumberField(value, 'y', path, diagnostics);
   const rawWires = readArrayField(value, 'wires', path, diagnostics);
@@ -383,4 +384,20 @@ function readJunction(
     return undefined;
   }
   return { id, x, y, wires };
+}
+
+function readId(
+  value: Record<string, unknown>,
+  path: readonly string[],
+  diagnostics: Diagnostic[],
+): string | undefined {
+  const id = readStringField(value, 'id', path, diagnostics, { nonEmpty: true });
+  if (id === undefined) {
+    return undefined;
+  }
+  if (!isUuidV4(id)) {
+    report(diagnostics, 'schema/invalid-value', 'Field "id" must be a UUID v4.', [...path, 'id']);
+    return undefined;
+  }
+  return id;
 }

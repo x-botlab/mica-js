@@ -94,7 +94,7 @@ const description = parseDeviceDescription(
 
 - `metadata.name` 必填；`displayName` 缺省回退 `name`；`description` 可选。
 - `properties` 复用 `@mica-js/core/schematic` 的 #7 实现；不可用的属性描述被忽略，不猜测类型。
-- `ports` 按 #10 校验：方向必须是 `input` / `output`，载荷类型取自封闭清单，未知字段报 `schema/unknown-field`，未知类型报 `type/unknown`。
+- `ports` 按 #10 校验：方向必须是 `input` / `output`，载荷类型取自 `@mica-js/core/canvas` 的 `PAYLOAD_TYPES`（与画布共用同一份清单），未知字段报 `schema/unknown-field`，未知类型报 `type/unknown`。
 - `pins` 按 #12 校验：`kind` 必须是 `power` / `gnd` / `signal`，`side` 缺省 `left`；`powerDomain` 只允许出现在 `signal` 引脚，`levels` 必须与 `powerDomain` 同时出现并满足 `0 <= low < high <= 1`。引脚键与成员名大小写精确、不得为空。
 - `pinGroups` 按 #12 校验：成员非空、唯一且必须引用已声明引脚；组本身只保存固定顺序，不做电气推断。
 - `connections` 按 #14 校验：键非空；每项是纯对象且只含 `pins` / `initial`；`pins` 必须是两个互异、已在同一描述 `pins` 键声明的引脚 ID；`initial` 取 `open` / `closed`，省略时为 `open`。引脚描述本身（`kind` 等）由 #55 校验，本层只读取引脚键用于连接端点检查。

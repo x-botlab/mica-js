@@ -31,28 +31,55 @@ const document: SchematicDocument = parseSchematic({
   version: 1,
   sheet: {
     symbols: [
-      { id: 'u1', device: 'pkg:mcu', x: 100, y: 100, rotation: 0 },
-      { id: 'L1', device: 'builtin:label', net: 'L1', x: 200, y: 100, rotation: 0 },
-      { id: 'P1', device: 'builtin:power', x: 0, y: 0, rotation: 0, net: '3V3' },
-      { id: 'G1', device: 'builtin:ground', x: 0, y: 60, rotation: 0, net: 'GND' },
+      {
+        id: '00000006-4c77-4daf-8fab-320fc3476afc',
+        device: 'pkg:mcu',
+        x: 100,
+        y: 100,
+        rotation: 0,
+      },
+      {
+        id: '00000003-986d-45ab-84b6-b67319708dce',
+        device: 'builtin:label',
+        net: 'L1',
+        x: 200,
+        y: 100,
+        rotation: 0,
+      },
+      {
+        id: '00000004-33d4-419e-80e8-ca689a1b74a4',
+        device: 'builtin:power',
+        x: 0,
+        y: 0,
+        rotation: 0,
+        net: '3V3',
+      },
+      {
+        id: '00000002-a4c8-4744-8d5d-6e16ed257d9a',
+        device: 'builtin:ground',
+        x: 0,
+        y: 60,
+        rotation: 0,
+        net: 'GND',
+      },
     ],
     wires: [
       {
-        id: 'w1',
+        id: '00000007-9cf4-407f-8900-09a16d33a38c',
         points: [
           { x: 100, y: 100 },
           { x: 200, y: 100 },
         ],
       },
       {
-        id: 'w2',
+        id: '00000008-a914-47d5-84d1-8bafbe533ffb',
         points: [
           { x: 0, y: 0 },
           { x: 0, y: 40 },
         ],
       },
       {
-        id: 'w3',
+        id: '00000009-f25c-4a8c-8be1-1c60e8fb777f',
         points: [
           { x: 0, y: 60 },
           { x: 0, y: 80 },
@@ -97,7 +124,16 @@ function sceneAt(rotation: number) {
     document: parseSchematic({
       version: 1,
       sheet: {
-        symbols: [{ id: 'U1', device: 'pkg:ne555', x: 0, y: 0, rotation }],
+        symbols: [
+          {
+            id: 'e0c8f4b2-1a35-4c77-8d90-2f4b6a8c1e35',
+            device: 'pkg:ne555',
+            designator: 'U1',
+            x: 0,
+            y: 0,
+            rotation,
+          },
+        ],
         wires: [],
         junctions: [],
       },
@@ -152,8 +188,11 @@ describe('buildSchematicScene', () => {
       document,
       devices,
       theme: DARK_SCHEMATIC_THEME,
-      selection: { wires: new Set(['w1']), symbols: new Set(['u1']) },
-      hover: { kind: 'wire', id: 'w2', segment: 0 },
+      selection: {
+        wires: new Set(['00000007-9cf4-407f-8900-09a16d33a38c']),
+        symbols: new Set(['00000006-4c77-4daf-8fab-320fc3476afc']),
+      },
+      hover: { kind: 'wire', id: '00000008-a914-47d5-84d1-8bafbe533ffb', segment: 0 },
     });
     const selected = scene.items.find(
       (item) => item.kind === 'polyline' && item.color === DARK_SCHEMATIC_THEME.wireSelected,
@@ -171,8 +210,12 @@ describe('buildSchematicScene', () => {
         document,
         devices,
         theme: DARK_SCHEMATIC_THEME,
-        ...(input.selected === true ? { selection: { symbols: new Set(['u1']) } } : {}),
-        ...(input.hovered === true ? { hover: { kind: 'symbol', id: 'u1' } } : {}),
+        ...(input.selected === true
+          ? { selection: { symbols: new Set(['00000006-4c77-4daf-8fab-320fc3476afc']) } }
+          : {}),
+        ...(input.hovered === true
+          ? { hover: { kind: 'symbol', id: '00000006-4c77-4daf-8fab-320fc3476afc' } }
+          : {}),
       });
       const name = scene.items.find((item) => item.kind === 'text' && item.text === 'MCU');
       return name?.kind === 'text' ? name.color : undefined;
@@ -217,7 +260,15 @@ describe('buildSchematicScene', () => {
         ...document,
         sheet: {
           ...document.sheet,
-          symbols: [{ id: 'x1', device: 'unknown:device', x: 5, y: 5, rotation: 0 }],
+          symbols: [
+            {
+              id: '0000000a-70ff-4052-81b8-edc8c851e627',
+              device: 'unknown:device',
+              x: 5,
+              y: 5,
+              rotation: 0,
+            },
+          ],
         },
       } as SchematicDocument,
       devices,
@@ -279,7 +330,16 @@ describe('buildSchematicScene', () => {
       document: parseSchematic({
         version: 1,
         sheet: {
-          symbols: [{ id: 'U1', device: 'pkg:ne555', x: 0, y: 0, rotation: 0 }],
+          symbols: [
+            {
+              id: '3a7d1e5c-8b24-4f69-9c01-6d2e8f4b0a57',
+              device: 'pkg:ne555',
+              designator: 'U1',
+              x: 0,
+              y: 0,
+              rotation: 0,
+            },
+          ],
           wires: [],
           junctions: [],
         },
@@ -368,7 +428,16 @@ describe('buildSchematicScene', () => {
         document: parseSchematic({
           version: 1,
           sheet: {
-            symbols: [{ id: 'P1', device: POWER_DEVICE, net: 'VCC', x: 0, y: 0, rotation }],
+            symbols: [
+              {
+                id: '00000004-33d4-419e-80e8-ca689a1b74a4',
+                device: POWER_DEVICE,
+                net: 'VCC',
+                x: 0,
+                y: 0,
+                rotation,
+              },
+            ],
             wires: [],
             junctions: [],
           },
@@ -409,7 +478,16 @@ describe('buildSchematicScene', () => {
         document: parseSchematic({
           version: 1,
           sheet: {
-            symbols: [{ id: 'lbl', device: LABEL_DEVICE, net: 'N1', x: 0, y: 0, rotation }],
+            symbols: [
+              {
+                id: '00000005-6b20-49c7-8d4f-c6ab400264c7',
+                device: LABEL_DEVICE,
+                net: 'N1',
+                x: 0,
+                y: 0,
+                rotation,
+              },
+            ],
             wires: [],
             junctions: [],
           },
@@ -443,7 +521,16 @@ describe('buildSchematicScene', () => {
         document: parseSchematic({
           version: 1,
           sheet: {
-            symbols: [{ id: 'A1', device, net: 'A1', x: 0, y: 0, rotation: 0 }],
+            symbols: [
+              {
+                id: '00000001-eb9f-4adf-8db3-c3ff4c1bbcf9',
+                device,
+                net: 'A1',
+                x: 0,
+                y: 0,
+                rotation: 0,
+              },
+            ],
             wires: [],
             junctions: [],
           },
@@ -494,7 +581,15 @@ describe('buildSchematicScene', () => {
       document: parseSchematic({
         version: 1,
         sheet: {
-          symbols: [{ id: 'U1', device: 'pkg:plain', x: 0, y: 0, rotation: 0 }],
+          symbols: [
+            {
+              id: '5b9e2f6d-7c13-4a80-9d24-8e1b3f5c0a69',
+              device: 'pkg:plain',
+              x: 0,
+              y: 0,
+              rotation: 0,
+            },
+          ],
           wires: [],
           junctions: [],
         },

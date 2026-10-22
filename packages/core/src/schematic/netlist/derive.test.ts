@@ -24,13 +24,32 @@ const SAMPLE: SchematicDocument = {
   version: 1,
   sheet: {
     symbols: [
-      { id: 's-mcu', device: 'stm32-package:stm32g431rbt6-lqfp64', x: 480, y: 160, rotation: 0 },
-      { id: 's-lcd', device: 'lcd-package:ct117e-m4-tft-lcd-2-4', x: 136, y: 55, rotation: 0 },
-      { id: 'lcd-l-d0', device: 'builtin:label', net: 'lcd-l-d0', x: 300, y: 100, rotation: 0 },
+      {
+        id: '0000000b-2dc0-44c6-8963-e4ea065d722b',
+        device: 'stm32-package:stm32g431rbt6-lqfp64',
+        x: 480,
+        y: 160,
+        rotation: 0,
+      },
+      {
+        id: '0000000a-c16f-4700-81a9-7ef80c62a850',
+        device: 'lcd-package:ct117e-m4-tft-lcd-2-4',
+        x: 136,
+        y: 55,
+        rotation: 0,
+      },
+      {
+        id: '00000008-33b8-486d-8c54-1dc2d275f643',
+        device: 'builtin:label',
+        net: 'lcd-l-d0',
+        x: 300,
+        y: 100,
+        rotation: 0,
+      },
     ],
     wires: [
       {
-        id: 'w-d0',
+        id: '0000000e-d219-4ea3-84bb-593c369c1900',
         points: [
           { x: 480, y: 160 },
           { x: 300, y: 160 },
@@ -39,14 +58,21 @@ const SAMPLE: SchematicDocument = {
         ],
       },
       {
-        id: 'w-label-d0',
+        id: '0000000f-02d3-4c5c-815f-2fda0d3151f0',
         points: [
           { x: 300, y: 124 },
           { x: 300, y: 100 },
         ],
       },
     ],
-    junctions: [{ id: 'j-d0', x: 300, y: 124, wires: ['w-d0', 'w-label-d0'] }],
+    junctions: [
+      {
+        id: '00000004-9a12-484a-897d-ff38defa94b2',
+        x: 300,
+        y: 124,
+        wires: ['0000000e-d219-4ea3-84bb-593c369c1900', '0000000f-02d3-4c5c-815f-2fda0d3151f0'],
+      },
+    ],
   },
 };
 
@@ -71,24 +97,24 @@ describe('deriveSchematicTopology', () => {
     expect(topology.nets).toEqual([
       {
         name: 'lcd-l-d0',
-        wireIds: ['w-d0', 'w-label-d0'],
+        wireIds: ['0000000e-d219-4ea3-84bb-593c369c1900', '0000000f-02d3-4c5c-815f-2fda0d3151f0'],
         members: [
-          { kind: 'label', symbolId: 'lcd-l-d0' },
-          { kind: 'pin', symbolId: 's-lcd', pinId: 'D0' },
-          { kind: 'pin', symbolId: 's-mcu', pinId: 'PC0' },
+          { kind: 'label', symbolId: '00000008-33b8-486d-8c54-1dc2d275f643' },
+          { kind: 'pin', symbolId: '0000000a-c16f-4700-81a9-7ef80c62a850', pinId: 'D0' },
+          { kind: 'pin', symbolId: '0000000b-2dc0-44c6-8963-e4ea065d722b', pinId: 'PC0' },
         ],
       },
     ]);
     expect(topology.pins).toEqual([
       {
-        symbolId: 's-lcd',
+        symbolId: '0000000a-c16f-4700-81a9-7ef80c62a850',
         pinId: 'D0',
         position: { x: 136, y: 55 },
         open: false,
         netName: 'lcd-l-d0',
       },
       {
-        symbolId: 's-mcu',
+        symbolId: '0000000b-2dc0-44c6-8963-e4ea065d722b',
         pinId: 'PC0',
         position: { x: 480, y: 160 },
         open: false,
@@ -101,12 +127,26 @@ describe('deriveSchematicTopology', () => {
   it('reports conflicting labels on one net', () => {
     const document = documentWith({
       symbols: [
-        { id: 'a', device: 'builtin:label', net: 'A', x: 0, y: 0, rotation: 0 },
-        { id: 'b', device: 'builtin:label', net: 'B', x: 10, y: 0, rotation: 0 },
+        {
+          id: '00000001-faa5-47fc-815d-1ddcb9eaeaea',
+          device: 'builtin:label',
+          net: 'A',
+          x: 0,
+          y: 0,
+          rotation: 0,
+        },
+        {
+          id: '00000002-e7c9-4d6d-89e9-2ffdad17b8bd',
+          device: 'builtin:label',
+          net: 'B',
+          x: 10,
+          y: 0,
+          rotation: 0,
+        },
       ],
       wires: [
         {
-          id: 'w',
+          id: '0000000d-4ab0-4ece-8091-de044c58c9ae',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -122,7 +162,7 @@ describe('deriveSchematicTopology', () => {
     const document = documentWith({
       wires: [
         {
-          id: 'w',
+          id: '0000000d-4ab0-4ece-8091-de044c58c9ae',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 10 },
@@ -133,17 +173,25 @@ describe('deriveSchematicTopology', () => {
     const topology = deriveSchematicTopology(document, { devices });
     expect(topology.nets).toEqual([]);
     expect(topology.danglingWireEnds).toEqual([
-      { wireId: 'w', end: 'end', point: { x: 10, y: 10 } },
-      { wireId: 'w', end: 'start', point: { x: 0, y: 0 } },
+      { wireId: '0000000d-4ab0-4ece-8091-de044c58c9ae', end: 'end', point: { x: 10, y: 10 } },
+      { wireId: '0000000d-4ab0-4ece-8091-de044c58c9ae', end: 'start', point: { x: 0, y: 0 } },
     ]);
   });
 
   it('connects a wire whose interior passes through a pin', () => {
     const document = documentWith({
-      symbols: [{ id: 's', device: 'stm32-package:stm32g431rbt6-lqfp64', x: 5, y: 0, rotation: 0 }],
+      symbols: [
+        {
+          id: '00000009-20d0-411c-897b-44bc357e1972',
+          device: 'stm32-package:stm32g431rbt6-lqfp64',
+          x: 5,
+          y: 0,
+          rotation: 0,
+        },
+      ],
       wires: [
         {
-          id: 'w',
+          id: '0000000d-4ab0-4ece-8091-de044c58c9ae',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -155,25 +203,33 @@ describe('deriveSchematicTopology', () => {
     expect(topology.nets).toEqual([
       {
         name: null,
-        wireIds: ['w'],
-        members: [{ kind: 'pin', symbolId: 's', pinId: 'PC0' }],
+        wireIds: ['0000000d-4ab0-4ece-8091-de044c58c9ae'],
+        members: [{ kind: 'pin', symbolId: '00000009-20d0-411c-897b-44bc357e1972', pinId: 'PC0' }],
       },
     ]);
   });
 
   it('merges wires that meet at the same pin without a junction', () => {
     const document = documentWith({
-      symbols: [{ id: 's', device: 'stm32-package:stm32g431rbt6-lqfp64', x: 0, y: 0, rotation: 0 }],
+      symbols: [
+        {
+          id: '00000009-20d0-411c-897b-44bc357e1972',
+          device: 'stm32-package:stm32g431rbt6-lqfp64',
+          x: 0,
+          y: 0,
+          rotation: 0,
+        },
+      ],
       wires: [
         {
-          id: 'w1',
+          id: '00000010-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
           ],
         },
         {
-          id: 'w2',
+          id: '00000011-a914-47d5-84d1-8bafbe533ffb',
           points: [
             { x: 0, y: 0 },
             { x: 0, y: 10 },
@@ -183,21 +239,24 @@ describe('deriveSchematicTopology', () => {
     });
     const topology = deriveSchematicTopology(document, { devices });
     expect(topology.nets).toHaveLength(1);
-    expect(topology.nets[0]?.wireIds).toEqual(['w1', 'w2']);
+    expect(topology.nets[0]?.wireIds).toEqual([
+      '00000010-9cf4-407f-8900-09a16d33a38c',
+      '00000011-a914-47d5-84d1-8bafbe533ffb',
+    ]);
   });
 
   it('does not connect crossing wires without a junction', () => {
     const document = documentWith({
       wires: [
         {
-          id: 'horizontal',
+          id: '00000003-9133-41be-84f9-c255d593231c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
           ],
         },
         {
-          id: 'vertical',
+          id: '0000000c-4a29-4075-8caa-d19142dfb112',
           points: [
             { x: 5, y: -5 },
             { x: 5, y: 5 },
@@ -205,8 +264,22 @@ describe('deriveSchematicTopology', () => {
         },
       ],
       symbols: [
-        { id: 'l1', device: 'builtin:label', net: 'L1', x: 10, y: 0, rotation: 0 },
-        { id: 'l2', device: 'builtin:label', net: 'L2', x: 5, y: 5, rotation: 0 },
+        {
+          id: '00000006-58c8-4974-8943-b00f84be79fc',
+          device: 'builtin:label',
+          net: 'L1',
+          x: 10,
+          y: 0,
+          rotation: 0,
+        },
+        {
+          id: '00000007-3abe-43ef-8e00-fe24590a3ea3',
+          device: 'builtin:label',
+          net: 'L2',
+          x: 5,
+          y: 5,
+          rotation: 0,
+        },
       ],
     });
     const topology = deriveSchematicTopology(document, { devices });
@@ -216,12 +289,25 @@ describe('deriveSchematicTopology', () => {
   it('keeps isolated pins open and reports dangling ends', () => {
     const document = documentWith({
       symbols: [
-        { id: 's', device: 'stm32-package:stm32g431rbt6-lqfp64', x: 100, y: 100, rotation: 0 },
-        { id: 'l', device: 'builtin:label', net: 'L', x: 0, y: 0, rotation: 0 },
+        {
+          id: '00000009-20d0-411c-897b-44bc357e1972',
+          device: 'stm32-package:stm32g431rbt6-lqfp64',
+          x: 100,
+          y: 100,
+          rotation: 0,
+        },
+        {
+          id: '00000005-6e56-4e7f-8384-2e2e21b774e6',
+          device: 'builtin:label',
+          net: 'L',
+          x: 0,
+          y: 0,
+          rotation: 0,
+        },
       ],
       wires: [
         {
-          id: 'w',
+          id: '0000000d-4ab0-4ece-8091-de044c58c9ae',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -232,7 +318,7 @@ describe('deriveSchematicTopology', () => {
     const topology = deriveSchematicTopology(document, { devices });
     expect(topology.pins).toEqual([
       {
-        symbolId: 's',
+        symbolId: '00000009-20d0-411c-897b-44bc357e1972',
         pinId: 'PC0',
         position: { x: 100, y: 100 },
         open: true,
@@ -240,7 +326,11 @@ describe('deriveSchematicTopology', () => {
       },
     ]);
     expect(topology.nets).toEqual([
-      { name: 'L', wireIds: ['w'], members: [{ kind: 'label', symbolId: 'l' }] },
+      {
+        name: 'L',
+        wireIds: ['0000000d-4ab0-4ece-8091-de044c58c9ae'],
+        members: [{ kind: 'label', symbolId: '00000005-6e56-4e7f-8384-2e2e21b774e6' }],
+      },
     ]);
     expect(topology.danglingWireEnds.map((item) => item.point)).toEqual([{ x: 10, y: 0 }]);
   });
@@ -251,15 +341,23 @@ describe('deriveSchematicTopology', () => {
     expect(topology.nets).toEqual([
       {
         name: 'lcd-l-d0',
-        wireIds: ['w-d0', 'w-label-d0'],
-        members: [{ kind: 'label', symbolId: 'lcd-l-d0' }],
+        wireIds: ['0000000e-d219-4ea3-84bb-593c369c1900', '0000000f-02d3-4c5c-815f-2fda0d3151f0'],
+        members: [{ kind: 'label', symbolId: '00000008-33b8-486d-8c54-1dc2d275f643' }],
       },
     ]);
   });
 
   it('throws for unresolved devices when a provider is given', () => {
     const document = documentWith({
-      symbols: [{ id: 's', device: 'missing-package:missing', x: 0, y: 0, rotation: 0 }],
+      symbols: [
+        {
+          id: '00000009-20d0-411c-897b-44bc357e1972',
+          device: 'missing-package:missing',
+          x: 0,
+          y: 0,
+          rotation: 0,
+        },
+      ],
     });
     expect(
       codesOf(catchError(() => deriveSchematicTopology(document, { devices })).diagnostics),
@@ -271,7 +369,9 @@ describe('deriveSchematicTopology', () => {
       { packageId: 'p', devices: [{ id: 'd', displayName: 'D' }] },
     ]);
     const document = documentWith({
-      symbols: [{ id: 's', device: 'p:d', x: 0, y: 0, rotation: 0 }],
+      symbols: [
+        { id: '00000009-20d0-411c-897b-44bc357e1972', device: 'p:d', x: 0, y: 0, rotation: 0 },
+      ],
     });
     const topology = deriveSchematicTopology(document, { devices: registry });
     expect(topology.pins).toEqual([]);
@@ -300,11 +400,17 @@ describe('deriveSchematicTopology', () => {
   it('honours tolerance when attaching wires to pins', () => {
     const document = documentWith({
       symbols: [
-        { id: 's', device: 'stm32-package:stm32g431rbt6-lqfp64', x: -0.2, y: 0, rotation: 0 },
+        {
+          id: '00000009-20d0-411c-897b-44bc357e1972',
+          device: 'stm32-package:stm32g431rbt6-lqfp64',
+          x: -0.2,
+          y: 0,
+          rotation: 0,
+        },
       ],
       wires: [
         {
-          id: 'w',
+          id: '0000000d-4ab0-4ece-8091-de044c58c9ae',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },

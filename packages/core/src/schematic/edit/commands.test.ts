@@ -13,26 +13,33 @@ function makeDocument(): SchematicDocument {
     version: 1,
     sheet: {
       symbols: [
-        { id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 },
-        { id: 's2', device: 'pkg:b', x: 100, y: 0, rotation: 0 },
+        { id: '00000002-41e6-4a4c-869a-82a4cd304787', device: 'pkg:a', x: 0, y: 0, rotation: 0 },
+        { id: '00000003-dfe1-4ed9-83d0-30ddf7887781', device: 'pkg:b', x: 100, y: 0, rotation: 0 },
       ],
       wires: [
         {
-          id: 'w1',
+          id: '00000004-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
           ],
         },
         {
-          id: 'w2',
+          id: '00000005-a914-47d5-84d1-8bafbe533ffb',
           points: [
             { x: 5, y: 0 },
             { x: 5, y: 10 },
           ],
         },
       ],
-      junctions: [{ id: 'j1', x: 5, y: 0, wires: ['w1', 'w2'] }],
+      junctions: [
+        {
+          id: '00000001-516c-48ac-8128-07f98c98ee13',
+          x: 5,
+          y: 0,
+          wires: ['00000004-9cf4-407f-8900-09a16d33a38c', '00000005-a914-47d5-84d1-8bafbe533ffb'],
+        },
+      ],
     },
   };
 }
@@ -49,7 +56,10 @@ describe('applySchematicCommand', () => {
   it('does not mutate the input document', () => {
     const document = makeDocument();
     const snapshot = JSON.stringify(document);
-    applySchematicCommand(document, { type: 'remove-wire', id: 'w1' });
+    applySchematicCommand(document, {
+      type: 'remove-wire',
+      id: '00000004-9cf4-407f-8900-09a16d33a38c',
+    });
     expect(JSON.stringify(document)).toBe(snapshot);
   });
 
@@ -76,38 +86,52 @@ describe('applySchematicCommand', () => {
     });
     const wireId = withWire.sheet.wires.at(-1)?.id;
     expect(wireId).toMatch(UUID_V4);
-    expect(['w1', 'w2']).not.toContain(wireId);
+    expect([
+      '00000004-9cf4-407f-8900-09a16d33a38c',
+      '00000005-a914-47d5-84d1-8bafbe533ffb',
+    ]).not.toContain(wireId);
 
     const withJunction = applySchematicCommand(withWire, {
       type: 'add-junction',
       x: 5,
       y: 0,
-      wires: ['w1', 'w2'],
+      wires: ['00000004-9cf4-407f-8900-09a16d33a38c', '00000005-a914-47d5-84d1-8bafbe533ffb'],
     });
     const junctionId = withJunction.sheet.junctions.at(-1)?.id;
     expect(junctionId).toMatch(UUID_V4);
-    expect(junctionId).not.toBe('j1');
+    expect(junctionId).not.toBe('00000001-516c-48ac-8128-07f98c98ee13');
   });
 
   it('updates and removes symbols, wires and junctions', () => {
     const document = makeDocument();
     const updatedSymbol = applySchematicCommand(document, {
       type: 'update-symbol',
-      id: 's1',
+      id: '00000002-41e6-4a4c-869a-82a4cd304787',
       x: 42,
       rotation: 90,
     });
     expect(updatedSymbol.sheet.symbols[0]).toMatchObject({ x: 42, y: 0, rotation: 90 });
 
     expect(
-      applySchematicCommand(document, { type: 'remove-symbol', id: 's2' }).sheet.symbols,
+      applySchematicCommand(document, {
+        type: 'remove-symbol',
+        id: '00000003-dfe1-4ed9-83d0-30ddf7887781',
+      }).sheet.symbols,
     ).toHaveLength(1);
     expect(
-      applySchematicCommand(document, { type: 'remove-junction', id: 'j1' }).sheet.junctions,
+      applySchematicCommand(document, {
+        type: 'remove-junction',
+        id: '00000001-516c-48ac-8128-07f98c98ee13',
+      }).sheet.junctions,
     ).toEqual([]);
 
-    const removedWire = applySchematicCommand(document, { type: 'remove-wire', id: 'w1' });
-    expect(removedWire.sheet.wires.map((wire) => wire.id)).toEqual(['w2']);
+    const removedWire = applySchematicCommand(document, {
+      type: 'remove-wire',
+      id: '00000004-9cf4-407f-8900-09a16d33a38c',
+    });
+    expect(removedWire.sheet.wires.map((wire) => wire.id)).toEqual([
+      '00000005-a914-47d5-84d1-8bafbe533ffb',
+    ]);
     expect(removedWire.sheet.junctions).toEqual([]);
   });
 
@@ -115,12 +139,18 @@ describe('applySchematicCommand', () => {
     const effects: EditEffect[] = [];
     applySchematicCommand(
       makeDocument(),
-      { type: 'remove-wire', id: 'w1' },
+      { type: 'remove-wire', id: '00000004-9cf4-407f-8900-09a16d33a38c' },
       {
         onEffect: (effect) => effects.push(effect),
       },
     );
-    expect(effects).toEqual([{ kind: 'junction-removed', id: 'j1', reason: 'wire-removed' }]);
+    expect(effects).toEqual([
+      {
+        kind: 'junction-removed',
+        id: '00000001-516c-48ac-8128-07f98c98ee13',
+        reason: 'wire-removed',
+      },
+    ]);
   });
 
   it('rejects unknown entities', () => {
@@ -146,22 +176,42 @@ describe('applySchematicCommand', () => {
 
   it('rejects junctions with fewer than two wires', () => {
     expect(
-      codesOfCommand(makeDocument(), { type: 'add-junction', x: 0, y: 0, wires: ['w1'] }),
+      codesOfCommand(makeDocument(), {
+        type: 'add-junction',
+        x: 0,
+        y: 0,
+        wires: ['00000004-9cf4-407f-8900-09a16d33a38c'],
+      }),
     ).toEqual(['schema/invalid-value']);
   });
 
   it('rejects junctions that reference unknown or duplicated wires', () => {
     expect(
-      codesOfCommand(makeDocument(), { type: 'add-junction', x: 0, y: 0, wires: ['w1', 'nope'] }),
+      codesOfCommand(makeDocument(), {
+        type: 'add-junction',
+        x: 0,
+        y: 0,
+        wires: ['00000004-9cf4-407f-8900-09a16d33a38c', 'nope'],
+      }),
     ).toContain('junction/unknown-wire');
     expect(
-      codesOfCommand(makeDocument(), { type: 'add-junction', x: 0, y: 0, wires: ['w1', 'w1'] }),
+      codesOfCommand(makeDocument(), {
+        type: 'add-junction',
+        x: 0,
+        y: 0,
+        wires: ['00000004-9cf4-407f-8900-09a16d33a38c', '00000004-9cf4-407f-8900-09a16d33a38c'],
+      }),
     ).toContain('junction/duplicate-wire');
   });
 
   it('rejects junctions that do not lie on their wires', () => {
     expect(
-      codesOfCommand(makeDocument(), { type: 'add-junction', x: 50, y: 50, wires: ['w1', 'w2'] }),
+      codesOfCommand(makeDocument(), {
+        type: 'add-junction',
+        x: 50,
+        y: 50,
+        wires: ['00000004-9cf4-407f-8900-09a16d33a38c', '00000005-a914-47d5-84d1-8bafbe533ffb'],
+      }),
     ).toEqual(['junction/off-wire']);
   });
 
@@ -169,7 +219,7 @@ describe('applySchematicCommand', () => {
     const error = catchError(() =>
       applySchematicCommand(makeDocument(), {
         type: 'set-wire-points',
-        id: 'w1',
+        id: '00000004-9cf4-407f-8900-09a16d33a38c',
         points: [
           { x: 100, y: 100 },
           { x: 110, y: 100 },
@@ -185,7 +235,7 @@ describe('applySchematicCommand', () => {
       makeDocument(),
       {
         type: 'set-wire-points',
-        id: 'w1',
+        id: '00000004-9cf4-407f-8900-09a16d33a38c',
         points: [
           { x: 100, y: 100 },
           { x: 110, y: 100 },
@@ -194,13 +244,19 @@ describe('applySchematicCommand', () => {
       { onJunctionConflict: 'remove', onEffect: (effect) => effects.push(effect) },
     );
     expect(result.sheet.junctions).toEqual([]);
-    expect(effects).toEqual([{ kind: 'junction-removed', id: 'j1', reason: 'junction-detached' }]);
+    expect(effects).toEqual([
+      {
+        kind: 'junction-removed',
+        id: '00000001-516c-48ac-8128-07f98c98ee13',
+        reason: 'junction-detached',
+      },
+    ]);
   });
 
   it('keeps junctions when geometry still contains them', () => {
     const result = applySchematicCommand(makeDocument(), {
       type: 'set-wire-points',
-      id: 'w1',
+      id: '00000004-9cf4-407f-8900-09a16d33a38c',
       points: [
         { x: -10, y: 0 },
         { x: 20, y: 0 },
@@ -210,6 +266,7 @@ describe('applySchematicCommand', () => {
   });
 
   it('accepts a custom id factory', () => {
+    const customId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
     const result = applySchematicCommand(
       makeDocument(),
       {
@@ -219,9 +276,9 @@ describe('applySchematicCommand', () => {
           { x: 1, y: 5 },
         ],
       },
-      { createId: (kind) => `${kind}-custom` },
+      { createId: () => customId },
     );
-    expect(result.sheet.wires.at(-1)?.id).toBe('wire-custom');
+    expect(result.sheet.wires.at(-1)?.id).toBe(customId);
   });
 
   it('rejects unsupported commands', () => {
@@ -258,7 +315,9 @@ describe('property declaration checks', () => {
     return {
       version: 1,
       sheet: {
-        symbols: [{ id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 }],
+        symbols: [
+          { id: '00000002-41e6-4a4c-869a-82a4cd304787', device: 'pkg:a', x: 0, y: 0, rotation: 0 },
+        ],
         wires: [],
         junctions: [],
       },
@@ -268,21 +327,36 @@ describe('property declaration checks', () => {
   it('rejects values outside the declared type or range', () => {
     const codes = codesOfCommand(
       documentWithSymbol(),
-      { type: 'set-symbol-property', id: 's1', key: 'speed', value: 999 },
+      {
+        type: 'set-symbol-property',
+        id: '00000002-41e6-4a4c-869a-82a4cd304787',
+        key: 'speed',
+        value: 999,
+      },
       options,
     );
     expect(codes).toEqual(['schema/invalid-value']);
     expect(
       codesOfCommand(
         documentWithSymbol(),
-        { type: 'set-symbol-property', id: 's1', key: 'cores', value: 1.5 },
+        {
+          type: 'set-symbol-property',
+          id: '00000002-41e6-4a4c-869a-82a4cd304787',
+          key: 'cores',
+          value: 1.5,
+        },
         options,
       ),
     ).toEqual(['schema/invalid-type']);
     expect(
       codesOfCommand(
         documentWithSymbol(),
-        { type: 'set-symbol-property', id: 's1', key: 'accent', value: 'blue' },
+        {
+          type: 'set-symbol-property',
+          id: '00000002-41e6-4a4c-869a-82a4cd304787',
+          key: 'accent',
+          value: 'blue',
+        },
         options,
       ),
     ).toEqual(['schema/invalid-value']);
@@ -291,7 +365,12 @@ describe('property declaration checks', () => {
   it('accepts values that satisfy the declaration and canonicalizes colors', () => {
     const result = applySchematicCommand(
       documentWithSymbol(),
-      { type: 'set-symbol-property', id: 's1', key: 'accent', value: '#ff8800' },
+      {
+        type: 'set-symbol-property',
+        id: '00000002-41e6-4a4c-869a-82a4cd304787',
+        key: 'accent',
+        value: '#ff8800',
+      },
       options,
     );
     expect(result.sheet.symbols[0]?.properties).toEqual({ accent: '#FF8800' });
@@ -300,7 +379,7 @@ describe('property declaration checks', () => {
       result,
       {
         type: 'set-symbol-property',
-        id: 's1',
+        id: '00000002-41e6-4a4c-869a-82a4cd304787',
         key: 'firmware',
         value: { src: 'assets/fw.bin', mode: 'file' },
       },
@@ -312,7 +391,12 @@ describe('property declaration checks', () => {
 
     const cleared = applySchematicCommand(
       firmware,
-      { type: 'set-symbol-property', id: 's1', key: 'saved', value: null },
+      {
+        type: 'set-symbol-property',
+        id: '00000002-41e6-4a4c-869a-82a4cd304787',
+        key: 'saved',
+        value: null,
+      },
       options,
     );
     expect(cleared.sheet.symbols[0]?.properties).toMatchObject({ saved: null });
