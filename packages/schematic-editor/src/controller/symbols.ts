@@ -159,7 +159,11 @@ export function deleteSelection(session: EditorSession): void {
           removeWire(session, item.id);
           break;
         case 'junction':
-          session.editor.dispatch({ type: 'remove-junction', id: item.id });
+          // Removing a wire already drops junctions it leaves with fewer than two wires, so a
+          // rubber-band selection around a T connection contains junction ids that are gone.
+          if (session.document.sheet.junctions.some((junction) => junction.id === item.id)) {
+            session.editor.dispatch({ type: 'remove-junction', id: item.id });
+          }
           break;
         case 'vertex': {
           const wire = session.findWire(item.wireId);

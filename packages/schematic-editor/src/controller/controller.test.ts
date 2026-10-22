@@ -227,6 +227,74 @@ describe('SchematicEditorController', () => {
     expect(controller.document.sheet.junctions).toHaveLength(1);
   });
 
+  it('deletes a rubber-band selection around a T connection, junction included', () => {
+    const controller = createController(
+      documentOf({
+        wires: [
+          {
+            id: 'w1',
+            points: [
+              { x: 0, y: 0 },
+              { x: 100, y: 0 },
+            ],
+          },
+        ],
+      }),
+    );
+    controller.addWire([
+      { x: 50, y: 50 },
+      { x: 50, y: 0 },
+    ]);
+    const junction = controller.document.sheet.junctions[0];
+    expect(junction).toBeDefined();
+
+    controller.setSelection([
+      ...controller.document.sheet.wires.map((wire) => ({ kind: 'wire' as const, id: wire.id })),
+      { kind: 'junction', id: junction?.id ?? '' },
+    ]);
+    expect(() => controller.deleteSelection()).not.toThrow();
+
+    expect(controller.document.sheet.wires).toEqual([]);
+    expect(controller.document.sheet.junctions).toEqual([]);
+    expect(controller.selection).toEqual([]);
+    expect(controller.state.lastError).toBeUndefined();
+  });
+
+  it('keeps the through wire when a T junction and its branch are deleted together', () => {
+    const controller = createController(
+      documentOf({
+        wires: [
+          {
+            id: 'w1',
+            points: [
+              { x: 0, y: 0 },
+              { x: 50, y: 0 },
+              { x: 100, y: 0 },
+            ],
+          },
+          {
+            id: 'w2',
+            points: [
+              { x: 50, y: 0 },
+              { x: 50, y: 50 },
+            ],
+          },
+        ],
+        junctions: [{ id: 'j1', x: 50, y: 0, wires: ['w1', 'w2'] }],
+      }),
+    );
+
+    controller.setSelection([
+      { kind: 'wire', id: 'w2' },
+      { kind: 'junction', id: 'j1' },
+    ]);
+    controller.deleteSelection();
+
+    expect(controller.document.sheet.wires.map((wire) => wire.id)).toEqual(['w1']);
+    expect(controller.document.sheet.junctions).toEqual([]);
+    expect(controller.state.lastError).toBeUndefined();
+  });
+
   it('caches state until something changes', () => {
     const controller = createController(
       documentOf({ symbols: [{ id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 }] }),
