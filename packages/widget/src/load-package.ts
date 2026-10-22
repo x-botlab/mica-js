@@ -1,6 +1,5 @@
 import { parsePayloadType } from '@mica-js/core/canvas';
 import { WidgetLoadError, type WidgetLoadErrorCode } from './errors';
-import { moduleReferenceProblem } from './self-contained';
 import type { PortDefinition, PropertyDefinition, WidgetDefinition, WidgetModule } from './types';
 
 /** Read-only view of the files that make up one package. */
@@ -53,7 +52,6 @@ export async function loadWidgetPackage(files: PackageFiles): Promise<WidgetPack
     const definition = await readDefinition(files, manifest.id, entry);
     const implementationPath = toImplementationPath(entry.path);
     const code = await readImplementation(files, manifest.id, entry.id, implementationPath);
-    assertSelfContained(code, manifest.id, implementationPath);
     modules[entry.id] = { definition, code };
     sources.push(code);
   }
@@ -423,17 +421,6 @@ function requireObject(
 
 function decode(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
-}
-
-function assertSelfContained(code: string, packageId: string, path: string): void {
-  const problem = moduleReferenceProblem(code);
-  if (problem !== undefined) {
-    throw new WidgetLoadError(
-      'widget/not-self-contained',
-      `Implementation ${JSON.stringify(path)} must be self-contained: ${problem}.`,
-      { packageId, path },
-    );
-  }
 }
 
 async function sha256Hex(text: string, packageId: string): Promise<string> {

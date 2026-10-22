@@ -16,7 +16,7 @@ pnpm add @mica-js/widget
 
 | 导出                                     | 作用                                                                 |
 | ---------------------------------------- | -------------------------------------------------------------------- |
-| `WidgetModule`                           | `{ definition, code }`：定义与单文件自包含 ESM 源码                  |
+| `WidgetModule`                           | `{ definition, code }`：定义与单文件 ESM 源码                        |
 | `WidgetDefinition`                       | `properties`、`ports` 及可选的 `displayName` / `description`         |
 | `PropertyDefinition`                     | 属性描述（#7），除 `type` 外字段原样透传                             |
 | `PortDefinition`                         | 话题端口描述（#10）：`direction`、`type`，可选 `title`/`description` |
@@ -115,24 +115,25 @@ interface WidgetProvider {
 - 条目必须有 `path`，可选 `displayName` / `description`；后者写入 `WidgetDefinition`。
 - 路径必须是包内相对 POSIX 路径：绝对路径、盘符、反斜杠与 `..` 片段一律报 `widget/invalid-manifest`。
 - 实现路径由描述路径把 `.json` 换成 `.js` 得到；缺少实现报 `widget/no-implementation`。
-- 实现必须是单文件自包含 ESM：任何 `import`（`import.meta` 除外）、动态 `import()`、`export ... from` 一律报 `widget/not-self-contained`。检查按词法 token 进行，注释、字符串、模板与正则字面量中的同名文本不算，`export default`、`export const`、`export { a }` 等正常导出不受限制。
+- 实现源码按原样交给调用方，本包不解析、不执行、不做静态检查（`widget/not-self-contained` 为保留错误码，留给执行侧使用）。
 - `contentHash` 是「按 Widget ID 排序后拼接全部源码」的 SHA-256 十六进制，用于判断包内容是否变化。
 
 ## 错误
 
 `WidgetLoadError` 的 `code` 是稳定契约，`packageId` 与 `path` 指向出错的包和包内路径：
 
-| `code`                      | 场景                                                    |
-| --------------------------- | ------------------------------------------------------- |
-| `widget/package-not-found`  | `package.json` 缺失或不可读                             |
-| `widget/invalid-manifest`   | 清单或 `widgets` 索引非法、路径越界、描述文件缺失       |
-| `widget/invalid-definition` | 描述不是对象/非法 JSON，或 `ports` 类型不合法           |
-| `widget/no-implementation`  | 同名 `.js` 实现缺失或不可读                             |
-| `widget/not-self-contained` | 实现包含 `import`、动态 `import()` 或 `export ... from` |
-| `widget/load-failed`        | 其它加载失败（例如环境缺少 `crypto.subtle`）            |
+| `code`                      | 场景                                               |
+| --------------------------- | -------------------------------------------------- |
+| `widget/package-not-found`  | `package.json` 缺失或不可读                        |
+| `widget/invalid-manifest`   | 清单或 `widgets` 索引非法、路径越界、描述文件缺失  |
+| `widget/invalid-definition` | 描述不是对象/非法 JSON，或 `ports` 类型不合法      |
+| `widget/no-implementation`  | 同名 `.js` 实现缺失或不可读                        |
+| `widget/not-self-contained` | 保留错误码；加载器不检查源码，供执行侧（沙箱）使用 |
+| `widget/load-failed`        | 其它加载失败（例如环境缺少 `crypto.subtle`）       |
 
 ## 边界
 
 - 本包不执行源码、不创建 Worker、不校验脚本行为；执行与隔离属于沙箱。
+- 不解析实现源码：`import`、`export` 是否合法留给执行侧决定，加载器只负责取字节与纯数据定义。
 - 不解析属性字段语义、不建立端口连接、不持久化实例配置。
 - 不枚举包目录，不跟随重定向或符号链接；读取哪些文件完全由清单决定。
