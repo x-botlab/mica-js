@@ -8,6 +8,8 @@ export default defineConfig({
       '@mica-js/core/schematic': fileURLToPath(
         new URL('../core/src/schematic/index.ts', import.meta.url),
       ),
+      '@mica-js/core': fileURLToPath(new URL('../core/src/index.ts', import.meta.url)),
+      '@mica-js/ir': fileURLToPath(new URL('../ir/src/index.ts', import.meta.url)),
     },
   },
   build: {
@@ -19,7 +21,7 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: true,
     minify: false,
-    rollupOptions: { external: ['@mica-js/core', '@mica-js/core/schematic'] },
+    rollupOptions: { external: ['@mica-js/core', '@mica-js/core/schematic', '@mica-js/ir'] },
   },
   plugins: [
     dts({

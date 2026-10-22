@@ -310,6 +310,9 @@ importers:
       '@mica-js/core':
         specifier: workspace:*
         version: link:../core
+      '@mica-js/ir':
+        specifier: workspace:*
+        version: link:../ir
     devDependencies:
       '@types/node':
         specifier: ^24.19.2

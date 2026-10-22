@@ -30,7 +30,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@mica-js/core": "workspace:*"
+    "@mica-js/core": "workspace:*",
+    "@mica-js/ir": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
