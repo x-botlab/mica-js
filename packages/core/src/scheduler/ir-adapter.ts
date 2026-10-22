@@ -2,6 +2,7 @@ import { createIRInterpreter } from '@mica-js/ir';
 import type {
   EntryRef,
   IRBridgeHost,
+  IRInstructionExecutor,
   IRModule,
   IRStorage,
   IRValidationOptions,
@@ -21,6 +22,8 @@ export interface IRSchedulerInstanceDefinition {
   readonly module: IRModule;
   readonly validation: IRValidationOptions;
   readonly bridge?: IRBridgeHost;
+  /** Trusted synchronous executors for declared domain instructions. */
+  readonly executors?: readonly IRInstructionExecutor[];
 }
 
 export interface IRSchedulerInstance {
@@ -47,7 +50,7 @@ export function createIRSchedulerInstance(
       timePs: scheduler.now,
     });
   }
-  const { instanceId, module, validation } = definition;
+  const { instanceId, module, validation, executors } = definition;
   const captured = {
     memories: module.memories,
     functions: module.functions,
@@ -94,6 +97,7 @@ export function createIRSchedulerInstance(
       },
     },
     stepObserver: { beforeStep: () => context().consumeSteps() },
+    ...(executors === undefined ? {} : { executors }),
   });
   const instance = scheduler.addInstance({
     instanceId,

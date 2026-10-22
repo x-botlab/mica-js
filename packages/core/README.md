@@ -32,7 +32,7 @@ pnpm add @mica-js/core
 
 ## 真实 IR 执行
 
-`createIRSchedulerInstance(scheduler, { instanceId, module, validation })` 创建一份既有 `@mica-js/ir` 参考解释器及独立存储，将 `event.now/at/cancel` 接入**同一个**调度队列和 ID 分配器，不另造解释器或调度器。`validation` 的指令支持/授权与资源权限仍显式提供，不会自动放宽。
+`createIRSchedulerInstance(scheduler, { instanceId, module, validation, executors? })` 创建一份既有 `@mica-js/ir` 参考解释器及独立存储，将 `event.now/at/cancel` 接入**同一个**调度队列和 ID 分配器，不另造解释器或调度器。`validation` 的指令支持/授权与资源权限仍显式提供，不会自动放宽；`executors` 是可信宿主提供的领域指令同步执行器，未注册的领域指令仍在链接期拒绝。
 
 ```ts
 import { createIRModule } from '@mica-js/ir';
@@ -67,6 +67,8 @@ instance.storage.loadState(received); // 7
 ```
 
 适配器返回只读 `instance: SchedulerInstance`、`storage: IRStorage`，以及 `at(EntryRef, deadline, args): number`、`cancel(id): void`、`enqueueControl(LifecycleRef, args): void`、`enqueueMessage(EntryRef, args): number`。生命周期不能用 `at` 提升优先级；控制接入仅供可信内核，不向器件开放创建特权工作能力。销毁使用 `scheduler.destroyInstance(instance.instance)`。
+
+领域执行器只接收解释器快照中的节点、按值解析的 SSA 操作数与执行上下文；它们只应在当前调度入口内同步工作。`connection.apply` 使用这一扩展把捕获的 bool 列表一次性提交给 `TopologyRuntime.submit()`，由拓扑在下一个控制阶段原子应用；核心不导入连接领域类型。
 
 模块中的普通入口和生命周期在创建时固定身份与签名；接纳前完整检查目标、期限及全部标量参数，成功后按值捕获，包括 `FloatBits` 的独立不可变副本和原始浮点位。普通函数、同名伪造引用、跨实例/模块目标、错误类别/参数及过去期限均拒绝。无事件 host 的独立解释器拒绝事件模块；不支持的其他领域指令仍明确拒绝。
 
@@ -144,13 +146,22 @@ serializeSchematic(document); // 固定字段顺序的 .sch JSON
 ## 画布（`./canvas`）
 
 ```ts
-import { parseCanvas, serializeCanvas } from '@mica-js/core/canvas';
+import { applyCanvasCommand, parseCanvas, serializeCanvas } from '@mica-js/core/canvas';
 
 const canvas = parseCanvas(text); // version / schematic / widgets
 serializeCanvas(canvas); // 固定键序、2 空格缩进、结尾换行
+
+const next = applyCanvasCommand(canvas, {
+  type: 'set-property',
+  instanceId,
+  key: 'label',
+  value: 'hello',
+}); // 纯函数：返回新文档，canvas 不变
 ```
 
 canvas 是独立画布：`widgets` 是 widget 实例数组，数组顺序即绘制顺序；实例保存 `x` / `y` / `width` / `height` / `rotation`、可选的 `properties` 覆盖与 `bindings`（端口键 → `{ symbol, port }` 端点）。canvas 以工程根相对路径作为标识，顶层没有 `id`；`schematic` 可选，只声明仿真绑定。原理图编辑器不依赖这个入口。
+
+编辑命令（#96）：`add-instance` / `remove-instance`、`set-placement` / `set-z`、`set-property` / `unset-property`、`set-binding`（`target: null` 解绑）、`set-schematic`（`null` 清除）。命令是纯函数，失败抛 `SchematicError` 并一次带回全部诊断；本层只做结构校验，端点存在性、方向与载荷类型由绑定装载负责。
 
 ## 电气模块
 

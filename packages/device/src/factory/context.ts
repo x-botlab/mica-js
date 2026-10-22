@@ -3,12 +3,13 @@ import type {
   BytesRef,
   EntryRef,
   InboxRef,
-  IRDeclarations,
   IRModule,
   OutputRef,
   ScalarArgs,
   ScalarType,
 } from '@mica-js/ir';
+import { createConnectionSupport } from '../connection/builder';
+import type { DeviceConnectionDescriptor, DeviceIRDeclarations } from '../connection/types';
 import { DeviceError } from '../errors';
 import type { MessagingController } from '../messaging/controller';
 import type { DeviceAPI, DevicePropertySnapshot, TopicPayload } from '../types';
@@ -40,6 +41,7 @@ export function createFactoryContext(
   module: IRModule,
   deviceId: string,
   messaging: MessagingController,
+  connections: ReadonlyMap<string, DeviceConnectionDescriptor>,
 ): FactoryContext {
   let open = true;
   const failClosed = (operation: string): never => {
@@ -49,8 +51,17 @@ export function createFactoryContext(
       { deviceId },
     );
   };
+  const connectionSupport = createConnectionSupport(module, connections, deviceId);
   const ir = new Proxy(module, {
     get(target, property) {
+      if (property === 'connection') {
+        return (...args: unknown[]): unknown => {
+          if (!open) {
+            return failClosed(property);
+          }
+          return connectionSupport.declare(args[0]);
+        };
+      }
       if (typeof property !== 'string' || !DECLARATION_METHODS.has(property)) {
         return undefined;
       }
@@ -62,7 +73,15 @@ export function createFactoryContext(
         if (!open) {
           return failClosed(property);
         }
-        return Reflect.apply(method, target, args);
+        const result = Reflect.apply(method, target, args);
+        if (
+          (property === 'func' || property === 'entry' || property === 'lifecycle') &&
+          typeof result === 'object' &&
+          result !== null
+        ) {
+          connectionSupport.decorateFunctionRef(result);
+        }
+        return result;
       };
     },
     set(_target, property) {
@@ -80,7 +99,7 @@ export function createFactoryContext(
   });
   const api: DeviceAPI = Object.freeze({
     props,
-    ir: ir as unknown as IRDeclarations,
+    ir: ir as unknown as DeviceIRDeclarations,
     subscribe: (port: string, callback: unknown) => messaging.subscribe(port, callback),
     publish: (port: string, payload: TopicPayload) => messaging.publish(port, payload),
     post: <P extends readonly ScalarType[]>(entry: EntryRef<P>, args: ScalarArgs<P>) =>

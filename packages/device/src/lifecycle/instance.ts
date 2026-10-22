@@ -5,6 +5,8 @@ import {
   type IRSchedulerInstance,
   type Scheduler,
 } from '@mica-js/core';
+import { prepareConnectionExecution } from '../connection/executor';
+import type { DeviceConnectionOptions } from '../connection/types';
 import { DeviceError } from '../errors';
 import { readDeviceBindings, type ValidatedBindings } from '../factory/bindings';
 import { createFactoryContext } from '../factory/context';
@@ -43,6 +45,7 @@ export function createDeviceInstance(
   const definition = readLoadedModule(loaded);
   validateScheduler(scheduler);
   const instanceId = readInstanceId(options);
+  const connectionOptions = readConnectionOptions(options);
   const props = resolveDeviceProperties(
     definition.description,
     isPlainRecord(options) && options.properties !== undefined ? options.properties : {},
@@ -50,7 +53,13 @@ export function createDeviceInstance(
 
   const module = createIRModule();
   const messaging = createMessaging(definition, module, options);
-  const context = createFactoryContext(props, module, definition.deviceId, messaging);
+  const context = createFactoryContext(
+    props,
+    module,
+    definition.deviceId,
+    messaging,
+    definition.description.connections,
+  );
   let rawBindings: unknown;
   try {
     rawBindings = invokeFactory(definition.factory, context.api, definition.deviceId);
@@ -79,7 +88,14 @@ export function createDeviceInstance(
     messaging.abort();
     throw cause;
   }
-  const policy = createValidationPolicy(module);
+  const policy = createValidationPolicy(module, definition.description.connections);
+  const connectionExecutor = prepareConnectionExecution({
+    module,
+    description: definition.description.connections,
+    instanceId,
+    deviceId: definition.deviceId,
+    topology: connectionOptions?.topology,
+  });
   const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name, {
     beforeEntry: () => messaging.beforeEntry(),
     afterEntry: (entryContext, failure) => messaging.completeEntry(entryContext, failure),
@@ -92,6 +108,7 @@ export function createDeviceInstance(
       module,
       validation: policy,
       bridge: messaging.bridge,
+      ...(connectionExecutor === undefined ? {} : { executors: [connectionExecutor] }),
     });
   } catch (cause) {
     messaging.abort();
@@ -193,7 +210,8 @@ function readLoadedModule(value: unknown): LoadedModule {
     !isPlainRecord(description) ||
     typeof description['name'] !== 'string' ||
     !(description['properties'] instanceof Map) ||
-    !(description['ports'] instanceof Map)
+    !(description['ports'] instanceof Map) ||
+    !(description['connections'] instanceof Map)
   ) {
     throw instanceError(
       `Device ${JSON.stringify(deviceId)} instance requires a parsed device description.`,
@@ -229,6 +247,35 @@ function readInstanceId(options: unknown): string {
     throw instanceError('Device instance id must be a non-empty string.');
   }
   return instanceId;
+}
+
+function readConnectionOptions(options: unknown): DeviceConnectionOptions | undefined {
+  if (!isPlainRecord(options)) {
+    return undefined;
+  }
+  const connections = options['connections'];
+  if (connections === undefined) {
+    return undefined;
+  }
+  if (!isPlainRecord(connections)) {
+    throw instanceError('Device instance connections must be an object.');
+  }
+  for (const field of Object.keys(connections)) {
+    if (field !== 'topology') {
+      throw instanceError(
+        `Device instance connections has unknown field ${JSON.stringify(field)}.`,
+      );
+    }
+  }
+  const topology = connections['topology'];
+  if (
+    !isObjectLike(topology) ||
+    typeof topology['submit'] !== 'function' ||
+    typeof topology['connectionState'] !== 'function'
+  ) {
+    throw instanceError('Device instance connections.topology must be a topology runtime.');
+  }
+  return { topology: topology as unknown as DeviceConnectionOptions['topology'] };
 }
 
 function invokeFactory(factory: DeviceFactory, api: DeviceAPI, deviceId: string): unknown {

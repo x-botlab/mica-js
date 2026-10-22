@@ -96,6 +96,28 @@ ir.entry('enable', ['bool']).body((b, [on]) => {
 
 `invoke` 只生成已声明的显式指令，并校验操作数类别、标量类型与结果布局；不提供 `call(hostFunction)` 或任意运行期 JS 回调扩展。
 
+领域指令还支持分组列表操作数，用于一条指令携带固定长度而运行期按值捕获的批量数据：
+
+```ts
+const apply = ir.domainInstruction('led.apply', {
+  operands: [
+    { kind: 'static-list', category: 'led', minLength: 1 },
+    { kind: 'value-list', type: 'bool', minLength: 1 },
+  ],
+  results: [],
+});
+
+ir.entry('apply', ['bool']).body((b, [on]) => {
+  b.invoke(apply, [
+    [first, second],
+    [on, b.bool.not(on)],
+  ]);
+  b.return([]);
+});
+```
+
+列表操作数在 IR 节点中保留为 `static-list` / `ssa-list`，不会展开成 JS 对象数组；`minLength` 在建图、静态校验与解释器链接期共同检查。列表元素仍逐项校验类别、类型、模块归属与资源授权；元素数量对应关系由所属领域的可信校验器负责。
+
 ## 实例存储
 
 ```ts
@@ -220,7 +242,7 @@ runtime.storage.loadState(count); // 3
 ```
 
 - `createIRInterpreter` 捕获私有执行快照，调用 `validateIR`，再用 `createIRStorage` 建独占存储；原模型后续修改不影响已创建的实例。
-- `IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`bridge: IRBridgeHost`、`stepObserver: IRStepObserver`；API 面向可信宿主，不是隔离恶意 JS getter/validator 的沙箱。
+- `IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`bridge: IRBridgeHost`、`stepObserver: IRStepObserver`、`executors: IRInstructionExecutor[]`；API 面向可信宿主，不是隔离恶意 JS getter/validator 的沙箱。
 - `execute(target, args, context)` 同步执行 `FunctionRef` / `EntryRef` / `LifecycleRef`，返回 `{ values, steps }`。`context = { instanceId, virtualTime }` 必填：实例标识非空，虚拟时间为非负安全整数皮秒，仅用于诊断。
 - 存储跨成功执行保留；每次 `execute` 使用独立预算。普通调用和块跳转不推进虚拟时间、不创建事件、不形成等待/恢复对象；显式 event 指令通过下述可信宿主桥接。
 
@@ -250,7 +272,29 @@ runtime.storage.loadState(count); // 3
 - 存储操作沿用完整范围校验与原子提交：失败操作无部分写入，已提交效果不回滚。
 - 预算、求值、存储或 trap 故障会锁定实例，后续 `execute` 抛 `instance-faulted`；无 reset/resume，也不支持失败入口中途恢复。
 - 非法目标、参数或 context 等调用前错误不消耗步骤、不锁定实例。
-- 执行能力限于现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、核心 `event.now/at/cancel`、`bridge.send` / `bridge.send_bytes`、普通 `call` 及 `return/jump/branch/trap`；扩展静态校验通过也不会自动获得执行实现。未实现领域指令在执行前拒绝；dispatch、Provider/checkpoint 与其他保留能力仍静态拒绝。
+- 执行能力包括现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、核心 `event.now/at/cancel`、`bridge.send` / `bridge.send_bytes`、普通 `call`、`return/jump/branch/trap`，以及通过 `executors` 显式注册的领域指令。没有执行器的领域指令在执行前以 `unsupported-instruction` 拒绝；dispatch、Provider/checkpoint 与其他保留能力仍静态拒绝。
+
+### 领域指令执行（#57）
+
+```ts
+const runtime = createIRInterpreter(module, {
+  validation,
+  executors: [
+    {
+      op: 'led.apply',
+      execute({ instruction, operands, context }) {
+        // 同步完成所属领域的原子效果；operands 只含按节点顺序解析的 SSA 值。
+        return [];
+      },
+    },
+  ],
+});
+```
+
+- `IRInstructionExecutor` 是可信同步宿主扩展，不是任意 JS 回调面；`op` 不能与核心指令同名，重复注册报 `invalid-options`。
+- 执行器在参数绑定后按节点调用一次，接收模型快照中的指令与按值解析的 SSA 操作数（`ssa-list` 按元素顺序展开）。返回值数量与声明结果类型逐项校验；返回 Promise、generator、数量或类型不符均使本次执行失败。
+- 解释器创建时扫描所有可达与不可达指令；某领域指令没有执行器时整体链接失败，不会把不支持的能力当作空操作。
+- 执行器抛错沿用 `evaluation-failed`、位置、调用栈与 `cause`；已提交效果不回滚，实例随后进入 faulted。执行器需要自行保证其声明范围内的原子性与调度语义。
 
 ### 事件与宿主桥接（#48）
 
@@ -362,6 +406,7 @@ runtime.storage.validateDependencies(after.dependencies); // true
 - 单元边界为 `floor(offset / unitBytes)`，声明后固定；非零更新为覆盖的每个单元产生新版本 token，未覆盖单元与其他资源不变。
 - 依赖对象是不透明 token，只在本实例内有效；过期、伪造、跨资源/实例或非法形状返回 `false`，空集合为 `true`。它们不是序列化或持久化格式。
 - 普通 `store` / `copy` 不改变版本；Provider 缓存（#60）与运行中恢复（#61）不在本包。
+- `writeInbox` 是可信宿主把消息写入 inbox 的唯一通道；IR 自身的 inbox 读取保持只读，普通写入仍被拒绝。`updateBytesFromBytes` 走 `update` 授权、完整范围检查与原子版本路径，供 device 的 `api.updateBytes` 使用。
 
 ```ts
 interface IRStorage {
@@ -373,12 +418,10 @@ interface IRStorage {
     length: number,
   ): void;
   fillBytes(destination: BytesRef, offset: number, length: number, value: number): void;
-  /** Host-only inbox admission; ordinary IR writes remain rejected. */
-  writeInbox(ref: InboxRef, offset: number, bytes: Uint8Array): void;
-  /** Host-only versioned update from captured bytes; content and units commit atomically. */
-  updateBytesFromBytes(ref: BytesRef, offset: number, bytes: Uint8Array): void;
   readVersionedBytes(ref: ReadableBytesRef, offset: number, length: number): IRVersionedBytes;
   validateDependencies(dependencies: readonly IRResourceDependency[]): boolean;
+  writeInbox(ref: InboxRef, offset: number, bytes: Uint8Array): void;
+  updateBytesFromBytes(ref: BytesRef, offset: number, bytes: Uint8Array): void;
 }
 
 type IRVersionedBytes = {
@@ -395,7 +438,7 @@ type IRResourceDependency = {
 
 ## 当前限制
 
-- 事件队列/调度器本身（核心 event 指令通过上述可信宿主桥接）；输出队列、话题路由与 JS 作者侧 `api.updateBytes` 请求队列由 `@mica-js/device` 持有。
+- 事件队列/调度器、输出队列/话题路由/通知时机与 JS 作者侧 `api.updateBytes` 请求队列；核心 event 与 bridge 指令只通过上述可信宿主桥接。
 - Provider 生成缓存（#60）、运行中恢复/checkpoint（#61）与 JIT。
 - 尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。
 
@@ -410,4 +453,4 @@ pnpm --filter @mica-js/ir build
 ## 相关提案
 
 - 规范：[IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26)、[器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)
-- 实现： [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)、[#46](https://github.com/x-botlab/mica-js/issues/46)、[#47](https://github.com/x-botlab/mica-js/issues/47)
+- 实现： [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)、[#46](https://github.com/x-botlab/mica-js/issues/46)、[#47](https://github.com/x-botlab/mica-js/issues/47)、[#57](https://github.com/x-botlab/mica-js/issues/57)

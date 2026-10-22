@@ -655,9 +655,18 @@ function domain(node: InstructionNode, state: InstructionValidationState): void 
     );
     return;
   }
-  const kinds = declaration.operands.map((operand): OperandKind =>
-    operand.kind === 'value' ? 'ssa' : operand.kind,
-  );
+  const kinds = declaration.operands.map((operand): OperandKind => {
+    switch (operand.kind) {
+      case 'value':
+        return 'ssa';
+      case 'value-list':
+        return 'ssa-list';
+      case 'static':
+      case 'static-list':
+      case 'literal':
+        return operand.kind;
+    }
+  });
   if (!operands(node, state, kinds, 'signature-mismatch')) {
     return;
   }
@@ -667,6 +676,33 @@ function domain(node: InstructionNode, state: InstructionValidationState): void 
       if (!value(node, state, index, descriptor.type, 'signature-mismatch')) valid = false;
     } else if (descriptor.kind === 'static') {
       if (!domainStatic(node, state, index, descriptor.category)) valid = false;
+    } else if (descriptor.kind === 'value-list') {
+      const list = node.operands[index] as Extract<InstructionOperand, { kind: 'ssa-list' }>;
+      if (!listLength(node, state, index, list.values.length, descriptor.minLength)) valid = false;
+      list.values.forEach((item, itemIndex) => {
+        if (item.type !== descriptor.type) {
+          state.report(
+            'signature-mismatch',
+            `${node.op} operand ${index}[${itemIndex}] must have type ${descriptor.type}`,
+          );
+          valid = false;
+        }
+      });
+    } else if (descriptor.kind === 'static-list') {
+      const list = node.operands[index] as Extract<InstructionOperand, { kind: 'static-list' }>;
+      if (!listLength(node, state, index, list.refs.length, descriptor.minLength)) valid = false;
+      list.refs.forEach((ref, itemIndex) => {
+        if (
+          !checkDomainStatic(
+            ref,
+            state,
+            descriptor.category,
+            `${node.op} operand ${index}[${itemIndex}]`,
+          )
+        ) {
+          valid = false;
+        }
+      });
     }
   });
   if (!valid) {
@@ -725,7 +761,15 @@ function domainStatic(
   index: number,
   category: string,
 ): boolean {
-  const ref = staticRef(node, index);
+  return checkDomainStatic(staticRef(node, index), state, category, `${node.op} operand ${index}`);
+}
+
+function checkDomainStatic(
+  ref: StaticRef,
+  state: InstructionValidationState,
+  category: string,
+  label: string,
+): boolean {
   const kind = ref[refKind];
   const memoryDefinition = state.memories.get(ref);
   const functionDefinition = state.functions.get(ref);
@@ -750,24 +794,33 @@ function domainStatic(
       resource = true;
   }
   if (!listed) {
-    state.report(
-      'invalid-static-reference',
-      `${node.op} operand ${index} must reference a listed ${category}`,
-    );
+    state.report('invalid-static-reference', `${label} must reference a listed ${category}`);
     return false;
   }
   if (kind !== category) {
-    state.report(
-      'signature-mismatch',
-      `${node.op} operand ${index} must have category ${category}`,
-    );
+    state.report('signature-mismatch', `${label} must have category ${category}`);
     return false;
   }
   if (resource && !hasGrant(state, ref)) {
-    state.report('unauthorized-resource', `${node.op} operand ${index} requires a resource grant`);
+    state.report('unauthorized-resource', `${label} requires a resource grant`);
     return false;
   }
   return true;
+}
+
+function listLength(
+  node: InstructionNode,
+  state: InstructionValidationState,
+  index: number,
+  length: number,
+  minimum: number | undefined,
+): boolean {
+  if (minimum === undefined || length >= minimum) return true;
+  state.report(
+    'signature-mismatch',
+    `${node.op} operand ${index} requires at least ${minimum} item(s)`,
+  );
+  return false;
 }
 
 function consumeThenable(value: unknown): boolean {

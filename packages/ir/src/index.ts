@@ -5,6 +5,8 @@ export type {
   IRInterpreterOptions,
   IREventHost,
   IRStepObserver,
+  IRInstructionExecution,
+  IRInstructionExecutor,
   IRInterpreter,
   IRExecutionContext,
   IRExecutionResult,
