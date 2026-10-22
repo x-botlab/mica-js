@@ -201,6 +201,26 @@ describe('widget guest runtime', () => {
     expect(events.filter((event) => event.type === WIDGET_FRAME_EVENT)).toHaveLength(1);
   });
 
+  it('commits one frame when the factory invalidates during construction', async () => {
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+    const { runtime, events } = createHarness({
+      widget: (api) => {
+        api.invalidate();
+        return { render: () => {} };
+      },
+    });
+
+    await runtime.load(loadRequest('widget'));
+    runtime.mount(mountRequest());
+    const committed = (): number =>
+      events.filter((event) => event.type === WIDGET_FRAME_EVENT).length;
+
+    expect(committed()).toBe(1);
+    await tick();
+    await tick();
+    expect(committed()).toBe(1);
+  });
+
   it('updates props and repaints once per set-properties call', async () => {
     vi.stubGlobal('OffscreenCanvas', FakeCanvas);
     let seen: Readonly<Record<string, unknown>> | undefined;

@@ -340,6 +340,9 @@ export function createWidgetRuntime(
         throw error instanceof Error ? error : new Error(String(error));
       }
 
+      // A factory may call `invalidate()` while building; the first paint below covers that
+      // request, so drop the queued repaint instead of committing a second identical frame.
+      dirty.delete(session);
       paint(session);
     },
 

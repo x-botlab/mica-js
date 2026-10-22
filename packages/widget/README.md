@@ -127,6 +127,8 @@ await host.dispose();
 
 guest 的 `mount` 阶段错误通过 `mount()` 的 rejection 呈现，因此一次失败只产生一条诊断。
 
+`instanceId` 在 `mount()` 入口**同步预留**，所以并发挂载同一 id 时只有一个会真正启动，另一个立即得到 `widget/instance-exists`。若实例在挂载完成前被 `unmount()`（或宿主被 `dispose()`），该次 `mount()` 以 `name === 'WidgetMountCancelledError'` 的 `Error` reject，并清理 guest 侧已创建或即将创建的会话——不会留下无 layer 的「已挂载」假象，也不会误删同一 id 的新挂载记录。这类取消属于调用方的主动行为，不产生诊断。
+
 ### 崩溃与重建
 
 sandbox 终止时不自动重建实例：`dispose()` 主动终止沙箱；其它终止在**下一次调用**被发现（`SandboxHandle` 没有终止事件），此时清空 `layers` 并上报 `widget/runtime-failed`。之后再次 `mount()` 会启动新的 sandbox 并重新 `load`，但不会恢复先前的实例——自动重建留给后续增强。
@@ -240,6 +242,7 @@ interface WidgetProvider {
 - 不解析实现源码：`import`、`export` 是否合法留给 guest 的 `import()` 决定，加载器只负责取字节与纯数据定义。
 - 不解析属性字段语义、不建立端口连接、不持久化实例配置。
 - 不做话题路由：`publish` 只经 `onPublish` 原样交给调用方，`deliver` 的 `simTime` 由调用方提供。
+- **不按端口声明校验 `publish` / `subscribe`**：这两个方法目前接受任意端口名，`WidgetDefinition.ports` 在运行时基本未被使用。因此 widget 可以伪造任意端口的消息，宿主侧的 `onPublish` 也会原样收到。**#99 必须补上校验**：按该实例解析到的 `definition.ports` 检查 `publish` 的端口存在且 `direction === 'output'`，对未声明的端口丢弃并上报诊断（`subscribe` 同理，方向为 `input`）。校验必须放在 guest 侧（不可信代码就在那里）或以 definition 为准在宿主侧过滤，且不能在 `WidgetHost` 公开接口里引入编辑器概念。
 - 不合成多层位图、不读写画布文档：`WidgetLayers` 只给位图与挂载顺序。
 - 不自动重建终止后的实例（见「崩溃与重建」）。
 - 不枚举包目录，不跟随重定向或符号链接；读取哪些文件完全由清单决定。

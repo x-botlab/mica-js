@@ -22,6 +22,9 @@ class FakeSandbox implements WidgetSandbox {
   readonly reasons: string[] = [];
   readonly #listeners = new Map<string, Set<(payload: unknown) => void>>();
   readonly #failures = new Map<string, Error[]>();
+  readonly #gates = new Map<string, Promise<void>>();
+  /** Mirrors the guest instance table, so a second `mount` of one id fails like the real guest. */
+  readonly #sessions = new Set<string>();
 
   fail(method: string, error: Error): void {
     const queue = this.#failures.get(method) ?? [];
@@ -29,10 +32,57 @@ class FakeSandbox implements WidgetSandbox {
     this.#failures.set(method, queue);
   }
 
+  /** Holds the next call of `method` open; the returned function releases it. */
+  gate(method: string): () => void {
+    let release: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#gates.set(method, pending);
+    return release;
+  }
+
   call(method: string, ...args: unknown[]): Promise<unknown> {
     this.calls.push({ method, args });
     const failure = this.#failures.get(method)?.shift();
-    return failure ? Promise.reject(failure) : Promise.resolve(undefined);
+    if (failure) return Promise.reject(failure);
+
+    const guestError = this.#applyGuestState(method, args);
+    if (guestError) return Promise.reject(guestError);
+
+    const gate = this.#gates.get(method);
+    if (gate) {
+      this.#gates.delete(method);
+      return gate;
+    }
+    return Promise.resolve(undefined);
+  }
+
+  /** Guest sessions still alive; an unmounted id must leave nothing behind. */
+  liveSessionIds(): string[] {
+    return [...this.#sessions];
+  }
+
+  #applyGuestState(method: string, args: readonly unknown[]): Error | undefined {
+    const first = args[0];
+    const instanceId =
+      typeof first === 'object' && first !== null
+        ? (first as { instanceId?: unknown }).instanceId
+        : first;
+    if (typeof instanceId !== 'string') return undefined;
+
+    if (method === 'mount') {
+      if (this.#sessions.has(instanceId)) {
+        return new Error(`Widget instance ${JSON.stringify(instanceId)} is already mounted`);
+      }
+      this.#sessions.add(instanceId);
+      return undefined;
+    }
+    if (method === 'unmount') {
+      this.#sessions.delete(instanceId);
+      return undefined;
+    }
+    return undefined;
   }
 
   on(type: string, listener: (payload: unknown) => void): () => void {
@@ -367,6 +417,101 @@ describe('createWidgetHost', () => {
       expect.objectContaining({ code: 'widget/instance-exists', instanceId: 'a' }),
     ]);
     expect(harness.sandbox.methods().filter((method) => method === 'mount')).toHaveLength(1);
+  });
+
+  it('reserves the instance id synchronously so a concurrent mount loses the race', async () => {
+    const harness = createHarness();
+
+    const results = await Promise.all([mount(harness.host), mount(harness.host)]);
+
+    expect(results).toEqual([undefined, undefined]);
+    expect(harness.diagnostics).toEqual([
+      expect.objectContaining({ code: 'widget/instance-exists', instanceId: 'a' }),
+    ]);
+    expect(harness.host.layers.get('a')).toBeDefined();
+    expect(harness.sandbox.methods().filter((method) => method === 'mount')).toHaveLength(1);
+
+    harness.host.unmount('a');
+    expect(harness.changes.at(-1)).toEqual({ type: 'removed', instanceId: 'a' });
+  });
+
+  it('releases the guest session when the instance is unmounted while mounting', async () => {
+    const harness = createHarness();
+    const release = harness.sandbox.gate('mount');
+
+    const mounting = mount(harness.host);
+    await tick();
+    harness.host.unmount('a');
+    release();
+
+    await expect(mounting).rejects.toMatchObject({ name: 'WidgetMountCancelledError' });
+    expect(harness.host.layers.get('a')).toBeUndefined();
+    expect(harness.diagnostics).toEqual([]);
+    expect(harness.sandbox.methods().at(-1)).toBe('unmount');
+    expect(harness.sandbox.argsOf('unmount')).toEqual(['a']);
+    expect(harness.sandbox.liveSessionIds()).toEqual([]);
+
+    harness.host.unmount('a');
+    expect(harness.diagnostics).toEqual([
+      expect.objectContaining({ code: 'widget/instance-not-found', instanceId: 'a' }),
+    ]);
+  });
+
+  it('rejects instead of mounting a new guest session when unmounted before the sandbox starts', async () => {
+    const sandbox = new FakeSandbox();
+    let resolveWidget: ((value: WidgetModule) => void) | undefined;
+    const host = createWidgetHost({
+      provider: {
+        resolve: () =>
+          new Promise<WidgetModule | undefined>((resolve) => {
+            resolveWidget = resolve;
+          }),
+      },
+      sandbox: () => Promise.resolve(sandbox),
+    });
+
+    const mounting = mount(host);
+    host.unmount('a');
+    resolveWidget?.(demoModule);
+
+    await expect(mounting).rejects.toMatchObject({ name: 'WidgetMountCancelledError' });
+    expect(host.layers.get('a')).toBeUndefined();
+    expect(sandbox.methods()).toEqual([]);
+    expect(sandbox.liveSessionIds()).toEqual([]);
+  });
+
+  it('treats a mount cancelled by dispose as a cancellation, not a widget failure', async () => {
+    const harness = createHarness();
+    const release = harness.sandbox.gate('mount');
+
+    const mounting = mount(harness.host);
+    await tick();
+    const disposing = harness.host.dispose();
+    release();
+
+    await expect(mounting).rejects.toMatchObject({ name: 'WidgetMountCancelledError' });
+    await disposing;
+
+    expect(harness.diagnostics).toEqual([]);
+    expect(harness.host.layers.list()).toEqual([]);
+    expect(harness.sandbox.reasons).toHaveLength(1);
+  });
+
+  it('leaves a newer record alone when a cancelled mount unwinds', async () => {
+    const harness = createHarness();
+    const release = harness.sandbox.gate('mount');
+
+    const mounting = mount(harness.host);
+    await tick();
+    harness.host.unmount('a');
+    const remounting = mount(harness.host);
+    release();
+
+    await expect(mounting).rejects.toMatchObject({ name: 'WidgetMountCancelledError' });
+    await remounting;
+
+    expect(harness.host.layers.get('a')).toBeDefined();
+    expect(harness.diagnostics).toEqual([]);
   });
 
   it('reports missing instances for every instance-scoped method', async () => {

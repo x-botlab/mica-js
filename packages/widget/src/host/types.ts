@@ -46,7 +46,14 @@ export interface WidgetPublish {
 }
 
 export interface WidgetHost {
-  /** Resolves once the instance rendered its first frame; rejects when the instance cannot run. */
+  /**
+   * Resolves once the instance rendered its first frame.
+   *
+   * Rejects when the widget cannot be mounted; an id reserved by a mount that is still in flight
+   * yields `widget/instance-exists` instead. If the instance is unmounted (or the host disposed)
+   * while the mount is in flight, the promise rejects with an error named
+   * `WidgetMountCancelledError` and no layer is left behind.
+   */
   mount(spec: WidgetMountSpec): Promise<void>;
   unmount(instanceId: string): void;
   /** Geometry changes apply immediately; the matching bitmap arrives asynchronously. */

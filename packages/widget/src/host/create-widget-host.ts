@@ -34,6 +34,8 @@ import type {
 
 interface InstanceRecord {
   readonly widget: string;
+  /** Identifies the mount attempt that reserved this id, so late callbacks cannot adopt it. */
+  readonly token: symbol;
   props: Readonly<Record<string, unknown>>;
 }
 
@@ -42,6 +44,17 @@ class WidgetRuntimeError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = 'WidgetRuntimeError';
+  }
+}
+
+/**
+ * The instance was removed (or the host disposed) while its mount was in flight. Rejecting keeps
+ * `mount()` honest instead of resolving for an instance that no longer has a layer.
+ */
+class WidgetMountCancelledError extends Error {
+  constructor(instanceId: string) {
+    super(`Mount of widget instance "${instanceId}" was cancelled before it finished`);
+    this.name = 'WidgetMountCancelledError';
   }
 }
 
@@ -103,6 +116,36 @@ class WidgetHostImpl implements WidgetHost {
       return;
     }
 
+    // Reserve the id before the first await: a concurrent mount of the same instance now loses
+    // here instead of racing into the guest and tearing down the winner's record and layer.
+    const record: InstanceRecord = {
+      widget: ref,
+      token: Symbol(instanceId),
+      props: spec.props ?? {},
+    };
+    this.#instances.set(instanceId, record);
+    this.#layerStore.add({
+      instanceId,
+      width: spec.width,
+      height: spec.height,
+      dpr: this.#dpr,
+    });
+
+    let mounted = false;
+    try {
+      mounted = await this.#mountInstance(instanceId, ref, record);
+    } finally {
+      // A cancelled or failed attempt only drops its own reservation.
+      if (!mounted) this.#forget(instanceId, record);
+    }
+  }
+
+  /**
+   * Runs one mount attempt; every await re-checks that this attempt still owns the id.
+   *
+   * @returns always `true`; a cancelled attempt throws instead of reporting success.
+   */
+  async #mountInstance(instanceId: string, ref: string, record: InstanceRecord): Promise<boolean> {
     let module: WidgetModule | undefined;
     try {
       module = await this.#provider.resolve(ref);
@@ -124,28 +167,12 @@ class WidgetHostImpl implements WidgetHost {
           : `Widget reference "${ref}" must use the "<package>:<widget>" form.`,
         { instanceId, widget: ref },
       );
-      return;
+      return false;
     }
+    this.#requireOwnership(instanceId, record);
 
-    const instance: InstanceRecord = { widget: ref, props: spec.props ?? {} };
-    this.#instances.set(instanceId, instance);
-    this.#layerStore.add({
-      instanceId,
-      width: spec.width,
-      height: spec.height,
-      dpr: this.#dpr,
-    });
-
-    let sandbox: WidgetSandbox;
-    try {
-      sandbox = await this.#ensureSandbox();
-    } catch (error) {
-      this.#forget(instanceId);
-      throw error;
-    }
-
-    const layer = this.#layerStore.get(instanceId);
-    if (!layer || !this.#instances.has(instanceId)) return;
+    const sandbox = await this.#ensureSandbox();
+    this.#requireOwnership(instanceId, record);
 
     try {
       await sandbox.call(WIDGET_LOAD_METHOD, {
@@ -158,18 +185,23 @@ class WidgetHostImpl implements WidgetHost {
           },
         ],
       });
-      if (!this.#instances.has(instanceId)) return;
+      this.#requireOwnership(instanceId, record);
+
+      const layer = this.#layerStore.get(instanceId);
+      if (!layer) throw new WidgetMountCancelledError(instanceId);
       await sandbox.call(WIDGET_MOUNT_METHOD, {
         instanceId,
         widget: ref,
         width: layer.width,
         height: layer.height,
         dpr: layer.dpr,
-        props: instance.props,
+        props: record.props,
       });
     } catch (error) {
-      this.#forget(instanceId);
       if (error instanceof WidgetRuntimeError) throw error;
+      if (error instanceof WidgetMountCancelledError) throw error;
+      // Disposal is the caller's own doing, not a widget failure; report it as a cancellation.
+      if (this.#disposed) throw new WidgetMountCancelledError(instanceId);
       if (this.#isTerminated()) {
         this.#failRuntime('The widget sandbox terminated during mount.');
         throw error;
@@ -181,6 +213,18 @@ class WidgetHostImpl implements WidgetHost {
       );
       throw error;
     }
+
+    if (!this.#owns(instanceId, record)) {
+      // The mount was cancelled while the guest was creating the instance. Release that session,
+      // otherwise an unmounted id keeps a canvas, subscriptions and timers alive for good. A newer
+      // record for the same id is skipped: the guest keys sessions by id, so a late release would
+      // tear down the replacement's session instead of ours.
+      if (!this.#instances.has(instanceId)) {
+        await releaseGuestInstance(sandbox, instanceId);
+      }
+      throw new WidgetMountCancelledError(instanceId);
+    }
+    return true;
   }
 
   unmount(instanceId: string): void {
@@ -192,7 +236,7 @@ class WidgetHostImpl implements WidgetHost {
       return;
     }
 
-    this.#forget(instanceId);
+    this.#forget(instanceId, instance);
     this.#fire(undefined, WIDGET_UNMOUNT_METHOD, [instanceId], instanceId);
   }
 
@@ -267,8 +311,21 @@ class WidgetHostImpl implements WidgetHost {
     return instance;
   }
 
-  /** Drops an instance that never became usable; the layer closes its bitmap. */
-  #forget(instanceId: string): void {
+  /** True while `record` is still the live record for this id in an undisposed host. */
+  #owns(instanceId: string, record: InstanceRecord): boolean {
+    return !this.#disposed && this.#instances.get(instanceId) === record;
+  }
+
+  /** Aborts a mount attempt whose instance was removed or replaced while it awaited. */
+  #requireOwnership(instanceId: string, record: InstanceRecord): void {
+    if (!this.#owns(instanceId, record)) {
+      throw new WidgetMountCancelledError(instanceId);
+    }
+  }
+
+  /** Drops this attempt's reservation and layer; a newer record for the same id is left alone. */
+  #forget(instanceId: string, record: InstanceRecord): void {
+    if (this.#instances.get(instanceId) !== record) return;
     this.#instances.delete(instanceId);
     this.#layerStore.remove(instanceId);
   }
@@ -485,5 +542,14 @@ async function terminate(sandbox: WidgetSandbox): Promise<void> {
     await sandbox.terminate('widget host disposed');
   } catch {
     // Already terminated.
+  }
+}
+
+/** Asks the guest to drop an instance the host has already given up on. */
+async function releaseGuestInstance(sandbox: WidgetSandbox, instanceId: string): Promise<void> {
+  try {
+    await sandbox.call(WIDGET_UNMOUNT_METHOD, instanceId);
+  } catch {
+    // The guest never created the instance, or the sandbox is already gone.
   }
 }
