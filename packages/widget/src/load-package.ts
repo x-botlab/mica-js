@@ -13,7 +13,10 @@ export interface PackageFiles {
 export interface WidgetPackage {
   readonly id: string;
   readonly version: string;
-  /** SHA-256 (hex) over the implementation sources concatenated in widget-id order. */
+  /**
+   * SHA-256 (hex) over the `[widget id, source]` pairs in widget-id order, so distinct package
+   * contents never collide and reordering the manifest does not change the hash.
+   */
   readonly contentHash: string;
   readonly modules: Readonly<Record<string, WidgetModule>>;
 }
