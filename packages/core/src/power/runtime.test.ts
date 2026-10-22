@@ -1023,6 +1023,35 @@ describe('power digital pin observers', () => {
     expect(indeterminate?.sample).toEqual({ value: 0, ready: true, source: 'threshold-range' });
   });
 
+  it('reports one batch in topology declaration order, not sorted identity order', () => {
+    const pins: TopologyPinDeclaration[] = [
+      { instanceId: 'dev', pinName: 'Z', kind: 'signal' },
+      { instanceId: 'dev', pinName: 'A', kind: 'signal' },
+    ];
+    const definition: PowerDefinition = {
+      topology: { pins, wires: [], connections: [] },
+      devices: [{ instanceId: 'dev', powerDomains: {} }],
+    };
+    const scheduler = createScheduler();
+    const power = createPowerRuntime(scheduler, definition, {
+      instanceId: 'power',
+      pinStates: [pinState('dev', 'Z'), pinState('dev', 'A')],
+    });
+    run(scheduler);
+    const batches: (readonly PowerDigitalPinChange[])[] = [];
+    power.addDigitalPinObserver({
+      onDigitalPinChange(changes) {
+        batches.push(changes);
+      },
+    });
+
+    power.updatePinStates([pushPull('dev', 'Z', true), pushPull('dev', 'A', true)]);
+    run(scheduler);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]!.map((change) => change.pinName)).toEqual(['Z', 'A']);
+    expect(batches[0]!.map((change) => change.sample.value)).toEqual([1, 1]);
+  });
+
   it('calls observers in registration order and unsubscribes independently', () => {
     const { scheduler, power } = fixture();
     run(scheduler);

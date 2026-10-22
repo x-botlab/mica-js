@@ -190,7 +190,7 @@ type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
 ```
 
 - 同步工厂每次创建只调用一次。`api.ir` 暴露 `state/array/bytes/inbox/func/entry/lifecycle`、`pin(id)` / `connection(id)` 与本实例的输出声明 `output/outputBytes`；工厂返回**或抛出**后立即封闭，任何后续声明或结构写入报 `device/factory-closed`。工厂不能通过上下文取得原始 `IRModule`、执行器或调度器。`subscribe` / `onOutput` 登记同样只在工厂期间开放。
-- `b.pin` 通过 `@mica-js/ir` 的 `FunctionBuilder` 模块增强获得类型；运行期由本包为 device 模块注册的 builder extension 提供，普通函数、生命周期与嵌套块共用同一组方法。`b.connection` 由 #57 的装饰路径提供。直接使用裸 `createIRModule()` 的模块不会自动获得这些命名空间。
+- `b.pin` / `b.observe` 通过 `@mica-js/ir` 的 `FunctionBuilder` 模块增强获得类型；运行期由本包为 device 模块注册的 builder extension 提供，普通函数、生命周期与嵌套块共用同一组方法。`b.connection` 由 #57 的装饰路径提供。直接使用裸 `createIRModule()` 的模块不会自动获得这些命名空间。
 - `api.props` 是创建时解析默认值后的独立、递归只读快照；运行期不可修改，不提供更新接口、自动重建或 `onPropsChanged`。需要另一组属性时由宿主显式创建新实例。
 - 工厂返回值必须是纯对象，只允许 `initialize` / `reset` / `onDispose` 三个字段。生命周期引用必须属于本次工厂声明的模块、类别为 `lifecycle`、零参数；同一引用同时绑定 initialize 与 reset 拒绝。`onDispose` 必须是同步普通函数（拒绝 async/generator/class），运行时还要求返回 `undefined`。
 - 工厂返回 Promise/thenable 或默认导出为 async/async generator 报 `device/factory-async`；普通函数抛出、非普通函数或非法返回形状分别报 `device/factory-failed` / `device/lifecycle-binding`。
@@ -301,6 +301,7 @@ initialize.body((b) => {
 - 载荷固定为 `[u8 边沿编码, ...按 captures 声明顺序的 u32]`。边沿编码只描述本次匹配的 rising/falling，不把 `both` 写入载荷；数字捕获读取同一解析阶段的 #51 采样结果，gated capture 按采样规则得到 0。触发时复制数值入队，执行入口时不再重新采样。
 - 初始禁用；每次显式 `configure` 都在提交点重建基线并原子更新启用/边沿，即使参数相同。首次启用、门控/待定区间恢复、浮空进出与显式配置都只重建基线，不投递边沿；只有相邻确定 `sampled` 电平的 `0→1` / `1→0` 才可能投递，未选中的确定跃迁仍更新基线。不新增 baseline 包装字段。
 - 观察依赖 #51 的解析阶段数字变化通知；`DevicePinHost.addDigitalPinObserver` 缺失时报 `device/observe-unavailable`。同一解析阶段的变化按观察声明顺序入队，走 `scheduler.enqueueMessage` 的 #54 普通入口队列：不推进时间、不形成等待栈、不同步重入器件或其他实例。
+- 观察绑定与 `pinHost` 应共享同一 scheduler 与虚拟时间基准，才能保证解析阶段与普通入口阶段按本文顺序衔接。跨 scheduler 注入 `pinHost` 的跨阶段顺序不在本批合同内；宿主若这样组合，需自行保证两个 scheduler 的驱动顺序，本层不额外推演或重排。
 - 关闭观察不撤销已入队消息，也不补发关闭期间的跃迁；销毁时取消订阅并丢弃实例内待执行入口，已捕获载荷保持原内容。
 - 仅实现数字边沿观察。`edges=0` 状态观察、模拟量/电压观察、`get_*`/`set_*`、组观察与任意比较器均明确拒绝，不注册空实现。
 

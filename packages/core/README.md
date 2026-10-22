@@ -457,7 +457,7 @@ scheduler.start(); // 初始化域、通知 off→on、恢复门控并继续网�
 ### 数字引脚变化观察
 
 - `power.addDigitalPinObserver(observer)` 注册变化观察者，返回幂等 disposer；可同时注册多个，按注册顺序调用。`destroy()` 清除全部观察者，之后注册明确拒绝。
-- 每次完成电气解析阶段后同步通知一次，只包含 `(value, ready, source)` 发生变化的 signal 引脚，按拓扑声明顺序稳定排列。没有变化时不调用。
+- 每次完成电气解析阶段后同步通知一次，只包含 `(value, ready, source)` 发生变化的 signal 引脚，按 `TopologyDefinition.pins` 的声明顺序稳定排列；内部按 `(instanceId, pinName)` 排序的查找/更新列表不改变该通知顺序。没有变化时不调用。
 - 通知不重放当前值；当前状态继续用 `sampleDigital` 读取。回调只能入队或读取，不得同步重入器件入口。
 - 观察者异常采用 fail-fast：立即停止后续观察者通知并向当前 scheduler 入口传播；此前观察者已经入队的消息不回滚。
 - 该接口不改变 #51 已批准的 `observe(observer)` 电源域通知；域门控变化表现为 `ready`/`source` 变化，供 #56 观察层重建基线。

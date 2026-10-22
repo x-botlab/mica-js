@@ -67,6 +67,27 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+/**
+ * `CapturedPowerDefinition.pins` is sorted by identity for deterministic lookup and updates.
+ * Digital observer batches keep the original topology declaration order instead.
+ */
+function captureSignalPinsInDeclarationOrder(
+  definition: CapturedPowerDefinition,
+): readonly CapturedPin[] {
+  const pins: CapturedPin[] = [];
+  for (const declared of definition.topology.pins) {
+    if (declared.kind !== 'signal') continue;
+    const captured = definition.pinsByKey.get(pinKey(declared.instanceId, declared.pinName));
+    if (captured === undefined) {
+      throw new Error(
+        `Invariant: missing captured pin for (${JSON.stringify(declared.instanceId)}, ${JSON.stringify(declared.pinName)})`,
+      );
+    }
+    pins.push(captured);
+  }
+  return Object.freeze(pins);
+}
+
 function sameDigitalSample(
   left: PowerDigitalSample | undefined,
   right: PowerDigitalSample,
@@ -216,7 +237,7 @@ class PowerRuntimeImpl implements PowerRuntime {
         state.powerReady,
       ]),
     );
-    this.#signalPins = Object.freeze(definition.pins.filter((pin) => pin.kind === 'signal'));
+    this.#signalPins = captureSignalPinsInDeclarationOrder(definition);
     for (const pin of this.#signalPins) this.#memory.set(pin.key, 0);
     for (const domain of definition.domainsInOrder) this.#notified.set(domain.key, 'off');
 
