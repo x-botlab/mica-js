@@ -21,6 +21,7 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 │   └── sandbox-playground/   # 沙箱演示与手测面板
 └── packages/
     ├── core/                 # @mica-js/core：仿真内核
+    ├── canvas-editor/        # @mica-js/canvas-editor：画布编辑器（.cnv 合成与交互）
     ├── device/               # @mica-js/device：器件加载、属性与实例生命周期
     ├── ir/                   # @mica-js/ir：IR 建图、校验、存储与参考解释器
     ├── schematic-editor/     # @mica-js/schematic-editor：Canvas 原理图编辑器
@@ -56,6 +57,29 @@ editor.placeDevice('stm32-package:stm32g431rbt6-lqfp64'); // 抓到光标上，�
 ```
 
 宿主 API、器件放置与回调时序见 [packages/schematic-editor/README.md](packages/schematic-editor/README.md)，可运行示例见 [apps/playground](apps/playground)。
+
+## 画布编辑器
+
+`@mica-js/canvas-editor` 把 `.cnv` 文档与 `WidgetLayers` 的位图合成到一块 Canvas 上，并把指针/键盘操作翻译成 `CanvasCommand`。它不持有文档、不修改文档、不启动 sandbox：编辑模式只通过 `onCommand` 上报命令，运行模式只通过 `dispatch` 转发命中实例的输入。
+
+```ts
+import { mountCanvasEditor } from '@mica-js/canvas-editor';
+
+const editor = mountCanvasEditor({
+  container: document.querySelector('#host'),
+  document: canvasDocument,
+  layers: host.layers,
+  onCommand: (command) => {
+    canvasDocument = applyCanvasCommand(canvasDocument, command);
+    editor.setDocument(canvasDocument);
+  },
+  dispatch: (instanceId, event) => host.dispatch(instanceId, event),
+});
+
+editor.setMode('run');
+```
+
+键位、坐标约定与边界见 [packages/canvas-editor/README.md](packages/canvas-editor/README.md)。
 
 `@mica-js/core` 当前提供理想电压驱动/弱偏置的公共网络求值、冲突现场及 `mica-floating-v2` 确定性浮空模拟取值。连接拓扑层接收静态外部导线与引脚快照，维护内部连接状态和网络连通分量（含合并/拆分与全局 GND），在公共控制阶段原子提交连接 patch 后只重算受影响网络。电源层在其上计算电源域供电/接地条件与迟滞就绪状态，按域门控引脚驱动、内部偏置和采样，并通过公共控制阶段按依赖顺序通知器件；不支持的能力（IR pin 指令、协议、掉电后寄存器/reset 语义）明确留在后续器件层。连续电路求解仍不在当前范围；接口、集成责任及验证见 [packages/core/README.md](packages/core/README.md)。
 
