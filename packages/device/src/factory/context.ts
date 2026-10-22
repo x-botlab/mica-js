@@ -1,4 +1,6 @@
-import type { IRDeclarations, IRModule } from '@mica-js/ir';
+import type { IRModule } from '@mica-js/ir';
+import { createConnectionSupport } from '../connection/builder';
+import type { DeviceConnectionDescriptor, DeviceIRDeclarations } from '../connection/types';
 import { DeviceError } from '../errors';
 import type { DeviceAPI, DevicePropertySnapshot } from '../types';
 
@@ -26,6 +28,7 @@ export function createFactoryContext(
   props: DevicePropertySnapshot,
   module: IRModule,
   deviceId: string,
+  connections: ReadonlyMap<string, DeviceConnectionDescriptor>,
 ): FactoryContext {
   let open = true;
   const failClosed = (operation: string): never => {
@@ -35,8 +38,17 @@ export function createFactoryContext(
       { deviceId },
     );
   };
+  const connectionSupport = createConnectionSupport(module, connections, deviceId);
   const ir = new Proxy(module, {
     get(target, property) {
+      if (property === 'connection') {
+        return (...args: unknown[]): unknown => {
+          if (!open) {
+            return failClosed(property);
+          }
+          return connectionSupport.declare(args[0]);
+        };
+      }
       if (typeof property !== 'string' || !DECLARATION_METHODS.has(property)) {
         return undefined;
       }
@@ -48,7 +60,15 @@ export function createFactoryContext(
         if (!open) {
           return failClosed(property);
         }
-        return Reflect.apply(method, target, args);
+        const result = Reflect.apply(method, target, args);
+        if (
+          (property === 'func' || property === 'entry' || property === 'lifecycle') &&
+          typeof result === 'object' &&
+          result !== null
+        ) {
+          connectionSupport.decorateFunctionRef(result);
+        }
+        return result;
       };
     },
     set(_target, property) {
@@ -66,7 +86,7 @@ export function createFactoryContext(
   });
   const api: DeviceAPI = Object.freeze({
     props,
-    ir: ir as unknown as IRDeclarations,
+    ir: ir as unknown as DeviceIRDeclarations,
   });
   return {
     api,

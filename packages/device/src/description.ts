@@ -1,4 +1,5 @@
 import { readPropertyDescriptors, type PropertyDescriptor } from '@mica-js/core/schematic';
+import { readConnections } from './connection/description';
 import { DeviceError } from './errors';
 import { isPlainRecord } from './internal/records';
 import {
@@ -37,6 +38,7 @@ export function parseDeviceDescription(
     description,
     properties: readProperties(definition['properties']),
     ports: readPorts(definition['ports']),
+    connections: readConnections(definition),
     designatorPrefix: readDesignatorPrefix(definition['designatorPrefix']),
   };
 }

@@ -872,6 +872,44 @@ function createBuilderObject(state: BuilderState): unknown {
             );
           }
           return literal(operand);
+        case 'value-list': {
+          if (!Array.isArray(operand)) {
+            fail(`Instruction "${metadata.name}" operand ${index} must be an array of SSA values`);
+          }
+          requireListLength(operand.length, descriptor.minLength, metadata.name, index);
+          const values = operand.map((item, itemIndex) => {
+            const label = `Instruction "${metadata.name}" operand ${index}[${itemIndex}]`;
+            if (typeof item !== 'object' || item === null) {
+              fail(`${label} must be an SSA value`);
+            }
+            valueType(item as Value, label);
+            assertValue(item as Value, state, descriptor.type, label);
+            return item as Value;
+          });
+          return { kind: 'ssa-list' as const, values };
+        }
+        case 'static-list': {
+          if (!Array.isArray(operand)) {
+            fail(
+              `Instruction "${metadata.name}" operand ${index} must be an array of static references`,
+            );
+          }
+          requireListLength(operand.length, descriptor.minLength, metadata.name, index);
+          const refs = operand.map((item, itemIndex) => {
+            const label = `Instruction "${metadata.name}" operand ${index}[${itemIndex}]`;
+            if (typeof item !== 'object' || item === null) {
+              fail(`${label} must be a static reference`);
+            }
+            if ((item as StaticRef)[refKind] !== descriptor.category) {
+              fail(`${label} must have category ${descriptor.category}`);
+            }
+            assertStaticRef(item as StaticRef, module, descriptor.category, label);
+            return item as StaticRef;
+          });
+          return { kind: 'static-list' as const, refs };
+        }
+        default:
+          fail(`Instruction "${metadata.name}" operand ${index} has an unknown kind`);
       }
     });
     const block = current(`instruction "${metadata.name}"`);
@@ -997,6 +1035,17 @@ function createBuilderObject(state: BuilderState): unknown {
   };
 
   return builder;
+}
+
+function requireListLength(
+  length: number,
+  minimum: number | undefined,
+  name: string,
+  index: number,
+): void {
+  if (minimum !== undefined && length < minimum) {
+    fail(`Instruction "${name}" operand ${index} requires at least ${minimum} item(s)`);
+  }
 }
 
 function requireEndian(value: unknown, label: string): void {
