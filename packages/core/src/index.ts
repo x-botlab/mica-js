@@ -45,3 +45,27 @@ export type {
   TopologyPinRef,
   TopologyRuntime,
 } from './topology/topology-types';
+
+export { createPowerRuntime, PowerFeedbackError } from './power/power';
+export type {
+  PowerDefinition,
+  PowerDeviceDefinition,
+  PowerDigitalSample,
+  PowerDigitalSource,
+  PowerDomainChange,
+  PowerDomainDeclaration,
+  PowerDomainObserver,
+  PowerDomainSnapshot,
+  PowerDomainState,
+  PowerDownReason,
+  PowerFloatingOptions,
+  PowerInputMode,
+  PowerLevels,
+  PowerOptions,
+  PowerPinBinding,
+  PowerPinGate,
+  PowerPinGateReason,
+  PowerRuntime,
+  PowerVoltageSample,
+  PowerVoltageSource,
+} from './power/power-types';
