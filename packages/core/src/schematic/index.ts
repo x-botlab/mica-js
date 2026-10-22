@@ -34,15 +34,15 @@ export { SchematicError } from './format/errors';
 export { parseSchematic } from './format/parse-schematic';
 export { serializeSchematic } from './format/serialize';
 
-export { deriveSchematicTopology } from './topology/derive';
+export { deriveSchematicTopology } from './netlist/derive';
 export type {
   DanglingWireEnd,
   SchematicNet,
   SchematicNetMember,
   SchematicPinInstance,
   SchematicTopology,
-  TopologyOptions,
-} from './topology/derive';
+  SchematicTopologyOptions,
+} from './netlist/derive';
 
 export { loadSchematic } from './load/load';
 export type { LoadSchematicOptions, LoadedSchematic } from './load/load';

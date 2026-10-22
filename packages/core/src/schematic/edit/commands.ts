@@ -19,7 +19,7 @@ import {
 import { parseDeviceReference } from '../device/reference';
 import { defaultNetName, hasDesignator, namesNet, symbolRole } from '../device/reference';
 import type { SymbolRole } from '../device/reference';
-import type { TopologyOptions } from '../topology/derive';
+import type { SchematicTopologyOptions } from '../netlist/derive';
 import { DEFAULT_TOLERANCE, pointOnPolyline } from '../geometry/point';
 import { defaultElementIdFactory, type ElementIdFactory } from './ids';
 
@@ -88,7 +88,7 @@ export interface EditEffect {
   readonly reason: 'wire-removed' | 'junction-detached';
 }
 
-export interface SchematicEditOptions extends TopologyOptions {
+export interface SchematicEditOptions extends SchematicTopologyOptions {
   readonly createId?: ElementIdFactory;
   /** How to handle junctions that stop lying on a wire after its geometry changes. */
   readonly onJunctionConflict?: 'reject' | 'remove';

@@ -3,10 +3,10 @@ import type { SchematicDocument } from '../format/types';
 import {
   deriveSchematicTopology,
   type SchematicTopology,
-  type TopologyOptions,
-} from '../topology/derive';
+  type SchematicTopologyOptions,
+} from '../netlist/derive';
 
-export type LoadSchematicOptions = TopologyOptions;
+export type LoadSchematicOptions = SchematicTopologyOptions;
 
 export interface LoadedSchematic {
   readonly document: SchematicDocument;

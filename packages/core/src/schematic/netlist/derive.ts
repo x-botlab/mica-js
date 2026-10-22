@@ -41,7 +41,7 @@ export interface DanglingWireEnd {
   readonly point: Point;
 }
 
-export interface TopologyOptions {
+export interface SchematicTopologyOptions {
   readonly devices?: DeviceSymbolProvider;
   /** Coordinate comparison tolerance in page units; defaults to exact matching. */
   readonly tolerance?: number;
@@ -77,7 +77,7 @@ type Connection =
  */
 export function deriveSchematicTopology(
   document: SchematicDocument,
-  options: TopologyOptions = {},
+  options: SchematicTopologyOptions = {},
 ): SchematicTopology {
   const diagnostics: Diagnostic[] = [];
   const tolerance = options.tolerance ?? DEFAULT_TOLERANCE;
