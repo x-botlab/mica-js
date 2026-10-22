@@ -88,19 +88,27 @@ export function createDeviceInstance(
     messaging.abort();
     throw cause;
   }
-  const policy = createValidationPolicy(module, definition.description.connections);
-  const connectionExecutor = prepareConnectionExecution({
-    module,
-    description: definition.description.connections,
-    instanceId,
-    deviceId: definition.deviceId,
-    topology: connectionOptions?.topology,
-  });
-  const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name, {
-    beforeEntry: () => messaging.beforeEntry(),
-    afterEntry: (entryContext, failure) => messaging.completeEntry(entryContext, failure),
-    onInitializeComplete: () => messaging.markReady(),
-  });
+  let policy: ReturnType<typeof createValidationPolicy>;
+  let connectionExecutor: ReturnType<typeof prepareConnectionExecution>;
+  let tracking: ReturnType<typeof createLifecycleScheduler>;
+  try {
+    policy = createValidationPolicy(module, definition.description.connections);
+    connectionExecutor = prepareConnectionExecution({
+      module,
+      description: definition.description.connections,
+      instanceId,
+      deviceId: definition.deviceId,
+      topology: connectionOptions?.topology,
+    });
+    tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name, {
+      beforeEntry: () => messaging.beforeEntry(),
+      afterEntry: (entryContext, failure) => messaging.completeEntry(entryContext, failure),
+      onInitializeComplete: () => messaging.markReady(),
+    });
+  } catch (cause) {
+    messaging.abort();
+    throw cause;
+  }
   let core: IRSchedulerInstance;
   try {
     core = createIRSchedulerInstance(tracking.scheduler, {
@@ -231,10 +239,28 @@ function validateScheduler(value: unknown): asserts value is Scheduler {
   if (!isObjectLike(value)) {
     throw instanceError('Device instance requires a scheduler.');
   }
-  for (const method of ['addInstance', 'enqueueControl', 'destroyInstance', 'start', 'step']) {
+  for (const method of [
+    'addInstance',
+    'enqueueControl',
+    'enqueueMessage',
+    'destroyInstance',
+    'start',
+    'pause',
+    'step',
+  ]) {
     if (typeof value[method] !== 'function') {
       throw instanceError(`Device instance scheduler must implement ${method}().`);
     }
+  }
+  if (!Number.isSafeInteger(value['now']) || (value['now'] as number) < 0) {
+    throw instanceError('Device instance scheduler must expose a non-negative integer now.');
+  }
+  const state = value['state'];
+  if (state !== 'paused' && state !== 'running' && state !== 'faulted') {
+    throw instanceError('Device instance scheduler must expose a valid state.');
+  }
+  if (!('error' in value) || (value['error'] !== undefined && !isObjectLike(value['error']))) {
+    throw instanceError('Device instance scheduler must expose undefined or an error object.');
   }
 }
 

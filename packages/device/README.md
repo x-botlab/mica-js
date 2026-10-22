@@ -219,7 +219,7 @@ interface DeviceInstance {
 - `postBytes(entry, inbox, bytes)` 要求 entry 签名 `[u32, u32]`。接纳时预留 inbox 连续范围、复制字节并把 `offset/length` 交给 entry；entry 返回、故障或销毁时释放。零长度消息使用 `offset=0, length=0`，不占字节容量但仍计入消息条数限制。容量不足抛 `BackpressureError`，不覆盖未消费数据。
 - `onOutput(output, callback)` 为每个 IR 输出登记唯一消费者，重复绑定报 `device/output-consumer`。回调在入口返回后执行，`meta.timePs` 是 `bridge.send` 捕获时的虚拟时间；标量输出载荷为固定布局列表，字节输出为独立 `Uint8Array`。队列满时 `b.output` / `b.outputBytes` 返回 `false`，失败发送不通知。
 - `updateBytes(resource, offset, bytes)` 只对声明为可写 `bytes` 的资源生效；Promise 完成表示内容与受影响单元版本已一并可见。readonly、未声明或越界报 `device/update-target`。
-- 宿主用 `instance.deliver(port, payload, { simTime })` 投递输入话题，用 `onTopic` 接收 `api.publish`。`onTopic` 必须是同步、返回 `undefined` 的函数；未提供时发布消息在校验后丢弃。初始化期间的输入与 IR 输出暂存于有界队列，initialize 成功后先按捕获顺序通知输出，再按接纳顺序投递输入。
+- 宿主用 `instance.deliver(port, payload, { simTime })` 投递输入话题，用 `onTopic` 接收 `api.publish`。`onTopic` 必须是同步、返回 `undefined` 的函数；返回 thenable 或其他值会先消费该 thenable，再以 `device/message-callback` 拒绝。未提供时发布消息在校验后丢弃。初始化期间的输入与 IR 输出暂存于有界队列，initialize 成功后先按捕获顺序通知输出，再按接纳顺序投递输入；入口边界内的回调新产生的输入、发布与更新会在同一边界继续排空，不越过已受理消息。
 - 工厂/initialize 完成前调用 `post/postBytes/publish/updateBytes` 报 `device/not-active`；故障/销毁中报 `device/instance-busy`；销毁后报 `device/instance-destroyed`。销毁丢弃未消费的实例内通知，但不撤销已交付给 `onTopic` 的外部效果。
 - 不实现重放、ACK/可靠传输、跨实例广播协议；普通消息投递不推进客体时间。
 
@@ -274,7 +274,7 @@ initialize.body((b) => {
 | `device/message-target`         | `post` / `postBytes` 目标不是普通 entry、签名或参数不合法                      |
 | `device/inbox-reference`        | `postBytes` 的 inbox 不是本次工厂声明的 inbox                                  |
 | `device/update-target`          | `updateBytes` 资源不可写/未声明/范围非法或提交失败                             |
-| `device/message-callback`       | 监听器或 `onTopic` 不是允许的函数形态                                          |
+| `device/message-callback`       | 监听器或 `onTopic` 不是允许的函数形态，或 `onTopic` 返回值不是 `undefined`     |
 | `device/not-active`             | initialize 完成前或工厂/链接失败后调用消息操作                                 |
 | `device/connection-invalid`     | 空/重复 patch、非 bool、跨实例句柄、重复声明或连接执行参数不合法               |
 | `device/connection-unknown`     | 连接 ID 未由描述或绑定的 topology 为该实例声明                                 |

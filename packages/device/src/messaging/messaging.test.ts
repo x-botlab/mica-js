@@ -31,6 +31,24 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
   throw new Error('Expected the promise to reject.');
 }
 
+interface UnhandledRejectionHost {
+  on(event: 'unhandledRejection', listener: (reason: unknown) => void): void;
+  off(event: 'unhandledRejection', listener: (reason: unknown) => void): void;
+}
+
+const runtime = globalThis as unknown as {
+  process?: UnhandledRejectionHost;
+  setTimeout: (callback: () => void, delay?: number) => unknown;
+};
+
+async function flushRejectionEvents(): Promise<void> {
+  await Promise.resolve();
+  await new Promise<void>((resolve) => {
+    runtime.setTimeout(resolve, 0);
+  });
+  await Promise.resolve();
+}
+
 function expectDeviceError(run: () => unknown, code: string): DeviceError {
   let caught: unknown;
   try {
@@ -808,6 +826,107 @@ describe('bounded queues and diagnostics', () => {
 });
 
 describe('additional messaging contract edges', () => {
+  it('drains reentrant deliveries from onTopic before accepting later direct deliveries', async () => {
+    const received: number[] = [];
+    let api: DeviceAPI | undefined;
+    let emit: EntryRef<readonly ['u32']> | undefined;
+    const { instance, scheduler } = createForTest(
+      (context) => {
+        api = context;
+        const output = context.ir.output('scalar', { params: ['u32'], capacity: 1 });
+        emit = context.ir.entry('emit', ['u32']);
+        emit.body((b, [value]) => {
+          b.output(output, [value]);
+          b.return([]);
+        });
+        context.onOutput(output, () => {
+          api!.publish('result', 1);
+        });
+        context.subscribe('value', (payload) => {
+          received.push(payload as number);
+        });
+        return {};
+      },
+      {
+        onTopic: () => {
+          instance!.deliver('value', 42, { simTime: 0 });
+        },
+      },
+      createScheduler(),
+      description({
+        value: { direction: 'input', type: 'number' },
+        result: { direction: 'output', type: 'number' },
+      }),
+    );
+    await api!.post(emit!, [1]);
+    scheduler.start();
+    expect(received).toEqual([42]);
+
+    instance.deliver('value', 43, { simTime: 1 });
+    expect(received).toEqual([42, 43]);
+  });
+
+  it('aborts staging when connection preparation fails after the factory', () => {
+    let api: DeviceAPI | undefined;
+    const description = testDescription({
+      pins: { A: { kind: 'signal' }, B: { kind: 'signal' } },
+      connections: { contact: { pins: ['A', 'B'], initial: 'open' } },
+      ports: {
+        value: { direction: 'input', type: 'number' },
+        result: { direction: 'output', type: 'number' },
+      },
+    });
+    expectDeviceError(
+      () =>
+        createForTest(
+          (context) => {
+            api = context;
+            const initialize = context.ir.lifecycle('initialize', []);
+            const contact = context.ir.connection('contact');
+            initialize.body((b) => {
+              b.connection.apply([{ connection: contact, closed: b.const('bool', true) }]);
+              b.return([]);
+            });
+            context.subscribe('value', () => undefined);
+            return { initialize };
+          },
+          {},
+          createScheduler(),
+          description,
+        ),
+      'device/connection-unavailable',
+    );
+    expectDeviceError(() => api!.subscribe('value', () => undefined), 'device/not-active');
+    expectDeviceError(() => api!.publish('result', 1), 'device/not-active');
+  });
+
+  it('consumes a rejected onTopic thenable before rejecting the contract violation', async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    runtime.process?.on('unhandledRejection', listener);
+    try {
+      let api: DeviceAPI | undefined;
+      createForTest(
+        (context) => {
+          api = context;
+          return {};
+        },
+        {
+          onTopic: () => Promise.reject(new Error('sink boom')),
+        },
+        createScheduler(),
+        description({ result: { direction: 'output', type: 'number' } }),
+      );
+      expectDeviceError(() => api!.publish('result', 1), 'device/message-callback');
+      await flushRejectionEvents();
+    } finally {
+      runtime.process?.off('unhandledRejection', listener);
+    }
+    expect(unhandled).toEqual([]);
+  });
+
   it('stops topic delivery after unsubscribe without revoking acceptance', () => {
     const received: TopicPayload[] = [];
     let unsubscribe: (() => void) | undefined;

@@ -15,7 +15,7 @@ import type {
 } from '@mica-js/ir';
 import type { SchedulerExecutionContext } from '@mica-js/core';
 import { DeviceError } from '../errors';
-import { callableKind, isThenable } from '../internal/functions';
+import { callableKind, consumeThenable, isThenable } from '../internal/functions';
 import { isPlainRecord } from '../internal/records';
 import type {
   DeviceDescription,
@@ -238,34 +238,41 @@ export class MessagingController {
     let firstError: unknown = failure;
     try {
       if (this.#ready) {
-        try {
-          this.#flushUpdates();
-        } catch (cause) {
-          firstError ??= cause;
-        }
-        try {
-          this.#drainOutputs();
-        } catch (cause) {
-          firstError ??= cause;
-        }
-        if (failure === undefined && firstError === undefined) {
+        do {
           try {
-            this.#drainInputs();
+            this.#flushUpdates();
           } catch (cause) {
             firstError ??= cause;
           }
-        }
-        try {
-          this.#drainPublish();
-        } catch (cause) {
-          firstError ??= cause;
-        }
-        // Callbacks may have queued new updates while the boundary was draining.
-        try {
-          this.#flushUpdates();
-        } catch (cause) {
-          firstError ??= cause;
-        }
+          try {
+            this.#drainOutputs();
+          } catch (cause) {
+            firstError ??= cause;
+          }
+          if (failure === undefined && firstError === undefined) {
+            try {
+              this.#drainInputs();
+            } catch (cause) {
+              firstError ??= cause;
+            }
+          }
+          try {
+            this.#drainPublish();
+          } catch (cause) {
+            firstError ??= cause;
+          }
+          // Callbacks may have queued new updates or cross-queue work during this pass.
+          try {
+            this.#flushUpdates();
+          } catch (cause) {
+            firstError ??= cause;
+          }
+        } while (
+          this.#pendingUpdates.length > 0 ||
+          this.#outputQueue.length > 0 ||
+          (failure === undefined && firstError === undefined && this.#pendingInputs.length > 0) ||
+          this.#pendingPublish.length > 0
+        );
       }
     } finally {
       this.#draining = false;
@@ -583,7 +590,7 @@ export class MessagingController {
     if (listeners === undefined || listeners.length === 0) {
       return;
     }
-    if (!this.#ready || this.#executing || this.#draining) {
+    if (!this.#ready || this.#executing || this.#draining || this.#pendingInputs.length > 0) {
       if (this.#pendingInputs.length >= this.#limits.deliveryCapacity) {
         throw this.#backpressure(
           'deliver',
@@ -749,7 +756,12 @@ export class MessagingController {
           Object.freeze({ port: message.port, payload: message.payload }),
         );
         if (result !== undefined) {
-          throw new TypeError('onTopic must return undefined');
+          consumeThenable(result);
+          throw messagingError(
+            'device/message-callback',
+            this.#deviceId,
+            'onTopic must return undefined.',
+          );
         }
       } catch (cause) {
         firstError ??= cause;
