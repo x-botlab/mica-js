@@ -9,22 +9,22 @@ const SAMPLE = `{
   "version": 1,
   "sheet": {
     "symbols": [
-      { "id": "s-mcu", "device": "stm32-package:stm32g431rbt6-lqfp64", "x": 480, "y": 160, "rotation": 0 },
-      { "id": "s-lcd", "device": "lcd-package:ct117e-m4-tft-lcd-2-4", "x": 136, "y": 55, "rotation": 0 },
-      { "id": "lcd-l-d0", "device": "builtin:label", "net": "lcd-l-d0", "x": 300, "y": 100, "rotation": 0 }
+      { "id": "3f1a9c2e-5b64-4d17-9c8a-1e2d3f4a5b60", "device": "stm32-package:stm32g431rbt6-lqfp64", "x": 480, "y": 160, "rotation": 0 },
+      { "id": "7c2b4d1a-6e35-4f82-a9b1-2c3d4e5f6a71", "device": "lcd-package:ct117e-m4-tft-lcd-2-4", "x": 136, "y": 55, "rotation": 0 },
+      { "id": "9d3c2b1a-4e5f-4a6b-8c7d-0e1f2a3b4c82", "device": "builtin:label", "net": "lcd-l-d0", "x": 300, "y": 100, "rotation": 0 }
     ],
     "wires": [
       {
-        "id": "w-d0",
+        "id": "1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93",
         "points": [{ "x": 480, "y": 160 }, { "x": 300, "y": 160 }, { "x": 300, "y": 55 }, { "x": 136, "y": 55 }]
       },
       {
-        "id": "w-label-d0",
+        "id": "2c3d4e5f-6a71-4b82-9c93-4d5e6f7a8b04",
         "points": [{ "x": 300, "y": 124 }, { "x": 300, "y": 100 }]
       }
     ],
     "junctions": [
-      { "id": "j-d0", "x": 300, "y": 124, "wires": ["w-d0", "w-label-d0"] }
+      { "id": "4e5f6a7b-8c93-4d04-9e15-6f7a8b9c0d25", "x": 300, "y": 124, "wires": ["1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93", "2c3d4e5f-6a71-4b82-9c93-4d5e6f7a8b04"] }
     ]
   }
 }`;
@@ -40,7 +40,10 @@ describe('parseSchematic', () => {
     expect(Object.keys(document)).toEqual(['version', 'sheet']);
     expect(document.sheet.symbols).toHaveLength(3);
     expect(document.sheet.wires[0]?.points).toHaveLength(4);
-    expect(document.sheet.junctions[0]?.wires).toEqual(['w-d0', 'w-label-d0']);
+    expect(document.sheet.junctions[0]?.wires).toEqual([
+      '1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93',
+      '2c3d4e5f-6a71-4b82-9c93-4d5e6f7a8b04',
+    ]);
   });
 
   it('accepts plain values as well as text', () => {
@@ -122,13 +125,62 @@ describe('parseSchematic', () => {
 
   it('rejects duplicate element ids', () => {
     const error = catchError(() =>
-      parseSchematic(SAMPLE.replace('{ "id": "s-lcd"', '{ "id": "s-mcu"')),
+      parseSchematic(
+        SAMPLE.replace(
+          '{ "id": "7c2b4d1a-6e35-4f82-a9b1-2c3d4e5f6a71"',
+          '{ "id": "3f1a9c2e-5b64-4d17-9c8a-1e2d3f4a5b60"',
+        ),
+      ),
     );
     expect(error.diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'id/duplicate',
         pointer: '/sheet/symbols/1/id',
-        entity: { kind: 'symbol', id: 's-mcu' },
+        entity: { kind: 'symbol', id: '3f1a9c2e-5b64-4d17-9c8a-1e2d3f4a5b60' },
+      }),
+    );
+  });
+
+  it('requires UUID v4 element ids', () => {
+    const symbol = catchError(() =>
+      parseSchematic(
+        SAMPLE.replace('"id": "3f1a9c2e-5b64-4d17-9c8a-1e2d3f4a5b60"', '"id": "s-mcu"'),
+      ),
+    );
+    expect(symbol.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        code: 'schema/invalid-value',
+        message: 'Field "id" must be a UUID v4.',
+        pointer: '/sheet/symbols/0/id',
+      }),
+    );
+
+    const wire = catchError(() =>
+      parseSchematic(
+        SAMPLE.replace('"id": "1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93"', '"id": "w-d0"'),
+      ),
+    );
+    expect(wire.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        code: 'schema/invalid-value',
+        message: 'Field "id" must be a UUID v4.',
+        pointer: '/sheet/wires/0/id',
+      }),
+    );
+
+    const junction = catchError(() =>
+      parseSchematic(
+        SAMPLE.replace('"id": "4e5f6a7b-8c93-4d04-9e15-6f7a8b9c0d25"', '"id": "j-d0"'),
+      ),
+    );
+    expect(junction.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        code: 'schema/invalid-value',
+        message: 'Field "id" must be a UUID v4.',
+        pointer: '/sheet/junctions/0/id',
       }),
     );
   });
@@ -136,23 +188,34 @@ describe('parseSchematic', () => {
   it('rejects junctions that reference unknown or duplicate wires', () => {
     const unknown = catchError(() =>
       parseSchematic(
-        SAMPLE.replace('"wires": ["w-d0", "w-label-d0"]', '"wires": ["w-d0", "missing"]'),
+        SAMPLE.replace(
+          '"wires": ["1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93", "2c3d4e5f-6a71-4b82-9c93-4d5e6f7a8b04"]',
+          '"wires": ["1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93", "missing"]',
+        ),
       ),
     );
     expect(codesOf(unknown.diagnostics)).toContain('junction/unknown-wire');
 
     const duplicate = catchError(() =>
       parseSchematic(
-        SAMPLE.replace('"wires": ["w-d0", "w-label-d0"]', '"wires": ["w-d0", "w-d0"]'),
+        SAMPLE.replace(
+          '"wires": ["1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93", "2c3d4e5f-6a71-4b82-9c93-4d5e6f7a8b04"]',
+          '"wires": ["1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93", "1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93"]',
+        ),
       ),
     );
     expect(codesOf(duplicate.diagnostics)).toContain('junction/duplicate-wire');
   });
 
   it('rejects junctions with fewer than two wires', () => {
-    expect(codes(SAMPLE.replace('"wires": ["w-d0", "w-label-d0"]', '"wires": ["w-d0"]'))).toContain(
-      'schema/invalid-value',
-    );
+    expect(
+      codes(
+        SAMPLE.replace(
+          '"wires": ["1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93", "2c3d4e5f-6a71-4b82-9c93-4d5e6f7a8b04"]',
+          '"wires": ["1b2c3d4e-5f60-4a71-9b82-3c4d5e6f7a93"]',
+        ),
+      ),
+    ).toContain('schema/invalid-value');
   });
 
   it('round-trips through serializeSchematic', () => {

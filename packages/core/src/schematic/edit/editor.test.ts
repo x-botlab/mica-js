@@ -8,10 +8,12 @@ function makeDocument(): SchematicDocument {
   return {
     version: 1,
     sheet: {
-      symbols: [{ id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 }],
+      symbols: [
+        { id: '00000002-41e6-4a4c-869a-82a4cd304787', device: 'pkg:a', x: 0, y: 0, rotation: 0 },
+      ],
       wires: [
         {
-          id: 'w1',
+          id: '00000003-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -138,21 +140,28 @@ describe('SchematicEditor', () => {
         ...document.sheet,
         wires: [
           {
-            id: 'w1',
+            id: '00000003-9cf4-407f-8900-09a16d33a38c',
             points: [
               { x: 0, y: 0 },
               { x: 10, y: 0 },
             ],
           },
           {
-            id: 'w2',
+            id: '00000004-a914-47d5-84d1-8bafbe533ffb',
             points: [
               { x: 5, y: 0 },
               { x: 5, y: 10 },
             ],
           },
         ],
-        junctions: [{ id: 'j1', x: 5, y: 0, wires: ['w1', 'w2'] }],
+        junctions: [
+          {
+            id: '00000001-516c-48ac-8128-07f98c98ee13',
+            x: 5,
+            y: 0,
+            wires: ['00000003-9cf4-407f-8900-09a16d33a38c', '00000004-a914-47d5-84d1-8bafbe533ffb'],
+          },
+        ],
       },
     });
     expect(editor.document.sheet.junctions).toHaveLength(1);
@@ -161,7 +170,14 @@ describe('SchematicEditor', () => {
       ...document,
       sheet: {
         ...editor.document.sheet,
-        junctions: [{ id: 'j1', x: 5, y: 5, wires: ['w1', 'w2'] }],
+        junctions: [
+          {
+            id: '00000001-516c-48ac-8128-07f98c98ee13',
+            x: 5,
+            y: 5,
+            wires: ['00000003-9cf4-407f-8900-09a16d33a38c', '00000004-a914-47d5-84d1-8bafbe533ffb'],
+          },
+        ],
       },
     });
     expect(editor.document.sheet.junctions).toEqual([]);

@@ -201,13 +201,19 @@ const mcuVss = pin(MCU, 'VSS', placements.mcu);
 const timerOut = pin(TIMER, 'OUT', placements.timer);
 const trunkX = 250;
 
+/**
+ * MCU symbol id in the demo schematic. Hosts preselect it to show the #7 property types in their
+ * property panel, so the constant is exported instead of the id being repeated at the call site.
+ */
+export const SAMPLE_MCU_SYMBOL_ID = '00000006-2dc0-44c6-8963-e4ea065d722b';
+
 const schematicText = JSON.stringify(
   {
     version: 1,
     sheet: {
       symbols: [
         {
-          id: 's-mcu',
+          id: SAMPLE_MCU_SYMBOL_ID,
           device: MCU,
           ...placements.mcu,
           properties: {
@@ -216,38 +222,53 @@ const schematicText = JSON.stringify(
           },
         },
         {
-          id: 'u3',
+          id: '00000008-9054-4323-8487-62af20580a94',
           device: MCU8051,
           ...placements.mcu8051,
           properties: { speed: 12 },
         },
         {
-          id: 's-lcd',
+          id: '00000005-c16f-4700-81a9-7ef80c62a850',
           device: LCD,
           ...placements.lcd,
           properties: { panel: { src: 'assets/panel.png', mode: 'file' }, orientation: 'portrait' },
         },
-        { id: 'u2', device: TIMER, ...placements.timer },
-        { id: 'lcd-l-d2', device: 'builtin:label', ...placements.label, net: 'D2' },
-        { id: 'p3v3', device: 'builtin:power', ...placements.power, net: '3V3' },
-        { id: 'gnd', device: 'builtin:ground', ...placements.ground, net: 'GND' },
+        { id: '00000007-88ff-48b9-8096-f1137382e67f', device: TIMER, ...placements.timer },
+        {
+          id: '00000003-4d70-4c65-8b59-601eaeb86945',
+          device: 'builtin:label',
+          ...placements.label,
+          net: 'D2',
+        },
+        {
+          id: '00000004-9939-4156-8e78-135a99c479d8',
+          device: 'builtin:power',
+          ...placements.power,
+          net: '3V3',
+        },
+        {
+          id: '00000001-5e00-46a2-88d7-e216a3f0f75a',
+          device: 'builtin:ground',
+          ...placements.ground,
+          net: 'GND',
+        },
       ],
       wires: [
         {
-          id: 'w-d0',
+          id: '00000009-d219-4ea3-84bb-593c369c1900',
           points: [mcuD0, { x: trunkX, y: mcuD0.y }, { x: trunkX, y: lcdD0.y }, lcdD0],
         },
         {
-          id: 'w-label',
+          id: '0000000b-3b70-43f3-8425-482db6f77ef2',
           points: [
             { x: trunkX, y: placements.label.y },
             { x: placements.label.x, y: placements.label.y },
           ],
         },
-        { id: 'w-vcc', points: [mcuVdd, at(placements.power)] },
-        { id: 'w-gnd', points: [mcuVss, at(placements.ground)] },
+        { id: '0000000d-84a6-479f-8077-5f49f0d1efba', points: [mcuVdd, at(placements.power)] },
+        { id: '0000000a-5403-4a30-88ca-17bc865bfbfa', points: [mcuVss, at(placements.ground)] },
         {
-          id: 'w-out',
+          id: '0000000c-804d-489f-8062-db22ac5215dc',
           points: [
             timerOut,
             { x: 420, y: timerOut.y },
@@ -258,7 +279,14 @@ const schematicText = JSON.stringify(
           ],
         },
       ],
-      junctions: [{ id: 'j-label', x: trunkX, y: placements.label.y, wires: ['w-d0', 'w-label'] }],
+      junctions: [
+        {
+          id: '00000002-7f63-4f2a-870b-45319d0e7b45',
+          x: trunkX,
+          y: placements.label.y,
+          wires: ['00000009-d219-4ea3-84bb-593c369c1900', '0000000b-3b70-43f3-8425-482db6f77ef2'],
+        },
+      ],
     },
   },
   null,

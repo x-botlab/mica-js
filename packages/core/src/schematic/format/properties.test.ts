@@ -7,7 +7,9 @@ import { catchError, codesOf } from '../../format/test-helpers';
 const BASE = {
   version: 1,
   sheet: {
-    symbols: [{ id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 }],
+    symbols: [
+      { id: '00000001-41e6-4a4c-869a-82a4cd304787', device: 'pkg:a', x: 0, y: 0, rotation: 0 },
+    ],
     wires: [],
     junctions: [],
   },

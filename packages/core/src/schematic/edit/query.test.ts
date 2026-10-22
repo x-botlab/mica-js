@@ -23,10 +23,18 @@ function makeDocument(overrides: Partial<SchematicDocument['sheet']> = {}): Sche
   return {
     version: 1,
     sheet: {
-      symbols: [{ id: 's1', device: 'pkg:chip', x: 100, y: 100, rotation: 0 }],
+      symbols: [
+        {
+          id: '00000006-41e6-4a4c-869a-82a4cd304787',
+          device: 'pkg:chip',
+          x: 100,
+          y: 100,
+          rotation: 0,
+        },
+      ],
       wires: [
         {
-          id: 'w1',
+          id: '00000007-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -34,14 +42,21 @@ function makeDocument(overrides: Partial<SchematicDocument['sheet']> = {}): Sche
           ],
         },
         {
-          id: 'w2',
+          id: '00000008-a914-47d5-84d1-8bafbe533ffb',
           points: [
             { x: 5, y: -5 },
             { x: 5, y: 5 },
           ],
         },
       ],
-      junctions: [{ id: 'j1', x: 5, y: 0, wires: ['w1', 'w2'] }],
+      junctions: [
+        {
+          id: '00000005-516c-48ac-8128-07f98c98ee13',
+          x: 5,
+          y: 0,
+          wires: ['00000007-9cf4-407f-8900-09a16d33a38c', '00000008-a914-47d5-84d1-8bafbe533ffb'],
+        },
+      ],
       ...overrides,
     },
   };
@@ -51,16 +66,18 @@ describe('hitTestSchematic', () => {
   it('prefers junctions over everything else', () => {
     expect(hitTestSchematic(makeDocument(), { x: 5, y: 0 }, { devices })).toEqual({
       kind: 'junction',
-      id: 'j1',
+      id: '00000005-516c-48ac-8128-07f98c98ee13',
     });
   });
 
   it('finds pins before wires', () => {
     const document = makeDocument({
-      symbols: [{ id: 's1', device: 'pkg:chip', x: 0, y: 0, rotation: 0 }],
+      symbols: [
+        { id: '00000006-41e6-4a4c-869a-82a4cd304787', device: 'pkg:chip', x: 0, y: 0, rotation: 0 },
+      ],
       wires: [
         {
-          id: 'w1',
+          id: '00000007-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -71,38 +88,40 @@ describe('hitTestSchematic', () => {
     });
     expect(hitTestSchematic(document, { x: 0, y: 0 }, { devices })).toEqual({
       kind: 'pin',
-      symbolId: 's1',
+      symbolId: '00000006-41e6-4a4c-869a-82a4cd304787',
       pinId: 'A',
     });
   });
 
   it('grabs the whole pin stub, not just the anchor', () => {
     const document = makeDocument({
-      symbols: [{ id: 's1', device: 'pkg:chip', x: 0, y: 0, rotation: 0 }],
+      symbols: [
+        { id: '00000006-41e6-4a4c-869a-82a4cd304787', device: 'pkg:chip', x: 0, y: 0, rotation: 0 },
+      ],
       wires: [],
       junctions: [],
     });
     // Body spans -5…15; pin A reaches in from -5, pin B from 15.
     expect(hitTestSchematic(document, { x: -3, y: 0 }, { devices })).toEqual({
       kind: 'pin',
-      symbolId: 's1',
+      symbolId: '00000006-41e6-4a4c-869a-82a4cd304787',
       pinId: 'A',
     });
     expect(hitTestSchematic(document, { x: 13, y: 0 }, { devices })).toEqual({
       kind: 'pin',
-      symbolId: 's1',
+      symbolId: '00000006-41e6-4a4c-869a-82a4cd304787',
       pinId: 'B',
     });
     expect(hitTestSchematic(document, { x: 5, y: 3 }, { devices })).toEqual({
       kind: 'symbol',
-      id: 's1',
+      id: '00000006-41e6-4a4c-869a-82a4cd304787',
     });
   });
 
   it('reports the wire segment index', () => {
     expect(hitTestSchematic(makeDocument(), { x: 10, y: 5 }, { devices })).toEqual({
       kind: 'wire',
-      id: 'w1',
+      id: '00000007-9cf4-407f-8900-09a16d33a38c',
       segment: 1,
     });
   });
@@ -110,7 +129,7 @@ describe('hitTestSchematic', () => {
   it('finds symbol bodies', () => {
     expect(hitTestSchematic(makeDocument(), { x: 105, y: 103 }, { devices })).toEqual({
       kind: 'symbol',
-      id: 's1',
+      id: '00000006-41e6-4a4c-869a-82a4cd304787',
     });
   });
 
@@ -130,7 +149,7 @@ describe('hitTestSchematic', () => {
       hitTestSchematic(makeDocument(), { x: 10.4, y: 5 }, { devices, tolerance: 0.5 }),
     ).toEqual({
       kind: 'wire',
-      id: 'w1',
+      id: '00000007-9cf4-407f-8900-09a16d33a38c',
       segment: 1,
     });
   });
@@ -138,20 +157,28 @@ describe('hitTestSchematic', () => {
   it('falls back to the symbol origin without device geometry', () => {
     expect(hitTestSchematic(makeDocument(), { x: 100, y: 100 })).toEqual({
       kind: 'symbol',
-      id: 's1',
+      id: '00000006-41e6-4a4c-869a-82a4cd304787',
     });
   });
 
   it('follows the rotation of builtin annotations', () => {
     const document = makeDocument({
-      symbols: [{ id: 'P1', device: 'builtin:power', x: 100, y: 100, rotation: 90 }],
+      symbols: [
+        {
+          id: '00000001-33d4-419e-80e8-ca689a1b74a4',
+          device: 'builtin:power',
+          x: 100,
+          y: 100,
+          rotation: 90,
+        },
+      ],
       wires: [],
       junctions: [],
     });
     // At 90° the stem and label extend to the right of the anchor instead of above it.
     expect(hitTestSchematic(document, { x: 120, y: 100 })).toEqual({
       kind: 'symbol',
-      id: 'P1',
+      id: '00000001-33d4-419e-80e8-ca689a1b74a4',
     });
     expect(hitTestSchematic(document, { x: 100, y: 80 })).toBeUndefined();
   });
@@ -164,21 +191,21 @@ describe('findJunctionCandidates', () => {
       junctions: [],
       wires: [
         {
-          id: 'a',
+          id: '00000002-faa5-47fc-815d-1ddcb9eaeaea',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
           ],
         },
         {
-          id: 'b',
+          id: '00000003-e7c9-4d6d-89e9-2ffdad17b8bd',
           points: [
             { x: 5, y: -5 },
             { x: 5, y: 5 },
           ],
         },
         {
-          id: 'c',
+          id: '00000004-1ba7-4a5b-8648-de2cd0dfcb30',
           points: [
             { x: 10, y: 0 },
             { x: 20, y: 0 },
@@ -187,8 +214,14 @@ describe('findJunctionCandidates', () => {
       ],
     });
     expect(findJunctionCandidates(document)).toEqual([
-      { point: { x: 5, y: 0 }, wireIds: ['a', 'b'] },
-      { point: { x: 10, y: 0 }, wireIds: ['a', 'c'] },
+      {
+        point: { x: 5, y: 0 },
+        wireIds: ['00000002-faa5-47fc-815d-1ddcb9eaeaea', '00000003-e7c9-4d6d-89e9-2ffdad17b8bd'],
+      },
+      {
+        point: { x: 10, y: 0 },
+        wireIds: ['00000002-faa5-47fc-815d-1ddcb9eaeaea', '00000004-1ba7-4a5b-8648-de2cd0dfcb30'],
+      },
     ]);
   });
 
@@ -203,14 +236,14 @@ describe('findJunctionCandidates', () => {
       junctions: [],
       wires: [
         {
-          id: 'a',
+          id: '00000002-faa5-47fc-815d-1ddcb9eaeaea',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
           ],
         },
         {
-          id: 'b',
+          id: '00000003-e7c9-4d6d-89e9-2ffdad17b8bd',
           points: [
             { x: 10, y: 0 },
             { x: 20, y: 0 },
@@ -219,7 +252,10 @@ describe('findJunctionCandidates', () => {
       ],
     });
     expect(findJunctionCandidates(document)).toEqual([
-      { point: { x: 10, y: 0 }, wireIds: ['a', 'b'] },
+      {
+        point: { x: 10, y: 0 },
+        wireIds: ['00000002-faa5-47fc-815d-1ddcb9eaeaea', '00000003-e7c9-4d6d-89e9-2ffdad17b8bd'],
+      },
     ]);
   });
 
@@ -229,14 +265,14 @@ describe('findJunctionCandidates', () => {
       junctions: [],
       wires: [
         {
-          id: 'a',
+          id: '00000002-faa5-47fc-815d-1ddcb9eaeaea',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
           ],
         },
         {
-          id: 'b',
+          id: '00000003-e7c9-4d6d-89e9-2ffdad17b8bd',
           points: [
             { x: 0, y: 20 },
             { x: 10, y: 20 },
@@ -253,14 +289,14 @@ describe('findJunctionCandidates', () => {
       junctions: [],
       wires: [
         {
-          id: 'a',
+          id: '00000002-faa5-47fc-815d-1ddcb9eaeaea',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
           ],
         },
         {
-          id: 'b',
+          id: '00000003-e7c9-4d6d-89e9-2ffdad17b8bd',
           points: [
             { x: 10.2, y: 0 },
             { x: 20, y: 0 },
@@ -270,7 +306,10 @@ describe('findJunctionCandidates', () => {
     });
     expect(findJunctionCandidates(document)).toEqual([]);
     expect(findJunctionCandidates(document, { tolerance: 0.5 })).toEqual([
-      { point: { x: 10, y: 0 }, wireIds: ['a', 'b'] },
+      {
+        point: { x: 10, y: 0 },
+        wireIds: ['00000002-faa5-47fc-815d-1ddcb9eaeaea', '00000003-e7c9-4d6d-89e9-2ffdad17b8bd'],
+      },
     ]);
   });
 });

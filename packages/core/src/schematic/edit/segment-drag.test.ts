@@ -42,7 +42,7 @@ describe('planSegmentDrag', () => {
     const document = documentOf({
       wires: [
         {
-          id: 'w1',
+          id: '00000005-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 50, y: 0 },
@@ -51,7 +51,9 @@ describe('planSegmentDrag', () => {
         },
       ],
     });
-    expect(planSegmentDrag(document, 'w1', 0, { x: 0, y: 10 })).toEqual([
+    expect(
+      planSegmentDrag(document, '00000005-9cf4-407f-8900-09a16d33a38c', 0, { x: 0, y: 10 }),
+    ).toEqual([
       { x: 0, y: 10 },
       { x: 50, y: 10 },
       { x: 50, y: 40 },
@@ -62,7 +64,7 @@ describe('planSegmentDrag', () => {
     const document = documentOf({
       wires: [
         {
-          id: 'w1',
+          id: '00000005-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -72,7 +74,9 @@ describe('planSegmentDrag', () => {
         },
       ],
     });
-    expect(planSegmentDrag(document, 'w1', 0, { x: 0, y: 5 })).toEqual([
+    expect(
+      planSegmentDrag(document, '00000005-9cf4-407f-8900-09a16d33a38c', 0, { x: 0, y: 5 }),
+    ).toEqual([
       { x: 0, y: 5 },
       { x: 10, y: 5 },
       { x: 20, y: 5 },
@@ -81,7 +85,13 @@ describe('planSegmentDrag', () => {
   });
 
   it('keeps a pin-attached end and bends the wire into a dogleg', () => {
-    const symbol = { id: 's1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 };
+    const symbol = {
+      id: '00000003-41e6-4a4c-869a-82a4cd304787',
+      device: 'pkg:mcu',
+      x: 0,
+      y: 0,
+      rotation: 0,
+    };
     const reference = parseDeviceReference('pkg:mcu');
     if (reference === undefined) {
       throw new Error('The test device reference must parse.');
@@ -92,12 +102,20 @@ describe('planSegmentDrag', () => {
       symbols: [symbol],
       wires: [
         {
-          id: 'w1',
+          id: '00000005-9cf4-407f-8900-09a16d33a38c',
           points: [pin, { x: pin.x + 40, y: pin.y }, { x: pin.x + 40, y: pin.y + 40 }],
         },
       ],
     });
-    expect(planSegmentDrag(document, 'w1', 0, { x: 0, y: 10 }, { devices })).toEqual([
+    expect(
+      planSegmentDrag(
+        document,
+        '00000005-9cf4-407f-8900-09a16d33a38c',
+        0,
+        { x: 0, y: 10 },
+        { devices },
+      ),
+    ).toEqual([
       pin,
       { x: pin.x, y: pin.y + 10 },
       { x: pin.x + 40, y: pin.y + 10 },
@@ -108,40 +126,68 @@ describe('planSegmentDrag', () => {
   it('reports connected vertices from pins, anchors, junctions and other wires', () => {
     const document = documentOf({
       symbols: [
-        { id: 'u1', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 },
-        { id: 'l1', device: 'builtin:label', net: 'D0', x: 200, y: 200, rotation: 0 },
+        { id: '00000004-4c77-4daf-8fab-320fc3476afc', device: 'pkg:mcu', x: 0, y: 0, rotation: 0 },
+        {
+          id: '00000002-58c8-4974-8943-b00f84be79fc',
+          device: 'builtin:label',
+          net: 'D0',
+          x: 200,
+          y: 200,
+          rotation: 0,
+        },
       ],
       wires: [
         {
-          id: 'w1',
+          id: '00000005-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: -40, y: 0 },
             { x: 40, y: 0 },
           ],
         },
         {
-          id: 'w2',
+          id: '00000006-a914-47d5-84d1-8bafbe533ffb',
           points: [
             { x: 200, y: 200 },
             { x: 200, y: 260 },
           ],
         },
       ],
-      junctions: [{ id: 'j1', x: 40, y: 0, wires: ['w1'] }],
+      junctions: [
+        {
+          id: '00000001-516c-48ac-8128-07f98c98ee13',
+          x: 40,
+          y: 0,
+          wires: ['00000005-9cf4-407f-8900-09a16d33a38c'],
+        },
+      ],
     });
     // Pin A sits at (-40, 0); the junction marks (40, 0) on this wire as connected.
-    expect(isConnectedVertex(document, { x: -40, y: 0 }, 'w1', { devices })).toBe(true);
-    expect(isConnectedVertex(document, { x: 40, y: 0 }, 'w1')).toBe(true);
-    expect(isConnectedVertex(document, { x: 200, y: 200 }, 'w2')).toBe(true);
-    expect(isConnectedVertex(document, { x: 200, y: 260 }, 'w2')).toBe(false);
-    expect(isConnectedVertex(document, { x: 0, y: 0 }, 'w1', { devices })).toBe(false);
+    expect(
+      isConnectedVertex(document, { x: -40, y: 0 }, '00000005-9cf4-407f-8900-09a16d33a38c', {
+        devices,
+      }),
+    ).toBe(true);
+    expect(
+      isConnectedVertex(document, { x: 40, y: 0 }, '00000005-9cf4-407f-8900-09a16d33a38c'),
+    ).toBe(true);
+    expect(
+      isConnectedVertex(document, { x: 200, y: 200 }, '00000006-a914-47d5-84d1-8bafbe533ffb'),
+    ).toBe(true);
+    expect(
+      isConnectedVertex(document, { x: 200, y: 260 }, '00000006-a914-47d5-84d1-8bafbe533ffb'),
+    ).toBe(false);
+    expect(
+      isConnectedVertex(document, { x: 0, y: 0 }, '00000005-9cf4-407f-8900-09a16d33a38c', {
+        devices,
+      }),
+    ).toBe(false);
   });
 
   it('ignores unknown wires, degenerate segments and empty deltas', () => {
     const document = documentOf({
       wires: [
         {
-          id: 'w1',
+          id: '00000005-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -150,7 +196,11 @@ describe('planSegmentDrag', () => {
       ],
     });
     expect(planSegmentDrag(document, 'nope', 0, { x: 0, y: 5 })).toBeUndefined();
-    expect(planSegmentDrag(document, 'w1', 0, { x: 0, y: 0 })).toBeUndefined();
-    expect(planSegmentDrag(document, 'w1', 5, { x: 0, y: 5 })).toBeUndefined();
+    expect(
+      planSegmentDrag(document, '00000005-9cf4-407f-8900-09a16d33a38c', 0, { x: 0, y: 0 }),
+    ).toBeUndefined();
+    expect(
+      planSegmentDrag(document, '00000005-9cf4-407f-8900-09a16d33a38c', 5, { x: 0, y: 5 }),
+    ).toBeUndefined();
   });
 });

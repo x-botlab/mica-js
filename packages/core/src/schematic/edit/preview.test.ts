@@ -15,10 +15,12 @@ function makeDocument(): SchematicDocument {
   return {
     version: 1,
     sheet: {
-      symbols: [{ id: 's1', device: 'pkg:a', x: 0, y: 0, rotation: 0 }],
+      symbols: [
+        { id: '00000003-41e6-4a4c-869a-82a4cd304787', device: 'pkg:a', x: 0, y: 0, rotation: 0 },
+      ],
       wires: [
         {
-          id: 'w1',
+          id: '00000005-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -26,22 +28,34 @@ function makeDocument(): SchematicDocument {
           ],
         },
         {
-          id: 'w2',
+          id: '00000006-a914-47d5-84d1-8bafbe533ffb',
           points: [
             { x: 10, y: 10 },
             { x: 20, y: 10 },
           ],
         },
       ],
-      junctions: [{ id: 'j1', x: 10, y: 10, wires: ['w1', 'w2'] }],
+      junctions: [
+        {
+          id: '00000001-516c-48ac-8128-07f98c98ee13',
+          x: 10,
+          y: 10,
+          wires: ['00000005-9cf4-407f-8900-09a16d33a38c', '00000006-a914-47d5-84d1-8bafbe533ffb'],
+        },
+      ],
     },
   };
 }
 
 describe('previewSymbolDrag', () => {
   it('moves the wire endpoint attached to a moving pin', () => {
-    const preview = previewSymbolDrag(makeDocument(), devices, 's1', { x: 0, y: -5, rotation: 0 });
-    expect(preview?.wires.get('w1')).toEqual([
+    const preview = previewSymbolDrag(
+      makeDocument(),
+      devices,
+      '00000003-41e6-4a4c-869a-82a4cd304787',
+      { x: 0, y: -5, rotation: 0 },
+    );
+    expect(preview?.wires.get('00000005-9cf4-407f-8900-09a16d33a38c')).toEqual([
       { x: 0, y: -5 },
       { x: 10, y: -5 },
       { x: 10, y: 20 },
@@ -49,8 +63,13 @@ describe('previewSymbolDrag', () => {
   });
 
   it('leaves a junction alone while it still lies on the rerouted wire', () => {
-    const preview = previewSymbolDrag(makeDocument(), devices, 's1', { x: 0, y: -5, rotation: 0 });
-    expect(preview?.junctions.has('j1')).toBe(false);
+    const preview = previewSymbolDrag(
+      makeDocument(),
+      devices,
+      '00000003-41e6-4a4c-869a-82a4cd304787',
+      { x: 0, y: -5, rotation: 0 },
+    );
+    expect(preview?.junctions.has('00000001-516c-48ac-8128-07f98c98ee13')).toBe(false);
   });
 
   it('projects a detached junction onto the rerouted wire', () => {
@@ -59,28 +78,40 @@ describe('previewSymbolDrag', () => {
       ...document.sheet,
       wires: [
         {
-          id: 'w1',
+          id: '00000005-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
           ],
         },
         {
-          id: 'w2',
+          id: '00000006-a914-47d5-84d1-8bafbe533ffb',
           points: [
             { x: 5, y: 0 },
             { x: 5, y: 10 },
           ],
         },
       ],
-      junctions: [{ id: 'j1', x: 5, y: 0, wires: ['w1', 'w2'] }],
+      junctions: [
+        {
+          id: '00000001-516c-48ac-8128-07f98c98ee13',
+          x: 5,
+          y: 0,
+          wires: ['00000005-9cf4-407f-8900-09a16d33a38c', '00000006-a914-47d5-84d1-8bafbe533ffb'],
+        },
+      ],
     };
-    const preview = previewSymbolDrag({ ...document, sheet }, devices, 's1', {
-      x: 0,
-      y: -5,
-      rotation: 0,
-    });
-    expect(preview?.junctions.get('j1')).toEqual({ x: 5, y: -5 });
+    const preview = previewSymbolDrag(
+      { ...document, sheet },
+      devices,
+      '00000003-41e6-4a4c-869a-82a4cd304787',
+      {
+        x: 0,
+        y: -5,
+        rotation: 0,
+      },
+    );
+    expect(preview?.junctions.get('00000001-516c-48ac-8128-07f98c98ee13')).toEqual({ x: 5, y: -5 });
   });
 
   it('carries anchors sitting on a moving pin', () => {
@@ -89,25 +120,45 @@ describe('previewSymbolDrag', () => {
       ...document.sheet,
       symbols: [
         ...document.sheet.symbols,
-        { id: 'l1', device: 'builtin:label', x: 0, y: 0, rotation: 0 },
+        {
+          id: '00000002-58c8-4974-8943-b00f84be79fc',
+          device: 'builtin:label',
+          x: 0,
+          y: 0,
+          rotation: 0,
+        },
       ],
     };
-    const preview = previewSymbolDrag({ ...document, sheet }, devices, 's1', {
-      x: 4,
-      y: 6,
-      rotation: 0,
-    });
-    expect(preview?.symbols.get('l1')).toEqual({ x: 4, y: 6 });
+    const preview = previewSymbolDrag(
+      { ...document, sheet },
+      devices,
+      '00000003-41e6-4a4c-869a-82a4cd304787',
+      {
+        x: 4,
+        y: 6,
+        rotation: 0,
+      },
+    );
+    expect(preview?.symbols.get('00000002-58c8-4974-8943-b00f84be79fc')).toEqual({ x: 4, y: 6 });
   });
 
   it('drag the wire end attached to a moving net label', () => {
     const document = makeDocument();
     const sheet = {
       ...document.sheet,
-      symbols: [{ id: 'l1', device: 'builtin:label', net: 'D0', x: 0, y: 0, rotation: 0 }],
+      symbols: [
+        {
+          id: '00000002-58c8-4974-8943-b00f84be79fc',
+          device: 'builtin:label',
+          net: 'D0',
+          x: 0,
+          y: 0,
+          rotation: 0,
+        },
+      ],
       wires: [
         {
-          id: 'w1',
+          id: '00000005-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -117,9 +168,10 @@ describe('previewSymbolDrag', () => {
       junctions: [],
     };
     const drag = (to: { x: number; y: number }) =>
-      previewSymbolDrag({ ...document, sheet }, devices, 'l1', { ...to, rotation: 0 })?.wires.get(
-        'w1',
-      );
+      previewSymbolDrag({ ...document, sheet }, devices, '00000002-58c8-4974-8943-b00f84be79fc', {
+        ...to,
+        rotation: 0,
+      })?.wires.get('00000005-9cf4-407f-8900-09a16d33a38c');
 
     // Along the wire: only the length changes.
     expect(drag({ x: -5, y: 0 })).toEqual([
@@ -145,10 +197,18 @@ describe('previewSymbolDrag', () => {
     const document = makeDocument();
     const sheet = {
       ...document.sheet,
-      symbols: [{ id: 't1', device: 'builtin:text', x: 0, y: 0, rotation: 0 }],
+      symbols: [
+        {
+          id: '00000004-bd69-4fdd-8b46-5dad176ff52d',
+          device: 'builtin:text',
+          x: 0,
+          y: 0,
+          rotation: 0,
+        },
+      ],
       wires: [
         {
-          id: 'w1',
+          id: '00000005-9cf4-407f-8900-09a16d33a38c',
           points: [
             { x: 0, y: 0 },
             { x: 10, y: 0 },
@@ -157,16 +217,26 @@ describe('previewSymbolDrag', () => {
       ],
       junctions: [],
     };
-    const preview = previewSymbolDrag({ ...document, sheet }, devices, 't1', {
-      x: 0,
-      y: -5,
-      rotation: 0,
-    });
+    const preview = previewSymbolDrag(
+      { ...document, sheet },
+      devices,
+      '00000004-bd69-4fdd-8b46-5dad176ff52d',
+      {
+        x: 0,
+        y: -5,
+        rotation: 0,
+      },
+    );
     expect(preview?.wires.size).toBe(0);
   });
 
   it('returns an empty preview when nothing moves', () => {
-    const preview = previewSymbolDrag(makeDocument(), devices, 's1', { x: 0, y: 0, rotation: 0 });
+    const preview = previewSymbolDrag(
+      makeDocument(),
+      devices,
+      '00000003-41e6-4a4c-869a-82a4cd304787',
+      { x: 0, y: 0, rotation: 0 },
+    );
     expect(preview?.wires.size).toBe(0);
     expect(preview?.junctions.size).toBe(0);
     expect(preview?.symbols.size).toBe(0);
