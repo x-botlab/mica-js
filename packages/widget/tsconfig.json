@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "paths": {
+      "@mica-js/core/canvas": ["../core/src/canvas/index.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}
