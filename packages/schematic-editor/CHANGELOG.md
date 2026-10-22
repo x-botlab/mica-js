@@ -1,5 +1,13 @@
 # @mica-js/schematic-editor
 
+## 0.1.1
+
+### Patch Changes
+
+- b98b39d: 修复框选 T 型连接后删除报未知交点：删除导线时已顺带移除的交点不再重复删除，整笔删除不再回滚。
+- Updated dependencies [69dc4b0]
+  - @mica-js/core@0.1.1
+
 ## 0.1.0
 
 ### Minor Changes
