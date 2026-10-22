@@ -24,7 +24,8 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
     ├── device/               # @mica-js/device：器件加载、属性与实例生命周期
     ├── ir/                   # @mica-js/ir：IR 建图、校验、存储与参考解释器
     ├── schematic-editor/     # @mica-js/schematic-editor：Canvas 原理图编辑器
-    └── sandbox/              # @mica-js/sandbox：iframe + Web Worker 通用 JS 沙箱
+    ├── sandbox/              # @mica-js/sandbox：iframe + Web Worker 通用 JS 沙箱
+    └── widget/               # @mica-js/widget：Widget 定义与包加载（纯数据）
 ```
 
 ## 仿真内核与 IR
