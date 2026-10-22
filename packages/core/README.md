@@ -14,7 +14,7 @@ pnpm add @mica-js/core
 | ------------------------- | -------------------------------------------------------- |
 | `@mica-js/core`           | 仿真内核（时间调度、电气网络求值、连接拓扑、电源域门控） |
 | `@mica-js/core/schematic` | 原理图 `.sch`：解析、拓扑推导、编辑命令与属性系统        |
-| `@mica-js/core/canvas`    | 画布 `.cnv`：与 `.sch` 绑定的 2D 摆放（`layout`）        |
+| `@mica-js/core/canvas`    | 画布 `.cnv`：widget 实例的摆放、属性覆盖与端口绑定       |
 
 文件合同：`.sch` 见 [#6](https://github.com/x-botlab/mica-js/issues/6)，`.cnv` 见 [#67](https://github.com/x-botlab/mica-js/issues/67)。
 
@@ -142,14 +142,13 @@ serializeSchematic(document); // 固定字段顺序的 .sch JSON
 ## 画布（`./canvas`）
 
 ```ts
-import { loadCanvas, parseCanvas, serializeCanvas } from '@mica-js/core/canvas';
+import { parseCanvas, serializeCanvas } from '@mica-js/core/canvas';
 
-const canvas = parseCanvas(text); // version / id / schematic / layout
-const { placements } = loadCanvas(canvas, { schematic: document }); // layout 键须属于该 .sch
-serializeCanvas(canvas);
+const canvas = parseCanvas(text); // version / schematic / widgets
+serializeCanvas(canvas); // 固定键序、2 空格缩进、结尾换行
 ```
 
-`layout` 以 symbol 的稳定 `id` 为键，值为 `{ x, y, rotation }`；引用绑定原理图中不存在的实例时报 `canvas/unknown-symbol`。原理图编辑器不依赖这个入口。
+canvas 是独立画布：`widgets` 是 widget 实例数组，数组顺序即绘制顺序；实例保存 `x` / `y` / `width` / `height` / `rotation`、可选的 `properties` 覆盖与 `bindings`（端口键 → `{ symbol, port }` 端点）。canvas 以工程根相对路径作为标识，顶层没有 `id`；`schematic` 可选，只声明仿真绑定。原理图编辑器不依赖这个入口。
 
 ## 电气模块
 
