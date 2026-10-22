@@ -86,7 +86,7 @@ interface WidgetProvider {
 }
 ```
 
-属性描述沿用 #7，本包只保留结构、不解析字段语义；`ports[*].type` 必须是 `@mica-js/core/canvas` 中 `PAYLOAD_TYPES` 的成员。
+属性描述沿用 #7，本包只保留结构、不解析字段语义；`ports[*].type` 必须是 `@mica-js/core/canvas` 中 `PAYLOAD_TYPES` 的成员。`properties` 与 `ports` 都是无原型对象（`Object.getPrototypeOf` 为 `null`），定义里的 `__proto__` 键会被忽略，不会变成记录的原型或幽灵成员。
 
 ## 包格式
 
@@ -116,7 +116,7 @@ interface WidgetProvider {
 - 路径必须是包内相对 POSIX 路径：绝对路径、盘符、反斜杠与 `..` 片段一律报 `widget/invalid-manifest`。
 - 实现路径由描述路径把 `.json` 换成 `.js` 得到；缺少实现报 `widget/no-implementation`。
 - 实现源码按原样交给调用方，本包不解析、不执行、不做静态检查（`widget/not-self-contained` 为保留错误码，留给执行侧使用）。
-- `contentHash` 是「按 Widget ID 排序后拼接全部源码」的 SHA-256 十六进制，用于判断包内容是否变化。
+- `contentHash` 是「按 Widget ID 排序的 `[id, 源码]` 对经 `JSON.stringify` 后」的 SHA-256 十六进制；id 参与哈希，因此内容在 Widget 之间移动、或新增空实现文件都会改变哈希，可用于判断包内容是否变化。
 
 ## 错误
 

@@ -46,17 +46,18 @@ interface PackageManifest {
 export async function loadWidgetPackage(files: PackageFiles): Promise<WidgetPackage> {
   const manifest = await readManifest(files);
   const modules: Record<string, WidgetModule> = {};
-  const sources: string[] = [];
+  const sources: (readonly [string, string])[] = [];
 
   for (const entry of manifest.widgets) {
     const definition = await readDefinition(files, manifest.id, entry);
     const implementationPath = toImplementationPath(entry.path);
     const code = await readImplementation(files, manifest.id, entry.id, implementationPath);
     modules[entry.id] = { definition, code };
-    sources.push(code);
+    sources.push([entry.id, code]);
   }
 
-  const contentHash = await sha256Hex(sources.join(''), manifest.id);
+  // Ids travel with each source, so the digest separates adjacent widgets and empty files.
+  const contentHash = await sha256Hex(JSON.stringify(sources), manifest.id);
   return { id: manifest.id, version: manifest.version, contentHash, modules };
 }
 
@@ -207,7 +208,7 @@ function readProperties(
   path: string,
 ): Readonly<Record<string, PropertyDefinition>> {
   if (value === undefined) {
-    return {};
+    return createRecord();
   }
   const record = requireObject(
     value,
@@ -217,8 +218,11 @@ function readProperties(
     path,
   );
 
-  const properties: Record<string, PropertyDefinition> = {};
+  const properties: Record<string, PropertyDefinition> = createRecord();
   for (const [key, raw] of Object.entries(record)) {
+    if (isUnsafeRecordKey(key)) {
+      continue;
+    }
     const descriptor = requireObject(
       raw,
       'widget/invalid-definition',
@@ -245,7 +249,7 @@ function readPorts(
   path: string,
 ): Readonly<Record<string, PortDefinition>> {
   if (value === undefined) {
-    return {};
+    return createRecord();
   }
   const record = requireObject(
     value,
@@ -255,8 +259,11 @@ function readPorts(
     path,
   );
 
-  const ports: Record<string, PortDefinition> = {};
+  const ports: Record<string, PortDefinition> = createRecord();
   for (const [key, raw] of Object.entries(record)) {
+    if (isUnsafeRecordKey(key)) {
+      continue;
+    }
     const descriptor = requireObject(
       raw,
       'widget/invalid-definition',
@@ -422,6 +429,19 @@ function requireObject(
 
 function decode(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Record for keys taken from untrusted definition JSON: no inherited setter can intercept an
+ * assignment, so a declared entry can never become an object prototype.
+ */
+function createRecord<T>(): Record<string, T> {
+  return Object.create(null) as Record<string, T>;
+}
+
+/** `__proto__` is never a stable widget key, and on any object it would shadow the prototype. */
+function isUnsafeRecordKey(key: string): boolean {
+  return key === '__proto__';
 }
 
 async function sha256Hex(text: string, packageId: string): Promise<string> {

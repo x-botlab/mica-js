@@ -58,6 +58,42 @@ describe('loadWidgetPackage', () => {
     expect(changed.contentHash).not.toBe(original.contentHash);
   });
 
+  it('changes the content hash when the same source moves to another widget id', async () => {
+    const named = (widgetId: string): string =>
+      JSON.stringify({
+        name: 'demo-package',
+        version: '1.0.0',
+        widgets: { [widgetId]: { path: 'widgets/impl.json' } },
+      });
+    const entriesFor = (widgetId: string): Record<string, string> => ({
+      'package.json': named(widgetId),
+      'widgets/impl.json': JSON.stringify({}),
+      'widgets/impl.js': GAUGE_CODE,
+    });
+
+    const gauge = await loadWidgetPackage(createMemoryFiles(entriesFor('gauge')));
+    const meter = await loadWidgetPackage(createMemoryFiles(entriesFor('meter')));
+
+    expect(gauge.modules['gauge']?.code).toBe(meter.modules['meter']?.code);
+    expect(meter.contentHash).not.toBe(gauge.contentHash);
+  });
+
+  it('changes the content hash when a widget with empty source is added', async () => {
+    const entries = demoEntries();
+    entries['package.json'] = JSON.stringify({
+      ...DEMO_MANIFEST,
+      widgets: { ...DEMO_MANIFEST.widgets, blank: { path: 'widgets/blank.json' } },
+    });
+    entries['widgets/blank.json'] = JSON.stringify({});
+    entries['widgets/blank.js'] = '';
+
+    const original = await loadWidgetPackage(createMemoryFiles(demoEntries()));
+    const extended = await loadWidgetPackage(createMemoryFiles(entries));
+
+    expect(extended.modules['blank']?.code).toBe('');
+    expect(extended.contentHash).not.toBe(original.contentHash);
+  });
+
   it('reports a missing package.json', async () => {
     await expect(loadWidgetPackage(createMemoryFiles({}))).rejects.toMatchObject({
       name: 'WidgetLoadError',
@@ -155,6 +191,52 @@ describe('loadWidgetPackage', () => {
     await expect(loadWidgetPackage(createMemoryFiles(entries))).rejects.toBeInstanceOf(
       WidgetLoadError,
     );
+  });
+
+  it('keeps a __proto__ property key out of the definition record', async () => {
+    const entries = demoEntries();
+    entries['widgets/gauge.json'] =
+      '{"properties":{"__proto__":{"type":"color"},"tint":{"type":"color"}},"ports":{}}';
+
+    const widgetPackage = await loadWidgetPackage(createMemoryFiles(entries));
+    const properties = widgetPackage.modules['gauge']?.definition.properties;
+
+    expect(properties).toBeDefined();
+    expect(Object.keys(properties ?? {})).toEqual(['tint']);
+    expect(Object.getPrototypeOf(properties)).toBeNull();
+    expect(Object.keys({ ...properties })).toEqual(['tint']);
+    expect(properties?.['__proto__']).toBeUndefined();
+    expect('type' in (properties ?? {})).toBe(false);
+  });
+
+  it('keeps a __proto__ port key out of the definition record', async () => {
+    const entries = demoEntries();
+    entries['widgets/gauge.json'] =
+      '{"ports":{"__proto__":{"direction":"input","type":"number"},"value":{"direction":"output","type":"number"}}}';
+
+    const widgetPackage = await loadWidgetPackage(createMemoryFiles(entries));
+    const ports = widgetPackage.modules['gauge']?.definition.ports;
+
+    expect(ports).toBeDefined();
+    expect(Object.keys(ports ?? {})).toEqual(['value']);
+    expect(Object.getPrototypeOf(ports)).toBeNull();
+    expect(ports?.['__proto__']).toBeUndefined();
+    // The declared descriptor must not leak in as an inherited member.
+    expect('direction' in (ports ?? {})).toBe(false);
+    expect((ports as Record<string, unknown> | undefined)?.['direction']).toBeUndefined();
+  });
+
+  it('returns prototype-free records when a definition declares no properties or ports', async () => {
+    const entries = demoEntries();
+    entries['widgets/gauge.json'] = JSON.stringify({});
+
+    const widgetPackage = await loadWidgetPackage(createMemoryFiles(entries));
+    const definition = widgetPackage.modules['gauge']?.definition;
+
+    expect(Object.getPrototypeOf(definition?.properties)).toBeNull();
+    expect(Object.getPrototypeOf(definition?.ports)).toBeNull();
+    expect(Object.keys(definition?.properties ?? {})).toEqual([]);
+    expect(Object.keys(definition?.ports ?? {})).toEqual([]);
   });
 
   it('reports a missing implementation', async () => {

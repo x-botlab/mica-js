@@ -4,7 +4,7 @@ import type { PayloadType } from '@mica-js/core/canvas';
 export interface WidgetModule {
   /** Ports and properties described by the widget definition. */
   readonly definition: WidgetDefinition;
-  /** Self-contained single-file ESM source. */
+  /** Widget implementation module source, passed through verbatim; the loader does not inspect it. */
   readonly code: string;
 }
 
