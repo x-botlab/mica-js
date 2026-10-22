@@ -142,13 +142,22 @@ serializeSchematic(document); // 固定字段顺序的 .sch JSON
 ## 画布（`./canvas`）
 
 ```ts
-import { parseCanvas, serializeCanvas } from '@mica-js/core/canvas';
+import { applyCanvasCommand, parseCanvas, serializeCanvas } from '@mica-js/core/canvas';
 
 const canvas = parseCanvas(text); // version / schematic / widgets
 serializeCanvas(canvas); // 固定键序、2 空格缩进、结尾换行
+
+const next = applyCanvasCommand(canvas, {
+  type: 'set-property',
+  instanceId,
+  key: 'label',
+  value: 'hello',
+}); // 纯函数：返回新文档，canvas 不变
 ```
 
 canvas 是独立画布：`widgets` 是 widget 实例数组，数组顺序即绘制顺序；实例保存 `x` / `y` / `width` / `height` / `rotation`、可选的 `properties` 覆盖与 `bindings`（端口键 → `{ symbol, port }` 端点）。canvas 以工程根相对路径作为标识，顶层没有 `id`；`schematic` 可选，只声明仿真绑定。原理图编辑器不依赖这个入口。
+
+编辑命令（#96）：`add-instance` / `remove-instance`、`set-placement` / `set-z`、`set-property` / `unset-property`、`set-binding`（`target: null` 解绑）、`set-schematic`（`null` 清除）。命令是纯函数，失败抛 `SchematicError` 并一次带回全部诊断；本层只做结构校验，端点存在性、方向与载荷类型由绑定装载负责。
 
 ## 电气模块
 
