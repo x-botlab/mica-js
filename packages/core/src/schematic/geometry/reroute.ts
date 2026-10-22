@@ -1,4 +1,5 @@
-import type { Point, SchematicWire } from '../format/types';
+import type { SchematicWire } from '../../format/types';
+import type { Point } from '../../format/value';
 
 export interface PointMove {
   readonly from: Point;

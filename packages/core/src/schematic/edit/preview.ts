@@ -1,6 +1,7 @@
 import { namesNet, symbolRole } from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
-import type { Placement, Point, SchematicDocument } from '../format/types';
+import type { Placement, SchematicDocument } from '../../format/types';
+import type { Point } from '../../format/value';
 import { symbolPinPosition } from '../geometry/transform';
 import {
   nearestPointOnPolyline,

@@ -1,10 +1,6 @@
-export { SCHEMATIC_VERSION } from './format/types';
+export { SCHEMATIC_VERSION } from '../format/types';
 export type {
-  AssetMode,
-  AssetReference,
   Placement,
-  Point,
-  PropertyValue,
   Rect,
   SchematicDocument,
   SchematicJunction,
@@ -12,7 +8,8 @@ export type {
   SchematicSymbol,
   SchematicVersion,
   SchematicWire,
-} from './format/types';
+} from '../format/types';
+export type { AssetMode, AssetReference, Point, PropertyValue } from '../format/value';
 
 export {
   ASSET_MODES,
@@ -20,7 +17,7 @@ export {
   base64Error,
   isAssetMode,
   isAssetReference,
-} from './format/asset';
+} from '../format/value';
 
 export type {
   Diagnostic,
@@ -28,8 +25,8 @@ export type {
   DiagnosticEntity,
   DiagnosticRelated,
   DiagnosticSeverity,
-} from './format/diagnostics';
-export { SchematicError } from './format/errors';
+} from '../format/diagnostics';
+export { SchematicError } from '../format/errors';
 
 export { parseSchematic } from './format/parse-schematic';
 export { serializeSchematic } from './format/serialize';

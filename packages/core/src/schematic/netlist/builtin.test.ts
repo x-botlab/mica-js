@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { SchematicDocument } from '../format/types';
-import { catchError, codesOf } from '../format/test-helpers';
+import type { SchematicDocument } from '../../format/types';
+import { catchError, codesOf } from '../../format/test-helpers';
 import { deriveSchematicTopology } from './derive';
 
 function documentWith(

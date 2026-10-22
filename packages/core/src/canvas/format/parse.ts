@@ -1,6 +1,6 @@
-import type { Diagnostic } from '../../schematic/format/diagnostics';
-import { SchematicError } from '../../schematic/format/errors';
-import { parseInput } from '../../schematic/format/input';
+import type { Diagnostic } from '../../format/diagnostics';
+import { SchematicError } from '../../format/errors';
+import { parseInput } from '../../format/input';
 import {
   forbidUnknownFields,
   hasErrors,
@@ -10,7 +10,7 @@ import {
   readObjectField,
   readStringField,
   report,
-} from '../../schematic/format/validate';
+} from '../../format/validate';
 import type { CanvasDocument, CanvasPlacement } from './types';
 import { CANVAS_VERSION } from './types';
 

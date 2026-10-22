@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createDeviceRegistry } from '../device/registry';
-import type { SchematicDocument } from '../format/types';
+import type { SchematicDocument } from '../../format/types';
 import { findJunctionCandidates, hitTestSchematic } from './query';
 
 const devices = createDeviceRegistry([

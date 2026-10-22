@@ -1,7 +1,7 @@
-import type { Diagnostic } from '../schematic/format/diagnostics';
-import { SchematicError } from '../schematic/format/errors';
-import type { SchematicDocument } from '../schematic/format/types';
-import { toPointer } from '../schematic/format/validate';
+import type { Diagnostic } from '../format/diagnostics';
+import { SchematicError } from '../format/errors';
+import type { SchematicDocument } from '../format/types';
+import { toPointer } from '../format/validate';
 import type { CanvasDocument, CanvasPlacement } from './format/types';
 
 export type CanvasCommand =

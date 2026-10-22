@@ -1,5 +1,5 @@
 import { parseSchematic } from '../format/parse-schematic';
-import type { SchematicDocument } from '../format/types';
+import type { SchematicDocument } from '../../format/types';
 import {
   deriveSchematicTopology,
   type SchematicTopology,

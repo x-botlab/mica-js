@@ -1,16 +1,15 @@
-import { isAssetReference } from '../format/asset';
-import type { Diagnostic } from '../format/diagnostics';
-import { throwIfErrors } from '../format/errors';
+import { isAssetReference } from '../../format/value';
+import type { Diagnostic } from '../../format/diagnostics';
+import { throwIfErrors } from '../../format/errors';
 import { parseSchematic } from '../format/parse-schematic';
+import type { Point, PropertyValue } from '../../format/value';
 import type {
-  Point,
-  PropertyValue,
   SchematicDocument,
   SchematicJunction,
   SchematicSymbol,
   SchematicWire,
-} from '../format/types';
-import { toPointer } from '../format/validate';
+} from '../../format/types';
+import { toPointer } from '../../format/validate';
 import {
   normalizePropertyValue,
   propertyValueProblem,

@@ -1,4 +1,4 @@
-import type { SchematicDocument } from '../format/types';
+import type { SchematicDocument } from '../../format/types';
 import { parseSchematic } from '../format/parse-schematic';
 import { pointOnPolyline } from '../geometry/point';
 import { serializeSchematic } from '../format/serialize';

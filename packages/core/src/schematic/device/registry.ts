@@ -1,7 +1,7 @@
-import type { Diagnostic } from '../format/diagnostics';
-import { SchematicError, throwIfErrors } from '../format/errors';
-import type { Rect } from '../format/types';
-import { isRecord } from '../format/validate';
+import type { Diagnostic } from '../../format/diagnostics';
+import { SchematicError, throwIfErrors } from '../../format/errors';
+import type { Rect } from '../../format/types';
+import { isRecord } from '../../format/validate';
 import {
   formatDeviceReference,
   isReservedPackageId,

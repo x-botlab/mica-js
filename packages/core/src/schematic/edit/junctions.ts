@@ -1,4 +1,5 @@
-import type { Point, SchematicDocument } from '../format/types';
+import type { SchematicDocument } from '../../format/types';
+import type { Point } from '../../format/value';
 import { pointOnPolyline } from '../geometry/point';
 
 export interface JunctionReleaseOptions {

@@ -1,6 +1,7 @@
-import type { Diagnostic } from '../format/diagnostics';
-import { throwIfErrors } from '../format/errors';
-import type { Point, Rect, SchematicDocument } from '../format/types';
+import type { Diagnostic } from '../../format/diagnostics';
+import { throwIfErrors } from '../../format/errors';
+import type { Rect, SchematicDocument } from '../../format/types';
+import type { Point } from '../../format/value';
 import { builtinSymbolKind, netNameOf, parseDeviceReference } from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
 import {

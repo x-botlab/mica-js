@@ -1,4 +1,5 @@
-import type { Point, Rect, SchematicDocument } from '../format/types';
+import type { Rect, SchematicDocument } from '../../format/types';
+import type { Point } from '../../format/value';
 import {
   GROUND_DEVICE,
   POWER_DEVICE,

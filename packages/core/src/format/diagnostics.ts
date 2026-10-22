@@ -28,6 +28,13 @@ export type DiagnosticCode =
   | 'symbol/designator-duplicate'
   | 'net/naming-conflict'
   | 'canvas/unknown-symbol'
+  | 'canvas/unknown-widget'
+  | 'canvas/unknown-property'
+  | 'canvas/unknown-port'
+  | 'canvas/unknown-schematic'
+  | 'canvas/unknown-target-port'
+  | 'topic/type-mismatch'
+  | 'type/unknown'
   | 'edit/unknown-entity'
   | 'edit/invalid-command';
 

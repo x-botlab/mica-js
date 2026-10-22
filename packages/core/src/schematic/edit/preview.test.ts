@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DeviceSymbolProvider } from '../device/symbol';
-import type { SchematicDocument } from '../format/types';
+import type { SchematicDocument } from '../../format/types';
 import { previewSymbolDrag } from './preview';
 
 const devices: DeviceSymbolProvider = {

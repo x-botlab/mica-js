@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Point } from '../format/types';
+import type { Point } from '../../format/value';
 import {
   boundsOfPoints,
   distanceToSegment,

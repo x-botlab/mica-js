@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SchematicWire } from '../format/types';
+import type { SchematicWire } from '../../format/types';
 import { stretchWireEndpoint } from './reroute';
 
 function makeWire(points: readonly { x: number; y: number }[]): SchematicWire {

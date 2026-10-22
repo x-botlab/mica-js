@@ -1,6 +1,7 @@
 import { parseDeviceReference, symbolRole } from '../device/reference';
 import type { DeviceSymbolProvider } from '../device/symbol';
-import type { Point, SchematicDocument, SchematicWire } from '../format/types';
+import type { SchematicDocument, SchematicWire } from '../../format/types';
+import type { Point } from '../../format/value';
 import { symbolPinPosition } from '../geometry/transform';
 
 export interface SegmentDragOptions {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createDeviceRegistry } from '../device/registry';
 import { parseDeviceReference } from '../device/reference';
-import type { SchematicDocument } from '../format/types';
+import type { SchematicDocument } from '../../format/types';
 import { symbolPinPosition } from '../geometry/transform';
 import { isConnectedVertex, planSegmentDrag } from './segment-drag';
 

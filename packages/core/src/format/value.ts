@@ -1,4 +1,26 @@
-import type { AssetMode, AssetReference } from './types';
+/** 2D point shared by the `.sch` and `.cnv` contracts. */
+export interface Point {
+  readonly x: number;
+  readonly y: number;
+}
+
+/** Where an image / binary property value lives (#7). */
+export type AssetMode = 'file' | 'inline' | 'store';
+
+/**
+ * Reference to a project asset instead of inline bytes (#7): `file` is a project-root relative
+ * POSIX path, `inline` is base64 text and `store` is a host resource identifier.
+ */
+export interface AssetReference {
+  readonly src: string;
+  readonly mode: AssetMode;
+}
+
+/**
+ * Instance property value stored in `symbol.properties` (see #6 / #7): a scalar, a resource
+ * reference for `image` / `binary` properties, or `null` for an explicitly cleared nullable one.
+ */
+export type PropertyValue = string | number | boolean | AssetReference | null;
 
 /** Where an image / binary property value lives (#7). */
 export const ASSET_MODES = ['file', 'inline', 'store'] as const;

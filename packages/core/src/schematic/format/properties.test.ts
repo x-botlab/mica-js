@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parseSchematic } from './parse-schematic';
 import { serializeSchematic } from './serialize';
-import type { SchematicDocument } from './types';
-import { catchError, codesOf } from './test-helpers';
+import type { SchematicDocument } from '../../format/types';
+import { catchError, codesOf } from '../../format/test-helpers';
 
 const BASE = {
   version: 1,

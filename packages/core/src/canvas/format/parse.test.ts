@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { catchError, codesOf } from '../../schematic/format/test-helpers';
+import { catchError, codesOf } from '../../format/test-helpers';
 import { parseCanvas } from './parse';
 import { serializeCanvas } from './serialize';
 import type { CanvasDocument } from './types';

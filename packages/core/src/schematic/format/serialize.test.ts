@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseSchematic } from './parse-schematic';
 import { serializeSchematic } from './serialize';
-import type { SchematicDocument } from './types';
+import type { SchematicDocument } from '../../format/types';
 
 const DOCUMENT: SchematicDocument = {
   version: 1,
