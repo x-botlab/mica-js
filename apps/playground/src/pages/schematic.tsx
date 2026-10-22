@@ -14,7 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { readHashParams } from '@/lib/router';
 import { cn } from '@/lib/utils';
-import { DEVICE_LIBRARY, devices, schematic } from '@/schematic/sample';
+import { DEVICE_LIBRARY, SAMPLE_MCU_SYMBOL_ID, devices, schematic } from '@/schematic/sample';
 import { USAGE_SNIPPETS } from '@/schematic/snippets';
 
 const SELECTION_LABELS: Readonly<Record<EditorSelection['kind'], string>> = {
@@ -111,7 +111,7 @@ export function SchematicPage({ dark }: SchematicPageProps) {
     setState(editor.controller.state);
     setZoom(editor.getViewport().scale);
     // Demo default: preselect the MCU so the host property panel shows the #7 property types.
-    editor.controller.setSelection([{ kind: 'symbol', id: 's-mcu' }]);
+    editor.controller.setSelection([{ kind: 'symbol', id: SAMPLE_MCU_SYMBOL_ID }]);
     if (import.meta.env.DEV) {
       // Console handle for poking at the mounted editor while developing the playground.
       Object.assign(globalThis, { mica: editor });

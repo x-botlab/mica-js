@@ -201,13 +201,19 @@ const mcuVss = pin(MCU, 'VSS', placements.mcu);
 const timerOut = pin(TIMER, 'OUT', placements.timer);
 const trunkX = 250;
 
+/**
+ * MCU symbol id in the demo schematic. Hosts preselect it to show the #7 property types in their
+ * property panel, so the constant is exported instead of the id being repeated at the call site.
+ */
+export const SAMPLE_MCU_SYMBOL_ID = '00000006-2dc0-44c6-8963-e4ea065d722b';
+
 const schematicText = JSON.stringify(
   {
     version: 1,
     sheet: {
       symbols: [
         {
-          id: '00000006-2dc0-44c6-8963-e4ea065d722b',
+          id: SAMPLE_MCU_SYMBOL_ID,
           device: MCU,
           ...placements.mcu,
           properties: {

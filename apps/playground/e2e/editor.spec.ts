@@ -35,6 +35,9 @@ interface Snapshot {
   readonly symbols: readonly (Point & { readonly id: string })[];
   readonly wires: readonly { readonly id: string; readonly points: readonly Point[] }[];
   readonly junctions: readonly (Point & { readonly id: string })[];
+  /** Host-facing inspector for the current selection; `undefined` when nothing is selected. */
+  readonly inspector:
+    { readonly kind: string; readonly id: string; readonly fields: number } | undefined;
 }
 
 function readSnapshot(page: Page): Promise<Snapshot> {
@@ -51,16 +54,34 @@ function readSnapshot(page: Page): Promise<Snapshot> {
             junctions: readonly (Point & { id: string })[];
           };
         };
+        inspector:
+          | {
+              readonly kind: 'symbol';
+              readonly id: string;
+              readonly properties: readonly unknown[];
+            }
+          | { readonly kind: 'wire'; readonly id: string; readonly points: readonly unknown[] }
+          | undefined;
       };
     };
     const { symbols, wires, junctions } = state.document.sheet;
     const copy = ({ x, y }: Point): Point => ({ x, y });
+    const { inspector } = state;
     return {
       tool: state.tool,
       placingDevice: state.placingDevice,
       symbols: symbols.map((symbol) => ({ ...copy(symbol), id: symbol.id })),
       wires: wires.map((wire) => ({ id: wire.id, points: wire.points.map(copy) })),
       junctions: junctions.map((junction) => ({ ...copy(junction), id: junction.id })),
+      inspector:
+        inspector === undefined
+          ? undefined
+          : {
+              kind: inspector.kind,
+              id: inspector.id,
+              fields:
+                inspector.kind === 'symbol' ? inspector.properties.length : inspector.points.length,
+            },
     };
   });
 }
@@ -166,6 +187,15 @@ test('renders the sample schematic', async ({ page }) => {
   );
   expect(snapshot.wires).toHaveLength(5);
   expect(snapshot.junctions).toHaveLength(1);
+});
+
+test('preselects the MCU so the host property panel has content', async ({ page }) => {
+  await openEditor(page);
+  const snapshot = await readSnapshot(page);
+  // A stale preselect id would be pruned by the controller and leave the inspector empty.
+  expect(snapshot.inspector?.kind).toBe('symbol');
+  expect(snapshot.symbols.some((symbol) => symbol.id === snapshot.inspector?.id)).toBe(true);
+  expect(snapshot.inspector?.fields).toBeGreaterThan(0);
 });
 
 test('dragging a net label keeps its wire connected with a fold', async ({ page }) => {
