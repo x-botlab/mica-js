@@ -1,4 +1,4 @@
-import { snapshotElectricalPin } from '../electrical/electrical';
+import { snapshotElectricalPin } from '../electrical/network';
 import {
   checkChoice,
   checkFinite,
@@ -6,16 +6,16 @@ import {
   checkInteger,
   checkRecord,
   invalidType,
-} from '../electrical/electrical-validation';
-import type { ElectricalPinInput } from '../electrical/electrical-types';
-import type { TopologyDefinition, TopologyPinRef } from '../topology/topology-types';
-import { captureTopologyDefinition } from '../topology/topology';
+} from '../electrical/validation';
+import type { ElectricalPinInput } from '../electrical/types';
+import type { TopologyDefinition, TopologyPinRef } from '../topology/types';
+import { captureTopologyDefinition } from '../topology/runtime';
 import type {
   PowerDomainObserver,
   PowerFloatingOptions,
   PowerInputMode,
   PowerLevels,
-} from './power-types';
+} from './types';
 
 const INPUT_MODES = ['two-state', 'three-state'] as const;
 const DOMAIN_FIELDS = ['supply', 'ground', 'voltage', 'dependsOn'] as const;

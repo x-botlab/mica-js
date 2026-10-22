@@ -1,14 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { ElectricalPinInput } from '../electrical/electrical-types';
-import { createScheduler } from '../scheduler/scheduler';
-import type { TopologyDefinition } from '../topology/topology-types';
-import { createPowerRuntime } from './power';
-import type {
-  PowerDefinition,
-  PowerDomainObserver,
-  PowerInputMode,
-  PowerOptions,
-} from './power-types';
+import type { ElectricalPinInput } from '../electrical/types';
+import { createScheduler } from '../scheduler/runtime';
+import type { TopologyDefinition } from '../topology/types';
+import { createPowerRuntime } from './runtime';
+import type { PowerDefinition, PowerDomainObserver, PowerInputMode, PowerOptions } from './types';
 
 const MODEL = Object.freeze({
   kind: 'ideal-voltage' as const,

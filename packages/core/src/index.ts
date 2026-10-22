@@ -2,11 +2,11 @@ export const MICA_CORE_VERSION = '0.0.0';
 
 export { MAX_TIME_PS, timePs, toTimePs, addTime, subtractTime } from './scheduler/time';
 export type { TimePs, TimeUnit } from './scheduler/time';
-export { createScheduler } from './scheduler/scheduler';
+export { createScheduler } from './scheduler/runtime';
 export { createIRSchedulerInstance } from './scheduler/ir-adapter';
 export type { IRSchedulerInstance, IRSchedulerInstanceDefinition } from './scheduler/ir-adapter';
-export { SchedulerError } from './scheduler/scheduler-error';
-export type { SchedulerErrorCode } from './scheduler/scheduler-error';
+export { SchedulerError } from './scheduler/errors';
+export type { SchedulerErrorCode } from './scheduler/errors';
 export type {
   Scheduler,
   SchedulerExecutionContext,
@@ -17,7 +17,7 @@ export type {
   SchedulerRunOptions,
   SchedulerRunResult,
   SchedulerTarget,
-} from './scheduler/scheduler-types';
+} from './scheduler/types';
 
 export type {
   ElectricalPinInput,
@@ -26,11 +26,11 @@ export type {
   ElectricalNetworkResult,
   FloatingInputSample,
   FloatingInput,
-} from './electrical/electrical-types';
-export { ElectricalConflictError, resolveElectricalNetwork } from './electrical/electrical';
+} from './electrical/types';
+export { ElectricalConflictError, resolveElectricalNetwork } from './electrical/network';
 export { createFloatingInput } from './electrical/floating-input';
 
-export { createTopologyRuntime } from './topology/topology';
+export { createTopologyRuntime } from './topology/runtime';
 export type {
   ConnectionState,
   TopologyConnectionDeclaration,
@@ -44,9 +44,9 @@ export type {
   TopologyPinDeclaration,
   TopologyPinRef,
   TopologyRuntime,
-} from './topology/topology-types';
+} from './topology/types';
 
-export { createPowerRuntime, PowerFeedbackError } from './power/power';
+export { createPowerRuntime, PowerFeedbackError } from './power/runtime';
 export type {
   PowerDefinition,
   PowerDeviceDefinition,
@@ -68,4 +68,4 @@ export type {
   PowerRuntime,
   PowerVoltageSample,
   PowerVoltageSource,
-} from './power/power-types';
+} from './power/types';

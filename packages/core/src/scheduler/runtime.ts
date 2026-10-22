@@ -1,8 +1,8 @@
 import type { RuntimeScalar } from '@mica-js/ir';
-import { SchedulerError } from './scheduler-error';
-import type { SchedulerErrorCode } from './scheduler-error';
-import { EventIdPool, MinHeap } from './scheduler-queue';
-import { captureArgs, returnedSynchronously, scalarType, synchronous } from './scheduler-values';
+import { SchedulerError } from './errors';
+import type { SchedulerErrorCode } from './errors';
+import { EventIdPool, MinHeap } from './queue';
+import { captureArgs, returnedSynchronously, scalarType, synchronous } from './values';
 import type {
   Scheduler,
   SchedulerExecutionContext,
@@ -12,7 +12,7 @@ import type {
   SchedulerRunOptions,
   SchedulerRunResult,
   SchedulerTarget,
-} from './scheduler-types';
+} from './types';
 import { MAX_TIME_PS, timePs } from './time';
 import type { TimePs } from './time';
 

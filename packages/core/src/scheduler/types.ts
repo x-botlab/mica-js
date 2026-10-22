@@ -1,5 +1,5 @@
 import type { RuntimeScalar, ScalarType } from '@mica-js/ir';
-import type { SchedulerError } from './scheduler-error';
+import type { SchedulerError } from './errors';
 import type { TimePs } from './time';
 
 export interface SchedulerTarget {

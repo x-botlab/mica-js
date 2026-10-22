@@ -7,13 +7,13 @@ import type {
   LifecycleRef,
   RuntimeScalar,
 } from '@mica-js/ir';
-import { SchedulerError } from './scheduler-error';
+import { SchedulerError } from './errors';
 import type {
   Scheduler,
   SchedulerExecutionContext,
   SchedulerInstance,
   SchedulerTarget,
-} from './scheduler-types';
+} from './types';
 
 export interface IRSchedulerInstanceDefinition {
   readonly instanceId: string;
