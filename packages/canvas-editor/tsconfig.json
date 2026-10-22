@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "paths": {
+      "@mica-js/core/canvas": ["../core/src/canvas/index.ts"],
+      "@mica-js/widget": ["../widget/src/index.ts"],
+      "@mica-js/sandbox": ["../sandbox/src/index.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}
