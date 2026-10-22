@@ -1,0 +1,41 @@
+{
+  "name": "@mica-js/widget",
+  "version": "0.0.1",
+  "description": "Mica widget contract: widget definitions and pure-data package loading",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/widget"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "prepack": "pnpm -r --filter \"@mica-js/widget...\" build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@mica-js/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-dts": "catalog:",
+    "vitest": "catalog:"
+  }
+}
