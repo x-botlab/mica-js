@@ -49,6 +49,16 @@ export function createIRModule(): IRModule {
   return new IRModuleImpl();
 }
 
+function listLength(value: unknown, name: string, index: number): { readonly minLength?: number } {
+  if (value === undefined) {
+    return {};
+  }
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    fail(`Instruction "${name}" operand ${index} minLength must be a non-negative integer`);
+  }
+  return { minLength: value as number };
+}
+
 class IRModuleImpl implements IRModule {
   private readonly core: ModuleState;
 
@@ -264,6 +274,22 @@ class IRModuleImpl implements IRModule {
           return { kind: 'static' as const, category: operand.category };
         case 'literal':
           return { kind: 'literal' as const };
+        case 'value-list':
+          assertScalarType(operand.type, `Instruction "${name}" operand ${index} type`);
+          return {
+            kind: 'value-list' as const,
+            type: operand.type,
+            ...listLength(operand.minLength, name, index),
+          };
+        case 'static-list':
+          if (typeof operand.category !== 'string' || operand.category.length === 0) {
+            fail(`Instruction "${name}" operand ${index} static category must be non-empty`);
+          }
+          return {
+            kind: 'static-list' as const,
+            category: operand.category,
+            ...listLength(operand.minLength, name, index),
+          };
         default:
           fail(`Instruction "${name}" operand ${index} has an unknown kind`);
       }

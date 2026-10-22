@@ -1,5 +1,10 @@
 import type { PropertyDescriptor, PropertyValue } from '@mica-js/core/schematic';
-import type { IRDeclarations, IRStorage, LifecycleRef } from '@mica-js/ir';
+import type { IRStorage, LifecycleRef } from '@mica-js/ir';
+import type {
+  DeviceConnectionDescriptor,
+  DeviceConnectionOptions,
+  DeviceIRDeclarations,
+} from './connection/types';
 
 /** Payload types of logical topic ports (#10). */
 export const TOPIC_PAYLOAD_TYPES = [
@@ -44,6 +49,7 @@ export interface DeviceDescription {
   readonly description: string | undefined;
   readonly properties: ReadonlyMap<string, PropertyDescriptor>;
   readonly ports: ReadonlyMap<string, DevicePortDescriptor>;
+  readonly connections: ReadonlyMap<string, DeviceConnectionDescriptor>;
   readonly designatorPrefix: string | undefined;
 }
 
@@ -59,7 +65,7 @@ export interface DeviceAPI {
   /** Independent, recursively frozen property snapshot fixed for this instance. */
   readonly props: DevicePropertySnapshot;
   /** Static IR declaration surface; closed as soon as the synchronous factory returns. */
-  readonly ir: IRDeclarations;
+  readonly ir: DeviceIRDeclarations;
 }
 
 /** Flat lifecycle bindings returned by a device factory (#8). */
@@ -71,8 +77,8 @@ export interface DeviceBindings {
 
 /**
  * Synchronous device factory. It runs once per instance, builds the static IR and returns the
- * lifecycle bindings. Message bridge, pin I/O, observation and connection APIs belong to later
- * device-layer tasks and are intentionally absent from {@link DeviceAPI}.
+ * lifecycle bindings. Message bridge, pin I/O and observation APIs belong to later device-layer
+ * tasks; the connection author surface is exposed through {@link DeviceAPI.ir} and the builder.
  */
 export type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
 
@@ -85,6 +91,11 @@ export interface DeviceInstanceOptions {
   readonly instanceId: string;
   /** Instance property overrides resolved against the device description. */
   readonly properties?: Readonly<Record<string, PropertyValue>>;
+  /**
+   * Connection topology bound to this instance. Required when the IR applies connections;
+   * the topology must share this instance's scheduler and outlive the instance.
+   */
+  readonly connections?: DeviceConnectionOptions;
 }
 
 /**

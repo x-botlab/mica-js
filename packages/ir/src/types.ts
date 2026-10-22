@@ -285,7 +285,17 @@ export interface ResourceOperations {
 export type DomainOperandType =
   | { readonly kind: 'value'; readonly type: ScalarType }
   | { readonly kind: 'static'; readonly category: string }
-  | { readonly kind: 'literal' };
+  | { readonly kind: 'literal' }
+  | {
+      readonly kind: 'value-list';
+      readonly type: ScalarType;
+      readonly minLength?: number;
+    }
+  | {
+      readonly kind: 'static-list';
+      readonly category: string;
+      readonly minLength?: number;
+    };
 
 export type DomainOperandValue<O extends DomainOperandType> = O extends {
   readonly kind: 'value';
@@ -296,7 +306,11 @@ export type DomainOperandValue<O extends DomainOperandType> = O extends {
     ? StaticRef<C>
     : O extends { readonly kind: 'literal' }
       ? boolean | number | string
-      : never;
+      : O extends { readonly kind: 'value-list'; readonly type: infer T extends ScalarType }
+        ? readonly Value<T>[]
+        : O extends { readonly kind: 'static-list'; readonly category: infer C extends string }
+          ? readonly StaticRef<C>[]
+          : never;
 
 export type DomainOperandValues<O extends readonly DomainOperandType[]> = {
   readonly [I in keyof O]: DomainOperandValue<O[I]>;
@@ -457,7 +471,9 @@ export interface DomainDeclaration {
 export type InstructionOperand =
   | { readonly kind: 'ssa'; readonly value: Value }
   | { readonly kind: 'static'; readonly ref: StaticRef }
-  | { readonly kind: 'literal'; readonly value: boolean | number | string };
+  | { readonly kind: 'literal'; readonly value: boolean | number | string }
+  | { readonly kind: 'ssa-list'; readonly values: readonly Value[] }
+  | { readonly kind: 'static-list'; readonly refs: readonly StaticRef[] };
 
 export interface InstructionNode {
   readonly op: string;
