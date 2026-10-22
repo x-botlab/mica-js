@@ -147,14 +147,139 @@ describe('parseDeviceDescription', () => {
 
   it('normalizes designatorPrefix and ignores unknown top-level fields', () => {
     const description = parseDeviceDescription(
-      { designatorPrefix: ' U ', pins: { a: {} }, futureField: true },
+      { designatorPrefix: ' U ', futureField: true },
       METADATA,
     );
     expect(description.designatorPrefix).toBe('U');
+    expect(description.pins.size).toBe(0);
+    expect(description.pinGroups.size).toBe(0);
     expect(parseDeviceDescription({ designatorPrefix: '  ' }, METADATA).designatorPrefix).toBe(
       undefined,
     );
     expect(parseDeviceDescription({}, METADATA).designatorPrefix).toBeUndefined();
+  });
+
+  it('parses physical pin declarations and fixed groups', () => {
+    const description = parseDeviceDescription(
+      {
+        pins: {
+          VCC: { kind: 'power', side: 'top' },
+          GND: { kind: 'gnd' },
+          OUT: { kind: 'signal', side: 'right' },
+          DIN: {
+            kind: 'signal',
+            powerDomain: 'io',
+            levels: { low: 0.3, high: 0.7 },
+          },
+        },
+        pinGroups: { data: { pins: ['OUT', 'DIN'] } },
+      },
+      METADATA,
+    );
+    expect(description.pins.get('VCC')).toEqual({ key: 'VCC', kind: 'power', side: 'top' });
+    expect(description.pins.get('GND')).toEqual({ key: 'GND', kind: 'gnd', side: 'left' });
+    expect(description.pins.get('OUT')).toEqual({ key: 'OUT', kind: 'signal', side: 'right' });
+    expect(description.pins.get('DIN')).toEqual({
+      key: 'DIN',
+      kind: 'signal',
+      side: 'left',
+      powerDomain: 'io',
+      levels: { low: 0.3, high: 0.7 },
+    });
+    expect(description.pinGroups.get('data')).toEqual({
+      key: 'data',
+      pins: ['OUT', 'DIN'],
+    });
+  });
+
+  it('rejects invalid pin declarations', () => {
+    expectCode(
+      () => parseDeviceDescription({ pins: { A: {} } }, METADATA),
+      'device/description-schema',
+      '/pins/A/kind',
+    );
+    expectCode(
+      () => parseDeviceDescription({ pins: { A: { kind: 'io' } } }, METADATA),
+      'schema/invalid-value',
+      '/pins/A/kind',
+    );
+    expectCode(
+      () => parseDeviceDescription({ pins: { A: { kind: 'signal', side: 'center' } } }, METADATA),
+      'schema/invalid-value',
+      '/pins/A/side',
+    );
+    expectCode(
+      () => parseDeviceDescription({ pins: { A: { kind: 'signal', future: 1 } } }, METADATA),
+      'schema/unknown-field',
+      '/pins/A/future',
+    );
+    expectCode(
+      () => parseDeviceDescription({ pins: { A: { kind: 'power', powerDomain: 'io' } } }, METADATA),
+      'schema/invalid-value',
+      '/pins/A/powerDomain',
+    );
+    expectCode(
+      () =>
+        parseDeviceDescription(
+          { pins: { A: { kind: 'signal', levels: { low: 0.2, high: 0.8 } } } },
+          METADATA,
+        ),
+      'schema/invalid-value',
+      '/pins/A/levels',
+    );
+    expectCode(
+      () =>
+        parseDeviceDescription(
+          {
+            pins: {
+              A: { kind: 'signal', powerDomain: 'io', levels: { low: 0.8, high: 0.2 } },
+            },
+          },
+          METADATA,
+        ),
+      'schema/invalid-value',
+      '/pins/A/levels',
+    );
+    expectCode(
+      () => parseDeviceDescription({ pins: [] }, METADATA),
+      'device/description-schema',
+      '/pins',
+    );
+    expectCode(
+      () => parseDeviceDescription({ pins: { '': { kind: 'signal' } } }, METADATA),
+      'device/description-schema',
+      '/pins',
+    );
+  });
+
+  it('rejects invalid pin groups', () => {
+    const pins = { A: { kind: 'signal' }, B: { kind: 'signal' } };
+    expectCode(
+      () => parseDeviceDescription({ pins, pinGroups: { g: { pins: [] } } }, METADATA),
+      'schema/invalid-value',
+      '/pinGroups/g/pins',
+    );
+    expectCode(
+      () => parseDeviceDescription({ pins, pinGroups: { g: { pins: ['A', 'A'] } } }, METADATA),
+      'schema/invalid-value',
+      '/pinGroups/g/pins/1',
+    );
+    expectCode(
+      () => parseDeviceDescription({ pins, pinGroups: { g: { pins: ['A', 'Z'] } } }, METADATA),
+      'schema/invalid-value',
+      '/pinGroups/g/pins/1',
+    );
+    expectCode(
+      () =>
+        parseDeviceDescription({ pins, pinGroups: { g: { pins: ['A'], future: 1 } } }, METADATA),
+      'schema/unknown-field',
+      '/pinGroups/g/future',
+    );
+    expectCode(
+      () => parseDeviceDescription({ pins, pinGroups: { '': { pins: ['A'] } } }, METADATA),
+      'device/description-schema',
+      '/pinGroups',
+    );
   });
 
   it('rejects non-object definitions', () => {

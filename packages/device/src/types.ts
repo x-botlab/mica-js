@@ -1,19 +1,23 @@
 import type { PropertyDescriptor, PropertyValue } from '@mica-js/core/schematic';
+import type { ElectricalPinInput, PowerDigitalSample, TopologyPinRef } from '@mica-js/core';
 import type {
   BytesOutputRef,
   BytesRef,
   EntryRef,
   InboxRef,
+  IRDeclarations,
   IRStorage,
   LifecycleRef,
   OutputRef,
   ScalarArgs,
   ScalarType,
+  StaticRef,
+  Value,
 } from '@mica-js/ir';
 import type {
+  ConnectionRef,
   DeviceConnectionDescriptor,
   DeviceConnectionOptions,
-  DeviceIRDeclarations,
 } from './connection/types';
 
 /** Payload types of logical topic ports (#10). */
@@ -75,6 +79,27 @@ export interface DeviceDescriptionMetadata {
   readonly description?: string;
 }
 
+export type PinKind = 'power' | 'gnd' | 'signal';
+export type PinSide = 'left' | 'right' | 'top' | 'bottom';
+
+/** One physical pin declared by a device description (#12). */
+export interface DevicePinDescriptor {
+  readonly key: string;
+  readonly kind: PinKind;
+  /** Schematic presentation side; electrical semantics are carried by `kind` only. */
+  readonly side: PinSide;
+  /** Optional power-domain binding used by the power layer (#13). */
+  readonly powerDomain?: string;
+  /** Optional proportional input levels; requires `powerDomain` (#13). */
+  readonly levels?: { readonly low: number; readonly high: number };
+}
+
+/** One fixed pin group declared by a device description (#12). */
+export interface DevicePinGroupDescriptor {
+  readonly key: string;
+  readonly pins: readonly string[];
+}
+
 /**
  * Parsed device description. Instance configuration is fixed at creation time (#7 / #8);
  * this object is the declaration, not a mutable runtime property store.
@@ -85,6 +110,8 @@ export interface DeviceDescription {
   readonly description: string | undefined;
   readonly properties: ReadonlyMap<string, PropertyDescriptor>;
   readonly ports: ReadonlyMap<string, DevicePortDescriptor>;
+  readonly pins: ReadonlyMap<string, DevicePinDescriptor>;
+  readonly pinGroups: ReadonlyMap<string, DevicePinGroupDescriptor>;
   readonly connections: ReadonlyMap<string, DeviceConnectionDescriptor>;
   readonly designatorPrefix: string | undefined;
 }
@@ -94,6 +121,29 @@ export interface DeviceDefinition {
   readonly definition: DeviceDescription;
   /** ES module source text of the device factory. */
   readonly code: string;
+}
+
+/** Static handle for one physical pin declared by the device description (#12). */
+export type PinRef = StaticRef<'pin'>;
+
+export interface PinConfig {
+  readonly mode: 'high-z' | 'push-pull' | 'open-drain' | 'analog';
+  readonly outputEnabled: boolean;
+  readonly pull: 'none' | 'up' | 'down';
+}
+
+/** Pin I/O operations attached to every IR function builder (#8 / #25). */
+export interface PinOperations {
+  configure(pin: PinRef, config: PinConfig): undefined;
+  writeDigital(pin: PinRef, level: Value<'bool'>): undefined;
+  /** Returns `u32`: bit 0 is the interpreted level, upper bits are zero. */
+  sampleDigital(pin: PinRef): Value<'u32'>;
+}
+
+/** Instance declaration surface: core declarations plus this device's pins and connections. */
+export interface DeviceIRDeclarations extends IRDeclarations {
+  pin(id: string): PinRef;
+  connection(id: string): ConnectionRef;
 }
 
 /** Instance-level factory context (#8): fixed props, declarations and message bridge. */
@@ -146,9 +196,9 @@ export interface DeviceBindings {
 
 /**
  * Synchronous device factory. It runs once per instance, builds the static IR, registers message
- * listeners and returns the lifecycle bindings. Pin I/O and observation APIs belong to later
- * device-layer tasks; the connection author surface is exposed through {@link DeviceAPI.ir} and
- * the builder.
+ * listeners and returns the lifecycle bindings. Observation APIs belong to a later device-layer
+ * task; the pin and connection author surfaces are exposed through {@link DeviceAPI.ir} and the
+ * builder.
  */
 export type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
 
@@ -175,6 +225,16 @@ export interface DeviceTopicMessage {
   readonly payload: TopicPayload;
 }
 
+/**
+ * Public power/electrical capabilities consumed by pin I/O (#51). `PowerRuntime` satisfies this
+ * interface structurally; the device layer never owns domains, thresholds or gating state.
+ */
+export interface DevicePinHost {
+  pinIntent(pin: TopologyPinRef): ElectricalPinInput;
+  updatePinStates(states: readonly ElectricalPinInput[]): void;
+  sampleDigital(pin: TopologyPinRef): PowerDigitalSample;
+}
+
 /** Host options for {@link createDeviceInstance}. */
 export interface DeviceInstanceOptions {
   /** Scheduler instance identity; must be unique for the scheduler's lifetime. */
@@ -185,6 +245,8 @@ export interface DeviceInstanceOptions {
   readonly messaging?: DeviceMessagingOptions;
   /** Synchronous host consumer for `api.publish`; omitted messages are dropped at a boundary. */
   readonly onTopic?: (message: DeviceTopicMessage) => void;
+  /** Held-intent and gated-sampling source for declared pins; required by pin instructions. */
+  readonly pinHost?: DevicePinHost;
   /**
    * Connection topology bound to this instance. Required when the IR applies connections;
    * the topology must share this instance's scheduler and outlive the instance.

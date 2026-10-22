@@ -1,7 +1,7 @@
 {
   "name": "@mica-js/widget",
   "version": "0.0.1",
-  "description": "Mica widget contract: widget definitions and pure-data package loading",
+  "description": "Mica widget contract and runtime: definitions, pure-data package loading, and the sandboxed WidgetHost",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -30,9 +30,11 @@
     "access": "public"
   },
   "dependencies": {
-    "@mica-js/core": "workspace:*"
+    "@mica-js/core": "workspace:*",
+    "@mica-js/sandbox": "workspace:*"
   },
   "devDependencies": {
+    "rolldown": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plugin-dts": "catalog:",

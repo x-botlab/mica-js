@@ -10,6 +10,8 @@ export type DeviceErrorCode =
   | 'device/factory-closed'
   | 'device/lifecycle-binding'
   | 'device/lifecycle-unsupported'
+  | 'device/pin-unknown'
+  | 'device/pin-io-unavailable'
   | 'device/link-failed'
   | 'device/instance-invalid'
   | 'device/instance-busy'

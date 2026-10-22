@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import dts from 'vite-plugin-dts';
 import { defineConfig } from 'vitest/config';
+import { micaWidgetPlugins } from './vite.plugins';
 
 export default defineConfig({
   build: {
@@ -13,10 +14,11 @@ export default defineConfig({
     sourcemap: true,
     minify: false,
     rollupOptions: {
-      external: ['@mica-js/core', '@mica-js/core/canvas'],
+      external: ['@mica-js/core', '@mica-js/core/canvas', '@mica-js/sandbox'],
     },
   },
   plugins: [
+    ...micaWidgetPlugins(),
     dts({
       tsconfigPath: './tsconfig.build.json',
       entryRoot: 'src',
@@ -28,11 +30,12 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
-    // Tests run before the workspace build, so resolve the payload type helpers from source.
+    // Tests run before the workspace build, so resolve the workspace packages from source.
     alias: {
       '@mica-js/core/canvas': fileURLToPath(
         new URL('../core/src/canvas/index.ts', import.meta.url),
       ),
+      '@mica-js/sandbox': fileURLToPath(new URL('../sandbox/src/index.ts', import.meta.url)),
     },
   },
 });

@@ -2,6 +2,7 @@ import { readPropertyDescriptors, type PropertyDescriptor } from '@mica-js/core/
 import { readConnections } from './connection/description';
 import { DeviceError } from './errors';
 import { isPlainRecord } from './internal/records';
+import { readPinGroups, readPins } from './pins/parse';
 import {
   TOPIC_PAYLOAD_TYPES,
   type DeviceDescription,
@@ -32,12 +33,15 @@ export function parseDeviceDescription(
       pointer: '',
     });
   }
+  const pins = readPins(definition['pins']);
   return {
     name,
     displayName,
     description,
     properties: readProperties(definition['properties']),
     ports: readPorts(definition['ports']),
+    pins,
+    pinGroups: readPinGroups(definition['pinGroups'], pins),
     connections: readConnections(definition),
     designatorPrefix: readDesignatorPrefix(definition['designatorPrefix']),
   };

@@ -2,9 +2,11 @@ import type {
   BlockDefinition,
   DomainInstructionDefinition,
   FunctionBodyDefinition,
+  FunctionBuilder,
   FunctionCategory,
   FunctionDefinition,
   FunctionRef,
+  IRBuilderExtension,
   InstructionNode,
   MemoryDefinition,
   OutputDefinition,
@@ -14,12 +16,20 @@ import type {
   Value,
 } from './types';
 
+/** Captured builder extension; method identity and receiver are fixed at module creation. */
+export interface BuilderExtensionState {
+  readonly namespace: string;
+  readonly receiver: IRBuilderExtension;
+  readonly create: (builder: FunctionBuilder) => unknown;
+}
+
 export interface ModuleState {
   readonly memories: MemoryState[];
   readonly functions: FunctionDeclarationState[];
   readonly domainDeclarations: DomainDeclarationState[];
   readonly instructions: DomainInstructionState[];
   readonly outputs: OutputState[];
+  readonly builderExtensions: readonly BuilderExtensionState[];
   readonly names: Set<string>;
   readonly instructionNames: Set<string>;
   bodyDepth: number;

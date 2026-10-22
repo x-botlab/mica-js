@@ -16,6 +16,7 @@ import type {
   FunctionSignature,
   InboxRef,
   IRModule,
+  IRModuleOptions,
   JSScalar,
   LifecycleRef,
   MemoryDefinition,
@@ -26,6 +27,7 @@ import type {
   StaticRef,
 } from './types';
 import type {
+  BuilderExtensionState,
   DomainDeclarationState,
   DomainInstructionState,
   FunctionDeclarationState,
@@ -49,10 +51,39 @@ import {
   createOutputRef,
   createStateRef,
   normalizeScalarLiteral,
+  assertSynchronousCallback,
 } from './runtime';
 
-export function createIRModule(): IRModule {
-  return new IRModuleImpl();
+const RESERVED_BUILDER_NAMES: ReadonlySet<string> = new Set([
+  'const',
+  'bits',
+  'bool',
+  'int',
+  'float',
+  'convert',
+  'bitcast',
+  'select',
+  'state',
+  'array',
+  'bytes',
+  'resource',
+  'event',
+  'call',
+  'block',
+  'at',
+  'invoke',
+  'return',
+  'jump',
+  'branch',
+  'trap',
+  'then',
+  'constructor',
+  '__proto__',
+  'prototype',
+]);
+
+export function createIRModule(options?: IRModuleOptions): IRModule {
+  return new IRModuleImpl(options);
 }
 
 function listLength(value: unknown, name: string, index: number): { readonly minLength?: number } {
@@ -68,13 +99,14 @@ function listLength(value: unknown, name: string, index: number): { readonly min
 class IRModuleImpl implements IRModule {
   private readonly core: ModuleState;
 
-  constructor() {
+  constructor(options: IRModuleOptions | undefined) {
     this.core = {
       memories: [],
       functions: [],
       domainDeclarations: [],
       instructions: [],
       outputs: [],
+      builderExtensions: captureBuilderExtensions(options),
       names: new Set(),
       instructionNames: new Set(CORE_INSTRUCTION_NAMES),
       bodyDepth: 0,
@@ -417,4 +449,41 @@ function assertPositiveCapacity(value: unknown, label: string): asserts value is
   if (!Number.isSafeInteger(value) || (value as number) < 1) {
     fail(`${label} must be a positive safe integer`);
   }
+}
+
+function captureBuilderExtensions(
+  options: IRModuleOptions | undefined,
+): readonly BuilderExtensionState[] {
+  if (options === undefined) {
+    return Object.freeze([]);
+  }
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    fail('IR module options must be an object');
+  }
+  const raw = options.builderExtensions;
+  if (raw === undefined) {
+    return Object.freeze([]);
+  }
+  if (!Array.isArray(raw)) {
+    fail('IR module builderExtensions must be an array');
+  }
+  const namespaces = new Set<string>();
+  const captured = raw.map((extension, index): BuilderExtensionState => {
+    if (typeof extension !== 'object' || extension === null) {
+      fail(`Builder extension ${index} must be an object`);
+    }
+    const namespace = extension.namespace;
+    assertName(namespace, `Builder extension ${index}`);
+    if (RESERVED_BUILDER_NAMES.has(namespace)) {
+      fail(`Builder extension namespace "${namespace}" collides with a built-in builder member`);
+    }
+    if (namespaces.has(namespace)) {
+      fail(`Builder extension namespace "${namespace}" is already registered`);
+    }
+    namespaces.add(namespace);
+    const create = extension.create;
+    assertSynchronousCallback(create, `Builder extension "${namespace}" create`);
+    return Object.freeze({ namespace, receiver: extension, create });
+  });
+  return Object.freeze(captured);
 }

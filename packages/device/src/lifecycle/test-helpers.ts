@@ -47,6 +47,8 @@ export function createForTest(
     ...(options.properties === undefined ? {} : { properties: options.properties }),
     ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
     ...(options.onTopic === undefined ? {} : { onTopic: options.onTopic }),
+    ...(options.pinHost === undefined ? {} : { pinHost: options.pinHost }),
+    ...(options.connections === undefined ? {} : { connections: options.connections }),
   });
   return { instance, scheduler, description };
 }

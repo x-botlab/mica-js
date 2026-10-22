@@ -1,3 +1,5 @@
+import './pins/augment';
+
 export { DeviceError } from './errors';
 export type { DeviceErrorCode, DeviceErrorOptions } from './errors';
 export { BackpressureError } from './messaging/errors';
@@ -13,7 +15,6 @@ export type {
   ConnectionRef,
   DeviceConnectionDescriptor,
   DeviceConnectionOptions,
-  DeviceIRDeclarations,
 } from './connection/types';
 
 export type {
@@ -26,7 +27,11 @@ export type {
   DeviceInstance,
   DeviceInstanceOptions,
   DeviceInstanceState,
+  DeviceIRDeclarations,
   DeviceMessagingOptions,
+  DevicePinDescriptor,
+  DevicePinGroupDescriptor,
+  DevicePinHost,
   DevicePortDescriptor,
   DevicePropertySnapshot,
   DeviceTopicMessage,
@@ -34,9 +39,13 @@ export type {
   IROutputMetadata,
   LoadedDeviceModule,
   MessageCallback,
+  PinConfig,
+  PinKind,
+  PinOperations,
+  PinRef,
+  PinSide,
   TopicMetadata,
   TopicPayload,
-  TopicPayloadType,
   Unsubscribe,
   Vec2d,
   Vec3d,

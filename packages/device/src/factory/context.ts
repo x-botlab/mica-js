@@ -9,10 +9,17 @@ import type {
   ScalarType,
 } from '@mica-js/ir';
 import { createConnectionSupport } from '../connection/builder';
-import type { DeviceConnectionDescriptor, DeviceIRDeclarations } from '../connection/types';
+import type { DeviceConnectionDescriptor } from '../connection/types';
 import { DeviceError } from '../errors';
 import type { MessagingController } from '../messaging/controller';
-import type { DeviceAPI, DevicePropertySnapshot, TopicPayload } from '../types';
+import type { PinDomain } from '../pins/domain';
+import type {
+  DeviceAPI,
+  DeviceIRDeclarations,
+  DevicePropertySnapshot,
+  PinRef,
+  TopicPayload,
+} from '../types';
 
 const DECLARATION_METHODS = new Set<PropertyKey>([
   'state',
@@ -41,6 +48,7 @@ export function createFactoryContext(
   module: IRModule,
   deviceId: string,
   messaging: MessagingController,
+  pins: PinDomain,
   connections: ReadonlyMap<string, DeviceConnectionDescriptor>,
 ): FactoryContext {
   let open = true;
@@ -54,6 +62,14 @@ export function createFactoryContext(
   const connectionSupport = createConnectionSupport(module, connections, deviceId);
   const ir = new Proxy(module, {
     get(target, property) {
+      if (property === 'pin') {
+        return (id: unknown): PinRef => {
+          if (!open) {
+            return failClosed('pin');
+          }
+          return pins.catalog.declare(module, id, deviceId);
+        };
+      }
       if (property === 'connection') {
         return (...args: unknown[]): unknown => {
           if (!open) {

@@ -1,5 +1,5 @@
 import type { TopologyRuntime } from '@mica-js/core';
-import type { IRDeclarations, ScalarType, StaticRef, Value } from '@mica-js/ir';
+import type { ScalarType, StaticRef, Value } from '@mica-js/ir';
 
 /** One internal controlled connection declared by a device description (#14). */
 export interface DeviceConnectionDescriptor {
@@ -30,15 +30,6 @@ export interface ConnectionOperations {
 export interface DeviceConnectionOptions {
   /** Topology that owns this instance's declared connection states. */
   readonly topology: TopologyRuntime;
-}
-
-/**
- * Device-scoped IR declarations. Extending `IRDeclarations` here (instead of augmenting it)
- * keeps the core module free of connection knowledge while exposing the confirmed author API.
- */
-export interface DeviceIRDeclarations extends IRDeclarations {
-  /** Resolve a connection declared by this device description; never exposes state. */
-  connection(id: string): ConnectionRef;
 }
 
 declare module '@mica-js/ir' {

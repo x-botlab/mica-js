@@ -1,4 +1,9 @@
-import { createIRModule, type IRStorage } from '@mica-js/ir';
+import {
+  createIRModule,
+  type IRInstructionExecutor,
+  type IRModule,
+  type IRStorage,
+} from '@mica-js/ir';
 import {
   createIRSchedulerInstance,
   SchedulerError,
@@ -13,6 +18,8 @@ import { createFactoryContext } from '../factory/context';
 import { callableKind, consumeThenable, isThenable } from '../internal/functions';
 import { isObjectLike, isPlainRecord } from '../internal/records';
 import { MessagingController } from '../messaging/controller';
+import { PinDomain } from '../pins/domain';
+import type { PinRuntime } from '../pins/runtime';
 import { resolveDeviceProperties } from '../properties';
 import type {
   DeviceAPI,
@@ -21,6 +28,7 @@ import type {
   DeviceInstanceOptions,
   DeviceInstanceState,
   DeviceFactory,
+  DevicePinHost,
   DevicePropertySnapshot,
   LoadedDeviceModule,
   TopicMetadata,
@@ -50,14 +58,29 @@ export function createDeviceInstance(
     definition.description,
     isPlainRecord(options) && options.properties !== undefined ? options.properties : {},
   );
+  const pinHost = readPinHost(options);
 
-  const module = createIRModule();
+  const moduleRef: { current?: IRModule } = {};
+  const pins = new PinDomain(
+    definition.description.pins,
+    () => {
+      if (moduleRef.current === undefined) {
+        throw new Error('Pin domain used before the IR module was created');
+      }
+      return moduleRef.current;
+    },
+    definition.deviceId,
+  );
+  const module = createIRModule({ builderExtensions: [pins.extension] });
+  moduleRef.current = module;
+  pins.instructions();
   const messaging = createMessaging(definition, module, options);
   const context = createFactoryContext(
     props,
     module,
     definition.deviceId,
     messaging,
+    pins,
     definition.description.connections,
   );
   let rawBindings: unknown;
@@ -88,27 +111,47 @@ export function createDeviceInstance(
     messaging.abort();
     throw cause;
   }
-  let policy: ReturnType<typeof createValidationPolicy>;
-  let connectionExecutor: ReturnType<typeof prepareConnectionExecution>;
-  let tracking: ReturnType<typeof createLifecycleScheduler>;
+  let setup: {
+    readonly policy: ReturnType<typeof createValidationPolicy>;
+    readonly pinRuntime: PinRuntime;
+    readonly references: readonly string[];
+    readonly executors: readonly IRInstructionExecutor[];
+    readonly tracking: ReturnType<typeof createLifecycleScheduler>;
+  };
+  let createdPinRuntime: PinRuntime | undefined;
   try {
-    policy = createValidationPolicy(module, definition.description.connections);
-    connectionExecutor = prepareConnectionExecution({
+    const policy = createValidationPolicy(
+      module,
+      definition.description.connections,
+      pins.validators(),
+    );
+    const pinRuntime = pins.createRuntime(instanceId, pinHost);
+    createdPinRuntime = pinRuntime;
+    const references = pins.references(module);
+    pinRuntime.assertReady(references);
+    const connectionExecutor = prepareConnectionExecution({
       module,
       description: definition.description.connections,
       instanceId,
       deviceId: definition.deviceId,
       topology: connectionOptions?.topology,
     });
-    tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name, {
+    const executors = [
+      ...pinRuntime.executors(),
+      ...(connectionExecutor === undefined ? [] : [connectionExecutor]),
+    ];
+    const tracking = createLifecycleScheduler(scheduler, bindings.initialize?.name, {
       beforeEntry: () => messaging.beforeEntry(),
       afterEntry: (entryContext, failure) => messaging.completeEntry(entryContext, failure),
       onInitializeComplete: () => messaging.markReady(),
     });
+    setup = { policy, pinRuntime, references, executors, tracking };
   } catch (cause) {
     messaging.abort();
+    createdPinRuntime?.release();
     throw cause;
   }
+  const { policy, pinRuntime, references, executors, tracking } = setup;
   let core: IRSchedulerInstance;
   try {
     core = createIRSchedulerInstance(tracking.scheduler, {
@@ -116,7 +159,7 @@ export function createDeviceInstance(
       module,
       validation: policy,
       bridge: messaging.bridge,
-      ...(connectionExecutor === undefined ? {} : { executors: [connectionExecutor] }),
+      ...(executors.length === 0 ? {} : { executors }),
     });
   } catch (cause) {
     messaging.abort();
@@ -129,12 +172,14 @@ export function createDeviceInstance(
       enqueueMessage: (target, args) => core.enqueueMessage(target, args),
       isFaulted: () => scheduler.error !== undefined,
     });
+    pinRuntime.prepare(references);
   } catch (cause) {
     messaging.abort();
+    pinRuntime.release();
     try {
       scheduler.destroyInstance(core.instance);
     } catch {
-      // The attach failure is the useful diagnostic.
+      // The setup failure is the useful diagnostic.
     }
     throw cause;
   }
@@ -144,6 +189,7 @@ export function createDeviceInstance(
       core.enqueueControl(bindings.initialize.ref, []);
     } catch (cause) {
       messaging.abort();
+      pinRuntime.release();
       try {
         scheduler.destroyInstance(core.instance);
       } catch {
@@ -168,6 +214,7 @@ export function createDeviceInstance(
     core,
     scheduler,
     bindings,
+    pinRuntime,
     tracking.isInitialized,
     messaging,
   );
@@ -219,6 +266,8 @@ function readLoadedModule(value: unknown): LoadedModule {
     typeof description['name'] !== 'string' ||
     !(description['properties'] instanceof Map) ||
     !(description['ports'] instanceof Map) ||
+    !(description['pins'] instanceof Map) ||
+    !(description['pinGroups'] instanceof Map) ||
     !(description['connections'] instanceof Map)
   ) {
     throw instanceError(
@@ -273,6 +322,28 @@ function readInstanceId(options: unknown): string {
     throw instanceError('Device instance id must be a non-empty string.');
   }
   return instanceId;
+}
+
+function readPinHost(options: unknown): DevicePinHost | undefined {
+  const value = isPlainRecord(options) ? options['pinHost'] : undefined;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isObjectLike(value)) {
+    throw new DeviceError(
+      'device/pin-io-unavailable',
+      'Device instance pinHost must be an object.',
+    );
+  }
+  for (const method of ['pinIntent', 'updatePinStates', 'sampleDigital'] as const) {
+    if (typeof value[method] !== 'function') {
+      throw new DeviceError(
+        'device/pin-io-unavailable',
+        `Device instance pinHost must implement ${method}().`,
+      );
+    }
+  }
+  return value as unknown as DevicePinHost;
 }
 
 function readConnectionOptions(options: unknown): DeviceConnectionOptions | undefined {
@@ -366,6 +437,7 @@ function createHandle(
   core: IRSchedulerInstance,
   scheduler: Scheduler,
   bindings: ValidatedBindings,
+  pinRuntime: PinRuntime,
   isInitialized: () => boolean,
   messaging: MessagingController,
 ): DeviceInstance {
@@ -421,6 +493,7 @@ function createHandle(
       );
     }
     destroying = true;
+    pinRuntime.release();
     try {
       scheduler.destroyInstance(core.instance);
     } catch (cause) {
