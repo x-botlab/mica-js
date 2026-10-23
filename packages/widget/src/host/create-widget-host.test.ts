@@ -471,6 +471,52 @@ describe('createWidgetHost', () => {
     expect(harness.host.layers.get(ID_A)).toBeDefined();
   });
 
+  it('remounts an instance whose property names an asset the guest never received', async () => {
+    const reads: string[] = [];
+    const assets: WidgetAssetSource = {
+      read: async (ref) => {
+        reads.push(ref.src);
+        return new TextEncoder().encode(`bytes:${ref.src}`);
+      },
+    };
+    const harness = createHarness(undefined, { module: assetModule, assets });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+    expect(reads).toEqual(['default.png']);
+
+    harness.host.applyCommand({
+      type: 'set-property',
+      instanceId: ID_A,
+      key: 'texture',
+      value: { src: 'chosen.png', mode: 'file' },
+    });
+    await flush();
+
+    // A remount is the only way to hand the new bytes over, so the guest gets a second mount.
+    expect(reads).toEqual(['default.png', 'chosen.png']);
+    expect(mountCount(harness.sandbox)).toBe(2);
+    expect(unmountCount(harness.sandbox)).toBe(1);
+    const sent = mountRequests(harness.sandbox)[1]?.assets as Record<string, Uint8Array>;
+    expect(new TextDecoder().decode(sent['chosen.png'])).toBe('bytes:chosen.png');
+    expect(harness.diagnostics).toEqual([]);
+  });
+
+  it('keeps the instance mounted when a property change adds no asset', async () => {
+    const harness = createHarness(undefined, { module: defaultsModule });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+
+    harness.host.applyCommand({
+      type: 'set-property',
+      instanceId: ID_A,
+      key: 'color',
+      value: '#112233',
+    });
+    await flush();
+
+    expect(mountCount(harness.sandbox)).toBe(1);
+    expect(unmountCount(harness.sandbox)).toBe(0);
+    expect(harness.sandbox.callsOf('set-properties')).toHaveLength(1);
+  });
+
   it('mounts only the instance an add-instance command introduces', async () => {
     const harness = createHarness();
     await harness.host.loadDocument(canvas(instance({ id: ID_A })));

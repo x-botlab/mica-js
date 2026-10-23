@@ -55,6 +55,8 @@ interface InstanceRecord {
   /** Placement last applied to this instance, so a pass can tell a real edit from a rewrite. */
   placement: WidgetPlacement;
   props: Readonly<Record<string, unknown>>;
+  /** `src` of every asset the mounted props referenced; the guest only holds prefetched bytes. */
+  assets: ReadonlySet<string>;
 }
 
 /** Host state before any document was loaded. */
@@ -305,7 +307,27 @@ class WidgetHostImpl implements WidgetHost {
     existing.placement = placement;
 
     const props = widget.properties ?? {};
-    if (!sameProperties(existing.props, props)) this.#setProperties(widget.id, props);
+    if (!sameProperties(existing.props, props)) {
+      // Bytes are prefetched once, at mount: the guest cannot read a resource the host never sent,
+      // so a property that names a new image re-mounts instead of reaching an empty asset map.
+      if (this.#referencesUnprefetchedAsset(existing, props)) {
+        this.#unmount(widget.id);
+        await this.#mount(widget);
+        return;
+      }
+      this.#setProperties(widget.id, props);
+    }
+  }
+
+  #referencesUnprefetchedAsset(
+    existing: InstanceRecord,
+    props: Readonly<Record<string, unknown>>,
+  ): boolean {
+    if (this.#assets === undefined) return false;
+    for (const src of collectAssetRefs(props).keys()) {
+      if (!existing.assets.has(src)) return true;
+    }
+    return false;
   }
 
   /**
@@ -347,6 +369,7 @@ class WidgetHostImpl implements WidgetHost {
       token: Symbol(instanceId),
       placement: placementOf(widget),
       props: widget.properties ?? {},
+      assets: new Set<string>(),
     };
     this.#instances.set(instanceId, record);
     this.#layerStore.add({
@@ -417,6 +440,7 @@ class WidgetHostImpl implements WidgetHost {
       // mount still behaves the same on both sides of the boundary.
       const props = mergeProperties(module.definition?.properties, record.props);
       const assets = await this.#prefetchAssets(instanceId, ref, props);
+      record.assets = new Set(collectAssetRefs(props).keys());
       this.#requireOwnership(instanceId, record);
 
       const layer = this.#layerStore.get(instanceId);
