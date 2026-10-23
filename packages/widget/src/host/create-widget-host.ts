@@ -36,7 +36,7 @@ import type { WidgetModule } from '../types';
 import { WidgetLayerStore } from './layers';
 import { createDefaultWidgetSandbox } from './sandbox';
 import type {
-  WidgetAssetSource,
+  WidgetAssetProvider,
   WidgetDiagnostic,
   WidgetDiagnosticCode,
   WidgetHost,
@@ -101,7 +101,7 @@ class WidgetHostImpl implements WidgetHost {
   readonly #container: HTMLElement | undefined;
   readonly #onDiagnostic: ((diagnostic: WidgetDiagnostic) => void) | undefined;
   readonly #onPublish: ((publish: WidgetPublish) => void) | undefined;
-  readonly #assets: WidgetAssetSource | undefined;
+  readonly #assets: WidgetAssetProvider | undefined;
   readonly #catalog: WidgetHostOptions['catalog'];
   readonly #createSandbox: WidgetSandboxFactory;
   readonly #layerStore = new WidgetLayerStore();
@@ -640,7 +640,7 @@ class WidgetHostImpl implements WidgetHost {
         try {
           const bytes = await source.read(assetRef);
           if (!(bytes instanceof Uint8Array)) {
-            throw new TypeError('WidgetAssetSource.read() must resolve to a Uint8Array');
+            throw new TypeError('WidgetAssetProvider.read() must resolve to a Uint8Array');
           }
           return [assetRef.src, bytes];
         } catch (error) {

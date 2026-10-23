@@ -18,7 +18,7 @@ export type { PackageWidgetProviderOptions } from './provider/package';
 
 export { createWidgetHost } from './host/create-widget-host';
 export type {
-  WidgetAssetSource,
+  WidgetAssetProvider,
   WidgetDiagnostic,
   WidgetDiagnosticCode,
   WidgetHost,

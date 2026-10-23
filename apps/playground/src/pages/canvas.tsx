@@ -14,7 +14,7 @@ import {
   createPackageWidgetProvider,
   createWidgetHost,
   type PackageFiles,
-  type WidgetAssetSource,
+  type WidgetAssetProvider,
   type WidgetDefinition,
   type WidgetHost,
   type WidgetProvider,
@@ -48,7 +48,7 @@ const PACKAGE_FILES: PackageFiles = {
   read: (path) => fetchBytes(`widgets/${path}`),
 };
 
-const ASSETS: WidgetAssetSource = {
+const ASSETS: WidgetAssetProvider = {
   read: (ref) => fetchBytes(ref.src),
 };
 

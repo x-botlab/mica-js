@@ -34,7 +34,7 @@ pnpm add @mica-js/widget
 | `WidgetInputEvent`                          | 转发给实例的指针 / 键盘事件                                          |
 | `WidgetInstanceApi` / `WidgetInstance`      | Widget 工厂收到的实例 API 与可选钩子                                 |
 | `WidgetAssetRef`                            | 资源引用 `{ src, mode: 'file' \| 'inline' \| 'store' }`（#7）        |
-| `WidgetAssetApi` / `WidgetAssetSource`      | guest 的 `readBinary` 与宿主侧预取来源                               |
+| `WidgetAssetApi` / `WidgetAssetProvider`    | guest 的 `readBinary` 与宿主侧预取来源                               |
 | `WidgetPublish`                             | `{ instanceId, port, payload, simTime }`                             |
 | `WidgetFactory` / `WidgetDeliveryMeta`      | 模块默认导出的工厂类型与端口投递元数据                               |
 | `WidgetSandbox` / `WidgetSandboxFactory`    | 可注入的最小沙箱接口（`call` / `on` / `terminate`）                  |
@@ -289,7 +289,7 @@ interface WidgetAssetRef {
   readonly mode: 'file' | 'inline' | 'store';
 }
 
-interface WidgetAssetSource {
+interface WidgetAssetProvider {
   read(ref: WidgetAssetRef): Promise<Uint8Array>;
 }
 

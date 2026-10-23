@@ -36,8 +36,14 @@ export interface WidgetLayers {
   subscribe(listener: (change: WidgetLayerChange) => void): () => void;
 }
 
-/** Reads bytes for image / binary property values; the host prefetches them at mount time. */
-export interface WidgetAssetSource {
+/**
+ * Reads the bytes behind an image / binary property value (`{ src, mode }`).
+ *
+ * The host prefetches every referenced resource when an instance mounts and hands the bytes to the
+ * guest, which has no network of its own. Not to be confused with `WidgetProvider`, which resolves
+ * widget definitions and code.
+ */
+export interface WidgetAssetProvider {
   /**
    * Resolves to the resource bytes. `inline` references are base64-decoded here, on the host, so
    * the guest never sees encoded data. A rejection only skips this resource.
@@ -156,7 +162,7 @@ export interface WidgetHostOptions {
    * Prefetches image / binary property values when an instance mounts. Without it nothing is
    * prefetched and `api.assets.readBinary` rejects.
    */
-  readonly assets?: WidgetAssetSource;
+  readonly assets?: WidgetAssetProvider;
   /**
    * Resolves widget definitions and schematic symbols for binding validation.
    *
