@@ -34,7 +34,7 @@ function createFakeEditor(): FakeEditor {
     cancelInteraction: vi.fn(() => {
       calls.push('cancelInteraction');
     }),
-    state: { mode: 'edit', selection: [], viewport: { x: 0, y: 0, scale: 1 } },
+    getState: () => ({ mode: 'edit', selection: [], viewport: { x: 0, y: 0, scale: 1 } }),
     focus: vi.fn(),
     destroy: vi.fn(() => {
       calls.push('destroy');
@@ -177,8 +177,8 @@ describe('createCanvasScene', () => {
     expect(options.document).toBe(host.getDocument());
     expect(options.layers).toBe(host.getLayers());
     expect(options.mode).toBe('edit');
-    expect(scene.document).toBe(host.getDocument());
-    expect(scene.mode).toBe('edit');
+    expect(scene.getDocument()).toBe(host.getDocument());
+    expect(scene.getMode()).toBe('edit');
   });
 
   it('forwards a command to the host and reports the committed snapshot once', async () => {
@@ -215,7 +215,7 @@ describe('createCanvasScene', () => {
     expect(diagnostics[0]?.message).toContain('placement out of bounds');
     expect(onChange).not.toHaveBeenCalled();
     expect(editor.setDocument).not.toHaveBeenCalled();
-    expect(scene.document).toBe(host.getDocument());
+    expect(scene.getDocument()).toBe(host.getDocument());
   });
 
   it('adopts a snapshot the host committed on its own without looping', async () => {
@@ -337,12 +337,12 @@ describe('createCanvasScene', () => {
     await scene.setMode('run');
 
     expect(editor.calls).toEqual(['cancelInteraction', 'setMode:run']);
-    expect(scene.mode).toBe('run');
+    expect(scene.getMode()).toBe('run');
 
     await scene.setMode('edit');
     expect(editor.calls.at(-2)).toBe('cancelInteraction');
     expect(editor.calls.at(-1)).toBe('setMode:edit');
-    expect(scene.mode).toBe('edit');
+    expect(scene.getMode()).toBe('edit');
   });
 
   it('resets the widgets on every mode change', async () => {
@@ -359,7 +359,7 @@ describe('createCanvasScene', () => {
   it('does not reset when the mode is already in effect', async () => {
     const host = createFakeHost();
     const scene = await mountScene(host, { mode: 'run' });
-    expect(scene.mode).toBe('run');
+    expect(scene.getMode()).toBe('run');
 
     await scene.setMode('run');
 
@@ -378,7 +378,7 @@ describe('createCanvasScene', () => {
     });
 
     // Routing follows the new mode immediately, while the widgets are still being rebuilt.
-    expect(scene.mode).toBe('run');
+    expect(scene.getMode()).toBe('run');
     expect(editor.calls).toEqual(['cancelInteraction', 'setMode:run']);
     expect(host.reset).toHaveBeenCalledTimes(1);
     await Promise.resolve();
@@ -396,7 +396,7 @@ describe('createCanvasScene', () => {
 
     await expect(scene.setMode('run')).rejects.toThrow('reset exploded');
 
-    expect(scene.mode).toBe('edit');
+    expect(scene.getMode()).toBe('edit');
     expect(editor.calls).toEqual(['cancelInteraction', 'setMode:run', 'setMode:edit']);
   });
 
@@ -408,7 +408,7 @@ describe('createCanvasScene', () => {
     await scene.setMode('run');
 
     expect(host.reset).not.toHaveBeenCalled();
-    expect(scene.mode).toBe('edit');
+    expect(scene.getMode()).toBe('edit');
   });
 
   it('forwards a host-side selection but drops ids the document does not contain', async () => {

@@ -41,7 +41,7 @@ export interface CanvasEditor {
   /** Drops the gesture in flight without producing a command. */
   cancelInteraction(): void;
   /** Current viewport and selection, for the host to persist or inspect. */
-  readonly state: CanvasEditorState;
+  getState(): CanvasEditorState;
   focus(): void;
   destroy(): void;
 }
@@ -459,7 +459,7 @@ export function mountCanvasEditor(options: MountCanvasEditorOptions): CanvasEdit
       session.cancelInteraction();
       invalidate();
     },
-    get state(): CanvasEditorState {
+    getState(): CanvasEditorState {
       const viewport = session.viewport;
       return {
         mode: session.mode,

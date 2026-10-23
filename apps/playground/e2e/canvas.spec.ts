@@ -2,6 +2,21 @@ import { expect, test, type Page } from '@playwright/test';
 
 /** The mounted scene the playground exposes in dev builds. */
 interface SceneHandle {
+  getMode(): string;
+  getDocument(): {
+    readonly widgets: readonly {
+      readonly id: string;
+      readonly widget: string;
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+    }[];
+  };
+}
+
+/** What `sceneState` hands to the test process: plain data, read through the scene's getters. */
+interface SceneSnapshot {
   readonly mode: string;
   readonly document: {
     readonly widgets: readonly {
@@ -32,7 +47,7 @@ interface Point {
   readonly y: number;
 }
 
-type DemoWidget = SceneHandle['document']['widgets'][number];
+type DemoWidget = SceneSnapshot['document']['widgets'][number];
 
 /** Instance center in document coordinates, so a test never depends on the demo's geometry. */
 function centerOf(widget: DemoWidget): Point {
@@ -95,13 +110,13 @@ async function openCanvas(page: Page): Promise<void> {
   await expect(page.locator('canvas.mica-canvas-editor__surface')).toBeVisible();
 }
 
-async function sceneState(page: Page): Promise<SceneHandle> {
+async function sceneState(page: Page): Promise<SceneSnapshot> {
   return page.evaluate(() => {
     const scene = (globalThis as unknown as { micaCanvas: SceneHandle }).micaCanvas;
     return {
-      mode: scene.mode,
+      mode: scene.getMode(),
       document: {
-        widgets: scene.document.widgets.map((widget) => ({
+        widgets: scene.getDocument().widgets.map((widget) => ({
           id: widget.id,
           widget: widget.widget,
           x: widget.x,

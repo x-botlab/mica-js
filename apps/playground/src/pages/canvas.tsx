@@ -246,7 +246,7 @@ export function CanvasPage() {
           );
         });
 
-        const resolved = await resolveDefinitions(provider, created.document);
+        const resolved = await resolveDefinitions(provider, created.getDocument());
         if (cancelled) {
           // The effect was torn down mid-startup; release what this attempt already created.
           created.destroy();
@@ -258,8 +258,8 @@ export function CanvasPage() {
         sceneRef.current = created;
         hostRef.current = ownedHost;
         // The loaded document is the baseline: a fresh page is not "unsaved changes".
-        draft.seed(created.document);
-        setDocument(created.document);
+        draft.seed(created.getDocument());
+        setDocument(created.getDocument());
         setDefinitions(resolved);
         setPalette(paletteEntries(demoPackage.id, demoPackage.modules));
         if (restored !== null) {
@@ -366,9 +366,9 @@ export function CanvasPage() {
     setError(null);
     try {
       await scene.setMode(next);
-      setMode(scene.mode);
+      setMode(scene.getMode());
     } catch (cause) {
-      setMode(scene.mode);
+      setMode(scene.getMode());
       setError(`切换到${next === 'run' ? '运行' : '编辑'}模式失败：${describeError(cause)}`);
     } finally {
       setSwitching(false);
@@ -400,7 +400,7 @@ export function CanvasPage() {
     if (scene === null) {
       return;
     }
-    downloadDocument(serializeCanvas(scene.document), 'demo.cnv');
+    downloadDocument(serializeCanvas(scene.getDocument()), 'demo.cnv');
   };
 
   /** A list row selects its instance, so the inspector follows the list. */

@@ -52,16 +52,18 @@ export interface CreateCanvasSceneOptions {
 }
 
 export interface CanvasScene {
-  readonly document: CanvasDocument;
-  readonly mode: CanvasMode;
+  /** Snapshot the editor currently draws; the same reference until a command commits a new one. */
+  getDocument(): CanvasDocument;
+  /** Mode in effect; every call returns the current value. */
+  getMode(): CanvasMode;
   /**
    * Switches mode and resets every widget: the host rebuilds its instances from the current
    * document, so widgets restart from their initial state.
    *
-   * `mode` reflects the new value immediately, because input routing has to follow at once; the
-   * returned promise resolves once `host.reset()` has remounted every instance. Switching to the
-   * mode already in effect resolves without resetting. Selection and viewport survive, because the
-   * document — and therefore every instance id — is unchanged.
+   * `getMode()` reflects the new value immediately, because input routing has to follow at once;
+   * the returned promise resolves once `host.reset()` has remounted every instance. Switching to
+   * the mode already in effect resolves without resetting. Selection and viewport survive, because
+   * the document — and therefore every instance id — is unchanged.
    *
    * @throws when the host rejects the reset; the scene then reverts to the previous mode.
    */
@@ -271,10 +273,10 @@ export async function createCanvasScene(options: CreateCanvasSceneOptions): Prom
   }
 
   return {
-    get document() {
+    getDocument(): CanvasDocument {
       return snapshot;
     },
-    get mode() {
+    getMode(): CanvasMode {
       return mode;
     },
     setMode,
