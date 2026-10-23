@@ -1,4 +1,9 @@
-import type { CanvasBindingCatalog, CanvasCommand, CanvasDocument } from '@mica-js/core/canvas';
+import type {
+  CanvasBindingCatalog,
+  CanvasBindingTarget,
+  CanvasCommand,
+  CanvasDocument,
+} from '@mica-js/core/canvas';
 import type { WidgetProvider } from '../types';
 import type { WidgetAssetRef, WidgetInputEvent } from '../runtime/types';
 
@@ -156,6 +161,28 @@ export interface WidgetSandboxHostOptions {
 
 export type WidgetSandboxFactory = (options: WidgetSandboxHostOptions) => Promise<WidgetSandbox>;
 
+/** One payload a simulation published for an endpoint the canvas can bind to. */
+export interface SimulationPublish {
+  readonly target: CanvasBindingTarget;
+  readonly payload: unknown;
+  readonly simTime: number;
+}
+
+/**
+ * Simulation the host is connected to, so bound endpoints reach the widgets without a routing
+ * layer in between.
+ *
+ * Both sides live on this thread: the host resolves the binding synchronously and hands the
+ * payload to the widget sandbox, which is the only hop left (a microtask, not a worker). A
+ * `DeviceSimExecutor` from `@mica-js/simulator` satisfies this interface structurally.
+ */
+export interface WidgetHostSimulation {
+  /** Publishes from the simulation; the returned function unsubscribes. */
+  onPublish(listener: (publish: SimulationPublish) => void): () => void;
+  /** Forwards a widget payload to the endpoint its port is bound to. */
+  deliver(target: CanvasBindingTarget, payload: unknown): void;
+}
+
 export interface WidgetHostOptions {
   readonly provider: WidgetProvider;
   readonly container?: HTMLElement;
@@ -165,6 +192,12 @@ export interface WidgetHostOptions {
   readonly onDiagnostic?: (diagnostic: WidgetDiagnostic) => void;
   /** Receives port payloads published by widgets; topic routing is out of scope here. */
   readonly onPublish?: (publish: WidgetPublish) => void;
+  /**
+   * Simulation the host is wired to: device publishes reach the widgets bound to their endpoint,
+   * and widget publishes reach the device bound to their port. Without it the host only reports
+   * publishes through `onPublish` and delivers what the host asks for.
+   */
+  readonly simulation?: WidgetHostSimulation;
   /**
    * Prefetches image / binary property values when an instance mounts. Without it nothing is
    * prefetched and `api.assets.readBinary` rejects.

@@ -4,6 +4,7 @@ import {
   createDeviceInstance,
   loadDeviceModule,
   type DeviceInstance,
+  type LoadedDeviceModule,
   type TopicPayload,
 } from '@mica-js/device';
 import { SimulatorError } from './errors';
@@ -38,7 +39,7 @@ interface Runtime {
 
 interface PendingDelivery {
   readonly target: DeviceTopicTarget;
-  readonly payload: TopicPayload;
+  readonly payload: unknown;
 }
 
 /**
@@ -56,6 +57,8 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
   readonly #options: DeviceSimExecutorOptions;
   readonly #publishListeners = new Set<(publish: DevicePublish) => void>();
   readonly #pending: PendingDelivery[] = [];
+  /** Loaded device modules, so `reset` can rebuild instances without touching the provider. */
+  readonly #modules = new Map<string, LoadedDeviceModule>();
   #runtime: Runtime | undefined;
   #schematic: SchematicDocument = EMPTY_SCHEMATIC;
   #state: SimulationState = 'idle';
@@ -82,8 +85,9 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
 
   async loadSchematic(document: SchematicDocument): Promise<void> {
     this.#assertNotDisposed();
+    await this.#loadModules(document);
     // Build first: a rejected load must leave the running simulation untouched.
-    const runtime = await this.#buildRuntime(document);
+    const runtime = this.#buildRuntime(document);
     this.#teardown();
     this.#runtime = runtime;
     this.#schematic = document;
@@ -130,7 +134,7 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
     };
   }
 
-  deliver(target: DeviceTopicTarget, payload: TopicPayload): void {
+  deliver(target: DeviceTopicTarget, payload: unknown): void {
     const runtime = this.#requireRuntime();
     const instance = runtime.instances.get(target.symbol);
     if (instance === undefined) {
@@ -158,26 +162,52 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
     this.#pending.push(Object.freeze({ target: Object.freeze({ ...target }), payload }));
   }
 
-  async reset(): Promise<void> {
+  reset(): void {
     this.#assertNotDisposed();
     if (this.#runtime === undefined) {
       this.#pending.length = 0;
       return;
     }
-    await this.loadSchematic(this.#schematic);
+    // The modules are cached, so a reset never yields: it swaps in freshly built instances.
+    const runtime = this.#buildRuntime(this.#schematic);
+    this.#teardown();
+    this.#runtime = runtime;
+    this.#state = 'ready';
   }
 
-  async dispose(): Promise<void> {
+  dispose(): void {
     if (this.#state === 'disposed') {
       return;
     }
     this.#state = 'disposed';
     this.#publishListeners.clear();
     this.#teardown();
+    this.#modules.clear();
   }
 
-  /** Loads every device of the schematic and runs the `initialize` pass on a fresh scheduler. */
-  async #buildRuntime(document: SchematicDocument): Promise<Runtime> {
+  /** Loads the devices the schematic names; already loaded ids are reused. */
+  async #loadModules(document: SchematicDocument): Promise<void> {
+    for (const symbol of document.sheet.symbols) {
+      if (this.#modules.has(symbol.device)) {
+        continue;
+      }
+      try {
+        this.#modules.set(
+          symbol.device,
+          await loadDeviceModule(symbol.device, this.#options.devices),
+        );
+      } catch (cause) {
+        throw new SimulatorError(
+          'simulator/device-load-failed',
+          `Device ${JSON.stringify(symbol.device)} of symbol "${symbol.id}" could not be loaded.`,
+          { symbol: symbol.id, cause },
+        );
+      }
+    }
+  }
+
+  /** Mounts every symbol of the schematic and runs the `initialize` pass on a fresh scheduler. */
+  #buildRuntime(document: SchematicDocument): Runtime {
     const scheduler =
       this.#options.scheduler === undefined
         ? createScheduler()
@@ -186,7 +216,7 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
     const topics: DeviceTopic[] = [];
     try {
       for (const symbol of document.sheet.symbols) {
-        const instance = await this.#createInstance(symbol, scheduler);
+        const instance = this.#createInstance(symbol, scheduler);
         instances.set(symbol.id, instance);
         collectTopics(symbol, instance, topics);
       }
@@ -201,15 +231,13 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
     }
   }
 
-  async #createInstance(symbol: SchematicSymbol, scheduler: Scheduler): Promise<DeviceInstance> {
-    let loaded;
-    try {
-      loaded = await loadDeviceModule(symbol.device, this.#options.devices);
-    } catch (cause) {
+  #createInstance(symbol: SchematicSymbol, scheduler: Scheduler): DeviceInstance {
+    const loaded = this.#modules.get(symbol.device);
+    if (loaded === undefined) {
       throw new SimulatorError(
         'simulator/device-load-failed',
-        `Device ${JSON.stringify(symbol.device)} of symbol "${symbol.id}" could not be loaded.`,
-        { symbol: symbol.id, cause },
+        `Device ${JSON.stringify(symbol.device)} of symbol "${symbol.id}" was not loaded.`,
+        { symbol: symbol.id },
       );
     }
     try {
@@ -261,7 +289,9 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
       if (instance === undefined) {
         continue; // The target was validated when it was queued; a reload dropped the instance.
       }
-      instance.deliver(delivery.target.port, delivery.payload, { simTime });
+      // `deliver` accepts `unknown` because hosts forward widget payloads; the device layer
+      // captures and validates the value against the port type.
+      instance.deliver(delivery.target.port, delivery.payload as TopicPayload, { simTime });
     }
   }
 

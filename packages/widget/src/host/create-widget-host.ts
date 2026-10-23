@@ -41,11 +41,13 @@ import type {
   WidgetDiagnosticCode,
   WidgetHost,
   WidgetHostOptions,
+  WidgetHostSimulation,
   WidgetLayers,
   WidgetPublish,
   WidgetSandbox,
   WidgetSandboxFactory,
   WidgetSize,
+  SimulationPublish,
 } from './types';
 
 interface InstanceRecord {
@@ -101,6 +103,7 @@ class WidgetHostImpl implements WidgetHost {
   readonly #onPublish: ((publish: WidgetPublish) => void) | undefined;
   readonly #assets: WidgetAssetProvider | undefined;
   readonly #catalog: WidgetHostOptions['catalog'];
+  readonly #simulation: WidgetHostSimulation | undefined;
   readonly #createSandbox: WidgetSandboxFactory;
   readonly #layerStore = new WidgetLayerStore();
   readonly #instances = new Map<string, InstanceRecord>();
@@ -108,6 +111,7 @@ class WidgetHostImpl implements WidgetHost {
   readonly #documentListeners = new Set<(document: CanvasDocument) => void>();
 
   #document: CanvasDocument = EMPTY_DOCUMENT;
+  #unsubscribeSimulation: (() => void) | undefined;
   #reconcilePending = false;
   /** The next coordination pass has to reset the guest before it syncs instances. */
   #resetPending = false;
@@ -127,8 +131,12 @@ class WidgetHostImpl implements WidgetHost {
     this.#onPublish = options.onPublish;
     this.#assets = options.assets;
     this.#catalog = options.catalog;
+    this.#simulation = options.simulation;
     this.#createSandbox = options.sandbox ?? createDefaultWidgetSandbox;
     this.#dpr = options.dpr ?? currentDevicePixelRatio();
+    this.#unsubscribeSimulation = this.#simulation?.onPublish((publish) => {
+      this.#onSimulationPublish(publish);
+    });
   }
 
   getDocument(): CanvasDocument {
@@ -690,7 +698,7 @@ class WidgetHostImpl implements WidgetHost {
     const message = payload as Partial<WidgetPublishMessage> | null | undefined;
     if (!message || typeof message !== 'object') return;
     if (typeof message.instanceId !== 'string' || typeof message.port !== 'string') return;
-    this.#onPublish?.({
+    const publish: WidgetPublish = {
       instanceId: message.instanceId,
       port: message.port,
       payload: message.payload,
@@ -699,7 +707,47 @@ class WidgetHostImpl implements WidgetHost {
         typeof message.simTime === 'number' && Number.isFinite(message.simTime)
           ? message.simTime
           : 0,
-    });
+    };
+    // Route before notifying: a device may answer synchronously, and the host listener should see
+    // the publish once its effects are already in flight.
+    this.#forwardToSimulation(publish);
+    this.#onPublish?.(publish);
+  }
+
+  /** Sends a widget publish to the endpoint its port is bound to; unbound ports stay host-local. */
+  #forwardToSimulation(publish: WidgetPublish): void {
+    const simulation = this.#simulation;
+    if (simulation === undefined) return;
+    const widget = this.#document.widgets.find((candidate) => candidate.id === publish.instanceId);
+    const target = widget?.bindings?.[publish.port];
+    if (target === undefined) return;
+    try {
+      simulation.deliver(target, publish.payload);
+    } catch (error) {
+      this.#report(
+        'widget/deliver-failed',
+        `Publish from "${publish.instanceId}" could not reach ${target.symbol}.${target.port}: ${describeError(error)}`,
+        { instanceId: publish.instanceId, widget: widget?.widget },
+      );
+    }
+  }
+
+  /** Fans a device publish out to every widget port bound to its endpoint. */
+  #onSimulationPublish(publish: SimulationPublish): void {
+    if (this.#disposed) return;
+    const { target } = publish;
+    for (const widget of this.#document.widgets) {
+      const bindings = widget.bindings;
+      if (bindings === undefined) continue;
+      for (const port of Object.keys(bindings)) {
+        const bound = bindings[port];
+        if (bound === undefined || bound.symbol !== target.symbol || bound.port !== target.port) {
+          continue;
+        }
+        // `deliver` reports unknown instances and guest failures on its own.
+        this.deliver(widget.id, port, publish.payload, publish.simTime);
+      }
+    }
   }
 
   #onAssetFailedMessage(payload: unknown): void {
@@ -787,6 +835,8 @@ class WidgetHostImpl implements WidgetHost {
   async #shutdown(): Promise<void> {
     this.#disposed = true;
     this.#detach();
+    this.#unsubscribeSimulation?.();
+    this.#unsubscribeSimulation = undefined;
     this.#layerStore.clear();
     this.#instances.clear();
 

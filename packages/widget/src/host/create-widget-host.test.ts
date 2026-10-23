@@ -1,19 +1,27 @@
 import { SchematicError } from '@mica-js/core/canvas';
 import type {
   CanvasBindingCatalog,
+  CanvasBindingTarget,
   CanvasCommand,
   CanvasDocument,
   CanvasWidgetInstance,
 } from '@mica-js/core/canvas';
 import { describe, expect, it } from 'vitest';
 import { createStaticWidgetProvider } from '../provider/static';
-import { WIDGET_ERROR_EVENT, WIDGET_FRAME_EVENT, WIDGET_PUBLISH_EVENT } from '../runtime/protocol';
+import {
+  WIDGET_DELIVER_METHOD,
+  WIDGET_ERROR_EVENT,
+  WIDGET_FRAME_EVENT,
+  WIDGET_PUBLISH_EVENT,
+} from '../runtime/protocol';
 import type { WidgetAssetRef } from '../runtime/types';
 import type { WidgetModule } from '../types';
 import { createWidgetHost } from './create-widget-host';
 import type {
+  SimulationPublish,
   WidgetAssetProvider,
   WidgetDiagnostic,
+  WidgetHostSimulation,
   WidgetLayerChange,
   WidgetPublish,
   WidgetSandbox,
@@ -143,6 +151,36 @@ class FakeSandbox implements WidgetSandbox {
   }
 }
 
+/** Stand-in for `DeviceSimExecutor`: records deliveries and lets a test publish on demand. */
+class FakeSimulation implements WidgetHostSimulation {
+  readonly delivered: { readonly target: CanvasBindingTarget; readonly payload: unknown }[] = [];
+  /** When set, the next `deliver` throws it, so the host has to report instead of throwing. */
+  failNext: Error | undefined;
+  readonly #listeners = new Set<(publish: SimulationPublish) => void>();
+
+  deliver(target: CanvasBindingTarget, payload: unknown): void {
+    const failure = this.failNext;
+    this.failNext = undefined;
+    if (failure !== undefined) throw failure;
+    this.delivered.push({ target, payload });
+  }
+
+  onPublish(listener: (publish: SimulationPublish) => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+
+  publish(publish: SimulationPublish): void {
+    for (const listener of [...this.#listeners]) listener(publish);
+  }
+
+  listenerCount(): number {
+    return this.#listeners.size;
+  }
+}
+
 function createBitmap(instanceId: string): FakeBitmap {
   const bitmap: FakeBitmap = {
     instanceId,
@@ -200,6 +238,7 @@ interface HarnessOptions {
   readonly module?: WidgetModule;
   readonly assets?: WidgetAssetProvider;
   readonly catalog?: CanvasBindingCatalog;
+  readonly simulation?: WidgetHostSimulation;
 }
 
 function createHarness(sandbox = new FakeSandbox(), options: HarnessOptions = {}): Harness {
@@ -222,6 +261,7 @@ function createHarness(sandbox = new FakeSandbox(), options: HarnessOptions = {}
     onPublish: (publish) => publishes.push(publish),
     ...(options.assets === undefined ? {} : { assets: options.assets }),
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+    ...(options.simulation === undefined ? {} : { simulation: options.simulation }),
   });
   host.getLayers().subscribe((change) => changes.push(change));
   host.onDocumentChange((document) => documents.push(document));
@@ -1230,5 +1270,92 @@ describe('createWidgetHost', () => {
     // session table when `reset-runtime` fails, so that attempt fails too and is reported.
     expect(mountCount(harness.sandbox)).toBe(2);
     expect(harness.diagnostics[1]).toMatchObject({ code: 'widget/mount-failed' });
+  });
+});
+
+describe('simulation bridge', () => {
+  it('forwards a bound widget publish to the simulation', async () => {
+    const simulation = new FakeSimulation();
+    const harness = createHarness(new FakeSandbox(), { simulation });
+    await harness.host.loadDocument(
+      canvas(instance({ id: ID_A, bindings: { pressed: { symbol: 'mcu', port: 'key' } } })),
+    );
+
+    harness.sandbox.emit(WIDGET_PUBLISH_EVENT, {
+      instanceId: ID_A,
+      port: 'pressed',
+      payload: true,
+      simTime: 5,
+    });
+
+    expect(simulation.delivered).toEqual([
+      { target: { symbol: 'mcu', port: 'key' }, payload: true },
+    ]);
+    expect(harness.publishes).toHaveLength(1);
+  });
+
+  it('keeps publishes of unbound ports host-local', async () => {
+    const simulation = new FakeSimulation();
+    const harness = createHarness(new FakeSandbox(), { simulation });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+
+    harness.sandbox.emit(WIDGET_PUBLISH_EVENT, { instanceId: ID_A, port: 'value', payload: 1 });
+
+    expect(simulation.delivered).toEqual([]);
+    expect(harness.publishes).toHaveLength(1);
+  });
+
+  it('delivers a simulation publish to every widget bound to the endpoint', async () => {
+    const simulation = new FakeSimulation();
+    const harness = createHarness(new FakeSandbox(), { simulation });
+    await harness.host.loadDocument(
+      canvas(
+        instance({ id: ID_A, bindings: { value: { symbol: 'mcu', port: 'display' } } }),
+        instance({
+          id: ID_B,
+          bindings: {
+            value: { symbol: 'mcu', port: 'display' },
+            other: { symbol: 'mcu', port: 'unrelated' },
+          },
+        }),
+      ),
+    );
+
+    simulation.publish({ target: { symbol: 'mcu', port: 'display' }, payload: 7, simTime: 9 });
+    await flush();
+
+    expect(harness.sandbox.callsOf(WIDGET_DELIVER_METHOD)).toEqual([
+      [ID_A, 'value', 7, 9],
+      [ID_B, 'value', 7, 9],
+    ]);
+  });
+
+  it('reports a rejected forward without dropping the publish', async () => {
+    const simulation = new FakeSimulation();
+    const harness = createHarness(new FakeSandbox(), { simulation });
+    await harness.host.loadDocument(
+      canvas(instance({ id: ID_A, bindings: { value: { symbol: 'mcu', port: 'display' } } })),
+    );
+    simulation.failNext = new Error('simulator rejected');
+
+    harness.sandbox.emit(WIDGET_PUBLISH_EVENT, { instanceId: ID_A, port: 'value', payload: 2 });
+
+    expect(harness.diagnostics[0]).toMatchObject({
+      code: 'widget/deliver-failed',
+      instanceId: ID_A,
+      message: expect.stringContaining('simulator rejected'),
+    });
+    expect(harness.publishes).toHaveLength(1);
+  });
+
+  it('unsubscribes from the simulation on dispose', async () => {
+    const simulation = new FakeSimulation();
+    const harness = createHarness(new FakeSandbox(), { simulation });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+    expect(simulation.listenerCount()).toBe(1);
+
+    await harness.host.dispose();
+
+    expect(simulation.listenerCount()).toBe(0);
   });
 });

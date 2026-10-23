@@ -30,6 +30,8 @@ export type {
   WidgetSandbox,
   WidgetSandboxFactory,
   WidgetSandboxHostOptions,
+  SimulationPublish,
+  WidgetHostSimulation,
 } from './host/types';
 export { createDefaultWidgetSandbox } from './host/sandbox';
 export { WIDGET_RUNTIME_SOURCE } from './internal/runtime-source';

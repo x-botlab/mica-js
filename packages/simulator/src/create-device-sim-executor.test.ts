@@ -227,7 +227,8 @@ describe('createDeviceSimExecutor', () => {
     executor.advance(timePs(1000));
     expect(publishes).toHaveLength(1);
 
-    await executor.reset();
+    // Synchronous on purpose: the modules are cached, so a reset never yields the host thread.
+    expect(executor.reset()).toBeUndefined();
 
     expect(executor.getSimTime()).toBe(0);
     expect(executor.getSchematic()).toBe(loaded);
@@ -240,17 +241,17 @@ describe('createDeviceSimExecutor', () => {
     const executor = createExecutor();
     await executor.loadSchematic(schematic(symbolOf('u1', MIRROR)));
 
-    await executor.dispose();
-    await executor.dispose();
+    expect(executor.dispose()).toBeUndefined();
+    expect(executor.dispose()).toBeUndefined();
 
     expect(executor.getState()).toBe('disposed');
     expect(executor.getTopics()).toEqual([]);
     expect(() => executor.advance(timePs(1))).toThrowError(SimulatorError);
     expect(() => executor.deliver({ symbol: 'u1', port: 'value' }, 1)).toThrowError(SimulatorError);
+    expect(() => executor.reset()).toThrowError(SimulatorError);
     await expect(executor.loadSchematic(schematic())).rejects.toMatchObject({
       code: 'simulator/disposed',
     });
-    await expect(executor.reset()).rejects.toMatchObject({ code: 'simulator/disposed' });
   });
 
   it('keeps a throwing publish listener from stopping the simulation', async () => {

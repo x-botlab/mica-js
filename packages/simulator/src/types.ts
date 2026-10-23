@@ -74,7 +74,12 @@ export interface DeviceSimExecutorOptions {
  *
  * The executor owns the scheduler, the device instances and the topic routing; the host owns the
  * clock: it calls {@link advance} with the slice of time it wants simulated and dispatches widget
- * input through {@link deliver}. Every getter returns the current value at call time.
+ * input through {@link deliver}. The executor itself never leaves the caller's thread — there is
+ * no worker and no message channel — so a host can wire it to `WidgetHost` and read a publish
+ * while the stack that produced it is still running.
+ *
+ * Every method except `loadSchematic` is synchronous: once a schematic is loaded, a host can
+ * advance, deliver, reset and dispose from plain event handlers.
  */
 export interface DeviceSimExecutor {
   getState(): SimulationState;
@@ -88,8 +93,10 @@ export interface DeviceSimExecutor {
   /**
    * Builds a runtime for `document` and mounts one device instance per symbol.
    *
-   * The new runtime is built before the old one is dropped, so a rejected load leaves the previous
-   * simulation untouched. Resolves once every `initialize` entry has run, with the clock back at 0.
+   * Asynchronous only because device modules are fetched through the provider: everything after
+   * that runs synchronously. The new runtime is built before the old one is dropped, so a rejected
+   * load leaves the previous simulation untouched. Resolves once every `initialize` entry has run,
+   * with the clock back at 0.
    *
    * @throws {SimulatorError} when a device cannot be loaded or instantiated.
    */
@@ -98,9 +105,9 @@ export interface DeviceSimExecutor {
   /**
    * Advances the virtual clock by `delta` picoseconds and runs everything scheduled up to it.
    *
-   * Synchronous on purpose: the whole slice runs inside the call, so the host can drive it from a
-   * frame loop and read {@link AdvanceReport} right away. Payloads queued by {@link deliver} are
-   * consumed at the start of the slice.
+   * The whole slice runs inside the call, so the host can drive it from a frame loop and read
+   * {@link AdvanceReport} right away. Payloads queued by {@link deliver} are consumed at the start
+   * of the slice.
    *
    * @throws {SimulatorError} when the executor is idle, disposed or `delta` is not positive.
    * @throws when a device faults; `getState()` is then `'faulted'`.
@@ -113,16 +120,24 @@ export interface DeviceSimExecutor {
   /**
    * Queues one payload for a device input port.
    *
+   * The payload is `unknown` on purpose: the host forwards what a widget published, and the device
+   * layer rejects a payload that does not match the port type.
+   *
    * Delivery is deferred to the next {@link advance}, so a host can post several events for the
    * same instant and have the devices observe them in call order.
    *
    * @throws {SimulatorError} when the symbol or port is unknown, or the port is an output.
    */
-  deliver(target: DeviceTopicTarget, payload: TopicPayload): void;
+  deliver(target: DeviceTopicTarget, payload: unknown): void;
 
-  /** Drops the running instances and rebuilds them from the current schematic at time 0. */
-  reset(): Promise<void>;
+  /**
+   * Drops the running instances and rebuilds them from the current schematic at time 0.
+   *
+   * Synchronous: the devices were already loaded by `loadSchematic`, so this is a fresh set of
+   * instances, not a reload.
+   */
+  reset(): void;
 
   /** Destroys every instance and releases the runtime. Idempotent. */
-  dispose(): Promise<void>;
+  dispose(): void;
 }

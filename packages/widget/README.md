@@ -209,6 +209,22 @@ const bytes = await api.assets.readBinary(api.props.texture.src);
 
 `api.publish(port, payload, simTime?)` 的第三个参数是 widget 做出反应时的仿真时刻，`onPublish` 回调因此总能读到 `simTime`。当前宿主没有仿真时钟，未显式传入时填 `0`；接入仿真后由 widget 传入当时的 `simTime`。
 
+### 接入仿真（`simulation`）
+
+`WidgetHostOptions.simulation` 让宿主自己完成 `symbol.port` ↔ widget 端口的双向路由，应用侧不必再手写转发：
+
+```ts
+import { createDeviceSimExecutor } from '@mica-js/simulator';
+
+const executor = createDeviceSimExecutor({ devices: provider });
+const host = createWidgetHost({ provider, assets, simulation: executor });
+```
+
+- **器件 → widget**：`simulation.onPublish` 的 `target` 与某个实例 `bindings` 里的端点相同时，宿主对该端口 `deliver(payload, simTime)`；同一端点绑了多个实例就逐个投递。
+- **widget → 器件**：widget 发布的端口有绑定就调用 `simulation.deliver(binding, payload)`；没绑定的端口仍只在宿主侧上报 `onPublish`。转发抛错上报 `widget/deliver-failed`，不影响 `onPublish` 的派发。
+- **同一线程**：`WidgetHostSimulation` 只有 `onPublish` / `deliver` 两个同步方法，宿主解析绑定也是同步的；唯一的一跳异步来自 widget sandbox 自己的 `deliver` 调用（iframe/worker 边界），不是仿真线程。`dispose()` 会退订。
+- 结构类型：`@mica-js/simulator` 的 `DeviceSimExecutor` 直接满足 `WidgetHostSimulation`，不需要适配层。
+
 ### 启动时机
 
 `createWidgetHost()` 同步返回，sandbox 在**第一个实例挂载时**才启动，同一次协调里的并发挂载共享这一次启动。没有实例的宿主不必承担 iframe + worker 的启动成本；挂载本身是异步的，因此懒启动对调用方不可见。
@@ -300,6 +316,17 @@ interface WidgetPublish {
   readonly simTime: number;
 }
 
+interface SimulationPublish {
+  readonly target: { readonly symbol: string; readonly port: string };
+  readonly payload: unknown;
+  readonly simTime: number;
+}
+
+interface WidgetHostSimulation {
+  onPublish(listener: (publish: SimulationPublish) => void): () => void;
+  deliver(target: { readonly symbol: string; readonly port: string }, payload: unknown): void;
+}
+
 interface PortDefinition {
   readonly title?: string;
   readonly description?: string;
@@ -362,7 +389,7 @@ interface WidgetProvider {
 - 加载器不执行源码、不创建 Worker；执行与隔离由 `WidgetHost` 交给 `@mica-js/sandbox`，本包不改动它的协议。
 - 不解析实现源码：`import`、`export` 是否合法留给 guest 的 `import()` 决定，加载器只负责取字节与纯数据定义。
 - 只合并属性默认值，不解析其它字段语义、不建立端口连接、不持久化实例配置。
-- 不做话题路由：`publish` 只经 `onPublish` 交给调用方（带上 widget 给出的 `simTime`，缺省 `0`），`deliver` 的 `simTime` 由调用方提供。
+- 不做话题路由：没有 `simulation` 时 `publish` 只经 `onPublish` 交给调用方（带上 widget 给出的 `simTime`，缺省 `0`），`deliver` 的 `simTime` 由调用方提供；提供 `simulation` 时宿主只按 `bindings` 端点转发，不校验载荷类型。
 - 不做资源缓存或动态 IO：资源只在挂载前预取一次，guest 侧没有网络与 DOM；`readBinary` 只读预取结果。
 - **不按端口声明校验 `publish` / `subscribe`**：这两个方法目前接受任意端口名，`WidgetDefinition.ports` 在运行时基本未被使用。因此 widget 可以伪造任意端口的消息，宿主侧的 `onPublish` 也会原样收到。**#99 必须补上校验**：按该实例解析到的 `definition.ports` 检查 `publish` 的端口存在且 `direction === 'output'`，对未声明的端口丢弃并上报诊断（`subscribe` 同理，方向为 `input`）。校验必须放在 guest 侧（不可信代码就在那里）或以 definition 为准在宿主侧过滤，且不能在 `WidgetHost` 公开接口里引入编辑器概念。
 - 不合成多层位图：`WidgetLayers` 只给位图与绘制顺序，合成交给宿主或 `@mica-js/canvas-editor`。
