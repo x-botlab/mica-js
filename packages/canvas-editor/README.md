@@ -124,7 +124,8 @@ scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主
 
 - 文档坐标是逻辑单位：100 % 缩放下 1 单位 = 1 CSS 像素；`rotation` 为度、顺时针、绕实例中心。
 - 画布按 `devicePixelRatio` 放大，绘制变换为 `setTransform(dpr * scale, 0, 0, dpr * scale, dpr * x, dpr * y)`。
-- 合成顺序：网格 → 位图（`layers.list()` 顺序；`bitmap === undefined` 的实例画占位框）→ 选中框 → 手柄。
+- 合成顺序：网格 → 位图（`layers.list()` 顺序；`bitmap === undefined` 的实例画占位框）→ 编辑模式的实例边框 → 选中框 → 手柄。
+- 编辑模式给**每个实例**画一圈半透明边框（`theme.outline`）：透明组件本身画不出东西，没有这圈边框就找不到它的位置。运行模式不画，交互动效与选中框一样只在编辑时出现。
 - 位图按实例几何绘制：`translate(x + width/2, y + height/2)` → `rotate` → `drawImage(bitmap, -width/2, -height/2, width, height)`。
 - 重绘由 `#dirty` 标志 + 单次 `requestAnimationFrame` 合并；触发点只有位图层变化、文档/模式/选择变化、交互步骤与容器尺寸变化，**空闲时不调度帧**。
 
