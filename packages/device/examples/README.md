@@ -15,6 +15,10 @@
 - 放在 `examples/` 而不是 `src/`：模型是器件作者产物，保留原始 JSON/JS 配对便于宿主、文档和后续 Playground 直接复用；同时与包源码和测试辅助代码区分。
 - 端到端回归在 [`../src/e2e/button-relay.test.ts`](../src/e2e/button-relay.test.ts)：从磁盘读取这两个文件，走 `loadDeviceModule` → `createDeviceInstance` → scheduler/IR → `createPowerRuntime` → `b.connection.apply` → topology 的完整链路，断言网络电压、观察投递、原子切换、复位、实例隔离、掉电门控与电气冲突行为。
 
+## 已知前提
+
+端到端用例依赖两处**非公共合同**前提：同刻控制条目按实例注册顺序执行（`initialize` 补丁顺序断言即由此而来），以及测试板的 `VCC`/`LOAD` 供电、`COIL*`/`NO*`/`NC*` 上下拉与 `board` 电源域绑定属于宿主侧电路。改动调度器同刻 control 排序或该测试板接线都会改变断言，需要同步更新。
+
 ## 运行
 
 在仓库根目录运行：

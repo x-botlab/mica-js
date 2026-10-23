@@ -255,7 +255,7 @@ export function circuit(options: CircuitOptions = {}): {
   };
 }
 
-/** `TopologyRuntime` facade that records every committed patch request in order. */
+/** `TopologyRuntime` facade that records every accepted patch request in commit order. */
 export function recordingTopology(
   runtime: TopologyRuntime,
   patches: TopologyConnectionPatch[],
@@ -263,8 +263,9 @@ export function recordingTopology(
   return {
     instance: runtime.instance,
     submit(patch: TopologyConnectionPatch): void {
-      patches.push(patch);
+      // Record only accepted requests: a patch the runtime rejects was never committed.
       runtime.submit(patch);
+      patches.push(patch);
     },
     updatePinStates: (states) => runtime.updatePinStates(states),
     refresh: (pins) => runtime.refresh(pins),
@@ -281,7 +282,7 @@ export interface Rig {
   readonly scheduler: Scheduler;
   readonly power: PowerRuntime;
   readonly topology: TopologyRuntime;
-  /** Every `connection.apply` patch requested by a device, in commit order. */
+  /** Every `connection.apply` patch accepted by the bound topology, in commit order. */
   readonly patches: readonly TopologyConnectionPatch[];
   readonly buttons: ReadonlyMap<string, DeviceInstance>;
   readonly relays: ReadonlyMap<string, DeviceInstance>;

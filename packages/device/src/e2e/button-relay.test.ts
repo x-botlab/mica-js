@@ -4,10 +4,16 @@ import {
   SchedulerError,
   createPowerRuntime,
   createScheduler,
+  type TopologyConnectionPatch,
   type TopologyPinRef,
 } from '@mica-js/core';
-import { DeviceError, createDeviceInstance, loadDeviceModule } from '../index';
-import type { DeviceInstance } from '../index';
+import {
+  DeviceError,
+  createDeviceInstance,
+  loadDeviceModule,
+  parseDeviceDescription,
+} from '../index';
+import type { DeviceFactory, DeviceInstance, LoadedDeviceModule } from '../index';
 import {
   BUTTON_DEVICE_ID,
   RELAY_DEVICE_ID,
@@ -16,6 +22,7 @@ import {
   exampleProvider,
   pinState,
   readExampleDescription,
+  recordingTopology,
   withRig,
   type Rig,
 } from './test-helpers';
@@ -274,6 +281,108 @@ describe('ideal button and ideal relay end-to-end (#58)', () => {
       expect(rig.voltage(NO2)).toBe(5);
     } finally {
       rig.destroy();
+    }
+  });
+
+  it('stops a destroyed example instance without touching the rest of the chain', async () => {
+    await withRig((rig) => {
+      rig.settle();
+      rig.press('sw1', true);
+      rig.settle();
+      const before = rig.patches.length;
+
+      button(rig).destroy();
+
+      // The instance refuses new input instead of silently dropping it.
+      expect(() => rig.press('sw1', false)).toThrowError(
+        expect.objectContaining({ code: 'device/instance-destroyed' }),
+      );
+      rig.settle();
+      expect(rig.patches).toHaveLength(before);
+      // Committed topology state belongs to the host and is not rolled back by teardown.
+      expect(rig.connection('sw1', 'contact')).toBe('closed');
+      expect(rig.connection('k1', 'normallyOpen')).toBe('closed');
+      expect(rig.voltage(NO1)).toBe(5);
+
+      // The untouched channel keeps working after its neighbour is gone.
+      rig.press('sw2', true);
+      rig.settle();
+      expect(rig.connection('k2', 'normallyOpen')).toBe('closed');
+      expect(rig.voltage(NO2)).toBe(5);
+    });
+  });
+
+  it('runs onDispose exactly once and refuses input after destroy', async () => {
+    const scheduler = createScheduler();
+    const layout = circuit();
+    const power = createPowerRuntime(scheduler, layout.power, {
+      instanceId: 'power',
+      pinStates: layout.pinStates,
+    });
+    const patches: TopologyConnectionPatch[] = [];
+    const topology = recordingTopology(power, patches);
+    const description = parseDeviceDescription(await readExampleDescription(BUTTON_DEVICE_ID), {
+      name: BUTTON_DEVICE_ID,
+    });
+    // The committed example returns the `api.subscribe` disposer as `onDispose`. This probe
+    // keeps the same authoring calls and adds a counter, because controller teardown runs before
+    // the hook and leaves an unwrapped disposer with no other observable side effect.
+    let disposed = 0;
+    const factory: DeviceFactory = (api) => {
+      const contact = api.ir.connection('contact');
+      const setPressed = api.ir.entry('setPressed', ['bool']);
+      const initialize = api.ir.lifecycle('initialize', []);
+      setPressed.body((b, [pressed]) => {
+        b.connection.apply([{ connection: contact, closed: pressed }]);
+        b.return([]);
+      });
+      initialize.body((b) => {
+        b.connection.apply([{ connection: contact, closed: b.const('bool', false) }]);
+        b.return([]);
+      });
+      const stop = api.subscribe('pressed', (pressed) => {
+        if (typeof pressed !== 'boolean') {
+          return;
+        }
+        return api.post(setPressed, [pressed]);
+      });
+      return {
+        initialize,
+        onDispose: () => {
+          disposed += 1;
+          stop();
+        },
+      };
+    };
+    const loaded: LoadedDeviceModule = { deviceId: BUTTON_DEVICE_ID, description, factory };
+    try {
+      const instance = createDeviceInstance(loaded, scheduler, {
+        instanceId: 'sw1',
+        pinHost: power,
+        connections: { topology },
+      });
+      scheduler.start();
+      instance.deliver('pressed', true, { simTime: 0 });
+      scheduler.start();
+      expect(topology.connectionState('sw1', 'contact')).toBe('closed');
+
+      instance.destroy();
+      expect(disposed).toBe(1);
+      // Repeated destroy is a no-op and must not repeat the disposer.
+      instance.destroy();
+      expect(disposed).toBe(1);
+
+      // Teardown keeps the committed contact, rejects further input and runs no queued work.
+      expect(topology.connectionState('sw1', 'contact')).toBe('closed');
+      const before = patches.length;
+      expect(() => instance.deliver('pressed', false, { simTime: 0 })).toThrowError(
+        expect.objectContaining({ code: 'device/instance-destroyed' }),
+      );
+      scheduler.start();
+      expect(patches).toHaveLength(before);
+      expect(topology.connectionState('sw1', 'contact')).toBe('closed');
+    } finally {
+      power.destroy();
     }
   });
 
