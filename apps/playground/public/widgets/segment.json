@@ -1,0 +1,9 @@
+{
+  "properties": {
+    "digits": { "type": "number", "title": "位数", "default": 8 },
+    "color": { "type": "color", "title": "颜色", "default": "#ff3b30" }
+  },
+  "ports": {
+    "value": { "direction": "input", "type": "string", "title": "数值" }
+  }
+}

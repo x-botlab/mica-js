@@ -223,6 +223,9 @@ importers:
 
   apps/playground:
     dependencies:
+      '@mica-js/canvas-editor':
+        specifier: workspace:*
+        version: link:../../packages/canvas-editor
       '@mica-js/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -232,6 +235,9 @@ importers:
       '@mica-js/schematic-editor':
         specifier: workspace:*
         version: link:../../packages/schematic-editor
+      '@mica-js/widget':
+        specifier: workspace:*
+        version: link:../../packages/widget
       '@radix-ui/react-slot':
         specifier: ^1.2.4
         version: 1.5.0(@types/react@19.3.0)(react@19.3.1)

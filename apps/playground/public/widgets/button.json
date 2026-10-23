@@ -1,0 +1,8 @@
+{
+  "properties": {
+    "label": { "type": "string", "title": "标签", "default": "S1" }
+  },
+  "ports": {
+    "press": { "direction": "output", "type": "boolean", "title": "按下" }
+  }
+}

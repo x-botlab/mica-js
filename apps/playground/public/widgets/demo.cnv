@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "widgets": [
+    {
+      "id": "5d0f1c9a-1b2c-4d3e-8f40-9a7b6c5d4e30",
+      "widget": "demo:image",
+      "x": 0,
+      "y": 0,
+      "width": 480,
+      "height": 320,
+      "rotation": 0,
+      "properties": {
+        "image": { "src": "assets/panel.png", "mode": "file" }
+      }
+    },
+    {
+      "id": "9a8b7c6d-5e4f-4a3b-b2c1-0d9e8f7a6b50",
+      "widget": "demo:segment",
+      "x": 96,
+      "y": 32,
+      "width": 320,
+      "height": 72,
+      "rotation": 0,
+      "bindings": {
+        "value": { "symbol": "demo-board", "port": "value" }
+      }
+    },
+    {
+      "id": "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e50",
+      "widget": "demo:button",
+      "x": 40,
+      "y": 228,
+      "width": 96,
+      "height": 56,
+      "rotation": 0,
+      "bindings": {
+        "press": { "symbol": "demo-board", "port": "press" }
+      }
+    }
+  ]
+}

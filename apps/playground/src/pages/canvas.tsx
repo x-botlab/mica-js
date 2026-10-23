@@ -1,0 +1,296 @@
+import {
+  createCanvasScene,
+  DARK_CANVAS_THEME,
+  type CanvasMode,
+  type CanvasScene,
+  type CanvasSceneDiagnostic,
+} from '@mica-js/canvas-editor';
+import type { CanvasBindingTarget } from '@mica-js/core/canvas';
+import {
+  createPackageWidgetProvider,
+  createWidgetHost,
+  type PackageFiles,
+  type WidgetAssetSource,
+  type WidgetHost,
+} from '@mica-js/widget';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+
+/** Endpoint `demo.cnv` binds; the simulation the scene forwards to is faked with a timer below. */
+const DRIVER_TARGET: CanvasBindingTarget = { symbol: 'demo-board', port: 'value' };
+
+const PACKAGE_FILES: PackageFiles = {
+  label: 'demo',
+  read: (path) => fetchBytes(`widgets/${path}`),
+};
+
+const ASSETS: WidgetAssetSource = {
+  read: (ref) => fetchBytes(ref.src),
+};
+
+async function fetchBytes(path: string): Promise<Uint8Array> {
+  const response = await fetch(new URL(path, globalThis.document.baseURI));
+  if (!response.ok) {
+    throw new Error(`读取 ${path} 失败（HTTP ${response.status}）`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+interface DiagnosticEntry {
+  readonly id: number;
+  readonly code: string;
+  readonly message: string;
+}
+
+interface PublishEntry {
+  readonly id: number;
+  readonly time: string;
+  readonly endpoint: string;
+  readonly payload: string;
+  readonly simTime: number;
+}
+
+function nextId(): number {
+  return Date.now() + Math.random();
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function describePayload(payload: unknown): string {
+  try {
+    return JSON.stringify(payload) ?? String(payload);
+  } catch {
+    return String(payload);
+  }
+}
+
+export function CanvasPage() {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const sceneRef = useRef<CanvasScene | null>(null);
+  const [ready, setReady] = useState(false);
+  const [mode, setMode] = useState<CanvasMode>('edit');
+  const [selected, setSelected] = useState(0);
+  const [revision, setRevision] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<readonly DiagnosticEntry[]>([]);
+  const [publishes, setPublishes] = useState<readonly PublishEntry[]>([]);
+
+  const pushDiagnostic = useCallback((diagnostic: CanvasSceneDiagnostic) => {
+    setDiagnostics((entries) =>
+      [{ id: nextId(), code: diagnostic.code, message: diagnostic.message }, ...entries].slice(
+        0,
+        40,
+      ),
+    );
+  }, []);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container === null) {
+      return;
+    }
+    let cancelled = false;
+    let host: WidgetHost | undefined;
+    let scene: CanvasScene | undefined;
+
+    const start = async (): Promise<void> => {
+      try {
+        const provider = await createPackageWidgetProvider({ files: PACKAGE_FILES });
+        const ownedHost = createWidgetHost({
+          provider,
+          assets: ASSETS,
+          onDiagnostic: pushDiagnostic,
+          // `WidgetHostOptions.onPublish` takes exactly one callback; the scene fans it out.
+          onPublish: (publish) => scene?.receivePublish(publish),
+        });
+        host = ownedHost;
+        const text = new TextDecoder().decode(await fetchBytes('widgets/demo.cnv'));
+        const created = await createCanvasScene({
+          container,
+          document: text,
+          host: ownedHost,
+          mode: 'edit',
+          theme: DARK_CANVAS_THEME,
+          onChange: () => setRevision((value) => value + 1),
+          onSelectionChange: (ids) => setSelected(ids.length),
+          onDiagnostic: pushDiagnostic,
+        });
+        created.onPublish((target, payload, simTime) => {
+          setPublishes((entries) =>
+            [
+              {
+                id: nextId(),
+                time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+                endpoint: `${target.symbol}.${target.port}`,
+                payload: describePayload(payload),
+                simTime,
+              },
+              ...entries,
+            ].slice(0, 40),
+          );
+        });
+
+        if (cancelled) {
+          created.destroy();
+          return;
+        }
+        scene = created;
+        sceneRef.current = created;
+        setReady(true);
+        if (import.meta.env.DEV) {
+          // Console handles for poking at the mounted scene while developing the playground.
+          Object.assign(globalThis, { micaCanvas: created, micaWidgetHost: ownedHost });
+        }
+      } catch (cause) {
+        if (!cancelled) {
+          setError(describeError(cause));
+          // Nothing will mount over this host; release its sandbox instead of leaking it.
+          void host?.dispose();
+        }
+      }
+    };
+
+    void start();
+
+    return () => {
+      cancelled = true;
+      scene?.destroy();
+      scene = undefined;
+      sceneRef.current = null;
+      // The playground owns the host, so it is the one that terminates the sandbox.
+      void host?.dispose();
+      host = undefined;
+    };
+  }, [pushDiagnostic]);
+
+  useEffect(() => {
+    if (!ready || mode !== 'run') {
+      return;
+    }
+    const scene = sceneRef.current;
+    if (scene === null) {
+      return;
+    }
+    let tick = 0;
+    const drive = (): void => {
+      tick += 1;
+      scene.deliver(DRIVER_TARGET, (1000 + (tick % 1000) * 0.37).toFixed(3), tick);
+    };
+    // One value right away, so the display lights up instead of waiting for the first second.
+    drive();
+    const timer = globalThis.setInterval(drive, 1000);
+    return () => globalThis.clearInterval(timer);
+  }, [mode, ready]);
+
+  const switchMode = (next: CanvasMode): void => {
+    const scene = sceneRef.current;
+    if (scene === null) {
+      return;
+    }
+    try {
+      scene.setMode(next);
+      setMode(next);
+      setError(null);
+    } catch (cause) {
+      // A rejected switch keeps the old mode; the toolbar shows why instead of lying about it.
+      setError(`切换到${next === 'run' ? '运行' : '编辑'}模式失败：${describeError(cause)}`);
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2">
+        <div className="flex items-center gap-1">
+          {(['edit', 'run'] as const).map((candidate) => (
+            <Button
+              key={candidate}
+              size="xs"
+              variant={mode === candidate ? 'default' : 'outline'}
+              disabled={!ready}
+              onClick={() => switchMode(candidate)}
+            >
+              {candidate === 'edit' ? '编辑' : '运行'}
+            </Button>
+          ))}
+        </div>
+        <Badge variant="muted">selected {selected}</Badge>
+        <Badge variant={diagnostics.length === 0 ? 'muted' : 'outline'}>
+          诊断 {diagnostics.length}
+        </Badge>
+        <Badge variant="muted">rev {revision}</Badge>
+        <span className="text-muted-foreground ml-auto text-[11px]">
+          {error ?? '编辑模式拖动实例；运行模式点击按键，数码管每秒刷新。'}
+        </span>
+      </div>
+
+      <div className="flex min-h-0 flex-1">
+        <div className="relative min-h-0 min-w-0 flex-1">
+          <div ref={containerRef} className="absolute inset-0" />
+          {ready ? null : (
+            <div className="text-muted-foreground pointer-events-none absolute inset-0 grid place-items-center text-[11px]">
+              {error === null ? '加载 widget 包与示例 .cnv…' : null}
+            </div>
+          )}
+        </div>
+
+        <aside className="bg-card/40 flex w-72 shrink-0 flex-col border-l">
+          <section className="flex min-h-0 flex-1 flex-col">
+            <header className="flex items-center gap-2 border-b px-3 py-2">
+              <h2 className="text-xs font-semibold">诊断</h2>
+              <span className="text-muted-foreground text-[10px]">onDiagnostic</span>
+              <Button
+                size="xs"
+                variant="ghost"
+                className="ml-auto"
+                onClick={() => {
+                  setDiagnostics([]);
+                  setPublishes([]);
+                }}
+              >
+                清空
+              </Button>
+            </header>
+            <ul className="min-h-0 flex-1 overflow-y-auto p-2 text-[11px]">
+              {diagnostics.length === 0 ? (
+                <li className="text-muted-foreground px-1">没有诊断。</li>
+              ) : (
+                diagnostics.map((entry) => (
+                  <li key={entry.id} className="border-b py-1 last:border-b-0">
+                    <span className="font-mono text-[10px] text-amber-500">{entry.code}</span>
+                    <p className="text-muted-foreground break-words">{entry.message}</p>
+                  </li>
+                ))
+              )}
+            </ul>
+          </section>
+
+          <section className="flex min-h-0 flex-1 flex-col border-t">
+            <header className="flex items-center gap-2 border-b px-3 py-2">
+              <h2 className="text-xs font-semibold">发布日志</h2>
+              <span className="text-muted-foreground text-[10px]">scene.onPublish</span>
+            </header>
+            <ul className="min-h-0 flex-1 overflow-y-auto p-2 font-mono text-[11px]">
+              {publishes.length === 0 ? (
+                <li className="text-muted-foreground px-1 font-sans">运行模式下点击按键试试。</li>
+              ) : (
+                publishes.map((entry) => (
+                  <li key={entry.id} className="flex gap-2 border-b py-1 last:border-b-0">
+                    <span className="text-muted-foreground shrink-0">{entry.time}</span>
+                    <span className="shrink-0 text-sky-400">{entry.endpoint}</span>
+                    <span className="text-foreground break-all">{entry.payload}</span>
+                    <span className="text-muted-foreground ml-auto shrink-0">
+                      t={entry.simTime}
+                    </span>
+                  </li>
+                ))
+              )}
+            </ul>
+          </section>
+        </aside>
+      </div>
+    </div>
+  );
+}

@@ -12,6 +12,8 @@
 - widget 的挂载、帧生成与 sandbox 生命周期属于 `@mica-js/widget` 的 `WidgetHost`。
 - 视口与选择是编辑器状态，**不写入文档**。
 
+`mountCanvasEditor` 保持这些边界；可选的组合层 `createCanvasScene` 只把已有的 `WidgetHost` 与编辑器接起来，文档和 sandbox 仍归宿主所有。
+
 ## 安装
 
 ```bash
@@ -41,6 +43,51 @@ editor.setMode('run'); // 运行模式：只转发输入，不显示选中框与
 ```
 
 `container` 需要有确定的尺寸：编辑器把 root 撑满容器，并按 `devicePixelRatio` 放大画布。
+
+## 组合层（`createCanvasScene`）
+
+`CanvasScene` 把文档、`WidgetHost`（`@mica-js/widget`）与编辑器串成一个整体：命令向下交给宿主，快照向上回灌，发布按绑定反查。宿主仍然拥有文档与 sandbox，场景只负责连线。
+
+```ts
+import { createCanvasScene } from '@mica-js/canvas-editor';
+import { createWidgetHost } from '@mica-js/widget';
+
+let scene: CanvasScene | undefined;
+const host = createWidgetHost({
+  provider,
+  assets,
+  onDiagnostic: (diagnostic) => console.warn(diagnostic.code, diagnostic.message),
+  // `WidgetHostOptions.onPublish` 只接受一个回调；场景把它的监听器集合扇出给 `onPublish`。
+  onPublish: (publish) => scene?.receivePublish(publish),
+});
+
+scene = await createCanvasScene({
+  container,
+  document: cnvText, // `.cnv` 文本或已解析的 CanvasDocument
+  host,
+  onChange: (document) => persist(document), // 每次提交后写回磁盘
+  onDiagnostic: (diagnostic) => console.warn(diagnostic.code, diagnostic.message),
+});
+
+scene.setMode('run'); // 先取消进行中的交互，再切到运行模式
+scene.deliver({ symbol: 'mcu', port: 'value' }, '12.34', simTime); // 仿真侧 → widget（按端点扇出）
+const off = scene.onPublish((target, payload, simTime) => route(target, payload, simTime));
+scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主决定
+```
+
+| 成员                      | 说明                                                            |
+| ------------------------- | --------------------------------------------------------------- |
+| `document`                | 宿主当前提交的快照                                              |
+| `mode`                    | 当前模式                                                        |
+| `setMode(mode)`           | 进入运行模式前先 `cancelInteraction()`；失败时保持原模式        |
+| `deliver(target, …)`      | 把载荷投递到**所有**绑定该端点的实例；没有命中时什么也不做      |
+| `onPublish(listener)`     | 收到 `(target, payload, simTime)`；返回取消订阅函数             |
+| `receivePublish(publish)` | 接收宿主 `onPublish` 转发来的 `WidgetPublish`，无绑定时上报诊断 |
+| `destroy()`               | `editor.destroy()` + 取消订阅；**不会** `dispose()` 宿主        |
+
+诊断码以 `canvas-scene/` 开头：`command-failed`（宿主拒绝命令）、`unbound-publish`（发布端口没有绑定）、`change-failed`（`onChange` 抛错）、`publish-failed`（监听器抛错）。命令被拒时编辑器不回灌，继续画旧快照。
+
+`createCanvasScene` 是异步的：它先 `await host.loadDocument(options.document)`，再挂载编辑器；宿主校验失败时直接抛出且不挂载。
 
 ## 挂载选项
 
@@ -118,6 +165,7 @@ editor.setMode('run'); // 运行模式：只转发输入，不显示选中框与
 | `src/render/grid.ts`     | 网格步长与主/次网格线判定（无 DOM）                                   |
 | `src/render/renderer.ts` | 网格、位图、选中框与手柄的 Canvas 绘制                                |
 | `src/editor/mount.ts`    | DOM 绑定、rAF 调度、把事件喂给状态机、把命令交给 `onCommand`          |
+| `src/scene.ts`           | `createCanvasScene`：文档 ↔ 宿主 ↔ 编辑器与端口投递/发布反查          |
 | `src/styles.ts`          | 注入的 `<style>`（画布容器与画布元素）                                |
 
 纯逻辑模块不依赖 DOM，单测跑在 node 环境：
@@ -134,3 +182,4 @@ pnpm --filter @mica-js/canvas-editor run build
 - Widget 契约：[#7](https://github.com/x-botlab/mica-js/issues/7)
 - Widget 运行时：[#98](https://github.com/x-botlab/mica-js/issues/98)
 - 画布编辑器：[#100](https://github.com/x-botlab/mica-js/issues/100)
+- 场景组装与 playground demo：[#101](https://github.com/x-botlab/mica-js/issues/101)
