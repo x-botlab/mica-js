@@ -39,6 +39,97 @@ export class IRStorageError extends Error {
   }
 }
 
+/**
+ * Internal storage fast path for the JIT. It is deliberately not re-exported from `index.ts`:
+ * every other module must keep using the checked public `IRStorage` surface.
+ *
+ * Invariants the JIT may rely on:
+ * - **I1**: if `control.epoch` reads the same value twice, no dependency token could have gone
+ *   from valid to invalid in between, because `validateDependencies` only observes
+ *   `record.units` and every unit-map reassignment bumps the epoch.
+ * - **I3**: an epoch bump is sufficient but not necessary for an invalidation. Lazy unit creation
+ *   and rewrites that happen to preserve every token also bump it; over-reporting is safe.
+ *   (I2 lives on `ProviderRuntime.cacheEpoch` in `provider.ts`.)
+ */
+export const storageInternals: unique symbol = Symbol('mica.ir.storageInternals');
+
+/** Mutable control block shared by every record of one storage instance. */
+export interface StorageControl {
+  /** Incremented on every reassignment of any record's unit map; never decreases. */
+  epoch: number;
+  /** Nesting depth of `suspendStorageWrites`; writes are rejected while greater than zero. */
+  suspended: number;
+}
+
+/** Scalar record view exposed to the JIT. */
+export interface ScalarRecordInternals {
+  readonly kind: 'state' | 'array';
+  readonly scalarType: ScalarType;
+  readonly length: number;
+  readonly width: number;
+  /** Backing bytes: `byteOffset === 0` and the buffer is owned by this record. */
+  readonly bytes: Uint8Array;
+  /**
+   * Typed view over {@link bytes}, present only on little-endian hosts. `bool` uses
+   * `Uint8Array`; f32/f64 use `Float32Array`/`Float64Array`.
+   */
+  readonly view:
+    | Uint8Array
+    | Int8Array
+    | Uint16Array
+    | Int16Array
+    | Uint32Array
+    | Int32Array
+    | Float32Array
+    | Float64Array
+    | undefined;
+  /**
+   * Raw word view for f32/f64 only: f32 has `length` words, f64 has `2 * length` words with the
+   * low word first (little-endian). JIT stores must write canonical NaN bits through this view.
+   */
+  readonly raw: Uint32Array | undefined;
+  /** True while the whole-resource unit is tracked; writes must then call `advanceScalar`. */
+  readonly tracked: () => boolean;
+  /** Binds the owning storage's whole-resource unit so JIT views can advance it. */
+  readonly advance: () => void;
+}
+
+/** Whole-unit advance hook shared by storage records and JIT resource views. */
+export interface AdvanceableRecord {
+  advance(): void;
+}
+
+/** Byte record view exposed to the JIT. */
+export interface ByteRecordInternals {
+  readonly kind: 'bytes' | 'inbox';
+  readonly writable: boolean;
+  readonly length: number;
+  readonly unitBytes: number;
+  readonly bytes: Uint8Array;
+  /** DataView covering the whole record for endian-explicit byte access. */
+  readonly data: DataView;
+}
+
+/**
+ * Object behind `storage[storageInternals]`. JIT code may use these members directly:
+ * scalar loads/stores go through `view`/`raw`, byte access through `data`, and the guarded write
+ * sequence is `control.suspended` → backing write → `advanceScalar` when `tracked()` is true.
+ */
+export interface StorageInternals {
+  readonly control: StorageControl;
+  readonly littleEndianHost: boolean;
+  /** Returns the record; invalid refs throw the same `IRStorageError` as the public methods. */
+  scalar(
+    ref: object,
+    kind: 'state' | 'array',
+    label: string,
+    write?: boolean,
+  ): ScalarRecordInternals;
+  bytes(ref: object, write: boolean, label: string): ByteRecordInternals;
+  /** Mirrors the tracked-store path: a no-op while the record is untracked. */
+  advanceScalar(record: AdvanceableRecord): void;
+}
+
 export type StorageValue<T extends ScalarType> = T extends 'bool'
   ? boolean
   : T extends FloatType
@@ -87,6 +178,20 @@ export interface IRStorageOptions {
 }
 
 /**
+ * Deep, engine-independent snapshot of every declared memory resource.
+ *
+ * Maps are keyed by the declared memory name (unique per validated module) so
+ * two storage instances can be compared without sharing opaque refs. Scalar
+ * values use the same encoding as `loadState`/`loadArray` (floats keep their
+ * exact `FloatBits`), and byte regions (including inboxes) are copied.
+ */
+export interface IRStorageSnapshot {
+  readonly scalars: ReadonlyMap<string, StorageValue<ScalarType>>;
+  readonly arrays: ReadonlyMap<string, readonly StorageValue<ScalarType>[]>;
+  readonly bytes: ReadonlyMap<string, Uint8Array>;
+}
+
+/**
  * Per-instance storage for declared state, arrays, byte regions, and inboxes.
  * The buffers are private; callers can only use the checked accessors.
  */
@@ -132,27 +237,32 @@ export interface IRStorage {
   updateBytesFromBytes(ref: BytesRef, offset: number, bytes: Uint8Array): void;
   readVersionedBytes(ref: ReadableBytesRef, offset: number, length: number): IRVersionedBytes;
   validateDependencies(dependencies: readonly IRResourceDependency[]): boolean;
+  /**
+   * Copy every memory resource into a fresh snapshot. Reads never mint version
+   * units, so dumping is observationally equivalent to `loadState` /
+   * `loadArray` / byte reads and can be used by test oracles at any point.
+   */
+  dump(): IRStorageSnapshot;
 }
 
-interface BaseRecord {
+interface BaseRecord<K extends MemoryDefinition['kind'] = MemoryDefinition['kind']> {
   readonly definition: MemoryDefinition;
   readonly ref: object;
-  readonly kind: MemoryDefinition['kind'];
+  readonly kind: K;
   readonly writable: boolean;
   readonly bytes: Uint8Array;
+  /** Owning storage's control block; shared by every record of one storage instance. */
+  readonly control: StorageControl;
 }
 
-interface ScalarRecord extends BaseRecord {
-  readonly scalarType: ScalarType;
-  readonly length: number;
-  readonly width: number;
+interface ScalarRecord extends BaseRecord<'state' | 'array'>, ScalarRecordInternals {
   readonly identity: IRResourceIdentity;
   units: ReadonlyMap<number, IRResourceDependency>;
+  /** Bound by the owning storage so `advanceScalar` can mint tokens and bump the epoch. */
+  advance: () => void;
 }
 
-interface ByteRecord extends BaseRecord {
-  readonly length: number;
-  readonly unitBytes: number;
+interface ByteRecord extends BaseRecord<'bytes' | 'inbox'>, ByteRecordInternals {
   readonly identity: IRResourceIdentity;
   units: ReadonlyMap<number, IRResourceDependency>;
 }
@@ -166,18 +276,36 @@ const CANONICAL_NAN: Readonly<Record<FloatType, bigint>> = {
 
 /** Storage instances whose mutating accessors are suspended for provider generation (#60). */
 const suspendedWrites = new WeakMap<object, number>();
+/** Control blocks by storage instance, so suspend/resume can mirror the nesting depth. */
+const storageControls = new WeakMap<object, StorageControl>();
+
+let littleEndianProbe: () => boolean = detectLittleEndianHost;
+
+/**
+ * @internal Replaces the host endianness probe. Tests use it to exercise the big-endian branch;
+ * production code never calls it. Pass nothing to restore the real probe.
+ */
+export function setLittleEndianHostProbe(probe?: () => boolean): void {
+  littleEndianProbe = probe ?? detectLittleEndianHost;
+}
 
 export function suspendStorageWrites(storage: IRStorage): void {
-  suspendedWrites.set(storage, (suspendedWrites.get(storage) ?? 0) + 1);
+  const depth = (suspendedWrites.get(storage) ?? 0) + 1;
+  suspendedWrites.set(storage, depth);
+  const control = storageControls.get(storage);
+  if (control !== undefined) control.suspended = depth;
 }
 
 export function resumeStorageWrites(storage: IRStorage): void {
   const depth = suspendedWrites.get(storage) ?? 0;
-  if (depth <= 1) {
+  const remaining = depth <= 1 ? 0 : depth - 1;
+  if (remaining === 0) {
     suspendedWrites.delete(storage);
   } else {
-    suspendedWrites.set(storage, depth - 1);
+    suspendedWrites.set(storage, remaining);
   }
+  const control = storageControls.get(storage);
+  if (control !== undefined) control.suspended = remaining;
 }
 
 function freezeDependency(identity: IRResourceIdentity): IRResourceDependency {
@@ -192,9 +320,11 @@ export function createIRStorage(module: IRModule, options?: IRStorageOptions): I
   if (!isRecord(module) || !Array.isArray(module.memories)) {
     throw new IRStorageError('invalid-resource', 'createIRStorage requires an IR module');
   }
+  const control: StorageControl = { epoch: 0, suspended: 0 };
+  const littleEndianHost = littleEndianProbe();
   const records = new Map<object, MemoryRecord>();
   for (const definition of module.memories) {
-    const record = createRecord(definition);
+    const record = createRecord(definition, control, littleEndianHost);
     if (records.has(record.ref)) {
       throw new IRStorageError('invalid-resource', 'Duplicate memory reference in module');
     }
@@ -217,18 +347,46 @@ export function createIRStorage(module: IRModule, options?: IRStorageOptions): I
     }
     updateResources.add(ref);
   }
-  return new Storage(records, updateResources);
+  return new Storage(records, updateResources, control, littleEndianHost);
 }
 
 class Storage implements IRStorage, IRProviderTrackedReads {
   readonly #records: ReadonlyMap<object, MemoryRecord>;
   readonly #updateResources: ReadonlySet<object>;
   readonly #dependencies = new WeakMap<object, { record: MemoryRecord; index: number }>();
+  readonly #control: StorageControl;
+  readonly #internals: StorageInternals;
 
-  constructor(records: ReadonlyMap<object, MemoryRecord>, updateResources: ReadonlySet<object>) {
+  constructor(
+    records: ReadonlyMap<object, MemoryRecord>,
+    updateResources: ReadonlySet<object>,
+    control: StorageControl,
+    littleEndianHost: boolean,
+  ) {
     this.#records = records;
     this.#updateResources = updateResources;
+    this.#control = control;
+    for (const record of records.values()) {
+      if ('scalarType' in record) {
+        // The closure keeps the dependency registry and epoch private to this storage.
+        record.advance = () => this.#advanceScalar(record);
+      }
+    }
+    this.#internals = Object.freeze({
+      control,
+      littleEndianHost,
+      scalar: (ref: object, kind: 'state' | 'array', label: string, write = false) =>
+        this.#scalar(ref, kind, label, write),
+      bytes: (ref: object, write: boolean, label: string) => this.#byte(ref, write, label),
+      advanceScalar,
+    });
+    storageControls.set(this, control);
     Object.freeze(this);
+  }
+
+  /** Internal fast path for the JIT; see the invariants documented on {@link storageInternals}. */
+  get [storageInternals](): StorageInternals {
+    return this.#internals;
   }
 
   loadState<T extends ScalarType>(ref: StateRef<T>): StorageValue<T> {
@@ -370,7 +528,7 @@ class Storage implements IRStorage, IRProviderTrackedReads {
       const units = this.#prepareUnits(target, start, count, true);
       // No allocation, callbacks, or validation may intervene in this commit.
       target.bytes.set(bytes, start);
-      target.units = units;
+      this.#setUnits(target, units);
     } catch {
       throw new IRStorageError(
         'allocation-failure',
@@ -391,7 +549,7 @@ class Storage implements IRStorage, IRProviderTrackedReads {
     try {
       const units = this.#prepareUnits(target, start, count, true);
       target.bytes.fill(value, start, start + count);
-      target.units = units;
+      this.#setUnits(target, units);
     } catch {
       throw new IRStorageError(
         'allocation-failure',
@@ -413,7 +571,7 @@ class Storage implements IRStorage, IRProviderTrackedReads {
       // Inbox contents are host inputs; advance the whole-resource unit so tracked reads expire.
       const units = this.#prepareUnits(record, start, snapshot.length, true);
       record.bytes.set(snapshot, start);
-      record.units = units;
+      this.#setUnits(record, units);
     } catch {
       throw new IRStorageError('allocation-failure', 'writeInbox could not prepare its update');
     }
@@ -429,7 +587,7 @@ class Storage implements IRStorage, IRProviderTrackedReads {
       const units = this.#prepareUnits(target, start, snapshot.length, true);
       // No allocation, callbacks, or validation may intervene in this commit.
       target.bytes.set(snapshot, start);
-      target.units = units;
+      this.#setUnits(target, units);
     } catch {
       throw new IRStorageError(
         'allocation-failure',
@@ -448,11 +606,35 @@ class Storage implements IRStorage, IRProviderTrackedReads {
       const dependencies: IRResourceDependency[] = [];
       for (const index of coveredUnits(record, start, count)) dependencies.push(units.get(index)!);
       const result = Object.freeze({ bytes, dependencies: Object.freeze(dependencies) });
-      record.units = units;
+      this.#setUnits(record, units);
       return result;
     } catch {
       throw new IRStorageError('allocation-failure', 'Could not capture versioned bytes');
     }
+  }
+
+  dump(): IRStorageSnapshot {
+    const scalars = new Map<string, StorageValue<ScalarType>>();
+    const arrays = new Map<string, readonly StorageValue<ScalarType>[]>();
+    const bytes = new Map<string, Uint8Array>();
+    for (const record of this.#records.values()) {
+      const name = record.definition.name;
+      if ('scalarType' in record) {
+        const values: StorageValue<ScalarType>[] = [];
+        for (let index = 0; index < record.length; index += 1) {
+          const bits = readBits(record.bytes, index * record.width, record.width, 'little');
+          values.push(decodeScalar(record.scalarType, bits) as StorageValue<ScalarType>);
+        }
+        if (record.kind === 'state') {
+          scalars.set(name, values[0] as StorageValue<ScalarType>);
+        } else {
+          arrays.set(name, Object.freeze(values));
+        }
+        continue;
+      }
+      bytes.set(name, record.bytes.slice());
+    }
+    return Object.freeze({ scalars, arrays, bytes });
   }
 
   validateDependencies(dependencies: readonly IRResourceDependency[]): boolean {
@@ -482,19 +664,26 @@ class Storage implements IRStorage, IRProviderTrackedReads {
   }
 
   #assertWritable(): void {
-    if (suspendedWrites.has(this)) {
+    if (this.#control.suspended > 0) {
       throw new IRStorageError(
         'unauthorized-resource',
         'Storage writes are suspended during provider generation',
       );
     }
   }
+
+  /** Single mutation point for unit maps; keeps `control.epoch` in lockstep with `units`. */
+  #setUnits(record: MemoryRecord, units: ReadonlyMap<number, IRResourceDependency>): void {
+    record.units = units;
+    this.#control.epoch += 1;
+  }
+
   /** Whole-resource unit for scalar state/arrays; created lazily on the first tracked read. */
   #scalarUnit(record: ScalarRecord): IRResourceDependency {
     const previous = record.units.get(0);
     if (previous !== undefined) return previous;
     const dependency = freezeDependency(record.identity);
-    record.units = new Map([[0, dependency]]);
+    this.#setUnits(record, new Map([[0, dependency]]));
     this.#dependencies.set(dependency, { record, index: 0 });
     return dependency;
   }
@@ -507,7 +696,7 @@ class Storage implements IRStorage, IRProviderTrackedReads {
   #advanceScalar(record: ScalarRecord): void {
     if (record.units.size === 0) return;
     const dependency = freezeDependency(record.identity);
-    record.units = new Map([[0, dependency]]);
+    this.#setUnits(record, new Map([[0, dependency]]));
     this.#dependencies.set(dependency, { record, index: 0 });
   }
 
@@ -571,7 +760,65 @@ class Storage implements IRStorage, IRProviderTrackedReads {
   }
 }
 
-function createRecord(definition: MemoryDefinition): MemoryRecord {
+/**
+ * Advances the whole-resource unit for a scalar record after a JIT fast-path write. Mirrors the
+ * tracked store path exactly: untracked records are ignored, tracked ones get a fresh token.
+ */
+export function advanceScalar(record: AdvanceableRecord): void {
+  record.advance();
+}
+
+/** True when host typed arrays use little-endian byte order (every mainstream target). */
+function detectLittleEndianHost(): boolean {
+  return new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
+}
+
+type ScalarView = NonNullable<ScalarRecordInternals['view']>;
+
+/**
+ * Prebuilds the JIT views over a record's freshly allocated buffer. Big-endian hosts get no
+ * views; the JIT falls back to `DataView(bytes, ..., true)` there.
+ */
+function scalarViews(
+  type: ScalarType,
+  bytes: Uint8Array,
+  length: number,
+  littleEndianHost: boolean,
+): { view: ScalarView | undefined; raw: Uint32Array | undefined } {
+  if (!littleEndianHost) return { view: undefined, raw: undefined };
+  const buffer = bytes.buffer;
+  switch (type) {
+    case 'bool':
+    case 'u8':
+      return { view: new Uint8Array(buffer, 0, length), raw: undefined };
+    case 'i8':
+      return { view: new Int8Array(buffer, 0, length), raw: undefined };
+    case 'u16':
+      return { view: new Uint16Array(buffer, 0, length), raw: undefined };
+    case 'i16':
+      return { view: new Int16Array(buffer, 0, length), raw: undefined };
+    case 'u32':
+      return { view: new Uint32Array(buffer, 0, length), raw: undefined };
+    case 'i32':
+      return { view: new Int32Array(buffer, 0, length), raw: undefined };
+    case 'f32':
+      return {
+        view: new Float32Array(buffer, 0, length),
+        raw: new Uint32Array(buffer, 0, length),
+      };
+    case 'f64':
+      return {
+        view: new Float64Array(buffer, 0, length),
+        raw: new Uint32Array(buffer, 0, 2 * length),
+      };
+  }
+}
+
+function createRecord(
+  definition: MemoryDefinition,
+  control: StorageControl,
+  littleEndianHost: boolean,
+): MemoryRecord {
   if (!isRecord(definition) || !isRecord(definition.ref)) {
     throw new IRStorageError('invalid-resource', 'Invalid memory definition');
   }
@@ -625,15 +872,22 @@ function createRecord(definition: MemoryDefinition): MemoryRecord {
     }
     const width = scalarWidth(type);
     const bytes = allocate(length, width, definition.name);
+    const views = scalarViews(type, bytes, length, littleEndianHost);
     const record: ScalarRecord = {
       definition,
       ref: definition.ref,
       kind,
       writable: definition.writable,
       bytes,
+      control,
       scalarType: type,
       length,
       width,
+      view: views.view,
+      raw: views.raw,
+      tracked: () => record.units.size > 0,
+      // Rebound by the owning storage so the closure can reach its dependency registry.
+      advance: () => undefined,
       identity: Object.freeze({}) as IRResourceIdentity,
       units: new Map(),
     };
@@ -685,8 +939,10 @@ function createRecord(definition: MemoryDefinition): MemoryRecord {
       kind,
       writable: definition.writable,
       bytes,
+      control,
       length,
       unitBytes,
+      data: new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
       identity: Object.freeze({}) as IRResourceIdentity,
       units: new Map(),
     };

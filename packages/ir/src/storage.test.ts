@@ -1,3 +1,5 @@
+/// <reference types="node" />
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   createIRModule,
@@ -5,8 +7,22 @@ import {
   IRStorageError,
   type FloatBits,
   type IRModule,
+  type IRStorage,
   type IRStorageErrorCode,
+  type RuntimeScalar,
+  type ScalarType,
 } from './index';
+import {
+  advanceScalar,
+  providerReadArray,
+  providerReadState,
+  resumeStorageWrites,
+  setLittleEndianHostProbe,
+  storageInternals,
+  suspendStorageWrites,
+  type IRProviderTrackedReads,
+  type StorageInternals,
+} from './storage';
 import { byteReadonly, refKind } from './types';
 
 const RAM = new Uint8Array([
@@ -515,5 +531,338 @@ describe('@mica-js/ir storage', () => {
     expect('buffer' in storage).toBe(false);
     expect('version' in storage).toBe(false);
     expect('versions' in storage).toBe(false);
+  });
+});
+
+function storageInternalsOf(storage: IRStorage): StorageInternals {
+  return (storage as unknown as { readonly [storageInternals]: StorageInternals })[
+    storageInternals
+  ];
+}
+
+describe('storage internals fast path', () => {
+  it('bumps the epoch exactly when a unit map is reassigned', () => {
+    const fixture = createFixture();
+    const storage = createIRStorage(fixture.module, { updateResources: [fixture.ram] });
+    const fast = storageInternalsOf(storage);
+    const tracked = storage as unknown as IRProviderTrackedReads;
+    expect(fast.control).toEqual({ epoch: 0, suspended: 0 });
+
+    // Public reads and stores with no tracked unit leave every unit map untouched.
+    expect(storage.loadState(fixture.word)).toBe(0x1234);
+    expect(storage.loadArray(fixture.words, 1)).toBe(0x3344);
+    expect(storage.loadBytes('u8', 'little', fixture.ram, 0)).toBe(0x11);
+    storage.storeBytes('u8', 'little', fixture.ram, 0, 0x11);
+    storage.copy(fixture.ram, 1, fixture.ram, 0, 1);
+    storage.storeState(fixture.word, 0x1234);
+    expect(fast.control.epoch).toBe(0);
+
+    // Lazy unit creation counts as a rewrite.
+    tracked[providerReadState](fixture.word);
+    expect(fast.control.epoch).toBe(1);
+    // A tracked store advances the whole-resource unit even for an identical value.
+    storage.storeState(fixture.word, 0x1234);
+    expect(fast.control.epoch).toBe(2);
+    tracked[providerReadArray](fixture.words, 0);
+    expect(fast.control.epoch).toBe(3);
+    storage.storeArray(fixture.words, 0, 0x1122);
+    expect(fast.control.epoch).toBe(4);
+    // Untracked resources are unaffected.
+    storage.storeState(fixture.dword, 1);
+    expect(fast.control.epoch).toBe(4);
+
+    // Versioned byte reads lazily mint units.
+    const firstRead = storage.readVersionedBytes(fixture.ram, 0, 2);
+    expect(fast.control.epoch).toBe(5);
+    const secondRead = storage.readVersionedBytes(fixture.ram, 0, 2);
+    expect(fast.control.epoch).toBe(6);
+    // I3: the epoch moved even though the tokens are unchanged and still valid.
+    expect(secondRead.dependencies).toEqual(firstRead.dependencies);
+    expect(storage.validateDependencies(firstRead.dependencies)).toBe(true);
+
+    const beforeWrites = fast.control.epoch;
+    storage.storeBytes('u8', 'little', fixture.ram, 0, 0x99);
+    storage.updateBytes(fixture.ram, 0, fixture.ram, 0, 1);
+    storage.fillBytes(fixture.ram, 0, 1, 0);
+    storage.updateBytesFromBytes(fixture.ram, 0, new Uint8Array([1]));
+    storage.writeInbox(fixture.inbox, 0, new Uint8Array([1]));
+    storage.writeInbox(fixture.inbox, 0, new Uint8Array(0));
+    expect(fast.control.epoch).toBe(beforeWrites + 4);
+  });
+
+  it('keeps dependency tokens valid while the epoch is unchanged (I1)', () => {
+    const fixture = createFixture();
+    const storage = createIRStorage(fixture.module, { updateResources: [fixture.ram] });
+    const fast = storageInternalsOf(storage);
+    const read = storage.readVersionedBytes(fixture.ram, 0, 2);
+    const epoch = fast.control.epoch;
+    expect(storage.validateDependencies(read.dependencies)).toBe(true);
+
+    storage.loadBytes('u8', 'little', fixture.ram, 0);
+    storage.storeBytes('u8', 'little', fixture.ram, 0, 1);
+    storage.copy(fixture.ram, 1, fixture.ram, 0, 1);
+    expect(fast.control.epoch).toBe(epoch);
+    expect(storage.validateDependencies(read.dependencies)).toBe(true);
+
+    storage.updateBytesFromBytes(fixture.ram, 0, new Uint8Array([2]));
+    expect(fast.control.epoch).toBeGreaterThan(epoch);
+    expect(storage.validateDependencies(read.dependencies)).toBe(false);
+  });
+
+  it('mirrors the suspension depth on the control block', () => {
+    const fixture = createFixture();
+    const fast = storageInternalsOf(fixture.storage);
+    expect(fast.control.suspended).toBe(0);
+
+    suspendStorageWrites(fixture.storage);
+    suspendStorageWrites(fixture.storage);
+    expect(fast.control.suspended).toBe(2);
+    resumeStorageWrites(fixture.storage);
+    expect(fast.control.suspended).toBe(1);
+    const error = expectStorageError(
+      () => fixture.storage.storeState(fixture.word, 1),
+      'unauthorized-resource',
+    );
+    expect(error.message).toBe('Storage writes are suspended during provider generation');
+
+    resumeStorageWrites(fixture.storage);
+    expect(fast.control.suspended).toBe(0);
+    fixture.storage.storeState(fixture.word, 1);
+    expect(fixture.storage.loadState(fixture.word)).toBe(1);
+  });
+
+  it('exposes record internals without widening the public contract', () => {
+    const fixture = createFixture();
+    const fast = storageInternalsOf(fixture.storage);
+    expect(fast.littleEndianHost).toBe(true);
+
+    const state = fast.scalar(fixture.word, 'state', 'test state');
+    expect(state.kind).toBe('state');
+    expect(state.scalarType).toBe('u16');
+    expect(state.length).toBe(1);
+    expect(state.width).toBe(2);
+    expect(state.view).toBeInstanceOf(Uint16Array);
+    expect(state.raw).toBeUndefined();
+    expect(state.tracked()).toBe(false);
+    expect(state.bytes.byteOffset).toBe(0);
+    expect(state.view!.buffer).toBe(state.bytes.buffer);
+
+    const record = fast.bytes(fixture.ram, true, 'test bytes');
+    expect(record.kind).toBe('bytes');
+    expect(record.writable).toBe(true);
+    expect(record.length).toBe(RAM.length);
+    expect(record.unitBytes).toBe(RAM.length);
+    expect(record.data).toBeInstanceOf(DataView);
+    expect(record.data.byteLength).toBe(RAM.length);
+    expect(record.data.getUint8(0)).toBe(0x11);
+
+    const wideModule = createIRModule();
+    const wideArray = wideModule.array('wide', 'f64', [1, 2]);
+    const singleModule = createIRModule();
+    const singleArray = singleModule.array('single', 'f32', [1, 2]);
+    const wideRecord = storageInternalsOf(createIRStorage(wideModule)).scalar(
+      wideArray,
+      'array',
+      'wide',
+    );
+    const singleRecord = storageInternalsOf(createIRStorage(singleModule)).scalar(
+      singleArray,
+      'array',
+      'single',
+    );
+    expect(wideRecord.view).toBeInstanceOf(Float64Array);
+    expect(wideRecord.raw).toHaveLength(4);
+    expect(singleRecord.view).toBeInstanceOf(Float32Array);
+    expect(singleRecord.raw).toHaveLength(2);
+
+    expectStorageError(() => fast.bytes(fixture.rom, true, 'test bytes'), 'readonly-resource');
+    expectStorageError(() => fast.scalar(fixture.ram, 'state', 'test state'), 'invalid-resource');
+  });
+
+  it('advances a tracked scalar after a direct typed-view write', () => {
+    const fixture = createFixture();
+    const fast = storageInternalsOf(fixture.storage);
+    const reads = fixture.storage as unknown as IRProviderTrackedReads;
+    const token = reads[providerReadState](fixture.word).dependencies;
+    const record = fast.scalar(fixture.word, 'state', 'test state', true);
+    expect(record.tracked()).toBe(true);
+
+    (record.view as unknown as { [index: number]: number })[0] = 0xabcd;
+    expect(fixture.storage.loadState(fixture.word)).toBe(0xabcd);
+    advanceScalar(record);
+    expect(fixture.storage.validateDependencies(token)).toBe(false);
+
+    const next = reads[providerReadState](fixture.word);
+    expect(next.value).toBe(0xabcd);
+    expect(fixture.storage.validateDependencies(next.dependencies)).toBe(true);
+
+    // Untracked records ignore advanceScalar entirely.
+    const fresh = createIRStorage(fixture.module);
+    const freshFast = storageInternalsOf(fresh);
+    const untracked = freshFast.scalar(fixture.word, 'state', 'test state', true);
+    const before = freshFast.control.epoch;
+    advanceScalar(untracked);
+    expect(freshFast.control.epoch).toBe(before);
+  });
+
+  it('writes every scalar type through the typed views like the public path', () => {
+    const cases: readonly { type: ScalarType; value: RuntimeScalar }[] = [
+      { type: 'bool', value: true },
+      { type: 'u8', value: 0xa5 },
+      { type: 'u16', value: 0xbeef },
+      { type: 'u32', value: 0xdeadbeef },
+      { type: 'i8', value: -0x71 },
+      { type: 'i16', value: -0x1234 },
+      { type: 'i32', value: -0x1234567 },
+      { type: 'f32', value: 1.5 },
+      { type: 'f64', value: 0.1 },
+      { type: 'f32', value: Number.NaN },
+      { type: 'f32', value: -0 },
+      { type: 'f32', value: 2 ** -149 },
+      { type: 'f64', value: Number.NaN },
+      { type: 'f64', value: -0 },
+      { type: 'f64', value: 5e-324 },
+    ];
+    for (const { type, value } of cases) {
+      const module = createIRModule();
+      const initial = type === 'bool' ? false : 0;
+      const slot = module.array('slot', type, [initial, initial]);
+      const storage = createIRStorage(module);
+      const record = storageInternalsOf(storage).scalar(slot, 'array', 'slot', true);
+      const index = 1;
+
+      // Reference bytes and value come from the checked public path.
+      storage.storeArray(slot, index, value);
+      const expectedBytes = Uint8Array.from(record.bytes);
+      const expected = storage.loadArray(slot, index);
+
+      // Clear, then write the same value through the JIT fast path.
+      record.bytes.fill(0);
+      if ((type === 'f32' || type === 'f64') && typeof value === 'number' && Number.isNaN(value)) {
+        if (type === 'f32') {
+          record.raw![index] = 0x7fc00000;
+        } else {
+          record.raw![index * 2] = 0;
+          record.raw![index * 2 + 1] = 0x7ff80000;
+        }
+      } else {
+        (record.view as unknown as { [index: number]: number })[index] =
+          typeof value === 'boolean' ? (value ? 1 : 0) : (value as number);
+      }
+      expect(Uint8Array.from(record.bytes)).toEqual(expectedBytes);
+      expect(storage.loadArray(slot, index)).toEqual(expected);
+    }
+  });
+
+  it('omits typed views on big-endian hosts', () => {
+    const fixture = createFixture();
+    try {
+      setLittleEndianHostProbe(() => false);
+      const storage = createIRStorage(fixture.module);
+      const fast = storageInternalsOf(storage);
+      expect(fast.littleEndianHost).toBe(false);
+
+      const scalar = fast.scalar(fixture.word, 'state', 'test state');
+      expect(scalar.view).toBeUndefined();
+      expect(scalar.raw).toBeUndefined();
+      expect(storage.loadState(fixture.word)).toBe(0x1234);
+      storage.storeState(fixture.word, 0xabcd);
+      expect(storage.loadState(fixture.word)).toBe(0xabcd);
+
+      const record = fast.bytes(fixture.ram, true, 'test bytes');
+      expect(record.data.getUint8(0)).toBe(0x11);
+      storage.storeBytes('u16', 'little', fixture.ram, 0, 0x0102);
+      expect(storage.loadBytes('u16', 'little', fixture.ram, 0)).toBe(0x0102);
+    } finally {
+      setLittleEndianHostProbe();
+    }
+  });
+
+  it('keeps #setUnits as the only unit-map assignment', () => {
+    const source = readFileSync(new URL('./storage.ts', import.meta.url), 'utf8');
+    expect(source.match(/\.units\s*=/g) ?? []).toHaveLength(1);
+    expect(source).toMatch(/#setUnits\([^)]*\)[^{]*\{\s*record\.units = units;/);
+  });
+
+  describe('dump', () => {
+    it('snapshots every scalar, array, and byte resource by name', () => {
+      const fixture = createFixture();
+      fixture.storage.storeState(fixture.dword, 0x01020304);
+      fixture.storage.storeArray(fixture.words, 1, 0xbeef);
+      fixture.storage.storeBytes('u16', 'big', fixture.ram, 0, 0xcafe);
+      fixture.storage.writeInbox(fixture.inbox, 0, new Uint8Array([7, 8]));
+
+      const snapshot = fixture.storage.dump();
+
+      expect([...snapshot.scalars.keys()]).toEqual([
+        'flag',
+        'byte',
+        'word',
+        'dword',
+        'sbyte',
+        'sword',
+        'sdword',
+        'single',
+        'double',
+      ]);
+      expect(snapshot.scalars.get('flag')).toBe(false);
+      expect(snapshot.scalars.get('byte')).toBe(0);
+      expect(snapshot.scalars.get('word')).toBe(0x1234);
+      expect(snapshot.scalars.get('dword')).toBe(0x01020304);
+      expect(snapshot.scalars.get('sbyte')).toBe(-1);
+      expect(snapshot.scalars.get('single')).toEqual<FloatBits>({
+        type: 'f32',
+        bits: '0x3fc00000',
+      });
+      expect(snapshot.scalars.get('double')).toEqual<FloatBits>({
+        type: 'f64',
+        bits: '0x3fb999999999999a',
+      });
+
+      expect([...snapshot.arrays.keys()]).toEqual(['words', 'emptyArray']);
+      expect(snapshot.arrays.get('words')).toEqual([0x1122, 0xbeef]);
+      expect(snapshot.arrays.get('emptyArray')).toEqual([]);
+
+      expect([...snapshot.bytes.keys()]).toEqual(['ram', 'rom', 'input', 'empty']);
+      const ram = snapshot.bytes.get('ram')!;
+      expect(Array.from(ram.subarray(0, 4))).toEqual([0xca, 0xfe, 0x33, 0x44]);
+      expect(Array.from(snapshot.bytes.get('rom')!)).toEqual([
+        0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+      ]);
+      expect(Array.from(snapshot.bytes.get('input')!)).toEqual([7, 8, 0, 0]);
+      expect(snapshot.bytes.get('empty')!.length).toBe(0);
+    });
+
+    it('returns deep copies that never share storage buffers', () => {
+      const fixture = createFixture();
+      const snapshot = fixture.storage.dump();
+      snapshot.bytes.get('ram')![0] = 0xff;
+      fixture.storage.storeBytes('u8', 'little', fixture.ram, 1, 0xee);
+
+      expect(fixture.storage.loadBytes('u8', 'little', fixture.ram, 0)).toBe(0x11);
+      expect(snapshot.bytes.get('ram')![1]).toBe(0x22);
+      expect(snapshot.scalars.get('single')).not.toBe(fixture.storage.loadState(fixture.single));
+      expect(snapshot.arrays.get('words')).not.toBe(fixture.storage.dump().arrays.get('words'));
+    });
+
+    it('does not mint version units or observe writes as reads', () => {
+      const fixture = createFixture();
+      const control = storageInternalsOf(fixture.storage).control;
+      const before = control.epoch;
+      const first = fixture.storage.dump();
+      const second = fixture.storage.dump();
+      expect(control.epoch).toBe(before);
+      expect([...first.scalars]).toEqual([...second.scalars]);
+      expect(second.scalars.get('flag')).toBe(fixture.storage.loadState(fixture.flag));
+    });
+
+    it('keeps NaN payload bits exactly as stored', () => {
+      const fixture = createFixture();
+      fixture.storage.storeState(fixture.single, { type: 'f32', bits: '0x7fa00001' });
+      expect(fixture.storage.dump().scalars.get('single')).toEqual<FloatBits>({
+        type: 'f32',
+        bits: '0x7fa00001',
+      });
+    });
   });
 });

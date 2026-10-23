@@ -155,7 +155,10 @@ export function evaluateFloatInstruction(
       return fromNumber(target, literals[0]);
     }
     try {
-      return floating(target, { type: target, bits: literals[0] } as FloatBits);
+      const bits = floating(target, { type: target, bits: literals[0] } as FloatBits);
+      // SSA floating values are always frozen; `const.bits` is the only instruction that
+      // materializes a new FloatBits, so freeze it before it can reach an executor or host.
+      return Object.freeze({ type: bits.type, bits: bits.bits });
     } catch {
       fail('invalid-instruction', 'const.bits requires an exact-width hexadecimal literal');
     }

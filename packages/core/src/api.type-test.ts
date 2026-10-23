@@ -5,6 +5,7 @@ import {
   createScheduler,
   timePs,
   type IRSchedulerInstance,
+  type IRSchedulerInstanceDefinition,
   type Scheduler,
   type SchedulerExecutionContext,
   type SchedulerInstance,
@@ -51,4 +52,19 @@ instance.at(target, 0, [{ payload: 1 }]);
 context.timePs = timePs(1);
 // @ts-expect-error Instance identity cannot be retargeted after registration.
 instance.instanceId = 'other';
+declare const definition: IRSchedulerInstanceDefinition;
+const engine: 'jit' | 'reference' | undefined = definition.engine;
+void engine;
+const jitDefinition: IRSchedulerInstanceDefinition = { ...definition, engine: 'jit' };
+const referenceDefinition: IRSchedulerInstanceDefinition = { ...definition, engine: 'reference' };
+void [jitDefinition, referenceDefinition];
+// @ts-expect-error `exactOptionalPropertyTypes` keeps "not supplied" distinct from `undefined`.
+const defaultDefinition: IRSchedulerInstanceDefinition = { ...definition, engine: undefined };
+void defaultDefinition;
+createIRSchedulerInstance(createScheduler(), { ...definition, engine: 'reference' });
+// @ts-expect-error Only the two built-in engines are accepted.
+const unknownEngine: IRSchedulerInstanceDefinition = { ...definition, engine: 'wasm' };
+void unknownEngine;
+// @ts-expect-error Only "jit" and "reference" are valid engines.
+createIRSchedulerInstance(createScheduler(), { ...definition, engine: 'wasm' });
 void createIRSchedulerInstance;

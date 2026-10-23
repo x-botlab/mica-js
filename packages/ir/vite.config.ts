@@ -15,7 +15,14 @@ export default defineConfig({
   plugins: [
     dts({
       include: ['src'],
-      exclude: ['src/**/*.test.ts', 'src/**/*.type-test.ts'],
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/*.type-test.ts',
+        'src/jit/testing/**',
+        'src/testing/**',
+        // Benchmarks are development-only; they must not enter `dist`.
+        'bench/**',
+      ],
       // One flattened declaration, so node16 consumers never follow extensionless imports.
       bundleTypes: true,
     }),

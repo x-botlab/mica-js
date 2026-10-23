@@ -6,6 +6,8 @@ import type {
   FloatBits,
   InboxRef,
   IRStorage,
+  IRStorageSnapshot,
+  ScalarType,
   StateRef,
   StorageValue,
 } from './index';
@@ -66,3 +68,9 @@ storage.copy(inbox, 0, ram, 0, 1);
 storage.copy(rom, 0, ram, 0, 1);
 // @ts-expect-error a state reference is not a byte source
 storage.copy(ram, 0, byte, 0, 1);
+
+const snapshot = storage.dump();
+expectType<IRStorageSnapshot>(snapshot);
+expectType<ReadonlyMap<string, StorageValue<ScalarType>>>(snapshot.scalars);
+expectType<ReadonlyMap<string, readonly StorageValue<ScalarType>[]>>(snapshot.arrays);
+expectType<ReadonlyMap<string, Uint8Array>>(snapshot.bytes);

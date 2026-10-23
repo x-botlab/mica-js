@@ -33,7 +33,12 @@ export default defineConfig({
       tsconfigPath: './tsconfig.build.json',
       entryRoot: 'src',
       bundleTypes: true,
-      exclude: ['src/**/*.test.ts', 'src/**/*.type-test.ts', 'src/**/test-helpers.ts'],
+      exclude: [
+        'src/**/*.test.ts',
+        'src/**/*.type-test.ts',
+        'src/**/test-helpers.ts',
+        'src/testing',
+      ],
     }),
   ],
 });
