@@ -387,7 +387,7 @@ describe('createWidgetHost', () => {
   it('prefetches nested asset references from document props', async () => {
     const reads: WidgetAssetRef[] = [];
     const assets: WidgetAssetProvider = {
-      read: async (ref) => {
+      resolve: async (ref) => {
         reads.push(ref);
         return new TextEncoder().encode(`bytes:${ref.src}`);
       },
@@ -422,7 +422,7 @@ describe('createWidgetHost', () => {
 
   it('mounts without the failed asset and reports widget/asset-failed', async () => {
     const assets: WidgetAssetProvider = {
-      read: async (ref) => {
+      resolve: async (ref) => {
         if (ref.src === 'missing.png') throw new Error('ENOENT');
         return new Uint8Array([1, 2]);
       },
@@ -474,7 +474,7 @@ describe('createWidgetHost', () => {
   it('remounts an instance whose property names an asset the guest never received', async () => {
     const reads: string[] = [];
     const assets: WidgetAssetProvider = {
-      read: async (ref) => {
+      resolve: async (ref) => {
         reads.push(ref.src);
         return new TextEncoder().encode(`bytes:${ref.src}`);
       },
@@ -1172,7 +1172,7 @@ describe('createWidgetHost', () => {
     const harness = createHarness(undefined, {
       module: assetModule,
       assets: {
-        read: async (ref) => {
+        resolve: async (ref) => {
           reads.push(ref.src);
           return new TextEncoder().encode(ref.src);
         },

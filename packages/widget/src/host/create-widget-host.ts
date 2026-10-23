@@ -638,9 +638,9 @@ class WidgetHostImpl implements WidgetHost {
     const entries = await Promise.all(
       [...refs.values()].map(async (assetRef): Promise<[string, Uint8Array] | undefined> => {
         try {
-          const bytes = await source.read(assetRef);
+          const bytes = await source.resolve(assetRef);
           if (!(bytes instanceof Uint8Array)) {
-            throw new TypeError('WidgetAssetProvider.read() must resolve to a Uint8Array');
+            throw new TypeError('WidgetAssetProvider.resolve() must resolve to a Uint8Array');
           }
           return [assetRef.src, bytes];
         } catch (error) {

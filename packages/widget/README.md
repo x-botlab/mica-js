@@ -34,7 +34,7 @@ pnpm add @mica-js/widget
 | `WidgetInputEvent`                          | 转发给实例的指针 / 键盘事件                                          |
 | `WidgetInstanceApi` / `WidgetInstance`      | Widget 工厂收到的实例 API 与可选钩子                                 |
 | `WidgetAssetRef`                            | 资源引用 `{ src, mode: 'file' \| 'inline' \| 'store' }`（#7）        |
-| `WidgetAssetApi` / `WidgetAssetProvider`    | guest 的 `readBinary` 与宿主侧预取来源                               |
+| `WidgetAssetApi` / `WidgetAssetProvider`    | guest 的 `readBinary` 与宿主侧的资源解析                             |
 | `WidgetPublish`                             | `{ instanceId, port, payload, simTime }`                             |
 | `WidgetFactory` / `WidgetDeliveryMeta`      | 模块默认导出的工厂类型与端口投递元数据                               |
 | `WidgetSandbox` / `WidgetSandboxFactory`    | 可注入的最小沙箱接口（`call` / `on` / `terminate`）                  |
@@ -187,7 +187,7 @@ import { createWidgetHost } from '@mica-js/widget';
 const host = createWidgetHost({
   provider,
   assets: {
-    async read(ref) {
+    async resolve(ref) {
       // mode 为 'inline' 时在这里完成 base64 解码，guest 只会看到字节。
       return loadBytes(ref.src);
     },
@@ -195,7 +195,7 @@ const host = createWidgetHost({
 });
 ```
 
-宿主遍历合并默认值后的 props（含对象与数组里的嵌套值），收集所有形如 `{ src, mode }` 的引用，逐个 `read` 后把 `src → Uint8Array` 随 `mount` 请求一起发给 guest；同一个 `src` 只读一次。单个资源失败只上报 `widget/asset-failed` 并跳过该资源，实例照常挂载；没有配置 `assets` 时不做任何预取，也不报错。预取发生在挂载时：属性改动引入新的 `{ src }` 时宿主会重挂载该实例，让新资源随挂载送达。
+宿主遍历合并默认值后的 props（含对象与数组里的嵌套值），收集所有形如 `{ src, mode }` 的引用，逐个 `resolve` 后把 `src → Uint8Array` 随 `mount` 请求一起发给 guest；同一个 `src` 只读一次。单个资源失败只上报 `widget/asset-failed` 并跳过该资源，实例照常挂载；没有配置 `assets` 时不做任何预取，也不报错。预取发生在挂载时：属性改动引入新的 `{ src }` 时宿主会重挂载该实例，让新资源随挂载送达。
 
 widget 通过 `api.assets.readBinary(src)` 读取：
 
@@ -290,7 +290,7 @@ interface WidgetAssetRef {
 }
 
 interface WidgetAssetProvider {
-  read(ref: WidgetAssetRef): Promise<Uint8Array>;
+  resolve(ref: WidgetAssetRef): Promise<Uint8Array>;
 }
 
 interface WidgetPublish {

@@ -49,7 +49,7 @@ const PACKAGE_FILES: PackageFiles = {
 };
 
 const ASSETS: WidgetAssetProvider = {
-  read: (ref) => fetchBytes(ref.src),
+  resolve: (ref) => fetchBytes(ref.src),
 };
 
 async function fetchBytes(path: string): Promise<Uint8Array> {

@@ -37,7 +37,7 @@ export interface WidgetLayers {
 }
 
 /**
- * Reads the bytes behind an image / binary property value (`{ src, mode }`).
+ * Resolves the bytes behind an image / binary property value (`{ src, mode }`).
  *
  * The host prefetches every referenced resource when an instance mounts and hands the bytes to the
  * guest, which has no network of its own. Not to be confused with `WidgetProvider`, which resolves
@@ -48,7 +48,7 @@ export interface WidgetAssetProvider {
    * Resolves to the resource bytes. `inline` references are base64-decoded here, on the host, so
    * the guest never sees encoded data. A rejection only skips this resource.
    */
-  read(ref: WidgetAssetRef): Promise<Uint8Array>;
+  resolve(ref: WidgetAssetRef): Promise<Uint8Array>;
 }
 
 /** Port payload a widget published; routing belongs to a later layer. */
