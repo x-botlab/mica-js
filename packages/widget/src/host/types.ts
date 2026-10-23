@@ -1,3 +1,4 @@
+import type { CanvasBindingCatalog, CanvasCommand, CanvasDocument } from '@mica-js/core/canvas';
 import type { WidgetProvider } from '../types';
 import type { WidgetAssetRef, WidgetInputEvent } from '../runtime/types';
 
@@ -7,13 +8,6 @@ export type { WidgetAssetRef } from '../runtime/types';
 export interface WidgetSize {
   readonly width: number;
   readonly height: number;
-}
-
-export interface WidgetMountSpec extends WidgetSize {
-  readonly instanceId: string;
-  /** Widget reference `"<package>:<widget>"`. */
-  readonly widget: string;
-  readonly props?: Readonly<Record<string, unknown>>;
 }
 
 /** Read-only view of one mounted instance's latest frame. */
@@ -31,10 +25,12 @@ export interface WidgetLayer {
 export type WidgetLayerChange =
   | { readonly type: 'added'; readonly instanceId: string }
   | { readonly type: 'updated'; readonly instanceId: string }
-  | { readonly type: 'removed'; readonly instanceId: string };
+  | { readonly type: 'removed'; readonly instanceId: string }
+  /** Drawing order changed; no layer was mounted or unmounted. */
+  | { readonly type: 'reordered' };
 
 export interface WidgetLayers {
-  /** Mount order, so the host or editor can composite in drawing order. */
+  /** Document order (`document.widgets`), so the host or editor can composite in drawing order. */
   list(): readonly WidgetLayer[];
   get(instanceId: string): WidgetLayer | undefined;
   subscribe(listener: (change: WidgetLayerChange) => void): () => void;
@@ -60,18 +56,36 @@ export interface WidgetPublish {
 
 export interface WidgetHost {
   /**
-   * Resolves once the instance rendered its first frame.
-   *
-   * Rejects when the widget cannot be mounted; an id reserved by a mount that is still in flight
-   * yields `widget/instance-exists` instead. If the instance is unmounted (or the host disposed)
-   * while the mount is in flight, the promise rejects with an error named
-   * `WidgetMountCancelledError` and no layer is left behind.
+   * Snapshot the host currently coordinates: the last document accepted by `loadDocument` or
+   * `applyCommand`. Starts as the empty document `{ version: 1, widgets: [] }`.
    */
-  mount(spec: WidgetMountSpec): Promise<void>;
-  unmount(instanceId: string): void;
-  /** Geometry changes apply immediately; the matching bitmap arrives asynchronously. */
-  update(instanceId: string, size: WidgetSize): void;
-  setProperties(instanceId: string, props: Readonly<Record<string, unknown>>): void;
+  readonly document: CanvasDocument;
+
+  /**
+   * Parses, validates and commits a document, then mounts the instances it lists.
+   *
+   * Resolves once the instances of this first pass finished mounting. A widget that fails to mount
+   * is reported through `onDiagnostic` and left out of `layers` instead of rejecting this promise.
+   *
+   * @throws {SchematicError} when `source` is not a valid `.cnv` document or the bindings do not
+   * validate; neither the document nor the instances change in that case.
+   */
+  loadDocument(source: string | CanvasDocument): Promise<void>;
+
+  /**
+   * Applies one command to the current document.
+   *
+   * The new snapshot and the `onDocumentChange` notification happen synchronously; coordinating
+   * instances runs in the background and never rolls the document back. A rejected command leaves
+   * both the document and the instances untouched.
+   *
+   * @throws {SchematicError} when the command is invalid or the resulting bindings do not validate.
+   */
+  applyCommand(command: CanvasCommand): void;
+
+  /** Subscribes to committed snapshots; returns the unsubscribe function. */
+  onDocumentChange(listener: (document: CanvasDocument) => void): () => void;
+
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
   dispatch(instanceId: string, event: WidgetInputEvent): void;
   readonly layers: WidgetLayers;
@@ -130,6 +144,13 @@ export interface WidgetHostOptions {
    * prefetched and `api.assets.readBinary` rejects.
    */
   readonly assets?: WidgetAssetSource;
+  /**
+   * Resolves widget definitions and schematic symbols for binding validation.
+   *
+   * Without it `loadDocument` / `applyCommand` only run the structural checks of the `.cnv`
+   * format; the reference checks that need the registry and the schematic are skipped.
+   */
+  readonly catalog?: CanvasBindingCatalog;
   /** Replaces the sandbox implementation; the default starts `@mica-js/sandbox` lazily. */
   readonly sandbox?: WidgetSandboxFactory;
 }

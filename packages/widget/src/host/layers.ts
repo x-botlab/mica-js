@@ -93,6 +93,31 @@ export class WidgetLayerStore implements WidgetLayers {
     this.#emit({ type: 'removed', instanceId });
   }
 
+  /**
+   * Rewrites drawing order to `instanceIds` without touching a frame.
+   *
+   * Ids the table does not hold are skipped, and records the caller did not list keep their
+   * relative order at the end: a mount in flight owns a layer before the document instance that
+   * created it is reconciled.
+   */
+  reorder(instanceIds: readonly string[]): void {
+    const ordered = new Map<string, LayerRecord>();
+    for (const instanceId of instanceIds) {
+      const record = this.#records.get(instanceId);
+      if (record !== undefined) ordered.set(instanceId, record);
+    }
+    for (const [instanceId, record] of this.#records) {
+      if (!ordered.has(instanceId)) ordered.set(instanceId, record);
+    }
+    if (sameOrder([...this.#records.keys()], [...ordered.keys()])) return;
+
+    this.#records.clear();
+    for (const [instanceId, record] of ordered) {
+      this.#records.set(instanceId, record);
+    }
+    this.#emit({ type: 'reordered' });
+  }
+
   clear(): void {
     for (const instanceId of [...this.#records.keys()]) {
       this.remove(instanceId);
@@ -118,4 +143,8 @@ export function closeBitmap(bitmap: ImageBitmap | undefined): void {
   } catch {
     // Already closed by its previous owner.
   }
+}
+
+function sameOrder(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
 }

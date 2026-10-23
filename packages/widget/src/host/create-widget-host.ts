@@ -1,4 +1,16 @@
 import {
+  CANVAS_VERSION,
+  applyCanvasCommand,
+  assertCanvasBindings,
+  parseCanvas,
+} from '@mica-js/core/canvas';
+import type {
+  CanvasCommand,
+  CanvasDocument,
+  CanvasWidgetInstance,
+  WidgetPlacement,
+} from '@mica-js/core/canvas';
+import {
   WIDGET_ASSET_FAILED_EVENT,
   WIDGET_DELIVER_METHOD,
   WIDGET_ERROR_EVENT,
@@ -29,7 +41,6 @@ import type {
   WidgetHost,
   WidgetHostOptions,
   WidgetLayers,
-  WidgetMountSpec,
   WidgetPublish,
   WidgetSandbox,
   WidgetSandboxFactory,
@@ -40,8 +51,13 @@ interface InstanceRecord {
   readonly widget: string;
   /** Identifies the mount attempt that reserved this id, so late callbacks cannot adopt it. */
   readonly token: symbol;
+  /** Placement last applied to this instance, so a pass can tell a real edit from a rewrite. */
+  placement: WidgetPlacement;
   props: Readonly<Record<string, unknown>>;
 }
+
+/** Host state before any document was loaded. */
+const EMPTY_DOCUMENT: CanvasDocument = { version: CANVAS_VERSION, widgets: [] };
 
 /** Startup or shutdown failure; already reported, so call sites must not report it twice. */
 class WidgetRuntimeError extends Error {
@@ -65,9 +81,11 @@ class WidgetMountCancelledError extends Error {
 /**
  * Creates the widget host.
  *
- * The sandbox starts lazily on the first `mount()` and every concurrent mount shares that one
- * startup, so a host with no instances never pays for an iframe and a worker. After a crash the
- * next `mount()` starts a fresh sandbox instead of rebuilding instances automatically.
+ * The document is the single source of truth: instances are mounted, resized, repropped and
+ * reordered to match it. The sandbox starts lazily on the first instance and every concurrent mount
+ * shares that one startup, so a host with no instances never pays for an iframe and a worker. After
+ * a crash the next reconciliation starts a fresh sandbox instead of rebuilding instances
+ * automatically.
  */
 export function createWidgetHost(options: WidgetHostOptions): WidgetHost {
   return new WidgetHostImpl(options);
@@ -81,11 +99,18 @@ class WidgetHostImpl implements WidgetHost {
   readonly #onDiagnostic: ((diagnostic: WidgetDiagnostic) => void) | undefined;
   readonly #onPublish: ((publish: WidgetPublish) => void) | undefined;
   readonly #assets: WidgetAssetSource | undefined;
+  readonly #catalog: WidgetHostOptions['catalog'];
   readonly #createSandbox: WidgetSandboxFactory;
   readonly #layerStore = new WidgetLayerStore();
   readonly #instances = new Map<string, InstanceRecord>();
   readonly #detachers: (() => void)[] = [];
+  readonly #documentListeners = new Set<(document: CanvasDocument) => void>();
 
+  #document: CanvasDocument = EMPTY_DOCUMENT;
+  #reconcilePending = false;
+  #reconcilePass: Promise<void> | undefined;
+  /** Identifies the drain that owns {@link #reconcilePass}; only that drain may release it. */
+  #reconcileOwner = 0;
   #sandbox: WidgetSandbox | undefined;
   #starting: Promise<WidgetSandbox> | undefined;
   #disposing: Promise<void> | undefined;
@@ -99,12 +124,185 @@ class WidgetHostImpl implements WidgetHost {
     this.#onDiagnostic = options.onDiagnostic;
     this.#onPublish = options.onPublish;
     this.#assets = options.assets;
+    this.#catalog = options.catalog;
     this.#createSandbox = options.sandbox ?? createDefaultWidgetSandbox;
     this.#dpr = options.dpr ?? currentDevicePixelRatio();
   }
 
-  async mount(spec: WidgetMountSpec): Promise<void> {
-    const { instanceId, widget: ref } = spec;
+  get document(): CanvasDocument {
+    return this.#document;
+  }
+
+  async loadDocument(source: string | CanvasDocument): Promise<void> {
+    const document = parseCanvas(source);
+    this.#assertBindings(document);
+    this.#commit(document);
+    const pass = this.#scheduleReconcile();
+    this.#emitDocument(document);
+    await pass;
+  }
+
+  applyCommand(command: CanvasCommand): void {
+    // Both steps throw before the snapshot is committed, so a rejected command changes nothing.
+    const document = applyCanvasCommand(this.#document, command);
+    this.#assertBindings(document);
+    this.#commit(document);
+    void this.#scheduleReconcile();
+    this.#emitDocument(document);
+  }
+
+  onDocumentChange(listener: (document: CanvasDocument) => void): () => void {
+    this.#documentListeners.add(listener);
+    return () => {
+      this.#documentListeners.delete(listener);
+    };
+  }
+
+  deliver(instanceId: string, port: string, payload: unknown, simTime: number): void {
+    if (!this.#requireInstance(instanceId)) return;
+    this.#fire(
+      'widget/deliver-failed',
+      WIDGET_DELIVER_METHOD,
+      [instanceId, port, payload, simTime],
+      instanceId,
+    );
+  }
+
+  dispatch(instanceId: string, event: WidgetInputEvent): void {
+    if (!this.#requireInstance(instanceId)) return;
+    this.#fire('widget/deliver-failed', WIDGET_POINTER_METHOD, [instanceId, event], instanceId);
+  }
+
+  resize(dpr: number): void {
+    if (!Number.isFinite(dpr) || dpr <= 0 || dpr === this.#dpr) return;
+    this.#dpr = dpr;
+
+    for (const layer of this.#layerStore.list()) {
+      this.#layerStore.setDpr(layer.instanceId, dpr);
+      this.#fire(
+        'widget/render-failed',
+        WIDGET_RESIZE_METHOD,
+        [layer.instanceId, layer.width, layer.height, dpr],
+        layer.instanceId,
+      );
+    }
+  }
+
+  dispose(): Promise<void> {
+    const pending = this.#disposing ?? this.#shutdown();
+    this.#disposing = pending;
+    return pending;
+  }
+
+  /** Runs the binding checks both document entry points share; nothing needs them without a catalog. */
+  #assertBindings(document: CanvasDocument): void {
+    assertCanvasBindings(document, this.#catalog === undefined ? {} : { catalog: this.#catalog });
+  }
+
+  /**
+   * Makes `document` the new snapshot and drops the instances it no longer lists.
+   *
+   * Removal is synchronous on purpose: a mount still in flight for a removed id has to be cancelled
+   * right away, while the coordination pass that would have removed it may be blocked on it.
+   */
+  #commit(document: CanvasDocument): void {
+    this.#document = document;
+    const live = new Set(document.widgets.map((widget) => widget.id));
+    for (const instanceId of [...this.#instances.keys()]) {
+      if (!live.has(instanceId)) this.#unmount(instanceId);
+    }
+  }
+
+  /**
+   * Queues a coordination pass and returns the running queue.
+   *
+   * A pass reads {@link document} per instance, so everything committed while it waits is coalesced
+   * into the next iteration; the promise settles only once the queue has caught up.
+   *
+   * The drain starts on a microtask instead of from here: {@link #syncInstances} notifies the layer
+   * store synchronously from inside a guest await, and a subscriber that applies a command from that
+   * notification would otherwise re-enter while the slot below is still empty and start a second,
+   * concurrent drain.
+   */
+  #scheduleReconcile(): Promise<void> {
+    this.#reconcilePending = true;
+    this.#reconcilePass ??= Promise.resolve().then(() => this.#drainReconcile());
+    return this.#reconcilePass;
+  }
+
+  async #drainReconcile(): Promise<void> {
+    const owner = ++this.#reconcileOwner;
+    try {
+      while (this.#reconcilePending && !this.#disposed) {
+        this.#reconcilePending = false;
+        await this.#syncInstances();
+      }
+    } finally {
+      // A stale finish must never untrack a newer pass that is still mounting, so only the drain
+      // that owns the slot releases it.
+      if (this.#reconcileOwner === owner) {
+        this.#reconcilePending = false;
+        this.#reconcilePass = undefined;
+      }
+    }
+  }
+
+  /** Mounts, resizes, sets properties and reorders instances to match the document. */
+  async #syncInstances(): Promise<void> {
+    for (const { id: instanceId } of this.#document.widgets) {
+      if (this.#disposed) return;
+      // A newer snapshot may have dropped this id while the previous instance was mounting.
+      const widget = this.#document.widgets.find((entry) => entry.id === instanceId);
+      if (widget === undefined) continue;
+      await this.#syncInstance(widget);
+    }
+    this.#layerStore.reorder(this.#document.widgets.map((widget) => widget.id));
+  }
+
+  async #syncInstance(widget: CanvasWidgetInstance): Promise<void> {
+    const existing = this.#instances.get(widget.id);
+    if (existing === undefined) {
+      await this.#mount(widget);
+      return;
+    }
+    if (existing.widget !== widget.widget) {
+      // Nothing in the document retargets an instance in place, so replacing it is the only way to
+      // keep one layer from mixing two widget definitions.
+      this.#unmount(widget.id);
+      await this.#mount(widget);
+      return;
+    }
+
+    const placement = placementOf(widget);
+    // `x`, `y` and `rotation` only move the composite position, which the document already carries;
+    // only a size change has to reach the guest.
+    if (
+      placement.width !== existing.placement.width ||
+      placement.height !== existing.placement.height
+    ) {
+      this.#update(widget.id, { width: placement.width, height: placement.height });
+    }
+    existing.placement = placement;
+
+    const props = widget.properties ?? {};
+    if (!sameProperties(existing.props, props)) this.#setProperties(widget.id, props);
+  }
+
+  /**
+   * Mounts one document instance. Failures stay inside that instance: the mount attempt already
+   * reported its own diagnostic, and the document is never rolled back for it.
+   */
+  async #mount(widget: CanvasWidgetInstance): Promise<void> {
+    try {
+      await this.#startInstance(widget);
+    } catch {
+      // Already reported, or a newer snapshot cancelled this mount; the next pass resumes from the
+      // current document either way.
+    }
+  }
+
+  async #startInstance(widget: CanvasWidgetInstance): Promise<void> {
+    const { id: instanceId, widget: ref } = widget;
 
     if (this.#disposed) {
       this.#report('widget/runtime-failed', 'The widget host is disposed.', {
@@ -127,15 +325,17 @@ class WidgetHostImpl implements WidgetHost {
     const record: InstanceRecord = {
       widget: ref,
       token: Symbol(instanceId),
-      props: spec.props ?? {},
+      placement: placementOf(widget),
+      props: widget.properties ?? {},
     };
     this.#instances.set(instanceId, record);
     this.#layerStore.add({
       instanceId,
-      width: spec.width,
-      height: spec.height,
+      width: widget.width,
+      height: widget.height,
       dpr: this.#dpr,
     });
+    this.#layerStore.reorder(this.#document.widgets.map((entry) => entry.id));
 
     let mounted = false;
     try {
@@ -240,7 +440,7 @@ class WidgetHostImpl implements WidgetHost {
     return true;
   }
 
-  unmount(instanceId: string): void {
+  #unmount(instanceId: string): void {
     const instance = this.#instances.get(instanceId);
     if (!instance) {
       this.#report('widget/instance-not-found', `Widget instance "${instanceId}" is not mounted.`, {
@@ -253,7 +453,7 @@ class WidgetHostImpl implements WidgetHost {
     this.#fire(undefined, WIDGET_UNMOUNT_METHOD, [instanceId], instanceId);
   }
 
-  update(instanceId: string, size: WidgetSize): void {
+  #update(instanceId: string, size: WidgetSize): void {
     if (!this.#requireInstance(instanceId)) return;
     this.#layerStore.setSize(instanceId, size.width, size.height);
     const layer = this.#layerStore.get(instanceId);
@@ -266,7 +466,7 @@ class WidgetHostImpl implements WidgetHost {
     );
   }
 
-  setProperties(instanceId: string, props: Readonly<Record<string, unknown>>): void {
+  #setProperties(instanceId: string, props: Readonly<Record<string, unknown>>): void {
     const instance = this.#requireInstance(instanceId);
     if (!instance) return;
     instance.props = props;
@@ -276,42 +476,6 @@ class WidgetHostImpl implements WidgetHost {
       [instanceId, props],
       instanceId,
     );
-  }
-
-  deliver(instanceId: string, port: string, payload: unknown, simTime: number): void {
-    if (!this.#requireInstance(instanceId)) return;
-    this.#fire(
-      'widget/deliver-failed',
-      WIDGET_DELIVER_METHOD,
-      [instanceId, port, payload, simTime],
-      instanceId,
-    );
-  }
-
-  dispatch(instanceId: string, event: WidgetInputEvent): void {
-    if (!this.#requireInstance(instanceId)) return;
-    this.#fire('widget/deliver-failed', WIDGET_POINTER_METHOD, [instanceId, event], instanceId);
-  }
-
-  resize(dpr: number): void {
-    if (!Number.isFinite(dpr) || dpr <= 0 || dpr === this.#dpr) return;
-    this.#dpr = dpr;
-
-    for (const layer of this.#layerStore.list()) {
-      this.#layerStore.setDpr(layer.instanceId, dpr);
-      this.#fire(
-        'widget/render-failed',
-        WIDGET_RESIZE_METHOD,
-        [layer.instanceId, layer.width, layer.height, dpr],
-        layer.instanceId,
-      );
-    }
-  }
-
-  dispose(): Promise<void> {
-    const pending = this.#disposing ?? this.#shutdown();
-    this.#disposing = pending;
-    return pending;
   }
 
   #requireInstance(instanceId: string): InstanceRecord | undefined {
@@ -585,6 +749,46 @@ class WidgetHostImpl implements WidgetHost {
       console.error('[@mica-js/widget] diagnostic handler threw', error);
     }
   }
+
+  #emitDocument(document: CanvasDocument): void {
+    for (const listener of [...this.#documentListeners]) {
+      try {
+        listener(document);
+      } catch (error) {
+        console.error('[@mica-js/widget] document listener threw', error);
+      }
+    }
+  }
+}
+
+function placementOf(widget: CanvasWidgetInstance): WidgetPlacement {
+  return {
+    x: widget.x,
+    y: widget.y,
+    width: widget.width,
+    height: widget.height,
+    rotation: widget.rotation,
+  };
+}
+
+/**
+ * Shallow comparison of two property maps.
+ *
+ * The document owns property values, so a nested object only counts as changed when the caller
+ * replaced the object itself; deep equality would swallow those edits. The key sets matter as much
+ * as the values, because a missing key falls back to the definition default while an explicit
+ * `undefined` overrides it.
+ */
+function sameProperties(
+  left: Readonly<Record<string, unknown>>,
+  right: Readonly<Record<string, unknown>>,
+): boolean {
+  if (left === right) return true;
+  const keys = Object.keys(left);
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.hasOwn(right, key) && Object.is(left[key], right[key]))
+  );
 }
 
 function splitRef(ref: string): { packageId: string; widgetId: string } | undefined {
