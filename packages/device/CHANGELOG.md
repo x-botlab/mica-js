@@ -1,5 +1,26 @@
 # @mica-js/device
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [214a324]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [214a324]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [dea8509]
+- Updated dependencies [214a324]
+- Updated dependencies [214a324]
+- Updated dependencies [2ed90cd]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [214a324]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [214a324]
+- Updated dependencies [214a324]
+  - @mica-js/ir@0.3.0
+  - @mica-js/core@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes

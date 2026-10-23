@@ -1,5 +1,12 @@
 # @mica-js/schematic-editor
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [dea8509]
+  - @mica-js/core@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes

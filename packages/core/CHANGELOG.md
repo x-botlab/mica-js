@@ -1,5 +1,33 @@
 # @mica-js/core
 
+## 0.3.0
+
+### Minor Changes
+
+- dea8509: feat(core): IR 实例默认使用 JIT 引擎
+
+  - 新增 `IRSchedulerInstanceDefinition.engine` 选项（'jit' | 'reference'，默认 'jit'）
+  - 切换到 `stepBudget` 协议实现批量步数检查
+  - 两种引擎的可观测行为完全等价
+  - 性能提升约 256×（相对参考解释器）
+
+### Patch Changes
+
+- Updated dependencies [214a324]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [214a324]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [214a324]
+- Updated dependencies [214a324]
+- Updated dependencies [2ed90cd]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [214a324]
+- Updated dependencies [1cc2a2b]
+- Updated dependencies [214a324]
+- Updated dependencies [214a324]
+  - @mica-js/ir@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # @mica-js/simulator
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [dea8509]
+  - @mica-js/core@0.3.0
+  - @mica-js/device@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes
