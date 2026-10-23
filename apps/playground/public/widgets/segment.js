@@ -95,8 +95,10 @@ function drawDigit(context, left, top, width, height, thickness, character, colo
 
 /** Every position of a real display has its own decimal point; only the lit ones show. */
 function drawPoint(context, left, top, width, height, thickness, lit, color) {
+  // A point never grows with the stroke, or a thick display would show a blob instead.
+  const size = Math.min(thickness, width * 0.28);
   context.fillStyle = lit ? color : OFF_COLOR;
-  context.fillRect(left + width - thickness, top + height - thickness, thickness, thickness);
+  context.fillRect(left + width - size, top + height - size, size, size);
 }
 
 /**
