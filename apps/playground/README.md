@@ -12,20 +12,20 @@ pnpm --filter @mica-js/playground run test:e2e   # Playwright 冒烟，自带 41
 
 ## 页面
 
-| 路由                   | 页面         | 演示内容                                                                                   |
-| ---------------------- | ------------ | ------------------------------------------------------------------------------------------ |
-| `#/`                   | 概览         | 页面导航、workspace 命令速查                                                               |
-| `#/canvas`             | 画布         | `createCanvasScene`：demo widget 包、拖动实例、运行模式与发布日志、宿主属性/绑定面板       |
-| `#/schematic`          | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、宿主属性面板（#7 全部属性类型）、显示开关、回调事件流 |
-| `#/schematic?readonly` | 只读查看器   | 同一页以 `readOnly: true` 挂载：选择与缩放可用，编辑全部被拒                               |
-| `#/sandbox`            | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动/终止、调用与日志                                  |
+| 路由                   | 页面         | 演示内容                                                                                                 |
+| ---------------------- | ------------ | -------------------------------------------------------------------------------------------------------- |
+| `#/`                   | 概览         | 页面导航、workspace 命令速查                                                                             |
+| `#/canvas`             | 画布         | `createCanvasScene`：demo widget 包、组件列表、拖动实例、运行模式与发布日志、宿主属性/绑定面板、草稿保存 |
+| `#/schematic`          | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、宿主属性面板（#7 全部属性类型）、显示开关、回调事件流               |
+| `#/schematic?readonly` | 只读查看器   | 同一页以 `readOnly: true` 挂载：选择与缩放可用，编辑全部被拒                                             |
+| `#/sandbox`            | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动/终止、调用与日志                                                |
 
 新增页面：在 `src/components/app-shell.tsx` 的 `PAGES` 里加一项（`id` 同时是路由），在 `src/App.tsx` 里渲染对应组件即可。
 
 ## 目录
 
 ```text
-e2e/canvas.spec.ts             Playwright 冒烟：三实例渲染、拖动提交命令、运行模式发布与浏览、属性面板
+e2e/canvas.spec.ts             Playwright 冒烟：实例渲染、拖动提交命令、运行模式发布与浏览、属性面板、组件列表与草稿
 e2e/editor.spec.ts             Playwright 冒烟：渲染、网标拖动折线、导线 T 接入、只读守卫
 playwright.config.ts           e2e 配置（webServer 跑 127.0.0.1:4174 的 dev server）
 src/canvas/panel-model.ts      纯逻辑：候选端点过滤、属性初值/「已覆盖」、绑定选项、错误消息
@@ -47,9 +47,13 @@ public/widgets/                demo widget 包（package.json + image/segment/bu
 src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）
 ```
 
+画布页的左侧栏是**组件列表**：条目来自 `public/widgets/package.json`（`loadWidgetPackage` 读出来的 `displayName` + 宿主给的默认尺寸），点击即发一条 `add-instance`，新实例按对角偏移级联摆放并置顶。运行模式下列表禁用。
+
 画布页的右侧栏是**宿主 UI**：属性控件按 `provider.resolve(ref).definition.properties` 渲染，绑定下拉按 `definition.ports` 渲染，值一律通过 `host.applyCommand` 提交，被拒时把 `SchematicError.diagnostics` 的 message 显示在对应控件下方。可选端点来自 `src/canvas/panel-model.ts` 的 `DEMO_TARGETS`（示例没有真实原理图，`createWidgetHost` 不传 `catalog` 时跳过引用校验）。
 
-示例 `demo.cnv` 用真实的 CT107D 开发板照片（`public/assets/ct107d-board.webp`，1068 × 768）当底图，坐标就是照片像素：两颗 4 位数码管组件各盖住照片里的一个 LED 窗口，分别绑到 `demo-mcu.display` / `demo-mcu.display2`；按键组件盖住 S7 那颗独立按键并绑到 `demo-mcu.key`。
+**保存**走 `src/canvas/persist.ts`：每次提交 `serializeCanvas(document)` 与上一次成功的文本比较，不同才在 300 ms 去抖后写入 `localStorage`（键 `mica-playground:canvas-draft`）；`保存` 按钮与 `Ctrl/Cmd+S` 跳过去抖立即写，`导出` 把当前文档下载成 `demo.cnv`，`重置草稿` 清掉草稿并 `host.loadDocument` 回示例。重新打开页面时优先读草稿，控件旁的徽章显示 `已保存` / `未保存` / `保存失败`。
+
+示例 `demo.cnv` 用真实的 CT107D 开发板照片（`public/assets/ct107d-board.webp`，1068 × 768）当底图，坐标就是照片像素：两颗 4 位数码管组件各盖住照片里的一个 LED 窗口，分别绑到 `demo-mcu.display` / `demo-mcu.display2`；按键组件盖住 S7 那颗独立按键并绑到 `demo-mcu.key`。按键是全透明的，所以编辑模式下编辑器给每个实例画的一圈半透明边框（`theme.outline`）就是它唯一的位置线索。
 
 `demo:segment` 的属性是位数、颜色、笔画粗细（占字高比例）与位间距（数位格子留白比例）；小数点的大小与它和数字的距离各有一个属性（`pointSize` / `pointGap`，都按字高比例，`pointSize` 为 0 时不画）。点画在数字右侧，不占数字本身的宽度，`value` 里的 `.` 只点亮前一位的点。`demo:button` 支持文本（可留空）、圆角、背景颜色（普通/按下，接受 `#RRGGBBAA`，可全透明）与背景图片（普通/按下，图片优先于颜色，按 cover 裁切）；示例里把颜色设成全透明，于是按下时只透出一层半透明白。
 

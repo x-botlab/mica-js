@@ -9,10 +9,12 @@ import {
   type CanvasBindingTarget,
   type CanvasCommand,
   type CanvasDocument,
+  serializeCanvas,
 } from '@mica-js/core/canvas';
 import {
   createPackageWidgetProvider,
   createWidgetHost,
+  loadWidgetPackage,
   type PackageFiles,
   type WidgetAssetProvider,
   type WidgetDefinition,
@@ -20,7 +22,15 @@ import {
   type WidgetProvider,
 } from '@mica-js/widget';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPaletteInstance, paletteEntries, type PaletteEntry } from '@/canvas/palette';
 import { commandErrorMessages } from '@/canvas/panel-model';
+import { createCanvasDraft, createDraftStore, createMemoryStorage } from '@/canvas/persist';
+import {
+  DRAFT_STORAGE_KEY,
+  type CanvasDraft,
+  type DraftStorage,
+  type SaveState,
+} from '@/canvas/persist';
 import { CanvasInspector } from '@/components/canvas-inspector';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -48,6 +58,13 @@ const PACKAGE_FILES: PackageFiles = {
   read: (path) => fetchBytes(`widgets/${path}`),
 };
 
+/** What the save badge says; the draft store reports the state, the page only renders it. */
+const SAVE_LABELS: Readonly<Record<SaveState, string>> = {
+  clean: '已保存',
+  dirty: '未保存',
+  failed: '保存失败',
+};
+
 const ASSETS: WidgetAssetProvider = {
   resolve: (ref) => fetchBytes(ref.src),
 };
@@ -58,6 +75,30 @@ async function fetchBytes(path: string): Promise<Uint8Array> {
     throw new Error(`读取 ${path} 失败（HTTP ${response.status}）`);
   }
   return new Uint8Array(await response.arrayBuffer());
+}
+
+/** `localStorage`, or a per-tab fallback when the browser refuses it. */
+function draftStorage(): DraftStorage {
+  try {
+    const storage = globalThis.localStorage;
+    storage.getItem(DRAFT_STORAGE_KEY); // Safari throws from the property itself in some modes.
+    return storage;
+  } catch {
+    return createMemoryStorage();
+  }
+}
+
+/** Hands the serialized document to the browser as a file; there is no workspace to write to. */
+function downloadDocument(text: string, name: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  try {
+    const anchor = globalThis.document.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 interface DiagnosticEntry {
@@ -119,6 +160,10 @@ export function CanvasPage() {
   const [definitions, setDefinitions] = useState<ReadonlyMap<string, WidgetDefinition>>(
     () => new Map(),
   );
+  const [palette, setPalette] = useState<readonly PaletteEntry[]>([]);
+  const [saveState, setSaveState] = useState<SaveState>('clean');
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const draftRef = useRef<CanvasDraft | null>(null);
   const [resolving, setResolving] = useState(true);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -146,6 +191,8 @@ export function CanvasPage() {
     const start = async (): Promise<void> => {
       try {
         const provider = await createPackageWidgetProvider({ files: PACKAGE_FILES });
+        // The list comes from `widgets/package.json`, so adding a widget there is enough.
+        const demoPackage = await loadWidgetPackage(PACKAGE_FILES);
         const ownedHost = createWidgetHost({
           provider,
           assets: ASSETS,
@@ -154,7 +201,17 @@ export function CanvasPage() {
           onPublish: (publish) => scene?.receivePublish(publish),
         });
         host = ownedHost;
-        const text = new TextDecoder().decode(await fetchBytes('widgets/demo.cnv'));
+
+        const store = createDraftStore(draftStorage());
+        const draft = createCanvasDraft({
+          store,
+          onStateChange: setSaveState,
+          onError: (cause) => setSaveError(describeError(cause)),
+        });
+        draftRef.current = draft;
+        const restored = store.read();
+
+        const text = restored ?? new TextDecoder().decode(await fetchBytes('widgets/demo.cnv'));
         const created = await createCanvasScene({
           container,
           document: text,
@@ -164,6 +221,7 @@ export function CanvasPage() {
           onChange: (next) => {
             setDocument(next);
             setRevision((value) => value + 1);
+            draft.record(next);
           },
           onSelectionChange: (ids) => setSelectedIds(ids),
           onDiagnostic: pushDiagnostic,
@@ -194,8 +252,14 @@ export function CanvasPage() {
         scene = created;
         sceneRef.current = created;
         hostRef.current = ownedHost;
+        // The loaded document is the baseline: a fresh page is not "unsaved changes".
+        draft.seed(created.document);
         setDocument(created.document);
         setDefinitions(resolved);
+        setPalette(paletteEntries(demoPackage.id, demoPackage.modules));
+        if (restored !== null) {
+          setSaveError(null);
+        }
         setResolving(false);
         setReady(true);
         if (import.meta.env.DEV) {
@@ -220,6 +284,8 @@ export function CanvasPage() {
 
     return () => {
       cancelled = true;
+      draftRef.current?.destroy();
+      draftRef.current = null;
       scene?.destroy();
       scene = undefined;
       sceneRef.current = null;
@@ -308,6 +374,64 @@ export function CanvasPage() {
   const selectedDefinition =
     selectedInstance === undefined ? undefined : definitions.get(selectedInstance.widget);
 
+  /** Adds one palette entry on top of the stack, cascading so clicks do not pile up. */
+  const addFromPalette = (entry: PaletteEntry): void => {
+    const host = hostRef.current;
+    if (host === null) {
+      return;
+    }
+    const current = host.document;
+    const messages = applyCommand({
+      type: 'add-instance',
+      instance: createPaletteInstance(entry, current.widgets.length, crypto.randomUUID()),
+      z: current.widgets.length,
+    });
+    setError(messages.length === 0 ? null : messages.join('；'));
+  };
+
+  const exportDocument = (): void => {
+    const scene = sceneRef.current;
+    if (scene === null) {
+      return;
+    }
+    downloadDocument(serializeCanvas(scene.document), 'demo.cnv');
+  };
+
+  /**
+   * Drops the stored draft and reloads the sample. `loadDocument` goes through the host, so the
+   * scene adopts the fresh snapshot the same way it adopts a command.
+   */
+  const resetDraft = (): void => {
+    const host = hostRef.current;
+    const draft = draftRef.current;
+    draft?.reset();
+    setSaveError(null);
+    if (host === null) {
+      return;
+    }
+    void (async () => {
+      try {
+        const text = new TextDecoder().decode(await fetchBytes('widgets/demo.cnv'));
+        await host.loadDocument(text);
+        // The sample is the baseline again, so reloading it does not count as unsaved work.
+        draft?.seed(host.document);
+      } catch (cause) {
+        setError(`重置草稿失败：${describeError(cause)}`);
+      }
+    })();
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        draftRef.current?.flush();
+      }
+    };
+    globalThis.addEventListener('keydown', onKeyDown);
+    return () => globalThis.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2">
@@ -329,12 +453,73 @@ export function CanvasPage() {
           诊断 {diagnostics.length}
         </Badge>
         <Badge variant="muted">rev {revision}</Badge>
+        <Badge variant={saveState === 'failed' ? 'outline' : 'muted'}>
+          {SAVE_LABELS[saveState]}
+        </Badge>
+        <div className="flex items-center gap-1">
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={!ready || saveState === 'clean'}
+            onClick={() => draftRef.current?.flush()}
+            title="写入本地草稿（Ctrl+S）"
+          >
+            保存
+          </Button>
+          <Button size="xs" variant="ghost" disabled={!ready} onClick={exportDocument}>
+            导出
+          </Button>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={!ready}
+            onClick={resetDraft}
+            title="清掉本地草稿并回到示例 .cnv"
+          >
+            重置草稿
+          </Button>
+        </div>
         <span className="text-muted-foreground ml-auto text-[11px]">
-          {error ?? '编辑模式拖动实例；运行模式点击按键，数码管每秒刷新。'}
+          {error ?? saveError ?? '编辑模式拖动实例；运行模式点击按键，数码管每秒刷新。'}
         </span>
       </div>
 
       <div className="flex min-h-0 flex-1">
+        <aside className="bg-card/40 flex w-44 shrink-0 flex-col overflow-y-auto border-r">
+          <header className="flex items-center gap-2 border-b px-3 py-2">
+            <h2 className="text-xs font-semibold">组件</h2>
+            <span className="text-muted-foreground truncate text-[10px]">
+              {palette.length} 个 · package.json
+            </span>
+          </header>
+          <ul className="flex flex-col gap-1 p-2">
+            {palette.length === 0 ? (
+              <li className="text-muted-foreground px-1 text-[11px]">正在读取 widget 包…</li>
+            ) : (
+              palette.map((entry) => (
+                <li key={entry.ref}>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    className="w-full justify-between"
+                    disabled={!ready || mode === 'run'}
+                    title={`${entry.ref} · ${entry.width}×${entry.height}`}
+                    onClick={() => addFromPalette(entry)}
+                  >
+                    <span className="truncate">{entry.title}</span>
+                    <span className="text-muted-foreground ml-2 shrink-0 font-mono text-[10px]">
+                      {entry.width}×{entry.height}
+                    </span>
+                  </Button>
+                </li>
+              ))
+            )}
+          </ul>
+          <p className="text-muted-foreground px-3 pb-2 text-[10px]">
+            点击添加到画布；运行模式不可用。
+          </p>
+        </aside>
+
         <div className="relative min-h-0 min-w-0 flex-1">
           <div ref={containerRef} className="absolute inset-0" />
           {ready ? null : (

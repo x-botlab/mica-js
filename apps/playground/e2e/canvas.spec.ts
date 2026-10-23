@@ -289,3 +289,27 @@ test('resets widget state when the mode changes', async ({ page }) => {
   expect(await layerCount(page)).toBe(document.widgets.length);
   await expect(page.getByText('诊断 0')).toBeVisible();
 });
+
+test('adds a widget from the palette and restores it from the draft', async ({ page }) => {
+  await openCanvas(page);
+  const before = (await sceneState(page)).document.widgets.length;
+
+  await page
+    .getByRole('button', { name: /数码管/ })
+    .first()
+    .click();
+  await expect.poll(async () => (await sceneState(page)).document.widgets.length).toBe(before + 1);
+  await expect(page.getByText('未保存')).toBeVisible();
+  // The debounced draft write flips the badge back once it lands.
+  await expect(page.getByText('已保存')).toBeVisible({ timeout: 3000 });
+
+  await page.reload();
+  await page.waitForFunction(
+    () => (globalThis as { micaCanvas?: unknown }).micaCanvas !== undefined,
+  );
+  expect((await sceneState(page)).document.widgets.length).toBe(before + 1);
+
+  // Resetting drops the draft and reloads the sample document.
+  await page.getByRole('button', { name: '重置草稿' }).click();
+  await expect.poll(async () => (await sceneState(page)).document.widgets.length).toBe(before);
+});
