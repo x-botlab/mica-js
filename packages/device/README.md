@@ -189,7 +189,8 @@ interface DeviceBindings {
 type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
 ```
 
-- 同步工厂每次创建只调用一次。`api.ir` 暴露 `state/array/bytes/inbox/func/entry/lifecycle`、`pin(id)` / `connection(id)` 与本实例的输出声明 `output/outputBytes`；工厂返回**或抛出**后立即封闭，任何后续声明或结构写入报 `device/factory-closed`。工厂不能通过上下文取得原始 `IRModule`、执行器或调度器。`subscribe` / `onOutput` 登记同样只在工厂期间开放。
+- 同步工厂每次创建只调用一次。`api.ir` 暴露 `state/array/bytes/inbox/func/entry/lifecycle/provider`、`pin(id)` / `connection(id)` 与本实例的输出声明 `output/outputBytes`；工厂返回**或抛出**后立即封闭，任何后续声明或结构写入报 `device/factory-closed`。工厂不能通过上下文取得原始 `IRModule`、执行器或调度器。`subscribe` / `onOutput` 登记同样只在工厂期间开放。
+- `api.ir.provider` 沿用 IR #60 合同：生成回调在首次派发时执行，产物经同一 `validateIR`/解释器校验并在实例内缓存；`dispatch` 作为入口终结指令延续当前预算与虚拟时间。每次派发校验产物依赖，资源版本变化后按需重生成。
 - `b.pin` / `b.observe` 通过 `@mica-js/ir` 的 `FunctionBuilder` 模块增强获得类型；运行期由本包为 device 模块注册的 builder extension 提供，普通函数、生命周期与嵌套块共用同一组方法。`b.connection` 由 #57 的装饰路径提供。直接使用裸 `createIRModule()` 的模块不会自动获得这些命名空间。
 - `api.props` 是创建时解析默认值后的独立、递归只读快照；运行期不可修改，不提供更新接口、自动重建或 `onPropsChanged`。需要另一组属性时由宿主显式创建新实例。
 - 工厂返回值必须是纯对象，只允许 `initialize` / `reset` / `onDispose` 三个字段。生命周期引用必须属于本次工厂声明的模块、类别为 `lifecycle`、零参数；同一引用同时绑定 initialize 与 reset 拒绝。`onDispose` 必须是同步普通函数（拒绝 async/generator/class），运行时还要求返回 `undefined`。
@@ -392,7 +393,7 @@ initialize.body((b) => {
 
 ## 支持边界
 
-本层已实现 #53 的工厂上下文与实例生命周期、#54 的话题订阅/发布/`post`/`postBytes`/IR 输出/`updateBytes`/有界队列与激活顺序、#55 的引脚声明与数字 I/O、#56 的数字边沿观察与捕获投递、#57 的 `api.ir.connection` / `b.connection.apply` 与 core topology 提交接入，以及 #58 由 `examples/` 与端到端用例覆盖的理想按钮/继电器闭环（未新增公共入口）。不实现 #59 的 sandbox 执行适配，也不实现 #60/#61 的 Provider/checkpoint；不提供重放、ACK/可靠传输、跨实例广播、连接状态查询、JS 直接更新入口、复数别名或外部导线运行时增删。观察仅支持数字边沿；`edges=0` 状态观察、模拟量/电压观察、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
+本层已实现 #53 的工厂上下文与实例生命周期、#54 的话题订阅/发布/`post`/`postBytes`/IR 输出/`updateBytes`/有界队列与激活顺序、#55 的引脚声明与数字 I/O、#56 的数字边沿观察与捕获投递、#57 的 `api.ir.connection` / `b.connection.apply` 与 core topology 提交接入、#60 的 `api.ir.provider` 生成产物接入，以及 #58 由 `examples/` 与端到端用例覆盖的理想按钮/继电器闭环（未新增公共入口）。不实现 #59 的 sandbox 执行适配，也不实现 #61 的 checkpoint/运行中恢复；不提供重放、ACK/可靠传输、跨实例广播、连接状态查询、JS 直接更新入口、复数别名或外部导线运行时增删。观察仅支持数字边沿；`edges=0` 状态观察、模拟量/电压观察、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
 
 ## 验证
 

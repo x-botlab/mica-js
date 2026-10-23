@@ -68,7 +68,9 @@ describe('device factory context', () => {
     expect(surface['updateBytes']).toBeTypeOf('function');
     expect(ir['functions']).toBeUndefined();
     expect(ir['domainInstruction']).toBeUndefined();
-    expect(ir['provider']).toBeUndefined();
+    expect(ir['providers']).toBeUndefined();
+    // #60 adds the provider declaration method; read-only module data stays hidden.
+    expect(ir['provider']).toBeTypeOf('function');
     expect(ir['output']).toBeTypeOf('function');
     expect(ir['outputBytes']).toBeTypeOf('function');
     expect(() => {

@@ -22,7 +22,7 @@ import type { InstructionValidationState } from './validation-internal';
 import type { IRDiagnosticCode } from './validation-types';
 
 const CORE_INSTRUCTIONS = new Set(CORE_INSTRUCTION_NAMES);
-const TERMINATORS = new Set(['return', 'jump', 'branch', 'trap']);
+const TERMINATORS = new Set(['return', 'jump', 'branch', 'trap', 'dispatch']);
 const PREDICATES = new Set(['eq', 'ne', 'lt', 'le', 'gt', 'ge']);
 const INTEGER_WIDTH: Readonly<Record<string, number>> = {
   u8: 8,
@@ -231,6 +231,13 @@ function validatePolicy(node: InstructionNode, state: InstructionValidationState
     state.report(
       'unsupported-instruction',
       `Instruction "${node.op}" is reserved for a future capability`,
+    );
+    return false;
+  }
+  if (state.imports !== undefined && !CORE_INSTRUCTIONS.has(node.op)) {
+    state.report(
+      'provider-import-violation',
+      `Generated artifacts cannot use declared instruction "${node.op}"`,
     );
     return false;
   }
@@ -447,6 +454,12 @@ function memory(
     );
     return undefined;
   }
+  if (state.imports !== undefined && !state.imports.has(ref)) {
+    state.report(
+      'provider-import-violation',
+      `${node.op} operand ${index} is not imported by this provider`,
+    );
+  }
   if (access === 'write' && !definition.writable) {
     state.report('invalid-resource', `${node.op} operand ${index} must reference writable memory`);
   }
@@ -538,6 +551,12 @@ function bridgeSend(node: InstructionNode, state: InstructionValidationState): v
     );
     return;
   }
+  if (state.imports !== undefined && !state.imports.has(operand.ref)) {
+    state.report(
+      'provider-import-violation',
+      'bridge.send target is not imported by this provider',
+    );
+  }
   const kinds: OperandKind[] = ['static', ...output.params.map(() => 'ssa' as const)];
   if (!operands(node, state, kinds)) {
     return;
@@ -570,6 +589,12 @@ function bridgeSendBytes(node: InstructionNode, state: InstructionValidationStat
     );
     return;
   }
+  if (state.imports !== undefined && !state.imports.has(operand.ref)) {
+    state.report(
+      'provider-import-violation',
+      'bridge.send_bytes target is not imported by this provider',
+    );
+  }
   memory(node, state, 1, ['bytes', 'inbox'], 'read');
   value(node, state, 2, 'u32');
   value(node, state, 3, 'u32');
@@ -586,6 +611,9 @@ function eventAt(node: InstructionNode, state: InstructionValidationState): void
   if (target === undefined) {
     state.report('invalid-static-reference', 'event.at target must be listed in this module');
     return;
+  }
+  if (state.imports !== undefined && !state.imports.has(operand.ref)) {
+    state.report('provider-import-violation', 'event.at target is not imported by this provider');
   }
   if (target.category !== 'entry' || operand.ref[refKind] !== 'entry') {
     state.report('invalid-call-target', 'event.at target must be an ordinary entry');
@@ -619,6 +647,9 @@ function call(node: InstructionNode, state: InstructionValidationState): void {
     );
     return;
   }
+  if (state.imports !== undefined && !state.imports.has(operand.ref)) {
+    state.report('provider-import-violation', 'call target is not imported by this provider');
+  }
   if (target.category !== 'function' || operand.ref[refKind] !== 'function') {
     state.report(
       'invalid-call-target',
@@ -645,6 +676,13 @@ function domain(node: InstructionNode, state: InstructionValidationState): void 
   const declaration = state.declarations.get(node.op);
   if (declaration === undefined) {
     state.report('unknown-instruction', `Instruction "${node.op}" is not declared`);
+    return;
+  }
+  if (state.imports !== undefined) {
+    state.report(
+      'provider-import-violation',
+      `Generated artifacts cannot use declared instruction "${node.op}"`,
+    );
     return;
   }
   const validator = state.validators.get(node.op);

@@ -802,13 +802,29 @@ describe('static validation, snapshots and unsupported execution', () => {
     },
   );
 
-  it('rejects dispatch instead of treating it as a successful return', () => {
+  it('rejects dispatch when the backend does not support it instead of returning early', () => {
     const module = createIRModule();
+    const provider = module.provider(
+      'code',
+      {
+        keyTypes: [],
+        params: [],
+        results: [],
+        reads: [],
+        imports: [],
+      },
+      (gen) => gen.function((b) => b.return([])),
+    );
     const run = module.func('run', { params: [], results: [] });
-    run.body((b) => b.return([]));
-    Object.assign(module.functions[0]!.body!.entry.terminator!, { kind: 'dispatch' });
+    run.body((b) => b.dispatch(provider, [], []));
     const failure = error(
-      () => createIRInterpreter(module, { validation: policy(module) }),
+      () =>
+        createIRInterpreter(module, {
+          validation: policy(module, {
+            supportedInstructions: CORE_INSTRUCTION_NAMES.filter((op) => op !== 'dispatch'),
+            authorizedInstructions: CORE_INSTRUCTION_NAMES.filter((op) => op !== 'dispatch'),
+          }),
+        }),
       'validation-failed',
     );
     expect(failure.diagnostics).toContainEqual(

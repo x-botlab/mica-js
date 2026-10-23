@@ -39,7 +39,8 @@ export type {
   IRInstructionValidator,
   IRValidationOptions,
 } from './validation-types';
-export { IRConstructionError } from './errors';
+export { IRConstructionError, IRProviderError } from './errors';
+export type { IRProviderErrorCode, IRProviderErrorDetails } from './errors';
 export {
   SCALAR_TYPES,
   INTEGER_TYPES,
@@ -83,8 +84,11 @@ export type {
   FunctionDefinition,
   FunctionRef,
   FunctionSignature,
+  GeneratedFunction,
   GeneratedFunctionBuilder,
+  GenerationContext,
   HexBits,
+  ImportRef,
   IRBuilderExtension,
   IRDeclarations,
   IRModule,
@@ -105,6 +109,9 @@ export type {
   OutputDefinition,
   OutputRef,
   Predicate,
+  ProviderDefinition,
+  ProviderDescriptor,
+  ProviderRef,
   ReadableBytesRef,
   ResourceRef,
   ResourceOperations,

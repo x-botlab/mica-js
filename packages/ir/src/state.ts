@@ -10,6 +10,8 @@ import type {
   InstructionNode,
   MemoryDefinition,
   OutputDefinition,
+  ProviderDefinition,
+  ProviderRef,
   ScalarType,
   StaticRef,
   Terminator,
@@ -26,6 +28,7 @@ export interface BuilderExtensionState {
 export interface ModuleState {
   readonly memories: MemoryState[];
   readonly functions: FunctionDeclarationState[];
+  readonly providers: ProviderState[];
   readonly domainDeclarations: DomainDeclarationState[];
   readonly instructions: DomainInstructionState[];
   readonly outputs: OutputState[];
@@ -33,6 +36,19 @@ export interface ModuleState {
   readonly names: Set<string>;
   readonly instructionNames: Set<string>;
   bodyDepth: number;
+  providerDepth: number;
+}
+
+export interface ProviderState {
+  readonly module: ModuleState;
+  readonly name: string;
+  readonly keyTypes: readonly ScalarType[];
+  readonly params: readonly ScalarType[];
+  readonly results: readonly ScalarType[];
+  readonly reads: readonly StaticRef[];
+  readonly imports: readonly StaticRef[];
+  readonly generate: (gen: unknown, key: readonly unknown[]) => unknown;
+  ref: ProviderRef;
 }
 
 export interface MemoryState {
@@ -106,5 +122,17 @@ export function toFunctionDefinition(state: FunctionDeclarationState): FunctionD
     params: state.params,
     results: state.results,
     body: state.body,
+  };
+}
+
+export function toProviderDefinition(state: ProviderState): ProviderDefinition {
+  return {
+    name: state.name,
+    ref: state.ref,
+    keyTypes: state.keyTypes,
+    params: state.params,
+    results: state.results,
+    reads: state.reads,
+    imports: state.imports,
   };
 }

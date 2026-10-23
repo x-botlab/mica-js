@@ -1,7 +1,11 @@
 import { CORE_INSTRUCTION_NAMES } from './builder';
+import { IRProviderError } from './errors';
 import { evaluateFloatInstruction } from './float';
 import { toNumber } from './float-ieee';
+import { createProviderRuntime } from './provider';
+import type { ProviderArtifact, ProviderRuntime } from './provider';
 import { assertSynchronousCallback, isFloatType } from './runtime';
+import { getProviderMetadata } from './runtime';
 import { evaluateScalarInstruction } from './scalar';
 import { createIRStorage, IRStorageError } from './storage';
 import type { IRStorage } from './storage';
@@ -21,6 +25,7 @@ import type {
   NumericType,
   OutputDefinition,
   OutputRef,
+  ProviderDefinition,
   ReadableBytesRef,
   RuntimeScalar,
   ScalarType,
@@ -110,7 +115,8 @@ export type IRExecutionErrorCode =
   | 'evaluation-failed'
   | 'storage-failed'
   | 'unsupported-instruction'
-  | 'instance-faulted';
+  | 'instance-faulted'
+  | 'provider-failed';
 
 export interface IRExecutionLocation {
   readonly functionIndex: number;
@@ -157,6 +163,7 @@ export class IRExecutionError extends Error {
 interface Model {
   readonly memories: readonly MemoryDefinition[];
   readonly functions: readonly FunctionDefinition[];
+  readonly providers: readonly ProviderDefinition[];
   readonly domainDeclarations: IRModule['domainDeclarations'];
   readonly instructions: IRModule['instructions'];
   readonly outputs: IRModule['outputs'];
@@ -222,6 +229,7 @@ export function createIRInterpreter(
     source = {
       memories: module.memories,
       functions: module.functions,
+      providers: module.providers ?? [],
       domainDeclarations: module.domainDeclarations,
       instructions: module.instructions,
       outputs: module.outputs ?? [],
@@ -285,6 +293,21 @@ export function createIRInterpreter(
   } catch (cause) {
     throw new IRExecutionError('storage-failed', 'Could not allocate instance storage', { cause });
   }
+  for (const provider of model.providers) {
+    if (getProviderMetadata(provider.ref) === undefined) {
+      throw new IRExecutionError(
+        'validation-failed',
+        `Provider "${provider.name}" has no generation callback; declare providers with createIRModule`,
+      );
+    }
+  }
+  const providers = createProviderRuntime({
+    model,
+    storage,
+    validation: validationOptions,
+    hasEventHost: eventHost !== undefined,
+    hasBridge: bridge !== undefined,
+  });
   return new Interpreter(
     model.functions,
     storage,
@@ -294,6 +317,7 @@ export function createIRInterpreter(
     bridge,
     model.outputs,
     executors,
+    providers,
   );
 }
 
@@ -467,6 +491,7 @@ class Interpreter implements IRInterpreter {
   readonly #bridge: IRBridgeHost | undefined;
   readonly #outputs: ReadonlyMap<object, OutputDefinition>;
   readonly #executors: ReadonlyMap<string, CapturedExecutor> | undefined;
+  readonly #providers: ProviderRuntime;
   #faulted = false;
 
   constructor(
@@ -478,6 +503,7 @@ class Interpreter implements IRInterpreter {
     bridge: IRBridgeHost | undefined,
     outputs: readonly OutputDefinition[],
     executors: ReadonlyMap<string, CapturedExecutor> | undefined,
+    providers: ProviderRuntime,
   ) {
     this.#eventHost = eventHost;
     this.#stepObserver = stepObserver;
@@ -487,6 +513,7 @@ class Interpreter implements IRInterpreter {
     this.#functions = new Map(functions.map((fn) => [fn.ref, fn]));
     this.#indices = new Map(functions.map((fn, index) => [fn, index]));
     this.#maxSteps = maxSteps;
+    this.#providers = providers;
     Object.freeze(this);
   }
 
@@ -597,6 +624,19 @@ class Interpreter implements IRInterpreter {
           }
           case 'trap':
             throw new IRExecutionError('trap', `IR trap: ${term.code}`);
+          case 'dispatch': {
+            const key = term.key.map((value) => read(frame, value));
+            const args = term.args.map((value) => read(frame, value));
+            const artifact = this.#providers.materialize(term.provider, key);
+            // The artifact replaces this frame: dispatch is a tail transfer that keeps the
+            // current entry, budget, and virtual time, and its return reaches our caller.
+            const inputs = artifact.fn.params.map((type, index) =>
+              captureArgument(type, args[index]!),
+            );
+            frames.pop();
+            frames.push(this.generatedFrame(artifact, inputs));
+            break;
+          }
         }
       }
       throw new Error('Execution ended without returning');
@@ -606,9 +646,11 @@ class Interpreter implements IRInterpreter {
       const code =
         cause instanceof IRExecutionError
           ? cause.code
-          : cause instanceof IRStorageError
-            ? 'storage-failed'
-            : 'evaluation-failed';
+          : cause instanceof IRProviderError
+            ? 'provider-failed'
+            : cause instanceof IRStorageError
+              ? 'storage-failed'
+              : 'evaluation-failed';
       throw new IRExecutionError(
         code,
         cause instanceof Error ? cause.message : 'IR execution failed',
@@ -617,6 +659,9 @@ class Interpreter implements IRInterpreter {
           ...(callStack.length > 0 ? { location: callStack[callStack.length - 1]! } : {}),
           callStack,
           steps,
+          ...(cause instanceof IRProviderError && cause.diagnostics.length > 0
+            ? { diagnostics: cause.diagnostics }
+            : {}),
           cause,
         },
       );
@@ -725,6 +770,17 @@ class Interpreter implements IRInterpreter {
     return {
       fn,
       functionIndex: this.#indices.get(fn)!,
+      block,
+      position: 0,
+      values: new Map(block.params.map((param, index) => [param, args[index]!])),
+    };
+  }
+
+  private generatedFrame(artifact: ProviderArtifact, args: readonly RuntimeScalar[]): Frame {
+    const block = artifact.fn.body!.entry;
+    return {
+      fn: artifact.fn,
+      functionIndex: artifact.index,
       block,
       position: 0,
       values: new Map(block.params.map((param, index) => [param, args[index]!])),

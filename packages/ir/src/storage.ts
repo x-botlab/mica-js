@@ -64,6 +64,24 @@ export interface IRVersionedBytes {
   readonly dependencies: readonly IRResourceDependency[];
 }
 
+/** Whole-resource value plus the version units it was read from (#60). */
+export interface IRVersionedScalar<T extends ScalarType> {
+  readonly value: StorageValue<T>;
+  readonly dependencies: readonly IRResourceDependency[];
+}
+
+/**
+ * Internal tracked-read surface used by provider generation. It is symbol-keyed on purpose:
+ * the public `IRStorage` contract does not grow scalar dependency accessors.
+ */
+export const providerReadState: unique symbol = Symbol('mica.ir.provider-read-state');
+export const providerReadArray: unique symbol = Symbol('mica.ir.provider-read-array');
+
+export interface IRProviderTrackedReads {
+  [providerReadState]<T extends ScalarType>(ref: StateRef<T>): IRVersionedScalar<T>;
+  [providerReadArray]<T extends ScalarType>(ref: ArrayRef<T>, index: number): IRVersionedScalar<T>;
+}
+
 export interface IRStorageOptions {
   readonly updateResources?: readonly BytesRef[];
 }
@@ -128,6 +146,8 @@ interface ScalarRecord extends BaseRecord {
   readonly scalarType: ScalarType;
   readonly length: number;
   readonly width: number;
+  readonly identity: IRResourceIdentity;
+  units: ReadonlyMap<number, IRResourceDependency>;
 }
 
 interface ByteRecord extends BaseRecord {
@@ -143,6 +163,30 @@ const CANONICAL_NAN: Readonly<Record<FloatType, bigint>> = {
   f32: 0x7fc00000n,
   f64: 0x7ff8000000000000n,
 };
+
+/** Storage instances whose mutating accessors are suspended for provider generation (#60). */
+const suspendedWrites = new WeakMap<object, number>();
+
+export function suspendStorageWrites(storage: IRStorage): void {
+  suspendedWrites.set(storage, (suspendedWrites.get(storage) ?? 0) + 1);
+}
+
+export function resumeStorageWrites(storage: IRStorage): void {
+  const depth = suspendedWrites.get(storage) ?? 0;
+  if (depth <= 1) {
+    suspendedWrites.delete(storage);
+  } else {
+    suspendedWrites.set(storage, depth - 1);
+  }
+}
+
+function freezeDependency(identity: IRResourceIdentity): IRResourceDependency {
+  return Object.freeze({
+    resource: identity,
+    unit: Object.freeze({}) as IRVersionUnitIdentity,
+    version: Object.freeze({}) as IRResourceVersion,
+  });
+}
 
 export function createIRStorage(module: IRModule, options?: IRStorageOptions): IRStorage {
   if (!isRecord(module) || !Array.isArray(module.memories)) {
@@ -176,10 +220,10 @@ export function createIRStorage(module: IRModule, options?: IRStorageOptions): I
   return new Storage(records, updateResources);
 }
 
-class Storage implements IRStorage {
+class Storage implements IRStorage, IRProviderTrackedReads {
   readonly #records: ReadonlyMap<object, MemoryRecord>;
   readonly #updateResources: ReadonlySet<object>;
-  readonly #dependencies = new WeakMap<object, { record: ByteRecord; index: number }>();
+  readonly #dependencies = new WeakMap<object, { record: MemoryRecord; index: number }>();
 
   constructor(records: ReadonlyMap<object, MemoryRecord>, updateResources: ReadonlySet<object>) {
     this.#records = records;
@@ -196,8 +240,10 @@ class Storage implements IRStorage {
   }
 
   storeState<T extends ScalarType>(ref: StateRef<T>, value: RuntimeScalar): void {
+    this.#assertWritable();
     const record = this.#scalar(ref, 'state', 'state.store resource', true);
     writeScalar(record, 0, value);
+    this.#advanceScalar(record);
   }
 
   loadArray<T extends ScalarType>(ref: ArrayRef<T>, index: number): StorageValue<T> {
@@ -210,9 +256,30 @@ class Storage implements IRStorage {
   }
 
   storeArray<T extends ScalarType>(ref: ArrayRef<T>, index: number, value: RuntimeScalar): void {
+    this.#assertWritable();
     const record = this.#scalar(ref, 'array', 'array.store resource', true);
     const offset = scalarOffset(record, index, 'array.store index');
     writeScalar(record, offset, value);
+    this.#advanceScalar(record);
+  }
+
+  [providerReadState]<T extends ScalarType>(ref: StateRef<T>): IRVersionedScalar<T> {
+    const record = this.#scalar(ref, 'state', 'readState resource');
+    const value = decodeScalar(
+      record.scalarType,
+      readBits(record.bytes, 0, record.width, 'little'),
+    ) as StorageValue<T>;
+    return Object.freeze({ value, dependencies: Object.freeze([this.#scalarUnit(record)]) });
+  }
+
+  [providerReadArray]<T extends ScalarType>(ref: ArrayRef<T>, index: number): IRVersionedScalar<T> {
+    const record = this.#scalar(ref, 'array', 'readArray resource');
+    const offset = scalarOffset(record, index, 'readArray index');
+    const value = decodeScalar(
+      record.scalarType,
+      readBits(record.bytes, offset, record.width, 'little'),
+    ) as StorageValue<T>;
+    return Object.freeze({ value, dependencies: Object.freeze([this.#scalarUnit(record)]) });
   }
 
   loadBytes<T extends NumericType>(
@@ -235,6 +302,7 @@ class Storage implements IRStorage {
     offset: number,
     value: RuntimeScalar,
   ): void {
+    this.#assertWritable();
     const record = this.#byte(ref, true, 'bytes.store resource');
     const width = numericWidth(type, 'bytes.store type');
     assertEndian(endian, 'bytes.store endian');
@@ -250,6 +318,7 @@ class Storage implements IRStorage {
     sourceOffset: number,
     length: number,
   ): void {
+    this.#assertWritable();
     const target = this.#byte(destination, true, 'bytes.copy destination');
     const origin = this.#byte(source, false, 'bytes.copy source');
     const count = unsigned32(length, 'bytes.copy length');
@@ -279,6 +348,7 @@ class Storage implements IRStorage {
     sourceOffset: number,
     length: number,
   ): void {
+    this.#assertWritable();
     const target = this.#updateTarget(destination);
     const origin = this.#byte(source, false, 'resource.update_bytes source');
     const count = unsigned32(length, 'resource.update_bytes length');
@@ -310,6 +380,7 @@ class Storage implements IRStorage {
   }
 
   fillBytes(destination: BytesRef, offset: number, length: number, value: number): void {
+    this.#assertWritable();
     const target = this.#updateTarget(destination);
     const count = unsigned32(length, 'resource.fill_bytes length');
     const start = byteOffset(target, offset, count, 'resource.fill_bytes offset');
@@ -330,6 +401,7 @@ class Storage implements IRStorage {
   }
 
   writeInbox(ref: InboxRef, offset: number, bytes: Uint8Array): void {
+    this.#assertWritable();
     const record = this.#byte(ref, false, 'writeInbox resource');
     if (record.kind !== 'inbox') {
       throw new IRStorageError('invalid-resource', 'writeInbox requires an inbox resource');
@@ -337,10 +409,18 @@ class Storage implements IRStorage {
     const snapshot = captureBytes(bytes, 'writeInbox bytes');
     const start = byteOffset(record, offset, snapshot.length, 'writeInbox offset');
     if (snapshot.length === 0) return;
-    record.bytes.set(snapshot, start);
+    try {
+      // Inbox contents are host inputs; advance the whole-resource unit so tracked reads expire.
+      const units = this.#prepareUnits(record, start, snapshot.length, true);
+      record.bytes.set(snapshot, start);
+      record.units = units;
+    } catch {
+      throw new IRStorageError('allocation-failure', 'writeInbox could not prepare its update');
+    }
   }
 
   updateBytesFromBytes(ref: BytesRef, offset: number, bytes: Uint8Array): void {
+    this.#assertWritable();
     const target = this.#updateTarget(ref);
     const snapshot = captureBytes(bytes, 'updateBytesFromBytes bytes');
     const start = byteOffset(target, offset, snapshot.length, 'updateBytesFromBytes offset');
@@ -399,6 +479,36 @@ class Storage implements IRStorage {
       );
     }
     return record;
+  }
+
+  #assertWritable(): void {
+    if (suspendedWrites.has(this)) {
+      throw new IRStorageError(
+        'unauthorized-resource',
+        'Storage writes are suspended during provider generation',
+      );
+    }
+  }
+  /** Whole-resource unit for scalar state/arrays; created lazily on the first tracked read. */
+  #scalarUnit(record: ScalarRecord): IRResourceDependency {
+    const previous = record.units.get(0);
+    if (previous !== undefined) return previous;
+    const dependency = freezeDependency(record.identity);
+    record.units = new Map([[0, dependency]]);
+    this.#dependencies.set(dependency, { record, index: 0 });
+    return dependency;
+  }
+
+  /**
+   * Ordinary scalar stores have no other versioned path, so they advance the whole-resource
+   * unit. Runs with no tracked read are skipped; the first later read captures the then-current
+   * value and needs no invalidation.
+   */
+  #advanceScalar(record: ScalarRecord): void {
+    if (record.units.size === 0) return;
+    const dependency = freezeDependency(record.identity);
+    record.units = new Map([[0, dependency]]);
+    this.#dependencies.set(dependency, { record, index: 0 });
   }
 
   #prepareUnits(
@@ -524,6 +634,8 @@ function createRecord(definition: MemoryDefinition): MemoryRecord {
       scalarType: type,
       length,
       width,
+      identity: Object.freeze({}) as IRResourceIdentity,
+      units: new Map(),
     };
     definition.initial.forEach((value, index) => {
       writeBits(record.bytes, index * width, width, 'little', encodeScalar(type, value));

@@ -4,7 +4,9 @@ import type {
   BytesOutputRef,
   DomainInstruction,
   FunctionRef,
+  GeneratedFunction,
   OutputRef,
+  ProviderRef,
   ScalarType,
   StateRef,
   StaticRef,
@@ -34,6 +36,7 @@ import type {
   MemoryState,
   ModuleState,
   OutputState,
+  ProviderState,
 } from './state';
 
 interface ValueMetadata {
@@ -54,6 +57,7 @@ const functionMetadata = new WeakMap<object, FunctionDeclarationState>();
 const outputMetadata = new WeakMap<object, OutputState>();
 const staticMetadata = new WeakMap<object, DomainDeclarationState>();
 const instructionMetadata = new WeakMap<object, DomainInstructionState>();
+const providerMetadata = new WeakMap<object, ProviderState>();
 
 export function createValue<T extends ScalarType>(
   owner: BuilderState,
@@ -147,6 +151,33 @@ export function createDomainStaticRef<Kind extends string>(
   return ref;
 }
 
+export function createProviderRef<
+  K extends readonly ScalarType[],
+  P extends readonly ScalarType[],
+  R extends readonly ScalarType[],
+>(provider: ProviderState): ProviderRef<K, P, R> {
+  const ref = {
+    [refKind]: 'provider',
+    [signature]: {
+      params: provider.params,
+      results: provider.results,
+      keyTypes: provider.keyTypes,
+    },
+  } as unknown as ProviderRef<K, P, R>;
+  providerMetadata.set(ref, provider);
+  return ref;
+}
+
+export function createGeneratedFunctionRef<P extends readonly ScalarType[]>(
+  params: readonly ScalarType[],
+  results: readonly ScalarType[],
+): GeneratedFunction<P, readonly ScalarType[]> {
+  return {
+    [refKind]: 'generated-function',
+    [signature]: { params, results },
+  } as unknown as GeneratedFunction<P, readonly ScalarType[]>;
+}
+
 export function createDomainInstructionRef(instruction: DomainInstructionState): DomainInstruction {
   const ref = {
     [refKind]: 'instruction',
@@ -182,10 +213,15 @@ export function getInstructionMetadata(ref: object): DomainInstructionState | un
   return instructionMetadata.get(ref);
 }
 
+export function getProviderMetadata(ref: object): ProviderState | undefined {
+  return providerMetadata.get(ref);
+}
+
 export function getRefModule(ref: StaticRef): ModuleState | undefined {
   return (
     memoryMetadata.get(ref)?.module ??
     functionMetadata.get(ref)?.module ??
+    providerMetadata.get(ref)?.module ??
     outputMetadata.get(ref)?.module ??
     staticMetadata.get(ref)?.module ??
     instructionMetadata.get(ref)?.module

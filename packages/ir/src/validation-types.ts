@@ -24,7 +24,11 @@ export type IRDiagnosticCode =
   | 'unknown-instruction'
   | 'unsupported-instruction'
   | 'domain-validation'
-  | 'extension-error';
+  | 'extension-error'
+  | 'invalid-provider'
+  | 'provider-key-mismatch'
+  | 'unsupported-provider'
+  | 'provider-import-violation';
 
 export interface IRDiagnosticLocation {
   readonly path: string;

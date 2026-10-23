@@ -90,6 +90,27 @@ export type ReadableBytesRef = BytesRef | InboxRef;
 export type WritableBytesRef = BytesRef<false>;
 export type ResourceRef = StateRef | ArrayRef | ReadableBytesRef;
 
+/** Static provider declaration (#8 / #60). */
+export interface ProviderRef<
+  K extends readonly ScalarType[] = readonly ScalarType[],
+  P extends readonly ScalarType[] = readonly ScalarType[],
+  R extends readonly ScalarType[] = readonly ScalarType[],
+> extends StaticRef<'provider'> {
+  readonly [signature]: FunctionSignature<P, R> & { readonly keyTypes: K };
+}
+
+/** Opaque handle for the artifact produced by one generation. */
+export interface GeneratedFunction<
+  P extends readonly ScalarType[] = readonly ScalarType[],
+  R extends readonly ScalarType[] = readonly ScalarType[],
+> extends StaticRef<'generated-function'> {
+  readonly [signature]: FunctionSignature<P, R>;
+}
+
+/** Static references a generated artifact may use; domain declarations are not importable. */
+export type ImportRef =
+  ResourceRef | StaticRef<'function' | 'entry' | 'provider' | 'scalar-output' | 'bytes-output'>;
+
 export interface FunctionSignature<
   P extends readonly ScalarType[],
   R extends readonly ScalarType[],
@@ -404,6 +425,18 @@ export interface IRDeclarations {
   ): FunctionRef<P, R>;
   entry<const P extends readonly ScalarType[]>(name: string, params: P): EntryRef<P>;
   lifecycle<const P extends readonly ScalarType[]>(name: string, params: P): LifecycleRef<P>;
+  provider<
+    const K extends readonly ScalarType[],
+    const P extends readonly ScalarType[],
+    const R extends readonly ScalarType[],
+  >(
+    name: string,
+    descriptor: ProviderDescriptor<K, P, R>,
+    generate: (
+      gen: GenerationContext<NoInfer<P>, NoInfer<R>>,
+      key: ScalarArgs<NoInfer<K>>,
+    ) => GeneratedFunction<NoInfer<P>, NoInfer<R>>,
+  ): ProviderRef<K, P, R>;
   output<const P extends readonly ScalarType[]>(
     name: string,
     descriptor: { readonly params: P; readonly capacity: number },
@@ -464,6 +497,11 @@ export interface FunctionBuilder<R extends readonly ScalarType[] = readonly []> 
     offset: Value<'u32'>,
     length: Value<'u32'>,
   ): Value<'bool'>;
+  dispatch<K extends readonly ScalarType[], P extends readonly ScalarType[]>(
+    provider: ProviderRef<K, P, NoInfer<R>>,
+    key: Values<NoInfer<K>>,
+    args: Values<NoInfer<P>>,
+  ): undefined;
   block<const P extends readonly ScalarType[]>(types: P): BlockRef<P>;
   at<P extends readonly ScalarType[]>(
     block: BlockRef<P>,
@@ -484,9 +522,8 @@ export interface FunctionBuilder<R extends readonly ScalarType[] = readonly []> 
 }
 
 /**
- * Type boundary for Provider-generated functions. Provider generation,
- * checkpoints, and dispatch belong to a later task; this interface only keeps
- * nested block callbacks on the specialized builder family.
+ * Type boundary for Provider-generated functions (#60). The builder inherits `dispatch`;
+ * `checkpoint` and runtime invalidation recovery belong to #61.
  */
 export interface GeneratedFunctionBuilder<
   R extends readonly ScalarType[] = readonly [],
@@ -495,6 +532,47 @@ export interface GeneratedFunctionBuilder<
     block: BlockRef<P>,
     callback: (b: GeneratedFunctionBuilder<R>, params: Values<P>) => undefined,
   ): undefined;
+}
+
+/**
+ * Tracked-read surface available while one artifact is generated (#8 / #60).
+ * Reads record the covered version units; there is no write or event API.
+ */
+export interface GenerationContext<
+  P extends readonly ScalarType[] = readonly ScalarType[],
+  R extends readonly ScalarType[] = readonly ScalarType[],
+> {
+  readBytes(ref: ReadableBytesRef, offset: number, length: number): Uint8Array;
+  readState<T extends ScalarType>(ref: StateRef<T>): JSScalar<T>;
+  readArray<T extends ScalarType>(ref: ArrayRef<T>, index: number): JSScalar<T>;
+  function(
+    callback: (b: GeneratedFunctionBuilder<NoInfer<R>>, params: Values<NoInfer<P>>) => undefined,
+  ): GeneratedFunction<P, R>;
+}
+
+export interface ProviderDescriptor<
+  K extends readonly ScalarType[],
+  P extends readonly ScalarType[],
+  R extends readonly ScalarType[],
+> {
+  readonly keyTypes: K;
+  readonly params: P;
+  readonly results: R;
+  /** Generation-time tracked reads; an authorization ceiling, not a dependency list. */
+  readonly reads: readonly ResourceRef[];
+  /** Static references the generated artifact may use. */
+  readonly imports: readonly ImportRef[];
+}
+
+/** Provider declaration data exposed by `IRModule.providers`; the callback stays internal. */
+export interface ProviderDefinition {
+  readonly name: string;
+  readonly ref: ProviderRef;
+  readonly keyTypes: readonly ScalarType[];
+  readonly params: readonly ScalarType[];
+  readonly results: readonly ScalarType[];
+  readonly reads: readonly StaticRef[];
+  readonly imports: readonly StaticRef[];
 }
 
 export type FunctionCategory = 'function' | 'entry' | 'lifecycle';
@@ -557,6 +635,12 @@ export type Terminator =
       readonly yes: EdgeDefinition;
       readonly no: EdgeDefinition;
     }
+  | {
+      readonly kind: 'dispatch';
+      readonly provider: ProviderRef;
+      readonly key: readonly Value[];
+      readonly args: readonly Value[];
+    }
   | { readonly kind: 'return'; readonly values: readonly Value[] }
   | { readonly kind: 'trap'; readonly code: string };
 
@@ -585,6 +669,7 @@ export interface FunctionDefinition {
 export interface IRModule extends IRDeclarations {
   readonly memories: readonly MemoryDefinition[];
   readonly functions: readonly FunctionDefinition[];
+  readonly providers: readonly ProviderDefinition[];
   readonly domainDeclarations: readonly DomainDeclaration[];
   readonly instructions: readonly DeclaredInstruction[];
   readonly outputs: readonly OutputDefinition[];

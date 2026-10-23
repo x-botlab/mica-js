@@ -54,6 +54,7 @@ export function createIRSchedulerInstance(
   const captured = {
     memories: module.memories,
     functions: module.functions,
+    providers: module.providers ?? [],
     domainDeclarations: module.domainDeclarations,
     instructions: module.instructions,
     outputs: module.outputs,
