@@ -29,6 +29,9 @@ e2e/canvas.spec.ts             Playwright 冒烟：实例渲染、拖动提交�
 e2e/editor.spec.ts             Playwright 冒烟：渲染、网标拖动折线、导线 T 接入、只读守卫
 playwright.config.ts           e2e 配置（webServer 跑 127.0.0.1:4174 的 dev server）
 src/canvas/panel-model.ts      纯逻辑：候选端点过滤、属性初值/「已覆盖」、绑定选项、错误消息
+src/canvas/palette.ts          组件列表：从 widget 包生成条目、新实例的默认尺寸与级联位置
+src/canvas/layers.ts           图层列表：文档数组 ↔ 自上而下的显示顺序、拖动落点换算出 `set-z`
+src/canvas/persist.ts          草稿保存：序列化去重、去抖写入、失败重试
 src/canvas/panel-model.test.ts vitest（node）覆盖上述纯逻辑
 src/components/app-shell.tsx   侧边导航 + 顶栏 + 主题切换
 src/components/canvas-inspector.tsx  画布的宿主属性/绑定面板（按 widget 定义渲染控件）
@@ -47,7 +50,7 @@ public/widgets/                demo widget 包（package.json + image/segment/bu
 src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）
 ```
 
-画布页的左侧栏是**组件列表**：条目来自 `public/widgets/package.json`（`loadWidgetPackage` 读出来的 `displayName` + 宿主给的默认尺寸），点击即发一条 `add-instance`，新实例按对角偏移级联摆放并置顶。运行模式下列表禁用。
+画布页的左侧栏是**组件列表 + 图层列表**：组件条目来自 `public/widgets/package.json`（`loadWidgetPackage` 读出来的 `displayName` + 宿主给的默认尺寸），点击即发一条 `add-instance`，新实例按对角偏移级联摆放并置顶，运行模式下列表禁用。图层列表按**绘制顺序自上而下**列出当前文档的实例（`src/canvas/layers.ts` 负责把文档数组反过来），点一行调 `scene.setSelection` 选中它，拖动一行落到另一行即发一条 `set-z`（目标 `z` 是 `count - 1 - 显示下标`）。
 
 画布页的右侧栏是**宿主 UI**：属性控件按 `provider.resolve(ref).definition.properties` 渲染，绑定下拉按 `definition.ports` 渲染，值一律通过 `host.applyCommand` 提交，被拒时把 `SchematicError.diagnostics` 的 message 显示在对应控件下方。可选端点来自 `src/canvas/panel-model.ts` 的 `DEMO_TARGETS`（示例没有真实原理图，`createWidgetHost` 不传 `catalog` 时跳过引用校验）。
 

@@ -22,6 +22,7 @@ import {
   type WidgetProvider,
 } from '@mica-js/widget';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { layerRows, zForDrop } from '@/canvas/layers';
 import { createPaletteInstance, paletteEntries, type PaletteEntry } from '@/canvas/palette';
 import { commandErrorMessages } from '@/canvas/panel-model';
 import { createCanvasDraft, createDraftStore, createMemoryStorage } from '@/canvas/persist';
@@ -34,6 +35,7 @@ import {
 import { CanvasInspector } from '@/components/canvas-inspector';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 
 /**
  * Endpoints `demo.cnv` binds; the simulation the scene forwards to is faked with a timer below.
@@ -161,6 +163,8 @@ export function CanvasPage() {
     () => new Map(),
   );
   const [palette, setPalette] = useState<readonly PaletteEntry[]>([]);
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('clean');
   const [saveError, setSaveError] = useState<string | null>(null);
   const draftRef = useRef<CanvasDraft | null>(null);
@@ -373,6 +377,7 @@ export function CanvasPage() {
   const selectedInstance = document?.widgets.find((widget) => widget.id === selectedIds[0]);
   const selectedDefinition =
     selectedInstance === undefined ? undefined : definitions.get(selectedInstance.widget);
+  const rows = layerRows(document, definitions);
 
   /** Adds one palette entry on top of the stack, cascading so clicks do not pile up. */
   const addFromPalette = (entry: PaletteEntry): void => {
@@ -395,6 +400,25 @@ export function CanvasPage() {
       return;
     }
     downloadDocument(serializeCanvas(scene.document), 'demo.cnv');
+  };
+
+  /** A list row selects its instance, so the inspector follows the list. */
+  const selectLayer = (instanceId: string): void => {
+    sceneRef.current?.setSelection([instanceId]);
+  };
+
+  /** Dropping a row commits one `set-z`; the list is topmost-first, the document is bottom-first. */
+  const dropLayer = (instanceId: string, displayIndex: number): void => {
+    const host = hostRef.current;
+    if (host === null) {
+      return;
+    }
+    const z = zForDrop(host.document.widgets.length, displayIndex);
+    if (z === undefined) {
+      return;
+    }
+    const messages = applyCommand({ type: 'set-z', instanceId, z });
+    setError(messages.length === 0 ? null : messages.join('；'));
   };
 
   /**
@@ -485,7 +509,7 @@ export function CanvasPage() {
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <aside className="bg-card/40 flex w-44 shrink-0 flex-col overflow-y-auto border-r">
+        <aside className="bg-card/40 flex w-52 shrink-0 flex-col overflow-y-auto border-r">
           <header className="flex items-center gap-2 border-b px-3 py-2">
             <h2 className="text-xs font-semibold">组件</h2>
             <span className="text-muted-foreground truncate text-[10px]">
@@ -517,6 +541,73 @@ export function CanvasPage() {
           </ul>
           <p className="text-muted-foreground px-3 pb-2 text-[10px]">
             点击添加到画布；运行模式不可用。
+          </p>
+
+          <header className="flex items-center gap-2 border-y px-3 py-2">
+            <h2 className="text-xs font-semibold">图层</h2>
+            <span className="text-muted-foreground truncate text-[10px]">
+              {rows.length} 个 · 拖动排序
+            </span>
+          </header>
+          <ul className="flex flex-col gap-0.5 p-2" data-layers>
+            {rows.length === 0 ? (
+              <li className="text-muted-foreground px-1 text-[11px]">画布上没有实例。</li>
+            ) : (
+              rows.map((row) => {
+                const selected = selectedIds.includes(row.id);
+                const dragged = dragId === row.id;
+                const target = dragId !== null && dropIndex === row.displayIndex && !dragged;
+                return (
+                  <li
+                    key={row.id}
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', row.id);
+                      setDragId(row.id);
+                    }}
+                    onDragEnd={() => {
+                      setDragId(null);
+                      setDropIndex(null);
+                    }}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.dataTransfer.dropEffect = 'move';
+                      if (dropIndex !== row.displayIndex) {
+                        setDropIndex(row.displayIndex);
+                      }
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      const draggedId = dragId ?? event.dataTransfer.getData('text/plain');
+                      setDragId(null);
+                      setDropIndex(null);
+                      if (draggedId.length > 0) {
+                        dropLayer(draggedId, row.displayIndex);
+                      }
+                    }}
+                    onClick={() => selectLayer(row.id)}
+                    title={`${row.id} · z ${row.z}`}
+                    className={cn(
+                      'flex cursor-grab items-center gap-1 rounded border px-1.5 py-1 text-[11px] select-none',
+                      selected
+                        ? 'border-sky-500/60 bg-sky-500/10'
+                        : 'hover:bg-accent/40 border-transparent',
+                      dragged && 'opacity-40',
+                      target && 'border-sky-400 border-dashed',
+                    )}
+                  >
+                    <span className="truncate">{row.title}</span>
+                    <span className="text-muted-foreground ml-auto font-mono text-[10px]">
+                      z{row.z}
+                    </span>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+          <p className="text-muted-foreground px-3 pb-2 text-[10px]">
+            列表自上而下是绘制顺序；拖动即发一条 `set-z`。
           </p>
         </aside>
 

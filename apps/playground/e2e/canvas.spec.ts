@@ -313,3 +313,24 @@ test('adds a widget from the palette and restores it from the draft', async ({ p
   await page.getByRole('button', { name: '重置草稿' }).click();
   await expect.poll(async () => (await sceneState(page)).document.widgets.length).toBe(before);
 });
+
+test('selects and reorders instances from the layer list', async ({ page }) => {
+  await openCanvas(page);
+  const widgets = (await sceneState(page)).document.widgets;
+  const ids = widgets.map((widget) => widget.id);
+  const rows = page.locator('[data-layers] li');
+  await expect(rows).toHaveCount(ids.length);
+
+  // The list is topmost first, so row 0 is the last entry of the document.
+  await rows.nth(0).click();
+  await expect(
+    page.getByText(widgets[widgets.length - 1]?.widget ?? '', { exact: true }),
+  ).toBeVisible();
+
+  // Dropping onto the last row puts the dragged instance at the bottom of the stack.
+  await rows.nth(0).dragTo(rows.nth(ids.length - 1));
+  await expect
+    .poll(async () => (await sceneState(page)).document.widgets.map((widget) => widget.id))
+    .toEqual([ids[ids.length - 1], ...ids.slice(0, -1)]);
+  await expect(page.getByText('诊断 0')).toBeVisible();
+});
