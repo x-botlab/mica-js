@@ -1,6 +1,12 @@
-import type { SchedulerOptions, TimePs } from '@mica-js/core';
-import type { SchematicDocument } from '@mica-js/core/schematic';
-import type { IDeviceProvider, TopicPayload, TopicPayloadType } from '@mica-js/device';
+import type { Scheduler, SchedulerOptions, TimePs, TopologyRuntime } from '@mica-js/core';
+import type { SchematicDocument, SchematicSymbol } from '@mica-js/core/schematic';
+import type {
+  DeviceInstanceOptions,
+  DevicePinHost,
+  IDeviceProvider,
+  TopicPayload,
+  TopicPayloadType,
+} from '@mica-js/device';
 
 /** Lifecycle of one executor. `ready` is the only state that can advance. */
 export type SimulationState = 'idle' | 'ready' | 'faulted' | 'disposed';
@@ -62,11 +68,56 @@ export interface SimulationDiagnostic {
   readonly cause?: unknown;
 }
 
+/**
+ * Extra instance options a host may add per symbol.
+ *
+ * Identity, the symbol's properties and the pin/connection hosts stay with the executor, so a
+ * host cannot rebind one instance to another runtime's wiring.
+ */
+export type DeviceSimInstanceOptions = Omit<
+  DeviceInstanceOptions,
+  'instanceId' | 'onTopic' | 'pinHost' | 'connections' | 'properties'
+>;
+
+/**
+ * Host-owned wiring handed to every instance of one runtime.
+ *
+ * The executor builds it through {@link DeviceSimHostFactory} on every `loadSchematic` and
+ * `reset()`, so the pin host and the topology always belong to the scheduler that is running.
+ */
+export interface DeviceSimHost {
+  /** Electrical/pin host passed to every instance as `pinHost`. */
+  readonly pinHost?: DevicePinHost;
+  /** Topology passed to every instance as `connections.topology`. */
+  readonly topology?: TopologyRuntime;
+  /** Adds per-symbol options such as `updateResources`; omitted fields keep the defaults. */
+  instanceOptions?(symbol: SchematicSymbol): DeviceSimInstanceOptions | undefined;
+  /** Releases what the factory created; runs once every instance of the runtime is destroyed. */
+  dispose?(): void;
+}
+
+export interface DeviceSimHostContext {
+  /** Scheduler of the runtime being built; a new one for every load and every reset. */
+  readonly scheduler: Scheduler;
+  readonly schematic: SchematicDocument;
+}
+
+/** Builds the wiring for one runtime. */
+export type DeviceSimHostFactory = (context: DeviceSimHostContext) => DeviceSimHost;
+
 export interface DeviceSimExecutorOptions {
   /** Device descriptions and code; the schematic only names device ids. */
   readonly devices: IDeviceProvider;
   readonly scheduler?: SchedulerOptions;
   readonly onDiagnostic?: (diagnostic: SimulationDiagnostic) => void;
+  /**
+   * Host-owned pin/connection wiring, built once per runtime with that runtime's scheduler.
+   *
+   * Without it the instances get neither `pinHost` nor a topology, so a device whose IR touches
+   * pins or connections fails to load with the device layer's own error. A factory that throws
+   * rejects `loadSchematic` and `reset`; the running runtime is then left untouched.
+   */
+  readonly host?: DeviceSimHostFactory;
 }
 
 /**

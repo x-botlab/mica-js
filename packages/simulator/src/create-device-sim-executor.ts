@@ -12,6 +12,7 @@ import type {
   AdvanceReport,
   DeviceSimExecutor,
   DeviceSimExecutorOptions,
+  DeviceSimHost,
   DevicePublish,
   DeviceTopic,
   DeviceTopicTarget,
@@ -35,6 +36,8 @@ interface Runtime {
   readonly scheduler: Scheduler;
   readonly instances: ReadonlyMap<string, DeviceInstance>;
   readonly topics: readonly DeviceTopic[];
+  /** Wiring the instances were mounted against; released with the runtime. */
+  readonly host: DeviceSimHost | undefined;
 }
 
 interface PendingDelivery {
@@ -212,26 +215,32 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
       this.#options.scheduler === undefined
         ? createScheduler()
         : createScheduler(this.#options.scheduler);
+    const host = this.#options.host?.({ scheduler, schematic: document });
     const instances = new Map<string, DeviceInstance>();
     const topics: DeviceTopic[] = [];
     try {
       for (const symbol of document.sheet.symbols) {
-        const instance = this.#createInstance(symbol, scheduler);
+        const instance = this.#createInstance(symbol, scheduler, host);
         instances.set(symbol.id, instance);
         collectTopics(symbol, instance, topics);
       }
       // Device factories only queue `initialize`; run it so the runtime is ready to advance.
       scheduler.start({ until: scheduler.now });
-      return { scheduler, instances, topics: Object.freeze(topics) };
+      return { scheduler, instances, topics: Object.freeze(topics), host };
     } catch (error) {
       for (const instance of instances.values()) {
         destroyQuietly(instance, (diagnostic) => this.#report(diagnostic));
       }
+      disposeHostQuietly(host, (diagnostic) => this.#report(diagnostic));
       throw error;
     }
   }
 
-  #createInstance(symbol: SchematicSymbol, scheduler: Scheduler): DeviceInstance {
+  #createInstance(
+    symbol: SchematicSymbol,
+    scheduler: Scheduler,
+    host: DeviceSimHost | undefined,
+  ): DeviceInstance {
     const loaded = this.#modules.get(symbol.device);
     if (loaded === undefined) {
       throw new SimulatorError(
@@ -240,10 +249,14 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
         { symbol: symbol.id },
       );
     }
+    const additions = host?.instanceOptions?.(symbol);
     try {
       return createDeviceInstance(loaded, scheduler, {
+        ...additions,
         instanceId: symbol.id,
         ...(symbol.properties === undefined ? {} : { properties: symbol.properties }),
+        ...(host?.pinHost === undefined ? {} : { pinHost: host.pinHost }),
+        ...(host?.topology === undefined ? {} : { connections: { topology: host.topology } }),
         onTopic: (message) => {
           this.#publish(scheduler, symbol.id, message.port, message.payload);
         },
@@ -305,6 +318,8 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
     for (const instance of runtime.instances.values()) {
       destroyQuietly(instance, (diagnostic) => this.#report(diagnostic));
     }
+    // The pin host and the topology outlive the instances they serve, so they go last.
+    disposeHostQuietly(runtime.host, (diagnostic) => this.#report(diagnostic));
   }
 
   #requireRuntime(): Runtime {
@@ -363,6 +378,21 @@ function destroyQuietly(
       code: 'simulator/dispose-failed',
       message: `Device instance "${instance.instanceId}" failed to destroy.`,
       symbol: instance.instanceId,
+      cause,
+    });
+  }
+}
+
+function disposeHostQuietly(
+  host: DeviceSimHost | undefined,
+  report: (diagnostic: SimulationDiagnostic) => void,
+): void {
+  try {
+    host?.dispose?.();
+  } catch (cause) {
+    report({
+      code: 'simulator/dispose-failed',
+      message: 'The host wiring failed to dispose.',
       cause,
     });
   }

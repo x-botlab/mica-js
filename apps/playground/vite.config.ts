@@ -24,6 +24,14 @@ export default defineConfig({
       '@mica-js/core/schematic': fileURLToPath(
         new URL('../../packages/core/src/schematic/index.ts', import.meta.url),
       ),
+      '@mica-js/core': fileURLToPath(new URL('../../packages/core/src/index.ts', import.meta.url)),
+      '@mica-js/ir': fileURLToPath(new URL('../../packages/ir/src/index.ts', import.meta.url)),
+      '@mica-js/device': fileURLToPath(
+        new URL('../../packages/device/src/index.ts', import.meta.url),
+      ),
+      '@mica-js/simulator': fileURLToPath(
+        new URL('../../packages/simulator/src/index.ts', import.meta.url),
+      ),
       '@mica-js/schematic-editor': fileURLToPath(
         new URL('../../packages/schematic-editor/src/index.ts', import.meta.url),
       ),
