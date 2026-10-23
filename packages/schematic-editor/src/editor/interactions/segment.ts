@@ -31,7 +31,9 @@ export function updateSegmentDrag(context: InteractionContext, page: Point): boo
   if (drag?.mode !== 'segment') {
     return false;
   }
-  const wire = context.deps.controller.document.sheet.wires.find((item) => item.id === drag.wireId);
+  const wire = context.deps.controller
+    .getDocument()
+    .sheet.wires.find((item) => item.id === drag.wireId);
   const start = wire?.points[drag.segment];
   const end = wire?.points[drag.segment + 1];
   if (wire === undefined || start === undefined || end === undefined) {
@@ -44,7 +46,7 @@ export function updateSegmentDrag(context: InteractionContext, page: Point): boo
     horizontal
       ? { x: start.x, y: start.y + (page.y - drag.origin.y) }
       : { x: start.x + (page.x - drag.origin.x), y: start.y },
-    context.deps.controller.display,
+    context.deps.controller.getDisplay(),
   );
   const candidate = horizontal ? { x: 0, y: target.y - start.y } : { x: target.x - start.x, y: 0 };
   if (candidate.x !== drag.delta.x || candidate.y !== drag.delta.y) {

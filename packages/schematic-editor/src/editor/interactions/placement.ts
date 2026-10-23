@@ -12,11 +12,11 @@ import type { InteractionContext } from './context';
 
 /** Device the next click inserts: the host's armed device wins over the toolbar tool. */
 export function placementDevice(context: InteractionContext): string | undefined {
-  const armed = context.deps.controller.placingDevice;
+  const armed = context.deps.controller.getPlacingDevice();
   if (armed !== undefined) {
     return armed;
   }
-  const tool = context.deps.controller.tool;
+  const tool = context.deps.controller.getTool();
   return isPlacementTool(tool) ? toolDevice(tool) : undefined;
 }
 
@@ -80,7 +80,9 @@ export function place(context: InteractionContext, page: Point): void {
   const role = symbolRole(device);
   // Connection points snap to pins and wire ends; components only snap to the grid.
   const snapped =
-    role === 'component' ? snapToGrid(page, controller.display) : context.pointer.snapWire(page);
+    role === 'component'
+      ? snapToGrid(page, controller.getDisplay())
+      : context.pointer.snapWire(page);
   // A label dropped on a pin hangs off a short lead instead of sitting on the pin.
   const stub = labelStub(context, device, snapped);
   const point = stub?.anchor ?? snapped;
@@ -93,7 +95,7 @@ export function place(context: InteractionContext, page: Point): void {
       }
       controller.dispatch({
         type: 'add-symbol',
-        ...(device === LABEL_DEVICE ? { net: nextNetName(controller.document) } : {}),
+        ...(device === LABEL_DEVICE ? { net: nextNetName(controller.getDocument()) } : {}),
         ...(designator === undefined ? {} : { designator }),
         device,
         x: point.x,
@@ -115,6 +117,6 @@ export function snapPlacementPoint(
   device: string,
 ): Point {
   return symbolRole(device) === 'component'
-    ? snapToGrid(page, context.deps.controller.display)
+    ? snapToGrid(page, context.deps.controller.getDisplay())
     : context.pointer.snapWire(page);
 }

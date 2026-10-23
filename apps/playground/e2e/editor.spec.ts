@@ -43,27 +43,29 @@ interface Snapshot {
 function readSnapshot(page: Page): Promise<Snapshot> {
   return page.evaluate(() => {
     const { controller } = (globalThis as unknown as { mica: EditorHandle }).mica;
-    const { state } = controller as unknown as {
-      state: {
-        tool: string;
-        placingDevice: string | undefined;
-        document: {
-          sheet: {
-            symbols: readonly (Point & { id: string })[];
-            wires: readonly { id: string; points: readonly Point[] }[];
-            junctions: readonly (Point & { id: string })[];
+    const state = (
+      controller as unknown as {
+        getState(): {
+          tool: string;
+          placingDevice: string | undefined;
+          document: {
+            sheet: {
+              symbols: readonly (Point & { id: string })[];
+              wires: readonly { id: string; points: readonly Point[] }[];
+              junctions: readonly (Point & { id: string })[];
+            };
           };
+          inspector:
+            | {
+                readonly kind: 'symbol';
+                readonly id: string;
+                readonly properties: readonly unknown[];
+              }
+            | { readonly kind: 'wire'; readonly id: string; readonly points: readonly unknown[] }
+            | undefined;
         };
-        inspector:
-          | {
-              readonly kind: 'symbol';
-              readonly id: string;
-              readonly properties: readonly unknown[];
-            }
-          | { readonly kind: 'wire'; readonly id: string; readonly points: readonly unknown[] }
-          | undefined;
-      };
-    };
+      }
+    ).getState();
     const { symbols, wires, junctions } = state.document.sheet;
     const copy = ({ x, y }: Point): Point => ({ x, y });
     const { inspector } = state;
@@ -130,9 +132,9 @@ async function hitPoint(
       const { controller } = editor;
       const sheet = (
         controller as unknown as {
-          document: { sheet: { wires: readonly { points: readonly Point[] }[] } };
+          getDocument(): { sheet: { wires: readonly { points: readonly Point[] }[] } };
         }
-      ).document.sheet;
+      ).getDocument().sheet;
       // Wire endpoints win the hit test inside the pointer tolerance, and a drag there reshapes
       // the wire instead of moving the symbol: stay clear of every vertex.
       const clearance = 6 / editor.getViewport().scale + 2;

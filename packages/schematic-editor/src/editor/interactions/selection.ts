@@ -16,7 +16,7 @@ export function selectionAt(context: InteractionContext, page: Point): EditorSel
 
 export function vertexAt(context: InteractionContext, page: Point): EditorSelection | undefined {
   const tolerance = context.pointer.tolerance();
-  for (const wire of context.deps.controller.document.sheet.wires) {
+  for (const wire of context.deps.controller.getDocument().sheet.wires) {
     for (let index = 0; index < wire.points.length; index += 1) {
       const point = wire.points[index];
       if (point === undefined) {
@@ -36,7 +36,9 @@ export function annotationSymbolAt(context: InteractionContext, page: Point): bo
   if (hit?.kind !== 'symbol') {
     return false;
   }
-  const symbol = context.deps.controller.document.sheet.symbols.find((item) => item.id === hit.id);
+  const symbol = context.deps.controller
+    .getDocument()
+    .sheet.symbols.find((item) => item.id === hit.id);
   return symbol !== undefined && symbolRole(symbol.device) !== 'component';
 }
 
@@ -48,10 +50,10 @@ export function selectItem(
 ): void {
   const controller = context.deps.controller;
   if (selection === undefined) {
-    controller.setSelection(additive ? controller.selection : []);
+    controller.setSelection(additive ? controller.getSelection() : []);
     return;
   }
-  const current = controller.selection;
+  const current = controller.getSelection();
   const exists = current.some((item) => sameSelectionItem(item, selection));
   if (!additive) {
     controller.setSelection([selection]);
@@ -68,7 +70,7 @@ export function selectItem(
 export function finishMarquee(context: InteractionContext, origin: Point, current: Point): void {
   context.deps.controller.setSelection(
     marqueeSelection(
-      context.deps.controller.document,
+      context.deps.controller.getDocument(),
       rectOf(origin, current),
       context.deps.devices,
     ),

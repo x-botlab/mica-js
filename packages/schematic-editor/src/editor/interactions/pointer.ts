@@ -58,7 +58,7 @@ export class Pointer {
     if (hit?.kind !== 'wire') {
       return undefined;
     }
-    const wire = this.#deps.controller.document.sheet.wires.find((item) => item.id === hit.id);
+    const wire = this.#deps.controller.getDocument().sheet.wires.find((item) => item.id === hit.id);
     const a = wire?.points[hit.segment];
     const b = wire?.points[hit.segment + 1];
     if (a === undefined || b === undefined) {

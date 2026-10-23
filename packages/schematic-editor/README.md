@@ -116,7 +116,7 @@ editor.fitToContent();
 
 `SchematicEditorController` 不依赖 DOM，可单独用于批量编辑或 Node 环境：
 
-- 读状态：`state`、`document`、`selection`、`tool`、`display`、`canUndo`、`canRedo`。
+- 读状态：`getState()`、`getRenderState()`、`getDocument()`、`getSelection()`、`getTool()`、`getDisplay()`、`getCanUndo()`、`getCanRedo()`、`getPlacingDevice()`。
 - 工具：`setTool`、`placeDevice`、`cancelPlacement`、`nextDesignator`、`setSelection`、`setDisplayOptions`、`reset`、`replace`。
 - 编辑：`dispatch`、`transaction`、`undo`、`redo`、`moveSelectionBy`、`rotateSelection`、`deleteSelection`、`addWire`、`connectWireAt`、`moveWireSegment`、`previewWireSegment`、`moveReferenceBy`、`setSymbolProperty`、`removeSymbolProperty`、`renameDesignator`、`renameNet`。
 - 查询：`inspect`、`topology`、`hitTest`、`subscribe`。

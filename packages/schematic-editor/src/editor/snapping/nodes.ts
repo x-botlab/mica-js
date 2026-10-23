@@ -37,7 +37,7 @@ export function connectionNodeAt(context: SnapContext, point: Point): Point | un
 
 /** Endpoint of an existing wire under `point`; used to close a connection. */
 export function wireEndpointAt(context: SnapContext, point: Point): Point | undefined {
-  for (const wire of context.controller.document.sheet.wires) {
+  for (const wire of context.controller.getDocument().sheet.wires) {
     for (const endpoint of [wire.points[0], wire.points[wire.points.length - 1]]) {
       if (
         endpoint !== undefined &&
@@ -57,7 +57,7 @@ export function anchorSymbolAt(
   point: Point,
 ): { readonly x: number; readonly y: number } | undefined {
   // Anchors sit on wire endpoints, where `hitTest` reports the wire first, so scan directly.
-  for (const symbol of context.controller.document.sheet.symbols) {
+  for (const symbol of context.controller.getDocument().sheet.symbols) {
     const device = symbol.device;
     if (device !== LABEL_DEVICE && device !== POWER_DEVICE && device !== GROUND_DEVICE) {
       continue;
@@ -76,7 +76,9 @@ export function pinPosition(
   context: SnapContext,
   hit: { readonly symbolId: string; readonly pinId: string },
 ): Point | undefined {
-  const symbol = context.controller.document.sheet.symbols.find((item) => item.id === hit.symbolId);
+  const symbol = context.controller
+    .getDocument()
+    .sheet.symbols.find((item) => item.id === hit.symbolId);
   if (symbol === undefined) {
     return undefined;
   }
