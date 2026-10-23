@@ -1,3 +1,4 @@
+---
 '@mica-js/canvas-editor': minor
 ---
 
