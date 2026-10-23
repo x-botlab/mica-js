@@ -222,6 +222,8 @@ interface DeviceInstanceOptions {
   readonly instanceId: string;
   readonly properties?: Readonly<Record<string, PropertyValue>>;
   readonly messaging?: DeviceMessagingOptions;
+  /** 额外获准通过 api.updateBytes 更新的已声明字节资源名。 */
+  readonly updateResources?: readonly string[];
   readonly onTopic?: (message: { readonly port: string; readonly payload: TopicPayload }) => void;
 }
 interface DeviceInstance {
@@ -234,7 +236,8 @@ interface DeviceInstance {
 - `post(entry, args)` 只接受本实例声明的普通 entry；Promise 完成表示**已接纳**，不表示入口已执行。`post` 不推进时间、不创建事件、不形成等待栈。
 - `postBytes(entry, inbox, bytes)` 要求 entry 签名 `[u32, u32]`。接纳时预留 inbox 连续范围、复制字节并把 `offset/length` 交给 entry；entry 返回、故障或销毁时释放。零长度消息使用 `offset=0, length=0`，不占字节容量但仍计入消息条数限制。容量不足抛 `BackpressureError`，不覆盖未消费数据。
 - `onOutput(output, callback)` 为每个 IR 输出登记唯一消费者，重复绑定报 `device/output-consumer`。回调在入口返回后执行，`meta.timePs` 是 `bridge.send` 捕获时的虚拟时间；标量输出载荷为固定布局列表，字节输出为独立 `Uint8Array`。队列满时 `b.output` / `b.outputBytes` 返回 `false`，失败发送不通知。
-- `updateBytes(resource, offset, bytes)` 只对声明为可写 `bytes` 的资源生效；Promise 完成表示内容与受影响单元版本已一并可见。readonly、未声明或越界报 `device/update-target`。
+- `updateBytes(resource, offset, bytes)` 对声明为可写 `bytes` 的资源，或由 `DeviceInstanceOptions.updateResources` 按资源名额外授权的只读 `bytes` 资源生效；Promise 完成表示内容与受影响单元版本已一并可见。`readonly: true` 只禁止客体普通写入，不取消宿主的独立更新授权。未授权、未声明或越界报 `device/update-target`。
+- `updateResources` 在工厂返回后按名称解析，只接受本次工厂声明的 `bytes` 资源；未知名称、非字节资源或重复项报 `device/instance-invalid`。授权同时作用于 `api.updateBytes` 和 IR 的 `resource.update_bytes` / `fill_bytes`，但不会把该资源变成可执行普通 `bytes.store` 的写资源。
 - 宿主用 `instance.deliver(port, payload, { simTime })` 投递输入话题，用 `onTopic` 接收 `api.publish`。`onTopic` 必须是同步、返回 `undefined` 的函数；返回 thenable 或其他值会先消费该 thenable，再以 `device/message-callback` 拒绝。未提供时发布消息在校验后丢弃。初始化期间的输入与 IR 输出暂存于有界队列，initialize 成功后先按捕获顺序通知输出，再按接纳顺序投递输入；入口边界内的回调新产生的输入、发布与更新会在同一边界继续排空，不越过已受理消息。
 - 工厂/initialize 完成前调用 `post/postBytes/publish/updateBytes` 报 `device/not-active`；故障/销毁中报 `device/instance-busy`；销毁后报 `device/instance-destroyed`。销毁丢弃未消费的实例内通知，但不撤销已交付给 `onTopic` 的外部效果。
 - 不实现重放、ACK/可靠传输、跨实例广播协议；普通消息投递不推进客体时间。
@@ -378,7 +381,7 @@ initialize.body((b) => {
 | `device/output-consumer`        | 同一 IR 输出重复登记消费者                                                     |
 | `device/message-target`         | `post` / `postBytes` 目标不是普通 entry、签名或参数不合法                      |
 | `device/inbox-reference`        | `postBytes` 的 inbox 不是本次工厂声明的 inbox                                  |
-| `device/update-target`          | `updateBytes` 资源不可写/未声明/范围非法或提交失败                             |
+| `device/update-target`          | `updateBytes` 资源不可写且未获准更新/未声明/范围非法或提交失败                 |
 | `device/message-callback`       | 监听器或 `onTopic` 不是允许的函数形态，或 `onTopic` 返回值不是 `undefined`     |
 | `device/not-active`             | initialize 完成前或工厂/链接失败后调用消息操作                                 |
 | `device/connection-invalid`     | 空/重复 patch、非 bool、跨实例句柄、重复声明或连接执行参数不合法               |
@@ -393,7 +396,7 @@ initialize.body((b) => {
 
 ## 支持边界
 
-本层已实现 #53 的工厂上下文与实例生命周期、#54 的话题订阅/发布/`post`/`postBytes`/IR 输出/`updateBytes`/有界队列与激活顺序、#55 的引脚声明与数字 I/O、#56 的数字边沿观察与捕获投递、#57 的 `api.ir.connection` / `b.connection.apply` 与 core topology 提交接入、#60 的 `api.ir.provider` 生成产物接入、#61 的产物 checkpoint/运行中恢复，以及 #58 由 `examples/` 与端到端用例覆盖的理想按钮/继电器闭环（未新增 device 公共入口）。不实现 #59 的 sandbox 执行适配；不提供持久化快照、跨进程/跨实例迁移、重放、ACK/可靠传输、跨实例广播、连接状态查询、JS 直接更新入口、复数别名或外部导线运行时增删。观察仅支持数字边沿；`edges=0` 状态观察、模拟量/电压观察、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
+本层已实现 #53 的工厂上下文与实例生命周期、#54 的话题订阅/发布/`post`/`postBytes`/IR 输出/`updateBytes`/有界队列与激活顺序、#55 的引脚声明与数字 I/O、#56 的数字边沿观察与捕获投递、#57 的 `api.ir.connection` / `b.connection.apply` 与 core topology 提交接入、#60 的 `api.ir.provider` 生成产物接入、#61 的产物 checkpoint/运行中恢复，以及 #58 由 `examples/` 与端到端用例覆盖的理想按钮/继电器闭环。`DeviceInstanceOptions.updateResources` 为 #62 提供宿主对只读字节资源的独立更新授权；同目录 `examples/teaching-mcu/` 是 #8/#26 的合成两字节 ISA 教学 MCU，使用 8 B 版本单元、Provider 按 PC 生成基本块、消息更新固件与块边界事件。该示例只保证块边界可观察，不是 AVR/8051 等真实 ISA，也不声称逐周期等价。不实现 #59 的 sandbox 执行适配；不提供持久化快照、跨进程/跨实例迁移、重放、ACK/可靠传输、跨实例广播、连接状态查询、JS 直接更新入口、复数别名或外部导线运行时增删。观察仅支持数字边沿；`edges=0` 状态观察、模拟量/电压观察、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
 
 ## 验证
 
@@ -405,7 +408,7 @@ pnpm --filter @mica-js/device test
 pnpm --filter @mica-js/device typecheck
 ```
 
-Vitest 使用真实临时目录中的 `.json` / `.js` 配对文件验证 provider 加载；覆盖所有 #7 属性类型、默认值、覆盖校验、未知键忽略、嵌套对象/数组冻结、外部别名变更、运行期写入拒绝、独立实例快照、#10 端口校验、#12 引脚/固定组声明、#14 连接声明、各类导出错误、provider 失败、纯对象容器拒绝、带注释 class、URL 构造失败、Node DOM shim 判定及 provider+device id 模块缓存语义。端到端用例（#58）从 `examples/` 读取已提交的真实 `.json` / `.js` 配对，回放按下、释放与排队短脉冲，断言线圈/触点网络电压、观察投递、SPDT 原子切换、initialize 采样、显式 reset 与缺失 reset、销毁后拒绝输入且 `onDispose` 只执行一次、两个实例隔离、非法模型拒绝、掉电门控不伪造电压，以及电气冲突下已提交的拓扑与网络效果不被回滚，并验证同一输入序列得到同一轨迹；`src/examples.type-test.ts` 以类型断言镜像两个示例的组合作者面。引脚用例使用真实 `createPowerRuntime`、scheduler 与 IR 解释器，覆盖 `pins` / `pinGroups` 解析与拒绝、未知/跨实例/非 signal 引用、builder 类型与配置编码、初始状态提交、同入口写后采样的控制阶段可见性、驱动意图与实际网络分离、掉电/欠压/失地/恢复及持有意图重放、门控采样返回 0、驱动冲突 `ElectricalConflictError`、缺少 host/引脚拒绝与销毁恢复；不使用手写电气算法替代 #49/#51。连接用例走真实 builder → `validateIR` → 解释器/调度器 → 实例生命周期 → core topology，覆盖单触点/双触点、控制阶段延迟、SSA 按值捕获、bool 分支选择 patch、同刻顺序、冲突不回滚、销毁与未知/跨实例诊断。观察用例继续走真实 builder → `validateIR` → 参考解释器 / scheduler → device 生命周期 → core power 链路，覆盖静态绑定与链接期目标签名、`observe.configure` 编码与 `edges=0` 拒绝、首次启用/显式重配/禁用重启/门控恢复/浮空与待定区间重建基线、rising/falling/both 选择、同刻短脉冲双边沿、捕获按值固定、声明顺序与 #54 普通队列顺序、销毁后停止投递及未知/非 signal 引脚和宿主能力诊断。消息用例继续走真实 builder → `validateIR` → 参考解释器 / scheduler → device 生命周期链，覆盖话题订阅/取消/重复、载荷与方向诊断、`post` 接纳与执行分离、`postBytes` 预留/复制/释放/零长度/实例隔离、IR 标量与字节输出、`timePs` 捕获、不重入 JS、输出队列满的 `false`、`updateBytes` 内容与版本、初始化暂存与激活顺序、故障/销毁、各容量 `BackpressureError`、重入排空顺序及链接失败监听清理。生命周期用例使用真实工厂、真实 `createIRModule`、`createIRSchedulerInstance` 与现有 scheduler，覆盖工厂一次调用与声明封闭、同步/Promise/async 拒绝、绑定与重复绑定、链接失败零残留、initialize 控制阶段完成判据、reset 语义与缺失诊断、事件 `now/at/cancel`、故障暂停与故障后销毁、destroy 顺序/幂等/重入、`onDispose` 限制与异常、storage 销毁守卫。跨包集成用例把解析结果送入 `@mica-js/core/schematic` 的 `createDeviceRegistry`，并用真实临时 provider 完成 `loadDeviceModule → createDeviceInstance → scheduler` 闭环。测试直接调用生产函数，不用构建或子进程冒充单元测试。
+Vitest 使用真实临时目录中的 `.json` / `.js` 配对文件验证 provider 加载；覆盖所有 #7 属性类型、默认值、覆盖校验、未知键忽略、嵌套对象/数组冻结、外部别名变更、运行期写入拒绝、独立实例快照、#10 端口校验、#12 引脚/固定组声明、#14 连接声明、各类导出错误、provider 失败、纯对象容器拒绝、带注释 class、URL 构造失败、Node DOM shim 判定及 provider+device id 模块缓存语义。端到端用例（#58）从 `examples/` 读取已提交的真实 `.json` / `.js` 配对，回放按下、释放与排队短脉冲，断言线圈/触点网络电压、观察投递、SPDT 原子切换、initialize 采样、显式 reset 与缺失 reset、销毁后拒绝输入且 `onDispose` 只执行一次、两个实例隔离、非法模型拒绝、掉电门控不伪造电压，以及电气冲突下已提交的拓扑与网络效果不被回滚，并验证同一输入序列得到同一轨迹；`src/examples.type-test.ts` 以类型断言镜像两个示例的组合作者面。引脚用例使用真实 `createPowerRuntime`、scheduler 与 IR 解释器，覆盖 `pins` / `pinGroups` 解析与拒绝、未知/跨实例/非 signal 引用、builder 类型与配置编码、初始状态提交、同入口写后采样的控制阶段可见性、驱动意图与实际网络分离、掉电/欠压/失地/恢复及持有意图重放、门控采样返回 0、驱动冲突 `ElectricalConflictError`、缺少 host/引脚拒绝与销毁恢复；不使用手写电气算法替代 #49/#51。连接用例走真实 builder → `validateIR` → 解释器/调度器 → 实例生命周期 → core topology，覆盖单触点/双触点、控制阶段延迟、SSA 按值捕获、bool 分支选择 patch、同刻顺序、冲突不回滚、销毁与未知/跨实例诊断。观察用例继续走真实 builder → `validateIR` → 参考解释器 / scheduler → device 生命周期 → core power 链路，覆盖静态绑定与链接期目标签名、`observe.configure` 编码与 `edges=0` 拒绝、首次启用/显式重配/禁用重启/门控恢复/浮空与待定区间重建基线、rising/falling/both 选择、同刻短脉冲双边沿、捕获按值固定、声明顺序与 #54 普通队列顺序、销毁后停止投递及未知/非 signal 引脚和宿主能力诊断。消息用例继续走真实 builder → `validateIR` → 参考解释器 / scheduler → device 生命周期链，覆盖话题订阅/取消/重复、载荷与方向诊断、`post` 接纳与执行分离、`postBytes` 预留/复制/释放/零长度/实例隔离、IR 标量与字节输出、`timePs` 捕获、不重入 JS、输出队列满的 `false`、`updateBytes` 内容与版本、初始化暂存与激活顺序、故障/销毁、各容量 `BackpressureError`、重入排空顺序及链接失败监听清理。生命周期用例使用真实工厂、真实 `createIRModule`、`createIRSchedulerInstance` 与现有 scheduler，覆盖工厂一次调用与声明封闭、同步/Promise/async 拒绝、绑定与重复绑定、链接失败零残留、initialize 控制阶段完成判据、reset 语义与缺失诊断、事件 `now/at/cancel`、故障暂停与故障后销毁、destroy 顺序/幂等/重入、`onDispose` 限制与异常、storage 销毁守卫。跨包集成用例把解析结果送入 `@mica-js/core/schematic` 的 `createDeviceRegistry`，并用真实临时 provider 完成 `loadDeviceModule → createDeviceInstance → scheduler` 闭环。教学 MCU 用例（#62）从 `examples/teaching-mcu/` 读取真实配对，经真实工厂、Provider、`validateIR`、scheduler、core power 与消息桥接断言 PC/R0/GPIO/事件时间轨迹、运行时条件分支与 u32 回绕、8 B 单元更新后的 B0 重生成/B8 复用/B6 保守失效、256 B 与整资源单元的保守失效、缺少固件/非法地址/非法指令/HALT 行为，并以 helper 自修改 fixture 证明 checkpoint 恢复不重放已提交 helper 效果。测试直接调用生产函数，不用构建或子进程冒充单元测试。
 
 ## 相关提案
 

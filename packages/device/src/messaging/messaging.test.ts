@@ -689,6 +689,35 @@ describe('versioned byte updates', () => {
     expect((destroyed as DeviceError).code).toBe('device/instance-destroyed');
   });
 
+  it('authorizes readonly bytes named by updateResources without opening other readonly bytes', async () => {
+    let api: DeviceAPI | undefined;
+    let firmware: BytesRef<true> | undefined;
+    let other: BytesRef<true> | undefined;
+    const { instance } = createForTest(
+      (context) => {
+        api = context;
+        firmware = context.ir.bytes('firmware', new Uint8Array(4), {
+          readonly: true,
+          unitBytes: 2,
+        });
+        other = context.ir.bytes('other', new Uint8Array(2), { readonly: true });
+        return {};
+      },
+      { updateResources: ['firmware'] },
+    );
+    const before = instance.storage.readVersionedBytes(firmware!, 0, 4);
+    await api!.updateBytes(firmware!, 1, new Uint8Array([9, 8]));
+    const after = instance.storage.readVersionedBytes(firmware!, 0, 4);
+    expect([...after.bytes]).toEqual([0, 9, 8, 0]);
+    expect(after.dependencies[0]).not.toBe(before.dependencies[0]);
+    expect(after.dependencies[1]).not.toBe(before.dependencies[1]);
+    expect(after.dependencies[2]).toBe(before.dependencies[2]);
+
+    const rejected = await rejection(api!.updateBytes(other!, 0, new Uint8Array([1])));
+    expect((rejected as DeviceError).code).toBe('device/update-target');
+    instance.destroy();
+  });
+
   it('queues updates from output callbacks and reports updateCapacity', async () => {
     let api: DeviceAPI | undefined;
     let firmware: BytesRef<false> | undefined;

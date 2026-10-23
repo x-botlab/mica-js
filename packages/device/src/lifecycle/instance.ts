@@ -61,6 +61,7 @@ export function createDeviceInstance(
     isPlainRecord(options) && options.properties !== undefined ? options.properties : {},
   );
   const pinHost = readPinHost(options);
+  const updateResourceNames = readUpdateResourceNames(options);
 
   const moduleRef: { current?: IRModule } = {};
   const pins = new PinDomain(
@@ -108,10 +109,16 @@ export function createDeviceInstance(
     context.close();
   }
 
+  let updateResources: ReadonlySet<object>;
   try {
+    updateResources = resolveUpdateResources(module, updateResourceNames, definition.deviceId);
     messaging.bindDeclarations();
+    messaging.setUpdateResources(updateResources);
   } catch (cause) {
     messaging.abort();
+    if (cause instanceof DeviceError) {
+      throw cause;
+    }
     throw new DeviceError(
       'device/instance-invalid',
       `Device ${JSON.stringify(definition.deviceId)} messaging declarations are invalid.`,
@@ -136,10 +143,12 @@ export function createDeviceInstance(
   };
   let createdPinRuntime: PinRuntime | undefined;
   try {
-    const policy = createValidationPolicy(module, definition.description.connections, [
-      ...pins.validators(),
-      ...observes.validators(),
-    ]);
+    const policy = createValidationPolicy(
+      module,
+      definition.description.connections,
+      [...pins.validators(), ...observes.validators()],
+      updateResources,
+    );
     const pinRuntime = pins.createRuntime(instanceId, pinHost);
     createdPinRuntime = pinRuntime;
     observes.assertReady(module);
@@ -372,6 +381,61 @@ function readPinHost(options: unknown): DevicePinHost | undefined {
     }
   }
   return value as unknown as DevicePinHost;
+}
+
+function readUpdateResourceNames(options: unknown): readonly string[] {
+  if (!isPlainRecord(options)) {
+    return Object.freeze([]);
+  }
+  const value = options['updateResources'];
+  if (value === undefined) {
+    return Object.freeze([]);
+  }
+  if (!Array.isArray(value)) {
+    throw instanceError('Device instance updateResources must be an array of byte resource names.');
+  }
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (let index = 0; index < value.length; index += 1) {
+    const name: unknown = value[index];
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      throw instanceError(
+        `Device instance updateResources[${String(index)}] must be a non-empty string.`,
+      );
+    }
+    if (seen.has(name)) {
+      throw instanceError(
+        `Device instance updateResources[${String(index)}] repeats ${JSON.stringify(name)}.`,
+      );
+    }
+    seen.add(name);
+    names.push(name);
+  }
+  return Object.freeze(names);
+}
+
+function resolveUpdateResources(
+  module: IRModule,
+  names: readonly string[],
+  deviceId: string,
+): ReadonlySet<object> {
+  const refs = new Set<object>();
+  if (names.length === 0) {
+    return refs;
+  }
+  const memories = new Map(module.memories.map((memory) => [memory.name, memory]));
+  for (const name of names) {
+    const memory = memories.get(name);
+    if (memory === undefined || memory.kind !== 'bytes') {
+      throw new DeviceError(
+        'device/instance-invalid',
+        `Device ${JSON.stringify(deviceId)} updateResources names ${JSON.stringify(name)}, which is not a declared bytes resource.`,
+        { deviceId },
+      );
+    }
+    refs.add(memory.ref);
+  }
+  return refs;
 }
 
 function readConnectionOptions(options: unknown): DeviceConnectionOptions | undefined {

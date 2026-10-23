@@ -1,4 +1,11 @@
-import type { EntryRef, FunctionRef, LifecycleRef, Value } from '@mica-js/ir';
+import type {
+  BytesRef,
+  EntryRef,
+  FunctionRef,
+  LifecycleRef,
+  ProviderRef,
+  Value,
+} from '@mica-js/ir';
 import type {
   ConnectionRef,
   DeviceAPI,
@@ -88,9 +95,75 @@ export function createIdealRelay(api: DeviceAPI): DeviceBindings {
   return { initialize };
 }
 
+/** Compile-time mirror of `examples/teaching-mcu/teaching-mcu.js` (synthetic two-byte ISA). */
+export function createTeachingMcu(api: DeviceAPI): DeviceBindings {
+  const ir = api.ir;
+  const gpio: PinRef = ir.pin('GPIO');
+  const writeGPIO: FunctionRef<readonly ['u32'], readonly []> = ir.func('writeGPIO', {
+    params: ['u32'],
+    results: [],
+  });
+  writeGPIO.body((b, [value]) => {
+    const high: Value<'bool'> = b.int.cmp(
+      'ne',
+      b.int.and(value, b.const('u32', 1)),
+      b.const('u32', 0),
+    );
+    b.pin.writeDigital(gpio, high);
+    b.return([]);
+  });
+  const firmware: BytesRef<true> = ir.bytes('firmware', new Uint8Array(12), {
+    readonly: true,
+    unitBytes: 8,
+  });
+  const pc = ir.state('pc', 'u32', 0);
+  const r0 = ir.state('r0', 'u32', 0);
+  const step: EntryRef<readonly []> = ir.entry('step', []);
+  const initialize: LifecycleRef<readonly []> = ir.lifecycle('initialize', []);
+  const code: ProviderRef<readonly ['u32'], readonly [], readonly []> = ir.provider(
+    'code',
+    {
+      keyTypes: ['u32'],
+      params: [],
+      results: [],
+      reads: [firmware],
+      imports: [pc, r0, step, writeGPIO],
+    },
+    (gen, [address]) => {
+      const bytes = gen.readBytes(firmware, address, 2);
+      const opcode = bytes[0]!;
+      const operand = bytes[1]!;
+      return gen.function((b) => {
+        let value = b.state.load(r0);
+        if (opcode === 0x10) {
+          value = b.int.add(value, b.const('u32', operand));
+        }
+        b.state.store(r0, value);
+        b.call(writeGPIO, [value]);
+        b.state.store(pc, b.const('u32', operand));
+        b.event.at(step, b.float.add(b.event.now(), b.const('f64', 20000)), []);
+        b.return([]);
+      });
+    },
+  );
+  step.body((b) => b.dispatch(code, [b.state.load(pc)], []));
+  initialize.body((b) => {
+    b.pin.writeDigital(gpio, b.const('bool', false));
+    b.event.at(step, b.event.now(), []);
+    b.return([]);
+  });
+  const stop: Unsubscribe = api.subscribe('firmwarePatch', (payload) => {
+    if (!(payload instanceof Uint8Array)) return undefined;
+    return api.updateBytes(firmware, 0, payload);
+  });
+  return { initialize, onDispose: stop };
+}
+
 declare const api: DeviceAPI;
 const buttonFactory: DeviceFactory = createIdealButton;
 const relayFactory: DeviceFactory = createIdealRelay;
+const mcuFactory: DeviceFactory = createTeachingMcu;
+const mcuBindings: DeviceBindings = createTeachingMcu(api);
 const buttonBindings: DeviceBindings = createIdealButton(api);
 const relayBindings: DeviceBindings = createIdealRelay(api);
 
@@ -115,4 +188,4 @@ run.body((b) => {
   b.return([]);
 });
 
-void [buttonFactory, relayFactory, buttonBindings, relayBindings];
+void [buttonFactory, relayFactory, mcuFactory, buttonBindings, relayBindings, mcuBindings];

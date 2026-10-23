@@ -120,6 +120,7 @@ export class MessagingController {
   readonly #outputMap = new Map<object, OutputDefinition>();
   readonly #functionMap = new Map<object, FunctionDefinition>();
   readonly #memoryMap = new Map<object, MemoryDefinition>();
+  #updateResources: ReadonlySet<object> = new Set();
   readonly #subscriptions = new Map<string, TopicListener[]>();
   readonly #outputListeners = new Map<object, OutputCallback>();
   readonly #outputQueue: OutputMessage[] = [];
@@ -174,6 +175,11 @@ export class MessagingController {
     this.#inbox = new InboxAllocator(this.#module.memories);
   }
 
+  /** Applies the host's independent update grant resolved from DeviceInstanceOptions. */
+  setUpdateResources(resources: ReadonlySet<object>): void {
+    this.#updateResources = resources;
+  }
+
   readonly bridge: IRBridgeHost = Object.freeze({
     send: (output: OutputRef, payload: readonly (boolean | number)[], timePs: number): boolean =>
       this.#sendScalar(output, payload, timePs),
@@ -209,6 +215,7 @@ export class MessagingController {
     this.#outputMap.clear();
     this.#functionMap.clear();
     this.#memoryMap.clear();
+    this.#updateResources = new Set();
     this.#runtime = undefined;
   }
 
@@ -512,13 +519,13 @@ export class MessagingController {
       if (
         memory === undefined ||
         memory.kind !== 'bytes' ||
-        !memory.writable ||
+        (!memory.writable && !this.#updateResources.has(memory.ref)) ||
         memory.layout.kind !== 'bytes'
       ) {
         throw messagingError(
           'device/update-target',
           this.#deviceId,
-          'updateBytes requires a writable bytes resource declared by this factory.',
+          'updateBytes requires a writable bytes resource or a host-authorized update resource declared by this factory.',
         );
       }
       const capacity = memory.layout.length;
