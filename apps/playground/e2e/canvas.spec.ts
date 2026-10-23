@@ -82,7 +82,8 @@ async function switchMode(page: Page, label: '编辑' | '运行'): Promise<void>
   }
   // Back in edit mode nothing repaints the segment, and the remount left exactly one frame.
   await expect.poll(() => frameSequence(page, segment.id)).toBe(1);
-  await expect.poll(() => layerCount(page)).toBe(3);
+  const { document } = await sceneState(page);
+  await expect.poll(() => layerCount(page)).toBe(document.widgets.length);
 }
 
 async function openCanvas(page: Page): Promise<void> {
@@ -143,6 +144,7 @@ test('draws every instance of the demo document', async ({ page }) => {
   const { document } = await sceneState(page);
   expect(document.widgets.map((widget) => widget.widget)).toEqual([
     'demo:image',
+    'demo:segment',
     'demo:segment',
     'demo:button',
   ]);
@@ -210,7 +212,7 @@ test('edits a selected instance through the property panel', async ({ page }) =>
   await expect(page.getByText('demo:segment', { exact: true })).toBeVisible();
 
   const color = page.getByLabel('color', { exact: true });
-  await expect(color).toHaveValue('#ff3b30');
+  await expect(color).toHaveValue('#FF3B30');
   await color.fill('#00ff88');
   await color.blur();
 
@@ -283,6 +285,7 @@ test('resets widget state when the mode changes', async ({ page }) => {
   await switchMode(page, '编辑');
 
   expect(await frameSequence(page, segment.id)).toBe(1);
-  expect(await layerCount(page)).toBe(3);
+  const { document } = await sceneState(page);
+  expect(await layerCount(page)).toBe(document.widgets.length);
   await expect(page.getByText('诊断 0')).toBeVisible();
 });

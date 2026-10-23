@@ -25,8 +25,23 @@ import { CanvasInspector } from '@/components/canvas-inspector';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
-/** Endpoint `demo.cnv` binds; the simulation the scene forwards to is faked with a timer below. */
-const DRIVER_TARGET: CanvasBindingTarget = { symbol: 'demo-mcu', port: 'display' };
+/**
+ * Endpoints `demo.cnv` binds; the simulation the scene forwards to is faked with a timer below.
+ * The board carries two 4-digit modules, so each one gets its own value.
+ */
+const DRIVER_TARGETS: readonly {
+  readonly target: CanvasBindingTarget;
+  readonly value: (tick: number) => string;
+}[] = [
+  {
+    target: { symbol: 'demo-mcu', port: 'display' },
+    value: (tick) => (5 + (tick % 50) * 0.01).toFixed(2),
+  },
+  {
+    target: { symbol: 'demo-mcu', port: 'display2' },
+    value: (tick) => String(1000 + (tick % 1000)),
+  },
+];
 
 const PACKAGE_FILES: PackageFiles = {
   label: 'demo',
@@ -230,7 +245,9 @@ export function CanvasPage() {
         return;
       }
       tick += 1;
-      scene.deliver(DRIVER_TARGET, (1000 + (tick % 1000) * 0.37).toFixed(3), tick);
+      for (const { target, value } of DRIVER_TARGETS) {
+        scene.deliver(target, value(tick), tick);
+      }
     };
     // One value right away, so the display lights up instead of waiting for the first second.
     drive();

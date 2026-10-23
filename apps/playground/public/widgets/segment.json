@@ -1,7 +1,23 @@
 {
   "properties": {
-    "digits": { "type": "number", "title": "位数", "default": 8 },
-    "color": { "type": "color", "title": "颜色", "default": "#ff3b30" }
+    "digits": { "type": "integer", "title": "位数", "default": 4, "min": 1, "max": 24 },
+    "color": { "type": "color", "title": "颜色", "default": "#FF3B30" },
+    "thickness": {
+      "type": "number",
+      "title": "笔画粗细",
+      "description": "笔画宽度占字高的比例",
+      "default": 0.13,
+      "min": 0.04,
+      "max": 0.4
+    },
+    "spacing": {
+      "type": "number",
+      "title": "位间距",
+      "description": "每个数位格子左右留白的比例",
+      "default": 0.16,
+      "min": 0,
+      "max": 0.7
+    }
   },
   "ports": {
     "value": { "direction": "input", "type": "string", "title": "数值" }

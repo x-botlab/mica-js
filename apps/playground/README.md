@@ -49,6 +49,10 @@ src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）
 
 画布页的右侧栏是**宿主 UI**：属性控件按 `provider.resolve(ref).definition.properties` 渲染，绑定下拉按 `definition.ports` 渲染，值一律通过 `host.applyCommand` 提交，被拒时把 `SchematicError.diagnostics` 的 message 显示在对应控件下方。可选端点来自 `src/canvas/panel-model.ts` 的 `DEMO_TARGETS`（示例没有真实原理图，`createWidgetHost` 不传 `catalog` 时跳过引用校验）。
 
+示例 `demo.cnv` 用真实的 CT107D 开发板照片（`public/assets/ct107d-board.webp`，1068 × 768）当底图，坐标就是照片像素：两颗 4 位数码管组件各盖住照片里的一个 LED 窗口，分别绑到 `demo-mcu.display` / `demo-mcu.display2`；按键组件盖住 S7 那颗独立按键并绑到 `demo-mcu.key`。
+
+`demo:segment` 的属性是位数、颜色、笔画粗细（占字高比例）与位间距（数位格子留白比例），每一位都画自己的小数点，`value` 里的 `.` 只点亮前一位的点。`demo:button` 支持文本（可留空）、圆角、背景颜色（普通/按下，接受 `#RRGGBBAA`，可全透明）与背景图片（普通/按下，图片优先于颜色，按 cover 裁切）；示例里把颜色设成全透明，于是按下时只透出一层半透明白。
+
 画布页的「编辑 / 运行」按钮 `await scene.setMode(...)`：**切换模式会重置全部 widget**（实例按当前文档重建，guest 不重新求值模块），因此按钮在重置期间禁用并显示「重置中…」，运行模式的定时投递也会在切换前先停下，避免向正在销毁的实例投递。
 
 ## 主题

@@ -1,6 +1,16 @@
 {
   "properties": {
-    "label": { "type": "string", "title": "标签", "default": "S1" }
+    "label": { "type": "string", "title": "文本", "default": "" },
+    "radius": { "type": "number", "title": "圆角", "default": 8, "min": 0 },
+    "background": { "type": "color", "alpha": true, "title": "背景颜色", "default": "#3F3F46" },
+    "backgroundPressed": {
+      "type": "color",
+      "alpha": true,
+      "title": "背景颜色（按下）",
+      "default": "#18181B"
+    },
+    "image": { "type": "image", "title": "背景图片" },
+    "imagePressed": { "type": "image", "title": "背景图片（按下）" }
   },
   "ports": {
     "press": { "direction": "output", "type": "boolean", "title": "按下" }

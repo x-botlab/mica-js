@@ -35,6 +35,7 @@ describe('compatibleTargets', () => {
   it('pairs a widget input with schematic outputs of the same payload type', () => {
     expect(compatibleTargets(DISPLAY)).toEqual([
       { symbol: 'demo-mcu', port: 'display', direction: 'output', type: 'string' },
+      { symbol: 'demo-mcu', port: 'display2', direction: 'output', type: 'string' },
     ]);
   });
 
@@ -52,7 +53,11 @@ describe('bindingOptions', () => {
   it('starts with "unbound" and lists the compatible candidates', () => {
     const options = bindingOptions(instance(), 'value', DISPLAY);
     expect(options[0]).toEqual({ value: '', label: '未绑定', current: false });
-    expect(options.map((option) => option.value)).toEqual(['', 'demo-mcu:display']);
+    expect(options.map((option) => option.value)).toEqual([
+      '',
+      'demo-mcu:display',
+      'demo-mcu:display2',
+    ]);
     expect(options[1]?.label).toBe('demo-mcu.display · output · string');
   });
 
@@ -60,8 +65,13 @@ describe('bindingOptions', () => {
     const bound = instance({ bindings: { value: { symbol: 'legacy', port: 'bus' } } });
     const options = bindingOptions(bound, 'value', DISPLAY);
 
-    expect(options.map((option) => option.value)).toEqual(['', 'demo-mcu:display', 'legacy:bus']);
-    expect(options[2]).toMatchObject({ label: 'legacy.bus · 当前', current: true });
+    expect(options.map((option) => option.value)).toEqual([
+      '',
+      'demo-mcu:display',
+      'demo-mcu:display2',
+      'legacy:bus',
+    ]);
+    expect(options[3]).toMatchObject({ label: 'legacy.bus · 当前', current: true });
   });
 
   it('does not repeat a current binding the candidates already offer', () => {

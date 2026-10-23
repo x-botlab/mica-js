@@ -156,6 +156,21 @@ function PropertyField({ instance, propertyKey, descriptor, disabled, onApply }:
         </div>
       );
       break;
+    case 'string':
+      control = (
+        <input
+          type="text"
+          className="bg-background w-full rounded border px-1.5 py-1 font-mono text-[11px]"
+          defaultValue={valueToText(initial)}
+          disabled={disabled}
+          onBlur={(event) => commit(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') commit(event.currentTarget.value);
+          }}
+          aria-label={propertyKey}
+        />
+      );
+      break;
     case 'image':
     case 'binary': {
       const ref = assetRefOf(initial);

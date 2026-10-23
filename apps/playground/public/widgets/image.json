@@ -3,7 +3,7 @@
     "image": {
       "type": "image",
       "title": "图片",
-      "default": { "src": "assets/panel.png", "mode": "file" }
+      "default": { "src": "assets/ct107d-board.webp", "mode": "file" }
     }
   },
   "ports": {}

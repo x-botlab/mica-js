@@ -14,6 +14,7 @@ export interface DemoTarget {
  */
 export const DEMO_TARGETS = [
   { symbol: 'demo-mcu', port: 'display', direction: 'output', type: 'string' },
+  { symbol: 'demo-mcu', port: 'display2', direction: 'output', type: 'string' },
   { symbol: 'demo-mcu', port: 'key', direction: 'input', type: 'boolean' },
   { symbol: 'demo-mcu', port: 'led', direction: 'input', type: 'boolean' },
 ] as const satisfies readonly DemoTarget[];

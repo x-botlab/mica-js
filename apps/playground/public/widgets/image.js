@@ -1,5 +1,25 @@
 /* global Blob, createImageBitmap */
 
+/** MIME hint for the `Blob`; the decoder still sniffs the bytes. */
+function imageType(src) {
+  const extension = (/\.([a-z0-9]+)$/i.exec(src)?.[1] ?? '').toLowerCase();
+  switch (extension) {
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    case 'avif':
+      return 'image/avif';
+    default:
+      return '';
+  }
+}
+
 export default function backgroundImage(api) {
   const property = api.props.image;
   const src = property && typeof property === 'object' ? property.src : undefined;
@@ -12,7 +32,7 @@ export default function backgroundImage(api) {
         throw new TypeError('image.src must be a string');
       }
       const bytes = await api.assets.readBinary(src);
-      bitmap = await createImageBitmap(new Blob([bytes]));
+      bitmap = await createImageBitmap(new Blob([bytes], { type: imageType(src) }));
     } catch {
       failed = true;
     } finally {
