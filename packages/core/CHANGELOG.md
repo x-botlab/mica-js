@@ -1,5 +1,24 @@
 # @mica-js/core
 
+## 0.2.0
+
+### Minor Changes
+
+- 9ea9858: 新增 `@mica-js/widget`：Widget 定义、`WidgetProvider` 接口、静态 provider 与包加载（含路径校验、内容哈希、缓存）。`@mica-js/core/canvas` 增补 `PAYLOAD_TYPES`、`parsePayloadType`、`isAssignable` 与 `PayloadType` 导出，供 widget 端口类型校验复用。
+- f6c9dac: 实现连接作者接口与 IR 接入（#57）：器件描述解析 #14 连接声明；`api.ir.connection(id)` 与 `b.connection.apply([{ connection, closed }])` 把建图时固定的对象列表降低为 `static-list` 连接引用与等长 bool SSA 列表；通过 `DeviceInstanceOptions.connections.topology` 绑定 core topology，在合法控制阶段以一份原子 patch 提交，支持普通/生命周期/嵌套块、SSA 按值捕获、稳定同刻顺序、未知/跨实例/非法 patch 诊断，以及冲突后不回滚已提交拓扑。IR 增加通用领域指令列表操作数与可信同步 `IRInstructionExecutor`，core `createIRSchedulerInstance` 可传入执行器。
+- d699e7f: 实现话题与 IR 消息桥接（#54）：`api.subscribe/publish/post/postBytes/onOutput/updateBytes` 接入真实 `validateIR` → 参考解释器 → scheduler → device 生命周期链；新增 IR `output` / `outputBytes`、`bridge.send` / `bridge.send_bytes` 与宿主 `IRBridgeHost`，device 侧提供有界输出/输入/发布/更新队列、inbox 预留与释放、初始化暂存与激活顺序、`onTopic` 宿主回调及 `deliver`，并以 `BackpressureError` 和新增 `DeviceErrorCode` 报告背压与非法载荷/句柄/范围。Scheduler 增加不推进时间、不分配事件 ID 的普通消息入口与 `messageId`；`IRStorage` 增加宿主 inbox 写入与原子版本化字节更新。`TopicPayloadType` 随 `DevicePortDescriptor` 一起从包入口导出，宿主可以给端口类型命名。
+- c5b688e: 实现数字边沿观察与捕获投递（#56）：`api.ir.observeDigital` 声明静态观察绑定，`b.observe.configure` 降低为 `observe.configure`（静态绑定、bool 启用位、u8 边沿编码 1/2/3）；链接期校验 trigger/capture 均为本实例 signal 引脚且目标 entry 签名恰为 `['u8', ...u32 × captures.length]`。device 按 #25 维护启用、边沿选择与基线，使用 #51 的解析阶段采样和门控结果，在首次启用、显式重配、门控恢复及浮空/待定区间后重建基线且不误报边沿；触发时按同一阶段快照固定 `[u8, ...u32]` 载荷，经 #54 的 `scheduler.enqueueMessage` 普通队列按声明顺序投递，不推进时间、不同步重入。core 新增 `PowerDigitalPinChange` / `PowerDigitalPinObserver` 与 `PowerRuntime.addDigitalPinObserver`，在多观察者注册顺序下 fail-fast 通知变化引脚。新增 `device/observe-pin`、`device/observe-binding`、`device/observe-config`、`device/observe-unavailable`；明确拒绝 `edges=0` 状态观察、模拟量、电压、get/set、组观察与任意比较器。
+
+### Patch Changes
+
+- 645e731: 实现 Provider 生成、依赖跟踪与缓存（#60）：`ir.provider` 声明固定 key/参数/结果布局、生成期受追踪读取与产物可引用引用；`gen.readBytes`/`readState`/`readArray` 登记实际覆盖的版本单元（state/array 使用整资源单元），产物经既有 `validateIR`、imports 白名单与解释器执行。`dispatch` 作为终结指令按规范化 key 复用或按需重生成产物，每次派发校验全部依赖，缓存按实例隔离。新增 `IRProviderError` 与可区分的声明/读取/生成/产物/依赖错误码；生成产物写入自身读依赖时明确拒绝（运行中恢复属于 #61）。device 的 `api.ir.provider` 与 core 的调度接入同步可用。
+- Updated dependencies [f6c9dac]
+- Updated dependencies [d699e7f]
+- Updated dependencies [dbf7d60]
+- Updated dependencies [a5d8ce5]
+- Updated dependencies [645e731]
+  - @mica-js/ir@0.2.0
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/core",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Mica circuit simulator core: virtual time and deterministic event scheduling",
   "license": "MIT",
   "repository": {
@@ -29,7 +29,6 @@
   ],
   "scripts": {
     "build": "vite build",
-    "prepack": "pnpm run build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

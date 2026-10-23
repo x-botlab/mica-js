@@ -20,7 +20,8 @@
     "lint:package": "node scripts/lint-package.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm install --lockfile-only",
-    "release": "changeset publish"
+    "pack-packages": "pnpm -r build && changeset pack --out-dir .release-pack",
+    "release": "pnpm run pack-packages && changeset publish --from-pack-dir .release-pack"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",

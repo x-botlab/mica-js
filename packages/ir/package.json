@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/ir",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Domain-independent IR model and typed builder for Mica",
   "license": "MIT",
   "repository": {
@@ -21,7 +21,6 @@
   ],
   "scripts": {
     "build": "vite build",
-    "prepack": "pnpm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/canvas-editor",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Mica canvas editor: composites .cnv widgets onto one canvas and turns user input into CanvasCommand",
   "license": "MIT",
   "repository": {
@@ -21,7 +21,6 @@
   ],
   "scripts": {
     "build": "vite build",
-    "prepack": "pnpm -r --filter \"@mica-js/canvas-editor...\" build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
