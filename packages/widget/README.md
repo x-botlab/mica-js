@@ -195,7 +195,7 @@ const host = createWidgetHost({
 });
 ```
 
-宿主遍历合并默认值后的 props（含对象与数组里的嵌套值），收集所有形如 `{ src, mode }` 的引用，逐个 `read` 后把 `src → Uint8Array` 随 `mount` 请求一起发给 guest；同一个 `src` 只读一次。单个资源失败只上报 `widget/asset-failed` 并跳过该资源，实例照常挂载；没有配置 `assets` 时不做任何预取，也不报错。预取只发生在挂载时：`set-properties` 之后才出现的引用不会被补读。
+宿主遍历合并默认值后的 props（含对象与数组里的嵌套值），收集所有形如 `{ src, mode }` 的引用，逐个 `read` 后把 `src → Uint8Array` 随 `mount` 请求一起发给 guest；同一个 `src` 只读一次。单个资源失败只上报 `widget/asset-failed` 并跳过该资源，实例照常挂载；没有配置 `assets` 时不做任何预取，也不报错。预取发生在挂载时：属性改动引入新的 `{ src }` 时宿主会重挂载该实例，让新资源随挂载送达。
 
 widget 通过 `api.assets.readBinary(src)` 读取：
 
@@ -203,7 +203,7 @@ widget 通过 `api.assets.readBinary(src)` 读取：
 const bytes = await api.assets.readBinary(api.props.texture.src);
 ```
 
-每次调用返回**副本**，widget 可以随意修改。未预取的 `src`（没有来源、读取失败，或挂载后才出现）会被 reject，并在同一实例、同一 `src` 的首次失败时上报一条 `widget/asset-failed`。**这个 Promise 必须由 widget 自己 `catch`**：不 await 也不 catch 会在 guest worker 里留下 unhandled rejection。
+每次调用返回**副本**，widget 可以随意修改。未预取的 `src`（没有来源、读取失败，或挂载后才出现且还没重挂载）会被 reject，并在同一实例、同一 `src` 的首次失败时上报一条 `widget/asset-failed`。**这个 Promise 必须由 widget 自己 `catch`**：不 await 也不 catch 会在 guest worker 里留下 unhandled rejection。
 
 ### `publish` 携带 `simTime`
 
