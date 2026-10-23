@@ -1,0 +1,18 @@
+{
+  "pins": {
+    "A": { "kind": "signal", "side": "right" },
+    "B": { "kind": "signal", "side": "left" }
+  },
+  "connections": {
+    "contact": { "pins": ["A", "B"], "initial": "open" }
+  },
+  "ports": {
+    "pressed": {
+      "title": "按下",
+      "description": "true 时触点闭合，把 A/B 短接。",
+      "direction": "input",
+      "type": "boolean"
+    }
+  },
+  "designatorPrefix": "S"
+}

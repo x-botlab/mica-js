@@ -1,5 +1,7 @@
 export { SimulatorError } from './errors';
 export type { SimulatorErrorCode, SimulatorErrorOptions } from './errors';
+export { createCircuitHost } from './circuit';
+export type { CircuitLayout, CircuitOptions } from './circuit';
 export { createDeviceSimExecutor } from './create-device-sim-executor';
 export type {
   AdvanceReason,

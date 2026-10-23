@@ -57,19 +57,22 @@ src/schematic/sample.ts        器件注册表（含 designatorPrefix 与 #7 属
 src/schematic/snippets.ts      编辑器页「用法」面板里的代码片段
 public/assets/                 示例资源：ct107d-board.webp（画布底图）、panel.png（image）与 firmware/m4-demo.bin（binary）
 public/widgets/                demo widget 包（package.json + image/segment/button）与示例 demo.cnv
-public/devices/                demo 器件包：demo.sch（原理图）、demo-mcu.json（描述）与 demo-mcu.js（IR 实现）
+public/devices/                demo 器件包：push-button / counter-4bit / hex-display 三个器件的描述与 IR，以及它们接线的 demo.sch
+scripts/build-device-demo.mjs  改布局后重算 demo.sch 的符号坐标与导线端点（`pnpm build:devices`，顺带打印推导出的网表）
 src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）
 ```
 
 画布页的左侧栏是**组件列表 + 图层列表**：组件条目来自 `public/widgets/package.json`（`loadWidgetPackage` 读出来的 `displayName` + 宿主给的默认尺寸），点击即发一条 `add-instance`，新实例按对角偏移级联摆放并置顶，运行模式下列表禁用。图层列表按**绘制顺序自上而下**列出当前文档的实例（`src/canvas/layers.ts` 负责把文档数组反过来），点一行调 `scene.setSelection` 选中它，拖动一行落到另一行即发一条 `set-z`（目标 `z` 是 `count - 1 - 显示下标`）。
 
-画布页的右侧栏是**宿主 UI**：属性控件按 `provider.resolve(ref).definition.properties` 渲染，绑定下拉按 `definition.ports` 渲染，值一律通过 `host.applyCommand` 提交，被拒时把 `SchematicError.diagnostics` 的 message 显示在对应控件下方。可选端点来自**正在运行的仿真**（`DeviceSimExecutor.getTopics()`），`src/canvas/panel-model.ts` 只负责按方向互补 + 载荷类型相等过滤候选；下拉的**标签用位号**（`U1.display`），提交的值仍是符号 id（`0000000d-…:display`），因为绑定存的是 id。
+画布页的右侧栏是**宿主 UI**：属性控件按 `provider.resolve(ref).definition.properties` 渲染，绑定下拉按 `definition.ports` 渲染，值一律通过 `host.applyCommand` 提交，被拒时把 `SchematicError.diagnostics` 的 message 显示在对应控件下方。可选端点来自**正在运行的仿真**（`DeviceSimExecutor.getTopics()`），`src/canvas/panel-model.ts` 只负责按方向互补 + 载荷类型相等过滤候选；下拉的**标签用位号**（`U2.value`），提交的值仍是符号 id（`00000013-…:value`），因为绑定存的是 id。
 
 **仿真**跑在页面同一条 JS 线程上：`src/pages/canvas.tsx` 用 `createDeviceSimExecutor({ devices })` 建执行器（器件来自 `public/devices/`，`demo:<name>` → `<name>.json` + `<name>.js`），再把它作为 `simulation` 传给 `createWidgetHost`，于是器件发布按 `bindings` 直接投到 widget、widget 发布按绑定直接投给器件，页面里没有一行转发代码。画布文档通过 `schematic: "devices/demo.sch"` 声明它模拟的原理图，页面启动时读这个 `.sch`、`parseSchematic` 后交给 `loadSchematic`；运行模式用 100 ms 的定时器每次 `advance(0.1 s 虚拟时间)`，切换模式时 `executor.reset()` 让器件与 widget 一起回到 t=0。
 
 **保存**走 `src/canvas/persist.ts`：每次提交 `serializeCanvas(document)` 与上一次成功的文本比较，不同才在 300 ms 去抖后写入 `localStorage`（键 `mica-playground:canvas-draft`）；`保存` 按钮与 `Ctrl/Cmd+S` 跳过去抖立即写，`导出` 把当前文档下载成 `demo.cnv`，`重置草稿` 清掉草稿并 `host.loadDocument` 回示例。重新打开页面时优先读草稿，控件旁的徽章显示 `已保存` / `未保存` / `保存失败`。
 
-示例 `demo.cnv` 用真实的 CT107D 开发板照片（`public/assets/ct107d-board.webp`，1068 × 768）当底图，坐标就是照片像素：两颗 4 位数码管组件各盖住照片里的一个 LED 窗口，分别绑到 `demo.sch` 里那颗 MCU 符号（位号 `U1`）的 `display` / `display2`；按键组件盖住 S7 那颗独立按键并绑到它的 `key`。按键是全透明的，所以编辑模式下编辑器给每个实例画的一圈半透明边框（`theme.outline`）就是它唯一的位置线索。`public/devices/demo-mcu.js` 是示例器件：IR 每 0.1 s 走一个 `tick`，把计数经 output 交给 JS 侧 `api.publish` 成两串显示值；按下 `key` 时它把计数清零，于是按键到器件的方向也能在数码管上看到。
+示例 `demo.cnv` 用真实的 CT107D 开发板照片（`public/assets/ct107d-board.webp`，1068 × 768）当底图，坐标就是照片像素：两颗 4 位数码管组件各盖住照片里的一个 LED 窗口，分别绑到 `demo.sch` 里那颗粒数码管驱动符号（位号 `U2`）的 `value`（十进制）与 `bits`（二进制）；按键组件盖住 S7 那颗独立按键并绑到按键符号（位号 `S1`）的 `pressed`。按键是全透明的，所以编辑模式下编辑器给每个实例画的一圈半透明边框（`theme.outline`）就是它唯一的位置线索。
+
+`demo.sch` 是一条**真电路**，不是单个假器件：`S1`（按钮，A/B 两个触点端子）的 A 端接 `U1`（4 位计数器）的 `CLK`，B 端接地；`U1` 的 `Q0..Q3` 分别接到 `U2`（数码管驱动）的 `D0..D3`；两颗芯片的 `VCC` / `GND` 分别接到图纸上的 5 V 与 GND 符号。计数器的 `CLK` 内部上拉，按钮闭合把 `CLK` 拉到地，于是产生一个下降沿、计数加一；`U2` 采样 `D0..D3` 后把半字节发布成 `value` / `bits`。器件引脚到电气网的映射由 `@mica-js/simulator` 的 `buildCircuit` 完成，导线位置则来自 `scripts/build-device-demo.mjs`（改布局后重跑它即可，脚本会用 `symbolPinPosition` 重算每个端点并打印推导出的网表）。
 
 `demo:segment` 的属性是位数、颜色、笔画粗细（占字高比例）与位间距（数位格子留白比例）；小数点的大小与它和数字的距离各有一个属性（`pointSize` / `pointGap`，都按字高比例，`pointSize` 为 0 时不画）。点画在数字右侧，不占数字本身的宽度，`value` 里的 `.` 只点亮前一位的点。`demo:button` 支持文本（可留空）、圆角、背景颜色（普通/按下，接受 `#RRGGBBAA`，可全透明）与背景图片（普通/按下，图片优先于颜色，按 cover 裁切）；示例里把颜色设成全透明，于是按下时只透出一层半透明白。
 

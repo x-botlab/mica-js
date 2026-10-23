@@ -13,7 +13,7 @@ import {
 } from '@mica-js/core/canvas';
 import { parseSchematic } from '@mica-js/core/schematic';
 import { parseDeviceDescription, type IDeviceProvider } from '@mica-js/device';
-import { createDeviceSimExecutor, type DeviceSimExecutor } from '@mica-js/simulator';
+import { createCircuitHost, createDeviceSimExecutor, type DeviceSimExecutor } from '@mica-js/simulator';
 import {
   createPackageWidgetProvider,
   createWidgetHost,
@@ -251,6 +251,8 @@ export function CanvasPage() {
         const demoPackage = await loadWidgetPackage(PACKAGE_FILES);
         const ownedExecutor = createDeviceSimExecutor({
           devices: DEVICES,
+          // The sheet's wires are the circuit: `createCircuitHost` derives the nets per runtime.
+          host: createCircuitHost(),
           onDiagnostic: pushDiagnostic,
         });
         executor = ownedExecutor;
@@ -587,7 +589,7 @@ export function CanvasPage() {
           </Button>
         </div>
         <span className="text-muted-foreground ml-auto text-[11px]">
-          {error ?? saveError ?? '编辑模式拖动实例；运行模式点击按键，数码管每秒刷新。'}
+          {error ?? saveError ?? '编辑模式拖动实例；运行模式点一下按键，计数器加一。'}
         </span>
       </div>
 

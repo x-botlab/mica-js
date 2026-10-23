@@ -23,7 +23,7 @@
       "height": 62,
       "rotation": 0,
       "bindings": {
-        "value": { "symbol": "0000000d-0000-4000-8000-000000000001", "port": "display" }
+        "value": { "symbol": "00000013-0000-4000-8000-000000000001", "port": "value" }
       }
     },
     {
@@ -35,7 +35,7 @@
       "height": 62,
       "rotation": 0,
       "bindings": {
-        "value": { "symbol": "0000000d-0000-4000-8000-000000000001", "port": "display2" }
+        "value": { "symbol": "00000013-0000-4000-8000-000000000001", "port": "bits" }
       }
     },
     {
@@ -53,7 +53,7 @@
         "backgroundPressed": "#FFFFFF40"
       },
       "bindings": {
-        "press": { "symbol": "0000000d-0000-4000-8000-000000000001", "port": "key" }
+        "press": { "symbol": "00000011-0000-4000-8000-000000000001", "port": "pressed" }
       }
     }
   ]

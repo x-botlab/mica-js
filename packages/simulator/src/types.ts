@@ -4,6 +4,7 @@ import type {
   DeviceInstanceOptions,
   DevicePinHost,
   IDeviceProvider,
+  LoadedDeviceModule,
   TopicPayload,
   TopicPayloadType,
 } from '@mica-js/device';
@@ -105,6 +106,13 @@ export interface DeviceSimHostContext {
   /** Scheduler of the runtime being built; a new one for every load and every reset. */
   readonly scheduler: Scheduler;
   readonly schematic: SchematicDocument;
+  /**
+   * Device modules the schematic resolves to, keyed by device id.
+   *
+   * Pin geometry and connection pairs live in the descriptions, so a wiring host that derives nets
+   * from the sheet (see `createCircuitHost`) reads them from here instead of loading them twice.
+   */
+  readonly modules: ReadonlyMap<string, LoadedDeviceModule>;
 }
 
 /** Builds the wiring for one runtime. */

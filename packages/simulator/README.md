@@ -82,7 +82,27 @@ const report = executor.advance(timePs(100_000)); // 100 ns，同步完成
 
 诊断码以 `simulator/` 开头：`device-load-failed`、`instance-create-failed`、`advance-failed`、`publish-failed`、`dispose-failed`。宿主调用的参数错误抛 `SimulatorError`（`code` 见 `SimulatorErrorCode`）。
 
+## 电气层
+
+原理图里的导线就是电路：`createCircuitHost()` 返回一个宿主接线工厂，用 `deriveSchematicTopology` 把每个器件引脚按合成符号的几何位置落到网，折成 `TopologyDefinition` 交给 `createPowerRuntime` 解算，再把结果作为 `pinHost` / `topology` 交给执行器。执行器自身不解析电路，这条路径是可选的一层便利封装。
+
+```ts
+const executor = createDeviceSimExecutor({
+  devices: provider,
+  host: createCircuitHost(), // 5 V 供电；createCircuitHost({ supplyVoltage: 3.3 }) 可改
+});
+```
+
+- **网 → 外部导线。** 每张网一条 `wireId`，成员是网里的全部引脚；带地符号的网标 `globalGnd`。
+- **电源符号 → 电源实例。** `builtin:power` / `builtin:ground` 属于合成实例 `power`：供电网的引脚按 `supplyVoltage`（默认 5 V）模拟输出，接地网的引脚按逻辑低电压强驱动。地是 0 V 参考，不是悬空——所以「触点接地」真的能把引脚拉低。
+- **器件引脚 → 拓扑引脚。** 引脚种类取自器件描述（`signal` / `power` / `gnd`）；器件描述里的 `connections` 变成可开关的内部连接，`connection.apply` 直接作用在这张网上。引脚几何来自 `DeviceSimHostContext.modules`，所以工厂不会重复加载器件。
+- **引脚初值一条不少。** `PowerOptions.pinStates` 要求每个已声明引脚一条，默认高阻、无上下拉；器件在 `initialize` 里 `pin.configure` 之后由器件层覆盖。
+- **生命周期跟着运行时走。** 实例先销毁（退订、停观察者），工厂的 `dispose` 最后销毁电气网络；构建失败时同样按这个顺序回收。
+
+按钮 + 计数器 + 数码管的完整样例见 `apps/playground/public/devices/`，`apps/playground/scripts/build-device-demo.mjs` 负责在改动布局后重算导线端点。
+
 ## 边界
 
-- **电路定义归宿主所有。** 执行器只透传 `pinHost` / `topology`，不解析板级电源、上拉或网络拓扑；引脚与电气观测（`sampleDigital`、`connectionState`）由宿主读自己的运行时。
+- **电路定义归宿主所有。** 执行器只透传 `pinHost` / `topology`，不解析板级电源、上拉或网络拓扑；引脚与电气观测（`sampleDigital`、`connectionState`）由宿主读自己的运行时。`createCircuitHost` 是可选的实现之一，手写电路（例如 playground 的仿真调试页）可以直接实现 `DeviceSimHostFactory`。
+- **模拟量只有理想电压源。** `createCircuitHost` 的引脚模型固定为 `ideal-voltage`（0–5 V，低 0.8 V、高 2 V），没有电流、RC 或器件间负载；需要更细的电气行为时要往 `@mica-js/core` 的电气层加模型，或换一个自定义宿主。
 - 器件代码在宿主 realm 里求值（与 `loadDeviceModule` 相同，等同可信扩展），沙箱化未做。
