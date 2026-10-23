@@ -33,13 +33,23 @@ import type {
 import type { IRResourceDependency, StorageControl } from './storage';
 import type { FunctionDefinition, IRModule, RuntimeScalar, ScalarType } from './types';
 import type { ProviderArtifact } from './provider';
-import { compileFunctionWithSource, JitCodegenUnavailable } from './jit/codegen/compile';
-import type { CompileEnv, CompiledFunction } from './jit/codegen/compile';
+import {
+  compileFunctionWithSource,
+  compileRegionWithSource,
+  JitCodegenUnavailable,
+} from './jit/codegen/compile';
+import type { CompileEnv, CompiledFunction, CompiledRegion } from './jit/codegen/compile';
+import { DispatchRegistry, REGION_THRESHOLD, providerDispatchInfo } from './jit/dispatch-ic';
+import type { ArtifactState, ProviderDispatchInfo } from './jit/dispatch-ic';
 import { computeSummaries } from './jit/effects';
+import { attachRegion, collectRegionMembers } from './jit/region';
 import { runHeapFunction } from './jit/heap-tier';
-import type { HeapEntry } from './jit/heap-tier';
+import type { HeapEntry, HeapRunOptions } from './jit/heap-tier';
 import { Op, lowerFunction } from './jit/mir';
-import type { MFunction } from './jit/mir';
+import type { LayoutProfile, MFunction } from './jit/mir';
+import { createInlineContext, inlineFunction } from './jit/passes/inline';
+import type { InlineContext } from './jit/passes/inline';
+import { runJitOptimizationPipeline } from './jit/passes';
 import { createLowerContext } from './jit/resolve';
 import type { LowerContext } from './jit/resolve';
 import {
@@ -54,11 +64,21 @@ import {
 import type { CompiledFn, JitHelpers } from './jit/runtime-core';
 import { verifyMIR } from './jit/verify';
 
-/**
- * Optimization switches. J11–J14 extend this into a literal union; until then
- * no optimization names are accepted and `optimizations` must be empty.
- */
-export type IRJITOptimization = never;
+/** Optimization switches (J11–J14). */
+export type IRJITOptimization =
+  | 'sccp'
+  | 'gvn'
+  | 'range'
+  | 'licm'
+  | 'dce'
+  | 'loadElim'
+  | 'scalarPromotion'
+  | 'boundsElim'
+  | 'dispatchIC'
+  | 'checkpointFast'
+  | 'regions'
+  | 'region-compile'
+  | 'inline';
 
 /** JIT execution tier. */
 export type IRJITTier = 'auto' | 'heap' | 'compiled';
@@ -87,8 +107,9 @@ export interface IRJITTuning {
    */
   readonly warmup?: IRJITWarmup;
   /**
-   * Number of heap-tier runs before an artifact is compiled. Accepted for the
-   * J0 tuning surface; this engine compiles an artifact on first dispatch.
+   * Number of heap-tier runs before an artifact is compiled. The first
+   * `artifactWarmup` dispatches run through the iterative heap tier, then the
+   * artifact is compiled (tier-1, or tier-2 when `tierUpThreshold` is 0).
    * Non-negative safe integer, default 1.
    */
   readonly artifactWarmup?: number;
@@ -97,6 +118,11 @@ export interface IRJITTuning {
    * function with a fresh compiled segment. Positive safe integer, default 1000.
    */
   readonly maxCompiledDepth?: number;
+  /**
+   * Tier-1 entries before a function is recompiled at Tier 2 (J13). `0`
+   * compiles on first use; `Infinity` disables tiering. Default 1000.
+   */
+  readonly tierUpThreshold?: number;
   /** Optimization switches; unknown keys are rejected by `invalid-options`. */
   readonly optimizations?: Readonly<Partial<Record<IRJITOptimization, boolean>>>;
   /** Debug aids; `verify` runs the MIR verifier after lowering. Default off. */
@@ -124,6 +150,29 @@ export interface IRJITInternals {
   readonly compiledArtifacts: number;
   /** Artifacts recompiled because a deep dependency changed. */
   readonly recompiledArtifacts: number;
+  /** Dispatch site IC hits (J14). */
+  readonly icHits: number;
+  /** Dispatch site IC misses that reached `materialize`. */
+  readonly icMisses: number;
+  /** Provider jump-cache hits. */
+  readonly jumpHits: number;
+  /** Regions compiled from hot dispatch chains. */
+  readonly regions: number;
+  /** Tier-2 recompilations (model functions and artifacts, J13). */
+  readonly tier2Compilations: number;
+  /** Source of the most recently compiled region (debug aid for tests). */
+  readonly regionSource: string | undefined;
+  /** Dispatch site snapshots (debug aid for tests). */
+  readonly dispatchSites: readonly {
+    readonly states: readonly unknown[];
+    readonly keys: readonly unknown[];
+    readonly es: readonly number[];
+    readonly cs: readonly number[];
+    readonly count: number;
+    readonly next: number;
+    readonly hits: number;
+    readonly misses: number;
+  }[];
 }
 
 interface ResolvedTuning {
@@ -132,17 +181,37 @@ interface ResolvedTuning {
   readonly warmup: IRJITWarmup;
   readonly artifactWarmup: number;
   readonly maxCompiledDepth: number;
+  readonly tierUpThreshold: number;
   readonly verify: boolean;
+  /** Fully resolved per-pass switches (missing user entries default to true). */
+  readonly optimizations: Readonly<Record<IRJITOptimization, boolean>>;
+  readonly dispatchIC: boolean;
+  readonly checkpointFast: boolean;
+  readonly regions: boolean;
+  readonly inline: boolean;
 }
 
-interface ArtifactEntry {
+interface ArtifactEntry extends ArtifactState {
   readonly mir: MFunction;
   /** Provider indices this artifact may dispatch/checkpoint to. */
   readonly providers: readonly number[];
   compiled: CompiledFunction;
+  /** Tier-1 and Tier-2 compilation results; both stay available after tiering. */
+  tier1: CompiledFunction | undefined;
+  tier2: CompiledFunction | undefined;
+  /** Heap-tier warmup wrapper (J13), when `artifactWarmup > 0`. */
+  warmup: CompiledFn | undefined;
+  /** Number of heap-tier runs completed before compilation. */
+  uses: number;
+  /** A failed warmup compile keeps the artifact on the heap tier. */
+  heapOnly: boolean;
   dependencies: readonly IRResourceDependency[];
   storageEpoch: number;
   providerEpoch: number;
+  validatedEpoch: number;
+  entries: number;
+  region: CompiledRegion | undefined;
+  regionIndex: number;
 }
 
 type PreparedExecution = ReturnType<typeof prepareExecution>;
@@ -154,6 +223,8 @@ interface SavedRuntime {
   readonly context: IRExecutionContext;
   readonly tailFn: CompiledFn | undefined;
   readonly tailArgs: unknown[] | undefined;
+  readonly tailState: ArtifactState | undefined;
+  readonly currentState: ArtifactState | undefined;
   readonly depth: number;
   readonly ret: unknown[] | undefined;
 }
@@ -169,11 +240,34 @@ const JIT_OPTION_KEYS: ReadonlySet<string> = new Set([
   'warmup',
   'artifactWarmup',
   'maxCompiledDepth',
+  'tierUpThreshold',
   'optimizations',
   'debug',
 ]);
 
 const DEBUG_KEYS: ReadonlySet<string> = new Set(['verify']);
+
+/** Default switch state: every pass enabled. */
+const OPTIMIZATION_DEFAULTS: Readonly<Record<IRJITOptimization, boolean>> = Object.freeze({
+  sccp: true,
+  gvn: true,
+  range: true,
+  licm: true,
+  dce: true,
+  loadElim: true,
+  scalarPromotion: true,
+  boundsElim: true,
+  dispatchIC: true,
+  checkpointFast: true,
+  regions: true,
+  'region-compile': true,
+  inline: true,
+});
+
+/** Optimization names accepted by `jit.optimizations`. */
+const OPTIMIZATION_NAMES: ReadonlySet<string> = new Set(
+  Object.keys(OPTIMIZATION_DEFAULTS) as IRJITOptimization[],
+);
 
 /**
  * Create a compiled IR engine. The returned interpreter implements exactly the
@@ -226,7 +320,13 @@ function resolveTuning(value: unknown): ResolvedTuning {
       warmup: 'lazy',
       artifactWarmup: 1,
       maxCompiledDepth: 1000,
+      tierUpThreshold: 1000,
       verify: false,
+      optimizations: OPTIMIZATION_DEFAULTS,
+      dispatchIC: true,
+      checkpointFast: true,
+      regions: true,
+      inline: true,
     };
   }
   if (!isRecord(value)) throw optionsError('jit must be an object');
@@ -259,12 +359,30 @@ function resolveTuning(value: unknown): ResolvedTuning {
   ) {
     throw optionsError('jit.maxCompiledDepth must be a positive safe integer');
   }
+  const tierUpThreshold = value.tierUpThreshold;
+  if (
+    tierUpThreshold !== undefined &&
+    tierUpThreshold !== Number.POSITIVE_INFINITY &&
+    (!Number.isSafeInteger(tierUpThreshold) || (tierUpThreshold as number) < 0)
+  ) {
+    throw optionsError('jit.tierUpThreshold must be a non-negative safe integer');
+  }
   const optimizations = value.optimizations;
   if (optimizations !== undefined) {
     if (!isRecord(optimizations)) throw optionsError('jit.optimizations must be an object');
     for (const key of Object.keys(optimizations)) {
-      throw optionsError(`Unknown JIT optimization "${key}"`);
+      if (!OPTIMIZATION_NAMES.has(key)) {
+        throw optionsError(`Unknown JIT optimization "${key}"`);
+      }
+      if (typeof optimizations[key] !== 'boolean') {
+        throw optionsError(`JIT optimization "${key}" must be a boolean`);
+      }
     }
+  }
+  const switches = (optimizations ?? {}) as Partial<Record<IRJITOptimization, boolean>>;
+  const resolved: Record<IRJITOptimization, boolean> = { ...OPTIMIZATION_DEFAULTS };
+  for (const name of Object.keys(resolved) as IRJITOptimization[]) {
+    resolved[name] = switches[name] !== false;
   }
   const debug = value.debug;
   if (debug !== undefined) {
@@ -282,7 +400,14 @@ function resolveTuning(value: unknown): ResolvedTuning {
     warmup: (warmup as IRJITWarmup | undefined) ?? 'lazy',
     artifactWarmup: (artifactWarmup as number | undefined) ?? 1,
     maxCompiledDepth: (maxCompiledDepth as number | undefined) ?? 1000,
+    tierUpThreshold: (tierUpThreshold as number | undefined) ?? 1000,
     verify: debug !== undefined && (debug as { verify?: boolean }).verify === true,
+    optimizations: resolved,
+    dispatchIC: resolved.dispatchIC,
+    checkpointFast: resolved.checkpointFast,
+    // `regions` and `region-compile` are aliases; both must stay enabled.
+    regions: resolved.regions && resolved['region-compile'],
+    inline: switches.inline !== false,
   };
 }
 
@@ -306,11 +431,21 @@ class JITInterpreter implements IRInterpreter {
   readonly #helpers: JitHelpers;
   readonly #control: StorageControl;
   readonly #compiled: (CompiledFunction | undefined)[];
+  /** Tier-2 model functions, kept alongside tier-1 for diagnostics (J13). */
+  readonly #tier2: (CompiledFunction | undefined)[];
+  /** Shared callee table, summaries and SCC map used by the inliner. */
+  readonly #inline: InlineContext;
+  /** Artifact entries by compiled index for `rt.tierUp(index)` (J13). */
+  readonly #artifactsByIndex = new Map<number, ArtifactEntry>();
   readonly #artifactEntries = new WeakMap<ProviderArtifact, ArtifactEntry>();
   /** Deep-fallback entries keyed by compiled function index (model and artifact). */
   readonly #heapEntries = new Map<number, HeapEntry>();
   /** Compiled artifacts grouped by the provider that produced them. */
   readonly #artifactsByProvider = new Map<object, Set<ArtifactEntry>>();
+  /** Provider metadata for dispatch ICs and region keys. */
+  readonly #providerInfo: readonly ProviderDispatchInfo[];
+  /** Dispatch sites, jump caches and transition counts. */
+  readonly #dispatch: DispatchRegistry;
 
   #faulted = false;
   #referenceOnly = false;
@@ -318,6 +453,9 @@ class JITInterpreter implements IRInterpreter {
   #compiledFunctions = 0;
   #compiledArtifacts = 0;
   #recompiledArtifacts = 0;
+  #tier2Compilations = 0;
+  #regions = 0;
+  #regionSource: string | undefined;
 
   constructor(setup: EngineSetup, tuning: ResolvedTuning) {
     this.#setup = setup;
@@ -327,8 +465,20 @@ class JITInterpreter implements IRInterpreter {
     const executorNames = [...(setup.executors?.keys() ?? [])];
     const lower = createLowerContext(setup.model, executorNames);
     this.#lower = lower;
-    this.#mir = setup.model.functions.map((definition, index) =>
+    const lowered = setup.model.functions.map((definition, index) =>
       lowerFunction(lower, definition, index, definition.name),
+    );
+    if (tuning.verify) {
+      for (const fn of lowered) verifyMIR(fn, lower);
+    }
+    const passes = tuning.optimizations;
+    this.#mir = lowered.map((fn) =>
+      runJitOptimizationPipeline(fn, { memories: setup.model.memories }, lower, {
+        passes,
+        verify: tuning.verify,
+        observer: setup.stepObserver !== undefined,
+        constants: lower.constants,
+      }),
     );
     for (let index = 0; index < setup.model.functions.length; index += 1) {
       this.#heapEntries.set(index, {
@@ -337,10 +487,8 @@ class JITInterpreter implements IRInterpreter {
         artifact: undefined,
       });
     }
-    if (tuning.verify) {
-      for (const fn of this.#mir) verifyMIR(fn, lower);
-    }
     const summaries = computeSummaries(this.#mir);
+    this.#inline = createInlineContext(this.#mir, summaries);
 
     const internals = storageInternalsOf(setup.storage);
     this.#control = internals.control;
@@ -351,13 +499,19 @@ class JITInterpreter implements IRInterpreter {
       ...(setup.stepBudget === undefined ? {} : { stepBudget: setup.stepBudget }),
     });
     runtime.maxDepth = tuning.maxCompiledDepth;
+    runtime.tierUpThreshold = tuning.tierUpThreshold;
+    runtime.tierUp = (index) => this.#tierUp(index);
     this.#runtime = runtime;
 
+    this.#providerInfo = providerDispatchInfo(setup.model.providers);
+    this.#dispatch = new DispatchRegistry(this.#providerInfo);
     const helpers = createJitHelpers(setup, {
-      artifact: (artifact) => this.#artifactFunction(artifact),
+      artifact: (artifact, providerIndex) => this.#artifactState(artifact, providerIndex),
+      dispatch: this.#dispatch,
     });
     this.#helpers = helpers;
     this.#compiled = new Array<CompiledFunction | undefined>(this.#mir.length);
+    this.#tier2 = new Array<CompiledFunction | undefined>(this.#mir.length);
     this.#env = {
       rt: runtime,
       helpers,
@@ -365,7 +519,13 @@ class JITInterpreter implements IRInterpreter {
       memoryRefs: setup.model.memories.map((memory) => memory.ref),
       littleEndian: internals.littleEndianHost,
       summaries,
+      providers: this.#providerInfo,
+      dispatchIC: tuning.dispatchIC,
+      checkpointFast: tuning.checkpointFast,
+      optimizations: tuning.optimizations,
+      verify: tuning.verify,
     };
+    runtime.regionTrigger = (state) => this.#maybeFormRegion(state);
 
     // Every slot starts as a stub: generated code only ever calls `H.fns[i]`,
     // so replacing the slot is enough to swap in compiled code (J13 relies on
@@ -382,6 +542,23 @@ class JITInterpreter implements IRInterpreter {
     const compiledFunctions = (): number => this.#compiledFunctions;
     const compiledArtifacts = (): number => this.#compiledArtifacts;
     const recompiledArtifacts = (): number => this.#recompiledArtifacts;
+    const tier2Compilations = (): number => this.#tier2Compilations;
+    const icHits = (): number => this.#dispatch.stats().icHits;
+    const icMisses = (): number => this.#dispatch.stats().icMisses;
+    const jumpHits = (): number => this.#dispatch.jumpHits;
+    const regions = (): number => this.#regions;
+    const regionSource = (): string | undefined => this.#regionSource;
+    const dispatchSites = (): IRJITInternals['dispatchSites'] =>
+      this.#dispatch.sites.map((site) => ({
+        states: [...site.states],
+        keys: site.keys.map((keys) => (keys === undefined ? undefined : [...keys])),
+        es: [...site.es],
+        cs: [...site.cs],
+        count: site.count,
+        next: site.next,
+        hits: site.hits,
+        misses: site.misses,
+      }));
     Object.defineProperty(this, jitInternals, {
       enumerable: false,
       configurable: false,
@@ -399,6 +576,27 @@ class JITInterpreter implements IRInterpreter {
         },
         get recompiledArtifacts(): number {
           return recompiledArtifacts();
+        },
+        get tier2Compilations(): number {
+          return tier2Compilations();
+        },
+        get icHits(): number {
+          return icHits();
+        },
+        get icMisses(): number {
+          return icMisses();
+        },
+        get jumpHits(): number {
+          return jumpHits();
+        },
+        get regions(): number {
+          return regions();
+        },
+        get regionSource(): string | undefined {
+          return regionSource();
+        },
+        get dispatchSites(): IRJITInternals['dispatchSites'] {
+          return dispatchSites();
         },
       }) satisfies IRJITInternals,
     });
@@ -497,11 +695,111 @@ class JITInterpreter implements IRInterpreter {
     if (existing !== undefined) return existing;
     const mir = this.#mir[index];
     if (mir === undefined) throw new Error(`JIT has no model function ${index}`);
-    const compiled = compileFunctionWithSource(mir, this.#env);
+    const tier2 = this.#tuning.tierUpThreshold === 0;
+    const compiled = this.#compileMIR(mir, tier2);
     this.#compiled[index] = compiled;
+    if (tier2) {
+      this.#tier2[index] = compiled;
+      this.#tier2Compilations += 1;
+    } else {
+      this.#armTierCounter(index);
+    }
     this.#helpers.fns[index] = compiled.fn;
     this.#compiledFunctions += 1;
     return compiled;
+  }
+
+  /** True when the engine should emit tier-1 entry counters. */
+  #tieringEnabled(): boolean {
+    return Number.isFinite(this.#tuning.tierUpThreshold) && this.#tuning.tierUpThreshold > 0;
+  }
+
+  #armTierCounter(index: number): void {
+    if (!this.#tieringEnabled()) return;
+    this.#runtime.counters[index] ??= 0;
+  }
+
+  /**
+   * Compile one function, optionally through the tier-2 pipeline (inline +
+   * profile-biased layout). `tier2` is false for tier-1 and true for the
+   * first compile when `tierUpThreshold` is 0 or for a promotion.
+   */
+  #compileMIR(
+    mir: MFunction,
+    tier2: boolean,
+    artifactDependencies?: readonly unknown[],
+    artifactState?: ArtifactState,
+  ): CompiledFunction {
+    let optimized = mir;
+    let layout: LayoutProfile | undefined;
+    if (tier2) {
+      // Even when `inline` is disabled, the pass supplies the layout weights;
+      // `maxInstructions: 0` makes it a pure layout/profile computation.
+      const result = inlineFunction(mir, this.#inline, {
+        ...(this.#tuning.inline ? {} : { maxInstructions: 0 }),
+        profile: { calls: this.#callProfile() },
+      });
+      optimized = result.fn;
+      layout = result.layout;
+      if (this.#tuning.verify) verifyMIR(optimized, this.#lower);
+    }
+    return compileFunctionWithSource(optimized, {
+      ...this.#env,
+      ...(artifactDependencies === undefined ? {} : { artifactDependencies }),
+      ...(artifactState === undefined ? {} : { artifactState }),
+      ...(layout === undefined ? {} : { layout }),
+      ...(!tier2 && this.#tieringEnabled() ? { tierUp: true } : {}),
+    });
+  }
+
+  /** Tier-1 invocation counts, used to rank inlining candidates. */
+  #callProfile(): ReadonlyMap<number, number> {
+    const calls = new Map<number, number>();
+    for (let index = 0; index < this.#mir.length; index += 1) {
+      const count = this.#runtime.counters[index];
+      if (count !== undefined && count > 0) calls.set(index, count);
+    }
+    return calls;
+  }
+
+  /**
+   * Synchronous Tier-2 promotion (J13). The activation that triggered the
+   * counter keeps running its tier-1 body; replacing `H.fns[i]` routes every
+   * later call (including recursive calls) through the new code.
+   */
+  #tierUp(index: number): void {
+    this.#runtime.counters[index] = -1;
+    if (index < this.#mir.length) {
+      if (this.#tier2[index] !== undefined) return;
+      const mir = this.#mir[index];
+      if (mir === undefined) return;
+      try {
+        const compiled = this.#compileMIR(mir, true);
+        this.#tier2[index] = compiled;
+        this.#compiled[index] = compiled;
+        this.#helpers.fns[index] = compiled.fn;
+        this.#compiledFunctions += 1;
+        this.#tier2Compilations += 1;
+      } catch (cause) {
+        if (!(cause instanceof JitCodegenUnavailable)) throw cause;
+      }
+      return;
+    }
+
+    const entry = this.#artifactsByIndex.get(index);
+    if (entry === undefined || entry.tier2 !== undefined) return;
+    if (entry.tier1 === undefined && entry.tier2 === undefined) return;
+    try {
+      const compiled = this.#compileMIR(entry.mir, true, entry.dependencies, entry);
+      entry.tier2 = compiled;
+      entry.compiled = compiled;
+      entry.entries = 0;
+      this.#helpers.fns[index] = compiled.fn;
+      this.#compiledArtifacts += 1;
+      this.#tier2Compilations += 1;
+    } catch (cause) {
+      if (!(cause instanceof JitCodegenUnavailable)) throw cause;
+    }
   }
 
   /**
@@ -515,71 +813,205 @@ class JITInterpreter implements IRInterpreter {
       if (entry === undefined) {
         throw new Error(`JIT deep fallback for function ${functionIndex} is unavailable`);
       }
-      return runHeapFunction(this.#setup, this.#runtime, entry, args);
+      return runHeapFunction(this.#setup, this.#runtime, entry, args, this.#heapOptions());
     };
+  }
+
+  /** Hooks used by every heap-tier run started by this engine (J13). */
+  #heapOptions(): HeapRunOptions {
+    return {
+      onArtifact: (artifact, providerIndex) => this.#noteHeapArtifact(artifact, providerIndex),
+    };
+  }
+
+  /**
+   * A provider artifact was dispatched from heap code. Register it so
+   * `artifactWarmup` and tiering see the run even when the compiled parents
+   * never touched it.
+   */
+  #noteHeapArtifact(artifact: ProviderArtifact, providerIndex: number): void {
+    const entry = this.#artifactState(artifact, providerIndex);
+    if (entry.tier1 !== undefined || entry.tier2 !== undefined) {
+      // It already has compiled code; heap execution still counts for tiering.
+      this.#runtime.noteEntry(artifact.index);
+      return;
+    }
+    entry.uses += 1;
+    // Do not form a dispatch region while the artifact is still warming.
+    entry.entries = 0;
+    if (!entry.heapOnly && entry.uses >= this.#tuning.artifactWarmup) {
+      this.#tryCompileArtifact(entry);
+    }
   }
 
   // --- Provider artifacts ------------------------------------------------
 
   /**
-   * Return the compiled function for one materialized artifact. Compilation
-   * happens on the first dispatch (never at engine creation) and a cached
-   * artifact is recompiled when its dependency chain changed.
+   * Return the state for one materialized artifact. Compilation happens on the
+   * first dispatch (never at engine creation) and a cached artifact is
+   * recompiled when its dependency chain changed. The state object is stable
+   * across recompiles, so an IC entry keeps pointing at the current function.
    */
-  #artifactFunction(artifact: ProviderArtifact): CompiledFn {
+  #artifactState(artifact: ProviderArtifact, providerIndex: number): ArtifactEntry {
     validateArtifact(artifact);
     let entry = this.#artifactEntries.get(artifact);
     if (entry === undefined) {
-      entry = this.#compileArtifact(artifact);
+      entry = this.#compileArtifact(artifact, providerIndex);
     } else if (this.#dependenciesChanged(entry)) {
       if (!this.#deepDependenciesValid(entry, new Set())) {
         entry = this.#recompileArtifact(entry, artifact);
       } else {
         entry.storageEpoch = this.#control.epoch;
         entry.providerEpoch = this.#setup.providers.cacheEpoch;
+        entry.validatedEpoch = this.#control.epoch;
       }
     }
     this.#helpers.fns[artifact.index] = entry.compiled.fn;
-    return entry.compiled.fn;
+    return entry;
   }
 
-  #compileArtifact(artifact: ProviderArtifact): ArtifactEntry {
-    const mir = lowerFunction(this.#lower, artifact.fn, artifact.index, artifact.name);
-    if (this.#tuning.verify) verifyMIR(mir, this.#lower);
-    const compiled = compileFunctionWithSource(mir, {
-      ...this.#env,
-      artifactDependencies: artifact.dependencies,
-    });
-    this.#compiledArtifacts += 1;
+  #compileArtifact(artifact: ProviderArtifact, providerIndex: number): ArtifactEntry {
+    const lowered = lowerFunction(this.#lower, artifact.fn, artifact.index, artifact.name);
+    if (this.#tuning.verify) verifyMIR(lowered, this.#lower);
+    const mir = runJitOptimizationPipeline(
+      lowered,
+      { memories: this.#setup.model.memories },
+      this.#lower,
+      {
+        passes: this.#tuning.optimizations,
+        verify: this.#tuning.verify,
+        observer: this.#setup.stepObserver !== undefined,
+        constants: this.#lower.constants,
+      },
+    );
+    // The state must exist before code generation: the checkpoint fast path
+    // embeds it as a constant. With `artifactWarmup > 0` the initial function
+    // is the heap-tier wrapper; it is replaced once the artifact is hot.
+    const placeholder: CompiledFunction = {
+      fn: () => {
+        throw new Error('JIT artifact state used before compilation finished');
+      },
+      source: '',
+      frame: { locations: [], stepsAfter: new Int32Array(0) },
+      structured: true,
+      fallback: undefined,
+      constants: [],
+    };
     const entry: ArtifactEntry = {
+      artifact,
+      key: artifact.key,
+      providerIndex,
       mir,
       providers: providerIndices(mir),
-      compiled,
+      compiled: placeholder,
+      tier1: undefined,
+      tier2: undefined,
+      warmup: undefined,
+      uses: 0,
+      heapOnly: false,
       dependencies: artifact.dependencies,
       storageEpoch: this.#control.epoch,
       providerEpoch: this.#setup.providers.cacheEpoch,
+      validatedEpoch: this.#control.epoch,
+      entries: 0,
+      region: undefined,
+      regionIndex: -1,
     };
     this.#artifactEntries.set(artifact, entry);
+    this.#artifactsByIndex.set(artifact.index, entry);
     this.#heapEntries.set(artifact.index, {
       fn: artifact.fn,
       functionIndex: artifact.index,
       artifact,
     });
     this.#registerEntry(entry, artifact);
+    if (this.#tuning.artifactWarmup > 0) {
+      entry.warmup = this.#artifactWarmupWrapper(entry);
+      entry.compiled = Object.freeze({ ...placeholder, fn: entry.warmup });
+    } else {
+      this.#compileArtifactTier(entry);
+    }
     return entry;
   }
 
-  #recompileArtifact(entry: ArtifactEntry, artifact: ProviderArtifact): ArtifactEntry {
-    this.#recompiledArtifacts += 1;
-    const compiled = compileFunctionWithSource(entry.mir, {
-      ...this.#env,
-      artifactDependencies: artifact.dependencies,
-    });
-    this.#compiledArtifacts += 1;
+  /** Heap-tier wrapper used until `artifactWarmup` runs have completed. */
+  #artifactWarmupWrapper(entry: ArtifactEntry): CompiledFn {
+    return (...args: unknown[]): unknown => {
+      if (entry.tier1 !== undefined || entry.tier2 !== undefined) {
+        return entry.compiled.fn(...args);
+      }
+      const heap = this.#heapEntries.get(entry.artifact.index);
+      if (heap === undefined) {
+        throw new Error(`JIT heap entry for artifact ${entry.artifact.index} is unavailable`);
+      }
+      const result = runHeapFunction(this.#setup, this.#runtime, heap, args, this.#heapOptions());
+      entry.uses += 1;
+      entry.entries = 0;
+      if (!entry.heapOnly && entry.uses >= this.#tuning.artifactWarmup) {
+        this.#tryCompileArtifact(entry);
+      }
+      if (entry.tier1 !== undefined || entry.tier2 !== undefined) {
+        this.#helpers.fns[entry.artifact.index] = entry.compiled.fn;
+      }
+      return result;
+    };
+  }
+
+  /** Compile an artifact at the tier selected by `tierUpThreshold`. */
+  #compileArtifactTier(entry: ArtifactEntry): void {
+    const tier2 = this.#tuning.tierUpThreshold === 0;
+    const compiled = this.#compileMIR(entry.mir, tier2, entry.dependencies, entry);
+    if (tier2) {
+      entry.tier2 = compiled;
+      this.#tier2Compilations += 1;
+    } else {
+      entry.tier1 = compiled;
+      this.#armTierCounter(entry.artifact.index);
+    }
     entry.compiled = compiled;
+    entry.warmup = undefined;
+    entry.entries = 0;
+    this.#helpers.fns[entry.artifact.index] = compiled.fn;
+    this.#compiledArtifacts += 1;
+  }
+
+  /** Warmup compilation is best effort: keep the heap tier when codegen is blocked. */
+  #tryCompileArtifact(entry: ArtifactEntry): void {
+    try {
+      this.#compileArtifactTier(entry);
+    } catch (cause) {
+      if (!(cause instanceof JitCodegenUnavailable)) throw cause;
+      entry.heapOnly = true;
+      entry.uses = 0;
+    }
+  }
+
+  #recompileArtifact(entry: ArtifactEntry, artifact: ProviderArtifact): ArtifactEntry {
+    // While an artifact is still warming there is no compiled code to refresh;
+    // keep the wrapper and update the epochs so the next dispatch is clean.
+    if (entry.tier1 === undefined && entry.tier2 === undefined) {
+      entry.dependencies = artifact.dependencies;
+      entry.storageEpoch = this.#control.epoch;
+      entry.providerEpoch = this.#setup.providers.cacheEpoch;
+      entry.validatedEpoch = this.#control.epoch;
+      return entry;
+    }
+    this.#recompiledArtifacts += 1;
+    const tier2 = entry.tier2 !== undefined || this.#tuning.tierUpThreshold === 0;
+    const compiled = this.#compileMIR(entry.mir, tier2, artifact.dependencies, entry);
+    entry.compiled = compiled;
+    if (tier2) {
+      entry.tier2 = compiled;
+      this.#tier2Compilations += 1;
+    } else {
+      entry.tier1 = compiled;
+      this.#armTierCounter(entry.artifact.index);
+    }
+    this.#compiledArtifacts += 1;
     entry.dependencies = artifact.dependencies;
     entry.storageEpoch = this.#control.epoch;
     entry.providerEpoch = this.#setup.providers.cacheEpoch;
+    entry.validatedEpoch = this.#control.epoch;
     return entry;
   }
 
@@ -619,6 +1051,49 @@ class JITInterpreter implements IRInterpreter {
       }
     }
     return true;
+  }
+
+  // --- Region compilation (J14) ------------------------------------------
+
+  /**
+   * Called once an artifact reaches {@link REGION_THRESHOLD} entries. The
+   * hottest dispatch chain rooted at it is compiled into a single JavaScript
+   * state machine; every member then routes through it in `runTail`.
+   */
+  #maybeFormRegion(state: ArtifactState): void {
+    if (!this.#tuning.regions || state.region !== undefined) return;
+    const info = this.#providerInfo[state.providerIndex];
+    if (info === undefined) return;
+    // Promoted locals are not namespaced per member yet; keeping such
+    // artifacts on the normal dispatch path is correctness-preserving.
+    if (state.mir.promotions.length > 0) {
+      state.entries = REGION_THRESHOLD + 1;
+      return;
+    }
+    const members = collectRegionMembers(state, this.#dispatch).filter(
+      (member) => member.mir.promotions.length === 0,
+    );
+    if (members.length === 0) return;
+    try {
+      const region = compileRegionWithSource(
+        members.map((member) => ({
+          state: member,
+          mir: member.mir,
+          key: member.key,
+          keyTypes: info.keyTypes,
+          providerIndex: member.providerIndex,
+          params: info.params,
+        })),
+        this.#env,
+      );
+      attachRegion(region);
+      this.#regions += 1;
+      this.#regionSource = region.source;
+    } catch {
+      // Keep normal dispatch. Moving past the threshold avoids recompiling a
+      // broken region on every subsequent entry.
+      state.entries = REGION_THRESHOLD + 1;
+    }
   }
 
   // --- Reference fallback ------------------------------------------------
@@ -661,6 +1136,8 @@ class JITInterpreter implements IRInterpreter {
       context: runtime.context,
       tailFn: runtime.tailFn,
       tailArgs: runtime.tailArgs,
+      tailState: runtime.tailState,
+      currentState: runtime.currentState,
       depth: runtime.depth,
       ret: runtime.ret.length === 0 ? undefined : [...runtime.ret],
     };
@@ -674,6 +1151,8 @@ class JITInterpreter implements IRInterpreter {
     runtime.context = saved.context;
     runtime.tailFn = saved.tailFn;
     runtime.tailArgs = saved.tailArgs;
+    runtime.tailState = saved.tailState;
+    runtime.currentState = saved.currentState;
     runtime.depth = saved.depth;
     runtime.ret.length = 0;
     if (saved.ret !== undefined) runtime.ret.push(...saved.ret);

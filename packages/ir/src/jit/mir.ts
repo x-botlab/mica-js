@@ -119,6 +119,16 @@ export enum Op {
   Check = 'check',
   /** Synthetic (step = 0) register spill writeback (J12). */
   Spill = 'spill',
+  /** Synthetic (step = 1) load replacement that forwards an already available value (J12). */
+  Forward = 'forward',
+  /** Promoted location read: the result is the promoted local (J12). */
+  PromoteLoad = 'promote.load',
+  /** Promoted location write: updates the local, keeping the suspended check (J12). */
+  PromoteStore = 'promote.store',
+  /** Synthetic (step = 0) reload of promoted locals after a barrier (J12). */
+  PromoteReload = 'promote.reload',
+  /** Synthetic (step = 0) loop-versioning range guard for bounds elimination (J12). */
+  BoundsGuard = 'bounds.guard',
 }
 
 /** Every valid opcode; used by the verifier. */
@@ -168,6 +178,12 @@ export interface MInst {
    * holds a frozen `FloatBits` object.
    */
   constRep?: 'D' | 'U';
+  /**
+   * Set by the bounds-elimination pass on an array/bytes access that the
+   * loop-versioning guard proved in range. Code generation then skips the
+   * bounds slow path; the original loop copy keeps it.
+   */
+  uncheckedBounds?: boolean;
 }
 
 /** One CFG edge with its block arguments. */
@@ -176,19 +192,24 @@ export interface MEdge {
   readonly args: readonly ValueId[];
 }
 
+/**
+ * Terminators account for one source step, except the synthetic jump that
+ * enters an inlined call body (J13); that jump has `step = 0` so the inlined
+ * call keeps the reference step count (call 1 + body + return 1).
+ */
 export type MTerm =
-  | { kind: 'jump'; target: number; args: ValueId[]; loc: LocId; step: 1 }
-  | { kind: 'branch'; cond: ValueId; yes: MEdge; no: MEdge; loc: LocId; step: 1 }
-  | { kind: 'return'; values: ValueId[]; loc: LocId; step: 1 }
+  | { kind: 'jump'; target: number; args: ValueId[]; loc: LocId; step: 0 | 1 }
+  | { kind: 'branch'; cond: ValueId; yes: MEdge; no: MEdge; loc: LocId; step: 0 | 1 }
+  | { kind: 'return'; values: ValueId[]; loc: LocId; step: 0 | 1 }
   | {
       kind: 'dispatch';
       provider: number;
       key: ValueId[];
       args: ValueId[];
       loc: LocId;
-      step: 1;
+      step: 0 | 1;
     }
-  | { kind: 'trap'; code: number; loc: LocId; step: 1 };
+  | { kind: 'trap'; code: number; loc: LocId; step: 0 | 1 };
 
 /** One basic block; `id` equals the source block index. */
 export interface MBlock {
@@ -202,14 +223,56 @@ export interface MBlock {
   succs: number[];
 }
 
+/**
+ * One virtual frame recorded for a location that was copied into a caller by
+ * the inlining pass (J13). It names the position in the callee's source and is
+ * parallel to {@link LocTable.locations}; `undefined` marks a location that
+ * belongs to the compiled function itself.
+ */
+export interface MInlineFrame {
+  readonly functionIndex: number;
+  readonly blockIndex: number;
+  readonly instructionIndex?: number;
+  readonly terminator?: true;
+}
+
 /** Per-item source locations; `stepsAfter` and `parent` are filled by later issues. */
 export interface LocTable {
   /** One frozen location per source instruction and per terminator, in source order. */
   readonly locations: readonly IRExecutionLocation[];
   /** Steps remaining in the current segment after this item; filled by J6. */
   readonly stepsAfter: Int32Array;
-  /** Inlining frame chain; -1 means no parent frame. Filled with -1 by J5/J13. */
+  /**
+   * Inlining frame chain; -1 means no parent frame. An inlined instruction's
+   * loc points at its own source position and `parent[loc]` points at the call
+   * site in the enclosing function, so errors can be expanded layer by layer.
+   */
   readonly parent: Int32Array;
+  /** Virtual frame for each location id, or `undefined` for the function's own code. */
+  readonly inlineFrames: readonly (MInlineFrame | undefined)[];
+}
+
+/**
+ * Block weights used by tier-2 (J13) to bias generated code layout. Higher
+ * values are executed more often according to the tier-1 profile.
+ */
+export interface LayoutProfile {
+  readonly blockWeights: ReadonlyMap<number, number>;
+}
+
+/**
+ * One storage location promoted to a local variable (J12).
+ *
+ * `memory` is a resolved model memory index and `index` is the constant array
+ * element, or `undefined` for a scalar `state` resource. The generated local
+ * names are derived from `id` (`p<id>` for the value, `p<id>d` for its dirty
+ * flag), so code generation never interpolates user text.
+ */
+export interface MPromotion {
+  readonly id: number;
+  readonly memory: number;
+  readonly index: number | undefined;
+  readonly type: ScalarType;
 }
 
 /** One lowered function or provider artifact. */
@@ -227,6 +290,14 @@ export interface MFunction {
   readonly locs: LocTable;
   /** Set by {@link import('./cfg').analyzeCFG}; optimistic until then. */
   reducible: boolean;
+  /** Storage locations promoted to locals; empty for an unoptimized function. */
+  promotions: MPromotion[];
+  /**
+   * True after the inlining pass copied at least one callee body into this
+   * function (J13). Source-block step checks no longer apply: a source block
+   * may have been split across the call site and its continuation.
+   */
+  inlined?: boolean;
 }
 
 const OP_BY_NAME: ReadonlyMap<string, Op> = (() => {
@@ -583,8 +654,12 @@ export function lowerFunction(
       locations: Object.freeze(locations),
       stepsAfter: new Int32Array(locations.length).fill(-1),
       parent: new Int32Array(locations.length).fill(-1),
+      inlineFrames: Object.freeze(
+        new Array<MInlineFrame | undefined>(locations.length).fill(undefined),
+      ),
     },
     reducible: true,
+    promotions: [],
   };
 }
 

@@ -18,10 +18,13 @@ import type {
 import type { IRModule, RuntimeScalar, ScalarType } from '../../types';
 import { compileFunctionWithSource } from '../codegen/compile';
 import type { CompileEnv, CompiledFunction } from '../codegen/compile';
+import { DispatchRegistry, providerDispatchInfo } from '../dispatch-ic';
+import type { ArtifactState } from '../dispatch-ic';
 import { computeSummaries } from '../effects';
 import { lowerFunction } from '../mir';
 import type { MFunction } from '../mir';
 import { createLowerContext } from '../resolve';
+import type { LowerContext } from '../resolve';
 import {
   JitRuntime,
   JitUnwind,
@@ -56,6 +59,17 @@ const DEFAULT_CONTEXT: IRExecutionContext = Object.freeze({
   virtualTime: 0,
 });
 
+/** Extra test-assembly controls; production wiring lives in `jit-runtime.ts`. */
+export interface CompileModuleExtra {
+  readonly forceSwitch?: boolean;
+  /**
+   * Optional MIR transform applied after lowering (and to provider artifacts)
+   * before summaries and compilation. The J12 tests use it to run the memory
+   * passes on the exact MIR that gets compiled.
+   */
+  readonly transform?: (fn: MFunction, lower: LowerContext) => MFunction;
+}
+
 /**
  * Compile every model function. Executor tables keep the declaration order of
  * `options.executors`, matching `createLowerContext` and `Helpers.executor`.
@@ -63,14 +77,16 @@ const DEFAULT_CONTEXT: IRExecutionContext = Object.freeze({
 export function compileModule(
   module: IRModule,
   options: IRInterpreterOptions,
-  extra: { readonly forceSwitch?: boolean } = {},
+  extra: CompileModuleExtra = {},
 ): CompiledModule {
   const setup = prepareEngine(module, options);
   const executorNames = [...(setup.executors?.keys() ?? [])];
   const lower = createLowerContext(setup.model, executorNames);
-  const mir = setup.model.functions.map((definition, index) =>
-    lowerFunction(lower, definition, index, definition.name),
-  );
+  const transform = extra.transform;
+  const mir = setup.model.functions.map((definition, index) => {
+    const lowered = lowerFunction(lower, definition, index, definition.name);
+    return transform === undefined ? lowered : transform(lowered, lower);
+  });
   const summaries = computeSummaries(mir);
 
   const runtimeOptions = {
@@ -83,22 +99,43 @@ export function compileModule(
   // Set immediately after the helpers exist; artifact compilation only happens
   // while executing, so the reference is always populated by then.
   const environment: { current: CompileEnv | undefined } = { current: undefined };
+  const providers = providerDispatchInfo(setup.model.providers);
+  const dispatch = new DispatchRegistry(providers);
+  const artifactStates = new Map<number, ArtifactState>();
   const helpers = createJitHelpers(setup, {
     // J7 compiles artifacts lazily; the test assembly does the same so that
     // `dispatch` and invalidated `checkpoint` transfers can be exercised.
-    artifact: (artifact) => {
-      const existing = helpers.fns[artifact.index];
+    artifact: (artifact, providerIndex) => {
+      const existing = artifactStates.get(artifact.index);
       if (existing !== undefined) return existing;
       const env = environment.current;
       if (env === undefined) throw new Error('JIT test assembly is not initialized');
-      const mfn = lowerFunction(lower, artifact.fn, artifact.index, artifact.name);
-      const compiledArtifact = compileFunctionWithSource(mfn, {
+      const loweredArtifact = lowerFunction(lower, artifact.fn, artifact.index, artifact.name);
+      const mfn = transform === undefined ? loweredArtifact : transform(loweredArtifact, lower);
+      const state: ArtifactState = {
+        artifact,
+        key: artifact.key,
+        providerIndex,
+        mir: mfn,
+        compiled: { fn: () => undefined },
+        dependencies: artifact.dependencies,
+        storageEpoch: 0,
+        providerEpoch: 0,
+        validatedEpoch: -1,
+        entries: 0,
+        region: undefined,
+        regionIndex: -1,
+      };
+      state.compiled = compileFunctionWithSource(mfn, {
         ...env,
         artifactDependencies: artifact.dependencies,
+        artifactState: state,
       });
-      helpers.fns[artifact.index] = compiledArtifact.fn;
-      return compiledArtifact.fn;
+      artifactStates.set(artifact.index, state);
+      helpers.fns[artifact.index] = state.compiled.fn;
+      return state;
     },
+    dispatch,
   });
   const compileEnv: CompileEnv = {
     rt: runtime,
@@ -107,6 +144,7 @@ export function compileModule(
     memoryRefs: setup.model.memories.map((memory) => memory.ref),
     littleEndian: storageInternalsOf(setup.storage).littleEndianHost,
     summaries,
+    providers,
     ...(extra.forceSwitch === undefined ? {} : { forceSwitch: extra.forceSwitch }),
   };
   environment.current = compileEnv;

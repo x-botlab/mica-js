@@ -50,6 +50,15 @@ export const PARITY_CONFIGS: readonly ParityConfig[] = Object.freeze([
   jitConfig('jit-heap', { tier: 'heap' }),
   jitConfig('jit', { tier: 'compiled', warmup: 'lazy' }),
   jitConfig('jit-default', {}),
+  // Tier-2 immediately (inline + biased layout) and on the first hot call.
+  jitConfig('jit-tier2', { tier: 'compiled', tierUpThreshold: 0 }),
+  jitConfig('jit-hot', { tier: 'compiled', tierUpThreshold: 1 }),
+  // The same pipeline with inlining disabled: the pass switch is observable.
+  jitConfig('jit-tier2-no-inline', {
+    tier: 'compiled',
+    tierUpThreshold: 0,
+    optimizations: { inline: false },
+  }),
 ]);
 
 export interface FailureCauseRecord {

@@ -16,7 +16,21 @@ import { randomProgram } from './testing/random-ir';
  * Canonical switch names. `satisfies` makes the list fail to typecheck as soon
  * as a new pass is added to `IRJITOptimization` without being listed here.
  */
-export const OPTIMIZATION_PASSES = [] as const satisfies readonly IRJITOptimization[];
+export const OPTIMIZATION_PASSES = [
+  'sccp',
+  'gvn',
+  'range',
+  'licm',
+  'dce',
+  'loadElim',
+  'scalarPromotion',
+  'boundsElim',
+  'dispatchIC',
+  'checkpointFast',
+  'regions',
+  'region-compile',
+  'inline',
+] as const satisfies readonly IRJITOptimization[];
 
 type MissingOptimization = Exclude<IRJITOptimization, (typeof OPTIMIZATION_PASSES)[number]>;
 
@@ -41,15 +55,22 @@ function allDisabled(
 }
 
 export const PASS_MATRIX_ROWS: readonly PassMatrixRow[] = Object.freeze([
-  { name: 'default', tuning: { tier: 'compiled' } },
+  // `tierUpThreshold: 0` compiles Tier-2 immediately; without it the inline
+  // switch would never be observable because the first call is Tier-1.
+  { name: 'default', tuning: { tier: 'compiled', tierUpThreshold: 0 } },
   {
     name: 'all-disabled',
-    tuning: { tier: 'compiled', optimizations: allDisabled(OPTIMIZATION_PASSES) },
+    tuning: {
+      tier: 'compiled',
+      tierUpThreshold: 0,
+      optimizations: allDisabled(OPTIMIZATION_PASSES),
+    },
   },
   ...OPTIMIZATION_PASSES.map((pass) => ({
     name: `without-${pass}`,
     tuning: {
       tier: 'compiled' as const,
+      tierUpThreshold: 0,
       optimizations: allDisabled([pass]),
     },
   })),

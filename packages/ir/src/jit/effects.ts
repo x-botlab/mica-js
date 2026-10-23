@@ -106,8 +106,20 @@ const HOST_TRANSFER = info({
 });
 /** Synthetic checks may throw; J11 refines this once the check kind is known. */
 const CHECK = info({ throws: true });
-/** Register spill writeback is not observable storage. */
+/**
+ * Register spill writeback is not observable storage from the MIR effect
+ * model's point of view (it has no results and never throws); DCE keeps it
+ * explicitly because it is a real write.
+ */
 const SPILL = info({});
+/** Promoted-location reads come from a local (J12). */
+const PROMOTE_LOAD = info({ reads: [Effect.ScalarRead] });
+/** Promoted stores can only throw through the suspended slow path (J12). */
+const PROMOTE_STORE = info({ throws: true });
+/** Barriers reload promoted locals from the backing view (J12). */
+const PROMOTE_RELOAD = info({ reads: [Effect.ScalarRead] });
+/** The loop-versioning guard is pure and cannot throw (J12). */
+const BOUNDS_GUARD = info({});
 
 /** Static effect table. */
 export const EFFECT_INFO: Readonly<Record<Op, EffectInfo>> = {
@@ -165,6 +177,11 @@ export const EFFECT_INFO: Readonly<Record<Op, EffectInfo>> = {
   [Op.Executor]: HOST,
   [Op.Check]: CHECK,
   [Op.Spill]: SPILL,
+  [Op.Forward]: PURE,
+  [Op.PromoteLoad]: PROMOTE_LOAD,
+  [Op.PromoteStore]: PROMOTE_STORE,
+  [Op.PromoteReload]: PROMOTE_RELOAD,
+  [Op.BoundsGuard]: BOUNDS_GUARD,
 };
 
 const ALL_EFFECTS: readonly Effect[] = HOST_TRANSFER.effects;

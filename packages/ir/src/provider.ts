@@ -41,6 +41,13 @@ export interface ProviderArtifact {
   readonly name: string;
   readonly index: number;
   readonly dependencies: readonly IRResourceDependency[];
+  /**
+   * Normalized key values that produced this artifact (J14 dispatch IC).
+   * Floats are already canonical (`toNumber(fromNumber(...))`).
+   */
+  readonly key: readonly (boolean | number)[];
+  /** Canonical key id used as the provider-cache key (`normalizeKey(...).id`). */
+  readonly keyId: string;
 }
 
 export interface ProviderRuntimeOptions {
@@ -212,6 +219,8 @@ class ProviderRuntimeImpl implements ProviderRuntime {
       name,
       index: this.#model.functions.length + this.#generated++,
       dependencies,
+      key: key.values,
+      keyId: key.id,
     });
   }
 

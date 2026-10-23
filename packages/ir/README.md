@@ -475,20 +475,56 @@ runtime.execute(increment, [3], { instanceId: 'counter', virtualTime: 1000 });
 `createIRJIT(module, options)` 与 `createIRInterpreter` 使用相同的 `IRInterpreterOptions` 与 `IRInterpreter` 接口（`storage` + `execute`），返回对象同样被冻结。创建流程先调用共享的 `prepareEngine`，因此非法选项、校验诊断、未实现指令等错误与参考解释器完全一致。
 
 - **等价契约**：同一目标与实参下，`execute` 的 `values`、`steps`、`IRExecutionError` 的 `code`/`message`/`location`/`callStack`/`steps`/`diagnostics` 与参考解释器逐项相同；效果提交与 faulted 语义也相同。
-- **懒编译**：创建期只做快照、校验与 MIR 降级，不调用 `new Function`。模型函数在第一次被调用时编译并替换 `H.fns` 槽；Provider 产物在第一次 `dispatch` / checkpoint 恢复触发 `materialize` 时编译。`warmup: 'eager'` 会在创建期编译全部模型函数，Provider 产物仍在首次派发时编译。
+- **懒编译**：创建期只做快照、校验与 MIR 降级，不调用 `new Function`。模型函数在第一次被调用时编译并替换 `H.fns` 槽；Provider 产物在堆帧层预热 `artifactWarmup` 次后编译。`warmup: 'eager'` 会在创建期编译全部模型函数，Provider 产物仍在首次派发时开始预热。
+- **分层重编译（Tier-1 → Tier-2）**：`tierUpThreshold > 0` 时首次编译只产出 Tier-1（不含内联）。每个函数序言与堆帧层都会为调用计数；达到阈值后同步编译 Tier-2（内联 + 按剖析/循环深度偏置的块布局）并替换 `H.fns[i]`。当前正在执行的 Tier-1 激活继续跑完（没有 OSR），之后的调用进入 Tier-2。`tierUpThreshold: 0` 表示首次编译直接产出 Tier-2；`optimizations.inline: false` 可关闭内联。
+- **内联（`inline`）**：只内联非递归（不同调用图 SCC）、摘要 `hasTransfer = false`（无 `dispatch` / checkpoint 恢复）且 MIR 指令数 ≤ 120 的被调函数；内联后函数不超过「原大小 × 4 + 200」，嵌套深度 ≤ 4。调用点优先按 Tier-1 热度、再按静态循环深度、最后按被调函数大小选取。
+- **虚拟帧**：内联进来的位置保留被调函数的位置对象，并记录 `locs.parent` 与 `locs.inlineFrames`。错误展开时沿父链逐层生成 `callStack`，`location`、`steps` 与未内联的参考解释器完全一致；`stepsAfter` 仍按调用者的步段计算。
 - **尾派发**：`dispatch` 与失效 checkpoint 通过 `TAIL` 哨兵和 `rt.runTail()` 蹦床执行，派发链不增长 JS 栈；产物以 `artifact.index` / `artifact.name` 降级，因此错误位置与调用栈和参考一致。
-- **依赖与重编译**：产物按对象身份缓存编译结果；每次派发先校验该产物的依赖 token，并递归检查它可能调用到的 Provider 产物链（深层依赖）。依赖失效时重新生成产物并编译新产物。
+- **依赖与重编译**：产物按对象身份缓存编译结果；每次派发先校验该产物的依赖 token，并递归检查它可能调用到的 Provider 产物链（深层依赖）。依赖失效时重新生成产物并编译新产物，已升级的产物保持 Tier-2 重编译。
 - **计步**：`maxSteps`、`stepObserver`、`stepBudget` 与参考解释器语义相同；预算模式下会在宿主边界与执行结束时合并提交已开始的步骤。
 - **CSP 回落**：创建时探测 `new Function`。`codegen: 'auto'`（默认）在不可用时静默返回共享同一 `storage` 的参考解释器；`codegen: 'require'` 以 `invalid-options` / `JIT code generation is unavailable in this environment` 拒绝。创建后懒编译若失败，后续执行也回落到参考解释器。
 - **`IRJITTuning`**：
   - `tier`：`'auto'`（默认）、`'heap'`（只用参考解释器）、`'compiled'`；
   - `codegen`：`'auto'`（默认）、`'require'`；
   - `warmup`：`'lazy'`（默认）、`'eager'`；
-  - `artifactWarmup`：非负安全整数，默认 1；本引擎在首次派发时编译产物；
+  - `artifactWarmup`：非负安全整数，默认 1；产物先在堆帧层执行该次数，然后编译（`0` 表示首次派发即编译）；
+  - `tierUpThreshold`：非负安全整数，默认 1000；Tier-1 调用计数达到该值后重编译为 Tier-2，`0` 表示首次编译即 Tier-2；
   - `maxCompiledDepth`：正安全整数，默认 1000；超过时以新的编译段继续执行；
-  - `optimizations`：优化开关（当前无已定义名称，传入未知键报 `invalid-options`）；
+  - `optimizations`：`inline`（默认开启）；传入未知键报 `invalid-options`；
   - `debug.verify`：降级后运行 MIR verifier，默认 `false`。
+- **已知限制**：没有 OSR；只运行一次的长循环函数不会在运行中升级到 Tier-2。DBT 负载的产物会被反复执行，不受影响。
 - 推荐把 JIT 与 `stepBudget` 一起使用：批量计步让宿主以更少的回调完成同等预算核算，同时保留 `maxSteps` 的安全上限。
+
+## 性能基准（#150）
+
+`packages/ir/bench/m3.bench.ts` 是 M3 类客体 DBT 的吞吐基准，结构与 device 包 teaching-mcu 的写法一致：
+
+- 16 × `u32` 客体寄存器、`n`/`z`/`c`/`v` 四个标志位与 256 KiB 字节内存；
+- `blocks` Provider 按客体 `pc` 从只读 flash 解码基本块（每块 8 条指令），启动时预生成 16 个块；
+- 每个块以 `dispatch blocks(nextPc)` 尾派发到下一块，形成客体循环；
+- 块内把已执行指令数累加到 `cycles`，达到 `sliceEnd` 后写回 `pc`、调用 `event.at(step, …)` 并返回宿主（teaching-mcu 式的批量事件）；
+- 基准测量**客体指令/秒**：`M inst/s = ops/sec × (每条 op 的客体指令数 / 1_000_000)`。
+
+```bash
+pnpm --filter @mica-js/ir bench
+```
+
+JIT 条目使用当前默认配置的 `createIRJIT`（`jit-default`），参考解释器作为对照。JIT 每条 op 执行 1,024,000 条客体指令（128 条/圈的客体环 × 8,000 圈）；参考解释器每条 op 执行 1,024 条（8 圈），因此两者的 `ops/sec` 不能直接比较，需先换算为 M inst/s。
+
+### 基线结果
+
+记录环境：Node v24.18.0；AMD Ryzen 5 5600G（6C/12T，最高 3.9 GHz）；Windows x64；2026-10-23。
+
+| 引擎          | ops/sec | 客体指令/op | M inst/s |
+| ------------- | ------: | ----------: | -------: |
+| `jit-default` |   21.54 |   1,024,000 |    22.06 |
+| `reference`   |   89.88 |       1,024 |    0.092 |
+
+`jit-default` 约为参考解释器的 240 倍，达到 ≥ 72 M inst/s 目标的 30.6%。该基线使用当前默认配置（含 Tier-1/Tier-2 与 Provider 快路径）；#151–#154 的后续优化仍以同一命令、同一负载复测。72 MHz 目标（≥ 72M 客体指令/秒）在 #154 验收。
+
+基准会额外打印 `target` 行，给出 `jit-default` 相对 ≥ 72 M inst/s 目标的达成比例。由于同一台宿主可能同时运行其他任务，连续复测中 `jit-default` 落在 10.6–25.1 M inst/s、`reference` 落在 0.026–0.103 M inst/s，两者比值维持在 230–291 倍；绝对吞吐受宿主负载影响，比较优化收益时务必使用相同的命令、Node 版本与环境。
+
+> Vitest 5 默认通过 Vite module runner 运行源码，跨模块导出访问会带来少量 getter 开销，运行时可能打印 `Benchmark Warning`。两个引擎在同一进程、同一模块图下测量，比值仍然可比；做优化前后对比时请使用相同命令、Node 版本与环境。
 
 ## 版本化资源更新
 
@@ -574,7 +610,7 @@ type IRResourceDependency = {
 
 - 事件队列/调度器、输出队列/话题路由/通知时机与 JS 作者侧 `api.updateBytes` 请求队列；核心 event 与 bridge 指令只通过上述可信宿主桥接。
 - 运行中恢复仅限合法产物 checkpoint 的尾派发，不支持失败入口中途恢复、跨进程/跨实例迁移或持久化快照。
-- JIT 目前不包含 J11–J14 的优化 pass；`optimizations` 尚未定义任何名称。
+- JIT 的 `optimizations` 目前提供 `inline`；Tier-2 仅在内联 + 偏置布局层面生效，尚无 OSR。
 - 尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。
 
 ## 开发
@@ -582,6 +618,7 @@ type IRResourceDependency = {
 ```bash
 pnpm --filter @mica-js/ir test        # 模型、建图、校验、标量、存储、解释器、JIT 与资源更新
 pnpm --filter @mica-js/ir typecheck   # 含 builder / storage / interpreter 正反类型用例
+pnpm --filter @mica-js/ir bench       # M3 类 DBT 吞吐基准（不进 CI）
 pnpm --filter @mica-js/ir build
 ```
 

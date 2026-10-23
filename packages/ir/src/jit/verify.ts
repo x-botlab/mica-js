@@ -13,7 +13,7 @@
  * - locations: non-synthetic instructions point at their source position.
  */
 import { isFloatType, isIntegerType, isNumericType, isSignedIntegerType } from '../runtime';
-import type { ScalarType } from '../types';
+import type { FunctionDefinition, ScalarType } from '../types';
 import { buildCFG, computeDominators, dominates } from './cfg';
 import { Op, OP_VALUES } from './mir';
 import type { MBlock, MFunction, MInst, MTerm, ValueId } from './mir';
@@ -28,6 +28,11 @@ const INTEGER_WIDTH: Readonly<Record<string, number>> = {
   u32: 32,
   i32: 32,
 };
+
+/** Synthetic instructions that carry no source step and may omit `node`. */
+function isSyntheticZeroStep(op: Op): boolean {
+  return op === Op.Spill || op === Op.PromoteReload || op === Op.BoundsGuard;
+}
 
 interface Definition {
   readonly block: MBlock;
@@ -131,33 +136,47 @@ class Verifier {
     if (this.fn.blocks[0]!.id !== 0) {
       this.fail('the first MIR block must be the entry block');
     }
-    body.blocks.forEach((_source, index) => {
-      if (this.blockById.get(index) === undefined) {
-        this.fail(`source block ${index} has no MIR block`);
-      }
-    });
+    // Later passes may delete unreachable source blocks (SCCP/DCE), so a
+    // source block without a MIR counterpart is not an error.
     const locations = this.fn.locs.locations;
-    this.fn.blocks.forEach((block) => {
-      const source = body.blocks[block.id];
-      if (source === undefined) {
-        // Blocks inserted by later passes carry no source steps (LICM preheaders).
+    // Inlining (J13) splits a source block at the call site and appends copied
+    // callee blocks, so the one-block-per-source-block step identity no longer
+    // holds. `assertStepInvariant` is skipped for the same reason; parity tests
+    // check the observable step count instead.
+    if (this.fn.inlined !== true) {
+      this.fn.blocks.forEach((block) => {
+        const source = body.blocks[block.id];
+        if (source === undefined) {
+          // Blocks inserted by later passes carry no source steps (LICM preheaders).
+          return;
+        }
+        if (block.term === undefined) {
+          this.fail(`b${block.id} has no terminator`);
+          return;
+        }
+        let steps = block.term.step;
+        for (const inst of block.insts) steps += inst.step;
+        if (steps !== source.instructions.length + 1) {
+          this.fail(
+            `b${block.id} accounts for ${steps} steps but its source has ${
+              source.instructions.length + 1
+            }`,
+          );
+        }
+      });
+    }
+    locations.forEach((location, locId) => {
+      if (this.fn.locs.inlineFrames[locId] !== undefined) {
+        // Copied callee code: resolve the location against its own function.
+        const source = this.sourceFunction(location.functionIndex);
+        const sourceBlock = source?.body?.blocks[location.blockIndex];
+        if (sourceBlock === undefined || sourceBlock.id !== location.blockId) {
+          this.fail(
+            `inlined location for b${location.blockIndex} does not describe its source function`,
+          );
+        }
         return;
       }
-      if (block.term === undefined) {
-        this.fail(`b${block.id} has no terminator`);
-        return;
-      }
-      let steps = block.term.step;
-      for (const inst of block.insts) steps += inst.step;
-      if (steps !== source.instructions.length + 1) {
-        this.fail(
-          `b${block.id} accounts for ${steps} steps but its source has ${
-            source.instructions.length + 1
-          }`,
-        );
-      }
-    });
-    for (const location of locations) {
       const sourceBlock = body.blocks[location.blockIndex];
       if (
         sourceBlock === undefined ||
@@ -166,7 +185,13 @@ class Verifier {
       ) {
         this.fail(`location for b${location.blockIndex} does not describe this function's source`);
       }
-    }
+    });
+  }
+
+  /** Source definition named by a location (artifact indices are the function itself). */
+  private sourceFunction(functionIndex: number): FunctionDefinition | undefined {
+    if (functionIndex === this.fn.functionIndex) return this.fn.source;
+    return this.context?.model.functions[functionIndex];
   }
 
   checkBlocks(): void {
@@ -185,9 +210,13 @@ class Verifier {
     } else {
       const location = this.fn.locs.locations[block.term.loc]!;
       const source = this.fn.source.body?.blocks[block.id];
+      // The synthetic jump that enters an inlined body is tied to the call
+      // instruction (step 0), not to a source terminator.
+      const inlineEntry =
+        block.term.kind === 'jump' && block.term.step === 0 && this.fn.inlined === true;
       if (
-        location.terminator !== true ||
-        (source !== undefined && location.blockIndex !== block.id)
+        (location.terminator !== true && !inlineEntry) ||
+        (this.fn.inlined !== true && source !== undefined && location.blockIndex !== block.id)
       ) {
         this.fail(`b${block.id} terminator loc does not point at its source terminator`);
       }
@@ -270,9 +299,16 @@ class Verifier {
       this.fail(`b${block.id} ${inst.op} loc ${inst.loc} is out of range`);
     } else if (inst.node !== undefined) {
       const location = this.fn.locs.locations[inst.loc]!;
-      const sourceBlock = this.fn.source.body?.blocks[location.blockIndex];
+      const inlined = this.fn.locs.inlineFrames[inst.loc] !== undefined;
+      // Inlined instructions keep the callee's source location (and its
+      // functionIndex); everything else must point at this function's source.
+      if (!inlined && location.functionIndex !== this.fn.functionIndex) {
+        this.fail(`b${block.id} ${inst.op} loc does not point at its source instruction`);
+        return;
+      }
+      const source = this.sourceFunction(location.functionIndex);
+      const sourceBlock = source?.body?.blocks[location.blockIndex];
       if (
-        location.functionIndex !== this.fn.functionIndex ||
         location.instructionIndex === undefined ||
         sourceBlock === undefined ||
         sourceBlock.id !== location.blockId ||
@@ -281,12 +317,21 @@ class Verifier {
         this.fail(`b${block.id} ${inst.op} loc does not point at its source instruction`);
       }
     }
-    if (inst.op !== Op.Check && inst.op !== Op.Spill) {
-      if (inst.node === undefined) this.fail(`b${block.id} ${inst.op} has no source node`);
-      if (inst.step !== 1) this.fail(`b${block.id} ${inst.op} must account for one step`);
+    const synthetic = isSyntheticZeroStep(inst.op);
+    const inserted = this.fn.source.body?.blocks[block.id] === undefined;
+    // S-1 is checked per block by `checkStructure`: a pass may move a step
+    // between instructions (LICM hoists with step 0 and leaves Check(none) at
+    // the original position) as long as the block total stays exact.
+    if (inst.op !== Op.Check && !synthetic) {
+      if (inst.node === undefined && !inserted) {
+        this.fail(`b${block.id} ${inst.op} has no source node`);
+      }
+      if (inst.step !== 0 && inst.step !== 1) {
+        this.fail(`b${block.id} ${inst.op} must account for zero or one step`);
+      }
     }
-    if (inst.op === Op.Spill && inst.step !== 0) {
-      this.fail('spill must not account for a source step');
+    if (synthetic && inst.step !== 0) {
+      this.fail(`${inst.op} must not account for a source step`);
     }
     this.checkOpTypes(inst);
   }
@@ -590,7 +635,89 @@ class Verifier {
       case Op.Check:
       case Op.Spill:
         if (!this.expectResults(inst, [])) return;
+        if (inst.op === Op.Spill) this.checkPromotionRefs(inst);
         return;
+      case Op.Forward: {
+        if (!this.expectArgs(inst, 1)) return;
+        const source = this.type(inst.args[0]!);
+        if (source === undefined) return;
+        this.expectResults(inst, [source]);
+        return;
+      }
+      case Op.PromoteLoad: {
+        if (!this.expectArgs(inst, 0)) return;
+        const promotion = this.promotionAt(inst, 0);
+        if (promotion === undefined) return;
+        this.expectResults(inst, [promotion.type]);
+        return;
+      }
+      case Op.PromoteStore: {
+        if (!this.expectResults(inst, [])) return;
+        if (!this.expectArgs(inst, 1)) return;
+        const promotion = this.promotionAt(inst, 0);
+        if (promotion !== undefined) this.expectArgType(inst, 0, promotion.type);
+        return;
+      }
+      case Op.PromoteReload:
+        if (!this.expectArgs(inst, 0) || !this.expectResults(inst, [])) return;
+        this.checkPromotionRefs(inst);
+        return;
+      case Op.BoundsGuard: {
+        if (!this.expectArgs(inst, 2) || !this.expectResults(inst, ['bool'])) return;
+        this.expectArgType(inst, 0, 'u32');
+        this.expectArgType(inst, 1, 'u32');
+        if (inst.imm.length !== 2 + 3 * inst.refs.length) {
+          this.fail('bounds.guard descriptor length does not match its memory list');
+          return;
+        }
+        for (const value of inst.imm) {
+          if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+            this.fail('bounds.guard descriptors must be safe integers');
+            return;
+          }
+        }
+        if (inst.imm[0] !== 0 && inst.imm[0] !== 1) {
+          this.fail('bounds.guard relation must be 0 (lt) or 1 (le)');
+        }
+        if ((inst.imm[1] as number) <= 0) this.fail('bounds.guard stride must be positive');
+        inst.refs.forEach((memory) => this.checkMemoryIndex(memory, ['array', 'bytes', 'inbox']));
+        return;
+      }
+    }
+  }
+
+  private promotionAt(inst: MInst, index: number) {
+    const id = inst.refs[index];
+    if (id === undefined) {
+      this.fail(`${inst.op} is missing promotion index ${index}`);
+      return undefined;
+    }
+    const promotion = this.fn.promotions[id];
+    if (promotion === undefined || promotion.id !== id) {
+      this.fail(`${inst.op} references unknown promotion ${id}`);
+      return undefined;
+    }
+    return promotion;
+  }
+
+  private checkPromotionRefs(inst: MInst): void {
+    for (const id of inst.refs) {
+      const promotion = this.fn.promotions[id];
+      if (promotion === undefined || promotion.id !== id) {
+        this.fail(`${inst.op} references unknown promotion ${id}`);
+      }
+    }
+  }
+
+  private checkMemoryIndex(index: number, kinds: readonly string[]): void {
+    if (this.context === undefined) return;
+    const memory = this.context.model.memories[index];
+    if (memory === undefined) {
+      this.fail(`memory index ${index} is not in the model`);
+      return;
+    }
+    if (!kinds.includes(memory.kind)) {
+      this.fail(`memory ${index} must be one of ${kinds.join('/')}`);
     }
   }
 
@@ -862,8 +989,16 @@ export function verifyMIR(fn: MFunction, context?: LowerContext): void {
   }
 }
 
-/** Throwing S-1 check used by debug builds and by every pass test. */
+/**
+ * Throwing S-1 check used by debug builds and by every pass test.
+ *
+ * Inlined functions are skipped: a source block is split at each call site and
+ * the callee's own blocks are appended, so per-block source counts no longer
+ * exist. The invariant that matters (a path's total steps match the reference)
+ * is covered by the parity suite and `passes/inline.test.ts`.
+ */
 export function assertStepInvariant(fn: MFunction): void {
+  if (fn.inlined === true) return;
   const body = fn.source.body;
   if (body === undefined) throw new Error('MIR verification failed: source function has no body');
   for (const block of fn.blocks) {

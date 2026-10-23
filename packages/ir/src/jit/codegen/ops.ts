@@ -14,7 +14,7 @@
 import { isFloatType } from '../../runtime';
 import type { NumericType, ScalarType } from '../../types';
 import { Op } from '../mir';
-import type { MFunction, MInst, Rep, ValueId } from '../mir';
+import type { MFunction, MInst, MPromotion, Rep, ValueId } from '../mir';
 
 /** Constant pool shared by all generated functions of one module. */
 export class ConstantPool {
@@ -73,6 +73,41 @@ export interface OpsContext {
   readonly depthName: string;
   /** Artifact dependency set, when compiling a provider artifact. */
   readonly artifactDependencies: readonly unknown[] | undefined;
+  /** Checkpoint epoch guard (J14); false keeps the baseline validate path. */
+  readonly checkpointFast: boolean;
+  /** Constant name of the artifact state (`ST`), when compiling an artifact. */
+  artifactStateName(): string | undefined;
+  /** Promoted-location descriptor by id. */
+  promotion(id: number): MPromotion;
+  /**
+   * Region-wide promoted state location for `memory` (J14). Returned names are
+   * shared by every member of the region, so state loads/stores become local
+   * reads/writes and values stay live across block boundaries.
+   */
+  readonly regionPromotion: ((memory: number) => RegionPromotionNames | undefined) | undefined;
+}
+
+/** Generated names of one region-wide promotion. */
+export interface RegionPromotionNames {
+  readonly local: string;
+  readonly dirty: string;
+  readonly type: ScalarType;
+}
+
+/** The subset of {@link OpsContext} needed for promotion spill/reload snippets. */
+export interface PromotionContext {
+  readonly le: boolean;
+  line(text: string): void;
+  resource(index: number): string;
+  constant(value: unknown): string;
+  memory(index: number): unknown;
+  value(id: ValueId): string;
+  numeric(id: ValueId): string;
+  boundary(id: ValueId): string;
+  readonly typeOf: (id: ValueId) => ScalarType;
+  readonly repOf: (id: ValueId) => Rep;
+  promotion(id: number): MPromotion;
+  /** Append a line at the given absolute prefix (used inside the catch block). */
 }
 
 const INTEGER_WIDTH: Readonly<Record<string, number>> = {
@@ -117,6 +152,19 @@ function widthOf(type: ScalarType): number {
   return INTEGER_WIDTH[type as string] ?? 0;
 }
 
+/**
+ * J11 range hints are appended to `imm`; unknown markers are ignored. When a
+ * marker is absent the template is byte-identical to the baseline.
+ */
+function hasMarker(inst: MInst, marker: string): boolean {
+  return inst.imm.some((value) => value === marker);
+}
+
+/** Wrap an expression, or keep `| 0` when `nowrap` proved the range. */
+function wrapResult(inst: MInst, type: ScalarType, expression: string): string {
+  return hasMarker(inst, 'nowrap') ? `((${expression}) | 0)` : wrap(type, expression);
+}
+
 function mask(bits: number): string {
   return bits >= 32 ? '0xffffffff' : String(2 ** bits - 1);
 }
@@ -151,8 +199,8 @@ function assignment(context: OpsContext, result: ValueId, expression: string): v
 }
 
 /** Load from a pre-fetched scalar record. */
-function fastScalarLoad(
-  context: OpsContext,
+export function fastScalarLoad(
+  context: PromotionContext,
   record: string,
   index: string,
   type: ScalarType,
@@ -182,6 +230,33 @@ function fastScalarLoad(
     default:
       return `${record}.data.${dataViewGetter(type)}(${offset}, true)`;
   }
+}
+
+/**
+ * Emit the fast-path write of one scalar into `record` slot 0 (J14 region
+ * promotions reuse the exact same representation rules as `state.store`).
+ */
+export function emitFastStateWrite(
+  context: OpsContext,
+  record: string,
+  valueType: ScalarType,
+  value: string,
+): void {
+  if (context.le) {
+    if (valueType === 'f32') {
+      context.line(`  ${record}.raw[0] = H.raw32(${value});`);
+    } else if (valueType === 'f64') {
+      context.line(`  H.raw64(${value}, H.scratch);`);
+      context.line(`  ${record}.raw[0] = H.scratch[0];`);
+      context.line(`  ${record}.raw[1] = H.scratch[1];`);
+    } else if (valueType === 'bool') {
+      context.line(`  ${record}.view[0] = ${value} ? 1 : 0;`);
+    } else {
+      context.line(`  ${record}.view[0] = ${value};`);
+    }
+    return;
+  }
+  writeDataView(context, record, '0', valueType, value);
 }
 
 function dataViewGetter(type: ScalarType): string {
@@ -274,13 +349,13 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       assignment(context, results[0]!, `${arg(0)} !== ${arg(1)}`);
       return;
     case Op.IntAdd:
-      assignment(context, results[0]!, wrap(type, `${arg(0)} + ${arg(1)}`));
+      assignment(context, results[0]!, wrapResult(inst, type, `${arg(0)} + ${arg(1)}`));
       return;
     case Op.IntSub:
-      assignment(context, results[0]!, wrap(type, `${arg(0)} - ${arg(1)}`));
+      assignment(context, results[0]!, wrapResult(inst, type, `${arg(0)} - ${arg(1)}`));
       return;
     case Op.IntMul:
-      assignment(context, results[0]!, wrap(type, `Math.imul(${arg(0)}, ${arg(1)})`));
+      assignment(context, results[0]!, wrapResult(inst, type, `Math.imul(${arg(0)}, ${arg(1)})`));
       return;
     case Op.IntDiv: {
       const node = context.constant(inst.node!);
@@ -289,16 +364,21 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
         type === 'u32'
           ? `((${arg(0)} / ${arg(1)}) >>> 0)`
           : wrap(type, `(${arg(0)} / ${arg(1)}) | 0`);
-      assignment(context, results[0]!, `${arg(1)} === 0 ? ${fail} : ${quotient}`);
+      assignment(
+        context,
+        results[0]!,
+        hasMarker(inst, 'nozero') ? quotient : `${arg(1)} === 0 ? ${fail} : ${quotient}`,
+      );
       return;
     }
     case Op.IntRem: {
       const node = context.constant(inst.node!);
       const fail = `H.scalar(${node}, [${arg(0)}, ${arg(1)}])`;
+      const remainder = wrap(type, `${arg(0)} % ${arg(1)}`);
       assignment(
         context,
         results[0]!,
-        `${arg(1)} === 0 ? ${fail} : ${wrap(type, `${arg(0)} % ${arg(1)}`)}`,
+        hasMarker(inst, 'nozero') ? remainder : `${arg(1)} === 0 ? ${fail} : ${remainder}`,
       );
       return;
     }
@@ -316,10 +396,11 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       return;
     case Op.IntShl: {
       const width = widthOf(type);
+      const shift = wrap(type, `${arg(0)} << ${arg(1)}`);
       assignment(
         context,
         results[0]!,
-        `${arg(1)} >= ${width} ? 0 : ${wrap(type, `${arg(0)} << ${arg(1)}`)}`,
+        hasMarker(inst, 'inrange') ? shift : `${arg(1)} >= ${width} ? 0 : ${shift}`,
       );
       return;
     }
@@ -329,15 +410,22 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
         type === 'u32'
           ? `${arg(0)} >>> ${arg(1)}`
           : wrap(type, `(${arg(0)} & ${mask(width)}) >>> ${arg(1)}`);
-      assignment(context, results[0]!, `${arg(1)} >= ${width} ? 0 : ${shift}`);
+      assignment(
+        context,
+        results[0]!,
+        hasMarker(inst, 'inrange') ? shift : `${arg(1)} >= ${width} ? 0 : ${shift}`,
+      );
       return;
     }
     case Op.IntAshr: {
       const width = widthOf(type);
+      const shift = `${arg(0)} >> ${arg(1)}`;
       assignment(
         context,
         results[0]!,
-        `${arg(1)} >= ${width} ? (${arg(0)} < 0 ? -1 : 0) : (${arg(0)} >> ${arg(1)})`,
+        hasMarker(inst, 'inrange')
+          ? shift
+          : `${arg(1)} >= ${width} ? (${arg(0)} < 0 ? -1 : 0) : ${shift}`,
       );
       return;
     }
@@ -433,6 +521,11 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
     }
     case Op.StateLoad: {
       const memory = inst.refs[0]!;
+      const promoted = context.regionPromotion?.(memory);
+      if (promoted !== undefined) {
+        assignment(context, results[0]!, promoted.local);
+        return;
+      }
       const record = context.resource(memory);
       assignment(context, results[0]!, fastScalarLoad(context, record, '0', type));
       return;
@@ -443,34 +536,42 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       const ref = context.constant(context.memory(memory));
       const fast = fastScalarLoad(context, record, `(${arg(0)})`, type);
       const slow = `H.storage.loadArray(${ref}, ${arg(0)})`;
-      assignment(context, results[0]!, `${arg(0)} < ${record}.length ? ${fast} : ${slow}`);
+      assignment(
+        context,
+        results[0]!,
+        inst.uncheckedBounds === true ? fast : `${arg(0)} < ${record}.length ? ${fast} : ${slow}`,
+      );
       return;
     }
     case Op.StateStore: {
       const memory = inst.refs[0]!;
-      const record = context.resource(memory);
-      const value = context.value(inst.args[0]!);
-      const boundary = context.boundary(inst.args[0]!);
-      const valueType = context.typeOf(inst.args[0]!);
+      const valueId = inst.args[0]!;
+      const value = context.value(valueId);
+      const boundary = context.boundary(valueId);
+      const valueType = context.typeOf(valueId);
       const reference = context.constant(context.memory(memory));
+      const promoted = context.regionPromotion?.(memory);
+      if (promoted !== undefined) {
+        // A region-wide promotion is a local: keep the suspended-write check at
+        // the original position, then mark the shared local dirty.
+        context.line(`if (H.ctl.suspended !== 0) {`);
+        context.line(`  H.storage.storeState(${reference}, ${boundary});`);
+        context.line('} else {');
+        // U floats must canonicalize before a later promoted load sees them.
+        const stored =
+          isFloatType(promoted.type) && context.repOf(valueId) === 'U'
+            ? `H.fromBoundary(${context.typeConstant(promoted.type)}, H.toBoundary(${context.typeConstant(promoted.type)}, ${value}))`
+            : value;
+        context.line(`  ${promoted.local} = ${stored};`);
+        context.line(`  ${promoted.dirty} = 1;`);
+        context.line('}');
+        return;
+      }
+      const record = context.resource(memory);
       context.line(`if (H.ctl.suspended !== 0) {`);
       context.line(`  H.storage.storeState(${reference}, ${boundary});`);
       context.line('} else {');
-      if (context.le) {
-        if (valueType === 'f32') {
-          context.line(`  ${record}.raw[0] = H.raw32(${value});`);
-        } else if (valueType === 'f64') {
-          context.line(`  H.raw64(${value}, H.scratch);`);
-          context.line(`  ${record}.raw[0] = H.scratch[0];`);
-          context.line(`  ${record}.raw[1] = H.scratch[1];`);
-        } else if (valueType === 'bool') {
-          context.line(`  ${record}.view[0] = ${value} ? 1 : 0;`);
-        } else {
-          context.line(`  ${record}.view[0] = ${value};`);
-        }
-      } else {
-        writeDataView(context, record, '0', valueType, value);
-      }
+      emitFastStateWrite(context, record, valueType, value);
       context.line(`  if (${record}.tracked()) H.advance(${record});`);
       context.line('}');
       return;
@@ -483,7 +584,11 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       const boundary = context.boundary(inst.args[1]!);
       const valueType = context.typeOf(inst.args[1]!);
       const reference = context.constant(context.memory(memory));
-      context.line(`if (H.ctl.suspended !== 0 || !(${index} < ${record}.length)) {`);
+      const guard =
+        inst.uncheckedBounds === true
+          ? 'H.ctl.suspended !== 0'
+          : `H.ctl.suspended !== 0 || !(${index} < ${record}.length)`;
+      context.line(`if (${guard}) {`);
       context.line(`  H.storage.storeArray(${reference}, ${index}, ${boundary});`);
       context.line('} else {');
       if (context.le) {
@@ -521,7 +626,9 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       assignment(
         context,
         results[0]!,
-        `${offset} <= ${record}.length - ${width} ? ${fast} : ${slow}`,
+        inst.uncheckedBounds === true
+          ? fast
+          : `${offset} <= ${record}.length - ${width} ? ${fast} : ${slow}`,
       );
       return;
     }
@@ -535,7 +642,11 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       const offset = context.value(inst.args[0]!);
       const value = context.value(inst.args[1]!);
       const reference = context.constant(context.memory(memory));
-      context.line(`if (H.ctl.suspended !== 0 || !(${offset} <= ${record}.length - ${width})) {`);
+      const guard =
+        inst.uncheckedBounds === true
+          ? 'H.ctl.suspended !== 0'
+          : `H.ctl.suspended !== 0 || !(${offset} <= ${record}.length - ${width})`;
+      context.line(`if (${guard}) {`);
       context.line(
         `  H.storage.storeBytes(${context.constant(inst.imm[0])}, ${context.constant(
           inst.imm[1],
@@ -675,34 +786,287 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       }
       const dependencies = context.constant(context.artifactDependencies);
       const temp = context.temp();
-      context.line(`if (!H.validate(${dependencies})) {`);
-      context.line('  rt.beforeHost();');
-      context.line(
-        `  ${temp} = H.recover(${inst.refs[0]!}, [${inst.args
-          .slice(0, keyCount(inst))
-          .map((id) => context.value(id))
-          .join(', ')}], [${inst.args
-          .slice(keyCount(inst))
-          .map((id) => context.boundary(id))
-          .join(', ')}], ${context.constant(context.fn.name)}, ${context.constant(
-          context.fn.results,
-        )});`,
-      );
-      context.line('  rt.afterHost();');
-      context.line(`  rt.tailFn = ${temp}.fn; rt.tailArgs = ${temp}.args;`);
-      context.line(`  rt.depth = ${context.depthName};`);
-      context.line('  return rt.TAIL;');
+      const state = context.checkpointFast ? context.artifactStateName() : undefined;
+      const recover = (indent: string): void => {
+        context.line(`${indent}rt.beforeHost();`);
+        context.line(
+          `${indent}${temp} = H.recover(${inst.refs[0]!}, [${inst.args
+            .slice(0, keyCount(inst))
+            .map((id) => context.value(id))
+            .join(', ')}], [${inst.args
+            .slice(keyCount(inst))
+            .map((id) => context.boundary(id))
+            .join(', ')}], ${context.constant(context.fn.name)}, ${context.constant(
+            context.fn.results,
+          )});`,
+        );
+        context.line(`${indent}rt.afterHost();`);
+        context.line(`${indent}rt.tailFn = ${temp}.fn; rt.tailArgs = ${temp}.args;`);
+        context.line(`${indent}rt.tailState = ${temp}.state;`);
+        context.line(`${indent}rt.depth = ${context.depthName};`);
+        context.line(`${indent}return rt.TAIL;`);
+      };
+      if (state === undefined) {
+        context.line(`if (!H.validate(${dependencies})) {`);
+        recover('  ');
+        context.line('}');
+        return;
+      }
+      // Epoch guard (J14): dependencies can only invalidate when the storage
+      // epoch moves (I1), so an unchanged epoch skips the WeakMap walk. An IC
+      // hit into the artifact has already set `validatedEpoch` to that epoch.
+      context.line(`if (${state}.validatedEpoch !== H.ctl.epoch) {`);
+      context.line(`  if (H.validate(${dependencies})) {`);
+      context.line(`    ${state}.validatedEpoch = H.ctl.epoch;`);
+      context.line('  } else {');
+      recover('    ');
+      context.line('  }');
       context.line('}');
       return;
     }
-    case Op.Check:
+    case Op.Forward:
+      assignment(context, results[0]!, arg(0));
+      return;
+    case Op.PromoteLoad: {
+      const promotion = context.promotion(inst.refs[0]!);
+      assignment(context, results[0]!, promotionLocal(promotion.id));
+      return;
+    }
+    case Op.PromoteStore: {
+      const promotion = context.promotion(inst.refs[0]!);
+      const record = context.resource(promotion.memory);
+      const local = promotionLocal(promotion.id);
+      const dirty = promotionDirty(promotion.id);
+      const valueId = inst.args[0]!;
+      const reference = context.constant(context.memory(promotion.memory));
+      const slow =
+        promotion.index === undefined
+          ? `H.storage.storeState(${reference}, ${context.boundary(valueId)});`
+          : `H.storage.storeArray(${reference}, ${promotion.index}, ${context.boundary(valueId)});`;
+      context.line(`if (H.ctl.suspended !== 0) {`);
+      context.line(`  ${slow}`);
+      context.line('} else {');
+      context.line(`  ${local} = ${context.value(valueId)};`);
+      context.line(`  ${dirty} = 1;`);
+      // U floats must round-trip through storage before a later load may see
+      // them: storing canonicalizes the bit string to lowercase.
+      if (isFloatType(promotion.type) && context.repOf(valueId) === 'U') {
+        context.line(`  if (${dirty} !== 0) {`);
+        emitPromotionWrite(context, promotion, record, '    ');
+        context.line(`    ${dirty} = 0;`);
+        context.line('  }');
+        context.line(
+          `  ${local} = ${fastScalarLoad(context, record, promotionIndex(promotion), promotion.type)};`,
+        );
+      }
+      context.line('}');
+      return;
+    }
+    case Op.PromoteReload:
+      emitPromotionReload(context, inst.refs);
+      return;
     case Op.Spill:
-      // Synthetic ops arrive with J11/J12; J5 never produces them.
-      context.line(`/* ${inst.op} */`);
+      emitPromotionSpill(context, inst.refs);
+      return;
+    case Op.BoundsGuard:
+      emitBoundsGuard(context, inst);
+      return;
+    case Op.Check:
+      emitCheck(context, inst);
       return;
     default:
       throw new Error(`JIT codegen has no template for opcode "${String(inst.op)}"`);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Promoted storage locals (J12)                                       */
+/* ------------------------------------------------------------------ */
+
+export function promotionLocal(id: number): string {
+  return `ps${id}`;
+}
+
+export function promotionDirty(id: number): string {
+  return `ps${id}d`;
+}
+
+function promotionIndex(promotion: MPromotion): string {
+  return String(promotion.index ?? 0);
+}
+
+/** Write one promoted local back to the backing view and advance if tracked. */
+function emitPromotionWrite(
+  context: PromotionContext,
+  promotion: MPromotion,
+  record: string,
+  indent: string,
+): void {
+  const value = promotionLocal(promotion.id);
+  const index = promotionIndex(promotion);
+  if (context.le) {
+    if (promotion.type === 'f32') {
+      context.line(`${indent}${record}.raw[${index}] = H.raw32(${value});`);
+    } else if (promotion.type === 'f64') {
+      context.line(`${indent}H.raw64(${value}, H.scratch);`);
+      context.line(`${indent}${record}.raw[${index} * 2] = H.scratch[0];`);
+      context.line(`${indent}${record}.raw[${index} * 2 + 1] = H.scratch[1];`);
+    } else if (promotion.type === 'bool') {
+      context.line(`${indent}${record}.view[${index}] = ${value} ? 1 : 0;`);
+    } else {
+      context.line(`${indent}${record}.view[${index}] = ${value};`);
+    }
+  } else {
+    const width = NUMERIC_WIDTH[promotion.type as NumericType] ?? 1;
+    const offset = `${index} * ${width}`;
+    if (promotion.type === 'f32') {
+      context.line(`${indent}${record}.data.setUint32(${offset}, H.raw32(${value}), true);`);
+    } else if (promotion.type === 'f64') {
+      context.line(`${indent}H.raw64(${value}, H.scratch);`);
+      context.line(`${indent}${record}.data.setUint32(${offset}, H.scratch[0], true);`);
+      context.line(`${indent}${record}.data.setUint32(${offset} + 4, H.scratch[1], true);`);
+    } else if (promotion.type === 'bool') {
+      context.line(`${indent}${record}.data.setUint8(${offset}, ${value} ? 1 : 0);`);
+    } else {
+      context.line(
+        `${indent}${record}.data.${dataViewSetter(promotion.type)}(${offset}, ${value}, true);`,
+      );
+    }
+  }
+  context.line(`${indent}if (${record}.tracked()) H.advance(${record});`);
+}
+
+/** Emit one `if (dirty) { writeback }` per listed promotion. */
+export function emitPromotionSpill(context: PromotionContext, ids: readonly number[]): void {
+  for (const id of ids) {
+    const promotion = context.promotion(id);
+    const record = context.resource(promotion.memory);
+    const dirty = promotionDirty(id);
+    context.line(`if (${dirty} !== 0) {`);
+    emitPromotionWrite(context, promotion, record, '  ');
+    context.line(`  ${dirty} = 0;`);
+    context.line('}');
+  }
+}
+
+/** Emit one reload per listed promotion; dirty state is discarded. */
+export function emitPromotionReload(context: PromotionContext, ids: readonly number[]): void {
+  for (const id of ids) {
+    const promotion = context.promotion(id);
+    const record = context.resource(promotion.memory);
+    context.line(
+      `${promotionLocal(id)} = ${fastScalarLoad(
+        context,
+        record,
+        promotionIndex(promotion),
+        promotion.type,
+      )};`,
+    );
+    context.line(`${promotionDirty(id)} = 0;`);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Loop-versioning bounds guard (J12)                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Evaluate the guard for a versioned loop.
+ *
+ * `args[0]` is the induction start, `args[1]` the loop bound; `imm[0]` picks
+ * `lt` (0) or `le` (1), `imm[1]` is the positive stride and each `refs[i]`
+ * carries `(scale, offset, width)` at `imm[2 + 3i]`. The emitted arithmetic
+ * uses plain JS numbers: values stay below 2^53, and any result outside the
+ * u32 range makes the guard false (the original loop copy then runs).
+ */
+function emitBoundsGuard(context: OpsContext, inst: MInst): void {
+  const [initId, boundId] = inst.args as [ValueId, ValueId];
+  const relation = inst.imm[0] as number;
+  const last = context.temp();
+  const ok = context.temp();
+  const init = context.numeric(initId);
+  const bound = context.numeric(boundId);
+  context.line(`${last} = ${relation === 0 ? `${bound} - 1` : bound};`);
+  // A loop whose body never starts needs no unchecked copy.
+  context.line(`${ok} = ${last} >= ${init} && ${init} >= 0;`);
+  inst.refs.forEach((memory, position) => {
+    const scale = inst.imm[2 + position * 3] as number;
+    const offset = inst.imm[3 + position * 3] as number;
+    const width = inst.imm[4 + position * 3] as number;
+    const left = context.temp();
+    const right = context.temp();
+    const low = context.temp();
+    const high = context.temp();
+    const record = context.resource(memory);
+    context.line(`${left} = ${init} * ${numberLiteral(scale)} + ${numberLiteral(offset)};`);
+    context.line(`${right} = ${last} * ${numberLiteral(scale)} + ${numberLiteral(offset)};`);
+    context.line(`${low} = Math.min(${left}, ${right});`);
+    context.line(`${high} = Math.max(${left}, ${right});`);
+    context.line(
+      `${ok} = ${ok} && ${low} >= 0 && ${high} >= 0 && ${high} <= 0xffffffff && ` +
+        `(${high} + ${width}) <= ${record}.length;`,
+    );
+  });
+  assignment(context, inst.results[0]!, ok);
+}
+
+/* ------------------------------------------------------------------ */
+/* Synthetic checks (J11)                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `check` carries the throwing semantics of a replaced instruction without a
+ * result. Only `none` and `bounds` are produced by the J12 passes; the
+ * `divzero` form is accepted for the J11 pipeline.
+ */
+function emitCheck(context: OpsContext, inst: MInst): void {
+  const kind = inst.imm[0];
+  if (kind === 'none') return;
+  if (kind === 'f2i') {
+    const value = inst.args[0];
+    if (value === undefined) throw new Error('JIT codegen: f2i check needs an operand');
+    const node = context.constant(inst.node);
+    context.line(`H.floatToInt(${node}, ${context.value(value)});`);
+    return;
+  }
+  if (kind === 'divzero') {
+    const divisor = inst.args[1];
+    if (divisor === undefined) throw new Error('JIT codegen: divzero check needs a divisor');
+    const node = context.constant(inst.node);
+    context.line(
+      `if (${context.numeric(divisor)} === 0) H.scalar(${node}, [${inst.args
+        .map((id) => context.boundary(id))
+        .join(', ')}]);`,
+    );
+    return;
+  }
+  if (kind === 'bounds') {
+    const memory = inst.refs[0];
+    const index = inst.args[0];
+    if (memory === undefined || index === undefined || inst.node === undefined) {
+      throw new Error('JIT codegen: bounds check needs a source load and its operands');
+    }
+    const record = context.resource(memory);
+    const reference = context.constant(context.memory(memory));
+    if (inst.node.op === 'bytes.load') {
+      // `imm` is the original load's `[type, endian]`; the width decides the
+      // exact slow-path predicate `offset <= length - width`.
+      const type = context.constant(inst.imm[1]);
+      const endian = context.constant(inst.imm[2]);
+      const width = NUMERIC_WIDTH[inst.imm[1] as NumericType] ?? 1;
+      context.line(`if (!(${context.value(index)} <= ${record}.length - ${width})) {`);
+      context.line(
+        `  H.storage.loadBytes(${type}, ${endian}, ${reference}, ${context.value(index)});`,
+      );
+      context.line('}');
+      return;
+    }
+    context.line(`if (!(${context.value(index)} < ${record}.length)) {`);
+    context.line(`  H.storage.loadArray(${reference}, ${context.value(index)});`);
+    context.line('}');
+    return;
+  }
+  throw new Error(`JIT codegen: unsupported check kind "${String(kind)}"`);
 }
 
 /**

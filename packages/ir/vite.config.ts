@@ -20,6 +20,8 @@ export default defineConfig({
         'src/**/*.type-test.ts',
         'src/jit/testing/**',
         'src/testing/**',
+        // Benchmarks are development-only; they must not enter `dist`.
+        'bench/**',
       ],
       // One flattened declaration, so node16 consumers never follow extensionless imports.
       bundleTypes: true,

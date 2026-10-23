@@ -20,9 +20,10 @@
     "dist"
   ],
   "scripts": {
+    "bench": "vitest bench --run --reporter=verbose",
     "build": "vite build",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.bench.json"
   },
   "publishConfig": {
     "access": "public"

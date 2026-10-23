@@ -419,7 +419,7 @@ describe('createIRJIT creation', () => {
     [{ maxCompiledDepth: 0 }, /jit.maxCompiledDepth/],
     [{ maxCompiledDepth: Number.NaN }, /jit.maxCompiledDepth/],
     [{ optimizations: [] }, /jit.optimizations/],
-    [{ optimizations: { inline: true } }, /Unknown JIT optimization "inline"/],
+    [{ optimizations: { teleport: true } }, /Unknown JIT optimization "teleport"/],
     [{ debug: null }, /jit.debug/],
     [{ debug: { verify: 'yes' } }, /jit.debug.verify/],
     [{ debug: { traces: true } }, /Unknown JIT debug option "traces"/],

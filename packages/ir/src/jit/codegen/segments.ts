@@ -14,7 +14,7 @@
  */
 import type { IRExecutionLocation } from '../../interpreter';
 import { EFFECT_INFO } from '../effects';
-import type { LocId, MBlock, MFunction, MInst, MTerm } from '../mir';
+import type { LocId, MBlock, MFunction, MInlineFrame, MInst, MTerm } from '../mir';
 
 /** One instruction or terminator, planned for both budget paths. */
 export interface PlannedItem {
@@ -42,6 +42,13 @@ export interface FunctionPlan {
   readonly blocks: ReadonlyMap<number, readonly PlannedSegment[]>;
   readonly locations: readonly IRExecutionLocation[];
   readonly stepsAfter: Int32Array;
+  /**
+   * Virtual-frame chain for every location id. Exact-copy items point at the
+   * original item's parent (not at the original item itself), so unwinding
+   * reports each inlined frame exactly once.
+   */
+  readonly parent: Int32Array;
+  readonly inlineFrames: readonly (MInlineFrame | undefined)[];
 }
 
 interface MutableItem {
@@ -99,11 +106,16 @@ export function planFunction(fn: MFunction): FunctionPlan {
   for (const block of fn.blocks) planned.set(block.id, blockSegments(block));
 
   const locations = [...fn.locs.locations];
+  const parent = Array.from(fn.locs.parent);
+  const inlineFrames = [...fn.locs.inlineFrames];
   for (const segments of planned.values()) {
     for (const segment of segments) {
       for (const item of segment) {
         item.exactLoc = locations.length;
         locations.push(fn.locs.locations[item.loc]!);
+        // Skip the duplicate: `loc` and `exactLoc` share one location object.
+        parent.push(fn.locs.parent[item.loc] ?? -1);
+        inlineFrames.push(fn.locs.inlineFrames[item.loc]);
       }
     }
   }
@@ -138,5 +150,5 @@ export function planFunction(fn: MFunction): FunctionPlan {
     }
     blocks.set(id, result);
   }
-  return { blocks, locations, stepsAfter };
+  return { blocks, locations, stepsAfter, parent: Int32Array.from(parent), inlineFrames };
 }

@@ -18,7 +18,7 @@ import type {
   IRStepBudget,
   IRStepObserver,
 } from '../interpreter';
-import type { ProviderArtifact } from '../provider';
+import type { ProviderArtifact, ProviderRuntime } from '../provider';
 import { isFloatType } from '../runtime';
 import { evaluateScalarInstruction } from '../scalar';
 import { storageInternals } from '../storage';
@@ -29,6 +29,8 @@ import type {
   StorageInternals,
 } from '../storage';
 import type { FloatBits, FloatType, InstructionNode, RuntimeScalar, ScalarType } from '../types';
+import type { ArtifactState } from './dispatch-ic';
+import { DispatchRegistry, REGION_THRESHOLD } from './dispatch-ic';
 import {
   convertFloat,
   floatCompare,
@@ -76,6 +78,10 @@ export interface JitFrame {
   readonly locations: readonly IRExecutionLocation[];
   /** Steps remaining in the current segment after each location id. */
   readonly stepsAfter: Int32Array;
+  /** Inlining frame chain per location; `-1` terminates the chain (J13). */
+  readonly parent?: Int32Array;
+  /** Virtual frames for locations copied by the inliner (J13). */
+  readonly inlineFrames?: readonly unknown[];
 }
 
 export type BudgetMode = 'none' | 'observer' | 'budget';
@@ -113,9 +119,35 @@ export class JitRuntime {
   /** Pending tail transfer, consumed by {@link runTail}. */
   tailFn: CompiledFn | undefined = undefined;
   tailArgs: unknown[] | undefined = undefined;
+  /** Artifact state of a pending tail transfer (J14 dispatch IC / regions). */
+  tailState: ArtifactState | undefined = undefined;
+  /** Artifact whose body is currently running; used for transition statistics. */
+  currentState: ArtifactState | undefined = undefined;
+  /**
+   * Called when an artifact reaches {@link REGION_THRESHOLD} entries; the
+   * execution engine (J7) uses it to build a region. Keeping it on the runtime
+   * avoids a per-dispatch callback: the branch is a single integer compare.
+   */
+  regionTrigger: ((state: ArtifactState) => void) | undefined = undefined;
   /** Current compiled-function nesting depth; J7 owns the deep-recursion fallback. */
   depth = 0;
   maxDepth = 1_000_000;
+  /** Per-function entry counters used by Tier-2 recompilation (J13). */
+  counters: number[] = [];
+  /** Entry count that promotes a function to Tier 2; infinity disables it. */
+  tierUpThreshold = Number.POSITIVE_INFINITY;
+  /** Tier-2 promotion callback installed by the execution engine (J13). */
+  tierUp: (index: number) => void = () => undefined;
+
+  /** Count one function entry and promote at the threshold (J13). */
+  noteEntry(index: number): void {
+    if (!Number.isFinite(this.tierUpThreshold)) return;
+    const count = this.counters[index] ?? 0;
+    if (count < 0) return;
+    const next = count + 1;
+    this.counters[index] = next;
+    if (next >= this.tierUpThreshold) this.tierUp(index);
+  }
 
   readonly #observer: IRStepObserver | undefined;
   readonly #budget: IRStepBudget | undefined;
@@ -147,6 +179,8 @@ export class JitRuntime {
     this.ret.length = 0;
     this.tailFn = undefined;
     this.tailArgs = undefined;
+    this.tailState = undefined;
+    this.currentState = undefined;
     this.depth = 0;
     // Budgeted executions keep `limit` at -1 so every step takes the exact path,
     // matching the reference's one-`consume`-per-step protocol.
@@ -201,16 +235,28 @@ export class JitRuntime {
     this.committed = this.steps;
   }
 
+  /** Append one frame's location chain (inlined locations have parents). */
+  #pushFrames(frames: IRExecutionLocation[], loc: number, frame: JitFrame): void {
+    const parents = frame.parent;
+    const seen = new Set<number>();
+    let current = loc;
+    while (current >= 0 && !seen.has(current)) {
+      seen.add(current);
+      const location = frame.locations[current];
+      if (location !== undefined) frames.push(location);
+      current = parents?.[current] ?? -1;
+    }
+  }
+
   /** Translate any thrown value into a {@link JitUnwind}, appending this frame. */
   unwind(cause: unknown, loc: number, frame: JitFrame): JitUnwind {
-    const location = loc >= 0 ? frame.locations[loc] : undefined;
     if (cause instanceof JitUnwind) {
-      if (location !== undefined) cause.frames.push(location);
+      this.#pushFrames(cause.frames, loc, frame);
       return cause;
     }
     const after = loc >= 0 ? (frame.stepsAfter[loc] ?? 0) : 0;
     const unwind = new JitUnwind(cause, this.steps - after);
-    if (location !== undefined) unwind.frames.push(location);
+    this.#pushFrames(unwind.frames, loc, frame);
     return unwind;
   }
 
@@ -218,11 +264,24 @@ export class JitRuntime {
   runTail(): unknown {
     const fn = this.tailFn;
     const args = this.tailArgs;
+    const state = this.tailState;
     if (fn === undefined || args === undefined) {
       throw new Error('JIT tail transfer has no target');
     }
     this.tailFn = undefined;
     this.tailArgs = undefined;
+    this.tailState = undefined;
+    if (state !== undefined) {
+      this.currentState = state;
+      const region = state.region;
+      if (region !== undefined) {
+        // A compiled region absorbs the whole call: one JS frame, one depth
+        // increment, and member transitions stay in the region's own loop.
+        return region.fn(state.regionIndex, ...args);
+      }
+      state.entries += 1;
+      if (state.entries === REGION_THRESHOLD) this.regionTrigger?.(state);
+    }
     return fn(...args);
   }
 
@@ -265,6 +324,8 @@ export interface JitResource {
 export interface JitTailTarget {
   readonly fn: CompiledFn;
   readonly args: unknown[];
+  /** Artifact state; generated dispatch code stores it in `rt.tailState`. */
+  readonly state: ArtifactState;
 }
 
 /**
@@ -276,6 +337,10 @@ export interface JitTailTarget {
 export interface JitHelpers {
   readonly storage: EngineSetup['storage'];
   readonly ctl: StorageControl;
+  /** Provider runtime, exposing `cacheEpoch` (I2). */
+  readonly prov: ProviderRuntime;
+  /** Dispatch site and jump-cache registry (J14). */
+  readonly ic: DispatchRegistry;
   readonly le: boolean;
   readonly res: readonly JitResource[];
   /** Compiled model functions by model index; filled by the compiler driver. */
@@ -341,8 +406,10 @@ export interface JitHelpers {
 }
 
 export interface JitHelpersOptions {
-  /** Compiles (or looks up) the artifact function; J7 supplies the real one. */
-  readonly artifact?: (artifact: ProviderArtifact) => CompiledFn;
+  /** Compiles (or looks up) the artifact state; J7 supplies the real one. */
+  readonly artifact?: (artifact: ProviderArtifact, providerIndex: number) => ArtifactState;
+  /** Shared dispatch registry; one per engine. */
+  readonly dispatch?: DispatchRegistry;
 }
 
 /** Convert one boundary value into the representation generated code expects. */
@@ -417,9 +484,12 @@ export function createJitHelpers(setup: EngineSetup, options: JitHelpersOptions 
   }
   const executors = [...(setup.executors?.values() ?? [])];
   const artifacts = options.artifact;
+  const dispatch = options.dispatch ?? new DispatchRegistry();
   return {
     storage: setup.storage,
     ctl: internals.control,
+    prov: setup.providers,
+    ic: dispatch,
     le: internals.littleEndianHost,
     res: Object.freeze(resources),
     fns: [],
@@ -465,7 +535,7 @@ export function createJitHelpers(setup: EngineSetup, options: JitHelpersOptions 
       const provider = setup.model.providers[providerIndex];
       if (provider === undefined) throw new Error('JIT dispatch target is not declared');
       const artifact = setup.providers.materialize(provider.ref, [...(key as RuntimeScalar[])]);
-      return tailTarget(artifact, args, artifacts);
+      return tailTarget(artifact, args, artifacts, providerIndex);
     },
     recover: (providerIndex, key, args, name, currentResults) => {
       const provider = setup.model.providers[providerIndex];
@@ -485,7 +555,7 @@ export function createJitHelpers(setup: EngineSetup, options: JitHelpersOptions 
           `Recovery target for checkpoint in "${name}" has a different result layout`,
         );
       }
-      return tailTarget(artifact, args, artifacts);
+      return tailTarget(artifact, args, artifacts, providerIndex);
     },
     argument: (type, value) => toJitArgument(type, value),
     result: (type, value) => fromJitResult(type, value),
@@ -495,16 +565,18 @@ export function createJitHelpers(setup: EngineSetup, options: JitHelpersOptions 
 function tailTarget(
   artifact: ProviderArtifact,
   args: readonly unknown[],
-  compile: ((artifact: ProviderArtifact) => CompiledFn) | undefined,
+  compile: ((artifact: ProviderArtifact, providerIndex: number) => ArtifactState) | undefined,
+  providerIndex: number,
 ): JitTailTarget {
-  const fn = compile?.(artifact);
-  if (fn === undefined) {
+  const state = compile?.(artifact, providerIndex);
+  if (state === undefined) {
     throw new Error(
       'JIT provider artifacts require the execution engine (J7) to compile the artifact function',
     );
   }
   return {
-    fn,
+    fn: state.compiled.fn,
+    state,
     args: artifact.fn.params.map((type, index) =>
       toJitArgument(type, args[index] as RuntimeScalar),
     ),

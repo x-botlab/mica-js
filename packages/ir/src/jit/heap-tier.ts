@@ -61,6 +61,29 @@ interface HeapFrame {
   readonly values: Map<Value, RuntimeScalar>;
 }
 
+/** Optional engine hooks for artifacts materialized while the heap tier runs. */
+export interface HeapRunOptions {
+  /**
+   * Called once for every artifact the heap tier dispatches to (including a
+   * checkpoint recovery target), before its frame is entered. The engine uses
+   * it to register the artifact for `artifactWarmup` and tiering.
+   */
+  readonly onArtifact?: (artifact: ProviderArtifact, providerIndex: number) => void;
+}
+
+function notifyArtifact(
+  setup: EngineSetup,
+  options: HeapRunOptions | undefined,
+  artifact: ProviderArtifact,
+  provider: ProviderRef,
+): void {
+  if (options?.onArtifact === undefined) return;
+  const providerIndex = setup.model.providers.findIndex(
+    (definition) => definition.ref === provider,
+  );
+  options.onArtifact(artifact, providerIndex);
+}
+
 /**
  * Run `entry` with `args` (MIR representation) using `runtime` for step
  * accounting and `setup` for storage, providers and host hooks.
@@ -70,8 +93,13 @@ export function runHeapFunction(
   runtime: JitRuntime,
   entry: HeapEntry,
   args: readonly unknown[],
+  options?: HeapRunOptions,
 ): unknown {
   const context = runtime.context;
+  // The heap tier is part of the tiering ladder: a hot function that only
+  // ever runs here still triggers its tier-2 compilation. Artifacts count
+  // through `artifactWarmup` instead, so they are excluded.
+  if (entry.artifact === undefined) runtime.noteEntry(entry.functionIndex);
   const frames: HeapFrame[] = [
     frameFor(
       entry,
@@ -88,7 +116,7 @@ export function runHeapFunction(
       const node = frame.block.instructions[frame.position];
       if (node !== undefined) {
         if (node.op === 'checkpoint') {
-          checkpoint(setup, frame, node, frames);
+          checkpoint(setup, frame, node, frames, options);
           continue;
         }
         const operands = node.operands.flatMap((operand) => {
@@ -100,11 +128,13 @@ export function runHeapFunction(
         });
         if (node.op === 'call') {
           const callee = setup.functions.get(reference(node, 0) as FunctionRef)!;
+          const calleeIndex = setup.indices.get(callee)!;
+          runtime.noteEntry(calleeIndex);
           frames.push(
             frameFor(
               {
                 fn: callee,
-                functionIndex: setup.indices.get(callee)!,
+                functionIndex: calleeIndex,
                 artifact: undefined,
               },
               operands,
@@ -162,6 +192,7 @@ export function runHeapFunction(
           runtime.beforeHost();
           const artifact = setup.providers.materialize(term.provider, key);
           runtime.afterHost();
+          notifyArtifact(setup, options, artifact, term.provider);
           const inputs = artifact.fn.params.map((type, index) =>
             captureArgument(type, args[index]!),
           );
@@ -208,6 +239,7 @@ function checkpoint(
   frame: HeapFrame,
   node: InstructionNode,
   frames: HeapFrame[],
+  options: HeapRunOptions | undefined,
 ): void {
   const artifact = frame.artifact;
   if (artifact === undefined) {
@@ -221,6 +253,7 @@ function checkpoint(
   const key = listValues(frame, node, 1);
   const args = listValues(frame, node, 2);
   const recovered = recoverCheckpoint(setup, frame.fn, provider, key, args);
+  notifyArtifact(setup, options, recovered.artifact, provider);
   frames.pop();
   frames.push(generatedFrame(recovered.artifact, recovered.inputs));
 }
