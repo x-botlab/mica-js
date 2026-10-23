@@ -50,8 +50,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # No global build: each package's `prepack` builds what it ships (the editor also builds
-      # its `@mica-js/core` dependency first), so only the packages being published are built.
+      # Build once, then pack, then publish the tarballs. The pack phase never builds: `prepack`
+      # was removed so `changeset pack` (which packs up to 4 packages concurrently) only tars the
+      # existing `dist`. Publishing from tarballs (`--from-pack-dir`) runs no lifecycle scripts, so
+      # no two processes ever write the same package's output.
       - name: Version packages or publish
         uses: changesets/action@v2
         with:

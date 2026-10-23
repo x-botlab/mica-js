@@ -21,7 +21,6 @@
   ],
   "scripts": {
     "build": "vite build",
-    "prepack": "pnpm -r --filter \"@mica-js/simulator...\" build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
