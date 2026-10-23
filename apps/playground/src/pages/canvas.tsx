@@ -13,7 +13,11 @@ import {
 } from '@mica-js/core/canvas';
 import { parseSchematic } from '@mica-js/core/schematic';
 import { parseDeviceDescription, type IDeviceProvider } from '@mica-js/device';
-import { createCircuitHost, createDeviceSimExecutor, type DeviceSimExecutor } from '@mica-js/simulator';
+import {
+  createCircuitHost,
+  createDeviceSimExecutor,
+  type DeviceSimExecutor,
+} from '@mica-js/simulator';
 import {
   createPackageWidgetProvider,
   createWidgetHost,

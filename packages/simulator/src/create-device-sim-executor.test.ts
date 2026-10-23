@@ -7,7 +7,12 @@ import {
 } from '@mica-js/core/schematic';
 import { parseDeviceDescription, type IDeviceProvider } from '@mica-js/device';
 import { describe, expect, it } from 'vitest';
-import { createCircuitHost, createDeviceSimExecutor, SimulatorError, type DevicePublish } from './index';
+import {
+  createCircuitHost,
+  createDeviceSimExecutor,
+  SimulatorError,
+  type DevicePublish,
+} from './index';
 
 const MIRROR = 'acme:mirror';
 const TICKER = 'acme:ticker';
