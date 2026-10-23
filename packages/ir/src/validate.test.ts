@@ -863,23 +863,33 @@ describe('validateIR capabilities and resources', () => {
     },
   );
 
-  it.each([
-    'checkpoint',
-    'dispatch',
-    'provider.generate',
-    'kernel.call',
-    'resource.update',
-    'resource.fill',
-  ])('rejects reserved future operation %s even when a backend lists it', (op) => {
+  it.each(['checkpoint', 'provider.generate', 'kernel.call', 'resource.update', 'resource.fill'])(
+    'rejects reserved future operation %s even when a backend lists it',
+    (op) => {
+      const input = single();
+      present(block(input).instructions[0]).op = op;
+      rejects(
+        input,
+        'unsupported-instruction',
+        instructionLocation(input, 0),
+        options({
+          supportedInstructions: [...core, op],
+          authorizedInstructions: [...core, op],
+        }),
+      );
+    },
+  );
+
+  it('rejects dispatch in the instruction list because it is a terminator', () => {
     const input = single();
-    present(block(input).instructions[0]).op = op;
+    present(block(input).instructions[0]).op = 'dispatch';
     rejects(
       input,
-      'unsupported-instruction',
+      'invalid-terminator',
       instructionLocation(input, 0),
       options({
-        supportedInstructions: [...core, op],
-        authorizedInstructions: [...core, op],
+        supportedInstructions: [...core, 'dispatch'],
+        authorizedInstructions: [...core, 'dispatch'],
       }),
     );
   });

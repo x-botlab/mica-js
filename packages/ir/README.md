@@ -2,7 +2,7 @@
 
 领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔/浮点逐指令语义、实例存储与参考解释器。
 
-本包负责**建图、实例存储、静态校验与参考执行**：声明标量资源与函数、构造 SSA 值、基本块与终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。提供显式 IR 输出端点与 `bridge.send` / `bridge.send_bytes` 的宿主桥接，但不提供事件调度、话题路由/通知队列、Provider 生成缓存、运行中恢复或 JIT；校验通过不代表已经执行，未实现的能力显式拒绝，不以空操作伪装成功。
+本包负责**建图、实例存储、静态校验与参考执行**：声明标量资源与函数、构造 SSA 值、基本块与终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。提供显式 IR 输出端点与 `bridge.send` / `bridge.send_bytes` 的宿主桥接，以及按 key 生成、依赖跟踪与实例内缓存的 Provider 产物；不提供事件调度、话题路由/通知队列、运行中恢复或 JIT。校验通过不代表已经执行，未实现的能力显式拒绝，不以空操作伪装成功。
 
 ## 安装
 
@@ -14,17 +14,18 @@ pnpm add @mica-js/ir
 
 唯一公开入口为 `@mica-js/ir`，构建生成 `dist/index.js`（ESM）与声明文件。
 
-| 导出                                          | 作用                                                                                                       |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `createIRModule()`                            | 创建独立的模块声明/建图上下文，返回 `IRModule`                                                             |
-| `createIRStorage(module, options?)`           | 为声明资源创建一份独立实例存储；`updateResources` 显式授予字节更新权限，默认无授权                         |
-| `createIRInterpreter(module, options)`        | 创建经快照与校验的参考解释器，拥有独立 `storage`                                                           |
-| `validateIR(input, options)`                  | 返回 `IRValidationResult`，通过 `IRDiagnostic` / `IRDiagnosticLocation` 报告静态错误                       |
-| `evaluateScalarInstruction(instruction, ops)` | 求值单个整数/布尔节点，失败抛 `IRScalarEvaluationError`                                                    |
-| `evaluateFloatInstruction(instruction, ops)`  | 求值单个浮点节点，失败抛 `IRFloatEvaluationError`                                                          |
-| 类型                                          | `IRDeclarations`、`FunctionBuilder<R>`、`IRModule`、`FunctionRef` / `EntryRef` / `LifecycleRef` 等引用类别 |
+| 导出                                          | 作用                                                                                                                                            |
+| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createIRModule()`                            | 创建独立的模块声明/建图上下文，返回 `IRModule`                                                                                                  |
+| `createIRStorage(module, options?)`           | 为声明资源创建一份独立实例存储；`updateResources` 显式授予字节更新权限，默认无授权                                                              |
+| `createIRInterpreter(module, options)`        | 创建经快照与校验的参考解释器，拥有独立 `storage`                                                                                                |
+| `validateIR(input, options)`                  | 返回 `IRValidationResult`，通过 `IRDiagnostic` / `IRDiagnosticLocation` 报告静态错误                                                            |
+| `evaluateScalarInstruction(instruction, ops)` | 求值单个整数/布尔节点，失败抛 `IRScalarEvaluationError`                                                                                         |
+| `evaluateFloatInstruction(instruction, ops)`  | 求值单个浮点节点，失败抛 `IRFloatEvaluationError`                                                                                               |
+| `IRProviderError`                             | Provider 声明、生成、产物与缓存失败，带稳定 `code` 与产物诊断                                                                                   |
+| 类型                                          | `IRDeclarations`、`FunctionBuilder<R>`、`IRModule`、`ProviderRef` / `GeneratedFunction`、`FunctionRef` / `EntryRef` / `LifecycleRef` 等引用类别 |
 
-`StateRef`、`ArrayRef`、`BytesRef`、`InboxRef` 不可互换；`EntryRef`、`LifecycleRef` 与普通 `FunctionRef` 在类型和运行期都保持独立，`OutputRef` 与 `BytesOutputRef` 也是独立的静态类别。
+`StateRef`、`ArrayRef`、`BytesRef`、`InboxRef` 不可互换；`EntryRef`、`LifecycleRef` 与普通 `FunctionRef` 在类型和运行期都保持独立，`OutputRef` 与 `BytesOutputRef`、`ProviderRef` 与 `GeneratedFunction` 同样是独立的静态类别。
 
 ## 建图
 
@@ -49,7 +50,7 @@ run.body((b, [value]) => {
 - 普通函数通过 `b.call(target, args)` 同步调用，结果始终按列表返回（零/单/多结果）；入口与生命周期没有普通返回值，也不能被 `call`。
 - 基本块：`b.block(types)` 只创建目标块，`b.at(block, callback)` 才进入该块并在回调后恢复插入位置。每个块必须以 `return` / `jump` / `branch` / `trap` 终结；回调抛错、返回 Promise 或未终结都会使整个函数构建失效，需重新 `.body`。
 - 块参数是循环与合流的唯一显式传值方式，不提供隐式 phi 或可变局部变量。
-- `GeneratedFunctionBuilder<R>` 目前只保留继承边界：Provider 工厂、`checkpoint` 与 `dispatch` 属于后续任务。
+- `GeneratedFunctionBuilder<R>` 继承 `dispatch`，并由 `gen.function` 传入；`checkpoint` 与运行中恢复属于 #61，当前不提供。
 
 ```ts
 const choose = ir.func('choose', { params: ['bool'], results: ['u32'] });
@@ -312,7 +313,7 @@ runtime.storage.loadState(count); // 3
 - 存储操作沿用完整范围校验与原子提交：失败操作无部分写入，已提交效果不回滚。
 - 预算、求值、存储或 trap 故障会锁定实例，后续 `execute` 抛 `instance-faulted`；无 reset/resume，也不支持失败入口中途恢复。
 - 非法目标、参数或 context 等调用前错误不消耗步骤、不锁定实例。
-- 执行能力包括现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、核心 `event.now/at/cancel`、`bridge.send` / `bridge.send_bytes`、普通 `call`、`return/jump/branch/trap`，以及通过 `executors` 显式注册的领域指令。没有执行器的领域指令在执行前以 `unsupported-instruction` 拒绝；dispatch、Provider/checkpoint 与其他保留能力仍静态拒绝。
+- 执行能力包括现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、核心 `event.now/at/cancel`、`bridge.send` / `bridge.send_bytes`、普通 `call`、`return/jump/branch/trap`、按声明生成的 Provider `dispatch` 产物，以及通过 `executors` 显式注册的领域指令。没有执行器的领域指令在执行前以 `unsupported-instruction` 拒绝；checkpoint/运行中恢复与其他保留能力仍静态拒绝。
 
 ### 领域指令执行（#57）
 
@@ -397,6 +398,44 @@ interface IRBridgeHost {
 
 `src/output.test.ts` 覆盖真实 builder/validate/interpreter 链、标量/字节捕获、零长度、`false` 结果、范围与 `maxBytes` 拒绝；`src/output.type-test.ts` 检查正反类型签名。
 
+### Provider 生成与缓存（#60）
+
+`ir.provider(name, descriptor, generate)` 声明固定 key/参数/结果布局、生成期获准读取与产物可引用引用；`IRModule.providers` 只暴露声明数据，生成回调保留在内部元数据。
+
+```ts
+const code = ir.provider(
+  'code',
+  {
+    keyTypes: ['u32'],
+    params: [],
+    results: [],
+    reads: [firmware], // 生成期受追踪读取的授权上限
+    imports: [pc, r0, helper], // 产物可引用的静态引用
+  },
+  (gen, [address]) => {
+    const bytes = gen.readBytes(firmware, address, 2); // 独立副本
+    return gen.function((b) => {
+      b.state.store(r0, b.const('u32', bytes[1]));
+      b.state.store(pc, b.const('u32', address + 2));
+      b.call(helper, []);
+      b.return([]);
+    });
+  },
+);
+step.body((b) => b.dispatch(code, [b.state.load(pc)], []));
+```
+
+- `gen.readBytes` / `readState` / `readArray` 只接受 `reads` 中的资源，不按读取权限推断整资源依赖，并登记实际覆盖的版本单元；`readBytes` 校验 JS 整数范围并返回独立 `Uint8Array` 副本。未授权、越界/非法长度分别以 `unauthorized-read` / `invalid-read` 拒绝。
+- 生成回调同步执行；只创建当前产物，不能动态声明资源/函数/入口，也不能经可信 storage 句柄写入。每次生成最多一次 `gen.function`，且必须返回该句柄；生成失败不进入缓存。
+- 产物仍由 `validateIR`（结构、SSA、支配、终结、资源 grant）与 imports 白名单校验：只能引用 `imports` 中的静态引用，不能调用领域指令，可使用参考解释器已实现的核心指令。产物执行与静态代码共用同一指令实现和 storage。
+- `dispatch` 是终结指令：按规范化的 key 取得产物，并在当前入口、步数预算与虚拟时间中尾转移；`provider.results` 必须与当前函数结果完全一致。每次派发校验该产物的全部依赖，失效时按当前内容重新生成；缓存命中不重新生成，也不重放已提交效果。
+- key 在生成回调中是 JS 标量；缓存身份按 provider 与精确编码（bool、整数、浮点 canonical 位串）区分，运行时 args 不参与。缓存按解释器实例隔离；v0.1 不实现驱逐/上限。
+- state/array 以整资源单元跟踪，普通 `storeState` / `storeArray` 与宿主 `writeInbox` 推进版本；`reads` 中出现 writable bytes 在声明期拒绝（普通 `bytes.store` 不推进版本）。相同值写入允许保守失效。
+- 产物直接或经 `imports` 调用链写入其生成读取的资源时，视为需要运行中失效恢复，在产物校验期以 `unsupported-provider` 拒绝（#61 未实现）。
+- 失败抛 `IRProviderError`（`invalid-provider`、`key-mismatch`、`unauthorized-read`、`invalid-read`、`generation-failed`、`invalid-artifact`、`import-violation`、`dependency-changed`、`illegal-operation`），解释器包装为 `provider-failed` 并保留 `cause`、调用位置与产物诊断。
+
+`src/provider.test.ts`、`src/provider-runtime.test.ts`、`src/provider-storage.test.ts` 与 `src/provider.type-test.ts` 覆盖声明/链接、真实生成与缓存轨迹、版本失效、key 规范化、受追踪读取副本与越界、生成期非法操作及产物 imports/恢复边界。
+
 ## 版本化资源更新
 
 `FunctionBuilder.resource` 提供：
@@ -445,7 +484,8 @@ runtime.storage.validateDependencies(after.dependencies); // true
 - `IRStorage` 新增 `updateBytes`、`fillBytes`、`readVersionedBytes`、`validateDependencies`；零长仍验端点与权限，但不读写字节或改版本。
 - 单元边界为 `floor(offset / unitBytes)`，声明后固定；非零更新为覆盖的每个单元产生新版本 token，未覆盖单元与其他资源不变。
 - 依赖对象是不透明 token，只在本实例内有效；过期、伪造、跨资源/实例或非法形状返回 `false`，空集合为 `true`。它们不是序列化或持久化格式。
-- 普通 `store` / `copy` 不改变版本；Provider 缓存（#60）与运行中恢复（#61）不在本包。
+- 普通 `bytes.store` / `bytes.copy` 不改变字节单元版本；state/array 使用整资源单元，普通 `storeState` / `storeArray` 推进该单元（#60），宿主 `writeInbox` 推进 inbox 整资源单元。
+- Provider 的受追踪标量读取通过内部 symbol 方法访问同一依赖元数据，不新增公开 `IRStorage` 方法；运行中恢复（#61）与 JIT 不在本包。
 - `writeInbox` 是可信宿主把消息写入 inbox 的唯一通道；IR 自身的 inbox 读取保持只读，普通写入仍被拒绝。`updateBytesFromBytes` 走 `update` 授权、完整范围检查与原子版本路径，供 device 的 `api.updateBytes` 使用。
 
 ```ts
@@ -479,7 +519,7 @@ type IRResourceDependency = {
 ## 当前限制
 
 - 事件队列/调度器、输出队列/话题路由/通知时机与 JS 作者侧 `api.updateBytes` 请求队列；核心 event 与 bridge 指令只通过上述可信宿主桥接。
-- Provider 生成缓存（#60）、运行中恢复/checkpoint（#61）与 JIT。
+- 运行中恢复/checkpoint（#61）与 JIT；Provider 产物在自身依赖失效时只能在下一次派发重新生成。
 - 尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。
 
 ## 开发
@@ -493,4 +533,4 @@ pnpm --filter @mica-js/ir build
 ## 相关提案
 
 - 规范：[IR SPEC #26](https://github.com/x-botlab/mica-js/issues/26)、[器件作者 API #8](https://github.com/x-botlab/mica-js/issues/8)
-- 实现： [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)、[#46](https://github.com/x-botlab/mica-js/issues/46)、[#47](https://github.com/x-botlab/mica-js/issues/47)、[#57](https://github.com/x-botlab/mica-js/issues/57)
+- 实现： [#41](https://github.com/x-botlab/mica-js/issues/41)、[#42](https://github.com/x-botlab/mica-js/issues/42)、[#43](https://github.com/x-botlab/mica-js/issues/43)、[#44](https://github.com/x-botlab/mica-js/issues/44)、[#45](https://github.com/x-botlab/mica-js/issues/45)、[#46](https://github.com/x-botlab/mica-js/issues/46)、[#47](https://github.com/x-botlab/mica-js/issues/47)、[#57](https://github.com/x-botlab/mica-js/issues/57)、[#60](https://github.com/x-botlab/mica-js/issues/60)

@@ -31,6 +31,7 @@ const DECLARATION_METHODS = new Set<PropertyKey>([
   'func',
   'entry',
   'lifecycle',
+  'provider',
   'output',
   'outputBytes',
 ]);

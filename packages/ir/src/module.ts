@@ -1,5 +1,5 @@
 import { defineFunctionBody, CORE_INSTRUCTION_NAMES } from './builder';
-import { fail } from './errors';
+import { IRProviderError, fail } from './errors';
 import type {
   ArrayRef,
   BytesOptions,
@@ -14,6 +14,8 @@ import type {
   FunctionDefinition,
   FunctionRef,
   FunctionSignature,
+  GeneratedFunction,
+  GenerationContext,
   InboxRef,
   IRModule,
   IRModuleOptions,
@@ -22,6 +24,11 @@ import type {
   MemoryDefinition,
   OutputDefinition,
   OutputRef,
+  ProviderDefinition,
+  ProviderDescriptor,
+  ProviderRef,
+  ResourceRef,
+  ScalarArgs,
   ScalarType,
   StateRef,
   StaticRef,
@@ -34,8 +41,9 @@ import type {
   MemoryState,
   ModuleState,
   OutputState,
+  ProviderState,
 } from './state';
-import { toFunctionDefinition } from './state';
+import { toFunctionDefinition, toProviderDefinition } from './state';
 import {
   assertCapacity,
   assertName,
@@ -49,11 +57,14 @@ import {
   createFunctionRef,
   createInboxRef,
   createOutputRef,
+  createProviderRef,
   createStateRef,
+  getMemoryMetadata,
+  getRefModule,
   normalizeScalarLiteral,
   assertSynchronousCallback,
 } from './runtime';
-
+import { refKind } from './types';
 const RESERVED_BUILDER_NAMES: ReadonlySet<string> = new Set([
   'const',
   'bits',
@@ -103,6 +114,7 @@ class IRModuleImpl implements IRModule {
     this.core = {
       memories: [],
       functions: [],
+      providers: [],
       domainDeclarations: [],
       instructions: [],
       outputs: [],
@@ -110,6 +122,7 @@ class IRModuleImpl implements IRModule {
       names: new Set(),
       instructionNames: new Set(CORE_INSTRUCTION_NAMES),
       bodyDepth: 0,
+      providerDepth: 0,
     };
   }
 
@@ -119,6 +132,10 @@ class IRModuleImpl implements IRModule {
 
   get functions(): readonly FunctionDefinition[] {
     return this.core.functions.map((declaration) => toFunctionDefinition(declaration));
+  }
+
+  get providers(): readonly ProviderDefinition[] {
+    return this.core.providers.map((provider) => toProviderDefinition(provider));
   }
 
   get domainDeclarations(): readonly DomainDeclaration[] {
@@ -269,6 +286,57 @@ class IRModuleImpl implements IRModule {
       results: [],
     });
     return declaration.ref as unknown as LifecycleRef<P>;
+  }
+
+  provider<
+    const K extends readonly ScalarType[],
+    const P extends readonly ScalarType[],
+    const R extends readonly ScalarType[],
+  >(
+    name: string,
+    descriptor: ProviderDescriptor<K, P, R>,
+    generate: (
+      gen: GenerationContext<NoInfer<P>, NoInfer<R>>,
+      key: ScalarArgs<NoInfer<K>>,
+    ) => GeneratedFunction<NoInfer<P>, NoInfer<R>>,
+  ): ProviderRef<K, P, R> {
+    this.declareName(name);
+    if (typeof descriptor !== 'object' || descriptor === null) {
+      fail(`Provider "${name}" requires a descriptor`);
+    }
+    const keyTypes = assertScalarTypeList(descriptor.keyTypes, `Provider "${name}" keyTypes`);
+    const params = assertScalarTypeList(descriptor.params, `Provider "${name}" params`);
+    const results = assertScalarTypeList(descriptor.results, `Provider "${name}" results`);
+    const reads = captureProviderRefs(
+      this.core,
+      descriptor.reads,
+      `Provider "${name}" reads`,
+      PROVIDER_READ_CATEGORIES,
+      true,
+    ) as readonly ResourceRef[];
+    const imports = captureProviderRefs(
+      this.core,
+      descriptor.imports,
+      `Provider "${name}" imports`,
+      PROVIDER_IMPORT_CATEGORIES,
+      false,
+    );
+    assertSynchronousCallback(generate, `Provider "${name}" generate`);
+    const provider: ProviderState = {
+      module: this.core,
+      name,
+      keyTypes,
+      params,
+      results,
+      reads,
+      imports,
+      generate: generate as (gen: unknown, key: readonly unknown[]) => unknown,
+      ref: undefined as unknown as ProviderRef,
+    };
+    const ref = createProviderRef<K, P, R>(provider);
+    provider.ref = ref as unknown as ProviderRef;
+    this.core.providers.push(provider);
+    return ref;
   }
 
   output<const P extends readonly ScalarType[]>(
@@ -438,11 +506,68 @@ class IRModuleImpl implements IRModule {
 
   private declareName(name: string): void {
     assertName(name, 'Declaration');
+    if (this.core.providerDepth > 0) {
+      throw new IRProviderError(
+        'illegal-operation',
+        `Declaration "${name}" is not allowed during provider generation`,
+      );
+    }
     if (this.core.names.has(name)) {
       fail(`Declaration "${name}" is already declared in this module`);
     }
     this.core.names.add(name);
   }
+}
+
+const PROVIDER_READ_CATEGORIES = new Set(['state', 'array', 'bytes', 'inbox']);
+const PROVIDER_IMPORT_CATEGORIES = new Set([
+  ...PROVIDER_READ_CATEGORIES,
+  'function',
+  'entry',
+  'provider',
+  'scalar-output',
+  'bytes-output',
+]);
+
+function captureProviderRefs(
+  module: ModuleState,
+  values: unknown,
+  label: string,
+  categories: ReadonlySet<string>,
+  trackedRead: boolean,
+): readonly StaticRef[] {
+  if (!Array.isArray(values)) {
+    fail(`${label} must be an array`);
+  }
+  const seen = new Set<object>();
+  return Object.freeze(
+    Array.from(values, (value, index) => {
+      if (typeof value !== 'object' || value === null) {
+        fail(`${label}[${index}] must be a static reference`);
+      }
+      const ref = value as StaticRef;
+      const kind = ref[refKind];
+      if (typeof kind !== 'string' || !categories.has(kind)) {
+        fail(`${label}[${index}] must be a ${[...categories].join(' or ')} reference`);
+      }
+      if (getRefModule(ref) !== module) {
+        fail(`${label}[${index}] belongs to another module`);
+      }
+      if (seen.has(ref)) {
+        fail(`${label}[${index}] is listed more than once`);
+      }
+      seen.add(ref);
+      if (trackedRead && kind === 'bytes') {
+        const memory = getMemoryMetadata(ref);
+        if (memory === undefined || memory.definition.writable) {
+          fail(
+            `${label}[${index}] cannot track writable bytes; ordinary bytes.store does not advance versions`,
+          );
+        }
+      }
+      return ref;
+    }),
+  );
 }
 
 function assertPositiveCapacity(value: unknown, label: string): asserts value is number {

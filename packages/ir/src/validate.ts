@@ -6,8 +6,12 @@ import { validateInstruction } from './validate-instructions';
 import { byteReadonly, refKind, scalarType, signature, valueKind } from './types';
 import type {
   BlockDefinition,
+  DeclaredInstruction,
+  DomainDeclaration,
   FunctionDefinition,
   MemoryDefinition,
+  OutputDefinition,
+  ProviderDefinition,
   ScalarType,
   StaticRef,
   Value,
@@ -16,6 +20,7 @@ import type {
   IRDiagnostic,
   IRDiagnosticCode,
   IRDiagnosticLocation,
+  IRInstructionValidator,
   IRValidationOptions,
   IRValidationResult,
 } from './validation-types';
@@ -33,10 +38,41 @@ interface CallSite {
 }
 
 const coreNames = new Set(CORE_INSTRUCTION_NAMES);
-const terminators = new Set(['return', 'jump', 'branch', 'trap']);
+const terminators = new Set(['return', 'jump', 'branch', 'trap', 'dispatch']);
+const IMPORTABLE_PROVIDER_KINDS = new Set([
+  'state',
+  'array',
+  'bytes',
+  'inbox',
+  'function',
+  'entry',
+  'provider',
+  'scalar-output',
+  'bytes-output',
+]);
 
 export function validateIR(input: unknown, options: IRValidationOptions): IRValidationResult {
   return new Validator().run(input, options);
+}
+
+/** Validate one provider artifact against the module it was generated from (#60). */
+export function validateGeneratedFunction(
+  input: unknown,
+  fn: FunctionDefinition,
+  options: IRValidationOptions,
+  imports: readonly StaticRef[],
+): readonly IRDiagnostic[] {
+  return new Validator().runGenerated(input, fn, options, imports);
+}
+
+interface Lookups {
+  readonly memories: ReadonlyMap<object, MemoryDefinition>;
+  readonly functions: ReadonlyMap<object, FunctionDefinition>;
+  readonly domains: ReadonlyMap<object, DomainDeclaration>;
+  readonly outputs: ReadonlyMap<object, OutputDefinition>;
+  readonly declarations: ReadonlyMap<string, DeclaredInstruction>;
+  readonly validators: ReadonlyMap<string, IRInstructionValidator>;
+  readonly providers: ReadonlyMap<object, ProviderDefinition>;
 }
 
 class Validator {
@@ -57,6 +93,7 @@ class Validator {
           ? {
               memories: input.memories,
               functions: input.functions,
+              providers: input.providers,
               domainDeclarations: input.domainDeclarations,
               instructions: input.instructions,
               outputs: input.outputs,
@@ -274,6 +311,23 @@ class Validator {
         }
       }
     });
+    if (input.providers !== undefined) {
+      this.array(input.providers, { path: 'providers' });
+      (input.providers as unknown[]).forEach((provider, i) => {
+        const location = { path: `providers[${i}]` };
+        if (!this.record(provider, location)) return;
+        this.name(provider.name, location);
+        this.ref(provider.ref, location);
+        this.types(provider.keyTypes, location);
+        this.types(provider.params, location);
+        this.types(provider.results, location);
+        for (const list of ['reads', 'imports'] as const) {
+          if (this.array(provider[list], location)) {
+            for (const ref of provider[list] as unknown[]) this.ref(ref, location);
+          }
+        }
+      });
+    }
     (input.functions as unknown[]).forEach((fn, fi) => {
       let location: IRDiagnosticLocation = { path: `functions[${fi}]`, functionIndex: fi };
       if (!this.record(fn, location)) return;
@@ -344,6 +398,10 @@ class Validator {
           for (const edge of [term.yes, term.no]) {
             if (this.record(edge, at)) this.values(edge.args, at);
           }
+        } else if (term.kind === 'dispatch') {
+          this.ref(term.provider, at);
+          this.values(term.key, at);
+          this.values(term.args, at);
         }
       });
     });
@@ -489,134 +547,301 @@ class Validator {
         );
       }
     }
+    const lookups = this.lookups(module, options);
     const blocks = new Set<object>();
     module.functions.forEach((fn, fi) => this.collect(fn, fi, blocks));
-    const memories = new Map(module.memories.map((memory) => [memory.ref, memory]));
-    const functions = new Map(module.functions.map((fn) => [fn.ref, fn]));
-    const domains = new Map(module.domainDeclarations.map((domain) => [domain.ref, domain]));
-    const outputs = new Map((module.outputs ?? []).map((output) => [output.ref, output]));
-    const declarations = new Map(
-      module.instructions.map((declaration) => [declaration.name, declaration]),
-    );
-    const validators = new Map(options.validators?.map((validator) => [validator.op, validator]));
-    module.functions.forEach((fn, fi) => {
-      if (fn.body === undefined || !fn.body.blocks.includes(fn.body.entry)) return;
-      const dominators = this.dominators(fn);
-      fn.body.blocks.forEach((block, bi) => {
-        const location = this.blockLocation(fn, fi, block, bi);
-        const use = (value: Value, position: number, at: IRDiagnosticLocation): void => {
-          const definition = this.definitions.get(value);
-          if (definition === undefined || definition.functionIndex !== fi) {
-            this.report('ssa-undefined', 'SSA value is not defined in this function', at);
-          } else if (
-            definition.block === block
-              ? definition.position >= position
-              : !(definition.block === fn.body?.entry && definition.position === -1) &&
-                !dominators.get(block)?.has(definition.block)
-          ) {
-            this.report('ssa-dominance', 'SSA definition does not dominate this use', at);
-          }
+    (module.providers ?? []).forEach((provider, i) => {
+      const location = { path: `providers[${i}]` };
+      register(provider.name, provider.ref, location);
+      this.provider(provider, location, lookups);
+    });
+    module.functions.forEach((fn, fi) => this.validateFunction(module, fn, fi, lookups, options));
+    this.recursion(module.functions);
+  }
+
+  private lookups(module: ModuleModel, options: IRValidationOptions): Lookups {
+    return {
+      memories: new Map(module.memories.map((memory) => [memory.ref, memory])),
+      functions: new Map(module.functions.map((fn) => [fn.ref, fn])),
+      domains: new Map(module.domainDeclarations.map((domain) => [domain.ref, domain])),
+      outputs: new Map((module.outputs ?? []).map((output) => [output.ref, output])),
+      declarations: new Map(
+        module.instructions.map((declaration) => [declaration.name, declaration]),
+      ),
+      validators: new Map(options.validators?.map((validator) => [validator.op, validator])),
+      providers: new Map((module.providers ?? []).map((provider) => [provider.ref, provider])),
+    };
+  }
+
+  private validateFunction(
+    module: ModuleModel,
+    fn: FunctionDefinition,
+    fi: number,
+    lookups: Lookups,
+    options: IRValidationOptions,
+    imports?: ReadonlySet<object>,
+  ): void {
+    const { memories, functions, domains, outputs, declarations, validators, providers } = lookups;
+    if (fn.body === undefined || !fn.body.blocks.includes(fn.body.entry)) return;
+    const dominators = this.dominators(fn);
+    fn.body.blocks.forEach((block, bi) => {
+      const location = this.blockLocation(fn, fi, block, bi);
+      const use = (value: Value, position: number, at: IRDiagnosticLocation): void => {
+        const definition = this.definitions.get(value);
+        if (definition === undefined || definition.functionIndex !== fi) {
+          this.report('ssa-undefined', 'SSA value is not defined in this function', at);
+        } else if (
+          definition.block === block
+            ? definition.position >= position
+            : !(definition.block === fn.body?.entry && definition.position === -1) &&
+              !dominators.get(block)?.has(definition.block)
+        ) {
+          this.report('ssa-dominance', 'SSA definition does not dominate this use', at);
+        }
+      };
+      block.instructions.forEach((node, ii) => {
+        const at = {
+          ...location,
+          path: `${location.path}.instructions[${ii}]`,
+          instructionIndex: ii,
         };
-        block.instructions.forEach((node, ii) => {
-          const at = {
-            ...location,
-            path: `${location.path}.instructions[${ii}]`,
-            instructionIndex: ii,
-          };
-          for (const operand of node.operands) {
-            if (operand.kind === 'ssa') use(operand.value, ii, at);
-            else if (operand.kind === 'ssa-list') {
-              for (const value of operand.values) use(value, ii, at);
-            }
+        for (const operand of node.operands) {
+          if (operand.kind === 'ssa') use(operand.value, ii, at);
+          else if (operand.kind === 'ssa-list') {
+            for (const value of operand.values) use(value, ii, at);
           }
-          if (terminators.has(node.op)) {
-            this.report(
-              'invalid-terminator',
-              'Terminator cannot appear in the instruction list',
-              at,
-            );
-            return;
-          }
-          validateInstruction(node, {
-            module,
-            fn,
-            block,
-            location: at,
-            options,
-            memories,
-            functions,
-            domains,
-            outputs,
-            declarations,
-            validators,
-            report: (code, message) => this.report(code, message, at),
-            call: (target) => this.callSites.push({ source: fn, target, location: at }),
-          });
+        }
+        if (terminators.has(node.op)) {
+          this.report('invalid-terminator', 'Terminator cannot appear in the instruction list', at);
+          return;
+        }
+        validateInstruction(node, {
+          module,
+          fn,
+          block,
+          location: at,
+          options,
+          memories,
+          functions,
+          domains,
+          outputs,
+          declarations,
+          validators,
+          providers,
+          ...(imports === undefined ? {} : { imports }),
+          report: (code, message) => this.report(code, message, at),
+          call: (target) => this.callSites.push({ source: fn, target, location: at }),
         });
-        const at = { ...location, path: `${location.path}.terminator`, terminator: true as const };
-        const term = block.terminator;
-        if (term === undefined) {
-          this.report('invalid-terminator', 'Block must have a terminator', at);
-          return;
-        }
-        if (!terminators.has(term.kind)) {
-          this.report(
-            typeof term.kind === 'string' && isReservedOperation(term.kind)
-              ? 'unsupported-instruction'
-              : 'invalid-terminator',
-            'Unknown or unsupported terminator',
-            at,
-          );
-          return;
-        }
-        if (!options.supportedInstructions.includes(term.kind))
-          this.report('unsupported-instruction', 'Backend does not support this terminator', at);
-        if (!options.authorizedInstructions.includes(term.kind))
-          this.report('unauthorized-instruction', 'Terminator is not authorized', at);
-        const edge = (target: BlockDefinition, args: readonly Value[]): void => {
-          args.forEach((value) => use(value, block.instructions.length, at));
-          if (!fn.body?.blocks.includes(target))
-            this.report('invalid-block', 'Edge target is not a block of this function', at);
-          else if (
+      });
+      const at = { ...location, path: `${location.path}.terminator`, terminator: true as const };
+      const term = block.terminator;
+      if (term === undefined) {
+        this.report('invalid-terminator', 'Block must have a terminator', at);
+        return;
+      }
+      if (!terminators.has(term.kind)) {
+        this.report(
+          typeof term.kind === 'string' && isReservedOperation(term.kind)
+            ? 'unsupported-instruction'
+            : 'invalid-terminator',
+          'Unknown or unsupported terminator',
+          at,
+        );
+        return;
+      }
+      if (!options.supportedInstructions.includes(term.kind))
+        this.report('unsupported-instruction', 'Backend does not support this terminator', at);
+      if (!options.authorizedInstructions.includes(term.kind))
+        this.report('unauthorized-instruction', 'Terminator is not authorized', at);
+      const edge = (target: BlockDefinition, args: readonly Value[]): void => {
+        args.forEach((value) => use(value, block.instructions.length, at));
+        if (!fn.body?.blocks.includes(target))
+          this.report('invalid-block', 'Edge target is not a block of this function', at);
+        else if (
+          !sameTypes(
+            args.map((value) => value.type),
+            target.params.map((value) => value.type),
+          )
+        )
+          this.report('signature-mismatch', 'Edge arguments do not match block parameters', at);
+      };
+      switch (term.kind) {
+        case 'jump':
+          edge(term.target, term.args);
+          break;
+        case 'branch':
+          use(term.condition, block.instructions.length, at);
+          if (term.condition.type !== 'bool')
+            this.report('type-mismatch', 'Branch condition must be bool', at);
+          edge(term.yes.target, term.yes.args);
+          edge(term.no.target, term.no.args);
+          break;
+        case 'return':
+          term.values.forEach((value) => use(value, block.instructions.length, at));
+          if (
             !sameTypes(
-              args.map((value) => value.type),
-              target.params.map((value) => value.type),
+              term.values.map((value) => value.type),
+              fn.results,
             )
           )
-            this.report('signature-mismatch', 'Edge arguments do not match block parameters', at);
-        };
-        switch (term.kind) {
-          case 'jump':
-            edge(term.target, term.args);
+            this.report(
+              'signature-mismatch',
+              'Return values do not match the function signature',
+              at,
+            );
+          break;
+        case 'trap':
+          if (typeof term.code !== 'string' || term.code.length === 0)
+            this.report('invalid-terminator', 'Trap requires a non-empty static code', at);
+          break;
+        case 'dispatch': {
+          term.key.forEach((value) => use(value, block.instructions.length, at));
+          term.args.forEach((value) => use(value, block.instructions.length, at));
+          const provider = providers.get(term.provider);
+          if (provider === undefined) {
+            this.report(
+              'invalid-static-reference',
+              'Dispatch target is not a provider declared by this module',
+              at,
+            );
             break;
-          case 'branch':
-            use(term.condition, block.instructions.length, at);
-            if (term.condition.type !== 'bool')
-              this.report('type-mismatch', 'Branch condition must be bool', at);
-            edge(term.yes.target, term.yes.args);
-            edge(term.no.target, term.no.args);
-            break;
-          case 'return':
-            term.values.forEach((value) => use(value, block.instructions.length, at));
-            if (
-              !sameTypes(
-                term.values.map((value) => value.type),
-                fn.results,
-              )
+          }
+          if (imports !== undefined && !imports.has(term.provider)) {
+            this.report(
+              'provider-import-violation',
+              'Dispatch target is not imported by this provider',
+              at,
+            );
+          }
+          if (
+            !sameTypes(
+              term.key.map((value) => value.type),
+              provider.keyTypes,
             )
-              this.report(
-                'signature-mismatch',
-                'Return values do not match the function signature',
-                at,
-              );
-            break;
-          case 'trap':
-            if (typeof term.code !== 'string' || term.code.length === 0)
-              this.report('invalid-terminator', 'Trap requires a non-empty static code', at);
+          ) {
+            this.report(
+              'provider-key-mismatch',
+              'Dispatch key does not match the provider key layout',
+              at,
+            );
+          }
+          if (
+            !sameTypes(
+              term.args.map((value) => value.type),
+              provider.params,
+            )
+          ) {
+            this.report(
+              'signature-mismatch',
+              'Dispatch arguments do not match the provider signature',
+              at,
+            );
+          }
+          if (!sameTypes(fn.results, provider.results)) {
+            this.report(
+              'signature-mismatch',
+              'Dispatch results do not match the current function results',
+              at,
+            );
+          }
+          break;
         }
-      });
+      }
     });
-    this.recursion(module.functions);
+  }
+
+  private provider(
+    provider: ProviderDefinition,
+    location: IRDiagnosticLocation,
+    lookups: Lookups,
+  ): void {
+    const invalid = (message: string): void => this.report('invalid-provider', message, location);
+    if (provider.ref[refKind] !== 'provider') {
+      invalid('Provider reference category differs from its declaration');
+    }
+    const layout = provider.ref[signature];
+    if (
+      !isRecord(layout) ||
+      !Array.isArray(layout.params) ||
+      !Array.isArray(layout.results) ||
+      !Array.isArray(layout.keyTypes) ||
+      !sameTypes(layout.params, provider.params) ||
+      !sameTypes(layout.results, provider.results) ||
+      !sameTypes(layout.keyTypes, provider.keyTypes)
+    ) {
+      this.report(
+        'signature-mismatch',
+        'Provider reference signature differs from the actual declaration',
+        location,
+      );
+    }
+    for (const type of [...provider.keyTypes, ...provider.params, ...provider.results]) {
+      if (!isScalarType(type)) invalid('Provider layout contains an invalid scalar type');
+    }
+    const seenReads = new Set<object>();
+    for (const ref of provider.reads) {
+      const memory = lookups.memories.get(ref);
+      if (memory === undefined || !['state', 'array', 'bytes', 'inbox'].includes(memory.kind)) {
+        invalid('Provider reads must reference a declared resource');
+        continue;
+      }
+      if (seenReads.has(ref)) invalid('Provider reads list the same resource more than once');
+      seenReads.add(ref);
+      if (memory.kind === 'bytes' && memory.writable) {
+        invalid('Provider reads cannot track writable bytes; ordinary bytes.store has no version');
+      }
+    }
+    const seenImports = new Set<object>();
+    for (const ref of provider.imports) {
+      const kind = ref[refKind];
+      const known =
+        lookups.memories.has(ref) ||
+        lookups.functions.has(ref) ||
+        lookups.providers.has(ref) ||
+        lookups.outputs.has(ref);
+      if (typeof kind !== 'string' || !IMPORTABLE_PROVIDER_KINDS.has(kind) || !known) {
+        invalid(
+          'Provider imports must reference a declared resource, function, entry, provider, or output',
+        );
+        continue;
+      }
+      if (seenImports.has(ref)) invalid('Provider imports list the same reference more than once');
+      seenImports.add(ref);
+    }
+  }
+
+  runGenerated(
+    input: unknown,
+    fn: FunctionDefinition,
+    options: IRValidationOptions,
+    imports: readonly StaticRef[],
+  ): readonly IRDiagnostic[] {
+    try {
+      if (this.optionsShape(options)) {
+        const model = isRecord(input)
+          ? {
+              memories: input.memories,
+              functions: input.functions,
+              providers: input.providers,
+              domainDeclarations: input.domainDeclarations,
+              instructions: input.instructions,
+              outputs: input.outputs,
+            }
+          : input;
+        if (this.moduleShape(model)) {
+          const typed = model as unknown as ModuleModel;
+          const lookups = this.lookups(typed, options);
+          const index = typed.functions.length;
+          this.collect(fn, index, new Set());
+          this.validateFunction(typed, fn, index, lookups, options, new Set<object>(imports));
+        }
+      }
+    } catch {
+      this.report('malformed-input', 'Provider artifact could not be read safely', {
+        path: 'providers.generated',
+      });
+    }
+    return this.diagnostics;
   }
 
   private memory(memory: MemoryDefinition, location: IRDiagnosticLocation): void {

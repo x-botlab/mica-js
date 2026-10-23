@@ -7,6 +7,7 @@ import type {
   IRModule,
   MemoryDefinition,
   OutputDefinition,
+  ProviderDefinition,
 } from './types';
 import type {
   IRDiagnosticCode,
@@ -20,6 +21,7 @@ export type ModuleModel = Pick<
   'memories' | 'functions' | 'domainDeclarations' | 'instructions'
 > & {
   readonly outputs?: readonly OutputDefinition[];
+  readonly providers?: readonly ProviderDefinition[];
 };
 
 export interface InstructionValidationState {
@@ -34,6 +36,9 @@ export interface InstructionValidationState {
   readonly outputs: ReadonlyMap<object, OutputDefinition>;
   readonly declarations: ReadonlyMap<string, DeclaredInstruction>;
   readonly validators: ReadonlyMap<string, IRInstructionValidator>;
+  readonly providers: ReadonlyMap<object, ProviderDefinition>;
+  /** Set when validating a provider artifact; every static reference must be imported. */
+  readonly imports?: ReadonlySet<object>;
   report(code: IRDiagnosticCode, message: string): void;
   call(target: FunctionDefinition, instruction: InstructionNode): void;
 }

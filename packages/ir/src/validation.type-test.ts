@@ -47,6 +47,10 @@ type DiagnosticCodes = Assert<
     | 'unsupported-instruction'
     | 'domain-validation'
     | 'extension-error'
+    | 'invalid-provider'
+    | 'provider-key-mismatch'
+    | 'unsupported-provider'
+    | 'provider-import-violation'
   >
 >;
 declare const checkedSignature: ValidationSignature;

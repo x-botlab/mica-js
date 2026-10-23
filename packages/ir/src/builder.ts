@@ -9,6 +9,7 @@ import type {
   FunctionRef,
   InstructionOperand,
   OutputRef,
+  ProviderRef,
   ReadableBytesRef,
   ScalarType,
   StateRef,
@@ -40,6 +41,7 @@ import {
   getInstructionMetadata,
   getMemoryMetadata,
   getOutputMetadata,
+  getProviderMetadata,
   getValueMetadata,
   isFloatType,
   isIntegerType,
@@ -111,6 +113,7 @@ const CORE_OPERATIONS = [
   'event.now',
   'event.at',
   'event.cancel',
+  'dispatch',
   'return',
   'jump',
   'branch',
@@ -123,6 +126,22 @@ const PREDICATES = new Set(['eq', 'ne', 'lt', 'le', 'gt', 'ge']);
 const ENDIANS = new Set(['little', 'big']);
 
 export function defineFunctionBody(declaration: FunctionDeclarationState, callback: unknown): void {
+  buildFunctionBody(declaration, callback, false);
+}
+
+/** Build one provider artifact body while its generation callback is running (#60). */
+export function buildGeneratedFunctionBody(
+  declaration: FunctionDeclarationState,
+  callback: unknown,
+): void {
+  buildFunctionBody(declaration, callback, true);
+}
+
+function buildFunctionBody(
+  declaration: FunctionDeclarationState,
+  callback: unknown,
+  generated: boolean,
+): void {
   if (declaration.body !== undefined) {
     fail(`Function "${declaration.name}" already has a body`);
   }
@@ -131,6 +150,9 @@ export function defineFunctionBody(declaration: FunctionDeclarationState, callba
   }
   const bodyLabel = `Body callback for "${declaration.name}"`;
   assertSynchronousCallback(callback, bodyLabel);
+  if (!generated && declaration.module.providerDepth > 0) {
+    fail(`Cannot define "${declaration.name}" during provider generation`);
+  }
   if (declaration.module.bodyDepth > 0) {
     fail(`Cannot define function "${declaration.name}" inside another function body`);
   }
@@ -1059,6 +1081,32 @@ function createBuilderObject(state: BuilderState): unknown {
       length: Value,
     ): Value<'bool'> {
       return outputOperations.outputBytes(ref, region, offset, length);
+    },
+    dispatch(provider: ProviderRef, key: readonly Value[], args: readonly Value[]): undefined {
+      if (typeof provider !== 'object' || provider === null) {
+        fail('dispatch target must be a provider reference');
+      }
+      if (provider[refKind] !== 'provider') {
+        fail(`dispatch target must be a provider reference, received ${String(provider[refKind])}`);
+      }
+      const target = getProviderMetadata(provider);
+      if (target === undefined || target.module !== module) {
+        fail('dispatch target is not a provider declared by this module');
+      }
+      const keyTypes = target.keyTypes;
+      const params = target.params;
+      assertValueList(key, state, keyTypes, 'dispatch key');
+      assertValueList(args, state, params, 'dispatch arguments');
+      const results = state.declaration.results;
+      if (
+        results.length !== target.results.length ||
+        results.some((type, index) => type !== target.results[index])
+      ) {
+        fail(
+          `dispatch target returns (${target.results.join(', ')}), not the current (${results.join(', ')})`,
+        );
+      }
+      return terminate({ kind: 'dispatch', provider, key: [...key], args: [...args] }, 'dispatch');
     },
     block(types: readonly ScalarType[]): BlockRef {
       return makeBlock(types);
