@@ -1,14 +1,62 @@
 # @mica-js/ir
 
-领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔/浮点逐指令语义、实例存储与参考解释器。
+领域无关的 IR：同步类型化建图器、实例存储、静态校验、参考解释器与 JIT 编译器。不导入任何领域类型——引脚、连接、电源等都通过显式声明与可信执行器接入。
 
-本包负责**建图、实例存储、静态校验与执行**：声明标量资源与函数、构造 SSA 值、基本块与终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。提供显式 IR 输出端点与 `bridge.send` / `bridge.send_bytes` 的宿主桥接，以及按 key 生成、依赖跟踪与实例内缓存的 Provider 产物；产物 checkpoint 支持运行中依赖失效后的尾派发恢复。`createIRInterpreter` 提供参考解释器，`createIRJIT` 提供同一执行契约的编译引擎。不提供事件调度、话题路由或通知队列。校验通过不代表已经执行，未实现的能力显式拒绝，不以空操作伪装成功。
+## 架构
+
+```mermaid
+flowchart LR
+  builder["createIRModule()<br/>声明资源 · 构建函数体"] --> module["IRModule<br/>纯数据快照"]
+  module --> validate["validateIR()<br/>结构 · SSA · 支配 · 权限"]
+  module --> storage["createIRStorage()<br/>实例存储"]
+  validate --> interpreter["createIRInterpreter()<br/>参考解释器"]
+  validate --> jit["createIRJIT()<br/>JIT 编译器"]
+  storage --> interpreter
+  storage --> jit
+  interpreter --> eventHost["IREventHost<br/>事件桥接"]
+  interpreter --> bridge["IRBridgeHost<br/>输出桥接"]
+  interpreter --> executors["IRInstructionExecutor[]<br/>领域指令"]
+  jit --> eventHost
+  jit --> bridge
+  jit --> executors
+  provider["ir.provider()<br/>生成产物"] --> interpreter
+  provider --> jit
+```
 
 ## 安装
 
 ```bash
 pnpm add @mica-js/ir
 ```
+
+## 快速上手
+
+```ts
+import { createIRInterpreter, createIRModule } from '@mica-js/ir';
+
+const module = createIRModule();
+const count = module.state('count', 'u32', 0);
+const increment = module.func('increment', { params: ['u32'], results: ['u32'] });
+increment.body((b, [delta]) => {
+  const next = b.int.add(b.state.load(count), delta);
+  b.state.store(count, next);
+  b.return([next]);
+});
+
+const operations = ['state.load', 'int.add', 'state.store', 'return'];
+const runtime = createIRInterpreter(module, {
+  validation: {
+    supportedInstructions: operations,
+    authorizedInstructions: operations,
+    resources: [{ ref: count, access: 'read-write' }],
+  },
+});
+
+runtime.execute(increment, [3], { instanceId: 'counter', virtualTime: 0 });
+runtime.storage.loadState(count); // 3
+```
+
+**JIT 使用同样的 API**，只需将 `createIRInterpreter` 替换为 `createIRJIT`，结果、步数、错误与参考解释器完全等价。
 
 ## 公共入口
 

@@ -1,6 +1,35 @@
 # @mica-js/core
 
-Mica 仿真内核（虚拟时间与确定性事件调度），并提供原理图 `.sch` 与画布 `.cnv` 的文档格式子路径。
+Mica 仿真内核：整数皮秒虚拟时间与确定性事件调度，并在其上提供电气网络求值、连接拓扑与电源域门控。同一包的子入口还提供原理图 `.sch` 与画布 `.cnv` 的文档格式。
+
+## 入口
+
+| 入口                      | 内容                                                 |
+| ------------------------- | ---------------------------------------------------- |
+| `@mica-js/core`           | 仿真内核：时间、调度、电气求值、连接拓扑、电源域     |
+| `@mica-js/core/schematic` | `.sch`：解析、序列化、拓扑推导、编辑命令、器件注册表 |
+| `@mica-js/core/canvas`    | `.cnv`：widget 实例、属性覆盖、端口绑定与绑定校验    |
+
+## 架构
+
+```mermaid
+flowchart TD
+  subgraph core["@mica-js/core"]
+    scheduler["Scheduler<br/>虚拟时间 · 事件队列 · 控制阶段"]
+    topology["TopologyRuntime<br/>内部连接 · 连通分量 · 原子 patch"]
+    power["PowerRuntime<br/>电源域 · 迟滞 · 门控 · 通知"]
+    electrical["resolveElectricalNetwork<br/>理想电压 · 弱偏置 · 浮空"]
+    adapter["createIRSchedulerInstance<br/>IR JIT/解释器 ↔ 调度器"]
+    documents["schematic / canvas 子入口"]
+  end
+
+  ir["@mica-js/ir JIT/解释器"] --> adapter
+  adapter --> scheduler
+  topology --> scheduler
+  topology --> electrical
+  power --> topology
+  power --> scheduler
+```
 
 ## 安装
 
@@ -8,19 +37,47 @@ Mica 仿真内核（虚拟时间与确定性事件调度），并提供原理图
 pnpm add @mica-js/core
 ```
 
-## 入口
+## 快速上手
 
-| 入口                      | 内容                                                     |
-| ------------------------- | -------------------------------------------------------- |
-| `@mica-js/core`           | 仿真内核（时间调度、电气网络求值、连接拓扑、电源域门控） |
-| `@mica-js/core/schematic` | 原理图 `.sch`：解析、拓扑推导、编辑命令与属性系统        |
-| `@mica-js/core/canvas`    | 画布 `.cnv`：widget 实例的摆放、属性覆盖与端口绑定       |
+```ts
+import { createIRModule } from '@mica-js/ir';
+import { createIRSchedulerInstance, createScheduler } from '@mica-js/core';
 
-文件合同：`.sch` 见 [#6](https://github.com/x-botlab/mica-js/issues/6)，`.cnv` 见 [#67](https://github.com/x-botlab/mica-js/issues/67)。
+const module = createIRModule();
+const count = module.state('count', 'u32', 0);
+const tick = module.entry('tick', []);
+tick.body((b) => {
+  b.state.store(count, b.int.add(b.state.load(count), b.const('u32', 1)));
+  b.event.at(tick, b.float.add(b.event.now(), b.const('f64', 1000)), []); // 1 ns 后再触发
+  b.return([]);
+});
 
-## 仿真调度
+const operations = [
+  'const',
+  'state.load',
+  'int.add',
+  'float.add',
+  'state.store',
+  'event.now',
+  'event.at',
+  'return',
+];
+const scheduler = createScheduler();
+const instance = createIRSchedulerInstance(scheduler, {
+  instanceId: 'counter',
+  module,
+  validation: {
+    supportedInstructions: operations,
+    authorizedInstructions: operations,
+    resources: [{ ref: count, access: 'read-write' }],
+  },
+});
 
-整数皮秒虚拟时间、确定性普通事件与公共控制调度，对应 [#48](https://github.com/x-botlab/mica-js/issues/48)。依据 [#23](https://github.com/x-botlab/mica-js/issues/23)、[#26](https://github.com/x-botlab/mica-js/issues/26)；已批准的公共合同及执行边界见 [调度合同](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322004590)、[IR 接入补充](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322166225) 和 [审批记录](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322233200)。上游发布命名及多入口集成已[另行批准](https://github.com/x-botlab/mica-js/issues/48#issuecomment-6322661335)。仿真 API 入口为 `@mica-js/core`，既有 `MICA_CORE_VERSION` 与原理图/画布子入口保留。
+instance.at(tick, 0, []);
+const report = scheduler.start({ until: 10_000 });
+// report = { timePs: 10000, executed: 11, reason: 'until' }
+instance.storage.loadState(count); // 11
+```
 
 ## 时间
 

@@ -1,40 +1,56 @@
-# 器件作者示例：理想按钮、理想继电器与教学 MCU
+# 器件作者示例
 
-本目录存放已提交的真实器件模型。每个器件遵循 [器件定义](https://github.com/x-botlab/mica-js/issues/11) 的同目录同名配对：描述与实现分别使用 `<id>.json` 与 `<id>.js`，加载时由宿主 `IDeviceProvider` 读取两份文件，`loadDeviceModule` 只导入实现源码。
+本目录存放三个已提交的器件模型，作为器件作者面的可执行参考。每个器件遵循同目录同名配对：描述 `<id>.json` 与实现 `<id>.js`，由宿主 `IDeviceProvider` 读取两份文件，`loadDeviceModule` 只导入实现源码。
 
-| 器件       | 文件            | 行为                                                                                                                                                     |
-| ---------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 理想按钮   | `ideal-button/` | 话题 `pressed` 驱动被动双向触点 `contact`（`A`–`B`）；initialize 与 reset 复位为断开；不驱动任何引脚                                                     |
-| 理想继电器 | `ideal-relay/`  | `IN` 的边沿由 `observeDigital` 捕获；`apply` 用捕获电平在同一 patch 原子切换 `normallyOpen`（`COM`–`NO`）与 `normallyClosed`（`COM`–`NC`）；不声明 reset |
-| 教学 MCU   | `teaching-mcu/` | #8 §8.2 / #26 §16.4 的两字节合成 ISA：`0x10` ADD、`0x20` JMP、`0x30` JNZ、`0x00` HALT；Provider 按 PC 生成一个客体基本块，块末写 GPIO 并安排下一次入口   |
+这些文件不是 `@mica-js/device` 的包实现：它们位于 `src/` 之外，也不从包入口导出，因此不会随包发布。
 
-按钮/继电器只使用已确认的作者面：`api.ir` 静态声明、`b.pin`、`b.observe`、`b.connection`、`api.subscribe` / `api.post` 与生命周期绑定；没有运行期 JS 解码引脚协议，也没有用宿主输出代替被动触点。
+| 器件       | 目录            | 行为                                                                                                                                                                                              |
+| ---------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 理想按钮   | `ideal-button/` | 引脚 `A` / `B`、连接 `contact`（初始 open）、输入话题 `pressed`；`b.connection.apply` 接通 / 断开被动双向触点；initialize 与 reset 都复位为断开，任何引脚都不被驱动                               |
+| 理想继电器 | `ideal-relay/`  | 引脚 `IN` / `COM` / `NO` / `NC`、连接 `normallyOpen` / `normallyClosed`；`b.pin.sampleDigital(IN)` 建立初始触点并启用 `observeDigital`；捕获到的电平在同一 patch 内原子切换两路触点；不声明 reset |
+| 教学 MCU   | `teaching-mcu/` | 引脚 `GPIO`、输入话题 `firmwarePatch`；两字节合成 ISA（`0x10` ADD、`0x20` JMP、`0x30` JNZ、`0x00` HALT），Provider 按 PC 生成一个基本块，块末写 GPIO 并安排下一次入口                             |
 
-教学 MCU 使用 `ir.provider` 的受追踪读取、`b.pin.writeDigital`、`b.event.at` 与 `api.subscribe` / `api.updateBytes`。固件固定为 12 B、按 8 B 版本单元划分；`firmwarePatch` 输入端口接受字节载荷并从偏移 0 更新固件。示例的两种重要限制：
+按钮与继电器只使用公开的器件作者面：`api.ir` 静态声明、`b.pin`、`b.observe`、`b.connection`、`api.subscribe` / `api.post` 与生命周期绑定；没有运行期 JS 解码引脚协议，也没有用宿主输出代替被动触点。
 
-- 每条合成指令计 10,000 ps，模型只在块边界可观察；GPIO 是块末 `r0` 最低位的教学调试镜像。它不是 AVR/8051 等真实 ISA，不模拟中断、流水线、MMIO 或逐周期时序，也不允许据此声称真实 MCU 可以无条件整块提前提交。
-- 固件声明为 `readonly: true`，客体生成代码只读取它。宿主通过实例选项 `updateResources: ['firmware']` 单独授予 `api.updateBytes` 更新路径；`readonly` 本身不授予该权限，也不允许普通客体写入。
+教学 MCU 另外使用 `ir.provider` 的受追踪读取、`b.pin.writeDigital`、`b.event.at` 与 `api.updateBytes`。固件固定为 12 B、按 8 B 版本单元划分；`firmwarePatch` 接受字节载荷并从偏移 0 更新固件。
 
-## 与实现的关系
+## 数据流
 
-- 这些文件不是 `@mica-js/device` 的包实现：`tsconfig.build.json` 只包含 `src`，`package.json` 的 `files` 仅含 `dist`，因此它们不会进入 `dist` 或发布包。
-- 放在 `examples/` 而不是 `src/`：模型是器件作者产物，保留原始 JSON/JS 配对便于宿主、文档和后续 Playground 直接复用；同时与包源码和测试辅助代码区分。
-- 端到端回归在 [`../src/e2e/button-relay.test.ts`](../src/e2e/button-relay.test.ts)：从磁盘读取按钮/继电器文件，走 `loadDeviceModule` → `createDeviceInstance` → scheduler/IR → `createPowerRuntime` → `b.connection.apply` → topology 的完整链路，断言网络电压、观察投递、原子切换、复位、实例隔离、掉电门控与电气冲突行为。
-- 教学 MCU 回归在 [`../src/e2e/teaching-mcu.test.ts`](../src/e2e/teaching-mcu.test.ts)：从磁盘读取 `teaching-mcu.json` / `.js`，走 `loadDeviceModule` → `createDeviceInstance` → `validateIR` → scheduler → `createPowerRuntime` → Provider 生成/缓存 → 消息更新 → HALT 的完整链路；断言 PC/R0/GPIO/事件时间轨迹、运行时条件分支与 u32 回绕、8 B 单元更新后的生成次数、256 B/整资源单元的保守失效，以及缺少固件/非法地址/非法指令/HALT 行为。checkpoint 不自修改重放在 [`../src/e2e/self-modifying-checkpoint.test.ts`](../src/e2e/self-modifying-checkpoint.test.ts) 中以 helper 自修改 fixture 验证。
+```mermaid
+flowchart TD
+  subgraph button["理想按钮"]
+    press["话题 pressed: boolean"] --> setPressed["entry setPressed(bool)"]
+    setPressed --> contact["b.connection.apply(contact)"]
+  end
 
-## 已知前提
+  contact --> net["触点网络<br/>A ↔ B"]
 
-端到端用例依赖两处**非公共合同**前提：同刻控制条目按实例注册顺序执行（`initialize` 补丁顺序断言即由此而来），以及测试板的 `VCC`/`LOAD` 供电、`COIL*`/`NO*`/`NC*` 上下拉与 `board` 电源域绑定属于宿主侧电路。改动调度器同刻 control 排序或该测试板接线都会改变断言，需要同步更新。
+  subgraph relay["理想继电器"]
+    net --> in["引脚 IN"]
+    in --> observe["observeDigital<br/>边沿捕获"]
+    observe --> changed["entry changed(u8, u32)"]
+    changed --> toggle["apply(normallyOpen, normallyClosed)"]
+  end
 
-教学 MCU 用例另外依赖宿主提供 `updateResources: ['firmware']` 的独立更新授权，以及测试板把 `mcu.GPIO` 与 `board.SENSE` 接在同一网络、`SENSE` 下拉开漏且 `board` 逻辑域由 5 V `VCC` 供电。它不依赖真实芯片的电气时序。
-
-## 运行
-
-在仓库根目录运行：
-
-```powershell
-pnpm --filter @mica-js/device test
-pnpm --filter @mica-js/device typecheck
+  subgraph mcu["教学 MCU"]
+    fw["firmwarePatch 字节"] --> update["api.updateBytes(firmware)"]
+    update --> gen["ir.provider 重生成"]
+    gen --> tick["entry step"]
+    tick --> gpio["b.pin.writeDigital(GPIO)"]
+    tick --> at["b.event.at(step, now + 10 ns)"]
+  end
 ```
 
-按钮/继电器只覆盖理想模型语义：无抖动、无接触电阻、无机械延迟、无线圈电流或吸合阈值。教学 MCU 只覆盖块边界的合成 ISA 语义，不覆盖真实指令集、中断、流水线、MMIO、块内观察者或真实周期时序。模拟量完整行为与协议库不在本目录范围。
+## 宿主要求
+
+示例只描述器件本身，板级接线由宿主提供：
+
+- 按钮与继电器需要一个电气网络把触点串进电路；供电轨、上拉 / 下拉与电源域绑定都属于宿主侧电路，不是器件模型的一部分。
+- 继电器依赖「同刻多份控制工作按实例注册顺序执行」，因此多颗器件的 `initialize` 补丁顺序是确定的。
+- 教学 MCU 需要宿主通过 `updateResources: ['firmware']` 授予固件更新权限，并把 `GPIO` 接入一个由 5 V 供电、带下拉的逻辑域。它不依赖真实芯片的电气时序。
+
+## 限制
+
+- 按钮与继电器只覆盖理想模型语义：无抖动、无接触电阻、无机械延迟、无线圈电流或吸合阈值。
+- 教学 MCU 只覆盖块边界的合成 ISA 语义：每条合成指令计 10,000 ps，GPIO 是块末 `r0` 最低位的教学调试镜像。它不是 AVR / 8051 等真实 ISA，不模拟中断、流水线、MMIO 或逐周期时序。
+- 固件声明为 `readonly: true`，客体生成代码只读取它；`readonly` 本身不授予更新权限，也不允许普通客体写入。
