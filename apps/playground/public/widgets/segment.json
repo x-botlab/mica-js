@@ -6,17 +6,33 @@
       "type": "number",
       "title": "笔画粗细",
       "description": "笔画宽度占字高的比例",
-      "default": 0.13,
+      "default": 0.1,
       "min": 0.04,
       "max": 0.4
     },
     "spacing": {
       "type": "number",
       "title": "位间距",
-      "description": "每个数位格子左右留白的比例（小数点另占一列）",
+      "description": "每个数位格子左右留白的比例",
       "default": 0.1,
       "min": 0,
       "max": 0.7
+    },
+    "pointSize": {
+      "type": "number",
+      "title": "小数点大小",
+      "description": "占字高的比例，0 表示不画",
+      "default": 0.06,
+      "min": 0,
+      "max": 0.3
+    },
+    "pointGap": {
+      "type": "number",
+      "title": "小数点间距",
+      "description": "小数点与数字之间的距离，占字高的比例",
+      "default": 0.05,
+      "min": 0,
+      "max": 0.3
     }
   },
   "ports": {
