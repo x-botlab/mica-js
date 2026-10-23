@@ -105,6 +105,22 @@ export interface PowerVoltageSample {
   readonly source: PowerVoltageSource;
 }
 
+/** One digital pin interpretation that changed in a completed electrical resolution phase. */
+export interface PowerDigitalPinChange {
+  readonly instanceId: string;
+  readonly pinName: string;
+  readonly sample: PowerDigitalSample;
+}
+
+/**
+ * Change-only digital pin observer. Registrations receive no initial replay; current values are
+ * read through {@link PowerRuntime.sampleDigital}. Callbacks run synchronously at the end of a
+ * resolution phase and must only enqueue work or read state.
+ */
+export interface PowerDigitalPinObserver {
+  onDigitalPinChange(changes: readonly PowerDigitalPinChange[]): void;
+}
+
 export interface PowerFloatingOptions {
   /** u32 seed used by `mica-floating-v2`. */
   readonly seed: number;
@@ -149,5 +165,11 @@ export interface PowerRuntime {
   sampleVoltage(pin: TopologyPinRef): PowerVoltageSample;
   /** Replace or clear the single domain-change observer. */
   observe(observer: PowerDomainObserver | undefined): void;
+  /**
+   * Register a digital pin change observer. Multiple observers are called in registration
+   * order after each completed electrical resolution phase; the returned disposer is idempotent.
+   * Throwing stops later observers and faults the current scheduler entry.
+   */
+  addDigitalPinObserver(observer: PowerDigitalPinObserver): () => void;
   destroy(): void;
 }

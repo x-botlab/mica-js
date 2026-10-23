@@ -13,6 +13,8 @@ import type {
 } from '../topology/types';
 import type {
   PowerDefinition,
+  PowerDigitalPinChange,
+  PowerDigitalPinObserver,
   PowerDigitalSample,
   PowerDomainChange,
   PowerDomainObserver,
@@ -27,11 +29,13 @@ import type {
   PowerVoltageSample,
 } from './types';
 import {
+  captureDigitalPinObserver,
   captureObserver,
   capturePowerDefinition,
   capturePowerOptions,
   domainKey,
   pinKey,
+  type CapturedDigitalPinObserver,
   type CapturedDomain,
   type CapturedObserver,
   type CapturedPin,
@@ -61,6 +65,39 @@ type Command =
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
+ * `CapturedPowerDefinition.pins` is sorted by identity for deterministic lookup and updates.
+ * Digital observer batches keep the original topology declaration order instead.
+ */
+function captureSignalPinsInDeclarationOrder(
+  definition: CapturedPowerDefinition,
+): readonly CapturedPin[] {
+  const pins: CapturedPin[] = [];
+  for (const declared of definition.topology.pins) {
+    if (declared.kind !== 'signal') continue;
+    const captured = definition.pinsByKey.get(pinKey(declared.instanceId, declared.pinName));
+    if (captured === undefined) {
+      throw new Error(
+        `Invariant: missing captured pin for (${JSON.stringify(declared.instanceId)}, ${JSON.stringify(declared.pinName)})`,
+      );
+    }
+    pins.push(captured);
+  }
+  return Object.freeze(pins);
+}
+
+function sameDigitalSample(
+  left: PowerDigitalSample | undefined,
+  right: PowerDigitalSample,
+): boolean {
+  return (
+    left !== undefined &&
+    left.value === right.value &&
+    left.ready === right.ready &&
+    left.source === right.source
+  );
 }
 
 function compareSnapshots(left: PowerDomainSnapshot, right: PowerDomainSnapshot): number {
@@ -169,6 +206,7 @@ class PowerRuntimeImpl implements PowerRuntime {
   readonly #notified = new Map<string, PowerDomainState>();
   readonly #pendingOpen = new Set<string>();
   readonly #digital = new Map<string, PowerDigitalSample>();
+  readonly #digitalObservers: CapturedDigitalPinObserver[] = [];
   readonly #memory = new Map<string, 0 | 1>();
   readonly #dirty = new Set<string>();
   readonly #commands: Command[] = [];
@@ -199,7 +237,7 @@ class PowerRuntimeImpl implements PowerRuntime {
         state.powerReady,
       ]),
     );
-    this.#signalPins = Object.freeze(definition.pins.filter((pin) => pin.kind === 'signal'));
+    this.#signalPins = captureSignalPinsInDeclarationOrder(definition);
     for (const pin of this.#signalPins) this.#memory.set(pin.key, 0);
     for (const domain of definition.domainsInOrder) this.#notified.set(domain.key, 'off');
 
@@ -423,10 +461,24 @@ class PowerRuntimeImpl implements PowerRuntime {
     this.#observer = observer === undefined ? undefined : captureObserver(observer, 'observer');
   }
 
+  addDigitalPinObserver(observer: PowerDigitalPinObserver): () => void {
+    this.#assertAlive();
+    const captured = captureDigitalPinObserver(observer, 'observer');
+    this.#digitalObservers.push(captured);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      const index = this.#digitalObservers.indexOf(captured);
+      if (index >= 0) this.#digitalObservers.splice(index, 1);
+    };
+  }
+
   destroy(): void {
     if (this.#destroyed) return;
     this.#destroyed = true;
     this.#observer = undefined;
+    this.#digitalObservers.length = 0;
     this.#commands.length = 0;
     this.#topology.destroy();
     this.#scheduler.destroyInstance(this.#instance);
@@ -667,7 +719,32 @@ class PowerRuntimeImpl implements PowerRuntime {
   }
 
   #interpretPins(): void {
-    for (const pin of this.#signalPins) this.#interpretPin(pin);
+    if (this.#digitalObservers.length === 0) {
+      for (const pin of this.#signalPins) this.#interpretPin(pin);
+      return;
+    }
+    const changes: PowerDigitalPinChange[] = [];
+    for (const pin of this.#signalPins) {
+      const previous = this.#digital.get(pin.key);
+      this.#interpretPin(pin);
+      const sample = this.#digital.get(pin.key) as PowerDigitalSample;
+      if (!sameDigitalSample(previous, sample)) {
+        changes.push(
+          Object.freeze({
+            instanceId: pin.ref.instanceId,
+            pinName: pin.ref.pinName,
+            sample,
+          }),
+        );
+      }
+    }
+    if (changes.length === 0) return;
+    const captured = Object.freeze(changes);
+    // Fail-fast: a throwing observer stops later notifications and faults the entry. Messages
+    // already enqueued by earlier observers stay queued and are not rolled back.
+    for (const observer of [...this.#digitalObservers]) {
+      observer.notify.call(observer.receiver, captured);
+    }
   }
 
   #interpretPin(pin: CapturedPin): void {

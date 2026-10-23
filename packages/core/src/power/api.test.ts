@@ -7,6 +7,8 @@ import {
   type FloatingInput,
   type PowerDefinition,
   type PowerDeviceDefinition,
+  type PowerDigitalPinChange,
+  type PowerDigitalPinObserver,
   type PowerDigitalSample,
   type PowerDigitalSource,
   type PowerDomainChange,
@@ -74,6 +76,10 @@ it('preserves the approved power entrypoint signatures', () => {
   expectTypeOf<PowerRuntime['observe']>().parameters.toEqualTypeOf<
     [observer: PowerDomainObserver | undefined]
   >();
+  expectTypeOf<PowerRuntime['addDigitalPinObserver']>().parameters.toEqualTypeOf<
+    [observer: PowerDigitalPinObserver]
+  >();
+  expectTypeOf<PowerRuntime['addDigitalPinObserver']>().returns.toEqualTypeOf<() => void>();
   expectTypeOf<PowerRuntime['destroy']>().returns.toEqualTypeOf<void>();
 });
 
@@ -134,6 +140,13 @@ it('preserves the approved definition, snapshot and option shapes', () => {
     [changes: readonly PowerDomainChange[], snapshot: readonly PowerDomainSnapshot[]]
   >();
   expectTypeOf<PowerDomainObserver['onPowerDomainChange']>().returns.toEqualTypeOf<void>();
+  expectTypeOf<PowerDigitalPinChange['instanceId']>().toEqualTypeOf<string>();
+  expectTypeOf<PowerDigitalPinChange['pinName']>().toEqualTypeOf<string>();
+  expectTypeOf<PowerDigitalPinChange['sample']>().toEqualTypeOf<PowerDigitalSample>();
+  expectTypeOf<PowerDigitalPinObserver['onDigitalPinChange']>().parameters.toEqualTypeOf<
+    [changes: readonly PowerDigitalPinChange[]]
+  >();
+  expectTypeOf<PowerDigitalPinObserver['onDigitalPinChange']>().returns.toEqualTypeOf<void>();
 });
 
 it('exposes diagnostics on PowerFeedbackError', () => {
