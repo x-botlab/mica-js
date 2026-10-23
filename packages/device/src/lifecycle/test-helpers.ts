@@ -46,6 +46,7 @@ export function createForTest(
     instanceId: options.instanceId ?? 'device-instance',
     ...(options.properties === undefined ? {} : { properties: options.properties }),
     ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
+    ...(options.updateResources === undefined ? {} : { updateResources: options.updateResources }),
     ...(options.onTopic === undefined ? {} : { onTopic: options.onTopic }),
     ...(options.pinHost === undefined ? {} : { pinHost: options.pinHost }),
     ...(options.connections === undefined ? {} : { connections: options.connections }),

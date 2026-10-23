@@ -12,9 +12,10 @@ import type { DeviceConnectionDescriptor } from '../connection/types';
  * Reference-interpreter policy for a device instance.
  *
  * Every instruction used by the factory is offered to validation; declared domain instructions
- * without a trusted validator still fail at link time. Writable byte resources additionally
- * receive the independent update grant required by `resource.update_bytes` /
- * `resource.fill_bytes`. Pin declarations receive a read-write grant; observation declarations
+ * without a trusted validator still fail at link time. Writable byte resources, plus readonly
+ * bytes named by the instance's `updateResources` grant, receive the independent update
+ * permission required by `resource.update_bytes` / `resource.fill_bytes`.
+ * Pin declarations receive a read-write grant; observation declarations
  * receive a write grant; connection declarations receive a write grant only when the device
  * description declares the same id.
  */
@@ -22,6 +23,7 @@ export function createValidationPolicy(
   module: IRModule,
   connections: ReadonlyMap<string, DeviceConnectionDescriptor> = new Map(),
   pinValidators: readonly IRInstructionValidator[] = [],
+  updateResources: ReadonlySet<object> = new Set(),
 ): IRValidationOptions {
   const instructions = new Set<string>();
   for (const fn of module.functions) {
@@ -43,6 +45,11 @@ export function createValidationPolicy(
       }
     } else {
       resources.push({ ref: memory.ref, access: 'read' });
+      // A readonly bytes resource is still eligible for the independent host update path when
+      // the instance options authorize its name; readonly only forbids ordinary guest stores.
+      if (memory.kind === 'bytes' && updateResources.has(memory.ref)) {
+        resources.push({ ref: memory.ref, access: 'update' });
+      }
     }
   }
   for (const declaration of module.domainDeclarations) {

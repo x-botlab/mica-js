@@ -276,6 +276,12 @@ export interface DeviceInstanceOptions {
   readonly properties?: Readonly<Record<string, PropertyValue>>;
   /** Bounded messaging limits; omitted values use the documented defaults. */
   readonly messaging?: DeviceMessagingOptions;
+  /**
+   * Declared byte resource names that this instance additionally authorizes for
+   * `api.updateBytes`. Writable bytes remain authorized by default; this list grants the
+   * independent update path to `readonly` resources without making ordinary guest stores legal.
+   */
+  readonly updateResources?: readonly string[];
   /** Synchronous host consumer for `api.publish`; omitted messages are dropped at a boundary. */
   readonly onTopic?: (message: DeviceTopicMessage) => void;
   /** Held-intent and gated-sampling source for declared pins; required by pin instructions. */

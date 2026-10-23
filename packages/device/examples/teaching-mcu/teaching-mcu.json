@@ -1,0 +1,14 @@
+{
+  "pins": {
+    "GPIO": { "kind": "signal", "side": "right" }
+  },
+  "ports": {
+    "firmwarePatch": {
+      "title": "Firmware patch",
+      "description": "Replacement firmware image applied through the versioned resource update path.",
+      "direction": "input",
+      "type": "bytes"
+    }
+  },
+  "designatorPrefix": "U"
+}

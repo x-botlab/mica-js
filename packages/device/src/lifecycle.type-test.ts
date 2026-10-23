@@ -37,6 +37,7 @@ const options: DeviceInstanceOptions = {
   instanceId: 'typed',
   properties: {},
   messaging: { postCapacity: 8, outputByteBudget: 1024 },
+  updateResources: ['firmware'],
   onTopic: (message) => {
     const payload: TopicPayload = message.payload;
     void [message.port, payload];
@@ -74,6 +75,9 @@ void api.post(setValue, [1]);
 void api.postBytes(receiveBytes, inbox, new Uint8Array(1));
 void api.updateBytes(bytesResource, 0, new Uint8Array(1));
 instance.deliver('value', 1, { simTime: 0 });
+// @ts-expect-error updateResources is a list of declared resource names, not refs or numbers
+const invalidOptions: DeviceInstanceOptions = { instanceId: 'typed', updateResources: [1] };
+void invalidOptions;
 
 void [
   instance,

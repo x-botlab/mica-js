@@ -30,10 +30,12 @@ const EXAMPLES = new URL('../../examples/', import.meta.url);
 const EXAMPLE_FILES: Readonly<Record<string, string>> = Object.freeze({
   'mica:ideal-button': 'ideal-button',
   'mica:ideal-relay': 'ideal-relay',
+  'mica:teaching-mcu': 'teaching-mcu',
 });
 
 export const BUTTON_DEVICE_ID = 'mica:ideal-button';
 export const RELAY_DEVICE_ID = 'mica:ideal-relay';
+export const TEACHING_MCU_DEVICE_ID = 'mica:teaching-mcu';
 
 export interface FixtureOverride {
   /** Replacement description object for a negative scenario. */

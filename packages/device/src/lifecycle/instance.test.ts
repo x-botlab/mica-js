@@ -653,6 +653,31 @@ describe('creation failures', () => {
     );
     expect(first.instance.state).toBe('ready');
   });
+
+  it('validates updateResources against declared byte resources', () => {
+    const factory: DeviceFactory = (api) => {
+      api.ir.bytes('firmware', new Uint8Array(2), { readonly: true });
+      api.ir.state('counter', 'u32', 0);
+      return {};
+    };
+    for (const updateResources of [
+      'firmware',
+      [''],
+      ['firmware', 'firmware'],
+      ['missing'],
+      ['counter'],
+    ]) {
+      expectDeviceError(
+        () =>
+          createForTest(factory, {
+            updateResources: updateResources as unknown as readonly string[],
+          }),
+        'device/instance-invalid',
+      );
+    }
+    const accepted = createForTest(factory, { updateResources: ['firmware'] });
+    expect(accepted.instance.state).toBe('ready');
+  });
 });
 
 /** Wraps a real scheduler to run a test hook at the start of every entry. */
