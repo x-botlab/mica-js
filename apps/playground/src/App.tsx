@@ -5,6 +5,7 @@ import { CanvasPage } from '@/pages/canvas';
 import { HomePage } from '@/pages/home';
 import { SandboxPage } from '@/pages/sandbox';
 import { SchematicPage } from '@/pages/schematic';
+import { SimulatorPage } from '@/pages/simulator';
 
 const ROUTES = PAGES.map((page) => ({ id: page.id, path: `#/${page.id}` }));
 
@@ -31,6 +32,8 @@ export function App() {
         <CanvasPage />
       ) : route === 'sandbox' ? (
         <SandboxPage />
+      ) : route === 'simulator' ? (
+        <SimulatorPage />
       ) : (
         <HomePage />
       )}

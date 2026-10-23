@@ -17,7 +17,7 @@ Mica 是一个基于 TypeScript/JavaScript 开发的高性能、模块化、开�
 ```text
 .
 ├── apps/
-│   ├── playground/           # 各包示例站点（原理图编辑器、沙箱）
+│   ├── playground/           # 各包示例站点（画布、原理图编辑器、沙箱、仿真）
 │   └── sandbox-playground/   # 沙箱演示与手测面板
 └── packages/
     ├── core/                 # @mica-js/core：仿真内核
@@ -103,7 +103,7 @@ await sandbox.call('start');
 
 ## Playground
 
-[apps/playground](apps/playground) 是各包的可交互示例站点：React + Vite + Tailwind v4 + shadcn/ui，哈希路由单入口，页面直接引用包源码。目前包含概览、原理图编辑器（含宿主驱动器件放置与回调事件流）与沙箱（guest 代码执行与调用日志）三个页面。
+[apps/playground](apps/playground) 是各包的可交互示例站点：React + Vite + Tailwind v4 + shadcn/ui，哈希路由单入口，页面直接引用包源码。目前包含概览、画布、原理图编辑器（含宿主驱动器件放置与回调事件流）、沙箱（guest 代码执行与调用日志）与仿真（`#/simulator`：按钮 / 继电器 / 教学 MCU 场景、虚拟时间与事件轨迹）五个页面。
 
 ```bash
 pnpm --filter @mica-js/playground dev

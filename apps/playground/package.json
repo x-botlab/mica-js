@@ -15,8 +15,10 @@
   "dependencies": {
     "@mica-js/canvas-editor": "workspace:*",
     "@mica-js/core": "workspace:*",
+    "@mica-js/device": "workspace:*",
     "@mica-js/sandbox": "workspace:*",
     "@mica-js/schematic-editor": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
     "@mica-js/widget": "workspace:*",
     "@radix-ui/react-slot": "^1.2.4",
     "class-variance-authority": "^0.7.1",

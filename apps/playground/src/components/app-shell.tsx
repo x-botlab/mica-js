@@ -1,9 +1,9 @@
-import { CircuitBoard, Home, Moon, PanelsTopLeft, ShieldCheck, Sun } from 'lucide-react';
+import { Activity, CircuitBoard, Home, Moon, PanelsTopLeft, ShieldCheck, Sun } from 'lucide-react';
 import type { ComponentType, ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
-export type PageId = 'home' | 'canvas' | 'schematic' | 'sandbox';
+export type PageId = 'home' | 'canvas' | 'schematic' | 'sandbox' | 'simulator';
 
 export interface PageDefinition {
   readonly id: PageId;
@@ -27,6 +27,12 @@ export const PAGES: readonly PageDefinition[] = [
     icon: CircuitBoard,
   },
   { id: 'sandbox', title: '沙箱', subtitle: 'iframe + Worker 隔离执行', icon: ShieldCheck },
+  {
+    id: 'simulator',
+    title: '仿真',
+    subtitle: 'DeviceSimExecutor：单虚拟时钟、事件轨迹与诊断',
+    icon: Activity,
+  },
 ];
 
 export interface AppShellProps {

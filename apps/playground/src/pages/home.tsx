@@ -1,4 +1,4 @@
-import { ArrowRight, CircuitBoard, PanelsTopLeft, ShieldCheck } from 'lucide-react';
+import { Activity, ArrowRight, CircuitBoard, PanelsTopLeft, ShieldCheck } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -25,6 +25,13 @@ const PAGES = [
     title: '沙箱',
     summary: 'iframe + Worker 里跑不可信代码：调用 guest 方法、看日志与错误。',
     tags: ['@mica-js/sandbox'],
+  },
+  {
+    id: 'simulator',
+    icon: Activity,
+    title: '仿真',
+    summary: '按钮 / 继电器 / 教学 MCU 跑在一条虚拟时钟上：单步、复位、事件轨迹与电气观测。',
+    tags: ['@mica-js/simulator', '@mica-js/device'],
   },
 ] as const;
 

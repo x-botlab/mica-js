@@ -19,6 +19,7 @@ pnpm --filter @mica-js/playground run test:e2e   # Playwright 冒烟，自带 41
 | `#/schematic`          | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、宿主属性面板（#7 全部属性类型）、显示开关、回调事件流               |
 | `#/schematic?readonly` | 只读查看器   | 同一页以 `readOnly: true` 挂载：选择与缩放可用，编辑全部被拒                                             |
 | `#/sandbox`            | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动/终止、调用与日志                                                |
+| `#/simulator`          | 仿真         | `@mica-js/simulator`：按钮 / 继电器 / 教学 MCU 三场景、启动/暂停/步进/复位、事件轨迹、电气观测与诊断     |
 
 新增页面：在 `src/components/app-shell.tsx` 的 `PAGES` 里加一项（`id` 同时是路由），在 `src/App.tsx` 里渲染对应组件即可。
 
@@ -27,6 +28,7 @@ pnpm --filter @mica-js/playground run test:e2e   # Playwright 冒烟，自带 41
 ```text
 e2e/canvas.spec.ts             Playwright 冒烟：实例渲染、拖动提交命令、运行模式发布与浏览、属性面板、组件列表与草稿
 e2e/editor.spec.ts             Playwright 冒烟：渲染、网标拖动折线、导线 T 接入、只读守卫
+e2e/simulator.spec.ts          Playwright 冒烟：sandbox 按钮驱动触点、能力/拒绝、确定性回放、暂停/复位、换场景无残留、窄屏
 playwright.config.ts           e2e 配置（webServer 跑 127.0.0.1:4174 的 dev server）
 src/canvas/panel-model.ts      纯逻辑：候选端点过滤、属性初值/「已覆盖」、绑定选项、错误消息
 src/canvas/palette.ts          组件列表：从 widget 包生成条目、新实例的默认尺寸与级联位置
@@ -43,6 +45,14 @@ src/pages/canvas.tsx           画布页：demo widget 包 + .cnv + WidgetHost �
 src/pages/home.tsx             概览
 src/pages/schematic.tsx        原理图编辑器页：挂载编辑器并把宿主 UI 接上
 src/pages/sandbox.tsx          沙箱页：createSandbox + 调用 + 日志
+src/pages/simulator.tsx        仿真页：三场景、工具栏、事件轨迹、电气观测、能力与诊断
+src/sim/devices.ts             器件 provider：按 ?raw 读取 packages/device/examples 的已提交 JSON/JS 配对
+src/sim/symbols.ts             场景符号（UUID v4 + 位号 S1/K1/U1）
+src/sim/board.ts               宿主侧电路：拓扑、电源域与引脚意图
+src/sim/scenarios.ts           三场景：原理图 + 板级接线 + 探针 + 输入 + 限制 + 回放脚本
+src/sim/session.ts             无 DOM 的会话层：执行器、宿主接线、探针采样、轨迹、诊断、确定性回放
+src/sim/trace.ts               轨迹条目、载荷描述、虚拟时间格式化与轨迹摘要
+src/sim/session.test.ts        vitest（node）覆盖加载、能力、拒绝、暂停语义与重复加载一致性
 src/schematic/sample.ts        器件注册表（含 designatorPrefix 与 #7 属性描述）、示例 .sch
 src/schematic/snippets.ts      编辑器页「用法」面板里的代码片段
 public/assets/                 示例资源：ct107d-board.webp（画布底图）、panel.png（image）与 firmware/m4-demo.bin（binary）
@@ -62,6 +72,38 @@ src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）
 
 画布页的「编辑 / 运行」按钮 `await scene.setMode(...)`：**切换模式会重置全部 widget**（实例按当前文档重建，guest 不重新求值模块），因此按钮在重置期间禁用并显示「重置中…」，运行模式的定时投递也会在切换前先停下，避免向正在销毁的实例投递。
 
+## 仿真页
+
+`#/simulator` 是 `@mica-js/simulator` 的交互调试台：用 `?raw` 读取 `packages/device/examples` 里已提交的 JSON/JS 配对，经 `parseDeviceDescription` + `loadDeviceModule` 加载，页面里不重写调度器或芯片算法。
+
+| 场景          | 内容                                                                                                                                            |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| 理想按钮      | 触点 A–B 接在 VCC 与下拉的 `board.SENSE` 之间；画布上的 `demo:button` 在 `@mica-js/sandbox` 里发布 `press`，经 `WidgetHost` 投递到 `S1.pressed` |
+| 按钮 → 继电器 | 按钮触点把 VCC 送到 `K1.IN`/`board.COIL`，继电器在同一个 patch 内切换 COM–NO / COM–NC；触点侧由独立 `LOAD` 供电                                 |
+| 教学 MCU      | 合成 ISA 只在块边界写 `GPIO`，经板级 `SENSE` 读出；`updateResources: ['firmware']` 授权 `firmwarePatch` 的 8 B 单元更新                         |
+
+**宿主接线。** 执行器只透传 `pinHost` / `topology`（`DeviceSimExecutorOptions.host`），电路归本页所有：
+
+- `src/sim/board.ts` 给出三块板的 `TopologyDefinition`、`PowerDefinition` 与引脚意图；
+- 每次 `loadSchematic` / `reset()` 都用该运行时自己的调度器建 `createPowerRuntime`，实例销毁后再 `power.destroy()`；
+- 探针（`connectionState` / `sampleDigital`）在轨迹里标为「电气观测」，并写明「宿主直读」——这些值不是器件发布。
+
+**工具栏。** `启动` / `暂停` 按 16 ms 墙钟节拍推进固定 10 ns 虚拟时间片；`单步` 只推进一片；`复位` 调 `executor.reset()`（按当前原理图重建实例、时钟归零），**不是**器件 reset 生命周期；`销毁` 释放执行器与 widget 宿主；`确定性回放 ×2` 用固定脚本各加载一次新会话并比较轨迹摘要。
+
+**能力与拒绝。** 能力面板按器件描述列出引脚/连接/端口，并在一次性调度器上探测模型自己的 `reset`：`ideal-button` 接受，`ideal-relay` / `teaching-mcu` 以 `device/lifecycle-unsupported` 拒绝。所以「复位」按钮永远只是重建实例，模型不支持的复位、没有的端口都直接显示为「不支持 / 无话题端口」，不会用空实现冒充。
+
+**错误语义。** 器件层拒绝载荷时 `advance` 抛出但执行器仍是 `ready`（时钟不推进）——页面记成 `bench/delivery-rejected` 诊断；只有调度器故障才会置 `faulted`、暂停运行循环并禁用推进。MCU 页的「发送非法载荷（应被拒绝）」就是这条路径的现场演示。
+
+### 本地运行
+
+```bash
+pnpm --filter @mica-js/playground dev     # http://localhost:5173/#/simulator
+pnpm --filter @mica-js/playground test    # vitest：src/sim/session.test.ts
+pnpm --filter @mica-js/playground run test:e2e   # 含 e2e/simulator.spec.ts
+```
+
+`playwright.config.ts` 会自己起 4174 端口的 dev server，e2e 不需要先手动启动。
+
 ## 主题
 
 `index.css` 用 shadcn 的 oklch token；顶栏切换 `.dark` 类。原理图页同时把 `@mica-js/schematic-editor` 的主题（`DARK_SCHEMATIC_THEME` / `LIGHT_SCHEMATIC_THEME`）传给编辑器，使 Canvas 与页面 chrome 一起切换。
@@ -71,4 +113,4 @@ src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）
 `vite.config.ts` 与 `tsconfig.json` 各自声明了同一组别名：
 
 - `@/*` → `src/*`（shadcn 约定）
-- `@mica-js/core/canvas`、`@mica-js/core/schematic`、`@mica-js/canvas-editor`、`@mica-js/widget`、`@mica-js/schematic-editor`、`@mica-js/sandbox` → 对应包的 `src`，所以改包源码后刷新即生效，无需先构建。
+- `@mica-js/core`、`@mica-js/core/canvas`、`@mica-js/core/schematic`、`@mica-js/ir`、`@mica-js/device`、`@mica-js/simulator`、`@mica-js/canvas-editor`、`@mica-js/widget`、`@mica-js/schematic-editor`、`@mica-js/sandbox` → 对应包的 `src`，所以改包源码后刷新即生效，无需先构建。
