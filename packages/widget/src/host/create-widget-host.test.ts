@@ -61,15 +61,15 @@ class FakeSandbox implements WidgetSandbox {
     const failure = this.#failures.get(method)?.shift();
     if (failure) return Promise.reject(failure);
 
-    const guestError = this.#applyGuestState(method, args);
-    if (guestError) return Promise.reject(guestError);
-
     const gate = this.#gates.get(method);
-    if (gate) {
-      this.#gates.delete(method);
-      return gate;
-    }
-    return Promise.resolve(undefined);
+    if (gate !== undefined) this.#gates.delete(method);
+    // The guest touches its session table when the call runs, not when the host asks for it: a
+    // gated `mount` must not look like a live session while the host is still waiting for it.
+    return (gate ?? Promise.resolve()).then(() => {
+      const guestError = this.#applyGuestState(method, args);
+      if (guestError !== undefined) throw guestError;
+      return undefined;
+    });
   }
 
   /** Guest sessions still alive; an unmounted id must leave nothing behind. */
@@ -658,6 +658,35 @@ describe('createWidgetHost', () => {
     expect(harness.diagnostics).toEqual([]);
   });
 
+  it('reuses the running queue when a layer subscriber applies a command', async () => {
+    const harness = createHarness();
+    let reentered = false;
+    harness.host.layers.subscribe((change) => {
+      // A subscriber is allowed to edit the document from the notification. That work has to join
+      // the running pass; starting a second one would interleave guest calls and resolve
+      // `loadDocument` before the instances it mounted are done.
+      if (change.type !== 'added' || reentered) return;
+      reentered = true;
+      harness.host.applyCommand({ type: 'set-z', instanceId: ID_A, z: 1 });
+    });
+
+    await harness.host.loadDocument(canvas(instance({ id: ID_A }), instance({ id: ID_B })));
+
+    expect(reentered).toBe(true);
+    // One queue: both mounts belong to the same pass, so they keep the order it walked.
+    expect(harness.sandbox.methods()).toEqual(['load', 'mount', 'load', 'mount']);
+    expect(mountRequests(harness.sandbox).map((request) => request.instanceId)).toEqual([
+      ID_A,
+      ID_B,
+    ]);
+    expect(unmountCount(harness.sandbox)).toBe(0);
+    // `loadDocument` resolves after every instance mounted, so the layers already follow the
+    // document the subscriber installed.
+    expect(layerIds(harness)).toEqual([ID_B, ID_A]);
+    expect(documentIds(harness)).toEqual([ID_B, ID_A]);
+    expect(harness.diagnostics).toEqual([]);
+  });
+
   it('mounts each instance once when two loadDocument calls race', async () => {
     const harness = createHarness();
     const document = canvas(instance({ id: ID_A }), instance({ id: ID_B }));
@@ -859,7 +888,10 @@ describe('createWidgetHost', () => {
     await flush();
 
     expect(harness.host.layers.list()).toEqual([]);
-    expect(harness.sandbox.argsOf('unmount')).toEqual([ID_A]);
+    // The document removal unmounts, then the cancelled mount releases the session the guest
+    // created while the host was still waiting, so `unmount` ends the call log.
+    expect(harness.sandbox.methods().at(-1)).toBe('unmount');
+    expect(harness.sandbox.callsOf('unmount')).toEqual([[ID_A], [ID_A]]);
     expect(harness.sandbox.liveSessionIds()).toEqual([]);
     expect(harness.diagnostics).toEqual([]);
     expect(documentIds(harness)).toEqual([]);

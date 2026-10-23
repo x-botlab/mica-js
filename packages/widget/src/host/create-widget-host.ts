@@ -109,6 +109,8 @@ class WidgetHostImpl implements WidgetHost {
   #document: CanvasDocument = EMPTY_DOCUMENT;
   #reconcilePending = false;
   #reconcilePass: Promise<void> | undefined;
+  /** Identifies the drain that owns {@link #reconcilePass}; only that drain may release it. */
+  #reconcileOwner = 0;
   #sandbox: WidgetSandbox | undefined;
   #starting: Promise<WidgetSandbox> | undefined;
   #disposing: Promise<void> | undefined;
@@ -216,22 +218,32 @@ class WidgetHostImpl implements WidgetHost {
    *
    * A pass reads {@link document} per instance, so everything committed while it waits is coalesced
    * into the next iteration; the promise settles only once the queue has caught up.
+   *
+   * The drain starts on a microtask instead of from here: {@link #syncInstances} notifies the layer
+   * store synchronously from inside a guest await, and a subscriber that applies a command from that
+   * notification would otherwise re-enter while the slot below is still empty and start a second,
+   * concurrent drain.
    */
   #scheduleReconcile(): Promise<void> {
     this.#reconcilePending = true;
-    this.#reconcilePass ??= this.#drainReconcile();
+    this.#reconcilePass ??= Promise.resolve().then(() => this.#drainReconcile());
     return this.#reconcilePass;
   }
 
   async #drainReconcile(): Promise<void> {
+    const owner = ++this.#reconcileOwner;
     try {
       while (this.#reconcilePending && !this.#disposed) {
         this.#reconcilePending = false;
         await this.#syncInstances();
       }
     } finally {
-      this.#reconcilePending = false;
-      this.#reconcilePass = undefined;
+      // A stale finish must never untrack a newer pass that is still mounting, so only the drain
+      // that owns the slot releases it.
+      if (this.#reconcileOwner === owner) {
+        this.#reconcilePending = false;
+        this.#reconcilePass = undefined;
+      }
     }
   }
 

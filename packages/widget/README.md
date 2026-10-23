@@ -146,7 +146,7 @@ interface WidgetHost {
 - **属性比较**是浅比较：键集合相同且每个键 `Object.is` 相等才算没变化。文档拥有属性值，嵌套对象只有被整体替换才算改动；键集合参与比较，因为缺失的键回落到定义默认值，而显式 `undefined` 会覆盖默认值。
 - **顺序**：`layers.list()` 的顺序等于 `document.widgets` 的顺序。`set-z` 只重排层表，不重新挂载，并以 `{ type: 'reordered' }` 通知订阅者。
 - **几何与位图分离**：几何变化同步改 layer 的 `width` / `height`（`sequence` 不变），新位图异步到达后再递增 `sequence`。
-- **串行化**：协调走单条内部队列。多次 `applyCommand` 不会并发调用 guest，队列每轮都以**最新快照**为准，因此中间态会被合并，不会出现重复挂载或漏掉卸载。
+- **串行化**：协调走单条内部队列。多次 `applyCommand` 不会并发调用 guest，队列每轮都以**最新快照**为准，因此中间态会被合并，不会出现重复挂载或漏掉卸载。层订阅者在 `layers.subscribe` 回调里同步 `applyCommand` 也被允许：这次提交只把工作排到正在运行的队列上，不会另起一条协调循环。
 - **`applyCommand` 同步、协调异步**：文档快照与 `onDocumentChange` 立即更新；挂载、`resize`、`set-properties` 在后台进行。协调失败只经 `onDiagnostic` 上报（`widget/mount-failed`、`widget/render-failed` 等），**不回滚文档**；失败的实例不在 `layers` 里，下一次提交会重试。
 - **`loadDocument` 异步**：等首批实例挂载完成后才 resolve。单个 widget 挂载失败不会让 promise reject，只上报诊断。
 - **实例移除是同步的**：快照提交时立即丢掉被移除实例的 layer 与记录，因此「挂载还在途中就被移除」能在当下取消，而不必等协调队列腾出空位。
