@@ -50,8 +50,10 @@ export interface WidgetRuntime {
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
   pointer(instanceId: string, event: WidgetInputEvent): void;
   /**
-   * Releases every instance and forgets every evaluated module, so the next `load` imports the
-   * sources again. The guest itself keeps running: restarts stay cheap and the sandbox survives.
+   * Releases every instance and keeps the evaluated modules.
+   *
+   * A reset rebuilds instances, it does not re-evaluate modules: the contract puts instance state in
+   * the factory closure, so keeping the factories is what makes the reset cheap.
    */
   resetRuntime(): void;
   /** Releases every instance; the sandbox calls it when the guest is terminated. */
@@ -473,12 +475,9 @@ export function createWidgetRuntime(
         release(session);
       }
       sessions.clear();
-      // Module-level state only goes away with the module itself: dropping the factories makes the
-      // next `load` import again, and `importBlobModule` creates a fresh blob URL per import so the
-      // ES module registry cannot answer from its cache.
-      factories.clear();
-      definitions.clear();
-      pendingFactories.clear();
+      // Factories and definitions stay: a reset rebuilds instances, it does not re-evaluate modules.
+      // Anything a widget keeps at module scope therefore survives the reset, which is why instance
+      // state belongs inside the factory closure (`x-botlab/mica-js#2`).
     },
 
     dispose() {

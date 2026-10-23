@@ -541,23 +541,27 @@ describe('widget guest runtime', () => {
     expect(() => runtime.mount(mountRequest())).toThrow('is not loaded');
   });
 
-  it('re-evaluates the widget module on the next load after reset-runtime', async () => {
+  it('keeps a widget module evaluated once across reset-runtime', async () => {
     vi.stubGlobal('OffscreenCanvas', FakeCanvas);
     let evaluations = 0;
-    /** Value of a module-level counter each factory instance saw, in mount order. */
-    const seen: number[] = [];
+    let factoryCalls = 0;
+    /** One bump closure per factory call; each closes over its own counter. */
+    const bumps: (() => number)[] = [];
     const { runtime } = createHarness(
       {},
       {
         importModule: async () => {
           evaluations += 1;
-          // `counter` stands in for a `let counter = 0;` at module scope: it only resets when the
-          // module is evaluated again, which is exactly what a factory-only reset would miss.
-          let counter = 0;
           return {
             default: () => {
-              seen.push(counter);
-              counter += 1;
+              factoryCalls += 1;
+              // Instance state lives in the closure, so every mount starts from zero even though
+              // the module itself is evaluated only once.
+              let counter = 0;
+              bumps.push(() => {
+                counter += 1;
+                return counter;
+              });
               return {};
             },
           };
@@ -568,24 +572,27 @@ describe('widget guest runtime', () => {
     await runtime.load(loadRequest('widget'));
     runtime.mount(mountRequest({ instanceId: 'a' }));
     runtime.mount(mountRequest({ instanceId: 'b' }));
-    expect(seen).toEqual([0, 1]);
-
     runtime.resetRuntime();
     await runtime.load(loadRequest('widget'));
     runtime.mount(mountRequest({ instanceId: 'a' }));
 
-    expect(evaluations).toBe(2);
-    expect(seen).toEqual([0, 1, 0]);
+    // The factory ran again for every mount — that is what gives the fresh instance its own
+    // closure — while the module source itself was evaluated exactly once.
+    expect(factoryCalls).toBe(3);
+    expect(evaluations).toBe(1);
+    // Each instance owns an independent counter: bumping every closure returns 1, never 1/2/3.
+    expect(bumps.map((bump) => bump())).toEqual([1, 1, 1]);
   });
 
-  it('loads a reset package again instead of answering from the factory cache', async () => {
+  it('answers a repeated load from the factory cache after reset-runtime', async () => {
     const { runtime, imports } = createHarness({ widget: () => ({}) });
 
     await runtime.load(loadRequest('widget'));
     runtime.resetRuntime();
     await runtime.load(loadRequest('widget'));
 
-    expect(imports).toEqual(['widget', 'widget']);
+    // Re-importing would restart module-level state, so the reset deliberately keeps the factory.
+    expect(imports).toEqual(['widget']);
   });
 
   it('releases every session on reset-runtime, so stale subscriptions go quiet', async () => {

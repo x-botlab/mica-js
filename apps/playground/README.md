@@ -49,7 +49,7 @@ src/index.css                  Tailwind + shadcn 主题 token（:root / .dark）
 
 画布页的右侧栏是**宿主 UI**：属性控件按 `provider.resolve(ref).definition.properties` 渲染，绑定下拉按 `definition.ports` 渲染，值一律通过 `host.applyCommand` 提交，被拒时把 `SchematicError.diagnostics` 的 message 显示在对应控件下方。可选端点来自 `src/canvas/panel-model.ts` 的 `DEMO_TARGETS`（示例没有真实原理图，`createWidgetHost` 不传 `catalog` 时跳过引用校验）。
 
-画布页的「编辑 / 运行」按钮 `await scene.setMode(...)`：**切换模式会重置全部 widget**（实例按当前文档重建、guest 模块重新求值），因此按钮在重置期间禁用并显示「重置中…」，运行模式的定时投递也会在切换前先停下，避免向正在销毁的实例投递。
+画布页的「编辑 / 运行」按钮 `await scene.setMode(...)`：**切换模式会重置全部 widget**（实例按当前文档重建，guest 不重新求值模块），因此按钮在重置期间禁用并显示「重置中…」，运行模式的定时投递也会在切换前先停下，避免向正在销毁的实例投递。
 
 ## 主题
 

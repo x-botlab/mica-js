@@ -90,7 +90,7 @@ scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主
 
 `createCanvasScene` 是异步的：它先 `await host.loadDocument(options.document)`，再挂载编辑器；宿主校验失败时直接抛出且不挂载。
 
-**切换模式会重置 widget 状态。** `scene.setMode(next)` 返回 promise，执行顺序固定为：`editor.cancelInteraction()` → `editor.setMode(next)` → `await host.reset()`。`mode` 属性在调用后**立即**是新值（输入路由马上跟着变），promise 在 `host.reset()` 把全部实例按当前文档重建完成后才 resolve。重置会丢弃实例并清空 guest 的模块缓存，所以按键不会停在按下、数码管不会停在最后一个值，模块顶层变量也回到初始值。切到当前模式则直接 resolve，不做重置；重置失败时 promise reject，场景回退到原模式。选择与视口保持不变（实例 id 未变）。
+**切换模式会重置 widget 状态。** `scene.setMode(next)` 返回 promise，执行顺序固定为：`editor.cancelInteraction()` → `editor.setMode(next)` → `await host.reset()`。`mode` 属性在调用后**立即**是新值（输入路由马上跟着变），promise 在 `host.reset()` 把全部实例按当前文档重建完成后才 resolve。重置会丢弃实例并重建工厂实例，所以按键不会停在按下、数码管不会停在最后一个值；模块本身不重新求值，因此 widget 的实例状态要放在工厂闭包里。切到当前模式则直接 resolve，不做重置；重置失败时 promise reject，场景回退到原模式。选择与视口保持不变（实例 id 未变）。
 
 运行模式下画布仍可浏览：滚轮缩放、`Shift` + 滚轮横向平移、中键或空格 + 左键拖动平移，这些操作不产生命令、也不转发给 widget（详见下方「运行模式」）。
 

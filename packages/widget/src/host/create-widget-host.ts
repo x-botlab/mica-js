@@ -528,11 +528,13 @@ class WidgetHostImpl implements WidgetHost {
   }
 
   /**
-   * Asks the guest to release its sessions and module cache.
+   * Asks the guest to release its sessions.
    *
-   * A host without a sandbox has nothing to reset: no instance ever mounted, so the following sync
-   * pass simply mounts into a fresh runtime. Failures are reported, never thrown: the remount below
-   * resumes from whatever state the guest is in.
+   * The guest keeps its evaluated modules: a reset rebuilds instances, so module-level state is out
+   * of scope by contract and the factories stay warm. A host without a sandbox has nothing to
+   * reset: no instance ever mounted, so the following sync pass simply mounts into a fresh runtime.
+   * Failures are reported, never thrown: the remount below resumes from whatever state the guest is
+   * in.
    */
   async #resetGuestRuntime(): Promise<void> {
     if (!this.#sandbox && !this.#starting) return;

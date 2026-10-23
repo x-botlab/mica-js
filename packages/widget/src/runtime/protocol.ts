@@ -21,11 +21,10 @@ export const WIDGET_SET_PROPERTIES_METHOD = 'set-properties';
 export const WIDGET_DELIVER_METHOD = 'deliver';
 export const WIDGET_POINTER_METHOD = 'pointer';
 /**
- * Drops every instance and the module cache without terminating the guest, so the next `load`
- * evaluates each widget module again instead of reusing its factory.
+ * Releases every instance without terminating the guest. Widget modules stay evaluated, so the next
+ * `load` reuses their factories and only fresh instances are created.
  */
 export const WIDGET_RESET_RUNTIME_METHOD = 'reset-runtime';
-
 /** Instance boundary that produced a widget error. */
 export type WidgetErrorPhase = 'mount' | 'render' | 'deliver';
 

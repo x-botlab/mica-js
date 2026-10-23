@@ -87,8 +87,12 @@ export interface WidgetHost {
   onDocumentChange(listener: (document: CanvasDocument) => void): () => void;
 
   /**
-   * Drops every instance, discards the guest's module cache and mounts the current document again,
-   * so widgets restart from their initial state. Layers are emptied and repopulated.
+   * Drops every instance and mounts the current document again, so widgets restart from their
+   * initial state. Layers are emptied and repopulated.
+   *
+   * Each mount runs the widget factory again (fresh closure, canvas and subscriptions, initial
+   * props), but the guest keeps its module cache: a widget module is evaluated once per session.
+   * Module-level state is therefore not reset — the contract puts instance state in the factory.
    *
    * Resolves once every instance of the current document has mounted again. Failures are reported
    * through `onDiagnostic` instead of rejecting, like every other coordination step.

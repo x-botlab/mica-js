@@ -55,8 +55,8 @@ export interface CanvasScene {
   readonly document: CanvasDocument;
   readonly mode: CanvasMode;
   /**
-   * Switches mode and resets every widget: the host drops its instances and module cache, then
-   * mounts the current document again, so widgets restart from their initial state.
+   * Switches mode and resets every widget: the host rebuilds its instances from the current
+   * document, so widgets restart from their initial state.
    *
    * `mode` reflects the new value immediately, because input routing has to follow at once; the
    * returned promise resolves once `host.reset()` has remounted every instance. Switching to the
