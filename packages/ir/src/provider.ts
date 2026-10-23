@@ -54,6 +54,16 @@ export interface ProviderRuntimeOptions {
 export interface ProviderRuntime {
   /** Returns the artifact for one dispatch after validating (and, on a miss, generating) it. */
   materialize(provider: ProviderRef, key: RuntimeScalar[]): ProviderArtifact;
+  /**
+   * Incremented after every successful provider-cache write.
+   *
+   * Invariant **I2** (relied on by the J14 dispatch inline caches): two equal `cacheEpoch` reads
+   * imply that no provider cache entry was added or replaced in between. Combined with the
+   * storage-side **I1** (`StorageControl.epoch`), an unchanged pair lets a cached artifact be
+   * reused without calling `materialize`. Conversely, **I3**: a changed epoch is sufficient but
+   * not necessary for a real change — over-reporting is safe.
+   */
+  readonly cacheEpoch: number;
 }
 
 const READABLE_KINDS = ['bytes', 'inbox'];
@@ -76,6 +86,7 @@ class ProviderRuntimeImpl implements ProviderRuntime {
   readonly #cache = new Map<StaticRef, Map<string, ProviderArtifact>>();
   readonly #functions: ReadonlyMap<object, FunctionDefinition>;
   #generated = 0;
+  #cacheEpoch = 0;
 
   constructor(options: ProviderRuntimeOptions) {
     this.#model = options.model;
@@ -90,6 +101,10 @@ class ProviderRuntimeImpl implements ProviderRuntime {
       resources: options.validation.resources,
     });
     this.#functions = new Map(options.model.functions.map((fn) => [fn.ref, fn]));
+  }
+
+  get cacheEpoch(): number {
+    return this.#cacheEpoch;
   }
 
   materialize(provider: ProviderRef, keyValues: RuntimeScalar[]): ProviderArtifact {
@@ -113,6 +128,8 @@ class ProviderRuntimeImpl implements ProviderRuntime {
     }
     const artifact = this.#generate(target, definition, key);
     entries.set(key.id, artifact);
+    // I2: any cache content change is visible to dispatch ICs through this counter.
+    this.#cacheEpoch += 1;
     return artifact;
   }
 

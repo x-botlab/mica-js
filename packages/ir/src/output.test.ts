@@ -87,6 +87,20 @@ function host(calls: Call[], results: boolean[] = []): IRBridgeHost {
   };
 }
 
+/** A host that returns exactly the given values, including non-boolean ones. */
+function returning(calls: Call[], results: unknown[]): IRBridgeHost {
+  return {
+    send(output, payload, timePs) {
+      calls.push({ kind: 'scalar', output, payload, timePs });
+      return results.shift() as boolean;
+    },
+    sendBytes(output, bytes, timePs) {
+      calls.push({ kind: 'bytes', output, payload: bytes, timePs });
+      return results.shift() as boolean;
+    },
+  };
+}
+
 describe('IR scalar and byte output bridge', () => {
   it('declares outputs and lowers b.output / b.outputBytes to bridge instructions', () => {
     const { module, scalar, bytes, emit } = fixture();
@@ -267,4 +281,53 @@ describe('IR scalar and byte output bridge', () => {
     );
     expect(region).toBeDefined();
   });
+
+  it.each([1, undefined, 'true'])(
+    'captures a non-boolean bridge.send result (%s) as evaluation-failed',
+    (returned) => {
+      const { module, emit } = fixture();
+      const calls: Call[] = [];
+      const interpreter = createIRInterpreter(module, {
+        validation: policy(module),
+        bridge: returning(calls, [returned]),
+      });
+      const failure = expectExecutionError(
+        () => interpreter.execute(emit, [7], context),
+        'evaluation-failed',
+      );
+      expect(failure.steps).toBe(2);
+      expect(failure.location).toMatchObject({
+        functionIndex: 0,
+        functionName: 'emit',
+        blockIndex: 0,
+        blockId: module.functions[0]!.body!.entry.id,
+        instructionIndex: 1,
+      });
+      expectExecutionError(() => interpreter.execute(emit, [7], context), 'instance-faulted');
+    },
+  );
+
+  it.each([1, undefined, 'true'])(
+    'captures a non-boolean bridge.send_bytes result (%s) as evaluation-failed',
+    (returned) => {
+      const { module, emit } = fixture();
+      const calls: Call[] = [];
+      const interpreter = createIRInterpreter(module, {
+        validation: policy(module),
+        bridge: returning(calls, [true, returned]),
+      });
+      const failure = expectExecutionError(
+        () => interpreter.execute(emit, [7], context),
+        'evaluation-failed',
+      );
+      expect(failure.steps).toBe(6);
+      expect(failure.location).toMatchObject({
+        functionIndex: 0,
+        functionName: 'emit',
+        blockIndex: 0,
+        blockId: module.functions[0]!.body!.entry.id,
+        instructionIndex: 5,
+      });
+    },
+  );
 });

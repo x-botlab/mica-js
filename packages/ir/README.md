@@ -213,6 +213,7 @@ evaluateScalarInstruction(multiply, [4294967295, 4294967295]); // 1
 - 内部用无依赖 BigInt 精确计算，按目标精度最近值、居中取偶数舍入；FMA 不舍入中间乘积，保留次正规数与有符号零。
 - 算术与精度转换产生的 NaN 规范为 `0x7fc00000` / `0x7ff8000000000000`；`const.bits`、`select` 与 bitcast 保留原始位。
 - 浮点输出始终为 `FloatBits`；需要保留 NaN 载荷/符号位时必须传 `FloatBits`，不要经 JS number 往返。
+- SSA 中的浮点值一律冻结：`const.bits` 返回冻结的 `FloatBits`，宿主经 executor operands 或函数返回值拿到同一对象时不能就地修改。
 - 失败抛 `IRFloatEvaluationError`：`integer-overflow`、`invalid-instruction`、`invalid-operand`、`unsupported-operation`。
 
 ```ts
@@ -283,7 +284,7 @@ runtime.storage.loadState(count); // 3
 ```
 
 - `createIRInterpreter` 捕获私有执行快照，调用 `validateIR`，再用 `createIRStorage` 建独占存储；原模型后续修改不影响已创建的实例。
-- `IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`bridge: IRBridgeHost`、`stepObserver: IRStepObserver`、`executors: readonly IRInstructionExecutor[]`；API 面向可信宿主，不是隔离恶意 JS getter/validator 的沙箱。
+- `IRInterpreterOptions` 包含必填 `validation: IRValidationOptions` 和可选 `maxSteps: number`、`eventHost: IREventHost`、`bridge: IRBridgeHost`、`stepObserver: IRStepObserver`、`stepBudget: IRStepBudget`、`executors: readonly IRInstructionExecutor[]`；API 面向可信宿主，不是隔离恶意 JS getter/validator 的沙箱。
 - `execute(target, args, context)` 同步执行 `FunctionRef` / `EntryRef` / `LifecycleRef`，返回 `{ values, steps }`。`context = { instanceId, virtualTime }` 必填：实例标识非空，虚拟时间为非负安全整数皮秒，仅用于诊断。
 - 存储跨成功执行保留；每次 `execute` 使用独立预算。普通调用和块跳转不推进虚拟时间、不创建事件、不形成等待/恢复对象；显式 event 指令通过下述可信宿主桥接。
 
@@ -371,6 +372,24 @@ The optional `stepObserver.beforeStep` runs once before each reference step effe
 
 `src/event.test.ts` tests real IR execution, validation, capture, time/ID boundaries, synchronous hooks, and step effects; `src/event.type-test.ts` checks the approved API and invalid signatures.
 
+### 批量计步协议 `stepBudget`
+
+```ts
+interface IRStepBudget {
+  remaining(context: IRExecutionContext): number;
+  consume(context: IRExecutionContext, steps: number): void;
+}
+```
+
+`IRInterpreterOptions.stepBudget` 是 `stepObserver` 之外的可选计步协议，两者**互斥**：同时提供时创建期以 `invalid-options` / `stepObserver and stepBudget are mutually exclusive` 拒绝。它面向可以把多步合并为一次调用的引擎（JIT）：引擎可以在任意时刻用 `remaining(ctx)` 读取额度，也可以把累计的 `p` 步合并为一次 `consume(ctx, p)`，因此宿主必须实现以下义务（J0 H1–H4）：
+
+- **H1** `consume(ctx, n)` 与连续 `n` 次 `consume(ctx, 1)` 等价，`n` 为正安全整数；
+- **H2** `remaining(ctx)` 不多报：返回 `r` 时，紧接着的 `r` 次 `consume(ctx, 1)` 都会成功；
+- **H3** 两个方法都不读写 IR 存储；
+- **H4** 两个方法都不重入 `execute`。
+
+参考解释器是该协议的语义定义：每一步都按「`maxSteps` 检查 → `consume(ctx, 1)` → 计步 → 执行」的顺序恰好调用一次 `consume`，**从不调用** `remaining`，也不检查 `consume` 的返回值。被 `maxSteps` 拦截的步骤不会调用 `consume`；`consume` 抛错时 `steps` 不包含该步，错误按其他 hook 的路径包装（非 `IRExecutionError` 为 `evaluation-failed`，`IRExecutionError` 保留原 code），`location` 指向该步，实例随即 faulted，已提交效果不回滚。`remaining`/`consume` 与其他 hook 一样在创建期经 `captureHook` 捕获：非函数、async/generator 方法以 `invalid-options` / `Expected synchronous interpreter hooks` 拒绝，返回 Promise/thenable 或 generator 时按 `evaluation-failed` 失败。
+
 ### 输出与消息桥接（#54）
 
 `IRDeclarations.output` / `IRDeclarations.outputBytes` 声明静态、有界的输出端点；`IRModule.outputs` 返回 `OutputDefinition` 列表。`FunctionBuilder` 增加：
@@ -394,7 +413,7 @@ interface IRBridgeHost {
 }
 ```
 
-可选 `IRInterpreterOptions.bridge` 在指令位置同步接收已捕获数据与虚拟时间；没有 bridge host 的解释器在创建时拒绝含 bridge 指令的模块。标量输出参数在 host 边界转换为 JS `boolean`/`number`（浮点解码为 number），字节输出先校验读取范围与 `maxBytes` 再快照。完整范围、读取权限与 `maxBytes` 非法是模型错误；只有合法载荷下的队列/字节预算不足由 host 返回 `false`。解释器不执行 JS，队列与通知时机由 device 层负责。
+可选 `IRInterpreterOptions.bridge` 在指令位置同步接收已捕获数据与虚拟时间；没有 bridge host 的解释器在创建时拒绝含 bridge 指令的模块。标量输出参数在 host 边界转换为 JS `boolean`/`number`（浮点解码为 number），字节输出先校验读取范围与 `maxBytes` 再快照。完整范围、读取权限与 `maxBytes` 非法是模型错误；只有合法载荷下的队列/字节预算不足由 host 返回 `false`。宿主返回值在写入 `bool` 结果前经 `captureArgument('bool')` 捕获：返回非 boolean（例如 `1`、`undefined`、`'true'`）时以 `evaluation-failed` 失败，`steps` 与 `location` 指向该 `bridge.send` / `bridge.send_bytes` 指令，解释器随即 faulted。解释器不执行 JS，队列与通知时机由 device 层负责。
 
 `src/output.test.ts` 覆盖真实 builder/validate/interpreter 链、标量/字节捕获、零长度、`false` 结果、范围与 `maxBytes` 拒绝；`src/output.type-test.ts` 检查正反类型签名。
 

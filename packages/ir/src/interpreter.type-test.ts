@@ -11,6 +11,7 @@ import {
   type IRInterpreter,
   type IRInterpreterOptions,
   type IRModule,
+  type IRStepBudget,
   type IRStorage,
   type IRValidationOptions,
   type LifecycleRef,
@@ -27,6 +28,24 @@ declare const state: StateRef;
 declare const location: IRExecutionLocation;
 
 const options: IRInterpreterOptions = { validation, maxSteps: 0 };
+const stepBudget: IRStepBudget = {
+  remaining: (captured) => captured.virtualTime,
+  consume: (captured, steps) => {
+    void captured.instanceId;
+    void steps;
+  },
+};
+const budgetedOptions: IRInterpreterOptions = { validation, stepBudget };
+createIRInterpreter(module, budgetedOptions);
+const remaining: number = stepBudget.remaining({ instanceId: 'test', virtualTime: 0 });
+void remaining;
+// @ts-expect-error the batch protocol requires consume
+const missingConsume: IRStepBudget = { remaining: () => 1 };
+// @ts-expect-error the batch protocol requires remaining
+const missingRemaining: IRStepBudget = { consume: () => undefined };
+// @ts-expect-error remaining reports a number of steps
+const wrongRemaining: IRStepBudget = { remaining: () => undefined, consume: () => undefined };
+void [missingConsume, missingRemaining, wrongRemaining];
 const runtime: IRInterpreter = createIRInterpreter(module, options);
 const context: IRExecutionContext = { instanceId: 'test', virtualTime: 0 };
 const args: readonly RuntimeScalar[] = [true, 7, { type: 'f32', bits: '0x7fa12345' }];

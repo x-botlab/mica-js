@@ -884,3 +884,42 @@ describe('static validation, snapshots and unsupported execution', () => {
     expect(createIRStorage(module).loadState(state)).toBe(9);
   });
 });
+
+describe('SSA floating capture', () => {
+  it('freezes const.bits results and the operands an executor receives', () => {
+    const module = createIRModule();
+    const probe = module.domainInstruction('probe.read', {
+      operands: [{ kind: 'value', type: 'f32' }],
+      results: ['f32'],
+    });
+    const run = module.func('run', { params: [], results: ['f32', 'f32'] });
+    run.body((b) => {
+      const bits = b.bits('f32', '0x7fa12345');
+      const [echo] = b.invoke(probe, [bits]);
+      b.return([bits, echo!]);
+    });
+    const seen: RuntimeScalar[] = [];
+    const validation = policy(module, {
+      supportedInstructions: [...CORE_INSTRUCTION_NAMES, 'probe.read'],
+      authorizedInstructions: [...CORE_INSTRUCTION_NAMES, 'probe.read'],
+      validators: [{ op: 'probe.read', validate: () => [] }],
+    });
+    const runtime = createIRInterpreter(module, {
+      validation,
+      executors: [
+        {
+          op: 'probe.read',
+          execute: (request) => {
+            seen.push(...request.operands);
+            return request.operands;
+          },
+        },
+      ],
+    });
+    const result = runtime.execute(run, [], context);
+    expect(result.values[0]).toEqual({ type: 'f32', bits: '0x7fa12345' });
+    expect(Object.isFrozen(result.values[0])).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(Object.isFrozen(seen[0])).toBe(true);
+  });
+});

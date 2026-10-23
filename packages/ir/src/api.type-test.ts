@@ -9,6 +9,7 @@ import type {
   IRInstructionExecution,
   IRInstructionExecutor,
   IRModule,
+  IRStepBudget,
   LifecycleRef,
   ScalarType,
   Value,
@@ -252,3 +253,16 @@ b.at(join, async () => {});
 // Keep the scalar type import meaningful for declaration checking.
 const scalar: ScalarType = 'u32';
 void scalar;
+
+// Batch step accounting is exported from the package entry.
+const stepBudget: IRStepBudget = {
+  remaining: (captured) => captured.virtualTime,
+  consume: (captured, steps) => {
+    void captured.instanceId;
+    void steps;
+  },
+};
+expectType<IRStepBudget>(stepBudget);
+// @ts-expect-error the batch protocol requires both methods
+const incompleteBudget: IRStepBudget = { remaining: () => 0 };
+void incompleteBudget;

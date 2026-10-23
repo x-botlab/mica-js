@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CORE_INSTRUCTION_NAMES } from './builder';
+import { prepareEngine } from './engine-setup';
 import {
   createIRInterpreter,
   createIRModule,
@@ -132,7 +133,7 @@ function toyModule() {
     },
   );
   step.body((b) => b.dispatch(code, [b.state.load(pc)], []));
-  return { module, firmware, pc, r0, stopped, guestFault, step, calls };
+  return { module, firmware, pc, r0, stopped, guestFault, step, code, calls };
 }
 
 function runStep(
@@ -767,5 +768,31 @@ describe('provider key and read contract at runtime', () => {
         b.dispatch(keyed, [key], []);
       });
     }).toThrow(/dispatch key/);
+  });
+});
+
+describe('provider runtime cache epoch', () => {
+  it('counts cache writes and stays fixed on hits (I2)', () => {
+    const fixture = toyModule();
+    const validation = policy(fixture.module, [{ ref: fixture.firmware, access: 'update' }]);
+    const setup = prepareEngine(fixture.module, { validation });
+    const providers = setup.providers;
+    expect(providers.cacheEpoch).toBe(0);
+
+    const first = providers.materialize(fixture.code, [0]);
+    expect(providers.cacheEpoch).toBe(1);
+    expect(fixture.calls.count).toBe(1);
+
+    // Cache hit: same artifact, same epoch, no generation callback.
+    expect(providers.materialize(fixture.code, [0])).toBe(first);
+    expect(providers.cacheEpoch).toBe(1);
+    expect(fixture.calls.count).toBe(1);
+
+    // Invalidating unit 0 forces a regeneration and a second cache write.
+    setup.storage.updateBytesFromBytes(fixture.firmware, 0, new Uint8Array([0x10]));
+    const regenerated = providers.materialize(fixture.code, [0]);
+    expect(regenerated).not.toBe(first);
+    expect(providers.cacheEpoch).toBe(2);
+    expect(fixture.calls.count).toBe(2);
   });
 });
