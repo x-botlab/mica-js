@@ -9,6 +9,7 @@ import {
   type CanvasBindingTarget,
   type CanvasCommand,
   type CanvasDocument,
+  parseCanvas,
   serializeCanvas,
 } from '@mica-js/core/canvas';
 import {
@@ -218,7 +219,7 @@ export function CanvasPage() {
         const text = restored ?? new TextDecoder().decode(await fetchBytes('widgets/demo.cnv'));
         const created = await createCanvasScene({
           container,
-          document: text,
+          document: parseCanvas(text),
           host: ownedHost,
           mode: 'edit',
           theme: DARK_CANVAS_THEME,
@@ -436,7 +437,7 @@ export function CanvasPage() {
     void (async () => {
       try {
         const text = new TextDecoder().decode(await fetchBytes('widgets/demo.cnv'));
-        await host.loadDocument(text);
+        await host.loadDocument(parseCanvas(text));
         // The sample is the baseline again, so reloading it does not count as unsaved work.
         draft?.seed(host.document);
       } catch (cause) {

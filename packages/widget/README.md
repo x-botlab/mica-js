@@ -120,7 +120,7 @@ await host.dispose();
 ```ts
 interface WidgetHost {
   readonly document: CanvasDocument;
-  loadDocument(source: string | CanvasDocument): Promise<void>;
+  loadDocument(document: CanvasDocument): Promise<void>;
   applyCommand(command: CanvasCommand): void;
   onDocumentChange(listener: (document: CanvasDocument) => void): () => void;
   reset(): Promise<void>;
@@ -132,7 +132,7 @@ interface WidgetHost {
 }
 ```
 
-`document` 初始是空文档 `{ version: 1, widgets: [] }`；`loadDocument` 接受 `.cnv` 文本或已解析对象，`applyCommand` 接受 `@mica-js/core/canvas` 的 `CanvasCommand`。实例级操作（挂载、卸载、改尺寸、改属性）不再公开，`WidgetMountSpec` / `WidgetSize` 也随之从公开类型中移除。
+`document` 初始是空文档 `{ version: 1, widgets: [] }`；`loadDocument` 只接收解析好的 `CanvasDocument`（`.cnv` 文本请先用 `@mica-js/core/canvas` 的 `parseCanvas` 解析），`applyCommand` 接受 `@mica-js/core/canvas` 的 `CanvasCommand`。宿主仍会重新校验传入的文档，坏文档抛 `SchematicError` 且不改变已挂载的实例。实例级操作（挂载、卸载、改尺寸、改属性）不再公开，`WidgetMountSpec` / `WidgetSize` 也随之从公开类型中移除。
 
 ### 重置（`reset()`）
 

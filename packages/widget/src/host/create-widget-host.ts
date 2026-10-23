@@ -138,12 +138,12 @@ class WidgetHostImpl implements WidgetHost {
     return this.#document;
   }
 
-  async loadDocument(source: string | CanvasDocument): Promise<void> {
-    const document = parseCanvas(source);
-    this.#assertBindings(document);
-    this.#commit(document);
+  async loadDocument(document: CanvasDocument): Promise<void> {
+    const parsed = parseCanvas(document);
+    this.#assertBindings(parsed);
+    this.#commit(parsed);
     const pass = this.#scheduleReconcile();
-    this.#emitDocument(document);
+    this.#emitDocument(parsed);
     await pass;
   }
 

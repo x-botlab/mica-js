@@ -320,25 +320,15 @@ describe('createWidgetHost', () => {
     ]);
   });
 
-  it('accepts serialized .cnv text', async () => {
-    const harness = createHarness();
-
-    await harness.host.loadDocument(JSON.stringify(canvas(instance({ id: ID_A }))));
-
-    expect(layerIds(harness)).toEqual([ID_A]);
-    expect(documentIds(harness)).toEqual([ID_A]);
-  });
-
-  it('rejects an unparsable document without touching the mounted instances', async () => {
+  it('rejects an invalid document without touching the mounted instances', async () => {
     const harness = createHarness();
     await harness.host.loadDocument(canvas(instance({ id: ID_A })));
     const before = harness.host.document;
 
-    await expect(harness.host.loadDocument('{"version": 1,')).rejects.toBeInstanceOf(
-      SchematicError,
-    );
     const futureVersion = { version: 2, widgets: [] } as unknown as CanvasDocument;
     await expect(harness.host.loadDocument(futureVersion)).rejects.toBeInstanceOf(SchematicError);
+    const broken = { version: 1, widgets: [{ id: 'not-a-uuid' }] } as unknown as CanvasDocument;
+    await expect(harness.host.loadDocument(broken)).rejects.toBeInstanceOf(SchematicError);
 
     expect(harness.host.document).toBe(before);
     expect(layerIds(harness)).toEqual([ID_A]);

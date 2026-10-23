@@ -68,15 +68,18 @@ export interface WidgetHost {
   readonly document: CanvasDocument;
 
   /**
-   * Parses, validates and commits a document, then mounts the instances it lists.
+   * Commits an already parsed document and mounts the instances it lists.
+   *
+   * Parsing stays with the caller (`parseCanvas`): the host still re-validates the snapshot it is
+   * handed, but it never guesses whether a value is text or a document.
    *
    * Resolves once the instances of this first pass finished mounting. A widget that fails to mount
    * is reported through `onDiagnostic` and left out of `layers` instead of rejecting this promise.
    *
-   * @throws {SchematicError} when `source` is not a valid `.cnv` document or the bindings do not
+   * @throws {SchematicError} when `document` is not a valid `.cnv` document or the bindings do not
    * validate; neither the document nor the instances change in that case.
    */
-  loadDocument(source: string | CanvasDocument): Promise<void>;
+  loadDocument(document: CanvasDocument): Promise<void>;
 
   /**
    * Applies one command to the current document.

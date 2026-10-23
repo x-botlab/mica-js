@@ -50,6 +50,7 @@ editor.setMode('run'); // 运行模式：只转发输入，不显示选中框与
 
 ```ts
 import { createCanvasScene } from '@mica-js/canvas-editor';
+import { parseCanvas } from '@mica-js/core/canvas';
 import { createWidgetHost } from '@mica-js/widget';
 
 let scene: CanvasScene | undefined;
@@ -63,7 +64,7 @@ const host = createWidgetHost({
 
 scene = await createCanvasScene({
   container,
-  document: cnvText, // `.cnv` 文本或已解析的 CanvasDocument
+  document: parseCanvas(cnvText), // 已解析的 CanvasDocument；文本由应用侧解析
   host,
   onChange: (document) => persist(document), // 每次提交后写回磁盘
   onSelectionChange: (ids) => renderInspector(ids), // 宿主属性/绑定面板用
@@ -89,7 +90,7 @@ scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主
 
 诊断码以 `canvas-scene/` 开头：`command-failed`（宿主拒绝命令）、`unbound-publish`（发布端口没有绑定）、`change-failed`（`onChange` 抛错）、`publish-failed`（监听器抛错）。命令被拒时编辑器不回灌，继续画旧快照。
 
-`createCanvasScene` 是异步的：它先 `await host.loadDocument(options.document)`，再挂载编辑器；宿主校验失败时直接抛出且不挂载。
+`createCanvasScene` 是异步的：它先 `await host.loadDocument(options.document)`，再挂载编辑器；`document` 必须是已解析的 `CanvasDocument`（`.cnv` 文本先用 `parseCanvas` 解析），宿主校验失败时直接抛出且不挂载。
 
 **切换模式会重置 widget 状态。** `scene.setMode(next)` 返回 promise，执行顺序固定为：`editor.cancelInteraction()` → `editor.setMode(next)` → `await host.reset()`。`mode` 属性在调用后**立即**是新值（输入路由马上跟着变），promise 在 `host.reset()` 把全部实例按当前文档重建完成后才 resolve。重置会丢弃实例并重建工厂实例，所以按键不会停在按下、数码管不会停在最后一个值；模块本身不重新求值，因此 widget 的实例状态要放在工厂闭包里。切到当前模式则直接 resolve，不做重置；重置失败时 promise reject，场景回退到原模式。选择与视口保持不变（实例 id 未变）。
 

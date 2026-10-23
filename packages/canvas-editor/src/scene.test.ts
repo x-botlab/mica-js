@@ -78,11 +78,8 @@ function createFakeHost(initial: CanvasDocument = canvasDocument()): FakeHost {
     get document() {
       return current;
     },
-    loadDocument: vi.fn(async (source: string | CanvasDocument) => {
-      if (typeof source === 'string') {
-        throw new Error('this fake host only accepts parsed documents');
-      }
-      current = source;
+    loadDocument: vi.fn(async (document: CanvasDocument) => {
+      current = document;
     }),
     applyCommand: vi.fn((command: CanvasCommand) => {
       current = applyCanvasCommand(current, command);

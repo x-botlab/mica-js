@@ -38,8 +38,8 @@ export interface CanvasSceneHost extends WidgetHost {
 
 export interface CreateCanvasSceneOptions {
   readonly container: HTMLElement;
-  /** `.cnv` text or an already parsed document. */
-  readonly document: string | CanvasDocument;
+  /** Parsed `.cnv` document; parse text with `parseCanvas` before handing it over. */
+  readonly document: CanvasDocument;
   /** Runtime built by the host (see x-botlab/mica-js#118); the scene never owns it. */
   readonly host: WidgetHost;
   /** Defaults to `'edit'`. */
