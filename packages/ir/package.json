@@ -21,6 +21,7 @@
   ],
   "scripts": {
     "bench": "vitest bench --run --reporter=verbose",
+    "bench:m3": "vitest bench --run bench/m3.bench.ts",
     "build": "vite build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.bench.json"

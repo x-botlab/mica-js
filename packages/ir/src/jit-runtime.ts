@@ -39,8 +39,13 @@ import {
   JitCodegenUnavailable,
 } from './jit/codegen/compile';
 import type { CompileEnv, CompiledFunction, CompiledRegion } from './jit/codegen/compile';
-import { DispatchRegistry, REGION_THRESHOLD, providerDispatchInfo } from './jit/dispatch-ic';
-import type { ArtifactState, ProviderDispatchInfo } from './jit/dispatch-ic';
+import {
+  DispatchRegistry,
+  MAX_REGION_MEMBERS,
+  REGION_THRESHOLD,
+  providerDispatchInfo,
+} from './jit/dispatch-ic';
+import type { ArtifactState, DispatchKey, ProviderDispatchInfo } from './jit/dispatch-ic';
 import { computeSummaries } from './jit/effects';
 import { attachRegion, collectRegionMembers } from './jit/region';
 import { runHeapFunction } from './jit/heap-tier';
@@ -1071,8 +1076,31 @@ class JITInterpreter implements IRInterpreter {
       return;
     }
     const members = collectRegionMembers(state, this.#dispatch).filter(
-      (member) => member.mir.promotions.length === 0,
+      (member) => member.mir.promotions.length === 0 && member.region === undefined,
     );
+    // The recorded transition graph can miss an edge (a jump-cache hit does not
+    // update site statistics), which would leave a hot artifact outside every
+    // region and force an exit on each of its dispatches. Fill the remaining
+    // slack with other hot artifacts of the same provider; `MAX_REGION_MEMBERS`
+    // and the emitted-source budget still bound the result.
+    if (members.length < MAX_REGION_MEMBERS) {
+      const keys = new Set(members.map((member) => keySignature(member.key)));
+      const hot: ArtifactState[] = [];
+      for (const candidate of this.#artifactsByIndex.values()) {
+        if (candidate.providerIndex !== state.providerIndex) continue;
+        if (candidate.region !== undefined || candidate.entries <= 0) continue;
+        if (candidate.mir.promotions.length > 0) continue;
+        hot.push(candidate);
+      }
+      hot.sort((left, right) => right.entries - left.entries);
+      for (const candidate of hot) {
+        if (members.length >= MAX_REGION_MEMBERS) break;
+        const signature = keySignature(candidate.key);
+        if (keys.has(signature)) continue;
+        keys.add(signature);
+        members.push(candidate);
+      }
+    }
     if (members.length === 0) return;
     try {
       const region = compileRegionWithSource(
@@ -1210,4 +1238,15 @@ function resultValues(
   if (types.length === 0) return [];
   if (types.length === 1) return [fromJitResult(types[0]!, result)];
   return types.map((type, index) => fromJitResult(type, runtime.ret[index]));
+}
+
+/**
+ * Identity of a dispatch key. Region members must be unambiguous: a state
+ * machine matches the first member whose key compares equal, so two artifacts
+ * with the same key may never share a region.
+ */
+function keySignature(key: readonly DispatchKey[]): string {
+  return key
+    .map((value) => (typeof value === 'number' && Object.is(value, -0) ? '-0' : `${value}`))
+    .join('\u0000');
 }

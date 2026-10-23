@@ -1,9 +1,10 @@
-import { createIRInterpreter } from '@mica-js/ir';
+import { createIRInterpreter, createIRJIT } from '@mica-js/ir';
 import type {
   EntryRef,
   IRBridgeHost,
   IRInstructionExecutor,
   IRModule,
+  IRStepBudget,
   IRStorage,
   IRValidationOptions,
   LifecycleRef,
@@ -24,6 +25,8 @@ export interface IRSchedulerInstanceDefinition {
   readonly bridge?: IRBridgeHost;
   /** Trusted synchronous executors for declared domain instructions. */
   readonly executors?: readonly IRInstructionExecutor[];
+  /** IR 执行引擎。默认 'jit'；'reference' 使用参考解释器（用于调试或对照）。 */
+  readonly engine?: 'jit' | 'reference';
 }
 
 export interface IRSchedulerInstance {
@@ -51,6 +54,12 @@ export function createIRSchedulerInstance(
     });
   }
   const { instanceId, module, validation, executors } = definition;
+  const engine = definition.engine;
+  if (engine !== undefined && engine !== 'jit' && engine !== 'reference') {
+    throw new SchedulerError('invalid-instance', 'IR engine must be "jit" or "reference"', {
+      timePs: scheduler.now,
+    });
+  }
   const captured = {
     memories: module.memories,
     functions: module.functions,
@@ -82,7 +91,20 @@ export function createIRSchedulerInstance(
     }
     return active;
   };
-  const interpreter = createIRInterpreter(captured, {
+  // The scheduler's per-entry counters satisfy the `@mica-js/ir` step-budget protocol:
+  // - H1: `consumeSteps(n)` is all-or-nothing, while the JIT only batches steps that already
+  //   ran (`n` never exceeds the last `remainingSteps` it read) or consumes one step at a
+  //   time, so the batch/serial difference is never observable;
+  // - H2: `remainingSteps` is exactly `maxSteps - steps` and never over-reports;
+  // - H3: both methods only adjust that counter behind `#boundary`; neither touches IR
+  //   storage nor re-enters execution;
+  // - H4: the scheduler rejects re-entrant execution, so one entry has one consumer.
+  const stepBudget: IRStepBudget = {
+    remaining: () => context().remainingSteps,
+    consume: (_ctx, count) => context().consumeSteps(count),
+  };
+  const create = engine === 'reference' ? createIRInterpreter : createIRJIT;
+  const interpreter = create(captured, {
     validation,
     maxSteps: Number.MAX_SAFE_INTEGER,
     ...(definition.bridge === undefined ? {} : { bridge: definition.bridge }),
@@ -97,7 +119,7 @@ export function createIRSchedulerInstance(
         instance.cancel(id);
       },
     },
-    stepObserver: { beforeStep: () => context().consumeSteps() },
+    stepBudget,
     ...(executors === undefined ? {} : { executors }),
   });
   const instance = scheduler.addInstance({

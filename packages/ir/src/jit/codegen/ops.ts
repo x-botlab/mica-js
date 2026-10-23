@@ -148,6 +148,22 @@ export function numberLiteral(value: number): string {
   return String(value);
 }
 
+/**
+ * Literal text of a `const` instruction that code generation may duplicate at
+ * every use instead of materializing a local.
+ *
+ * `constRep === 'U'` reads the module constant table (`K<n>`), which is a plain
+ * variable read and therefore not worth inlining; float results are excluded by
+ * the caller because their MIR representation can differ from the literal.
+ */
+export function inlineConstantText(inst: MInst): string | undefined {
+  if (inst.op !== Op.Const || inst.constRep === 'U') return undefined;
+  const value = inst.imm[0];
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') return numberLiteral(value);
+  return undefined;
+}
+
 function widthOf(type: ScalarType): number {
   return INTEGER_WIDTH[type as string] ?? 0;
 }

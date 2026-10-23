@@ -32,7 +32,7 @@ pnpm add @mica-js/core
 
 ## 真实 IR 执行
 
-`createIRSchedulerInstance(scheduler, { instanceId, module, validation, executors? })` 创建一份既有 `@mica-js/ir` 参考解释器及独立存储，将 `event.now/at/cancel` 接入**同一个**调度队列和 ID 分配器，不另造解释器或调度器。`validation` 的指令支持/授权与资源权限仍显式提供，不会自动放宽；`executors` 是可信宿主提供的领域指令同步执行器，未注册的领域指令仍在链接期拒绝。
+`createIRSchedulerInstance(scheduler, { instanceId, module, validation, executors?, engine? })` 创建一份既有 `@mica-js/ir` 执行引擎及独立存储，将 `event.now/at/cancel` 接入**同一个**调度队列和 ID 分配器，不另造解释器或调度器。`engine` 选择执行引擎：默认 `'jit'`（`createIRJIT`），`'reference'` 回退到参考解释器，仅用于调试或对照；两者使用同一份选项与同一套存储语义，可观测行为等价（执行顺序、虚拟时间、每入口步数预算与错误字段、`IRExecutionError` 的位置与调用链），详见 `@mica-js/ir` README 的 JIT 一节。`validation` 的指令支持/授权与资源权限仍显式提供，不会自动放宽；`executors` 是可信宿主提供的领域指令同步执行器，未注册的领域指令仍在链接期拒绝。
 
 ```ts
 import { createIRModule } from '@mica-js/ir';
@@ -106,7 +106,7 @@ instance.storage.loadState(received); // 7
 
 每入口参考步骤和同一虚拟时刻的入口次数（普通及控制合计）默认各为 **1,000,000**，可配置非负安全整数；0 禁止执行。入口次数跨暂停、步进和分段保留，只在时间真正变化时重置。超限在下一步骤/入口效果前暂停并诊断，不偷偷增加 1 ps。
 
-IR 适配器通过 `stepObserver.beforeStep` 逐步连接 `consumeSteps`。其内部解释器 `maxSteps` 设为 `Number.MAX_SAFE_INTEGER`，实际预算由 scheduler 控制，避免独立解释器的默认一百万覆盖用户更高配置；独立解释器默认行为不变。
+IR 适配器通过 `stepBudget` 协议（`remaining()` / `consume(ctx, count)`）连接调度器计步：最多一次提交本段已执行的步数，而非每一步都调用一次宿主。其内部解释器 `maxSteps` 设为 `Number.MAX_SAFE_INTEGER`，实际预算由 scheduler 控制，避免独立解释器的默认一百万覆盖用户更高配置；独立解释器默认行为不变。
 
 宿主边界输入失败无队列/ID 副作用，不污染仿真。入口外的边界错误 `steps` 为 0，且不填 `instanceId/targetName/phase/eventId`，不继承上一入口的计数；入口内故障仍报告失败入口的步数与位置。入口内模型错误使整个 scheduler `faulted`，保留此前已提交状态、已安排队列及失败入口占用的 ID，不继续执行其他实例；后端捕获错误也不能清除全局故障。不支持入口中途恢复或检查点恢复，必须重建/合法重放。`pause()` 不清除故障。
 

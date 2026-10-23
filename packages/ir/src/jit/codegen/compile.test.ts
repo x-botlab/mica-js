@@ -1424,7 +1424,7 @@ describe('JIT source snapshots', () => {
         if (d >= rt.maxDepth) return rt.deep(1, p0, p1);
         rt.depth = d + 1;
         let L = -1;
-        let v0 = false, v1 = 0, v2 = 0, v3 = 0, v4 = 0, v5 = 0;
+        let v0 = false, v1 = 0, v4 = 0, v5 = 0;
         v0 = p0;
         v1 = p1;
         try {
@@ -1440,31 +1440,27 @@ describe('JIT source snapshots', () => {
             L = 8;
             if (rt.steps >= rt.limit) rt.limitReached(F.locations[8]);
             rt.steps += 1;
-            v2 = 1;
             L = 2;
             if (rt.steps >= rt.limit) rt.limitReached(F.locations[2]);
             rt.steps += 1;
           } else {
             rt.steps += 2;
-            v2 = 1;
             L = 2;
           }
-          v4 = v2;
+          v4 = 1;
         } else {
           if (rt.steps + 2 > rt.limit) {
             L = 10;
             if (rt.steps >= rt.limit) rt.limitReached(F.locations[10]);
             rt.steps += 1;
-            v3 = 2;
             L = 4;
             if (rt.steps >= rt.limit) rt.limitReached(F.locations[4]);
             rt.steps += 1;
           } else {
             rt.steps += 2;
-            v3 = 2;
             L = 4;
           }
-          v4 = v3;
+          v4 = 2;
         }
         if (rt.steps + 2 > rt.limit) {
           L = 12;
@@ -1499,29 +1495,25 @@ describe('JIT source snapshots', () => {
         if (d >= rt.maxDepth) return rt.deep(0, p0);
         rt.depth = d + 1;
         let L = -1;
-        let v0 = 0, v1 = 0, v2 = 0, v3 = 0, v4 = 0, v5 = false, v6 = 0, v7 = 0, v8 = 0, v9 = 0, v10 = 0;
+        let v0 = 0, v3 = 0, v4 = 0, v5 = false, v6 = 0, v7 = 0, v8 = 0, v9 = 0, v10 = 0;
         v0 = p0;
         try {
         if (rt.steps + 3 > rt.limit) {
           L = 9;
           if (rt.steps >= rt.limit) rt.limitReached(F.locations[9]);
           rt.steps += 1;
-          v1 = 0;
           L = 10;
           if (rt.steps >= rt.limit) rt.limitReached(F.locations[10]);
           rt.steps += 1;
-          v2 = 1;
           L = 2;
           if (rt.steps >= rt.limit) rt.limitReached(F.locations[2]);
           rt.steps += 1;
         } else {
           rt.steps += 3;
-          v1 = 0;
-          v2 = 1;
           L = 2;
         }
-        v3 = v1;
-        v4 = v1;
+        v3 = 0;
+        v4 = 0;
         L1: for (;;) {
           if (rt.steps + 2 > rt.limit) {
             L = 12;
@@ -1543,7 +1535,7 @@ describe('JIT source snapshots', () => {
               L = 14;
               if (rt.steps >= rt.limit) rt.limitReached(F.locations[14]);
               rt.steps += 1;
-              v8 = ((v6 + v2) >>> 0);
+              v8 = ((v6 + 1) >>> 0);
               L = 15;
               if (rt.steps >= rt.limit) rt.limitReached(F.locations[15]);
               rt.steps += 1;
@@ -1553,7 +1545,7 @@ describe('JIT source snapshots', () => {
               rt.steps += 1;
             } else {
               rt.steps += 3;
-              v8 = ((v6 + v2) >>> 0);
+              v8 = ((v6 + 1) >>> 0);
               v9 = ((v7 + v8) >>> 0);
               L = 7;
             }

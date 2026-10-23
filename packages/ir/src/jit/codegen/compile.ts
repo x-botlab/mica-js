@@ -14,7 +14,7 @@ import { analyzeRepresentation } from '../repr';
 import type { CompiledFn, JitFrame, JitHelpers, JitRuntime } from '../runtime-core';
 import { createRegionRuntime } from '../region';
 import { emitFunction, emitRegion } from './emit';
-import type { EmitEnv, EmittedFunction } from './emit';
+import type { EmitEnv, EmittedFunction, EmittedRegion } from './emit';
 import type { ScalarType } from '../../types';
 
 /** Raised when the host forbids dynamic code generation. */
@@ -89,6 +89,33 @@ interface CacheEntry {
 
 const sourceCache = new WeakMap<MFunction, CacheEntry>();
 
+/**
+ * A step budget at or above this bound is unreachable in practice: `rt.steps`
+ * counts executed instructions, and no run can execute `Number.MAX_SAFE_INTEGER`
+ * of them (the counter itself loses integer precision there). Compiling such a
+ * runtime without the exact per-item budget copy removes half the generated
+ * code.
+ */
+const UNBOUNDED_STEPS = Number.MAX_SAFE_INTEGER;
+
+/** Whether generated code must be able to stop at an exact step. */
+function needsExactSteps(rt: JitRuntime): boolean {
+  // Step observers and host budgets poll every step (`limit` stays at -1).
+  if (rt.mode !== 'none') return true;
+  return rt.maxSteps < UNBOUNDED_STEPS;
+}
+
+/**
+ * Emitted-source budget of one region function.
+ *
+ * The host engine only optimizes functions below a bytecode limit (V8 stops at
+ * 60 KiB), and an interpreted region is an order of magnitude slower than a
+ * compiled one. Emitted text runs roughly three times the bytecode size, and a
+ * region that grows past ~120 KiB of source stops being optimized, so members
+ * are dropped (coldest first) until the region fits.
+ */
+const REGION_SOURCE_BUDGET = 120_000;
+
 function emit(mfn: MFunction, env: CompileEnv): EmittedFunction {
   const cached = sourceCache.get(mfn);
   if (cached !== undefined && cached.env === env) return cached.emitted;
@@ -96,6 +123,7 @@ function emit(mfn: MFunction, env: CompileEnv): EmittedFunction {
     constants: env.constants,
     littleEndian: env.littleEndian,
     memoryRefs: env.memoryRefs,
+    exactSteps: needsExactSteps(env.rt),
     ...(env.summaries === undefined ? {} : { summaries: env.summaries }),
     ...(env.artifactDependencies === undefined
       ? {}
@@ -184,28 +212,49 @@ export function compileRegionWithSource(
   env: CompileEnv,
 ): CompiledRegion {
   if (members.length === 0) throw new Error('JIT region compilation needs at least one member');
-  const runtime = createRegionRuntime(members);
-  const emitted = emitRegion(
-    members.map((member) => ({
-      state: member.state,
-      mir: member.mir,
-      key: member.key,
-      keyTypes: member.keyTypes,
-      params: member.params,
-      providerIndex: member.providerIndex,
-    })),
-    {
-      constants: env.constants,
-      littleEndian: env.littleEndian,
-      memoryRefs: env.memoryRefs,
-      ...(env.summaries === undefined ? {} : { summaries: env.summaries }),
-      ...(env.providers === undefined ? {} : { providers: env.providers }),
-      ...(env.dispatchIC === undefined ? {} : { dispatchIC: env.dispatchIC }),
-      ...(env.checkpointFast === undefined ? {} : { checkpointFast: env.checkpointFast }),
-      ...(env.forceSwitch === undefined ? {} : { forceSwitch: env.forceSwitch }),
-    },
-    runtime,
-  );
+  const build = (
+    count: number,
+  ): { readonly emitted: EmittedRegion; readonly members: readonly RegionCompileMember[] } => {
+    const chosen = members.slice(0, count);
+    const runtime = createRegionRuntime(chosen);
+    const emitted = emitRegion(
+      chosen.map((member) => ({
+        state: member.state,
+        mir: member.mir,
+        key: member.key,
+        keyTypes: member.keyTypes,
+        params: member.params,
+        providerIndex: member.providerIndex,
+      })),
+      {
+        constants: env.constants,
+        littleEndian: env.littleEndian,
+        memoryRefs: env.memoryRefs,
+        exactSteps: needsExactSteps(env.rt),
+        ...(env.summaries === undefined ? {} : { summaries: env.summaries }),
+        ...(env.providers === undefined ? {} : { providers: env.providers }),
+        ...(env.dispatchIC === undefined ? {} : { dispatchIC: env.dispatchIC }),
+        ...(env.checkpointFast === undefined ? {} : { checkpointFast: env.checkpointFast }),
+        ...(env.forceSwitch === undefined ? {} : { forceSwitch: env.forceSwitch }),
+      },
+      runtime,
+    );
+    return { emitted, members: chosen };
+  };
+  // A region is one JavaScript function, and the host engine only optimizes
+  // functions below a bytecode budget (V8 stops at 60 KiB). Keep the emitted
+  // source well under the equivalent size, dropping trailing members until the
+  // region fits.
+  let built = build(members.length);
+  while (built.members.length > 1 && built.emitted.source.length > REGION_SOURCE_BUDGET) {
+    const ratio = REGION_SOURCE_BUDGET / built.emitted.source.length;
+    const next = Math.max(
+      1,
+      Math.min(built.members.length - 1, Math.floor(built.members.length * ratio)),
+    );
+    built = build(next);
+  }
+  const emitted = built.emitted;
   let factory: (rt: JitRuntime, k: readonly unknown[], helpers: JitHelpers) => CompiledFn;
   try {
     factory = new Function('rt', 'k', 'H', emitted.source) as (
@@ -222,7 +271,7 @@ export function compileRegionWithSource(
   return {
     fn: factory(env.rt, emitted.constants, env.helpers),
     source: emitted.source,
-    members: members.map((member) => member.state),
+    members: built.members.map((member) => member.state),
     frames: emitted.frames,
   };
 }

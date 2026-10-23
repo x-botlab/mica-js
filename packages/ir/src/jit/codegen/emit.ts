@@ -40,6 +40,8 @@ import {
   emitInstruction,
   emitPromotionSpill,
   fastScalarLoad,
+  inlineConstantText,
+  numberLiteral,
   promotionDirty,
   promotionLocal,
 } from './ops';
@@ -82,6 +84,12 @@ export interface EmitEnv {
   readonly tierUp?: boolean;
   /** Debug: force the `switch (pc)` form. */
   readonly forceSwitch?: boolean;
+  /**
+   * Emit the exact (per-item) budget copy. Set to `false` only when the step
+   * budget is provably unreachable, which removes half of the generated code
+   * from every segment (default: `true`).
+   */
+  readonly exactSteps?: boolean;
 }
 
 /** Per-member emission options for {@link emitRegion} (J14). */
@@ -156,6 +164,14 @@ class Emitter implements OpsContext {
   readonly #sites: { readonly providerIndex: number }[] = [];
   /** Region-wide state promotions (J14); `undefined` outside regions. */
   readonly regionPromotion: ((memory: number) => RegionPromotionNames | undefined) | undefined;
+  /** `false` when the step budget provably cannot be reached. */
+  readonly #exactSteps: boolean;
+  /** Single-definition integer/boolean constants, inlined at every use. */
+  readonly #constText = new Map<ValueId, string>();
+  /** How many instructions (or block parameters) define each value. */
+  readonly #definitions: Map<ValueId, number>;
+  /** Load instructions whose result is substituted at every use. */
+  readonly #inlineInst = new Map<MInst, string>();
   #temps = 0;
   #indent = 0;
   #lines: string[] = [];
@@ -168,6 +184,7 @@ class Emitter implements OpsContext {
     this.#options = options;
     this.#prefix = options.prefix ?? '';
     this.le = env.littleEndian;
+    this.#exactSteps = env.exactSteps !== false;
     this.plan = planFunction(fn);
     this.frame = Object.freeze({
       locations: Object.freeze([...this.plan.locations]),
@@ -177,6 +194,17 @@ class Emitter implements OpsContext {
     });
     this.pool = options.pool ?? new ConstantPool(env.constants);
     this.#blocks = new Map(fn.blocks.map((block) => [block.id, block]));
+    this.#definitions = new Map<ValueId, number>();
+    for (const block of fn.blocks) {
+      for (const param of block.params) {
+        this.#definitions.set(param, (this.#definitions.get(param) ?? 0) + 1);
+      }
+      for (const inst of block.insts) {
+        for (const result of inst.results) {
+          this.#definitions.set(result, (this.#definitions.get(result) ?? 0) + 1);
+        }
+      }
+    }
     const region = options.region;
     if (region !== undefined && region.promotions.length > 0) {
       this.regionPromotion = (memory) => {
@@ -195,6 +223,91 @@ class Emitter implements OpsContext {
       const attempt = tryStructurize(fn);
       this.shape = attempt.shape;
       this.fallback = attempt.reason;
+    }
+    this.#collectInlinableCopies(fn);
+  }
+
+  /**
+   * Mark promoted-location loads whose result can replace the value directly.
+   *
+   * A load is inlined only when the value has exactly one definition, every use
+   * stays in the same block after the load, and nothing between the load and
+   * its last use can change the backing local (a host boundary reloads
+   * promotions, and a store to the same location overwrites it). Otherwise the
+   * snapshot the instruction materializes is load-bearing.
+   */
+  #collectInlinableCopies(fn: MFunction): void {
+    interface UseInfo {
+      block: number;
+      last: number;
+      count: number;
+      crossBlock: boolean;
+    }
+    const uses = new Map<ValueId, UseInfo>();
+    const note = (id: ValueId, block: number, index: number): void => {
+      const entry = uses.get(id);
+      if (entry === undefined) {
+        uses.set(id, { block, last: index, count: 1, crossBlock: false });
+        return;
+      }
+      entry.count += 1;
+      if (entry.block !== block) entry.crossBlock = true;
+      else if (index > entry.last) entry.last = index;
+    };
+    // Terminator operands are conservatively treated as cross-block uses: a
+    // value handed to a successor must keep its snapshot semantics.
+    const termRefs = new Set<ValueId>();
+    for (const block of fn.blocks) {
+      const term = block.term;
+      if (term.kind === 'return') {
+        for (const id of term.values) termRefs.add(id);
+      } else if (term.kind === 'dispatch') {
+        for (const id of term.key) termRefs.add(id);
+        for (const id of term.args) termRefs.add(id);
+      } else if (term.kind === 'branch') {
+        termRefs.add(term.cond);
+        for (const id of term.yes.args) termRefs.add(id);
+        for (const id of term.no.args) termRefs.add(id);
+      } else if (term.kind === 'jump') {
+        for (const id of term.args) termRefs.add(id);
+      }
+      block.insts.forEach((inst, index) => {
+        for (const arg of inst.args) note(arg, block.id, index);
+      });
+    }
+    for (const block of fn.blocks) {
+      block.insts.forEach((inst, index) => {
+        const result = inst.results[0];
+        if (result === undefined || inst.results.length !== 1) return;
+        if ((this.#definitions.get(result) ?? 0) !== 1) return;
+        let text: string | undefined;
+        let memory: number | undefined;
+        if (inst.op === Op.PromoteLoad) {
+          text = promotionLocal(inst.refs[0]!);
+        } else if (inst.op === Op.StateLoad) {
+          memory = inst.refs[0];
+          text = this.regionPromotion?.(inst.refs[0]!)?.local;
+        }
+        if (text === undefined) return;
+        const info = uses.get(result);
+        if (info === undefined || info.crossBlock || info.block !== block.id) return;
+        if (termRefs.has(result)) return;
+        for (let cursor = index + 1; cursor <= info.last; cursor += 1) {
+          const next = block.insts[cursor]!;
+          if (EFFECT_INFO[next.op].host) return;
+          if (
+            next.op === Op.PromoteLoad ||
+            next.op === Op.PromoteStore ||
+            next.op === Op.PromoteReload ||
+            next.op === Op.Spill
+          ) {
+            return;
+          }
+          if (next.op === Op.StateStore && next.refs[0] === memory) return;
+          if (next.op === Op.StateLoad && next.refs[0] === memory) return;
+        }
+        this.#inlineInst.set(inst, text);
+      });
     }
   }
 
@@ -274,9 +387,12 @@ class Emitter implements OpsContext {
 
   /** Local declarations for every SSA value and promotion (region members). */
   localDeclarations(): string[] {
-    const locals = this.fn.values.map(
-      (value) => `${this.value(value.id)} = ${initialValue(value.rep)}`,
-    );
+    const locals: string[] = [];
+    for (const value of this.fn.values) {
+      // Inlined constants have no local of their own.
+      if (this.#constText.has(value.id)) continue;
+      locals.push(`${this.value(value.id)} = ${initialValue(value.rep)}`);
+    }
     for (const promotion of this.fn.promotions) {
       // Initialize from the backing view in the prologue: the entry block can
       // be a loop header, so an entry instruction would reload every iteration.
@@ -340,6 +456,8 @@ class Emitter implements OpsContext {
   }
 
   value(id: ValueId): string {
+    const constant = this.#constText.get(id);
+    if (constant !== undefined) return constant;
     return `${this.#prefix}v${id}`;
   }
 
@@ -508,6 +626,17 @@ class Emitter implements OpsContext {
     const body = terminator === undefined ? items : items.slice(0, -1);
     const steps = segment.steps;
 
+    if (!this.#exactSteps) {
+      // The step budget is provably unreachable (unbounded `maxSteps`, no step
+      // observer and no host budget), so only the fast copy is emitted.
+      if (steps !== 0) this.line(`rt.steps += ${steps};`);
+      for (const item of body) this.#emitFastItem(item);
+      if (terminator !== undefined && terminator.step === 1) {
+        this.line(`L = ${terminator.loc};`);
+      }
+      return;
+    }
+
     if (terminator === undefined) {
       if (steps === 0) {
         for (const item of items) this.#emitStepZero(item);
@@ -596,12 +725,33 @@ class Emitter implements OpsContext {
    * host observes exactly the reference storage contents.
    */
   #emitItemInstruction(inst: MInst): void {
+    if (this.#inlineConstant(inst)) return;
+    const copy = this.#inlineInst.get(inst);
+    if (copy !== undefined) {
+      this.#constText.set(inst.results[0]!, copy);
+      return;
+    }
     const barrier =
       this.#sharedPromotions().length > 0 &&
       (EFFECT_INFO[inst.op].host || inst.op === Op.Checkpoint);
     if (barrier) this.#emitSharedSpill();
     emitInstruction(inst, this);
     if (barrier) this.#emitSharedReload();
+  }
+
+  /**
+   * Fold a single-definition `const` into every use instead of materializing a
+   * local. The value never exists at run time, so it costs neither a statement
+   * nor a slot in the generated function.
+   */
+  #inlineConstant(inst: MInst): boolean {
+    const result = inst.results[0];
+    if (result === undefined || inst.results.length !== 1) return false;
+    const text = inlineConstantText(inst);
+    if (text === undefined || isFloatValue(this.fn, result)) return false;
+    if ((this.#definitions.get(result) ?? 0) !== 1) return false;
+    this.#constText.set(result, text);
+    return true;
   }
 
   #emitFastItem(item: PlannedItem): void {
@@ -941,11 +1091,14 @@ class Emitter implements OpsContext {
       this.#emitMemberEntry(member, rs, cursor, region, mirArgs);
     };
     if (keyExprs.length === 1 && !isFloatType(region.keyTypes[0]!)) {
-      // Single integer/bool key: a switch is the cheapest member selector.
+      // Single integer/bool key: a switch over *literal* member keys. The keys
+      // are fixed when the region is compiled, so the host can turn a dense
+      // case set into a jump table instead of comparing computed expressions.
       this.line(`switch (${keyExprs[0]}) {`);
       this.#indent += 1;
       for (let member = 0; member < region.memberCount; member += 1) {
-        this.line(`case ${rs}.keys[${member}][0]:`);
+        const key = region.keys[member]![0];
+        this.line(`case ${typeof key === 'boolean' ? String(key) : numberLiteral(key as number)}:`);
         this.#indent += 1;
         this.line(
           `if (H.ctl.epoch === ${rs}.es[${member}] && ` +
@@ -984,6 +1137,20 @@ class Emitter implements OpsContext {
     // A region exit (or re-entry through materialize) is a host boundary: all
     // dirty shared promotions must be visible to the provider cache first.
     this.#emitSharedSpill();
+    const info = this.#providerInfo(term.provider);
+    if (info !== undefined && this.#env.dispatchIC !== false) {
+      // Hot exit: the jump cache holds the target artifact at the current
+      // epochs, so the transfer needs no provider-cache round trip.
+      this.line(
+        `${temp} = H.ic.jumpHit(${term.provider}, [${keyExprs.join(', ')}], H.ctl.epoch, ` +
+          'H.prov.cacheEpoch);',
+      );
+      this.line(`if (${temp} !== undefined) {`);
+      this.#indent += 1;
+      this.#emitHitTail(temp, info.params, boundary);
+      this.#indent -= 1;
+      this.line('}');
+    }
     this.line('rt.beforeHost();');
     this.line(
       `${temp} = H.materialize(${term.provider}, [${keyExprs.join(', ')}], [${boundary.join(', ')}]);`,

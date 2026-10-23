@@ -18,7 +18,7 @@ for (let i = 0; i < 200; i++) {
   jit.execute(fixture.step, [], fixture.context);
 }
 
-const internals = (jit as Record<string, unknown>)[jitInternals] as {
+const internals = (jit as unknown as Record<symbol, unknown>)[jitInternals] as {
   regions: number;
   compiledArtifacts: number;
   icHits: number;
