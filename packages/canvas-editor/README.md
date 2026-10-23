@@ -76,15 +76,16 @@ const off = scene.onPublish((target, payload, simTime) => route(target, payload,
 scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主决定
 ```
 
-| 成员                      | 说明                                                            |
-| ------------------------- | --------------------------------------------------------------- |
-| `document`                | 宿主当前提交的快照                                              |
-| `mode`                    | 当前模式（调用 `setMode` 后立即更新，不等重置完成）             |
-| `setMode(mode)`           | 切换模式并重置全部 widget；回到相同模式直接 resolve，不重置     |
-| `deliver(target, …)`      | 把载荷投递到**所有**绑定该端点的实例；没有命中时什么也不做      |
-| `onPublish(listener)`     | 收到 `(target, payload, simTime)`；返回取消订阅函数             |
-| `receivePublish(publish)` | 接收宿主 `onPublish` 转发来的 `WidgetPublish`，无绑定时上报诊断 |
-| `destroy()`               | `editor.destroy()` + 取消订阅；**不会** `dispose()` 宿主        |
+| 成员                      | 说明                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------ |
+| `document`                | 宿主当前提交的快照                                                             |
+| `mode`                    | 当前模式（调用 `setMode` 后立即更新，不等重置完成）                            |
+| `setMode(mode)`           | 切换模式并重置全部 widget；回到相同模式直接 resolve，不重置                    |
+| `setSelection(ids)`       | 宿主侧（例如图层列表）设置选择；不存在的 id 被丢弃，变化走 `onSelectionChange` |
+| `deliver(target, …)`      | 把载荷投递到**所有**绑定该端点的实例；没有命中时什么也不做                     |
+| `onPublish(listener)`     | 收到 `(target, payload, simTime)`；返回取消订阅函数                            |
+| `receivePublish(publish)` | 接收宿主 `onPublish` 转发来的 `WidgetPublish`，无绑定时上报诊断                |
+| `destroy()`               | `editor.destroy()` + 取消订阅；**不会** `dispose()` 宿主                       |
 
 诊断码以 `canvas-scene/` 开头：`command-failed`（宿主拒绝命令）、`unbound-publish`（发布端口没有绑定）、`change-failed`（`onChange` 抛错）、`publish-failed`（监听器抛错）。命令被拒时编辑器不回灌，继续画旧快照。
 

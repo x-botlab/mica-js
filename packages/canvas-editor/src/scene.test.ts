@@ -414,6 +414,26 @@ describe('createCanvasScene', () => {
     expect(scene.mode).toBe('edit');
   });
 
+  it('forwards a host-side selection but drops ids the document does not contain', async () => {
+    const host = createFakeHost(canvasDocument(widget('a'), widget('b')));
+    const scene = await mountScene(host);
+
+    scene.setSelection(['b', 'ghost']);
+
+    expect(editor.setSelection).toHaveBeenCalledWith(['b']);
+  });
+
+  it('ignores a selection change after destroy', async () => {
+    const host = createFakeHost(canvasDocument(widget('a')));
+    const scene = await mountScene(host);
+    scene.destroy();
+    vi.mocked(editor.setSelection).mockClear();
+
+    scene.setSelection(['a']);
+
+    expect(editor.setSelection).not.toHaveBeenCalled();
+  });
+
   it('destroys the editor and the subscriptions but never the host', async () => {
     const host = createFakeHost();
     const scene = await mountScene(host);

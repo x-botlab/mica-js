@@ -9,3 +9,5 @@
 `setMode(mode)` 改为返回 `Promise<void>` 并**重置全部 widget**：先 `cancelInteraction()`、再 `setMode`、最后 `await host.reset()`，因此切换模式后 widget 回到初始状态（实例重建；模块只求值一次，实例状态在工厂闭包里）。`mode` 立即反映新值，promise 在重置完成后 resolve；切到当前模式直接 resolve 不重置，重置失败则回退模式并 reject。
 
 编辑模式新增每个实例一圈半透明的强调色边框（新主题 token `outline`，先垫一层深色描边再画主色）：完全透明的 widget 画不出任何像素，没有这圈边框就找不到它的位置。边框画在位图之上、选中框之下，运行模式不画。
+
+新增 `CanvasScene.setSelection(ids)`：宿主的图层列表可以据此驱动编辑器选择，`onSelectionChange` 照常回报结果；文档里不存在的 id 会被丢掉，避免留下画不出来的选择。

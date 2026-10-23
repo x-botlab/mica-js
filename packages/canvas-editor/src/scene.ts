@@ -66,6 +66,13 @@ export interface CanvasScene {
    * @throws when the host rejects the reset; the scene then reverts to the previous mode.
    */
   setMode(mode: CanvasMode): Promise<void>;
+  /**
+   * Replaces the editor selection, e.g. from a host-side layer list.
+   *
+   * The editor reports the change through `onSelectionChange`; ids the document does not contain
+   * are dropped, so a stale id can never leave a selection the editor cannot draw.
+   */
+  setSelection(ids: readonly string[]): void;
   /** Simulation side → widgets: forwards to every instance bound to `target`. */
   deliver(target: CanvasBindingTarget, payload: unknown, simTime: number): void;
   /** Widget → simulation side; the returned function unsubscribes. */
@@ -212,6 +219,14 @@ export async function createCanvasScene(options: CreateCanvasSceneOptions): Prom
     }
   }
 
+  function setSelection(ids: readonly string[]): void {
+    if (destroyed) {
+      return;
+    }
+    const known = new Set(snapshot.widgets.map((widget) => widget.id));
+    editor.setSelection(ids.filter((id) => known.has(id)));
+  }
+
   function onPublish(listener: CanvasScenePublishListener): () => void {
     if (destroyed) {
       return () => {};
@@ -263,6 +278,7 @@ export async function createCanvasScene(options: CreateCanvasSceneOptions): Prom
       return mode;
     },
     setMode,
+    setSelection,
     deliver,
     onPublish,
     receivePublish,
