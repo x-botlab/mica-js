@@ -125,7 +125,7 @@ pnpm --filter @mica-js/core typecheck
 pnpm --filter @mica-js/core build
 ```
 
-不提供电气求值、器件作者回调协议、话题路由/JS 消息桥、Provider 缓存、JIT、I2C/SPI 协议库、持久化调度快照或墙钟运行器。未实现能力不会以空实现或仅记录指令冒充完成。
+不提供电气求值、器件作者回调协议、话题路由/JS 消息桥、Provider 缓存（由 `@mica-js/ir` 提供）、JIT、I2C/SPI 协议库、持久化调度快照或墙钟运行器。未实现能力不会以空实现或仅记录指令冒充完成。
 
 ## 原理图（`./schematic`）
 

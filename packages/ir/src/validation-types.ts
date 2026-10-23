@@ -28,7 +28,8 @@ export type IRDiagnosticCode =
   | 'invalid-provider'
   | 'provider-key-mismatch'
   | 'unsupported-provider'
-  | 'provider-import-violation';
+  | 'provider-import-violation'
+  | 'invalid-checkpoint';
 
 export interface IRDiagnosticLocation {
   readonly path: string;

@@ -523,11 +523,22 @@ export interface FunctionBuilder<R extends readonly ScalarType[] = readonly []> 
 
 /**
  * Type boundary for Provider-generated functions (#60). The builder inherits `dispatch`;
- * `checkpoint` and runtime invalidation recovery belong to #61.
+ * `checkpoint` marks a legal runtime-invalidation recovery boundary (#61).
  */
 export interface GeneratedFunctionBuilder<
   R extends readonly ScalarType[] = readonly [],
 > extends FunctionBuilder<R> {
+  /**
+   * Checks the current artifact's full dependency set. When it is still valid, execution
+   * continues with the next instruction. Otherwise the rest of this artifact is abandoned and
+   * `provider` is tail-dispatched with the current `key`/`args`, keeping committed effects,
+   * the current entry budget, and virtual time.
+   */
+  checkpoint<K extends readonly ScalarType[], P extends readonly ScalarType[]>(
+    provider: ProviderRef<K, P, NoInfer<R>>,
+    key: Values<NoInfer<K>>,
+    args: Values<NoInfer<P>>,
+  ): undefined;
   at<P extends readonly ScalarType[]>(
     block: BlockRef<P>,
     callback: (b: GeneratedFunctionBuilder<R>, params: Values<P>) => undefined,

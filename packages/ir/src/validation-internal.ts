@@ -44,7 +44,9 @@ export interface InstructionValidationState {
 }
 
 export function isReservedOperation(op: string): boolean {
-  if (op === 'resource.update_bytes' || op === 'resource.fill_bytes') return false;
+  if (op === 'checkpoint' || op === 'resource.update_bytes' || op === 'resource.fill_bytes') {
+    return false;
+  }
   return /^(?:(?:kernel|provider|checkpoint|dispatch)(?:[._-]|$)|resource[._-](?:update|fill))/i.test(
     op,
   );

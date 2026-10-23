@@ -17,7 +17,8 @@ export type IRProviderErrorCode =
   | 'invalid-artifact'
   | 'import-violation'
   | 'dependency-changed'
-  | 'illegal-operation';
+  | 'illegal-operation'
+  | 'recovery-failed';
 
 export interface IRProviderErrorDetails {
   readonly cause?: unknown;
