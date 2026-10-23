@@ -109,7 +109,9 @@ function pinOutward(
   context: SnapContext,
   hit: { readonly symbolId: string; readonly pinId: string },
 ): Point | undefined {
-  const symbol = context.controller.document.sheet.symbols.find((item) => item.id === hit.symbolId);
+  const symbol = context.controller
+    .getDocument()
+    .sheet.symbols.find((item) => item.id === hit.symbolId);
   const reference = symbol === undefined ? undefined : parseDeviceReference(symbol.device);
   const definition =
     reference === undefined ? undefined : context.devices?.getDeviceSymbol(reference);

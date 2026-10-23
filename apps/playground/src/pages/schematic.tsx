@@ -108,7 +108,7 @@ export function SchematicPage({ dark }: SchematicPageProps) {
       onViewportChange: (viewport) => setZoom(viewport.scale),
     });
     editorRef.current = editor;
-    setState(editor.controller.state);
+    setState(editor.controller.getState());
     setZoom(editor.getViewport().scale);
     // Demo default: preselect the MCU so the host property panel shows the #7 property types.
     editor.controller.setSelection([{ kind: 'symbol', id: SAMPLE_MCU_SYMBOL_ID }]);

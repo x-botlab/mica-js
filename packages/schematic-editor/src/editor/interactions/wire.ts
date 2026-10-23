@@ -63,7 +63,7 @@ export function pendingWireWithCursor(context: InteractionContext): readonly Poi
 /** Clicking a pin or wire end in select mode starts a wire from there. */
 export function startWireAtNode(context: InteractionContext, page: Point): boolean {
   const controller = context.deps.controller;
-  if (controller.tool !== 'select' || context.deps.readOnly) {
+  if (controller.getTool() !== 'select' || context.deps.readOnly) {
     return false;
   }
   // Net labels, ports and text are selection/drag targets, so a tap on their body must not be

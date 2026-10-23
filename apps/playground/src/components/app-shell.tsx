@@ -1,9 +1,9 @@
-import { CircuitBoard, Home, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { CircuitBoard, Home, Moon, PanelsTopLeft, ShieldCheck, Sun } from 'lucide-react';
 import type { ComponentType, ReactNode } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
-export type PageId = 'home' | 'schematic' | 'sandbox';
+export type PageId = 'home' | 'canvas' | 'schematic' | 'sandbox';
 
 export interface PageDefinition {
   readonly id: PageId;
@@ -14,6 +14,12 @@ export interface PageDefinition {
 
 export const PAGES: readonly PageDefinition[] = [
   { id: 'home', title: '概览', subtitle: '包的示例与入口', icon: Home },
+  {
+    id: 'canvas',
+    title: '画布',
+    subtitle: 'CanvasScene：.cnv 文档 + widget 运行时',
+    icon: PanelsTopLeft,
+  },
   {
     id: 'schematic',
     title: '原理图编辑器',

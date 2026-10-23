@@ -40,7 +40,7 @@ export function snapForWire(context: SnapContext, point: Point): Point {
   return (
     connectionNodeAt(context, point) ??
     wireBodyPointAt(context, point) ??
-    snapToGrid(point, context.controller.display)
+    snapToGrid(point, context.controller.getDisplay())
   );
 }
 
@@ -51,7 +51,7 @@ export function snapForWire(context: SnapContext, point: Point): Point {
 export function wireBodyPointAt(context: SnapContext, point: Point): Point | undefined {
   const radius = context.tolerance * 2;
   let best: { readonly point: Point; readonly distance: number } | undefined;
-  for (const wire of context.controller.document.sheet.wires) {
+  for (const wire of context.controller.getDocument().sheet.wires) {
     for (let index = 1; index < wire.points.length; index += 1) {
       const a = wire.points[index - 1];
       const b = wire.points[index];

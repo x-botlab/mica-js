@@ -18,7 +18,7 @@ export type { PackageWidgetProviderOptions } from './provider/package';
 
 export { createWidgetHost } from './host/create-widget-host';
 export type {
-  WidgetAssetSource,
+  WidgetAssetProvider,
   WidgetDiagnostic,
   WidgetDiagnosticCode,
   WidgetHost,
@@ -30,6 +30,8 @@ export type {
   WidgetSandbox,
   WidgetSandboxFactory,
   WidgetSandboxHostOptions,
+  SimulationPublish,
+  WidgetHostSimulation,
 } from './host/types';
 export { createDefaultWidgetSandbox } from './host/sandbox';
 export { WIDGET_RUNTIME_SOURCE } from './internal/runtime-source';

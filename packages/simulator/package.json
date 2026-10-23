@@ -1,0 +1,42 @@
+{
+  "name": "@mica-js/simulator",
+  "version": "0.0.0",
+  "description": "Mica simulator: runs the device instances of a schematic on one virtual clock",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/simulator"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "prepack": "pnpm -r --filter \"@mica-js/simulator...\" build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@mica-js/core": "workspace:*",
+    "@mica-js/device": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-dts": "catalog:",
+    "vitest": "catalog:"
+  }
+}

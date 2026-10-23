@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AppShell, PAGES, type PageId } from '@/components/app-shell';
 import { navigate, useHashRoute } from '@/lib/router';
+import { CanvasPage } from '@/pages/canvas';
 import { HomePage } from '@/pages/home';
 import { SandboxPage } from '@/pages/sandbox';
 import { SchematicPage } from '@/pages/schematic';
@@ -26,6 +27,8 @@ export function App() {
     >
       {route === 'schematic' ? (
         <SchematicPage dark={dark} />
+      ) : route === 'canvas' ? (
+        <CanvasPage />
       ) : route === 'sandbox' ? (
         <SandboxPage />
       ) : (

@@ -10,15 +10,15 @@ import { finishWire } from './wire';
 export function cancelInteraction(context: InteractionContext): boolean {
   const controller = context.deps.controller;
   const active =
-    controller.placingDevice !== undefined ||
-    controller.tool !== 'select' ||
-    controller.selection.length > 0 ||
+    controller.getPlacingDevice() !== undefined ||
+    controller.getTool() !== 'select' ||
+    controller.getSelection().length > 0 ||
     context.state.pendingWire.length > 0 ||
     context.state.drag !== undefined;
   if (!active) {
     return false;
   }
-  if (controller.placingDevice !== undefined) {
+  if (controller.getPlacingDevice() !== undefined) {
     controller.cancelPlacement();
   }
   context.state.reset();
@@ -48,14 +48,14 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
     return;
   }
   if (event.key === 'Enter') {
-    if (controller.tool === 'wire') {
+    if (controller.getTool() === 'wire') {
       finishWire(context);
     }
     return;
   }
   if (
     event.key === 'Backspace' &&
-    controller.tool === 'wire' &&
+    controller.getTool() === 'wire' &&
     context.state.pendingWire.length > 0
   ) {
     event.preventDefault();
@@ -103,7 +103,7 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
   if (readOnly) {
     return;
   }
-  const step = controller.display.gridSize > 0 ? controller.display.gridSize : 1;
+  const step = controller.getDisplay().gridSize > 0 ? controller.getDisplay().gridSize : 1;
   const distance = event.shiftKey ? step * 10 : step;
   const deltas: Readonly<Record<string, Point>> = {
     ArrowLeft: { x: -distance, y: 0 },

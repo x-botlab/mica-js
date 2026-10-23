@@ -458,8 +458,79 @@ describe('CanvasInteractionSession', () => {
       const session = new CanvasInteractionSession({ mode: 'run', selection: ['a'] });
       expect(session.keyDown(running, { key: 'Delete' }).commands).toEqual([]);
       expect(session.keyDown(running, { key: 'ArrowRight' }).commands).toEqual([]);
-      expect(session.wheel({ x: 0, y: 0, deltaX: 0, deltaY: -100 }).commands).toEqual([]);
-      expect(session.viewport.scale).toBe(1);
+      // The wheel still moves the viewport, but that is editor state, never a command.
+      const wheeled = session.wheel({ x: 0, y: 0, deltaX: 0, deltaY: -100 });
+      expect(wheeled.commands).toEqual([]);
+      expect(wheeled.events).toEqual([]);
+      expect(session.viewport.scale).toBeGreaterThan(1);
+    });
+
+    it('zooms with a plain wheel and pans with Shift + wheel', () => {
+      const zoomed = new CanvasInteractionSession({ mode: 'run' });
+      const zoom = zoomed.wheel({ x: 40, y: 20, deltaX: 0, deltaY: -200 });
+      expect(zoom.commands).toEqual([]);
+      expect(zoom.events).toEqual([]);
+      expect(zoom.redraw).toBe(true);
+      expect(zoomed.viewport.scale).toBeGreaterThan(1);
+
+      const panned = new CanvasInteractionSession({ mode: 'run' });
+      const pan = panned.wheel({ x: 0, y: 0, deltaX: 0, deltaY: 40, shiftKey: true });
+      expect(pan.commands).toEqual([]);
+      expect(pan.events).toEqual([]);
+      expect(panned.viewport).toEqual({ x: -40, y: 0, scale: 1 });
+    });
+
+    it('pans with the middle button without forwarding anything to a widget', () => {
+      const session = new CanvasInteractionSession({ mode: 'run' });
+      const pressed = session.pointerDown(running, { x: 150, y: 75, button: 1, pointerId: 1 });
+      expect(session.interaction).toBe('panning');
+      expect(pressed.events).toEqual([]);
+      expect(pressed.commands).toEqual([]);
+
+      const moved = session.pointerMove(running, { x: 180, y: 95, pointerId: 1 });
+      expect(moved.events).toEqual([]);
+      expect(moved.commands).toEqual([]);
+      expect(moved.viewport).toEqual({ x: 30, y: 20, scale: 1 });
+
+      const released = session.pointerUp(running, { x: 180, y: 95, pointerId: 1 });
+      expect(released.events).toEqual([]);
+      expect(session.interaction).toBe('idle');
+      expect(session.pointerTargetId).toBeUndefined();
+      // A press on the widget is what arms forwarding; the pan must not have armed it.
+      expect(session.pointerMove(running, { x: 10, y: 10, pointerId: 1 }).events).toEqual([]);
+    });
+
+    it('pans with Space + left button without forwarding anything to a widget', () => {
+      const session = new CanvasInteractionSession({ mode: 'run' });
+      const pressed = session.pointerDown(running, {
+        x: 150,
+        y: 75,
+        spaceKey: true,
+        pointerId: 1,
+      });
+      expect(session.interaction).toBe('panning');
+      expect(pressed.events).toEqual([]);
+
+      const moved = session.pointerMove(running, { x: 120, y: 55, pointerId: 1 });
+      expect(moved.events).toEqual([]);
+      expect(moved.viewport).toEqual({ x: -30, y: -20, scale: 1 });
+
+      const released = session.pointerUp(running, { x: 120, y: 55, pointerId: 1 });
+      expect(released.events).toEqual([]);
+      expect(session.interaction).toBe('idle');
+    });
+
+    it('zooms while a widget press is routed, and keeps forwarding that press', () => {
+      const session = new CanvasInteractionSession({ mode: 'run' });
+      expect(session.pointerDown(running, { x: 150, y: 75, pointerId: 1 }).events).toHaveLength(1);
+
+      const zoomed = session.wheel({ x: 150, y: 75, deltaX: 0, deltaY: -120 });
+      expect(zoomed.events).toEqual([]);
+      expect(zoomed.commands).toEqual([]);
+
+      // Coordinates stay instance-local under the new viewport.
+      const moved = session.pointerMove(running, { x: 150, y: 75, pointerId: 1 });
+      expect(moved.events[0]?.event).toMatchObject({ type: 'pointermove', x: 50, y: 25 });
     });
   });
 

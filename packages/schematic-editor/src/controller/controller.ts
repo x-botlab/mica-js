@@ -32,41 +32,41 @@ export class SchematicEditorController {
     this.#session = new EditorSession(options);
   }
 
-  get state(): EditorState {
+  getState(): EditorState {
     return this.#session.state();
   }
 
   /** Everything the canvas draws from; never builds the inspector. */
-  get renderState(): EditorRenderState {
+  getRenderState(): EditorRenderState {
     return this.#session.renderState();
   }
 
-  get document(): SchematicDocument {
+  getDocument(): SchematicDocument {
     return this.#session.document;
   }
 
-  get selection(): readonly EditorSelection[] {
+  getSelection(): readonly EditorSelection[] {
     return this.#session.selection;
   }
 
-  get tool(): EditorTool {
+  getTool(): EditorTool {
     return this.#session.tool;
   }
 
-  get display(): DisplayOptions {
+  getDisplay(): DisplayOptions {
     return this.#session.display;
   }
 
-  get canUndo(): boolean {
+  getCanUndo(): boolean {
     return this.#session.editor.canUndo;
   }
 
-  get canRedo(): boolean {
+  getCanRedo(): boolean {
     return this.#session.editor.canRedo;
   }
 
   /** Device armed for placement by the host's device list; `undefined` when idle. */
-  get placingDevice(): string | undefined {
+  getPlacingDevice(): string | undefined {
     return this.#session.placingDevice;
   }
 

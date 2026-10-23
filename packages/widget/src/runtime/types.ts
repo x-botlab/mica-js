@@ -21,7 +21,7 @@ export interface WidgetAssetApi {
   /**
    * Resolves to a copy of the prefetched bytes for `src`; the widget may mutate it freely.
    *
-   * Rejects when the resource was not prefetched: no `WidgetAssetSource` was configured, the host
+   * Rejects when the resource was not prefetched: no `WidgetAssetProvider` was configured, the host
    * failed to read it, or a property introduced it after mount. The first missing read per
    * instance and `src` also reports `widget/asset-failed`. Callers must handle the rejection;
    * ignoring it leaves an unhandled rejection in the guest worker.

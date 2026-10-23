@@ -60,7 +60,7 @@ function createController(document = documentOf({})): SchematicEditorController 
 }
 
 function wirePoints(controller: SchematicEditorController, id: string): readonly Point[] {
-  const wire = controller.document.sheet.wires.find((candidate) => candidate.id === id);
+  const wire = controller.getDocument().sheet.wires.find((candidate) => candidate.id === id);
   expect(wire).toBeDefined();
   return wire?.points ?? [];
 }
@@ -84,17 +84,17 @@ describe('SchematicEditorController', () => {
     controller.moveSelectionBy(10, 0);
     controller.moveSelectionBy(10, 0);
 
-    expect(controller.document.sheet.symbols[0]?.x).toBe(20);
-    expect(controller.state.canUndo).toBe(true);
+    expect(controller.getDocument().sheet.symbols[0]?.x).toBe(20);
+    expect(controller.getState().canUndo).toBe(true);
 
     controller.undo();
-    expect(controller.document.sheet.symbols[0]?.x).toBe(10);
+    expect(controller.getDocument().sheet.symbols[0]?.x).toBe(10);
     controller.undo();
-    expect(controller.document.sheet.symbols[0]?.x).toBe(0);
-    expect(controller.canUndo).toBe(false);
+    expect(controller.getDocument().sheet.symbols[0]?.x).toBe(0);
+    expect(controller.getCanUndo()).toBe(false);
 
     controller.redo();
-    expect(controller.document.sheet.symbols[0]?.x).toBe(10);
+    expect(controller.getDocument().sheet.symbols[0]?.x).toBe(10);
   });
 
   it('keeps document and selection intact when an edit fails', () => {
@@ -112,19 +112,19 @@ describe('SchematicEditorController', () => {
       }),
     );
     controller.setSelection([{ kind: 'symbol', id: '00000003-41e6-4a4c-869a-82a4cd304787' }]);
-    const before = controller.document;
+    const before = controller.getDocument();
 
     expect(() => controller.dispatch({ type: 'remove-symbol', id: 'missing' })).toThrow(
       SchematicError,
     );
-    expect(controller.document).toBe(before);
-    expect(controller.selection).toEqual([
+    expect(controller.getDocument()).toBe(before);
+    expect(controller.getSelection()).toEqual([
       { kind: 'symbol', id: '00000003-41e6-4a4c-869a-82a4cd304787' },
     ]);
-    expect(controller.state.lastError).toBeInstanceOf(SchematicError);
+    expect(controller.getState().lastError).toBeInstanceOf(SchematicError);
 
     controller.moveSelectionBy(5, 5);
-    expect(controller.state.lastError).toBeUndefined();
+    expect(controller.getState().lastError).toBeUndefined();
   });
 
   it('records validation rejections in state.lastError', () => {
@@ -153,17 +153,17 @@ describe('SchematicEditorController', () => {
     expect(() => controller.renameDesignator('00000003-41e6-4a4c-869a-82a4cd304787', 'U2')).toThrow(
       SchematicError,
     );
-    expect(controller.state.lastError?.message).toContain('already used');
+    expect(controller.getState().lastError?.message).toContain('already used');
     expect(controller.nextDesignator('pkg:mcu')).toBe('U1');
 
     // Rejections outside a transaction (bad reference, short wire) report the same way.
     expect(() => controller.placeDevice('nonsense')).toThrow(SchematicError);
-    expect(controller.state.lastError?.message).toContain('Invalid device reference');
+    expect(controller.getState().lastError?.message).toContain('Invalid device reference');
     expect(() => controller.addWire([{ x: 0, y: 0 }])).toThrow(SchematicError);
-    expect(controller.state.lastError?.message).toContain('two points');
+    expect(controller.getState().lastError?.message).toContain('two points');
 
     controller.renameDesignator('00000003-41e6-4a4c-869a-82a4cd304787', 'U1');
-    expect(controller.state.lastError).toBeUndefined();
+    expect(controller.getState().lastError).toBeUndefined();
   });
 
   it('drops selection entries that no longer exist', () => {
@@ -194,9 +194,9 @@ describe('SchematicEditorController', () => {
       { kind: 'wire', id: '00000006-9cf4-407f-8900-09a16d33a38c' },
     ]);
     controller.deleteSelection();
-    expect(controller.document.sheet.symbols).toEqual([]);
-    expect(controller.document.sheet.wires).toEqual([]);
-    expect(controller.selection).toEqual([]);
+    expect(controller.getDocument().sheet.symbols).toEqual([]);
+    expect(controller.getDocument().sheet.wires).toEqual([]);
+    expect(controller.getSelection()).toEqual([]);
   });
 
   it('splits a host wire and creates a junction when a new wire ends on it', () => {
@@ -219,7 +219,7 @@ describe('SchematicEditorController', () => {
       { x: 50, y: 0 },
     ]);
 
-    const junctions = controller.document.sheet.junctions;
+    const junctions = controller.getDocument().sheet.junctions;
     expect(junctions).toHaveLength(1);
     const junction = junctions[0];
     expect(junction?.x).toBe(50);
@@ -257,23 +257,23 @@ describe('SchematicEditorController', () => {
       { x: 50, y: 50 },
       { x: 50, y: 0 },
     ]);
-    const wiresAfterAdd = controller.document.sheet.wires.length;
-    const branchId = controller.document.sheet.wires.at(-1)?.id ?? '';
+    const wiresAfterAdd = controller.getDocument().sheet.wires.length;
+    const branchId = controller.getDocument().sheet.wires.at(-1)?.id ?? '';
     expect(branchId).not.toBe('00000006-9cf4-407f-8900-09a16d33a38c');
 
     controller.setSelection([{ kind: 'wire', id: branchId }]);
     controller.deleteSelection();
 
-    expect(controller.document.sheet.junctions).toEqual([]);
-    expect(controller.document.sheet.wires).toHaveLength(1);
-    const merged = controller.document.sheet.wires[0];
+    expect(controller.getDocument().sheet.junctions).toEqual([]);
+    expect(controller.getDocument().sheet.wires).toHaveLength(1);
+    const merged = controller.getDocument().sheet.wires[0];
     expect(merged?.id).toBe('00000006-9cf4-407f-8900-09a16d33a38c');
     expect(merged?.points[0]).toEqual({ x: 0, y: 0 });
     expect(merged?.points[merged.points.length - 1]).toEqual({ x: 100, y: 0 });
 
     controller.undo();
-    expect(controller.document.sheet.wires).toHaveLength(wiresAfterAdd);
-    expect(controller.document.sheet.junctions).toHaveLength(1);
+    expect(controller.getDocument().sheet.wires).toHaveLength(wiresAfterAdd);
+    expect(controller.getDocument().sheet.junctions).toHaveLength(1);
   });
 
   it('deletes a rubber-band selection around a T connection, junction included', () => {
@@ -294,19 +294,21 @@ describe('SchematicEditorController', () => {
       { x: 50, y: 50 },
       { x: 50, y: 0 },
     ]);
-    const junction = controller.document.sheet.junctions[0];
+    const junction = controller.getDocument().sheet.junctions[0];
     expect(junction).toBeDefined();
 
     controller.setSelection([
-      ...controller.document.sheet.wires.map((wire) => ({ kind: 'wire' as const, id: wire.id })),
+      ...controller
+        .getDocument()
+        .sheet.wires.map((wire) => ({ kind: 'wire' as const, id: wire.id })),
       { kind: 'junction', id: junction?.id ?? '' },
     ]);
     expect(() => controller.deleteSelection()).not.toThrow();
 
-    expect(controller.document.sheet.wires).toEqual([]);
-    expect(controller.document.sheet.junctions).toEqual([]);
-    expect(controller.selection).toEqual([]);
-    expect(controller.state.lastError).toBeUndefined();
+    expect(controller.getDocument().sheet.wires).toEqual([]);
+    expect(controller.getDocument().sheet.junctions).toEqual([]);
+    expect(controller.getSelection()).toEqual([]);
+    expect(controller.getState().lastError).toBeUndefined();
   });
 
   it('keeps the through wire when a T junction and its branch are deleted together', () => {
@@ -346,11 +348,11 @@ describe('SchematicEditorController', () => {
     ]);
     controller.deleteSelection();
 
-    expect(controller.document.sheet.wires.map((wire) => wire.id)).toEqual([
+    expect(controller.getDocument().sheet.wires.map((wire) => wire.id)).toEqual([
       '00000006-9cf4-407f-8900-09a16d33a38c',
     ]);
-    expect(controller.document.sheet.junctions).toEqual([]);
-    expect(controller.state.lastError).toBeUndefined();
+    expect(controller.getDocument().sheet.junctions).toEqual([]);
+    expect(controller.getState().lastError).toBeUndefined();
   });
 
   it('caches state until something changes', () => {
@@ -367,13 +369,13 @@ describe('SchematicEditorController', () => {
         ],
       }),
     );
-    expect(controller.state).toBe(controller.state);
-    expect(controller.renderState).toBe(controller.renderState);
-    expect(controller.renderState.document).toBe(controller.document);
+    expect(controller.getState()).toBe(controller.getState());
+    expect(controller.getRenderState()).toBe(controller.getRenderState());
+    expect(controller.getRenderState().document).toBe(controller.getDocument());
 
-    const before = controller.state;
+    const before = controller.getState();
     controller.setSelection([{ kind: 'symbol', id: '00000003-41e6-4a4c-869a-82a4cd304787' }]);
-    expect(controller.state).not.toBe(before);
+    expect(controller.getState()).not.toBe(before);
   });
 
   it('stretches the connected wire when a net label moves', () => {
@@ -404,8 +406,8 @@ describe('SchematicEditorController', () => {
     controller.setSelection([{ kind: 'symbol', id: '00000002-58c8-4974-8943-b00f84be79fc' }]);
     // Perpendicular: the original run stays and the label gets its own segment.
     controller.moveSelectionBy(0, -10);
-    expect(controller.document.sheet.symbols[0]).toMatchObject({ x: 0, y: -10 });
-    expect(controller.document.sheet.wires[0]?.points).toEqual([
+    expect(controller.getDocument().sheet.symbols[0]).toMatchObject({ x: 0, y: -10 });
+    expect(controller.getDocument().sheet.wires[0]?.points).toEqual([
       { x: 0, y: -10 },
       { x: 0, y: 0 },
       { x: 50, y: 0 },
@@ -413,7 +415,7 @@ describe('SchematicEditorController', () => {
 
     // Along the wire: only the length changes.
     controller.moveSelectionBy(-10, 0);
-    expect(controller.document.sheet.wires[0]?.points).toEqual([
+    expect(controller.getDocument().sheet.wires[0]?.points).toEqual([
       { x: -10, y: -10 },
       { x: 0, y: -10 },
       { x: 0, y: 0 },
@@ -456,9 +458,9 @@ describe('SchematicEditorController', () => {
       { x: 100, y: 0 },
     ]);
 
-    const branchId = controller.document.sheet.wires.at(-1)?.id;
+    const branchId = controller.getDocument().sheet.wires.at(-1)?.id;
     expect(branchId).toBeDefined();
-    expect(controller.document.sheet.junctions).toEqual([
+    expect(controller.getDocument().sheet.junctions).toEqual([
       {
         id: '00000001-516c-48ac-8128-07f98c98ee13',
         x: 50,
@@ -470,7 +472,7 @@ describe('SchematicEditorController', () => {
         ],
       },
     ]);
-    expect(controller.document.sheet.wires).toHaveLength(3);
+    expect(controller.getDocument().sheet.wires).toHaveLength(3);
   });
 
   it('creates a junction on an existing wire through connectWireAt', () => {
@@ -501,16 +503,18 @@ describe('SchematicEditorController', () => {
       '00000007-a914-47d5-84d1-8bafbe533ffb',
     );
 
-    const junction = controller.document.sheet.junctions.find((item) => item.id === junctionId);
+    const junction = controller
+      .getDocument()
+      .sheet.junctions.find((item) => item.id === junctionId);
     expect(junction?.wires).toEqual([
       '00000006-9cf4-407f-8900-09a16d33a38c',
       expect.any(String),
       '00000007-a914-47d5-84d1-8bafbe533ffb',
     ]);
-    expect(controller.state.canUndo).toBe(true);
+    expect(controller.getState().canUndo).toBe(true);
     controller.undo();
-    expect(controller.document.sheet.junctions).toEqual([]);
-    expect(controller.document.sheet.wires).toHaveLength(2);
+    expect(controller.getDocument().sheet.junctions).toEqual([]);
+    expect(controller.getDocument().sheet.wires).toHaveLength(2);
   });
 
   it('moves and deletes wire vertices', () => {
@@ -633,12 +637,12 @@ describe('SchematicEditorController', () => {
         ],
       }),
     );
-    const before = controller.document;
+    const before = controller.getDocument();
     controller.setSelection([{ kind: 'junction', id: '00000001-516c-48ac-8128-07f98c98ee13' }]);
     controller.moveSelectionBy(0, 10);
 
-    expect(controller.document).toBe(before);
-    expect(controller.document.sheet.junctions[0]).toMatchObject({ x: 50, y: 0 });
+    expect(controller.getDocument()).toBe(before);
+    expect(controller.getDocument().sheet.junctions[0]).toMatchObject({ x: 50, y: 0 });
   });
 
   it('rotates selected symbols in 90 degree steps', () => {
@@ -657,9 +661,9 @@ describe('SchematicEditorController', () => {
     );
     controller.setSelection([{ kind: 'symbol', id: '00000003-41e6-4a4c-869a-82a4cd304787' }]);
     controller.rotateSelection(90);
-    expect(controller.document.sheet.symbols[0]?.rotation).toBe(90);
+    expect(controller.getDocument().sheet.symbols[0]?.rotation).toBe(90);
     controller.rotateSelection(-180);
-    expect(controller.document.sheet.symbols[0]?.rotation).toBe(270);
+    expect(controller.getDocument().sheet.symbols[0]?.rotation).toBe(270);
   });
 
   it('carries connected wire ends, junctions and anchors around with the rotation', () => {
@@ -706,14 +710,14 @@ describe('SchematicEditorController', () => {
       x: -(rotated?.y ?? 0),
       y: rotated?.x ?? 0,
     };
-    expect(controller.document.sheet.wires[0]?.points[0]?.x).toBeCloseTo(expected.x, 9);
-    expect(controller.document.sheet.wires[0]?.points[0]?.y).toBeCloseTo(expected.y, 9);
-    const movedAnchor = controller.document.sheet.symbols[1];
+    expect(controller.getDocument().sheet.wires[0]?.points[0]?.x).toBeCloseTo(expected.x, 9);
+    expect(controller.getDocument().sheet.wires[0]?.points[0]?.y).toBeCloseTo(expected.y, 9);
+    const movedAnchor = controller.getDocument().sheet.symbols[1];
     expect(movedAnchor?.x).toBeCloseTo(expected.x, 9);
     expect(movedAnchor?.y).toBeCloseTo(expected.y, 9);
 
     controller.undo();
-    expect(controller.document.sheet.wires[0]?.points[0]).toEqual(start);
+    expect(controller.getDocument().sheet.wires[0]?.points[0]).toEqual(start);
   });
 
   it('inspects symbols with declared property defaults and overrides', () => {
@@ -835,10 +839,10 @@ describe('SchematicEditorController', () => {
       }),
     );
     controller.setSymbolProperty('00000003-41e6-4a4c-869a-82a4cd304787', 'speed', 120);
-    expect(controller.document.sheet.symbols[0]?.properties).toEqual({ speed: 120 });
+    expect(controller.getDocument().sheet.symbols[0]?.properties).toEqual({ speed: 120 });
 
     controller.removeSymbolProperty('00000003-41e6-4a4c-869a-82a4cd304787', 'speed');
-    expect(controller.document.sheet.symbols[0]?.properties).toBeUndefined();
+    expect(controller.getDocument().sheet.symbols[0]?.properties).toBeUndefined();
     expect(() =>
       controller.removeSymbolProperty('00000003-41e6-4a4c-869a-82a4cd304787', 'speed'),
     ).toThrow(SchematicError);
@@ -861,13 +865,13 @@ describe('SchematicEditorController', () => {
     expect(() =>
       controller.setSymbolProperty('00000003-41e6-4a4c-869a-82a4cd304787', 'speed', 999),
     ).toThrow(SchematicError);
-    expect(controller.state.lastError?.message).toContain('at most 170');
-    expect(controller.document.sheet.symbols[0]?.properties).toBeUndefined();
+    expect(controller.getState().lastError?.message).toContain('at most 170');
+    expect(controller.getDocument().sheet.symbols[0]?.properties).toBeUndefined();
 
     expect(() =>
       controller.setSymbolProperty('00000003-41e6-4a4c-869a-82a4cd304787', 'cores', 1.5),
     ).toThrow(SchematicError);
-    expect(controller.state.lastError?.message).toContain('safe integer');
+    expect(controller.getState().lastError?.message).toContain('safe integer');
   });
 
   it('notifies subscribers and stops after unsubscribing', () => {
@@ -891,26 +895,26 @@ describe('SchematicEditorController', () => {
     unsubscribe();
     controller.setTool('wire');
     expect(tools).toEqual(['wire', 'select']);
-    expect(controller.tool).toBe('wire');
+    expect(controller.getTool()).toBe('wire');
   });
 
   it('applies grid display options without touching history', () => {
     const controller = createController(documentOf({}));
     controller.setDisplayOptions({ snap: false, gridSize: 20, gridSubdivisions: 4 });
-    expect(controller.state.display).toEqual({
+    expect(controller.getState().display).toEqual({
       grid: true,
       snap: false,
       labels: true,
       gridSize: 20,
       gridSubdivisions: 4,
     });
-    expect(controller.canUndo).toBe(false);
+    expect(controller.getCanUndo()).toBe(false);
   });
 
   it('ignores wire adds with fewer than two points', () => {
     const controller = createController(documentOf({}));
     expect(() => controller.addWire([{ x: 0, y: 0 }])).toThrow(SchematicError);
-    expect(controller.document.sheet.wires).toEqual([]);
+    expect(controller.getDocument().sheet.wires).toEqual([]);
   });
 
   it('swaps the document as one undoable edit through replace', () => {
@@ -934,13 +938,13 @@ describe('SchematicEditorController', () => {
     });
 
     controller.replace(next);
-    expect(controller.document.sheet.symbols.map((symbol) => symbol.id)).toEqual([
+    expect(controller.getDocument().sheet.symbols.map((symbol) => symbol.id)).toEqual([
       '00000004-dfe1-4ed9-83d0-30ddf7887781',
     ]);
-    expect(controller.canUndo).toBe(true);
+    expect(controller.getCanUndo()).toBe(true);
 
     controller.undo();
-    expect(controller.document.sheet.symbols.map((symbol) => symbol.id)).toEqual([
+    expect(controller.getDocument().sheet.symbols.map((symbol) => symbol.id)).toEqual([
       '00000003-41e6-4a4c-869a-82a4cd304787',
     ]);
   });
@@ -954,11 +958,11 @@ describe('SchematicEditorController', () => {
       ]);
       controller.dispatch({ type: 'add-symbol', device: 'pkg:mcu', x: 10, y: 0 });
     });
-    expect(controller.document.sheet.wires).toHaveLength(1);
-    expect(controller.document.sheet.symbols).toHaveLength(1);
+    expect(controller.getDocument().sheet.wires).toHaveLength(1);
+    expect(controller.getDocument().sheet.symbols).toHaveLength(1);
     controller.undo();
-    expect(controller.document.sheet.wires).toHaveLength(0);
-    expect(controller.document.sheet.symbols).toHaveLength(0);
+    expect(controller.getDocument().sheet.wires).toHaveLength(0);
+    expect(controller.getDocument().sheet.symbols).toHaveLength(0);
   });
 
   it('returns void from command methods', () => {
@@ -1118,23 +1122,23 @@ describe('SchematicEditorController', () => {
       controller.setTool('wire');
 
       controller.placeDevice('pkg:mcu');
-      expect(controller.placingDevice).toBe('pkg:mcu');
+      expect(controller.getPlacingDevice()).toBe('pkg:mcu');
       // Arming leaves the tool in select mode so the click places instead of drawing.
-      expect(controller.tool).toBe('select');
+      expect(controller.getTool()).toBe('select');
 
       controller.cancelPlacement();
-      expect(controller.placingDevice).toBeUndefined();
+      expect(controller.getPlacingDevice()).toBeUndefined();
 
       controller.placeDevice('pkg:mcu');
       controller.setTool('wire');
-      expect(controller.placingDevice).toBeUndefined();
-      expect(controller.tool).toBe('wire');
+      expect(controller.getPlacingDevice()).toBeUndefined();
+      expect(controller.getTool()).toBe('wire');
     });
 
     it('rejects malformed device references without arming', () => {
       const controller = createController(documentOf({}));
       expect(() => controller.placeDevice('nonsense')).toThrow(SchematicError);
-      expect(controller.placingDevice).toBeUndefined();
+      expect(controller.getPlacingDevice()).toBeUndefined();
     });
 
     it('picks the first unused designator through the host factory', () => {

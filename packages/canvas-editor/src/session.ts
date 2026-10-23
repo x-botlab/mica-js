@@ -225,6 +225,13 @@ export class CanvasInteractionSession {
 
     if (this.#mode === 'run') {
       this.#pointerId = input.pointerId;
+      // Browsing the canvas stays available while widgets are live: middle button and Space + drag
+      // pan, and neither reaches a widget.
+      if (input.button === 1 || input.spaceKey === true) {
+        this.#pointerTargetId = undefined;
+        this.#interaction = { kind: 'panning', origin: this.#lastPointer, start: this.#viewport };
+        return this.#result(false);
+      }
       return this.#runPointer(document, 'pointerdown', input);
     }
 
@@ -293,24 +300,17 @@ export class CanvasInteractionSession {
       return this.#result(false);
     }
     if (this.#mode === 'run') {
+      if (this.#interaction.kind === 'panning') {
+        return this.#result(this.#panTo(this.#lastPointer));
+      }
       return this.#runPointer(document, 'pointermove', input);
     }
 
     const point = this.#lastPointer;
     const interaction = this.#interaction;
     switch (interaction.kind) {
-      case 'panning': {
-        const next = panBy(
-          interaction.start,
-          point.x - interaction.origin.x,
-          point.y - interaction.origin.y,
-        );
-        if (sameViewport(next, this.#viewport)) {
-          return this.#result(false);
-        }
-        this.#viewport = next;
-        return this.#result(true);
-      }
+      case 'panning':
+        return this.#result(this.#panTo(point));
       case 'pressed': {
         if (interaction.targetId === undefined) {
           return this.#result(false);
@@ -348,6 +348,12 @@ export class CanvasInteractionSession {
     }
     if (this.#mode === 'run') {
       this.#pointerId = undefined;
+      if (this.#interaction.kind === 'panning') {
+        // The release finishes the pan; it is never a widget event.
+        const changed = this.#panTo(this.#lastPointer);
+        this.#interaction = { kind: 'idle' };
+        return this.#result(changed);
+      }
       return this.#runPointer(document, 'pointerup', input);
     }
 
@@ -356,14 +362,8 @@ export class CanvasInteractionSession {
     const point = this.#lastPointer;
 
     if (interaction.kind === 'panning') {
+      const changed = this.#panTo(point);
       this.#interaction = { kind: 'idle' };
-      const next = panBy(
-        interaction.start,
-        point.x - interaction.origin.x,
-        point.y - interaction.origin.y,
-      );
-      const changed = !sameViewport(next, this.#viewport);
-      this.#viewport = next;
       const hadPreview = this.#clearPreviews();
       return this.#result(changed || hadPreview);
     }
@@ -407,6 +407,11 @@ export class CanvasInteractionSession {
     this.#pointerId = undefined;
 
     if (this.#mode === 'run') {
+      if (this.#interaction.kind === 'panning') {
+        // A pan drops without touching a widget: nothing was pressed on an instance.
+        this.#interaction = { kind: 'idle' };
+        return this.#result(false);
+      }
       const instanceId = this.#pointerTargetId;
       this.#pointerTargetId = undefined;
       const instance = instanceId === undefined ? undefined : findInstance(document, instanceId);
@@ -436,10 +441,8 @@ export class CanvasInteractionSession {
   }
 
   wheel(input: WheelInput): InteractionResult {
-    if (this.#mode === 'run') {
-      return this.#result(false);
-    }
     const point = { x: input.x, y: input.y };
+    // Wheeling never reaches a widget: the viewport is editor state in both modes.
     // `WheelEvent.deltaMode` decides the unit: Firefox reports lines, some devices report pages.
     const deltaX = normalizeWheelDelta(input.deltaX, input.deltaMode, input.pageSize);
     const deltaY = normalizeWheelDelta(input.deltaY, input.deltaMode, input.pageSize);
@@ -649,6 +652,24 @@ export class CanvasInteractionSession {
     return (
       pointerId === undefined || this.#pointerId === undefined || pointerId === this.#pointerId
     );
+  }
+
+  /** Moves the viewport by the panning gesture's travel; returns whether it changed. */
+  #panTo(point: Point): boolean {
+    const interaction = this.#interaction;
+    if (interaction.kind !== 'panning') {
+      return false;
+    }
+    const next = panBy(
+      interaction.start,
+      point.x - interaction.origin.x,
+      point.y - interaction.origin.y,
+    );
+    if (sameViewport(next, this.#viewport)) {
+      return false;
+    }
+    this.#viewport = next;
+    return true;
   }
 
   /** Ends the gesture without committing it; returns whether the canvas must repaint. */

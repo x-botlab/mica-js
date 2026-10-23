@@ -53,6 +53,7 @@ export type {
   PinSide,
   TopicMetadata,
   TopicPayload,
+  TopicPayloadType,
   Unsubscribe,
   Vec2d,
   Vec3d,

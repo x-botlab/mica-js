@@ -69,7 +69,15 @@ interface Harness {
   readonly imports: string[];
 }
 
-function createHarness(factories: Readonly<Record<string, Factory>>): Harness {
+interface HarnessOptions {
+  /** Replaces the code → factory table; used to model module-level state across evaluations. */
+  readonly importModule?: (code: string) => Promise<unknown>;
+}
+
+function createHarness(
+  factories: Readonly<Record<string, Factory>>,
+  options: HarnessOptions = {},
+): Harness {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: CapturedEvent[] = [];
   const imports: string[] = [];
@@ -95,10 +103,12 @@ function createHarness(factories: Readonly<Record<string, Factory>>): Harness {
   };
 
   const runtime = createWidgetRuntime(context as unknown as GuestContext, {
-    importModule: async (code) => {
-      imports.push(code);
-      return { default: factories[code] };
-    },
+    importModule:
+      options.importModule ??
+      (async (code) => {
+        imports.push(code);
+        return { default: factories[code] };
+      }),
   });
 
   return { runtime, handlers, events, context: context as unknown as GuestContext, imports };
@@ -161,6 +171,7 @@ describe('widget guest runtime', () => {
       'set-properties',
       'deliver',
       'pointer',
+      'reset-runtime',
     ]);
   });
 
@@ -528,5 +539,108 @@ describe('widget guest runtime', () => {
       'must default-export a factory function',
     );
     expect(() => runtime.mount(mountRequest())).toThrow('is not loaded');
+  });
+
+  it('keeps a widget module evaluated once across reset-runtime', async () => {
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+    let evaluations = 0;
+    let factoryCalls = 0;
+    /** One bump closure per factory call; each closes over its own counter. */
+    const bumps: (() => number)[] = [];
+    const { runtime } = createHarness(
+      {},
+      {
+        importModule: async () => {
+          evaluations += 1;
+          return {
+            default: () => {
+              factoryCalls += 1;
+              // Instance state lives in the closure, so every mount starts from zero even though
+              // the module itself is evaluated only once.
+              let counter = 0;
+              bumps.push(() => {
+                counter += 1;
+                return counter;
+              });
+              return {};
+            },
+          };
+        },
+      },
+    );
+
+    await runtime.load(loadRequest('widget'));
+    runtime.mount(mountRequest({ instanceId: 'a' }));
+    runtime.mount(mountRequest({ instanceId: 'b' }));
+    runtime.resetRuntime();
+    await runtime.load(loadRequest('widget'));
+    runtime.mount(mountRequest({ instanceId: 'a' }));
+
+    // The factory ran again for every mount — that is what gives the fresh instance its own
+    // closure — while the module source itself was evaluated exactly once.
+    expect(factoryCalls).toBe(3);
+    expect(evaluations).toBe(1);
+    // Each instance owns an independent counter: bumping every closure returns 1, never 1/2/3.
+    expect(bumps.map((bump) => bump())).toEqual([1, 1, 1]);
+  });
+
+  it('answers a repeated load from the factory cache after reset-runtime', async () => {
+    const { runtime, imports } = createHarness({ widget: () => ({}) });
+
+    await runtime.load(loadRequest('widget'));
+    runtime.resetRuntime();
+    await runtime.load(loadRequest('widget'));
+
+    // Re-importing would restart module-level state, so the reset deliberately keeps the factory.
+    expect(imports).toEqual(['widget']);
+  });
+
+  it('releases every session on reset-runtime, so stale subscriptions go quiet', async () => {
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+    let received = 0;
+    const disposed: string[] = [];
+    let api: WidgetInstanceApi | undefined;
+    const { runtime } = createHarness({
+      widget: (instanceApi) => {
+        api = instanceApi;
+        instanceApi.subscribe('brightness', () => {
+          received += 1;
+        });
+        return { dispose: () => disposed.push(instanceApi.instanceId) };
+      },
+    });
+
+    await runtime.load(loadRequest('widget'));
+    runtime.mount(mountRequest());
+    runtime.deliver('a', 'brightness', 1, 0);
+    expect(received).toBe(1);
+    const canvas = canvases[0];
+    expect(canvas?.width).toBe(40);
+
+    runtime.resetRuntime();
+
+    expect(disposed).toEqual(['a']);
+    expect(canvas?.width).toBe(1);
+    expect(canvas?.height).toBe(1);
+    expect(() => runtime.deliver('a', 'brightness', 2, 0)).toThrow('is not mounted');
+    expect(received).toBe(1);
+    // The old api is inert: a late invalidation must not paint a released session.
+    api?.invalidate();
+    await tick();
+    expect(canvases).toHaveLength(1);
+  });
+
+  it('keeps the runtime usable after reset-runtime', async () => {
+    vi.stubGlobal('OffscreenCanvas', FakeCanvas);
+    const { runtime, events } = createHarness({ widget: () => ({}) });
+
+    await runtime.load(loadRequest('widget'));
+    runtime.mount(mountRequest());
+    runtime.resetRuntime();
+
+    await runtime.load(loadRequest('widget'));
+    runtime.mount(mountRequest());
+
+    expect(events.filter((event) => event.type === WIDGET_FRAME_EVENT)).toHaveLength(2);
   });
 });

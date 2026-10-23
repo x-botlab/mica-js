@@ -41,7 +41,7 @@ export interface CanvasEditor {
   /** Drops the gesture in flight without producing a command. */
   cancelInteraction(): void;
   /** Current viewport and selection, for the host to persist or inspect. */
-  readonly state: CanvasEditorState;
+  getState(): CanvasEditorState;
   focus(): void;
   destroy(): void;
 }
@@ -207,16 +207,16 @@ export function mountCanvasEditor(options: MountCanvasEditorOptions): CanvasEdit
     if (disposed) {
       return;
     }
-    if (session.mode === 'run') {
-      canvas.style.cursor = 'default';
-      return;
-    }
     if (session.interaction === 'panning') {
       canvas.style.cursor = 'grabbing';
       return;
     }
     if (spaceHeld) {
       canvas.style.cursor = 'grab';
+      return;
+    }
+    if (session.mode === 'run') {
+      canvas.style.cursor = 'default';
       return;
     }
     let cursor = 'default';
@@ -354,12 +354,15 @@ export function mountCanvasEditor(options: MountCanvasEditorOptions): CanvasEdit
     if (disposed) {
       return;
     }
-    // In edit mode Space is the pan modifier, so it must not reach the widgets or scroll the page.
-    if (session.mode === 'edit' && (event.key === ' ' || event.code === 'Space')) {
+    // Space is the pan modifier in both modes, so it must never scroll the page. Edit mode keeps
+    // it away from the widgets; run mode still forwards the key after registering the modifier.
+    if (event.key === ' ' || event.code === 'Space') {
       event.preventDefault();
       spaceHeld = true;
       updateCursor();
-      return;
+      if (session.mode === 'edit') {
+        return;
+      }
     }
     if (session.mode === 'edit' && ownsKey(event)) {
       event.preventDefault();
@@ -456,7 +459,7 @@ export function mountCanvasEditor(options: MountCanvasEditorOptions): CanvasEdit
       session.cancelInteraction();
       invalidate();
     },
-    get state(): CanvasEditorState {
+    getState(): CanvasEditorState {
       const viewport = session.viewport;
       return {
         mode: session.mode,

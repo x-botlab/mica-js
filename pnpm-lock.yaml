@@ -223,6 +223,9 @@ importers:
 
   apps/playground:
     dependencies:
+      '@mica-js/canvas-editor':
+        specifier: workspace:*
+        version: link:../../packages/canvas-editor
       '@mica-js/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -232,6 +235,9 @@ importers:
       '@mica-js/schematic-editor':
         specifier: workspace:*
         version: link:../../packages/schematic-editor
+      '@mica-js/widget':
+        specifier: workspace:*
+        version: link:../../packages/widget
       '@radix-ui/react-slot':
         specifier: ^1.2.4
         version: 1.5.0(@types/react@19.3.0)(react@19.3.1)
@@ -278,6 +284,9 @@ importers:
       vite:
         specifier: 'catalog:'
         version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
 
   apps/sandbox-playground:
     dependencies:
@@ -406,6 +415,28 @@ importers:
       vite-plugin-dts:
         specifier: 'catalog:'
         version: 5.1.2(@microsoft/api-extractor@7.59.4(@types/node@24.19.2))(rolldown@1.2.14)(supports-color@7.2.0)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  packages/simulator:
+    dependencies:
+      '@mica-js/core':
+        specifier: workspace:*
+        version: link:../core
+      '@mica-js/device':
+        specifier: workspace:*
+        version: link:../device
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
+      vite-plugin-dts:
+        specifier: 'catalog:'
+        version: 5.1.2(@microsoft/api-extractor@7.59.4(@types/node@24.19.2))(rolldown@1.2.14)(supports-color@8.1.1)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
       vitest:
         specifier: 'catalog:'
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))

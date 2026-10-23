@@ -9,6 +9,7 @@ import {
   WIDGET_MOUNT_METHOD,
   WIDGET_POINTER_METHOD,
   WIDGET_PUBLISH_EVENT,
+  WIDGET_RESET_RUNTIME_METHOD,
   WIDGET_RESIZE_METHOD,
   WIDGET_SET_PROPERTIES_METHOD,
   WIDGET_UNMOUNT_METHOD,
@@ -48,6 +49,13 @@ export interface WidgetRuntime {
   setProperties(instanceId: string, props: Readonly<Record<string, unknown>>): void;
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
   pointer(instanceId: string, event: WidgetInputEvent): void;
+  /**
+   * Releases every instance and keeps the evaluated modules.
+   *
+   * A reset rebuilds instances, it does not re-evaluate modules: the contract puts instance state in
+   * the factory closure, so keeping the factories is what makes the reset cheap.
+   */
+  resetRuntime(): void;
   /** Releases every instance; the sandbox calls it when the guest is terminated. */
   dispose(): void;
 }
@@ -102,6 +110,7 @@ export function setup(ctx: GuestContext): void {
   ctx.handle(WIDGET_POINTER_METHOD, (instanceId: string, event: WidgetInputEvent) =>
     runtime.pointer(instanceId, event),
   );
+  ctx.handle(WIDGET_RESET_RUNTIME_METHOD, () => runtime.resetRuntime());
   ctx.signal.addEventListener('abort', () => runtime.dispose(), { once: true });
 }
 
@@ -456,6 +465,19 @@ export function createWidgetRuntime(
       } catch (error) {
         report('deliver', instanceId, error);
       }
+    },
+
+    resetRuntime() {
+      if (disposed) return;
+      dirty.clear();
+      for (const session of [...sessions.values()]) {
+        sessions.delete(session.instanceId);
+        release(session);
+      }
+      sessions.clear();
+      // Factories and definitions stay: a reset rebuilds instances, it does not re-evaluate modules.
+      // Anything a widget keeps at module scope therefore survives the reset, which is why instance
+      // state belongs inside the factory closure (`x-botlab/mica-js#2`).
     },
 
     dispose() {

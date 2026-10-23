@@ -19,6 +19,7 @@ import {
   WIDGET_MOUNT_METHOD,
   WIDGET_POINTER_METHOD,
   WIDGET_PUBLISH_EVENT,
+  WIDGET_RESET_RUNTIME_METHOD,
   WIDGET_RESIZE_METHOD,
   WIDGET_SET_PROPERTIES_METHOD,
   WIDGET_UNMOUNT_METHOD,
@@ -35,16 +36,18 @@ import type { WidgetModule } from '../types';
 import { WidgetLayerStore } from './layers';
 import { createDefaultWidgetSandbox } from './sandbox';
 import type {
-  WidgetAssetSource,
+  WidgetAssetProvider,
   WidgetDiagnostic,
   WidgetDiagnosticCode,
   WidgetHost,
   WidgetHostOptions,
+  WidgetHostSimulation,
   WidgetLayers,
   WidgetPublish,
   WidgetSandbox,
   WidgetSandboxFactory,
   WidgetSize,
+  SimulationPublish,
 } from './types';
 
 interface InstanceRecord {
@@ -54,6 +57,8 @@ interface InstanceRecord {
   /** Placement last applied to this instance, so a pass can tell a real edit from a rewrite. */
   placement: WidgetPlacement;
   props: Readonly<Record<string, unknown>>;
+  /** `src` of every asset the mounted props referenced; the guest only holds prefetched bytes. */
+  assets: ReadonlySet<string>;
 }
 
 /** Host state before any document was loaded. */
@@ -92,14 +97,13 @@ export function createWidgetHost(options: WidgetHostOptions): WidgetHost {
 }
 
 class WidgetHostImpl implements WidgetHost {
-  readonly layers: WidgetLayers;
-
   readonly #provider: WidgetHostOptions['provider'];
   readonly #container: HTMLElement | undefined;
   readonly #onDiagnostic: ((diagnostic: WidgetDiagnostic) => void) | undefined;
   readonly #onPublish: ((publish: WidgetPublish) => void) | undefined;
-  readonly #assets: WidgetAssetSource | undefined;
+  readonly #assets: WidgetAssetProvider | undefined;
   readonly #catalog: WidgetHostOptions['catalog'];
+  readonly #simulation: WidgetHostSimulation | undefined;
   readonly #createSandbox: WidgetSandboxFactory;
   readonly #layerStore = new WidgetLayerStore();
   readonly #instances = new Map<string, InstanceRecord>();
@@ -107,7 +111,10 @@ class WidgetHostImpl implements WidgetHost {
   readonly #documentListeners = new Set<(document: CanvasDocument) => void>();
 
   #document: CanvasDocument = EMPTY_DOCUMENT;
+  #unsubscribeSimulation: (() => void) | undefined;
   #reconcilePending = false;
+  /** The next coordination pass has to reset the guest before it syncs instances. */
+  #resetPending = false;
   #reconcilePass: Promise<void> | undefined;
   /** Identifies the drain that owns {@link #reconcilePass}; only that drain may release it. */
   #reconcileOwner = 0;
@@ -118,27 +125,34 @@ class WidgetHostImpl implements WidgetHost {
   #dpr: number;
 
   constructor(options: WidgetHostOptions) {
-    this.layers = this.#layerStore;
     this.#provider = options.provider;
     this.#container = options.container;
     this.#onDiagnostic = options.onDiagnostic;
     this.#onPublish = options.onPublish;
     this.#assets = options.assets;
     this.#catalog = options.catalog;
+    this.#simulation = options.simulation;
     this.#createSandbox = options.sandbox ?? createDefaultWidgetSandbox;
     this.#dpr = options.dpr ?? currentDevicePixelRatio();
+    this.#unsubscribeSimulation = this.#simulation?.onPublish((publish) => {
+      this.#onSimulationPublish(publish);
+    });
   }
 
-  get document(): CanvasDocument {
+  getDocument(): CanvasDocument {
     return this.#document;
   }
 
-  async loadDocument(source: string | CanvasDocument): Promise<void> {
-    const document = parseCanvas(source);
-    this.#assertBindings(document);
-    this.#commit(document);
+  getLayers(): WidgetLayers {
+    return this.#layerStore;
+  }
+
+  async loadDocument(document: CanvasDocument): Promise<void> {
+    const parsed = parseCanvas(document);
+    this.#assertBindings(parsed);
+    this.#commit(parsed);
     const pass = this.#scheduleReconcile();
-    this.#emitDocument(document);
+    this.#emitDocument(parsed);
     await pass;
   }
 
@@ -156,6 +170,19 @@ class WidgetHostImpl implements WidgetHost {
     return () => {
       this.#documentListeners.delete(listener);
     };
+  }
+
+  reset(): Promise<void> {
+    if (this.#disposed) {
+      return Promise.reject(new WidgetRuntimeError('Widget host is disposed'));
+    }
+    // Clear synchronously so `layers` is empty the moment the caller asks: the editor paints
+    // placeholder frames until the remount commits new bitmaps.
+    this.#instances.clear();
+    this.#layerStore.clear();
+    this.#resetPending = true;
+    // Same queue as every other mutation, so a reset never interleaves with an in-flight mount.
+    return this.#scheduleReconcile();
   }
 
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void {
@@ -235,6 +262,10 @@ class WidgetHostImpl implements WidgetHost {
     try {
       while (this.#reconcilePending && !this.#disposed) {
         this.#reconcilePending = false;
+        if (this.#resetPending) {
+          this.#resetPending = false;
+          await this.#resetGuestRuntime();
+        }
         await this.#syncInstances();
       }
     } finally {
@@ -285,7 +316,27 @@ class WidgetHostImpl implements WidgetHost {
     existing.placement = placement;
 
     const props = widget.properties ?? {};
-    if (!sameProperties(existing.props, props)) this.#setProperties(widget.id, props);
+    if (!sameProperties(existing.props, props)) {
+      // Bytes are prefetched once, at mount: the guest cannot read a resource the host never sent,
+      // so a property that names a new image re-mounts instead of reaching an empty asset map.
+      if (this.#referencesUnprefetchedAsset(existing, props)) {
+        this.#unmount(widget.id);
+        await this.#mount(widget);
+        return;
+      }
+      this.#setProperties(widget.id, props);
+    }
+  }
+
+  #referencesUnprefetchedAsset(
+    existing: InstanceRecord,
+    props: Readonly<Record<string, unknown>>,
+  ): boolean {
+    if (this.#assets === undefined) return false;
+    for (const src of collectAssetRefs(props).keys()) {
+      if (!existing.assets.has(src)) return true;
+    }
+    return false;
   }
 
   /**
@@ -327,6 +378,7 @@ class WidgetHostImpl implements WidgetHost {
       token: Symbol(instanceId),
       placement: placementOf(widget),
       props: widget.properties ?? {},
+      assets: new Set<string>(),
     };
     this.#instances.set(instanceId, record);
     this.#layerStore.add({
@@ -397,6 +449,7 @@ class WidgetHostImpl implements WidgetHost {
       // mount still behaves the same on both sides of the boundary.
       const props = mergeProperties(module.definition?.properties, record.props);
       const assets = await this.#prefetchAssets(instanceId, ref, props);
+      record.assets = new Set(collectAssetRefs(props).keys());
       this.#requireOwnership(instanceId, record);
 
       const layer = this.#layerStore.get(instanceId);
@@ -507,6 +560,34 @@ class WidgetHostImpl implements WidgetHost {
     this.#layerStore.remove(instanceId);
   }
 
+  /**
+   * Asks the guest to release its sessions.
+   *
+   * The guest keeps its evaluated modules: a reset rebuilds instances, so module-level state is out
+   * of scope by contract and the factories stay warm. A host without a sandbox has nothing to
+   * reset: no instance ever mounted, so the following sync pass simply mounts into a fresh runtime.
+   * Failures are reported, never thrown: the remount below resumes from whatever state the guest is
+   * in.
+   */
+  async #resetGuestRuntime(): Promise<void> {
+    if (!this.#sandbox && !this.#starting) return;
+    try {
+      const sandbox = await this.#ensureSandbox();
+      if (this.#disposed) return;
+      await sandbox.call(WIDGET_RESET_RUNTIME_METHOD);
+    } catch (error) {
+      if (this.#disposed || error instanceof WidgetRuntimeError) return;
+      if (this.#isTerminated()) {
+        this.#failRuntime('The widget sandbox terminated during reset.');
+        return;
+      }
+      this.#report(
+        'widget/runtime-failed',
+        `The widget runtime could not be reset: ${describeError(error)}`,
+      );
+    }
+  }
+
   #ensureSandbox(): Promise<WidgetSandbox> {
     if (this.#disposed) {
       return Promise.reject(new WidgetRuntimeError('Widget host is disposed'));
@@ -566,9 +647,9 @@ class WidgetHostImpl implements WidgetHost {
     const entries = await Promise.all(
       [...refs.values()].map(async (assetRef): Promise<[string, Uint8Array] | undefined> => {
         try {
-          const bytes = await source.read(assetRef);
+          const bytes = await source.resolve(assetRef);
           if (!(bytes instanceof Uint8Array)) {
-            throw new TypeError('WidgetAssetSource.read() must resolve to a Uint8Array');
+            throw new TypeError('WidgetAssetProvider.resolve() must resolve to a Uint8Array');
           }
           return [assetRef.src, bytes];
         } catch (error) {
@@ -617,7 +698,7 @@ class WidgetHostImpl implements WidgetHost {
     const message = payload as Partial<WidgetPublishMessage> | null | undefined;
     if (!message || typeof message !== 'object') return;
     if (typeof message.instanceId !== 'string' || typeof message.port !== 'string') return;
-    this.#onPublish?.({
+    const publish: WidgetPublish = {
       instanceId: message.instanceId,
       port: message.port,
       payload: message.payload,
@@ -626,7 +707,47 @@ class WidgetHostImpl implements WidgetHost {
         typeof message.simTime === 'number' && Number.isFinite(message.simTime)
           ? message.simTime
           : 0,
-    });
+    };
+    // Route before notifying: a device may answer synchronously, and the host listener should see
+    // the publish once its effects are already in flight.
+    this.#forwardToSimulation(publish);
+    this.#onPublish?.(publish);
+  }
+
+  /** Sends a widget publish to the endpoint its port is bound to; unbound ports stay host-local. */
+  #forwardToSimulation(publish: WidgetPublish): void {
+    const simulation = this.#simulation;
+    if (simulation === undefined) return;
+    const widget = this.#document.widgets.find((candidate) => candidate.id === publish.instanceId);
+    const target = widget?.bindings?.[publish.port];
+    if (target === undefined) return;
+    try {
+      simulation.deliver(target, publish.payload);
+    } catch (error) {
+      this.#report(
+        'widget/deliver-failed',
+        `Publish from "${publish.instanceId}" could not reach ${target.symbol}.${target.port}: ${describeError(error)}`,
+        { instanceId: publish.instanceId, widget: widget?.widget },
+      );
+    }
+  }
+
+  /** Fans a device publish out to every widget port bound to its endpoint. */
+  #onSimulationPublish(publish: SimulationPublish): void {
+    if (this.#disposed) return;
+    const { target } = publish;
+    for (const widget of this.#document.widgets) {
+      const bindings = widget.bindings;
+      if (bindings === undefined) continue;
+      for (const port of Object.keys(bindings)) {
+        const bound = bindings[port];
+        if (bound === undefined || bound.symbol !== target.symbol || bound.port !== target.port) {
+          continue;
+        }
+        // `deliver` reports unknown instances and guest failures on its own.
+        this.deliver(widget.id, port, publish.payload, publish.simTime);
+      }
+    }
   }
 
   #onAssetFailedMessage(payload: unknown): void {
@@ -714,6 +835,8 @@ class WidgetHostImpl implements WidgetHost {
   async #shutdown(): Promise<void> {
     this.#disposed = true;
     this.#detach();
+    this.#unsubscribeSimulation?.();
+    this.#unsubscribeSimulation = undefined;
     this.#layerStore.clear();
     this.#instances.clear();
 

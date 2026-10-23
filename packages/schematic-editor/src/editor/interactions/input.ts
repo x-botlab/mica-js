@@ -147,7 +147,7 @@ export class EditorInput {
       return;
     }
 
-    if (deps.controller.tool === 'wire' && !deps.readOnly) {
+    if (deps.controller.getTool() === 'wire' && !deps.readOnly) {
       addWirePoint(this.#context, page);
       return;
     }
@@ -204,7 +204,7 @@ export class EditorInput {
     }
 
     const device = placementDevice(this.#context);
-    if (deps.controller.tool === 'wire') {
+    if (deps.controller.getTool() === 'wire') {
       state.cursorPoint = pointer.snapWire(page);
       deps.onChange();
       return;
@@ -274,7 +274,7 @@ export class EditorInput {
 
   #onDoubleClick = (event: MouseEvent): void => {
     const { deps, pointer } = this.#context;
-    if (deps.controller.tool === 'wire') {
+    if (deps.controller.getTool() === 'wire') {
       finishWire(this.#context);
       return;
     }

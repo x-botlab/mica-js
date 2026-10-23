@@ -4,9 +4,9 @@ import type { InteractionContext } from './context';
 
 /** Starts dragging a symbol; the grid is applied where it lands, not to the pointer delta. */
 export function beginMoveDrag(context: InteractionContext, page: Point, symbolId: string): boolean {
-  const symbol = context.deps.controller.document.sheet.symbols.find(
-    (item) => item.id === symbolId,
-  );
+  const symbol = context.deps.controller
+    .getDocument()
+    .sheet.symbols.find((item) => item.id === symbolId);
   context.state.drag = {
     mode: 'move',
     origin: page,
@@ -21,9 +21,9 @@ export function beginReferenceDrag(
   page: Point,
   symbolId: string,
 ): boolean {
-  const symbol = context.deps.controller.document.sheet.symbols.find(
-    (item) => item.id === symbolId,
-  );
+  const symbol = context.deps.controller
+    .getDocument()
+    .sheet.symbols.find((item) => item.id === symbolId);
   if (symbol === undefined) {
     return false;
   }
@@ -44,7 +44,7 @@ export function updateMoveDrag(context: InteractionContext, page: Point): boolea
   if (drag?.mode !== 'move') {
     return false;
   }
-  const next = snapDragOffset(drag.anchor, drag.origin, page, context.deps.controller.display);
+  const next = snapDragOffset(drag.anchor, drag.origin, page, context.deps.controller.getDisplay());
   if (next.x !== drag.offset.x || next.y !== drag.offset.y) {
     context.state.drag = { ...drag, offset: next };
     context.deps.onChange();

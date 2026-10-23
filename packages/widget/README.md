@@ -34,7 +34,7 @@ pnpm add @mica-js/widget
 | `WidgetInputEvent`                          | 转发给实例的指针 / 键盘事件                                          |
 | `WidgetInstanceApi` / `WidgetInstance`      | Widget 工厂收到的实例 API 与可选钩子                                 |
 | `WidgetAssetRef`                            | 资源引用 `{ src, mode: 'file' \| 'inline' \| 'store' }`（#7）        |
-| `WidgetAssetApi` / `WidgetAssetSource`      | guest 的 `readBinary` 与宿主侧预取来源                               |
+| `WidgetAssetApi` / `WidgetAssetProvider`    | guest 的 `readBinary` 与宿主侧的资源解析                             |
 | `WidgetPublish`                             | `{ instanceId, port, payload, simTime }`                             |
 | `WidgetFactory` / `WidgetDeliveryMeta`      | 模块默认导出的工厂类型与端口投递元数据                               |
 | `WidgetSandbox` / `WidgetSandboxFactory`    | 可注入的最小沙箱接口（`call` / `on` / `terminate`）                  |
@@ -103,13 +103,13 @@ host.applyCommand({
   placement: { x: 120, y: 64, width: 320, height: 96, rotation: 0 },
 });
 
-host.layers.subscribe((change) => {
+host.getLayers().subscribe((change) => {
   // { type: 'added' | 'updated' | 'removed', instanceId } | { type: 'reordered' }
 });
 host.deliver(gaugeId, 'brightness', 0.42, 1280);
 host.dispatch(gaugeId, { type: 'pointerdown', x: 12, y: 8 });
 
-const layer = host.layers.get(gaugeId);
+const layer = host.getLayers().get(gaugeId);
 // { instanceId, width, height, dpr, bitmap, sequence }
 
 await host.dispose();
@@ -119,19 +119,32 @@ await host.dispose();
 
 ```ts
 interface WidgetHost {
-  readonly document: CanvasDocument;
-  loadDocument(source: string | CanvasDocument): Promise<void>;
+  getDocument(): CanvasDocument;
+  loadDocument(document: CanvasDocument): Promise<void>;
   applyCommand(command: CanvasCommand): void;
   onDocumentChange(listener: (document: CanvasDocument) => void): () => void;
+  reset(): Promise<void>;
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
   dispatch(instanceId: string, event: WidgetInputEvent): void;
-  readonly layers: WidgetLayers;
+  getLayers(): WidgetLayers;
   resize(dpr: number): void;
   dispose(): Promise<void>;
 }
 ```
 
-`document` 初始是空文档 `{ version: 1, widgets: [] }`；`loadDocument` 接受 `.cnv` 文本或已解析对象，`applyCommand` 接受 `@mica-js/core/canvas` 的 `CanvasCommand`。实例级操作（挂载、卸载、改尺寸、改属性）不再公开，`WidgetMountSpec` / `WidgetSize` 也随之从公开类型中移除。
+`getDocument()` 初始返回空文档 `{ version: 1, widgets: [] }`，之后每次都是当前快照；`loadDocument` 只接收解析好的 `CanvasDocument`（`.cnv` 文本请先用 `@mica-js/core/canvas` 的 `parseCanvas` 解析），`applyCommand` 接受 `@mica-js/core/canvas` 的 `CanvasCommand`。宿主仍会重新校验传入的文档，坏文档抛 `SchematicError` 且不改变已挂载的实例。实例级操作（挂载、卸载、改尺寸、改属性）不再公开，`WidgetMountSpec` / `WidgetSize` 也随之从公开类型中移除。`getLayers()` 返回宿主唯一的图层存储，调用多次拿到的是同一个对象。
+
+### 重置（`reset()`）
+
+`reset()` 让**全部 widget 回到初始状态**，供宿主在切换编辑/运行模式时调用：
+
+1. 同步清空 `#instances` 与 `layers`（编辑器立刻画占位框）；
+2. 在协调队列里先调用 guest 的 `reset-runtime`：卸载所有 session（释放画布、清订阅），**工厂与定义保留**，模块不会被重新求值；
+3. 再按**当前文档**重新 `load` + `mount` 每个实例，`props` / `assets` 重新合并与预取；resolve 时全部实例已重新挂载。
+
+要点：guest 本身不重启（iframe/worker 保留），所以重置比销毁重建便宜得多；`reset()` 与 `applyCommand` / `loadDocument` 共用同一条协调队列，不会与进行中的协调交错；重置失败只上报 `widget/runtime-failed`，不 reject，随后的重挂载照常进行。
+
+**实例状态写在工厂闭包里。** 重置只重建实例，不会重新求值模块，所以 `export default` 之外的状态（`let counter = 0;` 这类）在重置后保持原样——那是未定义行为。模块顶层是共享常量与纯函数的位置，实例状态属于工厂作用域（见 x-botlab/mica-js#2）。
 
 ### 校验
 
@@ -144,6 +157,7 @@ interface WidgetHost {
 - **按 id 比对**：文档新增的 id → 挂载；消失的 id → 卸载；几何变化 → `resize`；属性变化 → `set-properties`；无变化不动 guest。
 - **几何比较**用 `x`、`y`、`width`、`height`、`rotation` 五项判定是否变化，但只有 `width` / `height` 会推给 guest：`x` / `y` / `rotation` 只影响合成位置，已经在文档里，层只需要尺寸。
 - **属性比较**是浅比较：键集合相同且每个键 `Object.is` 相等才算没变化。文档拥有属性值，嵌套对象只有被整体替换才算改动；键集合参与比较，因为缺失的键回落到定义默认值，而显式 `undefined` 会覆盖默认值。
+- **资源属性变化会重挂载**：guest 只在挂载时收到预取好的字节，所以属性里出现新的 `{ src }` 时宿主按「卸载 + 挂载」处理，让新资源随挂载送达；没有新资源时仍只发 `set-properties`。
 - **顺序**：`layers.list()` 的顺序等于 `document.widgets` 的顺序。`set-z` 只重排层表，不重新挂载，并以 `{ type: 'reordered' }` 通知订阅者。
 - **几何与位图分离**：几何变化同步改 layer 的 `width` / `height`（`sequence` 不变），新位图异步到达后再递增 `sequence`。
 - **串行化**：协调走单条内部队列。多次 `applyCommand` 不会并发调用 guest，队列每轮都以**最新快照**为准，因此中间态会被合并，不会出现重复挂载或漏掉卸载。层订阅者在 `layers.subscribe` 回调里同步 `applyCommand` 也被允许：这次提交只把工作排到正在运行的队列上，不会另起一条协调循环。
@@ -153,7 +167,7 @@ interface WidgetHost {
 
 ### 执行模型
 
-- 全部实例共用一个 `createSandbox()`；widget 代码以文本经 guest 方法 `load` 注入，guest 用 blob URL + `import()` 求值并缓存默认导出的工厂。
+- 全部实例共用一个 `createSandbox()`；widget 代码以文本经 guest 方法 `load` 注入，guest 用 blob URL + `import()` 求值一次并缓存默认导出的工厂。`reset-runtime` 只丢弃 session，工厂缓存保留，因此模块不会再次求值。
 - 每个实例有自己的 `OffscreenCanvas`（`round(width * dpr) × round(height * dpr)`），2D 上下文按 `dpr` 缩放，widget 始终使用逻辑尺寸绘制。
 - guest 自建画布，通过自定义事件把 `ImageBitmap` **转移**给宿主，不使用沙箱的 `GuestSurface`：一个 guest 一块整幅表面的模型没有 surface 标识，多个实例分不清来源。
 - 事件使用 `widget:` 命名空间：`widget:frame`、`widget:publish`、`widget:error`、`widget:asset-failed`。沙箱保留了 `mica:` 前缀（guest 侧 `mica:` 事件会被丢弃，`sandbox.on('mica:...')` 会抛错），因此不能使用 `mica:widget-frame`。
@@ -173,7 +187,7 @@ import { createWidgetHost } from '@mica-js/widget';
 const host = createWidgetHost({
   provider,
   assets: {
-    async read(ref) {
+    async resolve(ref) {
       // mode 为 'inline' 时在这里完成 base64 解码，guest 只会看到字节。
       return loadBytes(ref.src);
     },
@@ -181,7 +195,7 @@ const host = createWidgetHost({
 });
 ```
 
-宿主遍历合并默认值后的 props（含对象与数组里的嵌套值），收集所有形如 `{ src, mode }` 的引用，逐个 `read` 后把 `src → Uint8Array` 随 `mount` 请求一起发给 guest；同一个 `src` 只读一次。单个资源失败只上报 `widget/asset-failed` 并跳过该资源，实例照常挂载；没有配置 `assets` 时不做任何预取，也不报错。预取只发生在挂载时：`set-properties` 之后才出现的引用不会被补读。
+宿主遍历合并默认值后的 props（含对象与数组里的嵌套值），收集所有形如 `{ src, mode }` 的引用，逐个 `resolve` 后把 `src → Uint8Array` 随 `mount` 请求一起发给 guest；同一个 `src` 只读一次。单个资源失败只上报 `widget/asset-failed` 并跳过该资源，实例照常挂载；没有配置 `assets` 时不做任何预取，也不报错。预取发生在挂载时：属性改动引入新的 `{ src }` 时宿主会重挂载该实例，让新资源随挂载送达。
 
 widget 通过 `api.assets.readBinary(src)` 读取：
 
@@ -189,11 +203,27 @@ widget 通过 `api.assets.readBinary(src)` 读取：
 const bytes = await api.assets.readBinary(api.props.texture.src);
 ```
 
-每次调用返回**副本**，widget 可以随意修改。未预取的 `src`（没有来源、读取失败，或挂载后才出现）会被 reject，并在同一实例、同一 `src` 的首次失败时上报一条 `widget/asset-failed`。**这个 Promise 必须由 widget 自己 `catch`**：不 await 也不 catch 会在 guest worker 里留下 unhandled rejection。
+每次调用返回**副本**，widget 可以随意修改。未预取的 `src`（没有来源、读取失败，或挂载后才出现且还没重挂载）会被 reject，并在同一实例、同一 `src` 的首次失败时上报一条 `widget/asset-failed`。**这个 Promise 必须由 widget 自己 `catch`**：不 await 也不 catch 会在 guest worker 里留下 unhandled rejection。
 
 ### `publish` 携带 `simTime`
 
 `api.publish(port, payload, simTime?)` 的第三个参数是 widget 做出反应时的仿真时刻，`onPublish` 回调因此总能读到 `simTime`。当前宿主没有仿真时钟，未显式传入时填 `0`；接入仿真后由 widget 传入当时的 `simTime`。
+
+### 接入仿真（`simulation`）
+
+`WidgetHostOptions.simulation` 让宿主自己完成 `symbol.port` ↔ widget 端口的双向路由，应用侧不必再手写转发：
+
+```ts
+import { createDeviceSimExecutor } from '@mica-js/simulator';
+
+const executor = createDeviceSimExecutor({ devices: provider });
+const host = createWidgetHost({ provider, assets, simulation: executor });
+```
+
+- **器件 → widget**：`simulation.onPublish` 的 `target` 与某个实例 `bindings` 里的端点相同时，宿主对该端口 `deliver(payload, simTime)`；同一端点绑了多个实例就逐个投递。
+- **widget → 器件**：widget 发布的端口有绑定就调用 `simulation.deliver(binding, payload)`；没绑定的端口仍只在宿主侧上报 `onPublish`。转发抛错上报 `widget/deliver-failed`，不影响 `onPublish` 的派发。
+- **同一线程**：`WidgetHostSimulation` 只有 `onPublish` / `deliver` 两个同步方法，宿主解析绑定也是同步的；唯一的一跳异步来自 widget sandbox 自己的 `deliver` 调用（iframe/worker 边界），不是仿真线程。`dispose()` 会退订。
+- 结构类型：`@mica-js/simulator` 的 `DeviceSimExecutor` 直接满足 `WidgetHostSimulation`，不需要适配层。
 
 ### 启动时机
 
@@ -275,8 +305,8 @@ interface WidgetAssetRef {
   readonly mode: 'file' | 'inline' | 'store';
 }
 
-interface WidgetAssetSource {
-  read(ref: WidgetAssetRef): Promise<Uint8Array>;
+interface WidgetAssetProvider {
+  resolve(ref: WidgetAssetRef): Promise<Uint8Array>;
 }
 
 interface WidgetPublish {
@@ -284,6 +314,17 @@ interface WidgetPublish {
   readonly port: string;
   readonly payload: unknown;
   readonly simTime: number;
+}
+
+interface SimulationPublish {
+  readonly target: { readonly symbol: string; readonly port: string };
+  readonly payload: unknown;
+  readonly simTime: number;
+}
+
+interface WidgetHostSimulation {
+  onPublish(listener: (publish: SimulationPublish) => void): () => void;
+  deliver(target: { readonly symbol: string; readonly port: string }, payload: unknown): void;
 }
 
 interface PortDefinition {
@@ -348,7 +389,7 @@ interface WidgetProvider {
 - 加载器不执行源码、不创建 Worker；执行与隔离由 `WidgetHost` 交给 `@mica-js/sandbox`，本包不改动它的协议。
 - 不解析实现源码：`import`、`export` 是否合法留给 guest 的 `import()` 决定，加载器只负责取字节与纯数据定义。
 - 只合并属性默认值，不解析其它字段语义、不建立端口连接、不持久化实例配置。
-- 不做话题路由：`publish` 只经 `onPublish` 交给调用方（带上 widget 给出的 `simTime`，缺省 `0`），`deliver` 的 `simTime` 由调用方提供。
+- 不做话题路由：没有 `simulation` 时 `publish` 只经 `onPublish` 交给调用方（带上 widget 给出的 `simTime`，缺省 `0`），`deliver` 的 `simTime` 由调用方提供；提供 `simulation` 时宿主只按 `bindings` 端点转发，不校验载荷类型。
 - 不做资源缓存或动态 IO：资源只在挂载前预取一次，guest 侧没有网络与 DOM；`readBinary` 只读预取结果。
 - **不按端口声明校验 `publish` / `subscribe`**：这两个方法目前接受任意端口名，`WidgetDefinition.ports` 在运行时基本未被使用。因此 widget 可以伪造任意端口的消息，宿主侧的 `onPublish` 也会原样收到。**#99 必须补上校验**：按该实例解析到的 `definition.ports` 检查 `publish` 的端口存在且 `direction === 'output'`，对未声明的端口丢弃并上报诊断（`subscribe` 同理，方向为 `input`）。校验必须放在 guest 侧（不可信代码就在那里）或以 definition 为准在宿主侧过滤，且不能在 `WidgetHost` 公开接口里引入编辑器概念。
 - 不合成多层位图：`WidgetLayers` 只给位图与绘制顺序，合成交给宿主或 `@mica-js/canvas-editor`。

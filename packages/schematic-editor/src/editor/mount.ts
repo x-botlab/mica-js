@@ -125,7 +125,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     readOnly,
     toolbar: options.toolbar !== false,
     onToolClick: (tool) => {
-      controller.setTool(controller.tool === tool ? 'select' : tool);
+      controller.setTool(controller.getTool() === tool ? 'select' : tool);
       shell.root.focus();
     },
   });
@@ -137,9 +137,9 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
   let theme = resolveSchematicTheme(options.theme);
   let disposed = false;
   let lastSelection: readonly EditorSelection[] = [];
-  let lastTool: EditorTool = controller.tool;
-  let lastPlacing: string | undefined = controller.placingDevice;
-  let lastError: SchematicError | undefined = controller.state.lastError;
+  let lastTool: EditorTool = controller.getTool();
+  let lastPlacing: string | undefined = controller.getPlacingDevice();
+  let lastError: SchematicError | undefined = controller.getState().lastError;
   let lastViewport: ViewportState | undefined = viewport.state;
 
   const input = new EditorInput({
@@ -175,7 +175,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
     renderer.setTheme(theme);
   }
 
-  function render(state: EditorRenderState = controller.renderState): void {
+  function render(state: EditorRenderState = controller.getRenderState()): void {
     if (disposed) {
       return;
     }
@@ -256,7 +256,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
   const unsubscribe = controller.subscribe(sync);
   applyTheme();
   input.attach();
-  sync(controller.state);
+  sync(controller.getState());
 
   const resizeObserver = new ResizeObserver(() => resize());
   resizeObserver.observe(shell.canvasHost);
@@ -322,7 +322,7 @@ export function mountSchematicEditor(options: MountSchematicEditorOptions): Moun
       render();
     },
     toJSON(): string {
-      return serializeSchematic(controller.document);
+      return serializeSchematic(controller.getDocument());
     },
     focus(): void {
       shell.root.focus();

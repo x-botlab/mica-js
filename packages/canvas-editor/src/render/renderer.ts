@@ -11,6 +11,10 @@ import { isMajorGridLine, resolveGridStep } from './grid';
 const HANDLE_SIZE = 7;
 /** Screen-space radius of the round rotation handle. */
 const ROTATE_HANDLE_RADIUS = 4;
+/** Screen-space width of the per-instance border drawn in edit mode. */
+const OUTLINE_WIDTH = 1.5;
+/** Dark backing under that border, so it stays readable on a bright widget frame. */
+const OUTLINE_HALO = 'rgba(10, 10, 10, 0.35)';
 
 /** Everything one repaint needs; the renderer owns no state beyond the canvas surface. */
 export interface CanvasFrame {
@@ -88,6 +92,7 @@ export class CanvasFrameRenderer {
     this.#drawGrid(context, frame);
     this.#drawInstances(context, frame);
     if (frame.mode === 'edit') {
+      this.#drawOutlines(context, frame);
       this.#drawSelection(context, frame);
     }
   }
@@ -198,6 +203,39 @@ export class CanvasFrameRenderer {
     context.setLineDash([4 / frame.viewport.scale, 3 / frame.viewport.scale]);
     context.strokeRect(-width / 2, -height / 2, width, height);
     context.setLineDash([]);
+  }
+
+  /**
+   * A faint border around every instance in edit mode.
+   *
+   * A widget may paint nothing at all (a fully transparent button over a photo), so the geometry
+   * has to be visible without selecting it first. Selection draws its own brighter dashed outline
+   * and handles on top of this.
+   */
+  #drawOutlines(context: CanvasRenderingContext2D, frame: CanvasFrame): void {
+    const lineWidth = OUTLINE_WIDTH / frame.viewport.scale;
+    context.save();
+    context.strokeStyle = this.#theme.outline;
+    context.lineWidth = lineWidth;
+    for (const instance of frame.document.widgets) {
+      const placement = frame.previews.get(instance.id) ?? instance;
+      const center = placementCenter(placement);
+      context.save();
+      context.translate(center.x, center.y);
+      context.rotate(degreesToRadians(placement.rotation));
+      const left = -placement.width / 2;
+      const top = -placement.height / 2;
+      // A translucent halo keeps the border readable on a bright photo, where a single light line
+      // would wash out.
+      context.strokeStyle = OUTLINE_HALO;
+      context.lineWidth = lineWidth * 2;
+      context.strokeRect(left, top, placement.width, placement.height);
+      context.strokeStyle = this.#theme.outline;
+      context.lineWidth = lineWidth;
+      context.strokeRect(left, top, placement.width, placement.height);
+      context.restore();
+    }
+    context.restore();
   }
 
   #drawSelection(context: CanvasRenderingContext2D, frame: CanvasFrame): void {

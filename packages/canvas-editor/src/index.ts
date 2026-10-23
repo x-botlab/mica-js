@@ -1,6 +1,17 @@
 export { mountCanvasEditor } from './editor/mount';
 export type { CanvasEditor, MountCanvasEditorOptions } from './editor/mount';
 
+export { createCanvasScene } from './scene';
+export type {
+  CanvasScene,
+  CanvasSceneDiagnostic,
+  CanvasSceneDiagnosticCode,
+  CanvasSceneFailure,
+  CanvasSceneHost,
+  CanvasScenePublishListener,
+  CreateCanvasSceneOptions,
+} from './scene';
+
 export type {
   CanvasEditorDiagnostic,
   CanvasEditorDiagnosticCode,
