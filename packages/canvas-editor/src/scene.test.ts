@@ -54,6 +54,9 @@ interface FakeHost extends CanvasSceneHost {
   emitDocumentChange(document: CanvasDocument): void;
   emitPublish(publish: WidgetPublish): void;
   publishListenerCount(): number;
+  /** Holds the next `reset()` open; the returned function releases it. */
+  holdReset(): () => void;
+  failNextReset(error: Error): void;
 }
 
 const layers: WidgetLayers = {
@@ -67,6 +70,8 @@ function createFakeHost(initial: CanvasDocument = canvasDocument()): FakeHost {
   const delivered: Delivered[] = [];
   const documentListeners = new Set<(document: CanvasDocument) => void>();
   const publishListeners = new Set<(publish: WidgetPublish) => void>();
+  let resetGate: Promise<void> | undefined;
+  let resetFailure: Error | undefined;
 
   return {
     delivered,
@@ -89,6 +94,18 @@ function createFakeHost(initial: CanvasDocument = canvasDocument()): FakeHost {
         documentListeners.delete(listener);
       };
     }),
+    reset: vi.fn(async () => {
+      const gate = resetGate;
+      resetGate = undefined;
+      if (gate !== undefined) {
+        await gate;
+      }
+      const failure = resetFailure;
+      resetFailure = undefined;
+      if (failure !== undefined) {
+        throw failure;
+      }
+    }),
     deliver: vi.fn((instanceId: string, port: string, payload: unknown, simTime: number) => {
       delivered.push({ instanceId, port, payload, simTime });
     }),
@@ -110,6 +127,16 @@ function createFakeHost(initial: CanvasDocument = canvasDocument()): FakeHost {
       for (const listener of [...publishListeners]) listener(publish);
     },
     publishListenerCount: () => publishListeners.size,
+    holdReset(): () => void {
+      let release: () => void = () => {};
+      resetGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return release;
+    },
+    failNextReset(error: Error): void {
+      resetFailure = error;
+    },
   };
 }
 
@@ -310,13 +337,80 @@ describe('createCanvasScene', () => {
     const host = createFakeHost();
     const scene = await mountScene(host);
 
-    scene.setMode('run');
+    await scene.setMode('run');
 
     expect(editor.calls).toEqual(['cancelInteraction', 'setMode:run']);
     expect(scene.mode).toBe('run');
 
-    scene.setMode('edit');
+    await scene.setMode('edit');
+    expect(editor.calls.at(-2)).toBe('cancelInteraction');
     expect(editor.calls.at(-1)).toBe('setMode:edit');
+    expect(scene.mode).toBe('edit');
+  });
+
+  it('resets the widgets on every mode change', async () => {
+    const host = createFakeHost();
+    const scene = await mountScene(host);
+
+    await scene.setMode('run');
+    expect(host.reset).toHaveBeenCalledTimes(1);
+
+    await scene.setMode('edit');
+    expect(host.reset).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not reset when the mode is already in effect', async () => {
+    const host = createFakeHost();
+    const scene = await mountScene(host, { mode: 'run' });
+    expect(scene.mode).toBe('run');
+
+    await scene.setMode('run');
+
+    expect(host.reset).not.toHaveBeenCalled();
+    expect(editor.calls).toEqual([]);
+  });
+
+  it('applies the new mode before the reset and resolves after it', async () => {
+    const host = createFakeHost();
+    const scene = await mountScene(host);
+    const release = host.holdReset();
+
+    let settled = false;
+    const switching = scene.setMode('run').then(() => {
+      settled = true;
+    });
+
+    // Routing follows the new mode immediately, while the widgets are still being rebuilt.
+    expect(scene.mode).toBe('run');
+    expect(editor.calls).toEqual(['cancelInteraction', 'setMode:run']);
+    expect(host.reset).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    release();
+    await switching;
+    expect(settled).toBe(true);
+  });
+
+  it('keeps the previous mode when the host rejects the reset', async () => {
+    const host = createFakeHost();
+    const scene = await mountScene(host);
+    host.failNextReset(new Error('reset exploded'));
+
+    await expect(scene.setMode('run')).rejects.toThrow('reset exploded');
+
+    expect(scene.mode).toBe('edit');
+    expect(editor.calls).toEqual(['cancelInteraction', 'setMode:run', 'setMode:edit']);
+  });
+
+  it('ignores a mode change after destroy', async () => {
+    const host = createFakeHost();
+    const scene = await mountScene(host);
+    scene.destroy();
+
+    await scene.setMode('run');
+
+    expect(host.reset).not.toHaveBeenCalled();
     expect(scene.mode).toBe('edit');
   });
 

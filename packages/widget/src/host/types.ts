@@ -86,6 +86,15 @@ export interface WidgetHost {
   /** Subscribes to committed snapshots; returns the unsubscribe function. */
   onDocumentChange(listener: (document: CanvasDocument) => void): () => void;
 
+  /**
+   * Drops every instance, discards the guest's module cache and mounts the current document again,
+   * so widgets restart from their initial state. Layers are emptied and repopulated.
+   *
+   * Resolves once every instance of the current document has mounted again. Failures are reported
+   * through `onDiagnostic` instead of rejecting, like every other coordination step.
+   */
+  reset(): Promise<void>;
+
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
   dispatch(instanceId: string, event: WidgetInputEvent): void;
   readonly layers: WidgetLayers;

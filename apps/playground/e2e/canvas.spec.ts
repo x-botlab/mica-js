@@ -9,6 +9,8 @@ interface SceneHandle {
       readonly widget: string;
       readonly x: number;
       readonly y: number;
+      readonly width: number;
+      readonly height: number;
     }[];
   };
 }
@@ -16,6 +18,11 @@ interface SceneHandle {
 /** The widget host is exposed too, so a test can watch a layer repaint. */
 interface HostHandle {
   readonly layers: {
+    list(): readonly {
+      readonly instanceId: string;
+      readonly sequence: number;
+      readonly bitmap: unknown;
+    }[];
     get(instanceId: string): { readonly sequence: number } | undefined;
   };
 }
@@ -23,6 +30,59 @@ interface HostHandle {
 interface Point {
   readonly x: number;
   readonly y: number;
+}
+
+type DemoWidget = SceneHandle['document']['widgets'][number];
+
+/** Instance center in document coordinates, so a test never depends on the demo's geometry. */
+function centerOf(widget: DemoWidget): Point {
+  return { x: widget.x + widget.width / 2, y: widget.y + widget.height / 2 };
+}
+
+/** Frame counter of one instance; a remount restarts it at 1. */
+async function frameSequence(page: Page, instanceId: string): Promise<number> {
+  return page.evaluate((id) => {
+    const host = (globalThis as unknown as { micaWidgetHost: HostHandle }).micaWidgetHost;
+    return host.layers.get(id)?.sequence ?? 0;
+  }, instanceId);
+}
+
+async function layerCount(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      (globalThis as unknown as { micaWidgetHost: HostHandle }).micaWidgetHost.layers.list().length,
+  );
+}
+
+async function demoWidget(page: Page, ref: string): Promise<DemoWidget> {
+  const widget = (await sceneState(page)).document.widgets.find((entry) => entry.widget === ref);
+  if (widget === undefined) {
+    throw new Error(`the demo document has no ${ref} instance`);
+  }
+  return widget;
+}
+
+/**
+ * Switches mode and waits until the rebuild finished.
+ *
+ * A switch drops and re-creates every instance, so the run-mode driver only starts afterwards: a
+ * new segment frame is the signal that both the reset and the remount are done.
+ */
+async function switchMode(page: Page, label: '编辑' | '运行'): Promise<void> {
+  const segment = await demoWidget(page, 'demo:segment');
+  const before = await frameSequence(page, segment.id);
+  await page.getByRole('button', { name: label, exact: true }).click();
+  await expect
+    .poll(async () => (await sceneState(page)).mode)
+    .toBe(label === '运行' ? 'run' : 'edit');
+
+  if (label === '运行') {
+    await expect.poll(() => frameSequence(page, segment.id)).toBeGreaterThan(before);
+    return;
+  }
+  // Back in edit mode nothing repaints the segment, and the remount left exactly one frame.
+  await expect.poll(() => frameSequence(page, segment.id)).toBe(1);
+  await expect.poll(() => layerCount(page)).toBe(3);
 }
 
 async function openCanvas(page: Page): Promise<void> {
@@ -44,6 +104,8 @@ async function sceneState(page: Page): Promise<SceneHandle> {
           widget: widget.widget,
           x: widget.x,
           y: widget.y,
+          width: widget.width,
+          height: widget.height,
         })),
       },
     };
@@ -91,9 +153,11 @@ test('turns a drag into a committed placement and a document revision', async ({
   await openCanvas(page);
   const before = await sceneState(page);
   const button = before.document.widgets.find((widget) => widget.widget === 'demo:button');
-  expect(button).toBeDefined();
+  if (button === undefined) {
+    throw new Error('the demo document has no button instance');
+  }
 
-  const start = await pagePoint(page, { x: (button?.x ?? 0) + 48, y: (button?.y ?? 0) + 28 });
+  const start = await pagePoint(page, centerOf(button));
   await page.mouse.move(start.x, start.y);
   await page.mouse.down();
   for (let step = 1; step <= 6; step += 1) {
@@ -113,16 +177,10 @@ test('turns a drag into a committed placement and a document revision', async ({
 
 test('delivers to the segment and logs the button publish in run mode', async ({ page }) => {
   await openCanvas(page);
-  await page.getByRole('button', { name: '运行' }).click();
-  await expect.poll(async () => (await sceneState(page)).mode).toBe('run');
+  await switchMode(page, '运行');
 
-  const button = (await sceneState(page)).document.widgets.find(
-    (widget) => widget.widget === 'demo:button',
-  );
-  const point = await pagePoint(page, {
-    x: (button?.x ?? 0) + 48,
-    y: (button?.y ?? 0) + 28,
-  });
+  const button = await demoWidget(page, 'demo:button');
+  const point = await pagePoint(page, centerOf(button));
   await page.mouse.click(point.x, point.y);
 
   await expect(page.getByText('demo-mcu.key').first()).toBeVisible();
@@ -131,36 +189,23 @@ test('delivers to the segment and logs the button publish in run mode', async ({
 
 test('repaints the segment from the run-mode timer', async ({ page }) => {
   await openCanvas(page);
-  const segment = (await sceneState(page)).document.widgets.find(
-    (widget) => widget.widget === 'demo:segment',
-  );
-  if (segment === undefined) {
-    throw new Error('the demo document has no segment instance');
-  }
+  const segment = await demoWidget(page, 'demo:segment');
 
-  const frames = (): Promise<number> =>
-    page.evaluate((instanceId) => {
-      const host = (globalThis as unknown as { micaWidgetHost: HostHandle }).micaWidgetHost;
-      return host.layers.get(instanceId)?.sequence ?? 0;
-    }, segment.id);
   // The mount already produced one frame; the driver's deliveries have to add more.
-  const mounted = await frames();
-  await page.getByRole('button', { name: '运行' }).click();
+  const mounted = await frameSequence(page, segment.id);
+  await page.getByRole('button', { name: '运行', exact: true }).click();
 
-  await expect.poll(frames, { timeout: 5000 }).toBeGreaterThan(mounted);
+  await expect
+    .poll(() => frameSequence(page, segment.id), { timeout: 5000 })
+    .toBeGreaterThan(mounted);
 });
 
 test('edits a selected instance through the property panel', async ({ page }) => {
   await openCanvas(page);
-  const segment = (await sceneState(page)).document.widgets.find(
-    (widget) => widget.widget === 'demo:segment',
-  );
-  if (segment === undefined) {
-    throw new Error('the demo document has no segment instance');
-  }
+  const segment = await demoWidget(page, 'demo:segment');
 
   // Select the segment in edit mode: the panel shows its definition.
-  const point = await pagePoint(page, { x: segment.x + 160, y: segment.y + 36 });
+  const point = await pagePoint(page, centerOf(segment));
   await page.mouse.click(point.x, point.y);
   await expect(page.getByText('demo:segment', { exact: true })).toBeVisible();
 
@@ -185,14 +230,9 @@ test('edits a selected instance through the property panel', async ({ page }) =>
 
 test('offers only complementary binding candidates', async ({ page }) => {
   await openCanvas(page);
-  const button = (await sceneState(page)).document.widgets.find(
-    (widget) => widget.widget === 'demo:button',
-  );
-  if (button === undefined) {
-    throw new Error('the demo document has no button instance');
-  }
+  const button = await demoWidget(page, 'demo:button');
 
-  const point = await pagePoint(page, { x: button.x + 48, y: button.y + 28 });
+  const point = await pagePoint(page, centerOf(button));
   await page.mouse.click(point.x, point.y);
 
   const select = page.getByLabel('press 绑定');
@@ -208,25 +248,14 @@ test('offers only complementary binding candidates', async ({ page }) => {
 
 test('zooms and pans in run mode without reaching a widget', async ({ page }) => {
   await openCanvas(page);
-  const button = (await sceneState(page)).document.widgets.find(
-    (widget) => widget.widget === 'demo:button',
-  );
-  if (button === undefined) {
-    throw new Error('the demo document has no button instance');
-  }
-  await page.getByRole('button', { name: '运行' }).click();
-  await expect.poll(async () => (await sceneState(page)).mode).toBe('run');
+  const button = await demoWidget(page, 'demo:button');
+  await switchMode(page, '运行');
 
-  const frames = (): Promise<number> =>
-    page.evaluate((instanceId) => {
-      const host = (globalThis as unknown as { micaWidgetHost: HostHandle }).micaWidgetHost;
-      return host.layers.get(instanceId)?.sequence ?? 0;
-    }, button.id);
   const before = await canvasTransform(page);
-  const buttonFrames = await frames();
+  const buttonFrames = await frameSequence(page, button.id);
 
   // Wheel zooms around the pointer; the transform is the viewport, and nothing is published.
-  const anchor = await pagePoint(page, { x: button.x + 48, y: button.y + 28 });
+  const anchor = await pagePoint(page, centerOf(button));
   await page.mouse.move(anchor.x, anchor.y);
   await page.mouse.wheel(0, -240);
   await expect.poll(async () => (await canvasTransform(page)).scale).toBeGreaterThan(before.scale);
@@ -239,6 +268,21 @@ test('zooms and pans in run mode without reaching a widget', async ({ page }) =>
   await page.mouse.up({ button: 'middle' });
 
   await expect.poll(async () => (await canvasTransform(page)).x).toBeGreaterThan(zoomed.x);
-  expect(await frames()).toBe(buttonFrames);
+  expect(await frameSequence(page, button.id)).toBe(buttonFrames);
+  await expect(page.getByText('诊断 0')).toBeVisible();
+});
+
+test('resets widget state when the mode changes', async ({ page }) => {
+  await openCanvas(page);
+  const segment = await demoWidget(page, 'demo:segment');
+  await switchMode(page, '运行');
+  // The run-mode driver keeps repainting the display.
+  expect(await frameSequence(page, segment.id)).toBeGreaterThan(1);
+
+  // Leaving run mode rebuilds every widget: the display drops its value and paints once.
+  await switchMode(page, '编辑');
+
+  expect(await frameSequence(page, segment.id)).toBe(1);
+  expect(await layerCount(page)).toBe(3);
   await expect(page.getByText('诊断 0')).toBeVisible();
 });

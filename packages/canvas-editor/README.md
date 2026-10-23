@@ -70,7 +70,7 @@ scene = await createCanvasScene({
   onDiagnostic: (diagnostic) => console.warn(diagnostic.code, diagnostic.message),
 });
 
-scene.setMode('run'); // 先取消进行中的交互，再切到运行模式
+scene.setMode('run'); // 切到运行模式：先取消交互，再重置全部 widget（见下）
 scene.deliver({ symbol: 'mcu', port: 'value' }, '12.34', simTime); // 仿真侧 → widget（按端点扇出）
 const off = scene.onPublish((target, payload, simTime) => route(target, payload, simTime));
 scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主决定
@@ -79,8 +79,8 @@ scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主
 | 成员                      | 说明                                                            |
 | ------------------------- | --------------------------------------------------------------- |
 | `document`                | 宿主当前提交的快照                                              |
-| `mode`                    | 当前模式                                                        |
-| `setMode(mode)`           | 进入运行模式前先 `cancelInteraction()`；失败时保持原模式        |
+| `mode`                    | 当前模式（调用 `setMode` 后立即更新，不等重置完成）             |
+| `setMode(mode)`           | 切换模式并重置全部 widget；回到相同模式直接 resolve，不重置     |
 | `deliver(target, …)`      | 把载荷投递到**所有**绑定该端点的实例；没有命中时什么也不做      |
 | `onPublish(listener)`     | 收到 `(target, payload, simTime)`；返回取消订阅函数             |
 | `receivePublish(publish)` | 接收宿主 `onPublish` 转发来的 `WidgetPublish`，无绑定时上报诊断 |
@@ -89,6 +89,8 @@ scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主
 诊断码以 `canvas-scene/` 开头：`command-failed`（宿主拒绝命令）、`unbound-publish`（发布端口没有绑定）、`change-failed`（`onChange` 抛错）、`publish-failed`（监听器抛错）。命令被拒时编辑器不回灌，继续画旧快照。
 
 `createCanvasScene` 是异步的：它先 `await host.loadDocument(options.document)`，再挂载编辑器；宿主校验失败时直接抛出且不挂载。
+
+**切换模式会重置 widget 状态。** `scene.setMode(next)` 返回 promise，执行顺序固定为：`editor.cancelInteraction()` → `editor.setMode(next)` → `await host.reset()`。`mode` 属性在调用后**立即**是新值（输入路由马上跟着变），promise 在 `host.reset()` 把全部实例按当前文档重建完成后才 resolve。重置会丢弃实例并清空 guest 的模块缓存，所以按键不会停在按下、数码管不会停在最后一个值，模块顶层变量也回到初始值。切到当前模式则直接 resolve，不做重置；重置失败时 promise reject，场景回退到原模式。选择与视口保持不变（实例 id 未变）。
 
 运行模式下画布仍可浏览：滚轮缩放、`Shift` + 滚轮横向平移、中键或空格 + 左键拖动平移，这些操作不产生命令、也不转发给 widget（详见下方「运行模式」）。
 
@@ -158,6 +160,7 @@ scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主
 - 按下期间，按下的实例独占移动与抬起事件；抬起后路由立即解除，之后的移动重新命中测试，空白处不转发。
 - 键盘事件转发给最近一次命中的实例；只有画布持有焦点时才会收到键事件。
 - 浏览画布与编辑模式一致：滚轮以指针为锚缩放、`Shift` + 滚轮横向平移；中键拖动或空格 + 左键拖动平移。这些视口操作**不产生命令，也不转发给 widget**（`WidgetInputEvent` 不含滚轮），中键/空格拖动也不会把按下路由给实例。
+- 通过 `CanvasScene` 切换模式会重置 widget（编辑器自身的 `setMode` 只切策略，不碰 widget）。
 
 ## 内部结构
 

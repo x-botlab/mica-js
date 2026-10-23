@@ -94,8 +94,11 @@ export function CanvasPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CanvasScene | null>(null);
   const hostRef = useRef<WidgetHost | null>(null);
+  /** Lets a mode switch stop the driver before the instances it feeds are dropped. */
+  const driverActive = useRef(false);
   const [ready, setReady] = useState(false);
   const [mode, setMode] = useState<CanvasMode>('edit');
+  const [switching, setSwitching] = useState(false);
   const [selectedIds, setSelectedIds] = useState<readonly string[]>([]);
   const [document, setDocument] = useState<CanvasDocument | null>(null);
   const [definitions, setDefinitions] = useState<ReadonlyMap<string, WidgetDefinition>>(
@@ -167,7 +170,9 @@ export function CanvasPage() {
 
         const resolved = await resolveDefinitions(provider, created.document);
         if (cancelled) {
+          // The effect was torn down mid-startup; release what this attempt already created.
           created.destroy();
+          void ownedHost.dispose();
           return;
         }
 
@@ -218,15 +223,22 @@ export function CanvasPage() {
     if (scene === null) {
       return;
     }
+    driverActive.current = true;
     let tick = 0;
     const drive = (): void => {
+      if (!driverActive.current) {
+        return;
+      }
       tick += 1;
       scene.deliver(DRIVER_TARGET, (1000 + (tick % 1000) * 0.37).toFixed(3), tick);
     };
     // One value right away, so the display lights up instead of waiting for the first second.
     drive();
     const timer = globalThis.setInterval(drive, 1000);
-    return () => globalThis.clearInterval(timer);
+    return () => {
+      driverActive.current = false;
+      globalThis.clearInterval(timer);
+    };
   }, [mode, ready]);
 
   /** Host-side command entry point for the inspector; the scene adopts the snapshot from there. */
@@ -251,18 +263,27 @@ export function CanvasPage() {
     [pushDiagnostic],
   );
 
-  const switchMode = (next: CanvasMode): void => {
+  /**
+   * Switching mode rebuilds every widget, so it is awaited and locked: a second click while the
+   * remount runs would queue another reset for nothing.
+   */
+  const switchMode = async (next: CanvasMode): Promise<void> => {
     const scene = sceneRef.current;
-    if (scene === null) {
+    if (scene === null || switching || next === mode) {
       return;
     }
+    // Stop feeding instances that are about to be dropped, or the host reports them as missing.
+    driverActive.current = false;
+    setSwitching(true);
+    setError(null);
     try {
-      scene.setMode(next);
-      setMode(next);
-      setError(null);
+      await scene.setMode(next);
+      setMode(scene.mode);
     } catch (cause) {
-      // A rejected switch keeps the old mode; the toolbar shows why instead of lying about it.
+      setMode(scene.mode);
       setError(`切换到${next === 'run' ? '运行' : '编辑'}模式失败：${describeError(cause)}`);
+    } finally {
+      setSwitching(false);
     }
   };
 
@@ -279,10 +300,10 @@ export function CanvasPage() {
               key={candidate}
               size="xs"
               variant={mode === candidate ? 'default' : 'outline'}
-              disabled={!ready}
-              onClick={() => switchMode(candidate)}
+              disabled={!ready || switching}
+              onClick={() => void switchMode(candidate)}
             >
-              {candidate === 'edit' ? '编辑' : '运行'}
+              {switching && mode !== candidate ? '重置中…' : candidate === 'edit' ? '编辑' : '运行'}
             </Button>
           ))}
         </div>

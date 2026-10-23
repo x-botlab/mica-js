@@ -123,6 +123,7 @@ interface WidgetHost {
   loadDocument(source: string | CanvasDocument): Promise<void>;
   applyCommand(command: CanvasCommand): void;
   onDocumentChange(listener: (document: CanvasDocument) => void): () => void;
+  reset(): Promise<void>;
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
   dispatch(instanceId: string, event: WidgetInputEvent): void;
   readonly layers: WidgetLayers;
@@ -132,6 +133,18 @@ interface WidgetHost {
 ```
 
 `document` 初始是空文档 `{ version: 1, widgets: [] }`；`loadDocument` 接受 `.cnv` 文本或已解析对象，`applyCommand` 接受 `@mica-js/core/canvas` 的 `CanvasCommand`。实例级操作（挂载、卸载、改尺寸、改属性）不再公开，`WidgetMountSpec` / `WidgetSize` 也随之从公开类型中移除。
+
+### 重置（`reset()`）
+
+`reset()` 让**全部 widget 回到初始状态**，供宿主在切换编辑/运行模式时调用：
+
+1. 同步清空 `#instances` 与 `layers`（编辑器立刻画占位框）；
+2. 在协调队列里先调用 guest 的 `reset-runtime`：卸载所有 session（释放画布、清订阅、丢弃工厂实例）并**清空模块缓存**，使下一次 `load` 重新 `import` 模块——`importBlobModule` 每次都会创建新的 blob URL，因此 ES 模块注册表不会命中旧缓存；
+3. 再按**当前文档**重新 `load` + `mount` 每个实例，`props` / `assets` 重新合并与预取；resolve 时全部实例已重新挂载。
+
+要点：guest 本身不重启（iframe/worker 保留），所以重置比销毁重建便宜得多；`reset()` 与 `applyCommand` / `loadDocument` 共用同一条协调队列，不会与进行中的协调交错；重置失败只上报 `widget/runtime-failed`，不 reject，随后的重挂载照常进行。
+
+**模块级状态也会归零**：widget 在 `export default` 之外写的变量（如 `let counter = 0;`）只有在模块重新求值时才会重置，因此只重建工厂实例是不够的。
 
 ### 校验
 
@@ -153,7 +166,7 @@ interface WidgetHost {
 
 ### 执行模型
 
-- 全部实例共用一个 `createSandbox()`；widget 代码以文本经 guest 方法 `load` 注入，guest 用 blob URL + `import()` 求值并缓存默认导出的工厂。
+- 全部实例共用一个 `createSandbox()`；widget 代码以文本经 guest 方法 `load` 注入，guest 用 blob URL + `import()` 求值并缓存默认导出的工厂。`reset-runtime` 清空这份缓存，下次 `load` 重新求值（模块顶层状态也随之归零）。
 - 每个实例有自己的 `OffscreenCanvas`（`round(width * dpr) × round(height * dpr)`），2D 上下文按 `dpr` 缩放，widget 始终使用逻辑尺寸绘制。
 - guest 自建画布，通过自定义事件把 `ImageBitmap` **转移**给宿主，不使用沙箱的 `GuestSurface`：一个 guest 一块整幅表面的模型没有 surface 标识，多个实例分不清来源。
 - 事件使用 `widget:` 命名空间：`widget:frame`、`widget:publish`、`widget:error`、`widget:asset-failed`。沙箱保留了 `mica:` 前缀（guest 侧 `mica:` 事件会被丢弃，`sandbox.on('mica:...')` 会抛错），因此不能使用 `mica:widget-frame`。

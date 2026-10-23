@@ -19,6 +19,7 @@ import {
   WIDGET_MOUNT_METHOD,
   WIDGET_POINTER_METHOD,
   WIDGET_PUBLISH_EVENT,
+  WIDGET_RESET_RUNTIME_METHOD,
   WIDGET_RESIZE_METHOD,
   WIDGET_SET_PROPERTIES_METHOD,
   WIDGET_UNMOUNT_METHOD,
@@ -108,6 +109,8 @@ class WidgetHostImpl implements WidgetHost {
 
   #document: CanvasDocument = EMPTY_DOCUMENT;
   #reconcilePending = false;
+  /** The next coordination pass has to reset the guest before it syncs instances. */
+  #resetPending = false;
   #reconcilePass: Promise<void> | undefined;
   /** Identifies the drain that owns {@link #reconcilePass}; only that drain may release it. */
   #reconcileOwner = 0;
@@ -156,6 +159,19 @@ class WidgetHostImpl implements WidgetHost {
     return () => {
       this.#documentListeners.delete(listener);
     };
+  }
+
+  reset(): Promise<void> {
+    if (this.#disposed) {
+      return Promise.reject(new WidgetRuntimeError('Widget host is disposed'));
+    }
+    // Clear synchronously so `layers` is empty the moment the caller asks: the editor paints
+    // placeholder frames until the remount commits new bitmaps.
+    this.#instances.clear();
+    this.#layerStore.clear();
+    this.#resetPending = true;
+    // Same queue as every other mutation, so a reset never interleaves with an in-flight mount.
+    return this.#scheduleReconcile();
   }
 
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void {
@@ -235,6 +251,10 @@ class WidgetHostImpl implements WidgetHost {
     try {
       while (this.#reconcilePending && !this.#disposed) {
         this.#reconcilePending = false;
+        if (this.#resetPending) {
+          this.#resetPending = false;
+          await this.#resetGuestRuntime();
+        }
         await this.#syncInstances();
       }
     } finally {
@@ -505,6 +525,32 @@ class WidgetHostImpl implements WidgetHost {
     if (this.#instances.get(instanceId) !== record) return;
     this.#instances.delete(instanceId);
     this.#layerStore.remove(instanceId);
+  }
+
+  /**
+   * Asks the guest to release its sessions and module cache.
+   *
+   * A host without a sandbox has nothing to reset: no instance ever mounted, so the following sync
+   * pass simply mounts into a fresh runtime. Failures are reported, never thrown: the remount below
+   * resumes from whatever state the guest is in.
+   */
+  async #resetGuestRuntime(): Promise<void> {
+    if (!this.#sandbox && !this.#starting) return;
+    try {
+      const sandbox = await this.#ensureSandbox();
+      if (this.#disposed) return;
+      await sandbox.call(WIDGET_RESET_RUNTIME_METHOD);
+    } catch (error) {
+      if (this.#disposed || error instanceof WidgetRuntimeError) return;
+      if (this.#isTerminated()) {
+        this.#failRuntime('The widget sandbox terminated during reset.');
+        return;
+      }
+      this.#report(
+        'widget/runtime-failed',
+        `The widget runtime could not be reset: ${describeError(error)}`,
+      );
+    }
   }
 
   #ensureSandbox(): Promise<WidgetSandbox> {

@@ -78,6 +78,12 @@ class FakeSandbox implements WidgetSandbox {
   }
 
   #applyGuestState(method: string, args: readonly unknown[]): Error | undefined {
+    // `reset-runtime` takes no arguments and drops every session, like the real guest.
+    if (method === 'reset-runtime') {
+      this.#sessions.clear();
+      return undefined;
+    }
+
     const first = args[0];
     const instanceId =
       typeof first === 'object' && first !== null
@@ -1075,5 +1081,110 @@ describe('createWidgetHost', () => {
 
     expect(sandbox.reasons).toHaveLength(1);
     expect(host.layers.list()).toEqual([]);
+  });
+
+  it('resets the guest runtime and mounts the current document again', async () => {
+    const harness = createHarness();
+    await harness.host.loadDocument(canvas(instance({ id: ID_A }), instance({ id: ID_B })));
+    expect(mountCount(harness.sandbox)).toBe(2);
+
+    const resetting = harness.host.reset();
+    // Layers vanish synchronously, so the editor can paint placeholders right away.
+    expect(layerIds(harness)).toEqual([]);
+    await resetting;
+
+    expect(harness.sandbox.methods()).toContain('reset-runtime');
+    expect(harness.sandbox.methods().filter((method) => method === 'reset-runtime')).toHaveLength(
+      1,
+    );
+    expect(layerIds(harness)).toEqual([ID_A, ID_B]);
+    expect(documentIds(harness)).toEqual([ID_A, ID_B]);
+  });
+
+  it('mounts brand-new instances on reset instead of adopting the old ones', async () => {
+    const harness = createHarness();
+    await harness.host.loadDocument(canvas(instance({ id: ID_A }), instance({ id: ID_B })));
+    expect(mountCount(harness.sandbox)).toBe(2);
+    expect(unmountCount(harness.sandbox)).toBe(0);
+
+    await harness.host.reset();
+
+    // Four mounts total: the original two and the two the reset re-created. Nothing is adopted, so
+    // the host never sends a redundant unmount for the instances it dropped synchronously.
+    expect(mountCount(harness.sandbox)).toBe(4);
+    expect(unmountCount(harness.sandbox)).toBe(0);
+    expect(mountRequests(harness.sandbox).map((request) => request.instanceId)).toEqual([
+      ID_A,
+      ID_B,
+      ID_A,
+      ID_B,
+    ]);
+  });
+
+  it('re-loads and re-prefetches assets for every instance the reset remounts', async () => {
+    const reads: string[] = [];
+    const harness = createHarness(undefined, {
+      module: assetModule,
+      assets: {
+        read: async (ref) => {
+          reads.push(ref.src);
+          return new TextEncoder().encode(ref.src);
+        },
+      },
+    });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+    expect(reads).toEqual(['default.png']);
+
+    await harness.host.reset();
+
+    expect(reads).toEqual(['default.png', 'default.png']);
+    expect(harness.sandbox.methods().filter((method) => method === 'load')).toHaveLength(2);
+    const assetsSent = mountRequests(harness.sandbox)[1]?.assets as Record<string, Uint8Array>;
+    expect(new TextDecoder().decode(assetsSent['default.png'])).toBe('default.png');
+  });
+
+  it('does not interleave a reset with a concurrent command', async () => {
+    const harness = createHarness();
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+    const before = harness.sandbox.methods().length;
+    const release = harness.sandbox.gate('reset-runtime');
+
+    const resetting = harness.host.reset();
+    harness.host.applyCommand({
+      type: 'add-instance',
+      instance: instance({ id: ID_B }),
+      z: 1,
+    });
+    await flush();
+    // The queued command waits for the reset, which is still parked in the guest: no new mount may
+    // start while `reset-runtime` is in flight.
+    expect(harness.sandbox.methods().slice(before)).toEqual(['reset-runtime']);
+
+    release();
+    await resetting;
+
+    const methods = harness.sandbox.methods();
+    const resetAt = methods.indexOf('reset-runtime');
+    expect(methods[resetAt]).toBe('reset-runtime');
+    // Everything after the reset is the remount of the full, current document.
+    expect(methods.slice(resetAt + 1).filter((method) => method === 'mount')).toHaveLength(2);
+    expect(layerIds(harness)).toEqual([ID_A, ID_B]);
+  });
+
+  it('reports a failed reset instead of rejecting', async () => {
+    const harness = createHarness();
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+    harness.sandbox.fail('reset-runtime', new Error('reset exploded'));
+
+    await expect(harness.host.reset()).resolves.toBeUndefined();
+
+    expect(harness.diagnostics[0]).toMatchObject({
+      code: 'widget/runtime-failed',
+      message: expect.stringContaining('reset exploded'),
+    });
+    // The remount is attempted anyway; a broken reset must not stop the pass. The fake keeps its
+    // session table when `reset-runtime` fails, so that attempt fails too and is reported.
+    expect(mountCount(harness.sandbox)).toBe(2);
+    expect(harness.diagnostics[1]).toMatchObject({ code: 'widget/mount-failed' });
   });
 });

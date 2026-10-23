@@ -54,8 +54,18 @@ export interface CreateCanvasSceneOptions {
 export interface CanvasScene {
   readonly document: CanvasDocument;
   readonly mode: CanvasMode;
-  /** Drops the interaction in flight before entering run mode; a rejected switch keeps the mode. */
-  setMode(mode: CanvasMode): void;
+  /**
+   * Switches mode and resets every widget: the host drops its instances and module cache, then
+   * mounts the current document again, so widgets restart from their initial state.
+   *
+   * `mode` reflects the new value immediately, because input routing has to follow at once; the
+   * returned promise resolves once `host.reset()` has remounted every instance. Switching to the
+   * mode already in effect resolves without resetting. Selection and viewport survive, because the
+   * document — and therefore every instance id — is unchanged.
+   *
+   * @throws when the host rejects the reset; the scene then reverts to the previous mode.
+   */
+  setMode(mode: CanvasMode): Promise<void>;
   /** Simulation side → widgets: forwards to every instance bound to `target`. */
   deliver(target: CanvasBindingTarget, payload: unknown, simTime: number): void;
   /** Widget → simulation side; the returned function unsubscribes. */
@@ -179,16 +189,27 @@ export async function createCanvasScene(options: CreateCanvasSceneOptions): Prom
     }
   }
 
-  function setMode(next: CanvasMode): void {
+  async function setMode(next: CanvasMode): Promise<void> {
     if (destroyed || next === mode) {
       return;
     }
-    if (next === 'run') {
-      // A gesture started in edit mode must not spill a command into the run mode.
-      editor.cancelInteraction();
-    }
+    const previous = mode;
+    // A gesture started in the old mode must not spill a command into the new one.
+    editor.cancelInteraction();
     editor.setMode(next);
+    // Routed input follows the new mode right away, even while the widgets are still remounting.
     mode = next;
+    try {
+      await host.reset();
+    } catch (error) {
+      if (destroyed) {
+        return;
+      }
+      // The widgets were not rebuilt, so keep the editor on the mode they are actually running in.
+      mode = previous;
+      editor.setMode(previous);
+      throw error;
+    }
   }
 
   function onPublish(listener: CanvasScenePublishListener): () => void {
