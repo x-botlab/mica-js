@@ -26,7 +26,7 @@ export const DARK_CANVAS_THEME: CanvasTheme = {
   rotateHandle: '#e5e5e5',
   placeholderFill: 'rgba(250, 250, 250, 0.04)',
   placeholderStroke: 'rgba(250, 250, 250, 0.28)',
-  outline: 'rgba(250, 250, 250, 0.45)',
+  outline: 'rgba(56, 189, 248, 0.85)',
   gridSize: 10,
 };
 
@@ -40,7 +40,7 @@ export const LIGHT_CANVAS_THEME: CanvasTheme = {
   rotateHandle: '#262626',
   placeholderFill: 'rgba(10, 10, 10, 0.03)',
   placeholderStroke: 'rgba(10, 10, 10, 0.3)',
-  outline: 'rgba(10, 10, 10, 0.45)',
+  outline: 'rgba(2, 132, 199, 0.85)',
   gridSize: 10,
 };
 

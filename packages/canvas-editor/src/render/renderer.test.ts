@@ -162,8 +162,8 @@ describe('CanvasFrameRenderer', () => {
     const edit = createRenderer();
     edit.renderer.resize(400, 200, 1);
     edit.renderer.render(frame({ document, layers }));
-    // One border per instance; a widget that paints nothing still shows where it is.
-    expect(edit.context.calls.filter((call) => call === 'strokeRect')).toHaveLength(2);
+    // Two passes per instance: a dark halo and the accent border on top of it.
+    expect(edit.context.calls.filter((call) => call === 'strokeRect')).toHaveLength(4);
 
     const run = createRenderer();
     run.renderer.resize(400, 200, 1);

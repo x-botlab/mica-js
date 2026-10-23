@@ -11,6 +11,10 @@ import { isMajorGridLine, resolveGridStep } from './grid';
 const HANDLE_SIZE = 7;
 /** Screen-space radius of the round rotation handle. */
 const ROTATE_HANDLE_RADIUS = 4;
+/** Screen-space width of the per-instance border drawn in edit mode. */
+const OUTLINE_WIDTH = 1.5;
+/** Dark backing under that border, so it stays readable on a bright widget frame. */
+const OUTLINE_HALO = 'rgba(10, 10, 10, 0.35)';
 
 /** Everything one repaint needs; the renderer owns no state beyond the canvas surface. */
 export interface CanvasFrame {
@@ -209,7 +213,7 @@ export class CanvasFrameRenderer {
    * and handles on top of this.
    */
   #drawOutlines(context: CanvasRenderingContext2D, frame: CanvasFrame): void {
-    const lineWidth = 1 / frame.viewport.scale;
+    const lineWidth = OUTLINE_WIDTH / frame.viewport.scale;
     context.save();
     context.strokeStyle = this.#theme.outline;
     context.lineWidth = lineWidth;
@@ -219,12 +223,16 @@ export class CanvasFrameRenderer {
       context.save();
       context.translate(center.x, center.y);
       context.rotate(degreesToRadians(placement.rotation));
-      context.strokeRect(
-        -placement.width / 2,
-        -placement.height / 2,
-        placement.width,
-        placement.height,
-      );
+      const left = -placement.width / 2;
+      const top = -placement.height / 2;
+      // A translucent halo keeps the border readable on a bright photo, where a single light line
+      // would wash out.
+      context.strokeStyle = OUTLINE_HALO;
+      context.lineWidth = lineWidth * 2;
+      context.strokeRect(left, top, placement.width, placement.height);
+      context.strokeStyle = this.#theme.outline;
+      context.lineWidth = lineWidth;
+      context.strokeRect(left, top, placement.width, placement.height);
       context.restore();
     }
     context.restore();
