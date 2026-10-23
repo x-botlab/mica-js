@@ -32,6 +32,10 @@ on:
 
 jobs:
   verify:
+    # The changesets "Version Packages" PR only rewrites versions, CHANGELOGs and changeset files;
+    # `release.yml` builds from the merge commit before publishing, so a full verify here would
+    # only duplicate that work without adding signal.
+    if: github.event_name != 'pull_request' || github.head_ref != 'changeset-release/main'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
