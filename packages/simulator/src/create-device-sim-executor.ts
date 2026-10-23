@@ -1,5 +1,9 @@
 import { createScheduler, timePs, type Scheduler, type TimePs } from '@mica-js/core';
-import type { SchematicDocument, SchematicSymbol } from '@mica-js/core/schematic';
+import {
+  designatorOf,
+  type SchematicDocument,
+  type SchematicSymbol,
+} from '@mica-js/core/schematic';
 import {
   createDeviceInstance,
   loadDeviceModule,
@@ -354,10 +358,12 @@ function collectTopics(
   instance: DeviceInstance,
   into: DeviceTopic[],
 ): void {
+  const designator = designatorOf(symbol) ?? symbol.id;
   for (const [port, descriptor] of instance.description.ports) {
     into.push(
       Object.freeze({
         symbol: symbol.id,
+        designator,
         port,
         direction: descriptor.direction,
         type: descriptor.type,

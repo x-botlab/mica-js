@@ -18,8 +18,13 @@ export type SimulationState = 'idle' | 'ready' | 'faulted' | 'disposed';
  * `DevicePortDescriptor`, so a host can build binding candidates without touching the devices.
  */
 export interface DeviceTopic {
-  /** Symbol id inside the schematic (`SchematicSymbol.id`). */
+  /** Symbol id inside the schematic (`SchematicSymbol.id`); this is what a binding stores. */
   readonly symbol: string;
+  /**
+   * Reference designator shown to users (`U1`), following `designatorOf`: the symbol's own
+   * `designator`, or its id when the schematic does not set one.
+   */
+  readonly designator: string;
   /** Port key declared by the device description. */
   readonly port: string;
   readonly direction: 'input' | 'output';

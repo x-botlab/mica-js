@@ -20,10 +20,16 @@ const NUMBER_IN: PortDefinition = { direction: 'input', type: 'number' };
 
 /** Endpoints the demo device exposes, as DeviceSimExecutor.getTopics() reports them. */
 const TARGETS = [
-  { symbol: 'demo-mcu', port: 'display', direction: 'output', type: 'string' },
-  { symbol: 'demo-mcu', port: 'display2', direction: 'output', type: 'string' },
-  { symbol: 'demo-mcu', port: 'key', direction: 'input', type: 'boolean' },
-  { symbol: 'demo-mcu', port: 'led', direction: 'input', type: 'boolean' },
+  { symbol: 'demo-mcu', designator: 'U1', port: 'display', direction: 'output', type: 'string' },
+  {
+    symbol: 'demo-mcu',
+    designator: 'U1',
+    port: 'display2',
+    direction: 'output',
+    type: 'string',
+  },
+  { symbol: 'demo-mcu', designator: 'U1', port: 'key', direction: 'input', type: 'boolean' },
+  { symbol: 'demo-mcu', designator: 'U1', port: 'led', direction: 'input', type: 'boolean' },
 ] as const;
 
 function instance(overrides: Partial<CanvasWidgetInstance> = {}): CanvasWidgetInstance {
@@ -42,8 +48,20 @@ function instance(overrides: Partial<CanvasWidgetInstance> = {}): CanvasWidgetIn
 describe('compatibleTargets', () => {
   it('pairs a widget input with schematic outputs of the same payload type', () => {
     expect(compatibleTargets(DISPLAY, TARGETS)).toEqual([
-      { symbol: 'demo-mcu', port: 'display', direction: 'output', type: 'string' },
-      { symbol: 'demo-mcu', port: 'display2', direction: 'output', type: 'string' },
+      {
+        symbol: 'demo-mcu',
+        designator: 'U1',
+        port: 'display',
+        direction: 'output',
+        type: 'string',
+      },
+      {
+        symbol: 'demo-mcu',
+        designator: 'U1',
+        port: 'display2',
+        direction: 'output',
+        type: 'string',
+      },
     ]);
   });
 
@@ -66,7 +84,7 @@ describe('bindingOptions', () => {
       'demo-mcu:display',
       'demo-mcu:display2',
     ]);
-    expect(options[1]?.label).toBe('demo-mcu.display · output · string');
+    expect(options[1]?.label).toBe('U1.display · output · string');
   });
 
   it('keeps an unknown current binding selectable instead of rendering it blank', () => {

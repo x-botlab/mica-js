@@ -288,6 +288,7 @@ function BindingField({ instance, portKey, port, targets, disabled, onApply }: B
 
   return (
     <div className="border-b py-1.5 last:border-b-0" data-port={portKey}>
+      {' '}
       <div className="flex items-center gap-1">
         <span className="font-mono text-[11px]">{portKey}</span>
         <span className="text-muted-foreground text-[10px]">
@@ -320,7 +321,7 @@ function BindingField({ instance, portKey, port, targets, disabled, onApply }: B
       <p className="text-muted-foreground mt-0.5 text-[10px]">
         {current === undefined
           ? '未绑定：运行/仿真消息不会到达这个端口。'
-          : `当前 ${describeTarget(current)}`}
+          : `当前 ${describeTarget(current, targets)}`}
       </p>
       <ErrorLines messages={errors} />
     </div>

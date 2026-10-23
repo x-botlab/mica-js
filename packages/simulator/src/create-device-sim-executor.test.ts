@@ -80,8 +80,15 @@ function createProvider(): IDeviceProvider {
   };
 }
 
-function symbolOf(id: string, device: string): SchematicSymbol {
-  return { id, device, x: 0, y: 0, rotation: 0 };
+function symbolOf(id: string, device: string, designator?: string): SchematicSymbol {
+  return {
+    id,
+    device,
+    x: 0,
+    y: 0,
+    rotation: 0,
+    ...(designator === undefined ? {} : { designator }),
+  };
 }
 
 function schematic(...symbols: readonly SchematicSymbol[]): SchematicDocument {
@@ -117,14 +124,22 @@ describe('createDeviceSimExecutor', () => {
   it('mounts one instance per symbol and indexes its ports', async () => {
     const executor = createExecutor();
 
-    await executor.loadSchematic(schematic(symbolOf('u1', MIRROR), symbolOf('u2', TICKER)));
+    await executor.loadSchematic(schematic(symbolOf('u1', MIRROR, 'U1'), symbolOf('u2', TICKER)));
 
     expect(executor.getState()).toBe('ready');
     expect(executor.getSimTime()).toBe(0);
+    // `designator` falls back to the symbol id when the schematic does not name the part.
     expect(executor.getTopics()).toEqual([
-      { symbol: 'u1', port: 'value', direction: 'input', type: 'number' },
-      { symbol: 'u1', port: 'mirror', direction: 'output', type: 'number', title: 'Mirror' },
-      { symbol: 'u2', port: 'count', direction: 'output', type: 'number' },
+      { symbol: 'u1', designator: 'U1', port: 'value', direction: 'input', type: 'number' },
+      {
+        symbol: 'u1',
+        designator: 'U1',
+        port: 'mirror',
+        direction: 'output',
+        type: 'number',
+        title: 'Mirror',
+      },
+      { symbol: 'u2', designator: 'u2', port: 'count', direction: 'output', type: 'number' },
     ]);
   });
 

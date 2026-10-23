@@ -27,7 +27,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { layerRows, zForDrop } from '@/canvas/layers';
 import { createPaletteInstance, paletteEntries, type PaletteEntry } from '@/canvas/palette';
-import { commandErrorMessages, type TopicCandidate } from '@/canvas/panel-model';
+import { commandErrorMessages, describeTarget, type TopicCandidate } from '@/canvas/panel-model';
 import { createCanvasDraft, createDraftStore, createMemoryStorage } from '@/canvas/persist';
 import {
   DRAFT_STORAGE_KEY,
@@ -182,6 +182,8 @@ export function CanvasPage() {
     () => new Map(),
   );
   const [topics, setTopics] = useState<readonly TopicCandidate[]>([]);
+  /** Same list for the publish log, which is written from callbacks that must stay stable. */
+  const topicsRef = useRef<readonly TopicCandidate[]>([]);
   const [palette, setPalette] = useState<readonly PaletteEntry[]>([]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -206,16 +208,22 @@ export function CanvasPage() {
     [],
   );
 
-  /** One log row per publish, whichever direction it travelled. */
+  /** One log row per publish, whichever direction it travelled; labels use designators. */
   const recordPublish = useCallback(
-    (direction: 'widget' | 'device', endpoint: string, payload: unknown, simTime: number) => {
+    (
+      direction: 'widget' | 'device',
+      target: { readonly symbol: string; readonly port: string },
+      payload: unknown,
+      simTime: number,
+    ) => {
+      const designator = describeTarget(target, topicsRef.current);
       setPublishes((entries) =>
         [
           {
             id: nextId(),
             time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
             direction,
-            endpoint,
+            endpoint: designator,
             payload: describePayload(payload),
             simTime,
           },
@@ -282,12 +290,12 @@ export function CanvasPage() {
           onDiagnostic: pushDiagnostic,
         });
         created.onPublish((target, payload, simTime) => {
-          recordPublish('widget', `${target.symbol}.${target.port}`, payload, simTime);
+          recordPublish('widget', target, payload, simTime);
         });
         // Device publishes never enter the scene (the host routes them straight to the widgets),
         // so the log listens on the executor for the other direction.
         ownedExecutor.onPublish(({ target, payload, simTime }) => {
-          recordPublish('device', `${target.symbol}.${target.port}`, payload, simTime);
+          recordPublish('device', target, payload, simTime);
         });
 
         const resolved = await resolveDefinitions(provider, created.getDocument());
@@ -297,7 +305,8 @@ export function CanvasPage() {
           try {
             const schematicText = new TextDecoder().decode(await fetchBytes(schematicPath));
             await ownedExecutor.loadSchematic(parseSchematic(schematicText));
-            setTopics(ownedExecutor.getTopics());
+            topicsRef.current = ownedExecutor.getTopics();
+            setTopics(topicsRef.current);
           } catch (cause) {
             // A broken schematic must not blank the canvas: report it and keep editing.
             pushDiagnostic({

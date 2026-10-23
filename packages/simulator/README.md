@@ -56,20 +56,20 @@ const report = executor.advance(timePs(100_000)); // 100 ns，同步完成
 
 ## 接口
 
-| 成员                       | 说明                                                                |
-| -------------------------- | ------------------------------------------------------------------- |
-| `getState()`               | `'idle'`、`'ready'`、`'faulted'`、`'disposed'`；只有 `ready` 能推进 |
-| `getSimTime()`             | 当前虚拟时间；首次加载前为 `0`                                      |
-| `getSchematic()`           | 当前运行时的来源文档；首次加载前是空图                              |
-| `getTopics()`              | 每个实例的端口，`symbol` + `port` 与画布绑定的端点一一对应          |
-| `loadSchematic(document)`  | 按符号建实例并跑 `initialize`，时钟归零；构建失败时旧运行时原样保留 |
-| `advance(delta)`           | 同步推进 `delta` 皮秒，返回 `{ from, to, executed, reason }`        |
-| `onPublish(listener)`      | 器件发布 `(target, payload, simTime)`；返回取消订阅函数             |
-| `deliver(target, payload)` | 排入下一次 `advance` 的开头，同一时刻多次调用按调用顺序被器件看到   |
-| `reset()`                  | 丢弃实例、按当前原理图重建，时钟归零；同步                          |
-| `dispose()`                | 销毁全部实例并释放运行时；同步、幂等                                |
+| 成员                       | 说明                                                                                          |
+| -------------------------- | --------------------------------------------------------------------------------------------- |
+| `getState()`               | `'idle'`、`'ready'`、`'faulted'`、`'disposed'`；只有 `ready` 能推进                           |
+| `getSimTime()`             | 当前虚拟时间；首次加载前为 `0`                                                                |
+| `getSchematic()`           | 当前运行时的来源文档；首次加载前是空图                                                        |
+| `getTopics()`              | 每个实例的端口，`symbol`（id，绑定用的就是它）+ `designator`（位号，未设置时等于 id）+ `port` |
+| `loadSchematic(document)`  | 按符号建实例并跑 `initialize`，时钟归零；构建失败时旧运行时原样保留                           |
+| `advance(delta)`           | 同步推进 `delta` 皮秒，返回 `{ from, to, executed, reason }`                                  |
+| `onPublish(listener)`      | 器件发布 `(target, payload, simTime)`；返回取消订阅函数                                       |
+| `deliver(target, payload)` | 排入下一次 `advance` 的开头，同一时刻多次调用按调用顺序被器件看到                             |
+| `reset()`                  | 丢弃实例、按当前原理图重建，时钟归零；同步                                                    |
+| `dispose()`                | 销毁全部实例并释放运行时；同步、幂等                                                          |
 
-`DeviceTopic` 的 `direction` / `type` 与 `DevicePortDescriptor` 同构，宿主可以直接用 `getTopics()` 生成画布的绑定候选。
+`DeviceTopic` 的 `direction` / `type` 与 `DevicePortDescriptor` 同构，宿主可以直接用 `getTopics()` 生成画布的绑定候选。`symbol` 是原理图里的符号 id（绑定存的就是它），`designator` 是给人看的位号（`designatorOf`：符号自己的 `designator`，没写时回退到 id），两者在界面上不要混用。
 
 ## 语义
 

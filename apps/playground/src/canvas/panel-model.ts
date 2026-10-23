@@ -4,9 +4,21 @@ import type { PortDefinition, PropertyDefinition } from '@mica-js/widget';
 /** One endpoint the running schematic exposes; the playground reads these from the simulation. */
 export interface TopicCandidate {
   readonly symbol: string;
+  /** Reference designator the UI shows (`U1`); the id itself when the schematic sets none. */
+  readonly designator: string;
   readonly port: string;
   readonly direction: 'input' | 'output';
   readonly type: PayloadType;
+}
+
+/** Display name of one symbol; unknown symbols fall back to their id. */
+export function designatorOf(symbol: string, targets: readonly TopicCandidate[]): string {
+  for (const target of targets) {
+    if (target.symbol === symbol) {
+      return target.designator;
+    }
+  }
+  return symbol;
 }
 
 export interface TargetOption {
@@ -41,8 +53,12 @@ export function parseTargetValue(value: string): CanvasBindingTarget | undefined
   return { symbol: value.slice(0, index), port: value.slice(index + 1) };
 }
 
-export function describeTarget(target: CanvasBindingTarget): string {
-  return `${target.symbol}.${target.port}`;
+/** `U1.display` rather than `0000000d-….display`: bindings store ids, people read designators. */
+export function describeTarget(
+  target: CanvasBindingTarget,
+  targets: readonly TopicCandidate[],
+): string {
+  return `${designatorOf(target.symbol, targets)}.${target.port}`;
 }
 
 /** Binding the document currently declares for `port`, if any. */
@@ -69,7 +85,7 @@ export function bindingOptions(
   for (const target of candidates) {
     options.push({
       value: targetValue(target),
-      label: `${describeTarget(target)} · ${target.direction} · ${target.type}`,
+      label: `${target.designator}.${target.port} · ${target.direction} · ${target.type}`,
       current: false,
     });
   }
@@ -81,7 +97,7 @@ export function bindingOptions(
   ) {
     options.push({
       value: targetValue(current),
-      label: `${describeTarget(current)} · 当前`,
+      label: `${describeTarget(current, targets)} · 当前`,
       current: true,
     });
   }
