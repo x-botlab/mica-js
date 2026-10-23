@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/widget",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Mica widget contract and runtime: definitions, pure-data package loading, and the sandboxed WidgetHost",
   "license": "MIT",
   "repository": {
