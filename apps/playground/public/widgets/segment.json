@@ -13,8 +13,8 @@
     "spacing": {
       "type": "number",
       "title": "位间距",
-      "description": "每个数位格子左右留白的比例",
-      "default": 0.16,
+      "description": "每个数位格子左右留白的比例（小数点另占一列）",
+      "default": 0.1,
       "min": 0,
       "max": 0.7
     }

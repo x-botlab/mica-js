@@ -21,12 +21,15 @@ const FALLBACK_COLOR = '#FF3B30';
 const DEFAULT_DIGITS = 4;
 /** Stroke width of a real 0.56-inch display, as a fraction of the digit height. */
 const DEFAULT_THICKNESS = 0.13;
-/** Share of a digit cell left empty on both sides, so neighbours do not touch. */
-const DEFAULT_SPACING = 0.16;
+/** Share of a digit cell kept clear of the glyph and its decimal point. */
+const DEFAULT_SPACING = 0.1;
 /** Width / height of one digit: a real display is clearly taller than it is wide. */
 const DIGIT_ASPECT = 0.58;
 /** Share of the widget height the glyph may use. */
-const HEIGHT_FILL = 0.9;
+const HEIGHT_FILL = 0.76;
+/** Size of the decimal point, and its distance from the digit, in digit-height fractions. */
+const POINT_RATIO = 0.12;
+const POINT_GAP_RATIO = 0.9;
 
 function clampNumber(value, min, max, fallback) {
   const number = Number(value);
@@ -93,12 +96,10 @@ function drawDigit(context, left, top, width, height, thickness, character, colo
   }
 }
 
-/** Every position of a real display has its own decimal point; only the lit ones show. */
-function drawPoint(context, left, top, width, height, thickness, lit, color) {
-  // A point never grows with the stroke, or a thick display would show a blob instead.
-  const size = Math.min(thickness, width * 0.28);
+/** Every position of a real display has its own decimal point, sitting beside the digit. */
+function drawPoint(context, left, top, size, lit, color) {
   context.fillStyle = lit ? color : OFF_COLOR;
-  context.fillRect(left + width - size, top + height - size, size, size);
+  context.fillRect(left, top, size, size);
 }
 
 /**
@@ -147,16 +148,23 @@ export default function segmentDisplay(api) {
       const cell = width / digits;
       const digitHeight = height * HEIGHT_FILL;
       const digitTop = (height - digitHeight) / 2;
-      const digitWidth = Math.max(2, Math.min(cell * (1 - spacing), digitHeight * DIGIT_ASPECT));
       const stroke = Math.max(1, digitHeight * thickness);
+      // The decimal point is its own column beside the digit, never inside the segment field.
+      const pointSize = Math.max(1, Math.min(stroke * 0.75, digitHeight * POINT_RATIO));
+      const pointGap = Math.max(1, pointSize * POINT_GAP_RATIO);
+      const innerWidth = Math.max(2, cell * (1 - spacing));
+      const digitWidth = Math.max(
+        2,
+        Math.min(innerWidth - pointSize - pointGap, digitHeight * DIGIT_ASPECT),
+      );
 
       // Every cell paints, lit or not: unlit segments and points are what a real display shows.
       for (let index = 0; index < digits; index += 1) {
         const glyph = cells[index - offset];
-        const left = index * cell + (cell - digitWidth) / 2;
+        const innerLeft = index * cell + (cell - innerWidth) / 2;
         drawDigit(
           context,
-          left,
+          innerLeft,
           digitTop,
           digitWidth,
           digitHeight,
@@ -166,11 +174,9 @@ export default function segmentDisplay(api) {
         );
         drawPoint(
           context,
-          left,
-          digitTop,
-          digitWidth,
-          digitHeight,
-          stroke,
+          innerLeft + innerWidth - pointSize,
+          digitTop + digitHeight - pointSize,
+          pointSize,
           glyph !== undefined && glyph.dot,
           color,
         );
