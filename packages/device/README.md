@@ -325,6 +325,19 @@ initialize.body((b) => {
 - 多触点 patch 不暴露中间拓扑；同刻多份 patch 按提交顺序稳定执行。电气冲突或拓扑控制失败不回滚已提交的拓扑状态，按 #50 的 fault 语义上抛。
 - topology 被销毁后继续提交报 `device/connection-unavailable`；实例销毁会移除其待执行入口，不再提交连接。`destroy()` 不会销毁宿主拥有的 topology。
 
+## 示例器件与端到端闭环（#58）
+
+`examples/` 按 #11 的同目录同名配对提供两个真实作者面模型，作为首个完整闭环的可执行样例；`package.json` 的 `files` 仅含 `dist`，这些文件既不进入发布产物，也不从包入口导出。
+
+| 目录                    | 描述文件与实现              | 行为                                                                                                                                                                                                                                       |
+| ----------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `examples/ideal-button` | `ideal-button.json` + `.js` | 引脚 `A`/`B`、连接 `contact`（初始 open）、输入话题 `pressed: boolean`；话题消息经 `api.post` 进入 `setPressed`，用 `b.connection.apply` 接通/断开被动双向触点；initialize 与 reset 都复位为断开，任何引脚都不被驱动                       |
+| `examples/ideal-relay`  | `ideal-relay.json` + `.js`  | 引脚 `IN`/`COM`/`NO`/`NC`、连接 `normallyOpen`/`normallyClosed`；initialize 用 `b.pin.sampleDigital(IN)` 建立初始触点并启用 `observeDigital`；`changed(u8, u32)` 用触发时捕获的电平调用 `apply`，同一 patch 原子切换两路触点；不声明 reset |
+
+端到端用例 `src/e2e/button-relay.test.ts` 从磁盘读取上述配对，经真实文件 provider → `loadDeviceModule` → `createDeviceInstance` → scheduler/IR → `createPowerRuntime`（电气网络、电源域、数字观察）→ `b.connection.apply` → topology 完成闭环：按钮话题 → 线圈网络电压 → 边沿投递 → 继电器 `apply` → 触点拓扑 → 第二网络电压。
+
+`examples/` 放在 `src/` 之外：这些是器件作者的模型文件而非包实现，保留原始 JSON/JS 配对便于宿主与文档直接复用；`tsconfig.build.json` 的 `include: ["src"]` 与 `files: ["dist"]` 共同保证它们不进入 `dist` 或发布包。
+
 ## 错误码
 
 | 错误码                          | 含义                                                                           |
@@ -374,7 +387,7 @@ initialize.body((b) => {
 
 ## 支持边界
 
-本层已实现 #53 的工厂上下文与实例生命周期、#54 的话题订阅/发布/`post`/`postBytes`/IR 输出/`updateBytes`/有界队列与激活顺序、#55 的引脚声明与数字 I/O、#56 的数字边沿观察与捕获投递，以及 #57 的 `api.ir.connection` / `b.connection.apply` 与 core topology 提交接入。不实现 #58 的端到端模型、#59 的 sandbox 执行适配，也不实现 #60/#61 的 Provider/checkpoint；不提供重放、ACK/可靠传输、跨实例广播、连接状态查询、JS 直接更新入口、复数别名或外部导线运行时增删。观察仅支持数字边沿；`edges=0` 状态观察、模拟量/电压观察、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
+本层已实现 #53 的工厂上下文与实例生命周期、#54 的话题订阅/发布/`post`/`postBytes`/IR 输出/`updateBytes`/有界队列与激活顺序、#55 的引脚声明与数字 I/O、#56 的数字边沿观察与捕获投递、#57 的 `api.ir.connection` / `b.connection.apply` 与 core topology 提交接入，以及 #58 由 `examples/` 与端到端用例覆盖的理想按钮/继电器闭环（未新增公共入口）。不实现 #59 的 sandbox 执行适配，也不实现 #60/#61 的 Provider/checkpoint；不提供重放、ACK/可靠传输、跨实例广播、连接状态查询、JS 直接更新入口、复数别名或外部导线运行时增删。观察仅支持数字边沿；`edges=0` 状态观察、模拟量/电压观察、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
 
 ## 验证
 
@@ -386,7 +399,7 @@ pnpm --filter @mica-js/device test
 pnpm --filter @mica-js/device typecheck
 ```
 
-Vitest 使用真实临时目录中的 `.json` / `.js` 配对文件验证 provider 加载；覆盖所有 #7 属性类型、默认值、覆盖校验、未知键忽略、嵌套对象/数组冻结、外部别名变更、运行期写入拒绝、独立实例快照、#10 端口校验、#12 引脚/固定组声明、#14 连接声明、各类导出错误、provider 失败、纯对象容器拒绝、带注释 class、URL 构造失败、Node DOM shim 判定及 provider+device id 模块缓存语义。引脚用例使用真实 `createPowerRuntime`、scheduler 与 IR 解释器，覆盖 `pins` / `pinGroups` 解析与拒绝、未知/跨实例/非 signal 引用、builder 类型与配置编码、初始状态提交、同入口写后采样的控制阶段可见性、驱动意图与实际网络分离、掉电/欠压/失地/恢复及持有意图重放、门控采样返回 0、驱动冲突 `ElectricalConflictError`、缺少 host/引脚拒绝与销毁恢复；不使用手写电气算法替代 #49/#51。连接用例走真实 builder → `validateIR` → 解释器/调度器 → 实例生命周期 → core topology，覆盖单触点/双触点、控制阶段延迟、SSA 按值捕获、bool 分支选择 patch、同刻顺序、冲突不回滚、销毁与未知/跨实例诊断。观察用例继续走真实 builder → `validateIR` → 参考解释器 / scheduler → device 生命周期 → core power 链路，覆盖静态绑定与链接期目标签名、`observe.configure` 编码与 `edges=0` 拒绝、首次启用/显式重配/禁用重启/门控恢复/浮空与待定区间重建基线、rising/falling/both 选择、同刻短脉冲双边沿、捕获按值固定、声明顺序与 #54 普通队列顺序、销毁后停止投递及未知/非 signal 引脚和宿主能力诊断。消息用例继续走真实 builder → `validateIR` → 参考解释器 / scheduler → device 生命周期链，覆盖话题订阅/取消/重复、载荷与方向诊断、`post` 接纳与执行分离、`postBytes` 预留/复制/释放/零长度/实例隔离、IR 标量与字节输出、`timePs` 捕获、不重入 JS、输出队列满的 `false`、`updateBytes` 内容与版本、初始化暂存与激活顺序、故障/销毁、各容量 `BackpressureError`、重入排空顺序及链接失败监听清理。生命周期用例使用真实工厂、真实 `createIRModule`、`createIRSchedulerInstance` 与现有 scheduler，覆盖工厂一次调用与声明封闭、同步/Promise/async 拒绝、绑定与重复绑定、链接失败零残留、initialize 控制阶段完成判据、reset 语义与缺失诊断、事件 `now/at/cancel`、故障暂停与故障后销毁、destroy 顺序/幂等/重入、`onDispose` 限制与异常、storage 销毁守卫。跨包集成用例把解析结果送入 `@mica-js/core/schematic` 的 `createDeviceRegistry`，并用真实临时 provider 完成 `loadDeviceModule → createDeviceInstance → scheduler` 闭环。测试直接调用生产函数，不用构建或子进程冒充单元测试。
+Vitest 使用真实临时目录中的 `.json` / `.js` 配对文件验证 provider 加载；覆盖所有 #7 属性类型、默认值、覆盖校验、未知键忽略、嵌套对象/数组冻结、外部别名变更、运行期写入拒绝、独立实例快照、#10 端口校验、#12 引脚/固定组声明、#14 连接声明、各类导出错误、provider 失败、纯对象容器拒绝、带注释 class、URL 构造失败、Node DOM shim 判定及 provider+device id 模块缓存语义。端到端用例（#58）从 `examples/` 读取已提交的真实 `.json` / `.js` 配对，回放按下、释放与排队短脉冲，断言线圈/触点网络电压、观察投递、SPDT 原子切换、initialize 采样、显式 reset 与缺失 reset、两个实例隔离、非法模型拒绝、掉电门控不伪造电压，以及电气冲突下已提交的拓扑与网络效果不被回滚，并验证同一输入序列得到同一轨迹。引脚用例使用真实 `createPowerRuntime`、scheduler 与 IR 解释器，覆盖 `pins` / `pinGroups` 解析与拒绝、未知/跨实例/非 signal 引用、builder 类型与配置编码、初始状态提交、同入口写后采样的控制阶段可见性、驱动意图与实际网络分离、掉电/欠压/失地/恢复及持有意图重放、门控采样返回 0、驱动冲突 `ElectricalConflictError`、缺少 host/引脚拒绝与销毁恢复；不使用手写电气算法替代 #49/#51。连接用例走真实 builder → `validateIR` → 解释器/调度器 → 实例生命周期 → core topology，覆盖单触点/双触点、控制阶段延迟、SSA 按值捕获、bool 分支选择 patch、同刻顺序、冲突不回滚、销毁与未知/跨实例诊断。观察用例继续走真实 builder → `validateIR` → 参考解释器 / scheduler → device 生命周期 → core power 链路，覆盖静态绑定与链接期目标签名、`observe.configure` 编码与 `edges=0` 拒绝、首次启用/显式重配/禁用重启/门控恢复/浮空与待定区间重建基线、rising/falling/both 选择、同刻短脉冲双边沿、捕获按值固定、声明顺序与 #54 普通队列顺序、销毁后停止投递及未知/非 signal 引脚和宿主能力诊断。消息用例继续走真实 builder → `validateIR` → 参考解释器 / scheduler → device 生命周期链，覆盖话题订阅/取消/重复、载荷与方向诊断、`post` 接纳与执行分离、`postBytes` 预留/复制/释放/零长度/实例隔离、IR 标量与字节输出、`timePs` 捕获、不重入 JS、输出队列满的 `false`、`updateBytes` 内容与版本、初始化暂存与激活顺序、故障/销毁、各容量 `BackpressureError`、重入排空顺序及链接失败监听清理。生命周期用例使用真实工厂、真实 `createIRModule`、`createIRSchedulerInstance` 与现有 scheduler，覆盖工厂一次调用与声明封闭、同步/Promise/async 拒绝、绑定与重复绑定、链接失败零残留、initialize 控制阶段完成判据、reset 语义与缺失诊断、事件 `now/at/cancel`、故障暂停与故障后销毁、destroy 顺序/幂等/重入、`onDispose` 限制与异常、storage 销毁守卫。跨包集成用例把解析结果送入 `@mica-js/core/schematic` 的 `createDeviceRegistry`，并用真实临时 provider 完成 `loadDeviceModule → createDeviceInstance → scheduler` 闭环。测试直接调用生产函数，不用构建或子进程冒充单元测试。
 
 ## 相关提案
 
