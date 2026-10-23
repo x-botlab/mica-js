@@ -5,20 +5,28 @@ import {
   type CanvasScene,
   type CanvasSceneDiagnostic,
 } from '@mica-js/canvas-editor';
-import type { CanvasBindingTarget } from '@mica-js/core/canvas';
+import {
+  type CanvasBindingTarget,
+  type CanvasCommand,
+  type CanvasDocument,
+} from '@mica-js/core/canvas';
 import {
   createPackageWidgetProvider,
   createWidgetHost,
   type PackageFiles,
   type WidgetAssetSource,
+  type WidgetDefinition,
   type WidgetHost,
+  type WidgetProvider,
 } from '@mica-js/widget';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { commandErrorMessages } from '@/canvas/panel-model';
+import { CanvasInspector } from '@/components/canvas-inspector';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
 /** Endpoint `demo.cnv` binds; the simulation the scene forwards to is faked with a timer below. */
-const DRIVER_TARGET: CanvasBindingTarget = { symbol: 'demo-board', port: 'value' };
+const DRIVER_TARGET: CanvasBindingTarget = { symbol: 'demo-mcu', port: 'display' };
 
 const PACKAGE_FILES: PackageFiles = {
   label: 'demo',
@@ -67,12 +75,33 @@ function describePayload(payload: unknown): string {
   }
 }
 
+/** Definitions of every widget the document references; the demo package never changes. */
+async function resolveDefinitions(
+  provider: WidgetProvider,
+  document: CanvasDocument,
+): Promise<ReadonlyMap<string, WidgetDefinition>> {
+  const definitions = new Map<string, WidgetDefinition>();
+  for (const ref of new Set(document.widgets.map((widget) => widget.widget))) {
+    const module = await provider.resolve(ref);
+    if (module !== undefined) {
+      definitions.set(ref, module.definition);
+    }
+  }
+  return definitions;
+}
+
 export function CanvasPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CanvasScene | null>(null);
+  const hostRef = useRef<WidgetHost | null>(null);
   const [ready, setReady] = useState(false);
   const [mode, setMode] = useState<CanvasMode>('edit');
-  const [selected, setSelected] = useState(0);
+  const [selectedIds, setSelectedIds] = useState<readonly string[]>([]);
+  const [document, setDocument] = useState<CanvasDocument | null>(null);
+  const [definitions, setDefinitions] = useState<ReadonlyMap<string, WidgetDefinition>>(
+    () => new Map(),
+  );
+  const [resolving, setResolving] = useState(true);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<readonly DiagnosticEntry[]>([]);
@@ -114,8 +143,11 @@ export function CanvasPage() {
           host: ownedHost,
           mode: 'edit',
           theme: DARK_CANVAS_THEME,
-          onChange: () => setRevision((value) => value + 1),
-          onSelectionChange: (ids) => setSelected(ids.length),
+          onChange: (next) => {
+            setDocument(next);
+            setRevision((value) => value + 1);
+          },
+          onSelectionChange: (ids) => setSelectedIds(ids),
           onDiagnostic: pushDiagnostic,
         });
         created.onPublish((target, payload, simTime) => {
@@ -133,20 +165,31 @@ export function CanvasPage() {
           );
         });
 
+        const resolved = await resolveDefinitions(provider, created.document);
         if (cancelled) {
           created.destroy();
           return;
         }
+
         scene = created;
         sceneRef.current = created;
+        hostRef.current = ownedHost;
+        setDocument(created.document);
+        setDefinitions(resolved);
+        setResolving(false);
         setReady(true);
         if (import.meta.env.DEV) {
           // Console handles for poking at the mounted scene while developing the playground.
-          Object.assign(globalThis, { micaCanvas: created, micaWidgetHost: ownedHost });
+          Object.assign(globalThis, {
+            micaCanvas: created,
+            micaWidgetHost: ownedHost,
+            micaProvider: provider,
+          });
         }
       } catch (cause) {
         if (!cancelled) {
           setError(describeError(cause));
+          setResolving(false);
           // Nothing will mount over this host; release its sandbox instead of leaking it.
           void host?.dispose();
         }
@@ -160,6 +203,7 @@ export function CanvasPage() {
       scene?.destroy();
       scene = undefined;
       sceneRef.current = null;
+      hostRef.current = null;
       // The playground owns the host, so it is the one that terminates the sandbox.
       void host?.dispose();
       host = undefined;
@@ -185,6 +229,28 @@ export function CanvasPage() {
     return () => globalThis.clearInterval(timer);
   }, [mode, ready]);
 
+  /** Host-side command entry point for the inspector; the scene adopts the snapshot from there. */
+  const applyCommand = useCallback(
+    (command: CanvasCommand): readonly string[] => {
+      const host = hostRef.current;
+      if (host === null) {
+        return ['宿主尚未就绪。'];
+      }
+      try {
+        host.applyCommand(command);
+        return [];
+      } catch (cause) {
+        // `SchematicError.diagnostics` carries every problem; show them all under the control.
+        const messages = commandErrorMessages(cause);
+        for (const message of messages) {
+          pushDiagnostic({ code: 'canvas-scene/command-failed', message });
+        }
+        return messages;
+      }
+    },
+    [pushDiagnostic],
+  );
+
   const switchMode = (next: CanvasMode): void => {
     const scene = sceneRef.current;
     if (scene === null) {
@@ -199,6 +265,10 @@ export function CanvasPage() {
       setError(`切换到${next === 'run' ? '运行' : '编辑'}模式失败：${describeError(cause)}`);
     }
   };
+
+  const selectedInstance = document?.widgets.find((widget) => widget.id === selectedIds[0]);
+  const selectedDefinition =
+    selectedInstance === undefined ? undefined : definitions.get(selectedInstance.widget);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -216,7 +286,7 @@ export function CanvasPage() {
             </Button>
           ))}
         </div>
-        <Badge variant="muted">selected {selected}</Badge>
+        <Badge variant="muted">selected {selectedIds.length}</Badge>
         <Badge variant={diagnostics.length === 0 ? 'muted' : 'outline'}>
           诊断 {diagnostics.length}
         </Badge>
@@ -236,8 +306,17 @@ export function CanvasPage() {
           )}
         </div>
 
-        <aside className="bg-card/40 flex w-72 shrink-0 flex-col border-l">
-          <section className="flex min-h-0 flex-1 flex-col">
+        <aside className="bg-card/40 flex w-72 shrink-0 flex-col overflow-y-auto border-l">
+          <CanvasInspector
+            mode={mode}
+            instance={selectedInstance}
+            definition={selectedDefinition}
+            resolving={resolving}
+            revision={revision}
+            onApply={applyCommand}
+          />
+
+          <section className="flex flex-col border-t">
             <header className="flex items-center gap-2 border-b px-3 py-2">
               <h2 className="text-xs font-semibold">诊断</h2>
               <span className="text-muted-foreground text-[10px]">onDiagnostic</span>
@@ -253,7 +332,7 @@ export function CanvasPage() {
                 清空
               </Button>
             </header>
-            <ul className="min-h-0 flex-1 overflow-y-auto p-2 text-[11px]">
+            <ul className="max-h-48 overflow-y-auto p-2 text-[11px]">
               {diagnostics.length === 0 ? (
                 <li className="text-muted-foreground px-1">没有诊断。</li>
               ) : (
@@ -267,12 +346,12 @@ export function CanvasPage() {
             </ul>
           </section>
 
-          <section className="flex min-h-0 flex-1 flex-col border-t">
+          <section className="flex flex-col border-t">
             <header className="flex items-center gap-2 border-b px-3 py-2">
               <h2 className="text-xs font-semibold">发布日志</h2>
               <span className="text-muted-foreground text-[10px]">scene.onPublish</span>
             </header>
-            <ul className="min-h-0 flex-1 overflow-y-auto p-2 font-mono text-[11px]">
+            <ul className="max-h-48 overflow-y-auto p-2 font-mono text-[11px]">
               {publishes.length === 0 ? (
                 <li className="text-muted-foreground px-1 font-sans">运行模式下点击按键试试。</li>
               ) : (

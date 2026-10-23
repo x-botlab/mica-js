@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import { micaSandboxPlugins } from '../../packages/sandbox/vite.plugins';
 import { micaWidgetPlugins } from '../../packages/widget/vite.plugins';
 
@@ -31,5 +31,9 @@ export default defineConfig({
         new URL('../../packages/sandbox/src/index.ts', import.meta.url),
       ),
     },
+  },
+  test: {
+    include: ['src/**/*.test.ts'],
+    environment: 'node',
   },
 });

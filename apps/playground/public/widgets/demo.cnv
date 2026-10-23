@@ -22,7 +22,7 @@
       "height": 72,
       "rotation": 0,
       "bindings": {
-        "value": { "symbol": "demo-board", "port": "value" }
+        "value": { "symbol": "demo-mcu", "port": "display" }
       }
     },
     {
@@ -34,7 +34,7 @@
       "height": 56,
       "rotation": 0,
       "bindings": {
-        "press": { "symbol": "demo-board", "port": "press" }
+        "press": { "symbol": "demo-mcu", "port": "key" }
       }
     }
   ]

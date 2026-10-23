@@ -62,6 +62,20 @@ async function pagePoint(page: Page, point: Point): Promise<Point> {
   }, point);
 }
 
+/** The editor paints with `setTransform(dpr * scale, …, dpr * x, dpr * y)`, so this is the viewport. */
+async function canvasTransform(
+  page: Page,
+): Promise<{ readonly scale: number; readonly x: number; readonly y: number }> {
+  return page.evaluate(() => {
+    const canvas = document.querySelector('canvas.mica-canvas-editor__surface');
+    if (!(canvas instanceof HTMLCanvasElement)) {
+      throw new Error('the canvas surface is not mounted');
+    }
+    const transform = canvas.getContext('2d')?.getTransform();
+    return { scale: transform?.a ?? 1, x: transform?.e ?? 0, y: transform?.f ?? 0 };
+  });
+}
+
 test('draws every instance of the demo document', async ({ page }) => {
   await openCanvas(page);
   const { document } = await sceneState(page);
@@ -111,7 +125,7 @@ test('delivers to the segment and logs the button publish in run mode', async ({
   });
   await page.mouse.click(point.x, point.y);
 
-  await expect(page.getByText('demo-board.press').first()).toBeVisible();
+  await expect(page.getByText('demo-mcu.key').first()).toBeVisible();
   await expect(page.getByText('诊断 0')).toBeVisible();
 });
 
@@ -134,4 +148,97 @@ test('repaints the segment from the run-mode timer', async ({ page }) => {
   await page.getByRole('button', { name: '运行' }).click();
 
   await expect.poll(frames, { timeout: 5000 }).toBeGreaterThan(mounted);
+});
+
+test('edits a selected instance through the property panel', async ({ page }) => {
+  await openCanvas(page);
+  const segment = (await sceneState(page)).document.widgets.find(
+    (widget) => widget.widget === 'demo:segment',
+  );
+  if (segment === undefined) {
+    throw new Error('the demo document has no segment instance');
+  }
+
+  // Select the segment in edit mode: the panel shows its definition.
+  const point = await pagePoint(page, { x: segment.x + 160, y: segment.y + 36 });
+  await page.mouse.click(point.x, point.y);
+  await expect(page.getByText('demo:segment', { exact: true })).toBeVisible();
+
+  const color = page.getByLabel('color', { exact: true });
+  await expect(color).toHaveValue('#ff3b30');
+  await color.fill('#00ff88');
+  await color.blur();
+
+  await expect(page.getByText('rev 1')).toBeVisible();
+  const colorRow = page.locator('[data-property="color"]');
+  await expect(colorRow.getByText('已覆盖')).toBeVisible();
+  await expect(page.getByText('诊断 0')).toBeVisible();
+
+  // The binding panel keeps showing the endpoint the document declares.
+  await expect(page.getByLabel('value 绑定')).toHaveValue('demo-mcu:display');
+
+  // Reset drops the override again.
+  await colorRow.getByRole('button', { name: '重置' }).click();
+  await expect(page.getByText('rev 2')).toBeVisible();
+  await expect(colorRow.getByText('已覆盖')).toBeHidden();
+});
+
+test('offers only complementary binding candidates', async ({ page }) => {
+  await openCanvas(page);
+  const button = (await sceneState(page)).document.widgets.find(
+    (widget) => widget.widget === 'demo:button',
+  );
+  if (button === undefined) {
+    throw new Error('the demo document has no button instance');
+  }
+
+  const point = await pagePoint(page, { x: button.x + 48, y: button.y + 28 });
+  await page.mouse.click(point.x, point.y);
+
+  const select = page.getByLabel('press 绑定');
+  await expect(select).toHaveValue('demo-mcu:key');
+  // A boolean widget output pairs with the boolean schematic inputs only.
+  const labels = await select.locator('option').allTextContents();
+  expect(labels).toEqual([
+    '未绑定',
+    'demo-mcu.key · input · boolean',
+    'demo-mcu.led · input · boolean',
+  ]);
+});
+
+test('zooms and pans in run mode without reaching a widget', async ({ page }) => {
+  await openCanvas(page);
+  const button = (await sceneState(page)).document.widgets.find(
+    (widget) => widget.widget === 'demo:button',
+  );
+  if (button === undefined) {
+    throw new Error('the demo document has no button instance');
+  }
+  await page.getByRole('button', { name: '运行' }).click();
+  await expect.poll(async () => (await sceneState(page)).mode).toBe('run');
+
+  const frames = (): Promise<number> =>
+    page.evaluate((instanceId) => {
+      const host = (globalThis as unknown as { micaWidgetHost: HostHandle }).micaWidgetHost;
+      return host.layers.get(instanceId)?.sequence ?? 0;
+    }, button.id);
+  const before = await canvasTransform(page);
+  const buttonFrames = await frames();
+
+  // Wheel zooms around the pointer; the transform is the viewport, and nothing is published.
+  const anchor = await pagePoint(page, { x: button.x + 48, y: button.y + 28 });
+  await page.mouse.move(anchor.x, anchor.y);
+  await page.mouse.wheel(0, -240);
+  await expect.poll(async () => (await canvasTransform(page)).scale).toBeGreaterThan(before.scale);
+
+  // The middle button pans over the button instance without pressing it.
+  const zoomed = await canvasTransform(page);
+  await page.mouse.move(anchor.x, anchor.y);
+  await page.mouse.down({ button: 'middle' });
+  await page.mouse.move(anchor.x + 60, anchor.y + 40, { steps: 5 });
+  await page.mouse.up({ button: 'middle' });
+
+  await expect.poll(async () => (await canvasTransform(page)).x).toBeGreaterThan(zoomed.x);
+  expect(await frames()).toBe(buttonFrames);
+  await expect(page.getByText('诊断 0')).toBeVisible();
 });

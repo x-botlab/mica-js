@@ -66,6 +66,7 @@ scene = await createCanvasScene({
   document: cnvText, // `.cnv` 文本或已解析的 CanvasDocument
   host,
   onChange: (document) => persist(document), // 每次提交后写回磁盘
+  onSelectionChange: (ids) => renderInspector(ids), // 宿主属性/绑定面板用
   onDiagnostic: (diagnostic) => console.warn(diagnostic.code, diagnostic.message),
 });
 
@@ -88,6 +89,8 @@ scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主
 诊断码以 `canvas-scene/` 开头：`command-failed`（宿主拒绝命令）、`unbound-publish`（发布端口没有绑定）、`change-failed`（`onChange` 抛错）、`publish-failed`（监听器抛错）。命令被拒时编辑器不回灌，继续画旧快照。
 
 `createCanvasScene` 是异步的：它先 `await host.loadDocument(options.document)`，再挂载编辑器；宿主校验失败时直接抛出且不挂载。
+
+运行模式下画布仍可浏览：滚轮缩放、`Shift` + 滚轮横向平移、中键或空格 + 左键拖动平移，这些操作不产生命令、也不转发给 widget（详见下方「运行模式」）。
 
 ## 挂载选项
 
@@ -154,6 +157,7 @@ scene.destroy(); // 只拆编辑器与自己的订阅；host.dispose() 由宿主
 - `pointerdown` / `pointermove` / `pointerup` / `pointercancel` 命中实例后转发实例局部坐标（已扣除位置与旋转，`(0, 0)` 是实例左上角）。
 - 按下期间，按下的实例独占移动与抬起事件；抬起后路由立即解除，之后的移动重新命中测试，空白处不转发。
 - 键盘事件转发给最近一次命中的实例；只有画布持有焦点时才会收到键事件。
+- 浏览画布与编辑模式一致：滚轮以指针为锚缩放、`Shift` + 滚轮横向平移；中键拖动或空格 + 左键拖动平移。这些视口操作**不产生命令，也不转发给 widget**（`WidgetInputEvent` 不含滚轮），中键/空格拖动也不会把按下路由给实例。
 
 ## 内部结构
 
