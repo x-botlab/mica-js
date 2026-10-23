@@ -1,6 +1,6 @@
 # @mica-js/widget
 
-Mica Widget 的契约与运行时：Widget 定义、端口/属性描述、把包内脚本解析为 `WidgetModule` 的加载器，以及在沙箱 guest 侧执行脚本、在宿主侧管理实例生命周期与层位图缓存的 `WidgetHost`。
+Mica Widget 的契约与运行时：Widget 定义、端口/属性描述、把包内脚本解析为 `WidgetModule` 的加载器，以及在沙箱 guest 侧执行脚本、在宿主侧持有 `.cnv` 文档并协调实例与层位图的 `WidgetHost`。
 
 本包把 **Widget 变成纯数据**（定义 + 单文件源码），也负责**把纯数据跑起来**：运行时只认识 `WidgetProvider`；「包」只是分发方式，解析逻辑收敛在 provider 实现里，不向上层泄漏。执行隔离完全交给 `@mica-js/sandbox`，本包不改动它的协议。
 
@@ -26,10 +26,10 @@ pnpm add @mica-js/widget
 | `loadWidgetPackage(files)`                  | 把单个包的字节来源解析为 `WidgetPackage`                             |
 | `PackageFiles` / `WidgetPackage`            | 字节读取抽象与包解析结果                                             |
 | `WidgetLoadError`                           | 带 `code`、`packageId`、`path` 的加载错误                            |
-| `createWidgetHost({ provider, ... })`       | 创建 `WidgetHost`；沙箱在首次 `mount` 时惰性启动                     |
-| `WidgetHost` / `WidgetMountSpec`            | 实例生命周期、属性、投递、输入分发与 `dispose`                       |
-| `WidgetLayers` / `WidgetLayer`              | 按挂载顺序的层位图与 `sequence`，供宿主或编辑器合成                  |
-| `WidgetLayerChange`                         | `added` / `updated` / `removed` 订阅事件                             |
+| `createWidgetHost({ provider, ... })`       | 创建 `WidgetHost`；沙箱在第一个实例挂载时惰性启动                    |
+| `WidgetHost`                                | 持有 `.cnv` 文档、编排实例、投递、输入分发与 `dispose`               |
+| `WidgetLayers` / `WidgetLayer`              | 按文档顺序的层位图与 `sequence`，供宿主或编辑器合成                  |
+| `WidgetLayerChange`                         | `added` / `updated` / `removed` / `reordered` 订阅事件               |
 | `WidgetDiagnostic` / `WidgetDiagnosticCode` | 不打断调用方的失败上报                                               |
 | `WidgetInputEvent`                          | 转发给实例的指针 / 键盘事件                                          |
 | `WidgetInstanceApi` / `WidgetInstance`      | Widget 工厂收到的实例 API 与可选钩子                                 |
@@ -68,6 +68,8 @@ if (widget === undefined) {
 
 ## 运行时（`WidgetHost`）
 
+`WidgetHost` 持有画布文档（`.cnv`，见 `@mica-js/core/canvas`）：宿主只声明文档、提交命令，实例的增删改由 host 协调。
+
 ```ts
 import { createStaticWidgetProvider, createWidgetHost } from '@mica-js/widget';
 
@@ -76,27 +78,78 @@ const host = createWidgetHost({
   onDiagnostic: (diagnostic) => console.warn(diagnostic.code, diagnostic.message),
 });
 
-await host.mount({
-  instanceId: 'gauge-1',
-  widget: 'gauge:brightness',
-  width: 160,
-  height: 48,
+const gaugeId = '2b6f0d1e-6f0a-4a7a-9a39-0d3c5a1f7c11';
+
+await host.loadDocument({
+  version: 1,
+  widgets: [
+    {
+      id: gaugeId,
+      widget: 'gauge:brightness',
+      x: 120,
+      y: 64,
+      width: 160,
+      height: 48,
+      rotation: 0,
+      properties: { color: '#22AA55FF' },
+    },
+  ],
+});
+
+host.applyCommand({ type: 'set-z', instanceId: gaugeId, z: 0 });
+host.applyCommand({
+  type: 'set-placement',
+  instanceId: gaugeId,
+  placement: { x: 120, y: 64, width: 320, height: 96, rotation: 0 },
 });
 
 host.layers.subscribe((change) => {
-  // { type: 'added' | 'updated' | 'removed', instanceId }
+  // { type: 'added' | 'updated' | 'removed', instanceId } | { type: 'reordered' }
 });
-host.setProperties('gauge-1', { color: '#22AA55FF' });
-host.deliver('gauge-1', 'brightness', 0.42, 1280);
-host.dispatch('gauge-1', { type: 'pointerdown', x: 12, y: 8 });
-host.update('gauge-1', { width: 320, height: 96 });
+host.deliver(gaugeId, 'brightness', 0.42, 1280);
+host.dispatch(gaugeId, { type: 'pointerdown', x: 12, y: 8 });
 
-const layer = host.layers.get('gauge-1');
+const layer = host.layers.get(gaugeId);
 // { instanceId, width, height, dpr, bitmap, sequence }
 
-host.unmount('gauge-1');
 await host.dispose();
 ```
+
+### 文档与接口
+
+```ts
+interface WidgetHost {
+  readonly document: CanvasDocument;
+  loadDocument(source: string | CanvasDocument): Promise<void>;
+  applyCommand(command: CanvasCommand): void;
+  onDocumentChange(listener: (document: CanvasDocument) => void): () => void;
+  deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
+  dispatch(instanceId: string, event: WidgetInputEvent): void;
+  readonly layers: WidgetLayers;
+  resize(dpr: number): void;
+  dispose(): Promise<void>;
+}
+```
+
+`document` 初始是空文档 `{ version: 1, widgets: [] }`；`loadDocument` 接受 `.cnv` 文本或已解析对象，`applyCommand` 接受 `@mica-js/core/canvas` 的 `CanvasCommand`。实例级操作（挂载、卸载、改尺寸、改属性）不再公开，`WidgetMountSpec` / `WidgetSize` 也随之从公开类型中移除。
+
+### 校验
+
+两条入口都先跑 `parseCanvas` 的结构校验（仅 `loadDocument`）或 `applyCanvasCommand` 的结构校验（仅 `applyCommand`），再跑 `validateCanvasBindings(document, { catalog })`；出现 error 级诊断时抛 `SchematicError`，文档与实例都不改变。`applyCommand` 的顺序固定为「应用命令 → 校验绑定 → 提交快照」，因此被拒绝的命令不会留下半成品状态。
+
+`WidgetHostOptions.catalog`（`CanvasBindingCatalog`，来自 `@mica-js/core/canvas`）提供 widget 定义与原理图符号，用来校验引用、属性名、端口方向与载荷类型。**未提供 `catalog` 时跳过引用校验**，只保留结构与绑定形状校验，行为与未接入注册表的宿主一致。
+
+### 协调语义
+
+- **按 id 比对**：文档新增的 id → 挂载；消失的 id → 卸载；几何变化 → `resize`；属性变化 → `set-properties`；无变化不动 guest。
+- **几何比较**用 `x`、`y`、`width`、`height`、`rotation` 五项判定是否变化，但只有 `width` / `height` 会推给 guest：`x` / `y` / `rotation` 只影响合成位置，已经在文档里，层只需要尺寸。
+- **属性比较**是浅比较：键集合相同且每个键 `Object.is` 相等才算没变化。文档拥有属性值，嵌套对象只有被整体替换才算改动；键集合参与比较，因为缺失的键回落到定义默认值，而显式 `undefined` 会覆盖默认值。
+- **顺序**：`layers.list()` 的顺序等于 `document.widgets` 的顺序。`set-z` 只重排层表，不重新挂载，并以 `{ type: 'reordered' }` 通知订阅者。
+- **几何与位图分离**：几何变化同步改 layer 的 `width` / `height`（`sequence` 不变），新位图异步到达后再递增 `sequence`。
+- **串行化**：协调走单条内部队列。多次 `applyCommand` 不会并发调用 guest，队列每轮都以**最新快照**为准，因此中间态会被合并，不会出现重复挂载或漏掉卸载。
+- **`applyCommand` 同步、协调异步**：文档快照与 `onDocumentChange` 立即更新；挂载、`resize`、`set-properties` 在后台进行。协调失败只经 `onDiagnostic` 上报（`widget/mount-failed`、`widget/render-failed` 等），**不回滚文档**；失败的实例不在 `layers` 里，下一次提交会重试。
+- **`loadDocument` 异步**：等首批实例挂载完成后才 resolve。单个 widget 挂载失败不会让 promise reject，只上报诊断。
+- **实例移除是同步的**：快照提交时立即丢掉被移除实例的 layer 与记录，因此「挂载还在途中就被移除」能在当下取消，而不必等协调队列腾出空位。
 
 ### 执行模型
 
@@ -144,34 +197,32 @@ const bytes = await api.assets.readBinary(api.props.texture.src);
 
 ### 启动时机
 
-`createWidgetHost()` 同步返回，sandbox 在**首次 `mount()`** 时才启动，并发的 `mount()` 共享同一次启动。没有实例的宿主不必承担 iframe + worker 的启动成本；`mount()` 本身是异步的，因此懒启动对调用方不可见。
+`createWidgetHost()` 同步返回，sandbox 在**第一个实例挂载时**才启动，同一次协调里的并发挂载共享这一次启动。没有实例的宿主不必承担 iframe + worker 的启动成本；挂载本身是异步的，因此懒启动对调用方不可见。
 
 ### 层（`WidgetLayers`）
 
-`layers.list()` 按挂载顺序返回（即绘制顺序），`get()` 返回**同一份活对象**：`update()` 立即改变 `width`/`height`（位图异步到达，`sequence` 不变），新帧到达时 `sequence` 递增并把上一帧 `close()`。`unmount` 关闭当前帧，`dispose` 关闭全部帧。
+`layers.list()` 按 `document.widgets` 顺序返回（即绘制顺序），`get()` 返回**同一份活对象**：尺寸变化立即改变 `width`/`height`（位图异步到达，`sequence` 不变），新帧到达时 `sequence` 递增并把上一帧 `close()`。实例被移除时关闭当前帧，`dispose` 关闭全部帧。`list()` 顺序即合成顺序，`set-z` 之后无需重新合成位图。
 
 ### 诊断
 
-失败通过 `onDiagnostic` 上报，不抛给调用方；只有 `mount()` 会 reject。重复实例、未知实例、未知 widget 这类校验失败只上报并返回。
+失败通过 `onDiagnostic` 上报，不抛给调用方；`loadDocument` 只在文档或绑定校验失败时 reject，`applyCommand` 只在命令被拒绝时抛错。重复实例、未知实例、未知 widget 这类校验失败只上报并返回。
 
 | `code`                      | 场景                                                       |
 | --------------------------- | ---------------------------------------------------------- |
 | `widget/runtime-failed`     | sandbox 启动失败或运行中终止（层被清空）                   |
 | `widget/unknown-widget`     | provider 未注册该引用，或引用不是 `<包>:<widget>`          |
-| `widget/instance-exists`    | 同一 `instanceId` 重复 `mount`                             |
+| `widget/instance-exists`    | 同一 `instanceId` 已被占用（重复预留）                     |
 | `widget/instance-not-found` | 对未挂载实例调用实例作用域方法                             |
-| `widget/mount-failed`       | 工厂或 guest `mount` 抛出（`mount()` 同时 reject）         |
+| `widget/mount-failed`       | 工厂或 guest `mount` 抛出                                  |
 | `widget/render-failed`      | `render` 抛错，或 `resize` / `set-properties` 调用失败     |
 | `widget/deliver-failed`     | 订阅回调、输入回调或 `deliver` 调用抛错                    |
 | `widget/asset-failed`       | 资源预取失败，或 widget 读取了未预取的资源（实例继续运行） |
 
-guest 的 `mount` 阶段错误通过 `mount()` 的 rejection 呈现，因此一次失败只产生一条诊断。
-
-`instanceId` 在 `mount()` 入口**同步预留**，所以并发挂载同一 id 时只有一个会真正启动，另一个立即得到 `widget/instance-exists`。若实例在挂载完成前被 `unmount()`（或宿主被 `dispose()`），该次 `mount()` 以 `name === 'WidgetMountCancelledError'` 的 `Error` reject，并清理 guest 侧已创建或即将创建的会话——不会留下无 layer 的「已挂载」假象，也不会误删同一 id 的新挂载记录。这类取消属于调用方的主动行为，不产生诊断。
+`instanceId` 在挂载入口**同步预留**，所以同一 id 不会被两个挂载尝试同时占用。若实例在挂载完成前从文档里消失（或宿主被 `dispose()`），该次挂载以 `name === 'WidgetMountCancelledError'` 的 `Error` 结束，并清理 guest 侧已创建或即将创建的会话——不会留下无 layer 的「已挂载」假象，也不会误删同一 id 的新记录。挂载由文档驱动，因此这类取消不再向调用方 reject，也不产生诊断：新快照就是结果。
 
 ### 崩溃与重建
 
-sandbox 终止时不自动重建实例：`dispose()` 主动终止沙箱；其它终止在**下一次调用**被发现（`SandboxHandle` 没有终止事件），此时清空 `layers` 并上报 `widget/runtime-failed`。之后再次 `mount()` 会启动新的 sandbox 并重新 `load`，但不会恢复先前的实例——自动重建留给后续增强。
+sandbox 终止时不自动重建实例：`dispose()` 主动终止沙箱；其它终止在**下一次调用**被发现（`SandboxHandle` 没有终止事件），此时清空 `layers` 并上报 `widget/runtime-failed`。之后的 `loadDocument` / `applyCommand` 会启动新的 sandbox 并重新 `load`，但只会挂载当次协调涉及的实例——自动重建整套视图留给后续增强。
 
 ### 编写 widget
 
@@ -300,6 +351,7 @@ interface WidgetProvider {
 - 不做话题路由：`publish` 只经 `onPublish` 交给调用方（带上 widget 给出的 `simTime`，缺省 `0`），`deliver` 的 `simTime` 由调用方提供。
 - 不做资源缓存或动态 IO：资源只在挂载前预取一次，guest 侧没有网络与 DOM；`readBinary` 只读预取结果。
 - **不按端口声明校验 `publish` / `subscribe`**：这两个方法目前接受任意端口名，`WidgetDefinition.ports` 在运行时基本未被使用。因此 widget 可以伪造任意端口的消息，宿主侧的 `onPublish` 也会原样收到。**#99 必须补上校验**：按该实例解析到的 `definition.ports` 检查 `publish` 的端口存在且 `direction === 'output'`，对未声明的端口丢弃并上报诊断（`subscribe` 同理，方向为 `input`）。校验必须放在 guest 侧（不可信代码就在那里）或以 definition 为准在宿主侧过滤，且不能在 `WidgetHost` 公开接口里引入编辑器概念。
-- 不合成多层位图、不读写画布文档：`WidgetLayers` 只给位图与挂载顺序。
+- 不合成多层位图：`WidgetLayers` 只给位图与绘制顺序，合成交给宿主或 `@mica-js/canvas-editor`。
+- 文档只用于协调实例：`loadDocument` / `applyCommand` 解析、校验并保存快照，但不做视口、选择、命中测试与命令生成，这些属于编辑器；也不持久化 `.cnv`，写盘由宿主负责。
 - 不自动重建终止后的实例（见「崩溃与重建」）。
 - 不枚举包目录，不跟随重定向或符号链接；读取哪些文件完全由清单决定。

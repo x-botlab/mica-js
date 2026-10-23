@@ -26,12 +26,10 @@ export type {
   WidgetLayer,
   WidgetLayerChange,
   WidgetLayers,
-  WidgetMountSpec,
   WidgetPublish,
   WidgetSandbox,
   WidgetSandboxFactory,
   WidgetSandboxHostOptions,
-  WidgetSize,
 } from './host/types';
 export { createDefaultWidgetSandbox } from './host/sandbox';
 export { WIDGET_RUNTIME_SOURCE } from './internal/runtime-source';
