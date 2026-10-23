@@ -2,7 +2,7 @@
 
 领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔/浮点逐指令语义、实例存储与参考解释器。
 
-本包负责**建图、实例存储、静态校验与参考执行**：声明标量资源与函数、构造 SSA 值、基本块与终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。提供显式 IR 输出端点与 `bridge.send` / `bridge.send_bytes` 的宿主桥接，以及按 key 生成、依赖跟踪与实例内缓存的 Provider 产物；不提供事件调度、话题路由/通知队列、运行中恢复或 JIT。校验通过不代表已经执行，未实现的能力显式拒绝，不以空操作伪装成功。
+本包负责**建图、实例存储、静态校验与参考执行**：声明标量资源与函数、构造 SSA 值、基本块与终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。提供显式 IR 输出端点与 `bridge.send` / `bridge.send_bytes` 的宿主桥接，以及按 key 生成、依赖跟踪与实例内缓存的 Provider 产物；产物 checkpoint 支持运行中依赖失效后的尾派发恢复。不提供事件调度、话题路由/通知队列或 JIT。校验通过不代表已经执行，未实现的能力显式拒绝，不以空操作伪装成功。
 
 ## 安装
 
@@ -50,7 +50,7 @@ run.body((b, [value]) => {
 - 普通函数通过 `b.call(target, args)` 同步调用，结果始终按列表返回（零/单/多结果）；入口与生命周期没有普通返回值，也不能被 `call`。
 - 基本块：`b.block(types)` 只创建目标块，`b.at(block, callback)` 才进入该块并在回调后恢复插入位置。每个块必须以 `return` / `jump` / `branch` / `trap` 终结；回调抛错、返回 Promise 或未终结都会使整个函数构建失效，需重新 `.body`。
 - 块参数是循环与合流的唯一显式传值方式，不提供隐式 phi 或可变局部变量。
-- `GeneratedFunctionBuilder<R>` 继承 `dispatch`，并由 `gen.function` 传入；`checkpoint` 与运行中恢复属于 #61，当前不提供。
+- `GeneratedFunctionBuilder<R>` 继承 `dispatch`，并由 `gen.function` 传入；另提供 `checkpoint(provider, key, args)` 标记产物内的合法恢复边界（#61）。
 
 ```ts
 const choose = ir.func('choose', { params: ['bool'], results: ['u32'] });
@@ -313,7 +313,7 @@ runtime.storage.loadState(count); // 3
 - 存储操作沿用完整范围校验与原子提交：失败操作无部分写入，已提交效果不回滚。
 - 预算、求值、存储或 trap 故障会锁定实例，后续 `execute` 抛 `instance-faulted`；无 reset/resume，也不支持失败入口中途恢复。
 - 非法目标、参数或 context 等调用前错误不消耗步骤、不锁定实例。
-- 执行能力包括现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、核心 `event.now/at/cancel`、`bridge.send` / `bridge.send_bytes`、普通 `call`、`return/jump/branch/trap`、按声明生成的 Provider `dispatch` 产物，以及通过 `executors` 显式注册的领域指令。没有执行器的领域指令在执行前以 `unsupported-instruction` 拒绝；checkpoint/运行中恢复与其他保留能力仍静态拒绝。
+- 执行能力包括现有整数/布尔/浮点/存储指令、`resource.update_bytes` / `resource.fill_bytes`、核心 `event.now/at/cancel`、`bridge.send` / `bridge.send_bytes`、普通 `call`、`return/jump/branch/trap`、按声明生成的 Provider `dispatch` 产物，以及通过 `executors` 显式注册的领域指令。没有执行器的领域指令在执行前以 `unsupported-instruction` 拒绝；产物 `checkpoint` 在失效时于当前入口与预算内尾派发恢复目标，其他保留能力仍静态拒绝。
 
 ### 领域指令执行（#57）
 
@@ -431,10 +431,13 @@ step.body((b) => b.dispatch(code, [b.state.load(pc)], []));
 - `dispatch` 是终结指令：按规范化的 key 取得产物，并在当前入口、步数预算与虚拟时间中尾转移；`provider.results` 必须与当前函数结果完全一致。每次派发校验该产物的全部依赖，失效时按当前内容重新生成；缓存命中不重新生成，也不重放已提交效果。
 - key 在生成回调中是 JS 标量；缓存身份按 provider 与精确编码（bool、整数、浮点 canonical 位串）区分，运行时 args 不参与。缓存按解释器实例隔离；v0.1 不实现驱逐/上限。
 - state/array 以整资源单元跟踪，普通 `storeState` / `storeArray` 与宿主 `writeInbox` 推进版本；`reads` 中出现 writable bytes 在声明期拒绝（普通 `bytes.store` 不推进版本）。相同值写入允许保守失效。
-- 产物直接或经 `imports` 调用链写入其生成读取的资源时，视为需要运行中失效恢复，在产物校验期以 `unsupported-provider` 拒绝（#61 未实现）。
-- 失败抛 `IRProviderError`（`invalid-provider`、`key-mismatch`、`unauthorized-read`、`invalid-read`、`generation-failed`、`invalid-artifact`、`import-violation`、`dependency-changed`、`illegal-operation`），解释器包装为 `provider-failed` 并保留 `cause`、调用位置与产物诊断。
+- 产物直接或经 `imports` 调用链写入其生成读取的资源时，必须在同一块内、该写入之后提供 `checkpoint`；两者之间只允许写非 `reads` 的 state/array。恢复 key/args 与恢复状态值应在失效写入前算好，不能把 `const` 或纯计算夹在中间；无法证明恢复正确时产物校验以 `unsupported-provider` 拒绝。
+- `b.checkpoint(provider, key, args)` 只存在于生成产物构建器；普通函数中出现以 `invalid-checkpoint` 拒绝。它检查当前产物的完整依赖：有效则继续下一条；失效则丢弃旧产物剩余步骤，以当前 SSA key/args 尾派发恢复目标。已提交的存储、事件、输出与时间效果保留且不重放，当前入口预算与虚拟时间不变。
+- 恢复目标可为当前 provider 自身，或 `imports` 中的其他 provider；其 key/参数与结果布局必须与当前产物匹配，否则分别以 `provider-key-mismatch` / `signature-mismatch` / `provider-import-violation` 拒绝。目标结果布局不匹配、checkpoint 出现在非法位置或依赖 token 无法证明属于当前实例时，运行期以 `recovery-failed` 拒绝。
+- checkpoint 不固化生成产物：恢复时按当前资源版本重新生成。缓存、宿主对象与进行中的调用帧不进入 checkpoint；恢复所需客体状态必须已写回 IR 资源。只支持内存内实例恢复，不提供磁盘格式、跨进程/跨实例迁移、快照/restore 或 JIT/重放。
+- 失败抛 `IRProviderError`（`invalid-provider`、`key-mismatch`、`unauthorized-read`、`invalid-read`、`generation-failed`、`invalid-artifact`、`import-violation`、`dependency-changed`、`illegal-operation`、`recovery-failed`），解释器包装为 `provider-failed` 并保留 `cause`、调用位置与产物诊断。
 
-`src/provider.test.ts`、`src/provider-runtime.test.ts`、`src/provider-storage.test.ts` 与 `src/provider.type-test.ts` 覆盖声明/链接、真实生成与缓存轨迹、版本失效、key 规范化、受追踪读取副本与越界、生成期非法操作及产物 imports/恢复边界。
+`src/provider.test.ts`、`src/provider-runtime.test.ts`、`src/provider-storage.test.ts`、`src/provider-checkpoint.test.ts` 与 `src/provider.type-test.ts` 覆盖声明/链接、真实生成与缓存轨迹、版本失效、key 规范化、受追踪读取副本与越界、生成期非法操作、产物 imports、checkpoint 恢复与恢复边界。
 
 ## 版本化资源更新
 
@@ -485,7 +488,7 @@ runtime.storage.validateDependencies(after.dependencies); // true
 - 单元边界为 `floor(offset / unitBytes)`，声明后固定；非零更新为覆盖的每个单元产生新版本 token，未覆盖单元与其他资源不变。
 - 依赖对象是不透明 token，只在本实例内有效；过期、伪造、跨资源/实例或非法形状返回 `false`，空集合为 `true`。它们不是序列化或持久化格式。
 - 普通 `bytes.store` / `bytes.copy` 不改变字节单元版本；state/array 使用整资源单元，普通 `storeState` / `storeArray` 推进该单元（#60），宿主 `writeInbox` 推进 inbox 整资源单元。
-- Provider 的受追踪标量读取通过内部 symbol 方法访问同一依赖元数据，不新增公开 `IRStorage` 方法；运行中恢复（#61）与 JIT 不在本包。
+- Provider 的受追踪标量读取通过内部 symbol 方法访问同一依赖元数据，不新增公开 `IRStorage` 方法；运行中恢复依赖这些 token 的实例内校验，JIT 不在本包。
 - `writeInbox` 是可信宿主把消息写入 inbox 的唯一通道；IR 自身的 inbox 读取保持只读，普通写入仍被拒绝。`updateBytesFromBytes` 走 `update` 授权、完整范围检查与原子版本路径，供 device 的 `api.updateBytes` 使用。
 
 ```ts
@@ -519,7 +522,7 @@ type IRResourceDependency = {
 ## 当前限制
 
 - 事件队列/调度器、输出队列/话题路由/通知时机与 JS 作者侧 `api.updateBytes` 请求队列；核心 event 与 bridge 指令只通过上述可信宿主桥接。
-- 运行中恢复/checkpoint（#61）与 JIT；Provider 产物在自身依赖失效时只能在下一次派发重新生成。
+- JIT；运行中恢复仅限合法产物 checkpoint 的尾派发，不支持失败入口中途恢复、跨进程/跨实例迁移或持久化快照。
 - 尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。
 
 ## 开发

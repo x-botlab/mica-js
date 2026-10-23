@@ -63,12 +63,22 @@ expectType<readonly ProviderDefinition[]>(module.providers);
 void providerDefinitions;
 
 const dispatchable = module.func('dispatchable', { params: ['u32'], results: ['u32'] });
-dispatchable.body((b, [value]) => b.dispatch(code, [u32], [value]));
+dispatchable.body((b, [value]) => {
+  // @ts-expect-error Checkpoints are only exposed in generated function builders.
+  b.checkpoint(code, [u32], [u32]);
+  return b.dispatch(code, [u32], [value]);
+});
 generatedBuilder.dispatch(code, [u32], [u32]);
+generatedBuilder.checkpoint(code, [u32], [u32]);
 generatedBuilder.at(generatedBuilder.block([]), (nested) => {
   expectType<GeneratedFunctionBuilder<readonly ['u32']>>(nested);
+  nested.checkpoint(code, [u32], [u32]);
   return nested.return([u32]);
 });
+// @ts-expect-error Checkpoint keys use the provider key layout.
+generatedBuilder.checkpoint(code, [bool], [u32]);
+// @ts-expect-error Checkpoint arguments use the provider parameter layout.
+generatedBuilder.checkpoint(code, [u32], [bool]);
 // Generated artifacts cannot return different results than the dispatch context.
 const mismatched = module.func('mismatched', { params: [], results: ['bool'] });
 // @ts-expect-error Provider results are part of the dispatch tail signature.

@@ -863,7 +863,7 @@ describe('validateIR capabilities and resources', () => {
     },
   );
 
-  it.each(['checkpoint', 'provider.generate', 'kernel.call', 'resource.update', 'resource.fill'])(
+  it.each(['provider.generate', 'kernel.call', 'resource.update', 'resource.fill'])(
     'rejects reserved future operation %s even when a backend lists it',
     (op) => {
       const input = single();
@@ -879,6 +879,20 @@ describe('validateIR capabilities and resources', () => {
       );
     },
   );
+
+  it('rejects checkpoint outside provider artifacts', () => {
+    const input = single();
+    present(block(input).instructions[0]).op = 'checkpoint';
+    rejects(
+      input,
+      'invalid-checkpoint',
+      instructionLocation(input, 0),
+      options({
+        supportedInstructions: [...core, 'checkpoint'],
+        authorizedInstructions: [...core, 'checkpoint'],
+      }),
+    );
+  });
 
   it('rejects dispatch in the instruction list because it is a terminator', () => {
     const input = single();

@@ -26,6 +26,7 @@ import type {
   OutputDefinition,
   OutputRef,
   ProviderDefinition,
+  ProviderRef,
   ReadableBytesRef,
   RuntimeScalar,
   ScalarType,
@@ -173,6 +174,8 @@ interface Frame {
   readonly fn: FunctionDefinition;
   readonly functionIndex: number;
   readonly values: Map<Value, RuntimeScalar>;
+  /** Present only for provider artifact frames; `checkpoint` checks this dependency set. */
+  readonly artifact?: ProviderArtifact;
   block: BlockDefinition;
   position: number;
 }
@@ -576,6 +579,10 @@ class Interpreter implements IRInterpreter {
         steps += 1;
         const node = frame.block.instructions[frame.position];
         if (node !== undefined) {
+          if (node.op === 'checkpoint') {
+            this.checkpoint(frame, node, frames);
+            continue;
+          }
           const operands = node.operands.flatMap((operand) => {
             if (operand.kind === 'ssa') return [read(frame, operand.value)];
             if (operand.kind === 'ssa-list') {
@@ -781,10 +788,49 @@ class Interpreter implements IRInterpreter {
     return {
       fn: artifact.fn,
       functionIndex: artifact.index,
+      artifact,
       block,
       position: 0,
       values: new Map(block.params.map((param, index) => [param, args[index]!])),
     };
+  }
+
+  /**
+   * A legal recovery boundary: valid dependencies continue with the next instruction; invalid
+   * ones abandon the rest of this artifact and tail-dispatch `key`/`args` to the target. The
+   * replaced frame means no instruction after the checkpoint runs twice and no effect is undone.
+   */
+  private checkpoint(frame: Frame, node: InstructionNode, frames: Frame[]): void {
+    const artifact = frame.artifact;
+    if (artifact === undefined) {
+      throw new IRProviderError(
+        'recovery-failed',
+        'checkpoint executed outside a provider artifact',
+      );
+    }
+    if (this.storage.validateDependencies(artifact.dependencies)) {
+      frame.position += 1;
+      return;
+    }
+    const provider = reference(node, 0) as ProviderRef;
+    const key = listValues(frame, node, 1);
+    const args = listValues(frame, node, 2);
+    const recovered = this.#providers.materialize(provider, key);
+    if (!this.storage.validateDependencies(recovered.dependencies)) {
+      throw new IRProviderError(
+        'recovery-failed',
+        `Recovery target for checkpoint in "${frame.fn.name}" still has stale dependencies`,
+      );
+    }
+    if (!sameResultTypes(recovered.fn.results, frame.fn.results)) {
+      throw new IRProviderError(
+        'recovery-failed',
+        `Recovery target for checkpoint in "${frame.fn.name}" has a different result layout`,
+      );
+    }
+    const inputs = recovered.fn.params.map((type, index) => captureArgument(type, args[index]!));
+    frames.pop();
+    frames.push(this.generatedFrame(recovered, inputs));
   }
 }
 
@@ -804,6 +850,16 @@ function read(frame: Frame, value: Value): RuntimeScalar {
   const result = frame.values.get(value);
   if (result === undefined) throw new Error('SSA value was not bound');
   return result;
+}
+
+function listValues(frame: Frame, node: InstructionNode, index: number): RuntimeScalar[] {
+  const operand = node.operands[index];
+  if (operand?.kind !== 'ssa-list') throw new Error('Expected a validated ssa-list operand');
+  return operand.values.map((value) => read(frame, value));
+}
+
+function sameResultTypes(left: readonly ScalarType[], right: readonly ScalarType[]): boolean {
+  return left.length === right.length && left.every((type, index) => type === right[index]);
 }
 
 function enterBlock(frame: Frame, block: BlockDefinition, args: readonly Value[]): void {

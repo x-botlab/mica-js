@@ -51,6 +51,7 @@ type DiagnosticCodes = Assert<
     | 'provider-key-mismatch'
     | 'unsupported-provider'
     | 'provider-import-violation'
+    | 'invalid-checkpoint'
   >
 >;
 declare const checkedSignature: ValidationSignature;

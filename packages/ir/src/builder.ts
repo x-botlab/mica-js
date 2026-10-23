@@ -113,6 +113,7 @@ const CORE_OPERATIONS = [
   'event.now',
   'event.at',
   'event.cancel',
+  'checkpoint',
   'dispatch',
   'return',
   'jump',
@@ -161,7 +162,7 @@ function buildFunctionBody(
   declaration.module.bodyDepth += 1;
   let state: BuilderState | undefined;
   try {
-    const currentState = createBuilderState(declaration);
+    const currentState = createBuilderState(declaration, generated);
     state = currentState;
     const builder = createBuilderObject(currentState) as FunctionBuilder;
     const params = declaration.params.map((type, index) => createValue(currentState, type, index));
@@ -188,13 +189,17 @@ function buildFunctionBody(
   }
 }
 
-function createBuilderState(declaration: FunctionDeclarationState): BuilderState {
+function createBuilderState(
+  declaration: FunctionDeclarationState,
+  generated: boolean,
+): BuilderState {
   const state = {
     module: declaration.module,
     declaration,
     entry: undefined as unknown as BlockState,
     blocks: [] as BlockState[],
     insertion: [] as BlockState[],
+    generated,
     valueSeq: 0,
     blockSeq: 1,
     finished: false,
@@ -1009,6 +1014,44 @@ function createBuilderObject(state: BuilderState): unknown {
     return results;
   };
 
+  const checkpoint = (
+    provider: ProviderRef,
+    key: readonly Value[],
+    args: readonly Value[],
+  ): undefined => {
+    if (typeof provider !== 'object' || provider === null) {
+      fail('checkpoint target must be a provider reference');
+    }
+    if (provider[refKind] !== 'provider') {
+      fail(`checkpoint target must be a provider reference, received ${String(provider[refKind])}`);
+    }
+    const target = getProviderMetadata(provider);
+    if (target === undefined || target.module !== module) {
+      fail('checkpoint target is not a provider declared by this module');
+    }
+    assertValueList(key, state, target.keyTypes, 'checkpoint key');
+    assertValueList(args, state, target.params, 'checkpoint arguments');
+    const results = state.declaration.results;
+    if (
+      results.length !== target.results.length ||
+      results.some((type, index) => type !== target.results[index])
+    ) {
+      fail(
+        `checkpoint target returns (${target.results.join(', ')}), not the current (${results.join(', ')})`,
+      );
+    }
+    emit(
+      'checkpoint',
+      [
+        staticOperand(provider),
+        { kind: 'ssa-list', values: [...key] },
+        { kind: 'ssa-list', values: [...args] },
+      ],
+      [],
+    );
+    return undefined;
+  };
+
   const builder = {
     const<T extends ScalarType>(type: T, value: unknown): Value<T> {
       assertScalarType(type, 'const type');
@@ -1157,6 +1200,15 @@ function createBuilderObject(state: BuilderState): unknown {
       return terminate({ kind: 'trap', code }, 'trap');
     },
   };
+
+  if (state.generated) {
+    Object.defineProperty(builder, 'checkpoint', {
+      value: checkpoint,
+      enumerable: true,
+      writable: false,
+      configurable: false,
+    });
+  }
 
   for (const extension of state.module.builderExtensions) {
     const label = `Builder extension "${extension.namespace}"`;

@@ -393,7 +393,7 @@ initialize.body((b) => {
 
 ## 支持边界
 
-本层已实现 #53 的工厂上下文与实例生命周期、#54 的话题订阅/发布/`post`/`postBytes`/IR 输出/`updateBytes`/有界队列与激活顺序、#55 的引脚声明与数字 I/O、#56 的数字边沿观察与捕获投递、#57 的 `api.ir.connection` / `b.connection.apply` 与 core topology 提交接入、#60 的 `api.ir.provider` 生成产物接入，以及 #58 由 `examples/` 与端到端用例覆盖的理想按钮/继电器闭环（未新增公共入口）。不实现 #59 的 sandbox 执行适配，也不实现 #61 的 checkpoint/运行中恢复；不提供重放、ACK/可靠传输、跨实例广播、连接状态查询、JS 直接更新入口、复数别名或外部导线运行时增删。观察仅支持数字边沿；`edges=0` 状态观察、模拟量/电压观察、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
+本层已实现 #53 的工厂上下文与实例生命周期、#54 的话题订阅/发布/`post`/`postBytes`/IR 输出/`updateBytes`/有界队列与激活顺序、#55 的引脚声明与数字 I/O、#56 的数字边沿观察与捕获投递、#57 的 `api.ir.connection` / `b.connection.apply` 与 core topology 提交接入、#60 的 `api.ir.provider` 生成产物接入、#61 的产物 checkpoint/运行中恢复，以及 #58 由 `examples/` 与端到端用例覆盖的理想按钮/继电器闭环（未新增 device 公共入口）。不实现 #59 的 sandbox 执行适配；不提供持久化快照、跨进程/跨实例迁移、重放、ACK/可靠传输、跨实例广播、连接状态查询、JS 直接更新入口、复数别名或外部导线运行时增删。观察仅支持数字边沿；`edges=0` 状态观察、模拟量/电压观察、`set_*` / `get_*`、组 `port.*` I/O、逐引脚 direction 与协议库同样不在本批范围，均明确拒绝而非空实现。文件定位、缺失文件与 JSON 语法诊断由 `IDeviceProvider` 负责。
 
 ## 验证
 

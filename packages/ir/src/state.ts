@@ -91,6 +91,8 @@ export interface BuilderState {
   readonly entry: BlockState;
   readonly blocks: BlockState[];
   readonly insertion: BlockState[];
+  /** True while building a provider artifact; exposes `checkpoint` (#61). */
+  readonly generated: boolean;
   valueSeq: number;
   blockSeq: number;
   finished: boolean;

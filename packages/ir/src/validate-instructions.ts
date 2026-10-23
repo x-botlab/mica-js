@@ -220,6 +220,9 @@ export function validateInstruction(
     case 'call':
       call(node, state);
       return;
+    case 'checkpoint':
+      checkpoint(node, state);
+      return;
     default:
       domain(node, state);
   }
@@ -670,6 +673,65 @@ function call(node: InstructionNode, state: InstructionValidationState): void {
       valid = false;
   });
   if (valid) state.call(target, node);
+}
+
+function checkpoint(node: InstructionNode, state: InstructionValidationState): void {
+  if (state.imports === undefined) {
+    state.report(
+      'invalid-checkpoint',
+      'checkpoint may only appear in a provider-generated artifact',
+    );
+    return;
+  }
+  if (node.operands.length !== 3) {
+    state.report('invalid-checkpoint', 'checkpoint requires 3 operands');
+    return;
+  }
+  if (!operands(node, state, ['static', 'ssa-list', 'ssa-list'], 'invalid-checkpoint')) return;
+  if (node.results.length !== 0) {
+    state.report('invalid-checkpoint', 'checkpoint requires no results');
+    return;
+  }
+  const providerRef = staticRef(node, 0);
+  const target = state.providers.get(providerRef);
+  if (target === undefined) {
+    state.report(
+      'invalid-static-reference',
+      'checkpoint target must be a provider declared by this module',
+    );
+    return;
+  }
+  if (!state.imports.has(providerRef)) {
+    state.report('provider-import-violation', 'checkpoint target is not imported by this provider');
+  }
+  const key = (node.operands[1] as Extract<InstructionOperand, { kind: 'ssa-list' }>).values;
+  const args = (node.operands[2] as Extract<InstructionOperand, { kind: 'ssa-list' }>).values;
+  if (
+    !sameTypes(
+      key.map((value) => value.type),
+      target.keyTypes,
+    )
+  ) {
+    state.report('provider-key-mismatch', 'Checkpoint key does not match the provider key layout');
+  }
+  if (
+    !sameTypes(
+      args.map((value) => value.type),
+      target.params,
+    )
+  ) {
+    state.report('signature-mismatch', 'Checkpoint arguments do not match the provider signature');
+  }
+  if (!sameTypes(state.fn.results, target.results)) {
+    state.report(
+      'signature-mismatch',
+      'Checkpoint recovery target results do not match the current artifact results',
+    );
+  }
+}
+
+function sameTypes(left: readonly ScalarType[], right: readonly ScalarType[]): boolean {
+  return left.length === right.length && left.every((type, index) => type === right[index]);
 }
 
 function domain(node: InstructionNode, state: InstructionValidationState): void {

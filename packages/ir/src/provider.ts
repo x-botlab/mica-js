@@ -20,6 +20,7 @@ import type {
   FunctionRef,
   GeneratedFunction,
   GenerationContext,
+  InstructionNode,
   ProviderDefinition,
   ProviderRef,
   ReadableBytesRef,
@@ -166,7 +167,10 @@ class ProviderRuntimeImpl implements ProviderRuntime {
       body: built.body,
     };
     const diagnostics = [
-      ...validateGeneratedFunction(this.#model, fn, this.#artifactValidation, definition.imports),
+      ...validateGeneratedFunction(this.#model, fn, this.#artifactValidation, [
+        ...definition.imports,
+        definition.ref,
+      ]),
       ...this.#artifactDiagnostics(fn, definition),
     ];
     if (diagnostics.length > 0) {
@@ -222,12 +226,21 @@ class ProviderRuntimeImpl implements ProviderRuntime {
       }
     }
     const reads = new Set<StaticRef>(definition.reads);
-    const violation = findTrackedWrite(fn, reads, this.#functions, new Set());
+    const violation = findUnprotectedWrite(fn, reads, this.#functions);
     if (violation !== undefined) {
       diagnostics.push({
         code: 'unsupported-provider',
-        message: `Generated artifact writes generated-read resource ${violation}; runtime invalidation recovery is not implemented (#61)`,
-        location,
+        message:
+          `Generated artifact writes generated-read resource ${violation.resource} without a ` +
+          'checkpoint before continuing; place checkpoint after the update, with only ' +
+          'non-read state/array stores in between',
+        location: {
+          ...location,
+          blockIndex: violation.blockIndex,
+          ...(violation.instructionIndex === undefined
+            ? {}
+            : { instructionIndex: violation.instructionIndex }),
+        },
       });
     }
     return diagnostics;
@@ -463,30 +476,75 @@ function keyMismatch(providerName: string, index: number, type: ScalarType): IRP
   );
 }
 
+interface UnprotectedWrite {
+  readonly resource: string;
+  readonly blockIndex: number;
+  readonly instructionIndex?: number;
+}
+
 /**
- * Rejects artifacts that write a resource they were generated from. The transitive walk covers
- * ordinary calls inside this module; dispatch targets are re-checked when they run.
+ * Rejects artifacts that may invalidate their own generation reads without a recovery boundary.
+ * A checkpoint must follow the invalidating instruction in the same block; only direct stores to
+ * non-read state/arrays may intervene. The transitive walk covers ordinary calls in this module;
+ * dispatch targets are validated and checked when they run.
  */
-function findTrackedWrite(
+function findUnprotectedWrite(
+  fn: FunctionDefinition,
+  reads: ReadonlySet<StaticRef>,
+  functions: ReadonlyMap<object, FunctionDefinition>,
+): UnprotectedWrite | undefined {
+  for (const [blockIndex, block] of (fn.body?.blocks ?? []).entries()) {
+    let pending: StaticRef | undefined;
+    for (const [instructionIndex, node] of block.instructions.entries()) {
+      if (pending !== undefined) {
+        if (node.op === 'checkpoint') {
+          pending = undefined;
+          continue;
+        }
+        if (isRecoveryBookkeeping(node, reads)) continue;
+        return { resource: describeRef(pending), blockIndex, instructionIndex };
+      }
+      const written = trackedWrite(node, reads, functions, new Set());
+      if (written !== undefined) pending = written;
+    }
+    if (pending !== undefined) return { resource: describeRef(pending), blockIndex };
+  }
+  return undefined;
+}
+
+function isRecoveryBookkeeping(node: InstructionNode, reads: ReadonlySet<StaticRef>): boolean {
+  if (node.op !== 'state.store' && node.op !== 'array.store') return false;
+  const operand = node.operands[0];
+  return operand?.kind === 'static' && !reads.has(operand.ref);
+}
+
+function trackedWrite(
+  node: InstructionNode,
+  reads: ReadonlySet<StaticRef>,
+  functions: ReadonlyMap<object, FunctionDefinition>,
+  visited: Set<object>,
+): StaticRef | undefined {
+  const written = writtenRef(node.op, node.operands);
+  if (written !== undefined && reads.has(written)) return written;
+  if (node.op !== 'call') return undefined;
+  const target = node.operands[0];
+  if (target?.kind !== 'static') return undefined;
+  const callee = functions.get(target.ref);
+  return callee === undefined ? undefined : findWriteInFunction(callee, reads, functions, visited);
+}
+
+function findWriteInFunction(
   fn: FunctionDefinition,
   reads: ReadonlySet<StaticRef>,
   functions: ReadonlyMap<object, FunctionDefinition>,
   visited: Set<object>,
-): string | undefined {
+): StaticRef | undefined {
   if (visited.has(fn)) return undefined;
   visited.add(fn);
   for (const block of fn.body?.blocks ?? []) {
     for (const node of block.instructions) {
-      const written = writtenRef(node.op, node.operands);
-      if (written !== undefined && reads.has(written)) return describeRef(written);
-      if (node.op === 'call') {
-        const target = (node.operands[0] as { readonly ref?: StaticRef } | undefined)?.ref;
-        const callee = target === undefined ? undefined : functions.get(target);
-        if (callee !== undefined) {
-          const nested = findTrackedWrite(callee, reads, functions, visited);
-          if (nested !== undefined) return nested;
-        }
-      }
+      const written = trackedWrite(node, reads, functions, visited);
+      if (written !== undefined) return written;
     }
   }
   return undefined;
