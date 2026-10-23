@@ -95,7 +95,7 @@ export async function createCanvasScene(options: CreateCanvasSceneOptions): Prom
   const { host } = options;
   await host.loadDocument(options.document);
 
-  let snapshot: CanvasDocument = host.document;
+  let snapshot: CanvasDocument = host.getDocument();
   let mode: CanvasMode = options.mode ?? 'edit';
   let destroyed = false;
   let unsubscribeHostPublish: (() => void) | undefined;
@@ -112,7 +112,7 @@ export async function createCanvasScene(options: CreateCanvasSceneOptions): Prom
   /**
    * Makes `next` the snapshot the editor draws. The reference check is what keeps a command from
    * being adopted twice: the host notifies `onDocumentChange` synchronously, and the command
-   * handler adopts `host.document` afterwards.
+   * handler adopts `host.getDocument()` afterwards.
    */
   function adopt(next: CanvasDocument): void {
     if (destroyed || next === snapshot) {
@@ -146,7 +146,7 @@ export async function createCanvasScene(options: CreateCanvasSceneOptions): Prom
       });
       return;
     }
-    adopt(host.document);
+    adopt(host.getDocument());
   }
 
   function deliver(target: CanvasBindingTarget, payload: unknown, simTime: number): void {
@@ -251,7 +251,7 @@ export async function createCanvasScene(options: CreateCanvasSceneOptions): Prom
   const editor = mountCanvasEditor({
     container: options.container,
     document: snapshot,
-    layers: host.layers,
+    layers: host.getLayers(),
     mode,
     onCommand: handleCommand,
     dispatch: (instanceId, event) => host.dispatch(instanceId, event),

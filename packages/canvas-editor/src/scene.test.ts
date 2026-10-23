@@ -75,7 +75,7 @@ function createFakeHost(initial: CanvasDocument = canvasDocument()): FakeHost {
 
   return {
     delivered,
-    get document() {
+    getDocument(): CanvasDocument {
       return current;
     },
     loadDocument: vi.fn(async (document: CanvasDocument) => {
@@ -107,7 +107,7 @@ function createFakeHost(initial: CanvasDocument = canvasDocument()): FakeHost {
       delivered.push({ instanceId, port, payload, simTime });
     }),
     dispatch: vi.fn(),
-    layers,
+    getLayers: () => layers,
     resize: vi.fn(),
     dispose: vi.fn(async () => {}),
     onPublish: vi.fn((listener: (publish: WidgetPublish) => void) => {
@@ -154,7 +154,7 @@ async function mountScene(
   host: FakeHost,
   options: Omit<Partial<CreateCanvasSceneOptions>, 'container' | 'host' | 'document'> = {},
 ): Promise<CanvasScene> {
-  return createCanvasScene({ container, document: host.document, host, ...options });
+  return createCanvasScene({ container, document: host.getDocument(), host, ...options });
 }
 
 let editor: FakeEditor;
@@ -174,10 +174,10 @@ describe('createCanvasScene', () => {
 
     expect(host.loadDocument).toHaveBeenCalledWith(document);
     const options = mountedOptions();
-    expect(options.document).toBe(host.document);
-    expect(options.layers).toBe(host.layers);
+    expect(options.document).toBe(host.getDocument());
+    expect(options.layers).toBe(host.getLayers());
     expect(options.mode).toBe('edit');
-    expect(scene.document).toBe(host.document);
+    expect(scene.document).toBe(host.getDocument());
     expect(scene.mode).toBe('edit');
   });
 
@@ -190,10 +190,10 @@ describe('createCanvasScene', () => {
 
     expect(host.applyCommand).toHaveBeenCalledTimes(1);
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith(host.document);
+    expect(onChange).toHaveBeenCalledWith(host.getDocument());
     // The host already notified `onDocumentChange`; the command handler must not feed twice.
     expect(editor.setDocument).toHaveBeenCalledTimes(1);
-    expect(editor.setDocument).toHaveBeenCalledWith(host.document);
+    expect(editor.setDocument).toHaveBeenCalledWith(host.getDocument());
   });
 
   it('reports a rejected command and keeps the editor on the old snapshot', async () => {
@@ -215,7 +215,7 @@ describe('createCanvasScene', () => {
     expect(diagnostics[0]?.message).toContain('placement out of bounds');
     expect(onChange).not.toHaveBeenCalled();
     expect(editor.setDocument).not.toHaveBeenCalled();
-    expect(scene.document).toBe(host.document);
+    expect(scene.document).toBe(host.getDocument());
   });
 
   it('adopts a snapshot the host committed on its own without looping', async () => {
@@ -225,16 +225,16 @@ describe('createCanvasScene', () => {
 
     host.applyCommand({ type: 'add-instance', instance: widget(ID_A), z: 0 });
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith(host.document);
+    expect(onChange).toHaveBeenCalledWith(host.getDocument());
 
     // The same snapshot again is not a change.
-    host.emitDocumentChange(host.document);
+    host.emitDocumentChange(host.getDocument());
     expect(onChange).toHaveBeenCalledTimes(1);
 
     const placement = { x: 12, y: 24, width: 100, height: 50, rotation: 0 };
     host.applyCommand({ type: 'set-placement', instanceId: ID_A, placement });
     expect(onChange).toHaveBeenCalledTimes(2);
-    expect(onChange).toHaveBeenLastCalledWith(host.document);
+    expect(onChange).toHaveBeenLastCalledWith(host.getDocument());
     expect(editor.setDocument).toHaveBeenCalledTimes(2);
   });
 

@@ -223,7 +223,7 @@ function createHarness(sandbox = new FakeSandbox(), options: HarnessOptions = {}
     ...(options.assets === undefined ? {} : { assets: options.assets }),
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
   });
-  host.layers.subscribe((change) => changes.push(change));
+  host.getLayers().subscribe((change) => changes.push(change));
   host.onDocumentChange((document) => documents.push(document));
 
   return { host, sandbox, diagnostics, changes, publishes, documents, starts: () => starts };
@@ -240,11 +240,14 @@ async function flush(): Promise<void> {
 }
 
 function layerIds(harness: Harness): string[] {
-  return harness.host.layers.list().map((layer) => layer.instanceId);
+  return harness.host
+    .getLayers()
+    .list()
+    .map((layer) => layer.instanceId);
 }
 
 function documentIds(harness: Harness): string[] {
-  return harness.host.document.widgets.map((widget) => widget.id);
+  return harness.host.getDocument().widgets.map((widget) => widget.id);
 }
 
 /** Arguments of every guest `mount`, in order. */
@@ -297,8 +300,8 @@ describe('createWidgetHost', () => {
   it('starts empty and does not start the sandbox before an instance exists', () => {
     const harness = createHarness();
 
-    expect(harness.host.document).toEqual({ version: 1, widgets: [] });
-    expect(harness.host.layers.list()).toEqual([]);
+    expect(harness.host.getDocument()).toEqual({ version: 1, widgets: [] });
+    expect(harness.host.getLayers().list()).toEqual([]);
     expect(harness.starts()).toBe(0);
   });
 
@@ -323,14 +326,14 @@ describe('createWidgetHost', () => {
   it('rejects an invalid document without touching the mounted instances', async () => {
     const harness = createHarness();
     await harness.host.loadDocument(canvas(instance({ id: ID_A })));
-    const before = harness.host.document;
+    const before = harness.host.getDocument();
 
     const futureVersion = { version: 2, widgets: [] } as unknown as CanvasDocument;
     await expect(harness.host.loadDocument(futureVersion)).rejects.toBeInstanceOf(SchematicError);
     const broken = { version: 1, widgets: [{ id: 'not-a-uuid' }] } as unknown as CanvasDocument;
     await expect(harness.host.loadDocument(broken)).rejects.toBeInstanceOf(SchematicError);
 
-    expect(harness.host.document).toBe(before);
+    expect(harness.host.getDocument()).toBe(before);
     expect(layerIds(harness)).toEqual([ID_A]);
     expect(harness.sandbox.state).toBe('ready');
   });
@@ -431,7 +434,7 @@ describe('createWidgetHost', () => {
       ),
     );
 
-    expect(harness.host.layers.get(ID_A)).toBeDefined();
+    expect(harness.host.getLayers().get(ID_A)).toBeDefined();
     expect(harness.diagnostics).toEqual([
       expect.objectContaining({
         code: 'widget/asset-failed',
@@ -458,7 +461,7 @@ describe('createWidgetHost', () => {
 
     expect(harness.diagnostics).toEqual([]);
     expect(mountRequests(harness.sandbox)[0]).not.toHaveProperty('assets');
-    expect(harness.host.layers.get(ID_A)).toBeDefined();
+    expect(harness.host.getLayers().get(ID_A)).toBeDefined();
   });
 
   it('remounts an instance whose property names an asset the guest never received', async () => {
@@ -548,7 +551,7 @@ describe('createWidgetHost', () => {
       height: 10,
       dpr: 1,
     });
-    const layer = harness.host.layers.get(ID_A);
+    const layer = harness.host.getLayers().get(ID_A);
     expect(layer?.sequence).toBe(1);
 
     harness.host.applyCommand({
@@ -599,10 +602,10 @@ describe('createWidgetHost', () => {
     await flush();
 
     expect(harness.sandbox.argsOf('set-properties')).toEqual([ID_A, { color: '#FF0000' }]);
-    const layer = harness.host.layers.get(ID_A);
+    const layer = harness.host.getLayers().get(ID_A);
     expect(layer?.sequence).toBe(0);
     expect(layer?.bitmap).toBeUndefined();
-    expect(harness.host.document.widgets[0]?.properties).toEqual({ color: '#FF0000' });
+    expect(harness.host.getDocument().widgets[0]?.properties).toEqual({ color: '#FF0000' });
   });
 
   it('reorders layers on set-z without mounting or unmounting', async () => {
@@ -622,14 +625,14 @@ describe('createWidgetHost', () => {
   it('rejects an invalid command without changing the document or the layers', async () => {
     const harness = createHarness();
     await harness.host.loadDocument(canvas(instance({ id: ID_A })));
-    const before = harness.host.document;
+    const before = harness.host.getDocument();
 
     expect(() => harness.host.applyCommand({ type: 'remove-instance', instanceId: ID_B })).toThrow(
       SchematicError,
     );
     await flush();
 
-    expect(harness.host.document).toBe(before);
+    expect(harness.host.getDocument()).toBe(before);
     expect(layerIds(harness)).toEqual([ID_A]);
     expect(unmountCount(harness.sandbox)).toBe(0);
   });
@@ -637,7 +640,7 @@ describe('createWidgetHost', () => {
   it('rejects a command whose bindings do not validate, keeping the previous state', async () => {
     const harness = createHarness(undefined, { catalog });
     await harness.host.loadDocument(canvas(instance({ id: ID_A, properties: { color: 'red' } })));
-    const before = harness.host.document;
+    const before = harness.host.getDocument();
     const calls = harness.sandbox.calls.length;
 
     const command: CanvasCommand = {
@@ -649,8 +652,8 @@ describe('createWidgetHost', () => {
     expect(() => harness.host.applyCommand(command)).toThrow(SchematicError);
     await flush();
 
-    expect(harness.host.document).toBe(before);
-    expect(harness.host.layers.get(ID_A)?.width).toBe(20);
+    expect(harness.host.getDocument()).toBe(before);
+    expect(harness.host.getLayers().get(ID_A)?.width).toBe(20);
     expect(harness.sandbox.calls.slice(calls)).toEqual([]);
     expect(harness.diagnostics).toEqual([]);
   });
@@ -662,8 +665,8 @@ describe('createWidgetHost', () => {
       harness.host.loadDocument(canvas(instance({ id: ID_A, properties: { width: 1 } }))),
     ).rejects.toBeInstanceOf(SchematicError);
 
-    expect(harness.host.document).toEqual({ version: 1, widgets: [] });
-    expect(harness.host.layers.list()).toEqual([]);
+    expect(harness.host.getDocument()).toEqual({ version: 1, widgets: [] });
+    expect(harness.host.getLayers().list()).toEqual([]);
     expect(harness.starts()).toBe(0);
   });
 
@@ -703,7 +706,7 @@ describe('createWidgetHost', () => {
   it('reuses the running queue when a layer subscriber applies a command', async () => {
     const harness = createHarness();
     let reentered = false;
-    harness.host.layers.subscribe((change) => {
+    harness.host.getLayers().subscribe((change) => {
       // A subscriber is allowed to edit the document from the notification. That work has to join
       // the running pass; starting a second one would interleave guest calls and resolve
       // `loadDocument` before the instances it mounted are done.
@@ -758,7 +761,12 @@ describe('createWidgetHost', () => {
       'demo:gauge',
     ]);
     expect(sandbox.callsOf('unmount')).toEqual([[ID_A]]);
-    expect(host.layers.list().map((layer) => layer.instanceId)).toEqual([ID_A]);
+    expect(
+      host
+        .getLayers()
+        .list()
+        .map((layer) => layer.instanceId),
+    ).toEqual([ID_A]);
   });
 
   it('notifies document listeners synchronously once per commit', async () => {
@@ -800,7 +808,7 @@ describe('createWidgetHost', () => {
       dpr: 1,
     });
 
-    const layer = harness.host.layers.get(ID_A);
+    const layer = harness.host.getLayers().get(ID_A);
     expect(layer?.sequence).toBe(2);
     expect(layer?.bitmap).toBe(asBitmap(second));
     expect(first.closed).toBe(true);
@@ -821,7 +829,7 @@ describe('createWidgetHost', () => {
     });
 
     expect(bitmap.closed).toBe(true);
-    expect(harness.host.layers.get('unknown')).toBeUndefined();
+    expect(harness.host.getLayers().get('unknown')).toBeUndefined();
   });
 
   it('keeps every other instance when one reports a failure', async () => {
@@ -841,8 +849,8 @@ describe('createWidgetHost', () => {
         widget: 'demo:indicator',
       }),
     ]);
-    expect(harness.host.layers.get(ID_A)).toBeDefined();
-    expect(harness.host.layers.get(ID_B)).toBeDefined();
+    expect(harness.host.getLayers().get(ID_A)).toBeDefined();
+    expect(harness.host.getLayers().get(ID_B)).toBeDefined();
   });
 
   it('reports delivery failures without dropping the instance', async () => {
@@ -859,7 +867,7 @@ describe('createWidgetHost', () => {
       code: 'widget/deliver-failed',
       instanceId: ID_A,
     });
-    expect(harness.host.layers.get(ID_A)).toBeDefined();
+    expect(harness.host.getLayers().get(ID_A)).toBeDefined();
   });
 
   it('forwards published payloads to the host callback', async () => {
@@ -910,7 +918,7 @@ describe('createWidgetHost', () => {
 
     harness.host.applyCommand({ type: 'remove-instance', instanceId: ID_A });
 
-    expect(harness.host.layers.get(ID_A)).toBeUndefined();
+    expect(harness.host.getLayers().get(ID_A)).toBeUndefined();
     expect(bitmap.closed).toBe(true);
     expect(harness.changes.at(-1)).toEqual({ type: 'removed', instanceId: ID_A });
 
@@ -929,7 +937,7 @@ describe('createWidgetHost', () => {
     await loading;
     await flush();
 
-    expect(harness.host.layers.list()).toEqual([]);
+    expect(harness.host.getLayers().list()).toEqual([]);
     // The document removal unmounts, then the cancelled mount releases the session the guest
     // created while the host was still waiting, so `unmount` ends the call log.
     expect(harness.sandbox.methods().at(-1)).toBe('unmount');
@@ -951,7 +959,7 @@ describe('createWidgetHost', () => {
     await loading;
     await flush();
 
-    expect(harness.host.layers.get(ID_A)).toBeDefined();
+    expect(harness.host.getLayers().get(ID_A)).toBeDefined();
     expect(harness.sandbox.liveSessionIds()).toEqual([ID_A]);
     expect(harness.diagnostics).toEqual([]);
   });
@@ -977,7 +985,7 @@ describe('createWidgetHost', () => {
     expect(harness.diagnostics).toEqual([
       expect.objectContaining({ code: 'widget/unknown-widget', widget: 'demo:missing' }),
     ]);
-    expect(harness.host.layers.list()).toEqual([]);
+    expect(harness.host.getLayers().list()).toEqual([]);
     expect(harness.starts()).toBe(0);
   });
 
@@ -1008,7 +1016,7 @@ describe('createWidgetHost', () => {
     await flush();
 
     expect(layerIds(harness)).toEqual([ID_A]);
-    expect(harness.host.layers.get(ID_A)?.width).toBe(30);
+    expect(harness.host.getLayers().get(ID_A)?.width).toBe(30);
   });
 
   it('repaints every layer when the device pixel ratio changes', async () => {
@@ -1017,7 +1025,7 @@ describe('createWidgetHost', () => {
 
     harness.host.resize(2);
 
-    expect(harness.host.layers.get(ID_A)?.dpr).toBe(2);
+    expect(harness.host.getLayers().get(ID_A)?.dpr).toBe(2);
     await flush();
     expect(harness.sandbox.argsOf('resize')).toEqual([ID_A, 20, 10, 2]);
   });
@@ -1041,7 +1049,7 @@ describe('createWidgetHost', () => {
     expect(harness.diagnostics).toEqual([
       expect.objectContaining({ code: 'widget/runtime-failed' }),
     ]);
-    expect(harness.host.layers.list()).toEqual([]);
+    expect(harness.host.getLayers().list()).toEqual([]);
     expect(bitmap.closed).toBe(true);
   });
 
@@ -1056,7 +1064,7 @@ describe('createWidgetHost', () => {
     await host.loadDocument(canvas(instance({ id: ID_A })));
 
     expect(diagnostics).toEqual([expect.objectContaining({ code: 'widget/runtime-failed' })]);
-    expect(host.layers.list()).toEqual([]);
+    expect(host.getLayers().list()).toEqual([]);
   });
 
   it('terminates the sandbox and closes every bitmap on dispose', async () => {
@@ -1076,7 +1084,7 @@ describe('createWidgetHost', () => {
 
     expect(harness.sandbox.reasons).toHaveLength(1);
     expect(bitmap.closed).toBe(true);
-    expect(harness.host.layers.list()).toEqual([]);
+    expect(harness.host.getLayers().list()).toEqual([]);
   });
 
   it('cancels a mount interrupted by dispose without reporting a failure', async () => {
@@ -1092,7 +1100,7 @@ describe('createWidgetHost', () => {
     await disposing;
 
     expect(harness.diagnostics).toEqual([]);
-    expect(harness.host.layers.list()).toEqual([]);
+    expect(harness.host.getLayers().list()).toEqual([]);
     expect(harness.sandbox.reasons).toHaveLength(1);
   });
 
@@ -1116,7 +1124,7 @@ describe('createWidgetHost', () => {
     await disposing;
 
     expect(sandbox.reasons).toHaveLength(1);
-    expect(host.layers.list()).toEqual([]);
+    expect(host.getLayers().list()).toEqual([]);
   });
 
   it('resets the guest runtime and mounts the current document again', async () => {

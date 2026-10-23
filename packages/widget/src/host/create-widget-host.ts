@@ -95,8 +95,6 @@ export function createWidgetHost(options: WidgetHostOptions): WidgetHost {
 }
 
 class WidgetHostImpl implements WidgetHost {
-  readonly layers: WidgetLayers;
-
   readonly #provider: WidgetHostOptions['provider'];
   readonly #container: HTMLElement | undefined;
   readonly #onDiagnostic: ((diagnostic: WidgetDiagnostic) => void) | undefined;
@@ -123,7 +121,6 @@ class WidgetHostImpl implements WidgetHost {
   #dpr: number;
 
   constructor(options: WidgetHostOptions) {
-    this.layers = this.#layerStore;
     this.#provider = options.provider;
     this.#container = options.container;
     this.#onDiagnostic = options.onDiagnostic;
@@ -134,8 +131,12 @@ class WidgetHostImpl implements WidgetHost {
     this.#dpr = options.dpr ?? currentDevicePixelRatio();
   }
 
-  get document(): CanvasDocument {
+  getDocument(): CanvasDocument {
     return this.#document;
+  }
+
+  getLayers(): WidgetLayers {
+    return this.#layerStore;
   }
 
   async loadDocument(document: CanvasDocument): Promise<void> {

@@ -386,7 +386,7 @@ export function CanvasPage() {
     if (host === null) {
       return;
     }
-    const current = host.document;
+    const current = host.getDocument();
     const messages = applyCommand({
       type: 'add-instance',
       instance: createPaletteInstance(entry, current.widgets.length, crypto.randomUUID()),
@@ -414,7 +414,7 @@ export function CanvasPage() {
     if (host === null) {
       return;
     }
-    const z = zForDrop(host.document.widgets.length, displayIndex);
+    const z = zForDrop(host.getDocument().widgets.length, displayIndex);
     if (z === undefined) {
       return;
     }
@@ -439,7 +439,7 @@ export function CanvasPage() {
         const text = new TextDecoder().decode(await fetchBytes('widgets/demo.cnv'));
         await host.loadDocument(parseCanvas(text));
         // The sample is the baseline again, so reloading it does not count as unsaved work.
-        draft?.seed(host.document);
+        draft?.seed(host.getDocument());
       } catch (cause) {
         setError(`重置草稿失败：${describeError(cause)}`);
       }

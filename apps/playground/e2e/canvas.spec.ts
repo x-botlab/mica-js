@@ -17,7 +17,7 @@ interface SceneHandle {
 
 /** The widget host is exposed too, so a test can watch a layer repaint. */
 interface HostHandle {
-  readonly layers: {
+  getLayers(): {
     list(): readonly {
       readonly instanceId: string;
       readonly sequence: number;
@@ -43,14 +43,15 @@ function centerOf(widget: DemoWidget): Point {
 async function frameSequence(page: Page, instanceId: string): Promise<number> {
   return page.evaluate((id) => {
     const host = (globalThis as unknown as { micaWidgetHost: HostHandle }).micaWidgetHost;
-    return host.layers.get(id)?.sequence ?? 0;
+    return host.getLayers().get(id)?.sequence ?? 0;
   }, instanceId);
 }
 
 async function layerCount(page: Page): Promise<number> {
   return page.evaluate(
     () =>
-      (globalThis as unknown as { micaWidgetHost: HostHandle }).micaWidgetHost.layers.list().length,
+      (globalThis as unknown as { micaWidgetHost: HostHandle }).micaWidgetHost.getLayers().list()
+        .length,
   );
 }
 

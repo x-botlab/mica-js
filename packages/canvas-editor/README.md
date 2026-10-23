@@ -29,7 +29,7 @@ import { applyCanvasCommand } from '@mica-js/core/canvas';
 const editor = mountCanvasEditor({
   container: document.querySelector('#host')!, // 编辑器只往里 append 自己的 root
   document: canvasDocument, // CanvasDocument（.cnv）
-  layers: host.layers, // WidgetHost 的位图层
+  layers: host.getLayers(), // WidgetHost 的位图层
   onCommand: (command) => {
     canvasDocument = applyCanvasCommand(canvasDocument, command);
     editor.setDocument(canvasDocument); // 回灌快照：选择、视口与进行中的交互都会保留

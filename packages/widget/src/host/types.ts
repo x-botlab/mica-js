@@ -64,8 +64,10 @@ export interface WidgetHost {
   /**
    * Snapshot the host currently coordinates: the last document accepted by `loadDocument` or
    * `applyCommand`. Starts as the empty document `{ version: 1, widgets: [] }`.
+   *
+   * Every call returns the current value, so a long-lived reference stays live.
    */
-  readonly document: CanvasDocument;
+  getDocument(): CanvasDocument;
 
   /**
    * Commits an already parsed document and mounts the instances it lists.
@@ -74,7 +76,8 @@ export interface WidgetHost {
    * handed, but it never guesses whether a value is text or a document.
    *
    * Resolves once the instances of this first pass finished mounting. A widget that fails to mount
-   * is reported through `onDiagnostic` and left out of `layers` instead of rejecting this promise.
+   * is reported through `onDiagnostic` and left out of `getLayers()` instead of rejecting this
+   * promise.
    *
    * @throws {SchematicError} when `document` is not a valid `.cnv` document or the bindings do not
    * validate; neither the document nor the instances change in that case.
@@ -110,7 +113,8 @@ export interface WidgetHost {
 
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
   dispatch(instanceId: string, event: WidgetInputEvent): void;
-  readonly layers: WidgetLayers;
+  /** Bitmaps in document order; the same store for the lifetime of the host. */
+  getLayers(): WidgetLayers;
   /** Changes the device pixel ratio of every layer and repaints all instances. */
   resize(dpr: number): void;
   /** Terminates the sandbox and closes every bitmap. */
