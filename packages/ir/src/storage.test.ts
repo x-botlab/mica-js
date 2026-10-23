@@ -783,4 +783,86 @@ describe('storage internals fast path', () => {
     expect(source.match(/\.units\s*=/g) ?? []).toHaveLength(1);
     expect(source).toMatch(/#setUnits\([^)]*\)[^{]*\{\s*record\.units = units;/);
   });
+
+  describe('dump', () => {
+    it('snapshots every scalar, array, and byte resource by name', () => {
+      const fixture = createFixture();
+      fixture.storage.storeState(fixture.dword, 0x01020304);
+      fixture.storage.storeArray(fixture.words, 1, 0xbeef);
+      fixture.storage.storeBytes('u16', 'big', fixture.ram, 0, 0xcafe);
+      fixture.storage.writeInbox(fixture.inbox, 0, new Uint8Array([7, 8]));
+
+      const snapshot = fixture.storage.dump();
+
+      expect([...snapshot.scalars.keys()]).toEqual([
+        'flag',
+        'byte',
+        'word',
+        'dword',
+        'sbyte',
+        'sword',
+        'sdword',
+        'single',
+        'double',
+      ]);
+      expect(snapshot.scalars.get('flag')).toBe(false);
+      expect(snapshot.scalars.get('byte')).toBe(0);
+      expect(snapshot.scalars.get('word')).toBe(0x1234);
+      expect(snapshot.scalars.get('dword')).toBe(0x01020304);
+      expect(snapshot.scalars.get('sbyte')).toBe(-1);
+      expect(snapshot.scalars.get('single')).toEqual<FloatBits>({
+        type: 'f32',
+        bits: '0x3fc00000',
+      });
+      expect(snapshot.scalars.get('double')).toEqual<FloatBits>({
+        type: 'f64',
+        bits: '0x3fb999999999999a',
+      });
+
+      expect([...snapshot.arrays.keys()]).toEqual(['words', 'emptyArray']);
+      expect(snapshot.arrays.get('words')).toEqual([0x1122, 0xbeef]);
+      expect(snapshot.arrays.get('emptyArray')).toEqual([]);
+
+      expect([...snapshot.bytes.keys()]).toEqual(['ram', 'rom', 'input', 'empty']);
+      const ram = snapshot.bytes.get('ram')!;
+      expect(Array.from(ram.subarray(0, 4))).toEqual([0xca, 0xfe, 0x33, 0x44]);
+      expect(Array.from(snapshot.bytes.get('rom')!)).toEqual([
+        0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7,
+      ]);
+      expect(Array.from(snapshot.bytes.get('input')!)).toEqual([7, 8, 0, 0]);
+      expect(snapshot.bytes.get('empty')!.length).toBe(0);
+    });
+
+    it('returns deep copies that never share storage buffers', () => {
+      const fixture = createFixture();
+      const snapshot = fixture.storage.dump();
+      snapshot.bytes.get('ram')![0] = 0xff;
+      fixture.storage.storeBytes('u8', 'little', fixture.ram, 1, 0xee);
+
+      expect(fixture.storage.loadBytes('u8', 'little', fixture.ram, 0)).toBe(0x11);
+      expect(snapshot.bytes.get('ram')![1]).toBe(0x22);
+      expect(snapshot.scalars.get('single')).not.toBe(fixture.storage.loadState(fixture.single));
+      expect(snapshot.arrays.get('words')).not.toBe(fixture.storage.dump().arrays.get('words'));
+    });
+
+    it('does not mint version units or observe writes as reads', () => {
+      const fixture = createFixture();
+      const control = storageInternalsOf(fixture.storage).control;
+      const before = control.epoch;
+      const first = fixture.storage.dump();
+      const second = fixture.storage.dump();
+      expect(control.epoch).toBe(before);
+      expect([...first.scalars]).toEqual([...second.scalars]);
+      expect(second.scalars.get('flag')).toBe(fixture.storage.loadState(fixture.flag));
+    });
+
+    it('keeps NaN payload bits exactly as stored', () => {
+      const fixture = createFixture();
+      fixture.storage.storeState(fixture.single, { type: 'f32', bits: '0x7fa00001' });
+      expect(fixture.storage.dump().scalars.get('single')).toEqual<FloatBits>({
+        type: 'f32',
+        bits: '0x7fa00001',
+      });
+    });
+  });
 });

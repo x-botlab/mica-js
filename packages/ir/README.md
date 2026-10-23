@@ -2,7 +2,7 @@
 
 领域无关的 IR 数据模型、同步类型化建图器、静态校验/链接诊断、整数/布尔/浮点逐指令语义、实例存储与参考解释器。
 
-本包负责**建图、实例存储、静态校验与参考执行**：声明标量资源与函数、构造 SSA 值、基本块与终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。提供显式 IR 输出端点与 `bridge.send` / `bridge.send_bytes` 的宿主桥接，以及按 key 生成、依赖跟踪与实例内缓存的 Provider 产物；产物 checkpoint 支持运行中依赖失效后的尾派发恢复。不提供事件调度、话题路由/通知队列或 JIT。校验通过不代表已经执行，未实现的能力显式拒绝，不以空操作伪装成功。
+本包负责**建图、实例存储、静态校验与执行**：声明标量资源与函数、构造 SSA 值、基本块与终结指令，为每个实例建立独立存储，并通过 `validateIR` 检查内存模型、控制流与能力策略。提供显式 IR 输出端点与 `bridge.send` / `bridge.send_bytes` 的宿主桥接，以及按 key 生成、依赖跟踪与实例内缓存的 Provider 产物；产物 checkpoint 支持运行中依赖失效后的尾派发恢复。`createIRInterpreter` 提供参考解释器，`createIRJIT` 提供同一执行契约的编译引擎。不提供事件调度、话题路由或通知队列。校验通过不代表已经执行，未实现的能力显式拒绝，不以空操作伪装成功。
 
 ## 安装
 
@@ -19,6 +19,7 @@ pnpm add @mica-js/ir
 | `createIRModule()`                            | 创建独立的模块声明/建图上下文，返回 `IRModule`                                                                                                  |
 | `createIRStorage(module, options?)`           | 为声明资源创建一份独立实例存储；`updateResources` 显式授予字节更新权限，默认无授权                                                              |
 | `createIRInterpreter(module, options)`        | 创建经快照与校验的参考解释器，拥有独立 `storage`                                                                                                |
+| `createIRJIT(module, options)`                | 创建经同样快照与校验的 JIT 执行引擎，拥有独立 `storage`；与参考解释器结果、步数与错误等价                                                       |
 | `validateIR(input, options)`                  | 返回 `IRValidationResult`，通过 `IRDiagnostic` / `IRDiagnosticLocation` 报告静态错误                                                            |
 | `evaluateScalarInstruction(instruction, ops)` | 求值单个整数/布尔节点，失败抛 `IRScalarEvaluationError`                                                                                         |
 | `evaluateFloatInstruction(instruction, ops)`  | 求值单个浮点节点，失败抛 `IRFloatEvaluationError`                                                                                               |
@@ -453,10 +454,41 @@ step.body((b) => b.dispatch(code, [b.state.load(pc)], []));
 - 产物直接或经 `imports` 调用链写入其生成读取的资源时，必须在同一块内、该写入之后提供 `checkpoint`；两者之间只允许写非 `reads` 的 state/array。恢复 key/args 与恢复状态值应在失效写入前算好，不能把 `const` 或纯计算夹在中间；无法证明恢复正确时产物校验以 `unsupported-provider` 拒绝。
 - `b.checkpoint(provider, key, args)` 只存在于生成产物构建器；普通函数中出现以 `invalid-checkpoint` 拒绝。它检查当前产物的完整依赖：有效则继续下一条；失效则丢弃旧产物剩余步骤，以当前 SSA key/args 尾派发恢复目标。已提交的存储、事件、输出与时间效果保留且不重放，当前入口预算与虚拟时间不变。
 - 恢复目标可为当前 provider 自身，或 `imports` 中的其他 provider；其 key/参数与结果布局必须与当前产物匹配，否则分别以 `provider-key-mismatch` / `signature-mismatch` / `provider-import-violation` 拒绝。目标结果布局不匹配、checkpoint 出现在非法位置或依赖 token 无法证明属于当前实例时，运行期以 `recovery-failed` 拒绝。
-- checkpoint 不固化生成产物：恢复时按当前资源版本重新生成。缓存、宿主对象与进行中的调用帧不进入 checkpoint；恢复所需客体状态必须已写回 IR 资源。只支持内存内实例恢复，不提供磁盘格式、跨进程/跨实例迁移、快照/restore 或 JIT/重放。
+- checkpoint 不固化生成产物：恢复时按当前资源版本重新生成。缓存、宿主对象与进行中的调用帧不进入 checkpoint；恢复所需客体状态必须已写回 IR 资源。只支持内存内实例恢复，不提供磁盘格式、跨进程/跨实例迁移、快照/restore 或重放。
 - 失败抛 `IRProviderError`（`invalid-provider`、`key-mismatch`、`unauthorized-read`、`invalid-read`、`generation-failed`、`invalid-artifact`、`import-violation`、`dependency-changed`、`illegal-operation`、`recovery-failed`），解释器包装为 `provider-failed` 并保留 `cause`、调用位置与产物诊断。
 
 `src/provider.test.ts`、`src/provider-runtime.test.ts`、`src/provider-storage.test.ts`、`src/provider-checkpoint.test.ts` 与 `src/provider.type-test.ts` 覆盖声明/链接、真实生成与缓存轨迹、版本失效、key 规范化、受追踪读取副本与越界、生成期非法操作、产物 imports、checkpoint 恢复与恢复边界。
+
+## JIT 执行引擎
+
+```ts
+import { createIRJIT, createIRModule } from '@mica-js/ir';
+
+const runtime = createIRJIT(module, {
+  validation,
+  maxSteps: 1_000_000,
+  jit: { tier: 'auto', codegen: 'auto', warmup: 'lazy', artifactWarmup: 1 },
+});
+runtime.execute(increment, [3], { instanceId: 'counter', virtualTime: 1000 });
+```
+
+`createIRJIT(module, options)` 与 `createIRInterpreter` 使用相同的 `IRInterpreterOptions` 与 `IRInterpreter` 接口（`storage` + `execute`），返回对象同样被冻结。创建流程先调用共享的 `prepareEngine`，因此非法选项、校验诊断、未实现指令等错误与参考解释器完全一致。
+
+- **等价契约**：同一目标与实参下，`execute` 的 `values`、`steps`、`IRExecutionError` 的 `code`/`message`/`location`/`callStack`/`steps`/`diagnostics` 与参考解释器逐项相同；效果提交与 faulted 语义也相同。
+- **懒编译**：创建期只做快照、校验与 MIR 降级，不调用 `new Function`。模型函数在第一次被调用时编译并替换 `H.fns` 槽；Provider 产物在第一次 `dispatch` / checkpoint 恢复触发 `materialize` 时编译。`warmup: 'eager'` 会在创建期编译全部模型函数，Provider 产物仍在首次派发时编译。
+- **尾派发**：`dispatch` 与失效 checkpoint 通过 `TAIL` 哨兵和 `rt.runTail()` 蹦床执行，派发链不增长 JS 栈；产物以 `artifact.index` / `artifact.name` 降级，因此错误位置与调用栈和参考一致。
+- **依赖与重编译**：产物按对象身份缓存编译结果；每次派发先校验该产物的依赖 token，并递归检查它可能调用到的 Provider 产物链（深层依赖）。依赖失效时重新生成产物并编译新产物。
+- **计步**：`maxSteps`、`stepObserver`、`stepBudget` 与参考解释器语义相同；预算模式下会在宿主边界与执行结束时合并提交已开始的步骤。
+- **CSP 回落**：创建时探测 `new Function`。`codegen: 'auto'`（默认）在不可用时静默返回共享同一 `storage` 的参考解释器；`codegen: 'require'` 以 `invalid-options` / `JIT code generation is unavailable in this environment` 拒绝。创建后懒编译若失败，后续执行也回落到参考解释器。
+- **`IRJITTuning`**：
+  - `tier`：`'auto'`（默认）、`'heap'`（只用参考解释器）、`'compiled'`；
+  - `codegen`：`'auto'`（默认）、`'require'`；
+  - `warmup`：`'lazy'`（默认）、`'eager'`；
+  - `artifactWarmup`：非负安全整数，默认 1；本引擎在首次派发时编译产物；
+  - `maxCompiledDepth`：正安全整数，默认 1000；超过时以新的编译段继续执行；
+  - `optimizations`：优化开关（当前无已定义名称，传入未知键报 `invalid-options`）；
+  - `debug.verify`：降级后运行 MIR verifier，默认 `false`。
+- 推荐把 JIT 与 `stepBudget` 一起使用：批量计步让宿主以更少的回调完成同等预算核算，同时保留 `maxSteps` 的安全上限。
 
 ## 版本化资源更新
 
@@ -507,7 +539,7 @@ runtime.storage.validateDependencies(after.dependencies); // true
 - 单元边界为 `floor(offset / unitBytes)`，声明后固定；非零更新为覆盖的每个单元产生新版本 token，未覆盖单元与其他资源不变。
 - 依赖对象是不透明 token，只在本实例内有效；过期、伪造、跨资源/实例或非法形状返回 `false`，空集合为 `true`。它们不是序列化或持久化格式。
 - 普通 `bytes.store` / `bytes.copy` 不改变字节单元版本；state/array 使用整资源单元，普通 `storeState` / `storeArray` 推进该单元（#60），宿主 `writeInbox` 推进 inbox 整资源单元。
-- Provider 的受追踪标量读取通过内部 symbol 方法访问同一依赖元数据，不新增公开 `IRStorage` 方法；运行中恢复依赖这些 token 的实例内校验，JIT 不在本包。
+- Provider 的受追踪标量读取通过内部 symbol 方法访问同一依赖元数据，不新增公开 `IRStorage` 方法；运行中恢复依赖这些 token 的实例内校验，JIT 引擎复用同一 storage 与校验路径。
 - `writeInbox` 是可信宿主把消息写入 inbox 的唯一通道；IR 自身的 inbox 读取保持只读，普通写入仍被拒绝。`updateBytesFromBytes` 走 `update` 授权、完整范围检查与原子版本路径，供 device 的 `api.updateBytes` 使用。
 
 ```ts
@@ -541,13 +573,14 @@ type IRResourceDependency = {
 ## 当前限制
 
 - 事件队列/调度器、输出队列/话题路由/通知时机与 JS 作者侧 `api.updateBytes` 请求队列；核心 event 与 bridge 指令只通过上述可信宿主桥接。
-- JIT；运行中恢复仅限合法产物 checkpoint 的尾派发，不支持失败入口中途恢复、跨进程/跨实例迁移或持久化快照。
+- 运行中恢复仅限合法产物 checkpoint 的尾派发，不支持失败入口中途恢复、跨进程/跨实例迁移或持久化快照。
+- JIT 目前不包含 J11–J14 的优化 pass；`optimizations` 尚未定义任何名称。
 - 尚未定义的函数保持 `body: undefined`，会被 `validateIR` 拒绝。
 
 ## 开发
 
 ```bash
-pnpm --filter @mica-js/ir test        # 模型、建图、校验、标量、存储、解释器与资源更新
+pnpm --filter @mica-js/ir test        # 模型、建图、校验、标量、存储、解释器、JIT 与资源更新
 pnpm --filter @mica-js/ir typecheck   # 含 builder / storage / interpreter 正反类型用例
 pnpm --filter @mica-js/ir build
 ```

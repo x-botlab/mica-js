@@ -186,6 +186,16 @@ export function createIRInterpreter(
   return new Interpreter(prepareEngine(module, options));
 }
 
+/**
+ * @internal
+ * Build a reference engine over an existing setup. The JIT uses this for its
+ * CSP/heap fallback so both engines share one storage instance and one set of
+ * captured hooks.
+ */
+export function createIRInterpreterFromSetup(setup: EngineSetup): IRInterpreter {
+  return new Interpreter(setup);
+}
+
 class Interpreter implements IRInterpreter {
   readonly #setup: EngineSetup;
   readonly storage: IRStorage;

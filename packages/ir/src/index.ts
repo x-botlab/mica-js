@@ -1,5 +1,14 @@
 export { createIRModule } from './module';
 export { createIRInterpreter, IRExecutionError } from './interpreter';
+export { createIRJIT } from './jit';
+export type {
+  IRJITCodegen,
+  IRJITOptimization,
+  IRJITOptions,
+  IRJITTier,
+  IRJITTuning,
+  IRJITWarmup,
+} from './jit';
 export type {
   IRBridgeHost,
   IRInterpreterOptions,
@@ -26,6 +35,7 @@ export type {
   IRResourceVersion,
   IRResourceDependency,
   IRVersionedBytes,
+  IRStorageSnapshot,
 } from './storage';
 export { evaluateScalarInstruction, IRScalarEvaluationError } from './scalar';
 export type { IRScalarEvaluationErrorCode } from './scalar';

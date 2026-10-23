@@ -237,7 +237,14 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
   const results = inst.results;
   const arg = (index: number): string => context.value(inst.args[index]!);
   const num = (index: number): string => context.numeric(inst.args[index]!);
-  const type = results.length > 0 ? context.typeOf(results[0]!) : context.typeOf(inst.args[0]!);
+  // Instructions with neither results nor scalar operands (a zero-argument
+  // `call` or `checkpoint`) never read the type; they must not probe operand 0.
+  const type =
+    results.length > 0
+      ? context.typeOf(results[0]!)
+      : inst.args.length > 0
+        ? context.typeOf(inst.args[0]!)
+        : 'u32';
 
   switch (inst.op) {
     case Op.Const: {
@@ -677,7 +684,9 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
           .join(', ')}], [${inst.args
           .slice(keyCount(inst))
           .map((id) => context.boundary(id))
-          .join(', ')}], ${context.constant(context.fn.name)});`,
+          .join(', ')}], ${context.constant(context.fn.name)}, ${context.constant(
+          context.fn.results,
+        )});`,
       );
       context.line('  rt.afterHost();');
       context.line(`  rt.tailFn = ${temp}.fn; rt.tailArgs = ${temp}.args;`);

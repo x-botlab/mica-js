@@ -5,6 +5,7 @@ import type {
   InboxRef,
   IRResourceDependency,
   IRStorage,
+  IRStorageSnapshot,
   IRVersionedBytes,
   NumericType,
   ReadableBytesRef,
@@ -111,5 +112,8 @@ export class LifecycleStorage implements IRStorage {
   }
   validateDependencies(dependencies: readonly IRResourceDependency[]): boolean {
     return this.#live('validateDependencies').validateDependencies(dependencies);
+  }
+  dump(): IRStorageSnapshot {
+    return this.#live('dump').dump();
   }
 }

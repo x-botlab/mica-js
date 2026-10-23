@@ -1,5 +1,6 @@
 // Compile-only contract checks. This file is not executed and is excluded from
 // the package build; `pnpm --filter @mica-js/ir typecheck` is the test runner.
+import { createIRJIT } from './index';
 import type {
   EntryRef,
   FunctionBuilder,
@@ -8,6 +9,10 @@ import type {
   IRDeclarations,
   IRInstructionExecution,
   IRInstructionExecutor,
+  IRInterpreter,
+  IRInterpreterOptions,
+  IRJITOptions,
+  IRJITTuning,
   IRModule,
   IRStepBudget,
   LifecycleRef,
@@ -266,3 +271,29 @@ expectType<IRStepBudget>(stepBudget);
 // @ts-expect-error the batch protocol requires both methods
 const incompleteBudget: IRStepBudget = { remaining: () => 0 };
 void incompleteBudget;
+
+// The JIT engine shares the interpreter contract and adds an optional tuning object.
+declare const interpreterOptions: IRInterpreterOptions;
+const jitTuning: IRJITTuning = {
+  tier: 'auto',
+  codegen: 'require',
+  warmup: 'eager',
+  artifactWarmup: 2,
+  maxCompiledDepth: 500,
+  optimizations: {},
+  debug: { verify: true },
+};
+const jitOptions: IRJITOptions = { ...interpreterOptions, jit: jitTuning };
+expectType<IRInterpreterOptions>(jitOptions);
+const jit: IRInterpreter = createIRJIT(module, jitOptions);
+expectType<IRInterpreter>(jit);
+// @ts-expect-error `heap` is the only non-compiled tier; arbitrary strings are rejected.
+const badTier: IRJITTuning = { tier: 'fast' };
+void badTier;
+// @ts-expect-error warmup is lazy or eager only.
+const badWarmup: IRJITTuning = { warmup: 'whenever' };
+void badWarmup;
+// No optimization names exist before J11, so the object must stay empty; the
+// runtime rejects unknown keys.
+const noOptimizations: IRJITTuning = { optimizations: {} };
+void noOptimizations;

@@ -90,6 +90,13 @@ export interface ScalarRecordInternals {
   readonly raw: Uint32Array | undefined;
   /** True while the whole-resource unit is tracked; writes must then call `advanceScalar`. */
   readonly tracked: () => boolean;
+  /** Binds the owning storage's whole-resource unit so JIT views can advance it. */
+  readonly advance: () => void;
+}
+
+/** Whole-unit advance hook shared by storage records and JIT resource views. */
+export interface AdvanceableRecord {
+  advance(): void;
 }
 
 /** Byte record view exposed to the JIT. */
@@ -120,7 +127,7 @@ export interface StorageInternals {
   ): ScalarRecordInternals;
   bytes(ref: object, write: boolean, label: string): ByteRecordInternals;
   /** Mirrors the tracked-store path: a no-op while the record is untracked. */
-  advanceScalar(record: ScalarRecordInternals): void;
+  advanceScalar(record: AdvanceableRecord): void;
 }
 
 export type StorageValue<T extends ScalarType> = T extends 'bool'
@@ -171,6 +178,20 @@ export interface IRStorageOptions {
 }
 
 /**
+ * Deep, engine-independent snapshot of every declared memory resource.
+ *
+ * Maps are keyed by the declared memory name (unique per validated module) so
+ * two storage instances can be compared without sharing opaque refs. Scalar
+ * values use the same encoding as `loadState`/`loadArray` (floats keep their
+ * exact `FloatBits`), and byte regions (including inboxes) are copied.
+ */
+export interface IRStorageSnapshot {
+  readonly scalars: ReadonlyMap<string, StorageValue<ScalarType>>;
+  readonly arrays: ReadonlyMap<string, readonly StorageValue<ScalarType>[]>;
+  readonly bytes: ReadonlyMap<string, Uint8Array>;
+}
+
+/**
  * Per-instance storage for declared state, arrays, byte regions, and inboxes.
  * The buffers are private; callers can only use the checked accessors.
  */
@@ -216,6 +237,12 @@ export interface IRStorage {
   updateBytesFromBytes(ref: BytesRef, offset: number, bytes: Uint8Array): void;
   readVersionedBytes(ref: ReadableBytesRef, offset: number, length: number): IRVersionedBytes;
   validateDependencies(dependencies: readonly IRResourceDependency[]): boolean;
+  /**
+   * Copy every memory resource into a fresh snapshot. Reads never mint version
+   * units, so dumping is observationally equivalent to `loadState` /
+   * `loadArray` / byte reads and can be used by test oracles at any point.
+   */
+  dump(): IRStorageSnapshot;
 }
 
 interface BaseRecord<K extends MemoryDefinition['kind'] = MemoryDefinition['kind']> {
@@ -586,6 +613,30 @@ class Storage implements IRStorage, IRProviderTrackedReads {
     }
   }
 
+  dump(): IRStorageSnapshot {
+    const scalars = new Map<string, StorageValue<ScalarType>>();
+    const arrays = new Map<string, readonly StorageValue<ScalarType>[]>();
+    const bytes = new Map<string, Uint8Array>();
+    for (const record of this.#records.values()) {
+      const name = record.definition.name;
+      if ('scalarType' in record) {
+        const values: StorageValue<ScalarType>[] = [];
+        for (let index = 0; index < record.length; index += 1) {
+          const bits = readBits(record.bytes, index * record.width, record.width, 'little');
+          values.push(decodeScalar(record.scalarType, bits) as StorageValue<ScalarType>);
+        }
+        if (record.kind === 'state') {
+          scalars.set(name, values[0] as StorageValue<ScalarType>);
+        } else {
+          arrays.set(name, Object.freeze(values));
+        }
+        continue;
+      }
+      bytes.set(name, record.bytes.slice());
+    }
+    return Object.freeze({ scalars, arrays, bytes });
+  }
+
   validateDependencies(dependencies: readonly IRResourceDependency[]): boolean {
     if (!Array.isArray(dependencies)) return false;
     // Index iteration deliberately rejects holes as malformed dependencies.
@@ -713,9 +764,8 @@ class Storage implements IRStorage, IRProviderTrackedReads {
  * Advances the whole-resource unit for a scalar record after a JIT fast-path write. Mirrors the
  * tracked store path exactly: untracked records are ignored, tracked ones get a fresh token.
  */
-export function advanceScalar(record: ScalarRecordInternals): void {
-  const scalar = record as ScalarRecord;
-  scalar.advance();
+export function advanceScalar(record: AdvanceableRecord): void {
+  record.advance();
 }
 
 /** True when host typed arrays use little-endian byte order (every mainstream target). */

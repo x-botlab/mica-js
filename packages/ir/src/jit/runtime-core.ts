@@ -7,7 +7,7 @@
  * the tail-call sentinel and the translated error frames. The execution entry
  * point that drives `TAIL` chains lives in J7.
  */
-import { invokeEvent, invokeExecutor, invokeOutput } from '../engine-host';
+import { invokeEvent, invokeExecutor, invokeOutput, sameResultTypes } from '../engine-host';
 import type { EngineSetup } from '../engine-setup';
 import { IRProviderError } from '../errors';
 import { evaluateFloatInstruction } from '../float';
@@ -100,6 +100,10 @@ export class JitRuntime {
   committed = 0;
   limit: number;
   context: IRExecutionContext;
+  /** Alias read by generated host calls (`rt.ctx`). */
+  get ctx(): IRExecutionContext {
+    return this.context;
+  }
   readonly maxSteps: number;
   readonly mode: BudgetMode;
   /** Multi-result return slots, preallocated once per execution. */
@@ -126,7 +130,9 @@ export class JitRuntime {
       this.limit = -1;
     } else if (options.stepBudget !== undefined) {
       this.mode = 'budget';
-      this.limit = Math.min(this.maxSteps, this.readRemaining());
+      // The reference consumes exactly one step per instruction and never polls
+      // `remaining`, so budgeted runs always take the exact (per-step) path.
+      this.limit = -1;
     } else {
       this.mode = 'none';
       this.limit = this.maxSteps;
@@ -142,19 +148,9 @@ export class JitRuntime {
     this.tailFn = undefined;
     this.tailArgs = undefined;
     this.depth = 0;
-    if (this.mode === 'budget') {
-      this.limit = Math.min(this.maxSteps, this.readRemaining());
-    } else {
-      this.limit = this.mode === 'observer' ? -1 : this.maxSteps;
-    }
-  }
-
-  /** Non-negative safe integers only; anything else counts as an exhausted budget. */
-  private readRemaining(): number {
-    const budget = this.#budget;
-    if (budget === undefined) return this.maxSteps;
-    const value = budget.remaining(this.context);
-    return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+    // Budgeted executions keep `limit` at -1 so every step takes the exact path,
+    // matching the reference's one-`consume`-per-step protocol.
+    this.limit = this.mode === 'none' ? this.maxSteps : -1;
   }
 
   /**
@@ -168,7 +164,6 @@ export class JitRuntime {
       // The location is kept for diagnostics/debug builds; the reference error
       // itself carries no details (the caller's unwind adds them).
       void location;
-      this.flush();
       // The reference raises this without details; the caller's `wrapExecutionError`
       // fills in the location, call stack and step count.
       throw new IRExecutionError(
@@ -181,30 +176,29 @@ export class JitRuntime {
       return;
     }
     if (this.mode === 'budget') {
-      this.flush();
+      // One host call per step, in execution order. A throwing call must not
+      // advance the counter, so `committed` only moves after it returns.
       this.#budget!.consume(this.context, 1);
       this.committed = this.steps + 1;
-      this.limit = Math.min(this.maxSteps, this.committed + this.readRemaining());
     }
   }
 
-  /** Commit every pending step to the host budget (R3). */
+  /** Budget steps are committed one at a time; nothing is ever pending. */
   flush(): void {
     if (this.mode !== 'budget') return;
-    if (this.steps <= this.committed) return;
-    this.#budget!.consume(this.context, this.steps - this.committed);
-    this.committed = this.steps;
   }
 
   /** Host calls see a fully committed counter. */
   beforeHost(): void {
-    this.flush();
+    if (this.mode !== 'budget' || this.steps <= this.committed) return;
+    this.#budget!.consume(this.context, this.steps - this.committed);
+    this.committed = this.steps;
   }
 
-  /** After host code the remaining budget may have changed (R4). */
+  /** After host code the counter is fully committed; `remaining` is never polled. */
   afterHost(): void {
     if (this.mode !== 'budget') return;
-    this.limit = Math.min(this.maxSteps, this.committed + this.readRemaining());
+    this.committed = this.steps;
   }
 
   /** Translate any thrown value into a {@link JitUnwind}, appending this frame. */
@@ -263,6 +257,8 @@ export interface JitResource {
   readonly bytes: Uint8Array;
   readonly data: DataView;
   readonly tracked: () => boolean;
+  /** Whole-resource unit advance after a fast-path write (bytes views never write). */
+  readonly advance: () => void;
 }
 
 /** One resolved tail-transfer target. */
@@ -336,6 +332,7 @@ export interface JitHelpers {
     key: readonly unknown[],
     args: readonly unknown[],
     currentName: string,
+    currentResults: readonly ScalarType[],
   ) => JitTailTarget;
   /** Convert one host boundary value into the MIR representation of `type`. */
   readonly argument: (type: ScalarType, value: RuntimeScalar) => unknown;
@@ -400,6 +397,7 @@ export function createJitHelpers(setup: EngineSetup, options: JitHelpersOptions 
         bytes: record.bytes,
         data: new DataView(record.bytes.buffer, record.bytes.byteOffset, record.bytes.byteLength),
         tracked: record.tracked,
+        advance: record.advance,
       });
     } else {
       // Prefetch never writes, so no writability check is required here.
@@ -413,6 +411,7 @@ export function createJitHelpers(setup: EngineSetup, options: JitHelpersOptions 
         bytes: record.bytes,
         data: record.data,
         tracked: () => false,
+        advance: () => undefined,
       });
     }
   }
@@ -468,15 +467,22 @@ export function createJitHelpers(setup: EngineSetup, options: JitHelpersOptions 
       const artifact = setup.providers.materialize(provider.ref, [...(key as RuntimeScalar[])]);
       return tailTarget(artifact, args, artifacts);
     },
-    recover: (providerIndex, key, args, name) => {
+    recover: (providerIndex, key, args, name, currentResults) => {
       const provider = setup.model.providers[providerIndex];
       if (provider === undefined) throw new Error('JIT checkpoint target is not declared');
-      // Mirror `recoverCheckpoint`: materialize, then require fresh dependencies.
+      // Mirror `recoverCheckpoint`: materialize, require fresh dependencies and
+      // the same result layout as the artifact being replaced.
       const artifact = setup.providers.materialize(provider.ref, [...(key as RuntimeScalar[])]);
       if (!setup.storage.validateDependencies(artifact.dependencies)) {
         throw new IRProviderError(
           'recovery-failed',
           `Recovery target for checkpoint in "${name}" still has stale dependencies`,
+        );
+      }
+      if (!sameResultTypes(artifact.fn.results, currentResults)) {
+        throw new IRProviderError(
+          'recovery-failed',
+          `Recovery target for checkpoint in "${name}" has a different result layout`,
         );
       }
       return tailTarget(artifact, args, artifacts);
