@@ -1,0 +1,26 @@
+{
+  "ports": {
+    "key": {
+      "direction": "input",
+      "type": "boolean",
+      "title": "按键",
+      "description": "按下时把计数清零。"
+    },
+    "led": {
+      "direction": "input",
+      "type": "boolean",
+      "title": "LED",
+      "description": "演示用的第二个布尔输入，未绑定。"
+    },
+    "display": {
+      "direction": "output",
+      "type": "string",
+      "title": "数码管 1"
+    },
+    "display2": {
+      "direction": "output",
+      "type": "string",
+      "title": "数码管 2"
+    }
+  }
+}

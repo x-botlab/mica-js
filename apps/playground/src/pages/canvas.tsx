@@ -3,15 +3,17 @@ import {
   DARK_CANVAS_THEME,
   type CanvasMode,
   type CanvasScene,
-  type CanvasSceneDiagnostic,
 } from '@mica-js/canvas-editor';
+import { timePs } from '@mica-js/core';
 import {
-  type CanvasBindingTarget,
   type CanvasCommand,
   type CanvasDocument,
   parseCanvas,
   serializeCanvas,
 } from '@mica-js/core/canvas';
+import { parseSchematic } from '@mica-js/core/schematic';
+import { parseDeviceDescription, type IDeviceProvider } from '@mica-js/device';
+import { createDeviceSimExecutor, type DeviceSimExecutor } from '@mica-js/simulator';
 import {
   createPackageWidgetProvider,
   createWidgetHost,
@@ -25,7 +27,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { layerRows, zForDrop } from '@/canvas/layers';
 import { createPaletteInstance, paletteEntries, type PaletteEntry } from '@/canvas/palette';
-import { commandErrorMessages } from '@/canvas/panel-model';
+import { commandErrorMessages, type TopicCandidate } from '@/canvas/panel-model';
 import { createCanvasDraft, createDraftStore, createMemoryStorage } from '@/canvas/persist';
 import {
   DRAFT_STORAGE_KEY,
@@ -38,23 +40,36 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
+/** Device package the canvas demo runs: `demo:<name>` resolves to `devices/<name>.json` + `.js`. */
+const DEVICE_PACKAGE = 'demo';
+/** Virtual time one run-mode tick advances; equals the demo device's own period (0.1 s). */
+const DRIVER_STEP_PS = timePs(100_000_000_000);
+const DRIVER_INTERVAL_MS = 100;
+
 /**
- * Endpoints `demo.cnv` binds; the simulation the scene forwards to is faked with a timer below.
- * The board carries two 4-digit modules, so each one gets its own value.
+ * Device source for the demo schematic. The provider owns id resolution and file layout; the
+ * simulator only asks for `demo:<name>`.
  */
-const DRIVER_TARGETS: readonly {
-  readonly target: CanvasBindingTarget;
-  readonly value: (tick: number) => string;
-}[] = [
-  {
-    target: { symbol: 'demo-mcu', port: 'display' },
-    value: (tick) => (5 + (tick % 50) * 0.01).toFixed(2),
+const DEVICES: IDeviceProvider = {
+  async resolve(deviceId) {
+    const separator = deviceId.indexOf(':');
+    const name = separator < 0 ? '' : deviceId.slice(separator + 1);
+    if (deviceId.slice(0, separator) !== DEVICE_PACKAGE || name.length === 0) {
+      return undefined;
+    }
+    const [description, code] = await Promise.all([
+      fetchBytes(`devices/${name}.json`),
+      fetchBytes(`devices/${name}.js`),
+    ]);
+    const raw: unknown = JSON.parse(new TextDecoder().decode(description));
+    return {
+      definition: parseDeviceDescription(raw as Readonly<Record<string, unknown>>, {
+        name: deviceId,
+      }),
+      code: new TextDecoder().decode(code),
+    };
   },
-  {
-    target: { symbol: 'demo-mcu', port: 'display2' },
-    value: (tick) => String(1000 + (tick % 1000)),
-  },
-];
+};
 
 const PACKAGE_FILES: PackageFiles = {
   label: 'demo',
@@ -113,6 +128,8 @@ interface DiagnosticEntry {
 interface PublishEntry {
   readonly id: number;
   readonly time: string;
+  /** `'widget'` is widget → device, `'device'` is device → widgets. */
+  readonly direction: 'widget' | 'device';
   readonly endpoint: string;
   readonly payload: string;
   readonly simTime: number;
@@ -153,6 +170,7 @@ export function CanvasPage() {
   const containerRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<CanvasScene | null>(null);
   const hostRef = useRef<WidgetHost | null>(null);
+  const executorRef = useRef<DeviceSimExecutor | null>(null);
   /** Lets a mode switch stop the driver before the instances it feeds are dropped. */
   const driverActive = useRef(false);
   const [ready, setReady] = useState(false);
@@ -163,6 +181,7 @@ export function CanvasPage() {
   const [definitions, setDefinitions] = useState<ReadonlyMap<string, WidgetDefinition>>(
     () => new Map(),
   );
+  const [topics, setTopics] = useState<readonly TopicCandidate[]>([]);
   const [palette, setPalette] = useState<readonly PaletteEntry[]>([]);
   const [dragId, setDragId] = useState<string | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
@@ -175,14 +194,37 @@ export function CanvasPage() {
   const [diagnostics, setDiagnostics] = useState<readonly DiagnosticEntry[]>([]);
   const [publishes, setPublishes] = useState<readonly PublishEntry[]>([]);
 
-  const pushDiagnostic = useCallback((diagnostic: CanvasSceneDiagnostic) => {
-    setDiagnostics((entries) =>
-      [{ id: nextId(), code: diagnostic.code, message: diagnostic.message }, ...entries].slice(
-        0,
-        40,
-      ),
-    );
-  }, []);
+  const pushDiagnostic = useCallback(
+    (diagnostic: { readonly code: string; readonly message: string }) => {
+      setDiagnostics((entries) =>
+        [{ id: nextId(), code: diagnostic.code, message: diagnostic.message }, ...entries].slice(
+          0,
+          40,
+        ),
+      );
+    },
+    [],
+  );
+
+  /** One log row per publish, whichever direction it travelled. */
+  const recordPublish = useCallback(
+    (direction: 'widget' | 'device', endpoint: string, payload: unknown, simTime: number) => {
+      setPublishes((entries) =>
+        [
+          {
+            id: nextId(),
+            time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+            direction,
+            endpoint,
+            payload: describePayload(payload),
+            simTime,
+          },
+          ...entries,
+        ].slice(0, 40),
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -192,15 +234,23 @@ export function CanvasPage() {
     let cancelled = false;
     let host: WidgetHost | undefined;
     let scene: CanvasScene | undefined;
+    let executor: DeviceSimExecutor | undefined;
 
     const start = async (): Promise<void> => {
       try {
         const provider = await createPackageWidgetProvider({ files: PACKAGE_FILES });
         // The list comes from `widgets/package.json`, so adding a widget there is enough.
         const demoPackage = await loadWidgetPackage(PACKAGE_FILES);
+        const ownedExecutor = createDeviceSimExecutor({
+          devices: DEVICES,
+          onDiagnostic: pushDiagnostic,
+        });
+        executor = ownedExecutor;
         const ownedHost = createWidgetHost({
           provider,
           assets: ASSETS,
+          // The host routes publishes both ways; no forwarding code lives in this page.
+          simulation: ownedExecutor,
           onDiagnostic: pushDiagnostic,
           // `WidgetHostOptions.onPublish` takes exactly one callback; the scene fans it out.
           onPublish: (publish) => scene?.receivePublish(publish),
@@ -232,24 +282,35 @@ export function CanvasPage() {
           onDiagnostic: pushDiagnostic,
         });
         created.onPublish((target, payload, simTime) => {
-          setPublishes((entries) =>
-            [
-              {
-                id: nextId(),
-                time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-                endpoint: `${target.symbol}.${target.port}`,
-                payload: describePayload(payload),
-                simTime,
-              },
-              ...entries,
-            ].slice(0, 40),
-          );
+          recordPublish('widget', `${target.symbol}.${target.port}`, payload, simTime);
+        });
+        // Device publishes never enter the scene (the host routes them straight to the widgets),
+        // so the log listens on the executor for the other direction.
+        ownedExecutor.onPublish(({ target, payload, simTime }) => {
+          recordPublish('device', `${target.symbol}.${target.port}`, payload, simTime);
         });
 
         const resolved = await resolveDefinitions(provider, created.getDocument());
+        // The canvas names its schematic; without one the demo runs without a simulation.
+        const schematicPath = created.getDocument().schematic;
+        if (schematicPath !== undefined) {
+          try {
+            const schematicText = new TextDecoder().decode(await fetchBytes(schematicPath));
+            await ownedExecutor.loadSchematic(parseSchematic(schematicText));
+            setTopics(ownedExecutor.getTopics());
+          } catch (cause) {
+            // A broken schematic must not blank the canvas: report it and keep editing.
+            pushDiagnostic({
+              code: 'simulator/load-failed',
+              message: `原理图 ${schematicPath} 加载失败：${describeError(cause)}`,
+            });
+          }
+        }
+
         if (cancelled) {
           // The effect was torn down mid-startup; release what this attempt already created.
           created.destroy();
+          ownedExecutor.dispose();
           void ownedHost.dispose();
           return;
         }
@@ -257,6 +318,7 @@ export function CanvasPage() {
         scene = created;
         sceneRef.current = created;
         hostRef.current = ownedHost;
+        executorRef.current = ownedExecutor;
         // The loaded document is the baseline: a fresh page is not "unsaved changes".
         draft.seed(created.getDocument());
         setDocument(created.getDocument());
@@ -272,6 +334,7 @@ export function CanvasPage() {
           Object.assign(globalThis, {
             micaCanvas: created,
             micaWidgetHost: ownedHost,
+            micaSimulator: ownedExecutor,
             micaProvider: provider,
           });
         }
@@ -280,6 +343,7 @@ export function CanvasPage() {
           setError(describeError(cause));
           setResolving(false);
           // Nothing will mount over this host; release its sandbox instead of leaking it.
+          executor?.dispose();
           void host?.dispose();
         }
       }
@@ -295,34 +359,39 @@ export function CanvasPage() {
       scene = undefined;
       sceneRef.current = null;
       hostRef.current = null;
+      executorRef.current = null;
       // The playground owns the host, so it is the one that terminates the sandbox.
+      executor?.dispose();
       void host?.dispose();
+      executor = undefined;
       host = undefined;
     };
-  }, [pushDiagnostic]);
+  }, [pushDiagnostic, recordPublish]);
 
   useEffect(() => {
     if (!ready || mode !== 'run') {
       return;
     }
-    const scene = sceneRef.current;
-    if (scene === null) {
+    const executor = executorRef.current;
+    if (executor === null || executor.getState() !== 'ready') {
       return;
     }
     driverActive.current = true;
-    let tick = 0;
     const drive = (): void => {
       if (!driverActive.current) {
         return;
       }
-      tick += 1;
-      for (const { target, value } of DRIVER_TARGETS) {
-        scene.deliver(target, value(tick), tick);
+      try {
+        executor.advance(DRIVER_STEP_PS);
+      } catch (cause) {
+        // The executor is 'faulted' now; stop feeding it and surface the failure.
+        driverActive.current = false;
+        setError(`仿真推进失败：${describeError(cause)}`);
       }
     };
-    // One value right away, so the display lights up instead of waiting for the first second.
+    // One step right away, so the displays light up instead of waiting for the first interval.
     drive();
-    const timer = globalThis.setInterval(drive, 1000);
+    const timer = globalThis.setInterval(drive, DRIVER_INTERVAL_MS);
     return () => {
       driverActive.current = false;
       globalThis.clearInterval(timer);
@@ -366,6 +435,10 @@ export function CanvasPage() {
     setError(null);
     try {
       await scene.setMode(next);
+      // The widgets were rebuilt, so the simulation restarts from t = 0 as well: both sides of the
+      // bridge always describe the same run. `reset()` is synchronous, so the mode switch still
+      // resolves in one go.
+      executorRef.current?.reset();
       setMode(scene.getMode());
     } catch (cause) {
       setMode(scene.getMode());
@@ -628,6 +701,7 @@ export function CanvasPage() {
             definition={selectedDefinition}
             resolving={resolving}
             revision={revision}
+            targets={topics}
             onApply={applyCommand}
           />
 
@@ -664,7 +738,7 @@ export function CanvasPage() {
           <section className="flex flex-col border-t">
             <header className="flex items-center gap-2 border-b px-3 py-2">
               <h2 className="text-xs font-semibold">发布日志</h2>
-              <span className="text-muted-foreground text-[10px]">scene.onPublish</span>
+              <span className="text-muted-foreground text-[10px]">→ widget · ← 器件</span>
             </header>
             <ul className="max-h-48 overflow-y-auto p-2 font-mono text-[11px]">
               {publishes.length === 0 ? (
@@ -673,7 +747,9 @@ export function CanvasPage() {
                 publishes.map((entry) => (
                   <li key={entry.id} className="flex gap-2 border-b py-1 last:border-b-0">
                     <span className="text-muted-foreground shrink-0">{entry.time}</span>
-                    <span className="shrink-0 text-sky-400">{entry.endpoint}</span>
+                    <span className="shrink-0 text-sky-400">
+                      {entry.direction === 'widget' ? '→' : '←'} {entry.endpoint}
+                    </span>
                     <span className="text-foreground break-all">{entry.payload}</span>
                     <span className="text-muted-foreground ml-auto shrink-0">
                       t={entry.simTime}

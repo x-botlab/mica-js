@@ -13,6 +13,7 @@ import {
   parseTargetValue,
   propertyInitialValue,
   targetValue,
+  type TopicCandidate,
 } from '@/canvas/panel-model';
 
 /** Applies one command; the returned messages come from `SchematicError.diagnostics`. */
@@ -26,6 +27,8 @@ export interface CanvasInspectorProps {
   readonly resolving: boolean;
   /** Bumped whenever the document changes, so field drafts reseed from the committed values. */
   readonly revision: number;
+  /** Endpoints the running schematic offers; empty while no simulation is loaded. */
+  readonly targets: readonly TopicCandidate[];
   readonly onApply: CanvasCommandApplier;
 }
 
@@ -273,13 +276,14 @@ interface BindingFieldProps {
   readonly instance: CanvasWidgetInstance;
   readonly portKey: string;
   readonly port: PortDefinition;
+  readonly targets: readonly TopicCandidate[];
   readonly disabled: boolean;
   readonly onApply: CanvasCommandApplier;
 }
 
-function BindingField({ instance, portKey, port, disabled, onApply }: BindingFieldProps) {
+function BindingField({ instance, portKey, port, targets, disabled, onApply }: BindingFieldProps) {
   const [errors, setErrors] = useState<readonly string[]>([]);
-  const options = bindingOptions(instance, portKey, port);
+  const options = bindingOptions(instance, portKey, port, targets);
   const current = bindingTargetOf(instance, portKey);
 
   return (
@@ -329,6 +333,7 @@ export function CanvasInspector({
   definition,
   resolving,
   revision,
+  targets,
   onApply,
 }: CanvasInspectorProps) {
   const readOnly = mode === 'run';
@@ -392,6 +397,7 @@ export function CanvasInspector({
                 instance={instance}
                 portKey={key}
                 port={port}
+                targets={targets}
                 disabled={readOnly}
                 onApply={onApply}
               />

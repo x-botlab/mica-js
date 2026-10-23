@@ -47,6 +47,9 @@ interface Point {
   readonly y: number;
 }
 
+/** Symbol id of the demo .sch; bindings, candidate labels and the publish log all show it. */
+const SYMBOL = '0000000d-0000-4000-8000-000000000001';
+
 type DemoWidget = SceneSnapshot['document']['widgets'][number];
 
 /** Instance center in document coordinates, so a test never depends on the demo's geometry. */
@@ -201,7 +204,7 @@ test('delivers to the segment and logs the button publish in run mode', async ({
   const point = await pagePoint(page, centerOf(button));
   await page.mouse.click(point.x, point.y);
 
-  await expect(page.getByText('demo-mcu.key').first()).toBeVisible();
+  await expect(page.getByText(`${SYMBOL}.key`).first()).toBeVisible();
   await expect(page.getByText('诊断 0')).toBeVisible();
 });
 
@@ -209,13 +212,15 @@ test('repaints the segment from the run-mode timer', async ({ page }) => {
   await openCanvas(page);
   const segment = await demoWidget(page, 'demo:segment');
 
-  // The mount already produced one frame; the driver's deliveries have to add more.
+  // The mount already produced one frame; the demo device has to add more.
   const mounted = await frameSequence(page, segment.id);
   await page.getByRole('button', { name: '运行', exact: true }).click();
 
   await expect
     .poll(() => frameSequence(page, segment.id), { timeout: 5000 })
     .toBeGreaterThan(mounted);
+  // The value comes from the device, not from the page: it shows up in the publish log too.
+  await expect(page.getByText(`${SYMBOL}.display`).first()).toBeVisible();
 });
 
 test('edits a selected instance through the property panel', async ({ page }) => {
@@ -238,7 +243,7 @@ test('edits a selected instance through the property panel', async ({ page }) =>
   await expect(page.getByText('诊断 0')).toBeVisible();
 
   // The binding panel keeps showing the endpoint the document declares.
-  await expect(page.getByLabel('value 绑定')).toHaveValue('demo-mcu:display');
+  await expect(page.getByLabel('value 绑定')).toHaveValue(`${SYMBOL}:display`);
 
   // Reset drops the override again.
   await colorRow.getByRole('button', { name: '重置' }).click();
@@ -254,13 +259,13 @@ test('offers only complementary binding candidates', async ({ page }) => {
   await page.mouse.click(point.x, point.y);
 
   const select = page.getByLabel('press 绑定');
-  await expect(select).toHaveValue('demo-mcu:key');
+  await expect(select).toHaveValue(`${SYMBOL}:key`);
   // A boolean widget output pairs with the boolean schematic inputs only.
   const labels = await select.locator('option').allTextContents();
   expect(labels).toEqual([
     '未绑定',
-    'demo-mcu.key · input · boolean',
-    'demo-mcu.led · input · boolean',
+    `${SYMBOL}.key · input · boolean`,
+    `${SYMBOL}.led · input · boolean`,
   ]);
 });
 

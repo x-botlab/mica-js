@@ -8,11 +8,11 @@
       "@/*": ["./src/*"],
       "@mica-js/canvas-editor": ["../../packages/canvas-editor/src/index.ts"],
       "@mica-js/widget": ["../../packages/widget/src/index.ts"],
+      "@mica-js/core": ["../../packages/core/src/index.ts"],
       "@mica-js/core/canvas": ["../../packages/core/src/canvas/index.ts"],
       "@mica-js/core/schematic": ["../../packages/core/src/schematic/index.ts"],
-      "@mica-js/core": ["../../packages/core/src/index.ts"],
-      "@mica-js/ir": ["../../packages/ir/src/index.ts"],
       "@mica-js/device": ["../../packages/device/src/index.ts"],
+      "@mica-js/ir": ["../../packages/ir/src/index.ts"],
       "@mica-js/simulator": ["../../packages/simulator/src/index.ts"],
       "@mica-js/schematic-editor": ["../../packages/schematic-editor/src/index.ts"],
       "@mica-js/sandbox": ["../../packages/sandbox/src/index.ts"]
