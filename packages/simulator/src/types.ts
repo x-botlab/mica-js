@@ -4,6 +4,7 @@ import type {
   DeviceInstanceOptions,
   DevicePinHost,
   IDeviceProvider,
+  LoadedDeviceModule,
   TopicPayload,
   TopicPayloadType,
 } from '@mica-js/device';
@@ -18,8 +19,13 @@ export type SimulationState = 'idle' | 'ready' | 'faulted' | 'disposed';
  * `DevicePortDescriptor`, so a host can build binding candidates without touching the devices.
  */
 export interface DeviceTopic {
-  /** Symbol id inside the schematic (`SchematicSymbol.id`). */
+  /** Symbol id inside the schematic (`SchematicSymbol.id`); this is what a binding stores. */
   readonly symbol: string;
+  /**
+   * Reference designator shown to users (`U1`), following `designatorOf`: the symbol's own
+   * `designator`, or its id when the schematic does not set one.
+   */
+  readonly designator: string;
   /** Port key declared by the device description. */
   readonly port: string;
   readonly direction: 'input' | 'output';
@@ -100,6 +106,13 @@ export interface DeviceSimHostContext {
   /** Scheduler of the runtime being built; a new one for every load and every reset. */
   readonly scheduler: Scheduler;
   readonly schematic: SchematicDocument;
+  /**
+   * Device modules the schematic resolves to, keyed by device id.
+   *
+   * Pin geometry and connection pairs live in the descriptions, so a wiring host that derives nets
+   * from the sheet (see `createCircuitHost`) reads them from here instead of loading them twice.
+   */
+  readonly modules: ReadonlyMap<string, LoadedDeviceModule>;
 }
 
 /** Builds the wiring for one runtime. */

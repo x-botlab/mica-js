@@ -24,11 +24,13 @@ export default defineConfig({
       '@mica-js/core/schematic': fileURLToPath(
         new URL('../../packages/core/src/schematic/index.ts', import.meta.url),
       ),
+      // Keep the bare package last: Vite matches aliases by prefix, so `@mica-js/core` would
+      // otherwise swallow `@mica-js/core/canvas` and `@mica-js/core/schematic`.
       '@mica-js/core': fileURLToPath(new URL('../../packages/core/src/index.ts', import.meta.url)),
-      '@mica-js/ir': fileURLToPath(new URL('../../packages/ir/src/index.ts', import.meta.url)),
       '@mica-js/device': fileURLToPath(
         new URL('../../packages/device/src/index.ts', import.meta.url),
       ),
+      '@mica-js/ir': fileURLToPath(new URL('../../packages/ir/src/index.ts', import.meta.url)),
       '@mica-js/simulator': fileURLToPath(
         new URL('../../packages/simulator/src/index.ts', import.meta.url),
       ),

@@ -13,6 +13,7 @@ import {
   parseTargetValue,
   propertyInitialValue,
   targetValue,
+  type TopicCandidate,
 } from '@/canvas/panel-model';
 
 /** Applies one command; the returned messages come from `SchematicError.diagnostics`. */
@@ -26,6 +27,8 @@ export interface CanvasInspectorProps {
   readonly resolving: boolean;
   /** Bumped whenever the document changes, so field drafts reseed from the committed values. */
   readonly revision: number;
+  /** Endpoints the running schematic offers; empty while no simulation is loaded. */
+  readonly targets: readonly TopicCandidate[];
   readonly onApply: CanvasCommandApplier;
 }
 
@@ -273,17 +276,19 @@ interface BindingFieldProps {
   readonly instance: CanvasWidgetInstance;
   readonly portKey: string;
   readonly port: PortDefinition;
+  readonly targets: readonly TopicCandidate[];
   readonly disabled: boolean;
   readonly onApply: CanvasCommandApplier;
 }
 
-function BindingField({ instance, portKey, port, disabled, onApply }: BindingFieldProps) {
+function BindingField({ instance, portKey, port, targets, disabled, onApply }: BindingFieldProps) {
   const [errors, setErrors] = useState<readonly string[]>([]);
-  const options = bindingOptions(instance, portKey, port);
+  const options = bindingOptions(instance, portKey, port, targets);
   const current = bindingTargetOf(instance, portKey);
 
   return (
     <div className="border-b py-1.5 last:border-b-0" data-port={portKey}>
+      {' '}
       <div className="flex items-center gap-1">
         <span className="font-mono text-[11px]">{portKey}</span>
         <span className="text-muted-foreground text-[10px]">
@@ -316,7 +321,7 @@ function BindingField({ instance, portKey, port, disabled, onApply }: BindingFie
       <p className="text-muted-foreground mt-0.5 text-[10px]">
         {current === undefined
           ? '未绑定：运行/仿真消息不会到达这个端口。'
-          : `当前 ${describeTarget(current)}`}
+          : `当前 ${describeTarget(current, targets)}`}
       </p>
       <ErrorLines messages={errors} />
     </div>
@@ -329,6 +334,7 @@ export function CanvasInspector({
   definition,
   resolving,
   revision,
+  targets,
   onApply,
 }: CanvasInspectorProps) {
   const readOnly = mode === 'run';
@@ -392,6 +398,7 @@ export function CanvasInspector({
                 instance={instance}
                 portKey={key}
                 port={port}
+                targets={targets}
                 disabled={readOnly}
                 onApply={onApply}
               />

@@ -47,6 +47,10 @@ interface Point {
   readonly y: number;
 }
 
+/** Symbol ids of the demo `.sch`; a binding stores the id even though the UI shows the designator. */
+const BUTTON = '00000011-0000-4000-8000-000000000001';
+const DISPLAY = '00000013-0000-4000-8000-000000000001';
+
 type DemoWidget = SceneSnapshot['document']['widgets'][number];
 
 /** Instance center in document coordinates, so a test never depends on the demo's geometry. */
@@ -78,28 +82,34 @@ async function demoWidget(page: Page, ref: string): Promise<DemoWidget> {
   return widget;
 }
 
+/** Rows in the publish log for one endpoint; the log is written by the page, not by the scene. */
+async function publishRows(page: Page, endpoint: string): Promise<number> {
+  return page.evaluate(
+    (target) =>
+      [...document.querySelectorAll('li')].filter((row) => row.textContent?.includes(target))
+        .length,
+    endpoint,
+  );
+}
+
 /**
  * Switches mode and waits until the rebuild finished.
  *
- * A switch drops and re-creates every instance, so the run-mode driver only starts afterwards: a
- * new segment frame is the signal that both the reset and the remount are done.
+ * A switch drops and re-creates every instance and then resets the simulation, so the fresh
+ * initial publish is the signal that both sides are back at t = 0.
  */
 async function switchMode(page: Page, label: '编辑' | '运行'): Promise<void> {
-  const segment = await demoWidget(page, 'demo:segment');
-  const before = await frameSequence(page, segment.id);
+  const publishes = await publishRows(page, 'U2.value');
   await page.getByRole('button', { name: label, exact: true }).click();
   await expect
     .poll(async () => (await sceneState(page)).mode)
     .toBe(label === '运行' ? 'run' : 'edit');
+  await expect.poll(() => publishRows(page, 'U2.value')).toBeGreaterThan(publishes);
 
-  if (label === '运行') {
-    await expect.poll(() => frameSequence(page, segment.id)).toBeGreaterThan(before);
-    return;
+  if (label === '编辑') {
+    const { document } = await sceneState(page);
+    await expect.poll(() => layerCount(page)).toBe(document.widgets.length);
   }
-  // Back in edit mode nothing repaints the segment, and the remount left exactly one frame.
-  await expect.poll(() => frameSequence(page, segment.id)).toBe(1);
-  const { document } = await sceneState(page);
-  await expect.poll(() => layerCount(page)).toBe(document.widgets.length);
 }
 
 async function openCanvas(page: Page): Promise<void> {
@@ -193,29 +203,40 @@ test('turns a drag into a committed placement and a document revision', async ({
   await expect(page.getByText('rev 1')).toBeVisible();
 });
 
-test('delivers to the segment and logs the button publish in run mode', async ({ page }) => {
+test('counts a click through the wired button, counter and display', async ({ page }) => {
   await openCanvas(page);
   await switchMode(page, '运行');
 
   const button = await demoWidget(page, 'demo:button');
   const point = await pagePoint(page, centerOf(button));
-  await page.mouse.click(point.x, point.y);
+  const log = page.getByText('U2.value').first();
 
-  await expect(page.getByText('demo-mcu.key').first()).toBeVisible();
+  // The button closes the contact, the counter sees the falling edge and the display republishes.
+  await page.mouse.click(point.x, point.y);
+  await expect(log).toBeVisible();
+  await expect(page.getByText('"0001"').first()).toBeVisible();
   await expect(page.getByText('诊断 0')).toBeVisible();
+
+  // A second press has to land one count higher: the whole net really carries the state.
+  await page.mouse.click(point.x, point.y);
+  await expect(page.getByText('"0002"').first()).toBeVisible();
 });
 
-test('repaints the segment from the run-mode timer', async ({ page }) => {
+test('repaints the segment when the counter changes', async ({ page }) => {
   await openCanvas(page);
+  await switchMode(page, '运行');
   const segment = await demoWidget(page, 'demo:segment');
+  const button = await demoWidget(page, 'demo:button');
 
-  // The mount already produced one frame; the driver's deliveries have to add more.
-  const mounted = await frameSequence(page, segment.id);
-  await page.getByRole('button', { name: '运行', exact: true }).click();
+  const before = await frameSequence(page, segment.id);
+  const point = await pagePoint(page, centerOf(button));
+  await page.mouse.click(point.x, point.y);
 
+  // The value comes from the device, not from the page: the instance repaints from the publish.
   await expect
     .poll(() => frameSequence(page, segment.id), { timeout: 5000 })
-    .toBeGreaterThan(mounted);
+    .toBeGreaterThan(before);
+  await expect(page.getByText('U2.value').first()).toBeVisible();
 });
 
 test('edits a selected instance through the property panel', async ({ page }) => {
@@ -238,7 +259,7 @@ test('edits a selected instance through the property panel', async ({ page }) =>
   await expect(page.getByText('诊断 0')).toBeVisible();
 
   // The binding panel keeps showing the endpoint the document declares.
-  await expect(page.getByLabel('value 绑定')).toHaveValue('demo-mcu:display');
+  await expect(page.getByLabel('value 绑定')).toHaveValue(`${DISPLAY}:value`);
 
   // Reset drops the override again.
   await colorRow.getByRole('button', { name: '重置' }).click();
@@ -254,14 +275,10 @@ test('offers only complementary binding candidates', async ({ page }) => {
   await page.mouse.click(point.x, point.y);
 
   const select = page.getByLabel('press 绑定');
-  await expect(select).toHaveValue('demo-mcu:key');
+  await expect(select).toHaveValue(`${BUTTON}:pressed`);
   // A boolean widget output pairs with the boolean schematic inputs only.
   const labels = await select.locator('option').allTextContents();
-  expect(labels).toEqual([
-    '未绑定',
-    'demo-mcu.key · input · boolean',
-    'demo-mcu.led · input · boolean',
-  ]);
+  expect(labels).toEqual(['未绑定', 'S1.pressed · input · boolean']);
 });
 
 test('zooms and pans in run mode without reaching a widget', async ({ page }) => {
@@ -290,19 +307,22 @@ test('zooms and pans in run mode without reaching a widget', async ({ page }) =>
   await expect(page.getByText('诊断 0')).toBeVisible();
 });
 
-test('resets widget state when the mode changes', async ({ page }) => {
+test('resets the counter when the mode changes', async ({ page }) => {
   await openCanvas(page);
   const segment = await demoWidget(page, 'demo:segment');
   await switchMode(page, '运行');
-  // The run-mode driver keeps repainting the display.
-  expect(await frameSequence(page, segment.id)).toBeGreaterThan(1);
 
-  // Leaving run mode rebuilds every widget: the display drops its value and paints once.
+  const button = await demoWidget(page, 'demo:button');
+  const point = await pagePoint(page, centerOf(button));
+  await page.mouse.click(point.x, point.y);
+  await expect(page.getByText('"0001"').first()).toBeVisible();
+
+  // Leaving run mode rebuilds every widget and resets the devices together: the display is back
+  // to the counter's initial nibble instead of keeping the value it painted while running.
   await switchMode(page, '编辑');
-
-  expect(await frameSequence(page, segment.id)).toBe(1);
-  const { document } = await sceneState(page);
-  expect(await layerCount(page)).toBe(document.widgets.length);
+  await expect(page.getByText('"0000"').first()).toBeVisible();
+  // The remount painted once, and the reset publish is the only extra frame in edit mode.
+  expect(await frameSequence(page, segment.id)).toBe(2);
   await expect(page.getByText('诊断 0')).toBeVisible();
 });
 

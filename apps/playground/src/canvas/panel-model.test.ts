@@ -18,6 +18,20 @@ const DISPLAY: PortDefinition = { direction: 'input', type: 'string' };
 const PRESS: PortDefinition = { direction: 'output', type: 'boolean' };
 const NUMBER_IN: PortDefinition = { direction: 'input', type: 'number' };
 
+/** Endpoints the demo device exposes, as DeviceSimExecutor.getTopics() reports them. */
+const TARGETS = [
+  { symbol: 'demo-mcu', designator: 'U1', port: 'display', direction: 'output', type: 'string' },
+  {
+    symbol: 'demo-mcu',
+    designator: 'U1',
+    port: 'display2',
+    direction: 'output',
+    type: 'string',
+  },
+  { symbol: 'demo-mcu', designator: 'U1', port: 'key', direction: 'input', type: 'boolean' },
+  { symbol: 'demo-mcu', designator: 'U1', port: 'led', direction: 'input', type: 'boolean' },
+] as const;
+
 function instance(overrides: Partial<CanvasWidgetInstance> = {}): CanvasWidgetInstance {
   return {
     id: '1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e50',
@@ -33,37 +47,49 @@ function instance(overrides: Partial<CanvasWidgetInstance> = {}): CanvasWidgetIn
 
 describe('compatibleTargets', () => {
   it('pairs a widget input with schematic outputs of the same payload type', () => {
-    expect(compatibleTargets(DISPLAY)).toEqual([
-      { symbol: 'demo-mcu', port: 'display', direction: 'output', type: 'string' },
-      { symbol: 'demo-mcu', port: 'display2', direction: 'output', type: 'string' },
+    expect(compatibleTargets(DISPLAY, TARGETS)).toEqual([
+      {
+        symbol: 'demo-mcu',
+        designator: 'U1',
+        port: 'display',
+        direction: 'output',
+        type: 'string',
+      },
+      {
+        symbol: 'demo-mcu',
+        designator: 'U1',
+        port: 'display2',
+        direction: 'output',
+        type: 'string',
+      },
     ]);
   });
 
   it('pairs a widget output with schematic inputs of the same payload type', () => {
-    expect(compatibleTargets(PRESS).map((target) => target.port)).toEqual(['key', 'led']);
+    expect(compatibleTargets(PRESS, TARGETS).map((target) => target.port)).toEqual(['key', 'led']);
   });
 
   it('rejects every candidate when the type or the direction has no partner', () => {
-    expect(compatibleTargets(NUMBER_IN)).toEqual([]);
-    expect(compatibleTargets({ direction: 'output', type: 'string' })).toEqual([]);
+    expect(compatibleTargets(NUMBER_IN, TARGETS)).toEqual([]);
+    expect(compatibleTargets({ direction: 'output', type: 'string' }, TARGETS)).toEqual([]);
   });
 });
 
 describe('bindingOptions', () => {
   it('starts with "unbound" and lists the compatible candidates', () => {
-    const options = bindingOptions(instance(), 'value', DISPLAY);
+    const options = bindingOptions(instance(), 'value', DISPLAY, TARGETS);
     expect(options[0]).toEqual({ value: '', label: '未绑定', current: false });
     expect(options.map((option) => option.value)).toEqual([
       '',
       'demo-mcu:display',
       'demo-mcu:display2',
     ]);
-    expect(options[1]?.label).toBe('demo-mcu.display · output · string');
+    expect(options[1]?.label).toBe('U1.display · output · string');
   });
 
   it('keeps an unknown current binding selectable instead of rendering it blank', () => {
     const bound = instance({ bindings: { value: { symbol: 'legacy', port: 'bus' } } });
-    const options = bindingOptions(bound, 'value', DISPLAY);
+    const options = bindingOptions(bound, 'value', DISPLAY, TARGETS);
 
     expect(options.map((option) => option.value)).toEqual([
       '',
@@ -76,7 +102,7 @@ describe('bindingOptions', () => {
 
   it('does not repeat a current binding the candidates already offer', () => {
     const bound = instance({ bindings: { value: { symbol: 'demo-mcu', port: 'display' } } });
-    const options = bindingOptions(bound, 'value', DISPLAY);
+    const options = bindingOptions(bound, 'value', DISPLAY, TARGETS);
     expect(options.filter((option) => option.value === 'demo-mcu:display')).toHaveLength(1);
     expect(options.every((option) => !option.current)).toBe(true);
   });

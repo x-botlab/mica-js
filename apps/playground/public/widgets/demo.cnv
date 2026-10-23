@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "schematic": "devices/demo.sch",
   "widgets": [
     {
       "id": "5d0f1c9a-1b2c-4d3e-8f40-9a7b6c5d4e30",
@@ -22,7 +23,7 @@
       "height": 62,
       "rotation": 0,
       "bindings": {
-        "value": { "symbol": "demo-mcu", "port": "display" }
+        "value": { "symbol": "00000013-0000-4000-8000-000000000001", "port": "value" }
       }
     },
     {
@@ -34,7 +35,7 @@
       "height": 62,
       "rotation": 0,
       "bindings": {
-        "value": { "symbol": "demo-mcu", "port": "display2" }
+        "value": { "symbol": "00000013-0000-4000-8000-000000000001", "port": "bits" }
       }
     },
     {
@@ -52,7 +53,7 @@
         "backgroundPressed": "#FFFFFF40"
       },
       "bindings": {
-        "press": { "symbol": "demo-mcu", "port": "key" }
+        "press": { "symbol": "00000011-0000-4000-8000-000000000001", "port": "pressed" }
       }
     }
   ]

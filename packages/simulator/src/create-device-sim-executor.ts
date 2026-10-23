@@ -1,5 +1,10 @@
 import { createScheduler, timePs, type Scheduler, type TimePs } from '@mica-js/core';
-import type { SchematicDocument, SchematicSymbol } from '@mica-js/core/schematic';
+import {
+  designatorOf,
+  symbolRole,
+  type SchematicDocument,
+  type SchematicSymbol,
+} from '@mica-js/core/schematic';
 import {
   createDeviceInstance,
   loadDeviceModule,
@@ -48,9 +53,9 @@ interface PendingDelivery {
 /**
  * Creates an executor for one schematic at a time.
  *
- * Instances are provisioned by `@mica-js/device` on a private scheduler; pins, nets and the
- * electrical network are not wired yet, so a device whose IR touches pins or connections fails to
- * load with the device layer's own error.
+ * Every component symbol becomes a device instance on a private scheduler. Pin and connection
+ * wiring comes from `options.host`, which is rebuilt for every runtime so it always belongs to the
+ * scheduler that is running; schematic wiring itself is available as `createCircuitHost`.
  */
 export function createDeviceSimExecutor(options: DeviceSimExecutorOptions): DeviceSimExecutor {
   return new DeviceSimExecutorImpl(options);
@@ -191,7 +196,7 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
   /** Loads the devices the schematic names; already loaded ids are reused. */
   async #loadModules(document: SchematicDocument): Promise<void> {
     for (const symbol of document.sheet.symbols) {
-      if (this.#modules.has(symbol.device)) {
+      if (!isComponent(symbol) || this.#modules.has(symbol.device)) {
         continue;
       }
       try {
@@ -215,11 +220,18 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
       this.#options.scheduler === undefined
         ? createScheduler()
         : createScheduler(this.#options.scheduler);
-    const host = this.#options.host?.({ scheduler, schematic: document });
+    const host = this.#options.host?.({
+      scheduler,
+      schematic: document,
+      modules: this.#modules,
+    });
     const instances = new Map<string, DeviceInstance>();
     const topics: DeviceTopic[] = [];
     try {
       for (const symbol of document.sheet.symbols) {
+        if (!isComponent(symbol)) {
+          continue; // Power, ground, label and text symbols only shape the nets.
+        }
         const instance = this.#createInstance(symbol, scheduler, host);
         instances.set(symbol.id, instance);
         collectTopics(symbol, instance, topics);
@@ -349,15 +361,22 @@ class DeviceSimExecutorImpl implements DeviceSimExecutor {
   }
 }
 
+/** True when the symbol stands for a device the executor instantiates. */
+function isComponent(symbol: SchematicSymbol): boolean {
+  return symbolRole(symbol.device) === 'component';
+}
+
 function collectTopics(
   symbol: SchematicSymbol,
   instance: DeviceInstance,
   into: DeviceTopic[],
 ): void {
+  const designator = designatorOf(symbol) ?? symbol.id;
   for (const [port, descriptor] of instance.description.ports) {
     into.push(
       Object.freeze({
         symbol: symbol.id,
+        designator,
         port,
         direction: descriptor.direction,
         type: descriptor.type,

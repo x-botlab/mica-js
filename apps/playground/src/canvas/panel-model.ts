@@ -1,23 +1,25 @@
 import type { CanvasBindingTarget, CanvasWidgetInstance, PayloadType } from '@mica-js/core/canvas';
 import type { PortDefinition, PropertyDefinition } from '@mica-js/widget';
 
-export interface DemoTarget {
+/** One endpoint the running schematic exposes; the playground reads these from the simulation. */
+export interface TopicCandidate {
   readonly symbol: string;
+  /** Reference designator the UI shows (`U1`); the id itself when the schematic sets none. */
+  readonly designator: string;
   readonly port: string;
   readonly direction: 'input' | 'output';
   readonly type: PayloadType;
 }
 
-/**
- * Endpoints the playground can offer. A real host would read these from the bound schematic; the
- * demo has no schematic, and `createWidgetHost` skips reference checks without a catalog.
- */
-export const DEMO_TARGETS = [
-  { symbol: 'demo-mcu', port: 'display', direction: 'output', type: 'string' },
-  { symbol: 'demo-mcu', port: 'display2', direction: 'output', type: 'string' },
-  { symbol: 'demo-mcu', port: 'key', direction: 'input', type: 'boolean' },
-  { symbol: 'demo-mcu', port: 'led', direction: 'input', type: 'boolean' },
-] as const satisfies readonly DemoTarget[];
+/** Display name of one symbol; unknown symbols fall back to their id. */
+export function designatorOf(symbol: string, targets: readonly TopicCandidate[]): string {
+  for (const target of targets) {
+    if (target.symbol === symbol) {
+      return target.designator;
+    }
+  }
+  return symbol;
+}
 
 export interface TargetOption {
   /** `<symbol>:<port>`; the empty string is the "unbound" choice. */
@@ -31,9 +33,12 @@ export interface TargetOption {
  * Targets one port can bind: the direction must be complementary (a widget input reads what the
  * schematic outputs) and the payload type must match exactly, because payload types are nominal.
  */
-export function compatibleTargets(port: PortDefinition): readonly DemoTarget[] {
+export function compatibleTargets(
+  port: PortDefinition,
+  targets: readonly TopicCandidate[],
+): readonly TopicCandidate[] {
   const wanted = port.direction === 'input' ? 'output' : 'input';
-  return DEMO_TARGETS.filter((target) => target.direction === wanted && target.type === port.type);
+  return targets.filter((target) => target.direction === wanted && target.type === port.type);
 }
 
 export function targetValue(target: CanvasBindingTarget): string {
@@ -48,8 +53,12 @@ export function parseTargetValue(value: string): CanvasBindingTarget | undefined
   return { symbol: value.slice(0, index), port: value.slice(index + 1) };
 }
 
-export function describeTarget(target: CanvasBindingTarget): string {
-  return `${target.symbol}.${target.port}`;
+/** `U1.display` rather than `0000000d-….display`: bindings store ids, people read designators. */
+export function describeTarget(
+  target: CanvasBindingTarget,
+  targets: readonly TopicCandidate[],
+): string {
+  return `${designatorOf(target.symbol, targets)}.${target.port}`;
 }
 
 /** Binding the document currently declares for `port`, if any. */
@@ -69,13 +78,14 @@ export function bindingOptions(
   instance: CanvasWidgetInstance | undefined,
   portKey: string,
   port: PortDefinition,
+  targets: readonly TopicCandidate[],
 ): readonly TargetOption[] {
-  const candidates = compatibleTargets(port);
+  const candidates = compatibleTargets(port, targets);
   const options: TargetOption[] = [{ value: '', label: '未绑定', current: false }];
   for (const target of candidates) {
     options.push({
       value: targetValue(target),
-      label: `${describeTarget(target)} · ${target.direction} · ${target.type}`,
+      label: `${target.designator}.${target.port} · ${target.direction} · ${target.type}`,
       current: false,
     });
   }
@@ -87,7 +97,7 @@ export function bindingOptions(
   ) {
     options.push({
       value: targetValue(current),
-      label: `${describeTarget(current)} · 当前`,
+      label: `${describeTarget(current, targets)} · 当前`,
       current: true,
     });
   }
