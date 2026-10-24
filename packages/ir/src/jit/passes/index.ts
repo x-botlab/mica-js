@@ -33,11 +33,13 @@ export {
   runGVN,
   runRange,
   runLICM,
+  runLoopUnroll,
   runDCE,
 } from './pipeline';
 export type { OptimizationPass, OptimizationSwitches, PipelineOptions } from './pipeline';
 export { analyzeRanges } from './range';
 export type { Interval } from './range';
+export type { UnrollOptions } from './loop-unroll';
 
 /** The three J12 switches as they appear in `IRJITOptimization`. */
 export const MEMORY_OPTIMIZATIONS = ['loadElim', 'scalarPromotion', 'boundsElim'] as const;

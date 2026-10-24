@@ -75,6 +75,7 @@ export type IRJITOptimization =
   | 'gvn'
   | 'range'
   | 'licm'
+  | 'unroll'
   | 'dce'
   | 'loadElim'
   | 'scalarPromotion'
@@ -258,6 +259,7 @@ const OPTIMIZATION_DEFAULTS: Readonly<Record<IRJITOptimization, boolean>> = Obje
   gvn: true,
   range: true,
   licm: true,
+  unroll: true,
   dce: true,
   loadElim: true,
   scalarPromotion: true,

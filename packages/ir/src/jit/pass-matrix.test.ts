@@ -21,6 +21,7 @@ export const OPTIMIZATION_PASSES = [
   'gvn',
   'range',
   'licm',
+  'unroll',
   'dce',
   'loadElim',
   'scalarPromotion',
