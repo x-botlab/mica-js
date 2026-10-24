@@ -256,6 +256,35 @@ class Emitter implements OpsContext {
       this.fallback = attempt.reason;
     }
     this.#collectInlinableCopies(fn);
+    this.#registerInlinableValues();
+  }
+
+  /**
+   * Reserve the constants and load copies that are emitted inline, before any
+   * body is emitted.
+   *
+   * Inlining replaces the definition with its text at every use, so the value
+   * never gets a local. Which *case* is emitted first depends on the tier-2
+   * layout bias (hottest block first) and on the pass pipeline, so a use can be
+   * emitted before its definition. Registering up front keeps `value()` and
+   * `localDeclarations()` consistent no matter what order the blocks end up in.
+   */
+  #registerInlinableValues(): void {
+    for (const block of this.fn.blocks) {
+      for (const inst of block.insts) {
+        const copy = this.#inlineInst.get(inst);
+        if (copy !== undefined) {
+          this.#constText.set(inst.results[0]!, copy);
+          continue;
+        }
+        const result = inst.results[0];
+        if (result === undefined || inst.results.length !== 1) continue;
+        const text = inlineConstantText(inst);
+        if (text === undefined || isFloatValue(this.fn, result)) continue;
+        if ((this.#definitions.get(result) ?? 0) !== 1) continue;
+        this.#constText.set(result, text);
+      }
+    }
   }
 
   /**
