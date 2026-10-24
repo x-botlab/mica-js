@@ -421,4 +421,45 @@ describe('J12 memory optimization execution parity', () => {
       expect(scalarOf(jit, 'counter')).toEqual(scalarOf(reference, 'counter'));
     }
   });
+
+  it('matches the reference when a dominating load is reused across blocks', () => {
+    const module = createIRModule();
+    const counter = module.state('counter', 'u32', 3);
+    const run = module.func('run', {
+      params: ['bool', 'u32'],
+      results: ['u32', 'u32', 'u32'],
+    });
+    run.body((b, [flag, value]) => {
+      const left = b.block([]);
+      const right = b.block([]);
+      const join = b.block(['u32']);
+      // Dominating load: reused by the arms, but not by the join, because one
+      // arm stores a different value on the way there.
+      const first = b.state.load(counter);
+      b.branch(flag, { target: left, args: [] }, { target: right, args: [] });
+      b.at(left, (inner) => {
+        const current = inner.state.load(counter);
+        inner.jump(join, [inner.int.add(current, inner.const('u32', 1))]);
+      });
+      b.at(right, (inner) => {
+        inner.state.store(counter, value);
+        const current = inner.state.load(counter);
+        inner.jump(join, [inner.int.mul(current, inner.const('u32', 2))]);
+      });
+      b.at(join, (inner, [arm]) => inner.return([first, arm, inner.state.load(counter)]));
+    });
+
+    for (const [flag, value] of [
+      [false, 0],
+      [true, 5],
+      [true, 0xffff_ffff],
+    ] as const) {
+      const jit = optimized(module);
+      const reference = createIRInterpreter(module, { validation: policy(module) });
+      const expected = capture(() => reference.execute(run, [flag, value], context));
+      const actual = capture(() => jit.execute(run, [flag, value], context));
+      expect({ flag, value, actual }).toEqual({ flag, value, actual: expected });
+      expect(scalarOf(jit, 'counter')).toEqual(scalarOf(reference, 'counter'));
+    }
+  });
 });
