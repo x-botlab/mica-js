@@ -15,7 +15,7 @@
  */
 import type { StateRef } from '@mica-js/ir';
 import type { DeviceAccessor } from '../../runtime/types';
-import { PIN_MODE } from '../../types';
+import { PIN_MODE } from '../../pin-space';
 import {
   loadBool,
   loadNumber,

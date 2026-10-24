@@ -1,5 +1,5 @@
 import type { FunctionBuilder, FunctionRef, IRModule, Value } from '@mica-js/ir';
-import { PIN_MODE } from '../types';
+import { PIN_MODE } from '../pin-space';
 import type {
   CompiledCircuitMemory,
   CompiledNet,

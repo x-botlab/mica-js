@@ -6,7 +6,7 @@ import type {
   ScalarType,
   Value,
 } from '@mica-js/ir';
-import { PIN_MODE } from '../types';
+import { PIN_MODE } from '../pin-space';
 import { stateOffsetOf } from './allocator';
 import {
   UnifiedIRCompilerError,

@@ -37,10 +37,6 @@ unified-ir/
 │   ├── accessors.ts      - Device accessor loading
 │   ├── factory.ts        - Helper factories
 │   └── types.ts          - Runtime type definitions
-├── fixtures/         # Test fixtures (not production devices)
-│   ├── simple-mcu.ts     - Simplified MCU for unit tests
-│   ├── simple-led.ts     - Simplified LED for unit tests
-│   └── test-circuit.ts   - Test circuit helpers
 ├── devices/          # Simple production devices (U04)
 │   ├── common.ts         - Shared pin/state helpers
 │   ├── led/              - Unified LED: IR factory, accessor, tests
@@ -51,8 +47,8 @@ unified-ir/
 │       ├── teaching-mcu.ac.ts   - Accessor builder
 │       ├── teaching-mcu.d.ts    - TypeScript types
 │       └── *.test.ts            - Tests
-├── codegen.ts        # IR code generation utilities
-└── types.ts          # Core type definitions
+├── pin-space.ts      # Shared pin address space and pin modes
+└── validation.ts     # Validation grants derived from a generated module
 
 ```
 

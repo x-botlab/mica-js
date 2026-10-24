@@ -13,7 +13,7 @@ import type {
   CircuitCompilationOptions,
   CompiledCircuit,
 } from '../compiler';
-import { PIN_MODE } from '../types';
+import { PIN_MODE } from '../pin-space';
 import { buildDeviceAccessors } from './accessors';
 import {
   CircuitError,

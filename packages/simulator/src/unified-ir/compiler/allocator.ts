@@ -1,6 +1,6 @@
 import { INTEGER_TYPES, SCALAR_TYPES } from '@mica-js/ir';
 import type { ArrayRef, IRModule, ScalarType } from '@mica-js/ir';
-import { DEVICE_PIN_STRIDE, PIN_MODE, UNIFIED_PIN_CAPACITY } from '../types';
+import { DEVICE_PIN_STRIDE, PIN_MODE, UNIFIED_PIN_CAPACITY } from '../pin-space';
 import {
   UnifiedIRCompilerError,
   type CompiledCircuitMemory,

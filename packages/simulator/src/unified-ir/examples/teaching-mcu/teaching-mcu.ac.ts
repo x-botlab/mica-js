@@ -27,7 +27,7 @@ import type {
   WritableBytesRef,
 } from '@mica-js/ir';
 import type { McuAccessor } from '../../runtime/types';
-import { PIN_MODE } from '../../types';
+import { PIN_MODE } from '../../pin-space';
 import { TeachingMCUError } from './teaching-mcu.errors';
 import type { TeachingMCULayout, TeachingMCUPin, TeachingMCUISAType } from './teaching-mcu';
 

@@ -1,5 +1,5 @@
 import type { ArrayRef, IRModule, RuntimeScalar, ScalarType, StateRef } from '@mica-js/ir';
-import { PIN_MODE } from '../types';
+import { PIN_MODE } from '../pin-space';
 
 /**
  * Shared building blocks of the simple unified-IR devices (U04).

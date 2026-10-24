@@ -18,9 +18,8 @@ import type {
  * a tick costs one interpreter/JIT call for the whole circuit.
  *
  * The shared constants (`UNIFIED_PIN_CAPACITY`, `DEVICE_PIN_STRIDE`, `PIN_MODE`)
- * live in `../types` and are reused here; the prototype's MCU/LED generators in
- * `../device-mcu.ts` / `../device-led.ts` are the reference implementations the
- * generic device generator is extracted from.
+ * live in `../pin-space` and are reused here; the built-in `mcu` / `led`
+ * kernels in `device-gen.ts` are the reference implementations.
  */
 
 /** Electrical intent of one device pin. */

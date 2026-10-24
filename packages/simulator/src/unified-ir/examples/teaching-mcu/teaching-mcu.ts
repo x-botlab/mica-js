@@ -38,8 +38,8 @@ import type {
   Value,
 } from '@mica-js/ir';
 import type { DeviceAccessorFactoryContext, DeviceConfig, DeviceDescription } from '../../compiler';
-import { createModuleValidation } from '../../codegen';
-import { PIN_MODE } from '../../types';
+import { createModuleValidation } from '../../validation';
+import { PIN_MODE } from '../../pin-space';
 import { TeachingMCUError } from './teaching-mcu.errors';
 import {
   buildAccessor,

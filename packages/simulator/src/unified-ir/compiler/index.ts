@@ -1,6 +1,6 @@
 import { createIRModule, validateIR } from '@mica-js/ir';
 import type { IRModule, IRValidationOptions } from '@mica-js/ir';
-import { createModuleValidation } from '../codegen';
+import { createModuleValidation } from '../validation';
 import { GlobalResourceAllocator } from './allocator';
 import { DeviceIRGenerator, resolveDeviceDescription } from './device-gen';
 import { DEFAULT_ENTRY_POINT_NAMES, MainLoopGenerator, type MainLoopNames } from './mainloop-gen';

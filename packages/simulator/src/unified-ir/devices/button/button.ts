@@ -30,8 +30,8 @@
 import { createIRModule } from '@mica-js/ir';
 import type { FunctionRef, IRModule, IRValidationOptions, StateRef } from '@mica-js/ir';
 import type { DeviceConfig, DeviceDescription } from '../../compiler';
-import { createModuleValidation } from '../../codegen';
-import { PIN_MODE } from '../../types';
+import { createModuleValidation } from '../../validation';
+import { PIN_MODE } from '../../pin-space';
 import {
   createStandalonePinMemory,
   isDeviceIdentifier,
