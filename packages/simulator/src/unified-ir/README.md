@@ -41,6 +41,10 @@ unified-ir/
 │   ├── simple-mcu.ts     - Simplified MCU for unit tests
 │   ├── simple-led.ts     - Simplified LED for unit tests
 │   └── test-circuit.ts   - Test circuit helpers
+├── devices/          # Simple production devices (U04)
+│   ├── common.ts         - Shared pin/state helpers
+│   ├── led/              - Unified LED: IR factory, accessor, tests
+│   └── button/           - Unified push button: IR factory, accessor, tests
 ├── examples/         # Reference device implementations (test-only, not built-in)
 │   └── teaching-mcu/     - Complete example: ARM Cortex-M3 device
 │       ├── teaching-mcu.ts      - IR factory

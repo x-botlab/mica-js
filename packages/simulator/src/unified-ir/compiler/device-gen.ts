@@ -456,11 +456,11 @@ function hasAnyBehavior(behaviors: DeviceBehaviors): boolean {
 function isKernelRuntime(
   value: DeviceBehaviors | DeviceKernelRuntime,
 ): value is DeviceKernelRuntime {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    typeof (value as { tick?: unknown }).tick === 'object'
-  );
+  if (value === null || typeof value !== 'object') return false;
+  // A kernel may own any subset of the phases (an LED only needs `update`), so
+  // the first phase ref that is an object — not a behaviour callback — decides.
+  const phases: readonly (keyof DeviceKernelRuntime)[] = ['initialize', 'tick', 'update'];
+  return phases.some((phase) => typeof value[phase] === 'object');
 }
 
 /** Resolves one kernel phase ref to its generated function name. */

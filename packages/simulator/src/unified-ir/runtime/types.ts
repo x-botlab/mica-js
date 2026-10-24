@@ -1,5 +1,7 @@
 import type { IRJITTuning } from '@mica-js/ir';
 import type { CircuitCompilationInput, DeviceDescription } from '../compiler';
+import type { ButtonAccessor as ButtonIRAccessor } from '../devices/button/button.ac';
+import type { LedAccessor as LedIRAccessor } from '../devices/led/led.ac';
 import type { TeachingMCUAccessor } from '../examples/teaching-mcu/teaching-mcu.ac';
 
 /**
@@ -149,7 +151,11 @@ export type DeviceAccessorForType<T extends string> = T extends 'led' | 'ideal-l
     ? McuAccessor
     : T extends 'teaching-mcu-ir'
       ? TeachingMCUAccessor
-      : DeviceAccessor;
+      : T extends 'led-ir'
+        ? LedIRAccessor
+        : T extends 'button-ir'
+          ? ButtonIRAccessor
+          : DeviceAccessor;
 
 /**
  * Accessor map derived from a literal compilation input.
