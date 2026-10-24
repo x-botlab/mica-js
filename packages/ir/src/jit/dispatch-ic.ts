@@ -54,6 +54,12 @@ export type DispatchKey = boolean | number;
 
 /** A compiled region handle attached to every member artifact. */
 export interface RegionHandle {
+  /**
+   * Stable identity of the member set (`regionKeyOf`). Two compilations of the
+   * same members share a key, which is what the inter-region dependency graph
+   * (J15) is keyed by.
+   */
+  readonly key: string;
   /** `(memberIndex, ...arguments)`; the arguments use MIR representations. */
   readonly fn: CompiledFn;
   readonly members: readonly ArtifactState[];
@@ -320,6 +326,17 @@ export class DispatchRegistry {
 
   /** Hottest successors of one artifact, ordered by observed transitions. */
   hottestSuccessors(state: ArtifactState): readonly ArtifactState[] {
+    return this.hottestTransitions(state).map((transition) => transition.state);
+  }
+
+  /**
+   * Hottest successors of one artifact together with the recorded transition
+   * weights. Region formation (J14) and the direct-call planner (J15) both rank
+   * candidates with it.
+   */
+  hottestTransitions(
+    state: ArtifactState,
+  ): readonly { readonly state: ArtifactState; readonly weight: number }[] {
     const totals = new Map<ArtifactState, number>();
     for (const site of this.sites) {
       if (site.from !== state) continue;
@@ -332,7 +349,7 @@ export class DispatchRegistry {
     }
     return [...totals.entries()]
       .sort((left, right) => right[1] - left[1])
-      .map(([target]) => target);
+      .map(([target, weight]) => ({ state: target, weight }));
   }
 
   /** Aggregate IC statistics for `jitInternals`. */

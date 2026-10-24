@@ -31,6 +31,7 @@ import type {
 import type { FloatBits, FloatType, InstructionNode, RuntimeScalar, ScalarType } from '../types';
 import type { ArtifactState } from './dispatch-ic';
 import { DispatchRegistry, REGION_THRESHOLD } from './dispatch-ic';
+import type { RegionRuntimeState } from './region';
 import {
   convertFloat,
   floatCompare,
@@ -129,6 +130,13 @@ export class JitRuntime {
    * avoids a per-dispatch callback: the branch is a single integer compare.
    */
   regionTrigger: ((state: ArtifactState) => void) | undefined = undefined;
+  /**
+   * Called from generated region code for every transfer that leaves the
+   * region through the generic trampoline (J15). The execution engine samples
+   * the target so a hot boundary can be recompiled into a direct call; the
+   * default is a no-op so region code never has to test for it.
+   */
+  regionExit: (runtime: RegionRuntimeState, state: ArtifactState) => void = () => undefined;
   /** Current compiled-function nesting depth; J7 owns the deep-recursion fallback. */
   depth = 0;
   maxDepth = 1_000_000;

@@ -30,6 +30,7 @@ export const OPTIMIZATION_PASSES = [
   'checkpointFast',
   'regions',
   'region-compile',
+  'regionDirectCall',
   'inline',
 ] as const satisfies readonly IRJITOptimization[];
 

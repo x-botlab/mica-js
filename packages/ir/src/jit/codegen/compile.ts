@@ -7,14 +7,20 @@
  * engine (J7) treats as "fall back to the reference interpreter".
  */
 import { analyzeCFG } from '../cfg';
-import type { ArtifactState, DispatchKey, ProviderDispatchInfo } from '../dispatch-ic';
+import type {
+  ArtifactState,
+  DispatchKey,
+  ProviderDispatchInfo,
+  RegionHandle,
+} from '../dispatch-ic';
 import type { FunctionSummary } from '../effects';
 import type { LayoutProfile, MFunction } from '../mir';
 import { analyzeRepresentation } from '../repr';
 import type { CompiledFn, JitFrame, JitHelpers, JitRuntime } from '../runtime-core';
-import { createRegionRuntime } from '../region';
+import { createRegionExitProfile, createRegionRuntime, regionKeyOf } from '../region';
+import type { RegionDirectCallDep, RegionExitProfile, RegionRuntimeState } from '../region';
 import { emitFunction, emitRegion } from './emit';
-import type { EmitEnv, EmittedFunction, EmittedRegion } from './emit';
+import type { EmitEnv, EmittedFunction, EmittedRegion, ResolvedRegionDirectCall } from './emit';
 import type { ScalarType } from '../../types';
 
 /** Raised when the host forbids dynamic code generation. */
@@ -109,10 +115,13 @@ function needsExactSteps(rt: JitRuntime): boolean {
  * Emitted-source budget of one region function.
  *
  * The host engine only optimizes functions below a bytecode limit (V8 stops at
- * 60 KiB), and an interpreted region is an order of magnitude slower than a
- * compiled one. Emitted text runs roughly three times the bytecode size, and a
- * region that grows past ~120 KiB of source stops being optimized, so members
- * are dropped (coldest first) until the region fits.
+ * 60 KiB of bytecode); an interpreted region is several times slower than an
+ * optimized one, so crossing that line costs far more than the dispatch it
+ * saves. Measured on the M3 workload the emitted text is about 1.7× the
+ * bytecode size, and the direct-call guards of J15 add ~20% to it, so 80 KiB of
+ * source keeps a region near 47 KiB of bytecode — enough headroom that later
+ * growth does not silently push the function out of the optimizing tiers.
+ * Members are dropped (coldest first) until the region fits.
  */
 const REGION_SOURCE_BUDGET = 120_000;
 
@@ -193,12 +202,84 @@ export interface RegionCompileMember {
 }
 
 /** A compiled region callable plus its members and per-member frames. */
-export interface CompiledRegion {
+export interface CompiledRegion extends RegionHandle {
   /** `(memberIndex, ...arguments)`; arguments use MIR representations. */
   readonly fn: CompiledFn;
   readonly source: string;
   readonly members: readonly ArtifactState[];
   readonly frames: readonly JitFrame[];
+  /** Runtime epoch/key/profile table referenced by the generated code. */
+  readonly runtime: RegionRuntimeState;
+  /** Callee regions of the direct calls emitted into this compilation (J15). */
+  readonly directCallDeps: readonly RegionDirectCallDep[];
+}
+
+/** One hot exit target the caller wants emitted as a direct region call (J15). */
+export interface RegionDirectCallTarget {
+  /** Provider index of the exit site that may transfer to the target. */
+  readonly providerIndex: number;
+  /** Target artifact; supplies the guard key and the callee region. */
+  readonly state: ArtifactState;
+  /** Storage epoch literal for the guard. */
+  readonly epoch: number;
+  /** Provider cache epoch literal for the guard. */
+  readonly cacheEpoch: number;
+}
+
+/** Optional inputs of one region compilation. */
+export interface RegionCompileOptions {
+  /** Exit-target profile shared with generated code (J15). */
+  readonly profile?: RegionExitProfile;
+  /** Hot exit targets to guard and call directly (J15). */
+  readonly directCalls?: readonly RegionDirectCallTarget[];
+  /**
+   * Continue cache-hit exits inside the target's region (J15). Enabled by the
+   * `regionDirectCall` optimization switch.
+   */
+  readonly inlineTail?: boolean;
+}
+
+/**
+ * Resolve the requested direct calls against the compiled member set: a target
+ * is only usable when it belongs to a *different* compiled region. The result
+ * carries literal guard values and the callee's function/entry index.
+ */
+function resolveDirectCalls(
+  members: readonly RegionCompileMember[],
+  providers: CompileEnv['providers'],
+  requested: readonly RegionDirectCallTarget[] | undefined,
+): { readonly calls: readonly ResolvedRegionDirectCall[]; readonly deps: RegionDirectCallDep[] } {
+  if (requested === undefined || requested.length === 0) return { calls: [], deps: [] };
+  const own = new Set(members.map((member) => member.state));
+  const calls: ResolvedRegionDirectCall[] = [];
+  const deps: RegionDirectCallDep[] = [];
+  const seen = new Set<string>();
+  for (const target of requested) {
+    const state = target.state;
+    if (own.has(state)) continue;
+    const region = state.region;
+    if (region === undefined || state.regionIndex < 0) continue;
+    if (state.providerIndex !== target.providerIndex) continue;
+    const info = providers?.[target.providerIndex];
+    if (info === undefined || info.keyTypes.length !== state.key.length) continue;
+    const signature = `${target.providerIndex}\u0000${state.key.join('\u0000')}`;
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    calls.push({
+      providerIndex: target.providerIndex,
+      keyTypes: info.keyTypes,
+      key: state.key,
+      epoch: target.epoch,
+      cacheEpoch: target.cacheEpoch,
+      fn: region.fn,
+      entry: state.regionIndex,
+    });
+    const depSignature = `${region.key}\u0000${target.epoch}`;
+    if (!deps.some((dep) => `${dep.key}\u0000${dep.epoch}` === depSignature)) {
+      deps.push({ key: region.key, epoch: target.epoch });
+    }
+  }
+  return { calls, deps };
 }
 
 /**
@@ -206,17 +287,32 @@ export interface CompiledRegion {
  * the normal emitter (instruction templates, step batching, control-flow
  * structuring) and only adds the member selector and the in-region dispatch
  * edges.
+ *
+ * When `options.directCalls` is present, the hottest exits of the region are
+ * emitted as guarded calls into the region that owns the exit target (J15).
  */
 export function compileRegionWithSource(
   members: readonly RegionCompileMember[],
   env: CompileEnv,
+  options: RegionCompileOptions = {},
 ): CompiledRegion {
   if (members.length === 0) throw new Error('JIT region compilation needs at least one member');
+  const profile = options.profile ?? createRegionExitProfile();
+  const key = regionKeyOf(
+    members[0]!.providerIndex,
+    members.map((member) => member.state),
+  );
   const build = (
     count: number,
-  ): { readonly emitted: EmittedRegion; readonly members: readonly RegionCompileMember[] } => {
+  ): {
+    readonly emitted: EmittedRegion;
+    readonly members: readonly RegionCompileMember[];
+    readonly runtime: RegionRuntimeState;
+    readonly deps: readonly RegionDirectCallDep[];
+  } => {
     const chosen = members.slice(0, count);
-    const runtime = createRegionRuntime(chosen);
+    const { calls, deps } = resolveDirectCalls(chosen, env.providers, options.directCalls);
+    const runtime = createRegionRuntime(chosen, { key, profile });
     const emitted = emitRegion(
       chosen.map((member) => ({
         state: member.state,
@@ -238,8 +334,10 @@ export function compileRegionWithSource(
         ...(env.forceSwitch === undefined ? {} : { forceSwitch: env.forceSwitch }),
       },
       runtime,
+      calls,
+      options.inlineTail === true,
     );
-    return { emitted, members: chosen };
+    return { emitted, members: chosen, runtime, deps };
   };
   // A region is one JavaScript function, and the host engine only optimizes
   // functions below a bytecode budget (V8 stops at 60 KiB). Keep the emitted
@@ -269,9 +367,12 @@ export function compileRegionWithSource(
     );
   }
   return {
+    key,
     fn: factory(env.rt, emitted.constants, env.helpers),
     source: emitted.source,
     members: built.members.map((member) => member.state),
     frames: emitted.frames,
+    runtime: built.runtime,
+    directCallDeps: built.deps,
   };
 }
