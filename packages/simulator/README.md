@@ -18,6 +18,42 @@
 完整迁移步骤见 [docs/MIGRATION.md](./docs/MIGRATION.md)，弃用与移除时间表见
 [docs/DEPRECATIONS.md](./docs/DEPRECATIONS.md)。
 
+## 统一 IR 快速开始
+
+```ts
+import { Circuit, createLedIR, createMcuDescription, LED_IR_TYPE } from '@mica-js/simulator';
+
+const lamp = createLedIR('led1', { color: 'green' });
+
+const circuit = await Circuit.create({
+  devices: [
+    { id: 'mcu1', type: 'mcu', description: createMcuDescription() },
+    { id: 'led1', type: LED_IR_TYPE, description: lamp.device.description },
+  ],
+  connections: [
+    { from: 'mcu1.PA0', to: 'led1.anode' },
+    { from: 'led1.cathode', to: 'GND' },
+  ],
+});
+
+circuit.step(); // 一次引擎调用：MCU -> 电气解算 -> LED
+circuit.devices.led1.isOn(); // true，类型由器件 type 推导
+
+circuit.runBatch(1_000_000); // 整批一次引擎调用
+circuit.tickCount; // 1000001n
+
+circuit.dispose();
+```
+
+- **器件用 `<id>.<pin>` 连线**：`connections` 描述导线，编译器分配全局引脚空间，不需要手写偏移。
+- **访问器自动类型化**：`led-ir` → `LedAccessor`，`button-ir` → `ButtonAccessor`，
+  `teaching-mcu-ir` → `TeachingMCUAccessor`，未知类型保留通用 `DeviceAccessor`。
+- **两种推进方式**：`step()` 用于调试，`runBatch(n)` 走模块内循环，是吞吐路径。
+- **错误带稳定 code**：`CircuitError`（运行时）与 `UnifiedIRCompilerError`（编译期）。
+
+可运行的示例在 [`examples/`](./examples/)：`pnpm --filter @mica-js/simulator examples`
+会跑 LED 闪烁、按钮控制 LED、教学 MCU 固件闪烁与吞吐基准，并打印结果。
+
 ## 架构
 
 ```mermaid
@@ -38,7 +74,10 @@ flowchart TD
   circuit["createCircuitHost()<br/>可选电气接线"] -.-> hostFactory
 ```
 
-## 用法
+## 调度器路径用法
+
+> 维护模式：新代码请用上面的统一 IR。本节保留给"原理图 → 器件模块实例 + WidgetHost 消息"的
+> 现有集成，移除时间表见 [docs/DEPRECATIONS.md](./docs/DEPRECATIONS.md)。
 
 推荐直接挂到 `WidgetHost` 上：宿主按 `bindings` 完成双向路由，应用侧不再手写转发。
 
@@ -86,7 +125,7 @@ const report = executor.advance(timePs(100_000)); // 100 ns，同步完成
 - 工厂或 `dispose` 抛错时：构建阶段直接让 `loadSchematic` / `reset` 抛错（旧运行时原样保留），释放阶段转成 `simulator/dispose-failed` 诊断。
 - 不配置 `host` 时实例没有 `pinHost` 也没有拓扑，用到引脚或连接的器件会在加载时报器件层错误，并被包成 `simulator/instance-create-failed`。
 
-## 接口
+## DeviceSimExecutor 接口
 
 | 成员                       | 说明                                                                   |
 | -------------------------- | ---------------------------------------------------------------------- |
@@ -103,7 +142,7 @@ const report = executor.advance(timePs(100_000)); // 100 ns，同步完成
 
 `DeviceTopic` 的 `direction` / `type` 与 `DevicePortDescriptor` 同构，宿主可以直接用 `getTopics()` 生成画布的绑定候选。`symbol` 是原理图里的符号 id（绑定存的就是它），`designator` 是给人看的位号（符号自己的 `designator`，没写时回退到 id），两者在界面上不要混用。
 
-## 语义
+## DeviceSimExecutor 语义
 
 - **除 `loadSchematic` 之外全是同步的。** 加载之所以返回 promise，只因为器件模块要经 provider 取；模块随后被缓存，`reset()` 直接用缓存重建实例。仿真与 `WidgetHost` 跑在同一个 JS 线程上，没有 worker，也没有消息通道。
 - **先建后换。** `loadSchematic` 在新调度器上建好实例、跑完 `initialize` 后才替换旧运行时，因此器件解析失败或工厂抛错时，正在跑的仿真不受影响，时钟也不回退。
@@ -134,7 +173,7 @@ sequenceDiagram
 - 诊断码以 `simulator/` 开头：`device-load-failed`、`instance-create-failed`、`advance-failed`、`publish-failed`、`dispose-failed`。
 - 宿主调用的参数错误抛 `SimulatorError`，`code` 为 `simulator/disposed`、`simulator/not-ready`、`simulator/invalid-delta`、`simulator/unknown-target`、`simulator/unknown-port`、`simulator/device-load-failed` 或 `simulator/instance-create-failed`。
 
-## 电气层
+## 电气层（调度器路径）
 
 原理图里的导线就是电路。`createCircuitHost()` 返回一个宿主接线工厂，用 `deriveSchematicTopology` 把每个器件引脚按合成符号的几何位置落到网，折成 `TopologyDefinition` 交给 `createPowerRuntime` 解算，再把结果作为 `pinHost` / `topology` 交给执行器。
 
@@ -156,3 +195,13 @@ const executor = createDeviceSimExecutor({
 - **电路定义归宿主所有。** 执行器只透传 `pinHost` / `topology`，不解析板级电源、上拉或网络拓扑；引脚与电气观测由宿主读自己的运行时。`createCircuitHost` 是可选的实现之一，手写电路可以直接实现 `DeviceSimHostFactory`。
 - **模拟量只有理想电压源。** `createCircuitHost` 的引脚模型固定为 `ideal-voltage`（0–5 V，低 0.8 V、高 2 V），没有电流、RC 或器件间负载；需要更细的电气行为时要往 `@mica-js/core` 的电气层加模型，或换一个自定义宿主。
 - **器件代码在宿主 realm 里求值**（与 `loadDeviceModule` 相同，等同可信扩展），不做沙箱化。
+
+## 文档
+
+| 文档                                                   | 内容                                                     |
+| ------------------------------------------------------ | -------------------------------------------------------- |
+| [docs/MIGRATION.md](./docs/MIGRATION.md)               | 从 v0 原型 / 调度器路径迁移到统一 IR，API 对照与常见问题 |
+| [docs/API.md](./docs/API.md)                           | `Circuit`、`compileCircuit`、器件工厂与访问器参考        |
+| [docs/PERFORMANCE.md](./docs/PERFORMANCE.md)           | 基准场景、结果与复现步骤                                 |
+| [docs/DEPRECATIONS.md](./docs/DEPRECATIONS.md)         | 弃用状态与移除时间表                                     |
+| [src/unified-ir/README.md](./src/unified-ir/README.md) | 编译器与运行时的内部结构                                 |

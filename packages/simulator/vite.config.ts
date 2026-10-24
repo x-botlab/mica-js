@@ -24,7 +24,7 @@ export default defineConfig({
     }),
   ],
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'examples/**/*.test.ts'],
     environment: 'node',
     // Tests run before the workspace build, so resolve the workspace packages from source.
     alias: {
