@@ -5,13 +5,8 @@
  * device publishes those writes to the shared pin space, the electrical solve
  * runs, and the LED samples the net — all inside one compiled module.
  */
-import {
-  Circuit,
-  LED_IR_TYPE,
-  TEACHING_MCU_IR_TYPE,
-  createLedIR,
-  createTeachingMCUIR,
-} from '../src/index';
+import { Circuit, LED_IR_TYPE, createLedIR } from '../src/index';
+import { TEACHING_MCU_IR_TYPE, createTeachingMCUIR } from '../src/unified-ir/examples/teaching-mcu';
 import { blinkyFirmware } from './firmware';
 
 /** What {@link run} observed while executing the blinky firmware. */

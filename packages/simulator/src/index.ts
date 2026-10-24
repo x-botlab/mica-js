@@ -108,36 +108,6 @@ export type {
 } from './unified-ir/devices';
 
 /* -------------------------------------------------------------------------
- * Unified IR: teaching MCU reference device
- * ---------------------------------------------------------------------- */
-export {
-  FLASH_BASE,
-  GPIO_DIR,
-  GPIO_IDR,
-  GPIO_ODR,
-  PERIPHERAL_BASE,
-  RAM_BASE,
-  REGISTER_COUNT,
-  TEACHING_MCU_IR_TYPE,
-  TeachingMCUError,
-  createTeachingMCUCircuit,
-  createTeachingMCUIR,
-} from './unified-ir/examples/teaching-mcu';
-export type {
-  IRDevice as TeachingMCUIRDevice,
-  ResolvedTeachingMCUConfig,
-  TeachingMCUAccessor,
-  TeachingMCUConfig,
-  TeachingMCUErrorCode,
-  TeachingMCUErrorOptions,
-  TeachingMCUFlags,
-  TeachingMCUGpioState,
-  TeachingMCUISAType,
-  TeachingMCUNvicSnapshot,
-  TeachingMCUSnapshot,
-} from './unified-ir/examples/teaching-mcu';
-
-/* -------------------------------------------------------------------------
  * Scheduler path (maintenance mode, see docs/DEPRECATIONS.md)
  * ---------------------------------------------------------------------- */
 export { SimulatorError } from './errors';

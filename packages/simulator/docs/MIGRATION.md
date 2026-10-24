@@ -110,7 +110,7 @@ circuit.devices.sw1.getPressCount();
 ### Teaching MCU
 
 ```ts
-import { createTeachingMCUIR, TEACHING_MCU_IR_TYPE } from '@mica-js/simulator';
+import { createTeachingMCUIR, TEACHING_MCU_IR_TYPE } from '../src/unified-ir/examples/teaching-mcu';
 
 const mcu = createTeachingMCUIR('mcu', {
   isa: 'm3',
@@ -136,7 +136,7 @@ guest.writeGPIO('A', 0b1);
 guest.raiseInterrupt(0);
 ```
 
-`examples/teaching-mcu` 是**参考实现**：它随包提供，用于示例、测试和器件开发模板。
+`examples/teaching-mcu` 是**参考实现**：它仅供包内部测试、示例和器件开发模板使用，不作为公共 API 导出。
 生产器件应放在独立包里（例如 `@mica-js/device` 或第三方包），由宿主加载。
 
 ## 自定义器件

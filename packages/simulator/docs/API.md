@@ -13,10 +13,8 @@ import {
   createLedIR,
   createMcuDescription,
   createSingleDeviceCircuit,
-  createTeachingMCUIR,
   BUTTON_IR_TYPE,
   LED_IR_TYPE,
-  TEACHING_MCU_IR_TYPE,
 } from '@mica-js/simulator';
 ```
 
@@ -188,31 +186,6 @@ const led = createLedDescription(); // anode / cathode + lamp 状态
 `getLineLevel()`、`getReferenceLevel()`、`readPinInput(name)`、`samplePin(name)`、`step(count?)`、
 `run(count)`、`snapshot()`。
 
-### `TeachingMCUConfig` — `createTeachingMCUIR(id, config?)`
-
-| 字段                                   | 默认值             | 说明                      |
-| -------------------------------------- | ------------------ | ------------------------- |
-| `isa`                                  | `'m3'`             | `'m3'` 或 `'teaching'`    |
-| `ports` / `portWidth`                  | `['A','B']` / `16` | GPIO 端口与位宽           |
-| `flashSize` / `ramSize`                | 64 KiB / 32 KiB    | 存储器大小                |
-| `firmware` / `ramInitial`              | 内置镜像           | 初始 flash / SRAM         |
-| `registers` / `pc` / `sp`              | 0 / 0 / RAM 顶     | 初始寄存器                |
-| `instructionsPerTick`                  | `1`                | 每个 tick retire 的指令数 |
-| `maxBlockInstructions`                 | 设备默认           | 单个翻译块的最大指令数    |
-| `irqCount` / `interrupts`              | `32` / —           | NVIC 线路与 GPIO 中断映射 |
-| `initialOutputs` / `initialDirections` | —                  | 按端口的初始 ODR / DIR    |
-| `exceptionCycles`                      | `12`               | 异常进入的周期开销        |
-
-`TeachingMCUAccessor` 覆盖寄存器（`readRegister` / `writeRegister`）、内存
-（`readMemory` / `writeMemory` / block 读写 / `patchFirmware`）、GPIO（`readGPIO` / `writeGPIO` /
-`readGPIOInput` / `readGPIODirection` / `writeGPIODirection`）、PC/SP/LR/cycles、
-NVIC（`enableInterrupt` / `raiseInterrupt` / `isInterruptPending` / `readInterruptRegisters` …）、
-`step` / `run`、`snapshot`，以及兼容 `McuAccessor` 的寄存器接口。
-
-便捷工厂 `createTeachingMCUCircuit(id, config?, options?)` 创建单器件电路并返回类型化访问器。
-
-> `examples/teaching-mcu` 是参考实现，随包提供用于示例与测试；生产器件应放在独立包中。
-
 ---
 
 ## 访问器
@@ -331,5 +304,5 @@ class CircuitError extends Error {
 
 ### 器件错误
 
-`LedError`、`ButtonError`、`TeachingMCUError` 各自带稳定的 `code`（`invalid-config`、
+`LedError` 和 `ButtonError` 各自带稳定的 `code`（`invalid-config`、
 `layout-not-found`、`invalid-count` 等），构造函数会校验配置并在消息里给出可接受值。

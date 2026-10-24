@@ -10,7 +10,6 @@ import type {
   LedAccessor,
   LedIRAccessor,
   StorageAccessor,
-  TeachingMCUAccessor,
 } from './index';
 import {
   BUTTON_IR_TYPE,
@@ -19,7 +18,6 @@ import {
   DEVICE_PIN_STRIDE,
   LED_IR_TYPE,
   PIN_MODE,
-  TEACHING_MCU_IR_TYPE,
   UNIFIED_PIN_CAPACITY,
   UnifiedIRCompilerError,
   compileCircuit,
@@ -29,7 +27,6 @@ import {
   createLedIR,
   createMcuDescription,
   createSingleDeviceCircuit,
-  createTeachingMCUIR,
 } from './index';
 
 describe('public API surface', () => {
@@ -44,11 +41,9 @@ describe('public API surface', () => {
     expect(typeof createMcuDescription).toBe('function');
     expect(typeof createLedIR).toBe('function');
     expect(typeof createButtonIR).toBe('function');
-    expect(typeof createTeachingMCUIR).toBe('function');
 
     expect(LED_IR_TYPE).toBe('led-ir');
     expect(BUTTON_IR_TYPE).toBe('button-ir');
-    expect(TEACHING_MCU_IR_TYPE).toBe('teaching-mcu-ir');
     expect(UNIFIED_PIN_CAPACITY).toBe(256);
     expect(DEVICE_PIN_STRIDE).toBe(32);
     expect(PIN_MODE.pushPull).toBe(1);
@@ -72,7 +67,6 @@ describe('public API surface', () => {
     expectTypeOf(circuit.devices.led1).toEqualTypeOf<LedIRAccessor>();
     expectTypeOf(circuit.devices.sw1).toEqualTypeOf<ButtonIRAccessor>();
     expectTypeOf<LedAccessor>().toMatchTypeOf<DeviceAccessor>();
-    expectTypeOf<TeachingMCUAccessor>().toMatchTypeOf<DeviceAccessor>();
     expectTypeOf<StorageAccessor>().toHaveProperty('loadState');
 
     circuit.devices.sw1.press();
