@@ -4,15 +4,15 @@
 
 ## 状态总览
 
-| API / 路径                          | 状态         | 替代                                                    | 移除版本          |
-| ----------------------------------- | ------------ | ------------------------------------------------------- | ----------------- |
-| `createUnifiedCircuit()`（原型）    | **已弃用**   | `Circuit.create()`                                      | 0.3.0（本次发布） |
-| `generateUnifiedIR()`（原型）       | **已弃用**   | `compileCircuit()`                                      | 0.3.0（本次发布） |
-| `planUnifiedCircuit()`（原型）      | **已弃用**   | `compileCircuit()`                                      | 0.3.0（本次发布） |
-| `UnifiedCircuit*` 类型（原型）      | **已弃用**   | `Circuit`、`CompiledCircuit`、`CircuitCompilationInput` | 0.3.0（本次发布） |
-| `unified-ir/fixtures/*`（原型器件） | **已弃用**   | `unified-ir/devices/*`、`createLedDescription()`        | 0.3.0（本次发布） |
-| `createDeviceSimExecutor()`         | **维护模式** | `Circuit.create()`（新电路代码）                        | 不早于 1.0        |
-| `createCircuitHost()`               | **维护模式** | 统一 IR 的电气管线（`compileCircuit`）                  | 不早于 1.0        |
+| API / 路径                          | 状态         | 替代                                                    | 移除版本   |
+| ----------------------------------- | ------------ | ------------------------------------------------------- | ---------- |
+| `createUnifiedCircuit()`（原型）    | **已移除**   | `Circuit.create()`                                      | 0.3.0      |
+| `generateUnifiedIR()`（原型）       | **已移除**   | `compileCircuit()`                                      | 0.3.0      |
+| `planUnifiedCircuit()`（原型）      | **已移除**   | `compileCircuit()`                                      | 0.3.0      |
+| `UnifiedCircuit*` 类型（原型）      | **已移除**   | `Circuit`、`CompiledCircuit`、`CircuitCompilationInput` | 0.3.0      |
+| `unified-ir/fixtures/*`（原型器件） | **已移除**   | `unified-ir/devices/*`、`createLedDescription()`        | 0.3.0      |
+| `createDeviceSimExecutor()`         | **维护模式** | `Circuit.create()`（新电路代码）                        | 不早于 1.0 |
+| `createCircuitHost()`               | **维护模式** | 统一 IR 的电气管线（`compileCircuit`）                  | 不早于 1.0 |
 
 “维护模式”表示：API 仍然完整支持、继续修复缺陷，但**不推荐用于新代码**，也不会新增功能。
 

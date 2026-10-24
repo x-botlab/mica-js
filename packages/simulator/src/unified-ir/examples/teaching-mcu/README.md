@@ -64,17 +64,21 @@ mcu.run(1000);
 
 ## Performance
 
-Measured on prototype implementation (71-168× vs. scheduler baseline):
+`teaching-mcu.performance.test.ts` compares this device with the scheduler-based
+`packages/device/examples/teaching-mcu` on the same machine:
 
 | Mode                      |           Rate | Speedup |
 | ------------------------- | -------------: | ------: |
-| Teaching ISA, batch       | 13.10 M inst/s |   71.3× |
-| M3 ISA, batch             | 30.82 M inst/s |  167.7× |
-| Teaching ISA, single-step |  2.10 M inst/s |   11.4× |
+| Teaching ISA, batch       | 11.24 M inst/s |   70.4× |
+| M3 ISA, batch             | 27.06 M inst/s |  169.4× |
+| Teaching ISA, single-step |  1.72 M inst/s |   10.8× |
 
-Baseline: 0.184 M inst/s (scheduler-based architecture).
+Baseline: 0.160 M inst/s (scheduler-based architecture).
 
-Batch mode processes instructions in tight IR loop (amortizes dispatch overhead).
+Batch mode processes instructions in a tight IR loop (amortizes dispatch
+overhead). Time-sliced simulation (`instructionsPerTick: 1000`) reaches a
+higher per-instruction rate; see [docs/PERFORMANCE.md](../../../../docs/PERFORMANCE.md)
+for both methodologies.
 
 ## File Structure
 
@@ -95,49 +99,40 @@ teaching-mcu/
 ## Usage Example
 
 ```typescript
-import { Circuit } from '@mica-js/simulator/unified-ir/runtime';
-import { createTeachingMCUCircuit } from './teaching-mcu';
-import type { TeachingMCUAccessor } from './teaching-mcu';
+import { Circuit, createTeachingMCUIR, TEACHING_MCU_IR_TYPE } from '@mica-js/simulator';
 
-interface Devices {
-  mcu: TeachingMCUAccessor;
-}
-
-const circuit = await Circuit.create<Devices>({
-  devices: [
-    {
-      id: 'mcu',
-      type: 'teaching-mcu-ir',
-      factory: createTeachingMCUCircuit,
-      config: {
-        isa: 'm3',  // or 'teaching'
-        firmware: new Uint8Array([...]),
-        clockHz: 16_000_000
-      }
-    }
-  ],
-  netlist: []
+const mcu = createTeachingMCUIR('mcu', {
+  isa: 'm3', // or 'teaching'
+  firmware: new Uint8Array([...]),
+  instructionsPerTick: 1,
 });
 
-// Write registers
-circuit.devices.mcu.writeRegister('r0', 42);
-circuit.devices.mcu.writeRegister('pc', 0x1000);
+const circuit = await Circuit.create({
+  devices: [{ id: 'mcu', type: TEACHING_MCU_IR_TYPE, description: mcu.device.description }],
+  connections: [],
+});
 
-// Execute
-circuit.devices.mcu.step();  // Single instruction
-circuit.devices.mcu.run(1000);  // 1000 instructions (batch)
+const guest = circuit.devices.mcu; // TeachingMCUAccessor
 
-// Read state
-const r0 = circuit.devices.mcu.readRegister('r0');
-const flags = circuit.devices.mcu.readFlags();
-const gpio = circuit.devices.mcu.readGPIO('PA', 0);
+// Registers (r0–r15 plus pc/sp/lr/xpsr/cycles/ipsr)
+guest.writeRegister('r0', 42);
+guest.setPC(0x1000);
+const r0 = guest.readRegister('r0');
 
-// Memory access
-circuit.devices.mcu.writeMemory(0x8000, new Uint8Array([1, 2, 3, 4]));
-const data = circuit.devices.mcu.readMemory(0x8000, 4);
+// Execute: one tick retires `instructionsPerTick` instructions
+circuit.step();
+circuit.runBatch(1000);
+guest.step(10); // accessor shortcut: 10 ticks on the same circuit
 
-// NVIC
-circuit.devices.mcu.triggerInterrupt(5);  // External interrupt 5
+// Memory (unified address space, 4-byte or 1-byte access)
+guest.writeMemoryBlock(0x2000_0000, new Uint8Array([1, 2, 3, 4]));
+const data = guest.readMemoryBlock(0x2000_0000, 4);
+
+// GPIO and NVIC
+guest.writeGPIODirection('A', 0b1);
+guest.writeGPIO('A', 0b1);
+guest.enableInterrupt(5);
+guest.raiseInterrupt(5);
 ```
 
 ## Design Decisions
@@ -174,14 +169,14 @@ Device kernel generates:
 
 ### Accessor API
 
-`StorageAccessor` wrapper provides:
+`TeachingMCUAccessor` provides:
 
-- **Registers**: `readRegister(name)`, `writeRegister(name, value)`
-- **Memory**: `readMemory(addr, len)`, `writeMemory(addr, data)`
-- **GPIO**: `readGPIO(port, pin)`, `writeGPIO(port, pin, value)`
-- **NVIC**: `triggerInterrupt(n)`, `clearInterrupt(n)`
-- **Execution**: `step()`, `run(count)`, `reset()`
-- **Introspection**: `snapshot()`, `patchFirmware(addr, data)`
+- **Registers**: `readRegister(name | index)`, `writeRegister(name | index, value)`, `getPC` / `setPC`, `getSP` / `setSP`, `getLR` / `setLR`, `getCycles`, `getFlags`
+- **Memory**: `readMemory(addr, width)`, `writeMemory(addr, value, width)`, `readMemoryBlock(addr, len)`, `writeMemoryBlock(addr, bytes)`, `patchFirmware(addr, bytes)`
+- **GPIO**: `readGPIO(port)`, `writeGPIO(port, value)`, `readGPIOInput(port)`, `readGPIODirection(port)`, `writeGPIODirection(port, mask)`
+- **NVIC**: `enableInterrupt(n)`, `disableInterrupt(n)`, `raiseInterrupt(n)`, `clearInterrupt(n)`, `isInterruptPending(n)`, `isInterruptActive(n)`, `readInterruptRegisters()`
+- **Execution**: `step(count?)`, `run(count)` (ticks on the owning circuit)
+- **Introspection**: `snapshot()`, `isHalted()`, `isFaulted()`, `isSleeping()`
 
 ### Test Strategy
 

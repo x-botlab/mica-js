@@ -1,197 +1,94 @@
 # Example Devices
 
-This directory contains **reference device implementations** for testing and documentation purposes. These are **not built-in devices** — the simulator does not bundle device implementations.
+Reference device implementations that validate the unified IR compiler and
+runtime on realistic complexity. They are shipped with the simulator so the
+test suite and the examples can exercise them, but they are **not built-in
+devices**: production devices belong in device packages.
 
-## Purpose
-
-Example devices serve three purposes:
-
-1. **Validation**: Exercise the unified IR compiler and runtime with realistic complexity
-2. **Reference**: Demonstrate device development patterns and best practices
-3. **Testing**: Provide fixtures for integration and performance tests
+Public reference: [docs/API.md](../../../docs/API.md) (device contract and
+accessor surface) and [docs/MIGRATION.md](../../../docs/MIGRATION.md#自定义器件)
+(step-by-step migration).
 
 ## Available Examples
 
-### teaching-mcu
+### `teaching-mcu`
 
-Complete ARM Cortex-M3 implementation demonstrating:
+Complete ARM Cortex-M3 implementation:
 
-- Dual ISA support (teaching 16-bit + M3 32-bit)
-- Register file and memory management
-- GPIO and pin electrical integration
-- NVIC interrupt controller
-- Exception entry/return
-- Runtime firmware patching
+- Dual ISA support (educational 16-bit and M3 32-bit)
+- 16-register file, N/Z/C/V flags, unified flash/RAM/peripheral address space
+- PA0–PA15 / PB0–PB15 GPIO integrated with the electrical solve
+- NVIC interrupts, exception entry/return, WFI
+- Runtime firmware patching (`patchFirmware`)
 
-**Performance**: 71-168× faster than scheduler-based architecture (13-31 M inst/s).
+See [teaching-mcu/README.md](./teaching-mcu/README.md).
 
-See [teaching-mcu/README.md](./teaching-mcu/README.md) for detailed documentation.
+## Device Contract
 
-## Device Development Guide
+A device is described by a `DeviceDescription` and executed inside the circuit
+module. The production devices in `../devices/` (`led`, `button`) are the
+smallest complete examples; `teaching-mcu` is the complex one.
 
-### File Structure
+```ts
+import type { DeviceDescription } from '@mica-js/simulator';
 
-A complete device implementation consists of:
+export const counter: DeviceDescription = {
+  name: 'counter',
+  pins: {
+    out: { direction: 'output' },
+  },
+  states: {
+    count: { type: 'u32', initial: 0 },
+  },
+  behaviors: {
+    initialize: (api) => api.pin('out').configure(1), // push-pull
+    tick: (api) => {
+      const b = api.builder;
+      const count = api.state<'u32'>('count');
+      const next = b.int.add(count.load(), b.const('u32', 1));
+      count.store(next);
+      api.pin('out').writeDigital(b.int.cmp('ne', next, b.const('u32', 0)));
+    },
+  },
+};
+```
+
+Three hooks are available:
+
+| Hook         | Runs when                        | Typical use                         |
+| ------------ | -------------------------------- | ----------------------------------- |
+| `initialize` | once at `Circuit.create`/`reset` | pin modes, initial register values  |
+| `tick`       | before the electrical solve      | drive outputs, advance device state |
+| `update`     | after the electrical solve       | sample solved inputs (LED, button)  |
+
+Complex devices add two optional fields:
+
+- `kernel(context)` — runs before the phase bodies; declare private arrays,
+  byte memories and providers (firmware, RAM), then return either behaviour
+  hooks or ready-made phase function refs.
+- `accessor(context)` — build a typed accessor over the engine storage, e.g.
+  `TeachingMCUAccessor` or the LED / button accessors.
+
+Pins always live in the shared global pin space:
+
+```ts
+api.pin('out').configure(PIN_MODE.pushPull); // writes pin_mode[globalId]
+api.pin('out').writeDigital(level); // writes pin_output[globalId]
+api.pin('in').sampleDigital(); // reads solved pin_input[globalId]
+```
+
+## File Layout
 
 ```
 my-device/
-├── my-device.ts           # IR factory
-├── my-device.ac.ts        # Accessor builder
-├── my-device.d.ts         # TypeScript types
-├── my-device.errors.ts    # Error definitions (optional)
+├── my-device.ts           # IR factory + DeviceDescription
+├── my-device.ac.ts        # Typed accessor over StorageAccessor
+├── my-device.d.ts         # Stable type-only entry point
+├── my-device.errors.ts    # Machine-checkable error codes
 ├── my-device.test.ts      # Unit tests
-└── README.md              # Documentation
+├── my-device.integration.test.ts  # Circuit.create integration
+└── README.md
 ```
 
-### 1. IR Factory (`my-device.ts`)
-
-Generates IR functions for device behavior:
-
-```typescript
-import type { IRDevice } from '@mica-js/simulator/unified-ir/compiler';
-
-export function createMyDeviceIR(id: string, config: MyDeviceConfig): IRDevice {
-  return {
-    id,
-    type: 'my-device',
-    pins: [
-      { id: `${id}.input`, mode: 'input' },
-      { id: `${id}.output`, mode: 'output' },
-    ],
-    resources: {
-      scalars: { count: 2 }, // state variables
-      arrays: { count: 0 },
-      bytes: { count: 0 },
-    },
-    kernel: (ctx) => {
-      // Generate IR for device tick
-      ctx.body((b) => {
-        const input = b.readPin(0);
-        const state = b.getScalar(0);
-        // ... device logic ...
-        b.writePin(1, result);
-      });
-    },
-  };
-}
-```
-
-### 2. Accessor Builder (`my-device.ac.ts`)
-
-Provides high-level API over storage:
-
-```typescript
-import type { StorageAccessor } from '@mica-js/simulator/unified-ir/runtime';
-
-export function buildAccessor(deviceId: string, storage: StorageAccessor) {
-  return {
-    getState(): number {
-      return storage.getScalar(0);
-    },
-    setState(value: number): void {
-      storage.setScalar(0, value);
-    },
-    readOutput(): boolean {
-      return storage.getPin(1);
-    },
-  };
-}
-```
-
-### 3. TypeScript Types (`my-device.d.ts`)
-
-Export accessor interface:
-
-```typescript
-export interface MyDeviceAccessor {
-  getState(): number;
-  setState(value: number): void;
-  readOutput(): boolean;
-}
-```
-
-### 4. Usage
-
-```typescript
-import { Circuit } from '@mica-js/simulator/unified-ir/runtime';
-import { createMyDeviceIR } from './my-device';
-import type { MyDeviceAccessor } from './my-device';
-
-interface Devices {
-  dev1: MyDeviceAccessor;
-}
-
-const circuit = await Circuit.create<Devices>({
-  devices: [
-    { id: 'dev1', type: 'my-device', factory: createMyDeviceIR, config: {...} }
-  ],
-  netlist: [...]
-});
-
-circuit.devices.dev1.setState(42);
-circuit.step();
-console.log(circuit.devices.dev1.readOutput());
-```
-
-## Key Principles
-
-### No device coupling
-
-The simulator does not know about specific device types. Device loading, type mapping, and instantiation are the **user's responsibility**.
-
-### Explicit type mapping
-
-Users declare their circuit's device types explicitly:
-
-```typescript
-interface MyCircuit {
-  mcu: TeachingMCUAccessor;
-  led: MyLEDAccessor;
-}
-
-const circuit = await Circuit.create<MyCircuit>(...);
-```
-
-No magic inference from literals or registries.
-
-### StorageAccessor interface
-
-Device accessors receive `StorageAccessor`, which hides JIT/compiled internals:
-
-```typescript
-interface StorageAccessor {
-  getScalar(index: number): number;
-  setScalar(index: number, value: number): void;
-  getArray(index: number): Float64Array;
-  getBytes(index: number): Uint8Array;
-  getPin(pinIndex: number): boolean;
-  setPin(pinIndex: number, value: boolean): void;
-}
-```
-
-Accessors should not depend on IR implementation details.
-
-## Testing
-
-Example devices include comprehensive tests:
-
-- **Unit tests**: IR generation, accessor methods, edge cases
-- **Integration tests**: Multi-device circuits, electrical networks
-- **Performance tests**: Throughput benchmarks, latency measurements
-
-Run tests:
-
-```bash
-pnpm test packages/simulator/src/unified-ir/examples/
-```
-
-## Contributing
-
-Example devices are part of the simulator's test suite. When adding new examples:
-
-1. Provide complete implementation (IR factory + accessor + types)
-2. Include comprehensive tests
-3. Document design decisions and tradeoffs
-4. Measure performance vs. baseline
-
-Example devices are **not production devices** — they exist to validate and document the unified IR architecture.
+Use `../devices/led/` as a template: it ships all seven files, a parity test
+against the built-in `ideal-led` kernel and a performance test.
