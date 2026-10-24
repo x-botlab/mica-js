@@ -433,6 +433,9 @@ importers:
       '@mica-js/device':
         specifier: workspace:*
         version: link:../device
+      '@mica-js/ir':
+        specifier: workspace:*
+        version: link:../ir
     devDependencies:
       typescript:
         specifier: 'catalog:'
