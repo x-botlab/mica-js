@@ -30,8 +30,8 @@ import type { FunctionSummary } from '../effects';
 import { Op } from '../mir';
 import type { LayoutProfile, MBlock, MFunction, MInst, MPromotion, MTerm, ValueId } from '../mir';
 import { analyzeRepresentation } from '../repr';
-import type { RegionPromotion } from '../region';
-import { collectRegionPromotions } from '../region';
+import type { RegionPromotion, RegionRuntimeState } from '../region';
+import { collectRegionPromotions, REGION_DIRECT_CALL_DEPTH } from '../region';
 import type { JitFrame } from '../runtime-core';
 import { isFloatType } from '../../runtime';
 import {
@@ -116,6 +116,37 @@ export interface RegionEmitterOptions {
   readonly promotions: readonly RegionPromotion[];
   /** Model memory index → region promotion id. */
   readonly promotionByMemory: ReadonlyMap<number, number>;
+  /** Direct region calls emitted at this member's exit sites (J15). */
+  readonly directCalls: readonly ResolvedRegionDirectCall[];
+  /**
+   * Continue cache-hit exits inside the target's region instead of returning
+   * `TAIL` (J15).
+   */
+  readonly inlineTail: boolean;
+}
+
+/**
+ * One inter-region call, fully resolved for code generation (J15).
+ *
+ * `key` and both epochs are emitted as literals: V8 folds the guard into a
+ * couple of compares and keeps the call target monomorphic, which is what makes
+ * the crossing cheaper than the generic trampoline.
+ */
+export interface ResolvedRegionDirectCall {
+  /** Provider index of the exit site the guard is emitted at. */
+  readonly providerIndex: number;
+  /** Key types of that provider (selects `===` or `Object.is`). */
+  readonly keyTypes: readonly ScalarType[];
+  /** Literal key of the target artifact. */
+  readonly key: readonly DispatchKey[];
+  /** Literal storage epoch at which the target was last validated. */
+  readonly epoch: number;
+  /** Literal provider cache epoch at which the target was last validated. */
+  readonly cacheEpoch: number;
+  /** Entry function of the region that owns the target. */
+  readonly fn: (entry: number, ...args: unknown[]) => unknown;
+  /** Member index of the target inside that region. */
+  readonly entry: number;
 }
 
 interface EmitterOptions {
@@ -1055,11 +1086,46 @@ class Emitter implements OpsContext {
     this.line(`${state}.validatedEpoch = H.ctl.epoch;`);
     this.line(`${state}.storageEpoch = H.ctl.epoch;`);
     this.line(`${state}.providerEpoch = H.prov.cacheEpoch;`);
+    this.#emitRegionTail(state, params, boundary);
     this.line(`rt.tailFn = ${state}.compiled.fn;`);
     this.line(`rt.tailArgs = [${this.#tailArguments(params, boundary)}];`);
     this.line(`rt.tailState = ${state};`);
     this.line(`rt.depth = ${this.depthName};`);
     this.line('return rt.TAIL;');
+  }
+
+  /**
+   * Continue a transfer inside the region that owns `state` (J15).
+   *
+   * The resolved artifact already belongs to a compiled region — that is what
+   * `runTail` would discover next — so the trampoline round trip (sentinel,
+   * driver loop, argument array spread) collapses into one call. The epochs
+   * were validated by the cache hit that produced `state`, so no extra guard is
+   * needed; a changed epoch sends the transfer through `materialize` instead.
+   *
+   * `L` is cleared before the call for the same reason as
+   * {@link #emitDirectCalls}: a dispatch is a tail transfer, so an error raised
+   * inside the callee must not append this frame's location.
+   */
+  #emitRegionTail(state: string, params: readonly ScalarType[], boundary: readonly string[]): void {
+    const region = this.#options.region;
+    if (region === undefined || !region.inlineTail) return;
+    const handle = this.temp();
+    const result = this.temp();
+    const args = params.map((type, index) =>
+      isFloatType(type)
+        ? `H.argument(${this.typeConstant(type)}, ${boundary[index] ?? 'undefined'})`
+        : (boundary[index] ?? 'undefined'),
+    );
+    this.line(`${handle} = ${state}.region;`);
+    this.line(`if (${handle} !== undefined && rt.depth < ${REGION_DIRECT_CALL_DEPTH}) {`);
+    this.#indent += 1;
+    this.line('L = -1;');
+    this.line(`${result} = ${handle}.fn(${state}.regionIndex, ${args.join(', ')});`);
+    this.line(`rt.depth = ${this.depthName};`);
+    this.line(`return ${result};`);
+    this.#indent -= 1;
+    this.line('}');
   }
 
   #newSite(providerIndex: number): number {
@@ -1138,6 +1204,7 @@ class Emitter implements OpsContext {
     // dirty shared promotions must be visible to the provider cache first.
     this.#emitSharedSpill();
     const info = this.#providerInfo(term.provider);
+    this.#emitDirectCalls(term, keyExprs, info);
     if (info !== undefined && this.#env.dispatchIC !== false) {
       // Hot exit: the jump cache holds the target artifact at the current
       // epochs, so the transfer needs no provider-cache round trip.
@@ -1147,6 +1214,7 @@ class Emitter implements OpsContext {
       );
       this.line(`if (${temp} !== undefined) {`);
       this.#indent += 1;
+      this.#emitExitSample(temp);
       this.#emitHitTail(temp, info.params, boundary);
       this.#indent -= 1;
       this.line('}');
@@ -1156,6 +1224,7 @@ class Emitter implements OpsContext {
       `${temp} = H.materialize(${term.provider}, [${keyExprs.join(', ')}], [${boundary.join(', ')}]);`,
     );
     this.line('rt.afterHost();');
+    this.#emitExitSample(`${temp}.state`);
     for (let member = 0; member < region.memberCount; member += 1) {
       this.line(`if (${temp}.state === ${rs}.states[${member}]) {`);
       this.#indent += 1;
@@ -1173,6 +1242,84 @@ class Emitter implements OpsContext {
     this.line(`rt.tailFn = ${temp}.fn; rt.tailArgs = ${temp}.args; rt.tailState = ${temp}.state;`);
     this.line(`rt.depth = ${this.depthName};`);
     this.line('return rt.TAIL;');
+  }
+
+  /**
+   * Report one region exit to the engine's profile (J15).
+   *
+   * The sample is what turns a cold `TAIL` exit into a direct call on the next
+   * compilation of this region. `RS.profile.budget` is a plain number that the
+   * engine sets to `0` once a plan is final, so a settled region only pays one
+   * compare per exit.
+   */
+  #emitExitSample(state: string): void {
+    this.line(`if (${this.#options.region!.runtimeName}.profile.budget > 0) {`);
+    this.#indent += 1;
+    this.line(`rt.regionExit(${this.#options.region!.runtimeName}, ${state});`);
+    this.#indent -= 1;
+    this.line('}');
+  }
+
+  /**
+   * Emit the guarded inter-region calls of this exit site (J15):
+   *
+   * ```js
+   * if (RK === 40 && H.ctl.epoch === 7 && H.prov.cacheEpoch === 3) {
+   *   t0 = K12(2, a0, a1);
+   *   rt.depth = d;
+   *   return t0;
+   * }
+   * ```
+   *
+   * The guard uses literals, so the key test folds into immediate compares. Both
+   * epochs are part of the guard because lemma L only guarantees that
+   * `materialize` still selects the same artifact while *both* are unchanged;
+   * any other value falls through to the jump cache and the generic path, which
+   * is exactly the pre-J15 behaviour.
+   *
+   * `L` is cleared before the call: a dispatch is a tail transfer, so an error
+   * raised inside the callee must not append this frame's location to the
+   * reported call stack. The callee's own unwind already recorded its frames
+   * and the depth is restored on the way out.
+   */
+  #emitDirectCalls(
+    term: Extract<MTerm, { kind: 'dispatch' }>,
+    keyExprs: readonly string[],
+    info: ProviderDispatchInfo | undefined,
+  ): void {
+    const region = this.#options.region!;
+    if (region.directCalls.length === 0) return;
+    const depth = this.depthName;
+    for (const call of region.directCalls) {
+      if (call.providerIndex !== term.provider) continue;
+      if (info === undefined || info.keyTypes.length !== call.key.length) continue;
+      const conditions = call.key.map((key, position) =>
+        this.#keyCompare(this.#keyLiteral(key), keyExprs[position]!, info.keyTypes[position]!),
+      );
+      conditions.push(
+        `H.ctl.epoch === ${call.epoch}`,
+        `H.prov.cacheEpoch === ${call.cacheEpoch}`,
+        `rt.depth < ${REGION_DIRECT_CALL_DEPTH}`,
+      );
+      const target = this.constant(call.fn);
+      const args = [String(call.entry), ...this.#mirArguments(term)];
+      const temp = this.temp();
+      this.line(`if (${conditions.join(' && ')}) {`);
+      this.#indent += 1;
+      // The frame is leaving through a tail transfer: no location may be
+      // attributed to it if the callee throws.
+      this.line('L = -1;');
+      this.line(`${temp} = ${target}(${args.join(', ')});`);
+      this.line(`rt.depth = ${depth};`);
+      this.line(`return ${temp};`);
+      this.#indent -= 1;
+      this.line('}');
+    }
+  }
+
+  /** Emit one normalized dispatch key as a literal expression. */
+  #keyLiteral(key: DispatchKey): string {
+    return typeof key === 'boolean' ? (key ? 'true' : 'false') : numberLiteral(key);
   }
 
   /**
@@ -1335,6 +1482,9 @@ export function emitFunction(fn: MFunction, env: EmitEnv): EmittedFunction {
   return new Emitter(fn, env).emit();
 }
 
+/** Direct calls emitted into a single member; bounds the emitted size (J15). */
+const MAX_DIRECT_CALLS_PER_MEMBER = 4;
+
 /** One artifact compiled as a region member (J14). */
 export interface RegionMemberEmit {
   readonly state: ArtifactState;
@@ -1361,11 +1511,17 @@ export interface EmittedRegion {
  * a cross-member dispatch assigns them and `continue`s the region loop, while
  * a miss performs the generic materialize and either re-enters a member or
  * leaves with `TAIL`.
+ *
+ * `directCalls` are the hot exits resolved by the engine (J15). A member only
+ * receives the calls whose provider its own dispatch sites can produce; every
+ * guard is emitted at the exit sites themselves.
  */
 export function emitRegion(
   members: readonly RegionMemberEmit[],
   env: EmitEnv,
-  runtime: unknown,
+  runtime: RegionRuntimeState,
+  directCalls: readonly ResolvedRegionDirectCall[] = [],
+  inlineTail = false,
 ): EmittedRegion {
   if (members.length === 0) throw new Error('JIT region compilation needs at least one member');
   const pool = new ConstantPool(env.constants);
@@ -1375,6 +1531,20 @@ export function emitRegion(
   const memberKeys = members.map((member) => member.key);
   const paramCount = members.reduce((max, member) => Math.max(max, member.params.length), 0);
   const parameterNames = Array.from({ length: paramCount }, (_value, index) => `a${index}`);
+  // Only the exit sites that can reach a target need its guard; keeping the
+  // per-member list minimal is what holds the emitted size in check.
+  const providersOf = members.map((member) => {
+    const providers = new Set<number>();
+    for (const block of member.mir.blocks) {
+      if (block.term.kind === 'dispatch') providers.add(block.term.provider);
+    }
+    return providers;
+  });
+  const memberCalls = members.map((_member, index) =>
+    directCalls
+      .filter((call) => providersOf[index]!.has(call.providerIndex))
+      .slice(0, MAX_DIRECT_CALLS_PER_MEMBER),
+  );
   // Region-wide state promotion: a state accessed more than once across the
   // member set becomes one shared local. This is what keeps a DBT register
   // file live across block boundaries without storage round trips.
@@ -1418,6 +1588,8 @@ export function emitRegion(
           memberPrefix: prefix,
           promotions,
           promotionByMemory,
+          directCalls: memberCalls[index]!,
+          inlineTail,
         },
       },
     );

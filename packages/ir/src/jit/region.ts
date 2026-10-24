@@ -31,6 +31,25 @@
  * Regions are cached by member set and never evicted. A regenerated artifact
  * is a fresh object, so it is never a member of the old region and the entry
  * check selects the normal dispatch path again.
+ *
+ * J15 removes that round trip for region-to-region transfers. Two mechanisms
+ * share the same idea — the transfer names its target region instead of going
+ * back through the driver — and both fall back to `TAIL` whenever anything is
+ * uncertain:
+ *
+ * - the *inline tail* continues a jump-cache hit inside the region that owns
+ *   the resolved artifact (`handle.fn(state.regionIndex, ...)`), which needs no
+ *   profile and covers every crossing;
+ * - a *direct-call guard* short-circuits the jump-cache probe for the hottest
+ *   exits of the region. The engine profiles the exit targets, and once one is
+ *   hot enough the region is recompiled with a literal key + epoch guard for
+ *   its top targets. The guard fails closed: any changed epoch, unbounded
+ *   nesting, or recompiled callee sends the transfer down the generic
+ *   `materialize` path.
+ *
+ * Because a direct call keeps the caller's JavaScript frame alive, both
+ * mechanisms stop at {@link REGION_DIRECT_CALL_DEPTH} and hand the transfer
+ * back to the trampoline, which keeps the stack flat and bounded.
  */
 import type { ArtifactState, DispatchKey, DispatchRegistry, RegionHandle } from './dispatch-ic';
 import { MAX_REGION_MEMBERS } from './dispatch-ic';
@@ -40,6 +59,8 @@ import type { ScalarType } from '../types';
 
 /** Runtime state referenced by generated region code (`RS.*`). */
 export interface RegionRuntimeState {
+  /** Region identity, shared with the inter-region dependency graph (J15). */
+  readonly key: string;
   readonly states: readonly ArtifactState[];
   readonly keys: readonly (readonly DispatchKey[])[];
   /** Per-member storage epoch recorded after the last validated entry. */
@@ -48,6 +69,12 @@ export interface RegionRuntimeState {
   readonly cs: number[];
   /** Artifact function indices, used by the deep-recursion fallback. */
   readonly ids: readonly number[];
+  /**
+   * Exit-target profile (J15). Generated code only reports while
+   * {@link RegionExitProfile.budget} is positive; the engine owns the counters
+   * and decides when the region is recompiled with direct calls.
+   */
+  readonly profile: RegionExitProfile;
 }
 
 /** One artifact selected for region compilation. */
@@ -64,7 +91,73 @@ export interface RegionMember {
 export interface CompiledRegion extends RegionHandle {
   readonly source: string;
   readonly members: readonly ArtifactState[];
+  /** Runtime epoch/key/profile table referenced by the generated code. */
+  readonly runtime: RegionRuntimeState;
+  /**
+   * Regions this compilation directly calls, one record per emitted guard
+   * (J15). The engine keeps a reverse graph over these keys so recompiling a
+   * callee refreshes every caller.
+   */
+  readonly directCallDeps: readonly RegionDirectCallDep[];
 }
+
+/** One inter-region call emitted into a compiled region (J15). */
+export interface RegionDirectCallDep {
+  /** Key of the callee region (`regionKeyOf`). */
+  readonly key: string;
+  /** Storage epoch literal guarding the call. */
+  readonly epoch: number;
+}
+
+/** One sampled exit target and how often it was observed. */
+export interface RegionExitSlot {
+  readonly state: ArtifactState;
+  count: number;
+}
+
+/**
+ * Exit-target profile of one region (J15).
+ *
+ * Generated region code reports the artifact every exit transferred to. The
+ * engine turns the hottest targets that belong to another compiled region into
+ * direct calls once a target crosses
+ * {@link REGION_DIRECT_CALL_THRESHOLD}; the budget bounds the sampling cost so
+ * a region whose exits never qualify stops paying for the report.
+ */
+export interface RegionExitProfile {
+  readonly slots: RegionExitSlot[];
+  /** Remaining exit reports; `0` disables sampling in generated code. */
+  budget: number;
+  /** Set while a rebuild is pending, so one window requests one rebuild. */
+  requested: boolean;
+}
+
+/** Sampled exit targets per region before new ones are ignored. */
+export const REGION_PROFILE_SLOTS = 8;
+
+/** Exits a region reports before sampling stops. */
+export const REGION_PROFILE_BUDGET = 16_384;
+
+/** Observations of one target before the region is recompiled (J15). */
+export const REGION_DIRECT_CALL_THRESHOLD = 256;
+
+/** Direct calls emitted into one region (`top-4` exit targets). */
+export const MAX_REGION_DIRECT_CALLS = 4;
+
+/** Recompilations one region may go through before it keeps its plan. */
+export const MAX_REGION_REBUILDS = 2;
+
+/**
+ * Maximum nesting of direct region calls.
+ *
+ * A direct call keeps the caller's JavaScript frame alive, so a ring of regions
+ * would grow the stack without bound; `rt.maxDepth` only guards IR recursion
+ * and sits far above what the host stack can hold. Past this depth the exit
+ * returns `TAIL` instead, which unwinds to the driver loop and restarts the
+ * chain. The value stays well inside a default V8 stack for a generated region
+ * function (which declares a large local frame).
+ */
+export const REGION_DIRECT_CALL_DEPTH = 8;
 
 /**
  * One state location promoted to a region-wide local (J14).
@@ -160,8 +253,12 @@ export function collectRegionMembers(
 }
 
 /** Build the mutable epoch table shared with generated region code. */
-export function createRegionRuntime(members: readonly RegionMember[]): RegionRuntimeState {
+export function createRegionRuntime(
+  members: readonly RegionMember[],
+  options: { readonly key: string; readonly profile: RegionExitProfile },
+): RegionRuntimeState {
   return {
+    key: options.key,
     states: members.map((member) => member.state),
     keys: members.map((member) => member.key),
     // The artifact's recorded epochs maximise first-jump hits; a changed epoch
@@ -169,7 +266,52 @@ export function createRegionRuntime(members: readonly RegionMember[]): RegionRun
     es: members.map((member) => member.state.storageEpoch),
     cs: members.map((member) => member.state.providerEpoch),
     ids: members.map((member) => member.state.artifact.index),
+    profile: options.profile,
   };
+}
+
+/**
+ * Identity of one region: its provider plus the sorted artifact indices of its
+ * members. Recompiling the same members keeps the key, which lets the
+ * inter-region dependency graph survive refreshes.
+ */
+export function regionKeyOf(providerIndex: number, members: readonly ArtifactState[]): string {
+  const indices = members.map((member) => member.artifact.index);
+  indices.sort((left, right) => left - right);
+  return `${providerIndex}#${indices.join('.')}`;
+}
+
+/** A fresh, enabled exit profile. */
+export function createRegionExitProfile(): RegionExitProfile {
+  return { slots: [], budget: REGION_PROFILE_BUDGET, requested: false };
+}
+
+/**
+ * Record one region-to-region exit. Returns true when a sampled target has
+ * reached {@link REGION_DIRECT_CALL_THRESHOLD}, which asks the engine to
+ * recompile the region with direct calls for its hottest exits.
+ *
+ * Sampling is identity based: the slot table is tiny (one entry per distinct
+ * exit target) and counts saturate at twice the threshold, so a long-running
+ * region never grows the table or the counters.
+ */
+export function recordRegionExit(profile: RegionExitProfile, state: ArtifactState): boolean {
+  if (profile.budget <= 0 || profile.requested) return false;
+  profile.budget -= 1;
+  for (const slot of profile.slots) {
+    if (slot.state !== state) continue;
+    if (slot.count < REGION_DIRECT_CALL_THRESHOLD * 2) slot.count += 1;
+    return slot.count >= REGION_DIRECT_CALL_THRESHOLD;
+  }
+  if (profile.slots.length < REGION_PROFILE_SLOTS) profile.slots.push({ state, count: 1 });
+  return false;
+}
+
+/** Drop every sample once a rebuild consumed them. */
+export function resetRegionExitProfile(profile: RegionExitProfile): void {
+  profile.slots.length = 0;
+  profile.budget = REGION_PROFILE_BUDGET;
+  profile.requested = false;
 }
 
 /** Register a compiled region on every member. Returns the region index table. */

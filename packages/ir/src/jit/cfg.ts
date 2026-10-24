@@ -164,7 +164,13 @@ export function dominates(dominators: Dominators, a: number, b: number): boolean
   }
 }
 
-/** Dominance frontier for every reachable block. */
+/**
+ * Dominance frontier for every reachable block.
+ *
+ * Unreachable predecessors are ignored: a pass may leave dead blocks that still
+ * point into live code (loop unrolling leaves the superseded loop for DCE), and
+ * they contribute no execution path.
+ */
 export function dominanceFrontiers(cfg: CFG, dominators: Dominators): Map<number, Set<number>> {
   const frontiers = new Map<number, Set<number>>();
   for (const block of cfg.order) frontiers.set(block, new Set<number>());
@@ -174,6 +180,7 @@ export function dominanceFrontiers(cfg: CFG, dominators: Dominators): Map<number
     const immediate = dominators.get(block);
     if (immediate === undefined) continue;
     for (const pred of preds) {
+      if (!dominators.has(pred)) continue;
       let runner: number | undefined = pred;
       while (runner !== undefined && runner !== immediate) {
         frontiers.get(runner)!.add(block);

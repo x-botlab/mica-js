@@ -1,21 +1,25 @@
 /**
- * The scalar optimization pipeline (J11).
+ * The scalar optimization pipeline (J11, O02).
  *
- * Order: `sccp → gvn → range → licm → dce`. Every pass is independently
- * switchable; disabling one never makes another incorrect, only less
- * profitable. When `verify` is set the MIR verifier runs after every pass.
+ * Order: `sccp → gvn → range → licm → unroll → dce`. Loop unrolling runs after
+ * LICM (so the hoisted invariants are already in the preheader) and before DCE
+ * (so the original loop blocks, which unrolling leaves unreachable, are
+ * dropped again). Every pass is independently switchable; disabling one never
+ * makes another incorrect, only less profitable. When `verify` is set the MIR
+ * verifier runs after every pass.
  */
 import { verifyMIR } from '../verify';
 import type { MFunction } from '../mir';
 import { optimizeFunction as dce } from './dce';
 import { optimizeFunction as gvn } from './gvn';
 import { optimizeFunction as licm } from './licm';
+import { optimizeFunction as unroll } from './loop-unroll';
 import { optimizeFunction as range } from './range';
 import { optimizeFunction as sccp } from './sccp';
 import type { OptimizeOptions } from './util';
 
 /** Canonical pipeline order and the `IRJITOptimization` literal union. */
-export const OPTIMIZATION_PASS_NAMES = ['sccp', 'gvn', 'range', 'licm', 'dce'] as const;
+export const OPTIMIZATION_PASS_NAMES = ['sccp', 'gvn', 'range', 'licm', 'unroll', 'dce'] as const;
 
 export type OptimizationPass = (typeof OPTIMIZATION_PASS_NAMES)[number];
 
@@ -35,6 +39,7 @@ const RUNNERS: Readonly<
   gvn,
   range,
   licm,
+  unroll,
   dce,
 };
 
@@ -44,6 +49,7 @@ export const ALL_OPTIMIZATIONS: Readonly<Record<OptimizationPass, true>> = Objec
   gvn: true,
   range: true,
   licm: true,
+  unroll: true,
   dce: true,
 });
 
@@ -70,4 +76,5 @@ export const runSCCP = sccp;
 export const runGVN = gvn;
 export const runRange = range;
 export const runLICM = licm;
+export const runLoopUnroll = unroll;
 export const runDCE = dce;

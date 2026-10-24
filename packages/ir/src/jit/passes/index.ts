@@ -1,8 +1,12 @@
 /**
  * Memory optimization passes (J12) and their canonical pipeline.
  *
- * Pipeline order (issue #152): `loadElim → scalarPromotion → boundsElim`.
- * Each pass is independently switchable and correct on its own.
+ * Pipeline order (issues #152, #158): `scalarPromotion → loadElim → boundsElim`.
+ * Promotion runs first so hot loop locations become locals before load
+ * elimination looks at what is left; load elimination then works across the
+ * dominator tree, and the `dce` sweep that follows the memory group drops the
+ * copies it leaves behind. Each pass is independently switchable and correct on
+ * its own.
  */
 import type { MFunction } from '../mir';
 import type { LowerContext } from '../resolve';
@@ -12,7 +16,7 @@ import { runScalarPromotion } from './scalar-promotion';
 import { runBoundsElim } from './bounds-elim';
 import type { BoundsElimResult } from './bounds-elim';
 import type { MemoryPassContext } from './memory-model';
-import { runOptimizationPipeline } from './pipeline';
+import { runDCE, runOptimizationPipeline } from './pipeline';
 
 export { runLoadElim } from './load-elim';
 export { runScalarPromotion } from './scalar-promotion';
@@ -29,11 +33,13 @@ export {
   runGVN,
   runRange,
   runLICM,
+  runLoopUnroll,
   runDCE,
 } from './pipeline';
 export type { OptimizationPass, OptimizationSwitches, PipelineOptions } from './pipeline';
 export { analyzeRanges } from './range';
 export type { Interval } from './range';
+export type { UnrollOptions } from './loop-unroll';
 
 /** The three J12 switches as they appear in `IRJITOptimization`. */
 export const MEMORY_OPTIMIZATIONS = ['loadElim', 'scalarPromotion', 'boundsElim'] as const;
@@ -63,19 +69,22 @@ function enabled(options: MemoryPassOptions, pass: MemoryOptimization): boolean 
 
 /**
  * Run the J12 pipeline on one function. The function is mutated in place.
+ *
+ * Promotion comes first: a promoted location keeps no `state.load` behind, so
+ * load elimination only has to look at the locations promotion left in storage.
  */
 export function runMemoryPasses(
   fn: MFunction,
   context: MemoryPassContext,
   options: MemoryPassOptions = {},
 ): MemoryPassReport {
-  const loadElim = enabled(options, 'loadElim')
-    ? runLoadElim(fn, context, { storeForwarding: options.observer !== true })
-    : 0;
   const scalarPromotion =
     options.observer === true || !enabled(options, 'scalarPromotion')
       ? 0
       : runScalarPromotion(fn, context);
+  const loadElim = enabled(options, 'loadElim')
+    ? runLoadElim(fn, context, { storeForwarding: options.observer !== true })
+    : 0;
   const boundsElim = enabled(options, 'boundsElim')
     ? runBoundsElim(fn, context)
     : { eliminated: 0, versioned: 0 };
@@ -99,8 +108,11 @@ export interface JitOptimizationOptions {
 
 /**
  * Canonical whole-function pipeline: J11 scalar passes first, then J12 memory
- * passes. J11's passes rebuild the value table, so they must run before any
- * promotion descriptor or `uncheckedBounds` marker exists.
+ * passes, then a final `dce` sweep. J11's passes rebuild the value table, so
+ * they must run before any promotion descriptor or `uncheckedBounds` marker
+ * exists; the trailing `dce` removes the copies (`Op.Forward`) and dead
+ * promotion traffic the memory group leaves behind, after the loads it could
+ * still eliminate have been resolved.
  */
 export function runJitOptimizationPipeline(
   fn: MFunction,
@@ -121,7 +133,7 @@ export function runJitOptimizationPipeline(
     ...(options.constants === undefined ? {} : { constants: options.constants }),
     ...(options.verify === undefined ? {} : { verify: options.verify }),
   };
-  const current = runOptimizationPipeline(fn, pipelineOptions);
+  let current = runOptimizationPipeline(fn, pipelineOptions);
   const memoryOptions: MemoryPassOptions = {
     ...(options.passes === undefined
       ? {}
@@ -129,6 +141,7 @@ export function runJitOptimizationPipeline(
     ...(options.observer === undefined ? {} : { observer: options.observer }),
   };
   runMemoryPasses(current, context, memoryOptions);
+  if (options.passes?.['dce'] !== false) current = runDCE(current);
   if (options.verify === true) verifyMIR(current, lower);
   return current;
 }

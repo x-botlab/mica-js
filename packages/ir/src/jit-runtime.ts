@@ -38,7 +38,13 @@ import {
   compileRegionWithSource,
   JitCodegenUnavailable,
 } from './jit/codegen/compile';
-import type { CompileEnv, CompiledFunction, CompiledRegion } from './jit/codegen/compile';
+import type {
+  CompileEnv,
+  CompiledFunction,
+  CompiledRegion,
+  RegionCompileMember,
+  RegionDirectCallTarget,
+} from './jit/codegen/compile';
 import {
   DispatchRegistry,
   MAX_REGION_MEMBERS,
@@ -47,7 +53,16 @@ import {
 } from './jit/dispatch-ic';
 import type { ArtifactState, DispatchKey, ProviderDispatchInfo } from './jit/dispatch-ic';
 import { computeSummaries } from './jit/effects';
-import { attachRegion, collectRegionMembers } from './jit/region';
+import {
+  MAX_REGION_DIRECT_CALLS,
+  MAX_REGION_REBUILDS,
+  attachRegion,
+  collectRegionMembers,
+  createRegionExitProfile,
+  recordRegionExit,
+  resetRegionExitProfile,
+} from './jit/region';
+import type { RegionExitProfile, RegionRuntimeState } from './jit/region';
 import { runHeapFunction } from './jit/heap-tier';
 import type { HeapEntry, HeapRunOptions } from './jit/heap-tier';
 import { Op, lowerFunction } from './jit/mir';
@@ -69,12 +84,13 @@ import {
 import type { CompiledFn, JitHelpers } from './jit/runtime-core';
 import { verifyMIR } from './jit/verify';
 
-/** Optimization switches (J11–J14). */
+/** Optimization switches (J11–J15). */
 export type IRJITOptimization =
   | 'sccp'
   | 'gvn'
   | 'range'
   | 'licm'
+  | 'unroll'
   | 'dce'
   | 'loadElim'
   | 'scalarPromotion'
@@ -83,6 +99,7 @@ export type IRJITOptimization =
   | 'checkpointFast'
   | 'regions'
   | 'region-compile'
+  | 'regionDirectCall'
   | 'inline';
 
 /** JIT execution tier. */
@@ -163,6 +180,10 @@ export interface IRJITInternals {
   readonly jumpHits: number;
   /** Regions compiled from hot dispatch chains. */
   readonly regions: number;
+  /** Regions recompiled to turn hot exits into direct calls (J15). */
+  readonly regionRebuilds: number;
+  /** Direct-call dependencies recorded by the compiled regions (J15). */
+  readonly regionDirectCalls: number;
   /** Tier-2 recompilations (model functions and artifacts, J13). */
   readonly tier2Compilations: number;
   /** Source of the most recently compiled region (debug aid for tests). */
@@ -193,6 +214,8 @@ interface ResolvedTuning {
   readonly dispatchIC: boolean;
   readonly checkpointFast: boolean;
   readonly regions: boolean;
+  /** Emit guarded direct calls between hot regions (J15). */
+  readonly regionDirectCall: boolean;
   readonly inline: boolean;
 }
 
@@ -220,6 +243,24 @@ interface ArtifactEntry extends ArtifactState {
 }
 
 type PreparedExecution = ReturnType<typeof prepareExecution>;
+
+/**
+ * One compiled region plus the state needed to refresh it (J15).
+ *
+ * The record outlives a compilation: the profile accumulates across rebuilds,
+ * and `key` (the member set) is what the reverse dependency graph stores, so a
+ * caller keeps pointing at the same callee identity after a refresh.
+ */
+interface RegionRecord {
+  readonly key: string;
+  readonly providerIndex: number;
+  /** Members requested at formation; the compiled subset may be smaller. */
+  readonly members: readonly ArtifactState[];
+  readonly profile: RegionExitProfile;
+  compiled: CompiledRegion;
+  /** Rebuilds consumed from {@link MAX_REGION_REBUILDS}. */
+  rebuilds: number;
+}
 
 interface SavedRuntime {
   readonly steps: number;
@@ -258,6 +299,7 @@ const OPTIMIZATION_DEFAULTS: Readonly<Record<IRJITOptimization, boolean>> = Obje
   gvn: true,
   range: true,
   licm: true,
+  unroll: true,
   dce: true,
   loadElim: true,
   scalarPromotion: true,
@@ -266,6 +308,7 @@ const OPTIMIZATION_DEFAULTS: Readonly<Record<IRJITOptimization, boolean>> = Obje
   checkpointFast: true,
   regions: true,
   'region-compile': true,
+  regionDirectCall: true,
   inline: true,
 });
 
@@ -331,6 +374,7 @@ function resolveTuning(value: unknown): ResolvedTuning {
       dispatchIC: true,
       checkpointFast: true,
       regions: true,
+      regionDirectCall: true,
       inline: true,
     };
   }
@@ -412,6 +456,7 @@ function resolveTuning(value: unknown): ResolvedTuning {
     checkpointFast: resolved.checkpointFast,
     // `regions` and `region-compile` are aliases; both must stay enabled.
     regions: resolved.regions && resolved['region-compile'],
+    regionDirectCall: resolved.regionDirectCall,
     inline: switches.inline !== false,
   };
 }
@@ -451,6 +496,12 @@ class JITInterpreter implements IRInterpreter {
   readonly #providerInfo: readonly ProviderDispatchInfo[];
   /** Dispatch sites, jump caches and transition counts. */
   readonly #dispatch: DispatchRegistry;
+  /** Compiled regions by key, covering the plan used to build them (J15). */
+  readonly #regionRecords = new Map<string, RegionRecord>();
+  /** Reverse direct-call graph: callee region key → caller region keys (J15). */
+  readonly #regionDependents = new Map<string, Set<string>>();
+  /** Generated region tables → owning record, for exit sampling (J15). */
+  readonly #regionByRuntime = new WeakMap<object, RegionRecord>();
 
   #faulted = false;
   #referenceOnly = false;
@@ -460,6 +511,7 @@ class JITInterpreter implements IRInterpreter {
   #recompiledArtifacts = 0;
   #tier2Compilations = 0;
   #regions = 0;
+  #regionRebuilds = 0;
   #regionSource: string | undefined;
 
   constructor(setup: EngineSetup, tuning: ResolvedTuning) {
@@ -531,6 +583,7 @@ class JITInterpreter implements IRInterpreter {
       verify: tuning.verify,
     };
     runtime.regionTrigger = (state) => this.#maybeFormRegion(state);
+    runtime.regionExit = (regionRuntime, state) => this.#noteRegionExit(regionRuntime, state);
 
     // Every slot starts as a stub: generated code only ever calls `H.fns[i]`,
     // so replacing the slot is enough to swap in compiled code (J13 relies on
@@ -552,6 +605,14 @@ class JITInterpreter implements IRInterpreter {
     const icMisses = (): number => this.#dispatch.stats().icMisses;
     const jumpHits = (): number => this.#dispatch.jumpHits;
     const regions = (): number => this.#regions;
+    const regionRebuilds = (): number => this.#regionRebuilds;
+    const regionDirectCalls = (): number => {
+      let total = 0;
+      for (const record of this.#regionRecords.values()) {
+        total += record.compiled.directCallDeps.length;
+      }
+      return total;
+    };
     const regionSource = (): string | undefined => this.#regionSource;
     const dispatchSites = (): IRJITInternals['dispatchSites'] =>
       this.#dispatch.sites.map((site) => ({
@@ -596,6 +657,12 @@ class JITInterpreter implements IRInterpreter {
         },
         get regions(): number {
           return regions();
+        },
+        get regionRebuilds(): number {
+          return regionRebuilds();
+        },
+        get regionDirectCalls(): number {
+          return regionDirectCalls();
         },
         get regionSource(): string | undefined {
           return regionSource();
@@ -1103,25 +1170,176 @@ class JITInterpreter implements IRInterpreter {
     }
     if (members.length === 0) return;
     try {
-      const region = compileRegionWithSource(
-        members.map((member) => ({
-          state: member,
-          mir: member.mir,
-          key: member.key,
-          keyTypes: info.keyTypes,
-          providerIndex: member.providerIndex,
-          params: info.params,
-        })),
-        this.#env,
-      );
-      attachRegion(region);
+      const profile = createRegionExitProfile();
+      const region = compileRegionWithSource(this.#regionMembers(members, info), this.#env, {
+        profile,
+        inlineTail: this.#tuning.regionDirectCall,
+      });
+      const record: RegionRecord = {
+        key: region.key,
+        providerIndex: state.providerIndex,
+        members,
+        profile,
+        compiled: region,
+        rebuilds: 0,
+      };
+      this.#installRegion(record);
       this.#regions += 1;
-      this.#regionSource = region.source;
     } catch {
       // Keep normal dispatch. Moving past the threshold avoids recompiling a
       // broken region on every subsequent entry.
       state.entries = REGION_THRESHOLD + 1;
     }
+  }
+
+  /** Region compiler input for one member set. */
+  #regionMembers(
+    members: readonly ArtifactState[],
+    info: ProviderDispatchInfo,
+  ): RegionCompileMember[] {
+    return members.map((member) => ({
+      state: member,
+      mir: member.mir,
+      key: member.key,
+      keyTypes: info.keyTypes,
+      providerIndex: member.providerIndex,
+      params: info.params,
+    }));
+  }
+
+  /** Attach a fresh compilation and register it in the dependency graph. */
+  #installRegion(record: RegionRecord): void {
+    attachRegion(record.compiled);
+    this.#regionRecords.set(record.key, record);
+    this.#regionByRuntime.set(record.compiled.runtime, record);
+    this.#regionSource = record.compiled.source;
+    // The graph is tiny (one edge per emitted guard); rebuilding it is cheaper
+    // than tracking incremental removals when a plan changes.
+    this.#regionDependents.clear();
+    for (const caller of this.#regionRecords.values()) {
+      for (const dep of caller.compiled.directCallDeps) {
+        let dependents = this.#regionDependents.get(dep.key);
+        if (dependents === undefined) {
+          dependents = new Set();
+          this.#regionDependents.set(dep.key, dependents);
+        }
+        dependents.add(caller.key);
+      }
+    }
+  }
+
+  /**
+   * Sample one region exit (J15) and turn a hot boundary into a direct call.
+   *
+   * The generated report is bounded by the profile budget; once a target
+   * crosses {@link REGION_DIRECT_CALL_THRESHOLD} the region is recompiled with
+   * guards for its hottest exits. A target without a compiled region (or a
+   * disabled feature) settles the profile instead of rebuilding.
+   */
+  #noteRegionExit(runtime: RegionRuntimeState, state: ArtifactState): void {
+    const record = this.#regionByRuntime.get(runtime);
+    if (record === undefined) return;
+    const profile = record.profile;
+    if (profile.requested || profile.budget <= 0) return;
+    if (!recordRegionExit(profile, state)) return;
+    if (
+      !this.#tuning.regionDirectCall ||
+      record.rebuilds >= MAX_REGION_REBUILDS ||
+      state.region === undefined ||
+      state.regionIndex < 0
+    ) {
+      // Nothing can be emitted for this target: stop paying for samples.
+      profile.budget = 0;
+      return;
+    }
+    profile.requested = true;
+    this.#rebuildRegion(record, new Set());
+  }
+
+  /**
+   * Recompile one region with direct calls for its hottest exits, then refresh
+   * every region that calls into it: a caller holds the callee's function and
+   * member index, both of which belong to the previous compilation.
+   */
+  #rebuildRegion(record: RegionRecord, seen: Set<string>, refresh = false): void {
+    if (seen.has(record.key)) return;
+    seen.add(record.key);
+    const callers = [...(this.#regionDependents.get(record.key) ?? [])];
+    if (!this.#recompileRegion(record, refresh)) return;
+    for (const key of callers) {
+      const caller = this.#regionRecords.get(key);
+      if (caller !== undefined) this.#rebuildRegion(caller, seen, true);
+    }
+  }
+
+  /**
+   * Recompile one region from its current member set and plan. Returns whether
+   * a new compilation was installed.
+   *
+   * `refresh` marks a rebuild forced by a callee refresh instead of the
+   * profile; those must not consume {@link MAX_REGION_REBUILDS}, because the
+   * caller only needs the new callee function and entry index.
+   */
+  #recompileRegion(record: RegionRecord, refresh: boolean): boolean {
+    const info = this.#providerInfo[record.providerIndex];
+    if (info === undefined || (!refresh && record.rebuilds >= MAX_REGION_REBUILDS)) {
+      record.profile.budget = 0;
+      return false;
+    }
+    const plan = this.#tuning.regionDirectCall
+      ? this.#directCallPlan(record.providerIndex, new Set(record.compiled.members), record.profile)
+      : [];
+    let compiled: CompiledRegion;
+    try {
+      compiled = compileRegionWithSource(this.#regionMembers(record.members, info), this.#env, {
+        profile: record.profile,
+        inlineTail: this.#tuning.regionDirectCall,
+        ...(plan.length === 0 ? {} : { directCalls: plan }),
+      });
+    } catch {
+      // Keep the previous compilation; it is still correct.
+      record.profile.budget = 0;
+      return false;
+    }
+    record.compiled = compiled;
+    if (!refresh) record.rebuilds += 1;
+    resetRegionExitProfile(record.profile);
+    this.#installRegion(record);
+    this.#regionRebuilds += 1;
+    return true;
+  }
+
+  /**
+   * Rank the exit targets of one region from the profile window. Only observed
+   * exits can become direct calls: emitting a guard for a target nothing jumps
+   * to would cost a compare chain on every exit and save nothing.
+   */
+  #directCallPlan(
+    providerIndex: number,
+    absorbed: ReadonlySet<ArtifactState>,
+    profile: RegionExitProfile,
+  ): RegionDirectCallTarget[] {
+    const weights = new Map<ArtifactState, number>();
+    for (const slot of profile.slots) {
+      if (slot.count <= (weights.get(slot.state) ?? 0)) continue;
+      weights.set(slot.state, slot.count);
+    }
+    const own = new Set<ArtifactState>(absorbed);
+    const ranked: { readonly state: ArtifactState; readonly weight: number }[] = [];
+    for (const [state, weight] of weights) {
+      if (own.has(state)) continue;
+      if (state.providerIndex !== providerIndex) continue;
+      if (state.region === undefined || state.regionIndex < 0) continue;
+      if (state.storageEpoch < 0 || state.providerEpoch < 0) continue;
+      ranked.push({ state, weight });
+    }
+    ranked.sort((left, right) => right.weight - left.weight);
+    return ranked.slice(0, MAX_REGION_DIRECT_CALLS).map((entry) => ({
+      providerIndex,
+      state: entry.state,
+      epoch: entry.state.storageEpoch,
+      cacheEpoch: entry.state.providerEpoch,
+    }));
   }
 
   // --- Reference fallback ------------------------------------------------
