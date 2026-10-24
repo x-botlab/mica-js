@@ -16,7 +16,7 @@ Mica 是一个用 TypeScript 编写的开源电路仿真引擎，采用 pnpm Mon
 | [`@mica-js/ir`](packages/ir)                             | 领域无关 IR：建图、存储、静态校验、参考解释器与 Provider 产物              |
 | [`@mica-js/core`](packages/core)                         | 仿真内核：虚拟时间、确定性调度、电气求值、连接拓扑、电源域，附文档格式入口 |
 | [`@mica-js/device`](packages/device)                     | 器件层：描述解析、provider 加载、工厂上下文、实例生命周期与引脚 I/O        |
-| [`@mica-js/simulator`](packages/simulator)               | 仿真执行器：在一条虚拟时钟上运行原理图里的全部器件实例                     |
+| [`@mica-js/simulator`](packages/simulator)               | 仿真器：统一 IR 电路编译/运行时（批处理 10–1000×），以及原理图器件执行器   |
 | [`@mica-js/sandbox`](packages/sandbox)                   | 通用 JS 沙箱：iframe + Worker 隔离与离屏渲染合成                           |
 | [`@mica-js/widget`](packages/widget)                     | Widget 契约与运行时：包加载、`WidgetHost`、图层与端口路由                  |
 | [`@mica-js/canvas-editor`](packages/canvas-editor)       | 画布编辑器：`.cnv` 合成、交互命令与场景组装                                |

@@ -20,17 +20,21 @@
     "dist"
   ],
   "scripts": {
+    "bench": "vitest bench --run",
+    "bench:unified": "vitest bench --run bench/unified-simple.bench.ts",
     "build": "vite build",
+    "examples": "vitest run examples/examples.test.ts --disableConsoleIntercept",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.bench.json"
   },
   "publishConfig": {
     "access": "public"
   },
   "dependencies": {
     "@mica-js/core": "workspace:*",
-    "@mica-js/device": "workspace:*"
+    "@mica-js/device": "workspace:*",
+    "@mica-js/ir": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",
