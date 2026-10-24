@@ -1,5 +1,32 @@
 # @mica-js/ir
 
+## 0.4.0
+
+### Minor Changes
+
+- 9ad1e93: 新增 JIT 小循环展开 pass（#157），消除短循环的回边检查与控制流开销：
+
+  - `jit/passes/loop-unroll.ts`：用 `cfg.ts` 的自然循环与 `range.ts` 的区间分析识别常量迭代次数的规范计数循环（头块 + 单 latch、唯一前驱边、唯一出口）。0–4 次迭代完全展开；8 次 → 2×4、16 次 → 4×4 部分展开；迭代体超过 50 条指令、体含宿主指令/`checkpoint`/可抛值错误操作、或非可归约循环一律不展开。
+  - 展开保持步数与可观测语义：被消去的头块分支在每个副本原位留下 `step = 1` 的 `check`，克隆指令保留原 `step`/`loc`（每个副本分配新的 location id，`stepsAfter` 因此仍然正确），归纳变量在完全展开时替换为常量，`stepObserver`/预算协议看到完全相同的步序列。
+  - 代码大小由「每次展开消耗函数预算」控制：单函数增长额度为 `max(128, 函数指令数 × 20%)`，超出时从完全展开降级为部分展开，再不行则不展开。
+  - `jit/passes/pipeline.ts`：流水线顺序变为 `sccp → gvn → range → licm → unroll → dce`，让 DCE 清理展开后不可达的原循环块；`IRJITOptimization` 新增 `unroll` 开关（默认开启），pass matrix 随之增加一行。
+  - `jit/cfg.ts`：`dominanceFrontiers` 忽略不可达前驱，支持「保留死块交给 DCE」的变换。
+  - 测试：`passes/loop-unroll.test.ts` 覆盖 0–4 次完全展开、8/16 次部分展开、大小/预算降级、宿主与可抛体拒绝，并与参考解释器逐值逐步对比（含 `stepObserver` 与预算耗尽位置）。
+  - 基准：`bench/loops.bench.ts` 对比 `unroll` 开关的循环吞吐（本机约 +10–15%）；M3 基准的客体块是直线代码、没有 IR 循环，生成的代码逐字节不变。
+
+- 117dcd0: 新增区域间直接调用（#156），去掉热循环跨区域时的 `TAIL` 蹦床往返：
+
+  - `jit/codegen/emit.ts`：区域出口的缓存命中不再先返回 `TAIL` 再交给 `runTail` 从驱动循环重新进入，而是直接 `handle.fn(state.regionIndex, ...)` 进入目标区域（`inlineTail`）。被调用区域的序言照旧刷新 epoch 表与晋升值，`rt.depth` 在返回后恢复；超过 `REGION_DIRECT_CALL_DEPTH`（8 层）时退回蹦床，保证 JS 栈有界。调用前把 `L` 置为 `-1`，callee 抛错时不会把调用方的位置追加进调用栈，可观测语义与改动前一致。
+  - `jit/region.ts`：新增区域身份 `regionKeyOf`（provider + 排序后的 artifact 索引）、出口采样表 `RegionExitProfile` 与 `recordRegionExit`（8 个槽位、计数饱和、预算有界）以及直接调用深度常量；`CompiledRegion` 增加 `runtime`、`key` 与 `directCallDeps`。
+  - `jit-runtime.ts`：`regionExit` 采样入口 + 反向依赖图 `#regionDependents`（区域 key → 调用方集合）。某个出口目标达到 `REGION_DIRECT_CALL_THRESHOLD`（256 次）后重编译该区域，用 top-4 热目标生成字面值 guard（`key`、storage epoch、cache epoch 都是常量，任何一项不匹配就回退到 jump cache / `materialize`）；重编译后立即刷新所有依赖它的区域，避免继续引用旧的成员布局。区域重编译上限为 2 次/区域，刷新不占额度，环状依赖由 `seen` 集合截断。
+  - `IRJITOptimization` 新增 `regionDirectCall` 开关（默认开启），关闭后区域行为与 #154 完全一致；`jitInternals` 增加 `regionRebuilds` 与 `regionDirectCalls` 诊断。
+  - 测试：`region.test.ts` 覆盖区域身份、采样饱和/预算、40 块环分裂成多个区域后跨区域直调（含与参考解释器逐值逐步对比）、区域源码体积增长 < 10%、以及直接调用路径上 trap 的错误码/步数/调用栈与参考一致。
+  - 基准：`bench/m3.bench.ts` 的 jit-default 从约 97 M inst/s 提升到 115–127 M inst/s。
+
+### Patch Changes
+
+- b4e453b: 新增区域融合基准 `bench/region-fusion.bench.ts`（#158）：4 个 provider artifact 组成状态机尾派发环，每个状态在入口块、工作块与出口块重复读取共享配置（`state` 标量与常量下标 `array` 表）。热身后 O01 把环融合成一个区域函数，基准对比 `jit.optimizations.loadElim`（O03）开关下同一 op 的 4096 次状态转换吞吐，并断言区域确实由 4 个 artifact 组成、O03 消除了被支配块中的冗余表读取、两种配置与参考解释器逐值逐步一致。`bench/` 不进入构建产物。
+
 ## 0.3.0
 
 ### Minor Changes

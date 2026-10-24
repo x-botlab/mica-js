@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/device",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Mica device layer: description parsing, provider loading and fixed instance properties",
   "license": "MIT",
   "repository": {

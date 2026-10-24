@@ -1,5 +1,12 @@
 # @mica-js/canvas-editor
 
+## 0.2.1
+
+### Patch Changes
+
+- @mica-js/core@0.3.1
+  - @mica-js/widget@0.1.2
+
 ## 0.2.0
 
 ### Minor Changes
