@@ -256,22 +256,20 @@ test('wire mode taps into an existing wire and creates a junction', async ({ pag
   await page.evaluate(() => {
     (globalThis as unknown as { mica: EditorHandle }).mica.controller.setTool('wire');
   });
+  // Both offsets are page units: 3 beside the trunk snaps back onto it, 2 along it snaps onto
+  // the grid, so the junction lands on the grid intersection under the trunk.
   const branch = await clientOf(page, { x: tap.x, y: tap.y + 70 });
-  const end = await clientOf(page, tap);
+  const end = await clientOf(page, { x: tap.x + 2, y: tap.y + 3 });
   await page.mouse.click(branch.x, branch.y);
-  await page.mouse.move(end.x + 2, end.y + 3);
-  await page.mouse.click(end.x + 2, end.y + 3);
+  await page.mouse.click(end.x, end.y);
   await page.waitForTimeout(80);
 
   const after = await readSnapshot(page);
   expect(after.tool).toBe('select');
   expect(after.junctions).toHaveLength(before.junctions.length + 1);
-  // The click landed a few units beside the trunk; snapping must put the junction on it.
-  expect(
-    after.junctions.some(
-      (junction) => Math.abs(junction.x - tap.x) <= 4 && Math.abs(junction.y - tap.y) <= 4,
-    ),
-  ).toBe(true);
+  expect(after.junctions.some((junction) => junction.x === tap.x && junction.y === tap.y)).toBe(
+    true,
+  );
   // One new wire, plus the tapped trunk split in two.
   expect(after.wires).toHaveLength(before.wires.length + 2);
 });

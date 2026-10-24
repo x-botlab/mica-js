@@ -5,6 +5,7 @@ import {
   orthogonalWaypoints,
   snapDragOffset,
   snapForWire,
+  wireBodyPointAt,
   wireWaypoints,
   type SnapContext,
 } from './snapping';
@@ -155,21 +156,21 @@ describe('snapDragOffset', () => {
   });
 });
 
-describe('snapForWire', () => {
-  function wireContext(wires: readonly unknown[]): SnapContext {
-    return {
-      controller: new SchematicEditorController({
-        document: parseSchematic({
-          version: 1,
-          sheet: { symbols: [], wires, junctions: [] },
-        }),
-        devices,
+function wireContext(wires: readonly unknown[]): SnapContext {
+  return {
+    controller: new SchematicEditorController({
+      document: parseSchematic({
+        version: 1,
+        sheet: { symbols: [], wires, junctions: [] },
       }),
       devices,
-      tolerance: 4,
-    };
-  }
+    }),
+    devices,
+    tolerance: 4,
+  };
+}
 
+describe('snapForWire', () => {
   const wire = {
     id: '00000002-9cf4-407f-8900-09a16d33a38c',
     points: [
@@ -179,8 +180,21 @@ describe('snapForWire', () => {
   };
 
   it('projects onto the closest point of a nearby wire', () => {
-    // 3 units above the run: inside the 8-unit snap radius, so it lands on the wire (y = 0).
-    expect(snapForWire(wireContext([wire]), { x: 47, y: 3 })).toEqual({ x: 47, y: 0 });
+    // 3 units above the run: inside the 8-unit snap radius, so it lands on the wire (y = 0)
+    // while x keeps the grid instead of the raw 47.
+    expect(snapForWire(wireContext([wire]), { x: 47, y: 3 })).toEqual({ x: 50, y: 0 });
+  });
+
+  it('keeps the grid along a vertical host', () => {
+    const vertical = {
+      id: '00000003-b1f0-4a57-8bd0-31f3b6ecb53f',
+      points: [
+        { x: 40, y: 0 },
+        { x: 40, y: 100 },
+      ],
+    };
+    // 3 units beside the run: x takes the host's own 40, y snaps from 47 to the grid.
+    expect(snapForWire(wireContext([vertical]), { x: 43, y: 47 })).toEqual({ x: 40, y: 50 });
   });
 
   it('keeps the grid when no wire is near', () => {
@@ -189,6 +203,35 @@ describe('snapForWire', () => {
 
   it('prefers a wire endpoint over the wire body', () => {
     expect(snapForWire(wireContext([wire]), { x: 2, y: 1 })).toEqual({ x: 0, y: 0 });
+  });
+
+  it('leaves the projection unrounded when snapping is off', () => {
+    const context = wireContext([wire]);
+    context.controller.setDisplayOptions({ snap: false });
+    expect(snapForWire(context, { x: 47, y: 3 })).toEqual({ x: 47, y: 0 });
+  });
+});
+
+describe('wireBodyPointAt', () => {
+  const shortRun = {
+    id: '00000004-6a3f-4f0e-9d6a-2a7b1f9f0f2e',
+    points: [
+      { x: 0, y: 0 },
+      { x: 17, y: 0 },
+    ],
+  };
+
+  it('snaps along the run when the grid point still sits on it', () => {
+    expect(wireBodyPointAt(wireContext([shortRun]), { x: 13, y: 3 })).toEqual({ x: 10, y: 0 });
+  });
+
+  it('keeps the projection when the grid falls past the end of the run', () => {
+    // The run ends at x = 17 between grid lines: 20 would leave the host, so stay at 16.
+    expect(wireBodyPointAt(wireContext([shortRun]), { x: 16, y: 3 })).toEqual({ x: 16, y: 0 });
+  });
+
+  it('returns undefined when every run is out of reach', () => {
+    expect(wireBodyPointAt(wireContext([]), { x: 47, y: 3 })).toBeUndefined();
   });
 });
 
