@@ -1,4 +1,5 @@
 import { projectOnSegment, type Point } from '@mica-js/core/schematic';
+import type { DisplayOptions } from '../../controller/types';
 import type { SnapContext } from './nodes';
 import { connectionNodeAt } from './nodes';
 import { snapToGrid } from './drag';
@@ -46,10 +47,12 @@ export function snapForWire(context: SnapContext, point: Point): Point {
 
 /**
  * Closest point on an existing wire's run when `point` is within the snap radius. Lets the wire
- * tool land exactly on another wire, which is what turns the run into a T junction.
+ * tool land exactly on another wire, which is what turns the run into a T junction. Only the
+ * offset beside the host is absorbed: the position along it still follows the grid.
  */
 export function wireBodyPointAt(context: SnapContext, point: Point): Point | undefined {
   const radius = context.tolerance * 2;
+  const display = context.controller.getDisplay();
   let best: { readonly point: Point; readonly distance: number } | undefined;
   for (const wire of context.controller.getDocument().sheet.wires) {
     for (let index = 1; index < wire.points.length; index += 1) {
@@ -63,8 +66,26 @@ export function wireBodyPointAt(context: SnapContext, point: Point): Point | und
       if (distance > radius || (best !== undefined && distance >= best.distance)) {
         continue;
       }
-      best = { point: { x: projected.x, y: projected.y }, distance };
+      best = { point: gridAlongHost(projected, a, b, display), distance };
     }
   }
   return best?.point;
+}
+
+function gridAlongHost(projected: Point, a: Point, b: Point, display: DisplayOptions): Point {
+  // The axis normal to the host keeps the run's own coordinate so the tap stays on it; the axis
+  // along the run follows the pointer, so it still has to honour the grid.
+  if (a.y === b.y && a.x !== b.x) {
+    const x = snapToGrid(projected, display).x;
+    return x >= Math.min(a.x, b.x) && x <= Math.max(a.x, b.x)
+      ? { x, y: a.y }
+      : { x: projected.x, y: a.y };
+  }
+  if (a.x === b.x && a.y !== b.y) {
+    const y = snapToGrid(projected, display).y;
+    return y >= Math.min(a.y, b.y) && y <= Math.max(a.y, b.y)
+      ? { x: a.x, y }
+      : { x: a.x, y: projected.y };
+  }
+  return { x: projected.x, y: projected.y };
 }
