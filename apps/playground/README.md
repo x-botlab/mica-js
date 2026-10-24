@@ -7,7 +7,7 @@ Mica 各包的可交互示例站点：React + Vite + Tailwind v4 + [shadcn/ui](h
 | 路由                   | 页面         | 演示内容                                                                                             |
 | ---------------------- | ------------ | ---------------------------------------------------------------------------------------------------- |
 | `#/`                   | 概览         | 页面导航与 workspace 命令速查                                                                        |
-| `#/canvas`             | 画布         | `createCanvasScene`：demo widget 包、组件列表、拖动实例、运行模式、宿主属性 / 绑定面板、草稿保存     |
+| `#/canvas`             | 画布         | `createCanvasEditor`：demo widget 包、组件列表、拖动实例、运行模式、宿主属性 / 绑定面板、草稿保存    |
 | `#/schematic`          | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、属性面板（全部属性类型）、显示开关、回调事件流                  |
 | `#/schematic?readonly` | 只读查看器   | 同一页以 `readOnly: true` 挂载：选择与缩放可用，编辑全部被拒                                         |
 | `#/sandbox`            | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动 / 终止、调用与日志                                          |
@@ -53,7 +53,7 @@ flowchart LR
   cnv["demo.cnv"] --> host
   sch["devices/demo.sch"] --> sim["DeviceSimExecutor"]
   dev["public/devices<br/>器件包"] --> sim
-  host --> scene["CanvasScene"]
+  host --> scene["CanvasEditor"]
   sim -->|"simulation"| host
   scene --> ui["组件列表 / 图层列表 / 属性面板"]
   ui -->|"applyCommand"| host

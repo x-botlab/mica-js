@@ -18,12 +18,23 @@ export interface CanvasEditorState {
   readonly viewport: CanvasEditorViewport;
 }
 
+/** Every diagnostic code the editor reports: its own surface plus the coordination ones. */
 export type CanvasEditorDiagnosticCode =
   | 'canvas-editor/context-unavailable'
   | 'canvas-editor/render-failed'
-  | 'canvas-editor/command-failed'
   | 'canvas-editor/selection-failed'
-  | 'canvas-editor/dispatch-failed';
+  | 'canvas-editor/dispatch-failed'
+  | CanvasEditorCoordinationDiagnosticCode;
+
+/**
+ * Diagnostic codes owned by the coordination layer: host commands, committed snapshots and
+ * publishes crossing between the document, the widgets and the listeners.
+ */
+export type CanvasEditorCoordinationDiagnosticCode =
+  | 'canvas-editor/command-failed'
+  | 'canvas-editor/change-failed'
+  | 'canvas-editor/publish-failed'
+  | 'canvas-editor/unbound-publish';
 
 /**
  * Problems the editor survives. Rendering, input handling and host callbacks keep running after a
@@ -31,6 +42,14 @@ export type CanvasEditorDiagnosticCode =
  */
 export interface CanvasEditorDiagnostic {
   readonly code: CanvasEditorDiagnosticCode;
+  readonly message: string;
+  readonly instanceId?: string;
+  readonly cause?: unknown;
+}
+
+/** A problem the coordination layer survives; `code` is one of its own codes only. */
+export interface CanvasEditorCoordinationDiagnostic {
+  readonly code: CanvasEditorCoordinationDiagnosticCode;
   readonly message: string;
   readonly instanceId?: string;
   readonly cause?: unknown;

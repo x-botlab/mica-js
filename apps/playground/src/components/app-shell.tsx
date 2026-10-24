@@ -17,7 +17,7 @@ export const PAGES: readonly PageDefinition[] = [
   {
     id: 'canvas',
     title: '画布',
-    subtitle: 'CanvasScene：.cnv 文档 + widget 运行时',
+    subtitle: 'CanvasEditor：.cnv 文档 + widget 运行时',
     icon: PanelsTopLeft,
   },
   {

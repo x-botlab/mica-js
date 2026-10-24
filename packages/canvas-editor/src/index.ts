@@ -1,18 +1,13 @@
-export { mountCanvasEditor } from './editor/mount';
-export type { CanvasEditor, MountCanvasEditorOptions } from './editor/mount';
-
-export { createCanvasScene } from './scene';
+export { createCanvasEditor } from './editor/mount';
 export type {
-  CanvasScene,
-  CanvasSceneDiagnostic,
-  CanvasSceneDiagnosticCode,
-  CanvasSceneFailure,
-  CanvasSceneHost,
-  CanvasScenePublishListener,
-  CreateCanvasSceneOptions,
-} from './scene';
+  CanvasEditor,
+  CanvasEditorPublishListener,
+  CreateCanvasEditorOptions,
+} from './editor/mount';
 
 export type {
+  CanvasEditorCoordinationDiagnostic,
+  CanvasEditorCoordinationDiagnosticCode,
   CanvasEditorDiagnostic,
   CanvasEditorDiagnosticCode,
   CanvasEditorState,

@@ -1,8 +1,8 @@
 import {
-  createCanvasScene,
+  createCanvasEditor,
   DARK_CANVAS_THEME,
   type CanvasMode,
-  type CanvasScene,
+  type CanvasEditor,
 } from '@mica-js/canvas-editor';
 import { timePs } from '@mica-js/core';
 import {
@@ -172,7 +172,7 @@ async function resolveDefinitions(
 
 export function CanvasPage() {
   const containerRef = useRef<HTMLDivElement>(null);
-  const sceneRef = useRef<CanvasScene | null>(null);
+  const sceneRef = useRef<CanvasEditor | null>(null);
   const hostRef = useRef<WidgetHost | null>(null);
   const executorRef = useRef<DeviceSimExecutor | null>(null);
   /** Lets a mode switch stop the driver before the instances it feeds are dropped. */
@@ -245,7 +245,7 @@ export function CanvasPage() {
     }
     let cancelled = false;
     let host: WidgetHost | undefined;
-    let scene: CanvasScene | undefined;
+    let scene: CanvasEditor | undefined;
     let executor: DeviceSimExecutor | undefined;
 
     const start = async (): Promise<void> => {
@@ -281,7 +281,7 @@ export function CanvasPage() {
         const restored = store.read();
 
         const text = restored ?? new TextDecoder().decode(await fetchBytes('widgets/demo.cnv'));
-        const created = await createCanvasScene({
+        const created = await createCanvasEditor({
           container,
           document: parseCanvas(text),
           host: ownedHost,
@@ -427,7 +427,7 @@ export function CanvasPage() {
         // `SchematicError.diagnostics` carries every problem; show them all under the control.
         const messages = commandErrorMessages(cause);
         for (const message of messages) {
-          pushDiagnostic({ code: 'canvas-scene/command-failed', message });
+          pushDiagnostic({ code: 'canvas-editor/command-failed', message });
         }
         return messages;
       }
