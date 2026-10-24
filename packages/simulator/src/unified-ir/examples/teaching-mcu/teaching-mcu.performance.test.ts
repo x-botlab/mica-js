@@ -21,8 +21,12 @@ import {
 } from '@mica-js/device';
 import { createIRJIT } from '@mica-js/ir';
 import { describe, expect, it } from 'vitest';
+import { jitInternals } from '../../../../../ir/src/jit-runtime';
 import { createTeachingMCUIR, RAM_BASE, type TeachingMCUISAType } from './index';
 import { loopFirmware, wordsToBytes, encodeI, encodeR, Op } from './teaching-mcu.test-helpers';
+
+/** Real-time budget of the target classroom device: 72 MHz of guest code. */
+const REALTIME_MINST_PER_SECOND = 72;
 const EXAMPLE = new URL('../../../../../device/examples/teaching-mcu/', import.meta.url);
 const MODEL = Object.freeze({
   kind: 'ideal-voltage' as const,
@@ -82,11 +86,28 @@ async function measureLegacy(blocks: number): Promise<number> {
 }
 
 interface UnifiedMeasurement {
+  /** Median wall time of one batch tick once the host has warmed up. */
   readonly milliseconds: number;
+  /** Retired guest instructions in one batch tick. */
   readonly instructions: number;
+  /** Wall time of the very first tick of a fresh instance (cold host code). */
+  readonly coldMilliseconds: number;
+  /** Translated units the provider built, and dispatch-site lookups per tick. */
+  readonly units: number;
+  readonly dispatchesPerTick: number;
 }
 
-function measureUnifiedBatch(isa: TeachingMCUISAType): UnifiedMeasurement {
+/** Ticks executed before the measured batch (V8 tiering, artifact caches). */
+const WARMUP_TICKS = 12;
+/** Timed ticks; the median is reported so one GC pause cannot dominate. */
+const MEASURED_TICKS = 24;
+
+function createBatchRuntime(isa: TeachingMCUISAType): {
+  readonly device: ReturnType<typeof createTeachingMCUIR>;
+  readonly jit: ReturnType<typeof createIRJIT>;
+  readonly context: { instanceId: string; virtualTime: number };
+  readonly reset: () => void;
+} {
   const firmware = isa === 'teaching' ? LEGACY_FIRMWARE : loopFirmware(60_000);
   const device = createTeachingMCUIR('mcu', {
     isa,
@@ -102,28 +123,61 @@ function measureUnifiedBatch(isa: TeachingMCUISAType): UnifiedMeasurement {
   });
   const context = { instanceId: 'perf', virtualTime: 0 };
   jit.execute(device.layout.entries.initialize, [], context);
-  // Warm every translated block, then restore the machine.
-  jit.execute(device.layout.entries.tick, [], context);
-  jit.storage.storeState(device.layout.pc, 0);
-  jit.storage.storeState(device.layout.cycles, 0);
-  jit.storage.storeState(device.layout.sliceEnd, 0);
-  jit.storage.storeState(device.layout.halted, false);
-  jit.storage.storeState(device.layout.fault, false);
-  jit.storage.storeState(device.layout.sleeping, false);
-  jit.storage.storeState(device.layout.flags.n, false);
-  jit.storage.storeState(device.layout.flags.z, false);
-  jit.storage.storeState(device.layout.flags.c, false);
-  jit.storage.storeState(device.layout.flags.v, false);
-  jit.storage.storeArray(device.layout.registers, 1, 0);
-  jit.storage.storeArray(device.layout.registers, 2, 0);
-  jit.storage.storeArray(device.layout.registers, 3, 0);
-  jit.storage.storeArray(device.layout.registers, 0, 0);
+  // Every batch tick starts from the same machine state, so the measured work
+  // is identical no matter how many ticks ran before it.
+  const reset = (): void => {
+    jit.storage.storeState(device.layout.pc, 0);
+    jit.storage.storeState(device.layout.cycles, 0);
+    jit.storage.storeState(device.layout.sliceEnd, 0);
+    jit.storage.storeState(device.layout.halted, false);
+    jit.storage.storeState(device.layout.fault, false);
+    jit.storage.storeState(device.layout.sleeping, false);
+    jit.storage.storeState(device.layout.flags.n, false);
+    jit.storage.storeState(device.layout.flags.z, false);
+    jit.storage.storeState(device.layout.flags.c, false);
+    jit.storage.storeState(device.layout.flags.v, false);
+    jit.storage.storeArray(device.layout.registers, 1, 0);
+    jit.storage.storeArray(device.layout.registers, 2, 0);
+    jit.storage.storeArray(device.layout.registers, 3, 0);
+    jit.storage.storeArray(device.layout.registers, 0, 0);
+  };
+  return { device, jit, context, reset };
+}
 
-  const start = performance.now();
+function measureUnifiedBatch(isa: TeachingMCUISAType): UnifiedMeasurement {
+  const { device, jit, context, reset } = createBatchRuntime(isa);
+  reset();
+  const coldStart = performance.now();
   jit.execute(device.layout.entries.tick, [], context);
-  const milliseconds = performance.now() - start;
-  const instructions = Number(jit.storage.loadState(device.layout.cycles));
-  return Object.freeze({ milliseconds, instructions });
+  const coldMilliseconds = performance.now() - coldStart;
+  const internals = (jit as unknown as Record<symbol, Record<string, number>>)[jitInternals];
+
+  for (let index = 0; index < WARMUP_TICKS; index += 1) {
+    reset();
+    jit.execute(device.layout.entries.tick, [], context);
+  }
+  const dispatchesBefore =
+    (internals?.icHits ?? 0) + (internals?.icMisses ?? 0) + (internals?.jumpHits ?? 0);
+
+  const samples: number[] = [];
+  let instructions = 0;
+  for (let index = 0; index < MEASURED_TICKS; index += 1) {
+    reset();
+    const start = performance.now();
+    jit.execute(device.layout.entries.tick, [], context);
+    samples.push(performance.now() - start);
+    instructions = Number(jit.storage.loadState(device.layout.cycles));
+  }
+  const dispatchesAfter =
+    (internals?.icHits ?? 0) + (internals?.icMisses ?? 0) + (internals?.jumpHits ?? 0);
+  samples.sort((left, right) => left - right);
+  return Object.freeze({
+    milliseconds: samples[Math.floor(samples.length / 2)]!,
+    instructions,
+    coldMilliseconds,
+    units: internals?.compiledArtifacts ?? 0,
+    dispatchesPerTick: (dispatchesAfter - dispatchesBefore) / MEASURED_TICKS,
+  });
 }
 
 function measureUnifiedSteps(ticks: number): UnifiedMeasurement {
@@ -139,7 +193,7 @@ function measureUnifiedSteps(ticks: number): UnifiedMeasurement {
   });
   const context = { instanceId: 'perf-step', virtualTime: 0 };
   jit.execute(device.layout.entries.initialize, [], context);
-  for (let index = 0; index < 2; index += 1) {
+  for (let index = 0; index < 2_000; index += 1) {
     jit.execute(device.layout.entries.tick, [], context);
   }
   jit.storage.storeState(device.layout.cycles, 0);
@@ -149,7 +203,13 @@ function measureUnifiedSteps(ticks: number): UnifiedMeasurement {
   }
   const milliseconds = performance.now() - start;
   const instructions = Number(jit.storage.loadState(device.layout.cycles));
-  return Object.freeze({ milliseconds, instructions });
+  return Object.freeze({
+    milliseconds,
+    instructions,
+    coldMilliseconds: 0,
+    units: 0,
+    dispatchesPerTick: 0,
+  });
 }
 
 describe('teaching MCU performance', () => {
@@ -168,16 +228,17 @@ describe('teaching MCU performance', () => {
     const m3Rate = m3Batch.instructions / (m3Batch.milliseconds / 1000);
     const m3Speedup = m3Rate / legacyRate;
 
-    const steps = measureUnifiedSteps(20_000);
+    const steps = measureUnifiedSteps(100_000);
     const stepRate = steps.instructions / (steps.milliseconds / 1000);
     const stepSpeedup = stepRate / legacyRate;
+    const stepNanoseconds = (steps.milliseconds * 1e6) / 100_000;
 
     console.log(
       [
         `legacy scheduler: ${(legacyRate / 1e6).toFixed(3)} M inst/s (${legacyMilliseconds.toFixed(1)} ms, ${legacyBlocks} blocks)`,
-        `unified teaching batch: ${(teachingRate / 1e6).toFixed(2)} M inst/s (${teachingSpeedup.toFixed(1)}x)`,
-        `unified M3 batch: ${(m3Rate / 1e6).toFixed(2)} M inst/s (${m3Speedup.toFixed(1)}x)`,
-        `unified teaching single-step: ${(stepRate / 1e6).toFixed(2)} M inst/s (${stepSpeedup.toFixed(1)}x)`,
+        `unified teaching batch: ${(teachingRate / 1e6).toFixed(2)} M inst/s (${teachingSpeedup.toFixed(1)}x), cold ${(teachingBatch.instructions / (teachingBatch.coldMilliseconds / 1000) / 1e6).toFixed(2)} M inst/s, ${teachingBatch.units} unit(s), ${teachingBatch.dispatchesPerTick.toFixed(2)} dispatches/tick`,
+        `unified M3 batch: ${(m3Rate / 1e6).toFixed(2)} M inst/s (${m3Speedup.toFixed(1)}x), cold ${(m3Batch.instructions / (m3Batch.coldMilliseconds / 1000) / 1e6).toFixed(2)} M inst/s, ${m3Batch.units} unit(s), ${m3Batch.dispatchesPerTick.toFixed(2)} dispatches/tick`,
+        `unified teaching single-step: ${(stepRate / 1e6).toFixed(2)} M inst/s (${stepSpeedup.toFixed(1)}x), ${stepNanoseconds.toFixed(0)} ns/tick`,
       ].join('\n'),
     );
 
@@ -185,11 +246,19 @@ describe('teaching MCU performance', () => {
     expect(m3Speedup).toBeGreaterThan(10);
     expect(teachingBatch.instructions).toBeGreaterThan(50_000);
     expect(m3Batch.instructions).toBeGreaterThan(100_000);
+    // Real-time emulation budget: 72 M guest instructions per second.
+    expect(teachingRate).toBeGreaterThan(REALTIME_MINST_PER_SECOND * 1e6);
+    expect(m3Rate).toBeGreaterThan(REALTIME_MINST_PER_SECOND * 1e6);
     // Single-step is the debugging path; it must still beat the scheduler.
     expect(stepSpeedup).toBeGreaterThan(1.5);
+    // One translated unit per guest loop, entered once per tick: the unit cache
+    // is warm for every measured tick (>99% hit rate).
+    expect(m3Batch.units).toBe(1);
+    expect(m3Batch.dispatchesPerTick).toBeLessThanOrEqual(1.05);
+    expect(teachingBatch.dispatchesPerTick).toBeLessThanOrEqual(1.05);
     // Guard against a regression that makes the measurement nonsense.
     expect(teachingBatch.milliseconds).toBeGreaterThan(0);
-  }, 30_000);
+  }, 60_000);
 
   it('executes a RAM-heavy M3 workload at batch speed', () => {
     const firmware = wordsToBytes([

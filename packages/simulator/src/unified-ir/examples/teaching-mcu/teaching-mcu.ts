@@ -130,6 +130,14 @@ export interface TeachingMCUConfig {
   readonly instructionsPerTick?: number;
   /** Maximum instructions decoded into one translated block. */
   readonly maxBlockInstructions?: number;
+  /**
+   * Fuse the reachable guest blocks of one decoding window into a single
+   * translated unit, so guest loops run inside one compiled function instead of
+   * one provider dispatch per iteration. Defaults to `true`; setting
+   * `MICA_DISABLE_SUPERBLOCK=1` in the environment forces the plain per-block
+   * translation.
+   */
+  readonly superblock?: boolean;
   /** Number of NVIC IRQ lines. Defaults to `32`, maximum `32`. */
   readonly irqCount?: number;
   /** GPIO-backed interrupt lines. */
@@ -157,6 +165,7 @@ export interface ResolvedTeachingMCUConfig {
   readonly vectorBase: number;
   readonly instructionsPerTick: number;
   readonly maxBlockInstructions: number;
+  readonly superblock: boolean;
   readonly irqCount: number;
   readonly interrupts: readonly TeachingMCUInterruptConfig[];
   readonly initialOutputs: Readonly<Record<string, number>>;
@@ -371,67 +380,292 @@ function isM3Terminator(op: number): boolean {
   return op === Op.B || op === Op.BL || op === Op.BX || op === Op.HALT || op === Op.WFI;
 }
 
-/** Decodes one translated block from a 32-bit instruction slice. */
-function decodeM3Block(
-  bytes: Uint8Array,
-  pc: number,
-  maxInstructions: number,
-): readonly DecodedInstruction[] {
-  const available = Math.floor(bytes.byteLength / 4);
-  const count = Math.min(maxInstructions, available);
-  if (count <= 0) return Object.freeze([]);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const decoded: DecodedInstruction[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const instruction = decodeM3Word(view.getUint32(index * 4, true), pc + index * 4);
-    decoded.push(instruction);
-    if (isM3Terminator(instruction.op)) break;
+/** True when the instruction ends a guest basic block. */
+function isTerminator(isa: TeachingMCUISAType, op: number): boolean {
+  if (isa === 'teaching') {
+    return op === Op.TJMP || op === Op.TJNZ || op === Op.HALT || op === Op.TFAULT;
   }
-  return Object.freeze(decoded);
+  return isM3Terminator(op);
+}
+
+/** Static branch target of one instruction, when the encoding carries one. */
+function staticTarget(
+  isa: TeachingMCUISAType,
+  instruction: DecodedInstruction,
+): number | undefined {
+  if (isa === 'teaching') {
+    return instruction.op === Op.TJMP || instruction.op === Op.TJNZ
+      ? instruction.target >>> 0
+      : undefined;
+  }
+  if (instruction.op === Op.B) return (instruction.pc + 4 + instruction.simm22 * 4) >>> 0;
+  if (instruction.op === Op.BL) return (instruction.pc + 4 + instruction.simm26 * 4) >>> 0;
+  return undefined;
 }
 
 /**
- * Decodes a teaching-ISA block exactly like the original example device:
- * consecutive `ADD R0, #imm` instructions are folded into one block and the
- * first non-ADD instruction terminates it.
+ * One translated guest block: a straight-line instruction run plus the
+ * terminator that decides where control goes next.
+ *
+ * | `terminator`   | successors                                  |
+ * | -------------- | ------------------------------------------- |
+ * | `'jump'`       | `takenPc`                                   |
+ * | `'branch'`     | `takenPc` (condition true) / `fallthroughPc` |
+ * | `'fallthrough'`| `fallthroughPc`                             |
+ * | `'halt'`       | none — leaves with `resumePc`               |
+ * | `'wfi'`        | none — leaves with `resumePc`               |
+ * | `'fault'`      | none — leaves with `resumePc`               |
+ * | `'bx'`         | none — leaves with the dynamic target       |
  */
-function decodeTeachingBlock(
+export interface GuestNode {
+  readonly pc: number;
+  readonly instructions: readonly DecodedInstruction[];
+  readonly terminator: 'jump' | 'branch' | 'fallthrough' | 'halt' | 'wfi' | 'fault' | 'bx';
+  /** Branch target (or the single successor for `'jump'`/`'fallthrough'`). */
+  readonly takenPc: number;
+  /** Not-taken successor of a conditional branch. */
+  readonly fallthroughPc: number;
+  /** PC reported when the node leaves the translated unit. */
+  readonly resumePc: number;
+  /** The node contains HALT/WFI/TFAULT, so a yield request must be honoured. */
+  readonly mayStop: boolean;
+  /**
+   * Whether the unit may yield at this node. Guest terminators and the end of
+   * the decoding window do; a node that only ends because the next instruction
+   * is a branch target keeps executing straight through, so a tick retires the
+   * same instructions it did with one translated block per dispatch.
+   */
+  readonly checksSlice: boolean;
+}
+
+/**
+ * A translated unit: every guest basic block reachable from `startPc` inside
+ * one decoded window, plus the edges between them.
+ *
+ * Blocks that branch back into the window become an IR loop, so a guest loop
+ * body runs inside one compiled function instead of one provider dispatch per
+ * iteration. Blocks whose successor lies outside the window dispatch normally,
+ * which keeps the unit semantics identical to per-block translation.
+ *
+ * Exported for the translation tests; the device API does not surface it.
+ */
+export interface GuestProgram {
+  readonly startPc: number;
+  readonly nodes: readonly GuestNode[];
+  /** Node index by start PC (only nodes of this program). */
+  readonly byPc: ReadonlyMap<number, number>;
+  /** True when any reachable node may set a yield-worthy flag. */
+  readonly mayStop: boolean;
+  /** True when the unit can change peripheral output state. */
+  readonly syncAfterBlock: boolean;
+  readonly instructionCount: number;
+}
+
+/** Upper bound on the instructions of one translated unit. */
+const SUPERBLOCK_INSTRUCTION_LIMIT = 256;
+
+function decodeGuestInstruction(
+  isa: TeachingMCUISAType,
   bytes: Uint8Array,
+  view: DataView,
+  index: number,
   pc: number,
-  maxInstructions: number,
-): readonly DecodedInstruction[] {
-  const decoded: DecodedInstruction[] = [];
-  let cursor = pc;
-  let offset = 0;
-  for (;;) {
-    if (decoded.length >= maxInstructions || offset + 2 > bytes.byteLength || cursor % 2 !== 0) {
-      decoded.push(makeTeachingInstruction(Op.TFAULT, cursor, 0, 0));
-      break;
-    }
+): DecodedInstruction {
+  if (isa === 'teaching') {
+    const offset = index * 2;
     const opcode = bytes[offset] as number;
     const operand = bytes[offset + 1] as number;
-    if (opcode === 0x10) {
-      decoded.push(makeTeachingInstruction(Op.TADD, cursor, operand, operand));
-      offset += 2;
-      cursor += 2;
-      continue;
-    }
-    if (opcode === 0x20) {
-      decoded.push(makeTeachingInstruction(Op.TJMP, cursor, operand, operand));
-      break;
-    }
-    if (opcode === 0x30) {
-      decoded.push(makeTeachingInstruction(Op.TJNZ, cursor, operand, operand));
-      break;
-    }
-    if (opcode === 0x00) {
-      decoded.push(makeTeachingInstruction(Op.HALT, cursor, 0, 0));
-      break;
-    }
-    decoded.push(makeTeachingInstruction(Op.TFAULT, cursor, 0, 0));
-    break;
+    if (opcode === 0x10) return makeTeachingInstruction(Op.TADD, pc, operand, operand);
+    if (opcode === 0x20) return makeTeachingInstruction(Op.TJMP, pc, operand, operand);
+    if (opcode === 0x30) return makeTeachingInstruction(Op.TJNZ, pc, operand, operand);
+    if (opcode === 0x00) return makeTeachingInstruction(Op.HALT, pc, 0, 0);
+    return makeTeachingInstruction(Op.TFAULT, pc, 0, 0);
   }
-  return Object.freeze(decoded);
+  return decodeM3Word(view.getUint32(index * 4, true), pc);
+}
+
+/**
+ * Decodes one translated unit from a read-only instruction slice.
+ *
+ * The window is decoded linearly and then partitioned into guest basic blocks:
+ * a node starts at the window start, after every terminator and at every static
+ * branch target inside the window. With `fuse === false` decoding stops after
+ * the first terminator, which reproduces the original one-block-per-dispatch
+ * translation exactly.
+ *
+ * Exported for the translation tests; the device API does not surface it.
+ */
+export function decodeGuestProgram(
+  bytes: Uint8Array,
+  startPc: number,
+  maxInstructions: number,
+  isa: TeachingMCUISAType,
+  fuse: boolean,
+): GuestProgram {
+  const size = isa === 'teaching' ? 2 : 4;
+  const limit = Math.min(
+    maxInstructions,
+    fuse ? SUPERBLOCK_INSTRUCTION_LIMIT : maxInstructions,
+    Math.floor(bytes.byteLength / size),
+  );
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoded: DecodedInstruction[] = [];
+  for (let index = 0; index < limit; index += 1) {
+    const pc = startPc + index * size;
+    const instruction = decodeGuestInstruction(isa, bytes, view, index, pc);
+    decoded.push(instruction);
+    if (!fuse && isTerminator(isa, instruction.op)) break;
+  }
+  if (decoded.length === 0) {
+    return Object.freeze({
+      startPc,
+      nodes: Object.freeze([]),
+      byPc: new Map<number, number>(),
+      mayStop: false,
+      syncAfterBlock: false,
+      instructionCount: 0,
+    });
+  }
+
+  const targets = new Set<number>();
+  if (fuse) {
+    for (const instruction of decoded) {
+      const target = staticTarget(isa, instruction);
+      if (target !== undefined) targets.add(target);
+    }
+  }
+
+  const nodes: GuestNode[] = [];
+  const byPc = new Map<number, number>();
+  let run: DecodedInstruction[] = [];
+  const flushRun = (
+    terminator: GuestNode['terminator'],
+    takenPc: number,
+    fallthroughPc: number,
+    resumePc: number,
+  ): void => {
+    if (run.length === 0) return;
+    const first = run[0]!;
+    const index = nodes.length;
+    byPc.set(first.pc, index);
+    nodes.push(
+      Object.freeze({
+        pc: first.pc,
+        instructions: Object.freeze(run),
+        terminator,
+        takenPc: takenPc >>> 0,
+        fallthroughPc: fallthroughPc >>> 0,
+        resumePc: resumePc >>> 0,
+        mayStop: terminator === 'halt' || terminator === 'wfi' || terminator === 'fault',
+        checksSlice: true,
+      }),
+    );
+    run = [];
+  };
+
+  for (let index = 0; index < decoded.length; index += 1) {
+    const instruction = decoded[index]!;
+    if (run.length > 0 && fuse && targets.has(instruction.pc)) {
+      const last = run[run.length - 1]!;
+      flushRun('fallthrough', last.pc + last.size, last.pc + last.size, last.pc + last.size);
+    }
+    run.push(instruction);
+    if (!isTerminator(isa, instruction.op)) continue;
+    const nextPc = instruction.pc + instruction.size;
+    const target = staticTarget(isa, instruction) ?? nextPc;
+    switch (instruction.op) {
+      case Op.B:
+        if (instruction.cond === Cond.AL) {
+          flushRun('jump', target, nextPc, target);
+        } else {
+          flushRun('branch', target, nextPc, nextPc);
+        }
+        break;
+      case Op.BL:
+      case Op.TJMP:
+        flushRun('jump', target, nextPc, target);
+        break;
+      case Op.TJNZ:
+        flushRun('branch', target, nextPc, nextPc);
+        break;
+      case Op.BX:
+        flushRun('bx', nextPc, nextPc, nextPc);
+        break;
+      case Op.HALT:
+        flushRun('halt', nextPc, nextPc, nextPc);
+        break;
+      case Op.WFI:
+        flushRun('wfi', nextPc, nextPc, nextPc);
+        break;
+      case Op.TFAULT:
+        flushRun('fault', instruction.pc, instruction.pc, instruction.pc);
+        break;
+      default:
+        flushRun('fallthrough', nextPc, nextPc, nextPc);
+        break;
+    }
+  }
+  if (run.length > 0) {
+    const last = run[run.length - 1]!;
+    flushRun('fallthrough', last.pc + last.size, last.pc + last.size, last.pc + last.size);
+  }
+
+  // Keep only the nodes reachable from the window start, in address order, so
+  // that decoded data after a HALT never grows the emitted function.
+  const reachable = new Set<number>([0]);
+  const queue: number[] = [0];
+  while (queue.length > 0) {
+    const nodeIndex = queue.pop()!;
+    const node = nodes[nodeIndex];
+    if (node === undefined) continue;
+    const successors =
+      node.terminator === 'jump'
+        ? [node.takenPc]
+        : node.terminator === 'branch'
+          ? [node.takenPc, node.fallthroughPc]
+          : node.terminator === 'fallthrough'
+            ? [node.fallthroughPc]
+            : [];
+    for (const successor of successors) {
+      const index = byPc.get(successor);
+      if (index === undefined || reachable.has(index)) continue;
+      reachable.add(index);
+      queue.push(index);
+    }
+  }
+
+  const order = [...reachable].sort((left, right) => left - right);
+  const remapped = new Map<number, number>();
+  const finalNodes: GuestNode[] = [];
+  const windowEnd = startPc + decoded.length * size;
+  for (const nodeIndex of order) {
+    const node = nodes[nodeIndex]!;
+    remapped.set(node.pc, finalNodes.length);
+    const last = node.instructions[node.instructions.length - 1]!;
+    const splitOnly = node.terminator === 'fallthrough' && last.pc + last.size < windowEnd;
+    finalNodes.push(splitOnly ? Object.freeze({ ...node, checksSlice: false }) : node);
+  }
+
+  let instructionCount = 0;
+  let mayStop = false;
+  let syncAfterBlock = isa === 'teaching';
+  for (const node of finalNodes) {
+    instructionCount += node.instructions.length;
+    mayStop = mayStop || node.mayStop;
+    if (!syncAfterBlock) {
+      syncAfterBlock = node.instructions.some(
+        (instruction) => instruction.op === Op.STR || instruction.op === Op.STRB,
+      );
+    }
+  }
+  return Object.freeze({
+    startPc,
+    nodes: Object.freeze(finalNodes),
+    byPc: remapped,
+    mayStop,
+    syncAfterBlock,
+    instructionCount,
+  });
 }
 
 function makeTeachingInstruction(
@@ -824,6 +1058,16 @@ function emitM3Instruction<R extends readonly ScalarType[]>(
     }
     case Op.NOP:
       return;
+    case Op.TADD: {
+      // Teaching ISA: `ADD R0, #imm` on the single accumulator register.
+      storeReg(
+        b,
+        ctx.regs,
+        instruction.rd,
+        b.int.add(loadReg(b, ctx.regs, instruction.rd), u32(b, instruction.imm8)),
+      );
+      return;
+    }
     default: {
       // Unknown encoding: latch a fault instead of aborting the host.
       b.state.store(ctx.fault, b.const('bool', true));
@@ -833,168 +1077,228 @@ function emitM3Instruction<R extends readonly ScalarType[]>(
   }
 }
 
-function emitBlock(
-  b: GeneratedBuilder,
-  decoded: readonly DecodedInstruction[],
-  ctx: EmitContext,
-): void {
-  const done = b.block(['u32']);
-  const returnBlock = b.block(['u32']);
-  const dispatchBlock = b.block(['u32']);
+/**
+ * Emits one translated unit.
+ *
+ * Every reachable guest block becomes an IR block whose single parameter is the
+ * retired-instruction count carried across the unit. Guest terminators end in a
+ * *gate*: a shared boundary block that adds the block's instruction count,
+ * honours the cycle budget (`sliceEnd`) and any latched `fault`/`halted`/
+ * `yieldRequested`, and then either loops back, continues with the next guest
+ * block, or tail-dispatches the provider. A backward edge is therefore a plain
+ * IR loop inside the generated function, which is what removes one provider
+ * dispatch per guest iteration.
+ */
+function emitProgram(b: GeneratedBuilder, program: GuestProgram, ctx: EmitContext): void {
+  const returnBlock = b.block(['u32', 'u32']);
+  const dispatchBlock = b.block(['u32', 'u32']);
+  const nodeBlocks = program.nodes.map(() => b.block(['u32']));
+  /** One gate per outgoing edge of `node`; a split-only node has none. */
+  const gateBlocks = program.nodes.map((node) =>
+    gateSpecs(node).map(() => b.block(['u32', 'u32'])),
+  );
   const deferred: (() => void)[] = [];
-  let nextPc: Value<'u32'> | undefined;
-  let blockTerminated = false;
-  let decodeEnded = false;
 
-  for (const instruction of decoded) {
-    switch (instruction.op) {
-      case Op.B: {
-        const taken =
-          ctx.isa === 'teaching' ? instruction.target : instruction.pc + 4 + instruction.simm22 * 4;
-        const fallthrough = instruction.pc + instruction.size;
-        nextPc =
-          instruction.cond === Cond.AL
-            ? u32(b, taken)
-            : b.select(
-                emitCondition(b, instruction.cond, ctx.flags),
-                u32(b, taken),
-                u32(b, fallthrough),
+  b.jump(nodeBlocks[0]!, [b.state.load(ctx.cycles)]);
+
+  const emitExits = (): void => {
+    b.at(returnBlock, (ib, [nextPc, count]) => {
+      // The pc state is only observable between ticks, so the hot path keeps it
+      // in a value and writes it once when the unit yields.
+      ib.state.store(ctx.pc, nextPc!);
+      ib.state.store(ctx.cycles, count!);
+      ib.state.store(ctx.yieldRequested, ib.const('bool', false));
+      if (ctx.syncAfterBlock) emitGpioBlockSync(ib, ctx);
+      ib.return([]);
+    });
+    b.at(dispatchBlock, (ib, [nextPc, count]) => {
+      ib.state.store(ctx.cycles, count!);
+      if (ctx.syncAfterBlock) emitGpioBlockSync(ib, ctx);
+      ib.dispatch(ctx.fetch, [nextPc!], []);
+    });
+  };
+
+  /** Shared boundary: honour the cycle budget/faults, then continue or leave. */
+  const emitGate = (nodeIndex: number, gateIndex: number, successor: number | undefined): void => {
+    const node = program.nodes[nodeIndex]!;
+    b.at(gateBlocks[nodeIndex]![gateIndex]!, (ib, [pendingPc, count]) => {
+      const sliceDone = ib.int.cmp('ge', count!, ib.state.load(ctx.sliceEnd));
+      const stop = node.mayStop
+        ? ib.bool.or(
+            ib.bool.or(sliceDone, ib.state.load(ctx.fault)),
+            ib.bool.or(ib.state.load(ctx.halted), ib.state.load(ctx.yieldRequested)),
+          )
+        : ib.bool.or(sliceDone, ib.state.load(ctx.fault));
+      if (successor === undefined) {
+        ib.branch(
+          stop,
+          { target: returnBlock, args: [pendingPc!, count!] },
+          { target: dispatchBlock, args: [pendingPc!, count!] },
+        );
+      } else {
+        ib.branch(
+          stop,
+          { target: returnBlock, args: [pendingPc!, count!] },
+          { target: nodeBlocks[successor]!, args: [count!] },
+        );
+      }
+    });
+  };
+
+  for (let nodeIndex = 0; nodeIndex < program.nodes.length; nodeIndex += 1) {
+    const node = program.nodes[nodeIndex]!;
+    const gates = gateSpecs(node);
+    gates.forEach((gate, gateIndex) => {
+      const successor =
+        gate.successorPc === undefined ? undefined : program.byPc.get(gate.successorPc);
+      emitGate(nodeIndex, gateIndex, successor);
+    });
+    b.at(nodeBlocks[nodeIndex]!, (ib, [carried]) => {
+      const count = carried!;
+      const terminal = node.instructions.length - 1;
+      let condition: Value<'bool'> | undefined;
+      let direct: { readonly pc: number } | undefined;
+      let bxTerminator: (() => void) | undefined;
+      for (let index = 0; index < node.instructions.length; index += 1) {
+        const instruction = node.instructions[index]!;
+        if (index !== terminal || !isTerminator(ctx.isa, instruction.op)) {
+          emitM3Instruction(ib, instruction, ctx);
+          continue;
+        }
+        switch (instruction.op) {
+          case Op.B:
+            if (instruction.cond !== Cond.AL) {
+              condition = emitCondition(ib, instruction.cond, ctx.flags);
+            }
+            break;
+          case Op.TJNZ:
+            condition = ib.int.cmp('ne', loadReg(ib, ctx.regs, 0), u32(ib, 0));
+            break;
+          case Op.BL:
+            storeReg(ib, ctx.regs, 14, u32(ib, (instruction.pc + instruction.size) >>> 0));
+            break;
+          case Op.BX: {
+            const value = loadReg(ib, ctx.regs, instruction.rn);
+            const exceptionReturn = ib.int.cmp('ge', value, u32(ib, EXCEPTION_RETURN_MASK));
+            const target = ib.int.and(value, u32(ib, 0xffff_fffe));
+            const exceptionBlock = b.block(['u32']);
+            const normalBlock = b.block(['u32', 'u32']);
+            bxTerminator = () => {
+              ib.branch(
+                exceptionReturn,
+                { target: exceptionBlock, args: [count] },
+                { target: normalBlock, args: [count, target] },
               );
-        decodeEnded = true;
-        break;
+            };
+            deferred.push(() => {
+              b.at(exceptionBlock, (eb, [carriedCount]) => {
+                eb.call(ctx.returnFromException, []);
+                eb.jump(gateBlocks[nodeIndex]![0]!, [
+                  eb.state.load(ctx.pc),
+                  eb.int.add(carriedCount!, u32(eb, node.instructions.length)),
+                ]);
+              });
+              b.at(normalBlock, (nb, [carriedCount, targetPc]) => {
+                nb.jump(gateBlocks[nodeIndex]![0]!, [
+                  targetPc!,
+                  nb.int.add(carriedCount!, u32(nb, node.instructions.length)),
+                ]);
+              });
+            });
+            break;
+          }
+          case Op.HALT:
+            ib.state.store(ctx.halted, ib.const('bool', true));
+            direct = { pc: node.resumePc };
+            break;
+          case Op.WFI:
+            ib.state.store(ctx.sleeping, ib.const('bool', true));
+            ib.state.store(ctx.yieldRequested, ib.const('bool', true));
+            direct = { pc: node.resumePc };
+            break;
+          case Op.TFAULT:
+            ib.state.store(ctx.fault, ib.const('bool', true));
+            ib.state.store(ctx.halted, ib.const('bool', true));
+            direct = { pc: node.resumePc };
+            break;
+          default:
+            break;
+        }
       }
-      case Op.BL: {
-        storeReg(b, ctx.regs, 14, u32(b, (instruction.pc + instruction.size) >>> 0));
-        nextPc = u32(b, (instruction.pc + 4 + instruction.simm26 * 4) >>> 0);
-        decodeEnded = true;
-        break;
-      }
-      case Op.BX: {
-        const value = loadReg(b, ctx.regs, instruction.rn);
-        const exceptionReturn = b.int.cmp('ge', value, u32(b, EXCEPTION_RETURN_MASK));
-        const target = b.int.and(value, u32(b, 0xffff_fffe));
-        const exceptionBlock = b.block([]);
-        const normalBlock = b.block(['u32']);
-        b.branch(
-          exceptionReturn,
-          { target: exceptionBlock, args: [] },
-          { target: normalBlock, args: [target] },
+
+      if (ctx.isa === 'teaching' && ctx.legacyGpioOffset !== undefined) {
+        // The original device published `r0 & 1` on its GPIO pin after each block.
+        const odr = ib.bytes.load('u32', 'little', ctx.memory, u32(ib, ctx.legacyGpioOffset));
+        const bit = ib.int.and(loadReg(ib, ctx.regs, 0), u32(ib, 1));
+        ib.bytes.store(
+          'u32',
+          'little',
+          ctx.memory,
+          u32(ib, ctx.legacyGpioOffset),
+          ib.int.or(ib.int.and(odr, u32(ib, 0xffff_fffe)), bit),
         );
-        deferred.push(() => {
-          b.at(exceptionBlock, (ib) => {
-            ib.call(ctx.returnFromException, []);
-            if (ctx.syncAfterBlock) emitGpioBlockSync(ib, ctx);
-            ib.jump(done, [ib.state.load(ctx.pc)]);
-          });
-          b.at(normalBlock, (ib, [targetPc]) => {
-            if (ctx.syncAfterBlock) emitGpioBlockSync(ib, ctx);
-            ib.jump(done, [targetPc]);
-          });
-        });
-        blockTerminated = true;
-        decodeEnded = true;
-        break;
       }
-      case Op.HALT: {
-        b.state.store(ctx.halted, b.const('bool', true));
-        nextPc = u32(b, (instruction.pc + instruction.size) >>> 0);
-        decodeEnded = true;
-        break;
+
+      const next = ib.int.add(count, u32(ib, node.instructions.length));
+      const gate = gateBlocks[nodeIndex]!;
+      if (direct !== undefined) {
+        ib.jump(returnBlock, [u32(ib, direct.pc), next]);
+        return;
       }
-      case Op.WFI: {
-        b.state.store(ctx.sleeping, b.const('bool', true));
-        b.state.store(ctx.yieldRequested, b.const('bool', true));
-        nextPc = u32(b, (instruction.pc + instruction.size) >>> 0);
-        decodeEnded = true;
-        break;
+      if (bxTerminator !== undefined) {
+        bxTerminator();
+        return;
       }
-      case Op.TJMP: {
-        nextPc = u32(b, instruction.target);
-        decodeEnded = true;
-        break;
+      if (!node.checksSlice) {
+        // Straight-through continuation: the guest block that started at this
+        // node's entry still runs, so this boundary is not a yield point.
+        const successor = program.byPc.get(node.fallthroughPc);
+        if (successor === undefined) {
+          ib.jump(dispatchBlock, [u32(ib, node.fallthroughPc), next]);
+        } else {
+          ib.jump(nodeBlocks[successor]!, [next]);
+        }
+        return;
       }
-      case Op.TJNZ: {
-        const nonzero = b.int.cmp('ne', loadReg(b, ctx.regs, 0), u32(b, 0));
-        nextPc = b.select(
-          nonzero,
-          u32(b, instruction.target),
-          u32(b, instruction.pc + instruction.size),
+      if (condition !== undefined) {
+        ib.branch(
+          condition,
+          { target: gate[0]!, args: [u32(ib, node.takenPc), next] },
+          { target: gate[1]!, args: [u32(ib, node.fallthroughPc), next] },
         );
-        decodeEnded = true;
-        break;
+        return;
       }
-      case Op.TADD: {
-        storeReg(b, ctx.regs, 0, b.int.add(loadReg(b, ctx.regs, 0), u32(b, instruction.imm8)));
-        break;
-      }
-      case Op.TFAULT: {
-        b.state.store(ctx.fault, b.const('bool', true));
-        b.state.store(ctx.halted, b.const('bool', true));
-        nextPc = u32(b, instruction.pc);
-        decodeEnded = true;
-        break;
-      }
-      default:
-        emitM3Instruction(b, instruction, ctx);
-        break;
-    }
-    if (decodeEnded) break;
+      ib.jump(gate[0]!, [
+        u32(ib, node.terminator === 'fallthrough' ? node.fallthroughPc : node.takenPc),
+        next,
+      ]);
+    });
   }
 
-  if (ctx.isa === 'teaching' && ctx.legacyGpioOffset !== undefined) {
-    // The original device published `r0 & 1` on its GPIO pin after each block.
-    const odr = b.bytes.load('u32', 'little', ctx.memory, u32(b, ctx.legacyGpioOffset));
-    const bit = b.int.and(loadReg(b, ctx.regs, 0), u32(b, 1));
-    b.bytes.store(
-      'u32',
-      'little',
-      ctx.memory,
-      u32(b, ctx.legacyGpioOffset),
-      b.int.or(b.int.and(odr, u32(b, 0xffff_fffe)), bit),
-    );
-  }
-
-  if (ctx.syncAfterBlock && !blockTerminated) {
-    emitGpioBlockSync(b, ctx);
-  }
-
-  if (!decodeEnded) {
-    const last = decoded[decoded.length - 1]!;
-    nextPc = u32(b, (last.pc + last.size) >>> 0);
-  }
-
-  if (!blockTerminated) {
-    b.jump(done, [nextPc ?? u32(b, 0)]);
-  }
+  emitExits();
   for (const emit of deferred) emit();
+}
 
-  b.at(done, (ib, [next]) => {
-    const nextCycles = ib.int.add(ib.state.load(ctx.cycles), u32(ib, decoded.length));
-    ib.state.store(ctx.cycles, nextCycles);
-    const sliceDone = ib.int.cmp('ge', nextCycles, ib.state.load(ctx.sliceEnd));
-    // Only blocks that can halt/fault/sleep pay for the extra flag loads.
-    const mayStop = decoded.some(
-      (instruction) =>
-        instruction.op === Op.HALT || instruction.op === Op.TFAULT || instruction.op === Op.WFI,
-    );
-    const stop = mayStop
-      ? ib.bool.or(
-          ib.bool.or(sliceDone, ib.state.load(ctx.fault)),
-          ib.bool.or(ib.state.load(ctx.halted), ib.state.load(ctx.yieldRequested)),
-        )
-      : ib.bool.or(sliceDone, ib.state.load(ctx.fault));
-    ib.branch(stop, { target: returnBlock, args: [next] }, { target: dispatchBlock, args: [next] });
-  });
-  b.at(returnBlock, (ib, [next]) => {
-    // The pc state is only observable between ticks, so the hot dispatch path
-    // keeps it in a value and writes it once when the slice yields.
-    ib.state.store(ctx.pc, next);
-    ib.state.store(ctx.yieldRequested, ib.const('bool', false));
-    ib.return([]);
-  });
-  b.at(dispatchBlock, (ib, [next]) => {
-    ib.dispatch(ctx.fetch, [next], []);
-  });
+interface GateSpec {
+  /** Successor PC this gate continues with (`undefined` for the dynamic BX case). */
+  readonly successorPc: number | undefined;
+}
+
+/** One gate per outgoing edge of `node`. */
+function gateSpecs(node: GuestNode): readonly GateSpec[] {
+  if (!node.checksSlice) return [];
+  switch (node.terminator) {
+    case 'jump':
+      return [{ successorPc: node.takenPc }];
+    case 'fallthrough':
+      return [{ successorPc: node.fallthroughPc }];
+    case 'branch':
+      return [{ successorPc: node.takenPc }, { successorPc: node.fallthroughPc }];
+    case 'bx':
+      return [{ successorPc: undefined }];
+    default:
+      return [];
+  }
 }
 
 /* -------------------------------------------------------------------------
@@ -1192,12 +1496,15 @@ function generateKernel(options: GenerateOptions): GeneratedKernel {
       const maxInstructions = config.isa === 'teaching' ? 4096 : config.maxBlockInstructions;
       const length = Math.min(maxInstructions * instructionSize, available);
       const bytes = gen.readBytes(flash, address, length);
-      const decoded =
-        config.isa === 'teaching'
-          ? decodeTeachingBlock(bytes, address, maxInstructions)
-          : decodeM3Block(bytes, address, maxInstructions);
+      const program = decodeGuestProgram(
+        bytes,
+        address,
+        maxInstructions,
+        config.isa,
+        config.superblock,
+      );
       return gen.function((b) => {
-        emitBlock(b, decoded, {
+        emitProgram(b, program, {
           isa: config.isa,
           regs: registers,
           memory,
@@ -1223,9 +1530,7 @@ function generateKernel(options: GenerateOptions): GeneratedKernel {
           portCount,
           // Teaching blocks always publish `r0 & 1`; M3 blocks only touch the
           // peripheral window through stores.
-          syncAfterBlock:
-            config.isa === 'teaching' ||
-            decoded.some((instruction) => instruction.op === Op.STR || instruction.op === Op.STRB),
+          syncAfterBlock: program.syncAfterBlock,
         });
       });
     },
@@ -1977,6 +2282,7 @@ export function resolveTeachingMCUConfig(
       'TeachingMCUConfig.exceptionCycles must be a non-negative integer',
     );
   }
+  const superblock = config.superblock ?? !disabledByEnvironment('MICA_DISABLE_SUPERBLOCK');
   return Object.freeze({
     isa,
     ports: Object.freeze(ports),
@@ -1991,6 +2297,7 @@ export function resolveTeachingMCUConfig(
     vectorBase,
     instructionsPerTick,
     maxBlockInstructions,
+    superblock,
     irqCount,
     interrupts: Object.freeze(normalizedInterrupts),
     initialOutputs: Object.freeze(initialOutputs),
@@ -2002,6 +2309,18 @@ export function resolveTeachingMCUConfig(
 function toBytes(value: Uint8Array | readonly number[]): Uint8Array {
   if (value instanceof Uint8Array) return new Uint8Array(value);
   return Uint8Array.from(value, (entry) => entry & 0xff);
+}
+
+/**
+ * Reads one optimization switch from the host environment. The optional chain
+ * keeps the check safe in browsers, where `process` does not exist.
+ */
+function disabledByEnvironment(name: string): boolean {
+  const environment = (
+    globalThis as { readonly process?: { readonly env?: Record<string, string | undefined> } }
+  ).process?.env;
+  const value = environment?.[name];
+  return value === '1' || value === 'true';
 }
 
 /* -------------------------------------------------------------------------
