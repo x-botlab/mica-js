@@ -1,5 +1,12 @@
 # @mica-js/simulator
 
+## 0.2.2
+
+### Patch Changes
+
+- @mica-js/core@0.3.1
+  - @mica-js/device@0.2.2
+
 ## 0.2.1
 
 ### Patch Changes

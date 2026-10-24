@@ -1,5 +1,14 @@
 # @mica-js/core
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [9ad1e93]
+- Updated dependencies [117dcd0]
+- Updated dependencies [b4e453b]
+  - @mica-js/ir@0.4.0
+
 ## 0.3.0
 
 ### Minor Changes
