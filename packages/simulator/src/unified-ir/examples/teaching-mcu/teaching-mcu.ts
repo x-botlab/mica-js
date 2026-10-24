@@ -38,6 +38,7 @@ import type {
   Value,
 } from '@mica-js/ir';
 import type { DeviceAccessorFactoryContext, DeviceConfig, DeviceDescription } from '../../compiler';
+import { Circuit, type CircuitRuntimeOptions } from '../../runtime';
 import { createModuleValidation } from '../../validation';
 import { PIN_MODE } from '../../pin-space';
 import { TeachingMCUError } from './teaching-mcu.errors';
@@ -2128,8 +2129,8 @@ export interface TeachingMCUCircuitInput<Id extends string> {
 export async function createTeachingMCUCircuit<const Id extends string>(
   id: Id,
   config: TeachingMCUConfig = {},
-  options?: import('../../runtime').CircuitRuntimeOptions,
-): Promise<import('../../runtime').Circuit<TeachingMCUCircuitInput<Id>>> {
+  options?: CircuitRuntimeOptions,
+): Promise<Circuit<TeachingMCUCircuitInput<Id>>> {
   const mcu = createTeachingMCUIR(id, config);
   const input: TeachingMCUCircuitInput<Id> = {
     devices: [
@@ -2141,6 +2142,5 @@ export async function createTeachingMCUCircuit<const Id extends string>(
     ],
     connections: [],
   };
-  const { Circuit } = await import('../../runtime');
   return Circuit.create(input, options);
 }

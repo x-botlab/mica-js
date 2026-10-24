@@ -4,9 +4,7 @@
  * `runBatch(n)` keeps the loop inside the generated module, so the whole batch
  * costs one engine call. That is the throughput path; `step()` is for debugging.
  */
-import { createMcuDescription } from '../src/unified-ir/compiler';
-import { createLedIR, LED_IR_TYPE } from '../src/unified-ir/devices/led';
-import { Circuit } from '../src/unified-ir/runtime';
+import { Circuit, createLedIR, createMcuDescription, LED_IR_TYPE } from '../src/index';
 
 /** Throughput measured by {@link run}. */
 export interface BenchmarkResult {

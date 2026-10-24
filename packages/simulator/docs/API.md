@@ -169,7 +169,8 @@ const led = createLedDescription(); // anode / cathode + lamp 状态
 返回 `LedIRDevice`：`{ id, type, config, module, layout, device, validation, buildAccessor }`。
 把 `device.description` 放进 `Circuit.create` 的 `devices` 即可。
 
-`LedAccessor`：`isOn()`、`isForwardBiased()`、`getBrightness()`、`getLevel()`、
+`LedIRAccessor`（包入口的导出名；内置 `led` / `ideal-led` 的访问器叫 `LedAccessor`）：
+`isOn()`、`isForwardBiased()`、`getBrightness()`、`getLevel()`、
 `setBrightness(value)`、`readAnode()`、`readCathode()`、`readPinInput(name)`、`samplePin(name)`、
 `refresh()`、`step(count?)`、`run(count)`、`snapshot()`，以及通用访问器成员。
 
@@ -182,7 +183,7 @@ const led = createLedDescription(); // anode / cathode + lamp 状态
 | `debounceTicks`  | `0`           | 原始输入稳定的 tick 数，之后才发布 |
 | `activeLow`      | `false`       | 按下时把 `A` 拉低而不是拉高        |
 
-`ButtonAccessor`：`press()`、`release()`、`toggle()`、`setPressed(v)`、`isPressed()`（原始）、
+`ButtonIRAccessor`（包入口的导出名）：`press()`、`release()`、`toggle()`、`setPressed(v)`、`isPressed()`（原始）、
 `isClosed()`（去抖后）、`isBouncing()`、`getPressCount()`、`resetPressCount()`、`getHoldTicks()`、
 `getLineLevel()`、`getReferenceLevel()`、`readPinInput(name)`、`samplePin(name)`、`step(count?)`、
 `run(count)`、`snapshot()`。

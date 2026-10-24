@@ -9,9 +9,7 @@
  * pnpm --filter @mica-js/simulator examples
  * ```
  */
-import { createMcuDescription } from '../src/unified-ir/compiler';
-import { createLedIR, LED_IR_TYPE } from '../src/unified-ir/devices/led';
-import { Circuit } from '../src/unified-ir/runtime';
+import { Circuit, createLedIR, createMcuDescription, LED_IR_TYPE } from '../src/index';
 
 /** What {@link run} observed while blinking. */
 export interface LedBlinkResult {

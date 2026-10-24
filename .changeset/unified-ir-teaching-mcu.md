@@ -2,7 +2,7 @@
 '@mica-js/simulator': minor
 ---
 
-新增统一 IR 教学 MCU（U03，`src/unified-ir/devices/`）：把真实的 Cortex-M3 级教学器件迁移到统一 IR 架构，验证编译器与运行时在复杂器件上的可用性。
+新增统一 IR 教学 MCU（U03，`src/unified-ir/examples/teaching-mcu/`）：把真实的 Cortex-M3 级教学器件迁移到统一 IR 架构，验证编译器与运行时在复杂器件上的可用性。
 
 - `createTeachingMCUIR(id, config)`：返回 `IRDevice`，包含独立 `@mica-js/ir` module（`initialize` / `tick` / `update`）、布局、验证授权和 `device`（可直接交给 `Circuit.create`）。支持 16 个 32 位寄存器、NZCV、flash/RAM/外设统一地址空间、PA0–PB15 GPIO、32 路 NVIC、异常压栈/返回、WFI 睡眠与 `m3`/`teaching` 两种指令集。
 - 指令执行使用按 PC 缓存的 Provider 基本块，块内直接发射 IR；`instructionsPerTick` 控制每个 tick 的指令片，`maxBlockInstructions` 控制翻译块上限。GPIO 写入在块末尾同步到共享 `pin_mode` / `pin_output`，host 通过访问器写入的 ODR/DIR 也会立即同步；所有引脚参与电气网络求解。

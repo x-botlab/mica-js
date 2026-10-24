@@ -5,9 +5,7 @@
  * applies the configured debounce inside the generated tick, and the LED
  * samples the solved net in the same step.
  */
-import { createButtonIR, BUTTON_IR_TYPE } from '../src/unified-ir/devices/button';
-import { createLedIR, LED_IR_TYPE } from '../src/unified-ir/devices/led';
-import { Circuit } from '../src/unified-ir/runtime';
+import { Circuit, BUTTON_IR_TYPE, LED_IR_TYPE, createButtonIR, createLedIR } from '../src/index';
 
 /** What {@link run} observed while pressing the button. */
 export interface ButtonLedResult {
