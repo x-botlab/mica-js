@@ -9,7 +9,7 @@ const PAGES = [
     id: 'canvas',
     icon: PanelsTopLeft,
     title: '画布',
-    summary: 'CanvasScene 串起 .cnv、WidgetHost 与编辑器：拖动实例、切换运行模式、看发布日志。',
+    summary: 'CanvasEditor 串起 .cnv、WidgetHost 与编辑器：拖动实例、切换运行模式、看发布日志。',
     tags: ['@mica-js/canvas-editor', '@mica-js/widget'],
   },
   {

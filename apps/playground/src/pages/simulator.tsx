@@ -1,5 +1,5 @@
 import { timePs } from '@mica-js/core';
-import { createCanvasScene, DARK_CANVAS_THEME, type CanvasScene } from '@mica-js/canvas-editor';
+import { createCanvasEditor, DARK_CANVAS_THEME, type CanvasEditor } from '@mica-js/canvas-editor';
 import {
   createPackageWidgetProvider,
   createWidgetHost,
@@ -75,7 +75,7 @@ export function SimulatorPage() {
 
   useEffect(() => {
     let cancelled = false;
-    let scene: CanvasScene | undefined;
+    let scene: CanvasEditor | undefined;
     let host: WidgetHost | undefined;
     const session = new SimulationSession(scenario);
     sessionRef.current = session;
@@ -118,7 +118,7 @@ export function SimulatorPage() {
         });
         host = createdHost;
         hostRef.current = createdHost;
-        const created = await createCanvasScene({
+        const created = await createCanvasEditor({
           container,
           document: canvas,
           host: createdHost,
