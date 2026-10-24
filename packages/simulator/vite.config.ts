@@ -26,6 +26,12 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts', 'examples/**/*.test.ts'],
     environment: 'node',
+    benchmark: {
+      // The export getter tracker wraps every module export in a counting
+      // getter while benchmarking, which dominates the cost of interpreted/JIT
+      // instruction dispatch. Benchmarks measure the engine, not the tracker.
+      suppressExportGetterWarnings: true,
+    },
     // Tests run before the workspace build, so resolve the workspace packages from source.
     alias: {
       '@mica-js/core/canvas': fileURLToPath(

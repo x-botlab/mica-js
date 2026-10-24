@@ -54,6 +54,18 @@ circuit.dispose();
 可运行的示例在 [`examples/`](./examples/)：`pnpm --filter @mica-js/simulator examples`
 会跑 LED 闪烁、按钮控制 LED、教学 MCU 固件闪烁与吞吐基准，并打印结果。
 
+### 性能
+
+同一张 MCU + LED 电路（Ryzen 5 5600G / Node.js 24）：
+
+| 变体                      | 每 tick | 相对调度器 |
+| ------------------------- | ------: | ---------: |
+| 调度器：每器件一个 module |  8.1 µs |       1.0× |
+| 统一 IR：`step()`         |  371 ns |      21.9× |
+| 统一 IR：`runBatch(2000)` |  6.8 ns |     ~1200× |
+
+完整场景、器件组合与复现步骤见 [docs/PERFORMANCE.md](./docs/PERFORMANCE.md)。
+
 ## 架构
 
 ```mermaid

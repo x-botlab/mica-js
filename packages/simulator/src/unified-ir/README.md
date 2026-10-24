@@ -111,7 +111,9 @@ Typical improvements vs. scheduler-based architecture:
 | Multi-device, batch         | 100-1000× |
 | Instruction execution (DBT) |   70-170× |
 
-Compilation overhead: ~1-2 ms (amortized over execution).
+Compilation overhead: ~0.4 ms for MCU + LED (amortized over execution).
+
+Measured scenarios, methodology and reproduction steps: [docs/PERFORMANCE.md](../../docs/PERFORMANCE.md).
 
 ## Design Constraints
 

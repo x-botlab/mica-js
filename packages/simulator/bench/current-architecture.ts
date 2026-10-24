@@ -19,7 +19,8 @@
  */
 import { createIRSchedulerInstance, createScheduler } from '@mica-js/core';
 import { createIRModule } from '@mica-js/ir';
-import { PIN_MODE, createModuleValidation } from '../src/index';
+import { PIN_MODE } from '../src/unified-ir/pin-space';
+import { createModuleValidation } from '../src/unified-ir/validation';
 
 export interface CurrentArchitecture {
   /** Advances the MCU, the net, and the LED by one simulated tick. */

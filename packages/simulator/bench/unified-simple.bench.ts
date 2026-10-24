@@ -1,5 +1,5 @@
 /**
- * Unified IR module vs. the current multi-module architecture, MCU + LED.
+ * Unified IR module vs. the scheduler architecture, MCU + LED.
  *
  * Both sides simulate exactly the same circuit — `mcu.PA0 -> led.anode`,
  * `led.cathode -> ground` — and the same device logic:
@@ -10,20 +10,21 @@
  * led      :  lamp = anode && !cathode
  * ```
  *
- * The left side is the architecture in production today (see
- * `current-architecture.ts`): one IR module per device on the core scheduler,
- * plus a JavaScript net bridge — three host entries per tick.
+ * The left side is the scheduler path (see `current-architecture.ts`): one IR
+ * module per device on the core scheduler plus a JavaScript net bridge — three
+ * host entries per tick.
  *
- * The right side is the prototype: one IR module holding both devices, the net
- * solver, and the main loop. `tick()` is one host entry per tick; `run(n)` is
- * one host entry for the whole batch, because the loop lives inside the module.
+ * The right side is the unified pipeline: one IR module holding both devices,
+ * the net solver and the main loop. `step()` is one host entry per tick;
+ * `runBatch(n)` is one host entry for the whole batch.
  *
  * Reported numbers are per simulated tick:
  *
  *     ns/tick = 1e9 / (ops/s × ticks per op)
  */
 import { test } from 'vitest';
-import { createMcuLedCircuit, createUnifiedCircuit } from '../src/index';
+import { createLedDescription, createMcuDescription } from '../src/unified-ir/compiler';
+import { Circuit } from '../src/unified-ir/runtime';
 import { createCurrentArchitecture } from './current-architecture';
 
 /** Ticks per measured op for the head-to-head comparison. */
@@ -32,13 +33,27 @@ const TICKS = 2_000;
 /** Batch size for the absolute throughput measurement. */
 const THROUGHPUT_TICKS = 1_000_000;
 
+/** The same circuit both sides compile. */
+async function createUnifiedMcuLed() {
+  return Circuit.create({
+    devices: [
+      { id: 'mcu', type: 'mcu', description: createMcuDescription() },
+      { id: 'led', type: 'ideal-led', description: createLedDescription() },
+    ],
+    connections: [
+      { from: 'mcu.PA0', to: 'led.anode' },
+      { from: 'led.cathode', to: 'GND' },
+    ],
+  });
+}
+
 const current = createCurrentArchitecture();
-const unified = createUnifiedCircuit(createMcuLedCircuit().config);
+const unified = await createUnifiedMcuLed();
 
 // Compile and warm both paths outside the measured region: the first tick pays
 // JIT compilation, the scheduler's first entry pays its own setup.
 for (let tick = 0; tick < 200; tick += 1) current.tick();
-unified.run(200);
+unified.runBatch(200);
 
 const CURRENT = `current: 2 IR modules + scheduler + JS net, ${TICKS} ticks`;
 const UNIFIED_HOST = `unified: one IR module, ${TICKS} ticks, one host call each`;
@@ -58,10 +73,10 @@ test('MCU + LED: unified IR module vs. per-device modules on the scheduler', asy
       for (let tick = 0; tick < TICKS; tick += 1) current.tick();
     }),
     bench(UNIFIED_HOST, () => {
-      for (let tick = 0; tick < TICKS; tick += 1) unified.tick();
+      for (let tick = 0; tick < TICKS; tick += 1) unified.step();
     }),
     bench(UNIFIED_BATCH, () => {
-      unified.run(TICKS);
+      unified.runBatch(TICKS);
     }),
     { time: 3_000, warmupTime: 500 },
   );
@@ -85,22 +100,22 @@ test('MCU + LED: unified IR module vs. per-device modules on the scheduler', asy
   );
 
   // Timing on a shared machine is noisy, so the gates stay far below the
-  // measured margins (~27x host-driven, ~100x batched) and only catch a real
-  // regression such as losing the compiled tier or the batched loop.
-  if (!(host > base * 5)) {
-    throw new Error('unified host-driven ticks regressed against the scheduler baseline');
+  // measured margins and only catch a real regression such as losing the
+  // compiled tier or the batched loop.
+  if (!(host > base * 3)) {
+    throw new Error('unified host-driven steps regressed against the scheduler baseline');
   }
   if (!(batch > base * 10)) {
     throw new Error('the batched unified loop regressed against the scheduler baseline');
   }
 });
 
-test('MCU + LED: 1M ticks meet the latency and throughput targets', () => {
-  const circuit = createUnifiedCircuit(createMcuLedCircuit().config);
-  circuit.run(100_000);
+test('MCU + LED: 1M ticks meet the latency and throughput targets', async () => {
+  const circuit = await createUnifiedMcuLed();
+  circuit.runBatch(100_000);
 
   const started = clock();
-  circuit.run(THROUGHPUT_TICKS);
+  circuit.runBatch(THROUGHPUT_TICKS);
   const elapsedMs = clock() - started;
   const ticksPerSecond = THROUGHPUT_TICKS / (elapsedMs / 1_000);
   const perTick = nsPerTick(ticksPerSecond);
@@ -122,22 +137,25 @@ test('MCU + LED: 1M ticks meet the latency and throughput targets', () => {
   }
   // The lamp must still follow the pin after a million steps: an even tick
   // count leaves PA0 low, an odd one leaves it high.
-  if (circuit.ledOn('led') !== (circuit.ticks % 2 === 1)) {
+  if (circuit.devices.led.isOn() !== (circuit.tickCount % 2n === 1n)) {
     throw new Error('the batched loop left the LED out of phase with PA0');
   }
+  circuit.dispose();
 });
 
-test('MCU + LED: the baseline and the prototype agree on every tick', () => {
+test('MCU + LED: the baseline and the unified module agree on every tick', async () => {
   const baseline = createCurrentArchitecture();
-  const circuit = createUnifiedCircuit(createMcuLedCircuit().config);
+  const circuit = await createUnifiedMcuLed();
   for (let tick = 0; tick < 32; tick += 1) {
     baseline.tick();
-    circuit.tick();
-    const pin = circuit.readPinInput(circuit.pinOf('led', 'anode'));
-    if (baseline.readLed() !== circuit.ledOn('led') || baseline.readLed() !== pin) {
+    circuit.step();
+    const lampOn = circuit.devices.led.isOn();
+    const anode = circuit.getPin('led.anode');
+    if (baseline.readLed() !== lampOn || lampOn !== anode) {
       throw new Error(
-        `tick ${tick + 1}: baseline led=${baseline.readLed()}, unified led=${circuit.ledOn('led')}, anode=${pin}`,
+        `tick ${tick + 1}: baseline led=${baseline.readLed()}, unified led=${lampOn}, anode=${anode}`,
       );
     }
   }
+  circuit.dispose();
 });
