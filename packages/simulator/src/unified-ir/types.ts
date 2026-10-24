@@ -7,7 +7,12 @@ import type {
 } from '@mica-js/ir';
 
 /**
- * Types for the unified IR module prototype.
+ * Types for the unified IR module prototype (v0).
+ *
+ * @deprecated The v0 prototype is superseded by the production pipeline:
+ * {@link compileCircuit} in `./compiler` compiles the circuit and `Circuit` in
+ * `./runtime` executes it. The prototype is scheduled for removal in the next
+ * minor release; see `docs/DEPRECATIONS.md`. Migrate to `Circuit.create()`.
  *
  * Every device of a circuit shares one global pin address space, so the device
  * logic, the electrical solve, and the device updates are all generated into a
@@ -98,6 +103,11 @@ export interface Netlist {
   readonly nets: readonly Net[];
 }
 
+/**
+ * @deprecated Prototype input shape with explicit pin offsets. Use
+ * `CircuitCompilationInput` (`devices` + `connections`) with `compileCircuit`
+ * or `Circuit.create` instead.
+ */
 export interface UnifiedCircuitConfig {
   readonly devices: readonly DeviceConfig[];
   readonly netlist: Netlist;
@@ -169,7 +179,12 @@ export interface UnifiedCircuitOptions {
   readonly instanceId?: string;
 }
 
-/** Compiled circuit: one IR module, one `tick()` call per simulated step. */
+/**
+ * Compiled circuit: one IR module, one `tick()` call per simulated step.
+ *
+ * @deprecated Superseded by the `Circuit` class in `./runtime`, which adds
+ * typed device accessors, `runBatch`, `reset`, pin access and disposal.
+ */
 export interface UnifiedCircuit {
   readonly program: UnifiedIRProgram;
   readonly runtime: IRInterpreter;

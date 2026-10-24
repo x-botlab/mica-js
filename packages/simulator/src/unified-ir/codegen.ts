@@ -27,7 +27,12 @@ import {
   type UnifiedPinMemory,
 } from './types';
 
-/** A config that passed every structural and pin-address check. */
+/**
+ * A config that passed every structural and pin-address check.
+ *
+ * @deprecated Part of the v0 prototype pipeline; `compileCircuit` returns a
+ * `CompiledCircuit` instead.
+ */
 export interface CircuitPlan {
   readonly devices: readonly DeviceConfig[];
   readonly nets: readonly PlannedNet[];
@@ -54,6 +59,11 @@ export interface CircuitPlan {
  * publish their outputs, the electrical network resolves, and only then do the
  * loads observe the solved inputs. Looping inside the module is what removes
  * the per-tick host entry: a batch of `steps` ticks costs one engine call.
+ *
+ * @deprecated The v0 prototype generator. Use `compileCircuit` from
+ * `./compiler` (or `Circuit.create` from `./runtime`), which supports arbitrary
+ * device descriptions, global state allocation and batched entries. The
+ * prototype is removed in the next minor release; see `docs/DEPRECATIONS.md`.
  *
  * @throws {UnifiedCircuitError} when the config is malformed or the netlist
  *   disagrees with a device's pin layout.
@@ -195,6 +205,9 @@ export function createModuleValidation(
  * The netlist is checked against the device pin maps, so a connection that
  * names an unknown device, an unknown pin, or the wrong global address fails
  * here — before a single instruction is generated.
+ *
+ * @deprecated The v0 prototype validator; input validation now lives in
+ * `compileCircuit`. Removed together with `generateUnifiedIR`.
  *
  * @throws {UnifiedCircuitError} for any structural or pin-address violation.
  */

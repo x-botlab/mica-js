@@ -31,6 +31,10 @@ const NO_ARGS: readonly RuntimeScalar[] = Object.freeze([]);
  * expect(circuit.ledOn('led')).toBe(true);
  * ```
  *
+ * @deprecated The v0 prototype host API. Use `Circuit.create` from
+ * `./runtime`, which compiles any device description, exposes typed accessors
+ * and runs batches in one engine call. See `docs/MIGRATION.md`.
+ *
  * @throws {UnifiedCircuitError} when the config is invalid.
  */
 export function createUnifiedCircuit(
