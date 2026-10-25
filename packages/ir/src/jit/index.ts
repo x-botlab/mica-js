@@ -3,6 +3,7 @@
  * the engine can be imported without pulling in the whole `jit/` directory.
  */
 export { createIRJIT } from '../jit-runtime';
+export type { CheckpointGranularity } from '../types';
 export type {
   IRJITCodegen,
   IRJITOptimization,

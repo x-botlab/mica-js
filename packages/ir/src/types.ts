@@ -21,6 +21,35 @@ export type FloatType = (typeof FLOAT_TYPES)[number];
 export const NUMERIC_TYPES = [...INTEGER_TYPES, ...FLOAT_TYPES] as const;
 export type NumericType = IntegerType | FloatType;
 
+/**
+ * How often a compiled engine must reproduce the reference engine's observable
+ * state.
+ *
+ * A *checkpoint* is a point where the two engines are compared, and the
+ * contract of a JIT engine is: storage, epochs, provider caches and the step
+ * count are identical after every checkpoint. Between checkpoints a compiled
+ * engine may reorder, fuse or elide work.
+ *
+ * - `'per-instruction'` — the strictest model: every guest instruction is a
+ *   checkpoint. Nothing may be deferred, so the engine writes the step counter
+ *   and re-reads every control flag at each instruction boundary. Used by
+ *   debugging tools that single-step and inspect state between instructions.
+ * - `'per-tick'` (default) — a tick (one `execute` call, or one `step` when the
+ *   step budget allows exactly one) is a checkpoint. A JIT region may keep
+ *   promoted storage, the step counter and the control flags in locals across
+ *   instruction *and* dispatch boundaries, so intermediate dispatches between
+ *   artifacts can disappear entirely. Storage and step counts still match at
+ *   the end of each tick.
+ * - `'per-safepoint'` — any point the engine chooses (yield, trap, host call,
+ *   explicit checkpoint instruction) is a checkpoint; the engine only
+ *   guarantees identity when it returns control to the host. This is the
+ *   weakest model and is intended for throughput-only workloads.
+ *
+ * The engine always reproduces errors (code, location, step count) exactly;
+ * only the timing of non-error observations moves.
+ */
+export type CheckpointGranularity = 'per-instruction' | 'per-tick' | 'per-safepoint';
+
 export type Predicate = 'eq' | 'ne' | 'lt' | 'le' | 'gt' | 'ge';
 export type Endian = 'little' | 'big';
 export type HexBits = `0x${string}`;

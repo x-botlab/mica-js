@@ -69,89 +69,108 @@ mcu.run(1000);
 are steady-state medians (the host has translated the firmware and V8 has
 tiered the generated code up):
 
-| Mode                      |             Rate | Speedup |
-| ------------------------- | ---------------: | ------: |
-| Teaching ISA, batch       |      527–561 M/s |  ~3300× |
-| M3 ISA, batch             |      449–465 M/s |  ~2900× |
-| Teaching ISA, single-step | 3.6–4.1 M tick/s |    ~24× |
+| Mode                      |             Rate |     Speedup |
+| ------------------------- | ---------------: | ----------: |
+| Teaching ISA, batch       |      486–505 M/s | ~2900–3300× |
+| M3 ISA, batch             |      583–595 M/s | ~3400–3900× |
+| Teaching ISA, single-step | 4.2–4.6 M tick/s |     ~25–28× |
 
-Baseline: 0.155–0.160 M inst/s (scheduler-based architecture), i.e. ~1.6 µs per
+Baseline: 0.13–0.18 M inst/s (scheduler-based architecture), i.e. ~1.6 µs per
 guest instruction.
 
 Both ISAs are far above the 72 M inst/s needed to emulate a 72 MHz classroom
-board in real time. Time-sliced simulation (`instructionsPerTick: 1000`, see
-`bench/unified-devices.bench.ts`) reaches 390 M inst/s, and
+board in real time, and both clear the 450 M inst/s fused-tick target the
+performance test asserts. Time-sliced simulation (`instructionsPerTick: 1000`,
+see `bench/unified-devices.bench.ts`) reaches 390 M inst/s, and
 [docs/PERFORMANCE.md](../../../../docs/PERFORMANCE.md) lists both methodologies.
 
 ### Reading these numbers
 
 A _batch_ figure counts guest instructions retired per second of host time once
 the machine is warm. The very first `tick()` of a fresh process is much slower
-(≈0.1 M inst/s) because the host compiles the translated units and V8 has not
-optimized the generated code; that cost is paid once per process and is
-independent of the translator (it is identical with
-`MICA_DISABLE_SUPERBLOCK=1`). Per-tick _latency_ is bounded below by the IR
-engine entry cost (~390 ns of `jit.execute` bookkeeping), so the debugging path
-is ~600–700 ns per tick, not per instruction.
+(≈0.1 M inst/s) because the host compiles the translated blocks and V8 has not
+optimized the generated code; that cost is paid once per process. Per-tick
+_latency_ is bounded below by the IR engine entry cost (~390 ns of
+`jit.execute` bookkeeping), so the debugging path is ~600–700 ns per tick, not
+per instruction.
 
-## Superblock translation
+## One block per dispatch
 
-One provider artifact would normally cover one guest basic block, so a guest
-loop pays a provider dispatch (inline-cache probe, key normalization, tail
-transfer, cycle-slice check) on every iteration. `decodeGuestProgram` instead
-translates a whole _window_ of up to `maxBlockInstructions` instructions
-(capped at 256) into a single unit:
+The provider translates exactly one guest basic block per artifact:
+`decodeGuestBlock` decodes linearly from the fetch address and stops at the
+first terminator (or when `maxBlockInstructions` is reached). The emitted IR
+function holds that block's instructions, its terminator, the cycle-budget gate
+and two exits — yield to the engine, or `dispatch` the successor.
 
-1. The window is decoded linearly.
-2. It is partitioned into guest basic blocks: a node starts at the window start,
-   after every terminator and at every static branch target inside the window.
-3. Only blocks reachable from the window start are emitted, in address order.
-4. Edges whose target is inside the window become IR jumps — a backward edge is
-   a plain IR loop, i.e. a JavaScript loop inside one compiled function. Edges
-   that leave the window still `dispatch`, so the unit is observably identical
-   to per-block translation.
+A guest loop is therefore a chain of artifacts, and closing it is the engine's
+job: the JIT's region compiler (`packages/ir/src/jit/region.ts`) fuses the hot
+dispatch chain into one compiled function once an artifact has been entered
+`REGION_THRESHOLD` (500) times. This example relies on that: a warm M3 loop
+ticks at 1.00 dispatch per tick, which is what the removed provider-side
+superblock translation used to achieve. `region-debug.test.ts` prints the
+dispatch split with regions on and off, and `region-performance.test.ts` pins
+the throughput.
+
+## Fusible edges and the tick checkpoint
+
+Every artifact ends in one boundary block, not one per successor: the block's
+own instructions run, its terminator picks the next PC **as a value**, and a
+single gate compares the cycle counter against the slice budget. That shape has
+two consequences the JIT relies on:
+
+- the edge into the gate is a plain IR `jump` with no host boundary and no
+  duplicated exit block, so the artifact structurizes (straight-line code plus
+  one `if`) instead of falling back to a `switch (pc)` loop, and a region member
+  re-entered from another member costs no dispatch;
+- a dispatch stays _inside the tick_: it neither publishes the pin memory nor
+  writes the step counter, because the host only observes those at a tick
+  boundary.
+
+The engine mirrors that with `checkpointGranularity` (see
+`packages/ir/src/types.ts`). Under the default `'per-tick'` a region keeps
+promoted storage (including constant-index register-file elements and the
+constant-offset GPIO bytes), the step counter and the control flags in locals
+across artifact boundaries, so the intermediate dispatches of a tick disappear
+entirely; `'per-instruction'` turns that off for single-stepping debuggers.
+Storage, epochs, the provider cache and the step count still match the reference
+engine at the end of every tick, which is what the parity fuzzing compares.
 
 ```
-        window from 0x0                       emitted unit
-  ┌──────────────────────────┐        ┌────────────────────────────┐
-  │ 0x0  MOVI r1, #0         │        │ node 0x0  (2 instr)        │
-  │ 0x4  MOVI r2, #50        │  ───►  │   └─► node 0x8 (no check)  │
-  │ 0x8  ADDI r1, r1, #1     │        │ node 0x8  (3 instr, BNE)   │
-  │ 0xC  CMP  r1, r2         │        │   ├─ taken ──► node 0x8 ⟲  │
-  │ 0x10 BNE  0x8            │        │   └─ fall  ──► node 0x14   │
-  │ 0x14 HALT                │        │ node 0x14 (HALT)           │
-  └──────────────────────────┘        └────────────────────────────┘
+        guest loop                        after warmup (one JIT region)
+  ┌──────────────────────────┐      ┌────────────────────────────────────┐
+  │ 0x0  MOVI r1, #0         │      │ artifact [0x0]  prologue           │
+  │ 0x4  MOVI r2, #50        │  ──► │ artifact [0x8]  loop (self-loop)   │
+  │ 0x8  ADDI r1, r1, #1     │      │ artifact [0x14] HALT               │
+  │ 0xC  CMP  r1, r2         │      │                                    │
+  │ 0x10 BNE  0x8            │      │ one host dispatch per tick         │
+  │ 0x14 HALT                │      └────────────────────────────────────┘
+  └──────────────────────────┘
 ```
 
-### Semantics that the fusion preserves
+A backward branch whose target is the artifact's own entry stays an IR loop
+inside that artifact, which is why the tight loop retires 10⁵ guest
+instructions per dispatch.
 
-- **Cycle accounting.** Every node adds its own instruction count to a value
-  threaded through the unit, so `cycles` stays exact.
-- **Yield granularity.** The cycle budget (`sliceEnd`) is checked where a
-  translated block used to end: at guest terminators and at the window end. A
-  node that only ends because the next instruction is a branch target
-  (`checksSlice: false`) continues straight through, so one tick retires the
-  same instructions as before.
-- **Faults and yields.** `fault`, `halted` and `yieldRequested` are observed at
-  the same boundaries, and `HALT`/`WFI`/`TFAULT` leave the unit in the same
-  state.
-- **Peripherals.** `emitGpioBlockSync` runs on every unit exit instead of every
-  block exit. Nothing inside a unit reads pin memory, so the host observes the
-  same pin state.
+### Semantics kept by the one-block translation
+
+- **Cycle accounting.** A block adds its own instruction count to `cycles` and
+  stores the total when it exits.
+- **Yield granularity.** The cycle budget (`sliceEnd`) is checked at every guest
+  terminator, so one tick retires the same instructions as before.
+- **Faults and yields.** `HALT`/`WFI`/`TFAULT` leave the artifact with the same
+  `fault`, `halted`, `sleeping` and `pc` state.
+- **Peripherals.** The teaching ISA latches `r0 & 1` into the ODR register after
+  each block (guest-visible MMIO). The pin-memory publish — the part only the
+  host can observe — happens when the artifact yields, i.e. once per tick
+  instead of once per block.
 - **Self-modifying code.** Guest stores cannot change the flash: writes below
   `flashSize` fault in `store32`/`store8`, and the flash image is a read-only
-  `BytesRef`. A unit therefore never goes stale, and no invalidation is needed.
+  `BytesRef`. A translated block therefore never goes stale.
 
-`decodeGuestProgram(..., fuse = false)` reproduces the original
-one-block-per-dispatch translation and is used as the fallback:
-
-```typescript
-createTeachingMCUIR('mcu', { isa: 'm3', firmware, superblock: false });
-```
-
-or, for a whole process, `MICA_DISABLE_SUPERBLOCK=1`. `teaching-mcu.block-translator.test.ts`
-pins the unit shape and asserts that both paths retire identical register,
-memory, flag and pin state.
+The earlier window-CFG translation (`decodeGuestProgram`, the `superblock`
+config option and `MICA_DISABLE_SUPERBLOCK`) has been removed; it is no longer
+needed now that the engine fuses hot dispatch chains. `teaching-mcu.block-translator.test.ts`
+pins the decoded block shape.
 
 The translator also removed the last source of a latent host-code bug: a
 single-definition constant could be emitted inline in the block that was
@@ -163,14 +182,16 @@ reserves inlined values before any body is emitted.
 
 ```
 teaching-mcu/
-├── teaching-mcu.ts               # IR factory + superblock translator
+├── teaching-mcu.ts               # IR factory + block decoder
 ├── teaching-mcu.ac.ts            # Accessor builder
 ├── teaching-mcu.d.ts             # TypeScript types
 ├── teaching-mcu.errors.ts        # Error definitions
 ├── teaching-mcu.test-helpers.ts  # Test utilities (firmware builders, reference model)
 ├── teaching-mcu.test.ts          # Unit tests (45 tests)
 ├── teaching-mcu.integration.test.ts  # Integration tests (12 tests)
-├── teaching-mcu.block-translator.test.ts  # Translation shape + parity (9 tests)
+├── teaching-mcu.block-translator.test.ts  # Block decoding shape (9 tests)
+├── region-debug.test.ts          # Region dispatch diagnostics
+├── region-performance.test.ts    # JIT region throughput
 ├── teaching-mcu.performance.test.ts  # Performance benchmarks (2 tests)
 ├── index.ts                      # Public exports
 └── README.md                     # This file
@@ -217,13 +238,14 @@ guest.raiseInterrupt(5);
 
 ## Design Decisions
 
-### Superblock translation instead of one block per dispatch
+### One block per dispatch, loops closed by JIT regions
 
-The hot path is a guest loop, and one provider dispatch per basic block dominated
-the cost. Units now span a whole decoding window and close guest loops inside
-one compiled function (see [Superblock translation](#superblock-translation)).
-`superblock: false` / `MICA_DISABLE_SUPERBLOCK=1` restores the per-block
-translation, which the parity tests keep working.
+The hot path is a guest loop. One provider artifact covers one guest basic block,
+so the loop is a chain of artifacts; the JIT's region compiler fuses that hot
+dispatch chain into one compiled function (see
+[One block per dispatch](#one-block-per-dispatch)). The example therefore needs
+no provider-side fusion of its own: the former `superblock` option and
+`MICA_DISABLE_SUPERBLOCK` switch are gone.
 
 ### Single-block exception handling
 

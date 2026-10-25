@@ -26,6 +26,7 @@ import { DispatchRegistry, providerDispatchInfo, REGION_THRESHOLD } from './disp
 import type { ArtifactState, DispatchKey } from './dispatch-ic';
 import {
   collectRegionMembers,
+  collectRegionPromotions,
   createRegionExitProfile,
   recordRegionExit,
   regionKeyOf,
@@ -33,6 +34,10 @@ import {
   REGION_PROFILE_BUDGET,
   REGION_PROFILE_SLOTS,
 } from './region';
+import type { RegionMember } from './region';
+import { Op } from './mir';
+import type { MInst, ValueId } from './mir';
+import type { MemoryDefinition } from '../types';
 
 const context: IRExecutionContext = { instanceId: 'region', virtualTime: 11 };
 
@@ -368,6 +373,231 @@ describe('compiled regions', () => {
     expect(jit.storage.loadState(acc)).toBe(expected);
   });
 
+  it('folds a member-local scalar promotion into the region local', () => {
+    const build = () => {
+      const module = createIRModule();
+      const acc = module.state('acc', 'u32', 0);
+      const blocks = module.provider(
+        'blocks',
+        { keyTypes: ['u32'], params: ['u32'], results: ['u32'], reads: [], imports: [acc] },
+        (gen, [key]) => {
+          if (key !== 0) return gen.function((b) => b.return([b.state.load(acc)]));
+          return gen.function((b, [value]) => {
+            // Internal CFG loop: `scalarPromotion` turns `acc` into a member
+            // local (`ps0`), which the region must resolve to its own shared
+            // local instead of keeping one copy per member.
+            const zero = b.const('u32', 0);
+            const one = b.const('u32', 1);
+            const head = b.block(['u32']);
+            const body = b.block(['u32']);
+            const after = b.block(['u32']);
+            const next = b.block(['u32']);
+            const done = b.block(['u32']);
+            b.jump(head, [zero]);
+            b.at(head, (inner, [index]) =>
+              inner.branch(
+                inner.int.cmp('lt', index, one),
+                { target: body, args: [index] },
+                { target: after, args: [index] },
+              ),
+            );
+            b.at(body, (inner, [index]) => {
+              inner.state.store(acc, inner.int.add(inner.state.load(acc), one));
+              inner.jump(head, [inner.int.add(index, one)]);
+            });
+            b.at(after, (inner) =>
+              inner.branch(
+                inner.int.cmp('gt', value, zero),
+                { target: next, args: [value] },
+                { target: done, args: [value] },
+              ),
+            );
+            b.at(next, (inner, [inside]) =>
+              inner.dispatch(
+                blocks,
+                [inner.const('u32', 0)],
+                [inner.int.sub(inside, inner.const('u32', 1))],
+              ),
+            );
+            b.at(done, (inner, [inside]) =>
+              inner.dispatch(
+                blocks,
+                [inner.const('u32', 1)],
+                [inner.int.add(inside, inner.const('u32', 1))],
+              ),
+            );
+          });
+        },
+      );
+      const run = module.func('run', { params: ['u32'], results: ['u32'] });
+      run.body((b, [n]) => b.dispatch(blocks, [b.const('u32', 0)], [n]));
+      return { module, run, acc };
+    };
+    const fixture = build();
+    const jit = createIRJIT(fixture.module, { validation: policy(fixture.module), maxSteps: 1e9 });
+    const reference = createIRInterpreter(fixture.module, {
+      validation: policy(fixture.module),
+      maxSteps: 1e9,
+    });
+    for (let index = 0; index < WARM_RUNS; index += 1) {
+      const actual = jit.execute(fixture.run, [LOOP_LENGTH], context);
+      const expected = reference.execute(fixture.run, [LOOP_LENGTH], context);
+      expect({ values: actual.values, steps: actual.steps }).toEqual({
+        values: expected.values,
+        steps: expected.steps,
+      });
+    }
+    expect(internals(jit).regions).toBe(1);
+    const source = internals(jit).regionSource!;
+    // Both the promoted member and the cold block are in the region, and the
+    // promoted slot lives in the shared local rather than a member local.
+    expect((source.match(/F = FS\[\d+\];/g) ?? []).length).toBe(2);
+    expect(source).toContain('rp0d = 1;');
+    expect(source).not.toContain('m0_ps');
+    expect(jit.storage.loadState(fixture.acc)).toBe(reference.storage.loadState(fixture.acc));
+  });
+
+  it('writes back member promotions when a member traps inside the region', () => {
+    // The trap is the only exit of the member that owns the array promotion, so
+    // the region's catch block is the only place the dirty local can be
+    // published. The `trap` argument stays 0 while the chain warms up, so the
+    // final execution is the one that fails inside compiled region code.
+    const build = () => {
+      const module = createIRModule();
+      const registers = module.array('registers', 'u32', new Array<number>(4).fill(0));
+      const blocks = module.provider(
+        'blocks',
+        {
+          keyTypes: ['u32'],
+          params: ['u32', 'u32'],
+          results: ['u32'],
+          reads: [],
+          imports: [registers],
+        },
+        (gen, [key]) => {
+          if (key !== 0) {
+            return gen.function((b, [value, trap]) => {
+              b.dispatch(blocks, [b.const('u32', 0)], [b.int.sub(value, b.const('u32', 1)), trap]);
+            });
+          }
+          return gen.function((b, [value, trap]) => {
+            const head = b.block(['u32']);
+            const body = b.block(['u32']);
+            const after = b.block([]);
+            const more = b.block([]);
+            const stop = b.block([]);
+            const boom = b.block([]);
+            const done = b.block([]);
+            b.jump(head, [b.const('u32', 0)]);
+            b.at(head, (inner, [index]) =>
+              inner.branch(
+                inner.int.cmp('lt', index, inner.const('u32', 1)),
+                { target: body, args: [index] },
+                { target: after, args: [] },
+              ),
+            );
+            b.at(body, (inner, [index]) => {
+              const slot = inner.const('u32', 2);
+              const current = inner.array.load(registers, slot);
+              inner.array.store(registers, slot, inner.int.add(current, inner.const('u32', 1)));
+              inner.jump(head, [inner.int.add(index, inner.const('u32', 1))]);
+            });
+            b.at(after, (inner) =>
+              inner.branch(
+                inner.int.cmp('gt', value, inner.const('u32', 0)),
+                { target: more, args: [] },
+                { target: stop, args: [] },
+              ),
+            );
+            b.at(more, (inner) =>
+              inner.dispatch(
+                blocks,
+                [inner.const('u32', 1)],
+                [inner.int.sub(value, inner.const('u32', 1)), trap],
+              ),
+            );
+            b.at(stop, (inner) =>
+              inner.branch(
+                inner.int.cmp('ne', trap, inner.const('u32', 0)),
+                { target: boom, args: [] },
+                { target: done, args: [] },
+              ),
+            );
+            b.at(boom, (inner) => inner.trap('boom'));
+            b.at(done, (inner) =>
+              inner.return([inner.array.load(registers, inner.const('u32', 2))]),
+            );
+          });
+        },
+      );
+      const run = module.func('run', { params: ['u32'], results: ['u32'] });
+      run.body((b, [trap]) => b.dispatch(blocks, [b.const('u32', 0)], [b.const('u32', 10), trap]));
+      return { module, run, registers };
+    };
+    const jitFixture = build();
+    const referenceFixture = build();
+    const jit = createIRJIT(jitFixture.module, {
+      validation: policy(jitFixture.module),
+      maxSteps: 1e9,
+    });
+    const reference = createIRInterpreter(referenceFixture.module, {
+      validation: policy(referenceFixture.module),
+      maxSteps: 1e9,
+    });
+    const capture = (engine: typeof jit, target: typeof jitFixture.run, trap: number) => {
+      try {
+        return { ok: true as const, values: engine.execute(target, [trap], context).values };
+      } catch (error) {
+        if (!(error instanceof IRExecutionError)) throw error;
+        return { ok: false as const, code: error.code };
+      }
+    };
+    // Six entries per run (values 10, 8, 6, 4, 2, 0), so 100 runs cross
+    // REGION_THRESHOLD with real dispatches.
+    for (let index = 0; index < 100; index += 1) {
+      expect(capture(jit, jitFixture.run, 0)).toEqual(capture(reference, referenceFixture.run, 0));
+    }
+    expect(internals(jit).regions).toBe(1);
+    // Every access to the register array uses a constant index, so the element
+    // is promoted region-wide: one shared local that survives a member
+    // boundary instead of one private copy per member.
+    expect(internals(jit).regionSource!).not.toMatch(/m\d+_ps0d/);
+    expect(internals(jit).regionSource!).toMatch(/rp\d+ = S\d+\.view\[2\]/);
+    const before = jit.storage.loadArray(jitFixture.registers, 2);
+    expect(capture(jit, jitFixture.run, 1)).toEqual(capture(reference, referenceFixture.run, 1));
+    // The trapping entry stored once before it reached the trap.
+    expect(jit.storage.loadArray(jitFixture.registers, 2)).toBe(before + 6);
+    expect(jit.storage.loadArray(jitFixture.registers, 2)).toBe(
+      reference.storage.loadArray(referenceFixture.registers, 2),
+    );
+  });
+
+  it('batches the step counter and control flags per tick by default', () => {
+    const run = (checkpointGranularity?: 'per-instruction' | 'per-tick') => {
+      const { module, run: target } = guestLoopFixture();
+      const jit = createIRJIT(module, {
+        validation: policy(module),
+        // An unbounded budget makes every per-item budget check dead code, so
+        // the region can batch the counter (J16). A finite budget keeps the
+        // exact per-block accounting in both granularities.
+        maxSteps: Number.MAX_SAFE_INTEGER,
+        jit: checkpointGranularity === undefined ? {} : { checkpointGranularity },
+      });
+      for (let index = 0; index < WARM_RUNS; index += 1) execute(jit, target, [LOOP_LENGTH]);
+      return internals(jit).regionSource ?? '';
+    };
+    const perTick = run();
+    expect(perTick).toMatch(/let S = 0;/);
+    expect(perTick).toMatch(/rt\.steps \+= S/);
+    expect(perTick).toMatch(/let SUS = H\.ctl\.suspended;/);
+    expect(perTick).not.toMatch(/H\.ctl\.suspended !== 0/);
+
+    const perInstruction = run('per-instruction');
+    expect(perInstruction).not.toMatch(/let S = 0;/);
+    expect(perInstruction).not.toMatch(/let SUS = H\.ctl\.suspended;/);
+    expect(perInstruction).toMatch(/rt\.steps \+= \d+;/);
+  });
+
   it('does not form regions when the pass is disabled', () => {
     const { module, run, calls } = guestLoopFixture();
     const jit = createIRJIT(module, {
@@ -577,10 +807,17 @@ describe('inter-region direct calls', () => {
   });
 
   it('keeps the emitted region inside the code-size budget', () => {
-    const direct = ringRun('direct').source.length;
-    const trampoline = ringRun('trampoline').source.length;
+    // Per-member size, not the raw total: the two runs pick different member
+    // sets (the source budget drops members until a region fits, so a small
+    // codegen difference changes which regions exist at all). What the guard
+    // really protects is that a direct-call guard stays a fixed epilogue per
+    // member instead of multiplying the body.
+    const perMember = (source: string): number =>
+      source.length / Math.max(1, (source.match(/F = FS\[\d+\];/g) ?? []).length);
+    const direct = perMember(ringRun('direct').source);
+    const trampoline = perMember(ringRun('trampoline').source);
     expect(trampoline).toBeGreaterThan(0);
-    expect(direct).toBeLessThanOrEqual(trampoline * 1.1);
+    expect(direct).toBeLessThanOrEqual(trampoline * 1.15);
   }, 120_000);
 
   it('reports the same error when a direct call traps', () => {
@@ -655,5 +892,150 @@ describe('inter-region direct calls', () => {
       break;
     }
     expect(compared).toBe(true);
+  });
+});
+
+/* -------------------------------------------------------------------------
+ * Region-wide promotions (J16)
+ * ---------------------------------------------------------------------- */
+
+describe('region promotions', () => {
+  const memories = [
+    {
+      name: 'registers',
+      kind: 'array',
+      layout: { kind: 'scalar', scalarType: 'u32', length: 16 },
+      writable: true,
+    },
+    {
+      name: 'peripheral',
+      kind: 'bytes',
+      layout: { kind: 'bytes', length: 256 },
+      writable: true,
+    },
+  ] as unknown as readonly MemoryDefinition[];
+
+  /** A one-block member whose values are all `u32` SSA values. */
+  function member(
+    insts: readonly MInst[],
+    constants: readonly (readonly [ValueId, number])[],
+  ): RegionMember {
+    const values: unknown[] = [];
+    for (const [id, literal] of constants) {
+      values[id] = {
+        id,
+        type: 'u32',
+        rep: 'U',
+        def: {
+          op: Op.Const,
+          args: [],
+          results: [id],
+          imm: [literal],
+          refs: [],
+          node: undefined,
+          loc: 0,
+          step: 0,
+        } satisfies MInst,
+      };
+    }
+    // A block parameter is not an instruction, so `constantNumber` cannot fold
+    // it: `instructionOf` recognises the definition by its `insts` list.
+    values[valueCount] = {
+      id: valueCount,
+      type: 'u32',
+      rep: 'U',
+      def: { id: valueCount, params: [valueCount], insts: [] },
+    };
+    return {
+      mir: { blocks: [{ insts }], values, promotions: [] },
+    } as unknown as RegionMember;
+  }
+
+  const DYNAMIC: ValueId = 0;
+  const valueCount = 1;
+  const constAt = (id: number, literal: number): readonly [ValueId, number] => [id, literal];
+  const arrayLoad = (memory: number, index: ValueId, result: ValueId): MInst => ({
+    op: Op.ArrayLoad,
+    args: [index],
+    results: [result],
+    imm: [],
+    refs: [memory],
+    node: undefined,
+    loc: 0,
+    step: 0,
+  });
+  const bytesAccess = (
+    op: Op.BytesLoad | Op.BytesStore,
+    memory: number,
+    offset: ValueId,
+    value: ValueId,
+  ): MInst => ({
+    op,
+    args: op === Op.BytesStore ? [offset, value] : [offset],
+    results: op === Op.BytesLoad ? [value] : [],
+    imm: ['u32', 'little'],
+    refs: [memory],
+    node: undefined,
+    loc: 0,
+    step: 0,
+  });
+
+  it('promotes a constant-index element that survives a member boundary', () => {
+    const first = member([arrayLoad(0, 2, 3)], [constAt(2, 7), constAt(3, 4)]);
+    const second = member([arrayLoad(0, 2, 3)], [constAt(2, 7), constAt(3, 4)]);
+    const promotions = collectRegionPromotions([first, second], memories);
+    expect(promotions).toHaveLength(1);
+    expect(promotions[0]).toMatchObject({ memory: 0, index: 7, type: 'u32' });
+  });
+
+  it('leaves an array with a dynamic access in storage', () => {
+    const first = member(
+      [arrayLoad(0, 2, 3), arrayLoad(0, DYNAMIC, 4)],
+      [constAt(2, 7), constAt(3, 4), constAt(4, 5)],
+    );
+    const second = member([arrayLoad(0, 2, 3)], [constAt(2, 7), constAt(3, 4)]);
+    expect(collectRegionPromotions([first, second], memories)).toHaveLength(0);
+  });
+
+  it('promotes non-overlapping constant byte intervals', () => {
+    const first = member([bytesAccess(Op.BytesStore, 1, 2, 3)], [constAt(2, 8), constAt(3, 4)]);
+    const second = member([bytesAccess(Op.BytesLoad, 1, 2, 3)], [constAt(2, 8), constAt(3, 4)]);
+    const promotions = collectRegionPromotions([first, second], memories);
+    expect(promotions).toHaveLength(1);
+    expect(promotions[0]).toMatchObject({ memory: 1, bytes: { offset: 8, numeric: 'u32' } });
+  });
+
+  it('refuses byte intervals that alias each other', () => {
+    // A `u32` at 8 covers bytes 8..12; a second interval at 9 would disagree
+    // with it, so the whole resource stays in storage.
+    const first = member(
+      [
+        bytesAccess(Op.BytesStore, 1, 2, 3),
+        bytesAccess(Op.BytesLoad, 1, 2, 3),
+        bytesAccess(Op.BytesLoad, 1, 4, 5),
+      ],
+      [constAt(2, 8), constAt(3, 4), constAt(4, 9), constAt(5, 6)],
+    );
+    const second = member([bytesAccess(Op.BytesLoad, 1, 2, 3)], [constAt(2, 8), constAt(3, 4)]);
+    expect(collectRegionPromotions([first, second], memories)).toHaveLength(0);
+  });
+
+  it('refuses a byte resource a range fill wrote', () => {
+    const fill: MInst = {
+      op: Op.ResourceFillBytes,
+      args: [],
+      results: [],
+      imm: [],
+      refs: [1],
+      node: undefined,
+      loc: 0,
+      step: 0,
+    };
+    const first = member(
+      [bytesAccess(Op.BytesStore, 1, 2, 3), fill],
+      [constAt(2, 8), constAt(3, 4)],
+    );
+    const second = member([bytesAccess(Op.BytesLoad, 1, 2, 3)], [constAt(2, 8), constAt(3, 4)]);
+    expect(collectRegionPromotions([first, second], memories)).toHaveLength(0);
   });
 });

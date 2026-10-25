@@ -80,17 +80,48 @@ export interface OpsContext {
   /** Promoted-location descriptor by id. */
   promotion(id: number): MPromotion;
   /**
-   * Region-wide promoted state location for `memory` (J14). Returned names are
-   * shared by every member of the region, so state loads/stores become local
+   * Generated names of one promoted location (J12).
+   *
+   * A state promotion whose memory is covered by a region-wide local resolves
+   * to that shared pair, so two members can never hold independent copies of
+   * one state slot. Every other promotion keeps a private local, namespaced by
+   * the member prefix so several members fit into one generated function.
+   */
+  promotionNames(id: number): PromotionNames;
+  /**
+   * Region-wide promoted location for `memory` (J14): a state slot when
+   * `index` is omitted, otherwise a constant array element. Returned names are
+   * shared by every member of the region, so loads/stores become local
    * reads/writes and values stay live across block boundaries.
    */
-  readonly regionPromotion: ((memory: number) => RegionPromotionNames | undefined) | undefined;
+  readonly regionPromotion:
+    | ((
+        memory: number,
+        index?: number,
+        bytes?: {
+          readonly offset: number;
+          readonly numeric: NumericType;
+          readonly little: boolean;
+        },
+      ) => RegionPromotionNames | undefined)
+    | undefined;
+  /** Constant integer carried by a value, or `undefined` when it is not constant. */
+  readonly constantIndex: (id: ValueId) => number | undefined;
+  /**
+   * Condition under which a storage write must take the public (throwing) path.
+   * A region hoists it into a local; everywhere else it reads the control block.
+   */
+  readonly suspendedCheck: () => string;
+}
+
+/** Generated names of one promoted local (J12). */
+export interface PromotionNames {
+  readonly local: string;
+  readonly dirty: string;
 }
 
 /** Generated names of one region-wide promotion. */
-export interface RegionPromotionNames {
-  readonly local: string;
-  readonly dirty: string;
+export interface RegionPromotionNames extends PromotionNames {
   readonly type: ScalarType;
 }
 
@@ -107,6 +138,7 @@ export interface PromotionContext {
   readonly typeOf: (id: ValueId) => ScalarType;
   readonly repOf: (id: ValueId) => Rep;
   promotion(id: number): MPromotion;
+  promotionNames(id: number): PromotionNames;
   /** Append a line at the given absolute prefix (used inside the catch block). */
 }
 
@@ -257,22 +289,52 @@ export function emitFastStateWrite(
   record: string,
   valueType: ScalarType,
   value: string,
+  index = '0',
 ): void {
   if (context.le) {
     if (valueType === 'f32') {
-      context.line(`  ${record}.raw[0] = H.raw32(${value});`);
+      context.line(`  ${record}.raw[${index}] = H.raw32(${value});`);
     } else if (valueType === 'f64') {
       context.line(`  H.raw64(${value}, H.scratch);`);
-      context.line(`  ${record}.raw[0] = H.scratch[0];`);
-      context.line(`  ${record}.raw[1] = H.scratch[1];`);
+      context.line(`  ${record}.raw[${index} * 2] = H.scratch[0];`);
+      context.line(`  ${record}.raw[${index} * 2 + 1] = H.scratch[1];`);
     } else if (valueType === 'bool') {
-      context.line(`  ${record}.view[0] = ${value} ? 1 : 0;`);
+      context.line(`  ${record}.view[${index}] = ${value} ? 1 : 0;`);
     } else {
-      context.line(`  ${record}.view[0] = ${value};`);
+      context.line(`  ${record}.view[${index}] = ${value};`);
     }
     return;
   }
-  writeDataView(context, record, '0', valueType, value);
+  writeDataView(context, record, index, valueType, value);
+}
+
+/**
+ * Fast constant-offset `bytes` read for a region promotion (J14).
+ *
+ * The interval is fixed when the region is compiled, so the access is the same
+ * `DataView` load the artifact body emits — it just runs once per region
+ * activation instead of once per member entry.
+ */
+export function fastBytesLoad(
+  context: PromotionContext,
+  record: string,
+  offset: string,
+  numeric: NumericType,
+  little: boolean,
+): string {
+  return readDataView(context as OpsContext, record, offset, numeric, little);
+}
+
+/** Fast constant-offset `bytes` write for a region promotion (J14). */
+export function emitFastBytesWrite(
+  context: PromotionContext,
+  record: string,
+  offset: string,
+  numeric: NumericType,
+  little: boolean,
+  value: string,
+): void {
+  writeDataViewBytes(context as OpsContext, record, offset, numeric, little, value, '');
 }
 
 function dataViewGetter(type: ScalarType): string {
@@ -548,6 +610,12 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
     }
     case Op.ArrayLoad: {
       const memory = inst.refs[0]!;
+      const index = context.constantIndex(inst.args[0]!);
+      const element = index === undefined ? undefined : context.regionPromotion?.(memory, index);
+      if (element !== undefined) {
+        assignment(context, results[0]!, element.local);
+        return;
+      }
       const record = context.resource(memory);
       const ref = context.constant(context.memory(memory));
       const fast = fastScalarLoad(context, record, `(${arg(0)})`, type);
@@ -570,7 +638,7 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       if (promoted !== undefined) {
         // A region-wide promotion is a local: keep the suspended-write check at
         // the original position, then mark the shared local dirty.
-        context.line(`if (H.ctl.suspended !== 0) {`);
+        context.line(`if (${context.suspendedCheck()}) {`);
         context.line(`  H.storage.storeState(${reference}, ${boundary});`);
         context.line('} else {');
         // U floats must canonicalize before a later promoted load sees them.
@@ -584,7 +652,7 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
         return;
       }
       const record = context.resource(memory);
-      context.line(`if (H.ctl.suspended !== 0) {`);
+      context.line(`if (${context.suspendedCheck()}) {`);
       context.line(`  H.storage.storeState(${reference}, ${boundary});`);
       context.line('} else {');
       emitFastStateWrite(context, record, valueType, value);
@@ -594,16 +662,35 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
     }
     case Op.ArrayStore: {
       const memory = inst.refs[0]!;
-      const record = context.resource(memory);
-      const index = context.value(inst.args[0]!);
       const value = context.value(inst.args[1]!);
       const boundary = context.boundary(inst.args[1]!);
       const valueType = context.typeOf(inst.args[1]!);
       const reference = context.constant(context.memory(memory));
+      const constantIndex = context.constantIndex(inst.args[0]!);
+      const element =
+        constantIndex === undefined ? undefined : context.regionPromotion?.(memory, constantIndex);
+      if (element !== undefined) {
+        // A region-wide element promotion: keep the suspended-write check at
+        // the original position, then mark the shared local dirty.
+        context.line(`if (${context.suspendedCheck()}) {`);
+        context.line(`  H.storage.storeArray(${reference}, ${arg(0)}, ${boundary});`);
+        context.line('} else {');
+        const stored =
+          isFloatType(element.type) && context.repOf(inst.args[1]!) === 'U'
+            ? `H.fromBoundary(${context.typeConstant(element.type)}, H.toBoundary(${context.typeConstant(element.type)}, ${value}))`
+            : value;
+        context.line(`  ${element.local} = ${stored};`);
+        context.line(`  ${element.dirty} = 1;`);
+        context.line('}');
+        return;
+      }
+      const record = context.resource(memory);
+      const index = context.value(inst.args[0]!);
+      const suspended = context.suspendedCheck();
       const guard =
         inst.uncheckedBounds === true
-          ? 'H.ctl.suspended !== 0'
-          : `H.ctl.suspended !== 0 || !(${index} < ${record}.length)`;
+          ? suspended
+          : `${suspended} || !(${index} < ${record}.length)`;
       context.line(`if (${guard}) {`);
       context.line(`  H.storage.storeArray(${reference}, ${index}, ${boundary});`);
       context.line('} else {');
@@ -633,6 +720,19 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       const endian = inst.imm[1] as string;
       const width = NUMERIC_WIDTH[numeric];
       const little = endian === 'little';
+      const constantOffset = context.constantIndex(inst.args[0]!);
+      const promoted =
+        constantOffset === undefined
+          ? undefined
+          : context.regionPromotion?.(memory, undefined, {
+              offset: constantOffset,
+              numeric,
+              little,
+            });
+      if (promoted !== undefined) {
+        assignment(context, results[0]!, promoted.local);
+        return;
+      }
       const offset = context.value(inst.args[0]!);
       const reference = context.constant(context.memory(memory));
       const fast = readDataView(context, record, offset, numeric, little);
@@ -658,10 +758,35 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       const offset = context.value(inst.args[0]!);
       const value = context.value(inst.args[1]!);
       const reference = context.constant(context.memory(memory));
+      const constantOffset = context.constantIndex(inst.args[0]!);
+      const promoted =
+        constantOffset === undefined
+          ? undefined
+          : context.regionPromotion?.(memory, undefined, {
+              offset: constantOffset,
+              numeric,
+              little,
+            });
+      if (promoted !== undefined) {
+        // Same shape as a promoted state store: the suspended check keeps the
+        // throwing path at the original position, the fast path is a local.
+        context.line(`if (${context.suspendedCheck()}) {`);
+        context.line(
+          `  H.storage.storeBytes(${context.constant(inst.imm[0])}, ${context.constant(
+            inst.imm[1],
+          )}, ${reference}, ${offset}, ${context.boundary(inst.args[1]!)});`,
+        );
+        context.line('} else {');
+        context.line(`  ${promoted.local} = ${value};`);
+        context.line(`  ${promoted.dirty} = 1;`);
+        context.line('}');
+        return;
+      }
+      const suspended = context.suspendedCheck();
       const guard =
         inst.uncheckedBounds === true
-          ? 'H.ctl.suspended !== 0'
-          : `H.ctl.suspended !== 0 || !(${offset} <= ${record}.length - ${width})`;
+          ? suspended
+          : `${suspended} || !(${offset} <= ${record}.length - ${width})`;
       context.line(`if (${guard}) {`);
       context.line(
         `  H.storage.storeBytes(${context.constant(inst.imm[0])}, ${context.constant(
@@ -845,21 +970,22 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
       return;
     case Op.PromoteLoad: {
       const promotion = context.promotion(inst.refs[0]!);
-      assignment(context, results[0]!, promotionLocal(promotion.id));
+      assignment(context, results[0]!, context.promotionNames(promotion.id).local);
       return;
     }
     case Op.PromoteStore: {
       const promotion = context.promotion(inst.refs[0]!);
       const record = context.resource(promotion.memory);
-      const local = promotionLocal(promotion.id);
-      const dirty = promotionDirty(promotion.id);
+      const names = context.promotionNames(promotion.id);
+      const local = names.local;
+      const dirty = names.dirty;
       const valueId = inst.args[0]!;
       const reference = context.constant(context.memory(promotion.memory));
       const slow =
         promotion.index === undefined
           ? `H.storage.storeState(${reference}, ${context.boundary(valueId)});`
           : `H.storage.storeArray(${reference}, ${promotion.index}, ${context.boundary(valueId)});`;
-      context.line(`if (H.ctl.suspended !== 0) {`);
+      context.line(`if (${context.suspendedCheck()}) {`);
       context.line(`  ${slow}`);
       context.line('} else {');
       context.line(`  ${local} = ${context.value(valueId)};`);
@@ -899,12 +1025,12 @@ export function emitInstruction(inst: MInst, context: OpsContext): void {
 /* Promoted storage locals (J12)                                       */
 /* ------------------------------------------------------------------ */
 
-export function promotionLocal(id: number): string {
-  return `ps${id}`;
+export function promotionLocal(id: number, prefix = ''): string {
+  return `${prefix}ps${id}`;
 }
 
-export function promotionDirty(id: number): string {
-  return `ps${id}d`;
+export function promotionDirty(id: number, prefix = ''): string {
+  return `${prefix}ps${id}d`;
 }
 
 function promotionIndex(promotion: MPromotion): string {
@@ -918,7 +1044,7 @@ function emitPromotionWrite(
   record: string,
   indent: string,
 ): void {
-  const value = promotionLocal(promotion.id);
+  const value = context.promotionNames(promotion.id).local;
   const index = promotionIndex(promotion);
   if (context.le) {
     if (promotion.type === 'f32') {
@@ -957,7 +1083,7 @@ export function emitPromotionSpill(context: PromotionContext, ids: readonly numb
   for (const id of ids) {
     const promotion = context.promotion(id);
     const record = context.resource(promotion.memory);
-    const dirty = promotionDirty(id);
+    const dirty = context.promotionNames(id).dirty;
     context.line(`if (${dirty} !== 0) {`);
     emitPromotionWrite(context, promotion, record, '  ');
     context.line(`  ${dirty} = 0;`);
@@ -970,15 +1096,11 @@ export function emitPromotionReload(context: PromotionContext, ids: readonly num
   for (const id of ids) {
     const promotion = context.promotion(id);
     const record = context.resource(promotion.memory);
+    const local = context.promotionNames(id).local;
     context.line(
-      `${promotionLocal(id)} = ${fastScalarLoad(
-        context,
-        record,
-        promotionIndex(promotion),
-        promotion.type,
-      )};`,
+      `${local} = ${fastScalarLoad(context, record, promotionIndex(promotion), promotion.type)};`,
     );
-    context.line(`${promotionDirty(id)} = 0;`);
+    context.line(`${context.promotionNames(id).dirty} = 0;`);
   }
 }
 

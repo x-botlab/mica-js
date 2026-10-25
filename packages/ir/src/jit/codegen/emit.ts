@@ -29,6 +29,7 @@ import { EFFECT_INFO } from '../effects';
 import type { FunctionSummary } from '../effects';
 import { Op } from '../mir';
 import type { LayoutProfile, MBlock, MFunction, MInst, MPromotion, MTerm, ValueId } from '../mir';
+import { constantNumber } from '../passes/memory-model';
 import { analyzeRepresentation } from '../repr';
 import type { RegionPromotion, RegionRuntimeState } from '../region';
 import { collectRegionPromotions, REGION_DIRECT_CALL_DEPTH } from '../region';
@@ -45,7 +46,8 @@ import {
   promotionDirty,
   promotionLocal,
 } from './ops';
-import type { OpsContext, PromotionContext, RegionPromotionNames } from './ops';
+import type { OpsContext, PromotionContext, PromotionNames, RegionPromotionNames } from './ops';
+import { emitFastBytesWrite, fastBytesLoad } from './ops';
 import { planFunction } from './segments';
 import type { FunctionPlan, PlannedItem, PlannedSegment } from './segments';
 import { StructurizationError, structurize } from './structure';
@@ -56,7 +58,7 @@ import type {
   StructuredProgram,
   TermShape,
 } from './structure';
-import type { ScalarType } from '../../types';
+import type { CheckpointGranularity, MemoryDefinition, NumericType, ScalarType } from '../../types';
 
 /** Compile-time inputs for one function. */
 export interface EmitEnv {
@@ -66,6 +68,15 @@ export interface EmitEnv {
   readonly littleEndian: boolean;
   /** Model memory references, indexed by `MInst.refs` memory indices. */
   readonly memoryRefs: readonly unknown[];
+  /** Model memory definitions, used by region-wide element promotion (J14). */
+  readonly memories?: readonly MemoryDefinition[];
+  /**
+   * Checkpoint contract of the engine (default `'per-tick'`). Only
+   * `'per-instruction'` changes codegen: it disables the cross-block batching
+   * of the step counter and the hoisted control flags, so every MIR block is
+   * observable exactly as the reference engine would be.
+   */
+  readonly checkpointGranularity?: CheckpointGranularity;
   /** Function summaries for `call` result layout and transfer detection. */
   readonly summaries?: ReadonlyMap<number, FunctionSummary>;
   /** Dependency set when compiling a provider artifact. */
@@ -98,6 +109,29 @@ export interface RegionEmitterOptions {
   readonly runtimeName: string;
   /** Region cursor variable (`Rcur`). */
   readonly cursorName: string;
+  /**
+   * Region-local step accumulator (`S`). Members add to it instead of writing
+   * `rt.steps` on every MIR block; the region flushes it before every exit,
+   * error unwind and host call, so `rt.steps` is exact wherever it is read.
+   */
+  readonly stepsLocal?: string;
+  /**
+   * Region-local copy of `ctl.suspended` (`SUS`).
+   *
+   * Storage writes are only suspended while host code runs, and a region
+   * member body never runs host code: the flag is loaded at region entry and
+   * re-read after every `materialize`, which is the only host call a region
+   * makes. Every member store therefore tests one local instead of reloading
+   * two object fields.
+   */
+  readonly suspendedLocal?: string;
+  /**
+   * Region-local copies of `ctl.epoch` (`EP`) and `prov.cacheEpoch` (`CE`).
+   * Both only change in host code, so a member dispatch guard reads a local
+   * instead of two object fields per member entry.
+   */
+  readonly epochLocal?: string;
+  readonly providerEpochLocal?: string;
   /** Loop label that member dispatches `continue`. */
   readonly label: string;
   readonly memberIndex: number;
@@ -114,8 +148,22 @@ export interface RegionEmitterOptions {
   readonly memberPrefix: (index: number) => string;
   /** Region-wide promoted state locations (shared locals). */
   readonly promotions: readonly RegionPromotion[];
-  /** Model memory index → region promotion id. */
+  /** Model memory index → region promotion id (scalar state slots). */
   readonly promotionByMemory: ReadonlyMap<number, number>;
+  /** Model memory index → constant element index → region promotion id. */
+  readonly promotionByElement: ReadonlyMap<number, ReadonlyMap<number, number>>;
+  /** Model memory index → byte-interval key (`offset:numeric:little`) → id. */
+  readonly promotionByBytes: ReadonlyMap<number, ReadonlyMap<string, number>>;
+  /**
+   * Whether a member entry must publish `validatedEpoch`.
+   *
+   * The field is only a hint for the checkpoint fast path inside an artifact
+   * (it skips the dependency walk when the epoch is unchanged), and a stale
+   * value can only make that walk run. Emitting the store only for members that
+   * actually contain a checkpoint keeps one object store per dispatch out of
+   * every other member — which is measurable on a one-block artifact.
+   */
+  readonly validatedEntry: (member: number) => boolean;
   /** Direct region calls emitted at this member's exit sites (J15). */
   readonly directCalls: readonly ResolvedRegionDirectCall[];
   /**
@@ -193,10 +241,27 @@ class Emitter implements OpsContext {
   readonly #resources = new Set<number>();
   readonly #blocks: Map<number, MBlock>;
   readonly #sites: { readonly providerIndex: number }[] = [];
-  /** Region-wide state promotions (J14); `undefined` outside regions. */
-  readonly regionPromotion: ((memory: number) => RegionPromotionNames | undefined) | undefined;
+  /** Region-wide promotions (J14); `undefined` outside regions. */
+  readonly regionPromotion:
+    | ((
+        memory: number,
+        index?: number,
+        bytes?: {
+          readonly offset: number;
+          readonly numeric: NumericType;
+          readonly little: boolean;
+        },
+      ) => RegionPromotionNames | undefined)
+    | undefined;
   /** `false` when the step budget provably cannot be reached. */
   readonly #exactSteps: boolean;
+  /** Region step accumulator; `undefined` outside regions and in exact mode. */
+  readonly #stepsLocal: string | undefined;
+  /** Region-local `ctl.suspended` copy; `undefined` outside regions. */
+  readonly #suspendedLocal: string | undefined;
+  /** Region-local `ctl.epoch` / `prov.cacheEpoch` copies. */
+  readonly #epochLocal: string | undefined;
+  readonly #providerEpochLocal: string | undefined;
   /** Single-definition integer/boolean constants, inlined at every use. */
   readonly #constText = new Map<ValueId, string>();
   /** How many instructions (or block parameters) define each value. */
@@ -216,6 +281,13 @@ class Emitter implements OpsContext {
     this.#prefix = options.prefix ?? '';
     this.le = env.littleEndian;
     this.#exactSteps = env.exactSteps !== false;
+    // The batched step counter needs the "budget unreachable" fast path: in
+    // exact mode every item compares `rt.steps` against `rt.limit`, so the
+    // accumulator would only add work.
+    this.#stepsLocal = this.#exactSteps ? undefined : options.region?.stepsLocal;
+    this.#suspendedLocal = options.region?.suspendedLocal;
+    this.#epochLocal = options.region?.epochLocal;
+    this.#providerEpochLocal = options.region?.providerEpochLocal;
     this.plan = planFunction(fn);
     this.frame = Object.freeze({
       locations: Object.freeze([...this.plan.locations]),
@@ -238,8 +310,17 @@ class Emitter implements OpsContext {
     }
     const region = options.region;
     if (region !== undefined && region.promotions.length > 0) {
-      this.regionPromotion = (memory) => {
-        const id = region.promotionByMemory.get(memory);
+      this.regionPromotion = (memory, index, bytes) => {
+        let id: number | undefined;
+        if (bytes !== undefined) {
+          id = region.promotionByBytes
+            .get(memory)
+            ?.get(`${bytes.offset}:${bytes.numeric}:${bytes.little ? 1 : 0}`);
+        } else if (index !== undefined) {
+          id = region.promotionByElement.get(memory)?.get(index);
+        } else {
+          id = region.promotionByMemory.get(memory);
+        }
         if (id === undefined) return undefined;
         const promotion = region.promotions[id]!;
         return { local: `rp${id}`, dirty: `rp${id}d`, type: promotion.type };
@@ -343,7 +424,8 @@ class Emitter implements OpsContext {
         let text: string | undefined;
         let memory: number | undefined;
         if (inst.op === Op.PromoteLoad) {
-          text = promotionLocal(inst.refs[0]!);
+          memory = this.promotion(inst.refs[0]!).memory;
+          text = this.promotionNames(inst.refs[0]!).local;
         } else if (inst.op === Op.StateLoad) {
           memory = inst.refs[0];
           text = this.regionPromotion?.(inst.refs[0]!)?.local;
@@ -374,6 +456,11 @@ class Emitter implements OpsContext {
   /** The planned frame, used by the region assembler. */
   get savedFrame(): JitFrame {
     return this.frame;
+  }
+
+  /** True when this member adds to the region step accumulator. */
+  get usesStepsLocal(): boolean {
+    return this.#stepsLocal !== undefined;
   }
 
   /** Number of generated temporaries (region assembler declarations). */
@@ -428,7 +515,15 @@ class Emitter implements OpsContext {
   #emitSharedReload(): void {
     for (const promotion of this.#sharedPromotions()) {
       const record = this.resource(promotion.memory);
-      this.line(`rp${promotion.id} = ${fastScalarLoad(this, record, '0', promotion.type)};`);
+      const bytes = promotion.bytes;
+      if (bytes !== undefined) {
+        this.line(
+          `rp${promotion.id} = ${fastBytesLoad(this, record, String(bytes.offset), bytes.numeric, bytes.little)};`,
+        );
+      } else {
+        const index = String(promotion.index ?? 0);
+        this.line(`rp${promotion.id} = ${fastScalarLoad(this, record, index, promotion.type)};`);
+      }
       this.line(`rp${promotion.id}d = 0;`);
     }
   }
@@ -438,11 +533,95 @@ class Emitter implements OpsContext {
       const record = this.resource(promotion.memory);
       this.line(`if (rp${promotion.id}d !== 0) {`);
       this.#indent += 1;
-      emitFastStateWrite(this, record, promotion.type, `rp${promotion.id}`);
+      const bytes = promotion.bytes;
+      if (bytes !== undefined) {
+        emitFastBytesWrite(
+          this,
+          record,
+          String(bytes.offset),
+          bytes.numeric,
+          bytes.little,
+          `rp${promotion.id}`,
+        );
+      } else {
+        emitFastStateWrite(
+          this,
+          record,
+          promotion.type,
+          `rp${promotion.id}`,
+          String(promotion.index ?? 0),
+        );
+      }
       this.line(`  rp${promotion.id}d = 0;`);
       this.#indent -= 1;
       this.line('}');
     }
+  }
+
+  /**
+   * Generated names of one promoted location (J12).
+   *
+   * A state promotion whose memory is covered by a region-wide local resolves
+   * to the shared pair: members must observe one value, and the region owns the
+   * reload/spill points. Every other promotion keeps a private local with the
+   * member prefix (`m0_ps0`), which is what lets several members share one
+   * generated function without name clashes.
+   */
+  promotionNames(id: number): PromotionNames {
+    const promotion = this.promotion(id);
+    const shared = this.regionPromotion?.(promotion.memory, promotion.index);
+    if (shared !== undefined) return shared;
+    return {
+      local: promotionLocal(id, this.#prefix),
+      dirty: promotionDirty(id, this.#prefix),
+    };
+  }
+
+  /**
+   * Promotions that keep a private local inside a region member.
+   *
+   * State locations promoted by the member are folded into the region-wide
+   * locals; array elements stay private (another member may alias them) and are
+   * therefore namespaced per member.
+   */
+  #memberPromotions(): readonly MPromotion[] {
+    return this.fn.promotions.filter((promotion) => {
+      if (this.#options.region === undefined) return true;
+      return this.regionPromotion?.(promotion.memory, promotion.index) === undefined;
+    });
+  }
+
+  /** Private promotion locals, declared once for the whole region. */
+  memberPromotionDeclarations(): string[] {
+    return this.#memberPromotions().flatMap((promotion) => {
+      const names = this.promotionNames(promotion.id);
+      return [`${names.local} = ${initialPromotionValue(promotion.type)}`, `${names.dirty} = 0`];
+    });
+  }
+
+  /** Private promotion locals initialized from storage on member entry. */
+  memberPromotionEntryLines(): string[] {
+    return this.captureLines(() => {
+      for (const promotion of this.#memberPromotions()) {
+        const names = this.promotionNames(promotion.id);
+        this.line(
+          `${names.local} = ${fastScalarLoad(
+            this,
+            this.resource(promotion.memory),
+            String(promotion.index ?? 0),
+            promotion.type,
+          )};`,
+        );
+        this.line(`${names.dirty} = 0;`);
+      }
+    });
+  }
+
+  /** Catch-block writeback of the private promotion locals. */
+  memberPromotionSpillLines(): string[] {
+    const ids = this.#memberPromotions().map((promotion) => promotion.id);
+    if (ids.length === 0) return [];
+    return this.captureLines(() => emitPromotionSpill(this, ids));
   }
 
   /** Local declarations for every SSA value and promotion (region members). */
@@ -453,18 +632,25 @@ class Emitter implements OpsContext {
       if (this.#constText.has(value.id)) continue;
       locals.push(`${this.value(value.id)} = ${initialValue(value.rep)}`);
     }
+    if (this.#options.region !== undefined) {
+      // Region members declare their (few) private promotion locals at the
+      // region frame so the shared catch can write them back; the region
+      // assembler emits them plus the member-entry initialization.
+      return locals;
+    }
     for (const promotion of this.fn.promotions) {
+      const names = this.promotionNames(promotion.id);
       // Initialize from the backing view in the prologue: the entry block can
       // be a loop header, so an entry instruction would reload every iteration.
       locals.push(
-        `${promotionLocal(promotion.id)} = ${fastScalarLoad(
+        `${names.local} = ${fastScalarLoad(
           this,
           this.resource(promotion.memory),
           String(promotion.index ?? 0),
           promotion.type,
         )}`,
       );
-      locals.push(`${promotionDirty(promotion.id)} = 0`);
+      locals.push(`${names.dirty} = 0`);
     }
     return locals;
   }
@@ -472,6 +658,51 @@ class Emitter implements OpsContext {
   /** Entry-block parameter ids, in signature order. */
   get entryParams(): readonly ValueId[] {
     return this.#block(0).params;
+  }
+
+  /** Constant integer carried by a value, or `undefined` (region element lookup). */
+  constantIndex(id: ValueId): number | undefined {
+    return constantNumber(this.fn, id);
+  }
+
+  /**
+   * Publish the region step accumulator into `rt.steps`.
+   *
+   * Every path that leaves the region — a member `return`, a `TAIL`/direct
+   * transfer, a host instruction or an error unwind — calls this first, so the
+   * counter observed outside the region is exactly what per-block accounting
+   * would have produced.
+   */
+  flushSteps(): void {
+    const local = this.#stepsLocal;
+    if (local === undefined) return;
+    this.line(`rt.steps += ${local}, ${local} = 0;`);
+  }
+
+  /** Storage-write guard: a region tests its hoisted copy of the flag. */
+  suspendedCheck(): string {
+    const local = this.#suspendedLocal;
+    return local === undefined ? 'H.ctl.suspended !== 0' : `${local} !== 0`;
+  }
+
+  /** Generated expression of the storage epoch. */
+  get epoch(): string {
+    return this.#epochLocal ?? 'H.ctl.epoch';
+  }
+
+  /** Generated expression of the provider cache epoch. */
+  get providerEpoch(): string {
+    return this.#providerEpochLocal ?? 'H.prov.cacheEpoch';
+  }
+
+  /** Re-read the control fields a host call can change (`materialize`). */
+  refreshControl(): void {
+    const suspended = this.#suspendedLocal;
+    if (suspended !== undefined) this.line(`${suspended} = H.ctl.suspended;`);
+    const epoch = this.#epochLocal;
+    if (epoch !== undefined) this.line(`${epoch} = H.ctl.epoch;`);
+    const providerEpoch = this.#providerEpochLocal;
+    if (providerEpoch !== undefined) this.line(`${providerEpoch} = H.prov.cacheEpoch;`);
   }
 
   /** Region-local name of one SSA value. */
@@ -689,7 +920,7 @@ class Emitter implements OpsContext {
     if (!this.#exactSteps) {
       // The step budget is provably unreachable (unbounded `maxSteps`, no step
       // observer and no host budget), so only the fast copy is emitted.
-      if (steps !== 0) this.line(`rt.steps += ${steps};`);
+      if (steps !== 0) this.line(`${this.#stepsLocal ?? 'rt.steps'} += ${steps};`);
       for (const item of body) this.#emitFastItem(item);
       if (terminator !== undefined && terminator.step === 1) {
         this.line(`L = ${terminator.loc};`);
@@ -795,6 +1026,7 @@ class Emitter implements OpsContext {
       this.#sharedPromotions().length > 0 &&
       (EFFECT_INFO[inst.op].host || inst.op === Op.Checkpoint);
     if (barrier) this.#emitSharedSpill();
+    if (EFFECT_INFO[inst.op].host || inst.op === Op.Checkpoint) this.flushSteps();
     emitInstruction(inst, this);
     if (barrier) this.#emitSharedReload();
   }
@@ -993,8 +1225,10 @@ class Emitter implements OpsContext {
   }
 
   #emitReturn(term: Extract<MTerm, { kind: 'return' }>): void {
-    // A region exit must publish dirty promoted values before returning.
+    // A region exit must publish dirty promoted values and the pending step
+    // count before returning.
     if (this.#options.region !== undefined) this.#emitSharedSpill();
+    this.flushSteps();
     const values = term.values;
     if (values.length === 0) {
       this.line(`rt.depth = ${this.depthName};`);
@@ -1085,8 +1319,8 @@ class Emitter implements OpsContext {
         this.line('}');
       }
       this.line(
-        `${temp} = H.ic.jumpHit(${term.provider}, [${keyExprs.join(', ')}], H.ctl.epoch, ` +
-          'H.prov.cacheEpoch);',
+        `${temp} = H.ic.jumpHit(${term.provider}, [${keyExprs.join(', ')}], ${this.epoch}, ` +
+          `${this.providerEpoch});`,
       );
       this.line(`if (${temp} !== undefined) {`);
       this.#indent += 1;
@@ -1196,8 +1430,8 @@ class Emitter implements OpsContext {
         this.line(`case ${typeof key === 'boolean' ? String(key) : numberLiteral(key as number)}:`);
         this.#indent += 1;
         this.line(
-          `if (H.ctl.epoch === ${rs}.es[${member}] && ` +
-            `H.prov.cacheEpoch === ${rs}.cs[${member}]) {`,
+          `if (${this.epoch} === ${rs}.es[${member}] && ` +
+            `${this.providerEpoch} === ${rs}.cs[${member}]) {`,
         );
         this.#indent += 1;
         direct(member);
@@ -1218,8 +1452,8 @@ class Emitter implements OpsContext {
               region.keyTypes[position]!,
             ),
           ),
-          `H.ctl.epoch === ${rs}.es[${member}]`,
-          `H.prov.cacheEpoch === ${rs}.cs[${member}]`,
+          `${this.epoch} === ${rs}.es[${member}]`,
+          `${this.providerEpoch} === ${rs}.cs[${member}]`,
         ];
         this.line(`if (${conditions.join(' && ')}) {`);
         this.#indent += 1;
@@ -1230,7 +1464,9 @@ class Emitter implements OpsContext {
     }
     const temp = this.temp();
     // A region exit (or re-entry through materialize) is a host boundary: all
-    // dirty shared promotions must be visible to the provider cache first.
+    // dirty shared promotions and the accumulated step count must be visible
+    // to the provider cache first.
+    this.flushSteps();
     this.#emitSharedSpill();
     const info = this.#providerInfo(term.provider);
     this.#emitDirectCalls(term, keyExprs, info);
@@ -1238,8 +1474,8 @@ class Emitter implements OpsContext {
       // Hot exit: the jump cache holds the target artifact at the current
       // epochs, so the transfer needs no provider-cache round trip.
       this.line(
-        `${temp} = H.ic.jumpHit(${term.provider}, [${keyExprs.join(', ')}], H.ctl.epoch, ` +
-          'H.prov.cacheEpoch);',
+        `${temp} = H.ic.jumpHit(${term.provider}, [${keyExprs.join(', ')}], ${this.epoch}, ` +
+          `${this.providerEpoch});`,
       );
       this.line(`if (${temp} !== undefined) {`);
       this.#indent += 1;
@@ -1253,13 +1489,16 @@ class Emitter implements OpsContext {
       `${temp} = H.materialize(${term.provider}, [${keyExprs.join(', ')}], [${boundary.join(', ')}]);`,
     );
     this.line('rt.afterHost();');
+    // Provider generation is the only code that can suspend storage writes or
+    // bump either epoch; re-read all three before a member body runs again.
+    this.refreshControl();
     this.#emitExitSample(`${temp}.state`);
     for (let member = 0; member < region.memberCount; member += 1) {
       this.line(`if (${temp}.state === ${rs}.states[${member}]) {`);
       this.#indent += 1;
-      this.line(`${rs}.es[${member}] = H.ctl.epoch;`);
-      this.line(`${rs}.cs[${member}] = H.prov.cacheEpoch;`);
-      this.line(`${rs}.states[${member}].validatedEpoch = H.ctl.epoch;`);
+      this.line(`${rs}.es[${member}] = ${this.epoch};`);
+      this.line(`${rs}.cs[${member}] = ${this.providerEpoch};`);
+      this.line(`${rs}.states[${member}].validatedEpoch = ${this.epoch};`);
       region.parameterNames.forEach((name, index) => {
         this.line(`${name} = ${temp}.args[${index}];`);
       });
@@ -1366,7 +1605,8 @@ class Emitter implements OpsContext {
     region.parameterNames.forEach((name, index) => {
       this.line(`${name} = ${sources[index] ?? 'undefined'};`);
     });
-    this.line(`${rs}.states[${member}].validatedEpoch = H.ctl.epoch;`);
+    if (region.validatedEntry(member))
+      this.line(`${rs}.states[${member}].validatedEpoch = ${this.epoch};`);
     this.line(`${cursor} = ${member};`);
     this.line(`continue ${region.label};`);
   }
@@ -1391,6 +1631,7 @@ class Emitter implements OpsContext {
         typeOf: (id) => this.typeOf(id),
         repOf: (id) => this.repOf(id),
         promotion: (id) => this.promotion(id),
+        promotionNames: (id) => this.promotionNames(id),
       };
       emitPromotionSpill(
         catchContext,
@@ -1553,6 +1794,9 @@ export function emitRegion(
   inlineTail = false,
 ): EmittedRegion {
   if (members.length === 0) throw new Error('JIT region compilation needs at least one member');
+  // Cross-block batching (J16): only a `per-instruction` checkpoint contract
+  // forbids keeping the step counter and control flags in region locals.
+  const batched = env.checkpointGranularity !== 'per-instruction';
   const pool = new ConstantPool(env.constants);
   const runtimeIndex = pool.intern(runtime);
   const prefix = (index: number): string => `m${index}_`;
@@ -1577,21 +1821,44 @@ export function emitRegion(
   // Region-wide state promotion: a state accessed more than once across the
   // member set becomes one shared local. This is what keeps a DBT register
   // file live across block boundaries without storage round trips.
-  const promotions = collectRegionPromotions(members);
-  const promotionByMemory = new Map(
-    promotions.map((promotion) => [promotion.memory, promotion.id]),
+  // A checkpoint is the only reader of `state.validatedEpoch`; every other
+  // member can enter without publishing it (see `RegionEmitterOptions`).
+  const checkpointMembers = members.map((member) =>
+    member.mir.blocks.some((block) => block.insts.some((inst) => inst.op === Op.Checkpoint)),
   );
+  const validatedEntry = (member: number): boolean => checkpointMembers[member] === true;
+  const promotions = collectRegionPromotions(members, env.memories);
+  const promotionByMemory = new Map<number, number>();
+  const promotionByElement = new Map<number, Map<number, number>>();
+  const promotionByBytes = new Map<number, Map<string, number>>();
+  for (const promotion of promotions) {
+    if (promotion.bytes !== undefined) {
+      let hosted = promotionByBytes.get(promotion.memory);
+      if (hosted === undefined) {
+        hosted = new Map();
+        promotionByBytes.set(promotion.memory, hosted);
+      }
+      const key = promotion.bytes;
+      hosted.set(`${key.offset}:${key.numeric}:${key.little ? 1 : 0}`, promotion.id);
+      continue;
+    }
+    if (promotion.index === undefined) {
+      promotionByMemory.set(promotion.memory, promotion.id);
+      continue;
+    }
+    let byIndex = promotionByElement.get(promotion.memory);
+    if (byIndex === undefined) {
+      byIndex = new Map();
+      promotionByElement.set(promotion.memory, byIndex);
+    }
+    byIndex.set(promotion.index, promotion.id);
+  }
   const emitters: Emitter[] = [];
   const frames: JitFrame[] = [];
   for (let index = 0; index < members.length; index += 1) {
     const member = members[index]!;
     analyzeCFG(member.mir);
     analyzeRepresentation(member.mir, env.summaries);
-    if (member.state.mir.promotions.length > 0) {
-      // Promotion locals are not namespaced yet; keeping such artifacts out of
-      // regions is correctness-preserving (they keep the normal dispatch path).
-      throw new Error('JIT region compilation does not support promoted artifacts');
-    }
     const emitter = new Emitter(
       member.mir,
       {
@@ -1617,8 +1884,17 @@ export function emitRegion(
           memberPrefix: prefix,
           promotions,
           promotionByMemory,
+          promotionByElement,
+          promotionByBytes,
+          validatedEntry,
           directCalls: memberCalls[index]!,
           inlineTail,
+          // `per-instruction` keeps every MIR block observable: no batched
+          // counter and no hoisted control flags.
+          ...(batched ? { stepsLocal: 'S' } : {}),
+          ...(batched ? { suspendedLocal: 'SUS' } : {}),
+          ...(batched ? { epochLocal: 'EP' } : {}),
+          ...(batched ? { providerEpochLocal: 'CE' } : {}),
         },
       },
     );
@@ -1632,6 +1908,12 @@ export function emitRegion(
   const first = emitters[0]!;
   const reloadLines = first.sharedPromotionReloadLines();
   const spillLines = first.sharedPromotionSpillLines();
+  // Member-private promotions (constant array elements) live in the region
+  // frame: the shared `catch` must be able to write them back for the member
+  // the cursor selects, and a member entry re-initializes them from storage.
+  const promotionDecls = emitters.flatMap((emitter) => emitter.memberPromotionDeclarations());
+  const memberEntryLines = emitters.map((emitter) => emitter.memberPromotionEntryLines());
+  const memberSpillLines = emitters.map((emitter) => emitter.memberPromotionSpillLines());
   const used = new Set<number>([runtimeIndex, framesIndex]);
   const resources = new Set<number>();
   for (const emitter of emitters) {
@@ -1658,16 +1940,51 @@ export function emitRegion(
   lines.push(`${INDENT}rt.depth = d + 1;`);
   lines.push(`${INDENT}let L = -1;`);
   lines.push(`${INDENT}let F = FS[Rcur];`);
-  if (promotions.length > 0) {
+  if (promotions.length > 0 || promotionDecls.length > 0) {
     const shared = promotions.flatMap((promotion) => [
       `rp${promotion.id} = ${initialPromotionValue(promotion.type)}`,
       `rp${promotion.id}d = 0`,
     ]);
-    lines.push(`${INDENT}let ${shared.join(', ')};`);
+    lines.push(`${INDENT}let ${[...shared, ...promotionDecls].join(', ')};`);
   }
-  lines.push(`${INDENT}RS.es[Rcur] = H.ctl.epoch;`);
-  lines.push(`${INDENT}RS.cs[Rcur] = H.prov.cacheEpoch;`);
-  lines.push(`${INDENT}RS.states[Rcur].validatedEpoch = H.ctl.epoch;`);
+  // Member locals live in the region frame rather than in the `case` block.
+  // A `let` declaration inside a case re-runs on every `continue Lregion` — a
+  // guest loop that fuses N one-block members would pay N × (values + temps)
+  // stores per guest iteration. Hoisting keeps the initialization at region
+  // entry, which is sound because every SSA value is assigned before its first
+  // read on every path that reaches it.
+  const hoisted: string[] = [];
+  for (let index = 0; index < members.length; index += 1) {
+    hoisted.push(...emitters[index]!.localDeclarations());
+    const tempCount = emitters[index]!.tempCount;
+    for (let position = 0; position < tempCount; position += 1) {
+      hoisted.push(`${prefix(index)}t${position} = 0`);
+    }
+  }
+  if (hoisted.length > 0) lines.push(`${INDENT}let ${hoisted.join(', ')};`);
+  // Batched step counter (see `Emitter#flushSteps`): only emitted when the
+  // emitted members actually use it, i.e. never in exact-budget mode.
+  const batchedSteps = emitters.some((emitter) => emitter.usesStepsLocal);
+  if (batchedSteps) lines.push(`${INDENT}let S = 0;`);
+  if (batched) {
+    lines.push(`${INDENT}let SUS = H.ctl.suspended;`);
+    // Epochs and the suspension flag only change in host code, which a region
+    // member body never runs (`materialize` re-reads all three).
+    lines.push(`${INDENT}let EP = H.ctl.epoch, CE = H.prov.cacheEpoch;`);
+    lines.push(`${INDENT}RS.es[Rcur] = EP;`);
+    lines.push(`${INDENT}RS.cs[Rcur] = CE;`);
+    // The cursor is dynamic here, so publish the hint whenever any member can
+    // read it (members without a checkpoint never do).
+    if (checkpointMembers.some(Boolean)) {
+      lines.push(`${INDENT}RS.states[Rcur].validatedEpoch = EP;`);
+    }
+  } else {
+    lines.push(`${INDENT}RS.es[Rcur] = H.ctl.epoch;`);
+    lines.push(`${INDENT}RS.cs[Rcur] = H.prov.cacheEpoch;`);
+    if (checkpointMembers.some(Boolean)) {
+      lines.push(`${INDENT}RS.states[Rcur].validatedEpoch = H.ctl.epoch;`);
+    }
+  }
   lines.push(`${INDENT}try {`);
   for (const line of reloadLines) lines.push(`${INDENT}${INDENT}${line}`);
   lines.push(`${INDENT}${INDENT}Lregion: for (;;) {`);
@@ -1676,19 +1993,13 @@ export function emitRegion(
     const emitter = emitters[index]!;
     lines.push(`${INDENT}${INDENT}${INDENT}${INDENT}case ${index}: {`);
     lines.push(`${INDENT}${INDENT}${INDENT}${INDENT}${INDENT}F = FS[${index}];`);
-    // Declarations must precede the entry-parameter copy: `m0_v0` is a block
-    // scoped `let` and the copy targets it.
-    const locals = emitter.localDeclarations();
-    if (locals.length > 0) {
-      lines.push(`${INDENT}${INDENT}${INDENT}${INDENT}${INDENT}let ${locals.join(', ')};`);
+    // A member entry re-initializes its private promotion locals, exactly like
+    // the prologue of the same artifact outside a region.
+    for (const line of memberEntryLines[index]!) {
+      lines.push(`${INDENT}${INDENT}${INDENT}${INDENT}${INDENT}${line}`);
     }
-    if (emitter.tempCount > 0) {
-      const temps = Array.from(
-        { length: emitter.tempCount },
-        (_value, position) => `${prefix(index)}t${position} = 0`,
-      );
-      lines.push(`${INDENT}${INDENT}${INDENT}${INDENT}${INDENT}let ${temps.join(', ')};`);
-    }
+    // Member locals and temps are declared once in the region frame (see the
+    // hoisted declaration above); the entry block only copies its parameters.
     memberParams[index]!.forEach((param, position) => {
       lines.push(
         `${INDENT}${INDENT}${INDENT}${INDENT}${INDENT}${prefix(index)}v${param} = ${
@@ -1712,8 +2023,23 @@ export function emitRegion(
   lines.push(`${INDENT}${INDENT}}`);
   lines.push(`${INDENT}} catch (e) {`);
   // An error must leave the same storage behind as the reference: every
-  // promoted store that already ran is written back before unwinding.
+  // promoted store that already ran is written back before unwinding. Private
+  // member locals are selected by the cursor; the shared region locals are
+  // always live.
+  if (memberSpillLines.some((spill) => spill.length > 0)) {
+    lines.push(`${INDENT}${INDENT}switch (Rcur) {`);
+    memberSpillLines.forEach((spill, index) => {
+      if (spill.length === 0) return;
+      lines.push(`${INDENT}${INDENT}${INDENT}case ${index}:`);
+      for (const line of spill) lines.push(`${INDENT}${INDENT}${INDENT}${INDENT}${line}`);
+      lines.push(`${INDENT}${INDENT}${INDENT}${INDENT}break;`);
+    });
+    lines.push(`${INDENT}${INDENT}}`);
+  }
   for (const line of spillLines) lines.push(`${INDENT}${INDENT}${line}`);
+  // Steps already retired by this activation must be visible to `rt.unwind`,
+  // which reports them on the error object.
+  if (batchedSteps) lines.push(`${INDENT}${INDENT}rt.steps += S;`);
   lines.push(`${INDENT}${INDENT}rt.depth = d;`);
   lines.push(`${INDENT}${INDENT}throw rt.unwind(e, L, F);`);
   lines.push(`${INDENT}}`);

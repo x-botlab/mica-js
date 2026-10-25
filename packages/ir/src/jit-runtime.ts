@@ -31,7 +31,13 @@ import type {
   IRInterpreterOptions,
 } from './interpreter';
 import type { IRResourceDependency, StorageControl } from './storage';
-import type { FunctionDefinition, IRModule, RuntimeScalar, ScalarType } from './types';
+import type {
+  CheckpointGranularity,
+  FunctionDefinition,
+  IRModule,
+  RuntimeScalar,
+  ScalarType,
+} from './types';
 import type { ProviderArtifact } from './provider';
 import {
   compileFunctionWithSource,
@@ -145,6 +151,20 @@ export interface IRJITTuning {
    * compiles on first use; `Infinity` disables tiering. Default 1000.
    */
   readonly tierUpThreshold?: number;
+  /**
+   * How often the engine must reproduce the reference engine's state
+   * ({@link CheckpointGranularity}). Default `'per-tick'`.
+   *
+   * In `'per-tick'` mode a compiled region keeps promoted storage, the step
+   * counter and the control flags in locals across dispatch boundaries, so the
+   * intermediate dispatches between artifacts of one tick may be optimized
+   * away entirely. Within a tick, only storage effects are guaranteed; the
+   * state after each tick is identical to the reference engine.
+   * `'per-instruction'` disables that fusion: every MIR block re-reads the
+   * control block and commits the step counter, which is what single-stepping
+   * debuggers observe.
+   */
+  readonly checkpointGranularity?: CheckpointGranularity;
   /** Optimization switches; unknown keys are rejected by `invalid-options`. */
   readonly optimizations?: Readonly<Partial<Record<IRJITOptimization, boolean>>>;
   /** Debug aids; `verify` runs the MIR verifier after lowering. Default off. */
@@ -208,6 +228,7 @@ interface ResolvedTuning {
   readonly artifactWarmup: number;
   readonly maxCompiledDepth: number;
   readonly tierUpThreshold: number;
+  readonly checkpointGranularity: CheckpointGranularity;
   readonly verify: boolean;
   /** Fully resolved per-pass switches (missing user entries default to true). */
   readonly optimizations: Readonly<Record<IRJITOptimization, boolean>>;
@@ -287,6 +308,7 @@ const JIT_OPTION_KEYS: ReadonlySet<string> = new Set([
   'artifactWarmup',
   'maxCompiledDepth',
   'tierUpThreshold',
+  'checkpointGranularity',
   'optimizations',
   'debug',
 ]);
@@ -369,6 +391,7 @@ function resolveTuning(value: unknown): ResolvedTuning {
       artifactWarmup: 1,
       maxCompiledDepth: 1000,
       tierUpThreshold: 1000,
+      checkpointGranularity: 'per-tick',
       verify: false,
       optimizations: OPTIMIZATION_DEFAULTS,
       dispatchIC: true,
@@ -416,6 +439,17 @@ function resolveTuning(value: unknown): ResolvedTuning {
   ) {
     throw optionsError('jit.tierUpThreshold must be a non-negative safe integer');
   }
+  const granularity = value.checkpointGranularity;
+  if (
+    granularity !== undefined &&
+    granularity !== 'per-instruction' &&
+    granularity !== 'per-tick' &&
+    granularity !== 'per-safepoint'
+  ) {
+    throw optionsError(
+      'jit.checkpointGranularity must be "per-instruction", "per-tick", or "per-safepoint"',
+    );
+  }
   const optimizations = value.optimizations;
   if (optimizations !== undefined) {
     if (!isRecord(optimizations)) throw optionsError('jit.optimizations must be an object');
@@ -450,6 +484,7 @@ function resolveTuning(value: unknown): ResolvedTuning {
     artifactWarmup: (artifactWarmup as number | undefined) ?? 1,
     maxCompiledDepth: (maxCompiledDepth as number | undefined) ?? 1000,
     tierUpThreshold: (tierUpThreshold as number | undefined) ?? 1000,
+    checkpointGranularity: (granularity as CheckpointGranularity | undefined) ?? 'per-tick',
     verify: debug !== undefined && (debug as { verify?: boolean }).verify === true,
     optimizations: resolved,
     dispatchIC: resolved.dispatchIC,
@@ -574,6 +609,8 @@ class JITInterpreter implements IRInterpreter {
       helpers,
       constants: lower.constants,
       memoryRefs: setup.model.memories.map((memory) => memory.ref),
+      memories: setup.model.memories,
+      checkpointGranularity: tuning.checkpointGranularity,
       littleEndian: internals.littleEndianHost,
       summaries,
       providers: this.#providerInfo,
@@ -1136,14 +1173,8 @@ class JITInterpreter implements IRInterpreter {
     if (!this.#tuning.regions || state.region !== undefined) return;
     const info = this.#providerInfo[state.providerIndex];
     if (info === undefined) return;
-    // Promoted locals are not namespaced per member yet; keeping such
-    // artifacts on the normal dispatch path is correctness-preserving.
-    if (state.mir.promotions.length > 0) {
-      state.entries = REGION_THRESHOLD + 1;
-      return;
-    }
     const members = collectRegionMembers(state, this.#dispatch).filter(
-      (member) => member.mir.promotions.length === 0 && member.region === undefined,
+      (member) => member.region === undefined,
     );
     // The recorded transition graph can miss an edge (a jump-cache hit does not
     // update site statistics), which would leave a hot artifact outside every
@@ -1156,7 +1187,6 @@ class JITInterpreter implements IRInterpreter {
       for (const candidate of this.#artifactsByIndex.values()) {
         if (candidate.providerIndex !== state.providerIndex) continue;
         if (candidate.region !== undefined || candidate.entries <= 0) continue;
-        if (candidate.mir.promotions.length > 0) continue;
         hot.push(candidate);
       }
       hot.sort((left, right) => right.entries - left.entries);

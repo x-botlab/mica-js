@@ -21,7 +21,7 @@ import { createRegionExitProfile, createRegionRuntime, regionKeyOf } from '../re
 import type { RegionDirectCallDep, RegionExitProfile, RegionRuntimeState } from '../region';
 import { emitFunction, emitRegion } from './emit';
 import type { EmitEnv, EmittedFunction, EmittedRegion, ResolvedRegionDirectCall } from './emit';
-import type { ScalarType } from '../../types';
+import type { CheckpointGranularity, MemoryDefinition, ScalarType } from '../../types';
 
 /** Raised when the host forbids dynamic code generation. */
 export class JitCodegenUnavailable extends Error {
@@ -42,6 +42,14 @@ export interface CompileEnv {
   readonly constants: readonly unknown[];
   /** Model memory references, indexed by resolved memory indices. */
   readonly memoryRefs: readonly unknown[];
+  /** Model memory definitions (region element promotion, J14). */
+  readonly memories?: readonly MemoryDefinition[];
+  /**
+   * How often the compiled code must reproduce reference state. `'per-tick'`
+   * (the default) lets a region batch the step counter and hoist the control
+   * flags; `'per-instruction'` keeps every MIR block observable.
+   */
+  readonly checkpointGranularity?: CheckpointGranularity;
   /** Host endianness; selects the typed-view or DataView fast path. */
   readonly littleEndian: boolean;
   readonly summaries?: ReadonlyMap<number, FunctionSummary>;
@@ -326,6 +334,10 @@ export function compileRegionWithSource(
         constants: env.constants,
         littleEndian: env.littleEndian,
         memoryRefs: env.memoryRefs,
+        ...(env.memories === undefined ? {} : { memories: env.memories }),
+        ...(env.checkpointGranularity === undefined
+          ? {}
+          : { checkpointGranularity: env.checkpointGranularity }),
         exactSteps: needsExactSteps(env.rt),
         ...(env.summaries === undefined ? {} : { summaries: env.summaries }),
         ...(env.providers === undefined ? {} : { providers: env.providers }),

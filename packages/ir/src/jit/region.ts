@@ -55,7 +55,8 @@ import type { ArtifactState, DispatchKey, DispatchRegistry, RegionHandle } from 
 import { MAX_REGION_MEMBERS } from './dispatch-ic';
 import { Op } from './mir';
 import type { MFunction } from './mir';
-import type { ScalarType } from '../types';
+import { constantNumber, NUMERIC_BYTES } from './passes/memory-model';
+import type { MemoryDefinition, NumericType, ScalarType } from '../types';
 
 /** Runtime state referenced by generated region code (`RS.*`). */
 export interface RegionRuntimeState {
@@ -170,49 +171,238 @@ export const REGION_DIRECT_CALL_DEPTH = 8;
 export interface RegionPromotion {
   readonly id: number;
   readonly memory: number;
+  /** Constant array index for an element promotion; `undefined` for a state slot. */
+  readonly index?: number;
+  /** Constant byte interval for a `bytes` promotion; `undefined` otherwise. */
+  readonly bytes?: {
+    readonly offset: number;
+    readonly numeric: NumericType;
+    readonly little: boolean;
+  };
   readonly type: ScalarType;
+}
+
+interface PromotionCandidate {
+  count: number;
+  type: ScalarType;
+  /** True when some access stores to the location. */
+  stores: boolean;
+}
+
+/** Identity of one constant byte interval inside a `bytes` memory. */
+interface IntervalKey {
+  readonly offset: number;
+  readonly numeric: NumericType;
+  readonly little: boolean;
+}
+
+function countCandidate(
+  counts: Map<number, PromotionCandidate>,
+  memory: number,
+  type: ScalarType,
+  store: boolean,
+): void {
+  const entry = counts.get(memory);
+  if (entry === undefined) counts.set(memory, { count: 1, type, stores: store });
+  else {
+    entry.count += 1;
+    entry.stores ||= store;
+  }
 }
 
 /**
  * Select the state resources that are worth keeping in region locals.
  *
- * Every `state.load` / `state.store` in every member counts as one access;
- * locations accessed at least twice become shared locals. State resources
- * cannot alias byte/array memories, so the promotion is sound without an
- * alias analysis. Constant-index array elements are deliberately left out:
- * they can alias other array accesses in another member.
+ * Every `state.load` / `state.store` in every member counts as one access, and
+ * a member-local scalar promotion of a state slot counts as an access too: that
+ * slot must resolve to the same region-wide local in every member, otherwise
+ * two members would cache one location independently. Locations accessed at
+ * least twice become shared locals. State resources cannot alias byte/array
+ * memories, so the promotion is sound without an alias analysis.
+ *
+ * Constant-index array elements are promoted on the same terms when the memory
+ * is *closed* inside the region: every access to it in every member must be a
+ * constant index. A dynamic access would alias any element, so such a memory
+ * stays in storage. This is what keeps a translated register file in locals: a
+ * guest basic block that reads and writes `registers[1]` is one artifact, and
+ * the loop that repeats it exists only after fusion, so the per-artifact
+ * promotion pass cannot see the reuse.
+ *
+ * `bytes` resources are promoted the same way, one constant interval at a time
+ * (this is what keeps the GPIO ODR/DIR read-modify-write out of the guest
+ * loop). A resource with a dynamic byte access, an overlapping pair of constant
+ * intervals, a float interval or a range copy/fill is left entirely in storage.
+ *
+ * `memories` supplies the array length, byte length and writability. Without
+ * it, element and interval promotion are disabled (state-only behaviour).
  */
 export function collectRegionPromotions(
   members: readonly RegionMember[],
+  memories?: readonly MemoryDefinition[],
 ): readonly RegionPromotion[] {
-  const counts = new Map<number, { count: number; type: ScalarType }>();
+  const scalars = new Map<number, PromotionCandidate>();
+  const elements = new Map<number, Map<number, PromotionCandidate>>();
+  /** Byte intervals keyed by `${offset}:${numeric}:${little}` inside one memory. */
+  const intervals = new Map<number, Map<string, PromotionCandidate & { key: IntervalKey }>>();
+  /** Array memories with an access the region cannot name: never promote them. */
+  const open = new Set<number>();
+  const intervalKey = (offset: number, numeric: NumericType, little: boolean): IntervalKey => ({
+    offset,
+    numeric,
+    little,
+  });
+  const intervalCount = (
+    memory: number,
+  ): Map<string, PromotionCandidate & { key: IntervalKey }> => {
+    let hosted = intervals.get(memory);
+    if (hosted === undefined) {
+      hosted = new Map();
+      intervals.set(memory, hosted);
+    }
+    return hosted;
+  };
+  const elementCount = (memory: number): Map<number, PromotionCandidate> => {
+    let byIndex = elements.get(memory);
+    if (byIndex === undefined) {
+      byIndex = new Map();
+      elements.set(memory, byIndex);
+    }
+    return byIndex;
+  };
   for (const member of members) {
-    for (const block of member.mir.blocks) {
+    const fn = member.mir;
+    for (const block of fn.blocks) {
       for (const inst of block.insts) {
-        let memory: number | undefined;
-        let type: ScalarType | undefined;
-        if (inst.op === Op.StateLoad) {
-          memory = inst.refs[0];
-          const result = inst.results[0];
-          type = result === undefined ? undefined : member.mir.values[result]?.type;
-        } else if (inst.op === Op.StateStore) {
-          memory = inst.refs[0];
-          const value = inst.args[0];
-          type = value === undefined ? undefined : member.mir.values[value]?.type;
-        } else {
+        if (inst.op === Op.StateLoad || inst.op === Op.StateStore) {
+          const memory = inst.refs[0]!;
+          const value = inst.op === Op.StateStore ? inst.args[0] : inst.results[0];
+          const type = value === undefined ? undefined : fn.values[value]?.type;
+          if (type === undefined) continue;
+          countCandidate(scalars, memory, type, inst.op === Op.StateStore);
           continue;
         }
-        if (memory === undefined || type === undefined) continue;
-        const entry = counts.get(memory);
-        if (entry === undefined) counts.set(memory, { count: 1, type });
-        else entry.count += 1;
+        if (inst.op === Op.PromoteLoad || inst.op === Op.PromoteStore) {
+          const promotion = fn.promotions[inst.refs[0]!];
+          if (promotion === undefined) continue;
+          if (promotion.index === undefined) {
+            countCandidate(scalars, promotion.memory, promotion.type, inst.op === Op.PromoteStore);
+          } else {
+            countCandidate(
+              elementCount(promotion.memory),
+              promotion.index,
+              promotion.type,
+              inst.op === Op.PromoteStore,
+            );
+          }
+          continue;
+        }
+        if (inst.op === Op.ArrayLoad || inst.op === Op.ArrayStore) {
+          const memory = inst.refs[0]!;
+          const index = constantNumber(fn, inst.args[0]!);
+          const value = inst.op === Op.ArrayStore ? inst.args[1] : inst.results[0];
+          const type = value === undefined ? undefined : fn.values[value]?.type;
+          if (index === undefined || type === undefined) {
+            open.add(memory);
+            continue;
+          }
+          countCandidate(elementCount(memory), index, type, inst.op === Op.ArrayStore);
+          continue;
+        }
+        if (inst.op === Op.BytesLoad || inst.op === Op.BytesStore) {
+          const memory = inst.refs[0]!;
+          const numeric = inst.imm[0] as NumericType;
+          const little = inst.imm[1] === 'little';
+          const offset = constantNumber(fn, inst.args[0]!);
+          // Float intervals are left alone: a `U` bit pattern does not survive
+          // a storage round trip, so a promoted copy could differ from storage.
+          if (offset === undefined || numeric === 'f32' || numeric === 'f64') {
+            open.add(memory);
+            continue;
+          }
+          const key = intervalKey(offset, numeric, little);
+          const id = `${key.offset}:${key.numeric}:${key.little ? 1 : 0}`;
+          const hosted = intervalCount(memory);
+          const entry = hosted.get(id);
+          if (entry === undefined) {
+            hosted.set(id, { count: 1, type: numeric, stores: inst.op === Op.BytesStore, key });
+          } else {
+            entry.count += 1;
+            entry.stores ||= inst.op === Op.BytesStore;
+          }
+          continue;
+        }
+        if (
+          inst.op === Op.BytesCopy ||
+          inst.op === Op.ResourceUpdateBytes ||
+          inst.op === Op.ResourceFillBytes
+        ) {
+          // A range copy/fill names an arbitrary interval of the resource, so
+          // no constant interval of it can be kept in a local.
+          for (const memory of inst.refs) open.add(memory);
+        }
       }
     }
   }
-  return [...counts.entries()]
-    .filter(([, entry]) => entry.count >= 2)
-    .sort(([left], [right]) => left - right)
-    .map(([memory, entry], id) => ({ id, memory, type: entry.type }));
+
+  const promotions: RegionPromotion[] = [];
+  for (const [memory, entry] of [...scalars.entries()].sort(([left], [right]) => left - right)) {
+    if (entry.count < 2) continue;
+    promotions.push({ id: promotions.length, memory, type: entry.type });
+  }
+  for (const memory of [...elements.keys()].sort((left, right) => left - right)) {
+    if (open.has(memory)) continue;
+    const definition = memories?.[memory];
+    if (definition === undefined || definition.kind !== 'array') continue;
+    if (definition.layout.kind !== 'scalar') continue;
+    const length = definition.layout.length;
+    const byIndex = elements.get(memory)!;
+    for (const index of [...byIndex.keys()].sort((left, right) => left - right)) {
+      const entry = byIndex.get(index)!;
+      if (entry.count < 2) continue;
+      // An out-of-range element access must keep throwing/trapping at its
+      // original spot, and a store needs a writable resource.
+      if (index < 0 || index >= length) continue;
+      if (entry.stores && definition.writable !== true) continue;
+      promotions.push({
+        id: promotions.length,
+        memory,
+        index,
+        type: definition.layout.scalarType,
+      });
+    }
+  }
+  for (const memory of [...intervals.keys()].sort((left, right) => left - right)) {
+    if (open.has(memory)) continue;
+    const definition = memories?.[memory];
+    if (definition === undefined || definition.layout.kind !== 'bytes') continue;
+    const length = definition.layout.length;
+    // Two different constant intervals of the same resource may overlap (a
+    // `u32` store followed by a `u8` load of one of its bytes); a local copy of
+    // each would then disagree. Such a resource stays in storage entirely.
+    const keys = [...intervals.get(memory)!.values()].map((entry) => entry.key);
+    const overlapping = keys.some((left, index) =>
+      keys.some(
+        (right, position) =>
+          position > index &&
+          left.offset < right.offset + NUMERIC_BYTES[right.numeric] &&
+          right.offset < left.offset + NUMERIC_BYTES[left.numeric],
+      ),
+    );
+    if (overlapping) continue;
+    for (const entry of intervals.get(memory)!.values()) {
+      if (entry.count < 2) continue;
+      const width = NUMERIC_BYTES[entry.key.numeric];
+      if (entry.key.offset < 0 || entry.key.offset + width > length) continue;
+      if (entry.stores && definition.writable !== true) continue;
+      promotions.push({
+        id: promotions.length,
+        memory,
+        bytes: entry.key,
+        type: entry.key.numeric,
+      });
+    }
+  }
+  return promotions;
 }
 
 /**

@@ -523,6 +523,7 @@ runtime.execute(increment, [3], { instanceId: 'counter', virtualTime: 1000 });
 `createIRJIT(module, options)` 与 `createIRInterpreter` 使用相同的 `IRInterpreterOptions` 与 `IRInterpreter` 接口（`storage` + `execute`），返回对象同样被冻结。创建流程先调用共享的 `prepareEngine`，因此非法选项、校验诊断、未实现指令等错误与参考解释器完全一致。
 
 - **等价契约**：同一目标与实参下，`execute` 的 `values`、`steps`、`IRExecutionError` 的 `code`/`message`/`location`/`callStack`/`steps`/`diagnostics` 与参考解释器逐项相同；效果提交与 faulted 语义也相同。
+- **检查点粒度（`checkpointGranularity`）**：等价性在*检查点*上成立，而不是每次宿主派发。默认 `'per-tick'`：一次 `execute`（=一个 tick）是一个检查点，region 可以把提升后的存储、步数计数器和控制标志留在局部变量里跨指令、跨派发复用，因此 tick 中间的派发可能被完全优化掉；`'per-instruction'` 关闭这些跨边界优化，让每个 MIR 块都可观测（单步调试）；`'per-safepoint'` 只在实际交还宿主时保证一致。三种模式下 tick 结束时的存储、epoch、Provider 缓存、步数以及任何错误字段都逐项一致。`maxSteps` 有界时每一步都是一个检查点，引擎会自动退回逐块计步。
 - **懒编译**：创建期只做快照、校验与 MIR 降级，不调用 `new Function`。模型函数在第一次被调用时编译并替换 `H.fns` 槽；Provider 产物在堆帧层预热 `artifactWarmup` 次后编译。`warmup: 'eager'` 会在创建期编译全部模型函数，Provider 产物仍在首次派发时开始预热。
 - **分层重编译（Tier-1 → Tier-2）**：`tierUpThreshold > 0` 时首次编译只产出 Tier-1（不含内联）。每个函数序言与堆帧层都会为调用计数；达到阈值后同步编译 Tier-2（内联 + 按剖析/循环深度偏置的块布局）并替换 `H.fns[i]`。当前正在执行的 Tier-1 激活继续跑完（没有 OSR），之后的调用进入 Tier-2。`tierUpThreshold: 0` 表示首次编译直接产出 Tier-2；`optimizations.inline: false` 可关闭内联。
 - **内联（`inline`）**：只内联非递归（不同调用图 SCC）、摘要 `hasTransfer = false`（无 `dispatch` / checkpoint 恢复）且 MIR 指令数 ≤ 120 的被调函数；内联后函数不超过「原大小 × 4 + 200」，嵌套深度 ≤ 4。调用点优先按 Tier-1 热度、再按静态循环深度、最后按被调函数大小选取。
@@ -538,6 +539,7 @@ runtime.execute(increment, [3], { instanceId: 'counter', virtualTime: 1000 });
   - `artifactWarmup`：非负安全整数，默认 1；产物先在堆帧层执行该次数，然后编译（`0` 表示首次派发即编译）；
   - `tierUpThreshold`：非负安全整数，默认 1000；Tier-1 调用计数达到该值后重编译为 Tier-2，`0` 表示首次编译即 Tier-2；
   - `maxCompiledDepth`：正安全整数，默认 1000；超过时以新的编译段继续执行；
+  - `checkpointGranularity`：`'per-tick'`（默认）、`'per-instruction'`、`'per-safepoint'`，见上一节的检查点契约；
   - `optimizations`：`inline`（默认开启）；传入未知键报 `invalid-options`；
   - `debug.verify`：降级后运行 MIR verifier，默认 `false`。
 - **已知限制**：没有 OSR；只运行一次的长循环函数不会在运行中升级到 Tier-2。DBT 负载的产物会被反复执行，不受影响。

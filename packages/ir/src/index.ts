@@ -2,6 +2,7 @@ export { createIRModule } from './module';
 export { createIRInterpreter, IRExecutionError } from './interpreter';
 export { createIRJIT } from './jit';
 export type {
+  CheckpointGranularity,
   IRJITCodegen,
   IRJITOptimization,
   IRJITOptions,
