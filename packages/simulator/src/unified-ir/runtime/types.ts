@@ -1,4 +1,5 @@
 import type { IRJITTuning } from '@mica-js/ir';
+import type { TopicPayloadType } from '@mica-js/device';
 import type { CircuitCompilationInput, DeviceDescription } from '../compiler';
 import type { ButtonAccessor as ButtonIRAccessor } from '../devices/button/button.ac';
 import type { LedAccessor as LedIRAccessor } from '../devices/led/led.ac';
@@ -25,6 +26,12 @@ export interface CircuitElectricalOptions {
   readonly allowMultiDriver?: boolean;
   /** Named fixed-level rails; merged over `GND`/`VCC`/`VDD`. */
   readonly rails?: Readonly<Record<string, boolean>>;
+  /**
+   * Nominal supply voltage in volts (RFC 0002 §5). Used for pins without a
+   * declared power domain and for rails whose name carries no voltage.
+   * Defaults to 3.3 V.
+   */
+  readonly supplyVoltage?: number;
 }
 
 /**
@@ -53,6 +60,8 @@ export interface CircuitRuntimeOptions {
 export type CircuitErrorCode =
   | 'invalid-options'
   | 'invalid-count'
+  | 'device-not-found'
+  | 'connection-not-found'
   | 'pin-not-found'
   | 'pin-not-writable'
   | 'state-not-found'
@@ -60,12 +69,19 @@ export type CircuitErrorCode =
   | 'register-not-found'
   | 'invalid-register-value'
   | 'unresolved-device'
+  | 'invalid-topic-payload'
+  | 'topic-not-found'
+  | 'no-power-domains'
+  | 'power-domain-not-found'
+  | 'electrical-conflict'
   | 'disposed';
 
 export interface CircuitErrorOptions {
   readonly deviceId?: string;
   readonly pinName?: string;
   readonly stateName?: string;
+  /** Power domain the failing call named (RFC 0007). */
+  readonly domainName?: string;
   readonly cause?: unknown;
 }
 
@@ -81,6 +97,7 @@ export class CircuitError extends Error {
   readonly deviceId: string | undefined;
   readonly pinName: string | undefined;
   readonly stateName: string | undefined;
+  readonly domainName: string | undefined;
 
   constructor(code: CircuitErrorCode, message: string, options: CircuitErrorOptions = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -88,6 +105,7 @@ export class CircuitError extends Error {
     this.deviceId = options.deviceId;
     this.pinName = options.pinName;
     this.stateName = options.stateName;
+    this.domainName = options.domainName;
   }
 }
 
@@ -134,6 +152,16 @@ export interface McuAccessor extends DeviceAccessor {
   readRegister(name: string): bigint;
   /** Writes one register; the value must fit the declared state type. */
   writeRegister(name: string, value: bigint): void;
+}
+
+/** One topic endpoint of a running circuit. */
+export interface CircuitTopic {
+  /** Device id inside the circuit (a schematic designator when it was derived from a sheet). */
+  readonly deviceId: string;
+  readonly port: string;
+  readonly direction: 'input' | 'output';
+  readonly type: TopicPayloadType;
+  readonly title?: string;
 }
 
 /** Every accessor of one circuit, keyed by device id. */

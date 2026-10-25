@@ -1,6 +1,20 @@
 import type { Diagnostic, DiagnosticCode } from './diagnostics';
 
 /**
+ * Stable error codes for schema conformance failures, shared by the format and device layers.
+ * The key is the contract; the value is a human-readable description for generic tooling.
+ * A specific failure adds its own detailed message next to the code.
+ */
+export const SCHEMA_ERROR_CODES = {
+  'schema/invalid-value': 'The value does not conform to the schema',
+  'schema/unknown-field': 'Unknown field in object',
+  'schema/type-mismatch': 'Type does not match expected type',
+} as const;
+
+/** One code from the {@link SCHEMA_ERROR_CODES} contract. */
+export type SchemaErrorCode = keyof typeof SCHEMA_ERROR_CODES;
+
+/**
  * Thrown when input violates the schematic format contract.
  * `diagnostics` carries every problem found, so callers can report them all at once.
  */

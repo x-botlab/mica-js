@@ -23,5 +23,5 @@
   `pnpm --filter @mica-js/simulator examples` 会执行并校验全部示例。
 - **性能**：MCU + LED 同场景对比调度器路径 8.1 µs/tick → 单步 371 ns（21.9×）→ 批处理 6.8 ns
   （约 1200×）；1M tick 实测 56–85 M tick/s；教学 MCU 时间切片 320 M inst/s，长切片对照
-  teaching ISA 11.2 M inst/s（70×）、M3 27.1 M inst/s（169×）。新增 `bench/unified-micro.bench.ts` 与
+  M3 27.1 M inst/s（169×）。新增 `bench/unified-micro.bench.ts` 与
   `bench/unified-devices.bench.ts`，并把 `bench/unified-simple.bench.ts` 改写到 `Circuit` API。

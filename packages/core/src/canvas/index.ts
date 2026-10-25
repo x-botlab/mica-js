@@ -23,7 +23,8 @@ export type { ValidateCanvasBindingsOptions } from './bindings/validate';
 
 // The `.cnv` contract shares the format error and diagnostic types with the `.sch` contract, so a
 // host can handle both files with one error type.
-export { SchematicError } from '../format/errors';
+export { SCHEMA_ERROR_CODES, SchematicError } from '../format/errors';
+export type { SchemaErrorCode } from '../format/errors';
 export type {
   Diagnostic,
   DiagnosticCode,

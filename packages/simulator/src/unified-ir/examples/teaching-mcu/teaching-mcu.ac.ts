@@ -29,7 +29,7 @@ import type {
 import type { McuAccessor } from '../../runtime/types';
 import { PIN_MODE } from '../../pin-space';
 import { TeachingMCUError } from './teaching-mcu.errors';
-import type { TeachingMCULayout, TeachingMCUPin, TeachingMCUISAType } from './teaching-mcu';
+import type { TeachingMCULayout, TeachingMCUPin } from './teaching-mcu';
 
 /** Storage subset the accessor needs; `IRStorage` satisfies it structurally. */
 export interface StorageAccessor {
@@ -111,8 +111,6 @@ export interface TeachingMCUSnapshot {
  * against `readRegister`/`writeRegister`/`readPin` keeps working.
  */
 export interface TeachingMCUAccessor extends McuAccessor {
-  /** Instruction set executed by this instance. */
-  readonly isa: TeachingMCUISAType;
   /** Guest register count (16). */
   readonly registerCount: number;
   /** GPIO port names in declaration order. */
@@ -446,7 +444,6 @@ export function buildAccessor(
       'ipsr',
     ]),
     registerCount: target.registerCount,
-    isa: target.isa,
     ports: target.config.ports,
 
     getPC(): number {

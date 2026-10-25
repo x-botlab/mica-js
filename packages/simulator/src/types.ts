@@ -60,6 +60,7 @@ export interface AdvanceReport {
 
 export type SimulationDiagnosticCode =
   | 'simulator/device-load-failed'
+  | 'simulator/schematic-diagnostic'
   | 'simulator/instance-create-failed'
   | 'simulator/advance-failed'
   | 'simulator/publish-failed'
@@ -153,6 +154,41 @@ export interface DeviceSimExecutor {
   getSchematic(): SchematicDocument;
   /** Endpoints of the running instances, in schematic order; empty while `idle`. */
   getTopics(): readonly DeviceTopic[];
+
+  /**
+   * Samples the digital level of one pin, for a probe table.
+   *
+   * Optional because only an executor that owns an electrical model can answer
+   * it: `createCircuitExecutor` (unified IR) implements it, the scheduler-path
+   * executor does not. Hosts must check for the member before calling it.
+   *
+   * @throws when the symbol or pin is unknown, or nothing is loaded.
+   */
+  samplePin?(symbol: string, pin: string): { value: 0 | 1; ready: boolean };
+
+  /**
+   * Samples the solved voltage of one pin, in volts (RFC 0002 §5).
+   *
+   * The analog counterpart of {@link samplePin}: a host builds a scope from it.
+   * Optional for the same reason — only a runtime with an electrical model can
+   * answer it.
+   *
+   * @throws when the symbol or pin is unknown, or nothing is loaded.
+   */
+  samplePinVoltage?(symbol: string, pin: string): { value: number; ready: boolean };
+
+  /**
+   * Samples the switch state of one declared device connection.
+   *
+   * Optional for the same reason as {@link samplePin}: it needs a runtime that
+   * keeps per-device connection state.
+   *
+   * @throws when the symbol or connection is unknown, or nothing is loaded.
+   */
+  sampleConnection?(
+    symbol: string,
+    connection: string,
+  ): { state: 'open' | 'closed'; ready: boolean };
 
   /**
    * Builds a runtime for `document` and mounts one device instance per symbol.

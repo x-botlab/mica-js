@@ -184,13 +184,27 @@ interface WidgetHost {
 
 ### 资源预取
 
-widget 通过 `api.assets.readBinary(src)` 读取：
+widget 通过 `api.assets.readBinary(src)` 读取字节，或用 `api.assets.loadImage(src)` 直接解码为 `ImageBitmap`：
 
 ```js
-const bytes = await api.assets.readBinary(api.props.texture.src);
+const bytes = await api.assets.readBinary(api.props.calibration.src);
+const bitmap = await api.assets.loadImage(api.props.texture.src);
+ctx.drawImage(bitmap, 0, 0);
+bitmap.close();
 ```
 
-每次调用返回**副本**，widget 可以随意修改。未预取的 `src` 会被 reject，并在同一实例、同一 `src` 的首次失败时上报一条 `widget/asset-failed`。**这个 Promise 必须由 widget 自己 `catch`**：不 await 也不 catch 会在 guest worker 里留下 unhandled rejection。
+`loadImage` 支持 PNG / JPEG / WebP / SVG（按扩展名推断 MIME），返回的位图由 widget 持有并负责 `close()`。每次 `readBinary` / `loadImage` 都返回**独立副本**，widget 可以随意修改。未预取的 `src` 会被 reject，并在同一实例、同一 `src` 的首次失败时上报一条 `widget/asset-failed`；解码失败同样以 rejection 结束。**这些 Promise 必须由 widget 自己 `catch`**：不 await 也不 catch 会在 guest worker 里留下 unhandled rejection。
+
+宿主需要从工程目录读取 `file` 引用时，可使用 Node 侧子入口 `@mica-js/widget/assets`：
+
+```ts
+import { createFileWidgetAssetProvider } from '@mica-js/widget/assets';
+
+const assets = createFileWidgetAssetProvider({ rootDir }); // 可再传 maxSize / decode
+const host = createWidgetHost({ provider, assets });
+```
+
+它复用 `@mica-js/core/assets` 的边界检查，失败时抛出带稳定错误码的 `WidgetAssetError`（`asset/missing`、`asset/out-of-root`、`asset/too-large`、`asset/undecodable`）。`inline` / `store` 引用仍由宿主自行解析；该子入口依赖 `node:fs`，不进入浏览器侧的包根导出。
 
 ### 接入仿真
 
@@ -221,6 +235,39 @@ sequenceDiagram
 - `WidgetHostSimulation` 只有 `onPublish` / `deliver` 两个同步方法；`@mica-js/simulator` 的 `DeviceSimExecutor` 结构上直接满足它。
 - 未显式传入 `simTime` 时按 `0` 发布。
 
+### 文本输入与选择
+
+guest 没有 DOM，输入法（IME）组合、光标和原生选择手柄都依赖宿主页面里的一个隐藏 `<textarea>` 代理：widget 调用 `api.textInput.begin()`，宿主按逻辑坐标把 textarea 放到对应位置并聚焦，再把 `composition*` / `input` / `keydown` 事件回传给 guest。
+
+```js
+export default function editor(api) {
+  let text = '';
+  let composing = '';
+
+  api.onTextInput((event) => {
+    if (event.type === 'composing') composing = event.text;
+    if (event.type === 'commit') text = event.text;
+    api.invalidate();
+  });
+
+  return {
+    input(event) {
+      if (event.type !== 'pointerdown') return;
+      api.textInput.begin({ x: 4, y: 4, width: 120, height: 24, initialText: text });
+    },
+    render(ctx) {
+      ctx.fillText(text || composing, 4, 18);
+    },
+  };
+}
+```
+
+- `api.textInput.begin(options)` 默认宽度 `100`、高度 `20`，`cursorPosition` 会夹到文本长度；`update({ x, y })` 在 widget 滚动/重排后移动控件。
+- `commit()` / `cancel()` 结束会话。widget 主动 `commit()` 时立即收到一次 `commit` 事件；宿主确认的同一次提交会被状态机忽略，不会重复通知。
+- `onTextInput` 返回取消订阅函数。`composing` 事件的 `text` 是 IME 正在编辑的组合串，`input` / `commit` 事件是控件完整值。
+- `api.textSelection.begin({ text, start, end, x, y })` 把 widget 自己绘制的文本交给原生选择控件；`onTextSelection` 的 `change` / `commit` / `cancel` 事件带 `start`、`end` 与 `selectedText`。范围越界会被夹到文本长度并对调为 `start <= end`。
+- 宿主可用 `WidgetHostOptions.textInputProxy` 注入自己的控件（测试或无 DOM 环境），`textInputAnchor` / `textInputScale` 调整默认控件的定位基准和缩放；默认控件在无 DOM 时不可用，会以 `widget/text-input-failed` 上报。
+
 ### 诊断
 
 失败通过 `onDiagnostic` 上报，不抛给调用方；`loadDocument` 只在文档或绑定校验失败时 reject，`applyCommand` 只在命令被拒绝时抛错。
@@ -235,6 +282,7 @@ sequenceDiagram
 | `widget/render-failed`      | `render` 抛错，或 `resize` / `set-properties` 失败 |
 | `widget/deliver-failed`     | 订阅回调、输入回调或 `deliver` 调用抛错            |
 | `widget/asset-failed`       | 资源预取失败，或 widget 读取了未预取的资源         |
+| `widget/text-input-failed`  | 宿主无法创建原生输入/选择控件（如无 DOM）          |
 
 ### 崩溃与重建
 
@@ -270,7 +318,13 @@ interface WidgetInstanceApi {
   readonly height: number;
   readonly props: Readonly<Record<string, unknown>>;
   readonly assets: WidgetAssetApi;
+  readonly textInput: WidgetTextInputApi;
+  readonly textSelection: WidgetTextSelectionApi;
+  onTextInput(listener: TextInputListener): () => void;
+  onTextSelection(listener: TextSelectionListener): () => void;
   subscribe(port: string, listener: WidgetPortListener): () => void;
+  onPropsChanged(listener: WidgetPropsListener): () => void;
+  onResize(listener: WidgetResizeListener): () => void;
   publish(port: string, payload: unknown, simTime?: number): void;
   invalidate(): void;
 }
@@ -278,13 +332,18 @@ interface WidgetInstanceApi {
 interface WidgetInstance {
   render?(context: OffscreenCanvasRenderingContext2D): void;
   input?(event: WidgetInputEvent): void;
+  tick?(deltaMs: number): void;
   dispose?(): void;
 }
 ```
 
 - 尺寸是逻辑单位：guest 运行时负责设备像素比，widget 不自己乘 DPR。
-- `render` / `input` / `dispose` 都可省略，纯逻辑 widget 不提供 `render`。
+- `render` / `input` / `tick` / `dispose` 都可省略，纯逻辑 widget 不提供 `render`。
+- `onPropsChanged` 在 `api.props` 更新后按注册顺序串行通知并自动重绘；初始值直接读 `api.props`。
+- `onResize` 在 `api.width` / `api.height` 更新后按注册顺序通知；仅 DPR 变化只重绘、不通知。
+- `tick(deltaMs)` 每个动画帧（约 60 FPS）调用一次，`deltaMs` 为距上一帧的毫秒数；需要重绘时自行调用 `invalidate()`。
 - `invalidate()` 在同一 tick 内多次调用会合并成一帧。
+- `textInput` / `textSelection` 在宿主页面的隐藏 `<textarea>` 上完成 IME 与原生选择，详见「文本输入与选择」。
 
 ## 类型
 

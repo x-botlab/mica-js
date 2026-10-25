@@ -22,6 +22,9 @@ import {
   WIDGET_RESET_RUNTIME_METHOD,
   WIDGET_RESIZE_METHOD,
   WIDGET_SET_PROPERTIES_METHOD,
+  WIDGET_TEXT_INPUT_EVENT,
+  WIDGET_TEXT_INPUT_METHOD,
+  WIDGET_TEXT_SELECTION_METHOD,
   WIDGET_UNMOUNT_METHOD,
 } from '../runtime/protocol';
 import type {
@@ -29,12 +32,18 @@ import type {
   WidgetErrorMessage,
   WidgetFrameMessage,
   WidgetPublishMessage,
+  WidgetTextCommandMessage,
+  WidgetTextInputBeginMessage,
+  WidgetTextSelectionBeginMessage,
+  WidgetTextSessionKind,
 } from '../runtime/protocol';
 import { collectAssetRefs, mergeProperties } from '../runtime/props';
 import type { WidgetInputEvent } from '../runtime/types';
 import type { WidgetModule } from '../types';
 import { WidgetLayerStore } from './layers';
 import { createDefaultWidgetSandbox } from './sandbox';
+import { createTextInputProxy } from './text-input-proxy';
+import type { WidgetTextInputProxy, WidgetTextInputProxyFactory } from './text-input-proxy';
 import type {
   WidgetAssetProvider,
   WidgetDiagnostic,
@@ -105,8 +114,11 @@ class WidgetHostImpl implements WidgetHost {
   readonly #catalog: WidgetHostOptions['catalog'];
   readonly #simulation: WidgetHostSimulation | undefined;
   readonly #createSandbox: WidgetSandboxFactory;
+  readonly #createTextInput: WidgetTextInputProxyFactory;
   readonly #layerStore = new WidgetLayerStore();
   readonly #instances = new Map<string, InstanceRecord>();
+  /** One live native control per instance and session kind; input and selection may coexist. */
+  readonly #textInputs = new Map<string, WidgetTextInputProxy>();
   readonly #detachers: (() => void)[] = [];
   readonly #documentListeners = new Set<(document: CanvasDocument) => void>();
 
@@ -133,6 +145,15 @@ class WidgetHostImpl implements WidgetHost {
     this.#catalog = options.catalog;
     this.#simulation = options.simulation;
     this.#createSandbox = options.sandbox ?? createDefaultWidgetSandbox;
+    this.#createTextInput =
+      options.textInputProxy ??
+      ((context) =>
+        createTextInputProxy({
+          kind: context.kind,
+          post: context.post,
+          ...(options.textInputAnchor === undefined ? {} : { anchor: options.textInputAnchor }),
+          ...(options.textInputScale === undefined ? {} : { scale: options.textInputScale }),
+        }));
     this.#dpr = options.dpr ?? currentDevicePixelRatio();
     this.#unsubscribeSimulation = this.#simulation?.onPublish((publish) => {
       this.#onSimulationPublish(publish);
@@ -179,6 +200,7 @@ class WidgetHostImpl implements WidgetHost {
     // Clear synchronously so `layers` is empty the moment the caller asks: the editor paints
     // placeholder frames until the remount commits new bitmaps.
     this.#instances.clear();
+    this.#dropTextInputs();
     this.#layerStore.clear();
     this.#resetPending = true;
     // Same queue as every other mutation, so a reset never interleaves with an in-flight mount.
@@ -503,6 +525,8 @@ class WidgetHostImpl implements WidgetHost {
     }
 
     this.#forget(instanceId, instance);
+    // The overlay lives on the host document, so it would outlive an unmounted widget.
+    this.#dropTextInputsFor(instanceId);
     this.#fire(undefined, WIDGET_UNMOUNT_METHOD, [instanceId], instanceId);
   }
 
@@ -674,6 +698,7 @@ class WidgetHostImpl implements WidgetHost {
       sandbox.on(WIDGET_PUBLISH_EVENT, (payload) => this.#onPublishMessage(payload)),
       sandbox.on(WIDGET_ERROR_EVENT, (payload) => this.#onErrorMessage(payload)),
       sandbox.on(WIDGET_ASSET_FAILED_EVENT, (payload) => this.#onAssetFailedMessage(payload)),
+      sandbox.on(WIDGET_TEXT_INPUT_EVENT, (payload) => this.#onTextCommand(payload)),
     );
   }
 
@@ -768,6 +793,170 @@ class WidgetHostImpl implements WidgetHost {
     );
   }
 
+  /**
+   * Routes one guest text command to the native control overlay.
+   *
+   * The guest never touches the DOM: it asks for a session here and receives the native events
+   * back through `WIDGET_TEXT_INPUT_METHOD` / `WIDGET_TEXT_SELECTION_METHOD`.
+   */
+  #onTextCommand(payload: unknown): void {
+    const command = payload as Partial<WidgetTextCommandMessage> | null | undefined;
+    if (!command || typeof command !== 'object') return;
+    if (typeof command.instanceId !== 'string') return;
+    // A command can arrive after its instance was unmounted; there is nothing left to drive.
+    if (!this.#instances.has(command.instanceId)) return;
+
+    const kind = command.session;
+    if (kind !== 'input' && kind !== 'selection') return;
+
+    switch (command.type) {
+      case 'begin':
+        this.#beginTextSession(
+          command as WidgetTextInputBeginMessage | WidgetTextSelectionBeginMessage,
+        );
+        return;
+      case 'update': {
+        const proxy = this.#getTextInput(command.instanceId, kind);
+        if (!proxy) return;
+        if (kind === 'input') {
+          const { x, y } = command as { x?: unknown; y?: unknown };
+          if (!isFiniteNumber(x) || !isFiniteNumber(y)) return;
+          proxy.update({ x, y });
+        } else {
+          const { start, end } = command as { start?: unknown; end?: unknown };
+          if (!isFiniteNumber(start) || !isFiniteNumber(end)) return;
+          proxy.updateRange({ start, end });
+        }
+        return;
+      }
+      case 'commit':
+      case 'cancel': {
+        const proxy = this.#getTextInput(command.instanceId, kind);
+        if (!proxy) return;
+        if (command.type === 'commit') proxy.commit();
+        else proxy.cancel();
+        this.#dropTextInput(command.instanceId, kind);
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  #beginTextSession(command: WidgetTextInputBeginMessage | WidgetTextSelectionBeginMessage): void {
+    const { instanceId, session } = command;
+    if (
+      !isFiniteNumber(command.x) ||
+      !isFiniteNumber(command.y) ||
+      !isFiniteNumber(command.width) ||
+      !isFiniteNumber(command.height)
+    ) {
+      return;
+    }
+
+    // One overlay per instance and kind: a new `begin` replaces the same kind still open, while an
+    // input and a selection session can stay side by side.
+    this.#dropTextInput(instanceId, session);
+
+    let proxy: WidgetTextInputProxy | undefined;
+    try {
+      proxy = this.#createTextInput({
+        instanceId,
+        kind: session,
+        post: (event) => this.#postTextEvent(instanceId, session, event),
+      });
+    } catch (error) {
+      this.#reportTextInputFailure(instanceId, session, error);
+      return;
+    }
+    if (!proxy) {
+      this.#reportTextInputFailure(
+        instanceId,
+        session,
+        new Error('no DOM is available to host the native control'),
+      );
+      return;
+    }
+
+    this.#textInputs.set(textInputKey(instanceId, session), proxy);
+    try {
+      // The guest is untrusted: validate the payload instead of trusting the runtime types.
+      const text = typeof command.text === 'string' ? command.text : '';
+      let start = 0;
+      let end = 0;
+      if (session === 'input') {
+        start = isFiniteNumber(command.cursorPosition) ? command.cursorPosition : 0;
+        end = start;
+      } else {
+        start = isFiniteNumber(command.start) ? command.start : 0;
+        end = isFiniteNumber(command.end) ? command.end : start;
+      }
+      proxy.begin({
+        x: command.x,
+        y: command.y,
+        width: command.width,
+        height: command.height,
+        text,
+        start,
+        end,
+      });
+    } catch (error) {
+      this.#dropTextInput(instanceId, session);
+      this.#reportTextInputFailure(instanceId, session, error);
+    }
+  }
+
+  #getTextInput(instanceId: string, kind: WidgetTextSessionKind): WidgetTextInputProxy | undefined {
+    return this.#textInputs.get(textInputKey(instanceId, kind));
+  }
+
+  #postTextEvent(instanceId: string, kind: WidgetTextSessionKind, event: unknown): void {
+    if (!this.#instances.has(instanceId)) return;
+    this.#fire(
+      undefined,
+      kind === 'input' ? WIDGET_TEXT_INPUT_METHOD : WIDGET_TEXT_SELECTION_METHOD,
+      [instanceId, event],
+      instanceId,
+    );
+  }
+
+  #reportTextInputFailure(instanceId: string, kind: WidgetTextSessionKind, error: unknown): void {
+    this.#report(
+      'widget/text-input-failed',
+      `Widget "${instanceId}" could not open a native ${kind} control: ${describeError(error)}`,
+      { instanceId, widget: this.#instances.get(instanceId)?.widget },
+    );
+  }
+
+  #dropTextInput(instanceId: string, kind: WidgetTextSessionKind): void {
+    const key = textInputKey(instanceId, kind);
+    const proxy = this.#textInputs.get(key);
+    if (!proxy) return;
+    this.#textInputs.delete(key);
+    try {
+      proxy.dispose();
+    } catch {
+      // The overlay may already be detached from the document.
+    }
+  }
+
+  #dropTextInputsFor(instanceId: string): void {
+    this.#dropTextInput(instanceId, 'input');
+    this.#dropTextInput(instanceId, 'selection');
+  }
+
+  #dropTextInputs(): void {
+    for (const key of [...this.#textInputs.keys()]) {
+      const proxy = this.#textInputs.get(key);
+      this.#textInputs.delete(key);
+      try {
+        proxy?.dispose();
+      } catch {
+        // The overlay may already be detached from the document.
+      }
+    }
+  }
+
   #onErrorMessage(payload: unknown): void {
     const message = payload as Partial<WidgetErrorMessage> | null | undefined;
     if (!message || typeof message !== 'object') return;
@@ -826,6 +1015,7 @@ class WidgetHostImpl implements WidgetHost {
     this.#sandbox = undefined;
     this.#starting = undefined;
     this.#detach();
+    this.#dropTextInputs();
     this.#layerStore.clear();
     this.#instances.clear();
     if (!this.#disposed) this.#report('widget/runtime-failed', message);
@@ -835,6 +1025,7 @@ class WidgetHostImpl implements WidgetHost {
   async #shutdown(): Promise<void> {
     this.#disposed = true;
     this.#detach();
+    this.#dropTextInputs();
     this.#unsubscribeSimulation?.();
     this.#unsubscribeSimulation = undefined;
     this.#layerStore.clear();
@@ -923,6 +1114,15 @@ function splitRef(ref: string): { packageId: string; widgetId: string } | undefi
 function currentDevicePixelRatio(): number {
   const ratio = (globalThis as { devicePixelRatio?: unknown }).devicePixelRatio;
   return typeof ratio === 'number' && Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+/** Instance ids are UUIDs, so a newline cannot appear in one; the key stays unambiguous. */
+function textInputKey(instanceId: string, kind: WidgetTextSessionKind): string {
+  return `${kind}\n${instanceId}`;
 }
 
 function isBitmap(value: unknown): value is ImageBitmap {

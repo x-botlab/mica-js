@@ -171,6 +171,8 @@ describe('widget guest runtime', () => {
       'set-properties',
       'deliver',
       'pointer',
+      'text-input',
+      'text-selection',
       'reset-runtime',
     ]);
   });

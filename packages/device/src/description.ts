@@ -8,9 +8,11 @@ import {
   type DeviceDescription,
   type DeviceDescriptionMetadata,
   type DevicePortDescriptor,
+  type PowerDomainDescription,
 } from './types';
 
 const PORT_FIELDS = new Set(['title', 'description', 'direction', 'type']);
+const POWER_DOMAIN_FIELDS = new Set(['name', 'voltage']);
 
 /**
  * Parses an already-loaded device description object (#11).
@@ -43,6 +45,7 @@ export function parseDeviceDescription(
     pinGroups: readPinGroups(definition['pinGroups'], pins),
     connections: readConnections(definition),
     designatorPrefix: readDesignatorPrefix(definition['designatorPrefix']),
+    powerDomains: readPowerDomains(definition['powerDomains']),
   };
 }
 
@@ -172,6 +175,72 @@ function readPort(key: string, value: unknown): DevicePortDescriptor {
     port.description = description;
   }
   return port;
+}
+
+/**
+ * Parses the optional RFC 0007 `powerDomains` declaration.
+ *
+ * The list is ordered: the first entry is the device's primary domain and gates
+ * its own logic. `voltage` is the nominal supply and must be a finite, positive
+ * number; the boolean circuit model stores it but never solves with it.
+ *
+ * @throws {DeviceError} when the list or one of its entries is malformed or
+ *   repeats a name.
+ */
+function readPowerDomains(value: unknown): readonly PowerDomainDescription[] {
+  if (value === undefined) {
+    return Object.freeze([]);
+  }
+  if (!Array.isArray(value)) {
+    throw new DeviceError('device/description-schema', 'Device powerDomains must be an array.', {
+      pointer: '/powerDomains',
+    });
+  }
+  const domains: PowerDomainDescription[] = [];
+  const seen = new Set<string>();
+  value.forEach((raw, index) => {
+    const pointer = `/powerDomains/${index}`;
+    if (!isPlainRecord(raw)) {
+      throw new DeviceError('schema/invalid-type', `Power domain ${index} must be an object.`, {
+        pointer,
+      });
+    }
+    for (const field of Object.keys(raw)) {
+      if (!POWER_DOMAIN_FIELDS.has(field)) {
+        throw new DeviceError(
+          'schema/unknown-field',
+          `Power domain ${index} has unknown field "${field}".`,
+          { pointer: `${pointer}/${escapePointer(field)}` },
+        );
+      }
+    }
+    const name = raw['name'];
+    if (typeof name !== 'string' || name.trim().length === 0) {
+      throw new DeviceError(
+        'schema/invalid-type',
+        `Power domain ${index} name must be a non-empty string.`,
+        { pointer: `${pointer}/name` },
+      );
+    }
+    if (seen.has(name)) {
+      throw new DeviceError(
+        'schema/invalid-value',
+        `Power domain ${JSON.stringify(name)} is declared twice.`,
+        { pointer: `${pointer}/name` },
+      );
+    }
+    const voltage = raw['voltage'];
+    if (typeof voltage !== 'number' || !Number.isFinite(voltage) || voltage <= 0) {
+      throw new DeviceError(
+        'schema/invalid-type',
+        `Power domain ${JSON.stringify(name)} voltage must be a finite positive number.`,
+        { pointer: `${pointer}/voltage` },
+      );
+    }
+    seen.add(name);
+    domains.push(Object.freeze({ name, voltage }));
+  });
+  return Object.freeze(domains);
 }
 
 function readDesignatorPrefix(value: unknown): string | undefined {

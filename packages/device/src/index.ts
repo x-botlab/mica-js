@@ -5,6 +5,16 @@ export { DeviceError } from './errors';
 export type { DeviceErrorCode, DeviceErrorOptions } from './errors';
 export { BackpressureError } from './messaging/errors';
 export type { BackpressureOperation } from './messaging/errors';
+export {
+  validateRgb565Layout,
+  validateSegmentsLayout,
+  validateTopicPayload,
+} from './messaging/payload';
+export type {
+  ValidateTopicPayloadOptions,
+  ValidationIssue,
+  ValidationResult,
+} from './messaging/payload';
 
 export { parseDeviceDescription } from './description';
 export { resolveDeviceProperties } from './properties';
@@ -51,6 +61,7 @@ export type {
   PinOperations,
   PinRef,
   PinSide,
+  PowerDomainDescription,
   TopicMetadata,
   TopicPayload,
   TopicPayloadType,

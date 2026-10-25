@@ -7,23 +7,14 @@ Complete ARM Cortex-M3 implementation for the unified IR architecture. This is a
 Teaching MCU serves as:
 
 - **Complexity validation**: Exercises compiler with real instruction set, peripherals, interrupts
-- **Performance baseline**: Demonstrates 70-170× speedup for instruction execution
+- **Performance baseline**: Runs a real M3 loop at hundreds of M inst/s (see below)
 - **Developer reference**: Shows patterns for complex stateful devices
 
 ## Features
 
-### Dual ISA Support
+### M3 ISA
 
-**Teaching ISA** (16-bit, educational):
-
-```
-MOV  r0, #42      ; Load immediate
-ADD  r1, r0, r2   ; Register arithmetic
-LDR  r3, [r0]     ; Memory load
-STR  r4, [r1]     ; Memory store
-```
-
-**M3 ISA** (32-bit, ARM Cortex-M3 subset):
+32-bit ARM Cortex-M3 subset:
 
 ```
 movs  r0, #42
@@ -64,21 +55,20 @@ mcu.run(1000);
 
 ## Performance
 
-`teaching-mcu.performance.test.ts` compares this device with the scheduler-based
-`packages/device/examples/teaching-mcu` on the same machine. The batch figures
-are steady-state medians (the host has translated the firmware and V8 has
-tiered the generated code up):
+`teaching-mcu.performance.test.ts` measures the batch path (an entire
+instruction slice inside one engine call) and the single-step path (the
+debugging path). The batch figure is a steady-state median: the host has
+translated the firmware and V8 has tiered the generated code up.
 
-| Mode                      |             Rate |     Speedup |
-| ------------------------- | ---------------: | ----------: |
-| Teaching ISA, batch       |      486–505 M/s | ~2900–3300× |
-| M3 ISA, batch             |      583–595 M/s | ~3400–3900× |
-| Teaching ISA, single-step | 4.2–4.6 M tick/s |     ~25–28× |
+| Mode          |             Rate |
+| ------------- | ---------------: |
+| M3 ISA, batch | 583–595 M inst/s |
 
-Baseline: 0.13–0.18 M inst/s (scheduler-based architecture), i.e. ~1.6 µs per
-guest instruction.
+For scale, the scheduler-based device in `packages/device/examples/teaching-mcu`
+retires ~0.13–0.18 M inst/s (~1.6 µs per guest instruction), so the unified
+batch path is roughly 3400–3900× faster.
 
-Both ISAs are far above the 72 M inst/s needed to emulate a 72 MHz classroom
+M3 throughput is far above the 72 M inst/s needed to emulate a 72 MHz classroom
 board in real time. These numbers are observations only: the perf files are
 excluded from `pnpm test` and run on demand with `pnpm test:perf`, and they
 contain no thresholds or assertions (a busy machine must never fail a test).
@@ -159,12 +149,11 @@ instructions per dispatch.
   stores the total when it exits.
 - **Yield granularity.** The cycle budget (`sliceEnd`) is checked at every guest
   terminator, so one tick retires the same instructions as before.
-- **Faults and yields.** `HALT`/`WFI`/`TFAULT` leave the artifact with the same
-  `fault`, `halted`, `sleeping` and `pc` state.
-- **Peripherals.** The teaching ISA latches `r0 & 1` into the ODR register after
-  each block (guest-visible MMIO). The pin-memory publish — the part only the
-  host can observe — happens when the artifact yields, i.e. once per tick
-  instead of once per block.
+- **Faults and yields.** `HALT`/`WFI` leave the artifact with the same `fault`,
+  `halted`, `sleeping` and `pc` state.
+- **Peripherals.** Guest MMIO stores land in the peripheral window, and the
+  pin-memory publish — the part only the host can observe — happens when the
+  artifact yields, i.e. once per tick instead of once per block.
 - **Self-modifying code.** Guest stores cannot change the flash: writes below
   `flashSize` fault in `store32`/`store8`, and the flash image is a read-only
   `BytesRef`. A translated block therefore never goes stale.
@@ -188,10 +177,10 @@ teaching-mcu/
 ├── teaching-mcu.ac.ts            # Accessor builder
 ├── teaching-mcu.d.ts             # TypeScript types
 ├── teaching-mcu.errors.ts        # Error definitions
-├── teaching-mcu.test-helpers.ts  # Test utilities (firmware builders, reference model)
-├── teaching-mcu.test.ts          # Unit tests (46 tests)
+├── teaching-mcu.test-helpers.ts  # Test utilities (firmware builders)
+├── teaching-mcu.test.ts          # Unit tests (45 tests)
 ├── teaching-mcu.integration.test.ts  # Integration tests (12 tests)
-├── teaching-mcu.block-translator.test.ts  # Block decoding shape (9 tests)
+├── teaching-mcu.block-translator.test.ts  # Block decoding shape (8 tests)
 ├── region-debug.test.ts          # Region formation + dispatch diagnostics
 ├── region-performance.test.ts    # JIT region throughput (observation only)
 ├── teaching-mcu.performance.test.ts  # Performance observations (no assertions)
@@ -205,7 +194,6 @@ teaching-mcu/
 import { Circuit, createTeachingMCUIR, TEACHING_MCU_IR_TYPE } from '@mica-js/simulator';
 
 const mcu = createTeachingMCUIR('mcu', {
-  isa: 'm3', // or 'teaching'
   firmware: new Uint8Array([...]),
   instructionsPerTick: 1,
 });
@@ -260,10 +248,6 @@ Flash (0x0000-0x7FFF) and RAM (0x8000-0xFFFF) share single address space. Provid
 ### Instruction counting
 
 `cycles` field counts retired instructions, not clock cycles. Exception entry charges configurable `exceptionCycles` (default 12).
-
-### GPIO mapping
-
-Legacy `GPIO` pin becomes `PA0`. Full GPIO ports PA/PB with 16 pins each.
 
 ## Implementation Notes
 
@@ -330,9 +314,9 @@ pnpm test packages/simulator/src/unified-ir/examples/teaching-mcu
 
 Expected:
 
-- 46 unit tests passing
+- 45 unit tests passing
 - 12 integration tests passing
-- 9 translation tests passing (unit shape and fusion on/off parity)
+- 8 translation tests passing (unit shape and fusion on/off parity)
 
 The two `*performance*` files are observation-only benchmarks: they are
 excluded from `pnpm test` (which must only verify correctness) and print their

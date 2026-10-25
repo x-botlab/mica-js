@@ -26,7 +26,6 @@ export type {
   TeachingMCUConfig,
   TeachingMCUCircuitInput,
   TeachingMCUInterruptConfig,
-  TeachingMCUISAType,
   TeachingMCULayout,
   TeachingMCUPin,
   TeachingMCUPinMemory,

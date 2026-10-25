@@ -1,0 +1,36 @@
+{
+  "name": "lab",
+  "version": "1.0.0",
+  "widgets": {
+    "animation": {
+      "path": "animation/animation.json",
+      "displayName": "动画",
+      "description": "tick(deltaMs) 帧动画 + onResize 重排 + onPropsChanged 改速度。"
+    },
+    "led": {
+      "path": "led/led.json",
+      "displayName": "LED",
+      "description": "布尔输入点亮指示灯，演示 input 端口与属性覆盖。"
+    },
+    "image-viewer": {
+      "path": "image-viewer/image-viewer.json",
+      "displayName": "图像查看器",
+      "description": "assets.loadImage() 预取图片，按 select 端口切换。"
+    },
+    "potentiometer": {
+      "path": "potentiometer/potentiometer.json",
+      "displayName": "电位器",
+      "description": "可拖动滑块输出 0–3.3 V，tick() 做平滑动画。"
+    },
+    "power-switch": {
+      "path": "power-switch/power-switch.json",
+      "displayName": "电源开关",
+      "description": "点击或改属性都会发布 power，演示 onPropsChanged。"
+    },
+    "text-display": {
+      "path": "text-display/text-display.json",
+      "displayName": "文本显示",
+      "description": "串口文本显示 + IME 输入（textInput）与原生选择（textSelection）。"
+    }
+  }
+}

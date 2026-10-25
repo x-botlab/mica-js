@@ -222,7 +222,7 @@ export class NetworkTopologyAnalyzer {
         diagnostic(
           'floating-net',
           'warning',
-          `Net ${netId} has no driver and no rail; its loads read a constant low`,
+          `Net ${netId} has no driver and no rail; its unbiased loads sample the floating level (RFC 0002 §4.5)`,
           netId,
           endpoints,
         ),

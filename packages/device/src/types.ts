@@ -96,6 +96,20 @@ export interface DevicePinGroupDescriptor {
 }
 
 /**
+ * One power domain a device declares (RFC 0007).
+ *
+ * The name is the identity used by `Circuit.turnOn` / `turnOff` / `isPowered`;
+ * the voltage is the nominal supply of the domain. The boolean circuit model
+ * only tracks on/off, so `voltage` is descriptive metadata reserved for a future
+ * voltage solver — it never participates in the electrical solve.
+ */
+export interface PowerDomainDescription {
+  readonly name: string;
+  /** Nominal supply voltage in volts; metadata only in the boolean model. */
+  readonly voltage: number;
+}
+
+/**
  * Parsed device description. Instance configuration is fixed at creation time (#7 / #8);
  * this object is the declaration, not a mutable runtime property store.
  */
@@ -109,6 +123,12 @@ export interface DeviceDescription {
   readonly pinGroups: ReadonlyMap<string, DevicePinGroupDescriptor>;
   readonly connections: ReadonlyMap<string, DeviceConnectionDescriptor>;
   readonly designatorPrefix: string | undefined;
+  /**
+   * Power domains the device declares (RFC 0007), in declaration order; empty
+   * when the device is not power-gated. The first domain gates the device's own
+   * logic (its `tick`/`update`) unless a pin binds itself to another one.
+   */
+  readonly powerDomains: readonly PowerDomainDescription[];
 }
 
 /** Already-parsed definition plus implementation source returned by an {@link IDeviceProvider}. */

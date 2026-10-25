@@ -1,0 +1,21 @@
+{
+  "properties": {
+    "label": { "type": "string", "title": "标签", "default": "电源" },
+    "on": {
+      "type": "boolean",
+      "title": "上电",
+      "description": "权威状态：属性面板改动与点击开关等价，都会通过 onPropsChanged 生效。",
+      "default": true
+    },
+    "onColor": { "type": "color", "title": "开颜色", "default": "#22C55E" },
+    "offColor": { "type": "color", "title": "关颜色", "default": "#3F3F46" }
+  },
+  "ports": {
+    "power": {
+      "direction": "output",
+      "type": "boolean",
+      "title": "电源",
+      "description": "true 表示请求上电；绑定到受电门控器件的 enable 端点。"
+    }
+  }
+}

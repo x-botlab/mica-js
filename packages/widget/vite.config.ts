@@ -6,15 +6,20 @@ import { micaWidgetPlugins } from './vite.plugins';
 export default defineConfig({
   build: {
     lib: {
-      entry: 'src/index.ts',
+      entry: { index: 'src/index.ts', assets: 'src/assets.ts' },
       formats: ['es'],
-      fileName: 'index',
+      fileName: (_format, entryName) => `${entryName}.js`,
     },
     target: 'es2022',
     sourcemap: true,
     minify: false,
     rollupOptions: {
-      external: ['@mica-js/core', '@mica-js/core/canvas', '@mica-js/sandbox'],
+      external: [
+        '@mica-js/core',
+        '@mica-js/core/assets',
+        '@mica-js/core/canvas',
+        '@mica-js/sandbox',
+      ],
     },
   },
   plugins: [
@@ -32,6 +37,9 @@ export default defineConfig({
     environment: 'node',
     // Tests run before the workspace build, so resolve the workspace packages from source.
     alias: {
+      '@mica-js/core/assets': fileURLToPath(
+        new URL('../core/src/assets/index.ts', import.meta.url),
+      ),
       '@mica-js/core/canvas': fileURLToPath(
         new URL('../core/src/canvas/index.ts', import.meta.url),
       ),

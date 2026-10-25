@@ -1,0 +1,16 @@
+{
+  "properties": {
+    "speed": {
+      "type": "number",
+      "title": "角速度",
+      "description": "弧度 / 秒；改动会通过 onPropsChanged 立即生效。",
+      "default": 1,
+      "min": -8,
+      "max": 8
+    },
+    "sides": { "type": "integer", "title": "边数", "default": 5, "min": 3, "max": 12 },
+    "color": { "type": "color", "title": "颜色", "default": "#F472B6" },
+    "background": { "type": "color", "title": "背景", "default": "#18181B" }
+  },
+  "ports": {}
+}

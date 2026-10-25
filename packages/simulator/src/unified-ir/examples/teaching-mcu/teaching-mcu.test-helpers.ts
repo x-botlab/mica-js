@@ -1,7 +1,6 @@
 /**
- * Test helpers for the unified teaching MCU: M3-class instruction encoding,
- * small firmware builders and a JavaScript reference model of the legacy
- * teaching ISA used by the parity tests.
+ * Test helpers for the unified teaching MCU: M3-class instruction encoding and
+ * small firmware builders.
  */
 import { createIRJIT } from '@mica-js/ir';
 import type { IRExecutionContext } from '@mica-js/ir';
@@ -68,6 +67,11 @@ export function encodeB(cond: number, displacementWords: number): number {
   return ((Op.B << 26) | ((cond & 0xf) << 22) | (displacementWords & 0x3f_ffff)) >>> 0;
 }
 
+/** Unconditional `BL` with a word displacement relative to `pc + 4`. */
+export function encodeBL(displacementWords: number): number {
+  return ((Op.BL << 26) | (displacementWords & 0x3f_ffff)) >>> 0;
+}
+
 export function wordsToBytes(words: readonly number[]): Uint8Array {
   const bytes = new Uint8Array(words.length * 4);
   const view = new DataView(bytes.buffer);
@@ -131,57 +135,4 @@ export function createStandalone(device: TeachingMCUIRDevice): StandaloneRuntime
     step: () => jit.execute(device.layout.entries.tick, [], context),
   });
   return { jit, accessor, context };
-}
-
-export interface TeachingReferenceState {
-  readonly r0: number;
-  readonly pc: number;
-  readonly gpio: boolean;
-  readonly halted: boolean;
-  readonly faulted: boolean;
-}
-
-/**
- * JavaScript model of the original teaching device, including its
- * "consecutive ADD instructions form one block" decode rule.
- */
-export function runTeachingReference(firmware: Uint8Array, blocks: number): TeachingReferenceState {
-  let r0 = 0;
-  let pc = 0;
-  let halted = false;
-  let faulted = false;
-  let gpio = false;
-  for (let block = 0; block < blocks && !halted; block += 1) {
-    for (;;) {
-      if (pc < 0 || pc % 2 !== 0 || pc + 2 > firmware.byteLength) {
-        faulted = true;
-        halted = true;
-        break;
-      }
-      const opcode = firmware[pc] as number;
-      const operand = firmware[pc + 1] as number;
-      if (opcode === 0x10) {
-        r0 = (r0 + operand) >>> 0;
-        pc += 2;
-        continue;
-      }
-      if (opcode === 0x20) {
-        pc = operand;
-        break;
-      }
-      if (opcode === 0x30) {
-        pc = r0 !== 0 ? operand : pc + 2;
-        break;
-      }
-      if (opcode === 0x00) {
-        halted = true;
-        break;
-      }
-      faulted = true;
-      halted = true;
-      break;
-    }
-    gpio = (r0 & 1) !== 0;
-  }
-  return Object.freeze({ r0, pc, gpio, halted, faulted });
 }

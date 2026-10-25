@@ -1,0 +1,38 @@
+{
+  "properties": {
+    "index": {
+      "type": "integer",
+      "title": "当前图片",
+      "description": "0–2，对应 image0 / image1 / image2。",
+      "default": 0,
+      "min": 0,
+      "max": 2
+    },
+    "mode": {
+      "type": "integer",
+      "title": "填充方式",
+      "description": "0 = contain（完整显示），1 = cover（填满裁切）。",
+      "default": 0,
+      "min": 0,
+      "max": 1
+    },
+    "background": { "type": "color", "title": "背景", "default": "#09090B" },
+    "image0": { "type": "image", "title": "图片 1" },
+    "image1": { "type": "image", "title": "图片 2" },
+    "image2": { "type": "image", "title": "图片 3" }
+  },
+  "ports": {
+    "select": {
+      "direction": "input",
+      "type": "number",
+      "title": "选择图片",
+      "description": "收到 0–2 时切换显示的图片；加载走 assets.loadImage()。"
+    },
+    "selected": {
+      "direction": "output",
+      "type": "number",
+      "title": "已选图片",
+      "description": "点击切换后发布当前槽位，便于回传给 MCU。"
+    }
+  }
+}

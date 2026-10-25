@@ -1,13 +1,28 @@
 declare const timeBrand: unique symbol;
 
 export type TimePs = number & { readonly [timeBrand]: 'TimePs' };
-export type TimeUnit = 'ps' | 'ns' | 'us' | 'ms' | 's';
+
+/**
+ * RFC 0001: 虚拟时间模型
+ *
+ * 支持的时间单位：
+ * - 'ps': 皮秒（picoseconds）
+ * - 'ns': 纳秒（nanoseconds）
+ * - 'us': 微秒（microseconds，ASCII 别名）
+ * - 'µs': 微秒（microseconds，Unicode）
+ * - 'ms': 毫秒（milliseconds）
+ * - 's': 秒（seconds）
+ *
+ * 'us' 和 'µs' 等价，推荐使用 'µs'。
+ */
+export type TimeUnit = 'ps' | 'ns' | 'us' | 'µs' | 'ms' | 's';
 export const MAX_TIME_PS = 7_200_000_000_000_000;
 
 const factors: Readonly<Record<TimeUnit, number>> = {
   ps: 1,
   ns: 1_000,
   us: 1_000_000,
+  µs: 1_000_000,
   ms: 1_000_000_000,
   s: 1_000_000_000_000,
 };
@@ -28,7 +43,7 @@ export function timePs(value: number): TimePs {
 
 export function toTimePs(value: number, unit: TimeUnit): TimePs {
   if (typeof unit !== 'string' || !Object.hasOwn(factors, unit)) {
-    throw new TypeError(`unit=${String(unit)} must be ps, ns, us, ms, or s`);
+    throw new TypeError(`unit=${String(unit)} must be ps, ns, us, µs, ms, or s`);
   }
   checked(value, `input (${unit})`);
   return checked(value * factors[unit], `conversion ${String(value)} ${unit} to ps`);

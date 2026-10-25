@@ -57,7 +57,6 @@ buttonLed.devices.sw1.press();
 
 /** Teaching Cortex-M3 running a real blink loop, driving one LED over GPIO. */
 const mcu = createTeachingMCUIR('mcu', {
-  isa: 'm3',
   ports: ['A'],
   portWidth: 1,
   firmware: blinkyFirmware(50),

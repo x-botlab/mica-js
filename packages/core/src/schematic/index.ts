@@ -26,7 +26,8 @@ export type {
   DiagnosticRelated,
   DiagnosticSeverity,
 } from '../format/diagnostics';
-export { SchematicError } from '../format/errors';
+export { SCHEMA_ERROR_CODES, SchematicError } from '../format/errors';
+export type { SchemaErrorCode } from '../format/errors';
 
 export { parseSchematic } from './format/parse-schematic';
 export { serializeSchematic } from './format/serialize';

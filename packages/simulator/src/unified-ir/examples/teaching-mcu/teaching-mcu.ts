@@ -13,15 +13,8 @@
  *     unified circuit module, and
  *   - the layout the accessor uses to read registers, memory, GPIO and NVIC.
  *
- * Two instruction sets are supported:
- *
- * | `isa`        | encoding | source                                           |
- * | ------------ | -------- | ------------------------------------------------ |
- * | `'m3'`       | 32-bit   | `packages/ir/bench/m3` Cortex-M3-class benchmark  |
- * | `'teaching'` | 16-bit   | the original `teaching-mcu` example device        |
- *
- * The `'teaching'` mode keeps the original device's observable behaviour so
- * migration can be validated instruction-for-instruction.
+ * The instruction set is the 32-bit Cortex-M3-class subset also used by the
+ * `packages/ir/bench/m3` benchmark.
  */
 import { createIRModule } from '@mica-js/ir';
 import type {
@@ -87,9 +80,6 @@ const EXCEPTION_RETURN_LR = 0xffff_fff9;
 const EXCEPTION_RETURN_MASK = 0xffff_fff0;
 const SIGN_BIT = 0x8000_0000;
 
-/** Instruction-set flavour. */
-export type TeachingMCUISAType = 'm3' | 'teaching';
-
 /** One GPIO pin that raises an NVIC interrupt. */
 export interface TeachingMCUInterruptConfig {
   /** IRQ number in `[0, irqCount - 1]`. */
@@ -104,8 +94,6 @@ export interface TeachingMCUInterruptConfig {
 
 /** Author-facing configuration of one teaching MCU instance. */
 export interface TeachingMCUConfig {
-  /** Instruction encoding. Defaults to `'m3'`. */
-  readonly isa?: TeachingMCUISAType;
   /** GPIO port names. Defaults to `['A', 'B']`. */
   readonly ports?: readonly string[];
   /** Pins per port, 1–32. Defaults to 16. */
@@ -114,7 +102,7 @@ export interface TeachingMCUConfig {
   readonly flashSize?: number;
   /** SRAM size in bytes. Defaults to 32 KiB. */
   readonly ramSize?: number;
-  /** Initial flash image. Defaults to the original teaching firmware. */
+  /** Initial flash image. Defaults to a single `HALT` word. */
   readonly firmware?: Uint8Array | readonly number[];
   /** Initial SRAM image. */
   readonly ramInitial?: Uint8Array | readonly number[];
@@ -144,7 +132,6 @@ export interface TeachingMCUConfig {
 
 /** Fully resolved configuration returned by {@link createTeachingMCUIR}. */
 export interface ResolvedTeachingMCUConfig {
-  readonly isa: TeachingMCUISAType;
   readonly ports: readonly string[];
   readonly portWidth: number;
   readonly flashSize: number;
@@ -183,7 +170,6 @@ export interface TeachingMCUPin {
 /** Ref/layout description the accessor needs; produced during IR generation. */
 export interface TeachingMCULayout {
   readonly deviceId: string;
-  readonly isa: TeachingMCUISAType;
   readonly config: ResolvedTeachingMCUConfig;
   readonly pins: ReadonlyMap<string, TeachingMCUPin>;
   readonly pinNames: readonly string[];
@@ -274,7 +260,7 @@ export interface IRDevice {
  * Instruction encoding
  * ---------------------------------------------------------------------- */
 
-/** Unified internal opcodes; teaching-only opcodes live above 100. */
+/** Unified internal opcodes. */
 const Op = {
   HALT: 0,
   MOVI: 1,
@@ -303,10 +289,6 @@ const Op = {
   BX: 24,
   WFI: 25,
   NOP: 26,
-  TADD: 100,
-  TJMP: 101,
-  TJNZ: 102,
-  TFAULT: 103,
 } as const;
 
 const Cond = {
@@ -335,16 +317,15 @@ interface DecodedInstruction {
   readonly rn: number;
   readonly rm: number;
   readonly imm16: number;
-  readonly imm8: number;
-  readonly target: number;
   readonly cond: number;
   readonly simm22: number;
   readonly simm26: number;
 }
 
-const INITIAL_TEACHING_FIRMWARE: readonly number[] = Object.freeze([
-  0x10, 1, 0x10, 2, 0x30, 8, 0x00, 0x00, 0x10, 4, 0x20, 0,
-]);
+const INITIAL_FIRMWARE: readonly number[] = Object.freeze([0, 0, 0, 0]);
+
+/** Encoded size of one guest instruction in bytes. */
+const INSTRUCTION_SIZE = 4;
 
 function decodeM3Word(word: number, pc: number): DecodedInstruction {
   let simm22 = word & 0x3f_ffff;
@@ -353,42 +334,25 @@ function decodeM3Word(word: number, pc: number): DecodedInstruction {
   if ((simm26 & 0x200_0000) !== 0) simm26 -= 0x400_0000;
   return Object.freeze({
     pc,
-    size: 4,
+    size: INSTRUCTION_SIZE,
     op: word >>> 26,
     rd: (word >>> 22) & 0xf,
     rn: (word >>> 18) & 0xf,
     rm: (word >>> 14) & 0xf,
     imm16: word & 0xffff,
-    imm8: word & 0xff,
-    target: 0,
     cond: (word >>> 22) & 0xf,
     simm22,
     simm26,
   });
 }
 
-function isM3Terminator(op: number): boolean {
+/** True when the instruction ends a guest basic block. */
+function isTerminator(op: number): boolean {
   return op === Op.B || op === Op.BL || op === Op.BX || op === Op.HALT || op === Op.WFI;
 }
 
-/** True when the instruction ends a guest basic block. */
-function isTerminator(isa: TeachingMCUISAType, op: number): boolean {
-  if (isa === 'teaching') {
-    return op === Op.TJMP || op === Op.TJNZ || op === Op.HALT || op === Op.TFAULT;
-  }
-  return isM3Terminator(op);
-}
-
 /** Static branch target of one instruction, when the encoding carries one. */
-function staticTarget(
-  isa: TeachingMCUISAType,
-  instruction: DecodedInstruction,
-): number | undefined {
-  if (isa === 'teaching') {
-    return instruction.op === Op.TJMP || instruction.op === Op.TJNZ
-      ? instruction.target >>> 0
-      : undefined;
-  }
+function staticTarget(instruction: DecodedInstruction): number | undefined {
   if (instruction.op === Op.B) return (instruction.pc + 4 + instruction.simm22 * 4) >>> 0;
   if (instruction.op === Op.BL) return (instruction.pc + 4 + instruction.simm26 * 4) >>> 0;
   return undefined;
@@ -430,30 +394,10 @@ export interface GuestBlock {
   readonly takenPc: number;
   /** Not-taken successor of a conditional branch. */
   readonly fallthroughPc: number;
-  /** The block contains HALT/WFI/TFAULT, so a yield request must be honoured. */
+  /** The block contains HALT/WFI, so a yield request must be honoured. */
   readonly mayStop: boolean;
   /** True when the block can change peripheral output state. */
   readonly syncAfterBlock: boolean;
-}
-
-function decodeGuestInstruction(
-  isa: TeachingMCUISAType,
-  bytes: Uint8Array,
-  view: DataView,
-  index: number,
-  pc: number,
-): DecodedInstruction {
-  if (isa === 'teaching') {
-    const offset = index * 2;
-    const opcode = bytes[offset] as number;
-    const operand = bytes[offset + 1] as number;
-    if (opcode === 0x10) return makeTeachingInstruction(Op.TADD, pc, operand, operand);
-    if (opcode === 0x20) return makeTeachingInstruction(Op.TJMP, pc, operand, operand);
-    if (opcode === 0x30) return makeTeachingInstruction(Op.TJNZ, pc, operand, operand);
-    if (opcode === 0x00) return makeTeachingInstruction(Op.HALT, pc, 0, 0);
-    return makeTeachingInstruction(Op.TFAULT, pc, 0, 0);
-  }
-  return decodeM3Word(view.getUint32(index * 4, true), pc);
 }
 
 /**
@@ -475,17 +419,15 @@ export function decodeGuestBlock(
   bytes: Uint8Array,
   startPc: number,
   maxInstructions: number,
-  isa: TeachingMCUISAType,
 ): GuestBlock {
-  const size = isa === 'teaching' ? 2 : 4;
-  const limit = Math.min(maxInstructions, Math.floor(bytes.byteLength / size));
+  const limit = Math.min(maxInstructions, Math.floor(bytes.byteLength / INSTRUCTION_SIZE));
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const instructions: DecodedInstruction[] = [];
   for (let index = 0; index < limit; index += 1) {
-    const pc = startPc + index * size;
-    const instruction = decodeGuestInstruction(isa, bytes, view, index, pc);
+    const pc = startPc + index * INSTRUCTION_SIZE;
+    const instruction = decodeM3Word(view.getUint32(index * INSTRUCTION_SIZE, true), pc);
     instructions.push(instruction);
-    if (isTerminator(isa, instruction.op)) break;
+    if (isTerminator(instruction.op)) break;
   }
   const last = instructions[instructions.length - 1];
   if (last === undefined) {
@@ -498,27 +440,22 @@ export function decodeGuestBlock(
       takenPc: startPc,
       fallthroughPc: startPc,
       mayStop: true,
-      syncAfterBlock: isa === 'teaching',
+      syncAfterBlock: false,
     });
   }
 
   const nextPc = (last.pc + last.size) >>> 0;
   let terminator: GuestTerminator = 'fallthrough';
   let takenPc = nextPc;
-  if (isTerminator(isa, last.op)) {
-    const target = (staticTarget(isa, last) ?? nextPc) >>> 0;
+  if (isTerminator(last.op)) {
+    const target = (staticTarget(last) ?? nextPc) >>> 0;
     switch (last.op) {
       case Op.B:
         terminator = last.cond === Cond.AL ? 'jump' : 'branch';
         takenPc = target;
         break;
       case Op.BL:
-      case Op.TJMP:
         terminator = 'jump';
-        takenPc = target;
-        break;
-      case Op.TJNZ:
-        terminator = 'branch';
         takenPc = target;
         break;
       case Op.BX:
@@ -529,10 +466,6 @@ export function decodeGuestBlock(
         break;
       case Op.WFI:
         terminator = 'wfi';
-        break;
-      case Op.TFAULT:
-        terminator = 'fault';
-        takenPc = last.pc >>> 0;
         break;
       default:
         break;
@@ -545,32 +478,10 @@ export function decodeGuestBlock(
     terminator,
     takenPc,
     fallthroughPc: nextPc,
-    mayStop: terminator === 'halt' || terminator === 'wfi' || terminator === 'fault',
-    syncAfterBlock:
-      isa === 'teaching' ||
-      instructions.some((instruction) => instruction.op === Op.STR || instruction.op === Op.STRB),
-  });
-}
-
-function makeTeachingInstruction(
-  op: number,
-  pc: number,
-  operand: number,
-  target: number,
-): DecodedInstruction {
-  return Object.freeze({
-    pc,
-    size: 2,
-    op,
-    rd: 0,
-    rn: 0,
-    rm: 0,
-    imm16: operand,
-    imm8: operand,
-    target,
-    cond: Cond.AL,
-    simm22: 0,
-    simm26: 0,
+    mayStop: terminator === 'halt' || terminator === 'wfi',
+    syncAfterBlock: instructions.some(
+      (instruction) => instruction.op === Op.STR || instruction.op === Op.STRB,
+    ),
   });
 }
 
@@ -591,7 +502,6 @@ interface MemoryNumbers {
 }
 
 interface EmitContext {
-  readonly isa: TeachingMCUISAType;
   readonly regs: ArrayRef<'u32'>;
   readonly memory: BytesRef<false>;
   readonly pc: StateRef<'u32'>;
@@ -609,8 +519,6 @@ interface EmitContext {
   readonly store8: FunctionRef<readonly ['u32', 'u32'], readonly []>;
   readonly returnFromException: FunctionRef<readonly [], readonly []>;
   readonly fetch: ProviderRef<readonly ['u32'], readonly [], readonly []>;
-  /** Emitted after a teaching-ISA block: PA0 mirrors bit 0 of r0. */
-  readonly legacyGpioOffset: number | undefined;
   /** Pin memories and GPIO layout used to publish outputs after a block. */
   readonly pinMemory: TeachingMCUPinMemory;
   readonly pins: ReadonlyMap<string, TeachingMCUPin>;
@@ -942,16 +850,6 @@ function emitM3Instruction<R extends readonly ScalarType[]>(
     }
     case Op.NOP:
       return;
-    case Op.TADD: {
-      // Teaching ISA: `ADD R0, #imm` on the single accumulator register.
-      storeReg(
-        b,
-        ctx.regs,
-        instruction.rd,
-        b.int.add(loadReg(b, ctx.regs, instruction.rd), u32(b, instruction.imm8)),
-      );
-      return;
-    }
     default: {
       // Unknown encoding: latch a fault instead of aborting the host.
       b.state.store(ctx.fault, b.const('bool', true));
@@ -1087,7 +985,7 @@ function emitBlock(b: GeneratedBuilder, block: GuestBlock, ctx: EmitContext): vo
     let bxTerminator: (() => void) | undefined;
     for (let index = 0; index < block.instructions.length; index += 1) {
       const instruction = block.instructions[index]!;
-      if (index !== terminal || !isTerminator(ctx.isa, instruction.op)) {
+      if (index !== terminal || !isTerminator(instruction.op)) {
         emitM3Instruction(ib, instruction, ctx);
         continue;
       }
@@ -1096,9 +994,6 @@ function emitBlock(b: GeneratedBuilder, block: GuestBlock, ctx: EmitContext): vo
           if (instruction.cond !== Cond.AL) {
             condition = emitCondition(ib, instruction.cond, ctx.flags);
           }
-          break;
-        case Op.TJNZ:
-          condition = ib.int.cmp('ne', loadReg(ib, ctx.regs, 0), u32(ib, 0));
           break;
         case Op.BL:
           storeReg(ib, ctx.regs, 14, u32(ib, (instruction.pc + instruction.size) >>> 0));
@@ -1142,27 +1037,9 @@ function emitBlock(b: GeneratedBuilder, block: GuestBlock, ctx: EmitContext): vo
           ib.state.store(ctx.yieldRequested, ib.const('bool', true));
           direct = { pc: block.takenPc };
           break;
-        case Op.TFAULT:
-          ib.state.store(ctx.fault, ib.const('bool', true));
-          ib.state.store(ctx.halted, ib.const('bool', true));
-          direct = { pc: block.takenPc };
-          break;
         default:
           break;
       }
-    }
-
-    if (ctx.isa === 'teaching' && ctx.legacyGpioOffset !== undefined) {
-      // The original device published `r0 & 1` on its GPIO pin after each block.
-      const odr = ib.bytes.load('u32', 'little', ctx.memory, u32(ib, ctx.legacyGpioOffset));
-      const bit = ib.int.and(loadReg(ib, ctx.regs, 0), u32(ib, 1));
-      ib.bytes.store(
-        'u32',
-        'little',
-        ctx.memory,
-        u32(ib, ctx.legacyGpioOffset),
-        ib.int.or(ib.int.and(odr, u32(ib, 0xffff_fffe)), bit),
-      );
     }
 
     const next = ib.int.add(count, u32(ib, block.instructions.length));
@@ -1286,7 +1163,7 @@ function generateKernel(options: GenerateOptions): GeneratedKernel {
   const registers = module.array(`${deviceId}_regs`, 'u32', config.registers);
   const flash = module.bytes(`${deviceId}_flash`, config.firmware, {
     readonly: true,
-    unitBytes: config.isa === 'teaching' ? 2 : 4,
+    unitBytes: 4,
   });
   const memory = module.bytes(`${deviceId}_memory`, createMemoryImage(config), {
     readonly: false,
@@ -1399,11 +1276,10 @@ function generateKernel(options: GenerateOptions): GeneratedKernel {
     },
     (gen, [key]) => {
       const address = (key as number) >>> 0;
-      const instructionSize = config.isa === 'teaching' ? 2 : 4;
       const executableSize = Math.min(config.firmware.byteLength, config.flashSize);
-      const aligned = address % instructionSize === 0;
+      const aligned = address % INSTRUCTION_SIZE === 0;
       const available = executableSize - address;
-      if (!aligned || available < instructionSize) {
+      if (!aligned || available < INSTRUCTION_SIZE) {
         return gen.function((b) => {
           b.state.store(fault, b.const('bool', true));
           b.state.store(halted, b.const('bool', true));
@@ -1411,13 +1287,12 @@ function generateKernel(options: GenerateOptions): GeneratedKernel {
           b.return([]);
         });
       }
-      const maxInstructions = config.isa === 'teaching' ? 4096 : config.maxBlockInstructions;
-      const length = Math.min(maxInstructions * instructionSize, available);
+      const maxInstructions = config.maxBlockInstructions;
+      const length = Math.min(maxInstructions * INSTRUCTION_SIZE, available);
       const bytes = gen.readBytes(flash, address, length);
-      const block = decodeGuestBlock(bytes, address, maxInstructions, config.isa);
+      const block = decodeGuestBlock(bytes, address, maxInstructions);
       return gen.function((b) => {
         emitBlock(b, block, {
-          isa: config.isa,
           regs: registers,
           memory,
           pc,
@@ -1435,13 +1310,10 @@ function generateKernel(options: GenerateOptions): GeneratedKernel {
           store8,
           returnFromException,
           fetch,
-          legacyGpioOffset: config.isa === 'teaching' ? peripheralOffset : undefined,
           pinMemory,
           pins,
           gpioMemoryOffset,
           portCount,
-          // Teaching blocks always publish `r0 & 1`; M3 blocks only touch the
-          // peripheral window through stores.
           syncAfterBlock: block.syncAfterBlock,
         });
       });
@@ -1566,7 +1438,6 @@ function generateKernel(options: GenerateOptions): GeneratedKernel {
 
   const layout: TeachingMCULayout = Object.freeze({
     deviceId,
-    isa: config.isa,
     config,
     pins,
     pinNames: Object.freeze([...pins.keys()]),
@@ -2026,13 +1897,6 @@ export function resolveTeachingMCUConfig(
   if (config === null || typeof config !== 'object') {
     throw new TeachingMCUError('invalid-config', 'TeachingMCUConfig must be an object');
   }
-  const isa = config.isa ?? 'm3';
-  if (isa !== 'm3' && isa !== 'teaching') {
-    throw new TeachingMCUError(
-      'invalid-config',
-      `TeachingMCUConfig.isa must be "m3" or "teaching", received ${String(isa)}`,
-    );
-  }
   const ports = [...(config.ports ?? ['A', 'B'])].map((port) => port.toUpperCase());
   if (ports.length === 0) {
     throw new TeachingMCUError('invalid-config', 'TeachingMCUConfig.ports must not be empty');
@@ -2068,10 +1932,7 @@ export function resolveTeachingMCUConfig(
       );
     }
   }
-  const firmware = toBytes(
-    config.firmware ??
-      (isa === 'teaching' ? Uint8Array.from(INITIAL_TEACHING_FIRMWARE) : new Uint8Array(4)),
-  );
+  const firmware = toBytes(config.firmware ?? Uint8Array.from(INITIAL_FIRMWARE));
   if (firmware.byteLength > flashSize) {
     throw new TeachingMCUError(
       'invalid-config',
@@ -2176,11 +2037,7 @@ export function resolveTeachingMCUConfig(
       (key) => key.toUpperCase() === port,
     );
     initialDirections[port] =
-      directionKey === undefined
-        ? isa === 'teaching' && port === 'A'
-          ? 1
-          : 0
-        : (config.initialDirections?.[directionKey] ?? 0) >>> 0;
+      directionKey === undefined ? 0 : (config.initialDirections?.[directionKey] ?? 0) >>> 0;
     const outputKey = Object.keys(config.initialOutputs ?? {}).find(
       (key) => key.toUpperCase() === port,
     );
@@ -2195,7 +2052,6 @@ export function resolveTeachingMCUConfig(
     );
   }
   return Object.freeze({
-    isa,
     ports: Object.freeze(ports),
     portWidth,
     flashSize,

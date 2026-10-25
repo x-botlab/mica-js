@@ -119,7 +119,6 @@ describe('button circuit integration', () => {
 
   it('feeds a teaching MCU input pin through the electrical solve', async () => {
     const mcu = createTeachingMCUIR('mcu1', {
-      isa: 'm3',
       ports: ['A'],
       portWidth: 1,
       firmware: wordsToBytes([encodeR(Op.HALT, 0, 0, 0)]),

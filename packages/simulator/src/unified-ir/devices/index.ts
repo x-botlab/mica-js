@@ -49,6 +49,17 @@ export type {
   ResolvedLedConfig,
 } from './led';
 
+export {
+  IDEAL_BUTTON_DEVICE,
+  IDEAL_BUTTON_PINS,
+  IDEAL_RELAY_DEVICE,
+  IDEAL_RELAY_PINS,
+  createIdealButtonDescription,
+  createIdealRelayDescription,
+  resolveExampleDevice,
+} from './example-devices';
+export type { ExampleDeviceReference } from './example-devices';
+
 export { buildAccessor as buildButtonAccessor } from './button';
 export { buildAccessor as buildLedAccessor } from './led';
 export type { SimpleDeviceAccessorOptions, SimpleDevicePin, SimplePinMemory } from './common';

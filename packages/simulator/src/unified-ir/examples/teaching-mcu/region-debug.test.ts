@@ -41,7 +41,6 @@ interface DispatchCounts {
 
 function measure(regions: boolean): DispatchCounts {
   const device = createTeachingMCUIR(`diag_${regions ? 'regions' : 'blocks'}`, {
-    isa: 'm3',
     firmware: loopFirmware(60_000),
     ports: ['A'],
     portWidth: 1,

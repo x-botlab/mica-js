@@ -15,18 +15,35 @@ import {
   BUTTON_IR_TYPE,
   Circuit,
   CircuitError,
+  DEFAULT_TOPIC_CAPACITY,
   DEVICE_PIN_STRIDE,
+  FLOATING_ALGORITHM,
   LED_IR_TYPE,
   PIN_MODE,
+  PIN_PULL,
+  TICK_PS,
+  TOPIC_STRING_MAX_BYTES,
   UNIFIED_PIN_CAPACITY,
   UnifiedIRCompilerError,
+  compileBoardTopology,
   compileCircuit,
+  compileSchematicToCircuit,
   createButtonIR,
+  createCircuitExecutor,
   createCircuitFromSchematic,
+  createIdealButtonDescription,
+  createIdealRelayDescription,
   createLedDescription,
   createLedIR,
   createMcuDescription,
   createSingleDeviceCircuit,
+  fromIRArgs,
+  hashFloatingState,
+  hashTopology,
+  resolveExampleDevice,
+  sampleFloating,
+  toIRArgs,
+  topicPayloadParams,
 } from './index';
 
 describe('public API surface', () => {
@@ -41,12 +58,32 @@ describe('public API surface', () => {
     expect(typeof createMcuDescription).toBe('function');
     expect(typeof createLedIR).toBe('function');
     expect(typeof createButtonIR).toBe('function');
+    expect(typeof compileSchematicToCircuit).toBe('function');
+    expect(typeof compileBoardTopology).toBe('function');
+    expect(typeof createCircuitExecutor).toBe('function');
+    expect(typeof resolveExampleDevice).toBe('function');
+    expect(typeof createIdealButtonDescription).toBe('function');
+    expect(typeof createIdealRelayDescription).toBe('function');
+    expect(typeof toIRArgs).toBe('function');
+    expect(typeof fromIRArgs).toBe('function');
+    expect(typeof topicPayloadParams).toBe('function');
+    expect(typeof sampleFloating).toBe('function');
+    expect(typeof hashFloatingState).toBe('function');
+    expect(typeof hashTopology).toBe('function');
 
     expect(LED_IR_TYPE).toBe('led-ir');
     expect(BUTTON_IR_TYPE).toBe('button-ir');
     expect(UNIFIED_PIN_CAPACITY).toBe(256);
     expect(DEVICE_PIN_STRIDE).toBe(32);
     expect(PIN_MODE.pushPull).toBe(1);
+    expect(PIN_MODE.openDrain).toBe(2);
+    expect(PIN_PULL.up).toBe(1);
+    expect(PIN_PULL.down).toBe(2);
+    expect(TICK_PS).toBe(1_000_000);
+    expect(FLOATING_ALGORITHM).toBe('mica-floating-v2');
+    expect(DEFAULT_TOPIC_CAPACITY).toBe(64);
+    expect(topicPayloadParams('boolean')).toEqual(['bool']);
+    expect(TOPIC_STRING_MAX_BYTES).toBe(32);
   });
 
   it('infers the type-specific accessor from a literal device type', async () => {

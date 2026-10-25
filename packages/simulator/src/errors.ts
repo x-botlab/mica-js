@@ -5,7 +5,8 @@ export type SimulatorErrorCode =
   | 'simulator/unknown-target'
   | 'simulator/unknown-port'
   | 'simulator/device-load-failed'
-  | 'simulator/instance-create-failed';
+  | 'simulator/instance-create-failed'
+  | 'simulator/schematic-compile-failed';
 
 export interface SimulatorErrorOptions {
   /** Symbol the failure belongs to, when it is attributable to one. */

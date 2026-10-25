@@ -18,6 +18,12 @@ const DEFAULT_SIZES: Readonly<Record<string, { width: number; height: number }>>
   image: { width: 320, height: 240 },
   segment: { width: 130, height: 62 },
   button: { width: 64, height: 56 },
+  animation: { width: 180, height: 180 },
+  'image-viewer': { width: 220, height: 150 },
+  led: { width: 80, height: 100 },
+  potentiometer: { width: 120, height: 170 },
+  'power-switch': { width: 110, height: 110 },
+  'text-display': { width: 240, height: 170 },
 };
 
 const FALLBACK_SIZE = { width: 160, height: 100 };

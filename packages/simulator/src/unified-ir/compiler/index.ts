@@ -3,8 +3,12 @@ import type { IRModule, IRValidationOptions } from '@mica-js/ir';
 import { createModuleValidation } from '../validation';
 import { GlobalResourceAllocator } from './allocator';
 import { DeviceIRGenerator, resolveDeviceDescription } from './device-gen';
+import { planFloating } from './floating';
+import { DomainInstructionLowering } from './lowering';
 import { DEFAULT_ENTRY_POINT_NAMES, MainLoopGenerator, type MainLoopNames } from './mainloop-gen';
+import { createPowerGating } from './power';
 import { ElectricalSolverGenerator } from './solver-gen';
+import { TopicEndpointRegistry } from './topics';
 import {
   NetworkTopologyAnalyzer,
   assertNoElectricalErrors,
@@ -57,7 +61,14 @@ export function compileCircuit(
   const names = resolveEntryNames(resolvedOptions);
 
   const module = createIRModule();
-  const allocation = new GlobalResourceAllocator(module).allocate(devices);
+  const allocation = new GlobalResourceAllocator(module, {
+    ...(resolvedOptions.supplyVoltage === undefined
+      ? {}
+      : { supplyVoltage: resolvedOptions.supplyVoltage }),
+  }).allocate(devices);
+  // `undefined` when nothing declares a domain: every generator then emits its
+  // ungated fast path, so a circuit without power domains is unchanged.
+  const power = createPowerGating(allocation.memory, allocation.powerDomains);
 
   const topologyOptions: TopologyOptions = {
     ...(resolvedOptions.rails === undefined ? {} : { rails: resolvedOptions.rails }),
@@ -71,26 +82,94 @@ export function compileCircuit(
   );
   assertNoElectricalErrors(netlist);
 
+  // Topic endpoints are declared before generation so a behaviour can already
+  // write its outputs and subscribe to its inputs while its body is open.
+  const topics = new TopicEndpointRegistry(module);
+  for (const device of devices) topics.declare(device);
+
+  // The pass is created before device generation: `@mica-js/ir` has no way to
+  // rewrite a closed function body, so a domain instruction has to be lowered
+  // while its block is still open. `run()` then proves none survived.
+  const lowering = new DomainInstructionLowering({
+    module,
+    memory: allocation.memory,
+    netlist,
+    pins: allocation.pins,
+    connections: allocation.connections,
+    observers: allocation.observers,
+    ...(power === undefined ? {} : { power }),
+  });
+
+  // Filled while device behaviours are generated; the net solvers use it to
+  // skip the weak tier on circuits that declare no pull resistor at all.
+  const pulledPins = new Set<number>();
+  // Filled by `pin.configure({ lowThreshold, highThreshold })`; a rail node
+  // whose sinks keep their seeded thresholds resolves its level at compile time.
+  const thresholdPins = new Set<number>();
+
   const generator = new DeviceIRGenerator({
     module,
     memory: allocation.memory,
     pins: allocation.pins,
     states: allocation.states,
+    topics,
+    lowering,
+    ...(power === undefined ? {} : { power }),
+    pullPins: pulledPins,
+    thresholdPins,
   });
   const generated = devices.map((device) => generator.generate(device));
+  const compiledTopics = topics.finalize();
+
+  // Domain lowering: proves that every `connection.apply` / `observe.configure`
+  // was lowered while its block was open, and hands the observer programs to
+  // the main loop (their edge detection has to run at the end of every tick).
+  const lowered = lowering.run(module);
+
+  // RFC 0002 §4.5: nets nothing can hold sample the deterministic floating
+  // sequence. The plan also allocates the tick clock, so a circuit without
+  // floating nets keeps its previous memory layout and instruction stream.
+  const floating = planFloating(
+    module,
+    netlist,
+    (netId) => lowered.connections.switchesOfNet(netId).length > 0,
+  );
 
   const solvers = new ElectricalSolverGenerator({
     module,
     memory: allocation.memory,
+    switches: lowered.connections,
+    ...(power === undefined ? {} : { power }),
+    ...(resolvedOptions.supplyVoltage === undefined
+      ? {}
+      : { supplyVoltage: resolvedOptions.supplyVoltage }),
+    pulledPins,
+    thresholdPins,
+    ...(floating.clock === undefined
+      ? {}
+      : { floating: { seed: floating.seed, clock: floating.clock, nets: floating.nets } }),
   }).generate(netlist);
 
   assertNoNameCollisions(
     devices,
-    solvers.map((solver) => solver.name),
+    [
+      ...solvers.map((solver) => solver.name),
+      ...lowered.connections.solvers.map((solver) => solver.name),
+      ...observerFunctionNames(allocation.observers),
+    ],
     names,
   );
 
-  const loop = new MainLoopGenerator(module).generate(
+  const loop = new MainLoopGenerator(module, {
+    memory: allocation.memory,
+    observers: lowered.observers,
+    initializeTail: (builder) => lowered.connections.emitInitialization(builder),
+    ...(power === undefined ? {} : { power }),
+    ...(allocation.memory.electricalFault === undefined
+      ? {}
+      : { faults: allocation.memory.electricalFault }),
+    ...(floating.clock === undefined ? {} : { floatingClock: floating.clock }),
+  }).generate(
     generated.map((device) => device.entry),
     solvers,
     netlist,
@@ -117,12 +196,17 @@ export function compileCircuit(
         batch: loop.batch,
       }),
     }),
+    topics: compiledTopics,
     pinMap: allocation.pins.pins,
     deviceMap,
     netlist,
     pins: allocation.pins,
     states: allocation.states,
+    connections: allocation.connections,
+    observers: allocation.observers,
+    powerDomains: allocation.powerDomains,
     memory: allocation.memory,
+    floating,
     validation,
     executionOrder: loop.order,
     functions: Object.freeze(module.functions.map((fn) => fn.name)),
@@ -165,6 +249,15 @@ function validateOptions(options: unknown): CircuitCompilationOptions {
   }
   if (resolved.allowMultiDriver !== undefined && typeof resolved.allowMultiDriver !== 'boolean') {
     throw new UnifiedIRCompilerError('invalid-input', 'options.allowMultiDriver must be a boolean');
+  }
+  if (
+    resolved.supplyVoltage !== undefined &&
+    (!Number.isFinite(resolved.supplyVoltage) || resolved.supplyVoltage <= 0)
+  ) {
+    throw new UnifiedIRCompilerError(
+      'invalid-input',
+      `options.supplyVoltage must be a finite positive number, received ${String(resolved.supplyVoltage)}`,
+    );
   }
   if (resolved.rails !== undefined) {
     if (
@@ -211,10 +304,21 @@ function resolveEntryNames(options: CircuitCompilationOptions): MainLoopNames {
 
 function assertNoNameCollisions(
   devices: readonly DeviceConfig[],
-  solverNames: readonly string[],
+  generatedNames: readonly string[],
   names: MainLoopNames,
 ): void {
-  const reserved = new Set<string>([names.tick, names.initialize, names.batch, ...solverNames]);
+  const reserved = new Set<string>([names.tick, names.initialize, names.batch]);
+  const seen = new Set<string>();
+  for (const name of generatedNames) {
+    if (reserved.has(name) || seen.has(name)) {
+      throw new UnifiedIRCompilerError(
+        'invalid-input',
+        `Generated function "${name}" collides with another generated function; rename the device or the entry point`,
+      );
+    }
+    seen.add(name);
+    reserved.add(name);
+  }
   for (const device of devices) {
     for (const phase of ['initialize', 'tick', 'update'] as const) {
       const generated = `${device.id}_${phase}`;
@@ -227,6 +331,13 @@ function assertNoNameCollisions(
       }
     }
   }
+}
+
+/** `<deviceId>_observe_<name>` for every declared observation. */
+function observerFunctionNames(observers: CompiledCircuit['observers']): readonly string[] {
+  return [...observers.devices].flatMap(([deviceId, slots]) =>
+    [...slots.keys()].map((name) => `${deviceId}_observe_${name}`),
+  );
 }
 
 function validateModule(module: IRModule, validation: IRValidationOptions): void {
@@ -243,7 +354,7 @@ function validateModule(module: IRModule, validation: IRValidationOptions): void
 
 export * from './types';
 export { GlobalResourceAllocator, createPinMemory, stateOffsetOf } from './allocator';
-export type { ResourceAllocation } from './allocator';
+export type { PinMemoryOptions, ResourceAllocation } from './allocator';
 export { DEFAULT_RAILS, NetworkTopologyAnalyzer, assertNoElectricalErrors } from './topology';
 export type { TopologyOptions } from './topology';
 export {
@@ -263,5 +374,75 @@ export type {
 } from './device-gen';
 export { ElectricalSolverGenerator } from './solver-gen';
 export type { NetSolverRuntime, SolverGenerationContext } from './solver-gen';
+export { FLOATING_CLOCK_MEMORY, FLOATING_TICK_PS, isFloating, planFloating } from './floating';
+export { createPowerGating, emitDevicePowered, emitPinPowered, selectPowered } from './power';
+export type { PowerGating } from './power';
+export {
+  DEFAULT_HIGH_THRESHOLD,
+  DEFAULT_LOW_THRESHOLD,
+  DEFAULT_SUPPLY_VOLTAGE,
+  THRESHOLD_HIGH_RATIO,
+  THRESHOLD_LOW_RATIO,
+  VOLTAGE_CONFLICT_TOLERANCE,
+  activeVoltage,
+  emitNetVoltage,
+  emitThresholdDigital,
+  planVoltage,
+  railVoltageOf,
+  resolveVoltageNetwork,
+  supplyVoltageOfRail,
+  thresholdsForSupply,
+} from './voltage-solver';
+export type {
+  NetVoltageEmission,
+  VoltageContribution,
+  VoltageDriverPlan,
+  VoltageNetworkResult,
+  VoltagePinState,
+  VoltagePlan,
+  VoltagePlanOptions,
+  VoltageThresholds,
+} from './voltage-solver';
+export {
+  DEFAULT_TOPIC_CAPACITY,
+  TOPIC_BYTES_MAX_BYTES,
+  TOPIC_STRING_MAX_BYTES,
+  TopicEndpointRegistry,
+  topicKey,
+  topicPayloadParams,
+  topicPortsOf,
+  validatePort,
+} from './topics';
+export type { DeclaredTopicPort } from './topics';
+export { compileBoardTopology, compileSchematicToCircuit, toDeviceId } from './schematic-compiler';
+export type {
+  BoardTopologyCompilation,
+  CompiledSchematicDevice,
+  SchematicCompilationOptions,
+  SchematicCompilationResult,
+} from './schematic-compiler';
 export { DEFAULT_ENTRY_POINT_NAMES, MainLoopGenerator } from './mainloop-gen';
-export type { MainLoopNames, MainLoopOutput } from './mainloop-gen';
+export type { MainLoopNames, MainLoopOptions, MainLoopOutput } from './mainloop-gen';
+export {
+  DomainInstructionLowering,
+  LOWERED_DOMAIN_INSTRUCTIONS,
+  createConnectionLowering,
+  createObserverLowering,
+  emitObserverDetection,
+  findDomainInstructions,
+} from './lowering';
+export type {
+  ConnectionClosed,
+  ConnectionLowering,
+  ConnectionLoweringContext,
+  ConnectionPatchEntry,
+  ConnectionSolverRuntime,
+  DomainLoweringPass,
+  DomainLoweringSurface,
+  LoweredDomainProgram,
+  LoweredObserver,
+  LoweringContext,
+  ObserverActivation,
+  ObserverLowering,
+  ObserverLoweringContext,
+} from './lowering';

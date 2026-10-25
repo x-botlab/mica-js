@@ -1,3 +1,5 @@
+import type { AssetErrorCode } from '../assets/errors';
+
 export type DiagnosticSeverity = 'error' | 'warning';
 
 export type DiagnosticCode =
@@ -36,7 +38,8 @@ export type DiagnosticCode =
   | 'topic/type-mismatch'
   | 'type/unknown'
   | 'edit/unknown-entity'
-  | 'edit/invalid-command';
+  | 'edit/invalid-command'
+  | AssetErrorCode;
 
 export interface DiagnosticEntity {
   readonly kind: 'symbol' | 'wire' | 'junction';

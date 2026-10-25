@@ -35,7 +35,6 @@ interface Measurement {
 
 function measure(regions: boolean): Measurement {
   const device = createTeachingMCUIR(`region_${regions ? 'on' : 'off'}`, {
-    isa: 'm3',
     firmware: loopFirmware(60_000),
     ports: ['A'],
     portWidth: 1,

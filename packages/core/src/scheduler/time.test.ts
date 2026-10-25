@@ -28,6 +28,7 @@ describe('integer picosecond time', () => {
     ['ps', 1, 1],
     ['ns', 1, 1_000],
     ['us', 1, 1_000_000],
+    ['µs', 1, 1_000_000],
     ['ms', 1, 1_000_000_000],
     ['s', 1, 1_000_000_000_000],
     ['s', 7_200, MAX_TIME_PS],
@@ -37,6 +38,31 @@ describe('integer picosecond time', () => {
     expect(toTimePs(0, unit)).toBe(0);
     expect(() => toTimePs(-1, unit)).toThrow(RangeError);
     expect(() => toTimePs(0.5, unit)).toThrow(TypeError);
+  });
+
+  it('treats µs (Unicode) as equivalent to us (ASCII)', () => {
+    const ascii = toTimePs(1, 'us');
+    const unicode = toTimePs(1, 'µs');
+    expect(ascii).toBe(unicode);
+    expect(ascii).toBe(1_000_000);
+    expect(unicode).toBe(1_000_000);
+    expect(toTimePs(7_200_000_000, 'µs')).toBe(MAX_TIME_PS);
+    expect(toTimePs(0, 'µs')).toBe(toTimePs(0, 'us'));
+    expect(() => toTimePs(-1, 'µs')).toThrow(RangeError);
+    expect(() => toTimePs(0.5, 'µs')).toThrow(TypeError);
+    expect(() => toTimePs(7_200_000_001, 'µs')).toThrow(RangeError);
+  });
+
+  it('accepts both us and µs as valid units', () => {
+    expect(() => toTimePs(1, 'us')).not.toThrow();
+    expect(() => toTimePs(1, 'µs')).not.toThrow();
+  });
+
+  it('rejects invalid units with a TypeError naming the unit', () => {
+    // @ts-expect-error 'xs' is not a TimeUnit
+    expect(() => toTimePs(1, 'xs')).toThrow(TypeError);
+    // @ts-expect-error 'xs' is not a TimeUnit
+    expect(() => toTimePs(1, 'xs')).toThrow('unit');
   });
 
   it('rejects unknown units and conversion overflow', () => {

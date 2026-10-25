@@ -1,0 +1,30 @@
+{
+  "properties": {
+    "label": { "type": "string", "title": "标签", "default": "电位器" },
+    "initial": {
+      "type": "number",
+      "title": "初始位置",
+      "description": "0–1，乘以满量程电压就是上电时的滑臂电压。",
+      "default": 0.5,
+      "min": 0,
+      "max": 1
+    },
+    "maxVoltage": {
+      "type": "number",
+      "title": "满量程电压",
+      "description": "滑臂在最右端时输出的电压（伏特）。",
+      "default": 3.3,
+      "min": 0.1,
+      "max": 12
+    },
+    "color": { "type": "color", "title": "颜色", "default": "#38BDF8" }
+  },
+  "ports": {
+    "voltage": {
+      "direction": "output",
+      "type": "number",
+      "title": "滑臂电压",
+      "description": "0–满量程的模拟电压，投递给电位器器件的 voltage 端点。"
+    }
+  }
+}

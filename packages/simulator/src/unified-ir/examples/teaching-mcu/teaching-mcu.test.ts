@@ -13,19 +13,16 @@ import {
   Op,
   createStandalone,
   encodeB,
+  encodeBL,
   encodeI,
   encodeR,
   interruptFirmware,
   loopFirmware,
-  runTeachingReference,
   wordsToBytes,
 } from './teaching-mcu.test-helpers';
 
-const TEACHING_FIRMWARE = Object.freeze([0x10, 1, 0x10, 2, 0x30, 8, 0x00, 0x00, 0x10, 4, 0x20, 0]);
-
 function m3(words: readonly number[], config: Parameters<typeof createTeachingMCUIR>[1] = {}) {
   return createTeachingMCUIR('mcu', {
-    isa: 'm3',
     firmware: wordsToBytes(words),
     ...config,
   });
@@ -34,7 +31,6 @@ function m3(words: readonly number[], config: Parameters<typeof createTeachingMC
 describe('teaching MCU configuration', () => {
   it('resolves the documented defaults', () => {
     const config = resolveTeachingMCUConfig();
-    expect(config.isa).toBe('m3');
     expect(config.ports).toEqual(['A', 'B']);
     expect(config.portWidth).toBe(16);
     expect(config.flashSize).toBe(64 * 1024);
@@ -47,14 +43,7 @@ describe('teaching MCU configuration', () => {
     expect(config.registers[15]).toBe(RAM_BASE);
   });
 
-  it('resolves the legacy teaching defaults', () => {
-    const config = resolveTeachingMCUConfig({ isa: 'teaching' });
-    expect(config.firmware).toEqual(Uint8Array.from(TEACHING_FIRMWARE));
-    expect(config.initialDirections.A).toBe(1);
-  });
-
   it.each([
-    [{ isa: 'arm' }, 'isa'],
     [{ ports: [] }, 'ports'],
     [{ ports: ['A', 'A'] }, 'ports'],
     [{ ports: ['AB'] }, 'ports'],
@@ -133,7 +122,7 @@ describe('M3-class execution', () => {
       encodeI(Op.MOVI, 2, 0, 0x1111),
       encodeR(Op.HALT, 0, 0, 0),
     ]);
-    const device = createTeachingMCUIR('mcu', { isa: 'm3', firmware });
+    const device = createTeachingMCUIR('mcu', { firmware });
     const { accessor } = createStandalone(device);
     accessor.step(6);
     // 3 - 5 sets N and clears C; GE is false, so the fall-through MOVI wins.
@@ -174,7 +163,7 @@ describe('M3-class execution', () => {
       encodeI(Op.MOVI, 2, 0, 1),
       encodeR(Op.HALT, 0, 0, 0),
     ]);
-    const device = createTeachingMCUIR('mcu', { isa: 'm3', firmware });
+    const device = createTeachingMCUIR('mcu', { firmware });
     const { accessor } = createStandalone(device);
     accessor.step(7);
     expect(accessor.readRegister('r0')).toBe(0n);
@@ -196,7 +185,7 @@ describe('M3-class execution', () => {
       encodeI(Op.LDRB, 2, 1, 4),
       encodeR(Op.HALT, 0, 0, 0),
     ]);
-    const device = createTeachingMCUIR('mcu', { isa: 'm3', firmware });
+    const device = createTeachingMCUIR('mcu', { firmware });
     const { accessor } = createStandalone(device);
     accessor.step(10);
     expect(accessor.readRegister('r0')).toBe(0x1234n);
@@ -217,7 +206,7 @@ describe('M3-class execution', () => {
       encodeI(Op.LDR, 2, 1, 0),
       encodeR(Op.HALT, 0, 0, 0),
     ]);
-    const device = createTeachingMCUIR('mcu', { isa: 'm3', firmware });
+    const device = createTeachingMCUIR('mcu', { firmware });
     const { accessor } = createStandalone(device);
     accessor.step(6);
     expect(accessor.readRegister('r2')).toBe(0x55n);
@@ -227,11 +216,76 @@ describe('M3-class execution', () => {
   it('reads the flash window through the data path', () => {
     const words = [encodeI(Op.MOVI, 0, 0, 0xbeef), encodeR(Op.HALT, 0, 0, 0)];
     const firmware = wordsToBytes(words);
-    const device = createTeachingMCUIR('mcu', { isa: 'm3', firmware });
+    const device = createTeachingMCUIR('mcu', { firmware });
     const { accessor } = createStandalone(device);
     expect(accessor.readMemory(0, 4)).toBe(words[0]);
     expect(() => accessor.writeMemory(0, 1)).toThrow(TeachingMCUError);
     expect(() => accessor.writeMemory(0, 1)).toThrow(/read-only/);
+  });
+
+  it('faults on an unaligned fetch address', () => {
+    const device = createTeachingMCUIR('mcu', {
+      firmware: wordsToBytes([encodeR(Op.HALT, 0, 0, 0), encodeR(Op.HALT, 0, 0, 0)]),
+      pc: 2,
+    });
+    const { accessor } = createStandalone(device);
+    accessor.step();
+    expect(accessor.isFaulted()).toBe(true);
+    expect(accessor.isHalted()).toBe(true);
+    // The faulting PC is preserved so the host can inspect the fetch address.
+    expect(accessor.getPC()).toBe(2);
+  });
+
+  it('executes the remaining M3 ALU, shift and multiply opcodes', () => {
+    const device = m3([
+      encodeI(Op.MOVI, 0, 0, 0b1100), // r0 = 12
+      encodeI(Op.MOVI, 1, 0, 0b1010), // r1 = 10
+      encodeR(Op.AND, 2, 0, 1), // 0b1000
+      encodeR(Op.ORR, 3, 0, 1), // 0b1110
+      encodeR(Op.EOR, 4, 0, 1), // 0b0110
+      encodeR(Op.SUB, 5, 0, 1), // 2
+      encodeR(Op.MUL, 6, 0, 1), // 120
+      encodeI(Op.SUBI, 7, 0, 2), // 10
+      encodeI(Op.MOVI, 8, 0, 2), // shift count
+      encodeR(Op.LSL, 9, 0, 8), // 12 << 2
+      encodeR(Op.LSR, 10, 0, 8), // 12 >> 2
+      encodeI(Op.MOVI, 11, 0, 0xfff0),
+      encodeI(Op.MOVT, 11, 0, 0xffff), // r11 = 0xffff_fff0 (-16)
+      encodeR(Op.ASR, 12, 11, 8), // -16 >> 2
+      encodeR(Op.NOP, 0, 0, 0),
+      encodeR(Op.HALT, 0, 0, 0),
+    ]);
+    const { accessor } = createStandalone(device);
+    accessor.step(16);
+    expect(accessor.readRegister('r2')).toBe(0b1000n);
+    expect(accessor.readRegister('r3')).toBe(0b1110n);
+    expect(accessor.readRegister('r4')).toBe(0b0110n);
+    expect(accessor.readRegister('r5')).toBe(2n);
+    expect(accessor.readRegister('r6')).toBe(120n);
+    expect(accessor.readRegister('r7')).toBe(10n);
+    expect(accessor.readRegister('r9')).toBe(48n);
+    expect(accessor.readRegister('r10')).toBe(3n);
+    expect(accessor.readRegister('r12')).toBe(0xffff_ff_fcn);
+    expect(accessor.getCycles()).toBe(16);
+    expect(accessor.isHalted()).toBe(true);
+  });
+
+  it('calls a subroutine with BL and returns with BX', () => {
+    const firmware = wordsToBytes([
+      encodeBL(2), // 0x00 -> 0x0c
+      encodeR(Op.HALT, 0, 0, 0), // 0x04 return address
+      encodeI(Op.MOVI, 0, 0, 0xdead), // 0x08 never executed
+      encodeI(Op.MOVI, 0, 0, 5), // 0x0c
+      encodeR(Op.BX, 0, 14, 0), // 0x10
+    ]);
+    const device = createTeachingMCUIR('mcu', { firmware });
+    const { accessor } = createStandalone(device);
+    accessor.step(3);
+    expect(accessor.readRegister('r0')).toBe(5n);
+    expect(accessor.getPC()).toBe(0x04);
+    expect(accessor.isHalted()).toBe(false);
+    accessor.step();
+    expect(accessor.isHalted()).toBe(true);
   });
 
   it('faults on out-of-range data accesses and unknown instructions', () => {
@@ -247,7 +301,6 @@ describe('M3-class execution', () => {
     expect(ramRun.accessor.isHalted()).toBe(true);
 
     const badOpcode = createTeachingMCUIR('mcu', {
-      isa: 'm3',
       firmware: wordsToBytes([0xffff_ffff, encodeR(Op.HALT, 0, 0, 0)]),
     });
     const opcodeRun = createStandalone(badOpcode);
@@ -258,7 +311,6 @@ describe('M3-class execution', () => {
 
   it('runs a branch loop and counts each retired instruction', () => {
     const device = createTeachingMCUIR('mcu', {
-      isa: 'm3',
       firmware: loopFirmware(50),
       instructionsPerTick: 8,
       maxBlockInstructions: 8,
@@ -279,7 +331,6 @@ describe('M3-class execution', () => {
     words[0x88 / 4] = encodeR(Op.HALT, 0, 0, 0);
     words[0x100 / 4] = encodeR(Op.BX, 0, 14, 0);
     const device = createTeachingMCUIR('mcu', {
-      isa: 'm3',
       firmware: wordsToBytes(words),
       pc: 0x80,
     });
@@ -309,7 +360,6 @@ describe('M3-class execution', () => {
     words[0x84 / 4] = encodeR(Op.HALT, 0, 0, 0);
     words[0x100 / 4] = encodeR(Op.HALT, 0, 0, 0);
     const device = createTeachingMCUIR('mcu', {
-      isa: 'm3',
       firmware: wordsToBytes(words),
       pc: 0x80,
       exceptionCycles: 7,
@@ -327,7 +377,7 @@ describe('M3-class execution', () => {
 
 describe('GPIO', () => {
   it('publishes ODR/DIR through the accessor and pin memory', () => {
-    const device = createTeachingMCUIR('mcu', { isa: 'm3', firmware: wordsToBytes([0]) });
+    const device = createTeachingMCUIR('mcu', { firmware: wordsToBytes([0]) });
     const { accessor } = createStandalone(device);
     accessor.writeGPIODirection('A', 0b101);
     accessor.writeGPIO('A', 0b101);
@@ -352,7 +402,6 @@ describe('GPIO', () => {
       encodeR(Op.HALT, 0, 0, 0),
     ]);
     const device = createTeachingMCUIR('mcu', {
-      isa: 'm3',
       firmware,
       initialDirections: { A: 0, B: 0 },
     });
@@ -362,12 +411,53 @@ describe('GPIO', () => {
     expect(accessor.readGPIO('A')).toBe(1);
     expect(accessor.readPin('PA0')).toBe(true);
   });
+
+  it('publishes guest ODR writes at the tick boundary', () => {
+    const firmware = wordsToBytes([
+      encodeI(Op.MOVI, 1, 0, 0x0000),
+      encodeI(Op.MOVT, 1, 0, 0x4000),
+      encodeI(Op.MOVI, 2, 0, 1),
+      encodeI(Op.STR, 2, 1, 0x04), // DIR = 1
+      encodeI(Op.STR, 2, 1, 0x00), // ODR = 1
+      encodeI(Op.MOVI, 2, 0, 0),
+      encodeI(Op.STR, 2, 1, 0x00), // ODR = 0
+      encodeR(Op.HALT, 0, 0, 0),
+    ]);
+    const stepped = createTeachingMCUIR('mcu', {
+      firmware,
+      ports: ['A'],
+      portWidth: 1,
+      instructionsPerTick: 1,
+    });
+    const { accessor } = createStandalone(stepped);
+    accessor.step(4); // MOVI, MOVT, MOVI, STR DIR
+    expect(accessor.readPin('PA0')).toBe(false);
+    accessor.step(); // STR ODR = 1
+    expect(accessor.readPin('PA0')).toBe(true);
+    accessor.step(); // MOVI r2, 0 leaves the pin latched
+    expect(accessor.readPin('PA0')).toBe(true);
+    accessor.step(); // STR ODR = 0
+    expect(accessor.readPin('PA0')).toBe(false);
+
+    // Both ODR writes inside one tick: the publish happens once, when the
+    // artifact yields, so only the final value reaches the pin memory.
+    const batched = createTeachingMCUIR('mcu', {
+      firmware,
+      ports: ['A'],
+      portWidth: 1,
+      instructionsPerTick: 8,
+    });
+    const batchRun = createStandalone(batched);
+    batchRun.accessor.step();
+    expect(batchRun.accessor.readGPIO('A')).toBe(0);
+    expect(batchRun.accessor.readPin('PA0')).toBe(false);
+    expect(batchRun.accessor.isHalted()).toBe(true);
+  });
 });
 
 describe('NVIC', () => {
   it('enters and returns from an interrupt with a full stack frame', () => {
     const device = createTeachingMCUIR('mcu', {
-      isa: 'm3',
       firmware: interruptFirmware(),
       pc: 0x80,
     });
@@ -395,7 +485,6 @@ describe('NVIC', () => {
 
   it('ignores pending IRQs that are not enabled and can clear pending bits', () => {
     const device = createTeachingMCUIR('mcu', {
-      isa: 'm3',
       firmware: interruptFirmware(),
       pc: 0x80,
     });
@@ -413,7 +502,6 @@ describe('NVIC', () => {
 
   it('does not nest a second exception while one is active', () => {
     const device = createTeachingMCUIR('mcu', {
-      isa: 'm3',
       firmware: interruptFirmware(),
       pc: 0x80,
     });
@@ -430,57 +518,6 @@ describe('NVIC', () => {
     expect(accessor.isInterruptPending(1)).toBe(true);
     accessor.step();
     expect(accessor.getIPSR()).toBe(17);
-  });
-});
-
-describe('legacy teaching ISA parity', () => {
-  it('matches the JavaScript reference over 40 blocks', () => {
-    const device = createTeachingMCUIR('legacy', { isa: 'teaching' });
-    const { accessor } = createStandalone(device);
-    const firmware = device.config.firmware;
-    for (let blocks = 1; blocks <= 40; blocks += 1) {
-      accessor.step();
-      const expected = runTeachingReference(firmware, blocks);
-      expect(accessor.readRegister('r0')).toBe(BigInt(expected.r0));
-      expect(accessor.getPC()).toBe(expected.pc);
-      expect(accessor.readPin('PA0')).toBe(expected.gpio);
-      expect(accessor.isHalted()).toBe(expected.halted);
-      expect(accessor.isFaulted()).toBe(expected.faulted);
-    }
-  });
-
-  it('applies firmware patches to cached legacy blocks', () => {
-    const device = createTeachingMCUIR('legacy', { isa: 'teaching' });
-    const { accessor } = createStandalone(device);
-    accessor.step();
-    expect(accessor.readRegister('r0')).toBe(3n);
-    // The first block is ADD 1, ADD 2, JNZ; replace the second immediate.
-    accessor.patchFirmware(3, Uint8Array.from([10]));
-    accessor.writeRegister('r0', 0);
-    accessor.setPC(0);
-    accessor.step();
-    expect(accessor.readRegister('r0')).toBe(11n);
-    expect(accessor.getPC()).toBe(8);
-  });
-
-  it('halts on the legacy HALT opcode and faults on unknown opcodes', () => {
-    const halted = createTeachingMCUIR('legacy', {
-      isa: 'teaching',
-      firmware: Uint8Array.from([0x10, 5, 0x00, 0x00]),
-    });
-    const haltedRun = createStandalone(halted);
-    haltedRun.accessor.step();
-    expect(haltedRun.accessor.readRegister('r0')).toBe(5n);
-    expect(haltedRun.accessor.isHalted()).toBe(true);
-
-    const faulted = createTeachingMCUIR('legacy', {
-      isa: 'teaching',
-      firmware: Uint8Array.from([0xff, 0x00]),
-    });
-    const faultedRun = createStandalone(faulted);
-    faultedRun.accessor.step();
-    expect(faultedRun.accessor.isFaulted()).toBe(true);
-    expect(faultedRun.accessor.isHalted()).toBe(true);
   });
 });
 
@@ -501,7 +538,6 @@ describe('accessor surface', () => {
     expect(snapshot.nvic.enabled).toBe(0);
     expect(accessor.stateNames).toContain('pc');
     expect(accessor.registerNames).toContain('xpsr');
-    expect(accessor.isa).toBe('m3');
     expect(accessor.ports).toEqual(['A', 'B']);
   });
 
@@ -541,7 +577,7 @@ describe('accessor surface', () => {
   });
 
   it('writes memory blocks and syncs GPIO words', () => {
-    const device = createTeachingMCUIR('mcu', { isa: 'm3', firmware: wordsToBytes([0]) });
+    const device = createTeachingMCUIR('mcu', { firmware: wordsToBytes([0]) });
     const { accessor } = createStandalone(device);
     accessor.writeMemoryBlock(RAM_BASE, Uint8Array.from([1, 2, 3, 4]));
     expect(accessor.readMemoryBlock(RAM_BASE, 4)).toEqual(Uint8Array.from([1, 2, 3, 4]));

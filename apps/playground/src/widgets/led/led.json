@@ -1,0 +1,16 @@
+{
+  "properties": {
+    "label": { "type": "string", "title": "标签", "default": "LED" },
+    "on": { "type": "boolean", "title": "点亮", "default": false },
+    "onColor": { "type": "color", "title": "点亮颜色", "default": "#EF4444" },
+    "offColor": { "type": "color", "title": "熄灭颜色", "default": "#3F3F46" }
+  },
+  "ports": {
+    "on": {
+      "direction": "input",
+      "type": "boolean",
+      "title": "点亮",
+      "description": "器件发布的布尔电平；true 时 LED 点亮。"
+    }
+  }
+}

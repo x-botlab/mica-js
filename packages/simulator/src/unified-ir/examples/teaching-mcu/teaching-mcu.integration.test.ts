@@ -70,7 +70,6 @@ function assertMcu(accessor: unknown): asserts accessor is TeachingMCUAccessor {
 describe('circuit integration', () => {
   it('creates a circuit with the typed teaching MCU accessor', async () => {
     const { input } = mcuInput({
-      isa: 'm3',
       firmware: wordsToBytes([encodeR(Op.HALT, 0, 0, 0)]),
     });
     const circuit = await Circuit.create(input);
@@ -87,7 +86,6 @@ describe('circuit integration', () => {
 
   it('patches firmware through the circuit accessor', async () => {
     const { input } = mcuInput({
-      isa: 'm3',
       firmware: wordsToBytes([encodeI(Op.MOVI, 0, 0, 1), encodeR(Op.HALT, 0, 0, 0)]),
     });
     const circuit = await Circuit.create(input);
@@ -104,7 +102,6 @@ describe('circuit integration', () => {
 
   it('publishes host GPIO writes to the electrical solve in the same tick', async () => {
     const { input } = mcuLedInput({
-      isa: 'm3',
       firmware: wordsToBytes([encodeR(Op.HALT, 0, 0, 0)]),
     });
     const circuit = await Circuit.create(input);
@@ -131,7 +128,7 @@ describe('circuit integration', () => {
       encodeI(Op.STR, 0, 1, 0x00), // ODR
       encodeR(Op.HALT, 0, 0, 0),
     ]);
-    const { input } = mcuLedInput({ isa: 'm3', firmware });
+    const { input } = mcuLedInput({ firmware });
     const circuit = await Circuit.create(input);
     assertMcu(circuit.devices.mcu);
     circuit.runBatch(6);
@@ -149,7 +146,7 @@ describe('circuit integration', () => {
       encodeI(Op.LDR, 0, 1, 0),
       encodeR(Op.HALT, 0, 0, 0),
     ]);
-    const { input } = mcuInput({ isa: 'm3', firmware });
+    const { input } = mcuInput({ firmware });
     const circuit = await Circuit.create(input);
     assertMcu(circuit.devices.mcu);
     circuit.devices.mcu.writeMemory(RAM_BASE + 0x100, 0xabcd, 4);
@@ -170,7 +167,6 @@ describe('circuit integration', () => {
     words[0x110 / 4] = encodeI(Op.STR, 0, 1, 0x00);
     words[0x114 / 4] = encodeR(Op.BX, 0, 14, 0);
     const { input } = mcuLedInput({
-      isa: 'm3',
       firmware: wordsToBytes(words),
       pc: 0x80,
     });
@@ -192,8 +188,8 @@ describe('circuit integration', () => {
 
   it('keeps single-step and batch execution semantically identical', async () => {
     const firmware = loopFirmware(100);
-    const stepped = mcuInput({ isa: 'm3', firmware, instructionsPerTick: 1 });
-    const batched = mcuInput({ isa: 'm3', firmware, instructionsPerTick: 1 });
+    const stepped = mcuInput({ firmware, instructionsPerTick: 1 });
+    const batched = mcuInput({ firmware, instructionsPerTick: 1 });
     const stepCircuit = await Circuit.create(stepped.input);
     const batchCircuit = await Circuit.create(batched.input);
     assertMcu(stepCircuit.devices.mcu);
@@ -214,7 +210,6 @@ describe('circuit integration', () => {
 
   it('resets the device, the pins and the tick counter', async () => {
     const { input } = mcuLedInput({
-      isa: 'm3',
       firmware: wordsToBytes([encodeR(Op.HALT, 0, 0, 0)]),
     });
     const circuit = await Circuit.create(input);
@@ -235,7 +230,6 @@ describe('circuit integration', () => {
 
   it('rejects accessor calls after dispose', async () => {
     const { input } = mcuInput({
-      isa: 'm3',
       firmware: wordsToBytes([encodeR(Op.HALT, 0, 0, 0)]),
     });
     const circuit = await Circuit.create(input);
@@ -248,7 +242,6 @@ describe('circuit integration', () => {
 
   it('exposes a one-device circuit factory', async () => {
     const circuit = await createTeachingMCUCircuit('mcu', {
-      isa: 'm3',
       firmware: wordsToBytes([encodeR(Op.HALT, 0, 0, 0)]),
     });
     const accessor = circuit.devices.mcu;
@@ -266,7 +259,7 @@ describe('circuit integration', () => {
       encodeB(Cond.NE, -3),
       encodeR(Op.HALT, 0, 0, 0),
     ]);
-    const { input } = mcuInput({ isa: 'm3', firmware, instructionsPerTick: 1 });
+    const { input } = mcuInput({ firmware, instructionsPerTick: 1 });
     const circuit = await Circuit.create(input);
     assertMcu(circuit.devices.mcu);
     circuit.runBatch(20);
@@ -277,7 +270,6 @@ describe('circuit integration', () => {
 
   it('reports IRQ state and NVIC words through the accessor', async () => {
     const { input } = mcuInput({
-      isa: 'm3',
       firmware: interruptFirmware(),
       pc: 0x80,
     });

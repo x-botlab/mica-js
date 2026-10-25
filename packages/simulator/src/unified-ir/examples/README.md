@@ -14,7 +14,7 @@ accessor surface).
 
 Complete ARM Cortex-M3 implementation:
 
-- Dual ISA support (educational 16-bit and M3 32-bit)
+- M3 (32-bit) instruction set with a basic-block provider
 - 16-register file, N/Z/C/V flags, unified flash/RAM/peripheral address space
 - PA0–PA15 / PB0–PB15 GPIO integrated with the electrical solve
 - NVIC interrupts, exception entry/return, WFI
@@ -75,6 +75,21 @@ api.pin('out').configure(PIN_MODE.pushPull); // writes pin_mode[globalId]
 api.pin('out').writeDigital(level); // writes pin_output[globalId]
 api.pin('in').sampleDigital(); // reads solved pin_input[globalId]
 ```
+
+An ordered subset of the pins can be addressed as one bit field (RFC 0004).
+The first name is the least significant bit:
+
+```ts
+const data = api.pinGroup(['D0', 'D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7']);
+
+data.writeDigital(0xa5); // D0 = 1, D1 = 0, ... D7 = 1 (constant)
+data.writeDigital(register.load()); // or any Value<'u32'>
+const byte = data.readDigital(); // solved pin_input levels, LSB first
+data.pin('D0').configure(PIN_MODE.pushPull); // one member handle
+```
+
+`pinGroup` is available on both phase and topic-handler APIs; a group holds
+1-32 declared pins, and a repeated or undeclared name is a compile error.
 
 ## File Layout
 

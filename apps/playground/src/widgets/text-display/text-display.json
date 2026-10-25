@@ -1,0 +1,27 @@
+{
+  "properties": {
+    "placeholder": { "type": "string", "title": "占位提示", "default": "点击输入…" },
+    "fontSize": { "type": "number", "title": "字号", "default": 13, "min": 8, "max": 40 },
+    "lines": { "type": "integer", "title": "可见行数", "default": 6, "min": 1, "max": 20 }
+  },
+  "ports": {
+    "text": {
+      "direction": "input",
+      "type": "string",
+      "title": "接收文本",
+      "description": "MCU 通过串口发布的文本，逐行追加到显示区。"
+    },
+    "send": {
+      "direction": "output",
+      "type": "string",
+      "title": "发送文本",
+      "description": "输入法提交的文本（中文 / 日文 / 韩文均可），回传给 MCU。"
+    },
+    "selection": {
+      "direction": "output",
+      "type": "string",
+      "title": "选中文本",
+      "description": "原生选择会话提交时发布，演示 textSelection API。"
+    }
+  }
+}

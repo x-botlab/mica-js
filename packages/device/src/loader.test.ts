@@ -38,6 +38,7 @@ describe('loadDeviceModule', () => {
           properties: { label: { type: 'string', default: 'Display' } },
           ports: { frame: { direction: 'output', type: 'bytes<rgb565>' } },
           designatorPrefix: 'U',
+          powerDomains: [{ name: 'vdd', voltage: 3.3 }],
         }),
         'demo.js': 'export default function createDevice(api) { return { api }; }',
       },
@@ -55,6 +56,7 @@ describe('loadDeviceModule', () => {
       expect(loaded.description.pinGroups).toBeInstanceOf(Map);
       expect(loaded.description.pinGroups.size).toBe(0);
       expect(loaded.description.designatorPrefix).toBe('U');
+      expect(loaded.description.powerDomains).toEqual([{ name: 'vdd', voltage: 3.3 }]);
       expect(typeof loaded.factory).toBe('function');
     } finally {
       await temp.cleanup();

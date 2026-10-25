@@ -13,10 +13,20 @@ import {
   WIDGET_ERROR_EVENT,
   WIDGET_FRAME_EVENT,
   WIDGET_PUBLISH_EVENT,
+  WIDGET_TEXT_INPUT_EVENT,
+  WIDGET_TEXT_INPUT_METHOD,
+  WIDGET_TEXT_SELECTION_METHOD,
 } from '../runtime/protocol';
+import type { WidgetTextCommandMessage } from '../runtime/protocol';
 import type { WidgetAssetRef } from '../runtime/types';
 import type { WidgetModule } from '../types';
 import { createWidgetHost } from './create-widget-host';
+import type {
+  WidgetTextInputBeginOptions,
+  WidgetTextInputProxy,
+  WidgetTextInputProxyContext,
+  WidgetTextInputProxyFactory,
+} from './text-input-proxy';
 import type {
   SimulationPublish,
   WidgetAssetProvider,
@@ -239,6 +249,7 @@ interface HarnessOptions {
   readonly assets?: WidgetAssetProvider;
   readonly catalog?: CanvasBindingCatalog;
   readonly simulation?: WidgetHostSimulation;
+  readonly textInputProxy?: WidgetTextInputProxyFactory;
 }
 
 function createHarness(sandbox = new FakeSandbox(), options: HarnessOptions = {}): Harness {
@@ -262,6 +273,7 @@ function createHarness(sandbox = new FakeSandbox(), options: HarnessOptions = {}
     ...(options.assets === undefined ? {} : { assets: options.assets }),
     ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
     ...(options.simulation === undefined ? {} : { simulation: options.simulation }),
+    ...(options.textInputProxy === undefined ? {} : { textInputProxy: options.textInputProxy }),
   });
   host.getLayers().subscribe((change) => changes.push(change));
   host.onDocumentChange((document) => documents.push(document));
@@ -1357,5 +1369,409 @@ describe('simulation bridge', () => {
     await harness.host.dispose();
 
     expect(simulation.listenerCount()).toBe(0);
+  });
+});
+
+class RecordingTextInputProxy implements WidgetTextInputProxy {
+  readonly begins: WidgetTextInputBeginOptions[] = [];
+  readonly positions: { readonly x: number; readonly y: number }[] = [];
+  readonly ranges: { readonly start: number; readonly end: number }[] = [];
+  commits = 0;
+  cancels = 0;
+  disposed = 0;
+
+  begin(options: WidgetTextInputBeginOptions): void {
+    this.begins.push(options);
+  }
+
+  update(position: { readonly x: number; readonly y: number }): void {
+    this.positions.push(position);
+  }
+
+  updateRange(range: { readonly start: number; readonly end: number }): void {
+    this.ranges.push(range);
+  }
+
+  commit(): void {
+    this.commits += 1;
+  }
+
+  cancel(): void {
+    this.cancels += 1;
+  }
+
+  dispose(): void {
+    this.disposed += 1;
+  }
+}
+
+interface ProxyHarness {
+  readonly factory: WidgetTextInputProxyFactory;
+  readonly contexts: WidgetTextInputProxyContext[];
+  readonly proxies: RecordingTextInputProxy[];
+}
+
+function createProxyHarness(): ProxyHarness {
+  const contexts: WidgetTextInputProxyContext[] = [];
+  const proxies: RecordingTextInputProxy[] = [];
+  return {
+    contexts,
+    proxies,
+    factory: (context) => {
+      contexts.push(context);
+      const proxy = new RecordingTextInputProxy();
+      proxies.push(proxy);
+      return proxy;
+    },
+  };
+}
+
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+function textCommand(
+  instanceId: string,
+  command: DistributiveOmit<WidgetTextCommandMessage, 'instanceId'>,
+): WidgetTextCommandMessage {
+  return { ...command, instanceId } as WidgetTextCommandMessage;
+}
+
+describe('widget host native text control', () => {
+  it('opens a native input control when the guest begins a session', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'input',
+        x: 3,
+        y: 4,
+        width: 50,
+        height: 18,
+        text: '你好',
+        cursorPosition: 2,
+      }),
+    );
+
+    expect(proxies.contexts).toHaveLength(1);
+    expect(proxies.contexts[0]).toMatchObject({ instanceId: ID_A, kind: 'input' });
+    expect(proxies.proxies[0]?.begins).toEqual([
+      { x: 3, y: 4, width: 50, height: 18, text: '你好', start: 2, end: 2 },
+    ]);
+  });
+
+  it('routes native input events back to the guest method', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'input',
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 10,
+        text: '',
+        cursorPosition: 0,
+      }),
+    );
+
+    proxies.contexts[0]?.post({ type: 'compositionend', text: '你好', cursorPosition: 2 });
+    await flush();
+
+    expect(harness.sandbox.callsOf(WIDGET_TEXT_INPUT_METHOD)).toEqual([
+      [ID_A, { type: 'compositionend', text: '你好', cursorPosition: 2 }],
+    ]);
+  });
+
+  it('opens a selection control with the widget range', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'selection',
+        x: 1,
+        y: 2,
+        width: 30,
+        height: 12,
+        text: 'Hello World',
+        start: 0,
+        end: 5,
+      }),
+    );
+    proxies.contexts[0]?.post({ type: 'change', start: 6, end: 11, selectedText: 'World' });
+    await flush();
+
+    expect(proxies.contexts[0]).toMatchObject({ instanceId: ID_A, kind: 'selection' });
+    expect(proxies.proxies[0]?.begins).toEqual([
+      { x: 1, y: 2, width: 30, height: 12, text: 'Hello World', start: 0, end: 5 },
+    ]);
+    expect(harness.sandbox.callsOf(WIDGET_TEXT_SELECTION_METHOD)).toEqual([
+      [ID_A, { type: 'change', start: 6, end: 11, selectedText: 'World' }],
+    ]);
+  });
+
+  it('forwards position and range updates to the matching control', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A }), instance({ id: ID_B })));
+
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'input',
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 10,
+        text: '',
+        cursorPosition: 0,
+      }),
+    );
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_B, {
+        type: 'begin',
+        session: 'selection',
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 10,
+        text: 'abc',
+        start: 0,
+        end: 1,
+      }),
+    );
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, { type: 'update', session: 'input', x: 7, y: 8 }),
+    );
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_B, { type: 'update', session: 'selection', start: 1, end: 3 }),
+    );
+
+    expect(proxies.proxies[0]?.positions).toEqual([{ x: 7, y: 8 }]);
+    expect(proxies.proxies[1]?.ranges).toEqual([{ start: 1, end: 3 }]);
+  });
+
+  it('commits and cancels the native control, then releases it', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A }), instance({ id: ID_B })));
+    const begin = {
+      type: 'begin' as const,
+      session: 'input' as const,
+      x: 0,
+      y: 0,
+      width: 20,
+      height: 10,
+      text: '',
+      cursorPosition: 0,
+    };
+    harness.sandbox.emit(WIDGET_TEXT_INPUT_EVENT, textCommand(ID_A, begin));
+    harness.sandbox.emit(WIDGET_TEXT_INPUT_EVENT, textCommand(ID_B, begin));
+
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, { type: 'commit', session: 'input' }),
+    );
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_B, { type: 'cancel', session: 'input' }),
+    );
+
+    expect(proxies.proxies[0]).toMatchObject({ commits: 1, cancels: 0, disposed: 1 });
+    expect(proxies.proxies[1]).toMatchObject({ commits: 0, cancels: 1, disposed: 1 });
+  });
+
+  it('replaces a control when the guest begins another session of the same kind', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+    const begin = {
+      type: 'begin' as const,
+      session: 'input' as const,
+      x: 0,
+      y: 0,
+      width: 20,
+      height: 10,
+      text: 'a',
+      cursorPosition: 1,
+    };
+
+    harness.sandbox.emit(WIDGET_TEXT_INPUT_EVENT, textCommand(ID_A, begin));
+    harness.sandbox.emit(WIDGET_TEXT_INPUT_EVENT, textCommand(ID_A, begin));
+
+    expect(proxies.proxies[0]?.disposed).toBe(1);
+    expect(proxies.proxies[1]?.begins).toHaveLength(1);
+  });
+
+  it('keeps an input and a selection control side by side', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'input',
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 10,
+        text: 'a',
+        cursorPosition: 1,
+      }),
+    );
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'selection',
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 10,
+        text: 'abc',
+        start: 0,
+        end: 2,
+      }),
+    );
+
+    expect(proxies.proxies[0]?.disposed).toBe(0);
+    expect(proxies.proxies[1]?.begins).toHaveLength(1);
+  });
+
+  it('releases the native control when its instance is removed', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'input',
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 10,
+        text: '',
+        cursorPosition: 0,
+      }),
+    );
+
+    harness.host.applyCommand({ type: 'remove-instance', instanceId: ID_A });
+    await flush();
+
+    expect(proxies.proxies[0]?.disposed).toBe(1);
+  });
+
+  it('releases every native control on dispose and reset', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A }), instance({ id: ID_B })));
+    const begin = {
+      type: 'begin' as const,
+      session: 'input' as const,
+      x: 0,
+      y: 0,
+      width: 20,
+      height: 10,
+      text: '',
+      cursorPosition: 0,
+    };
+    harness.sandbox.emit(WIDGET_TEXT_INPUT_EVENT, textCommand(ID_A, begin));
+    harness.sandbox.emit(WIDGET_TEXT_INPUT_EVENT, textCommand(ID_B, begin));
+
+    await harness.host.reset();
+    await flush();
+
+    expect(proxies.proxies.map((proxy) => proxy.disposed)).toEqual([1, 1]);
+  });
+
+  it('reports a session the host cannot create a control for', async () => {
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: () => undefined });
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'input',
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 10,
+        text: '',
+        cursorPosition: 0,
+      }),
+    );
+
+    expect(harness.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'widget/text-input-failed',
+        instanceId: ID_A,
+      }),
+    );
+  });
+
+  it('reports a session when the default control has no DOM', async () => {
+    const harness = createHarness();
+    await harness.host.loadDocument(canvas(instance({ id: ID_A })));
+
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'selection',
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 10,
+        text: 'abc',
+        start: 0,
+        end: 1,
+      }),
+    );
+
+    expect(harness.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'widget/text-input-failed',
+        instanceId: ID_A,
+      }),
+    );
+  });
+
+  it('ignores commands for an instance the document no longer lists', async () => {
+    const proxies = createProxyHarness();
+    const harness = createHarness(new FakeSandbox(), { textInputProxy: proxies.factory });
+
+    harness.sandbox.emit(
+      WIDGET_TEXT_INPUT_EVENT,
+      textCommand(ID_A, {
+        type: 'begin',
+        session: 'input',
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 10,
+        text: '',
+        cursorPosition: 0,
+      }),
+    );
+
+    expect(proxies.contexts).toEqual([]);
+    expect(harness.diagnostics).toEqual([]);
   });
 });

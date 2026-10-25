@@ -282,6 +282,81 @@ describe('parseDeviceDescription', () => {
     );
   });
 
+  it('parses RFC 0007 power domain declarations in order', () => {
+    const description = parseDeviceDescription(
+      {
+        powerDomains: [
+          { name: 'vdd', voltage: 3.3 },
+          { name: 'vbat', voltage: 3 },
+        ],
+      },
+      METADATA,
+    );
+    expect(description.powerDomains).toEqual([
+      { name: 'vdd', voltage: 3.3 },
+      { name: 'vbat', voltage: 3 },
+    ]);
+    expect(Object.isFrozen(description.powerDomains)).toBe(true);
+    expect(Object.isFrozen(description.powerDomains[0])).toBe(true);
+    expect(parseDeviceDescription({}, METADATA).powerDomains).toEqual([]);
+  });
+
+  it('rejects invalid power domain declarations', () => {
+    expectCode(
+      () => parseDeviceDescription({ powerDomains: {} }, METADATA),
+      'device/description-schema',
+      '/powerDomains',
+    );
+    expectCode(
+      () => parseDeviceDescription({ powerDomains: ['vdd'] }, METADATA),
+      'schema/invalid-type',
+      '/powerDomains/0',
+    );
+    expectCode(
+      () => parseDeviceDescription({ powerDomains: [{ voltage: 3.3 }] }, METADATA),
+      'schema/invalid-type',
+      '/powerDomains/0/name',
+    );
+    expectCode(
+      () => parseDeviceDescription({ powerDomains: [{ name: '  ', voltage: 3.3 }] }, METADATA),
+      'schema/invalid-type',
+      '/powerDomains/0/name',
+    );
+    expectCode(
+      () => parseDeviceDescription({ powerDomains: [{ name: 'vdd' }] }, METADATA),
+      'schema/invalid-type',
+      '/powerDomains/0/voltage',
+    );
+    expectCode(
+      () => parseDeviceDescription({ powerDomains: [{ name: 'vdd', voltage: 0 }] }, METADATA),
+      'schema/invalid-type',
+      '/powerDomains/0/voltage',
+    );
+    expectCode(
+      () =>
+        parseDeviceDescription(
+          { powerDomains: [{ name: 'vdd', voltage: 3.3, future: 1 }] },
+          METADATA,
+        ),
+      'schema/unknown-field',
+      '/powerDomains/0/future',
+    );
+    expectCode(
+      () =>
+        parseDeviceDescription(
+          {
+            powerDomains: [
+              { name: 'vdd', voltage: 3.3 },
+              { name: 'vdd', voltage: 3.0 },
+            ],
+          },
+          METADATA,
+        ),
+      'schema/invalid-value',
+      '/powerDomains/1/name',
+    );
+  });
+
   it('rejects non-object definitions', () => {
     expectCode(() => parseDeviceDescription('{}', METADATA), 'device/description-schema', '');
     expectCode(() => parseDeviceDescription([], METADATA), 'device/description-schema', '');

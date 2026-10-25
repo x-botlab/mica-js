@@ -1,3 +1,5 @@
+import type { SchemaErrorCode } from '@mica-js/core/canvas';
+
 export type DeviceErrorCode =
   | 'device/device-unknown'
   | 'device/provider-failed'
@@ -36,8 +38,7 @@ export type DeviceErrorCode =
   | 'device/connection-unknown'
   | 'device/connection-unavailable'
   | 'schema/invalid-type'
-  | 'schema/invalid-value'
-  | 'schema/unknown-field'
+  | SchemaErrorCode
   | 'type/unknown';
 
 export interface DeviceErrorOptions {

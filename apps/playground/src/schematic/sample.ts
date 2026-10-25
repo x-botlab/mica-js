@@ -3,6 +3,7 @@ import {
   parseDeviceReference,
   parseSchematic,
   symbolPinPosition,
+  type DevicePackageRegistration,
   type Placement,
   type Point,
   type SchematicDocument,
@@ -14,7 +15,7 @@ const LCD = 'lcd-package:ct117e-m4-tft-lcd-2-4';
 const TIMER = 'timer-package:ne555';
 
 /** Symbol geometry the canvas synthesizes from; the editor reads it through `devices`. */
-export const devices = createDeviceRegistry([
+export const SAMPLE_DEVICE_PACKAGES: readonly DevicePackageRegistration[] = [
   {
     packageId: 'stm32-package',
     devices: [
@@ -150,7 +151,9 @@ export const devices = createDeviceRegistry([
       },
     ],
   },
-]);
+];
+
+export const devices = createDeviceRegistry(SAMPLE_DEVICE_PACKAGES);
 
 /** Host-owned catalog; the editor only ever receives the device reference. */
 export interface DeviceEntry {

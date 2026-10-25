@@ -33,7 +33,6 @@ export interface TeachingMcuBlinkyResult {
  */
 export async function run(ticks = 2_000): Promise<TeachingMcuBlinkyResult> {
   const mcu = createTeachingMCUIR('mcu', {
-    isa: 'm3',
     firmware: blinkyFirmware(20),
     instructionsPerTick: 8,
   });

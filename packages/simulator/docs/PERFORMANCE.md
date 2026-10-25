@@ -16,9 +16,7 @@
 | MCU + 8 个 `ideal-led`                   | 26.5–30.1 M tick/s | —           |
 | 按钮（去抖）+ 富 LED                     | 64.7–66.9 M tick/s | —           |
 | Teaching MCU，时间切片（1000 inst/tick） | ~390 M inst/s      | —           |
-| Teaching ISA，长切片批处理               | 486–505 M inst/s   | ~2900–3300× |
 | M3 ISA，长切片批处理                     | 583–595 M inst/s   | ~3400–3900× |
-| Teaching ISA，单步                       | 4.2–4.6 M tick/s   | ~25–28×     |
 
 调度器路径基线：MCU + LED 约 6.3–8.1 µs/tick；Teaching MCU 约 0.13–0.18 M inst/s。
 

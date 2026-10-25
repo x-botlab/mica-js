@@ -4,11 +4,12 @@ Mica 仿真内核：整数皮秒虚拟时间与确定性事件调度，并在其
 
 ## 入口
 
-| 入口                      | 内容                                                 |
-| ------------------------- | ---------------------------------------------------- |
-| `@mica-js/core`           | 仿真内核：时间、调度、电气求值、连接拓扑、电源域     |
-| `@mica-js/core/schematic` | `.sch`：解析、序列化、拓扑推导、编辑命令、器件注册表 |
-| `@mica-js/core/canvas`    | `.cnv`：widget 实例、属性覆盖、端口绑定与绑定校验    |
+| 入口                      | 内容                                                   |
+| ------------------------- | ------------------------------------------------------ |
+| `@mica-js/core`           | 仿真内核：时间、调度、电气求值、连接拓扑、电源域       |
+| `@mica-js/core/schematic` | `.sch`：解析、序列化、拓扑推导、编辑命令、器件注册表   |
+| `@mica-js/core/canvas`    | `.cnv`：widget 实例、属性覆盖、端口绑定与绑定校验      |
+| `@mica-js/core/assets`    | 资源引用：工程根内的文件解析与 RFC 0009 错误码（Node） |
 
 ## 架构
 
@@ -82,7 +83,7 @@ instance.storage.loadState(count); // 11
 ## 时间
 
 - `TimePs` 是 `number` 品牌类型；`timePs(value)` 运行时验证并构造它。合法范围是 `0..MAX_TIME_PS`（含两端），`MAX_TIME_PS = 7_200_000_000_000_000`，即两小时。
-- `toTimePs(value, unit)` 接受非负整数单位值，单位为 `ps/ns/us/ms/s`，系数依次为 `1/1_000/1_000_000/1_000_000_000/1_000_000_000_000`。
+- `toTimePs(value, unit)` 接受非负整数单位值，单位为 `ps/ns/us/µs/ms/s`，系数依次为 `1/1_000/1_000_000/1_000_000/1_000_000_000/1_000_000_000_000`。`µs`（U+00B5 MICRO SIGN）是 RFC 0001 的 Unicode 微秒字面量，与 `us`（ASCII 别名）完全等价，推荐使用 `µs`。
 - `addTime(left, right)` 与 `subtractTime(later, earlier)` 检查全部输入及结果；负差、加法或换算越界拒绝。
 - 类型非 `number`、非有限值或非整数先抛 `TypeError`，再对负值/超过上限抛 `RangeError`，不做隐式转换。`-0` 规范化为 `+0`。错误包含输入名、值与约束；时间以 JSON 整数数值精确往返。
 - 普通 IR `f64` 仍可为非整数、NaN 或无穷；只有提交到时间接口时才按时间约束检查。
@@ -221,6 +222,31 @@ canvas 是独立画布：`widgets` 是 widget 实例数组，数组顺序即绘�
 编辑命令（#96）：`add-instance` / `remove-instance`、`set-placement` / `set-z`、`set-property` / `unset-property`、`set-binding`（`target: null` 解绑）、`set-schematic`（`null` 清除）。命令是纯函数，失败抛 `SchematicError` 并一次带回全部诊断；本层只做结构校验，端点存在性、方向与载荷类型由绑定装载负责。
 
 绑定校验（#99）：`validateCanvasBindings(document, { catalog })` 收集诊断、从不抛错；`assertCanvasBindings` 在有 error 时抛 `SchematicError` 并带回全部诊断。`CanvasBindingCatalog` 由宿主注入（widget 定义、已加载的 `.sch`、符号与器件端口），未提供 `catalog` 时跳过引用校验以保持向后兼容；`skipWidgets` 只校验器件侧，文档缺少 `schematic` 时只校验 widget 侧。方向必须互补（widget `input` 接器件 `output`，widget `output` 接器件 `input`），载荷类型必须相同，否则报 `topic/type-mismatch`。诊断码还包括 `canvas/unknown-schematic`、`canvas/unknown-widget`、`canvas/unknown-property`、`canvas/unknown-port`、`canvas/unknown-symbol` 与 `canvas/unknown-target-port`；原理图未加载时只报一次 `canvas/unknown-schematic`，不再级联符号错误。
+
+## 资源引用（`./assets`）
+
+```ts
+import {
+  isAssetError,
+  parseSchematicWithAssets,
+  resolveAsset,
+  validateSchematicAssets,
+} from '@mica-js/core/assets';
+
+const result = await resolveAsset('assets/logo.png', { rootDir });
+if (isAssetError(result)) {
+  result.code; // asset/missing | asset/out-of-root | asset/too-large | asset/undecodable
+}
+
+const document = await parseSchematicWithAssets(text, { rootDir }); // 解析并检查全部 file 引用
+```
+
+- 只读本地文件，绝不发起网络请求；`file` 引用按 `rootDir` 解析，`inline` / `store` 由宿主处理。
+- 路径先做词法归一化再做 `fs.realpath`，`..`、绝对路径与越界符号链接统一报 `asset/out-of-root`。
+- 默认单文件上限 10 MiB（`DEFAULT_ASSET_MAX_SIZE`），可用 `maxSize` 收紧；超限报 `asset/too-large`。
+- 可用 `decode` 注入图片解码等内容的校验，抛错映射为 `asset/undecodable`。
+- `validateSchematicAssets` 返回 `Diagnostic[]`（诊断码沿用 `asset/*` 并带 JSON Pointer）；`parseSchematicWithAssets` 汇总后抛 `SchematicError`。
+- 该入口依赖 `node:fs`，因此不在浏览器侧的 `@mica-js/core` / `./schematic` 入口中再导出。
 
 ## 电气模块
 

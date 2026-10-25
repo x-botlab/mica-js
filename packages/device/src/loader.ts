@@ -264,6 +264,7 @@ function isDeviceDescription(value: unknown): value is DeviceDescription {
     value['pins'] instanceof Map &&
     value['pinGroups'] instanceof Map &&
     value['connections'] instanceof Map &&
-    (value['designatorPrefix'] === undefined || typeof value['designatorPrefix'] === 'string')
+    (value['designatorPrefix'] === undefined || typeof value['designatorPrefix'] === 'string') &&
+    (value['powerDomains'] === undefined || Array.isArray(value['powerDomains']))
   );
 }

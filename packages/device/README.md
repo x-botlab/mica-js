@@ -111,6 +111,10 @@ const description = parseDeviceDescription(
     },
     pinGroups: { data: { pins: ['OUT', 'IN'] } },
     connections: { contact: { pins: ['A', 'B'], initial: 'open' } },
+    powerDomains: [
+      { name: 'vdd', voltage: 3.3 },
+      { name: 'vbat', voltage: 3 },
+    ],
     designatorPrefix: 'U',
   },
   { name: 'acme:display', displayName: '显示屏', description: '示例显示器件' },
@@ -125,9 +129,11 @@ const description = parseDeviceDescription(
 | `pins`             | `kind` 为 `power` / `gnd` / `signal`，`side` 缺省 `left`                                 |
 | `pinGroups`        | 成员非空、唯一且引用已声明引脚；只保存固定顺序，不做电气推断                             |
 | `connections`      | 每项只含 `pins` / `initial`；`pins` 是两个互异且已声明的引脚 ID                          |
+| `powerDomains`     | RFC 0007：`[{ name, voltage }]`，按声明顺序保留；名称唯一、`voltage` 为有限正数          |
 | `designatorPrefix` | 去除首尾空白；空字符串视为未声明                                                         |
 
 - `powerDomain` 只允许出现在 `signal` 引脚，`levels` 必须与它同时出现且 `0 <= low < high <= 1`。
+- `powerDomains` 的第一个域是器件主域；`voltage` 只是标称电压元数据，布尔电路模型不参与解算。
 - 引脚键与成员名大小写精确、不得为空；`initial` 取 `open` / `closed`，省略时 `open`。
 - 顶层未知字段被忽略；定义、`properties`、`ports`、引脚与连接都必须是纯对象（`Map`、`Set`、`Date`、class 实例不会被当作空记录）。
 
@@ -247,7 +253,8 @@ interface DeviceMessagingOptions {
 ```
 
 - `subscribe` 只接受描述中声明为 `input` 的端口，不同 callback 可注册多个监听器；同一 callback 重复注册同一端口报 `device/topic-subscription`。`publish` 只接受 `output` 端口。
-- 载荷校验是**表示层**的：布尔、有限数值、字符串、固定键的 `vec2d` / `vec3d`、`Uint8Array`。`bytes<rgb565>` 等布局校验属于宿主或格式层。字节载荷在捕获时复制，每个监听器收到独立副本。
+- 载荷校验是**表示层**的：布尔、有限数值、字符串、固定键的 `vec2d` / `vec3d`、`Uint8Array`。`bytes<rgb565>` 等布局校验属于宿主或格式层，由导出的 `validateTopicPayload(value, type, path?, options?)`（以及 `validateRgb565Layout` / `validateSegmentsLayout`）在投递前调用。字节载荷在捕获时复制，每个监听器收到独立副本。
+- `validateTopicPayload` 返回 `{ valid: true }` 或 `{ valid: false, error: { code, description, path, message } }`；`code` 取自 `schema/invalid-value`（取值不合约）、`schema/type-mismatch`（JavaScript 类型不符）与 `schema/unknown-field`（对象多出字段）。`bytes<rgb565>` 按 RFC 0010 §2.7 检查 8 字节小端头（`width` / `height` 均为正整数）与 `8 + width × height × 2` 总长度；`bytes<segments>` 按 §2.8 检查 `ceil(segmentCount / 8)`，段数由宿主通过 `options.segmentCount` 从器件定义传入，缺省时只拒绝空载荷。
 - `post(entry, args)` 只接受本实例声明的普通 entry；Promise 完成表示**已接纳**，不表示入口已执行。它不推进时间、不创建事件、不形成等待栈。
 - `postBytes(entry, inbox, bytes)` 要求 entry 签名 `[u32, u32]`。接纳时预留 inbox 连续范围、复制字节并把 `offset` / `length` 交给 entry；entry 返回、故障或销毁时释放。容量不足抛 `BackpressureError`，不覆盖未消费数据。
 - `onOutput(output, callback)` 为每个 IR 输出登记唯一消费者，重复绑定报 `device/output-consumer`。回调在入口返回后执行，`meta.timePs` 是 `bridge.send` 捕获时的虚拟时间。

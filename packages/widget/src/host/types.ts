@@ -6,8 +6,19 @@ import type {
 } from '@mica-js/core/canvas';
 import type { WidgetProvider } from '../types';
 import type { WidgetAssetRef, WidgetInputEvent } from '../runtime/types';
+import type { WidgetTextInputProxyFactory } from './text-input-proxy';
 
 export type { WidgetAssetRef } from '../runtime/types';
+export type {
+  CreateTextInputProxyOptions,
+  TextInputProxyOptions,
+  WidgetTextInputBeginOptions,
+  WidgetTextInputPostEvent,
+  WidgetTextInputProxy,
+  WidgetTextInputProxyContext,
+  WidgetTextInputProxyFactory,
+  WidgetTextInputProxyKind,
+} from './text-input-proxy';
 
 /** Logical widget size; the device pixel ratio is a host-wide concern. */
 export interface WidgetSize {
@@ -134,7 +145,8 @@ export type WidgetDiagnosticCode =
   | 'widget/mount-failed'
   | 'widget/render-failed'
   | 'widget/deliver-failed'
-  | 'widget/asset-failed';
+  | 'widget/asset-failed'
+  | 'widget/text-input-failed';
 
 export interface WidgetDiagnostic {
   readonly code: WidgetDiagnosticCode;
@@ -212,4 +224,15 @@ export interface WidgetHostOptions {
   readonly catalog?: CanvasBindingCatalog;
   /** Replaces the sandbox implementation; the default starts `@mica-js/sandbox` lazily. */
   readonly sandbox?: WidgetSandboxFactory;
+  /**
+   * Replaces the native `<textarea>` overlay that backs `api.textInput` and `api.textSelection`.
+   *
+   * The default needs a DOM; a headless host (or a test) can inject a fake. Returning `undefined`
+   * reports `widget/text-input-failed` for that session instead of throwing.
+   */
+  readonly textInputProxy?: WidgetTextInputProxyFactory;
+  /** Anchor of the default overlay. Defaults to `document.body`. */
+  readonly textInputAnchor?: HTMLElement;
+  /** CSS pixels per logical widget unit for the default overlay. Defaults to `1`. */
+  readonly textInputScale?: number;
 }

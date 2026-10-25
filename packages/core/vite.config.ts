@@ -14,6 +14,7 @@ export default defineConfig({
         index: 'src/index.ts',
         'schematic/index': 'src/schematic/index.ts',
         'canvas/index': 'src/canvas/index.ts',
+        'assets/index': 'src/assets/index.ts',
       },
       formats: ['es'],
       fileName: (_format, entryName) => `${entryName}.js`,
@@ -21,7 +22,7 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: true,
     minify: false,
-    rollupOptions: { external: ['@mica-js/ir'] },
+    rollupOptions: { external: ['@mica-js/ir', 'node:fs', 'node:fs/promises', 'node:path'] },
   },
   plugins: [
     dts({

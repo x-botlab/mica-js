@@ -32,10 +32,27 @@ export type {
   WidgetSandboxHostOptions,
   SimulationPublish,
   WidgetHostSimulation,
+  WidgetTextInputBeginOptions,
+  WidgetTextInputPostEvent,
+  WidgetTextInputProxy,
+  WidgetTextInputProxyContext,
+  WidgetTextInputProxyFactory,
+  WidgetTextInputProxyKind,
+  TextInputProxyOptions,
+  CreateTextInputProxyOptions,
 } from './host/types';
 export { createDefaultWidgetSandbox } from './host/sandbox';
+export { TextInputProxy, createTextInputProxy } from './host/text-input-proxy';
 export { WIDGET_RUNTIME_SOURCE } from './internal/runtime-source';
 export type {
+  TextInputEvent,
+  TextInputListener,
+  TextInputOptions,
+  TextInputPosition,
+  TextSelectionEvent,
+  TextSelectionListener,
+  TextSelectionOptions,
+  TextSelectionRange,
   WidgetAssetApi,
   WidgetAssetRef,
   WidgetDeliveryMeta,
@@ -44,4 +61,8 @@ export type {
   WidgetInstance,
   WidgetInstanceApi,
   WidgetPortListener,
+  WidgetPropsListener,
+  WidgetResizeListener,
+  WidgetTextInputApi,
+  WidgetTextSelectionApi,
 } from './runtime/types';
