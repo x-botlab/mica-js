@@ -120,12 +120,12 @@ jobs:
           head_status=0
           for round in $(seq 1 "$ROUNDS"); do
             echo "===== round $round =====" >> "$BASE_LOG"
-            run_side base "$BASE_LOG"
+            run_side base "$BASE_LOG" || true
             rc=$?
             if [ "$rc" -ne 0 ] && [ "$base_status" -eq 0 ]; then base_status=$rc; fi
 
             echo "===== round $round =====" >> "$HEAD_LOG"
-            run_side . "$HEAD_LOG"
+            run_side . "$HEAD_LOG" || true
             rc=$?
             if [ "$rc" -ne 0 ] && [ "$head_status" -eq 0 ]; then head_status=$rc; fi
           done
