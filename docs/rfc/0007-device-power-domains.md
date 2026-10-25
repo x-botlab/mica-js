@@ -1,8 +1,8 @@
 # 器件电源域声明与运行时供电状态
 
-> **来源**：[#13](https://github.com/x-botlab/mica-js/issues/13) · **同步**：2026-10-25
-> **实现**：[`packages/core/src/power/`](../../packages/core/src/power/)
-> **相关**：[器件定义](./device-definition.md) · [引脚声明](./device-pins.md) · [电气模型](./electrical-model.md) · [内部可控连接](./device-topology.md) · [IR 核心](./device-ir.md)
+- Start Date: 2026-10-16
+- Reference Issues: [#13](https://github.com/x-botlab/mica-js/issues/13)
+- Implementation PR: [#91](https://github.com/x-botlab/mica-js/pull/91)
 
 器件用 `powerDomains` 描述供电引脚、接地参考、上下电阈值与域依赖，用信号引脚的 `powerDomain` 关联所属域。内核依据连接网络的供电电压计算域状态，并把它作用于实体信号引脚的输出、采样与边沿门控；器件 IR 通过公共生命周期入口接收状态变化，自行维护复位、状态保留、通信状态机与恢复。
 
@@ -165,7 +165,7 @@ IO 域为 `on`、供电 3 V 时，`DIN` 的低门限为 0.9 V、高门限为 2.1
 
 ### 输入与边沿门控
 
-域为 `off` 时网络电势继续解析，器件侧新观察捕获与边沿检测暂停，输入逻辑记忆保存。门控下的采样返回值由 [IR 引脚 I/O](./ir-pin-io.md) 定义：数字为 `0`，模拟为正零。已捕获载荷与待执行事件不属于该就绪状态的写集合。
+域为 `off` 时网络电势继续解析，器件侧新观察捕获与边沿检测暂停，输入逻辑记忆保存。门控下的采样返回值由 [IR 引脚 I/O](./0004-ir-pin-io.md) 定义：数字为 `0`，模拟为正零。已捕获载荷与待执行事件不属于该就绪状态的写集合。
 
 必需域或供电引脚引用缺失、目标不存在时，在链接期报告模型异常。已声明域在运行时供电电势暂待确定时，沿用 `voltage: null`、`state: off` 与就绪门控规则，暂停对应输入的新捕获；配置、意图与逻辑记忆的保存／复位由既有生命周期合同决定，其他就绪读取方继续工作。域恢复就绪时提供当前域电压、实际输入结果与就绪变化作为恢复处理的共同快照。
 

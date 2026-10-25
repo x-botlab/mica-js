@@ -1,12 +1,12 @@
 # Widget JavaScript API
 
-> **来源**：[#2](https://github.com/x-botlab/mica-js/issues/2) · **同步**：2026-10-25
-> **实现**：[`packages/widget/src/runtime/`](../../packages/widget/src/runtime/) · [`packages/widget/src/host/`](../../packages/widget/src/host/)
-> **相关**：[Widget 定义](./widget-definition.md) · [属性定义](./device-properties.md) · [话题端口](./topic-ports.md) · [虚拟时间](./time-model.md) · [Widget 音频 API](./widget-audio-api.md)
+- Start Date: 2026-10-12
+- Reference Issues: [#2](https://github.com/x-botlab/mica-js/issues/2)
+- Implementation PR: [#117](https://github.com/x-botlab/mica-js/pull/117)
 
 组件行为由 `*.js` 实现，与同目录、同名的 `*.json` 配对。每个实例通过独立工厂创建并获得实例级上下文：读取属性、维护状态、订阅与发布话题，并在自己的画布上绘制。宿主掌握布局、事件路由、资源权限、调度与位图合成的最终控制权。
 
-属性与端口由 [Widget 定义](./widget-definition.md)拥有，分别引用[属性定义](./device-properties.md)与[话题端口](./topic-ports.md)的规则。
+属性与端口由 [Widget 定义](./0014-widget-definition.md)拥有，分别引用[属性定义](./0009-device-properties.md)与[话题端口](./0010-topic-ports.md)的规则。
 
 ## 模块与实例工厂
 
@@ -85,7 +85,7 @@ api.publish('angle', torque);
 unsubscribe();
 ```
 
-载荷类型取自[话题端口](./topic-ports.md)的封闭清单：`boolean`、`number`、`string`、`vec2d`、`vec3d`、`bytes`、`bytes<rgb565>`、`bytes<segments>`。
+载荷类型取自[话题端口](./0010-topic-ports.md)的封闭清单：`boolean`、`number`、`string`、`vec2d`、`vec3d`、`bytes`、`bytes<rgb565>`、`bytes<segments>`。
 
 `bytes` 及带标签的 `bytes<...>` 统一使用 `Uint8Array`：
 
@@ -111,7 +111,7 @@ api.publish('packet', packet);
 - `publish` 表示向宿主提交消息，接收方处理进度与交付保证由通信合同表达；数值发布与状态更新各自独立执行。
 - 宿主负责限流与队列上限，组件应控制发布频率。
 
-`meta` 是宿主提供的通信元数据，业务载荷单独传递。每条消息固定携带 `simTime`，即宿主投递时填充的仿真时间（口径见[虚拟时间](./time-model.md)）；元数据还包含接收时间与序号。
+`meta` 是宿主提供的通信元数据，业务载荷单独传递。每条消息固定携带 `simTime`，即宿主投递时填充的仿真时间（口径见[虚拟时间](./0001-virtual-time.md)）；元数据还包含接收时间与序号。
 
 ## 绘制与尺寸
 
@@ -265,7 +265,7 @@ return {
 };
 ```
 
-- `dt` 为固定模拟步长，`time` 为当前步完成时的模拟时间，两者均为整数皮秒（口径见[虚拟时间](./time-model.md)）。
+- `dt` 为固定模拟步长，`time` 为当前步完成时的模拟时间，两者均为整数皮秒（口径见[虚拟时间](./0001-virtual-time.md)）。
 - 宿主限制每帧补算步数，避免长时间暂停后无限追赶；暂停时固定步长计算保持暂停，属性与输入处理仍可进行。
 - 宿主提供权威模拟时钟。每个固定模拟步先冻结本步待投递消息，再向实例统一投递，待投递回调处理完成后执行本步 `tick`。
 - 本步投递回调与 `tick` 中发布的消息先缓存，到下一模拟步才对其他实例生效；步间外部输入在下一步开始时纳入待投递集合。
@@ -277,7 +277,7 @@ return {
 
 ## 资源访问
 
-图片与二进制属性保存[资源引用](./device-properties.md)（形如 `{ src, mode }`）。组件通过受控资源接口读取：
+图片与二进制属性保存[资源引用](./0009-device-properties.md)（形如 `{ src, mode }`）。组件通过受控资源接口读取：
 
 ```javascript
 const bitmap = await api.assets.loadImage(api.props.background);

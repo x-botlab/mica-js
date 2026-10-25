@@ -139,7 +139,7 @@ instance.storage.loadState(count); // 11
 
 ## 设计文档
 
-组件间的合同与语义（虚拟时间、电气模型、器件 IR、引脚与电源域、连接拓扑、文档格式、Widget 运行时与音频）见 [docs/spec](./docs/spec/README.md)。
+组件间的合同与语义（虚拟时间、电气模型、器件 IR、引脚与电源域、连接拓扑、文档格式、Widget 运行时与音频）见 [docs/rfc](./docs/rfc/README.md)。
 各包的 API 使用指南见包内 `docs/`，例如 [packages/simulator/docs](./packages/simulator/docs/API.md)。
 
 ## 开发

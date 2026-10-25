@@ -1,8 +1,8 @@
 # canvas 格式（.cnv）
 
-> **来源**：[#67](https://github.com/x-botlab/mica-js/issues/67) · **同步**：2026-10-25
-> **实现**：[`packages/core/src/canvas/format/`](../../packages/core/src/canvas/format/)
-> **相关**：[原理图格式](./schematic-format.md) · [Widget 定义](./widget-definition.md) · [Widget JavaScript API](./widget-js-api.md) · [属性定义](./device-properties.md) · [话题端口](./topic-ports.md)
+- Start Date: 2026-10-21
+- Reference Issues: [#67](https://github.com/x-botlab/mica-js/issues/67)
+- Implementation PR: [#74](https://github.com/x-botlab/mica-js/pull/74)
 
 canvas 使用 `.cnv` 文件描述，是一张独立的 2D 画布：记录画布上的 widget 实例，以及实例的摆放、属性覆盖与端口到器件端点的绑定。画布为无限平面，尺寸与视口由宿主按需映射，格式层只保存实例坐标。文件采用 UTF-8 JSON，`version` 固定为整数 `1`。
 
@@ -31,19 +31,19 @@ canvas 以宿主工程内的 POSIX 相对路径作为标识，文件可位于工
 
 ## widget 实例字段
 
-| 字段         | 类型     | 必填 | 说明                                                                     |
-| ------------ | -------- | ---- | ------------------------------------------------------------------------ |
-| `id`         | `string` | 是   | 实例稳定标识，UUID v4，在文档内唯一                                      |
-| `widget`     | `string` | 是   | widget 引用 `"<包ID>:<WidgetID>"`；内置 widget 使用 `builtin:<WidgetID>` |
-| `x`          | `number` | 是   | 左上角横坐标，有限数值，逻辑单位                                         |
-| `y`          | `number` | 是   | 左上角纵坐标，有限数值，逻辑单位                                         |
-| `width`      | `number` | 是   | 宽度，有限正数，逻辑单位                                                 |
-| `height`     | `number` | 是   | 高度，有限正数，逻辑单位                                                 |
-| `rotation`   | `number` | 是   | 旋转角，单位度，顺时针为正，以实例中心为旋转原点                         |
-| `properties` | `object` | 否   | 属性覆盖，键取自 widget 定义；值规则见[属性定义](./device-properties.md) |
-| `bindings`   | `object` | 否   | 端口键到绑定端点的映射，值为 `{ "symbol", "port" }`                      |
+| 字段         | 类型     | 必填 | 说明                                                                          |
+| ------------ | -------- | ---- | ----------------------------------------------------------------------------- |
+| `id`         | `string` | 是   | 实例稳定标识，UUID v4，在文档内唯一                                           |
+| `widget`     | `string` | 是   | widget 引用 `"<包ID>:<WidgetID>"`；内置 widget 使用 `builtin:<WidgetID>`      |
+| `x`          | `number` | 是   | 左上角横坐标，有限数值，逻辑单位                                              |
+| `y`          | `number` | 是   | 左上角纵坐标，有限数值，逻辑单位                                              |
+| `width`      | `number` | 是   | 宽度，有限正数，逻辑单位                                                      |
+| `height`     | `number` | 是   | 高度，有限正数，逻辑单位                                                      |
+| `rotation`   | `number` | 是   | 旋转角，单位度，顺时针为正，以实例中心为旋转原点                              |
+| `properties` | `object` | 否   | 属性覆盖，键取自 widget 定义；值规则见[属性定义](./0009-device-properties.md) |
+| `bindings`   | `object` | 否   | 端口键到绑定端点的映射，值为 `{ "symbol", "port" }`                           |
 
-`builtin` 是保留命名空间，内置 widget 由加载器识别，清单由 [Widget 定义](./widget-definition.md)维护。其他包 ID 由宿主按其依赖声明解析。
+`builtin` 是保留命名空间，内置 widget 由加载器识别，清单由 [Widget 定义](./0014-widget-definition.md)维护。其他包 ID 由宿主按其依赖声明解析。
 
 ### 坐标与绘制
 
@@ -123,7 +123,7 @@ canvas 以宿主工程内的 POSIX 相对路径作为标识，文件可位于工
 - `properties` 的键由 widget 定义声明，值符合属性类型与资源引用规则；未知键返回 `canvas/unknown-property`，类型或编码错误返回 `schema/invalid-value`。
 - `bindings` 的键由 widget 定义的 `ports` 声明，未知端口返回 `canvas/unknown-port`；值为对象，只含非空字符串 `symbol` 与非空字符串 `port`，出现其他键返回 `schema/unknown-field`。
 - 绑定端点解析失败返回结构化诊断：`symbol` 不在绑定原理图中返回 `canvas/unknown-symbol`；目标器件未声明该端口返回 `canvas/unknown-target-port`。
-- 端点方向与载荷类型按[话题端口](./topic-ports.md)校验，方向不符或类型不可赋值返回 `topic/type-mismatch`。
+- 端点方向与载荷类型按[话题端口](./0010-topic-ports.md)校验，方向不符或类型不可赋值返回 `topic/type-mismatch`。
 - 省略 `schematic` 时跳过端点解析，只校验 `bindings` 的结构。
 - `.cnv` 与 `.sch` 各自独立版本，不做联合版本校验；`.sch` 结构变化导致 symbol 消失时，装载期报 `canvas/unknown-symbol`，绑定原样保留，由编辑器提示修复。
 - 几何字段为有限数值，`width`、`height` 为正数；几何错误保留原始值并返回结构化诊断。

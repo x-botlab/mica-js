@@ -1,8 +1,8 @@
 # 属性定义
 
-> **来源**：[#7](https://github.com/x-botlab/mica-js/issues/7) · **同步**：2026-10-25
-> **实现**：[`packages/device/src/properties.ts`](../../packages/device/src/properties.ts) · [`packages/core/src/format/value.ts`](../../packages/core/src/format/value.ts)
-> **相关**：[Widget 定义](./widget-definition.md) · [话题端口](./topic-ports.md) · [原理图格式](./schematic-format.md) · [Canvas 格式](./canvas-format.md)
+- Start Date: 2026-10-15
+- Reference Issues: [#7](https://github.com/x-botlab/mica-js/issues/7)
+- Implementation PR: [#104](https://github.com/x-botlab/mica-js/pull/104)
 
 属性表达实例的持久配置。Widget 与器件在各自的核心描述中定义属性字段，并引用本文的规则；运行状态由状态合同描述，通信消息由话题端口描述。
 
@@ -78,4 +78,4 @@
 
 器件消费本规范时，属性是创建期固定配置：实例获得独立、递归只读快照，运行期属性更新必须拒绝且不自动重建。模型不注册属性变化监听，也不区分运行期可变与结构性属性；运行中的输入使用话题、消息及模型状态。宿主须隔离可变别名并保护嵌套值——仅靠 TypeScript `readonly` 不足以保证运行期不可修改。
 
-器件定位由[器件定义](./device-definition.md)维护，作者接口由器件 JavaScript API 维护。Widget 实例的属性语义（运行期更新、`onPropsChanged`）见 [Widget JavaScript API](./widget-js-api.md)，本文不改变该合同。
+器件定位由[器件定义](./0005-device-definition.md)维护，作者接口由器件 JavaScript API 维护。Widget 实例的属性语义（运行期更新、`onPropsChanged`）见 [Widget JavaScript API](./0015-widget-js-api.md)，本文不改变该合同。

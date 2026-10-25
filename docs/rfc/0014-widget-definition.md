@@ -1,8 +1,8 @@
 # Widget 定义
 
-> **来源**：[#1](https://github.com/x-botlab/mica-js/issues/1) · **同步**：2026-10-25
-> **实现**：[`packages/widget/src/provider/`](../../packages/widget/src/provider/) · [`packages/widget/src/load-package.ts`](../../packages/widget/src/load-package.ts)
-> **相关**：[包格式](./package-format.md) · [Widget JavaScript API](./widget-js-api.md) · [属性定义](./device-properties.md) · [话题端口](./topic-ports.md)
+- Start Date: 2026-10-12
+- Reference Issues: [#1](https://github.com/x-botlab/mica-js/issues/1)
+- Implementation PR: [#113](https://github.com/x-botlab/mica-js/pull/113)
 
 在包格式中增加 `widgets` 索引，定义 Widget 描述及同目录同名 JavaScript 配对。属性与话题端口是 Widget 定义的核心字段。
 
@@ -52,7 +52,7 @@ Widget ID 与展示名称由索引提供。Widget ID 采用 `[a-z0-9][a-z0-9-]*`
 }
 ```
 
-属性描述引用[属性定义](./device-properties.md)，话题端口描述引用[话题端口](./topic-ports.md)。缺省空对象分别表示空属性集合与空端口集合。属性保存实例持久配置；运行状态由实例维护；绑定保存逻辑端口到目标端点的映射。
+属性描述引用[属性定义](./0009-device-properties.md)，话题端口描述引用[话题端口](./0010-topic-ports.md)。缺省空对象分别表示空属性集合与空端口集合。属性保存实例持久配置；运行状态由实例维护；绑定保存逻辑端口到目标端点的映射。
 
 属性键与端口键使用稳定标识，字符规则为 `[a-z0-9][a-z0-9-]*`。
 

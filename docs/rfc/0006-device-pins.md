@@ -1,8 +1,8 @@
 # 器件引脚声明与运行时配置
 
-> **来源**：[#12](https://github.com/x-botlab/mica-js/issues/12) · **同步**：2026-10-25
-> **实现**：[`packages/device/src/pins/`](../../packages/device/src/pins/)
-> **相关**：[器件定义](./device-definition.md) · [电源域](./device-power-domains.md) · [内部可控连接](./device-topology.md) · [IR 引脚 I/O](./ir-pin-io.md) · [电气模型](./electrical-model.md)
+- Start Date: 2026-10-16
+- Reference Issues: [#12](https://github.com/x-botlab/mica-js/issues/12)
+- Implementation PR: [#114](https://github.com/x-botlab/mica-js/pull/114)
 
 器件通过静态声明提供实体引脚与固定成员顺序的引脚组；每个实例独立保存配置与输出意图。器件内部功能通过这些共享状态表达有效控制。本文只规定引脚资源的声明与状态，不定义访问指令或物理解析算法。
 

@@ -1,8 +1,8 @@
 # 器件 IR 核心规范
 
-> **来源**：[#26](https://github.com/x-botlab/mica-js/issues/26) · **同步**：2026-10-25
-> **实现**：[`packages/ir/`](../../packages/ir/) · [`packages/ir/README.md`](../../packages/ir/README.md)
-> **相关**：[IR 引脚 I/O](./ir-pin-io.md) · [虚拟时间](./time-model.md) · [电气模型](./electrical-model.md) · [内部可控连接](./device-topology.md)
+- Start Date: 2026-10-20
+- Reference Issues: [#26](https://github.com/x-botlab/mica-js/issues/26)
+- Implementation PR: [#64](https://github.com/x-botlab/mica-js/pull/64)
 
 本文描述器件执行 IR 的核心语义与最低校验要求。规范性用语：「必须」「不得」为强制要求，「可以」表示保持可观察行为的实现自由。作者层简写、可读输出与规范化核心 IR 共享同一套执行语义。
 
@@ -51,7 +51,7 @@ func scheduleNext(%deadline: f64) {
 | `i8/i16/i32` | 对应位宽补码有符号整数                      |
 | `f32/f64`    | IEEE 754 对应精度，允许 NaN、无穷大、正负零 |
 
-- 时间使用 `f64` 表示整数皮秒，不设独立 time 类型；普通 `f64` 运算不自动执行时间校验，时间接口按[虚拟时间](./time-model.md)校验。
+- 时间使用 `f64` 表示整数皮秒，不设独立 time 类型；普通 `f64` 运算不自动执行时间校验，时间接口按[虚拟时间](./0001-virtual-time.md)校验。
 - 事件 ID 使用 `u32`，`0` 表示没有事件。
 - 首版不得要求 `u64`、`i64`、eventHandle 或 option 类型。
 
@@ -185,7 +185,7 @@ resource.fill_bytes flash, 4, 4, 255
 
 ### 时间
 
-时间参数采用核心已有 `f64`；单位、范围与边界错误分类统一按[虚拟时间](./time-model.md)。普通 `f64` 常量、字段、参数与数组元素保持普通数值语义，只有提交到事件或其他时间接口时才校验。
+时间参数采用核心已有 `f64`；单位、范围与边界错误分类统一按[虚拟时间](./0001-virtual-time.md)。普通 `f64` 常量、字段、参数与数组元素保持普通数值语义，只有提交到事件或其他时间接口时才校验。
 
 | 操作                             | 签名与语义                                      |
 | -------------------------------- | ----------------------------------------------- |

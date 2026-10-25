@@ -1,8 +1,8 @@
 # 包格式定义
 
-> **来源**：[#3](https://github.com/x-botlab/mica-js/issues/3) · **同步**：2026-10-25
-> **实现**：[`packages/widget/src/load-package.ts`](../../packages/widget/src/load-package.ts)
-> **相关**：[器件定义](./device-definition.md) · [Widget 定义](./widget-definition.md) · [Canvas 格式](./canvas-format.md) · [原理图格式](./schematic-format.md)
+- Start Date: 2026-10-12
+- Reference Issues: [#3](https://github.com/x-botlab/mica-js/issues/3)
+- Implementation PR: [#113](https://github.com/x-botlab/mica-js/pull/113)
 
 定义通用包的元数据、包内文件路径与基础安装规则。包直接携带实际文件；后续内容规范在此基础上增加各自的包字段与内容规则。
 

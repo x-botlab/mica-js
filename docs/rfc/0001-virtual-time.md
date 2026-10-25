@@ -1,8 +1,8 @@
 # 虚拟时间模型
 
-> **来源**：[#23](https://github.com/x-botlab/mica-js/issues/23) · **同步**：2026-10-25
-> **实现**：[`packages/core/src/scheduler/time.ts`](../../packages/core/src/scheduler/time.ts)
-> **相关**：[器件 IR 核心](./device-ir.md) · [IR 引脚 I/O](./ir-pin-io.md) · [电气模型](./electrical-model.md)
+- Start Date: 2026-10-18
+- Reference Issues: [#23](https://github.com/x-botlab/mica-js/issues/23)
+- Implementation PR: [#82](https://github.com/x-botlab/mica-js/pull/82)
 
 仿真的全部时间值统一使用整数皮秒。本文规定时间值的单位、表示、范围、换算、运算、校验与序列化。
 

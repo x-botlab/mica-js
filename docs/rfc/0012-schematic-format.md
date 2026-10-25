@@ -1,10 +1,10 @@
 # 原理图格式（.sch）
 
-> **来源**：[#6](https://github.com/x-botlab/mica-js/issues/6) · **同步**：2026-10-25
-> **实现**：[`packages/core/src/schematic/format/`](../../packages/core/src/schematic/format/)
-> **相关**：[器件定义](./device-definition.md) · [Canvas 格式](./canvas-format.md) · [属性定义](./device-properties.md) · [话题端口](./topic-ports.md) · [引脚声明](./device-pins.md)
+- Start Date: 2026-10-14
+- Reference Issues: [#6](https://github.com/x-botlab/mica-js/issues/6)
+- Implementation PR: [#74](https://github.com/x-botlab/mica-js/pull/74)
 
-原理图使用 `.sch` 文件描述，采用 UTF-8 JSON，`version` 固定为整数 `1`；原理图标识为宿主工程内的 POSIX 相对路径。文件可位于工程内任意目录（如 `boards/`、`schematics/`）。canvas 布局使用独立的 `.cnv` 文件，见 [Canvas 格式](./canvas-format.md)。
+原理图使用 `.sch` 文件描述，采用 UTF-8 JSON，`version` 固定为整数 `1`；原理图标识为宿主工程内的 POSIX 相对路径。文件可位于工程内任意目录（如 `boards/`、`schematics/`）。canvas 布局使用独立的 `.cnv` 文件，见 [Canvas 格式](./0013-canvas-format.md)。
 
 工程配置、依赖声明与 `.sch` 的发现规则由宿主定义，格式层不规定工程配置入口。
 
@@ -91,15 +91,15 @@ symbol 必填 `{ id, device, x, y, rotation }`，可选 `designator`（仅器件
 | `net`        | string | 网标／电源／地必填 | 网名（`D0`、`3V3`、`GND`），非空；同名即同网，不要求唯一                                                                      |
 | `properties` | object | 可选               | 属性键到属性值的映射；值为字符串、有限数值、布尔值、image／binary 的资源引用 `{ src, mode }`，或 `nullable` 属性的显式 `null` |
 
-| 角色 | `device`          | 位号 | 网名           | 可编辑实例属性                           |
-| ---- | ----------------- | ---- | -------------- | ---------------------------------------- |
-| 器件 | `<包ID>:<器件ID>` | 有   | 无             | 由[器件定义](./device-definition.md)声明 |
-| 网标 | `builtin:label`   | 无   | 有             | 无                                       |
-| 电源 | `builtin:power`   | 无   | 有，缺省 `VCC` | 无                                       |
-| 地   | `builtin:ground`  | 无   | 有，缺省 `GND` | 无                                       |
-| 文本 | `builtin:text`    | 无   | 无             | 仅 `text`                                |
+| 角色 | `device`          | 位号 | 网名           | 可编辑实例属性                                |
+| ---- | ----------------- | ---- | -------------- | --------------------------------------------- |
+| 器件 | `<包ID>:<器件ID>` | 有   | 无             | 由[器件定义](./0005-device-definition.md)声明 |
+| 网标 | `builtin:label`   | 无   | 有             | 无                                            |
+| 电源 | `builtin:power`   | 无   | 有，缺省 `VCC` | 无                                            |
+| 地   | `builtin:ground`  | 无   | 有，缺省 `GND` | 无                                            |
+| 文本 | `builtin:text`    | 无   | 无             | 仅 `text`                                     |
 
-- 属性键与值类型取自器件定义（[器件定义](./device-definition.md) · [属性定义](./device-properties.md)），文件只保存实例覆盖值，未出现的键使用器件默认值。
+- 属性键与值类型取自器件定义（[器件定义](./0005-device-definition.md) · [属性定义](./0009-device-properties.md)），文件只保存实例覆盖值，未出现的键使用器件默认值。
 - `properties` 与位号不参与拓扑推导，只供编辑器、运行器与器件实现读取；`net` 参与网络命名。
 - 资源引用只出现在 image／binary 属性上：`file` 为工程内 POSIX 相对路径，`inline` 为 base64，`store` 为宿主资源标识；文档只保存引用，不保存宿主绝对路径与网络地址。违反 `mode` 的路径或编码返回 `schema/invalid-value`，未知字段返回 `schema/unknown-field`。
 - `builtin` 是保留命名空间，其他包 ID 由宿主按其依赖声明解析。
@@ -127,7 +127,7 @@ symbol 必填 `{ id, device, x, y, rotation }`，可选 `designator`（仅器件
 
 ## 连接语义
 
-- **器件与引脚来源**：`device` 使用 `<包ID>:<器件ID>`，两侧均为非空且采用明确字符规则的标识；`builtin:label`、`builtin:power`、`builtin:ground`、`builtin:text` 由加载器识别。实例引脚来自[引脚声明](./device-pins.md)。
+- **器件与引脚来源**：`device` 使用 `<包ID>:<器件ID>`，两侧均为非空且采用明确字符规则的标识；`builtin:label`、`builtin:power`、`builtin:ground`、`builtin:text` 由加载器识别。实例引脚来自[引脚声明](./0006-device-pins.md)。
 - **图元标识与引用**：三类图元的 `id` 为各自数组内唯一的 UUID v4，作为选择、撤销与 canvas 绑定的键；多个 symbol 可以引用同一 device。`designator` 在全部器件实例间唯一，改位号不改变 `id`；交点引用稳定导线 ID。
 - **引脚与网标连接**：导线首尾坐标与引脚或网标连接位置重合时接入对应连接端；线段内部采用几何经过语义；多条导线接入同一连接端时归入同一连通分量。
 - **导线之间连接**：显式交点合并 `wires` 列表中的导线连通分量；共同接入引脚或网标的导线通过该连接端连通；交叉、首尾重合、T 形接触与重叠一律采用显式交点规则。

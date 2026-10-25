@@ -1,8 +1,8 @@
 # 话题端口定义
 
-> **来源**：[#10](https://github.com/x-botlab/mica-js/issues/10) · **同步**：2026-10-25
-> **实现**：[`packages/device/src/messaging/`](../../packages/device/src/messaging/) · [`packages/widget/src/runtime/protocol.ts`](../../packages/widget/src/runtime/protocol.ts)
-> **相关**：[器件定义](./device-definition.md) · [属性定义](./device-properties.md) · [Widget 定义](./widget-definition.md) · [Canvas 格式](./canvas-format.md)
+- Start Date: 2026-10-15
+- Reference Issues: [#10](https://github.com/x-botlab/mica-js/issues/10)
+- Implementation PR: [#115](https://github.com/x-botlab/mica-js/pull/115)
 
 话题端口定义实例参与话题通信的逻辑端口，包括方向、载荷类型与绑定状态。Widget 与器件在各自核心描述中声明端口字段并引用本文规则。
 
@@ -73,7 +73,7 @@
 
 ## 绑定
 
-绑定把本实例的端口映射到目标端点，形如 `{ "symbol": "<symbol id>", "port": "<端口键>" }`；保存位置由宿主文档定义，Canvas 侧见 [Canvas 格式](./canvas-format.md)。
+绑定把本实例的端口映射到目标端点，形如 `{ "symbol": "<symbol id>", "port": "<端口键>" }`；保存位置由宿主文档定义，Canvas 侧见 [Canvas 格式](./0013-canvas-format.md)。
 
 - **方向**：必须 `output → input`。
 - **类型**：两侧载荷类型必须相同，不可赋值返回 `topic/type-mismatch`。
@@ -92,7 +92,7 @@
 { endpoint: { symbol, port }, simTime }
 ```
 
-- `simTime` 固定存在：宿主在投递时填充该消息对应的仿真时间，发布方不提供，载荷中不出现时间字段。数值口径见[虚拟时间](./time-model.md)。
+- `simTime` 固定存在：宿主在投递时填充该消息对应的仿真时间，发布方不提供，载荷中不出现时间字段。数值口径见[虚拟时间](./0001-virtual-time.md)。
 - **配对**：同一时刻的多路数据携带相同 `simTime`，消费方按时间配对，不依赖到达顺序。
 - **时钟域与单位**：由仿真合同定义，本规范只要求单调且可比较。
 - 因此不需要为「带时间的值」增设载荷类型；陀螺仪、电机反馈、音频采样等场景复用同一机制。

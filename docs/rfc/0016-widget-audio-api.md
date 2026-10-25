@@ -1,14 +1,14 @@
 # Widget 音频 API
 
-> **来源**：[#133](https://github.com/x-botlab/mica-js/issues/133) · **同步**：2026-10-25
-> **实现**：尚未实现（`packages/widget/src` 中无音频运行时）
-> **相关**：[Widget JavaScript API](./widget-js-api.md) · [话题端口](./topic-ports.md) · [属性定义](./device-properties.md)
+- Start Date: 2026-10-23
+- Reference Issues: [#133](https://github.com/x-botlab/mica-js/issues/133)
+- Implementation PR: —（尚未实现）
 
-在 [Widget JavaScript API](./widget-js-api.md)之上增加实例级音频能力 `api.audio`：片段播放、振荡器与 PCM 流。Widget 在沙箱 guest 中只提交音频指令与样本，宿主负责解码、重采样、混音与播放，与「guest 离屏绘制 + 宿主合成」的画面模型对称。
+在 [Widget JavaScript API](./0015-widget-js-api.md)之上增加实例级音频能力 `api.audio`：片段播放、振荡器与 PCM 流。Widget 在沙箱 guest 中只提交音频指令与样本，宿主负责解码、重采样、混音与播放，与「guest 离屏绘制 + 宿主合成」的画面模型对称。
 
 数据通路只使用 `postMessage` + transferable，不使用 `SharedArrayBuffer` / `Atomics`。PCM 流经宿主下发的 `MessagePort` 从 guest Worker 直连 `AudioWorklet`，不经宿主主线程中继；背压通过 worklet 直接回传的累计消费帧数（信用）实现。
 
-音频能力不需要在 [Widget 定义](./widget-definition.md)中声明，可用性只由宿主配置决定。
+音频能力不需要在 [Widget 定义](./0014-widget-definition.md)中声明，可用性只由宿主配置决定。
 
 ## 设计约束
 

@@ -1,8 +1,8 @@
 # 实体引脚与公共电气模型
 
-> **来源**：[#24](https://github.com/x-botlab/mica-js/issues/24) · **同步**：2026-10-25
-> **实现**：[`packages/core/src/electrical/`](../../packages/core/src/electrical/)
-> **依赖**：引脚声明 [#12](https://github.com/x-botlab/mica-js/issues/12) · 电源域 [#13](https://github.com/x-botlab/mica-js/issues/13) · 拓扑 [#14](https://github.com/x-botlab/mica-js/issues/14) · 虚拟时间 [#23](https://github.com/x-botlab/mica-js/issues/23) · IR 核心 [#26](https://github.com/x-botlab/mica-js/issues/26)
+- Start Date: 2026-10-19
+- Reference Issues: [#24](https://github.com/x-botlab/mica-js/issues/24)
+- Implementation PR: [#80](https://github.com/x-botlab/mica-js/pull/80)
 
 统一数字与模拟引脚的驱动、弱偏置、网络解析与采样回退规则。输入取实际网络电压或已确认的浮空回退值，输出表达器件意图，两者状态独立。
 
