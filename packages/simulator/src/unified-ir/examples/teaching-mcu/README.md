@@ -79,8 +79,10 @@ Baseline: 0.13–0.18 M inst/s (scheduler-based architecture), i.e. ~1.6 µs per
 guest instruction.
 
 Both ISAs are far above the 72 M inst/s needed to emulate a 72 MHz classroom
-board in real time, and both clear the 450 M inst/s fused-tick target the
-performance test asserts. Time-sliced simulation (`instructionsPerTick: 1000`,
+board in real time. These numbers are observations only: the perf files are
+excluded from `pnpm test` and run on demand with `pnpm test:perf`, and they
+contain no thresholds or assertions (a busy machine must never fail a test).
+Time-sliced simulation (`instructionsPerTick: 1000`,
 see `bench/unified-devices.bench.ts`) reaches 390 M inst/s, and
 [docs/PERFORMANCE.md](../../../../docs/PERFORMANCE.md) lists both methodologies.
 
@@ -107,9 +109,9 @@ job: the JIT's region compiler (`packages/ir/src/jit/region.ts`) fuses the hot
 dispatch chain into one compiled function once an artifact has been entered
 `REGION_THRESHOLD` (500) times. This example relies on that: a warm M3 loop
 ticks at 1.00 dispatch per tick, which is what the removed provider-side
-superblock translation used to achieve. `region-debug.test.ts` prints the
-dispatch split with regions on and off, and `region-performance.test.ts` pins
-the throughput.
+superblock translation used to achieve. `region-debug.test.ts` asserts that a
+region is formed and reports the dispatch split with regions on and off, while
+`region-performance.test.ts` reports the throughput without asserting it.
 
 ## Fusible edges and the tick checkpoint
 
@@ -187,12 +189,12 @@ teaching-mcu/
 ├── teaching-mcu.d.ts             # TypeScript types
 ├── teaching-mcu.errors.ts        # Error definitions
 ├── teaching-mcu.test-helpers.ts  # Test utilities (firmware builders, reference model)
-├── teaching-mcu.test.ts          # Unit tests (45 tests)
+├── teaching-mcu.test.ts          # Unit tests (46 tests)
 ├── teaching-mcu.integration.test.ts  # Integration tests (12 tests)
 ├── teaching-mcu.block-translator.test.ts  # Block decoding shape (9 tests)
-├── region-debug.test.ts          # Region dispatch diagnostics
-├── region-performance.test.ts    # JIT region throughput
-├── teaching-mcu.performance.test.ts  # Performance benchmarks (2 tests)
+├── region-debug.test.ts          # Region formation + dispatch diagnostics
+├── region-performance.test.ts    # JIT region throughput (observation only)
+├── teaching-mcu.performance.test.ts  # Performance observations (no assertions)
 ├── index.ts                      # Public exports
 └── README.md                     # This file
 ```
@@ -292,7 +294,8 @@ Device kernel generates:
 
 - **Unit tests**: Instruction semantics, register/memory operations, GPIO/NVIC
 - **Integration tests**: Multi-instruction programs, interrupt handling, Circuit API
-- **Performance tests**: Throughput benchmarks, validate speedup targets
+- **Performance observations**: Throughput numbers for humans; run with
+  `pnpm test:perf`, print only, never assert (performance is not a test result)
 
 ### Known Limitations
 
@@ -327,10 +330,13 @@ pnpm test packages/simulator/src/unified-ir/examples/teaching-mcu
 
 Expected:
 
-- 45 unit tests passing
+- 46 unit tests passing
 - 12 integration tests passing
 - 9 translation tests passing (unit shape and fusion on/off parity)
-- 2 performance tests passing (steady-state throughput and the 72 M inst/s budget)
+
+The two `*performance*` files are observation-only benchmarks: they are
+excluded from `pnpm test` (which must only verify correctness) and print their
+numbers when you run `pnpm test:perf`.
 
 ## Related Files
 

@@ -1,5 +1,5 @@
 /**
- * U04 performance measurement.
+ * U04 performance observations.
  *
  * LED and button are tick-driven devices, so the throughput path is the
  * generated batch loop: one engine call advances the whole circuit. The legacy
@@ -8,11 +8,13 @@
  * useful comparison is the unified LED against the built-in `ideal-led` kernel
  * it replaces.
  *
- * The thresholds are deliberately conservative so the test measures structure
- * (one host entry per batch) instead of machine speed.
+ * This file only reports numbers: there are no thresholds and no assertions,
+ * because performance must never decide whether a test run passes. It is
+ * excluded from `pnpm test` and runs on demand with `pnpm test:perf`. Device
+ * behaviour is covered by `led.test.ts` / `button.test.ts`.
  */
 import { performance } from 'node:perf_hooks';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
 import { createLedDescription, createMcuDescription } from '../compiler';
 import { Circuit } from '../runtime';
 import { createButtonIR, BUTTON_IR_TYPE } from './button';
@@ -71,47 +73,37 @@ function measure(circuit: Circuit, ticks: number): number {
 }
 
 describe('simple device performance', () => {
-  it('runs the unified LED at batch throughput comparable to the built-in kernel', async () => {
+  it('reports unified LED throughput next to the built-in kernel', async () => {
     const unified = await Circuit.create(unifiedLedInput());
     const builtin = await Circuit.create(builtinLedInput());
     try {
-      expect(unified.devices.led1.isOn()).toBe(false);
-      expect(builtin.devices.led1.isOn()).toBe(false);
       const unifiedMs = measure(unified, TICKS);
       const builtinMs = measure(builtin, TICKS);
       const unifiedRate = TICKS / (unifiedMs / 1000);
       const builtinRate = TICKS / (builtinMs / 1000);
       console.log(
         [
-          `unified LED: ${(unifiedRate / 1e6).toFixed(2)} M ticks/s (${unifiedMs.toFixed(1)} ms)`,
-          `built-in ideal-led: ${(builtinRate / 1e6).toFixed(2)} M ticks/s (${builtinMs.toFixed(1)} ms)`,
+          `unified LED: ${(unifiedRate / 1e6).toFixed(2)} M ticks/s (${unifiedMs.toFixed(1)} ms), lamp=${unified.devices.led1.isOn() ? 'on' : 'off'}`,
+          `built-in ideal-led: ${(builtinRate / 1e6).toFixed(2)} M ticks/s (${builtinMs.toFixed(1)} ms), lamp=${builtin.devices.led1.isOn() ? 'on' : 'off'}`,
           `ratio: ${(unifiedRate / builtinRate).toFixed(2)}x`,
         ].join('\n'),
       );
-      expect(unifiedMs).toBeGreaterThan(0);
-      expect(unifiedRate).toBeGreaterThan(200_000);
-      expect(builtinRate).toBeGreaterThan(200_000);
-      // The richer LED must stay in the same order of magnitude.
-      expect(unifiedRate).toBeGreaterThan(builtinRate / 10);
     } finally {
       unified.dispose();
       builtin.dispose();
     }
   });
 
-  it('runs a button + LED circuit at batch throughput', async () => {
+  it('reports button + LED throughput', async () => {
     const circuit = await Circuit.create(buttonLedInput());
     try {
       circuit.devices.sw1.press();
       const milliseconds = measure(circuit, TICKS);
       const rate = TICKS / (milliseconds / 1000);
       console.log(
-        `button + LED: ${(rate / 1e6).toFixed(2)} M ticks/s (${milliseconds.toFixed(1)} ms)`,
+        `button + LED: ${(rate / 1e6).toFixed(2)} M ticks/s (${milliseconds.toFixed(1)} ms), ` +
+          `lamp=${circuit.devices.led1.isOn() ? 'on' : 'off'}, hold=${circuit.devices.sw1.getHoldTicks()}`,
       );
-      expect(milliseconds).toBeGreaterThan(0);
-      expect(rate).toBeGreaterThan(200_000);
-      expect(circuit.devices.led1.isOn()).toBe(true);
-      expect(circuit.devices.sw1.getHoldTicks()).toBeGreaterThan(TICKS - WARMUP_TICKS - 2);
     } finally {
       circuit.dispose();
     }

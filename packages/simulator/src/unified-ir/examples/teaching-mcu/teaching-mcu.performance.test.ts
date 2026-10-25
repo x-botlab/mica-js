@@ -1,13 +1,17 @@
 /**
- * U03 performance validation.
+ * U03 performance observations.
  *
  * Compares the unified-IR teaching MCU against the current scheduler-based
  * device (`packages/device/examples/teaching-mcu`) using the same legacy
  * firmware and the same `@mica-js/core` scheduler host.
  *
  * The batch path is the throughput path: it runs an entire instruction slice
- * inside one engine call. A warmed unified JIT sits far above the 10× target;
- * the single-step path is the debugging path and is reported separately.
+ * inside one engine call. The single-step path is the debugging path and is
+ * reported separately.
+ *
+ * This file only reports numbers: there are no thresholds and no assertions,
+ * because performance must never decide whether a test run passes. It is
+ * excluded from `pnpm test` and runs on demand with `pnpm test:perf`.
  */
 import { readFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
@@ -20,23 +24,11 @@ import {
   type IDeviceProvider,
 } from '@mica-js/device';
 import { createIRJIT } from '@mica-js/ir';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
 import { jitInternals } from '../../../../../ir/src/jit-runtime';
-import { createTeachingMCUIR, RAM_BASE, type TeachingMCUISAType } from './index';
-import { loopFirmware, wordsToBytes, encodeI, encodeR, Op } from './teaching-mcu.test-helpers';
+import { createTeachingMCUIR, type TeachingMCUISAType } from './index';
+import { loopFirmware } from './teaching-mcu.test-helpers';
 
-/** Real-time budget of the target classroom device: 72 MHz of guest code. */
-const REALTIME_MINST_PER_SECOND = 72;
-
-/**
- * Batch throughput the unified JIT must reach on both guest ISAs.
- *
- * This is the number the "fuse across instruction boundaries" work (J16) is
- * measured by: a one-block-per-artifact provider pays a host dispatch per
- * guest basic block, and only a region that keeps promoted storage, the step
- * counter and the control flags in locals across those dispatches clears it.
- */
-const TARGET_MINST_PER_SECOND = 450;
 const EXAMPLE = new URL('../../../../../device/examples/teaching-mcu/', import.meta.url);
 const MODEL = Object.freeze({
   kind: 'ideal-voltage' as const,
@@ -87,7 +79,9 @@ async function measureLegacy(blocks: number): Promise<number> {
     pinHost: hostStub(),
   });
   scheduler.start({ until: 0 });
-  expect(device.state).toBe('ready');
+  if (device.state !== 'ready') {
+    throw new Error(`legacy device did not reach the ready state (got "${device.state}")`);
+  }
   const start = performance.now();
   scheduler.start({ until: blocks * 25_000 });
   const elapsed = performance.now() - start;
@@ -237,89 +231,36 @@ function measureUnifiedSteps(ticks: number): UnifiedMeasurement {
 }
 
 describe('teaching MCU performance', () => {
-  // The throughput floor is a peak property of the engine, so a retry only
-  // covers a host that was busy with another test file while the median was
-  // taken; a real regression fails every attempt.
-  it(
-    'beats the scheduler-based device by more than 10x on the batch path',
-    { retry: 2, timeout: 60_000 },
-    async () => {
-      const legacyBlocks = 10_000;
-      const legacyMilliseconds = await measureLegacy(legacyBlocks);
-      // The legacy firmware alternates 3-instruction and 2-instruction blocks.
-      const legacyInstructions = legacyBlocks * 2.5;
-      const legacyRate = legacyInstructions / (legacyMilliseconds / 1000);
+  it('reports throughput against the scheduler-based device', { timeout: 60_000 }, async () => {
+    const legacyBlocks = 10_000;
+    const legacyMilliseconds = await measureLegacy(legacyBlocks);
+    // The legacy firmware alternates 3-instruction and 2-instruction blocks.
+    const legacyInstructions = legacyBlocks * 2.5;
+    const legacyRate = legacyInstructions / (legacyMilliseconds / 1000);
 
-      const teachingBatch = measureUnifiedBatch('teaching');
-      const teachingRate = teachingBatch.instructions / (teachingBatch.milliseconds / 1000);
-      const teachingSpeedup = teachingRate / legacyRate;
+    const teachingBatch = measureUnifiedBatch('teaching');
+    const teachingRate = teachingBatch.instructions / (teachingBatch.milliseconds / 1000);
+    const teachingSpeedup = teachingRate / legacyRate;
 
-      const m3Batch = measureUnifiedBatch('m3');
-      const m3Rate = m3Batch.instructions / (m3Batch.milliseconds / 1000);
-      const m3Speedup = m3Rate / legacyRate;
+    const m3Batch = measureUnifiedBatch('m3');
+    const m3Rate = m3Batch.instructions / (m3Batch.milliseconds / 1000);
+    const m3Speedup = m3Rate / legacyRate;
 
-      const steps = measureUnifiedSteps(100_000);
-      const stepRate = steps.instructions / (steps.milliseconds / 1000);
-      const stepSpeedup = stepRate / legacyRate;
-      const stepNanoseconds = (steps.milliseconds * 1e6) / 100_000;
+    const steps = measureUnifiedSteps(100_000);
+    const stepRate = steps.instructions / (steps.milliseconds / 1000);
+    const stepSpeedup = stepRate / legacyRate;
+    const stepNanoseconds = (steps.milliseconds * 1e6) / 100_000;
 
-      console.log(
-        [
-          `legacy scheduler: ${(legacyRate / 1e6).toFixed(3)} M inst/s (${legacyMilliseconds.toFixed(1)} ms, ${legacyBlocks} blocks)`,
-          `unified teaching batch: ${(teachingRate / 1e6).toFixed(2)} M inst/s (${teachingSpeedup.toFixed(1)}x), cold ${(teachingBatch.instructions / (teachingBatch.coldMilliseconds / 1000) / 1e6).toFixed(2)} M inst/s, ${teachingBatch.units} unit(s), ${teachingBatch.dispatchesPerTick.toFixed(2)} dispatches/tick`,
-          `unified M3 batch: ${(m3Rate / 1e6).toFixed(2)} M inst/s (${m3Speedup.toFixed(1)}x), cold ${(m3Batch.instructions / (m3Batch.coldMilliseconds / 1000) / 1e6).toFixed(2)} M inst/s, ${m3Batch.units} unit(s), ${m3Batch.dispatchesPerTick.toFixed(2)} dispatches/tick`,
-          `unified teaching single-step: ${(stepRate / 1e6).toFixed(2)} M inst/s (${stepSpeedup.toFixed(1)}x), ${stepNanoseconds.toFixed(0)} ns/tick`,
-        ].join('\n'),
-      );
+    console.log(
+      [
+        `legacy scheduler: ${(legacyRate / 1e6).toFixed(3)} M inst/s (${legacyMilliseconds.toFixed(1)} ms, ${legacyBlocks} blocks)`,
+        `unified teaching batch: ${(teachingRate / 1e6).toFixed(2)} M inst/s (${teachingSpeedup.toFixed(1)}x), cold ${(teachingBatch.instructions / (teachingBatch.coldMilliseconds / 1000) / 1e6).toFixed(2)} M inst/s, ${teachingBatch.units} unit(s), ${teachingBatch.dispatchesPerTick.toFixed(2)} dispatches/tick`,
+        `unified M3 batch: ${(m3Rate / 1e6).toFixed(2)} M inst/s (${m3Speedup.toFixed(1)}x), cold ${(m3Batch.instructions / (m3Batch.coldMilliseconds / 1000) / 1e6).toFixed(2)} M inst/s, ${m3Batch.units} unit(s), ${m3Batch.dispatchesPerTick.toFixed(2)} dispatches/tick`,
+        `unified teaching single-step: ${(stepRate / 1e6).toFixed(2)} M inst/s (${stepSpeedup.toFixed(1)}x), ${stepNanoseconds.toFixed(0)} ns/tick`,
+      ].join('\n'),
+    );
 
-      expect(teachingSpeedup).toBeGreaterThan(10);
-      expect(m3Speedup).toBeGreaterThan(10);
-      expect(teachingBatch.instructions).toBeGreaterThan(50_000);
-      expect(m3Batch.instructions).toBeGreaterThan(100_000);
-      // Real-time emulation budget: 72 M guest instructions per second.
-      expect(teachingRate).toBeGreaterThan(REALTIME_MINST_PER_SECOND * 1e6);
-      expect(m3Rate).toBeGreaterThan(REALTIME_MINST_PER_SECOND * 1e6);
-      // The fused-tick target: both ISAs clear 450 M inst/s on the batch path.
-      expect(teachingRate).toBeGreaterThan(TARGET_MINST_PER_SECOND * 1e6);
-      expect(m3Rate).toBeGreaterThan(TARGET_MINST_PER_SECOND * 1e6);
-      // Single-step is the debugging path; it must still beat the scheduler.
-      expect(stepSpeedup).toBeGreaterThan(1.5);
-      // One translated artifact per guest basic block, and one region over the hot
-      // dispatch chain, so a warm tick costs a single host dispatch.
-      expect(m3Batch.units).toBeGreaterThan(0);
-      expect(m3Batch.dispatchesPerTick).toBeLessThanOrEqual(1.05);
-      expect(teachingBatch.dispatchesPerTick).toBeLessThanOrEqual(1.05);
-      // Guard against a regression that makes the measurement nonsense.
-      expect(teachingBatch.milliseconds).toBeGreaterThan(0);
-    },
-  );
-
-  it('executes a RAM-heavy M3 workload at batch speed', () => {
-    const firmware = wordsToBytes([
-      encodeI(Op.MOVI, 1, 0, 0x0000),
-      encodeI(Op.MOVT, 1, 0, 0x2000),
-      encodeI(Op.MOVI, 0, 0, 0x55),
-      encodeI(Op.STR, 0, 1, 0),
-      encodeI(Op.LDR, 2, 1, 0),
-      encodeR(Op.HALT, 0, 0, 0),
-    ]);
-    const device = createTeachingMCUIR('mcu', {
-      isa: 'm3',
-      firmware,
-      ports: ['A'],
-      portWidth: 1,
-    });
-    const jit = createIRJIT(device.module, {
-      validation: device.validation,
-      maxSteps: Number.MAX_SAFE_INTEGER,
-    });
-    const context = { instanceId: 'ram-perf', virtualTime: 0 };
-    jit.execute(device.layout.entries.initialize, [], context);
-    const accessor = device.buildAccessor(jit.storage, {
-      step: () => jit.execute(device.layout.entries.tick, [], context),
-    });
-    accessor.step(6);
-    expect(accessor.readRegister('r2')).toBe(0x55n);
-    expect(accessor.readMemory(RAM_BASE, 4)).toBe(0x55);
+    // No thresholds: the numbers above are observations. Correctness of the
+    // device is covered by teaching-mcu.test.ts / teaching-mcu.integration.test.ts.
   });
 });

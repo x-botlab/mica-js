@@ -208,6 +208,22 @@ describe('M3-class execution', () => {
     );
   });
 
+  it('runs a RAM-heavy workload through the tick entry point', () => {
+    const firmware = wordsToBytes([
+      encodeI(Op.MOVI, 1, 0, 0x0000),
+      encodeI(Op.MOVT, 1, 0, 0x2000),
+      encodeI(Op.MOVI, 0, 0, 0x55),
+      encodeI(Op.STR, 0, 1, 0),
+      encodeI(Op.LDR, 2, 1, 0),
+      encodeR(Op.HALT, 0, 0, 0),
+    ]);
+    const device = createTeachingMCUIR('mcu', { isa: 'm3', firmware });
+    const { accessor } = createStandalone(device);
+    accessor.step(6);
+    expect(accessor.readRegister('r2')).toBe(0x55n);
+    expect(accessor.readMemory(RAM_BASE, 4)).toBe(0x55);
+  });
+
   it('reads the flash window through the data path', () => {
     const words = [encodeI(Op.MOVI, 0, 0, 0xbeef), encodeR(Op.HALT, 0, 0, 0)];
     const firmware = wordsToBytes(words);

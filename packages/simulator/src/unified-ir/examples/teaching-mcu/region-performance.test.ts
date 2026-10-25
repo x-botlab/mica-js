@@ -1,25 +1,25 @@
 /**
- * JIT region performance for the teaching MCU example.
+ * JIT region performance observations for the teaching MCU example.
  *
  * The provider translates exactly one guest basic block per artifact, so a
  * guest loop costs one dispatch per basic block unless the engine fuses the hot
- * dispatch chain. This benchmark pins the behaviour the example relies on: with
- * regions enabled, a warm M3 loop retires at one dispatch per tick and far above
- * the 72 MHz real-time budget.
+ * dispatch chain. With regions enabled, a warm M3 loop retires at one dispatch
+ * per tick; with `regions` disabled the same loop still runs inside one
+ * artifact (the backward branch is a self-loop), but every block boundary in
+ * the tick becomes a host dispatch: three per tick instead of one.
  *
- * With `regions` disabled the same loop still runs inside one artifact (the
- * backward branch is a self-loop), but every block boundary in the tick becomes
- * a host dispatch: three per tick instead of one.
+ * This file only reports numbers: there are no thresholds and no assertions,
+ * because performance must never decide whether a test run passes. It is
+ * excluded from `pnpm test` and runs on demand with `pnpm test:perf`. Region
+ * formation itself is asserted in `region-debug.test.ts`.
  */
 import { performance } from 'node:perf_hooks';
 import { createIRJIT } from '@mica-js/ir';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
 import { jitInternals } from '../../../../../ir/src/jit-runtime';
 import { createTeachingMCUIR } from './index';
 import { loopFirmware } from './teaching-mcu.test-helpers';
 
-/** Real-time budget of the target classroom device: 72 MHz of guest code. */
-const REALTIME_MINST_PER_SECOND = 72;
 const WARMUP_TICKS = 2000;
 const MEASURED_TICKS = 60;
 const ROUNDS = 3;
@@ -93,27 +93,19 @@ function measure(regions: boolean): Measurement {
 }
 
 describe('region performance', () => {
-  it('fuses the hot dispatch chain with one dispatch per tick', () => {
+  it('reports dispatch and throughput numbers with regions on and off', () => {
     const withRegions = measure(true);
     const withoutRegions = measure(false);
 
     console.log(
       [
         `regions on : ${withRegions.mips.toFixed(1)} M inst/s, ${withRegions.units} unit(s), ` +
-          `${withRegions.regions} region(s), ${withRegions.dispatchesPerTick.toFixed(2)} dispatches/tick`,
+          `${withRegions.regions} region(s), ${withRegions.instructionsPerTick} inst/tick, ` +
+          `${withRegions.dispatchesPerTick.toFixed(2)} dispatches/tick`,
         `regions off: ${withoutRegions.mips.toFixed(1)} M inst/s, ${withoutRegions.units} unit(s), ` +
-          `${withoutRegions.regions} region(s), ${withoutRegions.dispatchesPerTick.toFixed(2)} dispatches/tick`,
+          `${withoutRegions.regions} region(s), ${withoutRegions.instructionsPerTick} inst/tick, ` +
+          `${withoutRegions.dispatchesPerTick.toFixed(2)} dispatches/tick`,
       ].join('\n'),
     );
-
-    // The tick body is three blocks: prologue, guest loop, halt.
-    expect(withRegions.instructionsPerTick).toBe(180_003);
-    // One region covering all three blocks means one host dispatch per tick.
-    expect(withRegions.regions).toBeGreaterThanOrEqual(1);
-    expect(withRegions.dispatchesPerTick).toBeLessThanOrEqual(1.05);
-    // The real-time budget must stay satisfied without provider-side fusion.
-    expect(withRegions.mips).toBeGreaterThan(REALTIME_MINST_PER_SECOND);
-    // Without regions every block boundary stays a dispatch.
-    expect(withoutRegions.dispatchesPerTick).toBeGreaterThan(1.5);
   }, 300_000);
 });

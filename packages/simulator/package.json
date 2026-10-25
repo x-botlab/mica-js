@@ -25,6 +25,7 @@
     "build": "vite build",
     "examples": "vitest run examples/examples.test.ts --disableConsoleIntercept",
     "test": "vitest run",
+    "test:perf": "vitest run --config vitest.perf.config.ts --disableConsoleIntercept",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.bench.json"
   },

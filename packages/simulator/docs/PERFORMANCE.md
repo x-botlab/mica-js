@@ -15,7 +15,8 @@
 | 运行器   | Vitest bench（Tinybench，交错采样）       |
 
 数值是单机、单次运行的观测值；同一台机器上不同运行之间通常有 ±10–20% 波动。
-脚本本身带回归门槛（例如批处理必须比调度器基线快 10× 以上），所以波动不会掩盖真实退化。
+性能文件与基准**只输出观测值，没有任何阈值或断言**：性能从不决定测试通过与否，
+`pnpm test` / CI 也不会执行它们（见 `vite.config.ts` 的 `exclude`）。
 
 ## 结果摘要
 
@@ -92,8 +93,8 @@ region 编译器同样作用在这一路径上：`instructionsPerTick: 1000` 时
 | 统一 M3 批处理           |            583–595 M inst/s | ~3400–3900× |
 | 统一 teaching ISA 单步   | 4.2–4.6 M tick/s（~570 ns） |     ~25–28× |
 
-两个 ISA 都远高于"实时仿真 72 MHz 教学板"所需的 72 M inst/s，并且都越过 450 M inst/s
-的融合目标。provider 每次只翻译一个基本块，热循环的跨块派发由 JIT 的 region 编译器
+两个 ISA 的观测吞吐都远高于"实时仿真 72 MHz 教学板"所需的 72 M inst/s（450 M inst/s
+的融合目标仅作为记录参考，测试并不对其断言）。provider 每次只翻译一个基本块，热循环的跨块派发由 JIT 的 region 编译器
 消除：一个 60,000 次迭代的 M3 倒计数循环在整条 tick 内只进入 region 一次
 （`dispatches/tick = 1.00`），循环体就是宿主 JavaScript 的循环。provider 侧的超级块
 （window-CFG）翻译已删除。
@@ -151,18 +152,26 @@ pnpm --filter @mica-js/simulator exec vitest bench --run bench/unified-simple.be
 # 文档示例（LED 闪烁 / 按钮 / 教学 MCU 固件 / 吞吐）
 pnpm --filter @mica-js/simulator examples
 
+# 全部性能观测（不含任何断言，只看数字；不参与 `pnpm test` / CI）
+pnpm --filter @mica-js/simulator test:perf
+
 # U03 的调度器对照（含旧器件）
 pnpm --filter @mica-js/simulator exec vitest run \
   src/unified-ir/examples/teaching-mcu/teaching-mcu.performance.test.ts \
   --disableConsoleIntercept
 ```
 
+> 性能文件只做观测：它们**没有任何阈值或断言**，并且被 `vite.config.ts`
+> 排除在 `pnpm test` 之外——机器繁忙时不会让测试失败。正确性由
+> `*.test.ts` 中的结构性断言保证（例如 `region-debug.test.ts` 断言 region
+> 已形成、每个 tick 退休的 guest 指令数）。
+
 基准文件：
 
 | 文件                             | 内容                                            |
 | -------------------------------- | ----------------------------------------------- |
 | `bench/current-architecture.ts`  | 调度器基线：两个 module + JS 解网，同一张电路   |
-| `bench/unified-simple.bench.ts`  | 调度器 vs 统一 IR、单步 vs 批处理、1M tick 门槛 |
+| `bench/unified-simple.bench.ts`  | 调度器 vs 统一 IR、单步 vs 批处理、1M tick 观测 |
 | `bench/unified-micro.bench.ts`   | 编译、单步、批处理、`reset()`、访问器与引脚     |
 | `bench/unified-devices.bench.ts` | MCU + 8 LED、按钮 + 富 LED、教学 MCU 真实固件   |
 

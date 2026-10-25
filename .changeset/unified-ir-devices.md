@@ -8,4 +8,4 @@
 - `createButtonIR(id, config)` / `BUTTON_IR_TYPE`：两终端按钮，支持 `debounceTicks`、`activeLow`、`initialPressed`；`ButtonAccessor` 区分原始位置与去抖触点（`press()` / `release()` / `toggle()` / `isPressed()` / `isClosed()` / `isBouncing()` / `getPressCount()` / `getHoldTicks()` / `getLineLevel()` / `snapshot()`）。去抖在生成的 tick 内完成，不依赖宿主轮询。
 - 两个器件都导出 `device`（可直接放进 `Circuit.create` 的 `devices`），器件类型 `led-ir` / `button-ir` 进入 `Circuit` 的访问器类型推导，`circuit.devices.sw1.press()` 无需断言。
 - 共享辅助 `StorageAccessor`、`SimplePinMemory`、`SimpleDeviceAccessorOptions` 与 `buildAccessor` / `register*Layout` 供自定义器件复用。
-- `led.ts` 的 `lamp` 与内置 `ideal-led` 内核逐 tick 对齐（每个 tick 用同一个 MCU 驱动两者并比较）；`performance.test.ts` 覆盖吞吐（LED≈29.9 M tick/s、内置 ideal-led≈32.7 M tick/s、按钮电路≈11.7 M tick/s）。
+- `led.ts` 的 `lamp` 与内置 `ideal-led` 内核逐 tick 对齐（每个 tick 用同一个 MCU 驱动两者并比较）；`performance.test.ts` 只观测吞吐（LED≈29.9 M tick/s、内置 ideal-led≈32.7 M tick/s、按钮电路≈11.7 M tick/s），不含门槛或断言。

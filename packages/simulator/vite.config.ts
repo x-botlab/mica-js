@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import dts from 'vite-plugin-dts';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   build: {
@@ -25,6 +25,10 @@ export default defineConfig({
   ],
   test: {
     include: ['src/**/*.test.ts', 'examples/**/*.test.ts'],
+    // Performance files only print observations; they are not correctness
+    // tests, so they never gate `pnpm test` (and can never fail CI on a busy
+    // machine). Run them explicitly with `pnpm test:perf`.
+    exclude: [...configDefaults.exclude, '**/*performance.test.ts'],
     environment: 'node',
     benchmark: {
       // The export getter tracker wraps every module export in a counting

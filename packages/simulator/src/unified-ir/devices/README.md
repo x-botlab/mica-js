@@ -131,7 +131,9 @@ button position.
 
 ## Performance
 
-Measured by `performance.test.ts` (one engine call per 200 k-tick batch):
+Reported by `performance.test.ts` (one engine call per 200 k-tick batch). The
+numbers are observations only: the file has no thresholds or assertions and is
+excluded from `pnpm test`; run it with `pnpm test:perf`.
 
 | Scenario                            | Throughput      |
 | ----------------------------------- | --------------- |

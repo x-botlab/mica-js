@@ -11,4 +11,4 @@
 - `ElectricalSolverGenerator`：每张网一个 `solve_net_<id>`，单驱动为无分支 `mode == push-pull && output`；`allowMultiDriver` 时按线与（wired-OR）解算；无驱动网读取轨电平或常量低。
 - `MainLoopGenerator`：`unified_initialize`、`unified_tick`（一次完整步进，驱动 → 解网 → 负载）与 `unified_tick_batch(count)`（模块内循环，一次引擎调用跑完整批）；器件按驱动/负载依赖排序，反馈环回退声明顺序。
 - 错误统一为 `UnifiedIRCompilerError`（`invalid-input`、`duplicate-device`、`unknown-device`、`pin-not-found`、`state-not-found`、`invalid-connection`、`capacity-exceeded`、`unsupported-device`、`driver-conflict`、`power-short`、`rail-conflict`、`invalid-ir`），引脚错误消息形如 `Pin 'mcu1.PA0' not found. Available: [...]`。
-- 新增 `compiler.test.ts`（50 例：分配、拓扑、器件/解算/主循环生成、错误路径、确定性）与 `integration.test.ts`（11 例：JIT 上 MCU → LED 信号传播、VCC/GND 轨、自定义器件、双向引脚、类型化状态、JIT/参考解释器一致、批处理、编译 < 200 ms 与 1000 tick（约 0.4 ms）性能门槛）。
+- 新增 `compiler.test.ts`（50 例：分配、拓扑、器件/解算/主循环生成、错误路径、确定性）与 `integration.test.ts`（11 例：JIT 上 MCU → LED 信号传播、VCC/GND 轨、自定义器件、双向引脚、类型化状态、JIT/参考解释器一致、批处理）；编译与 tick 耗时移入 `integration.performance.test.ts`，只输出观测值、不含门槛或断言。

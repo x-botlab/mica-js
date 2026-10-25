@@ -315,25 +315,4 @@ describe('CompiledCircuit integration', () => {
     expect(pinInputOf(compiled, jit, 'b1.line')).toBe(false);
     expect(lampOf(compiled, jit, 'led1')).toBe(false);
   });
-
-  it('compiles quickly and ticks at prototype speed', () => {
-    const compileStart = performance.now();
-    const compiled = compileCircuit(mcuLedInput());
-    const compileMs = performance.now() - compileStart;
-    expect(compileMs).toBeLessThan(200);
-
-    const jit = createRuntime(compiled);
-    initialize(compiled, jit);
-    tick(compiled, jit);
-    // Warm the compiled loop so the measurement excludes code generation.
-    jit.execute(compiled.entryPoints.refs.batch, [100], CONTEXT);
-
-    const ticks = 1000;
-    const start = performance.now();
-    jit.execute(compiled.entryPoints.refs.batch, [ticks], CONTEXT);
-    const elapsedMs = performance.now() - start;
-    // The prototype target is ~400 ns/tick; 10 ms for 1000 ticks (~10 us/tick)
-    // still leaves >20x headroom on a busy CI machine.
-    expect(elapsedMs).toBeLessThan(10);
-  });
 });

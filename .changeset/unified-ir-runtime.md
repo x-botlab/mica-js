@@ -11,5 +11,5 @@
 - 器件访问器：LED（`led`/`ideal-led`）提供 `isOn()`/`lampState`；MCU（`mcu`/`teaching-mcu`）提供 `readRegister`/`writeRegister`（bool/整数状态当 `bigint` 寄存器）及 `readPin`/`writePin`；所有器件都有 `getState`/`setState`，未知类型保留通用表面。
 - 便捷工厂：`createSingleDeviceCircuit(type)` 用内置内核造单器件电路；`createCircuitFromSchematic(schematic, { devices, resolveDevice })` 从 `deriveSchematicTopology` 网表生成电路，designator 作为器件 id（非法字符自动规范化并去重）。
 - 错误统一为带 `code` 的 `CircuitError`（`invalid-options`、`invalid-count`、`pin-not-found`、`pin-not-writable`、`state-not-found`、`invalid-state-value`、`register-not-found`、`invalid-register-value`、`unresolved-device`、`disposed`），引脚/状态/寄存器缺失时消息列出所有可选值；`dispose()` 幂等，之后连同已取出的访问器一起拒绝调用。
-- 新增 `runtime.test.ts`（30 例：创建、批处理、单步、重置、访问器、寄存器、引脚与错误路径）、`integration.test.ts`（17 例：MCU → LED 传播、大批量计数、JIT/参考解释器一致、线与、自定义电平轨、工厂与原理图转换）与 `performance.test.ts`（创建 < 500 ms、批处理 > 1 M tick/s、单步 < 1 µs；本机实测约 37 ms / 60–90 M tick/s / 0.45–0.5 µs）。
+- 新增 `runtime.test.ts`（30 例：创建、批处理、单步、重置、访问器、寄存器、引脚与错误路径）、`integration.test.ts`（17 例：MCU → LED 传播、大批量计数、JIT/参考解释器一致、线与、自定义电平轨、工厂与原理图转换）与 `performance.test.ts`（创建、批处理、单步性能观测，只输出数字、不断言；本机实测约 37 ms / 60–90 M tick/s / 0.45–0.5 µs）。
 - 现有 `createDeviceSimExecutor`、调度器、电气层与 U01 编译器路径完全不变。

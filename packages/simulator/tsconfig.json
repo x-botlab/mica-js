@@ -10,5 +10,5 @@
       "@mica-js/device": ["../device/src/index.ts"]
     }
   },
-  "include": ["src", "examples", "vite.config.ts"]
+  "include": ["src", "examples", "vite.config.ts", "vitest.perf.config.ts"]
 }

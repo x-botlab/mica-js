@@ -11,5 +11,5 @@
 - **跨块批处理**：步数计数器改为 region 局部累加，在每次出口、host 指令与错误展开前写回；`ctl.suspended` 与两个 epoch 在 region 入口读入、`materialize` 之后重新读取。
 - **`validatedEpoch` 只在含 `checkpoint` 的成员入口写回**（该字段只是检查点的快速路径提示，陈旧只会多走一次依赖校验）。
 - **`@mica-js/simulator` teaching MCU**：每个 artifact 只保留一个边界块（后继 PC 作为值传递），因此 artifact 可被结构化而不是退化成 `switch (pc)`；pin 内存发布移到 artifact 让出时（tick 边界），不再每个客体基本块发布一次；`r0 & 1` latch 到 ODR 仍然每块执行。
-- **性能**（`teaching-mcu.performance.test.ts`，本机）：teaching ISA 批处理 170–182 → 486–505 M inst/s，M3 批处理 480–495 → 583–595 M inst/s；测试新增 450 M inst/s 门槛，并对度量取「多轮中位数的最小值」以抵抗同机并行测试的干扰。
+- **性能**（`teaching-mcu.performance.test.ts`，本机）：teaching ISA 批处理 170–182 → 486–505 M inst/s，M3 批处理 480–495 → 583–595 M inst/s；该文件只输出观测值，不含门槛或断言（`pnpm test:perf` 手动运行，不参与 CI），并对度量取「多轮中位数的最小值」以抵抗同机并行测试的干扰。
 - **测试**：`parity-fuzz.test.ts` 说明并按三种粒度运行差分测试（含 unbounded budget 的批处理路径）；`region.test.ts` 新增提升选择与生成代码形状的断言。

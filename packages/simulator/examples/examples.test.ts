@@ -45,13 +45,15 @@ describe('documented examples', () => {
     expect(result.cycles).toBeGreaterThan(0);
   });
 
-  it('benchmark: the batch path sustains millions of ticks per second', async () => {
-    const result = await runBenchmark(1_000_000, 2);
+  it('benchmark: reports the ticks it measured', async () => {
+    // A small run keeps the example exercised in CI. Throughput numbers are
+    // observations, never assertions (see `benchmark.performance.test.ts`).
+    const result = await runBenchmark(1_000, 1);
     console.log(
-      `benchmark: ${(result.ticksPerSecond / 1_000_000).toFixed(1)} M ticks/s ` +
-        `(${result.nsPerTick.toFixed(1)} ns/tick)`,
+      `benchmark: ${result.ticks} ticks measured ` +
+        `(${(result.ticksPerSecond / 1_000_000).toFixed(1)} M ticks/s, ` +
+        `${result.nsPerTick.toFixed(1)} ns/tick)`,
     );
-    expect(result.ticksPerSecond).toBeGreaterThan(1_000_000);
-    expect(result.nsPerTick).toBeLessThan(1_000);
+    expect(result.ticks).toBe(1_000);
   });
 });
