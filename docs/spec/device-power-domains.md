@@ -1,5 +1,6 @@
 # 器件电源域声明与运行时供电状态
 
+> **来源**：[#13](https://github.com/x-botlab/mica-js/issues/13) · **同步**：2026-10-25
 > **实现**：[`packages/core/src/power/`](../../packages/core/src/power/)
 > **相关**：[器件定义](./device-definition.md) · [引脚声明](./device-pins.md) · [电气模型](./electrical-model.md) · [内部可控连接](./device-topology.md) · [IR 核心](./device-ir.md)
 

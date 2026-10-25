@@ -1,5 +1,6 @@
 # canvas 格式（.cnv）
 
+> **来源**：[#67](https://github.com/x-botlab/mica-js/issues/67) · **同步**：2026-10-25
 > **实现**：[`packages/core/src/canvas/format/`](../../packages/core/src/canvas/format/)
 > **相关**：[原理图格式](./schematic-format.md) · [Widget 定义](./widget-definition.md) · [Widget JavaScript API](./widget-js-api.md) · [属性定义](./device-properties.md) · [话题端口](./topic-ports.md)
 

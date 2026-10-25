@@ -1,5 +1,6 @@
 # 包格式定义
 
+> **来源**：[#3](https://github.com/x-botlab/mica-js/issues/3) · **同步**：2026-10-25
 > **实现**：[`packages/widget/src/load-package.ts`](../../packages/widget/src/load-package.ts)
 > **相关**：[器件定义](./device-definition.md) · [Widget 定义](./widget-definition.md) · [Canvas 格式](./canvas-format.md) · [原理图格式](./schematic-format.md)
 

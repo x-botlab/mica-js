@@ -1,5 +1,6 @@
 # 话题端口定义
 
+> **来源**：[#10](https://github.com/x-botlab/mica-js/issues/10) · **同步**：2026-10-25
 > **实现**：[`packages/device/src/messaging/`](../../packages/device/src/messaging/) · [`packages/widget/src/runtime/protocol.ts`](../../packages/widget/src/runtime/protocol.ts)
 > **相关**：[器件定义](./device-definition.md) · [属性定义](./device-properties.md) · [Widget 定义](./widget-definition.md) · [Canvas 格式](./canvas-format.md)
 

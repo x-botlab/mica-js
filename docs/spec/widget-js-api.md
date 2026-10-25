@@ -1,5 +1,6 @@
 # Widget JavaScript API
 
+> **来源**：[#2](https://github.com/x-botlab/mica-js/issues/2) · **同步**：2026-10-25
 > **实现**：[`packages/widget/src/runtime/`](../../packages/widget/src/runtime/) · [`packages/widget/src/host/`](../../packages/widget/src/host/)
 > **相关**：[Widget 定义](./widget-definition.md) · [属性定义](./device-properties.md) · [话题端口](./topic-ports.md) · [虚拟时间](./time-model.md) · [Widget 音频 API](./widget-audio-api.md)
 

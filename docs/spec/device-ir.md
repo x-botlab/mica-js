@@ -1,5 +1,6 @@
 # 器件 IR 核心规范
 
+> **来源**：[#26](https://github.com/x-botlab/mica-js/issues/26) · **同步**：2026-10-25
 > **实现**：[`packages/ir/`](../../packages/ir/) · [`packages/ir/README.md`](../../packages/ir/README.md)
 > **相关**：[IR 引脚 I/O](./ir-pin-io.md) · [虚拟时间](./time-model.md) · [电气模型](./electrical-model.md) · [内部可控连接](./device-topology.md)
 

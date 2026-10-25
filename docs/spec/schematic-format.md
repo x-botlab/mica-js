@@ -1,5 +1,6 @@
 # 原理图格式（.sch）
 
+> **来源**：[#6](https://github.com/x-botlab/mica-js/issues/6) · **同步**：2026-10-25
 > **实现**：[`packages/core/src/schematic/format/`](../../packages/core/src/schematic/format/)
 > **相关**：[器件定义](./device-definition.md) · [Canvas 格式](./canvas-format.md) · [属性定义](./device-properties.md) · [话题端口](./topic-ports.md) · [引脚声明](./device-pins.md)
 

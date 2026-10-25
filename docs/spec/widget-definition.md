@@ -1,5 +1,6 @@
 # Widget 定义
 
+> **来源**：[#1](https://github.com/x-botlab/mica-js/issues/1) · **同步**：2026-10-25
 > **实现**：[`packages/widget/src/provider/`](../../packages/widget/src/provider/) · [`packages/widget/src/load-package.ts`](../../packages/widget/src/load-package.ts)
 > **相关**：[包格式](./package-format.md) · [Widget JavaScript API](./widget-js-api.md) · [属性定义](./device-properties.md) · [话题端口](./topic-ports.md)
 

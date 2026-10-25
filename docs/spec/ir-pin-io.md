@@ -1,5 +1,6 @@
 # IR 引脚 I/O、采样与观察合同
 
+> **来源**：[#25](https://github.com/x-botlab/mica-js/issues/25) · **同步**：2026-10-25
 > **实现**：[`packages/device/src/observe/`](../../packages/device/src/observe/) · [`packages/device/src/pins/`](../../packages/device/src/pins/)
 > **相关**：[IR 核心](./device-ir.md) · [引脚声明](./device-pins.md) · [电源域](./device-power-domains.md) · [电气模型](./electrical-model.md) · [虚拟时间](./time-model.md)
 

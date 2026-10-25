@@ -1,5 +1,6 @@
 # 器件定义
 
+> **来源**：[#11](https://github.com/x-botlab/mica-js/issues/11) · **同步**：2026-10-25
 > **实现**：[`packages/device/src/description.ts`](../../packages/device/src/description.ts) · [`packages/device/src/loader.ts`](../../packages/device/src/loader.ts)
 > **相关**：[包格式](./package-format.md) · [属性定义](./device-properties.md) · [话题端口](./topic-ports.md) · [引脚声明](./device-pins.md) · [IR 核心](./device-ir.md)
 
