@@ -1,6 +1,5 @@
 # 属性定义
 
-> **状态**：提案（OPEN） · **来源**：[#7](https://github.com/x-botlab/mica-js/issues/7) · **同步**：2026-10-25
 > **实现**：[`packages/device/src/properties.ts`](../../packages/device/src/properties.ts) · [`packages/core/src/format/value.ts`](../../packages/core/src/format/value.ts)
 > **相关**：[Widget 定义](./widget-definition.md) · [话题端口](./topic-ports.md) · [原理图格式](./schematic-format.md) · [Canvas 格式](./canvas-format.md)
 

@@ -1,6 +1,5 @@
 # Widget 音频 API
 
-> **状态**：提案（OPEN） · **来源**：[#133](https://github.com/x-botlab/mica-js/issues/133) · **同步**：2026-10-25
 > **实现**：尚未实现（`packages/widget/src` 中无音频运行时）
 > **相关**：[Widget JavaScript API](./widget-js-api.md) · [话题端口](./topic-ports.md) · [属性定义](./device-properties.md)
 

@@ -1,6 +1,5 @@
 # 虚拟时间模型
 
-> **状态**：提案（OPEN） · **来源**：[#23](https://github.com/x-botlab/mica-js/issues/23) · **同步**：2026-10-25
 > **实现**：[`packages/core/src/scheduler/time.ts`](../../packages/core/src/scheduler/time.ts)
 > **相关**：[器件 IR 核心](./device-ir.md) · [IR 引脚 I/O](./ir-pin-io.md) · [电气模型](./electrical-model.md)
 

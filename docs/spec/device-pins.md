@@ -1,6 +1,5 @@
 # 器件引脚声明与运行时配置
 
-> **状态**：提案（OPEN） · **来源**：[#12](https://github.com/x-botlab/mica-js/issues/12) · **同步**：2026-10-25
 > **实现**：[`packages/device/src/pins/`](../../packages/device/src/pins/)
 > **相关**：[器件定义](./device-definition.md) · [电源域](./device-power-domains.md) · [内部可控连接](./device-topology.md) · [IR 引脚 I/O](./ir-pin-io.md) · [电气模型](./electrical-model.md)
 

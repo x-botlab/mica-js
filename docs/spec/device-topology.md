@@ -1,6 +1,5 @@
 # 器件内部可控连接与运行时拓扑切换
 
-> **状态**：提案（OPEN） · **来源**：[#14](https://github.com/x-botlab/mica-js/issues/14) · **同步**：2026-10-25
 > **实现**：[`packages/core/src/topology/`](../../packages/core/src/topology/) · [`packages/device/src/connection/`](../../packages/device/src/connection/)
 > **相关**：[器件定义](./device-definition.md) · [引脚声明](./device-pins.md) · [电源域](./device-power-domains.md) · [电气模型](./electrical-model.md) · [IR 核心](./device-ir.md)
 

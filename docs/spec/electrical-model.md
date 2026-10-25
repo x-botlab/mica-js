@@ -1,6 +1,5 @@
 # 实体引脚与公共电气模型
 
-> **状态**：提案（OPEN） · **来源**：[#24](https://github.com/x-botlab/mica-js/issues/24) · **同步**：2026-10-25
 > **实现**：[`packages/core/src/electrical/`](../../packages/core/src/electrical/)
 > **依赖**：引脚声明 [#12](https://github.com/x-botlab/mica-js/issues/12) · 电源域 [#13](https://github.com/x-botlab/mica-js/issues/13) · 拓扑 [#14](https://github.com/x-botlab/mica-js/issues/14) · 虚拟时间 [#23](https://github.com/x-botlab/mica-js/issues/23) · IR 核心 [#26](https://github.com/x-botlab/mica-js/issues/26)
 
