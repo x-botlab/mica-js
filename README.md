@@ -137,6 +137,11 @@ instance.storage.loadState(count); // 11
 └── scripts/                  # 仓库级校验脚本
 ```
 
+## 设计文档
+
+组件间的合同与语义（虚拟时间、电气模型、器件 IR、引脚与电源域、连接拓扑、文档格式、Widget 运行时与音频）见 [docs](./docs/README.md)。
+各包的 API 使用指南见包内 `docs/`，例如 [packages/simulator/docs](./packages/simulator/docs/API.md)。
+
 ## 开发
 
 环境要求：Node.js `^20.19.0 || >=22.12.0`，pnpm 由 `packageManager` 固定版本（`corepack enable pnpm` 即可）。
