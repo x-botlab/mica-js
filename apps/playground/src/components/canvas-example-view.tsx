@@ -53,8 +53,12 @@ interface PublishEntry {
   readonly simTime: number;
 }
 
+/** Monotonic entry id: Date.now() + random collided often enough to duplicate React keys. */
+let nextEntryId = 0;
+
 function nextId(): number {
-  return Date.now() + Math.random();
+  nextEntryId += 1;
+  return nextEntryId;
 }
 
 function describeError(error: unknown): string {
@@ -134,18 +138,21 @@ export function CanvasExampleView({ dark, example }: CanvasExampleViewProps) {
       payload: unknown,
       simTime: number,
     ) => {
-      setPublishes((entries) =>
-        [
-          {
-            id: nextId(),
-            direction,
-            endpoint: describeTarget(target, topicsRef.current),
-            payload: describePayload(payload),
-            simTime,
-          },
-          ...entries,
-        ].slice(0, 40),
-      );
+      setPublishes((entries) => {
+        const endpoint = describeTarget(target, topicsRef.current);
+        const text = describePayload(payload);
+        const last = entries[0];
+        // Devices re-publish unchanged values every tick; showing each one buries the transitions.
+        if (last !== undefined && last.direction === direction && last.endpoint === endpoint) {
+          if (last.payload === text) {
+            return entries;
+          }
+        }
+        return [{ id: nextId(), direction, endpoint, payload: text, simTime }, ...entries].slice(
+          0,
+          40,
+        );
+      });
     },
     [],
   );

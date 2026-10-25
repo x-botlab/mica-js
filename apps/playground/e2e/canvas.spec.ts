@@ -138,8 +138,10 @@ test('routes a button press through the indicator into the LED', async ({ page }
   await page.mouse.move(point.x, point.y);
   await page.mouse.down();
 
-  // The widget publishes into D1.input; the indicator republishes it as D1.output.
-  await expect(page.getByText(/D1\.input/).first()).toBeVisible();
+  // The widget publishes into D1.input; the indicator republishes it as D1.output, and the
+  // LED widget binds to that endpoint. Widget publishes reach the device through the host, so
+  // the visible proof is the device-side entry in the publish log.
+  await expect(page.getByText(/D1\.output/).first()).toBeVisible();
   await expect.poll(() => frameSequence(page, led.id), { timeout: 5000 }).toBeGreaterThan(before);
   await page.mouse.up();
   await expect(page.getByText('诊断 0')).toBeVisible();
@@ -174,6 +176,16 @@ test('adds a widget from the palette on the simple canvas', async ({ page }) => 
   await page.getByRole('button', { name: /动画/ }).first().click();
   await expect.poll(async () => (await sceneState(page)).widgets.length).toBe(before + 1);
   await expect(page.getByText('rev 1')).toBeVisible();
+});
+
+test('drives the DAC and reads the solved voltage back', async ({ page }) => {
+  await openCanvas(page, '/examples/dac-voltmeter');
+  await switchMode(page, '运行');
+  // The slider publishes volts, the DAC drives VOUT and the probe reports the settled net.
+  const entry = page.locator('li', { hasText: 'TP1.voltage' }).first();
+  await expect(entry).toBeVisible({ timeout: 10_000 });
+  await expect(entry).toContainText(/1\.6[0-9]/);
+  await expect(page.getByText('诊断 0')).toBeVisible();
 });
 
 test('switches between edit and run mode', async ({ page }) => {

@@ -2,6 +2,8 @@ import type { DeviceDefinition } from '@mica-js/device';
 import { parseDeviceDescription } from '@mica-js/device';
 import type { DeviceDescription, SchematicDeviceBinding } from '@mica-js/simulator';
 import { ADC_MODULE_DEVICE, ADC_MODULE_PACKAGE, createAdcModuleDescription } from './adc-module';
+import { MCP4725_DEVICE, MCP4725_PACKAGE, createMcp4725Description } from './analog/mcp4725';
+import { PROBE_DEVICE, PROBE_PACKAGE, createProbeDescription } from './analog/probe';
 import { DAC_MODULE_DEVICE, DAC_MODULE_PACKAGE, createDacModuleDescription } from './dac-module';
 import { I2C_EEPROM_DEVICE, I2C_EEPROM_PACKAGE, createI2cEepromDescription } from './i2c-eeprom';
 import { I2C_MASTER_DEVICE, I2C_MASTER_PACKAGE, createI2cMasterDescription } from './i2c-master';
@@ -136,6 +138,20 @@ export const PLAYGROUND_DEVICES: readonly PlaygroundDevice[] = Object.freeze([
     '把 widget 发布的布尔值锁存后从 output 端发布，供 LED 等 widget 绑定。',
     INDICATOR_PACKAGE,
     createIndicatorDescription,
+  ),
+  define(
+    MCP4725_DEVICE,
+    'MCP4725 DAC',
+    '12 位 I²C DAC：设定电压后用 pin.writeAnalog 驱动 VOUT，由解网把电压送上网络。',
+    MCP4725_PACKAGE,
+    createMcp4725Description,
+  ),
+  define(
+    PROBE_DEVICE,
+    '测试点',
+    '高阻输入探针：把所在网络的解网电压发布给电压表等 widget。',
+    PROBE_PACKAGE,
+    createProbeDescription,
   ),
 ]);
 

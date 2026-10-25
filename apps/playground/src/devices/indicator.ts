@@ -57,10 +57,7 @@ function initialize(api: DeviceBehaviorApi): void {
 function update(api: DeviceBehaviorApi): void {
   const b = api.builder;
   const level = api.state<'bool'>('level').load();
-  const updated = api.state<'bool'>('updated').load();
-  // `updated` is set by the input handler above, so one publish per delivered value instead of
-  // one per tick. Without it the widget host sees an unchanged payload 30 times a second.
-  api.topics.publish('output', [level], updated);
+  api.topics.publish('output', [level]);
   api.pin('OUT').writeDigital(level);
   api.state<'bool'>('updated').store(b.const('bool', false));
 }

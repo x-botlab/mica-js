@@ -31,6 +31,11 @@
       "path": "text-display/text-display.json",
       "displayName": "文本显示",
       "description": "串口文本显示 + IME 输入（textInput）与原生选择（textSelection）。"
+    },
+    "voltmeter": {
+      "path": "voltmeter/voltmeter.json",
+      "displayName": "电压表",
+      "description": "number 输入显示读数与条形图，演示模拟量回读。"
     }
   }
 }

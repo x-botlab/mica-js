@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { getDeviceRegistry } from '@/lib/registry';
+import { Circuit, compileSchematicToCircuit } from '@mica-js/simulator';
+import { resolvePlaygroundDevice } from '@/devices';
+import { getDeviceRegistry, getSimulationDevices } from '@/lib/registry';
 import { DEFAULT_EXAMPLE_ID, EXAMPLES, exampleById, examplePath, examplesOf } from './index';
 
 describe('example registry', () => {
@@ -41,6 +43,30 @@ describe('example registry', () => {
       if (example.schematic !== undefined) {
         expect(example.schematic.sheet.symbols.length, example.id).toBeGreaterThan(0);
       }
+    }
+  });
+
+  it('compiles every canvas schematic into a circuit', async () => {
+    for (const example of EXAMPLES) {
+      // A schematic example mounts the editor only; the canvas host is what compiles.
+      if (example.kind !== 'canvas' || example.schematic === undefined) {
+        continue;
+      }
+      const compilation = await compileSchematicToCircuit(
+        example.schematic,
+        getSimulationDevices(),
+        {
+          resolveDevice: resolvePlaygroundDevice,
+        },
+      );
+      expect(
+        compilation.diagnostics.filter((entry) => entry.severity === 'error'),
+        example.id,
+      ).toEqual([]);
+      const circuit = await Circuit.create(compilation.input, {
+        electrical: { rails: compilation.rails },
+      });
+      circuit.dispose();
     }
   });
 

@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "label": { "type": "string", "title": "标签", "default": "电压表" },
+    "decimals": { "type": "integer", "title": "小数位", "default": 2, "min": 0, "max": 3 },
+    "maxVoltage": {
+      "type": "number",
+      "title": "满量程电压",
+      "description": "条形图的满量程（伏特）。",
+      "default": 3.3,
+      "min": 0.1,
+      "max": 12
+    },
+    "color": { "type": "color", "title": "颜色", "default": "#22D3EE" }
+  },
+  "ports": {
+    "value": {
+      "direction": "input",
+      "type": "number",
+      "title": "电压",
+      "description": "器件发布的电压读数，单位伏特。"
+    }
+  }
+}

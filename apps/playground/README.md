@@ -70,11 +70,12 @@ flowchart LR
 
 `src/examples/` 是唯一的示例来源：每个示例一个目录，`index.ts` 导出 `ExampleDefinition` 并登记到 `src/examples/index.ts`；侧栏、首页与 `/examples/:id` 都从注册表生成。`kind: 'schematic'` 的示例直接挂进 `@mica-js/schematic-editor`，`kind: 'canvas'` 的示例先加载 `schematic` 里的端点，再把 `.cnv` 文档挂进画布 + widget 宿主。
 
-| 分类       | 示例        | 内容                                           |
-| ---------- | ----------- | ---------------------------------------------- |
-| 编辑器示例 | LED 闪烁    | teaching-mcu 的 GPIO 驱动 LED（原理图）        |
-| 编辑器示例 | 基础 Widget | 按钮 / 开关 → `lab:indicator` → LED 的端口绑定 |
-| 编辑器示例 | 简单画布    | 拖动、缩放、组件面板添加实例                   |
+| 分类       | 示例          | 内容                                           |
+| ---------- | ------------- | ---------------------------------------------- |
+| 能力测试   | 滑杆 → 电压表 | `pin.writeAnalog` 驱动 DAC，测试点回读解网电压 |
+| 编辑器示例 | LED 闪烁      | teaching-mcu 的 GPIO 驱动 LED（原理图）        |
+| 编辑器示例 | 基础 Widget   | 按钮 / 开关 → `lab:indicator` → LED 的端口绑定 |
+| 编辑器示例 | 简单画布      | 拖动、缩放、组件面板添加实例                   |
 
 - **器件注册表**：`src/lib/registry.ts` 把内置样例、`packages/device/examples` 的 `mica:` 描述与 `src/devices` 的 `lab:` 包描述注册成一个 registry；编辑器只按引用查符号，页面不重复写引脚。
 - **示例数据**：文档由 `src/examples/builders/schematic.ts` 的构造函数生成，导线端点从注册表的引脚几何算出，不硬编码坐标。

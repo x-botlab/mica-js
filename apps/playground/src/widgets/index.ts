@@ -12,6 +12,8 @@ import powerSwitchDefinition from './power-switch/power-switch.json?raw';
 import powerSwitchCode from './power-switch/power-switch.js?raw';
 import textDisplayDefinition from './text-display/text-display.json?raw';
 import textDisplayCode from './text-display/text-display.js?raw';
+import voltmeterDefinition from './voltmeter/voltmeter.json?raw';
+import voltmeterCode from './voltmeter/voltmeter.js?raw';
 
 /**
  * The playground's own widget package.
@@ -39,6 +41,8 @@ const FILES: Readonly<Record<string, string>> = Object.freeze({
   'power-switch/power-switch.js': powerSwitchCode,
   'text-display/text-display.json': textDisplayDefinition,
   'text-display/text-display.js': textDisplayCode,
+  'voltmeter/voltmeter.json': voltmeterDefinition,
+  'voltmeter/voltmeter.js': voltmeterCode,
 });
 
 const encoder = new TextEncoder();
@@ -63,6 +67,7 @@ export const PLAYGROUND_WIDGETS = Object.freeze([
   'lab:potentiometer',
   'lab:power-switch',
   'lab:text-display',
+  'lab:voltmeter',
 ]);
 
 /** File map, exposed for the widget tests. */

@@ -1,3 +1,4 @@
+import { DAC_VOLTMETER_EXAMPLE } from './capability/dac-voltmeter';
 import { BASIC_WIDGETS_EXAMPLE } from './editor/basic-widgets';
 import { LED_BLINK_EXAMPLE } from './editor/led-blink';
 import { SIMPLE_CANVAS_EXAMPLE } from './editor/simple-canvas';
@@ -18,6 +19,7 @@ export const EXAMPLE_CATEGORIES: readonly ExampleCategory[] = Object.freeze([
 
 /** Every page the playground can mount, in sidebar order. */
 export const EXAMPLES: readonly ExampleDefinition[] = Object.freeze([
+  DAC_VOLTMETER_EXAMPLE,
   LED_BLINK_EXAMPLE,
   BASIC_WIDGETS_EXAMPLE,
   SIMPLE_CANVAS_EXAMPLE,
