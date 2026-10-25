@@ -62,8 +62,7 @@ interface PendingDelivery {
  * and the main loop into one `@mica-js/ir` module and advances a batch with a single engine call.
  * This executor remains supported while it is the only path that mounts `@mica-js/device` modules,
  * loads schematics and routes widget topics; it will not be removed before the unified runtime
- * reaches host-integration parity. See `docs/DEPRECATIONS.md` for the timeline and
- * `docs/MIGRATION.md` for the migration recipe.
+ * reaches host-integration parity.
  */
 export function createDeviceSimExecutor(options: DeviceSimExecutorOptions): DeviceSimExecutor {
   return new DeviceSimExecutorImpl(options);

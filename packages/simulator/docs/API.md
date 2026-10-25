@@ -18,8 +18,7 @@ import {
 } from '@mica-js/simulator';
 ```
 
-调度器路径的 API（`createDeviceSimExecutor`、`createCircuitHost`）见
-[README](../README.md) 与 [DEPRECATIONS.md](./DEPRECATIONS.md)。
+调度器路径的 API（`createDeviceSimExecutor`、`createCircuitHost`）见 [README](../README.md)。
 
 ---
 
@@ -294,7 +293,9 @@ class CircuitError extends Error {
 }
 ```
 
-`code` 取值见 [MIGRATION.md](./MIGRATION.md#错误处理)。
+`code` 取值包括 `invalid-options`、`invalid-count`、`pin-not-found`、`pin-not-writable`、
+`state-not-found`、`invalid-state-value`、`register-not-found`、`invalid-register-value`、
+`unresolved-device`、`disposed` 等。
 
 ### `UnifiedIRCompilerError`
 

@@ -5,10 +5,10 @@
  *
  * - **Unified IR** (recommended for new code): `Circuit` compiles the whole
  *   circuit — devices, electrical solve and main loop — into one
- *   `@mica-js/ir` module. See `docs/MIGRATION.md` and `docs/API.md`.
+ *   `@mica-js/ir` module. See `docs/API.md`.
  * - **Scheduler path** (maintenance mode): `createDeviceSimExecutor` loads
  *   schematic device modules and routes widget topics. Deprecated in TSDoc;
- *   see `docs/DEPRECATIONS.md`.
+ *   kept for existing schematic and widget integrations.
  */
 
 /* -------------------------------------------------------------------------
@@ -108,7 +108,7 @@ export type {
 } from './unified-ir/devices';
 
 /* -------------------------------------------------------------------------
- * Scheduler path (maintenance mode, see docs/DEPRECATIONS.md)
+ * Scheduler path (maintenance mode)
  * ---------------------------------------------------------------------- */
 export { SimulatorError } from './errors';
 export type { SimulatorErrorCode, SimulatorErrorOptions } from './errors';

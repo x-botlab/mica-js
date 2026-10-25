@@ -58,7 +58,7 @@ export interface CircuitOptions {
  * @deprecated Part of the scheduler-based host path. For programmatic circuits prefer
  * `Circuit.create()` (unified IR), which compiles the electrical network into the same module as the
  * devices. This factory stays supported until the unified runtime can mount device modules from a
- * schematic; see `docs/DEPRECATIONS.md`.
+ * schematic.
  */
 export function createCircuitHost(options: CircuitOptions = {}): DeviceSimHostFactory {
   return ({ scheduler, schematic, modules }) => {

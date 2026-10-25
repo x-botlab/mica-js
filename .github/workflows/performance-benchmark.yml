@@ -1,0 +1,220 @@
+name: Performance Benchmark
+
+# Compares the simulator performance suite of a pull request against its merge
+# target. Only pull requests trigger the workflow: a push to main has no base
+# revision to compare against, and would only add noise.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'packages/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - 'tsconfig*.json'
+      - '.github/workflows/performance-benchmark.yml'
+
+# Start from no permissions and grant them per job.
+permissions: {}
+
+# A new push supersedes the previous benchmark of the same pull request.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    # Drafts churn on every push; `ready_for_review` starts the first run.
+    # The changesets version PR only rewrites versions and changelogs.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.head_ref != 'changeset-release/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # Number of base/PR rounds; the median of these rounds is reported.
+      ROUNDS: 3
+    permissions:
+      contents: read
+      pull-requests: write # post or update the benchmark comment
+    steps:
+      - name: Checkout pull request
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      # A nested checkout keeps both revisions side by side. It must run after
+      # the root checkout: the checkout action cleans untracked files, which
+      # would delete this directory.
+      - name: Checkout merge target
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.14.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install pull request dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The pnpm store is shared, so the second install only links packages.
+      - name: Install merge target dependencies
+        working-directory: base
+        run: pnpm install --frozen-lockfile
+
+      # Base and pull request run in alternating rounds on the same runner, so
+      # both sides see the same machine state. Perf suites print observations
+      # only; a failing run must not fail the check, it just loses samples.
+      - name: Run performance benchmarks
+        id: bench
+        env:
+          BASE_LOG: ${{ runner.temp }}/perf-base.log
+          HEAD_LOG: ${{ runner.temp }}/perf-head.log
+        run: |
+          set -uo pipefail
+
+          : > "$BASE_LOG"
+          : > "$HEAD_LOG"
+
+          has_perf_script() {
+            node -e "
+              const fs = require('node:fs');
+              const manifest = JSON.parse(fs.readFileSync(process.argv[1] + '/package.json', 'utf8'));
+              process.exit(manifest.scripts?.['test:perf'] ? 0 : 1);
+            " "$1" 2>/dev/null
+          }
+
+          # The workspace alias is preferred. An older base revision may only
+          # expose the package script, and a revision that predates the perf
+          # harness exposes neither.
+          perf_command() {
+            local dir="$1"
+            if has_perf_script "$dir"; then
+              printf '%s' 'pnpm test:perf'
+            elif has_perf_script "$dir/packages/simulator"; then
+              printf '%s' 'pnpm --filter @mica-js/simulator test:perf'
+            fi
+          }
+
+          run_side() {
+            local dir="$1" log="$2" cmd
+            cmd=$(perf_command "$dir")
+            if [ -z "$cmd" ]; then
+              printf 'no test:perf script in %s\n' "$dir" >> "$log"
+              return 78
+            fi
+            ( cd "$dir" && eval "$cmd" ) >> "$log" 2>&1
+          }
+
+          base_status=0
+          head_status=0
+          for round in $(seq 1 "$ROUNDS"); do
+            echo "===== round $round =====" >> "$BASE_LOG"
+            run_side base "$BASE_LOG"
+            rc=$?
+            if [ "$rc" -ne 0 ] && [ "$base_status" -eq 0 ]; then base_status=$rc; fi
+
+            echo "===== round $round =====" >> "$HEAD_LOG"
+            run_side . "$HEAD_LOG"
+            rc=$?
+            if [ "$rc" -ne 0 ] && [ "$head_status" -eq 0 ]; then head_status=$rc; fi
+          done
+
+          echo "base_status=$base_status" >> "$GITHUB_OUTPUT"
+          echo "head_status=$head_status" >> "$GITHUB_OUTPUT"
+
+          if [ "$base_status" -ne 0 ]; then
+            echo "::notice::Base benchmark exited with $base_status; expected on revisions without the perf harness."
+          fi
+          if [ "$head_status" -ne 0 ]; then
+            echo "::warning::Pull request benchmark exited with $head_status."
+          fi
+
+      - name: Compare performance
+        id: compare
+        env:
+          BASE_LOG: ${{ runner.temp }}/perf-base.log
+          HEAD_LOG: ${{ runner.temp }}/perf-head.log
+          COMMENT_FILE: ${{ runner.temp }}/perf-comment.md
+          REPORT_FILE: ${{ runner.temp }}/perf-report.json
+          BASE_LABEL: ${{ github.event.pull_request.base.ref }}
+          HEAD_LABEL: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_STATUS: ${{ steps.bench.outputs.base_status }}
+          HEAD_STATUS: ${{ steps.bench.outputs.head_status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          node scripts/perf-benchmark.mjs
+          status=$?
+          if [ -f "$COMMENT_FILE" ]; then
+            cat "$COMMENT_FILE" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
+
+      # A pull_request from a fork receives a read-only token, so the comment
+      # can only be written for branches in this repository. The job summary
+      # carries the full report either way.
+      - name: Post performance comment
+        if: >-
+          always() &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v9
+        env:
+          COMMENT_FILE: ${{ runner.temp }}/perf-comment.md
+        with:
+          script: |
+            const { existsSync, readFileSync } = require('node:fs');
+            if (!existsSync(process.env.COMMENT_FILE)) {
+              core.warning('No benchmark comment file was produced; skipping the pull request comment.');
+              return;
+            }
+
+            const body = readFileSync(process.env.COMMENT_FILE, 'utf8');
+            const marker = '<!-- mica-js-perf-benchmark -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const previous = comments.find((comment) => comment.body?.includes(marker));
+
+            if (previous) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: previous.id,
+                body,
+              });
+              core.info(`Updated benchmark comment ${previous.id}.`);
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+              core.info('Created benchmark comment.');
+            }
+
+      - name: Upload benchmark logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-benchmark
+          path: |
+            ${{ runner.temp }}/perf-base.log
+            ${{ runner.temp }}/perf-head.log
+            ${{ runner.temp }}/perf-report.json
+            ${{ runner.temp }}/perf-comment.md
+          if-no-files-found: ignore
+          retention-days: 14

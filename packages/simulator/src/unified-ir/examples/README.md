@@ -6,8 +6,7 @@ test suite and the examples can exercise them, but they are **not built-in
 devices**: production devices belong in device packages.
 
 Public reference: [docs/API.md](../../../docs/API.md) (device contract and
-accessor surface) and [docs/MIGRATION.md](../../../docs/MIGRATION.md#自定义器件)
-(step-by-step migration).
+accessor surface).
 
 ## Available Examples
 

@@ -15,8 +15,7 @@
 
 统一 IR 把整块电路（器件 tick、电气解算、主循环）编译进**一个** `@mica-js/ir` module，
 一次 `runBatch(n)` 只付一次引擎调用开销，实测比"每器件一个 module + 调度器 + JS 解网"快 10–1000×。
-完整迁移步骤见 [docs/MIGRATION.md](./docs/MIGRATION.md)，弃用与移除时间表见
-[docs/DEPRECATIONS.md](./docs/DEPRECATIONS.md)。
+公开 API 见 [docs/API.md](./docs/API.md)。
 
 ## 统一 IR 快速开始
 
@@ -89,7 +88,7 @@ flowchart TD
 ## 调度器路径用法
 
 > 维护模式：新代码请用上面的统一 IR。本节保留给"原理图 → 器件模块实例 + WidgetHost 消息"的
-> 现有集成，移除时间表见 [docs/DEPRECATIONS.md](./docs/DEPRECATIONS.md)。
+> 现有集成。
 
 推荐直接挂到 `WidgetHost` 上：宿主按 `bindings` 完成双向路由，应用侧不再手写转发。
 
@@ -210,10 +209,8 @@ const executor = createDeviceSimExecutor({
 
 ## 文档
 
-| 文档                                                   | 内容                                                     |
-| ------------------------------------------------------ | -------------------------------------------------------- |
-| [docs/MIGRATION.md](./docs/MIGRATION.md)               | 从 v0 原型 / 调度器路径迁移到统一 IR，API 对照与常见问题 |
-| [docs/API.md](./docs/API.md)                           | `Circuit`、`compileCircuit`、器件工厂与访问器参考        |
-| [docs/PERFORMANCE.md](./docs/PERFORMANCE.md)           | 基准场景、结果与复现步骤                                 |
-| [docs/DEPRECATIONS.md](./docs/DEPRECATIONS.md)         | 弃用状态与移除时间表                                     |
-| [src/unified-ir/README.md](./src/unified-ir/README.md) | 编译器与运行时的内部结构                                 |
+| 文档                                                   | 内容                                              |
+| ------------------------------------------------------ | ------------------------------------------------- |
+| [docs/API.md](./docs/API.md)                           | `Circuit`、`compileCircuit`、器件工厂与访问器参考 |
+| [docs/PERFORMANCE.md](./docs/PERFORMANCE.md)           | 参考基准范围与复现方式                            |
+| [src/unified-ir/README.md](./src/unified-ir/README.md) | 编译器与运行时的内部结构                          |
