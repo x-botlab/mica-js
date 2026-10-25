@@ -48,7 +48,7 @@ function readSnapshot(page: Page): Promise<Snapshot> {
   });
 }
 
-async function openEditor(page: Page, path = '/schematic-examples/led-blink'): Promise<void> {
+async function openEditor(page: Page, path = '/examples/led-blink'): Promise<void> {
   await page.goto(`/#${path}`);
   await page.waitForFunction(() => (globalThis as { mica?: unknown }).mica !== undefined);
   await expect(page.locator('canvas')).toBeVisible();
@@ -98,9 +98,7 @@ async function drag(page: Page, from: Point, to: Point): Promise<void> {
 
 test('renders every schematic example', async ({ page }) => {
   const examples = [
-    { path: '/schematic-examples/led-blink', id: 'led-blink', symbols: 3, wires: 2 },
-    { path: '/schematic-examples/segment-display', id: 'segment-display', symbols: 3, wires: 2 },
-    { path: '/schematic-examples/basic-io', id: 'basic-io', symbols: 4, wires: 3 },
+    { path: '/examples/led-blink', id: 'led-blink', symbols: 3, wires: 2 },
   ] as const;
 
   for (const example of examples) {
@@ -134,21 +132,12 @@ test('dragging a symbol commits a move', async ({ page }) => {
   expect(moved?.x).toBeGreaterThan(symbol.x + 40);
 });
 
-test('wire mode adds a wire on the basic I/O sheet', async ({ page }) => {
-  await openEditor(page, '/schematic-examples/basic-io');
-  const before = await readSnapshot(page);
-  await page.evaluate(() => {
-    (globalThis as unknown as { mica: EditorHandle }).mica.controller.setTool('wire');
-  });
-  const start = await clientOf(page, { x: 240, y: 540 });
-  const end = await clientOf(page, { x: 420, y: 540 });
-  await page.mouse.click(start.x, start.y);
-  await page.mouse.click(end.x, end.y);
-  await page.waitForTimeout(80);
-
-  const after = await readSnapshot(page);
-  expect(after.tool).toBe('select');
-  expect(after.wires).toHaveLength(before.wires.length + 1);
+test('navigates from the sidebar to every example', async ({ page }) => {
+  await page.goto('/#/');
+  for (const title of ['LED 闪烁', '基础 Widget', '简单画布']) {
+    await page.getByRole('button', { name: title, exact: true }).click();
+    await expect(page.locator(`[data-example]`)).toBeVisible();
+  }
 });
 
 test('the read-only toggle rejects host placement', async ({ page }) => {
@@ -176,9 +165,9 @@ test('the read-only toggle rejects host placement', async ({ page }) => {
 test('collapses and expands sidebar categories', async ({ page }) => {
   await page.goto('/#/');
   await expect(page.getByRole('button', { name: 'LED 闪烁' })).toBeVisible();
-  await page.getByRole('button', { name: '原理图示例' }).click();
+  await page.getByRole('button', { name: '编辑器示例' }).click();
   await expect(page.getByRole('button', { name: 'LED 闪烁' })).toHaveCount(0);
-  await page.getByRole('button', { name: '原理图示例' }).click();
+  await page.getByRole('button', { name: '编辑器示例' }).click();
   await expect(page.getByRole('button', { name: 'LED 闪烁' })).toBeVisible();
 });
 

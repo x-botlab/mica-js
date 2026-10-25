@@ -9,11 +9,11 @@ import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { getDeviceRegistry } from '@/lib/registry';
-import type { SchematicExample } from '@/schematic/examples';
+import type { SchematicExampleDefinition } from '@/examples/types';
 
 export interface SchematicExampleViewProps {
   readonly dark: boolean;
-  readonly example: SchematicExample;
+  readonly example: SchematicExampleDefinition;
 }
 
 /**

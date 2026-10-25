@@ -7,11 +7,7 @@ import {
 } from '@mica-js/canvas-editor';
 import { timePs } from '@mica-js/core';
 import { serializeCanvas, type CanvasCommand, type CanvasDocument } from '@mica-js/core/canvas';
-import {
-  createCircuitHost,
-  createDeviceSimExecutor,
-  type DeviceSimExecutor,
-} from '@mica-js/simulator';
+import { createCircuitExecutor, type DeviceSimExecutor } from '@mica-js/simulator';
 import {
   createWidgetHost,
   type WidgetAssetProvider,
@@ -22,11 +18,12 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPaletteInstance, paletteEntries, type PaletteEntry } from '@/canvas/palette';
 import { commandErrorMessages, describeTarget, type TopicCandidate } from '@/canvas/panel-model';
-import type { CanvasExample } from '@/canvas/examples';
+import type { CanvasExampleDefinition } from '@/examples/types';
 import { CanvasInspector } from '@/components/canvas-inspector';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { getSimulationDevices, getWidgetRegistry } from '@/lib/registry';
+import { resolvePlaygroundDevice } from '@/devices';
 
 /** Virtual time one run-mode tick advances (30 ms). */
 const DRIVER_STEP_PS = timePs(30_000_000);
@@ -88,7 +85,7 @@ async function resolveDefinitions(
 
 export interface CanvasExampleViewProps {
   readonly dark: boolean;
-  readonly example: CanvasExample;
+  readonly example: CanvasExampleDefinition;
 }
 
 /**
@@ -166,9 +163,9 @@ export function CanvasExampleView({ dark, example }: CanvasExampleViewProps) {
     const start = async (): Promise<void> => {
       try {
         const registry = await getWidgetRegistry();
-        const ownedExecutor = createDeviceSimExecutor({
+        const ownedExecutor = createCircuitExecutor({
           devices: getSimulationDevices(),
-          host: createCircuitHost(),
+          resolveDevice: resolvePlaygroundDevice,
           onDiagnostic: pushDiagnostic,
         });
         executor = ownedExecutor;

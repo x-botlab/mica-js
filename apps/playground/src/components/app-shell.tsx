@@ -60,7 +60,7 @@ export function AppShell({ dark, onToggleTheme, children }: AppShellProps) {
           </div>
         </div>
 
-        <nav className="flex flex-col gap-0.5 p-2">
+        <nav className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
           {NAV_ENTRIES.map((entry) => {
             if (entry.kind === 'item') {
               const { path, title, icon: Icon } = entry as NavItem;

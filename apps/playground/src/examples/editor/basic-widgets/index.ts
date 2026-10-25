@@ -1,23 +1,11 @@
-import { parseCanvas, type CanvasDocument } from '@mica-js/core/canvas';
-import { parseSchematic, type SchematicDocument } from '@mica-js/core/schematic';
-
-/** One page under "画布示例". */
-export interface CanvasExample {
-  readonly id: string;
-  readonly title: string;
-  readonly summary: string;
-  readonly document: CanvasDocument;
-  /** Endpoints the widget bindings target; loaded into the simulator before mounting. */
-  readonly schematic?: SchematicDocument;
-  readonly showPalette?: boolean;
-}
+import { parseCanvas } from '@mica-js/core/canvas';
+import { parseSchematic } from '@mica-js/core/schematic';
+import type { CanvasExampleDefinition } from '@/examples/types';
 
 const WIDGET_BUTTON = '00000201-0000-4000-8000-000000000001';
 const WIDGET_SWITCH = '00000202-0000-4000-8000-000000000001';
 const WIDGET_LED_KEY = '00000203-0000-4000-8000-000000000001';
 const WIDGET_LED_POWER = '00000204-0000-4000-8000-000000000001';
-const WIDGET_ANIMATION = '00000205-0000-4000-8000-000000000001';
-const WIDGET_TEXT = '00000206-0000-4000-8000-000000000001';
 
 const INDICATOR_KEY = '00000101-0000-4000-8000-000000000001';
 const INDICATOR_POWER = '00000102-0000-4000-8000-000000000001';
@@ -26,7 +14,7 @@ const INDICATOR_POWER = '00000102-0000-4000-8000-000000000001';
  * Two indicators stand in for the board: the button and the switch each publish
  * a boolean into `input`, and the LED widgets bind to the matching `output`.
  */
-const basicWidgetsSchematic = parseSchematic(
+const schematic = parseSchematic(
   JSON.stringify({
     version: 1,
     sheet: {
@@ -70,7 +58,7 @@ const basicWidgetsSchematic = parseSchematic(
   }),
 );
 
-const basicWidgetsDocument = parseCanvas(
+const document = parseCanvas(
   JSON.stringify({
     version: 1,
     widgets: [
@@ -122,59 +110,15 @@ const basicWidgetsDocument = parseCanvas(
   }),
 );
 
-const simpleCanvasDocument = parseCanvas(
-  JSON.stringify({
-    version: 1,
-    widgets: [
-      {
-        id: WIDGET_ANIMATION,
-        widget: 'lab:animation',
-        x: 120,
-        y: 96,
-        width: 220,
-        height: 220,
-        rotation: 0,
-        properties: { speed: 1.2, sides: 6 },
-      },
-      {
-        id: WIDGET_TEXT,
-        widget: 'lab:text-display',
-        x: 420,
-        y: 116,
-        width: 300,
-        height: 200,
-        rotation: 0,
-        properties: { placeholder: '点击输入…' },
-      },
-    ],
-  }),
-);
-
-/** Starter canvases: one wired example, one free-form editing surface. */
-export const CANVAS_EXAMPLES: readonly CanvasExample[] = Object.freeze([
-  {
-    id: 'basic-widgets',
-    title: '基础 Widget',
-    summary: '按钮、开关与 LED：widget 通过 lab:indicator 的布尔端口互通。',
-    document: basicWidgetsDocument,
-    schematic: basicWidgetsSchematic,
-  },
-  {
-    id: 'simple-canvas',
-    title: '简单画布',
-    summary: '拖动、缩放、从组件面板添加实例；运行模式看动画。',
-    document: simpleCanvasDocument,
-    showPalette: true,
-  },
-]);
-
-export function canvasExampleById(id: string): CanvasExample {
-  const example = CANVAS_EXAMPLES.find((candidate) => candidate.id === id);
-  if (example === undefined) {
-    throw new Error(`Unknown canvas example "${id}".`);
-  }
-  return example;
-}
-
-export const BASIC_WIDGETS_EXAMPLE = canvasExampleById('basic-widgets');
-export const SIMPLE_CANVAS_EXAMPLE = canvasExampleById('simple-canvas');
+/** 按钮 / 开关 / LED 通过布尔指示器互通。 */
+export const BASIC_WIDGETS_EXAMPLE: CanvasExampleDefinition = Object.freeze({
+  kind: 'canvas',
+  id: 'basic-widgets',
+  title: '基础 Widget',
+  capability: 'widget ↔ 器件端口绑定',
+  summary: '按钮、开关与 LED：widget 通过 lab:indicator 的布尔端口互通。',
+  category: 'editor',
+  devices: ['lab:indicator', 'demo:button', 'lab:power-switch', 'lab:led'],
+  document,
+  schematic,
+});

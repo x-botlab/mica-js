@@ -49,7 +49,7 @@ async function sceneState(page: Page): Promise<SceneSnapshot> {
   });
 }
 
-async function openCanvas(page: Page, path = '/canvas-examples/basic-widgets'): Promise<void> {
+async function openCanvas(page: Page, path = '/examples/basic-widgets'): Promise<void> {
   await page.goto(`/#${path}`);
   await page.waitForFunction(
     () => (globalThis as { micaCanvas?: unknown }).micaCanvas !== undefined,
@@ -134,11 +134,14 @@ test('routes a button press through the indicator into the LED', async ({ page }
 
   const before = await frameSequence(page, led.id);
   const point = await pagePoint(page, centerOf(button));
-  await page.mouse.click(point.x, point.y);
+  // The button publishes `press` while held, so the LED mirrors the press, not the click.
+  await page.mouse.move(point.x, point.y);
+  await page.mouse.down();
 
   // The widget publishes into D1.input; the indicator republishes it as D1.output.
   await expect(page.getByText(/D1\.input/).first()).toBeVisible();
   await expect.poll(() => frameSequence(page, led.id), { timeout: 5000 }).toBeGreaterThan(before);
+  await page.mouse.up();
   await expect(page.getByText('诊断 0')).toBeVisible();
 });
 
@@ -166,7 +169,7 @@ test('edits a selected LED through the property panel', async ({ page }) => {
 });
 
 test('adds a widget from the palette on the simple canvas', async ({ page }) => {
-  await openCanvas(page, '/canvas-examples/simple-canvas');
+  await openCanvas(page, '/examples/simple-canvas');
   const before = (await sceneState(page)).widgets.length;
   await page.getByRole('button', { name: /动画/ }).first().click();
   await expect.poll(async () => (await sceneState(page)).widgets.length).toBe(before + 1);
