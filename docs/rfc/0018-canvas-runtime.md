@@ -79,44 +79,47 @@ reset(): Promise<void>;
 
 ### 资源
 
-外部内容一律以 URI 表达，读取只有一个出口：
+外部内容一律以 URI 表达，URI 类型取自 `vscode-uri`：scheme、authority、path 是独立字段，非标准 scheme 不必迁就 `URL` 的归一化规则。
 
 ```ts
+import type { URI } from 'vscode-uri';
+
 interface HostFs {
-  read(uri: string, options?: HostFsReadOptions): Promise<Uint8Array>;
+  read(uri: URI): Promise<Uint8Array>;
 }
 
-interface HostFsReadOptions {
-  /** 单次读取上限（字节）；实现应在超出时立即拒绝，而不是读完再判断。 */
-  readonly maxBytes?: number;
-  /** 取消；本地实现可支持，跨线程代理可不支持，规范不强制。 */
-  readonly signal?: AbortSignal;
+interface HostFsError extends Error {
+  readonly code: 'not-found' | 'out-of-root' | 'too-large' | 'undecodable';
+  readonly uri: URI;
 }
 ```
 
-三条约束：
+四条约束：
 
 - **只接受绝对 URI**。相对引用的解析是调用方的事，`fs` 永远拿到完整地址，因此不需要知道文档在哪。
 - **只返回字节**。文本解码、JSON 解析与 base64 由调用方完成，接口只负责搬运。
-- **失败必须带错误码**。错误码沿用[属性定义](./0009-device-properties.md)的建议值，跨线程时按码重建。
+- **没有可选参数**。读取上限由实现按自身策略执行，调用方在拿到字节后按属性声明校验大小与像素。
+- **失败必须带错误码**。码不带命名空间前缀，跨线程时按码重建。
 
-| 情形                 | `code`              |
-| -------------------- | ------------------- |
-| scheme 未实现或越权  | `asset/out-of-root` |
-| 文件不存在           | `asset/missing`     |
-| 超过 `maxBytes`      | `asset/too-large`   |
-| `data:` 内容无法解码 | `asset/undecodable` |
+| 情形                 | `code`        |
+| -------------------- | ------------- |
+| 资源不存在           | `not-found`   |
+| scheme 未实现或越权  | `out-of-root` |
+| 超过实现的上限       | `too-large`   |
+| `data:` 内容无法解码 | `undecodable` |
 
 规范只固定一条 scheme 规则：**`data:` URI 由宿主本地解码，不经过 `fs`**。它自包含、没有 I/O 语义，但仍受与其他资源相同的大小与像素上限约束。其余 scheme 全部由宿主决定：支持哪些、如何映射到存储、如何授权、如何拒绝，规范不设内置清单，也不要求任何具体名称。
 
 两项规则由共享辅助函数承担，避免两侧各写一遍：
 
 ```ts
-resolveUri(ref: string, baseUri: string): string;
-readResource(fs: HostFs, uri: string, options?: HostFsReadOptions): Promise<Uint8Array>;
+resolveUri(reference: string, baseUri: URI): URI;
+readResource(fs: HostFs, uri: URI): Promise<Uint8Array>;
 ```
 
-`resolveUri` 按文档 URI 解析相对引用；`readResource` 对 `data:` 本地解码，其余交给 `fs.read`。相对引用的解析属于 URL 语义而非 scheme 策略：结果保留文档 URI 的 scheme 与授权段，所以「相对路径」的含义由宿主选择的寻址形态自然给出。文档 URI 有授权段但没有路径时，相对引用会挂到授权段之下，宿主应要求路径非空。
+`resolveUri` 用 `vscode-uri` 的路径解析把相对引用接到基准上；`readResource` 对 `data:` 本地解码，其余交给 `fs.read`。相对引用的解析属于 URI 语义而非 scheme 策略：结果保留基准 URI 的 scheme 与 authority，所以「相对路径」的含义由宿主选择的寻址形态自然给出。基准 URI 有 authority 但没有路径时，相对引用会挂到 authority 之下，宿主应要求基准路径非空。
+
+公开入口（`loadDocument`、`loadSchematic`）接受 `string` 并在边界处解析为 `URI`，其后的内部调用一律使用 `URI`，避免同一路径被解析多次。
 
 `fs` 不提供目录枚举，也不提供写入；包根与文档根由调用方显式给出。缓存与并发顺序由实现决定，规范不作要求。
 
@@ -163,14 +166,14 @@ tick(dt: TimePs): Promise<void>;
 
 ## 校验
 
-| 对象     | 规则                                                                                       |
-| -------- | ------------------------------------------------------------------------------------------ |
-| 资源引用 | `data:` 本地解码；其他 scheme 由宿主决定；相对引用按 URL 语义解析并保留 scheme 与授权段    |
-| 资源上限 | 越出授权范围返回 `asset/out-of-root`，超限返回 `asset/too-large`，缺失返回 `asset/missing` |
-| 文档装入 | `.cnv` 或其引用的原理图读取、解析失败时拒绝本次 `loadDocument`，文档与实例均不变           |
-| 绑定校验 | 方向必须 `output → input`，两侧载荷类型必须相同；不可赋值按 `topic/type-mismatch` 报告     |
-| 端点缺失 | 目标符号或端口不存在时报告诊断，不挂载该实例                                               |
-| 帧间隔   | 单帧补算步数超过上限时按上限执行，并丢弃多余积压                                           |
+| 对象     | 规则                                                                                    |
+| -------- | --------------------------------------------------------------------------------------- |
+| 资源引用 | `data:` 本地解码；其他 scheme 由宿主决定；相对引用按 URL 语义解析并保留 scheme 与授权段 |
+| 资源读取 | 越出授权范围返回 `out-of-root`，超限返回 `too-large`，缺失返回 `not-found`              |
+| 文档装入 | `.cnv` 或其引用的原理图读取、解析失败时拒绝本次 `loadDocument`，文档与实例均不变        |
+| 绑定校验 | 方向必须 `output → input`，两侧载荷类型必须相同；不可赋值按 `topic/type-mismatch` 报告  |
+| 端点缺失 | 目标符号或端口不存在时报告诊断，不挂载该实例                                            |
+| 帧间隔   | 单帧补算步数超过上限时按上限执行，并丢弃多余积压                                        |
 
 ## 关联
 
