@@ -12,6 +12,63 @@
 
 `WidgetHost` 是唯一的装配点：画布文档、原理图、器件、widget 与资源都从它进来；仿真运行时由它持有，实例在哪个线程绘制也由它安排。
 
+### 接口
+
+```ts
+interface WidgetHost {
+  loadDocument(uri: URI): Promise<void>;
+  applyCommand(command: CanvasCommand): void;
+  reset(): Promise<void>;
+  getDocument(): CanvasDocument;
+
+  dispatch(instanceId: string, event: WidgetInputEvent): void;
+  getLayers(): WidgetLayers;
+
+  pause(): void;
+  resume(): void;
+  dispose(): Promise<void>;
+}
+```
+
+| 方法                    | 作用                                   |
+| ----------------------- | -------------------------------------- |
+| `loadDocument(uri)`     | 读取并装入画布文档，成功后自动开始推进 |
+| `applyCommand(command)` | 在当前快照上增量修改                   |
+| `reset()`               | 重新执行一次 `loadDocument`            |
+| `getDocument()`         | 当前已装入的快照                       |
+| `dispatch(id, event)`   | 转交一条输入事件，在下一个步首分发     |
+| `getLayers()`           | 图层视图，随推进更新                   |
+| `pause()` / `resume()`  | 冻结与恢复帧时钟，不改动文档与实例状态 |
+| `dispose()`             | 终止沙箱并释放全部图层位图             |
+
+`WidgetLayers` 给画布编辑器读图层用：
+
+```ts
+interface WidgetLayer {
+  readonly instanceId: string;
+  readonly width: number;
+  readonly height: number;
+  readonly dpr: number;
+  /** 最近一帧；实例尚未产出位图时为 `undefined` */
+  readonly bitmap: ImageBitmap | undefined;
+  /** 每产出一帧递增，用于判断是否需要重绘 */
+  readonly sequence: number;
+}
+
+type WidgetLayerChange =
+  | { readonly type: 'added'; readonly instanceId: string }
+  | { readonly type: 'updated'; readonly instanceId: string }
+  | { readonly type: 'removed'; readonly instanceId: string }
+  | { readonly type: 'reordered' };
+
+interface WidgetLayers {
+  /** 按文档顺序排列 */
+  list(): readonly WidgetLayer[];
+  get(instanceId: string): WidgetLayer | undefined;
+  subscribe(listener: (change: WidgetLayerChange) => void): () => void;
+}
+```
+
 ### 选项
 
 | 选项             | 类型             | 作用                                                        |
@@ -53,14 +110,6 @@ await host.loadDocument(uri);
 `DeviceSimHost` 的接口围绕话题与状态展开：引脚、网络与解网是运行时的内部实现，跨线程部署时同样留在 `DeviceSimHost` 一侧。
 
 ### 文档装入与推进
-
-```ts
-loadDocument(uri: URI): Promise<void>;
-applyCommand(command: CanvasCommand): void;
-reset(): Promise<void>;
-pause(): void;
-resume(): void;
-```
 
 `loadDocument` 接收 `.cnv` 的 URI；`WidgetHost` 自己读取并解析画布文档，并把其中的原理图引用解析成绝对 URI 后交给 `DeviceSimHost`。URI 的形态由 `WidgetHost` 决定，规范只要求它可被 `fs.read` 读取。
 
