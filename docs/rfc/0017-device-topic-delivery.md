@@ -91,20 +91,44 @@ api.ir.fifo(name, { maxRecord, length });
 
 ### 步内顺序
 
+器件与 widget 共用同一个步进屏障：两侧都完成本步后才进入下一步。
+
 ```text
-投递冻结 → applyInputs → 执行本步全部求值轮次 → flushOutputs
+投递冻结 → applyInputs → 求值轮次 → flushOutputs → widget tick
 ```
 
-1. 步开始时冻结本步待投递消息，按目标端点交给对应器件；
+1. 步开始时冻结本步待投递集合：器件端口消息交给对应器件，widget 端口消息与外部输入交给对应 widget；
 2. 依次执行每个器件的 `applyInputs`，其写入对该步后续求值轮次立即可见；
 3. 执行本步的全部求值轮次，各轮次内器件的调度由实现安排；
-4. 依次执行每个器件的 `flushOutputs`，其发布进入后续步的投递集合。
+4. 依次执行每个器件的 `flushOutputs`，其发布进入下一步的投递集合；
+5. 依次执行每个 widget 的 `tick`，其发布进入下一步的投递集合。
+
+两侧在本步产生的发布都要等到屏障放行才被对方看到，因此收发时机与谁先跑完无关。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as 宿主
+    participant D as 器件
+    participant W as widget
+
+    Note over H: 步 N
+    H->>D: 上一步的器件端口投递
+    H->>W: 上一步的器件发布与外部输入
+    D->>D: applyInputs(io)
+    Note over D: 求值轮次 × R
+    D->>H: flushOutputs 的发布，进下一步集合
+    W->>W: tick(dt)
+    W->>H: tick 中的发布，进下一步集合
+    Note over H: 两侧都完成，进入步 N+1
+```
 
 线程划分、帧与步的关系见[画布运行时](./0018-canvas-runtime.md)。
 
 ### 生效边界
 
-- 本步 `flushOutputs` 发布的消息最早在下一步被任何 `applyInputs` 看到；跨实例传播因此具有恰好一个固定步长的延迟。
+- 本步产生的发布最早在下一步被看到：器件 `flushOutputs` 与 widget `tick` 中的发布都进下一步的投递集合。
+- 四条路径的延迟相同，都是恰好一个固定步长：器件→器件、器件→widget、widget→器件、widget→widget。
 - 同一端口在一个步内收到多条投递时的处理由 `delivery` 决定，见下节。
 - 同一虚拟时刻的多次投递沿发布顺序处理。
 
