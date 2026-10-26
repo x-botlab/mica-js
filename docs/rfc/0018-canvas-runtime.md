@@ -20,9 +20,11 @@ interface WidgetHost {
   applyCommand(command: CanvasCommand): void;
   reset(): Promise<void>;
   getDocument(): CanvasDocument;
+  onDidChangeDocument(listener: (document: CanvasDocument) => void): () => void;
 
   dispatch(instanceId: string, event: WidgetInputEvent): void;
   getLayers(): WidgetLayers;
+  resize(dpr: number): void;
 
   pause(): void;
   resume(): void;
@@ -30,16 +32,18 @@ interface WidgetHost {
 }
 ```
 
-| 方法                    | 作用                                   |
-| ----------------------- | -------------------------------------- |
-| `loadDocument(uri)`     | 读取并装入画布文档，成功后自动开始推进 |
-| `applyCommand(command)` | 在当前快照上增量修改                   |
-| `reset()`               | 重新执行一次 `loadDocument`            |
-| `getDocument()`         | 当前已装入的快照                       |
-| `dispatch(id, event)`   | 转交一条输入事件，在下一个步首分发     |
-| `getLayers()`           | 图层视图，随推进更新                   |
-| `pause()` / `resume()`  | 冻结与恢复帧时钟，不改动文档与实例状态 |
-| `dispose()`             | 终止沙箱并释放全部图层位图             |
+| 方法                            | 作用                                   |
+| ------------------------------- | -------------------------------------- |
+| `loadDocument(uri)`             | 读取并装入画布文档，成功后自动开始推进 |
+| `applyCommand(command)`         | 在当前快照上增量修改                   |
+| `reset()`                       | 重新执行一次 `loadDocument`            |
+| `getDocument()`                 | 当前已装入的快照                       |
+| `onDidChangeDocument(listener)` | 订阅快照变更；返回取消订阅函数         |
+| `dispatch(id, event)`           | 转交一条输入事件，在下一个步首分发     |
+| `getLayers()`                   | 图层视图，随推进更新                   |
+| `resize(dpr)`                   | 改变所有图层的像素比并重绘             |
+| `pause()` / `resume()`          | 冻结与恢复帧时钟，不改动文档与实例状态 |
+| `dispose()`                     | 终止沙箱并释放全部图层位图             |
 
 `WidgetLayers` 给画布编辑器读图层用：
 
@@ -65,20 +69,20 @@ interface WidgetLayers {
   /** 按文档顺序排列 */
   list(): readonly WidgetLayer[];
   get(instanceId: string): WidgetLayer | undefined;
-  subscribe(listener: (change: WidgetLayerChange) => void): () => void;
+  onDidChange(listener: (change: WidgetLayerChange) => void): () => void;
 }
 ```
 
 ### 选项
 
-| 选项             | 类型             | 作用                                                        |
-| ---------------- | ---------------- | ----------------------------------------------------------- |
-| `widgetProvider` | `WidgetProvider` | widget 定义与实现                                           |
-| `deviceHost`     | `DeviceSimHost`  | 已构建的 `DeviceSimHost`；必需                              |
-| `fs`             | `HostFs`         | 读取外部内容的唯一出口，见[宿主文件系统](./0019-host-fs.md) |
-| `dpr`            | `number`         | 图层像素比，默认 1                                          |
-| `onDiagnostic`   | 回调             | 故障上报；调用照常返回                                      |
-| `onPublish`      | 回调             | 落在绑定范围之外的 widget 发布，交给调用方处理              |
+| 选项                    | 类型             | 作用                                                        |
+| ----------------------- | ---------------- | ----------------------------------------------------------- |
+| `widgetProvider`        | `WidgetProvider` | widget 定义与实现                                           |
+| `deviceHost`            | `DeviceSimHost`  | 已构建的 `DeviceSimHost`；必需                              |
+| `fs`                    | `HostFs`         | 读取外部内容的唯一出口，见[宿主文件系统](./0019-host-fs.md) |
+| `dpr`                   | `number`         | 图层像素比，默认 1                                          |
+| `onDidReportDiagnostic` | 回调             | 故障上报；调用照常返回                                      |
+| `onDidPublish`          | 回调             | 落在绑定范围之外的 widget 发布，交给调用方处理              |
 
 前三项必需，其余可选。
 
@@ -101,7 +105,7 @@ await host.loadDocument(uri);
 | `loadSchematic(uri)`       | 读取并装入原理图；`URI` 或 `undefined` 清空 |
 | `tick(dt)`                 | 推进一个固定步，返回报告                    |
 | `deliver(target, payload)` | 向器件端点投递一条消息                      |
-| `onPublish(listener)`      | 订阅器件发布；注册本身是本地操作            |
+| `onDidPublish(listener)`   | 订阅器件发布；注册本身是本地操作            |
 | `getTopics()`              | 端点清单                                    |
 | `getSimTime()`             | 当前仿真时间                                |
 | `getSchematic()`           | 当前原理图                                  |
@@ -180,7 +184,7 @@ sequenceDiagram
         Note over DJ: 求值轮次 × R
         DS->>DJ: flushOutputs(io)
         DJ-->>DS: publish
-        DS-->>WH: onPublish(publish)
+        DS-->>WH: onDidPublish(publish)
         Note over WH: 收入下一步的投递集合
         WH->>WJ: tick(dt)
         WJ-->>WH: publish

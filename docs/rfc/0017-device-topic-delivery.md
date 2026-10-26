@@ -97,7 +97,7 @@ api.ir.fifo(name, { maxRecord, length });
 2. `DeviceSimHost.tick(dt)` 冻结本步待投递集合：上一步的 widget 发布进入对应器件的收件箱；
 3. 各器件执行 `applyInputs(io)`，其写入对该步后续求值轮次立即可见；
 4. 执行本步的全部求值轮次，各轮次内器件的调度由实现安排；
-5. 各器件执行 `flushOutputs(io)`，发布经 `onPublish` 交给 `WidgetHost`，进入下一步的投递集合；
+5. 各器件执行 `flushOutputs(io)`，发布经 `onDidPublish` 交给 `WidgetHost`，进入下一步的投递集合；
 6. `DeviceSimHost.tick(dt)` 返回后，`WidgetHost` 执行 widget 的 `tick(dt)`；widget 的发布经 `WidgetHost.deliver` 交给 `DeviceSimHost`，进入下一步的投递集合；
 7. 两侧都完成，屏障放行。
 
