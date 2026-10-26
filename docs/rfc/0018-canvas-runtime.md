@@ -83,17 +83,42 @@ reset(): Promise<void>;
 
 ```ts
 interface HostFs {
-  read(uri: string): Promise<Uint8Array>;
+  read(uri: string, options?: HostFsReadOptions): Promise<Uint8Array>;
+}
+
+interface HostFsReadOptions {
+  /** 单次读取上限（字节）；实现应在超出时立即拒绝，而不是读完再判断。 */
+  readonly maxBytes?: number;
+  /** 取消；本地实现可支持，跨线程代理可不支持，规范不强制。 */
+  readonly signal?: AbortSignal;
 }
 ```
 
-规范只固定一条 scheme 规则：**`data:` URI 由宿主本地解码，不经过 `fs`**。它自包含、没有 I/O 语义，但仍受与其他资源相同的大小与像素上限约束。
+三条约束：
 
-其余 scheme 全部由宿主决定：支持哪些、如何映射到存储、如何授权、如何拒绝，规范不设内置清单，也不要求任何具体名称。
+- **只接受绝对 URI**。相对引用的解析是调用方的事，`fs` 永远拿到完整地址，因此不需要知道文档在哪。
+- **只返回字节**。文本解码、JSON 解析与 base64 由调用方完成，接口只负责搬运。
+- **失败必须带错误码**。错误码沿用[属性定义](./0009-device-properties.md)的建议值，跨线程时按码重建。
 
-相对引用的解析属于 URL 语义而非 scheme 策略：按文档 URI 解析，保留 scheme 与授权段。于是「相对路径」的含义由宿主选择的寻址形态自然给出——单层的 `scheme:/a/b.cnv` 得到 `scheme:/a/c.png`，带授权段的 `scheme://mount/a/b.cnv` 得到 `scheme://mount/a/c.png`。文档 URI 有授权段但没有路径时，相对引用会挂到授权段之下，宿主应要求路径非空。
+| 情形                 | `code`              |
+| -------------------- | ------------------- |
+| scheme 未实现或越权  | `asset/out-of-root` |
+| 文件不存在           | `asset/missing`     |
+| 超过 `maxBytes`      | `asset/too-large`   |
+| `data:` 内容无法解码 | `asset/undecodable` |
 
-跨授权段或跨 scheme 的绝对引用是否接受，同样由宿主按其授权规则决定。
+规范只固定一条 scheme 规则：**`data:` URI 由宿主本地解码，不经过 `fs`**。它自包含、没有 I/O 语义，但仍受与其他资源相同的大小与像素上限约束。其余 scheme 全部由宿主决定：支持哪些、如何映射到存储、如何授权、如何拒绝，规范不设内置清单，也不要求任何具体名称。
+
+两项规则由共享辅助函数承担，避免两侧各写一遍：
+
+```ts
+resolveUri(ref: string, baseUri: string): string;
+readResource(fs: HostFs, uri: string, options?: HostFsReadOptions): Promise<Uint8Array>;
+```
+
+`resolveUri` 按文档 URI 解析相对引用；`readResource` 对 `data:` 本地解码，其余交给 `fs.read`。相对引用的解析属于 URL 语义而非 scheme 策略：结果保留文档 URI 的 scheme 与授权段，所以「相对路径」的含义由宿主选择的寻址形态自然给出。文档 URI 有授权段但没有路径时，相对引用会挂到授权段之下，宿主应要求路径非空。
+
+`fs` 不提供目录枚举，也不提供写入；包根与文档根由调用方显式给出。缓存与并发顺序由实现决定，规范不作要求。
 
 资源引用若为带 `mode` 的旧式对象，按以下规则归一后不再区分来源：`file` 视为相对 URI，`inline` 视为 `data:` URI，`store` 视为宿主自有的 URI 形态。归一规则只影响读入，不改变文档中已有的字段。
 
