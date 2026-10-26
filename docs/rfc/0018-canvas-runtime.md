@@ -102,21 +102,6 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 
 `WidgetHost` 自己持有帧时钟：每帧决定这次推进多少，并按每次的 `dt` 调用 `deviceHost.tick(dt)`，再把发生变化的图层位图交出去。画布编辑器不参与推进。
 
-```ts
-tick(dt: TimePs): Promise<void>;
-```
-
-```ts
-// WidgetHost 的帧回调：每帧一次
-async function onFrame(dtWall) {
-  if (paused) return;
-  for (const dt of plan(dtWall)) {
-    await deviceHost.tick(dt);
-    widget.tick(dt);
-  }
-}
-```
-
 一帧推进几步、每次的 `dt` 取多少，由 `WidgetHost` 决定；帧间隔与步长之间的换算属于它的推进策略，规范只要求每次调用的 `dt` 为正整数皮秒。
 
 - 渲染每帧一次，与本次推进了几步无关；
