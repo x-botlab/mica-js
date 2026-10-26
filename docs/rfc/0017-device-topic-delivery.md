@@ -27,27 +27,27 @@
 
 ### 固定模拟步
 
-宿主以固定步长 `dt` 推进仿真，`dt` 为整数皮秒，口径见[虚拟时间](./0001-virtual-time.md)。
+`DeviceSimHost` 以固定步长 `dt` 推进仿真，`dt` 为整数皮秒，口径见[虚拟时间](./0001-virtual-time.md)。
 
 术语按层划分：
 
 | 词       | 含义                                                                                                                 |
 | -------- | -------------------------------------------------------------------------------------------------------------------- |
-| 步       | 宿主一次推进覆盖的一格，长度固定为 `dt`；推进入口见[画布运行时](./0018-canvas-runtime.md)                            |
+| 步       | `WidgetHost` 一次推进覆盖的一格，长度固定为 `dt`；推进入口见[画布运行时](./0018-canvas-runtime.md)                   |
 | 求值轮次 | 仿真器在一格内反复执行的一轮「驱动输出 → 解网 → 负载读取」。轮次数与 `dt` 的换算比率由实现决定，二者之间没有约定比例 |
 
 一个步覆盖若干求值轮次，全部轮次跑完后才执行 `flushOutputs`。轮次在步内的调度属于[器件 IR](./0003-device-ir.md)。
 
-步长由宿主决定，在同一实例存续期内固定；同一宿主内所有器件使用相同步长。
+步长由 `WidgetHost` 决定并由它逐步传给 `DeviceSimHost.tick(dt)`，在同一实例存续期内固定；同一 `DeviceSimHost` 内所有器件使用相同步长。
 
 ### 器件钩子
 
 器件工厂返回的对象可以包含两个运行期钩子：
 
-| 钩子               | 时机         | 权限                             |
-| ------------------ | ------------ | -------------------------------- |
-| `applyInputs(io)`  | 步首，求值前 | 读取本步投递的输入；写入 IR 内存 |
-| `flushOutputs(io)` | 步末，求值后 | 读取 IR 内存；向宿主发布         |
+| 钩子               | 时机         | 权限                                  |
+| ------------------ | ------------ | ------------------------------------- |
+| `applyInputs(io)`  | 步首，求值前 | 读取本步投递的输入；写入 IR 内存      |
+| `flushOutputs(io)` | 步末，求值后 | 读取 IR 内存；向 `DeviceSimHost` 发布 |
 
 两个钩子均为可选，按方向实现：只需接收的器件实现 `applyInputs`，只需发送的实现 `flushOutputs`，完全自洽的器件两个都可以省略。钩子在器件实例的作用域内运行。
 
@@ -91,39 +91,19 @@ api.ir.fifo(name, { maxRecord, length });
 
 ### 步内顺序
 
-器件与 widget 共用同一个步进屏障：两侧都完成本步后才进入下一步。
+一步由 `WidgetHost` 驱动：它调用 `DeviceSimHost.tick(dt)` 完成器件侧，返回后在同一个步里执行 widget 的 `tick`。两者都结束才进入下一步，这就是步进屏障。
 
-```text
-投递冻结 → applyInputs → 求值轮次 → flushOutputs → widget tick
-```
+1. `WidgetHost` 在步首把上一步收集到的器件发布与外部输入交给 widget 实例；
+2. `DeviceSimHost.tick(dt)` 冻结本步待投递集合：上一步的 widget 发布进入对应器件的收件箱；
+3. 各器件执行 `applyInputs(io)`，其写入对该步后续求值轮次立即可见；
+4. 执行本步的全部求值轮次，各轮次内器件的调度由实现安排；
+5. 各器件执行 `flushOutputs(io)`，发布经 `onPublish` 交给 `WidgetHost`，进入下一步的投递集合；
+6. `DeviceSimHost.tick(dt)` 返回后，`WidgetHost` 执行 widget 的 `tick(dt)`；widget 的发布经 `WidgetHost.deliver` 交给 `DeviceSimHost`，进入下一步的投递集合；
+7. 两侧都完成，屏障放行。
 
-1. 步开始时冻结本步待投递集合：器件端口消息交给对应器件，widget 端口消息与外部输入交给对应 widget；
-2. 依次执行每个器件的 `applyInputs`，其写入对该步后续求值轮次立即可见；
-3. 执行本步的全部求值轮次，各轮次内器件的调度由实现安排；
-4. 依次执行每个器件的 `flushOutputs`，其发布进入下一步的投递集合；
-5. 依次执行每个 widget 的 `tick`，其发布进入下一步的投递集合。
+第 2–5 步在 `DeviceSimHost.tick(dt)` 内完成，第 1、6 步由 `WidgetHost` 完成。本步产生的发布都要等屏障放行才被对方看到，因此收发时机与谁先跑完无关。
 
-两侧在本步产生的发布都要等到屏障放行才被对方看到，因此收发时机与谁先跑完无关。
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant H as 宿主
-    participant D as 器件
-    participant W as widget
-
-    Note over H: 步 N
-    H->>D: 上一步的器件端口投递
-    H->>W: 上一步的器件发布与外部输入
-    D->>D: applyInputs(io)
-    Note over D: 求值轮次 × R
-    D->>H: flushOutputs 的发布，进下一步集合
-    W->>W: tick(dt)
-    W->>H: tick 中的发布，进下一步集合
-    Note over H: 两侧都完成，进入步 N+1
-```
-
-线程划分、帧与步的关系见[画布运行时](./0018-canvas-runtime.md)。
+完整时序见[画布运行时](./0018-canvas-runtime.md)。
 
 ### 生效边界
 
@@ -145,11 +125,11 @@ sequenceDiagram
 - 全部投递按发布顺序逐条交付，一条记录对应一次投递；调用 `takeInputs` 返回全部记录。
 - 队列深度受容量约束：队列达到容量上限时拒绝本次接纳并上报背压，已接纳的记录保持原样。
 
-出向 `level` 端口由器件在 `flushOutputs` 内自行判断何时发布；宿主把每次 `publish` 都当作新值转发。
+出向 `level` 端口由器件在 `flushOutputs` 内自行判断何时发布；`DeviceSimHost` 把每次 `publish` 都当作新值转发。
 
 ### 时间
 
-投递信封中的 `simTime` 由宿主填充：
+投递信封中的 `simTime` 由 `DeviceSimHost` 填充：
 
 - `flushOutputs` 的发布使用该步结束时的仿真时间；
 - `applyInputs` 收到的信封保留其发布时刻。
@@ -157,10 +137,10 @@ sequenceDiagram
 ### 钩子的执行条件
 
 - 钩子运行在器件实例的作用域内，操作对象是本器件声明的内存与本步投递；
-- 仿真时间由宿主在步边界推进，钩子内的时间读取是只读快照；
-- 钩子抛出的异常由宿主隔离并以诊断上报，该步继续执行。
+- 仿真时间由 `DeviceSimHost` 在步边界推进，钩子内的时间读取是只读快照；
+- 钩子抛出的异常由 `DeviceSimHost` 隔离并以诊断上报，该步继续执行。
 
-IR 与宿主之间的接触面就是上述两个钩子：执行求值轮次期间，运行时做的是驱动、解网与负载读取。
+IR 与 `DeviceSimHost` 之间的接触面就是上述两个钩子：执行求值轮次期间，运行时做的是驱动、解网与负载读取。
 
 ## 校验
 
@@ -303,17 +283,17 @@ export default function createUsart(api) {
 - 器件之间的通信（片间 UART、I²C、SPI、1-Wire 与 GPIO 连线）由电气仿真承担，见 [RFC 0004](./0004-ir-pin-io.md)。
 - 载荷的字节布局（`string` 的 UTF-8 编码、`bytes<rgb565>` 的像素头）由[话题端口](./0010-topic-ports.md)规定。
 - Widget 侧的订阅与发布接口见 [Widget JS API](./0015-widget-js-api.md)。
-- 渲染帧的调度、宿主装配、线程划分与资源寻址见[画布运行时](./0018-canvas-runtime.md)；`dt` 与渲染帧率相互独立。
+- 渲染帧的调度、`WidgetHost` 装配、线程划分与资源寻址见[画布运行时](./0018-canvas-runtime.md)；`dt` 与渲染帧率相互独立。
 - 沙箱的能力限制与位图回传由沙箱自身的合同维护。
 
 ## 关联
 
 - [RFC 0001](./0001-virtual-time.md)：`dt` 与 `simTime` 的单位与范围。
-- [RFC 0003](./0003-device-ir.md)：IR 内存、入口与生命周期；本文的宿主通知由步边界采样表达。
+- [RFC 0003](./0003-device-ir.md)：IR 内存、入口与生命周期；本文的器件通知由步边界采样表达。
 - [RFC 0004](./0004-ir-pin-io.md)：电气通道的引脚读写，与本文的话题通道并列。
 - [RFC 0009](./0009-device-properties.md)：属性是创建期只读快照，投递承载的是端口载荷。
 - [RFC 0010](./0010-topic-ports.md)：端口描述与载荷类型；本文补充 `delivery` 字段。
 - [RFC 0013](./0013-canvas-format.md)：`.cnv` 的实例、绑定与 `schematic` 引用。
 - [RFC 0014](./0014-widget-definition.md)：widget 的端口声明。
 - [RFC 0015](./0015-widget-js-api.md)：Widget 的 `publish` / `subscribe`；其投递时机、队列与背压由本文统一。
-- [RFC 0018](./0018-canvas-runtime.md)：宿主装配、线程划分与资源寻址。
+- [RFC 0018](./0018-canvas-runtime.md)：`WidgetHost` 装配、线程划分与资源寻址。

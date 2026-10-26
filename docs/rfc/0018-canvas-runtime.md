@@ -8,7 +8,7 @@
 
 ## 声明
 
-### 宿主职责
+### 装配职责
 
 `WidgetHost` 是唯一的装配点：画布文档、原理图、器件、widget 与资源都从它进来；仿真运行时由它持有，实例在哪个线程绘制也由它安排。
 
@@ -17,15 +17,15 @@
 | 选项             | 类型             | 作用                                                        |
 | ---------------- | ---------------- | ----------------------------------------------------------- |
 | `widgetProvider` | `WidgetProvider` | widget 定义与实现                                           |
-| `deviceHost`     | `DeviceSimHost`  | 已构建的仿真宿主；必需                                      |
+| `deviceHost`     | `DeviceSimHost`  | 已构建的 `DeviceSimHost`；必需                              |
 | `fs`             | `HostFs`         | 读取外部内容的唯一出口，见[宿主文件系统](./0019-host-fs.md) |
 | `dpr`            | `number`         | 图层像素比，默认 1                                          |
 | `onDiagnostic`   | 回调             | 故障上报；调用照常返回                                      |
-| `onPublish`      | 回调             | 落在绑定范围之外的 widget 发布，交给宿主自行处理            |
+| `onPublish`      | 回调             | 落在绑定范围之外的 widget 发布，交给调用方处理              |
 
 前三项必需，其余可选。
 
-`deviceHost` 由装配层用 `deviceProvider` 与 `fs` 构建后传入，`WidgetHost` 接收构建好的仿真宿主：
+`deviceHost` 由装配层用 `deviceProvider` 与 `fs` 构建后传入，`WidgetHost` 接收构建好的 `DeviceSimHost`：
 
 ```ts
 const deviceHost = await createDeviceSimHost({ deviceProvider, fs });
@@ -33,9 +33,9 @@ const host = createWidgetHost({ widgetProvider, deviceHost, fs });
 await host.loadDocument(uri);
 ```
 
-`fs` 出现两次是因为两侧各需读取自己那部分内容（宿主读画布文档与 widget 资源，运行时读原理图与器件属性资源），但它是同一个对象。
+`fs` 出现两次是因为两侧各需读取自己那部分内容（`WidgetHost` 读画布文档与 widget 资源，`DeviceSimHost` 读原理图与器件属性资源），但它是同一个对象。
 
-### 仿真宿主
+### `DeviceSimHost`
 
 `DeviceSimHost` 是可跨线程的接口：全部方法返回 Promise，同线程实现与跨线程实现具有完全相同的调用方式。因此 `WidgetHost` 与仿真可以分处不同线程，调用方用一套代码覆盖两种部署。
 
@@ -50,7 +50,7 @@ await host.loadDocument(uri);
 | `getSchematic()`           | 当前原理图                                  |
 | `dispose()`                | 释放运行时                                  |
 
-仿真宿主的接口围绕话题与状态展开：引脚、网络与解网是运行时的内部实现，在跨线程部署中同样留在宿主一侧。
+`DeviceSimHost` 的接口围绕话题与状态展开：引脚、网络与解网是运行时的内部实现，跨线程部署时同样留在 `DeviceSimHost` 一侧。
 
 ### 文档装入
 
@@ -60,7 +60,7 @@ applyCommand(command: CanvasCommand): void;
 reset(): Promise<void>;
 ```
 
-`loadDocument` 接收 `.cnv` 的 URI；宿主自己读取并解析画布文档，并把其中的原理图引用解析成绝对 URI 后交给仿真运行时。URI 的形态由宿主决定，规范只要求它可被 `fs.read` 读取。
+`loadDocument` 接收 `.cnv` 的 URI；`WidgetHost` 自己读取并解析画布文档，并把其中的原理图引用解析成绝对 URI 后交给 `DeviceSimHost`。URI 的形态由 `WidgetHost` 决定，规范只要求它可被 `fs.read` 读取。
 
 顺序固定为：
 
@@ -73,13 +73,13 @@ reset(): Promise<void>;
 
 器件属性资源在第 3 步完成，因此实例创建时工厂读到的属性值已是可以直接使用的字节。widget 属性资源在第 4 步完成，同样在实例挂载之前。
 
-端点的两个来源都在宿主内部：widget 侧来自 `widgetProvider` 解析出的定义，器件侧来自 `deviceHost.getTopics()`，宿主据此装配。
+端点的两个来源都在 `WidgetHost` 内部：widget 侧来自 `widgetProvider` 解析出的定义，器件侧来自 `deviceHost.getTopics()`，据此装配。
 
 `applyCommand` 在已装入的快照上增量修改；`reset` 重新执行一次当前的 `loadDocument`。
 
 ### 资源
 
-外部内容的寻址与读取见[宿主文件系统](./0019-host-fs.md)。宿主通过 `fs` 取得画布文档、原理图、器件属性资源与 widget 属性资源，规则以该文为准。
+外部内容的寻址与读取见[宿主文件系统](./0019-host-fs.md)。`WidgetHost` 与 `DeviceSimHost` 各自通过 `fs` 取得所需内容：前者读画布文档与 widget 属性资源，后者读原理图与器件属性资源，规则以该文为准。
 
 ## 运行时
 
@@ -92,7 +92,7 @@ reset(): Promise<void>;
 
 widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙箱内运行，由沙箱把它与主线程隔开。三者之间以同线程的同步调用协作：投递、`tick` 与钩子调用都直接发生在本线程内。
 
-沙箱同时承载可信的宿主代码与不可信的实例代码，因此沙箱本身按不可信内容对待：它看到的 DOM、存储与凭据都是隔离后的视图。
+沙箱同时承载可信任的框架代码与不可信的实例代码，因此沙箱本身按不可信内容对待：它看到的 DOM、存储与凭据都是隔离后的视图。
 
 ### 帧与步
 
@@ -102,19 +102,58 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 tick(dt: TimePs): Promise<void>;
 ```
 
-两层推进都叫 `tick`，由接收者区分：宿主收到的是墙钟间隔，仿真宿主收到的是一个固定步。
+两层推进都叫 `tick`，由接收者区分：`WidgetHost` 收到的是墙钟间隔，`DeviceSimHost` 收到的是一个固定步。
 
 ```ts
 // 主线程：每帧一次
-await host.tick(frameDelta);
+await widgetHost.tick(frameDelta);
 ```
 
 ```ts
-// 宿主内部：把累积时长换成若干步
-for (; carried >= step; carried -= step) await deviceHost.tick(step);
+// WidgetHost 内部：把累积时长换成若干步
+for (; carried >= step; carried -= step) {
+  await deviceHost.tick(step);
+  widget.tick(step);
+}
 ```
 
-`tick` 只接收时长；当前仿真时间由宿主从仿真宿主读取，时刻的权威来源因此只有一个。返回 Promise 是因为 `tick` 可能跨线程。
+`tick` 只接收时长；当前仿真时间由 `WidgetHost` 从 `DeviceSimHost` 读取，时刻的权威来源因此只有一个。返回 Promise 是因为 `tick` 可能跨线程。
+
+#### 一步的完整时序
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as 画布编辑器（主线程）
+    participant WH as WidgetHost（沙箱）
+    participant WJ as widget 实例（widget js）
+    participant DS as DeviceSimHost（沙箱）
+    participant DJ as 器件实例（device js / IR）
+
+    E->>WH: tick(dtWall)，附带本帧输入事件
+    Note over WH: 累积墙钟时长，得出本帧步数
+
+    loop 每个固定步
+        WH->>WJ: 上一步的器件发布与外部输入
+        WH->>DS: tick(dt)
+        DS->>DS: 冻结待投递集合（上一步的 widget 发布）
+        DS->>DJ: applyInputs(io)
+        Note over DJ: 求值轮次 × R
+        DS->>DJ: flushOutputs(io)
+        DJ-->>DS: publish
+        DS-->>WH: onPublish(publish)
+        Note over WH: 收入下一步的投递集合
+        WH->>WJ: tick(dt)
+        WJ-->>WH: publish
+        WH->>DS: deliver(target, payload)
+        Note over DS: 收入下一步的投递集合
+    end
+
+    Note over WJ,DJ: 本步的 publish 在下一轮步首才被对方看到
+    WH-->>E: 有变化的图层位图，每帧一次
+```
+
+`flushOutputs` 与 widget `tick` 都在本步内完成，两者产生的发布都要等下一步才被对方看到，因此谁先跑完不影响结果。
 
 - 一帧可以覆盖零个、一个或多个步，取决于累积时长与固定步长；
 - 沙箱限制单帧最多补算的步数，长时间暂停后以丢弃积压代替追赶；
