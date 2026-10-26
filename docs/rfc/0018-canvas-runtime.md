@@ -39,20 +39,16 @@ await host.loadDocument(uri);
 
 `DeviceSimHost` 是可跨线程的接口：全部方法返回 Promise，即使实现与调用方同线程也一样。因此 `WidgetHost` 与仿真可以分处不同线程，调用方不需要为两种部署写两套代码。
 
-| 方法                            | 作用                                   |
-| ------------------------------- | -------------------------------------- |
-| `loadSchematic(uri)`            | 读取并装入原理图；`undefined` 表示清空 |
-| `advance(dt)`                   | 推进一个固定步，返回报告               |
-| `deliver(target, payload)`      | 向器件端点投递一条消息                 |
-| `onPublish(listener)`           | 订阅器件发布；注册本身是本地操作       |
-| `getTopics()`                   | 端点清单                               |
-| `getSimTime()`                  | 当前仿真时间                           |
-| `getSchematic()`                | 当前原理图                             |
-| `samplePinLevel(symbol, pin)`   | 观测：一个引脚的解网数字电平           |
-| `samplePinVoltage(symbol, pin)` | 观测：一个引脚的解网电压，单位伏特     |
-| `dispose()`                     | 释放运行时                             |
-
-`samplePinLevel` 与 `samplePinVoltage` 是**观测口**，不参与投递：宿主用它画探针表与示波器，不需要器件预先声明端口。每次查询返回该步结束时的解网结果，`ready` 为 `false` 表示该引脚尚无有效解网值。它们每步至多调用一次，且未声明的符号或引脚返回 `ready: false` 而不是抛错。
+| 方法                       | 作用                                   |
+| -------------------------- | -------------------------------------- |
+| `loadSchematic(uri)`       | 读取并装入原理图；`undefined` 表示清空 |
+| `advance(dt)`              | 推进一个固定步，返回报告               |
+| `deliver(target, payload)` | 向器件端点投递一条消息                 |
+| `onPublish(listener)`      | 订阅器件发布；注册本身是本地操作       |
+| `getTopics()`              | 端点清单                               |
+| `getSimTime()`             | 当前仿真时间                           |
+| `getSchematic()`           | 当前原理图                             |
+| `dispose()`                | 释放运行时                             |
 
 仿真宿主不暴露引脚与拓扑对象：电气解网是运行时的内部实现，跨线程时也不可作为接口出现。
 
