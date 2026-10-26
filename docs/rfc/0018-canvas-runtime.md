@@ -14,19 +14,47 @@
 
 ### 选项
 
-| 选项             | 类型                   | 作用                                       |
-| ---------------- | ---------------------- | ------------------------------------------ |
-| `widgetProvider` | `WidgetProvider`       | widget 定义与实现                          |
-| `deviceProvider` | `DeviceProvider`       | 器件描述与实现                             |
-| `deviceHost`     | `DeviceSimHostFactory` | 引脚的电气接线与拓扑；必需                 |
-| `fs`             | `HostFs`               | 读取外部内容的唯一出口                     |
-| `dpr`            | `number`               | 图层像素比，默认 1                         |
-| `onDiagnostic`   | 回调                   | 不中断调用的故障上报                       |
-| `onPublish`      | 回调                   | 未绑定端口的 widget 发布，交给宿主自行处理 |
+| 选项             | 类型             | 作用                                       |
+| ---------------- | ---------------- | ------------------------------------------ |
+| `widgetProvider` | `WidgetProvider` | widget 定义与实现                          |
+| `deviceHost`     | `DeviceSimHost`  | 已构建的仿真宿主；必需                     |
+| `fs`             | `HostFs`         | 读取外部内容的唯一出口                     |
+| `dpr`            | `number`         | 图层像素比，默认 1                         |
+| `onDiagnostic`   | 回调             | 不中断调用的故障上报                       |
+| `onPublish`      | 回调             | 未绑定端口的 widget 发布，交给宿主自行处理 |
 
-前四项必需，其余可选。引脚与拓扑是器件运行的前提，因此 `deviceHost` 没有缺省实现，也不允许省略。
+前三项必需，其余可选。
 
-仿真运行时由宿主按 `deviceProvider`、`deviceHost` 与 `fs` 构建，调用方不传入运行时实例。文件读取在构造时注入，因此运行时自己就能读取原理图与器件属性资源。
+`deviceHost` 由装配层用 `deviceProvider` 与 `fs` 构建后传入，`WidgetHost` 不负责创建仿真运行时：
+
+```ts
+const deviceHost = await createDeviceSimHost({ deviceProvider, fs });
+const host = createWidgetHost({ widgetProvider, deviceHost, fs });
+await host.loadDocument(uri);
+```
+
+`fs` 出现两次是因为两侧各需读取自己那部分内容（宿主读画布文档与 widget 资源，运行时读原理图与器件属性资源），但它是同一个对象。
+
+### 仿真宿主
+
+`DeviceSimHost` 是可跨线程的接口：全部方法返回 Promise，即使实现与调用方同线程也一样。因此 `WidgetHost` 与仿真可以分处不同线程，调用方不需要为两种部署写两套代码。
+
+| 方法                            | 作用                                   |
+| ------------------------------- | -------------------------------------- |
+| `loadSchematic(uri)`            | 读取并装入原理图；`undefined` 表示清空 |
+| `advance(dt)`                   | 推进一个固定步，返回报告               |
+| `deliver(target, payload)`      | 向器件端点投递一条消息                 |
+| `onPublish(listener)`           | 订阅器件发布；注册本身是本地操作       |
+| `getTopics()`                   | 端点清单                               |
+| `getSimTime()`                  | 当前仿真时间                           |
+| `getSchematic()`                | 当前原理图                             |
+| `samplePinLevel(symbol, pin)`   | 观测：一个引脚的解网数字电平           |
+| `samplePinVoltage(symbol, pin)` | 观测：一个引脚的解网电压，单位伏特     |
+| `dispose()`                     | 释放运行时                             |
+
+`samplePinLevel` 与 `samplePinVoltage` 是**观测口**，不参与投递：宿主用它画探针表与示波器，不需要器件预先声明端口。每次查询返回该步结束时的解网结果，`ready` 为 `false` 表示该引脚尚无有效解网值。它们每步至多调用一次，且未声明的符号或引脚返回 `ready: false` 而不是抛错。
+
+仿真宿主不暴露引脚与拓扑对象：电气解网是运行时的内部实现，跨线程时也不可作为接口出现。
 
 ### 文档装入
 
@@ -49,7 +77,7 @@ reset(): Promise<void>;
 
 器件属性资源在第 3 步完成，因此实例创建时工厂读到的属性值已是可以直接使用的字节，而不是待解析的引用。widget 属性资源在第 4 步完成，同样在实例挂载之前。
 
-端点的两个来源都在宿主内部：widget 侧来自 `provider` 解析出的定义，器件侧来自运行时已有的端点清单。宿主不额外接受端点目录。
+端点的两个来源都在宿主内部：widget 侧来自 `widgetProvider` 解析出的定义，器件侧来自 `deviceHost.getTopics()`。宿主不额外接受端点目录。
 
 `applyCommand` 在已装入的快照上增量修改，不回读文件；`reset` 重新执行一次当前的 `loadDocument`。
 
@@ -91,10 +119,10 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 主线程持有帧时钟，每帧向沙箱发出一次推进信号并附带墙钟间隔；沙箱按累积时长执行若干步，再回传发生变化的图层位图。
 
 ```ts
-tick(dt: TimePs): void;
+tick(dt: TimePs): Promise<void>;
 ```
 
-`tick` 只接收步长；当前仿真时间由宿主从运行时读取，因此调用方不传时刻，也不会出现两个时间来源不一致的情况。
+`tick` 只接收步长；当前仿真时间由宿主从仿真宿主读取，因此调用方不传时刻，也不会出现两个时间来源不一致的情况。返回 Promise 是因为 `advance` 可能跨线程。
 
 - 一帧可以覆盖零个、一个或多个步，取决于累积时长与固定步长；
 - 沙箱限制单帧最多补算的步数，长时间暂停后丢弃积压而不追赶；
