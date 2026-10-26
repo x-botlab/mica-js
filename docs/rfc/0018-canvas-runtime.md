@@ -96,7 +96,7 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 
 ### 帧与步
 
-主线程持有帧时钟，每帧向沙箱发出一次推进信号并附带墙钟间隔；沙箱按累积时长执行若干步，再回传发生变化的图层位图。
+主线程持有帧时钟，每帧向沙箱发出一次推进信号并附带该帧的墙钟间隔；`WidgetHost` 按固定步长推进若干步，再回传发生变化的图层位图。
 
 ```ts
 tick(dt: TimePs): Promise<void>;
@@ -104,18 +104,28 @@ tick(dt: TimePs): Promise<void>;
 
 两层推进都叫 `tick`，由接收者区分：`WidgetHost` 收到的是墙钟间隔，`DeviceSimHost` 收到的是一个固定步。
 
+帧间隔与固定步长互不整除，因此 `WidgetHost` 维护一个余量：把每帧的间隔加进来，每凑够一个 `dt` 就推进一步并扣掉 `dt`，不足一步的部分留到下一帧。
+
 ```ts
 // 主线程：每帧一次
 await widgetHost.tick(frameDelta);
 ```
 
 ```ts
-// WidgetHost 内部：把累积时长换成若干步
-for (; carried >= step; carried -= step) {
+// WidgetHost 内部：余量跨帧保留
+carried += dtWall;
+while (carried >= step) {
+  carried -= step;
   await deviceHost.tick(step);
   widget.tick(step);
 }
 ```
+
+- 帧间隔小于 `dt` 时，一步跨若干帧才凑齐，中间那些帧推进零步；
+- 帧间隔大于 `dt` 时，同一帧内连续推进多步；
+- 渲染每帧一次，与本次推进了几步无关。
+
+单帧补算的步数有上限；达到上限时停止补算并清空余量，长时间暂停后跳过积压。
 
 `tick` 只接收时长；当前仿真时间由 `WidgetHost` 从 `DeviceSimHost` 读取，时刻的权威来源因此只有一个。返回 Promise 是因为 `tick` 可能跨线程。
 
@@ -131,7 +141,7 @@ sequenceDiagram
     participant DJ as 器件实例（device js / IR）
 
     E->>WH: tick(dtWall)，附带本帧输入事件
-    Note over WH: 累积墙钟时长，得出本帧步数
+    Note over WH: 余量 += dtWall，凑够一步才推进
 
     loop 每个固定步
         WH->>WJ: 上一步的器件发布与外部输入
@@ -155,11 +165,7 @@ sequenceDiagram
 
 `flushOutputs` 与 widget `tick` 都在本步内完成，两者产生的发布都要等下一步才被对方看到，因此谁先跑完不影响结果。
 
-- 一帧可以覆盖零个、一个或多个步，取决于累积时长与固定步长；
-- 沙箱限制单帧最多补算的步数，长时间暂停后以丢弃积压代替追赶；
-- 渲染每帧一次，widget 的 `tick` 每步一次。
-
-固定步长与步内顺序见[器件话题投递](./0017-device-topic-delivery.md)。
+widget 的 `tick` 每步一次，渲染每帧一次。固定步长与步内顺序见[器件话题投递](./0017-device-topic-delivery.md)。
 
 ### 跨线程输入
 
@@ -178,7 +184,7 @@ sequenceDiagram
 | 文档装入 | `.cnv` 或其引用的原理图读取、解析失败时拒绝本次 `loadDocument`，文档与实例保持装入前的状态 |
 | 绑定校验 | 方向取 `output → input`，两侧载荷类型保持相同；赋值失败时按 `topic/type-mismatch` 报告     |
 | 端点缺失 | 目标符号或端口缺失时报告诊断，并跳过该实例的挂载                                           |
-| 帧间隔   | 单帧补算步数超过上限时按上限执行，并丢弃多余积压                                           |
+| 帧间隔   | 单帧补算步数达到上限时按上限推进，余量清零，积压的部分丢弃                                 |
 
 ## 关联
 
