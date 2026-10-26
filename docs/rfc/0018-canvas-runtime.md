@@ -30,22 +30,25 @@
 ### 文档装入
 
 ```ts
-loadDocument(canvas: CanvasDocument, baseUri: string): Promise<void>;
+loadDocument(uri: string): Promise<void>;
 applyCommand(command: CanvasCommand): void;
 reset(): Promise<void>;
 ```
 
-`loadDocument` 的顺序固定为：
+`loadDocument` 接收 `.cnv` 的 URI，宿主自己读取并解析；该 URI 同时是文档内所有相对引用的基准。
 
-1. `canvas.schematic` 非空时按 `baseUri` 解析成绝对 URI，经 `files.read` 取得字节并解析为原理图；
-2. 装入仿真运行时；为空时装入空图纸；
-3. 解析每个实例的 widget 定义与属性资源；
-4. 校验绑定的方向与载荷类型；
-5. 挂载实例。
+顺序固定为：
+
+1. 经 `files.read` 取得 `.cnv` 字节并解析为文档；
+2. `schematic` 非空时按文档 URI 解析成绝对 URI，经 `files.read` 取得字节并解析为原理图；
+3. 装入仿真运行时；为空时装入空图纸；
+4. 解析每个实例的 widget 定义与属性资源；
+5. 校验绑定的方向与载荷类型；
+6. 挂载实例。
 
 端点的两个来源都在宿主内部：widget 侧来自 `provider` 解析出的定义，器件侧来自运行时已有的端点清单。宿主不额外接受端点目录。
 
-`applyCommand` 与 `reset` 复用同一套步骤：原理图引用变化时重新装入运行时，否则只协调实例。
+`applyCommand` 在已装入的快照上增量修改，不回读文件；`reset` 重新执行一次当前的 `loadDocument`。
 
 ### 资源
 
@@ -59,7 +62,7 @@ interface WidgetHostFiles {
 
 | 引用形态          | 处理                                   |
 | ----------------- | -------------------------------------- |
-| 相对或绝对 URI    | 按 `baseUri` 解析后 `files.read`       |
+| 相对或绝对 URI    | 按文档 URI 解析后 `files.read`         |
 | `data:` URI       | 宿主本地解码，不经过 `files`           |
 | 宿主自定义 scheme | `files.read`，由该 scheme 的提供方解释 |
 
@@ -104,9 +107,9 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 
 | 对象     | 规则                                                                                     |
 | -------- | ---------------------------------------------------------------------------------------- |
-| 资源引用 | 相对 URI 按 `baseUri` 解析；`data:` 本地解码；其余经 `files.read`                        |
+| 资源引用 | 相对 URI 按文档 URI 解析；`data:` 本地解码；其余经 `files.read`                          |
 | 资源上限 | 越出工程根返回 `asset/out-of-root`，超限返回 `asset/too-large`，缺失返回 `asset/missing` |
-| 文档装入 | 原理图读取或解析失败时拒绝本次 `loadDocument`，文档与实例均不变                          |
+| 文档装入 | `.cnv` 或其引用的原理图读取、解析失败时拒绝本次 `loadDocument`，文档与实例均不变         |
 | 绑定校验 | 方向必须 `output → input`，两侧载荷类型必须相同；不可赋值按 `topic/type-mismatch` 报告   |
 | 端点缺失 | 目标符号或端口不存在时报告诊断，不挂载该实例                                             |
 | 帧间隔   | 单帧补算步数超过上限时按上限执行，并丢弃多余积压                                         |
