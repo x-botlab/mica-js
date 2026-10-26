@@ -52,12 +52,14 @@ await host.loadDocument(uri);
 
 `DeviceSimHost` 的接口围绕话题与状态展开：引脚、网络与解网是运行时的内部实现，跨线程部署时同样留在 `DeviceSimHost` 一侧。
 
-### 文档装入
+### 文档装入与推进
 
 ```ts
 loadDocument(uri: URI): Promise<void>;
 applyCommand(command: CanvasCommand): void;
 reset(): Promise<void>;
+pause(): void;
+resume(): void;
 ```
 
 `loadDocument` 接收 `.cnv` 的 URI；`WidgetHost` 自己读取并解析画布文档，并把其中的原理图引用解析成绝对 URI 后交给 `DeviceSimHost`。URI 的形态由 `WidgetHost` 决定，规范只要求它可被 `fs.read` 读取。
@@ -77,6 +79,8 @@ reset(): Promise<void>;
 
 `applyCommand` 在已装入的快照上增量修改；`reset` 重新执行一次当前的 `loadDocument`。
 
+`WidgetHost` 自己持有帧时钟并推进仿真，画布编辑器只装入文档、下发命令、读取图层。`loadDocument` 成功后自动开始推进；`pause` 冻结帧时钟与余量，`resume` 从冻结处继续并以恢复时刻重新计时，暂停期间不计入余量。两者都不改动已装入的文档与实例状态。
+
 ### 资源
 
 外部内容的寻址与读取见[宿主文件系统](./0019-host-fs.md)。`WidgetHost` 与 `DeviceSimHost` 各自通过 `fs` 取得所需内容：前者读画布文档与 widget 属性资源，后者读原理图与器件属性资源，规则以该文为准。
@@ -85,18 +89,18 @@ reset(): Promise<void>;
 
 ### 线程划分
 
-| 线程   | 内容                                                    |
-| ------ | ------------------------------------------------------- |
-| 主线程 | 画布编辑器：图层合成、交互与属性面板                    |
-| 沙箱   | `WidgetHost`、widget 实例、仿真运行时，三者同处一个线程 |
+| 线程   | 内容                                                            |
+| ------ | --------------------------------------------------------------- |
+| 主线程 | 画布编辑器：图层合成、交互与属性面板                            |
+| 沙箱   | `WidgetHost`、widget 实例、仿真运行时、帧时钟，四者同处一个线程 |
 
-widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙箱内运行，由沙箱把它与主线程隔开。三者之间以同线程的同步调用协作：投递、`tick` 与钩子调用都直接发生在本线程内。
+widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙箱内运行，由沙箱把它与主线程隔开。三者之间以同线程的同步调用协作：投递、`tick` 与钩子调用都直接发生在本线程内。帧时钟也随 `WidgetHost` 留在沙箱内，推送节奏因此不受主线程调度影响。
 
 沙箱同时承载可信任的框架代码与不可信的实例代码，因此沙箱本身按不可信内容对待：它看到的 DOM、存储与凭据都是隔离后的视图。
 
 ### 帧与步
 
-主线程持有帧时钟，每帧向沙箱发出一次推进信号并附带该帧的墙钟间隔；`WidgetHost` 按固定步长推进若干步，再回传发生变化的图层位图。
+`WidgetHost` 自己持有帧时钟：每帧读取自上次帧以来的墙钟间隔，按固定步长推进若干步，再把发生变化的图层位图交出去。画布编辑器不参与推进。
 
 ```ts
 tick(dt: TimePs): Promise<void>;
@@ -107,17 +111,15 @@ tick(dt: TimePs): Promise<void>;
 帧间隔与固定步长互不整除，因此 `WidgetHost` 维护一个余量：把每帧的间隔加进来，每凑够一个 `dt` 就推进一步并扣掉 `dt`，不足一步的部分留到下一帧。
 
 ```ts
-// 主线程：每帧一次
-await widgetHost.tick(frameDelta);
-```
-
-```ts
-// WidgetHost 内部：余量跨帧保留
-carried += dtWall;
-while (carried >= step) {
-  carried -= step;
-  await deviceHost.tick(step);
-  widget.tick(step);
+// WidgetHost 的帧回调：每帧一次
+async function onFrame(dtWall) {
+  if (paused) return;
+  carried += dtWall;
+  while (carried >= step) {
+    carried -= step;
+    await deviceHost.tick(step);
+    widget.tick(step);
+  }
 }
 ```
 
@@ -127,7 +129,7 @@ while (carried >= step) {
 
 单帧补算的步数有上限；达到上限时停止补算并清空余量，长时间暂停后跳过积压。
 
-`tick` 只接收时长；当前仿真时间由 `WidgetHost` 从 `DeviceSimHost` 读取，时刻的权威来源因此只有一个。返回 Promise 是因为 `tick` 可能跨线程。
+`tick` 只接收时长；当前仿真时间由 `WidgetHost` 从 `DeviceSimHost` 读取，时刻的权威来源因此只有一个。返回 Promise 是因为该调用可能跨线程。
 
 #### 一步的完整时序
 
@@ -140,8 +142,8 @@ sequenceDiagram
     participant DS as DeviceSimHost（沙箱）
     participant DJ as 器件实例（device js / IR）
 
-    E->>WH: tick(dtWall)，附带本帧输入事件
-    Note over WH: 余量 += dtWall，凑够一步才推进
+    E->>WH: 输入事件（随时到达，步首分发）
+    Note over WH: 自持帧时钟，余量 += dtWall，凑够一步才推进
 
     loop 每个固定步
         WH->>WJ: 上一步的器件发布与外部输入
@@ -169,9 +171,9 @@ widget 的 `tick` 每步一次，渲染每帧一次。固定步长与步内顺�
 
 ### 跨线程输入
 
-指针、键盘、文本输入与文档命令与推进信号走同一条通道，在步首统一分发，因此一条输入落在第几步由它在通道中的位置决定。
+指针、键盘与文本输入由画布编辑器转交。它们的到达时刻与步边界无关：先进入队列，在下一个步首统一分发，因此一条输入落在第几步取决于它到达时仿真推进到了哪里，与主线程的帧节奏无关。
 
-文本输入与原生选择依赖 DOM，由主线程代理并通过同一条通道回传。
+文本输入与原生选择依赖 DOM，由主线程代理后转交。
 
 ### 共享地址空间
 
