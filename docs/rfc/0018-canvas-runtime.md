@@ -14,18 +14,17 @@
 
 ### 选项
 
-| 选项           | 类型                   | 作用                                       |
-| -------------- | ---------------------- | ------------------------------------------ |
-| `provider`     | `WidgetProvider`       | widget 定义与实现                          |
-| `devices`      | `IDeviceProvider`      | 器件描述与实现；宿主据此构建仿真运行时     |
-| `files`        | `WidgetHostFiles`      | 读取外部内容的唯一出口，见「资源」         |
-| `host`         | `DeviceSimHostFactory` | 引脚的电气接线与拓扑（可选）               |
-| `sandbox`      | `WidgetSandboxFactory` | 实例的隔离实现（可选）                     |
-| `dpr`          | `number`               | 图层像素比                                 |
-| `onDiagnostic` | 回调                   | 不中断调用的故障上报                       |
-| `onPublish`    | 回调                   | 未绑定端口的 widget 发布，交给宿主自行处理 |
-
-仿真运行时由宿主按 `devices` 与 `host` 构建，调用方不传入运行时实例。
+| 选项                                                                                                                                             | 类型                   | 作用                                       |
+| ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------- | ------------------------------------------ |
+| `provider`                                                                                                                                       | `WidgetProvider`       | widget 定义与实现                          |
+| `devices`                                                                                                                                        | `IDeviceProvider`      | 器件描述与实现；宿主据此构建仿真运行时     |
+| `files`                                                                                                                                          | `WidgetHostFiles`      | 读取外部内容的唯一出口，见「资源」         |
+| `host`                                                                                                                                           | `DeviceSimHostFactory` | 引脚的电气接线与拓扑（可选）               |
+| `sandbox`                                                                                                                                        | `WidgetSandboxFactory` | 实例的隔离实现（可选）                     |
+| `dpr`                                                                                                                                            | `number`               | 图层像素比                                 |
+| `onDiagnostic`                                                                                                                                   | 回调                   | 不中断调用的故障上报                       |
+| `onPublish`                                                                                                                                      | 回调                   | 未绑定端口的 widget 发布，交给宿主自行处理 |
+| 仿真运行时由宿主按 `devices`、`host` 与 `files` 构建，调用方不传入运行时实例。文件读取在构造时注入，因此运行时自己就能读取原理图与器件属性资源。 |
 
 ### 文档装入
 
@@ -35,16 +34,18 @@ applyCommand(command: CanvasCommand): void;
 reset(): Promise<void>;
 ```
 
-`loadDocument` 接收 `.cnv` 的 URI，宿主自己读取并解析；该 URI 同时是文档内所有相对引用的基准。URI 的形态由宿主决定，规范只要求它可被 `files.read` 读取。
+`loadDocument` 接收 `.cnv` 的 URI；宿主自己读取并解析画布文档，并把其中的原理图引用解析成绝对 URI 后交给仿真运行时。URI 的形态由宿主决定，规范只要求它可被 `files.read` 读取。
 
 顺序固定为：
 
 1. 经 `files.read` 取得 `.cnv` 字节并解析为文档；
-2. `schematic` 非空时按文档 URI 解析成绝对 URI，经 `files.read` 取得字节并解析为原理图；
-3. 装入仿真运行时；为空时装入空图纸；
-4. 解析每个实例的 widget 定义与属性资源；
+2. `schematic` 为空时清空运行时，非空时按文档 URI 解析成绝对 URI 并调用 `loadSchematic(uri)`；
+3. 运行时读取并解析该原理图，同时把每个 symbol 的 `image` / `binary` 属性解析成字节，基准是该原理图自己的 URI；
+4. 解析每个实例的 widget 定义与属性资源，基准是画布文档的 URI；
 5. 校验绑定的方向与载荷类型；
 6. 挂载实例。
+
+器件属性资源在第 3 步完成，因此实例创建时工厂读到的属性值已是可以直接使用的字节，而不是待解析的引用。widget 属性资源在第 4 步完成，同样在实例挂载之前。
 
 端点的两个来源都在宿主内部：widget 侧来自 `provider` 解析出的定义，器件侧来自运行时已有的端点清单。宿主不额外接受端点目录。
 
