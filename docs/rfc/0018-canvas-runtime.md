@@ -30,7 +30,7 @@
 ### 文档装入
 
 ```ts
-loadDocument(uri: string): Promise<void>; // 例如 'workspace:/boards/panel.cnv'
+loadDocument(uri: string): Promise<void>; // 例如 'workspace://proj/boards/panel.cnv'
 applyCommand(command: CanvasCommand): void;
 reset(): Promise<void>;
 ```
@@ -60,16 +60,25 @@ interface WidgetHostFiles {
 }
 ```
 
-| 引用形态         | 处理                                                      |
-| ---------------- | --------------------------------------------------------- |
-| `workspace:` URI | 由宿主实现，映射到工程根；`workspace:/a/b.cnv` 为分层路径 |
-| 相对引用         | 按文档 URI 解析，结果仍落在同一 scheme                    |
-| `data:` URI      | 宿主本地解码，不经过 `files`                              |
-| 其他 scheme      | 默认拒绝；宿主可按白名单开放（如 `http:`、自有资源库）    |
+| 引用形态         | 处理                                                   |
+| ---------------- | ------------------------------------------------------ |
+| `workspace:` URI | 由宿主实现，映射到工程；授权段与路径的划分见下         |
+| 相对引用         | 按文档 URI 解析，保留授权段                            |
+| `data:` URI      | 宿主本地解码，不经过 `files`                           |
+| 其他 scheme      | 默认拒绝；宿主可按白名单开放（如 `http:`、自有资源库） |
 
-`workspace:` 用单斜杠写分层路径。`workspace://a/b.cnv` 会把 `a` 解析成 URI 授权段而不是目录，宿主不得接受这种形式。
+`workspace:` 的两种写法都由宿主解释：
 
-相对引用不会越出工程根：`..` 在根处止步，`workspace:/boards/` 里的 `../robot.sch` 得到 `workspace:/robot.sch`。跨 scheme 的绝对引用（`http:` 等）因此必须显式列入白名单。
+| 写法                            | 解析                                |
+| ------------------------------- | ----------------------------------- |
+| `workspace:/boards/panel.cnv`   | 无授权段，路径 `/boards/panel.cnv`  |
+| `workspace://proj/boards/x.cnv` | 授权段 `proj`，路径 `/boards/x.cnv` |
+
+授权段的含义由宿主定义（工程名、挂载点或单根工程名），标准解析保证相对引用保留授权段：`workspace://proj/boards/` 里的 `../robot.sch` 得到 `workspace://proj/robot.sch`。跨授权段的绝对引用即切换到另一个工程，宿主按自己的授权规则决定是否接受。
+
+只有授权段、没有路径的文档 URI（`workspace://proj`）会把每个相对引用都挂到授权段之下（`art/x.png` 得到 `workspace://proj/art/x.png`），因此宿主应要求文档 URI 的路径非空。
+
+跨 scheme 的绝对引用（`http:` 等）不受工程根约束，必须显式列入白名单。
 
 `data:` 自包含，没有 I/O 语义，因此不进读取通道；它仍受与其他资源相同的大小与像素上限约束。
 
@@ -110,14 +119,14 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 
 ## 校验
 
-| 对象     | 规则                                                                                     |
-| -------- | ---------------------------------------------------------------------------------------- |
-| 资源引用 | `workspace:` 必须单斜杠；相对引用按文档 URI 解析；`data:` 本地解码；其他 scheme 需白名单 |
-| 资源上限 | 越出工程根返回 `asset/out-of-root`，超限返回 `asset/too-large`，缺失返回 `asset/missing` |
-| 文档装入 | `.cnv` 或其引用的原理图读取、解析失败时拒绝本次 `loadDocument`，文档与实例均不变         |
-| 绑定校验 | 方向必须 `output → input`，两侧载荷类型必须相同；不可赋值按 `topic/type-mismatch` 报告   |
-| 端点缺失 | 目标符号或端口不存在时报告诊断，不挂载该实例                                             |
-| 帧间隔   | 单帧补算步数超过上限时按上限执行，并丢弃多余积压                                         |
+| 对象     | 规则                                                                                            |
+| -------- | ----------------------------------------------------------------------------------------------- |
+| 资源引用 | 授权段由宿主解释；文档 URI 路径非空；相对引用保留授权段；`data:` 本地解码；其他 scheme 需白名单 |
+| 资源上限 | 越出工程根返回 `asset/out-of-root`，超限返回 `asset/too-large`，缺失返回 `asset/missing`        |
+| 文档装入 | `.cnv` 或其引用的原理图读取、解析失败时拒绝本次 `loadDocument`，文档与实例均不变                |
+| 绑定校验 | 方向必须 `output → input`，两侧载荷类型必须相同；不可赋值按 `topic/type-mismatch` 报告          |
+| 端点缺失 | 目标符号或端口不存在时报告诊断，不挂载该实例                                                    |
+| 帧间隔   | 单帧补算步数超过上限时按上限执行，并丢弃多余积压                                                |
 
 ## 关联
 
