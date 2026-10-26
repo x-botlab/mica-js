@@ -26,12 +26,12 @@ interface HostFs {
 
 ```ts
 interface HostFsError extends Error {
-  readonly code: 'not-found' | 'out-of-root' | 'too-large' | 'undecodable';
+  readonly code: 'FileNotFound' | 'NoPermissions' | 'NoFileSystem' | 'Unavailable';
   readonly uri: URI;
 }
 ```
 
-错误码不带命名空间前缀，跨线程传输时按码重建。
+码名与语义对齐 VS Code 的 `FileSystemError`，宿主可以直接转发既有错误；跨线程传输时按码重建。
 
 ## 运行时
 
@@ -39,7 +39,7 @@ interface HostFsError extends Error {
 
 - **只接受绝对 URI**：相对引用的解析由调用方完成，`read` 不接收相对形式，也不知道任何基准位置。
 - **只返回字节**：文本解码、结构化解析与 base64 处理由调用方完成。
-- **没有可选参数**：读取上限由实现按自身策略执行；调用方在取得字节后按资源声明的上限校验大小与像素。
+- **没有可选参数**：读取上限由实现按自身策略执行；调用方在取得字节后按资源声明的上限校验大小与像素。实现若按策略拒绝，按 `NoPermissions` 报告。
 - **失败必须抛错**：以 `HostFsError` 拒绝，`code` 取自下方分类。
 
 ### 引用解析
@@ -72,17 +72,18 @@ interface HostFsError extends Error {
 
 ## 校验
 
-| 情形                 | `code`        |
-| -------------------- | ------------- |
-| 资源不存在           | `not-found`   |
-| scheme 未实现或越权  | `out-of-root` |
-| 超过实现的上限       | `too-large`   |
-| `data:` 内容无法解码 | `undecodable` |
+| 情形                                   | `code`          |
+| -------------------------------------- | --------------- |
+| 资源不存在                             | `FileNotFound`  |
+| 越权，或实现按自身策略拒绝             | `NoPermissions` |
+| 没有该 scheme 的文件系统实现           | `NoFileSystem`  |
+| 临时不可用：后端离线、正在重载、已卸载 | `Unavailable`   |
 
 - 传入相对 URI 属于调用方错误，实现不得静默补全基准。
-- 未识别的 scheme 按 `out-of-root` 报告，不新增错误码。
+- 解码失败不属于本接口：`data:` 由宿主本地解码，解码错误由调用方按自身错误分类报告。
+- 大小限制由调用方按资源声明校验；实现若有更严格的策略上限，按 `NoPermissions` 报告，不新增错误码。
 
 ## 关联
 
-- [RFC 0009](./0009-device-properties.md)：属性中的资源引用与建议的上限字段。
+- [RFC 0009](./0009-device-properties.md)：属性中的资源引用与建议的上限字段。该文建议的 `asset/*` 错误码由本文的错误分类取代。
 - [RFC 0018](./0018-canvas-runtime.md)：`WidgetHost` 与 `DeviceSimHost` 通过本接口读取画布文档、原理图与属性资源。
