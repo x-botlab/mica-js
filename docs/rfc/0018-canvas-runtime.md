@@ -23,7 +23,8 @@ interface WidgetHost {
   onDidChangeDocument(listener: (document: CanvasDocument) => void): () => void;
 
   dispatch(instanceId: string, event: WidgetInputEvent): void;
-  getLayers(): WidgetLayers;
+  onDidLayerUpdate(listener: (update: WidgetLayerUpdate) => void): () => void;
+  invalidate(): void;
   resize(dpr: number): void;
 
   pause(): void;
@@ -40,12 +41,13 @@ interface WidgetHost {
 | `getDocument()`                 | 当前已装入的快照                       |
 | `onDidChangeDocument(listener)` | 订阅快照变更；返回取消订阅函数         |
 | `dispatch(id, event)`           | 转交一条输入事件，在下一个步首分发     |
-| `getLayers()`                   | 图层视图，随推进更新                   |
+| `onDidLayerUpdate(listener)`    | 订阅图层增量；返回取消订阅函数         |
+| `invalidate()`                  | 请求全量同步，宿主回一条 `reset` 更新  |
 | `resize(dpr)`                   | 改变所有图层的像素比并重绘             |
 | `pause()` / `resume()`          | 冻结与恢复帧时钟，不改动文档与实例状态 |
 | `dispose()`                     | 终止沙箱并释放全部图层位图             |
 
-`WidgetLayers` 给画布编辑器读图层用：
+图层按增量推送，每个更新是一条可序列化的消息：
 
 ```ts
 interface WidgetLayer {
@@ -59,19 +61,17 @@ interface WidgetLayer {
   readonly sequence: number;
 }
 
-type WidgetLayerChange =
-  | { readonly type: 'added'; readonly instanceId: string }
-  | { readonly type: 'updated'; readonly instanceId: string }
+type WidgetLayerUpdate =
+  | { readonly type: 'added'; readonly layer: WidgetLayer }
+  | { readonly type: 'updated'; readonly layer: WidgetLayer }
   | { readonly type: 'removed'; readonly instanceId: string }
-  | { readonly type: 'reordered' };
-
-interface WidgetLayers {
-  /** 按文档顺序排列 */
-  list(): readonly WidgetLayer[];
-  get(instanceId: string): WidgetLayer | undefined;
-  onDidChange(listener: (change: WidgetLayerChange) => void): () => void;
-}
+  | { readonly type: 'reordered'; readonly order: readonly string[] }
+  | { readonly type: 'reset'; readonly layers: readonly WidgetLayer[] };
 ```
+
+除 `bitmap` 外全部字段可结构化克隆；`bitmap` 为 `ImageBitmap`，跨线程按 transfer 传递。
+
+订阅后调用一次 `invalidate()` 即可取得初始状态，宿主以 `reset` 回复全部图层。`reset` 之后只发增量：`added`、`updated`、`removed` 针对单个实例，`reordered` 给新的绘制顺序。
 
 ### 选项
 
