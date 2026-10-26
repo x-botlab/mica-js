@@ -23,7 +23,11 @@ interface WidgetHost {
   onDidChangeDocument(listener: (document: CanvasDocument) => void): () => void;
 
   dispatch(instanceId: string, event: WidgetInputEvent): void;
-  onDidLayerUpdate(listener: (update: WidgetLayerUpdate) => void): () => void;
+
+  onDidAddLayer(listener: (layer: WidgetLayer) => void): () => void;
+  onDidChangeLayer(listener: (layer: WidgetLayer) => void): () => void;
+  onDidRemoveLayer(listener: (instanceId: string) => void): () => void;
+  onDidResetLayers(listener: (layers: readonly WidgetLayer[]) => void): () => void;
   invalidate(): void;
   resize(dpr: number): void;
 
@@ -41,13 +45,16 @@ interface WidgetHost {
 | `getDocument()`                 | 当前已装入的快照                       |
 | `onDidChangeDocument(listener)` | 订阅快照变更；返回取消订阅函数         |
 | `dispatch(id, event)`           | 转交一条输入事件，在下一个步首分发     |
-| `onDidLayerUpdate(listener)`    | 订阅图层增量；返回取消订阅函数         |
-| `invalidate()`                  | 请求全量同步，宿主回一条 `reset` 更新  |
+| `onDidAddLayer(listener)`       | 实例挂载并产出首个图层                 |
+| `onDidChangeLayer(listener)`    | 某图层的位图或尺寸变化                 |
+| `onDidRemoveLayer(listener)`    | 实例卸载                               |
+| `onDidResetLayers(listener)`    | 全量图层，作为 `invalidate()` 的回复   |
+| `invalidate()`                  | 请求全量同步                           |
 | `resize(dpr)`                   | 改变所有图层的像素比并重绘             |
 | `pause()` / `resume()`          | 冻结与恢复帧时钟，不改动文档与实例状态 |
 | `dispose()`                     | 终止沙箱并释放全部图层位图             |
 
-图层按增量推送，每个更新是一条可序列化的消息：
+图层只以事件形式出现，每个事件只描述一件事：
 
 ```ts
 interface WidgetLayer {
@@ -60,18 +67,13 @@ interface WidgetLayer {
   /** 每产出一帧递增，用于判断是否需要重绘 */
   readonly sequence: number;
 }
-
-type WidgetLayerUpdate =
-  | { readonly type: 'added'; readonly layer: WidgetLayer }
-  | { readonly type: 'updated'; readonly layer: WidgetLayer }
-  | { readonly type: 'removed'; readonly instanceId: string }
-  | { readonly type: 'reordered'; readonly order: readonly string[] }
-  | { readonly type: 'reset'; readonly layers: readonly WidgetLayer[] };
 ```
 
-除 `bitmap` 外全部字段可结构化克隆；`bitmap` 为 `ImageBitmap`，跨线程按 transfer 传递。
+- `onDidAddLayer` 与 `onDidChangeLayer` 携带完整图层，`onDidRemoveLayer` 只携带 `instanceId`；
+- `onDidResetLayers` 携带全部图层，用于 `invalidate()` 的回复与初始同步；
+- 绘制顺序取自文档的 `widgets` 顺序（见[画布格式](./0013-canvas-format.md)），不发单独的重排事件。
 
-订阅后调用一次 `invalidate()` 即可取得初始状态，宿主以 `reset` 回复全部图层。`reset` 之后只发增量：`added`、`updated`、`removed` 针对单个实例，`reordered` 给新的绘制顺序。
+除 `bitmap` 外全部字段可结构化克隆；`bitmap` 为 `ImageBitmap`，跨线程按 transfer 传递。
 
 ### 选项
 
