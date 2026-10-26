@@ -42,7 +42,7 @@ await host.loadDocument(uri);
 | 方法                       | 作用                                        |
 | -------------------------- | ------------------------------------------- |
 | `loadSchematic(uri)`       | 读取并装入原理图；`URI` 或 `undefined` 清空 |
-| `advance(dt)`              | 推进一个固定步，返回报告                    |
+| `tick(dt)`                 | 推进一个固定步，返回报告                    |
 | `deliver(target, payload)` | 向器件端点投递一条消息                      |
 | `onPublish(listener)`      | 订阅器件发布；注册本身是本地操作            |
 | `getTopics()`              | 端点清单                                    |
@@ -102,11 +102,23 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 tick(dt: TimePs): Promise<void>;
 ```
 
-`tick` 只接收步长；当前仿真时间由宿主从仿真宿主读取，时刻的权威来源因此只有一个，调用方按步长调用即可。返回 Promise 是因为 `advance` 可能跨线程。
+两层推进都叫 `tick`，由接收者区分：宿主收到的是墙钟间隔，仿真宿主收到的是一个固定步。
+
+```ts
+// 主线程：每帧一次
+await host.tick(frameDelta);
+```
+
+```ts
+// 宿主内部：把累积时长换成若干步
+for (; carried >= step; carried -= step) await deviceHost.tick(step);
+```
+
+`tick` 只接收时长；当前仿真时间由宿主从仿真宿主读取，时刻的权威来源因此只有一个。返回 Promise 是因为 `tick` 可能跨线程。
 
 - 一帧可以覆盖零个、一个或多个步，取决于累积时长与固定步长；
 - 沙箱限制单帧最多补算的步数，长时间暂停后以丢弃积压代替追赶；
-- 渲染每帧一次，`tick` 每步一次。
+- 渲染每帧一次，widget 的 `tick` 每步一次。
 
 固定步长与步内顺序见[器件话题投递](./0017-device-topic-delivery.md)。
 
