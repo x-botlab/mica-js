@@ -24,10 +24,10 @@ interface WidgetHost {
 
   dispatch(instanceId: string, event: WidgetInputEvent): void;
 
-  onDidAddLayer(listener: (layer: WidgetLayer) => void): () => void;
-  onDidChangeLayer(listener: (layer: WidgetLayer) => void): () => void;
-  onDidRemoveLayer(listener: (instanceId: string) => void): () => void;
-  onDidReorderLayers(listener: (order: readonly string[]) => void): () => void;
+  onDidAddWidget(listener: (widget: Widget) => void): () => void;
+  onDidChangeWidget(listener: (widget: Widget) => void): () => void;
+  onDidRemoveWidget(listener: (instanceId: string) => void): () => void;
+  onDidReorderWidgets(listener: (order: readonly string[]) => void): () => void;
   invalidate(): void;
   resize(dpr: number): void;
 
@@ -37,27 +37,29 @@ interface WidgetHost {
 }
 ```
 
-| 方法                           | 作用                                   |
-| ------------------------------ | -------------------------------------- |
-| `loadDocument(uri)`            | 读取并装入画布文档，成功后自动开始推进 |
-| `applyCommand(command)`        | 在当前快照上增量修改                   |
-| `reset()`                      | 重新执行一次 `loadDocument`            |
-| `listInstances()`              | 实例投影，供属性面板与大纲使用         |
-| `dispatch(id, event)`          | 转交一条输入事件，在下一个步首分发     |
-| `onDidAddLayer(listener)`      | 实例挂载并产出首个图层                 |
-| `onDidChangeLayer(listener)`   | 某图层的几何、位图或尺寸变化           |
-| `onDidRemoveLayer(listener)`   | 实例卸载                               |
-| `onDidReorderLayers(listener)` | 绘制顺序变化                           |
-| `invalidate()`                 | 请求全量同步                           |
-| `resize(dpr)`                  | 改变所有图层的像素比并重绘             |
-| `pause()` / `resume()`         | 冻结与恢复帧时钟，不改动文档与实例状态 |
-| `dispose()`                    | 终止沙箱并释放全部图层位图             |
+| 方法                            | 作用                                   |
+| ------------------------------- | -------------------------------------- |
+| `loadDocument(uri)`             | 读取并装入画布文档，成功后自动开始推进 |
+| `applyCommand(command)`         | 在当前快照上增量修改                   |
+| `reset()`                       | 重新执行一次 `loadDocument`            |
+| `listInstances()`               | 实例投影，供属性面板与大纲使用         |
+| `dispatch(id, event)`           | 转交一条输入事件，在下一个步首分发     |
+| `onDidAddWidget(listener)`      | 实例挂载并产出首个帧                   |
+| `onDidChangeWidget(listener)`   | 某实例的几何、属性、位图或尺寸变化     |
+| `onDidRemoveWidget(listener)`   | 实例卸载                               |
+| `onDidReorderWidgets(listener)` | 绘制顺序变化                           |
+| `invalidate()`                  | 请求全量同步                           |
+| `resize(dpr)`                   | 改变所有实例的像素比并重绘             |
+| `pause()` / `resume()`          | 冻结与恢复帧时钟，不改动文档与实例状态 |
+| `dispose()`                     | 终止沙箱并释放全部位图                 |
 
-图层只以事件形式出现，每个事件只描述一件事：
+每个实例的绘制状态只以事件形式出现，每个事件只描述一件事：
 
 ```ts
-interface WidgetLayer {
+interface Widget {
   readonly instanceId: string;
+  /** widget 引用：`<包ID>:<WidgetID>` 或 `builtin:<WidgetID>` */
+  readonly widget: string;
   /** 左上角，逻辑单位 */
   readonly x: number;
   readonly y: number;
@@ -66,6 +68,8 @@ interface WidgetLayer {
   /** 度，顺时针为正，绕矩形中心 */
   readonly rotation: number;
   readonly dpr: number;
+  readonly properties: Readonly<Record<string, unknown>>;
+  readonly bindings: Readonly<Record<string, WidgetBinding>>;
   /** 最近一帧；实例尚未产出位图时为 `undefined` */
   readonly bitmap: ImageBitmap | undefined;
   /** 每产出一帧递增，用于判断是否需要重绘 */
@@ -73,33 +77,25 @@ interface WidgetLayer {
 }
 ```
 
-- `onDidAddLayer` 与 `onDidChangeLayer` 携带完整图层；几何变化走 `onDidChangeLayer`；
-- `onDidRemoveLayer` 只携带 `instanceId`；
-- `onDidReorderLayers` 给出新的绘制顺序，元素为 `instanceId`；
-- `invalidate()` 时宿主按当前顺序先逐个发 `onDidRemoveLayer`，再逐个发 `onDidAddLayer`，订阅方据此全量重建。
+- `onDidAddWidget` 与 `onDidChangeWidget` 携带完整状态，几何与属性的变化都走 `onDidChangeWidget`；
+- `onDidRemoveWidget` 只携带 `instanceId`；
+- `onDidReorderWidgets` 给出新的绘制顺序，元素为 `instanceId`；
+- `invalidate()` 时宿主按当前顺序先逐个发 `onDidRemoveWidget`，再逐个发 `onDidAddWidget`，订阅方据此全量重建。
 
-图层消息整体可 transfer：`bitmap` 为 `ImageBitmap`，随 transfer 列表传递，其余字段为纯数据。
+消息整体可 transfer：`bitmap` 为 `ImageBitmap`，随 transfer 列表传递，其余字段为纯数据。
 
 ### 实例投影
 
-属性面板与大纲需要的是实例元数据，与图层（几何 + 位图）分开取：
+`listInstances()` 返回批量视图，与 `Widget` 同形但不带 `bitmap` —— 列表查询不搬运位图：
 
 ```ts
-interface WidgetInstance {
-  readonly instanceId: string;
-  /** widget 引用：`<包ID>:<WidgetID>` 或 `builtin:<WidgetID>` */
-  readonly widget: string;
-  readonly properties: Readonly<Record<string, unknown>>;
-  readonly bindings: Readonly<Record<string, WidgetBinding>>;
-}
+type WidgetInstance = Omit<Widget, 'bitmap'>;
 
 interface WidgetBinding {
   readonly symbol: string;
   readonly port: string;
 }
 ```
-
-几何与绘制顺序由图层事件给出，不在这里重复；两处按 `instanceId` 对应。
 
 ### 选项
 
@@ -108,7 +104,7 @@ interface WidgetBinding {
 | `widgetProvider`        | `WidgetProvider` | widget 定义与实现                                           |
 | `deviceHost`            | `DeviceSimHost`  | 已构建的 `DeviceSimHost`；必需                              |
 | `fs`                    | `HostFs`         | 读取外部内容的唯一出口，见[宿主文件系统](./0019-host-fs.md) |
-| `dpr`                   | `number`         | 图层像素比，默认 1                                          |
+| `dpr`                   | `number`         | 实例像素比，默认 1                                          |
 | `onDidReportDiagnostic` | 回调             | 故障上报；调用照常返回                                      |
 | `onDidPublish`          | 回调             | 落在绑定范围之外的 widget 发布，交给调用方处理              |
 
@@ -160,7 +156,7 @@ await host.loadDocument(uri);
 
 `applyCommand` 在已装入的快照上增量修改；`reset` 重新执行一次当前的 `loadDocument`。
 
-`WidgetHost` 自己持有帧时钟并推进仿真，画布编辑器只装入文档、下发命令、读取图层。`loadDocument` 成功后自动开始推进；`pause` 冻结帧时钟，`resume` 从冻结处继续并以恢复时刻重新计时。两者都不改动已装入的文档与实例状态。
+`WidgetHost` 自己持有帧时钟并推进仿真，画布编辑器只装入文档、下发命令、接收实例状态。`loadDocument` 成功后自动开始推进；`pause` 冻结帧时钟，`resume` 从冻结处继续并以恢复时刻重新计时。两者都不改动已装入的文档与实例状态。
 
 ### 资源
 
@@ -181,7 +177,7 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 
 ### 帧与步
 
-`WidgetHost` 自己持有帧时钟：每帧决定这次推进多少，并按每次的 `dt` 调用 `deviceHost.tick(dt)`，再把发生变化的图层位图交出去。画布编辑器不参与推进。
+`WidgetHost` 自己持有帧时钟：每帧决定这次推进多少，并按每次的 `dt` 调用 `deviceHost.tick(dt)`，再把发生变化的实例位图交出去。画布编辑器不参与推进。
 
 一帧推进几步、每次的 `dt` 取多少，由 `WidgetHost` 决定；帧间隔与步长之间的换算属于它的推进策略，规范只要求每次调用的 `dt` 为正整数皮秒。
 
@@ -221,7 +217,7 @@ sequenceDiagram
     end
 
     Note over WJ,DJ: 本步的 publish 在下一轮步首才被对方看到
-    WH-->>E: 有变化的图层位图，每帧一次
+    WH-->>E: 有变化的位图，每帧一次
 ```
 
 `flushOutputs` 与 widget `tick` 都在本步内完成，两者产生的发布都要等下一步才被对方看到，因此谁先跑完不影响结果。
