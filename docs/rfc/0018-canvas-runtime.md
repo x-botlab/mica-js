@@ -42,8 +42,7 @@ await host.loadDocument(uri);
 | 方法                       | 作用                                        |
 | -------------------------- | ------------------------------------------- |
 | `loadSchematic(uri)`       | 读取并装入原理图；`URI` 或 `undefined` 清空 |
-| `getStep()`                | 固定步长，实例存续期内不变                  |
-| `tick()`                   | 推进一个固定步，返回报告                    |
+| `tick(dt)`                 | 推进一个固定步，返回报告                    |
 | `deliver(target, payload)` | 向器件端点投递一条消息                      |
 | `onPublish(listener)`      | 订阅器件发布；注册本身是本地操作            |
 | `getTopics()`              | 端点清单                                    |
@@ -103,7 +102,11 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 
 `WidgetHost` 自己持有帧时钟：每帧读取自上次帧以来的墙钟间隔，按固定步长推进若干步，再把发生变化的图层位图交出去。画布编辑器不参与推进。
 
-步长由 `DeviceSimHost` 固定，经 `getStep()` 读出；推进只调 `tick()`，不传步长。
+```ts
+tick(dt: TimePs): Promise<void>;
+```
+
+两层推进都叫 `tick`，由接收者区分：`WidgetHost` 收到的是墙钟间隔，`DeviceSimHost` 收到的是一个固定步。
 
 帧间隔与固定步长互不整除，因此 `WidgetHost` 维护一个余量：**已经过去、但还不足一个步的墙钟时长**，单位与 `dt` 相同，取值始终落在 `[0, dt)`。每帧把该帧的间隔加进来，每凑够一个 `dt` 就推进一步并扣掉 `dt`，剩下的部分留到下一帧。
 
@@ -116,13 +119,11 @@ async function onFrame(dtWall) {
   carried += dtWall;
   while (carried >= step) {
     carried -= step;
-    await deviceHost.tick();
+    await deviceHost.tick(step);
     widget.tick(step);
   }
 }
 ```
-
-`step` 取自 `deviceHost.getStep()`，在实例存续期内不变。
 
 - 帧间隔小于 `dt` 时，一步跨若干帧才凑齐，中间那些帧推进零步；
 - 帧间隔大于 `dt` 时，同一帧内连续推进多步；
@@ -148,7 +149,7 @@ sequenceDiagram
 
     loop 每个固定步
         WH->>WJ: 上一步的器件发布与外部输入
-        WH->>DS: tick()
+        WH->>DS: tick(dt)
         DS->>DS: 冻结待投递集合（上一步的 widget 发布）
         DS->>DJ: applyInputs(io)
         Note over DJ: 求值轮次 × R
@@ -156,7 +157,7 @@ sequenceDiagram
         DJ-->>DS: publish
         DS-->>WH: onPublish(publish)
         Note over WH: 收入下一步的投递集合
-        WH->>WJ: tick
+        WH->>WJ: tick(dt)
         WJ-->>WH: publish
         WH->>DS: deliver(target, payload)
         Note over DS: 收入下一步的投递集合

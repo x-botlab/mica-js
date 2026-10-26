@@ -38,7 +38,7 @@
 
 一个步覆盖若干求值轮次，全部轮次跑完后才执行 `flushOutputs`。轮次在步内的调度属于[器件 IR](./0003-device-ir.md)。
 
-步长是 `DeviceSimHost` 的实现常量：经 `getStep()` 读出，在整个实例存续期内不变，同一 `DeviceSimHost` 内所有器件共用这一个步长。宿主推进时逐个 `tick()`，不传步长。
+步长由 `WidgetHost` 决定并由它逐步传给 `DeviceSimHost.tick(dt)`，在同一实例存续期内固定；同一 `DeviceSimHost` 内所有器件使用相同步长。
 
 ### 器件钩子
 
@@ -91,17 +91,17 @@ api.ir.fifo(name, { maxRecord, length });
 
 ### 步内顺序
 
-一步由 `WidgetHost` 驱动：它调用 `DeviceSimHost.tick()` 完成器件侧，返回后在同一个步里执行 widget 的 `tick`。两者都结束才进入下一步，这就是步进屏障。
+一步由 `WidgetHost` 驱动：它调用 `DeviceSimHost.tick(dt)` 完成器件侧，返回后在同一个步里执行 widget 的 `tick`。两者都结束才进入下一步，这就是步进屏障。
 
 1. `WidgetHost` 在步首把上一步收集到的器件发布与外部输入交给 widget 实例；
-2. `DeviceSimHost.tick()` 冻结本步待投递集合：上一步的 widget 发布进入对应器件的收件箱；
+2. `DeviceSimHost.tick(dt)` 冻结本步待投递集合：上一步的 widget 发布进入对应器件的收件箱；
 3. 各器件执行 `applyInputs(io)`，其写入对该步后续求值轮次立即可见；
 4. 执行本步的全部求值轮次，各轮次内器件的调度由实现安排；
 5. 各器件执行 `flushOutputs(io)`，发布经 `onPublish` 交给 `WidgetHost`，进入下一步的投递集合；
-6. `DeviceSimHost.tick()` 返回后，`WidgetHost` 执行 widget 的 `tick`；widget 的发布经 `WidgetHost.deliver` 交给 `DeviceSimHost`，进入下一步的投递集合；
+6. `DeviceSimHost.tick(dt)` 返回后，`WidgetHost` 执行 widget 的 `tick(dt)`；widget 的发布经 `WidgetHost.deliver` 交给 `DeviceSimHost`，进入下一步的投递集合；
 7. 两侧都完成，屏障放行。
 
-第 2–5 步在 `DeviceSimHost.tick()` 内完成，第 1、6 步由 `WidgetHost` 完成。本步产生的发布都要等屏障放行才被对方看到，因此收发时机与谁先跑完无关。
+第 2–5 步在 `DeviceSimHost.tick(dt)` 内完成，第 1、6 步由 `WidgetHost` 完成。本步产生的发布都要等屏障放行才被对方看到，因此收发时机与谁先跑完无关。
 
 完整时序见[画布运行时](./0018-canvas-runtime.md)。
 
