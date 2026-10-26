@@ -91,6 +91,8 @@ api.ir.fifo(name, { maxRecord, length });
 3. 执行该步覆盖的全部电路 tick；
 4. 依次执行每个器件的 `flushOutputs`，其发布进入后续步的投递集合。
 
+线程划分、帧与步的关系见[画布运行时](./0018-canvas-runtime.md)。
+
 ### 生效边界
 
 - 本步 `flushOutputs` 发布的消息最早在下一步被任何 `applyInputs` 看到；跨实例传播因此具有恰好一个固定步长的延迟。
@@ -268,6 +270,8 @@ export default function createUsart(api) {
 - 本文不定义载荷的字节布局：`string` 的 UTF-8 编码、`bytes<rgb565>` 的像素头由[话题端口](./0010-topic-ports.md)规定。
 - 本文不定义 Widget 侧的订阅与发布接口，见 [Widget JS API](./0015-widget-js-api.md)。
 - 本文不定义宿主如何调度渲染帧；`dt` 与渲染帧率相互独立。
+- 本文不定义沙箱的实现细节：沙箱如何限制第三方代码的能力、如何回传位图，由沙箱自身合同维护。
+- 本文不定义宿主装配、线程划分与资源寻址，见[画布运行时](./0018-canvas-runtime.md)。
 
 ## 关联
 
@@ -276,4 +280,7 @@ export default function createUsart(api) {
 - [RFC 0004](./0004-ir-pin-io.md)：电气通道的引脚读写，与本文的话题通道并列。
 - [RFC 0009](./0009-device-properties.md)：属性是创建期只读快照，不参与投递。
 - [RFC 0010](./0010-topic-ports.md)：端口描述与载荷类型；本文补充 `delivery` 字段。
+- [RFC 0013](./0013-canvas-format.md)：`.cnv` 的实例、绑定与 `schematic` 引用。
+- [RFC 0014](./0014-widget-definition.md)：widget 的端口声明。
 - [RFC 0015](./0015-widget-js-api.md)：Widget 的 `publish` / `subscribe`；其投递时机、队列与背压由本文统一。
+- [RFC 0018](./0018-canvas-runtime.md)：宿主装配、线程划分与资源寻址。
