@@ -39,23 +39,23 @@ await host.loadDocument(uri);
 
 `DeviceSimHost` 是可跨线程的接口：全部方法返回 Promise，即使实现与调用方同线程也一样。因此 `WidgetHost` 与仿真可以分处不同线程，调用方不需要为两种部署写两套代码。
 
-| 方法                       | 作用                                   |
-| -------------------------- | -------------------------------------- |
-| `loadSchematic(uri)`       | 读取并装入原理图；`undefined` 表示清空 |
-| `advance(dt)`              | 推进一个固定步，返回报告               |
-| `deliver(target, payload)` | 向器件端点投递一条消息                 |
-| `onPublish(listener)`      | 订阅器件发布；注册本身是本地操作       |
-| `getTopics()`              | 端点清单                               |
-| `getSimTime()`             | 当前仿真时间                           |
-| `getSchematic()`           | 当前原理图                             |
-| `dispose()`                | 释放运行时                             |
+| 方法                       | 作用                                        |
+| -------------------------- | ------------------------------------------- |
+| `loadSchematic(uri)`       | 读取并装入原理图；`URI` 或 `undefined` 清空 |
+| `advance(dt)`              | 推进一个固定步，返回报告                    |
+| `deliver(target, payload)` | 向器件端点投递一条消息                      |
+| `onPublish(listener)`      | 订阅器件发布；注册本身是本地操作            |
+| `getTopics()`              | 端点清单                                    |
+| `getSimTime()`             | 当前仿真时间                                |
+| `getSchematic()`           | 当前原理图                                  |
+| `dispose()`                | 释放运行时                                  |
 
 仿真宿主不暴露引脚与拓扑对象：电气解网是运行时的内部实现，跨线程时也不可作为接口出现。
 
 ### 文档装入
 
 ```ts
-loadDocument(uri: string): Promise<void>;
+loadDocument(uri: URI): Promise<void>;
 applyCommand(command: CanvasCommand): void;
 reset(): Promise<void>;
 ```
@@ -119,7 +119,7 @@ readResource(fs: HostFs, uri: URI): Promise<Uint8Array>;
 
 `resolveUri` 用 `vscode-uri` 的路径解析把相对引用接到基准上；`readResource` 对 `data:` 本地解码，其余交给 `fs.read`。相对引用的解析属于 URI 语义而非 scheme 策略：结果保留基准 URI 的 scheme 与 authority，所以「相对路径」的含义由宿主选择的寻址形态自然给出。基准 URI 有 authority 但没有路径时，相对引用会挂到 authority 之下，宿主应要求基准路径非空。
 
-公开入口（`loadDocument`、`loadSchematic`）接受 `string` 并在边界处解析为 `URI`，其后的内部调用一律使用 `URI`，避免同一路径被解析多次。
+所有接受 URI 的接口都使用 `vscode-uri` 的 `URI` 类型，调用方用 `URI.parse` 构造一次即可；接口内部不再接受字符串形式，也不重复解析。文档内的相对引用本身是字符串，由 `resolveUri` 接到基准 URI 上。
 
 `fs` 不提供目录枚举，也不提供写入；包根与文档根由调用方显式给出。缓存与并发顺序由实现决定，规范不作要求。
 
