@@ -30,7 +30,7 @@
 ### 文档装入
 
 ```ts
-loadDocument(uri: string): Promise<void>;
+loadDocument(uri: string): Promise<void>; // 例如 'workspace:/boards/panel.cnv'
 applyCommand(command: CanvasCommand): void;
 reset(): Promise<void>;
 ```
@@ -60,15 +60,20 @@ interface WidgetHostFiles {
 }
 ```
 
-| 引用形态          | 处理                                   |
-| ----------------- | -------------------------------------- |
-| 相对或绝对 URI    | 按文档 URI 解析后 `files.read`         |
-| `data:` URI       | 宿主本地解码，不经过 `files`           |
-| 宿主自定义 scheme | `files.read`，由该 scheme 的提供方解释 |
+| 引用形态         | 处理                                                      |
+| ---------------- | --------------------------------------------------------- |
+| `workspace:` URI | 由宿主实现，映射到工程根；`workspace:/a/b.cnv` 为分层路径 |
+| 相对引用         | 按文档 URI 解析，结果仍落在同一 scheme                    |
+| `data:` URI      | 宿主本地解码，不经过 `files`                              |
+| 其他 scheme      | 默认拒绝；宿主可按白名单开放（如 `http:`、自有资源库）    |
+
+`workspace:` 用单斜杠写分层路径。`workspace://a/b.cnv` 会把 `a` 解析成 URI 授权段而不是目录，宿主不得接受这种形式。
+
+相对引用不会越出工程根：`..` 在根处止步，`workspace:/boards/` 里的 `../robot.sch` 得到 `workspace:/robot.sch`。跨 scheme 的绝对引用（`http:` 等）因此必须显式列入白名单。
 
 `data:` 自包含，没有 I/O 语义，因此不进读取通道；它仍受与其他资源相同的大小与像素上限约束。
 
-资源引用若为带 `mode` 的旧式对象，按以下规则归一后不再区分来源：`file` 视为相对 URI，`inline` 视为 `data:` URI，`store` 视为宿主自定义 scheme。归一规则只影响读入，不改变文档中已有的字段。
+资源引用若为带 `mode` 的旧式对象，按以下规则归一后不再区分来源：`file` 视为相对 URI，`inline` 视为 `data:` URI，`store` 视为 `workspace:` 或宿主自定义 scheme。归一规则只影响读入，不改变文档中已有的字段。
 
 ## 运行时
 
@@ -107,7 +112,7 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 
 | 对象     | 规则                                                                                     |
 | -------- | ---------------------------------------------------------------------------------------- |
-| 资源引用 | 相对 URI 按文档 URI 解析；`data:` 本地解码；其余经 `files.read`                          |
+| 资源引用 | `workspace:` 必须单斜杠；相对引用按文档 URI 解析；`data:` 本地解码；其他 scheme 需白名单 |
 | 资源上限 | 越出工程根返回 `asset/out-of-root`，超限返回 `asset/too-large`，缺失返回 `asset/missing` |
 | 文档装入 | `.cnv` 或其引用的原理图读取、解析失败时拒绝本次 `loadDocument`，文档与实例均不变         |
 | 绑定校验 | 方向必须 `output → input`，两侧载荷类型必须相同；不可赋值按 `topic/type-mismatch` 报告   |
