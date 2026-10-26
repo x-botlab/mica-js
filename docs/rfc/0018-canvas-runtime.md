@@ -79,7 +79,7 @@ resume(): void;
 
 `applyCommand` 在已装入的快照上增量修改；`reset` 重新执行一次当前的 `loadDocument`。
 
-`WidgetHost` 自己持有帧时钟并推进仿真，画布编辑器只装入文档、下发命令、读取图层。`loadDocument` 成功后自动开始推进；`pause` 冻结帧时钟与余量，`resume` 从冻结处继续并以恢复时刻重新计时，暂停期间不计入余量。两者都不改动已装入的文档与实例状态。
+`WidgetHost` 自己持有帧时钟并推进仿真，画布编辑器只装入文档、下发命令、读取图层。`loadDocument` 成功后自动开始推进；`pause` 冻结帧时钟，`resume` 从冻结处继续并以恢复时刻重新计时。两者都不改动已装入的文档与实例状态。
 
 ### 资源
 
@@ -100,36 +100,27 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 
 ### 帧与步
 
-`WidgetHost` 自己持有帧时钟：每帧读取自上次帧以来的墙钟间隔，按固定步长推进若干步，再把发生变化的图层位图交出去。画布编辑器不参与推进。
+`WidgetHost` 自己持有帧时钟：每帧决定这次推进多少，并按每次的 `dt` 调用 `deviceHost.tick(dt)`，再把发生变化的图层位图交出去。画布编辑器不参与推进。
 
 ```ts
 tick(dt: TimePs): Promise<void>;
 ```
 
-两层推进都叫 `tick`，由接收者区分：`WidgetHost` 收到的是墙钟间隔，`DeviceSimHost` 收到的是一个固定步。
-
-帧间隔与固定步长互不整除，因此 `WidgetHost` 维护一个余量：**已经过去、但还不足一个步的墙钟时长**，单位与 `dt` 相同，取值始终落在 `[0, dt)`。每帧把该帧的间隔加进来，每凑够一个 `dt` 就推进一步并扣掉 `dt`，剩下的部分留到下一帧。
-
-余量只决定「这一帧推进几步」，仿真时间仍由推进的步数决定：`WidgetHost` 不读它来推算时刻，时刻以 `DeviceSimHost.getSimTime()` 为准。
-
 ```ts
 // WidgetHost 的帧回调：每帧一次
 async function onFrame(dtWall) {
   if (paused) return;
-  carried += dtWall;
-  while (carried >= step) {
-    carried -= step;
-    await deviceHost.tick(step);
-    widget.tick(step);
+  for (const dt of plan(dtWall)) {
+    await deviceHost.tick(dt);
+    widget.tick(dt);
   }
 }
 ```
 
-- 帧间隔小于 `dt` 时，一步跨若干帧才凑齐，中间那些帧推进零步；
-- 帧间隔大于 `dt` 时，同一帧内连续推进多步；
-- 渲染每帧一次，与本次推进了几步无关。
+一帧推进几步、每次的 `dt` 取多少，由 `WidgetHost` 决定；帧间隔与步长之间的换算属于它的推进策略，规范只要求每次调用的 `dt` 为正整数皮秒。
 
-单帧补算的步数有上限；达到上限时停止补算并清空余量，长时间暂停后跳过积压。
+- 渲染每帧一次，与本次推进了几步无关；
+- 单帧推进的步数有上限，长时间暂停后跳过积压。
 
 `tick` 只接收时长；当前仿真时间由 `WidgetHost` 从 `DeviceSimHost` 读取，时刻的权威来源因此只有一个。返回 Promise 是因为该调用可能跨线程。
 
@@ -145,7 +136,7 @@ sequenceDiagram
     participant DJ as 器件实例（device js / IR）
 
     E->>WH: 输入事件（随时到达，步首分发）
-    Note over WH: 自持帧时钟，余量 += dtWall，凑够一步才推进
+    Note over WH: 自持帧时钟，按本次的 dt 逐步推进
 
     loop 每个固定步
         WH->>WJ: 上一步的器件发布与外部输入
@@ -169,7 +160,7 @@ sequenceDiagram
 
 `flushOutputs` 与 widget `tick` 都在本步内完成，两者产生的发布都要等下一步才被对方看到，因此谁先跑完不影响结果。
 
-widget 的 `tick` 每步一次，渲染每帧一次。固定步长与步内顺序见[器件话题投递](./0017-device-topic-delivery.md)。
+widget 的 `tick` 每步一次，渲染每帧一次。步长与步内顺序见[器件话题投递](./0017-device-topic-delivery.md)。
 
 ### 跨线程输入
 
@@ -188,15 +179,15 @@ widget 的 `tick` 每步一次，渲染每帧一次。固定步长与步内顺�
 | 文档装入 | `.cnv` 或其引用的原理图读取、解析失败时拒绝本次 `loadDocument`，文档与实例保持装入前的状态 |
 | 绑定校验 | 方向取 `output → input`，两侧载荷类型保持相同；赋值失败时按 `topic/type-mismatch` 报告     |
 | 端点缺失 | 目标符号或端口缺失时报告诊断，并跳过该实例的挂载                                           |
-| 帧间隔   | 单帧补算步数达到上限时按上限推进，余量清零，积压的部分丢弃                                 |
+| 帧间隔   | 单帧推进步数达到上限时按上限推进，积压的部分丢弃                                           |
 
 ## 关联
 
-- [RFC 0001](./0001-virtual-time.md)：墙钟间隔到固定步长的换算口径。
+- [RFC 0001](./0001-virtual-time.md)：时间值单位与换算口径。
 - [RFC 0009](./0009-device-properties.md)：属性中的资源引用。
 - [RFC 0010](./0010-topic-ports.md)：绑定方向与载荷类型。
 - [RFC 0013](./0013-canvas-format.md)：`.cnv` 的实例、绑定与 `schematic` 引用。
 - [RFC 0014](./0014-widget-definition.md)：widget 的端口声明。
 - [RFC 0015](./0015-widget-js-api.md)：Widget 的上下文接口、`tick` 与文本输入。
-- [RFC 0017](./0017-device-topic-delivery.md)：固定步长、步内顺序与话题投递。
+- [RFC 0017](./0017-device-topic-delivery.md)：步长、步内顺序与话题投递。
 - [RFC 0019](./0019-host-fs.md)：资源寻址与读取接口。
