@@ -1,6 +1,6 @@
 ---
 description: 'RFC 规范文档（docs/rfc）的编写规范：结构、措辞、范围划分与变更流程'
-applyTo: 'docs/**/*.md'
+applyTo: 'docs/rfc/**/*.md'
 ---
 
 # RFC 编写规范
