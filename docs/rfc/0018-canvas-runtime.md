@@ -14,17 +14,19 @@
 
 ### 选项
 
-| 选项                                                                                                                                             | 类型                   | 作用                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------- | ------------------------------------------ |
-| `provider`                                                                                                                                       | `WidgetProvider`       | widget 定义与实现                          |
-| `devices`                                                                                                                                        | `IDeviceProvider`      | 器件描述与实现；宿主据此构建仿真运行时     |
-| `files`                                                                                                                                          | `WidgetHostFiles`      | 读取外部内容的唯一出口，见「资源」         |
-| `host`                                                                                                                                           | `DeviceSimHostFactory` | 引脚的电气接线与拓扑（可选）               |
-| `sandbox`                                                                                                                                        | `WidgetSandboxFactory` | 实例的隔离实现（可选）                     |
-| `dpr`                                                                                                                                            | `number`               | 图层像素比                                 |
-| `onDiagnostic`                                                                                                                                   | 回调                   | 不中断调用的故障上报                       |
-| `onPublish`                                                                                                                                      | 回调                   | 未绑定端口的 widget 发布，交给宿主自行处理 |
-| 仿真运行时由宿主按 `devices`、`host` 与 `files` 构建，调用方不传入运行时实例。文件读取在构造时注入，因此运行时自己就能读取原理图与器件属性资源。 |
+| 选项             | 类型                   | 作用                                       |
+| ---------------- | ---------------------- | ------------------------------------------ |
+| `widgetProvider` | `WidgetProvider`       | widget 定义与实现                          |
+| `deviceProvider` | `DeviceProvider`       | 器件描述与实现                             |
+| `deviceHost`     | `DeviceSimHostFactory` | 引脚的电气接线与拓扑；必需                 |
+| `fs`             | `HostFs`               | 读取外部内容的唯一出口                     |
+| `dpr`            | `number`               | 图层像素比，默认 1                         |
+| `onDiagnostic`   | 回调                   | 不中断调用的故障上报                       |
+| `onPublish`      | 回调                   | 未绑定端口的 widget 发布，交给宿主自行处理 |
+
+前四项必需，其余可选。引脚与拓扑是器件运行的前提，因此 `deviceHost` 没有缺省实现，也不允许省略。
+
+仿真运行时由宿主按 `deviceProvider`、`deviceHost` 与 `fs` 构建，调用方不传入运行时实例。文件读取在构造时注入，因此运行时自己就能读取原理图与器件属性资源。
 
 ### 文档装入
 
@@ -34,11 +36,11 @@ applyCommand(command: CanvasCommand): void;
 reset(): Promise<void>;
 ```
 
-`loadDocument` 接收 `.cnv` 的 URI；宿主自己读取并解析画布文档，并把其中的原理图引用解析成绝对 URI 后交给仿真运行时。URI 的形态由宿主决定，规范只要求它可被 `files.read` 读取。
+`loadDocument` 接收 `.cnv` 的 URI；宿主自己读取并解析画布文档，并把其中的原理图引用解析成绝对 URI 后交给仿真运行时。URI 的形态由宿主决定，规范只要求它可被 `fs.read` 读取。
 
 顺序固定为：
 
-1. 经 `files.read` 取得 `.cnv` 字节并解析为文档；
+1. 经 `fs.read` 取得 `.cnv` 字节并解析为文档；
 2. `schematic` 为空时清空运行时，非空时按文档 URI 解析成绝对 URI 并调用 `loadSchematic(uri)`；
 3. 运行时读取并解析该原理图，同时把每个 symbol 的 `image` / `binary` 属性解析成字节，基准是该原理图自己的 URI；
 4. 解析每个实例的 widget 定义与属性资源，基准是画布文档的 URI；
@@ -56,12 +58,12 @@ reset(): Promise<void>;
 外部内容一律以 URI 表达，读取只有一个出口：
 
 ```ts
-interface WidgetHostFiles {
+interface HostFs {
   read(uri: string): Promise<Uint8Array>;
 }
 ```
 
-规范只固定一条 scheme 规则：**`data:` URI 由宿主本地解码，不经过 `files`**。它自包含、没有 I/O 语义，但仍受与其他资源相同的大小与像素上限约束。
+规范只固定一条 scheme 规则：**`data:` URI 由宿主本地解码，不经过 `fs`**。它自包含、没有 I/O 语义，但仍受与其他资源相同的大小与像素上限约束。
 
 其余 scheme 全部由宿主决定：支持哪些、如何映射到存储、如何授权、如何拒绝，规范不设内置清单，也不要求任何具体名称。
 
