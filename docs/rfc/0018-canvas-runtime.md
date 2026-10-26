@@ -19,15 +19,15 @@ interface WidgetHost {
   loadDocument(uri: URI): Promise<void>;
   applyCommand(command: CanvasCommand): void;
   reset(): Promise<void>;
-  getDocument(): CanvasDocument;
-  onDidChangeDocument(listener: (document: CanvasDocument) => void): () => void;
+
+  listInstances(): readonly WidgetInstance[];
 
   dispatch(instanceId: string, event: WidgetInputEvent): void;
 
   onDidAddLayer(listener: (layer: WidgetLayer) => void): () => void;
   onDidChangeLayer(listener: (layer: WidgetLayer) => void): () => void;
   onDidRemoveLayer(listener: (instanceId: string) => void): () => void;
-  onDidResetLayers(listener: (layers: readonly WidgetLayer[]) => void): () => void;
+  onDidReorderLayers(listener: (order: readonly string[]) => void): () => void;
   invalidate(): void;
   resize(dpr: number): void;
 
@@ -37,30 +37,34 @@ interface WidgetHost {
 }
 ```
 
-| 方法                            | 作用                                   |
-| ------------------------------- | -------------------------------------- |
-| `loadDocument(uri)`             | 读取并装入画布文档，成功后自动开始推进 |
-| `applyCommand(command)`         | 在当前快照上增量修改                   |
-| `reset()`                       | 重新执行一次 `loadDocument`            |
-| `getDocument()`                 | 当前已装入的快照                       |
-| `onDidChangeDocument(listener)` | 订阅快照变更；返回取消订阅函数         |
-| `dispatch(id, event)`           | 转交一条输入事件，在下一个步首分发     |
-| `onDidAddLayer(listener)`       | 实例挂载并产出首个图层                 |
-| `onDidChangeLayer(listener)`    | 某图层的位图或尺寸变化                 |
-| `onDidRemoveLayer(listener)`    | 实例卸载                               |
-| `onDidResetLayers(listener)`    | 全量图层，作为 `invalidate()` 的回复   |
-| `invalidate()`                  | 请求全量同步                           |
-| `resize(dpr)`                   | 改变所有图层的像素比并重绘             |
-| `pause()` / `resume()`          | 冻结与恢复帧时钟，不改动文档与实例状态 |
-| `dispose()`                     | 终止沙箱并释放全部图层位图             |
+| 方法                           | 作用                                   |
+| ------------------------------ | -------------------------------------- |
+| `loadDocument(uri)`            | 读取并装入画布文档，成功后自动开始推进 |
+| `applyCommand(command)`        | 在当前快照上增量修改                   |
+| `reset()`                      | 重新执行一次 `loadDocument`            |
+| `listInstances()`              | 实例投影，供属性面板与大纲使用         |
+| `dispatch(id, event)`          | 转交一条输入事件，在下一个步首分发     |
+| `onDidAddLayer(listener)`      | 实例挂载并产出首个图层                 |
+| `onDidChangeLayer(listener)`   | 某图层的几何、位图或尺寸变化           |
+| `onDidRemoveLayer(listener)`   | 实例卸载                               |
+| `onDidReorderLayers(listener)` | 绘制顺序变化                           |
+| `invalidate()`                 | 请求全量同步                           |
+| `resize(dpr)`                  | 改变所有图层的像素比并重绘             |
+| `pause()` / `resume()`         | 冻结与恢复帧时钟，不改动文档与实例状态 |
+| `dispose()`                    | 终止沙箱并释放全部图层位图             |
 
 图层只以事件形式出现，每个事件只描述一件事：
 
 ```ts
 interface WidgetLayer {
   readonly instanceId: string;
+  /** 左上角，逻辑单位 */
+  readonly x: number;
+  readonly y: number;
   readonly width: number;
   readonly height: number;
+  /** 度，顺时针为正，绕矩形中心 */
+  readonly rotation: number;
   readonly dpr: number;
   /** 最近一帧；实例尚未产出位图时为 `undefined` */
   readonly bitmap: ImageBitmap | undefined;
@@ -69,11 +73,33 @@ interface WidgetLayer {
 }
 ```
 
-- `onDidAddLayer` 与 `onDidChangeLayer` 携带完整图层，`onDidRemoveLayer` 只携带 `instanceId`；
-- `onDidResetLayers` 携带全部图层，用于 `invalidate()` 的回复与初始同步；
-- 绘制顺序取自文档的 `widgets` 顺序（见[画布格式](./0013-canvas-format.md)），不发单独的重排事件。
+- `onDidAddLayer` 与 `onDidChangeLayer` 携带完整图层；几何变化走 `onDidChangeLayer`；
+- `onDidRemoveLayer` 只携带 `instanceId`；
+- `onDidReorderLayers` 给出新的绘制顺序，元素为 `instanceId`；
+- `invalidate()` 时宿主按当前顺序先逐个发 `onDidRemoveLayer`，再逐个发 `onDidAddLayer`，订阅方据此全量重建。
 
-除 `bitmap` 外全部字段可结构化克隆；`bitmap` 为 `ImageBitmap`，跨线程按 transfer 传递。
+图层消息整体可 transfer：`bitmap` 为 `ImageBitmap`，随 transfer 列表传递，其余字段为纯数据。
+
+### 实例投影
+
+属性面板与大纲需要的是实例元数据，与图层（几何 + 位图）分开取：
+
+```ts
+interface WidgetInstance {
+  readonly instanceId: string;
+  /** widget 引用：`<包ID>:<WidgetID>` 或 `builtin:<WidgetID>` */
+  readonly widget: string;
+  readonly properties: Readonly<Record<string, unknown>>;
+  readonly bindings: Readonly<Record<string, WidgetBinding>>;
+}
+
+interface WidgetBinding {
+  readonly symbol: string;
+  readonly port: string;
+}
+```
+
+几何与绘制顺序由图层事件给出，不在这里重复；两处按 `instanceId` 对应。
 
 ### 选项
 
