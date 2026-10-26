@@ -117,7 +117,26 @@ resolveUri(reference: string, baseUri: URI): URI;
 readResource(fs: HostFs, uri: URI): Promise<Uint8Array>;
 ```
 
-`resolveUri` 用 `vscode-uri` 的路径解析把相对引用接到基准上；`readResource` 对 `data:` 本地解码，其余交给 `fs.read`。相对引用的解析属于 URI 语义而非 scheme 策略：结果保留基准 URI 的 scheme 与 authority，所以「相对路径」的含义由宿主选择的寻址形态自然给出。基准 URI 有 authority 但没有路径时，相对引用会挂到 authority 之下，宿主应要求基准路径非空。
+`resolveUri` 按引用形态分三种，全部基于 `vscode-uri` 的 `Utils`：
+
+```ts
+import { URI, Utils } from 'vscode-uri';
+
+function resolveUri(reference: string, baseUri: URI): URI {
+  const absolute = URI.parse(reference);
+  if (absolute.scheme !== '') return absolute; // 已带 scheme：原样使用
+  if (reference.startsWith('/')) {
+    return baseUri.with({ path: reference, query: '', fragment: '' }); // 工程根绝对路径
+  }
+  return Utils.joinPath(Utils.dirname(baseUri), reference); // 相对文档
+}
+```
+
+不要用 `Utils.resolvePath` 解析文档相对引用：它把基准路径当成目录，`resolvePath('/boards/panel.cnv', 'art/x.png')` 会得到 `/boards/panel.cnv/art/x.png`。`joinPath(dirname(base), ref)` 才等价于「相对文档」。
+
+`Utils.extname` 用于校验文档扩展名（`.cnv`、`.sch`），`Utils.basename` 用于诊断信息。相对引用的解析属于 URI 语义而非 scheme 策略：结果保留基准 URI 的 scheme 与 authority，所以「相对路径」的含义由宿主选择的寻址形态自然给出。基准 URI 有 authority 但没有路径时，相对引用会挂到 authority 之下，宿主应要求基准路径非空。
+
+`readResource` 对 `data:` 本地解码，其余交给 `fs.read`。
 
 所有接受 URI 的接口都使用 `vscode-uri` 的 `URI` 类型，调用方用 `URI.parse` 构造一次即可；接口内部不再接受字符串形式，也不重复解析。文档内的相对引用本身是字符串，由 `resolveUri` 接到基准 URI 上。
 
