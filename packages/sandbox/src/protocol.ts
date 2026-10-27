@@ -9,39 +9,6 @@ export interface SerializedError {
   code?: string;
 }
 
-/** Size of the drawing surface, in device pixels. */
-export interface SurfaceGeometry {
-  width: number;
-  height: number;
-  dpr: number;
-}
-
-export interface SandboxFeatures {
-  wasm: boolean;
-  offscreenCanvas: boolean;
-  webgl2: boolean;
-}
-
-/** What the guest reports back once `setup()` has finished. */
-export interface SandboxInfo {
-  name: string;
-  origin: string;
-  userAgent: string;
-  guestMethods: string[];
-  features: SandboxFeatures;
-}
-
-export type Envelope =
-  | { k: 'ready'; info: SandboxInfo }
-  | { k: 'boot-error'; error: SerializedError }
-  | { k: 'request'; id: number; method: string; args: unknown[] }
-  | { k: 'response'; id: number; ok: true; value: unknown }
-  | { k: 'response'; id: number; ok: false; error: SerializedError }
-  | { k: 'event'; type: string; payload: unknown }
-  | { k: 'notify'; method: string; args: unknown[] }
-  | { k: 'log'; level: SandboxLogLevel; parts: unknown[] }
-  | { k: 'guest-error'; error: SerializedError };
-
 /** Guest code after URL sources have been fetched by the host. */
 export interface GuestSourcePayload {
   type: 'module' | 'script';
@@ -55,7 +22,6 @@ export interface FrameBootMessage {
   name: string;
   runtime: string;
   source: GuestSourcePayload;
-  surface: SurfaceGeometry;
   captureConsole: boolean;
   port: MessagePort;
 }
@@ -73,9 +39,13 @@ export interface FrameErrorMessage {
   message: string;
 }
 
+export interface WorkerReadyMessage {
+  type: 'mica:worker-ready';
+}
+
 export type HostToFrameMessage = FrameBootMessage | FrameTerminateMessage;
 
-export type FrameToHostMessage = FrameReadyMessage | FrameErrorMessage;
+export type FrameToHostMessage = FrameReadyMessage | FrameErrorMessage | WorkerReadyMessage;
 
 export interface WorkerInitMessage {
   type: 'mica:init';
@@ -83,25 +53,7 @@ export interface WorkerInitMessage {
   name: string;
   port: MessagePort;
   source: GuestSourcePayload;
-  surface: SurfaceGeometry;
   captureConsole: boolean;
-}
-
-const ENVELOPE_KINDS = new Set([
-  'ready',
-  'boot-error',
-  'request',
-  'response',
-  'event',
-  'notify',
-  'log',
-  'guest-error',
-]);
-
-export function isEnvelope(value: unknown): value is Envelope {
-  if (typeof value !== 'object' || value === null) return false;
-  const kind = (value as { k?: unknown }).k;
-  return typeof kind === 'string' && ENVELOPE_KINDS.has(kind);
 }
 
 export function serializeError(error: unknown): SerializedError {

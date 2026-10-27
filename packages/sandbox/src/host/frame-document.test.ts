@@ -35,6 +35,7 @@ describe('frame document', () => {
     expect(html).toContain('<script nonce="nonce-1">');
     expect(html).toContain('mica:boot');
     expect(html).toContain('mica:frame-ready');
+    expect(html).toContain('mica:worker-ready');
   });
 
   it('escapes attribute values', () => {

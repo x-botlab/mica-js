@@ -1,14 +1,15 @@
+import { createRpc } from '@mica-js/core/rpc';
+import type { RpcEndpoint, RpcProxy } from '@mica-js/core/rpc';
 import { SandboxError } from '../errors';
-import { RpcPeer } from '../internal/rpc';
-import type { SandboxInfo, SandboxLogLevel, SurfaceGeometry, WorkerInitMessage } from '../protocol';
-import type {
-  GuestContext,
-  GuestHandler,
-  GuestMethods,
-  GuestSetupResult,
-  GuestSurface,
-  GuestSurfaceOptions,
-} from '../types';
+import { toCloneableParts } from '../protocol';
+import type { SandboxLogLevel, WorkerInitMessage } from '../protocol';
+import type { GuestContext, GuestHandler, GuestMethods, GuestSetupResult } from '../types';
+import {
+  guestControlService,
+  guestService,
+  hostCapabilitiesService,
+  hostControlService,
+} from '../internal/services';
 
 interface WorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
@@ -25,8 +26,6 @@ declare function importScripts(...urls: string[]): void;
 
 type GuestSetup = (ctx: GuestContext) => GuestSetupResult;
 
-const FRAME_EVENT = 'mica:frame';
-const SURFACE_EVENT = 'mica:surface';
 const TERMINATE_EVENT = 'mica:terminate';
 const CONSOLE_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 
@@ -38,12 +37,13 @@ const nativeConsole = {
 };
 
 const handlers = new Map<string, GuestHandler>();
+const guestImplementation: Record<string, (...args: unknown[]) => unknown> = {};
 const listeners = new Map<string, Set<(payload: unknown) => void>>();
-const surfaces = new Set<GuestSurfaceImpl>();
 const abortController = new AbortController();
 
-let peer: RpcPeer | undefined;
-let surfaceGeometry: SurfaceGeometry = { width: 300, height: 150, dpr: 1 };
+let rpc: RpcEndpoint | undefined;
+let hostCapabilities: RpcProxy<Record<string, (...args: unknown[]) => unknown>> | undefined;
+let hostControl: RpcProxy<Record<string, (...args: unknown[]) => unknown>> | undefined;
 let pendingDispose: (() => unknown) | undefined;
 let disposed = false;
 
@@ -54,64 +54,49 @@ scope.addEventListener('message', (event) => {
 });
 
 scope.addEventListener('error', (event) => {
-  peer?.postGuestError(event.error ?? new Error(event.message));
+  void hostControl?.guestError?.(event.error ?? new Error(event.message));
 });
 
 scope.addEventListener('unhandledrejection', (event) => {
-  peer?.postGuestError(event.reason);
+  void hostControl?.guestError?.(event.reason);
 });
 
 async function boot(init: WorkerInitMessage): Promise<void> {
-  surfaceGeometry = init.surface;
-
-  const activePeer = new RpcPeer(init.port, {
-    onRequest: (method, args) => dispatch(method, args),
-    onEvent: (type, payload) => handleHostEvent(type, payload),
-    onNotify: (method, args) => {
-      void dispatch(method, args).catch((error: unknown) => activePeer.postGuestError(error));
-    },
+  const activeRpc = createRpc(init.port, {
+    onError: (error) => nativeConsole.error('[@mica-js/sandbox] RPC error', error),
   });
-  peer = activePeer;
+  rpc = activeRpc;
+  hostCapabilities = activeRpc.getProxy(hostCapabilitiesService, {
+    timeoutMs: 0,
+    transfer: (_member, args) => (args.length > 2 ? (args[2] as readonly Transferable[]) : []),
+  });
+  hostControl = activeRpc.getProxy(hostControlService);
+  activeRpc.register(guestService, guestImplementation);
+  activeRpc.register(guestControlService, {
+    dispatchEvent: (type: string, payload: unknown) => handleHostEvent(type, payload),
+    terminate: () => shutdown(),
+  });
 
   if (init.captureConsole) {
-    forwardConsole(activePeer);
+    forwardConsole(activeRpc);
   }
-
   try {
     const entry = await loadEntry(init.source);
     const ctx = createContext(init);
     const result = await entry.setup(ctx);
     registerSetupResult(result);
     if (entry.dispose) pendingDispose = entry.dispose;
-    activePeer.postReady(buildInfo(init));
-    // Tells the frame that startup finished, so later uncaught errors are not reported twice.
+    // The host creates its RPC endpoint after guest services are registered.
     scope.postMessage({ type: 'mica:worker-ready' });
   } catch (error) {
-    activePeer.postBootError(error);
+    await hostControl?.bootError?.(error);
     nativeConsole.error('[@mica-js/sandbox] guest failed to start', error);
   }
-}
-
-async function dispatch(method: string, args: unknown[]): Promise<unknown> {
-  const handler = handlers.get(method);
-  if (!handler) {
-    throw new SandboxError('method-not-found', `Guest does not expose "${method}"`);
-  }
-  return (handler as unknown as (...callArgs: unknown[]) => unknown)(...args);
 }
 
 function handleHostEvent(type: string, payload: unknown): void {
   if (type === TERMINATE_EVENT) {
     void shutdown();
-    return;
-  }
-
-  if (type === SURFACE_EVENT) {
-    const next = payload as SurfaceGeometry | null;
-    if (next && typeof next.width === 'number' && typeof next.height === 'number') {
-      surfaceGeometry = next;
-      for (const surface of surfaces) surface.applyHostGeometry(next);
-    }
     return;
   }
 
@@ -121,7 +106,7 @@ function handleHostEvent(type: string, payload: unknown): void {
     try {
       listener(payload);
     } catch (error) {
-      peer?.postGuestError(error);
+      void hostControl?.guestError?.(error);
     }
   }
 }
@@ -130,8 +115,6 @@ async function shutdown(): Promise<void> {
   if (disposed) return;
   disposed = true;
   abortController.abort();
-  for (const surface of surfaces) surface.dispose();
-  surfaces.clear();
   try {
     await pendingDispose?.();
   } catch (error) {
@@ -152,12 +135,16 @@ function createContext(init: WorkerInitMessage): GuestContext {
         throw new SandboxError('invalid-options', `Handler for "${name}" must be a function`);
       }
       handlers.set(name, handler);
+      guestImplementation[name] = handler as (...args: unknown[]) => unknown;
     },
     invoke(name, ...args) {
-      return requirePeer().request(name, args);
+      return (requireHostCapabilities()[name] as (...callArgs: unknown[]) => Promise<unknown>)(
+        ...args,
+      );
     },
     invokeWith(name, args, options = {}) {
-      return requirePeer().request(name, args, options);
+      const proxy = createHostCapabilities(options.timeoutMs, options.transfer);
+      return (proxy[name] as (...callArgs: unknown[]) => Promise<unknown>)(...args);
     },
     on(type, listener) {
       let subscribers = listeners.get(type);
@@ -174,15 +161,12 @@ function createContext(init: WorkerInitMessage): GuestContext {
       listeners.get(type)?.delete(listener);
     },
     emit(type, payload, transfer) {
-      requirePeer().emit(type, payload, transfer);
+      void requireHostControl().event!(type, payload, transfer).catch((error: unknown) =>
+        hostControl?.guestError?.(error),
+      );
     },
     log(...parts) {
-      peer?.postLog('info', parts);
-    },
-    createSurface(options: GuestSurfaceOptions = {}) {
-      const surface = new GuestSurfaceImpl(options);
-      surfaces.add(surface);
-      return surface;
+      void hostControl?.log?.('info', toCloneableParts(parts));
     },
   };
 }
@@ -198,69 +182,8 @@ function registerSetupResult(result: GuestSetupResult | GuestMethods | undefined
   for (const [name, value] of Object.entries(result)) {
     if (typeof value === 'function') {
       handlers.set(name, value as GuestHandler);
+      guestImplementation[name] = value as (...args: unknown[]) => unknown;
     }
-  }
-}
-
-class GuestSurfaceImpl implements GuestSurface {
-  readonly canvas: OffscreenCanvas;
-  readonly #autoSize: boolean;
-  #dpr: number;
-  #disposed = false;
-
-  constructor(options: GuestSurfaceOptions) {
-    const width = options.width ?? surfaceGeometry.width;
-    const height = options.height ?? surfaceGeometry.height;
-    this.#dpr = options.dpr ?? surfaceGeometry.dpr;
-    this.#autoSize = options.width === undefined && options.height === undefined;
-    this.canvas = new OffscreenCanvas(
-      Math.max(1, Math.round(width)),
-      Math.max(1, Math.round(height)),
-    );
-  }
-
-  get width(): number {
-    return this.canvas.width;
-  }
-
-  get height(): number {
-    return this.canvas.height;
-  }
-
-  get dpr(): number {
-    return this.#dpr;
-  }
-
-  commit(): void {
-    const activePeer = peer;
-    if (this.#disposed || !activePeer) return;
-
-    const bitmap = this.canvas.transferToImageBitmap();
-    const geometry: SurfaceGeometry = {
-      width: this.canvas.width,
-      height: this.canvas.height,
-      dpr: this.#dpr,
-    };
-    try {
-      activePeer.emit(FRAME_EVENT, { bitmap, geometry }, [bitmap]);
-    } catch {
-      bitmap.close();
-    }
-  }
-
-  resize(width: number, height: number, dpr?: number): void {
-    this.canvas.width = Math.max(1, Math.round(width));
-    this.canvas.height = Math.max(1, Math.round(height));
-    if (dpr !== undefined) this.#dpr = dpr;
-  }
-
-  applyHostGeometry(next: SurfaceGeometry): void {
-    if (!this.#autoSize) return;
-    this.resize(next.width, next.height, next.dpr);
-  }
-
-  dispose(): void {
-    this.#disposed = true;
   }
 }
 
@@ -311,45 +234,35 @@ function importGuestModule(url: string): Promise<unknown> {
   return import(/* @vite-ignore */ url) as Promise<unknown>;
 }
 
-function forwardConsole(activePeer: RpcPeer): void {
+function forwardConsole(activeRpc: RpcEndpoint): void {
+  const proxy = activeRpc.getProxy(hostControlService);
   for (const level of CONSOLE_LEVELS) {
     const original = console[level].bind(console);
     console[level] = (...parts: unknown[]) => {
       original(...parts);
-      activePeer.postLog(level as SandboxLogLevel, parts);
+      void proxy.log!(level as SandboxLogLevel, toCloneableParts(parts));
     };
   }
 }
 
-function buildInfo(init: WorkerInitMessage): SandboxInfo {
-  return {
-    name: init.name,
-    origin: readOrigin(),
-    userAgent: typeof navigator === 'undefined' ? 'unknown' : navigator.userAgent,
-    guestMethods: [...handlers.keys()],
-    features: detectFeatures(),
-  };
+function requireHostCapabilities(): RpcProxy<Record<string, (...args: unknown[]) => unknown>> {
+  if (!hostCapabilities) throw new SandboxError('terminated', 'Sandbox runtime is not connected');
+  return hostCapabilities;
 }
 
-function readOrigin(): string {
-  const origin = scope['origin'];
-  return typeof origin === 'string' ? origin : 'null';
+function requireHostControl(): RpcProxy<Record<string, (...args: unknown[]) => unknown>> {
+  if (!hostControl) throw new SandboxError('terminated', 'Sandbox runtime is not connected');
+  return hostControl;
 }
 
-function detectFeatures(): SandboxInfo['features'] {
-  const offscreenCanvas = typeof OffscreenCanvas === 'function';
-  let webgl2 = false;
-  if (offscreenCanvas) {
-    try {
-      webgl2 = Boolean(new OffscreenCanvas(1, 1).getContext('webgl2'));
-    } catch {
-      webgl2 = false;
-    }
-  }
-  return { wasm: typeof WebAssembly === 'object', offscreenCanvas, webgl2 };
+function createHostCapabilities(timeoutMs = 0, transfer?: readonly Transferable[]) {
+  return requireHostCapabilitiesEndpoint().getProxy(hostCapabilitiesService, {
+    timeoutMs,
+    transfer: () => transfer ?? [],
+  });
 }
 
-function requirePeer(): RpcPeer {
-  if (!peer) throw new SandboxError('terminated', 'Sandbox runtime is not connected');
-  return peer;
+function requireHostCapabilitiesEndpoint(): RpcEndpoint {
+  if (!rpc) throw new SandboxError('terminated', 'Sandbox runtime is not connected');
+  return rpc;
 }

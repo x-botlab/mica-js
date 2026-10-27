@@ -26,7 +26,10 @@ const FRAME_BOOTSTRAP = `(function () {
         workerUrl = URL.createObjectURL(new Blob([data.runtime], { type: 'text/javascript' }));
         worker = new Worker(workerUrl);
         worker.onmessage = function (event) {
-          if (event.data && event.data.type === 'mica:worker-ready') workerReady = true;
+          if (event.data && event.data.type === 'mica:worker-ready') {
+            workerReady = true;
+            post({ type: 'mica:worker-ready' });
+          }
         };
         // Only startup failures are interesting here; guest errors travel over the port.
         worker.onerror = function (error) {
@@ -44,7 +47,6 @@ const FRAME_BOOTSTRAP = `(function () {
             name: data.name,
             port: data.port,
             source: data.source,
-            surface: data.surface,
             captureConsole: data.captureConsole
           },
           [data.port]

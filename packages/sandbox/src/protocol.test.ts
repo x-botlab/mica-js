@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SandboxError, deserializeError } from './errors';
-import { isEnvelope, serializeError, toCloneableParts } from './protocol';
+import { serializeError, toCloneableParts } from './protocol';
 
 describe('protocol: error serialization', () => {
   it('keeps name, message, stack and code', () => {
@@ -27,20 +27,6 @@ describe('protocol: error serialization', () => {
   it('handles non-error values', () => {
     expect(serializeError('plain string')).toEqual({ name: 'Error', message: 'plain string' });
     expect(serializeError({ a: 1 }).message).toBe('{"a":1}');
-  });
-});
-
-describe('protocol: envelopes', () => {
-  it('accepts known envelopes', () => {
-    expect(isEnvelope({ k: 'request', id: 1, method: 'x', args: [] })).toBe(true);
-    expect(isEnvelope({ k: 'ready', info: {} })).toBe(true);
-  });
-
-  it('rejects unknown or malformed messages', () => {
-    expect(isEnvelope(null)).toBe(false);
-    expect(isEnvelope('ready')).toBe(false);
-    expect(isEnvelope({ k: 'unknown' })).toBe(false);
-    expect(isEnvelope({})).toBe(false);
   });
 });
 

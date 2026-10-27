@@ -1,20 +1,18 @@
-import {
-  SandboxError,
-  createSandbox,
-  type SandboxContract,
-  type SandboxHandle,
-} from '@mica-js/sandbox';
+import { createRpc, defineRpcService } from '@mica-js/core/rpc';
+import { SandboxError, SandboxWorker } from '@mica-js/sandbox';
 import { useEffect, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 
-interface GuestApi extends SandboxContract {
+interface GuestApi {
   add(a: number, b: number): number;
   computePi(iterations: number): Promise<{ value: number; ms: number; origin: string }>;
   env(): Record<string, string>;
 }
+
+const guestService = defineRpcService<GuestApi>('guest');
 
 const GUEST_CODE = `export function setup(ctx) {
   return {
@@ -51,7 +49,7 @@ interface LogLine {
 }
 
 export function SandboxPage() {
-  const sandboxRef = useRef<SandboxHandle<GuestApi> | null>(null);
+  const sandboxRef = useRef<SandboxWorker | null>(null);
   const [code, setCode] = useState(GUEST_CODE);
   const [log, setLog] = useState<readonly LogLine[]>([]);
   const [status, setStatus] = useState('未启动');
@@ -83,23 +81,21 @@ export function SandboxPage() {
     setBusy(true);
     await stop('restart');
     try {
-      const sandbox = await createSandbox<GuestApi>({
-        source: { type: 'module', code },
-        callTimeoutMs: 2000,
-        onLog: (entry) => pushLog(entry.level, entry.parts.map((part) => String(part)).join(' ')),
-      });
+      const sandbox = new SandboxWorker(
+        { type: 'module', code },
+        { name: 'playground-sandbox', bootTimeoutMs: 10_000, captureConsole: false },
+      );
+      const rpc = createRpc(await sandbox.ready, { timeoutMs: 2000 });
       sandboxRef.current = sandbox;
       setStatus(`运行中 · ${sandbox.id}`);
-      pushLog(
-        'lifecycle',
-        `booted · origin=${sandbox.info.origin} · methods=${sandbox.info.guestMethods.join(', ')}`,
-      );
+      pushLog('lifecycle', `booted · ${sandbox.id}`);
 
-      const sum = await sandbox.call('add', 2, 3);
+      const guest = rpc.getProxy(guestService);
+      const sum = await guest.add(2, 3);
       pushLog('call', `add(2, 3) → ${sum}`);
-      const pi = await sandbox.call('computePi', 200000);
+      const pi = await guest.computePi(200000);
       pushLog('call', `computePi(200000) → ${pi.value.toFixed(6)} in ${pi.ms}ms`);
-      const env = await sandbox.call('env');
+      const env = await guest.env();
       pushLog('call', `env() → ${JSON.stringify(env)}`);
     } catch (error) {
       const message =

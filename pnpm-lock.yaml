@@ -294,19 +294,6 @@ importers:
         specifier: 'catalog:'
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
 
-  apps/sandbox-playground:
-    dependencies:
-      '@mica-js/sandbox':
-        specifier: workspace:*
-        version: link:../../packages/sandbox
-    devDependencies:
-      typescript:
-        specifier: 'catalog:'
-        version: 6.0.3
-      vite:
-        specifier: 'catalog:'
-        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
-
   packages/canvas-editor:
     dependencies:
       '@mica-js/core':
@@ -389,6 +376,10 @@ importers:
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
 
   packages/sandbox:
+    dependencies:
+      '@mica-js/core':
+        specifier: workspace:*
+        version: link:../core
     devDependencies:
       rolldown:
         specifier: 'catalog:'

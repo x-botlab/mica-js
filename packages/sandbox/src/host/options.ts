@@ -1,35 +1,20 @@
 import { SandboxError } from '../errors';
-import type {
-  SandboxCapabilities,
-  SandboxHostOptions,
-  SandboxSource,
-  TrustedHtmlPolicy,
-} from '../types';
+import type { SandboxSource, SandboxWorkerOptions, TrustedHtmlPolicy } from '../types';
 
 export interface NormalizedOptions {
   source: SandboxSource;
-  capabilities: SandboxCapabilities;
   name: string;
   container: HTMLElement | undefined;
-  hidden: boolean;
   bootTimeoutMs: number;
-  callTimeoutMs: number;
-  onCallTimeout: 'reject' | 'terminate';
   frameUrl: string | undefined;
   nonce: string | undefined;
   trustedTypesPolicy: TrustedHtmlPolicy | undefined;
-  csp: SandboxHostOptions['csp'];
-  canvas: HTMLCanvasElement | undefined;
-  onFrame: SandboxHostOptions['onFrame'];
-  maxFps: number;
+  csp: SandboxWorkerOptions['csp'];
   runtime: string | undefined;
   captureConsole: boolean;
-  onLog: SandboxHostOptions['onLog'];
 }
 
 const DEFAULT_BOOT_TIMEOUT_MS = 10_000;
-const DEFAULT_MAX_FPS = 60;
-
 export function assertBrowserEnvironment(): void {
   if (typeof document === 'undefined' || typeof window === 'undefined') {
     throw new SandboxError(
@@ -39,12 +24,13 @@ export function assertBrowserEnvironment(): void {
   }
 }
 
-export function normalizeOptions(options: SandboxHostOptions): NormalizedOptions {
+export function normalizeOptions(
+  source: SandboxSource,
+  options: SandboxWorkerOptions = {},
+): NormalizedOptions {
   if (typeof options !== 'object' || options === null) {
-    throw new SandboxError('invalid-options', 'createSandbox() requires an options object');
+    throw new SandboxError('invalid-options', 'SandboxWorker options must be an object');
   }
-
-  const source = options.source;
   if (typeof source !== 'object' || source === null) {
     throw new SandboxError('invalid-options', '`source` is required');
   }
@@ -59,39 +45,21 @@ export function normalizeOptions(options: SandboxHostOptions): NormalizedOptions
     throw new SandboxError('invalid-options', '`source.url` must be a non-empty string');
   }
 
-  if (options.canvas !== undefined && options.onFrame !== undefined) {
-    throw new SandboxError(
-      'invalid-options',
-      'Pass either `canvas` (composited for you) or `onFrame` (composite yourself), not both',
-    );
-  }
-
   if (options.frameUrl !== undefined && options.frameUrl.trim() === '') {
     throw new SandboxError('invalid-options', '`frameUrl` must be a non-empty string');
   }
 
-  const capabilities = options.capabilities ?? {};
-  assertCapabilities(capabilities);
-
   return {
     source,
-    capabilities,
     name: options.name ?? `sandbox-${nextSandboxId()}`,
     container: options.container,
-    hidden: options.hidden ?? true,
     bootTimeoutMs: duration(options.bootTimeoutMs, DEFAULT_BOOT_TIMEOUT_MS, 'bootTimeoutMs'),
-    callTimeoutMs: duration(options.callTimeoutMs, 0, 'callTimeoutMs'),
-    onCallTimeout: options.onCallTimeout ?? 'reject',
     frameUrl: options.frameUrl,
     nonce: options.nonce,
     trustedTypesPolicy: options.trustedTypesPolicy,
     csp: options.csp,
-    canvas: options.canvas,
-    onFrame: options.onFrame,
-    maxFps: duration(options.maxFps, DEFAULT_MAX_FPS, 'maxFps'),
     runtime: options.runtime,
     captureConsole: options.captureConsole ?? true,
-    onLog: options.onLog,
   };
 }
 
@@ -139,15 +107,4 @@ function duration(value: number | undefined, fallback: number, field: string): n
     throw new SandboxError('invalid-options', `\`${field}\` must be a non-negative finite number`);
   }
   return value;
-}
-
-function assertCapabilities(capabilities: SandboxCapabilities): void {
-  if (typeof capabilities !== 'object' || capabilities === null) {
-    throw new SandboxError('invalid-options', '`capabilities` must be an object');
-  }
-  for (const [name, capability] of Object.entries(capabilities)) {
-    if (typeof capability !== 'function') {
-      throw new SandboxError('invalid-options', `Capability "${name}" must be a function`);
-    }
-  }
 }
