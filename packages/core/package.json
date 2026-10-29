@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Mica circuit simulator core: virtual time and deterministic event scheduling",
   "license": "MIT",
   "repository": {
