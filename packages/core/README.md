@@ -4,11 +4,66 @@ Mica 仿真内核：整数皮秒虚拟时间与确定性事件调度，并在其
 
 ## 入口
 
-| 入口                      | 内容                                                 |
-| ------------------------- | ---------------------------------------------------- |
-| `@mica-js/core`           | 仿真内核：时间、调度、电气求值、连接拓扑、电源域     |
-| `@mica-js/core/schematic` | `.sch`：解析、序列化、拓扑推导、编辑命令、器件注册表 |
-| `@mica-js/core/canvas`    | `.cnv`：widget 实例、属性覆盖、端口绑定与绑定校验    |
+| 入口                      | 内容                                                          |
+| ------------------------- | ------------------------------------------------------------- |
+| `@mica-js/core`           | 仿真内核：时间、调度、电气求值、连接拓扑、电源域              |
+| `@mica-js/core/schematic` | `.sch`：解析、序列化、拓扑推导、编辑命令、器件注册表          |
+| `@mica-js/core/canvas`    | `.cnv`：widget 实例、属性覆盖、端口绑定与绑定校验             |
+| `@mica-js/core/rpc`       | MessagePort 上的双向 RPC：动态代理、事件订阅与 transfer       |
+| `@mica-js/core/logging`   | `LogRecord` / `LoggerService` 与 `loggerService` RPC 服务标识 |
+| `@mica-js/core/lifecycle` | `Disposable`、`DisposableStore`、`Event<T>` 与 `Emitter`      |
+
+## RPC 与资源管理
+
+`@mica-js/core/rpc` 提供基于 MessagePort 的 `createRpc`，支持动态代理、双向调用和按 `onDidXxx` 命名的事件订阅，无需维护方法描述表。服务端在运行时检查方法并保留实现对象的 `this`；访问器及 `Object.prototype` 成员不会被暴露。
+
+代理普通方法统一返回 Promise，即使实现方法同步返回。事件同步返回取消订阅函数；非方法属性和普通方法的回调参数不能作为远程接口使用。参数与结果须支持结构化克隆，URI 使用字符串。业务操作的串行调度由服务负责，RPC 保留端口消息顺序，支持双向重入调用。
+
+`@mica-js/core/lifecycle` 提供 `IDisposable`（及其别名 `Disposable`）、`DisposableStore`、`toDisposable`，以及 VS Code 同款 `Event<T>` 与它的实现 `Emitter<T>`；各包的 `onDidXxx` 成员一律用它实现。`clear()` 释放当前资源后仍可复用；`dispose()` 永久关闭，之后添加的资源立即释放。清理失败会在其余资源释放后通过 `AggregateError` 汇总。
+
+`@mica-js/core/logging` 定义可结构化克隆的 `LogRecord` 与 `LoggerService`，并把共享的服务标识 `loggerService` 绑定到 `'logger'`。sandbox 两侧各自 `register` / `getProxy` 同一个标识即可转出日志，宿主侧只负责把记录落到自己的输出。
+
+```ts
+import { createRpc, defineRpcService } from '@mica-js/core/rpc';
+import { DisposableStore, toDisposable } from '@mica-js/core/lifecycle';
+
+const store = new DisposableStore();
+const rpc = store.add(createRpc(port));
+const deviceHost = defineRpcService<DeviceSimulationHost>('deviceHost');
+const service = rpc.getProxy(deviceHost);
+store.add(toDisposable(service.onDidPublishTopic(handleTopic)));
+await service.tick(dt);
+store.dispose();
+```
+
+`register()` 返回 `IDisposable`，注销时释放该服务的远端订阅并通过 `ServiceUnregistered` 通知订阅方；已经开始的方法执行照常完成。事件注册失败、事件发送失败及协议异常通过 `onDidError` 或创建时的 `onError` 回调报告。`RpcEndpoint.onDidError` / `onDidClose` 本身也是 `@mica-js/core/lifecycle` 的 `Event<T>`，订阅返回 `Disposable`；代理上的 `onDidXxx` 事件同步返回取消订阅函数。取消订阅幂等，即使远端尚未确认注册也能取消；监听者异常不会打断其余事件和响应。
+
+调用与订阅确认支持 `createRpc(port, { timeoutMs })` 默认超时，也可通过 `getProxy(name, { timeoutMs })` 覆盖。默认值 `0` 表示关闭超时，取值范围为 `0..2147483647` 整数毫秒。超时以 `RpcTimeoutError` 拒绝等待，远端执行继续；迟到响应被忽略。超时的订阅会发送取消消息。请求取消暂未提供。
+
+### 显式 Transfer
+
+默认使用结构化克隆。调用参数的转移列表在代理选项中指定，返回值和事件参数的转移列表在服务注册选项中指定：
+
+```ts
+const buffers = defineRpcService<BufferService>('buffers');
+const remote = rpc.getProxy(buffers, {
+  transfer: (member, args) => (member === 'write' ? [args[0] as ArrayBuffer] : []),
+});
+
+store.add(
+  rpc.register(buffers, implementation, {
+    transfer: (member, value) => {
+      if (member === 'read') return [value as ArrayBuffer];
+      if (member === 'onDidFrame') return [(value as [ImageBitmap])[0]];
+      return [];
+    },
+  }),
+);
+```
+
+事件的 `value` 是完整参数数组，普通方法的 `value` 是返回值。转移对象必须也出现在消息数据中；转移成功后发送方失去所有权。多订阅者需要独立的可转移对象，服务实现负责逐订阅者生成或克隆，RPC 不自动复制资源。Node MessagePort 的转移类型从端口推导，核心实现无需依赖 Node。
+
+端口由调用方管理；释放 RPC 会通知对端、拒绝未完成调用、清理请求计时器与双向订阅，并触发 `onDidClose`，但不关闭传入的端口。异常消息报告 `RpcProtocolError` 后被忽略。浏览器端口没有可靠的对端终止通知，sandbox 终止流程必须主动调用 `rpc.dispose()`；超时只能限制等待时间，不能替代生命周期清理。
 
 ## 架构
 
@@ -221,6 +276,22 @@ canvas 是独立画布：`widgets` 是 widget 实例数组，数组顺序即绘�
 编辑命令（#96）：`add-instance` / `remove-instance`、`set-placement` / `set-z`、`set-property` / `unset-property`、`set-binding`（`target: null` 解绑）、`set-schematic`（`null` 清除）。命令是纯函数，失败抛 `SchematicError` 并一次带回全部诊断；本层只做结构校验，端点存在性、方向与载荷类型由绑定装载负责。
 
 绑定校验（#99）：`validateCanvasBindings(document, { catalog })` 收集诊断、从不抛错；`assertCanvasBindings` 在有 error 时抛 `SchematicError` 并带回全部诊断。`CanvasBindingCatalog` 由宿主注入（widget 定义、已加载的 `.sch`、符号与器件端口），未提供 `catalog` 时跳过引用校验以保持向后兼容；`skipWidgets` 只校验器件侧，文档缺少 `schematic` 时只校验 widget 侧。方向必须互补（widget `input` 接器件 `output`，widget `output` 接器件 `input`），载荷类型必须相同，否则报 `topic/type-mismatch`。诊断码还包括 `canvas/unknown-schematic`、`canvas/unknown-widget`、`canvas/unknown-property`、`canvas/unknown-port`、`canvas/unknown-symbol` 与 `canvas/unknown-target-port`；原理图未加载时只报一次 `canvas/unknown-schematic`，不再级联符号错误。
+
+## 话题投递（RFC 0017）
+
+端口描述可以声明可选的 `delivery`：`level` 表示载荷是「当前值」，一步内只保留最后一条；`message` 表示载荷是「一条消息」，按发布顺序全部送达。省略时按载荷类型取默认值——`boolean` / `number` / `vec2d` / `vec3d` 为 `level`，`string`、`bytes`、`bytes<rgb565>`、`bytes<segments>` 为 `message`。`delivery` 与 `type` 正交，任意组合都成立。
+
+```ts
+import { TopicInbox, resolveDelivery } from '@mica-js/core';
+
+const delivery = resolveDelivery(descriptor.delivery, descriptor.type); // 声明的值优先
+const inbox = new TopicInbox({ delivery, capacity: 16, port: 'rx', onDiagnostic });
+inbox.post({ payload, simTime }); // message 端口满时返回 false 并上报 topic/backpressure
+inbox.takeInputs(); // 或 takeInput()；同一端口混用会上报 topic/mixed-read
+inbox.endStep(); // 步结束时清空本步记录，level 的生效值仍可由 inbox.current 读到
+```
+
+`./canvas` 入口同时导出 `parseDeliveryKind` / `defaultDelivery`，以及带 `delivery` 字段的 `CanvasPortDescriptor`，供 widget 与器件描述的装载期校验使用。
 
 ## 电气模块
 

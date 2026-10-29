@@ -1,16 +1,16 @@
 /**
- * Bootstrap that runs inside the sandbox frame: it creates the classic worker from the inlined
- * runtime and hands the worker the messaging port. The frame itself never talks to the guest.
+ * Bootstrap that runs inside the sandbox frame. It owns nothing but the worker lifecycle: the
+ * caller's bundler output *is* the worker script, and ordinary host messages are forwarded to the
+ * native Worker without a guest-side startup envelope.
  */
 const FRAME_BOOTSTRAP = `(function () {
   'use strict';
   var worker = null;
   var workerUrl = null;
-  var workerReady = false;
 
-  function post(message) {
+  function post(message, transfer) {
     try {
-      parent.postMessage(message, '*');
+      parent.postMessage(message, '*', transfer || []);
     } catch (error) {
       /* the host page is gone */
     }
@@ -19,45 +19,39 @@ const FRAME_BOOTSTRAP = `(function () {
   window.addEventListener('message', function (event) {
     if (event.source !== parent) return;
     var data = event.data;
-    if (!data || typeof data !== 'object') return;
 
-    if (data.type === 'mica:boot') {
+    if (!worker && data && typeof data === 'object' && data.type === 'mica:boot') {
       try {
-        workerUrl = URL.createObjectURL(new Blob([data.runtime], { type: 'text/javascript' }));
+        workerUrl = URL.createObjectURL(new Blob([data.code], { type: 'text/javascript' }));
         worker = new Worker(workerUrl);
-        worker.onmessage = function (event) {
-          if (event.data && event.data.type === 'mica:worker-ready') {
-            workerReady = true;
-            post({ type: 'mica:worker-ready' });
-          }
+        worker.onmessage = function (message) {
+          post({ type: 'mica:worker-message', data: message.data }, message.ports);
         };
-        // Only startup failures are interesting here; guest errors travel over the port.
+        worker.onmessageerror = function (message) {
+          post({ type: 'mica:worker-messageerror', data: message && message.data }, message && message.ports);
+        };
         worker.onerror = function (error) {
-          if (workerReady) return;
-          post({ type: 'mica:frame-error', message: String((error && error.message) || 'worker failed to start') });
+          post({
+            type: 'mica:worker-error',
+            message: String((error && error.message) || 'worker failed'),
+            filename: (error && error.filename) || '',
+            lineno: (error && error.lineno) || 0,
+            colno: (error && error.colno) || 0
+          });
         };
-        worker.onmessageerror = function () {
-          if (workerReady) return;
-          post({ type: 'mica:frame-error', message: 'worker message could not be deserialized' });
-        };
-        worker.postMessage(
-          {
-            type: 'mica:init',
-            id: data.id,
-            name: data.name,
-            port: data.port,
-            source: data.source,
-            captureConsole: data.captureConsole
-          },
-          [data.port]
-        );
+        post({ type: 'mica:worker-started' });
       } catch (error) {
         post({ type: 'mica:frame-error', message: String((error && error.message) || error) });
       }
       return;
     }
 
-    if (data.type === 'mica:terminate') {
+    if (
+      data &&
+      typeof data === 'object' &&
+      data.type === 'mica:terminate' &&
+      data.control === true
+    ) {
       if (worker) {
         worker.terminate();
         worker = null;
@@ -65,6 +59,15 @@ const FRAME_BOOTSTRAP = `(function () {
       if (workerUrl) {
         URL.revokeObjectURL(workerUrl);
         workerUrl = null;
+      }
+      return;
+    }
+
+    if (worker) {
+      try {
+        worker.postMessage(data, event.ports);
+      } catch (error) {
+        post({ type: 'mica:frame-error', message: String((error && error.message) || error) });
       }
     }
   });

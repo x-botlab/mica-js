@@ -9,9 +9,13 @@ import {
   wireWaypoints,
   type SnapContext,
 } from './snapping';
-import { SchematicEditorController } from '../controller/controller';
-import { createDeviceRegistry, parseSchematic } from '@mica-js/core/schematic';
-import { DEFAULT_DISPLAY_OPTIONS } from '../controller/types';
+import {
+  createDeviceRegistry,
+  hitTestSchematic,
+  parseSchematic,
+  type SchematicDocument,
+} from '@mica-js/core/schematic';
+import { DEFAULT_DISPLAY_OPTIONS, type DisplayOptions } from '../types';
 
 const devices = createDeviceRegistry([
   {
@@ -34,30 +38,39 @@ const devices = createDeviceRegistry([
   },
 ]);
 
-function contextAt(rotation: number, wires: readonly unknown[] = []): SnapContext {
+function contextOf(
+  document: SchematicDocument,
+  display: DisplayOptions = DEFAULT_DISPLAY_OPTIONS,
+): SnapContext {
   return {
-    controller: new SchematicEditorController({
-      document: parseSchematic({
-        version: 1,
-        sheet: {
-          symbols: [
-            {
-              id: '00000001-a735-469a-8b9b-a233ec702fe3',
-              device: 'pkg:ne555',
-              x: 100,
-              y: 100,
-              rotation,
-            },
-          ],
-          wires,
-          junctions: [],
-        },
-      }),
-      devices,
-    }),
+    document,
+    display,
     devices,
     tolerance: 4,
+    hitTest: (point, options) =>
+      hitTestSchematic(document, point, { devices, tolerance: 4, ...options }),
   };
+}
+
+function contextAt(rotation: number, wires: readonly unknown[] = []): SnapContext {
+  return contextOf(
+    parseSchematic({
+      version: 1,
+      sheet: {
+        symbols: [
+          {
+            id: '00000001-a735-469a-8b9b-a233ec702fe3',
+            device: 'pkg:ne555',
+            x: 100,
+            y: 100,
+            rotation,
+          },
+        ],
+        wires,
+        junctions: [],
+      },
+    }),
+  );
 }
 
 describe('labelStubAt', () => {
@@ -156,18 +169,17 @@ describe('snapDragOffset', () => {
   });
 });
 
-function wireContext(wires: readonly unknown[]): SnapContext {
-  return {
-    controller: new SchematicEditorController({
-      document: parseSchematic({
-        version: 1,
-        sheet: { symbols: [], wires, junctions: [] },
-      }),
-      devices,
+function wireContext(
+  wires: readonly unknown[],
+  display: DisplayOptions = DEFAULT_DISPLAY_OPTIONS,
+): SnapContext {
+  return contextOf(
+    parseSchematic({
+      version: 1,
+      sheet: { symbols: [], wires, junctions: [] },
     }),
-    devices,
-    tolerance: 4,
-  };
+    display,
+  );
 }
 
 describe('snapForWire', () => {
@@ -206,8 +218,7 @@ describe('snapForWire', () => {
   });
 
   it('leaves the projection unrounded when snapping is off', () => {
-    const context = wireContext([wire]);
-    context.controller.setDisplayOptions({ snap: false });
+    const context = wireContext([wire], { ...DEFAULT_DISPLAY_OPTIONS, snap: false });
     expect(snapForWire(context, { x: 47, y: 3 })).toEqual({ x: 47, y: 0 });
   });
 });

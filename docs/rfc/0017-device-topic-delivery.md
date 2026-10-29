@@ -27,7 +27,7 @@
 
 ### 步长
 
-一次 `DeviceSimHost.tick(dt)` 推进一个步，步长由该次调用的 `dt` 给定，为整数皮秒，口径见[虚拟时间](./0001-virtual-time.md)。相邻两次调用的 `dt` 可以不同。
+一次 `DeviceSimulationHost.tick(dt)` 推进一个步，步长由该次调用的 `dt` 给定，为整数皮秒，口径见[虚拟时间](./0001-virtual-time.md)。相邻两次调用的 `dt` 可以不同。
 
 术语按层划分：
 
@@ -44,10 +44,10 @@
 
 器件工厂返回的对象可以包含两个运行期钩子：
 
-| 钩子               | 时机         | 权限                                  |
-| ------------------ | ------------ | ------------------------------------- |
-| `applyInputs(io)`  | 步首，求值前 | 读取本步投递的输入；写入 IR 内存      |
-| `flushOutputs(io)` | 步末，求值后 | 读取 IR 内存；向 `DeviceSimHost` 发布 |
+| 钩子               | 时机         | 权限                                         |
+| ------------------ | ------------ | -------------------------------------------- |
+| `applyInputs(io)`  | 步首，求值前 | 读取本步投递的输入；写入 IR 内存             |
+| `flushOutputs(io)` | 步末，求值后 | 读取 IR 内存；向 `DeviceSimulationHost` 发布 |
 
 两个钩子均为可选，按方向实现：只需接收的器件实现 `applyInputs`，只需发送的实现 `flushOutputs`，完全自洽的器件两个都可以省略。钩子在器件实例的作用域内运行。
 
@@ -91,17 +91,17 @@ api.ir.fifo(name, { maxRecord, length });
 
 ### 步内顺序
 
-一步由 `WidgetHost` 驱动：它调用 `DeviceSimHost.tick(dt)` 完成器件侧，返回后在同一个步里执行 widget 的 `tick`。两者都结束才进入下一步，这就是步进屏障。
+一步由 `WidgetHost` 驱动：它调用 `DeviceSimulationHost.tick(dt)` 完成器件侧，返回后在同一个步里执行 widget 的 `tick`。两者都结束才进入下一步，这就是步进屏障。
 
 1. `WidgetHost` 在步首把上一步收集到的器件发布与外部输入交给 widget 实例；
-2. `DeviceSimHost.tick(dt)` 冻结本步待投递集合：上一步的 widget 发布进入对应器件的收件箱；
+2. `DeviceSimulationHost.tick(dt)` 冻结本步待投递集合：上一步的 widget 发布进入对应器件的收件箱；
 3. 各器件执行 `applyInputs(io)`，其写入对该步后续求值轮次立即可见；
 4. 执行本步的全部求值轮次，各轮次内器件的调度由实现安排；
 5. 各器件执行 `flushOutputs(io)`，发布经 `onDidPublish` 交给 `WidgetHost`，进入下一步的投递集合；
-6. `DeviceSimHost.tick(dt)` 返回后，`WidgetHost` 执行 widget 的 `tick(dt)`；widget 的发布经 `WidgetHost.deliver` 交给 `DeviceSimHost`，进入下一步的投递集合；
+6. `DeviceSimulationHost.tick(dt)` 返回后，`WidgetHost` 执行 widget 的 `tick(dt)`；widget 的发布经 `WidgetHost.deliver` 交给 `DeviceSimulationHost`，进入下一步的投递集合；
 7. 两侧都完成，屏障放行。
 
-第 2–5 步在 `DeviceSimHost.tick(dt)` 内完成，第 1、6 步由 `WidgetHost` 完成。本步产生的发布都要等屏障放行才被对方看到，因此收发时机与谁先跑完无关。
+第 2–5 步在 `DeviceSimulationHost.tick(dt)` 内完成，第 1、6 步由 `WidgetHost` 完成。本步产生的发布都要等屏障放行才被对方看到，因此收发时机与谁先跑完无关。
 
 完整时序见[画布运行时](./0018-canvas-runtime.md)。
 
@@ -125,11 +125,11 @@ api.ir.fifo(name, { maxRecord, length });
 - 全部投递按发布顺序逐条交付，一条记录对应一次投递；调用 `takeInputs` 返回全部记录。
 - 队列深度受容量约束：队列达到容量上限时拒绝本次接纳并上报背压，已接纳的记录保持原样。
 
-出向 `level` 端口由器件在 `flushOutputs` 内自行判断何时发布；`DeviceSimHost` 把每次 `publish` 都当作新值转发。
+出向 `level` 端口由器件在 `flushOutputs` 内自行判断何时发布；`DeviceSimulationHost` 把每次 `publish` 都当作新值转发。
 
 ### 时间
 
-投递信封中的 `simTime` 由 `DeviceSimHost` 填充：
+投递信封中的 `simTime` 由 `DeviceSimulationHost` 填充：
 
 - `flushOutputs` 的发布使用该步结束时的仿真时间；
 - `applyInputs` 收到的信封保留其发布时刻。
@@ -137,10 +137,10 @@ api.ir.fifo(name, { maxRecord, length });
 ### 钩子的执行条件
 
 - 钩子运行在器件实例的作用域内，操作对象是本器件声明的内存与本步投递；
-- 仿真时间由 `DeviceSimHost` 在步边界推进，钩子内的时间读取是只读快照；
-- 钩子抛出的异常由 `DeviceSimHost` 隔离并以诊断上报，该步继续执行。
+- 仿真时间由 `DeviceSimulationHost` 在步边界推进，钩子内的时间读取是只读快照；
+- 钩子抛出的异常由 `DeviceSimulationHost` 隔离并以诊断上报，该步继续执行。
 
-IR 与 `DeviceSimHost` 之间的接触面就是上述两个钩子：执行求值轮次期间，运行时做的是驱动、解网与负载读取。
+IR 与 `DeviceSimulationHost` 之间的接触面就是上述两个钩子：执行求值轮次期间，运行时做的是驱动、解网与负载读取。
 
 ## 校验
 

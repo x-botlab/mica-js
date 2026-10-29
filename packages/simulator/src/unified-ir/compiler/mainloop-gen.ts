@@ -32,13 +32,13 @@ export interface MainLoopOutput {
  *
  * ```text
  * unified_initialize:                // once, before the first tick
- *   mcu1_initialize()
- *   led1_initialize()                // if the device has one
+ *   drive1_initialize()
+ *   sink1_initialize()               // if the device has one
  *
  * unified_tick:                      // one simulation step
- *   mcu1_tick()                      // drivers publish their outputs
+ *   drive1_tick()                    // drivers publish their outputs
  *   solve_net_0()                    // the electrical network resolves
- *   led1_update()                    // loads observe the solved inputs
+ *   sink1_update()                   // loads observe the solved inputs
  *
  * unified_tick_batch(count):         // the same step, looped inside the IR
  *   for i in 0 .. count { <step> }

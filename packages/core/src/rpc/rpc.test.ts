@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { MessageChannel } from 'node:worker_threads';
 import { test } from 'vitest';
 import { createRpc } from './rpc';
-import { defineRpcService } from './types';
+import { sharedService } from './test-helpers';
 
-const deviceService = defineRpcService<Record<string, (...args: never[]) => unknown>>('device');
-const callbackService = defineRpcService<Record<string, (...args: never[]) => unknown>>('callback');
-const serviceService = defineRpcService<Record<string, (...args: never[]) => unknown>>('service');
-const blockedService = defineRpcService<Record<string, (...args: never[]) => unknown>>('blocked');
+const deviceService = sharedService('device');
+const callbackService = sharedService('callback');
+const serviceService = sharedService('service');
+const blockedService = sharedService('blocked');
 
 type Publication = { simTime: number; payload: Uint8Array };
 interface DeviceHost {
@@ -89,9 +89,7 @@ test('missing methods, services and prototype/accessor members reject', async ()
       await assert.rejects(proxy[name]!(), { name: 'MethodNotFound' });
     }
     assert.equal(getterCalls, 0);
-    const missing = rpc.client.getProxy<{ run(): Promise<void> }>(
-      defineRpcService<Record<string, (...args: never[]) => unknown>>('missing'),
-    );
+    const missing = rpc.client.getProxy<{ run(): Promise<void> }>(sharedService('missing'));
     await assert.rejects(missing.run(), { name: 'ServiceNotFound' });
   } finally {
     rpc.close();

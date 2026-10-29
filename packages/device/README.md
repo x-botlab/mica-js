@@ -117,18 +117,19 @@ const description = parseDeviceDescription(
 );
 ```
 
-| 字段               | 规则                                                                                     |
-| ------------------ | ---------------------------------------------------------------------------------------- |
-| `metadata.name`    | 必填；`displayName` 缺省回退 `name`；`description` 可选                                  |
-| `properties`       | 复用 `@mica-js/core/schematic` 的属性实现；不可用的描述被忽略，不猜测类型                |
-| `ports`            | `direction` 为 `input` / `output`，`type` 取自 `@mica-js/core/canvas` 的 `PAYLOAD_TYPES` |
-| `pins`             | `kind` 为 `power` / `gnd` / `signal`，`side` 缺省 `left`                                 |
-| `pinGroups`        | 成员非空、唯一且引用已声明引脚；只保存固定顺序，不做电气推断                             |
-| `connections`      | 每项只含 `pins` / `initial`；`pins` 是两个互异且已声明的引脚 ID                          |
-| `designatorPrefix` | 去除首尾空白；空字符串视为未声明                                                         |
+| 字段               | 规则                                                                                                                                         |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `metadata.name`    | 必填；`displayName` 缺省回退 `name`；`description` 可选                                                                                      |
+| `properties`       | 复用 `@mica-js/core/schematic` 的属性实现；不可用的描述被忽略，不猜测类型                                                                    |
+| `ports`            | `direction` 为 `input` / `output`，`type` 取自 `@mica-js/core/canvas` 的 `PAYLOAD_TYPES`；可选 `delivery` 为 `level` / `message`（RFC 0017） |
+| `pins`             | `kind` 为 `power` / `gnd` / `signal`，`side` 缺省 `left`                                                                                     |
+| `pinGroups`        | 成员非空、唯一且引用已声明引脚；只保存固定顺序，不做电气推断                                                                                 |
+| `connections`      | 每项只含 `pins` / `initial`；`pins` 是两个互异且已声明的引脚 ID                                                                              |
+| `designatorPrefix` | 去除首尾空白；空字符串视为未声明                                                                                                             |
 
 - `powerDomain` 只允许出现在 `signal` 引脚，`levels` 必须与它同时出现且 `0 <= low < high <= 1`。
 - 引脚键与成员名大小写精确、不得为空；`initial` 取 `open` / `closed`，省略时 `open`。
+- `ports[*].delivery` 与 `type` 正交，任意组合都成立；其他取值报 `schema/invalid-value`。省略时不写入结果，由宿主按载荷类型取默认值（标量为 `level`，文本与字节为 `message`）。
 - 顶层未知字段被忽略；定义、`properties`、`ports`、引脚与连接都必须是纯对象（`Map`、`Set`、`Date`、class 实例不会被当作空记录）。
 
 ## 属性快照
@@ -273,6 +274,55 @@ sequenceDiagram
 
 工厂 / initialize 完成前调用 `post` / `postBytes` / `publish` / `updateBytes` 报 `device/not-active`；故障或销毁中报 `device/instance-busy`；销毁后报 `device/instance-destroyed`。
 
+## 步钩子与 io（RFC 0017）
+
+工厂可以额外返回两个可选钩子。宿主在步首调用 `instance.applyInputs()`、步末调用 `instance.flushOutputs()`；没有声明钩子时两者都是空操作。
+
+```ts
+export default function createDevice(api) {
+  api.ir.state('count', 'u32', 0);
+  api.ir.bytes('frame', 8); // 按长度声明，零填充、可写
+  api.ir.fifo('rx', { maxRecord: 4, length: 16 }); // 变长记录队列
+
+  return {
+    applyInputs(io) {
+      const level = io.takeInput('levelIn'); // 本步最后一条，静默的步为 undefined
+      const records = io.takeInputs('msgIn'); // 本步全部记录，按发布顺序
+      io.writeState('count', records.length);
+      for (const record of records) io.writeFifo('rx', encode(record));
+    },
+    flushOutputs(io) {
+      io.publish('levelOut', io.readState('count'));
+      io.publishBytes('bytesOut', io.readBytes('frame'));
+      io.readFifo('rx'); // 取走全部已提交记录
+    },
+  };
+}
+```
+
+| `applyInputs` 的 `io`     | 语义                                                            |
+| ------------------------- | --------------------------------------------------------------- |
+| `takeInput(port)`         | 本步该端口投递的最后一条；静默的步返回 `undefined`              |
+| `takeInputs(port)`        | 本步该端口投递的全部记录，按发布顺序                            |
+| `writeState(name, value)` | 写入已声明标量状态；`f32` / `f64` 直接给 JS 数值                |
+| `writeFifo(name, bytes)`  | 追加一条记录；达到记录条数容量或超过 `maxRecord` 时返回 `false` |
+| `report(code, detail?)`   | 上报业务诊断，仿真状态保持原样                                  |
+
+| `flushOutputs` 的 `io`      | 语义                           |
+| --------------------------- | ------------------------------ |
+| `readState(name)`           | 读取标量状态（浮点转 JS 数值） |
+| `readBytes(name)`           | 读取字节内存的快照             |
+| `readFifo(name)`            | 取走该 FIFO 的全部已提交记录   |
+| `publish(port, payload)`    | 发布标量载荷                   |
+| `publishBytes(port, bytes)` | 发布字节载荷                   |
+
+- 投递语义由端口的 `delivery` 决定：`level` 端口一步只保留最后一条，`message` 端口按顺序全部保留；记录条数容量取 `DeviceMessagingOptions.deliveryCapacity`，超出时上报 `topic/backpressure` 并丢弃新记录。
+- `io` 的引用在运行期检查：内存名未声明、内存种类不符、端口方向不符都只上报诊断（`device/memory-*`、`device/topic-*`），不抛错、不改变仿真状态。同一端口混用 `takeInput` / `takeInputs` 上报 `topic/mixed-read`。
+- 钩子自身抛出的异常由宿主隔离（`applyInputs` / `flushOutputs` 会原样抛出给调用方）；无论是否抛出，步结束后都会清空本步记录。
+- 工厂声明了钩子时，第一步结束后会为从未被读取 / 发布的端口各上报一次 `device/port-unused`。
+- 诊断经 `DeviceInstanceOptions.onDiagnostic` 交给宿主；`report` 的业务码原样透传。
+- `api.ir.fifo(name, { maxRecord, length })` 以 IR domain declaration 的形式登记名称，与 state / bytes / 函数共享同一命名空间；`maxRecord` 与 `length` 必须是正安全整数，否则报 `device/fifo-descriptor`。
+
 ## 引脚声明与数字 I/O
 
 ```ts
@@ -364,44 +414,46 @@ initialize.body((b) => {
 
 ## 错误码
 
-| 错误码                          | 含义                                                      |
-| ------------------------------- | --------------------------------------------------------- |
-| `device/device-unknown`         | provider 返回 `undefined`，或 device id 为空              |
-| `device/provider-failed`        | provider 抛非 `DeviceError`、未实现 `resolve` 或结果违约  |
-| `device/description-schema`     | 定义容器、metadata 或 `designatorPrefix` 形状错误         |
-| `device/implementation-import`  | 代码字符串不是可加载的 ES 模块                            |
-| `device/implementation-export`  | 默认导出不是普通同步函数                                  |
-| `device/implementation-async`   | 默认导出声明为 async / async generator                    |
-| `device/factory-failed`         | 工厂抛出非 `DeviceError`、不是普通函数或调用失败          |
-| `device/factory-async`          | 工厂为 async，或返回 Promise / thenable                   |
-| `device/factory-closed`         | 工厂返回 / 抛出后尝试继续声明或写入 `api.ir`              |
-| `device/lifecycle-binding`      | 返回值、字段、生命周期引用、重复绑定或 `onDispose` 不合法 |
-| `device/lifecycle-unsupported`  | 未绑定 reset 却请求复位                                   |
-| `device/pin-unknown`            | `api.ir.pin` 引用未声明或空的引脚 id                      |
-| `device/pin-io-unavailable`     | 使用引脚 I/O 但缺少 pin host，或宿主未声明被引用引脚      |
-| `device/observe-pin`            | 观察 trigger / capture 引脚未知、跨实例或不是 `signal`    |
-| `device/observe-binding`        | 重复观察名、非法描述符或目标签名不匹配                    |
-| `device/observe-config`         | 非法 `observe.configure` 参数                             |
-| `device/observe-unavailable`    | 存在观察绑定但宿主不支持数字变化观察                      |
-| `device/connection-unknown`     | 连接 ID 未声明或不属于当前拓扑                            |
-| `device/connection-invalid`     | 空连接 ID 或非法连接操作                                  |
-| `device/connection-unavailable` | 未绑定拓扑或拓扑已销毁                                    |
-| `device/link-failed`            | IR 校验、链接或不支持的指令                               |
-| `device/instance-invalid`       | 创建选项、已加载模块、调度器或实例标识不合法              |
-| `device/instance-busy`          | 非法生命周期操作或重入冲突                                |
-| `device/instance-destroyed`     | 销毁后访问 `storage`、请求 reset 或提交消息               |
-| `device/dispose-failed`         | 清理完成后 `onDispose` 抛错或返回非法值                   |
-| `device/topic-unknown`          | 引用了描述中不存在的端口                                  |
-| `device/topic-direction`        | 输入 / 输出方向与操作不匹配                               |
-| `device/topic-payload`          | 载荷表示或 `simTime` 元数据不合法                         |
-| `device/topic-subscription`     | 同一 callback 重复注册同一输入端口                        |
-| `device/output-unknown`         | 引用了本次工厂未声明的输出                                |
-| `device/output-consumer`        | 同一 IR 输出重复登记消费者                                |
-| `device/message-target`         | `post` / `postBytes` 目标不是普通 entry 或签名不合法      |
-| `device/inbox-reference`        | `postBytes` 的 inbox 不是本次工厂声明的 inbox             |
-| `device/update-target`          | `updateBytes` 目标不是可更新字节资源或参数越界            |
-| `device/not-active`             | 工厂或 initialize 尚未完成时执行消息操作                  |
-| `device/message-callback`       | 回调抛错、返回 thenable 或其他非法值                      |
+| 错误码                          | 含义                                                                 |
+| ------------------------------- | -------------------------------------------------------------------- |
+| `device/device-unknown`         | provider 返回 `undefined`，或 device id 为空                         |
+| `device/provider-failed`        | provider 抛非 `DeviceError`、未实现 `resolve` 或结果违约             |
+| `device/description-schema`     | 定义容器、metadata 或 `designatorPrefix` 形状错误                    |
+| `device/implementation-import`  | 代码字符串不是可加载的 ES 模块                                       |
+| `device/implementation-export`  | 默认导出不是普通同步函数                                             |
+| `device/implementation-async`   | 默认导出声明为 async / async generator                               |
+| `device/factory-failed`         | 工厂抛出非 `DeviceError`、不是普通函数或调用失败                     |
+| `device/factory-async`          | 工厂为 async，或返回 Promise / thenable                              |
+| `device/factory-closed`         | 工厂返回 / 抛出后尝试继续声明或写入 `api.ir`                         |
+| `device/lifecycle-binding`      | 返回值、字段、生命周期引用、重复绑定或 `onDispose` 不合法            |
+| `device/lifecycle-unsupported`  | 未绑定 reset 却请求复位                                              |
+| `device/pin-unknown`            | `api.ir.pin` 引用未声明或空的引脚 id                                 |
+| `device/pin-io-unavailable`     | 使用引脚 I/O 但缺少 pin host，或宿主未声明被引用引脚                 |
+| `device/observe-pin`            | 观察 trigger / capture 引脚未知、跨实例或不是 `signal`               |
+| `device/observe-binding`        | 重复观察名、非法描述符或目标签名不匹配                               |
+| `device/observe-config`         | 非法 `observe.configure` 参数                                        |
+| `device/observe-unavailable`    | 存在观察绑定但宿主不支持数字变化观察                                 |
+| `device/fifo-unknown`           | `api.ir.fifo` 名称为空                                               |
+| `device/fifo-descriptor`        | FIFO 描述缺少对象、`maxRecord` / `length` 非正整数或重声明容量不一致 |
+| `device/connection-unknown`     | 连接 ID 未声明或不属于当前拓扑                                       |
+| `device/connection-invalid`     | 空连接 ID 或非法连接操作                                             |
+| `device/connection-unavailable` | 未绑定拓扑或拓扑已销毁                                               |
+| `device/link-failed`            | IR 校验、链接或不支持的指令                                          |
+| `device/instance-invalid`       | 创建选项、已加载模块、调度器或实例标识不合法                         |
+| `device/instance-busy`          | 非法生命周期操作或重入冲突                                           |
+| `device/instance-destroyed`     | 销毁后访问 `storage`、请求 reset 或提交消息                          |
+| `device/dispose-failed`         | 清理完成后 `onDispose` 抛错或返回非法值                              |
+| `device/topic-unknown`          | 引用了描述中不存在的端口                                             |
+| `device/topic-direction`        | 输入 / 输出方向与操作不匹配                                          |
+| `device/topic-payload`          | 载荷表示或 `simTime` 元数据不合法                                    |
+| `device/topic-subscription`     | 同一 callback 重复注册同一输入端口                                   |
+| `device/output-unknown`         | 引用了本次工厂未声明的输出                                           |
+| `device/output-consumer`        | 同一 IR 输出重复登记消费者                                           |
+| `device/message-target`         | `post` / `postBytes` 目标不是普通 entry 或签名不合法                 |
+| `device/inbox-reference`        | `postBytes` 的 inbox 不是本次工厂声明的 inbox                        |
+| `device/update-target`          | `updateBytes` 目标不是可更新字节资源或参数越界                       |
+| `device/not-active`             | 工厂或 initialize 尚未完成时执行消息操作                             |
+| `device/message-callback`       | 回调抛错、返回 thenable 或其他非法值                                 |
 
 ## 边界
 
@@ -409,4 +461,4 @@ initialize.body((b) => {
 - 不提供 WASM 回退或第二种实现加载来源。
 - `loadDeviceModule` 在宿主 realm 执行 provider 代码，**不是沙箱**；器件包必须可信。
 - 模拟观察、状态观察（`edges=0`）、电压读写、`get_*` / `set_*`、引脚组 I/O 与协议栈不在作者面。
-- 不做话题路由、重放、ACK 或跨实例广播；普通消息投递不推进客体时间。
+- 不做话题路由、重放、ACK 或跨实例广播；普通消息投递不推进客体时间。步钩子只在宿主调用 `applyInputs` / `flushOutputs` 时运行，本包不持有步长或步屏障。

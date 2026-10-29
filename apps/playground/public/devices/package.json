@@ -1,0 +1,21 @@
+{
+  "name": "demo",
+  "version": "1.0.0",
+  "devices": {
+    "ideal-button": {
+      "path": "ideal-button.json"
+    },
+    "debounced-button": {
+      "path": "debounced-button.json"
+    },
+    "ideal-led": {
+      "path": "ideal-led.json"
+    },
+    "ideal-relay": {
+      "path": "ideal-relay.json"
+    },
+    "teaching-mcu": {
+      "path": "teaching-mcu.json"
+    }
+  }
+}

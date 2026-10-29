@@ -2,13 +2,11 @@ import type { CanvasCommand, CanvasWidgetInstance } from '@mica-js/core/canvas';
 import type { CanvasMode } from '@mica-js/canvas-editor';
 import type { PortDefinition, PropertyDefinition, WidgetDefinition } from '@mica-js/widget';
 import { useState, type ReactNode } from 'react';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
   assetRefOf,
   bindingOptions,
   bindingTargetOf,
-  describeTarget,
   isPropertyOverridden,
   parseTargetValue,
   propertyInitialValue,
@@ -193,9 +191,6 @@ function PropertyField({ instance, propertyKey, descriptor, disabled, onApply }:
             }}
             aria-label={`${propertyKey} src`}
           />
-          <span className="text-muted-foreground text-[10px]">
-            {`{ src, mode: ${ref?.mode ?? 'file'} } · 资源在实例挂载时预取`}
-          </span>
         </div>
       );
       break;
@@ -239,15 +234,9 @@ function PropertyField({ instance, propertyKey, descriptor, disabled, onApply }:
   }
 
   return (
-    <div className="border-b py-1.5 last:border-b-0" data-property={propertyKey}>
+    <div className="border-b py-1.5 last:border-b-0">
       <div className="flex items-center gap-1">
-        <span className="font-mono text-[11px]">{propertyKey}</span>
-        <span className="text-muted-foreground text-[10px]">{descriptor.type}</span>
-        {overridden ? (
-          <Badge variant="secondary" className="h-4 px-1 text-[9px]">
-            已覆盖
-          </Badge>
-        ) : null}
+        <span className="truncate font-mono text-[11px]">{propertyKey}</span>
         <Button
           size="xs"
           variant="ghost"
@@ -258,7 +247,6 @@ function PropertyField({ instance, propertyKey, descriptor, disabled, onApply }:
               onApply({ type: 'unset-property', instanceId: instance.id, key: propertyKey }),
             )
           }
-          title="删除文档里的覆盖值，回到定义默认值"
         >
           重置
         </Button>
@@ -287,13 +275,9 @@ function BindingField({ instance, portKey, port, targets, disabled, onApply }: B
   const current = bindingTargetOf(instance, portKey);
 
   return (
-    <div className="border-b py-1.5 last:border-b-0" data-port={portKey}>
-      {' '}
+    <div className="border-b py-1.5 last:border-b-0">
       <div className="flex items-center gap-1">
         <span className="font-mono text-[11px]">{portKey}</span>
-        <span className="text-muted-foreground text-[10px]">
-          {port.direction} · {port.type}
-        </span>
       </div>
       <select
         className="bg-background mt-1 w-full rounded border px-1.5 py-1 text-[11px]"
@@ -318,11 +302,6 @@ function BindingField({ instance, portKey, port, targets, disabled, onApply }: B
           </option>
         ))}
       </select>
-      <p className="text-muted-foreground mt-0.5 text-[10px]">
-        {current === undefined
-          ? '未绑定：运行/仿真消息不会到达这个端口。'
-          : `当前 ${describeTarget(current, targets)}`}
-      </p>
       <ErrorLines messages={errors} />
     </div>
   );
@@ -337,7 +316,7 @@ export function CanvasInspector({
   targets,
   onApply,
 }: CanvasInspectorProps) {
-  const readOnly = mode === 'run';
+  const readOnly = mode === 'simulation';
   const properties = definition === undefined ? [] : Object.entries(definition.properties);
   const ports = definition === undefined ? [] : Object.entries(definition.ports);
 
@@ -346,24 +325,12 @@ export function CanvasInspector({
       <section className="flex flex-col">
         <header className="flex items-center gap-2 border-b px-3 py-2">
           <h2 className="text-xs font-semibold">属性</h2>
-          <span className="text-muted-foreground truncate font-mono text-[10px]">
-            {instance?.widget ?? '—'}
-          </span>
         </header>
         <div className="max-h-72 overflow-y-auto px-3 py-1">
-          {readOnly ? (
-            <p className="text-muted-foreground px-0 py-1 text-[10px]">
-              运行模式只读；切回「编辑」才能修改属性与绑定。
-            </p>
-          ) : null}
-          {instance === undefined ? (
-            <p className="text-muted-foreground py-1 text-[11px]">未选中实例：在画布上点一个。</p>
-          ) : resolving ? (
-            <p className="text-muted-foreground py-1 text-[11px]">正在解析 widget 定义…</p>
-          ) : definition === undefined ? (
-            <p className="py-1 text-[11px] text-red-400">找不到 {instance.widget} 的定义。</p>
-          ) : properties.length === 0 ? (
-            <p className="text-muted-foreground py-1 text-[11px]">该 widget 没有属性。</p>
+          {instance === undefined ? null : definition === undefined ? (
+            resolving ? null : (
+              <p className="py-1 text-[11px] text-red-400">找不到 {instance.widget} 的定义。</p>
+            )
           ) : (
             properties.map(([key, descriptor]) => (
               <PropertyField
@@ -382,28 +349,21 @@ export function CanvasInspector({
       <section className="flex flex-col border-t">
         <header className="flex items-center gap-2 border-b px-3 py-2">
           <h2 className="text-xs font-semibold">绑定</h2>
-          <span className="text-muted-foreground text-[10px]">端口 → 端点</span>
         </header>
         <div className="max-h-56 overflow-y-auto px-3 py-1">
-          {instance === undefined ? (
-            <p className="text-muted-foreground py-1 text-[11px]">未选中实例。</p>
-          ) : definition === undefined ? (
-            <p className="text-muted-foreground py-1 text-[11px]">定义解析后可用。</p>
-          ) : ports.length === 0 ? (
-            <p className="text-muted-foreground py-1 text-[11px]">该 widget 没有端口。</p>
-          ) : (
-            ports.map(([key, port]) => (
-              <BindingField
-                key={`${instance.id}:${key}:${revision}`}
-                instance={instance}
-                portKey={key}
-                port={port}
-                targets={targets}
-                disabled={readOnly}
-                onApply={onApply}
-              />
-            ))
-          )}
+          {instance === undefined || definition === undefined
+            ? null
+            : ports.map(([key, port]) => (
+                <BindingField
+                  key={`${instance.id}:${key}:${revision}`}
+                  instance={instance}
+                  portKey={key}
+                  port={port}
+                  targets={targets}
+                  disabled={readOnly}
+                  onApply={onApply}
+                />
+              ))}
         </div>
       </section>
     </div>

@@ -6,39 +6,8 @@ export interface TrustedHtmlPolicy {
   createHTML(input: string): unknown;
 }
 
-export interface ModuleSourceFromCode {
-  type: 'module';
-  code: string;
-}
-
-export interface ModuleSourceFromUrl {
-  type: 'module';
-  url: string;
-}
-
-export interface ScriptSourceFromCode {
-  type: 'script';
-  code: string;
-  /** Global the classic script assigns its entry point to. Defaults to `MicaGuest`. */
-  globalName?: string;
-}
-
-export interface ScriptSourceFromUrl {
-  type: 'script';
-  url: string;
-  globalName?: string;
-}
-
-/**
- * Guest program. `module` sources are ESM loaded with `import()`, `script` sources are classic
- * scripts loaded with `importScripts()`. URL sources are fetched by the host and inlined, because
- * the guest runs in an opaque origin without network access.
- */
-export type SandboxSource =
-  ModuleSourceFromCode | ModuleSourceFromUrl | ScriptSourceFromCode | ScriptSourceFromUrl;
-
 export interface SandboxWorkerOptions {
-  /** Diagnostic name used by the frame and guest runtime. */
+  /** Diagnostic name used by the frame document and error reporting. */
   name?: string;
   /** Element that hosts the offscreen iframe. Defaults to `document.body`. */
   container?: HTMLElement;
@@ -52,52 +21,61 @@ export interface SandboxWorkerOptions {
   trustedTypesPolicy?: TrustedHtmlPolicy;
   /** Overrides the frame document policy (srcdoc mode only). */
   csp?: string | ((defaultCsp: string) => string);
-  /** Overrides the inlined guest runtime (advanced/testing). */
-  runtime?: string;
-  /** Forward guest console output through the host-control RPC service. */
-  captureConsole?: boolean;
 }
 
 export type SandboxState = 'ready' | 'terminated';
+
+/** Uncaught worker failure, forwarded from the frame's `worker.onerror` listener. */
+export interface SandboxWorkerError {
+  readonly message: string;
+  readonly filename: string | undefined;
+  readonly lineno: number | undefined;
+  readonly colno: number | undefined;
+}
+
+export type SandboxPostMessageOptions = readonly Transferable[] | StructuredSerializeOptions;
 
 export interface SandboxWorker {
   readonly id: string;
   readonly name: string;
   readonly state: SandboxState;
-  readonly ready: Promise<MessagePort>;
+  /** Resolves after the iframe has created the real Worker. */
+  readonly ready: Promise<void>;
+  onmessage: ((event: MessageEvent) => void) | null;
+  onerror: ((event: ErrorEvent) => void) | null;
+  onmessageerror: ((event: MessageEvent) => void) | null;
+  postMessage(message: unknown, options?: SandboxPostMessageOptions): void;
+  addEventListener(
+    type: 'message',
+    listener: ((event: MessageEvent) => void) | EventListenerObject,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  addEventListener(
+    type: 'messageerror',
+    listener: ((event: MessageEvent) => void) | EventListenerObject,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  addEventListener(
+    type: 'error',
+    listener: ((event: ErrorEvent) => void) | EventListenerObject,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: 'message',
+    listener: ((event: MessageEvent) => void) | EventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: 'messageerror',
+    listener: ((event: MessageEvent) => void) | EventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  removeEventListener(
+    type: 'error',
+    listener: ((event: ErrorEvent) => void) | EventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ): void;
+  /** Subscribes to uncaught worker failures; returns an unsubscribe function. */
+  onError(listener: (error: SandboxWorkerError) => void): () => void;
   terminate(reason?: string): Promise<void>;
 }
-
-export type GuestHandler = (...args: never[]) => unknown;
-
-export interface GuestMethods {
-  [name: string]: GuestHandler;
-}
-
-export interface SandboxRequestOptions {
-  transfer?: readonly Transferable[];
-  timeoutMs?: number;
-}
-
-export interface GuestContext {
-  readonly id: string;
-  readonly name: string;
-  /** Aborted when the sandbox is terminated. */
-  readonly signal: AbortSignal;
-  /** Exposes a method the host can reach through the RPC service. */
-  handle(name: string, handler: GuestHandler): void;
-  /** Calls a host capability. */
-  invoke(name: string, ...args: unknown[]): Promise<unknown>;
-  invokeWith(
-    name: string,
-    args: readonly unknown[],
-    options?: SandboxRequestOptions,
-  ): Promise<unknown>;
-  on(type: string, listener: (payload: unknown) => void): () => void;
-  off(type: string, listener: (payload: unknown) => void): void;
-  emit(type: string, payload?: unknown, transfer?: readonly Transferable[]): void;
-  log(...parts: unknown[]): void;
-}
-
-export type GuestSetupResult =
-  void | GuestMethods | (() => void) | Promise<void | GuestMethods | (() => void)>;

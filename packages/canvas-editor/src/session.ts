@@ -24,7 +24,7 @@ import { IDENTITY_VIEWPORT, panBy, screenToDocument, zoomAt, type ViewportState 
  * Interaction state machine of the canvas editor. It owns selection, viewport and preview geometry,
  * and returns the commands a host must apply; it never edits the document itself.
  *
- * `mount.ts` only translates DOM events into the `PointerInput`/`KeyInput`/`WheelInput` shapes
+ * `editor/canvas-editor.ts` only translates DOM events into the `PointerInput`/`KeyInput`/`WheelInput` shapes
  * below, so every rule in here is testable without a DOM.
  */
 
@@ -223,7 +223,7 @@ export class CanvasInteractionSession {
       return this.#result(this.#mode === 'edit' && this.#abandonGesture());
     }
 
-    if (this.#mode === 'run') {
+    if (this.#mode === 'simulation') {
       this.#pointerId = input.pointerId;
       // Browsing the canvas stays available while widgets are live: middle button and Space + drag
       // pan, and neither reaches a widget.
@@ -299,7 +299,7 @@ export class CanvasInteractionSession {
     if (!this.#ownsPointer(input.pointerId)) {
       return this.#result(false);
     }
-    if (this.#mode === 'run') {
+    if (this.#mode === 'simulation') {
       if (this.#interaction.kind === 'panning') {
         return this.#result(this.#panTo(this.#lastPointer));
       }
@@ -346,7 +346,7 @@ export class CanvasInteractionSession {
     if (!this.#ownsPointer(input.pointerId)) {
       return this.#result(false);
     }
-    if (this.#mode === 'run') {
+    if (this.#mode === 'simulation') {
       this.#pointerId = undefined;
       if (this.#interaction.kind === 'panning') {
         // The release finishes the pan; it is never a widget event.
@@ -406,7 +406,7 @@ export class CanvasInteractionSession {
     }
     this.#pointerId = undefined;
 
-    if (this.#mode === 'run') {
+    if (this.#mode === 'simulation') {
       if (this.#interaction.kind === 'panning') {
         // A pan drops without touching a widget: nothing was pressed on an instance.
         this.#interaction = { kind: 'idle' };
@@ -458,7 +458,7 @@ export class CanvasInteractionSession {
   }
 
   keyDown(document: CanvasDocument, key: KeyInput): InteractionResult {
-    if (this.#mode === 'run') {
+    if (this.#mode === 'simulation') {
       return this.#runKey('keydown', document, key);
     }
 
@@ -507,7 +507,7 @@ export class CanvasInteractionSession {
   }
 
   keyUp(document: CanvasDocument, key: KeyInput): InteractionResult {
-    if (this.#mode !== 'run') {
+    if (this.#mode !== 'simulation') {
       return this.#result(false);
     }
     return this.#runKey('keyup', document, key);

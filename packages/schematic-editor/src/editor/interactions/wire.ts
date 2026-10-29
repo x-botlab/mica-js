@@ -17,14 +17,14 @@ export function addWirePoint(context: InteractionContext, page: Point): void {
   state.cursorPoint = point;
   // Landing on another endpoint (pin, anchor, wire end) or an existing wire closes the run.
   const node = connectionNodeAt(context.pointer.snapContext(), point);
-  const host = context.deps.controller.hitTest(point, {
+  const host = context.deps.editor.hitTest(point, {
     includeSymbols: false,
     tolerance: context.pointer.tolerance(),
   });
   const closes = node !== undefined || host?.kind === 'wire';
   if (closes && state.pendingWire.length >= 2) {
     finishWire(context);
-    context.deps.controller.setTool('select');
+    context.deps.editor.setTool('select');
     return;
   }
   context.deps.onChange();
@@ -40,7 +40,7 @@ export function finishWire(context: InteractionContext): void {
     context.deps.onChange();
     return;
   }
-  context.deps.run(() => context.deps.controller.addWire(points));
+  context.deps.run(() => context.deps.editor.addWire(points));
 }
 
 /** Pending wire plus the live cursor leg, for the dashed preview. */
@@ -62,8 +62,8 @@ export function pendingWireWithCursor(context: InteractionContext): readonly Poi
 
 /** Clicking a pin or wire end in select mode starts a wire from there. */
 export function startWireAtNode(context: InteractionContext, page: Point): boolean {
-  const controller = context.deps.controller;
-  if (controller.getTool() !== 'select' || context.deps.readOnly) {
+  const editor = context.deps.editor;
+  if (editor.getTool() !== 'select' || context.deps.readOnly) {
     return false;
   }
   // Net labels, ports and text are selection/drag targets, so a tap on their body must not be
@@ -76,7 +76,7 @@ export function startWireAtNode(context: InteractionContext, page: Point): boole
     return false;
   }
   // Switch the tool first: the tool change resets transient state, which must not eat the anchor.
-  controller.setTool('wire');
+  editor.setTool('wire');
   context.state.pendingWire = [node];
   context.state.cursorPoint = node;
   context.deps.onChange();

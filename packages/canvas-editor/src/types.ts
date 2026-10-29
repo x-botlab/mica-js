@@ -1,5 +1,5 @@
 /** Interaction mode of a mounted editor: editing the document, or driving the running widgets. */
-export type CanvasMode = 'edit' | 'run';
+export type CanvasMode = 'edit' | 'simulation';
 
 /** Zoom/pan of the canvas surface; `x`/`y` are the screen offset of the document origin. */
 export interface CanvasEditorViewport {
@@ -24,6 +24,7 @@ export type CanvasEditorDiagnosticCode =
   | 'canvas-editor/render-failed'
   | 'canvas-editor/selection-failed'
   | 'canvas-editor/dispatch-failed'
+  | 'canvas-editor/dispose-failed'
   | CanvasEditorCoordinationDiagnosticCode;
 
 /**

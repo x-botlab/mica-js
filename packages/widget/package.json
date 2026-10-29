@@ -14,6 +14,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js"
     }
   },
   "files": [
@@ -30,10 +34,14 @@
   },
   "dependencies": {
     "@mica-js/core": "workspace:*",
-    "@mica-js/sandbox": "workspace:*"
+    "@mica-js/sandbox": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
+    "rolldown": "catalog:"
+  },
+  "peerDependencies": {
+    "vite": "^8.0.0"
   },
   "devDependencies": {
-    "rolldown": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plugin-dts": "catalog:",

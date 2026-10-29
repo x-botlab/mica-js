@@ -30,7 +30,7 @@ export type DragInteraction =
 
 /**
  * Transient interaction state owned by the canvas. Nothing here belongs in the document, so the
- * controller never sees hovers, in-progress wires or previews.
+ * document model never sees hovers, in-progress wires or previews.
  */
 export class InteractionState {
   hover: SchematicHit | undefined;

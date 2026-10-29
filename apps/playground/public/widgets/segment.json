@@ -36,6 +36,7 @@
     }
   },
   "ports": {
-    "value": { "direction": "input", "type": "string", "title": "数值" }
+    "value": { "direction": "input", "type": "string", "title": "数值" },
+    "count": { "direction": "input", "type": "number", "title": "计数" }
   }
 }

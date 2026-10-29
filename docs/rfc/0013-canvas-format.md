@@ -122,7 +122,7 @@ canvas 以宿主工程内的 POSIX 相对路径作为标识，文件可位于工
 - `schematic` 出现时指向本次已加载的有效 `.sch`，无法解析返回 `canvas/unknown-schematic`；省略时跳过引用校验。
 - `properties` 的键由 widget 定义声明，值符合属性类型与资源引用规则；未知键返回 `canvas/unknown-property`，类型或编码错误返回 `schema/invalid-value`。
 - `bindings` 的键由 widget 定义的 `ports` 声明，未知端口返回 `canvas/unknown-port`；值为对象，只含非空字符串 `symbol` 与非空字符串 `port`，出现其他键返回 `schema/unknown-field`。
-- 绑定端点解析失败返回结构化诊断：`symbol` 不在绑定原理图中返回 `canvas/unknown-symbol`；目标器件未声明该端口返回 `canvas/unknown-target-port`。
+- 绑定端点解析失败返回结构化诊断：`symbol` 不在绑定原理图中返回 `canvas/unknown-symbol`；目标器件未声明该端口返回 `canvas/unknown-target-port`；两种情况均仅跳过受影响实例的挂载，不拒绝整个文档。
 - 端点方向与载荷类型按[话题端口](./0010-topic-ports.md)校验，方向不符或类型不可赋值返回 `topic/type-mismatch`。
 - 省略 `schematic` 时跳过端点解析，只校验 `bindings` 的结构。
 - `.cnv` 与 `.sch` 各自独立版本，不做联合版本校验；`.sch` 结构变化导致 symbol 消失时，装载期报 `canvas/unknown-symbol`，绑定原样保留，由编辑器提示修复。

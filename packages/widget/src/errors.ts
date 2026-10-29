@@ -4,7 +4,9 @@ export type WidgetLoadErrorCode =
   | 'widget/invalid-definition'
   | 'widget/no-implementation'
   | 'widget/not-self-contained'
-  | 'widget/load-failed';
+  | 'widget/load-failed'
+  /** A descriptor field carries a value outside its closed set (RFC 0017 `delivery`). */
+  | 'schema/invalid-value';
 
 export interface WidgetLoadErrorOptions {
   /** Package id, when the package was already identified. */

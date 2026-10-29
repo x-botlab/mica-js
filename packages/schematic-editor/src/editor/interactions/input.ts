@@ -1,5 +1,5 @@
 import type { Point, Rect, SchematicHit } from '@mica-js/core/schematic';
-import type { EditorSelection } from '../../controller/types';
+import type { EditorSelection } from '../../types';
 import type { EditorInputDeps, InteractionContext } from './context';
 import { cancelInteraction, handleKeyDown } from './keyboard';
 import {
@@ -39,7 +39,7 @@ export class EditorInput {
       deps,
       state: new InteractionState(),
       pointer: new Pointer({
-        controller: deps.controller,
+        editor: deps.editor,
         devices: deps.devices,
         viewport: deps.viewport,
         canvas: deps.canvas,
@@ -147,7 +147,7 @@ export class EditorInput {
       return;
     }
 
-    if (deps.controller.getTool() === 'wire' && !deps.readOnly) {
+    if (deps.editor.getTool() === 'wire' && !deps.readOnly) {
       addWirePoint(this.#context, page);
       return;
     }
@@ -204,7 +204,7 @@ export class EditorInput {
     }
 
     const device = placementDevice(this.#context);
-    if (deps.controller.getTool() === 'wire') {
+    if (deps.editor.getTool() === 'wire') {
       state.cursorPoint = pointer.snapWire(page);
       deps.onChange();
       return;
@@ -216,7 +216,7 @@ export class EditorInput {
       return;
     }
 
-    const next = deps.controller.hitTest(page, { tolerance: pointer.tolerance() });
+    const next = deps.editor.hitTest(page, { tolerance: pointer.tolerance() });
     if (!sameHit(next, state.hover)) {
       state.hover = next;
       deps.onChange();
@@ -274,15 +274,15 @@ export class EditorInput {
 
   #onDoubleClick = (event: MouseEvent): void => {
     const { deps, pointer } = this.#context;
-    if (deps.controller.getTool() === 'wire') {
+    if (deps.editor.getTool() === 'wire') {
       finishWire(this.#context);
       return;
     }
     const page = pointer.page(event);
-    const hit = deps.controller.hitTest(page, { tolerance: pointer.tolerance() });
+    const hit = deps.editor.hitTest(page, { tolerance: pointer.tolerance() });
     const selection = hit === undefined ? undefined : selectionFromHit(hit);
     if (selection !== undefined) {
-      deps.controller.setSelection([selection]);
+      deps.editor.setSelection([selection]);
     }
   };
 

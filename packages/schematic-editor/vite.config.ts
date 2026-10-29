@@ -7,12 +7,14 @@ export default defineConfig({
       entry: 'src/index.ts',
       formats: ['es'],
       fileName: 'index',
+      // The entry imports the editor chrome so the build can extract it into `dist/style.css`.
+      cssFileName: 'style',
     },
     target: 'es2022',
     sourcemap: true,
     minify: false,
     rollupOptions: {
-      external: ['@mica-js/core', '@mica-js/core/schematic'],
+      external: ['@mica-js/core', '@mica-js/core/lifecycle', '@mica-js/core/schematic'],
     },
   },
   plugins: [

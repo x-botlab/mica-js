@@ -3,13 +3,13 @@ import { MessageChannel } from 'node:worker_threads';
 import { expect, test } from 'vitest';
 import { DisposableStore } from '../lifecycle';
 import { createRpc } from './rpc';
-import { defineRpcService } from './types';
+import { sharedService } from './test-helpers';
 import type { RpcOptions } from './types';
 
-const serviceService = defineRpcService<Record<string, (...args: never[]) => unknown>>('service');
-const buffersService = defineRpcService<Record<string, (...args: never[]) => unknown>>('buffers');
-const eventsService = defineRpcService<Record<string, (...args: never[]) => unknown>>('events');
-const barrierService = defineRpcService<Record<string, (...args: never[]) => unknown>>('barrier');
+const serviceService = sharedService('service');
+const buffersService = sharedService('buffers');
+const eventsService = sharedService('events');
+const barrierService = sharedService('barrier');
 
 function pair(options: RpcOptions = {}) {
   const { port1, port2 } = new MessageChannel();

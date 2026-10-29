@@ -1,5 +1,73 @@
 import { describe, expect, it } from 'vitest';
-import { DisposableStore, toDisposable } from './index';
+import { DisposableStore, Emitter, toDisposable, type IDisposable } from './index';
+
+describe('Emitter', () => {
+  it('delivers to every listener until the subscription is disposed', () => {
+    const emitter = new Emitter<number>();
+    const seen: number[] = [];
+    const subscription = emitter.event((value) => seen.push(value));
+
+    emitter.fire(1);
+    expect(emitter.hasListeners).toBe(true);
+    subscription.dispose();
+    subscription.dispose();
+    emitter.fire(2);
+
+    expect(seen).toEqual([1]);
+    expect(emitter.hasListeners).toBe(false);
+  });
+
+  it('binds thisArgs and collects subscriptions in disposables', () => {
+    const emitter = new Emitter<string>();
+    const disposables: IDisposable[] = [];
+    const receiver = { prefix: 'net:', seen: [] as string[] };
+
+    emitter.event(
+      function (this: typeof receiver, value: string) {
+        this.seen.push(`${this.prefix}${value}`);
+      },
+      receiver,
+      disposables,
+    );
+    emitter.fire('VCC');
+
+    expect(receiver.seen).toEqual(['net:VCC']);
+    expect(disposables).toHaveLength(1);
+    for (const disposable of disposables) {
+      disposable.dispose();
+    }
+    emitter.fire('GND');
+    expect(receiver.seen).toEqual(['net:VCC']);
+  });
+
+  it('runs a listener added while firing on the next fire only', () => {
+    const emitter = new Emitter<number>();
+    const seen: string[] = [];
+    emitter.event(() => {
+      seen.push('first');
+      emitter.event(() => seen.push('late'));
+    });
+
+    emitter.fire(1);
+    expect(seen).toEqual(['first']);
+    emitter.fire(2);
+    expect(seen).toEqual(['first', 'first', 'late']);
+  });
+
+  it('stops delivering once disposed', () => {
+    const emitter = new Emitter<number>();
+    const seen: number[] = [];
+    emitter.event((value) => seen.push(value));
+    emitter.dispose();
+
+    emitter.fire(1);
+    emitter.event((value) => seen.push(value));
+    emitter.fire(2);
+
+    expect(seen).toEqual([]);
+    expect(emitter.hasListeners).toBe(false);
+  });
+});
 
 describe('DisposableStore', () => {
   it('clears resources and remains reusable', () => {

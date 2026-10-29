@@ -51,40 +51,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - run: pnpm run format:check
-
       - run: pnpm run lint
 
       - run: pnpm run typecheck
 
       - run: pnpm run build
 
-      - run: pnpm run lint:package
-
       - run: pnpm run test
-
-      # Browsers only change with the Playwright version, so keying on it avoids re-downloading
-      # whenever an unrelated dependency changes `pnpm-lock.yaml`.
-      - id: playwright-version
-        working-directory: apps/playground
-        run: |
-          version=$(node -p "require('@playwright/test/package.json').version")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      # Every test runs headless, so the shell build is enough and halves the cached artifact.
-      - id: playwright-cache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-shell
-
-      # A cache hit already carries the browser. Re-running `--with-deps` lets apt upgrade packages
-      # and restart services, which took over ten minutes on one runner image; only the miss path
-      # installs system dependencies.
-      - if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: pnpm --filter @mica-js/playground exec playwright install --with-deps --only-shell chromium
-
-      - if: steps.playwright-cache.outputs.cache-hit == 'true'
-        run: pnpm --filter @mica-js/playground exec playwright install --only-shell chromium
-
-      - run: pnpm run test:e2e

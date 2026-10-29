@@ -145,6 +145,50 @@ describe('parseDeviceDescription', () => {
     });
   });
 
+  it('reads the optional RFC 0017 delivery of a port and leaves it absent by default', () => {
+    const description = parseDeviceDescription(
+      {
+        ports: {
+          frame: { direction: 'output', type: 'bytes<rgb565>', delivery: 'level' },
+          press: { direction: 'input', type: 'boolean', delivery: 'message' },
+          value: { direction: 'output', type: 'number' },
+        },
+      },
+      METADATA,
+    );
+
+    // Delivery and payload type are independent, so both crossed combinations are valid.
+    expect(description.ports.get('frame')?.delivery).toBe('level');
+    expect(description.ports.get('press')?.delivery).toBe('message');
+    expect(description.ports.get('value')).toEqual({
+      key: 'value',
+      direction: 'output',
+      type: 'number',
+    });
+    expect('delivery' in (description.ports.get('value') ?? {})).toBe(false);
+  });
+
+  it('rejects an unknown RFC 0017 delivery value', () => {
+    expectCode(
+      () =>
+        parseDeviceDescription(
+          { ports: { p: { direction: 'input', type: 'boolean', delivery: 'latest' } } },
+          METADATA,
+        ),
+      'schema/invalid-value',
+      '/ports/p/delivery',
+    );
+    expectCode(
+      () =>
+        parseDeviceDescription(
+          { ports: { p: { direction: 'input', type: 'boolean', delivery: null } } },
+          METADATA,
+        ),
+      'schema/invalid-value',
+      '/ports/p/delivery',
+    );
+  });
+
   it('normalizes designatorPrefix and ignores unknown top-level fields', () => {
     const description = parseDeviceDescription(
       { designatorPrefix: ' U ', futureField: true },

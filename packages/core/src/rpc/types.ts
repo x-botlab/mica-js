@@ -1,4 +1,4 @@
-import type { IDisposable } from '../lifecycle';
+import type { Event as CoreEvent, IDisposable } from '../lifecycle';
 
 export interface RpcPort<TTransfer = Transferable> {
   postMessage(message: unknown, transfer?: TTransfer[]): void;
@@ -23,10 +23,9 @@ export interface RpcRegistrationOptions<TTransfer = Transferable> {
   readonly transfer?: (member: string, value: unknown) => readonly TTransfer[];
 }
 
-declare const rpcServiceIdBrand: unique symbol;
-
 export type RpcServiceId<T extends object> = string & {
-  readonly [rpcServiceIdBrand]: T;
+  /** Stable declaration name keeps bundled package entry declarations compatible. */
+  readonly __micaRpcServiceIdBrand: T;
 };
 
 export function defineRpcService<T extends object>(name: string): RpcServiceId<T> {
@@ -63,6 +62,8 @@ export interface RpcEndpoint<TTransfer = Transferable> extends IDisposable {
     serviceId: RpcServiceId<T>,
     options?: RpcProxyOptions<TTransfer>,
   ): RpcProxy<T>;
-  onDidError(listener: (error: Error) => void): () => void;
-  onDidClose(listener: () => void): () => void;
+  /** Fires for protocol and handler failures; observer exceptions never interrupt cleanup. */
+  readonly onDidError: CoreEvent<Error>;
+  /** Fires once when the endpoint closes; subscribing afterwards reports immediately. */
+  readonly onDidClose: CoreEvent<void>;
 }

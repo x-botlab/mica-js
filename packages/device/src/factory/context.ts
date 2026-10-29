@@ -22,6 +22,7 @@ import type {
   PinRef,
   TopicPayload,
 } from '../types';
+import type { FifoDomain } from '../topic/fifo';
 
 const DECLARATION_METHODS = new Set<PropertyKey>([
   'state',
@@ -54,6 +55,7 @@ export function createFactoryContext(
   pins: PinDomain,
   observes: ObserveDomain,
   connections: ReadonlyMap<string, DeviceConnectionDescriptor>,
+  fifos: FifoDomain,
 ): FactoryContext {
   let open = true;
   const failClosed = (operation: string): never => {
@@ -90,6 +92,14 @@ export function createFactoryContext(
           return connectionSupport.declare(args[0]);
         };
       }
+      if (property === 'fifo') {
+        return (name: unknown, descriptor: unknown): unknown => {
+          if (!open) {
+            return failClosed('fifo');
+          }
+          return fifos.declare(module, name, descriptor);
+        };
+      }
       if (typeof property !== 'string' || !DECLARATION_METHODS.has(property)) {
         return undefined;
       }
@@ -101,7 +111,11 @@ export function createFactoryContext(
         if (!open) {
           return failClosed(property);
         }
-        const result = Reflect.apply(method, target, args);
+        const result = Reflect.apply(
+          method,
+          target,
+          property === 'bytes' ? captureBytesArgs(args, deviceId) : args,
+        );
         if (
           (property === 'func' || property === 'entry' || property === 'lifecycle') &&
           typeof result === 'object' &&
@@ -146,4 +160,23 @@ export function createFactoryContext(
       messaging.closeRegistrations();
     },
   };
+}
+
+/**
+ * RFC 0017 declares a byte memory by length (`api.ir.bytes(name, length)`); the IR declaration
+ * takes initial bytes and options, so the capacity form becomes a zero-filled writable memory.
+ */
+function captureBytesArgs(args: readonly unknown[], deviceId: string): readonly unknown[] {
+  const [name, initialOrLength] = args;
+  if (typeof initialOrLength !== 'number') {
+    return args;
+  }
+  if (!Number.isSafeInteger(initialOrLength) || initialOrLength < 0) {
+    throw new DeviceError(
+      'schema/invalid-value',
+      `Device ${JSON.stringify(deviceId)} bytes ${JSON.stringify(String(name))} length must be a non-negative safe integer.`,
+      { deviceId },
+    );
+  }
+  return [name, new Uint8Array(initialOrLength), { readonly: false }];
 }

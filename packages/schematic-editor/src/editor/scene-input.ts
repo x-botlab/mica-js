@@ -1,5 +1,5 @@
 import type { Point } from '@mica-js/core/schematic';
-import type { EditorSelection } from '../controller/types';
+import type { EditorSelection } from '../types';
 
 export interface SceneHighlight {
   readonly symbols: ReadonlySet<string>;
@@ -8,7 +8,7 @@ export interface SceneHighlight {
   readonly vertices: readonly { readonly wireId: string; readonly index: number }[];
 }
 
-/** Translates controller selections into the flat sets the scene builder expects. */
+/** Translates editor selections into the flat sets the scene builder expects. */
 export function toSceneHighlight(selection: readonly EditorSelection[]): SceneHighlight {
   const symbols = new Set<string>();
   const wires = new Set<string>();

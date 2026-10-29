@@ -1,3 +1,9 @@
+/*
+ * Editor chrome, published as `@mica-js/schematic-editor/style.css`.
+ *
+ * The package never injects it at runtime: the host decides when the stylesheet loads, exactly like
+ * any other application CSS.
+ */
 .mica-schematic {
   position: relative;
   width: 100%;

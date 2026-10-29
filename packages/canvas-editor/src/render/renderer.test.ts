@@ -149,7 +149,7 @@ describe('CanvasFrameRenderer', () => {
     expect(multi.context.calls).not.toContain('fill');
   });
 
-  it('outlines every instance in edit mode and none in run mode', () => {
+  it('outlines every instance in edit mode and none in simulation mode', () => {
     const document = canvasDocument(widget('a'), widget('b', { x: 200 }));
     const bitmap = { width: 100, height: 50 } as unknown as ImageBitmap;
     // Both instances have a frame, so nothing draws a placeholder outline.
@@ -167,7 +167,7 @@ describe('CanvasFrameRenderer', () => {
 
     const run = createRenderer();
     run.renderer.resize(400, 200, 1);
-    run.renderer.render(frame({ document, layers, mode: 'run' }));
+    run.renderer.render(frame({ document, layers, mode: 'simulation' }));
     expect(run.context.calls).not.toContain('strokeRect');
   });
 });

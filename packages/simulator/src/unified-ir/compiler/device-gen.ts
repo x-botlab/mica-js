@@ -14,19 +14,14 @@ import {
   type DeviceBehaviorApi,
   type DeviceBehaviors,
   type DeviceConfig,
-  type DeviceDescription,
   type DeviceKernelRuntime,
   type DeviceMetadata,
   type DevicePinAllocation,
-  type DevicePinDescription,
   type DevicePinHandle,
-  type DeviceStateDescription,
   type DeviceStateHandle,
   type DeviceStateSlot,
   type GlobalPinMap,
   type GlobalStateMap,
-  type LedDescriptionOptions,
-  type McuDescriptionOptions,
 } from './types';
 
 /** Refs the main loop calls for one device; `undefined` means "no such phase". */
@@ -48,146 +43,6 @@ interface GeneratedPhase {
   readonly ref: FunctionRef<readonly [], readonly []>;
 }
 
-/** A device type with a built-in IR kernel. */
-export interface BuiltinDeviceKernel {
-  /** Canonical type name. */
-  readonly type: string;
-  /** Additional type names that select this kernel. */
-  readonly aliases: readonly string[];
-  readonly defaultPins: Readonly<Record<string, DevicePinDescription>>;
-  readonly defaultStates: Readonly<Record<string, DeviceStateDescription>>;
-  readonly behaviors: DeviceBehaviors;
-}
-
-/**
- * MCU kernel, extracted from the prototype `device-mcu.ts`.
- *
- * ```text
- * mcu_tick:
- *   PIN_OUTPUT[PA0] = !PIN_OUTPUT[PA0]     // one toggle per output pin
- *   PIN_MODE[PA0]   = PUSH_PULL
- * ```
- */
-const MCU_BEHAVIORS: DeviceBehaviors = Object.freeze({
-  initialize: (api: DeviceBehaviorApi) => {
-    for (const pin of api.outputs) pin.configure(PIN_MODE.pushPull);
-  },
-  tick: (api: DeviceBehaviorApi) => {
-    const b = api.builder;
-    for (const pin of api.outputs) {
-      const current = pin.readDrivenDigital();
-      pin.writeDigital(b.bool.not(current));
-      pin.configure(PIN_MODE.pushPull);
-    }
-  },
-});
-
-/**
- * LED kernel, extracted from the prototype `device-led.ts`.
- *
- * ```text
- * led_update:
- *   LED_STATE[i] = PIN_INPUT[anode] && !PIN_INPUT[cathode]
- * ```
- */
-const LED_BEHAVIORS: DeviceBehaviors = Object.freeze({
-  update: (api: DeviceBehaviorApi) => {
-    const b = api.builder;
-    const anode = api.pin('anode').sampleDigital();
-    const cathode = api.pin('cathode').sampleDigital();
-    api.state<'bool'>('lamp').store(b.bool.and(anode, b.bool.not(cathode)));
-  },
-});
-
-/** Built-in kernels the compiler ships; a description may also supply its own. */
-export const BUILTIN_DEVICE_KERNELS: readonly BuiltinDeviceKernel[] = Object.freeze([
-  Object.freeze({
-    type: 'mcu',
-    aliases: Object.freeze(['teaching-mcu']),
-    defaultPins: Object.freeze({ PA0: Object.freeze({ direction: 'output' as const }) }),
-    defaultStates: Object.freeze({}),
-    behaviors: MCU_BEHAVIORS,
-  }),
-  Object.freeze({
-    type: 'led',
-    aliases: Object.freeze(['ideal-led']),
-    defaultPins: Object.freeze({
-      anode: Object.freeze({ direction: 'passive' as const }),
-      cathode: Object.freeze({ direction: 'passive' as const }),
-    }),
-    defaultStates: Object.freeze({
-      lamp: Object.freeze({ type: 'bool' as const, initial: false }),
-    }),
-    behaviors: LED_BEHAVIORS,
-  }),
-]);
-
-const KERNELS_BY_TYPE: ReadonlyMap<string, BuiltinDeviceKernel> = new Map(
-  BUILTIN_DEVICE_KERNELS.flatMap((kernel) =>
-    [kernel.type, ...kernel.aliases].map((type) => [type, kernel] as const),
-  ),
-);
-
-/** Every device type that compiles without an explicit `description.behaviors`. */
-export const BUILTIN_DEVICE_TYPES: readonly string[] = Object.freeze(
-  BUILTIN_DEVICE_KERNELS.flatMap((kernel) => [kernel.type, ...kernel.aliases]),
-);
-
-/** Resolves the built-in kernel of one type, if any. */
-export function builtinDeviceKernel(type: string): BuiltinDeviceKernel | undefined {
-  return KERNELS_BY_TYPE.get(type);
-}
-
-/**
- * Applies the built-in defaults of `device.type` to a description.
- *
- * A description always wins: declared pins, states and behaviors are kept, and
- * only the missing pieces are filled in. Devices of an unknown type pass
- * through untouched so the generator can report a precise error.
- */
-export function resolveDeviceDescription(device: DeviceConfig): DeviceConfig {
-  const kernel = builtinDeviceKernel(device.type);
-  if (kernel === undefined) return device;
-  const pins = device.description.pins;
-  const hasPins = pins instanceof Map ? pins.size > 0 : Object.keys(pins).length > 0;
-  const states = device.description.states;
-  return Object.freeze({
-    ...device,
-    description: Object.freeze({
-      ...device.description,
-      pins: hasPins ? pins : kernel.defaultPins,
-      states:
-        states === undefined
-          ? kernel.defaultStates
-          : Object.freeze({ ...kernel.defaultStates, ...states }),
-      behaviors: device.description.behaviors ?? kernel.behaviors,
-    }),
-  });
-}
-
-/** Builds the prototype MCU description: push-pull outputs that toggle each tick. */
-export function createMcuDescription(options: McuDescriptionOptions = {}): DeviceDescription {
-  const names = options.pins ?? ['PA0'];
-  const direction = options.direction ?? 'output';
-  const pins: Record<string, DevicePinDescription> = {};
-  for (const name of names) pins[name] = Object.freeze({ direction });
-  return Object.freeze({ name: 'teaching-mcu', pins: Object.freeze(pins) });
-}
-
-/** Builds the prototype LED description: passive anode/cathode plus a lamp state. */
-export function createLedDescription(options: LedDescriptionOptions = {}): DeviceDescription {
-  const anode = options.anode ?? 'anode';
-  const cathode = options.cathode ?? 'cathode';
-  return Object.freeze({
-    name: 'ideal-led',
-    pins: Object.freeze({
-      [anode]: Object.freeze({ direction: 'passive' as const }),
-      [cathode]: Object.freeze({ direction: 'passive' as const }),
-    }),
-    states: Object.freeze({ lamp: Object.freeze({ type: 'bool' as const, initial: false }) }),
-  });
-}
-
 /** Everything the device generator reads from the prior compilation stages. */
 export interface DeviceGenerationContext {
   readonly module: IRModule;
@@ -205,9 +60,8 @@ export interface DeviceGenerationContext {
  * keeps its own module, protocol or host hop. A device without an explicit
  * `initialize` still gets one that configures its output pins as push-pull.
  *
- * Descriptions must already carry their built-in defaults, i.e. they go through
- * {@link resolveDeviceDescription} (`compileCircuit` does this before
- * allocating pins and states).
+ * The compiler ships no device models: every description must declare its own
+ * pins, states and behaviors (or a `kernel`) before it reaches this generator.
  */
 export class DeviceIRGenerator {
   private readonly context: DeviceGenerationContext;
@@ -260,7 +114,7 @@ export class DeviceIRGenerator {
       if (behaviors === undefined || !hasAnyBehavior(behaviors)) {
         throw new UnifiedIRCompilerError(
           'unsupported-device',
-          `Device "${device.id}" of type "${device.type}" declares no behaviors and the type has no built-in kernel. Provide description.behaviors or use one of: [${BUILTIN_DEVICE_TYPES.join(', ')}]`,
+          `Device "${device.id}" of type "${device.type}" declares no behaviors. Provide description.behaviors or description.kernel`,
           { deviceId: device.id },
         );
       }
@@ -457,8 +311,9 @@ function isKernelRuntime(
   value: DeviceBehaviors | DeviceKernelRuntime,
 ): value is DeviceKernelRuntime {
   if (value === null || typeof value !== 'object') return false;
-  // A kernel may own any subset of the phases (an LED only needs `update`), so
-  // the first phase ref that is an object — not a behaviour callback — decides.
+  // A kernel may own any subset of the phases (a passive sink only needs
+  // `update`), so the first phase ref that is an object — not a behaviour
+  // callback — decides.
   const phases: readonly (keyof DeviceKernelRuntime)[] = ['initialize', 'tick', 'update'];
   return phases.some((phase) => typeof value[phase] === 'object');
 }

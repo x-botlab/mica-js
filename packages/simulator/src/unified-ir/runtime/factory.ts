@@ -1,3 +1,4 @@
+import type { PayloadType } from '@mica-js/core/canvas';
 import { deriveSchematicTopology, parseDeviceReference, symbolRole } from '@mica-js/core/schematic';
 import type {
   DeviceReference,
@@ -12,16 +13,36 @@ import type {
   DeviceDescription,
 } from '../compiler';
 import { Circuit } from './circuit';
-import { CircuitError, type CircuitRuntimeOptions, type SingleDeviceCircuitInput } from './types';
+import { CircuitError, type CircuitRuntimeOptions, type DeviceAccessor } from './types';
+
+/**
+ * One endpoint a caller-supplied device declares to the simulation host.
+ *
+ * The simulator never guesses ports from a device type: the package that
+ * resolves the reference states which payloads the device accepts and which it
+ * publishes, in the same place it supplies the IR description.
+ */
+export interface SchematicDeviceTopic {
+  readonly port: string;
+  readonly direction: 'input' | 'output';
+  readonly type: PayloadType;
+  readonly title?: string;
+}
 
 /** Runtime behaviour of one schematic device package. */
 export interface SchematicDeviceBinding {
-  /** Device type, e.g. `'teaching-mcu'`. */
+  /** Device type, e.g. `'counter-ir'`. */
   readonly type: string;
   /** IR description: pins, states and behaviours. */
   readonly description: DeviceDescription;
   /** Instance configuration reserved for device kernels. */
   readonly config?: Readonly<Record<string, unknown>>;
+  /** Endpoints the simulation host exposes; absent means the device has none. */
+  readonly topics?: readonly SchematicDeviceTopic[];
+  /** Bridges one input topic payload onto the compiled device accessor. */
+  deliver?(accessor: DeviceAccessor, port: string, payload: unknown): void;
+  /** Reads one output topic from the compiled device accessor. */
+  read?(accessor: DeviceAccessor, port: string): unknown;
 }
 
 /** Options for {@link createCircuitFromSchematic}. */
@@ -35,41 +56,6 @@ export interface SchematicCircuitOptions extends CircuitRuntimeOptions {
   readonly resolveDevice: (reference: DeviceReference) => SchematicDeviceBinding | undefined;
   /** Coordinate tolerance used when matching pins to wires. */
   readonly tolerance?: number;
-}
-
-/**
- * Creates a circuit from one device type's built-in kernel.
- *
- * ```ts
- * const mcu = await createSingleDeviceCircuit('teaching-mcu');
- * mcu.runBatch(10);
- * ```
- *
- * The description is intentionally empty: the compiler fills in the built-in
- * pins, states and behaviours of `deviceType`, and rejects a type that ships no
- * kernel with a `unsupported-device` compiler error.
- *
- * @throws {UnifiedIRCompilerError} when `deviceType` has no built-in kernel.
- */
-export async function createSingleDeviceCircuit<const T extends string>(
-  deviceType: T,
-  config?: Readonly<Record<string, unknown>>,
-  options?: CircuitRuntimeOptions,
-): Promise<Circuit<SingleDeviceCircuitInput<T>>> {
-  if (typeof deviceType !== 'string' || deviceType.length === 0) {
-    throw new CircuitError('invalid-options', 'deviceType must be a non-empty string');
-  }
-  const device: DeviceConfig = {
-    id: 'device',
-    type: deviceType,
-    description: Object.freeze({ pins: Object.freeze({}) }),
-    ...(config === undefined ? {} : { config }),
-  };
-  const input = Object.freeze({
-    devices: Object.freeze([device]),
-    connections: Object.freeze([]),
-  }) as SingleDeviceCircuitInput<T>;
-  return Circuit.create(input, options);
 }
 
 /**
@@ -94,6 +80,38 @@ export async function createCircuitFromSchematic(
   schematic: SchematicDocument,
   options: SchematicCircuitOptions,
 ): Promise<Circuit> {
+  return (await createSchematicCircuit(schematic, options)).circuit;
+}
+
+/** One component symbol of a compiled schematic. */
+export interface SchematicCircuitBinding {
+  /** Symbol id as written in the schematic. */
+  readonly symbolId: string;
+  /** Compiler-safe device id assigned to the symbol. */
+  readonly deviceId: string;
+  /** Parsed `"<packageId>:<deviceId>"` reference. */
+  readonly reference: DeviceReference;
+  /** Device type from the resolved runtime binding. */
+  readonly type: string;
+}
+
+/** A compiled schematic circuit plus the symbol-to-device mapping it produced. */
+export interface SchematicCircuitResult {
+  readonly circuit: Circuit;
+  /** Component symbols in schematic order; non-component symbols are absent. */
+  readonly bindings: readonly SchematicCircuitBinding[];
+}
+
+/**
+ * Compiles a schematic and reports which circuit device each symbol became.
+ *
+ * {@link createCircuitFromSchematic} returns only the circuit; hosts that route
+ * schematic endpoints to circuit accessors need the mapping as well.
+ */
+export async function createSchematicCircuit(
+  schematic: SchematicDocument,
+  options: SchematicCircuitOptions,
+): Promise<SchematicCircuitResult> {
   if (
     schematic === null ||
     typeof schematic !== 'object' ||
@@ -105,11 +123,11 @@ export async function createCircuitFromSchematic(
   ) {
     throw new CircuitError(
       'invalid-options',
-      'createCircuitFromSchematic needs a schematic with sheet.symbols, sheet.wires and sheet.junctions',
+      'createSchematicCircuit needs a schematic with sheet.symbols, sheet.wires and sheet.junctions',
     );
   }
   if (options === null || typeof options !== 'object') {
-    throw new CircuitError('invalid-options', 'createCircuitFromSchematic needs options');
+    throw new CircuitError('invalid-options', 'createSchematicCircuit needs options');
   }
   const { resolveDevice, devices, tolerance, ...runtime } = options;
   if (typeof resolveDevice !== 'function') {
@@ -119,6 +137,7 @@ export async function createCircuitFromSchematic(
   const usedIds = new Set<string>();
   const deviceIdBySymbol = new Map<string, string>();
   const deviceConfigs: DeviceConfig[] = [];
+  const bindings: SchematicCircuitBinding[] = [];
   let componentCount = 0;
 
   for (const symbol of schematic.sheet.symbols) {
@@ -142,6 +161,14 @@ export async function createCircuitFromSchematic(
       description: binding.description,
       ...(binding.config === undefined ? {} : { config: binding.config }),
     });
+    if (reference !== undefined) {
+      bindings.push({
+        symbolId: symbol.id,
+        deviceId,
+        reference,
+        type: binding.type,
+      });
+    }
   }
 
   const topology = deriveSchematicTopology(schematic, {
@@ -197,7 +224,8 @@ export async function createCircuitFromSchematic(
     devices: Object.freeze(deviceConfigs),
     connections: Object.freeze(connections),
   };
-  return Circuit.create(input, runtime);
+  const circuit = await Circuit.create(input, runtime);
+  return Object.freeze({ circuit, bindings: Object.freeze(bindings) });
 }
 
 /**

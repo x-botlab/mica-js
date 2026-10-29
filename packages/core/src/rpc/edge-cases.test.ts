@@ -2,9 +2,10 @@
 import { MessageChannel } from 'node:worker_threads';
 import { expect, test } from 'vitest';
 import { createRpc } from './rpc';
+import { sharedService } from './test-helpers';
 import { defineRpcService } from './types';
 
-const serviceService = defineRpcService<Record<string, (...args: never[]) => unknown>>('service');
+const serviceService = sharedService('service');
 
 test('service tokens keep wire messages keyed by strings', async () => {
   const { port1, port2 } = new MessageChannel();
@@ -150,7 +151,7 @@ test('event listener failure does not suppress other subscriptions or response s
     expect(await proxy.run()).toBe(2);
     expect(values).toEqual([1]);
     expect(errors.map((error) => error.message)).toEqual(['listener failed']);
-    stopErrors();
+    stopErrors.dispose();
   } finally {
     client.dispose();
     server.dispose();

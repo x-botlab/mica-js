@@ -18,8 +18,8 @@ import type {
  * a tick costs one interpreter/JIT call for the whole circuit.
  *
  * The shared constants (`UNIFIED_PIN_CAPACITY`, `DEVICE_PIN_STRIDE`, `PIN_MODE`)
- * live in `../pin-space` and are reused here; the built-in `mcu` / `led`
- * kernels in `device-gen.ts` are the reference implementations.
+ * live in `../pin-space` and are reused here. The compiler ships no device
+ * models: every description is supplied by the caller.
  */
 
 /** Electrical intent of one device pin. */
@@ -207,9 +207,8 @@ export interface DeviceDescription {
    */
   readonly kernel?: DeviceKernelFactory;
   /**
-   * Optional typed accessor factory. Complex kernels (an MCU with its own
-   * register file, memory and NVIC) use it to expose a richer surface than
-   * the generic state/pin accessor.
+   * Optional typed accessor factory. Kernels with a richer surface than the
+   * generic state/pin accessor (a register file, a memory map) use it.
    */
   readonly accessor?: DeviceAccessorFactory;
   /**
@@ -224,7 +223,7 @@ export interface DeviceDescription {
 export interface DeviceConfig {
   /** Circuit-unique identity; prefix of every generated function name. */
   readonly id: string;
-  /** Device type, e.g. `'teaching-mcu'`; selects a built-in kernel when present. */
+  /** Device type, e.g. `'push-pull-driver'`; free-form label of the device model. */
   readonly type: string;
   readonly description: DeviceDescription;
   /** Instance configuration; reserved for device kernels that take parameters. */
@@ -474,18 +473,4 @@ export class UnifiedIRCompilerError extends Error {
     this.netId = options.netId;
     this.diagnostics = options.diagnostics ?? [];
   }
-}
-
-/** Options for {@link createMcuDescription}. */
-export interface McuDescriptionOptions {
-  /** Output pin names; defaults to `['PA0']`. */
-  readonly pins?: readonly string[];
-  /** Direction assigned to every declared pin; defaults to `'output'`. */
-  readonly direction?: DevicePinDirection;
-}
-
-/** Options for {@link createLedDescription}. */
-export interface LedDescriptionOptions {
-  readonly anode?: string;
-  readonly cathode?: string;
 }

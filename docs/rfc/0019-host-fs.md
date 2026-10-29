@@ -10,24 +10,24 @@
 
 ### URI
 
-资源以 URI 表示，类型为 `URI`（`vscode-uri`）。scheme、authority、path、query、fragment 是独立字段；`vscode-uri` 提供 `parse`、`joinPath`、`dirname`、`resolvePath` 等工具，解析与路径合并可直接复用。
+资源以 URI 字符串表示。字符串遵循 URI 的寻址语义，scheme、authority、path、query、fragment 作为独立部分解释；实现可使用符合 URI 规范的解析与路径合并工具。
 
 ### 读取接口
 
 ```ts
 interface HostFs {
-  read(uri: URI): Promise<Uint8Array>;
+  read(uri: string): Promise<Uint8Array>;
 }
 ```
 
-`read` 的入参是绝对 URI，返回该资源的完整字节。
+`read` 的入参是绝对 URI 字符串，返回该资源的完整字节。
 
 ### 错误
 
 ```ts
 interface HostFsError extends Error {
   readonly code: 'FileNotFound' | 'NoPermissions' | 'NoFileSystem' | 'Unavailable';
-  readonly uri: URI;
+  readonly uri: string;
 }
 ```
 
@@ -86,4 +86,4 @@ interface HostFsError extends Error {
 ## 关联
 
 - [RFC 0009](./0009-device-properties.md)：属性中的资源引用与建议的上限字段；本文的错误分类承担该文建议的 `asset/*` 错误码。
-- [RFC 0018](./0018-canvas-runtime.md)：`WidgetHost` 与 `DeviceSimHost` 通过本接口读取画布文档、原理图与属性资源。
+- [RFC 0018](./0018-canvas-runtime.md)：`WidgetHost` 与 `DeviceSimulationHost` 通过本接口读取画布文档、原理图与属性资源。

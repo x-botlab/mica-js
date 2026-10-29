@@ -11,16 +11,16 @@ Mica 是一个用 TypeScript 编写的开源电路仿真引擎，采用 pnpm Mon
 
 ## 包一览
 
-| 包                                                       | 职责                                                                       |
-| -------------------------------------------------------- | -------------------------------------------------------------------------- |
-| [`@mica-js/ir`](packages/ir)                             | 领域无关 IR：建图、存储、静态校验、参考解释器与 Provider 产物              |
-| [`@mica-js/core`](packages/core)                         | 仿真内核：虚拟时间、确定性调度、电气求值、连接拓扑、电源域，附文档格式入口 |
-| [`@mica-js/device`](packages/device)                     | 器件层：描述解析、provider 加载、工厂上下文、实例生命周期与引脚 I/O        |
-| [`@mica-js/simulator`](packages/simulator)               | 仿真器：统一 IR 电路编译/运行时（批处理 10–1000×），以及原理图器件执行器   |
-| [`@mica-js/sandbox`](packages/sandbox)                   | 通用 JS 沙箱：iframe + Worker 隔离与离屏渲染合成                           |
-| [`@mica-js/widget`](packages/widget)                     | Widget 契约与运行时：包加载、`WidgetHost`、图层与端口路由                  |
-| [`@mica-js/canvas-editor`](packages/canvas-editor)       | 画布编辑器：`.cnv` 合成、交互命令与场景组装                                |
-| [`@mica-js/schematic-editor`](packages/schematic-editor) | 原理图编辑器：`.sch` 的 Canvas 渲染与交互                                  |
+| 包                                                       | 职责                                                                        |
+| -------------------------------------------------------- | --------------------------------------------------------------------------- |
+| [`@mica-js/ir`](packages/ir)                             | 领域无关 IR：建图、存储、静态校验、参考解释器与 Provider 产物               |
+| [`@mica-js/core`](packages/core)                         | 仿真内核：虚拟时间、确定性调度、电气求值、连接拓扑、电源域，附文档格式入口  |
+| [`@mica-js/device`](packages/device)                     | 器件层：描述解析、provider 加载、工厂上下文、实例生命周期与引脚 I/O         |
+| [`@mica-js/simulator`](packages/simulator)               | 仿真器：统一 IR 电路编译/运行时，`DeviceSimulationHost` 契约与 sandbox 适配 |
+| [`@mica-js/sandbox`](packages/sandbox)                   | 通用 JS 沙箱：iframe + Worker 隔离与离屏渲染合成                            |
+| [`@mica-js/widget`](packages/widget)                     | Widget 契约与运行时：包加载、`WidgetHost`、图层与端口路由                   |
+| [`@mica-js/canvas-editor`](packages/canvas-editor)       | 画布编辑器：`.cnv` 合成、交互命令与场景组装                                 |
+| [`@mica-js/schematic-editor`](packages/schematic-editor) | 原理图编辑器：`.sch` 的 Canvas 渲染与交互                                   |
 
 ## 依赖关系
 
@@ -28,7 +28,6 @@ Mica 是一个用 TypeScript 编写的开源电路仿真引擎，采用 pnpm Mon
 graph TD
   subgraph apps["apps"]
     playground["playground<br/>示例站点"]
-    sandboxPlayground["sandbox-playground<br/>沙箱手测面板"]
   end
 
   subgraph packages["packages"]
@@ -45,14 +44,14 @@ graph TD
   playground --> simulator
   playground --> canvasEditor
   playground --> schematicEditor
-  playground --> sandbox
-  sandboxPlayground --> sandbox
   simulator --> device
   simulator --> core
+  simulator --> sandbox
   canvasEditor --> widget
   canvasEditor --> core
   schematicEditor --> core
   widget --> sandbox
+  widget --> simulator
   widget --> core
   device --> core
   device --> ir
@@ -123,8 +122,7 @@ instance.storage.loadState(count); // 11
 ```text
 .
 ├── apps/
-│   ├── playground/           # 各包示例站点（画布、原理图、沙箱、仿真）
-│   └── sandbox-playground/   # 沙箱能力与隔离自检面板
+│   └── playground/           # 各包示例站点（画布、原理图）
 ├── packages/
 │   ├── core/                 # 仿真内核与文档格式
 │   ├── ir/                   # IR 模型、校验与参考解释器
@@ -140,7 +138,7 @@ instance.storage.loadState(count); // 11
 ## 设计文档
 
 组件间的合同与语义（虚拟时间、电气模型、器件 IR、引脚与电源域、连接拓扑、文档格式、Widget 运行时与音频）见 [docs/rfc](./docs/rfc)。新增规范从 [docs/rfc-template.md](./docs/rfc-template.md) 起步。
-各包的 API 使用指南见包内 `docs/`，例如 [packages/simulator/docs](./packages/simulator/docs/API.md)。
+各包的 API 使用指南见包内 `docs/`，例如 [packages/simulator/docs](./packages/simulator/docs/MIGRATION.md)。
 
 ## 开发
 
@@ -150,10 +148,8 @@ instance.storage.loadState(count); // 11
 pnpm install
 pnpm run build         # 构建全部包（ESM + d.ts）
 pnpm run test          # 运行全部包测试
-pnpm run test:e2e      # Playground 冒烟测试（Playwright）
 pnpm run typecheck     # TypeScript 类型检查
 pnpm run lint          # ESLint
-pnpm run lint:package  # 包产物检查（publint + arethetypeswrong）
 pnpm run format        # Prettier 格式化
 ```
 

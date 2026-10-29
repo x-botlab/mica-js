@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "schematic": "schematics/device-bench.sch",
+  "widgets": [
+    {
+      "id": "5e6f7081-92a3-4eb4-8fd5-a6b7c8d9e0f1",
+      "widget": "demo:lamp",
+      "x": 48,
+      "y": 40,
+      "width": 140,
+      "height": 140,
+      "rotation": 0,
+      "properties": {
+        "label": "D1",
+        "color": "#FF3B30",
+        "offColor": "#27272A",
+        "radius": 20
+      },
+      "bindings": {
+        "lit": {
+          "symbol": "d9b8c7a6-5f4e-4d3c-8b2a-1f0e9d8c7b61",
+          "port": "lit"
+        }
+      }
+    },
+    {
+      "id": "6f708192-a3b4-4fc5-90e6-b7c8d9e0f1a2",
+      "widget": "demo:lamp",
+      "x": 220,
+      "y": 40,
+      "width": 140,
+      "height": 140,
+      "rotation": 0,
+      "properties": {
+        "label": "D2",
+        "color": "#22C55E",
+        "offColor": "#27272A",
+        "radius": 20
+      },
+      "bindings": {
+        "lit": {
+          "symbol": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a72",
+          "port": "lit"
+        }
+      }
+    }
+  ]
+}

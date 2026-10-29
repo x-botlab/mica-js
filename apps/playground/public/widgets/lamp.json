@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "label": { "type": "string", "title": "文本", "default": "" },
+    "color": { "type": "color", "title": "点亮颜色", "default": "#FF3B30" },
+    "offColor": { "type": "color", "title": "熄灭颜色", "default": "#27272A" },
+    "radius": { "type": "number", "title": "圆角", "default": 16, "min": 0 }
+  },
+  "ports": {
+    "lit": { "direction": "input", "type": "boolean", "title": "点亮" }
+  }
+}

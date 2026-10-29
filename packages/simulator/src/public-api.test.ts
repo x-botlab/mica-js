@@ -1,36 +1,26 @@
 /**
  * Guards the published entry point: every documented runtime export must stay
- * available and the typed accessor surface must keep inferring per-device
- * accessors from the literal device type.
+ * available, the generic accessor surface must stay generic, and no built-in
+ * device model may sneak back in.
  */
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import type {
-  ButtonIRAccessor,
-  DeviceAccessor,
-  LedAccessor,
-  LedIRAccessor,
-  StorageAccessor,
-  TeachingMCUAccessor,
-} from './index';
+import type { DeviceAccessor, SchematicDeviceBinding } from './index';
 import {
-  BUTTON_IR_TYPE,
   Circuit,
   CircuitError,
   DEVICE_PIN_STRIDE,
-  LED_IR_TYPE,
   PIN_MODE,
-  TEACHING_MCU_IR_TYPE,
   UNIFIED_PIN_CAPACITY,
   UnifiedIRCompilerError,
   compileCircuit,
-  createButtonIR,
+  createCircuitDeviceSimulationHost,
   createCircuitFromSchematic,
-  createLedDescription,
-  createLedIR,
-  createMcuDescription,
-  createSingleDeviceCircuit,
-  createTeachingMCUIR,
+  createModuleValidation,
+  createSchematicCircuit,
+  createSchematicDeviceSimulationHost,
+  startDeviceSimulationHostGuest,
 } from './index';
+import { lampSinkDescription, toggleDriverDescription } from './unified-ir/compiler/test-helpers';
 
 describe('public API surface', () => {
   it('exports every documented runtime entry point', () => {
@@ -39,53 +29,63 @@ describe('public API surface', () => {
     expect(typeof UnifiedIRCompilerError).toBe('function');
     expect(typeof compileCircuit).toBe('function');
     expect(typeof createCircuitFromSchematic).toBe('function');
-    expect(typeof createSingleDeviceCircuit).toBe('function');
-    expect(typeof createLedDescription).toBe('function');
-    expect(typeof createMcuDescription).toBe('function');
-    expect(typeof createLedIR).toBe('function');
-    expect(typeof createButtonIR).toBe('function');
-    expect(typeof createTeachingMCUIR).toBe('function');
+    expect(typeof createSchematicCircuit).toBe('function');
+    expect(typeof createCircuitDeviceSimulationHost).toBe('function');
+    expect(typeof createSchematicDeviceSimulationHost).toBe('function');
+    expect(typeof startDeviceSimulationHostGuest).toBe('function');
+    expect(typeof createModuleValidation).toBe('function');
 
-    expect(LED_IR_TYPE).toBe('led-ir');
-    expect(BUTTON_IR_TYPE).toBe('button-ir');
-    expect(TEACHING_MCU_IR_TYPE).toBe('teaching-mcu-ir');
     expect(UNIFIED_PIN_CAPACITY).toBe(256);
     expect(DEVICE_PIN_STRIDE).toBe(32);
     expect(PIN_MODE.pushPull).toBe(1);
   });
 
-  it('infers the type-specific accessor from a literal device type', async () => {
-    const lamp = createLedIR('led1');
-    const button = createButtonIR('sw1');
+  it('ships no device models', async () => {
+    const simulator = await import('./index');
+
+    for (const name of [
+      'createLedDescription',
+      'createMcuDescription',
+      'createSingleDeviceCircuit',
+      'BUILTIN_DEVICE_KERNELS',
+      'BUILTIN_DEVICE_TYPES',
+      'builtinDeviceKernel',
+      'resolveDeviceDescription',
+    ]) {
+      expect(name in simulator).toBe(false);
+    }
+  });
+
+  it('keeps the generic accessor surface for caller-supplied devices', async () => {
     const circuit = await Circuit.create({
       devices: [
-        { id: 'led1', type: LED_IR_TYPE, description: lamp.device.description },
-        { id: 'sw1', type: BUTTON_IR_TYPE, description: button.device.description },
+        { id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() },
+        { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
       ],
       connections: [
-        { from: 'sw1.B', to: 'GND' },
-        { from: 'sw1.A', to: 'led1.anode' },
-        { from: 'led1.cathode', to: 'GND' },
+        { from: 'drive1.PA0', to: 'sink1.anode' },
+        { from: 'sink1.cathode', to: 'GND' },
       ],
     });
 
-    expectTypeOf(circuit.devices.led1).toEqualTypeOf<LedIRAccessor>();
-    expectTypeOf(circuit.devices.sw1).toEqualTypeOf<ButtonIRAccessor>();
-    expectTypeOf<LedAccessor>().toMatchTypeOf<DeviceAccessor>();
-    expectTypeOf<TeachingMCUAccessor>().toMatchTypeOf<DeviceAccessor>();
-    expectTypeOf<StorageAccessor>().toHaveProperty('loadState');
+    expectTypeOf(circuit.devices.sink1).toEqualTypeOf<DeviceAccessor>();
+    expectTypeOf(circuit.devices.drive1).toEqualTypeOf<DeviceAccessor>();
 
-    circuit.devices.sw1.press();
-    circuit.runBatch(3);
-    expect(circuit.devices.led1.isOn()).toBe(true);
-    expect(circuit.devices.sw1.getPressCount()).toBe(1);
+    circuit.runBatch(1);
+    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
     circuit.dispose();
   });
 
-  it('drives a built-in device pair through the default kernels', async () => {
-    const circuit = await createSingleDeviceCircuit('mcu', { pins: ['PA0'] });
-    circuit.runBatch(2);
-    expect(circuit.devices.device.readPin('PA0')).toBe(false);
-    circuit.dispose();
+  it('describes devices through the caller-supplied binding contract', () => {
+    const binding: SchematicDeviceBinding = {
+      type: 'caller-device-ir',
+      description: toggleDriverDescription(),
+      topics: [{ port: 'value', direction: 'output', type: 'number' }],
+      read: () => 1,
+    };
+    expect(binding.topics?.[0]?.port).toBe('value');
+    expectTypeOf(binding.read).toEqualTypeOf<
+      ((accessor: DeviceAccessor, port: string) => unknown) | undefined
+    >();
   });
 });

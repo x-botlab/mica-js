@@ -1,4 +1,4 @@
-import type { PackageFiles } from './load-package';
+import type { PackageFiles } from './package/load';
 
 export interface MemoryFilesOptions {
   readonly label?: string;

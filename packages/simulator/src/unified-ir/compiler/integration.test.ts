@@ -3,12 +3,11 @@ import { createIRInterpreter, createIRJIT } from '@mica-js/ir';
 import type { IRExecutionContext, IRInterpreter, ScalarType, StorageValue } from '@mica-js/ir';
 import {
   compileCircuit,
-  createLedDescription,
-  createMcuDescription,
   type CircuitCompilationInput,
   type CompiledCircuit,
   type DeviceConfig,
 } from './index';
+import { lampSinkDescription, toggleDriverDescription } from './test-helpers';
 
 const CONTEXT: IRExecutionContext = Object.freeze({
   instanceId: 'unified-ir-compiler-test',
@@ -68,86 +67,86 @@ function pinModeOf(compiled: CompiledCircuit, runtime: IRInterpreter, endpoint: 
   return Number(runtime.storage.loadArray(compiled.memory.mode, pin));
 }
 
-function mcu(id = 'mcu1'): DeviceConfig {
-  return { id, type: 'teaching-mcu', description: createMcuDescription() };
+function driver(id = 'drive1'): DeviceConfig {
+  return { id, type: 'toggle-driver', description: toggleDriverDescription() };
 }
 
-function led(id = 'led1'): DeviceConfig {
-  return { id, type: 'ideal-led', description: createLedDescription() };
+function sink(id = 'sink1'): DeviceConfig {
+  return { id, type: 'lamp-sink', description: lampSinkDescription() };
 }
 
-function mcuLedInput(): CircuitCompilationInput {
+function driverSinkInput(): CircuitCompilationInput {
   return {
-    devices: [mcu(), led()],
+    devices: [driver(), sink()],
     connections: [
-      { from: 'mcu1.PA0', to: 'led1.anode' },
-      { from: 'led1.cathode', to: 'GND' },
+      { from: 'drive1.PA0', to: 'sink1.anode' },
+      { from: 'sink1.cathode', to: 'GND' },
     ],
   };
 }
 
 describe('CompiledCircuit integration', () => {
-  it('propagates an MCU pin toggle to the LED lamp', () => {
-    const compiled = compileCircuit(mcuLedInput());
+  it('propagates a driver pin toggle to the sink lamp', () => {
+    const compiled = compileCircuit(driverSinkInput());
     const jit = createRuntime(compiled);
     initialize(compiled, jit);
 
-    expect(lampOf(compiled, jit, 'led1')).toBe(false);
+    expect(lampOf(compiled, jit, 'sink1')).toBe(false);
 
     tick(compiled, jit);
-    expect(pinOutputOf(compiled, jit, 'mcu1.PA0')).toBe(true);
-    expect(pinInputOf(compiled, jit, 'led1.anode')).toBe(true);
-    expect(pinInputOf(compiled, jit, 'led1.cathode')).toBe(false);
-    expect(lampOf(compiled, jit, 'led1')).toBe(true);
+    expect(pinOutputOf(compiled, jit, 'drive1.PA0')).toBe(true);
+    expect(pinInputOf(compiled, jit, 'sink1.anode')).toBe(true);
+    expect(pinInputOf(compiled, jit, 'sink1.cathode')).toBe(false);
+    expect(lampOf(compiled, jit, 'sink1')).toBe(true);
 
     tick(compiled, jit);
-    expect(pinOutputOf(compiled, jit, 'mcu1.PA0')).toBe(false);
-    expect(pinInputOf(compiled, jit, 'led1.anode')).toBe(false);
-    expect(lampOf(compiled, jit, 'led1')).toBe(false);
+    expect(pinOutputOf(compiled, jit, 'drive1.PA0')).toBe(false);
+    expect(pinInputOf(compiled, jit, 'sink1.anode')).toBe(false);
+    expect(lampOf(compiled, jit, 'sink1')).toBe(false);
 
     tick(compiled, jit);
-    expect(lampOf(compiled, jit, 'led1')).toBe(true);
+    expect(lampOf(compiled, jit, 'sink1')).toBe(true);
   });
 
   it('configures the driving pin as push-pull during initialize', () => {
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     const jit = createRuntime(compiled);
     initialize(compiled, jit);
 
-    expect(pinModeOf(compiled, jit, 'mcu1.PA0')).toBe(1);
-    expect(pinOutputOf(compiled, jit, 'mcu1.PA0')).toBe(false);
-    expect(lampOf(compiled, jit, 'led1')).toBe(false);
+    expect(pinModeOf(compiled, jit, 'drive1.PA0')).toBe(1);
+    expect(pinOutputOf(compiled, jit, 'drive1.PA0')).toBe(false);
+    expect(lampOf(compiled, jit, 'sink1')).toBe(false);
   });
 
-  it('keeps the LED dark when the cathode sits on VCC', () => {
+  it('keeps the sink dark when the cathode sits on VCC', () => {
     const compiled = compileCircuit({
-      devices: [mcu(), led()],
+      devices: [driver(), sink()],
       connections: [
-        { from: 'mcu1.PA0', to: 'led1.anode' },
-        { from: 'led1.cathode', to: 'VCC' },
+        { from: 'drive1.PA0', to: 'sink1.anode' },
+        { from: 'sink1.cathode', to: 'VCC' },
       ],
     });
     const jit = createRuntime(compiled);
     initialize(compiled, jit);
     for (let step = 0; step < 4; step += 1) {
       tick(compiled, jit);
-      expect(pinInputOf(compiled, jit, 'led1.cathode')).toBe(true);
-      expect(lampOf(compiled, jit, 'led1')).toBe(false);
+      expect(pinInputOf(compiled, jit, 'sink1.cathode')).toBe(true);
+      expect(lampOf(compiled, jit, 'sink1')).toBe(false);
     }
   });
 
-  it('lights an LED wired between VCC and GND without any driver', () => {
+  it('lights a sink wired between VCC and GND without any driver', () => {
     const compiled = compileCircuit({
-      devices: [led()],
+      devices: [sink()],
       connections: [
-        { from: 'led1.anode', to: 'VCC' },
-        { from: 'led1.cathode', to: 'GND' },
+        { from: 'sink1.anode', to: 'VCC' },
+        { from: 'sink1.cathode', to: 'GND' },
       ],
     });
     const jit = createRuntime(compiled);
     initialize(compiled, jit);
     tick(compiled, jit);
-    expect(lampOf(compiled, jit, 'led1')).toBe(true);
+    expect(lampOf(compiled, jit, 'sink1')).toBe(true);
   });
 
   it('runs a custom probe device off the solved net', () => {
@@ -165,8 +164,8 @@ describe('CompiledCircuit integration', () => {
       },
     };
     const compiled = compileCircuit({
-      devices: [mcu(), probe],
-      connections: [{ from: 'mcu1.PA0', to: 'probe1.sense' }],
+      devices: [driver(), probe],
+      connections: [{ from: 'drive1.PA0', to: 'probe1.sense' }],
     });
     const jit = createRuntime(compiled);
     initialize(compiled, jit);
@@ -177,31 +176,31 @@ describe('CompiledCircuit integration', () => {
     expect(stateOf(compiled, jit, 'probe1', 'last')).toBe(false);
   });
 
-  it('keeps two independent MCU + LED pairs apart', () => {
+  it('keeps two independent driver + sink pairs apart', () => {
     const compiled = compileCircuit({
-      devices: [mcu('mcu1'), mcu('mcu2'), led('led1'), led('led2')],
+      devices: [driver('drive1'), driver('drive2'), sink('sink1'), sink('sink2')],
       connections: [
-        { from: 'mcu1.PA0', to: 'led1.anode' },
-        { from: 'led1.cathode', to: 'GND' },
-        { from: 'mcu2.PA0', to: 'led2.anode' },
-        { from: 'led2.cathode', to: 'GND' },
+        { from: 'drive1.PA0', to: 'sink1.anode' },
+        { from: 'sink1.cathode', to: 'GND' },
+        { from: 'drive2.PA0', to: 'sink2.anode' },
+        { from: 'sink2.cathode', to: 'GND' },
       ],
     });
     const jit = createRuntime(compiled);
     initialize(compiled, jit);
 
     tick(compiled, jit);
-    expect(lampOf(compiled, jit, 'led1')).toBe(true);
-    expect(lampOf(compiled, jit, 'led2')).toBe(true);
-    expect(pinInputOf(compiled, jit, 'led1.anode')).toBe(pinInputOf(compiled, jit, 'led2.anode'));
+    expect(lampOf(compiled, jit, 'sink1')).toBe(true);
+    expect(lampOf(compiled, jit, 'sink2')).toBe(true);
+    expect(pinInputOf(compiled, jit, 'sink1.anode')).toBe(pinInputOf(compiled, jit, 'sink2.anode'));
 
     tick(compiled, jit);
-    expect(lampOf(compiled, jit, 'led1')).toBe(false);
-    expect(lampOf(compiled, jit, 'led2')).toBe(false);
+    expect(lampOf(compiled, jit, 'sink1')).toBe(false);
+    expect(lampOf(compiled, jit, 'sink2')).toBe(false);
   });
 
   it('produces the same trace on the JIT and the reference interpreter', () => {
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     const jit = createRuntime(compiled, 'jit');
     const reference = createRuntime(compiled, 'reference');
     initialize(compiled, jit);
@@ -210,15 +209,15 @@ describe('CompiledCircuit integration', () => {
     for (let step = 0; step < 6; step += 1) {
       tick(compiled, jit);
       tick(compiled, reference);
-      expect(lampOf(compiled, reference, 'led1')).toBe(lampOf(compiled, jit, 'led1'));
-      expect(pinInputOf(compiled, reference, 'led1.anode')).toBe(
-        pinInputOf(compiled, jit, 'led1.anode'),
+      expect(lampOf(compiled, reference, 'sink1')).toBe(lampOf(compiled, jit, 'sink1'));
+      expect(pinInputOf(compiled, reference, 'sink1.anode')).toBe(
+        pinInputOf(compiled, jit, 'sink1.anode'),
       );
     }
   });
 
   it('batches ticks inside the generated loop', () => {
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     const single = createRuntime(compiled);
     const batched = createRuntime(compiled);
     initialize(compiled, single);
@@ -227,18 +226,18 @@ describe('CompiledCircuit integration', () => {
     for (let step = 0; step < 5; step += 1) tick(compiled, single);
     batched.execute(compiled.entryPoints.refs.batch, [5], CONTEXT);
 
-    expect(lampOf(compiled, batched, 'led1')).toBe(lampOf(compiled, single, 'led1'));
-    expect(pinInputOf(compiled, batched, 'led1.anode')).toBe(
-      pinInputOf(compiled, single, 'led1.anode'),
+    expect(lampOf(compiled, batched, 'sink1')).toBe(lampOf(compiled, single, 'sink1'));
+    expect(pinInputOf(compiled, batched, 'sink1.anode')).toBe(
+      pinInputOf(compiled, single, 'sink1.anode'),
     );
-    expect(pinOutputOf(compiled, batched, 'mcu1.PA0')).toBe(
-      pinOutputOf(compiled, single, 'mcu1.PA0'),
+    expect(pinOutputOf(compiled, batched, 'drive1.PA0')).toBe(
+      pinOutputOf(compiled, single, 'drive1.PA0'),
     );
 
     // One more tick must resume exactly where the batch stopped.
     tick(compiled, single);
     tick(compiled, batched);
-    expect(lampOf(compiled, batched, 'led1')).toBe(lampOf(compiled, single, 'led1'));
+    expect(lampOf(compiled, batched, 'sink1')).toBe(lampOf(compiled, single, 'sink1'));
   });
 
   it('accumulates a typed u32 device state on every tick', () => {
@@ -261,8 +260,8 @@ describe('CompiledCircuit integration', () => {
       },
     };
     const compiled = compileCircuit({
-      devices: [mcu(), counter],
-      connections: [{ from: 'mcu1.PA0', to: 'c1.clk' }],
+      devices: [driver(), counter],
+      connections: [{ from: 'drive1.PA0', to: 'c1.clk' }],
     });
     expect(compiled.states.arrays.get('u32')).toBeDefined();
 
@@ -295,30 +294,30 @@ describe('CompiledCircuit integration', () => {
       },
     };
     const compiled = compileCircuit({
-      devices: [bridge, led()],
+      devices: [bridge, sink()],
       connections: [
-        { from: 'b1.line', to: 'led1.anode' },
-        { from: 'led1.cathode', to: 'GND' },
+        { from: 'b1.line', to: 'sink1.anode' },
+        { from: 'sink1.cathode', to: 'GND' },
       ],
     });
     expect(compiled.netlist.nets[0]?.sinks.map((pin) => pin.endpoint)).toEqual([
       'b1.line',
-      'led1.anode',
+      'sink1.anode',
     ]);
 
     const jit = createRuntime(compiled);
     initialize(compiled, jit);
     tick(compiled, jit);
     expect(pinInputOf(compiled, jit, 'b1.line')).toBe(true);
-    expect(lampOf(compiled, jit, 'led1')).toBe(true);
+    expect(lampOf(compiled, jit, 'sink1')).toBe(true);
     tick(compiled, jit);
     expect(pinInputOf(compiled, jit, 'b1.line')).toBe(false);
-    expect(lampOf(compiled, jit, 'led1')).toBe(false);
+    expect(lampOf(compiled, jit, 'sink1')).toBe(false);
   });
 
   it('compiles quickly and ticks at prototype speed', () => {
     const compileStart = performance.now();
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     const compileMs = performance.now() - compileStart;
     expect(compileMs).toBeLessThan(200);
 

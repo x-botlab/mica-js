@@ -9,12 +9,15 @@
     "directory": "packages/canvas-editor"
   },
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "**/*.css"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./style.css": "./dist/style.css"
   },
   "files": [
     "dist"
@@ -30,6 +33,8 @@
   },
   "dependencies": {
     "@mica-js/core": "workspace:*",
+    "@mica-js/sandbox": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
     "@mica-js/widget": "workspace:*"
   },
   "devDependencies": {

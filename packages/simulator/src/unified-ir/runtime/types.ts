@@ -1,8 +1,5 @@
 import type { IRJITTuning } from '@mica-js/ir';
-import type { CircuitCompilationInput, DeviceDescription } from '../compiler';
-import type { ButtonAccessor as ButtonIRAccessor } from '../devices/button/button.ac';
-import type { LedAccessor as LedIRAccessor } from '../devices/led/led.ac';
-import type { TeachingMCUAccessor } from '../examples/teaching-mcu/teaching-mcu.ac';
+import type { CircuitCompilationInput } from '../compiler';
 
 /**
  * Types of the unified circuit runtime (U02).
@@ -57,8 +54,6 @@ export type CircuitErrorCode =
   | 'pin-not-writable'
   | 'state-not-found'
   | 'invalid-state-value'
-  | 'register-not-found'
-  | 'invalid-register-value'
   | 'unresolved-device'
   | 'disposed';
 
@@ -102,7 +97,7 @@ export class CircuitError extends Error {
 export interface DeviceAccessor {
   /** Circuit-unique device id. */
   readonly deviceId: string;
-  /** Device type, e.g. `'teaching-mcu'`. */
+  /** Device type, e.g. `'push-pull-driver'`. */
   readonly type: string;
   /** Declared pin names, in declaration order. */
   readonly pinNames: readonly string[];
@@ -118,70 +113,17 @@ export interface DeviceAccessor {
   setState(name: string, value: unknown): void;
 }
 
-/** Accessor of an LED-shaped device (`led`, `ideal-led`, …). */
-export interface LedAccessor extends DeviceAccessor {
-  /** Name of the boolean state `isOn()` reports. */
-  readonly lampState: string;
-  /** Lamps on when the anode senses high and the cathode low. */
-  isOn(): boolean;
-}
-
-/** Accessor of an MCU-shaped device (`mcu`, `teaching-mcu`, …). */
-export interface McuAccessor extends DeviceAccessor {
-  /** Integer/bool states exposed as registers, in declaration order. */
-  readonly registerNames: readonly string[];
-  /** Reads one register as a bigint bit pattern. */
-  readRegister(name: string): bigint;
-  /** Writes one register; the value must fit the declared state type. */
-  writeRegister(name: string, value: bigint): void;
-}
-
 /** Every accessor of one circuit, keyed by device id. */
 export type DeviceAccessors = Readonly<Record<string, DeviceAccessor>>;
 
 /**
- * Accessor type selected by a device type name.
- *
- * Unknown types fall back to `DeviceAccessor`, so custom devices keep the
- * generic state/pin surface without pretending to have lamps or registers.
- */
-export type DeviceAccessorForType<T extends string> = T extends 'led' | 'ideal-led'
-  ? LedAccessor
-  : T extends 'mcu' | 'teaching-mcu'
-    ? McuAccessor
-    : T extends 'teaching-mcu-ir'
-      ? TeachingMCUAccessor
-      : T extends 'led-ir'
-        ? LedIRAccessor
-        : T extends 'button-ir'
-          ? ButtonIRAccessor
-          : DeviceAccessor;
-
-/**
  * Accessor map derived from a literal compilation input.
  *
- * `Circuit.create` infers the device ids and types of a `const` input, so
- * `circuit.devices.led1.isOn()` type-checks without a cast while devices of
- * unknown types keep only the generic surface.
+ * `Circuit.create` infers the device ids of a `const` input, so
+ * `circuit.devices.<id>` is typed without a cast. A device package that wants a
+ * richer surface builds it through `DeviceDescription.accessor` and casts at
+ * the call site.
  */
 export type DeviceAccessorsOf<I extends CircuitCompilationInput> = {
-  readonly [D in I['devices'][number] as D['id']]: DeviceAccessorForType<D['type']>;
+  readonly [D in I['devices'][number] as D['id']]: DeviceAccessor;
 };
-
-/**
- * Input of `createSingleDeviceCircuit`: one device named `device` whose type is
- * preserved so `circuit.devices.device` keeps the type-specific accessor.
- */
-export interface SingleDeviceCircuitInput<
-  T extends string = string,
-> extends CircuitCompilationInput {
-  readonly devices: readonly [
-    {
-      readonly id: 'device';
-      readonly type: T;
-      readonly description: DeviceDescription;
-      readonly config?: Readonly<Record<string, unknown>>;
-    },
-  ];
-  readonly connections: readonly [];
-}

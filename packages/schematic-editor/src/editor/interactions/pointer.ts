@@ -1,11 +1,11 @@
 import type { DeviceSymbolProvider, Point } from '@mica-js/core/schematic';
-import type { SchematicEditorController } from '../../controller/controller';
 import { screenToPage, type ViewportState } from '../../render/viewport';
 import { MIN_HIT_PIXELS, snapForWire, type SnapContext, type WireAxis } from '../snapping';
+import type { EditorSurface } from '../surface';
 import type { EditorViewport } from '../viewport-state';
 
 export interface PointerDeps {
-  readonly controller: SchematicEditorController;
+  readonly editor: EditorSurface;
   readonly devices: DeviceSymbolProvider | undefined;
   readonly viewport: EditorViewport;
   readonly canvas: HTMLCanvasElement;
@@ -39,9 +39,11 @@ export class Pointer {
 
   snapContext(): SnapContext {
     return {
-      controller: this.#deps.controller,
+      document: this.#deps.editor.getValue(),
+      display: this.#deps.editor.getDisplay(),
       devices: this.#deps.devices,
       tolerance: this.tolerance(),
+      hitTest: (point, options) => this.#deps.editor.hitTest(point, options),
     };
   }
 
@@ -51,14 +53,14 @@ export class Pointer {
 
   /** Orientation of the existing wire under `point`, so a branch can approach it perpendicularly. */
   hostAxisAt(point: Point): WireAxis | undefined {
-    const hit = this.#deps.controller.hitTest(point, {
+    const hit = this.#deps.editor.hitTest(point, {
       includeSymbols: false,
       tolerance: this.tolerance(),
     });
     if (hit?.kind !== 'wire') {
       return undefined;
     }
-    const wire = this.#deps.controller.getDocument().sheet.wires.find((item) => item.id === hit.id);
+    const wire = this.#deps.editor.getValue().sheet.wires.find((item) => item.id === hit.id);
     const a = wire?.points[hit.segment];
     const b = wire?.points[hit.segment + 1];
     if (a === undefined || b === undefined) {

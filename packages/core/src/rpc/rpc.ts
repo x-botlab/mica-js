@@ -1,4 +1,4 @@
-import { toDisposable } from '../lifecycle';
+import { Emitter, toDisposable } from '../lifecycle';
 import { isRpcMessage } from './protocol';
 import type { RpcMessage } from './protocol';
 import type {
@@ -59,21 +59,20 @@ export function createRpc<TTransfer = Transferable>(
   const pending = new Map<number, Pending>();
   const listeners = new Map<number, Callable>();
   const subscriptions = new Map<number, Subscription<TTransfer>>();
-  const errorListeners = new Set<(error: Error) => void>();
-  const closeListeners = new Set<() => void>();
+  const errorEmitter = new Emitter<Error>();
+  const closeEmitter = new Emitter<void>();
   let nextId = 0;
   let lastIncomingId = 0;
   let closed = false;
 
   function report(error: unknown): void {
     const failure = asError(error);
-    for (const listener of [config.onError, ...errorListeners]) {
-      try {
-        listener?.(failure);
-      } catch {
-        /* Error observers must not interrupt cleanup. */
-      }
+    try {
+      config.onError?.(failure);
+    } catch {
+      /* Error observers must not interrupt cleanup. */
     }
+    errorEmitter.fire(failure);
   }
 
   function ensureOpen(): void {
@@ -153,15 +152,9 @@ export function createRpc<TTransfer = Transferable>(
     listeners.clear();
     for (const id of subscriptions.keys()) removeSubscription(id);
     services.clear();
-    for (const listener of [...closeListeners]) {
-      try {
-        listener();
-      } catch (error) {
-        report(error);
-      }
-    }
-    closeListeners.clear();
-    errorListeners.clear();
+    closeEmitter.fire(undefined);
+    closeEmitter.dispose();
+    errorEmitter.dispose();
   }
 
   function disconnect(): void {
@@ -366,22 +359,34 @@ export function createRpc<TTransfer = Transferable>(
         },
       }) as RpcProxy<T>;
     },
-    onDidError(listener) {
-      if (closed) return () => {};
-      errorListeners.add(listener);
-      return () => {
-        errorListeners.delete(listener);
-      };
-    },
-    onDidClose(listener) {
+    onDidError: (listener, thisArgs, disposables) =>
+      errorEmitter.event(
+        (error) => {
+          try {
+            listener.call(thisArgs, error);
+          } catch {
+            /* Error observers must not interrupt cleanup. */
+          }
+        },
+        undefined,
+        disposables,
+      ),
+    onDidClose: (listener, thisArgs, disposables) => {
       if (closed) {
-        listener();
-        return () => {};
+        listener.call(thisArgs, undefined);
+        return toDisposable(() => {});
       }
-      closeListeners.add(listener);
-      return () => {
-        closeListeners.delete(listener);
-      };
+      return closeEmitter.event(
+        (value) => {
+          try {
+            listener.call(thisArgs, value);
+          } catch (error) {
+            report(error);
+          }
+        },
+        undefined,
+        disposables,
+      );
     },
     dispose: disconnect,
   };

@@ -29,8 +29,8 @@ export interface ResourceAllocation {
  * Allocates the circuit-wide pin and state address spaces.
  *
  * ```
- * ids:  0 = mcu1.PA0   1 = mcu1.PA1   2 = led1.anode   3 = led1.cathode
- *       |<-- mcu1 -->|                |<----------- led1 ----------->|
+ * ids:  0 = drive1.PA0   1 = drive1.PA1   2 = sink1.anode   3 = sink1.cathode
+ *       |<-- drive1 -->|                |<----------- sink1 ----------->|
  *
  * pin_mode[256] u8   pin_output[256] bool   pin_input[256] bool
  * device_state_bool[n] / device_state_u32[m] / ...   (one array per used type)

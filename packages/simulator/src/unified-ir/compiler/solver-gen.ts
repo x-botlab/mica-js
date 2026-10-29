@@ -37,9 +37,8 @@ export interface SolverGenerationContext {
  * ```
  *
  * Only a push-pull driver holds its net; high-z, open-drain and analog modes
- * leave it floating, which is the prototype's rule (`device-mcu.ts` /
- * `device-led.ts`). A driver-less net loads the constant of its rail, or `false`
- * when it is truly floating.
+ * leave it floating. A driver-less net loads the constant of its rail, or
+ * `false` when it is truly floating.
  */
 export class ElectricalSolverGenerator {
   private readonly context: SolverGenerationContext;

@@ -127,6 +127,14 @@ export default function segmentDisplay(api) {
     api.invalidate();
   });
 
+  // Numeric sources (press counters, sensor readings) land here without a string conversion in
+  // the device: the display is the only widget that knows how to render digits.
+  api.subscribe('count', (value) => {
+    const number = Number(value);
+    text = Number.isFinite(number) ? String(number) : String(value);
+    api.invalidate();
+  });
+
   return {
     render(context) {
       const width = api.width;

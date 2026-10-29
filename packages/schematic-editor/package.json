@@ -1,7 +1,7 @@
 {
   "name": "@mica-js/schematic-editor",
   "version": "0.2.1",
-  "description": "Mica schematic editor: canvas renderer and interaction",
+  "description": "Mica schematic editor: document model, canvas renderer and interaction",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -9,12 +9,15 @@
     "directory": "packages/schematic-editor"
   },
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "**/*.css"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./style.css": "./dist/style.css"
   },
   "files": [
     "dist"

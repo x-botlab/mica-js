@@ -16,7 +16,7 @@
 
 ```ts
 interface WidgetHost {
-  loadDocument(uri: URI): Promise<void>;
+  loadDocument(uri: string): Promise<void>;
   applyCommand(command: CanvasCommand): void;
   reset(): Promise<void>;
 
@@ -99,47 +99,47 @@ interface WidgetBinding {
 
 ### 选项
 
-| 选项                    | 类型             | 作用                                                        |
-| ----------------------- | ---------------- | ----------------------------------------------------------- |
-| `widgetProvider`        | `WidgetProvider` | widget 定义与实现                                           |
-| `deviceHost`            | `DeviceSimHost`  | 已构建的 `DeviceSimHost`；必需                              |
-| `fs`                    | `HostFs`         | 读取外部内容的唯一出口，见[宿主文件系统](./0019-host-fs.md) |
-| `dpr`                   | `number`         | 实例像素比，默认 1                                          |
-| `onDidReportDiagnostic` | 回调             | 故障上报；调用照常返回                                      |
-| `onDidPublish`          | 回调             | 落在绑定范围之外的 widget 发布，交给调用方处理              |
+| 选项                    | 类型                   | 作用                                                        |
+| ----------------------- | ---------------------- | ----------------------------------------------------------- |
+| `widgetProvider`        | `WidgetProvider`       | widget 定义与实现                                           |
+| `deviceHost`            | `DeviceSimulationHost` | 已构建的 `DeviceSimulationHost`；必需                       |
+| `fs`                    | `HostFs`               | 读取外部内容的唯一出口，见[宿主文件系统](./0019-host-fs.md) |
+| `dpr`                   | `number`               | 实例像素比，默认 1                                          |
+| `onDidReportDiagnostic` | 回调                   | 故障上报；调用照常返回                                      |
+| `onDidPublish`          | 回调                   | 落在绑定范围之外的 widget 发布，交给调用方处理              |
 
 前三项必需，其余可选。
 
-`deviceHost` 由装配层用 `deviceProvider` 与 `fs` 构建后传入，`WidgetHost` 接收构建好的 `DeviceSimHost`：
+`deviceHost` 由装配层用 `fs` 和已创建的 sandbox 实例构建后传入，`WidgetHost` 接收构建好的 `DeviceSimulationHost`：
 
 ```ts
-const deviceHost = await createDeviceSimHost({ deviceProvider, fs });
+const deviceHost = await createDeviceSimulationHostFromSandbox({ sandbox, fs });
 const host = createWidgetHost({ widgetProvider, deviceHost, fs });
 await host.loadDocument(uri);
 ```
 
-`fs` 出现两次是因为两侧各需读取自己那部分内容（`WidgetHost` 读画布文档与 widget 资源，`DeviceSimHost` 读原理图与器件属性资源），但它是同一个对象。
+`sandbox` 是装配层创建好的 `SandboxWorker` 实例，与 `fs` 一起作为初始化选项传入；适配器只驱动它的 `ready`、`state` 与 `terminate`。`fs` 出现两次是因为两侧各需读取自己那部分内容（`WidgetHost` 读画布文档与 widget 资源，`DeviceSimulationHost` 读原理图与器件属性资源），但它是同一个对象。
 
-### `DeviceSimHost`
+### `DeviceSimulationHost`
 
-`DeviceSimHost` 是可跨线程的接口：全部方法返回 Promise，同线程实现与跨线程实现具有完全相同的调用方式。因此 `WidgetHost` 与仿真可以分处不同线程，调用方用一套代码覆盖两种部署。
+`DeviceSimulationHost` 是可跨线程的接口：全部方法返回 Promise，同线程实现与跨线程实现具有完全相同的调用方式。因此 `WidgetHost` 与仿真可以分处不同线程，调用方用一套代码覆盖两种部署。
 
-| 方法                       | 作用                                        |
-| -------------------------- | ------------------------------------------- |
-| `loadSchematic(uri)`       | 读取并装入原理图；`URI` 或 `undefined` 清空 |
-| `tick(dt)`                 | 推进一个固定步，返回报告                    |
-| `deliver(target, payload)` | 向器件端点投递一条消息                      |
-| `onDidPublish(listener)`   | 订阅器件发布；注册本身是本地操作            |
-| `getTopics()`              | 端点清单                                    |
-| `getSimTime()`             | 当前仿真时间                                |
-| `getSchematic()`           | 当前原理图                                  |
-| `dispose()`                | 释放运行时                                  |
+| 方法                       | 作用                                           |
+| -------------------------- | ---------------------------------------------- |
+| `loadSchematic(uri)`       | 读取并装入原理图；`string` 或 `undefined` 清空 |
+| `tick(dt)`                 | 推进一个固定步，返回报告                       |
+| `deliver(target, payload)` | 向器件端点投递一条消息                         |
+| `onDidPublish(listener)`   | 订阅器件发布；注册本身是本地操作               |
+| `getTopics()`              | 端点清单                                       |
+| `getSimTime()`             | 当前仿真时间                                   |
+| `getSchematic()`           | 当前原理图                                     |
+| `dispose()`                | 释放运行时                                     |
 
-`DeviceSimHost` 的接口围绕话题与状态展开：引脚、网络与解网是运行时的内部实现，跨线程部署时同样留在 `DeviceSimHost` 一侧。
+`DeviceSimulationHost` 的接口围绕话题与状态展开：引脚、网络与解网是运行时的内部实现，跨线程部署时同样留在 `DeviceSimulationHost` 一侧。
 
 ### 文档装入与推进
 
-`loadDocument` 接收 `.cnv` 的 URI；`WidgetHost` 自己读取并解析画布文档，并把其中的原理图引用解析成绝对 URI 后交给 `DeviceSimHost`。URI 的形态由 `WidgetHost` 决定，规范只要求它可被 `fs.read` 读取。
+`loadDocument` 接收 `.cnv` 的 URI；`WidgetHost` 自己读取并解析画布文档，并把其中的原理图引用解析成绝对 URI 后交给 `DeviceSimulationHost`。URI 的形态由 `WidgetHost` 决定，规范只要求它可被 `fs.read` 读取。
 
 顺序固定为：
 
@@ -160,7 +160,7 @@ await host.loadDocument(uri);
 
 ### 资源
 
-外部内容的寻址与读取见[宿主文件系统](./0019-host-fs.md)。`WidgetHost` 与 `DeviceSimHost` 各自通过 `fs` 取得所需内容：前者读画布文档与 widget 属性资源，后者读原理图与器件属性资源，规则以该文为准。
+外部内容的寻址与读取见[宿主文件系统](./0019-host-fs.md)。`WidgetHost` 与 `DeviceSimulationHost` 各自通过 `fs` 取得所需内容：前者读画布文档与 widget 属性资源，后者读原理图与器件属性资源，规则以该文为准。
 
 ## 运行时
 
@@ -184,7 +184,7 @@ widget 实例加载第三方代码，因此与 `WidgetHost`、仿真一并在沙
 - 渲染每帧一次，与本次推进了几步无关；
 - 单帧推进的步数有上限，长时间暂停后跳过积压。
 
-`tick` 只接收时长；当前仿真时间由 `WidgetHost` 从 `DeviceSimHost` 读取，时刻的权威来源因此只有一个。返回 Promise 是因为该调用可能跨线程。
+`tick` 只接收时长；当前仿真时间由 `WidgetHost` 从 `DeviceSimulationHost` 读取，时刻的权威来源因此只有一个。返回 Promise 是因为该调用可能跨线程。
 
 #### 一步的完整时序
 
@@ -194,7 +194,7 @@ sequenceDiagram
     participant E as 画布编辑器（主线程）
     participant WH as WidgetHost（沙箱）
     participant WJ as widget 实例（widget js）
-    participant DS as DeviceSimHost（沙箱）
+    participant DS as DeviceSimulationHost（沙箱）
     participant DJ as 器件实例（device js / IR）
 
     E->>WH: 输入事件（随时到达，步首分发）
@@ -226,9 +226,7 @@ widget 的 `tick` 每步一次，渲染每帧一次。步长与步内顺序见[�
 
 ### 跨线程输入
 
-指针、键盘与文本输入由画布编辑器转交。它们的到达时刻与步边界无关：先进入队列，在下一个步首统一分发，因此一条输入落在第几步取决于它到达时仿真推进到了哪里，与主线程的帧节奏无关。
-
-文本输入与原生选择依赖 DOM，由主线程代理后转交。
+指针与键盘事件由画布编辑器转交。它们的到达时刻与步边界无关：先进入队列，在下一个步首统一分发，因此一条输入落在第几步取决于它到达时仿真推进到了哪里，与主线程的帧节奏无关。
 
 ### 共享地址空间
 
@@ -250,6 +248,6 @@ widget 的 `tick` 每步一次，渲染每帧一次。步长与步内顺序见[�
 - [RFC 0010](./0010-topic-ports.md)：绑定方向与载荷类型。
 - [RFC 0013](./0013-canvas-format.md)：`.cnv` 的实例、绑定与 `schematic` 引用。
 - [RFC 0014](./0014-widget-definition.md)：widget 的端口声明。
-- [RFC 0015](./0015-widget-js-api.md)：Widget 的上下文接口、`tick` 与文本输入。
+- [RFC 0015](./0015-widget-js-api.md)：Widget 的上下文接口与 `tick`。
 - [RFC 0017](./0017-device-topic-delivery.md)：步长、步内顺序与话题投递。
 - [RFC 0019](./0019-host-fs.md)：资源寻址与读取接口。

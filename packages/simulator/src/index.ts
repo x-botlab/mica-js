@@ -1,21 +1,19 @@
 /**
  * `@mica-js/simulator` public surface.
  *
- * Two execution paths are exported:
+ * The package exposes one execution model: unified IR. `Circuit` compiles devices, electrical
+ * solving and the main loop into one `@mica-js/ir` module.
  *
- * - **Unified IR** (recommended for new code): `Circuit` compiles the whole
- *   circuit — devices, electrical solve and main loop — into one
- *   `@mica-js/ir` module. See `docs/MIGRATION.md` and `docs/API.md`.
- * - **Scheduler path** (maintenance mode): `createDeviceSimExecutor` loads
- *   schematic device modules and routes widget topics. Deprecated in TSDoc;
- *   see `docs/DEPRECATIONS.md`.
+ * It ships no device models: a caller supplies every description (pins, states,
+ * behaviours or kernel), so device packages stay the only place that knows what
+ * an LED, a button or an MCU is.
  */
 
 /* -------------------------------------------------------------------------
  * Unified IR: runtime
  * ---------------------------------------------------------------------- */
 export { Circuit, CircuitError } from './unified-ir/runtime';
-export { createCircuitFromSchematic, createSingleDeviceCircuit } from './unified-ir/runtime';
+export { createCircuitFromSchematic, createSchematicCircuit } from './unified-ir/runtime';
 export type {
   CircuitElectricalOptions,
   CircuitEngine,
@@ -24,26 +22,17 @@ export type {
   CircuitRuntimeOptions,
   DeviceAccessor,
   DeviceAccessors,
-  DeviceAccessorForType,
   DeviceAccessorsOf,
-  LedAccessor,
-  McuAccessor,
+  SchematicCircuitBinding,
   SchematicCircuitOptions,
   SchematicDeviceBinding,
-  SingleDeviceCircuitInput,
+  SchematicDeviceTopic,
 } from './unified-ir/runtime';
 
 /* -------------------------------------------------------------------------
  * Unified IR: compiler
  * ---------------------------------------------------------------------- */
-export {
-  BUILTIN_DEVICE_TYPES,
-  DEFAULT_RAILS,
-  UnifiedIRCompilerError,
-  compileCircuit,
-  createLedDescription,
-  createMcuDescription,
-} from './unified-ir/compiler';
+export { DEFAULT_RAILS, UnifiedIRCompilerError, compileCircuit } from './unified-ir/compiler';
 export type {
   CircuitCompilationInput,
   CircuitCompilationOptions,
@@ -70,94 +59,24 @@ export { DEVICE_PIN_STRIDE, PIN_MODE, UNIFIED_PIN_CAPACITY } from './unified-ir/
 export type { PinMode } from './unified-ir/pin-space';
 
 /* -------------------------------------------------------------------------
- * Unified IR: devices
+ * DeviceSimulationHost: RFC 0018 contract and same-thread implementations
+ * (the browser/sandbox factory lives in the `./sandbox` entry)
  * ---------------------------------------------------------------------- */
-export {
-  BUTTON_IR_TYPE,
-  ButtonError,
-  LED_COLORS,
-  LED_IR_TYPE,
-  LedError,
-  createButtonIR,
-  createLedIR,
-} from './unified-ir/devices';
 export type {
-  ButtonAccessor as ButtonIRAccessor,
-  ButtonAccessorOptions,
-  ButtonConfig,
-  ButtonErrorCode,
-  ButtonErrorOptions,
-  ButtonIRDevice,
-  ButtonSnapshot,
-  ButtonTerminal,
-  LedAccessor as LedIRAccessor,
-  LedAccessorOptions,
-  LedColor,
-  LedConfig,
-  LedErrorCode,
-  LedErrorOptions,
-  LedIRDevice,
-  LedSnapshot,
-  LedTerminal,
-  ResolvedButtonConfig,
-  ResolvedLedConfig,
-  SimpleDeviceAccessorOptions,
-  SimpleDevicePin,
-  SimplePinMemory,
-  StorageAccessor,
-} from './unified-ir/devices';
-
-/* -------------------------------------------------------------------------
- * Unified IR: teaching MCU reference device
- * ---------------------------------------------------------------------- */
-export {
-  FLASH_BASE,
-  GPIO_DIR,
-  GPIO_IDR,
-  GPIO_ODR,
-  PERIPHERAL_BASE,
-  RAM_BASE,
-  REGISTER_COUNT,
-  TEACHING_MCU_IR_TYPE,
-  TeachingMCUError,
-  createTeachingMCUCircuit,
-  createTeachingMCUIR,
-} from './unified-ir/examples/teaching-mcu';
-export type {
-  IRDevice as TeachingMCUIRDevice,
-  ResolvedTeachingMCUConfig,
-  TeachingMCUAccessor,
-  TeachingMCUConfig,
-  TeachingMCUErrorCode,
-  TeachingMCUErrorOptions,
-  TeachingMCUFlags,
-  TeachingMCUGpioState,
-  TeachingMCUISAType,
-  TeachingMCUNvicSnapshot,
-  TeachingMCUSnapshot,
-} from './unified-ir/examples/teaching-mcu';
-
-/* -------------------------------------------------------------------------
- * Scheduler path (maintenance mode, see docs/DEPRECATIONS.md)
- * ---------------------------------------------------------------------- */
-export { SimulatorError } from './errors';
-export type { SimulatorErrorCode, SimulatorErrorOptions } from './errors';
-export { createCircuitHost } from './circuit';
-export type { CircuitLayout, CircuitOptions } from './circuit';
-export { createDeviceSimExecutor } from './create-device-sim-executor';
-export type {
-  AdvanceReason,
-  AdvanceReport,
-  DevicePublish,
-  DeviceSimExecutor,
-  DeviceSimExecutorOptions,
-  DeviceSimHost,
-  DeviceSimHostContext,
-  DeviceSimHostFactory,
-  DeviceSimInstanceOptions,
+  DeviceSimulationHost,
+  DeviceSimTickReport,
   DeviceTopic,
-  DeviceTopicTarget,
-  SimulationDiagnostic,
-  SimulationDiagnosticCode,
-  SimulationState,
-} from './types';
+  SimulationPublish,
+} from './host/types';
+export type { Disposable, Event } from '@mica-js/core/lifecycle';
+export { createCircuitDeviceSimulationHost } from './host/circuit-host';
+export type { CircuitDeviceSimulationHostOptions } from './host/circuit-host';
+export { createSchematicDeviceSimulationHost } from './host/runtime';
+export type { SchematicDeviceSimulationHostOptions } from './host/runtime';
+export { startDeviceSimulationHostGuest } from './host/guest';
+export type { DeviceSimulationHostGuest, DeviceSimulationHostGuestOptions } from './host/guest';
+
+/* -------------------------------------------------------------------------
+ * Device authoring: helpers a caller-supplied device package needs
+ * ---------------------------------------------------------------------- */
+export { createModuleValidation } from './unified-ir/validation';

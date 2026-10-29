@@ -48,6 +48,7 @@ export function createForTest(
     ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
     ...(options.updateResources === undefined ? {} : { updateResources: options.updateResources }),
     ...(options.onTopic === undefined ? {} : { onTopic: options.onTopic }),
+    ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
     ...(options.pinHost === undefined ? {} : { pinHost: options.pinHost }),
     ...(options.connections === undefined ? {} : { connections: options.connections }),
   });

@@ -1,68 +1,68 @@
-import { createLedDescription, createMcuDescription } from '../compiler';
 import type { DeviceBehaviorApi } from '../compiler';
+import { lampSinkDescription, toggleDriverDescription } from '../compiler/test-helpers';
 
 /**
  * Shared fixtures of the runtime tests.
  *
  * The returned objects are `as const` so `Circuit.create` infers literal device
- * ids and types, which is what gives the tests their typed accessors.
+ * ids, which is what types `circuit.devices.<id>`.
  */
 
-/** `mcu1.PA0 -> led1.anode`, `led1.cathode -> GND`. */
-export function mcuLedInput() {
+/** `drive1.PA0 -> sink1.anode`, `sink1.cathode -> GND`. */
+export function driverSinkInput() {
   return {
     devices: [
-      { id: 'mcu1', type: 'teaching-mcu', description: createMcuDescription() },
-      { id: 'led1', type: 'ideal-led', description: createLedDescription() },
+      { id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() },
+      { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
     ],
     connections: [
-      { from: 'mcu1.PA0', to: 'led1.anode' },
-      { from: 'led1.cathode', to: 'GND' },
+      { from: 'drive1.PA0', to: 'sink1.anode' },
+      { from: 'sink1.cathode', to: 'GND' },
     ],
   } as const;
 }
 
-/** One toggling MCU and nothing else. */
-export function mcuOnlyInput() {
+/** One toggling driver and nothing else. */
+export function driverOnlyInput() {
   return {
-    devices: [{ id: 'mcu1', type: 'teaching-mcu', description: createMcuDescription() }],
+    devices: [{ id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() }],
     connections: [],
   } as const;
 }
 
 /**
- * MCU whose pin is owned by the host: no `tick`, so `writePin`/`setPin` decide
- * the level and the pin stays where the host put it.
+ * Driver whose pin is owned by the host: no `tick`, so `writePin`/`setPin`
+ * decide the level and the pin stays where the host put it.
  */
-export function latchMcuLedInput() {
+export function latchDriverSinkInput() {
   return {
     devices: [
       {
-        id: 'mcu1',
-        type: 'mcu',
+        id: 'drive1',
+        type: 'toggle-driver',
         description: {
           pins: { PA0: { direction: 'output' } },
-          // Any behaviour keeps the built-in default initialize, which puts the
+          // Any behaviour keeps the generated default initialize, which puts the
           // output pin into push-pull.
           behaviors: { update: () => {} },
         },
       },
-      { id: 'led1', type: 'ideal-led', description: createLedDescription() },
+      { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
     ],
     connections: [
-      { from: 'mcu1.PA0', to: 'led1.anode' },
-      { from: 'led1.cathode', to: 'GND' },
+      { from: 'drive1.PA0', to: 'sink1.anode' },
+      { from: 'sink1.cathode', to: 'GND' },
     ],
   } as const;
 }
 
-/** MCU with integer/bool states so the register accessor has something to read. */
-export function registerMcuInput() {
+/** Driver with integer/bool/float states so the generic state surface has values to read. */
+export function registerDriverInput() {
   return {
     devices: [
       {
-        id: 'mcu1',
-        type: 'mcu',
+        id: 'drive1',
+        type: 'toggle-driver',
         description: {
           pins: { PA0: { direction: 'output' } },
           states: {
@@ -79,27 +79,27 @@ export function registerMcuInput() {
   } as const;
 }
 
-/** Two independent MCU + LED pairs: one host-driven latch, one toggling MCU. */
+/** Two independent driver + sink pairs: one host-driven latch, one toggling driver. */
 export function twoPairInput() {
   return {
     devices: [
       {
-        id: 'mcu1',
-        type: 'mcu',
+        id: 'drive1',
+        type: 'toggle-driver',
         description: {
           pins: { PA0: { direction: 'output' } },
           behaviors: { update: () => {} },
         },
       },
-      { id: 'led1', type: 'ideal-led', description: createLedDescription() },
-      { id: 'mcu2', type: 'teaching-mcu', description: createMcuDescription() },
-      { id: 'led2', type: 'ideal-led', description: createLedDescription() },
+      { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
+      { id: 'drive2', type: 'toggle-driver', description: toggleDriverDescription() },
+      { id: 'sink2', type: 'lamp-sink', description: lampSinkDescription() },
     ],
     connections: [
-      { from: 'mcu1.PA0', to: 'led1.anode' },
-      { from: 'led1.cathode', to: 'GND' },
-      { from: 'mcu2.PA0', to: 'led2.anode' },
-      { from: 'led2.cathode', to: 'GND' },
+      { from: 'drive1.PA0', to: 'sink1.anode' },
+      { from: 'sink1.cathode', to: 'GND' },
+      { from: 'drive2.PA0', to: 'sink2.anode' },
+      { from: 'sink2.cathode', to: 'GND' },
     ],
   } as const;
 }
@@ -108,14 +108,14 @@ export function twoPairInput() {
 export function multiDriverInput() {
   return {
     devices: [
-      { id: 'mcu1', type: 'teaching-mcu', description: createMcuDescription() },
-      { id: 'mcu2', type: 'teaching-mcu', description: createMcuDescription() },
-      { id: 'led1', type: 'ideal-led', description: createLedDescription() },
+      { id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() },
+      { id: 'drive2', type: 'toggle-driver', description: toggleDriverDescription() },
+      { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
     ],
     connections: [
-      { from: 'mcu1.PA0', to: 'led1.anode' },
-      { from: 'mcu2.PA0', to: 'led1.anode' },
-      { from: 'led1.cathode', to: 'GND' },
+      { from: 'drive1.PA0', to: 'sink1.anode' },
+      { from: 'drive2.PA0', to: 'sink1.anode' },
+      { from: 'sink1.cathode', to: 'GND' },
     ],
   } as const;
 }
@@ -142,8 +142,8 @@ export function counterInput() {
           },
         },
       },
-      { id: 'mcu1', type: 'teaching-mcu', description: createMcuDescription() },
+      { id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() },
     ],
-    connections: [{ from: 'mcu1.PA0', to: 'count1.clk' }],
+    connections: [{ from: 'drive1.PA0', to: 'count1.clk' }],
   } as const;
 }

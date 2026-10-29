@@ -1,11 +1,11 @@
 import type { DeviceSymbolProvider } from '@mica-js/core/schematic';
-import type { SchematicEditorController } from '../../controller/controller';
+import type { EditorSurface } from '../surface';
 import type { EditorViewport } from '../viewport-state';
 import type { Pointer } from './pointer';
 import type { InteractionState } from './state';
 
 export interface EditorInputDeps {
-  readonly controller: SchematicEditorController;
+  readonly editor: EditorSurface;
   readonly devices: DeviceSymbolProvider | undefined;
   readonly viewport: EditorViewport;
   readonly root: HTMLElement;

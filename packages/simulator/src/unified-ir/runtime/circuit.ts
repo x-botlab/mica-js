@@ -81,12 +81,12 @@ interface ResolvedRuntimeOptions {
  * ```ts
  * const circuit = await Circuit.create({
  *   devices: [
- *     { id: 'mcu1', type: 'teaching-mcu', description: createMcuDescription() },
- *     { id: 'led1', type: 'ideal-led', description: createLedDescription() },
+ *     { id: 'drive1', type: 'push-pull-driver', description: driverDescription() },
+ *     { id: 'sink1', type: 'lamp-sink', description: sinkDescription() },
  *   ],
  *   connections: [
- *     { from: 'mcu1.PA0', to: 'led1.anode' },
- *     { from: 'led1.cathode', to: 'GND' },
+ *     { from: 'drive1.PA0', to: 'sink1.anode' },
+ *     { from: 'sink1.cathode', to: 'GND' },
  *   ],
  * });
  *
@@ -94,9 +94,9 @@ interface ResolvedRuntimeOptions {
  * expect(circuit.tickCount).toBe(1_000_000n);
  *
  * circuit.reset();
- * circuit.setPin('mcu1.PA0', true);                   // host drives the pin
+ * circuit.setPin('drive1.PA0', true);                 // host drives the pin
  * circuit.step();
- * expect(circuit.devices.led1.isOn()).toBe(true);
+ * expect(circuit.devices.sink1.getState('lamp')).toBe(true);
  * ```
  *
  * `Circuit` owns the engine instance and the tick counter; the compiled module
@@ -139,7 +139,7 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
    * `initialize` entry once.
    *
    * The input is inferred as a `const` type, so a literal device list keeps its
-   * ids and types and `circuit.devices.<id>` exposes the matching accessor.
+   * ids and `circuit.devices.<id>` is typed without a cast.
    *
    * @throws {UnifiedIRCompilerError} when the circuit cannot be compiled.
    * @throws {CircuitError} for invalid options.
@@ -317,6 +317,12 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
   get tickCount(): bigint {
     this.#assertActive();
     return this.#tickCount;
+  }
+
+  /** Virtual tick time completed since creation or the last `reset()`. */
+  get virtualTime(): number {
+    this.#assertActive();
+    return this.#virtualTime;
   }
 
   /** Underlying engine instance, e.g. for diagnostics or custom entries. */

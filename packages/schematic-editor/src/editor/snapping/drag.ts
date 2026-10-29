@@ -1,5 +1,5 @@
 import type { Point } from '@mica-js/core/schematic';
-import type { DisplayOptions } from '../../controller/types';
+import type { DisplayOptions } from '../../types';
 
 export function snapToGrid(point: Point, display: DisplayOptions): Point {
   if (!display.snap || !(display.gridSize > 0)) {

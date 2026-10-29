@@ -4,16 +4,21 @@ Mica 各包的可交互示例站点：React + Vite + Tailwind v4 + [shadcn/ui](h
 
 ## 页面
 
-| 路由                   | 页面         | 演示内容                                                                                             |
-| ---------------------- | ------------ | ---------------------------------------------------------------------------------------------------- |
-| `#/`                   | 概览         | 页面导航与 workspace 命令速查                                                                        |
-| `#/canvas`             | 画布         | `createCanvasEditor`：demo widget 包、组件列表、拖动实例、运行模式、宿主属性 / 绑定面板、草稿保存    |
-| `#/schematic`          | 原理图编辑器 | `@mica-js/schematic-editor`：器件库、属性面板（全部属性类型）、显示开关、回调事件流                  |
-| `#/schematic?readonly` | 只读查看器   | 同一页以 `readOnly: true` 挂载：选择与缩放可用，编辑全部被拒                                         |
-| `#/sandbox`            | 沙箱         | `@mica-js/sandbox`：guest 代码编辑、启动 / 终止、调用与日志                                          |
-| `#/simulator`          | 仿真         | `@mica-js/simulator`：按钮 / 继电器 / 教学 MCU 三场景、启动 / 暂停 / 步进 / 复位、事件轨迹与电气观测 |
+侧栏按“概览 / 原理图 / 画布”分组；原理图与画布组下的每个示例都是独立入口，直接打开它自己的文档。
 
-新增页面：在 `src/components/app-shell.tsx` 的 `PAGES` 里加一项（`id` 同时是路由），在 `src/App.tsx` 里渲染对应组件。
+| 路由                           | 页面                          | 演示内容                                                                          |
+| ------------------------------ | ----------------------------- | --------------------------------------------------------------------------------- |
+| `#/`                           | 概览                          | 页面导航                                                                          |
+| `#/schematic/board-properties` | 原理图 · 板级器件与属性       | `SchematicEditor`：STM32 / 8051 / LCD / NE555 的器件库、放置、连线与属性面板      |
+| `#/schematic/mcu-leds`         | 原理图 · 教学 MCU 与指示灯    | `device-bench.sch`：教学 MCU 驱动两盏 LED；“双通道指示灯”画布示例挂在这张图纸上   |
+| `#/schematic/button-relay`     | 原理图 · 按键、继电器与指示灯 | `button-relay.sch`：按键 S1 → 继电器 K1 → D1 / D2；“按键与指示灯”画布示例挂在这里 |
+| `#/schematic/<id>?readonly`    | 只读查看器                    | 同一页以 `readOnly: true` 挂载：选择与缩放可用，编辑全部被拒                      |
+| `#/canvas/button-lamp`         | 画布 · 按键与指示灯           | `CanvasEditor` + `WidgetHost`：`button-lamp.cnv`，按键 → 继电器 → 两盏灯与计数器  |
+| `#/canvas/dual-lamp`           | 画布 · 双通道指示灯           | `dual-lamp.cnv`：两盏指示灯订阅教学 MCU 的 `D1.lit` / `D2.lit`                    |
+
+只写组名（`#/schematic`、`#/canvas`）会打开该组的第一个示例。示例由 `src/examples/registry.ts` 统一登记：`SchematicExample` 带 `.sch` 资产路径，`CanvasExample` 带 `.cnv` 路径和它挂载的 `schematic`；`schematicRoute()` / `canvasRoute()` 生成侧栏与互链共用的路由。画布文档里的 `schematic` 必须等于某个原理图示例的 `document`。示例只登记这些**导航元数据**：标题与文档路径；器件、连线、端口和绑定一律来自标准 `.sch` / `.cnv` 文档本身。
+
+新增示例：在 `src/examples/registry.ts` 的 `SCHEMATIC_EXAMPLES` / `CANVAS_EXAMPLES` 里加一项并放入对应资产；侧栏、路由和互链会自动出现。新增页面：在 `src/components/app-shell.tsx` 的 `PAGE_GROUPS` 里加一组，在 `src/App.tsx` 里渲染对应组件。
 
 ## 运行
 
@@ -21,71 +26,65 @@ Mica 各包的可交互示例站点：React + Vite + Tailwind v4 + [shadcn/ui](h
 pnpm --filter @mica-js/playground dev            # http://localhost:5173
 pnpm --filter @mica-js/playground run build
 pnpm --filter @mica-js/playground run typecheck
-pnpm --filter @mica-js/playground run test       # vitest：纯逻辑（画布面板模型、仿真会话）
-pnpm --filter @mica-js/playground run test:e2e   # Playwright 冒烟，自带 4174 端口的 dev server
-pnpm --filter @mica-js/playground run build:devices  # 改 demo.sch 布局后重算导线端点与网表
 ```
 
-`playwright.config.ts` 会自己起 4174 端口的 dev server，e2e 不需要先手动启动。
+Playground 是演示站点：它不维护自己的测试，行为由各包测试与浏览器交互核对。
 
 ## 目录
 
 ```text
-e2e/                          Playwright 端到端用例
 src/canvas/                   画布页纯逻辑：面板模型、组件列表、图层顺序、草稿保存
-src/components/               app-shell、画布属性面板、原理图属性面板、shadcn/ui 组件
+src/components/               app-shell（侧栏与分组）、画布属性面板、原理图属性面板、shadcn/ui 组件
+src/examples/                 示例注册表（原理图 ↔ 画布链接与路由）
 src/lib/                      哈希路由与 cn()
-src/pages/                    五个页面组件
-src/schematic/                器件注册表、示例 .sch 与代码片段
-src/sim/                      仿真页：器件 provider、符号、板级电路、三场景、会话层、轨迹
+src/pages/                    三个页面组件（概览 / 原理图 / 画布）
+src/schematic/                编辑器示例的器件注册表
+src/sim/                      器件契约加载、契约 → 统一 IR 模型适配、画布设备宿主
 public/assets/                示例资源（画布底图、image / binary 属性）
-public/widgets/               demo widget 包与示例 demo.cnv
-public/devices/               demo 器件包（push-button / counter-4bit / hex-display）与 demo.sch
-scripts/build-device-demo.mjs 重算 demo.sch 的符号坐标与导线端点
+public/widgets/               demo widget 包：image / segment / button / lamp
+public/schematics/            原理图示例资产（原理图页与画布页共用）
+public/canvases/              画布示例资产，`schematic` 指向 public/schematics
+public/devices/               器件契约（package.json + 每器件 JSON：pins / topics / connections / reset）
 ```
 
 ## 画布页
 
 ```mermaid
 flowchart LR
-  pkg["public/widgets<br/>Widget 包"] --> provider["WidgetProvider"]
+  wdev["public/widgets<br/>Widget 包"] --> provider["WidgetProvider"]
   provider --> host["WidgetHost"]
-  cnv["demo.cnv"] --> host
-  sch["devices/demo.sch"] --> sim["DeviceSimExecutor"]
-  dev["public/devices<br/>器件包"] --> sim
+  cnv["public/canvases<br/>*.cnv"] --> host
+  sch["public/schematics<br/>button-relay.sch / device-bench.sch"] --> guest["Playground guest<br/>device-simulation-host.sandbox.ts"]
+  lib["public/devices<br/>器件契约"] --> guest
+  guest -->|"DeviceSimulationHost RPC"| host
   host --> scene["CanvasEditor"]
-  sim -->|"simulation"| host
-  scene --> ui["组件列表 / 图层列表 / 属性面板"]
+  scene --> ui["组件列表 / 图层列表 / 属性面板 / 发布日志"]
   ui -->|"applyCommand"| host
 ```
 
-- **左侧栏**是组件列表与图层列表。组件条目来自 `public/widgets/package.json`，点击即发一条 `add-instance`，新实例按对角偏移级联摆放并置顶；运行模式下列表禁用。图层列表按绘制顺序自上而下排列，点一行选中它，拖动一行落到另一行即发一条 `set-z`。
-- **右侧栏**是宿主 UI：属性控件按 `provider.resolve(ref).definition.properties` 渲染，绑定下拉按 `definition.ports` 渲染，值一律通过 `host.applyCommand` 提交，被拒时把诊断 message 显示在对应控件下方。
-- 可选端点来自**正在运行的仿真**（`getTopics()`），面板只按方向互补 + 载荷类型相等过滤候选；下拉标签用位号（`U2.value`），提交的值仍是符号 id。
-- **仿真**跑在页面同一条 JS 线程上：执行器作为 `simulation` 传给 `createWidgetHost`，器件发布按 `bindings` 直接投到 widget，widget 发布按绑定直接投给器件，页面里没有转发代码。运行模式用 100 ms 的定时器每次 `advance` 0.1 s 虚拟时间。
-- **保存**：每次提交把 `serializeCanvas(document)` 与上一次成功的文本比较，不同才在 300 ms 去抖后写入 `localStorage`；`保存` 按钮与 `Ctrl/Cmd+S` 跳过去抖立即写，`导出` 下载当前文档，`重置草稿` 恢复示例。
+- **侧栏入口**：`#/canvas/button-lamp` 挂载 `schematics/button-relay.sch`，`#/canvas/dual-lamp` 挂载 `schematics/device-bench.sch`；工具栏的“原理图”按钮跳到对应原理图侧栏入口（同一份图纸）。
+- **左侧栏**是组件列表与图层列表。组件条目来自 `public/widgets/package.json`（image / segment / button / lamp），点击即发一条 `add-instance`；图层列表按绘制顺序自上而下排列，点一行选中它，拖动一行落到另一行即发一条 `set-z`。
+- **右侧栏**是宿主 UI：属性控件按 `provider.resolve(ref).definition.properties` 渲染，绑定下拉按 `definition.ports` 渲染，值一律通过 `host.applyCommand` 提交。可选端点来自正在运行仿真的 `getTopics()`（契约里的 `topics`），只按方向互补 + 载荷类型相等过滤；下拉标签用位号（`D1.lit`），提交的值仍是符号 id。
+- **仿真**由 `WidgetHost` 自己的帧时钟推进：`scene.setMode('simulation')` 同时切换编辑器与宿主的模式并复位器件；`ideal-led` 把 `lamp` 通过契约的 `lit` 主题发布给指示灯 widget，`teaching-mcu` 每个 tick 翻转 GPIO。宿主按默认 `frame.stepMs = 25` 推进：每 25 ms 执行一个仿真步，器件状态按步传播；按键到指示灯之间的多级链路会在后续周期逐步落定，器件只在 topic 取值变化时发布，空转的示例只走时钟、不重绘。
+- **发布日志**记录两条路径：`S1.closed`、`D1.lit` 这类设备发布，以及 `按键.press` 这类 widget 输出（即使它同时被绑定送进器件）。“按键与指示灯”示例的按键 widget 绑定 `S1.pressed`：按下后按钮模型闭合触点、继电器吸合，`D1.lit` 变亮、`D2.lit` 熄灭，`S1.pressCount` 加一。
+- **保存**：每个示例有独立的草稿键 `mica-playground:canvas-draft:<id>`；`保存` / `Ctrl+S` 立即写入，`重置` 恢复该示例的 `.cnv`。
 
-`demo.sch` 是一条真电路：`S1`（按钮）的 A 端接 `U1`（4 位计数器）的 `CLK`，B 端接地；`U1` 的 `Q0..Q3` 接到 `U2`（数码管驱动）的 `D0..D3`；两颗芯片的 `VCC` / `GND` 接到图纸上的 5 V 与 GND 符号。按钮闭合把 `CLK` 拉到地产生下降沿，计数加一；`U2` 采样后把半字节发布成 `value` / `bits`。
+画布示例引用的器件必须由 `src/sim/device-contracts.ts` 的 `describeContract()` 解析出统一 IR 描述：全部四个类型（`ideal-led`、`teaching-mcu`、`button-ir`、`relay-ir`）都由 Playground 自己的 `src/sim/device-models.ts` 提供，仿真包不再内置任何器件。不在列表里的类型，画布设备宿主会明确报“没有统一 IR 运行时模型”，不会退回一个假模型。
 
-## 仿真页
+## 环境模块
 
-`#/simulator` 是 `@mica-js/simulator` 的交互调试台：用 `?raw` 读取 `packages/device/examples` 里已提交的 JSON / JS 配对，经 `parseDeviceDescription` + `loadDeviceModule` 加载，页面里不重写调度器或芯片算法。
+Playground 只提供示例环境，仿真编排留在公开包里：
 
-| 场景          | 内容                                                                                                                 |
-| ------------- | -------------------------------------------------------------------------------------------------------------------- |
-| 理想按钮      | 触点 A–B 接在 VCC 与下拉的 `board.SENSE` 之间；画布上的按钮在沙箱里发布 `press`，经 `WidgetHost` 投递到 `S1.pressed` |
-| 按钮 → 继电器 | 按钮触点把 VCC 送到 `K1.IN` / `board.COIL`，继电器在同一个 patch 内切换 COM–NO / COM–NC；触点侧由独立 `LOAD` 供电    |
-| 教学 MCU      | 合成 ISA 只在块边界写 `GPIO`，经板级 `SENSE` 读出；`updateResources: ['firmware']` 授权固件的 8 B 单元更新           |
-
-- **宿主接线**：执行器只透传 `pinHost` / `topology`，电路归本页所有；`src/sim/board.ts` 给出三块板的拓扑、电源定义与引脚意图，每次 `loadSchematic` / `reset()` 都用该运行时自己的调度器建 `createPowerRuntime`。
-- **探针**（`connectionState` / `sampleDigital`）在轨迹里标为「电气观测」，并写明「宿主直读」——这些值不是器件发布。
-- **工具栏**：`启动` / `暂停` 按 16 ms 墙钟节拍推进固定 10 ns 虚拟时间片；`单步` 只推进一片；`复位` 调 `executor.reset()`（按当前原理图重建实例、时钟归零），**不是**器件 reset 生命周期；`销毁` 释放执行器与 widget 宿主；`确定性回放 ×2` 用固定脚本各加载一次新会话并比较轨迹摘要。
-- **能力与拒绝**：能力面板按器件描述列出引脚 / 连接 / 端口，并在一次性调度器上探测模型自己的 `reset`：理想按钮接受，继电器与教学 MCU 以 `device/lifecycle-unsupported` 拒绝。所以「复位」按钮永远只是重建实例，模型不支持的能力直接显示为「不支持」。
-- **错误语义**：器件层拒绝载荷时 `advance` 抛出但执行器仍是 `ready`（时钟不推进），页面记成 `bench/delivery-rejected` 诊断；只有调度器故障才会置 `faulted`、暂停运行循环并禁用推进。
+- **器件库**：`src/sim/device-library.ts` 读取 `public/devices` 的契约（`package.json` + 每器件 JSON），校验 `pins` / `topics` / `connections` / `reset` 并合成符号；原理图页与画布页共用同一份库。
+- **契约 → 统一 IR**：`src/sim/device-contracts.ts` 把契约转成 `DeviceDescription`；`ideal-led` / `teaching-mcu` / `button-ir` / `relay-ir` 全部由 `src/sim/device-models.ts` 实现（`description.behaviors` 生成的 IR，没有 `DeviceAccessor`）。
+- **画布设备宿主**：`src/sim/device-simulation-host.sandbox.ts` 通过 `?sandbox-worker` 生成 Playground 自己的设备 guest（它带自己的器件库）；widget guest 直接用 `@mica-js/widget` 已内联的 `createWidgetHostGuestSandbox()`，不再需要构建期查询。`SandboxHostProvider` 负责创建设备 RPC、挂载 widget host，并把 `event.ports[0]` 交给 guest、把后续端口用于 widget 与设备的直连；worker 通过宿主文件系统 RPC 读取 `devices/` 契约，画布页不持有 `Circuit`。
+- **主题映射**：契约 topic 用 `state` 指明载荷落在哪个设备状态（`lit → lamp`）；宿主通过通用 `DeviceAccessor.getState/setState` 收发，不需要模型专用访问器。没有 `state` 的 topic 会被明确拒绝。
 
 ## 主题与别名
 
 `index.css` 用 shadcn 的 oklch token，顶栏切换 `.dark` 类；原理图页同时把编辑器的深 / 浅主题传给画布，使 Canvas 与页面 chrome 一起切换。
+
+两个编辑器不注入样式：`src/main.tsx` 显式导入 `@mica-js/canvas-editor/style.css` 与 `@mica-js/schematic-editor/style.css`（开发时别名指向包的 `src/styles/editor.css`，发布后指向 `dist/style.css`）。
 
 `vite.config.ts` 与 `tsconfig.json` 各自声明同一组别名：
 
