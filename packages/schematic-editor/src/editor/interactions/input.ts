@@ -316,10 +316,11 @@ export class EditorInput {
 
   /**
    * Copy and cut rely on the browser's clipboard events instead of `Ctrl+C` / `Ctrl+X` keydown, so
-   * the browser menu, keyboard shortcuts and host gestures all take the same path.
+   * the browser menu, keyboard shortcuts and host gestures all take the same path. The event itself
+   * carries the payload, so the editor must not write the system clipboard a second time.
    */
   #onCopy = (event: ClipboardEvent): void => {
-    const clipboard = this.#context.deps.editor.copySelection();
+    const clipboard = this.#context.deps.editor.copySelection({ system: false });
     if (clipboard === undefined) {
       return;
     }
@@ -331,7 +332,7 @@ export class EditorInput {
     if (this.#context.deps.readOnly) {
       return;
     }
-    const clipboard = this.#context.deps.editor.cutSelection();
+    const clipboard = this.#context.deps.editor.cutSelection({ system: false });
     if (clipboard === undefined) {
       return;
     }

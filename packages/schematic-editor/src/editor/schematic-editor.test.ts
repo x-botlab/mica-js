@@ -649,6 +649,71 @@ describe('SchematicEditor', () => {
       editor.dispose();
     });
 
+    it('pastes exactly at the pointer when snapping is off', async () => {
+      const { editor } = editorFor();
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+      const payload = editor.copySelection();
+      if (payload === undefined) {
+        throw new Error('expected a payload');
+      }
+      editor.setValue(documentOf({}));
+      editor.setViewport({ scale: 1, offsetX: 0, offsetY: 0 });
+      editor.setDisplayOptions({ snap: false });
+
+      const canvas = editor.canvas as unknown as FakeElement;
+      const screen = editor.toScreen({ x: 45, y: 65 });
+      canvas.emit('pointermove', {
+        pointerId: 1,
+        clientX: screen.x,
+        clientY: screen.y,
+        preventDefault: () => {},
+      });
+
+      const text = serializeSchematicClipboard(payload);
+      expect(await editor.pasteSelection({ text })).toBe(true);
+      expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 45, y: 65 });
+
+      // The same pointer point snaps to the nearest grid lines once snapping is back on.
+      editor.undo();
+      editor.setDisplayOptions({ snap: true });
+      expect(await editor.pasteSelection({ text })).toBe(true);
+      expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 50, y: 70 });
+      editor.dispose();
+    });
+
+    it('ignores foreign clipboard text without reporting an error', () => {
+      const { editor } = editorFor();
+      const before = editor.getValue();
+      const paste = fakeClipboardEvent({ 'text/plain': 'not a payload' });
+
+      (editor.root as unknown as FakeElement).emit('paste', paste);
+
+      expect(paste.defaultPrevented).toBe(true);
+      expect(editor.getValue()).toBe(before);
+      expect(editor.getState().lastError).toBeUndefined();
+      expect(editor.getCanUndo()).toBe(false);
+      editor.dispose();
+    });
+
+    it('leaves the clipboard port alone for DOM copy events', async () => {
+      const port = new MemoryClipboardPort();
+      const { editor } = editorFor(undefined, { clipboard: port });
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+
+      (editor.root as unknown as FakeElement).emit('copy', fakeClipboardEvent());
+      await flush();
+      expect(await port.read()).toBeUndefined();
+
+      // The host API still mirrors the payload to the system clipboard.
+      const payload = editor.copySelection();
+      if (payload === undefined) {
+        throw new Error('expected a payload');
+      }
+      await flush();
+      expect(await port.read()).toBe(serializeSchematicClipboard(payload));
+      editor.dispose();
+    });
+
     it('duplicates with Ctrl+D and selects everything with Ctrl+A', () => {
       const { editor } = editorFor(drawing());
       const root = editor.root as unknown as FakeElement;

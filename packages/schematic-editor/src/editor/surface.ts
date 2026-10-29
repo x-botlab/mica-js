@@ -7,7 +7,7 @@ import type {
 } from '@mica-js/core/schematic';
 import type { SchematicClipboard } from '../model/clipboard';
 import type { DisplayOptions, EditorSelection, EditorTool } from '../types';
-import type { EditorPasteOptions } from './schematic-editor';
+import type { EditorPasteOptions, ClipboardWriteOptions } from './schematic-editor';
 
 /**
  * Editing surface the interaction modules drive. {@link SchematicEditor} implements it; keeping
@@ -33,8 +33,8 @@ export interface EditorSurface {
   moveSelectionBy(dx: number, dy: number): void;
   rotateSelection(degrees: number): void;
   deleteSelection(): void;
-  copySelection(): SchematicClipboard | undefined;
-  cutSelection(): SchematicClipboard | undefined;
+  copySelection(options?: ClipboardWriteOptions): SchematicClipboard | undefined;
+  cutSelection(options?: ClipboardWriteOptions): SchematicClipboard | undefined;
   pasteSelection(options?: EditorPasteOptions): Promise<boolean>;
   duplicateSelection(): readonly EditorSelection[];
   selectAll(): void;

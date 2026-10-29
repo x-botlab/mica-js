@@ -150,11 +150,8 @@ export function pasteClipboard(
   clipboard: SchematicClipboard,
   options: PasteOptions = {},
 ): readonly SchematicTarget[] {
-  if (
-    clipboard.symbols.length === 0 &&
-    clipboard.wires.length === 0 &&
-    clipboard.junctions.length === 0
-  ) {
+  // Junctions only attach to wires; without copied wires there is nothing to insert or to record.
+  if (clipboard.symbols.length === 0 && clipboard.wires.length === 0) {
     return [];
   }
 

@@ -4,6 +4,7 @@ import './styles/editor.css';
 
 export { createSchematicEditor, SchematicEditor } from './editor/schematic-editor';
 export type {
+  ClipboardWriteOptions,
   EditorPasteOptions,
   SchematicEditorModelOptions,
   SchematicEditorOptions,

@@ -55,4 +55,4 @@ const duplicated = editor.duplicateSelection();
 editor.selectAll();
 ```
 
-剪贴板内容是与 `.sch` 图元同形的 `SchematicClipboard`，可用 `serializeSchematicClipboard()` / `parseSchematicClipboard()` 自行存取。`createSchematicEditor({ clipboard })` 可注入 `ClipboardPort`；没有系统剪贴板权限的环境使用导出的 `MemoryClipboardPort`，粘贴仍可走编辑器内部缓冲。剪切、粘贴与再制各自只记录 1 步撤销，粘贴不会改写复制时的几何形状。
+剪贴板内容是与 `.sch` 图元同形的 `SchematicClipboard`，可用 `serializeSchematicClipboard()` / `parseSchematicClipboard()` 自行存取。`createSchematicEditor({ clipboard })` 可注入 `ClipboardPort`，测试、Electron 壳或自绘宿主可用导出的 `MemoryClipboardPort`；无法访问系统剪贴板时，粘贴会自动回退到编辑器内部缓冲。剪切、粘贴与再制各自只记录 1 步撤销，粘贴不会改写复制时的几何形状。

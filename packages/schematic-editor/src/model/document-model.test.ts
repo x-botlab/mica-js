@@ -1385,6 +1385,22 @@ describe('DocumentModel', () => {
       expect(model.getCanUndo()).toBe(false);
     });
 
+    it('ignores a payload with junctions but no symbols or wires', () => {
+      const model = createModel(sourceDocument());
+      const before = model.getValue();
+      const payload: SchematicClipboard = {
+        format: SCHEMATIC_CLIPBOARD_FORMAT,
+        version: SCHEMATIC_CLIPBOARD_VERSION,
+        symbols: [],
+        wires: [],
+        junctions: before.sheet.junctions,
+      };
+
+      expect(model.paste(payload)).toEqual([]);
+      expect(model.getValue()).toBe(before);
+      expect(model.getCanUndo()).toBe(false);
+    });
+
     it('cuts as one history step and restores elements and designators on undo', () => {
       const model = createModel(sourceDocument());
       const clipboard = model.cut([

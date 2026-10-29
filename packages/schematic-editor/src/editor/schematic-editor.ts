@@ -22,7 +22,6 @@ import {
 } from '../model/clipboard';
 import { buildInspector } from '../model/inspector';
 import { pruneSelection, sameSelection } from '../model/selection';
-import { toSchematicError } from '../model/store';
 import { CanvasSchematicRenderer } from '../render/canvas-renderer';
 import { buildSchematicScene } from '../render/scene';
 import { resolveSchematicTheme, themeToCssVariables, type SchematicTheme } from '../render/theme';
@@ -58,6 +57,12 @@ export type SchematicEditorModelOptions = Omit<DocumentModelOptions, 'value'>;
 export interface EditorPasteOptions extends PasteOptions {
   /** Serialized payload; when present the system clipboard is not read. */
   readonly text?: string;
+}
+
+/** Copy and cut options: DOM clipboard events write their own payload and skip the port. */
+export interface ClipboardWriteOptions {
+  /** Also write the system clipboard; defaults to true. */
+  readonly system?: boolean;
 }
 
 /**
@@ -410,9 +415,10 @@ export class SchematicEditor implements EditorSurface {
 
   /**
    * Copies the selection into the editor's own buffer and, best-effort, into the system clipboard.
-   * Allowed in read-only editors because it changes nothing.
+   * Allowed in read-only editors because it changes nothing. DOM copy events pass
+   * `{ system: false }`: they write `clipboardData` themselves.
    */
-  copySelection(): SchematicClipboard | undefined {
+  copySelection(options: ClipboardWriteOptions = {}): SchematicClipboard | undefined {
     if (this.#disposed) {
       return undefined;
     }
@@ -421,12 +427,14 @@ export class SchematicEditor implements EditorSurface {
       return undefined;
     }
     this.#clipboard = clipboard;
-    void this.#writeClipboard(clipboard);
+    if (options.system !== false) {
+      void this.#writeClipboard(clipboard);
+    }
     return clipboard;
   }
 
   /** Cuts the selection as one undoable edit, then mirrors the payload to the system clipboard. */
-  cutSelection(): SchematicClipboard | undefined {
+  cutSelection(options: ClipboardWriteOptions = {}): SchematicClipboard | undefined {
     if (this.#disposed || this.#readOnly) {
       return undefined;
     }
@@ -435,7 +443,9 @@ export class SchematicEditor implements EditorSurface {
       return undefined;
     }
     this.#clipboard = clipboard;
-    void this.#writeClipboard(clipboard);
+    if (options.system !== false) {
+      void this.#writeClipboard(clipboard);
+    }
     return clipboard;
   }
 
@@ -460,11 +470,8 @@ export class SchematicEditor implements EditorSurface {
       this.setSelection(targets);
       this.root.focus();
       return true;
-    } catch (error) {
-      if (!this.#disposed) {
-        this.#error = toSchematicError(error);
-        this.#sync();
-      }
+    } catch {
+      // The model recorded the failure and notified the editor through onDidChangeError.
       return false;
     }
   }
@@ -701,9 +708,8 @@ export class SchematicEditor implements EditorSurface {
   #parseClipboard(text: string): SchematicClipboard | undefined {
     try {
       return parseSchematicClipboard(text);
-    } catch (error) {
-      this.#error = toSchematicError(error);
-      this.#sync();
+    } catch {
+      // Foreign or corrupted clipboard text stays silent: the document is simply left alone.
       return undefined;
     }
   }
@@ -717,9 +723,10 @@ export class SchematicEditor implements EditorSurface {
       return { offset: options.offset };
     }
     const page = this.#input.lastPointerPage;
-    return page === undefined
-      ? { offset: this.#gridStep() }
-      : { at: snapToGrid(page, this.#display) };
+    if (page === undefined) {
+      return { offset: this.#gridStep() };
+    }
+    return { at: this.#display.snap ? snapToGrid(page, this.#display) : page };
   }
 
   #gridStep(): Point {
