@@ -5,6 +5,7 @@
     "paths": {
       "@mica-js/core": ["../core/src/index.ts"],
       "@mica-js/core/canvas": ["../core/src/canvas/index.ts"],
+      "@mica-js/core/lifecycle": ["../core/src/lifecycle/index.ts"],
       "@mica-js/core/rpc": ["../core/src/rpc/index.ts"],
       "@mica-js/core/logging": ["../core/src/logging/index.ts"],
       "@mica-js/core/schematic": ["../core/src/schematic/index.ts"],
