@@ -119,7 +119,7 @@ async function bundleSelfContainedScript(
   const result = await build({
     input: entry,
     external: [],
-    ...(aliases.length === 0 ? {} : { resolve: { alias } }),
+    resolve: { conditionNames: ['source', 'import', 'browser', 'default'], alias },
     output: {
       format: 'iife',
       codeSplitting: false,

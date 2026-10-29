@@ -1,10 +1,9 @@
-import { fileURLToPath } from 'node:url';
 import dts from 'vite-plugin-dts';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  resolve: { conditions: ['source', 'module', 'browser', 'development|production'] },
   test: {
-    alias: { '@mica-js/ir': fileURLToPath(new URL('../ir/src/index.ts', import.meta.url)) },
     // The memory-release regression test observes WeakRef clearing after destroy.
     execArgv: ['--expose-gc'],
   },

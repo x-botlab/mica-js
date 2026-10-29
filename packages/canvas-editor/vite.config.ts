@@ -1,10 +1,10 @@
-import { fileURLToPath } from 'node:url';
 import dts from 'vite-plugin-dts';
 import { defineConfig } from 'vitest/config';
 import { micaSandboxPlugins } from '@mica-js/sandbox/vite';
 import { micaWidgetPlugins } from '@mica-js/widget/vite';
 
 export default defineConfig({
+  resolve: { conditions: ['source', 'module', 'browser', 'development|production'] },
   build: {
     lib: {
       entry: 'src/index.ts',
@@ -27,8 +27,7 @@ export default defineConfig({
     },
   },
   plugins: [
-    // Tests resolve `@mica-js/widget` from source, and the widget package inlines its guest worker
-    // and audio worklet through these two queries. The library build itself externalizes it.
+    // Tests import widget source, including its inlined guest and worklet queries.
     ...micaSandboxPlugins(),
     ...micaWidgetPlugins(),
     dts({
@@ -40,12 +39,5 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
-    // Tests run before the workspace build, so resolve the workspace packages from source.
-    alias: {
-      '@mica-js/core/canvas': fileURLToPath(
-        new URL('../core/src/canvas/index.ts', import.meta.url),
-      ),
-      '@mica-js/widget': fileURLToPath(new URL('../widget/src/index.ts', import.meta.url)),
-    },
   },
 });

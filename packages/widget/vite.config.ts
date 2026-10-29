@@ -6,17 +6,9 @@ import { defineConfig } from 'vitest/config';
 import { micaSandboxPlugins } from '@mica-js/sandbox/vite';
 import { micaWidgetPlugins } from './src/build/vite-plugin';
 
-const resolveSource = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
 const outDir = fileURLToPath(new URL('./dist', import.meta.url));
 const declarationSource = fileURLToPath(new URL('./src/virtual-runtime.d.ts', import.meta.url));
 const declarationReference = '/// <reference path="./virtual-runtime.d.ts" />';
-
-/** The bundled guests stay self-contained; resolve workspace imports to source, never stale dist. */
-const guestAliases = [
-  { find: '@mica-js/core/rpc', replacement: resolveSource('../core/src/rpc/index.ts') },
-  { find: '@mica-js/core/logging', replacement: resolveSource('../core/src/logging/index.ts') },
-  { find: '@mica-js/core', replacement: resolveSource('../core/src/index.ts') },
-];
 
 /**
  * `bundleTypes` drops ambient modules and deletes every declaration that is not an entry, so the
@@ -37,6 +29,7 @@ async function publishQueryDeclarations(): Promise<void> {
 export default defineConfig({
   // A library ships next to its assets; a root-absolute base would break every deployment below '/'.
   base: './',
+  resolve: { conditions: ['source', 'module', 'browser', 'development|production'] },
   build: {
     lib: {
       entry: {
@@ -66,8 +59,8 @@ export default defineConfig({
   plugins: [
     // Both bundles the package inlines are built here, in memory: `?sandbox-worker-code` for the
     // guest worker and `?audio-worklet-code` for the worklet. Neither becomes a dist file.
-    ...micaSandboxPlugins({ aliases: guestAliases }),
-    ...micaWidgetPlugins({ aliases: guestAliases }),
+    ...micaSandboxPlugins(),
+    ...micaWidgetPlugins(),
     dts({
       tsconfigPath: './tsconfig.build.json',
       entryRoot: 'src',
@@ -80,16 +73,5 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
-    // Tests run before the workspace build, so resolve the workspace packages from source.
-    alias: {
-      '@mica-js/core/rpc': resolveSource('../core/src/rpc/index.ts'),
-      '@mica-js/core/lifecycle': resolveSource('../core/src/lifecycle/index.ts'),
-      '@mica-js/core/logging': resolveSource('../core/src/logging/index.ts'),
-      '@mica-js/core/canvas': resolveSource('../core/src/canvas/index.ts'),
-      // Keep the subpath first: a string alias matches by prefix, so `@mica-js/sandbox` would
-      // otherwise swallow `@mica-js/sandbox/vite`.
-      '@mica-js/sandbox/vite': resolveSource('../sandbox/src/vite.ts'),
-      '@mica-js/sandbox': resolveSource('../sandbox/src/index.ts'),
-    },
   },
 });
