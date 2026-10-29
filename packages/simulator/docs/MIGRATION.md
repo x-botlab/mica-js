@@ -6,13 +6,13 @@
 
 ## 为什么迁移
 
-| 维度     | 调度器路径（每器件一个 module） | 统一 IR                                           |
-| -------- | ------------------------------- | ------------------------------------------------- |
-| 批处理   | 每 tick 多次宿主调用            | 整批一次引擎调用                                  |
-| 器件访问 | 事件 / 端口 / 消息              | 类型化访问器（`circuit.devices.led1.isOn()`）     |
-| 电气解算 | JavaScript 桥接，跨模块读写     | 生成进 IR，与器件共享引脚空间                     |
-| 确定性   | 取决于投递顺序                  | 单模块、单一执行顺序，逐 tick 可复现              |
-| 吞吐     | 基准线                          | 10–1000×（见 [PERFORMANCE.md](./PERFORMANCE.md)） |
+| 维度     | 调度器路径（每器件一个 module） | 统一 IR                                                |
+| -------- | ------------------------------- | ------------------------------------------------------ |
+| 批处理   | 每 tick 多次宿主调用            | 整批一次引擎调用                                       |
+| 器件访问 | 事件 / 端口 / 消息              | 通用访问器（`circuit.devices.sink1.getState('lamp')`） |
+| 电气解算 | JavaScript 桥接，跨模块读写     | 生成进 IR，与器件共享引脚空间                          |
+| 确定性   | 取决于投递顺序                  | 单模块、单一执行顺序，逐 tick 可复现                   |
+| 吞吐     | 基准线                          | 10–1000×（见 [PERFORMANCE.md](./PERFORMANCE.md)）      |
 
 ## API 对照
 
@@ -21,7 +21,7 @@
 | `createUnifiedCircuit(config, options)` | `Circuit.create(input, options)`           |
 | `circuit.tick()`                        | `circuit.step()`                           |
 | `circuit.run(count)`                    | `circuit.runBatch(count)`                  |
-| `circuit.ledOn('led')`                  | `circuit.devices.led.isOn()`               |
+| `circuit.ledOn('led')`                  | `circuit.devices.sink1.getState('lamp')`   |
 | `circuit.readPinInput(pin)`             | `circuit.getPin('device.pin')`             |
 | `circuit.pinOf('device', 'pin')`        | 直接用 `'device.pin'`                      |
 | `generateUnifiedIR(config)`             | `compileCircuit({ devices, connections })` |
@@ -44,21 +44,21 @@ console.log(circuit.ledOn('led'));
 ### 2. 新代码
 
 ```ts
-import { Circuit, createLedDescription, createMcuDescription } from '@mica-js/simulator';
+import { Circuit } from '@mica-js/simulator';
 
 const circuit = await Circuit.create({
   devices: [
-    { id: 'mcu1', type: 'mcu', description: createMcuDescription() },
-    { id: 'led1', type: 'ideal-led', description: createLedDescription() },
+    { id: 'drive1', type: 'push-pull-driver', description: driverDescription() },
+    { id: 'sink1', type: 'lamp-sink', description: sinkDescription() },
   ],
   connections: [
-    { from: 'mcu1.PA0', to: 'led1.anode' },
-    { from: 'led1.cathode', to: 'GND' },
+    { from: 'drive1.PA0', to: 'sink1.anode' },
+    { from: 'sink1.cathode', to: 'GND' },
   ],
 });
 
 circuit.step();
-console.log(circuit.devices.led1.isOn());
+console.log(circuit.devices.sink1.getState('lamp'));
 circuit.runBatch(1_000_000);
 circuit.dispose();
 ```
@@ -67,77 +67,60 @@ circuit.dispose();
 
 - **`await`**：`Circuit.create` 编译并校验 module 后返回（含一次 `initialize`）。
 - **无需手写引脚地址**：`connections` 用 `<器件 id>.<引脚名>` 描述导线，编译器分配全局引脚空间。
-- **访问器按字面量推导**：`type: 'ideal-led'` 让 `circuit.devices.led1` 得到 `LedAccessor`，`type: 'mcu'`
-  得到 `McuAccessor`；未知类型退回通用 `DeviceAccessor`。
+- **访问器只有通用一面**：`circuit.devices.<id>` 是 `DeviceAccessor`（`readPin` / `writePin` /
+  `getState` / `setState`）。需要更丰富表面的器件包用 `description.accessor` 自带一个，在调用处断言。
 - **`GND` / `VCC` / `VDD` 是默认电平轨**，无需声明；自定义轨用 `electrical.rails`。
 
 ## 器件迁移
 
-### LED
+### 器件实现已移出本包
+
+`@mica-js/simulator` 不再导出 `createLedIR` / `createButtonIR` / `createRelayIR` / `createTeachingMCUIR`
+及其访问器类型，也不再提供原理图器件目录（`mica:ideal-button` 等）。器件定义与模型由调用方维护：
+
+- demo 器件在 Playground：模型 `apps/playground/src/sim/device-models.ts`，契约 `apps/playground/public/devices`；
+- 其它项目把器件放进自己的包，只需要 `@mica-js/simulator` 的通用类型与 `@mica-js/ir`。
+
+### 也没有内建内核
+
+编译器不再自带 `mcu` / `led` 内核：`createLedDescription()` / `createMcuDescription()` /
+`BUILTIN_DEVICE_TYPES` / `LedAccessor` / `McuAccessor` 已删除，`type` 只是器件模型的自由标签。
+每个 `description` 必须自带 `pins`（以及需要的 `states` / `behaviors` / `kernel`），否则编译期报
+`unsupported-device`。没有描述就没有默认值——这保证了「LED 是什么」只存在于器件包里。
+
+包内测试与基准使用自己的最小描述（`drive1` / `sink1`），它们只是测试夹具，不是公开 API。
+
+### 自带渲染与主题的器件
+
+器件包按 `DeviceDescription` 提供 `pins` / `states` / `kernel` / `accessor`（可选），再把 `DeviceConfig`
+交给 `Circuit.create`。需要接入画布时，同一个器件包同时提供 `SchematicDeviceBinding`（`type` +
+`description` + `topics` + `deliver` / `read`），宿主用 `resolveDevice` 把它交给
+`createSchematicCircuit` 或 `createSchematicDeviceSimulationHost`。
 
 ```ts
-import { createLedIR, LED_IR_TYPE } from '@mica-js/simulator';
+import type { DeviceConfig, DeviceDescription, SchematicDeviceBinding } from '@mica-js/simulator';
 
-const lamp = createLedIR('led1', { color: 'green', activeLow: false });
-// 把 lamp.device.description 放进 Circuit.create 的 devices
-const circuit = await Circuit.create({
-  devices: [{ id: 'led1', type: LED_IR_TYPE, description: lamp.device.description }],
-  connections: [
-    { from: 'led1.anode', to: 'VCC' },
-    { from: 'led1.cathode', to: 'GND' },
-  ],
-});
-circuit.devices.led1.isOn();
-circuit.devices.led1.getBrightness();
-circuit.devices.led1.setBrightness(128);
+const description: DeviceDescription = {
+  name: 'counter',
+  pins: { clk: { direction: 'input' } },
+  states: { count: { type: 'u32', initial: 0 } },
+  behaviors: {
+    update: (api) => {
+      const count = api.state<'u32'>('count');
+      count.store(api.builder.int.add(count.load(), api.builder.const('u32', 1)));
+    },
+  },
+};
+
+const device: DeviceConfig = { id: 'U1', type: 'counter-ir', description };
+
+const binding: SchematicDeviceBinding = {
+  type: 'counter-ir',
+  description,
+  topics: [{ port: 'count', direction: 'output', type: 'number' }],
+  read: (accessor) => accessor.getState('count'),
+};
 ```
-
-内置的 `ideal-led`（`createLedDescription()`）只有 `lamp` 状态，适合最简电路；`createLedIR` 额外提供
-亮度、颜色和 `activeLow`。
-
-### Button
-
-```ts
-import { createButtonIR, BUTTON_IR_TYPE } from '@mica-js/simulator';
-
-const sw = createButtonIR('sw1', { debounceTicks: 2 });
-// sw.device.description 放进 devices；A 是开关端，B 是参考端
-circuit.devices.sw1.press(); // 原始位置
-circuit.devices.sw1.isClosed(); // 去抖后的触点
-circuit.devices.sw1.getPressCount();
-```
-
-### Teaching MCU
-
-```ts
-import { createTeachingMCUIR, TEACHING_MCU_IR_TYPE } from '@mica-js/simulator';
-
-const mcu = createTeachingMCUIR('mcu', {
-  isa: 'm3',
-  firmware, // Uint8Array
-  instructionsPerTick: 8,
-});
-
-const circuit = await Circuit.create({
-  devices: [
-    { id: 'mcu', type: TEACHING_MCU_IR_TYPE, description: mcu.device.description },
-    { id: 'led1', type: 'ideal-led', description: createLedDescription() },
-  ],
-  connections: [
-    { from: 'mcu.PA0', to: 'led1.anode' },
-    { from: 'led1.cathode', to: 'GND' },
-  ],
-});
-
-const guest = circuit.devices.mcu; // TeachingMCUAccessor
-guest.getPC();
-guest.readRegister('r0');
-guest.writeGPIO('A', 0b1);
-guest.raiseInterrupt(0);
-```
-
-`examples/teaching-mcu` 是**参考实现**：它随包提供，用于示例、测试和器件开发模板。
-生产器件应放在独立包里（例如 `@mica-js/device` 或第三方包），由宿主加载。
 
 ## 自定义器件
 
@@ -167,8 +150,7 @@ const counter: DeviceDescription = {
 };
 ```
 
-完整契约见 [API.md](./API.md#deviceconfig--devicedescription) 与
-`src/unified-ir/examples/teaching-mcu/`。
+完整契约见 `src/unified-ir/README.md`；需要示例时看 Playground 的 `apps/playground/src/devices`（模型）与 `apps/playground/src/sim/device-library.ts`（定义加载与绑定）。
 
 ## 常用操作
 
@@ -177,9 +159,9 @@ const counter: DeviceDescription = {
 | 推进一个 tick     | `circuit.step()`                                                   |
 | 推进一批          | `circuit.runBatch(1_000_000)`                                      |
 | 读已完成 tick 数  | `circuit.tickCount`（`bigint`）                                    |
-| 读一个引脚电平    | `circuit.getPin('mcu.PA0')`（解算后的电平）                        |
+| 读一个引脚电平    | `circuit.getPin('drive1.PA0')`（解算后的电平）                     |
 | 从宿主强制引脚    | `circuit.setPin('sw1.A', true)`                                    |
-| 读/写器件内部状态 | `circuit.devices.led1.getState('level')`                           |
+| 读/写器件内部状态 | `circuit.devices.sink1.getState('lamp')`                           |
 | 复位              | `circuit.reset()`（恢复声明初值并重跑 `initialize`）               |
 | 释放              | `circuit.dispose()`（幂等；之后所有调用抛 `CircuitError`）         |
 | 参考解释器对照    | `Circuit.create(input, { engine: 'reference' })`                   |
@@ -189,18 +171,16 @@ const counter: DeviceDescription = {
 
 运行时错误统一是 `CircuitError`，带稳定的 `code`：
 
-| code                     | 场景                                            |
-| ------------------------ | ----------------------------------------------- |
-| `invalid-options`        | `create` 的选项非法                             |
-| `invalid-count`          | `runBatch(count)` 不是 u32                      |
-| `pin-not-found`          | `getPin` / `setPin` 的引脚不存在                |
-| `pin-not-writable`       | 对 load/passive 引脚调用 `writePin`             |
-| `state-not-found`        | `getState` / `setState` 的状态名不存在          |
-| `invalid-state-value`    | 状态值类型不符                                  |
-| `register-not-found`     | `readRegister` / `writeRegister` 寄存器名不存在 |
-| `invalid-register-value` | 寄存器值越界                                    |
-| `unresolved-device`      | `createCircuitFromSchematic` 找不到器件         |
-| `disposed`               | 电路释放后继续调用                              |
+| code                  | 场景                                    |
+| --------------------- | --------------------------------------- |
+| `invalid-options`     | `create` 的选项非法                     |
+| `invalid-count`       | `runBatch(count)` 不是 u32              |
+| `pin-not-found`       | `getPin` / `setPin` 的引脚不存在        |
+| `pin-not-writable`    | 对 load/passive 引脚调用 `writePin`     |
+| `state-not-found`     | `getState` / `setState` 的状态名不存在  |
+| `invalid-state-value` | 状态值类型不符                          |
+| `unresolved-device`   | `createCircuitFromSchematic` 找不到器件 |
+| `disposed`            | 电路释放后继续调用                      |
 
 编译期错误是 `UnifiedIRCompilerError`（`unknown-device`、`pin-not-found`、`driver-conflict`、
 `power-short`、`rail-conflict`、`capacity-exceeded`、`unsupported-device`、`invalid-ir` 等）。
@@ -219,7 +199,7 @@ const counter: DeviceDescription = {
 | `reset()` / `dispose()`                 | 同名方法                                                  |
 
 ```ts
-import { Circuit, createLedDescription } from '@mica-js/simulator';
+import { Circuit, createCircuitFromSchematic } from '@mica-js/simulator';
 
 const circuit = await createCircuitFromSchematic(schematic, {
   devices: symbolProvider, // 与画布同一份符号几何
@@ -247,9 +227,18 @@ const circuit = await createCircuitFromSchematic(schematic, {
 能。`reset()` 恢复所有内存初值并重跑 `initialize`，`tickCount` 归零。`dispose()` 之后不能再用。
 
 **Q：为什么没有 `createLed()` / `createButton()` 这样的旧工厂？**
-`@mica-js/simulator` 的 v0 原型从未提供这些名字；统一 IR 的工厂统一命名为
-`createXxxIR()`，访问器统一为 `XxxAccessor`。
+`@mica-js/simulator` 的 v0 原型从未提供这些名字；统一 IR 只导出通用编译器与运行时，
+具体器件描述由器件包提供。
+
+**Q：现在还能拿到 `circuit.devices.led1.isOn()` 吗？**
+不能。`LedAccessor` / `McuAccessor` 与内建类型映射已删除，访问器统一是 `DeviceAccessor`：
+用 `getState('lamp')` 读同样的布尔状态，需要更丰富表面时由器件包用 `description.accessor` 提供并在调用处断言。
+
+**Q：删除内建内核算 breaking change 吗？**
+是。`createLedDescription` / `createMcuDescription` / `BUILTIN_DEVICE_TYPES` / `LedAccessor` /
+`McuAccessor` / `createSingleDeviceCircuit` 已从公开入口移除，调用方必须把描述改成自带
+`pins` / `states` / `behaviors`。
 
 **Q：删除 v0 原型 API 算 breaking change 吗？**
 不算。原型从未出现在包的导出入口中（`package.json` 只导出 `.`，`files` 只包含 `dist`），
-删除只影响直接深层导入 `src/unified-ir` 的本地脚本。按本文改写即可。
+删除只影响直接深层导入 `src/unified-ir` 的本地脚本。

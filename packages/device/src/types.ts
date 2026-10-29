@@ -1,4 +1,4 @@
-import type { PayloadType } from '@mica-js/core/canvas';
+import type { DeliveryKind, PayloadType } from '@mica-js/core/canvas';
 import type { PropertyDescriptor, PropertyValue } from '@mica-js/core/schematic';
 import type {
   ElectricalPinInput,
@@ -7,6 +7,7 @@ import type {
   TopologyPinRef,
 } from '@mica-js/core';
 import type {
+  BytesOptions,
   BytesOutputRef,
   BytesRef,
   EntryRef,
@@ -62,6 +63,12 @@ export interface DevicePortDescriptor {
   readonly description?: string;
   readonly direction: 'input' | 'output';
   readonly type: TopicPayloadType;
+  /**
+   * How publishes become deliveries (RFC 0017). Omitted means the payload type decides:
+   * `boolean` / `number` / `vec2d` / `vec3d` are `level`, the text and byte payloads are `message`.
+   * The field is orthogonal to `type`.
+   */
+  readonly delivery?: DeliveryKind;
 }
 
 /** Metadata supplied by the package index or provider for a device description (#11). */
@@ -165,8 +172,29 @@ export interface ObserveDigitalDescriptor<P extends readonly PinRef[]> {
   readonly target: EntryRef<NoInfer<readonly ['u8', ...CapturedPinTypes<P>]>>;
 }
 
-/** Instance declaration surface: core declarations plus this device's pins and connections. */
-export interface DeviceIRDeclarations extends IRDeclarations {
+/** Static handle for one FIFO record queue declared by the device factory (RFC 0017). */
+export type FifoRef = StaticRef<'fifo'>;
+
+/** Fixed shape of a FIFO record queue declared through `api.ir.fifo` (RFC 0017). */
+export interface FifoDescriptor {
+  /** Largest single record the queue accepts, in bytes. */
+  readonly maxRecord: number;
+  /** Number of records the queue holds. */
+  readonly length: number;
+}
+
+/** Instance declaration surface: core declarations plus this device's pins, connections and fifos. */
+export interface DeviceIRDeclarations extends Omit<IRDeclarations, 'bytes'> {
+  /** RFC 0017 form: a zero-filled, writable byte memory declared by its length. */
+  bytes(name: string, length: number): BytesRef<false>;
+  /** IR form: explicit initial bytes and options. */
+  bytes<const ReadonlyBytes extends boolean>(
+    name: string,
+    initial: Uint8Array,
+    options: BytesOptions<ReadonlyBytes>,
+  ): BytesRef<ReadonlyBytes>;
+  /** RFC 0017 form: a fixed-capacity record queue, reached through the step hooks' `io`. */
+  fifo(name: string, descriptor: FifoDescriptor): FifoRef;
   pin(id: string): PinRef;
   connection(id: string): ConnectionRef;
   observeDigital<const P extends readonly PinRef[]>(
@@ -216,11 +244,52 @@ export interface DeviceAPI {
   updateBytes(resource: BytesRef, offset: number, bytes: Uint8Array): Promise<void>;
 }
 
+/**
+ * `applyInputs` view of one step (RFC 0017): read this step's deliveries and write device memory.
+ *
+ * Every method validates at runtime and reports through {@link DeviceDiagnostic} instead of
+ * throwing, so a misused reference never aborts the step.
+ */
+export interface DeviceInputIO {
+  /** Last payload this step delivered to `port`; `undefined` when the step was silent. */
+  takeInput(port: string): TopicPayload | undefined;
+  /** Every payload this step delivered to `port`, in publish order. */
+  takeInputs(port: string): readonly TopicPayload[];
+  /** Writes a declared scalar state; floats take a JS number. */
+  writeState(name: string, value: boolean | number): void;
+  /** Appends one record to a declared FIFO; `false` when the queue is at capacity. */
+  writeFifo(name: string, bytes: Uint8Array): boolean;
+  /** Reports a business diagnostic; the simulation state stays unchanged. */
+  report(code: string, detail?: string): void;
+}
+
+/**
+ * `flushOutputs` view of one step (RFC 0017): read device memory and publish.
+ *
+ * Same reporting contract as {@link DeviceInputIO}: a bad reference becomes a diagnostic.
+ */
+export interface DeviceOutputIO {
+  /** Effective scalar value; floats are JS numbers. `undefined` when the memory is not a state. */
+  readState(name: string): boolean | number | undefined;
+  /** Snapshot of a declared byte memory. */
+  readBytes(name: string): Uint8Array;
+  /** Takes every committed record of a declared FIFO, leaving it empty. */
+  readFifo(name: string): readonly Uint8Array[];
+  /** Publishes a scalar payload on a declared output port. */
+  publish(port: string, payload: TopicPayload): void;
+  /** Publishes a byte payload on a declared output port. */
+  publishBytes(port: string, bytes: Uint8Array): void;
+}
+
 /** Flat lifecycle bindings returned by a device factory (#8). */
 export interface DeviceBindings {
   readonly initialize?: LifecycleRef<readonly []>;
   readonly reset?: LifecycleRef<readonly []>;
   readonly onDispose?: () => void;
+  /** Step start hook (RFC 0017): runs before the step's evaluation rounds. */
+  readonly applyInputs?: (io: DeviceInputIO) => void;
+  /** Step end hook (RFC 0017): runs after evaluation; its publishes use the step's end time. */
+  readonly flushOutputs?: (io: DeviceOutputIO) => void;
 }
 
 /**
@@ -229,6 +298,31 @@ export interface DeviceBindings {
  * are exposed through {@link DeviceAPI.ir} and the builder.
  */
 export type DeviceFactory = (api: DeviceAPI) => DeviceBindings;
+
+/**
+ * Codes the device runtime emits itself (RFC 0017). `io.report` may carry any business code, so
+ * {@link DeviceDiagnostic.code} stays an open string.
+ */
+export type DeviceDiagnosticCode =
+  | 'device/memory-unknown'
+  | 'device/memory-kind'
+  | 'device/memory-type'
+  | 'device/fifo-record'
+  | 'device/port-unused'
+  | 'device/topic-unknown'
+  | 'device/topic-direction'
+  | 'device/topic-rejected'
+  | 'topic/backpressure'
+  | 'topic/mixed-read';
+
+/** A runtime violation RFC 0017 reports instead of aborting the step. */
+export interface DeviceDiagnostic {
+  readonly code: DeviceDiagnosticCode | (string & {});
+  readonly message: string;
+  readonly deviceId?: string;
+  readonly port?: string;
+  readonly memory?: string;
+}
 
 /** Observable lifecycle state of an installed device instance. */
 export type DeviceInstanceState = 'initializing' | 'ready' | 'faulted' | 'destroying' | 'destroyed';
@@ -284,6 +378,12 @@ export interface DeviceInstanceOptions {
   readonly updateResources?: readonly string[];
   /** Synchronous host consumer for `api.publish`; omitted messages are dropped at a boundary. */
   readonly onTopic?: (message: DeviceTopicMessage) => void;
+  /**
+   * Receives the diagnostics RFC 0017 requires instead of aborting a step: misused `io`
+   * references, hook-side backpressure, `io.report` calls and the unused-port notice. A throwing
+   * sink is ignored.
+   */
+  readonly onDiagnostic?: (diagnostic: DeviceDiagnostic) => void;
   /** Held-intent and gated-sampling source for declared pins; required by pin instructions. */
   readonly pinHost?: DevicePinHost;
   /**
@@ -318,6 +418,16 @@ export interface DeviceInstance {
    * queue; after activation listeners start in acceptance order.
    */
   deliver(port: string, payload: TopicPayload, meta: TopicMetadata): void;
+  /**
+   * Runs the `applyInputs` hook for the step that is starting (RFC 0017); a no-op when the device
+   * declares no hook. The hook sees what {@link deliver} staged since the previous step.
+   */
+  applyInputs(): void;
+  /**
+   * Runs the `flushOutputs` hook for the step that just ended (RFC 0017); a no-op when the device
+   * declares no hook. Publishes reach `onTopic` before this call returns.
+   */
+  flushOutputs(): void;
 }
 
 /**

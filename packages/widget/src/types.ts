@@ -1,4 +1,4 @@
-import type { PayloadType } from '@mica-js/core/canvas';
+import type { DeliveryKind, PayloadType } from '@mica-js/core/canvas';
 
 /** A widget implementation and the data that describes it. */
 export interface WidgetModule {
@@ -27,6 +27,12 @@ export interface PortDefinition {
   readonly description?: string;
   readonly direction: 'input' | 'output';
   readonly type: PayloadType;
+  /**
+   * How publishes become deliveries (RFC 0017). Omitted means the payload type decides:
+   * `boolean` / `number` / `vec2d` / `vec3d` are `level`, the text and byte payloads are `message`.
+   * The field is orthogonal to `type`, so any combination is valid.
+   */
+  readonly delivery?: DeliveryKind;
 }
 
 export interface WidgetProvider {

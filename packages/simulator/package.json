@@ -12,8 +12,14 @@
   "sideEffects": false,
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./sandbox": {
+      "source": "./src/sandbox.ts",
+      "types": "./dist/sandbox.d.ts",
+      "import": "./dist/sandbox.js"
     }
   },
   "files": [
@@ -23,18 +29,28 @@
     "bench": "vitest bench --run",
     "bench:unified": "vitest bench --run bench/unified-simple.bench.ts",
     "build": "vite build",
-    "examples": "vitest run examples/examples.test.ts --disableConsoleIntercept",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.bench.json"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./sandbox": {
+        "types": "./dist/sandbox.d.ts",
+        "import": "./dist/sandbox.js"
+      }
+    }
   },
   "dependencies": {
     "@mica-js/core": "workspace:*",
     "@mica-js/device": "workspace:*",
-    "@mica-js/ir": "workspace:*"
+    "@mica-js/ir": "workspace:*",
+    "@mica-js/sandbox": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

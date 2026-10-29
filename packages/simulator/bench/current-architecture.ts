@@ -6,9 +6,9 @@
  *
  * ```text
  * tick():
- *   schedule mcu.tick   @ t   -> flips PA0, sets the pin mode
- *   schedule net.solve  @ t   -> JS: read mcu registers, write led.anode
- *   schedule led.update @ t   -> samples anode, writes the lamp state
+ *   schedule driver.tick   @ t   -> flips PA0, sets the pin mode
+ *   schedule net.solve  @ t   -> JS: read driver registers, write sink.anode
+ *   schedule sink.update @ t   -> samples anode, writes the lamp state
  *   scheduler.start({ until: t })
  * ```
  *
@@ -23,35 +23,35 @@ import { PIN_MODE } from '../src/unified-ir/pin-space';
 import { createModuleValidation } from '../src/unified-ir/validation';
 
 export interface CurrentArchitecture {
-  /** Advances the MCU, the net, and the LED by one simulated tick. */
+  /** Advances the driver, the net, and the sink by one simulated tick. */
   tick(): void;
   /** Completed ticks, i.e. the virtual time in picoseconds. */
   readonly ticks: number;
-  /** Lamp state as written by the LED module. */
-  readLed(): boolean;
+  /** Lamp state as written by the sink module. */
+  readLamp(): boolean;
 }
 
-/** Builds the two-module + scheduler baseline of the MCU + LED circuit. */
+/** Builds the two-module + scheduler baseline of the driver + sink circuit. */
 export function createCurrentArchitecture(): CurrentArchitecture {
-  // MCU module: PA0 output value and mode.
-  const mcuModule = createIRModule();
-  const mcuOutput = mcuModule.state('pa0_output', 'bool', false);
-  const mcuMode = mcuModule.state('pa0_mode', 'u8', PIN_MODE.highZ);
-  const mcuTick = mcuModule.entry('tick', []);
-  mcuTick.body((b) => {
-    b.state.store(mcuOutput, b.bool.not(b.state.load(mcuOutput)));
-    b.state.store(mcuMode, b.const('u8', PIN_MODE.pushPull));
+  // driver module: PA0 output value and mode.
+  const driverModule = createIRModule();
+  const driverOutput = driverModule.state('pa0_output', 'bool', false);
+  const driverMode = driverModule.state('pa0_mode', 'u8', PIN_MODE.highZ);
+  const driverTick = driverModule.entry('tick', []);
+  driverTick.body((b) => {
+    b.state.store(driverOutput, b.bool.not(b.state.load(driverOutput)));
+    b.state.store(driverMode, b.const('u8', PIN_MODE.pushPull));
     b.return([]);
   });
 
-  // LED module: the anode level the host publishes, plus the lamp state.
-  const ledModule = createIRModule();
-  const ledAnode = ledModule.state('anode', 'bool', false);
-  const ledLamp = ledModule.state('led_on', 'bool', false);
-  const ledUpdate = ledModule.entry('update', []);
-  ledUpdate.body((b) => {
+  // sink module: the anode level the host publishes, plus the lamp state.
+  const sinkModule = createIRModule();
+  const sinkAnode = sinkModule.state('anode', 'bool', false);
+  const sinkLamp = sinkModule.state('lamp', 'bool', false);
+  const sinkUpdate = sinkModule.entry('update', []);
+  sinkUpdate.body((b) => {
     // The cathode sits on ground, so the lamp follows the anode alone.
-    b.state.store(ledLamp, b.state.load(ledAnode));
+    b.state.store(sinkLamp, b.state.load(sinkAnode));
     b.return([]);
   });
 
@@ -59,15 +59,15 @@ export function createCurrentArchitecture(): CurrentArchitecture {
     maxStepsPerEntry: 1_000_000,
     maxEntriesPerTime: 1_000_000,
   });
-  const mcu = createIRSchedulerInstance(scheduler, {
-    instanceId: 'mcu',
-    module: mcuModule,
-    validation: createModuleValidation(mcuModule),
+  const driver = createIRSchedulerInstance(scheduler, {
+    instanceId: 'driver',
+    module: driverModule,
+    validation: createModuleValidation(driverModule),
   });
-  const led = createIRSchedulerInstance(scheduler, {
-    instanceId: 'led',
-    module: ledModule,
-    validation: createModuleValidation(ledModule),
+  const sink = createIRSchedulerInstance(scheduler, {
+    instanceId: 'sink',
+    module: sinkModule,
+    validation: createModuleValidation(sinkModule),
   });
   const solveTarget = Object.freeze({
     name: 'solve',
@@ -80,9 +80,9 @@ export function createCurrentArchitecture(): CurrentArchitecture {
     executor: {
       execute(): void {
         // The host boundary: cross-module register reads and a cross-module store.
-        const mode = mcu.storage.loadState(mcuMode);
-        const output = mcu.storage.loadState(mcuOutput);
-        led.storage.storeState(ledAnode, mode === PIN_MODE.pushPull && output === true);
+        const mode = driver.storage.loadState(driverMode);
+        const output = driver.storage.loadState(driverOutput);
+        sink.storage.storeState(sinkAnode, mode === PIN_MODE.pushPull && output === true);
       },
     },
   });
@@ -90,15 +90,15 @@ export function createCurrentArchitecture(): CurrentArchitecture {
   let time = 0;
   return Object.freeze({
     tick(): void {
-      mcu.at(mcuTick, time, []);
+      driver.at(driverTick, time, []);
       net.at(solveTarget, time, []);
-      led.at(ledUpdate, time, []);
+      sink.at(sinkUpdate, time, []);
       scheduler.start({ until: time });
       time += 1;
     },
     get ticks(): number {
       return time;
     },
-    readLed: (): boolean => led.storage.loadState(ledLamp) === true,
+    readLamp: (): boolean => sink.storage.loadState(sinkLamp) === true,
   });
 }

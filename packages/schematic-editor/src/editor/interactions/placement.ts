@@ -12,11 +12,11 @@ import type { InteractionContext } from './context';
 
 /** Device the next click inserts: the host's armed device wins over the toolbar tool. */
 export function placementDevice(context: InteractionContext): string | undefined {
-  const armed = context.deps.controller.getPlacingDevice();
+  const armed = context.deps.editor.getPlacingDevice();
   if (armed !== undefined) {
     return armed;
   }
-  const tool = context.deps.controller.getTool();
+  const tool = context.deps.editor.getTool();
   return isPlacementTool(tool) ? toolDevice(tool) : undefined;
 }
 
@@ -72,7 +72,7 @@ export function rotatePlacement(context: InteractionContext, degrees: number): b
 
 /** Places the armed device at `page`. */
 export function place(context: InteractionContext, page: Point): void {
-  const controller = context.deps.controller;
+  const editor = context.deps.editor;
   const device = placementDevice(context);
   if (device === undefined || context.deps.readOnly) {
     return;
@@ -80,22 +80,20 @@ export function place(context: InteractionContext, page: Point): void {
   const role = symbolRole(device);
   // Connection points snap to pins and wire ends; components only snap to the grid.
   const snapped =
-    role === 'component'
-      ? snapToGrid(page, controller.getDisplay())
-      : context.pointer.snapWire(page);
+    role === 'component' ? snapToGrid(page, editor.getDisplay()) : context.pointer.snapWire(page);
   // A label dropped on a pin hangs off a short lead instead of sitting on the pin.
   const stub = labelStub(context, device, snapped);
   const point = stub?.anchor ?? snapped;
   const properties = placementProperties(device);
-  const designator = role === 'component' ? controller.nextDesignator(device) : undefined;
+  const designator = role === 'component' ? editor.nextDesignator(device) : undefined;
   context.deps.run(() =>
-    controller.transaction(() => {
+    editor.transaction(() => {
       if (stub?.wire !== undefined) {
-        controller.addWire(stub.wire);
+        editor.addWire(stub.wire);
       }
-      controller.dispatch({
+      editor.applyCommand({
         type: 'add-symbol',
-        ...(device === LABEL_DEVICE ? { net: nextNetName(controller.getDocument()) } : {}),
+        ...(device === LABEL_DEVICE ? { net: nextNetName(editor.getValue()) } : {}),
         ...(designator === undefined ? {} : { designator }),
         device,
         x: point.x,
@@ -105,7 +103,7 @@ export function place(context: InteractionContext, page: Point): void {
       });
     }),
   );
-  controller.setTool('select');
+  editor.setTool('select');
   context.state.cursorPoint = undefined;
   context.state.placementRotation = 0;
 }
@@ -117,6 +115,6 @@ export function snapPlacementPoint(
   device: string,
 ): Point {
   return symbolRole(device) === 'component'
-    ? snapToGrid(page, context.deps.controller.getDisplay())
+    ? snapToGrid(page, context.deps.editor.getDisplay())
     : context.pointer.snapWire(page);
 }

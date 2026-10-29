@@ -5,23 +5,28 @@ import {
   parseDeviceReference,
   symbolPinPosition,
   type DeviceSymbolProvider,
+  type HitTestOptions,
   type Point,
+  type SchematicDocument,
+  type SchematicHit,
 } from '@mica-js/core/schematic';
-import type { SchematicEditorController } from '../../controller/controller';
+import type { DisplayOptions } from '../../types';
 
 /** Screen-space hit radius; callers divide by the viewport scale. */
 export const MIN_HIT_PIXELS = 6;
 
 export interface SnapContext {
-  readonly controller: SchematicEditorController;
+  readonly document: SchematicDocument;
+  readonly display: DisplayOptions;
   readonly devices: DeviceSymbolProvider | undefined;
   /** Hit tolerance in page units. */
   readonly tolerance: number;
+  readonly hitTest: (point: Point, options?: HitTestOptions) => SchematicHit | undefined;
 }
 
 /** World position of a pin / label / power / ground anchor under `point`. */
 export function connectionNodeAt(context: SnapContext, point: Point): Point | undefined {
-  const hit = context.controller.hitTest(point, {
+  const hit = context.hitTest(point, {
     tolerance: context.tolerance * 2,
     includeSymbols: false,
   });
@@ -37,7 +42,7 @@ export function connectionNodeAt(context: SnapContext, point: Point): Point | un
 
 /** Endpoint of an existing wire under `point`; used to close a connection. */
 export function wireEndpointAt(context: SnapContext, point: Point): Point | undefined {
-  for (const wire of context.controller.getDocument().sheet.wires) {
+  for (const wire of context.document.sheet.wires) {
     for (const endpoint of [wire.points[0], wire.points[wire.points.length - 1]]) {
       if (
         endpoint !== undefined &&
@@ -57,7 +62,7 @@ export function anchorSymbolAt(
   point: Point,
 ): { readonly x: number; readonly y: number } | undefined {
   // Anchors sit on wire endpoints, where `hitTest` reports the wire first, so scan directly.
-  for (const symbol of context.controller.getDocument().sheet.symbols) {
+  for (const symbol of context.document.sheet.symbols) {
     const device = symbol.device;
     if (device !== LABEL_DEVICE && device !== POWER_DEVICE && device !== GROUND_DEVICE) {
       continue;
@@ -76,9 +81,7 @@ export function pinPosition(
   context: SnapContext,
   hit: { readonly symbolId: string; readonly pinId: string },
 ): Point | undefined {
-  const symbol = context.controller
-    .getDocument()
-    .sheet.symbols.find((item) => item.id === hit.symbolId);
+  const symbol = context.document.sheet.symbols.find((item) => item.id === hit.symbolId);
   if (symbol === undefined) {
     return undefined;
   }

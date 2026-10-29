@@ -8,29 +8,29 @@ import { finishWire } from './wire';
  * tool, and clears the selection. Returns whether there was anything to cancel.
  */
 export function cancelInteraction(context: InteractionContext): boolean {
-  const controller = context.deps.controller;
+  const editor = context.deps.editor;
   const active =
-    controller.getPlacingDevice() !== undefined ||
-    controller.getTool() !== 'select' ||
-    controller.getSelection().length > 0 ||
+    editor.getPlacingDevice() !== undefined ||
+    editor.getTool() !== 'select' ||
+    editor.getSelection().length > 0 ||
     context.state.pendingWire.length > 0 ||
     context.state.drag !== undefined;
   if (!active) {
     return false;
   }
-  if (controller.getPlacingDevice() !== undefined) {
-    controller.cancelPlacement();
+  if (editor.getPlacingDevice() !== undefined) {
+    editor.cancelPlacement();
   }
   context.state.reset();
-  controller.setSelection([]);
-  controller.setTool('select');
+  editor.setSelection([]);
+  editor.setTool('select');
   context.deps.onChange();
   return true;
 }
 
 /** Keyboard shortcuts; the canvas keeps focus, so the root element owns the listener. */
 export function handleKeyDown(context: InteractionContext, event: KeyboardEvent): void {
-  const controller = context.deps.controller;
+  const editor = context.deps.editor;
   const readOnly = context.deps.readOnly;
 
   if (event.key === ' ') {
@@ -39,7 +39,7 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
       return;
     }
     if (!readOnly) {
-      context.deps.run(() => controller.rotateSelection(90));
+      context.deps.run(() => editor.rotateSelection(90));
     }
     return;
   }
@@ -48,14 +48,14 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
     return;
   }
   if (event.key === 'Enter') {
-    if (controller.getTool() === 'wire') {
+    if (editor.getTool() === 'wire') {
       finishWire(context);
     }
     return;
   }
   if (
     event.key === 'Backspace' &&
-    controller.getTool() === 'wire' &&
+    editor.getTool() === 'wire' &&
     context.state.pendingWire.length > 0
   ) {
     event.preventDefault();
@@ -66,13 +66,13 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
   if (event.key === 'Delete' || event.key === 'Backspace') {
     event.preventDefault();
     if (!readOnly) {
-      context.deps.run(() => controller.deleteSelection());
+      context.deps.run(() => editor.deleteSelection());
     }
     return;
   }
   if (event.key === 'r' || event.key === 'R') {
     if (!readOnly) {
-      context.deps.run(() => controller.rotateSelection(90));
+      context.deps.run(() => editor.rotateSelection(90));
     }
     return;
   }
@@ -86,9 +86,9 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
       return;
     }
     if (event.shiftKey) {
-      controller.redo();
+      editor.redo();
     } else {
-      controller.undo();
+      editor.undo();
     }
     return;
   }
@@ -97,13 +97,13 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
     if (readOnly) {
       return;
     }
-    controller.redo();
+    editor.redo();
     return;
   }
   if (readOnly) {
     return;
   }
-  const step = controller.getDisplay().gridSize > 0 ? controller.getDisplay().gridSize : 1;
+  const step = editor.getDisplay().gridSize > 0 ? editor.getDisplay().gridSize : 1;
   const distance = event.shiftKey ? step * 10 : step;
   const deltas: Readonly<Record<string, Point>> = {
     ArrowLeft: { x: -distance, y: 0 },
@@ -114,6 +114,6 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
   const delta = deltas[event.key];
   if (delta !== undefined) {
     event.preventDefault();
-    context.deps.run(() => controller.moveSelectionBy(delta.x, delta.y));
+    context.deps.run(() => editor.moveSelectionBy(delta.x, delta.y));
   }
 }

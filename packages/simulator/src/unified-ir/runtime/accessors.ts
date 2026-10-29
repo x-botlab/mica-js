@@ -1,4 +1,3 @@
-import { INTEGER_TYPES } from '@mica-js/ir';
 import type { FloatBits, IRInterpreter, RuntimeScalar } from '@mica-js/ir';
 import type {
   CompiledCircuit,
@@ -6,25 +5,7 @@ import type {
   DeviceStateSlot,
   ResolvedDevicePin,
 } from '../compiler';
-import {
-  CircuitError,
-  type DeviceAccessor,
-  type DeviceAccessors,
-  type LedAccessor,
-  type McuAccessor,
-} from './types';
-
-/** Device types whose accessor reports a lamp state. */
-const LED_TYPES: ReadonlySet<string> = new Set(['led', 'ideal-led']);
-
-/** Device types whose accessor exposes registers. */
-const MCU_TYPES: ReadonlySet<string> = new Set(['mcu', 'teaching-mcu']);
-
-/** State names `isOn()` prefers, in order, before falling back to the only bool state. */
-const LAMP_STATE_NAMES: readonly string[] = Object.freeze(['lamp', 'lit', 'on']);
-
-const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
-const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
+import { CircuitError, type DeviceAccessor, type DeviceAccessors } from './types';
 
 /** Everything the accessor builders read from one live circuit. */
 export interface DeviceAccessorContext {
@@ -41,10 +22,9 @@ export interface DeviceAccessorContext {
 /**
  * Builds one accessor per compiled device.
  *
- * The shape follows the device type: `led`/`ideal-led` gain `isOn()`,
- * `mcu`/`teaching-mcu` gain `readRegister`/`writeRegister`, and every other
- * type keeps the generic state/pin surface. The returned record is frozen and
- * keyed by device id.
+ * A description that declares `accessor` owns its surface; every other device
+ * keeps the generic state/pin accessor. The returned record is frozen and keyed
+ * by device id.
  */
 export function buildDeviceAccessors(context: DeviceAccessorContext): DeviceAccessors {
   const entries: [string, DeviceAccessor][] = [];
@@ -63,10 +43,6 @@ export function buildDeviceAccessors(context: DeviceAccessorContext): DeviceAcce
           runBatch: context.runBatch,
         }) as unknown as DeviceAccessor,
       ]);
-    } else if (LED_TYPES.has(device.type)) {
-      entries.push([device.deviceId, createLedAccessor(context, device, base)]);
-    } else if (MCU_TYPES.has(device.type)) {
-      entries.push([device.deviceId, createMcuAccessor(context, device, base)]);
     } else {
       entries.push([device.deviceId, base]);
     }
@@ -131,101 +107,6 @@ function createBaseAccessor(
   return Object.freeze(accessor);
 }
 
-function createLedAccessor(
-  context: DeviceAccessorContext,
-  device: DeviceMetadata,
-  base: DeviceAccessor,
-): LedAccessor {
-  const lamp = lampStateOf(device);
-
-  const requireLamp = (): DeviceStateSlot => {
-    if (lamp === undefined) {
-      throw new CircuitError(
-        'state-not-found',
-        `LED "${device.deviceId}" (${device.type}) declares no boolean lamp state. Available: ${formatNames(device.states.keys())}`,
-        { deviceId: device.deviceId },
-      );
-    }
-    return lamp;
-  };
-
-  const accessor: LedAccessor = {
-    ...base,
-    get lampState(): string {
-      return requireLamp().name;
-    },
-    isOn(): boolean {
-      context.assertActive();
-      const slot = requireLamp();
-      return context.jit.storage.loadArray(slot.array, slot.index) === true;
-    },
-  };
-  return Object.freeze(accessor);
-}
-
-function createMcuAccessor(
-  context: DeviceAccessorContext,
-  device: DeviceMetadata,
-  base: DeviceAccessor,
-): McuAccessor {
-  const registers = Object.freeze(
-    [...device.states.entries()]
-      .filter(([, slot]) => isRegisterType(slot.type))
-      .map(([name]) => name),
-  );
-
-  const registerSlot = (name: string): DeviceStateSlot => {
-    const slot = device.states.get(name);
-    if (slot === undefined || !isRegisterType(slot.type)) {
-      const detail =
-        slot === undefined
-          ? `has no state "${name}"`
-          : `declares "${name}" as ${slot.type}; registers must be bool or integer states`;
-      throw new CircuitError(
-        'register-not-found',
-        `MCU "${device.deviceId}" ${detail}. Registers: ${formatNames(registers)}`,
-        { deviceId: device.deviceId, stateName: name },
-      );
-    }
-    return slot;
-  };
-
-  const accessor: McuAccessor = {
-    ...base,
-    registerNames: registers,
-    readRegister(name: string): bigint {
-      context.assertActive();
-      const slot = registerSlot(name);
-      const value = context.jit.storage.loadArray(slot.array, slot.index);
-      if (slot.type === 'bool') return value === true ? 1n : 0n;
-      return BigInt(value as number);
-    },
-    writeRegister(name: string, value: bigint): void {
-      context.assertActive();
-      const slot = registerSlot(name);
-      if (typeof value !== 'bigint') {
-        throw new CircuitError(
-          'invalid-register-value',
-          `Register "${device.deviceId}.${name}" needs a bigint value, received ${typeof value}`,
-          { deviceId: device.deviceId, stateName: name },
-        );
-      }
-      const accepted =
-        slot.type === 'bool' ? value !== 0n : safeRegisterNumber(device, slot, value);
-      try {
-        context.jit.storage.storeArray(slot.array, slot.index, accepted);
-      } catch (cause) {
-        throw new CircuitError(
-          'invalid-register-value',
-          `Register "${device.deviceId}.${name}" (${slot.type}) rejected ${value}`,
-          { deviceId: device.deviceId, stateName: name, cause },
-        );
-      }
-    },
-  };
-  return Object.freeze(accessor);
-}
-
 /** Resolves one pin of `device`, or throws with every pin the device declares. */
 function pinOf(
   device: DeviceMetadata,
@@ -254,23 +135,6 @@ function stateOf(device: DeviceMetadata, name: string): DeviceStateSlot {
     );
   }
   return slot;
-}
-
-/**
- * Picks the state `isOn()` reports: `lamp`, then `lit`, then `on`, then the
- * only boolean state the description declares.
- */
-function lampStateOf(device: DeviceMetadata): DeviceStateSlot | undefined {
-  for (const name of LAMP_STATE_NAMES) {
-    const slot = device.states.get(name);
-    if (slot?.type === 'bool') return slot;
-  }
-  const bools = [...device.states.values()].filter((slot) => slot.type === 'bool');
-  return bools.length === 1 ? bools[0] : undefined;
-}
-
-function isRegisterType(type: DeviceStateSlot['type']): boolean {
-  return type === 'bool' || (INTEGER_TYPES as readonly string[]).includes(type);
 }
 
 function assertBoolean(
@@ -322,17 +186,6 @@ function coerceStateValue(
     );
   }
   return value;
-}
-
-function safeRegisterNumber(device: DeviceMetadata, slot: DeviceStateSlot, value: bigint): number {
-  if (value > MAX_SAFE_BIGINT || value < MIN_SAFE_BIGINT) {
-    throw new CircuitError(
-      'invalid-register-value',
-      `Register "${device.deviceId}.${slot.name}" received ${value}, which is outside the exact integer range`,
-      { deviceId: device.deviceId, stateName: slot.name },
-    );
-  }
-  return Number(value);
 }
 
 function isFloatBits(value: unknown): value is FloatBits {

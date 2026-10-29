@@ -85,7 +85,7 @@ export function bindingOptions(
   for (const target of candidates) {
     options.push({
       value: targetValue(target),
-      label: `${target.designator}.${target.port} · ${target.direction} · ${target.type}`,
+      label: `${target.designator}.${target.port}`,
       current: false,
     });
   }

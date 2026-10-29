@@ -2,13 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["ES2023", "DOM"],
-    "types": ["node"],
-    "paths": {
-      "@mica-js/core": ["../core/src/index.ts"],
-      "@mica-js/core/canvas": ["../core/src/canvas/index.ts"],
-      "@mica-js/core/schematic": ["../core/src/schematic/index.ts"],
-      "@mica-js/ir": ["../ir/src/index.ts"]
-    }
+    "types": ["node"]
   },
   "include": ["src"]
 }

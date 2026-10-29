@@ -141,3 +141,5 @@ export type {
   WritableBytesRef,
 } from './types';
 export { evaluateFloatInstruction, IRFloatEvaluationError } from './float';
+// Host-side scalar conversion: the RFC 0017 `io` surface exchanges JS numbers with float memory.
+export { fromNumber, toNumber } from './float-ieee';

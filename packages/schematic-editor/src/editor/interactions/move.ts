@@ -4,9 +4,7 @@ import type { InteractionContext } from './context';
 
 /** Starts dragging a symbol; the grid is applied where it lands, not to the pointer delta. */
 export function beginMoveDrag(context: InteractionContext, page: Point, symbolId: string): boolean {
-  const symbol = context.deps.controller
-    .getDocument()
-    .sheet.symbols.find((item) => item.id === symbolId);
+  const symbol = context.deps.editor.getValue().sheet.symbols.find((item) => item.id === symbolId);
   context.state.drag = {
     mode: 'move',
     origin: page,
@@ -21,9 +19,7 @@ export function beginReferenceDrag(
   page: Point,
   symbolId: string,
 ): boolean {
-  const symbol = context.deps.controller
-    .getDocument()
-    .sheet.symbols.find((item) => item.id === symbolId);
+  const symbol = context.deps.editor.getValue().sheet.symbols.find((item) => item.id === symbolId);
   if (symbol === undefined) {
     return false;
   }
@@ -44,7 +40,7 @@ export function updateMoveDrag(context: InteractionContext, page: Point): boolea
   if (drag?.mode !== 'move') {
     return false;
   }
-  const next = snapDragOffset(drag.anchor, drag.origin, page, context.deps.controller.getDisplay());
+  const next = snapDragOffset(drag.anchor, drag.origin, page, context.deps.editor.getDisplay());
   if (next.x !== drag.offset.x || next.y !== drag.offset.y) {
     context.state.drag = { ...drag, offset: next };
     context.deps.onChange();
@@ -77,7 +73,7 @@ export function finishMoveDrag(
     return false;
   }
   const { offset } = drag;
-  context.deps.run(() => context.deps.controller.moveSelectionBy(offset.x, offset.y));
+  context.deps.run(() => context.deps.editor.moveSelectionBy(offset.x, offset.y));
   return true;
 }
 
@@ -94,7 +90,7 @@ export function finishReferenceDrag(
   if (dx === 0 && dy === 0) {
     return false;
   }
-  context.deps.run(() => context.deps.controller.moveReferenceBy(drag.symbolId, dx, dy));
+  context.deps.run(() => context.deps.editor.moveReferenceBy(drag.symbolId, dx, dy));
   return true;
 }
 

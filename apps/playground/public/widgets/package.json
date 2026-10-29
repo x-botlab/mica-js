@@ -13,6 +13,10 @@
     "button": {
       "path": "button.json",
       "displayName": "按键"
+    },
+    "lamp": {
+      "path": "lamp.json",
+      "displayName": "指示灯"
     }
   }
 }

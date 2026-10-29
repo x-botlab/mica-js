@@ -2,7 +2,7 @@ import { createIRModule, validateIR } from '@mica-js/ir';
 import type { IRModule, IRValidationOptions } from '@mica-js/ir';
 import { createModuleValidation } from '../validation';
 import { GlobalResourceAllocator } from './allocator';
-import { DeviceIRGenerator, resolveDeviceDescription } from './device-gen';
+import { DeviceIRGenerator } from './device-gen';
 import { DEFAULT_ENTRY_POINT_NAMES, MainLoopGenerator, type MainLoopNames } from './mainloop-gen';
 import { ElectricalSolverGenerator } from './solver-gen';
 import {
@@ -22,21 +22,24 @@ import {
 /**
  * Compiles several devices and their wiring into one unified IR module (U01).
  *
+ * Device models are caller-supplied: every entry of `devices` carries the pins,
+ * states and behaviors (or `kernel`) its type needs.
+ *
  * ```ts
  * const circuit = compileCircuit({
  *   devices: [
- *     { id: 'mcu1', type: 'teaching-mcu', description: createMcuDescription() },
- *     { id: 'led1', type: 'ideal-led', description: createLedDescription() },
+ *     { id: 'drive1', type: 'push-pull-driver', description: driverDescription() },
+ *     { id: 'sink1', type: 'lamp-sink', description: sinkDescription() },
  *   ],
  *   connections: [
- *     { from: 'mcu1.PA0', to: 'led1.anode' },
- *     { from: 'led1.cathode', to: 'GND' },
+ *     { from: 'drive1.channel0', to: 'sink1.anode' },
+ *     { from: 'sink1.cathode', to: 'GND' },
  *   ],
  * });
  *
  * const jit = createIRJIT(circuit.module, { validation: circuit.validation });
  * jit.execute(circuit.entryPoints.refs.initialize, []);
- * jit.execute(circuit.entryPoints.refs.tick, []);          // mcu1 + nets + led1
+ * jit.execute(circuit.entryPoints.refs.tick, []);          // drive1 + nets + sink1
  * ```
  *
  * The pipeline is: validate the input, allocate the global pin and state
@@ -51,9 +54,8 @@ export function compileCircuit(
   input: CircuitCompilationInput,
   options: CircuitCompilationOptions = {},
 ): CompiledCircuit {
-  const { devices: rawDevices, connections } = validateInput(input);
+  const { devices, connections } = validateInput(input);
   const resolvedOptions = validateOptions(options);
-  const devices = rawDevices.map(resolveDeviceDescription);
   const names = resolveEntryNames(resolvedOptions);
 
   const module = createIRModule();
@@ -246,21 +248,8 @@ export { GlobalResourceAllocator, createPinMemory, stateOffsetOf } from './alloc
 export type { ResourceAllocation } from './allocator';
 export { DEFAULT_RAILS, NetworkTopologyAnalyzer, assertNoElectricalErrors } from './topology';
 export type { TopologyOptions } from './topology';
-export {
-  BUILTIN_DEVICE_KERNELS,
-  BUILTIN_DEVICE_TYPES,
-  DeviceIRGenerator,
-  builtinDeviceKernel,
-  createLedDescription,
-  createMcuDescription,
-  resolveDeviceDescription,
-} from './device-gen';
-export type {
-  BuiltinDeviceKernel,
-  DeviceGenerationContext,
-  DeviceLoopEntry,
-  GeneratedDevice,
-} from './device-gen';
+export { DeviceIRGenerator } from './device-gen';
+export type { DeviceGenerationContext, DeviceLoopEntry, GeneratedDevice } from './device-gen';
 export { ElectricalSolverGenerator } from './solver-gen';
 export type { NetSolverRuntime, SolverGenerationContext } from './solver-gen';
 export { DEFAULT_ENTRY_POINT_NAMES, MainLoopGenerator } from './mainloop-gen';

@@ -1,0 +1,23 @@
+{
+  "reference": "demo:ideal-button",
+  "type": "button-ir",
+  "displayName": "理想按钮",
+  "designatorPrefix": "S",
+  "config": { "debounceTicks": 0 },
+  "pins": {
+    "A": { "direction": "input", "side": "left", "kind": "signal" },
+    "B": { "direction": "output", "side": "right", "kind": "signal" }
+  },
+  "topics": {
+    "pressed": { "direction": "input", "type": "boolean", "title": "按下", "state": "pressed" },
+    "closed": { "direction": "output", "type": "boolean", "title": "触点闭合", "state": "closed" },
+    "pressCount": {
+      "direction": "output",
+      "type": "number",
+      "title": "按下次数",
+      "state": "pressCount"
+    }
+  },
+  "connections": ["contact"],
+  "reset": { "state": "supported", "detail": "统一 IR 复位会恢复按键初始状态" }
+}

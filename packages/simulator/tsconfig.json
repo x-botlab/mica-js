@@ -1,14 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2023"],
-    "paths": {
-      "@mica-js/core": ["../core/src/index.ts"],
-      "@mica-js/core/canvas": ["../core/src/canvas/index.ts"],
-      "@mica-js/core/schematic": ["../core/src/schematic/index.ts"],
-      "@mica-js/ir": ["../ir/src/index.ts"],
-      "@mica-js/device": ["../device/src/index.ts"]
-    }
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
-  "include": ["src", "examples", "vite.config.ts"]
+  "include": ["src", "bench", "vite.config.ts"]
 }

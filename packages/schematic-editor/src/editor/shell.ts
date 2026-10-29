@@ -1,5 +1,4 @@
-import type { EditorTool } from '../controller/types';
-import { EDITOR_STYLES } from '../styles';
+import type { EditorTool } from '../types';
 import { TOOL_ICONS, createToolIcon } from './icons';
 
 export interface EditorShell {
@@ -24,9 +23,6 @@ export function createShell(options: ShellOptions): EditorShell {
   root.className = 'mica-schematic';
   root.tabIndex = 0;
 
-  const style = doc.createElement('style');
-  style.textContent = EDITOR_STYLES;
-
   const canvasHost = doc.createElement('div');
   canvasHost.className = 'mica-schematic__canvas-host';
 
@@ -34,7 +30,7 @@ export function createShell(options: ShellOptions): EditorShell {
   canvas.className = 'mica-schematic__canvas';
   canvasHost.append(canvas);
 
-  root.append(style, canvasHost);
+  root.append(canvasHost);
 
   const toolButtons = new Map<EditorTool, HTMLButtonElement>();
   if (options.toolbar) {

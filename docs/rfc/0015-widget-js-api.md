@@ -43,18 +43,16 @@ export default function createWidget(api) {
 
 ## 上下文接口
 
-| 接口                               | 职责                                                       |
-| ---------------------------------- | ---------------------------------------------------------- |
-| `api.props`                        | 当前完整的只读属性快照                                     |
-| `api.width`、`api.height`          | 当前画布区域的逻辑宽高                                     |
-| `api.invalidate()`                 | 标记需要重绘，由运行时调度绘制                             |
-| `api.textInput.begin(options)`     | 创建宿主管理的文本编辑会话，支持文本、选区与输入法组合输入 |
-| `api.textSelection.begin(options)` | 创建宿主管理的原生文本选择会话                             |
-| `api.subscribe(port, callback)`    | 订阅逻辑输入端口，返回取消订阅函数                         |
-| `api.publish(port, payload)`       | 向逻辑输出端口发布载荷                                     |
-| `api.onPropsChanged(callback)`     | 监听属性变化，返回取消监听函数                             |
-| `api.assets.loadImage(reference)`  | 异步获取可绘制的图片位图                                   |
-| `api.assets.readBinary(reference)` | 异步获取独立二进制缓冲区                                   |
+| 接口                               | 职责                               |
+| ---------------------------------- | ---------------------------------- |
+| `api.props`                        | 当前完整的只读属性快照             |
+| `api.width`、`api.height`          | 当前画布区域的逻辑宽高             |
+| `api.invalidate()`                 | 标记需要重绘，由运行时调度绘制     |
+| `api.subscribe(port, callback)`    | 订阅逻辑输入端口，返回取消订阅函数 |
+| `api.publish(port, payload)`       | 向逻辑输出端口发布载荷             |
+| `api.onPropsChanged(callback)`     | 监听属性变化，返回取消监听函数     |
+| `api.assets.loadImage(reference)`  | 异步获取可绘制的图片位图           |
+| `api.assets.readBinary(reference)` | 异步获取独立二进制缓冲区           |
 
 组件通过逻辑端口名访问通信接口，宿主根据实例绑定完成话题路由与权限检查。
 
@@ -170,82 +168,6 @@ return {
 - `move` 按显示帧合并，只保留该帧最新坐标。
 - `end` 携带最终坐标，并先清除该手势未投递的 `move`。
 - `cancel` 清除待投递移动并结束拖动，保留此前已更新或发布的值。
-
-## 文本输入与 IME
-
-文本输入与 IME 采用宿主管理的编辑会话，实际文本以编辑会话快照为准。
-
-- 同一宿主同时维护一个活动编辑会话；开始编辑时组件获得焦点，切换组件或失焦时结束会话并保留已输入文本。
-- 组件提交当前文本、选区与局部编辑区域，宿主转换为屏幕位置。
-- 宿主用可聚焦、视觉隐藏且参与布局的真实 textarea 承接输入、组合输入、剪贴板与原生选区操作。
-- 编辑会话期间以宿主 textarea 为编辑数据源，向组件同步完整文本、选区快照与 `composing` 标记；组件负责在 Canvas 上绘制文本、选区与组合输入效果。
-- 程序主动替换文本时，若组合输入尚未完成，宿主推迟替换并保留最新请求，待组合完成后应用并同步新快照。
-- 输入代理定位在实际编辑位置附近，避免候选窗出现在错误位置；组件移动或尺寸变化时更新位置。
-- 组合临时文本与最终文本具有独立状态，最终提交按组合事件结算一次。
-
-```javascript
-const session = api.textInput.begin({
-  text: '',
-  selectionStart: 0,
-  selectionEnd: 0,
-  rect: { x: 10, y: 10, width: 200, height: 32 },
-  onChange(snapshot) {
-    // snapshot: text、selectionStart、selectionEnd、composing。
-    api.invalidate();
-  },
-});
-
-session.update({ text: '新文本', selectionStart: 3, selectionEnd: 3 });
-session.setRect({ x: 10, y: 20, width: 200, height: 32 });
-session.end();
-```
-
-- `begin` 返回实例所属的编辑会话对象；开始新会话前结束旧会话。
-- `update` 修改会话文本或选区；属性仍由宿主属性提交机制维护。组合期间推迟应用编辑数据修改，位置更新立即生效。
-- `setRect` 接收组件局部逻辑像素矩形，宿主完成坐标变换。
-- `onChange` 同步完整文本、选区与 `composing` 快照。
-- 选区下标使用 UTF-16 代码单元，与 DOM textarea 一致。
-- `end` 可重复调用；数据修改只作用于活动会话。
-- 正常结束时宿主等待浏览器完成组合事件结算，以 textarea 最终文本同步最后一次快照后结束会话；组合结算后先应用尚未执行的最新程序替换，再同步最终快照。
-- 异常销毁直接终止会话：已结算文本保留，组合临时文本随会话结束。
-
-键盘与焦点事件通过 `onEvent` 投递：
-
-- `type` 为 `keydown`、`keyup`、`focus` 或 `blur`，只投递给对应焦点实例。
-- 键盘事件包含 `key`、`code`、`repeat`、`altKey`、`ctrlKey`、`metaKey`、`shiftKey` 与 `isComposing`。
-- 编辑快捷键与组合输入按键交由原生输入框处理，业务快捷键在相应业务输入阶段触发。
-- 实际文本通过编辑会话 `onChange` 获取；事件以序列化数据投递，浏览器原生行为由宿主在平台事件阶段处理。
-
-## 原生文本选择
-
-`api.textSelection` 与文本编辑分开：组件提供可选择文本与字符布局，宿主创建真实 DOM 选区，支持浏览器原生右键菜单与复制。普通显示仍由组件画布绘制，DOM 选择层只在选择会话期间存在。
-
-```javascript
-const selection = api.textSelection.begin({
-  text: '第一行\n第二行',
-  runs: [
-    { start: 0, end: 3, rect: { x: 12, y: 12, width: 54, height: 20 } },
-    { start: 4, end: 7, rect: { x: 12, y: 32, width: 54, height: 20 } },
-  ],
-  font: { family: 'monospace', size: 15 },
-  anchor: 0,
-  focus: 3,
-  onChange({ anchor, focus, text }) {},
-  onEnd() {},
-});
-selection.update({ anchor: 0, focus: 7 });
-selection.setLayout({ runs, font });
-selection.end();
-```
-
-- `anchor`、`focus` 与 `runs` 的 `start`、`end` 使用 UTF-16 下标，字符范围为 `[start, end)`，端点保留方向以支持反向选择。
-- `runs` 按文本顺序排列，各字符范围独立；矩形使用组件局部逻辑像素。组件维护宽字符、组合字符与软换行映射。
-- `onChange` 接收端点及选中文字，宿主原生选区调整也触发通知；`onEnd` 在会话结束时通知组件清理自身选择记录。
-- 同一宿主只有一个活动选择会话；开始选择前结束编辑会话，恢复编辑时结束选择会话。
-- 拖动结束保留选区；右键已有选区时保留选择与原有焦点并显示浏览器原生菜单。
-- 宿主通过文本节点构建 DOM 选择层，复制结果使用业务文本中的换行。
-- 点击选区外、恢复输入或销毁实例时结束选择；文本或布局变更时更新字符映射或结束会话。
-- 第一版提供可见区域的线性选择，菜单项目由浏览器与操作系统决定。
 
 ## 时间与计算
 

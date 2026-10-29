@@ -1,13 +1,13 @@
 /**
- * Unified IR module vs. the scheduler architecture, MCU + LED.
+ * Unified IR module vs. the scheduler architecture, driver + sink.
  *
- * Both sides simulate exactly the same circuit — `mcu.PA0 -> led.anode`,
- * `led.cathode -> ground` — and the same device logic:
+ * Both sides simulate exactly the same circuit — `driver.PA0 -> sink.anode`,
+ * `sink.cathode -> ground` — and the same device logic:
  *
  * ```text
- * mcu.tick :  PA0 = !PA0 ; mode = PUSH_PULL
+ * driver.tick :  PA0 = !PA0 ; mode = PUSH_PULL
  * net      :  PA0 mode == PUSH_PULL && PA0  ->  anode
- * led      :  lamp = anode && !cathode
+ * sink      :  lamp = anode && !cathode
  * ```
  *
  * The left side is the scheduler path (see `current-architecture.ts`): one IR
@@ -23,7 +23,10 @@
  *     ns/tick = 1e9 / (ops/s × ticks per op)
  */
 import { test } from 'vitest';
-import { createLedDescription, createMcuDescription } from '../src/unified-ir/compiler';
+import {
+  lampSinkDescription,
+  toggleDriverDescription,
+} from '../src/unified-ir/compiler/test-helpers';
 import { Circuit } from '../src/unified-ir/runtime';
 import { createCurrentArchitecture } from './current-architecture';
 
@@ -34,21 +37,21 @@ const TICKS = 2_000;
 const THROUGHPUT_TICKS = 1_000_000;
 
 /** The same circuit both sides compile. */
-async function createUnifiedMcuLed() {
+async function createUnifiedCircuit() {
   return Circuit.create({
     devices: [
-      { id: 'mcu', type: 'mcu', description: createMcuDescription() },
-      { id: 'led', type: 'ideal-led', description: createLedDescription() },
+      { id: 'driver', type: 'toggle-driver', description: toggleDriverDescription() },
+      { id: 'sink', type: 'lamp-sink', description: lampSinkDescription() },
     ],
     connections: [
-      { from: 'mcu.PA0', to: 'led.anode' },
-      { from: 'led.cathode', to: 'GND' },
+      { from: 'driver.PA0', to: 'sink.anode' },
+      { from: 'sink.cathode', to: 'GND' },
     ],
   });
 }
 
 const current = createCurrentArchitecture();
-const unified = await createUnifiedMcuLed();
+const unified = await createUnifiedCircuit();
 
 // Compile and warm both paths outside the measured region: the first tick pays
 // JIT compilation, the scheduler's first entry pays its own setup.
@@ -67,7 +70,9 @@ const clock = (): number => {
 
 const nsPerTick = (ticksPerSecond: number): number => 1e9 / ticksPerSecond;
 
-test('MCU + LED: unified IR module vs. per-device modules on the scheduler', async ({ bench }) => {
+test('driver + sink: unified IR module vs. per-device modules on the scheduler', async ({
+  bench,
+}) => {
   const results = await bench.compare(
     bench(CURRENT, () => {
       for (let tick = 0; tick < TICKS; tick += 1) current.tick();
@@ -110,8 +115,8 @@ test('MCU + LED: unified IR module vs. per-device modules on the scheduler', asy
   }
 });
 
-test('MCU + LED: 1M ticks meet the latency and throughput targets', async () => {
-  const circuit = await createUnifiedMcuLed();
+test('driver + sink: 1M ticks meet the latency and throughput targets', async () => {
+  const circuit = await createUnifiedCircuit();
   circuit.runBatch(100_000);
 
   const started = clock();
@@ -137,23 +142,23 @@ test('MCU + LED: 1M ticks meet the latency and throughput targets', async () => 
   }
   // The lamp must still follow the pin after a million steps: an even tick
   // count leaves PA0 low, an odd one leaves it high.
-  if (circuit.devices.led.isOn() !== (circuit.tickCount % 2n === 1n)) {
-    throw new Error('the batched loop left the LED out of phase with PA0');
+  if (circuit.devices.sink.getState('lamp') !== (circuit.tickCount % 2n === 1n)) {
+    throw new Error('the batched loop left the sink out of phase with PA0');
   }
   circuit.dispose();
 });
 
-test('MCU + LED: the baseline and the unified module agree on every tick', async () => {
+test('driver + sink: the baseline and the unified module agree on every tick', async () => {
   const baseline = createCurrentArchitecture();
-  const circuit = await createUnifiedMcuLed();
+  const circuit = await createUnifiedCircuit();
   for (let tick = 0; tick < 32; tick += 1) {
     baseline.tick();
     circuit.step();
-    const lampOn = circuit.devices.led.isOn();
-    const anode = circuit.getPin('led.anode');
-    if (baseline.readLed() !== lampOn || lampOn !== anode) {
+    const lampOn = circuit.devices.sink.getState('lamp');
+    const anode = circuit.getPin('sink.anode');
+    if (baseline.readLamp() !== lampOn || lampOn !== anode) {
       throw new Error(
-        `tick ${tick + 1}: baseline led=${baseline.readLed()}, unified led=${lampOn}, anode=${anode}`,
+        `tick ${tick + 1}: baseline sink=${baseline.readLamp()}, unified sink=${lampOn}, anode=${anode}`,
       );
     }
   }

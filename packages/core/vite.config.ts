@@ -1,10 +1,9 @@
-import { fileURLToPath } from 'node:url';
 import dts from 'vite-plugin-dts';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  resolve: { conditions: ['source', 'module', 'browser', 'development|production'] },
   test: {
-    alias: { '@mica-js/ir': fileURLToPath(new URL('../ir/src/index.ts', import.meta.url)) },
     // The memory-release regression test observes WeakRef clearing after destroy.
     execArgv: ['--expose-gc'],
   },
@@ -14,6 +13,9 @@ export default defineConfig({
         index: 'src/index.ts',
         'schematic/index': 'src/schematic/index.ts',
         'canvas/index': 'src/canvas/index.ts',
+        'rpc/index': 'src/rpc/index.ts',
+        'logging/index': 'src/logging/index.ts',
+        'lifecycle/index': 'src/lifecycle/index.ts',
       },
       formats: ['es'],
       fileName: (_format, entryName) => `${entryName}.js`,
@@ -21,7 +23,7 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: true,
     minify: false,
-    rollupOptions: { external: ['@mica-js/ir'] },
+    rollupOptions: { external: ['@mica-js/ir', '@mica-js/core/rpc'] },
   },
   plugins: [
     dts({

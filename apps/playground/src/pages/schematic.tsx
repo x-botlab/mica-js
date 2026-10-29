@@ -1,71 +1,59 @@
 import {
   DARK_SCHEMATIC_THEME,
   LIGHT_SCHEMATIC_THEME,
-  mountSchematicEditor,
-  type EditorSelection,
+  createSchematicEditor,
   type EditorState,
-  type MountedSchematicEditor,
+  type SchematicEditor,
 } from '@mica-js/schematic-editor';
-import type { PropertyValue } from '@mica-js/core/schematic';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  parseSchematic,
+  type DeviceSymbolProvider,
+  type PropertyValue,
+  type SchematicDocument,
+} from '@mica-js/core/schematic';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { PropertyPanel } from '@/components/property-panel';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { readHashParams } from '@/lib/router';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { loadPlaygroundDeviceLibrary } from '@/sim/library';
+import {
+  canvasExamplesFor,
+  canvasRoute,
+  schematicExampleById,
+  type SchematicExampleId,
+} from '@/examples/registry';
+import { navigate, readHashParams } from '@/lib/router';
 import { cn } from '@/lib/utils';
-import { DEVICE_LIBRARY, SAMPLE_MCU_SYMBOL_ID, devices, schematic } from '@/schematic/sample';
-import { USAGE_SNIPPETS } from '@/schematic/snippets';
+import { DEVICE_LIBRARY, SAMPLE_MCU_SYMBOL_ID, devices as sampleDevices } from '@/schematic/sample';
+import type { DeviceLibrary } from '@/sim/device-library';
 
-const SELECTION_LABELS: Readonly<Record<EditorSelection['kind'], string>> = {
-  symbol: '器件',
-  reference: '位号',
-  wire: '导线',
-  junction: '交点',
-  vertex: '顶点',
-};
-
-interface LogEntry {
-  readonly id: number;
-  readonly time: string;
-  readonly text: string;
-}
-
-function describeSelection(selection: readonly EditorSelection[]): string {
-  if (selection.length === 0) {
-    return '空';
-  }
-  const counts = new Map<EditorSelection['kind'], number>();
-  for (const item of selection) {
-    counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
-  }
-  return [...counts].map(([kind, count]) => `${SELECTION_LABELS[kind]} ×${count}`).join(' · ');
-}
-
-/** Host-side guard: controller edits still throw, but the error already reached `onError`. */
+/** Host-side guard: model edits still throw, but the error already reached `onError`. */
 function run(edit: () => void): void {
   try {
     edit();
   } catch {
-    // Surface through `state.lastError` / `onError`; the reference host keeps the page alive.
+    // Surface through `state.lastError`; the reference host keeps the page alive.
   }
 }
 
 export interface SchematicPageProps {
   readonly dark: boolean;
+  /** Sheet this sidebar entry opens; the route decided it before the page mounted. */
+  readonly exampleId: SchematicExampleId;
 }
 
-export function SchematicPage({ dark }: SchematicPageProps) {
+export function SchematicPage({ dark, exampleId }: SchematicPageProps) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const editorRef = useRef<MountedSchematicEditor | null>(null);
-  const mountLogged = useRef(false);
-  // `#/schematic?readonly` mounts a viewer: the editor refuses every edit and the host hides its
-  // own editing affordances.
+  const editorRef = useRef<SchematicEditor | null>(null);
+  // `#/schematic/<example>?readonly` mounts a viewer: the editor refuses every edit and the host
+  // hides its own editing affordances.
   const [readOnly, setReadOnly] = useState(() => readHashParams().has('readonly'));
   const [state, setState] = useState<EditorState | null>(null);
-  const [zoom, setZoom] = useState(1);
-  const [log, setLog] = useState<readonly LogEntry[]>([]);
-  const [infoOpen, setInfoOpen] = useState(false);
+  const example = schematicExampleById(exampleId);
+  const [library, setLibrary] = useState<DeviceLibrary | null>(null);
+  const [sheet, setSheet] = useState<SchematicDocument | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     const sync = (): void => setReadOnly(readHashParams().has('readonly'));
@@ -73,61 +61,100 @@ export function SchematicPage({ dark }: SchematicPageProps) {
     return () => globalThis.removeEventListener('hashchange', sync);
   }, []);
 
-  const pushLog = useCallback((text: string) => {
-    setLog((entries) =>
-      [
-        {
-          id: Date.now() + Math.random(),
-          time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-          text,
-        },
-        ...entries,
-      ].slice(0, 40),
-    );
-  }, []);
+  // The example registry owns the asset path; the canvas documents name the same `.sch`, so the
+  // editor and the canvas device host always open one document.
+  useEffect(() => {
+    let cancelled = false;
+    setSheet(null);
+    setLoadError(null);
+    void (async () => {
+      try {
+        const [loaded, response] = await Promise.all([
+          loadPlaygroundDeviceLibrary(),
+          fetch(new URL(example.document, globalThis.document.baseURI)),
+        ]);
+        if (!response.ok) {
+          throw new Error(`读取 ${example.document} 失败（HTTP ${response.status}）`);
+        }
+        const parsed = parseSchematic(await response.text());
+        if (cancelled) return;
+        setLibrary(loaded);
+        setSheet(parsed);
+      } catch (cause) {
+        if (!cancelled) {
+          setLoadError(cause instanceof Error ? cause.message : String(cause));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [example.document]);
+
+  /** Both symbol sources are registered: sample devices for example 1, the demo library for example 2. */
+  const devices = useMemo<DeviceSymbolProvider>(
+    () => ({
+      getDeviceSymbol: (reference) =>
+        library?.symbols.getDeviceSymbol(reference) ?? sampleDevices.getDeviceSymbol(reference),
+      getDeviceName: (reference) =>
+        library?.symbols.getDeviceName(reference) ?? sampleDevices.getDeviceName(reference),
+      getDeviceDesignatorPrefix: (reference) =>
+        library?.symbols.getDeviceDesignatorPrefix?.(reference) ??
+        sampleDevices.getDeviceDesignatorPrefix?.(reference),
+      getDevicePropertyDescriptors: (reference) =>
+        library?.symbols.getDevicePropertyDescriptors?.(reference) ??
+        sampleDevices.getDevicePropertyDescriptors?.(reference),
+    }),
+    [library],
+  );
+
+  const palette = useMemo(() => {
+    if (example.library === 'sample') {
+      return DEVICE_LIBRARY;
+    }
+    return (library?.entries ?? []).map((entry) => ({
+      device: entry.reference,
+      name: entry.displayName,
+    }));
+  }, [example.library, library]);
 
   useEffect(() => {
     const host = hostRef.current;
-    if (host === null) {
+    if (host === null || sheet === null) {
       return;
     }
-    const editor = mountSchematicEditor({
+    const editor = createSchematicEditor({
       container: host,
-      schematic,
+      value: sheet,
       devices,
       theme: dark ? DARK_SCHEMATIC_THEME : LIGHT_SCHEMATIC_THEME,
       readOnly,
-      onChange: (next) => {
-        setState(next);
-        pushLog(`onChange · ${next.tool} · ${describeSelection(next.selection)}`);
-      },
-      onSelectionChange: (selection) =>
-        pushLog(`onSelectionChange · ${describeSelection(selection)}`),
-      onToolChange: (tool) => pushLog(`onToolChange · ${tool}`),
-      onError: (error) => pushLog(`onError · ${error?.message ?? 'cleared'}`),
-      onViewportChange: (viewport) => setZoom(viewport.scale),
     });
+    editor.onDidChangeState(setState);
     editorRef.current = editor;
-    setState(editor.controller.getState());
-    setZoom(editor.getViewport().scale);
-    // Demo default: preselect the MCU so the host property panel shows the #7 property types.
-    editor.controller.setSelection([{ kind: 'symbol', id: SAMPLE_MCU_SYMBOL_ID }]);
+    setState(editor.getState());
+    // Example 1 preselects the MCU so the host property panel opens on a device with properties;
+    // the demo sheet has no per-device properties, so the first symbol is enough there.
+    const preselect =
+      example.library === 'sample' ? SAMPLE_MCU_SYMBOL_ID : sheet.sheet.symbols[0]?.id;
+    if (preselect !== undefined) {
+      editor.setSelection([{ kind: 'symbol', id: preselect }]);
+    }
     if (import.meta.env.DEV) {
       // Console handle for poking at the mounted editor while developing the playground.
       Object.assign(globalThis, { mica: editor });
-    }
-    if (!mountLogged.current) {
-      mountLogged.current = true;
-      pushLog('mountSchematicEditor() · 已挂载');
     }
 
     return () => {
       editor.dispose();
       editorRef.current = null;
+      if (import.meta.env.DEV && (globalThis as { mica?: unknown }).mica === editor) {
+        delete (globalThis as { mica?: unknown }).mica;
+      }
     };
-    // The theme updates through its own effect below; `readOnly` remounts the editor, because the
-    // mode is fixed at mount time.
-  }, [pushLog, readOnly]);
+    // The theme updates through its own effect below; `readOnly` and the example document remount
+    // the editor, because the mode and the sheet are fixed at mount time.
+  }, [readOnly, sheet, devices, example.library]);
 
   useEffect(() => {
     editorRef.current?.setTheme(dark ? DARK_SCHEMATIC_THEME : LIGHT_SCHEMATIC_THEME);
@@ -135,7 +162,6 @@ export function SchematicPage({ dark }: SchematicPageProps) {
 
   const placeDevice = (device: string): void => {
     run(() => editorRef.current?.placeDevice(device));
-    pushLog(`placeDevice('${device}')`);
   };
 
   const setDisplay = (patch: {
@@ -145,310 +171,176 @@ export function SchematicPage({ dark }: SchematicPageProps) {
     gridSubdivisions?: number;
   }): void => {
     editorRef.current?.setDisplayOptions(patch);
-    pushLog(`setDisplayOptions(${JSON.stringify(patch)})`);
-  };
-
-  const exportJson = (): void => {
-    const editor = editorRef.current;
-    if (editor === null) {
-      return;
-    }
-    const url = URL.createObjectURL(new Blob([editor.toJSON()], { type: 'application/json' }));
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = 'schematic.sch';
-    anchor.click();
-    URL.revokeObjectURL(url);
-    pushLog('toJSON() → schematic.sch');
   };
 
   const updateProperty = (symbolId: string, key: string, value: PropertyValue): void => {
-    run(() => editorRef.current?.controller.setSymbolProperty(symbolId, key, value));
-    pushLog(`setSymbolProperty('${key}', ${JSON.stringify(value)})`);
+    run(() => editorRef.current?.getModel().setSymbolProperty(symbolId, key, value));
   };
 
   const resetProperty = (symbolId: string, key: string): void => {
-    run(() => editorRef.current?.controller.removeSymbolProperty(symbolId, key));
-    pushLog(`removeSymbolProperty('${key}')`);
+    run(() => editorRef.current?.getModel().removeSymbolProperty(symbolId, key));
   };
 
   const renameDesignator = (symbolId: string, next: string): void => {
-    run(() => editorRef.current?.controller.renameDesignator(symbolId, next));
-    pushLog(`renameDesignator('${next}')`);
+    run(() => editorRef.current?.getModel().renameDesignator(symbolId, next));
   };
 
   const renameNet = (symbolId: string, next: string): void => {
-    run(() => editorRef.current?.controller.renameNet(symbolId, next));
-    pushLog(`renameNet('${next}')`);
+    run(() => editorRef.current?.getModel().renameNet(symbolId, next));
   };
 
   const placingDevice = state?.placingDevice;
+  const canvasExamples = canvasExamplesFor(example.id);
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[204px_minmax(0,1fr)_324px] grid-rows-[minmax(0,1fr)] gap-3 p-3">
-      <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
-        <Card className="gap-2 py-3">
-          <CardHeader>
-            <CardTitle>器件库</CardTitle>
-            <CardDescription>宿主自己的列表，点击抓取后在画布上单击放置</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-1">
-            {DEVICE_LIBRARY.map((entry) => (
-              <button
-                key={entry.device}
-                type="button"
-                onClick={() => placeDevice(entry.device)}
-                title={entry.device}
-                disabled={readOnly}
-                aria-pressed={placingDevice === entry.device}
-                className={cn(
-                  'flex flex-col items-start gap-0.5 rounded-md border px-2 py-1.5 text-left transition-colors',
-                  'hover:bg-accent hover:text-accent-foreground',
-                  placingDevice === entry.device && 'border-primary bg-accent',
-                )}
-              >
-                <span className="text-xs font-medium">{entry.name}</span>
-                <span className="text-muted-foreground font-mono text-[10px]">
-                  {entry.prefix} · {entry.note}
-                </span>
-              </button>
-            ))}
-          </CardContent>
-        </Card>
-
-        <Card className="gap-2 py-3">
-          <CardHeader>
-            <CardTitle>工具条</CardTitle>
-            <CardDescription>内建工具条悬浮在画布右上角，可用 toolbar: false 关掉</CardDescription>
-          </CardHeader>
-          <CardContent className="text-muted-foreground flex flex-col gap-1 text-[11px]">
-            <span>
-              当前工具：<span className="text-foreground font-mono">{state?.tool ?? '—'}</span>
-            </span>
-            <span>
-              抓取中：
-              <span className="text-foreground font-mono">{placingDevice ?? '—'}</span>
-            </span>
-          </CardContent>
-        </Card>
-
-        <Card className="gap-2 py-3">
-          <CardHeader>
-            <CardTitle>显示</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-1.5">
-            {(
-              [
-                ['grid', '网格'],
-                ['snap', '吸附'],
-                ['labels', '引脚名'],
-              ] as const
-            ).map(([key, label]) => (
-              <label key={key} className="flex items-center gap-2 text-xs">
-                <input
-                  type="checkbox"
-                  className="accent-primary size-3.5"
-                  checked={state?.display[key] ?? true}
-                  onChange={(event) => {
-                    const value = event.target.checked;
-                    setDisplay(
-                      key === 'grid'
-                        ? { grid: value }
-                        : key === 'snap'
-                          ? { snap: value }
-                          : { labels: value },
-                    );
-                  }}
-                />
-                {label}
-              </label>
-            ))}
-            <label className="mt-1 flex items-center justify-between gap-2 text-xs">
-              网格细分
-              <select
-                className="bg-background rounded-md border px-1.5 py-0.5 text-[11px]"
-                value={state?.display.gridSubdivisions ?? 2}
-                onChange={(event) => {
-                  const value = Number(event.target.value);
-                  setDisplay({ gridSubdivisions: value });
-                }}
-              >
-                {[1, 2, 4, 5].map((value) => (
-                  <option key={value} value={value}>
-                    ×{value}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </CardContent>
-        </Card>
-
-        <Card className="gap-2 py-3">
-          <CardHeader>
-            <CardTitle>属性类型</CardTitle>
-            <CardDescription>
-              选中器件后在右侧面板编辑；清空输入即恢复器件定义的默认值
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="text-muted-foreground flex flex-col gap-1 text-[11px]">
-            <span className="text-foreground">STM32G431</span>
-            <span className="font-mono text-[10px]">string / binary</span>
-            <span className="text-foreground">AT89C52</span>
-            <span className="font-mono text-[10px]">number</span>
-            <span className="text-foreground">TFT LCD</span>
-            <span className="font-mono text-[10px]">image / enum / color / boolean</span>
-            <span className="mt-1">
-              image / binary 的值是资源引用{' '}
-              <span className="font-mono text-[10px]">src + mode</span>，示例指向{' '}
-              <span className="font-mono text-[10px]">public/assets</span> 下的文件，由宿主解析。
-            </span>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="flex min-h-0 flex-col gap-2">
-        <div className="flex items-center gap-1.5">
-          <Button size="xs" variant="outline" onClick={() => editorRef.current?.fitToContent()}>
-            适应内容
-          </Button>
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={state?.canUndo !== true}
-            onClick={() => editorRef.current?.undo()}
-          >
-            撤销
-          </Button>
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={state?.canRedo !== true}
-            onClick={() => editorRef.current?.redo()}
-          >
-            重做
-          </Button>
-          <Button size="xs" variant="outline" onClick={exportJson}>
-            导出 .sch
-          </Button>
-          <Button
-            size="xs"
-            variant={infoOpen ? 'default' : 'outline'}
-            onClick={() => setInfoOpen((open) => !open)}
-          >
-            用法与事件
-          </Button>
-          <div className="text-muted-foreground ml-auto flex items-center gap-2 text-[11px]">
-            {readOnly ? <Badge variant="muted">只读</Badge> : null}
-            <span className="font-mono">{zoom.toFixed(2)}×</span>
-            <span>拖动导线段 · 空格旋转 · Esc 取消 · 滚轮缩放</span>
-          </div>
-        </div>
-        <div ref={hostRef} className="bg-card min-h-0 flex-1 overflow-hidden rounded-xl border" />
-      </div>
-
-      <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pl-1">
-        <PropertyPanel
-          inspector={state?.inspector}
-          readOnly={readOnly}
-          onPropertyChange={updateProperty}
-          onPropertyReset={resetProperty}
-          onDesignatorChange={renameDesignator}
-          onNetChange={renameNet}
-        />
-
-        <Card className="gap-2 py-3">
-          <CardHeader>
-            <CardTitle>状态</CardTitle>
-          </CardHeader>
-          <CardContent className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-            <span className="text-muted-foreground">工具</span>
-            <span className="font-mono">{state?.tool ?? '—'}</span>
-            <span className="text-muted-foreground">抓取</span>
-            <span className="truncate font-mono">{placingDevice ?? '—'}</span>
-            <span className="text-muted-foreground">选中</span>
-            <span>{state === null ? '—' : describeSelection(state.selection)}</span>
-            <span className="text-muted-foreground">图元</span>
-            <span className="font-mono">
-              {state === null
-                ? '—'
-                : `${state.document.sheet.symbols.length} 器件 · ${state.document.sheet.wires.length} 导线`}
-            </span>
-            <span className="text-muted-foreground">错误</span>
-            <span className="truncate">{state?.lastError?.message ?? '—'}</span>
-          </CardContent>
-        </Card>
-
-        {infoOpen ? (
-          <>
+      {loadError === null ? null : (
+        <p className="border-destructive/40 bg-destructive/10 text-destructive col-span-3 rounded-md border px-3 py-2 text-xs">
+          {loadError}
+        </p>
+      )}
+      {sheet === null ? (
+        <p className="text-muted-foreground col-span-3 grid place-items-center text-xs">加载中…</p>
+      ) : (
+        <>
+          <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
             <Card className="gap-2 py-3">
               <CardHeader>
-                <CardTitle>用法</CardTitle>
-                <CardDescription>这段代码就是本页做的事</CardDescription>
+                <CardTitle>器件</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-1">
+                {palette.map((entry) => (
+                  <button
+                    key={entry.device}
+                    type="button"
+                    onClick={() => placeDevice(entry.device)}
+                    disabled={readOnly}
+                    aria-pressed={placingDevice === entry.device}
+                    className={cn(
+                      'rounded-md border px-2 py-1.5 text-left text-xs transition-colors',
+                      'hover:bg-accent hover:text-accent-foreground',
+                      placingDevice === entry.device && 'border-primary bg-accent',
+                    )}
+                  >
+                    {entry.name}
+                  </button>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card className="gap-2 py-3">
+              <CardHeader>
+                <CardTitle>显示</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-1.5">
-                {USAGE_SNIPPETS.map((snippet, index) => (
-                  <details
-                    key={snippet.title}
-                    open={index === 0}
-                    className="group rounded-md border px-2 py-1.5"
-                  >
-                    <summary className="cursor-pointer text-xs font-medium">
-                      {snippet.title}
-                    </summary>
-                    <p className="text-muted-foreground mt-1 text-[11px]">{snippet.note}</p>
-                    <pre className="mt-1.5 overflow-x-auto font-mono text-[10.5px] leading-[1.6]">
-                      {snippet.code}
-                    </pre>
-                  </details>
+                {(
+                  [
+                    ['grid', '网格'],
+                    ['snap', '吸附'],
+                    ['labels', '引脚名'],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label key={key} className="flex items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      className="accent-primary size-3.5"
+                      checked={state?.display[key] ?? true}
+                      onChange={(event) => {
+                        const value = event.target.checked;
+                        setDisplay(
+                          key === 'grid'
+                            ? { grid: value }
+                            : key === 'snap'
+                              ? { snap: value }
+                              : { labels: value },
+                        );
+                      }}
+                    />
+                    {label}
+                  </label>
                 ))}
+                <label className="mt-1 flex items-center justify-between gap-2 text-xs">
+                  网格细分
+                  <select
+                    className="bg-background rounded-md border px-1.5 py-0.5 text-[11px]"
+                    value={state?.display.gridSubdivisions ?? 2}
+                    onChange={(event) => {
+                      const value = Number(event.target.value);
+                      setDisplay({ gridSubdivisions: value });
+                    }}
+                  >
+                    {[1, 2, 4, 5].map((value) => (
+                      <option key={value} value={value}>
+                        ×{value}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </CardContent>
             </Card>
 
-            <Card className="gap-2 py-3">
-              <CardHeader>
-                <CardTitle>状态</CardTitle>
-              </CardHeader>
-              <CardContent className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
-                <span className="text-muted-foreground">工具</span>
-                <span className="font-mono">{state?.tool ?? '—'}</span>
-                <span className="text-muted-foreground">抓取</span>
-                <span className="truncate font-mono">{placingDevice ?? '—'}</span>
-                <span className="text-muted-foreground">选中</span>
-                <span>{state === null ? '—' : describeSelection(state.selection)}</span>
-                <span className="text-muted-foreground">图元</span>
-                <span className="font-mono">
-                  {state === null
-                    ? '—'
-                    : `${state.document.sheet.symbols.length} 器件 · ${state.document.sheet.wires.length} 导线`}
-                </span>
-                <span className="text-muted-foreground">错误</span>
-                <span className="break-words">{state?.lastError?.message ?? '—'}</span>
-              </CardContent>
-            </Card>
+            {canvasExamples.length === 0 ? null : (
+              <Card className="gap-2 py-3">
+                <CardHeader>
+                  <CardTitle>画布</CardTitle>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-1">
+                  {canvasExamples.map((canvas) => (
+                    <button
+                      key={canvas.id}
+                      type="button"
+                      onClick={() => navigate(canvasRoute(canvas.id))}
+                      className="hover:bg-accent hover:text-accent-foreground rounded-md border px-2 py-1.5 text-left text-xs transition-colors"
+                    >
+                      {canvas.title}
+                    </button>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+          </div>
 
-            <Card className="gap-2 py-3">
-              <CardHeader>
-                <CardTitle className="flex items-center justify-between">
-                  事件
-                  <Badge variant="muted">{log.length}</Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="flex max-h-72 flex-col gap-1 overflow-y-auto font-mono text-[10.5px]">
-                {log.length === 0 ? (
-                  <span className="text-muted-foreground">等待交互…</span>
-                ) : (
-                  log.map((entry) => (
-                    <div key={entry.id} className="flex gap-2">
-                      <span className="text-muted-foreground/70 shrink-0">{entry.time}</span>
-                      <span className="break-all">{entry.text}</span>
-                    </div>
-                  ))
-                )}
-              </CardContent>
-            </Card>
-          </>
-        ) : null}
-      </div>
+          <div className="flex min-h-0 flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <Button size="xs" variant="outline" onClick={() => editorRef.current?.fitToContent()}>
+                适应内容
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={state?.canUndo !== true}
+                onClick={() => editorRef.current?.undo()}
+              >
+                撤销
+              </Button>
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={state?.canRedo !== true}
+                onClick={() => editorRef.current?.redo()}
+              >
+                重做
+              </Button>
+              {readOnly ? <Badge variant="muted">只读</Badge> : null}
+            </div>
+            <div
+              ref={hostRef}
+              className="bg-card min-h-0 flex-1 overflow-hidden rounded-xl border"
+            />
+          </div>
+
+          <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pl-1">
+            <PropertyPanel
+              inspector={state?.inspector}
+              readOnly={readOnly}
+              onPropertyChange={updateProperty}
+              onPropertyReset={resetProperty}
+              onDesignatorChange={renameDesignator}
+              onNetChange={renameNet}
+            />
+          </div>
+        </>
+      )}
 
       {state?.lastError === undefined ? null : (
         <div className="bg-card pointer-events-none fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-md border px-3 py-1.5 text-xs shadow-lg">

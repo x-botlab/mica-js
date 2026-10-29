@@ -12,16 +12,34 @@
   "sideEffects": false,
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
     "./schematic": {
+      "source": "./src/schematic/index.ts",
       "types": "./dist/schematic/index.d.ts",
       "import": "./dist/schematic/index.js"
     },
     "./canvas": {
+      "source": "./src/canvas/index.ts",
       "types": "./dist/canvas/index.d.ts",
       "import": "./dist/canvas/index.js"
+    },
+    "./rpc": {
+      "source": "./src/rpc/index.ts",
+      "types": "./dist/rpc/index.d.ts",
+      "import": "./dist/rpc/index.js"
+    },
+    "./logging": {
+      "source": "./src/logging/index.ts",
+      "types": "./dist/logging/index.d.ts",
+      "import": "./dist/logging/index.js"
+    },
+    "./lifecycle": {
+      "source": "./src/lifecycle/index.ts",
+      "types": "./dist/lifecycle/index.d.ts",
+      "import": "./dist/lifecycle/index.js"
     }
   },
   "files": [
@@ -34,7 +52,33 @@
     "typecheck": "tsc --noEmit"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./schematic": {
+        "types": "./dist/schematic/index.d.ts",
+        "import": "./dist/schematic/index.js"
+      },
+      "./canvas": {
+        "types": "./dist/canvas/index.d.ts",
+        "import": "./dist/canvas/index.js"
+      },
+      "./rpc": {
+        "types": "./dist/rpc/index.d.ts",
+        "import": "./dist/rpc/index.js"
+      },
+      "./logging": {
+        "types": "./dist/logging/index.d.ts",
+        "import": "./dist/logging/index.js"
+      },
+      "./lifecycle": {
+        "types": "./dist/lifecycle/index.d.ts",
+        "import": "./dist/lifecycle/index.js"
+      }
+    }
   },
   "dependencies": {
     "@mica-js/ir": "workspace:*"

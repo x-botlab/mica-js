@@ -9,12 +9,16 @@
     "directory": "packages/canvas-editor"
   },
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "**/*.css"
+  ],
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./style.css": "./dist/style.css"
   },
   "files": [
     "dist"
@@ -26,10 +30,19 @@
     "typecheck": "tsc --noEmit"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./style.css": "./dist/style.css"
+    }
   },
   "dependencies": {
     "@mica-js/core": "workspace:*",
+    "@mica-js/sandbox": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
     "@mica-js/widget": "workspace:*"
   },
   "devDependencies": {

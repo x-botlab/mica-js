@@ -1,4 +1,4 @@
-import type { EditorTool } from '../controller/types';
+import type { EditorTool } from '../types';
 
 export interface ToolIcon {
   readonly tool: EditorTool;

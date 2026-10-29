@@ -23,9 +23,12 @@ import type { ObserveRuntime } from '../observe/runtime';
 import { PinDomain } from '../pins/domain';
 import type { PinRuntime } from '../pins/runtime';
 import { resolveDeviceProperties } from '../properties';
+import { DeviceStepHooks } from '../topic/hooks';
+import { FifoDomain } from '../topic/fifo';
 import type {
   DeviceAPI,
   DeviceDescription,
+  DeviceDiagnostic,
   DeviceInstance,
   DeviceInstanceOptions,
   DeviceInstanceState,
@@ -62,6 +65,8 @@ export function createDeviceInstance(
   );
   const pinHost = readPinHost(options);
   const updateResourceNames = readUpdateResourceNames(options);
+  const diagnostics = readDiagnosticSink(options);
+  const fifos = new FifoDomain(definition.deviceId);
 
   const moduleRef: { current?: IRModule } = {};
   const pins = new PinDomain(
@@ -98,6 +103,7 @@ export function createDeviceInstance(
     pins,
     observes,
     definition.description.connections,
+    fifos,
   );
   let rawBindings: unknown;
   try {
@@ -254,6 +260,7 @@ export function createDeviceInstance(
     observeRuntime,
     tracking.isInitialized,
     messaging,
+    { module, fifos, diagnostics },
   );
 }
 
@@ -359,6 +366,21 @@ function readInstanceId(options: unknown): string {
     throw instanceError('Device instance id must be a non-empty string.');
   }
   return instanceId;
+}
+
+function readDiagnosticSink(
+  options: unknown,
+): ((diagnostic: DeviceDiagnostic) => void) | undefined {
+  const value = isPlainRecord(options) ? options['onDiagnostic'] : undefined;
+  if (value === undefined) {
+    return undefined;
+  }
+  if (callableKind(value) !== 'function') {
+    throw instanceError(
+      'Device instance onDiagnostic must be a synchronous non-generator function.',
+    );
+  }
+  return value as (diagnostic: DeviceDiagnostic) => void;
 }
 
 function readPinHost(options: unknown): DevicePinHost | undefined {
@@ -533,8 +555,26 @@ function createHandle(
   observeRuntime: ObserveRuntime,
   isInitialized: () => boolean,
   messaging: MessagingController,
+  step: {
+    readonly module: IRModule;
+    readonly fifos: FifoDomain;
+    readonly diagnostics: ((diagnostic: DeviceDiagnostic) => void) | undefined;
+  },
 ): DeviceInstance {
   const guardedStorage = new LifecycleStorage(core.storage, definition.deviceId);
+  const hooks = DeviceStepHooks.isUsed(bindings)
+    ? new DeviceStepHooks({
+        deviceId: definition.deviceId,
+        description: definition.description,
+        module: step.module,
+        storage: () => guardedStorage,
+        publish: (port, payload) => messaging.publish(port, payload),
+        bindings,
+        fifos: step.fifos,
+        deliveryCapacity: messaging.deliveryCapacity,
+        ...(step.diagnostics === undefined ? {} : { onDiagnostic: step.diagnostics }),
+      })
+    : undefined;
   let destroyed = false;
   let destroying = false;
 
@@ -572,6 +612,8 @@ function createHandle(
     } catch (cause) {
       throw busyError(definition.deviceId, 'reset', 'the scheduler rejected control work', cause);
     }
+    // A reset restarts the instance; deliveries staged for the old state are dropped.
+    hooks?.clearPending();
   };
 
   const destroy = (): void => {
@@ -652,7 +694,27 @@ function createHandle(
       if (destroyed) {
         throw destroyedError(definition.deviceId, 'deliver');
       }
+      // Validates the target and type first; a rejected payload never reaches the hook inbox.
       messaging.deliver(port, payload, meta);
+      hooks?.stage(port, payload, meta);
+    },
+    applyInputs(): void {
+      if (destroying) {
+        throw busyError(definition.deviceId, 'applyInputs', 'the instance is being destroyed');
+      }
+      if (destroyed) {
+        throw destroyedError(definition.deviceId, 'applyInputs');
+      }
+      hooks?.applyInputs();
+    },
+    flushOutputs(): void {
+      if (destroying) {
+        throw busyError(definition.deviceId, 'flushOutputs', 'the instance is being destroyed');
+      }
+      if (destroyed) {
+        throw destroyedError(definition.deviceId, 'flushOutputs');
+      }
+      hooks?.flushOutputs();
     },
     reset,
     destroy,

@@ -6,7 +6,7 @@ import {
   type Rect,
   type SchematicDocument,
 } from '@mica-js/core/schematic';
-import type { EditorSelection } from '../controller/types';
+import type { EditorSelection } from '../types';
 
 export function rectOf(from: Point, to: Point): Rect {
   return {

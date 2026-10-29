@@ -158,6 +158,11 @@ export class MessagingController {
     }
   }
 
+  /** Pending input records one `message` port keeps before reporting backpressure. */
+  get deliveryCapacity(): number {
+    return this.#limits.deliveryCapacity;
+  }
+
   /** Captures declarations made by the synchronous factory; call once after it returns. */
   bindDeclarations(): void {
     this.#outputMap.clear();

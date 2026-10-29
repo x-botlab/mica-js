@@ -1,4 +1,4 @@
-import { parsePayloadType } from '@mica-js/core/canvas';
+import { parseDeliveryKind, parsePayloadType } from '@mica-js/core/canvas';
 import { readPropertyDescriptors, type PropertyDescriptor } from '@mica-js/core/schematic';
 import { readConnections } from './connection/description';
 import { DeviceError } from './errors';
@@ -10,7 +10,7 @@ import {
   type DevicePortDescriptor,
 } from './types';
 
-const PORT_FIELDS = new Set(['title', 'description', 'direction', 'type']);
+const PORT_FIELDS = new Set(['title', 'description', 'direction', 'type', 'delivery']);
 
 /**
  * Parses an already-loaded device description object (#11).
@@ -165,6 +165,20 @@ function readPort(key: string, value: unknown): DevicePortDescriptor {
   const port: {
     -readonly [K in keyof DevicePortDescriptor]: DevicePortDescriptor[K];
   } = { key, direction, type };
+  const declaredDelivery = value['delivery'];
+  if (declaredDelivery !== undefined) {
+    // RFC 0017: `delivery` is optional and independent of `type`; anything else is rejected rather
+    // than silently falling back to the payload type default.
+    const delivery = parseDeliveryKind(declaredDelivery);
+    if (delivery === undefined) {
+      throw new DeviceError(
+        'schema/invalid-value',
+        `Port "${key}" delivery must be "level" or "message".`,
+        { pointer: `${pointer}/delivery` },
+      );
+    }
+    port.delivery = delivery;
+  }
   if (title !== undefined) {
     port.title = title;
   }

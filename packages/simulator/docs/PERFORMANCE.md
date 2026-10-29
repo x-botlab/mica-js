@@ -17,6 +17,11 @@
 数值是单机、单次运行的观测值；同一台机器上不同运行之间通常有 ±10–20% 波动。
 脚本本身带回归门槛（例如批处理必须比调度器基线快 10× 以上），所以波动不会掩盖真实退化。
 
+> **口径提示**：本页数字取自内建 `mcu` / `led` 最小内核还在包内时（以及 Playground 的教学 MCU 模型）
+> 的测量。这些器件模型已经移出 `@mica-js/simulator`，现在的 `bench/unified-simple.bench.ts`
+> 使用包内的 driver / sink 测试夹具（同样的网络形状、同样的器件逻辑），因此第 1 节的相对关系仍然成立；
+> 第 2、3 节保留历史记录，复现需要对应的器件包。
+
 ## 结果摘要
 
 | 场景                                    |     调度器路径 |          统一 IR |     加速比 |
@@ -26,12 +31,12 @@
 | Teaching MCU 批处理（U03 口径）         | 0.160 M inst/s | 527–561 M inst/s |     ~3300× |
 | Teaching M3 批处理（U03 口径）          | 0.160 M inst/s | 449–465 M inst/s |     ~2900× |
 
-## 1. MCU + LED：调度器 vs 统一 IR
+## 1. driver + sink（原 mcu + led）：调度器 vs 统一 IR
 
-同一张电路、同一套器件逻辑（`mcu.PA0 → led.anode`、`led.cathode → GND`）：
+同一张电路、同一套器件逻辑（`driver.PA0 → sink.anode`、`sink.cathode → GND`）：
 
 - **调度器路径**：每器件一个 IR module，挂在 `@mica-js/core` 的调度器上，网络在 JavaScript 里桥接
-  ——每 tick 三次宿主入口（MCU、解网、LED）。
+  ——每 tick 三次宿主入口（driver、解网、sink）。
 - **统一 IR**：两个器件、解算器和主循环在同一个 module 里。
 
 | 变体                                        |   ns/tick | 相对基线   |
@@ -45,7 +50,7 @@
 
 ### 绝对吞吐
 
-MCU + LED，预热 100k tick 后连续跑 1,000,000 tick：
+driver + sink，预热 100k tick 后连续跑 1,000,000 tick：
 
 | 指标    | 观测值             |
 | ------- | ------------------ |
@@ -84,7 +89,7 @@ blinky 固件（GPIO MMIO 写 ODR）驱动一个 LED，`runBatch(20_000)`：
 
 ### 3.2 长切片（U03 性能测试口径）
 
-`teaching-mcu.performance.test.ts` 用同一台机器、更长的切片和 `maxBlockInstructions: 4096`，
+本轮测量使用当时随包提供的教学 MCU 模型（现已在 Playground 器件库中），同一台机器、更长的切片和 `maxBlockInstructions: 4096`，
 并与旧调度器器件直接对比。批处理数字取稳态中位数（宿主已完成译码、V8 已把生成代码
 升到优化层），这也是实时仿真真正运行的区间：
 
@@ -115,14 +120,14 @@ blinky 固件（GPIO MMIO 写 ODR）驱动一个 LED，`runBatch(20_000)`：
 
 | 操作                                                           |              成本 |
 | -------------------------------------------------------------- | ----------------: |
-| `compileCircuit(mcu + led)`（含校验）                          |      0.31–0.40 ms |
+| `compileCircuit(driver + sink)`（含校验）                      |      0.31–0.40 ms |
 | `Circuit.reset()`（恢复 3×256 数组 + 器件状态 + `initialize`） |          66–69 µs |
 | `step()`（单器件，引擎入口开销）                               |        364–405 ns |
-| `runBatch(1000)`（单器件 LED）                                 |   3.5–3.7 ns/tick |
-| `runBatch(1000)`（按钮 + 富 LED）                              | 15.1–15.3 ns/tick |
-| `devices.led.isOn()`                                           |          53–57 ns |
-| `getPin('led.anode')`                                          |          59–68 ns |
-| `setPin('mcu.PA0')`                                            |          79–85 ns |
+| `runBatch(1000)`（单器件 sink）                                |   3.5–3.7 ns/tick |
+| `runBatch(1000)`（按钮 + 带状态 sink）                         | 15.1–15.3 ns/tick |
+| `devices.sink.getState('lamp')`                                |          53–57 ns |
+| `getPin('sink.anode')`                                         |          59–68 ns |
+| `setPin('drive.PA0')`                                          |          79–85 ns |
 
 编译成本只在创建电路时支付一次；之后 `runBatch` 是纯执行路径。
 
@@ -138,23 +143,14 @@ pnpm --filter @mica-js/simulator exec vitest bench --run --disableConsoleInterce
 # 只跑某个文件
 pnpm --filter @mica-js/simulator exec vitest bench --run bench/unified-simple.bench.ts
 
-# 文档示例（LED 闪烁 / 按钮 / 教学 MCU 固件 / 吞吐）
-pnpm --filter @mica-js/simulator examples
-
-# U03 的调度器对照（含旧器件）
-pnpm --filter @mica-js/simulator exec vitest run \
-  src/unified-ir/examples/teaching-mcu/teaching-mcu.performance.test.ts \
-  --disableConsoleIntercept
 ```
 
 基准文件：
 
-| 文件                             | 内容                                            |
-| -------------------------------- | ----------------------------------------------- |
-| `bench/current-architecture.ts`  | 调度器基线：两个 module + JS 解网，同一张电路   |
-| `bench/unified-simple.bench.ts`  | 调度器 vs 统一 IR、单步 vs 批处理、1M tick 门槛 |
-| `bench/unified-micro.bench.ts`   | 编译、单步、批处理、`reset()`、访问器与引脚     |
-| `bench/unified-devices.bench.ts` | MCU + 8 LED、按钮 + 富 LED、教学 MCU 真实固件   |
+| 文件                            | 内容                                            |
+| ------------------------------- | ----------------------------------------------- |
+| `bench/current-architecture.ts` | 调度器基线：两个 module + JS 解网，同一张电路   |
+| `bench/unified-simple.bench.ts` | 调度器 vs 统一 IR、单步 vs 批处理、1M tick 门槛 |
 
 ## 口径说明
 

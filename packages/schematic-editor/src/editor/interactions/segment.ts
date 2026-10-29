@@ -8,7 +8,7 @@ export function beginSegmentDrag(
   page: Point,
   wireId: string,
 ): boolean {
-  const hit = context.deps.controller.hitTest(page, {
+  const hit = context.deps.editor.hitTest(page, {
     includeSymbols: false,
     tolerance: context.pointer.tolerance(),
   });
@@ -31,9 +31,7 @@ export function updateSegmentDrag(context: InteractionContext, page: Point): boo
   if (drag?.mode !== 'segment') {
     return false;
   }
-  const wire = context.deps.controller
-    .getDocument()
-    .sheet.wires.find((item) => item.id === drag.wireId);
+  const wire = context.deps.editor.getValue().sheet.wires.find((item) => item.id === drag.wireId);
   const start = wire?.points[drag.segment];
   const end = wire?.points[drag.segment + 1];
   if (wire === undefined || start === undefined || end === undefined) {
@@ -46,7 +44,7 @@ export function updateSegmentDrag(context: InteractionContext, page: Point): boo
     horizontal
       ? { x: start.x, y: start.y + (page.y - drag.origin.y) }
       : { x: start.x + (page.x - drag.origin.x), y: start.y },
-    context.deps.controller.getDisplay(),
+    context.deps.editor.getDisplay(),
   );
   const candidate = horizontal ? { x: 0, y: target.y - start.y } : { x: target.x - start.x, y: 0 };
   if (candidate.x !== drag.delta.x || candidate.y !== drag.delta.y) {
@@ -65,7 +63,7 @@ export function finishSegmentDrag(
     return false;
   }
   context.deps.run(() =>
-    context.deps.controller.moveWireSegment(drag.wireId, drag.segment, drag.delta),
+    context.deps.editor.moveWireSegment(drag.wireId, drag.segment, drag.delta),
   );
   return true;
 }
@@ -78,7 +76,7 @@ export function wirePreview(
   if (drag?.mode !== 'segment') {
     return undefined;
   }
-  const points = context.deps.controller.previewWireSegment(drag.wireId, drag.segment, drag.delta);
+  const points = context.deps.editor.previewWireSegment(drag.wireId, drag.segment, drag.delta);
   return points === undefined ? undefined : { wireId: drag.wireId, points };
 }
 

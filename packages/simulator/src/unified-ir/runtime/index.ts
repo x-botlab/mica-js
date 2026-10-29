@@ -1,6 +1,12 @@
 export { Circuit } from './circuit';
-export { createCircuitFromSchematic, createSingleDeviceCircuit } from './factory';
-export type { SchematicCircuitOptions, SchematicDeviceBinding } from './factory';
+export { createCircuitFromSchematic, createSchematicCircuit } from './factory';
+export type {
+  SchematicCircuitBinding,
+  SchematicCircuitOptions,
+  SchematicCircuitResult,
+  SchematicDeviceBinding,
+  SchematicDeviceTopic,
+} from './factory';
 export {
   CircuitError,
   type CircuitElectricalOptions,
@@ -9,12 +15,6 @@ export {
   type CircuitErrorOptions,
   type CircuitRuntimeOptions,
   type DeviceAccessor,
-  type DeviceAccessorForType,
   type DeviceAccessors,
   type DeviceAccessorsOf,
-  type LedAccessor,
-  type LedAccessor as LEDAccessor,
-  type McuAccessor,
-  type McuAccessor as MCUAccessor,
-  type SingleDeviceCircuitInput,
 } from './types';

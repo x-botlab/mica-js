@@ -2,6 +2,7 @@ import type { FunctionDefinition, IRModule, LifecycleRef } from '@mica-js/ir';
 import { DeviceError } from '../errors';
 import { isSynchronousFunction } from '../internal/functions';
 import { isPlainRecord } from '../internal/records';
+import type { DeviceInputIO, DeviceOutputIO } from '../types';
 
 export interface ValidatedLifecycle {
   readonly ref: LifecycleRef<readonly []>;
@@ -12,9 +13,11 @@ export interface ValidatedBindings {
   readonly initialize?: ValidatedLifecycle;
   readonly reset?: ValidatedLifecycle;
   readonly onDispose?: () => void;
+  readonly applyInputs?: (io: DeviceInputIO) => void;
+  readonly flushOutputs?: (io: DeviceOutputIO) => void;
 }
 
-const BINDING_FIELDS = new Set(['initialize', 'reset', 'onDispose']);
+const BINDING_FIELDS = new Set(['initialize', 'reset', 'onDispose', 'applyInputs', 'flushOutputs']);
 
 /**
  * Validates the synchronous factory result. The returned refs are the module's own declaration
@@ -76,10 +79,27 @@ export function readDeviceBindings(
     throw bindingError('onDispose must be a synchronous non-generator function.');
   }
 
+  let applyInputsValue: unknown;
+  let flushOutputsValue: unknown;
+  try {
+    applyInputsValue = record['applyInputs'];
+    flushOutputsValue = record['flushOutputs'];
+  } catch (cause) {
+    throw bindingError('factory step hooks could not be read.', cause);
+  }
+  if (applyInputsValue !== undefined && !isSynchronousFunction(applyInputsValue)) {
+    throw bindingError('applyInputs must be a synchronous non-generator function.');
+  }
+  if (flushOutputsValue !== undefined && !isSynchronousFunction(flushOutputsValue)) {
+    throw bindingError('flushOutputs must be a synchronous non-generator function.');
+  }
+
   const bindings: {
     initialize?: ValidatedLifecycle;
     reset?: ValidatedLifecycle;
     onDispose?: () => void;
+    applyInputs?: (io: DeviceInputIO) => void;
+    flushOutputs?: (io: DeviceOutputIO) => void;
   } = {};
   if (initialize !== undefined) {
     bindings.initialize = initialize;
@@ -89,6 +109,12 @@ export function readDeviceBindings(
   }
   if (onDisposeValue !== undefined) {
     bindings.onDispose = onDisposeValue as () => void;
+  }
+  if (applyInputsValue !== undefined) {
+    bindings.applyInputs = applyInputsValue as (io: DeviceInputIO) => void;
+  }
+  if (flushOutputsValue !== undefined) {
+    bindings.flushOutputs = flushOutputsValue as (io: DeviceOutputIO) => void;
   }
   return Object.freeze(bindings);
 }

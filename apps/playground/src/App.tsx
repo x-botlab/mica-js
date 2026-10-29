@@ -1,18 +1,15 @@
 import { useEffect, useState } from 'react';
-import { AppShell, PAGES, type PageId } from '@/components/app-shell';
-import { navigate, useHashRoute } from '@/lib/router';
+import { AppShell, resolveNavigation } from '@/components/app-shell';
+import { navigate, useHashPath } from '@/lib/router';
 import { CanvasPage } from '@/pages/canvas';
 import { HomePage } from '@/pages/home';
-import { SandboxPage } from '@/pages/sandbox';
 import { SchematicPage } from '@/pages/schematic';
-import { SimulatorPage } from '@/pages/simulator';
 
-const ROUTES = PAGES.map((page) => ({ id: page.id, path: `#/${page.id}` }));
-
+/** The sidebar and the rendered page read the same hash path, so a link cannot drift. */
 export function App() {
-  const route = useHashRoute<PageId>(ROUTES, 'home');
+  const path = useHashPath();
+  const { group, entry } = resolveNavigation(path);
   const [dark, setDark] = useState(true);
-  const page = PAGES.find((candidate) => candidate.id === route) ?? PAGES[0]!;
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
@@ -21,19 +18,16 @@ export function App() {
 
   return (
     <AppShell
-      page={page}
+      page={group}
+      entry={entry}
       dark={dark}
       onNavigate={navigate}
       onToggleTheme={() => setDark((value) => !value)}
     >
-      {route === 'schematic' ? (
-        <SchematicPage dark={dark} />
-      ) : route === 'canvas' ? (
-        <CanvasPage />
-      ) : route === 'sandbox' ? (
-        <SandboxPage />
-      ) : route === 'simulator' ? (
-        <SimulatorPage />
+      {group.id === 'schematic' && entry?.page === 'schematic' ? (
+        <SchematicPage dark={dark} exampleId={entry.exampleId} />
+      ) : group.id === 'canvas' && entry?.page === 'canvas' ? (
+        <CanvasPage exampleId={entry.exampleId} />
       ) : (
         <HomePage />
       )}

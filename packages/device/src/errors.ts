@@ -16,6 +16,8 @@ export type DeviceErrorCode =
   | 'device/observe-binding'
   | 'device/observe-config'
   | 'device/observe-unavailable'
+  | 'device/fifo-unknown'
+  | 'device/fifo-descriptor'
   | 'device/link-failed'
   | 'device/instance-invalid'
   | 'device/instance-busy'

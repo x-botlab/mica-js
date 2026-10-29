@@ -1,0 +1,15 @@
+{
+  "reference": "demo:ideal-led",
+  "type": "ideal-led",
+  "displayName": "理想 LED",
+  "designatorPrefix": "D",
+  "pins": {
+    "anode": { "direction": "passive", "side": "left", "kind": "signal" },
+    "cathode": { "direction": "passive", "side": "right", "kind": "signal" }
+  },
+  "topics": {
+    "lit": { "direction": "output", "type": "boolean", "title": "点亮", "state": "lamp" }
+  },
+  "connections": [],
+  "reset": { "state": "unsupported", "detail": "LED 没有独立 reset 生命周期" }
+}

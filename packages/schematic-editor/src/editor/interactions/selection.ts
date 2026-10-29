@@ -1,6 +1,6 @@
 import { symbolRole, type Point, type SchematicHit } from '@mica-js/core/schematic';
-import { sameSelectionItem } from '../../controller/selection';
-import type { EditorSelection } from '../../controller/types';
+import { sameTarget } from '../../model/selection';
+import type { EditorSelection } from '../../types';
 import { marqueeSelection, rectOf } from '../selection-box';
 import type { InteractionContext } from './context';
 
@@ -10,13 +10,13 @@ export function selectionAt(context: InteractionContext, page: Point): EditorSel
   if (vertex !== undefined) {
     return vertex;
   }
-  const hit = context.deps.controller.hitTest(page, { tolerance: context.pointer.tolerance() });
+  const hit = context.deps.editor.hitTest(page, { tolerance: context.pointer.tolerance() });
   return hit === undefined ? undefined : selectionFromHit(hit);
 }
 
 export function vertexAt(context: InteractionContext, page: Point): EditorSelection | undefined {
   const tolerance = context.pointer.tolerance();
-  for (const wire of context.deps.controller.getDocument().sheet.wires) {
+  for (const wire of context.deps.editor.getValue().sheet.wires) {
     for (let index = 0; index < wire.points.length; index += 1) {
       const point = wire.points[index];
       if (point === undefined) {
@@ -32,13 +32,11 @@ export function vertexAt(context: InteractionContext, page: Point): EditorSelect
 
 /** True when the pointer is over a builtin annotation (label / power / ground / text). */
 export function annotationSymbolAt(context: InteractionContext, page: Point): boolean {
-  const hit = context.deps.controller.hitTest(page, { tolerance: context.pointer.tolerance() });
+  const hit = context.deps.editor.hitTest(page, { tolerance: context.pointer.tolerance() });
   if (hit?.kind !== 'symbol') {
     return false;
   }
-  const symbol = context.deps.controller
-    .getDocument()
-    .sheet.symbols.find((item) => item.id === hit.id);
+  const symbol = context.deps.editor.getValue().sheet.symbols.find((item) => item.id === hit.id);
   return symbol !== undefined && symbolRole(symbol.device) !== 'component';
 }
 
@@ -48,32 +46,26 @@ export function selectItem(
   selection: EditorSelection | undefined,
   additive: boolean,
 ): void {
-  const controller = context.deps.controller;
+  const editor = context.deps.editor;
   if (selection === undefined) {
-    controller.setSelection(additive ? controller.getSelection() : []);
+    editor.setSelection(additive ? editor.getSelection() : []);
     return;
   }
-  const current = controller.getSelection();
-  const exists = current.some((item) => sameSelectionItem(item, selection));
+  const current = editor.getSelection();
+  const exists = current.some((item) => sameTarget(item, selection));
   if (!additive) {
-    controller.setSelection([selection]);
+    editor.setSelection([selection]);
     return;
   }
-  controller.setSelection(
-    exists
-      ? current.filter((item) => !sameSelectionItem(item, selection))
-      : [...current, selection],
+  editor.setSelection(
+    exists ? current.filter((item) => !sameTarget(item, selection)) : [...current, selection],
   );
 }
 
 /** Commits a rubber-band selection. */
 export function finishMarquee(context: InteractionContext, origin: Point, current: Point): void {
-  context.deps.controller.setSelection(
-    marqueeSelection(
-      context.deps.controller.getDocument(),
-      rectOf(origin, current),
-      context.deps.devices,
-    ),
+  context.deps.editor.setSelection(
+    marqueeSelection(context.deps.editor.getValue(), rectOf(origin, current), context.deps.devices),
   );
 }
 

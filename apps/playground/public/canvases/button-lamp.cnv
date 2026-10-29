@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "schematic": "schematics/button-relay.sch",
+  "widgets": [
+    {
+      "id": "1a2b3c4d-5e6f-4a70-8b91-c2d3e4f5a6b7",
+      "widget": "demo:button",
+      "x": 48,
+      "y": 40,
+      "width": 168,
+      "height": 72,
+      "rotation": 0,
+      "properties": {
+        "label": "按下 S1",
+        "radius": 10,
+        "background": "#3F3F46",
+        "backgroundPressed": "#0EA5E9"
+      },
+      "bindings": {
+        "press": {
+          "symbol": "f1a2b3c4-d5e6-4f70-8a91-b2c3d4e5f6a7",
+          "port": "pressed"
+        }
+      }
+    },
+    {
+      "id": "7d8e9f0a-1b2c-4d3e-9f4a-5b6c7d8e9f01",
+      "widget": "demo:segment",
+      "x": 260,
+      "y": 48,
+      "width": 260,
+      "height": 100,
+      "rotation": 0,
+      "properties": {
+        "digits": 4,
+        "color": "#22C55E"
+      },
+      "bindings": {
+        "count": {
+          "symbol": "f1a2b3c4-d5e6-4f70-8a91-b2c3d4e5f6a7",
+          "port": "pressCount"
+        }
+      }
+    },
+    {
+      "id": "3c4d5e6f-7081-4c92-8db3-e4f5a6b7c8d9",
+      "widget": "demo:lamp",
+      "x": 48,
+      "y": 170,
+      "width": 140,
+      "height": 140,
+      "rotation": 0,
+      "properties": {
+        "label": "D1 常开",
+        "color": "#FF3B30",
+        "offColor": "#27272A",
+        "radius": 20
+      },
+      "bindings": {
+        "lit": {
+          "symbol": "d9b8c7a6-5f4e-4d3c-8b2a-1f0e9d8c7b61",
+          "port": "lit"
+        }
+      }
+    },
+    {
+      "id": "8e9f0a1b-2c3d-4e4f-8a5b-6c7d8e9f0a12",
+      "widget": "demo:lamp",
+      "x": 220,
+      "y": 170,
+      "width": 140,
+      "height": 140,
+      "rotation": 0,
+      "properties": {
+        "label": "D2 常闭",
+        "color": "#F59E0B",
+        "offColor": "#27272A",
+        "radius": 20
+      },
+      "bindings": {
+        "lit": {
+          "symbol": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a72",
+          "port": "lit"
+        }
+      }
+    }
+  ]
+}

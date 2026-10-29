@@ -1,49 +1,17 @@
 import { fileURLToPath } from 'node:url';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vite';
 import { micaSandboxPlugins } from '../../packages/sandbox/vite.plugins';
-import { micaWidgetPlugins } from '../../packages/widget/vite.plugins';
+import { micaWidgetPlugins } from '../../packages/widget/src/build/vite';
 
 /** Every page consumes the workspace packages from source, so edits show up without a rebuild. */
 export default defineConfig({
-  // The widget guest runtime is a build-time bundle: its virtual module has to be provided here.
+  // Guest bundles are build-time transformations: the workspace packages inline their own guest
+  // worker and worklet, and `?sandbox-worker` stays for the Playground's custom device guest.
   plugins: [react(), tailwindcss(), ...micaSandboxPlugins(), ...micaWidgetPlugins()],
   resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url)),
-      '@mica-js/canvas-editor': fileURLToPath(
-        new URL('../../packages/canvas-editor/src/index.ts', import.meta.url),
-      ),
-      '@mica-js/widget': fileURLToPath(
-        new URL('../../packages/widget/src/index.ts', import.meta.url),
-      ),
-      '@mica-js/core/canvas': fileURLToPath(
-        new URL('../../packages/core/src/canvas/index.ts', import.meta.url),
-      ),
-      '@mica-js/core/schematic': fileURLToPath(
-        new URL('../../packages/core/src/schematic/index.ts', import.meta.url),
-      ),
-      // Keep the bare package last: Vite matches aliases by prefix, so `@mica-js/core` would
-      // otherwise swallow `@mica-js/core/canvas` and `@mica-js/core/schematic`.
-      '@mica-js/core': fileURLToPath(new URL('../../packages/core/src/index.ts', import.meta.url)),
-      '@mica-js/device': fileURLToPath(
-        new URL('../../packages/device/src/index.ts', import.meta.url),
-      ),
-      '@mica-js/ir': fileURLToPath(new URL('../../packages/ir/src/index.ts', import.meta.url)),
-      '@mica-js/simulator': fileURLToPath(
-        new URL('../../packages/simulator/src/index.ts', import.meta.url),
-      ),
-      '@mica-js/schematic-editor': fileURLToPath(
-        new URL('../../packages/schematic-editor/src/index.ts', import.meta.url),
-      ),
-      '@mica-js/sandbox': fileURLToPath(
-        new URL('../../packages/sandbox/src/index.ts', import.meta.url),
-      ),
-    },
-  },
-  test: {
-    include: ['src/**/*.test.ts'],
-    environment: 'node',
+    conditions: ['source', 'module', 'browser', 'development|production'],
+    alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
 });

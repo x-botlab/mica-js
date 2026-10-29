@@ -6,9 +6,9 @@ import type {
 } from '@mica-js/schematic-editor';
 import { useEffect, useState } from 'react';
 import type { PropertyValue } from '@mica-js/core/schematic';
-import type { AssetMode, PropertyType } from '@mica-js/core/schematic';
+import type { AssetMode } from '@mica-js/core/schematic';
 import { base64Error, isAssetReference } from '@mica-js/core/schematic';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 
@@ -91,23 +91,6 @@ interface PropertyInputProps {
   readonly onReset: () => void;
 }
 
-const TYPE_TITLES: Readonly<Record<PropertyType, string>> = {
-  string: 'string',
-  integer: 'integer',
-  number: 'number',
-  boolean: 'boolean',
-  color: 'color',
-  enum: 'enum',
-  image: 'image',
-  binary: 'binary',
-};
-
-const ASSET_MODE_HINTS: Readonly<Record<AssetMode, string>> = {
-  file: '工程根相对路径，宿主解析',
-  inline: 'base64 内联',
-  store: '宿主资源标识',
-};
-
 function assetText(value: PropertyValue | undefined): string {
   if (value === undefined) {
     return '未声明';
@@ -127,14 +110,7 @@ function PropertyInput({ field, disabled, onChange, onReset }: PropertyInputProp
   return (
     <div className="flex flex-col gap-1 rounded-md border border-dashed px-1.5 py-1">
       <div className="flex items-center gap-1">
-        <span className="truncate text-[11px]" title={field.description ?? field.key}>
-          {field.title ?? field.key}
-        </span>
-        <span className="text-muted-foreground font-mono text-[9px]">{field.key}</span>
-        <span className="bg-muted text-muted-foreground ml-auto rounded px-1 font-mono text-[9px]">
-          {TYPE_TITLES[field.type]}
-        </span>
-        {inherited ? <span className="text-muted-foreground text-[9px]">继承</span> : null}
+        <span className="truncate text-[11px]">{field.title ?? field.key}</span>
         <ResetButton inherited={inherited} disabled={disabled} onReset={onReset} />
       </div>
       <PropertyControl field={field} disabled={disabled} onChange={onChange} onReset={onReset} />
@@ -400,13 +376,11 @@ function AssetControl({ field, disabled, onChange, onReset }: PropertyInputProps
           <option value="inline">inline</option>
           <option value="store">store</option>
         </select>
-        <span className="text-muted-foreground truncate text-[10px]">{ASSET_MODE_HINTS[mode]}</span>
       </div>
       <Input
         key={`${field.key}:${mode}:${src}`}
         aria-label={field.key}
         defaultValue={src}
-        placeholder={inherited ? '继承默认，输入路径或标识覆盖' : undefined}
         disabled={disabled}
         className="font-mono text-[10px]"
         onBlur={(event) => {
@@ -455,7 +429,6 @@ function ResetButton({
   return (
     <button
       type="button"
-      title="恢复默认"
       aria-label="恢复默认"
       disabled={disabled || inherited}
       onClick={onReset}
@@ -510,11 +483,8 @@ function SymbolSection({
       <Row label="名称">{inspector.name ?? '—'}</Row>
       <Row label="位置">{`${formatNumber(inspector.x)}, ${formatNumber(inspector.y)}`}</Row>
       <Row label="旋转">{`${formatNumber(inspector.rotation)}°`}</Row>
-      {inspector.properties.length === 0 ? (
-        <p className="text-muted-foreground mt-1 text-[11px]">该器件未声明可编辑属性</p>
-      ) : (
+      {inspector.properties.length === 0 ? null : (
         <>
-          <div className="text-muted-foreground mt-1 text-[10px] tracking-wide uppercase">属性</div>
           {inspector.properties.map((field) => (
             <PropertyInput
               key={field.key}
@@ -533,11 +503,8 @@ function SymbolSection({
 function WireSection({ inspector }: { readonly inspector: WireInspector }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="mb-1 text-xs font-medium">
-        导线 <span className="text-muted-foreground font-mono text-[10px]">{inspector.id}</span>
-      </div>
+      <div className="mb-1 text-xs font-medium">导线</div>
       <Row label="网络">{inspector.netName ?? '未命名'}</Row>
-      <Row label="端点数">{String(inspector.points.length)}</Row>
       <Row label="起点">{formatPoint(inspector.points[0])}</Row>
       <Row label="终点">{formatPoint(inspector.points[inspector.points.length - 1])}</Row>
     </div>
@@ -555,7 +522,7 @@ export interface PropertyPanelProps {
 
 /**
  * Reference host implementation of the inspector column: the editor ships no property UI, so
- * this is what a host is expected to build on top of `state.inspector` and the controller.
+ * this is what a host is expected to build on top of `state.inspector` and the document model.
  */
 export function PropertyPanel(props: PropertyPanelProps) {
   const { inspector, readOnly } = props;
@@ -563,12 +530,9 @@ export function PropertyPanel(props: PropertyPanelProps) {
     <Card className="gap-2 py-3">
       <CardHeader>
         <CardTitle>属性</CardTitle>
-        <CardDescription>读取 state.inspector，写入走 controller</CardDescription>
       </CardHeader>
       <CardContent>
-        {inspector === undefined ? (
-          <p className="text-muted-foreground text-[11px]">选择器件或导线后在此查看与编辑</p>
-        ) : inspector.kind === 'wire' ? (
+        {inspector === undefined ? null : inspector.kind === 'wire' ? (
           <WireSection inspector={inspector} />
         ) : (
           <SymbolSection

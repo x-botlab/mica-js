@@ -19,6 +19,22 @@ export type {
   SchedulerTarget,
 } from './scheduler/types';
 
+export {
+  DEFAULT_TOPIC_CAPACITY,
+  DELIVERY_KINDS,
+  TopicInbox,
+  defaultDelivery,
+  parseDeliveryKind,
+  resolveDelivery,
+} from './topic/delivery';
+export type {
+  DeliveryKind,
+  TopicDeliveryDiagnostic,
+  TopicDeliveryDiagnosticCode,
+  TopicEnvelope,
+  TopicInboxOptions,
+} from './topic/delivery';
+
 export type {
   ElectricalPinInput,
   ElectricalNetworkInput,

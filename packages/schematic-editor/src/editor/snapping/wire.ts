@@ -1,5 +1,5 @@
 import { projectOnSegment, type Point } from '@mica-js/core/schematic';
-import type { DisplayOptions } from '../../controller/types';
+import type { DisplayOptions } from '../../types';
 import type { SnapContext } from './nodes';
 import { connectionNodeAt } from './nodes';
 import { snapToGrid } from './drag';
@@ -41,7 +41,7 @@ export function snapForWire(context: SnapContext, point: Point): Point {
   return (
     connectionNodeAt(context, point) ??
     wireBodyPointAt(context, point) ??
-    snapToGrid(point, context.controller.getDisplay())
+    snapToGrid(point, context.display)
   );
 }
 
@@ -52,9 +52,9 @@ export function snapForWire(context: SnapContext, point: Point): Point {
  */
 export function wireBodyPointAt(context: SnapContext, point: Point): Point | undefined {
   const radius = context.tolerance * 2;
-  const display = context.controller.getDisplay();
+  const display = context.display;
   let best: { readonly point: Point; readonly distance: number } | undefined;
-  for (const wire of context.controller.getDocument().sheet.wires) {
+  for (const wire of context.document.sheet.wires) {
     for (let index = 1; index < wire.points.length; index += 1) {
       const a = wire.points[index - 1];
       const b = wire.points[index];

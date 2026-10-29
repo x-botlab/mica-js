@@ -13,7 +13,7 @@ import {
   type Point,
   type SchematicDocument,
 } from '@mica-js/core/schematic';
-import type { EditorTool } from '../../controller/types';
+import type { EditorTool } from '../../types';
 import { pinPosition, type SnapContext } from './nodes';
 
 export function isPlacementTool(tool: EditorTool): boolean {
@@ -68,7 +68,7 @@ export interface LabelStub {
  * outward direction instead of sitting on the pin itself.
  */
 export function labelStubAt(context: SnapContext, point: Point): LabelStub | undefined {
-  const hit = context.controller.hitTest(point, {
+  const hit = context.hitTest(point, {
     tolerance: context.tolerance * 2,
     includeSymbols: false,
   });
@@ -97,7 +97,7 @@ function stubWire(
   pin: Point,
   anchor: Point,
 ): { readonly wire?: readonly Point[] } {
-  const host = context.controller.hitTest(anchor, {
+  const host = context.hitTest(anchor, {
     includeSymbols: false,
     tolerance: context.tolerance,
   });
@@ -109,9 +109,7 @@ function pinOutward(
   context: SnapContext,
   hit: { readonly symbolId: string; readonly pinId: string },
 ): Point | undefined {
-  const symbol = context.controller
-    .getDocument()
-    .sheet.symbols.find((item) => item.id === hit.symbolId);
+  const symbol = context.document.sheet.symbols.find((item) => item.id === hit.symbolId);
   const reference = symbol === undefined ? undefined : parseDeviceReference(symbol.device);
   const definition =
     reference === undefined ? undefined : context.devices?.getDeviceSymbol(reference);

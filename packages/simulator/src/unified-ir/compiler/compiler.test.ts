@@ -2,37 +2,35 @@ import { describe, expect, it } from 'vitest';
 import { createIRModule, validateIR } from '@mica-js/ir';
 import type { FunctionBodyDefinition, FunctionDefinition, IRModule } from '@mica-js/ir';
 import {
-  BUILTIN_DEVICE_TYPES,
   GlobalResourceAllocator,
   NetworkTopologyAnalyzer,
   UnifiedIRCompilerError,
   compileCircuit,
-  createLedDescription,
-  createMcuDescription,
   type CircuitCompilationInput,
   type CompiledCircuit,
   type DeviceConfig,
   type UnifiedIRCompilerErrorCode,
 } from './index';
+import { lampSinkDescription, toggleDriverDescription } from './test-helpers';
 
-function mcu(id = 'mcu1', pins?: readonly string[]): DeviceConfig {
+function driver(id = 'drive1', pins?: readonly string[]): DeviceConfig {
   return {
     id,
-    type: 'teaching-mcu',
-    description: createMcuDescription(pins === undefined ? {} : { pins }),
+    type: 'toggle-driver',
+    description: toggleDriverDescription(pins === undefined ? undefined : pins),
   };
 }
 
-function led(id = 'led1'): DeviceConfig {
-  return { id, type: 'ideal-led', description: createLedDescription() };
+function sink(id = 'sink1'): DeviceConfig {
+  return { id, type: 'lamp-sink', description: lampSinkDescription() };
 }
 
-function mcuLedInput(): CircuitCompilationInput {
+function driverSinkInput(): CircuitCompilationInput {
   return {
-    devices: [mcu(), led()],
+    devices: [driver(), sink()],
     connections: [
-      { from: 'mcu1.PA0', to: 'led1.anode' },
-      { from: 'led1.cathode', to: 'GND' },
+      { from: 'drive1.PA0', to: 'sink1.anode' },
+      { from: 'sink1.cathode', to: 'GND' },
     ],
   };
 }
@@ -103,15 +101,15 @@ function moduleFunctionNames(module: IRModule): string[] {
 
 describe('compileCircuit — single device', () => {
   it('compiles one device into a valid IR module', () => {
-    const compiled = compileCircuit({ devices: [mcu()], connections: [] });
+    const compiled = compileCircuit({ devices: [driver()], connections: [] });
 
     expect(compiled.module).toBeDefined();
     expect(compiled.entryPoints.tick).toBe('unified_tick');
     expect(compiled.entryPoints.initialize).toBe('unified_initialize');
     expect(compiled.entryPoints.batch).toBe('unified_tick_batch');
     expect(moduleFunctionNames(compiled.module)).toEqual([
-      'mcu1_initialize',
-      'mcu1_tick',
+      'drive1_initialize',
+      'drive1_tick',
       'unified_initialize',
       'unified_tick',
       'unified_tick_batch',
@@ -120,7 +118,7 @@ describe('compileCircuit — single device', () => {
   });
 
   it('exposes executable entry point refs next to their names', () => {
-    const compiled = compileCircuit({ devices: [mcu()], connections: [] });
+    const compiled = compileCircuit({ devices: [driver()], connections: [] });
     expect(compiled.entryPoints.refs.tick).toBe(
       compiled.module.functions.find((fn) => fn.name === compiled.entryPoints.tick)?.ref,
     );
@@ -130,7 +128,7 @@ describe('compileCircuit — single device', () => {
 
   it('accepts custom entry point names', () => {
     const compiled = compileCircuit(
-      { devices: [mcu()], connections: [] },
+      { devices: [driver()], connections: [] },
       {
         entryPointNames: {
           tick: 'circuit_step',
@@ -149,11 +147,12 @@ describe('compileCircuit — single device', () => {
 
   it('compiles a device whose description uses a Map of pins', () => {
     const description = {
-      name: 'map-mcu',
+      name: 'map-driver',
       pins: new Map([['PA0', { direction: 'output' as const }]]),
+      behaviors: { update: () => {} },
     };
     const compiled = compileCircuit({
-      devices: [{ id: 'map1', type: 'teaching-mcu', description }],
+      devices: [{ id: 'map1', type: 'toggle-driver', description }],
       connections: [],
     });
     expect(compiled.pinMap.get('map1.PA0')).toBe(0);
@@ -163,22 +162,22 @@ describe('compileCircuit — single device', () => {
 describe('GlobalResourceAllocator', () => {
   it('packs device pins into one contiguous address space', () => {
     const compiled = compileCircuit({
-      devices: [mcu('mcu1', ['PA0', 'PA1']), led('led1')],
+      devices: [driver('drive1', ['PA0', 'PA1']), sink('sink1')],
       connections: [],
     });
 
-    expect(compiled.pinMap.get('mcu1.PA0')).toBe(0);
-    expect(compiled.pinMap.get('mcu1.PA1')).toBe(1);
-    expect(compiled.pinMap.get('led1.anode')).toBe(2);
-    expect(compiled.pinMap.get('led1.cathode')).toBe(3);
+    expect(compiled.pinMap.get('drive1.PA0')).toBe(0);
+    expect(compiled.pinMap.get('drive1.PA1')).toBe(1);
+    expect(compiled.pinMap.get('sink1.anode')).toBe(2);
+    expect(compiled.pinMap.get('sink1.cathode')).toBe(3);
     expect(compiled.pins.totalPins).toBe(4);
-    expect(compiled.deviceMap.get('mcu1')?.pinOffset).toBe(0);
-    expect(compiled.deviceMap.get('led1')?.pinOffset).toBe(2);
+    expect(compiled.deviceMap.get('drive1')?.pinOffset).toBe(0);
+    expect(compiled.deviceMap.get('sink1')?.pinOffset).toBe(2);
   });
 
   it('never overlaps two device pin ranges', () => {
     const compiled = compileCircuit({
-      devices: [mcu('mcu1', ['PA0', 'PA1']), mcu('mcu2', ['PA0', 'PA1']), led('led1')],
+      devices: [driver('drive1', ['PA0', 'PA1']), driver('drive2', ['PA0', 'PA1']), sink('sink1')],
       connections: [],
     });
     const ids = [...compiled.pinMap.values()];
@@ -201,12 +200,12 @@ describe('GlobalResourceAllocator', () => {
         behaviors: { update: () => undefined },
       },
     };
-    const compiled = compileCircuit({ devices: [probe, led()], connections: [] });
+    const compiled = compileCircuit({ devices: [probe, sink()], connections: [] });
 
     const probeStates = compiled.deviceMap.get('probe1')?.states;
     expect(probeStates?.get('counter')).toMatchObject({ type: 'u32', index: 0, slot: 0 });
     expect(probeStates?.get('flag')).toMatchObject({ type: 'bool', index: 0, slot: 1 });
-    expect(compiled.deviceMap.get('led1')?.states.get('lamp')).toMatchObject({
+    expect(compiled.deviceMap.get('sink1')?.states.get('lamp')).toMatchObject({
       type: 'bool',
       index: 1,
       slot: 2,
@@ -216,20 +215,20 @@ describe('GlobalResourceAllocator', () => {
     expect(compiled.states.totals.get('u32')).toBe(1);
     expect(compiled.states.devices.get('probe1')?.size).toBe(2);
     expect(compiled.deviceMap.get('probe1')?.stateOffset).toBe(0);
-    expect(compiled.deviceMap.get('led1')?.stateOffset).toBe(2);
+    expect(compiled.deviceMap.get('sink1')?.stateOffset).toBe(2);
   });
 
   it('rejects a device with more pins than one port holds', () => {
     const pins = Array.from({ length: 33 }, (_, index) => `P${index}`);
     expectCompilerError(
-      () => compileCircuit({ devices: [mcu('mcu1', pins)], connections: [] }),
+      () => compileCircuit({ devices: [driver('drive1', pins)], connections: [] }),
       'capacity-exceeded',
     );
   });
 
   it('rejects a circuit that overflows the global pin space', () => {
     const pins = Array.from({ length: 32 }, (_, index) => `P${index}`);
-    const devices = Array.from({ length: 9 }, (_, index) => mcu(`mcu${index}`, pins));
+    const devices = Array.from({ length: 9 }, (_, index) => driver(`driver${index}`, pins));
     const failure = expectCompilerError(
       () => compileCircuit({ devices, connections: [] }),
       'capacity-exceeded',
@@ -241,7 +240,7 @@ describe('GlobalResourceAllocator', () => {
     const failure = expectCompilerError(
       () =>
         compileCircuit({
-          devices: [mcu('dup'), mcu('dup', ['PA1'])],
+          devices: [driver('dup'), driver('dup', ['PA1'])],
           connections: [],
         }),
       'duplicate-device',
@@ -253,7 +252,9 @@ describe('GlobalResourceAllocator', () => {
     expectCompilerError(
       () =>
         compileCircuit({
-          devices: [{ id: 'mcu-1', type: 'teaching-mcu', description: createMcuDescription() }],
+          devices: [
+            { id: 'driver-1', type: 'toggle-driver', description: toggleDriverDescription() },
+          ],
           connections: [],
         }),
       'invalid-input',
@@ -264,7 +265,10 @@ describe('GlobalResourceAllocator', () => {
     const description = { pins: { 'P.A0': { direction: 'output' as const } } };
     expectCompilerError(
       () =>
-        compileCircuit({ devices: [{ id: 'mcu1', type: 'mcu', description }], connections: [] }),
+        compileCircuit({
+          devices: [{ id: 'drive1', type: 'toggle-driver', description }],
+          connections: [],
+        }),
       'invalid-input',
     );
   });
@@ -288,7 +292,7 @@ describe('GlobalResourceAllocator', () => {
   it('can be used directly on a bare module', () => {
     const module = createIRModule();
     const allocator = new GlobalResourceAllocator(module);
-    const allocation = allocator.allocate([mcu('mcu1', ['PA0', 'PA1']), led()]);
+    const allocation = allocator.allocate([driver('drive1', ['PA0', 'PA1']), sink()]);
     expect(allocation.pins.totalPins).toBe(4);
     expect(allocation.states.totalStates).toBe(1);
     expect(module.memories.map((memory) => memory.name)).toEqual([
@@ -302,28 +306,28 @@ describe('GlobalResourceAllocator', () => {
 
 describe('NetworkTopologyAnalyzer', () => {
   it('recognises one net per connected component and splits drivers from loads', () => {
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     expect(compiled.netlist.nets).toHaveLength(2);
 
     const [driven, ground] = compiled.netlist.nets;
     expect(driven?.source).toBe('driver');
-    expect(driven?.drivers.map((pin) => pin.endpoint)).toEqual(['mcu1.PA0']);
-    expect(driven?.loads.map((pin) => pin.endpoint)).toEqual(['led1.anode']);
+    expect(driven?.drivers.map((pin) => pin.endpoint)).toEqual(['drive1.PA0']);
+    expect(driven?.loads.map((pin) => pin.endpoint)).toEqual(['sink1.anode']);
     expect(driven?.pins.map((pin) => pin.globalPinId)).toEqual([0, 1]);
 
     expect(ground?.source).toBe('rail');
     expect(ground?.level).toBe(false);
     expect(ground?.rails.map((rail) => rail.name)).toEqual(['GND']);
-    expect(ground?.loads.map((pin) => pin.endpoint)).toEqual(['led1.cathode']);
+    expect(ground?.loads.map((pin) => pin.endpoint)).toEqual(['sink1.cathode']);
     expect(compiled.netlist.diagnostics).toEqual([]);
   });
 
   it('merges a chain of connections into a single net', () => {
     const compiled = compileCircuit({
-      devices: [mcu(), led('led1'), led('led2')],
+      devices: [driver(), sink('sink1'), sink('sink2')],
       connections: [
-        { from: 'mcu1.PA0', to: 'led1.anode' },
-        { from: 'led1.anode', to: 'led2.anode' },
+        { from: 'drive1.PA0', to: 'sink1.anode' },
+        { from: 'sink1.anode', to: 'sink2.anode' },
       ],
     });
     expect(compiled.netlist.nets).toHaveLength(1);
@@ -336,10 +340,10 @@ describe('NetworkTopologyAnalyzer', () => {
 
   it('numbers nets by first appearance', () => {
     const compiled = compileCircuit({
-      devices: [mcu(), led()],
+      devices: [driver(), sink()],
       connections: [
-        { from: 'led1.cathode', to: 'GND' },
-        { from: 'mcu1.PA0', to: 'led1.anode' },
+        { from: 'sink1.cathode', to: 'GND' },
+        { from: 'drive1.PA0', to: 'sink1.anode' },
       ],
     });
     expect(compiled.netlist.nets[0]?.source).toBe('rail');
@@ -349,8 +353,8 @@ describe('NetworkTopologyAnalyzer', () => {
 
   it('warns about a floating net but still compiles it', () => {
     const compiled = compileCircuit({
-      devices: [led()],
-      connections: [{ from: 'led1.anode', to: 'led1.cathode' }],
+      devices: [sink()],
+      connections: [{ from: 'sink1.anode', to: 'sink1.cathode' }],
     });
     const floating = compiled.netlist.diagnostics.find((entry) => entry.code === 'floating-net');
     expect(floating?.severity).toBe('warning');
@@ -361,26 +365,26 @@ describe('NetworkTopologyAnalyzer', () => {
     const failure = expectCompilerError(
       () =>
         compileCircuit({
-          devices: [mcu('mcu1'), mcu('mcu2'), led()],
+          devices: [driver('drive1'), driver('drive2'), sink()],
           connections: [
-            { from: 'mcu1.PA0', to: 'led1.anode' },
-            { from: 'mcu2.PA0', to: 'led1.anode' },
+            { from: 'drive1.PA0', to: 'sink1.anode' },
+            { from: 'drive2.PA0', to: 'sink1.anode' },
           ],
         }),
       'driver-conflict',
     );
-    expect(failure.message).toContain('mcu1.PA0');
-    expect(failure.message).toContain('mcu2.PA0');
+    expect(failure.message).toContain('drive1.PA0');
+    expect(failure.message).toContain('drive2.PA0');
     expect(failure.diagnostics.some((entry) => entry.code === 'driver-conflict')).toBe(true);
   });
 
   it('solves several drivers as a wired-OR when allowed', () => {
     const compiled = compileCircuit(
       {
-        devices: [mcu('mcu1'), mcu('mcu2'), led()],
+        devices: [driver('drive1'), driver('drive2'), sink()],
         connections: [
-          { from: 'mcu1.PA0', to: 'led1.anode' },
-          { from: 'mcu2.PA0', to: 'led1.anode' },
+          { from: 'drive1.PA0', to: 'sink1.anode' },
+          { from: 'drive2.PA0', to: 'sink1.anode' },
         ],
       },
       { allowMultiDriver: true },
@@ -394,8 +398,8 @@ describe('NetworkTopologyAnalyzer', () => {
     const failure = expectCompilerError(
       () =>
         compileCircuit({
-          devices: [mcu()],
-          connections: [{ from: 'mcu1.PA0', to: 'GND' }],
+          devices: [driver()],
+          connections: [{ from: 'drive1.PA0', to: 'GND' }],
         }),
       'power-short',
     );
@@ -404,7 +408,7 @@ describe('NetworkTopologyAnalyzer', () => {
 
   it('rejects opposite rails wired together', () => {
     expectCompilerError(
-      () => compileCircuit({ devices: [mcu()], connections: [{ from: 'GND', to: 'VCC' }] }),
+      () => compileCircuit({ devices: [driver()], connections: [{ from: 'GND', to: 'VCC' }] }),
       'rail-conflict',
     );
   });
@@ -413,37 +417,41 @@ describe('NetworkTopologyAnalyzer', () => {
     const failure = expectCompilerError(
       () =>
         compileCircuit({
-          devices: [mcu()],
-          connections: [{ from: 'ghost.PA0', to: 'mcu1.PA0' }],
+          devices: [driver()],
+          connections: [{ from: 'ghost.PA0', to: 'drive1.PA0' }],
         }),
       'unknown-device',
     );
     expect(failure.message).toContain('ghost');
-    expect(failure.message).toContain('Available: [mcu1]');
+    expect(failure.message).toContain('Available: [drive1]');
   });
 
   it('reports a missing pin with the pins the device declares', () => {
     const failure = expectCompilerError(
       () =>
         compileCircuit({
-          devices: [mcu()],
-          connections: [{ from: 'mcu1.PA9', to: 'mcu1.PA0' }],
+          devices: [driver()],
+          connections: [{ from: 'drive1.PA9', to: 'drive1.PA0' }],
         }),
       'pin-not-found',
     );
-    expect(failure.message).toBe("Pin 'mcu1.PA9' not found. Available: [mcu1.PA0]");
+    expect(failure.message).toBe("Pin 'drive1.PA9' not found. Available: [drive1.PA0]");
   });
 
   it('rejects malformed connection endpoints', () => {
     expectCompilerError(
-      () => compileCircuit({ devices: [mcu()], connections: [{ from: 'mcu1', to: 'mcu1.PA0' }] }),
+      () =>
+        compileCircuit({
+          devices: [driver()],
+          connections: [{ from: 'drive1', to: 'drive1.PA0' }],
+        }),
       'invalid-connection',
     );
     expectCompilerError(
       () =>
         compileCircuit({
-          devices: [mcu()],
-          connections: [{ from: '', to: 'mcu1.PA0' }],
+          devices: [driver()],
+          connections: [{ from: '', to: 'drive1.PA0' }],
         }),
       'invalid-connection',
     );
@@ -452,8 +460,8 @@ describe('NetworkTopologyAnalyzer', () => {
   it('accepts a caller-defined rail', () => {
     const compiled = compileCircuit(
       {
-        devices: [led()],
-        connections: [{ from: 'led1.anode', to: 'VRAIL' }],
+        devices: [sink()],
+        connections: [{ from: 'sink1.anode', to: 'VRAIL' }],
       },
       { rails: { VRAIL: true } },
     );
@@ -463,9 +471,9 @@ describe('NetworkTopologyAnalyzer', () => {
 
   it('can be used directly on an allocation', () => {
     const module = createIRModule();
-    const allocation = new GlobalResourceAllocator(module).allocate([mcu(), led()]);
+    const allocation = new GlobalResourceAllocator(module).allocate([driver(), sink()]);
     const analyzer = new NetworkTopologyAnalyzer();
-    const netlist = analyzer.analyze([{ from: 'mcu1.PA0', to: 'led1.anode' }], allocation.pins);
+    const netlist = analyzer.analyze([{ from: 'drive1.PA0', to: 'sink1.anode' }], allocation.pins);
     expect(netlist.nets).toHaveLength(1);
     expect(netlist.nets[0]?.drivers[0]?.globalPinId).toBe(0);
     expect(netlist.nets[0]?.loads[0]?.globalPinId).toBe(1);
@@ -474,23 +482,26 @@ describe('NetworkTopologyAnalyzer', () => {
 
 describe('device IR generation', () => {
   it('emits one solver per net plus device functions', () => {
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     expect(moduleFunctionNames(compiled.module)).toEqual([
-      'mcu1_initialize',
-      'mcu1_tick',
-      'led1_update',
+      'drive1_initialize',
+      'drive1_tick',
+      'sink1_update',
       'solve_net_0',
       'solve_net_1',
       'unified_initialize',
       'unified_tick',
       'unified_tick_batch',
     ]);
-    expect(compiled.deviceMap.get('mcu1')?.functions).toEqual(['mcu1_initialize', 'mcu1_tick']);
-    expect(compiled.deviceMap.get('led1')?.functions).toEqual(['led1_update']);
+    expect(compiled.deviceMap.get('drive1')?.functions).toEqual([
+      'drive1_initialize',
+      'drive1_tick',
+    ]);
+    expect(compiled.deviceMap.get('sink1')?.functions).toEqual(['sink1_update']);
   });
 
   it('generates a branch-free solver for a single-driver net', () => {
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     expect(terminatorsOf(compiled, 'solve_net_0')).toEqual(['return']);
     expect(opsOf(compiled, 'solve_net_0')).toEqual([
       'const',
@@ -505,8 +516,8 @@ describe('device IR generation', () => {
   });
 
   it('inlines pin domain instructions into the shared pin memories', () => {
-    const compiled = compileCircuit(mcuLedInput());
-    const tickOps = opsOf(compiled, 'mcu1_tick');
+    const compiled = compileCircuit(driverSinkInput());
+    const tickOps = opsOf(compiled, 'drive1_tick');
     expect(tickOps).toEqual([
       'const',
       'array.load',
@@ -521,8 +532,8 @@ describe('device IR generation', () => {
   });
 
   it('writes push-pull mode when an output pin is configured', () => {
-    const compiled = compileCircuit(mcuLedInput());
-    const definition = definitionOf(compiled, 'mcu1_initialize');
+    const compiled = compileCircuit(driverSinkInput());
+    const definition = definitionOf(compiled, 'drive1_initialize');
     const store = definition.body.blocks
       .flatMap((block) => block.instructions)
       .find((instruction) => instruction.op === 'array.store');
@@ -546,8 +557,8 @@ describe('device IR generation', () => {
       },
     };
     const compiled = compileCircuit({
-      devices: [mcu(), probe],
-      connections: [{ from: 'mcu1.PA0', to: 'probe1.sense' }],
+      devices: [driver(), probe],
+      connections: [{ from: 'drive1.PA0', to: 'probe1.sense' }],
     });
     expect(compiled.deviceMap.get('probe1')?.functions).toEqual(['probe1_update']);
     expect(compiled.deviceMap.get('probe1')?.states.get('last')?.name).toBe('last');
@@ -563,7 +574,8 @@ describe('device IR generation', () => {
         }),
       'unsupported-device',
     );
-    for (const type of BUILTIN_DEVICE_TYPES) expect(failure.message).toContain(type);
+    expect(failure.message).toContain('declares no behaviors');
+    expect(failure.message).toContain('description.behaviors');
   });
 
   it('reports a missing pin reached from a behavior', () => {
@@ -603,26 +615,26 @@ describe('device IR generation', () => {
 
 describe('main loop', () => {
   it('calls drivers, then every net, then the loads', () => {
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     expect(callTargets(compiled, 'unified_tick')).toEqual([
-      'mcu1_tick',
+      'drive1_tick',
       'solve_net_0',
       'solve_net_1',
-      'led1_update',
+      'sink1_update',
     ]);
-    expect(callTargets(compiled, 'unified_initialize')).toEqual(['mcu1_initialize']);
+    expect(callTargets(compiled, 'unified_initialize')).toEqual(['drive1_initialize']);
   });
 
   it('orders devices so that a driver runs before the devices it feeds', () => {
     const compiled = compileCircuit({
-      devices: [led(), mcu()],
+      devices: [sink(), driver()],
       connections: [
-        { from: 'mcu1.PA0', to: 'led1.anode' },
-        { from: 'led1.cathode', to: 'GND' },
+        { from: 'drive1.PA0', to: 'sink1.anode' },
+        { from: 'sink1.cathode', to: 'GND' },
       ],
     });
-    expect(compiled.executionOrder).toEqual(['mcu1', 'led1']);
-    expect(callTargets(compiled, 'unified_tick')[0]).toBe('mcu1_tick');
+    expect(compiled.executionOrder).toEqual(['drive1', 'sink1']);
+    expect(callTargets(compiled, 'unified_tick')[0]).toBe('drive1_tick');
   });
 
   it('falls back to declaration order when devices feed each other', () => {
@@ -653,7 +665,7 @@ describe('main loop', () => {
   });
 
   it('keeps the batch loop inside the generated IR', () => {
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     const batch = definitionOf(compiled, 'unified_tick_batch');
     expect(batch.params).toEqual(['u32']);
     expect(batch.body.blocks).toHaveLength(4);
@@ -664,25 +676,25 @@ describe('main loop', () => {
       'return',
     ]);
     expect(callTargets(compiled, 'unified_tick_batch')).toEqual([
-      'mcu1_tick',
+      'drive1_tick',
       'solve_net_0',
       'solve_net_1',
-      'led1_update',
+      'sink1_update',
     ]);
   });
 });
 
 describe('compilation output', () => {
   it('is deterministic across runs', () => {
-    const first = compileCircuit(mcuLedInput());
-    const second = compileCircuit(mcuLedInput());
+    const first = compileCircuit(driverSinkInput());
+    const second = compileCircuit(driverSinkInput());
     expect(moduleFunctionNames(second.module)).toEqual(moduleFunctionNames(first.module));
     expect([...second.pinMap.entries()]).toEqual([...first.pinMap.entries()]);
     expect(second.executionOrder).toEqual(first.executionOrder);
   });
 
   it('reports every generated function in definition order', () => {
-    const compiled = compileCircuit(mcuLedInput());
+    const compiled = compileCircuit(driverSinkInput());
     expect(compiled.functions).toEqual(moduleFunctionNames(compiled.module));
   });
 
@@ -694,7 +706,7 @@ describe('compilation output', () => {
     const failure = expectCompilerError(
       () =>
         compileCircuit(
-          { devices: [mcu('unified')], connections: [] },
+          { devices: [driver('unified')], connections: [] },
           { entryPointNames: { tick: 'unified_tick' } },
         ),
       'invalid-input',
@@ -707,7 +719,7 @@ describe('compilation output', () => {
     expectCompilerError(
       () =>
         compileCircuit(
-          { devices: [mcu()], connections: [] },
+          { devices: [driver()], connections: [] },
           { entryPointNames: { tick: 'step', initialize: 'step' } },
         ),
       'invalid-input',
@@ -715,7 +727,7 @@ describe('compilation output', () => {
   });
 
   it('rejects malformed compiler options', () => {
-    const input = { devices: [mcu()], connections: [] };
+    const input = { devices: [driver()], connections: [] };
     expectCompilerError(
       () => compileCircuit(input, { validate: 'yes' as unknown as boolean }),
       'invalid-input',

@@ -1,9 +1,15 @@
 import type { PayloadType } from '../../format/type-name';
+import type { DeliveryKind } from '../../topic/delivery';
 
 /** One endpoint a binding can reach; widget and device ports share this shape. */
 export interface CanvasPortDescriptor {
   readonly direction: 'input' | 'output';
   readonly type: PayloadType;
+  /**
+   * How publishes become deliveries (RFC 0017). Omitted means the payload type decides; the two
+   * are orthogonal, so any combination of `delivery` and `type` is valid.
+   */
+  readonly delivery?: DeliveryKind;
 }
 
 /**

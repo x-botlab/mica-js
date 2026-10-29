@@ -399,11 +399,11 @@ describe('CanvasInteractionSession', () => {
     });
   });
 
-  describe('run mode', () => {
+  describe('simulation mode', () => {
     const running = canvasDocument(widget('a', { x: 100, y: 50 }));
 
     it('forwards instance-local pointer coordinates and never emits commands', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       const pressed = session.pointerDown(running, { x: 150, y: 75 });
 
       expect(pressed.commands).toEqual([]);
@@ -426,7 +426,7 @@ describe('CanvasInteractionSession', () => {
 
     it('removes the rotation from the forwarded coordinates', () => {
       const rotated = canvasDocument(widget('a', { x: 100, y: 50, rotation: 90 }));
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       const pressed = session.pointerDown(rotated, { x: 150, y: 50 });
 
       expect(pressed.events[0]?.event.x).toBeCloseTo(25);
@@ -434,13 +434,13 @@ describe('CanvasInteractionSession', () => {
     });
 
     it('does not forward a pointer that missed every instance', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       expect(session.pointerDown(running, { x: 10, y: 10 }).events).toEqual([]);
       expect(session.pointerMove(running, { x: 10, y: 10 }).events).toEqual([]);
     });
 
     it('forwards keyboard input to the last hit instance only', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       expect(session.keyDown(running, { key: 'Enter', code: 'Enter' }).events).toEqual([]);
 
       session.pointerDown(running, { x: 150, y: 75 });
@@ -454,8 +454,8 @@ describe('CanvasInteractionSession', () => {
       );
     });
 
-    it('does not edit the document in run mode', () => {
-      const session = new CanvasInteractionSession({ mode: 'run', selection: ['a'] });
+    it('does not edit the document in simulation mode', () => {
+      const session = new CanvasInteractionSession({ mode: 'simulation', selection: ['a'] });
       expect(session.keyDown(running, { key: 'Delete' }).commands).toEqual([]);
       expect(session.keyDown(running, { key: 'ArrowRight' }).commands).toEqual([]);
       // The wheel still moves the viewport, but that is editor state, never a command.
@@ -466,14 +466,14 @@ describe('CanvasInteractionSession', () => {
     });
 
     it('zooms with a plain wheel and pans with Shift + wheel', () => {
-      const zoomed = new CanvasInteractionSession({ mode: 'run' });
+      const zoomed = new CanvasInteractionSession({ mode: 'simulation' });
       const zoom = zoomed.wheel({ x: 40, y: 20, deltaX: 0, deltaY: -200 });
       expect(zoom.commands).toEqual([]);
       expect(zoom.events).toEqual([]);
       expect(zoom.redraw).toBe(true);
       expect(zoomed.viewport.scale).toBeGreaterThan(1);
 
-      const panned = new CanvasInteractionSession({ mode: 'run' });
+      const panned = new CanvasInteractionSession({ mode: 'simulation' });
       const pan = panned.wheel({ x: 0, y: 0, deltaX: 0, deltaY: 40, shiftKey: true });
       expect(pan.commands).toEqual([]);
       expect(pan.events).toEqual([]);
@@ -481,7 +481,7 @@ describe('CanvasInteractionSession', () => {
     });
 
     it('pans with the middle button without forwarding anything to a widget', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       const pressed = session.pointerDown(running, { x: 150, y: 75, button: 1, pointerId: 1 });
       expect(session.interaction).toBe('panning');
       expect(pressed.events).toEqual([]);
@@ -501,7 +501,7 @@ describe('CanvasInteractionSession', () => {
     });
 
     it('pans with Space + left button without forwarding anything to a widget', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       const pressed = session.pointerDown(running, {
         x: 150,
         y: 75,
@@ -521,7 +521,7 @@ describe('CanvasInteractionSession', () => {
     });
 
     it('zooms while a widget press is routed, and keeps forwarding that press', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       expect(session.pointerDown(running, { x: 150, y: 75, pointerId: 1 }).events).toHaveLength(1);
 
       const zoomed = session.wheel({ x: 150, y: 75, deltaX: 0, deltaY: -120 });
@@ -534,11 +534,11 @@ describe('CanvasInteractionSession', () => {
     });
   });
 
-  describe('run mode pointer routing', () => {
+  describe('simulation mode pointer routing', () => {
     const stage = canvasDocument(widget('a', { x: 100, y: 50 }), widget('b', { x: 300, y: 50 }));
 
     it('stops routing to the pressed instance once the pointer is released', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       expect(
         session.pointerDown(stage, { x: 150, y: 75, pointerId: 1 }).events[0]?.instanceId,
       ).toBe('a');
@@ -556,7 +556,7 @@ describe('CanvasInteractionSession', () => {
     });
 
     it('keeps routing to the pressed instance while the button is down', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       session.pointerDown(stage, { x: 150, y: 75, pointerId: 1 });
       // Dragged over widget b: the press keeps the input until it is released.
       const moved = session.pointerMove(stage, { x: 350, y: 75, pointerId: 1 });
@@ -567,7 +567,7 @@ describe('CanvasInteractionSession', () => {
     });
 
     it('forwards input only for the pointer that started the press', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       session.pointerDown(stage, { x: 150, y: 75, pointerId: 1 });
 
       expect(session.pointerDown(stage, { x: 350, y: 75, pointerId: 2 }).events).toEqual([]);
@@ -581,7 +581,7 @@ describe('CanvasInteractionSession', () => {
     });
 
     it('routes keyboard input to the last hit instance and drops it when cleared', () => {
-      const session = new CanvasInteractionSession({ mode: 'run' });
+      const session = new CanvasInteractionSession({ mode: 'simulation' });
       session.pointerDown(stage, { x: 150, y: 75, pointerId: 1 });
       session.pointerUp(stage, { x: 150, y: 75, pointerId: 1 });
       expect(session.activeInstanceId).toBe('a');

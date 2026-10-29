@@ -12,6 +12,7 @@
   "sideEffects": false,
   "exports": {
     ".": {
+      "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
@@ -27,7 +28,13 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.bench.json"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
   },
   "devDependencies": {
     "typescript": "catalog:",

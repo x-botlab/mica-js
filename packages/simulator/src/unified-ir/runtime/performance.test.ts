@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { Circuit } from './circuit';
-import { mcuLedInput } from './test-helpers';
+import { driverSinkInput } from './test-helpers';
 
 /**
  * U02 performance targets:
- * - batch throughput above 1 M ticks/s on the two-device MCU + LED scene,
+ * - batch throughput above 1 M ticks/s on the two-device driver + sink scene,
  * - single-step entry below 1 µs,
  * - creation (compile + validate + JIT) below 500 ms.
  *
@@ -30,7 +30,7 @@ function bestRound(run: () => void, rounds: number): number {
 describe('Circuit performance', () => {
   it('creates a two-device circuit in under 500 ms', async () => {
     const start = performance.now();
-    const circuit = await Circuit.create(mcuLedInput());
+    const circuit = await Circuit.create(driverSinkInput());
     const elapsedMs = performance.now() - start;
 
     console.log(`create: ${elapsedMs.toFixed(2)} ms`);
@@ -39,7 +39,7 @@ describe('Circuit performance', () => {
   });
 
   it('batches more than 1M ticks per second', async () => {
-    const circuit = await Circuit.create(mcuLedInput());
+    const circuit = await Circuit.create(driverSinkInput());
     // Tier the generated loop up before timing it.
     circuit.runBatch(10_000);
 
@@ -54,7 +54,7 @@ describe('Circuit performance', () => {
   });
 
   it('steps in under 1 µs on average', async () => {
-    const circuit = await Circuit.create(mcuLedInput());
+    const circuit = await Circuit.create(driverSinkInput());
     for (let index = 0; index < 2_000; index += 1) circuit.step();
 
     const bestMs = bestRound(() => {

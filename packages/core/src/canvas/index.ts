@@ -17,6 +17,17 @@ export { serializeCanvas } from './format/serialize';
 export { applyCanvasCommand } from './edit/commands';
 export type { CanvasCommand } from './edit/commands';
 
+// RFC 0017: a port descriptor may declare how publishes become deliveries; the payload type
+// supplies the default when the field is omitted. They are re-exported here because the canvas
+// contract owns the port descriptor shape that widget and device ports share.
+export {
+  DELIVERY_KINDS,
+  defaultDelivery,
+  parseDeliveryKind,
+  resolveDelivery,
+} from '../topic/delivery';
+export type { DeliveryKind } from '../topic/delivery';
+
 export { assertCanvasBindings, validateCanvasBindings } from './bindings/validate';
 export type { CanvasBindingCatalog, CanvasPortDescriptor } from './bindings/catalog';
 export type { ValidateCanvasBindingsOptions } from './bindings/validate';
