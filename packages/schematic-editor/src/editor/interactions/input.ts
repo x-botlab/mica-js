@@ -1,5 +1,7 @@
 import type { Point, Rect, SchematicHit } from '@mica-js/core/schematic';
+import { serializeSchematicClipboard } from '../../model/clipboard';
 import type { EditorSelection } from '../../types';
+import { readClipboardEvent, writeClipboardEvent } from '../clipboard';
 import type { EditorInputDeps, InteractionContext } from './context';
 import { cancelInteraction, handleKeyDown } from './keyboard';
 import {
@@ -59,6 +61,11 @@ export class EditorInput {
     return this.#context.state.cursorPoint;
   }
 
+  /** Last pointer position over the canvas in page space; `undefined` once it leaves. */
+  get lastPointerPage(): Point | undefined {
+    return this.#context.state.pointerPage;
+  }
+
   get marquee(): Rect | undefined {
     return this.#context.state.marquee;
   }
@@ -109,6 +116,9 @@ export class EditorInput {
     canvas.addEventListener('contextmenu', this.#onContextMenu);
     root.addEventListener('keydown', this.#onKeyDown);
     root.addEventListener('keyup', this.#onKeyUp);
+    root.addEventListener('copy', this.#onCopy);
+    root.addEventListener('cut', this.#onCut);
+    root.addEventListener('paste', this.#onPaste);
     root.ownerDocument.addEventListener('keydown', this.#onDocumentKeyDown);
   }
 
@@ -128,6 +138,9 @@ export class EditorInput {
     canvas.removeEventListener('contextmenu', this.#onContextMenu);
     root.removeEventListener('keydown', this.#onKeyDown);
     root.removeEventListener('keyup', this.#onKeyUp);
+    root.removeEventListener('copy', this.#onCopy);
+    root.removeEventListener('cut', this.#onCut);
+    root.removeEventListener('paste', this.#onPaste);
     root.ownerDocument.removeEventListener('keydown', this.#onDocumentKeyDown);
   }
 
@@ -136,6 +149,7 @@ export class EditorInput {
     deps.root.focus();
     const screen = pointer.screen(event);
     const page = pointer.page(event);
+    state.pointerPage = page;
 
     if (event.button === 1) {
       event.preventDefault();
@@ -181,6 +195,7 @@ export class EditorInput {
     const { deps, state, pointer } = this.#context;
     const screen = pointer.screen(event);
     const page = pointer.page(event);
+    state.pointerPage = page;
 
     if (state.drag?.mode === 'pan') {
       deps.viewport.pan(screen.x - state.drag.lastX, screen.y - state.drag.lastY);
@@ -259,6 +274,7 @@ export class EditorInput {
 
   #onPointerLeave = (): void => {
     const { deps, state } = this.#context;
+    state.pointerPage = undefined;
     if (state.hover !== undefined && state.drag === undefined) {
       state.hover = undefined;
       deps.onChange();
@@ -296,6 +312,43 @@ export class EditorInput {
 
   #onKeyUp = (): void => {
     // No key-up handling: Space now rotates instead of acting as a pan modifier.
+  };
+
+  /**
+   * Copy and cut rely on the browser's clipboard events instead of `Ctrl+C` / `Ctrl+X` keydown, so
+   * the browser menu, keyboard shortcuts and host gestures all take the same path.
+   */
+  #onCopy = (event: ClipboardEvent): void => {
+    const clipboard = this.#context.deps.editor.copySelection();
+    if (clipboard === undefined) {
+      return;
+    }
+    event.preventDefault();
+    writeClipboardEvent(event, serializeSchematicClipboard(clipboard));
+  };
+
+  #onCut = (event: ClipboardEvent): void => {
+    if (this.#context.deps.readOnly) {
+      return;
+    }
+    const clipboard = this.#context.deps.editor.cutSelection();
+    if (clipboard === undefined) {
+      return;
+    }
+    event.preventDefault();
+    writeClipboardEvent(event, serializeSchematicClipboard(clipboard));
+  };
+
+  #onPaste = (event: ClipboardEvent): void => {
+    if (this.#context.deps.readOnly) {
+      return;
+    }
+    const text = readClipboardEvent(event);
+    if (text === undefined) {
+      return;
+    }
+    event.preventDefault();
+    void this.#context.deps.editor.pasteSelection({ text });
   };
 
   /**

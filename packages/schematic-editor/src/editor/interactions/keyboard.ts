@@ -33,6 +33,11 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
   const editor = context.deps.editor;
   const readOnly = context.deps.readOnly;
 
+  // Host controls (property fields, search boxes) bubble their keys here; leave them alone.
+  if (isEditableTarget(event.target)) {
+    return;
+  }
+
   if (event.key === ' ') {
     event.preventDefault();
     if (rotatePlacement(context, 90)) {
@@ -100,6 +105,19 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
     editor.redo();
     return;
   }
+  if ((event.ctrlKey || event.metaKey) && (event.key === 'a' || event.key === 'A')) {
+    event.preventDefault();
+    editor.selectAll();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && (event.key === 'd' || event.key === 'D')) {
+    // The browser would bookmark the page; the editor duplicates the selection instead.
+    event.preventDefault();
+    if (!readOnly) {
+      editor.duplicateSelection();
+    }
+    return;
+  }
   if (readOnly) {
     return;
   }
@@ -116,4 +134,14 @@ export function handleKeyDown(context: InteractionContext, event: KeyboardEvent)
     event.preventDefault();
     context.deps.run(() => editor.moveSelectionBy(delta.x, delta.y));
   }
+}
+
+/** Text fields and contenteditable hosts keep their own shortcuts. */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (target === null || typeof target !== 'object') {
+    return false;
+  }
+  const element = target as { readonly tagName?: unknown; readonly isContentEditable?: unknown };
+  const tagName = typeof element.tagName === 'string' ? element.tagName.toLowerCase() : '';
+  return tagName === 'input' || tagName === 'textarea' || element.isContentEditable === true;
 }

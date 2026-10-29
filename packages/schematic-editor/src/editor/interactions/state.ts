@@ -37,6 +37,8 @@ export class InteractionState {
   drag: DragInteraction;
   pendingWire: Point[] = [];
   cursorPoint: Point | undefined;
+  /** Last pointer position in page space; anchors a paste that has no explicit target. */
+  pointerPage: Point | undefined;
   placementRotation = 0;
 
   get marquee(): Rect | undefined {

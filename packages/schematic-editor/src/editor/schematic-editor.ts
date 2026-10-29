@@ -14,8 +14,15 @@ import {
   type DocumentUpdateOptions,
 } from '../model/document-model';
 import { resolveSchematicContent, type SchematicContent } from '../model/content';
+import {
+  parseSchematicClipboard,
+  serializeSchematicClipboard,
+  type PasteOptions,
+  type SchematicClipboard,
+} from '../model/clipboard';
 import { buildInspector } from '../model/inspector';
 import { pruneSelection, sameSelection } from '../model/selection';
+import { toSchematicError } from '../model/store';
 import { CanvasSchematicRenderer } from '../render/canvas-renderer';
 import { buildSchematicScene } from '../render/scene';
 import { resolveSchematicTheme, themeToCssVariables, type SchematicTheme } from '../render/theme';
@@ -36,14 +43,22 @@ import {
   type EditorTool,
 } from '../types';
 import { DisposableStore, Emitter, type Event } from '@mica-js/core/lifecycle';
+import { createBrowserClipboardPort, type ClipboardPort } from './clipboard';
 import { EditorInput } from './interactions/input';
 import { toSceneHighlight } from './scene-input';
+import { snapToGrid } from './snapping';
 import { createShell, type EditorShell } from './shell';
 import type { EditorSurface } from './surface';
 import { EditorViewport } from './viewport-state';
 
 /** Model construction options exposed by {@link SchematicEditorOptions} (`value` is separate). */
 export type SchematicEditorModelOptions = Omit<DocumentModelOptions, 'value'>;
+
+/** Paste options of the editor API: a caller-provided payload skips the system clipboard. */
+export interface EditorPasteOptions extends PasteOptions {
+  /** Serialized payload; when present the system clipboard is not read. */
+  readonly text?: string;
+}
 
 /**
  * Options shared by {@link SchematicEditor} and {@link createSchematicEditor}.
@@ -67,6 +82,8 @@ export interface SchematicEditorOptions extends SchematicEditorModelOptions {
   readonly readOnly?: boolean;
   /** Renders the floating tool strip in the canvas corner; defaults to true. */
   readonly toolbar?: boolean;
+  /** System clipboard bridge; defaults to the browser Clipboard API. */
+  readonly clipboard?: ClipboardPort;
 }
 
 /**
@@ -110,6 +127,8 @@ export class SchematicEditor implements EditorSurface {
   readonly #renderer: CanvasSchematicRenderer;
   readonly #input: EditorInput;
   readonly #readOnly: boolean;
+  readonly #clipboardPort: ClipboardPort;
+  #clipboard: SchematicClipboard | undefined;
   #theme: SchematicTheme;
   #display: DisplayOptions;
   #selection: readonly EditorSelection[] = [];
@@ -132,6 +151,7 @@ export class SchematicEditor implements EditorSurface {
     this.#lastContent = this.#model.getValue();
     this.#container = options.container;
     this.#readOnly = options.readOnly ?? false;
+    this.#clipboardPort = options.clipboard ?? createBrowserClipboardPort();
     this.#display = { ...DEFAULT_DISPLAY_OPTIONS, ...options.display };
     this.#theme = resolveSchematicTheme(options.theme);
     this.#error = this.#model.getLastError();
@@ -388,6 +408,93 @@ export class SchematicEditor implements EditorSurface {
     }
   }
 
+  /**
+   * Copies the selection into the editor's own buffer and, best-effort, into the system clipboard.
+   * Allowed in read-only editors because it changes nothing.
+   */
+  copySelection(): SchematicClipboard | undefined {
+    if (this.#disposed) {
+      return undefined;
+    }
+    const clipboard = this.#model.copy(this.#selection);
+    if (clipboard === undefined) {
+      return undefined;
+    }
+    this.#clipboard = clipboard;
+    void this.#writeClipboard(clipboard);
+    return clipboard;
+  }
+
+  /** Cuts the selection as one undoable edit, then mirrors the payload to the system clipboard. */
+  cutSelection(): SchematicClipboard | undefined {
+    if (this.#disposed || this.#readOnly) {
+      return undefined;
+    }
+    const clipboard = this.#model.cut(this.#selection);
+    if (clipboard === undefined) {
+      return undefined;
+    }
+    this.#clipboard = clipboard;
+    void this.#writeClipboard(clipboard);
+    return clipboard;
+  }
+
+  /**
+   * Pastes a payload as one undoable edit and selects the new elements. The payload comes from
+   * `options.text`, then the clipboard port, then the editor's own buffer.
+   */
+  async pasteSelection(options: EditorPasteOptions = {}): Promise<boolean> {
+    if (this.#disposed || this.#readOnly) {
+      return false;
+    }
+    const clipboard =
+      options.text === undefined ? await this.#readClipboard() : this.#parseClipboard(options.text);
+    if (clipboard === undefined || this.#disposed) {
+      return false;
+    }
+    try {
+      const targets = this.#model.paste(clipboard, this.#pasteOptions(options));
+      if (targets.length === 0) {
+        return false;
+      }
+      this.setSelection(targets);
+      this.root.focus();
+      return true;
+    } catch (error) {
+      if (!this.#disposed) {
+        this.#error = toSchematicError(error);
+        this.#sync();
+      }
+      return false;
+    }
+  }
+
+  /** Copies and re-inserts the selection one grid step away as one undoable edit. */
+  duplicateSelection(): readonly EditorSelection[] {
+    if (this.#disposed || this.#readOnly) {
+      return [];
+    }
+    const targets = this.#model.duplicate(this.#selection, { offset: this.#gridStep() });
+    if (targets.length > 0) {
+      this.setSelection(targets);
+      this.root.focus();
+    }
+    return targets;
+  }
+
+  /** Selects every symbol, wire and junction; reference designators stay part of their symbol. */
+  selectAll(): void {
+    if (this.#disposed) {
+      return;
+    }
+    const { symbols, wires, junctions } = this.#model.getValue().sheet;
+    this.setSelection([
+      ...symbols.map((symbol): EditorSelection => ({ kind: 'symbol', id: symbol.id })),
+      ...wires.map((wire): EditorSelection => ({ kind: 'wire', id: wire.id })),
+      ...junctions.map((junction): EditorSelection => ({ kind: 'junction', id: junction.id })),
+    ]);
+  }
+
   moveReferenceBy(symbolId: string, dx: number, dy: number): void {
     if (this.#disposed) {
       return;
@@ -562,6 +669,62 @@ export class SchematicEditor implements EditorSurface {
     } catch {
       // The model already recorded the failure and notified the editor.
     }
+  }
+
+  async #writeClipboard(clipboard: SchematicClipboard): Promise<void> {
+    try {
+      await this.#clipboardPort.write(serializeSchematicClipboard(clipboard));
+    } catch {
+      // The editor's own buffer keeps paste working without clipboard permissions.
+    }
+  }
+
+  /** Payload from the system clipboard, falling back to the last copied or cut selection. */
+  async #readClipboard(): Promise<SchematicClipboard | undefined> {
+    let text: string | undefined;
+    try {
+      text = await this.#clipboardPort.read();
+    } catch {
+      return this.#clipboard;
+    }
+    if (text === undefined) {
+      return this.#clipboard;
+    }
+    try {
+      return parseSchematicClipboard(text);
+    } catch {
+      // Foreign clipboard content: keep pasting what the editor itself copied.
+      return this.#clipboard;
+    }
+  }
+
+  #parseClipboard(text: string): SchematicClipboard | undefined {
+    try {
+      return parseSchematicClipboard(text);
+    } catch (error) {
+      this.#error = toSchematicError(error);
+      this.#sync();
+      return undefined;
+    }
+  }
+
+  /** Explicit target first, then the pointer position, then a plain grid offset. */
+  #pasteOptions(options: PasteOptions): PasteOptions {
+    if (options.at !== undefined) {
+      return { at: options.at };
+    }
+    if (options.offset !== undefined) {
+      return { offset: options.offset };
+    }
+    const page = this.#input.lastPointerPage;
+    return page === undefined
+      ? { offset: this.#gridStep() }
+      : { at: snapToGrid(page, this.#display) };
+  }
+
+  #gridStep(): Point {
+    const size = this.#display.gridSize;
+    return size > 0 ? { x: size, y: size } : { x: 1, y: 1 };
   }
 
   #onModelChanged(): void {
