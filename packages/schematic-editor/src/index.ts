@@ -4,12 +4,27 @@ import './styles/editor.css';
 
 export { createSchematicEditor, SchematicEditor } from './editor/schematic-editor';
 export type {
+  ClipboardWriteOptions,
+  EditorPasteOptions,
   SchematicEditorModelOptions,
   SchematicEditorOptions,
 } from './editor/schematic-editor';
 
 export { DocumentModel } from './model/document-model';
 export type { DocumentModelOptions, DocumentUpdateOptions } from './model/document-model';
+
+export {
+  SCHEMATIC_CLIPBOARD_FORMAT,
+  SCHEMATIC_CLIPBOARD_MIME,
+  SCHEMATIC_CLIPBOARD_VERSION,
+  createSchematicClipboard,
+  parseSchematicClipboard,
+  serializeSchematicClipboard,
+} from './model/clipboard';
+export type { PasteOptions, SchematicClipboard } from './model/clipboard';
+
+export { MemoryClipboardPort, createBrowserClipboardPort } from './editor/clipboard';
+export type { ClipboardPort } from './editor/clipboard';
 
 export { createEmptySchematicDocument } from './model/content';
 export type { SchematicContent } from './model/content';

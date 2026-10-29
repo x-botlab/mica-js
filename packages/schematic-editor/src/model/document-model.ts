@@ -13,6 +13,12 @@ import type {
 } from '@mica-js/core/schematic';
 import * as symbols from './symbols';
 import * as wires from './wires';
+import {
+  createSchematicClipboard,
+  pasteClipboard,
+  type PasteOptions,
+  type SchematicClipboard,
+} from './clipboard';
 import { resolveSchematicContent, type SchematicContent } from './content';
 import { DocumentStore } from './store';
 import type { SchematicTarget } from '../types';
@@ -172,6 +178,38 @@ export class DocumentModel {
   /** Removes symbols, wires, junctions and wire vertices. */
   removeTargets(targets: readonly SchematicTarget[]): void {
     symbols.removeTargets(this.#store, targets);
+  }
+
+  /**
+   * Extracts the selected elements as a clipboard payload. Pure read: no history step.
+   * Reference targets copy their symbol, vertex targets their whole wire.
+   */
+  copy(targets: readonly SchematicTarget[]): SchematicClipboard | undefined {
+    return createSchematicClipboard(this.#store.document, targets);
+  }
+
+  /** Copies then deletes the selected elements as one undoable edit. */
+  cut(targets: readonly SchematicTarget[]): SchematicClipboard | undefined {
+    const clipboard = createSchematicClipboard(this.#store.document, targets);
+    if (clipboard === undefined) {
+      return undefined;
+    }
+    symbols.removeTargets(this.#store, targets);
+    return clipboard;
+  }
+
+  /** Inserts a payload as one undoable edit; returns the pasted symbols and wires. */
+  paste(clipboard: SchematicClipboard, options?: PasteOptions): readonly SchematicTarget[] {
+    return pasteClipboard(this.#store, clipboard, options);
+  }
+
+  /** Copies and re-inserts the selected elements offset by one grid step, as one undoable edit. */
+  duplicate(
+    targets: readonly SchematicTarget[],
+    options?: PasteOptions,
+  ): readonly SchematicTarget[] {
+    const clipboard = createSchematicClipboard(this.#store.document, targets);
+    return clipboard === undefined ? [] : pasteClipboard(this.#store, clipboard, options);
   }
 
   /** Moves a reference designator by a world-space delta. */

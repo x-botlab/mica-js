@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseSchematic, SchematicError, type SchematicDocument } from '@mica-js/core/schematic';
-import { createSchematicEditor, DocumentModel, DEFAULT_DISPLAY_OPTIONS } from '../index';
+import {
+  createSchematicEditor,
+  DocumentModel,
+  DEFAULT_DISPLAY_OPTIONS,
+  MemoryClipboardPort,
+  SCHEMATIC_CLIPBOARD_FORMAT,
+  SCHEMATIC_CLIPBOARD_MIME,
+  serializeSchematicClipboard,
+  type ClipboardPort,
+} from '../index';
 import {
   createContainer,
   devices,
@@ -13,7 +22,10 @@ import {
 
 let restoreDom: (() => void) | undefined;
 
-function editorFor(document = documentWithSymbol(), options: { readonly readOnly?: boolean } = {}) {
+function editorFor(
+  document = documentWithSymbol(),
+  options: { readonly readOnly?: boolean; readonly clipboard?: ClipboardPort } = {},
+) {
   restoreDom = installDomGlobals();
   const host = createContainer();
   const model = new DocumentModel({ value: document, devices });
@@ -21,8 +33,45 @@ function editorFor(document = documentWithSymbol(), options: { readonly readOnly
     container: host.container,
     model,
     ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
+    ...(options.clipboard === undefined ? {} : { clipboard: options.clipboard }),
   });
   return { editor, model, container: host.container, document: host.document };
+}
+
+interface FakeClipboardEvent {
+  readonly clipboardData: {
+    getData(type: string): string;
+    setData(type: string, value: string): void;
+  };
+  defaultPrevented: boolean;
+  preventDefault(): void;
+}
+
+/** `ClipboardEvent` is not a Node global; the editor only reads `clipboardData`. */
+function fakeClipboardEvent(initial: Record<string, string> = {}): FakeClipboardEvent {
+  const entries = new Map(Object.entries(initial));
+  const event: FakeClipboardEvent = {
+    clipboardData: {
+      getData: (type) => entries.get(type) ?? '',
+      setData: (type, value) => {
+        entries.set(type, value);
+      },
+    },
+    defaultPrevented: false,
+    preventDefault: () => {
+      event.defaultPrevented = true;
+    },
+  };
+  return event;
+}
+
+/** Lets a fire-and-forget clipboard write settle. */
+async function flush(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function keydown(root: FakeElement, key: string, modifiers: Record<string, boolean> = {}): void {
+  root.emit('keydown', { key, preventDefault: () => {}, ...modifiers });
 }
 
 afterEach(() => {
@@ -413,5 +462,355 @@ describe('SchematicEditor', () => {
     expect(editor.getValue().sheet.wires).toEqual([]);
     expect(editor.getSelection()).toEqual([]);
     editor.dispose();
+  });
+
+  describe('clipboard', () => {
+    const wireId = '00000006-9cf4-407f-8900-09a16d33a38c';
+    const branchWireId = '00000007-a914-47d5-84d1-8bafbe533ffb';
+    const junctionId = '00000001-516c-48ac-8128-07f98c98ee13';
+
+    function drawing(): SchematicDocument {
+      return documentOf({
+        symbols: [{ id: symbolId, device: 'pkg:mcu', x: 0, y: 0, rotation: 0, designator: 'U1' }],
+        wires: [
+          {
+            id: wireId,
+            points: [
+              { x: 0, y: 0 },
+              { x: 50, y: 0 },
+            ],
+          },
+          {
+            id: branchWireId,
+            points: [
+              { x: 50, y: 0 },
+              { x: 50, y: 50 },
+            ],
+          },
+        ],
+        junctions: [{ id: junctionId, x: 50, y: 0, wires: [wireId, branchWireId] }],
+      });
+    }
+
+    it('writes the payload on copy without touching history', () => {
+      const { editor } = editorFor();
+      const root = editor.root as unknown as FakeElement;
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+
+      const event = fakeClipboardEvent();
+      root.emit('copy', event);
+
+      expect(event.defaultPrevented).toBe(true);
+      const custom = event.clipboardData.getData(SCHEMATIC_CLIPBOARD_MIME);
+      expect(JSON.parse(custom)).toMatchObject({
+        format: SCHEMATIC_CLIPBOARD_FORMAT,
+        version: 1,
+        symbols: [{ id: symbolId }],
+      });
+      expect(event.clipboardData.getData('text/plain')).toBe(custom);
+      expect(editor.getCanUndo()).toBe(false);
+      editor.dispose();
+    });
+
+    it('leaves empty selections to the browser', () => {
+      const { editor } = editorFor();
+      const event = fakeClipboardEvent();
+      (editor.root as unknown as FakeElement).emit('copy', event);
+
+      expect(event.defaultPrevented).toBe(false);
+      expect(event.clipboardData.getData(SCHEMATIC_CLIPBOARD_MIME)).toBe('');
+      editor.dispose();
+    });
+
+    it('pastes a clipboard event as one step and selects the new elements', () => {
+      const { editor } = editorFor();
+      const root = editor.root as unknown as FakeElement;
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+      const copy = fakeClipboardEvent();
+      root.emit('copy', copy);
+
+      const paste = fakeClipboardEvent({
+        [SCHEMATIC_CLIPBOARD_MIME]: copy.clipboardData.getData(SCHEMATIC_CLIPBOARD_MIME),
+      });
+      root.emit('paste', paste);
+
+      expect(paste.defaultPrevented).toBe(true);
+      const symbols = editor.getValue().sheet.symbols;
+      expect(symbols).toHaveLength(2);
+      expect(symbols[1]).toMatchObject({ x: 10, y: 10, designator: 'U1' });
+      expect(editor.getSelection()).toEqual([{ kind: 'symbol', id: symbols[1]?.id }]);
+      expect(editor.getCanUndo()).toBe(true);
+      editor.dispose();
+    });
+
+    it('cuts a clipboard event in one step and pastes the payload back', () => {
+      const { editor } = editorFor(drawing());
+      const root = editor.root as unknown as FakeElement;
+      editor.setSelection([
+        { kind: 'symbol', id: symbolId },
+        { kind: 'wire', id: wireId },
+      ]);
+
+      const cut = fakeClipboardEvent();
+      root.emit('cut', cut);
+
+      expect(cut.defaultPrevented).toBe(true);
+      expect(editor.getValue().sheet.symbols).toEqual([]);
+      expect(editor.getValue().sheet.wires).toHaveLength(1);
+      // The junction lost one of its wires with the cut and went away.
+      expect(editor.getValue().sheet.junctions).toEqual([]);
+      expect(editor.getSelection()).toEqual([]);
+
+      const paste = fakeClipboardEvent({
+        [SCHEMATIC_CLIPBOARD_MIME]: cut.clipboardData.getData(SCHEMATIC_CLIPBOARD_MIME),
+      });
+      root.emit('paste', paste);
+      expect(editor.getValue().sheet.symbols).toHaveLength(1);
+
+      editor.undo();
+      editor.undo();
+      expect(editor.getValue().sheet.symbols).toHaveLength(1);
+      expect(editor.getValue().sheet.wires).toHaveLength(2);
+      expect(editor.getValue().sheet.junctions).toHaveLength(1);
+      editor.dispose();
+    });
+
+    it('round-trips through an injected clipboard port', async () => {
+      const port = new MemoryClipboardPort();
+      const source = editorFor(undefined, { clipboard: port });
+      source.editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+      source.editor.copySelection();
+      await flush();
+      expect(await port.read()).toBeDefined();
+      source.editor.dispose();
+
+      const target = editorFor(documentOf({}), { clipboard: port });
+      expect(await target.editor.pasteSelection()).toBe(true);
+      expect(target.editor.getValue().sheet.symbols).toHaveLength(1);
+      target.editor.dispose();
+    });
+
+    it('falls back to the in-editor buffer when the port fails', async () => {
+      const port: ClipboardPort = {
+        read: () => Promise.reject(new Error('permission denied')),
+        write: () => Promise.reject(new Error('permission denied')),
+      };
+      const { editor } = editorFor(documentWithSymbol(), { clipboard: port });
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+      editor.copySelection();
+      await flush();
+
+      expect(await editor.pasteSelection()).toBe(true);
+      expect(editor.getValue().sheet.symbols).toHaveLength(2);
+      editor.dispose();
+    });
+
+    it('pastes at an explicit page coordinate through the host API', async () => {
+      const { editor } = editorFor();
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+      const payload = editor.copySelection();
+      if (payload === undefined) {
+        throw new Error('expected a payload');
+      }
+      editor.setValue(documentOf({}));
+
+      const pasted = await editor.pasteSelection({
+        text: serializeSchematicClipboard(payload),
+        at: { x: 100, y: 200 },
+      });
+      expect(pasted).toBe(true);
+      expect(editor.getValue().sheet.symbols).toHaveLength(1);
+      expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 100, y: 200 });
+      editor.dispose();
+    });
+
+    it('anchors a paste at the last pointer position', async () => {
+      const { editor } = editorFor();
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+      const payload = editor.copySelection();
+      if (payload === undefined) {
+        throw new Error('expected a payload');
+      }
+      editor.setValue(documentOf({}));
+
+      const canvas = editor.canvas as unknown as FakeElement;
+      const screen = editor.toScreen({ x: 40, y: 60 });
+      canvas.emit('pointermove', {
+        pointerId: 1,
+        clientX: screen.x,
+        clientY: screen.y,
+        preventDefault: () => {},
+      });
+
+      expect(await editor.pasteSelection({ text: serializeSchematicClipboard(payload) })).toBe(
+        true,
+      );
+      expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 40, y: 60 });
+      editor.dispose();
+    });
+
+    it('pastes exactly at the pointer when snapping is off', async () => {
+      const { editor } = editorFor();
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+      const payload = editor.copySelection();
+      if (payload === undefined) {
+        throw new Error('expected a payload');
+      }
+      editor.setValue(documentOf({}));
+      editor.setViewport({ scale: 1, offsetX: 0, offsetY: 0 });
+      editor.setDisplayOptions({ snap: false });
+
+      const canvas = editor.canvas as unknown as FakeElement;
+      const screen = editor.toScreen({ x: 45, y: 65 });
+      canvas.emit('pointermove', {
+        pointerId: 1,
+        clientX: screen.x,
+        clientY: screen.y,
+        preventDefault: () => {},
+      });
+
+      const text = serializeSchematicClipboard(payload);
+      expect(await editor.pasteSelection({ text })).toBe(true);
+      expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 45, y: 65 });
+
+      // The same pointer point snaps to the nearest grid lines once snapping is back on.
+      editor.undo();
+      editor.setDisplayOptions({ snap: true });
+      expect(await editor.pasteSelection({ text })).toBe(true);
+      expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 50, y: 70 });
+      editor.dispose();
+    });
+
+    it('ignores foreign clipboard text without reporting an error', () => {
+      const { editor } = editorFor();
+      const before = editor.getValue();
+      const paste = fakeClipboardEvent({ 'text/plain': 'not a payload' });
+
+      (editor.root as unknown as FakeElement).emit('paste', paste);
+
+      expect(paste.defaultPrevented).toBe(true);
+      expect(editor.getValue()).toBe(before);
+      expect(editor.getState().lastError).toBeUndefined();
+      expect(editor.getCanUndo()).toBe(false);
+      editor.dispose();
+    });
+
+    it('leaves the clipboard port alone for DOM copy events', async () => {
+      const port = new MemoryClipboardPort();
+      const { editor } = editorFor(undefined, { clipboard: port });
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+
+      (editor.root as unknown as FakeElement).emit('copy', fakeClipboardEvent());
+      await flush();
+      expect(await port.read()).toBeUndefined();
+
+      // The host API still mirrors the payload to the system clipboard.
+      const payload = editor.copySelection();
+      if (payload === undefined) {
+        throw new Error('expected a payload');
+      }
+      await flush();
+      expect(await port.read()).toBe(serializeSchematicClipboard(payload));
+      editor.dispose();
+    });
+
+    it('duplicates with Ctrl+D and selects everything with Ctrl+A', () => {
+      const { editor } = editorFor(drawing());
+      const root = editor.root as unknown as FakeElement;
+
+      keydown(root, 'a', { ctrlKey: true });
+      expect(editor.getSelection()).toEqual([
+        { kind: 'symbol', id: symbolId },
+        { kind: 'wire', id: wireId },
+        { kind: 'wire', id: branchWireId },
+        { kind: 'junction', id: junctionId },
+      ]);
+
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+      keydown(root, 'd', { ctrlKey: true });
+      const symbols = editor.getValue().sheet.symbols;
+      expect(symbols).toHaveLength(2);
+      expect(symbols[1]).toMatchObject({ x: 10, y: 10, designator: 'U2' });
+      expect(editor.getSelection()).toEqual([{ kind: 'symbol', id: symbols[1]?.id }]);
+      editor.dispose();
+    });
+
+    it('copies and selects all but ignores edits in read-only editors', async () => {
+      const { editor } = editorFor(drawing(), { readOnly: true });
+      const root = editor.root as unknown as FakeElement;
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+
+      const copy = fakeClipboardEvent();
+      root.emit('copy', copy);
+      expect(copy.defaultPrevented).toBe(true);
+      const text = copy.clipboardData.getData(SCHEMATIC_CLIPBOARD_MIME);
+      expect(text.length).toBeGreaterThan(0);
+
+      const cut = fakeClipboardEvent();
+      root.emit('cut', cut);
+      expect(cut.defaultPrevented).toBe(false);
+      const paste = fakeClipboardEvent({ [SCHEMATIC_CLIPBOARD_MIME]: text });
+      root.emit('paste', paste);
+      expect(paste.defaultPrevented).toBe(false);
+
+      expect(editor.getValue().sheet.symbols).toHaveLength(1);
+      expect(editor.cutSelection()).toBeUndefined();
+      expect(editor.duplicateSelection()).toEqual([]);
+      expect(await editor.pasteSelection({ text })).toBe(false);
+      expect(editor.getCanUndo()).toBe(false);
+
+      keydown(root, 'a', { ctrlKey: true });
+      expect(editor.getSelection()).toHaveLength(4);
+      keydown(root, 'd', { ctrlKey: true });
+      expect(editor.getValue().sheet.symbols).toHaveLength(1);
+      editor.dispose();
+    });
+
+    it('keeps the undo and redo shortcuts working after a paste', () => {
+      const { editor } = editorFor();
+      const root = editor.root as unknown as FakeElement;
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+      const copy = fakeClipboardEvent();
+      root.emit('copy', copy);
+      root.emit(
+        'paste',
+        fakeClipboardEvent({
+          [SCHEMATIC_CLIPBOARD_MIME]: copy.clipboardData.getData(SCHEMATIC_CLIPBOARD_MIME),
+        }),
+      );
+      expect(editor.getValue().sheet.symbols).toHaveLength(2);
+
+      keydown(root, 'z', { ctrlKey: true });
+      expect(editor.getValue().sheet.symbols).toHaveLength(1);
+
+      keydown(root, 'Z', { ctrlKey: true, shiftKey: true });
+      expect(editor.getValue().sheet.symbols).toHaveLength(2);
+
+      keydown(root, 'z', { ctrlKey: true });
+      expect(editor.getValue().sheet.symbols).toHaveLength(1);
+      keydown(root, 'y', { ctrlKey: true });
+      expect(editor.getValue().sheet.symbols).toHaveLength(2);
+      editor.dispose();
+    });
+
+    it('ignores shortcuts that come from editable targets', () => {
+      const { editor } = editorFor();
+      const root = editor.root as unknown as FakeElement;
+      editor.setSelection([{ kind: 'symbol', id: symbolId }]);
+
+      root.emit('keydown', {
+        key: 'Delete',
+        target: { tagName: 'INPUT' },
+        preventDefault: () => {},
+      });
+      expect(editor.getValue().sheet.symbols).toHaveLength(1);
+      editor.dispose();
+    });
+
+    it('does not paste after dispose', async () => {
+      const { editor } = editorFor();
+      editor.dispose();
+      expect(await editor.pasteSelection({ text: '{}' })).toBe(false);
+    });
   });
 });
