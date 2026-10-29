@@ -11,6 +11,11 @@ import {
 } from '@mica-js/core/schematic';
 import { describe, expect, it } from 'vitest';
 import { DocumentModel } from '../index';
+import {
+  SCHEMATIC_CLIPBOARD_FORMAT,
+  SCHEMATIC_CLIPBOARD_VERSION,
+  type SchematicClipboard,
+} from './clipboard';
 import { buildInspector } from './inspector';
 import type { EditorSelection, Inspector } from '../types';
 
@@ -1224,6 +1229,209 @@ describe('DocumentModel', () => {
       expect(model.nextDesignator('pkg:mcu')).toBe('U1');
       // Unknown devices still get the global default prefix.
       expect(model.nextDesignator('pkg:unknown')).toBe('U1');
+    });
+  });
+
+  describe('clipboard', () => {
+    const mcuId = '00000003-41e6-4a4c-869a-82a4cd304787';
+    const labelId = '00000005-1f4e-4b1b-9a3a-0f0c2c5c7e21';
+    const throughWireId = '00000006-9cf4-407f-8900-09a16d33a38c';
+    const branchWireId = '00000007-a914-47d5-84d1-8bafbe533ffb';
+    const junctionId = '00000001-516c-48ac-8128-07f98c98ee13';
+
+    function sourceDocument(): SchematicDocument {
+      return documentOf({
+        symbols: [
+          {
+            id: mcuId,
+            device: 'pkg:mcu',
+            x: 10,
+            y: 20,
+            rotation: 90,
+            properties: { label: 'CPU' },
+            reference: { x: 3, y: 4 },
+            designator: 'U7',
+          },
+          { id: labelId, device: LABEL_DEVICE, x: 30, y: 20, rotation: 0, net: 'CLK' },
+        ],
+        wires: [
+          {
+            id: throughWireId,
+            points: [
+              { x: 0, y: 0 },
+              { x: 50, y: 0 },
+            ],
+          },
+          {
+            id: branchWireId,
+            points: [
+              { x: 50, y: 0 },
+              { x: 50, y: 50 },
+            ],
+          },
+        ],
+        junctions: [{ id: junctionId, x: 50, y: 0, wires: [throughWireId, branchWireId] }],
+      });
+    }
+
+    function copyEverything(model: DocumentModel): ReturnType<DocumentModel['copy']> {
+      return model.copy([
+        { kind: 'symbol', id: mcuId },
+        { kind: 'symbol', id: labelId },
+        { kind: 'wire', id: throughWireId },
+        { kind: 'wire', id: branchWireId },
+        { kind: 'junction', id: junctionId },
+      ]);
+    }
+
+    it('pastes into an empty document keeping geometry offsets, rotation, properties and net', () => {
+      const payload = copyEverything(createModel(sourceDocument()));
+      expect(payload).toBeDefined();
+      if (payload === undefined) {
+        throw new Error('expected a payload');
+      }
+
+      const model = createModel(documentOf({}));
+      const targets = model.paste(payload, { at: { x: 100, y: 200 } });
+
+      const symbols = model.getValue().sheet.symbols;
+      expect(symbols).toHaveLength(2);
+      expect(symbols[0]).toMatchObject({
+        device: 'pkg:mcu',
+        x: 110,
+        y: 220,
+        rotation: 90,
+        properties: { label: 'CPU' },
+        reference: { x: 3, y: 4 },
+        designator: 'U1',
+      });
+      expect(symbols[1]).toMatchObject({ device: LABEL_DEVICE, x: 130, y: 220, net: 'CLK' });
+      expect(symbols[1]?.designator).toBeUndefined();
+      expect(symbols[1]?.id).not.toBe(labelId);
+      expect(model.getValue().sheet.wires[0]?.points).toEqual([
+        { x: 100, y: 200 },
+        { x: 150, y: 200 },
+      ]);
+      expect(targets).toEqual([
+        { kind: 'symbol', id: symbols[0]?.id },
+        { kind: 'symbol', id: symbols[1]?.id },
+        { kind: 'wire', id: model.getValue().sheet.wires[0]?.id },
+        { kind: 'wire', id: model.getValue().sheet.wires[1]?.id },
+      ]);
+    });
+
+    it('regenerates ids and designators and points junctions at the pasted wires', () => {
+      const model = createModel(sourceDocument());
+      const payload = copyEverything(model);
+      if (payload === undefined) {
+        throw new Error('expected a payload');
+      }
+
+      const targets = model.paste(payload, { offset: { x: 0, y: 0 } });
+
+      const { symbols, wires, junctions } = model.getValue().sheet;
+      expect(symbols).toHaveLength(4);
+      expect(wires).toHaveLength(4);
+      expect(junctions).toHaveLength(2);
+      expect(new Set(symbols.map((symbol) => symbol.id)).size).toBe(4);
+      expect(new Set(wires.map((wire) => wire.id)).size).toBe(4);
+      expect(new Set(junctions.map((junction) => junction.id)).size).toBe(2);
+
+      const pastedSymbolIds = new Set(
+        targets.flatMap((target) => (target.kind === 'symbol' ? [target.id] : [])),
+      );
+      const pastedWireIds = new Set(
+        targets.flatMap((target) => (target.kind === 'wire' ? [target.id] : [])),
+      );
+      const pastedSymbols = symbols.filter((symbol) => pastedSymbolIds.has(symbol.id));
+      // The copied component keeps its old designator ('U7') on the original; the paste gets the
+      // first free one.
+      expect(pastedSymbols.map((symbol) => symbol.designator)).toEqual(['U1', undefined]);
+
+      const pastedJunction = junctions.find((junction) =>
+        junction.wires.every((wireId) => pastedWireIds.has(wireId)),
+      );
+      expect(pastedJunction?.wires).toHaveLength(2);
+      expect(pastedJunction?.wires).not.toContain(throughWireId);
+    });
+
+    it('commits a paste as one history step', () => {
+      const model = createModel(sourceDocument());
+      const before = model.getValue();
+      const payload = copyEverything(model);
+      if (payload === undefined) {
+        throw new Error('expected a payload');
+      }
+
+      model.paste(payload);
+      expect(model.getValue()).not.toBe(before);
+      expect(model.getCanUndo()).toBe(true);
+
+      model.undo();
+      expect(model.getValue()).toBe(before);
+      expect(model.getCanRedo()).toBe(true);
+    });
+
+    it('ignores empty payloads without touching history', () => {
+      const model = createModel(documentOf({}));
+      const empty: SchematicClipboard = {
+        format: SCHEMATIC_CLIPBOARD_FORMAT,
+        version: SCHEMATIC_CLIPBOARD_VERSION,
+        symbols: [],
+        wires: [],
+        junctions: [],
+      };
+      expect(model.paste(empty)).toEqual([]);
+      expect(model.getCanUndo()).toBe(false);
+    });
+
+    it('cuts as one history step and restores elements and designators on undo', () => {
+      const model = createModel(sourceDocument());
+      const clipboard = model.cut([
+        { kind: 'symbol', id: mcuId },
+        { kind: 'wire', id: throughWireId },
+      ]);
+
+      expect(clipboard?.symbols).toHaveLength(1);
+      expect(model.getValue().sheet.symbols.map((symbol) => symbol.designator)).toEqual([
+        undefined,
+      ]);
+      expect(model.getValue().sheet.wires).toHaveLength(1);
+      expect(model.getCanUndo()).toBe(true);
+
+      model.undo();
+      expect(model.getValue().sheet.symbols.map((symbol) => symbol.designator)).toEqual([
+        'U7',
+        undefined,
+      ]);
+      expect(model.getValue().sheet.wires).toHaveLength(2);
+    });
+
+    it('copies nothing and deletes nothing when the selection has no elements', () => {
+      const model = createModel(sourceDocument());
+      expect(model.cut([])).toBeUndefined();
+      expect(model.cut([{ kind: 'symbol', id: 'missing' }])).toBeUndefined();
+      expect(model.getCanUndo()).toBe(false);
+      expect(model.getValue().sheet.symbols).toHaveLength(2);
+    });
+
+    it('duplicates one grid step away and leaves the clipboard alone', () => {
+      const model = createModel(
+        documentOf({
+          symbols: [{ id: mcuId, device: 'pkg:mcu', x: 0, y: 0, rotation: 0, designator: 'U1' }],
+        }),
+      );
+
+      const targets = model.duplicate([{ kind: 'symbol', id: mcuId }]);
+
+      expect(targets).toHaveLength(1);
+      const symbols = model.getValue().sheet.symbols;
+      expect(symbols).toHaveLength(2);
+      expect(symbols[1]).toMatchObject({ x: 10, y: 10, designator: 'U2' });
+      expect(model.getCanUndo()).toBe(true);
+
+      model.undo();
+      expect(model.getValue().sheet.symbols).toHaveLength(1);
     });
   });
 });
