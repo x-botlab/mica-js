@@ -53,6 +53,9 @@ export interface ResistiveSolver {
   readonly contactCurrent: ArrayRef<'f64'>;
   readonly contactCurrentState: ArrayRef<'u8'>;
   readonly fault: StateRef<'u8'>;
+  /** Fault origin: 0 unknown, 1 resistor, 2 source, 3 contact, 4 node. */
+  readonly faultTargetKind: StateRef<'u8'>;
+  readonly faultTargetIndex: StateRef<'u32'>;
   readonly factorizations: StateRef<'u32'>;
   readonly groupRebuilds: ArrayRef<'u32'>;
   readonly groupSolves: ArrayRef<'u32'>;
@@ -80,6 +83,7 @@ type FlowStep =
       readonly valid: Value<'bool'>;
       readonly fault: StateRef<'u8'>;
       readonly code: number;
+      readonly onFailure?: (builder: FunctionBuilder<readonly []>) => void;
     };
 // Generators suspend authoring at block boundaries, so every IR block is fully terminated.
 // They run only at compilation, never during simulation.
@@ -117,8 +121,13 @@ class Flow {
   *loop(count: number | Value<'u32'>, emit: (index: Value<'u32'>) => Program | void): Program {
     yield { kind: 'loop', count, emit };
   }
-  *guard(valid: Value<'bool'>, fault: StateRef<'u8'>, code: number): Program {
-    yield { kind: 'guard', valid, fault, code };
+  *guard(
+    valid: Value<'bool'>,
+    fault: StateRef<'u8'>,
+    code: number,
+    onFailure?: (builder: FunctionBuilder<readonly []>) => void,
+  ): Program {
+    yield { kind: 'guard', valid, fault, code, ...(onFailure === undefined ? {} : { onFailure }) };
   }
   run(program: () => Program): void {
     this.advance(program(), this.b, () => {});
@@ -146,6 +155,7 @@ class Flow {
       owner.branch(step.valid, { target: done, args: [] }, { target: failed, args: [] });
       owner.at(failed, (b) => {
         b.state.store(step.fault, b.const('u8', step.code));
+        step.onFailure?.(b);
         b.return([]);
       });
     } else if (step.kind === 'when') {
@@ -257,6 +267,14 @@ export function generateResistiveSolver(
   );
   const contactSide = flags('contact_side', n);
   const fault = module.state(`${prefix}_fault`, 'u8', 0);
+  const faultTargetKind = module.state(`${prefix}_fault_target_kind`, 'u8', 0);
+  const faultTargetIndex = module.state(`${prefix}_fault_target_index`, 'u32', 0);
+  const origin =
+    (kind: number, index: number | Value<'u32'>) =>
+    (b: FunctionBuilder<readonly []>): void => {
+      b.state.store(faultTargetKind, b.const('u8', kind));
+      b.state.store(faultTargetIndex, typeof index === 'number' ? b.const('u32', index) : index);
+    };
   const factorizations = module.state(`${prefix}_factorizations`, 'u32', 0);
   const validFactors = module.state(`${prefix}_valid_factors`, 'bool', false);
   const topologyVersion = module.state(`${prefix}_topology_version`, 'u32', 0);
@@ -482,6 +500,7 @@ export function generateResistiveSolver(
             q.b.bool.and(q.b.float.isFinite(g), q.b.float.cmp('gt', g, q.f(0))),
             fault,
             RESISTIVE_FAULT.numericalFailure,
+            origin(1, index),
           );
           yield* q.when(q.b.int.cmp('ne', a, b), function () {
             const negative = q.b.float.sub(q.f(0), g);
@@ -500,6 +519,7 @@ export function generateResistiveSolver(
           q.b.bool.and(q.b.float.isFinite(divisor), q.b.float.cmp('gt', divisor, q.f(0))),
           fault,
           RESISTIVE_FAULT.numericalFailure,
+          origin(4, row),
         );
         q.store(scale, row, divisor);
         yield* q.when(q.b.bool.and(active, q.load(groupDirty, q.load(group, row))), function* () {
@@ -513,6 +533,7 @@ export function generateResistiveSolver(
               q.b.float.isFinite(coefficient),
               fault,
               RESISTIVE_FAULT.numericalFailure,
+              origin(4, row),
             );
             q.store(system, at(q, row, column), coefficient);
             q.store(factors, at(q, row, column), coefficient);
@@ -549,6 +570,7 @@ export function generateResistiveSolver(
                   q.b.float.cmp('gt', q.b.state.load(pivotMagnitude), q.f(1e-14)),
                   fault,
                   RESISTIVE_FAULT.numericalFailure,
+                  origin(4, k),
                 );
                 const selected = q.b.state.load(pivotRow);
                 const old = q.load(permutation, k);
@@ -571,6 +593,7 @@ export function generateResistiveSolver(
                       q.b.float.isFinite(multiplier),
                       fault,
                       RESISTIVE_FAULT.numericalFailure,
+                      origin(4, row),
                     );
                     q.store(factors, at(q, row, k), multiplier);
                     yield* q.loop(size, function* (ci) {
@@ -584,6 +607,7 @@ export function generateResistiveSolver(
                           q.b.float.isFinite(value),
                           fault,
                           RESISTIVE_FAULT.numericalFailure,
+                          origin(4, row),
                         );
                         q.store(factors, at(q, row, column), value);
                       });
@@ -632,6 +656,7 @@ export function generateResistiveSolver(
               q.b.bool.and(q.b.float.isFinite(g), q.b.float.cmp('gt', g, q.f(0))),
               fault,
               RESISTIVE_FAULT.numericalFailure,
+              origin(1, i),
             );
             if ((resistor.a === singleton) !== (resistor.b === singleton)) {
               const other = resistor.a === singleton ? resistor.b : resistor.a;
@@ -647,6 +672,7 @@ export function generateResistiveSolver(
           q.b.bool.and(q.b.float.isFinite(divisor), q.b.float.cmp('gt', divisor, q.f(0))),
           fault,
           RESISTIVE_FAULT.numericalFailure,
+          origin(4, singleton),
         );
         q.store(scale, singleton, divisor);
         for (let column = 0; column < n; column++)
@@ -721,6 +747,7 @@ export function generateResistiveSolver(
       q.run(function* () {
         q.b.state.store(hasSolution, q.b.const('bool', false));
         q.b.state.store(fault, q.b.const('u8', 0));
+        q.b.state.store(faultTargetKind, q.b.const('u8', 0));
         const changed = q.b.bool.not(sameFactors);
         for (const [i] of network.resistors.entries()) {
           const r = q.load(resistance, i);
@@ -728,6 +755,7 @@ export function generateResistiveSolver(
             q.b.bool.and(q.b.float.isFinite(r), q.b.float.cmp('gt', r, q.f(0))),
             fault,
             RESISTIVE_FAULT.invalidParameter,
+            origin(1, i),
           );
         }
         for (const [i] of network.sources.entries()) {
@@ -735,6 +763,7 @@ export function generateResistiveSolver(
             q.b.float.isFinite(q.load(sourceVoltage, i)),
             fault,
             RESISTIVE_FAULT.invalidParameter,
+            origin(2, i),
           );
         }
         yield* q.when(changed, function () {
@@ -757,7 +786,7 @@ export function generateResistiveSolver(
               q.b.bool.not(q.load(assigned, root)),
               q.b.float.cmp('eq', q.load(anchor, root), value),
             );
-            yield* q.guard(compatible, fault, RESISTIVE_FAULT.sourceConflict);
+            yield* q.guard(compatible, fault, RESISTIVE_FAULT.sourceConflict, origin(2, i));
             q.store(anchor, root, value);
             q.store(assigned, root, q.b.const('bool', true));
           });
@@ -786,7 +815,12 @@ export function generateResistiveSolver(
             q.load(anchor, row),
             q.b.select(active, q.b.state.load(accumulator), q.f(0)),
           );
-          yield* q.guard(q.b.float.isFinite(value), fault, RESISTIVE_FAULT.numericalFailure);
+          yield* q.guard(
+            q.b.float.isFinite(value),
+            fault,
+            RESISTIVE_FAULT.numericalFailure,
+            origin(4, row),
+          );
           yield* q.when(
             q.b.bool.and(active, q.b.float.cmp('ne', value, q.load(rhs, row))),
             function () {
@@ -853,6 +887,7 @@ export function generateResistiveSolver(
                     q.b.float.isFinite(value),
                     fault,
                     RESISTIVE_FAULT.numericalFailure,
+                    origin(4, row),
                   );
                   q.store(candidate, row, value);
                 });
@@ -883,6 +918,7 @@ export function generateResistiveSolver(
                 q.b.bool.and(q.b.float.isFinite(error), q.b.float.cmp('le', error, tolerance)),
                 fault,
                 RESISTIVE_FAULT.numericalFailure,
+                origin(4, row),
               );
             },
           );
@@ -898,7 +934,12 @@ export function generateResistiveSolver(
             q.b.float.div(delta, q.load(resistance, i)),
             q.f(0),
           );
-          yield* q.guard(q.b.float.isFinite(value), fault, RESISTIVE_FAULT.numericalFailure);
+          yield* q.guard(
+            q.b.float.isFinite(value),
+            fault,
+            RESISTIVE_FAULT.numericalFailure,
+            origin(1, i),
+          );
           q.store(candidateCurrent, i, value);
         }
         for (const [i, source] of network.sources.entries()) {
@@ -941,7 +982,12 @@ export function generateResistiveSolver(
             q.b.state.load(accumulator),
             q.f(0),
           );
-          yield* q.guard(q.b.float.isFinite(value), fault, RESISTIVE_FAULT.numericalFailure);
+          yield* q.guard(
+            q.b.float.isFinite(value),
+            fault,
+            RESISTIVE_FAULT.numericalFailure,
+            origin(2, i),
+          );
           q.store(candidateSourceCurrent, i, value);
           q.store(
             candidateSourceState,
@@ -1014,7 +1060,12 @@ export function generateResistiveSolver(
               q.b.bool.not(q.b.bool.and(leftSource, rightSource)),
             );
             const value = q.b.select(leftSource, rightOut, q.b.float.sub(q.f(0), leftOut));
-            yield* q.guard(q.b.float.isFinite(value), fault, RESISTIVE_FAULT.numericalFailure);
+            yield* q.guard(
+              q.b.float.isFinite(value),
+              fault,
+              RESISTIVE_FAULT.numericalFailure,
+              origin(3, i),
+            );
             q.store(candidateContactCurrent, i, q.b.select(unique, value, q.f(0)));
             q.store(
               candidateContactState,
@@ -1069,6 +1120,8 @@ export function generateResistiveSolver(
     contactCurrent,
     contactCurrentState,
     fault,
+    faultTargetKind,
+    faultTargetIndex,
     factorizations,
     groupRebuilds,
     groupSolves,

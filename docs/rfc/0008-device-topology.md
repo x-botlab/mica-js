@@ -26,7 +26,7 @@
 
 ## 电阻支路声明与初始化
 
-线性电阻支路由 `resistors` 对象声明，键为当前器件内非空、大小写敏感的支路 ID。此扩展只增加支路和初值合同，完整线性求解接入单独验证。
+线性电阻支路由 `resistors` 对象声明，键为当前器件内非空、大小写敏感的支路 ID。
 
 | 字段                  | 类型            | 约束                              |
 | --------------------- | --------------- | --------------------------------- |
@@ -166,6 +166,8 @@ connection.apply [connection.normallyOpen, connection.normallyClosed], [%energiz
 interface DeviceResistorHandle {
   setResistance(resistance: Value<'f64'>): void;
   setEnabled(enabled: Value<'bool'>): void;
+  /** 本次解析后的支路电流，单位 A，正方向为第一端到第二端。 */
+  sampleCurrent(): Value<'f64'>;
 }
 interface DeviceBehaviorApi {
   resistor(name: string): DeviceResistorHandle;
@@ -177,6 +179,7 @@ interface DeviceBehaviorApi {
 - 名称静态绑定当前实例的电阻或触点；patch 非空、无重复，所有列表等长。
 - `setResistance` 与 `applyResistors` 要求有限正阻值；patch 中任一无效值使整个 patch 失败，之前已提交的其他操作不回滚。
 - `applyResistors` 原子提交阻值，保留各支路使能状态；`setEnabled` 单独更新支路使能。
+- `sampleCurrent` 返回本次解析后第一端到第二端的支路电流，单位 A；断开的电阻支路返回 `0`。
 - `applyConnections` 按本文的下一个合法拓扑边界生效规则提交，调用者不得依赖同一入口内立即拓扑可见。
 
 ## 器件示例

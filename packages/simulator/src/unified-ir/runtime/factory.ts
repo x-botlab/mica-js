@@ -5,7 +5,6 @@ import type {
   DeviceSymbolProvider,
   SchematicDocument,
 } from '@mica-js/core/schematic';
-import { DEFAULT_RAILS } from '../compiler';
 import type {
   CircuitCompilationInput,
   Connection,
@@ -183,20 +182,7 @@ export async function createSchematicCircuit(
     );
   }
 
-  const resistive =
-    deviceConfigs.some(
-      ({ description }) =>
-        description.factory !== undefined ||
-        description.resistors !== undefined ||
-        description.connections !== undefined,
-    ) ||
-    options.electrical?.sources !== undefined ||
-    options.electrical?.interpretation !== undefined;
-  const railNames = new Set(
-    resistive
-      ? ['GND', ...Object.keys(options.electrical?.sources ?? {})]
-      : [...Object.keys(DEFAULT_RAILS), ...Object.keys(options.electrical?.rails ?? {})],
-  );
+  const railNames = new Set(['GND', ...Object.keys(options.electrical?.sources ?? {})]);
   const connections: Connection[] = [];
 
   for (const net of topology.nets) {

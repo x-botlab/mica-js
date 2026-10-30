@@ -29,20 +29,10 @@ import type {
  * models: every description is supplied by the caller.
  */
 
-/** Electrical intent of one device pin. */
-export type DevicePinDirection = 'input' | 'output' | 'bidirectional' | 'passive';
-
-/** Role a pin plays on its net; v1 supports one driver per net. */
-export type CompiledPinRole = 'driver' | 'load';
-
-/** One pin declared by a device description. */
+/** One pin declared by the paired electrical device definition. */
 export interface DevicePinDescription {
-  /** Defaults to `'passive'`: the pin only senses the net. */
-  readonly direction?: DevicePinDirection;
-  /** Overrides the role derived from `direction`. */
-  readonly role?: CompiledPinRole;
-  /** Purely informational kind, e.g. `'signal'`, `'power'`, `'gnd'`. */
-  readonly kind?: string;
+  readonly kind: 'signal' | 'power' | 'gnd';
+  readonly side?: 'left' | 'right' | 'top' | 'bottom';
 }
 
 /**
@@ -62,17 +52,17 @@ export interface DeviceStateDescription {
 export interface DevicePinHandle {
   readonly name: string;
   readonly globalId: number;
-  /** `pin.configure`: writes `pin_mode[globalId]`. */
+  /** Selects the physical output configuration. */
   configure(mode: number): void;
   setOutputEnabled(enabled: Value<'bool'>): void;
   setPull(pull: 'none' | 'up' | 'down'): void;
   writeVoltage(voltage: Value<'f64'>): void;
-  /** `pin.write_digital`: writes `pin_output[globalId]`. */
+  /** Writes digital drive intent through the finite output impedance. */
   writeDigital(level: Value<'bool'>): void;
-  /** `pin.sample_digital`: reads the solved `pin_input[globalId]`. */
+  /** Samples the solved voltage with the explicitly declared input thresholds. */
   sampleDigital(): Value<'bool'>;
   sampleVoltage(): Value<'f64'>;
-  /** Reads the device's own `pin_output[globalId]`. */
+  /** Reads this pin's digital drive intent. */
   readDrivenDigital(): Value<'bool'>;
 }
 
@@ -97,7 +87,6 @@ export interface DeviceStateHandle<T extends ScalarType = ScalarType> {
 export interface DeviceKernelPin {
   readonly name: string;
   readonly globalPinId: number;
-  readonly role: CompiledPinRole;
 }
 
 /**
@@ -151,7 +140,7 @@ export interface DeviceBehaviorApi {
   readonly config: Readonly<Record<string, unknown>> | undefined;
   /** Every declared pin of the device, in declaration order. */
   readonly pins: readonly DevicePinHandle[];
-  /** Pins whose role is `driver`. */
+  /** Pins initialized with physical drive capability. */
   readonly outputs: readonly DevicePinHandle[];
   pin(name: string): DevicePinHandle;
   resistor(name: string): DeviceResistorHandle;
@@ -174,7 +163,6 @@ export interface DeviceAccessorSurface {
   readonly pinNames: readonly string[];
   readonly stateNames: readonly string[];
   readPin(pinName: string): boolean;
-  writePin(pinName: string, value: boolean): void;
   getState(name: string): unknown;
   setState(name: string, value: unknown): void;
 }
@@ -222,7 +210,7 @@ export interface DeviceDescription {
   readonly resistors?: Readonly<Record<string, ResistorDeclaration>>;
   readonly connections?: Readonly<Record<string, ContactDeclaration>>;
   /** Paired synchronous JS factory, invoked once per instance before IR generation. */
-  readonly factory?: (context: ElectricalFactoryContext) => DeviceBehaviors | void;
+  readonly factory: (context: ElectricalFactoryContext) => DeviceBehaviors | void;
   readonly states?: Readonly<Record<string, DeviceStateDescription>>;
   readonly behaviors?: DeviceBehaviors;
   /**
@@ -266,8 +254,6 @@ export interface Connection {
 
 /** Options for the compiler. */
 export interface CircuitCompilationOptions {
-  /** Named fixed-level rails; merged over `GND`/`VCC`/`VDD`. */
-  readonly rails?: Readonly<Record<string, boolean>>;
   /** Explicit GND-referenced voltage sources; GND itself is always 0 V. */
   readonly sources?: Readonly<Record<string, { readonly voltage: number }>>;
   readonly interpretation?: 'two-state' | 'retain-in-band';
@@ -294,10 +280,6 @@ export interface ResolvedDevicePin {
   readonly name: string;
   readonly deviceId: string;
   readonly globalPinId: number;
-  readonly direction: DevicePinDirection;
-  readonly role: CompiledPinRole;
-  /** Whether the device reads the solved value of this pin. */
-  readonly senses: boolean;
 }
 
 /** Pins of one device mapped into the global pin space. */
@@ -341,68 +323,6 @@ export interface GlobalStateMap {
   readonly totalStates: number;
 }
 
-/** Pin memories every device and every net solver shares. */
-export interface CompiledCircuitMemory {
-  readonly mode: ArrayRef<'u8'>;
-  readonly output: ArrayRef<'bool'>;
-  readonly input: ArrayRef<'bool'>;
-}
-
-/** One pin resolved onto a net. */
-export interface CompiledPinConnection {
-  /** `'mcu1.PA0'`. */
-  readonly endpoint: string;
-  readonly deviceId: string;
-  readonly pinName: string;
-  readonly globalPinId: number;
-  readonly role: CompiledPinRole;
-  readonly senses: boolean;
-}
-
-/** One fixed-level rail on a net, e.g. `GND` (low) or `VCC` (high). */
-export interface CompiledRail {
-  readonly name: string;
-  readonly level: boolean;
-}
-
-/** Where a net's level comes from. */
-export type CompiledNetSource = 'driver' | 'rail' | 'floating';
-
-/** One electrical net: a connected component of pins and rails. */
-export interface CompiledNet {
-  readonly netId: number;
-  readonly pins: readonly CompiledPinConnection[];
-  readonly rails: readonly CompiledRail[];
-  readonly drivers: readonly CompiledPinConnection[];
-  /** Pins whose role is `load`. */
-  readonly loads: readonly CompiledPinConnection[];
-  /** Every pin that reads the solved level, including bidirectional drivers. */
-  readonly sinks: readonly CompiledPinConnection[];
-  readonly source: CompiledNetSource;
-  /** Constant level of a driver-less net; unused when `source === 'driver'`. */
-  readonly level: boolean;
-}
-
-/** Diagnostic codes produced by the compiler's electrical analysis. */
-export type CompilationDiagnosticCode = 'power-short' | 'rail-conflict' | 'floating-net';
-
-export type CompilationDiagnosticSeverity = 'error' | 'warning';
-
-/** One electrical-analysis finding; errors abort `compileCircuit`. */
-export interface CompilationDiagnostic {
-  readonly code: CompilationDiagnosticCode;
-  readonly severity: CompilationDiagnosticSeverity;
-  readonly message: string;
-  readonly netId: number | undefined;
-  readonly endpoints: readonly string[];
-}
-
-/** Result of the network topology analysis. */
-export interface CompiledNetlist {
-  readonly nets: readonly CompiledNet[];
-  readonly diagnostics: readonly CompilationDiagnostic[];
-}
-
 /** Metadata of one compiled device. */
 export interface DeviceMetadata {
   readonly deviceId: string;
@@ -420,8 +340,6 @@ export interface DeviceMetadata {
   readonly update: string | undefined;
   /** Typed accessor factory supplied by the device description, if any. */
   readonly accessor: DeviceAccessorFactory | undefined;
-  /** Kernel factory that generated the device's extra IR resources. */
-  readonly kernel: DeviceKernelFactory | undefined;
 }
 
 /** Generated entry points, both by name and as executable refs. */
@@ -445,13 +363,11 @@ export interface CompiledCircuit {
   /** `'mcu1.PA0'` -> global pin id. */
   readonly pinMap: ReadonlyMap<string, number>;
   readonly deviceMap: ReadonlyMap<string, DeviceMetadata>;
-  readonly netlist: CompiledNetlist;
   readonly pins: GlobalPinMap;
   readonly states: GlobalStateMap;
-  readonly memory: CompiledCircuitMemory;
   /** Validation grants covering every instruction and memory of the module. */
   readonly validation: IRValidationOptions;
-  /** Device ids in dependency order (drivers before the devices they feed). */
+  /** Device ids in stable declaration order. */
   readonly executionOrder: readonly string[];
   /** Every generated function name, in definition order. */
   readonly functions: readonly string[];
@@ -459,23 +375,11 @@ export interface CompiledCircuit {
 
 /** Error codes raised by {@link UnifiedIRCompilerError}. */
 export type UnifiedIRCompilerErrorCode =
-  | 'invalid-input'
-  | 'duplicate-device'
-  | 'unknown-device'
-  | 'pin-not-found'
-  | 'state-not-found'
-  | 'invalid-connection'
-  | 'capacity-exceeded'
-  | 'unsupported-device'
-  | 'power-short'
-  | 'rail-conflict'
-  | 'invalid-ir';
+  'invalid-input' | 'duplicate-device' | 'state-not-found' | 'capacity-exceeded' | 'invalid-ir';
 
 export interface UnifiedIRCompilerErrorOptions {
   readonly deviceId?: string;
   readonly pinName?: string;
-  readonly netId?: number;
-  readonly diagnostics?: readonly CompilationDiagnostic[];
   readonly cause?: unknown;
 }
 
@@ -485,8 +389,6 @@ export class UnifiedIRCompilerError extends Error {
   readonly code: UnifiedIRCompilerErrorCode;
   readonly deviceId: string | undefined;
   readonly pinName: string | undefined;
-  readonly netId: number | undefined;
-  readonly diagnostics: readonly CompilationDiagnostic[];
 
   constructor(
     code: UnifiedIRCompilerErrorCode,
@@ -497,7 +399,5 @@ export class UnifiedIRCompilerError extends Error {
     this.code = code;
     this.deviceId = options.deviceId;
     this.pinName = options.pinName;
-    this.netId = options.netId;
-    this.diagnostics = options.diagnostics ?? [];
   }
 }

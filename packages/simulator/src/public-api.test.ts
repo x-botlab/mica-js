@@ -24,7 +24,11 @@ import {
   createSchematicDeviceSimulationHost,
   startDeviceSimulationHostGuest,
 } from './index';
-import { lampSinkDescription, toggleDriverDescription } from './unified-ir/compiler/test-helpers';
+import {
+  lampSinkDescription,
+  toggleDriverDescription,
+  TEST_ELECTRICAL,
+} from './unified-ir/compiler/test-helpers';
 
 describe('public API surface', () => {
   it('exports every documented runtime entry point', () => {
@@ -66,25 +70,34 @@ describe('public API surface', () => {
       'BUILTIN_DEVICE_TYPES',
       'builtinDeviceKernel',
       'resolveDeviceDescription',
+      'DEFAULT_RAILS',
+      'NetworkTopologyAnalyzer',
+      'ElectricalSolverGenerator',
+      'createPinMemory',
     ]) {
       expect(name in simulator).toBe(false);
     }
   });
 
   it('keeps the generic accessor surface for caller-supplied devices', async () => {
-    const circuit = await Circuit.create({
-      devices: [
-        { id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() },
-        { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
-      ],
-      connections: [
-        { from: 'drive1.PA0', to: 'sink1.anode' },
-        { from: 'sink1.cathode', to: 'GND' },
-      ],
-    });
+    const circuit = await Circuit.create(
+      {
+        devices: [
+          { id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() },
+          { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
+        ],
+        connections: [
+          { from: 'drive1.PA0', to: 'sink1.anode' },
+          { from: 'sink1.cathode', to: 'GND' },
+        ],
+      },
+      { electrical: TEST_ELECTRICAL },
+    );
 
     expectTypeOf(circuit.devices.sink1).toEqualTypeOf<DeviceAccessor>();
     expectTypeOf(circuit.devices.drive1).toEqualTypeOf<DeviceAccessor>();
+    expectTypeOf<Circuit>().not.toHaveProperty('setPin');
+    expectTypeOf<DeviceAccessor>().not.toHaveProperty('writePin');
 
     circuit.runBatch(1);
     expect(circuit.devices.sink1.getState('lamp')).toBe(true);

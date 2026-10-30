@@ -36,7 +36,8 @@ const TOPICS: readonly SchematicDeviceTopic[] = Object.freeze([
 /** Copies the host-asserted `input` state onto `lamp`, so publishing has an observable effect. */
 export function toggleDescription(): DeviceDescription {
   return Object.freeze({
-    pins: Object.freeze({ out: Object.freeze({ direction: 'output' as const }) }),
+    pins: Object.freeze({ out: Object.freeze({ kind: 'signal' as const }) }),
+    factory: () => undefined,
     states: Object.freeze({
       input: Object.freeze({ type: 'bool' as const, initial: false }),
       lamp: Object.freeze({ type: 'bool' as const, initial: false }),

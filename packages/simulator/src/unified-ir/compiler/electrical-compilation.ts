@@ -30,22 +30,11 @@ export function prepareElectricalCompilation(
   devices: readonly DeviceConfig[],
   connections: readonly Connection[],
   options: CircuitCompilationOptions,
-): ElectricalCompilation | undefined {
-  const requested =
-    options.sources !== undefined ||
-    options.interpretation !== undefined ||
-    devices.some(
-      ({ description }) =>
-        description.factory !== undefined ||
-        description.resistors !== undefined ||
-        description.connections !== undefined,
-    );
-  if (!requested) return undefined;
+): ElectricalCompilation {
   const fail = (message: string): never => {
     throw new UnifiedIRCompilerError('invalid-input', message);
   };
-  if (options.rails !== undefined)
-    fail('Resistive circuits require explicit voltage sources, not boolean rails');
+  if ('rails' in options) fail('Unsupported boolean rails; declare explicit voltage sources');
   if (options.interpretation !== 'two-state' && options.interpretation !== 'retain-in-band')
     fail('Resistive circuits require an explicit digital interpretation');
   if (
@@ -71,9 +60,7 @@ export function prepareElectricalCompilation(
   const prepared = devices.map((device) => {
     const { description } = device;
     if (typeof description.factory !== 'function')
-      fail(
-        `Device "${device.id}" needs a paired electrical factory; mixed legacy circuits are unsupported`,
-      );
+      fail(`Device "${device.id}" needs a paired electrical factory`);
     const properties = device.properties === undefined ? {} : device.properties;
     if (properties === null || typeof properties !== 'object' || Array.isArray(properties))
       fail(`Invalid properties for device "${device.id}"`);

@@ -59,8 +59,7 @@ function createBaseAccessor(
 ): DeviceAccessor {
   const { jit } = context;
   const storage = jit.storage;
-  const memory = context.compiled.memory;
-  const electrical = electricalCompilationOf(context.compiled);
+  const electrical = electricalCompilationOf(context.compiled)!;
   const resolved = context.compiled.pins.devices.get(device.deviceId)?.resolved;
 
   const accessor: DeviceAccessor = {
@@ -70,34 +69,13 @@ function createBaseAccessor(
     stateNames: Object.freeze([...device.states.keys()]),
     readPin(pinName: string): boolean {
       context.assertActive();
-      const pin = pinOf(device, resolved, pinName);
-      if (electrical !== undefined)
-        return (
-          storage.loadArray(
-            electrical.operations.digitalIntent,
-            electrical.operations.pinIndices.get(`${device.deviceId}.${pinName}`)!,
-          ) === true
-        );
-      return storage.loadArray(memory.output, pin.globalPinId) === true;
-    },
-    writePin(pinName: string, value: boolean): void {
-      context.assertActive();
-      const pin = pinOf(device, resolved, pinName);
-      if (electrical !== undefined)
-        throw new CircuitError(
-          'pin-not-writable',
-          'Resistive pin writes must use device state and typed IR operations',
-          { deviceId: device.deviceId, pinName },
-        );
-      if (pin.role !== 'driver') {
-        throw new CircuitError(
-          'pin-not-writable',
-          `Pin "${device.deviceId}.${pinName}" has role "${pin.role}"; only driver pins can be written. Use Circuit.setPin to override a sensed level`,
-          { deviceId: device.deviceId, pinName },
-        );
-      }
-      assertBoolean(device.deviceId, pinName, value);
-      storage.storeArray(memory.output, pin.globalPinId, value);
+      pinOf(device, resolved, pinName);
+      return (
+        storage.loadArray(
+          electrical.operations.digitalIntent,
+          electrical.operations.pinIndices.get(`${device.deviceId}.${pinName}`)!,
+        ) === true
+      );
     },
     getState(name: string): unknown {
       context.assertActive();
@@ -150,20 +128,6 @@ function stateOf(device: DeviceMetadata, name: string): DeviceStateSlot {
     );
   }
   return slot;
-}
-
-function assertBoolean(
-  deviceId: string,
-  pinName: string,
-  value: unknown,
-): asserts value is boolean {
-  if (typeof value !== 'boolean') {
-    throw new CircuitError(
-      'invalid-state-value',
-      `Pin "${deviceId}.${pinName}" needs a boolean level, received ${typeof value}`,
-      { deviceId, pinName },
-    );
-  }
 }
 
 /**

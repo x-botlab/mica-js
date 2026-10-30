@@ -6,13 +6,14 @@
 
 规定无储能线性电阻网络的驱动、偏置、电压、电流、故障与采样回退。输入取实际网络电压或已确认的浮空回退值，输出意图独立保存。
 
-本次修订将贡献优先级解析改为线性电阻电气语义，以支持负载、分压和有限输出电阻；沿用原编号及浮空算法版本，与 [RFC 0004](./0004-ir-pin-io.md)、[RFC 0006](./0006-device-pins.md)、[RFC 0008](./0008-device-topology.md) 同步。
+本文采用线性电阻电气语义：有限输出电阻、真实电阻支路、显式参考源与双向理想触点共同参与电流守恒，负载、分压与多驱动由网络方程决定。浮空算法版本为 `mica-floating-v2`；相关引脚与拓扑合同与 [RFC 0004](./0004-ir-pin-io.md)、[RFC 0006](./0006-device-pins.md)、[RFC 0008](./0008-device-topology.md) 同步。
 
 ## 声明
 
 - 电压采用有限 `f64`，单位 V，相对全局 `GND = 0 V`；电阻单位 Ω，电流单位 A。
 - 有限电阻满足 `R > 0`；理想导通采用导线或理想触点，断路采用显式释放状态。
 - 独立电压源相对全局 GND，源电压显式声明；主动引脚采用电压源与有限输出电阻，内部上下拉分别采用有限电阻。
+- 电路以 `sources` 映射声明独立电压源：键为源 ID，值为 `{ voltage }`。`GND` 是保留的 `0 V` 源 ID，不重复声明；连接端点、驱动参考、偏置参考与输入参考都引用该映射中的源 ID，未绑定的源 ID 在装载期报告错误。
 - 引脚能力与初值由 [RFC 0006](./0006-device-pins.md) 声明；电阻与触点端点由 [RFC 0005](./0005-device-definition.md)、[RFC 0008](./0008-device-topology.md) 声明。
 - 电容、二极管、限流电源、浮置双端源与非线性模型不属于本合同。
 
@@ -55,6 +56,12 @@
 - 同一等电位节点上的生效理想源要求电压相同；不同电压触发 `electrical/source-conflict`，相同电压允许并存，但不可唯一分配的源电流标记为未定。
 - 电压、电流与物理状态作为完整快照发布；参数非法、源冲突或数值失败时暂停，保留上一份完整发布快照，复位恢复初值。
 - `maxAbsCurrent` 只用于过流诊断，不钳位电流。超过绝对值上限产生资源级活动诊断，连续超限保留一项，成功解析后恢复至上限以内即解除；过流继续执行。
+
+### 电气观察
+
+- 引脚电压观察返回确定值或浮空两类结果；浮空不回填采样合成的电压。
+- 支路、触点、源与引脚贡献按资源身份读取电流；自由电流无法唯一确定时返回未定状态。
+- 活动诊断按资源列出；求解故障不发布部分结果，观察保持最近成功快照直至复位。
 
 ### 浮空输入
 
@@ -142,13 +149,18 @@ function createFloatingAnalogInput(seed: number, instanceId: string, pinName: st
 
 ### 输入解释与供电
 
-本模型只提供实际网络电压、物理状态与浮空回退值。数字输入的二态／三态选择、比例门限与逻辑记忆属于 [#13](https://github.com/x-botlab/mica-js/issues/13)，实际电压独立保存。物理解析以实体引脚身份为单位：同一实体出现在多个静态组时仍是同一份物理状态。
+本模型只提供实际网络电压、物理状态与浮空回退值。数字输入的 `two-state`／`retain-in-band` 选择、比例门限与逻辑记忆属于 [#13](https://github.com/x-botlab/mica-js/issues/13)，实际电压独立保存。物理解析以实体引脚身份为单位：同一实体出现在多个静态组时仍是同一份物理状态。
 
 ## 校验
 
 - 非有限电压、非正电阻或非法资源参数报告 `electrical/invalid-parameter`，校验失败的补丁整体不提交。
 - 理想源约束冲突报告 `electrical/source-conflict`；无法形成有限、有效解报告 `electrical/numerical-failure`。
 - 超过 `maxAbsCurrent` 报告 `electrical/overcurrent`，诊断携带资源身份、带方向电流与绝对值上限。
+- 求解错误诊断在 `code` 与 `severity` 之外携带 `target?: ElectricalCurrentTarget`、`resources: readonly ElectricalCurrentTarget[]` 与 `pins: readonly string[]`。`target` 在可识别失败操作、支路或源时给出；`resources` 表示受影响的关联网络，不表示全部资源都有责任；`pins` 以 `device.pin` 列出相关引脚。
+- 故障现场以尝试中的拓扑关联，不取最近成功快照；有限支路在已知电压节点边界停止，理想源冲突只沿闭合触点遍历。
+- `ElectricalCurrentTarget` 标识电阻或触点（器件与资源 ID）、源（源 ID）或引脚贡献（器件、引脚与 `drive` / `pull-up` / `pull-down` 类别）。
+- `electrical/source-conflict` 的 `resources` 与 `pins` 包含参与源、闭合触点与相连引脚。
+- `electrical/numerical-failure` 的 `resources` 与 `pins` 表示受影响的连通网络；无法归因到单一操作、支路或源时不给出 `target`。
 - 过流诊断采用最近成功快照；求解故障不发布部分电气结果，故障状态保持至复位。
 
 ## 示例

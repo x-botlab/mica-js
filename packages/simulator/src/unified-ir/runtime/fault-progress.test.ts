@@ -14,6 +14,7 @@ for (const engine of ['reference', 'jit'] as const)
               type: 'fault-counter',
               description: {
                 pins: {},
+                factory: () => undefined,
                 kernel: ({ module }) => {
                   counter = module.state('counter', 'u32', 0);
                   const tick = module.func('fault_counter_tick', { params: [], results: [] });
@@ -37,7 +38,7 @@ for (const engine of ['reference', 'jit'] as const)
           ],
           connections: [],
         },
-        { engine },
+        { engine, electrical: { interpretation: 'two-state' } },
       );
       return { result, counter: () => result.jit.storage.loadState(counter) };
     }

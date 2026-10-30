@@ -89,7 +89,7 @@ ctx.electrical.initializePin('PA0', {
 });
 ```
 
-该初始化合同属于线性电阻模型扩展，运行期物理解算由 [RFC 0002](./0002-electrical-model.md) 的电气合同承接；初始化 API 与完整求解器接入分别验证。
+运行期物理解算由 [RFC 0002](./0002-electrical-model.md) 的电气合同承接。
 
 ## 运行时状态
 

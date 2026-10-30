@@ -1,3 +1,4 @@
+import { physicalDescription, TEST_ELECTRICAL } from '../compiler/test-helpers';
 import { describe, expect, it } from 'vitest';
 import {
   GROUND_DEVICE,
@@ -6,142 +7,9 @@ import {
   type SchematicDocument,
 } from '@mica-js/core/schematic';
 import { lampSinkDescription, toggleDriverDescription } from '../compiler/test-helpers';
-import { Circuit } from './circuit';
 import { createCircuitFromSchematic } from './factory';
 import { CircuitError } from './types';
 import type { SchematicCircuitOptions } from './factory';
-import {
-  counterInput,
-  driverSinkInput,
-  latchDriverSinkInput,
-  multiDriverInput,
-  twoPairInput,
-} from './test-helpers';
-
-describe('driver + sink integration', () => {
-  it('propagates every driver pin toggle to the lamp', async () => {
-    const circuit = await Circuit.create(driverSinkInput());
-
-    expect(circuit.devices.sink1.getState('lamp')).toBe(false);
-
-    circuit.step();
-    expect(circuit.devices.drive1.readPin('PA0')).toBe(true);
-    expect(circuit.getPin('drive1.PA0')).toBe(true);
-    expect(circuit.getPin('sink1.anode')).toBe(true);
-    expect(circuit.getPin('sink1.cathode')).toBe(false);
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-
-    circuit.step();
-    expect(circuit.devices.drive1.readPin('PA0')).toBe(false);
-    expect(circuit.getPin('sink1.anode')).toBe(false);
-    expect(circuit.devices.sink1.getState('lamp')).toBe(false);
-
-    circuit.step();
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-  });
-
-  it('keeps a host-driven pin level through batches', async () => {
-    const circuit = await Circuit.create(latchDriverSinkInput());
-
-    circuit.devices.drive1.writePin('PA0', true);
-    circuit.runBatch(1000);
-
-    expect(circuit.tickCount).toBe(1000n);
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-    expect(circuit.getPin('sink1.anode')).toBe(true);
-
-    circuit.devices.drive1.writePin('PA0', false);
-    circuit.runBatch(1);
-    expect(circuit.devices.sink1.getState('lamp')).toBe(false);
-  });
-
-  it('executes every tick of a large batch', async () => {
-    const circuit = await Circuit.create(counterInput());
-
-    circuit.runBatch(1_000_000);
-
-    expect(circuit.tickCount).toBe(1_000_000n);
-    expect(circuit.devices.count1.getState('count')).toBe(1_000_000);
-    expect(circuit.devices.count1.getState('last')).toBe(false);
-  });
-
-  it('lights the sink from a host-written pin after step', async () => {
-    const circuit = await Circuit.create(latchDriverSinkInput());
-
-    circuit.reset();
-    circuit.devices.drive1.writePin('PA0', true);
-    circuit.step();
-
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-  });
-
-  it('keeps two driver + sink pairs independent', async () => {
-    const circuit = await Circuit.create(twoPairInput());
-
-    // drive1 is a host-driven latch, drive2 toggles on every tick.
-    circuit.devices.drive1.writePin('PA0', true);
-    circuit.step();
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-    expect(circuit.devices.sink2.getState('lamp')).toBe(true);
-
-    circuit.step();
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-    expect(circuit.devices.sink2.getState('lamp')).toBe(false);
-    expect(circuit.getPin('drive1.PA0')).toBe(true);
-    expect(circuit.getPin('drive2.PA0')).toBe(false);
-  });
-
-  it('replays the same trace on the JIT and the reference engine', async () => {
-    const jit = await Circuit.create(driverSinkInput(), { engine: 'jit' });
-    const reference = await Circuit.create(driverSinkInput(), { engine: 'reference' });
-
-    for (let tick = 0; tick < 6; tick += 1) {
-      jit.step();
-      reference.step();
-      expect(reference.devices.sink1.getState('lamp')).toBe(jit.devices.sink1.getState('lamp'));
-      expect(reference.getPin('sink1.anode')).toBe(jit.getPin('sink1.anode'));
-      expect(reference.devices.drive1.readPin('PA0')).toBe(jit.devices.drive1.readPin('PA0'));
-    }
-    expect(reference.tickCount).toBe(jit.tickCount);
-  });
-
-  it('compiles without the optional IR validation pass', async () => {
-    const circuit = await Circuit.create(driverSinkInput(), { validateIR: false });
-    circuit.runBatch(3);
-    expect(circuit.tickCount).toBe(3n);
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-  });
-
-  it('honours custom rails from the electrical options', async () => {
-    const railInput = {
-      devices: [{ id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() }],
-      connections: [
-        { from: 'sink1.anode', to: 'PWR' },
-        { from: 'sink1.cathode', to: 'GND' },
-      ],
-    } as const;
-
-    await expect(Circuit.create(railInput)).rejects.toMatchObject({
-      name: 'UnifiedIRCompilerError',
-      code: 'invalid-connection',
-    });
-
-    const circuit = await Circuit.create(railInput, { electrical: { rails: { PWR: true } } });
-    circuit.step();
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-  });
-
-  it('solves several drivers as a wired-OR', async () => {
-    const circuit = await Circuit.create(multiDriverInput());
-    circuit.step();
-    expect(circuit.devices.drive1.readPin('PA0')).toBe(true);
-    expect(circuit.devices.drive2.readPin('PA0')).toBe(true);
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-
-    circuit.step();
-    expect(circuit.devices.sink1.getState('lamp')).toBe(false);
-  });
-});
 
 describe('factories', () => {
   it('rejects a malformed schematic document', async () => {
@@ -152,7 +20,9 @@ describe('factories', () => {
     ).rejects.toMatchObject({ name: 'CircuitError', code: 'invalid-options' });
 
     await expect(
-      createCircuitFromSchematic(schematic, {} as unknown as SchematicCircuitOptions),
+      createCircuitFromSchematic(schematic, {
+        electrical: TEST_ELECTRICAL,
+      } as unknown as SchematicCircuitOptions),
     ).rejects.toMatchObject({ name: 'CircuitError', code: 'invalid-options' });
   });
 
@@ -196,8 +66,12 @@ describe('factories', () => {
     };
 
     const circuit = await createCircuitFromSchematic(loose, {
+      electrical: TEST_ELECTRICAL,
       devices: symbolProvider,
-      resolveDevice: () => ({ type: 'lamp-sink', description: lampSinkDescription() }),
+      resolveDevice: () => ({
+        type: 'lamp-sink',
+        description: physicalDescription(lampSinkDescription()),
+      }),
     });
 
     expect(Object.keys(circuit.devices).sort()).toEqual(['D1', 'D1_2', 'sink_1']);
@@ -205,13 +79,17 @@ describe('factories', () => {
 
   it('compiles a schematic into a circuit', async () => {
     const circuit = await createCircuitFromSchematic(schematic, {
+      electrical: TEST_ELECTRICAL,
       devices: symbolProvider,
       resolveDevice: (reference) => {
         if (reference.deviceId === 'driver') {
-          return { type: 'toggle-driver', description: toggleDriverDescription() };
+          return {
+            type: 'toggle-driver',
+            description: physicalDescription(toggleDriverDescription()),
+          };
         }
         if (reference.deviceId === 'sink') {
-          return { type: 'lamp-sink', description: lampSinkDescription() };
+          return { type: 'lamp-sink', description: physicalDescription(lampSinkDescription()) };
         }
         return undefined;
       },
@@ -231,7 +109,11 @@ describe('factories', () => {
   it('needs a symbol provider to locate pins', async () => {
     await expect(
       createCircuitFromSchematic(schematic, {
-        resolveDevice: () => ({ type: 'toggle-driver', description: toggleDriverDescription() }),
+        electrical: TEST_ELECTRICAL,
+        resolveDevice: () => ({
+          type: 'toggle-driver',
+          description: physicalDescription(toggleDriverDescription()),
+        }),
       }),
     ).rejects.toBeInstanceOf(CircuitError);
   });
@@ -239,10 +121,11 @@ describe('factories', () => {
   it('reports component symbols without a binding', async () => {
     await expect(
       createCircuitFromSchematic(schematic, {
+        electrical: TEST_ELECTRICAL,
         devices: symbolProvider,
         resolveDevice: (reference) =>
           reference.deviceId === 'sink'
-            ? { type: 'lamp-sink', description: lampSinkDescription() }
+            ? { type: 'lamp-sink', description: physicalDescription(lampSinkDescription()) }
             : undefined,
       }),
     ).rejects.toMatchObject({ name: 'CircuitError', code: 'unresolved-device' });

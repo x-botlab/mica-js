@@ -34,12 +34,10 @@ export type {
 /* -------------------------------------------------------------------------
  * Unified IR: compiler
  * ---------------------------------------------------------------------- */
-export { DEFAULT_RAILS, UnifiedIRCompilerError, compileCircuit } from './unified-ir/compiler';
+export { UnifiedIRCompilerError, compileCircuit } from './unified-ir/compiler';
 export type {
   CircuitCompilationInput,
   CircuitCompilationOptions,
-  CompilationDiagnostic,
-  CompilationDiagnosticCode,
   CompiledCircuit,
   Connection,
   DeviceAccessorFactory,
@@ -52,7 +50,6 @@ export type {
   DeviceKernelFactory,
   DeviceKernelRuntime,
   DevicePinDescription,
-  DevicePinDirection,
   DeviceStateDescription,
   UnifiedIRCompilerErrorCode,
   UnifiedIRCompilerErrorOptions,

@@ -201,7 +201,22 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
         circuit.devices.gpio.setState('ohms', ohms);
         circuit.runBatch(5);
         expect(circuit.tickCount).toBe(5n);
-        expect(circuit.getDiagnostics()).toEqual([{ code, severity: 'error' }]);
+        const [failure] = circuit.getDiagnostics();
+        if (failure?.severity !== 'error') throw new Error('Expected an electrical fault');
+        expect(failure).toMatchObject({
+          code,
+          severity: 'error',
+          target: { kind: 'resistor', device: 'gpio', name: 'load' },
+        });
+        expect(failure?.resources).toContainEqual({
+          kind: 'resistor',
+          device: 'gpio',
+          name: 'load',
+        });
+        expect(failure?.pins).toEqual(expect.arrayContaining(['gpio.OUT', 'gpio.GND']));
+        expect(Object.isFrozen(failure?.resources)).toBe(true);
+        expect(Object.isFrozen(failure?.pins)).toBe(true);
+        expect(circuit.getDiagnostics()).toEqual([failure]);
         closeTo(circuit, 'gpio.load', 3.3 / 1050);
         circuit.devices.gpio.setState('ohms', 1000);
         circuit.step();
@@ -253,6 +268,75 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
     }
   });
 
+  test('locates a matrix failure to its network without naming a fabricated culprit', async () => {
+    const description: DeviceDescription = {
+      pins: {
+        P: { kind: 'signal' },
+        A: { kind: 'signal' },
+        B: { kind: 'signal' },
+        N: { kind: 'signal' },
+      },
+      resistors: {
+        feed: { pins: ['P', 'A'] },
+        link: { pins: ['A', 'B'] },
+        load: { pins: ['B', 'N'] },
+        unused: { pins: ['A', 'B'] },
+      },
+      states: { ohms: { type: 'f64', initial: 50 } },
+      factory: ({ electrical }) => {
+        electrical.initializeResistor('feed', { resistance: 50, enabled: true });
+        electrical.initializeResistor('link', { resistance: 1, enabled: true });
+        electrical.initializeResistor('load', { resistance: 50, enabled: true });
+        electrical.initializeResistor('unused', { resistance: 100, enabled: false });
+        return {
+          tick: (api) => {
+            const value = api.state<'f64'>('ohms').load();
+            api.applyResistors(['feed', 'load'], [value, value]);
+          },
+        };
+      },
+    };
+    const circuit = await Circuit.create(
+      {
+        devices: [{ id: 'network', type: 'network', description }],
+        connections: [
+          { from: 'network.P', to: 'VDD' },
+          { from: 'network.N', to: 'GND' },
+        ],
+      },
+      { engine, electrical },
+    );
+    try {
+      expect(circuit.getDiagnostics()).toEqual([]);
+      const before = circuit.getVoltage('network.A');
+      circuit.devices.network.setState('ohms', 1e30);
+      circuit.step();
+      const [failure] = circuit.getDiagnostics();
+      if (failure?.severity !== 'error') throw new Error('Expected an electrical fault');
+      expect(failure.code).toBe('electrical/numerical-failure');
+      expect(failure.target).toBeUndefined();
+      expect(failure.resources).toEqual(
+        expect.arrayContaining([
+          { kind: 'resistor', device: 'network', name: 'feed' },
+          { kind: 'resistor', device: 'network', name: 'link' },
+          { kind: 'resistor', device: 'network', name: 'load' },
+        ]),
+      );
+      expect(failure.resources).not.toContainEqual({
+        kind: 'resistor',
+        device: 'network',
+        name: 'unused',
+      });
+      expect(failure.pins).toEqual(['network.P', 'network.A', 'network.B', 'network.N']);
+      expect(circuit.getVoltage('network.A')).toEqual(before);
+      expect(circuit.tickCount).toBe(0n);
+      circuit.reset();
+      expect(circuit.getDiagnostics()).toEqual([]);
+    } finally {
+      circuit.dispose();
+    }
+  });
+
   test('latches source conflict, leaves contact current snapshot intact, and clears the fault on reset', async () => {
     const description: DeviceDescription = {
       pins: { A: { kind: 'signal' }, B: { kind: 'signal' } },
@@ -277,9 +361,20 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
       circuit.devices.switch.setState('closed', true);
       circuit.step();
       expect(circuit.tickCount).toBe(0n);
-      expect(circuit.getDiagnostics()).toEqual([
-        { code: 'electrical/source-conflict', severity: 'error' },
-      ]);
+      const [failure] = circuit.getDiagnostics();
+      expect(circuit.getDiagnostics()).toHaveLength(1);
+      expect(failure).toMatchObject({
+        code: 'electrical/source-conflict',
+        severity: 'error',
+        resources: expect.arrayContaining([
+          { kind: 'source', name: 'VDD' },
+          { kind: 'source', name: 'GND' },
+          contact('bridge'),
+        ]),
+        pins: ['switch.A', 'switch.B'],
+      });
+      circuit.step();
+      expect(circuit.getDiagnostics()).toEqual([failure]);
       closeTo(circuit, contact('bridge'), 0);
       expect(circuit.getVoltage('switch.A')).toEqual({ state: 'determinate', value: 3.3 });
       circuit.reset();

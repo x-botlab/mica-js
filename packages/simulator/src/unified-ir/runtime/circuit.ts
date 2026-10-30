@@ -1,5 +1,6 @@
 import { createIRInterpreter, createIRJIT, toNumber } from '@mica-js/ir';
 import { electricalCompilationOf } from '../compiler/electrical-compilation';
+import { electricalFaultContext } from '../compiler/electrical-diagnostics';
 import type {
   ArrayRef,
   BytesRef,
@@ -14,7 +15,6 @@ import type {
   CircuitCompilationOptions,
   CompiledCircuit,
 } from '../compiler';
-import { PIN_MODE } from '../pin-space';
 import { buildDeviceAccessors } from './accessors';
 import {
   CircuitError,
@@ -54,9 +54,6 @@ interface RuntimeContext {
 /** One pin of the global address space, resolved at construction time. */
 interface PinRuntime {
   readonly globalPinId: number;
-  readonly role: 'driver' | 'load';
-  /** Whether the device reads the solved level of this pin. */
-  readonly senses: boolean;
 }
 
 /** Declared initial value of one memory resource, replayed by `reset()`. */
@@ -78,7 +75,6 @@ interface ResolvedRuntimeOptions {
   readonly engine: CircuitEngine;
   readonly jit: IRJITTuning | undefined;
   readonly validateIR: boolean;
-  readonly rails: Readonly<Record<string, boolean>> | undefined;
   readonly sources: CircuitCompilationOptions['sources'];
   readonly interpretation: CircuitCompilationOptions['interpretation'];
   readonly floatingSeed: CircuitCompilationOptions['floatingSeed'];
@@ -104,7 +100,6 @@ interface ResolvedRuntimeOptions {
  * expect(circuit.tickCount).toBe(1_000_000n);
  *
  * circuit.reset();
- * circuit.setPin('drive1.PA0', true);                 // host drives the pin
  * circuit.step();
  * expect(circuit.devices.sink1.getState('lamp')).toBe(true);
  * ```
@@ -288,18 +283,17 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
   /**
    * Reads the level one pin observes.
    *
-   * A sensing pin (input, passive or bidirectional) reports the solved net
-   * level; a pure driver pin reports the level it actually drives, which is
-   * `false` unless it is configured push-pull.
+   * Requires an explicitly initialized digital input capability and applies
+   * the circuit interpretation to the solved physical voltage.
    *
    * @throws {CircuitError} with code `pin-not-found`.
    */
   getPin(pinName: string): boolean {
     this.#assertActive();
-    const pin = this.#pinRuntime(pinName);
+    this.#pinRuntime(pinName);
     const storage = this.#jit.storage;
-    const electrical = electricalCompilationOf(this.#compiled);
-    if (electrical !== undefined) {
+    const electrical = this.#ensureElectrical();
+    {
       const dot = pinName.indexOf('.');
       if (
         electrical.allocation.pins.get(pinName.slice(0, dot))?.get(pinName.slice(dot + 1))
@@ -317,44 +311,6 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
         ) === true
       );
     }
-    if (pin.senses) {
-      return storage.loadArray(this.#compiled.memory.input, pin.globalPinId) === true;
-    }
-    const mode = Number(storage.loadArray(this.#compiled.memory.mode, pin.globalPinId));
-    return (
-      mode === PIN_MODE.pushPull &&
-      storage.loadArray(this.#compiled.memory.output, pin.globalPinId) === true
-    );
-  }
-
-  /**
-   * Forces the level of one pin from the host.
-   *
-   * A driver pin gets its output latch written, so the level survives the next
-   * electrical solve. A sensing pin gets the solved-value slot overridden, which
-   * lasts until the next tick recomputes its net.
-   *
-   * @throws {CircuitError} with code `pin-not-found`.
-   */
-  setPin(pinName: string, value: boolean): void {
-    this.#assertActive();
-    const pin = this.#pinRuntime(pinName);
-    if (electricalCompilationOf(this.#compiled) !== undefined)
-      throw new CircuitError(
-        'unsupported-operation',
-        'Resistive pin writes must use device state and typed IR operations',
-        { pinName },
-      );
-    if (typeof value !== 'boolean') {
-      throw new CircuitError(
-        'invalid-state-value',
-        `Pin "${pinName}" needs a boolean level, received ${typeof value}`,
-        { pinName },
-      );
-    }
-    const target =
-      pin.role === 'driver' ? this.#compiled.memory.output : this.#compiled.memory.input;
-    this.#jit.storage.storeArray(target, pin.globalPinId, value);
   }
 
   /** Physical pin voltage; floating results never contain a synthetic voltage. */
@@ -477,6 +433,7 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
                 ? 'electrical/source-conflict'
                 : 'electrical/numerical-failure',
           severity: 'error',
+          ...electricalFaultContext(allocation, solver, this.#jit.storage),
         }),
       );
     return Object.freeze(diagnostics);
@@ -595,8 +552,6 @@ function pinRuntimeOf(compiled: CompiledCircuit): ReadonlyMap<string, PinRuntime
         `${deviceId}.${pinName}`,
         Object.freeze({
           globalPinId: pin.globalPinId,
-          role: pin.role,
-          senses: pin.senses,
         }),
       );
     }
@@ -661,7 +616,6 @@ function createEngine(compiled: CompiledCircuit, options: ResolvedRuntimeOptions
 function compileOptionsOf(options: ResolvedRuntimeOptions): CircuitCompilationOptions {
   return {
     validate: options.validateIR,
-    ...(options.rails === undefined ? {} : { rails: options.rails }),
     ...(options.sources === undefined ? {} : { sources: options.sources }),
     ...(options.interpretation === undefined ? {} : { interpretation: options.interpretation }),
     ...(options.floatingSeed === undefined ? {} : { floatingSeed: options.floatingSeed }),
@@ -700,20 +654,22 @@ function resolveOptions(options: unknown): ResolvedRuntimeOptions {
     }
   }
 
-  let rails: Readonly<Record<string, boolean>> | undefined;
   if (candidate.electrical !== undefined) {
     const electrical = candidate.electrical;
     if (electrical === null || typeof electrical !== 'object' || Array.isArray(electrical)) {
       throw new CircuitError('invalid-options', 'electrical must be a plain object');
     }
-    rails = electrical.rails;
+    if ('rails' in electrical)
+      throw new CircuitError(
+        'invalid-options',
+        'Boolean rails are unsupported; declare explicit voltage sources',
+      );
   }
 
   return Object.freeze({
     engine,
     jit: candidate.jit,
     validateIR: candidate.validateIR ?? true,
-    rails,
     sources: candidate.electrical?.sources,
     interpretation: candidate.electrical?.interpretation,
     floatingSeed: candidate.electrical?.floatingSeed,

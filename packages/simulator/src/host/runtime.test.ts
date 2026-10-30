@@ -44,6 +44,7 @@ function createHost(): {
   const publishes: SimulationPublish[] = [];
   const bytes = new TextEncoder().encode(JSON.stringify(toggleSchematic()));
   const host = createSchematicDeviceSimulationHost({
+    electrical: { interpretation: 'two-state' },
     read: async (uri) => {
       reads.push(uri);
       return bytes;
@@ -291,6 +292,7 @@ describe('createSchematicDeviceSimulationHost', () => {
       }),
     );
     const host = createSchematicDeviceSimulationHost({
+      electrical: { interpretation: 'two-state' },
       read: async () => bytes,
       devices: createToggleSymbols(),
       resolveDevice: resolveToggleDevice,
@@ -308,6 +310,7 @@ describe('createSchematicDeviceSimulationHost', () => {
   it('requires a resolver, because the package carries no built-in catalog', () => {
     expect(() =>
       createSchematicDeviceSimulationHost({
+        electrical: { interpretation: 'two-state' },
         read: async () => new Uint8Array(),
       } as unknown as Parameters<typeof createSchematicDeviceSimulationHost>[0]),
     ).toThrow('resolveDevice');

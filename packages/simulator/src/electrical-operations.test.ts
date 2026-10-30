@@ -102,6 +102,7 @@ function fixture(
     type: 'test-gpio',
     description: {
       pins: prepared.pinDeclarations,
+      factory: () => undefined,
       states: { ticks: { type: 'u32', initial: 0 }, updates: { type: 'u32', initial: 0 } },
       ...(prepared.implementation === undefined
         ? {}
@@ -126,10 +127,7 @@ function fixture(
   };
   const resources = new GlobalResourceAllocator(module).allocate([device]);
   const generated = new DeviceIRGenerator({ module, ...resources, electrical }).generate(device);
-  const loop = new MainLoopGenerator(module, electrical).generate([generated.entry], [], {
-    nets: [],
-    diagnostics: [],
-  });
+  const loop = new MainLoopGenerator(module, electrical).generate([generated.entry]);
   const validation = createModuleValidation(module);
   const runtime =
     engine === 'reference'
@@ -648,6 +646,7 @@ test('exposes typed operations instead of raw electrical memory to kernels and b
     type: 'test-passive',
     description: {
       pins: prepared.pinDeclarations,
+      factory: () => undefined,
       kernel: (context) => {
         expectTypeOf<typeof context>().not.toHaveProperty('memory');
         expect(context).not.toHaveProperty('memory');

@@ -99,6 +99,7 @@ export function createElectricalOperations(
   const checked = (
     b: Builder,
     valid: Value<'bool'>,
+    target: { readonly kind: number; readonly index: Value<'u32'> },
     commit: (b: Builder) => undefined,
   ): undefined => {
     const yes = b.block([]);
@@ -107,6 +108,8 @@ export function createElectricalOperations(
     b.at(yes, commit);
     b.at(no, (b) => {
       b.state.store(solver.fault, b.const('u8', RESISTIVE_FAULT.invalidParameter));
+      b.state.store(solver.faultTargetKind, b.const('u8', target.kind));
+      b.state.store(solver.faultTargetIndex, target.index);
       b.return([]);
     });
   };
@@ -313,18 +316,23 @@ export function createElectricalOperations(
     });
     writeVoltage.body((b, [value]) =>
       running(b, (b) =>
-        checked(b, b.float.isFinite(value), (b) => {
-          if (drive.analog === undefined) {
-            b.return([]);
-            return;
-          }
-          const at = index(b, drive.analog.source);
-          const changedRhs = b.float.cmp('ne', b.array.load(solver.sourceVoltage, at), value);
-          b.array.store(solver.sourceVoltage, at, value);
-          b.array.store(voltageReady, index(b, id), b.const('bool', true));
-          const [changedMatrix] = b.call(recompute, []);
-          return complete(b, changedMatrix, 'matrix', (b) => complete(b, changedRhs, 'rhs'));
-        }),
+        checked(
+          b,
+          b.float.isFinite(value),
+          { kind: 1, index: index(b, drive.analog?.resistor ?? drive.high) },
+          (b) => {
+            if (drive.analog === undefined) {
+              b.return([]);
+              return;
+            }
+            const at = index(b, drive.analog.source);
+            const changedRhs = b.float.cmp('ne', b.array.load(solver.sourceVoltage, at), value);
+            b.array.store(solver.sourceVoltage, at, value);
+            b.array.store(voltageReady, index(b, id), b.const('bool', true));
+            const [changedMatrix] = b.call(recompute, []);
+            return complete(b, changedMatrix, 'matrix', (b) => complete(b, changedRhs, 'rhs'));
+          },
+        ),
       ),
     );
     pinFunctions.set(id, { setMode, setEnabled, writeDigital, writeVoltage });
@@ -366,32 +374,39 @@ export function createElectricalOperations(
           b,
           count,
           (b, i) => {
+            const accepted = positive(b, b.array.load(queueNumber, i));
             b.state.store(
-              valid,
-              b.bool.and(b.state.load(valid), positive(b, b.array.load(queueNumber, i))),
+              solver.faultTargetIndex,
+              b.select(accepted, b.state.load(solver.faultTargetIndex), b.array.load(queueId, i)),
             );
+            b.state.store(valid, b.bool.and(b.state.load(valid), accepted));
           },
           (b) =>
-            checked(b, b.state.load(valid), (b) => {
-              b.state.store(changed, b.const('bool', false));
-              return loop(
-                b,
-                count,
-                (b, i) => {
-                  const target = b.array.load(queueId, i);
-                  const value = b.array.load(queueNumber, i);
-                  b.state.store(
-                    changed,
-                    b.bool.or(
-                      b.state.load(changed),
-                      b.float.cmp('ne', b.array.load(solver.resistance, target), value),
-                    ),
-                  );
-                  b.array.store(solver.resistance, target, value);
-                },
-                (b) => complete(b, b.state.load(changed), 'matrix'),
-              );
-            }),
+            checked(
+              b,
+              b.state.load(valid),
+              { kind: 1, index: b.state.load(solver.faultTargetIndex) },
+              (b) => {
+                b.state.store(changed, b.const('bool', false));
+                return loop(
+                  b,
+                  count,
+                  (b, i) => {
+                    const target = b.array.load(queueId, i);
+                    const value = b.array.load(queueNumber, i);
+                    b.state.store(
+                      changed,
+                      b.bool.or(
+                        b.state.load(changed),
+                        b.float.cmp('ne', b.array.load(solver.resistance, target), value),
+                      ),
+                    );
+                    b.array.store(solver.resistance, target, value);
+                  },
+                  (b) => complete(b, b.state.load(changed), 'matrix'),
+                );
+              },
+            ),
         );
       }),
     );

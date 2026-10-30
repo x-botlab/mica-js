@@ -3,7 +3,7 @@
  *
  * Every device of a circuit shares one global pin address space, so the
  * compiler and every device kernel must agree on the capacity, the per-device
- * stride and the meaning of a `pin_mode` slot. Capacity and stride are limits
+ * stride and the physical output configuration values. Capacity and stride are limits
  * checked at allocation time; the shared pin memories are sized to the pins a
  * circuit actually declares, so a larger ceiling costs no runtime memory.
  */
@@ -14,7 +14,7 @@ export const UNIFIED_PIN_CAPACITY = 4096;
 /** Global pin addresses one device may own; enough for the largest packages. */
 export const DEVICE_PIN_STRIDE = 512;
 
-/** Values stored in the global `pin_mode` array. */
+/** Physical output configuration values. */
 export const PIN_MODE = Object.freeze({
   highZ: 0,
   pushPull: 1,
@@ -22,5 +22,5 @@ export const PIN_MODE = Object.freeze({
   analog: 3,
 } as const);
 
-/** One value of the global `pin_mode` array. */
+/** One physical output configuration value. */
 export type PinMode = (typeof PIN_MODE)[keyof typeof PIN_MODE];

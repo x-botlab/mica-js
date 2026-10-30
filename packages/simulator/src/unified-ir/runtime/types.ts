@@ -34,6 +34,11 @@ export type ElectricalDiagnostic =
         | 'electrical/source-conflict'
         | 'electrical/numerical-failure';
       readonly severity: 'error';
+      /** Identifiable failed operation or resource; absent for a matrix-level failure. */
+      readonly target?: ElectricalCurrentTarget;
+      /** Resources associated with the affected network, not a list of proven culprits. */
+      readonly resources: readonly ElectricalCurrentTarget[];
+      readonly pins: readonly string[];
     };
 
 /** Execution engine a `Circuit` runs on. */
@@ -41,8 +46,6 @@ export type CircuitEngine = 'jit' | 'reference';
 
 /** Electrical-solve options forwarded to `compileCircuit`. */
 export interface CircuitElectricalOptions {
-  /** Named fixed-level rails; merged over `GND`/`VCC`/`VDD`. */
-  readonly rails?: Readonly<Record<string, boolean>>;
   readonly sources?: CircuitCompilationOptions['sources'];
   readonly interpretation?: CircuitCompilationOptions['interpretation'];
   readonly floatingSeed?: CircuitCompilationOptions['floatingSeed'];
@@ -77,7 +80,6 @@ export type CircuitErrorCode =
   | 'unsupported-operation'
   | 'resource-not-found'
   | 'pin-not-found'
-  | 'pin-not-writable'
   | 'state-not-found'
   | 'invalid-state-value'
   | 'unresolved-device'
@@ -117,8 +119,8 @@ export class CircuitError extends Error {
  *
  * `readPin` returns the level the *device* drives onto one of its pins (its
  * output latch), while `Circuit.getPin('device.pin')` returns the level the pin
- * *observes* after the electrical solve. Writing a pin only makes sense for
- * driver pins, so `writePin` rejects load and passive pins.
+ * *observes* after the electrical solve. Host changes use device state; there
+ * is no direct pin override API.
  */
 export interface DeviceAccessor {
   /** Circuit-unique device id. */
@@ -132,7 +134,6 @@ export interface DeviceAccessor {
   /** Reads the level the device drives onto `pinName`. */
   readPin(pinName: string): boolean;
   /** Writes the level the device drives onto `pinName`. */
-  writePin(pinName: string, value: boolean): void;
   /** Reads one declared internal state. */
   getState(name: string): unknown;
   /** Writes one declared internal state. */

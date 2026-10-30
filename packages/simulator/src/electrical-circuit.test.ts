@@ -82,8 +82,8 @@ describe.each(['reference', 'jit'] as const)('%s public resistive circuit', (eng
       assertDivider(circuit);
       expect(circuit.tickCount).toBe(0n);
       expect(properties).toHaveLength(2);
-      expect(() => circuit.setPin('R1.A', false)).toThrow('typed IR');
-      expect(() => circuit.devices['R1']!.writePin('A', false)).toThrow('typed IR');
+      expect(circuit).not.toHaveProperty('setPin');
+      expect(circuit.devices['R1']).not.toHaveProperty('writePin');
       expect(() => circuit.getPin('R1.A')).toThrow('no digital input');
       expect(() => circuit.getCurrent('R1.missing')).toThrow('Unknown resistor');
     } finally {
@@ -333,25 +333,31 @@ test('rejects omitted factories, mixed models, implicit interpretation and legac
   const description = await resistorDescription();
   const input = divider(description);
   expect(() => compileCircuit(input)).toThrow('explicit digital interpretation');
-  expect(() => compileCircuit(input, { ...electrical, rails: { VDD: true } })).toThrow(
+  expect(() => compileCircuit(input, { ...electrical, ...{ rails: { VDD: true } } })).toThrow(
     'boolean rails',
   );
   expect(() =>
     compileCircuit(
       {
         ...input,
-        devices: [...input.devices, { id: 'old', type: 'old', description: { pins: {} } }],
+        devices: [
+          ...input.devices,
+          { id: 'old', type: 'old', description: { pins: {} } as DeviceDescription },
+        ],
       },
       electrical,
     ),
-  ).toThrow('mixed legacy');
+  ).toThrow('paired electrical factory');
   expect(() =>
     compileCircuit(
       {
         ...input,
         devices: input.devices.map((device) => ({
           ...device,
-          description: { pins: description.pins, resistors: description.resistors! },
+          description: {
+            pins: description.pins,
+            resistors: description.resistors!,
+          } as DeviceDescription,
         })),
       },
       electrical,
