@@ -1,22 +1,8 @@
 /**
- * Unified IR module vs. the scheduler architecture, driver + sink.
+ * Unified IR throughput: driver + sink.
  *
- * Both sides simulate exactly the same circuit — `driver.PA0 -> sink.anode`,
- * `sink.cathode -> ground` — and the same device logic:
- *
- * ```text
- * driver.tick :  PA0 = !PA0 ; mode = PUSH_PULL
- * net      :  PA0 mode == PUSH_PULL && PA0  ->  anode
- * sink      :  lamp = anode && !cathode
- * ```
- *
- * The left side is the scheduler path (see `current-architecture.ts`): one IR
- * module per device on the core scheduler plus a JavaScript net bridge — three
- * host entries per tick.
- *
- * The right side is the unified pipeline: one IR module holding both devices,
- * the net solver and the main loop. `step()` is one host entry per tick;
- * `runBatch(n)` is one host entry for the whole batch.
+ * One IR module holds both devices, the net solver and the main loop. `step()` pays one host
+ * entry per tick; `runBatch(n)` pays one host entry for the whole batch.
  *
  * Reported numbers are per simulated tick:
  *
@@ -28,15 +14,14 @@ import {
   toggleDriverDescription,
 } from '../src/unified-ir/compiler/test-helpers';
 import { Circuit } from '../src/unified-ir/runtime';
-import { createCurrentArchitecture } from './current-architecture';
 
-/** Ticks per measured op for the head-to-head comparison. */
+/** Ticks per measured op for the host-driven vs batched comparison. */
 const TICKS = 2_000;
 
 /** Batch size for the absolute throughput measurement. */
 const THROUGHPUT_TICKS = 1_000_000;
 
-/** The same circuit both sides compile. */
+/** The circuit both measurements compile. */
 async function createUnifiedCircuit() {
   return Circuit.create({
     devices: [
@@ -50,18 +35,9 @@ async function createUnifiedCircuit() {
   });
 }
 
-const current = createCurrentArchitecture();
-const unified = await createUnifiedCircuit();
-
-// Compile and warm both paths outside the measured region: the first tick pays
-// JIT compilation, the scheduler's first entry pays its own setup.
-for (let tick = 0; tick < 200; tick += 1) current.tick();
-unified.runBatch(200);
-
-const CURRENT = `current: 2 IR modules + scheduler + JS net, ${TICKS} ticks`;
-const UNIFIED_HOST = `unified: one IR module, ${TICKS} ticks, one host call each`;
-const UNIFIED_BATCH = `unified: one IR module, ${TICKS} ticks, one host call per batch`;
-type Variant = typeof CURRENT | typeof UNIFIED_HOST | typeof UNIFIED_BATCH;
+const HOST = `host-driven step, ${TICKS} ticks`;
+const BATCH = `runBatch(${TICKS}), one host call`;
+type Variant = typeof HOST | typeof BATCH;
 
 const clock = (): number => {
   const perf = (globalThis as { performance?: { now(): number } }).performance;
@@ -70,18 +46,16 @@ const clock = (): number => {
 
 const nsPerTick = (ticksPerSecond: number): number => 1e9 / ticksPerSecond;
 
-test('driver + sink: unified IR module vs. per-device modules on the scheduler', async ({
-  bench,
-}) => {
+test('driver + sink: host-driven step vs batched loop', async ({ bench }) => {
+  const circuit = await createUnifiedCircuit();
+  circuit.runBatch(200);
+
   const results = await bench.compare(
-    bench(CURRENT, () => {
-      for (let tick = 0; tick < TICKS; tick += 1) current.tick();
+    bench(HOST, () => {
+      for (let tick = 0; tick < TICKS; tick += 1) circuit.step();
     }),
-    bench(UNIFIED_HOST, () => {
-      for (let tick = 0; tick < TICKS; tick += 1) unified.step();
-    }),
-    bench(UNIFIED_BATCH, () => {
-      unified.runBatch(TICKS);
+    bench(BATCH, () => {
+      circuit.runBatch(TICKS);
     }),
     { time: 3_000, warmupTime: 500 },
   );
@@ -93,26 +67,19 @@ test('driver + sink: unified IR module vs. per-device modules on the scheduler',
     return result.throughput.mean * TICKS;
   };
 
-  const base = rate(CURRENT);
-  const host = rate(UNIFIED_HOST);
-  const batch = rate(UNIFIED_BATCH);
-  const factor = (value: number): string => `${(value / base).toFixed(1)}x`;
-
+  const host = rate(HOST);
+  const batch = rate(BATCH);
   console.log(
-    `[unified-simple.bench] per tick: current ${nsPerTick(base).toFixed(1)} ns, ` +
-      `unified host-driven ${nsPerTick(host).toFixed(1)} ns (${factor(host)}), ` +
-      `unified batched ${nsPerTick(batch).toFixed(1)} ns (${factor(batch)})`,
+    `[unified-simple.bench] per tick: host-driven ${nsPerTick(host).toFixed(1)} ns, ` +
+      `batched ${nsPerTick(batch).toFixed(1)} ns (${(batch / host).toFixed(1)}x)`,
   );
 
-  // Timing on a shared machine is noisy, so the gates stay far below the
-  // measured margins and only catch a real regression such as losing the
-  // compiled tier or the batched loop.
-  if (!(host > base * 3)) {
-    throw new Error('unified host-driven steps regressed against the scheduler baseline');
+  // Timing on a shared machine is noisy, so the gate only catches a real regression such as the
+  // batched loop losing its compiled tier.
+  if (!(batch > host * 10)) {
+    throw new Error('the batched unified loop regressed against host-driven steps');
   }
-  if (!(batch > base * 10)) {
-    throw new Error('the batched unified loop regressed against the scheduler baseline');
-  }
+  circuit.dispose();
 });
 
 test('driver + sink: 1M ticks meet the latency and throughput targets', async () => {
@@ -148,19 +115,21 @@ test('driver + sink: 1M ticks meet the latency and throughput targets', async ()
   circuit.dispose();
 });
 
-test('driver + sink: the baseline and the unified module agree on every tick', async () => {
-  const baseline = createCurrentArchitecture();
-  const circuit = await createUnifiedCircuit();
+test('driver + sink: step and batch stay in phase', async () => {
+  const stepped = await createUnifiedCircuit();
+  const batched = await createUnifiedCircuit();
   for (let tick = 0; tick < 32; tick += 1) {
-    baseline.tick();
-    circuit.step();
-    const lampOn = circuit.devices.sink.getState('lamp');
-    const anode = circuit.getPin('sink.anode');
-    if (baseline.readLamp() !== lampOn || lampOn !== anode) {
+    stepped.step();
+    batched.runBatch(1);
+    const steppedLamp = stepped.devices.sink.getState('lamp');
+    const batchedLamp = batched.devices.sink.getState('lamp');
+    if (steppedLamp !== batchedLamp || steppedLamp !== stepped.getPin('sink.anode')) {
       throw new Error(
-        `tick ${tick + 1}: baseline sink=${baseline.readLamp()}, unified sink=${lampOn}, anode=${anode}`,
+        `tick ${tick + 1}: step=${steppedLamp}, batch=${batchedLamp}, ` +
+          `anode=${stepped.getPin('sink.anode')}`,
       );
     }
   }
-  circuit.dispose();
+  stepped.dispose();
+  batched.dispose();
 });

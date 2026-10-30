@@ -1,6 +1,6 @@
 # Unified IR Architecture
 
-Single-module compilation for multi-device circuits, achieving 10-1000× performance improvements over scheduler-based architecture.
+Single-module compilation for multi-device circuits.
 
 ## Architecture
 
@@ -47,7 +47,7 @@ unified-ir/
 ### Compile a circuit
 
 ```typescript
-import { compileCircuit } from '@mica-js/simulator/unified-ir/compiler';
+import { compileCircuit } from '@mica-js/simulator';
 
 const compiled = compileCircuit({
   devices: [
@@ -91,7 +91,7 @@ topics and accessor bridges the device exposes.
 
 ## Performance
 
-Typical improvements vs. scheduler-based architecture:
+Historical measurements against the removed scheduler architecture:
 
 | Scenario                    |   Speedup |
 | --------------------------- | --------: |

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { timePs, type TimePs } from '../scheduler/time';
+import { timePs, type TimePs } from '../time';
 import {
   DEFAULT_TOPIC_CAPACITY,
   DELIVERY_KINDS,

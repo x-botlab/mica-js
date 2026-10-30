@@ -48,7 +48,6 @@
   },
   "dependencies": {
     "@mica-js/core": "workspace:*",
-    "@mica-js/device": "workspace:*",
     "@mica-js/ir": "workspace:*",
     "@mica-js/sandbox": "workspace:*"
   },
