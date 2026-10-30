@@ -21,7 +21,6 @@ export default defineConfig({
         '@mica-js/core/lifecycle',
         '@mica-js/core/logging',
         '@mica-js/core/schematic',
-        '@mica-js/device',
         '@mica-js/ir',
         '@mica-js/sandbox',
       ],

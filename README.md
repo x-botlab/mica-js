@@ -7,8 +7,7 @@
 | 包                                                       | 职责                                                                        |
 | -------------------------------------------------------- | --------------------------------------------------------------------------- |
 | [`@mica-js/ir`](packages/ir)                             | 领域无关 IR：建图、存储、静态校验、参考解释器与 Provider 产物               |
-| [`@mica-js/core`](packages/core)                         | 仿真内核：虚拟时间、确定性调度、电气求值、连接拓扑、电源域，附文档格式入口  |
-| [`@mica-js/device`](packages/device)                     | 器件层：描述解析、provider 加载、工厂上下文、实例生命周期与引脚 I/O         |
+| [`@mica-js/core`](packages/core)                         | 文档与宿主基础设施：虚拟时间、`.sch` / `.cnv` 格式、RPC、日志与生命周期     |
 | [`@mica-js/simulator`](packages/simulator)               | 仿真器：统一 IR 电路编译/运行时，`DeviceSimulationHost` 契约与 sandbox 适配 |
 | [`@mica-js/sandbox`](packages/sandbox)                   | 通用 JS 沙箱：iframe + Worker 隔离与离屏渲染合成                            |
 | [`@mica-js/widget`](packages/widget)                     | Widget 契约与运行时：包加载、`WidgetHost`、图层与端口路由                   |

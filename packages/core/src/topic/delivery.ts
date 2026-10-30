@@ -1,5 +1,5 @@
 import type { PayloadType } from '../format/type-name';
-import type { TimePs } from '../scheduler/time';
+import type { TimePs } from '../time';
 
 /**
  * Delivery semantics of one topic port (RFC 0017).

@@ -15,35 +15,31 @@
 | 运行器   | Vitest bench（Tinybench，交错采样）       |
 
 数值是单机、单次运行的观测值；同一台机器上不同运行之间通常有 ±10–20% 波动。
-脚本本身带回归门槛（例如批处理必须比调度器基线快 10× 以上），所以波动不会掩盖真实退化。
+脚本本身带回归门槛（例如 1M tick 批处理必须满足绝对吞吐下限），所以波动不会掩盖真实退化。
 
 > **口径提示**：本页数字取自内建 `mcu` / `led` 最小内核还在包内时（以及 Playground 的教学 MCU 模型）
 > 的测量。这些器件模型已经移出 `@mica-js/simulator`，现在的 `bench/unified-simple.bench.ts`
-> 使用包内的 driver / sink 测试夹具（同样的网络形状、同样的器件逻辑），因此第 1 节的相对关系仍然成立；
-> 第 2、3 节保留历史记录，复现需要对应的器件包。
+> 使用包内的 driver / sink 测试夹具（同样的网络形状、同样的器件逻辑），第 1 节的绝对吞吐与
+> 第 4 节微基准可直接复现；第 2、3 节保留历史记录，复现需要对应的器件包。
 
 ## 结果摘要
 
-| 场景                                    |     调度器路径 |          统一 IR |     加速比 |
-| --------------------------------------- | -------------: | ---------------: | ---------: |
-| MCU + LED，单步（每 tick 一次宿主调用） |     6.3–8.1 µs |       318–371 ns |     20–22× |
-| MCU + LED，批处理（每批一次宿主调用）   |     6.3–8.1 µs |       6.6–6.8 ns | ~960–1200× |
-| Teaching MCU 批处理（U03 口径）         | 0.160 M inst/s | 527–561 M inst/s |     ~3300× |
-| Teaching M3 批处理（U03 口径）          | 0.160 M inst/s | 449–465 M inst/s |     ~2900× |
+| 场景                                    |          统一 IR |
+| --------------------------------------- | ---------------: |
+| MCU + LED，单步（每 tick 一次宿主调用） |       318–371 ns |
+| MCU + LED，批处理（每批一次宿主调用）   |       6.6–6.8 ns |
+| Teaching MCU 批处理（U03 口径）         | 527–561 M inst/s |
+| Teaching M3 批处理（U03 口径）          | 449–465 M inst/s |
 
-## 1. driver + sink（原 mcu + led）：调度器 vs 统一 IR
+## 1. driver + sink（原 mcu + led）：统一 IR
 
-同一张电路、同一套器件逻辑（`driver.PA0 → sink.anode`、`sink.cathode → GND`）：
+同一张电路、同一套器件逻辑（`driver.PA0 → sink.anode`、`sink.cathode → GND`），两个器件、
+解算器和主循环在同一个 module 里。
 
-- **调度器路径**：每器件一个 IR module，挂在 `@mica-js/core` 的调度器上，网络在 JavaScript 里桥接
-  ——每 tick 三次宿主入口（driver、解网、sink）。
-- **统一 IR**：两个器件、解算器和主循环在同一个 module 里。
-
-| 变体                                        |   ns/tick | 相对基线   |
-| ------------------------------------------- | --------: | ---------- |
-| 调度器：2 个 IR module + JS 解网            | 6334–8121 | 1.0×       |
-| 统一 IR：每 tick 一次 `step()`              |   318–371 | 20–22×     |
-| 统一 IR：每 2000 tick 一次 `runBatch(2000)` |   6.6–6.8 | ~960–1200× |
+| 变体                                        | ns/tick |
+| ------------------------------------------- | ------: |
+| 统一 IR：每 tick 一次 `step()`              | 318–371 |
+| 统一 IR：每 2000 tick 一次 `runBatch(2000)` | 6.6–6.8 |
 
 单步的上限由 `@mica-js/ir` 的每次执行入口开销决定（空 module 也约 400 ns，见微基准）；
 吞吐路径是 `runBatch`。
@@ -89,16 +85,15 @@ blinky 固件（GPIO MMIO 写 ODR）驱动一个 LED，`runBatch(20_000)`：
 
 ### 3.2 长切片（U03 性能测试口径）
 
-本轮测量使用当时随包提供的教学 MCU 模型（现已在 Playground 器件库中），同一台机器、更长的切片和 `maxBlockInstructions: 4096`，
-并与旧调度器器件直接对比。批处理数字取稳态中位数（宿主已完成译码、V8 已把生成代码
+本轮测量使用当时随包提供的教学 MCU 模型（现已在 Playground 器件库中），同一台机器、更长的切片和 `maxBlockInstructions: 4096`。
+批处理数字取稳态中位数（宿主已完成译码、V8 已把生成代码
 升到优化层），这也是实时仿真真正运行的区间：
 
-| 路径                     |                        吞吐 | 相对调度器 |
-| ------------------------ | --------------------------: | ---------: |
-| 旧调度器器件             |             0.155–0.160 M/s |       1.0× |
-| 统一 teaching ISA 批处理 |            527–561 M inst/s |     ~3300× |
-| 统一 M3 批处理           |            449–465 M inst/s |     ~2900× |
-| 统一 teaching ISA 单步   | 3.6–4.1 M tick/s（~620 ns） |       ~24× |
+| 路径                     |                        吞吐 |
+| ------------------------ | --------------------------: |
+| 统一 teaching ISA 批处理 |            527–561 M inst/s |
+| 统一 M3 批处理           |            449–465 M inst/s |
+| 统一 teaching ISA 单步   | 3.6–4.1 M tick/s（~620 ns） |
 
 两个 ISA 都远高于"实时仿真 72 MHz 教学板"所需的 72 M inst/s。超级块翻译消除了
 每基本块一次的 provider 派发：一个 60,000 次迭代的 M3 倒计数循环在整条 tick 内只
@@ -149,10 +144,9 @@ pnpm --filter @mica-js/simulator exec vitest bench --run bench/unified-simple.be
 
 基准文件：
 
-| 文件                            | 内容                                            |
-| ------------------------------- | ----------------------------------------------- |
-| `bench/current-architecture.ts` | 调度器基线：两个 module + JS 解网，同一张电路   |
-| `bench/unified-simple.bench.ts` | 调度器 vs 统一 IR、单步 vs 批处理、1M tick 门槛 |
+| 文件                            | 内容                                                   |
+| ------------------------------- | ------------------------------------------------------ |
+| `bench/unified-simple.bench.ts` | 单步 vs 批处理、1M tick 门槛与 step / batch 一致性检查 |
 
 ## 口径说明
 
@@ -161,6 +155,4 @@ pnpm --filter @mica-js/simulator exec vitest bench --run bench/unified-simple.be
 - **基准不测导出 getter**：Vitest 的 module-runner 默认会给每个导出包一层计数 getter，这会主导
   指令派发的成本。`vite.config.ts` 里设置 `benchmark.suppressExportGetterWarnings: true`
   关闭该追踪，否则本机实测会慢 100 倍以上。
-- **调度器基线是"刻意保留边界"的**：`bench/current-architecture.ts` 每 tick 三次宿主入口，
-  用来量化统一 IR 去掉的正是这些边界，不代表调度器路径的最优写法。
 - **参考解释器**：`engine: 'reference'` 用于逐值对照，比 JIT 慢一个数量级以上；性能数据均为 JIT。

@@ -7,7 +7,7 @@ import type { CircuitCompilationInput } from '../compiler';
  * `Circuit` is the host-facing facade over one compiled unified IR module: it
  * owns the engine instance, exposes typed per-device accessors and keeps the
  * tick counter. Everything here is transport-neutral; no type mentions the
- * scheduler, the device host or the schematic editor.
+ * device host or the schematic editor.
  */
 
 /** Execution engine a `Circuit` runs on. */
