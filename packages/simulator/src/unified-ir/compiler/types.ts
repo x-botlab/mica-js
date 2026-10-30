@@ -79,6 +79,8 @@ export interface DevicePinHandle {
 export interface DeviceResistorHandle {
   setResistance(ohms: Value<'f64'>): void;
   setEnabled(enabled: Value<'bool'>): void;
+  /** Solved current in amperes, positive from the first declared pin to the second. */
+  sampleCurrent(): Value<'f64'>;
 }
 
 /** Internal state slot a behavior may read and write. */
@@ -101,14 +103,12 @@ export interface DeviceKernelPin {
 /**
  * Everything a complex device kernel needs to declare its own IR before any
  * phase function body is opened: the module (for `array`/`bytes`/`provider`),
- * the shared pin memories and the allocated pin ids.
+ * typed operations through `bind(builder)` and the allocated pin ids.
  */
 export interface DeviceKernelContext {
   readonly deviceId: string;
   readonly config: Readonly<Record<string, unknown>> | undefined;
   readonly module: IRModule;
-  /** Legacy digital memory; resistive kernels use bind(builder). */
-  readonly memory: CompiledCircuitMemory;
   bind(builder: FunctionBuilder<readonly []>): DeviceBehaviorApi;
   readonly pins: readonly DeviceKernelPin[];
 }
@@ -147,8 +147,6 @@ export interface DeviceBehaviorApi {
    * simple devices never need to touch it.
    */
   readonly module: IRModule;
-  /** Shared `pin_mode` / `pin_output` / `pin_input` memories. */
-  readonly memory: CompiledCircuitMemory;
   /** Instance configuration from {@link DeviceConfig.config}. */
   readonly config: Readonly<Record<string, unknown>> | undefined;
   /** Every declared pin of the device, in declaration order. */

@@ -17,6 +17,10 @@
     "lamp": {
       "path": "lamp.json",
       "displayName": "指示灯"
+    },
+    "potentiometer": {
+      "path": "potentiometer.json",
+      "displayName": "电位器"
     }
   }
 }

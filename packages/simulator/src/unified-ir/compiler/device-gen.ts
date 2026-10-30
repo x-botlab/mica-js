@@ -85,20 +85,10 @@ export class DeviceIRGenerator {
         { deviceId: device.id },
       );
     }
-    const electrical = this.context.electrical;
-    const memory = this.context.memory;
     const kernelResult = device.description.kernel?.({
       deviceId: device.id,
       config: device.config,
       module: this.context.module,
-      get memory(): CompiledCircuitMemory {
-        if (electrical !== undefined)
-          throw new UnifiedIRCompilerError(
-            'unsupported-device',
-            'Raw electrical memory is unavailable; use bind(builder)',
-          );
-        return memory;
-      },
       bind: (builder) => this.createApi(device, allocation, builder),
       pins: [...allocation.resolved.values()].map((pin) =>
         Object.freeze({
@@ -230,7 +220,6 @@ export class DeviceIRGenerator {
       builder,
       new Map([...allocation.resolved].map(([name, pin]) => [name, pin.globalPinId])),
     );
-    const memory = this.context.memory;
     const requireElectrical = (): never => {
       throw new UnifiedIRCompilerError(
         'unsupported-device',
@@ -241,14 +230,6 @@ export class DeviceIRGenerator {
       deviceId: device.id,
       builder,
       module: this.context.module,
-      get memory(): CompiledCircuitMemory {
-        if (electrical !== undefined)
-          throw new UnifiedIRCompilerError(
-            'unsupported-device',
-            'Raw electrical memory is unavailable; use typed pin and resistor handles',
-          );
-        return memory;
-      },
       config: device.config,
       pins: electrical?.pins ?? Object.freeze(pins),
       outputs: electrical?.outputs ?? Object.freeze(outputs),

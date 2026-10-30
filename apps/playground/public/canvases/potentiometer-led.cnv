@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "schematic": "schematics/potentiometer-led.sch",
+  "widgets": [
+    {
+      "id": "a3000000-0000-4000-8000-000000000001",
+      "widget": "demo:potentiometer",
+      "x": 48,
+      "y": 40,
+      "width": 432,
+      "height": 112,
+      "rotation": 0,
+      "properties": { "label": "RV1" },
+      "bindings": {
+        "position": { "symbol": "a1000000-0000-4000-8000-000000000001", "port": "position" },
+        "actualPosition": {
+          "symbol": "a1000000-0000-4000-8000-000000000001",
+          "port": "actualPosition"
+        }
+      }
+    },
+    {
+      "id": "a3000000-0000-4000-8000-000000000002",
+      "widget": "demo:lamp",
+      "x": 48,
+      "y": 188,
+      "width": 140,
+      "height": 140,
+      "rotation": 0,
+      "properties": { "label": "DC", "color": "#22C55E", "radius": 8 },
+      "bindings": {
+        "brightness": { "symbol": "a1000000-0000-4000-8000-000000000004", "port": "brightness" }
+      }
+    },
+    {
+      "id": "a3000000-0000-4000-8000-000000000003",
+      "widget": "demo:lamp",
+      "x": 212,
+      "y": 188,
+      "width": 140,
+      "height": 140,
+      "rotation": 0,
+      "properties": { "label": "PWM 50%", "color": "#22C55E", "radius": 8 },
+      "bindings": {
+        "brightness": { "symbol": "a1000000-0000-4000-8000-000000000007", "port": "brightness" }
+      }
+    },
+    {
+      "id": "a3000000-0000-4000-8000-000000000004",
+      "widget": "demo:lamp",
+      "x": 376,
+      "y": 188,
+      "width": 140,
+      "height": 140,
+      "rotation": 0,
+      "properties": { "label": "5 V", "color": "#22C55E", "radius": 8 },
+      "bindings": {
+        "brightness": { "symbol": "a1000000-0000-4000-8000-00000000000a", "port": "brightness" }
+      }
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 import { createIRInterpreter, createIRJIT, createIRModule, toNumber } from '@mica-js/ir';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, expectTypeOf, test } from 'vitest';
 import { prepareElectricalDevice } from './electrical-authoring';
 import { GlobalResourceAllocator } from './unified-ir/compiler/allocator';
 import { DeviceIRGenerator } from './unified-ir/compiler/device-gen';
@@ -11,10 +11,11 @@ import { PIN_MODE } from './unified-ir/pin-space';
 import { createModuleValidation } from './unified-ir/validation';
 
 type Capture = (api: DeviceBehaviorApi, slot: number, name?: string) => void;
+type CaptureCurrent = (api: DeviceBehaviorApi, slot: number, name: string) => void;
 
 function fixture(
   engine: 'reference' | 'jit',
-  action: (api: DeviceBehaviorApi, capture: Capture) => void,
+  action: (api: DeviceBehaviorApi, capture: Capture, current: CaptureCurrent) => void,
   interpretation: 'two-state' | 'retain-in-band' = 'two-state',
   withBehavior = true,
   updateAction?: (api: DeviceBehaviorApi) => void,
@@ -23,6 +24,7 @@ function fixture(
   const module = createIRModule();
   const observedDigital = module.array('observed_digital', 'bool', Array<boolean>(32).fill(false));
   const observedVoltage = module.array('observed_voltage', 'f64', Array<number>(32).fill(0));
+  const observedCurrent = module.array('observed_current', 'f64', Array<number>(32).fill(0));
   const observedState = module.array('observed_state', 'u8', Array<number>(32).fill(1));
   const prepared = prepareElectricalDevice(
     {
@@ -56,7 +58,7 @@ function fixture(
       electrical.initializeResistor('bottom', { resistance: 1000, enabled: false });
       return withBehavior
         ? {
-            tick: (api) => action(api, capture),
+            tick: (api) => action(api, capture, captureCurrent),
             update: (api) => {
               const state = api.state<'u32'>('updates');
               state.store(api.builder.int.add(state.load(), api.builder.const('u32', 1)));
@@ -90,6 +92,10 @@ function fixture(
       b.const('u32', slot),
       b.array.load(electrical.solver.voltageState, b.const('u32', node)),
     );
+  };
+  const captureCurrent: CaptureCurrent = (api, slot, name) => {
+    const b = api.builder;
+    b.array.store(observedCurrent, b.const('u32', slot), api.resistor(name).sampleCurrent());
   };
   const device: DeviceConfig = {
     id: 'gpio',
@@ -157,6 +163,7 @@ function fixture(
       voltage: toNumber(runtime.storage.loadArray(observedVoltage, slot)),
       state: runtime.storage.loadArray(observedState, slot),
     }),
+    sampledCurrent: (slot: number) => toNumber(runtime.storage.loadArray(observedCurrent, slot)),
     fault: () => runtime.storage.loadState(electrical.solver.fault),
     resistance: (name: string) =>
       toNumber(
@@ -174,6 +181,30 @@ function fixture(
 
 for (const engine of ['reference', 'jit'] as const)
   describe(`electrical operations (${engine})`, () => {
+    test('samples declared branch current after edits without raw memory access', () => {
+      const p = fixture(engine, (api, _capture, current) => {
+        const b = api.builder;
+        const top = api.resistor('top');
+        const bottom = api.resistor('bottom');
+        current(api, 0, 'top');
+        top.setEnabled(b.const('bool', true));
+        bottom.setEnabled(b.const('bool', true));
+        current(api, 1, 'top');
+        top.setResistance(b.const('f64', 3000));
+        current(api, 2, 'top');
+        current(api, 3, 'bottom');
+        bottom.setEnabled(b.const('bool', false));
+        current(api, 4, 'bottom');
+        current(api, 5, 'top');
+        top.setEnabled(b.const('bool', false));
+        current(api, 6, 'top');
+      });
+      p.run();
+      expect(p.fault()).toBe(0);
+      const expected = [0, 3.3 / 2000, 3.3 / 4000, 3.3 / 4000, 0, 0, 0];
+      expected.forEach((value, slot) => expect(p.sampledCurrent(slot)).toBeCloseTo(value, 12));
+    });
+
     test('keeps high-Z, enable, and intent readiness independent', () => {
       const p = fixture(engine, (api, capture) => {
         const pin = api.pin('A');
@@ -599,7 +630,11 @@ for (const engine of ['reference', 'jit'] as const)
     });
   });
 
-test('rejects raw electrical memory access from a kernel factory', () => {
+test('exposes typed operations instead of raw electrical memory to kernels and behaviors', () => {
+  expectTypeOf<DeviceBehaviorApi>().not.toHaveProperty('memory');
+  fixture('jit', (api) => {
+    expect(api).not.toHaveProperty('memory');
+  });
   const module = createIRModule();
   const prepared = prepareElectricalDevice(
     { pins: { P: { kind: 'signal' } } },
@@ -614,7 +649,9 @@ test('rejects raw electrical memory access from a kernel factory', () => {
     description: {
       pins: prepared.pinDeclarations,
       kernel: (context) => {
-        void context.memory;
+        expectTypeOf<typeof context>().not.toHaveProperty('memory');
+        expect(context).not.toHaveProperty('memory');
+        expect(context.bind).toBeTypeOf('function');
         return {};
       },
     },
@@ -622,11 +659,10 @@ test('rejects raw electrical memory access from a kernel factory', () => {
   const resources = new GlobalResourceAllocator(module).allocate([device]);
   expect(() =>
     new DeviceIRGenerator({ module, ...resources, electrical }).generate(device),
-  ).toThrow('Raw electrical memory is unavailable');
+  ).not.toThrow();
 });
 
 test.each([
-  (api: DeviceBehaviorApi) => api.memory,
   (api: DeviceBehaviorApi) => api.applyConnections([], []),
   (api: DeviceBehaviorApi) => api.writeDigitalGroup([], []),
   (api: DeviceBehaviorApi) => api.applyResistors([], []),

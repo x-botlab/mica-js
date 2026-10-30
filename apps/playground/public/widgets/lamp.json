@@ -6,6 +6,7 @@
     "radius": { "type": "number", "title": "圆角", "default": 16, "min": 0 }
   },
   "ports": {
+    "brightness": { "direction": "input", "type": "number", "title": "Brightness" },
     "lit": { "direction": "input", "type": "boolean", "title": "点亮" }
   }
 }

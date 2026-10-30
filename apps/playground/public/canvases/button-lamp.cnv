@@ -57,9 +57,9 @@
         "radius": 20
       },
       "bindings": {
-        "lit": {
+        "brightness": {
           "symbol": "d9b8c7a6-5f4e-4d3c-8b2a-1f0e9d8c7b61",
-          "port": "lit"
+          "port": "brightness"
         }
       }
     },
@@ -78,9 +78,9 @@
         "radius": 20
       },
       "bindings": {
-        "lit": {
+        "brightness": {
           "symbol": "e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a72",
-          "port": "lit"
+          "port": "brightness"
         }
       }
     }

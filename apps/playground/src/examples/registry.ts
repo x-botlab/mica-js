@@ -9,8 +9,10 @@
  * capability, never by position.
  */
 
-export type SchematicExampleId = 'board-properties' | 'mcu-leds' | 'button-relay';
-export type CanvasExampleId = 'button-lamp' | 'dual-lamp';
+export type SchematicExampleId =
+  'board-properties' | 'mcu-leds' | 'button-relay' | 'potentiometer-led' | 'pullup-button-led';
+export type CanvasExampleId =
+  'button-lamp' | 'dual-lamp' | 'potentiometer-led' | 'pullup-button-led';
 
 /** Symbol source of one schematic sheet. */
 export type SchematicExampleLibrary = 'sample' | 'demo';
@@ -57,6 +59,18 @@ export const SCHEMATIC_EXAMPLES: readonly SchematicExample[] = Object.freeze([
     document: 'schematics/button-relay.sch',
     library: 'demo',
   }),
+  Object.freeze({
+    id: 'potentiometer-led',
+    title: '电位器与 LED 亮度',
+    document: 'schematics/potentiometer-led.sch',
+    library: 'demo',
+  }),
+  Object.freeze({
+    id: 'pullup-button-led',
+    title: '上拉与按键接地',
+    document: 'schematics/pullup-button-led.sch',
+    library: 'demo',
+  }),
 ]);
 
 export const CANVAS_EXAMPLES: readonly CanvasExample[] = Object.freeze([
@@ -71,6 +85,18 @@ export const CANVAS_EXAMPLES: readonly CanvasExample[] = Object.freeze([
     title: '双通道指示灯',
     document: 'canvases/dual-lamp.cnv',
     schematic: 'mcu-leds',
+  }),
+  Object.freeze({
+    id: 'potentiometer-led',
+    title: '电位器与 LED 亮度',
+    document: 'canvases/potentiometer-led.cnv',
+    schematic: 'potentiometer-led',
+  }),
+  Object.freeze({
+    id: 'pullup-button-led',
+    title: '上拉与按键接地',
+    document: 'canvases/pullup-button-led.cnv',
+    schematic: 'pullup-button-led',
   }),
 ]);
 

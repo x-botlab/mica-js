@@ -17,6 +17,9 @@
     "potentiometer": {
       "path": "potentiometer.json"
     },
+    "resistor": {
+      "path": "resistor.json"
+    },
     "teaching-mcu": {
       "path": "teaching-mcu.json"
     }

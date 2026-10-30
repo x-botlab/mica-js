@@ -49,8 +49,8 @@ const load: DeviceDescription = {
 };
 
 test('requires valid paired JS files and keeps metadata loading independent', async () => {
-  expect(library.entries).toHaveLength(6);
-  expect(factories.size).toBe(6);
+  expect(library.entries).toHaveLength(7);
+  expect(factories.size).toBe(7);
   await expect(
     loadDeviceFactories(
       {
@@ -235,7 +235,7 @@ describe.each(['reference', 'jit'] as const)('%s actual Playground factories', (
     try {
       voltage(circuit, 'mcu.PA0', 0);
       circuit.step();
-      voltage(circuit, 'mcu.PA0', (5 * 1000) / 1050);
+      voltage(circuit, 'mcu.PA0', (5 * 500) / 550);
       expect(circuit.devices['led']!.getState('lamp')).toBe(true);
       circuit.step();
       voltage(circuit, 'mcu.PA0', 0);
@@ -245,7 +245,58 @@ describe.each(['reference', 'jit'] as const)('%s actual Playground factories', (
     }
   });
 
-  test.each(['device-bench.sch', 'button-relay.sch'])(
+  test('pull-up LED is shunted off by a grounded button and restores after release/reset', async () => {
+    const schematic = parseSchematic(
+      await readFile(resolve(publicRoot, 'schematics/pullup-button-led.sch'), 'utf8'),
+    );
+    const circuit = await createCircuitFromSchematic(schematic, {
+      engine,
+      electrical: DEMO_ELECTRICAL,
+      devices: library.symbols,
+      resolveDevice: (reference) => {
+        const entry = library.find(reference.raw);
+        return entry === undefined
+          ? undefined
+          : createContractBinding(entry, factories.get(entry.reference)!);
+      },
+    });
+    const brightness = () => toNumber(circuit.devices['D1']!.getState('brightness') as FloatBits);
+    const current = (name: string, expected: number) => {
+      const result = circuit.getCurrent(name);
+      expect(result.state).toBe('determinate');
+      if (result.state === 'determinate') expect(result.value).toBeCloseTo(expected, 12);
+    };
+    try {
+      circuit.step();
+      voltage(circuit, 'D1.anode', 2.5);
+      current('R1.body', 0.0025);
+      current('D1.load', 0.0025);
+      expect(brightness()).toBeCloseTo(0.5, 12);
+      circuit.devices['S1']!.setState('pressed', true);
+      circuit.step();
+      voltage(circuit, 'D1.anode', 0);
+      current('R1.body', 0.005);
+      current('D1.load', 0);
+      expect(brightness()).toBe(0);
+      expect(circuit.devices['S1']!.getState('closed')).toBe(true);
+      expect(circuit.getDiagnostics()).toEqual([]);
+      circuit.devices['S1']!.setState('pressed', false);
+      circuit.step();
+      voltage(circuit, 'D1.anode', 2.5);
+      expect(brightness()).toBeCloseTo(0.5, 12);
+      circuit.devices['S1']!.setState('pressed', true);
+      circuit.step();
+      circuit.reset();
+      circuit.step();
+      voltage(circuit, 'D1.anode', 2.5);
+      expect(brightness()).toBeCloseTo(0.5, 12);
+      expect(circuit.devices['S1']!.getState('closed')).toBe(false);
+    } finally {
+      circuit.dispose();
+    }
+  });
+
+  test.each(['device-bench.sch', 'button-relay.sch', 'potentiometer-led.sch'])(
     'compiles and executes existing %s without legacy models',
     async (name) => {
       const schematic = parseSchematic(
@@ -265,6 +316,32 @@ describe.each(['reference', 'jit'] as const)('%s actual Playground factories', (
       try {
         circuit.runBatch(4);
         expect(circuit.tickCount).toBe(4n);
+        if (name === 'potentiometer-led.sch') {
+          const expected = (position: number) => {
+            const upper = 10 + 10000 * (1 - position);
+            const lower = 1 / (1 / (10 + 10000 * position) + 1 / 1000);
+            return (5 * lower) / (upper + lower);
+          };
+          const brightness = (id: string) =>
+            toNumber(circuit.devices[id]!.getState('brightness') as FloatBits);
+          voltage(circuit, 'RV1.W', expected(0.5));
+          expect(brightness('D1')).toBeCloseTo(expected(0.5) / 5, 10);
+          expect(brightness('D3')).toBe(1);
+          circuit.runBatch(16);
+          let pwm = 0;
+          for (let tick = 0; tick < 20; tick++) {
+            const sample = tick % 2 === 0 ? 1000 / 1050 : 0;
+            pwm += (sample - pwm) / 64;
+          }
+          expect(brightness('D2')).toBeCloseTo(pwm, 10);
+          circuit.devices['RV1']!.setState('position', 0.8);
+          circuit.step();
+          voltage(circuit, 'RV1.W', expected(0.8));
+          expect(brightness('D1')).toBeCloseTo(expected(0.8) / 5, 10);
+          circuit.reset();
+          circuit.step();
+          expect(brightness('D1')).toBeCloseTo(expected(0.5) / 5, 10);
+        }
       } finally {
         circuit.dispose();
       }

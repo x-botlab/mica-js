@@ -590,6 +590,10 @@ export function createElectricalOperations(
             setEnabled(value: Value<'bool'>): void {
               b.call(setResistorEnabled, [index(b, target), value]);
             },
+            sampleCurrent(): Value<'f64'> {
+              b.call(ensure, []);
+              return b.array.load(solver.current, index(b, target));
+            },
           });
         },
         writeDigitalGroup(names: readonly string[], values: readonly Value<'bool'>[]): void {

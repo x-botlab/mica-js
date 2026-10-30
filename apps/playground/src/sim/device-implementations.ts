@@ -12,6 +12,7 @@ export const MODEL_DEVICE_TYPES: readonly string[] = Object.freeze([
   'button-ir',
   'relay-ir',
   'potentiometer-ir',
+  'resistor-ir',
 ]);
 
 /** Ordinary state layout; electrical initialization and IR hooks live in paired JS. */
@@ -23,7 +24,10 @@ export function describeModel(
   let states: Readonly<Record<string, DeviceStateDescription>> = {};
   switch (entry.type) {
     case 'ideal-led':
-      states = { lamp: { type: 'bool', initial: false } };
+      states = {
+        lamp: { type: 'bool', initial: false },
+        brightness: { type: 'f64', initial: 0 },
+      };
       break;
     case 'button-ir':
       states = {

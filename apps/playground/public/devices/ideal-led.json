@@ -3,6 +3,18 @@
   "type": "ideal-led",
   "displayName": "理想 LED",
   "designatorPrefix": "D",
+  "properties": {
+    "nominalVoltage": { "type": "number", "default": 5, "exclusiveMin": 0, "unit": "V" },
+    "resistance": { "type": "number", "default": 1000, "exclusiveMin": 0, "unit": "ohm" },
+    "brightnessSamples": {
+      "type": "number",
+      "title": "Exponential moving average samples (1 = instantaneous)",
+      "default": 64,
+      "min": 1,
+      "max": 1000000,
+      "step": 1
+    }
+  },
   "pins": {
     "anode": {
       "side": "left",
@@ -13,7 +25,16 @@
       "kind": "signal"
     }
   },
+  "resistors": {
+    "load": { "pins": ["anode", "cathode"] }
+  },
   "topics": {
+    "brightness": {
+      "direction": "output",
+      "type": "number",
+      "title": "Brightness",
+      "state": "brightness"
+    },
     "lit": {
       "direction": "output",
       "type": "boolean",
@@ -22,7 +43,7 @@
     }
   },
   "reset": {
-    "state": "unsupported",
-    "detail": "LED 没有独立 reset 生命周期"
+    "state": "supported",
+    "detail": "Restores digital lamp and exponential moving average brightness to zero"
   }
 }

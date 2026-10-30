@@ -1,0 +1,16 @@
+{
+  "properties": {
+    "label": { "type": "string", "title": "Label", "default": "Position" },
+    "initialPosition": {
+      "type": "number",
+      "title": "Initial Position",
+      "default": 0.5,
+      "min": 0,
+      "max": 1
+    }
+  },
+  "ports": {
+    "position": { "direction": "output", "type": "number", "title": "Position" },
+    "actualPosition": { "direction": "input", "type": "number", "title": "Actual Position" }
+  }
+}

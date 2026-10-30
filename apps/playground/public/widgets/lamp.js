@@ -1,4 +1,4 @@
-/** A plain indicator lamp: one boolean input, no interaction of its own. */
+/** Numeric brightness takes precedence once received; boolean-only bindings still work. */
 function colorOf(value, fallback) {
   return typeof value === 'string' && value.length > 0 ? value : fallback;
 }
@@ -27,6 +27,13 @@ function roundedPath(context, width, height, radius) {
 
 export default function lamp(api) {
   let lit = false;
+  let brightness;
+
+  api.subscribe('brightness', (payload) => {
+    if (typeof payload !== 'number' || !Number.isFinite(payload)) return;
+    brightness = Math.min(1, Math.max(0, payload));
+    api.invalidate();
+  });
 
   api.subscribe('lit', (payload) => {
     lit = payload === true;
@@ -45,6 +52,7 @@ export default function lamp(api) {
       );
       const on = colorOf(api.props.color, '#FF3B30');
       const off = colorOf(api.props.offColor, '#27272A');
+      const level = brightness ?? (lit ? 1 : 0);
 
       context.clearRect(0, 0, width, height);
       context.save();
@@ -58,28 +66,35 @@ export default function lamp(api) {
       const size = Math.min(width, height) * (label.length > 0 ? 0.5 : 0.66);
       const cx = width / 2;
       const cy = label.length > 0 ? height * 0.42 : height / 2;
-      const glow = lit ? Math.max(4, size * 0.35) : 0;
+      const glow = Math.max(4, size * 0.35) * level;
 
       context.save();
-      context.shadowColor = lit ? on : 'transparent';
-      context.shadowBlur = glow;
+      context.shadowColor = 'transparent';
+      context.shadowBlur = 0;
       context.beginPath();
       context.arc(cx, cy, size / 2, 0, Math.PI * 2);
-      context.fillStyle = lit ? on : off;
+      context.fillStyle = off;
       context.fill();
+      if (level > 0) {
+        context.globalAlpha = level;
+        context.shadowColor = on;
+        context.shadowBlur = glow;
+        context.fillStyle = on;
+        context.fill();
+      }
       context.restore();
 
       // A highlight keeps the lamp readable when it is off.
       context.beginPath();
       context.arc(cx - size * 0.15, cy - size * 0.15, size * 0.16, 0, Math.PI * 2);
-      context.fillStyle = lit ? 'rgba(255, 255, 255, 0.55)' : 'rgba(255, 255, 255, 0.12)';
+      context.fillStyle = `rgba(255, 255, 255, ${0.12 + 0.43 * level})`;
       context.fill();
 
       if (label.length === 0) return;
       context.textAlign = 'center';
       context.textBaseline = 'middle';
       context.font = `600 ${Math.max(8, Math.min(height * 0.16, width * 0.2))}px system-ui, sans-serif`;
-      context.fillStyle = lit ? '#f4f4f5' : '#a1a1aa';
+      context.fillStyle = level > 0 ? '#f4f4f5' : '#a1a1aa';
       context.fillText(label, width / 2, height * 0.84);
     },
     dispose() {

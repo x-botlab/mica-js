@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "schematic": "schematics/pullup-button-led.sch",
+  "widgets": [
+    {
+      "id": "b3000000-0000-4000-8000-000000000001",
+      "widget": "demo:button",
+      "x": 48,
+      "y": 80,
+      "width": 168,
+      "height": 72,
+      "rotation": 0,
+      "properties": {
+        "label": "S1 接地",
+        "radius": 8,
+        "background": "#3F3F46",
+        "backgroundPressed": "#0EA5E9"
+      },
+      "bindings": {
+        "press": { "symbol": "b1000000-0000-4000-8000-000000000005", "port": "pressed" }
+      }
+    },
+    {
+      "id": "b3000000-0000-4000-8000-000000000002",
+      "widget": "demo:lamp",
+      "x": 280,
+      "y": 48,
+      "width": 140,
+      "height": 140,
+      "rotation": 0,
+      "properties": { "label": "D1", "color": "#22C55E", "radius": 8 },
+      "bindings": {
+        "brightness": { "symbol": "b1000000-0000-4000-8000-000000000003", "port": "brightness" }
+      }
+    }
+  ]
+}
