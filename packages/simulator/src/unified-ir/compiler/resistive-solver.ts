@@ -54,6 +54,8 @@ export interface ResistiveSolver {
   readonly contactCurrentState: ArrayRef<'u8'>;
   readonly fault: StateRef<'u8'>;
   readonly factorizations: StateRef<'u32'>;
+  readonly groupRebuilds: ArrayRef<'u32'>;
+  readonly groupSolves: ArrayRef<'u32'>;
   readonly topologyVersion: StateRef<'u32'>;
   readonly matrixVersion: StateRef<'u32'>;
   readonly rhsVersion: StateRef<'u32'>;
@@ -70,7 +72,7 @@ type FlowStep =
     }
   | {
       readonly kind: 'loop';
-      readonly count: number;
+      readonly count: number | Value<'u32'>;
       readonly emit: (index: Value<'u32'>) => Program | void;
     }
   | {
@@ -112,7 +114,7 @@ class Flow {
   *when(condition: Value<'bool'>, emit: () => Program | void): Program {
     yield { kind: 'when', condition, emit };
   }
-  *loop(count: number, emit: (index: Value<'u32'>) => Program | void): Program {
+  *loop(count: number | Value<'u32'>, emit: (index: Value<'u32'>) => Program | void): Program {
     yield { kind: 'loop', count, emit };
   }
   *guard(valid: Value<'bool'>, fault: StateRef<'u8'>, code: number): Program {
@@ -160,7 +162,11 @@ class Flow {
       owner.jump(header, [owner.const('u32', 0)]);
       owner.at(header, (b, [index]) => {
         b.branch(
-          b.int.cmp('lt', index, b.const('u32', step.count)),
+          b.int.cmp(
+            'lt',
+            index,
+            typeof step.count === 'number' ? b.const('u32', step.count) : step.count,
+          ),
           { target: body, args: [index] },
           { target: done, args: [] },
         );
@@ -185,6 +191,10 @@ export function generateResistiveSolver(
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(prefix)) throw new Error('Invalid resistive solver prefix');
   const n = network.nodes;
   const matrixSize = n * n;
+  const sourceNodes = new Set(network.sources.map((source) => source.node));
+  const unknownNodes = Array.from({ length: n }, (_, i) => i).filter((i) => !sourceNodes.has(i));
+  const singleton =
+    network.contacts.length === 0 && unknownNodes.length === 1 ? unknownNodes[0] : undefined;
   const array = <T extends 'u32' | 'u8' | 'f64' | 'bool'>(
     name: string,
     type: T,
@@ -299,11 +309,32 @@ export function generateResistiveSolver(
     'u8',
     Array<number>(Math.max(1, network.sources.length)).fill(2),
   );
+  const group = array(
+    'group',
+    'u32',
+    Array.from({ length: n }, (_, i) => i),
+  );
+  const groupSize = array('group_size', 'u32', Array<number>(n).fill(0));
+  const groupNodes = array('group_nodes', 'u32', Array<number>(matrixSize).fill(0));
+  const groupDirty = flags('group_dirty', n);
+  const groupSolveDirty = flags('group_solve_dirty', n);
+  const groupRebuilds = array('group_rebuilds', 'u32', Array<number>(n).fill(0));
+  const groupSolves = array('group_solves', 'u32', Array<number>(n).fill(0));
+  const previousResistance = floats('previous_resistance', network.resistors.length);
+  const previousEnabled = flags('previous_enabled', network.resistors.length);
+  const previousSourceEnabled = flags('previous_source_enabled', network.sources.length);
+  const factorsInitialized = module.state(`${prefix}_factors_initialized`, 'bool', false);
+  const repartition = module.state(`${prefix}_repartition`, 'bool', true);
+  const relaxing = module.state(`${prefix}_relaxing`, 'bool', true);
   const pivotRow = module.state(`${prefix}_pivot_row`, 'u32', 0);
   const pivotMagnitude = module.state(`${prefix}_pivot_magnitude`, 'f64', 0);
   const accumulator = module.state(`${prefix}_accumulator`, 'f64', 0);
   const magnitude = module.state(`${prefix}_magnitude`, 'f64', 0);
-  const factor = module.func(`${prefix}_factor`, { params: [], results: [] });
+  const factorGeneral = module.func(`${prefix}_factor_general`, { params: [], results: [] });
+  const factor =
+    singleton === undefined
+      ? factorGeneral
+      : module.func(`${prefix}_factor`, { params: [], results: [] });
   const solve = module.func(`${prefix}_solve`, { params: [], results: [] });
   const at = (q: Flow, row: Value<'u32'>, column: Value<'u32'>) =>
     q.b.int.add(q.b.int.mul(row, q.u(n)), column);
@@ -311,7 +342,7 @@ export function generateResistiveSolver(
     const index = at(q, row, column);
     q.store(conductance, index, q.b.float.add(q.load(conductance, index), delta));
   };
-  factor.body((builder) => {
+  factorGeneral.body((builder) => {
     const q = new Flow(builder);
     q.run(function* () {
       q.b.state.store(validFactors, q.b.const('bool', false));
@@ -320,17 +351,25 @@ export function generateResistiveSolver(
         q.store(known, i, q.b.const('bool', false));
         q.store(reachable, i, q.b.const('bool', false));
       });
-      // Fixed bounded label relaxation computes connected components of ideal contacts only.
+      // Relaxation remains bounded; stable labels skip the remaining edge scans.
+      q.b.state.store(relaxing, q.b.const('bool', true));
       yield* q.loop(n, function* () {
-        for (const [index, contact] of network.contacts.entries()) {
-          yield* q.when(q.load(contactClosed, index), function () {
-            const a = q.load(label, contact.a);
-            const b = q.load(label, contact.b);
-            const min = q.b.select(q.b.int.cmp('lt', a, b), a, b);
-            q.store(label, contact.a, min);
-            q.store(label, contact.b, min);
-          });
-        }
+        yield* q.when(q.b.state.load(relaxing), function* () {
+          q.b.state.store(relaxing, q.b.const('bool', false));
+          for (const [index, contact] of network.contacts.entries()) {
+            yield* q.when(q.load(contactClosed, index), function () {
+              const a = q.load(label, contact.a);
+              const b = q.load(label, contact.b);
+              const min = q.b.select(q.b.int.cmp('lt', a, b), a, b);
+              q.b.state.store(
+                relaxing,
+                q.b.bool.or(q.b.state.load(relaxing), q.b.int.cmp('ne', a, b)),
+              );
+              q.store(label, contact.a, min);
+              q.store(label, contact.b, min);
+            });
+          }
+        });
       });
       for (const [index, source] of network.sources.entries()) {
         yield* q.when(q.load(sourceEnabled, index), function () {
@@ -339,16 +378,97 @@ export function generateResistiveSolver(
           q.store(reachable, root, q.b.const('bool', true));
         });
       }
+      q.b.state.store(relaxing, q.b.const('bool', true));
       yield* q.loop(n, function* () {
-        for (const [index, resistor] of network.resistors.entries()) {
-          yield* q.when(q.load(resistorEnabled, index), function () {
+        yield* q.when(q.b.state.load(relaxing), function* () {
+          q.b.state.store(relaxing, q.b.const('bool', false));
+          for (const [index, resistor] of network.resistors.entries()) {
+            yield* q.when(q.load(resistorEnabled, index), function () {
+              const a = q.load(label, resistor.a);
+              const b = q.load(label, resistor.b);
+              const ra = q.load(reachable, a);
+              const rb = q.load(reachable, b);
+              const connected = q.b.bool.or(ra, rb);
+              q.b.state.store(
+                relaxing,
+                q.b.bool.or(q.b.state.load(relaxing), q.b.bool.xor(ra, rb)),
+              );
+              q.store(reachable, a, connected);
+              q.store(reachable, b, connected);
+            });
+          }
+        });
+      });
+      q.b.state.store(
+        repartition,
+        q.b.bool.or(
+          q.b.bool.not(q.b.state.load(factorsInitialized)),
+          q.b.int.cmp('ne', q.b.state.load(topologyVersion), q.b.state.load(factoredTopology)),
+        ),
+      );
+      for (const [i] of network.sources.entries())
+        q.b.state.store(
+          repartition,
+          q.b.bool.or(
+            q.b.state.load(repartition),
+            q.b.bool.xor(q.load(sourceEnabled, i), q.load(previousSourceEnabled, i)),
+          ),
+        );
+      yield* q.loop(n, function (i) {
+        q.store(group, i, i);
+        q.store(groupSize, i, q.u(0));
+      });
+      // Fixed ideal-voltage roots separate unknown blocks. Disabled finite branches
+      // remain in the conservative graph, so enabling one cannot join cached groups.
+      q.b.state.store(relaxing, q.b.const('bool', true));
+      yield* q.loop(n, function* () {
+        yield* q.when(q.b.state.load(relaxing), function* () {
+          q.b.state.store(relaxing, q.b.const('bool', false));
+          for (const resistor of network.resistors) {
             const a = q.load(label, resistor.a);
             const b = q.load(label, resistor.b);
-            const connected = q.b.bool.or(q.load(reachable, a), q.load(reachable, b));
-            q.store(reachable, a, connected);
-            q.store(reachable, b, connected);
-          });
-        }
+            yield* q.when(
+              q.b.bool.not(q.b.bool.or(q.load(known, a), q.load(known, b))),
+              function () {
+                const ga = q.load(group, a);
+                const gb = q.load(group, b);
+                const root = q.b.select(q.b.int.cmp('lt', ga, gb), ga, gb);
+                q.b.state.store(
+                  relaxing,
+                  q.b.bool.or(q.b.state.load(relaxing), q.b.int.cmp('ne', ga, gb)),
+                );
+                q.store(group, a, root);
+                q.store(group, b, root);
+              },
+            );
+          }
+        });
+      });
+      yield* q.loop(n, function (i) {
+        q.store(groupDirty, i, q.b.state.load(repartition));
+      });
+      for (const [i, resistor] of network.resistors.entries()) {
+        yield* q.when(
+          q.b.bool.or(
+            q.b.float.cmp('ne', q.load(resistance, i), q.load(previousResistance, i)),
+            q.b.bool.xor(q.load(resistorEnabled, i), q.load(previousEnabled, i)),
+          ),
+          function () {
+            q.store(groupDirty, q.load(group, q.load(label, resistor.a)), q.b.const('bool', true));
+            q.store(groupDirty, q.load(group, q.load(label, resistor.b)), q.b.const('bool', true));
+          },
+        );
+      }
+      yield* q.loop(n, function* (row) {
+        yield* q.when(
+          q.b.bool.and(q.load(reachable, row), q.b.bool.not(q.load(known, row))),
+          function () {
+            const root = q.load(group, row);
+            const size = q.load(groupSize, root);
+            q.store(groupNodes, at(q, root, size), row);
+            q.store(groupSize, root, q.b.int.add(size, q.u(1)));
+          },
+        );
       });
       yield* q.loop(matrixSize, function (i) {
         q.store(conductance, i, q.f(0));
@@ -382,67 +502,106 @@ export function generateResistiveSolver(
           RESISTIVE_FAULT.numericalFailure,
         );
         q.store(scale, row, divisor);
-        yield* q.loop(n, function* (column) {
-          const included = q.b.bool.and(active, q.b.bool.not(q.load(known, column)));
-          const identity = q.b.select(q.b.int.cmp('eq', row, column), q.f(1), q.f(0));
-          const coefficient = q.b.select(
-            included,
-            q.b.float.div(q.load(conductance, at(q, row, column)), divisor),
-            q.b.select(active, q.f(0), identity),
-          );
-          yield* q.guard(q.b.float.isFinite(coefficient), fault, RESISTIVE_FAULT.numericalFailure);
-          q.store(system, at(q, row, column), coefficient);
-          q.store(factors, at(q, row, column), coefficient);
-        });
-        q.store(permutation, row, row);
-      });
-      yield* q.loop(n, function* (k) {
-        q.b.state.store(pivotRow, k);
-        q.b.state.store(pivotMagnitude, q.f(0));
-        yield* q.loop(n, function* (row) {
-          yield* q.when(q.b.int.cmp('ge', row, k), function* () {
-            const abs = q.abs(q.load(factors, at(q, row, k)));
-            yield* q.when(q.b.float.cmp('gt', abs, q.b.state.load(pivotMagnitude)), function () {
-              q.b.state.store(pivotMagnitude, abs);
-              q.b.state.store(pivotRow, row);
-            });
-          });
-        });
-        yield* q.guard(
-          q.b.float.cmp('gt', q.b.state.load(pivotMagnitude), q.f(1e-14)),
-          fault,
-          RESISTIVE_FAULT.numericalFailure,
-        );
-        const selected = q.b.state.load(pivotRow);
-        const old = q.load(permutation, k);
-        q.store(permutation, k, q.load(permutation, selected));
-        q.store(permutation, selected, old);
-        yield* q.loop(n, function (column) {
-          const before = q.load(factors, at(q, k, column));
-          q.store(factors, at(q, k, column), q.load(factors, at(q, selected, column)));
-          q.store(factors, at(q, selected, column), before);
-        });
-        yield* q.loop(n, function* (row) {
-          yield* q.when(q.b.int.cmp('gt', row, k), function* () {
-            const multiplier = q.b.float.div(
-              q.load(factors, at(q, row, k)),
-              q.load(factors, at(q, k, k)),
+        yield* q.when(q.b.bool.and(active, q.load(groupDirty, q.load(group, row))), function* () {
+          yield* q.loop(n, function* (column) {
+            const coefficient = q.b.select(
+              q.load(known, column),
+              q.f(0),
+              q.b.float.div(q.load(conductance, at(q, row, column)), divisor),
             );
-            yield* q.guard(q.b.float.isFinite(multiplier), fault, RESISTIVE_FAULT.numericalFailure);
-            q.store(factors, at(q, row, k), multiplier);
-            yield* q.loop(n, function* (column) {
-              yield* q.when(q.b.int.cmp('gt', column, k), function* () {
-                const value = q.b.float.sub(
-                  q.load(factors, at(q, row, column)),
-                  q.b.float.mul(multiplier, q.load(factors, at(q, k, column))),
+            yield* q.guard(
+              q.b.float.isFinite(coefficient),
+              fault,
+              RESISTIVE_FAULT.numericalFailure,
+            );
+            q.store(system, at(q, row, column), coefficient);
+            q.store(factors, at(q, row, column), coefficient);
+          });
+          q.store(permutation, row, row);
+        });
+      });
+      yield* q.loop(n, function* (root) {
+        const size = q.load(groupSize, root);
+        yield* q.when(
+          q.b.bool.and(q.load(groupDirty, root), q.b.int.cmp('gt', size, q.u(0))),
+          function* () {
+            q.store(groupRebuilds, root, q.b.int.add(q.load(groupRebuilds, root), q.u(1)));
+            // A scaled singleton equation already has a unit diagonal: no LU work.
+            yield* q.when(q.b.int.cmp('gt', size, q.u(1)), function* () {
+              yield* q.loop(size, function* (ki) {
+                const k = q.load(groupNodes, at(q, root, ki));
+                q.b.state.store(pivotRow, k);
+                q.b.state.store(pivotMagnitude, q.f(0));
+                yield* q.loop(size, function* (ri) {
+                  yield* q.when(q.b.int.cmp('ge', ri, ki), function* () {
+                    const row = q.load(groupNodes, at(q, root, ri));
+                    const abs = q.abs(q.load(factors, at(q, row, k)));
+                    yield* q.when(
+                      q.b.float.cmp('gt', abs, q.b.state.load(pivotMagnitude)),
+                      function () {
+                        q.b.state.store(pivotMagnitude, abs);
+                        q.b.state.store(pivotRow, row);
+                      },
+                    );
+                  });
+                });
+                yield* q.guard(
+                  q.b.float.cmp('gt', q.b.state.load(pivotMagnitude), q.f(1e-14)),
+                  fault,
+                  RESISTIVE_FAULT.numericalFailure,
                 );
-                yield* q.guard(q.b.float.isFinite(value), fault, RESISTIVE_FAULT.numericalFailure);
-                q.store(factors, at(q, row, column), value);
+                const selected = q.b.state.load(pivotRow);
+                const old = q.load(permutation, k);
+                q.store(permutation, k, q.load(permutation, selected));
+                q.store(permutation, selected, old);
+                yield* q.loop(size, function (ci) {
+                  const column = q.load(groupNodes, at(q, root, ci));
+                  const before = q.load(factors, at(q, k, column));
+                  q.store(factors, at(q, k, column), q.load(factors, at(q, selected, column)));
+                  q.store(factors, at(q, selected, column), before);
+                });
+                yield* q.loop(size, function* (ri) {
+                  yield* q.when(q.b.int.cmp('gt', ri, ki), function* () {
+                    const row = q.load(groupNodes, at(q, root, ri));
+                    const multiplier = q.b.float.div(
+                      q.load(factors, at(q, row, k)),
+                      q.load(factors, at(q, k, k)),
+                    );
+                    yield* q.guard(
+                      q.b.float.isFinite(multiplier),
+                      fault,
+                      RESISTIVE_FAULT.numericalFailure,
+                    );
+                    q.store(factors, at(q, row, k), multiplier);
+                    yield* q.loop(size, function* (ci) {
+                      yield* q.when(q.b.int.cmp('gt', ci, ki), function* () {
+                        const column = q.load(groupNodes, at(q, root, ci));
+                        const value = q.b.float.sub(
+                          q.load(factors, at(q, row, column)),
+                          q.b.float.mul(multiplier, q.load(factors, at(q, k, column))),
+                        );
+                        yield* q.guard(
+                          q.b.float.isFinite(value),
+                          fault,
+                          RESISTIVE_FAULT.numericalFailure,
+                        );
+                        q.store(factors, at(q, row, column), value);
+                      });
+                    });
+                  });
+                });
               });
             });
-          });
-        });
+          },
+        );
       });
+      for (const [i] of network.resistors.entries()) {
+        q.store(previousResistance, i, q.load(resistance, i));
+        q.store(previousEnabled, i, q.load(resistorEnabled, i));
+      }
+      for (const [i] of network.sources.entries())
+        q.store(previousSourceEnabled, i, q.load(sourceEnabled, i));
+      q.b.state.store(factorsInitialized, q.b.const('bool', true));
       q.b.state.store(factoredTopology, q.b.state.load(topologyVersion));
       q.b.state.store(factoredMatrix, q.b.state.load(matrixVersion));
       q.b.state.store(validFactors, q.b.const('bool', true));
@@ -450,6 +609,85 @@ export function generateResistiveSolver(
       q.b.return([]);
     });
   });
+  if (singleton !== undefined) {
+    const direct = module.func(`${prefix}_factor_singleton`, { params: [], results: [] });
+    direct.body((builder) => {
+      const q = new Flow(builder);
+      q.run(function* () {
+        q.b.state.store(validFactors, q.b.const('bool', false));
+        for (let node = 0; node < n; node++) {
+          q.store(label, node, q.u(node));
+          q.store(known, node, q.b.const('bool', node !== singleton));
+          q.store(reachable, node, q.b.const('bool', node !== singleton));
+          q.store(group, node, q.u(node));
+          q.store(groupSize, node, q.u(0));
+          q.store(groupDirty, node, q.b.const('bool', node === singleton));
+          q.store(scale, node, q.f(1));
+          q.store(conductance, singleton * n + node, q.f(0));
+        }
+        for (const [i, resistor] of network.resistors.entries()) {
+          yield* q.when(q.load(resistorEnabled, i), function* () {
+            const g = q.b.float.div(q.f(1), q.load(resistance, i));
+            yield* q.guard(
+              q.b.bool.and(q.b.float.isFinite(g), q.b.float.cmp('gt', g, q.f(0))),
+              fault,
+              RESISTIVE_FAULT.numericalFailure,
+            );
+            if ((resistor.a === singleton) !== (resistor.b === singleton)) {
+              const other = resistor.a === singleton ? resistor.b : resistor.a;
+              addAt(q, q.u(singleton), q.u(singleton), g);
+              addAt(q, q.u(singleton), q.u(other), q.b.float.sub(q.f(0), g));
+              q.store(reachable, singleton, q.b.const('bool', true));
+            }
+          });
+        }
+        const active = q.load(reachable, singleton);
+        const divisor = q.b.select(active, q.load(conductance, singleton * n + singleton), q.f(1));
+        yield* q.guard(
+          q.b.bool.and(q.b.float.isFinite(divisor), q.b.float.cmp('gt', divisor, q.f(0))),
+          fault,
+          RESISTIVE_FAULT.numericalFailure,
+        );
+        q.store(scale, singleton, divisor);
+        for (let column = 0; column < n; column++)
+          q.store(system, singleton * n + column, q.f(column === singleton ? 1 : 0));
+        q.store(groupSize, singleton, q.b.select(active, q.u(1), q.u(0)));
+        q.store(groupNodes, singleton * n, q.u(singleton));
+        yield* q.when(active, function () {
+          q.store(groupRebuilds, singleton, q.b.int.add(q.load(groupRebuilds, singleton), q.u(1)));
+        });
+        for (const [i] of network.sources.entries())
+          q.store(previousSourceEnabled, i, q.load(sourceEnabled, i));
+        q.b.state.store(factorsInitialized, q.b.const('bool', true));
+        q.b.state.store(factoredTopology, q.b.state.load(topologyVersion));
+        q.b.state.store(factoredMatrix, q.b.state.load(matrixVersion));
+        q.b.state.store(validFactors, q.b.const('bool', true));
+        q.b.state.store(factorizations, q.b.int.add(q.b.state.load(factorizations), q.u(1)));
+        q.b.return([]);
+      });
+    });
+    factor.body((b) => {
+      let fixed = b.const('bool', true);
+      for (const node of sourceNodes) {
+        let enabled = b.const('bool', false);
+        for (const [i, source] of network.sources.entries())
+          if (source.node === node)
+            enabled = b.bool.or(enabled, b.array.load(sourceEnabled, b.const('u32', i)));
+        fixed = b.bool.and(fixed, enabled);
+      }
+      const yes = b.block([]);
+      const no = b.block([]);
+      b.branch(fixed, { target: yes, args: [] }, { target: no, args: [] });
+      b.at(yes, (b) => {
+        b.call(direct, []);
+        b.return([]);
+      });
+      b.at(no, (b) => {
+        b.call(factorGeneral, []);
+        b.return([]);
+      });
+    });
+  }
   solve.body((builder) => {
     const sameTopology = builder.int.cmp(
       'eq',
@@ -524,84 +762,129 @@ export function generateResistiveSolver(
             q.store(assigned, root, q.b.const('bool', true));
           });
         }
+        yield* q.loop(n, function (root) {
+          q.store(groupSolveDirty, root, q.b.bool.and(changed, q.load(groupDirty, root)));
+        });
         yield* q.loop(n, function* (row) {
-          q.b.state.store(accumulator, q.f(0));
-          yield* q.loop(n, function (column) {
-            const sourceTerm = q.b.select(
-              q.load(known, column),
-              q.b.float.mul(
-                q.b.float.div(q.load(conductance, at(q, row, column)), q.load(scale, row)),
-                q.load(anchor, column),
-              ),
-              q.f(0),
-            );
-            q.b.state.store(accumulator, q.b.float.sub(q.b.state.load(accumulator), sourceTerm));
-          });
           const active = q.b.bool.and(q.load(reachable, row), q.b.bool.not(q.load(known, row)));
+          q.b.state.store(accumulator, q.f(0));
+          yield* q.when(active, function* () {
+            yield* q.loop(n, function (column) {
+              const sourceTerm = q.b.select(
+                q.load(known, column),
+                q.b.float.mul(
+                  q.b.float.div(q.load(conductance, at(q, row, column)), q.load(scale, row)),
+                  q.load(anchor, column),
+                ),
+                q.f(0),
+              );
+              q.b.state.store(accumulator, q.b.float.sub(q.b.state.load(accumulator), sourceTerm));
+            });
+          });
           const value = q.b.select(
             q.load(known, row),
             q.load(anchor, row),
             q.b.select(active, q.b.state.load(accumulator), q.f(0)),
           );
           yield* q.guard(q.b.float.isFinite(value), fault, RESISTIVE_FAULT.numericalFailure);
-          q.store(rhs, row, value);
-        });
-        yield* q.loop(n, function* (row) {
-          q.b.state.store(accumulator, q.load(rhs, q.load(permutation, row)));
-          yield* q.loop(n, function* (column) {
-            yield* q.when(q.b.int.cmp('lt', column, row), function () {
-              q.b.state.store(
-                accumulator,
-                q.b.float.sub(
-                  q.b.state.load(accumulator),
-                  q.b.float.mul(q.load(factors, at(q, row, column)), q.load(work, column)),
-                ),
-              );
-            });
-          });
-          q.store(work, row, q.b.state.load(accumulator));
-        });
-        yield* q.loop(n, function* (reverse) {
-          const row = q.b.int.sub(q.u(n - 1), reverse);
-          q.b.state.store(accumulator, q.load(work, row));
-          yield* q.loop(n, function* (column) {
-            yield* q.when(q.b.int.cmp('gt', column, row), function () {
-              q.b.state.store(
-                accumulator,
-                q.b.float.sub(
-                  q.b.state.load(accumulator),
-                  q.b.float.mul(q.load(factors, at(q, row, column)), q.load(candidate, column)),
-                ),
-              );
-            });
-          });
-          const value = q.b.float.div(
-            q.b.state.load(accumulator),
-            q.load(factors, at(q, row, row)),
+          yield* q.when(
+            q.b.bool.and(active, q.b.float.cmp('ne', value, q.load(rhs, row))),
+            function () {
+              q.store(groupSolveDirty, q.load(group, row), q.b.const('bool', true));
+            },
           );
-          yield* q.guard(q.b.float.isFinite(value), fault, RESISTIVE_FAULT.numericalFailure);
-          q.store(candidate, row, value);
+          q.store(rhs, row, value);
+          yield* q.when(q.b.bool.not(active), function () {
+            q.store(candidate, row, value);
+          });
+        });
+        yield* q.loop(n, function* (root) {
+          const size = q.load(groupSize, root);
+          yield* q.when(
+            q.b.bool.and(q.load(groupSolveDirty, root), q.b.int.cmp('gt', size, q.u(0))),
+            function* () {
+              q.store(groupSolves, root, q.b.int.add(q.load(groupSolves, root), q.u(1)));
+              yield* q.when(q.b.int.cmp('eq', size, q.u(1)), function () {
+                const row = q.load(groupNodes, at(q, root, q.u(0)));
+                q.store(candidate, row, q.load(rhs, row));
+              });
+              yield* q.when(q.b.int.cmp('gt', size, q.u(1)), function* () {
+                yield* q.loop(size, function* (ri) {
+                  const row = q.load(groupNodes, at(q, root, ri));
+                  q.b.state.store(accumulator, q.load(rhs, q.load(permutation, row)));
+                  yield* q.loop(size, function* (ci) {
+                    yield* q.when(q.b.int.cmp('lt', ci, ri), function () {
+                      const column = q.load(groupNodes, at(q, root, ci));
+                      q.b.state.store(
+                        accumulator,
+                        q.b.float.sub(
+                          q.b.state.load(accumulator),
+                          q.b.float.mul(q.load(factors, at(q, row, column)), q.load(work, column)),
+                        ),
+                      );
+                    });
+                  });
+                  q.store(work, row, q.b.state.load(accumulator));
+                });
+                yield* q.loop(size, function* (reverse) {
+                  const ri = q.b.int.sub(q.b.int.sub(size, q.u(1)), reverse);
+                  const row = q.load(groupNodes, at(q, root, ri));
+                  q.b.state.store(accumulator, q.load(work, row));
+                  yield* q.loop(size, function* (ci) {
+                    yield* q.when(q.b.int.cmp('gt', ci, ri), function () {
+                      const column = q.load(groupNodes, at(q, root, ci));
+                      q.b.state.store(
+                        accumulator,
+                        q.b.float.sub(
+                          q.b.state.load(accumulator),
+                          q.b.float.mul(
+                            q.load(factors, at(q, row, column)),
+                            q.load(candidate, column),
+                          ),
+                        ),
+                      );
+                    });
+                  });
+                  const value = q.b.float.div(
+                    q.b.state.load(accumulator),
+                    q.load(factors, at(q, row, row)),
+                  );
+                  yield* q.guard(
+                    q.b.float.isFinite(value),
+                    fault,
+                    RESISTIVE_FAULT.numericalFailure,
+                  );
+                  q.store(candidate, row, value);
+                });
+              });
+            },
+          );
         });
         yield* q.loop(n, function* (row) {
-          q.b.state.store(accumulator, q.f(0));
-          q.b.state.store(magnitude, q.b.float.mul(q.f(1e-10), q.abs(q.load(rhs, row))));
-          yield* q.loop(n, function (column) {
-            const term = q.b.float.mul(
-              q.load(system, at(q, row, column)),
-              q.load(candidate, column),
-            );
-            q.b.state.store(accumulator, q.b.float.add(q.b.state.load(accumulator), term));
-            q.b.state.store(
-              magnitude,
-              q.b.float.add(q.b.state.load(magnitude), q.b.float.mul(q.f(1e-10), q.abs(term))),
-            );
-          });
-          const error = q.abs(q.b.float.sub(q.b.state.load(accumulator), q.load(rhs, row)));
-          const tolerance = q.b.float.add(q.f(1e-22), q.b.state.load(magnitude));
-          yield* q.guard(
-            q.b.bool.and(q.b.float.isFinite(error), q.b.float.cmp('le', error, tolerance)),
-            fault,
-            RESISTIVE_FAULT.numericalFailure,
+          yield* q.when(
+            q.b.bool.and(q.load(reachable, row), q.b.bool.not(q.load(known, row))),
+            function* () {
+              q.b.state.store(accumulator, q.f(0));
+              q.b.state.store(magnitude, q.b.float.mul(q.f(1e-10), q.abs(q.load(rhs, row))));
+              yield* q.loop(n, function (column) {
+                const term = q.b.float.mul(
+                  q.load(system, at(q, row, column)),
+                  q.load(candidate, column),
+                );
+                q.b.state.store(accumulator, q.b.float.add(q.b.state.load(accumulator), term));
+                q.b.state.store(
+                  magnitude,
+                  q.b.float.add(q.b.state.load(magnitude), q.b.float.mul(q.f(1e-10), q.abs(term))),
+                );
+              });
+              const error = q.abs(q.b.float.sub(q.b.state.load(accumulator), q.load(rhs, row)));
+              const tolerance = q.b.float.add(q.f(1e-22), q.b.state.load(magnitude));
+              yield* q.guard(
+                q.b.bool.and(q.b.float.isFinite(error), q.b.float.cmp('le', error, tolerance)),
+                fault,
+                RESISTIVE_FAULT.numericalFailure,
+              );
+            },
           );
         });
         // Currents and voltages are staged until the entire candidate snapshot is finite.
@@ -787,6 +1070,8 @@ export function generateResistiveSolver(
     contactCurrentState,
     fault,
     factorizations,
+    groupRebuilds,
+    groupSolves,
     topologyVersion,
     matrixVersion,
     rhsVersion,

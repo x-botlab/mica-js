@@ -126,6 +126,7 @@ export class MainLoopGenerator {
     const byId = new Map(entries.map((entry) => [entry.deviceId, entry]));
 
     const electrical = this.electrical;
+    electrical?.finalize();
     const progress = this.module.state(`${names.tick}_completed`, 'u32', 0);
     const collect = (phase: 'initialize' | 'tick' | 'update') =>
       order.flatMap((id) => {

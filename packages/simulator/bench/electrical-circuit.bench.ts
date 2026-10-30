@@ -482,7 +482,12 @@ interface Measured {
 test('electrical circuit: stable ticks, resistance, GPIO RHS and contact topology', async () => {
   const measured: Measured[] = [];
   try {
-    for (const variant of ['stable', 'resistance', 'gpio-rhs', 'contact'] as const) {
+    const variants = ['stable', 'resistance', 'gpio-rhs', 'contact'] as const;
+    const selected = process.env['MICA_BENCH_VARIANT'];
+    if (selected !== undefined && !variants.some((variant) => variant === selected))
+      throw new Error('MICA_BENCH_VARIANT must be stable, resistance, gpio-rhs or contact');
+    for (const variant of variants) {
+      if (selected !== undefined && variant !== selected) continue;
       const circuit = await createCircuit(variant, 'jit');
       measured.push({ variant, circuit, samples: [] });
       circuit.runBatch(WARMUP_TICKS);
@@ -501,7 +506,7 @@ test('electrical circuit: stable ticks, resistance, GPIO RHS and contact topolog
 
     console.log(
       `node=${process.version} platform=${process.platform}/${process.arch}; ` +
-        `ticks/round=${TICKS}; warmup=${WARMUP_TICKS}; rounds=${ROUNDS}`,
+        `ticks/round=${TICKS}; warmup=${WARMUP_TICKS}; rounds=${ROUNDS}; compiler=${process.env['MICA_BENCH_REF'] ?? 'worktree'}`,
     );
     for (const { variant, circuit, samples } of measured) {
       const sorted = [...samples].sort((a, b) => a - b);

@@ -207,4 +207,49 @@ pnpm --filter @mica-js/simulator exec vitest run --config bench/electrical-circu
 | GPIO 模拟电压改变，仅 RHS 更新 |  52.62 |  61.80 |
 | 每 tick 切换理想触点           | 202.98 | 261.20 |
 
-这些数字覆盖器件阶段、失效、当前稠密求解和批处理时钟，不含建图/JIT、RPC、UI、诊断 getter 或大规模网络。固定电路、缓存命中和持续调阻不是同一种负载；此结果不能推广为整机吞吐。当前独立分组和单节点闭式路径尚未实现，动态场景明显慢于缓存场景；此前算术微内核的 ns 数字不是这一基准的替代值。
+以上是初始实现（提交 `25db47cd`）的历史测量，覆盖器件阶段、失效、稠密求解和批处理时钟，不含建图/JIT、RPC、UI、诊断 getter 或大规模网络。固定电路、缓存命中和持续调阻不是同一种负载；此结果不能推广为整机吞吐。此前算术微内核的 ns 数字不是这一基准的替代值。
+
+### 分组与单节点优化对照
+
+当前实现按固定理想电压边界对未知节点保守分组，缓存未改变组的分解和解；源关闭和触点变化会重建分组。单节点组直接解缩放后的方程；只有一个潜在未知节点时另生成轻量装配路径，失去理想源边界时回退通用路径。未被模拟读取使用的输入不生成浮空采样辅助状态。所有分支仍在同一 IR 中运行，电压、电流、诊断与整份快照提交检查保留。
+
+同机串行对照 `25db47cd`，每轮 5000 tick、预热 2000 tick、5 轮，中位数 μs/tick：
+
+| 场景          |    基线 | 优化后 | 基线 / 优化后 |
+| ------------- | ------: | -----: | ------------: |
+| 稳定          |   0.796 |  0.777 |          1.03 |
+| 持续调阻      | 188.185 | 78.281 |          2.40 |
+| GPIO RHS 更新 |  45.057 | 23.718 |          1.90 |
+| 触点切换      | 185.697 | 86.311 |          2.15 |
+
+共享机器的短轮次波动明显，稳定项近似持平，不据此宣称可靠提升。另一次稳定项长轮次对照（预热 100000、每轮 100000 tick、15 轮）中位数为 1.010 → 0.757 μs/tick；不同测量协议的数据分开记录，不能混作统一吞吐承诺。
+
+```powershell
+$env:MICA_BENCH_TICKS = '5000'
+$env:MICA_BENCH_WARMUP_TICKS = '2000'
+$env:MICA_BENCH_ROUNDS = '5'
+$env:MICA_BENCH_REF = '25db47cd'
+pnpm --filter @mica-js/simulator exec vitest run --config bench\electrical-circuit.config.ts
+Remove-Item Env:MICA_BENCH_REF
+pnpm --filter @mica-js/simulator exec vitest run --config bench\electrical-circuit.config.ts
+```
+
+`MICA_BENCH_REF` 通过 Git 读取本轮四个编译器文件的指定版本，测试本身仍使用当前公共 Circuit harness，不修改工作区。它用于本轮编译器对照，不是任意历史 IR／运行时版本的整仓回放。`MICA_BENCH_VARIANT` 可选 `stable`、`resistance`、`gpio-rhs` 或 `contact`，只筛选计时场景，正确性测试仍检查全部场景。
+
+### 独立分组规模
+
+```sh
+pnpm --filter @mica-js/simulator exec vitest run --config bench/electrical-scaling.config.ts
+```
+
+新基准包含共享固定 VDD/GND 的独立带负载分压支路：先检查闭式电压／电流、reset，以及小规模 reference/JIT 快照相等，再测稳定与每条支路持续调阻。支持 `MICA_SCALING_BRANCHES`（逗号分隔）、`MICA_SCALING_TICKS`、`MICA_SCALING_WARMUP_TICKS`、`MICA_SCALING_ROUNDS`；同样支持 `MICA_BENCH_REF`。
+
+以下为持续调阻的中位数 μs/tick；4/8 支路用相同的 2000 预热、2000 tick/轮、5 轮对照。单支路为排除 JIT 预热影响，单独用 50000 预热、10000 tick/轮、9 轮对照。
+
+| 支路数 |    基线 |  优化后 | 基线 / 优化后 |
+| ------ | ------: | ------: | ------------: |
+| 1      |   7.518 |   3.765 |          2.00 |
+| 4      | 110.572 |  53.873 |          2.05 |
+| 8      | 516.717 | 176.621 |          2.93 |
+
+初版通用分组曾让最小电路变慢，已通过专用单节点装配与源关闭回退修正；没有降低正确性检查或性能门槛。8 支路仍明显不是线性扩展：通用路径保留稠密存储、全局装配／残差、以及源／触点电流的快照计算，未来稀疏化与局部发布还有空间。本轮不提供大图、UI 或 RPC 的性能保证。

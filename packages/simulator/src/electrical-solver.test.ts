@@ -26,6 +26,24 @@ const divider = (): ResistiveNetwork => ({
   contacts: [],
 });
 
+const independentLadders = (): ResistiveNetwork => ({
+  nodes: 7,
+  resistors: [
+    { a: 0, b: 2, resistance: 1000, enabled: true },
+    { a: 2, b: 3, resistance: 1000, enabled: true },
+    { a: 3, b: 1, resistance: 1000, enabled: true },
+    { a: 6, b: 4, resistance: 1000, enabled: true },
+    { a: 4, b: 5, resistance: 1000, enabled: true },
+    { a: 5, b: 1, resistance: 1000, enabled: true },
+  ],
+  sources: [
+    { node: 0, voltage: 3.3, enabled: true },
+    { node: 1, voltage: 0, enabled: true },
+    { node: 6, voltage: 5, enabled: true },
+  ],
+  contacts: [{ a: 3, b: 4, closed: false }],
+});
+
 function probe(network: ResistiveNetwork, engine: 'reference' | 'jit') {
   const module = createIRModule();
   const solver = generateResistiveSolver(module, network, 'test');
@@ -77,6 +95,14 @@ function probe(network: ResistiveNetwork, engine: 'reference' | 'jit') {
     });
   return {
     solver,
+    groups: () => ({
+      rebuilds: Array.from({ length: network.nodes }, (_, i) =>
+        runtime.storage.loadArray(solver.groupRebuilds, i),
+      ),
+      solves: Array.from({ length: network.nodes }, (_, i) =>
+        runtime.storage.loadArray(solver.groupSolves, i),
+      ),
+    }),
     solve: () =>
       runtime.execute(solver.solve, [], { instanceId: 'resistive-test', virtualTime: 0 }),
     number: (array: ArrayRef<'f64'>, i: number, value: number) => {
@@ -118,6 +144,90 @@ function probe(network: ResistiveNetwork, engine: 'reference' | 'jit') {
 
 for (const engine of ['reference', 'jit'] as const) {
   describe(`resistive IR (${engine})`, () => {
+    test('switches the direct singleton path to general solving when a source is disabled', () => {
+      const p = probe(divider(), engine);
+      p.solve();
+      const initial = p.snapshot();
+      p.flag(p.solver.sourceEnabled, 0, false);
+      p.solve();
+      expect(p.snapshot().fault).toBe(0);
+      expect(p.snapshot().voltage).toEqual([0, 0, 0]);
+      p.flag(p.solver.sourceEnabled, 0, true);
+      p.solve();
+      expect(p.snapshot().voltage).toEqual(initial.voltage);
+      p.flag(p.solver.resistorEnabled, 0, false);
+      p.solve();
+      expect(p.snapshot().voltage[1]).toBe(0);
+      p.flag(p.solver.resistorEnabled, 1, false);
+      p.solve();
+      expect(p.snapshot().voltageState).toEqual([0, 1, 0]);
+      expect(p.snapshot().current).toEqual([0, 0]);
+      p.flag(p.solver.resistorEnabled, 0, true);
+      p.solve();
+      expect(p.snapshot().voltage[1]).toBe(3.3);
+      expect(p.snapshot().voltageState).toEqual([0, 0, 0]);
+    });
+
+    test('rebuilds and solves only affected unknown groups across shared fixed rails', () => {
+      const p = probe(independentLadders(), engine);
+      p.solve();
+      expect(p.groups().rebuilds).toEqual([0, 0, 1, 0, 1, 0, 0]);
+      expect(p.groups().solves).toEqual([0, 0, 1, 0, 1, 0, 0]);
+      const untouched = p.snapshot().voltage.slice(4, 6);
+      p.number(p.solver.resistance, 0, 2000);
+      p.solve();
+      expect(p.snapshot().fault).toBe(0);
+      expect(p.snapshot().voltage[2]).toBeCloseTo(1.65, 12);
+      expect(p.snapshot().voltage[3]).toBeCloseTo(0.825, 12);
+      expect(p.snapshot().voltage.slice(4, 6)).toEqual(untouched);
+      expect(p.groups().rebuilds).toEqual([0, 0, 2, 0, 1, 0, 0]);
+      expect(p.groups().solves).toEqual([0, 0, 2, 0, 1, 0, 0]);
+      p.number(p.solver.sourceVoltage, 0, 6.6);
+      p.solve();
+      expect(p.snapshot().voltage[2]).toBeCloseTo(3.3, 12);
+      expect(p.groups().rebuilds).toEqual([0, 0, 2, 0, 1, 0, 0]);
+      expect(p.groups().solves).toEqual([0, 0, 3, 0, 1, 0, 0]);
+      p.number(p.solver.sourceVoltage, 2, 6);
+      p.solve();
+      expect(p.snapshot().voltage[4]).toBeCloseTo(4, 12);
+      expect(p.groups().solves).toEqual([0, 0, 3, 0, 2, 0, 0]);
+      p.solve();
+      expect(p.groups().solves).toEqual([0, 0, 3, 0, 2, 0, 0]);
+    });
+
+    test('repartitions when ideal boundaries disappear or contacts join and split groups', () => {
+      const p = probe(independentLadders(), engine);
+      p.solve();
+      const initial = p.snapshot();
+      p.flag(p.solver.sourceEnabled, 0, false);
+      p.solve();
+      expect(p.snapshot().fault).toBe(0);
+      expect(p.snapshot().voltage.slice(0, 4)).toEqual([0, 0, 0, 0]);
+      expect(p.snapshot().voltage.slice(4, 7)).toEqual(initial.voltage.slice(4, 7));
+      p.flag(p.solver.sourceEnabled, 0, true);
+      p.solve();
+      expect(p.snapshot().voltage).toEqual(initial.voltage);
+      p.flag(p.solver.contactClosed, 0, true);
+      p.solve();
+      expect(p.snapshot().fault).toBe(0);
+      const joined = (3.3 / 2000 + 5 / 1000) / (1 / 2000 + 1 / 1000 + 1 / 1000 + 1 / 2000);
+      expect(p.snapshot().voltage[3]).toBeCloseTo(joined, 12);
+      expect(p.snapshot().voltage[4]).toBeCloseTo(joined, 12);
+      p.flag(p.solver.contactClosed, 0, false);
+      p.solve();
+      expect(p.snapshot().voltage).toEqual(initial.voltage);
+      p.flag(p.solver.resistorEnabled, 1, false);
+      p.solve();
+      expect(p.snapshot().voltage[2]).toBeCloseTo(3.3, 12);
+      expect(p.snapshot().voltage[3]).toBe(0);
+      p.flag(p.solver.resistorEnabled, 1, true);
+      p.solve();
+      expect(p.snapshot().voltage).toEqual(initial.voltage);
+      p.reset();
+      p.solve();
+      expect(p.groups().rebuilds).toEqual([0, 0, 1, 0, 1, 0, 0]);
+    });
+
     test('solves a divider and stable oriented currents', () => {
       const p = probe(divider(), engine);
       p.solve();

@@ -5,7 +5,7 @@ import { createElectricalOperations } from './unified-ir/compiler/electrical-ope
 import { createModuleValidation } from './unified-ir/validation';
 import type { ArrayRef, FunctionRef } from '@mica-js/ir';
 import { describe, expect, test } from 'vitest';
-import { Circuit, PIN_MODE } from './index';
+import { Circuit, PIN_MODE, compileCircuit } from './index';
 import type { DeviceDescription } from './index';
 
 const electrical = {
@@ -62,6 +62,7 @@ function analogFixture(engine: 'reference' | 'jit', initialSupply = 3.3, deviceI
   description.kernel!({ module, bind: (b) => operations.bindDevice(deviceId, b) } as Parameters<
     NonNullable<DeviceDescription['kernel']>
   >[0]);
+  operations.finalize();
   const validation = createModuleValidation(module);
   const runtime =
     engine === 'reference'
@@ -72,6 +73,7 @@ function analogFixture(engine: 'reference' | 'jit', initialSupply = 3.3, deviceI
   run(operations.ensure);
   return {
     run,
+    solve: () => run(operations.ensure),
     drive,
     release,
     sample: (time: number) => {
@@ -97,7 +99,51 @@ function analogFixture(engine: 'reference' | 'jit', initialSupply = 3.3, deviceI
   };
 }
 
+test('generates floating helpers only for analog reads, sharing repeated reads of the same pin', () => {
+  const compile = (analog: boolean) => {
+    const description: DeviceDescription = {
+      pins: { A: { kind: 'signal' }, B: { kind: 'signal' } },
+      states: { sampled: { type: 'f64', initial: 0 }, digital: { type: 'bool', initial: false } },
+      factory: ({ electrical }) => {
+        for (const name of ['A', 'B'])
+          electrical.initializePin(name, {
+            input: { reference: { source: 'VDD' }, low: 0.3, high: 0.7 },
+          });
+        return {
+          update: (api) => {
+            api.state<'bool'>('digital').store(api.pin('B').sampleDigital());
+            if (analog)
+              api
+                .state<'f64'>('sampled')
+                .store(
+                  api.builder.float.add(api.pin('A').sampleVoltage(), api.pin('A').sampleVoltage()),
+                );
+          },
+        };
+      },
+    };
+    return compileCircuit(
+      { devices: [{ id: 'sensor', type: 'sensor', description }], connections: [] },
+      electrical,
+    );
+  };
+  expect(compile(false).functions.filter((name) => name.includes('_analog_'))).toEqual([]);
+  const functions = compile(true).functions;
+  expect(functions.filter((name) => name.endsWith('_sample'))).toEqual([
+    'electrical_analog_0_sample',
+  ]);
+  expect(functions.filter((name) => name.includes('_analog_1'))).toEqual([]);
+});
+
 describe.each(['reference', 'jit'] as const)('%s analog observations', (engine) => {
+  test('tracks physical floating episodes before the first analog read', () => {
+    const fixture = analogFixture(engine);
+    fixture.run(fixture.drive);
+    fixture.solve();
+    fixture.run(fixture.release);
+    fixture.solve();
+    expect(fixture.sample(0)).toBeCloseTo(1.155351, 6);
+  });
   test('matches both mica-floating-v2 RFC episodes, including high time bits and repeated reads', () => {
     const fixture = analogFixture(engine);
     const times = [0, 100, 101, 4294967296, 7200000000000000];

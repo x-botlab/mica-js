@@ -10,7 +10,7 @@
 
 编译器内部的[资源链接器](./src/unified-ir/compiler/electrical-network.ts)已将这些初始化结果映射为电阻、参考电压源、GPIO 驱动、独立上下拉及双向触点。只合并导线端点，不合并电阻两端；未初始化采样或驱动能力的被动引脚仍保留。
 
-[线性求解内核](./src/unified-ir/compiler/resistive-solver.ts)在同一 IR 模块中生成行缩放、选主元 LU 与前后代入，不调用宿主 JS 数值求解器。受控失效入口分别更新拓扑、矩阵与右端项版本；仅源电压变化复用分解，未变化的求解直接使用缓存。浮空有独立状态；源冲突和数值失败保留上一份完整发布快照，冗余理想源的电流标记为不确定。参考解释器与 JIT 的分压、电桥、触点、上下拉、极端数值及批量采样已有对照测试，RFC 的电阻 JSON/JS 示例也经过链接和实际求解。
+[线性求解内核](./src/unified-ir/compiler/resistive-solver.ts)在同一 IR 模块中生成行缩放、选主元 LU 与前后代入，不调用宿主 JS 数值求解器。固定理想电压节点隔开未知节点组；全部有限支路（含暂时禁用的支路）参与保守分组，未变组保留分解和解。源电压变化仅更新受影响组的解；理想触点变化或源使能变化重新分组。单节点组绕过 LU；只有一个潜在未知节点且其余节点均被理想源固定时使用直接装配，源关闭时退回通用求解。受控失效入口仍分别更新拓扑、矩阵与右端项版本，稳定求解直接命中缓存。浮空有独立状态；源冲突和数值失败保留上一份完整发布快照，冗余理想源的电流标记为不确定。参考解释器与 JIT 的分压、电桥、触点、上下拉、极端数值及批量采样已有对照测试，RFC 的电阻 JSON/JS 示例也经过链接和实际求解。
 
 [器件操作](./src/unified-ir/compiler/electrical-operations.ts)通过现有 `DeviceBehaviorApi` 提供独立输出使能、数字与模拟输出意图、开漏、独立上下拉、数字输入解释和原子数字／电阻／触点补丁。输出未就绪时保持释放；浮空数字输入读低，滞回记忆按每次成功求解更新。kernel 可用 `bind(builder)` 取得相同操作，新电气路径禁止直接读写旧电气数组，器件私有状态仍可正常使用。
 
@@ -26,13 +26,13 @@ Playground 的 LED、教学 MCU、按钮和继电器已迁移为同目录 JSON/J
 
 新增 `demo:potentiometer`：`position` 输入和 `actualPosition` 输出均为 [0, 1] 的 number。输入先经已有 `deliver` 队列，在下一 tick 写普通状态，再通过一次 IR `applyResistors` 原子调整上下两支路。number 输出将浮点状态转换为 JS number，通用 `DeviceAccessor.getState` 仍保留 FloatBits。阻值为 `endResistance + trackResistance * (1-position)` 与 `endResistance + trackResistance * position`；正端点电阻是显式属性，不是隐藏 epsilon。默认轨道 10000 Ω、每端 10 Ω、位置 0.5；真实负载会影响滑端电压。topic 回读的是位置，不是伪造的模拟电压；物理电压仍由本地 `Circuit.getVoltage` 观察。
 
-输入能力的 `sampleVoltage()` 返回确定节点的实际电压；浮空时按 RFC 的 `mica-floating-v2` 算法采样，不向物理解算添加噪声、隐式接地或泄漏。`floatingSeed` 默认为 0；同一浮空阶段、参考电压与时间下重复读取逐位一致，供电未就绪时返回正零，恢复后按既有阶段继续。`step(dt = 1)` / `runBatch(count, dt = 1)` 的 dt 单位为 ps，必须是正安全整数；内部时钟只推进成功完成的 tick，按 2^53 ps 回绕，reset 恢复初始时钟和浮空阶段。现有宿主使用其原有 tick 时长，不改变 RPC。
+输入能力的 `sampleVoltage()` 返回确定节点的实际电压；浮空时按 RFC 的 `mica-floating-v2` 算法采样，不向物理解算添加噪声、隐式接地或泄漏。仅为 IR 中实际调用模拟采样的引脚生成辅助函数和阶段状态，重复读取共享同一份；即使首次读取尚未发生，也按成功求解记录浮空阶段。纯数字引脚不生成这些辅助状态；没有模拟读取的电路不执行模拟时钟更新。`floatingSeed` 默认为 0；同一浮空阶段、参考电压与时间下重复读取逐位一致，供电未就绪时返回正零，恢复后按既有阶段继续。`step(dt = 1)` / `runBatch(count, dt = 1)` 的 dt 单位为 ps，必须是正安全整数；内部时钟只推进成功完成的 tick，按 2^53 ps 回绕，reset 恢复初始时钟和浮空阶段。现有宿主使用其原有 tick 时长，不改变 RPC。
 
 `getCurrent` 还接受 `{ kind: 'contact', device, name }`、`{ kind: 'source', name }`，以及 `{ kind: 'drive' | 'pull-up' | 'pull-down', device, pin }`。触点沿声明的第一端到第二端为正；源、输出驱动和偏置以向网络供电为正。闭合理想触点存在环流自由度或两侧理想源分担不唯一时返回 `indeterminate`；无源浮空纯电阻网络的有限支路电流确定为零，不与节点电压浮空混淆。
 
 `getDiagnostics()` 返回最后发布快照的只读活动诊断：声明电阻／引脚驱动的过流按资源唯一列出，恢复后消失，过流本身不暂停；参数错误、理想源冲突与数值失败锁存故障，reset 清除。它不是事件流或历史记录，batch 内出现后消失的过流不保留，目前也不提供完整故障资源溯源。没有增加电气 RPC 或诊断 DTO。
 
-其余旧夹具与执行路径尚未全部清理；暂存的旧执行路径不作为最终兼容模式，新旧模型混合明确拒绝。稠密内核的独立分组、单节点专用路径和完整诊断上下文仍待完成。[性能文档](./docs/PERFORMANCE.md)包含稳定、RHS 更新、调阻和触点变化的真实 Circuit 基准；算术微基准不能替代端到端数据。
+其余旧夹具与执行路径尚未全部清理；暂存的旧执行路径不作为最终兼容模式，新旧模型混合明确拒绝。分组与单节点路径已实现，但通用路径仍有稠密存储、全局装配／残差和电流快照发布成本，尚非完整稀疏求解器；完整诊断上下文仍待完成。[性能文档](./docs/PERFORMANCE.md)包含稳定、RHS 更新、调阻和触点变化的真实 Circuit 基准；算术微基准不能替代端到端数据。
 
 ```sh
 pnpm --filter @mica-js/simulator exec vitest run --config vitest.electrical.config.ts

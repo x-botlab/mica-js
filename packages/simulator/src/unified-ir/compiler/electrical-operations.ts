@@ -25,6 +25,7 @@ export interface ElectricalOperations {
   readonly clock: ArrayRef<'u32'>;
   readonly timeStep: ArrayRef<'u32'>;
   readonly advanceTime: FunctionRef<readonly [], readonly []>;
+  finalize(): void;
   readonly digitalSample: ArrayRef<'bool'>;
   readonly digitalIntent: ArrayRef<'bool'>;
   readonly pinIndices: ReadonlyMap<string, number>;
@@ -154,72 +155,84 @@ export function createElectricalOperations(
   const clock = module.array(`${prefix}_time`, 'u32', [0, 0]);
   const timeStep = module.array(`${prefix}_time_step`, 'u32', [1, 0]);
   const advanceTime = module.func(`${prefix}_advance_time`, { params: [], results: [] });
-  advanceTime.body((b) => {
-    const previous = b.array.load(clock, index(b, 0));
-    const low = b.int.add(previous, b.array.load(timeStep, index(b, 0)));
-    const carry = b.select(b.int.cmp('lt', low, previous), index(b, 1), index(b, 0));
-    const high = b.int.add(
-      b.int.add(b.array.load(clock, index(b, 1)), b.array.load(timeStep, index(b, 1))),
-      carry,
-    );
-    b.array.store(clock, index(b, 0), low);
-    b.array.store(clock, index(b, 1), b.int.and(high, index(b, 0x1fffff)));
-    b.return([]);
-  });
-  const analogInputs = new Map(
-    allPins.flatMap(({ deviceId, name, pin }, id) =>
-      pin.input === undefined
-        ? []
-        : [
-            [
-              id,
-              createFloatingInput(
-                module,
-                solver,
-                clock,
-                `${prefix}_analog_${id}`,
-                floatingSeed,
-                deviceId,
-                name,
-                pin.node,
-                pin.input.reference,
-              ),
-            ] as const,
-          ],
-    ),
-  );
-  inputs.body((b) => {
-    allPins.forEach(({ pin }, id) => {
-      const analog = analogInputs.get(id);
-      if (analog !== undefined) b.call(analog.update, []);
-      if (pin.input === undefined) return;
-      const ref = pin.input.reference;
-      const supply = b.array.load(solver.sourceVoltage, index(b, ref));
-      const value = b.array.load(solver.voltage, index(b, pin.node));
-      const low = b.float.cmp('le', value, b.float.mul(supply, b.const('f64', pin.input.low)));
-      const high = b.float.cmp('ge', value, b.float.mul(supply, b.const('f64', pin.input.high)));
-      const ready = b.bool.and(
-        b.array.load(solver.sourceEnabled, index(b, ref)),
-        b.bool.and(
-          b.float.cmp('gt', supply, b.const('f64', 0)),
-          b.int.cmp('eq', b.array.load(solver.voltageState, index(b, pin.node)), b.const('u8', 0)),
+  const analogInputs = new Map<number, ReturnType<typeof createFloatingInput>>();
+  const analogRequests = new Map<number, FunctionRef<readonly [], readonly ['f64']>>();
+  // Device bodies request samplers; helper bodies must be built outside any active IR body.
+  let finalized = false;
+  const finalize = () => {
+    if (finalized) return;
+    finalized = true;
+    for (const [id, sample] of analogRequests) {
+      const { deviceId, name, pin } = allPins[id]!;
+      analogInputs.set(
+        id,
+        createFloatingInput(
+          module,
+          solver,
+          clock,
+          `${prefix}_analog_${id}`,
+          floatingSeed,
+          deviceId,
+          name,
+          pin.node,
+          pin.input!.reference,
+          sample,
         ),
       );
-      const remembered = b.array.load(memory, index(b, id));
-      const next = b.select(
-        low,
-        b.const('bool', false),
-        b.select(high, b.const('bool', true), remembered),
+    }
+    advanceTime.body((b) => {
+      if (analogInputs.size === 0) {
+        b.return([]);
+        return;
+      }
+      const previous = b.array.load(clock, index(b, 0));
+      const low = b.int.add(previous, b.array.load(timeStep, index(b, 0)));
+      const carry = b.select(b.int.cmp('lt', low, previous), index(b, 1), index(b, 0));
+      const high = b.int.add(
+        b.int.add(b.array.load(clock, index(b, 1)), b.array.load(timeStep, index(b, 1))),
+        carry,
       );
-      b.array.store(memory, index(b, id), b.select(ready, next, remembered));
-      b.array.store(
-        sampled,
-        index(b, id),
-        b.bool.and(ready, interpretation === 'two-state' ? high : next),
-      );
+      b.array.store(clock, index(b, 0), low);
+      b.array.store(clock, index(b, 1), b.int.and(high, index(b, 0x1fffff)));
+      b.return([]);
     });
-    b.return([]);
-  });
+    inputs.body((b) => {
+      allPins.forEach(({ pin }, id) => {
+        const analog = analogInputs.get(id);
+        if (analog !== undefined) b.call(analog.update, []);
+        if (pin.input === undefined) return;
+        const ref = pin.input.reference;
+        const supply = b.array.load(solver.sourceVoltage, index(b, ref));
+        const value = b.array.load(solver.voltage, index(b, pin.node));
+        const low = b.float.cmp('le', value, b.float.mul(supply, b.const('f64', pin.input.low)));
+        const high = b.float.cmp('ge', value, b.float.mul(supply, b.const('f64', pin.input.high)));
+        const ready = b.bool.and(
+          b.array.load(solver.sourceEnabled, index(b, ref)),
+          b.bool.and(
+            b.float.cmp('gt', supply, b.const('f64', 0)),
+            b.int.cmp(
+              'eq',
+              b.array.load(solver.voltageState, index(b, pin.node)),
+              b.const('u8', 0),
+            ),
+          ),
+        );
+        const remembered = b.array.load(memory, index(b, id));
+        const next = b.select(
+          low,
+          b.const('bool', false),
+          b.select(high, b.const('bool', true), remembered),
+        );
+        b.array.store(memory, index(b, id), b.select(ready, next, remembered));
+        b.array.store(
+          sampled,
+          index(b, id),
+          b.bool.and(ready, interpretation === 'two-state' ? high : next),
+        );
+      });
+      b.return([]);
+    });
+  };
 
   const refresh = new Map<number, FunctionRef<readonly [], readonly ['bool']>>();
   const pinFunctions = new Map<
@@ -535,11 +548,20 @@ export function createElectricalOperations(
             return b.array.load(sampled, index(b, id));
           },
           sampleVoltage(): Value<'f64'> {
-            const analog =
-              analogInputs.get(id) ??
+            if (description.input === undefined)
               badResource(`Pin "${deviceId}.${name}" has no input capability`);
+            let sample = analogRequests.get(id);
+            if (sample === undefined) {
+              if (finalized)
+                badResource('Analog sampling must be declared before electrical finalization');
+              sample = module.func(`${prefix}_analog_${id}_sample`, {
+                params: [],
+                results: ['f64'],
+              });
+              analogRequests.set(id, sample);
+            }
             b.call(ensure, []);
-            return b.call(analog.sample, [])[0];
+            return b.call(sample, [])[0];
           },
           readDrivenDigital(): Value<'bool'> {
             functions();
@@ -592,6 +614,7 @@ export function createElectricalOperations(
     clock,
     timeStep,
     advanceTime,
+    finalize,
     digitalSample: sampled,
     digitalIntent: digital,
     pinIndices: new Map(allPins.map(({ deviceId, name }, index) => [`${deviceId}.${name}`, index])),

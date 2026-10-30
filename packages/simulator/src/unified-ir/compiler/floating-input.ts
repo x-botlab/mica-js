@@ -1,4 +1,4 @@
-import type { ArrayRef, FunctionBuilder, IRModule, Value } from '@mica-js/ir';
+import type { ArrayRef, FunctionBuilder, FunctionRef, IRModule, Value } from '@mica-js/ir';
 import type { ResistiveSolver } from './resistive-solver';
 
 type Builder = Pick<
@@ -26,6 +26,10 @@ export function createFloatingInput(
   pinName: string,
   node: number,
   reference: number,
+  sample: FunctionRef<readonly [], readonly ['f64']> = module.func(`${prefix}_sample`, {
+    params: [],
+    results: ['f64'],
+  }),
 ) {
   const text = JSON.stringify(['mica-floating-v2', seed, deviceId, pinName]).slice(0, -1) + ',';
   let prefixHash = 0x811c9dc5;
@@ -37,7 +41,6 @@ export function createFloatingInput(
   const initialized = module.state(`${prefix}_initialized`, 'bool', false);
   const initial = module.state(`${prefix}_initial`, 'f64', 0);
   const update = module.func(`${prefix}_update`, { params: [], results: [] });
-  const sample = module.func(`${prefix}_sample`, { params: [], results: ['f64'] });
   const ready = (b: Builder) =>
     b.bool.and(
       b.array.load(solver.sourceEnabled, u(b, reference)),
