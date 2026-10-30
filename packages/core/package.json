@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/core",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Mica core: virtual time, document formats, RPC, logging and lifecycle utilities",
   "license": "MIT",
   "repository": {
