@@ -10,9 +10,14 @@
  */
 
 export type SchematicExampleId =
-  'board-properties' | 'mcu-leds' | 'button-relay' | 'potentiometer-led' | 'pullup-button-led';
+  | 'board-properties'
+  | 'mcu-leds'
+  | 'button-relay'
+  | 'potentiometer-led'
+  | 'pullup-button-led'
+  | 'teaching-i2c';
 export type CanvasExampleId =
-  'button-lamp' | 'dual-lamp' | 'potentiometer-led' | 'pullup-button-led';
+  'button-lamp' | 'dual-lamp' | 'potentiometer-led' | 'pullup-button-led' | 'teaching-i2c';
 
 /** Symbol source of one schematic sheet. */
 export type SchematicExampleLibrary = 'sample' | 'demo';
@@ -41,6 +46,12 @@ export interface CanvasExample {
 }
 
 export const SCHEMATIC_EXAMPLES: readonly SchematicExample[] = Object.freeze([
+  Object.freeze({
+    id: 'teaching-i2c',
+    title: '双 MCU 软件 I2C',
+    document: 'schematics/teaching-i2c.sch',
+    library: 'demo',
+  }),
   Object.freeze({
     id: 'board-properties',
     title: '板级器件与属性',
@@ -74,6 +85,12 @@ export const SCHEMATIC_EXAMPLES: readonly SchematicExample[] = Object.freeze([
 ]);
 
 export const CANVAS_EXAMPLES: readonly CanvasExample[] = Object.freeze([
+  Object.freeze({
+    id: 'teaching-i2c',
+    title: '双 MCU 软件 I2C',
+    document: 'canvases/teaching-i2c.cnv',
+    schematic: 'teaching-i2c',
+  }),
   Object.freeze({
     id: 'button-lamp',
     title: '按键与指示灯',

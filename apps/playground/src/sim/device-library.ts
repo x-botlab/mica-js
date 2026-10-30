@@ -17,6 +17,7 @@ import type { DeviceSymbolProvider, PinSide } from '@mica-js/core/schematic';
 
 /** Folder `public/devices` is served from, relative to the page (and to the guest's host file system). */
 export const DEVICE_LIBRARY_ROOT = 'devices';
+export const PLAYGROUND_DEVICE_EXTENSIONS = ['teaching-i2c.package.json'] as const;
 
 /** Read-only view of the files that make up one device package. */
 export interface DeviceLibraryFiles {
@@ -114,7 +115,7 @@ interface DeviceDefinition {
 }
 
 /**
- * Reads `package.json` and every declared definition.
+ * Reads `package.json`, optional same-package extension manifests, and their definitions.
  *
  * Only the declared paths are read; the package is never enumerated. Nothing here imports a
  * device model: a definition that names a runtime type this package does not ship still loads,
@@ -122,12 +123,23 @@ interface DeviceDefinition {
  *
  * @throws {Error} with a message naming the package and path when the contract is inconsistent.
  */
-export async function loadDeviceLibrary(files: DeviceLibraryFiles): Promise<DeviceLibrary> {
+export async function loadDeviceLibrary(
+  files: DeviceLibraryFiles,
+  extensions: readonly string[] = [],
+): Promise<DeviceLibrary> {
   const manifest = await readManifest(files);
+  const declarations = [...manifest.devices];
+  for (const path of extensions) {
+    const extension = await readManifest(files, path);
+    if (extension.id !== manifest.id || extension.version !== manifest.version) {
+      throw new Error(`${files.label}/${path}: extension must match the base package name/version`);
+    }
+    declarations.push(...extension.devices);
+  }
   const entries: DeviceLibraryEntry[] = [];
   const seen = new Set<string>();
 
-  for (const declared of manifest.devices) {
+  for (const declared of declarations) {
     const definition = await readDefinition(files, manifest.id, declared);
     if (seen.has(definition.reference)) {
       throw new Error(`${files.label}: duplicate device reference ${definition.reference}`);
@@ -164,48 +176,46 @@ export async function loadDeviceLibrary(files: DeviceLibraryFiles): Promise<Devi
   });
 }
 
-async function readManifest(files: DeviceLibraryFiles): Promise<DeviceManifest> {
-  const text = await readText(files, PACKAGE_JSON);
-  const value = parseObject(text, files.label, PACKAGE_JSON);
+async function readManifest(
+  files: DeviceLibraryFiles,
+  path = PACKAGE_JSON,
+): Promise<DeviceManifest> {
+  const text = await readText(files, path);
+  const value = parseObject(text, files.label, path);
   const id = value['name'];
   if (typeof id !== 'string' || !ID_PATTERN.test(id)) {
-    throw new Error(`${files.label}/${PACKAGE_JSON}: "name" must be a kebab-case package id`);
+    throw new Error(`${files.label}/${path}: "name" must be a kebab-case package id`);
   }
   const version = value['version'];
   if (typeof version !== 'string' || version.length === 0) {
-    throw new Error(`${files.label}/${PACKAGE_JSON}: "version" must be a non-empty string`);
+    throw new Error(`${files.label}/${path}: "version" must be a non-empty string`);
   }
   const devices = value['devices'];
   if (devices === undefined) {
     return { id, version, devices: [] };
   }
-  const record = parseObjectValue(
-    devices,
-    files.label,
-    PACKAGE_JSON,
-    '"devices" must be an object',
-  );
+  const record = parseObjectValue(devices, files.label, path, '"devices" must be an object');
   const entries = Object.keys(record)
     .sort()
     .map((deviceId) => {
       if (!ID_PATTERN.test(deviceId)) {
         throw new Error(
-          `${files.label}/${PACKAGE_JSON}: device id ${JSON.stringify(deviceId)} must be kebab-case`,
+          `${files.label}/${path}: device id ${JSON.stringify(deviceId)} must be kebab-case`,
         );
       }
       const entry = parseObjectValue(
         record[deviceId],
         files.label,
-        PACKAGE_JSON,
+        path,
         `device "${deviceId}" must be an object`,
       );
-      const path = entry['path'];
-      if (typeof path !== 'string' || !path.endsWith(DEFINITION_EXTENSION)) {
+      const definitionPath = entry['path'];
+      if (typeof definitionPath !== 'string' || !definitionPath.endsWith(DEFINITION_EXTENSION)) {
         throw new Error(
-          `${files.label}/${PACKAGE_JSON}: device "${deviceId}" must declare a "${DEFINITION_EXTENSION}" path`,
+          `${files.label}/${path}: device "${deviceId}" must declare a "${DEFINITION_EXTENSION}" path`,
         );
       }
-      return { id: deviceId, path };
+      return { id: deviceId, path: definitionPath };
     });
   return { id, version, devices: entries };
 }

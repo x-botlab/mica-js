@@ -18,7 +18,12 @@ import {
 } from '@mica-js/simulator';
 import { DEMO_ELECTRICAL, loadDeviceFactories } from './device-implementations';
 import { createContractBinding } from './device-contracts';
-import { DEVICE_LIBRARY_ROOT, loadDeviceLibrary, type DeviceLibrary } from './device-library';
+import {
+  DEVICE_LIBRARY_ROOT,
+  PLAYGROUND_DEVICE_EXTENSIONS,
+  loadDeviceLibrary,
+  type DeviceLibrary,
+} from './device-library';
 
 /**
  * Host file system the guest reads bytes through.
@@ -69,7 +74,7 @@ self.addEventListener('message', (event: MessageEvent) => {
           return bytes;
         },
       };
-      const next = await loadDeviceLibrary(reader);
+      const next = await loadDeviceLibrary(reader, PLAYGROUND_DEVICE_EXTENSIONS);
       factories = await loadDeviceFactories(reader, next);
       loaded = next;
     },

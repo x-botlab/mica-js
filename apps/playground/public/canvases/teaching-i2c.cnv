@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "schematic": "schematics/teaching-i2c.sch",
+  "widgets": [
+    {
+      "id": "c3000000-0000-4000-8000-000000000001",
+      "widget": "demo:lamp",
+      "x": 80,
+      "y": 80,
+      "width": 160,
+      "height": 160,
+      "rotation": 0,
+      "properties": { "label": "SDA", "color": "#22C55E", "radius": 8 },
+      "bindings": {
+        "brightness": { "symbol": "c1000000-0000-4000-8000-000000000005", "port": "brightness" }
+      }
+    },
+    {
+      "id": "c3000000-0000-4000-8000-000000000002",
+      "widget": "demo:lamp",
+      "x": 300,
+      "y": 80,
+      "width": 160,
+      "height": 160,
+      "rotation": 0,
+      "properties": { "label": "SCL", "color": "#F59E0B", "radius": 8 },
+      "bindings": {
+        "brightness": { "symbol": "c1000000-0000-4000-8000-000000000006", "port": "brightness" }
+      }
+    }
+  ]
+}

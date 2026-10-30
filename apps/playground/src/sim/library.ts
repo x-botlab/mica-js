@@ -1,5 +1,6 @@
 import {
   DEVICE_LIBRARY_ROOT,
+  PLAYGROUND_DEVICE_EXTENSIONS,
   loadDeviceLibrary,
   type DeviceLibrary,
   type DeviceLibraryFiles,
@@ -23,6 +24,6 @@ let library: Promise<DeviceLibrary> | undefined;
 
 /** Loads `public/devices` once per page; every consumer shares the same immutable contract set. */
 export function loadPlaygroundDeviceLibrary(): Promise<DeviceLibrary> {
-  library ??= loadDeviceLibrary(PLAYGROUND_DEVICE_FILES);
+  library ??= loadDeviceLibrary(PLAYGROUND_DEVICE_FILES, PLAYGROUND_DEVICE_EXTENSIONS);
   return library;
 }

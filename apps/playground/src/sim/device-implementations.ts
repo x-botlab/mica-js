@@ -9,6 +9,8 @@ export const DEMO_ELECTRICAL = Object.freeze({
 export const MODEL_DEVICE_TYPES: readonly string[] = Object.freeze([
   'ideal-led',
   'teaching-mcu',
+  'teaching-i2c-master',
+  'teaching-i2c-slave',
   'button-ir',
   'relay-ir',
   'potentiometer-ir',
@@ -23,6 +25,43 @@ export function describeModel(
   if (!MODEL_DEVICE_TYPES.includes(entry.type)) return undefined;
   let states: Readonly<Record<string, DeviceStateDescription>> = {};
   switch (entry.type) {
+    case 'teaching-i2c-master':
+      states = {
+        ...unsignedStates([
+          'divider',
+          'phase',
+          'byte',
+          'lastSent',
+          'sentCount',
+          'addressAcks',
+          'dataAcks',
+          'nacks',
+        ]),
+        addressAck: { type: 'bool', initial: false },
+        dataAck: { type: 'bool', initial: false },
+      };
+      break;
+    case 'teaching-i2c-slave':
+      states = {
+        ...unsignedStates([
+          'shift',
+          'bits',
+          'ackStage',
+          'received',
+          'receivedCount',
+          'starts',
+          'stops',
+          'addressAcks',
+          'dataAcks',
+        ]),
+        previousSda: { type: 'bool', initial: true },
+        previousScl: { type: 'bool', initial: true },
+        active: { type: 'bool', initial: false },
+        address: { type: 'bool', initial: true },
+        selected: { type: 'bool', initial: false },
+        ackPending: { type: 'bool', initial: false },
+      };
+      break;
     case 'ideal-led':
       states = {
         lamp: { type: 'bool', initial: false },
@@ -52,6 +91,10 @@ export function describeModel(
     states,
     factory,
   });
+}
+
+function unsignedStates(names: readonly string[]): Record<string, DeviceStateDescription> {
+  return Object.fromEntries(names.map((name) => [name, { type: 'u32', initial: 0 }]));
 }
 
 export async function loadDeviceFactories(

@@ -1,0 +1,22 @@
+{
+  "reference": "demo:teaching-i2c-slave",
+  "type": "teaching-i2c-slave",
+  "displayName": "教学 MCU I2C 从机",
+  "designatorPrefix": "U",
+  "pins": {
+    "SDA": { "side": "left", "kind": "signal" },
+    "SCL": { "side": "left", "kind": "signal" }
+  },
+  "topics": {
+    "received": { "direction": "output", "type": "number", "state": "received" },
+    "count": { "direction": "output", "type": "number", "state": "receivedCount" },
+    "addressAcks": { "direction": "output", "type": "number", "state": "addressAcks" },
+    "dataAcks": { "direction": "output", "type": "number", "state": "dataAcks" },
+    "starts": { "direction": "output", "type": "number", "state": "starts" },
+    "stops": { "direction": "output", "type": "number", "state": "stops" }
+  },
+  "reset": {
+    "state": "supported",
+    "detail": "Releases bus and clears edge decoder for write-only address 0x42"
+  }
+}
