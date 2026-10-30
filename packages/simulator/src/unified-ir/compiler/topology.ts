@@ -21,8 +21,6 @@ export const DEFAULT_RAILS: Readonly<Record<string, boolean>> = Object.freeze({
 export interface TopologyOptions {
   /** Extra or overriding rails; merged over {@link DEFAULT_RAILS}. */
   readonly rails?: Readonly<Record<string, boolean>>;
-  /** Treat several drivers on one net as a wired-OR instead of a conflict. */
-  readonly allowMultiDriver?: boolean;
 }
 
 interface ResolvedPinEndpoint {
@@ -53,22 +51,20 @@ interface ComponentPins {
  * 2. a union-find pass collapses them into electrical nets (connected components);
  * 3. each net gets an id in first-appearance order and is split into drivers,
  *    loads and sinks;
- * 4. electrical conflicts (several drivers, a driver against a rail, two rails
- *    of opposite level) become diagnostics instead of silently wrong IR.
+ * 4. electrical conflicts (a driver against a rail, two rails of opposite
+ *    level) become diagnostics instead of silently wrong IR.
  *
- * The v1 electrical model supports one driver per net. `allowMultiDriver`
- * accepts more and the solver then emits a wired-OR instead of failing.
+ * Several drivers on one net are legal and solved as a wired-OR, which is what
+ * a bidirectional pin fighting a switch looks like on a bench.
  */
 export class NetworkTopologyAnalyzer {
   private readonly rails: ReadonlyMap<string, boolean>;
-  private readonly allowMultiDriver: boolean;
 
   constructor(options: TopologyOptions = {}) {
     this.rails = new Map([
       ...Object.entries(DEFAULT_RAILS),
       ...Object.entries(options.rails ?? {}),
     ]);
-    this.allowMultiDriver = options.allowMultiDriver ?? false;
   }
 
   /**
@@ -192,20 +188,6 @@ export class NetworkTopologyAnalyzer {
         ),
       );
     }
-    if (drivers.length > 1) {
-      const names = drivers.map((driver) => driver.endpoint).join(', ');
-      diagnostics.push(
-        diagnostic(
-          'driver-conflict',
-          this.allowMultiDriver ? 'warning' : 'error',
-          this.allowMultiDriver
-            ? `Net ${netId} has ${drivers.length} drivers (${names}); solving them as a wired-OR`
-            : `Net ${netId} has ${drivers.length} drivers (${names}); v1 supports one driver per net (set allowMultiDriver to solve them as a wired-OR)`,
-          netId,
-          endpoints,
-        ),
-      );
-    }
     if (drivers.length > 0 && rails.length > 0) {
       diagnostics.push(
         diagnostic(
@@ -311,12 +293,8 @@ export function assertNoElectricalErrors(netlist: CompiledNetlist): CompiledNetl
   });
 }
 
-function mapErrorCode(
-  code: CompilationDiagnostic['code'],
-): 'driver-conflict' | 'power-short' | 'rail-conflict' {
-  if (code === 'driver-conflict') return 'driver-conflict';
-  if (code === 'rail-conflict') return 'rail-conflict';
-  return 'power-short';
+function mapErrorCode(code: CompilationDiagnostic['code']): 'power-short' | 'rail-conflict' {
+  return code === 'rail-conflict' ? 'rail-conflict' : 'power-short';
 }
 
 function diagnostic(

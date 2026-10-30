@@ -72,7 +72,6 @@ describe('Circuit.create', () => {
       { instanceId: '' },
       { jit: [] } as unknown as CircuitRuntimeOptions,
       { electrical: null } as unknown as CircuitRuntimeOptions,
-      { electrical: { allowMultiDriver: 'yes' } } as unknown as CircuitRuntimeOptions,
     ];
     for (const options of cases) {
       await expect(Circuit.create(driverOnlyInput(), options)).rejects.toMatchObject({

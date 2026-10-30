@@ -70,7 +70,6 @@ interface ResolvedRuntimeOptions {
   readonly engine: CircuitEngine;
   readonly jit: IRJITTuning | undefined;
   readonly validateIR: boolean;
-  readonly allowMultiDriver: boolean;
   readonly rails: Readonly<Record<string, boolean>> | undefined;
   readonly instanceId: string;
 }
@@ -450,7 +449,6 @@ function createEngine(compiled: CompiledCircuit, options: ResolvedRuntimeOptions
 function compileOptionsOf(options: ResolvedRuntimeOptions): CircuitCompilationOptions {
   return {
     validate: options.validateIR,
-    allowMultiDriver: options.allowMultiDriver,
     ...(options.rails === undefined ? {} : { rails: options.rails }),
   };
 }
@@ -487,18 +485,11 @@ function resolveOptions(options: unknown): ResolvedRuntimeOptions {
     }
   }
 
-  let allowMultiDriver = false;
   let rails: Readonly<Record<string, boolean>> | undefined;
   if (candidate.electrical !== undefined) {
     const electrical = candidate.electrical;
     if (electrical === null || typeof electrical !== 'object' || Array.isArray(electrical)) {
       throw new CircuitError('invalid-options', 'electrical must be a plain object');
-    }
-    if (electrical.allowMultiDriver !== undefined) {
-      if (typeof electrical.allowMultiDriver !== 'boolean') {
-        throw new CircuitError('invalid-options', 'electrical.allowMultiDriver must be a boolean');
-      }
-      allowMultiDriver = electrical.allowMultiDriver;
     }
     rails = electrical.rails;
   }
@@ -507,7 +498,6 @@ function resolveOptions(options: unknown): ResolvedRuntimeOptions {
     engine,
     jit: candidate.jit,
     validateIR: candidate.validateIR ?? true,
-    allowMultiDriver,
     rails,
     instanceId: candidate.instanceId ?? DEFAULT_INSTANCE_ID,
   });

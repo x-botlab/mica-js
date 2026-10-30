@@ -25,8 +25,7 @@ export interface SolverGenerationContext {
 /**
  * Generates the electrical solve, one `solve_net_<id>` function per net.
  *
- * Single driver — the only shape v1 compiles without `allowMultiDriver` — is a
- * branch-free path:
+ * Each net solves as a branch-free function. One driver is the common shape:
  *
  * ```text
  * solve_net_0:
@@ -38,7 +37,7 @@ export interface SolverGenerationContext {
  *
  * Only a push-pull driver holds its net; high-z, open-drain and analog modes
  * leave it floating. A driver-less net loads the constant of its rail, or
- * `false` when it is truly floating.
+ * `false` when it is truly floating. Several drivers OR into a wired-OR level.
  */
 export class ElectricalSolverGenerator {
   private readonly context: SolverGenerationContext;
@@ -76,8 +75,8 @@ export class ElectricalSolverGenerator {
   /**
    * Folds the drivers of one net into the level its sinks observe.
    *
-   * A single driver yields `mode == push-pull && output`; several drivers (only
-   * reachable with `allowMultiDriver`) are OR-ed into a wired-OR level.
+   * A single driver yields `mode == push-pull && output`; several drivers are
+   * OR-ed into a wired-OR level.
    */
   private combineDrivers(
     b: FunctionBuilder<readonly []>,

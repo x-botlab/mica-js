@@ -104,7 +104,7 @@ export function twoPairInput() {
   } as const;
 }
 
-/** Two drivers on one net; only compiles with `allowMultiDriver`. */
+/** Two drivers on one net; the solver ORs them into a wired-OR level. */
 export function multiDriverInput() {
   return {
     devices: [

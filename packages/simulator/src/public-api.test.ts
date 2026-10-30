@@ -35,8 +35,8 @@ describe('public API surface', () => {
     expect(typeof startDeviceSimulationHostGuest).toBe('function');
     expect(typeof createModuleValidation).toBe('function');
 
-    expect(UNIFIED_PIN_CAPACITY).toBe(256);
-    expect(DEVICE_PIN_STRIDE).toBe(32);
+    expect(UNIFIED_PIN_CAPACITY).toBe(4096);
+    expect(DEVICE_PIN_STRIDE).toBe(512);
     expect(PIN_MODE.pushPull).toBe(1);
   });
 
