@@ -11,6 +11,7 @@ import {
   type DeviceConfig,
   type UnifiedIRCompilerErrorCode,
 } from './index';
+import { DEVICE_PIN_STRIDE, UNIFIED_PIN_CAPACITY } from '../pin-space';
 import { lampSinkDescription, toggleDriverDescription } from './test-helpers';
 
 function driver(id = 'drive1', pins?: readonly string[]): DeviceConfig {
@@ -23,6 +24,21 @@ function driver(id = 'drive1', pins?: readonly string[]): DeviceConfig {
 
 function sink(id = 'sink1'): DeviceConfig {
   return { id, type: 'lamp-sink', description: lampSinkDescription() };
+}
+
+/** Driver without per-pin IR: exercises allocation without generating pin code. */
+function silentDriver(id: string, pins: readonly string[]): DeviceConfig {
+  const declared: Record<string, { readonly direction: 'output' }> = {};
+  for (const name of pins) declared[name] = Object.freeze({ direction: 'output' as const });
+  return {
+    id,
+    type: 'silent-driver',
+    description: Object.freeze({
+      name: 'silent-driver',
+      pins: Object.freeze(declared),
+      behaviors: Object.freeze({ initialize: () => undefined }),
+    }),
+  };
 }
 
 function driverSinkInput(): CircuitCompilationInput {
@@ -184,7 +200,7 @@ describe('GlobalResourceAllocator', () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toEqual([0, 1, 2, 3, 4, 5]);
     expect(compiled.pins.totalPins).toBe(6);
-    expect(compiled.pins.capacity).toBe(256);
+    expect(compiled.pins.capacity).toBe(UNIFIED_PIN_CAPACITY);
   });
 
   it('allocates typed state slots across devices in declaration order', () => {
@@ -218,8 +234,8 @@ describe('GlobalResourceAllocator', () => {
     expect(compiled.deviceMap.get('sink1')?.stateOffset).toBe(2);
   });
 
-  it('rejects a device with more pins than one port holds', () => {
-    const pins = Array.from({ length: 33 }, (_, index) => `P${index}`);
+  it('rejects a device with more pins than one device may own', () => {
+    const pins = Array.from({ length: DEVICE_PIN_STRIDE + 1 }, (_, index) => `P${index}`);
     expectCompilerError(
       () => compileCircuit({ devices: [driver('drive1', pins)], connections: [] }),
       'capacity-exceeded',
@@ -227,13 +243,16 @@ describe('GlobalResourceAllocator', () => {
   });
 
   it('rejects a circuit that overflows the global pin space', () => {
-    const pins = Array.from({ length: 32 }, (_, index) => `P${index}`);
-    const devices = Array.from({ length: 9 }, (_, index) => driver(`driver${index}`, pins));
+    const pins = Array.from({ length: DEVICE_PIN_STRIDE }, (_, index) => `P${index}`);
+    const devicesPerCapacity = Math.floor(UNIFIED_PIN_CAPACITY / DEVICE_PIN_STRIDE);
+    const devices = Array.from({ length: devicesPerCapacity + 1 }, (_, index) =>
+      driver(`driver${index}`, pins),
+    );
     const failure = expectCompilerError(
       () => compileCircuit({ devices, connections: [] }),
       'capacity-exceeded',
     );
-    expect(failure.message).toContain('256');
+    expect(failure.message).toContain(String(UNIFIED_PIN_CAPACITY));
   });
 
   it('rejects duplicate device ids', () => {
@@ -302,6 +321,29 @@ describe('GlobalResourceAllocator', () => {
       'device_state_bool',
     ]);
   });
+
+  it('sizes the shared pin memories to the declared pins, not to the capacity', () => {
+    const module = createIRModule();
+    new GlobalResourceAllocator(module).allocate([driver('drive1', ['PA0', 'PA1']), sink()]);
+
+    const pinLengths = module.memories
+      .filter((memory) => memory.name.startsWith('pin_'))
+      .map((memory) => memory.layout.length);
+    expect(pinLengths).toEqual([4, 4, 4]);
+  });
+
+  it('accepts a circuit that fills the global pin space', () => {
+    const pins = Array.from({ length: DEVICE_PIN_STRIDE }, (_, index) => `P${index}`);
+    const deviceCount = UNIFIED_PIN_CAPACITY / DEVICE_PIN_STRIDE;
+    const devices = Array.from({ length: deviceCount }, (_, index) =>
+      silentDriver(`driver${index}`, pins),
+    );
+
+    const compiled = compileCircuit({ devices, connections: [] });
+
+    expect(compiled.pins.totalPins).toBe(UNIFIED_PIN_CAPACITY);
+    expect(compiled.pins.capacity).toBe(UNIFIED_PIN_CAPACITY);
+  });
 });
 
 describe('NetworkTopologyAnalyzer', () => {
@@ -361,36 +403,20 @@ describe('NetworkTopologyAnalyzer', () => {
     expect(compiled.netlist.nets[0]?.source).toBe('floating');
   });
 
-  it('rejects two drivers on one net', () => {
-    const failure = expectCompilerError(
-      () =>
-        compileCircuit({
-          devices: [driver('drive1'), driver('drive2'), sink()],
-          connections: [
-            { from: 'drive1.PA0', to: 'sink1.anode' },
-            { from: 'drive2.PA0', to: 'sink1.anode' },
-          ],
-        }),
-      'driver-conflict',
-    );
-    expect(failure.message).toContain('drive1.PA0');
-    expect(failure.message).toContain('drive2.PA0');
-    expect(failure.diagnostics.some((entry) => entry.code === 'driver-conflict')).toBe(true);
-  });
+  it('solves several drivers on one net as a wired-OR', () => {
+    const compiled = compileCircuit({
+      devices: [driver('drive1'), driver('drive2'), sink()],
+      connections: [
+        { from: 'drive1.PA0', to: 'sink1.anode' },
+        { from: 'drive2.PA0', to: 'sink1.anode' },
+      ],
+    });
 
-  it('solves several drivers as a wired-OR when allowed', () => {
-    const compiled = compileCircuit(
-      {
-        devices: [driver('drive1'), driver('drive2'), sink()],
-        connections: [
-          { from: 'drive1.PA0', to: 'sink1.anode' },
-          { from: 'drive2.PA0', to: 'sink1.anode' },
-        ],
-      },
-      { allowMultiDriver: true },
-    );
-    const conflict = compiled.netlist.diagnostics.find((entry) => entry.code === 'driver-conflict');
-    expect(conflict?.severity).toBe('warning');
+    expect(compiled.netlist.diagnostics.filter((entry) => entry.severity === 'error')).toEqual([]);
+    expect(compiled.netlist.nets[0]?.drivers.map((pin) => pin.endpoint)).toEqual([
+      'drive1.PA0',
+      'drive2.PA0',
+    ]);
     expect(opsOf(compiled, 'solve_net_0')).toContain('bool.or');
   });
 

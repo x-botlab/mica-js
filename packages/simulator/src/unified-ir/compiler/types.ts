@@ -241,11 +241,6 @@ export interface Connection {
 export interface CircuitCompilationOptions {
   /** Named fixed-level rails; merged over `GND`/`VCC`/`VDD`. */
   readonly rails?: Readonly<Record<string, boolean>>;
-  /**
-   * Accept nets with more than one driver pin and solve them as a wired-OR.
-   * Defaults to `false`, which reports a `driver-conflict` instead.
-   */
-  readonly allowMultiDriver?: boolean;
   /** Runs `validateIR` over the generated module. Defaults to `true`. */
   readonly validate?: boolean;
   /** Overrides for the generated entry-point names. */
@@ -357,8 +352,7 @@ export interface CompiledNet {
 }
 
 /** Diagnostic codes produced by the compiler's electrical analysis. */
-export type CompilationDiagnosticCode =
-  'driver-conflict' | 'power-short' | 'rail-conflict' | 'floating-net';
+export type CompilationDiagnosticCode = 'power-short' | 'rail-conflict' | 'floating-net';
 
 export type CompilationDiagnosticSeverity = 'error' | 'warning';
 
@@ -439,7 +433,6 @@ export type UnifiedIRCompilerErrorCode =
   | 'invalid-connection'
   | 'capacity-exceeded'
   | 'unsupported-device'
-  | 'driver-conflict'
   | 'power-short'
   | 'rail-conflict'
   | 'invalid-ir';

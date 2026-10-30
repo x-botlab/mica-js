@@ -63,9 +63,6 @@ export function compileCircuit(
 
   const topologyOptions: TopologyOptions = {
     ...(resolvedOptions.rails === undefined ? {} : { rails: resolvedOptions.rails }),
-    ...(resolvedOptions.allowMultiDriver === undefined
-      ? {}
-      : { allowMultiDriver: resolvedOptions.allowMultiDriver }),
   };
   const netlist = new NetworkTopologyAnalyzer(topologyOptions).analyze(
     connections,
@@ -164,9 +161,6 @@ function validateOptions(options: unknown): CircuitCompilationOptions {
   const resolved = options as CircuitCompilationOptions;
   if (resolved.validate !== undefined && typeof resolved.validate !== 'boolean') {
     throw new UnifiedIRCompilerError('invalid-input', 'options.validate must be a boolean');
-  }
-  if (resolved.allowMultiDriver !== undefined && typeof resolved.allowMultiDriver !== 'boolean') {
-    throw new UnifiedIRCompilerError('invalid-input', 'options.allowMultiDriver must be a boolean');
   }
   if (resolved.rails !== undefined) {
     if (

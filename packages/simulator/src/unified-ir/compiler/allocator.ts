@@ -32,7 +32,7 @@ export interface ResourceAllocation {
  * ids:  0 = drive1.PA0   1 = drive1.PA1   2 = sink1.anode   3 = sink1.cathode
  *       |<-- drive1 -->|                |<----------- sink1 ----------->|
  *
- * pin_mode[256] u8   pin_output[256] bool   pin_input[256] bool
+ * pin_mode[n] u8   pin_output[n] bool   pin_input[n] bool   (n = totalPins)
  * device_state_bool[n] / device_state_u32[m] / ...   (one array per used type)
  * ```
  *
@@ -50,10 +50,10 @@ export class GlobalResourceAllocator {
 
   /** Allocates the shared pin memories, the pin space and the state space. */
   allocate(devices: readonly DeviceConfig[]): ResourceAllocation {
-    const memory = createPinMemory(this.module);
+    const pins = this.allocatePins(devices);
     return Object.freeze({
-      memory,
-      pins: this.allocatePins(devices),
+      memory: createPinMemory(this.module, Math.max(1, pins.totalPins)),
+      pins,
       states: this.allocateStates(devices),
     });
   }
@@ -205,23 +205,32 @@ export class GlobalResourceAllocator {
   }
 }
 
-/** Declares the three pin memories shared by every device and net solver. */
-export function createPinMemory(module: IRModule): CompiledCircuitMemory {
+/**
+ * Declares the three pin memories shared by every device and net solver.
+ *
+ * The memories are sized to the pins the circuit declares, never to
+ * {@link UNIFIED_PIN_CAPACITY}: the capacity only bounds how many pins a
+ * circuit may have, so a large ceiling costs neither memory nor setup time.
+ */
+export function createPinMemory(
+  module: IRModule,
+  capacity: number = UNIFIED_PIN_CAPACITY,
+): CompiledCircuitMemory {
   return Object.freeze({
     mode: module.array(
       'pin_mode',
       'u8',
-      Array.from({ length: UNIFIED_PIN_CAPACITY }, () => PIN_MODE.highZ),
+      Array.from({ length: capacity }, () => PIN_MODE.highZ),
     ),
     output: module.array(
       'pin_output',
       'bool',
-      Array.from({ length: UNIFIED_PIN_CAPACITY }, () => false),
+      Array.from({ length: capacity }, () => false),
     ),
     input: module.array(
       'pin_input',
       'bool',
-      Array.from({ length: UNIFIED_PIN_CAPACITY }, () => false),
+      Array.from({ length: capacity }, () => false),
     ),
   });
 }

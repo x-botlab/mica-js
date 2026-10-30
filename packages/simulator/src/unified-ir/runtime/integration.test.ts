@@ -131,15 +131,8 @@ describe('driver + sink integration', () => {
     expect(circuit.devices.sink1.getState('lamp')).toBe(true);
   });
 
-  it('solves several drivers as a wired-OR when enabled', async () => {
-    await expect(Circuit.create(multiDriverInput())).rejects.toMatchObject({
-      name: 'UnifiedIRCompilerError',
-      code: 'driver-conflict',
-    });
-
-    const circuit = await Circuit.create(multiDriverInput(), {
-      electrical: { allowMultiDriver: true },
-    });
+  it('solves several drivers as a wired-OR', async () => {
+    const circuit = await Circuit.create(multiDriverInput());
     circuit.step();
     expect(circuit.devices.drive1.readPin('PA0')).toBe(true);
     expect(circuit.devices.drive2.readPin('PA0')).toBe(true);

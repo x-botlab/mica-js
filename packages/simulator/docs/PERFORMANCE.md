@@ -118,18 +118,20 @@ blinky 固件（GPIO MMIO 写 ODR）驱动一个 LED，`runBatch(20_000)`：
 
 ## 4. 微基准
 
-| 操作                                                           |              成本 |
-| -------------------------------------------------------------- | ----------------: |
-| `compileCircuit(driver + sink)`（含校验）                      |      0.31–0.40 ms |
-| `Circuit.reset()`（恢复 3×256 数组 + 器件状态 + `initialize`） |          66–69 µs |
-| `step()`（单器件，引擎入口开销）                               |        364–405 ns |
-| `runBatch(1000)`（单器件 sink）                                |   3.5–3.7 ns/tick |
-| `runBatch(1000)`（按钮 + 带状态 sink）                         | 15.1–15.3 ns/tick |
-| `devices.sink.getState('lamp')`                                |          53–57 ns |
-| `getPin('sink.anode')`                                         |          59–68 ns |
-| `setPin('drive.PA0')`                                          |          79–85 ns |
+| 操作                                                        |              成本 |
+| ----------------------------------------------------------- | ----------------: |
+| `compileCircuit(driver + sink)`（含校验）                   |      0.31–0.40 ms |
+| `Circuit.reset()`（恢复引脚内存 + 器件状态 + `initialize`） |            3–4 µs |
+| `step()`（单器件，引擎入口开销）                            |        364–405 ns |
+| `runBatch(1000)`（单器件 sink）                             |   3.5–3.7 ns/tick |
+| `runBatch(1000)`（按钮 + 带状态 sink）                      | 15.1–15.3 ns/tick |
+| `devices.sink.getState('lamp')`                             |          53–57 ns |
+| `getPin('sink.anode')`                                      |          59–68 ns |
+| `setPin('drive.PA0')`                                       |          79–85 ns |
 
-编译成本只在创建电路时支付一次；之后 `runBatch` 是纯执行路径。
+编译成本只在创建电路时支付一次；之后 `runBatch` 是纯执行路径。共享的引脚内存按电路实际声明的
+引脚数分配（`UNIFIED_PIN_CAPACITY` 只是分配期上限），所以创建与 `reset()` 的成本只随实际引脚数增长，
+与上限值无关。
 
 ## 5. 复现步骤
 

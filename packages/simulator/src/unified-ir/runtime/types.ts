@@ -15,11 +15,6 @@ export type CircuitEngine = 'jit' | 'reference';
 
 /** Electrical-solve options forwarded to `compileCircuit`. */
 export interface CircuitElectricalOptions {
-  /**
-   * Accept nets with more than one driver and solve them as a wired-OR.
-   * Defaults to `false`, which reports a `driver-conflict` at compile time.
-   */
-  readonly allowMultiDriver?: boolean;
   /** Named fixed-level rails; merged over `GND`/`VCC`/`VDD`. */
   readonly rails?: Readonly<Record<string, boolean>>;
 }

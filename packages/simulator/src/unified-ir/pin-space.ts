@@ -3,15 +3,16 @@
  *
  * Every device of a circuit shares one global pin address space, so the
  * compiler and every device kernel must agree on the capacity, the per-device
- * stride and the meaning of a `pin_mode` slot. The values are part of the
- * generated module's memory layout and must stay stable across releases.
+ * stride and the meaning of a `pin_mode` slot. Capacity and stride are limits
+ * checked at allocation time; the shared pin memories are sized to the pins a
+ * circuit actually declares, so a larger ceiling costs no runtime memory.
  */
 
-/** Global pin addresses available to one circuit (8 devices x 32 pins). */
-export const UNIFIED_PIN_CAPACITY = 256;
+/** Global pin addresses available to one circuit (8 devices x 512 pins). */
+export const UNIFIED_PIN_CAPACITY = 4096;
 
-/** Global pin addresses reserved per device (one 32-pin port). */
-export const DEVICE_PIN_STRIDE = 32;
+/** Global pin addresses one device may own; enough for the largest packages. */
+export const DEVICE_PIN_STRIDE = 512;
 
 /** Values stored in the global `pin_mode` array. */
 export const PIN_MODE = Object.freeze({
