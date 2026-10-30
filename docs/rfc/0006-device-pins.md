@@ -31,6 +31,66 @@
 
 一个实体引脚可以参与多个静态组，各组共享该引脚的同一份配置与意图。
 
+### 工厂电气初始化
+
+实体引脚的电气能力由配对 JS 工厂显式提供，初始参数可以来自实例属性或器件固定常量。`direction`、`role`、`passive` 不作为引脚 JSON 字段；`kind` 和 `side` 保持物理类别和呈现含义。引脚的驱动、数字采样与偏置能力分别由以下参数提供。
+
+```ts
+interface ElectricalReference {
+  readonly source: string;
+}
+
+interface PinElectricalDescription {
+  readonly drive?: {
+    readonly reference: ElectricalReference;
+    readonly highResistance: number;
+    readonly lowResistance: number;
+    readonly analogResistance?: number;
+    readonly maxAbsCurrent?: number;
+  };
+  readonly bias?: {
+    readonly reference: ElectricalReference;
+    readonly upResistance: number;
+    readonly downResistance: number;
+  };
+  readonly input?: {
+    readonly reference: ElectricalReference;
+    readonly low: number;
+    readonly high: number;
+  };
+}
+
+interface DeviceElectricalInitialization {
+  initializePin(id: string, initial: PinElectricalDescription): void;
+}
+```
+
+- `id` 引用当前实例已声明的引脚，资源引用按大小写精确匹配。
+- 每次初始化至少提供 `drive`、`bias`、`input` 中的一项；单个引脚每实例初始化一次。
+- 所有电阻以 Ω 为单位，要求有限且大于零；可选电流阈值以 A 为单位，要求有限且大于零。
+- `reference.source` 为非空源 ID，链接时必须绑定当前电路显式声明的参考源。
+- `drive` 表达主动输出能力，高低电阻分别适用于高、低数字意图，模拟输出使用 `analogResistance`。
+- `bias` 表达弱上拉和弱下拉的电阻，选择状态由运行期引脚配置控制。
+- `input` 的比例满足有限的 `0 <= low < high <= 1`，采样解释由 [RFC 0007](./0007-device-power-domains.md) 维护。
+- 输入解释模式归属整次仿真，`input` 不重复声明 `interpretation`。
+- 未初始化电气能力的端子可作为电阻或触点端点；生成主动输出或数字采样指令时必须具有对应能力。
+- 初始化不设置输出模式、输出使能、输出意图或上下拉选择；这些仍是独立运行状态。
+- 非法数值报告 `electrical/invalid-parameter`；未知引脚、重复初始化和关闭后的调用按 [RFC 0005](./0005-device-definition.md) 处理。
+
+```js
+ctx.electrical.initializePin('PA0', {
+  drive: {
+    reference: { source: 'VDD' },
+    highResistance: 30,
+    lowResistance: 25,
+    maxAbsCurrent: 0.02,
+  },
+  input: { reference: { source: 'VDD' }, low: 0.3, high: 0.7 },
+});
+```
+
+该初始化合同属于线性电阻模型扩展，运行期物理解算由 [RFC 0002](./0002-electrical-model.md) 的电气合同承接；初始化 API 与完整求解器接入分别验证。
+
 ## 运行时状态
 
 | 状态         | 新实例初始值 | 语义                         |

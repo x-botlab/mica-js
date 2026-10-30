@@ -14,6 +14,9 @@
     "ideal-relay": {
       "path": "ideal-relay.json"
     },
+    "potentiometer": {
+      "path": "potentiometer.json"
+    },
     "teaching-mcu": {
       "path": "teaching-mcu.json"
     }

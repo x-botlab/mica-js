@@ -3,14 +3,29 @@
   "type": "button-ir",
   "displayName": "去抖按钮",
   "designatorPrefix": "S",
-  "config": { "debounceTicks": 3 },
   "pins": {
-    "A": { "direction": "input", "side": "left", "kind": "signal" },
-    "B": { "direction": "output", "side": "right", "kind": "signal" }
+    "A": {
+      "side": "left",
+      "kind": "signal"
+    },
+    "B": {
+      "side": "right",
+      "kind": "signal"
+    }
   },
   "topics": {
-    "pressed": { "direction": "input", "type": "boolean", "title": "按下", "state": "pressed" },
-    "closed": { "direction": "output", "type": "boolean", "title": "触点闭合", "state": "closed" },
+    "pressed": {
+      "direction": "input",
+      "type": "boolean",
+      "title": "按下",
+      "state": "pressed"
+    },
+    "closed": {
+      "direction": "output",
+      "type": "boolean",
+      "title": "触点闭合",
+      "state": "closed"
+    },
     "pressCount": {
       "direction": "output",
       "type": "number",
@@ -18,6 +33,23 @@
       "state": "pressCount"
     }
   },
-  "connections": ["contact"],
-  "reset": { "state": "supported", "detail": "统一 IR 复位会恢复按键初始状态" }
+  "connections": {
+    "contact": {
+      "pins": ["A", "B"],
+      "initial": "open"
+    }
+  },
+  "reset": {
+    "state": "supported",
+    "detail": "统一 IR 复位会恢复按键初始状态"
+  },
+  "properties": {
+    "debounceTicks": {
+      "type": "number",
+      "default": 3,
+      "min": 0,
+      "max": 1000000,
+      "step": 1
+    }
+  }
 }

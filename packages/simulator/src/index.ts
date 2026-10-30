@@ -23,6 +23,8 @@ export type {
   DeviceAccessor,
   DeviceAccessors,
   DeviceAccessorsOf,
+  ElectricalCurrentTarget,
+  ElectricalDiagnostic,
   SchematicCircuitBinding,
   SchematicCircuitOptions,
   SchematicDeviceBinding,
@@ -80,3 +82,15 @@ export type { DeviceSimulationHostGuest, DeviceSimulationHostGuestOptions } from
  * Device authoring: helpers a caller-supplied device package needs
  * ---------------------------------------------------------------------- */
 export { createModuleValidation } from './unified-ir/validation';
+export { ElectricalDefinitionError } from './electrical-authoring';
+export type {
+  ContactDeclaration,
+  DeviceElectricalInitialization,
+  ElectricalDefinitionErrorCode,
+  ElectricalFactoryContext,
+  ElectricalReference,
+  ElectricalPinDeclaration,
+  PinElectricalDescription,
+  ResistorDeclaration,
+  ResistorInitialState,
+} from './electrical-authoring';

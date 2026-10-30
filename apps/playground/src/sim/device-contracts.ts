@@ -6,24 +6,14 @@ import type {
   SchematicDeviceTopic,
 } from '@mica-js/simulator';
 import type { DeviceLibraryEntry, DeviceTopicContract } from './device-library';
-import {
-  MODEL_DEVICE_TYPES,
-  createButtonDescription,
-  createLedDescription,
-  createMcuDescription,
-  createRelayDescription,
-} from './device-models';
+import { MODEL_DEVICE_TYPES, describeModel } from './device-implementations';
 
 /**
  * Runtime adapters for the device **contracts** in `public/devices`.
  *
- * A contract resolves to a unified-IR `DeviceDescription` from `device-models.ts`: the simulator
- * ships no device models, so the Playground owns all four demo types (`ideal-led`, `teaching-mcu`,
- * `button-ir`, `relay-ir`).
- *
- * Every source is a plain description with pins, states and behavior hooks — no device ships a
- * `DeviceAccessor`. A contract that names any other type still loads and renders in the schematic
- * editor, but a device host asked to compile it reports the missing runtime instead of guessing.
+ * JSON owns pins, properties and electrical resources; paired JS initializes capabilities and
+ * builds IR hooks. The Playground supplies ordinary state layouts, not per-tick JS behavior.
+ * A type without a state layout still renders in the editor, but cannot run in this host.
  *
  * Topic payloads cross the contract boundary through the generic `DeviceAccessor` state surface,
  * named by `topic.state`.
@@ -35,27 +25,20 @@ export function hasRuntimeModel(entry: DeviceLibraryEntry): boolean {
 }
 
 /** IR description of one contract, or `undefined` when no model exists for its type. */
-export function describeContract(entry: DeviceLibraryEntry): DeviceDescription | undefined {
-  switch (entry.type) {
-    case 'ideal-led':
-      return createLedDescription(entry);
-    case 'teaching-mcu':
-      return createMcuDescription(entry);
-    case 'button-ir':
-      return createButtonDescription(entry);
-    case 'relay-ir':
-      return createRelayDescription(entry);
-    default:
-      return undefined;
-  }
+export function describeContract(
+  entry: DeviceLibraryEntry,
+  factory: NonNullable<DeviceDescription['factory']>,
+): DeviceDescription | undefined {
+  return describeModel(entry, factory);
 }
 
 /** One `DeviceConfig` of a contract, for hosts that build a circuit without a schematic sheet. */
 export function createContractDevice(
   entry: DeviceLibraryEntry,
   instanceId: string,
+  factory: NonNullable<DeviceDescription['factory']>,
 ): DeviceConfig | undefined {
-  const description = describeContract(entry);
+  const description = describeContract(entry, factory);
   if (description === undefined) {
     return undefined;
   }
@@ -71,13 +54,14 @@ export function createContractDevice(
  * Schematic-side binding of one contract.
  *
  * The sandbox guest and the tests resolve references through this single function, so a schematic
- * compiled in a worker behaves exactly like one compiled in node. `config` travels with the
- * binding because the contract owns per-type parameters such as `debounceTicks`.
+ * compiled in a worker behaves exactly like one compiled in Node. Electrical parameters come
+ * from immutable instance properties; optional non-electrical config is forwarded unchanged.
  */
 export function createContractBinding(
   entry: DeviceLibraryEntry,
+  factory: NonNullable<DeviceDescription['factory']>,
 ): SchematicDeviceBinding | undefined {
-  const description = describeContract(entry);
+  const description = describeContract(entry, factory);
   if (description === undefined) {
     return undefined;
   }
@@ -152,5 +136,13 @@ export function deliverContractTopic(
       `Device ${entry.reference} topic ${JSON.stringify(port)} has no runtime state mapping yet`,
     );
   }
+  if (topic.type === 'number' && (typeof payload !== 'number' || !Number.isFinite(payload)))
+    throw new TypeError(`Device ${entry.reference} topic ${port} requires a finite number`);
+  if (
+    entry.type === 'potentiometer-ir' &&
+    port === 'position' &&
+    (typeof payload !== 'number' || payload < 0 || payload > 1)
+  )
+    throw new TypeError('Potentiometer position must be in [0, 1]');
   accessor.setState(topic.state, payload);
 }

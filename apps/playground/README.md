@@ -44,7 +44,7 @@ public/assets/                示例资源（画布底图、image / binary 属�
 public/widgets/               demo widget 包：image / segment / button / lamp
 public/schematics/            原理图示例资产（原理图页与画布页共用）
 public/canvases/              画布示例资产，`schematic` 指向 public/schematics
-public/devices/               器件契约（package.json + 每器件 JSON：pins / topics / connections / reset）
+public/devices/               器件包（package.json + 每器件 JSON/JS：资源声明与配对 IR 工厂）
 ```
 
 ## 画布页
@@ -69,14 +69,18 @@ flowchart LR
 - **发布日志**记录两条路径：`S1.closed`、`D1.lit` 这类设备发布，以及 `按键.press` 这类 widget 输出（即使它同时被绑定送进器件）。“按键与指示灯”示例的按键 widget 绑定 `S1.pressed`：按下后按钮模型闭合触点、继电器吸合，`D1.lit` 变亮、`D2.lit` 熄灭，`S1.pressCount` 加一。
 - **保存**：每个示例有独立的草稿键 `mica-playground:canvas-draft:<id>`；`保存` / `Ctrl+S` 立即写入，`重置` 恢复该示例的 `.cnv`。
 
-画布示例引用的器件必须由 `src/sim/device-contracts.ts` 的 `describeContract()` 解析出统一 IR 描述：全部四个类型（`ideal-led`、`teaching-mcu`、`button-ir`、`relay-ir`）都由 Playground 自己的 `src/sim/device-models.ts` 提供，仿真包不再内置任何器件。不在列表里的类型，画布设备宿主会明确报“没有统一 IR 运行时模型”，不会退回一个假模型。
+画布器件通过 `src/sim/device-contracts.ts` 组合为统一 IR 描述：JSON 声明引脚、属性和资源，配对 JS 初始化电气参数并生成 IR，`device-implementations.ts` 提供普通状态布局。五种类型（`ideal-led`、`teaching-mcu`、`button-ir`、`relay-ir`、`potentiometer-ir`）均由 Playground 提供，仿真包不内置具体器件；没有状态布局或配对 JS 时明确报错，不猜测模型。
+
+示例 guest 显式使用 5 V 的 VDD/VCC、MCU 的 50 Ω 高低输出电阻、数字输入的 0.3/0.7 比例门限。按钮采用双向理想触点，闭合状态不依赖供电；继电器原子切换 COM–NO / COM–NC，不再单向复制电平。LED 仅采样，不是二极管负载模型。
+
+`demo:potentiometer` 声明 A–W / W–B 两支电阻。默认轨道 10000 Ω、每支端点电阻 10 Ω、初始位置 0.5；`position` 输入与 `actualPosition` 输出都是 [0, 1] 的 number。输入排队至下一 tick，由 IR 原子更新两支阻值，回读位置经既有发布通道返回。端点电阻是显式属性；带负载滑端电压由物理解算决定，不从位置猜算。当前未添加专用画布控件或模拟电压 topic，物理电压可由本地 `Circuit.getVoltage` 观察。
 
 ## 环境模块
 
 Playground 只提供示例环境，仿真编排留在公开包里：
 
 - **器件库**：`src/sim/device-library.ts` 读取 `public/devices` 的契约（`package.json` + 每器件 JSON），校验 `pins` / `topics` / `connections` / `reset` 并合成符号；原理图页与画布页共用同一份库。
-- **契约 → 统一 IR**：`src/sim/device-contracts.ts` 把契约转成 `DeviceDescription`；`ideal-led` / `teaching-mcu` / `button-ir` / `relay-ir` 全部由 `src/sim/device-models.ts` 实现（`description.behaviors` 生成的 IR，没有 `DeviceAccessor`）。
+- **契约 → 统一 IR**：`src/sim/device-contracts.ts` 把 JSON 与配对工厂组合成 `DeviceDescription`；`device-implementations.ts` 通过同一文件服务加载 JS。页面只读元数据，worker 执行同步工厂，生成 IR 后不再逐 tick 调用 JS。
 - **画布设备宿主**：`src/sim/device-simulation-host.sandbox.ts` 通过 `?sandbox-worker` 生成 Playground 自己的设备 guest（它带自己的器件库）；widget guest 直接用 `@mica-js/widget` 已内联的 `createWidgetHostGuestSandbox()`，不再需要构建期查询。`SandboxHostProvider` 负责创建设备 RPC、挂载 widget host，并把 `event.ports[0]` 交给 guest、把后续端口用于 widget 与设备的直连；worker 通过宿主文件系统 RPC 读取 `devices/` 契约，画布页不持有 `Circuit`。
 - **主题映射**：契约 topic 用 `state` 指明载荷落在哪个设备状态（`lit → lamp`）；宿主通过通用 `DeviceAccessor.getState/setState` 收发，不需要模型专用访问器。没有 `state` 的 topic 会被明确拒绝。
 

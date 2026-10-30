@@ -7,6 +7,7 @@ import type {
   Value,
 } from '@mica-js/ir';
 import { PIN_MODE } from '../pin-space';
+import type { ElectricalOperations } from './electrical-operations';
 import { stateOffsetOf } from './allocator';
 import {
   UnifiedIRCompilerError,
@@ -49,6 +50,7 @@ export interface DeviceGenerationContext {
   readonly memory: CompiledCircuitMemory;
   readonly pins: GlobalPinMap;
   readonly states: GlobalStateMap;
+  readonly electrical?: ElectricalOperations;
 }
 
 /**
@@ -83,11 +85,21 @@ export class DeviceIRGenerator {
         { deviceId: device.id },
       );
     }
+    const electrical = this.context.electrical;
+    const memory = this.context.memory;
     const kernelResult = device.description.kernel?.({
       deviceId: device.id,
       config: device.config,
       module: this.context.module,
-      memory: this.context.memory,
+      get memory(): CompiledCircuitMemory {
+        if (electrical !== undefined)
+          throw new UnifiedIRCompilerError(
+            'unsupported-device',
+            'Raw electrical memory is unavailable; use bind(builder)',
+          );
+        return memory;
+      },
+      bind: (builder) => this.createApi(device, allocation, builder),
       pins: [...allocation.resolved.values()].map((pin) =>
         Object.freeze({
           name: pin.name,
@@ -111,7 +123,10 @@ export class DeviceIRGenerator {
       tick = phaseFromRef(this.context.module, device.id, kernelRuntime.tick);
       update = phaseFromRef(this.context.module, device.id, kernelRuntime.update);
     } else {
-      if (behaviors === undefined || !hasAnyBehavior(behaviors)) {
+      if (
+        this.context.electrical === undefined &&
+        (behaviors === undefined || !hasAnyBehavior(behaviors))
+      ) {
         throw new UnifiedIRCompilerError(
           'unsupported-device',
           `Device "${device.id}" of type "${device.type}" declares no behaviors. Provide description.behaviors or description.kernel`,
@@ -119,10 +134,12 @@ export class DeviceIRGenerator {
         );
       }
       initialize =
-        this.generatePhase(device, allocation, 'initialize', behaviors.initialize) ??
-        this.generateDefaultInitialize(device, allocation);
-      tick = this.generatePhase(device, allocation, 'tick', behaviors.tick);
-      update = this.generatePhase(device, allocation, 'update', behaviors.update);
+        this.generatePhase(device, allocation, 'initialize', behaviors?.initialize) ??
+        (this.context.electrical === undefined
+          ? this.generateDefaultInitialize(device, allocation)
+          : undefined);
+      tick = this.generatePhase(device, allocation, 'tick', behaviors?.tick);
+      update = this.generatePhase(device, allocation, 'update', behaviors?.update);
     }
 
     const functions: string[] = [];
@@ -208,15 +225,39 @@ export class DeviceIRGenerator {
       if (pin.role === 'driver') outputs.push(handle);
     }
     const slots = this.context.states.devices.get(device.id);
+    const electrical = this.context.electrical?.bindDevice(
+      device.id,
+      builder,
+      new Map([...allocation.resolved].map(([name, pin]) => [name, pin.globalPinId])),
+    );
+    const memory = this.context.memory;
+    const requireElectrical = (): never => {
+      throw new UnifiedIRCompilerError(
+        'unsupported-device',
+        `Device "${device.id}" requires the resistive electrical compiler`,
+      );
+    };
     return Object.freeze({
       deviceId: device.id,
       builder,
       module: this.context.module,
-      memory: this.context.memory,
+      get memory(): CompiledCircuitMemory {
+        if (electrical !== undefined)
+          throw new UnifiedIRCompilerError(
+            'unsupported-device',
+            'Raw electrical memory is unavailable; use typed pin and resistor handles',
+          );
+        return memory;
+      },
       config: device.config,
-      pins: Object.freeze(pins),
-      outputs: Object.freeze(outputs),
+      pins: electrical?.pins ?? Object.freeze(pins),
+      outputs: electrical?.outputs ?? Object.freeze(outputs),
+      resistor: electrical?.resistor ?? requireElectrical,
+      writeDigitalGroup: electrical?.writeDigitalGroup ?? requireElectrical,
+      applyResistors: electrical?.applyResistors ?? requireElectrical,
+      applyConnections: electrical?.applyConnections ?? requireElectrical,
       pin(name: string): DevicePinHandle {
+        if (electrical !== undefined) return electrical.pin(name);
         const handle = handles.get(name);
         if (handle === undefined) {
           const available = [...handles.keys()].map((entry) => `${device.id}.${entry}`);
@@ -263,11 +304,35 @@ export class DeviceIRGenerator {
         }
         builder.array.store(memory.mode, index(), builder.const('u8', mode));
       },
+      setOutputEnabled(): never {
+        throw new UnifiedIRCompilerError(
+          'unsupported-device',
+          'Output enable requires the resistive electrical compiler',
+        );
+      },
+      setPull(): never {
+        throw new UnifiedIRCompilerError(
+          'unsupported-device',
+          'Pull selection requires the resistive electrical compiler',
+        );
+      },
+      writeVoltage(): never {
+        throw new UnifiedIRCompilerError(
+          'unsupported-device',
+          'Voltage output requires the resistive electrical compiler',
+        );
+      },
       writeDigital(level: Value<'bool'>): void {
         builder.array.store(memory.output, index(), level);
       },
       sampleDigital(): Value<'bool'> {
         return builder.array.load(memory.input, index());
+      },
+      sampleVoltage(): never {
+        throw new UnifiedIRCompilerError(
+          'unsupported-device',
+          'Voltage sampling requires the resistive electrical compiler',
+        );
       },
       readDrivenDigital(): Value<'bool'> {
         return builder.array.load(memory.output, index());

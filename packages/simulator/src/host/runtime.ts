@@ -3,8 +3,14 @@ import { parseSchematic } from '@mica-js/core/schematic';
 import type { SchematicDocument } from '@mica-js/core/schematic';
 import type { CanvasBindingTarget, PayloadType } from '@mica-js/core/canvas';
 import { Emitter } from '@mica-js/core/lifecycle';
+import { toNumber, type FloatBits } from '@mica-js/ir';
 import { createSchematicCircuit } from '../unified-ir/runtime';
-import type { Circuit, SchematicDeviceBinding, SchematicDeviceTopic } from '../unified-ir/runtime';
+import type {
+  Circuit,
+  CircuitElectricalOptions,
+  SchematicDeviceBinding,
+  SchematicDeviceTopic,
+} from '../unified-ir/runtime';
 import type { DeviceAccessor } from '../unified-ir/runtime/types';
 import type {
   DeviceSimulationHost,
@@ -15,6 +21,8 @@ import type {
 
 /** Reads the bytes of one schematic URI; the caller resolves relative references. */
 export interface SchematicDeviceSimulationHostOptions {
+  /** Local startup configuration, not an RPC method or payload. */
+  readonly electrical?: CircuitElectricalOptions;
   readonly read: (uri: string) => Promise<Uint8Array>;
   /**
    * Symbol geometry of the schematics this host loads. Pass the same provider the schematic was
@@ -192,7 +200,17 @@ export function createSchematicDeviceSimulationHost(
       for (const topic of device.binding.topics ?? []) {
         if (topic.direction !== 'output' || device.binding.read === undefined) continue;
         const key = targetKey(device.symbol, topic.port);
-        const payload = device.binding.read(device.accessor, topic.port);
+        const raw = device.binding.read(device.accessor, topic.port);
+        const payload =
+          topic.type === 'number' &&
+          typeof raw === 'object' &&
+          raw !== null &&
+          'type' in raw &&
+          (raw.type === 'f32' || raw.type === 'f64') &&
+          'bits' in raw &&
+          typeof raw.bits === 'string'
+            ? toNumber(raw as FloatBits)
+            : raw;
         // Only a change is news to a level port; repeating it would make every widget repaint on
         // every step the circuit does not touch.
         if (published.has(key) && samePayload(published.get(key), payload)) continue;
@@ -228,6 +246,7 @@ export function createSchematicDeviceSimulationHost(
       const compiled = await createSchematicCircuit(schematic, {
         ...(symbolProvider === undefined ? {} : { devices: symbolProvider }),
         resolveDevice,
+        ...(options.electrical === undefined ? {} : { electrical: options.electrical }),
         instanceId: INSTANCE_ID,
       });
       const next = buildRuntime(compiled.circuit, schematic, compiled.bindings, resolveDevice);
@@ -270,10 +289,14 @@ export function createSchematicDeviceSimulationHost(
         }
         delivery.device.binding.deliver(delivery.device.accessor, delivery.port, delivery.payload);
       }
-      active.circuit.runBatch(1);
-      simTimePs += dt;
+      const before = active.circuit.tickCount;
+      try {
+        active.circuit.runBatch(1, dt);
+      } finally {
+        simTimePs += dt * Number(active.circuit.tickCount - before);
+      }
       publishOutputs(active);
-      return { simTime: simTimePs, executed: 1 };
+      return { simTime: simTimePs, executed: Number(active.circuit.tickCount - before) };
     },
 
     async deliver(target: CanvasBindingTarget, payload: unknown): Promise<void> {

@@ -4,7 +4,11 @@
  * device model may sneak back in.
  */
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import type { DeviceAccessor, SchematicDeviceBinding } from './index';
+import type { DeviceAccessor, ElectricalFactoryContext, SchematicDeviceBinding } from './index';
+// @ts-expect-error Compiler preparation results are internal.
+import type { PreparedElectricalDevice } from './index';
+// @ts-expect-error Initialized resource records are internal.
+import type { InitializedResistor } from './index';
 import {
   Circuit,
   CircuitError,
@@ -38,6 +42,17 @@ describe('public API surface', () => {
     expect(UNIFIED_PIN_CAPACITY).toBe(4096);
     expect(DEVICE_PIN_STRIDE).toBe(512);
     expect(PIN_MODE.pushPull).toBe(1);
+  });
+
+  it('keeps compiler preparation internal while exposing factory initialization types', async () => {
+    const simulator = await import('./index');
+    expect('prepareElectricalDevice' in simulator).toBe(false);
+    expectTypeOf<PreparedElectricalDevice<unknown>>().toBeAny();
+    expectTypeOf<InitializedResistor>().toBeAny();
+    expectTypeOf<ElectricalFactoryContext['electrical']['initializeResistor']>().toBeCallableWith(
+      'body',
+      { resistance: 1000, enabled: true },
+    );
   });
 
   it('ships no device models', async () => {

@@ -3,6 +3,10 @@ import type { IRModule, IRValidationOptions } from '@mica-js/ir';
 import { createModuleValidation } from '../validation';
 import { GlobalResourceAllocator } from './allocator';
 import { DeviceIRGenerator } from './device-gen';
+import {
+  prepareElectricalCompilation,
+  retainElectricalCompilation,
+} from './electrical-compilation';
 import { DEFAULT_ENTRY_POINT_NAMES, MainLoopGenerator, type MainLoopNames } from './mainloop-gen';
 import { ElectricalSolverGenerator } from './solver-gen';
 import {
@@ -54,20 +58,28 @@ export function compileCircuit(
   input: CircuitCompilationInput,
   options: CircuitCompilationOptions = {},
 ): CompiledCircuit {
-  const { devices, connections } = validateInput(input);
+  const validated = validateInput(input);
+  const { connections } = validated;
   const resolvedOptions = validateOptions(options);
   const names = resolveEntryNames(resolvedOptions);
 
   const module = createIRModule();
-  const allocation = new GlobalResourceAllocator(module).allocate(devices);
+  const allocation = new GlobalResourceAllocator(module).allocate(validated.devices);
+  const electrical = prepareElectricalCompilation(
+    module,
+    validated.devices,
+    connections,
+    resolvedOptions,
+  );
+  const devices = electrical?.devices ?? validated.devices;
 
   const topologyOptions: TopologyOptions = {
     ...(resolvedOptions.rails === undefined ? {} : { rails: resolvedOptions.rails }),
   };
-  const netlist = new NetworkTopologyAnalyzer(topologyOptions).analyze(
-    connections,
-    allocation.pins,
-  );
+  const netlist =
+    electrical === undefined
+      ? new NetworkTopologyAnalyzer(topologyOptions).analyze(connections, allocation.pins)
+      : { nets: [], diagnostics: [] };
   assertNoElectricalErrors(netlist);
 
   const generator = new DeviceIRGenerator({
@@ -75,13 +87,17 @@ export function compileCircuit(
     memory: allocation.memory,
     pins: allocation.pins,
     states: allocation.states,
+    ...(electrical === undefined ? {} : { electrical: electrical.operations }),
   });
   const generated = devices.map((device) => generator.generate(device));
 
-  const solvers = new ElectricalSolverGenerator({
-    module,
-    memory: allocation.memory,
-  }).generate(netlist);
+  const solvers =
+    electrical === undefined
+      ? new ElectricalSolverGenerator({
+          module,
+          memory: allocation.memory,
+        }).generate(netlist)
+      : [];
 
   assertNoNameCollisions(
     devices,
@@ -89,7 +105,7 @@ export function compileCircuit(
     names,
   );
 
-  const loop = new MainLoopGenerator(module).generate(
+  const loop = new MainLoopGenerator(module, electrical?.operations).generate(
     generated.map((device) => device.entry),
     solvers,
     netlist,
@@ -104,7 +120,7 @@ export function compileCircuit(
 
   const deviceMap = new Map(generated.map((device) => [device.metadata.deviceId, device.metadata]));
 
-  return Object.freeze({
+  const compiled = Object.freeze({
     module,
     entryPoints: Object.freeze({
       tick: loop.names.tick,
@@ -116,6 +132,7 @@ export function compileCircuit(
         batch: loop.batch,
       }),
     }),
+    progress: loop.progress,
     pinMap: allocation.pins.pins,
     deviceMap,
     netlist,
@@ -126,6 +143,8 @@ export function compileCircuit(
     executionOrder: loop.order,
     functions: Object.freeze(module.functions.map((fn) => fn.name)),
   });
+  if (electrical !== undefined) retainElectricalCompilation(compiled, electrical);
+  return compiled;
 }
 
 function validateInput(input: unknown): {

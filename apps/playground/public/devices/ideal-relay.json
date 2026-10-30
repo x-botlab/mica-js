@@ -4,10 +4,22 @@
   "displayName": "理想继电器",
   "designatorPrefix": "K",
   "pins": {
-    "IN": { "direction": "input", "side": "left", "kind": "signal" },
-    "COM": { "direction": "input", "side": "right", "kind": "signal" },
-    "NO": { "direction": "output", "side": "right", "kind": "signal" },
-    "NC": { "direction": "output", "side": "right", "kind": "signal" }
+    "IN": {
+      "side": "left",
+      "kind": "signal"
+    },
+    "COM": {
+      "side": "right",
+      "kind": "signal"
+    },
+    "NO": {
+      "side": "right",
+      "kind": "signal"
+    },
+    "NC": {
+      "side": "right",
+      "kind": "signal"
+    }
   },
   "topics": {
     "energized": {
@@ -17,6 +29,18 @@
       "state": "energized"
     }
   },
-  "connections": ["normallyOpen", "normallyClosed"],
-  "reset": { "state": "unsupported", "detail": "继电器没有独立 reset 生命周期" }
+  "connections": {
+    "normallyOpen": {
+      "pins": ["COM", "NO"],
+      "initial": "open"
+    },
+    "normallyClosed": {
+      "pins": ["COM", "NC"],
+      "initial": "closed"
+    }
+  },
+  "reset": {
+    "state": "unsupported",
+    "detail": "继电器没有独立 reset 生命周期"
+  }
 }

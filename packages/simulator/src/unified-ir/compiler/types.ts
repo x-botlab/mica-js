@@ -1,3 +1,9 @@
+import type { PropertyValue } from '@mica-js/core/schematic';
+import type {
+  ContactDeclaration,
+  ElectricalFactoryContext,
+  ResistorDeclaration,
+} from '../../electrical-authoring';
 import type {
   ArrayRef,
   BytesRef,
@@ -6,6 +12,7 @@ import type {
   IRModule,
   IRValidationOptions,
   ScalarType,
+  StateRef,
   Value,
 } from '@mica-js/ir';
 
@@ -57,12 +64,21 @@ export interface DevicePinHandle {
   readonly globalId: number;
   /** `pin.configure`: writes `pin_mode[globalId]`. */
   configure(mode: number): void;
+  setOutputEnabled(enabled: Value<'bool'>): void;
+  setPull(pull: 'none' | 'up' | 'down'): void;
+  writeVoltage(voltage: Value<'f64'>): void;
   /** `pin.write_digital`: writes `pin_output[globalId]`. */
   writeDigital(level: Value<'bool'>): void;
   /** `pin.sample_digital`: reads the solved `pin_input[globalId]`. */
   sampleDigital(): Value<'bool'>;
+  sampleVoltage(): Value<'f64'>;
   /** Reads the device's own `pin_output[globalId]`. */
   readDrivenDigital(): Value<'bool'>;
+}
+
+export interface DeviceResistorHandle {
+  setResistance(ohms: Value<'f64'>): void;
+  setEnabled(enabled: Value<'bool'>): void;
 }
 
 /** Internal state slot a behavior may read and write. */
@@ -91,7 +107,9 @@ export interface DeviceKernelContext {
   readonly deviceId: string;
   readonly config: Readonly<Record<string, unknown>> | undefined;
   readonly module: IRModule;
+  /** Legacy digital memory; resistive kernels use bind(builder). */
   readonly memory: CompiledCircuitMemory;
+  bind(builder: FunctionBuilder<readonly []>): DeviceBehaviorApi;
   readonly pins: readonly DeviceKernelPin[];
 }
 
@@ -138,6 +156,10 @@ export interface DeviceBehaviorApi {
   /** Pins whose role is `driver`. */
   readonly outputs: readonly DevicePinHandle[];
   pin(name: string): DevicePinHandle;
+  resistor(name: string): DeviceResistorHandle;
+  writeDigitalGroup(names: readonly string[], levels: readonly Value<'bool'>[]): void;
+  applyResistors(names: readonly string[], ohms: readonly Value<'f64'>[]): void;
+  applyConnections(names: readonly string[], closed: readonly Value<'bool'>[]): void;
   state<T extends ScalarType = ScalarType>(name: string): DeviceStateHandle<T>;
 }
 
@@ -198,6 +220,11 @@ export interface DeviceBehaviors {
 export interface DeviceDescription {
   readonly name?: string;
   readonly pins: DevicePinMap;
+  readonly properties?: Readonly<Record<string, unknown>>;
+  readonly resistors?: Readonly<Record<string, ResistorDeclaration>>;
+  readonly connections?: Readonly<Record<string, ContactDeclaration>>;
+  /** Paired synchronous JS factory, invoked once per instance before IR generation. */
+  readonly factory?: (context: ElectricalFactoryContext) => DeviceBehaviors | void;
   readonly states?: Readonly<Record<string, DeviceStateDescription>>;
   readonly behaviors?: DeviceBehaviors;
   /**
@@ -226,6 +253,8 @@ export interface DeviceConfig {
   /** Device type, e.g. `'push-pull-driver'`; free-form label of the device model. */
   readonly type: string;
   readonly description: DeviceDescription;
+  /** Persistent instance values resolved against the JSON property declarations. */
+  readonly properties?: Readonly<Record<string, PropertyValue>>;
   /** Instance configuration; reserved for device kernels that take parameters. */
   readonly config?: Readonly<Record<string, unknown>>;
 }
@@ -241,6 +270,11 @@ export interface Connection {
 export interface CircuitCompilationOptions {
   /** Named fixed-level rails; merged over `GND`/`VCC`/`VDD`. */
   readonly rails?: Readonly<Record<string, boolean>>;
+  /** Explicit GND-referenced voltage sources; GND itself is always 0 V. */
+  readonly sources?: Readonly<Record<string, { readonly voltage: number }>>;
+  readonly interpretation?: 'two-state' | 'retain-in-band';
+  /** Reproducible mica-floating-v2 input seed; defaults to 0. */
+  readonly floatingSeed?: number;
   /** Runs `validateIR` over the generated module. Defaults to `true`. */
   readonly validate?: boolean;
   /** Overrides for the generated entry-point names. */
@@ -408,6 +442,8 @@ export interface CompiledEntryPoints {
 export interface CompiledCircuit {
   readonly module: IRModule;
   readonly entryPoints: CompiledEntryPoints;
+  /** Completed ticks in the most recent step/batch, including before a fault. */
+  readonly progress: StateRef<'u32'>;
   /** `'mcu1.PA0'` -> global pin id. */
   readonly pinMap: ReadonlyMap<string, number>;
   readonly deviceMap: ReadonlyMap<string, DeviceMetadata>;

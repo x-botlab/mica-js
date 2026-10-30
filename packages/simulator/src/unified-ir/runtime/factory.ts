@@ -159,6 +159,7 @@ export async function createSchematicCircuit(
       id: deviceId,
       type: binding.type,
       description: binding.description,
+      ...(symbol.properties === undefined ? {} : { properties: symbol.properties }),
       ...(binding.config === undefined ? {} : { config: binding.config }),
     });
     if (reference !== undefined) {
@@ -182,10 +183,20 @@ export async function createSchematicCircuit(
     );
   }
 
-  const railNames = new Set([
-    ...Object.keys(DEFAULT_RAILS),
-    ...Object.keys(options.electrical?.rails ?? {}),
-  ]);
+  const resistive =
+    deviceConfigs.some(
+      ({ description }) =>
+        description.factory !== undefined ||
+        description.resistors !== undefined ||
+        description.connections !== undefined,
+    ) ||
+    options.electrical?.sources !== undefined ||
+    options.electrical?.interpretation !== undefined;
+  const railNames = new Set(
+    resistive
+      ? ['GND', ...Object.keys(options.electrical?.sources ?? {})]
+      : [...Object.keys(DEFAULT_RAILS), ...Object.keys(options.electrical?.rails ?? {})],
+  );
   const connections: Connection[] = [];
 
   for (const net of topology.nets) {

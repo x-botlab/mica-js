@@ -1,4 +1,5 @@
-import type { FunctionBuilder, FunctionRef, IRModule } from '@mica-js/ir';
+import type { FunctionBuilder, FunctionRef, IRModule, StateRef } from '@mica-js/ir';
+import type { ElectricalOperations } from './electrical-operations';
 import type { DeviceLoopEntry } from './device-gen';
 import type { NetSolverRuntime } from './solver-gen';
 import type { CompiledNetlist } from './types';
@@ -23,6 +24,7 @@ export interface MainLoopOutput {
   readonly initialize: FunctionRef<readonly [], readonly []>;
   readonly tick: FunctionRef<readonly [], readonly []>;
   readonly batch: FunctionRef<readonly ['u32'], readonly []>;
+  readonly progress: StateRef<'u32'>;
   /** Device ids in dependency order. */
   readonly order: readonly string[];
 }
@@ -51,7 +53,10 @@ export interface MainLoopOutput {
 export class MainLoopGenerator {
   private readonly module: IRModule;
 
-  constructor(module: IRModule) {
+  constructor(
+    module: IRModule,
+    private readonly electrical?: ElectricalOperations,
+  ) {
     this.module = module;
   }
 
@@ -120,53 +125,85 @@ export class MainLoopGenerator {
     const order = this.order(entries, netlist);
     const byId = new Map(entries.map((entry) => [entry.deviceId, entry]));
 
-    const emitStep = (b: FunctionBuilder<readonly []>): void => {
-      for (const deviceId of order) {
-        const entry = byId.get(deviceId);
-        if (entry?.tick !== undefined) b.call(entry.tick, []);
+    const electrical = this.electrical;
+    const progress = this.module.state(`${names.tick}_completed`, 'u32', 0);
+    const collect = (phase: 'initialize' | 'tick' | 'update') =>
+      order.flatMap((id) => {
+        const ref = byId.get(id)?.[phase];
+        return ref === undefined ? [] : [ref];
+      });
+    const ensure = electrical === undefined ? [] : [electrical.ensure];
+    const phases = [
+      ...collect('tick'),
+      ...solvers.map((solver) => solver.solve),
+      ...ensure,
+      ...collect('update'),
+      ...ensure,
+    ];
+    const emitCalls = (
+      b: FunctionBuilder<readonly []>,
+      calls: readonly FunctionRef<readonly [], readonly []>[],
+      finish: (b: FunctionBuilder<readonly []>) => undefined,
+    ): undefined => {
+      if (electrical === undefined) {
+        for (const call of calls) b.call(call, []);
+        return finish(b);
       }
-      for (const solver of solvers) b.call(solver.solve, []);
-      for (const deviceId of order) {
-        const entry = byId.get(deviceId);
-        if (entry?.update !== undefined) b.call(entry.update, []);
-      }
+      const emit = (b: FunctionBuilder<readonly []>, at: number): undefined => {
+        const next = b.block([]);
+        const failed = b.block([]);
+        b.branch(
+          b.int.cmp('eq', b.state.load(electrical.solver.fault), b.const('u8', 0)),
+          { target: next, args: [] },
+          { target: failed, args: [] },
+        );
+        b.at(failed, (b) => b.return([]));
+        b.at(next, (b) => {
+          const call = calls[at];
+          if (call === undefined) return finish(b);
+          b.call(call, []);
+          return emit(b, at + 1);
+        });
+      };
+      return emit(b, 0);
     };
-
+    const completed = (b: FunctionBuilder<readonly []>): void => {
+      if (electrical !== undefined) b.call(electrical.advanceTime, []);
+      b.state.store(progress, b.int.add(b.state.load(progress), b.const('u32', 1)));
+    };
     const initialize = this.module.func(names.initialize, { params: [], results: [] });
-    initialize.body((b) => {
-      for (const deviceId of order) {
-        const entry = byId.get(deviceId);
-        if (entry?.initialize !== undefined) b.call(entry.initialize, []);
-      }
-      b.return([]);
-    });
-
+    initialize.body((b) =>
+      emitCalls(b, [...collect('initialize'), ...ensure], (b) => b.return([])),
+    );
     const tick = this.module.func(names.tick, { params: [], results: [] });
     tick.body((b) => {
-      emitStep(b);
-      b.return([]);
+      b.state.store(progress, b.const('u32', 0));
+      return emitCalls(b, phases, (b) => {
+        completed(b);
+        b.return([]);
+      });
     });
-
-    // The batch entry keeps the loop inside the IR: one engine call per batch
-    // instead of one host entry per tick, which is the throughput path.
     const batch = this.module.func(names.batch, { params: ['u32'], results: [] });
     batch.body((b, [count]) => {
       const header = b.block(['u32']);
       const body = b.block(['u32']);
       const done = b.block([]);
+      b.state.store(progress, b.const('u32', 0));
       b.jump(header, [b.const('u32', 0)]);
-      b.at(header, (ib, [index]) =>
-        ib.branch(
-          ib.int.cmp('lt', index, count),
+      b.at(header, (b, [index]) =>
+        b.branch(
+          b.int.cmp('lt', index, count),
           { target: body, args: [index] },
           { target: done, args: [] },
         ),
       );
-      b.at(body, (ib, [index]) => {
-        emitStep(ib);
-        ib.jump(header, [ib.int.add(index, ib.const('u32', 1))]);
-      });
-      b.at(done, (ib) => ib.return([]));
+      b.at(body, (b, [index]) =>
+        emitCalls(b, phases, (b) => {
+          completed(b);
+          b.jump(header, [b.int.add(index, b.const('u32', 1))]);
+        }),
+      );
+      b.at(done, (b) => b.return([]));
     });
 
     return Object.freeze({
@@ -174,6 +211,7 @@ export class MainLoopGenerator {
       initialize,
       tick,
       batch,
+      progress,
       order,
     });
   }

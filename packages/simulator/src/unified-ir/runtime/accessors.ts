@@ -1,4 +1,5 @@
 import type { FloatBits, IRInterpreter, RuntimeScalar } from '@mica-js/ir';
+import { electricalCompilationOf } from '../compiler/electrical-compilation';
 import type {
   CompiledCircuit,
   DeviceMetadata,
@@ -59,6 +60,7 @@ function createBaseAccessor(
   const { jit } = context;
   const storage = jit.storage;
   const memory = context.compiled.memory;
+  const electrical = electricalCompilationOf(context.compiled);
   const resolved = context.compiled.pins.devices.get(device.deviceId)?.resolved;
 
   const accessor: DeviceAccessor = {
@@ -69,11 +71,24 @@ function createBaseAccessor(
     readPin(pinName: string): boolean {
       context.assertActive();
       const pin = pinOf(device, resolved, pinName);
+      if (electrical !== undefined)
+        return (
+          storage.loadArray(
+            electrical.operations.digitalIntent,
+            electrical.operations.pinIndices.get(`${device.deviceId}.${pinName}`)!,
+          ) === true
+        );
       return storage.loadArray(memory.output, pin.globalPinId) === true;
     },
     writePin(pinName: string, value: boolean): void {
       context.assertActive();
       const pin = pinOf(device, resolved, pinName);
+      if (electrical !== undefined)
+        throw new CircuitError(
+          'pin-not-writable',
+          'Resistive pin writes must use device state and typed IR operations',
+          { deviceId: device.deviceId, pinName },
+        );
       if (pin.role !== 'driver') {
         throw new CircuitError(
           'pin-not-writable',

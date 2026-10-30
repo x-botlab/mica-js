@@ -10,9 +10,9 @@ import type { DeviceSymbolProvider, PinSide } from '@mica-js/core/schematic';
  * Playground device package: **contracts only**.
  *
  * The committed JSON files describe what a device *is* — reference, unified-IR type, pins, topic
- * ports, connections and reset support. They do not carry a runtime model: the package stays usable
- * by the schematic editor and the canvas catalog on its own, and `device-models.ts` owns the unified
- * IR description of every type (nothing here guesses one).
+ * ports, electrical resources and reset support. Metadata loading does not execute the paired JS:
+ * the schematic editor and canvas catalog use JSON alone. The simulation worker separately loads
+ * factories through the same file system.
  */
 
 /** Folder `public/devices` is served from, relative to the page (and to the guest's host file system). */
@@ -26,15 +26,10 @@ export interface DeviceLibraryFiles {
   read(path: string): Promise<Uint8Array>;
 }
 
-/** Direction a contract declares for one pin. */
-export type DevicePinDirection = 'input' | 'output' | 'bidirectional' | 'passive';
-
-/** One declared pin; geometry comes from `side` and the symbol synthesizer. */
+/** Pin identity and geometry; capabilities are initialized by the paired factory. */
 export interface DevicePinContract {
-  readonly direction: DevicePinDirection;
   readonly side: PinSide;
-  /** Purely informational kind, e.g. `signal`, `power`, `gnd`. */
-  readonly kind?: string;
+  readonly kind: 'signal' | 'power' | 'gnd';
 }
 
 /**
@@ -59,6 +54,8 @@ export type DeviceResetState = 'supported' | 'unsupported';
 export interface DeviceLibraryEntry {
   /** Library-local id, e.g. `ideal-button`. */
   readonly id: string;
+  readonly path: string;
+  readonly definition: Readonly<Record<string, unknown>>;
   /** Full `<packageId>:<deviceId>` reference schematics use. */
   readonly reference: string;
   /** Unified-IR device type the contract names. */
@@ -90,12 +87,6 @@ const PACKAGE_JSON = 'package.json';
 const DEFINITION_EXTENSION = '.json';
 /** Package and device ids are stable kebab-case identifiers. */
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
-const PIN_DIRECTIONS: readonly DevicePinDirection[] = [
-  'input',
-  'output',
-  'bidirectional',
-  'passive',
-];
 const PIN_SIDES: readonly PinSide[] = ['left', 'right', 'top', 'bottom'];
 
 interface DeviceManifestEntry {
@@ -110,6 +101,7 @@ interface DeviceManifest {
 }
 
 interface DeviceDefinition {
+  readonly definition: Readonly<Record<string, unknown>>;
   readonly reference: string;
   readonly type: string;
   readonly displayName: string;
@@ -141,7 +133,7 @@ export async function loadDeviceLibrary(files: DeviceLibraryFiles): Promise<Devi
       throw new Error(`${files.label}: duplicate device reference ${definition.reference}`);
     }
     seen.add(definition.reference);
-    entries.push(Object.freeze({ id: declared.id, ...definition }));
+    entries.push(Object.freeze({ id: declared.id, path: declared.path, ...definition }));
   }
 
   const byReference = new Map(entries.map((entry) => [entry.reference, entry]));
@@ -245,11 +237,17 @@ async function readDefinition(
 
   const pins = readPins(files, declared.path, value['pins']);
   const topics = readTopics(files, declared.path, value['topics']);
-  const connections = optionalStringArray(
-    value['connections'],
-    'connections',
-    files.label,
-    declared.path,
+  const connections = Object.freeze(
+    Object.keys(
+      value['connections'] === undefined
+        ? {}
+        : parseObjectValue(
+            value['connections'],
+            files.label,
+            declared.path,
+            '"connections" must be a resource object',
+          ),
+    ),
   );
   const reset = parseObjectValue(
     value['reset'],
@@ -266,6 +264,7 @@ async function readDefinition(
   const detail = requireString(reset, 'detail', files.label, declared.path);
 
   return Object.freeze({
+    definition: Object.freeze({ ...value, pins }),
     reference: assertPackage(reference, packageId, files.label, declared.path),
     type,
     displayName,
@@ -296,15 +295,10 @@ function readPins(
       path,
       `pin "${name}" must be an object`,
     );
-    const direction = pin['direction'] ?? 'passive';
-    if (
-      typeof direction !== 'string' ||
-      !PIN_DIRECTIONS.includes(direction as DevicePinDirection)
-    ) {
+    if (Object.hasOwn(pin, 'direction') || Object.hasOwn(pin, 'role'))
       throw new Error(
-        `${files.label}/${path}: pin "${name}" direction must be one of ${PIN_DIRECTIONS.join(', ')}`,
+        `${files.label}/${path}: pin "${name}" uses obsolete electrical direction/role`,
       );
-    }
     const side = pin['side'] ?? 'left';
     if (typeof side !== 'string' || !PIN_SIDES.includes(side as PinSide)) {
       throw new Error(
@@ -312,14 +306,10 @@ function readPins(
       );
     }
     const kind = pin['kind'];
-    if (kind !== undefined && typeof kind !== 'string') {
-      throw new Error(`${files.label}/${path}: pin "${name}" "kind" must be a string`);
+    if (kind !== 'signal' && kind !== 'power' && kind !== 'gnd') {
+      throw new Error(`${files.label}/${path}: pin "${name}" kind must be signal, power or gnd`);
     }
-    pins[name] = Object.freeze({
-      direction: direction as DevicePinDirection,
-      side: side as PinSide,
-      ...(kind === undefined ? {} : { kind }),
-    });
+    pins[name] = Object.freeze({ side: side as PinSide, kind });
   }
   return Object.freeze(pins);
 }
@@ -426,19 +416,4 @@ function requireString(
     throw new Error(`${label}/${path}: "${key}" must be a non-empty string`);
   }
   return field;
-}
-
-function optionalStringArray(
-  raw: unknown,
-  key: string,
-  label: string,
-  path: string,
-): readonly string[] {
-  if (raw === undefined) {
-    return Object.freeze([]);
-  }
-  if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== 'string')) {
-    throw new Error(`${label}/${path}: "${key}" must be an array of strings`);
-  }
-  return Object.freeze([...(raw as string[])]);
 }

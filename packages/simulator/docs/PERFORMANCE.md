@@ -128,6 +128,39 @@ blinky 固件（GPIO MMIO 写 ODR）驱动一个 LED，`runBatch(20_000)`：
 引脚数分配（`UNIFIED_PIN_CAPACITY` 只是分配期上限），所以创建与 `reset()` 的成本只随实际引脚数增长，
 与上限值无关。
 
+## 电阻求解数值实验（2026-10-30）
+
+```sh
+pnpm --filter @mica-js/simulator bench:resistive
+```
+
+独立配置直接使用源码，不需要预构建 sandbox；实验不改变产品求解器。
+[基准源码](../bench/resistive-number.bench.ts) 比较相同的三节点线性电阻网络：
+节点间 A-B、B-C 各 1 mS，节点到三个已知电压源的电导分别为 3、2、2 mS。
+固定导纳矩阵在计时前求逆，每 tick 切换第一个源电压，执行三行矩阵向量乘法，
+保存三个节点电压及三个数字门限结果。两种实现采用相同的运算顺序和输入。
+
+- IR 路径使用当前 `createIRJIT`、f64 数组及批处理循环。
+- 原生路径使用普通 JS number、`Float64Array` 和 `Uint8Array`，不提供 IR 的权限、
+  暂停检查、资源版本跟踪或特殊 NaN 位模式保真合同，只作为专用数值内核的性能参考。
+- 计时前每种实现预热 500k tick；随后交替执行顺序，各测 9 轮，每轮 1M tick。
+  输出全部样本、最小值及中位数，不设机器相关的速度断言。
+- 正确性检查独立于计时：与 reference interpreter 对比奇偶 tick、拆分批次、零长度批次、
+  数字结果与电压，并检查三个节点的 KCL 残差小于 `1e-12`（以 mS、V 为数值单位）。
+
+Node v24.18.0、Windows x64，两个独立进程的观测值：
+
+| 路径              | 最小值 / ns/tick | 中位数 / ns/tick |
+| ----------------- | ---------------: | ---------------: |
+| 当前 IR f64 JIT   |    30.65 / 34.83 |    35.68 / 42.46 |
+| 原生 Float64Array |      3.94 / 4.20 |      5.35 / 5.64 |
+
+该形状下中位数相差约 6.7–7.5 倍，但不能把差值全部归因于浮点内存表示，
+也不能承诺 IR 能获得同等加速：两条路径的检查、资源跟踪和优化机会不同。
+此前临时探针的约 477 ns/tick 未被这次受控实验复现，不应继续用它估算产品成本。
+此实验也不包含动态电导、矩阵重分解、非线性迭代、脏组检测、器件执行或完整电路调度。
+它证明小型固定线性网络的算术成本可以很低，而不是完整模拟引擎已经具备该吞吐。
+
 ## 5. 复现步骤
 
 ```sh
@@ -156,3 +189,22 @@ pnpm --filter @mica-js/simulator exec vitest bench --run bench/unified-simple.be
   指令派发的成本。`vite.config.ts` 里设置 `benchmark.suppressExportGetterWarnings: true`
   关闭该追踪，否则本机实测会慢 100 倍以上。
 - **参考解释器**：`engine: 'reference'` 用于逐值对照，比 JIT 慢一个数量级以上；性能数据均为 JIT。
+
+## 线性电阻 Circuit 端到端基准
+
+```sh
+pnpm --filter @mica-js/simulator exec vitest run --config bench/electrical-circuit.config.ts
+```
+
+`electrical-circuit.bench.ts` 使用公共 `Circuit`，同一电路包含分压、电位器、DAC、触点和输入负载。计时前比较 reference/JIT 的引脚、电阻电流、普通状态及 reset，检查真实分压和变更效果；计时为 JIT `runBatch` 的普通循环，不使用 Tinybench。
+
+可通过 `MICA_BENCH_TICKS`、`MICA_BENCH_WARMUP_TICKS`、`MICA_BENCH_ROUNDS` 调整轮长；默认每轮 2000 tick、预热 1000 tick、5 轮。以下是 Windows x64、Node v24.18.0 的一次本地运行，单位 μs/tick：
+
+| 场景                           |   最佳 | 中位数 |
+| ------------------------------ | -----: | -----: |
+| 稳定，无电气失效               |   0.71 |   1.20 |
+| 每 tick 修改电位器两支阻值     | 223.89 | 242.97 |
+| GPIO 模拟电压改变，仅 RHS 更新 |  52.62 |  61.80 |
+| 每 tick 切换理想触点           | 202.98 | 261.20 |
+
+这些数字覆盖器件阶段、失效、当前稠密求解和批处理时钟，不含建图/JIT、RPC、UI、诊断 getter 或大规模网络。固定电路、缓存命中和持续调阻不是同一种负载；此结果不能推广为整机吞吐。当前独立分组和单节点闭式路径尚未实现，动态场景明显慢于缓存场景；此前算术微内核的 ns 数字不是这一基准的替代值。

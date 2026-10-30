@@ -60,6 +60,38 @@
 
 外部 JS、Worker 或 UI 更新在执行合同规定的接纳边界进入。硬件等待时间与器件内部配置延迟由普通定时事件表达；作者层配置合并在提交 IR 操作前完成。
 
+## JS 构建期操作
+
+以下为引脚 I/O 的构建期成员；句柄引用当前实例的静态资源，`Value<T>` 表达核心 IR 标量值。调用生成对应 IR 操作，工厂与句柄不作为每 tick 的 JS 执行服务。
+
+```ts
+interface DevicePinHandle {
+  readonly name: string;
+  readonly globalId: number;
+  configure(mode: number): void;
+  setOutputEnabled(enabled: Value<'bool'>): void;
+  setPull(pull: 'none' | 'up' | 'down'): void;
+  writeDigital(level: Value<'bool'>): void;
+  writeVoltage(voltage: Value<'f64'>): void;
+  sampleDigital(): Value<'bool'>;
+  sampleVoltage(): Value<'f64'>;
+  readDrivenDigital(): Value<'bool'>;
+}
+interface DeviceBehaviorApi {
+  pin(name: string): DevicePinHandle;
+  writeDigitalGroup(names: readonly string[], levels: readonly Value<'bool'>[]): void;
+}
+interface DeviceKernelContext {
+  bind(builder: FunctionBuilder<readonly []>): DeviceBehaviorApi;
+}
+```
+
+- `configure(mode)` 校验 `0/1/2/3` 并生成单项 `pin.set_mode`；三项原子配置仍按下一节的 `pin.configure` 合同执行。
+- 写数字或电压意图要求对应驱动能力；数字与电压采样要求输入能力。能力初始化由 [RFC 0006](./0006-device-pins.md) 规定；`sampleVoltage` 遵守本规范的实际电压、浮空回退与门控合同。
+- `readDrivenDigital` 读取已保存数字意图；`sampleDigital` 读取必要解析后的输入，两者分别维护。
+- 数字组的成员列表静态、非空、无重复且属于当前实例；数量与值列表匹配，提交遵守本规范的组原子性。
+- kernel 通过 `bind(builder)` 取得同一套授权操作；电气状态写入采用资源操作，普通私有内存沿用核心存储合同。
+
 ## 显式配置指令
 
 配置状态、枚举名称、初始值与意图保存关系由[引脚声明](./0006-device-pins.md)定义。本节唯一维护对应指令的标量签名与编码；`pin` 为静态引脚引用，各指令返回空结果。

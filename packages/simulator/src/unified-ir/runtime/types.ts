@@ -1,5 +1,5 @@
 import type { IRJITTuning } from '@mica-js/ir';
-import type { CircuitCompilationInput } from '../compiler';
+import type { CircuitCompilationInput, CircuitCompilationOptions } from '../compiler';
 
 /**
  * Types of the unified circuit runtime (U02).
@@ -10,6 +10,32 @@ import type { CircuitCompilationInput } from '../compiler';
  * device host or the schematic editor.
  */
 
+export type ElectricalCurrentTarget =
+  | { readonly kind: 'resistor' | 'contact'; readonly device: string; readonly name: string }
+  | {
+      readonly kind: 'drive' | 'pull-up' | 'pull-down';
+      readonly device: string;
+      readonly pin: string;
+    }
+  | { readonly kind: 'source'; readonly name: string };
+
+/** Active diagnostics of the last published electrical snapshot, plus any latched solve fault. */
+export type ElectricalDiagnostic =
+  | {
+      readonly code: 'electrical/overcurrent';
+      readonly severity: 'warning';
+      readonly target: ElectricalCurrentTarget;
+      readonly current: number;
+      readonly maxAbsCurrent: number;
+    }
+  | {
+      readonly code:
+        | 'electrical/invalid-parameter'
+        | 'electrical/source-conflict'
+        | 'electrical/numerical-failure';
+      readonly severity: 'error';
+    };
+
 /** Execution engine a `Circuit` runs on. */
 export type CircuitEngine = 'jit' | 'reference';
 
@@ -17,6 +43,9 @@ export type CircuitEngine = 'jit' | 'reference';
 export interface CircuitElectricalOptions {
   /** Named fixed-level rails; merged over `GND`/`VCC`/`VDD`. */
   readonly rails?: Readonly<Record<string, boolean>>;
+  readonly sources?: CircuitCompilationOptions['sources'];
+  readonly interpretation?: CircuitCompilationOptions['interpretation'];
+  readonly floatingSeed?: CircuitCompilationOptions['floatingSeed'];
 }
 
 /**
@@ -45,6 +74,8 @@ export interface CircuitRuntimeOptions {
 export type CircuitErrorCode =
   | 'invalid-options'
   | 'invalid-count'
+  | 'unsupported-operation'
+  | 'resource-not-found'
   | 'pin-not-found'
   | 'pin-not-writable'
   | 'state-not-found'

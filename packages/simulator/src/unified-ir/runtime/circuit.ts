@@ -1,4 +1,5 @@
-import { createIRInterpreter, createIRJIT } from '@mica-js/ir';
+import { createIRInterpreter, createIRJIT, toNumber } from '@mica-js/ir';
+import { electricalCompilationOf } from '../compiler/electrical-compilation';
 import type {
   ArrayRef,
   BytesRef,
@@ -20,6 +21,8 @@ import {
   type CircuitEngine,
   type CircuitRuntimeOptions,
   type DeviceAccessorsOf,
+  type ElectricalCurrentTarget,
+  type ElectricalDiagnostic,
 } from './types';
 
 /** Every generated entry takes no arguments, so one frozen array is reused. */
@@ -32,6 +35,11 @@ const MAX_BATCH_TICKS = 0xffff_ffff;
 const MAX_VIRTUAL_TIME = Number.MAX_SAFE_INTEGER;
 
 const DEFAULT_INSTANCE_ID = 'unified-circuit';
+
+type ElectricalReading =
+  | { readonly state: 'determinate'; readonly value: number }
+  | { readonly state: 'floating' }
+  | { readonly state: 'indeterminate' };
 
 /**
  * Mutable execution context. `IRExecutionContext` is readonly for callers; the
@@ -71,6 +79,9 @@ interface ResolvedRuntimeOptions {
   readonly jit: IRJITTuning | undefined;
   readonly validateIR: boolean;
   readonly rails: Readonly<Record<string, boolean>> | undefined;
+  readonly sources: CircuitCompilationOptions['sources'];
+  readonly interpretation: CircuitCompilationOptions['interpretation'];
+  readonly floatingSeed: CircuitCompilationOptions['floatingSeed'];
   readonly instanceId: string;
 }
 
@@ -184,12 +195,12 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
   /**
    * Runs `count` ticks inside one generated loop — the throughput path.
    *
-   * The whole batch is one engine call; `tickCount` grows by `count` once the
-   * call returns, so a failed batch never advances the clock.
+   * The whole batch is one engine call. The clock advances by completed ticks,
+   * including the completed prefix of a failed batch.
    *
    * @throws {CircuitError} with code `invalid-count` unless `count` is a u32.
    */
-  runBatch(count: number): void {
+  runBatch(count: number, dt = 1): void {
     this.#assertActive();
     if (
       typeof count !== 'number' ||
@@ -202,10 +213,15 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
         `runBatch(count) needs an integer in [0, ${MAX_BATCH_TICKS}], received ${String(count)}`,
       );
     }
+    this.#setTimeStep(dt);
     if (count === 0) return;
     this.#context.virtualTime = this.#virtualTime;
-    this.#jit.execute(this.#compiled.entryPoints.refs.batch, [count], this.#context);
-    this.#advance(count);
+    this.#jit.storage.storeState(this.#compiled.progress, 0);
+    try {
+      this.#jit.execute(this.#compiled.entryPoints.refs.batch, [count], this.#context);
+    } finally {
+      this.#advance(this.#jit.storage.loadState(this.#compiled.progress), dt);
+    }
   }
 
   /**
@@ -213,11 +229,15 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
    *
    * Every call is one engine entry, so prefer `runBatch` for throughput.
    */
-  step(): void {
+  step(dt = 1): void {
     this.#assertActive();
+    this.#setTimeStep(dt);
     this.#context.virtualTime = this.#virtualTime;
-    this.#jit.execute(this.#compiled.entryPoints.refs.tick, NO_ARGS, this.#context);
-    this.#advance(1);
+    try {
+      this.#jit.execute(this.#compiled.entryPoints.refs.tick, NO_ARGS, this.#context);
+    } finally {
+      this.#advance(this.#jit.storage.loadState(this.#compiled.progress), dt);
+    }
   }
 
   /**
@@ -278,6 +298,25 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
     this.#assertActive();
     const pin = this.#pinRuntime(pinName);
     const storage = this.#jit.storage;
+    const electrical = electricalCompilationOf(this.#compiled);
+    if (electrical !== undefined) {
+      const dot = pinName.indexOf('.');
+      if (
+        electrical.allocation.pins.get(pinName.slice(0, dot))?.get(pinName.slice(dot + 1))
+          ?.input === undefined
+      )
+        throw new CircuitError(
+          'unsupported-operation',
+          `Pin "${pinName}" has no digital input capability`,
+        );
+      this.#ensureElectrical();
+      return (
+        storage.loadArray(
+          electrical.operations.digitalSample,
+          electrical.operations.pinIndices.get(pinName)!,
+        ) === true
+      );
+    }
     if (pin.senses) {
       return storage.loadArray(this.#compiled.memory.input, pin.globalPinId) === true;
     }
@@ -300,6 +339,12 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
   setPin(pinName: string, value: boolean): void {
     this.#assertActive();
     const pin = this.#pinRuntime(pinName);
+    if (electricalCompilationOf(this.#compiled) !== undefined)
+      throw new CircuitError(
+        'unsupported-operation',
+        'Resistive pin writes must use device state and typed IR operations',
+        { pinName },
+      );
     if (typeof value !== 'boolean') {
       throw new CircuitError(
         'invalid-state-value',
@@ -310,6 +355,154 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
     const target =
       pin.role === 'driver' ? this.#compiled.memory.output : this.#compiled.memory.input;
     this.#jit.storage.storeArray(target, pin.globalPinId, value);
+  }
+
+  /** Physical pin voltage; floating results never contain a synthetic voltage. */
+  getVoltage(pinName: string): ElectricalReading {
+    this.#assertActive();
+    this.#pinRuntime(pinName);
+    const electrical = this.#ensureElectrical();
+    const dot = pinName.indexOf('.');
+    const pin = electrical.allocation.pins.get(pinName.slice(0, dot))!.get(pinName.slice(dot + 1))!;
+    return this.#electricalReading(
+      electrical.operations.solver.voltage,
+      electrical.operations.solver.voltageState,
+      pin.node,
+    );
+  }
+
+  /** Resistor/contact currents follow endpoint order; source and pin contributions flow outward. */
+  getCurrent(resource: string | ElectricalCurrentTarget): ElectricalReading {
+    this.#assertActive();
+    const {
+      allocation,
+      operations: { solver },
+    } = this.#ensureElectrical();
+    const missing = (): never => {
+      throw new CircuitError(
+        'resource-not-found',
+        `Unknown electrical current resource ${JSON.stringify(resource)}`,
+      );
+    };
+    let target: ElectricalCurrentTarget;
+    if (typeof resource === 'string') {
+      const dot = resource.indexOf('.');
+      if (dot <= 0) throw new CircuitError('resource-not-found', `Unknown resistor "${resource}"`);
+      target = { kind: 'resistor', device: resource.slice(0, dot), name: resource.slice(dot + 1) };
+    } else if (resource !== null && typeof resource === 'object') target = resource;
+    else return missing();
+    if (target.kind === 'resistor' || target.kind === 'contact') {
+      const contact = target.kind === 'contact';
+      const index = (contact ? allocation.contacts : allocation.resistors)
+        .get(target.device)
+        ?.get(target.name);
+      if (index === undefined) {
+        if (typeof resource === 'string')
+          throw new CircuitError('resource-not-found', `Unknown resistor "${resource}"`);
+        return missing();
+      }
+      return this.#electricalReading(
+        contact ? solver.contactCurrent : solver.current,
+        contact ? solver.contactCurrentState : solver.currentState,
+        index,
+      );
+    }
+    if (target.kind === 'source') {
+      const index = allocation.sources.get(target.name);
+      if (index === undefined) return missing();
+      return this.#electricalReading(solver.sourceCurrent, solver.sourceCurrentState, index);
+    }
+    if (target.kind !== 'drive' && target.kind !== 'pull-up' && target.kind !== 'pull-down')
+      return missing();
+    const pin = allocation.pins.get(target.device)?.get(target.pin);
+    if (pin === undefined) return missing();
+    const branches =
+      target.kind === 'drive'
+        ? pin.drive === undefined
+          ? undefined
+          : [
+              pin.drive.high,
+              pin.drive.low,
+              ...(pin.drive.analog === undefined ? [] : [pin.drive.analog.resistor]),
+            ]
+        : pin.bias === undefined
+          ? undefined
+          : [target.kind === 'pull-up' ? pin.bias.up : pin.bias.down];
+    if (branches === undefined) return missing();
+    let value = 0;
+    for (const index of branches) {
+      const current = this.#electricalReading(solver.current, solver.currentState, index);
+      if (current.state !== 'determinate') return current;
+      value -= current.value;
+    }
+    return { state: 'determinate', value };
+  }
+
+  /** Pull-based active diagnostics: one warning per resource; successful recovery removes it. */
+  getDiagnostics(): readonly ElectricalDiagnostic[] {
+    this.#assertActive();
+    const {
+      allocation,
+      operations: { solver },
+    } = this.#ensureElectrical();
+    const diagnostics: ElectricalDiagnostic[] = [];
+    const check = (target: ElectricalCurrentTarget, limit: number | undefined) => {
+      if (limit === undefined) return;
+      const current = this.getCurrent(target);
+      if (current.state === 'determinate' && Math.abs(current.value) > limit)
+        diagnostics.push(
+          Object.freeze({
+            code: 'electrical/overcurrent',
+            severity: 'warning',
+            target: Object.freeze(target),
+            current: current.value,
+            maxAbsCurrent: limit,
+          }),
+        );
+    };
+    for (const [device, resistors] of allocation.resistors)
+      for (const [name, index] of resistors)
+        check({ kind: 'resistor', device, name }, allocation.currentLimits.get(index));
+    for (const [device, pins] of allocation.pins)
+      for (const [pin, description] of pins)
+        check({ kind: 'drive', device, pin }, description.drive?.maxAbsCurrent);
+    const fault = this.#jit.storage.loadState(solver.fault);
+    if (fault !== 0)
+      diagnostics.push(
+        Object.freeze({
+          code:
+            fault === 1
+              ? 'electrical/invalid-parameter'
+              : fault === 2
+                ? 'electrical/source-conflict'
+                : 'electrical/numerical-failure',
+          severity: 'error',
+        }),
+      );
+    return Object.freeze(diagnostics);
+  }
+
+  #ensureElectrical() {
+    const electrical = electricalCompilationOf(this.#compiled);
+    if (electrical === undefined)
+      throw new CircuitError(
+        'unsupported-operation',
+        'This circuit has no resistive electrical model',
+      );
+    this.#context.virtualTime = this.#virtualTime;
+    this.#jit.execute(electrical.operations.ensure, NO_ARGS, this.#context);
+    return electrical;
+  }
+
+  #electricalReading(
+    values: ArrayRef<'f64'>,
+    states: ArrayRef<'u8'>,
+    index: number,
+  ): ElectricalReading {
+    const state = this.#jit.storage.loadArray(states, index);
+    if (state === 1) return { state: 'floating' };
+    if (state === 2) return { state: 'indeterminate' };
+    return { state: 'determinate', value: toNumber(this.#jit.storage.loadArray(values, index)) };
   }
 
   /** Number of ticks completed since creation or the last `reset()`. */
@@ -355,10 +548,29 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
     }
   }
 
-  #advance(count: number): void {
+  #setTimeStep(dt: number): void {
+    if (!Number.isSafeInteger(dt) || dt <= 0)
+      throw new CircuitError(
+        'invalid-options',
+        'Tick duration must be a positive safe integer in picoseconds',
+      );
+    const electrical = electricalCompilationOf(this.#compiled);
+    if (electrical !== undefined) {
+      this.#jit.storage.storeArray(electrical.operations.timeStep, 0, dt >>> 0);
+      this.#jit.storage.storeArray(electrical.operations.timeStep, 1, Math.floor(dt / 0x100000000));
+    }
+  }
+
+  #advance(count: number, dt: number): void {
     this.#tickCount += BigInt(count);
-    const next = this.#virtualTime + count;
-    this.#virtualTime = next > MAX_VIRTUAL_TIME ? 0 : next;
+    const elapsed = count * dt;
+    const next = this.#virtualTime + elapsed;
+    this.#virtualTime = Number.isSafeInteger(next)
+      ? next
+      : Number(
+          (BigInt(this.#virtualTime) + BigInt(count) * BigInt(dt)) %
+            (BigInt(MAX_VIRTUAL_TIME) + 1n),
+        );
   }
 
   #pinRuntime(pinName: string): PinRuntime {
@@ -450,6 +662,9 @@ function compileOptionsOf(options: ResolvedRuntimeOptions): CircuitCompilationOp
   return {
     validate: options.validateIR,
     ...(options.rails === undefined ? {} : { rails: options.rails }),
+    ...(options.sources === undefined ? {} : { sources: options.sources }),
+    ...(options.interpretation === undefined ? {} : { interpretation: options.interpretation }),
+    ...(options.floatingSeed === undefined ? {} : { floatingSeed: options.floatingSeed }),
   };
 }
 
@@ -499,6 +714,9 @@ function resolveOptions(options: unknown): ResolvedRuntimeOptions {
     jit: candidate.jit,
     validateIR: candidate.validateIR ?? true,
     rails,
+    sources: candidate.electrical?.sources,
+    interpretation: candidate.electrical?.interpretation,
+    floatingSeed: candidate.electrical?.floatingSeed,
     instanceId: candidate.instanceId ?? DEFAULT_INSTANCE_ID,
   });
 }
