@@ -36,16 +36,14 @@ export interface DevicePinContract {
 /**
  * One host-facing endpoint declared by the contract.
  *
- * `state` names the device state a payload maps to. A host with a matching runtime model can use
- * the generic `DeviceAccessor` surface (`getState` / `setState`) without knowing the model; a host
- * without one still has the full contract for binding validation.
+ * A port names the payload a factory hook consumes or publishes: `applyInputs` receives it at the
+ * step boundary and `flushOutputs` publishes it. The contract never names a device state slot.
  */
 export interface DeviceTopicContract {
   readonly port: string;
   readonly direction: 'input' | 'output';
   readonly type: PayloadType;
   readonly title?: string;
-  readonly state?: string;
 }
 
 /** Whether the device declares a reset lifecycle of its own. */
@@ -358,16 +356,15 @@ function readTopics(
       if (title !== undefined && typeof title !== 'string') {
         throw new Error(`${files.label}/${path}: topic "${port}" "title" must be a string`);
       }
-      const state = topic['state'];
-      if (state !== undefined && typeof state !== 'string') {
-        throw new Error(`${files.label}/${path}: topic "${port}" "state" must be a string`);
-      }
+      if (Object.hasOwn(topic, 'state'))
+        throw new Error(
+          `${files.label}/${path}: topic "${port}" must not map a device state; implement applyInputs/flushOutputs in the paired factory`,
+        );
       return Object.freeze({
         port,
         direction,
         type: parsed,
         ...(title === undefined ? {} : { title }),
-        ...(state === undefined ? {} : { state }),
       }) satisfies DeviceTopicContract;
     }),
   );

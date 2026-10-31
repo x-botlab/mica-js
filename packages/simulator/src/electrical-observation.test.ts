@@ -5,8 +5,9 @@ import { createElectricalOperations } from './unified-ir/compiler/electrical-ope
 import { createModuleValidation } from './unified-ir/validation';
 import type { ArrayRef, FunctionRef } from '@mica-js/ir';
 import { describe, expect, test } from 'vitest';
-import { Circuit, PIN_MODE, compileCircuit } from './index';
+import { PIN_MODE, compileCircuit } from './index';
 import type { DeviceDescription } from './index';
+import { createTestProbe } from './test-helpers/circuit-probe';
 
 const electrical = {
   sources: { VDD: { voltage: 3.3 } },
@@ -190,7 +191,7 @@ describe.each(['reference', 'jit'] as const)('%s analog observations', (engine) 
     expect(fixture.sample(0)).toBeCloseTo(1.155351, 6);
   });
 
-  test('advances the analog clock by actual picoseconds in step/batch and wraps without precision loss', async () => {
+  test('advances the analog clock by actual picoseconds in step/batch and wraps without precision loss', () => {
     const description: DeviceDescription = {
       pins: { AIN: { kind: 'signal' } },
       states: { sampled: { type: 'f64', initial: 0 } },
@@ -204,35 +205,27 @@ describe.each(['reference', 'jit'] as const)('%s analog observations', (engine) 
       },
     };
     const input = { devices: [{ id: 'sensor', type: 'sensor', description }], connections: [] };
-    const a = await Circuit.create(input, { engine, electrical });
-    const b = await Circuit.create(input, { engine, electrical });
+    const a = createTestProbe(input, { engine, electrical });
+    const b = createTestProbe(input, { engine, electrical });
     const expected = analogFixture(engine, 3.3, 'sensor');
-    const read = () =>
-      toNumber(a.devices['sensor']!.getState('sampled') as Parameters<typeof toNumber>[0]);
-    try {
-      a.step(4294967396);
-      a.step(17);
-      b.runBatch(1, 4294967396);
-      b.runBatch(1, 17);
-      expect(a.virtualTime).toBe(4294967413);
-      expect(a.devices['sensor']!.getState('sampled')).toEqual(
-        b.devices['sensor']!.getState('sampled'),
-      );
-      expect(read()).toBe(expected.sample(4294967396));
-      a.reset();
-      a.runBatch(2, Number.MAX_SAFE_INTEGER);
-      expect(a.virtualTime).toBe(Number.MAX_SAFE_INTEGER - 1);
-      a.step();
-      expect(read()).toBe(expected.sample(Number.MAX_SAFE_INTEGER - 1));
-      expect(() => a.step(0)).toThrow('picoseconds');
-      expect(() => a.runBatch(1, NaN)).toThrow('picoseconds');
-    } finally {
-      a.dispose();
-      b.dispose();
-    }
+    const read = () => a.readState('sensor', 'sampled');
+    a.step(4294967396);
+    a.step(17);
+    b.runBatch(1, 4294967396);
+    b.runBatch(1, 17);
+    expect(a.virtualTime).toBe(4294967413);
+    expect(read()).toBe(b.readState('sensor', 'sampled'));
+    expect(read()).toBe(expected.sample(4294967396));
+    a.reset();
+    a.runBatch(2, Number.MAX_SAFE_INTEGER);
+    expect(a.virtualTime).toBe(Number.MAX_SAFE_INTEGER - 1);
+    a.step();
+    expect(read()).toBe(expected.sample(Number.MAX_SAFE_INTEGER - 1));
+    expect(() => a.step(0)).toThrow('picoseconds');
+    expect(() => a.runBatch(1, NaN)).toThrow('picoseconds');
   });
 
-  test('rejects missing input capability and invalid floating seeds before factory execution', async () => {
+  test('rejects missing input capability and invalid floating seeds before factory execution', () => {
     let calls = 0;
     const description: DeviceDescription = {
       pins: { A: { kind: 'signal' } },
@@ -247,14 +240,14 @@ describe.each(['reference', 'jit'] as const)('%s analog observations', (engine) 
     };
     const input = { devices: [{ id: 'sensor', type: 'sensor', description }], connections: [] };
     for (const floatingSeed of [-1, 0x100000000, 1.5, NaN])
-      await expect(
-        Circuit.create(input, { engine, electrical: { ...electrical, floatingSeed } }),
-      ).rejects.toThrow('floatingSeed');
+      expect(() =>
+        createTestProbe(input, { engine, electrical: { ...electrical, floatingSeed } }),
+      ).toThrow('floatingSeed');
     expect(calls).toBe(0);
-    await expect(Circuit.create(input, { engine, electrical })).rejects.toThrow('input capability');
+    expect(() => createTestProbe(input, { engine, electrical })).toThrow('input capability');
   });
 
-  test('uses actual voltage in-band and keeps step/batch/reset deterministic through the public Circuit', async () => {
+  test('uses actual voltage in-band and keeps step/batch/reset deterministic', () => {
     const description: DeviceDescription = {
       pins: { A: { kind: 'signal' } },
       states: { sampled: { type: 'f64', initial: 0 } },
@@ -266,39 +259,24 @@ describe.each(['reference', 'jit'] as const)('%s analog observations', (engine) 
       },
     };
     const input = { devices: [{ id: 'sensor', type: 'sensor', description }], connections: [] };
-    const a = await Circuit.create(input, { engine, electrical });
-    const b = await Circuit.create(input, { engine, electrical });
-    try {
-      for (let i = 0; i < 5; i++) a.step();
-      b.runBatch(5);
-      expect(a.devices['sensor']!.getState('sampled')).toEqual(
-        b.devices['sensor']!.getState('sampled'),
-      );
-      expect(a.getVoltage('sensor.A')).toEqual({ state: 'floating' });
-      a.reset();
-      a.runBatch(5);
-      expect(a.devices['sensor']!.getState('sampled')).toEqual(
-        b.devices['sensor']!.getState('sampled'),
-      );
-      const driven = await Circuit.create(
-        { ...input, connections: [{ from: 'sensor.A', to: 'MID' }] },
-        {
-          engine,
-          electrical: { ...electrical, sources: { VDD: { voltage: 3.3 }, MID: { voltage: 1.6 } } },
-        },
-      );
-      try {
-        driven.step();
-        expect(
-          toNumber(driven.devices['sensor']!.getState('sampled') as Parameters<typeof toNumber>[0]),
-        ).toBe(1.6);
-        expect(driven.getPin('sensor.A')).toBe(false);
-      } finally {
-        driven.dispose();
-      }
-    } finally {
-      a.dispose();
-      b.dispose();
-    }
+    const a = createTestProbe(input, { engine, electrical });
+    const b = createTestProbe(input, { engine, electrical });
+    for (let i = 0; i < 5; i++) a.step();
+    b.runBatch(5);
+    expect(a.readState('sensor', 'sampled')).toBe(b.readState('sensor', 'sampled'));
+    expect(a.voltage('sensor.A')).toEqual({ state: 'floating' });
+    a.reset();
+    a.runBatch(5);
+    expect(a.readState('sensor', 'sampled')).toBe(b.readState('sensor', 'sampled'));
+    const driven = createTestProbe(
+      { ...input, connections: [{ from: 'sensor.A', to: 'MID' }] },
+      {
+        engine,
+        electrical: { ...electrical, sources: { VDD: { voltage: 3.3 }, MID: { voltage: 1.6 } } },
+      },
+    );
+    driven.step();
+    expect(driven.readState('sensor', 'sampled')).toBe(1.6);
+    expect(driven.digital('sensor.A')).toBe(false);
   });
 });

@@ -134,7 +134,6 @@ export class DeviceIRGenerator {
       initialize: initialize?.name,
       tick: tick?.name,
       update: update?.name,
-      accessor: device.description.accessor,
       ...(device.description.applyInputs === undefined
         ? {}
         : { applyInputs: device.description.applyInputs }),

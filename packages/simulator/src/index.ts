@@ -20,11 +20,6 @@ export type {
   CircuitErrorCode,
   CircuitErrorOptions,
   CircuitRuntimeOptions,
-  DeviceAccessor,
-  DeviceAccessors,
-  DeviceAccessorsOf,
-  ElectricalCurrentTarget,
-  ElectricalDiagnostic,
   SchematicCircuitBinding,
   SchematicCircuitOptions,
   SchematicDeviceBinding,
@@ -40,8 +35,6 @@ export type {
   CircuitCompilationOptions,
   CompiledCircuit,
   Connection,
-  DeviceAccessorFactory,
-  DeviceAccessorFactoryContext,
   DeviceBehaviorApi,
   DeviceBehaviors,
   DeviceImplementation,
@@ -73,8 +66,6 @@ export type {
   SimulationPublish,
 } from './host/types';
 export type { Disposable, Event } from '@mica-js/core/lifecycle';
-export { createCircuitDeviceSimulationHost } from './host/circuit-host';
-export type { CircuitDeviceSimulationHostOptions } from './host/circuit-host';
 export { createSchematicDeviceSimulationHost } from './host/runtime';
 export type { SchematicDeviceSimulationHostOptions } from './host/runtime';
 export { startDeviceSimulationHostGuest } from './host/guest';

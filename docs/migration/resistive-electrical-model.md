@@ -6,17 +6,17 @@
 
 ## 变更对照
 
-| 旧用法                                                    | 当前用法                                                                      |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `electrical: { rails: { PWR: true } }`                    | `electrical: { sources: { PWR: { voltage: 5 } } }`                            |
-| 连接端点直接写 `VCC`、`VDD` 或其他布尔电轨                | 在 `sources` 中声明同名电压源；`GND` 固定为 `0 V`，无需声明                   |
-| 省略数字输入解释模式                                      | 必须显式传入 `interpretation: 'two-state'` 或 `'retain-in-band'`              |
-| 只有 `behaviors`、没有配对工厂的器件描述                  | 每个器件提供同步 `factory`，在工厂内初始化引脚能力与电阻支路                  |
-| JSON 中的 `direction`、`role`、`electrical` 字段          | 引脚能力由工厂的 `initializePin` 提供；JSON 只保留 `kind` 与 `side`           |
-| `Circuit.setPin` / `DeviceAccessor.writePin`（已移除）    | 器件状态 + 类型化 IR 操作；宿主用 `setState` 改变输入状态                     |
-| `DeviceBehaviorApi.memory` / `DeviceKernelContext.memory` | `api.state()` 读写描述中声明的器件状态，或在 kernel 中声明自己的 IR 数组      |
-| 多驱动网按线或、强驱动优先级或固定电轨解析                | 各驱动的有限输出电阻、上下拉、电阻支路与闭合触点共同参与电流守恒              |
-| 布尔采样直接当作物理结果                                  | 数字采样按解释模式返回；物理电压与支路电流用 `getVoltage` / `getCurrent` 观察 |
+| 旧用法                                                    | 当前用法                                                                 |
+| --------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `electrical: { rails: { PWR: true } }`                    | `electrical: { sources: { PWR: { voltage: 5 } } }`                       |
+| 连接端点直接写 `VCC`、`VDD` 或其他布尔电轨                | 在 `sources` 中声明同名电压源；`GND` 固定为 `0 V`，无需声明              |
+| 省略数字输入解释模式                                      | 必须显式传入 `interpretation: 'two-state'` 或 `'retain-in-band'`         |
+| 只有 `behaviors`、没有配对工厂的器件描述                  | 每个器件提供同步 `factory`，在工厂内初始化引脚能力与电阻支路             |
+| JSON 中的 `direction`、`role`、`electrical` 字段          | 引脚能力由工厂的 `initializePin` 提供；JSON 只保留 `kind` 与 `side`      |
+| 宿主直写引脚或器件私有状态                                | 通过话题投递输入，由器件的 `applyInputs` 在步首调用 IR 更新入口          |
+| `DeviceBehaviorApi.memory` / `DeviceKernelContext.memory` | `api.state()` 读写描述中声明的器件状态，或在 kernel 中声明自己的 IR 数组 |
+| 多驱动网按线或、强驱动优先级或固定电轨解析                | 各驱动的有限输出电阻、上下拉、电阻支路与闭合触点共同参与电流守恒         |
+| 布尔采样直接当作物理结果                                  | 器件 IR 使用电压、电流采样计算结果，通过 `flushOutputs` 发布话题         |
 
 ## 1. 电路创建：显式参考源与解释模式
 
@@ -105,34 +105,21 @@ export default function createGpio({ electrical }) {
       const pin = api.pin('PA0');
       pin.configure(1);
       pin.setOutputEnabled(api.builder.const('bool', true));
-    },
-    tick(api) {
-      api.pin('PA0').writeDigital(api.state('level').load());
+      pin.writeDigital(api.builder.const('bool', true));
     },
   };
 }
 ```
 
-上面的 `1` 对应 `PIN_MODE.pushPull`。`level` 是器件状态，需要在描述中声明：
+上面的 `1` 对应 `PIN_MODE.pushPull`。这个固定高电平器件只在初始化时写入输出意图，无需每 tick 重复写入。外部可控输出通过下节的步首输入钩子调用 IR 入口更新。
 
-```ts
-const description = {
-  ...definition,
-  states: { level: { type: 'bool', initial: false } },
-  factory,
-};
-```
+## 3. 驱动：通过话题与 IR 操作更新
 
-其中 `definition` 是配对的 JSON 描述，`factory` 是该 JS 文件的默认导出。
+外部调用 `DeviceSimulationHost.deliver(target, payload)` 排队投递话题输入。下一步开始时，器件的 `applyInputs(io)` 消费输入，校验载荷并调用本器件声明的 IR 入口；IR 入口提交引脚意图或电气资源更新。步末的 `flushOutputs(io)` 读取器件声明的结果状态并发布输出话题。
 
-## 3. 驱动：从宿主直写引脚改为器件状态与 IR 操作
+`DeviceAccessor`、`Circuit.devices`、自定义访问器与原始引擎访问入口已移除。私有状态的标量读写只在器件自身的有效边界钩子内进行，话题端口不再通过 `state` 字段映射私有状态。单独使用 `Circuit` 的执行控制也不提供任意内部状态的读写入口。
 
-`Circuit.setPin` 与 `DeviceAccessor.writePin` 已移除。宿主改变状态，器件 IR 在下一 tick 提交引脚意图：
-
-```ts
-circuit.devices.gpio1.setState('level', true);
-circuit.step();
-```
+旧的 `createCircuitDeviceSimulationHost` 及其选项类型已移除；该适配器没有完整实现步首输入队列与步末输出发布。宿主集成使用 `createSchematicDeviceSimulationHost` 或 sandbox 入口，保持同一条步边界通信路径。
 
 - 数字输出：`pin.writeDigital(level)`。
 - 模拟输出：`pin.writeVoltage(voltage)`，引脚需要有 `analogResistance`。
@@ -160,9 +147,8 @@ circuit.step();
 
 - `pin.sampleVoltage()` 对确定网络返回实际电压；对浮空模拟输入返回 `mica-floating-v2` 的确定性伪噪声，用于保持可重复性，不代表物理驱动。
 - `resistor(name).sampleCurrent()` 返回本次解析后的支路电流，单位 A，正方向为第一端到第二端；断开的支路返回 `0`。被动负载应优先使用电流乘自身电阻计算压降，避免把浮空输入的伪噪声当作物理电压。
-- `Circuit.getVoltage('device.pin')` 返回物理电压观察：`determinate` 带数值，`floating` 表示未连接有效参考的被动分量。浮空观察不回填采样合成的电压。
-- `Circuit.getCurrent(target)` 接受 `'device.resistor'`、`{ kind: 'contact', device, name }`、`{ kind: 'source', name }` 以及 `{ kind: 'drive' | 'pull-up' | 'pull-down', device, pin }`。电阻与触点电流按端点顺序为正；源与引脚贡献以流出网络为正；自由电流无法唯一确定时返回 `indeterminate`。
-- `Circuit.getDiagnostics()` 返回当前活动诊断。超过 `maxAbsCurrent` 产生 `electrical/overcurrent` 警告，不钳位电流；求解故障保留最近一次成功快照，直到复位。
+- 器件在 IR 中采样并保存需要对外报告的结果，由 `flushOutputs` 发布话题。界面与宿主消费这些输出，不直接读取电路内部存储。
+- 电路级电压、电流与活动诊断查询接口已移除；内部电气求解、校验与故障处理仍保留。超过 `maxAbsCurrent` 不钳位电流，求解故障不发布部分求解结果。
 
 ## 6. 诊断与校验
 
@@ -179,7 +165,8 @@ circuit.step();
 
 ## 7. 迁移检查
 
-- 搜索 `rails`、`DEFAULT_RAILS`、`setPin(`、`writePin(` 与 `.memory`，逐一改为 `sources`、`interpretation`、器件状态和类型化 IR 操作。
+- 搜索 `rails`、`DEFAULT_RAILS`、`setPin(`、`writePin(` 与 `.memory`，逐一改为 `sources`、`interpretation` 与类型化 IR 操作。
+- 删除对 `DeviceAccessor`、`Circuit.devices` 和电路级调试查询的依赖；话题输入输出由工厂的 `applyInputs` / `flushOutputs` 接管，删除话题中的 `state` 映射。
 - 确认每个运行期器件的描述都带同步 `factory`，并且每条 `resistors` 支路都被初始化。
 - 确认原理图中的电源符号网名与 `sources` 键一致；`GND` 不需要声明。
 - 确认测试中的浮空模拟电压断言按 `mica-floating-v2` 的确定性伪噪声处理，不按 `0 V` 或物理驱动处理。

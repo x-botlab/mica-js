@@ -80,5 +80,12 @@ export default function createTeachingI2cMaster({ electrical }) {
       const next = b.select(b.int.cmp('eq', phase, u(44)), u(1), b.int.add(phase, u(1)));
       store('phase', b.select(addressFailed, u(39), b.select(due, next, phase)));
     },
+    flushOutputs(io) {
+      io.publish('sent', io.readState('lastSent'));
+      io.publish('count', io.readState('sentCount'));
+      io.publish('addressAcks', io.readState('addressAcks'));
+      io.publish('dataAcks', io.readState('dataAcks'));
+      io.publish('nacks', io.readState('nacks'));
+    },
   };
 }

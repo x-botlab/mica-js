@@ -14,6 +14,8 @@ import {
   toggleDriverDescription,
 } from '../src/unified-ir/compiler/test-helpers';
 import { Circuit } from '../src/unified-ir/runtime';
+import { createTestProbe } from '../src/test-helpers/circuit-probe';
+import type { TestProbe } from '../src/test-helpers/circuit-probe';
 import { TEST_ELECTRICAL } from '../src/unified-ir/compiler/test-helpers';
 
 /** Ticks per measured op for the host-driven vs batched comparison. */
@@ -22,21 +24,24 @@ const TICKS = 2_000;
 /** Batch size for the absolute throughput measurement. */
 const THROUGHPUT_TICKS = 10_000;
 
+const INPUT = {
+  devices: [
+    { id: 'driver', type: 'toggle-driver', description: toggleDriverDescription() },
+    { id: 'sink', type: 'lamp-sink', description: lampSinkDescription() },
+  ],
+  connections: [
+    { from: 'driver.PA0', to: 'sink.anode' },
+    { from: 'sink.cathode', to: 'GND' },
+  ],
+} as const;
+
 /** The circuit both measurements compile. */
 async function createUnifiedCircuit() {
-  return Circuit.create(
-    {
-      devices: [
-        { id: 'driver', type: 'toggle-driver', description: toggleDriverDescription() },
-        { id: 'sink', type: 'lamp-sink', description: lampSinkDescription() },
-      ],
-      connections: [
-        { from: 'driver.PA0', to: 'sink.anode' },
-        { from: 'sink.cathode', to: 'GND' },
-      ],
-    },
-    { electrical: TEST_ELECTRICAL },
-  );
+  return Circuit.create(INPUT, { electrical: TEST_ELECTRICAL });
+}
+
+function createUnifiedProbe(): TestProbe {
+  return createTestProbe(INPUT, { electrical: TEST_ELECTRICAL });
 }
 
 const HOST = `host-driven step, ${TICKS} ticks`;
@@ -100,27 +105,30 @@ test('resistive driver + sink: report per-tick throughput and verify electrical 
 
   // The lamp must still follow the pin after a million steps: an even tick
   // count leaves PA0 low, an odd one leaves it high.
-  if (circuit.devices.sink.getState('lamp') !== (circuit.tickCount % 2n === 1n)) {
+  const probe = createUnifiedProbe();
+  probe.runBatch(1_000 + THROUGHPUT_TICKS);
+  if (probe.readState('sink', 'lamp') !== (probe.tickCount % 2n === 1n)) {
     throw new Error('the batched loop left the sink out of phase with PA0');
+  }
+  if (circuit.tickCount !== probe.tickCount) {
+    throw new Error('the measured circuit and the numerical probe disagree on tick count');
   }
   circuit.dispose();
 });
 
-test('driver + sink: step and batch stay in phase', async () => {
-  const stepped = await createUnifiedCircuit();
-  const batched = await createUnifiedCircuit();
+test('driver + sink: step and batch stay in phase', () => {
+  const stepped = createUnifiedProbe();
+  const batched = createUnifiedProbe();
   for (let tick = 0; tick < 32; tick += 1) {
     stepped.step();
     batched.runBatch(1);
-    const steppedLamp = stepped.devices.sink.getState('lamp');
-    const batchedLamp = batched.devices.sink.getState('lamp');
-    if (steppedLamp !== batchedLamp || steppedLamp !== stepped.getPin('sink.anode')) {
+    const steppedLamp = stepped.readState('sink', 'lamp');
+    const batchedLamp = batched.readState('sink', 'lamp');
+    if (steppedLamp !== batchedLamp || steppedLamp !== stepped.digital('sink.anode')) {
       throw new Error(
         `tick ${tick + 1}: step=${steppedLamp}, batch=${batchedLamp}, ` +
-          `anode=${stepped.getPin('sink.anode')}`,
+          `anode=${stepped.digital('sink.anode')}`,
       );
     }
   }
-  stepped.dispose();
-  batched.dispose();
 });

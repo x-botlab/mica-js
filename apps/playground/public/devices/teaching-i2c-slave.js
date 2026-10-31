@@ -90,5 +90,13 @@ export default function createTeachingI2cSlave({ electrical }) {
       store('previousSda', sda);
       store('previousScl', scl);
     },
+    flushOutputs(io) {
+      io.publish('received', io.readState('received'));
+      io.publish('count', io.readState('receivedCount'));
+      io.publish('addressAcks', io.readState('addressAcks'));
+      io.publish('dataAcks', io.readState('dataAcks'));
+      io.publish('starts', io.readState('starts'));
+      io.publish('stops', io.readState('stops'));
+    },
   };
 }

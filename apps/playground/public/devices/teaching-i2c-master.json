@@ -8,11 +8,11 @@
     "SCL": { "side": "right", "kind": "signal" }
   },
   "topics": {
-    "sent": { "direction": "output", "type": "number", "state": "lastSent" },
-    "count": { "direction": "output", "type": "number", "state": "sentCount" },
-    "addressAcks": { "direction": "output", "type": "number", "state": "addressAcks" },
-    "dataAcks": { "direction": "output", "type": "number", "state": "dataAcks" },
-    "nacks": { "direction": "output", "type": "number", "state": "nacks" }
+    "sent": { "direction": "output", "type": "number" },
+    "count": { "direction": "output", "type": "number" },
+    "addressAcks": { "direction": "output", "type": "number" },
+    "dataAcks": { "direction": "output", "type": "number" },
+    "nacks": { "direction": "output", "type": "number" }
   },
   "reset": {
     "state": "supported",

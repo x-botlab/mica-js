@@ -7,7 +7,8 @@ import {
   type SchematicDocument,
 } from '@mica-js/core/schematic';
 import { lampSinkDescription, toggleDriverDescription } from '../compiler/test-helpers';
-import { createCircuitFromSchematic } from './factory';
+import { compileSchematicInput, createCircuitFromSchematic } from './factory';
+import { createTestProbe } from '../../test-helpers/circuit-probe';
 import { CircuitError } from './types';
 import type { SchematicCircuitOptions } from './factory';
 
@@ -65,7 +66,7 @@ describe('factories', () => {
       },
     };
 
-    const circuit = await createCircuitFromSchematic(loose, {
+    const compiled = compileSchematicInput(loose, {
       electrical: TEST_ELECTRICAL,
       devices: symbolProvider,
       resolveDevice: () => ({
@@ -73,12 +74,15 @@ describe('factories', () => {
         description: physicalDescription(lampSinkDescription()),
       }),
     });
-
-    expect(Object.keys(circuit.devices).sort()).toEqual(['D1', 'D1_2', 'sink_1']);
+    expect(compiled.bindings.map((binding) => binding.deviceId).sort()).toEqual([
+      'D1',
+      'D1_2',
+      'sink_1',
+    ]);
   });
 
   it('compiles a schematic into a circuit', async () => {
-    const circuit = await createCircuitFromSchematic(schematic, {
+    const options: SchematicCircuitOptions = {
       electrical: TEST_ELECTRICAL,
       devices: symbolProvider,
       resolveDevice: (reference) => {
@@ -93,17 +97,29 @@ describe('factories', () => {
         }
         return undefined;
       },
-    });
+    } as const;
+    const circuit = await createCircuitFromSchematic(schematic, options);
+    try {
+      const compiled = compileSchematicInput(schematic, options);
+      // Designators become device ids; `sym-gnd` is a built-in power symbol.
+      expect(compiled.bindings.map((binding) => binding.deviceId).sort()).toEqual(['D1', 'U1']);
+      expect(compiled.bindings.find((binding) => binding.deviceId === 'U1')?.type).toBe(
+        'toggle-driver',
+      );
 
-    // Designators become device ids; `sym-gnd` is a built-in power symbol.
-    expect(Object.keys(circuit.devices).sort()).toEqual(['D1', 'U1']);
-    expect(circuit.devices.U1?.type).toBe('toggle-driver');
-    expect(circuit.getPin('U1.PA0')).toBe(false);
-    expect(circuit.getPin('D1.cathode')).toBe(false);
+      const probe = createTestProbe(compiled.input, { electrical: TEST_ELECTRICAL });
+      expect(probe.digital('U1.PA0')).toBe(false);
+      expect(probe.digital('D1.cathode')).toBe(false);
 
-    circuit.step();
-    expect(circuit.getPin('U1.PA0')).toBe(true);
-    expect(circuit.getPin('D1.anode')).toBe(true);
+      probe.step();
+      expect(probe.digital('U1.PA0')).toBe(true);
+      expect(probe.digital('D1.anode')).toBe(true);
+
+      circuit.step();
+      expect(circuit.tickCount).toBe(1n);
+    } finally {
+      circuit.dispose();
+    }
   });
 
   it('needs a symbol provider to locate pins', async () => {

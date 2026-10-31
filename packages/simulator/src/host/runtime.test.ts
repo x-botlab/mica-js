@@ -1,8 +1,7 @@
 import { parseSchematic } from '@mica-js/core/schematic';
-import { toNumber, type FloatBits } from '@mica-js/ir';
-import { Circuit } from '../unified-ir/runtime/circuit';
 import type { DeviceDescription } from '../unified-ir/compiler';
 import type { SchematicDeviceBinding } from '../unified-ir/runtime';
+import { createTestProbe } from '../test-helpers/circuit-probe';
 import { describe, expect, it } from 'vitest';
 import { createSchematicDeviceSimulationHost } from './runtime';
 import type { SimulationPublish } from './types';
@@ -74,12 +73,12 @@ describe('createSchematicDeviceSimulationHost', () => {
           update: (api) => api.state<'f64'>('sampled').store(api.pin('out').sampleVoltage()),
         };
       },
+      flushOutputs: (io) => io.publish('voltage', io.readState('sampled')),
     };
     const binding: SchematicDeviceBinding = {
       type: 'analog-observer',
       description,
       topics: [{ port: 'voltage', type: 'number', direction: 'output' }],
-      read: (accessor) => accessor.getState('sampled'),
     };
     const host = createSchematicDeviceSimulationHost({
       electrical,
@@ -87,7 +86,7 @@ describe('createSchematicDeviceSimulationHost', () => {
       read: async () => new TextEncoder().encode(JSON.stringify(toggleSchematic())),
       resolveDevice: () => binding,
     });
-    const expected = await Circuit.create(
+    const expected = createTestProbe(
       { devices: [{ id: 'K1', type: binding.type, description }], connections: [] },
       { electrical },
     );
@@ -102,7 +101,7 @@ describe('createSchematicDeviceSimulationHost', () => {
         expect(await host.tick(dt)).toEqual({ simTime: time, executed: 1 });
         expect(publishes.at(-1)).toEqual({
           target: { symbol: TOGGLE_SYMBOL, port: 'voltage' },
-          payload: toNumber(expected.devices['K1']!.getState('sampled') as FloatBits),
+          payload: expected.readState('K1', 'sampled'),
           simTime: time,
         });
       }
@@ -115,7 +114,6 @@ describe('createSchematicDeviceSimulationHost', () => {
     } finally {
       subscription.dispose();
       await host.dispose();
-      expected.dispose();
     }
   });
   it('loads a schematic through the provided reader and reports caller-declared topics', async () => {

@@ -5,14 +5,15 @@ import { describe, expect, test } from 'vitest';
 import { GROUND_DEVICE, POWER_DEVICE, parseSchematic } from '@mica-js/core/schematic';
 import type { DeviceSymbolProvider } from '@mica-js/core/schematic';
 import {
-  Circuit,
   createCircuitFromSchematic,
-  createCircuitDeviceSimulationHost,
   createSchematicDeviceSimulationHost,
   compileCircuit,
   PIN_MODE,
 } from './index';
 import type { DeviceDescription, CircuitCompilationInput, ElectricalFactoryContext } from './index';
+import { compileSchematicInput } from './unified-ir/runtime/factory';
+import { createTestProbe } from './test-helpers/circuit-probe';
+import type { TestProbe } from './test-helpers/circuit-probe';
 
 const electrical = { sources: { VDD: { voltage: 5 } }, interpretation: 'two-state' } as const;
 
@@ -45,13 +46,13 @@ function divider(description: DeviceDescription): CircuitCompilationInput {
   };
 }
 
-function assertDivider(circuit: Circuit, expected = 1.25) {
-  expect(circuit.getVoltage('R1.A')).toEqual({ state: 'determinate', value: 5 });
-  expect(circuit.getVoltage('R2.B')).toEqual({ state: 'determinate', value: 0 });
-  const voltage = circuit.getVoltage('R1.B');
+function assertDivider(probe: TestProbe, expected = 1.25) {
+  expect(probe.voltage('R1.A')).toEqual({ state: 'determinate', value: 5 });
+  expect(probe.voltage('R2.B')).toEqual({ state: 'determinate', value: 0 });
+  const voltage = probe.voltage('R1.B');
   expect(voltage.state).toBe('determinate');
   if (voltage.state === 'determinate') expect(voltage.value).toBeCloseTo(expected, 12);
-  const current = circuit.getCurrent('R2.body');
+  const current = probe.current('R2.body');
   expect(current.state).toBe('determinate');
   if (current.state === 'determinate') expect(current.value).toBeCloseTo(expected / 1100, 12);
 }
@@ -67,83 +68,64 @@ describe.each(['reference', 'jit'] as const)('%s public resistive circuit', (eng
         base.factory!(context);
       },
     };
-    const circuit = await Circuit.create(divider(description), { engine, electrical });
-    try {
-      expect(properties.map((value) => value['resistance'])).toEqual([3300, 1100]);
-      expect(properties[0]).not.toBe(properties[1]);
-      expect(Object.isFrozen(properties[0])).toBe(true);
-      assertDivider(circuit);
-      expect(circuit.tickCount).toBe(0n);
-      circuit.step();
-      circuit.runBatch(3);
-      assertDivider(circuit);
-      expect(circuit.tickCount).toBe(4n);
-      circuit.reset();
-      assertDivider(circuit);
-      expect(circuit.tickCount).toBe(0n);
-      expect(properties).toHaveLength(2);
-      expect(circuit).not.toHaveProperty('setPin');
-      expect(circuit.devices['R1']).not.toHaveProperty('writePin');
-      expect(() => circuit.getPin('R1.A')).toThrow('no digital input');
-      expect(() => circuit.getCurrent('R1.missing')).toThrow('Unknown resistor');
-    } finally {
-      circuit.dispose();
-    }
-    expect(() => circuit.getVoltage('R1.B')).toThrow('disposed');
+    const input = divider(description);
+    const probe = createTestProbe(input, { engine, electrical });
+    expect(properties.map((value) => value['resistance'])).toEqual([3300, 1100]);
+    expect(properties[0]).not.toBe(properties[1]);
+    expect(Object.isFrozen(properties[0])).toBe(true);
+    assertDivider(probe);
+    expect(probe.tickCount).toBe(0n);
+    probe.step();
+    probe.runBatch(3);
+    assertDivider(probe);
+    expect(probe.tickCount).toBe(4n);
+    probe.reset();
+    assertDivider(probe);
+    expect(probe.tickCount).toBe(0n);
+    expect(properties).toHaveLength(2);
   });
 
   test('applies state-driven resistance only through IR and restores the initial solve on reset', async () => {
     const base = await resistorDescription();
     const input = divider(base);
     const first = input.devices[0]!;
-    const circuit = await Circuit.create(
-      {
-        ...input,
-        devices: [
-          {
-            ...first,
-            description: {
-              ...base,
-              states: { ohms: { type: 'f64', initial: 3300 } },
-              factory: (context) => {
-                base.factory!(context);
-                return {
-                  tick: (api) =>
-                    api.resistor('body').setResistance(api.state<'f64'>('ohms').load()),
-                };
-              },
+    const configured: CircuitCompilationInput = {
+      ...input,
+      devices: [
+        {
+          ...first,
+          description: {
+            ...base,
+            states: { ohms: { type: 'f64', initial: 3300 } },
+            factory: (context) => {
+              base.factory!(context);
+              return {
+                tick: (api) => api.resistor('body').setResistance(api.state<'f64'>('ohms').load()),
+              };
             },
           },
-          input.devices[1]!,
-        ],
-      },
-      { engine, electrical },
-    );
-    try {
-      circuit.devices['R1']!.setState('ohms', 1100);
-      assertDivider(circuit);
-      circuit.step();
-      assertDivider(circuit, 2.5);
-      circuit.devices['R1']!.setState('ohms', -1);
-      const host = createCircuitDeviceSimulationHost({
-        circuit,
-        ownsCircuit: false,
-        deliver: () => undefined,
-      });
-      expect(await host.tick(10_000)).toEqual({ simTime: 10_000, executed: 0 });
-      await host.dispose();
-      circuit.runBatch(4);
-      expect(circuit.tickCount).toBe(1n);
-      assertDivider(circuit, 2.5);
-      circuit.reset();
-      assertDivider(circuit);
-      expect(circuit.tickCount).toBe(0n);
-      circuit.step();
-      assertDivider(circuit);
-      expect(circuit.tickCount).toBe(1n);
-    } finally {
-      circuit.dispose();
-    }
+        },
+        input.devices[1]!,
+      ],
+    };
+    const probe = createTestProbe(configured, { engine, electrical });
+    probe.writeState('R1', 'ohms', 1100);
+    assertDivider(probe);
+    probe.step();
+    assertDivider(probe, 2.5);
+    probe.writeState('R1', 'ohms', -1);
+
+    probe.step();
+    expect(probe.tickCount).toBe(1n);
+    probe.runBatch(4);
+    expect(probe.tickCount).toBe(1n);
+    assertDivider(probe, 2.5);
+    probe.reset();
+    assertDivider(probe);
+    expect(probe.tickCount).toBe(0n);
+    probe.step();
+    assertDivider(probe);
+    expect(probe.tickCount).toBe(1n);
   });
 
   test('loads per-symbol properties and explicit power through the real schematic factory', async () => {
@@ -208,17 +190,27 @@ describe.each(['reference', 'jit'] as const)('%s public resistive circuit', (eng
       }),
       getDeviceName: () => 'resistor',
     };
-    const circuit = await createCircuitFromSchematic(schematic, {
+    const options = {
       engine,
       electrical,
       devices,
       resolveDevice: () => ({ type: 'resistor', description }),
+    } as const;
+    const circuit = await createCircuitFromSchematic(schematic, options);
+    const probe = createTestProbe(compileSchematicInput(schematic, options).input, {
+      engine,
+      electrical,
     });
     try {
-      assertDivider(circuit);
+      assertDivider(probe);
+      probe.runBatch(2);
+      probe.reset();
+      assertDivider(probe);
+
       circuit.runBatch(2);
+      expect(circuit.tickCount).toBe(2n);
       circuit.reset();
-      assertDivider(circuit);
+      expect(circuit.tickCount).toBe(0n);
     } finally {
       circuit.dispose();
     }
@@ -273,8 +265,8 @@ describe.each(['reference', 'jit'] as const)('%s public resistive circuit', (eng
     ).rejects.toThrow('VDD');
   });
 
-  test('keeps unconnected physical pins floating and reads typed GPIO samples', async () => {
-    const circuit = await Circuit.create(
+  test('keeps unconnected physical pins floating and reads typed GPIO samples', () => {
+    const probe = createTestProbe(
       {
         devices: [
           {
@@ -303,14 +295,10 @@ describe.each(['reference', 'jit'] as const)('%s public resistive circuit', (eng
       },
       { engine, electrical },
     );
-    try {
-      expect(circuit.getPin('gpio.A')).toBe(true);
-      expect(circuit.devices.gpio.readPin('A')).toBe(true);
-      expect(circuit.getVoltage('gpio.A')).toEqual({ state: 'determinate', value: 5 });
-      expect(circuit.getVoltage('gpio.B')).toEqual({ state: 'floating' });
-    } finally {
-      circuit.dispose();
-    }
+    expect(probe.digital('gpio.A')).toBe(true);
+    expect(probe.driven('gpio.A')).toBe(true);
+    expect(probe.voltage('gpio.A')).toEqual({ state: 'determinate', value: 5 });
+    expect(probe.voltage('gpio.B')).toEqual({ state: 'floating' });
   });
 });
 

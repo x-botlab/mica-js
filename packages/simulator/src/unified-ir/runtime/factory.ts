@@ -12,7 +12,7 @@ import type {
   DeviceDescription,
 } from '../compiler';
 import { Circuit } from './circuit';
-import { CircuitError, type CircuitRuntimeOptions, type DeviceAccessor } from './types';
+import { CircuitError, type CircuitRuntimeOptions } from './types';
 
 /**
  * One endpoint a caller-supplied device declares to the simulation host.
@@ -32,16 +32,18 @@ export interface SchematicDeviceTopic {
 export interface SchematicDeviceBinding {
   /** Device type, e.g. `'counter-ir'`. */
   readonly type: string;
-  /** IR description: pins, states and behaviours. */
+  /** IR description: pins, states, factory, behaviours and boundary hooks. */
   readonly description: DeviceDescription;
   /** Instance configuration reserved for device kernels. */
   readonly config?: Readonly<Record<string, unknown>>;
-  /** Endpoints the simulation host exposes; absent means the device has none. */
+  /**
+   * Endpoints the simulation host exposes; absent means the device has none.
+   *
+   * A host routes payloads through the description's `applyInputs` /
+   * `flushOutputs` hooks: topic names are host-facing, never a route into
+   * device state.
+   */
   readonly topics?: readonly SchematicDeviceTopic[];
-  /** Bridges one input topic payload onto the compiled device accessor. */
-  deliver?(accessor: DeviceAccessor, port: string, payload: unknown): void;
-  /** Reads one output topic from the compiled device accessor. */
-  read?(accessor: DeviceAccessor, port: string): unknown;
 }
 
 /** Options for {@link createCircuitFromSchematic}. */
@@ -101,16 +103,23 @@ export interface SchematicCircuitResult {
   readonly bindings: readonly SchematicCircuitBinding[];
 }
 
+/** Package-internal result of lowering one schematic to a compiler input. */
+export interface SchematicCompiledInput {
+  readonly input: CircuitCompilationInput;
+  readonly bindings: readonly SchematicCircuitBinding[];
+}
+
 /**
- * Compiles a schematic and reports which circuit device each symbol became.
+ * Lowers a schematic sheet to the netlist {@link createSchematicCircuit} compiles.
  *
- * {@link createCircuitFromSchematic} returns only the circuit; hosts that route
- * schematic endpoints to circuit accessors need the mapping as well.
+ * Kept package-internal: the public factory returns the running circuit, while
+ * the solver suites need the same device configs and connections without a
+ * second schematic implementation.
  */
-export async function createSchematicCircuit(
+export function compileSchematicInput(
   schematic: SchematicDocument,
   options: SchematicCircuitOptions,
-): Promise<SchematicCircuitResult> {
+): SchematicCompiledInput {
   if (
     schematic === null ||
     typeof schematic !== 'object' ||
@@ -128,7 +137,7 @@ export async function createSchematicCircuit(
   if (options === null || typeof options !== 'object') {
     throw new CircuitError('invalid-options', 'createSchematicCircuit needs options');
   }
-  const { resolveDevice, devices, tolerance, ...runtime } = options;
+  const { resolveDevice, devices, tolerance } = options;
   if (typeof resolveDevice !== 'function') {
     throw new CircuitError('invalid-options', 'resolveDevice must be a function');
   }
@@ -221,8 +230,22 @@ export async function createSchematicCircuit(
     devices: Object.freeze(deviceConfigs),
     connections: Object.freeze(connections),
   };
-  const circuit = await Circuit.create(input, runtime);
-  return Object.freeze({ circuit, bindings: Object.freeze(bindings) });
+  return Object.freeze({ input, bindings: Object.freeze(bindings) });
+}
+
+/**
+ * Compiles a schematic and reports which circuit device each symbol became.
+ *
+ * {@link createCircuitFromSchematic} returns only the circuit; the host needs
+ * the symbol-to-device mapping as well.
+ */
+export async function createSchematicCircuit(
+  schematic: SchematicDocument,
+  options: SchematicCircuitOptions,
+): Promise<SchematicCircuitResult> {
+  const { input, bindings } = compileSchematicInput(schematic, options);
+  const circuit = await Circuit.create(input, options);
+  return Object.freeze({ circuit, bindings });
 }
 
 /**
