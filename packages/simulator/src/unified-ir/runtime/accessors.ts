@@ -1,4 +1,10 @@
-import type { FloatBits, IRInterpreter, RuntimeScalar } from '@mica-js/ir';
+import {
+  toNumber,
+  type EntryRef,
+  type FloatBits,
+  type IRInterpreter,
+  type RuntimeScalar,
+} from '@mica-js/ir';
 import { electricalCompilationOf } from '../compiler/electrical-compilation';
 import type {
   CompiledCircuit,
@@ -8,10 +14,15 @@ import type {
 } from '../compiler';
 import { CircuitError, type DeviceAccessor, type DeviceAccessors } from './types';
 
+const bridges = new WeakMap<DeviceAccessor, DeviceAccessor>();
+export const deviceBridgeOf = (accessor: DeviceAccessor): DeviceAccessor =>
+  bridges.get(accessor) ?? accessor;
+
 /** Everything the accessor builders read from one live circuit. */
 export interface DeviceAccessorContext {
   readonly compiled: CompiledCircuit;
   readonly jit: IRInterpreter;
+  readonly execute: (entry: EntryRef, args: readonly RuntimeScalar[]) => void;
   /** Invoked before every read or write; throws once the circuit is disposed. */
   readonly assertActive: () => void;
   /** Advances the circuit by one tick; used by custom accessors. */
@@ -34,16 +45,15 @@ export function buildDeviceAccessors(context: DeviceAccessorContext): DeviceAcce
     if (device.accessor !== undefined) {
       // A custom kernel owns its accessor: the factory closes over the layout
       // its IR factory allocated in this module.
-      entries.push([
-        device.deviceId,
-        device.accessor({
-          deviceId: device.deviceId,
-          storage: context.jit.storage,
-          assertActive: context.assertActive,
-          step: context.step,
-          runBatch: context.runBatch,
-        }) as unknown as DeviceAccessor,
-      ]);
+      const custom = device.accessor({
+        deviceId: device.deviceId,
+        storage: context.jit.storage,
+        assertActive: context.assertActive,
+        step: context.step,
+        runBatch: context.runBatch,
+      }) as unknown as DeviceAccessor;
+      bridges.set(custom, base);
+      entries.push([device.deviceId, custom]);
     } else {
       entries.push([device.deviceId, base]);
     }
@@ -61,6 +71,7 @@ function createBaseAccessor(
   const storage = jit.storage;
   const electrical = electricalCompilationOf(context.compiled)!;
   const resolved = context.compiled.pins.devices.get(device.deviceId)?.resolved;
+  const entries = new Set(device.entries);
 
   const accessor: DeviceAccessor = {
     deviceId: device.deviceId,
@@ -96,6 +107,81 @@ function createBaseAccessor(
         );
       }
     },
+    ...(device.applyInputs === undefined
+      ? {}
+      : {
+          applyInputs(inputs) {
+            context.assertActive();
+            const pending = new Map<string, unknown[]>();
+            for (const input of inputs) {
+              const values = pending.get(input.port) ?? [];
+              values.push(input.payload);
+              pending.set(input.port, values);
+            }
+            let open = true;
+            const active = () => {
+              context.assertActive();
+              if (!open) throw new TypeError('Input IO is only valid during applyInputs');
+            };
+            try {
+              device.applyInputs!({
+                takeInput(port) {
+                  active();
+                  const values = pending.get(port);
+                  pending.delete(port);
+                  return values?.at(-1);
+                },
+                takeInputs(port) {
+                  active();
+                  const values = pending.get(port) ?? [];
+                  pending.delete(port);
+                  return Object.freeze(values);
+                },
+                writeState(name, value) {
+                  active();
+                  accessor.setState(name, value);
+                },
+                call(entry, args) {
+                  active();
+                  if (!entries.has(entry))
+                    throw new TypeError('Input entry must belong to this device');
+                  context.execute(entry, args);
+                },
+              });
+            } finally {
+              open = false;
+            }
+          },
+        }),
+    ...(device.flushOutputs === undefined
+      ? {}
+      : {
+          flushOutputs(publish) {
+            context.assertActive();
+            let open = true;
+            const active = () => {
+              context.assertActive();
+              if (!open) throw new TypeError('Output IO is only valid during flushOutputs');
+            };
+            try {
+              device.flushOutputs!({
+                readState(name) {
+                  active();
+                  const value = accessor.getState(name);
+                  return typeof value === 'object' && value !== null && 'bits' in value
+                    ? toNumber(value as FloatBits)
+                    : value;
+                },
+                publish(port, payload) {
+                  active();
+                  publish(port, payload);
+                },
+              });
+            } finally {
+              open = false;
+            }
+          },
+        }),
   };
   return Object.freeze(accessor);
 }

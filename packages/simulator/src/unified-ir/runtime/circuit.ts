@@ -167,6 +167,9 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
       buildDeviceAccessors({
         compiled,
         jit,
+        execute: (entry, args) => {
+          jit.execute(entry, args, circuit.#context);
+        },
         assertActive: () => {
           circuit.#assertActive();
         },

@@ -93,8 +93,7 @@ describe.each(['reference', 'jit'] as const)('%s actual Playground factories', (
     };
     try {
       voltage(circuit, 'pot.W', expected(0.2));
-      circuit.devices['pot']!.setState('position', 0.8);
-      voltage(circuit, 'pot.W', expected(0.2));
+      circuit.devices['pot']!.applyInputs!([{ port: 'position', payload: 0.8 }]);
       circuit.step();
       voltage(circuit, 'pot.W', expected(0.8));
       const upper = circuit.getCurrent('pot.upper');
@@ -108,7 +107,7 @@ describe.each(['reference', 'jit'] as const)('%s actual Playground factories', (
         throw new Error('Expected determined branch currents');
       expect(upper.value).toBeCloseTo(lower.value + current.value, 12);
       for (const position of [0, 1]) {
-        circuit.devices['pot']!.setState('position', position);
+        circuit.devices['pot']!.applyInputs!([{ port: 'position', payload: position }]);
         circuit.step();
         voltage(circuit, 'pot.W', expected(position));
       }
@@ -334,7 +333,7 @@ describe.each(['reference', 'jit'] as const)('%s actual Playground factories', (
             pwm += (sample - pwm) / 64;
           }
           expect(brightness('D2')).toBeCloseTo(pwm, 10);
-          circuit.devices['RV1']!.setState('position', 0.8);
+          circuit.devices['RV1']!.applyInputs!([{ port: 'position', payload: 0.8 }]);
           circuit.step();
           voltage(circuit, 'RV1.W', expected(0.8));
           expect(brightness('D1')).toBeCloseTo(expected(0.8) / 5, 10);
@@ -383,21 +382,41 @@ test('existing host queues potentiometer input, publishes numbers on change and 
     await host.loadSchematic('file:///pot.sch');
     await host.tick(10);
     expect(publications.map((event) => event.payload)).toEqual([0.2]);
+    await host.deliver(target, 0.4);
     await host.deliver(target, 0.8);
     expect(publications).toHaveLength(1);
     await host.tick(10);
     expect(publications.map((event) => event.payload)).toEqual([0.2, 0.8]);
     await host.tick(10);
     expect(publications).toHaveLength(2);
+    const feedback = host.onDidPublish((event) => {
+      if (event.payload === 0.4) void host.deliver(target, 0.6);
+    });
+    try {
+      await host.deliver(target, 0.4);
+      await host.tick(10);
+      expect(publications.at(-1)!.payload).toBe(0.4);
+      await host.tick(10);
+      expect(publications.at(-1)!.payload).toBe(0.6);
+    } finally {
+      feedback.dispose();
+    }
     for (const value of [NaN, Infinity, -0.1, 1.1]) {
       await host.deliver(target, value);
-      await expect(host.tick(10)).rejects.toThrow(/finite|\[0, 1\]/);
-      expect(await host.getSimTime()).toBe(30);
+      const report = await host.tick(10);
+      expect(report.executed).toBe(1);
+      expect(report.diagnostics).toEqual([
+        {
+          code: 'device/input-failed',
+          deviceId: id,
+          message: 'Potentiometer position must be in [0, 1]',
+        },
+      ]);
     }
     await expect(host.deliver(target, 'bad')).rejects.toThrow();
     await host.reset();
     await host.tick(10);
-    expect(publications.map((event) => event.payload)).toEqual([0.2, 0.8, 0.2]);
+    expect(publications.map((event) => event.payload)).toEqual([0.2, 0.8, 0.4, 0.6, 0.2]);
   } finally {
     subscription.dispose();
     await host.dispose();

@@ -74,7 +74,8 @@ export default function createResistor({ electrical, properties }) {
 - `drive`、`bias` 与 `input` 都通过 `reference.source` 引用 `sources` 中的源名。
 - `initializeResistor` 必须覆盖 JSON 声明的每条 `resistors` 支路；`enabled` 显式提供，零欧连接使用理想触点。
 - `connections` 无需工厂初始化，初始状态由 JSON 的 `initial` 给出。
-- 工厂可以返回 `initialize`、`tick`、`update` 行为；返回 `undefined` 表示器件没有运行期行为。工厂不能返回 Promise。
+- 工厂可以返回 `initialize`、`tick`、`update` 建图行为，或用 `kernel({ module, bind, deviceId })` 声明 IR 入口。`kernel` 与直接行为互斥；返回 `undefined` 表示器件没有运行期行为。工厂不能返回 Promise。
+- 工厂的 `applyInputs(io)` 与 `flushOutputs(io)` 是运行期边界钩子：宿主分别在步首投递输入、步末发布输出。`applyInputs` 可用 `io.call(entry, args)` 调用已有 IR 入口，参数由引擎校验；不能保存 `io` 到钩子返回后使用。
 - 以配对工厂和电气资源绑定的 `kernel` 仍可作为器件实现；删除的只是没有工厂／电气绑定的旧执行路径。
 - JSON 引脚声明中的 `direction`、`role`、`electrical` 会被拒绝；TypeScript 的 `DevicePinDescription` 也只保留 `kind` 与 `side`。这些语义由工厂初始化替代。
 
@@ -140,6 +141,14 @@ circuit.step();
 - 只有驱动能力的引脚才能写输出意图；纯被动或纯输入引脚写意图会在构建期报错。
 
 `sampleDigital` 读取本次解析后的数字输入，`readDrivenDigital` 读取器件自己保存的数字输出意图，两者语义不同。
+
+### 外部修改电阻
+
+固定电阻只在工厂中初始化。外部输入驱动的可变电阻，在 `kernel` 中通过 `module.entry(name, ['f64'])` 声明更新入口，在入口体中用 `bind(builder).resistor(name).setResistance(value)` 更新资源；`applyInputs` 取到本步输入后调用 `io.call(entry, [value])`，没有输入就不调用。
+
+宿主在步首冻结投递集合，每个器件的 `applyInputs` 只执行一次；`takeInput` 返回该端口本步最后一条输入，`takeInputs` 返回全部输入，取出后即消费。全部求值完成后才调用 `flushOutputs`，其 `readState` 将浮点值转换为 JS 数值，`publish` 经现有宿主发布通道送出。
+
+这条路径无需 `setState → tick → setResistance` 轮询，也不直接改写求解器存储。电位器在入口内用 `applyResistors` 一次更新两段阻值；新阻值实际变化才使矩阵缓存失效，随后由电气解析或采样触发求解。完整配对实现见 [potentiometer.js](../../apps/playground/public/devices/potentiometer.js)。
 
 ## 4. 多驱动与布尔语义
 

@@ -131,6 +131,10 @@ export function deliverContractTopic(
   if (topic.direction !== 'input') {
     throw new TypeError(`Device ${entry.reference} topic ${JSON.stringify(port)} is not an input`);
   }
+  if (accessor.applyInputs !== undefined) {
+    accessor.applyInputs([{ port, payload }]);
+    return;
+  }
   if (topic.state === undefined) {
     throw new TypeError(
       `Device ${entry.reference} topic ${JSON.stringify(port)} has no runtime state mapping yet`,

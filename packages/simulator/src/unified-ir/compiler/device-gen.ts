@@ -1,5 +1,6 @@
 import type {
   ArrayRef,
+  EntryRef,
   FunctionBuilder,
   FunctionRef,
   IRModule,
@@ -78,6 +79,7 @@ export class DeviceIRGenerator {
         { deviceId: device.id },
       );
     }
+    const functionOffset = this.context.module.functions.length;
     const kernelResult = device.description.kernel?.({
       deviceId: device.id,
       config: device.config,
@@ -118,6 +120,12 @@ export class DeviceIRGenerator {
     const metadata: DeviceMetadata = Object.freeze({
       deviceId: device.id,
       type: device.type,
+      entries: Object.freeze(
+        this.context.module.functions
+          .slice(functionOffset)
+          .filter((fn) => fn.category === 'entry')
+          .map((fn) => fn.ref as EntryRef),
+      ),
       pinOffset: allocation.offset,
       stateOffset: stateOffsetOf(this.context.states, device.id),
       pins: allocation.pins,
@@ -127,6 +135,12 @@ export class DeviceIRGenerator {
       tick: tick?.name,
       update: update?.name,
       accessor: device.description.accessor,
+      ...(device.description.applyInputs === undefined
+        ? {}
+        : { applyInputs: device.description.applyInputs }),
+      ...(device.description.flushOutputs === undefined
+        ? {}
+        : { flushOutputs: device.description.flushOutputs }),
     });
 
     return Object.freeze({

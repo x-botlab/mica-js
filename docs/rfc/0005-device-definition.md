@@ -93,7 +93,7 @@ interface ElectricalFactoryContext {
 }
 ```
 
-`PropertyValue` 由 [RFC 0009](./0009-device-properties.md) 定义；`DeviceElectricalInitialization` 汇集上述两个资源合同的初始化方法。普通 IR 建图能力继续遵守 [RFC 0003](./0003-device-ir.md)，不因本节增加运行期 JS 回调。
+`PropertyValue` 由 [RFC 0009](./0009-device-properties.md) 定义；`DeviceElectricalInitialization` 汇集上述两个资源合同的初始化方法。普通 IR 建图能力由 [RFC 0003](./0003-device-ir.md) 规定；工厂返回的 `applyInputs`、`flushOutputs` 边界钩子由 [RFC 0017](./0017-device-topic-delivery.md) 规定。
 
 例如包索引定位 `devices/resistor.json`，同目录 `resistor.js` 为配对实现。器件名称、描述及身份由包索引提供；JSON 不重复声明它们。
 

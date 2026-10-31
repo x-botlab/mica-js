@@ -73,30 +73,69 @@ export function prepareElectricalCompilation(
       properties,
       description.factory!,
     );
-    if (result.implementation !== undefined && description.behaviors !== undefined)
-      fail(`Device "${device.id}" declares both factory and static behaviors`);
-    const behaviors =
-      result.implementation === undefined ? description.behaviors : result.implementation;
-    if (behaviors !== undefined) {
-      if (behaviors === null || typeof behaviors !== 'object' || Array.isArray(behaviors))
+    const implementation = result.implementation;
+    if (implementation !== undefined) {
+      if (
+        implementation === null ||
+        typeof implementation !== 'object' ||
+        Array.isArray(implementation)
+      )
         fail(`Device "${device.id}" factory must return behavior hooks or undefined`);
-      for (const [phase, callback] of Object.entries(behaviors)) {
+      for (const [name, callback] of Object.entries(implementation)) {
+        if (
+          !['initialize', 'tick', 'update', 'kernel', 'applyInputs', 'flushOutputs'].includes(
+            name,
+          ) ||
+          (callback !== undefined && typeof callback !== 'function')
+        )
+          fail(`Invalid factory behavior "${device.id}.${name}"`);
+      }
+    }
+    const phases =
+      implementation === undefined
+        ? description.behaviors
+        : {
+            ...(implementation.initialize === undefined
+              ? {}
+              : { initialize: implementation.initialize }),
+            ...(implementation.tick === undefined ? {} : { tick: implementation.tick }),
+            ...(implementation.update === undefined ? {} : { update: implementation.update }),
+          };
+    if (phases !== undefined) {
+      for (const [phase, callback] of Object.entries(phases)) {
         if (
           !['initialize', 'tick', 'update'].includes(phase) ||
           (callback !== undefined && typeof callback !== 'function')
         )
           fail(`Invalid factory behavior "${device.id}.${phase}"`);
       }
-      if (description.kernel !== undefined)
-        fail(`Device "${device.id}" declares both behavior hooks and a kernel`);
     }
+    const hasPhases =
+      phases !== undefined && Object.values(phases).some((value) => value !== undefined);
+    if (implementation !== undefined && description.behaviors !== undefined)
+      fail(`Device "${device.id}" declares both factory and static behaviors`);
+    if (implementation?.kernel !== undefined && description.kernel !== undefined)
+      fail(`Device "${device.id}" declares two kernels`);
+    const kernel = implementation?.kernel ?? description.kernel;
+    if (hasPhases && kernel !== undefined)
+      fail(`Device "${device.id}" declares both behavior hooks and a kernel`);
     return {
       id: device.id,
       prepared: result,
       device: {
         ...device,
         properties: result.properties,
-        description: { ...description, ...(behaviors === undefined ? {} : { behaviors }) },
+        description: {
+          ...description,
+          ...(phases === undefined || !hasPhases ? {} : { behaviors: phases }),
+          ...(kernel === undefined ? {} : { kernel }),
+          ...(implementation?.applyInputs === undefined
+            ? {}
+            : { applyInputs: implementation.applyInputs }),
+          ...(implementation?.flushOutputs === undefined
+            ? {}
+            : { flushOutputs: implementation.flushOutputs }),
+        },
       },
     };
   });

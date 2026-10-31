@@ -1,5 +1,5 @@
 import type { IRJITTuning } from '@mica-js/ir';
-import type { CircuitCompilationInput, CircuitCompilationOptions } from '../compiler';
+import type { CircuitCompilationInput, CircuitCompilationOptions, DeviceInput } from '../compiler';
 
 /**
  * Types of the unified circuit runtime (U02).
@@ -138,6 +138,10 @@ export interface DeviceAccessor {
   getState(name: string): unknown;
   /** Writes one declared internal state. */
   setState(name: string, value: unknown): void;
+  /** Consumes inputs at a host step boundary, when declared by the paired factory. */
+  applyInputs?(inputs: readonly DeviceInput[]): void;
+  /** Publishes outputs after the host finishes evaluating the step. */
+  flushOutputs?(publish: (port: string, payload: unknown) => void): void;
 }
 
 /** Every accessor of one circuit, keyed by device id. */

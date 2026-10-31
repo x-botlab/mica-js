@@ -9,6 +9,8 @@ import type {
   BytesRef,
   FunctionBuilder,
   FunctionRef,
+  EntryRef,
+  RuntimeScalar,
   IRModule,
   IRValidationOptions,
   ScalarType,
@@ -202,15 +204,42 @@ export interface DeviceBehaviors {
   readonly update?: (api: DeviceBehaviorApi) => void;
 }
 
+export interface DeviceInput {
+  readonly port: string;
+  readonly payload: unknown;
+}
+
+export interface DeviceInputIo {
+  takeInput(port: string): unknown;
+  takeInputs(port: string): readonly unknown[];
+  writeState(name: string, value: unknown): void;
+  call(entry: EntryRef, args: readonly RuntimeScalar[]): void;
+}
+
+export interface DeviceOutputIo {
+  readState(name: string): unknown;
+  publish(port: string, payload: unknown): void;
+}
+
+export interface DeviceBridgeHooks {
+  readonly applyInputs?: (io: DeviceInputIo) => void;
+  readonly flushOutputs?: (io: DeviceOutputIo) => void;
+}
+
+/** Per-instance construction and boundary hooks returned by the paired factory. */
+export interface DeviceImplementation extends DeviceBehaviors, DeviceBridgeHooks {
+  readonly kernel?: DeviceKernelFactory;
+}
+
 /** IR-level device description consumed by the compiler. */
-export interface DeviceDescription {
+export interface DeviceDescription extends DeviceBridgeHooks {
   readonly name?: string;
   readonly pins: DevicePinMap;
   readonly properties?: Readonly<Record<string, unknown>>;
   readonly resistors?: Readonly<Record<string, ResistorDeclaration>>;
   readonly connections?: Readonly<Record<string, ContactDeclaration>>;
   /** Paired synchronous JS factory, invoked once per instance before IR generation. */
-  readonly factory: (context: ElectricalFactoryContext) => DeviceBehaviors | void;
+  readonly factory: (context: ElectricalFactoryContext) => DeviceImplementation | void;
   readonly states?: Readonly<Record<string, DeviceStateDescription>>;
   readonly behaviors?: DeviceBehaviors;
   /**
@@ -324,8 +353,9 @@ export interface GlobalStateMap {
 }
 
 /** Metadata of one compiled device. */
-export interface DeviceMetadata {
+export interface DeviceMetadata extends DeviceBridgeHooks {
   readonly deviceId: string;
+  readonly entries?: readonly EntryRef[];
   readonly type: string;
   /** First global pin id of the device. */
   readonly pinOffset: number;

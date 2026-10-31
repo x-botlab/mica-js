@@ -21,8 +21,7 @@
     "position": {
       "direction": "input",
       "type": "number",
-      "title": "Position",
-      "state": "position"
+      "title": "Position"
     },
     "actualPosition": {
       "direction": "output",
