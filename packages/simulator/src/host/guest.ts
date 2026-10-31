@@ -2,7 +2,7 @@ import { createRpc } from '@mica-js/core/rpc';
 import { loggerService } from '@mica-js/core/logging';
 import type { RpcEndpoint } from '@mica-js/core/rpc';
 import type { DeviceReference, DeviceSymbolProvider } from '@mica-js/core/schematic';
-import type { SchematicDeviceBinding } from '../unified-ir/runtime';
+import type { CircuitElectricalOptions, SchematicDeviceBinding } from '../unified-ir/runtime';
 import { deviceSimulationHostFileSystemService, deviceSimulationHostGuestService } from './rpc';
 import type { DeviceSimulationHostRpc } from './rpc';
 import { createSchematicDeviceSimulationHost } from './runtime';
@@ -14,6 +14,8 @@ import { createSchematicDeviceSimulationHost } from './runtime';
  * package that owns devices bundles its own worker script and supplies these.
  */
 export interface DeviceSimulationHostGuestOptions {
+  /** Fixed electrical configuration supplied by the owning worker module. */
+  readonly electrical?: CircuitElectricalOptions;
   /** Symbol geometry of the schematics this guest loads, or a factory called per load. */
   readonly devices?: DeviceSymbolProvider | (() => DeviceSymbolProvider);
   /** Resolves a schematic device reference; when omitted every reference stays unresolved. */
@@ -79,6 +81,7 @@ export function startDeviceSimulationHostGuest(
       return bytes;
     },
     ...(devices === undefined ? {} : { devices }),
+    ...(options.electrical === undefined ? {} : { electrical: options.electrical }),
     resolveDevice: resolveDevice ?? (() => undefined),
   });
 

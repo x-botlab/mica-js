@@ -1,13 +1,11 @@
 import { INTEGER_TYPES, SCALAR_TYPES } from '@mica-js/ir';
 import type { ArrayRef, IRModule, ScalarType } from '@mica-js/ir';
-import { DEVICE_PIN_STRIDE, PIN_MODE, UNIFIED_PIN_CAPACITY } from '../pin-space';
+import { DEVICE_PIN_STRIDE, UNIFIED_PIN_CAPACITY } from '../pin-space';
 import {
   UnifiedIRCompilerError,
-  type CompiledCircuitMemory,
   type DeviceConfig,
   type DevicePinAllocation,
   type DevicePinDescription,
-  type DevicePinDirection,
   type DeviceStateDescription,
   type DeviceStateSlot,
   type GlobalPinMap,
@@ -20,7 +18,6 @@ const DEVICE_ID_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** Everything the compiler allocates before a single instruction is generated. */
 export interface ResourceAllocation {
-  readonly memory: CompiledCircuitMemory;
   readonly pins: GlobalPinMap;
   readonly states: GlobalStateMap;
 }
@@ -32,12 +29,11 @@ export interface ResourceAllocation {
  * ids:  0 = drive1.PA0   1 = drive1.PA1   2 = sink1.anode   3 = sink1.cathode
  *       |<-- drive1 -->|                |<----------- sink1 ----------->|
  *
- * pin_mode[n] u8   pin_output[n] bool   pin_input[n] bool   (n = totalPins)
  * device_state_bool[n] / device_state_u32[m] / ...   (one array per used type)
  * ```
  *
  * Pins are packed in declaration order across devices — the addresses the
- * device IR and every net solver embed as constants. States are packed per
+ * device IR embeds as constants. States are packed per
  * scalar type into one shared array, so a device's slot stays typed while all
  * devices share one storage region.
  */
@@ -48,11 +44,10 @@ export class GlobalResourceAllocator {
     this.module = module;
   }
 
-  /** Allocates the shared pin memories, the pin space and the state space. */
+  /** Allocates pin addresses and typed device state arrays. */
   allocate(devices: readonly DeviceConfig[]): ResourceAllocation {
     const pins = this.allocatePins(devices);
     return Object.freeze({
-      memory: createPinMemory(this.module, Math.max(1, pins.totalPins)),
       pins,
       states: this.allocateStates(devices),
     });
@@ -93,11 +88,9 @@ export class GlobalResourceAllocator {
       const devicePins = new Map<string, number>();
       const resolved = new Map<string, ResolvedDevicePin>();
 
-      for (const [name, descriptor] of entries) {
+      for (const [name] of entries) {
         const globalPinId = totalPins;
         totalPins += 1;
-        const direction = resolvePinDirection(descriptor, device.id, name);
-        const { role, senses } = resolvePinRole(direction, descriptor?.role, device.id, name);
         devicePins.set(name, globalPinId);
         resolved.set(
           name,
@@ -105,9 +98,6 @@ export class GlobalResourceAllocator {
             name,
             deviceId: device.id,
             globalPinId,
-            direction,
-            role,
-            senses,
           }),
         );
         pins.set(`${device.id}.${name}`, globalPinId);
@@ -205,36 +195,6 @@ export class GlobalResourceAllocator {
   }
 }
 
-/**
- * Declares the three pin memories shared by every device and net solver.
- *
- * The memories are sized to the pins the circuit declares, never to
- * {@link UNIFIED_PIN_CAPACITY}: the capacity only bounds how many pins a
- * circuit may have, so a large ceiling costs neither memory nor setup time.
- */
-export function createPinMemory(
-  module: IRModule,
-  capacity: number = UNIFIED_PIN_CAPACITY,
-): CompiledCircuitMemory {
-  return Object.freeze({
-    mode: module.array(
-      'pin_mode',
-      'u8',
-      Array.from({ length: capacity }, () => PIN_MODE.highZ),
-    ),
-    output: module.array(
-      'pin_output',
-      'bool',
-      Array.from({ length: capacity }, () => false),
-    ),
-    input: module.array(
-      'pin_input',
-      'bool',
-      Array.from({ length: capacity }, () => false),
-    ),
-  });
-}
-
 /** First state slot ordinal of every device; used for `DeviceMetadata.stateOffset`. */
 export function stateOffsetOf(states: GlobalStateMap, deviceId: string): number {
   let offset = 0;
@@ -330,56 +290,6 @@ function pinEntries(
     }
   }
   return entries;
-}
-
-const PIN_DIRECTIONS: ReadonlySet<string> = new Set([
-  'input',
-  'output',
-  'bidirectional',
-  'passive',
-]);
-
-function resolvePinDirection(
-  descriptor: DevicePinDescription | undefined,
-  deviceId: string,
-  pinName: string,
-): DevicePinDirection {
-  const direction = descriptor?.direction ?? 'passive';
-  if (!PIN_DIRECTIONS.has(direction)) {
-    throw new UnifiedIRCompilerError(
-      'invalid-input',
-      `Device "${deviceId}" pin "${pinName}" has direction ${JSON.stringify(direction)}; expected input, output, bidirectional or passive`,
-      { deviceId, pinName },
-    );
-  }
-  return direction;
-}
-
-/**
- * Derives the electrical role and the read behavior of a pin.
- *
- * `output` drives only, `input`/`passive` sense only, `bidirectional` drives and
- * senses. An explicit `role` overrides the derived drive role while
- * `bidirectional` keeps its sense side.
- */
-function resolvePinRole(
-  direction: DevicePinDirection,
-  explicit: DevicePinDescription['role'],
-  deviceId: string,
-  pinName: string,
-): { readonly role: 'driver' | 'load'; readonly senses: boolean } {
-  if (explicit !== undefined && explicit !== 'driver' && explicit !== 'load') {
-    throw new UnifiedIRCompilerError(
-      'invalid-input',
-      `Device "${deviceId}" pin "${pinName}" has role ${JSON.stringify(explicit)}; expected driver or load`,
-      { deviceId, pinName },
-    );
-  }
-  if (explicit === 'driver') return { role: 'driver', senses: direction === 'bidirectional' };
-  if (explicit === 'load') return { role: 'load', senses: true };
-  if (direction === 'output') return { role: 'driver', senses: false };
-  if (direction === 'bidirectional') return { role: 'driver', senses: true };
-  return { role: 'load', senses: true };
 }
 
 function stateEntries(

@@ -44,7 +44,7 @@
 | `pin.write_voltage pin`  | `f64 voltage` | 空结果        |
 | `pin.sample_voltage pin` | 空            | `f64 voltage` |
 
-输出值采用有限 `f64` 电压（单位 V）。绑定电气模型提供参考、输出范围与供电约束，允许时电压可以取负值；写入在提交前校验有限性与声明范围，超出约束按模型异常合同保留此前已提交效果。
+输出值采用有限 `f64` 电压（单位 V）。绑定电气模型提供参考与供电约束，允许时电压可以取负值；写入在提交前校验有限性，非有限值按模型异常合同保留此前已提交效果。
 
 `write_voltage` 更新电压输出意图。门控就绪时，`sample_voltage` 对确定网络返回实际解析电压，对浮空网络返回确定性合成电压，两者都作为器件可用输入；内核分别保存物理状态与采样诊断。
 
@@ -59,6 +59,38 @@
 接收业务通过后续普通入口执行，触发事实在形成时捕获；接收入口取得捕获值，需要当前值时执行新的显式采样。同一虚拟时刻可以包含多个有序提交与解析阶段，同刻先高后低形成的可观察变化按实际顺序保留，每个阶段的组内原子性与阶段之间的顺序分别保持。
 
 外部 JS、Worker 或 UI 更新在执行合同规定的接纳边界进入。硬件等待时间与器件内部配置延迟由普通定时事件表达；作者层配置合并在提交 IR 操作前完成。
+
+## JS 构建期操作
+
+以下为引脚 I/O 的构建期成员；句柄引用当前实例的静态资源，`Value<T>` 表达核心 IR 标量值。调用生成对应 IR 操作，工厂与句柄不作为每 tick 的 JS 执行服务。
+
+```ts
+interface DevicePinHandle {
+  readonly name: string;
+  readonly globalId: number;
+  configure(mode: number): void;
+  setOutputEnabled(enabled: Value<'bool'>): void;
+  setPull(pull: 'none' | 'up' | 'down'): void;
+  writeDigital(level: Value<'bool'>): void;
+  writeVoltage(voltage: Value<'f64'>): void;
+  sampleDigital(): Value<'bool'>;
+  sampleVoltage(): Value<'f64'>;
+  readDrivenDigital(): Value<'bool'>;
+}
+interface DeviceBehaviorApi {
+  pin(name: string): DevicePinHandle;
+  writeDigitalGroup(names: readonly string[], levels: readonly Value<'bool'>[]): void;
+}
+interface DeviceKernelContext {
+  bind(builder: FunctionBuilder<readonly []>): DeviceBehaviorApi;
+}
+```
+
+- `configure(mode)` 校验 `0/1/2/3` 并生成单项 `pin.set_mode`；三项原子配置仍按下一节的 `pin.configure` 合同执行。
+- 写数字或电压意图要求对应驱动能力；数字与电压采样要求输入能力。能力初始化由 [RFC 0006](./0006-device-pins.md) 规定；`sampleVoltage` 遵守本规范的实际电压、浮空回退与门控合同。
+- `readDrivenDigital` 读取已保存数字意图；`sampleDigital` 读取必要解析后的输入，两者分别维护。
+- 数字组的成员列表静态、非空、无重复且属于当前实例；数量与值列表匹配，提交遵守本规范的组原子性。
+- kernel 通过 `bind(builder)` 取得同一套授权操作；电气状态写入采用资源操作，普通私有内存沿用核心存储合同。
 
 ## 显式配置指令
 
@@ -135,7 +167,7 @@
 
 参数校验、状态读写、引脚意图、网络变化、捕获事实、事件 ID 分配与释放、事件顺序及外部通知共同构成可观察效果。
 
-模型异常保留此前已提交效果，并按执行合同报告故障边界。组操作的校验阶段先于组意图提交；电气解析判定驱动电压不相容时立即报告模型异常并暂停仿真，记录相关网络、贡献来源与故障现场，采样采用正常数值返回路径。强弱贡献优先级、多源相容判据、容差与结果电压唯一由[电气模型](./0002-electrical-model.md)维护。
+模型异常保留此前已提交效果，并按执行合同报告故障边界。组操作的校验阶段先于组意图提交；电气解析判定理想源约束不相容或无法形成有限有效解时，按[电气模型](./0002-electrical-model.md)的故障合同报告并暂停仿真，采样采用正常数值返回路径。多源相容判据、容差与结果电压唯一由该合同维护。
 
 内核可以内联、特化、打包或融合实现，优化产物必须保持效果、触发快照与异常顺序，并在依赖变化时重新校验。
 
@@ -189,4 +221,4 @@ func initialize() {
 
 ## 迁移约定
 
-实体引脚与配置声明以[引脚声明](./0006-device-pins.md)为准；电气贡献与解析以[电气模型](./0002-electrical-model.md)为准；器件入口中的读写、捕获与投递以本文为准。来源提案中的协议接口对象、JS 方法与配置补丁语法由上述资源声明、标量操作与明确提交点承接。
+实体引脚与配置声明以[引脚声明](./0006-device-pins.md)为准；电气贡献与解析以[电气模型](./0002-electrical-model.md)为准；器件入口中的读写、捕获与投递以本文为准。

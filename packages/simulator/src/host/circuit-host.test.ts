@@ -15,10 +15,13 @@ const TOPICS: readonly DeviceTopic[] = [
 ];
 
 async function createCircuit(): Promise<Circuit> {
-  return Circuit.create({
-    devices: [{ id: 'K1', type: TOGGLE_TYPE, description: toggleDescription() }],
-    connections: [],
-  });
+  return Circuit.create(
+    {
+      devices: [{ id: 'K1', type: TOGGLE_TYPE, description: toggleDescription() }],
+      connections: [],
+    },
+    { electrical: { interpretation: 'two-state' } },
+  );
 }
 
 describe('createCircuitDeviceSimulationHost', () => {

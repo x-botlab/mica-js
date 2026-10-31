@@ -26,6 +26,12 @@ export interface DeviceSimTickReport {
   readonly simTime: number;
   /** Circuit steps executed by this call. */
   readonly executed: number;
+  /** Isolated device boundary-hook failures; absent when the step has none. */
+  readonly diagnostics?: readonly {
+    readonly code: 'device/input-failed' | 'device/output-failed';
+    readonly deviceId: string;
+    readonly message: string;
+  }[];
 }
 
 /**

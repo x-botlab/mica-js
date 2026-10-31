@@ -24,6 +24,51 @@
 
 每条连接作为独立拓扑边维护；多个触点可以共享端点，多条闭合路径可以连接同一组网络。断开一条边后，宿主依据剩余路径重新计算连通分量。端点可以引用 `signal`、`power` 或 `gnd` 引脚，引脚类别与域归属保持各自声明；触点只承担导通关系，电压与驱动状态由网络中的驱动源提供，解析结果与不相容判定由[电气模型](./0002-electrical-model.md)负责。
 
+## 电阻支路声明与初始化
+
+线性电阻支路由 `resistors` 对象声明，键为当前器件内非空、大小写敏感的支路 ID。
+
+| 字段                  | 类型            | 约束                              |
+| --------------------- | --------------- | --------------------------------- |
+| `resistors`           | object          | 可选，省略为空对象                |
+| `resistors.<id>.pins` | array of string | 恰好两个互异、已声明的实体引脚 ID |
+
+端点顺序决定支路电流的正方向，由第一个端点流向第二个端点。电阻连接不合并两端为等电位节点；理想闭合触点仍遵守本文原有连接合同。
+
+JSON 不在支路中保存初始阻值、`adjustable` 或 `initialEnabled`。JS 工厂使用属性或常量初始化数值：
+
+```ts
+interface ResistorInitialState {
+  readonly resistance: number;
+  readonly enabled: boolean;
+  readonly maxAbsCurrent?: number;
+}
+
+interface DeviceElectricalInitialization {
+  initializeResistor(id: string, initial: ResistorInitialState): void;
+}
+```
+
+- `id` 引用当前实例已声明的电阻支路。
+- `resistance` 单位 Ω，要求有限且大于零；零欧连接使用理想触点，断开使用 `enabled: false`。
+- `enabled` 显式提供，表示初始支路是否参与求解。
+- `maxAbsCurrent` 为可选诊断阈值，单位 A，要求有限且大于零；超限不改变支路电阻、不自动限流。
+- 所有已声明电阻在工厂结束前恰好初始化一次。
+- 运行期调阻能力不采用 `adjustable` 标志区分，资源修改仍须通过当前实例的静态引用及写授权。
+- 工厂初始化保存独立的实例初值；运行期调阻不修改属性快照，重置恢复工厂配置的初值。
+- 缺少、重复或未知资源初始化按 [RFC 0005](./0005-device-definition.md) 报告；非法阻值或电流阈值报告 `electrical/invalid-parameter`。
+
+```json
+{
+  "pins": { "A": { "kind": "signal" }, "B": { "kind": "signal" } },
+  "resistors": { "body": { "pins": ["A", "B"] } }
+}
+```
+
+```js
+ctx.electrical.initializeResistor('body', { resistance: 1000, enabled: true });
+```
+
 ## 运行时状态与更新
 
 宿主为每个「实例 + 连接 ID」保存当前 `open` / `closed` 状态，初值来自 `initial`。
@@ -115,12 +160,27 @@ connection.apply [connection.normallyOpen, connection.normallyClosed], [%energiz
 
 ### 作者层接口
 
-- `api.ir.connection(id)` 取得静态连接引用。
-- `b.connection.apply([{ connection, closed }, ...])` 生成本操作。
+构建期资源操作生成本文的 IR 语义；它们不引入每 tick 的 JS 服务或不同的事务、可见性、故障规则。
 
-对象列表在建图时固定，逐项降低为静态连接列表与 bool SSA 列表；普通、生命周期及生成函数的构建器与嵌套块使用相同写法。作者接口与类型由上层维护，本文唯一维护连接 IR 效果；统一命名不改变拓扑提交规则。普通 `pin.write_digital`、`bytes.store` 或任意 JS helper 不能替代本操作的拓扑效果。
+```ts
+interface DeviceResistorHandle {
+  setResistance(resistance: Value<'f64'>): void;
+  setEnabled(enabled: Value<'bool'>): void;
+  /** 本次解析后的支路电流，单位 A，正方向为第一端到第二端。 */
+  sampleCurrent(): Value<'f64'>;
+}
+interface DeviceBehaviorApi {
+  resistor(name: string): DeviceResistorHandle;
+  applyResistors(names: readonly string[], resistances: readonly Value<'f64'>[]): void;
+  applyConnections(names: readonly string[], closed: readonly Value<'bool'>[]): void;
+}
+```
 
-当前实现覆盖建图、链接期授权检查、补丁捕获与拓扑提交（[`packages/device/src/connection/`](../../packages/device/src/connection/)），并有按钮与继电器的端到端用例。
+- 名称静态绑定当前实例的电阻或触点；patch 非空、无重复，所有列表等长。
+- `setResistance` 与 `applyResistors` 要求有限正阻值；patch 中任一无效值使整个 patch 失败，之前已提交的其他操作不回滚。
+- `applyResistors` 原子提交阻值，保留各支路使能状态；`setEnabled` 单独更新支路使能。
+- `sampleCurrent` 返回本次解析后第一端到第二端的支路电流，单位 A；断开的电阻支路返回 `0`。
+- `applyConnections` 按本文的下一个合法拓扑边界生效规则提交，调用者不得依赖同一入口内立即拓扑可见。
 
 ## 器件示例
 

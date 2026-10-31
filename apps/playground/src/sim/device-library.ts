@@ -10,13 +10,14 @@ import type { DeviceSymbolProvider, PinSide } from '@mica-js/core/schematic';
  * Playground device package: **contracts only**.
  *
  * The committed JSON files describe what a device *is* — reference, unified-IR type, pins, topic
- * ports, connections and reset support. They do not carry a runtime model: the package stays usable
- * by the schematic editor and the canvas catalog on its own, and `device-models.ts` owns the unified
- * IR description of every type (nothing here guesses one).
+ * ports, electrical resources and reset support. Metadata loading does not execute the paired JS:
+ * the schematic editor and canvas catalog use JSON alone. The simulation worker separately loads
+ * factories through the same file system.
  */
 
 /** Folder `public/devices` is served from, relative to the page (and to the guest's host file system). */
 export const DEVICE_LIBRARY_ROOT = 'devices';
+export const PLAYGROUND_DEVICE_EXTENSIONS = ['teaching-i2c.package.json'] as const;
 
 /** Read-only view of the files that make up one device package. */
 export interface DeviceLibraryFiles {
@@ -26,15 +27,10 @@ export interface DeviceLibraryFiles {
   read(path: string): Promise<Uint8Array>;
 }
 
-/** Direction a contract declares for one pin. */
-export type DevicePinDirection = 'input' | 'output' | 'bidirectional' | 'passive';
-
-/** One declared pin; geometry comes from `side` and the symbol synthesizer. */
+/** Pin identity and geometry; capabilities are initialized by the paired factory. */
 export interface DevicePinContract {
-  readonly direction: DevicePinDirection;
   readonly side: PinSide;
-  /** Purely informational kind, e.g. `signal`, `power`, `gnd`. */
-  readonly kind?: string;
+  readonly kind: 'signal' | 'power' | 'gnd';
 }
 
 /**
@@ -59,6 +55,8 @@ export type DeviceResetState = 'supported' | 'unsupported';
 export interface DeviceLibraryEntry {
   /** Library-local id, e.g. `ideal-button`. */
   readonly id: string;
+  readonly path: string;
+  readonly definition: Readonly<Record<string, unknown>>;
   /** Full `<packageId>:<deviceId>` reference schematics use. */
   readonly reference: string;
   /** Unified-IR device type the contract names. */
@@ -90,12 +88,6 @@ const PACKAGE_JSON = 'package.json';
 const DEFINITION_EXTENSION = '.json';
 /** Package and device ids are stable kebab-case identifiers. */
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
-const PIN_DIRECTIONS: readonly DevicePinDirection[] = [
-  'input',
-  'output',
-  'bidirectional',
-  'passive',
-];
 const PIN_SIDES: readonly PinSide[] = ['left', 'right', 'top', 'bottom'];
 
 interface DeviceManifestEntry {
@@ -110,6 +102,7 @@ interface DeviceManifest {
 }
 
 interface DeviceDefinition {
+  readonly definition: Readonly<Record<string, unknown>>;
   readonly reference: string;
   readonly type: string;
   readonly displayName: string;
@@ -122,7 +115,7 @@ interface DeviceDefinition {
 }
 
 /**
- * Reads `package.json` and every declared definition.
+ * Reads `package.json`, optional same-package extension manifests, and their definitions.
  *
  * Only the declared paths are read; the package is never enumerated. Nothing here imports a
  * device model: a definition that names a runtime type this package does not ship still loads,
@@ -130,18 +123,29 @@ interface DeviceDefinition {
  *
  * @throws {Error} with a message naming the package and path when the contract is inconsistent.
  */
-export async function loadDeviceLibrary(files: DeviceLibraryFiles): Promise<DeviceLibrary> {
+export async function loadDeviceLibrary(
+  files: DeviceLibraryFiles,
+  extensions: readonly string[] = [],
+): Promise<DeviceLibrary> {
   const manifest = await readManifest(files);
+  const declarations = [...manifest.devices];
+  for (const path of extensions) {
+    const extension = await readManifest(files, path);
+    if (extension.id !== manifest.id || extension.version !== manifest.version) {
+      throw new Error(`${files.label}/${path}: extension must match the base package name/version`);
+    }
+    declarations.push(...extension.devices);
+  }
   const entries: DeviceLibraryEntry[] = [];
   const seen = new Set<string>();
 
-  for (const declared of manifest.devices) {
+  for (const declared of declarations) {
     const definition = await readDefinition(files, manifest.id, declared);
     if (seen.has(definition.reference)) {
       throw new Error(`${files.label}: duplicate device reference ${definition.reference}`);
     }
     seen.add(definition.reference);
-    entries.push(Object.freeze({ id: declared.id, ...definition }));
+    entries.push(Object.freeze({ id: declared.id, path: declared.path, ...definition }));
   }
 
   const byReference = new Map(entries.map((entry) => [entry.reference, entry]));
@@ -172,48 +176,46 @@ export async function loadDeviceLibrary(files: DeviceLibraryFiles): Promise<Devi
   });
 }
 
-async function readManifest(files: DeviceLibraryFiles): Promise<DeviceManifest> {
-  const text = await readText(files, PACKAGE_JSON);
-  const value = parseObject(text, files.label, PACKAGE_JSON);
+async function readManifest(
+  files: DeviceLibraryFiles,
+  path = PACKAGE_JSON,
+): Promise<DeviceManifest> {
+  const text = await readText(files, path);
+  const value = parseObject(text, files.label, path);
   const id = value['name'];
   if (typeof id !== 'string' || !ID_PATTERN.test(id)) {
-    throw new Error(`${files.label}/${PACKAGE_JSON}: "name" must be a kebab-case package id`);
+    throw new Error(`${files.label}/${path}: "name" must be a kebab-case package id`);
   }
   const version = value['version'];
   if (typeof version !== 'string' || version.length === 0) {
-    throw new Error(`${files.label}/${PACKAGE_JSON}: "version" must be a non-empty string`);
+    throw new Error(`${files.label}/${path}: "version" must be a non-empty string`);
   }
   const devices = value['devices'];
   if (devices === undefined) {
     return { id, version, devices: [] };
   }
-  const record = parseObjectValue(
-    devices,
-    files.label,
-    PACKAGE_JSON,
-    '"devices" must be an object',
-  );
+  const record = parseObjectValue(devices, files.label, path, '"devices" must be an object');
   const entries = Object.keys(record)
     .sort()
     .map((deviceId) => {
       if (!ID_PATTERN.test(deviceId)) {
         throw new Error(
-          `${files.label}/${PACKAGE_JSON}: device id ${JSON.stringify(deviceId)} must be kebab-case`,
+          `${files.label}/${path}: device id ${JSON.stringify(deviceId)} must be kebab-case`,
         );
       }
       const entry = parseObjectValue(
         record[deviceId],
         files.label,
-        PACKAGE_JSON,
+        path,
         `device "${deviceId}" must be an object`,
       );
-      const path = entry['path'];
-      if (typeof path !== 'string' || !path.endsWith(DEFINITION_EXTENSION)) {
+      const definitionPath = entry['path'];
+      if (typeof definitionPath !== 'string' || !definitionPath.endsWith(DEFINITION_EXTENSION)) {
         throw new Error(
-          `${files.label}/${PACKAGE_JSON}: device "${deviceId}" must declare a "${DEFINITION_EXTENSION}" path`,
+          `${files.label}/${path}: device "${deviceId}" must declare a "${DEFINITION_EXTENSION}" path`,
         );
       }
-      return { id: deviceId, path };
+      return { id: deviceId, path: definitionPath };
     });
   return { id, version, devices: entries };
 }
@@ -245,11 +247,17 @@ async function readDefinition(
 
   const pins = readPins(files, declared.path, value['pins']);
   const topics = readTopics(files, declared.path, value['topics']);
-  const connections = optionalStringArray(
-    value['connections'],
-    'connections',
-    files.label,
-    declared.path,
+  const connections = Object.freeze(
+    Object.keys(
+      value['connections'] === undefined
+        ? {}
+        : parseObjectValue(
+            value['connections'],
+            files.label,
+            declared.path,
+            '"connections" must be a resource object',
+          ),
+    ),
   );
   const reset = parseObjectValue(
     value['reset'],
@@ -266,6 +274,7 @@ async function readDefinition(
   const detail = requireString(reset, 'detail', files.label, declared.path);
 
   return Object.freeze({
+    definition: Object.freeze({ ...value, pins }),
     reference: assertPackage(reference, packageId, files.label, declared.path),
     type,
     displayName,
@@ -296,15 +305,10 @@ function readPins(
       path,
       `pin "${name}" must be an object`,
     );
-    const direction = pin['direction'] ?? 'passive';
-    if (
-      typeof direction !== 'string' ||
-      !PIN_DIRECTIONS.includes(direction as DevicePinDirection)
-    ) {
+    if (Object.hasOwn(pin, 'direction') || Object.hasOwn(pin, 'role'))
       throw new Error(
-        `${files.label}/${path}: pin "${name}" direction must be one of ${PIN_DIRECTIONS.join(', ')}`,
+        `${files.label}/${path}: pin "${name}" uses obsolete electrical direction/role`,
       );
-    }
     const side = pin['side'] ?? 'left';
     if (typeof side !== 'string' || !PIN_SIDES.includes(side as PinSide)) {
       throw new Error(
@@ -312,14 +316,10 @@ function readPins(
       );
     }
     const kind = pin['kind'];
-    if (kind !== undefined && typeof kind !== 'string') {
-      throw new Error(`${files.label}/${path}: pin "${name}" "kind" must be a string`);
+    if (kind !== 'signal' && kind !== 'power' && kind !== 'gnd') {
+      throw new Error(`${files.label}/${path}: pin "${name}" kind must be signal, power or gnd`);
     }
-    pins[name] = Object.freeze({
-      direction: direction as DevicePinDirection,
-      side: side as PinSide,
-      ...(kind === undefined ? {} : { kind }),
-    });
+    pins[name] = Object.freeze({ side: side as PinSide, kind });
   }
   return Object.freeze(pins);
 }
@@ -426,19 +426,4 @@ function requireString(
     throw new Error(`${label}/${path}: "${key}" must be a non-empty string`);
   }
   return field;
-}
-
-function optionalStringArray(
-  raw: unknown,
-  key: string,
-  label: string,
-  path: string,
-): readonly string[] {
-  if (raw === undefined) {
-    return Object.freeze([]);
-  }
-  if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== 'string')) {
-    throw new Error(`${label}/${path}: "${key}" must be an array of strings`);
-  }
-  return Object.freeze([...(raw as string[])]);
 }

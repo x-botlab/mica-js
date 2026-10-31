@@ -1,0 +1,16 @@
+{
+  "reference": "demo:resistor",
+  "type": "resistor-ir",
+  "displayName": "电阻",
+  "designatorPrefix": "R",
+  "properties": {
+    "resistance": { "type": "number", "default": 1000, "exclusiveMin": 0, "unit": "ohm" }
+  },
+  "pins": {
+    "A": { "side": "left", "kind": "signal" },
+    "B": { "side": "right", "kind": "signal" }
+  },
+  "resistors": { "body": { "pins": ["A", "B"] } },
+  "topics": {},
+  "reset": { "state": "supported", "detail": "Restores the declared resistance" }
+}

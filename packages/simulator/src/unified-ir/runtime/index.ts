@@ -17,4 +17,6 @@ export {
   type DeviceAccessor,
   type DeviceAccessors,
   type DeviceAccessorsOf,
+  type ElectricalCurrentTarget,
+  type ElectricalDiagnostic,
 } from './types';

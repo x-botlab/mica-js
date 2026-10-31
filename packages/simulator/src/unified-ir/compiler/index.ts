@@ -3,13 +3,11 @@ import type { IRModule, IRValidationOptions } from '@mica-js/ir';
 import { createModuleValidation } from '../validation';
 import { GlobalResourceAllocator } from './allocator';
 import { DeviceIRGenerator } from './device-gen';
-import { DEFAULT_ENTRY_POINT_NAMES, MainLoopGenerator, type MainLoopNames } from './mainloop-gen';
-import { ElectricalSolverGenerator } from './solver-gen';
 import {
-  NetworkTopologyAnalyzer,
-  assertNoElectricalErrors,
-  type TopologyOptions,
-} from './topology';
+  prepareElectricalCompilation,
+  retainElectricalCompilation,
+} from './electrical-compilation';
+import { DEFAULT_ENTRY_POINT_NAMES, MainLoopGenerator, type MainLoopNames } from './mainloop-gen';
 import {
   UnifiedIRCompilerError,
   type CircuitCompilationInput,
@@ -44,7 +42,7 @@ import {
  *
  * The pipeline is: validate the input, allocate the global pin and state
  * spaces, analyse the electrical topology, generate one function per device
- * phase, generate one solver per net, generate the main loop, then validate the
+ * phase, generate the resistive network solver and main loop, then validate the
  * resulting module with `validateIR`.
  *
  * @throws {UnifiedIRCompilerError} for malformed input, duplicate ids, unknown
@@ -54,45 +52,33 @@ export function compileCircuit(
   input: CircuitCompilationInput,
   options: CircuitCompilationOptions = {},
 ): CompiledCircuit {
-  const { devices, connections } = validateInput(input);
+  const validated = validateInput(input);
+  const { connections } = validated;
   const resolvedOptions = validateOptions(options);
   const names = resolveEntryNames(resolvedOptions);
 
   const module = createIRModule();
-  const allocation = new GlobalResourceAllocator(module).allocate(devices);
-
-  const topologyOptions: TopologyOptions = {
-    ...(resolvedOptions.rails === undefined ? {} : { rails: resolvedOptions.rails }),
-  };
-  const netlist = new NetworkTopologyAnalyzer(topologyOptions).analyze(
+  const allocation = new GlobalResourceAllocator(module).allocate(validated.devices);
+  const electrical = prepareElectricalCompilation(
+    module,
+    validated.devices,
     connections,
-    allocation.pins,
+    resolvedOptions,
   );
-  assertNoElectricalErrors(netlist);
+  const devices = electrical.devices;
 
   const generator = new DeviceIRGenerator({
     module,
-    memory: allocation.memory,
     pins: allocation.pins,
     states: allocation.states,
+    electrical: electrical.operations,
   });
   const generated = devices.map((device) => generator.generate(device));
 
-  const solvers = new ElectricalSolverGenerator({
-    module,
-    memory: allocation.memory,
-  }).generate(netlist);
+  assertNoNameCollisions(devices, names);
 
-  assertNoNameCollisions(
-    devices,
-    solvers.map((solver) => solver.name),
-    names,
-  );
-
-  const loop = new MainLoopGenerator(module).generate(
+  const loop = new MainLoopGenerator(module, electrical.operations).generate(
     generated.map((device) => device.entry),
-    solvers,
-    netlist,
     names,
   );
 
@@ -104,7 +90,7 @@ export function compileCircuit(
 
   const deviceMap = new Map(generated.map((device) => [device.metadata.deviceId, device.metadata]));
 
-  return Object.freeze({
+  const compiled = Object.freeze({
     module,
     entryPoints: Object.freeze({
       tick: loop.names.tick,
@@ -116,16 +102,17 @@ export function compileCircuit(
         batch: loop.batch,
       }),
     }),
+    progress: loop.progress,
     pinMap: allocation.pins.pins,
     deviceMap,
-    netlist,
     pins: allocation.pins,
     states: allocation.states,
-    memory: allocation.memory,
     validation,
     executionOrder: loop.order,
     functions: Object.freeze(module.functions.map((fn) => fn.name)),
   });
+  retainElectricalCompilation(compiled, electrical);
+  return compiled;
 }
 
 function validateInput(input: unknown): {
@@ -162,23 +149,6 @@ function validateOptions(options: unknown): CircuitCompilationOptions {
   if (resolved.validate !== undefined && typeof resolved.validate !== 'boolean') {
     throw new UnifiedIRCompilerError('invalid-input', 'options.validate must be a boolean');
   }
-  if (resolved.rails !== undefined) {
-    if (
-      resolved.rails === null ||
-      typeof resolved.rails !== 'object' ||
-      Array.isArray(resolved.rails)
-    ) {
-      throw new UnifiedIRCompilerError('invalid-input', 'options.rails must be a plain object');
-    }
-    for (const [name, level] of Object.entries(resolved.rails)) {
-      if (name.length === 0 || typeof level !== 'boolean') {
-        throw new UnifiedIRCompilerError(
-          'invalid-input',
-          `options.rails["${name}"] must be a boolean`,
-        );
-      }
-    }
-  }
   return resolved;
 }
 
@@ -205,12 +175,8 @@ function resolveEntryNames(options: CircuitCompilationOptions): MainLoopNames {
   return Object.freeze(names);
 }
 
-function assertNoNameCollisions(
-  devices: readonly DeviceConfig[],
-  solverNames: readonly string[],
-  names: MainLoopNames,
-): void {
-  const reserved = new Set<string>([names.tick, names.initialize, names.batch, ...solverNames]);
+function assertNoNameCollisions(devices: readonly DeviceConfig[], names: MainLoopNames): void {
+  const reserved = new Set<string>([names.tick, names.initialize, names.batch]);
   for (const device of devices) {
     for (const phase of ['initialize', 'tick', 'update'] as const) {
       const generated = `${device.id}_${phase}`;
@@ -238,13 +204,9 @@ function validateModule(module: IRModule, validation: IRValidationOptions): void
 }
 
 export * from './types';
-export { GlobalResourceAllocator, createPinMemory, stateOffsetOf } from './allocator';
+export { GlobalResourceAllocator, stateOffsetOf } from './allocator';
 export type { ResourceAllocation } from './allocator';
-export { DEFAULT_RAILS, NetworkTopologyAnalyzer, assertNoElectricalErrors } from './topology';
-export type { TopologyOptions } from './topology';
 export { DeviceIRGenerator } from './device-gen';
 export type { DeviceGenerationContext, DeviceLoopEntry, GeneratedDevice } from './device-gen';
-export { ElectricalSolverGenerator } from './solver-gen';
-export type { NetSolverRuntime, SolverGenerationContext } from './solver-gen';
 export { DEFAULT_ENTRY_POINT_NAMES, MainLoopGenerator } from './mainloop-gen';
 export type { MainLoopNames, MainLoopOutput } from './mainloop-gen';

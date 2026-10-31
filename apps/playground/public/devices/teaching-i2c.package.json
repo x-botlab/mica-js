@@ -1,0 +1,8 @@
+{
+  "name": "demo",
+  "version": "1.0.0",
+  "devices": {
+    "teaching-i2c-master": { "path": "teaching-i2c-master.json" },
+    "teaching-i2c-slave": { "path": "teaching-i2c-slave.json" }
+  }
+}

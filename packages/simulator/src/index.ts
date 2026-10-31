@@ -23,6 +23,8 @@ export type {
   DeviceAccessor,
   DeviceAccessors,
   DeviceAccessorsOf,
+  ElectricalCurrentTarget,
+  ElectricalDiagnostic,
   SchematicCircuitBinding,
   SchematicCircuitOptions,
   SchematicDeviceBinding,
@@ -32,25 +34,27 @@ export type {
 /* -------------------------------------------------------------------------
  * Unified IR: compiler
  * ---------------------------------------------------------------------- */
-export { DEFAULT_RAILS, UnifiedIRCompilerError, compileCircuit } from './unified-ir/compiler';
+export { UnifiedIRCompilerError, compileCircuit } from './unified-ir/compiler';
 export type {
   CircuitCompilationInput,
   CircuitCompilationOptions,
-  CompilationDiagnostic,
-  CompilationDiagnosticCode,
   CompiledCircuit,
   Connection,
   DeviceAccessorFactory,
   DeviceAccessorFactoryContext,
   DeviceBehaviorApi,
   DeviceBehaviors,
+  DeviceImplementation,
+  DeviceInput,
+  DeviceInputIo,
+  DeviceOutputIo,
+  DeviceBridgeHooks,
   DeviceConfig,
   DeviceDescription,
   DeviceKernelContext,
   DeviceKernelFactory,
   DeviceKernelRuntime,
   DevicePinDescription,
-  DevicePinDirection,
   DeviceStateDescription,
   UnifiedIRCompilerErrorCode,
   UnifiedIRCompilerErrorOptions,
@@ -80,3 +84,15 @@ export type { DeviceSimulationHostGuest, DeviceSimulationHostGuestOptions } from
  * Device authoring: helpers a caller-supplied device package needs
  * ---------------------------------------------------------------------- */
 export { createModuleValidation } from './unified-ir/validation';
+export { ElectricalDefinitionError } from './electrical-authoring';
+export type {
+  ContactDeclaration,
+  DeviceElectricalInitialization,
+  ElectricalDefinitionErrorCode,
+  ElectricalFactoryContext,
+  ElectricalReference,
+  ElectricalPinDeclaration,
+  PinElectricalDescription,
+  ResistorDeclaration,
+  ResistorInitialState,
+} from './electrical-authoring';

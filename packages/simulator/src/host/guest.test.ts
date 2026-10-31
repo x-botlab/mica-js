@@ -38,6 +38,7 @@ function toggleSchematicBytes(): Uint8Array {
 
 /** Caller-owned device library the tests hand to the guest, exactly as a device package would. */
 const toggleDevices: DeviceSimulationHostGuestOptions = {
+  electrical: { interpretation: 'two-state' },
   devices: createToggleSymbols(),
   resolveDevice: resolveToggleDevice,
 };

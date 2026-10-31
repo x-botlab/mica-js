@@ -1,0 +1,21 @@
+{
+  "reference": "demo:teaching-i2c-master",
+  "type": "teaching-i2c-master",
+  "displayName": "教学 MCU I2C 主机",
+  "designatorPrefix": "U",
+  "pins": {
+    "SDA": { "side": "right", "kind": "signal" },
+    "SCL": { "side": "right", "kind": "signal" }
+  },
+  "topics": {
+    "sent": { "direction": "output", "type": "number", "state": "lastSent" },
+    "count": { "direction": "output", "type": "number", "state": "sentCount" },
+    "addressAcks": { "direction": "output", "type": "number", "state": "addressAcks" },
+    "dataAcks": { "direction": "output", "type": "number", "state": "dataAcks" },
+    "nacks": { "direction": "output", "type": "number", "state": "nacks" }
+  },
+  "reset": {
+    "state": "supported",
+    "detail": "Releases bus and restarts fixed teaching write loop at byte zero"
+  }
+}

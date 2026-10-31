@@ -1,0 +1,424 @@
+import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
+import { beforeAll, describe, expect, test } from 'vitest';
+import { parseSchematic } from '@mica-js/core/schematic';
+import { toNumber, type FloatBits } from '@mica-js/ir';
+import { Circuit, createCircuitFromSchematic, createSchematicDeviceSimulationHost } from './index';
+import type { DeviceConfig, DeviceDescription, SimulationPublish } from './index';
+import { loadDeviceLibrary } from '../../../apps/playground/src/sim/device-library';
+import type {
+  DeviceLibrary,
+  DeviceLibraryFiles,
+} from '../../../apps/playground/src/sim/device-library';
+import {
+  DEMO_ELECTRICAL,
+  loadDeviceFactories,
+} from '../../../apps/playground/src/sim/device-implementations';
+import {
+  createContractBinding,
+  createContractDevice,
+} from '../../../apps/playground/src/sim/device-contracts';
+
+const publicRoot = resolve(import.meta.dirname, '../../../apps/playground/public');
+const files: DeviceLibraryFiles = {
+  label: 'demo',
+  read: (path) => readFile(resolve(publicRoot, 'devices', path)),
+};
+let library: DeviceLibrary;
+let factories: Awaited<ReturnType<typeof loadDeviceFactories>>;
+beforeAll(async () => {
+  library = await loadDeviceLibrary(files);
+  factories = await loadDeviceFactories(files, library);
+});
+function device(name: string, id = name): DeviceConfig {
+  const entry = library.find(`demo:${name}`)!;
+  return createContractDevice(entry, id, factories.get(entry.reference)!)!;
+}
+function voltage(circuit: Circuit, pin: string, expected: number) {
+  const value = circuit.getVoltage(pin);
+  expect(value.state).toBe('determinate');
+  if (value.state === 'determinate') expect(value.value).toBeCloseTo(expected, 10);
+}
+const load: DeviceDescription = {
+  pins: { A: { kind: 'signal' }, B: { kind: 'signal' } },
+  resistors: { body: { pins: ['A', 'B'] } },
+  factory: ({ electrical }) => {
+    electrical.initializeResistor('body', { resistance: 1000, enabled: true });
+  },
+};
+
+test('requires valid paired JS files and keeps metadata loading independent', async () => {
+  expect(library.entries).toHaveLength(7);
+  expect(factories.size).toBe(7);
+  await expect(
+    loadDeviceFactories(
+      {
+        ...files,
+        read: async () => {
+          throw new Error('missing');
+        },
+      },
+      library,
+    ),
+  ).rejects.toThrow('paired implementation');
+  await expect(
+    loadDeviceFactories(
+      { ...files, read: async () => new TextEncoder().encode('export default 42;') },
+      library,
+    ),
+  ).rejects.toThrow('invalid paired implementation');
+});
+
+describe.each(['reference', 'jit'] as const)('%s actual Playground factories', (engine) => {
+  test('updates both potentiometer branches with real loading, endpoint resistance and reset', async () => {
+    const circuit = await Circuit.create(
+      {
+        devices: [
+          { ...device('potentiometer', 'pot'), properties: { initialPosition: 0.2 } },
+          { id: 'load', type: 'load', description: load },
+        ],
+        connections: [
+          { from: 'pot.A', to: 'VDD' },
+          { from: 'pot.B', to: 'GND' },
+          { from: 'pot.W', to: 'load.A' },
+          { from: 'load.B', to: 'GND' },
+        ],
+      },
+      { engine, electrical: DEMO_ELECTRICAL },
+    );
+    const expected = (p: number) => {
+      const lower = 1 / (1 / (10 + 10000 * p) + 1 / 1000);
+      return (5 * lower) / (10 + 10000 * (1 - p) + lower);
+    };
+    try {
+      voltage(circuit, 'pot.W', expected(0.2));
+      circuit.devices['pot']!.applyInputs!([{ port: 'position', payload: 0.8 }]);
+      circuit.step();
+      voltage(circuit, 'pot.W', expected(0.8));
+      const upper = circuit.getCurrent('pot.upper');
+      const lower = circuit.getCurrent('pot.lower');
+      const current = circuit.getCurrent('load.body');
+      if (
+        upper.state !== 'determinate' ||
+        lower.state !== 'determinate' ||
+        current.state !== 'determinate'
+      )
+        throw new Error('Expected determined branch currents');
+      expect(upper.value).toBeCloseTo(lower.value + current.value, 12);
+      for (const position of [0, 1]) {
+        circuit.devices['pot']!.applyInputs!([{ port: 'position', payload: position }]);
+        circuit.step();
+        voltage(circuit, 'pot.W', expected(position));
+      }
+      circuit.reset();
+      voltage(circuit, 'pot.W', expected(0.2));
+      expect(toNumber(circuit.devices['pot']!.getState('position') as FloatBits)).toBe(0.2);
+    } finally {
+      circuit.dispose();
+    }
+  });
+
+  test.each([false, true])(
+    'button conducts bidirectionally with reversed supply=%s',
+    async (reverse) => {
+      const circuit = await Circuit.create(
+        {
+          devices: [
+            device('ideal-button', 'button'),
+            { id: 'load', type: 'load', description: load },
+          ],
+          connections: [
+            { from: `button.${reverse ? 'B' : 'A'}`, to: 'VDD' },
+            { from: `button.${reverse ? 'A' : 'B'}`, to: 'load.A' },
+            { from: 'load.B', to: 'GND' },
+          ],
+        },
+        { engine, electrical: DEMO_ELECTRICAL },
+      );
+      try {
+        voltage(circuit, 'load.A', 0);
+        circuit.devices['button']!.setState('pressed', true);
+        circuit.step();
+        voltage(circuit, 'load.A', 5);
+        expect(circuit.devices['button']!.getState('closed')).toBe(true);
+        expect(circuit.devices['button']!.getState('pressCount')).toBe(1);
+        circuit.devices['button']!.setState('pressed', false);
+        circuit.step();
+        voltage(circuit, 'load.A', 0);
+      } finally {
+        circuit.dispose();
+      }
+    },
+  );
+
+  test('mechanical closure does not fabricate power, and debounce counts consecutive ticks', async () => {
+    const circuit = await Circuit.create(
+      { devices: [device('debounced-button', 'button')], connections: [] },
+      { engine, electrical: DEMO_ELECTRICAL },
+    );
+    try {
+      circuit.devices['button']!.setState('pressed', true);
+      circuit.runBatch(2);
+      expect(circuit.devices['button']!.getState('closed')).toBe(false);
+      circuit.devices['button']!.setState('pressed', false);
+      circuit.step();
+      circuit.devices['button']!.setState('pressed', true);
+      circuit.runBatch(2);
+      expect(circuit.devices['button']!.getState('closed')).toBe(false);
+      circuit.step();
+      expect(circuit.devices['button']!.getState('closed')).toBe(true);
+      expect(circuit.getVoltage('button.A')).toEqual({ state: 'floating' });
+      expect(circuit.getVoltage('button.B')).toEqual({ state: 'floating' });
+      circuit.reset();
+      expect(circuit.devices['button']!.getState('closed')).toBe(false);
+    } finally {
+      circuit.dispose();
+    }
+  });
+
+  test('relay switches two opposite-powered throws atomically and accepts reverse conduction', async () => {
+    const circuit = await Circuit.create(
+      {
+        devices: [device('ideal-relay', 'relay')],
+        connections: [
+          { from: 'relay.IN', to: 'VDD' },
+          { from: 'relay.NO', to: 'VDD' },
+          { from: 'relay.NC', to: 'GND' },
+        ],
+      },
+      { engine, electrical: DEMO_ELECTRICAL },
+    );
+    try {
+      voltage(circuit, 'relay.COM', 0);
+      circuit.step();
+      expect(circuit.tickCount).toBe(1n);
+      voltage(circuit, 'relay.COM', 5);
+      voltage(circuit, 'relay.NC', 0);
+      expect(circuit.devices['relay']!.getState('energized')).toBe(true);
+      circuit.reset();
+      voltage(circuit, 'relay.COM', 0);
+    } finally {
+      circuit.dispose();
+    }
+    const floating = await Circuit.create(
+      { devices: [device('ideal-relay', 'relay')], connections: [{ from: 'relay.IN', to: 'VDD' }] },
+      { engine, electrical: DEMO_ELECTRICAL },
+    );
+    try {
+      floating.step();
+      expect(floating.getVoltage('relay.COM')).toEqual({ state: 'floating' });
+      expect(floating.getVoltage('relay.NO')).toEqual({ state: 'floating' });
+    } finally {
+      floating.dispose();
+    }
+  });
+
+  test('MCU drives through finite resistance and LED senses the solved node', async () => {
+    const circuit = await Circuit.create(
+      {
+        devices: [
+          device('teaching-mcu', 'mcu'),
+          device('ideal-led', 'led'),
+          { id: 'load', type: 'load', description: load },
+        ],
+        connections: [
+          { from: 'mcu.PA0', to: 'led.anode' },
+          { from: 'mcu.PA0', to: 'load.A' },
+          { from: 'load.B', to: 'GND' },
+          { from: 'led.cathode', to: 'GND' },
+        ],
+      },
+      { engine, electrical: DEMO_ELECTRICAL },
+    );
+    try {
+      voltage(circuit, 'mcu.PA0', 0);
+      circuit.step();
+      voltage(circuit, 'mcu.PA0', (5 * 500) / 550);
+      expect(circuit.devices['led']!.getState('lamp')).toBe(true);
+      circuit.step();
+      voltage(circuit, 'mcu.PA0', 0);
+      expect(circuit.devices['led']!.getState('lamp')).toBe(false);
+    } finally {
+      circuit.dispose();
+    }
+  });
+
+  test('pull-up LED is shunted off by a grounded button and restores after release/reset', async () => {
+    const schematic = parseSchematic(
+      await readFile(resolve(publicRoot, 'schematics/pullup-button-led.sch'), 'utf8'),
+    );
+    const circuit = await createCircuitFromSchematic(schematic, {
+      engine,
+      electrical: DEMO_ELECTRICAL,
+      devices: library.symbols,
+      resolveDevice: (reference) => {
+        const entry = library.find(reference.raw);
+        return entry === undefined
+          ? undefined
+          : createContractBinding(entry, factories.get(entry.reference)!);
+      },
+    });
+    const brightness = () => toNumber(circuit.devices['D1']!.getState('brightness') as FloatBits);
+    const current = (name: string, expected: number) => {
+      const result = circuit.getCurrent(name);
+      expect(result.state).toBe('determinate');
+      if (result.state === 'determinate') expect(result.value).toBeCloseTo(expected, 12);
+    };
+    try {
+      circuit.step();
+      voltage(circuit, 'D1.anode', 2.5);
+      current('R1.body', 0.0025);
+      current('D1.load', 0.0025);
+      expect(brightness()).toBeCloseTo(0.5, 12);
+      circuit.devices['S1']!.setState('pressed', true);
+      circuit.step();
+      voltage(circuit, 'D1.anode', 0);
+      current('R1.body', 0.005);
+      current('D1.load', 0);
+      expect(brightness()).toBe(0);
+      expect(circuit.devices['S1']!.getState('closed')).toBe(true);
+      expect(circuit.getDiagnostics()).toEqual([]);
+      circuit.devices['S1']!.setState('pressed', false);
+      circuit.step();
+      voltage(circuit, 'D1.anode', 2.5);
+      expect(brightness()).toBeCloseTo(0.5, 12);
+      circuit.devices['S1']!.setState('pressed', true);
+      circuit.step();
+      circuit.reset();
+      circuit.step();
+      voltage(circuit, 'D1.anode', 2.5);
+      expect(brightness()).toBeCloseTo(0.5, 12);
+      expect(circuit.devices['S1']!.getState('closed')).toBe(false);
+    } finally {
+      circuit.dispose();
+    }
+  });
+
+  test.each(['device-bench.sch', 'button-relay.sch', 'potentiometer-led.sch'])(
+    'compiles and executes existing %s without legacy models',
+    async (name) => {
+      const schematic = parseSchematic(
+        await readFile(resolve(publicRoot, 'schematics', name), 'utf8'),
+      );
+      const circuit = await createCircuitFromSchematic(schematic, {
+        engine,
+        electrical: DEMO_ELECTRICAL,
+        devices: library.symbols,
+        resolveDevice: (reference) => {
+          const entry = library.find(reference.raw);
+          return entry === undefined
+            ? undefined
+            : createContractBinding(entry, factories.get(entry.reference)!);
+        },
+      });
+      try {
+        circuit.runBatch(4);
+        expect(circuit.tickCount).toBe(4n);
+        if (name === 'potentiometer-led.sch') {
+          const expected = (position: number) => {
+            const upper = 10 + 10000 * (1 - position);
+            const lower = 1 / (1 / (10 + 10000 * position) + 1 / 1000);
+            return (5 * lower) / (upper + lower);
+          };
+          const brightness = (id: string) =>
+            toNumber(circuit.devices[id]!.getState('brightness') as FloatBits);
+          voltage(circuit, 'RV1.W', expected(0.5));
+          expect(brightness('D1')).toBeCloseTo(expected(0.5) / 5, 10);
+          expect(brightness('D3')).toBe(1);
+          circuit.runBatch(16);
+          let pwm = 0;
+          for (let tick = 0; tick < 20; tick++) {
+            const sample = tick % 2 === 0 ? 1000 / 1050 : 0;
+            pwm += (sample - pwm) / 64;
+          }
+          expect(brightness('D2')).toBeCloseTo(pwm, 10);
+          circuit.devices['RV1']!.applyInputs!([{ port: 'position', payload: 0.8 }]);
+          circuit.step();
+          voltage(circuit, 'RV1.W', expected(0.8));
+          expect(brightness('D1')).toBeCloseTo(expected(0.8) / 5, 10);
+          circuit.reset();
+          circuit.step();
+          expect(brightness('D1')).toBeCloseTo(expected(0.5) / 5, 10);
+        }
+      } finally {
+        circuit.dispose();
+      }
+    },
+  );
+});
+
+test('existing host queues potentiometer input, publishes numbers on change and resets', async () => {
+  const id = randomUUID();
+  const schematic = {
+    version: 1,
+    sheet: {
+      symbols: [
+        {
+          id,
+          device: 'demo:potentiometer',
+          designator: 'RV1',
+          x: 0,
+          y: 0,
+          rotation: 0,
+          properties: { initialPosition: 0.2 },
+        },
+      ],
+      wires: [],
+      junctions: [],
+    },
+  };
+  const entry = library.find('demo:potentiometer')!;
+  const host = createSchematicDeviceSimulationHost({
+    electrical: DEMO_ELECTRICAL,
+    devices: library.symbols,
+    read: async () => new TextEncoder().encode(JSON.stringify(schematic)),
+    resolveDevice: () => createContractBinding(entry, factories.get(entry.reference)!),
+  });
+  const publications: SimulationPublish[] = [];
+  const subscription = host.onDidPublish((event) => publications.push(event));
+  const target = { symbol: id, port: 'position' };
+  try {
+    await host.loadSchematic('file:///pot.sch');
+    await host.tick(10);
+    expect(publications.map((event) => event.payload)).toEqual([0.2]);
+    await host.deliver(target, 0.4);
+    await host.deliver(target, 0.8);
+    expect(publications).toHaveLength(1);
+    await host.tick(10);
+    expect(publications.map((event) => event.payload)).toEqual([0.2, 0.8]);
+    await host.tick(10);
+    expect(publications).toHaveLength(2);
+    const feedback = host.onDidPublish((event) => {
+      if (event.payload === 0.4) void host.deliver(target, 0.6);
+    });
+    try {
+      await host.deliver(target, 0.4);
+      await host.tick(10);
+      expect(publications.at(-1)!.payload).toBe(0.4);
+      await host.tick(10);
+      expect(publications.at(-1)!.payload).toBe(0.6);
+    } finally {
+      feedback.dispose();
+    }
+    for (const value of [NaN, Infinity, -0.1, 1.1]) {
+      await host.deliver(target, value);
+      const report = await host.tick(10);
+      expect(report.executed).toBe(1);
+      expect(report.diagnostics).toEqual([
+        {
+          code: 'device/input-failed',
+          deviceId: id,
+          message: 'Potentiometer position must be in [0, 1]',
+        },
+      ]);
+    }
+    await expect(host.deliver(target, 'bad')).rejects.toThrow();
+    await host.reset();
+    await host.tick(10);
+    expect(publications.map((event) => event.payload)).toEqual([0.2, 0.8, 0.4, 0.6, 0.2]);
+  } finally {
+    subscription.dispose();
+    await host.dispose();
+  }
+});

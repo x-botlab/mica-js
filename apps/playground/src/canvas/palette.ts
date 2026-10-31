@@ -18,6 +18,7 @@ const DEFAULT_SIZES: Readonly<Record<string, { width: number; height: number }>>
   image: { width: 320, height: 240 },
   segment: { width: 130, height: 62 },
   button: { width: 64, height: 56 },
+  potentiometer: { width: 180, height: 56 },
 };
 
 const FALLBACK_SIZE = { width: 160, height: 100 };

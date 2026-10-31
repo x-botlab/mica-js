@@ -1,4 +1,8 @@
 import { parseSchematic } from '@mica-js/core/schematic';
+import { toNumber, type FloatBits } from '@mica-js/ir';
+import { Circuit } from '../unified-ir/runtime/circuit';
+import type { DeviceDescription } from '../unified-ir/compiler';
+import type { SchematicDeviceBinding } from '../unified-ir/runtime';
 import { describe, expect, it } from 'vitest';
 import { createSchematicDeviceSimulationHost } from './runtime';
 import type { SimulationPublish } from './types';
@@ -40,6 +44,7 @@ function createHost(): {
   const publishes: SimulationPublish[] = [];
   const bytes = new TextEncoder().encode(JSON.stringify(toggleSchematic()));
   const host = createSchematicDeviceSimulationHost({
+    electrical: { interpretation: 'two-state' },
     read: async (uri) => {
       reads.push(uri);
       return bytes;
@@ -52,6 +57,67 @@ function createHost(): {
 }
 
 describe('createSchematicDeviceSimulationHost', () => {
+  it('samples analog number topics with caller duration, high-word carry and reset', async () => {
+    const electrical = {
+      sources: { VDD: { voltage: 3.3 } },
+      interpretation: 'two-state',
+      floatingSeed: 12345,
+    } as const;
+    const description: DeviceDescription = {
+      pins: { out: { kind: 'signal' } },
+      states: { sampled: { type: 'f64', initial: 0 } },
+      factory: ({ electrical }) => {
+        electrical.initializePin('out', {
+          input: { reference: { source: 'VDD' }, low: 0.3, high: 0.7 },
+        });
+        return {
+          update: (api) => api.state<'f64'>('sampled').store(api.pin('out').sampleVoltage()),
+        };
+      },
+    };
+    const binding: SchematicDeviceBinding = {
+      type: 'analog-observer',
+      description,
+      topics: [{ port: 'voltage', type: 'number', direction: 'output' }],
+      read: (accessor) => accessor.getState('sampled'),
+    };
+    const host = createSchematicDeviceSimulationHost({
+      electrical,
+      devices: createToggleSymbols(),
+      read: async () => new TextEncoder().encode(JSON.stringify(toggleSchematic())),
+      resolveDevice: () => binding,
+    });
+    const expected = await Circuit.create(
+      { devices: [{ id: 'K1', type: binding.type, description }], connections: [] },
+      { electrical },
+    );
+    const publishes: SimulationPublish[] = [];
+    const subscription = host.onDidPublish((event) => publishes.push(event));
+    try {
+      await host.loadSchematic('file:///boards/analog.sch');
+      let time = 0;
+      for (const dt of [10, 0x100000005, 17]) {
+        expected.step(dt);
+        time += dt;
+        expect(await host.tick(dt)).toEqual({ simTime: time, executed: 1 });
+        expect(publishes.at(-1)).toEqual({
+          target: { symbol: TOGGLE_SYMBOL, port: 'voltage' },
+          payload: toNumber(expected.devices['K1']!.getState('sampled') as FloatBits),
+          simTime: time,
+        });
+      }
+      const first = publishes[0]!.payload;
+      await host.reset();
+      expect(await host.getSimTime()).toBe(0);
+      await host.tick(10);
+      expect(publishes.at(-1)!.payload).toBe(first);
+      expect(typeof first).toBe('number');
+    } finally {
+      subscription.dispose();
+      await host.dispose();
+      expected.dispose();
+    }
+  });
   it('loads a schematic through the provided reader and reports caller-declared topics', async () => {
     const { host, reads } = createHost();
     try {
@@ -226,6 +292,7 @@ describe('createSchematicDeviceSimulationHost', () => {
       }),
     );
     const host = createSchematicDeviceSimulationHost({
+      electrical: { interpretation: 'two-state' },
       read: async () => bytes,
       devices: createToggleSymbols(),
       resolveDevice: resolveToggleDevice,
@@ -243,6 +310,7 @@ describe('createSchematicDeviceSimulationHost', () => {
   it('requires a resolver, because the package carries no built-in catalog', () => {
     expect(() =>
       createSchematicDeviceSimulationHost({
+        electrical: { interpretation: 'two-state' },
         read: async () => new Uint8Array(),
       } as unknown as Parameters<typeof createSchematicDeviceSimulationHost>[0]),
     ).toThrow('resolveDevice');

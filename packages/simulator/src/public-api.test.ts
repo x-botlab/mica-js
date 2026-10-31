@@ -4,7 +4,11 @@
  * device model may sneak back in.
  */
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import type { DeviceAccessor, SchematicDeviceBinding } from './index';
+import type { DeviceAccessor, ElectricalFactoryContext, SchematicDeviceBinding } from './index';
+// @ts-expect-error Compiler preparation results are internal.
+import type { PreparedElectricalDevice } from './index';
+// @ts-expect-error Initialized resource records are internal.
+import type { InitializedResistor } from './index';
 import {
   Circuit,
   CircuitError,
@@ -20,7 +24,11 @@ import {
   createSchematicDeviceSimulationHost,
   startDeviceSimulationHostGuest,
 } from './index';
-import { lampSinkDescription, toggleDriverDescription } from './unified-ir/compiler/test-helpers';
+import {
+  lampSinkDescription,
+  toggleDriverDescription,
+  TEST_ELECTRICAL,
+} from './unified-ir/compiler/test-helpers';
 
 describe('public API surface', () => {
   it('exports every documented runtime entry point', () => {
@@ -40,6 +48,17 @@ describe('public API surface', () => {
     expect(PIN_MODE.pushPull).toBe(1);
   });
 
+  it('keeps compiler preparation internal while exposing factory initialization types', async () => {
+    const simulator = await import('./index');
+    expect('prepareElectricalDevice' in simulator).toBe(false);
+    expectTypeOf<PreparedElectricalDevice<unknown>>().toBeAny();
+    expectTypeOf<InitializedResistor>().toBeAny();
+    expectTypeOf<ElectricalFactoryContext['electrical']['initializeResistor']>().toBeCallableWith(
+      'body',
+      { resistance: 1000, enabled: true },
+    );
+  });
+
   it('ships no device models', async () => {
     const simulator = await import('./index');
 
@@ -51,25 +70,34 @@ describe('public API surface', () => {
       'BUILTIN_DEVICE_TYPES',
       'builtinDeviceKernel',
       'resolveDeviceDescription',
+      'DEFAULT_RAILS',
+      'NetworkTopologyAnalyzer',
+      'ElectricalSolverGenerator',
+      'createPinMemory',
     ]) {
       expect(name in simulator).toBe(false);
     }
   });
 
   it('keeps the generic accessor surface for caller-supplied devices', async () => {
-    const circuit = await Circuit.create({
-      devices: [
-        { id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() },
-        { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
-      ],
-      connections: [
-        { from: 'drive1.PA0', to: 'sink1.anode' },
-        { from: 'sink1.cathode', to: 'GND' },
-      ],
-    });
+    const circuit = await Circuit.create(
+      {
+        devices: [
+          { id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() },
+          { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
+        ],
+        connections: [
+          { from: 'drive1.PA0', to: 'sink1.anode' },
+          { from: 'sink1.cathode', to: 'GND' },
+        ],
+      },
+      { electrical: TEST_ELECTRICAL },
+    );
 
     expectTypeOf(circuit.devices.sink1).toEqualTypeOf<DeviceAccessor>();
     expectTypeOf(circuit.devices.drive1).toEqualTypeOf<DeviceAccessor>();
+    expectTypeOf<Circuit>().not.toHaveProperty('setPin');
+    expectTypeOf<DeviceAccessor>().not.toHaveProperty('writePin');
 
     circuit.runBatch(1);
     expect(circuit.devices.sink1.getState('lamp')).toBe(true);

@@ -1,5 +1,5 @@
 import type { IRJITTuning } from '@mica-js/ir';
-import type { CircuitCompilationInput } from '../compiler';
+import type { CircuitCompilationInput, CircuitCompilationOptions, DeviceInput } from '../compiler';
 
 /**
  * Types of the unified circuit runtime (U02).
@@ -10,13 +10,45 @@ import type { CircuitCompilationInput } from '../compiler';
  * device host or the schematic editor.
  */
 
+export type ElectricalCurrentTarget =
+  | { readonly kind: 'resistor' | 'contact'; readonly device: string; readonly name: string }
+  | {
+      readonly kind: 'drive' | 'pull-up' | 'pull-down';
+      readonly device: string;
+      readonly pin: string;
+    }
+  | { readonly kind: 'source'; readonly name: string };
+
+/** Active diagnostics of the last published electrical snapshot, plus any latched solve fault. */
+export type ElectricalDiagnostic =
+  | {
+      readonly code: 'electrical/overcurrent';
+      readonly severity: 'warning';
+      readonly target: ElectricalCurrentTarget;
+      readonly current: number;
+      readonly maxAbsCurrent: number;
+    }
+  | {
+      readonly code:
+        | 'electrical/invalid-parameter'
+        | 'electrical/source-conflict'
+        | 'electrical/numerical-failure';
+      readonly severity: 'error';
+      /** Identifiable failed operation or resource; absent for a matrix-level failure. */
+      readonly target?: ElectricalCurrentTarget;
+      /** Resources associated with the affected network, not a list of proven culprits. */
+      readonly resources: readonly ElectricalCurrentTarget[];
+      readonly pins: readonly string[];
+    };
+
 /** Execution engine a `Circuit` runs on. */
 export type CircuitEngine = 'jit' | 'reference';
 
 /** Electrical-solve options forwarded to `compileCircuit`. */
 export interface CircuitElectricalOptions {
-  /** Named fixed-level rails; merged over `GND`/`VCC`/`VDD`. */
-  readonly rails?: Readonly<Record<string, boolean>>;
+  readonly sources?: CircuitCompilationOptions['sources'];
+  readonly interpretation?: CircuitCompilationOptions['interpretation'];
+  readonly floatingSeed?: CircuitCompilationOptions['floatingSeed'];
 }
 
 /**
@@ -45,8 +77,9 @@ export interface CircuitRuntimeOptions {
 export type CircuitErrorCode =
   | 'invalid-options'
   | 'invalid-count'
+  | 'unsupported-operation'
+  | 'resource-not-found'
   | 'pin-not-found'
-  | 'pin-not-writable'
   | 'state-not-found'
   | 'invalid-state-value'
   | 'unresolved-device'
@@ -86,8 +119,8 @@ export class CircuitError extends Error {
  *
  * `readPin` returns the level the *device* drives onto one of its pins (its
  * output latch), while `Circuit.getPin('device.pin')` returns the level the pin
- * *observes* after the electrical solve. Writing a pin only makes sense for
- * driver pins, so `writePin` rejects load and passive pins.
+ * *observes* after the electrical solve. Host changes use device state; there
+ * is no direct pin override API.
  */
 export interface DeviceAccessor {
   /** Circuit-unique device id. */
@@ -101,11 +134,14 @@ export interface DeviceAccessor {
   /** Reads the level the device drives onto `pinName`. */
   readPin(pinName: string): boolean;
   /** Writes the level the device drives onto `pinName`. */
-  writePin(pinName: string, value: boolean): void;
   /** Reads one declared internal state. */
   getState(name: string): unknown;
   /** Writes one declared internal state. */
   setState(name: string, value: unknown): void;
+  /** Consumes inputs at a host step boundary, when declared by the paired factory. */
+  applyInputs?(inputs: readonly DeviceInput[]): void;
+  /** Publishes outputs after the host finishes evaluating the step. */
+  flushOutputs?(publish: (port: string, payload: unknown) => void): void;
 }
 
 /** Every accessor of one circuit, keyed by device id. */

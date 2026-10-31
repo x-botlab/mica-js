@@ -11,9 +11,19 @@
  */
 import { defineRpcService } from '@mica-js/core/rpc';
 import type { DeviceReference } from '@mica-js/core/schematic';
-import { startDeviceSimulationHostGuest, type SchematicDeviceBinding } from '@mica-js/simulator';
+import {
+  startDeviceSimulationHostGuest,
+  type DeviceDescription,
+  type SchematicDeviceBinding,
+} from '@mica-js/simulator';
+import { DEMO_ELECTRICAL, loadDeviceFactories } from './device-implementations';
 import { createContractBinding } from './device-contracts';
-import { DEVICE_LIBRARY_ROOT, loadDeviceLibrary, type DeviceLibrary } from './device-library';
+import {
+  DEVICE_LIBRARY_ROOT,
+  PLAYGROUND_DEVICE_EXTENSIONS,
+  loadDeviceLibrary,
+  type DeviceLibrary,
+} from './device-library';
 
 /**
  * Host file system the guest reads bytes through.
@@ -37,6 +47,7 @@ self.addEventListener('message', (event: MessageEvent) => {
   started = true;
 
   let loaded: DeviceLibrary | undefined;
+  let factories: ReadonlyMap<string, NonNullable<DeviceDescription['factory']>> = new Map();
 
   const library = (): DeviceLibrary => {
     if (loaded === undefined) {
@@ -46,13 +57,14 @@ self.addEventListener('message', (event: MessageEvent) => {
   };
 
   const guest = startDeviceSimulationHostGuest(port, {
+    electrical: DEMO_ELECTRICAL,
     // `event.ports[1]` is the direct topic channel (RFC 0018); the widget guest holds the other end.
     ports: event.ports.slice(1),
     // `prepare` runs on the first schematic load, once `startDeviceSimulationHostGuest` returned the
     // endpoint, so the device library is read through the host file system on the same channel.
     prepare: async () => {
       const files = guest.rpc.getProxy(hostFileSystemService);
-      loaded = await loadDeviceLibrary({
+      const reader = {
         label: 'demo',
         async read(path: string): Promise<Uint8Array> {
           const bytes = await files.read(`${DEVICE_LIBRARY_ROOT}/${path}`);
@@ -61,12 +73,19 @@ self.addEventListener('message', (event: MessageEvent) => {
           }
           return bytes;
         },
-      });
+      };
+      const next = await loadDeviceLibrary(reader, PLAYGROUND_DEVICE_EXTENSIONS);
+      factories = await loadDeviceFactories(reader, next);
+      loaded = next;
     },
     devices: () => library().symbols,
     resolveDevice: (reference: DeviceReference): SchematicDeviceBinding | undefined => {
       const entry = library().find(reference.raw);
-      return entry === undefined ? undefined : createContractBinding(entry);
+      if (entry === undefined) return undefined;
+      const factory = factories.get(entry.reference);
+      if (factory === undefined)
+        throw new Error(`Missing paired implementation for ${entry.reference}`);
+      return createContractBinding(entry, factory);
     },
   });
 });

@@ -2,7 +2,7 @@
 
 - Start Date: 2026-10-25
 - Reference Issues: —（设计讨论，无对应 issue）
-- Implementation PR: —（尚未实现）
+- Implementation PR: [#226](https://github.com/x-botlab/mica-js/pull/226)（部分实现；增加步首入口调用以直接更新电气资源）
 
 规定器件话题在运行期的投递：步长与生效边界、队列、背压与载荷语义。器件之间的通信由电气仿真承担（引脚、网络与解网），见 [RFC 0004](./0004-ir-pin-io.md)。
 
@@ -67,13 +67,14 @@ api.ir.fifo(name, { maxRecord, length });
 
 `applyInputs` 的 `io`：
 
-| 方法                      | 语义                                                                               |
-| ------------------------- | ---------------------------------------------------------------------------------- |
-| `takeInput(port)`         | 取该端口本步投递的最后一条；本步该端口收到投递时返回该条，其余情况返回 `undefined` |
-| `takeInputs(port)`        | 取该端口本步投递的全部记录，按发布顺序                                             |
-| `writeState(name, value)` | 写入 IR 标量状态                                                                   |
-| `writeFifo(name, bytes)`  | 追加一条记录；队列达到容量上限时返回 `false`                                       |
-| `report(code, detail?)`   | 上报业务诊断，仿真状态保持原样                                                     |
+| 方法                      | 语义                                                                                   |
+| ------------------------- | -------------------------------------------------------------------------------------- |
+| `takeInput(port)`         | 取该端口本步投递的最后一条；本步该端口收到投递时返回该条，其余情况返回 `undefined`     |
+| `takeInputs(port)`        | 取该端口本步投递的全部记录，按发布顺序                                                 |
+| `writeState(name, value)` | 写入 IR 标量状态                                                                       |
+| `call(entry, args)`       | 在本次步首处理内同步执行已声明的 IR 入口，使用本实例的当前虚拟时间；参数按入口签名校验 |
+| `writeFifo(name, bytes)`  | 追加一条记录；队列达到容量上限时返回 `false`                                           |
+| `report(code, detail?)`   | 上报业务诊断，仿真状态保持原样                                                         |
 
 `flushOutputs` 的 `io`：
 
@@ -85,7 +86,17 @@ api.ir.fifo(name, { maxRecord, length });
 | `publish(port, payload)`    | 发布标量载荷                 |
 | `publishBytes(port, bytes)` | 发布字节载荷                 |
 
-两个 `io` 按方向分工：`applyInputs` 的 `io` 承担入向（读投递、写内存），`flushOutputs` 的 `io` 承担出向（读内存、读 FIFO、发布），表中的方法即全部可用方法。
+入口调用的签名为：
+
+```ts
+interface DeviceInputIo {
+  call(entry: EntryRef, args: readonly RuntimeScalar[]): void;
+}
+```
+
+`entry` 必须是本器件声明的普通入口。`io` 仅在当前钩子调用期间有效，钩子返回或抛出后关闭；后续访问按运行期违规处理。
+
+两个 `io` 按方向分工：`applyInputs` 的 `io` 承担入向（读投递、写内存、调用入口），`flushOutputs` 的 `io` 承担出向（读内存、读 FIFO、发布），表中的方法即全部可用方法。
 
 ## 运行时
 

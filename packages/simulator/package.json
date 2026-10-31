@@ -28,6 +28,7 @@
   "scripts": {
     "bench": "vitest bench --run",
     "bench:unified": "vitest bench --run bench/unified-simple.bench.ts",
+    "bench:resistive": "vitest run --config bench/resistive-number.config.ts",
     "build": "vite build",
     "test": "vitest run",
     "test:watch": "vitest",

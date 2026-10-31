@@ -3,14 +3,30 @@
   "type": "teaching-mcu",
   "displayName": "教学 MCU",
   "designatorPrefix": "U",
-  "config": { "isa": "teaching" },
+  "config": {
+    "isa": "teaching"
+  },
   "pins": {
-    "PA0": { "direction": "output", "side": "right", "kind": "signal" },
-    "PA1": { "direction": "output", "side": "right", "kind": "signal" },
-    "PA2": { "direction": "output", "side": "right", "kind": "signal" },
-    "PA3": { "direction": "output", "side": "right", "kind": "signal" }
+    "PA0": {
+      "side": "right",
+      "kind": "signal"
+    },
+    "PA1": {
+      "side": "right",
+      "kind": "signal"
+    },
+    "PA2": {
+      "side": "right",
+      "kind": "signal"
+    },
+    "PA3": {
+      "side": "right",
+      "kind": "signal"
+    }
   },
   "topics": {},
-  "connections": [],
-  "reset": { "state": "unsupported", "detail": "教学 MCU 没有独立 reset 生命周期" }
+  "reset": {
+    "state": "unsupported",
+    "detail": "教学 MCU 没有独立 reset 生命周期"
+  }
 }

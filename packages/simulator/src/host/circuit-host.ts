@@ -37,7 +37,9 @@ export function createCircuitDeviceSimulationHost({
   stepPs = DEFAULT_STEP_PS,
   deliver,
 }: CircuitDeviceSimulationHostOptions): DeviceSimulationHost {
-  const simTime = (): number => circuit.virtualTime * stepPs;
+  if (!Number.isSafeInteger(stepPs) || stepPs <= 0)
+    throw new TypeError('stepPs must be a positive safe integer');
+  const simTime = (): number => Number(circuit.tickCount) * stepPs;
 
   return {
     async loadSchematic() {
@@ -52,8 +54,9 @@ export function createCircuitDeviceSimulationHost({
           `DeviceSimulationHost.tick expects a positive integer dt, received ${dt}`,
         );
       }
-      circuit.runBatch(1);
-      return { simTime: simTime(), executed: 1 };
+      const before = circuit.tickCount;
+      circuit.runBatch(1, stepPs);
+      return { simTime: simTime(), executed: Number(circuit.tickCount - before) };
     },
     async deliver(target: CanvasBindingTarget, payload: unknown) {
       deliver(target.symbol, target.port, payload);
