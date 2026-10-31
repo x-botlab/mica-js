@@ -32,6 +32,9 @@
 import { expect, test } from 'vitest';
 import { Circuit } from '../src/index';
 import type { CircuitCompilationInput, DeviceDescription } from '../src/index';
+import type { ElectricalReading } from '../src/test-helpers/electrical-observation';
+import { createTestProbe } from '../src/test-helpers/circuit-probe';
+import type { TestProbe } from '../src/test-helpers/circuit-probe';
 
 /* -------------------------------------------------------------------------
  * Explicit physical parameters (S.I. volts and ohms).
@@ -56,7 +59,7 @@ const ELECTRICAL = {
 const VARIANTS = ['stable', 'resistance'] as const;
 type Variant = (typeof VARIANTS)[number];
 type Engine = 'reference' | 'jit';
-type Reading = ReturnType<Circuit['getVoltage']>;
+type Reading = ElectricalReading;
 
 /* -------------------------------------------------------------------------
  * Device: one divider branch. Only the `resistance` case defines a `tick`
@@ -153,6 +156,10 @@ async function createCircuit(branches: number, variant: Variant, engine: Engine)
   return Circuit.create(board(branches, variant), { engine, electrical: ELECTRICAL });
 }
 
+function createProbe(branches: number, variant: Variant, engine: Engine): TestProbe {
+  return createTestProbe(board(branches, variant), { engine, electrical: ELECTRICAL });
+}
+
 /* -------------------------------------------------------------------------
  * Correctness first: analytic physics, then reference/JIT equivalence.
  * ---------------------------------------------------------------------- */
@@ -167,27 +174,27 @@ function determinate(reading: Reading | undefined, label: string): number {
   return reading!.value;
 }
 
-function snapshot(circuit: Circuit, branches: number): Snapshot {
+function snapshot(probe: TestProbe, branches: number): Snapshot {
   const voltages: number[] = [];
   const currents: number[] = [];
   for (let index = 0; index < branches; index += 1) {
     const id = branchId(index);
-    voltages.push(determinate(circuit.getVoltage(`${id}.OUT`), `${id}.OUT`));
-    currents.push(determinate(circuit.getCurrent(`${id}.series`), `${id}.series`));
-    currents.push(determinate(circuit.getCurrent(`${id}.load`), `${id}.load`));
+    voltages.push(determinate(probe.voltage(`${id}.OUT`), `${id}.OUT`));
+    currents.push(determinate(probe.current(`${id}.series`), `${id}.series`));
+    currents.push(determinate(probe.current(`${id}.load`), `${id}.load`));
   }
   return { voltages, currents };
 }
 
 function assertPhysics(
-  circuit: Circuit,
+  probe: TestProbe,
   variant: Variant,
   branches: number,
   ticks: number,
   label: string,
 ): void {
   const { voltage, current } = analytic(adjustedSeriesOhms(variant, ticks));
-  const readings = snapshot(circuit, branches);
+  const readings = snapshot(probe, branches);
   expect(readings.voltages, `${label} branches`).toHaveLength(branches);
   for (let index = 0; index < branches; index += 1) {
     const id = branchId(index);
@@ -235,45 +242,33 @@ const REFERENCE_SIZES: readonly number[] = (() => {
   return small.length > 0 ? small : [DEFAULT_BRANCHES[0]];
 })();
 
-test('independent dividers: analytic physics and reference/JIT agreement', async () => {
+test('independent dividers: analytic physics and reference/JIT agreement', () => {
   for (const variant of VARIANTS) {
     for (const branches of REFERENCE_SIZES) {
-      const reference = await createCircuit(branches, variant, 'reference');
-      try {
-        const jit = await createCircuit(branches, variant, 'jit');
-        try {
-          const label = `${variant}/n=${branches}`;
-          assertPhysics(reference, variant, branches, 0, `${label} t0 reference`);
-          assertPhysics(jit, variant, branches, 0, `${label} t0 jit`);
-          assertSameSnapshot(snapshot(jit, branches), snapshot(reference, branches), `${label} t0`);
+      const reference = createProbe(branches, variant, 'reference');
+      const jit = createProbe(branches, variant, 'jit');
+      const label = `${variant}/n=${branches}`;
+      assertPhysics(reference, variant, branches, 0, `${label} t0 reference`);
+      assertPhysics(jit, variant, branches, 0, `${label} t0 jit`);
+      assertSameSnapshot(snapshot(jit, branches), snapshot(reference, branches), `${label} t0`);
 
-          // Two stepped plus two batched ticks stay inside one resistance
-          // period (nine updates) and are enough to leave the initial solve.
-          for (let tick = 0; tick < REFERENCE_TICKS / 2; tick += 1) {
-            reference.step();
-            jit.step();
-          }
-          reference.runBatch(REFERENCE_TICKS / 2);
-          jit.runBatch(REFERENCE_TICKS / 2);
-          assertPhysics(jit, variant, branches, REFERENCE_TICKS, `${label} t4 jit`);
-          assertSameSnapshot(snapshot(jit, branches), snapshot(reference, branches), `${label} t4`);
-          expect(jit.tickCount).toBe(reference.tickCount);
-
-          reference.reset();
-          jit.reset();
-          assertPhysics(jit, variant, branches, 0, `${label} reset jit`);
-          assertSameSnapshot(
-            snapshot(jit, branches),
-            snapshot(reference, branches),
-            `${label} reset`,
-          );
-          expect(jit.tickCount).toBe(0n);
-        } finally {
-          jit.dispose();
-        }
-      } finally {
-        reference.dispose();
+      // Two stepped plus two batched ticks stay inside one resistance
+      // period (nine updates) and are enough to leave the initial solve.
+      for (let tick = 0; tick < REFERENCE_TICKS / 2; tick += 1) {
+        reference.step();
+        jit.step();
       }
+      reference.runBatch(REFERENCE_TICKS / 2);
+      jit.runBatch(REFERENCE_TICKS / 2);
+      assertPhysics(jit, variant, branches, REFERENCE_TICKS, `${label} t4 jit`);
+      assertSameSnapshot(snapshot(jit, branches), snapshot(reference, branches), `${label} t4`);
+      expect(jit.tickCount).toBe(reference.tickCount);
+
+      reference.reset();
+      jit.reset();
+      assertPhysics(jit, variant, branches, 0, `${label} reset jit`);
+      assertSameSnapshot(snapshot(jit, branches), snapshot(reference, branches), `${label} reset`);
+      expect(jit.tickCount).toBe(0n);
     }
   }
 }, 60_000);
@@ -335,13 +330,9 @@ test('independent dividers: logged ns/tick by branch count, no timing thresholds
       expect(circuit.tickCount).toBe(BigInt(totalTicks));
       // Physics must survive the timed loop: the position now sits at
       // `totalTicks mod 9` eighths, which this recomputes without state access.
-      assertPhysics(
-        circuit,
-        variant,
-        branches,
-        totalTicks,
-        `${variant}/n=${branches} after timing`,
-      );
+      const probe = createProbe(branches, variant, 'jit');
+      probe.runBatch(totalTicks);
+      assertPhysics(probe, variant, branches, totalTicks, `${variant}/n=${branches} after timing`);
     }
   } finally {
     for (const { circuit } of measured) circuit.dispose();

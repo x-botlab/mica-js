@@ -21,10 +21,12 @@
  * `MICA_BENCH_TICKS` (2000), `MICA_BENCH_WARMUP_TICKS` (1000),
  * `MICA_BENCH_ROUNDS` (5).
  */
-import { toNumber } from '@mica-js/ir';
 import { expect, test } from 'vitest';
 import { Circuit, PIN_MODE } from '../src/index';
 import type { CircuitCompilationInput, DeviceBehaviorApi, DeviceDescription } from '../src/index';
+import type { ElectricalReading } from '../src/test-helpers/electrical-observation';
+import { createTestProbe } from '../src/test-helpers/circuit-probe';
+import type { TestProbe } from '../src/test-helpers/circuit-probe';
 
 /* -------------------------------------------------------------------------
  * Explicit physical parameters (S.I. volts and ohms).
@@ -103,7 +105,7 @@ const STATE_NAMES = [
 ] as const;
 
 type Variant = 'stable' | 'resistance' | 'gpio-rhs' | 'contact';
-type Reading = ReturnType<Circuit['getVoltage']>;
+type Reading = ElectricalReading;
 
 /* -------------------------------------------------------------------------
  * Device descriptions: exactly what a device package would ship, with the
@@ -314,14 +316,14 @@ interface Snapshot {
   readonly states: ReadonlyMap<string, unknown>;
 }
 
-function snapshot(circuit: Circuit): Snapshot {
+function snapshot(probe: TestProbe): Snapshot {
   const voltages = new Map<string, Reading>();
-  for (const pin of PIN_NAMES) voltages.set(pin, circuit.getVoltage(pin));
+  for (const pin of PIN_NAMES) voltages.set(pin, probe.voltage(pin));
   const currents = new Map<string, Reading>();
-  for (const resource of RESISTOR_NAMES) currents.set(resource, circuit.getCurrent(resource));
+  for (const resource of RESISTOR_NAMES) currents.set(resource, probe.current(resource));
   const states = new Map<string, unknown>();
   for (const [device, state] of STATE_NAMES)
-    states.set(`${device}.${state}`, circuit.devices[device]!.getState(state));
+    states.set(`${device}.${state}`, probe.readState(device, state));
   return { voltages, currents, states };
 }
 
@@ -356,16 +358,14 @@ function assertSameSnapshot(actual: Snapshot, expected: Snapshot, label: string)
   }
 }
 
-/** `getState` returns a raw storage value: booleans stay booleans, f64 arrives packed. */
+/** `readState` returns JS scalars: booleans stay booleans, f64 arrives as a number. */
 function stateScalar(value: unknown): number | boolean | undefined {
   if (typeof value === 'number' || typeof value === 'boolean') return value;
-  if (value !== null && typeof value === 'object' && 'type' in value && value.type === 'f64')
-    return toNumber(value as Parameters<typeof toNumber>[0]);
   return undefined;
 }
 
 /** Proves each variant really drives its own path instead of only being labelled. */
-function assertVariantEffect(variant: Variant, circuit: Circuit, initial: Snapshot): void {
+function assertVariantEffect(variant: Variant, probe: TestProbe, initial: Snapshot): void {
   const wiper0 = determinate(initial.voltages.get('pot.WIPER'), 'initial pot.WIPER');
   const dac0 = determinate(initial.voltages.get('gpio.DAC'), 'initial gpio.DAC');
   expect(determinate(initial.voltages.get('series.B'), 'initial series.B')).toBeCloseTo(
@@ -375,8 +375,8 @@ function assertVariantEffect(variant: Variant, circuit: Circuit, initial: Snapsh
   expect(dac0).toBeCloseTo(DAC_IDLE_VOLTS, 12);
 
   // 32 is even, so the contact variant is back to its initial open state.
-  circuit.runBatch(32);
-  const after = snapshot(circuit);
+  probe.runBatch(32);
+  const after = snapshot(probe);
   expect(determinate(after.voltages.get('series.B'), 'series.B')).toBeCloseTo(
     OPEN_DIVIDER_VOLTS,
     12,
@@ -394,65 +394,54 @@ function assertVariantEffect(variant: Variant, circuit: Circuit, initial: Snapsh
 
   if (variant === 'contact') {
     // An even number of ticks leaves the contact open, one more closes it.
-    circuit.step();
-    expect(determinate(circuit.getVoltage('series.B'), 'closed series.B')).toBeCloseTo(
+    probe.step();
+    expect(determinate(probe.voltage('series.B'), 'closed series.B')).toBeCloseTo(
       CLOSED_DIVIDER_VOLTS,
       12,
     );
-    circuit.step();
-    expect(determinate(circuit.getVoltage('series.B'), 'reopened series.B')).toBeCloseTo(
+    probe.step();
+    expect(determinate(probe.voltage('series.B'), 'reopened series.B')).toBeCloseTo(
       OPEN_DIVIDER_VOLTS,
       12,
     );
   }
-  expect(circuit.tickCount).toBe(variant === 'contact' ? 34n : 32n);
+  expect(probe.tickCount).toBe(variant === 'contact' ? 34n : 32n);
+}
+
+function createProbe(variant: Variant, engine: 'reference' | 'jit'): TestProbe {
+  return createTestProbe(board(variant), { engine, electrical: ELECTRICAL });
 }
 
 async function createCircuit(variant: Variant, engine: 'reference' | 'jit'): Promise<Circuit> {
   return Circuit.create(board(variant), { engine, electrical: ELECTRICAL });
 }
 
-async function withCircuit(
-  variant: Variant,
-  engine: 'reference' | 'jit',
-  run: (circuit: Circuit) => void | Promise<void>,
-): Promise<void> {
-  const circuit = await createCircuit(variant, engine);
-  try {
-    await run(circuit);
-  } finally {
-    circuit.dispose();
-  }
-}
-
-test('electrical circuit: reference and JIT agree before any timing', async () => {
+test('electrical circuit: reference and JIT agree before any timing', () => {
   for (const variant of ['stable', 'resistance', 'gpio-rhs', 'contact'] as const) {
-    await withCircuit(variant, 'reference', async (reference) => {
-      await withCircuit(variant, 'jit', async (jit) => {
-        const startReference = snapshot(reference);
-        const startJit = snapshot(jit);
-        assertSameSnapshot(startJit, startReference, `${variant} t0`);
+    const reference = createProbe(variant, 'reference');
+    const jit = createProbe(variant, 'jit');
+    const startReference = snapshot(reference);
+    const startJit = snapshot(jit);
+    assertSameSnapshot(startJit, startReference, `${variant} t0`);
 
-        // A short mixed step/batch prefix is enough to compare both engines:
-        // every pin, every branch current and every device state is compared.
-        for (let tick = 0; tick < 4; tick += 1) {
-          reference.step();
-          jit.step();
-        }
-        reference.runBatch(12);
-        jit.runBatch(12);
-        assertSameSnapshot(snapshot(jit), snapshot(reference), `${variant} t16`);
-        expect(jit.tickCount).toBe(reference.tickCount);
+    // A short mixed step/batch prefix is enough to compare both engines:
+    // every pin, every branch current and every device state is compared.
+    for (let tick = 0; tick < 4; tick += 1) {
+      reference.step();
+      jit.step();
+    }
+    reference.runBatch(12);
+    jit.runBatch(12);
+    assertSameSnapshot(snapshot(jit), snapshot(reference), `${variant} t16`);
+    expect(jit.tickCount).toBe(reference.tickCount);
 
-        reference.reset();
-        jit.reset();
-        assertSameSnapshot(snapshot(jit), snapshot(reference), `${variant} reset`);
-        assertSameSnapshot(snapshot(jit), startJit, `${variant} reset to t0`);
-        // Physics run on the JIT instance only; the slow reference engine would
-        // add seconds without checking anything the snapshots do not already cover.
-        assertVariantEffect(variant, jit, startJit);
-      });
-    });
+    reference.reset();
+    jit.reset();
+    assertSameSnapshot(snapshot(jit), snapshot(reference), `${variant} reset`);
+    assertSameSnapshot(snapshot(jit), startJit, `${variant} reset to t0`);
+    // Physics run on the JIT instance only; the slow reference engine would
+    // add seconds without checking anything the snapshots do not already cover.
+    assertVariantEffect(variant, jit, startJit);
   }
 }, 60_000);
 

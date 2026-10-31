@@ -1,5 +1,12 @@
 import type { IRStorage } from '@mica-js/ir';
-import type { ElectricalCurrentTarget } from '../runtime/types';
+export type ElectricalCurrentTarget =
+  | { readonly kind: 'resistor' | 'contact'; readonly device: string; readonly name: string }
+  | {
+      readonly kind: 'drive' | 'pull-up' | 'pull-down';
+      readonly device: string;
+      readonly pin: string;
+    }
+  | { readonly kind: 'source'; readonly name: string };
 import type { AllocatedElectricalNetwork } from './electrical-network';
 import { RESISTIVE_FAULT, type ResistiveSolver } from './resistive-solver';
 

@@ -8,12 +8,12 @@
     "SCL": { "side": "left", "kind": "signal" }
   },
   "topics": {
-    "received": { "direction": "output", "type": "number", "state": "received" },
-    "count": { "direction": "output", "type": "number", "state": "receivedCount" },
-    "addressAcks": { "direction": "output", "type": "number", "state": "addressAcks" },
-    "dataAcks": { "direction": "output", "type": "number", "state": "dataAcks" },
-    "starts": { "direction": "output", "type": "number", "state": "starts" },
-    "stops": { "direction": "output", "type": "number", "state": "stops" }
+    "received": { "direction": "output", "type": "number" },
+    "count": { "direction": "output", "type": "number" },
+    "addressAcks": { "direction": "output", "type": "number" },
+    "dataAcks": { "direction": "output", "type": "number" },
+    "starts": { "direction": "output", "type": "number" },
+    "stops": { "direction": "output", "type": "number" }
   },
   "reset": {
     "state": "supported",

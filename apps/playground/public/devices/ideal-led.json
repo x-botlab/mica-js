@@ -32,14 +32,12 @@
     "brightness": {
       "direction": "output",
       "type": "number",
-      "title": "Brightness",
-      "state": "brightness"
+      "title": "Brightness"
     },
     "lit": {
       "direction": "output",
       "type": "boolean",
-      "title": "点亮",
-      "state": "lamp"
+      "title": "点亮"
     }
   },
   "reset": {

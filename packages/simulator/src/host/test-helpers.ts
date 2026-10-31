@@ -1,18 +1,20 @@
 import { createDeviceRegistry, synthesizeDeviceSymbol } from '@mica-js/core/schematic';
 import type { DeviceReference, DeviceSymbolProvider } from '@mica-js/core/schematic';
-import type { DeviceBehaviorApi, DeviceConfig, DeviceDescription } from '../unified-ir/compiler';
 import type {
-  DeviceAccessor,
-  SchematicDeviceBinding,
-  SchematicDeviceTopic,
-} from '../unified-ir/runtime';
+  DeviceBehaviorApi,
+  DeviceConfig,
+  DeviceDescription,
+  DeviceInputIo,
+  DeviceOutputIo,
+} from '../unified-ir/compiler';
+import type { SchematicDeviceBinding, SchematicDeviceTopic } from '../unified-ir/runtime';
 
 /**
  * Minimal device package the host tests supply themselves.
  *
  * The simulator ships no built-in models after RFC 0018 moved them out, so the tests describe one
- * caller-owned toggle lamp exactly the way an application would: a reference, a description, the
- * endpoints and the two accessor bridges.
+ * caller-owned toggle lamp exactly the way an application would: a reference, a description with
+ * step-boundary hooks, and the endpoints those hooks serve.
  */
 export const TOGGLE_DEVICE = 'test:toggle';
 export const TOGGLE_TYPE = 'toggle-ir';
@@ -33,7 +35,7 @@ const TOPICS: readonly SchematicDeviceTopic[] = Object.freeze([
   }),
 ]);
 
-/** Copies the host-asserted `input` state onto `lamp`, so publishing has an observable effect. */
+/** Copies the hook-asserted `input` state onto `lamp`, so publishing has an observable effect. */
 export function toggleDescription(): DeviceDescription {
   return Object.freeze({
     pins: Object.freeze({ out: Object.freeze({ kind: 'signal' as const }) }),
@@ -47,6 +49,15 @@ export function toggleDescription(): DeviceDescription {
         api.state<'bool'>('lamp').store(api.state<'bool'>('input').load());
       },
     }),
+    applyInputs: (io: DeviceInputIo) => {
+      const payload = io.takeInput('lamp');
+      if (payload === undefined) return;
+      if (typeof payload !== 'boolean') throw new TypeError('lamp expects a boolean payload');
+      io.writeState('input', payload);
+    },
+    flushOutputs: (io: DeviceOutputIo) => {
+      io.publish('state', io.readState('lamp'));
+    },
   });
 }
 
@@ -61,15 +72,6 @@ export function toggleBinding(): SchematicDeviceBinding {
     type: TOGGLE_TYPE,
     description: toggleDescription(),
     topics: TOPICS,
-    deliver: (accessor: DeviceAccessor, port: string, payload: unknown) => {
-      if (port !== 'lamp') throw new TypeError(`Toggle has no writable topic ${port}`);
-      if (typeof payload !== 'boolean') throw new TypeError('lamp expects a boolean payload');
-      accessor.setState('input', payload);
-    },
-    read: (accessor: DeviceAccessor, port: string) => {
-      if (port !== 'state') throw new TypeError(`Toggle has no readable topic ${port}`);
-      return accessor.getState('lamp');
-    },
   });
 }
 

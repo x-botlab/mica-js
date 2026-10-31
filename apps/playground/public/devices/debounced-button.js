@@ -23,5 +23,15 @@ export default function createButton({ properties }) {
       api.state('closed').store(next);
       api.applyConnections(['contact'], [next]);
     },
+    applyInputs(io) {
+      const pressed = io.takeInput('pressed');
+      if (pressed === undefined) return;
+      if (typeof pressed !== 'boolean') throw new TypeError('Button pressed must be a boolean');
+      io.writeState('pressed', pressed);
+    },
+    flushOutputs(io) {
+      io.publish('closed', io.readState('closed'));
+      io.publish('pressCount', io.readState('pressCount'));
+    },
   };
 }

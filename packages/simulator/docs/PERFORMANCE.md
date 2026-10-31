@@ -15,12 +15,9 @@
 | 运行器   | Vitest bench（Tinybench，交错采样）       |
 
 数值是单机、单次运行的观测值；同一台机器上不同运行之间通常有 ±10–20% 波动。
-脚本本身带回归门槛（例如 1M tick 批处理必须满足绝对吞吐下限），所以波动不会掩盖真实退化。
+基准用于观察吞吐与波动，不把固定速度作为功能正确性的判据。
 
-> **口径提示**：本页数字取自内建 `mcu` / `led` 最小内核还在包内时（以及 Playground 的教学 MCU 模型）
-> 的测量。这些器件模型已经移出 `@mica-js/simulator`，现在的 `bench/unified-simple.bench.ts`
-> 使用包内的 driver / sink 测试夹具（同样的网络形状、同样的器件逻辑），第 1 节的绝对吞吐与
-> 第 4 节微基准可直接复现；第 2、3 节保留历史记录，复现需要对应的器件包。
+> **历史数据**：第 1–4 节来自旧布尔电气路径及已删除的教学 MCU，不能代表当前电阻求解器的性能。旧 MCU 的动态翻译实现没有迁移到 Playground 的 GPIO 翻转或软件 I2C 状态机。当前 `bench/unified-simple.bench.ts` 使用有限内阻 driver / sink，须重新运行获取结果。文末电阻数值实验是独立微基准，不代表完整器件的吞吐。
 
 ## 结果摘要
 
@@ -85,7 +82,7 @@ blinky 固件（GPIO MMIO 写 ODR）驱动一个 LED，`runBatch(20_000)`：
 
 ### 3.2 长切片（U03 性能测试口径）
 
-本轮测量使用当时随包提供的教学 MCU 模型（现已在 Playground 器件库中），同一台机器、更长的切片和 `maxBlockInstructions: 4096`。
+本轮测量使用当时随包提供、现已删除的教学 MCU 模型，同一台机器、更长的切片和 `maxBlockInstructions: 4096`。
 批处理数字取稳态中位数（宿主已完成译码、V8 已把生成代码
 升到优化层），这也是实时仿真真正运行的区间：
 
@@ -120,9 +117,6 @@ blinky 固件（GPIO MMIO 写 ODR）驱动一个 LED，`runBatch(20_000)`：
 | `step()`（单器件，引擎入口开销）                            |        364–405 ns |
 | `runBatch(1000)`（单器件 sink）                             |   3.5–3.7 ns/tick |
 | `runBatch(1000)`（按钮 + 带状态 sink）                      | 15.1–15.3 ns/tick |
-| `devices.sink.getState('lamp')`                             |          53–57 ns |
-| `getPin('sink.anode')`                                      |          59–68 ns |
-| `setPin('drive.PA0')`                                       |          79–85 ns |
 
 编译成本只在创建电路时支付一次；之后 `runBatch` 是纯执行路径。共享的引脚内存按电路实际声明的
 引脚数分配（`UNIFIED_PIN_CAPACITY` 只是分配期上限），所以创建与 `reset()` 的成本只随实际引脚数增长，

@@ -1,18 +1,17 @@
-import type { DeviceReference, DeviceSymbolProvider } from '@mica-js/core/schematic';
 import { parseSchematic } from '@mica-js/core/schematic';
+import type { DeviceReference, DeviceSymbolProvider } from '@mica-js/core/schematic';
 import type { SchematicDocument } from '@mica-js/core/schematic';
 import type { CanvasBindingTarget, PayloadType } from '@mica-js/core/canvas';
 import { Emitter } from '@mica-js/core/lifecycle';
-import { toNumber, type FloatBits } from '@mica-js/ir';
 import { createSchematicCircuit } from '../unified-ir/runtime';
+import { deviceBoundaryOf } from '../unified-ir/runtime/circuit';
+import type { DeviceBoundary } from '../unified-ir/runtime/bridge';
 import type {
   Circuit,
   CircuitElectricalOptions,
   SchematicDeviceBinding,
   SchematicDeviceTopic,
 } from '../unified-ir/runtime';
-import type { DeviceAccessor } from '../unified-ir/runtime/types';
-import { deviceBridgeOf } from '../unified-ir/runtime/accessors';
 import type {
   DeviceSimulationHost,
   DeviceSimTickReport,
@@ -42,14 +41,14 @@ export interface SchematicDeviceSimulationHostOptions {
 
 interface LoadedDevice {
   readonly symbol: string;
+  readonly deviceId: string;
   readonly designator: string;
   readonly binding: SchematicDeviceBinding;
-  readonly accessor: DeviceAccessor;
-  readonly bridge: DeviceAccessor;
 }
 
 interface LoadedRuntime {
   readonly circuit: Circuit;
+  readonly boundary: DeviceBoundary;
   readonly schematic: SchematicDocument;
   readonly devices: readonly LoadedDevice[];
   readonly topics: readonly DeviceTopic[];
@@ -138,16 +137,14 @@ function buildRuntime(
 
   for (const binding of bindings) {
     const deviceBinding = resolveDevice(binding.reference);
-    const accessor = circuit.devices[binding.deviceId];
-    if (deviceBinding === undefined || accessor === undefined) continue;
+    if (deviceBinding === undefined) continue;
     const symbol = symbols.get(binding.symbolId);
     const designator = symbol?.designator ?? binding.symbolId;
     const device: LoadedDevice = {
       symbol: binding.symbolId,
+      deviceId: binding.deviceId,
       designator,
       binding: deviceBinding,
-      accessor,
-      bridge: deviceBridgeOf(accessor),
     };
     devices.push(device);
     for (const topic of deviceBinding.topics ?? []) {
@@ -166,6 +163,7 @@ function buildRuntime(
 
   return {
     circuit,
+    boundary: deviceBoundaryOf(circuit),
     schematic,
     devices,
     topics: Object.freeze(topics),
@@ -197,22 +195,12 @@ export function createSchematicDeviceSimulationHost(
   let simTimePs = 0;
   let disposed = false;
 
-  const publishOutput = (device: LoadedDevice, port: string, raw: unknown): void => {
+  const publishOutput = (device: LoadedDevice, port: string, payload: unknown): void => {
     const topic = device.binding.topics?.find(
       (value) => value.port === port && value.direction === 'output',
     );
     if (topic === undefined)
       throw new TypeError(`Unknown output topic ${device.designator}.${port}`);
-    const payload =
-      topic.type === 'number' &&
-      typeof raw === 'object' &&
-      raw !== null &&
-      'type' in raw &&
-      (raw.type === 'f32' || raw.type === 'f64') &&
-      'bits' in raw &&
-      typeof raw.bits === 'string'
-        ? toNumber(raw as FloatBits)
-        : raw;
     if (!payloadMatches(topic.type, payload))
       throw new TypeError(`Invalid output payload for ${device.designator}.${port}`);
     if (!publishes.hasListeners) return;
@@ -226,22 +214,16 @@ export function createSchematicDeviceSimulationHost(
     diagnostics: NonNullable<DeviceSimTickReport['diagnostics']>[number][],
   ): void => {
     for (const device of active.devices) {
-      if (device.bridge.flushOutputs !== undefined) {
-        try {
-          device.bridge.flushOutputs((port, payload) => publishOutput(device, port, payload));
-        } catch (cause) {
-          diagnostics.push({
-            code: 'device/output-failed',
-            deviceId: device.symbol,
-            message: cause instanceof Error ? cause.message : String(cause),
-          });
-        }
-        continue;
-      }
-      if (!publishes.hasListeners) continue;
-      for (const topic of device.binding.topics ?? []) {
-        if (topic.direction !== 'output' || device.binding.read === undefined) continue;
-        publishOutput(device, topic.port, device.binding.read(device.accessor, topic.port));
+      try {
+        active.boundary.publishOutputs(device.deviceId, (port, payload) =>
+          publishOutput(device, port, payload),
+        );
+      } catch (cause) {
+        diagnostics.push({
+          code: 'device/output-failed',
+          deviceId: device.symbol,
+          message: cause instanceof Error ? cause.message : String(cause),
+        });
       }
     }
   };
@@ -302,29 +284,18 @@ export function createSchematicDeviceSimulationHost(
         return { simTime: simTimePs, executed: 0 };
       }
       const queued = pending.splice(0, pending.length);
-      const inputs = new Map<LoadedDevice, { port: string; payload: unknown }[]>();
+      const deliveries = new Map<LoadedDevice, { port: string; payload: unknown }[]>();
       for (const delivery of queued) {
-        if (delivery.device.bridge.applyInputs !== undefined) {
-          const values = inputs.get(delivery.device) ?? [];
-          values.push({ port: delivery.port, payload: delivery.payload });
-          inputs.set(delivery.device, values);
-        } else {
-          if (delivery.device.binding.deliver === undefined) {
-            throw new TypeError(
-              `${delivery.device.binding.type} has no writable topic ${JSON.stringify(delivery.port)}`,
-            );
-          }
-          delivery.device.binding.deliver(
-            delivery.device.accessor,
-            delivery.port,
-            delivery.payload,
-          );
-        }
+        const values = deliveries.get(delivery.device) ?? [];
+        values.push({ port: delivery.port, payload: delivery.payload });
+        deliveries.set(delivery.device, values);
       }
       const diagnostics: NonNullable<DeviceSimTickReport['diagnostics']>[number][] = [];
       for (const device of active.devices) {
+        const inputs = deliveries.get(device);
+        if (inputs === undefined && !active.boundary.hasInputHook(device.deviceId)) continue;
         try {
-          device.bridge.applyInputs?.(inputs.get(device) ?? []);
+          active.boundary.deliverInputs(device.deviceId, inputs ?? []);
         } catch (cause) {
           diagnostics.push({
             code: 'device/input-failed',
@@ -363,11 +334,6 @@ export function createSchematicDeviceSimulationHost(
         );
       }
       const device = binding.device;
-      if (device.binding.deliver === undefined && device.bridge.applyInputs === undefined) {
-        throw new Error(
-          `${device.binding.type} has no writable topic ${JSON.stringify(target.port)}`,
-        );
-      }
       pending.push({ device, port: target.port, payload });
     },
 

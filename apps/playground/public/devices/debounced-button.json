@@ -17,20 +17,17 @@
     "pressed": {
       "direction": "input",
       "type": "boolean",
-      "title": "按下",
-      "state": "pressed"
+      "title": "按下"
     },
     "closed": {
       "direction": "output",
       "type": "boolean",
-      "title": "触点闭合",
-      "state": "closed"
+      "title": "触点闭合"
     },
     "pressCount": {
       "direction": "output",
       "type": "number",
-      "title": "按下次数",
-      "state": "pressCount"
+      "title": "按下次数"
     }
   },
   "connections": {

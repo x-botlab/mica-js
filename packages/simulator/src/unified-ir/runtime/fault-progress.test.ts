@@ -1,12 +1,11 @@
-import type { StateRef } from '@mica-js/ir';
 import { describe, expect, test } from 'vitest';
-import { Circuit } from './circuit';
+import { createTestCircuit } from '../compiler/test-helpers';
+import { deviceBoundaryOf, type Circuit } from './circuit';
 
 for (const engine of ['reference', 'jit'] as const)
   describe(`fault progress (${engine})`, () => {
-    async function circuit() {
-      let counter: StateRef<'u32'>;
-      const result = await Circuit.create(
+    async function circuit(): Promise<{ probe: Circuit; counter: () => unknown }> {
+      const probe = await createTestCircuit(
         {
           devices: [
             {
@@ -14,13 +13,15 @@ for (const engine of ['reference', 'jit'] as const)
               type: 'fault-counter',
               description: {
                 pins: {},
+                states: { counter: { type: 'u32', initial: 0 } },
                 factory: () => undefined,
-                kernel: ({ module }) => {
-                  counter = module.state('counter', 'u32', 0);
+                flushOutputs: (io) => io.publish('counter', io.readState('counter')),
+                kernel: ({ module, bind }) => {
                   const tick = module.func('fault_counter_tick', { params: [], results: [] });
                   tick.body((b) => {
-                    const next = b.int.add(b.state.load(counter), b.const('u32', 1));
-                    b.state.store(counter, next);
+                    const counter = bind(b).state<'u32'>('counter');
+                    const next = b.int.add(counter.load(), b.const('u32', 1));
+                    counter.store(next);
                     const failed = b.block([]);
                     const done = b.block([]);
                     b.branch(
@@ -40,32 +41,39 @@ for (const engine of ['reference', 'jit'] as const)
         },
         { engine, electrical: { interpretation: 'two-state' } },
       );
-      return { result, counter: () => result.jit.storage.loadState(counter) };
+      return {
+        probe,
+        counter: () => {
+          let value: unknown;
+          deviceBoundaryOf(probe).publishOutputs('faulty', (_port, payload) => {
+            value = payload;
+          });
+          return value;
+        },
+      };
     }
 
     test('advances only the completed prefix of a failed batch, retaining failed-phase writes', async () => {
-      const { result, counter } = await circuit();
-      result.runBatch(1);
-      expect(result.tickCount).toBe(1n);
-      expect(() => result.runBatch(10)).toThrow();
-      expect(result.tickCount).toBe(2n);
-      expect(result.virtualTime).toBe(2);
+      const { probe, counter } = await circuit();
+      probe.runBatch(1);
+      expect(probe.tickCount).toBe(1n);
+      expect(() => probe.runBatch(10)).toThrow();
+      expect(probe.tickCount).toBe(2n);
+      expect(probe.virtualTime).toBe(2);
       expect(counter()).toBe(3);
-      expect(() => result.runBatch(10)).toThrow();
-      expect(result.tickCount).toBe(2n);
-      expect(result.virtualTime).toBe(2);
-      result.dispose();
+      expect(() => probe.runBatch(10)).toThrow();
+      expect(probe.tickCount).toBe(2n);
+      expect(probe.virtualTime).toBe(2);
     });
 
     test('does not count a failed individual step', async () => {
-      const { result, counter } = await circuit();
-      result.step();
-      result.step();
-      expect(result.tickCount).toBe(2n);
-      expect(() => result.step()).toThrow();
-      expect(result.tickCount).toBe(2n);
-      expect(result.virtualTime).toBe(2);
+      const { probe, counter } = await circuit();
+      probe.step();
+      probe.step();
+      expect(probe.tickCount).toBe(2n);
+      expect(() => probe.step()).toThrow();
+      expect(probe.tickCount).toBe(2n);
+      expect(probe.virtualTime).toBe(2);
       expect(counter()).toBe(3);
-      result.dispose();
     });
   });

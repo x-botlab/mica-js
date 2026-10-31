@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { Circuit, PIN_MODE } from './index';
-import type { DeviceDescription, ElectricalCurrentTarget } from './index';
+import { PIN_MODE } from './index';
+import type { DeviceDescription } from './index';
+import type { ElectricalCurrentTarget } from './test-helpers/electrical-observation';
+import { createTestProbe } from './test-helpers/circuit-probe';
+import type { TestProbe } from './test-helpers/circuit-probe';
 
 const electrical = { sources: { VDD: { voltage: 3.3 } }, interpretation: 'two-state' } as const;
 const contact = (name: string): ElectricalCurrentTarget => ({
@@ -8,8 +11,8 @@ const contact = (name: string): ElectricalCurrentTarget => ({
   device: 'switch',
   name,
 });
-function closeTo(circuit: Circuit, target: string | ElectricalCurrentTarget, expected: number) {
-  const current = circuit.getCurrent(target);
+function closeTo(probe: TestProbe, target: string | ElectricalCurrentTarget, expected: number) {
+  const current = probe.current(target);
   expect(current.state).toBe('determinate');
   if (current.state === 'determinate') expect(current.value).toBeCloseTo(expected, 12);
 }
@@ -24,13 +27,13 @@ const resistor: DeviceDescription = {
 describe.each(['reference', 'jit'] as const)('%s current identity and diagnostics', (engine) => {
   test.each([false, true])(
     'identifies a bridge contact current with reversed supply=%s',
-    async (reverse) => {
+    (reverse) => {
       const description: DeviceDescription = {
         pins: { A: { kind: 'signal' }, B: { kind: 'signal' } },
         connections: { bridge: { pins: ['A', 'B'], initial: 'closed' } },
         factory: () => undefined,
       };
-      const circuit = await Circuit.create(
+      const probe = createTestProbe(
         {
           devices: [
             { id: 'switch', type: 'switch', description },
@@ -44,19 +47,15 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
         },
         { engine, electrical },
       );
-      try {
-        closeTo(circuit, contact('bridge'), reverse ? -0.066 : 0.066);
-        closeTo(circuit, { kind: 'source', name: 'VDD' }, 0.066);
-        closeTo(circuit, { kind: 'source', name: 'GND' }, -0.066);
-        closeTo(circuit, 'load.body', 0.066);
-        expect(circuit.getDiagnostics()).toEqual([]);
-      } finally {
-        circuit.dispose();
-      }
+      closeTo(probe, contact('bridge'), reverse ? -0.066 : 0.066);
+      closeTo(probe, { kind: 'source', name: 'VDD' }, 0.066);
+      closeTo(probe, { kind: 'source', name: 'GND' }, -0.066);
+      closeTo(probe, 'load.body', 0.066);
+      expect(probe.diagnostics()).toEqual([]);
     },
   );
 
-  test('keeps ideal cycle currents indeterminate but identifies a bridge attached to that cycle', async () => {
+  test('keeps ideal cycle currents indeterminate but identifies a bridge attached to that cycle', () => {
     const description: DeviceDescription = {
       pins: {
         A: { kind: 'signal' },
@@ -72,7 +71,7 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
       },
       factory: () => undefined,
     };
-    const circuit = await Circuit.create(
+    const probe = createTestProbe(
       {
         devices: [
           { id: 'switch', type: 'switch', description },
@@ -86,22 +85,18 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
       },
       { engine, electrical },
     );
-    try {
-      for (const name of ['ab', 'bc', 'ca'])
-        expect(circuit.getCurrent(contact(name))).toEqual({ state: 'indeterminate' });
-      closeTo(circuit, contact('tail'), 0.066);
-    } finally {
-      circuit.dispose();
-    }
+    for (const name of ['ab', 'bc', 'ca'])
+      expect(probe.current(contact(name))).toEqual({ state: 'indeterminate' });
+    closeTo(probe, contact('tail'), 0.066);
   });
 
-  test('reports redundant ideal-source currents as indeterminate and source-free bridge current as zero', async () => {
+  test('reports redundant ideal-source currents as indeterminate and source-free bridge current as zero', () => {
     const description: DeviceDescription = {
       pins: { A: { kind: 'signal' }, B: { kind: 'signal' } },
       connections: { bridge: { pins: ['A', 'B'], initial: 'closed' } },
       factory: () => undefined,
     };
-    const circuit = await Circuit.create(
+    const probe = createTestProbe(
       {
         devices: [{ id: 'switch', type: 'switch', description }],
         connections: [
@@ -114,18 +109,15 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
         electrical: { ...electrical, sources: { VDD: { voltage: 3.3 }, VCC: { voltage: 3.3 } } },
       },
     );
-    try {
-      expect(circuit.getCurrent(contact('bridge'))).toEqual({ state: 'indeterminate' });
-      expect(circuit.getCurrent({ kind: 'source', name: 'VDD' })).toEqual({
-        state: 'indeterminate',
-      });
-      expect(circuit.getCurrent({ kind: 'source', name: 'VCC' })).toEqual({
-        state: 'indeterminate',
-      });
-    } finally {
-      circuit.dispose();
-    }
-    const floating = await Circuit.create(
+    expect(probe.current(contact('bridge'))).toEqual({ state: 'indeterminate' });
+    expect(probe.current({ kind: 'source', name: 'VDD' })).toEqual({
+      state: 'indeterminate',
+    });
+    expect(probe.current({ kind: 'source', name: 'VCC' })).toEqual({
+      state: 'indeterminate',
+    });
+
+    const floating = createTestProbe(
       {
         devices: [
           { id: 'switch', type: 'switch', description },
@@ -135,13 +127,9 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
       },
       { engine, electrical },
     );
-    try {
-      expect(floating.getVoltage('switch.A')).toEqual({ state: 'floating' });
-      closeTo(floating, contact('bridge'), 0);
-      closeTo(floating, 'load.body', 0);
-    } finally {
-      floating.dispose();
-    }
+    expect(floating.voltage('switch.A')).toEqual({ state: 'floating' });
+    closeTo(floating, contact('bridge'), 0);
+    closeTo(floating, 'load.body', 0);
   });
 
   test.each([
@@ -149,7 +137,7 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
     { ohms: Number.MIN_VALUE, code: 'electrical/numerical-failure' },
   ])(
     'deduplicates overcurrent, clears on recovery, and preserves the last good snapshot on $code',
-    async ({ ohms, code }) => {
+    ({ ohms, code }) => {
       const description: DeviceDescription = {
         pins: { OUT: { kind: 'signal' }, GND: { kind: 'gnd' } },
         states: { ohms: { type: 'f64', initial: 50 } },
@@ -179,65 +167,60 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
           };
         },
       };
-      const circuit = await Circuit.create(
+      const probe = createTestProbe(
         {
           devices: [{ id: 'gpio', type: 'gpio', description }],
           connections: [{ from: 'gpio.GND', to: 'GND' }],
         },
         { engine, electrical },
       );
-      try {
-        closeTo(circuit, { kind: 'drive', device: 'gpio', pin: 'OUT' }, 0.033);
-        const initial = circuit.getDiagnostics();
-        expect(initial).toHaveLength(2);
-        expect(initial.every((value) => value.code === 'electrical/overcurrent')).toBe(true);
-        circuit.runBatch(4);
-        expect(circuit.getDiagnostics()).toEqual(initial);
-        expect(circuit.tickCount).toBe(4n);
-        circuit.devices.gpio.setState('ohms', 1000);
-        circuit.step();
-        expect(circuit.getDiagnostics()).toEqual([]);
-        closeTo(circuit, { kind: 'drive', device: 'gpio', pin: 'OUT' }, 3.3 / 1050);
-        circuit.devices.gpio.setState('ohms', ohms);
-        circuit.runBatch(5);
-        expect(circuit.tickCount).toBe(5n);
-        const [failure] = circuit.getDiagnostics();
-        if (failure?.severity !== 'error') throw new Error('Expected an electrical fault');
-        expect(failure).toMatchObject({
-          code,
-          severity: 'error',
-          target: { kind: 'resistor', device: 'gpio', name: 'load' },
-        });
-        expect(failure?.resources).toContainEqual({
-          kind: 'resistor',
-          device: 'gpio',
-          name: 'load',
-        });
-        expect(failure?.pins).toEqual(expect.arrayContaining(['gpio.OUT', 'gpio.GND']));
-        expect(Object.isFrozen(failure?.resources)).toBe(true);
-        expect(Object.isFrozen(failure?.pins)).toBe(true);
-        expect(circuit.getDiagnostics()).toEqual([failure]);
-        closeTo(circuit, 'gpio.load', 3.3 / 1050);
-        circuit.devices.gpio.setState('ohms', 1000);
-        circuit.step();
-        expect(circuit.tickCount).toBe(5n);
-        circuit.reset();
-        expect(circuit.getDiagnostics()).toEqual(initial);
-        expect(Object.isFrozen(initial)).toBe(true);
-        expect(() => circuit.getCurrent({ kind: 'contact', device: 'gpio', name: 'load' })).toThrow(
-          'Unknown electrical current',
-        );
-        expect(() => circuit.getCurrent({ kind: 'source', name: 'missing' })).toThrow(
-          'Unknown electrical current',
-        );
-      } finally {
-        circuit.dispose();
-      }
-      expect(() => circuit.getDiagnostics()).toThrow('disposed');
+      closeTo(probe, { kind: 'drive', device: 'gpio', pin: 'OUT' }, 0.033);
+      const initial = probe.diagnostics();
+      expect(initial).toHaveLength(2);
+      expect(initial.every((value) => value.code === 'electrical/overcurrent')).toBe(true);
+      probe.runBatch(4);
+      expect(probe.diagnostics()).toEqual(initial);
+      expect(probe.tickCount).toBe(4n);
+      probe.writeState('gpio', 'ohms', 1000);
+      probe.step();
+      expect(probe.diagnostics()).toEqual([]);
+      closeTo(probe, { kind: 'drive', device: 'gpio', pin: 'OUT' }, 3.3 / 1050);
+      probe.writeState('gpio', 'ohms', ohms);
+      probe.runBatch(5);
+      expect(probe.tickCount).toBe(5n);
+      const [failure] = probe.diagnostics();
+      if (failure?.severity !== 'error') throw new Error('Expected an electrical fault');
+      expect(failure).toMatchObject({
+        code,
+        severity: 'error',
+        target: { kind: 'resistor', device: 'gpio', name: 'load' },
+      });
+      expect(failure?.resources).toContainEqual({
+        kind: 'resistor',
+        device: 'gpio',
+        name: 'load',
+      });
+      expect(failure?.pins).toEqual(expect.arrayContaining(['gpio.OUT', 'gpio.GND']));
+      expect(Object.isFrozen(failure?.resources)).toBe(true);
+      expect(Object.isFrozen(failure?.pins)).toBe(true);
+      expect(probe.diagnostics()).toEqual([failure]);
+      closeTo(probe, 'gpio.load', 3.3 / 1050);
+      probe.writeState('gpio', 'ohms', 1000);
+      probe.step();
+      expect(probe.tickCount).toBe(5n);
+      probe.reset();
+      expect(probe.diagnostics()).toEqual(initial);
+      expect(Object.isFrozen(initial)).toBe(true);
+      expect(() => probe.current({ kind: 'contact', device: 'gpio', name: 'load' })).toThrow(
+        'Unknown electrical current',
+      );
+      expect(() => probe.current({ kind: 'source', name: 'missing' })).toThrow(
+        'Unknown electrical current',
+      );
     },
   );
 
-  test('separates pull currents from active drive and exposes their orientation', async () => {
+  test('separates pull currents from active drive and exposes their orientation', () => {
     const description: DeviceDescription = {
       pins: { A: { kind: 'signal' }, B: { kind: 'gnd' } },
       resistors: { load: { pins: ['A', 'B'] } },
@@ -249,26 +232,22 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
         return { initialize: (api) => api.pin('A').setPull('up') };
       },
     };
-    const circuit = await Circuit.create(
+    const probe = createTestProbe(
       {
         devices: [{ id: 'gpio', type: 'gpio', description }],
         connections: [{ from: 'gpio.B', to: 'GND' }],
       },
       { engine, electrical },
     );
-    try {
-      closeTo(circuit, { kind: 'pull-up', device: 'gpio', pin: 'A' }, 0.00165);
-      closeTo(circuit, { kind: 'pull-down', device: 'gpio', pin: 'A' }, 0);
-      closeTo(circuit, { kind: 'source', name: 'VDD' }, 0.00165);
-      expect(() => circuit.getCurrent({ kind: 'drive', device: 'gpio', pin: 'A' })).toThrow(
-        'Unknown electrical current',
-      );
-    } finally {
-      circuit.dispose();
-    }
+    closeTo(probe, { kind: 'pull-up', device: 'gpio', pin: 'A' }, 0.00165);
+    closeTo(probe, { kind: 'pull-down', device: 'gpio', pin: 'A' }, 0);
+    closeTo(probe, { kind: 'source', name: 'VDD' }, 0.00165);
+    expect(() => probe.current({ kind: 'drive', device: 'gpio', pin: 'A' })).toThrow(
+      'Unknown electrical current',
+    );
   });
 
-  test('locates a matrix failure to its network without naming a fabricated culprit', async () => {
+  test('locates a matrix failure to its network without naming a fabricated culprit', () => {
     const description: DeviceDescription = {
       pins: {
         P: { kind: 'signal' },
@@ -296,7 +275,7 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
         };
       },
     };
-    const circuit = await Circuit.create(
+    const probe = createTestProbe(
       {
         devices: [{ id: 'network', type: 'network', description }],
         connections: [
@@ -306,38 +285,34 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
       },
       { engine, electrical },
     );
-    try {
-      expect(circuit.getDiagnostics()).toEqual([]);
-      const before = circuit.getVoltage('network.A');
-      circuit.devices.network.setState('ohms', 1e30);
-      circuit.step();
-      const [failure] = circuit.getDiagnostics();
-      if (failure?.severity !== 'error') throw new Error('Expected an electrical fault');
-      expect(failure.code).toBe('electrical/numerical-failure');
-      expect(failure.target).toBeUndefined();
-      expect(failure.resources).toEqual(
-        expect.arrayContaining([
-          { kind: 'resistor', device: 'network', name: 'feed' },
-          { kind: 'resistor', device: 'network', name: 'link' },
-          { kind: 'resistor', device: 'network', name: 'load' },
-        ]),
-      );
-      expect(failure.resources).not.toContainEqual({
-        kind: 'resistor',
-        device: 'network',
-        name: 'unused',
-      });
-      expect(failure.pins).toEqual(['network.P', 'network.A', 'network.B', 'network.N']);
-      expect(circuit.getVoltage('network.A')).toEqual(before);
-      expect(circuit.tickCount).toBe(0n);
-      circuit.reset();
-      expect(circuit.getDiagnostics()).toEqual([]);
-    } finally {
-      circuit.dispose();
-    }
+    expect(probe.diagnostics()).toEqual([]);
+    const before = probe.voltage('network.A');
+    probe.writeState('network', 'ohms', 1e30);
+    probe.step();
+    const [failure] = probe.diagnostics();
+    if (failure?.severity !== 'error') throw new Error('Expected an electrical fault');
+    expect(failure.code).toBe('electrical/numerical-failure');
+    expect(failure.target).toBeUndefined();
+    expect(failure.resources).toEqual(
+      expect.arrayContaining([
+        { kind: 'resistor', device: 'network', name: 'feed' },
+        { kind: 'resistor', device: 'network', name: 'link' },
+        { kind: 'resistor', device: 'network', name: 'load' },
+      ]),
+    );
+    expect(failure.resources).not.toContainEqual({
+      kind: 'resistor',
+      device: 'network',
+      name: 'unused',
+    });
+    expect(failure.pins).toEqual(['network.P', 'network.A', 'network.B', 'network.N']);
+    expect(probe.voltage('network.A')).toEqual(before);
+    expect(probe.tickCount).toBe(0n);
+    probe.reset();
+    expect(probe.diagnostics()).toEqual([]);
   });
 
-  test('latches source conflict, leaves contact current snapshot intact, and clears the fault on reset', async () => {
+  test('latches source conflict, leaves contact current snapshot intact, and clears the fault on reset', () => {
     const description: DeviceDescription = {
       pins: { A: { kind: 'signal' }, B: { kind: 'signal' } },
       connections: { bridge: { pins: ['A', 'B'], initial: 'open' } },
@@ -346,7 +321,7 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
         tick: (api) => api.applyConnections(['bridge'], [api.state<'bool'>('closed').load()]),
       }),
     };
-    const circuit = await Circuit.create(
+    const probe = createTestProbe(
       {
         devices: [{ id: 'switch', type: 'switch', description }],
         connections: [
@@ -356,33 +331,29 @@ describe.each(['reference', 'jit'] as const)('%s current identity and diagnostic
       },
       { engine, electrical },
     );
-    try {
-      closeTo(circuit, contact('bridge'), 0);
-      circuit.devices.switch.setState('closed', true);
-      circuit.step();
-      expect(circuit.tickCount).toBe(0n);
-      const [failure] = circuit.getDiagnostics();
-      expect(circuit.getDiagnostics()).toHaveLength(1);
-      expect(failure).toMatchObject({
-        code: 'electrical/source-conflict',
-        severity: 'error',
-        resources: expect.arrayContaining([
-          { kind: 'source', name: 'VDD' },
-          { kind: 'source', name: 'GND' },
-          contact('bridge'),
-        ]),
-        pins: ['switch.A', 'switch.B'],
-      });
-      circuit.step();
-      expect(circuit.getDiagnostics()).toEqual([failure]);
-      closeTo(circuit, contact('bridge'), 0);
-      expect(circuit.getVoltage('switch.A')).toEqual({ state: 'determinate', value: 3.3 });
-      circuit.reset();
-      expect(circuit.getDiagnostics()).toEqual([]);
-      circuit.step();
-      expect(circuit.tickCount).toBe(1n);
-    } finally {
-      circuit.dispose();
-    }
+    closeTo(probe, contact('bridge'), 0);
+    probe.writeState('switch', 'closed', true);
+    probe.step();
+    expect(probe.tickCount).toBe(0n);
+    const [failure] = probe.diagnostics();
+    expect(probe.diagnostics()).toHaveLength(1);
+    expect(failure).toMatchObject({
+      code: 'electrical/source-conflict',
+      severity: 'error',
+      resources: expect.arrayContaining([
+        { kind: 'source', name: 'VDD' },
+        { kind: 'source', name: 'GND' },
+        contact('bridge'),
+      ]),
+      pins: ['switch.A', 'switch.B'],
+    });
+    probe.step();
+    expect(probe.diagnostics()).toEqual([failure]);
+    closeTo(probe, contact('bridge'), 0);
+    expect(probe.voltage('switch.A')).toEqual({ state: 'determinate', value: 3.3 });
+    probe.reset();
+    expect(probe.diagnostics()).toEqual([]);
+    probe.step();
+    expect(probe.tickCount).toBe(1n);
   });
 });

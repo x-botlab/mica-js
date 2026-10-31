@@ -1,14 +1,22 @@
 /**
  * Guards the published entry point: every documented runtime export must stay
- * available, the generic accessor surface must stay generic, and no built-in
- * device model may sneak back in.
+ * available, device values travel only through RFC 0017 boundary hooks, and no
+ * built-in device model may sneak back in.
  */
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import type { DeviceAccessor, ElectricalFactoryContext, SchematicDeviceBinding } from './index';
+import type {
+  DeviceDescription,
+  DeviceInputIo,
+  DeviceOutputIo,
+  ElectricalFactoryContext,
+  SchematicDeviceBinding,
+} from './index';
 // @ts-expect-error Compiler preparation results are internal.
 import type { PreparedElectricalDevice } from './index';
 // @ts-expect-error Initialized resource records are internal.
 import type { InitializedResistor } from './index';
+// @ts-expect-error Device accessors are not part of the runtime surface.
+import type { DeviceAccessor } from './index';
 import {
   Circuit,
   CircuitError,
@@ -17,18 +25,13 @@ import {
   UNIFIED_PIN_CAPACITY,
   UnifiedIRCompilerError,
   compileCircuit,
-  createCircuitDeviceSimulationHost,
   createCircuitFromSchematic,
   createModuleValidation,
   createSchematicCircuit,
   createSchematicDeviceSimulationHost,
   startDeviceSimulationHostGuest,
 } from './index';
-import {
-  lampSinkDescription,
-  toggleDriverDescription,
-  TEST_ELECTRICAL,
-} from './unified-ir/compiler/test-helpers';
+import { toggleDriverDescription } from './unified-ir/compiler/test-helpers';
 
 describe('public API surface', () => {
   it('exports every documented runtime entry point', () => {
@@ -38,7 +41,6 @@ describe('public API surface', () => {
     expect(typeof compileCircuit).toBe('function');
     expect(typeof createCircuitFromSchematic).toBe('function');
     expect(typeof createSchematicCircuit).toBe('function');
-    expect(typeof createCircuitDeviceSimulationHost).toBe('function');
     expect(typeof createSchematicDeviceSimulationHost).toBe('function');
     expect(typeof startDeviceSimulationHostGuest).toBe('function');
     expect(typeof createModuleValidation).toBe('function');
@@ -51,6 +53,8 @@ describe('public API surface', () => {
   it('keeps compiler preparation internal while exposing factory initialization types', async () => {
     const simulator = await import('./index');
     expect('prepareElectricalDevice' in simulator).toBe(false);
+    expect('compileSchematicInput' in simulator).toBe(false);
+    expect('deviceBoundaryOf' in simulator).toBe(false);
     expectTypeOf<PreparedElectricalDevice<unknown>>().toBeAny();
     expectTypeOf<InitializedResistor>().toBeAny();
     expectTypeOf<ElectricalFactoryContext['electrical']['initializeResistor']>().toBeCallableWith(
@@ -66,6 +70,7 @@ describe('public API surface', () => {
       'createLedDescription',
       'createMcuDescription',
       'createSingleDeviceCircuit',
+      'createCircuitDeviceSimulationHost',
       'BUILTIN_DEVICE_KERNELS',
       'BUILTIN_DEVICE_TYPES',
       'builtinDeviceKernel',
@@ -79,41 +84,65 @@ describe('public API surface', () => {
     }
   });
 
-  it('keeps the generic accessor surface for caller-supplied devices', async () => {
+  it('exposes no device accessor or electrical readback surface', async () => {
+    const simulator = await import('./index');
+    for (const name of [
+      'DeviceAccessor',
+      'DeviceAccessors',
+      'DeviceAccessorsOf',
+      'DeviceAccessorFactory',
+      'DeviceAccessorFactoryContext',
+      'DeviceAccessorSurface',
+      'ElectricalCurrentTarget',
+      'ElectricalDiagnostic',
+    ])
+      expect(name in simulator).toBe(false);
+
+    expectTypeOf<DeviceAccessor>().toBeAny();
+    expectTypeOf<Circuit>().not.toHaveProperty('devices');
+    expectTypeOf<Circuit>().not.toHaveProperty('jit');
+    expectTypeOf<Circuit>().not.toHaveProperty('getPin');
+    expectTypeOf<Circuit>().not.toHaveProperty('getVoltage');
+    expectTypeOf<Circuit>().not.toHaveProperty('getCurrent');
+    expectTypeOf<Circuit>().not.toHaveProperty('getDiagnostics');
+    expectTypeOf<Circuit>().not.toHaveProperty('setPin');
+
     const circuit = await Circuit.create(
       {
-        devices: [
-          { id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() },
-          { id: 'sink1', type: 'lamp-sink', description: lampSinkDescription() },
-        ],
-        connections: [
-          { from: 'drive1.PA0', to: 'sink1.anode' },
-          { from: 'sink1.cathode', to: 'GND' },
-        ],
+        devices: [{ id: 'drive1', type: 'toggle-driver', description: toggleDriverDescription() }],
+        connections: [],
       },
-      { electrical: TEST_ELECTRICAL },
+      { electrical: { sources: { VDD: { voltage: 5 } }, interpretation: 'two-state' } },
     );
-
-    expectTypeOf(circuit.devices.sink1).toEqualTypeOf<DeviceAccessor>();
-    expectTypeOf(circuit.devices.drive1).toEqualTypeOf<DeviceAccessor>();
-    expectTypeOf<Circuit>().not.toHaveProperty('setPin');
-    expectTypeOf<DeviceAccessor>().not.toHaveProperty('writePin');
-
-    circuit.runBatch(1);
-    expect(circuit.devices.sink1.getState('lamp')).toBe(true);
-    circuit.dispose();
+    try {
+      expect(circuit).not.toHaveProperty('devices');
+      expect(circuit).not.toHaveProperty('jit');
+      expect(circuit).not.toHaveProperty('getState');
+    } finally {
+      circuit.dispose();
+    }
   });
 
-  it('describes devices through the caller-supplied binding contract', () => {
+  it('describes devices through topics plus factory-owned boundary hooks', () => {
+    const description: DeviceDescription = {
+      pins: { out: { kind: 'signal' } },
+      factory: () => undefined,
+      applyInputs: () => undefined,
+      flushOutputs: () => undefined,
+    };
     const binding: SchematicDeviceBinding = {
       type: 'caller-device-ir',
-      description: toggleDriverDescription(),
+      description,
       topics: [{ port: 'value', direction: 'output', type: 'number' }],
-      read: () => 1,
     };
     expect(binding.topics?.[0]?.port).toBe('value');
-    expectTypeOf(binding.read).toEqualTypeOf<
-      ((accessor: DeviceAccessor, port: string) => unknown) | undefined
+    expectTypeOf(binding.description.applyInputs).toEqualTypeOf<
+      ((io: DeviceInputIo) => void) | undefined
     >();
+    expectTypeOf(binding.description.flushOutputs).toEqualTypeOf<
+      ((io: DeviceOutputIo) => void) | undefined
+    >();
+    expectTypeOf<SchematicDeviceBinding>().not.toHaveProperty('deliver');
+    expectTypeOf<SchematicDeviceBinding>().not.toHaveProperty('read');
   });
 });

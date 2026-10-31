@@ -9,5 +9,8 @@ export default function createRelay({ electrical }) {
         [energized, api.builder.bool.not(energized)],
       );
     },
+    flushOutputs(io) {
+      io.publish('energized', io.readState('energized'));
+    },
   };
 }

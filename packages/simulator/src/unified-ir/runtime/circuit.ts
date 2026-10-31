@@ -1,6 +1,4 @@
-import { createIRInterpreter, createIRJIT, toNumber } from '@mica-js/ir';
-import { electricalCompilationOf } from '../compiler/electrical-compilation';
-import { electricalFaultContext } from '../compiler/electrical-diagnostics';
+import { createIRInterpreter, createIRJIT } from '@mica-js/ir';
 import type {
   ArrayRef,
   BytesRef,
@@ -15,15 +13,10 @@ import type {
   CircuitCompilationOptions,
   CompiledCircuit,
 } from '../compiler';
-import { buildDeviceAccessors } from './accessors';
-import {
-  CircuitError,
-  type CircuitEngine,
-  type CircuitRuntimeOptions,
-  type DeviceAccessorsOf,
-  type ElectricalCurrentTarget,
-  type ElectricalDiagnostic,
-} from './types';
+import { electricalCompilationOf } from '../compiler/electrical-compilation';
+import { createDeviceBoundary } from './bridge';
+import type { DeviceBoundary } from './bridge';
+import { CircuitError, type CircuitEngine, type CircuitRuntimeOptions } from './types';
 
 /** Every generated entry takes no arguments, so one frozen array is reused. */
 const NO_ARGS: readonly RuntimeScalar[] = Object.freeze([]);
@@ -36,11 +29,6 @@ const MAX_VIRTUAL_TIME = Number.MAX_SAFE_INTEGER;
 
 const DEFAULT_INSTANCE_ID = 'unified-circuit';
 
-type ElectricalReading =
-  | { readonly state: 'determinate'; readonly value: number }
-  | { readonly state: 'floating' }
-  | { readonly state: 'indeterminate' };
-
 /**
  * Mutable execution context. `IRExecutionContext` is readonly for callers; the
  * runtime owns this object and updates `virtualTime` in place so that `step()`
@@ -49,11 +37,6 @@ type ElectricalReading =
 interface RuntimeContext {
   instanceId: string;
   virtualTime: number;
-}
-
-/** One pin of the global address space, resolved at construction time. */
-interface PinRuntime {
-  readonly globalPinId: number;
 }
 
 /** Declared initial value of one memory resource, replayed by `reset()`. */
@@ -98,25 +81,24 @@ interface ResolvedRuntimeOptions {
  *
  * circuit.runBatch(1_000_000);                        // one engine call
  * expect(circuit.tickCount).toBe(1_000_000n);
- *
  * circuit.reset();
  * circuit.step();
- * expect(circuit.devices.sink1.getState('lamp')).toBe(true);
  * ```
  *
- * `Circuit` owns the engine instance and the tick counter; the compiled module
- * keeps every device, net and the main loop in one `@mica-js/ir` module, so a
- * batch is one interpreter/JIT call for the whole circuit.
+ * `Circuit` owns the engine instance, the tick counter and the private
+ * step-boundary hook plumbing. RFC 0017 traffic belongs to the
+ * `DeviceSimulationHost`: it delivers topic inputs before a step and publishes
+ * the topic outputs the device hooks report afterwards. `Circuit` itself
+ * exposes no device state, pin or electrical readback.
+ *
+ * The compiled module keeps every device, net and the main loop in one
+ * `@mica-js/ir` module, so a batch is one interpreter/JIT call for the whole
+ * circuit.
  */
-export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput> {
-  /** Typed per-device accessors, keyed by device id. */
-  readonly devices: DeviceAccessorsOf<I>;
-
+export class Circuit {
   readonly #compiled: CompiledCircuit;
   readonly #jit: IRInterpreter;
   readonly #context: RuntimeContext;
-  readonly #pins: ReadonlyMap<string, PinRuntime>;
-  readonly #pinNames: readonly string[];
   readonly #seeds: readonly ResetSeed[];
   #tickCount = 0n;
   #virtualTime = 0;
@@ -126,64 +108,48 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
     compiled: CompiledCircuit,
     jit: IRInterpreter,
     instanceId: string,
-    accessors: DeviceAccessorsOf<I>,
-    pins: ReadonlyMap<string, PinRuntime>,
+    boundary: DeviceBoundary,
     seeds: readonly ResetSeed[],
   ) {
     this.#compiled = compiled;
     this.#jit = jit;
     this.#context = { instanceId, virtualTime: 0 };
-    this.devices = accessors;
-    this.#pins = pins;
-    this.#pinNames = Object.freeze([...pins.keys()]);
     this.#seeds = seeds;
+    boundaries.set(this, boundary);
   }
 
   /**
    * Compiles `input`, builds the engine instance and runs the generated
    * `initialize` entry once.
    *
-   * The input is inferred as a `const` type, so a literal device list keeps its
-   * ids and `circuit.devices.<id>` is typed without a cast.
-   *
    * @throws {UnifiedIRCompilerError} when the circuit cannot be compiled.
    * @throws {CircuitError} for invalid options.
    */
-  static async create<const I extends CircuitCompilationInput>(
-    input: I,
+  static async create(
+    input: CircuitCompilationInput,
     options: CircuitRuntimeOptions = {},
-  ): Promise<Circuit<I>> {
+  ): Promise<Circuit> {
     const resolved = resolveOptions(options);
     const compiled = compileCircuit(input, compileOptionsOf(resolved));
     const jit = createEngine(compiled, resolved);
-    // The accessor factories run inside `buildDeviceAccessors`, which happens
-    // before `circuit` is assigned. They only close over this holder; the
-    // callbacks are invoked after construction.
-    const host: { circuit: Circuit<I> | undefined } = { circuit: undefined };
-    const circuit = new Circuit<I>(
+    const boundary = createDeviceBoundary({
+      compiled,
+      jit,
+      execute: (entry, args) => {
+        circuit.#context.virtualTime = circuit.#virtualTime;
+        jit.execute(entry, args, circuit.#context);
+      },
+      assertActive: () => {
+        circuit.#assertActive();
+      },
+    });
+    const circuit = new Circuit(
       compiled,
       jit,
       resolved.instanceId,
-      buildDeviceAccessors({
-        compiled,
-        jit,
-        execute: (entry, args) => {
-          jit.execute(entry, args, circuit.#context);
-        },
-        assertActive: () => {
-          circuit.#assertActive();
-        },
-        step: () => {
-          host.circuit?.step();
-        },
-        runBatch: (count) => {
-          host.circuit?.runBatch(count);
-        },
-      }) as DeviceAccessorsOf<I>,
-      pinRuntimeOf(compiled),
+      boundary,
       resetSeedsOf(compiled),
     );
-    host.circuit = circuit;
     // `initialize` runs once at creation; `reset()` replays the same sequence
     // after restoring every memory to its declared initial value.
     jit.execute(compiled.entryPoints.refs.initialize, NO_ARGS, circuit.#context);
@@ -283,188 +249,6 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
     this.#jit.execute(this.#compiled.entryPoints.refs.initialize, NO_ARGS, this.#context);
   }
 
-  /**
-   * Reads the level one pin observes.
-   *
-   * Requires an explicitly initialized digital input capability and applies
-   * the circuit interpretation to the solved physical voltage.
-   *
-   * @throws {CircuitError} with code `pin-not-found`.
-   */
-  getPin(pinName: string): boolean {
-    this.#assertActive();
-    this.#pinRuntime(pinName);
-    const storage = this.#jit.storage;
-    const electrical = this.#ensureElectrical();
-    {
-      const dot = pinName.indexOf('.');
-      if (
-        electrical.allocation.pins.get(pinName.slice(0, dot))?.get(pinName.slice(dot + 1))
-          ?.input === undefined
-      )
-        throw new CircuitError(
-          'unsupported-operation',
-          `Pin "${pinName}" has no digital input capability`,
-        );
-      this.#ensureElectrical();
-      return (
-        storage.loadArray(
-          electrical.operations.digitalSample,
-          electrical.operations.pinIndices.get(pinName)!,
-        ) === true
-      );
-    }
-  }
-
-  /** Physical pin voltage; floating results never contain a synthetic voltage. */
-  getVoltage(pinName: string): ElectricalReading {
-    this.#assertActive();
-    this.#pinRuntime(pinName);
-    const electrical = this.#ensureElectrical();
-    const dot = pinName.indexOf('.');
-    const pin = electrical.allocation.pins.get(pinName.slice(0, dot))!.get(pinName.slice(dot + 1))!;
-    return this.#electricalReading(
-      electrical.operations.solver.voltage,
-      electrical.operations.solver.voltageState,
-      pin.node,
-    );
-  }
-
-  /** Resistor/contact currents follow endpoint order; source and pin contributions flow outward. */
-  getCurrent(resource: string | ElectricalCurrentTarget): ElectricalReading {
-    this.#assertActive();
-    const {
-      allocation,
-      operations: { solver },
-    } = this.#ensureElectrical();
-    const missing = (): never => {
-      throw new CircuitError(
-        'resource-not-found',
-        `Unknown electrical current resource ${JSON.stringify(resource)}`,
-      );
-    };
-    let target: ElectricalCurrentTarget;
-    if (typeof resource === 'string') {
-      const dot = resource.indexOf('.');
-      if (dot <= 0) throw new CircuitError('resource-not-found', `Unknown resistor "${resource}"`);
-      target = { kind: 'resistor', device: resource.slice(0, dot), name: resource.slice(dot + 1) };
-    } else if (resource !== null && typeof resource === 'object') target = resource;
-    else return missing();
-    if (target.kind === 'resistor' || target.kind === 'contact') {
-      const contact = target.kind === 'contact';
-      const index = (contact ? allocation.contacts : allocation.resistors)
-        .get(target.device)
-        ?.get(target.name);
-      if (index === undefined) {
-        if (typeof resource === 'string')
-          throw new CircuitError('resource-not-found', `Unknown resistor "${resource}"`);
-        return missing();
-      }
-      return this.#electricalReading(
-        contact ? solver.contactCurrent : solver.current,
-        contact ? solver.contactCurrentState : solver.currentState,
-        index,
-      );
-    }
-    if (target.kind === 'source') {
-      const index = allocation.sources.get(target.name);
-      if (index === undefined) return missing();
-      return this.#electricalReading(solver.sourceCurrent, solver.sourceCurrentState, index);
-    }
-    if (target.kind !== 'drive' && target.kind !== 'pull-up' && target.kind !== 'pull-down')
-      return missing();
-    const pin = allocation.pins.get(target.device)?.get(target.pin);
-    if (pin === undefined) return missing();
-    const branches =
-      target.kind === 'drive'
-        ? pin.drive === undefined
-          ? undefined
-          : [
-              pin.drive.high,
-              pin.drive.low,
-              ...(pin.drive.analog === undefined ? [] : [pin.drive.analog.resistor]),
-            ]
-        : pin.bias === undefined
-          ? undefined
-          : [target.kind === 'pull-up' ? pin.bias.up : pin.bias.down];
-    if (branches === undefined) return missing();
-    let value = 0;
-    for (const index of branches) {
-      const current = this.#electricalReading(solver.current, solver.currentState, index);
-      if (current.state !== 'determinate') return current;
-      value -= current.value;
-    }
-    return { state: 'determinate', value };
-  }
-
-  /** Pull-based active diagnostics: one warning per resource; successful recovery removes it. */
-  getDiagnostics(): readonly ElectricalDiagnostic[] {
-    this.#assertActive();
-    const {
-      allocation,
-      operations: { solver },
-    } = this.#ensureElectrical();
-    const diagnostics: ElectricalDiagnostic[] = [];
-    const check = (target: ElectricalCurrentTarget, limit: number | undefined) => {
-      if (limit === undefined) return;
-      const current = this.getCurrent(target);
-      if (current.state === 'determinate' && Math.abs(current.value) > limit)
-        diagnostics.push(
-          Object.freeze({
-            code: 'electrical/overcurrent',
-            severity: 'warning',
-            target: Object.freeze(target),
-            current: current.value,
-            maxAbsCurrent: limit,
-          }),
-        );
-    };
-    for (const [device, resistors] of allocation.resistors)
-      for (const [name, index] of resistors)
-        check({ kind: 'resistor', device, name }, allocation.currentLimits.get(index));
-    for (const [device, pins] of allocation.pins)
-      for (const [pin, description] of pins)
-        check({ kind: 'drive', device, pin }, description.drive?.maxAbsCurrent);
-    const fault = this.#jit.storage.loadState(solver.fault);
-    if (fault !== 0)
-      diagnostics.push(
-        Object.freeze({
-          code:
-            fault === 1
-              ? 'electrical/invalid-parameter'
-              : fault === 2
-                ? 'electrical/source-conflict'
-                : 'electrical/numerical-failure',
-          severity: 'error',
-          ...electricalFaultContext(allocation, solver, this.#jit.storage),
-        }),
-      );
-    return Object.freeze(diagnostics);
-  }
-
-  #ensureElectrical() {
-    const electrical = electricalCompilationOf(this.#compiled);
-    if (electrical === undefined)
-      throw new CircuitError(
-        'unsupported-operation',
-        'This circuit has no resistive electrical model',
-      );
-    this.#context.virtualTime = this.#virtualTime;
-    this.#jit.execute(electrical.operations.ensure, NO_ARGS, this.#context);
-    return electrical;
-  }
-
-  #electricalReading(
-    values: ArrayRef<'f64'>,
-    states: ArrayRef<'u8'>,
-    index: number,
-  ): ElectricalReading {
-    const state = this.#jit.storage.loadArray(states, index);
-    if (state === 1) return { state: 'floating' };
-    if (state === 2) return { state: 'indeterminate' };
-    return { state: 'determinate', value: toNumber(this.#jit.storage.loadArray(values, index)) };
-  }
-
   /** Number of ticks completed since creation or the last `reset()`. */
   get tickCount(): bigint {
     this.#assertActive();
@@ -477,12 +261,6 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
     return this.#virtualTime;
   }
 
-  /** Underlying engine instance, e.g. for diagnostics or custom entries. */
-  get jit(): IRInterpreter {
-    this.#assertActive();
-    return this.#jit;
-  }
-
   /** Whether `dispose()` already ran. */
   get disposed(): boolean {
     return this.#disposed;
@@ -490,7 +268,7 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
 
   /**
    * Releases the runtime. Idempotent; every later call throws a `CircuitError`
-   * with code `disposed`, including stale device accessors.
+   * with code `disposed`.
    */
   dispose(): void {
     this.#disposed = true;
@@ -498,7 +276,7 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
     this.#virtualTime = 0;
   }
 
-  /** @internal Shared guard of the circuit and all of its accessors. */
+  /** @internal Shared guard of the circuit and its boundary hooks. */
   #assertActive(): void {
     if (this.#disposed) {
       throw new CircuitError(
@@ -532,34 +310,26 @@ export class Circuit<I extends CircuitCompilationInput = CircuitCompilationInput
             (BigInt(MAX_VIRTUAL_TIME) + 1n),
         );
   }
-
-  #pinRuntime(pinName: string): PinRuntime {
-    const pin = this.#pins.get(pinName);
-    if (pin === undefined) {
-      throw new CircuitError(
-        'pin-not-found',
-        `Pin "${pinName}" not found. Available: ${this.#pinNames.length === 0 ? '(none)' : `[${this.#pinNames.join(', ')}]`}`,
-        { pinName },
-      );
-    }
-    return pin;
-  }
 }
 
-/** Resolves every pin of the global address space into its runtime view. */
-function pinRuntimeOf(compiled: CompiledCircuit): ReadonlyMap<string, PinRuntime> {
-  const pins = new Map<string, PinRuntime>();
-  for (const [deviceId, allocation] of compiled.pins.devices) {
-    for (const [pinName, pin] of allocation.resolved) {
-      pins.set(
-        `${deviceId}.${pinName}`,
-        Object.freeze({
-          globalPinId: pin.globalPinId,
-        }),
-      );
-    }
-  }
-  return pins;
+const boundaries = new WeakMap<Circuit, DeviceBoundary>();
+
+/**
+ * Step-boundary hooks of one circuit.
+ *
+ * The device simulation host is the only package-level caller: RFC 0017 traffic
+ * enters through `applyInputs` and leaves through `flushOutputs`, never through
+ * a device accessor. This function is deliberately absent from the package
+ * entry points.
+ */
+export function deviceBoundaryOf(circuit: Circuit): DeviceBoundary {
+  const boundary = boundaries.get(circuit);
+  if (boundary === undefined)
+    throw new CircuitError(
+      'invalid-options',
+      'Argument must be a Circuit created by Circuit.create',
+    );
+  return boundary;
 }
 
 /**

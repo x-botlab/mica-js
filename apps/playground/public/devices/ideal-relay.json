@@ -25,8 +25,7 @@
     "energized": {
       "direction": "output",
       "type": "boolean",
-      "title": "线圈吸合",
-      "state": "energized"
+      "title": "线圈吸合"
     }
   },
   "connections": {

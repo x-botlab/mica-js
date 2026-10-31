@@ -46,5 +46,9 @@ export default function createLed({ electrical, properties }) {
           ),
         );
     },
+    flushOutputs(io) {
+      io.publish('brightness', io.readState('brightness'));
+      io.publish('lit', io.readState('lamp'));
+    },
   };
 }

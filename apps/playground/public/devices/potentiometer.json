@@ -26,8 +26,7 @@
     "actualPosition": {
       "direction": "output",
       "type": "number",
-      "title": "Position",
-      "state": "position"
+      "title": "Position"
     }
   },
   "reset": { "state": "supported", "detail": "Restores initial position and resistances" }

@@ -153,47 +153,6 @@ export interface DeviceBehaviorApi {
 }
 
 /**
- * Structural surface every device accessor exposes.
- *
- * The compiler keeps this declaration independent from the runtime's
- * `DeviceAccessor` so a device kernel can ship its own typed accessor without
- * making the compiler depend on the runtime module.
- */
-export interface DeviceAccessorSurface {
-  readonly deviceId: string;
-  readonly type: string;
-  readonly pinNames: readonly string[];
-  readonly stateNames: readonly string[];
-  readPin(pinName: string): boolean;
-  getState(name: string): unknown;
-  setState(name: string, value: unknown): void;
-}
-
-/** Host services handed to a device accessor factory at circuit creation. */
-export interface DeviceAccessorFactoryContext {
-  readonly deviceId: string;
-  /** Live engine storage (`IRStorage` in practice). */
-  readonly storage: unknown;
-  /** Throws once the owning circuit has been disposed. */
-  readonly assertActive: () => void;
-  /** Advances the owning circuit by one tick. */
-  readonly step: () => void;
-  /** Advances the owning circuit by `count` ticks. */
-  readonly runBatch: (count: number) => void;
-}
-
-/**
- * Builds the typed accessor of a device after its module is compiled.
- *
- * A description that supplies `accessor` replaces the generic accessor the
- * runtime would otherwise synthesize from `type`. The factory runs once per
- * circuit and closes over the layout its IR factory allocated.
- */
-export type DeviceAccessorFactory = (
-  context: DeviceAccessorFactoryContext,
-) => DeviceAccessorSurface;
-
-/**
  * Per-device behavior hooks. The compiler emits one IR function per hook:
  * `initialize` -> `<id>_initialize`, `tick` -> `<id>_tick`,
  * `update` -> `<id>_update`. Missing hooks simply produce no function.
@@ -248,11 +207,6 @@ export interface DeviceDescription extends DeviceBridgeHooks {
    * the behaviour hooks the compiler should call inside each phase.
    */
   readonly kernel?: DeviceKernelFactory;
-  /**
-   * Optional typed accessor factory. Kernels with a richer surface than the
-   * generic state/pin accessor (a register file, a memory map) use it.
-   */
-  readonly accessor?: DeviceAccessorFactory;
   /**
    * Read-only byte regions the kernel wants host updates for. The compiler
    * grants `update` access on top of the normal `read` grant so kernels can
@@ -368,8 +322,6 @@ export interface DeviceMetadata extends DeviceBridgeHooks {
   readonly initialize: string | undefined;
   readonly tick: string | undefined;
   readonly update: string | undefined;
-  /** Typed accessor factory supplied by the device description, if any. */
-  readonly accessor: DeviceAccessorFactory | undefined;
 }
 
 /** Generated entry points, both by name and as executable refs. */
