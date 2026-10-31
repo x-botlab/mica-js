@@ -1,5 +1,13 @@
 # @mica-js/canvas-editor
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [0aca467]
+  - @mica-js/simulator@1.0.0
+  - @mica-js/widget@0.2.2
+
 ## 0.3.1
 
 ### Patch Changes
