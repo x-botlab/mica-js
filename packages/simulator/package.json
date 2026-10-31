@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/simulator",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Mica simulator: runs the device instances of a schematic on one virtual clock",
   "license": "MIT",
   "repository": {

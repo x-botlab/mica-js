@@ -1,5 +1,12 @@
 # @mica-js/widget
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [8e5870b]
+  - @mica-js/simulator@2.0.0
+
 ## 0.2.2
 
 ### Patch Changes
