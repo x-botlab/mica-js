@@ -20,4 +20,5 @@
 
 - 项目级 skill 存放在 `.agents/skills/`，版本由 `skills-lock.json` 锁定；增删用 `npx skills@latest add mattpocock/skills -s <name>`。
 - `.claude/skills/` 是本机指向 `.agents/skills/` 的链接目录，已忽略，不要提交。
+- `spec-writer` 直接随仓库追踪，`skills-lock.json` 里没有它的条目；修改它走普通 git 流程，`npx skills update` 不会覆盖。
 - `grill-me` 需手动触发，实际流程在 `grilling`：在写方案或 RFC 前按设计树逐轮追问，把隐含假设逼出来；它只访谈，不动代码。
