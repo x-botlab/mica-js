@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-nullable-branch-join
 kind: compile
 ---
 
@@ -26,7 +24,13 @@ kind: compile
 <!-- prettier-ignore -->
 ```ddl
 device Atomic {
-fn read(value: number?, flag: bool) -> number { let saved: number? = value; if flag { saved = 1; } return saved + 1; }
+fn read(value: number?, flag: bool) -> number {
+let saved: number? = value;
+if flag {
+saved = 1;
+}
+return saved + 1;
+}
 }
 ```
 

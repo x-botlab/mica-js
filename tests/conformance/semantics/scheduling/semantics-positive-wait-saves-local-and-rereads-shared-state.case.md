@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-positive-wait-saves-local-and-rereads-shared-state
 kind: simulation
 ---
 
@@ -23,12 +21,19 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device SemanticProbe {
-        input notification update;
-        output channel out: number(capacity: 8);
-        state x: number = 1;
-        process mutate on update { x = 9; }
-        process start { let saved = x; await ticks(5); out.send(saved); out.send(x); }
-       }
+  input notification update;
+  output channel out: number(capacity: 8);
+  state x: number = 1;
+  process mutate on update {
+    x = 9;
+  }
+  process start {
+    let saved = x;
+    await ticks(5);
+    out.send(saved);
+    out.send(x);
+  }
+}
 ```
 
 ## 装配

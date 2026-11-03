@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-stale-input-validity-before-message
 kind: simulation
 ---
 
@@ -32,7 +30,10 @@ kind: simulation
 device HostProbe {
   input channel incoming: number(capacity: 2);
   output channel out: number(capacity: 2);
-  process start { let n = await incoming.receive(); out.send(n); }
+  process start {
+    let n = await incoming.receive();
+    out.send(n);
+  }
 }
 ```
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-assert-message-lazy
 kind: simulation
 ---
 
@@ -28,9 +26,13 @@ kind: simulation
 device Atomic {
 output channel out: number(capacity: 32);
 state calls: number = 0;
-fn message() -> string { calls = calls + 1; return "unexpected"; }
+fn message() -> string {
+calls = calls + 1;
+return "unexpected";
+}
 process start {
-assert true, message(); out.send(calls);
+assert true, message();
+out.send(calls);
 }
 }
 ```

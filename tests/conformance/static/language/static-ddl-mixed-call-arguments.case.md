@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-mixed-call-arguments
 kind: compile
 ---
 
@@ -22,14 +20,16 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-fn sum(left: number, right: number) -> number { return left + right; } const value = sum(1, right: 2);
+fn sum(left: number, right: number) -> number {
+return left + right;
+}
+const value = sum(1, right: 2);
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

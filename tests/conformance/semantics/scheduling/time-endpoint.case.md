@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-time-endpoint
 kind: simulation
 ---
 
@@ -27,8 +25,10 @@ kind: simulation
 ```ddl
 device Probe {
   output channel out: number(capacity: 8);
-
-  process start { await ticks(3); out.send(now()); }
+  process start {
+    await ticks(3);
+    out.send(now());
+  }
 }
 ```
 

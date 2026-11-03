@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: jit-code-write-does-not-wake-wait
 kind: comparison
 ---
 
@@ -25,7 +23,7 @@ kind: comparison
 
 ```json
 {
-  "model": "device Probe {\n public memory code[2]; state pc: number = 0;\n output channel out: number(capacity:32);\n fn emit(value:number) { out.send(value); }\nstate ready: bool = false;\n pure fn awake(): bool { return ready; }\n process start { await ticks(4); ready=true; }\n}",
+  "model": "device Probe {\n  public memory code[2];\n  state pc: number = 0;\n  output channel out: number(capacity: 32);\n  fn emit(value: number) { out.send(value); }\n  state ready: bool = false;\n  pure fn awake(): bool { return ready; }\n  process start {\n    await ticks(4);\n    ready = true;\n  }\n}",
   "description": {
     "instances": [
       {

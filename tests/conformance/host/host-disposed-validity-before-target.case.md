@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-disposed-validity-before-target
 kind: simulation
 ---
 

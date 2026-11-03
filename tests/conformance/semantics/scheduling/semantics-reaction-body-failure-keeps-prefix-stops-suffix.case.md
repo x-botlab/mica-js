@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-reaction-body-failure-keeps-prefix-stops-suffix
 kind: simulation
 ---
 
@@ -25,15 +23,23 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device SemanticProbe {
-        state trigger: number = 0; state allowed: bool = false;
-        public memory evidence[3];
-        reaction first on trigger as (old, current) { store8(evidence, 0, 1); }
-        reaction second on trigger as (old, current) {
-          store8(evidence, 1, 2); assert allowed;
-        }
-        reaction third on trigger as (old, current) { store8(evidence, 2, 3); }
-        process start { trigger = 1; }
-       }
+  state trigger: number = 0;
+  state allowed: bool = false;
+  public memory evidence[3];
+  reaction first on trigger as (old, current) {
+    store8(evidence, 0, 1);
+  }
+  reaction second on trigger as (old, current) {
+    store8(evidence, 1, 2);
+    assert allowed;
+  }
+  reaction third on trigger as (old, current) {
+    store8(evidence, 2, 3);
+  }
+  process start {
+    trigger = 1;
+  }
+}
 ```
 
 ## 装配

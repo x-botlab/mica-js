@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-const-reassignment
 kind: compile
 ---
 
@@ -25,14 +23,16 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-fn change() { const value = 1; value = 2; }
+fn change() {
+const value = 1;
+value = 2;
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

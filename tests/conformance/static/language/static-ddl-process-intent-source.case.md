@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-process-intent-source
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ derived branches: intent = []; process observe on branches {}
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

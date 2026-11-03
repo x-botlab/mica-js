@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-error-event-phase-before-state-and-target
 kind: simulation
 ---
 

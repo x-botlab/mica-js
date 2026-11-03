@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-fragment-final-value-coalesces-process-trigger
 kind: simulation
 ---
 
@@ -22,16 +20,25 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device SemanticProbe { output channel out: number(capacity: 32);
-        output channel reads: number(capacity: 8);
-        state x: number = 0;
-        process observe on x { out.send(x); }
-        process start {
-          x = 1; reads.send(x); x = 0; reads.send(x);
-          await ticks(0);
-          x = 1; reads.send(x); x = 2; reads.send(x);
-        }
-       }
+device SemanticProbe {
+  output channel out: number(capacity: 32);
+  output channel reads: number(capacity: 8);
+  state x: number = 0;
+  process observe on x {
+    out.send(x);
+  }
+  process start {
+    x = 1;
+    reads.send(x);
+    x = 0;
+    reads.send(x);
+    await ticks(0);
+    x = 1;
+    reads.send(x);
+    x = 2;
+    reads.send(x);
+  }
+}
 ```
 
 ## 装配

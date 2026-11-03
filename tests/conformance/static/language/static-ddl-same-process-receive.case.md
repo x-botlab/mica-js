@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-same-process-receive
 kind: compile
 ---
 
@@ -25,14 +23,17 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-input channel incoming: number(capacity: 2); process start { const first = await incoming.receive(); const second = await incoming.receive(); }
+input channel incoming: number(capacity: 2);
+process start {
+const first = await incoming.receive();
+const second = await incoming.receive();
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

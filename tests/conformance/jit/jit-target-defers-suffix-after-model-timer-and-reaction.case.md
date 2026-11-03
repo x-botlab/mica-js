@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: jit-target-defers-suffix-after-model-timer-and-reaction
 kind: comparison
 ---
 
@@ -25,7 +23,7 @@ kind: comparison
 ```json
 {
   "models": {
-    "jitProbe": "device JitProbe {\n    public memory code[2]; state pc: number = 0;\n    output channel out: number(capacity: 32);\n    fn emit(value: number) { out.send(value); }\n    \n        state trigger: number = 0;\n        reaction observe on trigger as (old, current) { out.send(100); }\n        process start { await ticks(4); out.send(99); trigger = 1; }\n      \n  }"
+    "jitProbe": "device JitProbe {\n  public memory code[2];\n  state pc: number = 0;\n  output channel out: number(capacity: 32);\n  fn emit(value: number) { out.send(value); }\n  state trigger: number = 0;\n  reaction observe on trigger as (old, current) { out.send(100); }\n  process start {\n    await ticks(4);\n    out.send(99);\n    trigger = 1;\n  }\n}"
   },
   "description": {
     "instances": [

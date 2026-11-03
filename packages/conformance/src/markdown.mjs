@@ -13,7 +13,7 @@ const sections = {
   comparison: ['对照输入', '执行步骤', '断言'],
 };
 const knownSections = new Set(Object.values(sections).flat());
-const metadataKeys = new Set(['format', 'id', 'kind']);
+const metadataKeys = new Set(['kind']);
 
 function filename(file) {
   return file instanceof URL ? fileURLToPath(file) : String(file ?? '<markdown>');
@@ -64,12 +64,6 @@ export function parseMarkdownCase(source, { file, layer } = {}) {
   const check = (key, valid, message) => {
     if (!valid) fail(message, locations[key] ?? 1);
   };
-  check('format', metadata.format === 'mica-case/v1', 'format must be mica-case/v1');
-  check(
-    'id',
-    typeof metadata.id === 'string' && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(metadata.id),
-    'id must be lower-kebab',
-  );
   check(
     'kind',
     Object.hasOwn(sections, metadata.kind),
@@ -233,7 +227,7 @@ export function parseMarkdownCase(source, { file, layer } = {}) {
   }
   const map = new SourceMap(JSON.parse(compiled.sourceMapText));
   return {
-    id: metadata.id,
+    name: file,
     layer,
     file,
     async run(adapter, t) {

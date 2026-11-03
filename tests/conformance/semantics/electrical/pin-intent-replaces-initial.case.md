@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-pin-intent-replaces-initial
 kind: simulation
 ---
 
@@ -27,8 +25,17 @@ kind: simulation
 ```ddl
 device Probe {
   output channel out: number(capacity: 8);
-  pin signal(low: 0.8, high: 2.0) = [resistor(to: supply, resistance: 1000)]; pin supply; pin reference;
-  process start { signal.intent <- [resistor(to: reference, resistance: 1000)]; await ticks(0); let v = signal.sample.voltage; if v != none { out.send(v); } }
+  pin signal(low: 0.8, high: 2.0) = [resistor(to: supply, resistance: 1000)];
+  pin supply;
+  pin reference;
+  process start {
+    signal.intent <- [resistor(to: reference, resistance: 1000)];
+    await ticks(0);
+    let v = signal.sample.voltage;
+    if v != none {
+      out.send(v);
+    }
+  }
 }
 ```
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: jit-redirect-same-nextpc-skips-suffix
 kind: comparison
 ---
 
@@ -31,7 +29,7 @@ kind: comparison
 
 ```json
 {
-  "model": "device Probe {\n public memory code[2]; state pc: number = 0;\n output channel out: number(capacity:32);\n fn emit(value:number) { out.send(value); }\nfn jump() { redirect(1); }\n}",
+  "model": "device Probe {\n  public memory code[2];\n  state pc: number = 0;\n  output channel out: number(capacity: 32);\n  fn emit(value: number) { out.send(value); }\n  fn jump() { redirect(1); }\n}",
   "description": {
     "instances": [
       {

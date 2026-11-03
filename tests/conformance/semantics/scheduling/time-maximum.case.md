@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-time-maximum
 kind: simulation
 ---
 
@@ -27,8 +25,10 @@ kind: simulation
 ```ddl
 device Probe {
   output channel out: number(capacity: 8);
-
-  process start { await ticks(7_200_000_000_000_000); out.send(now()); }
+  process start {
+    await ticks(7_200_000_000_000_000);
+    out.send(now());
+  }
 }
 ```
 

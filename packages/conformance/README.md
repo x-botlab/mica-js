@@ -6,9 +6,9 @@
 
 入口 `@mica-js/conformance` 导出：
 
-- `loadCases(rootURL)`：必须传目录 `file:` URL（以 `/` 结尾）；按 `layers` 中的六层递归发现且仅支持 `.case.md`，拒绝重复 id，layer 从目录推导。其他文件自然忽略；普通 `fixture.mjs` 等共享模块不会自动发现或执行。
+- `loadCases(rootURL)`：传目录 `file:` URL（以 `/` 结尾）；按 `layers` 中的六层递归发现 `.case.md`，`name` 由相对文件路径生成，layer 从目录推导。其他文件自然忽略。
 - `loadMarkdownCase(fileURL, {layer})`：异步读取并解析样本。
-- `parseMarkdownCase(source, {file, layer})`：同步解析、校验并编译执行代码，返回 `{id, layer, file, async run(adapter, t)}`。
+- `parseMarkdownCase(source, {file, layer})`：同步解析、校验并编译执行代码，返回 `{name, layer, file, async run(adapter, t)}`，直接解析时以文件路径作为名称。
 - `layers`：用例目录分类。
 - `summarize(cases, outcomes?)`：统计用例数量与执行结果；未传执行结果时计为未运行。
 - `loadAdapter(value?)`：加载真实适配器。
@@ -24,7 +24,7 @@ const cases = await loadCases(new URL('./tests/conformance/', import.meta.url));
 
 ## Markdown 契约
 
-可执行文件以 YAML frontmatter 开始（允许 BOM 和 CRLF），包含 `format: mica-case/v1`、lower-kebab `id` 和 `kind`。规范来源、前提、操作和预期直接写在 Markdown 正文中，内容通过 review 维护；框架按执行形式加载代码并统计实际结果。
+可执行文件以 YAML frontmatter 开始（允许 BOM 和 CRLF），只填写 `kind`。规范来源、前提、操作和预期直接写在 Markdown 正文中，内容通过 review 维护；框架按执行形式加载代码并统计实际结果。
 
 必填 H2 顺序：compile 为「输入、执行步骤、断言」；simulation 为「模型、装配、执行步骤、断言」；comparison 为「对照输入、执行步骤、断言」。每节恰好一个非空顶层围栏代码块；执行步骤与断言仅接受 `typescript`，输入与对照仅接受 `ddl/json`，模型仅接受 `ddl`，装配接受合法 `json`，解析后的数据直接交给用例。说明文字、H1、无代码的其他章节可以保留；重复、不适用或嵌套执行章节、缩进代码、其他章节的代码均拒绝。
 

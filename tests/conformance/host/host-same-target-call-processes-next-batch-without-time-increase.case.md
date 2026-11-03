@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-same-target-call-processes-next-batch-without-time-increase
 kind: simulation
 ---
 
@@ -23,10 +21,14 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device HostProbe {
-        input channel incoming: number(capacity: 2); input notification wake;
-        output channel out: number(capacity: 2);
-        process receiveOne on wake { let n = await incoming.receive(); out.send(n); }
-       }
+  input channel incoming: number(capacity: 2);
+  input notification wake;
+  output channel out: number(capacity: 2);
+  process receiveOne on wake {
+    let n = await incoming.receive();
+    out.send(n);
+  }
+}
 ```
 
 ## 装配

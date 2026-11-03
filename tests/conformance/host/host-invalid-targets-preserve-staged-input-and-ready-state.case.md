@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-invalid-targets-preserve-staged-input-and-ready-state
 kind: simulation
 ---
 
@@ -23,9 +21,13 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device HostProbe {
-        input channel incoming: number(capacity: 2); output channel out: number(capacity: 2);
-        process start { let n = await incoming.receive(); out.send(n); }
-       }
+  input channel incoming: number(capacity: 2);
+  output channel out: number(capacity: 2);
+  process start {
+    let n = await incoming.receive();
+    out.send(n);
+  }
+}
 ```
 
 ## 装配

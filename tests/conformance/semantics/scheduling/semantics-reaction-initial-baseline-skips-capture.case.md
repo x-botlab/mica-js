@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-reaction-initial-baseline-skips-capture
 kind: simulation
 ---
 
@@ -25,15 +23,21 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device SemanticProbe { output channel out: number(capacity: 32);
-        state x: number = 1;
-        state allowed: bool = false;
-        pure fn captureValue() -> number { assert allowed; return x; }
-        reaction observe on x as (old, current) capture saved = captureValue() {
-          out.send(saved);
-        }
-        process start { out.send(42); }
-       }
+device SemanticProbe {
+  output channel out: number(capacity: 32);
+  state x: number = 1;
+  state allowed: bool = false;
+  pure fn captureValue() -> number {
+    assert allowed;
+    return x;
+  }
+  reaction observe on x as (old, current) capture saved = captureValue() {
+    out.send(saved);
+  }
+  process start {
+    out.send(42);
+  }
+}
 ```
 
 ## 装配

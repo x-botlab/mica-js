@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-branch-local-escape
 kind: compile
 ---
 
@@ -25,14 +23,18 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-fn read(flag: bool) -> number { if flag { const saved = 1; } return saved; }
+fn read(flag: bool) -> number {
+if flag {
+const saved = 1;
+}
+return saved;
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

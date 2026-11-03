@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-import
 kind: compile
 ---
 
@@ -30,7 +28,6 @@ import "other.ddl"; device StaticFixture {}
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

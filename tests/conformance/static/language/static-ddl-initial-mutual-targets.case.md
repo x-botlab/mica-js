@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-initial-mutual-targets
 kind: compile
 ---
 
@@ -25,14 +23,14 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-pin first = [resistor(to: second, resistance: 1000)]; pin second = [resistor(to: first, resistance: 2000)];
+pin first = [resistor(to: second, resistance: 1000)];
+pin second = [resistor(to: first, resistance: 2000)];
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

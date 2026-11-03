@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-report-first-fault-before-event
 kind: simulation
 ---
 
@@ -39,7 +37,9 @@ kind: simulation
 ## 模型
 
 ```ddl
-device HostProbe { input notification wake; }
+device HostProbe {
+  input notification wake;
+}
 ```
 
 ## 装配

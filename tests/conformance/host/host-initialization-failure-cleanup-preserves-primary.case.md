@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-initialization-failure-cleanup-preserves-primary
 kind: simulation
 ---
 
@@ -44,7 +42,9 @@ kind: simulation
 ## 模型
 
 ```ddl
-device Cleanup { input notification wake; }
+device Cleanup {
+  input notification wake;
+}
 ```
 
 ## 装配

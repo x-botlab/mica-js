@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: jit-empty-block-rejected
 kind: compile
 ---
 

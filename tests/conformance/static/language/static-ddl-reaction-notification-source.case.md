@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-reaction-notification-source
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ input notification changed; reaction observe on changed as (before, after) {}
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: consistency-random-derived-state-ascii-default
 kind: comparison
 ---
 
@@ -23,7 +21,7 @@ kind: comparison
 ```json
 {
   "models": {
-    "randomProbe": "device RandomProbe {\n    output channel out: number(capacity: 16); process start {\n  let i: number = 0;\n  while i < 8 { out.send(random()); i = i + 1; }\n}\n  }"
+    "randomProbe": "device RandomProbe {\n  output channel out: number(capacity: 16);\n  process start {\n    let i: number = 0;\n    while i < 8 {\n      out.send(random());\n      i = i + 1;\n    }\n  }\n}"
   },
   "parameters": {
     "label": "ascii-default",

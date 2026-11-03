@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-channel-byte-copy-snapshot
 kind: simulation
 ---
 
@@ -25,7 +23,15 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Probe { memory data[1]; output channel out: bytes(maxLength: 1, capacity: 1); process start { store8(data, 0, 1); out.send(copyBytes(data, 0, 1)); store8(data, 0, 9); } }
+device Probe {
+  memory data[1];
+  output channel out: bytes(maxLength: 1, capacity: 1);
+  process start {
+    store8(data, 0, 1);
+    out.send(copyBytes(data, 0, 1));
+    store8(data, 0, 9);
+  }
+}
 ```
 
 ## 装配

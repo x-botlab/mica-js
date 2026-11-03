@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: consistency-builder-ddl-value-snapshot
 kind: comparison
 ---
 
@@ -25,7 +23,7 @@ kind: comparison
 
 ```json
 {
-  "source": "device Snapshot { public memory data[3]; process start { store8(data,0,1); let saved:number=load8(data,0); store8(data,0,9); store8(data,1,saved); } }"
+  "source": "device Snapshot {\n  public memory data[3];\n  process start {\n    store8(data, 0, 1);\n    let saved: number = load8(data, 0);\n    store8(data, 0, 9);\n    store8(data, 1, saved);\n  }\n}"
 }
 ```
 

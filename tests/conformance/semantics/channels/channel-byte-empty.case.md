@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-channel-byte-empty
 kind: simulation
 ---
 
@@ -25,7 +23,12 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Probe { output channel out: bytes(maxLength: 2, capacity: 1); process start { out.send(bytes[]); } }
+device Probe {
+  output channel out: bytes(maxLength: 2, capacity: 1);
+  process start {
+    out.send(bytes[]);
+  }
+}
 ```
 
 ## 装配

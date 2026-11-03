@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: device-resistor-initial-network
 kind: comparison
 ---
 

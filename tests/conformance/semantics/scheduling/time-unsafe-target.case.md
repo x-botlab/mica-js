@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-time-unsafe-target
 kind: simulation
 ---
 
@@ -28,7 +26,9 @@ kind: simulation
 device Probe {
   output channel out: number(capacity: 8);
 
-  process start { out.send(1); }
+  process start {
+    out.send(1);
+  }
 }
 ```
 

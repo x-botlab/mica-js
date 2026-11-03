@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-invalid-escape
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ kind: compile
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input.source);
 };

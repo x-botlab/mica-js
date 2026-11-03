@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-channel-validation-before-drop
 kind: simulation
 ---
 
@@ -25,7 +23,13 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Probe { output channel out: bytes(maxLength: 1, capacity: 1); process start { out.send(bytes[1]); out.send(bytes[1, 2]); } }
+device Probe {
+  output channel out: bytes(maxLength: 1, capacity: 1);
+  process start {
+    out.send(bytes[1]);
+    out.send(bytes[1, 2]);
+  }
+}
 ```
 
 ## 装配

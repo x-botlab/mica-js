@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-derived-runtime-read
 kind: compile
 ---
 
@@ -25,14 +23,17 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-state count: number = 1; pure fn read() -> number { return count; } derived next: number = read();
+state count: number = 1;
+pure fn read() -> number {
+return count;
+}
+derived next: number = read();
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

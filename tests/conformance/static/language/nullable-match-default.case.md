@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-nullable-match-default
 kind: compile
 ---
 
@@ -26,7 +24,12 @@ kind: compile
 <!-- prettier-ignore -->
 ```ddl
 device Atomic {
-fn read(value: number?) -> number { match value { none => { return 0; } _ => { return value + 1; } } }
+fn read(value: number?) -> number {
+match value {
+none => { return 0; }
+_ => { return value + 1; }
+}
+}
 }
 ```
 

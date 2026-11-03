@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-nullable-continue-path
 kind: compile
 ---
 
@@ -26,7 +24,15 @@ kind: compile
 <!-- prettier-ignore -->
 ```ddl
 device Atomic {
-fn read(value: number?) { while true { if value == none { continue; } const next = value + 1; break; } }
+fn read(value: number?) {
+while true {
+if value == none {
+continue;
+}
+const next = value + 1;
+break;
+}
+}
 }
 ```
 

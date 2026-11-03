@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-byte-length-validation-before-full-queue-overflow
 kind: simulation
 ---
 
@@ -23,13 +21,15 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device HostProbe {
-        input channel incoming: bytes(maxLength: 2, capacity: 2, overflow: Overflow.drop_oldest);
-        output channel out: bytes(maxLength: 2, capacity: 2);
-        process start {
-          let first = await incoming.receive(); out.send(first);
-          let second = await incoming.receive(); out.send(second);
-        }
-       }
+  input channel incoming: bytes(maxLength: 2, capacity: 2, overflow: Overflow.drop_oldest);
+  output channel out: bytes(maxLength: 2, capacity: 2);
+  process start {
+    let first = await incoming.receive();
+    out.send(first);
+    let second = await incoming.receive();
+    out.send(second);
+  }
+}
 ```
 
 ## 装配

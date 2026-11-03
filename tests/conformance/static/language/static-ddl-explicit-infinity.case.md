@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-explicit-infinity
 kind: compile
 ---
 
@@ -8,7 +6,10 @@ kind: compile
 
 ## 规范来源
 
-[docs/spec/language/expressions.rst](../../../../docs/spec/language/expressions.rst)
+[docs/spec/language/builtins.rst](../../../../docs/spec/language/builtins.rst)
+
+<!-- prettier-ignore -->
+> ``NaN`` 和 ``Infinity`` 是内置 number 常量，负无穷写作 ``-Infinity``。它们与普通运算结果采用相同类型。
 
 ## 验收义务
 
@@ -22,14 +23,16 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-const positive = Infinity; const negative = -Infinity; const nanValue = NaN; const zero = -0;
+const positive = Infinity;
+const negative = -Infinity;
+const nanValue = NaN;
+const zero = -0;
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-reaction-sync-effects
 kind: compile
 ---
 
@@ -22,18 +20,23 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-state count: number = 0; output channel outgoing: number(capacity: 2);
-     fn update() { count = count + 1; }
-     reaction observe on count as (before, after) {
-       update(); const time = now(); outgoing.send(random()); return;
-     }
+state count: number = 0;
+output channel outgoing: number(capacity: 2);
+fn update() {
+count = count + 1;
+}
+reaction observe on count as (before, after) {
+update();
+const time = now();
+outgoing.send(random());
+return;
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

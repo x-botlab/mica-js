@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-no-board-ground-reference
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ pin probe = [resistor(to: ground, resistance: 1000)];
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

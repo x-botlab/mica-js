@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: consistency-real-device-builder-and-ddl-share-host-execution-contract
 kind: comparison
 ---
 
@@ -25,7 +23,7 @@ kind: comparison
 ```json
 {
   "models": {
-    "equivalent": "device Equivalent {\n        public memory data[2];\n        process start { store8(data, 0, 7); await ticks(3); store8(data, 1, 9); }\n      }"
+    "equivalent": "device Equivalent {\n  public memory data[2];\n  process start {\n    store8(data, 0, 7);\n    await ticks(3);\n    store8(data, 1, 9);\n  }\n}"
   },
   "description": {
     "instances": [

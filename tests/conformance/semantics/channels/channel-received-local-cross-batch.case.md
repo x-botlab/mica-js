@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-channel-received-local-cross-batch
 kind: simulation
 ---
 
@@ -25,7 +23,15 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Probe { output channel out: number(capacity: 8); input channel incoming: number(capacity: 1); process start { let saved = await incoming.receive(); await ticks(3); out.send(saved); } }
+device Probe {
+  output channel out: number(capacity: 8);
+  input channel incoming: number(capacity: 1);
+  process start {
+    let saved = await incoming.receive();
+    await ticks(3);
+    out.send(saved);
+  }
+}
 ```
 
 ## 装配

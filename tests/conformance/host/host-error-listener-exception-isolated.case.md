@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-error-listener-exception-isolated
 kind: simulation
 ---
 

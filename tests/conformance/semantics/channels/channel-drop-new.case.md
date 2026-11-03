@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-channel-drop-new
 kind: simulation
 ---
 
@@ -25,7 +23,14 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Probe { output channel out: number(capacity: 2); process start { out.send(1); out.send(2); out.send(3); } }
+device Probe {
+  output channel out: number(capacity: 2);
+  process start {
+    out.send(1);
+    out.send(2);
+    out.send(3);
+  }
+}
 ```
 
 ## 装配

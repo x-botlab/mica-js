@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: template-initial-pull-down-first-sample
 kind: simulation
 ---
 

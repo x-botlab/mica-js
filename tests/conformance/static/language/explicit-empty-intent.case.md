@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: markdown-explicit-empty-intent
 kind: compile
 ---
 

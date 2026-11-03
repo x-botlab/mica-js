@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: consistency-random-fixed-vector-ordinary
 kind: simulation
 ---
 
@@ -37,11 +35,15 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device RandomProbe {
-    output channel out: number(capacity: 16); process start {
-  let i: number = 0;
-  while i < 8 { out.send(random()); i = i + 1; }
-}
+  output channel out: number(capacity: 16);
+  process start {
+    let i: number = 0;
+    while i < 8 {
+      out.send(random());
+      i = i + 1;
+    }
   }
+}
 ```
 
 ## 装配

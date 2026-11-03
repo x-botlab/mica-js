@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-logical-short-circuit
 kind: simulation
 ---
 
@@ -33,9 +31,14 @@ kind: simulation
 device Atomic {
 output channel out: number(capacity: 32);
 state calls: number = 0;
-fn change() -> bool { calls = calls + 1; return true; }
+fn change() -> bool {
+calls = calls + 1;
+return true;
+}
 process start {
-const first = false && change(); const second = true || change(); out.send(calls);
+const first = false && change();
+const second = true || change();
+out.send(calls);
 }
 }
 ```

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-default-not-last
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ fn choose(value: string) { match value { _ => {} "later" => {} } }
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

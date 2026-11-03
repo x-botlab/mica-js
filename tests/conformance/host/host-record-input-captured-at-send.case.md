@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-record-input-captured-at-send
 kind: simulation
 ---
 
@@ -23,11 +21,17 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device HostProbe {
-        record Item { n: number; ready: bool; }
-        input channel incoming: Item(capacity: 2);
-        output channel out: Item(capacity: 2);
-        process start { let item = await incoming.receive(); out.send(item); }
-       }
+  record Item {
+    n: number;
+    ready: bool;
+  }
+  input channel incoming: Item(capacity: 2);
+  output channel out: Item(capacity: 2);
+  process start {
+    let item = await incoming.receive();
+    out.send(item);
+  }
+}
 ```
 
 ## 装配

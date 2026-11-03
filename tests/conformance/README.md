@@ -40,7 +40,7 @@ pnpm test:conformance:strict
 | `simulation` | 模型 → 装配 → 执行步骤 → 断言 | [仿真模板](templates/simulation.template.md) |
 | `comparison` | 对照输入 → 执行步骤 → 断言    | [对照模板](templates/comparison.template.md) |
 
-frontmatter 只包含 `format: mica-case/v1`、唯一 `id` 和 `kind`。每个必填执行章节恰好一个非空围栏代码块；正文可穿插解释文字，说明章节自由组织。加载器按上述执行章节顺序提取代码。
+frontmatter 只包含 `kind`，用例名称由相对文件路径生成。每个必填执行章节恰好一个非空围栏代码块；正文可穿插解释文字，说明章节自由组织。加载器按上述执行章节顺序提取代码。
 
 模型使用 `ddl`；装配使用 `json`。输入与对照输入使用 `ddl` 或 `json`；执行步骤与断言使用 `typescript`。JSON 输入会解析成对象，DDL 输入保持原文。Builder 在执行步骤中通过 `adapter` 调用。
 

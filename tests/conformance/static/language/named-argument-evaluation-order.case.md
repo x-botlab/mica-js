@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-named-argument-evaluation-order
 kind: simulation
 ---
 
@@ -28,8 +26,13 @@ kind: simulation
 device Atomic {
 output channel out: number(capacity: 32);
 state calls: number = 0;
-fn next() -> number { calls = calls + 1; return calls; }
-fn pack(left: number, right: number) -> number { return left * 10 + right; }
+fn next() -> number {
+calls = calls + 1;
+return calls;
+}
+fn pack(left: number, right: number) -> number {
+return left * 10 + right;
+}
 process start {
 out.send(pack(right: next(), left: next()));
 }

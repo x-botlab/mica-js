@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-nullable-assignment-invalidates
 kind: compile
 ---
 
@@ -25,14 +23,20 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-fn read(value: number?) -> number { let saved: number? = value; if saved != none { saved = none; return saved + 1; } return 0; }
+fn read(value: number?) -> number {
+let saved: number? = value;
+if saved != none {
+saved = none;
+return saved + 1;
+}
+return 0;
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

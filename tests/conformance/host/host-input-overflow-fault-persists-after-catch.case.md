@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-input-overflow-fault-persists-after-catch
 kind: simulation
 ---
 
@@ -25,10 +23,12 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device HostProbe {
-        input channel incoming: number(capacity: 2, overflow: Overflow.error);
-        public memory data[1];
-        process start { store8(data, 0, 7); }
-       }
+  input channel incoming: number(capacity: 2, overflow: Overflow.error);
+  public memory data[1];
+  process start {
+    store8(data, 0, 7);
+  }
+}
 ```
 
 ## 装配

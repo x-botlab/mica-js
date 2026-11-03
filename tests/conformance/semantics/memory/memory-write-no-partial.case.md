@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-memory-write-no-partial
 kind: simulation
 ---
 
@@ -28,7 +26,11 @@ kind: simulation
 device Probe {
   output channel out: number(capacity: 8);
   public memory data[2];
-  process start { store8(data, 0, 17); store8(data, 1, 34); store16le(data, 1, 65535); }
+  process start {
+    store8(data, 0, 17);
+    store8(data, 1, 34);
+    store16le(data, 1, 65535);
+  }
 }
 ```
 

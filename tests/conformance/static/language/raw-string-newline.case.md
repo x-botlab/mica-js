@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-raw-string-newline
 kind: compile
 ---
 

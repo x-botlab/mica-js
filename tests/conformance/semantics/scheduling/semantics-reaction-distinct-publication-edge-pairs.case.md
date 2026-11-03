@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-reaction-distinct-publication-edge-pairs
 kind: simulation
 ---
 
@@ -22,11 +20,19 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device SemanticProbe { output channel out: number(capacity: 32);
-        state x: number = 0;
-        reaction observe on x as (old, current) { out.send(old); out.send(current); }
-        process start { x = 1; await ticks(0); x = 2; }
-       }
+device SemanticProbe {
+  output channel out: number(capacity: 32);
+  state x: number = 0;
+  reaction observe on x as (old, current) {
+    out.send(old);
+    out.send(current);
+  }
+  process start {
+    x = 1;
+    await ticks(0);
+    x = 2;
+  }
+}
 ```
 
 ## 装配

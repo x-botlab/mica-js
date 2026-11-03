@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-device-topic-failure-faults-before-event-without-rethrow
 kind: simulation
 ---
 
@@ -24,7 +22,7 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device HostProbe {  }
+device HostProbe {}
 ```
 
 ## 装配

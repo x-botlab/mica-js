@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-batch-clears-unread-input-keeps-sync-input-and-local
 kind: simulation
 ---
 
@@ -23,15 +21,19 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device HostProbe {
-        input channel incoming: number(capacity: 8);
-        output channel out: number(capacity: 8);
-        process start {
-          let first = await incoming.receive(); out.send(first);
-          await ticks(5); out.send(first);
-          let second = await incoming.receive(); out.send(second);
-          let third = await incoming.receive(); out.send(third);
-        }
-       }
+  input channel incoming: number(capacity: 8);
+  output channel out: number(capacity: 8);
+  process start {
+    let first = await incoming.receive();
+    out.send(first);
+    await ticks(5);
+    out.send(first);
+    let second = await incoming.receive();
+    out.send(second);
+    let third = await incoming.receive();
+    out.send(third);
+  }
+}
 ```
 
 ## 装配

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: jit-hook-on-every-instruction
 kind: comparison
 ---
 
@@ -30,7 +28,7 @@ kind: comparison
 
 ```json
 {
-  "model": "device Probe {\n public memory code[2]; state pc: number = 0;\n output channel out: number(capacity:32);\n fn emit(value:number) { out.send(value); }\nstate ready: bool = true;\n fn hook() { out.send(10); }\n}",
+  "model": "device Probe {\n  public memory code[2];\n  state pc: number = 0;\n  output channel out: number(capacity: 32);\n  fn emit(value: number) { out.send(value); }\n  state ready: bool = true;\n  fn hook() { out.send(10); }\n}",
   "description": {
     "instances": [
       {

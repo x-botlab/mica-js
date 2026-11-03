@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-memory-little-endian
 kind: simulation
 ---
 
@@ -28,7 +26,9 @@ kind: simulation
 device Probe {
   output channel out: number(capacity: 8);
   public memory data[5];
-  process start { store32le(data, 1, 305419896); }
+  process start {
+    store32le(data, 1, 305419896);
+  }
 }
 ```
 

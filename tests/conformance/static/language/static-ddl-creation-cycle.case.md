@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-creation-cycle
 kind: compile
 ---
 
@@ -25,14 +23,14 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-const first: number = second; const second: number = first;
+const first: number = second;
+const second: number = first;
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

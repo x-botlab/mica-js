@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-topic-registration-snapshot-and-synchronous-nesting
 kind: simulation
 ---
 
@@ -22,7 +20,7 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device HostProbe {  }
+device HostProbe {}
 ```
 
 ## 装配

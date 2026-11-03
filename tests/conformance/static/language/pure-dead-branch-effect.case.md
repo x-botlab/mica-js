@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-pure-dead-branch-effect
 kind: compile
 ---
 
@@ -26,7 +24,12 @@ kind: compile
 <!-- prettier-ignore -->
 ```ddl
 device Atomic {
-pure fn read() -> number { if false { return random(); } return 0; }
+pure fn read() -> number {
+if false {
+return random();
+}
+return 0;
+}
 }
 ```
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-initial-memory-read
 kind: compile
 ---
 
@@ -25,16 +23,18 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-memory data[1]; pin reference;
-     pure fn bias() -> intent { return [resistor(to: reference, resistance: load8(data, 0) + 1000)]; }
-     pin probe = bias();
+memory data[1];
+pin reference;
+pure fn bias() -> intent {
+return [resistor(to: reference, resistance: load8(data, 0) + 1000)];
+}
+pin probe = bias();
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

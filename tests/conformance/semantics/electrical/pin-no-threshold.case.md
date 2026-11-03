@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-pin-no-threshold
 kind: simulation
 ---
 
@@ -28,7 +26,13 @@ kind: simulation
 device Probe {
   output channel out: number(capacity: 8);
   pin signal;
-  process start { if signal.sample.level == Logic.unknown { out.send(1); } else { out.send(0); } }
+  process start {
+    if signal.sample.level == Logic.unknown {
+      out.send(1);
+    } else {
+      out.send(0);
+    }
+  }
 }
 ```
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-bom-crlf-chinese
 kind: compile
 ---
 
@@ -29,7 +27,6 @@ kind: compile
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input.source);
 let factoryCalls = 0;
 ```

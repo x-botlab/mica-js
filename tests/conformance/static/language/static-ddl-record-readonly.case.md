@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-record-readonly
 kind: compile
 ---
 
@@ -25,14 +23,17 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-record Item { value: number; } fn change() { let item: Item = { value: 1 }; item.value = 2; }
+record Item { value: number; }
+fn change() {
+let item: Item = { value: 1 };
+item.value = 2;
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

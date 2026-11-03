@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-explicit-undefined-seed-before-factory
 kind: simulation
 ---
 

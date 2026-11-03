@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-ordinary-now
 kind: compile
 ---
 
@@ -25,14 +23,18 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-fn read() -> number { return now(); } process start { const saved = read(); }
+fn read() -> number {
+return now();
+}
+process start {
+const saved = read();
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

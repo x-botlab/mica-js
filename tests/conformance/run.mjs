@@ -49,13 +49,12 @@ if (flags.has('--report')) {
       },
     );
     if (result.error) throw result.error;
-    const names = new Set(cases.map((item) => item.id));
+    const names = new Set(cases.map((item) => item.name));
     const outcomes = (await readFile(destination, 'utf8'))
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line))
-      .filter((item) => names.has(item.name))
-      .map((item) => ({ id: item.name, status: item.status }));
+      .filter((item) => names.has(item.name));
     printReport(outcomes);
     process.exitCode = result.status ?? 1;
   } finally {

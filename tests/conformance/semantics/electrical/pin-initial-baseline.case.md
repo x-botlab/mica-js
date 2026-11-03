@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-pin-initial-baseline
 kind: simulation
 ---
 
@@ -27,8 +25,17 @@ kind: simulation
 ```ddl
 device Probe {
   output channel out: number(capacity: 8);
-  pin signal(low: 0.8, high: 2.0) = [resistor(to: supply, resistance: 1000)]; pin supply; pin reference; reaction changed on signal.sample.level as (old, current) { out.send(9); }
-  process start { if signal.sample.level == Logic.high { out.send(1); } }
+  pin signal(low: 0.8, high: 2.0) = [resistor(to: supply, resistance: 1000)];
+  pin supply;
+  pin reference;
+  reaction changed on signal.sample.level as (old, current) {
+    out.send(9);
+  }
+  process start {
+    if signal.sample.level == Logic.high {
+      out.send(1);
+    }
+  }
 }
 ```
 

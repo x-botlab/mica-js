@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-reentry-lock-is-per-board
 kind: simulation
 ---
 

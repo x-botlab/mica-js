@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-sync-report-stops-next-delivery
 kind: simulation
 ---
 
@@ -36,7 +34,9 @@ kind: simulation
 ```ddl
 device Delivery {
   output channel out: number(capacity: 2);
-  process start { out.send(7); }
+  process start {
+    out.send(7);
+  }
 }
 ```
 

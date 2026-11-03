@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-direct-resource-parameters
 kind: compile
 ---
 
@@ -22,16 +20,18 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-pin probe; memory data[1];
-     pure fn read(p: pin, m: memory) -> bool { return p == probe && load8(m, 0) == 0; }
-     derived ready: bool = read(probe, data);
+pin probe;
+memory data[1];
+pure fn read(p: pin, m: memory) -> bool {
+return p == probe && load8(m, 0) == 0;
+}
+derived ready: bool = read(probe, data);
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

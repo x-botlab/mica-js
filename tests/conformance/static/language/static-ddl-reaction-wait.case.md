@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-reaction-wait
 kind: compile
 ---
 
@@ -25,14 +23,16 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-state count: number = 0; reaction observe on count as (before, after) { await ticks(1); }
+state count: number = 0;
+reaction observe on count as (before, after) {
+await ticks(1);
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

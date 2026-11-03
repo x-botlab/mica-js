@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-conditional-right-association
 kind: simulation
 ---
 

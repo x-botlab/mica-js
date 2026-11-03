@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: consistency-random-unselected-branch-instance-isolation-and-recreation
 kind: comparison
 ---
 
@@ -25,7 +23,7 @@ kind: comparison
 ```json
 {
   "models": {
-    "randomProbe": "device RandomProbe {\n    output channel out: number(capacity: 16); process start {\n        if false { out.send(random()); }\n        out.send(random()); await ticks(1); out.send(random());\n      }\n  }"
+    "randomProbe": "device RandomProbe {\n  output channel out: number(capacity: 16);\n  process start {\n    if false {\n      out.send(random());\n    }\n    out.send(random());\n    await ticks(1);\n    out.send(random());\n  }\n}"
   }
 }
 ```

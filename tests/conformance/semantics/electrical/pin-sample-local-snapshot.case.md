@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-pin-sample-local-snapshot
 kind: simulation
 ---
 
@@ -27,8 +25,22 @@ kind: simulation
 ```ddl
 device Probe {
   output channel out: number(capacity: 8);
-  pin signal(low: 0.8, high: 2.0) = [resistor(to: supply, resistance: 1000)]; pin supply; pin reference;
-  process start { let saved = signal.sample; signal.intent <- [resistor(to: reference, resistance: 1000)]; await ticks(0); let old = saved.voltage; if old != none { out.send(old); } let current = signal.sample.voltage; if current != none { out.send(current); } }
+  pin signal(low: 0.8, high: 2.0) = [resistor(to: supply, resistance: 1000)];
+  pin supply;
+  pin reference;
+  process start {
+    let saved = signal.sample;
+    signal.intent <- [resistor(to: reference, resistance: 1000)];
+    await ticks(0);
+    let old = saved.voltage;
+    if old != none {
+      out.send(old);
+    }
+    let current = signal.sample.voltage;
+    if current != none {
+      out.send(current);
+    }
+  }
 }
 ```
 

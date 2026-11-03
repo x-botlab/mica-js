@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: template-explicit-empty-intent
 kind: compile
 ---
 

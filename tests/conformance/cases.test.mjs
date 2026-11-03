@@ -13,7 +13,7 @@ if (process.env.MICA_CONFORMANCE_REQUIRE_ADAPTER === '1') {
 
 for (const item of cases) {
   test(
-    item.id,
+    item.name,
     {
       skip: adapter ? false : 'UNCONNECTED: compiler/runtime adapter not supplied',
     },

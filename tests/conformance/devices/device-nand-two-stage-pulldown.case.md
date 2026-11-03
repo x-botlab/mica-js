@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: device-nand-two-stage-pulldown
 kind: comparison
 ---
 

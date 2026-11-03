@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ir-missing-function-return
 kind: compile
 ---
 

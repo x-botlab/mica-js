@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-wait-local-number
 kind: simulation
 ---
 
@@ -27,8 +25,16 @@ kind: simulation
 ```ddl
 device Probe {
   output channel out: number(capacity: 8);
-  state x: number = 1; input notification update; process change on update { x = 9; }
-  process start { let saved = x; await ticks(3); out.send(saved); }
+  state x: number = 1;
+  input notification update;
+  process change on update {
+    x = 9;
+  }
+  process start {
+    let saved = x;
+    await ticks(3);
+    out.send(saved);
+  }
 }
 ```
 

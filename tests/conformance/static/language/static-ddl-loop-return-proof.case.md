@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-loop-return-proof
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ fn read() -> number { loop { continue; } }
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

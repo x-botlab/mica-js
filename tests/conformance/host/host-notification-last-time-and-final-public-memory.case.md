@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-notification-last-time-and-final-public-memory
 kind: simulation
 ---
 
@@ -25,13 +23,18 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device HostProbe {
-        public memory data[1]; output notification changed;
-        process start {
-          store8(data, 0, 1); changed.notify();
-          await ticks(2); store8(data, 0, 2); changed.notify();
-          await ticks(2); store8(data, 0, 3);
-        }
-       }
+  public memory data[1];
+  output notification changed;
+  process start {
+    store8(data, 0, 1);
+    changed.notify();
+    await ticks(2);
+    store8(data, 0, 2);
+    changed.notify();
+    await ticks(2);
+    store8(data, 0, 3);
+  }
+}
 ```
 
 ## 装配

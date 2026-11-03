@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-resource-local-alias
 kind: compile
 ---
 
@@ -25,14 +23,16 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-pin probe; fn read() { const saved = probe; }
+pin probe;
+fn read() {
+const saved = probe;
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-channel-missing-capacity
 kind: compile
 ---
 

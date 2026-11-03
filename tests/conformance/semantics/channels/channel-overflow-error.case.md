@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-channel-overflow-error
 kind: simulation
 ---
 
@@ -25,7 +23,16 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Probe { public memory evidence[1]; output channel out: number(capacity: 1, overflow: Overflow.error); process start { out.send(1); store8(evidence, 0, 7); out.send(2); store8(evidence, 0, 9); } }
+device Probe {
+  public memory evidence[1];
+  output channel out: number(capacity: 1, overflow: Overflow.error);
+  process start {
+    out.send(1);
+    store8(evidence, 0, 7);
+    out.send(2);
+    store8(evidence, 0, 9);
+  }
+}
 ```
 
 ## 装配

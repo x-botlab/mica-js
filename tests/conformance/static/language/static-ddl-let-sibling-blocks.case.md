@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-let-sibling-blocks
 kind: compile
 ---
 
@@ -8,7 +6,10 @@ kind: compile
 
 ## 规范来源
 
-[docs/spec/language/statements.rst](../../../../docs/spec/language/statements.rst)
+[docs/spec/language/lexical.rst](../../../../docs/spec/language/lexical.rst)
+
+<!-- prettier-ignore -->
+> 参数、局部绑定不能遮蔽当前可见的器件成员、参数或外层局部。兄弟块中互不包含的局部可以复用名称。局部名称在自身初始化完成后可用，初始化不能读取自身。``const`` 与 ``let`` 都必须有初值。
 
 ## 验收义务
 
@@ -22,14 +23,21 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-fn change(flag: bool) { if flag { let value = 1; value = 2; } else { let value = 3; value = 4; } }
+fn change(flag: bool) {
+if flag {
+let value = 1;
+value = 2;
+} else {
+let value = 3;
+value = 4;
+}
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

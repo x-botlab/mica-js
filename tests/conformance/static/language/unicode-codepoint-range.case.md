@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-unicode-codepoint-range
 kind: compile
 ---
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-bytes-channel-config
 kind: compile
 ---
 
@@ -24,14 +22,14 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-input channel incoming: bytes(maxLength: 256, capacity: 8); output channel outgoing: bytes(capacity: 4, maxLength: 64, overflow: Overflow.error);
+input channel incoming: bytes(maxLength: 256, capacity: 8);
+output channel outgoing: bytes(capacity: 4, maxLength: 64, overflow: Overflow.error);
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

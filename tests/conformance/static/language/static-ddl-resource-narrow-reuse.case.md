@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-resource-narrow-reuse
 kind: compile
 ---
 
@@ -25,14 +23,19 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-state value: number? = none; fn read() -> number { if value != none { return value + 1; } return 0; }
+state value: number? = none;
+fn read() -> number {
+if value != none {
+return value + 1;
+}
+return 0;
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

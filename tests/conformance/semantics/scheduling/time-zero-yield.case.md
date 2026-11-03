@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-time-zero-yield
 kind: simulation
 ---
 
@@ -27,8 +25,15 @@ kind: simulation
 ```ddl
 device Probe {
   output channel out: number(capacity: 8);
-  state x: number = 0; reaction changed on x as (old, current) { out.send(1); }
-  process start { x = 1; await ticks(0); out.send(2); }
+  state x: number = 0;
+  reaction changed on x as (old, current) {
+    out.send(1);
+  }
+  process start {
+    x = 1;
+    await ticks(0);
+    out.send(2);
+  }
 }
 ```
 

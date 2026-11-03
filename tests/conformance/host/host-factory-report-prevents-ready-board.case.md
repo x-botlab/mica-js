@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-factory-report-prevents-ready-board
 kind: simulation
 ---
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-creation-forward-dependency
 kind: compile
 ---
 
@@ -25,14 +23,15 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-const first = second + 1; const second = 2; state count: number = first;
+const first = second + 1;
+const second = 2;
+state count: number = first;
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

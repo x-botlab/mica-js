@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-sync-partial-delivery-stops-at-first-device-failure
 kind: simulation
 ---
 
@@ -25,8 +23,11 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device Delivery {
-        output channel out: number(capacity: 2); process start { out.send(7); }
-      }
+  output channel out: number(capacity: 2);
+  process start {
+    out.send(7);
+  }
+}
 ```
 
 ## 装配

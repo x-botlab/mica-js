@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-stable-reaction-comparison-signed-zero
 kind: simulation
 ---
 
@@ -25,12 +23,22 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device SemanticProbe { output channel out: number(capacity: 32);
-        record Pair { n: number; flag: bool; }
-        state x: number = 0;
-        reaction observe on x as (old, current) { out.send(1); }
-        process start { x = -0; await ticks(0); x = 2; }
-       }
+device SemanticProbe {
+  output channel out: number(capacity: 32);
+  record Pair {
+    n: number;
+    flag: bool;
+  }
+  state x: number = 0;
+  reaction observe on x as (old, current) {
+    out.send(1);
+  }
+  process start {
+    x = -0;
+    await ticks(0);
+    x = 2;
+  }
+}
 ```
 
 ## 装配

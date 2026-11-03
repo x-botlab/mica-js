@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-finite-reaction-closure-before-process
 kind: simulation
 ---
 
@@ -22,15 +20,23 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device SemanticProbe { output channel out: number(capacity: 32);
-        output channel ordinary: number(capacity: 8);
-        state x: number = 0;
-        reaction advance on x as (old, current) {
-          out.send(current); if current < 3 { x = current + 1; }
-        }
-        process observe on x { ordinary.send(x); }
-        process start { x = 1; }
-       }
+device SemanticProbe {
+  output channel out: number(capacity: 32);
+  output channel ordinary: number(capacity: 8);
+  state x: number = 0;
+  reaction advance on x as (old, current) {
+    out.send(current);
+    if current < 3 {
+      x = current + 1;
+    }
+  }
+  process observe on x {
+    ordinary.send(x);
+  }
+  process start {
+    x = 1;
+  }
+}
 ```
 
 ## 装配

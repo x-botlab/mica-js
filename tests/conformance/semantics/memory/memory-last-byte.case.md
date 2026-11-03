@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-memory-last-byte
 kind: simulation
 ---
 
@@ -28,7 +26,10 @@ kind: simulation
 device Probe {
   output channel out: number(capacity: 8);
   memory data[16];
-  process start { store8(data, 15, 255); out.send(load8(data, 15)); }
+  process start {
+    store8(data, 15, 255);
+    out.send(load8(data, 15));
+  }
 }
 ```
 

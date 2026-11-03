@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-process-call
 kind: compile
 ---
 
@@ -25,14 +23,17 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-state count: number = 0; process observe on count {} fn callProcess() { observe(); }
+state count: number = 0;
+process observe on count {}
+fn callProcess() {
+observe();
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

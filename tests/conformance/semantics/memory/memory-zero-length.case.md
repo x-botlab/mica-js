@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-memory-zero-length
 kind: simulation
 ---
 
@@ -28,7 +26,9 @@ kind: simulation
 device Probe {
   output channel out: number(capacity: 8);
   public memory data[0];
-  process start { out.send(load8(data, 0)); }
+  process start {
+    out.send(load8(data, 0));
+  }
 }
 ```
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-start-sees-injected-input-before-notification-process
 kind: simulation
 ---
 
@@ -23,14 +21,21 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device SemanticProbe {
-        input channel incoming: number(capacity: 2);
-        input notification wake;
-        output channel out: number(capacity: 8);
-        state x: number = 7;
-        process observe on x { out.send(99); }
-        process notified on wake { out.send(20); }
-        process start { let n = await incoming.receive(); out.send(n); }
-       }
+  input channel incoming: number(capacity: 2);
+  input notification wake;
+  output channel out: number(capacity: 8);
+  state x: number = 7;
+  process observe on x {
+    out.send(99);
+  }
+  process notified on wake {
+    out.send(20);
+  }
+  process start {
+    let n = await incoming.receive();
+    out.send(n);
+  }
+}
 ```
 
 ## 装配

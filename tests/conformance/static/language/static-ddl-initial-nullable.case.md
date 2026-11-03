@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-initial-nullable
 kind: compile
 ---
 
@@ -25,14 +23,16 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-pure fn bias() -> intent? { return none; } pin probe = bias();
+pure fn bias() -> intent? {
+return none;
+}
+pin probe = bias();
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

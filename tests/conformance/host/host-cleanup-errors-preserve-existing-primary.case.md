@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-cleanup-errors-preserve-existing-primary
 kind: simulation
 ---
 

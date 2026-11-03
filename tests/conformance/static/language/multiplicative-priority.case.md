@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-multiplicative-priority
 kind: simulation
 ---
 

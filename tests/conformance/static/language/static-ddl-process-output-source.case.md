@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-process-output-source
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ output notification changed; process observe on changed {}
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

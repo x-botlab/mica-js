@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-await-sync-function
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ fn waitHere() { await ticks(1); }
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

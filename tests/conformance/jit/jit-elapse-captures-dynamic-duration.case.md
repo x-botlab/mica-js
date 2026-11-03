@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: jit-elapse-captures-dynamic-duration
 kind: comparison
 ---
 
@@ -25,7 +23,7 @@ kind: comparison
 
 ```json
 {
-  "model": "device Probe {\n public memory code[2]; state pc: number = 0;\n output channel out: number(capacity:32);\n fn emit(value:number) { out.send(value); }\npublic memory duration[1];\n process start { store8(duration,0,4); await ticks(1); store8(duration,0,1); }\n}",
+  "model": "device Probe {\n  public memory code[2];\n  state pc: number = 0;\n  output channel out: number(capacity: 32);\n  fn emit(value: number) { out.send(value); }\n  public memory duration[1];\n  process start {\n    store8(duration, 0, 4);\n    await ticks(1);\n    store8(duration, 0, 1);\n  }\n}",
   "description": {
     "instances": [
       {

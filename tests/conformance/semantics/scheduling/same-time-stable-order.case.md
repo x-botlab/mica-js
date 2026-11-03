@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-same-time-stable-order
 kind: simulation
 ---
 
@@ -25,7 +23,19 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Probe { output channel out: number(capacity: 8); input notification first; input notification second; process a on first { await ticks(2); out.send(1); } process b on second { await ticks(2); out.send(2); } }
+device Probe {
+  output channel out: number(capacity: 8);
+  input notification first;
+  input notification second;
+  process a on first {
+    await ticks(2);
+    out.send(1);
+  }
+  process b on second {
+    await ticks(2);
+    out.send(2);
+  }
+}
 ```
 
 ## 装配

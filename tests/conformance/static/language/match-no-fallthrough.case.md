@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-match-no-fallthrough
 kind: simulation
 ---
 
@@ -29,7 +27,11 @@ device Atomic {
 output channel out: number(capacity: 32);
 state count: number = 0;
 process start {
-match 1 { 1 => { count = count + 1; } _ => { count = count + 10; } } out.send(count);
+match 1 {
+1 => { count = count + 1; }
+_ => { count = count + 10; }
+}
+out.send(count);
 }
 }
 ```

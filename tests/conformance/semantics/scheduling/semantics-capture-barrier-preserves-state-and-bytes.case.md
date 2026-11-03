@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-capture-barrier-preserves-state-and-bytes
 kind: simulation
 ---
 
@@ -22,17 +20,26 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device SemanticProbe { output channel out: number(capacity: 32);
-        state trigger: number = 0;
-        state count: number = 0;
-        memory data[1];
-        reaction first on trigger as (old, current) { count = 7; store8(data, 0, 9); }
-        reaction second on trigger as (old, current)
-          capture saved = count, bytesBefore = copyBytes(data, 0, 1) {
-          out.send(saved); out.send(count); out.send(bytesBefore[0]); out.send(load8(data, 0));
-        }
-        process start { store8(data, 0, 1); trigger = 1; }
-       }
+device SemanticProbe {
+  output channel out: number(capacity: 32);
+  state trigger: number = 0;
+  state count: number = 0;
+  memory data[1];
+  reaction first on trigger as (old, current) {
+    count = 7;
+    store8(data, 0, 9);
+  }
+  reaction second on trigger as (old, current) capture saved = count, bytesBefore = copyBytes(data, 0, 1) {
+    out.send(saved);
+    out.send(count);
+    out.send(bytesBefore[0]);
+    out.send(load8(data, 0));
+  }
+  process start {
+    store8(data, 0, 1);
+    trigger = 1;
+  }
+}
 ```
 
 ## 装配

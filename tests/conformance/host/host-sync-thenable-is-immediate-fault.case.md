@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-sync-thenable-is-immediate-fault
 kind: simulation
 ---
 

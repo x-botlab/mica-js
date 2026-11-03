@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-channel-prop-capacity
 kind: simulation
 ---
 
@@ -25,7 +23,14 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Probe(count: number default 1) { output channel out: number(capacity: count); process start { out.send(1); out.send(2); out.send(3); } }
+device Probe(count: number default 1) {
+  output channel out: number(capacity: count);
+  process start {
+    out.send(1);
+    out.send(2);
+    out.send(3);
+  }
+}
 ```
 
 ## 装配

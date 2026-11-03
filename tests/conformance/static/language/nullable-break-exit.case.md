@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-nullable-break-exit
 kind: compile
 ---
 
@@ -26,7 +24,15 @@ kind: compile
 <!-- prettier-ignore -->
 ```ddl
 device Atomic {
-fn read(value: number?) -> number { loop { if value != none { break; } return 0; } return value + 1; }
+fn read(value: number?) -> number {
+loop {
+if value != none {
+break;
+}
+return 0;
+}
+return value + 1;
+}
 }
 ```
 

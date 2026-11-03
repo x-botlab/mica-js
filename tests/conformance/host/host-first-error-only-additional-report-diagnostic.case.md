@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-first-error-only-additional-report-diagnostic
 kind: simulation
 ---
 

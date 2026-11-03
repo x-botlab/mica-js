@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-stable-reaction-comparison-bytes-content
 kind: simulation
 ---
 
@@ -25,12 +23,22 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device SemanticProbe { output channel out: number(capacity: 32);
-        record Pair { n: number; flag: bool; }
-        state x: bytes = bytes[1, 2];
-        reaction observe on x as (old, current) { out.send(1); }
-        process start { x = bytes[1, 2]; await ticks(0); x = bytes[1, 3]; }
-       }
+device SemanticProbe {
+  output channel out: number(capacity: 32);
+  record Pair {
+    n: number;
+    flag: bool;
+  }
+  state x: bytes = bytes[1, 2];
+  reaction observe on x as (old, current) {
+    out.send(1);
+  }
+  process start {
+    x = bytes[1, 2];
+    await ticks(0);
+    x = bytes[1, 3];
+  }
+}
 ```
 
 ## 装配

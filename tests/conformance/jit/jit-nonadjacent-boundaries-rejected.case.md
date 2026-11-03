@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: jit-nonadjacent-boundaries-rejected
 kind: compile
 ---
 

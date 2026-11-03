@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-bytes-subview-snapshot-survives-disposal
 kind: simulation
 ---
 
@@ -23,10 +21,13 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device HostProbe {
-        input channel incoming: bytes(maxLength: 4, capacity: 2);
-        output channel out: bytes(maxLength: 4, capacity: 2);
-        process start { let bytesValue = await incoming.receive(); out.send(bytesValue); }
-       }
+  input channel incoming: bytes(maxLength: 4, capacity: 2);
+  output channel out: bytes(maxLength: 4, capacity: 2);
+  process start {
+    let bytesValue = await incoming.receive();
+    out.send(bytesValue);
+  }
+}
 ```
 
 ## 装配

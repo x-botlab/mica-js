@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-initial-pin-intent-establishes-high-baseline-without-edge
 kind: simulation
 ---
 
@@ -25,16 +23,25 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device InitialPin {
-        pin signal(low: 0.8, high: 2.0) = [resistor(to: supply, resistance: 1000)];
-        pin supply;
-        state allowed: bool = false;
-        output channel out: number(capacity: 4);
-        pure fn checked() -> number { assert allowed; return 99; }
-        reaction observe on signal.sample.level as (old, current) capture saved = checked() {
-          out.send(saved);
-        }
-        process start { if signal.sample.level == Logic.high { out.send(1); } else { out.send(0); } }
-      }
+  pin signal(low: 0.8, high: 2.0) = [resistor(to: supply, resistance: 1000)];
+  pin supply;
+  state allowed: bool = false;
+  output channel out: number(capacity: 4);
+  pure fn checked() -> number {
+    assert allowed;
+    return 99;
+  }
+  reaction observe on signal.sample.level as (old, current) capture saved = checked() {
+    out.send(saved);
+  }
+  process start {
+    if signal.sample.level == Logic.high {
+      out.send(1);
+    } else {
+      out.send(0);
+    }
+  }
+}
 ```
 
 ## 装配

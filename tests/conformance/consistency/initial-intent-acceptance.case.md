@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: markdown-initial-intent-acceptance-comparison
 kind: comparison
 ---
 
@@ -28,8 +26,8 @@ kind: comparison
 
 ```json
 {
-  "omitted": "device EmptyIntent { pin input; }",
-  "explicit": "device EmptyIntent { pin input = []; }"
+  "omitted": "device EmptyIntent {\n  pin input;\n}",
+  "explicit": "device EmptyIntent {\n  pin input = [];\n}"
 }
 ```
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-target-includes-timer-and-reaction-closure
 kind: simulation
 ---
 
@@ -23,11 +21,17 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device SemanticProbe {
-        output channel out: number(capacity: 8);
-        state x: number = 0;
-        reaction observe on x as (old, current) { out.send(current); out.send(now()); }
-        process start { await ticks(5); x = 1; }
-       }
+  output channel out: number(capacity: 8);
+  state x: number = 0;
+  reaction observe on x as (old, current) {
+    out.send(current);
+    out.send(now());
+  }
+  process start {
+    await ticks(5);
+    x = 1;
+  }
+}
 ```
 
 ## 装配

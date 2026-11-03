@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: device-d-flip-flop-published-edge-capture
 kind: comparison
 ---
 

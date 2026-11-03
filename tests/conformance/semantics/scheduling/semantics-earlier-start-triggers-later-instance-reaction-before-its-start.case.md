@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-earlier-start-triggers-later-instance-reaction-before-its-start
 kind: comparison
 ---
 

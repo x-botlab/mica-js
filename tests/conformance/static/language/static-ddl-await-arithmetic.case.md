@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-await-arithmetic
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ process start { const value = 1 + await ticks(1); }
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-wait-shared-reread
 kind: simulation
 ---
 
@@ -27,8 +25,15 @@ kind: simulation
 ```ddl
 device Probe {
   output channel out: number(capacity: 8);
-  state x: number = 1; input notification update; process change on update { x = 9; }
-  process start { await ticks(3); out.send(x); }
+  state x: number = 1;
+  input notification update;
+  process change on update {
+    x = 9;
+  }
+  process start {
+    await ticks(3);
+    out.send(x);
+  }
 }
 ```
 

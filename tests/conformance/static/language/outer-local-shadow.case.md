@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-outer-local-shadow
 kind: compile
 ---
 
@@ -26,7 +24,12 @@ kind: compile
 <!-- prettier-ignore -->
 ```ddl
 device Atomic {
-fn read(flag: bool) { let value = 1; if flag { let value = 2; } }
+fn read(flag: bool) {
+let value = 1;
+if flag {
+let value = 2;
+}
+}
 }
 ```
 

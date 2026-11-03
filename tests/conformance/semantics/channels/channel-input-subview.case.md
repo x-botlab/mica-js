@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-channel-input-subview
 kind: simulation
 ---
 
@@ -25,7 +23,14 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Probe { input channel incoming: bytes(maxLength: 2, capacity: 1); output channel out: bytes(maxLength: 2, capacity: 1); process start { let value = await incoming.receive(); out.send(value); } }
+device Probe {
+  input channel incoming: bytes(maxLength: 2, capacity: 1);
+  output channel out: bytes(maxLength: 2, capacity: 1);
+  process start {
+    let value = await incoming.receive();
+    out.send(value);
+  }
+}
 ```
 
 ## 装配

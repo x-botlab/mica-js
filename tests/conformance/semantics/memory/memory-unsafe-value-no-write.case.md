@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-memory-unsafe-value-no-write
 kind: simulation
 ---
 
@@ -28,7 +26,10 @@ kind: simulation
 device Probe {
   output channel out: number(capacity: 8);
   public memory data[1];
-  process start { store8(data, 0, 17); store8(data, 0, 9_007_199_254_740_992); }
+  process start {
+    store8(data, 0, 17);
+    store8(data, 0, 9_007_199_254_740_992);
+  }
 }
 ```
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-dispose-reverse-order-at-most-once-after-cleanup-failures
 kind: simulation
 ---
 
@@ -24,7 +22,9 @@ kind: simulation
 
 <!-- prettier-ignore -->
 ```ddl
-device Cleanup { input notification wake; }
+device Cleanup {
+  input notification wake;
+}
 ```
 
 ## 装配

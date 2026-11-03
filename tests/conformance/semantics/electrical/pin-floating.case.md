@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-pin-floating
 kind: simulation
 ---
 
@@ -28,7 +26,15 @@ kind: simulation
 device Probe {
   output channel out: number(capacity: 8);
   pin signal(low: 0.8, high: 2.0);
-  process start { if signal.sample.status == SampleStatus.floating && signal.sample.voltage == none && signal.sample.level == Logic.unknown { out.send(1); } else { out.send(0); } }
+  process start {
+    if signal.sample.status == SampleStatus.floating &&
+      signal.sample.voltage == none &&
+      signal.sample.level == Logic.unknown {
+      out.send(1);
+    } else {
+      out.send(0);
+    }
+  }
 }
 ```
 

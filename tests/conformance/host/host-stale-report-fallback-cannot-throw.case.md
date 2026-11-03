@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-stale-report-fallback-cannot-throw
 kind: simulation
 ---
 

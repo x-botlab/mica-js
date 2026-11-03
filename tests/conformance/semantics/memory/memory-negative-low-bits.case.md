@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: atomic-memory-negative-low-bits
 kind: simulation
 ---
 
@@ -28,7 +26,9 @@ kind: simulation
 device Probe {
   output channel out: number(capacity: 8);
   public memory data[2];
-  process start { store16le(data, 0, -1); }
+  process start {
+    store16le(data, 0, -1);
+  }
 }
 ```
 

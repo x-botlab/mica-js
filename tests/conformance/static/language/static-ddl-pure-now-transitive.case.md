@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-pure-now-transitive
 kind: compile
 ---
 
@@ -22,14 +20,18 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-pure fn outer() -> number { return inner(); } pure fn inner() -> number { return now(); }
+pure fn outer() -> number {
+return inner();
+}
+pure fn inner() -> number {
+return now();
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

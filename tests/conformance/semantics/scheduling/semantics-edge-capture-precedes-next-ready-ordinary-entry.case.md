@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-edge-capture-precedes-next-ready-ordinary-entry
 kind: simulation
 ---
 
@@ -23,15 +21,25 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device SemanticProbe {
-        input notification rise; input notification fall;
-        output channel out: number(capacity: 8);
-        state clock: bool = false; state data: number = 0;
-        reaction latch on clock as (old, current) capture saved = data {
-          if !old && current { out.send(saved); }
-        }
-        process rising on rise { data = 1; clock = true; }
-        process falling on fall { clock = false; data = 0; }
-       }
+  input notification rise;
+  input notification fall;
+  output channel out: number(capacity: 8);
+  state clock: bool = false;
+  state data: number = 0;
+  reaction latch on clock as (old, current) capture saved = data {
+    if !old && current {
+      out.send(saved);
+    }
+  }
+  process rising on rise {
+    data = 1;
+    clock = true;
+  }
+  process falling on fall {
+    clock = false;
+    data = 0;
+  }
+}
 ```
 
 ## 装配

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-enum-number-conversion
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ enum Mode { idle, active } state mode: number = Mode.idle;
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

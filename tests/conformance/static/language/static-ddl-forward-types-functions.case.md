@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-forward-types-functions
 kind: compile
 ---
 
@@ -24,16 +22,19 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-fn make() -> Item { return helper(); }
-     fn helper() -> Item { return { value: 1 }; }
-     record Item { value: number; }
+fn make() -> Item {
+return helper();
+}
+fn helper() -> Item {
+return { value: 1 };
+}
+record Item { value: number; }
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: language-atomic-nullable-loop-backedge
 kind: compile
 ---
 
@@ -26,7 +24,17 @@ kind: compile
 <!-- prettier-ignore -->
 ```ddl
 device Atomic {
-fn read(value: number?) -> number { let saved: number? = value; if saved == none { return 0; } while true { const copy = saved + 1; saved = none; } return 0; }
+fn read(value: number?) -> number {
+let saved: number? = value;
+if saved == none {
+return 0;
+}
+while true {
+const copy = saved + 1;
+saved = none;
+}
+return 0;
+}
 }
 ```
 

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-nullable-local-narrow
 kind: compile
 ---
 
@@ -25,14 +23,18 @@ kind: compile
 
 ```ddl
 device StaticFixture {
-fn valueOrZero(value: number?) -> number { if value == none { return 0; } return value + 1; }
+fn valueOrZero(value: number?) -> number {
+if value == none {
+return 0;
+}
+return value + 1;
+}
 }
 ```
 
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const model = await adapter.compileDDL(input);
 let factoryCalls = 0;
 ```

@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: static-ddl-pure-ordinary-call
 kind: compile
 ---
 
@@ -32,7 +30,6 @@ fn ordinary() {} pure fn read() { ordinary(); }
 ## 执行步骤
 
 ```typescript
-assert.equal(typeof adapter.compileDDL, 'function');
 const compile = async () => {
   await adapter.compileDDL(input);
 };

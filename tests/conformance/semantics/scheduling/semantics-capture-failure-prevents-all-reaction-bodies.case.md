@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: semantics-capture-failure-prevents-all-reaction-bodies
 kind: simulation
 ---
 
@@ -25,15 +23,24 @@ kind: simulation
 <!-- prettier-ignore -->
 ```ddl
 device SemanticProbe {
-        state trigger: number = 0; state allowed: bool = false;
-        public memory evidence[1];
-        pure fn checked() -> number { assert allowed; return 1; }
-        reaction first on trigger as (old, current) { store8(evidence, 0, 2); }
-        reaction second on trigger as (old, current) capture saved = checked() {
-          store8(evidence, 0, saved);
-        }
-        process start { store8(evidence, 0, 1); trigger = 1; }
-       }
+  state trigger: number = 0;
+  state allowed: bool = false;
+  public memory evidence[1];
+  pure fn checked() -> number {
+    assert allowed;
+    return 1;
+  }
+  reaction first on trigger as (old, current) {
+    store8(evidence, 0, 2);
+  }
+  reaction second on trigger as (old, current) capture saved = checked() {
+    store8(evidence, 0, saved);
+  }
+  process start {
+    store8(evidence, 0, 1);
+    trigger = 1;
+  }
+}
 ```
 
 ## 装配

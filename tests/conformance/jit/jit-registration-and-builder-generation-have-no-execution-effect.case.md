@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: jit-registration-and-builder-generation-have-no-execution-effect
 kind: comparison
 ---
 
@@ -23,7 +21,7 @@ kind: comparison
 ```json
 {
   "models": {
-    "jitProbe": "device JitProbe {\n    public memory code[2]; state pc: number = 0;\n    output channel out: number(capacity: 32);\n    fn emit(value: number) { out.send(value); }\n    \n  }"
+    "jitProbe": "device JitProbe {\n  public memory code[2];\n  state pc: number = 0;\n  output channel out: number(capacity: 32);\n  fn emit(value: number) { out.send(value); }\n}"
   },
   "description": {
     "instances": [

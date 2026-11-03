@@ -1,6 +1,4 @@
 ---
-format: mica-case/v1
-id: host-unknown-later-type-before-factories
 kind: simulation
 ---
 
