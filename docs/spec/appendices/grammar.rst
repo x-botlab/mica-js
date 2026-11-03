@@ -23,7 +23,7 @@ DDL 文法
           | state-declaration | derived-declaration
           | pin-declaration | memory-declaration | channel-declaration
           | notification-declaration | function-declaration
-          | process-declaration | assert-statement ;
+          | process-declaration | reaction-declaration | assert-statement ;
 
    value-type = value-base, [ "?" ] ;
    value-base = "number" | "bool" | "string" | "bytes"
@@ -70,8 +70,15 @@ pin 参数只接受成对的 low、high，或同时省略；有限性、low < hi
    process-declaration = "process", "start", block
                        | "process", identifier, "on", source-path, block ;
    source-path = identifier, { ".", identifier } ;
+   reaction-declaration = "reaction", identifier, "on", source-path,
+                          "as", "(", identifier, ",", identifier, ")",
+                          [ "capture", captures ], block ;
+   captures = capture-binding, { ",", capture-binding }, [ "," ] ;
+   capture-binding = identifier, "=", expression ;
 
 start 专用于可选且唯一的启动过程；反应过程的 identifier 不能是 start。source-path 必须指向本实例可观察的静态资源路径或 input notification。过程不能出现在普通调用目标中。
+
+reaction 的 source-path 仅接受可比较的 state、derived 或 pin.sample 静态路径，不接受 notification。as 的两个名称及 capture 名称仅在响应体可见且不可重赋值；每项 capture 为独立纯表达式，不能引用这些绑定。纯性、可比较类型及响应体的同步效果由 :doc:`/language/functions` 校验。reaction、as、capture 为保留关键字。
 
 函数参数无默认值，不支持同名重载、泛型或递归。pin / memory 形参只接受直接资源引用或资源形参；其他参数、结果与调用效果按 :doc:`/language/functions` 检查。
 

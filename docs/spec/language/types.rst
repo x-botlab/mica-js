@@ -38,7 +38,7 @@
      assert isFinite(measured);
    }
 
-收窄针对局部 const、let 与函数参数，识别 ``== none``、``!= none``、``!``、``&&``、``||`` 及提前 return、break、continue 对后续可达路径的影响。分支汇合时只保留各条可达路径共同成立的类型事实；赋值更新 let 的当前事实。match 的非空分支也收窄局部被匹配值。
+收窄针对局部 const、let、函数参数及 reaction 的不可变绑定，识别 ``== none``、``!= none``、``!``、``&&``、``||`` 及提前 return、break、continue 对后续可达路径的影响。分支汇合时只保留各条可达路径共同成立的类型事实；赋值更新 let 的当前事实。match 的非空分支也收窄局部被匹配值。
 
 循环入口汇合首次进入与各回边、continue 路径的事实，出口汇合条件为假与各 break 路径的事实；仅在全部可达路径上成立的非空证明可以保留。
 
@@ -102,6 +102,8 @@ string 与 bytes 的索引均须为非负安全整数并小于实际长度，非
      - number、bool、string、枚举、记录、bytes 及其可空形式。
    * - derived、局部、值形参及返回
      - 上述普通值，另加 sample、intent 及其可空形式。
+   * - reaction 源及 previous / current、capture 绑定
+     - number、bool、string、枚举、记录、bytes、sample 及其单层可空形式；源还须满足静态路径规则。
    * - 通道负载
      - number、bool、扁平记录、bytes；不包含可空值。
    * - 资源形参

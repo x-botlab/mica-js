@@ -133,8 +133,6 @@ export interface BoardDescription {
 export interface BoardOptions {
   /** uint32，省略为 0；实例派生算法见 execution/random。 */
   readonly seed?: number;
-  /** 正安全整数，省略为 1_000_000。 */
-  readonly sameTimeBudget?: number;
 }
 export type BoardStatus = 'ready' | 'faulted' | 'disposed';
 export type RuntimePhase =
@@ -155,7 +153,6 @@ export type RuntimeDiagnosticCode =
   | 'INVALID_ELECTRICAL_PARAMETER'
   | 'CONFLICTING_REFERENCE'
   | 'ELECTRICAL_SOLVE_FAILED'
-  | 'SAME_TIME_BUDGET_EXCEEDED'
   | 'CHANNEL_CONSUMER_CONFLICT'
   | 'INVALID_CALL_STATE'
   | 'OBJECT_DISPOSED'

@@ -54,10 +54,19 @@
       网络求解后发布的电压、逻辑解释与状态，也称 sample，见 :doc:`/electrical`。
 
    执行入口
-      被运行时调度的过程或 JIT 入口；DDL 以可选且唯一的 ``process start`` 声明启动过程，其余过程显式声明 ``on source``，见 :doc:`/execution/index`。
+      被运行时调度的过程、同步响应或 JIT 入口；DDL 以 ``process start`` 声明启动过程，以 ``process name on source`` 声明普通反应过程，以 ``reaction`` 声明同步响应，见 :doc:`/execution/index`。
 
    同步片段
-      从入口开始或恢复，到实际挂起、过程结束或逻辑 JIT 指令结束的连续同步执行；ticks(0) 也结束片段，普通边界钩子返回不单独结束片段，见 :doc:`/execution/scheduling`。
+      从普通模型入口开始或恢复，到实际挂起、过程结束或逻辑 JIT 指令结束的连续同步执行；ticks(0) 也结束片段，普通边界钩子返回不单独结束片段，见 :doc:`/execution/scheduling`。
+
+   同步响应
+      由 ``reaction`` 声明，在发布边界完成全轮纯采集后按稳定顺序执行的不可挂起行为；全部响应体结束共同形成下一边界，见 :doc:`/language/functions` 与 :doc:`/execution/scheduling`。
+
+   同步闭包
+      一个发布边界开始，连续完成采集、同步响应及后续发布轮，直到没有同步响应需要执行的阶段；普通模型入口在其完成后继续，见 :doc:`/execution/scheduling`。
+
+   边界采集
+      观察源变化时固定旧值、新值并求值显式纯表达式的步骤；结果在本轮响应中不可变，不复制整板状态，见 :doc:`/language/functions`。
 
    微轮
       同一仿真时刻内，由片段边界检测到的资源或采样变化引发的后续反应轮次，见 :doc:`/execution/scheduling`。

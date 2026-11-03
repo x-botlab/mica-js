@@ -45,6 +45,7 @@ DDL、Builder 与手工 IR 输入共享校验规则。TypeScript 类型检查提
 #. 值与局部检查结果类型、定义先于使用、支配关系、区域可见性、Local 初始化与独立执行体边界；资源形参保持资源类别和当前实例归属。
 #. 控制流检查分支穷尽、模式重复、最近循环跳转、函数正常返回路径、计算区域 yield 与路径终结后的后缀。普通同步计算回调返回 void 时，生成控制流的全部路径必须已经终结；仍有正常结束路径时报告缺失 yield / 产值（IR_CONTROL_FLOW），不得将 undefined 当成模型值。纯与创建期计算回调仍须返回 Operand。
 #. 效果检查沿完整静态调用图传播，包含短路右侧和所有分支；不能用某次输入下分支未选中作为放宽上下文的依据。
+#. reaction 检查 sourcePath 非空、静态资源类别和 sourceType 与最终路径类型一致；notification、intent / intent? 及资源引用拒绝。previous / current 与所有 capture 名称唯一且满足遮蔽规则。每项捕获计算正常返回声明的可比较类型、遵守纯规则并有独立编号空间；捕获不能引用任何 reaction 绑定。reactionValue / reactionCapture 只能在所属响应体及其词法子区域使用，核对 binding 判别值、index 为非负安全整数且在 captures 范围内、结果 type 与源或捕获类型一致。辅助函数不继承绑定作用域。响应体只允许无值 return 或自然结束，禁止 returnValue、等待、receive、redirect 及 JIT 专有控制操作，效果限制沿所有被调用函数传播。
 #. JIT 检查块的相邻边界、每指令独立局部范围、等待尾位置与缺少目标入口的 redirect 调用路径。
 
 资源数值的动态条件继续在相应操作执行处检查；静态类型 number 不替代时长、偏移、消息长度或支路参数的值校验。创建期求值成功后才进入相应资源建立阶段。
@@ -65,6 +66,12 @@ DDL、Builder 与手工 IR 输入共享校验规则。TypeScript 类型检查提
    * - pure fn / derived
      - 语言规范的纯读取集合、局部计算、控制流、断言、纯调用与值构造。
      - derived 正常返回值；不产生资源效果，不读取 now 或 random。
+   * - reaction capture
+     - 与 pure fn 相同的纯读取、局部计算、控制流、断言及纯调用，返回可比较值。
+     - 每项计算独立，不能访问 previous / current 或其他 capture；结果拒绝 intent 及资源。
+   * - reaction body
+     - 普通同步读取、state / memory 写入、intent 更新、output 发送 / 通知、now、random、assert 和同步调用。
+     - 拒绝等待、receive、redirect 及 JIT 专有控制操作，包含辅助调用的传递效果。
    * - 普通 fn
      - 当前实例的同步读取、更新、消息发送、now、random 与同步调用。
      - 不挂起；可能 redirect 的函数只能在已绑定 JIT 路径使用。
@@ -81,6 +88,10 @@ DDL、Builder 与手工 IR 输入共享校验规则。TypeScript 类型检查提
 while 只提供一种条件构造形式，采用对应上下文的同步计算能力。普通路径条件可写入资源或调用普通 fn；pure 与创建期条件分别保持各自限制。
 
 效果从实际操作推导，输入声明只表达需要满足的约束。依赖来源从完整读取和调用图收集，资源形参在绑定时展开。动态存储索引保守订阅整个 memory，派生与等待沿静态依赖传递，具体复查阶段见 :doc:`/jit/interrupts`。反应源路径的最终类型必须可比较；intent 与 intent? 拒绝作为触发源。
+
+reaction 的 schema 要求 name、非空 sourcePath、sourceType、previous、current、captures 与 body 完整存在；绑定名称为合法标识符，captures 允许空数组，单项 value 为独立 ComputationIR。字段缺失、非法 binding 判别值或非整数编号属于 IR_SCHEMA；源或捕获类型不匹配、不可比较结果属于 IR_TYPE；不存在的资源或静态成员属于 IR_REFERENCE；跨执行体句柄或在 capture / 函数中读取 reaction 绑定属于 IR_SCOPE；同步效果越界属于 IR_EFFECT。Builder 的 capture 回调对象键集合必须与描述名称完全一致，额外或缺失回调在构造阶段拒绝。
+
+reaction 的验收包括：首次源观察不执行捕获；不同 reaction 的捕获均先于任一响应；捕获按文本顺序且不读取响应写入后的值；每次已发布变化独立保留旧值、新值；下一边界才处理响应导致的变化；响应体、条件、消息和辅助调用均不能绕过同步效果限制。该检查适用于 DDL、Builder 与手工 IR 三种来源。
 
 可空证明
 ------------------------------------------------
@@ -156,4 +167,4 @@ DDL 编译器保留源码来源；Builder 可以按生成片段标注。JIT 额�
 
 独立校验失败本身没有仿真副作用。运行时 translate 期间的构造或绑定失败属于 JIT 框架故障，按 :doc:`/errors` 使整板 faulted；不能通过捕获并继续使用失败 Builder 交付无效块。其他装配与执行错误保持所属章节的合同。
 
-本章冻结 IR 构造诊断。板级错误事件、宿主监听器与完整发布布局见 :doc:`/javascript/host`；预算报告的执行条件见 :doc:`/execution/scheduling`。
+本章冻结 IR 构造诊断。板级错误事件、宿主监听器与完整发布布局见 :doc:`/javascript/host`。普通类型、范围、资源与 assert 检查保持有效；非终止代码由宿主隔离边界处理。

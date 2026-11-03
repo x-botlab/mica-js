@@ -108,7 +108,10 @@ const description: BoardDescription = {
   ],
   nets: [{ id: 'ground', voltage: 0, pins: [{ instance: 'node', pin: 'reference' }] }],
 };
-const board: Board = createBoard(library, description, { seed: 0, sameTimeBudget: 100 });
+const validOptions: BoardOptions = { seed: 0 };
+const onlyOption: Record<keyof BoardOptions, number> = { seed: 0 };
+void onlyOption;
+const board: Board = createBoard(library, description, validOptions);
 const errorEvent: Event<RuntimeDiagnostic> = board.onDidError;
 const diagnosticEvent: Event<RuntimeDiagnostic> = board.onDidDiagnostic;
 const subscription: Disposable = errorEvent((diagnostic) => {

@@ -61,7 +61,7 @@
 销毁与代次
 ------------------------------------------------
 
-每个 context、输入端点和 ``BorrowedBytes`` 句柄绑定创建时的实例代次。板只公开 ``ready``、``faulted`` 与 ``disposed`` 三种状态。``faulted`` 后须销毁旧板，再由 ``createBoard`` 创建新对象，恢复边界见 :doc:`/errors`。新板独立执行创建期求值、资源建立和工厂初始化；``sameTimeBudget`` 的 D3 计数规则保持不变，创建期采用每板从 0 开始的独立计数，见 :doc:`/execution/scheduling`。
+每个 context、输入端点和 ``BorrowedBytes`` 句柄绑定创建时的实例代次。板只公开 ``ready``、``faulted`` 与 ``disposed`` 三种状态。``faulted`` 后须销毁旧板，再由 ``createBoard`` 创建新对象，恢复边界见 :doc:`/errors`。新板独立执行创建期求值、资源建立和工厂初始化。非终止执行及宿主容器外强制终止的边界见 :doc:`/execution/scheduling`；强制终止不等同于本章的正常销毁。
 
 ``dispose`` 以及创建失败后的清理按以下顺序执行：
 
