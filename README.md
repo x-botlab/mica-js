@@ -41,7 +41,18 @@ pnpm --filter @mica-js/playground dev
 
 ## 文档
 
-接口约定见 [RFC](docs/rfc/)；各包的简要用法见对应 README。
+接口约定见 [RFC](docs/rfc/)；各包的简要用法见对应 README。仿真重设计规范使用 [RST + Sphinx](docs/spec/index.rst) 编写。
+
+### 规范构建
+
+准备好 Sphinx、XeLaTeX 和 latexmk 后，在仓库根目录运行。安装步骤及开源字体说明见[规范构建](docs/README.rst)。
+
+```powershell
+pnpm docs:html
+pnpm docs:pdf
+```
+
+HTML 入口为 `dist/docs/html/index.html`，PDF 为 `dist/docs/latex/mica-spec.pdf`。命令直接使用 Sphinx 的 `html` 和 `latexpdf` 构建目标；所有产物均位于已忽略的 `dist/` 下。
 
 ## 开发
 

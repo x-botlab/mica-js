@@ -9,6 +9,8 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "docs:html": "sphinx-build -M html docs/spec dist/docs -n -W --keep-going",
+    "docs:pdf": "sphinx-build -M latexpdf docs/spec dist/docs -n -W --keep-going",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
