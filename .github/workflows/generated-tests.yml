@@ -1,0 +1,83 @@
+name: Generated Conformance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tests/generated/**'
+      - 'tests/conformance/**'
+      - 'packages/**'
+      - 'docs/spec/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/generated-tests.yml'
+  pull_request:
+    paths:
+      - 'tests/generated/**'
+      - 'tests/conformance/**'
+      - 'packages/**'
+      - 'docs/spec/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/generated-tests.yml'
+  schedule:
+    - cron: '23 19 * * *'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Execution budget
+        type: choice
+        options: [pr, daily, fuzz]
+        default: fuzz
+      seed:
+        description: Optional fixed int32 seed override (blank uses the profile seed list)
+        type: string
+      runs:
+        description: Optional run budget per domain and seed
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  generated:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MICA_CONFORMANCE_ADAPTER: ${{ vars.MICA_CONFORMANCE_ADAPTER }}
+      PROFILE: ${{ github.event_name == 'schedule' && 'daily' || inputs.profile || 'pr' }}
+      OVERRIDE_SEED: ${{ inputs.seed }}
+      OVERRIDE_RUNS: ${{ inputs.runs }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec eslint tests/generated
+      - run: pnpm typecheck:generated
+      - name: Check mathematical oracles and generator invariants
+        run: pnpm test:generated:unit
+      - name: Run isolated generated conformance (explicitly unconnected without an adapter)
+        shell: bash
+        run: |
+          args=(--profile "$PROFILE")
+          if [[ -n "$OVERRIDE_SEED" ]]; then args+=(--seed "$OVERRIDE_SEED"); fi
+          if [[ -n "$OVERRIDE_RUNS" ]]; then args+=(--runs "$OVERRIDE_RUNS"); fi
+          pnpm exec node tests/generated/run.mjs "${args[@]}"
+      - name: Retain counterexamples and execution status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-${{ env.PROFILE }}-${{ github.run_attempt }}
+          path: |
+            test-results/generated/
+            tests/generated/regressions/*.json
+          if-no-files-found: ignore
+          retention-days: 30
