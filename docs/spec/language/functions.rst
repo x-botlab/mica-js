@@ -68,6 +68,36 @@ source 为一个静态名称或成员路径，根为本实例 state、derived、
 
 反应式过程不重入，初始化仅建立观察基线。片段末按源最终值检测变化；已排队的触发合并，运行或等待期间至多记录一次待再运行，既不打断当前运行，也不提前恢复等待。过程执行时读取当前资源，具体值比较与排队规则见 :doc:`/execution/scheduling`。intent 与 intent? 不作为变化触发源。一次 ``return;`` 结束当前运行，不等于注销该入口。
 
+同步反应
+------------------------------------------------
+
+``reaction`` 声明在已发布源值变化时执行的同步响应：
+
+.. code-block:: text
+
+   reaction remember on probe.sample.level as (previous, current)
+     capture saved = count, header = copyBytes(data, 0, 2) {
+     if previous != current {
+       count = saved + 1;
+       chunks.send(header);
+     }
+   }
+
+``as (previous, current)`` 中的两个名称由作者指定，分别绑定相邻两次源观察的旧值与新值。``capture name = pureExpr, ...`` 整段可省略；出现时至少有一项，可带末尾逗号。reaction 与函数、过程一样只在 device 内声明，名称属于同一器件名称空间，不能作为函数调用。
+
+source 为本实例 state、derived 或 pin.sample 起始的单一静态路径，允许访问其静态字段，最终类型必须可比较；notification 不能作为 reaction 源。调用、运算、动态索引及多个源路径均拒绝；多源观察先用 derived 构造具名扁平记录，再以该 derived 为源。比较采用 :doc:`/execution/scheduling` 的源变化规则，不用响应体内再次读取的值替代已发布源值。
+
+previous / current 是源最终类型的不可变快照。每项 capture 从表达式推断类型，接受 number、bool、string、枚举、记录、bytes、sample 及其单层可空形式；intent、intent? 与资源引用拒绝。捕获表达式遵循现有纯表达式规则，可以读取属性、常量、state、derived、sample 和 memory，调用 pure fn；不另设更窄的读取集合。每项捕获独立求值，不能引用 previous / current、自身或其他 capture 名称。只有响应体及其词法子块可见这些绑定，辅助函数不捕获调用者绑定。名称唯一及遮蔽规则见 :doc:`lexical`。
+
+每次发布边界按以下顺序处理 reaction：
+
+#. 首次观察仅建立基线，不求值 capture，不执行响应体，也不合成事件；之后每次发布的变化都形成独立的一组旧值、新值和捕获快照。
+#. 按稳定实例顺序及实例内声明顺序处理本轮变化，各 reaction 的 captures 按文本顺序全部求值。在任何响应体开始前，本轮所有捕获 MUST 完成。
+#. 按相同稳定顺序同步执行本轮全部响应体；这些响应体之间不插入普通 process 或 JIT 恢复，也不执行新的发布边界。响应写入即时生效，后续响应的新读取可以看见写入，已捕获绑定保持不变。
+#. 本轮响应全部完成后再处理下一发布边界。响应造成的源变化在下一边界形成新一轮；不能递归插入当前轮。
+
+响应体允许普通同步效果，包括 state / memory 更新、intent 替换、output 发送与通知、now、random、assert 及同步函数调用。MUST NOT 等待、receive 或 redirect，包括经辅助函数间接产生的这些效果；return 仅结束当前响应。本轮 reaction 优先于普通过程恢复；普通 ``process ... on`` 的非重入、等待、待运行合并及读取当前值规则保持不变。reaction 不使用过程的 busy / pending 合并规则，也不把数次已发布变化压成一次当前值读取。
+
 纯函数与条件
 ------------------------------------------------
 
@@ -85,7 +115,7 @@ source 为一个静态名称或成员路径，根为本实例 state、derived、
 
 JIT 条件等待绑定一个无参、返回 bool 的 pure fn。derived 同样可调用 pure fn，依赖沿调用图静态收集。动态 memory 索引仍属于纯读取；条件订阅需保守覆盖可能读取的范围，不得遗漏更新。保守资源级订阅、稳定点复核及竞态处理见 :doc:`/jit/interrupts`。
 
-随机数是有状态效果，只有普通 fn、过程和 JIT 执行路径可以调用，不能因结果类型为 number 而当作纯函数，见 :doc:`builtins`。
+随机数是有状态效果，只有普通 fn、过程、reaction 响应体和 JIT 执行路径可以调用，不能因结果类型为 number 而当作纯函数，见 :doc:`builtins`。
 
 JIT 调用上下文
 ------------------------------------------------
@@ -103,6 +133,6 @@ JIT 调用上下文
 
 普通函数调用的位置实参与命名实参不混用，且按源码顺序求值，见 :doc:`expressions`。内置控制操作 ``redirect(target, delay: duration)`` 使用独立语法，不改变普通函数调用的参数规则；其目标为位置数值参数，延时为可选命名参数，省略时为零。
 
-签名、资源归属、返回路径及调用效果在执行前检查；不可达语句规则见 :doc:`statements`。无环同步调用仍可能在循环内持续运行，其实际工作量防护按 :doc:`/execution/scheduling` 的预算执行。
+签名、资源归属、返回路径及调用效果在执行前检查；不可达语句规则见 :doc:`statements`。无环调用图不证明循环终止；非终止执行由宿主隔离边界处理，语言校验与普通 assert 仍按各自合同执行。
 
 一致性校验应比较直接调用、内联调用和 Builder 调用的可观察效果，包括同步性、共享资源归属、返回与控制转向的区别。验证归档见 :doc:`/conformance`。

@@ -56,9 +56,12 @@ export interface Located {
   readonly source?: SourceInfo;
 }
 
-export type PlainTypeIR =
-  | { readonly kind: 'number' | 'bool' | 'string' | 'bytes' | 'intent' | 'sample' }
+export type ComparablePlainTypeIR =
+  | { readonly kind: 'number' | 'bool' | 'string' | 'bytes' | 'sample' }
   | { readonly kind: 'enum' | 'record'; readonly name: string };
+export type PlainTypeIR = ComparablePlainTypeIR | { readonly kind: 'intent' };
+export type ComparableTypeIR =
+  ComparablePlainTypeIR | { readonly kind: 'optional'; readonly inner: ComparablePlainTypeIR };
 
 /** 可空只嵌套一层；具体声明位置还须遵守 DDL 的类型适用范围。 */
 export type ValueTypeIR = PlainTypeIR | { readonly kind: 'optional'; readonly inner: PlainTypeIR };
@@ -112,10 +115,16 @@ export interface ValueRegionIR {
   readonly body: RegionIR;
 }
 
-/** 独立计算体使用 returnValue；创建期或 derived 用途由引用它的声明决定。 */
+/** 独立计算体使用 returnValue；创建期、derived 或 reaction capture 用途由声明决定。 */
 export interface ComputationIR extends Located {
   readonly type: ValueTypeIR;
   readonly body: RegionIR;
+}
+
+/** 每个 capture 是独立纯计算体；只在响应体内按声明索引读取其结果。 */
+export interface ReactionCaptureIR extends Located {
+  readonly name: string;
+  readonly value: ComputationIR & { readonly type: ComparableTypeIR };
 }
 
 export type UnaryOperator = 'positive' | 'negate' | 'not' | 'bitNot';
@@ -182,6 +191,11 @@ export type OperationIR = Located &
         readonly name: string;
       })
     | (ResultIR & { readonly kind: 'parameter'; readonly index: number })
+    | (ResultIR & {
+        readonly kind: 'reactionValue';
+        readonly binding: 'previous' | 'current';
+      })
+    | (ResultIR & { readonly kind: 'reactionCapture'; readonly index: number })
     | (ResultIR & {
         readonly kind: 'unary';
         readonly operator: UnaryOperator;
@@ -379,6 +393,16 @@ export type DeclarationIR = Located &
         readonly body: RegionIR;
       }
     | { readonly kind: 'start'; readonly body: RegionIR }
+    | {
+        readonly kind: 'reaction';
+        readonly name: string;
+        readonly sourcePath: readonly [string, ...string[]];
+        readonly sourceType: ComparableTypeIR;
+        readonly previous: string;
+        readonly current: string;
+        readonly captures: readonly ReactionCaptureIR[];
+        readonly body: RegionIR;
+      }
     | {
         readonly kind: 'on';
         readonly name: string;

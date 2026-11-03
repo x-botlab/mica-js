@@ -43,17 +43,31 @@ IR 数据结构
    * - start、on
      - body；on 另有 sourcePath。
      - 可恢复过程；on 的路径指向合法静态触发源。
+   * - reaction
+     - sourcePath、sourceType、previous / current 名称、有序 captures、body。
+     - 独立同步响应；capture 为独立纯计算，body 允许普通同步效果并拒绝挂起及 redirect。
    * - assert
      - body。
      - 无返回值的创建期语句体，只允许创建期计算及断言。
 
-``ComputationIR`` 为独立产值计算体，正常结束路径使用 ``returnValue``。它从引用位置取得创建期或 derived 用途，结果类型与声明要求一致。资源配置使用共享操作语言，而非另一个宿主表达式格式。
+``ComputationIR`` 为独立产值计算体，正常结束路径使用 ``returnValue``。它从引用位置取得创建期、derived 或 reaction capture 用途，结果类型与声明要求一致。资源配置使用共享操作语言，而非另一个宿主表达式格式。
 
 pin 的成对阈值在创建期检查有限且 low < high，省略时 level 恒为 unknown；完整电气合同见 :doc:`/electrical`。
 
 memory 的 ``public``、函数的 ``pure``、端点的 ``direction`` 在 IR 中显式存在；Builder 将省略的 public 规范化为 false。overflow 省略时仍按 :doc:`/channels` 的默认策略处理。
 
 创建期依赖顺序与断言时机以 :doc:`/language/declarations` 为准；不能直接把 declarations 数组当成不检查依赖的初始化脚本。
+
+reaction 声明与快照引用
+------------------------------------------------
+
+``kind: 'reaction'`` 是独立声明，不编码为 on 过程。sourcePath 是非空静态路径数组，根须为 state、derived 或 pin.sample；路径最终类型必须与 sourceType 严格匹配。``ComparableTypeIR`` 表示 number、bool、string、bytes、sample、具名 enum / record 及其单层 optional，排除 intent 与资源。
+
+previous 和 current 是响应体绑定的源码名称；二者及 captures 的名称遵守普通局部名称规则，彼此唯一且不遮蔽器件成员。captures 为有序 ``ReactionCaptureIR`` 数组，各项含 name、value 和可选 source；value 是返回可比较类型的独立纯 ComputationIR。空数组表示没有 capture。每个计算独立拥有结果与局部编号空间，不能访问旧值、新值或任何 capture 绑定，也不能引用其他计算体的结果。
+
+响应体通过两种产值操作显式取得运行期快照：``reactionValue { binding: 'previous' | 'current', result, type }`` 与 ``reactionCapture { index, result, type }``。index 是 captures 数组中从零开始的非负安全整数；前者 type 必须等于 sourceType，后者必须等于目标 value.type。读取不重新求值源或捕获表达式。它们只在本 reaction 的 body 及其词法嵌套区域合法，不能进入 capture、其他入口、辅助函数或 JIT 指令；函数 parameter 不能替代这些操作。每个读取结果仍接受通常的唯一编号与支配关系检查。
+
+第一次观察只建立基线；之后每次已发布变化都保存一组旧值 / 新值。稳定实例及声明顺序确定本轮捕获和响应顺序，单个 captures 按数组顺序求值。本轮全部 capture 完成后，才同步执行全部 body；body 产生的更新在下一发布边界形成新一轮，不插入当前轮，也不采用过程 busy / pending 合并。完整行为见 :doc:`/language/functions`。
 
 类型、常量与引用
 ------------------------------------------------
@@ -71,7 +85,7 @@ none 常量的结果类型必须为一个确定的 optional 类型。``optional`
 结果编号与局部槽
 ------------------------------------------------
 
-``ResultId`` 与 ``LocalId`` 均为非负安全整数，但拥有独立编号空间。一个结果编号在同一独立执行体内只定义一次，局部槽编号也只声明一次。创建期独立计算、derived、函数、过程以及每条 JIT 指令各有自己的编号空间；嵌套区域共享所属执行体的分配空间。
+``ResultId`` 与 ``LocalId`` 均为非负安全整数，但拥有独立编号空间。一个结果编号在同一独立执行体内只定义一次，局部槽编号也只声明一次。创建期独立计算、derived、函数、过程、每项 reaction capture、reaction 响应体以及每条 JIT 指令各有自己的编号空间；嵌套区域共享所属执行体的分配空间。
 
 编号必须在可见位置定义并支配其使用。外层值和槽可以进入子区域；分支、循环体与计算子区域的临时结果不能泄露到外层。分支汇合通过外层 Local，或显式产值的 select 等操作完成。编号的偶然相同不构成跨体引用许可。
 
@@ -88,7 +102,7 @@ and / or 的右侧、select 的两分支、while 条件和 assert 消息均为�
 
 在允许控制转向的普通上下文计算区域内，可以直接 redirect 或通过已绑定辅助调用 redirect；转向路径没有正常产值，不要求在其后追加 yield。Builder 普通同步计算回调返回 Operand 时，为仍可正常结束的生成路径追加 yield；返回 void 时，生成控制流的全部路径必须已经终结。只有部分路径转向时，其余正常路径仍须产值。仍有正常路径却返回 void 属于缺失 yield / 产值，不能把 undefined 编码为模型值。纯与创建期计算回调仍须返回 Operand；其视图不获得 redirect 能力。计算区域的可挂起操作始终拒绝；只在允许的过程体和 JIT 阶段生成等待。
 
-return / returnValue 结束所属函数或独立计算体；过程的 return 结束本次运行。所有必然终结节点之后继续追加同路径操作均拒绝。可能 redirect 的普通调用保留正常返回路径，不能据此推定后缀不可达。
+return / returnValue 结束所属函数或独立计算体；过程和 reaction 响应体的 return 结束本次运行。所有必然终结节点之后继续追加同路径操作均拒绝。可能 redirect 的普通调用保留正常返回路径，不能据此推定后缀不可达。
 
 操作的类型与效果
 ------------------------------------------------
@@ -103,6 +117,8 @@ return / returnValue 结束所属函数或独立计算体；过程的 return 结
      - 输入与结果检查
    * - constant、read、parameter、localRead
      - 与常量、实际声明、参数或局部槽类型严格核对。
+   * - reactionValue、reactionCapture
+     - 仅限所属 reaction 响应体；按 sourceType 或 captures[index].value.type 核对结果类型和索引范围。
    * - unary、binary、numeric
      - 按 :doc:`/language/expressions` 和 :doc:`/language/builtins` 的输入、参数数量和结果类型检查。concat 只接受 string。
    * - record、field

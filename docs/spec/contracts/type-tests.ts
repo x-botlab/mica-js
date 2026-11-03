@@ -159,6 +159,196 @@ function deviceExample(): DeviceIR {
   return device.finish();
 }
 
+function reactionExample(device: DeviceBuilder): void {
+  const pair = types.namedRecord('Pair', { value: types.number, ready: types.bool });
+  device.reaction(
+    {
+      name: 'remember',
+      sourcePath: ['probe', 'sample', 'level'],
+      sourceType: types.logic,
+      previous: 'oldLevel',
+      current: 'newLevel',
+      captures: [
+        { name: 'saved', type: types.number },
+        { name: 'header', type: types.bytes },
+        { name: 'snapshot', type: types.sample },
+        { name: 'optionalPair', type: types.optional(pair) },
+      ],
+    },
+    {
+      saved: (body) => {
+        body.returnValue(body.readState('count', types.number));
+        // @ts-expect-error Capture return types are fixed by their descriptors.
+        body.returnValue(false);
+        // @ts-expect-error Captures have no resource writes.
+        body.writeState('count', 1);
+        // @ts-expect-error Captures cannot read time.
+        body.now();
+        // @ts-expect-error Captures cannot consume randomness.
+        body.random();
+        // @ts-expect-error Captures cannot call ordinary functions.
+        body.call('ordinary');
+        // @ts-expect-error Capture contexts expose no reaction bindings.
+        void body.previous;
+      },
+      header: (body) => body.returnValue(body.copyBytes('data', 0, 2)),
+      snapshot: (body) => body.returnValue(body.readSample('probe')),
+      optionalPair: (body) => body.returnValue(null),
+    },
+    (body, bindings) => {
+      const previous: Value<import('./builder').Infer<typeof types.logic>> = bindings.previous;
+      const current: Value<import('./builder').Infer<typeof types.logic>> = bindings.current;
+      const header: Value<BytesValue> = bindings.captures.header;
+      body.equal(types.logic, previous, current);
+      body.writeState('count', body.add(bindings.captures.saved, 1));
+      body.store8('data', 0, 1);
+      body.writeIntent('probe', body.resistor('supply', 1000));
+      body.send('outgoing', header);
+      body.notify('changed');
+      body.now();
+      body.random();
+      body.call('ordinary');
+      body.assert(body.isNone(bindings.captures.optionalPair));
+      body.field(bindings.captures.snapshot, 'voltage');
+      body.while(
+        (test) => {
+          test.writeState('count', 1);
+          // @ts-expect-error Reaction calculation views cannot redirect.
+          test.redirect(0);
+          // @ts-expect-error Reaction calculation views cannot wait.
+          test.wait(0);
+          return false;
+        },
+        (loop) => {
+          // @ts-expect-error Nested reaction statement views cannot receive.
+          loop.receive('incoming', types.number);
+          loop.break();
+        },
+      );
+      // @ts-expect-error Reaction source values retain their enum type.
+      body.add(bindings.current, 1);
+      // @ts-expect-error Captured bytes are not numbers.
+      body.add(bindings.captures.header, 1);
+      // @ts-expect-error Previous bindings are immutable.
+      bindings.previous = bindings.current;
+      // @ts-expect-error Capture bindings are immutable.
+      bindings.captures.saved = body.constant(types.number, 1);
+      // @ts-expect-error The response sees only declared capture names.
+      void bindings.captures.missing;
+      // @ts-expect-error Reaction responses cannot wait.
+      body.wait(0);
+      // @ts-expect-error Reaction responses cannot receive, even immediately.
+      body.receive('incoming', types.number);
+      // @ts-expect-error Reaction responses cannot redirect.
+      body.redirect(0);
+      // @ts-expect-error Reaction responses cannot elapse.
+      body.elapse(0);
+      // @ts-expect-error Reaction responses cannot wait for JIT predicates.
+      body.waitUntil('ready');
+      // @ts-expect-error Reaction responses cannot stop JIT entries.
+      body.stop();
+      // @ts-expect-error Reaction responses have no value return.
+      body.returnValue(1);
+      body.return();
+    },
+  );
+  device.reaction(
+    {
+      name: 'pairChanged',
+      sourcePath: ['pair'],
+      sourceType: pair,
+      previous: 'before',
+      current: 'after',
+      captures: [],
+    },
+    {},
+    (body, bindings) => {
+      const number: Value<number> = body.field(bindings.current, 'value');
+      body.writeState('count', number);
+      // @ts-expect-error An empty capture list exposes no capture bindings.
+      void bindings.captures.saved;
+    },
+  );
+  device.reaction(
+    {
+      name: 'invalidSource',
+      sourcePath: ['intentState'],
+      // @ts-expect-error Intent is not a comparable source value.
+      sourceType: types.intent,
+      previous: 'before',
+      current: 'after',
+      captures: [],
+    },
+    {},
+    () => {},
+  );
+  device.reaction(
+    {
+      name: 'invalidCapture',
+      sourcePath: ['count'],
+      sourceType: types.number,
+      previous: 'before',
+      current: 'after',
+      captures: [
+        // @ts-expect-error Optional intent is not a comparable capture type.
+        { name: 'invalid', type: types.optional(types.intent) },
+        // @ts-expect-error Resources are not capture values.
+        { name: 'resource', type: types.pin },
+      ],
+    },
+    {},
+    () => {},
+  );
+}
+
+function reactionOptionalExample(device: DeviceBuilder): void {
+  const options = {
+    name: 'optionalChanged',
+    sourcePath: ['optionalChunk'],
+    sourceType: types.optional(types.bytes),
+    previous: 'before',
+    current: 'after',
+    captures: [{ name: 'saved', type: types.optional(types.sample) }],
+  } as const;
+  device.reaction(
+    options,
+    { saved: (body) => body.returnValue(body.optional(body.readSample('probe'))) },
+    (body, bindings) => {
+      const previous: Value<BytesValue | null> = bindings.previous;
+      body.if(body.not(body.isNone(previous)), (branch) => {
+        const bytes: Value<BytesValue> = branch.nonNull(previous);
+        branch.send('outgoing', bytes);
+      });
+      // @ts-expect-error Optional source values cannot be widened by response usage.
+      body.add(bindings.current, 1);
+    },
+  );
+  device.reaction(
+    options,
+    // @ts-expect-error Every capture descriptor requires a matching emitter.
+    {},
+    () => {},
+  );
+  device.reaction(
+    options,
+    {
+      saved: (body) => body.returnValue(null),
+      // @ts-expect-error Undeclared capture emitters are rejected.
+      extra: () => {},
+    },
+    () => {},
+  );
+  device.reaction(
+    {
+      ...options,
+      // @ts-expect-error Static source paths must not be empty.
+      sourcePath: [],
+    },
+    { saved: (body) => body.returnValue(null) },
+    () => {},
+  );
+}
+
 function removedSignalExample(device: DeviceBuilder, body: ProcessBody): void {
   // @ts-expect-error Signal declarations have been removed without an alias.
   device.signal({ name: 'removed', type: types.bool, initial: true });
@@ -630,6 +820,49 @@ const incompleteThreshold: DeclarationIR = {
   name: 'probe',
   low: { type: { kind: 'number' }, body: { operations: [] } },
 };
+const reactionDeclaration: DeclarationIR = {
+  kind: 'reaction',
+  name: 'remember',
+  sourcePath: ['count'],
+  sourceType: { kind: 'number' },
+  previous: 'before',
+  current: 'after',
+  captures: [
+    {
+      name: 'saved',
+      value: {
+        type: { kind: 'number' },
+        body: {
+          operations: [
+            { kind: 'read', resource: 'state', name: 'count', result: 0, type: { kind: 'number' } },
+            { kind: 'returnValue', value: 0 },
+          ],
+        },
+      },
+    },
+  ],
+  body: {
+    operations: [
+      { kind: 'reactionValue', binding: 'previous', result: 0, type: { kind: 'number' } },
+      { kind: 'reactionValue', binding: 'current', result: 1, type: { kind: 'number' } },
+      { kind: 'reactionCapture', index: 0, result: 2, type: { kind: 'number' } },
+      { kind: 'write', resource: 'state', name: 'count', value: 2 },
+      { kind: 'return' },
+    ],
+  },
+};
+const invalidReactionBinding: OperationIR = {
+  kind: 'reactionValue',
+  // @ts-expect-error A snapshot reference must select a declared source binding role.
+  binding: 'latest',
+  result: 0,
+  type: { kind: 'number' },
+};
+const invalidReactionType: import('./ir').ComparableTypeIR = {
+  kind: 'optional',
+  // @ts-expect-error Optional intent is excluded from reaction source and capture types.
+  inner: { kind: 'intent' },
+};
 const diagnostic: Diagnostic = {
   code: 'IR_TYPE',
   message: 'Expected number, received bool.',
@@ -651,6 +884,11 @@ const source: import('./ir').SourceInfo = {
 const incompatible: Value<number> = {} as Value<IntentValue>;
 void [
   deviceExample,
+  reactionExample,
+  reactionOptionalExample,
+  reactionDeclaration,
+  invalidReactionBinding,
+  invalidReactionType,
   removedSignalExample,
   operationsExample,
   compoundExample,

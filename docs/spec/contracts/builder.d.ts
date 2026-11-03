@@ -55,6 +55,7 @@ export type RuntimeValue =
   | BytesValue
   | IntentValue
   | SampleValue;
+export type ComparableValue = Exclude<RuntimeValue, IntentValue>;
 /** 记录接受目标类型的字段对象；bytes 输入会复制。sample 与 intent 不能伪造宿主常量。 */
 export type Constant<T> = T extends IntentValue | SampleValue
   ? never
@@ -352,6 +353,17 @@ export interface RuntimeStatements<Self, Compute extends ValueOps>
 export interface SyncCompute extends RuntimeStatements<SyncCompute, SyncCompute>, RedirectEffect {}
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- 保留具名的递归能力视图。
 export interface ProcessCompute extends RuntimeStatements<ProcessCompute, ProcessCompute> {}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- 保留 reaction 专用的递归能力视图。
+export interface ReactionCompute extends RuntimeStatements<ReactionCompute, ReactionCompute> {}
+/** 同步响应体可产生普通效果；不提供等待、接收或控制转向。 */
+export interface ReactionBody extends RuntimeStatements<ReactionBody, ReactionCompute> {
+  return(): void;
+}
+export interface ReactionCaptureBody<T extends ComparableValue> extends PureStatements<
+  ReactionCaptureBody<T>
+> {
+  returnValue(value: Operand<T>): void;
+}
 /** 无值函数仅提供 return，有值函数仅提供 returnValue；JS 自身 return 不生成该操作。 */
 export interface VoidFunctionBody
   extends RuntimeStatements<VoidFunctionBody, SyncCompute>, RedirectEffect {
@@ -398,6 +410,31 @@ export interface FunctionOptions<P extends readonly Parameter[]> {
 export interface NamedOptions {
   readonly name: string;
   readonly source?: SourceInfo;
+}
+export interface ReactionCapture {
+  readonly name: string;
+  readonly type: Type<ComparableValue>;
+  readonly source?: SourceInfo;
+}
+export type ReactionCaptureEmitters<C extends readonly ReactionCapture[]> = {
+  readonly [P in C[number] as P['name']]: (body: ReactionCaptureBody<Infer<P['type']>>) => void;
+};
+export interface ReactionBindings<T extends ComparableValue, C extends readonly ReactionCapture[]> {
+  readonly previous: Value<T>;
+  readonly current: Value<T>;
+  readonly captures: {
+    readonly [P in C[number] as P['name']]: Value<Infer<P['type']>>;
+  };
+}
+export interface ReactionOptions<
+  T extends ComparableValue,
+  C extends readonly ReactionCapture[],
+> extends NamedOptions {
+  readonly sourcePath: readonly [string, ...string[]];
+  readonly sourceType: Type<T>;
+  readonly previous: string;
+  readonly current: string;
+  readonly captures: C;
 }
 export interface PropertyOptions<T extends RuntimeValue> extends NamedOptions {
   readonly type: Type<T>;
@@ -470,6 +507,12 @@ export interface DeviceBuilder extends SourceScope<DeviceBuilder> {
   on(
     options: NamedOptions & { readonly sourcePath: readonly [string, ...string[]] },
     emit: (body: ProcessBody) => void,
+  ): void;
+  /** capture 回调各自生成独立纯计算体；响应参数为生成的 IR 结果句柄。 */
+  reaction<T extends ComparableValue, const C extends readonly ReactionCapture[]>(
+    options: ReactionOptions<T, C>,
+    capture: NoInfer<ReactionCaptureEmitters<C>>,
+    emit: (body: ReactionBody, bindings: NoInfer<ReactionBindings<T, C>>) => void,
   ): void;
   assert(emit: (body: CreationCompute) => void): void;
   finish(): DeviceIR;

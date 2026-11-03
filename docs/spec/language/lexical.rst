@@ -18,7 +18,7 @@
 
 简单语句以分号结束，不执行自动分号插入。语句块使用花括号；``else if`` 可以直接连写。参数、实参、枚举成员和记录字段列表允许末尾分隔符。
 
-结构关键字包括 ``device``、``default``、``const``、``let``、``enum``、``record``、``state``、``derived``、``pin``、``memory``、``fn``、``pure``、``process``、``on``、``if``、``else``、``match``、``while``、``loop``、``break``、``continue``、``return``、``await``、``assert`` 与 ``redirect``；``true``、``false``、``none`` 为值记号。它们不能作为用户声明名称。
+结构关键字包括 ``device``、``default``、``const``、``let``、``enum``、``record``、``state``、``derived``、``pin``、``memory``、``fn``、``pure``、``process``、``on``、``reaction``、``as``、``capture``、``if``、``else``、``match``、``while``、``loop``、``break``、``continue``、``return``、``await``、``assert`` 与 ``redirect``；``true``、``false``、``none`` 为值记号。它们不能作为用户声明名称。
 
 ``input``、``output`` 与 ``public`` 是声明上下文中的修饰符，``channel`` 与 ``notification`` 在端点声明中识别。其他名称位置仍接受这些拼写，例如 ``fn output()`` 和 ``pin out;``。``start`` 专用于启动过程名称。
 
@@ -49,4 +49,6 @@ device 的属性、器件级 ``const``、资源、derived、函数、过程和�
 
 内置类型、枚举、常量与函数名称由 :doc:`types` 和 :doc:`builtins` 给出，不能被用户声明遮蔽。命名实参的标签和成员访问按对应声明匹配；例如内置存储函数接受 ``memory: data`` 标签，该标签不声明一个名为 ``memory`` 的局部。
 
-函数与过程仅在 device 体内声明。块内使用局部声明、语句和控制结构；不嵌套定义 device、函数或过程。
+reaction 的名称也属于器件名称空间。其 previous / current 和 capture 绑定共同建立仅在响应体可见的不可变局部作用域，彼此名称必须唯一，不能遮蔽器件成员或内置名称；响应体内的局部也不能遮蔽它们。捕获初始化表达式不处于该绑定作用域中，不能引用其中任何名称。
+
+函数、过程与 reaction 仅在 device 体内声明。块内使用局部声明、语句和控制结构；不嵌套定义 device、函数、过程或 reaction。

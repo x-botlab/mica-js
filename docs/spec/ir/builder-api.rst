@@ -53,7 +53,7 @@ local 必须有初值，getLocal / setLocal 显式读写。if / match / while / 
 
 while 使用唯一的方法，条件回调按所属上下文取得同步计算能力，运行时每轮重新执行。普通上下文可以在条件中同步写入或调用普通函数；pure 和创建期保持自身限制。条件不能等待。
 
-and / or 的右侧及 select 的两分支使用显式惰性回调，while 条件与 assert 消息采用相同的计算回调返回合同。普通同步计算视图（SyncCompute、ProcessCompute）的回调接受 ``Operand<T> | void``；纯与创建期计算视图的回调仍须返回 ``Operand<T>``。返回 Operand 时，Builder 为仍可正常结束的生成路径追加 yield；返回 void 仅在生成控制流的全部路径已经终结时合法，例如 SyncCompute 中直接 redirect 或各分支均 redirect。若仅部分路径 redirect，其余正常路径仍须通过回调返回 Operand。仍有正常路径却返回 void 时，Builder / IR 校验报告缺失 yield / 产值；MUST NOT 把 undefined 当成模型值。TypeScript 不验证生成控制流是否全部终结，普通回调忘记 return 属于构造验收，而非预期类型错误。
+and / or 的右侧及 select 的两分支使用显式惰性回调，while 条件与 assert 消息采用相同的计算回调返回合同。普通同步计算视图（SyncCompute、ProcessCompute、ReactionCompute）的回调接受 ``Operand<T> | void``；纯与创建期计算视图的回调仍须返回 ``Operand<T>``。返回 Operand 时，Builder 为仍可正常结束的生成路径追加 yield；返回 void 仅在生成控制流的全部路径已经终结时合法，例如 SyncCompute 中直接 redirect 或各分支均 redirect。若仅部分路径 redirect，其余正常路径仍须通过回调返回 Operand。仍有正常路径却返回 void 时，Builder / IR 校验报告缺失 yield / 产值；MUST NOT 把 undefined 当成模型值。TypeScript 不验证生成控制流是否全部终结，普通回调忘记 return 属于构造验收，而非预期类型错误。
 
 已经提前生成的 Value 仍是提前求得的结果，不会因传入回调而自动变成延迟表达式。
 
@@ -98,6 +98,35 @@ start 声明可选且唯一的启动过程；on 使用名称与非空静态 sour
    const definition = device.finish();
 
 定义内前向引用在 finish 统一解析。每个声明位置的允许类型、创建期依赖和执行效果以语言规范为准；泛型接受某个 Type 不替代这些校验。
+
+同步 reaction 构造
+------------------------------------------------
+
+``reaction(options, capture, emit)`` 生成独立 reaction 声明。options 包含 name、非空 sourcePath、sourceType、previous / current 源码名称、有序 captures 描述及可选 source。sourceType 与各描述的 type 限于 ``ComparableValue``；字符串路径的实际资源类别和最终类型在 finish 核对。captures 描述按声明顺序给出 name、type 与可选 source；名称唯一且不遮蔽已有器件成员及两个源绑定。
+
+第二参数是按 capture 名称索引的构造回调对象，每个回调获得独立的 ``ReactionCaptureBody<T>``，用 returnValue 交付声明类型的纯计算结果；键集合须与描述完全一致。Builder 按 captures 数组而非对象属性顺序调用这些回调，各自关闭并隔离句柄。构造期宿主 JavaScript 回调执行一次，运行期计算仅在首次基线之后的已发布源变化时执行。空 captures 使用 [] 和 {}。
+
+emit 获得专用 ``ReactionBody`` 与只读 ``ReactionBindings<T, C>``。bindings.previous / current 为 ``Value<T>``，bindings.captures 按描述名称映射为各自类型的 Value。Builder 在响应体首部按 previous、current、captures 顺序生成 reactionValue / reactionCapture 产值操作，这些句柄是生成的 IR 操作数，不是构造期 JS 值或隐式资源读取。previous / current 的 API 属性名固定；options 中的名称保留 DDL 绑定及诊断名称。它们与其他 Value 一样仅在所属响应体和可见子区域可用。
+
+ReactionBody 提供普通同步效果及 return，不提供 wait、receive、redirect、elapse、waitUntil、stop 或 returnValue；条件、惰性计算与断言消息的计算回调使用独立 ``ReactionCompute`` 能力视图，分支和循环体继续使用 ReactionBody，保持相同同步效果限制。调用字符串指向的辅助函数仍接受传递效果校验。ReactionCaptureBody 不获得任何 reaction 绑定；捕获外层 JS 变量中的 Value 也不能绕过独立执行体检查。
+
+.. code-block:: typescript
+
+   device.reaction({
+     name: 'remember',
+     sourcePath: ['count'],
+     sourceType: types.number,
+     previous: 'before',
+     current: 'after',
+     captures: [{ name: 'saved', type: types.bytes }],
+   }, {
+     saved: capture => capture.returnValue(capture.copyBytes('data', 0, 2)),
+   }, (body, values) => {
+     body.assert(body.notEqual(types.number, values.previous, values.current));
+     body.send('outgoing', values.captures.saved);
+   });
+
+每轮全部捕获完成后才运行全部同步响应；稳定排序、基线和下一发布边界见 :doc:`/language/functions`。这些规则不改变普通 on 过程的非重入与挂起语义，仅确定其后的阶段优先级。
 
 资源操作
 ------------------------------------------------

@@ -44,14 +44,14 @@
        voltage: 0,
        pins: [{ instance: 'node', pin: 'reference' }],
      }],
-   }, { seed: 0, sameTimeBudget: 1_000_000 });
+   }, { seed: 0 });
 
 选项与实际资源
 ------------------------------------------------
 
 ``seed`` 是 uint32，省略为 0。``instances[].randomState`` 可覆盖对应实例的四字初始状态；数值检查、派生算法及参考向量见 :doc:`/execution/random`。种子不读取宿主时间或随机源。
 
-``sameTimeBudget`` 为正安全整数，省略为 1_000_000，运行期与创建期计数规则见 :doc:`/execution/scheduling`。首版不另设内存或队列总字节限额。声明数值合法不等于宿主能够分配；已知配置与资源建立错误在工厂前拒绝，建立失败报告 ``RESOURCE_ALLOCATION_FAILED``。运行中输出快照、编译缓存等资源分配失败属于框架故障，保留已发生效果，见 :doc:`/errors`。
+``options`` 仅接受 ``seed``，其他字段按未知配置拒绝。声明数值合法不等于宿主能够分配；已知配置与资源建立错误在工厂前拒绝，建立失败报告 ``RESOURCE_ALLOCATION_FAILED``。运行中输出快照、编译缓存等资源分配失败属于框架故障，保留已发生效果，见 :doc:`/errors`。非终止调用及容器外墙钟终止的边界见 :doc:`/execution/scheduling`，它们不新增核心超时接口。
 
 推进、故障与销毁
 ------------------------------------------------
@@ -99,9 +99,15 @@
 
 单个 onDidError 或宿主话题监听器抛错，不覆盖主因、不阻止其他宿主监听器与清理，通过 onDidDiagnostic 报告。onDidDiagnostic 监听器自身抛错仅用 console.error 兜底，不递归发布。销毁后的事件源不再分发；旧 context 的 reportError 用过期诊断兜底，正常返回，不改变任何新板。兜底输出失败也不能使 reportError 或清理流程再次抛错。
 
-创建失败时尚无可交付的板对象，直接抛 SimulationError，不要求订阅创建前事件。初始化主因保留为主诊断，清理失败按发生顺序附加。运行中首故障既触发事件，也使当前推进抛出 SimulationError；推进之外的故障立即通过事件报告。已交付诊断结构保持只读，后续附加诊断通过新事件或失败调用的汇总报告交付，不修改先前事件对象。
+创建失败时尚无可交付的板对象，直接抛 SimulationError，不要求订阅创建前事件。
 
-RuntimeDiagnostic 与 D2 的 IR Diagnostic 分开，复用 InputPath 与 SourceInfo。phase 是 library、assembly、initialize、execute、translate、sync、topic、dispose、host 或 report；time 是发生时已到达的仿真时间，在板时间尚未建立时为 null。instanceId、resource、path、source 在可确定时携带，diagnostic.cause 保留原异常引用，SimulationError 的规范访问位置为 error.diagnostic.cause，不要求 Error.cause 别名；只读合同不冻结原异常对象。related 依发生顺序保存附加诊断。预算错误的 cause 还应携带上限、已用计数与待执行动作等 :doc:`/execution/scheduling` 要求的信息。
+创建期模型表达式求值或器件体 assert 失败使用 ``MODEL_EXECUTION_FAILED``、``phase: 'assembly'``，发生于工厂调用前；底层执行或断言失败原因保留在 ``diagnostic.cause``。静态模型不合法仍使用 ``MODEL_VALIDATION_FAILED``，配置输入不合法使用 ``INVALID_CONFIGURATION``；已有专用分类码的错误继续使用专用码。断言求值为 false 是模型执行失败，不能将其归为类型或静态模型校验错误。
+
+首次推进中建立源观察基线、运行期边界源求值、同步反应捕获或反应体中的模型求值或断言失败使用 ``MODEL_EXECUTION_FAILED``、``phase: 'execute'``，此时已创建的板进入 faulted；电气求解等已有专用分类码的错误仍使用专用码。
+
+初始化主因保留为主诊断，清理失败按发生顺序附加。运行中首故障既触发事件，也使当前推进抛出 SimulationError；推进之外的故障立即通过事件报告。已交付诊断结构保持只读，后续附加诊断通过新事件或失败调用的汇总报告交付，不修改先前事件对象。
+
+RuntimeDiagnostic 与 D2 的 IR Diagnostic 分开，复用 InputPath 与 SourceInfo。phase 是 library、assembly、initialize、execute、translate、sync、topic、dispose、host 或 report；time 是发生时已到达的仿真时间，在板时间尚未建立时为 null。instanceId、resource、path、source 在可确定时携带，diagnostic.cause 保留原异常引用，SimulationError 的规范访问位置为 error.diagnostic.cause，不要求 Error.cause 别名；只读合同不冻结原异常对象。related 依发生顺序保存附加诊断。
 
 .. list-table:: 固定运行时分类码
    :header-rows: 1
@@ -117,8 +123,6 @@ RuntimeDiagnostic 与 D2 的 IR Diagnostic 分开，复用 InputPath 与 SourceI
      - 合法声明或运行中资源无法建立。
    * - INVALID_ELECTRICAL_PARAMETER / CONFLICTING_REFERENCE / ELECTRICAL_SOLVE_FAILED
      - 非法电气参数、参考装配冲突或数值求解失败，定位要求见 :doc:`/electrical`。
-   * - SAME_TIME_BUDGET_EXCEEDED
-     - 创建期或运行期同刻预算耗尽。
    * - CHANNEL_CONSUMER_CONFLICT
      - 不同过程可能消费同一个 input channel。
    * - INVALID_CALL_STATE / OBJECT_DISPOSED / BOARD_FAULTED / INVALID_BINDING

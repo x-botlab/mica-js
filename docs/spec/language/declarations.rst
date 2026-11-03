@@ -88,7 +88,7 @@ DDL 在 input channel 上 receive，在 output channel 上 send，在 output not
 函数、过程与局部绑定
 ------------------------------------------------
 
-函数使用 fn 或 pure fn，过程使用可选且唯一的 ``process start``，或带 on 源路径的命名反应过程，见 :doc:`functions`。
+函数使用 fn 或 pure fn，过程使用可选且唯一的 ``process start``，或带 on 源路径的命名反应过程。``reaction name on source as (previous, current)`` 声明独立的同步反应，可选 capture 绑定在所有响应开始前捕获的纯表达式，完整规则见 :doc:`functions`。
 
 ``const`` 建立不可重赋值的局部绑定，``let`` 建立可重赋值局部，两者都要求初值：
 
