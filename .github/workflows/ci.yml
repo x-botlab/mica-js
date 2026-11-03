@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
-    # Only code that this workflow verifies; docs / changeset-only pushes stay quiet.
+    # Include the normative contracts consumed by conformance checks.
     paths:
+      - 'tests/conformance/**'
+      - 'docs/spec/contracts/**'
+      - 'docs/spec/conformance.rst'
       - 'packages/**'
       - 'apps/**'
       - 'scripts/**'
@@ -18,6 +21,9 @@ on:
       - '.github/workflows/ci.yml'
   pull_request:
     paths:
+      - 'tests/conformance/**'
+      - 'docs/spec/contracts/**'
+      - 'docs/spec/conformance.rst'
       - 'packages/**'
       - 'apps/**'
       - 'scripts/**'
@@ -54,6 +60,11 @@ jobs:
       - run: pnpm run lint
 
       - run: pnpm run typecheck
+
+      - name: Check conformance types and run Markdown cases
+        run: |
+          pnpm typecheck:conformance
+          pnpm test:conformance
 
       - run: pnpm run build
 

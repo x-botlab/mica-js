@@ -1,0 +1,20 @@
+{
+  "name": "@mica-js/conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.mjs",
+      "import": "./src/index.mjs"
+    },
+    "./adapter": {
+      "types": "./src/adapter.d.ts"
+    }
+  },
+  "dependencies": {
+    "mdast-util-from-markdown": "^2.0.2",
+    "yaml": "^2.8.1",
+    "typescript": "catalog:"
+  }
+}
