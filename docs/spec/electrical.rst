@@ -37,9 +37,21 @@
 
 ``pin.intent`` 表达引脚贡献的电阻支路。``resistor(to: target, resistance: r)`` 返回 ``intent``；目标只接受当前实例的直接 pin 引用或 pin 形参。构造时尚无支路起点，赋给 pin 后，以该 pin 为起点、目标 pin 为另一端。经辅助函数传递仍保留实例归属。
 
-``[first, second]`` 合并支路，``[]`` 构造空意图。这些构造允许在 ``pure fn`` 中使用；只有 ``pin.intent <- value`` 才更新网络贡献，该写入不是纯效果。``intent`` 可保存为局部、作为函数形参或返回值，也可以可空，但不提供内容相等比较。
+``[first, second]`` 合并支路，``[]`` 构造空意图。这些构造允许在 ``pure fn`` 中使用；pin 初值在资源建立时设定初始贡献，运行中的 ``pin.intent <- value`` 更新网络贡献，该写入不是纯效果。``intent`` 可保存为局部、作为函数形参或返回值，也可以可空，但不提供内容相等比较。
 
 电阻使用 ``number``，单位为欧姆，MUST 为有限值且属于闭区间 ``[0.001, 1_000_000_000]``，即 1 mΩ 至 1 GΩ。实际执行 ``resistor`` 构造操作时检查，超界不截断、不转换为短路或开路；非法构造即使没有赋给引脚也失败。未执行分支不产生运行期构造错误，可静态确定的错误允许提前报告。
+
+pin 可在声明中给出创建期初始意图，省略时为空意图。例如：
+
+.. code-block:: text
+
+   device PullDown(resistance: number default 1_000_000) {
+     pin input(low: 0.8, high: 2.0) =
+       [resistor(to: reference, resistance: resistance)];
+     pin reference;
+   }
+
+初值必须为非可空 intent，按 :doc:`/language/declarations` 的创建期意图表达式求值。全部 pin 名称先绑定，允许前向目标引用；目标类别、实例归属与电阻范围在任何工厂前校验。全板初始支路先于任何工厂建立，首次推进才求解并建立观察基线，建立本身不伪造变化事件。初始意图就是该 pin 的当前贡献，之后赋值完整替换它，MUST NOT 作为永久并联支路保留。创建与求解顺序见 :doc:`/assembly`、:doc:`/execution/scheduling`。
 
 运行期非法构造属于框架错误，使整板 ``faulted``；尚未执行的 intent 赋值不发生，之前的资源效果保留。合法数值不替代实例归属与目标类别检查。
 

@@ -44,7 +44,8 @@ DDL 文法
                          "=", expression, ";" ;
 
    pin-declaration = "pin", identifier,
-                     [ "(", [ named-arguments ], ")" ], ";" ;
+                     [ "(", [ named-arguments ], ")" ],
+                     [ "=", expression ], ";" ;
    memory-declaration = [ "public" ], "memory", identifier,
                         "[", expression, "]", ";" ;
    direction = "input" | "output" ;
@@ -54,7 +55,7 @@ DDL 文法
 
 identifier 类型位置必须解析到具名枚举或记录。各位置允许的值类型由 :doc:`/language/types` 的适用范围表约束，不能因文法包含 value-type 就把可空值或 string 加入通道。
 
-pin 参数只接受成对的 low、high，或同时省略；有限性、low < high 与无阈值时的 unknown 电平由 :doc:`/electrical` 定义。channel 必须有 capacity，bytes 通道另需 maxLength，可选 overflow；其他选项、重复选项或非 bytes 的 maxLength 均拒绝。参数值、长度、初值和 device-constant 采用创建期表达式检查。
+pin 的可选初值须为非可空 intent，遵守创建期意图表达式限制；省略时为空意图。全部 pin 预绑定，初值可以前向引用本实例 pin。pin 参数只接受成对的 low、high，或同时省略；有限性、low < high 与无阈值时的 unknown 电平由 :doc:`/electrical` 定义。channel 必须有 capacity，bytes 通道另需 maxLength，可选 overflow；其他选项、重复选项或非 bytes 的 maxLength 均拒绝。参数值、长度、初值和 device-constant 采用创建期表达式检查。
 
 函数与过程
 ------------------------------------------------

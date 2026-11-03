@@ -601,6 +601,109 @@ function creationExample(body: CreationBody<number>): void {
   body.now();
   // @ts-expect-error Creation cannot load runtime memory.
   body.load8('data', 0);
+  // @ts-expect-error Ordinary creation bodies do not expose initial-intent pin references.
+  body.pin('probe');
+  // @ts-expect-error Initial-intent constructors are not available in ordinary creation bodies.
+  body.resistor('probe', 1000);
+}
+
+function initialIntentExample(): DeviceIR {
+  const device = createDeviceBuilder({ name: 'InitialIntent' });
+  device.property({ name: 'resistance', type: types.number, default: 1000 });
+  device.constant({ name: 'enabled', type: types.bool, value: true });
+  device.pin({
+    name: 'a',
+    low: 0.8,
+    high: 2,
+    initial: (body) => {
+      const forward: PinRef = body.pin('b');
+      const resistance = body.readProperty('resistance', types.number);
+      const intent = body.local(types.intent, body.combineIntents());
+      body.if(body.readConst('enabled', types.bool), (branch) => {
+        branch.setLocal(intent, branch.resistor(forward, resistance));
+      });
+      body.while(
+        (test) => {
+          test.combineIntents(test.resistor('b', resistance));
+          // @ts-expect-error Initial intent conditions cannot read runtime state.
+          test.readState('count', types.number);
+          return false;
+        },
+        (loop) => loop.break(),
+      );
+      const chosen = body.select(
+        types.intent,
+        true,
+        (yes) => yes.resistor(yes.pin('b'), resistance),
+        (no) => no.combineIntents(),
+      );
+      body.assert(true, (message) => {
+        message.resistor('b', resistance);
+        // @ts-expect-error Initial intent assertion messages cannot read samples.
+        message.readSample('b');
+        return 'initial intent';
+      });
+      body.returnValue(body.combineIntents(chosen, body.getLocal(intent)));
+      // @ts-expect-error Initial intent bodies must return intent, not number.
+      body.returnValue(1);
+      // @ts-expect-error Pin references are not intent values.
+      body.returnValue(forward);
+      // @ts-expect-error An initial intent cannot be null.
+      body.returnValue(null);
+      // @ts-expect-error An initial intent must be nonoptional.
+      body.returnValue(body.optional(chosen));
+      // @ts-expect-error Initial intent bodies cannot read state.
+      body.readState('count', types.number);
+      // @ts-expect-error Initial intent bodies cannot read derived values.
+      body.readDerived('ready', types.bool);
+      // @ts-expect-error Initial intent bodies cannot read samples.
+      body.readSample('b');
+      // @ts-expect-error Initial intent bodies cannot access memory references.
+      body.memory('data');
+      // @ts-expect-error Initial intent bodies cannot read memory.
+      body.load8('data', 0);
+      // @ts-expect-error Initial intent bodies cannot write resources.
+      body.writeIntent('a', chosen);
+      // @ts-expect-error Initial intent bodies cannot read time.
+      body.now();
+      // @ts-expect-error Initial intent bodies cannot consume randomness.
+      body.random();
+      // @ts-expect-error Initial intent bodies cannot call ordinary functions.
+      body.call('ordinary');
+      // @ts-expect-error Initial intent bodies cannot wait.
+      body.wait(1);
+      // @ts-expect-error Initial intent bodies cannot send messages.
+      body.send('outgoing', 1);
+      // @ts-expect-error Initial intent bodies cannot redirect.
+      body.redirect(0);
+      // @ts-expect-error Initial intent bodies cannot return without a value.
+      body.return();
+      // @ts-expect-error Resistance must be numeric.
+      body.resistor(forward, false);
+      // @ts-expect-error Memory references cannot be resistor targets.
+      body.resistor({} as MemoryRef, 1000);
+    },
+  });
+  device.pin({ name: 'b', initial: (body) => body.returnValue(body.combineIntents()) });
+  device.pin({
+    name: 'c',
+    initial: (body) => {
+      body.returnValue(body.callPureValue('pull', types.intent, body.pin('b')));
+    },
+  });
+  device.pureFn(
+    { name: 'pull', params: [{ name: 'target', type: types.pin }], returns: types.intent },
+    (body, args) => body.returnValue(body.resistor(args.target, 1000)),
+  );
+  // @ts-expect-error An initial intent cannot be a host constant.
+  device.pin({ name: 'invalid', initial: [] });
+  // @ts-expect-error Initial intent does not relax paired threshold requirements.
+  device.pin({
+    name: 'incomplete',
+    low: 0.8,
+    initial: (body) => body.returnValue(body.combineIntents()),
+  });
+  return device.finish();
 }
 
 function pureExample(body: PureValueFunctionBody<number>): void {
@@ -820,6 +923,49 @@ const incompleteThreshold: DeclarationIR = {
   name: 'probe',
   low: { type: { kind: 'number' }, body: { operations: [] } },
 };
+const initialPinDeclaration: DeclarationIR = {
+  kind: 'pin',
+  name: 'a',
+  initial: {
+    type: { kind: 'intent' },
+    body: {
+      operations: [
+        {
+          kind: 'constant',
+          result: 0,
+          type: { kind: 'number' },
+          constant: { kind: 'number', value: 1000 },
+        },
+        {
+          kind: 'resistor',
+          result: 1,
+          type: { kind: 'intent' },
+          to: { kind: 'pin', name: 'b' },
+          resistance: 0,
+        },
+        { kind: 'returnValue', value: 1 },
+      ],
+    },
+  },
+};
+const invalidInitialPinDeclaration: DeclarationIR = {
+  kind: 'pin',
+  name: 'a',
+  initial: {
+    // @ts-expect-error A pin initial computation must have the nonoptional intent type.
+    type: { kind: 'number' },
+    body: { operations: [] },
+  },
+};
+const optionalInitialPinDeclaration: DeclarationIR = {
+  kind: 'pin',
+  name: 'a',
+  initial: {
+    // @ts-expect-error Optional intent is not an initial pin intent.
+    type: { kind: 'optional', inner: { kind: 'intent' } },
+    body: { operations: [] },
+  },
+};
 const reactionDeclaration: DeclarationIR = {
   kind: 'reaction',
   name: 'remember',
@@ -895,6 +1041,10 @@ void [
   nullableCompoundExample,
   enumExample,
   creationExample,
+  initialIntentExample,
+  initialPinDeclaration,
+  invalidInitialPinDeclaration,
+  optionalInitialPinDeclaration,
   pureExample,
   jitExample,
   redirectExample,

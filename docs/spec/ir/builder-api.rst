@@ -75,7 +75,7 @@ call / callValue 分别生成无返回和单结果同步调用；callPure / call
 
 start 声明可选且唯一的启动过程；on 使用名称与非空静态 sourcePath 数组，例如 ``['probe', 'sample', 'level']``，最终源须为可观察且可比较的值或 input notification，intent 与 intent? 拒绝。这些方法生成静态声明，不在运行期新增资源。
 
-创建期 default / value / initial / length / capacity 等字段接受常量，或返回指定类型的 CreationBody 构造回调。回调在构造期执行一次，生成的计算在每次实例创建时执行。纯运行期 derived 使用 pure 构造体。device 级 assert 接收创建期无返回构造回调，消息仍为惰性计算。
+除 pin.initial 外，创建期 default / value / initial / length / capacity 等字段接受常量，或返回指定类型的 CreationBody 构造回调。回调在构造期执行一次，生成的计算在每次实例创建时执行。纯运行期 derived 使用 pure 构造体。device 级 assert 接收创建期无返回构造回调，消息仍为惰性计算。
 
 .. code-block:: typescript
 
@@ -98,6 +98,26 @@ start 声明可选且唯一的启动过程；on 使用名称与非空静态 sour
    const definition = device.finish();
 
 定义内前向引用在 finish 统一解析。每个声明位置的允许类型、创建期依赖和执行效果以语言规范为准；泛型接受某个 Type 不替代这些校验。
+
+初始 pin 意图构造
+------------------------------------------------
+
+``pin({ name, low?, high?, initial? })`` 的 initial 仅接受 ``(body: InitialIntentBody) => void``，正常路径调用 ``returnValue`` 返回非可空 intent。阈值仍成对给出；省略 initial 为空意图，显式空意图用 ``combineIntents()``。该回调在定义构造时生成 IR，每次实例创建时求值，不接受宿主 intent 常量。
+
+InitialIntentBody 在创建期值计算基础上增加 ``pin(name)``、``resistor(to, resistance)`` 与 ``combineIntents(...values)``。pin 返回符号 PinRef；to 接受本实例 pin 名称或 PinRef，允许前向引用，finish 统一解析，因此无需额外的声明 / 设置两阶段 API。分支继续使用 InitialIntentBody；select、while 条件、短路和断言消息使用 InitialIntentCompute，保持相同能力。pure 调用使用现有 callPure / callPureValue，并在完成时递归检查创建期读取限制及资源实参。
+
+该专用视图不提供 state、derived、sample、memory 读取或运行效果；普通 CreationBody 不因该字段获得 pin 与 resistor 方法。property、const、state 的类型适用范围保持原合同，字符串名称与调用结果描述仍须通过 IR 校验。
+
+.. code-block:: typescript
+
+   device.property({ name: 'resistance', type: types.number, default: 1000 });
+   device.pin({ name: 'a', low: 0.8, high: 2, initial: body => {
+     body.returnValue(body.resistor(body.pin('b'),
+       body.readProperty('resistance', types.number)));
+   } });
+   device.pin({ name: 'b' });
+
+此例与 ``pin a(low: 0.8, high: 2) = [resistor(to: b, resistance: resistance)];`` 的初始意图一致。全部资源预绑定、工厂前全板支路建立及首次 runUntil 的行为见 :doc:`resources`；后续 writeIntent 完整替换初值。
 
 同步 reaction 构造
 ------------------------------------------------

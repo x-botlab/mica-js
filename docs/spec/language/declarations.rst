@@ -37,7 +37,9 @@
 #. 校验提供的属性，以提供值替代相应默认值；解析默认值与器件级 const 的无环依赖。
 #. 求值并校验所有资源配置和初始值。依赖必须先就绪；同等就绪的声明按源码顺序处理。
 #. 按源码顺序执行创建期 assert。
-#. 建立执行资源并进入 JavaScript 工厂阶段。
+#. 建立执行资源，将全板初始引脚意图建立为当前支路，再进入 JavaScript 工厂阶段。
+
+引脚初始意图扩展上述创建期表达式：允许构造 ``intent`` 并引用本实例直接 pin 或经纯函数传递的 pin 形参；全部 pin 名称先绑定，因此目标可以在后面声明。引用只用于资源传参、身份比较及支路构造，不读取 ``pin.sample``。其余创建期读取与效果限制保持不变。
 
 定义阶段即拒绝默认值或 const 的静态依赖环，不因某次实例提供了值而接受有环定义。创建期检查失败不留下可执行实例。全板检查先于工厂调用的边界继续由 :doc:`/assembly` 维护。
 
@@ -61,12 +63,15 @@ derived 显式给出类型和纯表达式，允许调用 pure fn。依赖可包�
 
 .. code-block:: text
 
-   pin probe(low: 0.8, high: 2.0);
+   pin probe(low: 0.8, high: 2.0) =
+     [resistor(to: reference, resistance: 1_000_000)];
    pin reference;
    memory data[16];
    public memory exported[16];
 
 pin 阈值与 memory 长度使用创建期表达式。pin 的 low、high 使用命名形式，必须同时给出有限且 low < high 的值，或同时省略。省略时仍采样电压与状态，但逻辑电平恒为 unknown；端点等号与完整校验见 :doc:`/electrical`。供电及地也声明为普通 pin，由装配显式连接。
+
+pin 声明可在阈值之后以 ``= expression`` 指定非可空 ``intent`` 初值；省略时为 ``[]``。初值采用上述创建期意图表达式，求值与支路构造校验均在任何工厂调用前完成。之后的 ``pin.intent <- value`` 完整替换初值，不额外保留一层支路。建立时序与首次求解见 :doc:`/assembly` 和 :doc:`/execution/scheduling`。
 
 memory 是实例独立固定字节区，长度允许为零。``public`` 仅修饰 memory，授予配对 JavaScript 只读用途的借用权限。初始化、范围与借用合同见 :doc:`/memory`。
 
