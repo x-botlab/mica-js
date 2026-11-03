@@ -46,6 +46,7 @@ DDL、Builder 与手工 IR 输入共享校验规则。TypeScript 类型检查提
 #. 控制流检查分支穷尽、模式重复、最近循环跳转、函数正常返回路径、计算区域 yield 与路径终结后的后缀。普通同步计算回调返回 void 时，生成控制流的全部路径必须已经终结；仍有正常结束路径时报告缺失 yield / 产值（IR_CONTROL_FLOW），不得将 undefined 当成模型值。纯与创建期计算回调仍须返回 Operand。
 #. 效果检查沿完整静态调用图传播，包含短路右侧和所有分支；不能用某次输入下分支未选中作为放宽上下文的依据。
 #. reaction 检查 sourcePath 非空、静态资源类别和 sourceType 与最终路径类型一致；notification、intent / intent? 及资源引用拒绝。previous / current 与所有 capture 名称唯一且满足遮蔽规则。每项捕获计算正常返回声明的可比较类型、遵守纯规则并有独立编号空间；捕获不能引用任何 reaction 绑定。reactionValue / reactionCapture 只能在所属响应体及其词法子区域使用，核对 binding 判别值、index 为非负安全整数且在 captures 范围内、结果 type 与源或捕获类型一致。辅助函数不继承绑定作用域。响应体只允许无值 return 或自然结束，禁止 returnValue、等待、receive、redirect 及 JIT 专有控制操作，效果限制沿所有被调用函数传播。
+#. pin.initial 检查计算结果严格为非可空 intent、所有正常路径 returnValue；效果限制递归覆盖短路、分支、循环、断言消息与 pure 调用链。允许本实例直接 pin 引用与资源形参传递，拒绝运行资源读取。全部 pin 预绑定及引用的归属 / 范围检查先于任何工厂调用；resistor 参数在创建期求值时按电气合同检查。直接或间接的不存在引用、跨实例引用分别按引用与作用域错误拒绝，数值合法性失败拒绝创建。
 #. JIT 检查块的相邻边界、每指令独立局部范围、等待尾位置与缺少目标入口的 redirect 调用路径。
 
 资源数值的动态条件继续在相应操作执行处检查；静态类型 number 不替代时长、偏移、消息长度或支路参数的值校验。创建期求值成功后才进入相应资源建立阶段。
@@ -62,7 +63,10 @@ DDL、Builder 与手工 IR 输入共享校验规则。TypeScript 类型检查提
      - 专门限制
    * - 创建期
      - 常量、属性、器件常量、局部计算、控制流、断言与满足创建期限制的 pure 调用。
-     - 拒绝运行资源读取、资源写入、消息、时间读取、随机、等待与转向。
+     - 普通创建期体拒绝资源引用；拒绝运行资源读取、资源写入、消息、时间读取、随机、等待与转向。pin.initial 的专用引用能力见下一行。
+   * - pin.initial
+     - 创建期计算能力，另有本实例直接 pin 引用、resistor 与 intent 组合；pure 调用链可传递 pin / memory 资源形参引用。
+     - 全部调用链只读取属性、常量及值形参；资源引用只标识身份，不读取 state、derived、sample 或 memory 内容与长度。返回非可空 intent。
    * - pure fn / derived
      - 语言规范的纯读取集合、局部计算、控制流、断言、纯调用与值构造。
      - derived 正常返回值；不产生资源效果，不读取 now 或 random。

@@ -214,11 +214,18 @@ export interface ValueOps {
   ): Value<T>;
 }
 
-export interface ReadOps extends ValueOps {
+/** 引用按名称延迟解析，允许指向同一定义中后声明的 pin。 */
+export interface PinIntentOps {
+  pin(name: string): PinRef;
+  /** 生成引脚间电阻构造；执行时校验闭区间 [0.001, 1e9] Ω。 */
+  resistor(to: TargetInput, resistance: Operand<number>): Value<IntentValue>;
+  combineIntents(...values: Operand<IntentValue>[]): Value<IntentValue>;
+}
+
+export interface ReadOps extends ValueOps, PinIntentOps {
   /** 捕获执行处的当前状态值；此前的 writeState 已即时生效。 */
   readState<T extends RuntimeValue>(name: string, type: Type<T>): Value<T>;
   readDerived<T extends RuntimeValue>(name: string, type: Type<T>): Value<T>;
-  pin(name: string): PinRef;
   memory(name: string): MemoryRef;
   memoryLength(memory: MemoryInput): Value<number>;
   load8(memory: MemoryInput, offset: Operand<number>): Value<number>;
@@ -232,9 +239,6 @@ export interface ReadOps extends ValueOps {
     length: Operand<number>,
   ): Value<BytesValue>;
   readSample(pin: PinInput): Value<SampleValue>;
-  /** 生成引脚间电阻构造；执行时校验闭区间 [0.001, 1e9] Ω。 */
-  resistor(to: TargetInput, resistance: Operand<number>): Value<IntentValue>;
-  combineIntents(...values: Operand<IntentValue>[]): Value<IntentValue>;
   refEqual(left: PinRef, right: PinRef): Value<boolean>;
   refEqual(left: MemoryRef, right: MemoryRef): Value<boolean>;
 }
@@ -306,6 +310,20 @@ export interface CreationBody<T extends RuntimeValue> extends CreationStatements
 }
 /** 构造回调产生创建期 IR，不是实例创建时执行的任意宿主 JS；正常路径须 returnValue。 */
 export type CreationInput<T extends RuntimeValue> = Constant<T> | ((body: CreationBody<T>) => void);
+
+/** pin.initial 专用能力；嵌套计算保持相同的创建期限制。 */
+export interface InitialIntentStatements<Self>
+  extends
+    ValueOps,
+    PinIntentOps,
+    ControlFlow<Self, InitialIntentCompute>,
+    LazyOps<InitialIntentCompute>,
+    Assertions<InitialIntentCompute> {}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- 保留具名的递归能力视图。
+export interface InitialIntentCompute extends InitialIntentStatements<InitialIntentCompute> {}
+export interface InitialIntentBody extends InitialIntentStatements<InitialIntentBody> {
+  returnValue(value: Operand<IntentValue>): void;
+}
 
 export interface PureStatements<Self>
   extends ReadOps, ControlFlow<Self, PureCompute>, LazyOps<PureCompute>, Assertions<PureCompute> {}
@@ -448,8 +466,7 @@ export interface ConstantOptions<T extends RuntimeValue> extends NamedOptions {
   readonly type: Type<T>;
   readonly value: NoInfer<CreationInput<T>>;
 }
-export type PinOptions = NamedOptions &
-  (
+export type PinOptions = NamedOptions & { readonly initial?: (body: InitialIntentBody) => void } & (
     | { readonly low?: never; readonly high?: never }
     | { readonly low: CreationInput<number>; readonly high: CreationInput<number> }
   );

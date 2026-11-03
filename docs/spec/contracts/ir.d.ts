@@ -360,7 +360,12 @@ export type DeclarationIR = Located &
         readonly type: ValueTypeIR;
         readonly value: ComputationIR;
       }
-    | ({ readonly kind: 'pin'; readonly name: string } & (
+    | ({
+        readonly kind: 'pin';
+        readonly name: string;
+        /** 创建期求值；省略为空意图，后续 writeIntent 完整替换。 */
+        readonly initial?: ComputationIR & { readonly type: { readonly kind: 'intent' } };
+      } & (
         | { readonly low?: never; readonly high?: never }
         | { readonly low: ComputationIR; readonly high: ComputationIR }
       ))

@@ -28,8 +28,11 @@ IR 数据结构
    * - state
      - 必需 initial。
      - 创建期读取；返回声明类型。
-   * - pin、memory
-     - low / high 同时省略或同时给出；length 必需。
+   * - pin
+     - low / high 同时省略或同时给出；可选 initial。
+     - 阈值为创建期 number 计算；initial 为返回非可空 intent 的独立 ComputationIR，省略为空意图。
+   * - memory
+     - length 必需。
      - 创建期计算，结果为 number；数值合法性按资源合同检查。
    * - channel
      - capacity、可选 maxLength / overflow。
@@ -53,6 +56,8 @@ IR 数据结构
 ``ComputationIR`` 为独立产值计算体，正常结束路径使用 ``returnValue``。它从引用位置取得创建期、derived 或 reaction capture 用途，结果类型与声明要求一致。资源配置使用共享操作语言，而非另一个宿主表达式格式。
 
 pin 的成对阈值在创建期检查有限且 low < high，省略时 level 恒为 unknown；完整电气合同见 :doc:`/electrical`。
+
+pin.initial 的 type 固定为 ``{ kind: 'intent' }``，正常结束路径必须 returnValue。空意图由空组合构造产生，不能用 none 或宿主数组常量代替。它可引用后声明的本实例 pin；全部 pin 先预绑定，再求值 initial。资源引用身份不依赖目标 pin 的 initial，因此相互引用不构成初始化值依赖环。创建期效果、全板支路建立及首次求解顺序分别见 :doc:`validation` 与 :doc:`resources`。此字段不扩大 property、const 或 state 的合法类型位置。
 
 memory 的 ``public``、函数的 ``pure``、端点的 ``direction`` 在 IR 中显式存在；Builder 将省略的 public 规范化为 false。overflow 省略时仍按 :doc:`/channels` 的默认策略处理。
 
@@ -80,7 +85,7 @@ none 常量的结果类型必须为一个确定的 optional 类型。``optional`
 
 ``read`` 操作以 resource 类别和 name 区分 property、const、state、derived。pin / memory 引用使用类别加名称，或当前函数参数的位置。板级固定电位不构成器件引用；resistor 的目标只接受 pin 引用。函数与端点由相应操作中的名称引用。名称在绑定后转换为执行端内部引用，执行期间不重复字符串查找。
 
-函数资源参数只能是 pin / memory 引用。它们保持所属实例身份，不经参数读取操作变成普通值；``parameter`` 产值操作仅用于值形参，index 按参数声明表从零计数。资源形参的引用可以继续传入同步函数，不能存入 Local、返回值或记录。
+函数资源参数只能是 pin / memory 引用。它们保持所属实例身份，不经参数读取操作变成普通值；``parameter`` 产值操作仅用于值形参，index 按参数声明表从零计数。资源形参的引用可以继续传入同步函数，不能存入 Local、返回值或记录。pin.initial 调用链内可将本实例直接 pin 引用传入 pure fn 的 pin 形参，并继续传给 resistor 或下一层 pure 调用；这一引用传递不属于运行资源读取。其他创建期计算仍保持其原有资源引用限制。
 
 结果编号与局部槽
 ------------------------------------------------

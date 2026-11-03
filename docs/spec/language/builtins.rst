@@ -73,7 +73,7 @@
 
 ``resistor(to: pin, resistance: number) -> intent`` 是纯构造函数，目标仅接受当前实例的直接 pin 引用或 pin 形参。电阻必须有限且属于 ``[0.001, 1_000_000_000]`` Ω；构造操作执行时校验，失败属于框架错误。
 
-``[first, second]`` 合并 intent，``[]`` 为空意图。构造不改变网络；``pin.intent <- value`` 才替换引脚贡献。完整数值、采样和错误合同见 :doc:`/electrical`。
+``[first, second]`` 合并 intent，``[]`` 为空意图。构造不改变网络；pin 声明的初值在资源建立时成为初始贡献，运行中的 ``pin.intent <- value`` 则替换引脚贡献。完整数值、采样和错误合同见 :doc:`/electrical`。
 
 器件通过普通供电与地引脚连接板级固定电位网络。DDL 没有内建的 ground 引用或 drive 构造；板级理想参考不进入器件资源系统。pin 之间的直接身份比较仍只比较引用，不判断装配后是否同网或等电位。
 

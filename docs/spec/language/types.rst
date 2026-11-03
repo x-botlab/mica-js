@@ -102,6 +102,8 @@ string 与 bytes 的索引均须为非负安全整数并小于实际长度，非
      - number、bool、string、枚举、记录、bytes 及其可空形式。
    * - derived、局部、值形参及返回
      - 上述普通值，另加 sample、intent 及其可空形式。
+   * - pin 初始意图
+     - 非可空 intent；遵守创建期意图表达式限制。
    * - reaction 源及 previous / current、capture 绑定
      - number、bool、string、枚举、记录、bytes、sample 及其单层可空形式；源还须满足静态路径规则。
    * - 通道负载
