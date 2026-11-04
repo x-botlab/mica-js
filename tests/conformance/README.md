@@ -34,6 +34,33 @@ pnpm test:conformance:strict
 
 框架统一执行用例，报告通过、失败、跳过和未运行的数量。`--report` 仅生成用例统计，执行状态记为未运行。
 
+## 器件与联调验收
+
+[器件清单](devices/fixtures.json)以静态 JSON 记录源码与案例引用，12 类代表性模型均有端到端行为案例；登记表示存在案例，不替代实际运行结果，也不表示完整芯片行为已经覆盖。新增验收补齐了原先仅有源码的 8 类器件：
+
+| 器件 | 代表性验收 |
+| --- | --- |
+| 受控开关 | [连接与释放](devices/device-controlled-switch-connect-release.case.md) |
+| 三态缓冲器 | [惯性延迟与释放](devices/device-tristate-buffer-inertial-release.case.md) |
+| 抖动按钮 | [切换目标与稳定](devices/device-bouncing-button-retarget-settle.case.md) |
+| 计数器/PWM | [缓冲占空比与极值](devices/device-counter-pwm-buffered-duty-extremes.case.md) |
+| 异步 SRAM | [读写窗口与边界](devices/device-asynchronous-sram-window-boundaries.case.md) |
+| I²C EEPROM | [字节写入、忙期与地址回绕](devices/device-i2c-eeprom-byte-write-busy-wrap.case.md) |
+| UART | [回环、位时序与批次交接](devices/device-uart-loopback-batch-handoff.case.md) |
+| 最小处理器 | [指令、改码与生命周期](devices/device-minimal-processor-code-lifecycle.case.md)、[WAIT 与宿主异步唤醒](devices/device-minimal-processor-wait-host-wake.case.md) |
+
+多器件场景另外覆盖[双 UART 全双工与切片等价](devices/device-uart-full-duplex-slice-equivalence.case.md)，以及[UART 电气收帧 → 下一批 IRQ 通知 → 处理器 JIT 中断返回](devices/device-uart-processor-interrupt-integration.case.md)。切片比较保留相同的外部输入/交付时刻，并分别核对独立预期；不将任意批次切分宣称为等价。
+
+可只运行器件层（仍须配置真实 adapter）：
+
+```powershell
+$env:MICA_CONFORMANCE_ADAPTER = (Resolve-Path tests\conformance\adapter.mjs).Path
+$env:MICA_CONFORMANCE_REQUIRE_ADAPTER = '1'
+node --test --test-name-pattern='^devices/' tests\conformance\cases.test.mjs
+```
+
+[处理器辅助模块](devices/processor-support.mjs)在内存转译既有 TypeScript fixture，使用真实 SDK TypeFactory/Builder；额外 reaction 只把私有状态写入公开 evidence 存储以供观察，不实现另一套指令执行器。[引脚刺激辅助模块](devices/smoke-support.mjs)通过真实宿主输入和电阻意图驱动网络，不直接改写采样或内部调度队列。
+
 ## Markdown 样本
 
 一个 `*.case.md` 文件就是一个独立案例，也是唯一的用例格式。加载器递归扫描六个用例层目录中的 `*.case.md`，层级由所在目录决定。`templates/` 与 `examples/` 供复制和阅读，不登记为用例。共享模型和辅助模块可以独立保存，由 Markdown 显式引用。
