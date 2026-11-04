@@ -83,8 +83,13 @@ export interface ElectricalStats {
 }
 
 export interface ElectricalNetwork {
-  /** The caller establishes the initial observation baseline after the first solve. */
-  solve(): readonly ElectricalPin[];
+  /**
+   * The caller establishes the initial observation baseline after the first solve.
+   * Omit changedPins to detect intent identity changes automatically. When supplied,
+   * it must include every pin assigned since the last successful solve; intents are immutable.
+   * The first solve always reads all pins, regardless of this hint.
+   */
+  solve(changedPins?: Iterable<ElectricalPin>): readonly ElectricalPin[];
   readonly stats: ElectricalStats;
 }
 
@@ -95,6 +100,8 @@ interface Node {
 }
 
 interface Edge {
+  readonly pin: number;
+  readonly index: number;
   readonly from: number;
   readonly to: number;
   readonly resistance: number;
@@ -104,6 +111,7 @@ interface Edge {
 interface Component {
   readonly nodes: number[];
   readonly edges: Edge[];
+  readonly physical?: Component;
 }
 
 interface Factorization {
@@ -114,10 +122,132 @@ interface Factorization {
 }
 
 interface CachedComponent {
-  readonly nodes: readonly number[];
   readonly edges: readonly Edge[];
   readonly voltages: readonly (number | null)[];
   readonly factorization: Factorization | undefined;
+}
+
+interface PreparedBlock {
+  readonly component: Component;
+  readonly key: string;
+  readonly incident: ReadonlyMap<number, readonly number[]>;
+}
+
+interface PreparedTopology {
+  readonly blocks: PreparedBlock[];
+  /** Stable pin/branch slots allow equivalent older Edge objects to be shared. */
+  readonly edgeBlocks: readonly (readonly (number | undefined)[] | undefined)[];
+  readonly components: number;
+  readonly floatingComponents: number;
+}
+
+interface PinUpdate {
+  readonly intent: readonly ResistorBranch[];
+  readonly edges: readonly Edge[];
+}
+
+interface TopologySnapshot {
+  readonly id: number;
+  readonly cost: number;
+  readonly topology: PreparedTopology;
+}
+
+// Descriptors and admitted graphs share eight slots; each graph also has a slot budget.
+const topologyTransitionLimit = 8;
+const topologySnapshotLimit = 65_536;
+
+function topologyCost(topology: PreparedTopology): number {
+  let cost = 0;
+  const physicals = new Set<Component>();
+  for (const block of topology.blocks) {
+    cost += block.component.nodes.length + 2 * block.component.edges.length;
+    const physical = block.component.physical;
+    if (physical !== undefined && !physicals.has(physical)) {
+      physicals.add(physical);
+      cost += physical.nodes.length + physical.edges.length;
+    }
+    if (cost > topologySnapshotLimit) break;
+  }
+  return cost;
+}
+
+function rebindBlock(
+  block: PreparedBlock,
+  pinEdges: readonly (readonly Edge[])[],
+  updates: ReadonlyMap<number, PinUpdate>,
+): PreparedBlock {
+  let edges: Edge[] | undefined;
+  for (let index = 0; index < block.component.edges.length; index++) {
+    const edge = block.component.edges[index]!;
+    const next = (updates.get(edge.pin)?.edges ?? pinEdges[edge.pin]!)[edge.index]!;
+    if (edge.from === next.from && edge.to === next.to && edge.resistance === next.resistance)
+      continue;
+    edges ??= block.component.edges.slice();
+    edges[index] = next;
+  }
+  if (edges === undefined) return block;
+  return { ...block, component: { ...block.component, edges } };
+}
+
+function restoreTopology(
+  topology: PreparedTopology,
+  pinEdges: readonly (readonly Edge[])[],
+  updates: ReadonlyMap<number, PinUpdate>,
+): PreparedTopology {
+  let blocks: PreparedBlock[] | undefined;
+  for (let index = 0; index < topology.blocks.length; index++) {
+    const previous = topology.blocks[index]!;
+    const block = rebindBlock(previous, pinEdges, updates);
+    if (block === previous) continue;
+    blocks ??= topology.blocks.slice();
+    blocks[index] = block;
+  }
+  return blocks === undefined ? topology : { ...topology, blocks };
+}
+
+function prepareBlock(component: Component): PreparedBlock {
+  const incident = new Map<number, number[]>();
+  for (const node of component.nodes) incident.set(node, []);
+  component.edges.forEach((edge, index) => {
+    incident.get(edge.from)!.push(index);
+    incident.get(edge.to)!.push(index);
+  });
+  return { component, key: component.nodes.join(','), incident };
+}
+
+function prepareTopology(
+  nodes: readonly Node[],
+  pinEdges: readonly (readonly Edge[])[],
+): PreparedTopology {
+  const topology = new DisjointSet(nodes.length);
+  for (const edges of pinEdges) {
+    for (const edge of edges) topology.join(edge.from, edge.to);
+  }
+  const groups = new Map<number, Component>();
+  for (let node = 0; node < nodes.length; node++) {
+    const root = topology.find(node);
+    let group = groups.get(root);
+    if (group === undefined) {
+      group = { nodes: [], edges: [] };
+      groups.set(root, group);
+    }
+    group.nodes.push(node);
+  }
+  for (const edges of pinEdges) {
+    for (const edge of edges) groups.get(topology.find(edge.from))!.edges.push(edge);
+  }
+  let floatingComponents = 0;
+  const blocks: PreparedBlock[] = [];
+  const edgeBlocks: (number | undefined)[][] = [];
+  for (const component of groups.values()) {
+    if (component.nodes.every((node) => nodes[node]!.reference === undefined)) floatingComponents++;
+    for (const block of solveBlocks(component, nodes)) {
+      const index = blocks.length;
+      blocks.push(prepareBlock(block));
+      for (const edge of block.edges) (edgeBlocks[edge.pin] ??= [])[edge.index] = index;
+    }
+  }
+  return { blocks, edgeBlocks, components: groups.size, floatingComponents };
 }
 
 const cleanZero = (value: number): number => (value === 0 ? 0 : value);
@@ -130,7 +260,8 @@ class DisjointSet {
   private readonly parents: number[];
 
   constructor(count: number) {
-    this.parents = Array.from({ length: count }, (_, index) => index);
+    this.parents = new Array<number>(count);
+    for (let index = 0; index < count; index++) this.parents[index] = index;
   }
 
   find(index: number): number {
@@ -151,6 +282,57 @@ class DisjointSet {
   }
 }
 
+function solveBlocks(component: Component, nodes: readonly Node[]): Component[] {
+  const unknown: number[] = [];
+  let reference: number | undefined;
+  let mixedReferences = false;
+  for (const node of component.nodes) {
+    const potential = nodes[node]!.reference;
+    if (potential === undefined) unknown.push(node);
+    else if (reference === undefined) reference = potential;
+    else if (potential !== reference) mixedReferences = true;
+  }
+  if (unknown.length < 2 || !mixedReferences) return [component];
+  const slots = new Map(unknown.map((node, index) => [node, index]));
+  const topology = new DisjointSet(unknown.length);
+  let coupled = false;
+  for (const edge of component.edges) {
+    const from = slots.get(edge.from);
+    const to = slots.get(edge.to);
+    if (from !== undefined && to !== undefined) {
+      topology.join(from, to);
+      coupled = true;
+    }
+  }
+  // Tiny independent systems cost less as one matrix than as individual blocks.
+  if (!coupled && unknown.length <= 32) return [component];
+  const groups = new Map<number, { nodes: Set<number>; edges: Edge[] }>();
+  for (let index = 0; index < unknown.length; index++) {
+    const root = topology.find(index);
+    let group = groups.get(root);
+    if (group === undefined) {
+      group = { nodes: new Set(), edges: [] };
+      groups.set(root, group);
+    }
+    group.nodes.add(unknown[index]!);
+  }
+  if (groups.size === 1) return [component];
+  // Fixed potentials are boundary values, not couplings between unknowns.
+  for (const edge of component.edges) {
+    const unknownSlot = slots.get(edge.from) ?? slots.get(edge.to);
+    if (unknownSlot === undefined) continue;
+    const group = groups.get(topology.find(unknownSlot))!;
+    group.nodes.add(edge.from);
+    group.nodes.add(edge.to);
+    group.edges.push(edge);
+  }
+  return [...groups.values()].map((group) => ({
+    nodes: [...group.nodes].sort((a, b) => a - b),
+    edges: group.edges,
+    physical: component,
+  }));
+}
+
 /** Compensated summation also preserves small positive grounding contributions. */
 function sum(values: Iterable<number>): number {
   let total = 0;
@@ -164,21 +346,23 @@ function sum(values: Iterable<number>): number {
 }
 
 function arraysEqual(first: Float64Array, second: Float64Array): boolean {
-  return first.length === second.length && first.every((value, index) => value === second[index]);
+  if (first === second) return true;
+  if (first.length !== second.length) return false;
+  for (let index = 0; index < first.length; index++) {
+    if (first[index] !== second[index]) return false;
+  }
+  return true;
 }
 
 function sameConfiguration(previous: CachedComponent, component: Component): boolean {
-  return (
-    previous.nodes.length === component.nodes.length &&
-    previous.nodes.every((node, index) => node === component.nodes[index]) &&
-    previous.edges.length === component.edges.length &&
-    previous.edges.every((edge, index) => {
-      const other = component.edges[index]!;
-      return (
-        edge.from === other.from && edge.to === other.to && edge.resistance === other.resistance
-      );
-    })
-  );
+  if (previous.edges.length !== component.edges.length) return false;
+  for (let index = 0; index < previous.edges.length; index++) {
+    const edge = previous.edges[index]!;
+    const other = component.edges[index]!;
+    if (edge.from !== other.from || edge.to !== other.to || edge.resistance !== other.resistance)
+      return false;
+  }
+  return true;
 }
 
 function factorize(
@@ -187,6 +371,12 @@ function factorize(
   fail: (reason: string) => never,
 ): Factorization {
   const count = anchors.length;
+  if (matrix.length === 0) {
+    for (const pivot of anchors) {
+      if (!(pivot > 0) || !Number.isFinite(pivot)) fail('Invalid LDL pivot.');
+    }
+    return { matrix, anchors, pivots: anchors, weights: new Float64Array(0) };
+  }
   const work = matrix.slice();
   const grounding = anchors.slice();
   const pivots = new Float64Array(count);
@@ -233,23 +423,30 @@ function substitute(
 ): Float64Array {
   const { weights, pivots } = factorization;
   const count = right.length;
-  const forward = new Float64Array(count);
-  for (let row = 0; row < count; row++) {
-    const terms = [right[row]!];
-    for (let column = 0; column < row; column++) {
-      terms.push(weights[column * count + row]! * forward[column]!);
-    }
-    forward[row] = sum(terms);
-    if (!Number.isFinite(forward[row])) fail('Non-finite forward substitution.');
-  }
   const solution = new Float64Array(count);
-  for (let row = count - 1; row >= 0; row--) {
-    const terms = [forward[row]! / pivots[row]!];
-    for (let column = row + 1; column < count; column++) {
-      terms.push(weights[row * count + column]! * solution[column]!);
+  if (weights.length === 0) {
+    for (let row = 0; row < count; row++) {
+      solution[row] = right[row]! / pivots[row]!;
+      if (!Number.isFinite(solution[row])) fail('Non-finite backward substitution.');
     }
-    solution[row] = sum(terms);
-    if (!Number.isFinite(solution[row])) fail('Non-finite backward substitution.');
+  } else {
+    const forward = new Float64Array(count);
+    for (let row = 0; row < count; row++) {
+      const terms = [right[row]!];
+      for (let column = 0; column < row; column++) {
+        terms.push(weights[column * count + row]! * forward[column]!);
+      }
+      forward[row] = sum(terms);
+      if (!Number.isFinite(forward[row])) fail('Non-finite forward substitution.');
+    }
+    for (let row = count - 1; row >= 0; row--) {
+      const terms = [forward[row]! / pivots[row]!];
+      for (let column = row + 1; column < count; column++) {
+        terms.push(weights[row * count + column]! * solution[column]!);
+      }
+      solution[row] = sum(terms);
+      if (!Number.isFinite(solution[row])) fail('Non-finite backward substitution.');
+    }
   }
   return solution;
 }
@@ -327,6 +524,39 @@ export function createElectricalNetwork(
     node.reference = reference;
   }
   let cache = new Map<string, CachedComponent>();
+  let prepared: PreparedTopology | undefined;
+  let snapshot: TopologySnapshot | undefined;
+  let nextTopologyId = 0;
+  const transitionAges = new Map<string, number>();
+  let transitionClock = 0;
+  const transitions = new Map<string, TopologySnapshot | undefined>();
+  let pinDescriptions = new Array<string>(pins.length).fill('');
+  const rememberTransition = (key: string, target: TopologySnapshot): void => {
+    if (target.cost > topologySnapshotLimit) return;
+    const repeated = transitions.has(key);
+    transitionAges.set(key, ++transitionClock);
+    // A first observation retains only its descriptor, never the graph.
+    // Repeated successful observations admit the graph into the same eight slots.
+    if (!repeated) transitions.set(key, undefined);
+    else if (transitions.get(key) !== target) transitions.set(key, target);
+    if (transitions.size > topologyTransitionLimit) {
+      let oldest: string | undefined;
+      let oldestAge = Infinity;
+      for (const candidate of transitionAges.keys()) {
+        const age = transitionAges.get(candidate)!;
+        if (age < oldestAge) {
+          oldest = candidate;
+          oldestAge = age;
+        }
+      }
+      transitions.delete(oldest!);
+      transitionAges.delete(oldest!);
+    }
+  };
+  const publishedVoltages: (number | null | undefined)[] = new Array(nodes.length);
+  const intents: (readonly ResistorBranch[] | undefined)[] = new Array(pins.length);
+  const pinEdges: (readonly Edge[])[] = Array.from({ length: pins.length }, () => []);
+  const unchangedPins: readonly ElectricalPin[] = Object.freeze([]);
   const statistics = {
     solves: 0,
     components: 0,
@@ -340,59 +570,114 @@ export function createElectricalNetwork(
     get stats(): ElectricalStats {
       return Object.freeze({ ...statistics });
     },
-    solve(): readonly ElectricalPin[] {
-      const topology = new DisjointSet(nodes.length);
-      const edges: Edge[] = [];
-      for (let index = 0; index < pins.length; index++) {
-        const pin = pins[index]!;
+    solve(changedPins?: Iterable<ElectricalPin>): readonly ElectricalPin[] {
+      if (
+        prepared !== undefined &&
+        (changedPins instanceof Set
+          ? changedPins.size === 0
+          : Array.isArray(changedPins) && changedPins.length === 0)
+      ) {
+        statistics.solves++;
+        statistics.cacheHits += prepared.blocks.length;
+        return unchangedPins;
+      }
+      const updates = new Map<number, PinUpdate>();
+      const replacements = new Map<Edge, Edge>();
+      let topologyChanged = prepared === undefined;
+      for (const pin of prepared === undefined || changedPins === undefined ? pins : changedPins) {
+        const index = requirePin(pin, pinLocation(pin));
+        if (updates.has(index)) continue;
+        const intent = pin.intent;
+        if (intent === intents[index]) continue;
         const from = pinNodes[index]!;
-        for (const branch of pin.intent) {
+        const previous = pinEdges[index]!;
+        const edges: Edge[] = [];
+        for (const branch of intent) {
           validateResistance(branch.resistance, pinLocation(pin));
           const to = pinNodes[requirePin(branch.to, pinLocation(pin))]!;
           if (from === to) continue;
-          edges.push({
-            from,
-            to,
-            resistance: branch.resistance,
-            conductance: 1 / branch.resistance,
-          });
-          topology.join(from, to);
+          const old = previous[edges.length];
+          if (old?.to === to && old.resistance === branch.resistance) edges.push(old);
+          else {
+            const edge = {
+              pin: index,
+              index: edges.length,
+              from,
+              to,
+              resistance: branch.resistance,
+              conductance: 1 / branch.resistance,
+            };
+            edges.push(edge);
+            if (old?.to === to) replacements.set(old, edge);
+            else topologyChanged = true;
+          }
+        }
+        if (edges.length !== previous.length) topologyChanged = true;
+        updates.set(index, { intent, edges });
+      }
+      if (prepared !== undefined && !topologyChanged && replacements.size === 0) {
+        for (const [index, update] of updates) {
+          intents[index] = update.intent;
+          pinEdges[index] = update.edges;
+        }
+        statistics.solves++;
+        statistics.cacheHits += prepared.blocks.length;
+        return unchangedPins;
+      }
+      let topology = prepared;
+      let transitionKey: string | undefined;
+      let nextDescriptions: string[] | undefined;
+      let restored: TopologySnapshot | undefined;
+      const dirtyBlocks = new Map<number, PreparedBlock>();
+      if (topologyChanged) {
+        nextDescriptions = pinDescriptions.slice();
+        for (const [index, update] of updates) {
+          nextDescriptions[index] = update.edges.map((edge) => edge.to).join(',');
+        }
+        // Exact pin-slot and ordered endpoint lists retain multiplicity without hashing.
+        transitionKey = nextDescriptions.join(';');
+        restored = transitions.get(transitionKey);
+        if (restored !== undefined)
+          topology = restoreTopology(restored.topology, pinEdges, updates);
+        else {
+          const nextEdges = pinEdges.slice();
+          for (const [index, update] of updates) nextEdges[index] = update.edges;
+          topology = prepareTopology(nodes, nextEdges);
+        }
+      } else {
+        const dirty = new Set<number>();
+        for (const edge of replacements.keys()) {
+          const index = topology!.edgeBlocks[edge.pin]?.[edge.index];
+          if (index !== undefined) dirty.add(index);
+        }
+        for (const index of dirty) {
+          dirtyBlocks.set(index, rebindBlock(topology!.blocks[index]!, pinEdges, updates));
         }
       }
-      const groups = new Map<number, Component>();
-      for (let node = 0; node < nodes.length; node++) {
-        const root = topology.find(node);
-        let group = groups.get(root);
-        if (group === undefined) {
-          group = { nodes: [], edges: [] };
-          groups.set(root, group);
-        }
-        group.nodes.push(node);
-      }
-      for (const edge of edges) groups.get(topology.find(edge.from))!.edges.push(edge);
       const nextCache = new Map<string, CachedComponent>();
-      const voltages: (number | null)[] = Array(nodes.length).fill(null);
-      let floatingComponents = 0;
+      const pendingVoltages = new Map<number, number | null>();
       let factorizations = 0;
       let factorizationReuses = 0;
-      let cacheHits = 0;
-      for (const component of groups.values()) {
-        const key = component.nodes.join(',');
+      let cacheHits = topologyChanged ? 0 : topology!.blocks.length - dirtyBlocks.size;
+      for (const block of topologyChanged ? topology!.blocks : dirtyBlocks.values()) {
+        const { component, key } = block;
         const previous = cache.get(key);
-        const references = component.nodes.filter((node) => nodes[node]!.reference !== undefined);
-        if (references.length === 0) floatingComponents++;
         if (previous !== undefined && sameConfiguration(previous, component)) {
           cacheHits++;
-          component.nodes.forEach((node, index) => {
-            voltages[node] = previous.voltages[index]!;
-          });
           nextCache.set(key, previous);
           continue;
         }
-        const networkIds = component.nodes.flatMap((node) => [...nodes[node]!.networks]);
-        const resources = component.nodes.flatMap((node) => nodes[node]!.pins.map((pin) => pin.id));
-        const firstPin = nodes[component.nodes[0]!]!.pins[0]!;
+        const voltages = new Map(
+          component.nodes.map((node) => [node, nodes[node]!.reference ?? null]),
+        );
+        const references = component.nodes.filter((node) => nodes[node]!.reference !== undefined);
+        const physical = component.physical ?? component;
         const fail = (reason: string): never => {
+          const networkIds = physical.nodes.flatMap((node) => [...nodes[node]!.networks]);
+          const resources = physical.nodes.flatMap((node) =>
+            nodes[node]!.pins.map((pin) => pin.id),
+          );
+          const firstPin = nodes[physical.nodes[0]!]!.pins[0]!;
           throw new ElectricalError('ELECTRICAL_SOLVE_FAILED', reason, {
             ...pinLocation(firstPin),
             ...(networkIds[0] === undefined ? {} : { network: networkIds[0] }),
@@ -403,25 +688,27 @@ export function createElectricalNetwork(
         let factorization: Factorization | undefined;
         if (references.length !== 0) {
           const unknown = component.nodes.filter((node) => nodes[node]!.reference === undefined);
-          for (const node of references) voltages[node] = nodes[node]!.reference!;
+          for (const node of references) voltages.set(node, nodes[node]!.reference!);
           const firstReference = nodes[references[0]!]!.reference!;
           if (references.every((node) => nodes[node]!.reference === firstReference)) {
-            for (const node of unknown) voltages[node] = firstReference;
+            for (const node of unknown) voltages.set(node, firstReference);
           } else if (unknown.length !== 0) {
             const count = unknown.length;
             const slots = new Map(unknown.map((node, index) => [node, index]));
             let conductanceScale = 0;
             let voltageScale = 0;
+            let coupled = false;
             for (const node of references) {
               voltageScale = Math.max(voltageScale, Math.abs(nodes[node]!.reference!));
             }
             for (const edge of component.edges) {
-              if (slots.has(edge.from) || slots.has(edge.to)) {
-                conductanceScale = Math.max(conductanceScale, edge.conductance);
-              }
+              const from = slots.has(edge.from);
+              const to = slots.has(edge.to);
+              if (from || to) conductanceScale = Math.max(conductanceScale, edge.conductance);
+              if (from && to) coupled = true;
             }
             if (!(conductanceScale > 0) || !(voltageScale > 0)) fail('Invalid equation scaling.');
-            const matrix = new Float64Array(count * count);
+            const matrix = new Float64Array(coupled ? count * count : 0);
             const anchorTerms: number[][] = Array.from({ length: count }, () => []);
             const rightTerms: number[][] = Array.from({ length: count }, () => []);
             for (const edge of component.edges) {
@@ -455,31 +742,31 @@ export function createElectricalNetwork(
             unknown.forEach((node, index) => {
               const voltage = cleanZero(solution[index]! * voltageScale);
               if (!Number.isFinite(voltage)) fail('Non-finite node voltage.');
-              voltages[node] = voltage;
+              voltages.set(node, voltage);
             });
           }
           // Check the original, uneliminated equations, scaled in voltage only.
           for (const node of unknown) {
-            const incident = component.edges.filter(
-              (edge) => edge.from === node || edge.to === node,
-            );
-            const diagonal = sum(incident.map((edge) => edge.conductance));
+            const incident = block.incident.get(node)!;
+            const diagonal = sum(incident.map((index) => component.edges[index]!.conductance));
             if (!(diagonal > 0) || !Number.isFinite(diagonal))
               fail('Invalid original node equation.');
-            const voltage = voltages[node]!;
+            const voltage = voltages.get(node)!;
             if (voltage === null || !Number.isFinite(voltage)) fail('Missing candidate voltage.');
             let scale = Math.abs(voltage);
-            for (const edge of incident) {
+            for (const index of incident) {
+              const edge = component.edges[index]!;
               scale = Math.max(
                 scale,
-                Math.abs(voltages[edge.from === node ? edge.to : edge.from]!),
+                Math.abs(voltages.get(edge.from === node ? edge.to : edge.from)!),
               );
             }
             if (scale === 0) continue;
             const weighted: number[] = [];
             const absolute: number[] = [];
-            for (const edge of incident) {
-              const neighbor = voltages[edge.from === node ? edge.to : edge.from]! / scale;
+            for (const index of incident) {
+              const edge = component.edges[index]!;
+              const neighbor = voltages.get(edge.from === node ? edge.to : edge.from)! / scale;
               const weight = edge.conductance / diagonal;
               weighted.push(weight * neighbor);
               absolute.push(weight * Math.abs(neighbor));
@@ -493,46 +780,76 @@ export function createElectricalNetwork(
           }
         }
         nextCache.set(key, {
-          nodes: component.nodes,
           edges: component.edges,
-          voltages: component.nodes.map((node) => voltages[node]!),
+          voltages: component.nodes.map((node) => voltages.get(node)!),
           factorization,
         });
+        for (const [node, voltage] of voltages) {
+          if (publishedVoltages[node] !== voltage) pendingVoltages.set(node, voltage);
+        }
       }
-      const pending = pins.map((pin, index): PinSample => {
-        const voltage = voltages[pinNodes[index]!]!;
-        if (voltage === null)
-          return Object.freeze({ voltage: null, level: 'unknown', status: 'floating' });
-        const level =
-          pin.low === undefined
-            ? 'unknown'
-            : voltage <= pin.low
-              ? 'low'
-              : voltage >= pin.high!
-                ? 'high'
-                : 'unknown';
-        return Object.freeze({ voltage: cleanZero(voltage), level, status: 'valid' });
-      });
-      const changed = pins.filter((pin, index) => {
-        const candidate = pending[index]!;
-        return (
-          pin.sample.voltage !== candidate.voltage ||
-          pin.sample.level !== candidate.level ||
-          pin.sample.status !== candidate.status
-        );
-      });
-      // No pin or cache is modified until every component has passed acceptance.
-      pins.forEach((pin, index) => {
-        pin.sample = pending[index]!;
-      });
-      cache = nextCache;
+      const pending = new Map<ElectricalPin, PinSample>();
+      const changed: ElectricalPin[] = [];
+      for (const [node, voltage] of pendingVoltages) {
+        for (const pin of nodes[node]!.pins) {
+          const level =
+            voltage === null || pin.low === undefined
+              ? 'unknown'
+              : voltage <= pin.low
+                ? 'low'
+                : voltage >= pin.high!
+                  ? 'high'
+                  : 'unknown';
+          const status = voltage === null ? 'floating' : 'valid';
+          const previous = pin.sample;
+          const dirty =
+            previous.voltage !== voltage || previous.level !== level || previous.status !== status;
+          if (dirty) changed.push(pin);
+          if (dirty || statistics.solves === 0) {
+            pending.set(
+              pin,
+              Object.freeze({
+                voltage: voltage === null ? null : cleanZero(voltage),
+                level,
+                status,
+              }),
+            );
+          }
+        }
+      }
+      changed.sort((first, second) => pinSlots.get(first)! - pinSlots.get(second)!);
+      // No pin, intent snapshot, adjacency or factorization cache changes before acceptance.
+      for (const [pin, sample] of pending) pin.sample = sample;
+      for (const [node, voltage] of pendingVoltages) publishedVoltages[node] = voltage;
+      for (const [index, update] of updates) {
+        intents[index] = update.intent;
+        pinEdges[index] = update.edges;
+      }
+      if (topologyChanged) cache = nextCache;
+      else {
+        for (const [key, value] of nextCache) cache.set(key, value);
+        for (const [index, block] of dirtyBlocks) topology!.blocks[index] = block;
+      }
+      prepared = topology!;
+      if (topologyChanged) {
+        pinDescriptions = nextDescriptions!;
+        snapshot =
+          restored !== undefined && topology === restored.topology
+            ? restored
+            : {
+                id: restored?.id ?? nextTopologyId++,
+                cost: restored?.cost ?? topologyCost(topology!),
+                topology: topology!,
+              };
+        rememberTransition(transitionKey!, snapshot);
+      }
       statistics.solves++;
-      statistics.components = groups.size;
-      statistics.floatingComponents = floatingComponents;
+      statistics.components = topology!.components;
+      statistics.floatingComponents = topology!.floatingComponents;
       statistics.factorizations += factorizations;
       statistics.factorizationReuses += factorizationReuses;
       statistics.cacheHits += cacheHits;
-      return Object.freeze(changed);
+      return changed.length === 0 ? unchangedPins : Object.freeze(changed);
     },
   };
 }

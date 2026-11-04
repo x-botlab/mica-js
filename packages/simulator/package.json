@@ -39,7 +39,8 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "bench": "node bench/runtime.mjs",
-    "bench:electrical": "node bench/electrical.mjs"
+    "bench:electrical": "node bench/electrical.mjs",
+    "bench:workloads": "node bench/workloads.mjs"
   },
   "publishConfig": {
     "access": "public",

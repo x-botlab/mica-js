@@ -64,13 +64,12 @@ export function same(a: unknown, b: unknown): boolean {
   );
 }
 export function snapshot(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
   if (value instanceof Uint8Array) return value.slice();
   if (Array.isArray(value)) return Object.freeze(value.map(snapshot));
-  if (value && typeof value === 'object')
-    return Object.freeze(
-      Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshot(item)])),
-    );
-  return value;
+  return Object.freeze(
+    Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshot(item)])),
+  );
 }
 export function bytesView(
   bytes: Uint8Array,

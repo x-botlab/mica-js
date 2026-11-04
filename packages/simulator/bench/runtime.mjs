@@ -92,6 +92,35 @@ const scenarios = [
     }`,
   },
   {
+    name: 'static-state-reaction-fanout',
+    target: rounds,
+    expected: rounds * fanout,
+    operations: rounds * fanout,
+    source: `device StaticReactions {
+      state active: number = 0;
+      state idle: number = 0;
+      public memory evidence[4];
+      output channel out: number(capacity: 1);
+      ${Array.from(
+        { length: fanout },
+        (_, i) => `reaction r${i} on active as (old, current) {
+          assert current == old + 1;
+          store32le(evidence, 0, load32le(evidence, 0) + 1);
+        }`,
+      ).join('\n')}
+      reaction clean on idle as (old, current) { assert false; }
+      process start {
+        let i = 0;
+        while (i < ${rounds}) {
+          active = i + 1;
+          await ticks(1);
+          i = i + 1;
+        }
+        out.send(load32le(evidence, 0));
+      }
+    }`,
+  },
+  {
     name: 'memory-and-channel-snapshots',
     target: 0,
     expected: events - 1,

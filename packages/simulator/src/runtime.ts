@@ -280,6 +280,7 @@ class Instance {
   private readonly dependencyStack: Map<string, number>[] = [];
   private readonly subscriptions = new Map<string, Set<Observation>>();
   private readonly observations = new WeakMap<Observation, Dependencies>();
+  private readonly staticObservations = new WeakMap<Observation, () => unknown>();
   readonly evaluating = new Set<string>();
   readonly random: Uint32Array;
   readonly host: ExecutionHost;
@@ -316,7 +317,9 @@ class Instance {
         return pin.sample;
       },
       intent: (pin, value) => {
-        this.pin(pin).intent = value as readonly ResistorBranch[];
+        const target = this.pin(pin);
+        target.intent = value as readonly ResistorBranch[];
+        board.dirtyElectricalPins.add(target);
         board.electricalDirty = true;
       },
       resistor: (pin, resistance) => {
@@ -377,8 +380,9 @@ class Instance {
   }
   invalidate(key: string): void {
     this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
-    for (const observation of this.subscriptions.get(key) ?? [])
-      this.board.dirtyObservations.add(observation);
+    const subscribers = this.subscriptions.get(key);
+    if (subscribers)
+      for (const observation of subscribers) this.board.dirtyObservations.add(observation);
   }
   dependenciesCurrent(dependencies: Dependencies | undefined): boolean {
     if (!dependencies) return false;
@@ -398,10 +402,34 @@ class Instance {
     }
   }
   observe(observation: Observation, path: readonly string[]): unknown {
+    const read = this.staticObservations.get(observation);
+    if (read) return read();
+    const declaration = this.declarations.get(path[0]!);
+    if (declaration?.kind === 'pin' || declaration?.kind === 'state') {
+      const key = `${declaration.kind === 'pin' ? 'sample' : 'state'}:${declaration.name}`;
+      const pin = declaration.kind === 'pin' ? this.pin(declaration.name) : undefined;
+      if (pin && path[1] !== 'sample') throw new TypeError(`Invalid source ${path.join('.')}`);
+      // Published samples are immutable; state values may contain byte snapshots.
+      const read = () => {
+        let value: unknown = pin ? pin.sample : this.states.get(declaration.name);
+        for (let index = pin ? 2 : 1; index < path.length; index++)
+          value = (value as Record<string, unknown>)[path[index]!];
+        return pin ? value : snapshot(value);
+      };
+      const value = read();
+      let subscribers = this.subscriptions.get(key);
+      if (!subscribers) this.subscriptions.set(key, (subscribers = new Set()));
+      subscribers.add(observation);
+      this.staticObservations.set(observation, read);
+      return value;
+    }
     const observed = this.evaluate(() => snapshot(this.source(path)));
-    for (const key of this.observations.get(observation)?.keys() ?? [])
-      this.subscriptions.get(key)?.delete(observation);
+    const previous = this.observations.get(observation);
+    if (previous)
+      for (const key of previous.keys())
+        if (!observed.dependencies.has(key)) this.subscriptions.get(key)?.delete(observation);
     for (const key of observed.dependencies.keys()) {
+      if (previous?.has(key)) continue;
       let subscribers = this.subscriptions.get(key);
       if (!subscribers) this.subscriptions.set(key, (subscribers = new Set()));
       subscribers.add(observation);
@@ -725,13 +753,17 @@ class Instance {
   source(path: readonly string[]): unknown {
     const declaration = this.declarations.get(path[0]!);
     let value: unknown;
+    let firstField = 1;
     if (declaration?.kind === 'pin') {
       this.track(`sample:${declaration.name}`);
-      value = { sample: this.pin(declaration.name).sample };
+      if (path[1] !== 'sample') throw new TypeError(`Invalid source ${path.join('.')}`);
+      value = this.pin(declaration.name).sample;
+      firstField = 2;
     } else if (declaration?.kind === 'state' || declaration?.kind === 'derived')
       value = this.read(declaration.kind, declaration.name);
     else throw new TypeError(`Invalid source ${path.join('.')}`);
-    for (const field of path.slice(1)) value = (value as Record<string, unknown>)[field];
+    for (let index = firstField; index < path.length; index++)
+      value = (value as Record<string, unknown>)[path[index]!];
     return value;
   }
 }
@@ -742,6 +774,7 @@ class BoardRuntime implements Board {
   phase = 'assembly';
   current: Instance | undefined;
   electricalDirty = true;
+  readonly dirtyElectricalPins = new Set<ElectricalPin>();
   readonly dirtyObservations = new Set<Observation>();
   private readonly byId = new Map<string, Instance>();
   private dispatchDepth = 0;
@@ -1077,7 +1110,8 @@ class BoardRuntime implements Board {
   }
   private publish(): void {
     if (!this.electricalDirty) return;
-    const changed = this.network.solve();
+    const changed = this.network.solve(this.dirtyElectricalPins);
+    this.dirtyElectricalPins.clear();
     this.electricalDirty = false;
     for (const pin of changed) this.byId.get(pin.instance)!.invalidate(`sample:${pin.name}`);
   }
@@ -1124,12 +1158,13 @@ class BoardRuntime implements Board {
       }
       if (!reactions.length) return;
       for (const item of reactions)
-        item.frame = {
-          ...item.frame,
-          captures: item.reaction.declaration.captures.map((capture) =>
-            snapshot(computation(capture.value, item.reaction.instance.host)),
-          ),
-        };
+        if (item.reaction.declaration.captures.length)
+          item.frame = {
+            ...item.frame,
+            captures: item.reaction.declaration.captures.map((capture) =>
+              snapshot(computation(capture.value, item.reaction.instance.host)),
+            ),
+          };
       for (const item of reactions) {
         this.current = item.reaction.instance;
         const step = body(item.reaction.declaration.body)(
