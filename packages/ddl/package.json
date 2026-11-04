@@ -1,0 +1,40 @@
+{
+  "name": "@mica-js/ddl",
+  "version": "0.1.0",
+  "description": "Browser-compatible Langium frontend and TypeScript projection for Mica DDL",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "generate": "langium generate",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mica-js/device-model": "workspace:*",
+    "langium": "4.4.0"
+  },
+  "devDependencies": {
+    "langium-cli": "4.4.0",
+    "typescript": "catalog:"
+  }
+}

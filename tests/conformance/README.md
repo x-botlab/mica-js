@@ -24,6 +24,10 @@ pnpm test:conformance:strict
 
 显式配置的适配器导入失败或缺少入口时测试失败。严格模式要求接入真实适配器。
 
+仓库已提供转接新运行时的 [adapter.mjs](./adapter.mjs)。构建 `@mica-js/core`、`@mica-js/device-model`、`@mica-js/compiler`、`@mica-js/ddl` 与 `@mica-js/simulator` 后，可将上述环境变量设置为 `(Resolve-Path tests\conformance\adapter.mjs).Path`。
+
+`pnpm typecheck:implementation` 复用既有 Builder/IR/host 类型场景，将声明附件导入重定向到真实源码导出；`pnpm typecheck:conformance` 继续验证规范附件与器件适配源码自身。
+
 ## 用例说明
 
 每份 `.case.md` 用正文说明规范来源、前提、操作和预期，用代码块提供输入、执行步骤与断言。默认围绕一项清晰行为编写；验证交互时写清完整的操作序列和预期。规范引用、断言充分性和重复行为在 review 中检查。

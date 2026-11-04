@@ -16,6 +16,7 @@
     "test:conformance:report": "node tests/conformance/run.mjs --report",
     "test:conformance:strict": "node tests/conformance/run.mjs --require-adapter",
     "typecheck:conformance": "tsc -p tests/conformance/tsconfig.json && tsc -p docs/spec/contracts/tsconfig.json",
+    "typecheck:implementation": "node tests/conformance/typecheck-implementation.mjs",
     "test:generated": "node tests/generated/run.mjs --profile pr",
     "test:generated:unit": "node --test tests/generated/*.test.mjs",
     "typecheck:generated": "tsc -p tests/generated/tsconfig.json",

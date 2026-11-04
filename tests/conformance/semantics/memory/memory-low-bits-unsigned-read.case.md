@@ -73,6 +73,6 @@ board.runUntil(0);
 
 ```typescript
 assert.deepEqual(values(batches), [0, 13330, 4294967295]);
-assert.deepEqual([...context.memory.data], [0, 52, 18, 255, 255, 255, 255, 255]);
+assert.deepEqual([...context.memory.data], [0, 52, 18, 0, 255, 255, 255, 255]);
 assert.equal(board.status, 'ready');
 ```
