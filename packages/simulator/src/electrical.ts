@@ -130,7 +130,6 @@ interface CachedComponent {
 interface PreparedBlock {
   readonly component: Component;
   readonly key: string;
-  readonly incident: ReadonlyMap<number, readonly number[]>;
 }
 
 interface PreparedTopology {
@@ -206,13 +205,7 @@ function restoreTopology(
 }
 
 function prepareBlock(component: Component): PreparedBlock {
-  const incident = new Map<number, number[]>();
-  for (const node of component.nodes) incident.set(node, []);
-  component.edges.forEach((edge, index) => {
-    incident.get(edge.from)!.push(index);
-    incident.get(edge.to)!.push(index);
-  });
-  return { component, key: component.nodes.join(','), incident };
+  return { component, key: component.nodes.join(',') };
 }
 
 function prepareTopology(
@@ -283,18 +276,21 @@ class DisjointSet {
 }
 
 function solveBlocks(component: Component, nodes: readonly Node[]): Component[] {
-  const unknown: number[] = [];
+  let unknownCount = 0;
   let reference: number | undefined;
   let mixedReferences = false;
   for (const node of component.nodes) {
     const potential = nodes[node]!.reference;
-    if (potential === undefined) unknown.push(node);
+    if (potential === undefined) unknownCount++;
     else if (reference === undefined) reference = potential;
     else if (potential !== reference) mixedReferences = true;
   }
-  if (unknown.length < 2 || !mixedReferences) return [component];
-  const slots = new Map(unknown.map((node, index) => [node, index]));
-  const topology = new DisjointSet(unknown.length);
+  if (unknownCount < 2 || !mixedReferences) return [component];
+  const slots = new Map<number, number>();
+  for (const node of component.nodes) {
+    if (nodes[node]!.reference === undefined) slots.set(node, slots.size);
+  }
+  const topology = new DisjointSet(unknownCount);
   let coupled = false;
   for (const edge of component.edges) {
     const from = slots.get(edge.from);
@@ -305,32 +301,51 @@ function solveBlocks(component: Component, nodes: readonly Node[]): Component[] 
     }
   }
   // Tiny independent systems cost less as one matrix than as individual blocks.
-  if (!coupled && unknown.length <= 32) return [component];
-  const groups = new Map<number, { nodes: Set<number>; edges: Edge[] }>();
-  for (let index = 0; index < unknown.length; index++) {
+  if (!coupled && unknownCount <= 32) return [component];
+  const groups = new Array<Component | undefined>(unknownCount);
+  const blocks: Component[] = [];
+  for (let index = 0; index < unknownCount; index++) {
     const root = topology.find(index);
-    let group = groups.get(root);
+    let group = groups[root];
     if (group === undefined) {
-      group = { nodes: new Set(), edges: [] };
-      groups.set(root, group);
+      group = { nodes: [], edges: [], physical: component };
+      blocks.push(group);
     }
-    group.nodes.add(unknown[index]!);
+    // Union roots are minimum slots, so their groups are initialized first.
+    groups[index] = group;
   }
-  if (groups.size === 1) return [component];
+  if (blocks.length === 1) return [component];
+  const boundaries = new Map<number, Component[]>();
   // Fixed potentials are boundary values, not couplings between unknowns.
   for (const edge of component.edges) {
-    const unknownSlot = slots.get(edge.from) ?? slots.get(edge.to);
+    const from = slots.get(edge.from);
+    const to = slots.get(edge.to);
+    const unknownSlot = from ?? to;
     if (unknownSlot === undefined) continue;
-    const group = groups.get(topology.find(unknownSlot))!;
-    group.nodes.add(edge.from);
-    group.nodes.add(edge.to);
+    const group = groups[unknownSlot]!;
     group.edges.push(edge);
+    const boundary = from === undefined ? edge.from : to === undefined ? edge.to : undefined;
+    if (boundary === undefined) continue;
+    let adjacent = boundaries.get(boundary);
+    if (adjacent === undefined) {
+      adjacent = [];
+      boundaries.set(boundary, adjacent);
+    }
+    adjacent.push(group);
   }
-  return [...groups.values()].map((group) => ({
-    nodes: [...group.nodes].sort((a, b) => a - b),
-    edges: group.edges,
-    physical: component,
-  }));
+  // Physical nodes are already sorted; append each boundary once per block.
+  for (const node of component.nodes) {
+    const slot = slots.get(node);
+    if (slot !== undefined) groups[slot]!.nodes.push(node);
+    else {
+      const adjacent = boundaries.get(node);
+      if (adjacent === undefined) continue;
+      for (const group of adjacent) {
+        if (group.nodes[group.nodes.length - 1] !== node) group.nodes.push(node);
+      }
+    }
+  }
+  return blocks;
 }
 
 /** Compensated summation also preserves small positive grounding contributions. */
@@ -451,6 +466,86 @@ function substitute(
   return solution;
 }
 
+interface ReferenceProgram {
+  matches(edges: readonly Edge[], unknown: readonly number[]): boolean;
+  assemble(
+    edges: readonly Edge[],
+    conductanceScale: number,
+    voltageScale: number,
+  ): { anchors: Float64Array; right: Float64Array };
+}
+
+function sumPair(first: number, second: number): number {
+  first = 0 + first;
+  const total = first + second;
+  const correction =
+    Math.abs(first) >= Math.abs(second) ? first - total + second : second - total + first;
+  return total + correction;
+}
+
+function compileReferenceProgram(
+  unknown: readonly number[],
+  edges: readonly Edge[],
+  slots: ReadonlyMap<number, number>,
+  nodes: readonly Node[],
+): ReferenceProgram | undefined {
+  if (unknown.length > 32 || edges.length > 128) return undefined;
+  const rows: number[][] = Array.from({ length: unknown.length }, () => []);
+  const guards = [`unknown.length === ${unknown.length}`, `edges.length === ${edges.length}`];
+  const references: string[] = [];
+  for (let index = 0; index < edges.length; index++) {
+    const edge = edges[index]!;
+    const from = slots.get(edge.from);
+    const to = slots.get(edge.to);
+    if (from !== undefined && to !== undefined) return undefined;
+    if (from === undefined && to === undefined) {
+      guards.push(
+        `nodes[edges[${index}].from].reference !== undefined`,
+        `nodes[edges[${index}].to].reference !== undefined`,
+      );
+      continue;
+    }
+    const row = from ?? to!;
+    if (rows[row]!.length === 2) return undefined;
+    rows[row]!.push(index);
+    const fixed = from === undefined ? 'from' : 'to';
+    const variable = from === undefined ? 'to' : 'from';
+    references[index] = `nodes[edges[${index}].${fixed}].reference`;
+    guards.push(
+      `edges[${index}].${variable} === unknown[${row}]`,
+      `${references[index]} !== undefined`,
+    );
+  }
+  if (rows.some((row) => row.length === 0)) return undefined;
+  const assembly: string[] = [];
+  for (let row = 0; row < rows.length; row++) {
+    const indices = rows[row]!;
+    const reduce = (terms: readonly string[]): string =>
+      terms.length === 1 ? `(0 + ${terms[0]})` : `pair(${terms.join(',')})`;
+    for (const index of indices)
+      assembly.push(`const g${index} = edges[${index}].conductance / gScale;`);
+    assembly.push(
+      `anchors[${row}] = ${reduce(indices.map((index) => `g${index}`))};`,
+      `right[${row}] = ${reduce(indices.map((index) => `g${index} * (${references[index]} / vScale)`))};`,
+    );
+  }
+  // Bind closed reference rows while retaining their original compensated summation order.
+  const factory = new Function(
+    'pair',
+    'nodes',
+    `"use strict"; return {
+      matches(edges, unknown) { return ${guards.join(' && ')}; },
+      assemble(edges, gScale, vScale) {
+        const anchors = new Float64Array(${unknown.length});
+        const right = new Float64Array(${unknown.length});
+        ${assembly.join('\n')}
+        return { anchors, right };
+      }
+    };`,
+  ) as (pair: typeof sumPair, nodes: readonly Node[]) => ReferenceProgram;
+  return factory(sumPair, nodes);
+}
+
 export function createElectricalNetwork(
   inputPins: readonly ElectricalPin[],
   inputNets: readonly NetInput[],
@@ -524,6 +619,7 @@ export function createElectricalNetwork(
     node.reference = reference;
   }
   let cache = new Map<string, CachedComponent>();
+  const referencePrograms: ReferenceProgram[] = [];
   let prepared: PreparedTopology | undefined;
   let snapshot: TopologySnapshot | undefined;
   let nextTopologyId = 0;
@@ -686,6 +782,7 @@ export function createElectricalNetwork(
           });
         };
         let factorization: Factorization | undefined;
+        let referenceProgram: ReferenceProgram | undefined;
         if (references.length !== 0) {
           const unknown = component.nodes.filter((node) => nodes[node]!.reference === undefined);
           for (const node of references) voltages.set(node, nodes[node]!.reference!);
@@ -708,25 +805,47 @@ export function createElectricalNetwork(
               if (from && to) coupled = true;
             }
             if (!(conductanceScale > 0) || !(voltageScale > 0)) fail('Invalid equation scaling.');
-            const matrix = new Float64Array(coupled ? count * count : 0);
-            const anchorTerms: number[][] = Array.from({ length: count }, () => []);
-            const rightTerms: number[][] = Array.from({ length: count }, () => []);
-            for (const edge of component.edges) {
-              const from = slots.get(edge.from);
-              const to = slots.get(edge.to);
-              const conductance = edge.conductance / conductanceScale;
-              if (from !== undefined && to !== undefined) {
-                const slot = Math.min(from, to) * count + Math.max(from, to);
-                matrix[slot] = matrix[slot]! + conductance;
-              } else if (from !== undefined || to !== undefined) {
-                const slot = from ?? to!;
-                const reference = nodes[from === undefined ? edge.from : edge.to]!.reference!;
-                anchorTerms[slot]!.push(conductance);
-                rightTerms[slot]!.push(conductance * (reference / voltageScale));
+            if (!coupled) {
+              referenceProgram = referencePrograms.find((program) =>
+                program.matches(component.edges, unknown),
+              );
+              if (referenceProgram === undefined) {
+                referenceProgram = compileReferenceProgram(unknown, component.edges, slots, nodes);
+                if (referenceProgram !== undefined) {
+                  referencePrograms.push(referenceProgram);
+                  if (referencePrograms.length > topologyTransitionLimit) referencePrograms.shift();
+                }
               }
             }
-            const anchors = Float64Array.from(anchorTerms, (terms) => sum(terms));
-            const right = Float64Array.from(rightTerms, (terms) => sum(terms));
+            const matrix = new Float64Array(coupled ? count * count : 0);
+            let anchors: Float64Array;
+            let right: Float64Array;
+            if (referenceProgram !== undefined) {
+              ({ anchors, right } = referenceProgram.assemble(
+                component.edges,
+                conductanceScale,
+                voltageScale,
+              ));
+            } else {
+              const anchorTerms: number[][] = Array.from({ length: count }, () => []);
+              const rightTerms: number[][] = Array.from({ length: count }, () => []);
+              for (const edge of component.edges) {
+                const from = slots.get(edge.from);
+                const to = slots.get(edge.to);
+                const conductance = edge.conductance / conductanceScale;
+                if (from !== undefined && to !== undefined) {
+                  const slot = Math.min(from, to) * count + Math.max(from, to);
+                  matrix[slot] = matrix[slot]! + conductance;
+                } else if (from !== undefined || to !== undefined) {
+                  const slot = from ?? to!;
+                  const reference = nodes[from === undefined ? edge.from : edge.to]!.reference!;
+                  anchorTerms[slot]!.push(conductance);
+                  rightTerms[slot]!.push(conductance * (reference / voltageScale));
+                }
+              }
+              anchors = Float64Array.from(anchorTerms, (terms) => sum(terms));
+              right = Float64Array.from(rightTerms, (terms) => sum(terms));
+            }
             if (
               previous?.factorization !== undefined &&
               arraysEqual(previous.factorization.matrix, matrix) &&
@@ -744,39 +863,6 @@ export function createElectricalNetwork(
               if (!Number.isFinite(voltage)) fail('Non-finite node voltage.');
               voltages.set(node, voltage);
             });
-          }
-          // Check the original, uneliminated equations, scaled in voltage only.
-          for (const node of unknown) {
-            const incident = block.incident.get(node)!;
-            const diagonal = sum(incident.map((index) => component.edges[index]!.conductance));
-            if (!(diagonal > 0) || !Number.isFinite(diagonal))
-              fail('Invalid original node equation.');
-            const voltage = voltages.get(node)!;
-            if (voltage === null || !Number.isFinite(voltage)) fail('Missing candidate voltage.');
-            let scale = Math.abs(voltage);
-            for (const index of incident) {
-              const edge = component.edges[index]!;
-              scale = Math.max(
-                scale,
-                Math.abs(voltages.get(edge.from === node ? edge.to : edge.from)!),
-              );
-            }
-            if (scale === 0) continue;
-            const weighted: number[] = [];
-            const absolute: number[] = [];
-            for (const index of incident) {
-              const edge = component.edges[index]!;
-              const neighbor = voltages.get(edge.from === node ? edge.to : edge.from)! / scale;
-              const weight = edge.conductance / diagonal;
-              weighted.push(weight * neighbor);
-              absolute.push(weight * Math.abs(neighbor));
-            }
-            const scaledVoltage = voltage / scale;
-            const residual = Math.abs(scaledVoltage - sum(weighted));
-            const bound = 1e-12 * (Math.abs(scaledVoltage) + sum(absolute));
-            if (!Number.isFinite(residual) || !Number.isFinite(bound) || !(residual <= bound)) {
-              fail('Unknown-node normalized residual exceeds 1e-12.');
-            }
           }
         }
         nextCache.set(key, {

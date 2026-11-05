@@ -45,6 +45,47 @@ export class EventQueue<T> {
     return a.time < b.time || (a.time === b.time && a.order < b.order);
   }
 }
+export class ActivationQueue<T> {
+  private readonly entries: T[] = [];
+  private readonly words: number[] = [];
+  private readonly activeWords: number[] = [];
+  private readonly batch: T[] = [];
+  get size(): number {
+    return this.activeWords.length;
+  }
+  register(entry: T): number {
+    return this.entries.push(entry) - 1;
+  }
+  add(slot: number): void {
+    const word = slot >>> 5;
+    const previous = this.words[word] ?? 0;
+    if (previous === 0) this.activeWords.push(word);
+    this.words[word] = previous | (1 << (slot & 31));
+  }
+  take(): readonly T[] {
+    const batch = this.batch;
+    batch.length = 0;
+    if (this.activeWords.length > 1) this.activeWords.sort((a, b) => a - b);
+    for (const word of this.activeWords) {
+      let bits = this.words[word]!;
+      this.words[word] = 0;
+      while (bits !== 0) {
+        const bit = 31 - Math.clz32(bits & -bits);
+        batch.push(this.entries[word * 32 + bit]!);
+        bits &= bits - 1;
+      }
+    }
+    this.activeWords.length = 0;
+    return batch;
+  }
+  clear(): void {
+    this.entries.length = 0;
+    this.words.length = 0;
+    this.activeWords.length = 0;
+    this.batch.length = 0;
+  }
+}
+
 export class Fifo<T> {
   private values: (T | undefined)[] = [];
   private head = 0;

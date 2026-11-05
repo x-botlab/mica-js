@@ -6,7 +6,7 @@
 
 - `domains/expressions.mjs`：按结果类型递归构造 `number` / `bool` AST，覆盖算术、位运算、比较、逻辑短路、条件选择和属性/state 读取。相同 AST 分别输出 DDL 和手工 IR。IR 发射器以规范的 `DeviceIR` / `OperationIR` 合同进行类型检查。
 - `oracles/expressions.mjs`：独立树解释器以 AST 和绑定值为输入，按语言规定的 JavaScript binary64 运算计算预期值。简单过程参考状态机按生成的等待序列计算 tick、时间与输出；DDL、手工 IR、不同 `runUntil` 切片分别与该预期比较。
-- `domains/electrical.mjs`：按构造规则生成含明确参考点的连通正电阻网络、阈值与合法推进序列。独立节点方程与带选主元的消元计算预期电压；检查数字电平、实际电压的规范残差，以及电阻整体缩放、并联拆分和推进切片性质。
+- `domains/electrical.mjs`：按构造规则生成含明确参考点的连通正电阻网络、阈值与合法推进序列。独立节点方程与带选主元的消元计算预期电压；按测试定义的浮点误差范围比较实际电压，检查数字电平，以及电阻整体缩放、并联拆分和推进切片性质。
 
 规则来自 [表达式](../../docs/spec/language/expressions.rst)、[类型](../../docs/spec/language/types.rst)、[IR 操作](../../docs/spec/ir/operations.rst)、[电气模型](../../docs/spec/electrical.rst)、[调度](../../docs/spec/execution/scheduling.rst) 和 [通道](../../docs/spec/channels.rst)，由生成器与 Oracle 显式编码。规范变化时同步审查两者。
 

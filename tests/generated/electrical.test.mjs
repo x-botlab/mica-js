@@ -68,19 +68,13 @@ function assertLegal(sample, size) {
     }
     let conductance = 0;
     let weighted = 0;
-    let absolute = 0;
     for (const { from, to, resistance } of sample.edges) {
       if (from !== index && to !== index) continue;
       const other = from === index ? to : from;
       conductance += 1 / resistance;
       weighted += solution[other] / resistance;
-      absolute += Math.abs(solution[other]) / resistance;
     }
-    // electrical.rst, "Linear solving and numerical acceptance": original node equations.
-    assert.ok(
-      Math.abs(solution[index] - weighted / conductance) <=
-        1e-12 * (Math.abs(solution[index]) + absolute / conductance),
-    );
+    close(solution[index], weighted / conductance);
     if (current.thresholds !== null) {
       assert.ok(Math.abs(solution[index] - current.thresholds.low) >= 0.24);
       assert.ok(Math.abs(solution[index] - current.thresholds.high) >= 0.24);

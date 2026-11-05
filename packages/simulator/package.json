@@ -40,7 +40,8 @@
     "typecheck": "tsc --noEmit",
     "bench": "node bench/runtime.mjs",
     "bench:electrical": "node bench/electrical.mjs",
-    "bench:workloads": "node bench/workloads.mjs"
+    "bench:workloads": "node bench/workloads.mjs",
+    "bench:propagation": "node bench/propagation.mjs"
   },
   "publishConfig": {
     "access": "public",

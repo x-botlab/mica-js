@@ -25,7 +25,7 @@ import {
   type ElectricalNetwork,
   type ResistorBranch,
 } from './electrical';
-import { EventQueue, Fifo } from './queue';
+import { ActivationQueue, EventQueue, Fifo } from './queue';
 import {
   bytesView,
   captureValue,
@@ -62,8 +62,12 @@ import {
 
 type Decl<K extends DeclarationIR['kind']> = Extract<DeclarationIR, { kind: K }>;
 type Execution = Generator<ExecutionSignal, unknown, unknown>;
-type Dependencies = ReadonlyMap<string, number>;
+type Dependencies = ReadonlyMap<ResourceSlot, number>;
 type Observation = Process | Reaction;
+interface ResourceSlot {
+  version: number;
+  readonly subscribers: Set<Observation>;
+}
 interface Entry {
   readonly id: string;
   readonly model: DeviceIR;
@@ -201,6 +205,7 @@ interface Process {
   readonly instance: Instance;
   readonly declaration: Decl<'start'> | Decl<'on'>;
   readonly source?: readonly string[];
+  readSource?: () => unknown;
   previous?: unknown;
   order?: number;
   state: 'idle' | 'queued' | 'running' | 'waiting';
@@ -210,8 +215,11 @@ interface Process {
 interface Reaction {
   readonly instance: Instance;
   readonly declaration: Decl<'reaction'>;
+  readSource?: () => unknown;
   previous: unknown;
   order?: number;
+  execute?: CompiledBody;
+  frame: ReactionFrame | undefined;
 }
 interface Jit {
   readonly instance: Instance;
@@ -276,9 +284,10 @@ class Instance {
   readonly processes: Process[] = [];
   readonly reactions: Reaction[] = [];
   readonly derived = new Map<string, { dependencies: Dependencies; value: unknown }>();
-  private readonly versions = new Map<string, number>();
-  private readonly dependencyStack: Map<string, number>[] = [];
-  private readonly subscriptions = new Map<string, Set<Observation>>();
+  private readonly stateResources = new Map<string, ResourceSlot>();
+  private readonly memoryResources = new Map<string, ResourceSlot>();
+  readonly sampleResources = new Map<string, ResourceSlot>();
+  private readonly dependencyStack: Map<ResourceSlot, number>[] = [];
   private readonly observations = new WeakMap<Observation, Dependencies>();
   private readonly staticObservations = new WeakMap<Observation, () => unknown>();
   readonly evaluating = new Set<string>();
@@ -296,8 +305,22 @@ class Instance {
     seed: number,
     override?: readonly number[],
   ) {
-    for (const declaration of entry.model.declarations)
+    for (const declaration of entry.model.declarations) {
       if ('name' in declaration) this.declarations.set(declaration.name, declaration);
+      if (
+        declaration.kind === 'state' ||
+        declaration.kind === 'memory' ||
+        declaration.kind === 'pin'
+      ) {
+        const resources =
+          declaration.kind === 'state'
+            ? this.stateResources
+            : declaration.kind === 'memory'
+              ? this.memoryResources
+              : this.sampleResources;
+        resources.set(declaration.name, { version: 0, subscribers: new Set() });
+      }
+    }
     dataObject(props);
     this.rawProps = props;
     for (const key of Object.keys(props))
@@ -309,11 +332,11 @@ class Instance {
       write: (name, value) => {
         if (!this.states.has(name)) throw new TypeError(`Unknown state ${name}`);
         this.states.set(name, snapshot(value));
-        this.invalidate(`state:${name}`);
+        board.invalidate(this.stateResources.get(name)!);
       },
       sample: (ref) => {
         const pin = this.pin(ref);
-        this.track(`sample:${pin.name}`);
+        this.track(this.sampleResources, pin.name);
         return pin.sample;
       },
       intent: (pin, value) => {
@@ -330,7 +353,7 @@ class Instance {
       },
       memoryLength: (memory) => this.memory(memory).length,
       load: (kind, memory, offset) => {
-        this.track(`memory:${String(memory)}`);
+        this.track(this.memoryResources, String(memory));
         const bytes = this.memory(memory),
           size = kind.startsWith('load8') ? 1 : kind.startsWith('load16') ? 2 : 4,
           at = range(bytes, offset, size);
@@ -354,7 +377,7 @@ class Instance {
         this.memoryChanged(String(memory));
       },
       copyBytes: (memory, offset, length) => {
-        this.track(`memory:${String(memory)}`);
+        this.track(this.memoryResources, String(memory));
         const bytes = this.memory(memory),
           at = range(bytes, offset, length);
         return bytes.slice(at, at + Number(length));
@@ -375,23 +398,20 @@ class Instance {
     };
     this.context = createContext(this, board);
   }
-  private track(key: string): void {
-    this.dependencyStack.at(-1)?.set(key, this.versions.get(key) ?? 0);
-  }
-  invalidate(key: string): void {
-    this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
-    const subscribers = this.subscriptions.get(key);
-    if (subscribers)
-      for (const observation of subscribers) this.board.dirtyObservations.add(observation);
+  private track(resources: ReadonlyMap<string, ResourceSlot>, name: string): void {
+    const dependencies = this.dependencyStack.at(-1);
+    if (dependencies) {
+      const slot = resources.get(name)!;
+      dependencies.set(slot, slot.version);
+    }
   }
   dependenciesCurrent(dependencies: Dependencies | undefined): boolean {
     if (!dependencies) return false;
-    for (const [key, version] of dependencies)
-      if ((this.versions.get(key) ?? 0) !== version) return false;
+    for (const [slot, version] of dependencies) if (slot.version !== version) return false;
     return true;
   }
   evaluate<T>(compute: () => T): { value: T; dependencies: Dependencies } {
-    const dependencies = new Map<string, number>();
+    const dependencies = new Map<ResourceSlot, number>();
     this.dependencyStack.push(dependencies);
     try {
       return { value: compute(), dependencies };
@@ -406,7 +426,7 @@ class Instance {
     if (read) return read();
     const declaration = this.declarations.get(path[0]!);
     if (declaration?.kind === 'pin' || declaration?.kind === 'state') {
-      const key = `${declaration.kind === 'pin' ? 'sample' : 'state'}:${declaration.name}`;
+      const resources = declaration.kind === 'pin' ? this.sampleResources : this.stateResources;
       const pin = declaration.kind === 'pin' ? this.pin(declaration.name) : undefined;
       if (pin && path[1] !== 'sample') throw new TypeError(`Invalid source ${path.join('.')}`);
       // Published samples are immutable; state values may contain byte snapshots.
@@ -417,30 +437,27 @@ class Instance {
         return pin ? value : snapshot(value);
       };
       const value = read();
-      let subscribers = this.subscriptions.get(key);
-      if (!subscribers) this.subscriptions.set(key, (subscribers = new Set()));
-      subscribers.add(observation);
+      resources.get(declaration.name)!.subscribers.add(observation);
       this.staticObservations.set(observation, read);
       return value;
     }
     const observed = this.evaluate(() => snapshot(this.source(path)));
     const previous = this.observations.get(observation);
     if (previous)
-      for (const key of previous.keys())
-        if (!observed.dependencies.has(key)) this.subscriptions.get(key)?.delete(observation);
-    for (const key of observed.dependencies.keys()) {
-      if (previous?.has(key)) continue;
-      let subscribers = this.subscriptions.get(key);
-      if (!subscribers) this.subscriptions.set(key, (subscribers = new Set()));
-      subscribers.add(observation);
-    }
+      for (const slot of previous.keys())
+        if (!observed.dependencies.has(slot)) slot.subscribers.delete(observation);
+    for (const slot of observed.dependencies.keys())
+      if (!previous?.has(slot)) slot.subscribers.add(observation);
     this.observations.set(observation, observed.dependencies);
     return observed.value;
+  }
+  observationReader(observation: Observation, path: readonly string[]): () => unknown {
+    return this.staticObservations.get(observation) ?? (() => this.observe(observation, path));
   }
   read(kind: string, name: string): unknown {
     if (kind === 'state') {
       if (!this.states.has(name)) throw new TypeError(`Unknown state ${name}`);
-      this.track(`state:${name}`);
+      this.track(this.stateResources, name);
       return this.states.get(name);
     }
     if (kind === 'derived') {
@@ -503,7 +520,7 @@ class Instance {
     return bytes;
   }
   memoryChanged(name: string): void {
-    this.invalidate(`memory:${name}`);
+    this.board.invalidate(this.memoryResources.get(name)!);
     for (const jit of this.jits)
       if (jit.options.code === name) {
         jit.version++;
@@ -583,7 +600,12 @@ class Instance {
           });
           break;
         case 'reaction':
-          this.reactions.push({ instance: this, declaration, previous: undefined });
+          this.reactions.push({
+            instance: this,
+            declaration,
+            previous: undefined,
+            frame: undefined,
+          });
           break;
       }
     }
@@ -755,7 +777,7 @@ class Instance {
     let value: unknown;
     let firstField = 1;
     if (declaration?.kind === 'pin') {
-      this.track(`sample:${declaration.name}`);
+      this.track(this.sampleResources, declaration.name);
       if (path[1] !== 'sample') throw new TypeError(`Invalid source ${path.join('.')}`);
       value = this.pin(declaration.name).sample;
       firstField = 2;
@@ -775,7 +797,9 @@ class BoardRuntime implements Board {
   current: Instance | undefined;
   electricalDirty = true;
   readonly dirtyElectricalPins = new Set<ElectricalPin>();
-  readonly dirtyObservations = new Set<Observation>();
+  private readonly observations = new ActivationQueue<Observation>();
+  private readonly reactionBatch: Reaction[] = [];
+  private readonly sampleSlots = new Map<ElectricalPin, ResourceSlot>();
   private readonly byId = new Map<string, Instance>();
   private dispatchDepth = 0;
   private initialized = false;
@@ -890,10 +914,13 @@ class BoardRuntime implements Board {
         pins: net.pins.map((p: import('./types').PinEndpoint) => byId.get(p.instance)!.pin(p.pin)),
         ...(Object.hasOwn(net, 'voltage') ? { voltage: net.voltage! } : {}),
       }));
-      this.network = createElectricalNetwork(
-        this.instances.flatMap((instance) => [...instance.pins.values()]),
-        nets,
-      );
+      const pins: ElectricalPin[] = [];
+      for (const instance of this.instances)
+        for (const pin of instance.pins.values()) {
+          pins.push(pin);
+          this.sampleSlots.set(pin, instance.sampleResources.get(pin.name)!);
+        }
+      this.network = createElectricalNetwork(pins, nets);
       this.phase = 'initialize';
       for (const instance of this.instances) {
         this.current = instance;
@@ -1108,71 +1135,72 @@ class BoardRuntime implements Board {
       this.readyJits.push(jit);
     }
   }
+  invalidate(slot: ResourceSlot): void {
+    slot.version++;
+    for (const observation of slot.subscribers) this.observations.add(observation.order!);
+  }
   private publish(): void {
     if (!this.electricalDirty) return;
     const changed = this.network.solve(this.dirtyElectricalPins);
     this.dirtyElectricalPins.clear();
     this.electricalDirty = false;
-    for (const pin of changed) this.byId.get(pin.instance)!.invalidate(`sample:${pin.name}`);
+    for (const pin of changed) this.invalidate(this.sampleSlots.get(pin)!);
+  }
+  private bindObservation(observation: Observation, path: readonly string[]): void {
+    const instance = observation.instance;
+    observation.previous = instance.observe(observation, path);
+    observation.readSource = instance.observationReader(observation, path);
+    observation.order = this.observations.register(observation);
   }
   private baseline(): void {
     this.publish();
-    let order = 0;
     for (const instance of this.instances) {
       for (const process of instance.processes)
         if (
           process.source &&
           instance.declarations.get(process.source[0]!)?.kind !== 'notification'
-        ) {
-          process.order = order++;
-          process.previous = instance.observe(process, process.source);
-        }
-      for (const reaction of instance.reactions) {
-        reaction.order = order++;
-        reaction.previous = instance.observe(reaction, reaction.declaration.sourcePath);
-      }
+        )
+          this.bindObservation(process, process.source);
+      for (const reaction of instance.reactions)
+        this.bindObservation(reaction, reaction.declaration.sourcePath);
     }
   }
   private boundary(): void {
     for (;;) {
       this.publish();
-      if (!this.dirtyObservations.size) return;
-      const observations = [...this.dirtyObservations].sort((a, b) => a.order! - b.order!);
-      this.dirtyObservations.clear();
-      const reactions: { reaction: Reaction; frame: ReactionFrame }[] = [];
-      for (const observation of observations) {
-        const path =
-          observation.declaration.kind === 'reaction'
-            ? observation.declaration.sourcePath
-            : (observation as Process).source!;
-        const current = observation.instance.observe(observation, path);
-        if (same(observation.previous, current)) continue;
-        const previous = observation.previous;
-        observation.previous = current;
-        if (observation.declaration.kind === 'reaction')
-          reactions.push({
-            reaction: observation as Reaction,
-            frame: { previous, current, captures: [] },
-          });
-        else this.enqueue(observation as Process);
-      }
-      if (!reactions.length) return;
-      for (const item of reactions)
-        if (item.reaction.declaration.captures.length)
-          item.frame = {
-            ...item.frame,
-            captures: item.reaction.declaration.captures.map((capture) =>
-              snapshot(computation(capture.value, item.reaction.instance.host)),
-            ),
-          };
-      for (const item of reactions) {
-        this.current = item.reaction.instance;
-        const step = body(item.reaction.declaration.body)(
-          item.reaction.instance.host,
-          [],
-          item.frame,
-        ).next();
-        if (!step.done) throw new TypeError('Reaction cannot suspend');
+      if (!this.observations.size) return;
+      const reactions = this.reactionBatch;
+      reactions.length = 0;
+      try {
+        for (const observation of this.observations.take()) {
+          const current = observation.readSource!();
+          if (same(observation.previous, current)) continue;
+          const previous = observation.previous;
+          observation.previous = current;
+          if (observation.declaration.kind === 'reaction') {
+            const reaction = observation as Reaction;
+            reaction.frame = { previous, current, captures: [] };
+            reactions.push(reaction);
+          } else this.enqueue(observation as Process);
+        }
+        if (!reactions.length) return;
+        // Every instance completes observation and capture before any reaction body runs.
+        for (const reaction of reactions)
+          if (reaction.declaration.captures.length)
+            reaction.frame = {
+              ...reaction.frame!,
+              captures: reaction.declaration.captures.map((capture) =>
+                snapshot(computation(capture.value, reaction.instance.host)),
+              ),
+            };
+        for (const reaction of reactions) {
+          this.current = reaction.instance;
+          reaction.execute ??= body(reaction.declaration.body);
+          const step = reaction.execute(reaction.instance.host, [], reaction.frame).next();
+          if (!step.done) throw new TypeError('Reaction cannot suspend');
+        }
+      } finally {
+        for (const reaction of reactions) reaction.frame = undefined;
       }
     }
   }
@@ -1489,6 +1517,9 @@ class BoardRuntime implements Board {
     this.events.clear();
     this.models.clear();
     this.readyJits.clear();
+    this.observations.clear();
+    this.reactionBatch.length = 0;
+    this.sampleSlots.clear();
     this.listeners.clear();
     this.errors.dispose();
     this.diagnostics.dispose();

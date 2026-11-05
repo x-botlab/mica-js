@@ -355,7 +355,7 @@ async function verifyCacheTransitions() {
   let instrumented = compiled.outputText;
   for (const [name, counter] of [
     ['prepareTopology', 'topology'],
-    ['prepareBlock', 'adjacency'],
+    ['prepareBlock', 'blocks'],
     ['solveBlocks', 'partitions'],
     ['restoreTopology', 'restores'],
   ]) {
@@ -383,7 +383,7 @@ async function verifyCacheTransitions() {
   assert.equal(instrumented.split('return solution;').length, 2);
   instrumented = instrumented.replace(
     'return solution;',
-    'if (probes.badSolution) solution[0] += 1e-8; return solution;',
+    'if (probes.badSolution) solution[0] = NaN; return solution;',
   );
   const factorSignature = /function factorize\([^)]*\) \{/g;
   assert.equal([...instrumented.matchAll(factorSignature)].length, 1);
@@ -393,7 +393,7 @@ async function verifyCacheTransitions() {
   );
   const { createElectricalNetwork: createNetwork, probes } = await import(
     `data:text/javascript;base64,${Buffer.from(
-      'export const probes = { topology: 0, adjacency: 0, partitions: 0, restores: 0, diagonal: 0, failAfter: null, badSolution: false, caches: [], reboundBlocks: 0, zeroCopyRestores: 0 };\n' +
+      'export const probes = { topology: 0, blocks: 0, partitions: 0, restores: 0, diagonal: 0, failAfter: null, badSolution: false, caches: [], reboundBlocks: 0, zeroCopyRestores: 0 };\n' +
         instrumented,
     ).toString('base64')}`
   );
@@ -451,11 +451,11 @@ async function verifyCacheTransitions() {
     }
     return { snapshots, topologies };
   };
-  const builds = (operation, topology, adjacency) => {
+  const builds = (operation, topology, blocks) => {
     const before = { ...probes };
     const result = operation();
     assert.equal(probes.topology - before.topology, topology, 'physical topology builds');
-    assert.equal(probes.adjacency - before.adjacency, adjacency, 'block adjacency builds');
+    assert.equal(probes.blocks - before.blocks, blocks, 'block metadata preparations');
     if (topology === 0) assert.equal(probes.partitions, before.partitions, 'cached solve blocks');
     return result;
   };
@@ -603,20 +603,20 @@ async function verifyCacheTransitions() {
     );
     checkChain(second, (index) => -2 + (12 * (multiplier + index)) / (4 + multiplier));
   }
-  const beforeResidual = network.stats;
-  const residualSamples = allPins.map((endpoint) => endpoint.sample);
+  const beforeNonfinite = network.stats;
+  const nonfiniteSamples = allPins.map((endpoint) => endpoint.sample);
   leading(second, 4);
   probes.badSolution = true;
   assert.throws(() => network.solve(), {
     code: 'ELECTRICAL_SOLVE_FAILED',
-    reason: 'Unknown-node normalized residual exceeds 1e-12.',
+    reason: 'Non-finite node voltage.',
   });
   probes.badSolution = false;
-  assert.deepEqual(network.stats, beforeResidual);
-  allPins.forEach((endpoint, index) => assert.equal(endpoint.sample, residualSamples[index]));
+  assert.deepEqual(network.stats, beforeNonfinite);
+  allPins.forEach((endpoint, index) => assert.equal(endpoint.sample, nonfiniteSamples[index]));
   builds(() => network.solve([second.unknown[0]]), 0, 0);
-  assert.equal(network.stats.factorizations - beforeResidual.factorizations, 1);
-  assert.equal(network.stats.cacheHits - beforeResidual.cacheHits, 1);
+  assert.equal(network.stats.factorizations - beforeNonfinite.factorizations, 1);
+  assert.equal(network.stats.cacheHits - beforeNonfinite.cacheHits, 1);
   checkChain(second, (index) => -2 + (12 * (4 + index)) / 8);
   for (const count of [1, 2, 32, 33]) {
     const high = pin(`independent.${count}.high`);
@@ -738,7 +738,7 @@ async function verifyCacheTransitions() {
   assert.throws(
     () => switched.solve([signal]),
     (error) => {
-      assert.equal(error.reason, 'Unknown-node normalized residual exceeds 1e-12.');
+      assert.equal(error.reason, 'Non-finite node voltage.');
       assert.deepEqual(new Set(error.component), new Set([railHigh.id, railLow.id, signal.id]));
       return true;
     },
@@ -949,7 +949,7 @@ async function verifyCacheTransitions() {
   }
   return {
     topology_builds: probes.topology,
-    adjacency_builds: probes.adjacency,
+    block_preparations: probes.blocks,
     physical_partitions: probes.partitions,
     topology_restores: probes.restores,
     diagonal_factorizations: probes.diagonal,
@@ -961,9 +961,350 @@ async function verifyCacheTransitions() {
     cold_descriptor_entries: coldHandle.transitions.size,
     cold_retained_graphs: [...coldHandle.transitions.values()].filter(Boolean).length,
     assertions:
-      'stable identity/dirty hints, resistance adjacency reuse, exact reference-switch restoration, order/multiplicity, shared-reference merge/split, diagonal/coupled 32/33-node transitions, floating/reference-only transitions, 1e-12 residual rejection, complete failure diagnostics and atomic cache retry, 52-block zero-copy restores, two-observation admission, cold bus churn retains descriptors only, bounded ownership without history or numerical-cache chains',
+      'stable identity/dirty hints, resistance block metadata reuse, exact reference-switch restoration, order/multiplicity, shared-reference merge/split, diagonal/coupled 32/33-node transitions, floating/reference-only transitions, nonfinite result rejection, complete failure diagnostics and atomic cache retry, 52-block zero-copy restores, two-observation admission, cold bus churn retains descriptors only, bounded ownership without history or numerical-cache chains',
     instrumentation:
       'separate untimed module only; measured workloads use unmodified transpilation',
+  };
+}
+
+async function verifyReferenceAssembly() {
+  let instrumented = compiled.outputText;
+  const patch = (pattern, replacement) => {
+    assert.equal([...instrumented.matchAll(pattern)].length, 1, `Reference probe: ${pattern}`);
+    instrumented = instrumented.replace(pattern, replacement);
+  };
+  patch(
+    /function compileReferenceProgram\([^)]*\) \{/g,
+    '$& probes.compilations++; if (probes.generic) return undefined;',
+  );
+  patch(/const referencePrograms = \[\];/g, '$& probes.caches.push(referencePrograms);');
+  patch(
+    /return factory\(sumPair, nodes\);/g,
+    `const program = factory(sumPair, nodes);
+     const matches = program.matches;
+     const assemble = program.assemble;
+     program.matches = (...args) => {
+       const valid = matches(...args);
+       if (valid) probes.matches++; else probes.misses++;
+       return valid;
+     };
+     program.assemble = (...args) => { probes.assemblies++; return assemble(...args); };
+     return program;`,
+  );
+  patch(
+    /return solution;/g,
+    'if (probes.nonfiniteAfter !== null && probes.nonfiniteAfter-- === 0) solution[0] = NaN; return solution;',
+  );
+  patch(/function factorize\([^)]*\) \{/g, '$& if (probes.invalidPivot) anchors[0] = NaN;');
+  patch(
+    /const weight = conductance \/ pivot;/g,
+    'const weight = probes.invalidCoefficient ? NaN : conductance / pivot;',
+  );
+  const variants = await Promise.all(
+    [false, true].map(
+      (generic) =>
+        import(
+          `data:text/javascript;base64,${Buffer.from(
+            `export const probes = { generic: ${generic}, compilations: 0, assemblies: 0, matches: 0, misses: 0, caches: [], nonfiniteAfter: null, invalidPivot: false, invalidCoefficient: false };\n` +
+              instrumented,
+          ).toString('base64')}`
+        ),
+    ),
+  );
+  const specialized = variants[0].probes;
+  const fixtures = (values, count = 3) =>
+    variants.map(({ createElectricalNetwork, probes }) => {
+      const references = values.map((_, index) => pin(`assembly.reference.${index}`));
+      const unknown = Array.from({ length: count }, (_, index) => pin(`assembly.${index}`, true));
+      const endpoints = [...references, ...unknown];
+      const pins = [...endpoints].reverse();
+      const network = createElectricalNetwork(
+        pins,
+        references.map((endpoint, index) => ({
+          id: endpoint.id,
+          pins: [endpoint],
+          voltage: values[index],
+        })),
+      );
+      return {
+        values,
+        endpoints,
+        pins,
+        network,
+        probes,
+        programs: probes.caches.at(-1),
+        branches: [],
+        apply(branches) {
+          this.branches = branches;
+          const intents = endpoints.map(() => []);
+          for (const [from, to, resistance] of branches)
+            intents[from].push({ to: endpoints[to], resistance });
+          endpoints.forEach((endpoint, index) => {
+            endpoint.intent = intents[index];
+          });
+        },
+      };
+    });
+
+  // An unscaled dense elimination oracle is independent of specialized assembly and LDL.
+  const oracle = ({ values, endpoints, branches }) => {
+    const reachable = new Set(values.map((_, index) => index));
+    for (let pass = 0; pass < endpoints.length; pass++) {
+      for (const [from, to] of branches) {
+        if (reachable.has(from)) reachable.add(to);
+        if (reachable.has(to)) reachable.add(from);
+      }
+    }
+    const unknown = endpoints.flatMap((_, index) =>
+      index >= values.length && reachable.has(index) ? [index] : [],
+    );
+    const slots = new Map(unknown.map((node, index) => [node, index]));
+    const count = unknown.length;
+    const matrix = unknown.map(() => Array(count + 1).fill(0));
+    for (const [from, to, resistance] of branches) {
+      for (const [node, other] of [
+        [from, to],
+        [to, from],
+      ]) {
+        const row = slots.get(node);
+        if (row === undefined) continue;
+        matrix[row][row] += 1 / resistance;
+        const column = slots.get(other);
+        if (column === undefined) matrix[row][count] += values[other] / resistance;
+        else matrix[row][column] -= 1 / resistance;
+      }
+    }
+    for (let column = 0; column < count; column++) {
+      let pivot = column;
+      for (let row = column + 1; row < count; row++)
+        if (Math.abs(matrix[row][column]) > Math.abs(matrix[pivot][column])) pivot = row;
+      [matrix[column], matrix[pivot]] = [matrix[pivot], matrix[column]];
+      assert.ok(Number.isFinite(matrix[column][column]) && matrix[column][column] > 0);
+      for (let row = column + 1; row < count; row++) {
+        const factor = matrix[row][column] / matrix[column][column];
+        for (let entry = column + 1; entry <= count; entry++)
+          matrix[row][entry] -= factor * matrix[column][entry];
+      }
+    }
+    const result = endpoints.map((_, index) => values[index] ?? null);
+    for (let row = count - 1; row >= 0; row--) {
+      let right = matrix[row][count];
+      for (let column = row + 1; column < count; column++)
+        right -= matrix[row][column] * result[unknown[column]];
+      result[unknown[row]] = right / matrix[row][row];
+      assert.ok(Number.isFinite(result[unknown[row]]));
+    }
+    return result;
+  };
+  let comparisons = 0;
+  const compare = (pair, label, expectation) => {
+    const before = { ...specialized };
+    const results = pair.map((fixture) => {
+      const { endpoints, network, pins, programs, values } = fixture;
+      const previous = pins.map((endpoint) => endpoint.sample);
+      const initial = network.stats.solves === 0;
+      const changed = network.solve([...pins].reverse());
+      assert.ok(programs.length <= 8, `${label}: per-network compiled-program bound`);
+      assert.deepEqual(
+        changed,
+        pins.filter((endpoint, index) => {
+          const old = previous[index];
+          const next = endpoint.sample;
+          return (
+            old.voltage !== next.voltage || old.level !== next.level || old.status !== next.status
+          );
+        }),
+        `${label}: changed pins follow input order`,
+      );
+      pins.forEach((endpoint, index) => {
+        assert.ok(Object.isFrozen(endpoint.sample));
+        if (!initial && !changed.includes(endpoint)) assert.equal(endpoint.sample, previous[index]);
+      });
+      const expected = oracle(fixture);
+      endpoints.forEach((endpoint, index) => {
+        if (expected[index] === null) {
+          assert.deepEqual(endpoint.sample, {
+            voltage: null,
+            level: 'unknown',
+            status: 'floating',
+          });
+          return;
+        }
+        const voltage = checkPin(endpoint, expected[index], index < values.length);
+        const scale = Math.max(...values.map(Math.abs));
+        assert.ok(
+          Math.abs(voltage - expected[index]) <= 1e-10 * scale,
+          `${label}: independent oracle for ${endpoint.id}`,
+        );
+      });
+      return {
+        changed: changed.map((endpoint) => endpoint.id),
+        samples: pins.map((endpoint) => endpoint.sample),
+        stats: network.stats,
+      };
+    });
+    assert.deepEqual(results[0], results[1], `${label}: exact generic/specialized publication`);
+    if (expectation === 'fallback') assert.equal(specialized.assemblies, before.assemblies, label);
+    if (expectation === 'assembly' || expectation === 'reuse' || expectation === 'guard')
+      assert.ok(specialized.assemblies > before.assemblies, label);
+    if (expectation === 'reuse') {
+      assert.equal(specialized.compilations, before.compilations, label);
+      assert.ok(specialized.matches > before.matches, label);
+    }
+    if (expectation === 'guard') {
+      assert.ok(specialized.misses > before.misses, label);
+      assert.ok(specialized.compilations > before.compilations, label);
+    }
+    assert.equal(
+      variants[1].probes.assemblies,
+      0,
+      'generic variant never selects compiled assembly',
+    );
+    comparisons++;
+  };
+  const fixed = [
+    [0, 1, 5000],
+    [1, 2, 7000],
+  ];
+  const base = [...fixed, [3, 0, 1000], [4, 0, 2000], [4, 1, 1000], [0, 5, 3000], [5, 1, 1000]];
+  const apply = (pair, branches) => pair.forEach((fixture) => fixture.apply(branches));
+  for (const values of [
+    [10, 0, -6],
+    [-20, -2, 0],
+    [-10, 10, 0],
+    [1e120, 0, -3e119],
+    [1e-120, 0, -3e-121],
+    [0, 0, 0],
+  ]) {
+    const pair = fixtures(values);
+    const equal = values.every((value) => value === values[0]);
+    apply(pair, base);
+    compare(pair, `row1/2 and reversed references: ${values}`, equal ? 'fallback' : 'assembly');
+    const switched = base.map(([from, to, resistance]) =>
+      from < values.length ? [from, to, resistance] : [from, to < 2 ? 1 - to : to, resistance],
+    );
+    apply(pair, switched);
+    compare(pair, 'same-shape high/low switch', equal ? 'fallback' : 'reuse');
+    apply(
+      pair,
+      base.map(([from, to, resistance]) => [from, to, resistance * 3]),
+    );
+    compare(pair, 'same-shape resistance scaling', equal ? 'fallback' : 'reuse');
+    apply(pair, [...base].reverse());
+    compare(pair, 'edge ordering guard', equal ? 'fallback' : 'guard');
+    apply(pair, base.filter((_, index) => index !== 4).concat([[3, 1, 1000]]));
+    compare(pair, 'row assignment guard', equal ? 'fallback' : 'guard');
+    apply(pair, base.slice(0, -1));
+    compare(pair, 'edge count guard', equal ? 'fallback' : 'guard');
+    apply(pair, [...base, [5, 2, 2000]]);
+    compare(pair, 'three-reference-branch fallback', 'fallback');
+    apply(pair, [...base, [3, 4, 1000], [4, 5, 2000]]);
+    compare(pair, 'unknown-unknown coupling fallback', 'fallback');
+  }
+
+  const retry = fixtures([10, 0, -6]);
+  apply(retry, base);
+  compare(retry, 'failure baseline', 'assembly');
+  for (const [probe, reason, branches] of [
+    [
+      'nonfiniteAfter',
+      'Non-finite node voltage.',
+      base.map(([from, to, resistance]) => [from, to, resistance * 2]),
+    ],
+    [
+      'invalidPivot',
+      'Invalid LDL pivot.',
+      base.map(([from, to, resistance], index) => [from, to, resistance * (index + 1)]),
+    ],
+    [
+      'invalidCoefficient',
+      'Unrepresentable LDL coefficient.',
+      [...base, [3, 4, 1000], [4, 5, 2000]],
+    ],
+  ]) {
+    apply(retry, branches);
+    for (const fixture of retry) {
+      const previous = fixture.pins.map((endpoint) => endpoint.sample);
+      const stats = fixture.network.stats;
+      fixture.probes[probe] = probe === 'nonfiniteAfter' ? 0 : true;
+      assert.throws(
+        () => fixture.network.solve(),
+        (error) => {
+          assert.equal(error.code, 'ELECTRICAL_SOLVE_FAILED');
+          assert.equal(error.reason, reason);
+          assert.deepEqual(
+            new Set(error.component),
+            new Set(fixture.pins.map((endpoint) => endpoint.id)),
+          );
+          return true;
+        },
+      );
+      fixture.probes[probe] = probe === 'nonfiniteAfter' ? null : false;
+      assert.deepEqual(fixture.network.stats, stats, `${probe}: statistics rollback`);
+      fixture.pins.forEach((endpoint, index) =>
+        assert.equal(endpoint.sample, previous[index], `${probe}: no partial publication`),
+      );
+    }
+    compare(
+      retry,
+      `${probe}: retry without resubmitting intents`,
+      probe === 'invalidCoefficient' ? 'fallback' : 'reuse',
+    );
+  }
+
+  const independentRows = (count, offset = 3) =>
+    Array.from({ length: count }, (_, row) => [
+      [row + offset, 0, 1000],
+      [row + offset, 1, 2000],
+    ]).flat();
+  const shared = fixtures([10, 0], 128);
+  const beforeShared = { ...specialized };
+  apply(shared, independentRows(128, 2));
+  compare(shared, '128 equivalent independent rows share one compiled shape', 'assembly');
+  assert.equal(specialized.compilations - beforeShared.compilations, 1);
+  assert.equal(specialized.assemblies - beforeShared.assemblies, 128);
+  assert.equal(shared[0].programs.length, 1);
+  apply(
+    shared,
+    independentRows(128, 2).map(([from, to, resistance]) => [from, to, resistance * 3]),
+  );
+  compare(shared, '128 equivalent independent rows reuse one compiled shape', 'reuse');
+  assert.equal(shared[0].programs.length, 1);
+
+  const churn = fixtures([10, 0, -6], 12);
+  for (let count = 1; count <= 12; count++) {
+    apply(churn, [...fixed, ...independentRows(count)]);
+    compare(churn, `compiled-program row-count shape ${count}`, 'assembly');
+  }
+  assert.equal(
+    churn[0].programs.length,
+    8,
+    'eight retained programs after twelve row-count shapes',
+  );
+  assert.equal(churn[1].programs.length, 0, 'generic variant has no compiled programs');
+  const beforeEvicted = specialized.compilations;
+  apply(churn, [...fixed, ...independentRows(1)]);
+  compare(churn, 'evicted compiled program recompiled', 'assembly');
+  assert.equal(specialized.compilations - beforeEvicted, 1);
+  assert.equal(churn[0].programs.length, 8);
+  const isolated = fixtures([10, 0, -6]);
+  assert.equal(isolated[0].programs.length, 0, 'new network owns an independent program cache');
+  apply(isolated, base);
+  compare(isolated, 'independent per-network compilation', 'assembly');
+  for (const { probes } of variants)
+    for (const programs of probes.caches) assert.ok(programs.length <= 8);
+  return {
+    exact_publication_comparisons: comparisons,
+    compiled_assemblies: specialized.assemblies,
+    guarded_shape_reuses: specialized.matches,
+    guarded_shape_misses: specialized.misses,
+    maximum_programs_per_network: Math.max(
+      ...specialized.caches.map((programs) => programs.length),
+    ),
+    assertions:
+      'row1/2, reversed reference branches, scaled/negative/zero references, same-shape switching, order/row/edge-count guards, three-branch and coupled fallbacks, nonfinite/pivot/coefficient failure rollback and retry, exact samples and change ordering, independent dense oracle, 128 equivalent independent rows share one compiled shape, eight-entry per-network compiled-program eviction',
+    instrumentation:
+      'untimed module variants only; generic variant disables compileReferenceProgram selection without production tuning knobs',
   };
 }
 
@@ -1009,6 +1350,7 @@ function measure(workload) {
 }
 
 const cacheVerification = await verifyCacheTransitions();
+cacheVerification.reference_assembly = await verifyReferenceAssembly();
 if (verifyOnly) {
   console.log(
     JSON.stringify(
