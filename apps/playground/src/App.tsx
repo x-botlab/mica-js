@@ -1,10 +1,9 @@
-import type { CanvasDocument } from '@mica-js/document/canvas';
-import type { SchematicDocument } from '@mica-js/document/schematic';
 import {
   AlertCircle,
   Download,
   LocateFixed,
   Maximize,
+  PanelRight,
   Pause,
   Play,
   Redo2,
@@ -19,8 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   createCanvasEditor,
   createSchematicEditor,
-  type ICanvasEditor,
-  type ISchematicEditor,
+  type IEditorIntegrationState,
 } from '@mica-js/editor';
 import '@mica-js/editor/style.css';
 import { Button } from '@/components/ui/button';
@@ -36,46 +34,32 @@ import {
   type DemoSnapshot,
 } from '@/runtime-demo';
 
-type EditorInstance = ISchematicEditor | ICanvasEditor;
+import { IntegrationPanel } from '@/integration-panel';
+import { errorMessage, type EditorSession } from '@/host-integration';
 
-interface CanvasStatus {
-  readonly mode: 'edit' | 'simulation';
-  readonly running: boolean;
-  readonly simTime: number;
-}
+type ToolbarAction =
+  | 'undo'
+  | 'redo'
+  | 'run'
+  | 'pause'
+  | 'step'
+  | 'reset'
+  | 'zoomIn'
+  | 'zoomOut'
+  | 'resetView'
+  | 'fitView';
 
 const DOCUMENT_LABELS: Readonly<Record<DemoDocumentKind, string>> = {
   canvas: '画布 · example.cnv',
   schematic: '原理图 · example.sch',
 };
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function readCanvasStatus(value: unknown): CanvasStatus {
-  if (typeof value !== 'object' || value === null) {
-    throw new Error('画布状态不可用。');
-  }
-  const { mode, running, simTime } = value as Record<string, unknown>;
-  if (
-    (mode !== 'edit' && mode !== 'simulation') ||
-    typeof running !== 'boolean' ||
-    typeof simTime !== 'number'
-  ) {
-    throw new Error('画布状态不可用。');
-  }
-  return { mode, running, simTime };
-}
-
-function formatSimTime(value: number): string {
-  const milliseconds = value / 1e9;
-  return `${milliseconds >= 100 ? milliseconds.toFixed(0) : milliseconds.toFixed(1)} ms`;
-}
-
 export function App() {
   const host = useRef<HTMLDivElement>(null);
-  const editor = useRef<EditorInstance | undefined>(undefined);
+  const editor = useRef<EditorSession | undefined>(undefined);
+  const [session, setSession] = useState<EditorSession>();
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [focusProperties, setFocusProperties] = useState(0);
   const latest = useRef<DemoSnapshot | undefined>(undefined);
   const [kind, setKind] = useState<DemoDocumentKind>('canvas');
   const [reloadKey, setReloadKey] = useState(0);
@@ -84,18 +68,19 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [status, setStatus] = useState<CanvasStatus | null>(null);
+  const [status, setStatus] = useState<IEditorIntegrationState | null>(null);
 
   useEffect(() => {
     const container = host.current;
     if (container === null) return;
     let cancelled = false;
-    let instance: EditorInstance | undefined;
-    let unsubscribe: (() => void) | undefined;
+    let instance: EditorSession | undefined;
+    const subscriptions: { dispose(): void }[] = [];
     const mount = document.createElement('div');
     mount.className = 'absolute inset-0';
     container.append(mount);
     editor.current = undefined;
+    setSession(undefined);
     latest.current = undefined;
     setLoading(true);
     setReady(false);
@@ -109,43 +94,59 @@ export function App() {
         const loaded = await loadDemoDocument(kind);
         if (cancelled) return;
         latest.current = loaded.snapshot;
-        const created =
+        const created: EditorSession =
           kind === 'canvas'
-            ? await createCanvasEditor({
-                container: mount,
-                uri: loaded.uri,
-                fileSystem: demoFileSystem,
-                deviceLibrary: demoDeviceLibrary,
-                widgetLibrary: demoWidgetLibrary,
-              })
-            : await createSchematicEditor({
-                container: mount,
-                uri: loaded.uri,
-                fileSystem: demoFileSystem,
-                deviceLibrary: demoDeviceLibrary,
-              });
+            ? {
+                kind,
+                editor: await createCanvasEditor({
+                  container: mount,
+                  uri: loaded.uri,
+                  fileSystem: demoFileSystem,
+                  deviceLibrary: demoDeviceLibrary,
+                  widgetLibrary: demoWidgetLibrary,
+                }),
+              }
+            : {
+                kind,
+                editor: await createSchematicEditor({
+                  container: mount,
+                  uri: loaded.uri,
+                  fileSystem: demoFileSystem,
+                  deviceLibrary: demoDeviceLibrary,
+                }),
+              };
         if (cancelled) {
-          await created.dispose();
+          await created.editor.dispose();
           return;
         }
         instance = created;
         editor.current = created;
-        const subscription = created.onDidChangeContent((content) => {
+        const snapshot = () => {
+          if (cancelled) return;
           latest.current =
-            kind === 'canvas'
-              ? { kind, document: content as CanvasDocument }
-              : { kind, document: content as SchematicDocument };
-        });
-        unsubscribe = () => subscription.dispose();
+            created.kind === 'canvas'
+              ? { kind: 'canvas', document: created.editor.getDocument() }
+              : { kind: 'schematic', document: created.editor.getDocument() };
+        };
+        snapshot();
+        subscriptions.push(
+          created.editor.onDidChangeContent(snapshot),
+          created.editor.onDidChangeState((state) => {
+            if (!cancelled) setStatus(state);
+          }),
+          created.editor.onDidError(({ source, error }) => {
+            if (!cancelled) setActionError(`${source}: ${errorMessage(error)}`);
+          }),
+          created.editor.onDidDoubleClick(() => {
+            if (cancelled) return;
+            setPanelOpen(true);
+            setFocusProperties((value) => value + 1);
+          }),
+        );
+        setStatus(created.editor.getState());
+        setSession(created);
         setReady(true);
         setLoading(false);
-        if (kind === 'canvas') {
-          try {
-            setStatus(readCanvasStatus(await created.executeCommand('canvas.status')));
-          } catch (cause) {
-            if (!cancelled) setActionError(errorMessage(cause));
-          }
-        }
       } catch (cause) {
         if (!cancelled) {
           setLoadError(errorMessage(cause));
@@ -157,95 +158,58 @@ export function App() {
 
     return () => {
       cancelled = true;
-      unsubscribe?.();
+      for (const subscription of subscriptions) subscription.dispose();
       if (editor.current === instance) {
         editor.current = undefined;
       }
       latest.current = undefined;
       mount.remove();
       if (instance !== undefined) {
-        void instance.dispose().catch(() => undefined);
+        void instance.editor.dispose().catch(() => undefined);
       }
     };
   }, [kind, reloadKey]);
 
-  useEffect(() => {
-    if (kind !== 'canvas' || !ready) return;
-    let stopped = false;
-    let pending = false;
-    const update = async (): Promise<void> => {
-      const current = editor.current as ICanvasEditor | undefined;
-      if (pending || current === undefined) return;
-      pending = true;
+  const pending = useRef<EditorSession | undefined>(undefined);
+  const perform = useCallback(
+    async (owner: EditorSession, action: () => Promise<unknown>): Promise<void> => {
+      if (editor.current !== owner || pending.current === owner) return;
+      pending.current = owner;
+      setBusy(true);
+      setActionError(null);
       try {
-        const next = readCanvasStatus(await current.executeCommand('canvas.status'));
-        if (!stopped && editor.current === current) setStatus(next);
-      } catch {
-        // A switch disposes the editor mid-flight; the mount effect owns fatal errors.
+        await action();
+      } catch (cause) {
+        if (editor.current === owner) setActionError(errorMessage(cause));
+        throw cause;
       } finally {
-        pending = false;
+        if (pending.current === owner) pending.current = undefined;
+        if (editor.current === owner) {
+          setBusy(false);
+          setStatus(owner.editor.getState());
+        }
       }
-    };
-    void update();
-    const timer = globalThis.setInterval(() => void update(), 250);
-    return () => {
-      stopped = true;
-      globalThis.clearInterval(timer);
-    };
-  }, [kind, ready, reloadKey]);
-
-  const readStatus = useCallback(async (current: ICanvasEditor): Promise<void> => {
-    try {
-      const next = readCanvasStatus(await current.executeCommand('canvas.status'));
-      if (editor.current === current) setStatus(next);
-    } catch {
-      // The next command or the polling effect reports a real failure.
-    }
-  }, []);
-
-  const runCommand = useCallback(
-    (id: string, ...args: readonly unknown[]): void => {
-      const current = editor.current;
-      if (current === undefined) return;
-      setBusy(true);
-      void (async () => {
-        try {
-          await current.executeCommand(id, ...args);
-          if (editor.current !== current) return;
-          setActionError(null);
-          if (kind === 'canvas') {
-            await readStatus(current as ICanvasEditor);
-          }
-        } catch (cause) {
-          if (editor.current === current) setActionError(errorMessage(cause));
-        } finally {
-          if (editor.current === current) setBusy(false);
-        }
-      })();
     },
-    [kind, readStatus],
+    [],
   );
 
-  const setCanvasMode = useCallback(
-    (mode: 'edit' | 'simulation'): void => {
-      const current = editor.current as ICanvasEditor | undefined;
-      if (current === undefined) return;
-      setBusy(true);
-      void (async () => {
-        try {
-          await current.executeCommand('canvas.setMode', mode);
-          if (editor.current !== current) return;
-          await readStatus(current);
-          setActionError(null);
-        } catch (cause) {
-          if (editor.current === current) setActionError(errorMessage(cause));
-        } finally {
-          if (editor.current === current) setBusy(false);
-        }
-      })();
-    },
-    [readStatus],
-  );
+  const runCommand = (action: ToolbarAction): void => {
+    const current = editor.current;
+    if (!current) return;
+    void perform(current, async () => {
+      if (current.kind === 'canvas') return current.editor.executeCommand(`canvas.${action}`);
+      if (action === 'undo') return current.editor.executeCommand('schematic.undo');
+      if (action === 'redo') return current.editor.executeCommand('schematic.redo');
+    }).catch(() => undefined);
+  };
+
+  const setCanvasMode = (mode: 'edit' | 'simulation'): void => {
+    const current = editor.current;
+    if (current?.kind !== 'canvas') return;
+    void perform(current, () => current.editor.executeCommand('canvas.setMode', { mode })).catch(
+      () => undefined,
+    );
+  };
 
   const download = useCallback((): void => {
     const snapshot = latest.current;
@@ -269,7 +233,7 @@ export function App() {
   const controlsDisabled = !ready || busy;
   const simulationMode = kind === 'canvas' && status?.mode === 'simulation';
   const simulationActionsDisabled = controlsDisabled || !simulationMode;
-  const canEdit = !controlsDisabled && (kind !== 'canvas' || status?.mode === 'edit');
+  const canEdit = !controlsDisabled && status?.mode === 'edit' && !status.readOnly;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -326,8 +290,8 @@ export function App() {
                 : status.mode === 'edit'
                   ? '编辑'
                   : status.running
-                    ? `运行中 · ${formatSimTime(status.simTime)}`
-                    : `已暂停 · ${formatSimTime(status.simTime)}`}
+                    ? '运行中'
+                    : '已暂停'}
           </span>
           <Button
             variant="ghost"
@@ -335,8 +299,8 @@ export function App() {
             className="size-7"
             title="撤销"
             aria-label="撤销"
-            disabled={!canEdit}
-            onClick={() => runCommand(kind === 'canvas' ? 'canvas.undo' : 'schematic.undo')}
+            disabled={!canEdit || !status?.canUndo}
+            onClick={() => runCommand('undo')}
           >
             <Undo2 />
           </Button>
@@ -346,8 +310,8 @@ export function App() {
             className="size-7"
             title="重做"
             aria-label="重做"
-            disabled={!canEdit}
-            onClick={() => runCommand(kind === 'canvas' ? 'canvas.redo' : 'schematic.redo')}
+            disabled={!canEdit || !status?.canRedo}
+            onClick={() => runCommand('redo')}
           >
             <Redo2 />
           </Button>
@@ -362,7 +326,7 @@ export function App() {
                 title="缩小视图"
                 aria-label="缩小视图"
                 disabled={controlsDisabled}
-                onClick={() => runCommand('canvas.zoomOut')}
+                onClick={() => runCommand('zoomOut')}
               >
                 <ZoomOut />
               </Button>
@@ -373,7 +337,7 @@ export function App() {
                 title="放大视图"
                 aria-label="放大视图"
                 disabled={controlsDisabled}
-                onClick={() => runCommand('canvas.zoomIn')}
+                onClick={() => runCommand('zoomIn')}
               >
                 <ZoomIn />
               </Button>
@@ -384,7 +348,7 @@ export function App() {
                 title="适应内容"
                 aria-label="适应内容"
                 disabled={controlsDisabled}
-                onClick={() => runCommand('canvas.fitView')}
+                onClick={() => runCommand('fitView')}
               >
                 <Maximize />
               </Button>
@@ -395,7 +359,7 @@ export function App() {
                 title="重置视图"
                 aria-label="重置视图"
                 disabled={controlsDisabled}
-                onClick={() => runCommand('canvas.resetView')}
+                onClick={() => runCommand('resetView')}
               >
                 <LocateFixed />
               </Button>
@@ -407,7 +371,7 @@ export function App() {
                 title="运行仿真"
                 aria-label="运行仿真"
                 disabled={simulationActionsDisabled || status?.running === true}
-                onClick={() => runCommand('canvas.run')}
+                onClick={() => runCommand('run')}
               >
                 <Play />
               </Button>
@@ -418,7 +382,7 @@ export function App() {
                 title="暂停仿真"
                 aria-label="暂停仿真"
                 disabled={simulationActionsDisabled || status?.running !== true}
-                onClick={() => runCommand('canvas.pause')}
+                onClick={() => runCommand('pause')}
               >
                 <Pause />
               </Button>
@@ -429,7 +393,7 @@ export function App() {
                 title="单步仿真"
                 aria-label="单步仿真"
                 disabled={simulationActionsDisabled || status?.running === true}
-                onClick={() => runCommand('canvas.step')}
+                onClick={() => runCommand('step')}
               >
                 <SkipForward />
               </Button>
@@ -440,7 +404,7 @@ export function App() {
                 title="复位仿真"
                 aria-label="复位仿真"
                 disabled={simulationActionsDisabled}
-                onClick={() => runCommand('canvas.reset')}
+                onClick={() => runCommand('reset')}
               >
                 <RotateCcw />
               </Button>
@@ -448,6 +412,17 @@ export function App() {
           ) : null}
 
           <span className="bg-border mx-1 h-4 w-px" aria-hidden />
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7"
+            title="文档属性"
+            aria-label="切换属性侧栏"
+            aria-expanded={panelOpen}
+            onClick={() => setPanelOpen((value) => !value)}
+          >
+            <PanelRight />
+          </Button>
           <Button
             variant="ghost"
             size="icon"
@@ -481,30 +456,42 @@ export function App() {
         </div>
       )}
 
-      <main className="relative min-h-0 flex-1">
-        <div ref={host} className="absolute inset-0" />
-        {loading ? (
-          <div className="bg-background/70 text-muted-foreground pointer-events-none absolute inset-0 grid place-items-center text-xs">
-            正在打开示例…
-          </div>
-        ) : null}
-        {loadError === null ? null : (
-          <div className="bg-background absolute inset-0 grid place-items-center p-6">
-            <div className="max-w-sm text-center">
-              <AlertCircle className="text-destructive mx-auto size-5" />
-              <p className="text-destructive mt-2 text-xs leading-relaxed">{loadError}</p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="mt-3"
-                onClick={() => setReloadKey((value) => value + 1)}
-              >
-                重新加载
-              </Button>
+      <div className="relative flex min-h-0 flex-1 pb-6">
+        <main className="relative min-h-0 min-w-0 flex-1">
+          <div ref={host} className="absolute inset-0" />
+          {loading ? (
+            <div className="bg-background/70 text-muted-foreground pointer-events-none absolute inset-0 grid place-items-center text-xs">
+              正在打开示例…
             </div>
-          </div>
-        )}
-      </main>
+          ) : null}
+          {loadError === null ? null : (
+            <div className="bg-background absolute inset-0 grid place-items-center p-6">
+              <div className="max-w-sm text-center">
+                <AlertCircle className="text-destructive mx-auto size-5" />
+                <p className="text-destructive mt-2 text-xs leading-relaxed">{loadError}</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3"
+                  onClick={() => setReloadKey((value) => value + 1)}
+                >
+                  重新加载
+                </Button>
+              </div>
+            </div>
+          )}
+        </main>
+        {session ? (
+          <IntegrationPanel
+            key={`${kind}:${reloadKey}`}
+            session={session}
+            open={panelOpen}
+            focusProperties={focusProperties}
+            busy={busy}
+            perform={perform}
+          />
+        ) : null}
+      </div>
     </div>
   );
 }

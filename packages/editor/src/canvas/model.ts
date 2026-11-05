@@ -69,10 +69,23 @@ export class CanvasModel {
    * stays untouched in either case.
    */
   async apply(command: CanvasCommand): Promise<void> {
+    return this.applyMany([command]);
+  }
+
+  async applyMany(commands: readonly CanvasCommand[]): Promise<void> {
+    this.#assertAlive();
+    if (commands.length === 0) return this.whenIdle();
+    return this.transform((document) =>
+      commands.reduce((next, command) => applyCanvasCommand(next, command), document),
+    );
+  }
+
+  /** Prepare one complete transaction before changing content or history. */
+  async transform(update: (document: CanvasDocument) => CanvasDocument): Promise<void> {
     this.#assertAlive();
     await this.#enqueue(async () => {
       if (this.#disposed) return;
-      const next = applyCanvasCommand(this.#document, command);
+      const next = parseCanvas(update(this.#document));
       if (!(await this.#prepareSnapshot(next))) return;
       this.#commit(next);
     });

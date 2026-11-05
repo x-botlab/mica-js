@@ -95,7 +95,7 @@ function texts(items: readonly SceneItem[]): string[] {
 }
 
 /** Four-sided symbol used by the rotation and pin-label tests. */
-function ne555Devices() {
+function ne555Devices(custom = false) {
   return createDeviceRegistry([
     {
       packageId: 'pkg',
@@ -104,6 +104,7 @@ function ne555Devices() {
           id: 'ne555',
           symbol: {
             name: 'NE555',
+            ...(custom ? { graphics: [] } : {}),
             bounds: { x: -40, y: -50, width: 80, height: 100 },
             pins: {
               TRIG: { x: -60, y: -20, side: 'left' },
@@ -119,7 +120,7 @@ function ne555Devices() {
 }
 
 /** Scene of a single NE555 placed at `rotation`. */
-function sceneAt(rotation: number) {
+function sceneAt(rotation: number, custom = false) {
   return buildSchematicScene({
     document: parseSchematic({
       version: 1,
@@ -138,7 +139,7 @@ function sceneAt(rotation: number) {
         junctions: [],
       },
     }),
-    devices: ne555Devices(),
+    devices: ne555Devices(custom),
     theme: DARK_SCHEMATIC_THEME,
   });
 }
@@ -402,6 +403,32 @@ describe('buildSchematicScene', () => {
       baseline: 'middle',
     });
   });
+
+  it.each([false, true])('keeps pin names close to the body edge (custom: %s)', (custom) => {
+    const scene = sceneAt(0, custom);
+    for (const [text, position] of [
+      ['TRIG', { x: -38, y: -20 }],
+      ['OUT', { x: 38, y: 0 }],
+      ['VCC', { x: 0, y: -45 }],
+      ['GND', { x: 0, y: 45 }],
+    ] as const) {
+      expect(scene.items.find((item) => item.kind === 'text' && item.text === text)).toMatchObject({
+        position,
+      });
+    }
+  });
+
+  it.each([0, 90, 180, 270])(
+    'places custom-symbol default pin names inside the body at %i degrees',
+    (rotation) => {
+      const custom = sceneAt(rotation, true);
+      for (const name of ['TRIG', 'OUT', 'VCC', 'GND']) {
+        const expected = textItem(rotation, name);
+        const actual = custom.items.find((item) => item.kind === 'text' && item.text === name);
+        expect(actual).toEqual(expected);
+      }
+    },
+  );
 
   it('flips pin names instead of drawing them upside down', () => {
     expect(textItem(0, 'TRIG')).toMatchObject({ rotation: 0, align: 'left' });

@@ -12,6 +12,7 @@ export type EditorTool = 'select' | 'wire' | 'power' | 'ground' | 'label' | 'tex
 /** One addressable element of the document that an editor can select or edit. */
 export type SchematicTarget =
   | { readonly kind: 'symbol'; readonly id: string }
+  | { readonly kind: 'pin'; readonly symbolId: string; readonly pinId: string }
   | { readonly kind: 'reference'; readonly symbolId: string }
   | { readonly kind: 'wire'; readonly id: string }
   | { readonly kind: 'junction'; readonly id: string }
@@ -26,7 +27,7 @@ export interface IDisplayOptions {
   readonly labels: boolean;
   /** Snap step in page units. */
   readonly gridSize: number;
-  /** Visible grid lines per snap cell; `1` shows only the snap grid. */
+  /** Fine grid lines per snap cell; symbol dragging snaps to this finer spacing. */
   readonly gridSubdivisions: number;
 }
 

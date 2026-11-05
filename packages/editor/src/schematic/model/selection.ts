@@ -1,4 +1,8 @@
-import type { SchematicDocument } from '@mica-js/document/schematic';
+import {
+  parseDeviceReference,
+  type DeviceSymbolProvider,
+  type SchematicDocument,
+} from '@mica-js/document/schematic';
 import type { SchematicTarget } from '../types';
 
 export function sameTarget(left: SchematicTarget, right: SchematicTarget): boolean {
@@ -7,6 +11,9 @@ export function sameTarget(left: SchematicTarget, right: SchematicTarget): boole
   }
   if (left.kind === 'vertex' && right.kind === 'vertex') {
     return left.wireId === right.wireId && left.index === right.index;
+  }
+  if (left.kind === 'pin' && right.kind === 'pin') {
+    return left.symbolId === right.symbolId && left.pinId === right.pinId;
   }
   if (left.kind === 'reference' && right.kind === 'reference') {
     return left.symbolId === right.symbolId;
@@ -31,6 +38,7 @@ export function sameSelection(
 export function pruneSelection(
   selection: readonly SchematicTarget[],
   document: SchematicDocument,
+  devices?: DeviceSymbolProvider,
 ): readonly SchematicTarget[] {
   if (selection.length === 0) {
     return selection;
@@ -44,13 +52,28 @@ export function pruneSelection(
         return symbols.has(item.id);
       case 'reference':
         return symbols.has(item.symbolId);
+      case 'pin': {
+        const symbol = document.sheet.symbols.find((candidate) => candidate.id === item.symbolId);
+        if (symbol === undefined) return false;
+        if (devices === undefined) return true;
+        const reference = parseDeviceReference(symbol.device);
+        return (
+          reference !== undefined &&
+          devices.getDeviceSymbol(reference)?.pins[item.pinId] !== undefined
+        );
+      }
       case 'wire':
         return wires.has(item.id);
       case 'junction':
         return junctions.has(item.id);
       case 'vertex': {
         const wire = wires.get(item.wireId);
-        return wire !== undefined && item.index < wire.points.length;
+        return (
+          wire !== undefined &&
+          Number.isInteger(item.index) &&
+          item.index >= 0 &&
+          item.index < wire.points.length
+        );
       }
       default:
         return false;

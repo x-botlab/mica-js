@@ -3,7 +3,12 @@ import { createRoot } from 'react-dom/client';
 import { Download, Plus, Redo2, Undo2 } from 'lucide-react';
 import { serializeSchematic, type SchematicDocument } from '@mica-js/document/schematic';
 import { validateMetadata, type DeviceMetadata } from '@mica-js/sdk/metadata';
-import { createSchematicEditor, type ISchematicEditor } from '@mica-js/editor';
+import {
+  createSchematicEditor,
+  type EditorCommandArgs,
+  type ISchematicCommandMap,
+  type ISchematicEditor,
+} from '@mica-js/editor';
 import '@mica-js/editor/style.css';
 import './device-demo.css';
 
@@ -97,7 +102,10 @@ function DeviceDemo() {
     };
   }, []);
 
-  async function execute(command: string, ...args: unknown[]) {
+  async function execute<K extends keyof ISchematicCommandMap>(
+    command: K,
+    ...args: EditorCommandArgs<ISchematicCommandMap[K]>
+  ) {
     try {
       await editor.current?.executeCommand(command, ...args);
       setError('');
@@ -164,7 +172,9 @@ function DeviceDemo() {
               title="放置器件"
               aria-label="放置器件"
               disabled={!ready}
-              onClick={() => void execute('schematic.placeDevice', `demo:${selected}`)}
+              onClick={() =>
+                void execute('schematic.placeDevice', { deviceId: `demo:${selected}` })
+              }
             >
               <Plus size={18} />
             </button>

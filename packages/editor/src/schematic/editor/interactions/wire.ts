@@ -1,5 +1,5 @@
 import type { Point } from '@mica-js/document/schematic';
-import { connectionNodeAt, wireWaypoints } from '../snapping';
+import { connectionNodeAt, extendWirePath } from '../snapping';
 import { annotationSymbolAt } from './selection';
 import type { InteractionContext } from './context';
 
@@ -7,13 +7,7 @@ import type { InteractionContext } from './context';
 export function addWirePoint(context: InteractionContext, page: Point): void {
   const state = context.state;
   const point = context.pointer.snapWire(page);
-  const previous = state.pendingWire[state.pendingWire.length - 1];
-  state.pendingWire = [
-    ...state.pendingWire,
-    ...(previous === undefined
-      ? [point]
-      : wireWaypoints(previous, point, context.pointer.hostAxisAt(point))),
-  ];
+  state.pendingWire = extendWirePath(state.pendingWire, point, context.pointer.hostAxisAt(point));
   state.cursorPoint = point;
   // Landing on another endpoint (pin, anchor, wire end) or an existing wire closes the run.
   const node = connectionNodeAt(context.pointer.snapContext(), point);
@@ -50,14 +44,7 @@ export function pendingWireWithCursor(context: InteractionContext): readonly Poi
   if (cursor === undefined) {
     return state.pendingWire;
   }
-  const previous = state.pendingWire[state.pendingWire.length - 1];
-  if (previous === undefined) {
-    return [cursor];
-  }
-  return [
-    ...state.pendingWire,
-    ...wireWaypoints(previous, cursor, context.pointer.hostAxisAt(cursor)),
-  ];
+  return extendWirePath(state.pendingWire, cursor, context.pointer.hostAxisAt(cursor));
 }
 
 /** Clicking a pin or wire end in select mode starts a wire from there. */

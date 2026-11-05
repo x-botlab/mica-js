@@ -46,6 +46,7 @@ export class DocumentStore {
   #topology:
     { readonly document: SchematicDocument; readonly value: SchematicTopology } | undefined;
   #lastError: SchematicError | undefined;
+  #mutationDepth = 0;
 
   /** Fires after every commit: an edit, undo/redo or a document swap. */
   readonly onDidChangeContent: Event<DocumentStore> = this.#content.event;
@@ -79,20 +80,28 @@ export class DocumentStore {
    * `lastError`, reported through `onDidRejectEdit` and rethrown; the content stays untouched.
    */
   mutate(run: () => void, options: { reconcile?: boolean } = {}): void {
+    const outermost = this.#mutationDepth === 0;
+    this.#mutationDepth += 1;
     try {
       this.editor.transaction(() => {
         run();
-        if (options.reconcile !== false) {
+        if (outermost && options.reconcile !== false) {
           this.mergeDegenerateJunctions();
         }
       });
     } catch (error) {
-      this.#lastError = toSchematicError(error);
-      this.#rejections.fire(this.#lastError);
+      if (outermost) {
+        this.#lastError = toSchematicError(error);
+        this.#rejections.fire(this.#lastError);
+      }
       throw error;
+    } finally {
+      this.#mutationDepth -= 1;
     }
-    this.#lastError = undefined;
-    this.#content.fire(this);
+    if (outermost) {
+      this.#lastError = undefined;
+      this.#content.fire(this);
+    }
   }
 
   afterHistoryChange(): void {
@@ -102,8 +111,10 @@ export class DocumentStore {
 
   /** Records a rejected edit in `lastError`, notifies listeners, then rethrows. */
   reject(error: SchematicError): never {
-    this.#lastError = error;
-    this.#rejections.fire(error);
+    if (this.#mutationDepth === 0) {
+      this.#lastError = error;
+      this.#rejections.fire(error);
+    }
     throw error;
   }
 

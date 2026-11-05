@@ -6,6 +6,9 @@ import type {
 } from '@mica-js/document/canvas';
 import type { WidgetInputEvent } from '@mica-js/widget';
 import type { CanvasModel } from './model';
+import type { ICanvasTarget } from '../canvas-host';
+import { canvasSnapshot } from '../canvas-host';
+import type { IEditorPointerEvent } from '../host';
 
 /** A point in document units; one unit is one CSS pixel on the unzoomed surface. */
 export interface ICanvasPoint {
@@ -37,8 +40,10 @@ export const CANVAS_CORNER_HANDLES: readonly ICanvasHandle[] = ['nw', 'ne', 'se'
 export const CANVAS_MIN_INSTANCE_SIZE = 1;
 /** Edge length of a square corner handle, in CSS pixels. */
 export const CANVAS_HANDLE_SIZE = 8;
-/** Radius around a corner handle that starts a resize, in CSS pixels. */
+/** Radius around a handle that starts a resize or rotation, in CSS pixels. */
 export const CANVAS_HANDLE_HIT_RADIUS = 8;
+/** Distance from the top edge to the rotation handle center, in CSS pixels. */
+export const CANVAS_ROTATION_HANDLE_OFFSET = 24;
 /** A press must travel this far before it becomes a drag, so a click never nudges. */
 export const CANVAS_DRAG_THRESHOLD = 3;
 /** Smallest and largest zoom a wheel, the zoom methods or {@link fitViewport} produce. */
@@ -261,6 +266,48 @@ export function canvasHandlePoints(
   };
 }
 
+function canvasResizeCursor(handle: ICanvasHandle, rotation: number): string {
+  const diagonal = handle === 'nw' || handle === 'se' ? 45 : 135;
+  const direction = ((Math.round((rotation + diagonal) / 45) % 4) + 4) % 4;
+  return ['ew-resize', 'nwse-resize', 'ns-resize', 'nesw-resize'][direction]!;
+}
+
+/** Rotation handle in document units, a constant screen distance above the rotated top edge. */
+export function canvasRotationHandlePoint(placement: WidgetPlacement, scale = 1): ICanvasPoint {
+  return canvasLocalToPoint(placement, {
+    x: 0,
+    y: -placement.height / 2 - CANVAS_ROTATION_HANDLE_OFFSET / scale,
+  });
+}
+
+/** Rotation handle hit test with a constant CSS-pixel radius at the current zoom. */
+export function hitTestCanvasRotationHandle(
+  placement: WidgetPlacement,
+  point: ICanvasPoint,
+  scale = 1,
+): boolean {
+  const handle = canvasRotationHandlePoint(placement, scale);
+  return Math.hypot(handle.x - point.x, handle.y - point.y) <= CANVAS_HANDLE_HIT_RADIUS / scale;
+}
+
+/** Rotates around the fixed center, preserving the pointer-down offset within the handle. */
+export function rotateCanvasPlacement(
+  placement: WidgetPlacement,
+  origin: ICanvasPoint,
+  pointer: ICanvasPoint,
+): WidgetPlacement {
+  const center = canvasPlacementCenter(placement);
+  const start = { x: origin.x - center.x, y: origin.y - center.y };
+  const end = { x: pointer.x - center.x, y: pointer.y - center.y };
+  if (Math.hypot(start.x, start.y) === 0 || Math.hypot(end.x, end.y) === 0) return placement;
+  const delta =
+    (Math.atan2(start.x * end.y - start.y * end.x, start.x * end.x + start.y * end.y) * 180) /
+    Math.PI;
+  // Returning to the baseline must not create an edit from floating-point noise.
+  if (Math.abs(delta) < 1e-10) return placement;
+  return { ...placement, rotation: placement.rotation + delta };
+}
+
 /** Nearest corner handle within `radius`; corners do not overlap, so the first match wins. */
 export function hitTestCanvasHandle(
   placement: WidgetPlacement,
@@ -360,10 +407,16 @@ export interface ICanvasViewOptions {
   /** Whether the widgets are running; only then is pointer input forwarded. */
   readonly isSimulation: () => boolean;
   /** Receives rendering, dispatch and document failures; the view keeps running. */
-  readonly onError?: (error: unknown) => void;
+  readonly onError?: (error: unknown, source?: 'render' | 'runtime' | 'command') => void;
+  readonly onSelectionChange?: (selection: readonly ICanvasTarget[]) => void;
+  readonly onClick?: (event: IEditorPointerEvent<ICanvasTarget>) => void;
+  readonly onDoubleClick?: (event: IEditorPointerEvent<ICanvasTarget>) => void;
+  readonly onContextMenu?: (event: IEditorPointerEvent<ICanvasTarget>) => void;
 }
 
 export interface ICanvasView {
+  getSelection(): readonly ICanvasTarget[];
+  setSelection(selection: readonly ICanvasTarget[]): void;
   /** Redraws the current document; also runs on model changes and container resizes. */
   render(): void;
   /** Zooms in one step around the surface center. */
@@ -397,6 +450,12 @@ type Gesture =
       readonly instanceId: string;
       readonly start: WidgetPlacement;
       readonly handle: ICanvasHandle;
+    }
+  | {
+      readonly kind: 'rotate';
+      readonly instanceId: string;
+      readonly start: WidgetPlacement;
+      readonly origin: ICanvasPoint;
     };
 
 interface IPreview {
@@ -408,7 +467,7 @@ interface IPreview {
  * Canvas2D surface over one {@link CanvasModel}.
  *
  * The view draws the document in drawing order, applies each instance rotation and draws the
- * selected instance with its corner handles. It renders on model changes, container resizes and
+ * selected instance with its resize and rotation handles. It renders on model changes, container resizes and
  * explicit {@link ICanvasView.render} calls; it has no clock of its own, so the host decides when
  * a new widget frame becomes visible.
  */
@@ -429,6 +488,10 @@ class CanvasView implements ICanvasView {
   #preview: IPreview | undefined;
   #pointerId: number | undefined;
   #disposed = false;
+  #hostPress:
+    | { pointerId: number; origin: ICanvasPoint; target: ICanvasTarget | null; moved: boolean }
+    | undefined;
+  #suppressDoubleClick = false;
 
   constructor(options: ICanvasViewOptions) {
     this.#options = options;
@@ -438,10 +501,30 @@ class CanvasView implements ICanvasView {
     options.container.append(canvas);
     this.#canvas = canvas;
     this.#context = canvas.getContext('2d');
-    this.#listen('pointerdown', (event) => this.#handlePointerDown(event));
-    this.#listen('pointermove', (event) => this.#handlePointerMove(event));
-    this.#listen('pointerup', (event) => this.#handlePointerUp(event));
-    this.#listen('pointercancel', (event) => this.#handlePointerCancel(event));
+    this.#listen('pointerdown', (event) => {
+      this.#handlePointerDown(event);
+      this.#observePress(event);
+    });
+    this.#listen('pointermove', (event) => {
+      this.#observeMove(event);
+      this.#handlePointerMove(event);
+    });
+    this.#listen('pointerup', (event) => {
+      this.#handlePointerUp(event);
+      this.#observeRelease(event);
+    });
+    this.#listen('pointercancel', (event) => {
+      this.#hostPress = undefined;
+      this.#handlePointerCancel(event);
+    });
+    this.#listen('dblclick', (event) => {
+      if (!this.#suppressDoubleClick) this.#options.onDoubleClick?.(this.#hostEvent(event));
+    });
+    this.#listen('contextmenu', (event) => {
+      const payload = this.#hostEvent(event);
+      this.#setSelection(payload.target?.id);
+      this.#options.onContextMenu?.(payload);
+    });
     this.#listen('lostpointercapture', () => this.#handleLostPointerCapture());
     this.#listen('keydown', (event) => this.#handleKeyDown(event));
     this.#listen('keyup', (event) => this.#handleKeyUp(event));
@@ -460,8 +543,99 @@ class CanvasView implements ICanvasView {
     this.render();
   }
 
+  getSelection(): readonly ICanvasTarget[] {
+    return canvasSnapshot(
+      this.#selectedId === undefined ? [] : [{ kind: 'widget', id: this.#selectedId }],
+    );
+  }
+
+  setSelection(selection: readonly ICanvasTarget[]): void {
+    if (this.#disposed) throw new Error('Canvas view is disposed.');
+    if (selection.length > 1) throw new Error('Canvas supports only a single selection.');
+    const target = selection[0];
+    if (target && (target.kind !== 'widget' || !this.#findInstance(target.id))) {
+      throw new Error(`Unknown canvas selection target "${target.id}".`);
+    }
+    this.#setSelection(target?.id);
+  }
+
+  #hostEvent(event: MouseEvent): IEditorPointerEvent<ICanvasTarget> {
+    const position = viewportToDocument(this.#viewport, this.#pointerScreenPoint(event));
+    const hit = hitTestCanvasInstance(this.#options.model.document.widgets, position);
+    return canvasSnapshot({
+      target: hit ? { kind: 'widget' as const, id: hit.id } : null,
+      position,
+      clientPosition: { x: event.clientX, y: event.clientY },
+      button: event.button,
+      altKey: event.altKey ?? false,
+      ctrlKey: event.ctrlKey ?? false,
+      metaKey: event.metaKey ?? false,
+      shiftKey: event.shiftKey ?? false,
+      mode: this.#isSimulation() ? 'simulation' : 'edit',
+    });
+  }
+
+  #observePress(event: PointerEvent): void {
+    if (this.#disposed || this.#hostPress) return;
+    const gesture = this.#gesture;
+    const suppress =
+      event.button !== 0 ||
+      this.#isPanPress(event) ||
+      gesture?.kind === 'resize' ||
+      gesture?.kind === 'rotate';
+    this.#suppressDoubleClick = suppress;
+    if (suppress) return;
+    const payload = this.#hostEvent(event);
+    this.#setSelection(payload.target?.id);
+    this.#hostPress = {
+      pointerId: event.pointerId,
+      origin: { x: event.clientX, y: event.clientY },
+      target: payload.target,
+      moved: false,
+    };
+  }
+
+  #observeMove(event: PointerEvent): void {
+    const press = this.#hostPress;
+    if (!press || press.pointerId !== event.pointerId) return;
+    if (
+      Math.hypot(event.clientX - press.origin.x, event.clientY - press.origin.y) >=
+      CANVAS_DRAG_THRESHOLD
+    ) {
+      press.moved = true;
+      this.#suppressDoubleClick = true;
+    }
+  }
+
+  #observeRelease(event: PointerEvent): void {
+    const press = this.#hostPress;
+    if (!press || press.pointerId !== event.pointerId) return;
+    this.#observeMove(event);
+    this.#hostPress = undefined;
+    const payload = this.#hostEvent(event);
+    if (!press.moved && press.target?.id === payload.target?.id) this.#options.onClick?.(payload);
+  }
+
   render(): void {
     if (this.#disposed) return;
+    try {
+      this.#render();
+    } catch (error) {
+      this.#report(error);
+    }
+  }
+
+  #render(): void {
+    const simulation = this.#isSimulation();
+    const gesture = this.#gesture;
+    if (
+      (simulation || this.#readOnly) &&
+      gesture !== undefined &&
+      gesture.kind !== 'forward' &&
+      gesture.kind !== 'pan'
+    ) {
+      this.#endGesture();
+    }
     if (this.#observer === undefined) {
       // Without a ResizeObserver the layout is the only source of the surface size.
       this.#syncSize();
@@ -481,7 +655,7 @@ class CanvasView implements ICanvasView {
     for (const instance of document.widgets) {
       this.#drawInstance(context, instance);
     }
-    if (!this.#isSimulation()) {
+    if (!simulation) {
       this.#drawSelection(context, document, scale);
     }
   }
@@ -647,6 +821,16 @@ class CanvasView implements ICanvasView {
       context.fillRect(point.x - half, point.y - half, size, size);
       context.strokeRect(point.x - half, point.y - half, size, size);
     }
+    const top = canvasLocalToPoint(placement, { x: 0, y: -placement.height / 2 });
+    const rotation = canvasRotationHandlePoint(placement, scale);
+    context.beginPath();
+    context.moveTo(top.x, top.y);
+    context.lineTo(rotation.x, rotation.y);
+    context.stroke();
+    context.beginPath();
+    context.arc(rotation.x, rotation.y, half, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
   }
 
   #handleModelChange(): void {
@@ -677,6 +861,15 @@ class CanvasView implements ICanvasView {
     const selected = this.#selectedInstance(document);
     const scale = this.#viewport.scale;
     if (!this.#readOnly && selected !== undefined) {
+      if (event.button === 0 && hitTestCanvasRotationHandle(selected, point, scale)) {
+        this.#beginGesture(event, {
+          kind: 'rotate',
+          instanceId: selected.id,
+          start: selected,
+          origin: point,
+        });
+        return;
+      }
       const handle = hitTestCanvasHandle(selected, point, CANVAS_HANDLE_HIT_RADIUS / scale);
       if (handle !== undefined) {
         this.#beginGesture(event, {
@@ -707,8 +900,25 @@ class CanvasView implements ICanvasView {
 
   #handlePointerMove(event: PointerEvent): void {
     const gesture = this.#gesture;
-    if (this.#disposed || gesture === undefined || !this.#ownsPointer(event)) return;
+    if (this.#disposed) return;
     const screen = this.#pointerScreenPoint(event);
+    if (gesture === undefined) {
+      const selected = this.#selectedInstance(this.#options.model.document);
+      let cursor = '';
+      if (!this.#readOnly && !this.#isSimulation() && selected !== undefined) {
+        const point = viewportToDocument(this.#viewport, screen);
+        const scale = this.#viewport.scale;
+        if (hitTestCanvasRotationHandle(selected, point, scale)) {
+          cursor = 'grab';
+        } else {
+          const handle = hitTestCanvasHandle(selected, point, CANVAS_HANDLE_HIT_RADIUS / scale);
+          if (handle !== undefined) cursor = canvasResizeCursor(handle, selected.rotation);
+        }
+      }
+      this.#canvas.style.cursor = cursor;
+      return;
+    }
+    if (!this.#ownsPointer(event)) return;
 
     if (gesture.kind === 'pan') {
       this.#setViewport({
@@ -731,9 +941,17 @@ class CanvasView implements ICanvasView {
     }
     if (this.#readOnly || this.#isSimulation()) {
       this.#endGesture();
+      this.render();
       return;
     }
 
+    if (
+      gesture.kind === 'rotate' &&
+      this.#preview === undefined &&
+      !this.#rotationDragMoved(gesture, point)
+    ) {
+      return;
+    }
     let active = gesture;
     if (active.kind === 'press') {
       const distance =
@@ -755,7 +973,9 @@ class CanvasView implements ICanvasView {
             x: active.start.x + point.x - active.origin.x,
             y: active.start.y + point.y - active.origin.y,
           }
-        : resizeCanvasPlacement(active.start, active.handle, point);
+        : active.kind === 'rotate'
+          ? rotateCanvasPlacement(active.start, active.origin, point)
+          : resizeCanvasPlacement(active.start, active.handle, point);
     this.#preview = { instanceId: active.instanceId, placement };
     this.render();
   }
@@ -793,7 +1013,14 @@ class CanvasView implements ICanvasView {
       return;
     }
 
-    const preview = this.#preview;
+    const preview =
+      gesture.kind === 'rotate' &&
+      (this.#preview !== undefined || this.#rotationDragMoved(gesture, point))
+        ? {
+            instanceId: gesture.instanceId,
+            placement: rotateCanvasPlacement(gesture.start, gesture.origin, point),
+          }
+        : this.#preview;
     const start = gesture.start;
     this.#endGesture();
     if (preview !== undefined && !samePlacement(preview.placement, start)) {
@@ -809,9 +1036,16 @@ class CanvasView implements ICanvasView {
     this.render();
   }
 
+  #rotationDragMoved(gesture: Extract<Gesture, { kind: 'rotate' }>, point: ICanvasPoint): boolean {
+    return (
+      Math.hypot(point.x - gesture.origin.x, point.y - gesture.origin.y) * this.#viewport.scale >=
+      CANVAS_DRAG_THRESHOLD
+    );
+  }
+
   #handlePointerCancel(event: PointerEvent): void {
     const gesture = this.#gesture;
-    if (this.#disposed || gesture === undefined) return;
+    if (this.#disposed || gesture === undefined || !this.#ownsPointer(event)) return;
     if (gesture.kind === 'forward' && this.#isSimulation()) {
       const instance = this.#findInstance(gesture.instanceId);
       if (instance !== undefined) {
@@ -851,6 +1085,10 @@ class CanvasView implements ICanvasView {
 
   #handleKeyDown(event: KeyboardEvent): void {
     if (this.#disposed) return;
+    if (event.key === 'Escape' && this.#cancelEditGesture()) {
+      this.#preventDefault(event);
+      return;
+    }
     if (isSpaceKey(event)) {
       // Space arms panning; keeping it from the page only matters while the canvas has focus.
       this.#spaceHeld = true;
@@ -890,6 +1128,15 @@ class CanvasView implements ICanvasView {
 
   #handleBlur(): void {
     this.#spaceHeld = false;
+    this.#cancelEditGesture();
+  }
+
+  #cancelEditGesture(): boolean {
+    const gesture = this.#gesture;
+    if (gesture === undefined || gesture.kind === 'pan' || gesture.kind === 'forward') return false;
+    this.#endGesture();
+    this.render();
+    return true;
   }
 
   #startForward(event: PointerEvent, point: ICanvasPoint): void {
@@ -923,15 +1170,15 @@ class CanvasView implements ICanvasView {
     try {
       void this.#options
         .onDispatch(instanceId, event)
-        .catch((error: unknown) => this.#report(error));
+        .catch((error: unknown) => this.#report(error, 'runtime'));
     } catch (error) {
-      this.#report(error);
+      this.#report(error, 'runtime');
     }
   }
 
   #run(operation: () => Promise<void>): void {
     const fail = (error: unknown): void => {
-      this.#report(error);
+      this.#report(error, 'command');
       // A rejected edit or history step leaves the document unchanged; repaint it without the
       // gesture preview so the surface never shows geometry the document does not have.
       this.render();
@@ -946,6 +1193,12 @@ class CanvasView implements ICanvasView {
   #beginGesture(event: PointerEvent, gesture: Gesture): void {
     this.#gesture = gesture;
     this.#preview = undefined;
+    this.#canvas.style.cursor =
+      gesture.kind === 'rotate'
+        ? 'grabbing'
+        : gesture.kind === 'resize'
+          ? canvasResizeCursor(gesture.handle, gesture.start.rotation)
+          : '';
     const pointerId = event.pointerId;
     if (typeof pointerId === 'number' && Number.isFinite(pointerId)) {
       this.#pointerId = pointerId;
@@ -964,6 +1217,7 @@ class CanvasView implements ICanvasView {
     this.#pointerId = undefined;
     this.#gesture = undefined;
     this.#preview = undefined;
+    this.#canvas.style.cursor = '';
     if (pointerId === undefined || typeof this.#canvas.releasePointerCapture !== 'function') {
       return;
     }
@@ -994,6 +1248,7 @@ class CanvasView implements ICanvasView {
   #setSelection(id: string | undefined): void {
     if (this.#selectedId === id) return;
     this.#selectedId = id;
+    this.#options.onSelectionChange?.(this.getSelection());
     this.render();
   }
 
@@ -1001,11 +1256,11 @@ class CanvasView implements ICanvasView {
     const id = this.#selectedId;
     if (id === undefined) return;
     if (!this.#options.model.document.widgets.some((widget) => widget.id === id)) {
-      this.#selectedId = undefined;
+      this.#setSelection(undefined);
     }
   }
 
-  #pointerScreenPoint(event: PointerEvent | WheelEvent): ICanvasPoint {
+  #pointerScreenPoint(event: MouseEvent | WheelEvent): ICanvasPoint {
     const rect =
       typeof this.#canvas.getBoundingClientRect === 'function'
         ? this.#canvas.getBoundingClientRect()
@@ -1042,11 +1297,11 @@ class CanvasView implements ICanvasView {
     return this.#options.readOnly ?? false;
   }
 
-  #report(error: unknown): void {
+  #report(error: unknown, source: 'render' | 'runtime' | 'command' = 'render'): void {
     const onError = this.#options.onError;
     if (onError === undefined) return;
     try {
-      onError(error);
+      onError(error, source);
     } catch {
       // A broken error handler must not break rendering or input handling.
     }

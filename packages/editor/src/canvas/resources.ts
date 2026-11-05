@@ -1,5 +1,9 @@
 import {
   assertCanvasBindings,
+  validateCanvasBindings,
+  resolveDelivery,
+  type CanvasBindingCatalog,
+  type CanvasBindingTarget,
   type CanvasDocument,
   type CanvasPortDescriptor,
 } from '@mica-js/document/canvas';
@@ -32,9 +36,12 @@ export async function prepareCanvasResources(
   files: IFileSystemProvider,
   deviceLibrary: IDeviceLibrary,
   widgetLibrary: IWidgetLibrary,
+  projectRoot?: string,
 ): Promise<ICanvasResources> {
   const schematicUri =
-    document.schematic === undefined ? undefined : new URL(document.schematic, uri).href;
+    document.schematic === undefined
+      ? undefined
+      : new URL(document.schematic, projectRoot ?? uri).href;
   const schematic =
     schematicUri === undefined
       ? emptySchematic
@@ -91,7 +98,7 @@ export async function prepareCanvasResources(
           ),
           ...instance.properties,
         };
-        return [instance.id, await prepareAssets(props, uri, files)] as const;
+        return [instance.id, await prepareAssets(props, projectRoot ?? uri, files)] as const;
       }),
     ),
   );
@@ -110,11 +117,71 @@ export async function prepareCanvasResources(
           ),
           ...symbol.properties,
         };
-        return [symbol.id, await prepareAssets(props, schematicUri ?? uri, files)] as const;
+        return [
+          symbol.id,
+          await prepareAssets(props, projectRoot ?? schematicUri ?? uri, files),
+        ] as const;
       }),
     ),
   );
-  return { document, schematic, devices, widgets, assets, simulationAssets };
+  const resources = { document, schematic, devices, widgets, assets, simulationAssets };
+  for (const instance of document.widgets) {
+    for (const [port, target] of Object.entries(instance.bindings ?? {})) {
+      const reason = canvasBindingReason(resources, instance.id, port, target);
+      if (reason !== undefined) throw new Error(reason);
+    }
+  }
+  return resources;
+}
+
+export function canvasBindingCatalog(resources: ICanvasResources): CanvasBindingCatalog {
+  return {
+    widgetDefinition(id) {
+      const definition = resources.widgets.get(id)?.definition;
+      return (
+        definition && { ports: definition.ports, propertyKeys: Object.keys(definition.properties) }
+      );
+    },
+    hasSchematic: (path) => path === resources.document.schematic,
+    hasSymbol: (id) => resources.schematic.sheet.symbols.some((symbol) => symbol.id === id),
+    symbolPort(id, port) {
+      const symbol = resources.schematic.sheet.symbols.find((symbol) => symbol.id === id);
+      return resources.devices.find((device) => device.id === symbol?.device)?.definition.ports?.[
+        port
+      ];
+    },
+  };
+}
+
+/** Use the document validator for queries as well as writes; delivery is an additional host check. */
+export function canvasBindingReason(
+  resources: ICanvasResources,
+  instanceId: string,
+  port: string,
+  target: CanvasBindingTarget,
+): string | undefined {
+  const instance = resources.document.widgets.find((item) => item.id === instanceId);
+  if (!instance) throw new Error(`Unknown widget instance "${instanceId}".`);
+  const catalog = canvasBindingCatalog(resources);
+  const diagnostics = validateCanvasBindings(
+    {
+      ...resources.document,
+      widgets: [{ ...instance, bindings: { [port]: target } }],
+    },
+    { catalog },
+  );
+  if (diagnostics.length) return diagnostics.map((item) => item.message).join(' ');
+  const source = resources.widgets.get(instance.widget)?.definition.ports[port];
+  const destination = catalog.symbolPort(target.symbol, target.port);
+  if (
+    source &&
+    destination &&
+    resolveDelivery(source.delivery, source.type) !==
+      resolveDelivery(destination.delivery, destination.type)
+  ) {
+    return `Widget port "${port}" cannot bind to device port "${target.port}": delivery must match.`;
+  }
+  return undefined;
 }
 
 async function prepareAssets(

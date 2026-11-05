@@ -450,13 +450,13 @@ function drawSymbol(items: SceneItem[], options: IDrawSymbolOptions): void {
     return;
   }
 
+  const localBody = definition.bounds ??
+    pinsBounds(definition.pins) ?? { x: -12, y: -12, width: 24, height: 24 };
   if (definition.graphics !== undefined) {
-    drawCustomSymbol(items, options, definition);
+    drawCustomSymbol(items, options, definition, localBody);
     return;
   }
 
-  const localBody = definition.bounds ??
-    pinsBounds(definition.pins) ?? { x: -12, y: -12, width: 24, height: 24 };
   const body = symbolBounds(placement, localBody, {}) ?? fallbackBounds(placement);
 
   items.push({ kind: 'rect', bounds: body, fill: theme.symbolFill, stroke, width: 1.5 });
@@ -479,7 +479,7 @@ function drawSymbol(items: SceneItem[], options: IDrawSymbolOptions): void {
     font: fonts.symbolFont,
   });
 
-  for (const [pinId, anchor] of Object.entries(definition.pins)) {
+  for (const anchor of Object.values(definition.pins)) {
     const side = pinSide(anchor, localBody) ?? 'left';
     const pinPosition = symbolPinPosition(placement, anchor);
     const edge = symbolPinPosition(placement, pinStubEnd(localBody, anchor, side));
@@ -490,25 +490,15 @@ function drawSymbol(items: SceneItem[], options: IDrawSymbolOptions): void {
       color: highlight ?? theme.pin,
       width: 1.2,
     });
-    if (!options.labels) {
-      continue;
-    }
-    const label = pinLabel(localBody, side, anchor);
-    items.push({
-      kind: 'text',
-      position: symbolPinPosition(placement, label.position),
-      text: pinId,
-      color: highlight ?? theme.pinText,
-      ...uprightText(placement.rotation + label.rotation, label.align, label.baseline),
-      font: fonts.pinFont,
-    });
   }
+  drawPinLabels(items, options, definition, localBody);
 }
 
 function drawCustomSymbol(
   items: SceneItem[],
   options: IDrawSymbolOptions,
   definition: DeviceSymbolDefinition,
+  localBody: Rect,
 ): void {
   const { placement, theme, symbol, selected, hovered, fonts } = options;
   const highlight = selected ? theme.selection : hovered || options.ghost ? theme.hover : undefined;
@@ -609,18 +599,40 @@ function drawCustomSymbol(
     ...uprightText(placement.rotation, annotation?.align ?? 'left', 'bottom'),
     font: fonts.pinFont,
   });
+  drawPinLabels(items, options, definition, localBody);
+}
+
+function drawPinLabels(
+  items: SceneItem[],
+  options: IDrawSymbolOptions,
+  definition: DeviceSymbolDefinition,
+  localBody: Rect,
+): void {
   if (!options.labels) return;
+  const { placement, theme, fonts, selected, hovered } = options;
+  const highlight = selected ? theme.selection : hovered || options.ghost ? theme.hover : undefined;
   for (const [pinId, pin] of Object.entries(definition.pins)) {
     if (pin.label?.visible === false) continue;
+    const explicit = pin.label?.position;
+    const label =
+      explicit === undefined
+        ? pinLabel(localBody, pinSide(pin, localBody) ?? 'left', pin)
+        : {
+            position: { x: explicit[0], y: explicit[1] },
+            align: 'left' as const,
+            baseline: 'middle' as const,
+            rotation: 0,
+          };
     items.push({
       kind: 'text',
-      position:
-        pin.label?.position === undefined
-          ? symbolPinPosition(placement, pin)
-          : at(pin.label.position),
+      position: symbolPinPosition(placement, label.position),
       text: pin.displayName ?? pinId,
       color: highlight ?? theme.pinText,
-      ...uprightText(placement.rotation, pin.label?.align ?? 'left', 'middle'),
+      ...uprightText(
+        placement.rotation + label.rotation,
+        pin.label?.align ?? label.align,
+        label.baseline,
+      ),
       font: fonts.pinFont,
     });
   }
@@ -656,28 +668,28 @@ function pinLabel(
   switch (side) {
     case 'left':
       return {
-        position: { x: body.x + 5, y: clampY },
+        position: { x: body.x + 2, y: clampY },
         align: 'left',
         baseline: 'middle',
         rotation: 0,
       };
     case 'right':
       return {
-        position: { x: body.x + body.width - 5, y: clampY },
+        position: { x: body.x + body.width - 2, y: clampY },
         align: 'right',
         baseline: 'middle',
         rotation: 0,
       };
     case 'top':
       return {
-        position: { x: clampX, y: body.y + 10 },
+        position: { x: clampX, y: body.y + 5 },
         align: 'center',
         baseline: 'middle',
         rotation: -90,
       };
     case 'bottom':
       return {
-        position: { x: clampX, y: body.y + body.height - 10 },
+        position: { x: clampX, y: body.y + body.height - 5 },
         align: 'center',
         baseline: 'middle',
         rotation: -90,

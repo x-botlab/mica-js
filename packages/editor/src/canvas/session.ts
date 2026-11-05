@@ -6,11 +6,15 @@ import { createDecorator } from '../instantiation';
 import { IDeviceLibraryResolver, IWidgetLibraryResolver } from '../libraries';
 import { IFileSystemProvider } from '../provider-services';
 import type { IDeviceLibrary, IWidgetLibrary } from '../providers';
-import { prepareCanvasResources, type ICanvasResources } from './resources';
+import { prepareCanvasResources, canvasBindingReason, type ICanvasResources } from './resources';
+import type { ICanvasBindingInfo } from '../canvas-host';
+import { canvasSnapshot } from '../canvas-host';
+import type { IEditorProperty } from '../host';
 import { ICanvasRuntimeFactory, type ICanvasRuntimes } from './runtime-factory';
 
 export interface ICanvasConfiguration {
   readonly uri: string;
+  readonly projectRoot?: string;
   readonly container: HTMLElement;
 }
 export const ICanvasConfiguration = createDecorator<ICanvasConfiguration>(
@@ -26,6 +30,60 @@ interface IRunningCanvas {
 export class CanvasSession {
   readonly #renders = new Emitter<void>();
   readonly onDidRender: Event<void> = this.#renders.event;
+  readonly #changes = new Emitter<void>();
+  readonly onDidChangeState = this.#changes.event;
+  readonly #errors = new Emitter<unknown>();
+  readonly onDidError = this.#errors.event;
+
+  getProperties(instanceId: string, readOnly: boolean): readonly IEditorProperty[] {
+    const resources = this.#resources;
+    const instance = resources?.document.widgets.find((item) => item.id === instanceId);
+    if (!resources || !instance) throw new Error(`Unknown widget instance "${instanceId}".`);
+    const definitions = resources.widgets.get(instance.widget)!.definition.properties;
+    return canvasSnapshot(
+      Object.entries(definitions).map(([key, descriptor]) => ({
+        ...descriptor,
+        key,
+        label: String(descriptor.label ?? descriptor.title ?? key),
+        type: descriptor.type,
+        defaultValue: descriptor.default,
+        overrideValue: instance.properties?.[key],
+        overridden: Object.hasOwn(instance.properties ?? {}, key),
+        value: Object.hasOwn(instance.properties ?? {}, key)
+          ? instance.properties?.[key]
+          : descriptor.default,
+        readOnly: readOnly || descriptor.readOnly === true,
+      })),
+    );
+  }
+
+  getBindings(instanceId: string): readonly ICanvasBindingInfo[] {
+    const resources = this.#resources;
+    const instance = resources?.document.widgets.find((item) => item.id === instanceId);
+    if (!resources || !instance) throw new Error(`Unknown widget instance "${instanceId}".`);
+    return canvasSnapshot(
+      Object.entries(resources.widgets.get(instance.widget)!.definition.ports).map(
+        ([port, descriptor]) => ({
+          ...descriptor,
+          port,
+          target: instance.bindings?.[port] ?? null,
+          candidates: resources.schematic.sheet.symbols.flatMap((symbol) => {
+            const device = resources.devices.find((item) => item.id === symbol.device);
+            return Object.keys(device?.definition.ports ?? {}).map((targetPort) => {
+              const target = { symbol: symbol.id, port: targetPort };
+              const reason = canvasBindingReason(resources, instanceId, port, target);
+              return {
+                target,
+                label: `${symbol.designator ?? symbol.id} / ${device?.definition.displayName ?? symbol.device} / ${targetPort}`,
+                compatible: reason === undefined,
+                ...(reason === undefined ? {} : { reason }),
+              };
+            });
+          }),
+        }),
+      ),
+    );
+  }
   #active: IRunningCanvas | undefined;
   #resources: ICanvasResources | undefined;
   #signature: string | undefined;
@@ -66,6 +124,7 @@ export class CanvasSession {
         this.files,
         this.devices,
         this.widgets,
+        this.configuration.projectRoot,
       );
       this.#assertAlive();
       const signature = JSON.stringify({
@@ -109,6 +168,7 @@ export class CanvasSession {
         this.#mode = previous;
         throw error;
       }
+      this.#changes.fire();
     });
   }
 
@@ -124,11 +184,14 @@ export class CanvasSession {
     if (this.#mode !== 'simulation') throw new Error('Switch to simulation mode before running.');
     if (this.#running) return;
     this.#running = true;
+    this.#changes.fire();
     this.#schedule();
   }
 
   pause(): void {
+    if (!this.#running) return;
     this.#running = false;
+    this.#changes.fire();
   }
 
   step(): Promise<void> {
@@ -157,6 +220,8 @@ export class CanvasSession {
         if (active) await this.#release(active);
       } finally {
         this.#renders.dispose();
+        this.#changes.dispose();
+        this.#errors.dispose();
       }
     });
     return this.#disposal;
@@ -171,6 +236,13 @@ export class CanvasSession {
         if (this.#active === candidate) this.#renders.fire();
       }),
     );
+    const report = (error: unknown) => {
+      if (this.#active === candidate && !this.#disposed) this.#errors.fire(error);
+    };
+    const widgetErrors = runtimes.widgets.onDidDiagnostic?.(report);
+    const simulationErrors = runtimes.simulation.onDidDiagnostic?.(report);
+    if (widgetErrors) candidate.subscriptions.push(widgetErrors);
+    if (simulationErrors) candidate.subscriptions.push(simulationErrors);
     try {
       this.#assertAlive();
       await runtimes.simulation.load({
@@ -203,10 +275,7 @@ export class CanvasSession {
     this.#active = candidate;
     this.#simTime = timePs(0);
     this.#renders.fire();
-    if (previous)
-      await this.#release(previous).catch((error) =>
-        console.error('Previous canvas runtime cleanup failed.', error),
-      );
+    if (previous) await this.#release(previous).catch((error) => this.#errors.fire(error));
     this.#schedule();
   }
 
@@ -230,7 +299,7 @@ export class CanvasSession {
         () => this.#schedule(),
         (error) => {
           this.pause();
-          if (!this.#disposed) console.error('Canvas runtime stopped.', error);
+          if (!this.#disposed) this.#errors.fire(error);
         },
       );
     }, 25);

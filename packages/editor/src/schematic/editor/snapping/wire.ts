@@ -36,6 +36,33 @@ export function wireWaypoints(
   return host === 'vertical' ? [{ x: from.x, y: to.y }, to] : [{ x: to.x, y: from.y }, to];
 }
 
+/** Extends a routed path, folding retraced collinear legs instead of leaving dangling branches. */
+export function extendWirePath(
+  points: readonly Point[],
+  to: Point,
+  host: WireAxis | undefined,
+): Point[] {
+  const from = points[points.length - 1];
+  const candidates = from === undefined ? [to] : [...points, ...wireWaypoints(from, to, host)];
+  const path: Point[] = [];
+  for (const point of candidates) {
+    while (path.length >= 2) {
+      const a = path[path.length - 2]!;
+      const b = path[path.length - 1]!;
+      if ((a.x === b.x && b.x === point.x) || (a.y === b.y && b.y === point.y)) {
+        path.pop();
+      } else {
+        break;
+      }
+    }
+    const previous = path[path.length - 1];
+    if (previous === undefined || previous.x !== point.x || previous.y !== point.y) {
+      path.push(point);
+    }
+  }
+  return path;
+}
+
 /** Snaps to a nearby connection node, then to a nearby wire, otherwise to the grid. */
 export function snapForWire(context: ISnapContext, point: Point): Point {
   return (

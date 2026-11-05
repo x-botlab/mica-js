@@ -1,4 +1,6 @@
 import type { DeviceSymbolProvider } from '@mica-js/document/schematic';
+import type { IEditorPointerEvent } from '../../../host';
+import type { SchematicTarget } from '../../types';
 import type { IEditorSurface } from '../surface';
 import type { EditorViewport } from '../viewport-state';
 import type { Pointer } from './pointer';
@@ -11,6 +13,10 @@ export interface IEditorInputDeps {
   readonly root: HTMLElement;
   readonly canvas: HTMLCanvasElement;
   readonly readOnly: boolean;
+  readonly onPointerEvent?: (
+    kind: 'click' | 'doubleClick' | 'contextMenu',
+    event: IEditorPointerEvent<SchematicTarget>,
+  ) => void;
   /** Called after any interaction state or document change. */
   readonly onChange: () => void;
   /** Fits the view to the document (F key, initial layout). */

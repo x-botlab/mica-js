@@ -34,43 +34,105 @@ export async function mount(
 
 内容事件在编辑、撤销、重做提交后发送快照，首次加载不发送；订阅返回 Disposable。文件系统只读，保存、序列化和修改状态由集成方维护。
 
-支持的命令：
+命令通过类型映射约束名称、参数及返回值。修改命令使用一个参数对象，无参数命令省略第二个参数；底层文档命令保留为内部实现。
 
-| ID                      | 参数与行为                                           |
-| ----------------------- | ---------------------------------------------------- |
-| `schematic.apply`       | 一个 document `SchematicCommand`，准备新增器件后提交 |
-| `schematic.undo`        | 撤销一步                                             |
-| `schematic.redo`        | 重做一步                                             |
-| `schematic.placeDevice` | 完整器件 ID，准备元数据后进入鼠标放置模式            |
+```typescript
+await editor.executeCommand('schematic.setProperty', {
+  symbolId,
+  key: 'resistance',
+  value: 1000,
+});
+await editor.executeCommand('schematic.setProperties', {
+  symbolId,
+  values: { resistance: 2200 },
+  remove: ['tolerance'],
+});
+await editor.executeCommand('schematic.placeDevice', { deviceId: 'demo:resistor' });
+await editor.executeCommand('schematic.undo');
+```
+
+`setProperties` 将整组设置及重置作为一步撤销；重置使用 `remove`，保留属性值 `null` 自身的含义。器件、导线、选择、工具及视图操作见导出的 `ISchematicCommandMap`。
 
 文档命令按调用顺序执行。命令失败拒绝 Promise，队列继续接受后续命令。关闭后禁止执行命令，正在等待器件解析的编辑不会再提交；重复关闭返回同一个 Promise。关闭只移除编辑器自己的 DOM 和内部资源，保留宿主容器与 provider。
+
+原理图器件拖动按细网格间距吸附（`gridSize / gridSubdivisions`，默认 5 页面单位）；预览与提交使用同一位置，未拖动的轴保持原坐标。
 
 ## 画布编辑器
 
 `createCanvasEditor({ container, uri, fileSystem, deviceLibrary, widgetLibrary, readOnly? })` 加载一个 `.cnv` 文档，准备关联原理图、描述和资源，创建内部 sandbox 后挂载画布。门面与原理图一致：`uri`、`state`、`onDidChangeContent`、`executeCommand` 和 `dispose`。
 
-画布支持选中、拖动、角点调整尺寸、删除与撤销重做。仿真模式将局部坐标的交互事件交给 widget；文档编辑在编辑模式执行。只读选项禁止文档修改，仍允许仿真交互。
+画布支持单个 widget 选中、拖动、角点调整尺寸、任意角度旋转、删除与撤销重做。拖动选中框顶部引线末端的圆形手柄可绕 widget 中心旋转，手柄大小、引线长度和命中范围不随缩放变化。旋转保留按下时的角度偏移，拖动仅预览，松开指针提交一次可撤销的修改；Escape、失焦、指针取消、丢失捕获、外部文档修改或切换到仿真模式会取消编辑预览。旋转后仍可沿 widget 自身轴线调整尺寸并拖动位置；尺寸手柄在悬停与拖动时显示随 widget 角度变化的方向指针。仿真模式将局部坐标的交互事件交给 widget；文档编辑在编辑模式执行。只读选项禁止文档修改，仍允许仿真交互。
 
 滚轮以指针位置为中心缩放视图，范围为 10%–800%；鼠标中键拖动或按住空格后左键拖动可平移视图。这些操作在编辑、仿真和只读模式均可用。视图变化只保留在当前编辑器实例中，不修改文档、不进入撤销历史，也不触发 `onDidChangeContent`。
 
-| ID                                 | 参数与行为                                         |
-| ---------------------------------- | -------------------------------------------------- |
-| `canvas.apply`                     | 一个 `CanvasCommand`，准备成功后提交               |
-| `canvas.undo` / `canvas.redo`      | 撤销或重做一个文档修改                             |
-| `canvas.setMode`                   | `'edit'` 或 `'simulation'`；切换会重建初始运行状态 |
-| `canvas.run` / `canvas.pause`      | 开始或暂停固定步长仿真                             |
-| `canvas.step`                      | 执行一个固定步长，编辑模式只刷新 widget            |
-| `canvas.reset`                     | 根据当前文档重建初始运行状态                       |
-| `canvas.status`                    | 返回 `{ mode, running, simTime }`，时间单位为皮秒  |
-| `canvas.zoomIn` / `canvas.zoomOut` | 以视口中心为锚点放大或缩小视图                     |
-| `canvas.fitView`                   | 将全部 widget（含旋转边界）居中适应视口            |
-| `canvas.resetView`                 | 恢复 100% 缩放和零平移                             |
+| ID                                             | 参数与行为                                                          |
+| ---------------------------------------------- | ------------------------------------------------------------------- |
+| `canvas.setProperty` / `canvas.removeProperty` | `{ instanceId, key, value? }`，设置或重置 widget 属性               |
+| `canvas.setProperties`                         | `{ instanceId, values, remove? }`，批量设置及重置，一步撤销         |
+| `canvas.setBinding`                            | `{ instanceId, port, target }`，目标为 `{ symbol, port }` 或 `null` |
+| `canvas.setSchematic`                          | `{ path, bindings? }`，切换或解除关联，见下文                       |
+| `canvas.addWidget` / `canvas.removeWidget`     | 添加或移除 widget                                                   |
+| `canvas.setPlacement` / `canvas.setZ`          | 修改位置、尺寸、角度或绘制顺序                                      |
+| `canvas.undo` / `canvas.redo`                  | 撤销或重做一个文档修改                                              |
+| `canvas.setMode`                               | `{ mode: 'edit' \| 'simulation' }`；切换会重建初始运行状态          |
+| `canvas.run` / `canvas.pause`                  | 开始或暂停固定步长仿真                                              |
+| `canvas.step` / `canvas.reset`                 | 执行一个固定步长或重建初始运行状态                                  |
+| `canvas.zoomIn` / `canvas.zoomOut`             | 以视口中心为锚点放大或缩小视图                                      |
+| `canvas.fitView` / `canvas.resetView`          | 适应全部旋转边界或恢复 100% 视图                                    |
+
+完整参数和返回值见导出的 `ICanvasCommandMap`。
 
 运行会话负责唯一帧调度器，以 25 ms 固定步长推进仿真；暂停时继续刷新 widget 而不推进仿真时间。话题数据通过两个 guest 之间的直连 RPC 通道传递，editor 配置绑定，不在 UI 线程转发 payload。位置、旋转和层级只属于编辑器；改变执行输入时先建立候选会话，全部准备成功后替换旧会话。文档与历史在准备失败时保持原值。
 
 library 的代码只在 sandbox 中执行，资源由 editor 通过只读文件系统预先读取。关闭 editor 会取消时钟、移除视图，并释放内部运行实例、RPC、bitmap 和 sandbox；外部 provider 保留宿主所有权。
 
 内部服务通过构造参数装饰器注入，使用此包的 TypeScript 配置启用 `experimentalDecorators`。DI 容器和服务标识保留在包内，应用通过具体编辑器工厂创建实例。
+
+## 宿主集成
+
+- `getDocument()` 返回只读文档快照；`onDidChangeContent` 只在提交、撤销及重做后发送，拖动预览不触发。
+- `getSelection()` / `setSelection()` 与 `onDidChangeSelection` 用于对象树、搜索和编辑视图联动。原理图按目标类型区分器件、导线等对象；画布目标为 `{ kind: 'widget', id }`，当前一次选择一个 widget。
+- `onDidClick`、`onDidDoubleClick`、`onDidContextMenu` 携带目标（空白为 `null`）、文档坐标 `position`、CSS 客户端坐标 `clientPosition`、按钮、修饰键及编辑模式。点击导致的选中变化先通知，重复点击相同对象仍发送点击事件；拖动、尺寸调整、旋转及平移不作为点击。
+- 双击沿用浏览器语义，允许此前已发送单击通知。右键事件供宿主定位菜单，仿真交互通知与 widget 运行时输入分开处理。
+- `getProperties(id)` 返回属性名称、类型、有效值、默认值、覆盖值、覆盖状态及只读状态。面板在选中变化和内容变化时刷新；修改通过类型化命令提交。
+- `getState()` / `onDidChangeState` 提供只读、模式和撤销重做状态；`onDidError` 提供来源及原始错误。命令失败同时拒绝 Promise，宿主可统一展示反馈。
+- 事件订阅返回 Disposable，宿主卸载面板时释放订阅；编辑器关闭时释放自身订阅和事件。
+
+```typescript
+const refresh = () => {
+  const selection = editor.getSelection();
+  const document = editor.getDocument();
+  renderObjectTree(document, selection);
+};
+const subscriptions = [
+  editor.onDidChangeContent(refresh),
+  editor.onDidChangeSelection(refresh),
+  editor.onDidDoubleClick((event) => openDetails(event.target)),
+  editor.onDidError(({ error }) => showError(error)),
+];
+refresh();
+// On host unmount:
+subscriptions.forEach((subscription) => subscription.dispose());
+```
+
+### 话题绑定及原理图关联
+
+`canvas.getBindings(instanceId)` 返回 widget 端口的当前目标和器件端口候选。候选包含兼容状态及不兼容原因，编辑器在提交时重新校验方向、负载类型和投递语义。绑定目标使用器件实例 ID 与端口名，运行时负责话题路由。
+
+```typescript
+await canvas.executeCommand('canvas.setBinding', {
+  instanceId,
+  port: 'press',
+  target: { symbol: symbolId, port: 'in' },
+});
+await canvas.executeCommand('canvas.setSchematic', {
+  path: 'circuits/main.sch',
+  bindings: 'clear',
+});
+await canvas.executeCommand('canvas.setSchematic', { path: null });
+```
+
+`projectRoot` 可指定项目根目录的绝对 URI，关联路径相对该根目录解析；省略时使用画布 URI 所在目录。切换默认 `bindings: 'preserve'`，保留并校验原绑定；选择 `clear` 清空全部绑定，解除关联也会清空绑定。路径、绑定、资源和候选运行时全部准备成功后提交，一步撤销恢复原关联及绑定；失败时文档与活动运行时保持原状态。只读或仿真模式下拒绝文档修改。
 
 ## Provider 契约
 

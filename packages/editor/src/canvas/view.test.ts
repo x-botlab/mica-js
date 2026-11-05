@@ -8,15 +8,21 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CanvasModel } from './model';
 import {
   CANVAS_FIT_PADDING,
+  CANVAS_HANDLE_HIT_RADIUS,
+  CANVAS_HANDLE_SIZE,
   CANVAS_IDENTITY_VIEWPORT,
   CANVAS_MAX_ZOOM,
   CANVAS_MIN_ZOOM,
+  CANVAS_ROTATION_HANDLE_OFFSET,
   CANVAS_WHEEL_ZOOM_RATE,
   CANVAS_ZOOM_FACTOR,
   canvasLocalToPoint,
+  canvasHandlePoints,
   canvasPlacementBounds,
+  canvasPlacementCenter,
   canvasPlacementCorners,
   canvasPointToLocal,
+  canvasRotationHandlePoint,
   clampCanvasZoom,
   containsCanvasPoint,
   createCanvasView,
@@ -24,11 +30,15 @@ import {
   fitViewport,
   hitTestCanvasHandle,
   hitTestCanvasInstance,
+  hitTestCanvasRotationHandle,
   resizeCanvasPlacement,
+  rotateCanvasPlacement,
+  rotateCanvasVector,
   viewportToDocument,
   widgetPointFromCanvas,
   zoomViewportAt,
   type ICanvasFrame,
+  type ICanvasPoint,
   type ICanvasView,
 } from './view';
 
@@ -110,6 +120,14 @@ class FakeContext {
 
   stroke(): void {
     this.#record('stroke', []);
+  }
+
+  arc(x: number, y: number, radius: number, start: number, end: number): void {
+    this.#record('arc', [x, y, radius, start, end]);
+  }
+
+  fill(): void {
+    this.#record('fill', []);
   }
 
   count(name: string): number {
@@ -289,6 +307,7 @@ interface IHarness {
   readonly context: FakeContext;
   readonly dispatches: IDispatch[];
   readonly errors: unknown[];
+  readonly hostEvents: { kind: string; value: unknown }[];
   dispose(): void;
 }
 
@@ -303,6 +322,7 @@ function createHarness(options: IHarnessOptions = {}): IHarness {
   const model = options.model ?? new CanvasModel(options.document ?? documentWith(instance(ID_A)));
   const dispatches: IDispatch[] = [];
   const errors: unknown[] = [];
+  const hostEvents: { kind: string; value: unknown }[] = [];
   const view = createCanvasView({
     container: container as unknown as HTMLElement,
     model,
@@ -319,6 +339,10 @@ function createHarness(options: IHarnessOptions = {}): IHarness {
     },
     isSimulation: () => options.simulationState?.value ?? options.simulation ?? false,
     onError: (error) => errors.push(error),
+    onSelectionChange: (value) => hostEvents.push({ kind: 'selection', value }),
+    onClick: (value) => hostEvents.push({ kind: 'click', value }),
+    onDoubleClick: (value) => hostEvents.push({ kind: 'doubleClick', value }),
+    onContextMenu: (value) => hostEvents.push({ kind: 'contextMenu', value }),
   });
   const canvas = container.children[0];
   if (canvas === undefined) {
@@ -333,6 +357,7 @@ function createHarness(options: IHarnessOptions = {}): IHarness {
     context: canvas.context,
     dispatches,
     errors,
+    hostEvents,
     dispose() {
       view.dispose();
       model.dispose();
@@ -419,6 +444,102 @@ function tick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+function emitPointer(
+  harness: IHarness,
+  type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointercancel',
+  point: ICanvasPoint,
+  pointerId = 1,
+): void {
+  harness.canvas.emit(
+    type,
+    pointer({
+      clientX: point.x,
+      clientY: point.y,
+      pointerId,
+      buttons: type === 'pointerup' || type === 'pointercancel' ? 0 : 1,
+    }),
+  );
+}
+
+function selectAt(harness: IHarness, point: ICanvasPoint): void {
+  emitPointer(harness, 'pointerdown', point);
+  emitPointer(harness, 'pointerup', point);
+}
+
+function rotatedPoint(center: ICanvasPoint, point: ICanvasPoint, degrees: number): ICanvasPoint {
+  const offset = rotateCanvasVector({ x: point.x - center.x, y: point.y - center.y }, degrees);
+  return { x: center.x + offset.x, y: center.y + offset.y };
+}
+
+describe('canvas resize cursors', () => {
+  it.each([
+    [0, ['nwse-resize', 'nesw-resize', 'nwse-resize', 'nesw-resize']],
+    [37, ['ns-resize', 'ew-resize', 'ns-resize', 'ew-resize']],
+    [90, ['nesw-resize', 'nwse-resize', 'nesw-resize', 'nwse-resize']],
+    [-45, ['ew-resize', 'ns-resize', 'ew-resize', 'ns-resize']],
+    [360, ['nwse-resize', 'nesw-resize', 'nwse-resize', 'nesw-resize']],
+  ] as const)('matches the handle direction at %s degrees', (rotation, cursors) => {
+    const widget = instance(ID_A, { x: 100, y: 100, rotation });
+    const harness = createHarness({ document: documentWith(widget) });
+    selectAt(harness, canvasPlacementCenter(widget));
+    const handles = canvasHandlePoints(widget);
+    for (const [index, handle] of (['nw', 'ne', 'se', 'sw'] as const).entries()) {
+      emitPointer(harness, 'pointermove', handles[handle]);
+      expect(harness.canvas.style.cursor).toBe(cursors[index]);
+    }
+    emitPointer(harness, 'pointermove', canvasPlacementCenter(widget));
+    expect(harness.canvas.style.cursor).toBe('');
+    expect(harness.model.canUndo).toBe(false);
+    harness.dispose();
+  });
+
+  it('keeps the resize cursor throughout dragging after zoom and pan', () => {
+    const widget = instance(ID_A, { x: 100, y: 100, rotation: 37 });
+    const harness = createHarness({ document: documentWith(widget) });
+    selectAt(harness, canvasPlacementCenter(widget));
+    harness.canvas.emit(
+      'wheel',
+      wheel({ clientX: 0, clientY: 0, deltaY: -Math.log(2) / CANVAS_WHEEL_ZOOM_RATE }),
+    );
+    harness.canvas.emit('pointerdown', pointer({ clientX: 300, clientY: 250, button: 1 }));
+    emitPointer(harness, 'pointermove', { x: 330, y: 270 });
+    emitPointer(harness, 'pointerup', { x: 330, y: 270 });
+    const corner = canvasHandlePoints(widget).se;
+    const screen = { x: corner.x * 2 + 30, y: corner.y * 2 + 20 };
+    emitPointer(harness, 'pointermove', screen);
+    expect(harness.canvas.style.cursor).toBe('ns-resize');
+    emitPointer(harness, 'pointerdown', screen);
+    expect(harness.canvas.style.cursor).toBe('ns-resize');
+    const target = { x: screen.x + 40, y: screen.y + 20 };
+    emitPointer(harness, 'pointermove', target);
+    expect(harness.canvas.style.cursor).toBe('ns-resize');
+    expect(harness.model.canUndo).toBe(false);
+    emitPointer(harness, 'pointercancel', target);
+    expect(harness.canvas.style.cursor).toBe('');
+    expect(harness.model.document.widgets[0]).toEqual(widget);
+    harness.dispose();
+  });
+
+  it.each(['readOnly', 'simulation'] as const)(
+    'does not offer resize cursors in %s mode',
+    (mode) => {
+      const widget = instance(ID_A, { x: 100, y: 100 });
+      const simulationState = { value: false };
+      const harness = createHarness({
+        document: documentWith(widget),
+        readOnly: mode === 'readOnly',
+        simulationState,
+      });
+      selectAt(harness, canvasPlacementCenter(widget));
+      simulationState.value = mode === 'simulation';
+      harness.view.render();
+      emitPointer(harness, 'pointermove', canvasHandlePoints(widget).se);
+      expect(harness.canvas.style.cursor).toBe('');
+      harness.dispose();
+    },
+  );
+});
+
 describe('canvas geometry', () => {
   it('maps document points into a rotated instance frame', () => {
     const placement = { x: 0, y: 0, width: 100, height: 50, rotation: 90 };
@@ -477,6 +598,75 @@ describe('canvas geometry', () => {
     expect(resized.width).toBe(2);
     expect(resized.height).toBe(2);
   });
+});
+
+describe('canvas rotation geometry', () => {
+  it('keeps the initial placement and pointer-down offset as the angular baseline', () => {
+    const widget = instance(ID_A, { x: 80, y: 90, rotation: 37.5 });
+    const center = canvasPlacementCenter(widget);
+    const handle = canvasRotationHandlePoint(widget);
+    const origin = { x: handle.x + 5, y: handle.y + 2 };
+    const target = rotatedPoint(center, origin, 28.25);
+    const rotated = rotateCanvasPlacement(widget, origin, target);
+
+    expect(rotated.rotation).toBeCloseTo(65.75);
+    expect(rotated).toMatchObject({ x: 80, y: 90, width: 100, height: 50 });
+    expect(canvasPlacementCenter(rotated)).toEqual(center);
+    expect(rotateCanvasPlacement(widget, origin, origin)).toBe(widget);
+    expect(rotateCanvasPlacement(widget, origin, center)).toBe(widget);
+    expect(rotateCanvasPlacement(widget, center, target)).toBe(widget);
+  });
+
+  it('crosses the atan2 branch boundary without snapping to quarter turns', () => {
+    const widget = instance(ID_A, { rotation: 260 });
+    const center = canvasPlacementCenter(widget);
+    const origin = canvasRotationHandlePoint(widget);
+
+    expect(
+      rotateCanvasPlacement(widget, origin, rotatedPoint(center, origin, 23.75)).rotation,
+    ).toBeCloseTo(283.75);
+    expect(
+      rotateCanvasPlacement(widget, origin, rotatedPoint(center, origin, -41.125)).rotation,
+    ).toBeCloseTo(218.875);
+  });
+
+  it.each([0.1, 1, 8])(
+    'keeps the handle offset and hit radius in CSS pixels at scale %s',
+    (scale) => {
+      const widget = instance(ID_A, { x: 80, y: 90, rotation: 31.25 });
+      const viewport = { x: 123, y: -45, scale };
+      const handle = canvasRotationHandlePoint(widget, scale);
+      const screen = documentToViewport(viewport, handle);
+      const top = documentToViewport(
+        viewport,
+        canvasLocalToPoint(widget, { x: 0, y: -widget.height / 2 }),
+      );
+
+      expect(Math.hypot(screen.x - top.x, screen.y - top.y)).toBeCloseTo(
+        CANVAS_ROTATION_HANDLE_OFFSET,
+      );
+      expect(
+        hitTestCanvasRotationHandle(
+          widget,
+          viewportToDocument(viewport, {
+            x: screen.x + CANVAS_HANDLE_HIT_RADIUS - 0.1,
+            y: screen.y,
+          }),
+          scale,
+        ),
+      ).toBe(true);
+      expect(
+        hitTestCanvasRotationHandle(
+          widget,
+          viewportToDocument(viewport, {
+            x: screen.x + CANVAS_HANDLE_HIT_RADIUS + 0.1,
+            y: screen.y,
+          }),
+          scale,
+        ),
+      ).toBe(false);
+    },
+  );
 });
 
 describe('createCanvasView', () => {
@@ -790,6 +980,481 @@ describe('createCanvasView', () => {
     harness.view.render();
     expect(harness.context.calls.length).toBe(calls);
   });
+});
+
+describe('canvas rotation interaction', () => {
+  it('previews from the initial angle and commits only the pointerup angle as one undo step', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100, rotation: 37.5 });
+    const other = instance(ID_B, { x: 300 });
+    const harness = createHarness({ document: documentWith(widget, other) });
+    const changes: CanvasDocument[] = [];
+    const subscription = harness.model.onDidChangeContent((document) => changes.push(document));
+    const center = canvasPlacementCenter(widget);
+    selectAt(harness, center);
+    const handle = canvasRotationHandlePoint(widget);
+    const origin = { x: handle.x + 5, y: handle.y + 2 };
+    emitPointer(harness, 'pointermove', origin);
+    expect(harness.canvas.style.cursor).toBe('grab');
+    emitPointer(harness, 'pointerdown', origin);
+    expect(harness.canvas.style.cursor).toBe('grabbing');
+
+    emitPointer(harness, 'pointermove', rotatedPoint(center, origin, 12.25));
+    emitPointer(harness, 'pointermove', rotatedPoint(center, origin, 28.25));
+    expect(harness.model.document.widgets[0]?.rotation).toBe(37.5);
+    expect(harness.model.canUndo).toBe(false);
+    expect(changes).toHaveLength(0);
+    const paintedRotation = harness.context.calls.filter((call) => call.name === 'rotate').at(-1);
+    expect(paintedRotation?.args[0]).toBeCloseTo((65.75 * Math.PI) / 180);
+
+    emitPointer(harness, 'pointerup', rotatedPoint(center, origin, 43.125));
+    await harness.model.whenIdle();
+    expect(changes).toHaveLength(1);
+    expect(harness.model.document.widgets[0]).toMatchObject({
+      x: 100,
+      y: 100,
+      width: 100,
+      height: 50,
+    });
+    expect(harness.model.document.widgets[0]?.rotation).toBeCloseTo(80.625);
+    expect(harness.model.document.widgets[1]).toEqual(other);
+    expect(harness.canvas.captured.size).toBe(0);
+    expect(harness.canvas.style.cursor).toBe('');
+    expect(harness.dispatches).toHaveLength(0);
+
+    await harness.model.undo();
+    expect(harness.model.document.widgets[0]).toEqual(widget);
+    expect(harness.model.canUndo).toBe(false);
+    await harness.model.redo();
+    expect(harness.model.document.widgets[0]?.rotation).toBeCloseTo(80.625);
+    subscription.dispose();
+    harness.dispose();
+  });
+
+  it('does not record clicks, sub-threshold movement or a return to the angular baseline', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100, rotation: -23.75 });
+    const harness = createHarness({ document: documentWith(widget) });
+    const center = canvasPlacementCenter(widget);
+    selectAt(harness, center);
+    const origin = canvasRotationHandlePoint(widget);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointerup', origin);
+    emitPointer(harness, 'pointerdown', origin);
+    const jitter = { x: origin.x + 1, y: origin.y + 1 };
+    emitPointer(harness, 'pointermove', jitter);
+    emitPointer(harness, 'pointerup', jitter);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointermove', rotatedPoint(center, origin, 44.125));
+    emitPointer(harness, 'pointermove', origin);
+    emitPointer(harness, 'pointerup', origin);
+    await harness.model.whenIdle();
+
+    expect(harness.model.document.widgets[0]).toEqual(widget);
+    expect(harness.model.canUndo).toBe(false);
+    harness.dispose();
+  });
+
+  it.each([0.1, 1, 8])(
+    'draws and hit-tests the rotation handle after zoom and pan at scale %s',
+    async (scale) => {
+      const widget = instance(ID_A, { x: 100, y: 100, rotation: 31.25 });
+      const harness = createHarness({ document: documentWith(widget), devicePixelRatio: 2 });
+      harness.canvas.emit(
+        'wheel',
+        wheel({
+          clientX: 0,
+          clientY: 0,
+          deltaY: -Math.log(scale) / CANVAS_WHEEL_ZOOM_RATE,
+        }),
+      );
+      harness.canvas.emit('pointerdown', pointer({ clientX: 100, clientY: 100, button: 1 }));
+      harness.canvas.emit(
+        'pointerup',
+        pointer({ clientX: 140, clientY: 130, button: 1, buttons: 0 }),
+      );
+      const viewport = {
+        scale: transformNumber(harness.context, 0) / 2,
+        x: transformNumber(harness.context, 4) / 2,
+        y: transformNumber(harness.context, 5) / 2,
+      };
+      const center = documentToViewport(viewport, canvasPlacementCenter(widget));
+      selectAt(harness, center);
+      const handle = documentToViewport(
+        viewport,
+        canvasRotationHandlePoint(widget, viewport.scale),
+      );
+      const arc = harness.context.calls.filter((call) => call.name === 'arc').at(-1);
+      expect(Number(arc?.args[2]) * viewport.scale).toBeCloseTo(CANVAS_HANDLE_SIZE / 2);
+      const origin = { x: handle.x + CANVAS_HANDLE_HIT_RADIUS - 1, y: handle.y };
+      emitPointer(harness, 'pointermove', origin);
+      expect(harness.canvas.style.cursor).toBe('grab');
+      emitPointer(harness, 'pointerdown', origin);
+      emitPointer(harness, 'pointerup', rotatedPoint(center, origin, 37.125));
+      await harness.model.whenIdle();
+
+      expect(harness.model.document.widgets[0]?.rotation).toBeCloseTo(68.375);
+      expect(harness.model.document.widgets[0]).toMatchObject({
+        x: 100,
+        y: 100,
+        width: 100,
+        height: 50,
+      });
+      expect(harness.model.canUndo).toBe(true);
+      harness.dispose();
+    },
+  );
+
+  it.each(['pointercancel', 'lostpointercapture', 'Escape', 'blur'])(
+    'cancels a rotation on %s without recording history',
+    async (cancel) => {
+      const widget = instance(ID_A, { x: 100, y: 100, rotation: 37.5 });
+      const harness = createHarness({ document: documentWith(widget) });
+      const center = canvasPlacementCenter(widget);
+      const origin = canvasRotationHandlePoint(widget);
+      const target = rotatedPoint(center, origin, 41.125);
+      selectAt(harness, center);
+      emitPointer(harness, 'pointerdown', origin);
+      emitPointer(harness, 'pointermove', target);
+      if (cancel === 'Escape') {
+        harness.canvas.emit('keydown', key({ key: 'Escape' }));
+      } else if (cancel === 'pointercancel') {
+        emitPointer(harness, 'pointercancel', target);
+      } else {
+        harness.canvas.emit(cancel, {});
+      }
+      emitPointer(harness, 'pointerup', target);
+      await harness.model.whenIdle();
+
+      expect(harness.model.document.widgets[0]).toEqual(widget);
+      expect(harness.model.canUndo).toBe(false);
+      expect(harness.canvas.captured.size).toBe(0);
+      const arc = harness.context.calls.filter((call) => call.name === 'arc').at(-1);
+      expect(arc?.args[0]).toBeCloseTo(origin.x);
+      expect(arc?.args[1]).toBeCloseTo(origin.y);
+      harness.dispose();
+    },
+  );
+
+  it('ignores other pointers during rotation, including their cancellation', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100 });
+    const harness = createHarness({ document: documentWith(widget) });
+    const center = canvasPlacementCenter(widget);
+    const origin = canvasRotationHandlePoint(widget);
+    const target = rotatedPoint(center, origin, 32.5);
+    selectAt(harness, center);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointermove', target, 2);
+    emitPointer(harness, 'pointerup', target, 2);
+    emitPointer(harness, 'pointercancel', target, 2);
+    expect(harness.canvas.captured.has(1)).toBe(true);
+    expect(harness.model.canUndo).toBe(false);
+    emitPointer(harness, 'pointerup', target);
+    await harness.model.whenIdle();
+    expect(harness.model.document.widgets[0]?.rotation).toBeCloseTo(32.5);
+    harness.dispose();
+  });
+
+  it('cancels rotation when an external document edit invalidates the baseline', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100 });
+    const harness = createHarness({ document: documentWith(widget) });
+    const center = canvasPlacementCenter(widget);
+    const origin = canvasRotationHandlePoint(widget);
+    const target = rotatedPoint(center, origin, 32.5);
+    selectAt(harness, center);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointermove', target);
+    await harness.model.apply({
+      type: 'set-placement',
+      instanceId: ID_A,
+      placement: { ...widget, x: 120 },
+    });
+    emitPointer(harness, 'pointerup', target);
+    await harness.model.whenIdle();
+
+    expect(harness.model.document.widgets[0]).toMatchObject({ x: 120, rotation: 0 });
+    expect(harness.canvas.captured.size).toBe(0);
+    await harness.model.undo();
+    expect(harness.model.document.widgets[0]).toEqual(widget);
+    expect(harness.model.canUndo).toBe(false);
+    harness.dispose();
+  });
+});
+
+describe('canvas rotation modes and recovery', () => {
+  it('hides the rotation handle and blocks rotation in read-only mode', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100, rotation: 31.25 });
+    const harness = createHarness({ document: documentWith(widget), readOnly: true });
+    const center = canvasPlacementCenter(widget);
+    const origin = canvasRotationHandlePoint(widget);
+    selectAt(harness, center);
+    expect(harness.context.count('arc')).toBe(0);
+    expect(harness.context.count('strokeRect')).toBeGreaterThan(1);
+    emitPointer(harness, 'pointermove', origin);
+    expect(harness.canvas.style.cursor).toBe('');
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointermove', rotatedPoint(center, origin, 42.5));
+    emitPointer(harness, 'pointerup', rotatedPoint(center, origin, 42.5));
+    await harness.model.whenIdle();
+
+    expect(harness.model.document.widgets[0]).toEqual(widget);
+    expect(harness.model.canUndo).toBe(false);
+    expect(harness.dispatches).toHaveLength(0);
+    harness.dispose();
+  });
+
+  it('clears rotation preview on simulation render and preserves arbitrary-angle widget input', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100, rotation: 31.25 });
+    const simulationState = { value: false };
+    const harness = createHarness({ document: documentWith(widget), simulationState });
+    const center = canvasPlacementCenter(widget);
+    const origin = canvasRotationHandlePoint(widget);
+    const target = rotatedPoint(center, origin, 42.5);
+    selectAt(harness, center);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointermove', target);
+    simulationState.value = true;
+    const before = harness.context.calls.length;
+    harness.view.render();
+    const simulationCalls = harness.context.calls.slice(before);
+    expect(simulationCalls.some((call) => call.name === 'arc')).toBe(false);
+    expect(simulationCalls.find((call) => call.name === 'rotate')?.args[0]).toBeCloseTo(
+      (31.25 * Math.PI) / 180,
+    );
+    expect(harness.canvas.captured.size).toBe(0);
+    emitPointer(harness, 'pointerup', target);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointerup', target);
+    expect(harness.dispatches).toHaveLength(0);
+    const localPoint = canvasLocalToPoint(widget, { x: 15, y: -10 });
+    emitPointer(harness, 'pointerdown', localPoint);
+    emitPointer(harness, 'pointerup', localPoint);
+    expect(harness.dispatches[0]?.event.x).toBeCloseTo(65);
+    expect(harness.dispatches[0]?.event.y).toBeCloseTo(15);
+    await harness.model.whenIdle();
+    expect(harness.model.document.widgets[0]).toEqual(widget);
+    expect(harness.model.canUndo).toBe(false);
+
+    simulationState.value = false;
+    harness.view.render();
+    const arc = harness.context.calls.filter((call) => call.name === 'arc').at(-1);
+    expect(arc?.args[0]).toBeCloseTo(origin.x);
+    expect(arc?.args[1]).toBeCloseTo(origin.y);
+    harness.dispose();
+  });
+
+  it('cancels on simulation pointerup even without an intervening render', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100 });
+    const simulationState = { value: false };
+    const harness = createHarness({ document: documentWith(widget), simulationState });
+    const center = canvasPlacementCenter(widget);
+    const origin = canvasRotationHandlePoint(widget);
+    const target = rotatedPoint(center, origin, -33.75);
+    selectAt(harness, center);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointermove', target);
+    simulationState.value = true;
+    emitPointer(harness, 'pointerup', target);
+    await harness.model.whenIdle();
+    expect(harness.model.document.widgets[0]).toEqual(widget);
+    expect(harness.model.canUndo).toBe(false);
+    expect(harness.dispatches).toHaveLength(0);
+    harness.dispose();
+  });
+
+  it('discards an in-progress rotation on disposal', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100 });
+    const harness = createHarness({ document: documentWith(widget) });
+    const center = canvasPlacementCenter(widget);
+    const origin = canvasRotationHandlePoint(widget);
+    const target = rotatedPoint(center, origin, 33.75);
+    selectAt(harness, center);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointermove', target);
+    harness.view.dispose();
+    emitPointer(harness, 'pointerup', target);
+    await harness.model.whenIdle();
+    expect(harness.model.document.widgets[0]).toEqual(widget);
+    expect(harness.model.canUndo).toBe(false);
+    expect(harness.canvas.captured.size).toBe(0);
+    harness.dispose();
+  });
+
+  it('repaints committed geometry when rotation preparation fails', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100, rotation: 31.25 });
+    const failure = new Error('rotation rejected');
+    let preparations = 0;
+    const model = new CanvasModel(documentWith(widget), async () => {
+      preparations += 1;
+      throw failure;
+    });
+    const harness = createHarness({ model });
+    const center = canvasPlacementCenter(widget);
+    const origin = canvasRotationHandlePoint(widget);
+    const target = rotatedPoint(center, origin, 33.75);
+    selectAt(harness, center);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointermove', target);
+    expect(preparations).toBe(0);
+    emitPointer(harness, 'pointerup', target);
+    await tick();
+    expect(preparations).toBe(1);
+    expect(harness.errors).toEqual([failure]);
+    expect(harness.model.document.widgets[0]).toEqual(widget);
+    expect(harness.model.canUndo).toBe(false);
+    const arc = harness.context.calls.filter((call) => call.name === 'arc').at(-1);
+    expect(arc?.args[0]).toBeCloseTo(origin.x);
+    expect(arc?.args[1]).toBeCloseTo(origin.y);
+    harness.dispose();
+  });
+
+  it('moves and resizes on the widget axes after arbitrary-angle rotation', async () => {
+    const widget = instance(ID_A, { x: 100, y: 100 });
+    const harness = createHarness({ document: documentWith(widget) });
+    const center = canvasPlacementCenter(widget);
+    const origin = canvasRotationHandlePoint(widget);
+    selectAt(harness, center);
+    emitPointer(harness, 'pointerdown', origin);
+    emitPointer(harness, 'pointerup', rotatedPoint(center, origin, 31.25));
+    await harness.model.whenIdle();
+    emitPointer(harness, 'pointerdown', center);
+    emitPointer(harness, 'pointermove', { x: center.x + 20, y: center.y + 15 });
+    emitPointer(harness, 'pointerup', { x: center.x + 20, y: center.y + 15 });
+    await harness.model.whenIdle();
+    const moved = instance(ID_A, { x: 120, y: 115, rotation: 31.25 });
+    expect(harness.model.document.widgets[0]?.x).toBeCloseTo(moved.x);
+    expect(harness.model.document.widgets[0]?.y).toBeCloseTo(moved.y);
+    expect(harness.model.document.widgets[0]?.rotation).toBeCloseTo(moved.rotation);
+
+    const corner = canvasLocalToPoint(moved, { x: 50, y: 25 });
+    const target = canvasLocalToPoint(moved, { x: 110, y: 65 });
+    emitPointer(harness, 'pointerdown', corner);
+    emitPointer(harness, 'pointermove', target);
+    emitPointer(harness, 'pointerup', target);
+    await harness.model.whenIdle();
+    const resized = harness.model.document.widgets[0];
+    expect(resized?.width).toBeCloseTo(160);
+    expect(resized?.height).toBeCloseTo(90);
+    expect(resized?.rotation).toBeCloseTo(31.25);
+    if (resized === undefined) throw new Error('The resized widget disappeared.');
+    const pinned = canvasPlacementCorners(moved)[0];
+    const after = canvasPlacementCorners(resized)[0];
+    expect(after?.x).toBeCloseTo(pinned?.x ?? Number.NaN);
+    expect(after?.y).toBeCloseTo(pinned?.y ?? Number.NaN);
+    harness.dispose();
+  });
+});
+
+describe('canvas host interactions', () => {
+  it('emits selection before repeated clicks and reports blank targets and pointer metadata', () => {
+    const harness = createHarness();
+    const { canvas, view, hostEvents } = harness;
+    const click = (x: number, y: number) => {
+      canvas.emit('pointerdown', pointer({ clientX: x, clientY: y }));
+      canvas.emit('pointerup', pointer({ clientX: x, clientY: y }));
+    };
+    click(20, 20);
+    click(20, 20);
+    click(200, 150);
+    expect(hostEvents.map((event) => event.kind)).toEqual([
+      'selection',
+      'click',
+      'click',
+      'selection',
+      'click',
+    ]);
+    expect(hostEvents[1]!.value).toMatchObject({
+      target: { kind: 'widget', id: ID_A },
+      position: { x: 20, y: 20 },
+      clientPosition: { x: 20, y: 20 },
+      button: 0,
+      ctrlKey: false,
+      mode: 'edit',
+    });
+    expect(hostEvents.at(-1)!.value).toMatchObject({ target: null });
+    expect(Object.isFrozen(hostEvents[1]!.value)).toBe(true);
+    expect(view.getSelection()).toEqual([]);
+    canvas.emit('dblclick', pointer({ clientX: 20, clientY: 20 }));
+    canvas.emit('contextmenu', pointer({ clientX: 20, clientY: 20, button: 2 }));
+    expect(hostEvents.slice(-3).map((event) => event.kind)).toEqual([
+      'doubleClick',
+      'selection',
+      'contextMenu',
+    ]);
+    harness.dispose();
+    canvas.emit('dblclick', pointer({ clientX: 20, clientY: 20 }));
+    expect(hostEvents.at(-1)!.kind).toBe('contextMenu');
+  });
+
+  it('emits programmatic selection, rejects multiple targets and prunes deleted widgets', async () => {
+    const harness = createHarness({
+      document: documentWith(instance(ID_A), instance(ID_B, { x: 200 })),
+    });
+    const { view, model, hostEvents } = harness;
+    view.setSelection([{ kind: 'widget', id: ID_A }]);
+    expect(Object.isFrozen(view.getSelection())).toBe(true);
+    expect(view.getSelection()).toEqual([{ kind: 'widget', id: ID_A }]);
+    view.setSelection([{ kind: 'widget', id: ID_A }]);
+    expect(hostEvents).toHaveLength(1);
+    expect(() =>
+      view.setSelection([
+        { kind: 'widget', id: ID_A },
+        { kind: 'widget', id: ID_B },
+      ]),
+    ).toThrow('single selection');
+    expect(() => view.setSelection([{ kind: 'widget', id: 'missing' }])).toThrow('Unknown');
+    await model.apply({ type: 'remove-instance', instanceId: ID_A });
+    expect(view.getSelection()).toEqual([]);
+    expect(hostEvents.at(-1)).toEqual({ kind: 'selection', value: [] });
+    harness.dispose();
+  });
+
+  it('does not emit clicks after dragging, resizing, rotation or panning', async () => {
+    const harness = createHarness();
+    const { canvas, view, model, hostEvents } = harness;
+    canvas.emit('pointerdown', pointer({ clientX: 20, clientY: 20 }));
+    canvas.emit('pointermove', pointer({ clientX: 40, clientY: 30 }));
+    canvas.emit('pointerup', pointer({ clientX: 40, clientY: 30 }));
+    await model.whenIdle();
+    view.setSelection([{ kind: 'widget', id: ID_A }]);
+    const widget = model.document.widgets[0]!;
+    const corner = canvasHandlePoints(widget).se;
+    canvas.emit('pointerdown', pointer({ clientX: corner.x, clientY: corner.y }));
+    canvas.emit('pointermove', pointer({ clientX: corner.x + 10, clientY: corner.y + 10 }));
+    canvas.emit('pointerup', pointer({ clientX: corner.x + 10, clientY: corner.y + 10 }));
+    await model.whenIdle();
+    const rotation = canvasRotationHandlePoint(model.document.widgets[0]!, 1);
+    canvas.emit('pointerdown', pointer({ clientX: rotation.x, clientY: rotation.y }));
+    canvas.emit('pointermove', pointer({ clientX: rotation.x + 20, clientY: rotation.y + 20 }));
+    canvas.emit('pointerup', pointer({ clientX: rotation.x + 20, clientY: rotation.y + 20 }));
+    await model.whenIdle();
+    canvas.emit('pointerdown', pointer({ clientX: 20, clientY: 20, button: 1 }));
+    canvas.emit('pointermove', pointer({ clientX: 30, clientY: 30, button: 1 }));
+    canvas.emit('pointerup', pointer({ clientX: 30, clientY: 30, button: 1 }));
+    expect(hostEvents.some((event) => event.kind === 'click')).toBe(false);
+    harness.dispose();
+  });
+
+  it.each([{ readOnly: true }, { simulation: true }, { readOnly: true, simulation: true }])(
+    'observes readonly and simulation input without editing or preventing widget input: %o',
+    (options) => {
+      const harness = createHarness(options);
+      const { canvas, view, model, hostEvents, dispatches } = harness;
+      let prevented = false;
+      canvas.emit('pointerdown', {
+        ...pointer({ clientX: 20, clientY: 20 }),
+        preventDefault: () => {
+          prevented = true;
+        },
+      });
+      canvas.emit('pointerup', pointer({ clientX: 20, clientY: 20 }));
+      expect(view.getSelection()).toEqual([{ kind: 'widget', id: ID_A }]);
+      expect(hostEvents.map((event) => event.kind)).toEqual(['selection', 'click']);
+      expect(model.canUndo).toBe(false);
+      expect(prevented).toBe(false);
+      if (options.simulation)
+        expect(dispatches.map((item) => item.event.type)).toEqual(['pointerdown', 'pointerup']);
+      harness.dispose();
+    },
+  );
 });
 
 describe('canvas viewport', () => {

@@ -3,6 +3,7 @@ import {
   LABEL_STUB_LENGTH,
   labelStubAt,
   orthogonalWaypoints,
+  extendWirePath,
   snapDragOffset,
   snapForWire,
   wireBodyPointAt,
@@ -128,7 +129,30 @@ describe('labelStubAt', () => {
 });
 
 describe('snapDragOffset', () => {
-  const display = { ...DEFAULT_DISPLAY_OPTIONS, gridSize: 10 };
+  const display = { ...DEFAULT_DISPLAY_OPTIONS, gridSize: 10, gridSubdivisions: 1 };
+
+  it('moves by one visible fine-grid cell with the default subdivisions', () => {
+    expect(
+      snapDragOffset({ x: 0, y: 0 }, { x: 0, y: 0 }, { x: 5, y: -5 }, DEFAULT_DISPLAY_OPTIONS),
+    ).toEqual({ x: 5, y: -5 });
+    expect(
+      snapDragOffset({ x: 3, y: 2 }, { x: 0, y: 0 }, { x: 3, y: 1 }, DEFAULT_DISPLAY_OPTIONS),
+    ).toEqual({ x: 2, y: 0 });
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'falls back to one subdivision for %s',
+    (gridSubdivisions) => {
+      expect(
+        snapDragOffset(
+          { x: 0, y: 0 },
+          { x: 0, y: 0 },
+          { x: 6, y: 0 },
+          { ...display, gridSubdivisions },
+        ),
+      ).toEqual({ x: 10, y: 0 });
+    },
+  );
 
   it('lands the dragged anchor on the nearest grid intersection', () => {
     // Anchor starts off-grid at 483,197 and is dragged by (48,43).
@@ -243,6 +267,73 @@ describe('wireBodyPointAt', () => {
 
   it('returns undefined when every run is out of reach', () => {
     expect(wireBodyPointAt(wireContext([]), { x: 47, y: 3 })).toBeUndefined();
+  });
+});
+
+describe('extendWirePath', () => {
+  it('retracts an overshot corner instead of leaving a dangling preview branch', () => {
+    const points = [
+      { x: 100, y: 100 },
+      { x: 0, y: 100 },
+      { x: 0, y: -60 },
+      { x: 140, y: -60 },
+    ];
+    expect(extendWirePath(points, { x: 80, y: 0 }, undefined)).toEqual([
+      { x: 100, y: 100 },
+      { x: 0, y: 100 },
+      { x: 0, y: -60 },
+      { x: 80, y: -60 },
+      { x: 80, y: 0 },
+    ]);
+    expect(points.at(-1)).toEqual({ x: 140, y: -60 });
+  });
+
+  it('retracts vertical overlap while retaining a perpendicular approach to a host wire', () => {
+    expect(
+      extendWirePath(
+        [
+          { x: 0, y: 0 },
+          { x: 0, y: 100 },
+        ],
+        { x: 40, y: 60 },
+        'vertical',
+      ),
+    ).toEqual([
+      { x: 0, y: 0 },
+      { x: 0, y: 60 },
+      { x: 40, y: 60 },
+    ]);
+  });
+
+  it('collapses retraced corners and duplicate clicks without leaving zero-length segments', () => {
+    const points = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+    ];
+    expect(extendWirePath(points, { x: 100, y: 0 }, undefined)).toEqual([
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+    ]);
+    expect(extendWirePath(points, { x: 100, y: 100 }, undefined)).toEqual(points);
+    expect(extendWirePath([{ x: 0, y: 0 }], { x: 0, y: 0 }, undefined)).toEqual([{ x: 0, y: 0 }]);
+  });
+
+  it('starts from an empty path and merges a forward collinear extension', () => {
+    expect(extendWirePath([], { x: 20, y: 0 }, undefined)).toEqual([{ x: 20, y: 0 }]);
+    expect(
+      extendWirePath(
+        [
+          { x: 0, y: 0 },
+          { x: 20, y: 0 },
+        ],
+        { x: 40, y: 0 },
+        undefined,
+      ),
+    ).toEqual([
+      { x: 0, y: 0 },
+      { x: 40, y: 0 },
+    ]);
   });
 });
 

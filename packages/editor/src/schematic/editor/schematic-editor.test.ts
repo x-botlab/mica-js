@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   parseSchematic,
   SchematicError,
@@ -7,6 +7,7 @@ import {
 import { createSchematicEditor } from './schematic-editor';
 import { DocumentModel } from '../model/document-model';
 import { DEFAULT_DISPLAY_OPTIONS } from '../types';
+import { CanvasSchematicRenderer } from '../render/canvas-renderer';
 import { MemoryClipboardPort, type IClipboardPort } from './clipboard';
 import {
   SCHEMATIC_CLIPBOARD_FORMAT,
@@ -78,6 +79,7 @@ function keydown(root: FakeElement, key: string, modifiers: Record<string, boole
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   restoreDom?.();
   restoreDom = undefined;
 });
@@ -425,6 +427,112 @@ describe('SchematicEditor', () => {
     const { editor } = editorFor(
       parseSchematic({ version: 1, sheet: { symbols: [], wires: [], junctions: [] } }),
     );
+    expect(editor.getState().canUndo).toBe(false);
+    editor.dispose();
+  });
+
+  it('drags a device by one fine-grid cell and records a single undoable edit', () => {
+    const render = vi.spyOn(CanvasSchematicRenderer.prototype, 'render');
+    const { editor } = editorFor();
+    const changes = vi.fn();
+    editor.onDidChangeContent(changes);
+    const canvas = editor.canvas as unknown as FakeElement;
+    const emit = (type: string, x: number, y: number) => {
+      const screen = editor.toScreen({ x, y });
+      canvas.emit(type, {
+        button: 0,
+        pointerId: 1,
+        clientX: screen.x,
+        clientY: screen.y,
+        shiftKey: false,
+        preventDefault: () => {},
+      });
+    };
+    emit('pointerdown', 5, 5);
+    emit('pointermove', 10, 10);
+    expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 0, y: 0 });
+    expect(changes).not.toHaveBeenCalled();
+    expect(
+      render.mock.lastCall?.[0].items.find((item) => item.kind === 'text' && item.text === 'MCU'),
+    ).toMatchObject({ position: { x: 5, y: 5 } });
+    emit('pointerup', 10, 10);
+    expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 5, y: 5 });
+    expect(changes).toHaveBeenCalledTimes(1);
+    editor.undo();
+    expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 0, y: 0 });
+    editor.redo();
+    expect(editor.getValue().sheet.symbols[0]).toMatchObject({ x: 5, y: 5 });
+    editor.dispose();
+  });
+
+  it('previews and commits a retracted wire without dangling or zero-length segments', () => {
+    const render = vi.spyOn(CanvasSchematicRenderer.prototype, 'render');
+    const { editor } = editorFor(documentOf({}));
+    const changes = vi.fn();
+    editor.onDidChangeContent(changes);
+    editor.setTool('wire');
+    const canvas = editor.canvas as unknown as FakeElement;
+    const pointer = (type: string, x: number, y: number) => {
+      const screen = editor.toScreen({ x, y });
+      canvas.emit(type, {
+        button: 0,
+        pointerId: 1,
+        clientX: screen.x,
+        clientY: screen.y,
+        shiftKey: false,
+        preventDefault: () => {},
+      });
+    };
+    const click = (x: number, y: number) => {
+      pointer('pointerdown', x, y);
+      pointer('pointerup', x, y);
+    };
+    click(100, 100);
+    click(0, 100);
+    click(0, -60);
+    click(140, -60);
+    pointer('pointermove', 80, 0);
+    const preview = render.mock.lastCall?.[0].items.find(
+      (item) => item.kind === 'polyline' && item.dash !== undefined,
+    );
+    const expected = [
+      { x: 100, y: 100 },
+      { x: 0, y: 100 },
+      { x: 0, y: -60 },
+      { x: 80, y: -60 },
+      { x: 80, y: 0 },
+    ];
+    expect(preview).toMatchObject({ points: expected });
+    expect(changes).not.toHaveBeenCalled();
+    click(80, 0);
+    click(80, 0);
+    keydown(editor.root as unknown as FakeElement, 'Enter');
+    expect(editor.getValue().sheet.wires.map((wire) => wire.points)).toEqual([expected]);
+    expect(changes).toHaveBeenCalledTimes(1);
+    editor.undo();
+    expect(editor.getValue().sheet.wires).toEqual([]);
+    editor.redo();
+    expect(editor.getValue().sheet.wires.map((wire) => wire.points)).toEqual([expected]);
+    editor.dispose();
+  });
+
+  it('does not commit a wire retraced entirely to its starting point', () => {
+    const { editor } = editorFor(documentOf({}));
+    editor.setTool('wire');
+    const canvas = editor.canvas as unknown as FakeElement;
+    for (const x of [0, 100, 0, 0]) {
+      const screen = editor.toScreen({ x, y: 0 });
+      canvas.emit('pointerdown', {
+        button: 0,
+        pointerId: 1,
+        clientX: screen.x,
+        clientY: screen.y,
+        shiftKey: false,
+        preventDefault: () => {},
+      });
+    }
+    keydown(editor.root as unknown as FakeElement, 'Enter');
+    expect(editor.getValue().sheet.wires).toEqual([]);
     expect(editor.getState().canUndo).toBe(false);
     editor.dispose();
   });

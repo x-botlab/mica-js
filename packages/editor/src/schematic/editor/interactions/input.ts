@@ -36,6 +36,9 @@ export type { IEditorInputDeps } from './context';
 export class EditorInput {
   readonly #context: InteractionContext;
   #detached = false;
+  #clickStart:
+    | { readonly pointerId: number; readonly x: number; readonly y: number; moved: boolean }
+    | undefined;
 
   constructor(deps: IEditorInputDeps) {
     this.#context = {
@@ -110,7 +113,7 @@ export class EditorInput {
     canvas.addEventListener('pointerdown', this.#onPointerDown);
     canvas.addEventListener('pointermove', this.#onPointerMove);
     canvas.addEventListener('pointerup', this.#onPointerUp);
-    canvas.addEventListener('pointercancel', this.#onPointerUp);
+    canvas.addEventListener('pointercancel', this.#onPointerCancel);
     canvas.addEventListener('pointerleave', this.#onPointerLeave);
     canvas.addEventListener('wheel', this.#onWheel, { passive: false });
     canvas.addEventListener('dblclick', this.#onDoubleClick);
@@ -132,7 +135,7 @@ export class EditorInput {
     canvas.removeEventListener('pointerdown', this.#onPointerDown);
     canvas.removeEventListener('pointermove', this.#onPointerMove);
     canvas.removeEventListener('pointerup', this.#onPointerUp);
-    canvas.removeEventListener('pointercancel', this.#onPointerUp);
+    canvas.removeEventListener('pointercancel', this.#onPointerCancel);
     canvas.removeEventListener('pointerleave', this.#onPointerLeave);
     canvas.removeEventListener('wheel', this.#onWheel);
     canvas.removeEventListener('dblclick', this.#onDoubleClick);
@@ -146,6 +149,10 @@ export class EditorInput {
   }
 
   #onPointerDown = (event: PointerEvent): void => {
+    this.#clickStart =
+      event.button === 0
+        ? { pointerId: event.pointerId, x: event.clientX, y: event.clientY, moved: false }
+        : undefined;
     const { deps, state, pointer } = this.#context;
     deps.root.focus();
     const screen = pointer.screen(event);
@@ -193,6 +200,12 @@ export class EditorInput {
   };
 
   #onPointerMove = (event: PointerEvent): void => {
+    const start = this.#clickStart;
+    if (
+      start?.pointerId === event.pointerId &&
+      Math.hypot(event.clientX - start.x, event.clientY - start.y) >= 3
+    )
+      start.moved = true;
     const { deps, state, pointer } = this.#context;
     const screen = pointer.screen(event);
     const page = pointer.page(event);
@@ -240,6 +253,38 @@ export class EditorInput {
   };
 
   #onPointerUp = (event: PointerEvent): void => {
+    const start = this.#clickStart;
+    this.#clickStart = undefined;
+    const drag = this.#context.state.drag;
+    const dragged =
+      drag?.mode === 'pan' ||
+      (drag?.mode === 'move' && (drag.offset.x !== 0 || drag.offset.y !== 0)) ||
+      (drag?.mode === 'segment' && (drag.delta.x !== 0 || drag.delta.y !== 0)) ||
+      (drag?.mode === 'reference' &&
+        (drag.position.x !== drag.start.x || drag.position.y !== drag.start.y)) ||
+      (drag?.mode === 'marquee' &&
+        (drag.current.x !== drag.origin.x || drag.current.y !== drag.origin.y));
+    this.#finishPointerUp(event);
+    if (
+      start?.pointerId === event.pointerId &&
+      event.button === 0 &&
+      !dragged &&
+      !start.moved &&
+      Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3
+    ) {
+      this.#emitPointer('click', event);
+    }
+  };
+
+  #onPointerCancel = (event: PointerEvent): void => {
+    this.#clickStart = undefined;
+    this.#context.state.reset();
+    if (this.#context.deps.canvas.hasPointerCapture(event.pointerId))
+      this.#context.deps.canvas.releasePointerCapture(event.pointerId);
+    this.#context.deps.onChange();
+  };
+
+  #finishPointerUp = (event: PointerEvent): void => {
     const { deps, state } = this.#context;
     const drag = state.drag;
     state.drag = undefined;
@@ -291,8 +336,9 @@ export class EditorInput {
 
   #onDoubleClick = (event: MouseEvent): void => {
     const { deps, pointer } = this.#context;
-    if (deps.editor.getTool() === 'wire') {
+    if (deps.editor.getTool() === 'wire' && !deps.readOnly) {
       finishWire(this.#context);
+      this.#emitPointer('doubleClick', event);
       return;
     }
     const page = pointer.page(event);
@@ -301,11 +347,37 @@ export class EditorInput {
     if (selection !== undefined) {
       deps.editor.setSelection([selection]);
     }
+    this.#emitPointer('doubleClick', event);
   };
 
-  #onContextMenu = (event: Event): void => {
+  #onContextMenu = (event: MouseEvent): void => {
     event.preventDefault();
+    this.#emitPointer('contextMenu', event);
   };
+
+  #emitPointer(kind: 'click' | 'doubleClick' | 'contextMenu', event: MouseEvent): void {
+    const { deps, pointer } = this.#context;
+    if (deps.onPointerEvent === undefined) return;
+    const position = pointer.page(event);
+    const hit = deps.editor.hitTest(position, { tolerance: pointer.tolerance() });
+    const target =
+      hit?.kind === 'pin'
+        ? { kind: 'pin' as const, symbolId: hit.symbolId, pinId: hit.pinId }
+        : hit === undefined
+          ? null
+          : (selectionFromHit(hit) ?? null);
+    deps.onPointerEvent(kind, {
+      target,
+      position,
+      clientPosition: { x: event.clientX, y: event.clientY },
+      button: event.button,
+      altKey: event.altKey ?? false,
+      ctrlKey: event.ctrlKey ?? false,
+      metaKey: event.metaKey ?? false,
+      shiftKey: event.shiftKey ?? false,
+      mode: 'edit',
+    });
+  }
 
   #onKeyDown = (event: KeyboardEvent): void => {
     handleKeyDown(this.#context, event);

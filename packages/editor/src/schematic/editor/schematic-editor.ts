@@ -47,6 +47,7 @@ import { toSceneHighlight } from './scene-input';
 import { snapToGrid } from './snapping';
 import { createShell, type IEditorShell } from './shell';
 import type { IEditorSurface } from './surface';
+import type { IEditorInputDeps } from './interactions/context';
 import { EditorViewport } from './viewport-state';
 
 /** Model construction options exposed by {@link ISchematicEditorOptions} (`value` is separate). */
@@ -89,6 +90,7 @@ export interface ISchematicEditorOptions extends SchematicEditorModelOptions {
   /** System clipboard bridge; defaults to the browser Clipboard API. */
   readonly clipboard?: IClipboardPort;
   readonly prepareDevices?: (ids: readonly string[]) => Promise<void>;
+  readonly onPointerEvent?: IEditorInputDeps['onPointerEvent'];
 }
 
 /**
@@ -184,6 +186,7 @@ export class SchematicEditor implements IEditorSurface {
       root: this.root,
       canvas: this.canvas,
       readOnly: this.#readOnly,
+      ...(options.onPointerEvent === undefined ? {} : { onPointerEvent: options.onPointerEvent }),
       onChange: () => this.#render(),
       onFit: () => this.fitToContent(),
       run: (edit) => this.#run(edit),
@@ -193,13 +196,25 @@ export class SchematicEditor implements IEditorSurface {
     this.#subscriptions.add(this.#model.onDidChangeContent(() => this.#onModelChanged()));
     this.#subscriptions.add(this.#model.onDidRejectEdit(() => this.#onModelChanged()));
 
-    this.#applyTheme();
-    this.#input.attach();
-    this.#sync();
-
-    this.#resizeObserver.observe(this.#shell.canvasHost);
-    this.#container.append(this.root);
-    this.resize();
+    try {
+      this.#applyTheme();
+      this.#input.attach();
+      this.#sync();
+      this.#resizeObserver.observe(this.#shell.canvasHost);
+      this.#container.append(this.root);
+      this.resize();
+    } catch (error) {
+      try {
+        this.dispose();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          'Schematic view initialization and cleanup failed.',
+          { cause: cleanupError },
+        );
+      }
+      throw error;
+    }
   }
 
   /** Model the editor draws; the same reference for the lifetime of the editor. */
@@ -221,7 +236,7 @@ export class SchematicEditor implements IEditorSurface {
     if (this.#disposed) {
       return;
     }
-    this.#selection = pruneSelection(selection, this.#model.getValue());
+    this.#selection = pruneSelection(selection, this.#model.getValue(), this.#model.getDevices());
     this.#sync();
   }
 
@@ -774,7 +789,11 @@ export class SchematicEditor implements IEditorSurface {
     if (this.#disposed) {
       return;
     }
-    this.#selection = pruneSelection(this.#selection, this.#model.getValue());
+    this.#selection = pruneSelection(
+      this.#selection,
+      this.#model.getValue(),
+      this.#model.getDevices(),
+    );
     const state = this.#state();
     this.#shell.setToolActive(state.tool);
     this.canvas.style.cursor =

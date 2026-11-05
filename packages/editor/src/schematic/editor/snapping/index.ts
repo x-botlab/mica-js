@@ -8,7 +8,13 @@ export {
 } from './nodes';
 export type { ISnapContext } from './nodes';
 export { snapDragOffset, snapToGrid } from './drag';
-export { snapForWire, wireBodyPointAt, orthogonalWaypoints, wireWaypoints } from './wire';
+export {
+  snapForWire,
+  wireBodyPointAt,
+  orthogonalWaypoints,
+  wireWaypoints,
+  extendWirePath,
+} from './wire';
 export type { WireAxis } from './wire';
 export {
   LABEL_STUB_LENGTH,
