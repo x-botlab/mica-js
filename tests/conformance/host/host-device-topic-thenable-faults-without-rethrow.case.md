@@ -58,6 +58,6 @@ board.topics.publish('topic', 7);
 assert.equal(board.status, 'faulted');
 assert.equal(errors.length, 1);
 assert.equal(errors[0].code, 'ASYNC_HOOK_RESULT');
-assert.equal(errors[0].diagnostic.phase, 'topic');
+assert.equal(errors[0].phase, 'topic');
 assert.throws(() => board.topics.publish('topic', 7), diagnostic('BOARD_FAULTED'));
 ```

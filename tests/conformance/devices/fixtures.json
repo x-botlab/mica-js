@@ -1,0 +1,86 @@
+[
+  {
+    "id": "resistor",
+    "sources": ["resistor/resistor.ddl"],
+    "cases": ["device-resistor-initial-network"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "controlled-switch",
+    "sources": ["controlled-switch/controlled-switch.ddl"],
+    "cases": ["device-controlled-switch-connect-release"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "nand",
+    "sources": ["nand/nand.ddl"],
+    "cases": ["device-nand-two-stage-pulldown"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "tristate-buffer",
+    "sources": ["tristate-buffer/tristate-buffer.ddl"],
+    "cases": ["device-tristate-buffer-inertial-release"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "d-flip-flop",
+    "sources": ["d-flip-flop/d-flip-flop.ddl"],
+    "cases": ["device-d-flip-flop-published-edge-capture"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "retriggerable-monostable",
+    "sources": ["retriggerable-monostable/retriggerable-monostable.ddl"],
+    "cases": ["device-monostable-retrigger-deadline"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "bouncing-button",
+    "sources": ["bouncing-button/bouncing-button.ddl"],
+    "cases": ["device-bouncing-button-retarget-settle"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "counter-pwm",
+    "sources": ["counter-pwm/counter-pwm.ddl"],
+    "cases": ["device-counter-pwm-buffered-duty-extremes"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "asynchronous-sram",
+    "sources": ["asynchronous-sram/asynchronous-sram.ddl"],
+    "cases": ["device-asynchronous-sram-window-boundaries"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "i2c-eeprom",
+    "sources": ["i2c-eeprom/i2c-eeprom.ddl"],
+    "cases": ["device-i2c-eeprom-byte-write-busy-wrap"],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "uart",
+    "sources": ["uart/uart.ddl", "uart/uart-adapter.js"],
+    "cases": [
+      "device-uart-loopback-batch-handoff",
+      "device-uart-full-duplex-slice-equivalence",
+      "device-uart-processor-interrupt-integration"
+    ],
+    "status": "requires-runtime"
+  },
+  {
+    "id": "minimal-processor",
+    "sources": [
+      "minimal-processor/minimal-processor.ts",
+      "minimal-processor/minimal-processor-adapter.js"
+    ],
+    "cases": [
+      "device-minimal-processor-code-lifecycle",
+      "device-minimal-processor-wait-host-wake",
+      "device-uart-processor-interrupt-integration"
+    ],
+    "integration": "processor-support.mjs transpiles the existing TypeScript fixture in memory, injects the real SDK TypeFactory and adapter builder, and adds public evidence memory with observation reactions. The existing processor adapter receives the actual translator; declaration-only contracts are never runtime imports.",
+    "status": "requires-runtime"
+  }
+]

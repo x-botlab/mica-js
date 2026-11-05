@@ -1,7 +1,7 @@
 {
   "name": "@mica-js/simulator",
   "version": "2.0.0",
-  "description": "Mica simulator: runs the device instances of a schematic on one virtual clock",
+  "description": "Synchronous compiled device simulation runtime",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,23 +16,33 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./sandbox": {
-      "source": "./src/sandbox.ts",
-      "types": "./dist/sandbox.d.ts",
-      "import": "./dist/sandbox.js"
+    "./device": {
+      "source": "./src/device.ts",
+      "types": "./dist/device.d.ts",
+      "import": "./dist/device.js"
+    },
+    "./model": {
+      "source": "./src/model.ts",
+      "types": "./dist/model.d.ts",
+      "import": "./dist/model.js"
+    },
+    "./ddl": {
+      "source": "./src/ddl.ts",
+      "types": "./dist/ddl.d.ts",
+      "import": "./dist/ddl.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "bench": "vitest bench --run",
-    "bench:unified": "vitest bench --run bench/unified-simple.bench.ts",
-    "bench:resistive": "vitest run --config bench/resistive-number.config.ts",
     "build": "vite build",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.bench.json"
+    "typecheck": "tsc --noEmit",
+    "bench": "node bench/runtime.mjs",
+    "bench:electrical": "node bench/electrical.mjs",
+    "bench:workloads": "node bench/workloads.mjs",
+    "bench:propagation": "node bench/propagation.mjs",
+    "bench:mcu": "node bench/mcu.mjs"
   },
   "publishConfig": {
     "access": "public",
@@ -41,21 +51,29 @@
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
       },
-      "./sandbox": {
-        "types": "./dist/sandbox.d.ts",
-        "import": "./dist/sandbox.js"
+      "./device": {
+        "types": "./dist/device.d.ts",
+        "import": "./dist/device.js"
+      },
+      "./model": {
+        "types": "./dist/model.d.ts",
+        "import": "./dist/model.js"
+      },
+      "./ddl": {
+        "types": "./dist/ddl.d.ts",
+        "import": "./dist/ddl.js"
       }
     }
   },
   "dependencies": {
-    "@mica-js/core": "workspace:*",
-    "@mica-js/ir": "workspace:*",
-    "@mica-js/sandbox": "workspace:*"
+    "@mica-js/compiler": "workspace:*",
+    "@mica-js/device-model": "workspace:*",
+    "@mica-js/ddl": "workspace:*",
+    "@mica-js/core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",
     "vite": "catalog:",
-    "vite-plugin-dts": "catalog:",
-    "vitest": "catalog:"
+    "vite-plugin-dts": "catalog:"
   }
 }

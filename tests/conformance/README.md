@@ -24,11 +24,42 @@ pnpm test:conformance:strict
 
 显式配置的适配器导入失败或缺少入口时测试失败。严格模式要求接入真实适配器。
 
+仓库已提供转接新运行时的 [adapter.mjs](./adapter.mjs)。构建 `@mica-js/core`、`@mica-js/device-model`、`@mica-js/compiler`、`@mica-js/ddl` 与 `@mica-js/simulator` 后，可将上述环境变量设置为 `(Resolve-Path tests\conformance\adapter.mjs).Path`。
+
+`pnpm typecheck:implementation` 复用既有 Builder/IR/host 类型场景，将声明附件导入重定向到真实源码导出；`pnpm typecheck:conformance` 继续验证规范附件与器件适配源码自身。
+
 ## 用例说明
 
 每份 `.case.md` 用正文说明规范来源、前提、操作和预期，用代码块提供输入、执行步骤与断言。默认围绕一项清晰行为编写；验证交互时写清完整的操作序列和预期。规范引用、断言充分性和重复行为在 review 中检查。
 
 框架统一执行用例，报告通过、失败、跳过和未运行的数量。`--report` 仅生成用例统计，执行状态记为未运行。
+
+## 器件与联调验收
+
+[器件清单](devices/fixtures.json)以静态 JSON 记录源码与案例引用，12 类代表性模型均有端到端行为案例；登记表示存在案例，不替代实际运行结果，也不表示完整芯片行为已经覆盖。新增验收补齐了原先仅有源码的 8 类器件：
+
+| 器件 | 代表性验收 |
+| --- | --- |
+| 受控开关 | [连接与释放](devices/device-controlled-switch-connect-release.case.md) |
+| 三态缓冲器 | [惯性延迟与释放](devices/device-tristate-buffer-inertial-release.case.md) |
+| 抖动按钮 | [切换目标与稳定](devices/device-bouncing-button-retarget-settle.case.md) |
+| 计数器/PWM | [缓冲占空比与极值](devices/device-counter-pwm-buffered-duty-extremes.case.md) |
+| 异步 SRAM | [读写窗口与边界](devices/device-asynchronous-sram-window-boundaries.case.md) |
+| I²C EEPROM | [字节写入、忙期与地址回绕](devices/device-i2c-eeprom-byte-write-busy-wrap.case.md) |
+| UART | [回环、位时序与批次交接](devices/device-uart-loopback-batch-handoff.case.md) |
+| 最小处理器 | [指令、改码与生命周期](devices/device-minimal-processor-code-lifecycle.case.md)、[WAIT 与宿主异步唤醒](devices/device-minimal-processor-wait-host-wake.case.md) |
+
+多器件场景另外覆盖[双 UART 全双工与切片等价](devices/device-uart-full-duplex-slice-equivalence.case.md)，以及[UART 电气收帧 → 下一批 IRQ 通知 → 处理器 JIT 中断返回](devices/device-uart-processor-interrupt-integration.case.md)。切片比较保留相同的外部输入/交付时刻，并分别核对独立预期；不将任意批次切分宣称为等价。
+
+可只运行器件层（仍须配置真实 adapter）：
+
+```powershell
+$env:MICA_CONFORMANCE_ADAPTER = (Resolve-Path tests\conformance\adapter.mjs).Path
+$env:MICA_CONFORMANCE_REQUIRE_ADAPTER = '1'
+node --test --test-name-pattern='^devices/' tests\conformance\cases.test.mjs
+```
+
+[处理器辅助模块](devices/processor-support.mjs)在内存转译既有 TypeScript fixture，使用真实 SDK TypeFactory/Builder；额外 reaction 只把私有状态写入公开 evidence 存储以供观察，不实现另一套指令执行器。[引脚刺激辅助模块](devices/smoke-support.mjs)通过真实宿主输入和电阻意图驱动网络，不直接改写采样或内部调度队列。
 
 ## Markdown 样本
 

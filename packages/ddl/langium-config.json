@@ -1,0 +1,5 @@
+{
+  "projectName": "DDL",
+  "languages": [{ "id": "ddl", "grammar": "src/ddl.langium", "fileExtensions": [".ddl"] }],
+  "out": "src/generated"
+}

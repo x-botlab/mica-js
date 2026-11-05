@@ -33,7 +33,7 @@ kind: comparison
 
 ```json
 {
-  "model": "device Slice {\n  public memory data[1];\n  public memory code[1];\n  state pc: number = 0;\n  output channel out: number(capacity: 32);\n  fn emit(value: number) { out.send(value); }\n  process start {\n    await ticks(2);\n    out.send(99);\n  }\n  process second {\n    await ticks(4);\n    store8(data, 0, 1);\n  }\n}",
+  "model": "device Slice {\n  public memory data[2];\n  public memory code[1];\n  state pc: number = 0;\n  input notification beginSecond;\n  output channel out: number(capacity: 32);\n  fn emit(value: number) { out.send(value); }\n  process start {\n    await ticks(2);\n    out.send(99);\n  }\n  process second on beginSecond {\n    await ticks(4);\n    store8(data, 0, 1);\n  }\n}",
   "description": {
     "instances": [
       {
@@ -58,6 +58,7 @@ const library = adapter.createDeviceLibrary([
     model,
     create(ctx) {
       contexts.push(ctx);
+      ctx.inputs.beginSecond.notify();
       ctx.attachJit({
         entry: 'cpu',
         code: 'code',

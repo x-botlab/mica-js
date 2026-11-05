@@ -83,7 +83,7 @@ fault(rejected.board, () => rejected.board.runUntil(0));
 ## 断言
 
 ```typescript
-const forwarded = values(accepted.batches)[0];
+const forwarded = values(accepted.batches, 'copies')[0];
 assert.deepEqual([...forwarded], [1, 2]);
 assert.equal(accepted.board.status, 'ready');
 

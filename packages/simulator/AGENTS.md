@@ -1,5 +1,7 @@
 # Simulator
 
-- Keep generic circuit compilation/runtime separate from concrete device libraries; consumers supply device descriptions and resolution.
-- `host/` owns the `DeviceSimulationHost` contract; `guest/` implements the sandbox side over typed core RPC.
-- Keep the sandbox guest self-contained and inlined during the package build; do not add a published guest script entry.
+- Consumers supply device models and synchronous factories; the SDK runs in the caller's thread.
+- Reuse `@mica-js/device-model` for canonical IR/Builder validation and `@mica-js/compiler` for model execution.
+- Keep Langium loading behind the separate `/ddl` entry; core runtime sources stay browser-compatible.
+- Preserve publication boundaries, capture-before-body ordering and existing instruction continuations when optimizing execution.
+- Validate changes with the real conformance adapter and generated oracles described in [README.md](./README.md); keep Node-only measurements under `bench/`.

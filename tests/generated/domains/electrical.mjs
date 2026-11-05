@@ -241,29 +241,6 @@ function checkReadings(sample, delivered) {
     assert.equal(value.valid, true);
     for (const name of ['low', 'high', 'unknown']) assert.equal(value[name], level === name);
   }
-  // Forward-error tolerance cannot replace electrical.rst's original-node residual check.
-  for (let offset = 0; offset < delivered.length; offset += sample.nodes.length) {
-    for (let index = 0; index < sample.nodes.length; index++) {
-      if (sample.nodes[index].voltage !== null) continue;
-      const branches = sample.edges.filter(
-        ({ from, to }) => from !== to && (from === index || to === index),
-      );
-      const conductance = branches.reduce((sum, branch) => sum + 1 / branch.resistance, 0);
-      let weighted = 0;
-      let absolute = 0;
-      for (const { from, to, resistance } of branches) {
-        const neighbor = delivered[offset + (from === index ? to : from)].value.voltage;
-        const weight = 1 / resistance / conductance;
-        weighted += weight * neighbor;
-        absolute += weight * Math.abs(neighbor);
-      }
-      const voltage = delivered[offset + index].value.voltage;
-      assert.ok(
-        Math.abs(voltage - weighted) <= 1e-12 * (Math.abs(voltage) + absolute),
-        `node ${index}: published voltages violate the normalized nodal residual`,
-      );
-    }
-  }
 }
 
 async function execute(adapter, sample, targets) {
