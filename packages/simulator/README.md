@@ -43,6 +43,8 @@ memory 使用独立字节区，输入和输出遵守快照、FIFO 与批次规�
 
 运行时记录片段内实际赋值的引脚，求解器据此更新缓存而非每边界扫描全板意图；独立求解调用省略提示时仍比较所有意图身份。意图数组及分支遵守不可变值合同。未变化块复用配置与分解，未变化采样复用已冻结对象；全部必要块求解成功后才原子发布全板新采样。一般耦合块的稠密后端对含 U 个未知节点的计算块使用 O(U²) 空间和 O(U³) 分解时间；大型单一计算块仍应通过基准评估。
 
+JIT 在翻译并校验整个块后，将各 PC 直接绑定到已编译的指令入口；热路径不再逐次查找块内指令或读取编译缓存。执行状态保持稳定对象形状，避免每条指令增删临时属性。代码写入仍使入口缓存失效，已挂起的当前指令保留原恢复数据，完成后重新选择指令，不重放前缀。不存在 `waitUntil` 订阅时跳过全体 JIT 等待检查；存在订阅时仍按注册顺序检查。每条指令的钩子、耗时、发布边界和推进终点规则不变。
+
 旧 `Circuit`、`compileCircuit`、原理图宿主和 `/sandbox` 入口已移除；编辑器与 playground 的接入需迁移到新的库/板合同。
 
 ## 验证
@@ -75,6 +77,22 @@ pnpm --filter @mica-js/simulator bench:propagation
 ### 跨器件传播基准
 
 `bench:propagation` 使用真实 DDL/SDK，覆盖发送器、共享电气网络、多接收器及后续边界的中继传播；每组独立核对计数与校验和。使用 `--sizes=1,4,16,64 --samples=20 --warmup=2 --rounds=100` 可指定扇出、采样、预热及传播轮数。JSON 报告中位数、P95/P99 和聚合操作吞吐；它测量结构化传播路径，不代表整帧 UART 摘要或完整芯片速度。配合已有 UART 真实负载确认通用路径上的收益与回退。作为模块导入时不自动运行 CLI；导出的 `preparePropagation({ rounds, steps })` 返回准备好的工厂，`create(sdk, { size })` 为指定 SDK 创建独立场景，提供 `run()`、`verify()`、`dispose()`，可用于计时外准备、逐样本交替的双版本对照。
+
+### MCU 连续执行基准
+
+[MCU 基准](bench/mcu.mjs)通过真实公开 SDK/JIT 执行合成的 8 位累加器模型，不是 ARM/AVR 或其他具体芯片仿真器。三个持续负载分别为算术/分支循环、独立数据 RAM 读写，以及 GPIO 电气输出、模型定时器与中断服务程序；不使用 WAIT 或空闲跳时充当 CPU 性能。ADDI/XORI/LD/ST/OUT/IRET 各消耗两周期，JMP 一周期，中断入口额外两周期。默认每周期 10,000 ps，即模型标称 100 MHz，而非宣称能够实时仿真 100 MHz。
+
+```powershell
+pnpm --filter @mica-js/simulator bench:mcu
+pnpm --filter @mica-js/simulator bench:mcu --workloads=alu-branch,ram,gpio-timer-irq --sizes=1,4,16 --samples=40 --warmup=5 --cycles-per-step=10000
+node --test packages\simulator\bench\mcu.test.mjs
+```
+
+默认每组独立创建板，记录一次首次推进，再预热 3 批、测量 20 批，每批每颗 MCU 推进 10,000 周期。报告分开列出每颗 MCU 的等效实时 MHz、实时倍率、聚合周期吞吐、已开始指令吞吐和批次 P50/P95/P99。等效 MHz 使用单颗 MCU 的已流逝 CPU 周期与计时墙钟秒数计算，不把指令数当周期数，也不把多 MCU 的聚合吞吐当作单颗主频。末尾指令或中断入口尚未消耗的周期不计入进度；报告中的指令数是已开始数，不是完成数。MCU 在此模型中没有空闲间隙。
+
+计时仅覆盖 `runUntil`，不包含建模、装配、预期计算、证据快照和事件循环让出。独立增量解释器在计时外核对 CPU/IRQ 状态、全部数据 RAM、定时器次数和 GPIO 采样，并核对已流逝周期等于已开始指令耗时加入口耗时、减去终点尚未消耗的部分。没有逐指令宿主计数、轨迹或状态观察反应。GPIO 验证是采样状态，不宣称覆盖全部边沿历史；多 MCU 使用同步起点和相同固件。预热不保证覆盖所有 JIT 路径，首次推进也不是新进程冷启动。
+
+作为模块导入时不运行 CLI；`create(sdk, { workload, size, stepCycles, cyclePs, irqPeriodCycles })` 返回独立场景，提供 `step(cycles?)`、`verify()`、`progress`、`dispose()` 及共享的 `model`。相同模型/时钟/中断周期配置在不同 SDK 间复用同一 IR 对象，供 AB/BA 对照；`progress` 不推进板，`verify()` 触发同终点快照，在首次推进前调用会使冷启动观测失效。通过 `step` 推进，不直接调用场景内板的 `runUntil`。CLI 的总工作量包含首次推进、预热和测量；每板每颗 MCU 最多 500 万周期、整个矩阵聚合最多 5000 万周期，其余参数边界见 `--help`。短批次的百分位及 MHz 仍受宿主 GC、调度和 V8 状态影响，不作为真实芯片或稳定实时延迟保证。
 
 ### 真实负载基准
 

@@ -7,7 +7,6 @@ import {
   type DeviceIR,
   type DeclarationIR,
   type ComputationIR,
-  type BlockIR,
   type RegionIR,
 } from '@mica-js/device-model';
 import {
@@ -221,22 +220,21 @@ interface Reaction {
   execute?: CompiledBody;
   frame: ReactionFrame | undefined;
 }
+interface JitInstruction {
+  readonly pc: number;
+  readonly nextPc: number;
+  readonly execute: CompiledBody;
+}
 interface Jit {
   readonly instance: Instance;
   readonly options: JitOptions;
-  readonly cache: Map<number, BlockIR>;
+  readonly cache: Map<number, JitInstruction>;
   active: boolean;
   stopped: boolean;
   queued: boolean;
-  ready: boolean;
-  execution?: Execution;
-  instruction?: BlockIR['instructions'][number];
-  block?: BlockIR;
-  version: number;
-  activeVersion: number;
+  execution: Execution | undefined;
   predicate?: string;
   dependencies?: Dependencies;
-  inHook: boolean;
 }
 interface TopicListener {
   readonly owner?: Instance;
@@ -521,11 +519,7 @@ class Instance {
   }
   memoryChanged(name: string): void {
     this.board.invalidate(this.memoryResources.get(name)!);
-    for (const jit of this.jits)
-      if (jit.options.code === name) {
-        jit.version++;
-        jit.cache.clear();
-      }
+    for (const jit of this.jits) if (jit.options.code === name) jit.cache.clear();
   }
   prepare(): void {
     for (const declaration of this.entry.model.declarations)
@@ -729,10 +723,7 @@ class Instance {
       active: true,
       stopped: false,
       queued: false,
-      ready: true,
-      version: 0,
-      activeVersion: 0,
-      inHook: false,
+      execution: undefined,
     };
     this.jits.push(jit);
     this.board.jits.push(jit);
@@ -740,8 +731,9 @@ class Instance {
       dispose: () => {
         if (!jit.active) return;
         jit.active = false;
-        delete jit.execution;
+        jit.execution = undefined;
         delete jit.predicate;
+        this.board.waitingJits.delete(jit);
         jit.cache.clear();
       },
     };
@@ -809,6 +801,7 @@ class BoardRuntime implements Board {
   private readonly models = new Fifo<Process>();
   private readonly events = new EventQueue<() => void>();
   private readonly readyJits = new Fifo<Jit>();
+  readonly waitingJits = new Set<Jit>();
   readonly jits: Jit[] = [];
   readonly instances: Instance[] = [];
   private network!: ElectricalNetwork;
@@ -1131,7 +1124,6 @@ class BoardRuntime implements Board {
   private queueJit(jit: Jit): void {
     if (jit.active && !jit.stopped && !jit.queued) {
       jit.queued = true;
-      jit.ready = true;
       this.readyJits.push(jit);
     }
   }
@@ -1253,7 +1245,6 @@ class BoardRuntime implements Board {
       const duration = time(signal.duration);
       if (duration === 0) return false;
       const due = time(this.time + duration);
-      jit.ready = false;
       this.events.push(due, () => this.queueJit(jit));
       this.boundary();
       return true;
@@ -1263,13 +1254,13 @@ class BoardRuntime implements Board {
       if (checked.value === true) return false;
       jit.predicate = signal.predicate;
       jit.dependencies = checked.dependencies;
-      jit.ready = false;
+      this.waitingJits.add(jit);
       this.boundary();
       return true;
     }
     if (signal.kind === 'stop') {
       jit.stopped = true;
-      delete jit.execution;
+      jit.execution = undefined;
       this.boundary();
       return true;
     }
@@ -1277,11 +1268,7 @@ class BoardRuntime implements Board {
       finite(signal.pc, 'redirect target');
       const duration = time(signal.delay);
       jit.instance.host.write(jit.options.pc, signal.pc);
-      delete jit.execution;
-      delete jit.instruction;
-      delete jit.block;
-      jit.inHook = false;
-      jit.ready = false;
+      jit.execution = undefined;
       this.boundary();
       if (duration === 0) this.queueJit(jit);
       else this.events.push(time(this.time + duration), () => this.queueJit(jit));
@@ -1303,14 +1290,13 @@ class BoardRuntime implements Board {
         const step = execution.next();
         if (!step.done) {
           jit.execution = execution;
-          jit.inHook = true;
           if (this.jitSignal(jit, step.value)) return;
           throw new TypeError('Invalid hook suspension');
         }
       }
       const pc = finite(jit.instance.states.get(jit.options.pc), 'pc');
-      let block = jit.cache.get(pc);
-      if (!block) {
+      let instruction = jit.cache.get(pc);
+      if (!instruction) {
         const prior = this.phase;
         this.phase = 'translate';
         let valid = true;
@@ -1324,11 +1310,20 @@ class BoardRuntime implements Board {
             createJitBlockBuilder({ device: jit.instance.entry.model }),
           );
           acceptSync(result);
-          block = validateBoundBlockIR(result, jit.instance.entry.model);
+          const block = validateBoundBlockIR(result, jit.instance.entry.model);
           if (block.instructions[0]?.pc !== pc)
             throw new TypeError('Translated first pc does not match');
-          for (const instruction of block.instructions) body(instruction.body);
-          for (const instruction of block.instructions) jit.cache.set(instruction.pc, block);
+          const instructions = block.instructions.map((instruction) => ({
+            pc: instruction.pc,
+            nextPc: instruction.nextPc,
+            execute: body(instruction.body),
+          }));
+          // Match the first instruction when a block contains a repeated PC.
+          for (let index = instructions.length - 1; index >= 0; index--) {
+            const entry = instructions[index]!;
+            jit.cache.set(entry.pc, entry);
+          }
+          instruction = instructions[0]!;
         } catch (cause) {
           throw this.wrap(cause, 'JIT_FAILED', 'translate', jit.instance);
         } finally {
@@ -1336,21 +1331,13 @@ class BoardRuntime implements Board {
           this.phase = prior;
         }
       }
-      const instruction = block.instructions.find((item) => item.pc === pc);
-      if (!instruction) throw new TypeError('Missing instruction');
-      jit.block = block;
-      jit.instruction = instruction;
-      jit.activeVersion = jit.version;
       jit.instance.host.write(jit.options.pc, instruction.nextPc);
-      jit.execution = body(instruction.body)(jit.instance.host);
+      jit.execution = instruction.execute(jit.instance.host);
     }
     for (;;) {
       const step = jit.execution.next();
       if (step.done) {
-        delete jit.execution;
-        delete jit.instruction;
-        delete jit.block;
-        jit.inHook = false;
+        jit.execution = undefined;
         this.boundary();
         this.queueJit(jit);
         return;
@@ -1404,21 +1391,23 @@ class BoardRuntime implements Board {
           if (this.isFaulted) throw this.primary!;
           continue;
         }
-        for (const jit of this.jits)
-          if (
-            jit.active &&
-            !jit.stopped &&
-            jit.predicate &&
-            !jit.instance.dependenciesCurrent(jit.dependencies)
-          ) {
-            const checked = jit.instance.evaluate(() => jit.instance.syncCall(jit.predicate!));
-            jit.dependencies = checked.dependencies;
-            if (checked.value === true) {
-              delete jit.predicate;
-              delete jit.dependencies;
-              this.queueJit(jit);
+        if (this.waitingJits.size)
+          for (const jit of this.jits)
+            if (
+              jit.active &&
+              !jit.stopped &&
+              jit.predicate &&
+              !jit.instance.dependenciesCurrent(jit.dependencies)
+            ) {
+              const checked = jit.instance.evaluate(() => jit.instance.syncCall(jit.predicate!));
+              jit.dependencies = checked.dependencies;
+              if (checked.value === true) {
+                delete jit.predicate;
+                delete jit.dependencies;
+                this.waitingJits.delete(jit);
+                this.queueJit(jit);
+              }
             }
-          }
         if (this.time < end && this.readyJits.length) {
           this.runJit(this.readyJits.shift());
           if (this.isFaulted) throw this.primary!;

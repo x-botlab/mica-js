@@ -41,7 +41,8 @@
     "bench": "node bench/runtime.mjs",
     "bench:electrical": "node bench/electrical.mjs",
     "bench:workloads": "node bench/workloads.mjs",
-    "bench:propagation": "node bench/propagation.mjs"
+    "bench:propagation": "node bench/propagation.mjs",
+    "bench:mcu": "node bench/mcu.mjs"
   },
   "publishConfig": {
     "access": "public",
