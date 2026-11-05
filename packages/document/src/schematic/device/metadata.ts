@@ -59,7 +59,12 @@ export type DevicePropertyEditor =
       readonly max?: number;
       readonly step?: number;
     }
-  | { readonly kind: 'text' | 'textarea' | 'checkbox' | 'file' }
+  | { readonly kind: 'text' | 'textarea' | 'checkbox' }
+  | {
+      readonly kind: 'file';
+      readonly extensions?: readonly string[];
+      readonly maxSize?: number;
+    }
   | { readonly kind: 'select'; readonly labels?: Readonly<Record<string, string>> };
 export interface DevicePropertyMetadata {
   readonly type: 'number' | 'boolean' | 'string' | 'enum' | 'bytes';
@@ -103,6 +108,8 @@ export interface DeviceMetadata {
   readonly description?: string;
   readonly license?: string;
   readonly tags?: readonly string[];
+  readonly templates?: readonly string[];
+  readonly recommends?: { readonly widgets?: readonly string[] };
   readonly designatorPrefix?: string;
   readonly properties?: Readonly<Record<string, DevicePropertyMetadata>>;
   readonly pins?: Readonly<Record<string, DevicePinMetadata>>;
@@ -202,6 +209,24 @@ const editor: Check = (v, p, d) => {
   };
   if (isRecord(v) && v.kind === 'number')
     Object.assign(fields, { min: number, max: number, step: positive });
+  if (isRecord(v) && v.kind === 'file') {
+    fields.extensions = (value, path, diagnostics) => {
+      strings(value, path, diagnostics);
+      if (Array.isArray(value))
+        value.forEach((extension, index) => {
+          if (
+            typeof extension === 'string' &&
+            !/^\.[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*$/.test(extension)
+          )
+            fail(`${path}/${index}`, diagnostics, 'Expected a dotted filename extension.');
+        });
+    };
+    fields.maxSize = (value, path, diagnostics) => {
+      positive(value, path, diagnostics);
+      if (typeof value === 'number' && !Number.isInteger(value))
+        fail(path, diagnostics, 'Expected an integer byte count.');
+    };
+  }
   if (isRecord(v) && v.kind === 'select') fields.labels = map(text);
   object(fields, ['kind'])(v, p, d);
 };
@@ -323,6 +348,8 @@ const checkMetadata = object(
     description: nonempty,
     license: nonempty,
     tags: strings,
+    templates: strings,
+    recommends: object({ widgets: strings }),
     designatorPrefix: (v, p, d) => {
       if (typeof v !== 'string' || !/^\S+$/.test(v))
         fail(p, d, 'Expected a nonempty prefix without whitespace.');

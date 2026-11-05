@@ -31,6 +31,25 @@
         "$ref": "#/$defs/nonempty"
       }
     },
+    "templates": {
+      "description": "平台项目模板 ID，按展示优先级排序；由平台解析，不自动创建项目。",
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/nonempty" }
+    },
+    "recommends": {
+      "description": "器件推荐项，不构成加载或运行依赖。",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "widgets": {
+          "description": "推荐的完整 Widget ID，按展示优先级排序。",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonempty" }
+        }
+      }
+    },
     "designatorPrefix": {
       "type": "string",
       "pattern": "^\\S+$"
@@ -173,6 +192,7 @@
       ]
     },
     "editor": {
+      "description": "属性面板输入控件提示；不替代属性类型或运行时约束，省略时由宿主选择控件。",
       "oneOf": [
         {
           "type": "object",
@@ -180,12 +200,15 @@
           "required": ["kind"],
           "properties": {
             "min": {
+              "description": "数字控件的最小值提示，与属性使用相同单位。",
               "type": "number"
             },
             "max": {
+              "description": "数字控件的最大值提示，应不小于 min。",
               "type": "number"
             },
             "step": {
+              "description": "数字控件递增或递减的正数步长。",
               "$ref": "#/$defs/positive"
             },
             "kind": {
@@ -199,7 +222,29 @@
           "required": ["kind"],
           "properties": {
             "kind": {
-              "enum": ["text", "textarea", "checkbox", "file"]
+              "enum": ["text", "textarea", "checkbox"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "file" },
+            "extensions": {
+              "description": "允许的文件扩展名，包含前导点；宿主忽略大小写匹配，省略或空数组表示不限。",
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^\\.[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*$"
+              }
+            },
+            "maxSize": {
+              "description": "文件大小上限，单位为字节；省略表示不限。",
+              "type": "integer",
+              "exclusiveMinimum": 0
             }
           }
         },
@@ -209,6 +254,7 @@
           "required": ["kind"],
           "properties": {
             "labels": {
+              "description": "枚举实际值到显示文字的映射，不改变候选值与保存值；SDK 作者格式要求显式提供此对象。",
               "type": "object",
               "additionalProperties": {
                 "type": "string"

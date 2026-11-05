@@ -151,8 +151,10 @@ describe('metadata schemas', () => {
               'pins',
               'ports',
               'properties',
+              'recommends',
               'symbol',
               'tags',
+              'templates',
               'version',
             ]
           : [
@@ -173,6 +175,24 @@ describe('metadata schemas', () => {
 });
 
 describe('validateMetadata', () => {
+  it('accepts platform references and rejects invalid recommendation lists', () => {
+    const metadata: DeviceMetadata = {
+      ...DEVICE,
+      templates: ['platform:c51', 'platform:arm-gcc'],
+      recommends: { widgets: ['demo:voltmeter'] },
+    };
+    expect(() => validateMetadata(metadata, 'device')).not.toThrow();
+    expect(() =>
+      validateMetadata(deviceWith({ templates: [], recommends: {} }), 'device'),
+    ).not.toThrow();
+    for (const patch of [
+      { templates: [''] },
+      { templates: ['platform:c51', 'platform:c51'] },
+      { recommends: { widgets: [1] } },
+      { recommends: { unknown: [] } },
+    ])
+      expect(() => validateMetadata(deviceWith(patch), 'device')).toThrow();
+  });
   it('accepts a complete device', () => {
     expect(() => validateMetadata(DEVICE, 'device')).not.toThrow();
     expect(() => validateMetadata(DEVICE, 'device', 'resistor')).not.toThrow();
@@ -547,6 +567,43 @@ describe('property metadata', () => {
 });
 
 describe('property editors', () => {
+  it('accepts typed file constraints and rejects malformed limits', () => {
+    const property: DeviceMetadata['properties'] = {
+      firmware: {
+        type: 'bytes',
+        required: true,
+        editor: { kind: 'file', extensions: ['.bin', '.HEX', '.tar.gz'], maxSize: 1048576 },
+      },
+    };
+    expect(() => validateMetadata(deviceWith({ properties: property }), 'device')).not.toThrow();
+    expect(() =>
+      validateMetadata(
+        deviceProperties({
+          x: { type: 'bytes', required: true, editor: { kind: 'file', extensions: [] } },
+        }),
+        'device',
+      ),
+    ).not.toThrow();
+    for (const options of [
+      { extensions: ['bin'] },
+      { extensions: ['.'] },
+      { extensions: ['*.bin'] },
+      { extensions: ['.bin', '.bin'] },
+      { extensions: [1] },
+      { maxSize: 0 },
+      { maxSize: -1 },
+      { maxSize: 1.5 },
+      { maxSize: '1024' },
+    ])
+      expect(() =>
+        validateMetadata(
+          deviceProperties({
+            x: { type: 'bytes', required: true, editor: { kind: 'file', ...options } },
+          }),
+          'device',
+        ),
+      ).toThrow();
+  });
   it('accepts every editor kind', () => {
     const editors = [
       { kind: 'number', min: 0, max: 10, step: 0.5 },
