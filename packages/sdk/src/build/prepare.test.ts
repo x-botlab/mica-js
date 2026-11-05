@@ -1,0 +1,478 @@
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
+import { runCli, type CliStreams } from './cli';
+import {
+  DEVICE_DECLARATION_FILE,
+  DEVICE_SOURCE_FILE,
+  prepare,
+  watchDevices,
+  type PrepareWatcher,
+} from './prepare';
+
+const PROBE = `device Probe(level: Mode? default none) {
+  enum Mode { low, high }
+  record Sample { level: number; valid: bool; }
+  input channel raw: bytes(maxLength: 4, capacity: 2, overflow: Overflow.error);
+  output channel samples: Sample(capacity: 4, overflow: Overflow.drop_new);
+  output notification empty;
+  input notification reset;
+  public memory buffer[8];
+  state count: number = 0;
+}
+`;
+
+const GATE = `device Gate(gain: number default 1) {
+  input channel trigger: number(capacity: 1, overflow: Overflow.drop_oldest);
+  output channel level: number(capacity: 1, overflow: Overflow.drop_new);
+  assert gain >= 0;
+}
+`;
+
+const ALIASES = [
+  'Props',
+  'PropertyInput',
+  'Inputs',
+  'Memory',
+  'Outputs',
+  'Context',
+  'Batch',
+  'Adapter',
+  'Factory',
+];
+
+const roots: string[] = [];
+const watchers: PrepareWatcher[] = [];
+const temporaryDirectories: string[] = [];
+const children: ChildProcess[] = [];
+const loadModule = createRequire(import.meta.url);
+const typescript = loadModule('typescript') as typeof import('typescript');
+const packageRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', '..');
+
+async function createRoot(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), 'mica-sdk-prepare-'));
+  roots.push(root);
+  return root;
+}
+
+async function writeDevice(
+  root: string,
+  device: string,
+  source: string,
+  sourceDir = 'src',
+): Promise<string> {
+  const directory = join(root, sourceDir, 'devices', device);
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, DEVICE_SOURCE_FILE), source, 'utf8');
+  return join(directory, DEVICE_DECLARATION_FILE);
+}
+
+async function waitFor(check: () => Promise<boolean>, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await new Promise((settle) => setTimeout(settle, 25));
+  }
+  throw new Error(`Condition was not met within ${timeoutMs} ms`);
+}
+
+async function readIfPresent(file: string): Promise<string | undefined> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+function capture(): { streams: CliStreams; out: string[]; err: string[] } {
+  const out: string[] = [];
+  const err: string[] = [];
+  return {
+    out,
+    err,
+    streams: {
+      out: { write: (chunk: string) => void out.push(chunk) },
+      err: { write: (chunk: string) => void err.push(chunk) },
+    },
+  };
+}
+
+/** Mirrors the `tsc` build closely enough to spawn the real CLI entry point from source. */
+async function buildCliEntry(): Promise<string> {
+  const directory = await mkdtemp(join(packageRoot, '.tmp-cli-'));
+  temporaryDirectories.push(directory);
+  const compilerOptions = {
+    target: typescript.ScriptTarget.ES2022,
+    module: typescript.ModuleKind.ESNext,
+    verbatimModuleSyntax: true,
+  };
+  for (const name of ['prepare', 'cli']) {
+    const source = await readFile(join(packageRoot, 'src', 'build', `${name}.ts`), 'utf8');
+    const { outputText } = typescript.transpileModule(source, {
+      compilerOptions,
+      fileName: `${name}.ts`,
+    });
+    await writeFile(join(directory, `${name}.js`), outputText, 'utf8');
+  }
+  return join(directory, 'cli.js');
+}
+
+function runExecutable(
+  entry: string,
+  args: readonly string[],
+): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(process.execPath, [entry, ...args], {
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+afterEach(async () => {
+  for (const child of children.splice(0)) child.kill();
+  for (const watcher of watchers.splice(0)) await watcher.dispose();
+  for (const directory of temporaryDirectories.splice(0))
+    await rm(directory, { recursive: true, force: true });
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+
+describe('prepare', () => {
+  it('projects the DDL model into declarations that resolve the device module', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', PROBE);
+
+    await expect(prepare({ root })).resolves.toEqual([declarationFile]);
+
+    const content = await readFile(declarationFile, 'utf8');
+    expect(content).toContain('// Generated by @mica-js/sdk prepare from model.ddl; do not edit.');
+    expect(content).toContain(
+      'import type { BorrowedBytes, ChannelMessage, DeviceAdapter, DeviceBatch, DeviceContext, ' +
+        'DeviceFactory, InputChannel, InputNotification, Notification, ReadonlyBytes } from ' +
+        '"@mica-js/sdk/device";',
+    );
+    expect(content).toContain('export type Probe_Mode = "low" | "high";');
+    expect(content).toContain('export interface Probe_Sample {');
+    expect(content).toContain('  readonly "level": Probe_Mode | null;');
+    expect(content).toContain('  readonly "level"?: Probe_Mode | null;');
+    expect(content).toContain('  readonly "raw": InputChannel<Uint8Array>;');
+    expect(content).toContain('  readonly "reset": InputNotification;');
+    expect(content).toContain('  readonly "buffer": BorrowedBytes;');
+    expect(content).toContain('  readonly "samples": readonly ChannelMessage<Probe_Sample>[];');
+    expect(content).toContain('  readonly "empty": Notification | null;');
+    expect(content).toContain(
+      'export type ProbeContext = DeviceContext<ProbeProps, ProbeInputs, ProbeMemory>;',
+    );
+    expect(content).toContain(
+      'export type ProbeFactory = DeviceFactory<ProbeContext, ProbeBatch>;',
+    );
+    for (const alias of ALIASES) expect(content).toContain(`export type ${alias} = Probe${alias};`);
+  });
+
+  it('keeps an unchanged declaration and rewrites a changed one', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', PROBE);
+    await prepare({ root });
+
+    const stamp = new Date('2020-01-02T03:04:05.000Z');
+    await utimes(declarationFile, stamp, stamp);
+    const before = await readFile(declarationFile, 'utf8');
+
+    await prepare({ root });
+
+    expect(await readFile(declarationFile, 'utf8')).toBe(before);
+    expect((await stat(declarationFile)).mtimeMs).toBe(stamp.getTime());
+
+    await writeFile(
+      join(root, 'src', 'devices', 'probe', DEVICE_SOURCE_FILE),
+      PROBE.replace('device Probe(', 'device Probe(extra: number default 1, '),
+      'utf8',
+    );
+    await prepare({ root });
+
+    expect(await readFile(declarationFile, 'utf8')).toContain('  readonly "extra": number;');
+    expect((await stat(declarationFile)).mtimeMs).not.toBe(stamp.getTime());
+  });
+
+  it('removes the stale generated declaration when the definition stops compiling', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', PROBE);
+    await prepare({ root });
+    const sourceFile = join(root, 'src', 'devices', 'probe', DEVICE_SOURCE_FILE);
+
+    await writeFile(sourceFile, 'device Probe { level: number = ; }', 'utf8');
+
+    await expect(prepare({ root })).rejects.toThrow(sourceFile);
+    await expect(stat(declarationFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('leaves a hand-written declaration alone when the definition fails', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', 'device Probe { level: number = ; }');
+    await writeFile(declarationFile, 'export type Factory = () => void;\n', 'utf8');
+
+    await expect(prepare({ root })).rejects.toThrow(DEVICE_SOURCE_FILE);
+
+    expect(await readFile(declarationFile, 'utf8')).toBe('export type Factory = () => void;\n');
+  });
+
+  it('scans the configured source directory', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', PROBE, 'dev');
+
+    await expect(prepare({ root, sourceDir: 'dev' })).resolves.toEqual([declarationFile]);
+    expect(await readFile(declarationFile, 'utf8')).toContain('export interface ProbeProps {');
+    await expect(stat(join(root, 'src', 'devices'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('generates one declaration per device directory in directory order', async () => {
+    const root = await createRoot();
+    const gate = await writeDevice(root, 'alpha-gate', GATE);
+    const probe = await writeDevice(root, 'beta-probe', PROBE);
+
+    await expect(prepare({ root })).resolves.toEqual([gate, probe]);
+    expect(await readFile(gate, 'utf8')).toContain('export interface GateProps {');
+    expect(await readFile(probe, 'utf8')).toContain('export interface ProbeProps {');
+  });
+
+  it('resolves with no paths when the package has no devices', async () => {
+    const root = await createRoot();
+
+    await expect(prepare({ root })).resolves.toEqual([]);
+  });
+
+  it('writes no declaration when any definition fails', async () => {
+    const root = await createRoot();
+    const probe = await writeDevice(root, 'probe', PROBE);
+    await prepare({ root });
+    const before = await readFile(probe, 'utf8');
+
+    await writeFile(
+      join(root, 'src', 'devices', 'probe', DEVICE_SOURCE_FILE),
+      PROBE.replace('device Probe(', 'device Probe(extra: number default 1, '),
+      'utf8',
+    );
+    await writeDevice(root, 'z-gate', 'device Gate { gain: number = ; }');
+
+    await expect(prepare({ root })).rejects.toThrow(DEVICE_SOURCE_FILE);
+    expect(await readFile(probe, 'utf8')).toBe(before);
+  });
+
+  it('removes the declaration of a device directory without a definition', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', PROBE);
+    await prepare({ root });
+
+    await rm(join(root, 'src', 'devices', 'probe', DEVICE_SOURCE_FILE));
+
+    await expect(prepare({ root })).resolves.toEqual([]);
+    await expect(stat(declarationFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('watchDevices', () => {
+  it('regenerates on added, changed and removed device definitions', async () => {
+    const root = await createRoot();
+    const probe = await writeDevice(root, 'probe', PROBE);
+    const watcher = watchDevices({ root, debounceMs: 10 });
+    watchers.push(watcher);
+    await expect(watcher.ready).resolves.toEqual([probe]);
+
+    const gate = await writeDevice(root, 'gate', GATE);
+    await waitFor(async () => (await readIfPresent(gate))?.includes('GateProps') === true);
+
+    const sourceFile = join(root, 'src', 'devices', 'probe', DEVICE_SOURCE_FILE);
+    await writeFile(
+      sourceFile,
+      PROBE.replace('device Probe(', 'device Probe(extra: number default 1, '),
+      'utf8',
+    );
+    await waitFor(async () => (await readIfPresent(probe))?.includes('"extra"') === true);
+
+    await rm(sourceFile);
+    await waitFor(async () => (await readIfPresent(probe)) === undefined);
+  });
+
+  it('reports a failed definition without losing the watch loop', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', PROBE);
+    const errors: unknown[] = [];
+    const watcher = watchDevices({
+      root,
+      debounceMs: 10,
+      onError: (error) => errors.push(error),
+    });
+    watchers.push(watcher);
+    await watcher.ready;
+
+    const sourceFile = join(root, 'src', 'devices', 'probe', DEVICE_SOURCE_FILE);
+    await writeFile(sourceFile, 'device Probe { level: number = ; }', 'utf8');
+    await waitFor(async () => errors.length > 0);
+    await waitFor(async () => (await readIfPresent(declarationFile)) === undefined);
+
+    await writeFile(
+      sourceFile,
+      PROBE.replace('device Probe(', 'device Probe(extra: number default 1, '),
+      'utf8',
+    );
+    await waitFor(async () => (await readIfPresent(declarationFile))?.includes('"extra"') === true);
+  });
+});
+
+describe('cli', () => {
+  it('prints the usage for --help', async () => {
+    const { streams, out, err } = capture();
+
+    await expect(runCli(['--help'], streams)).resolves.toBe(0);
+    expect(out.join('')).toContain('Usage: mica prepare');
+    expect(err).toEqual([]);
+  });
+
+  it('explains the command when invoked without arguments', async () => {
+    const { streams, out } = capture();
+
+    await expect(runCli([], streams)).resolves.toBe(0);
+    expect(out.join('')).toContain('Usage: mica prepare');
+  });
+
+  it('rejects unknown arguments with a nonzero status', async () => {
+    const { streams, err } = capture();
+
+    await expect(runCli(['--bogus'], streams)).resolves.toBe(1);
+    expect(err.join('')).toContain("Unknown argument '--bogus'.");
+    expect(err.join('')).toContain('Usage: mica prepare');
+  });
+
+  it('rejects unknown commands with a nonzero status', async () => {
+    const { streams, err } = capture();
+
+    await expect(runCli(['build'], streams)).resolves.toBe(1);
+    expect(err.join('')).toContain("Unknown command 'build'.");
+    expect(err.join('')).toContain('Usage: mica prepare');
+  });
+
+  it('generates the declarations of the given root', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', PROBE);
+    const { streams, out } = capture();
+
+    await expect(runCli(['prepare', '--root', root], streams)).resolves.toBe(0);
+    expect(out.join('')).toContain('1 device declaration ready');
+    expect(await readIfPresent(declarationFile)).toContain('ProbeProps');
+  });
+
+  it('reports a failing definition with a nonzero status', async () => {
+    const root = await createRoot();
+    await writeDevice(root, 'probe', 'device Probe { level: number = ; }');
+    const { streams, err } = capture();
+
+    await expect(runCli(['prepare', '--root', root], streams)).resolves.toBe(1);
+    expect(err.join('')).toContain(DEVICE_SOURCE_FILE);
+  });
+
+  it('disposes a prepare --watch session when a signal arrives', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', PROBE);
+    const sigintBaseline = new Set(process.listeners('SIGINT'));
+    const sigtermBaseline = new Set(process.listeners('SIGTERM'));
+    const { streams, out } = capture();
+
+    const session = runCli(['prepare', '--watch', '--root', root], streams);
+    let stopped = false;
+    const signal = (): void => {
+      if (stopped) return;
+      stopped = true;
+      const listener = process
+        .listeners('SIGTERM')
+        .find((candidate) => !sigtermBaseline.has(candidate)) as
+        ((signal: NodeJS.Signals) => void) | undefined;
+      listener?.('SIGTERM');
+    };
+
+    const added = (name: 'SIGINT' | 'SIGTERM', baseline: ReadonlySet<unknown>): number =>
+      process.listeners(name).filter((listener) => !baseline.has(listener)).length;
+
+    try {
+      await waitFor(async () => out.join('').includes('for changes'));
+      expect(added('SIGINT', sigintBaseline)).toBe(1);
+      expect(added('SIGTERM', sigtermBaseline)).toBe(1);
+
+      signal();
+
+      await expect(session).resolves.toBe(0);
+      expect(added('SIGINT', sigintBaseline)).toBe(0);
+      expect(added('SIGTERM', sigtermBaseline)).toBe(0);
+      expect(await readIfPresent(declarationFile)).toContain('ProbeProps');
+    } finally {
+      signal();
+    }
+  }, 15_000);
+});
+
+describe('cli executable', () => {
+  it('generates declarations through the prepare command', async () => {
+    const root = await createRoot();
+    const declarationFile = await writeDevice(root, 'probe', PROBE);
+    const entry = await buildCliEntry();
+
+    const result = runExecutable(entry, ['prepare', '--root', root]);
+
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('1 device declaration ready');
+    expect(await readIfPresent(declarationFile)).toContain('export interface ProbeProps {');
+  });
+
+  it('serves --help and rejects unknown commands', async () => {
+    const entry = await buildCliEntry();
+
+    const help = runExecutable(entry, ['--help']);
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain('Usage: mica prepare');
+    expect(help.stderr).toBe('');
+
+    const unknown = runExecutable(entry, ['build']);
+    expect(unknown.status).toBe(1);
+    expect(unknown.stderr).toContain("Unknown command 'build'.");
+  });
+
+  it('reports a failing definition with a nonzero status', async () => {
+    const root = await createRoot();
+    await writeDevice(root, 'probe', 'device Probe { level: number = ; }');
+    const entry = await buildCliEntry();
+
+    const result = runExecutable(entry, ['prepare', '--root', root]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(DEVICE_SOURCE_FILE);
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'exits with status 0 after SIGINT while watching',
+    async () => {
+      const root = await createRoot();
+      await writeDevice(root, 'probe', PROBE);
+      const entry = await buildCliEntry();
+      const child = spawn(process.execPath, [entry, 'prepare', '--watch', '--root', root], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      children.push(child);
+      let stdout = '';
+      child.stdout?.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (settle) => {
+          child.once('exit', (code, signal) => settle({ code, signal }));
+        },
+      );
+
+      await waitFor(async () => stdout.includes('for changes'));
+      child.kill('SIGINT');
+
+      await expect(exited).resolves.toEqual({ code: 0, signal: null });
+    },
+    20_000,
+  );
+});

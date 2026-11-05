@@ -1,0 +1,117 @@
+{
+  "name": "@mica-js/sdk",
+  "version": "0.1.0",
+  "description": "Device and widget author APIs and standalone Vite content builds",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "bin": {
+    "mica": "./dist/build/cli.js"
+  },
+  "files": [
+    "dist",
+    "templates"
+  ],
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./device": {
+      "source": "./src/device.ts",
+      "types": "./dist/device.d.ts",
+      "import": "./dist/device.js"
+    },
+    "./widget": {
+      "source": "./src/widget.ts",
+      "types": "./dist/widget.d.ts",
+      "import": "./dist/widget.js"
+    },
+    "./model": {
+      "source": "./src/model.ts",
+      "types": "./dist/model.d.ts",
+      "import": "./dist/model.js"
+    },
+    "./ddl": {
+      "source": "./src/ddl.ts",
+      "types": "./dist/ddl.d.ts",
+      "import": "./dist/ddl.js"
+    },
+    "./metadata": {
+      "source": "./src/metadata/index.ts",
+      "types": "./dist/metadata/index.d.ts",
+      "import": "./dist/metadata/index.js"
+    },
+    "./vite": {
+      "source": "./src/build/vite.ts",
+      "types": "./dist/build/vite.d.ts",
+      "import": "./dist/build/vite.js"
+    },
+    "./prepare": {
+      "source": "./src/build/prepare.ts",
+      "types": "./dist/build/prepare.d.ts",
+      "import": "./dist/build/prepare.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./device": {
+        "types": "./dist/device.d.ts",
+        "import": "./dist/device.js"
+      },
+      "./widget": {
+        "types": "./dist/widget.d.ts",
+        "import": "./dist/widget.js"
+      },
+      "./model": {
+        "types": "./dist/model.d.ts",
+        "import": "./dist/model.js"
+      },
+      "./ddl": {
+        "types": "./dist/ddl.d.ts",
+        "import": "./dist/ddl.js"
+      },
+      "./metadata": {
+        "types": "./dist/metadata/index.d.ts",
+        "import": "./dist/metadata/index.js"
+      },
+      "./vite": {
+        "types": "./dist/build/vite.d.ts",
+        "import": "./dist/build/vite.js"
+      },
+      "./prepare": {
+        "types": "./dist/build/prepare.d.ts",
+        "import": "./dist/build/prepare.js"
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@mica-js/core": "workspace:*",
+    "@mica-js/ddl": "workspace:*",
+    "@mica-js/device-model": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
+    "@mica-js/widget": "workspace:*",
+    "ajv": "^8.17.1",
+    "rolldown": "catalog:"
+  },
+  "peerDependencies": {
+    "vite": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}
