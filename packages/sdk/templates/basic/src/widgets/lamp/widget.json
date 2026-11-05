@@ -1,0 +1,9 @@
+{
+  "kind": "widget",
+  "id": "lamp",
+  "version": "1.0.0",
+  "displayName": "Lamp",
+  "ports": {
+    "brightness": { "direction": "input", "type": "number", "delivery": "level" }
+  }
+}

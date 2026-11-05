@@ -7,4 +7,5 @@ Widget 契约、包加载和运行时，负责管理画布文档、widget 实例
 ## 主要入口
 
 - `@mica-js/widget`：`createWidgetHost`、widget provider 以及内置沙箱和音频 worklet 工厂。
+- `@mica-js/widget/author`：仅 Widget 作者类型（工厂、上下文、输入、资源与音频），不加载宿主或沙箱入口；`@mica-js/sdk/widget` 复用此入口。
 - `@mica-js/widget/vite`：`micaWidgetPlugins()`，用于 widget 构建集成。

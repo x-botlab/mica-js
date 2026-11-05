@@ -12,3 +12,4 @@ playwright-report/
 .playwright-mcp/
 .release-pack/
 .claude/skills/
+**/*.d.ddl.ts
