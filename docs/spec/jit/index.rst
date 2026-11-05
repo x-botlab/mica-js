@@ -4,7 +4,7 @@
 动态执行入口
 ================================================
 
-JIT 入口将实例中的代码字节按需转换为共享 IR，并通过普通仿真调度执行。本章中的指令是模型显式分组的执行单位，不要求仿真系统识别其领域含义。接口已经确认，尚未实现；宿主注册与翻译回调的精确签名由 :download:`host.d.ts <../contracts/host.d.ts>` 维护，Builder 构造合同见 :doc:`/ir/builder-api`，SDK 导出布局见 :doc:`/javascript/host`。
+JIT 入口将实例中的代码字节按需转换为共享 IR，并通过仿真调度执行。本章中的指令是模型显式分组的执行单位，不要求仿真系统识别其领域含义。板默认使用 MCU 吞吐模式，也可选择逐指令精确模式，模式合同见 :doc:`throughput`。宿主注册与翻译回调的精确签名由 :download:`host.d.ts <../contracts/host.d.ts>` 维护，Builder 构造合同见 :doc:`/ir/builder-api`，SDK 导出布局见 :doc:`/javascript/host`。
 
 .. toctree::
    :maxdepth: 2
@@ -12,6 +12,7 @@ JIT 入口将实例中的代码字节按需转换为共享 IR，并通过普通�
    execution
    interrupts
    code-memory
+   throughput
 
 注册与绑定
 ------------------------------------------------
@@ -20,7 +21,7 @@ JIT 入口将实例中的代码字节按需转换为共享 IR，并通过普通�
 
 ``JitHost``、``JitOptions``、``InstructionHook`` 与 ``JitTranslate`` 的成员统一引用 :download:`host.d.ts <../contracts/host.d.ts>`，避免与宿主合同重复定义。翻译边界见 :doc:`/ir/builder`；``Disposable`` 复用 ``@mica-js/core/lifecycle`` 并遵循 :doc:`/javascript/host` 的托管释放合同。
 
-可选 ``beforeInstruction`` 仅省略时表示无钩子，显式 ``undefined`` 或 ``null`` 按原值校验并拒绝；其他可选字段同样只有省略才采用默认。
+可选 ``beforeInstruction`` 仅省略时表示无钩子；``polling`` 仅省略时表示无显式轮询声明，空数组同样有效。显式 ``undefined`` 或 ``null`` 按原值校验并拒绝；选项及轮询项中的未知字段拒绝。``polling`` 的绑定和等待语义见 :doc:`throughput`；其他可选字段同样只有省略才采用默认。
 
 ``entry`` 是本实例唯一入口名，``code`` 是本实例 memory 名称，``pc`` 是本实例 number state 名称。
 

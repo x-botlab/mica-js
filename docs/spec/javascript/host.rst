@@ -4,7 +4,7 @@
 宿主接口与 SDK
 ================================================
 
-本章定义器件库、板对象、宿主事件与公开模块的合同。精确 TypeScript 签名由 :download:`host.d.ts <../contracts/host.d.ts>` 维护；这些声明与示例是规范附件，不表示当前已发布包或运行时已经实现。器件 context 的投影见 :doc:`interfaces`，资源权限与批次分别见 :doc:`/memory`、:doc:`/channels`。
+本章定义器件库、板对象、宿主事件与公开模块的合同。精确 TypeScript 签名由 :download:`host.d.ts <../contracts/host.d.ts>` 维护；这些声明与示例是规范附件。器件 context 的投影见 :doc:`interfaces`，资源权限与批次分别见 :doc:`/memory`、:doc:`/channels`。
 
 器件库
 ------------------------------------------------
@@ -51,7 +51,9 @@
 
 ``seed`` 是 uint32，省略为 0。``instances[].randomState`` 可覆盖对应实例的四字初始状态；数值检查、派生算法及参考向量见 :doc:`/execution/random`。种子不读取宿主时间或随机源。
 
-``options`` 仅接受 ``seed``，其他字段按未知配置拒绝。声明数值合法不等于宿主能够分配；已知配置与资源建立错误在工厂前拒绝，建立失败报告 ``RESOURCE_ALLOCATION_FAILED``。运行中输出快照、编译缓存等资源分配失败属于框架故障，保留已发生效果，见 :doc:`/errors`。非终止调用及容器外墙钟终止的边界见 :doc:`/execution/scheduling`，它们不新增核心超时接口。
+``options`` 接受 ``seed``、``execution`` 与 ``cpuQuantum``；未知字段按配置错误拒绝。``execution`` 仅接受 ``'throughput'`` 或 ``'precise'``，省略时使用 ``'throughput'``。``cpuQuantum`` 是整数 ps，合法范围为 1 到 10_000_000，省略时使用 10_000_000，即 10 μs。它限定吞吐模式引入的 CPU 可见性预算；精确模式仍校验此字段，但不使用其值。两字段均只有省略才采用默认，显式 ``undefined`` 或 ``null`` 均拒绝。模式、时间预算和轮询声明见 :doc:`/jit/throughput`。
+
+声明数值合法不等于宿主能够分配；已知配置与资源建立错误在工厂前拒绝，建立失败报告 ``RESOURCE_ALLOCATION_FAILED``。运行中输出快照、编译缓存等资源分配失败属于框架故障，保留已发生效果，见 :doc:`/errors`。非终止调用及容器外墙钟终止的边界见 :doc:`/execution/scheduling`，它们不新增核心超时接口。
 
 推进、故障与销毁
 ------------------------------------------------

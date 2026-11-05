@@ -43,7 +43,19 @@ memory 使用独立字节区，输入和输出遵守快照、FIFO 与批次规�
 
 运行时记录片段内实际赋值的引脚，求解器据此更新缓存而非每边界扫描全板意图；独立求解调用省略提示时仍比较所有意图身份。意图数组及分支遵守不可变值合同。未变化块复用配置与分解，未变化采样复用已冻结对象；全部必要块求解成功后才原子发布全板新采样。一般耦合块的稠密后端对含 U 个未知节点的计算块使用 O(U²) 空间和 O(U³) 分解时间；大型单一计算块仍应通过基准评估。
 
-JIT 在翻译并校验整个块后，将各 PC 直接绑定到已编译的指令入口；热路径不再逐次查找块内指令或读取编译缓存。执行状态保持稳定对象形状，避免每条指令增删临时属性。代码写入仍使入口缓存失效，已挂起的当前指令保留原恢复数据，完成后重新选择指令，不重放前缀。不存在 `waitUntil` 订阅时跳过全体 JIT 等待检查；存在订阅时仍按注册顺序检查。每条指令的钩子、耗时、发布边界和推进终点规则不变。
+JIT 在翻译并校验整个块后，将各 PC 直接绑定到已编译的指令入口，保持稳定执行对象，避免逐次块内查找和临时属性增删。代码写入仍使入口缓存失效，已挂起的当前指令保留原恢复数据，完成后重新选择指令，不重放前缀。不存在等待订阅时跳过全体 JIT 等待检查；存在订阅时仍按注册顺序检查。
+
+### MCU 执行模式
+
+板默认使用 `execution: 'throughput'`，可切换 `execution: 'precise'`。`cpuQuantum` 为整数皮秒，范围 1 到 10,000,000，默认 10 μs；精确模式仍校验该值但不使用它。吞吐模式允许 CPU 观察、轮询退出和 IRQ 响应的额外延迟不超过该预算；固有的指令耗时、中断屏蔽和模型等待另计。外设、通信边沿、FIFO 和已锁存事件不按该预算合并。
+
+吞吐模式将支持的缓存指令编译为紧凑 JS 执行循环，使用标量状态槽和原始 RAM 字节区，减少逐指令生成器、对象分配和通用派发。每段截止于下一普通事件或推进终点；资源屏障已排除中间可观察变化时，不因时间量子额外返回通用调度器。`cpuQuantum` 是额外可见性延迟的上界而非固定步长，当前实现保持精确事件期限，不故意引入延迟。直接执行目前只用于单 JIT 板上的标量运算、固定 RAM 区域（偏移可动态计算）、正固定耗时和分支；不支持的指令、观察者、中断条件依赖写入及代码写入形成逐指令屏障，其余指令继续直接执行。按守卫集合复用最多 8 份程序，代码失效时一起清除，避免 IRQ 分支切换导致重复编译。挂起后缀保留读取结果，实际写入用可复用脏位集提交；外部改码也不重放当前前缀。
+
+直接执行守卫缓存资源的观察订阅版本：资源首次被观察或最后一个观察订阅移除时更新版本，动态观察分支切换和共享订阅遵守同一规则。订阅版本未变且中断条件没有新增实际读取依赖时，复用已有守卫集合，省去每次交接对全部状态与内存的扫描；普通资源值变化仍使用原有数据版本和通知机制。
+
+批次交接跳过空输入队列的排空与清理，并在创建器件时预绑定输入清理、输出通道和输出通知的布局。完全空的输出复用该器件预建的冻结对象；首次出现消息或通知时才按原字段顺序复制布局并生成新快照，空输出通道复用冻结空数组。全部器件的批次仍在任何 `sync` 回调之前捕获，每个器件逐次收到新的冻结批次，所有输出字段、通知复位、非空消息快照与冻结合同保持不变；空输出对象及数组身份不保证逐批唯一。
+
+`waitUntil` 保持按依赖唤醒的 WFI 等待。单 JIT 板上的无副作用自循环可自动证明并跳过重复执行，依赖变化后沿原循环相位恢复，不提前读到外部变化；多 JIT 保留原交错顺序。模型也可在 `attachJit` 声明 `polling: [{ pc, predicate }]`：吞吐模式在该 PC 开始前检查本实例无参 bool 纯函数，返回 false 时停在循环头等待实际依赖或中断条件变化，循环体不执行；返回 true 后正常执行。该声明是模型的等待语义承诺，精确模式忽略它并实际执行循环。参见[吞吐合同](../../docs/spec/jit/throughput.rst)。
 
 旧 `Circuit`、`compileCircuit`、原理图宿主和 `/sandbox` 入口已移除；编辑器与 playground 的接入需迁移到新的库/板合同。
 
@@ -59,7 +71,7 @@ pnpm test:generated --require-adapter
 pnpm test:generated:daily --require-adapter
 ```
 
-`typecheck:implementation` 将已有 Builder/IR/host 类型场景的合同导入重定向到真实源码入口，不复制场景。运行时未新增单元测试，验收使用既有[符合性场景](../../tests/conformance/README.md)和[独立生成 oracle](../../tests/generated/README.md)。
+`typecheck:implementation` 将已有 Builder/IR/host 类型场景的合同导入重定向到真实源码入口，不复制场景。运行时验收使用[符合性场景](../../tests/conformance/README.md)和[独立生成 oracle](../../tests/generated/README.md)。`pnpm --filter @mica-js/compiler test` 检查直接基本块后端；`pnpm --filter @mica-js/simulator test` 检查 MCU 基准、切片推进及其独立 oracle。
 
 ## 基准
 
@@ -93,6 +105,54 @@ node --test packages\simulator\bench\mcu.test.mjs
 计时仅覆盖 `runUntil`，不包含建模、装配、预期计算、证据快照和事件循环让出。独立增量解释器在计时外核对 CPU/IRQ 状态、全部数据 RAM、定时器次数和 GPIO 采样，并核对已流逝周期等于已开始指令耗时加入口耗时、减去终点尚未消耗的部分。没有逐指令宿主计数、轨迹或状态观察反应。GPIO 验证是采样状态，不宣称覆盖全部边沿历史；多 MCU 使用同步起点和相同固件。预热不保证覆盖所有 JIT 路径，首次推进也不是新进程冷启动。
 
 作为模块导入时不运行 CLI；`create(sdk, { workload, size, stepCycles, cyclePs, irqPeriodCycles })` 返回独立场景，提供 `step(cycles?)`、`verify()`、`progress`、`dispose()` 及共享的 `model`。相同模型/时钟/中断周期配置在不同 SDK 间复用同一 IR 对象，供 AB/BA 对照；`progress` 不推进板，`verify()` 触发同终点快照，在首次推进前调用会使冷启动观测失效。通过 `step` 推进，不直接调用场景内板的 `runUntil`。CLI 的总工作量包含首次推进、预热和测量；每板每颗 MCU 最多 500 万周期、整个矩阵聚合最多 5000 万周期，其余参数边界见 `--help`。短批次的百分位及 MHz 仍受宿主 GC、调度和 V8 状态影响，不作为真实芯片或稳定实时延迟保证。
+
+### 典型 MCU 固件基准
+
+`bench:mcu:typical` 使用单颗标称 100 MHz 的合成 MCU，覆盖 1%、10%、30% 有效计算和持续满载，分别采用 WFI 与显式轮询等待。定时 IRQ 为 1 kHz，GPIO 每 10 ms 切换；UART 保留真实 115200 baud 逐位电气传输、独立字节解码、16 字节 FIFO 和 IRQ 服务。
+
+```powershell
+pnpm --filter @mica-js/simulator bench:mcu:typical --duration-ms 31 --warmup-ms 11 --uart-period-ms 10
+pnpm --filter @mica-js/simulator bench:mcu:typical --duration-ms 31 --warmup-ms 11 --uart-period-ms 1
+pnpm --filter @mica-js/simulator bench:mcu:typical --duration-ms 11 --warmup-ms 1 --execution precise --waiting wfi --busy 10
+```
+
+默认每 1 ms 发送 11 字节，即约 11,000 B/s，接近线路饱和；`--uart-period-ms 10` 保持相同波特率，每 10 ms 发送同样的 11 字节，即约 1,100 B/s。两种线路负载分开报告，不把降低通信量当作运行时优化。宿主每 10 μs 交接 UART 接收结果，CPU 状态、全部工作 RAM、定时 IRQ、GPIO 与 UART 字节序列使用计时外的独立 oracle 核对，且每次交接单独检查 IRQ 响应上限。
+
+此驱动包含固定 10 μs 宿主交接，即使外层 `step()` 推进 10–20 ms，内部也会调用多次 `runUntil`，因此只作为交接压力对照，不代表宿主每次直接推进 10–20 ms 的目标场景。两种接入方式的结果不可直接视为同一工作负载的运行时加速比。
+
+主指标是 `realTimeFactor = 模拟秒数 / runUntil 墙钟秒数`；大于 1 表示该样本可实时推进。默认每组为 1 ms 首次推进加 9 ms 单次热样本，不输出伪百分位；上例前两条各测 20 ms 热样本。JSON Lines 保留首次推进、热样本、IRQ 响应、FIFO/丢字节证据，并把已发起有效计算周期、服务周期估计和剩余可等待周期区分开；后两者不是后端执行/跳过计数，终点可能有尚未完成的指令。不能将休眠期间的标称周期折算为实际计算 MHz，也不代表 ARM/AVR 的物理指令集性能。计时包含 SDK sync，排除装配、宿主交接与验证；需要应用端总耗时时应另计这些成本。通过 `create(sdk, options)` 注入 SDK，可复用同一模型做独立板对照。
+
+### 板内 UART 与 10–20 ms 宿主步进
+
+[board-mcu.mjs](bench/board-mcu.mjs) 面向宿主每次直接推进 10–20 ms 的场景，导出同样的 `create(sdk, options)` 工厂和 `step`、`verify`、`progress`、`dispose`。每次 `step(count)` 恰好调用一次正时间 `runUntil`，没有内部 10 μs 宿主交接循环。默认每 10 ms 发送 11 字节，总周期预算默认为 2,000,000，即 20 ms；宿主步长和有效计算占比等参数仍须显式选择。
+
+CPU 与接收 UART 通过校验后的共享 IR 组合，保留原逐位收发与电气采样；自主发送模型在精确时刻生成突发，接收完成时在模型内同步写入 CPU FIFO 并产生 IRQ，不依赖 `sync` 搬运。硬件收发 FIFO 仍分别为 16 字节；诊断通道容量明确扩大为 16,384 条，以容纳最长 1 s 预算内的批次轨迹，不代表硬件 FIFO 扩容。
+
+在本包目录中，例如：
+
+```javascript
+import * as sdk from './dist/index.js';
+import { create } from './bench/board-mcu.mjs';
+
+const bench = create(sdk, {
+  execution: 'throughput',
+  waiting: 'poll',
+  busyPercent: 10,
+  uartPeriodMs: 10,
+  cycles: 10_000_000,
+});
+try {
+  for (let index = 0; index < 5; index++) {
+    const step = bench.step(2_000_000);
+    const evidence = bench.verify();
+    console.log({ step, state: evidence.state, uart: evidence.uart });
+  }
+} finally {
+  bench.dispose();
+}
+```
+
+`verify()` 的同终点快照调用单独列为 oracle 调用，不计入步进耗时；独立检查全部 RAM、工作结果、字节和时间戳、FIFO、IRQ 和 GPIO。板内接入与旧宿主交接驱动的模型边界不同，二者的实时倍率不能相除后称为运行时加速；运行时优化应在同一板内模型上做配对对照，并报告实际 `runUntil` 调用次数。
 
 ### 真实负载基准
 

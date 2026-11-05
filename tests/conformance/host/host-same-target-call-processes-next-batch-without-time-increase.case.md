@@ -59,6 +59,11 @@ const { board, context, batches } = await device(
 t.after(board.dispose.bind(board));
 
 assert.equal(board.runUntil(3), undefined);
+const emptyBatch = batches[0];
+assert(Object.isFrozen(emptyBatch));
+assert(Object.isFrozen(emptyBatch.outputs));
+assert(Object.isFrozen(emptyBatch.outputs.out));
+assert.deepEqual(emptyBatch.outputs.out, []);
 context.inputs.incoming.send(7);
 context.inputs.wake.notify();
 ```
@@ -76,6 +81,17 @@ assert.deepEqual(
     [3, 3],
   ],
 );
+
+const populatedBatch = batches[1];
+assert(Object.isFrozen(populatedBatch.outputs.out));
+assert(Object.isFrozen(populatedBatch.outputs.out[0]));
+assert.equal(board.runUntil(4), undefined);
+assert.equal(batches.length, 3);
+assert.deepEqual(batches[2].outputs.out, []);
+assert(Object.isFrozen(batches[2].outputs.out));
+assert.deepEqual(emptyBatch.outputs.out, []);
+assert.deepEqual(populatedBatch.outputs.out, [{ time: 3, value: 7 }]);
+assert.equal(Object.getPrototypeOf(batches[2].outputs), null);
 
 board.dispose();
 ```

@@ -39,6 +39,46 @@ export type CompiledBody = (
 
 export type CompiledComputation = (host: ExecutionHost) => unknown;
 
+/** Static numeric bank layout; the runtime guards ownership/observers before entry. */
+export interface DirectJitBinding {
+  readonly states: ReadonlyMap<string, number>;
+  readonly memories: ReadonlyMap<string, number>;
+  readonly pc: { readonly name: string; readonly index: number };
+  /** Compile-time write barriers; recompile when membership changes. */
+  readonly blockedStates?: ReadonlySet<string>;
+  readonly blockedMemories?: ReadonlySet<string>;
+}
+
+/** Reusable runtime-owned bank. Flush completed effects even when run throws. */
+export interface DirectJitFrame {
+  states: unknown[];
+  memories: Uint8Array[];
+  /** Reusable bit words indexed by bank index >>> 5; clear before each invocation. */
+  stateDirty: number[];
+  memoryDirty: number[];
+  time: number;
+  /** Absolute wake time when resume is nonzero. */
+  due: number;
+  /** Zero means idle; other values are opaque continuations owned by this program. */
+  resume: number;
+  /** Allocate at least program.localCount slots once, not once per instruction. */
+  locals: unknown[];
+  /** Complete a pending old instruction, then exit before starting another. */
+  stopAfterInstruction?: boolean;
+}
+
+export type DirectJitReason = 'deadline' | 'fallback' | 'stopped' | 'invalidated';
+
+export interface DirectJitProgram {
+  /** At time === deadline neither an instruction nor its suffix executes. */
+  run(frame: DirectJitFrame, deadline: number): DirectJitReason;
+  readonly localCount: number;
+  readonly readStates: readonly string[];
+  readonly writeStates: readonly string[];
+  readonly readMemories: readonly string[];
+  readonly writeMemories: readonly string[];
+}
+
 /** Generated line and column are one-based, relative to Artifact.source. */
 export interface GeneratedPosition {
   readonly path: InputPath;

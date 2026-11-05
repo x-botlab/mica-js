@@ -1,4 +1,4 @@
-export async function setup(adapter, model, attach, description) {
+export async function setup(adapter, model, attach, description, options = {}) {
   let context;
   const batches = [];
   const library = adapter.createDeviceLibrary([
@@ -17,7 +17,7 @@ export async function setup(adapter, model, attach, description) {
       },
     },
   ]);
-  const board = adapter.createBoard(library, description);
+  const board = adapter.createBoard(library, description, options);
   return { board, context, batches };
 }
 

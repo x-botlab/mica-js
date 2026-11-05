@@ -12,6 +12,9 @@ import {
 import {
   compileBody,
   compileComputation,
+  compileDirectJit,
+  type DirectJitFrame,
+  type DirectJitProgram,
   type ExecutionHost,
   type ExecutionSignal,
   type CompiledBody,
@@ -25,6 +28,7 @@ import {
   type ResistorBranch,
 } from './electrical';
 import { ActivationQueue, EventQueue, Fifo } from './queue';
+import { isPollingInstruction } from './polling';
 import {
   bytesView,
   captureValue,
@@ -190,6 +194,8 @@ interface Message {
   readonly time: number;
   readonly value: unknown;
 }
+const EMPTY_MESSAGES: readonly never[] = Object.freeze([]);
+
 interface Channel {
   readonly declaration: Decl<'channel'>;
   readonly capacity: number;
@@ -223,12 +229,39 @@ interface Reaction {
 interface JitInstruction {
   readonly pc: number;
   readonly nextPc: number;
+  readonly body: RegionIR;
   readonly execute: CompiledBody;
+  readonly polling: boolean;
+}
+interface DirectExecution {
+  readonly program: DirectJitProgram;
+  readonly frame: DirectJitFrame;
+  readonly stateReads: readonly (readonly [string, number])[];
+  readonly stateWrites: readonly (readonly [string, number])[];
+  readonly memoryWrites: readonly (readonly [string, number])[];
+  readonly revision: number;
 }
 interface Jit {
   readonly instance: Instance;
   readonly options: JitOptions;
   readonly cache: Map<number, JitInstruction>;
+  readonly polling: ReadonlyMap<number, string>;
+  revision: number;
+  directRevision: number;
+  directObserverRevision: number;
+  readonly directStateGuards: Set<string>;
+  readonly directMemoryGuards: Set<string>;
+  readonly directHookReads: Set<ResourceSlot>;
+  readonly directPrograms: Map<string, DirectExecution | undefined>;
+  directProgramRevision: number;
+  direct: DirectExecution | undefined;
+  directSkip: number | undefined;
+  pollReads: Dependencies | undefined;
+  currentPc: number | undefined;
+  automaticPolling: boolean;
+  pollingWait: boolean;
+  pollingPeriod: number;
+  pollingOrigin: number;
   active: boolean;
   stopped: boolean;
   queued: boolean;
@@ -277,14 +310,19 @@ class Instance {
   readonly channels = new Map<string, Channel>();
   readonly notificationInputs = new Set<string>();
   readonly notificationOutputs = new Map<string, number | null>();
+  private readonly batchInputs: Channel[] = [];
+  private readonly batchOutputs: (readonly [string, Channel])[] = [];
+  private readonly batchNotifications: string[] = [];
+  private readonly emptyOutputs: Record<string, unknown> = Object.create(null);
   readonly resources: Disposable[] = [];
   readonly jits: Jit[] = [];
   readonly processes: Process[] = [];
   readonly reactions: Reaction[] = [];
   readonly derived = new Map<string, { dependencies: Dependencies; value: unknown }>();
-  private readonly stateResources = new Map<string, ResourceSlot>();
-  private readonly memoryResources = new Map<string, ResourceSlot>();
+  readonly stateResources = new Map<string, ResourceSlot>();
+  readonly memoryResources = new Map<string, ResourceSlot>();
   readonly sampleResources = new Map<string, ResourceSlot>();
+  observerRevision = 0;
   private readonly dependencyStack: Map<ResourceSlot, number>[] = [];
   private readonly observations = new WeakMap<Observation, Dependencies>();
   private readonly staticObservations = new WeakMap<Observation, () => unknown>();
@@ -435,7 +473,9 @@ class Instance {
         return pin ? value : snapshot(value);
       };
       const value = read();
-      resources.get(declaration.name)!.subscribers.add(observation);
+      const slot = resources.get(declaration.name)!;
+      if (!slot.subscribers.size) this.observerRevision++;
+      slot.subscribers.add(observation);
       this.staticObservations.set(observation, read);
       return value;
     }
@@ -443,9 +483,17 @@ class Instance {
     const previous = this.observations.get(observation);
     if (previous)
       for (const slot of previous.keys())
-        if (!observed.dependencies.has(slot)) slot.subscribers.delete(observation);
+        if (
+          !observed.dependencies.has(slot) &&
+          slot.subscribers.delete(observation) &&
+          !slot.subscribers.size
+        )
+          this.observerRevision++;
     for (const slot of observed.dependencies.keys())
-      if (!previous?.has(slot)) slot.subscribers.add(observation);
+      if (!previous?.has(slot)) {
+        if (!slot.subscribers.size) this.observerRevision++;
+        slot.subscribers.add(observation);
+      }
     this.observations.set(observation, observed.dependencies);
     return observed.value;
   }
@@ -519,7 +567,16 @@ class Instance {
   }
   memoryChanged(name: string): void {
     this.board.invalidate(this.memoryResources.get(name)!);
-    for (const jit of this.jits) if (jit.options.code === name) jit.cache.clear();
+    for (const jit of this.jits)
+      if (jit.options.code === name) {
+        jit.cache.clear();
+        jit.revision++;
+        jit.directPrograms.clear();
+        jit.directProgramRevision = -1;
+        jit.directSkip = undefined;
+        if (jit.direct?.frame.resume) jit.direct.frame.stopAfterInstruction = true;
+        else jit.direct = undefined;
+      }
   }
   prepare(): void {
     for (const declaration of this.entry.model.declarations)
@@ -603,6 +660,48 @@ class Instance {
           break;
       }
     }
+    // Preserve the batch key order: output channels, then output notifications.
+    for (const [name, channel] of this.channels) {
+      if (channel.declaration.direction === 'input') this.batchInputs.push(channel);
+      else {
+        this.batchOutputs.push([name, channel]);
+        this.emptyOutputs[name] = EMPTY_MESSAGES;
+      }
+    }
+    for (const name of this.notificationOutputs.keys()) {
+      this.batchNotifications.push(name);
+      this.emptyOutputs[name] = null;
+    }
+    Object.freeze(this.emptyOutputs);
+  }
+  captureBatch(from: number, to: number): DeviceBatch {
+    for (const channel of this.batchInputs) if (channel.incoming.length) channel.incoming.clear();
+    let outputs = this.emptyOutputs;
+    for (const [name, channel] of this.batchOutputs) {
+      if (!channel.outgoing.length) continue;
+      if (outputs === this.emptyOutputs)
+        outputs = Object.assign(Object.create(null), this.emptyOutputs);
+      outputs[name] = Object.freeze(
+        channel.outgoing
+          .drain()
+          .map((message) =>
+            Object.freeze({ time: message.time, value: externalValue(message.value) }),
+          ),
+      );
+    }
+    for (const name of this.batchNotifications) {
+      const notified = this.notificationOutputs.get(name)!;
+      if (notified === null) continue;
+      if (outputs === this.emptyOutputs)
+        outputs = Object.assign(Object.create(null), this.emptyOutputs);
+      outputs[name] = Object.freeze({ time: notified });
+      this.notificationOutputs.set(name, null);
+    }
+    return Object.freeze({
+      from,
+      to,
+      outputs: outputs === this.emptyOutputs ? outputs : Object.freeze(outputs),
+    });
   }
   assertCreation(): void {
     for (const declaration of this.entry.model.declarations) {
@@ -682,7 +781,7 @@ class Instance {
     this.guard();
     if (this.board.phase !== 'initialize' || this.board.current !== this)
       throw this.board.error('INVALID_CALL_STATE', 'attachJit is initialization-only', this);
-    dataObject(options, ['entry', 'code', 'pc', 'beforeInstruction', 'translate']);
+    dataObject(options, ['entry', 'code', 'pc', 'beforeInstruction', 'polling', 'translate']);
     identity(options.entry);
     identity(options.code);
     identity(options.pc);
@@ -711,6 +810,25 @@ class Instance {
         throw this.board.error('INVALID_BINDING', 'Invalid instruction hook', this);
     } else if (Object.hasOwn(options, 'beforeInstruction'))
       throw new TypeError('Invalid beforeInstruction');
+    const polling = new Map<number, string>();
+    if (Object.hasOwn(options, 'polling')) {
+      if (!Array.isArray(options.polling)) throw new TypeError('polling must be an array');
+      for (const item of options.polling) {
+        dataObject(item, ['pc', 'predicate']);
+        const pc = finite(item.pc, 'polling pc');
+        const predicate = identity(item.predicate);
+        const declaration = this.declarations.get(predicate);
+        if (
+          polling.has(pc) ||
+          declaration?.kind !== 'function' ||
+          !declaration.pure ||
+          declaration.params.length ||
+          declaration.returns?.kind !== 'bool'
+        )
+          throw this.board.error('INVALID_BINDING', 'Invalid polling declaration', this);
+        polling.set(pc, predicate);
+      }
+    }
     const jit: Jit = {
       instance: this,
       options: Object.freeze({
@@ -720,6 +838,23 @@ class Instance {
           : {}),
       }),
       cache: new Map(),
+      polling,
+      revision: 0,
+      directRevision: -1,
+      directObserverRevision: -1,
+      directStateGuards: new Set(),
+      directMemoryGuards: new Set(),
+      directHookReads: new Set(),
+      directPrograms: new Map(),
+      directProgramRevision: -1,
+      direct: undefined,
+      directSkip: undefined,
+      pollReads: undefined,
+      currentPc: undefined,
+      automaticPolling: false,
+      pollingWait: false,
+      pollingPeriod: 0,
+      pollingOrigin: 0,
       active: true,
       stopped: false,
       queued: false,
@@ -735,6 +870,9 @@ class Instance {
         delete jit.predicate;
         this.board.waitingJits.delete(jit);
         jit.cache.clear();
+        jit.directPrograms.clear();
+        jit.direct = undefined;
+        jit.pollReads = undefined;
       },
     };
     this.resources.push(disposable);
@@ -806,6 +944,8 @@ class BoardRuntime implements Board {
   readonly instances: Instance[] = [];
   private network!: ElectricalNetwork;
   private primary: SimulationError | undefined;
+  private readonly execution: 'throughput' | 'precise';
+  private executionEnd = 0;
   readonly onDidError: Event<RuntimeDiagnostic> = (listener, thisArgs, disposables) =>
     this.errors.event(
       (diagnostic) => {
@@ -834,7 +974,16 @@ class BoardRuntime implements Board {
   constructor(entries: readonly Entry[], description: BoardDescription, options: BoardOptions) {
     try {
       dataObject(description, ['instances', 'nets']);
-      dataObject(options, ['seed']);
+      dataObject(options, ['seed', 'execution', 'cpuQuantum']);
+      const execution = Object.hasOwn(options, 'execution') ? options.execution : 'throughput';
+      if (execution !== 'throughput' && execution !== 'precise')
+        throw new TypeError('Invalid execution mode');
+      this.execution = execution;
+      const cpuQuantum = Object.hasOwn(options, 'cpuQuantum')
+        ? integer(options.cpuQuantum, 'cpuQuantum')
+        : 10_000_000;
+      if (cpuQuantum < 1 || cpuQuantum > 10_000_000)
+        throw new RangeError('cpuQuantum outside [1, 10000000]');
       if (!Array.isArray(description.instances) || !Array.isArray(description.nets))
         throw new TypeError('instances and nets are required arrays');
       const seed = Object.hasOwn(options, 'seed') ? integer(options.seed, 'seed') : 0;
@@ -1240,6 +1389,164 @@ class BoardRuntime implements Board {
       return;
     }
   }
+  private refreshDirectGuards(jit: Jit, hookReads?: Dependencies): void {
+    let changed = false;
+    const instance = jit.instance;
+    const hookCount = jit.directHookReads.size;
+    // IRQ masking and short-circuit reads must not churn the compiled barrier set.
+    if (hookReads) for (const slot of hookReads.keys()) jit.directHookReads.add(slot);
+    if (
+      jit.directObserverRevision === instance.observerRevision &&
+      hookCount === jit.directHookReads.size
+    )
+      return;
+    jit.directObserverRevision = instance.observerRevision;
+    for (const [name, slot] of instance.stateResources) {
+      const blocked = slot.subscribers.size > 0 || jit.directHookReads.has(slot);
+      if (jit.directStateGuards.has(name) === blocked) continue;
+      if (blocked) jit.directStateGuards.add(name);
+      else jit.directStateGuards.delete(name);
+      changed = true;
+    }
+    for (const [name, slot] of instance.memoryResources) {
+      const blocked =
+        slot.subscribers.size > 0 || jit.directHookReads.has(slot) || name === jit.options.code;
+      if (jit.directMemoryGuards.has(name) === blocked) continue;
+      if (blocked) jit.directMemoryGuards.add(name);
+      else jit.directMemoryGuards.delete(name);
+      changed = true;
+    }
+    if (changed) {
+      jit.direct = undefined;
+      jit.directRevision = -1;
+      jit.directSkip = undefined;
+    }
+  }
+  private runDirect(jit: Jit, hookReads?: Dependencies): boolean {
+    const instance = jit.instance;
+    const pending = Boolean(jit.direct?.frame.resume);
+    if (!pending) {
+      const pc = finite(instance.states.get(jit.options.pc), 'pc');
+      if (
+        this.execution !== 'throughput' ||
+        this.jits.length !== 1 ||
+        jit.polling.has(pc) ||
+        jit.cache.get(pc)?.polling
+      )
+        return false;
+      this.refreshDirectGuards(jit, hookReads);
+      if (jit.directSkip === pc) return false;
+      if (jit.directRevision !== jit.revision) {
+        if (jit.directProgramRevision !== jit.revision) {
+          jit.directPrograms.clear();
+          jit.directProgramRevision = jit.revision;
+        }
+        const key = JSON.stringify([
+          [...jit.directStateGuards].sort(),
+          [...jit.directMemoryGuards].sort(),
+        ]);
+        if (jit.directPrograms.has(key)) {
+          jit.direct = jit.directPrograms.get(key);
+          jit.directRevision = jit.revision;
+        } else {
+          const stateNames = [...instance.states.keys()].filter((name) => {
+            const declaration = instance.declarations.get(name) as Decl<'state'>;
+            return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
+          });
+          const memoryNames = [...instance.memories.keys()];
+          const states = new Map(stateNames.map((name, index) => [name, index]));
+          const memories = new Map(memoryNames.map((name, index) => [name, index]));
+          const program = compileDirectJit(
+            [...jit.cache.values()].filter(
+              (instruction) => !instruction.polling && !jit.polling.has(instruction.pc),
+            ),
+            {
+              states,
+              memories,
+              pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
+              blockedStates: jit.directStateGuards,
+              blockedMemories: jit.directMemoryGuards,
+            },
+          );
+          jit.directRevision = jit.revision;
+          jit.direct = program
+            ? {
+                program,
+                stateReads: program.readStates.map((name) => [name, states.get(name)!] as const),
+                stateWrites: program.writeStates.map((name) => [name, states.get(name)!] as const),
+                memoryWrites: program.writeMemories.map(
+                  (name) => [name, memories.get(name)!] as const,
+                ),
+                revision: jit.revision,
+                frame: {
+                  states: new Array(stateNames.length),
+                  memories: memoryNames.map((name) => instance.memory(name)),
+                  locals: new Array(program.localCount),
+                  stateDirty: new Array(Math.ceil(stateNames.length / 32)).fill(0),
+                  memoryDirty: new Array(Math.ceil(memoryNames.length / 32)).fill(0),
+                  time: this.time,
+                  due: this.time,
+                  resume: 0,
+                },
+              }
+            : undefined;
+          if (jit.directPrograms.size >= 8)
+            jit.directPrograms.delete(jit.directPrograms.keys().next().value!);
+          jit.directPrograms.set(key, jit.direct);
+        }
+      }
+      if (!jit.direct) return false;
+    }
+    const direct = jit.direct!;
+    const frame = direct.frame;
+    if (pending) frame.stopAfterInstruction = true;
+    for (const [name, index] of direct.stateReads) frame.states[index] = instance.states.get(name);
+    frame.time = this.time;
+    frame.stateDirty.fill(0);
+    frame.memoryDirty.fill(0);
+    const start = this.time;
+    let reason: ReturnType<DirectJitProgram['run']>;
+    try {
+      // Resource barriers exclude intermediate observers; real events retain exact deadlines.
+      reason = direct.program.run(frame, Math.min(this.executionEnd, this.events.time));
+    } finally {
+      this.time = frame.time;
+      for (const [name, index] of direct.stateWrites)
+        if ((frame.stateDirty[index >>> 5]! & (1 << (index & 31))) !== 0)
+          instance.host.write(name, frame.states[index]);
+      for (const [name, index] of direct.memoryWrites)
+        if ((frame.memoryDirty[index >>> 5]! & (1 << (index & 31))) !== 0)
+          instance.memoryChanged(name);
+    }
+    this.boundary();
+    if (reason === 'fallback') {
+      jit.directSkip = finite(instance.states.get(jit.options.pc), 'pc');
+      if (this.time === start && this.time < this.executionEnd) return false;
+    } else if (reason === 'stopped') {
+      jit.stopped = true;
+      return true;
+    } else if (reason === 'invalidated') {
+      frame.stopAfterInstruction = false;
+      if (direct.revision !== jit.revision) {
+        jit.direct = undefined;
+        jit.directRevision = -1;
+      }
+    }
+    if (frame.resume && frame.due > this.time)
+      this.events.push(frame.due, () => this.queueJit(jit));
+    else this.queueJit(jit);
+    return true;
+  }
+  private pollingDependencies(jit: Jit, dependencies: Dependencies): Dependencies {
+    const result = new Map(dependencies);
+    const instance = jit.instance;
+    for (const slot of [
+      instance.stateResources.get(jit.options.pc)!,
+      instance.memoryResources.get(jit.options.code)!,
+    ])
+      result.set(slot, slot.version);
+    return result;
+  }
   private jitSignal(jit: Jit, signal: ExecutionSignal): boolean {
     if (signal.kind === 'elapse') {
       const duration = time(signal.duration);
@@ -1253,6 +1560,7 @@ class BoardRuntime implements Board {
       const checked = jit.instance.evaluate(() => jit.instance.syncCall(signal.predicate));
       if (checked.value === true) return false;
       jit.predicate = signal.predicate;
+      jit.pollingWait = false;
       jit.dependencies = checked.dependencies;
       this.waitingJits.add(jit);
       this.boundary();
@@ -1269,9 +1577,24 @@ class BoardRuntime implements Board {
       const duration = time(signal.delay);
       jit.instance.host.write(jit.options.pc, signal.pc);
       jit.execution = undefined;
+      const polling =
+        jit.automaticPolling && duration > 0 && signal.pc === jit.currentPc && jit.pollReads;
+      const dependencies = polling ? this.pollingDependencies(jit, polling) : undefined;
+      jit.automaticPolling = false;
+      jit.pollReads = undefined;
       this.boundary();
       if (duration === 0) this.queueJit(jit);
-      else this.events.push(time(this.time + duration), () => this.queueJit(jit));
+      else
+        this.events.push(time(this.time + duration), () => {
+          if (!jit.active || jit.stopped) return;
+          if (dependencies && jit.instance.dependenciesCurrent(dependencies)) {
+            jit.dependencies = dependencies;
+            jit.pollingWait = true;
+            jit.pollingPeriod = duration;
+            jit.pollingOrigin = this.time;
+            this.waitingJits.add(jit);
+          } else this.queueJit(jit);
+        });
       return true;
     }
     throw new TypeError('Invalid JIT suspension');
@@ -1280,21 +1603,56 @@ class BoardRuntime implements Board {
     jit.queued = false;
     if (!jit.active || jit.stopped) return;
     this.current = jit.instance;
+    if (jit.direct?.frame.resume) {
+      this.runDirect(jit);
+      return;
+    }
     if (!jit.execution) {
+      jit.automaticPolling = false;
+      jit.pollReads = undefined;
+      let hookReads: Dependencies | undefined;
+      let hookPending = false;
       const hook = jit.options.beforeInstruction;
-      if (
-        hook &&
-        jit.instance.read(jit.instance.declarations.get(hook.when)!.kind, hook.when) === true
-      ) {
-        const execution = jit.instance.invoke(hook.call);
-        const step = execution.next();
-        if (!step.done) {
-          jit.execution = execution;
-          if (this.jitSignal(jit, step.value)) return;
-          throw new TypeError('Invalid hook suspension');
+      if (hook) {
+        const kind = jit.instance.declarations.get(hook.when)!.kind;
+        const priorPc = jit.instance.states.get(jit.options.pc) as number;
+        const collect =
+          this.execution === 'throughput' && (this.jits.length === 1 || jit.polling.has(priorPc));
+        const checked = collect
+          ? jit.instance.evaluate(() => jit.instance.read(kind, hook.when))
+          : undefined;
+        const handled = (checked ? checked.value : jit.instance.read(kind, hook.when)) === true;
+        if (handled) {
+          const execution = jit.instance.invoke(hook.call);
+          const step = execution.next();
+          if (!step.done) {
+            jit.execution = execution;
+            if (this.jitSignal(jit, step.value)) return;
+            throw new TypeError('Invalid hook suspension');
+          }
         }
+        hookReads = checked?.dependencies;
+        hookPending = handled;
       }
       const pc = finite(jit.instance.states.get(jit.options.pc), 'pc');
+      if (this.execution === 'throughput') {
+        const predicate = jit.polling.get(pc);
+        if (predicate) {
+          const checked = jit.instance.evaluate(() => jit.instance.syncCall(predicate));
+          if (checked.value !== true) {
+            jit.dependencies = this.pollingDependencies(
+              jit,
+              new Map([...(hookReads ?? []), ...checked.dependencies]),
+            );
+            jit.pollingWait = true;
+            jit.pollingPeriod = 0;
+            this.waitingJits.add(jit);
+            this.boundary();
+            return;
+          }
+        }
+        if (!hookPending && this.jits.length === 1 && this.runDirect(jit, hookReads)) return;
+      }
       let instruction = jit.cache.get(pc);
       if (!instruction) {
         const prior = this.phase;
@@ -1316,6 +1674,8 @@ class BoardRuntime implements Board {
           const instructions = block.instructions.map((instruction) => ({
             pc: instruction.pc,
             nextPc: instruction.nextPc,
+            body: instruction.body,
+            polling: isPollingInstruction(instruction.body, instruction.pc, jit.options.pc),
             execute: body(instruction.body),
           }));
           // Match the first instruction when a block contains a repeated PC.
@@ -1323,6 +1683,8 @@ class BoardRuntime implements Board {
             const entry = instructions[index]!;
             jit.cache.set(entry.pc, entry);
           }
+          jit.revision++;
+          jit.directSkip = undefined;
           instruction = instructions[0]!;
         } catch (cause) {
           throw this.wrap(cause, 'JIT_FAILED', 'translate', jit.instance);
@@ -1331,11 +1693,25 @@ class BoardRuntime implements Board {
           this.phase = prior;
         }
       }
+      jit.currentPc = pc;
+      jit.automaticPolling =
+        this.execution === 'throughput' &&
+        this.jits.length === 1 &&
+        instruction.polling &&
+        !hookPending &&
+        (!hook || hookReads !== undefined);
+      jit.pollReads = hookReads;
       jit.instance.host.write(jit.options.pc, instruction.nextPc);
       jit.execution = instruction.execute(jit.instance.host);
     }
     for (;;) {
-      const step = jit.execution.next();
+      const step = jit.automaticPolling
+        ? (() => {
+            const checked = jit.instance.evaluate(() => jit.execution!.next());
+            jit.pollReads = new Map([...(jit.pollReads ?? []), ...checked.dependencies]);
+            return checked.value;
+          })()
+        : jit.execution.next();
       if (step.done) {
         jit.execution = undefined;
         this.boundary();
@@ -1354,6 +1730,7 @@ class BoardRuntime implements Board {
     if (end < this.time) throw new RangeError('Cannot run backwards');
     const from = this.time;
     this.phase = 'execute';
+    this.executionEnd = end;
     try {
       if (!this.initialized) {
         this.baseline();
@@ -1365,7 +1742,8 @@ class BoardRuntime implements Board {
       }
       for (const instance of this.instances) {
         for (const channel of instance.channels.values()) {
-          for (const message of channel.pending.drain()) channel.incoming.push(message);
+          if (channel.pending.length)
+            for (const message of channel.pending.drain()) channel.incoming.push(message);
           if (channel.receiver && channel.incoming.length) {
             const process = channel.receiver;
             delete channel.receiver;
@@ -1391,14 +1769,36 @@ class BoardRuntime implements Board {
           if (this.isFaulted) throw this.primary!;
           continue;
         }
+        let pollingBoundary = Infinity;
         if (this.waitingJits.size)
-          for (const jit of this.jits)
-            if (
-              jit.active &&
-              !jit.stopped &&
-              jit.predicate &&
-              !jit.instance.dependenciesCurrent(jit.dependencies)
-            ) {
+          for (const jit of this.jits) {
+            if (!jit.active || jit.stopped || !this.waitingJits.has(jit)) continue;
+            if (jit.instance.dependenciesCurrent(jit.dependencies)) {
+              if (jit.pollingWait && jit.pollingPeriod > 0) {
+                const lastStart = MAX_TIME - ((MAX_TIME - jit.pollingOrigin) % jit.pollingPeriod);
+                if (lastStart < MAX_TIME && lastStart < end) {
+                  if (lastStart === this.time) {
+                    jit.pollingWait = false;
+                    delete jit.dependencies;
+                    this.waitingJits.delete(jit);
+                    this.queueJit(jit);
+                  } else pollingBoundary = Math.min(pollingBoundary, lastStart);
+                }
+              }
+              continue;
+            }
+            if (jit.pollingWait) {
+              jit.pollingWait = false;
+              delete jit.dependencies;
+              this.waitingJits.delete(jit);
+              const remainder =
+                jit.pollingPeriod > 0 ? (this.time - jit.pollingOrigin) % jit.pollingPeriod : 0;
+              if (remainder)
+                this.events.push(time(this.time + (jit.pollingPeriod - remainder)), () =>
+                  this.queueJit(jit),
+                );
+              else this.queueJit(jit);
+            } else if (jit.predicate) {
               const checked = jit.instance.evaluate(() => jit.instance.syncCall(jit.predicate!));
               jit.dependencies = checked.dependencies;
               if (checked.value === true) {
@@ -1408,9 +1808,14 @@ class BoardRuntime implements Board {
                 this.queueJit(jit);
               }
             }
+          }
         if (this.time < end && this.readyJits.length) {
           this.runJit(this.readyJits.shift());
           if (this.isFaulted) throw this.primary!;
+          continue;
+        }
+        if (pollingBoundary < this.events.time && pollingBoundary <= end) {
+          this.time = pollingBoundary;
           continue;
         }
         if (this.events.time <= end) {
@@ -1420,25 +1825,7 @@ class BoardRuntime implements Board {
         this.time = end;
         break;
       }
-      const batches: DeviceBatch[] = this.instances.map((instance) => {
-        const outputs: Record<string, unknown> = Object.create(null);
-        for (const [name, channel] of instance.channels) {
-          channel.incoming.clear();
-          if (channel.declaration.direction === 'output')
-            outputs[name] = Object.freeze(
-              channel.outgoing
-                .drain()
-                .map((message) =>
-                  Object.freeze({ time: message.time, value: externalValue(message.value) }),
-                ),
-            );
-        }
-        for (const [name, notified] of instance.notificationOutputs) {
-          outputs[name] = notified === null ? null : Object.freeze({ time: notified });
-          instance.notificationOutputs.set(name, null);
-        }
-        return Object.freeze({ from, to: end, outputs: Object.freeze(outputs) });
-      });
+      const batches = this.instances.map((instance) => instance.captureBatch(from, end));
       this.phase = 'sync';
       for (let i = 0; i < this.instances.length; i++) {
         const instance = this.instances[i]!;
