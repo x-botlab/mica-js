@@ -30,6 +30,11 @@
       "source": "./src/ddl.ts",
       "types": "./dist/ddl.d.ts",
       "import": "./dist/ddl.js"
+    },
+    "./sandbox": {
+      "source": "./src/sandbox.ts",
+      "types": "./dist/sandbox.d.ts",
+      "import": "./dist/sandbox.js"
     }
   },
   "files": [
@@ -39,6 +44,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "node --test bench/*.test.mjs",
+    "test:runtime": "vitest run",
     "bench": "node bench/runtime.mjs",
     "bench:electrical": "node bench/electrical.mjs",
     "bench:workloads": "node bench/workloads.mjs",
@@ -64,6 +70,10 @@
       "./ddl": {
         "types": "./dist/ddl.d.ts",
         "import": "./dist/ddl.js"
+      },
+      "./sandbox": {
+        "types": "./dist/sandbox.d.ts",
+        "import": "./dist/sandbox.js"
       }
     }
   },
@@ -71,11 +81,14 @@
     "@mica-js/compiler": "workspace:*",
     "@mica-js/device-model": "workspace:*",
     "@mica-js/ddl": "workspace:*",
-    "@mica-js/core": "workspace:*"
+    "@mica-js/core": "workspace:*",
+    "@mica-js/document": "workspace:*",
+    "@mica-js/sandbox": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",
     "vite": "catalog:",
-    "vite-plugin-dts": "catalog:"
+    "vite-plugin-dts": "catalog:",
+    "vitest": "catalog:"
   }
 }

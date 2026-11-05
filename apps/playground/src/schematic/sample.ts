@@ -6,7 +6,7 @@ import {
   type Placement,
   type Point,
   type SchematicDocument,
-} from '@mica-js/core/schematic';
+} from '@mica-js/document/schematic';
 
 const MCU = 'stm32-package:stm32g431rbt6-lqfp64';
 const MCU8051 = 'at89-package:at89c52';

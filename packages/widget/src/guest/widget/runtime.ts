@@ -1,8 +1,8 @@
+import { timePs } from '@mica-js/core';
 import { createRpc } from '@mica-js/core/rpc';
 import { loggerService } from '@mica-js/core/logging';
 import type { RpcEndpoint } from '@mica-js/core/rpc';
-import type { CanvasBindingTarget } from '@mica-js/core/canvas';
-import type { SimulationPublish } from '@mica-js/simulator';
+import type { CanvasBindingTarget } from '@mica-js/document/canvas';
 import type { PropertyDefinition, WidgetDefinition } from '../../types';
 import { createWidgetAudioRuntime } from '../audio/controller';
 import type { WidgetAudioRuntime } from '../audio/controller';
@@ -23,21 +23,28 @@ import {
   widgetPublishEvent,
   widgetResetRuntimeMethod,
   widgetResizeMethod,
+  widgetSetAssetsMethod,
   widgetSetBindingsMethod,
   widgetSetPropertiesMethod,
+  widgetSimulationRuntimeService,
+  widgetStepMethod,
   widgetUnmountMethod,
-  widgetDeviceTopicService,
+  widgetConfigureMethod,
 } from './protocol';
 import type {
   WidgetAssetFailedMessage,
+  WidgetDirectTopicService,
+  IWidgetSimulationPublish,
+  IWidgetSimulationRuntimeChannel,
   WidgetErrorMessage,
   WidgetErrorPhase,
   WidgetFrameMessage,
+  IWidgetGuestRuntimeConfig,
+  IWidgetGuestStep,
   WidgetLoadPackage,
   WidgetLoadRequest,
   WidgetMountRequest,
   WidgetPublishMessage,
-  WidgetDeviceTopicChannel,
 } from './protocol';
 import { mergeProperties } from './props';
 import type {
@@ -57,7 +64,13 @@ export interface WidgetRuntimeOptions {
    * Direct device channel (RFC 0018). Present only when the worker was handed a device port, in
    * which case the guest routes topic traffic itself and the host stops relaying it.
    */
-  readonly device?: WidgetDeviceTopicChannel;
+  readonly device?: IWidgetSimulationRuntimeChannel;
+  /** Other end of the direct port; the guest creates its RPC endpoint on first use. */
+  readonly devicePort?: MessagePort;
+  /** Starts in explicit-step mode; the editor runtime sets this through `configure`. */
+  readonly explicitStepping?: boolean;
+  /** Contract behind `devicePort`; defaults to `simulation-runtime`. */
+  readonly directTopicService?: WidgetDirectTopicService;
 }
 
 /** Guest-side widget runtime; every method maps to one member of {@link widgetGuestService}. */
@@ -67,6 +80,7 @@ export interface WidgetRuntime {
   unmount(instanceId: string): void;
   resize(instanceId: string, width: number, height: number, dpr: number): void;
   setProperties(instanceId: string, props: Readonly<Record<string, unknown>>): void;
+  setAssets(instanceId: string, assets: Readonly<Record<string, Uint8Array>>): void;
   /**
    * Replaces the endpoints this instance writes to and reads from.
    *
@@ -76,6 +90,13 @@ export interface WidgetRuntime {
   setBindings(instanceId: string, bindings: Readonly<Record<string, CanvasBindingTarget>>): void;
   deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
   pointer(instanceId: string, event: WidgetInputEvent): void;
+  /** Applies the editor runtime configuration; returns whether a direct channel is active. */
+  configure(config: IWidgetGuestRuntimeConfig): boolean;
+  /**
+   * Advances the guest to caller-supplied time, paints what explicit stepping deferred, and
+   * resolves once direct widget → simulation deliveries started by this step have settled.
+   */
+  step(step: IWidgetGuestStep): Promise<void>;
   /**
    * Releases every instance and keeps the evaluated modules.
    *
@@ -119,6 +140,7 @@ export interface WidgetWorkerRuntime {
 
 interface Session {
   readonly instanceId: string;
+  readonly generation: number | undefined;
   width: number;
   height: number;
   dpr: number;
@@ -162,10 +184,9 @@ export function startWidgetRuntime(
 
   // The first extra port is the direct device channel: the assembly layer holds the other end, so
   // a publish reaches the device guest and a device publish reaches this runtime without a hop
-  // through the host's thread (RFC 0018).
+  // through the host's thread (RFC 0018). The runtime connects it on first use, so an editor
+  // runtime can select the `simulation-runtime` contract before any traffic exists.
   const devicePort = options.ports?.[0];
-  const deviceEndpoint = devicePort === undefined ? undefined : createRpc(devicePort);
-  const device = deviceEndpoint?.getProxy(widgetDeviceTopicService);
 
   const dispatch = (type: string, payload: unknown): void => {
     for (const listener of [...(listeners.get(type) ?? [])]) {
@@ -199,7 +220,7 @@ export function startWidgetRuntime(
         return () => set.delete(listener);
       },
     },
-    { ...options, ...(device === undefined ? {} : { device }) },
+    { ...options, ...(devicePort === undefined ? {} : { devicePort }) },
   );
 
   const dispose = (): void => {
@@ -208,7 +229,6 @@ export function startWidgetRuntime(
     listeners.clear();
     runtime.dispose();
     endpoint.dispose();
-    deviceEndpoint?.dispose();
     try {
       port.close();
     } catch {
@@ -223,12 +243,17 @@ export function startWidgetRuntime(
 
   endpoint.register(widgetGuestService, {
     [widgetLoadMethod]: (request: WidgetLoadRequest) => runtime.load(request),
-    [widgetMountMethod]: (request: WidgetMountRequest) => runtime.mount(request),
+    [widgetMountMethod]: async (request: WidgetMountRequest) => {
+      // A synchronous factory or first-paint failure becomes a rejected RPC, never a silent mount.
+      runtime.mount(request);
+    },
     [widgetUnmountMethod]: (instanceId: string) => runtime.unmount(instanceId),
     [widgetResizeMethod]: (instanceId: string, width: number, height: number, dpr: number) =>
       runtime.resize(instanceId, width, height, dpr),
     [widgetSetPropertiesMethod]: (instanceId: string, props: Readonly<Record<string, unknown>>) =>
       runtime.setProperties(instanceId, props),
+    [widgetSetAssetsMethod]: (instanceId: string, assets: Readonly<Record<string, Uint8Array>>) =>
+      runtime.setAssets(instanceId, assets),
     [widgetSetBindingsMethod]: (
       instanceId: string,
       bindings: Readonly<Record<string, CanvasBindingTarget>>,
@@ -237,6 +262,8 @@ export function startWidgetRuntime(
       runtime.deliver(instanceId, port, payload, simTime),
     [widgetPointerMethod]: (instanceId: string, event: WidgetInputEvent) =>
       runtime.pointer(instanceId, event),
+    [widgetConfigureMethod]: (config: IWidgetGuestRuntimeConfig) => runtime.configure(config),
+    [widgetStepMethod]: (step: IWidgetGuestStep) => runtime.step(step),
     [widgetResetRuntimeMethod]: () => runtime.resetRuntime(),
   });
   endpoint.register(widgetGuestControlService, {
@@ -257,14 +284,58 @@ export function createWidgetRuntime(
   options: WidgetRuntimeOptions = {},
 ): WidgetRuntime {
   const importModule = options.importModule ?? importBlobModule;
-  const device = options.device;
   const factories = new Map<string, WidgetFactory>();
   const definitions = new Map<string, WidgetDefinition>();
   const pendingFactories = new Map<string, Promise<WidgetFactory>>();
   const sessions = new Map<string, Session>();
   const dirty = new Set<Session>();
+  /** Direct publishes that arrive in explicit-step mode and wait for the next `step`. */
+  const pendingDevicePublishes: IWidgetSimulationPublish[] = [];
+  /** Direct widget → simulation calls still in flight; `step` waits for them before resolving. */
+  const pendingDirectDeliveries = new Set<Promise<void>>();
   let scheduled = false;
   let disposed = false;
+  /** Explicit stepping disables the automatic repaint scheduler; the caller paints via `step`. */
+  let explicitStepping = options.explicitStepping === true;
+  /** Last time supplied by `step`, used when a widget publishes without one. */
+  let lastStepTime = 0;
+  let device: IWidgetSimulationRuntimeChannel | undefined;
+  let directService: WidgetDirectTopicService | undefined;
+  let deviceEndpoint: RpcEndpoint | undefined;
+  let unsubscribeDevice = (): void => {};
+
+  /**
+   * Connects the direct port to one contract.
+   *
+   * An RPC endpoint cannot be replaced on a live port: its close frame also closes the peer. The
+   * first user of the port therefore connects the simulation-runtime contract once.
+   */
+  function connectDirect(service: WidgetDirectTopicService): boolean {
+    if (device !== undefined) return directService === service;
+    const port = options.devicePort;
+    if (port === undefined) return false;
+    const endpoint = createRpc(port);
+    deviceEndpoint = endpoint;
+    const channel = endpoint.getProxy(widgetSimulationRuntimeService);
+    unsubscribeDevice = channel.onDidPublish(receiveDevicePublish);
+    device = channel;
+    directService = service;
+    return true;
+  }
+
+  if (options.device !== undefined) {
+    device = options.device;
+    directService = 'simulation-runtime';
+    unsubscribeDevice = options.device.onDidPublish(receiveDevicePublish);
+  } else if (options.directTopicService !== undefined) {
+    connectDirect(options.directTopicService);
+  }
+
+  /** Standalone guests connect the same direct contract on their first ordinary call. */
+  function ensureDirect(): void {
+    if (device !== undefined || options.devicePort === undefined) return;
+    connectDirect(options.directTopicService ?? 'simulation-runtime');
+  }
 
   const audio: WidgetAudioRuntime = createWidgetAudioRuntime({
     onListenerError: (instanceId, error) => report('deliver', instanceId, error),
@@ -310,29 +381,82 @@ export function createWidgetRuntime(
    * Only a guest with a direct device channel receives these calls: the host keeps the same fan-out
    * for guests without one, and the two paths never run together.
    */
-  function receiveDevicePublish(publish: SimulationPublish): void {
+  function receiveDevicePublish(publish: IWidgetSimulationPublish): void {
     if (disposed) return;
+    // Explicit stepping owns every input boundary: a direct device publish is consumed at the
+    // next `step`, like a host-delivered message. Automatic mode delivers immediately.
+    if (explicitStepping) {
+      pendingDevicePublishes.push(publish);
+      return;
+    }
+    fanOutDevicePublish(publish);
+  }
+
+  function fanOutDevicePublish(publish: IWidgetSimulationPublish): void {
     for (const session of [...sessions.values()]) {
+      if (session.disposed || !sessions.has(session.instanceId)) continue;
       for (const [port, target] of Object.entries(session.bindings)) {
-        if (target.symbol !== publish.target.symbol || target.port !== publish.target.port)
+        if (target.symbol !== publish.target.symbol || target.port !== publish.target.port) {
           continue;
-        deliverToInstance(session.instanceId, port, publish.payload, publish.simTime);
+        }
+        try {
+          deliverToInstance(session.instanceId, port, publish.payload, publish.simTime);
+        } catch (error) {
+          report('deliver', session.instanceId, error);
+        }
       }
     }
   }
 
-  const unsubscribeDevice = device?.onDidPublish(receiveDevicePublish) ?? (() => {});
+  /** Tracks one widget → simulation call so `step` can wait for the data plane to settle. */
+  function trackDirectDelivery(promise: Promise<void>, instanceId: string): void {
+    const settled = promise.catch((error: unknown) => {
+      report('deliver', instanceId, error);
+    });
+    pendingDirectDeliveries.add(settled);
+    void settled.then(() => {
+      pendingDirectDeliveries.delete(settled);
+    });
+  }
+
+  async function settleDirectDeliveries(): Promise<void> {
+    while (pendingDirectDeliveries.size > 0) {
+      await Promise.all([...pendingDirectDeliveries]);
+    }
+  }
+
+  /** Drops queued direct input that only one removed instance could still consume. */
+  function dropQueuedDevicePublishes(session: Session): void {
+    if (pendingDevicePublishes.length === 0) return;
+    const targets = Object.values(session.bindings);
+    if (targets.length === 0) return;
+    const otherTargets = [...sessions.values()].flatMap((other) => Object.values(other.bindings));
+    for (let index = pendingDevicePublishes.length - 1; index >= 0; index -= 1) {
+      const publish = pendingDevicePublishes[index];
+      if (publish === undefined) continue;
+      const relevant = targets.some(
+        (target) => target.symbol === publish.target.symbol && target.port === publish.target.port,
+      );
+      if (!relevant) continue;
+      const stillNeeded = otherTargets.some(
+        (target) => target.symbol === publish.target.symbol && target.port === publish.target.port,
+      );
+      if (!stillNeeded) pendingDevicePublishes.splice(index, 1);
+    }
+  }
 
   function invalidate(session: Session): void {
     if (session.failed || session.disposed || disposed) return;
     dirty.add(session);
-    if (scheduled) return;
+    // Explicit stepping owns the paint schedule: the next `step` paints what this marks dirty.
+    if (explicitStepping || scheduled) return;
     scheduled = true;
     queueMicrotask(flush);
   }
 
   function flush(): void {
     scheduled = false;
+    if (explicitStepping) return;
     const pending = [...dirty];
     dirty.clear();
     for (const session of pending) {
@@ -340,8 +464,9 @@ export function createWidgetRuntime(
     }
   }
 
-  function paint(session: Session): void {
-    if (session.failed || session.disposed || disposed) return;
+  /** @returns whether the frame was committed; a failed session reports and stops instead. */
+  function paint(session: Session): boolean {
+    if (session.failed || session.disposed || disposed) return false;
 
     const { context, canvas } = session;
     if (typeof context.setTransform === 'function') {
@@ -358,21 +483,21 @@ export function createWidgetRuntime(
         session.failed = true;
         dirty.delete(session);
         report('render', session.instanceId, error);
-        return;
+        return false;
       }
     }
 
-    commit(session);
+    return commit(session);
   }
 
-  function commit(session: Session): void {
+  function commit(session: Session): boolean {
     let bitmap: ImageBitmap;
     try {
       bitmap = session.canvas.transferToImageBitmap();
     } catch (error) {
       session.failed = true;
       report('render', session.instanceId, error);
-      return;
+      return false;
     }
 
     const payload: WidgetFrameMessage = {
@@ -381,12 +506,15 @@ export function createWidgetRuntime(
       width: session.width,
       height: session.height,
       dpr: session.dpr,
+      ...(session.generation === undefined ? {} : { generation: session.generation }),
     };
     try {
       channel.emit(widgetFrameEvent, payload, [bitmap]);
     } catch {
       closeBitmap(bitmap);
+      return false;
     }
+    return true;
   }
 
   function requireSession(instanceId: string): Session {
@@ -407,6 +535,7 @@ export function createWidgetRuntime(
     audio.open(request.instanceId, request.audio);
     return {
       instanceId: request.instanceId,
+      generation: request.generation,
       width: toLogicalSize(request.width),
       height: toLogicalSize(request.height),
       dpr: toDpr(request.dpr),
@@ -491,15 +620,22 @@ export function createWidgetRuntime(
           instanceId: session.instanceId,
           port,
           payload,
-          simTime: toSimTime(simTime),
+          simTime: toSimTime(simTime, explicitStepping ? lastStepTime : 0),
         };
         // Route before notifying, so the host listener sees a publish whose delivery is in flight.
         const target = session.bindings[port];
         const direct = target !== undefined && device !== undefined;
         if (target !== undefined && device !== undefined) {
-          void device.deliver(target, payload, message.simTime).catch((error: unknown) => {
+          try {
+            trackDirectDelivery(
+              Promise.resolve(
+                device.deliver({ target, payload, simTime: timePs(message.simTime) }),
+              ),
+              session.instanceId,
+            );
+          } catch (error) {
             report('deliver', session.instanceId, error);
-          });
+          }
         }
         try {
           channel.emit(widgetPublishEvent, direct ? { ...message, direct } : message);
@@ -545,6 +681,7 @@ export function createWidgetRuntime(
 
   return {
     async load(request: WidgetLoadRequest) {
+      ensureDirect();
       const packages: readonly WidgetLoadPackage[] = Array.isArray(request.packages)
         ? request.packages
         : [];
@@ -608,13 +745,23 @@ export function createWidgetRuntime(
       // A factory may call `invalidate()` while building; the first paint below covers that
       // request, so drop the queued repaint instead of committing a second identical frame.
       dirty.delete(session);
-      paint(session);
+      const painted = paint(session);
+      if (!painted && explicitStepping) {
+        // The editor runtime adopts a candidate session only when mount succeeds. Legacy hosts keep
+        // the isolated, report-only behavior they had before explicit stepping.
+        sessions.delete(instanceId);
+        release(session);
+        throw new Error(
+          `Widget instance ${JSON.stringify(instanceId)} failed during its first paint`,
+        );
+      }
     },
 
     unmount(instanceId) {
       const session = sessions.get(instanceId);
       if (!session) return;
       sessions.delete(instanceId);
+      dropQueuedDevicePublishes(session);
       release(session);
     },
 
@@ -627,7 +774,8 @@ export function createWidgetRuntime(
       session.canvas.width = toPixelSize(width, session.dpr);
       session.canvas.height = toPixelSize(height, session.dpr);
       dirty.delete(session);
-      paint(session);
+      if (explicitStepping) dirty.add(session);
+      else paint(session);
     },
 
     setProperties(instanceId, props) {
@@ -636,7 +784,17 @@ export function createWidgetRuntime(
       invalidate(session);
     },
 
+    setAssets(instanceId, assets) {
+      const session = requireSession(instanceId);
+      session.assets.clear();
+      session.reportedAssets.clear();
+      for (const [src, bytes] of toAssetMap(assets)) {
+        session.assets.set(src, bytes);
+      }
+    },
+
     setBindings(instanceId, bindings) {
+      ensureDirect();
       const session = sessions.get(instanceId);
       // A host without a direct device channel routes on its own, so a late binding map is no error.
       if (session === undefined) return;
@@ -644,6 +802,7 @@ export function createWidgetRuntime(
     },
 
     deliver(instanceId, port, payload, simTime) {
+      ensureDirect();
       deliverToInstance(instanceId, port, payload, simTime);
     },
 
@@ -659,9 +818,49 @@ export function createWidgetRuntime(
       }
     },
 
+    configure(config) {
+      if (disposed) return false;
+      if (config?.explicitStepping !== undefined) {
+        explicitStepping = config.explicitStepping === true;
+      }
+      if (config?.directTopicService !== undefined) {
+        if (device !== undefined) return directService === config.directTopicService;
+        return connectDirect(config.directTopicService);
+      }
+      return device !== undefined;
+    },
+
+    async step(context) {
+      if (disposed) throw new Error('The widget runtime is disposed');
+      // Validate the branded boundaries again: RPC carries plain numbers, and a bad step must not
+      // silently become the widget time base.
+      lastStepTime = timePs(context.simTime);
+      timePs(context.dt);
+      if (context.mode !== 'edit' && context.mode !== 'simulation') {
+        throw new TypeError(`Unknown widget step mode: ${String(context.mode)}`);
+      }
+      if (explicitStepping) {
+        // A widget publish that started before this step reaches the simulation before new input
+        // is consumed and before the caller ticks the primary channel.
+        await settleDirectDeliveries();
+        // Inputs first: a direct publish queued since the last step is consumed at this step's start.
+        for (const publish of pendingDevicePublishes.splice(0)) {
+          fanOutDevicePublish(publish);
+        }
+        const pending = [...dirty];
+        dirty.clear();
+        for (const session of pending) paint(session);
+      }
+      // The caller's next simulation tick runs on the primary channel; do not let it overtake a
+      // direct widget → simulation delivery started by this step (or before it).
+      await settleDirectDeliveries();
+    },
+
     resetRuntime() {
       if (disposed) return;
       dirty.clear();
+      pendingDevicePublishes.length = 0;
+      pendingDirectDeliveries.clear();
       for (const session of [...sessions.values()]) {
         sessions.delete(session.instanceId);
         release(session);
@@ -676,7 +875,17 @@ export function createWidgetRuntime(
       if (disposed) return;
       disposed = true;
       unsubscribeDevice();
+      deviceEndpoint?.dispose();
+      deviceEndpoint = undefined;
+      device = undefined;
+      try {
+        options.devicePort?.close();
+      } catch {
+        // Already closed.
+      }
       dirty.clear();
+      pendingDevicePublishes.length = 0;
+      pendingDirectDeliveries.clear();
       for (const session of [...sessions.values()]) {
         release(session);
       }
@@ -739,8 +948,8 @@ function toAssetMap(
   return map;
 }
 
-function toSimTime(value: number | undefined): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+function toSimTime(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : fallback;
 }
 
 function closeBitmap(bitmap: ImageBitmap): void {

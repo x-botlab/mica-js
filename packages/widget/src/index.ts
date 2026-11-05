@@ -34,7 +34,36 @@ export type { HostFsErrorCode, HostFsErrorOptions, HostFsErrorPayload } from './
 export { decodeDataUri, decodeDataUriText } from './host-fs/data-uri';
 export { isAbsoluteHostUri, resolveHostUri } from './host-fs/uri';
 
-export { createWidgetHost } from './host/widget-host';
+export { createWidgetRuntime } from './runtime/runtime';
+export { WidgetRuntimeError } from './runtime/errors';
+export type { WidgetRuntimeErrorCode } from './runtime/errors';
+export type {
+  IPreparedWidgetInstance,
+  IWidgetFrame,
+  IWidgetFrameContext,
+  IWidgetInstanceUpdate,
+  IWidgetMessage,
+  IWidgetRuntime,
+  IWidgetRuntimeDiagnostic,
+  IWidgetRuntimeDiagnosticCode,
+  IWidgetRuntimeDiagnosticPhase,
+  IWidgetRuntimeOptions,
+  IWidgetRuntimeRouting,
+  WidgetRuntimeMode,
+} from './runtime/types';
+export {
+  widgetConfigureMethod,
+  widgetSetAssetsMethod,
+  widgetSimulationRuntimeService,
+  widgetStepMethod,
+} from './guest/widget/protocol';
+export type {
+  WidgetDirectTopicService,
+  IWidgetGuestRuntimeConfig,
+  IWidgetGuestStep,
+  IWidgetSimulationPublish,
+  IWidgetSimulationRuntimeChannel,
+} from './guest/widget/protocol';
 export { createWidgetSandboxFromWorker } from './host/sandbox';
 export { createWidgetHostGuestSandbox, widgetGuestScript } from './host/guest';
 export { createWidgetAudioWorklet, widgetAudioWorkletUrl } from './host/audio/worklet';
@@ -44,10 +73,6 @@ export type {
   WidgetBinding,
   WidgetDiagnostic,
   WidgetDiagnosticCode,
-  WidgetHost,
-  WidgetHostFrameOptions,
-  WidgetHostMode,
-  WidgetHostOptions,
   WidgetInstance,
   WidgetLayer,
   WidgetLayerChange,

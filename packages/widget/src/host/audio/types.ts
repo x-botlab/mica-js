@@ -4,7 +4,7 @@ import type { WidgetAudioLimits, WidgetAudioState } from '../../guest/audio/prot
 export type { WidgetAudioLimits, WidgetAudioState } from '../../guest/audio/protocol';
 
 /**
- * Host audio configuration for `createWidgetHost` (RFC 0016).
+ * Audio configuration for `createWidgetRuntime` (RFC 0016).
  *
  * Omit it and `api.audio.state` is `unavailable`: every method still returns a usable handle, but
  * nothing is ever played.
@@ -13,13 +13,13 @@ export type { WidgetAudioLimits, WidgetAudioState } from '../../guest/audio/prot
   readonly context: AudioContext;
   /** Where the host's master gain ends up; defaults to `context.destination`. */
   readonly destination?: AudioNode;
-  /** Creates the worklet node after the host has created the context. */
+  /** Creates the worklet node using the caller-owned context. */
   readonly getAudioWorklet?: (context: AudioContext) => Promise<AudioWorkletNode>;
   /** Tightens the defaults (8 voices, 4 PCM streams per instance). */
   readonly limits?: Partial<WidgetAudioLimits>;
 }
 
-/** `WidgetHost.audio` — controls every instance of one widget host. */
+/** `IWidgetRuntime.audio` controls every instance owned by the runtime. */
 export interface WidgetAudioControls {
   /** Mirror of the state the guest reads from `api.audio.state`. */
   readonly state: WidgetAudioState;

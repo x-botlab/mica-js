@@ -1,7 +1,13 @@
-import { parsePayloadType } from '@mica-js/core/canvas';
-import type { CanvasBindingCatalog, CanvasPortDescriptor } from '@mica-js/core/canvas';
-import type { SchematicDocument } from '@mica-js/core/schematic';
-import type { DeviceTopic } from '@mica-js/simulator';
+import { parsePayloadType } from '@mica-js/document/canvas';
+import type { CanvasBindingCatalog, CanvasPortDescriptor } from '@mica-js/document/canvas';
+import type { SchematicDocument } from '@mica-js/document/schematic';
+/** Resolved topic facts supplied by the assembly layer for binding validation. */
+export interface IHostBindingTopic {
+  readonly symbol: string;
+  readonly port: string;
+  readonly direction: CanvasPortDescriptor['direction'];
+  readonly type: string;
+}
 import type { WidgetDefinition } from '../types';
 
 /** What the binding validator needs to know about one widget definition. */
@@ -13,11 +19,8 @@ function portKey(symbol: string, port: string): string {
 }
 
 /**
- * Catalog the host assembles itself (RFC 0018).
- *
- * Widget ports and properties come from the definitions `widgetProvider.resolve` returned, the
- * device side from `deviceHost.getTopics()` and the schematic the runtime loaded. A host with an
- * explicit `WidgetHostOptions.catalog` skips this one entirely.
+ * Binding catalog assembled from resolved widget definitions, schematic symbols and topic facts.
+ * The caller resolves these facts; the catalog does not load or own a simulation runtime.
  */
 export class HostBindingCatalog implements CanvasBindingCatalog {
   readonly #definitions = new Map<string, CatalogWidgetDefinition>();
@@ -49,7 +52,7 @@ export class HostBindingCatalog implements CanvasBindingCatalog {
   setDeviceFacts(options: {
     readonly schematics: readonly (string | undefined)[];
     readonly schematic: SchematicDocument | undefined;
-    readonly topics: readonly DeviceTopic[];
+    readonly topics: readonly IHostBindingTopic[];
   }): void {
     this.#schematics = new Set(
       options.schematics.filter((path): path is string => path !== undefined && path !== ''),

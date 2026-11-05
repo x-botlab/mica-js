@@ -1,0 +1,58 @@
+{
+  "name": "@mica-js/editor",
+  "version": "0.0.1",
+  "description": "Mica editors: independent composition roots, commands and scoped services",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/editor"
+  },
+  "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./style.css": {
+      "source": "./src/styles.css",
+      "default": "./dist/style.css"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./style.css": "./dist/style.css"
+    }
+  },
+  "dependencies": {
+    "@mica-js/core": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
+    "@mica-js/sdk": "workspace:*",
+    "@mica-js/widget": "workspace:*",
+    "@mica-js/document": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-dts": "catalog:",
+    "vitest": "catalog:"
+  }
+}

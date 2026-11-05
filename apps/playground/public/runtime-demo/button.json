@@ -1,0 +1,34 @@
+{
+  "displayName": "回环按钮",
+  "description": "按下时向绑定的器件输入发布 true，松开时发布 false。",
+  "properties": {
+    "label": {
+      "type": "string",
+      "title": "标签",
+      "default": "按下"
+    },
+    "radius": {
+      "type": "number",
+      "title": "圆角",
+      "default": 10,
+      "min": 0
+    },
+    "background": {
+      "type": "color",
+      "title": "背景颜色",
+      "default": "#3F3F46"
+    },
+    "activeColor": {
+      "type": "color",
+      "title": "按下颜色",
+      "default": "#0EA5E9"
+    }
+  },
+  "ports": {
+    "press": {
+      "direction": "output",
+      "type": "boolean",
+      "title": "按下"
+    }
+  }
+}

@@ -2,13 +2,13 @@
 
 Mica 是一套基于 TypeScript 的电路仿真与可视化编辑工具集，把原理图、电路运行和交互式面板连接起来，可用于构建浏览器中的电路实验、教学演示和自定义器件仿真应用。
 
-项目提供原理图编辑器、画布编辑器、器件仿真运行时和扩展脚本的沙箱环境。各部分可以独立嵌入现有应用，也可以组合使用；[Playground](apps/playground/) 展示了它们协同工作的完整示例。
+项目提供原理图与画布编辑器、器件仿真运行时和扩展脚本的沙箱环境。各部分可以独立嵌入现有应用；[Playground](apps/playground/) 使用新编辑器工厂展示文档编辑与 widget / 器件双向话题通信。
 
 ## 特色
 
 - **原理图与交互面板联动**：在原理图中放置器件、连线和配置属性，再用画布上的按钮、电位器、指示灯等 widget 与仿真器件交互。
-- **可扩展的器件与 widget**：器件通过 JSON 声明引脚、属性和电气资源，配对 JavaScript 描述行为；应用可以提供自己的器件库和 widget 包。
-- **虚拟时间驱动的仿真**：支持单步、批量执行与复位，不依赖墙上时钟决定电路行为。参考解释器与 JIT 为同一份程序提供不同执行方式。
+- **可扩展的器件与 widget**：JSON 声明展示元数据，DDL 定义器件模型；SDK 生成自包含的 JavaScript 模型与同步适配器，应用提供自己的器件库和 widget 包。
+- **虚拟时间驱动的仿真**：支持单步、批量执行与复位，不依赖墙上时钟决定电路行为。DDL 和 TypeScript Builder 共用新器件模型与 JavaScript 编译后端。
 - **真实的电阻网络求解**：支持显式电压源、电阻、有限内阻 GPIO、上下拉和双向理想触点，可观察节点电压与支路电流，而不只是传播布尔电平。
 - **隔离运行扩展脚本**：提供沙箱与跨边界通信能力，供宿主隔离运行器件和 widget 脚本。
 - **按需组合的包结构**：编辑器、仿真器、文档模型和运行基础设施分别提供，应用自行掌握界面集成、器件来源与文档持久化。
@@ -25,20 +25,22 @@ pnpm install
 pnpm --filter @mica-js/playground dev
 ```
 
-打开终端输出的地址，在侧栏选择原理图或画布示例。现有示例包括 MCU 指示灯、按键与继电器、电位器调光，以及电阻上拉后由按键接地熄灯。
+打开终端输出的地址，在工具栏切换原理图或画布。画布切换到仿真模式并运行后，按住按钮可观察通过器件回送话题驱动的指示灯。文档下载由 Playground 自行处理。
 
 ## 包
 
-| 包                                                       | 职责                                                                        |
-| -------------------------------------------------------- | --------------------------------------------------------------------------- |
-| [`@mica-js/ir`](packages/ir)                             | 领域无关 IR：建图、存储、静态校验、参考解释器与 JIT 执行                    |
-| [`@mica-js/core`](packages/core)                         | 文档与宿主基础设施：虚拟时间、`.sch` / `.cnv` 格式、RPC、日志与生命周期     |
-| [`@mica-js/simulator`](packages/simulator)               | 仿真器：统一 IR 电路编译/运行时，`DeviceSimulationHost` 契约与 sandbox 适配 |
-| [`@mica-js/sandbox`](packages/sandbox)                   | 通用 JS 沙箱：iframe + Worker 隔离与离屏渲染合成                            |
-| [`@mica-js/widget`](packages/widget)                     | Widget 契约与运行时：包加载、`WidgetHost`、图层与端口路由                   |
-| [`@mica-js/sdk`](packages/sdk)                           | Device / Widget 作者 API、DDL 类型生成与 Vite 独立双文件构建                |
-| [`@mica-js/canvas-editor`](packages/canvas-editor)       | 画布编辑器：`.cnv` 合成、交互命令与场景组装                                 |
-| [`@mica-js/schematic-editor`](packages/schematic-editor) | 原理图编辑器：`.sch` 的 Canvas 渲染与交互                                   |
+| 包                                               | 职责                                                              |
+| ------------------------------------------------ | ----------------------------------------------------------------- |
+| [`@mica-js/core`](packages/core)                 | 基础设施：虚拟时间、RPC、日志与生命周期                           |
+| [`@mica-js/document`](packages/document)         | 文档领域：`.sch` / `.cnv` 格式、文档操作、几何与网表、话题契约    |
+| [`@mica-js/device-model`](packages/device-model) | 新器件共享模型、TypeScript Builder 与校验                         |
+| [`@mica-js/compiler`](packages/compiler)         | 新器件模型的 JavaScript 编译与执行                                |
+| [`@mica-js/ddl`](packages/ddl)                   | DDL 解析、模型编译与类型投影                                      |
+| [`@mica-js/simulator`](packages/simulator)       | 同步板级仿真与编辑器预备运行时、独立 sandbox 适配                 |
+| [`@mica-js/sdk`](packages/sdk)                   | Device / Widget 作者 API、DDL 类型生成与 Vite 独立双文件构建      |
+| [`@mica-js/sandbox`](packages/sandbox)           | 通用 JS 沙箱：iframe + Worker 隔离与离屏渲染合成                  |
+| [`@mica-js/widget`](packages/widget)             | Widget 契约与运行时：包加载、`IWidgetRuntime`、帧、音频与话题通信 |
+| [`@mica-js/editor`](packages/editor)             | 原理图与画布编辑器：文档、交互、历史、依赖注入及内部运行会话      |
 
 ## 文档
 

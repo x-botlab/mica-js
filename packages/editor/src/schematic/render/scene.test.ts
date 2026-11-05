@@ -1,0 +1,608 @@
+import { describe, expect, it } from 'vitest';
+import {
+  GROUND_DEVICE,
+  LABEL_DEVICE,
+  POWER_DEVICE,
+  createDeviceRegistry,
+  parseSchematic,
+  type SchematicDocument,
+} from '@mica-js/document/schematic';
+import { buildSchematicScene, type SceneItem } from './scene';
+import { DARK_SCHEMATIC_THEME, LIGHT_SCHEMATIC_THEME } from './theme';
+
+const devices = createDeviceRegistry([
+  {
+    packageId: 'pkg',
+    devices: [
+      {
+        id: 'mcu',
+        displayName: 'STM32',
+        symbol: {
+          name: 'MCU',
+          pins: { PC0: { x: 0, y: 0 }, PC1: { x: 0, y: -10 } },
+          bounds: { x: -20, y: -20, width: 40, height: 40 },
+        },
+      },
+    ],
+  },
+]);
+
+const document: SchematicDocument = parseSchematic({
+  version: 1,
+  sheet: {
+    symbols: [
+      {
+        id: '00000006-4c77-4daf-8fab-320fc3476afc',
+        device: 'pkg:mcu',
+        x: 100,
+        y: 100,
+        rotation: 0,
+      },
+      {
+        id: '00000003-986d-45ab-84b6-b67319708dce',
+        device: 'builtin:label',
+        net: 'L1',
+        x: 200,
+        y: 100,
+        rotation: 0,
+      },
+      {
+        id: '00000004-33d4-419e-80e8-ca689a1b74a4',
+        device: 'builtin:power',
+        x: 0,
+        y: 0,
+        rotation: 0,
+        net: '3V3',
+      },
+      {
+        id: '00000002-a4c8-4744-8d5d-6e16ed257d9a',
+        device: 'builtin:ground',
+        x: 0,
+        y: 60,
+        rotation: 0,
+        net: 'GND',
+      },
+    ],
+    wires: [
+      {
+        id: '00000007-9cf4-407f-8900-09a16d33a38c',
+        points: [
+          { x: 100, y: 100 },
+          { x: 200, y: 100 },
+        ],
+      },
+      {
+        id: '00000008-a914-47d5-84d1-8bafbe533ffb',
+        points: [
+          { x: 0, y: 0 },
+          { x: 0, y: 40 },
+        ],
+      },
+      {
+        id: '00000009-f25c-4a8c-8be1-1c60e8fb777f',
+        points: [
+          { x: 0, y: 60 },
+          { x: 0, y: 80 },
+        ],
+      },
+    ],
+    junctions: [],
+  },
+});
+
+function texts(items: readonly SceneItem[]): string[] {
+  return items.filter((item) => item.kind === 'text').map((item) => item.text);
+}
+
+/** Four-sided symbol used by the rotation and pin-label tests. */
+function ne555Devices() {
+  return createDeviceRegistry([
+    {
+      packageId: 'pkg',
+      devices: [
+        {
+          id: 'ne555',
+          symbol: {
+            name: 'NE555',
+            bounds: { x: -40, y: -50, width: 80, height: 100 },
+            pins: {
+              TRIG: { x: -60, y: -20, side: 'left' },
+              OUT: { x: 60, y: 0, side: 'right' },
+              VCC: { x: 0, y: -70, side: 'top' },
+              GND: { x: 0, y: 70, side: 'bottom' },
+            },
+          },
+        },
+      ],
+    },
+  ]);
+}
+
+/** Scene of a single NE555 placed at `rotation`. */
+function sceneAt(rotation: number) {
+  return buildSchematicScene({
+    document: parseSchematic({
+      version: 1,
+      sheet: {
+        symbols: [
+          {
+            id: 'e0c8f4b2-1a35-4c77-8d90-2f4b6a8c1e35',
+            device: 'pkg:ne555',
+            designator: 'U1',
+            x: 0,
+            y: 0,
+            rotation,
+          },
+        ],
+        wires: [],
+        junctions: [],
+      },
+    }),
+    devices: ne555Devices(),
+    theme: DARK_SCHEMATIC_THEME,
+  });
+}
+
+function textItem(rotation: number, text: string) {
+  const item = sceneAt(rotation).items.find(
+    (entry) => entry.kind === 'text' && entry.text === text,
+  );
+  return item?.kind === 'text' ? item : undefined;
+}
+
+describe('buildSchematicScene', () => {
+  it('draws wires, symbols and builtin glyphs', () => {
+    const scene = buildSchematicScene({ document, devices, theme: DARK_SCHEMATIC_THEME });
+    const polylines = scene.items.filter((item) => item.kind === 'polyline');
+    expect(polylines).toHaveLength(3);
+    expect(scene.items.some((item) => item.kind === 'rect')).toBe(true);
+    expect(texts(scene.items)).toContain('MCU');
+    expect(texts(scene.items)).toContain('L1');
+    expect(texts(scene.items)).toContain('3V3');
+    expect(texts(scene.items)).toContain('GND');
+  });
+
+  it('centers the device name on the symbol', () => {
+    const scene = buildSchematicScene({ document, devices, theme: DARK_SCHEMATIC_THEME });
+    const label = scene.items.find((item) => item.kind === 'text' && item.text === 'MCU');
+    expect(label).toMatchObject({
+      align: 'center',
+      baseline: 'middle',
+      position: { x: 100, y: 100 },
+    });
+  });
+
+  it('uses theme colors for every element', () => {
+    const dark = buildSchematicScene({ document, devices, theme: DARK_SCHEMATIC_THEME });
+    const light = buildSchematicScene({ document, devices, theme: LIGHT_SCHEMATIC_THEME });
+    const darkWire = dark.items.find((item) => item.kind === 'polyline');
+    const lightWire = light.items.find((item) => item.kind === 'polyline');
+    expect(darkWire).toMatchObject({ color: DARK_SCHEMATIC_THEME.wire });
+    expect(lightWire).toMatchObject({ color: LIGHT_SCHEMATIC_THEME.wire });
+    expect(dark.background).toBe(DARK_SCHEMATIC_THEME.background);
+    expect(light.background).toBe(LIGHT_SCHEMATIC_THEME.background);
+  });
+
+  it('applies selection and hover colors', () => {
+    const scene = buildSchematicScene({
+      document,
+      devices,
+      theme: DARK_SCHEMATIC_THEME,
+      selection: {
+        wires: new Set(['00000007-9cf4-407f-8900-09a16d33a38c']),
+        symbols: new Set(['00000006-4c77-4daf-8fab-320fc3476afc']),
+      },
+      hover: { kind: 'wire', id: '00000008-a914-47d5-84d1-8bafbe533ffb', segment: 0 },
+    });
+    const selected = scene.items.find(
+      (item) => item.kind === 'polyline' && item.color === DARK_SCHEMATIC_THEME.wireSelected,
+    );
+    const hovered = scene.items.find(
+      (item) => item.kind === 'polyline' && item.color === DARK_SCHEMATIC_THEME.hover,
+    );
+    expect(selected).toBeDefined();
+    expect(hovered).toBeDefined();
+  });
+
+  it('lights up the device name only when the symbol is hovered or selected', () => {
+    const nameOf = (input: { selected?: boolean; hovered?: boolean }) => {
+      const scene = buildSchematicScene({
+        document,
+        devices,
+        theme: DARK_SCHEMATIC_THEME,
+        ...(input.selected === true
+          ? { selection: { symbols: new Set(['00000006-4c77-4daf-8fab-320fc3476afc']) } }
+          : {}),
+        ...(input.hovered === true
+          ? { hover: { kind: 'symbol', id: '00000006-4c77-4daf-8fab-320fc3476afc' } }
+          : {}),
+      });
+      const name = scene.items.find((item) => item.kind === 'text' && item.text === 'MCU');
+      return name?.kind === 'text' ? name.color : undefined;
+    };
+
+    expect(nameOf({})).toBe(DARK_SCHEMATIC_THEME.symbolText);
+    expect(nameOf({})).not.toBe(DARK_SCHEMATIC_THEME.selection);
+    expect(nameOf({ selected: true })).toBe(DARK_SCHEMATIC_THEME.selection);
+    expect(nameOf({ hovered: true })).toBe(DARK_SCHEMATIC_THEME.selection);
+  });
+
+  it('draws the pending wire only in wire mode', () => {
+    const pendingWire = [
+      { x: 0, y: 0 },
+      { x: 10, y: 10 },
+    ];
+    const wireScene = buildSchematicScene({
+      document,
+      devices,
+      theme: DARK_SCHEMATIC_THEME,
+      tool: 'wire',
+      pendingWire,
+    });
+    const selectScene = buildSchematicScene({
+      document,
+      devices,
+      theme: DARK_SCHEMATIC_THEME,
+      tool: 'select',
+      pendingWire,
+    });
+    expect(
+      wireScene.items.some((item) => item.kind === 'polyline' && item.dash !== undefined),
+    ).toBe(true);
+    expect(
+      selectScene.items.some((item) => item.kind === 'polyline' && item.dash !== undefined),
+    ).toBe(false);
+  });
+
+  it('uses a placeholder for symbols without geometry', () => {
+    const scene = buildSchematicScene({
+      document: {
+        ...document,
+        sheet: {
+          ...document.sheet,
+          symbols: [
+            {
+              id: '0000000a-70ff-4052-81b8-edc8c851e627',
+              device: 'unknown:device',
+              x: 5,
+              y: 5,
+              rotation: 0,
+            },
+          ],
+        },
+      } as SchematicDocument,
+      devices,
+      theme: DARK_SCHEMATIC_THEME,
+    });
+    const rect = scene.items.find((item) => item.kind === 'rect');
+    expect(rect).toMatchObject({ stroke: DARK_SCHEMATIC_THEME.symbolPlaceholder, dash: [4, 3] });
+  });
+
+  it('draws net names on wires when labels are enabled', () => {
+    const scene = buildSchematicScene({ document, devices, theme: DARK_SCHEMATIC_THEME });
+    expect(texts(scene.items)).toContain('L1');
+  });
+
+  it('exposes the grid from the theme', () => {
+    const scene = buildSchematicScene({ document, devices, theme: DARK_SCHEMATIC_THEME });
+    expect(scene.grid).toEqual({
+      size: DARK_SCHEMATIC_THEME.gridSize,
+      subdivisions: 1,
+      minor: DARK_SCHEMATIC_THEME.grid,
+      major: DARK_SCHEMATIC_THEME.gridMajor,
+    });
+    const hidden = buildSchematicScene({
+      document,
+      devices,
+      theme: DARK_SCHEMATIC_THEME,
+      display: { grid: false, labels: false },
+    });
+    expect(hidden.grid).toBeUndefined();
+  });
+
+  it('subdivides the grid when asked and clamps invalid densities', () => {
+    const dense = buildSchematicScene({
+      document,
+      devices,
+      theme: DARK_SCHEMATIC_THEME,
+      display: { grid: true, labels: false, gridSize: 10, gridSubdivisions: 4 },
+    });
+    expect(dense.grid?.size).toBe(10);
+    expect(dense.grid?.subdivisions).toBe(4);
+
+    const invalid = buildSchematicScene({
+      document,
+      devices,
+      theme: DARK_SCHEMATIC_THEME,
+      display: { grid: true, labels: false, gridSubdivisions: 0 },
+    });
+    expect(invalid.grid?.subdivisions).toBe(1);
+  });
+
+  it('renders without a device provider', () => {
+    const scene = buildSchematicScene({ document, theme: DARK_SCHEMATIC_THEME });
+    expect(scene.items.length).toBeGreaterThan(0);
+  });
+
+  it('draws pin stubs and labels according to the declared side', () => {
+    const sided = ne555Devices();
+    const scene = buildSchematicScene({
+      document: parseSchematic({
+        version: 1,
+        sheet: {
+          symbols: [
+            {
+              id: '3a7d1e5c-8b24-4f69-9c01-6d2e8f4b0a57',
+              device: 'pkg:ne555',
+              designator: 'U1',
+              x: 0,
+              y: 0,
+              rotation: 0,
+            },
+          ],
+          wires: [],
+          junctions: [],
+        },
+      }),
+      devices: sided,
+      theme: DARK_SCHEMATIC_THEME,
+    });
+
+    const lines = scene.items.filter((item) => item.kind === 'line');
+    // Left stub: from the body edge (x = -40) to the anchor (x = -60), at the pin's y.
+    expect(lines).toContainEqual({
+      kind: 'line',
+      from: { x: -40, y: -20 },
+      to: { x: -60, y: -20 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+    // Right stub.
+    expect(lines).toContainEqual({
+      kind: 'line',
+      from: { x: 40, y: 0 },
+      to: { x: 60, y: 0 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+    // Top and bottom stubs are vertical.
+    expect(lines).toContainEqual({
+      kind: 'line',
+      from: { x: 0, y: -50 },
+      to: { x: 0, y: -70 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+    expect(lines).toContainEqual({
+      kind: 'line',
+      from: { x: 0, y: 50 },
+      to: { x: 0, y: 70 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+
+    const rotationOf = (text: string): number | undefined => {
+      const item = scene.items.find((entry) => entry.kind === 'text' && entry.text === text);
+      return item?.kind === 'text' ? item.rotation : undefined;
+    };
+    expect(rotationOf('TRIG')).toBe(0);
+    expect(rotationOf('VCC')).toBe(-90);
+    expect(rotationOf('GND')).toBe(-90);
+
+    const reference = scene.items.find((item) => item.kind === 'text' && item.text === 'U1');
+    expect(reference).toMatchObject({ align: 'left', baseline: 'bottom' });
+  });
+
+  it('turns the device name with quarter turns and keeps text upright at half turns', () => {
+    expect(textItem(90, 'NE555')).toMatchObject({ rotation: 90 });
+    expect(textItem(270, 'NE555')).toMatchObject({ rotation: -90 });
+    expect(textItem(180, 'NE555')).toMatchObject({
+      rotation: 0,
+      align: 'center',
+      baseline: 'middle',
+    });
+  });
+
+  it('flips pin names instead of drawing them upside down', () => {
+    expect(textItem(0, 'TRIG')).toMatchObject({ rotation: 0, align: 'left' });
+    expect(textItem(90, 'TRIG')).toMatchObject({ rotation: 90, align: 'left' });
+    expect(textItem(180, 'TRIG')).toMatchObject({ rotation: 0, align: 'right' });
+    expect(textItem(270, 'TRIG')).toMatchObject({ rotation: -90, align: 'left' });
+    expect(textItem(180, 'VCC')).toMatchObject({ rotation: 90 });
+    expect(textItem(180, 'GND')).toMatchObject({ rotation: 90 });
+  });
+
+  it('flips the reference designator with the symbol', () => {
+    expect(textItem(90, 'U1')).toMatchObject({ rotation: 90, align: 'left', baseline: 'bottom' });
+    expect(textItem(180, 'U1')).toMatchObject({ rotation: 0, align: 'right', baseline: 'top' });
+    expect(textItem(270, 'U1')).toMatchObject({
+      rotation: -90,
+      align: 'left',
+      baseline: 'bottom',
+    });
+  });
+
+  it('rotates the power glyph and keeps its label upright', () => {
+    const scene = (rotation: number) =>
+      buildSchematicScene({
+        document: parseSchematic({
+          version: 1,
+          sheet: {
+            symbols: [
+              {
+                id: '00000004-33d4-419e-80e8-ca689a1b74a4',
+                device: POWER_DEVICE,
+                net: 'VCC',
+                x: 0,
+                y: 0,
+                rotation,
+              },
+            ],
+            wires: [],
+            junctions: [],
+          },
+        }),
+        devices,
+        theme: DARK_SCHEMATIC_THEME,
+      });
+    // The bar is horizontal at 0° and vertical at 90°.
+    const bar = (rotation: number) => {
+      const lines = scene(rotation).items.filter((item) => item.kind === 'line');
+      const item = lines[1];
+      if (item?.kind !== 'line') {
+        throw new Error('missing bar line');
+      }
+      return item;
+    };
+    expect(bar(0)).toMatchObject({ from: { x: -6, y: -10 }, to: { x: 6, y: -10 } });
+    expect(bar(90).from.x).toBeCloseTo(10, 9);
+    expect(bar(90).to.x).toBeCloseTo(10, 9);
+    expect(bar(90).from.y - bar(90).to.y).toBeCloseTo(-12, 9);
+
+    const label = scene(90).items.find((item) => item.kind === 'text');
+    expect(label).toMatchObject({
+      text: 'VCC',
+      rotation: 0,
+      align: 'left',
+      baseline: 'middle',
+    });
+    expect(label?.kind === 'text' ? label.position.x : 0).toBeCloseTo(13, 9);
+    expect(label?.kind === 'text' ? label.position.y : 1).toBeCloseTo(0, 9);
+    const flipped = scene(180).items.find((item) => item.kind === 'text');
+    expect(flipped).toMatchObject({ rotation: 0, align: 'center', baseline: 'top' });
+  });
+
+  it('keeps the label name off the wire it marks', () => {
+    const labelAt = (rotation: number) =>
+      buildSchematicScene({
+        document: parseSchematic({
+          version: 1,
+          sheet: {
+            symbols: [
+              {
+                id: '00000005-6b20-49c7-8d4f-c6ab400264c7',
+                device: LABEL_DEVICE,
+                net: 'N1',
+                x: 0,
+                y: 0,
+                rotation,
+              },
+            ],
+            wires: [],
+            junctions: [],
+          },
+        }),
+        devices,
+        theme: DARK_SCHEMATIC_THEME,
+      }).items.find((item) => item.kind === 'text');
+
+    // Horizontal label: the name sits just above the wire, not on it.
+    expect(labelAt(0)).toMatchObject({
+      position: { x: 4, y: -1 },
+      align: 'left',
+      baseline: 'bottom',
+    });
+    expect(labelAt(180)).toMatchObject({ position: { x: -4, y: -1 }, align: 'right' });
+    // Vertical label: the name sits beside the wire, level with the cross.
+    expect(labelAt(90)).toMatchObject({
+      position: { x: 4, y: 0 },
+      align: 'left',
+      baseline: 'middle',
+    });
+    expect(labelAt(270)).toMatchObject({
+      position: { x: 4, y: 0 },
+      baseline: 'middle',
+    });
+  });
+
+  it('omits the anchor dot on power and ground symbols', () => {
+    const itemsOf = (device: string) =>
+      buildSchematicScene({
+        document: parseSchematic({
+          version: 1,
+          sheet: {
+            symbols: [
+              {
+                id: '00000001-eb9f-4adf-8db3-c3ff4c1bbcf9',
+                device,
+                net: 'A1',
+                x: 0,
+                y: 0,
+                rotation: 0,
+              },
+            ],
+            wires: [],
+            junctions: [],
+          },
+        }),
+        devices,
+        theme: DARK_SCHEMATIC_THEME,
+      }).items;
+
+    for (const device of [POWER_DEVICE, GROUND_DEVICE, LABEL_DEVICE]) {
+      expect(itemsOf(device).filter((item) => item.kind === 'circle')).toHaveLength(0);
+    }
+
+    // The label marks its connection point with a small cross instead.
+    const cross = itemsOf(LABEL_DEVICE).filter((item) => item.kind === 'line');
+    expect(cross).toContainEqual({
+      kind: 'line',
+      from: { x: -3, y: 0 },
+      to: { x: 3, y: 0 },
+      color: DARK_SCHEMATIC_THEME.labelAnchor,
+      width: 1.2,
+    });
+    expect(cross).toContainEqual({
+      kind: 'line',
+      from: { x: 0, y: -3 },
+      to: { x: 0, y: 3 },
+      color: DARK_SCHEMATIC_THEME.labelAnchor,
+      width: 1.2,
+    });
+  });
+
+  it('infers the side when a pin omits it', () => {
+    const inferred = createDeviceRegistry([
+      {
+        packageId: 'pkg',
+        devices: [
+          {
+            id: 'plain',
+            symbol: {
+              name: 'PLAIN',
+              bounds: { x: -20, y: -20, width: 40, height: 40 },
+              pins: { P: { x: -40, y: 0 } },
+            },
+          },
+        ],
+      },
+    ]);
+    const scene = buildSchematicScene({
+      document: parseSchematic({
+        version: 1,
+        sheet: {
+          symbols: [
+            {
+              id: '5b9e2f6d-7c13-4a80-9d24-8e1b3f5c0a69',
+              device: 'pkg:plain',
+              x: 0,
+              y: 0,
+              rotation: 0,
+            },
+          ],
+          wires: [],
+          junctions: [],
+        },
+      }),
+      devices: inferred,
+      theme: DARK_SCHEMATIC_THEME,
+    });
+    expect(scene.items.filter((item) => item.kind === 'line')).toContainEqual({
+      kind: 'line',
+      from: { x: -20, y: 0 },
+      to: { x: -40, y: 0 },
+      color: DARK_SCHEMATIC_THEME.pin,
+      width: 1.2,
+    });
+  });
+});

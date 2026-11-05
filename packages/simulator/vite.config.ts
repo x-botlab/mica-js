@@ -1,5 +1,6 @@
+import { micaSandboxPlugins } from '@mica-js/sandbox/vite';
 import dts from 'vite-plugin-dts';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   resolve: { conditions: ['source'] },
@@ -10,6 +11,7 @@ export default defineConfig({
         device: 'src/device.ts',
         model: 'src/model.ts',
         ddl: 'src/ddl.ts',
+        sandbox: 'src/sandbox.ts',
       },
       formats: ['es'],
       fileName: (_format, name) => `${name}.js`,
@@ -19,5 +21,14 @@ export default defineConfig({
     minify: false,
     rollupOptions: { external: (id) => id.startsWith('@mica-js/') },
   },
-  plugins: [dts({ tsconfigPath: './tsconfig.build.json', entryRoot: 'src', bundleTypes: true })],
+  plugins: [
+    ...micaSandboxPlugins(),
+    dts({
+      tsconfigPath: './tsconfig.build.json',
+      entryRoot: 'src',
+      exclude: ['src/**/*.test.ts', 'src/**/test-helpers.ts'],
+      bundleTypes: true,
+    }),
+  ],
+  test: { include: ['src/simulation-runtime/**/*.test.ts'], environment: 'node' },
 });

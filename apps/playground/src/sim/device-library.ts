@@ -1,10 +1,10 @@
-import { parsePayloadType, type PayloadType } from '@mica-js/core/canvas';
+import { parsePayloadType, type PayloadType } from '@mica-js/document/canvas';
 import {
   createDeviceRegistry,
   parseDeviceReference,
   synthesizeDeviceSymbol,
-} from '@mica-js/core/schematic';
-import type { DeviceSymbolProvider, PinSide } from '@mica-js/core/schematic';
+} from '@mica-js/document/schematic';
+import type { DeviceSymbolProvider, PinSide } from '@mica-js/document/schematic';
 
 /**
  * Playground device package: **contracts only**.

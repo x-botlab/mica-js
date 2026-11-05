@@ -1,7 +1,7 @@
 {
   "name": "@mica-js/core",
   "version": "0.5.0",
-  "description": "Mica core: virtual time, document formats, RPC, logging and lifecycle utilities",
+  "description": "Mica core: virtual time, RPC, logging and lifecycle utilities",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -15,16 +15,6 @@
       "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./schematic": {
-      "source": "./src/schematic/index.ts",
-      "types": "./dist/schematic/index.d.ts",
-      "import": "./dist/schematic/index.js"
-    },
-    "./canvas": {
-      "source": "./src/canvas/index.ts",
-      "types": "./dist/canvas/index.d.ts",
-      "import": "./dist/canvas/index.js"
     },
     "./rpc": {
       "source": "./src/rpc/index.ts",
@@ -58,14 +48,6 @@
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
       },
-      "./schematic": {
-        "types": "./dist/schematic/index.d.ts",
-        "import": "./dist/schematic/index.js"
-      },
-      "./canvas": {
-        "types": "./dist/canvas/index.d.ts",
-        "import": "./dist/canvas/index.js"
-      },
       "./rpc": {
         "types": "./dist/rpc/index.d.ts",
         "import": "./dist/rpc/index.js"
@@ -79,9 +61,6 @@
         "import": "./dist/lifecycle/index.js"
       }
     }
-  },
-  "dependencies": {
-    "@mica-js/ir": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:",

@@ -1,13 +1,13 @@
+import { timePs } from '@mica-js/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRpc } from '@mica-js/core/rpc';
 import type { RpcEndpoint } from '@mica-js/core/rpc';
-import type { SimulationPublish } from '@mica-js/simulator';
 import type { WidgetDefinition } from '../../types';
 import { widgetAudioGuestService } from '../audio/protocol';
 import { createFakeWorklet, flush } from '../audio/test-helpers';
 import {
   widgetAssetFailedEvent,
-  widgetDeviceTopicService,
+  widgetSimulationRuntimeService,
   widgetErrorEvent,
   widgetFrameEvent,
   widgetGuestService,
@@ -18,7 +18,8 @@ import {
 } from './protocol';
 import type {
   WidgetAssetFailedMessage,
-  WidgetDeviceTopicChannel,
+  IWidgetSimulationRuntimeChannel,
+  IWidgetSimulationPublish,
   WidgetErrorMessage,
   WidgetFrameMessage,
   WidgetPublishMessage,
@@ -86,7 +87,7 @@ interface HarnessOptions {
   /** Replaces the code → factory table; used to model module-level state across evaluations. */
   readonly importModule?: (code: string) => Promise<unknown>;
   /** Direct device channel; without it the guest stays in host-routed mode. */
-  readonly device?: WidgetDeviceTopicChannel;
+  readonly device?: IWidgetSimulationRuntimeChannel;
 }
 
 function createHarness(
@@ -246,9 +247,12 @@ describe('widget worker entry', () => {
       'unmount',
       'resize',
       'set-properties',
+      'set-assets',
       'set-bindings',
       'deliver',
       'pointer',
+      'configure',
+      'step',
       'reset-runtime',
     ]);
     expect(Object.keys(guestControl(fake))).toEqual(['dispatchEvent', 'terminate']);
@@ -363,16 +367,16 @@ describe('widget worker entry', () => {
     let api: WidgetInstanceApi | undefined;
     const received: unknown[] = [];
     const delivered: { readonly payload: unknown; readonly simTime: number | undefined }[] = [];
-    const deviceListeners = new Set<(publish: SimulationPublish) => void>();
+    const deviceListeners = new Set<(publish: IWidgetSimulationPublish) => void>();
 
     // The device guest: the same service name the simulator registers, reached without the host. It
     // has to exist before the widget guest starts, because the guest subscribes at startup.
     const deviceRpc = createRpc(deviceHostPort);
-    deviceRpc.register(widgetDeviceTopicService, {
-      deliver: async (_target: unknown, payload: unknown, simTime?: number) => {
+    deviceRpc.register(widgetSimulationRuntimeService, {
+      deliver: async ({ payload, simTime }) => {
         delivered.push({ payload, simTime });
       },
-      onDidPublish(listener: (publish: SimulationPublish) => void) {
+      onDidPublish(listener: (publish: IWidgetSimulationPublish) => void) {
         deviceListeners.add(listener);
         return () => deviceListeners.delete(listener);
       },
@@ -402,10 +406,10 @@ describe('widget worker entry', () => {
 
     api?.publish('value', 7, 1280);
     await tick();
-    expect(delivered).toEqual([{ payload: 7, simTime: 1280 }]);
+    expect(delivered).toEqual([{ payload: 7, simTime: timePs(1280) }]);
 
     for (const listener of [...deviceListeners]) {
-      listener({ target: { symbol: 'led', port: 'anode' }, payload: 5, simTime: 10 });
+      listener({ target: { symbol: 'led', port: 'anode' }, payload: 5, simTime: timePs(10) });
     }
     // The publish crosses the port pair, so it lands on the guest's queue after this turn.
     await tick();
@@ -699,7 +703,7 @@ describe('widget guest runtime', () => {
     runtime.mount(mountRequest());
     runtime.deliver('a', 'brightness', 0.5, 42);
 
-    expect(received).toEqual([{ payload: 0.5, simTime: 42 }]);
+    expect(received).toEqual([{ payload: 0.5, simTime: timePs(42) }]);
     expect(errors(events)).toEqual([
       { instanceId: 'a', phase: 'deliver', error: { name: 'Error', message: 'listener exploded' } },
     ]);
@@ -723,12 +727,12 @@ describe('widget guest runtime', () => {
     expect(events.filter((event) => event.type === widgetPublishEvent)).toEqual([
       {
         type: widgetPublishEvent,
-        payload: { instanceId: 'a', port: 'value', payload: 7, simTime: 0 },
+        payload: { instanceId: 'a', port: 'value', payload: 7, simTime: timePs(0) },
         transfer: undefined,
       },
       {
         type: widgetPublishEvent,
-        payload: { instanceId: 'a', port: 'value', payload: 8, simTime: 1280 },
+        payload: { instanceId: 'a', port: 'value', payload: 8, simTime: timePs(1280) },
         transfer: undefined,
       },
     ]);
@@ -948,9 +952,9 @@ function createFakeDeviceChannel() {
     readonly payload: unknown;
     readonly simTime: number | undefined;
   }[] = [];
-  const listeners = new Set<(publish: SimulationPublish) => void>();
-  const channel: WidgetDeviceTopicChannel = {
-    deliver: async (target, payload, simTime) => {
+  const listeners = new Set<(publish: IWidgetSimulationPublish) => void>();
+  const channel: IWidgetSimulationRuntimeChannel = {
+    deliver: async ({ target, payload, simTime }) => {
       delivered.push({ target, payload, simTime });
     },
     onDidPublish(listener) {
@@ -961,7 +965,7 @@ function createFakeDeviceChannel() {
   return {
     channel,
     delivered,
-    publish(publish: SimulationPublish) {
+    publish(publish: IWidgetSimulationPublish) {
       for (const listener of [...listeners]) listener(publish);
     },
   };
@@ -989,7 +993,7 @@ describe('widget guest direct device channel', () => {
     await tick();
 
     expect(device.delivered).toEqual([
-      { target: { symbol: 'led', port: 'input' }, payload: 7, simTime: 1280 },
+      { target: { symbol: 'led', port: 'input' }, payload: 7, simTime: timePs(1280) },
     ]);
     // The host still sees the publish, marked as already routed, so it neither forwards nor loses it.
     const publish = events.find((event) => event.type === widgetPublishEvent);
@@ -997,7 +1001,7 @@ describe('widget guest direct device channel', () => {
       instanceId: 'a',
       port: 'value',
       payload: 7,
-      simTime: 1280,
+      simTime: timePs(1280),
       direct: true,
     } satisfies WidgetPublishMessage);
   });
@@ -1044,10 +1048,10 @@ describe('widget guest direct device channel', () => {
     await runtime.load(loadRequest('widget'));
     runtime.mount(mountRequest());
     runtime.setBindings('a', { brightness: { symbol: 'led', port: 'anode' } });
-    device.publish({ target: { symbol: 'led', port: 'anode' }, payload: 5, simTime: 10 });
-    device.publish({ target: { symbol: 'led', port: 'cathode' }, payload: 6, simTime: 20 });
+    device.publish({ target: { symbol: 'led', port: 'anode' }, payload: 5, simTime: timePs(10) });
+    device.publish({ target: { symbol: 'led', port: 'cathode' }, payload: 6, simTime: timePs(20) });
 
-    expect(received).toEqual([[5, { simTime: 10 }]]);
+    expect(received).toEqual([[5, { simTime: timePs(10) }]]);
   });
 
   it('forwards a bindings change before the next publish', async () => {
@@ -1072,7 +1076,7 @@ describe('widget guest direct device channel', () => {
     await tick();
 
     expect(device.delivered).toEqual([
-      { target: { symbol: 'relay', port: 'coil' }, payload: 1, simTime: 0 },
+      { target: { symbol: 'relay', port: 'coil' }, payload: 1, simTime: timePs(0) },
     ]);
   });
 
@@ -1096,7 +1100,7 @@ describe('widget guest direct device channel', () => {
       instanceId: 'a',
       port: 'value',
       payload: 7,
-      simTime: 1280,
+      simTime: timePs(1280),
     } satisfies WidgetPublishMessage);
   });
 });

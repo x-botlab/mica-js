@@ -1,0 +1,488 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Mica device.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "id", "version", "displayName"],
+  "properties": {
+    "kind": {
+      "const": "device"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9-]+$"
+    },
+    "version": {
+      "$ref": "#/$defs/nonempty"
+    },
+    "displayName": {
+      "$ref": "#/$defs/nonempty"
+    },
+    "description": {
+      "$ref": "#/$defs/nonempty"
+    },
+    "license": {
+      "$ref": "#/$defs/nonempty"
+    },
+    "tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/nonempty"
+      }
+    },
+    "designatorPrefix": {
+      "type": "string",
+      "pattern": "^\\S+$"
+    },
+    "properties": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/property"
+      }
+    },
+    "pins": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/pin"
+      }
+    },
+    "ports": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/port"
+      }
+    },
+    "symbol": {
+      "$ref": "#/$defs/symbol"
+    }
+  },
+  "$defs": {
+    "nonempty": {
+      "type": "string",
+      "minLength": 1
+    },
+    "positive": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "coordinate": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "align": {
+      "enum": ["left", "center", "right"]
+    },
+    "property": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "required"],
+      "properties": {
+        "type": {
+          "enum": ["number", "boolean", "string", "enum", "bytes"]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "default": {},
+        "enumName": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonempty"
+          }
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        },
+        "order": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "editor": {
+          "$ref": "#/$defs/editor"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              }
+            },
+            "required": ["required"]
+          },
+          "then": {
+            "not": {
+              "required": ["default"]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "enum"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["enumName", "values"]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["enumName"]
+                },
+                {
+                  "required": ["values"]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "editor": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            },
+            "step": {
+              "$ref": "#/$defs/positive"
+            },
+            "kind": {
+              "const": "number"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": ["text", "textarea", "checkbox", "file"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "const": "select"
+            }
+          }
+        }
+      ]
+    },
+    "pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "group": {
+          "type": "string"
+        }
+      }
+    },
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "type"],
+      "properties": {
+        "direction": {
+          "enum": ["input", "output"]
+        },
+        "type": {
+          "enum": [
+            "boolean",
+            "number",
+            "string",
+            "vec2d",
+            "vec3d",
+            "bytes",
+            "bytes<rgb565>",
+            "bytes<segments>"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "delivery": {
+          "enum": ["level", "message"]
+        }
+      }
+    },
+    "symbol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bounds", "graphics", "pins"],
+      "properties": {
+        "bounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y", "width", "height"],
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "width": {
+              "$ref": "#/$defs/positive"
+            },
+            "height": {
+              "$ref": "#/$defs/positive"
+            }
+          }
+        },
+        "graphics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/graphic"
+          }
+        },
+        "pins": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/anchor"
+          }
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "designator": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["position"],
+              "properties": {
+                "position": {
+                  "$ref": "#/$defs/coordinate"
+                },
+                "align": {
+                  "$ref": "#/$defs/align"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["position", "direction"],
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/coordinate"
+        },
+        "direction": {
+          "enum": ["left", "right", "up", "down"]
+        },
+        "label": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["visible"],
+          "properties": {
+            "visible": {
+              "type": "boolean"
+            },
+            "position": {
+              "$ref": "#/$defs/coordinate"
+            },
+            "align": {
+              "$ref": "#/$defs/align"
+            }
+          }
+        }
+      }
+    },
+    "graphic": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": ["line", "polyline", "rect", "circle", "arc", "text"]
+        },
+        "fill": {
+          "enum": ["none", "foreground", "background"],
+          "default": "none"
+        },
+        "strokeWidth": {
+          "$ref": "#/$defs/positive"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "const": "line"
+            },
+            "from": {
+              "$ref": "#/$defs/coordinate"
+            },
+            "to": {
+              "$ref": "#/$defs/coordinate"
+            }
+          },
+          "required": ["from", "to"]
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "polyline"
+            },
+            "points": {
+              "type": "array",
+              "minItems": 2,
+              "items": {
+                "$ref": "#/$defs/coordinate"
+              }
+            },
+            "closed": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": ["points"]
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "rect"
+            },
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            },
+            "width": {
+              "$ref": "#/$defs/positive"
+            },
+            "height": {
+              "$ref": "#/$defs/positive"
+            }
+          },
+          "required": ["x", "y", "width", "height"]
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "circle"
+            },
+            "center": {
+              "$ref": "#/$defs/coordinate"
+            },
+            "radius": {
+              "$ref": "#/$defs/positive"
+            }
+          },
+          "required": ["center", "radius"]
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "arc"
+            },
+            "center": {
+              "$ref": "#/$defs/coordinate"
+            },
+            "radius": {
+              "$ref": "#/$defs/positive"
+            },
+            "startAngle": {
+              "type": "number"
+            },
+            "sweepAngle": {
+              "type": "number",
+              "minimum": -360,
+              "maximum": 360,
+              "not": {
+                "const": 0
+              }
+            }
+          },
+          "required": ["center", "radius", "startAngle", "sweepAngle"]
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "text"
+            },
+            "position": {
+              "$ref": "#/$defs/coordinate"
+            },
+            "text": {
+              "type": "string"
+            },
+            "align": {
+              "$ref": "#/$defs/align"
+            },
+            "fontSize": {
+              "$ref": "#/$defs/positive"
+            }
+          },
+          "required": ["position", "text"]
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

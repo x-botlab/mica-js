@@ -1,0 +1,65 @@
+{
+  "name": "@mica-js/document",
+  "version": "0.0.1",
+  "description": "Mica document contracts: schematic and canvas formats, topic delivery and shared format models",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/document"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./schematic": {
+      "source": "./src/schematic/index.ts",
+      "types": "./dist/schematic/index.d.ts",
+      "import": "./dist/schematic/index.js"
+    },
+    "./canvas": {
+      "source": "./src/canvas/index.ts",
+      "types": "./dist/canvas/index.d.ts",
+      "import": "./dist/canvas/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./schematic": {
+        "types": "./dist/schematic/index.d.ts",
+        "import": "./dist/schematic/index.js"
+      },
+      "./canvas": {
+        "types": "./dist/canvas/index.d.ts",
+        "import": "./dist/canvas/index.js"
+      }
+    }
+  },
+  "dependencies": {
+    "@mica-js/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-dts": "catalog:",
+    "vitest": "catalog:"
+  }
+}

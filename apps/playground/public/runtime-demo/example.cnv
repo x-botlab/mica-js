@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "schematic": "example.sch",
+  "widgets": [
+    {
+      "id": "9cb7a4fe-04df-4d9d-ac25-1099581df01c",
+      "widget": "demo:button",
+      "x": 64,
+      "y": 96,
+      "width": 200,
+      "height": 80,
+      "rotation": 0,
+      "properties": {
+        "label": "按下回环",
+        "background": "#3F3F46",
+        "activeColor": "#0EA5E9"
+      },
+      "bindings": {
+        "press": {
+          "symbol": "11290bae-a217-4814-92b1-d825f86c7c83",
+          "port": "in"
+        }
+      }
+    },
+    {
+      "id": "a2f6c28d-9a8b-44cd-95a7-340d0726fc73",
+      "widget": "demo:indicator",
+      "x": 360,
+      "y": 56,
+      "width": 160,
+      "height": 160,
+      "rotation": 0,
+      "properties": {
+        "label": "回送灯",
+        "color": "#22C55E",
+        "offColor": "#27272A"
+      },
+      "bindings": {
+        "lit": {
+          "symbol": "11290bae-a217-4814-92b1-d825f86c7c83",
+          "port": "out"
+        }
+      }
+    }
+  ]
+}
