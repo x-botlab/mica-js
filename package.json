@@ -29,7 +29,7 @@
     "prepare": "husky",
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm install --lockfile-only",
-    "pack-packages": "pnpm -r build && changeset pack --out-dir .release-pack",
+    "pack-packages": "pnpm --filter \"{packages/*}...\" -r build && changeset pack --out-dir .release-pack",
     "release": "pnpm run pack-packages && changeset publish --from-pack-dir .release-pack"
   },
   "devDependencies": {

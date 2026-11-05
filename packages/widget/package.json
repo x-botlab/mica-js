@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/widget",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Mica widget contract and runtime: author definitions, package loading, and sandboxed instance execution",
   "license": "MIT",
   "repository": {
