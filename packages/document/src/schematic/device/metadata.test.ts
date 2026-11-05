@@ -51,6 +51,54 @@ const custom = (): DeviceMetadata => ({
 });
 
 describe('device metadata', () => {
+  it('retains file constraints in property panel descriptors', () => {
+    const raw: DeviceMetadata = {
+      ...metadata(),
+      properties: {
+        firmware: {
+          type: 'bytes',
+          required: true,
+          editor: {
+            kind: 'file',
+            extensions: ['.bin', '.HEX', '.tar.gz'],
+            maxSize: 1048576,
+          },
+        },
+      },
+    };
+    expect(parseDeviceMetadata(raw)).toBe(raw);
+    expect(deviceMetadataPropertyDescriptors(raw).get('firmware')?.editor).toEqual(
+      raw.properties!.firmware!.editor,
+    );
+    for (const editor of [
+      { kind: 'file', extensions: ['bin'] },
+      { kind: 'file', extensions: ['.'] },
+      { kind: 'file', extensions: ['.bin', '.bin'] },
+      { kind: 'file', maxSize: 0 },
+      { kind: 'file', maxSize: 1.5 },
+    ])
+      expect(() =>
+        parseDeviceMetadata({
+          ...raw,
+          properties: { firmware: { type: 'bytes', required: true, editor } },
+        }),
+      ).toThrow(SchematicError);
+  });
+  it('preserves optional platform references without resolving targets', () => {
+    const raw: DeviceMetadata = {
+      ...metadata(),
+      templates: ['platform:c51'],
+      recommends: { widgets: ['demo:voltmeter'] },
+    };
+    expect(parseDeviceMetadata(raw)).toBe(raw);
+    expect(() => parseDeviceMetadata({ ...raw, templates: [''] })).toThrow(SchematicError);
+    expect(() => parseDeviceMetadata({ ...raw, recommends: { widgets: ['x', 'x'] } })).toThrow(
+      SchematicError,
+    );
+    expect(() => parseDeviceMetadata({ ...raw, recommends: { unknown: [] } })).toThrow(
+      SchematicError,
+    );
+  });
   it('accepts omitted maps and normalizes them as empty', () => {
     const raw = { kind: 'device', id: 'minimal', version: '1', displayName: 'Minimal' };
     const parsed = parseDeviceMetadata(raw);

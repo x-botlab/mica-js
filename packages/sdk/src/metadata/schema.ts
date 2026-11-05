@@ -172,7 +172,25 @@ function editorSchema(): MetadataJsonSchema {
       whenEquals('kind', 'text', objectSchema({ kind: { type: 'string', const: 'text' } })),
       whenEquals('kind', 'textarea', objectSchema({ kind: { type: 'string', const: 'textarea' } })),
       whenEquals('kind', 'checkbox', objectSchema({ kind: { type: 'string', const: 'checkbox' } })),
-      whenEquals('kind', 'file', objectSchema({ kind: { type: 'string', const: 'file' } })),
+      whenEquals(
+        'kind',
+        'file',
+        objectSchema({
+          kind: { type: 'string', const: 'file' },
+          extensions: {
+            type: 'array',
+            description:
+              'Allowed dotted filename extensions, matched case-insensitively by the host.',
+            uniqueItems: true,
+            items: { type: 'string', pattern: '^\\.[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*$' },
+          },
+          maxSize: {
+            type: 'integer',
+            exclusiveMinimum: 0,
+            description: 'Maximum file size in bytes.',
+          },
+        }),
+      ),
       whenEquals(
         'kind',
         'select',
@@ -412,6 +430,20 @@ export const deviceMetadataSchema: MetadataJsonSchema = {
   properties: {
     kind: { type: 'string', const: 'device' },
     ...headerProperties(),
+    templates: {
+      type: 'array',
+      description: 'Platform project template IDs in display priority order.',
+      uniqueItems: true,
+      items: { type: 'string', minLength: 1 },
+    },
+    recommends: objectSchema({
+      widgets: {
+        type: 'array',
+        description: 'Recommended full widget IDs in display priority order; not dependencies.',
+        uniqueItems: true,
+        items: { type: 'string', minLength: 1 },
+      },
+    }),
     designatorPrefix: { type: 'string', pattern: '^\\S+$' },
     properties: { $ref: '#/$defs/properties' },
     pins: { $ref: '#/$defs/pins' },

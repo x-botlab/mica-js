@@ -53,6 +53,8 @@ export interface CheckboxEditor {
 
 export interface FileEditor {
   readonly kind: 'file';
+  readonly extensions?: readonly string[];
+  readonly maxSize?: number;
 }
 
 export interface SelectEditor {
@@ -106,6 +108,7 @@ export interface EnumProperty extends PropertyCommon {
  */
 export interface BytesProperty extends PropertyCommon {
   readonly type: 'bytes';
+  readonly editor?: FileEditor;
 }
 
 export type PropertyMetadata =
@@ -222,6 +225,8 @@ interface MetadataHeader {
 
 export interface DeviceMetadata extends MetadataHeader {
   readonly kind: 'device';
+  readonly templates?: readonly string[];
+  readonly recommends?: { readonly widgets?: readonly string[] };
   readonly designatorPrefix?: string;
   readonly properties?: Readonly<Record<string, PropertyMetadata>>;
   readonly pins?: Readonly<Record<string, PinMetadata>>;
