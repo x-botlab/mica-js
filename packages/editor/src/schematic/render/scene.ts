@@ -8,6 +8,8 @@ import {
   pinSide,
   pinStubEnd,
   pinsBounds,
+  pointOnPolyline,
+  samePoint,
   referencePosition,
   rotatePoint,
   symbolBounds,
@@ -242,6 +244,8 @@ export function buildSchematicScene(input: IRenderInput): ISchematicScene {
   const symbolFont = `${theme.symbolFontSize}px ${theme.fontFamily}`;
   const items: SceneItem[] = [];
   const drag = previewDrag(document, devices, selection);
+  const wirePaths: (readonly Point[])[] = [];
+  const junctionPoints = new Set<string>();
 
   for (const wire of document.sheet.wires) {
     const selected = selection.wires?.has(wire.id) ?? false;
@@ -251,6 +255,7 @@ export function buildSchematicScene(input: IRenderInput): ISchematicScene {
       preview !== undefined && preview.wireId === wire.id
         ? preview.points
         : (drag.wires.get(wire.id) ?? wire.points);
+    wirePaths.push(points);
     items.push({
       kind: 'polyline',
       points,
@@ -263,6 +268,7 @@ export function buildSchematicScene(input: IRenderInput): ISchematicScene {
     const selected = selection.junctions?.has(junction.id) ?? false;
     const hovered = input.hover?.kind === 'junction' && input.hover.id === junction.id;
     const center = drag.junctions.get(junction.id) ?? { x: junction.x, y: junction.y };
+    junctionPoints.add(`${center.x},${center.y}`);
     items.push({
       kind: 'circle',
       center,
@@ -279,9 +285,10 @@ export function buildSchematicScene(input: IRenderInput): ISchematicScene {
       (input.hover?.kind === 'reference' && input.hover.symbolId === symbol.id);
     const placed = { x: symbol.x, y: symbol.y, rotation: symbol.rotation };
     const dragged = drag.symbols.get(symbol.id);
+    const placement = dragged === undefined ? placed : { ...placed, x: dragged.x, y: dragged.y };
     drawSymbol(items, {
       symbol,
-      placement: dragged === undefined ? placed : { ...placed, x: dragged.x, y: dragged.y },
+      placement,
       theme,
       devices,
       labels: display.labels,
@@ -292,6 +299,28 @@ export function buildSchematicScene(input: IRenderInput): ISchematicScene {
         ? { referenceOverride: input.referencePreview.position }
         : {}),
     });
+    const reference = parseDeviceReference(symbol.device);
+    const definition = reference === undefined ? undefined : devices?.getDeviceSymbol(reference);
+    for (const pin of Object.values(definition?.pins ?? {})) {
+      const center = symbolPinPosition(placement, pin);
+      const key = `${center.x},${center.y}`;
+      if (junctionPoints.has(key)) continue;
+      let branches = 1;
+      for (const points of wirePaths) {
+        if (!pointOnPolyline(points, center)) continue;
+        branches +=
+          samePoint(center, points[0]!) || samePoint(center, points[points.length - 1]!) ? 1 : 2;
+      }
+      if (branches <= 2) continue;
+      junctionPoints.add(key);
+      items.push({
+        kind: 'circle',
+        center,
+        radius: JUNCTION_RADIUS,
+        fill: selected ? theme.junctionSelected : hovered ? theme.hover : theme.junction,
+        width: 0,
+      });
+    }
   }
   for (const vertex of selection.vertices ?? []) {
     const wire = document.sheet.wires.find((candidate) => candidate.id === vertex.wireId);

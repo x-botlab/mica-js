@@ -56,6 +56,7 @@ const packageRoot = resolve(fileURLToPath(new URL('.', import.meta.url)), '..', 
 async function createRoot(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'mica-sdk-prepare-'));
   roots.push(root);
+  await writeFile(join(root, 'mica.config.ts'), 'export default {};');
   return root;
 }
 
@@ -110,7 +111,7 @@ async function buildCliEntry(): Promise<string> {
     module: typescript.ModuleKind.ESNext,
     verbatimModuleSyntax: true,
   };
-  for (const name of ['prepare', 'cli']) {
+  for (const name of ['prepare', 'config', 'cli']) {
     const source = await readFile(join(packageRoot, 'src', 'build', `${name}.ts`), 'utf8');
     const { outputText } = typescript.transpileModule(source, {
       compilerOptions,
@@ -327,7 +328,7 @@ describe('cli', () => {
     const { streams, out, err } = capture();
 
     await expect(runCli(['--help'], streams)).resolves.toBe(0);
-    expect(out.join('')).toContain('Usage: mica prepare');
+    expect(out.join('')).toContain('Usage: mica <command>');
     expect(err).toEqual([]);
   });
 
@@ -335,7 +336,7 @@ describe('cli', () => {
     const { streams, out } = capture();
 
     await expect(runCli([], streams)).resolves.toBe(0);
-    expect(out.join('')).toContain('Usage: mica prepare');
+    expect(out.join('')).toContain('Usage: mica <command>');
   });
 
   it('rejects unknown arguments with a nonzero status', async () => {
@@ -343,15 +344,15 @@ describe('cli', () => {
 
     await expect(runCli(['--bogus'], streams)).resolves.toBe(1);
     expect(err.join('')).toContain("Unknown argument '--bogus'.");
-    expect(err.join('')).toContain('Usage: mica prepare');
+    expect(err.join('')).toContain('Usage: mica <command>');
   });
 
   it('rejects unknown commands with a nonzero status', async () => {
     const { streams, err } = capture();
 
-    await expect(runCli(['build'], streams)).resolves.toBe(1);
-    expect(err.join('')).toContain("Unknown command 'build'.");
-    expect(err.join('')).toContain('Usage: mica prepare');
+    await expect(runCli(['unknown'], streams)).resolves.toBe(1);
+    expect(err.join('')).toContain("Unknown command 'unknown'.");
+    expect(err.join('')).toContain('Usage: mica <command>');
   });
 
   it('generates the declarations of the given root', async () => {
@@ -431,12 +432,12 @@ describe('cli executable', () => {
 
     const help = runExecutable(entry, ['--help']);
     expect(help.status).toBe(0);
-    expect(help.stdout).toContain('Usage: mica prepare');
+    expect(help.stdout).toContain('Usage: mica <command>');
     expect(help.stderr).toBe('');
 
-    const unknown = runExecutable(entry, ['build']);
+    const unknown = runExecutable(entry, ['unknown']);
     expect(unknown.status).toBe(1);
-    expect(unknown.stderr).toContain("Unknown command 'build'.");
+    expect(unknown.stderr).toContain("Unknown command 'unknown'.");
   });
 
   it('reports a failing definition with a nonzero status', async () => {

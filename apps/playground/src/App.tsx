@@ -25,7 +25,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
   demoDeviceLibrary,
-  demoFileSystem,
+  createDemoFileSystem,
   demoFileName,
   demoWidgetLibrary,
   loadDemoDocument,
@@ -61,6 +61,7 @@ export function App() {
   const [panelOpen, setPanelOpen] = useState(true);
   const [focusProperties, setFocusProperties] = useState(0);
   const latest = useRef<DemoSnapshot | undefined>(undefined);
+  const documents = useRef<Partial<Record<DemoDocumentKind, DemoSnapshot>>>({});
   const [kind, setKind] = useState<DemoDocumentKind>('canvas');
   const [reloadKey, setReloadKey] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -91,7 +92,8 @@ export function App() {
 
     const start = async (): Promise<void> => {
       try {
-        const loaded = await loadDemoDocument(kind);
+        const fileSystem = createDemoFileSystem(() => Object.values(documents.current));
+        const loaded = await loadDemoDocument(kind, fileSystem);
         if (cancelled) return;
         latest.current = loaded.snapshot;
         const created: EditorSession =
@@ -101,9 +103,10 @@ export function App() {
                 editor: await createCanvasEditor({
                   container: mount,
                   uri: loaded.uri,
-                  fileSystem: demoFileSystem,
+                  fileSystem,
                   deviceLibrary: demoDeviceLibrary,
                   widgetLibrary: demoWidgetLibrary,
+                  voltageReferences: { VCC: 5 },
                 }),
               }
             : {
@@ -111,7 +114,7 @@ export function App() {
                 editor: await createSchematicEditor({
                   container: mount,
                   uri: loaded.uri,
-                  fileSystem: demoFileSystem,
+                  fileSystem,
                   deviceLibrary: demoDeviceLibrary,
                 }),
               };
@@ -127,6 +130,7 @@ export function App() {
             created.kind === 'canvas'
               ? { kind: 'canvas', document: created.editor.getDocument() }
               : { kind: 'schematic', document: created.editor.getDocument() };
+          documents.current[created.kind] = latest.current;
         };
         snapshot();
         subscriptions.push(
@@ -169,7 +173,6 @@ export function App() {
       }
     };
   }, [kind, reloadKey]);
-
   const pending = useRef<EditorSession | undefined>(undefined);
   const perform = useCallback(
     async (owner: EditorSession, action: () => Promise<unknown>): Promise<void> => {

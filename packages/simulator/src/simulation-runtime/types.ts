@@ -21,6 +21,8 @@ export interface IPreparedSimulationDevice {
 export interface IPreparedSimulation {
   readonly schematic: SchematicDocument;
   readonly devices: readonly IPreparedSimulationDevice[];
+  /** Fixed board voltages by exact schematic net name; ignored for empty sheets. Ground stays zero. */
+  readonly voltageReferences?: Readonly<Record<string, number>>;
   /** assets[symbolId][src]; required for every effective image/binary resource reference. */
   readonly assets?: Readonly<Record<string, Readonly<Record<string, Uint8Array>>>>;
 }

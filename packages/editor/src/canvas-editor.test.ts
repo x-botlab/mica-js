@@ -61,6 +61,77 @@ beforeEach(() => {
 });
 
 describe('canvas editor factory', () => {
+  it('snapshots fixed net references and forwards them to replacement simulation candidates', async () => {
+    const voltageReferences = { VCC: 5 };
+    const editor = await createCanvasEditor({ ...options(), voltageReferences, readOnly: true });
+    voltageReferences.VCC = 12;
+    const initial = await createRuntime.mock.results[0]!.value;
+    expect(initial.simulation.load).toHaveBeenCalledWith(
+      expect.objectContaining({
+        voltageReferences: { VCC: 5 },
+      }),
+    );
+    await editor.executeCommand('canvas.setMode', { mode: 'simulation' });
+    const replacement = await createRuntime.mock.results[1]!.value;
+    expect(replacement.simulation.load).toHaveBeenCalledWith(
+      expect.objectContaining({
+        voltageReferences: { VCC: 5 },
+      }),
+    );
+    expect(editor.getState().readOnly).toBe(true);
+    await editor.dispose();
+  });
+
+  it('keeps schematic detachment available with fixed voltage references', async () => {
+    const opts = options();
+    const associated = { ...source, schematic: 'main.sch' };
+    const schematic = {
+      version: 1,
+      sheet: {
+        symbols: [{ id, device: 'builtin:power', net: 'VCC', x: 0, y: 0, rotation: 0 }],
+        wires: [],
+        junctions: [],
+      },
+    };
+    const editor = await createCanvasEditor({
+      ...opts,
+      voltageReferences: { VCC: 5 },
+      fileSystem: {
+        read: async (uri: string) =>
+          new TextEncoder().encode(JSON.stringify(uri.endsWith('.cnv') ? associated : schematic)),
+      },
+    });
+    await editor.executeCommand('canvas.setSchematic', { path: null });
+    expect(editor.getDocument().schematic).toBeUndefined();
+    const detached = await createRuntime.mock.results.at(-1)!.value;
+    expect(detached.simulation.load).toHaveBeenCalledWith(
+      expect.objectContaining({
+        voltageReferences: { VCC: 5 },
+        schematic: { version: 1, sheet: { symbols: [], wires: [], junctions: [] } },
+      }),
+    );
+    await editor.dispose();
+  });
+
+  it('rejects invalid fixed net voltage configuration', async () => {
+    for (const voltageReferences of [
+      { VCC: NaN },
+      { VCC: Infinity },
+      { VCC: '5' },
+      [],
+      null,
+      new Map([['VCC', 5]]),
+    ]) {
+      await expect(
+        createCanvasEditor({
+          ...options(),
+          voltageReferences: voltageReferences as unknown as Readonly<Record<string, number>>,
+        }),
+      ).rejects.toThrow('voltageReferences');
+    }
+    expect(createRuntime).not.toHaveBeenCalled();
+  });
+
   it('constrains command names, object parameters and results at compile time', () => {
     const check = (editor: ICanvasEditor) => {
       const result: Promise<void> = editor.executeCommand('canvas.setProperty', {

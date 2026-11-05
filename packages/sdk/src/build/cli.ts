@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
+import { loadProjectConfig } from './config.js';
 import { relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepare, watchDevices, type PrepareWatcher } from './prepare.js';
@@ -11,41 +12,46 @@ export interface CliStreams {
 }
 
 export interface CliArguments {
+  readonly command: 'prepare' | 'build';
   readonly help: boolean;
   readonly watch: boolean;
   readonly root: string;
-  readonly sourceDir: string;
+  readonly config?: string;
+  readonly sourceDir?: string;
 }
 
-const DEFAULT_SOURCE_DIR = 'src';
-const COMMAND = 'prepare';
+type PrepareOptions = { readonly root: string; readonly sourceDir: string };
 
-const USAGE = `Usage: mica prepare [options]
+const USAGE = `Usage: mica <command> [options]
 
-Generates model.d.ddl.ts declarations next to every <source-dir>/devices/<name>/model.ddl.
+Commands:
+  build              build standalone Device / Widget artifacts
+  prepare            generate model.d.ddl.ts declarations
+
+A mica.config.ts file identifies the project; it is discovered upwards from --root.
 
 Options:
-  --watch             regenerate whenever a device definition is added, changed or removed
-  --root <dir>        package root (default: current directory)
-  --source-dir <dir>  source directory inside the root (default: src)
-  -h, --help          show this help`;
+  --config <file>     explicit mica.config.ts, relative to --root
+  --root <dir>        discovery directory (default: current directory)
+  --source-dir <dir>  override the configured source directory
+  --watch            watch DDL definitions (prepare only)
+  -h, --help         show this help`;
 
-/**
- * Parses the `mica prepare` command line. The command name is optional, so `mica --watch` runs
- * the same command as `mica prepare --watch`.
- * @throws On an unknown command or option, or a missing option value.
- */
+/** Parses SDK commands without reading or executing project configuration. */
 export function parseCliArguments(argv: readonly string[]): CliArguments {
   // A bare `mica` only explains the command instead of guessing a package root.
   let help = argv.length === 0;
   let watch = false;
   let root = process.cwd();
-  let sourceDir = DEFAULT_SOURCE_DIR;
+  let sourceDir: string | undefined;
+  let config: string | undefined;
+  let command: CliArguments['command'] = 'prepare';
   let index = 0;
 
-  const command = argv[0];
-  if (command !== undefined && !command.startsWith('-')) {
-    if (command !== COMMAND) throw new Error(`Unknown command '${command}'.`);
+  const first = argv[0];
+  if (first !== undefined && !first.startsWith('-')) {
+    if (first !== 'prepare' && first !== 'build') throw new Error(`Unknown command '${first}'.`);
+    command = first;
     index = 1;
   }
 
@@ -83,15 +89,26 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
       case '--source-dir':
         sourceDir = flagValue();
         break;
+      case '--config':
+        config = flagValue();
+        break;
       default:
         throw new Error(`Unknown argument '${argument}'.`);
     }
   }
 
-  return { help, watch, root: resolve(root), sourceDir };
+  if (watch && command !== 'prepare') throw new Error('--watch is only supported by mica prepare.');
+  return {
+    command,
+    help,
+    watch,
+    root: resolve(root),
+    ...(sourceDir === undefined ? {} : { sourceDir }),
+    ...(config === undefined ? {} : { config }),
+  };
 }
 
-/** Runs one `mica prepare` invocation and returns the process exit code. */
+/** Runs one SDK command and returns its exit code. */
 export async function runCli(
   argv: readonly string[],
   streams: CliStreams = { out: process.stdout, err: process.stderr },
@@ -100,17 +117,42 @@ export async function runCli(
   try {
     options = parseCliArguments(argv);
   } catch (error) {
-    streams.err.write(`mica prepare: ${messageOf(error)}\n\n${USAGE}\n`);
+    streams.err.write(`mica: ${messageOf(error)}\n\n${USAGE}\n`);
     return 1;
   }
   if (options.help) {
     streams.out.write(`${USAGE}\n`);
     return 0;
   }
-  return options.watch ? watchLoop(options, streams) : prepareOnce(options, streams);
+  try {
+    const project = await loadProjectConfig({
+      root: options.root,
+      ...(options.config === undefined ? {} : { config: options.config }),
+    });
+    const configured = {
+      ...project,
+      config: {
+        ...project.config,
+        ...(options.sourceDir === undefined ? {} : { sourceDir: options.sourceDir }),
+      },
+    };
+    if (options.command === 'build') {
+      const { buildProject } = await import('./project.js');
+      await buildProject(configured);
+      streams.out.write('mica build: complete\n');
+      return 0;
+    }
+    const preparation = { root: project.root, sourceDir: configured.config.sourceDir ?? 'src' };
+    return options.watch
+      ? await watchLoop(preparation, streams)
+      : await prepareOnce(preparation, streams);
+  } catch (error) {
+    streams.err.write(`mica ${options.command}: ${messageOf(error)}\n`);
+    return 1;
+  }
 }
 
-async function prepareOnce(options: CliArguments, streams: CliStreams): Promise<number> {
+async function prepareOnce(options: PrepareOptions, streams: CliStreams): Promise<number> {
   try {
     report(await prepare({ root: options.root, sourceDir: options.sourceDir }), streams);
     return 0;
@@ -120,7 +162,7 @@ async function prepareOnce(options: CliArguments, streams: CliStreams): Promise<
   }
 }
 
-function watchLoop(options: CliArguments, streams: CliStreams): Promise<number> {
+function watchLoop(options: PrepareOptions, streams: CliStreams): Promise<number> {
   return new Promise<number>((settle) => {
     let watcher: PrepareWatcher;
     try {

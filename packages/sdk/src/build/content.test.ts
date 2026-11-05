@@ -3,18 +3,17 @@ import { cp, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/pr
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build, createServer, type ViteDevServer } from 'vite';
 import { createBoard, createDeviceLibrary } from '@mica-js/simulator';
 import type { DeviceIR } from '@mica-js/device-model';
 import type { DeviceFactory } from '../device.js';
 import { buildContent, modelExpression } from './content.js';
-import { micaSdk } from './vite.js';
+import { runCli } from './cli.js';
 
 const roots: string[] = [];
-const servers: ViteDevServer[] = [];
 async function fixture() {
   const root = await mkdtemp(resolve(tmpdir(), 'mica-sdk-build-'));
   roots.push(root);
+  await writeFile(resolve(root, 'mica.config.ts'), 'export default {};');
   await cp(
     fileURLToPath(new URL('../../templates/basic/src', import.meta.url)),
     resolve(root, 'src'),
@@ -33,7 +32,6 @@ async function load(source: string) {
   )) as Record<string, unknown>;
 }
 afterEach(async () => {
-  await Promise.all(servers.splice(0).map((server) => server.close()));
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -161,13 +159,7 @@ describe('standalone content builds', () => {
   it('uses Vite without HTML and emits only two files per entry', async () => {
     const root = await fixture();
     await write(root, 'public/extra.txt', 'must not be copied');
-    await build({
-      configFile: false,
-      root,
-      logLevel: 'silent',
-      plugins: [micaSdk()],
-      build: { minify: false },
-    });
+    expect(await runCli(['build', '--root', root])).toBe(0);
     expect(await readdir(resolve(root, 'dist'))).toEqual(['devices', 'widgets']);
     expect(await readdir(resolve(root, 'dist/devices/resistor'))).toEqual([
       'device.js',
@@ -177,51 +169,5 @@ describe('standalone content builds', () => {
     expect(await readFile(resolve(root, 'src/devices/resistor/model.d.ddl.ts'), 'utf8')).toContain(
       'Factory',
     );
-  });
-
-  it('serves the same artifact layout below a configured base', async () => {
-    const root = await fixture();
-    const server = await createServer({
-      configFile: false,
-      root,
-      base: '/components/',
-      logLevel: 'silent',
-      plugins: [micaSdk()],
-      server: { host: '127.0.0.1', port: 0 },
-    });
-    servers.push(server);
-    await server.listen();
-    const address = server.httpServer!.address();
-    if (!address || typeof address === 'string') throw new Error('No dev server address');
-    const url = `http://127.0.0.1:${address.port}/components/`;
-    const response = await fetch(url + 'devices/resistor/device.json');
-    expect(response.status).toBe(200);
-    expect(((await response.json()) as { id: string }).id).toBe('resistor');
-    expect((await fetch(url + 'widgets/lamp/widget.js')).status).toBe(200);
-    expect((await fetch(url + 'devices/missing/device.json')).status).toBe(404);
-    const metadataPath = 'src/devices/resistor/device.json';
-    const metadata = JSON.parse(await readFile(resolve(root, metadataPath), 'utf8')) as Record<
-      string,
-      unknown
-    >;
-    await write(
-      root,
-      metadataPath,
-      JSON.stringify({ ...metadata, displayName: 'Updated resistor' }),
-    );
-    await expect
-      .poll(async () => {
-        const response = await fetch(url + 'devices/resistor/device.json');
-        return response.ok ? ((await response.json()) as { displayName: string }).displayName : '';
-      })
-      .toBe('Updated resistor');
-    await write(root, metadataPath, '{');
-    await expect
-      .poll(async () => (await fetch(url + 'devices/resistor/device.json')).status)
-      .toBe(500);
-    await write(root, metadataPath, JSON.stringify(metadata));
-    await expect
-      .poll(async () => (await fetch(url + 'devices/resistor/device.json')).status)
-      .toBe(200);
   });
 });

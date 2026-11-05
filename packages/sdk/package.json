@@ -1,7 +1,7 @@
 {
   "name": "@mica-js/sdk",
   "version": "0.1.0",
-  "description": "Device and widget author APIs and standalone Vite content builds",
+  "description": "Device and widget author APIs with CLI-managed content builds",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -43,10 +43,10 @@
       "types": "./dist/metadata/index.d.ts",
       "import": "./dist/metadata/index.js"
     },
-    "./vite": {
-      "source": "./src/build/vite.ts",
-      "types": "./dist/build/vite.d.ts",
-      "import": "./dist/build/vite.js"
+    "./config": {
+      "source": "./src/build/config.ts",
+      "types": "./dist/build/config.d.ts",
+      "import": "./dist/build/config.js"
     },
     "./prepare": {
       "source": "./src/build/prepare.ts",
@@ -81,9 +81,9 @@
         "types": "./dist/metadata/index.d.ts",
         "import": "./dist/metadata/index.js"
       },
-      "./vite": {
-        "types": "./dist/build/vite.d.ts",
-        "import": "./dist/build/vite.js"
+      "./config": {
+        "types": "./dist/build/config.d.ts",
+        "import": "./dist/build/config.js"
       },
       "./prepare": {
         "types": "./dist/build/prepare.d.ts",
@@ -103,15 +103,12 @@
     "@mica-js/simulator": "workspace:*",
     "@mica-js/widget": "workspace:*",
     "ajv": "^8.17.1",
-    "rolldown": "catalog:"
-  },
-  "peerDependencies": {
-    "vite": "^8.0.0"
+    "rolldown": "catalog:",
+    "vite": "catalog:"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
     "typescript": "catalog:",
-    "vite": "catalog:",
     "vitest": "catalog:"
   }
 }

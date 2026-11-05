@@ -15,28 +15,33 @@ Mica 的交互式示例站点。主页面直接使用 `@mica-js/editor` 的 `cre
 
 ## 运行时示例
 
-`public/runtime-demo` 是主页面使用的自包含演示，器件与 widget 的描述和代码都通过完整 ID 解析：
+主页面消费 [playground-components](../../examples/playground-components/) 的 SDK CLI 产物，
+`public/runtime-demo` 只保存示例原理图和画布，不维护器件或 Widget 的预编译副本。
 
-- `demo:echo`（`device.json` + `device.js`）：SDK 器件模块，具名导出 `model` 和同步适配器工厂
-  `create(ctx)`。通过 `ctx.topics.onDidReceive` 缓存输入主题 `in` 的 `Boolean(payload)`，在 `sync()`
-  中通过 `ctx.topics.publish` 回送到输出主题 `out`；`dispose()` 同步释放订阅。
-- `demo:button`（`button.json` + `button.js`）：指针按下/松开时向 `press` 输出端口发布布尔值。
-- `demo:indicator`（`indicator.json` + `indicator.js`）：订阅 `lit` 输入端口并绘制指示灯。
+电路使用固定板级 `VCC = 5 V` 和接地参考，串联 330 Ω 电阻、LED 与常开按钮，电压表并联在 LED
+两端。没有独立电源器件。LED 使用 100 Ω 简化电阻负载；仅正向电流产生亮度，反向不发光，电气模型
+仍允许反向电流，不模拟二极管截止或压降。按钮闭合为 1 Ω，断开为 1 GΩ；电压表输入阻抗为 10 MΩ。
+电阻、LED 和按钮隐藏引脚名称；电压表仅在符号内显示 `+ / -` 极性标识。
 
-`example.cnv` 中的绑定为 `demo:button.press -> demo:echo.in` 和
-`demo:echo.out -> demo:indicator.lit`。进入仿真模式并运行后，按住画布上的按钮会点亮指示灯，松开后
-指示灯熄灭；暂停时可按“单步”推进。
+- `demo:button.press -> demo:push-button.press`：按住闭合，松开或取消指针时断开。
+- `demo:led.brightness -> demo:led-indicator.brightness`：显示正向电流对应的亮度。
+- `demo:voltmeter.voltage -> demo:voltmeter.voltage`：显示 LED 两端电压。
 
-主线程只读取 JSON 与 JS 文本，不执行模块代码；widget 和器件脚本只在编辑器内部的 sandbox worker
-中运行。器件元数据遵循 `@mica-js/sdk/metadata` 的 `DeviceMetadata`，由加载器调用 `validateMetadata`
-校验。元数据中的本地 `id` 为 `echo`，文档和库解析始终使用完整 ID `demo:echo`；主题定义在 `ports`
-中，布尔端口采用 `level` 传递。widget 仍使用现有 `WidgetModule` 定义与默认导出的工厂，保留颜色属性。
+进入仿真模式并运行后，按住按钮点亮 LED，电压表约为 1.16 V；松开后熄灭并回到约 0 V。
+主线程只读取 JSON 和 JS，代码只在编辑器的 sandbox 中执行。每个组件的交付产物只有一份 JS 和一份
+JSON；依赖与资源全部内联，产物不含运行时模块导入、动态导入或独立资源文件。
 
-`model.ddl` 是器件模型源文件，声明 `IN`、`OUT` 两个引脚。`device.js` 的 `model` 使用上游
-`@mica-js/ddl` 的 `compileDDL(ddl, { uri: 'mica:devices/echo/model.ddl' })` 编译为
-`@mica-js/device-model` 的 `DeviceIR`，再以 JSON 对象字面量嵌入模块；此模型只有普通 JSON 值，
-没有额外运行时导入或构建流水线。修改 DDL 后需用相同 URI 重新编译并替换 `model`，保留同步适配器。
-验证包括重新编译并比较嵌入模型、SDK 元数据校验，以及同步工厂的输入、推进、回送和释放订阅。
+## SDK CLI 集成
+
+`dev` / `build` 首先构建 SDK 及其依赖，保证干净工作区中 CLI 入口可用。
+
+- 开发：先执行一次 `mica build`，将组件产物复制到忽略提交的 `public/components`，再启动普通 Vite
+  开发服务。可传 `--host`、`--port`、`--strictPort`、`--open`。
+- 更新：应用源码由 Vite 正常热更新；组件源码变更后重新运行 Playground `dev`，不自动重建组件。
+- 生产：同样先构建组件并复制到 `public/components`，再由 Vite 构建应用并复制静态产物。组件构建失败时
+  停止应用构建。部署后通过相同的 `/components/` 路径加载，不依赖独立组件服务。
+
+生成目录和 DDL 类型声明均由仓库忽略，源码是唯一维护入口。
 
 ## 独立 device demo
 

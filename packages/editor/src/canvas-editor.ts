@@ -38,6 +38,8 @@ export interface ICanvasEditorOptions {
   readonly deviceLibrary: IDeviceLibrary;
   readonly widgetLibrary: IWidgetLibrary;
   readonly readOnly?: boolean;
+  /** Fixed board voltages by exact schematic net name; ignored without a schematic. Ground stays zero. */
+  readonly voltageReferences?: Readonly<Record<string, number>>;
   readonly projectRoot?: string;
 }
 
@@ -65,6 +67,25 @@ export interface ICanvasEditor {
 }
 
 export async function createCanvasEditor(options: ICanvasEditorOptions): Promise<ICanvasEditor> {
+  const references = options.voltageReferences;
+  if (
+    references !== undefined &&
+    (references === null ||
+      typeof references !== 'object' ||
+      (Object.getPrototypeOf(references) !== Object.prototype &&
+        Object.getPrototypeOf(references) !== null) ||
+      Reflect.ownKeys(references).some(
+        (name) =>
+          typeof name !== 'string' ||
+          name.trim().length === 0 ||
+          typeof references[name] !== 'number' ||
+          !Number.isFinite(references[name]),
+      ))
+  ) {
+    throw new Error(
+      'Expected a plain voltageReferences map with nonempty net names and finite numeric voltages',
+    );
+  }
   const uri = new URL(options.uri).href;
   const projectRoot =
     options.projectRoot === undefined ? new URL('.', uri).href : new URL(options.projectRoot).href;
@@ -96,6 +117,9 @@ export async function createCanvasEditor(options: ICanvasEditorOptions): Promise
     uri,
     ...(options.projectRoot === undefined ? {} : { projectRoot: root }),
     container: options.container,
+    ...(options.voltageReferences === undefined
+      ? {}
+      : { voltageReferences: Object.freeze(structuredClone(options.voltageReferences)) }),
   });
   services.set(ICommandService, new SyncDescriptor(Commands));
   services.set(IDeviceLibraryResolver, new SyncDescriptor(DeviceLibraryResolver));

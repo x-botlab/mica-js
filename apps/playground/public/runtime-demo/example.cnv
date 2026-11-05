@@ -11,34 +11,49 @@
       "height": 80,
       "rotation": 0,
       "properties": {
-        "label": "按下回环",
-        "background": "#3F3F46",
-        "activeColor": "#0EA5E9"
+        "label": "按住点亮",
+        "color": "#D78345"
       },
       "bindings": {
         "press": {
-          "symbol": "11290bae-a217-4814-92b1-d825f86c7c83",
-          "port": "in"
+          "symbol": "10000000-0000-4000-8000-000000000002",
+          "port": "press"
         }
       }
     },
     {
       "id": "a2f6c28d-9a8b-44cd-95a7-340d0726fc73",
-      "widget": "demo:indicator",
+      "widget": "demo:led-indicator",
       "x": 360,
       "y": 56,
       "width": 160,
       "height": 160,
       "rotation": 0,
       "properties": {
-        "label": "回送灯",
+        "label": "LED",
         "color": "#22C55E",
         "offColor": "#27272A"
       },
       "bindings": {
-        "lit": {
-          "symbol": "11290bae-a217-4814-92b1-d825f86c7c83",
-          "port": "out"
+        "brightness": {
+          "symbol": "10000000-0000-4000-8000-000000000003",
+          "port": "brightness"
+        }
+      }
+    },
+    {
+      "id": "a2f6c28d-9a8b-44cd-95a7-340d0726fc74",
+      "widget": "demo:voltmeter",
+      "x": 580,
+      "y": 72,
+      "width": 240,
+      "height": 150,
+      "rotation": 0,
+      "properties": { "label": "LED 电压", "precision": 2 },
+      "bindings": {
+        "voltage": {
+          "symbol": "10000000-0000-4000-8000-000000000004",
+          "port": "voltage"
         }
       }
     }

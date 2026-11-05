@@ -354,8 +354,112 @@ describe('prepared SDK Board runtime', () => {
       { id: 'net:0', pins: [{ instance: SYMBOL, pin: 'a' }], voltage: 0 },
       { id: 'net:1', pins: [{ instance: SYMBOL, pin: 'b' }] },
     ]);
+    const referenced = { ...connected, voltageReferences: { VCC: 5, GND: 0 } };
+    const fixed = await prepareSimulation(referenced, importer, () => {});
+    expect(fixed.description.nets).toEqual([
+      { id: 'net:0', pins: [{ instance: SYMBOL, pin: 'a' }], voltage: 0 },
+      { id: 'net:1', pins: [{ instance: SYMBOL, pin: 'b' }], voltage: 5 },
+    ]);
     const api = runtime();
     await api.load(connected);
+    await api.tick(timePs(1));
+    await api.load(referenced);
+    await api.tick(timePs(2));
+
+    for (const voltageReferences of [
+      { VCC: NaN },
+      { VCC: Infinity },
+      { VCC: -Infinity },
+      { VCC: '5' },
+      [],
+      null,
+      new Map([['VCC', 5]]),
+      new Date(),
+      { '': 5 },
+    ]) {
+      await expect(
+        prepareSimulation(
+          { ...connected, voltageReferences } as unknown as IPreparedSimulation,
+          importer,
+          () => {},
+        ),
+      ).rejects.toMatchObject({ code: 'invalid-input' });
+    }
+    await expect(
+      prepareSimulation({ ...connected, voltageReferences: { MISSING: 5 } }, importer, () => {}),
+    ).rejects.toThrow('missing schematic net "MISSING"');
+    await expect(
+      prepareSimulation({ ...connected, voltageReferences: { GND: 5 } }, importer, () => {}),
+    ).rejects.toThrow('Conflicting voltage references on ground net "GND"');
+
+    const merged = {
+      ...referenced,
+      schematic: {
+        ...connected.schematic,
+        sheet: {
+          ...connected.schematic.sheet,
+          wires: [
+            {
+              id: '55555555-5555-4555-8555-555555555555',
+              points: [
+                { x: 0, y: 0 },
+                { x: 20, y: 0 },
+              ],
+            },
+          ],
+        },
+      },
+    };
+    // Topology already rejects aliases with different names on one physical net.
+    await expect(prepareSimulation(merged, importer, () => {})).rejects.toThrow(
+      'conflicting names',
+    );
+    const groundedVcc = {
+      ...connected,
+      voltageReferences: { VCC: 5 },
+      schematic: {
+        ...connected.schematic,
+        sheet: {
+          ...connected.schematic.sheet,
+          symbols: connected.schematic.sheet.symbols.map((symbol) =>
+            symbol.device === 'builtin:ground' ? { ...symbol, net: 'VCC' } : symbol,
+          ),
+        },
+      },
+    };
+    await expect(prepareSimulation(groundedVcc, importer, () => {})).rejects.toThrow(
+      'Conflicting voltage references on ground net "VCC"',
+    );
+    const unnamedPower = {
+      ...referenced,
+      schematic: {
+        ...connected.schematic,
+        sheet: {
+          ...connected.schematic.sheet,
+          symbols: connected.schematic.sheet.symbols.map((symbol) =>
+            symbol.device === 'builtin:power' ? { ...symbol, net: '' } : symbol,
+          ),
+        },
+      },
+    };
+    await expect(prepareSimulation(unnamedPower, importer, () => {})).rejects.toThrow(
+      'Field "net" must not be empty',
+    );
+  });
+
+  it('allows fixed references on an empty simulation when no schematic is associated', async () => {
+    const input = {
+      schematic: parseSchematic({
+        version: 1,
+        sheet: { symbols: [], wires: [], junctions: [] },
+      }),
+      devices: [],
+      voltageReferences: { VCC: 5 },
+    };
+    const prepared = await prepareSimulation(input, importer, () => {});
+    expect(prepared.description).toEqual({ instances: [], nets: [] });
+    const api = runtime();
+    await api.load(input);
     await api.tick(timePs(1));
   });
 

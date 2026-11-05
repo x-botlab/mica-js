@@ -90,6 +90,36 @@ const document: SchematicDocument = parseSchematic({
   },
 });
 
+it('marks a pin junction when two wires and the pin stub form three branches', () => {
+  const dotCount = (value: SchematicDocument) =>
+    buildSchematicScene({ document: value, devices, theme: DARK_SCHEMATIC_THEME }).items.filter(
+      (item) =>
+        item.kind === 'circle' &&
+        item.center.x === 100 &&
+        item.center.y === 100 &&
+        item.radius === 3,
+    ).length;
+  expect(dotCount(document)).toBe(0);
+  expect(
+    dotCount({
+      ...document,
+      sheet: {
+        ...document.sheet,
+        wires: [
+          ...document.sheet.wires,
+          {
+            id: '00000010-f25c-4a8c-8be1-1c60e8fb777f',
+            points: [
+              { x: 100, y: 100 },
+              { x: 100, y: 140 },
+            ],
+          },
+        ],
+      },
+    }),
+  ).toBe(1);
+});
+
 function texts(items: readonly SceneItem[]): string[] {
   return items.filter((item) => item.kind === 'text').map((item) => item.text);
 }

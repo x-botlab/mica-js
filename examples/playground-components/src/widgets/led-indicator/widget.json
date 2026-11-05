@@ -1,0 +1,14 @@
+{
+  "kind": "widget",
+  "id": "led-indicator",
+  "version": "1.0.0",
+  "displayName": "LED 指示灯",
+  "properties": {
+    "label": { "type": "string", "required": false, "default": "指示灯", "title": "标签" },
+    "color": { "type": "string", "required": false, "default": "#45c692", "title": "点亮颜色" },
+    "offColor": { "type": "string", "required": false, "default": "#26332e", "title": "熄灭颜色" }
+  },
+  "ports": {
+    "brightness": { "direction": "input", "type": "number", "delivery": "level", "title": "亮度" }
+  }
+}

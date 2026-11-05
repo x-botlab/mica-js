@@ -1,0 +1,32 @@
+{
+  "kind": "device",
+  "id": "voltmeter",
+  "version": "1.0.0",
+  "displayName": "Voltmeter",
+  "designatorPrefix": "VM",
+  "description": "Differential voltage measurement with 10 Mohm input impedance; output is positive minus negative in volts. An entirely floating measurement reports zero.",
+  "pins": { "positive": { "label": "+" }, "negative": { "label": "-" } },
+  "ports": { "voltage": { "direction": "output", "type": "number", "delivery": "level" } },
+  "symbol": {
+    "bounds": { "x": -40, "y": -28, "width": 80, "height": 56 },
+    "graphics": [
+      { "type": "line", "from": [-40, 0], "to": [-18, 0] },
+      { "type": "circle", "center": [0, 0], "radius": 18, "fill": "background" },
+      { "type": "text", "position": [0, 5], "text": "V", "align": "center", "fontSize": 14 },
+      { "type": "line", "from": [18, 0], "to": [40, 0] }
+    ],
+    "pins": {
+      "positive": {
+        "position": [-40, 0],
+        "direction": "left",
+        "label": { "visible": true, "position": [-14, 0], "align": "left" }
+      },
+      "negative": {
+        "position": [40, 0],
+        "direction": "right",
+        "label": { "visible": true, "position": [14, 0], "align": "right" }
+      }
+    },
+    "annotations": { "designator": { "position": [0, -24], "align": "center" } }
+  }
+}

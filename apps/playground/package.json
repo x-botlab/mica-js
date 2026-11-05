@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node scripts/components.mjs dev",
+    "build": "node scripts/components.mjs build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },
@@ -26,6 +26,7 @@
     "tailwind-merge": "^3.3.1"
   },
   "devDependencies": {
+    "@mica-js/playground-components": "workspace:*",
     "@tailwindcss/vite": "^4.1.14",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.1",

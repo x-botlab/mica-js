@@ -57,6 +57,7 @@ export async function prepareSimulation(
   }
   const schematic = parseSchematic(input.schematic);
   const assets = readAssets(input.assets);
+  const voltageReferences = readVoltageReferences(input.voltageReferences);
   const candidates = new Map<
     string,
     { readonly definition: DeviceMetadata; readonly code: string }
@@ -165,6 +166,18 @@ export async function prepareSimulation(
     },
   };
   const topology = deriveSchematicTopology(schematic, { devices: provider });
+  const empty =
+    schematic.sheet.symbols.length === 0 &&
+    schematic.sheet.wires.length === 0 &&
+    schematic.sheet.junctions.length === 0;
+  for (const name of voltageReferences.keys()) {
+    if (!empty && !topology.nets.some((net) => net.name === name)) {
+      throw new SimulationRuntimeError(
+        'invalid-input',
+        `Voltage reference names missing schematic net "${name}"`,
+      );
+    }
+  }
   return {
     instances: symbols.map((symbol) => ({
       symbol: symbol.id,
@@ -176,14 +189,24 @@ export async function prepareSimulation(
         type: symbol.id,
         props: resolveProperties(symbol, devices.get(symbol.device)!, assets.get(symbol.id)),
       })),
-      nets: topology.nets.map((net, index) => ({
-        id: `net:${index}`,
-        pins: net.members.flatMap((member) =>
-          member.kind === 'pin' ? [{ instance: member.symbolId, pin: member.pinId }] : [],
-        ),
-        // A power label names a net; only a ground symbol declares an ideal reference.
-        ...(net.members.some((member) => member.kind === 'ground') ? { voltage: 0 } : {}),
-      })),
+      nets: topology.nets.map((net, index) => {
+        const reference = net.name === null ? undefined : voltageReferences.get(net.name);
+        const grounded = net.members.some((member) => member.kind === 'ground');
+        if (grounded && reference !== undefined && reference !== 0) {
+          throw new SimulationRuntimeError(
+            'invalid-input',
+            `Conflicting voltage references on ground net "${net.name}": 0 and ${reference}`,
+          );
+        }
+        const voltage = grounded ? 0 : reference;
+        return {
+          id: `net:${index}`,
+          pins: net.members.flatMap((member) =>
+            member.kind === 'pin' ? [{ instance: member.symbolId, pin: member.pinId }] : [],
+          ),
+          ...(voltage === undefined ? {} : { voltage }),
+        };
+      }),
     },
   };
 }
@@ -229,6 +252,33 @@ function resolveProperties(
       );
   }
   return props;
+}
+
+function readVoltageReferences(value: unknown): ReadonlyMap<string, number> {
+  if (value === undefined) return new Map();
+  if (
+    !isRecord(value) ||
+    (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+  ) {
+    throw new SimulationRuntimeError('invalid-input', 'Expected a plain voltageReferences map');
+  }
+  const references = new Map<string, number>();
+  for (const name of Reflect.ownKeys(value)) {
+    const voltage = typeof name === 'string' ? value[name] : undefined;
+    if (
+      typeof name !== 'string' ||
+      name.trim().length === 0 ||
+      typeof voltage !== 'number' ||
+      !Number.isFinite(voltage)
+    ) {
+      throw new SimulationRuntimeError(
+        'invalid-input',
+        'Expected voltageReferences with nonempty net names and finite numeric voltages',
+      );
+    }
+    references.set(name, voltage);
+  }
+  return references;
 }
 
 function readAssets(value: unknown): ReadonlyMap<string, ReadonlyMap<string, Uint8Array>> {

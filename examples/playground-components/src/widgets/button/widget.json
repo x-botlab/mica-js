@@ -1,0 +1,13 @@
+{
+  "kind": "widget",
+  "id": "button",
+  "version": "1.0.0",
+  "displayName": "瞬时按钮",
+  "properties": {
+    "label": { "type": "string", "required": false, "default": "按钮", "title": "标签" },
+    "color": { "type": "string", "required": false, "default": "#d78345", "title": "按钮颜色" }
+  },
+  "ports": {
+    "press": { "direction": "output", "type": "boolean", "delivery": "level", "title": "按下状态" }
+  }
+}

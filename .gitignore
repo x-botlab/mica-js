@@ -13,3 +13,4 @@ playwright-report/
 .release-pack/
 .claude/skills/
 **/*.d.ddl.ts
+/apps/playground/public/components/

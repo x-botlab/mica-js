@@ -15,6 +15,7 @@ import { ICanvasRuntimeFactory, type ICanvasRuntimes } from './runtime-factory';
 export interface ICanvasConfiguration {
   readonly uri: string;
   readonly projectRoot?: string;
+  readonly voltageReferences?: Readonly<Record<string, number>>;
   readonly container: HTMLElement;
 }
 export const ICanvasConfiguration = createDecorator<ICanvasConfiguration>(
@@ -129,6 +130,7 @@ export class CanvasSession {
       this.#assertAlive();
       const signature = JSON.stringify({
         schematic: prepared.schematic,
+        voltageReferences: this.configuration.voltageReferences,
         devices: prepared.devices,
         widgets: document.widgets.map((instance) => ({
           id: instance.id,
@@ -247,6 +249,9 @@ export class CanvasSession {
       this.#assertAlive();
       await runtimes.simulation.load({
         schematic: resources.schematic,
+        ...(this.configuration.voltageReferences === undefined
+          ? {}
+          : { voltageReferences: this.configuration.voltageReferences }),
         devices: resources.devices,
         assets: structuredClone(resources.simulationAssets),
       });

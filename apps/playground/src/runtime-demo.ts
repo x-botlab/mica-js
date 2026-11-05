@@ -14,29 +14,32 @@ import { validateMetadata, type DeviceMetadata } from '@mica-js/sdk/metadata';
 
 export type DemoDocumentKind = 'schematic' | 'canvas';
 
-/** Full IDs shared by the fixtures and the libraries; documents only ever name these IDs. */
-export const DEMO_ECHO_DEVICE = 'demo:echo';
-export const DEMO_BUTTON_WIDGET = 'demo:button';
-export const DEMO_INDICATOR_WIDGET = 'demo:indicator';
-
 const ASSET_ROOT = 'runtime-demo';
+const COMPONENT_ROOT = 'components';
 
 interface IDemoAsset {
   readonly metadata: string;
   readonly code: string;
 }
 
-const DEVICE_ASSETS: Readonly<Record<string, IDemoAsset>> = {
-  [DEMO_ECHO_DEVICE]: { metadata: `${ASSET_ROOT}/device.json`, code: `${ASSET_ROOT}/device.js` },
-};
+function componentAssets(
+  category: 'devices' | 'widgets',
+  ids: readonly string[],
+): Readonly<Record<string, IDemoAsset>> {
+  const kind = category === 'devices' ? 'device' : 'widget';
+  return Object.fromEntries(
+    ids.map((id) => [
+      `demo:${id}`,
+      {
+        metadata: `${COMPONENT_ROOT}/${category}/${id}/${kind}.json`,
+        code: `${COMPONENT_ROOT}/${category}/${id}/${kind}.js`,
+      },
+    ]),
+  );
+}
 
-const WIDGET_ASSETS: Readonly<Record<string, IDemoAsset>> = {
-  [DEMO_BUTTON_WIDGET]: { metadata: `${ASSET_ROOT}/button.json`, code: `${ASSET_ROOT}/button.js` },
-  [DEMO_INDICATOR_WIDGET]: {
-    metadata: `${ASSET_ROOT}/indicator.json`,
-    code: `${ASSET_ROOT}/indicator.js`,
-  },
-};
+const DEVICE_ASSETS = componentAssets('devices', ['resistor', 'push-button', 'led', 'voltmeter']);
+const WIDGET_ASSETS = componentAssets('widgets', ['button', 'led-indicator', 'voltmeter']);
 
 function assetUri(path: string): string {
   return new URL(path, globalThis.document.baseURI).href;
@@ -72,7 +75,7 @@ export const demoDeviceLibrary: IDeviceLibrary = {
       readDefinition<unknown>(asset.metadata),
       readText(asset.code),
     ]);
-    validateMetadata(definition, 'device', 'echo');
+    validateMetadata(definition, 'device', id.slice('demo:'.length));
     return { definition: definition as DeviceMetadata, code };
   },
 };
@@ -85,9 +88,26 @@ export const demoWidgetLibrary: IWidgetLibrary = {
       readDefinition<IWidgetDescription['definition']>(asset.metadata),
       readText(asset.code),
     ]);
+    validateMetadata(definition, 'widget', id.slice('demo:'.length));
     return { definition, code };
   },
 };
+
+/** Reads current host snapshots when switching between document editors. */
+export function createDemoFileSystem(
+  snapshots: () => readonly DemoSnapshot[],
+): IFileSystemProvider {
+  return {
+    async read(uri) {
+      const snapshot = snapshots().find(
+        (entry) => uri === assetUri(`${ASSET_ROOT}/${demoFileName(entry)}`),
+      );
+      return snapshot === undefined
+        ? demoFileSystem.read(uri)
+        : new TextEncoder().encode(serializeDemoSnapshot(snapshot));
+    },
+  };
+}
 
 export interface IDemoLoadedDocument {
   readonly uri: string;
@@ -99,10 +119,13 @@ export type DemoSnapshot =
   | { readonly kind: 'schematic'; readonly document: SchematicDocument };
 
 /** Reads and parses the initial snapshot the app keeps for its own download action. */
-export async function loadDemoDocument(kind: DemoDocumentKind): Promise<IDemoLoadedDocument> {
+export async function loadDemoDocument(
+  kind: DemoDocumentKind,
+  fileSystem: IFileSystemProvider = demoFileSystem,
+): Promise<IDemoLoadedDocument> {
   const path = kind === 'canvas' ? `${ASSET_ROOT}/example.cnv` : `${ASSET_ROOT}/example.sch`;
   const uri = assetUri(path);
-  const text = await readText(path);
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(await fileSystem.read(uri));
   return kind === 'canvas'
     ? { uri, snapshot: { kind, document: parseCanvas(text) } }
     : { uri, snapshot: { kind, document: parseSchematic(text) } };

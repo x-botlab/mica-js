@@ -55,7 +55,7 @@ await editor.executeCommand('schematic.undo');
 
 文档命令按调用顺序执行。命令失败拒绝 Promise，队列继续接受后续命令。关闭后禁止执行命令，正在等待器件解析的编辑不会再提交；重复关闭返回同一个 Promise。关闭只移除编辑器自己的 DOM 和内部资源，保留宿主容器与 provider。
 
-原理图器件拖动按细网格间距吸附（`gridSize / gridSubdivisions`，默认 5 页面单位）；预览与提交使用同一位置，未拖动的轴保持原坐标。
+原理图器件拖动按细网格间距吸附（`gridSize / gridSubdivisions`，默认 5 页面单位）；预览与提交使用同一位置，未拖动的轴保持原坐标。引脚连接处分支数超过 2（包含引脚短线）时自动绘制连接圆点，使用当前预览几何，不向文档新增 junction 记录。
 
 ## 画布编辑器
 
@@ -81,6 +81,8 @@ await editor.executeCommand('schematic.undo');
 | `canvas.fitView` / `canvas.resetView`          | 适应全部旋转边界或恢复 100% 视图                                    |
 
 完整参数和返回值见导出的 `ICanvasCommandMap`。
+
+可选 `voltageReferences: { VCC: 5 }` 为同名原理图网络配置固定板级电压，接地网络保持 0 V。电源标记只命名网络，电压由该选项显式提供。
 
 运行会话负责唯一帧调度器，以 25 ms 固定步长推进仿真；暂停时继续刷新 widget 而不推进仿真时间。话题数据通过两个 guest 之间的直连 RPC 通道传递，editor 配置绑定，不在 UI 线程转发 payload。位置、旋转和层级只属于编辑器；改变执行输入时先建立候选会话，全部准备成功后替换旧会话。文档与历史在准备失败时保持原值。
 
