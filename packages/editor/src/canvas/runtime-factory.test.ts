@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CanvasRuntimeFactory } from './runtime-factory';
 
 const mocks = vi.hoisted(() => ({
@@ -24,10 +24,65 @@ beforeEach(() => {
   mocks.simulation.mockResolvedValue({ dispose: vi.fn(async () => {}) });
   mocks.widgetWorker.mockReturnValue({ terminate: vi.fn(async () => {}) });
   mocks.sandbox.mockResolvedValue({ terminate: vi.fn(async () => {}) });
-  mocks.widgets.mockReturnValue({ dispose: vi.fn(async () => {}) });
+  mocks.widgets.mockReturnValue({
+    dispose: vi.fn(async () => {}),
+    audio: { suspend: vi.fn(), resume: vi.fn() },
+  });
+  vi.stubGlobal('AudioContext', undefined);
 });
+afterEach(() => vi.unstubAllGlobals());
 
 describe('canvas sandbox composition', () => {
+  function mockAudio() {
+    const context = {
+      state: 'suspended',
+      resume: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    };
+    const constructor = vi.fn(function () {
+      return context;
+    });
+    vi.stubGlobal('AudioContext', constructor);
+    return { context, constructor };
+  }
+
+  it('owns audio, starts suspended and closes the context exactly once', async () => {
+    const { context, constructor } = mockAudio();
+    const runtimes = await new CanvasRuntimeFactory().create({} as HTMLElement);
+    expect(constructor).toHaveBeenCalledOnce();
+    expect(mocks.widgets).toHaveBeenCalledWith(expect.anything(), { audio: { context } });
+    expect(runtimes.widgets.audio.suspend).toHaveBeenCalledOnce();
+    await runtimes.resumeAudio();
+    expect(context.resume).toHaveBeenCalledOnce();
+    context.state = 'running';
+    await runtimes.resumeAudio();
+    expect(context.resume).toHaveBeenCalledOnce();
+    await runtimes.dispose();
+    await runtimes.dispose();
+    expect(context.close).toHaveBeenCalledOnce();
+    context.state = 'suspended';
+    await runtimes.resumeAudio();
+    expect(context.resume).toHaveBeenCalledOnce();
+  });
+
+  it('works without Web Audio', async () => {
+    const runtimes = await new CanvasRuntimeFactory().create({} as HTMLElement);
+    expect(mocks.widgets).toHaveBeenCalledWith(expect.anything(), {});
+    await expect(runtimes.resumeAudio()).resolves.toBeUndefined();
+    await runtimes.dispose();
+  });
+
+  it('closes audio on initialization failure', async () => {
+    const { context } = mockAudio();
+    mocks.widgets.mockImplementationOnce(() => {
+      throw new Error('runtime failed');
+    });
+    await expect(new CanvasRuntimeFactory().create({} as HTMLElement)).rejects.toThrow(
+      'runtime failed',
+    );
+    expect(context.close).toHaveBeenCalledOnce();
+  });
+
   it('wires a direct topic port and owns both runtimes through idempotent cleanup', async () => {
     const container = {} as HTMLElement;
     const runtimes = await new CanvasRuntimeFactory().create(container);

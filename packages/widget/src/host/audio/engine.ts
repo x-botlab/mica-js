@@ -332,6 +332,7 @@ export class WidgetAudioEngine {
     control.onDidDiagnostic((diagnostic) => this.#onDiagnostic(diagnostic));
     worklet.connect(this.#destination);
     await this.#attachRuntime();
+    if (this.#suspended) await control.suspend();
     this.#available = true;
     return true;
   }

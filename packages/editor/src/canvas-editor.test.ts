@@ -24,7 +24,7 @@ const source: CanvasDocument = {
 const module = { definition: { properties: {}, ports: {} }, code: '' };
 function options() {
   return {
-    container: {} as HTMLElement,
+    container: new EventTarget() as HTMLElement,
     uri: 'https://test/main.cnv',
     fileSystem: { read: vi.fn(async () => new TextEncoder().encode(JSON.stringify(source))) },
     deviceLibrary: { resolve: vi.fn(async () => undefined) },
@@ -51,7 +51,9 @@ beforeEach(() => {
       setBindings: vi.fn(async () => {}),
       step: vi.fn(async () => {}),
       dispatch: vi.fn(async () => {}),
+      audio: { suspend: vi.fn(), resume: vi.fn() },
     },
+    resumeAudio: vi.fn(async () => {}),
     simulation: {
       load: vi.fn(async () => {}),
       tick: vi.fn(async () => ({ simTime: timePs(1), executed: 1 })),

@@ -37,6 +37,8 @@ export interface ICanvasEditorOptions {
   readonly fileSystem: IFileSystemProvider;
   readonly deviceLibrary: IDeviceLibrary;
   readonly widgetLibrary: IWidgetLibrary;
+  /** Simulation step and target frame period in milliseconds; defaults to 20. */
+  readonly stepMs?: number;
   readonly readOnly?: boolean;
   /** Fixed board voltages by exact schematic net name; ignored without a schematic. Ground stays zero. */
   readonly voltageReferences?: Readonly<Record<string, number>>;
@@ -117,6 +119,7 @@ export async function createCanvasEditor(options: ICanvasEditorOptions): Promise
     uri,
     ...(options.projectRoot === undefined ? {} : { projectRoot: root }),
     container: options.container,
+    ...(options.stepMs === undefined ? {} : { stepMs: options.stepMs }),
     ...(options.voltageReferences === undefined
       ? {}
       : { voltageReferences: Object.freeze(structuredClone(options.voltageReferences)) }),

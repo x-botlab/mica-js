@@ -62,6 +62,25 @@ describe('WidgetAudioEngine', () => {
     harness.worklet.dispose();
   });
 
+  it('honors suspension requested before the first mount', async () => {
+    const harness = createHarness();
+    harness.engine.suspend();
+    const { runtime } = await mountGuest(harness);
+    try {
+      expect(harness.engine.state).toBe('suspended');
+      runtime.api('i1').tone({ type: 'square', frequency: 480, volume: 1 });
+      await flush();
+      expect(harness.worklet.render(128).left.every((sample) => sample === 0)).toBe(true);
+      harness.engine.resume();
+      await flush();
+      expect(Math.max(...harness.worklet.render(128).left.map(Math.abs))).toBeGreaterThan(0.5);
+    } finally {
+      runtime.dispose();
+      harness.engine.dispose();
+      harness.worklet.dispose();
+    }
+  });
+
   it('reports unavailable when the browser has no AudioWorklet', async () => {
     const context = {
       sampleRate: 48000,
