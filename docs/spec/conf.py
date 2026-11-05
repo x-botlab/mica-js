@@ -34,5 +34,14 @@ latex_elements = {
 \usepackage[UTF8,scheme=chinese,fontset=fandol,heading=true]{ctex}
 \ctexset{chapter={name={第,章},number=\arabic{chapter}}}
 \setlength{\headheight}{14pt}
+% 中文正文首行缩进两个汉字。Sphinx 默认引入 parskip 宏包，
+% 以零缩进加段间距排版，这里改为缩进排法并相应收窄段间距。
+\setlength{\parindent}{2\ccwd}
+\setlength{\parskip}{0.25\baselineskip plus 1pt minus 1pt}
+% 表格、列表和代码块内部保持齐头排版。
+\AddToHook{env/longtable/begin}{\setlength{\parindent}{0pt}}
+\AddToHook{env/tabular/begin}{\setlength{\parindent}{0pt}}
+\AddToHook{env/tabulary/begin}{\setlength{\parindent}{0pt}}
+\AddToHook{cmd/list/after}{\setlength{\parindent}{0pt}}
 """,
 }
