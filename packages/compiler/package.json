@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/compiler",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Direct JavaScript compiler for Mica device execution bodies",
   "license": "MIT",
   "repository": {

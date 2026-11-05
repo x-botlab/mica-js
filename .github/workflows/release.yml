@@ -50,7 +50,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Build once, then pack, then publish the tarballs. The pack phase never builds: `prepack`
+      # Build library packages and their dependencies, then pack and publish the tarballs.
+      # The pack phase never builds: `prepack`
       # was removed so `changeset pack` (which packs up to 4 packages concurrently) only tars the
       # existing `dist`. Publishing from tarballs (`--from-pack-dir`) runs no lifecycle scripts, so
       # no two processes ever write the same package's output.

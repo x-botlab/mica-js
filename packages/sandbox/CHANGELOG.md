@@ -1,5 +1,11 @@
 # @mica-js/sandbox
 
+## 0.4.0
+
+### Minor Changes
+
+- New architecture for mica simulator and refactoring of editor package
+
 ## 0.3.0
 
 ### Minor Changes
