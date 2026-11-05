@@ -5,10 +5,9 @@ import { defineConfig } from 'vite';
 import { micaSandboxPlugins } from '../../packages/sandbox/vite.plugins';
 import { micaWidgetPlugins } from '../../packages/widget/src/build/vite';
 
-/** Every page consumes the workspace packages from source, so edits show up without a rebuild. */
+/** Resolve workspace packages from source so integration work shows up without a rebuild. */
 export default defineConfig({
-  // Guest bundles are build-time transformations: the workspace packages inline their own guest
-  // worker and worklet, and `?sandbox-worker` stays for the Playground's custom device guest.
+  // Guest workers are framework infrastructure; component artifacts come from the SDK CLI.
   plugins: [react(), tailwindcss(), ...micaSandboxPlugins(), ...micaWidgetPlugins()],
   resolve: {
     conditions: ['source', 'module', 'browser', 'development|production'],

@@ -1,0 +1,31 @@
+{
+  "kind": "device",
+  "id": "resistor",
+  "version": "1.0.0",
+  "displayName": "Resistor",
+  "designatorPrefix": "R",
+  "properties": {
+    "resistance": {
+      "type": "number",
+      "required": false,
+      "default": 1000,
+      "unit": "ohm",
+      "editor": { "kind": "number", "min": 0, "step": 1 }
+    }
+  },
+  "pins": { "a": { "label": "A" }, "b": { "label": "B" } },
+  "symbol": {
+    "bounds": { "x": -50, "y": -20, "width": 100, "height": 40 },
+    "graphics": [
+      { "type": "line", "from": [-50, 0], "to": [-25, 0] },
+      { "type": "rect", "x": -25, "y": -10, "width": 50, "height": 20, "fill": "background" },
+      { "type": "line", "from": [25, 0], "to": [50, 0] },
+      { "type": "text", "position": [0, 28], "text": "1k ohm", "align": "center", "fontSize": 11 }
+    ],
+    "pins": {
+      "a": { "position": [-50, 0], "direction": "left", "label": { "visible": false } },
+      "b": { "position": [50, 0], "direction": "right", "label": { "visible": false } }
+    },
+    "annotations": { "designator": { "position": [0, -18], "align": "center" } }
+  }
+}

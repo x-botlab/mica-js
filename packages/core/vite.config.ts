@@ -11,8 +11,6 @@ export default defineConfig({
     lib: {
       entry: {
         index: 'src/index.ts',
-        'schematic/index': 'src/schematic/index.ts',
-        'canvas/index': 'src/canvas/index.ts',
         'rpc/index': 'src/rpc/index.ts',
         'logging/index': 'src/logging/index.ts',
         'lifecycle/index': 'src/lifecycle/index.ts',
@@ -23,7 +21,7 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: true,
     minify: false,
-    rollupOptions: { external: ['@mica-js/ir', '@mica-js/core/rpc'] },
+    rollupOptions: { external: ['@mica-js/core/rpc'] },
   },
   plugins: [
     dts({

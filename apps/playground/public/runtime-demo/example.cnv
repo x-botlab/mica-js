@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "schematic": "example.sch",
+  "widgets": [
+    {
+      "id": "9cb7a4fe-04df-4d9d-ac25-1099581df01c",
+      "widget": "demo:button",
+      "x": 64,
+      "y": 96,
+      "width": 200,
+      "height": 80,
+      "rotation": 0,
+      "properties": {
+        "label": "按住点亮",
+        "color": "#D78345"
+      },
+      "bindings": {
+        "press": {
+          "symbol": "10000000-0000-4000-8000-000000000002",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "a2f6c28d-9a8b-44cd-95a7-340d0726fc73",
+      "widget": "demo:led-indicator",
+      "x": 360,
+      "y": 56,
+      "width": 160,
+      "height": 160,
+      "rotation": 0,
+      "properties": {
+        "label": "LED",
+        "color": "#22C55E",
+        "offColor": "#27272A"
+      },
+      "bindings": {
+        "brightness": {
+          "symbol": "10000000-0000-4000-8000-000000000003",
+          "port": "brightness"
+        }
+      }
+    },
+    {
+      "id": "a2f6c28d-9a8b-44cd-95a7-340d0726fc74",
+      "widget": "demo:voltmeter",
+      "x": 580,
+      "y": 72,
+      "width": 240,
+      "height": 150,
+      "rotation": 0,
+      "properties": { "label": "LED 电压", "precision": 2 },
+      "bindings": {
+        "voltage": {
+          "symbol": "10000000-0000-4000-8000-000000000004",
+          "port": "voltage"
+        }
+      }
+    }
+  ]
+}

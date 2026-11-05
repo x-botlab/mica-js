@@ -1,0 +1,135 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #222;
+  background: #fafafa;
+  font-size: 13px;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+.demo {
+  height: 100dvh;
+  display: grid;
+  grid-template-rows: 52px minmax(0, 1fr) 28px;
+}
+.demo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 18px;
+  background: #fff;
+  border-bottom: 1px solid #ddd;
+}
+h1 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+}
+h1 span {
+  margin-left: 12px;
+  color: #777;
+  font-size: 12px;
+  font-weight: 400;
+}
+.demo-actions {
+  display: flex;
+  gap: 6px;
+}
+button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  color: #333;
+  background: #fff;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  background: #eef6f1;
+  border-color: #91b29e;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+button:focus-visible,
+select:focus-visible,
+pre:focus-visible {
+  outline: 2px solid #167350;
+  outline-offset: 2px;
+}
+.demo-workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 330px;
+}
+.demo-surface {
+  min-height: 0;
+  min-width: 0;
+}
+.demo-source {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: #fff;
+  border-left: 1px solid #ddd;
+}
+.demo-source-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid #eee;
+}
+select {
+  min-width: 0;
+  flex: 1;
+  height: 32px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  padding: 0 8px;
+  background: #fff;
+  color: #333;
+  font: inherit;
+}
+pre {
+  overflow: auto;
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  font:
+    11px/1.7 ui-monospace,
+    Consolas,
+    monospace;
+  color: #59675b;
+  tab-size: 2;
+}
+.demo-status {
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  border-top: 1px solid #ddd;
+  background: #fff;
+  font-size: 11px;
+  color: #666;
+}
+@media (max-width: 700px) {
+  .demo-workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 200px;
+  }
+  .demo-source {
+    border-left: 0;
+    border-top: 1px solid #ddd;
+  }
+  .demo-source-heading {
+    padding: 6px 12px;
+  }
+}

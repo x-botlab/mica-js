@@ -18,8 +18,8 @@ export function widgetAudioWorkletUrl(): string {
 /**
  * Loads the packaged processor into `context` and creates its node.
  *
- * Pass it as `getAudioWorklet` wherever a `WidgetHost` or `CanvasEditor` asks for one; hosts that
- * provide no loader of their own use the same processor internally.
+ * Pass it as `WidgetAudioOptions.getAudioWorklet`; runtimes that provide no loader of their
+ * own use the same processor internally.
  */
 export async function createWidgetAudioWorklet(context: AudioContext): Promise<AudioWorkletNode> {
   if (typeof context.audioWorklet?.addModule !== 'function') {

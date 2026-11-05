@@ -1,0 +1,19 @@
+{
+  "name": "@mica-js/playground-components",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "mica build",
+    "typecheck": "mica prepare && tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@mica-js/sdk": "workspace:*",
+    "@mica-js/ddl": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
+    "@types/node": "^24.19.2",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

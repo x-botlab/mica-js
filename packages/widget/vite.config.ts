@@ -46,12 +46,11 @@ export default defineConfig({
     rollupOptions: {
       external: [
         '@mica-js/core',
-        '@mica-js/core/canvas',
+        '@mica-js/document/canvas',
         '@mica-js/core/lifecycle',
         '@mica-js/core/logging',
         '@mica-js/core/rpc',
         '@mica-js/sandbox',
-        '@mica-js/simulator',
         'rolldown',
         'vite',
       ],

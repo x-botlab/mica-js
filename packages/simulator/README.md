@@ -1,6 +1,6 @@
 # @mica-js/simulator
 
-基于[器件仿真规范](../../docs/spec/index.rst)的同步运行时。DDL、TypeScript Builder 和动态生成块使用共享 IR 与 JS 编译后端；运行位置由接入者决定，包不创建 Worker 或沙箱。
+基于[器件仿真规范](../../docs/spec/index.rst)的同步运行时。DDL、TypeScript Builder 和动态生成块使用共享器件模型与 JS 编译后端。根入口保持 DOM 无关，调用方决定运行位置；浏览器可选 sandbox 入口提供编辑器使用的隔离适配。
 
 ## 入口
 
@@ -8,6 +8,7 @@
 - `@mica-js/simulator/device`：器件工厂、context、通道、批次、字节视图和 JIT 接口。
 - `@mica-js/simulator/model`：共享 IR、Builder 与校验器。
 - `@mica-js/simulator/ddl`：Langium DDL 编译工具；根入口不加载解析器。
+- `@mica-js/simulator/sandbox`：预备仿真的默认 guest 与 worker 适配器。
 
 ```typescript
 import { createDeviceLibrary, createBoard } from '@mica-js/simulator';
@@ -59,6 +60,17 @@ JIT 在翻译并校验整个块后，将各 PC 直接绑定到已编译的指令
 
 旧 `Circuit`、`compileCircuit`、原理图宿主和 `/sandbox` 入口已移除；编辑器与 playground 的接入需迁移到新的库/板合同。
 
+## 编辑器预备运行时
+
+`createSimulationRuntime()` 提供 `ISimulationRuntime`，接收调用方已准备的原理图、器件 JSON 元数据、自包含 JS 文本与按符号分组的资源字节。JS 使用 SDK 的 `model`、同步 `create` 具名导出；装载后通过 `createDeviceLibrary` / `createBoard` 建立运行实例。元数据用于符号、属性与端口校验，执行模型来自 SDK 编译后的共享器件模型。
+
+- `load(input)` 在候选板准备成功后替换当前板；失败保留原运行状态。`reset()` 根据已加载输入重建初始状态。
+- `deliver(message)` 将输入排到下一次 `tick(dt)`；整数皮秒步推进 Board，输出通过 `onDidPublish` 发布。省略端口 delivery 时沿用文档话题默认语义。
+- 原理图属性覆盖元数据默认值，文件或内联资源引用由独立 `assets[symbolId][src]` 转为字节属性；运行时不读取文件或解析库。
+- `onDidDiagnostic` 转发原生 Board 故障与端口诊断；故障板通过 `reset()` 或重新 `load()` 恢复。
+
+浏览器由编辑器创建 `createSimulationRuntimeGuestSandbox({ container })`，再调用 `createSimulationRuntimeFromWorker(worker, { topicPort })`。适配器接管 worker 生命周期；只传递 MessagePort，复用 typed RPC 的 `simulation-runtime` 服务。器件模块仅在 guest 内求值，直连端口负责与 widget guest 双向通信。
+
 ## 验证
 
 构建新模型、DDL、编译器和 simulator 包后，连接真实 adapter：
@@ -71,7 +83,7 @@ pnpm test:generated --require-adapter
 pnpm test:generated:daily --require-adapter
 ```
 
-`typecheck:implementation` 将已有 Builder/IR/host 类型场景的合同导入重定向到真实源码入口，不复制场景。运行时验收使用[符合性场景](../../tests/conformance/README.md)和[独立生成 oracle](../../tests/generated/README.md)。`pnpm --filter @mica-js/compiler test` 检查直接基本块后端；`pnpm --filter @mica-js/simulator test` 检查 MCU 基准、切片推进及其独立 oracle。
+`typecheck:implementation` 将已有 Builder/IR/host 类型场景的合同导入重定向到真实源码入口，不复制场景。运行时验收使用[符合性场景](../../tests/conformance/README.md)和[独立生成 oracle](../../tests/generated/README.md)。`pnpm --filter @mica-js/compiler test` 检查直接基本块后端；`pnpm --filter @mica-js/simulator test` 检查 MCU 基准、切片推进及其独立 oracle。编辑器预备运行时另通过 `pnpm --filter @mica-js/simulator test:runtime` 验证装载、资源、话题与 guest/RPC 生命周期。
 
 ## 基准
 

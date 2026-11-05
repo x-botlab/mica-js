@@ -1,0 +1,58 @@
+{
+  "kind": "device",
+  "id": "led",
+  "version": "1.0.0",
+  "displayName": "LED",
+  "designatorPrefix": "D",
+  "pins": { "anode": { "label": "A" }, "cathode": { "label": "K" } },
+  "symbol": {
+    "bounds": { "x": -50, "y": -40, "width": 100, "height": 70 },
+    "graphics": [
+      { "type": "line", "from": [-50, 0], "to": [-18, 0] },
+      {
+        "type": "polyline",
+        "points": [
+          [-18, -18],
+          [18, 0],
+          [-18, 18]
+        ],
+        "closed": true,
+        "fill": "background"
+      },
+      { "type": "line", "from": [18, -18], "to": [18, 18], "strokeWidth": 2 },
+      { "type": "line", "from": [18, 0], "to": [50, 0] },
+      {
+        "type": "polyline",
+        "points": [
+          [0, -20],
+          [15, -35],
+          [15, -28]
+        ]
+      },
+      { "type": "line", "from": [15, -35], "to": [8, -35] },
+      {
+        "type": "polyline",
+        "points": [
+          [12, -15],
+          [27, -30],
+          [27, -23]
+        ]
+      },
+      { "type": "line", "from": [27, -30], "to": [20, -30] },
+      { "type": "text", "position": [0, 30], "text": "LED", "align": "center", "fontSize": 11 }
+    ],
+    "pins": {
+      "anode": {
+        "position": [-50, 0],
+        "direction": "left",
+        "label": { "visible": true, "position": [-35, 12], "align": "center" }
+      },
+      "cathode": {
+        "position": [50, 0],
+        "direction": "right",
+        "label": { "visible": true, "position": [35, 12], "align": "center" }
+      }
+    },
+    "annotations": { "designator": { "position": [-12, -43], "align": "center" } }
+  }
+}

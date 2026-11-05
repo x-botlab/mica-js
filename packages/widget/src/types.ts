@@ -1,4 +1,4 @@
-import type { DeliveryKind, PayloadType } from '@mica-js/core/canvas';
+import type { DeliveryKind, PayloadType } from '@mica-js/document/canvas';
 
 /** A widget implementation and the data that describes it. */
 export interface WidgetModule {

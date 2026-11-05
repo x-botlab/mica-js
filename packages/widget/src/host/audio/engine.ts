@@ -203,10 +203,10 @@ export class WidgetAudioEngine {
 
   setInstanceVolume(instanceId: string, volume: number): void {
     if (typeof volume !== 'number') {
-      throw new TypeError('WidgetHost.audio.setInstanceVolume expects a number');
+      throw new TypeError('WidgetAudioControls.setInstanceVolume expects a number');
     }
     if (!Number.isFinite(volume) || volume < 0 || volume > 1) {
-      throw new RangeError('WidgetHost.audio.setInstanceVolume expects a value in [0, 1]');
+      throw new RangeError('WidgetAudioControls.setInstanceVolume expects a value in [0, 1]');
     }
     const instance = this.#instances.get(instanceId);
     if (!instance) return;

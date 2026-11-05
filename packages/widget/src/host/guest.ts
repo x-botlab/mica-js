@@ -14,9 +14,7 @@ export const widgetGuestScript: string = guestScript;
 /**
  * Creates the widget host guest worker.
  *
- * This is the guest `WidgetHost` talks to, and it is the same one `@mica-js/canvas-editor`'s
- * `SandboxHostProvider` starts by default. Hosts only start it; the RPC surface is wired by
- * `createWidgetSandboxFromWorker`.
+ * Hosts start the guest, then wire its RPC surface with `createWidgetSandboxFromWorker`.
  */
 export function createWidgetHostGuestSandbox(options: SandboxWorkerOptions = {}): SandboxWorker {
   return new SandboxWorker(widgetGuestScript, { name: 'widget', ...options });

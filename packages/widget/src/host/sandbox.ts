@@ -11,7 +11,7 @@ import {
 import type { SandboxWorker } from '@mica-js/sandbox';
 import type { WidgetSandbox, WidgetSandboxHostOptions } from './types';
 
-/** Adapts a provider-created widget worker to WidgetHost's RPC-facing surface. */
+/** Adapts a provider-created widget worker to the runtime's RPC-facing surface. */
 export async function createWidgetSandboxFromWorker(
   worker: SandboxWorker,
   options: WidgetSandboxHostOptions,

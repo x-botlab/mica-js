@@ -1,4 +1,4 @@
-import { parseDeliveryKind, parsePayloadType } from '@mica-js/core/canvas';
+import { parseDeliveryKind, parsePayloadType } from '@mica-js/document/canvas';
 import { WidgetLoadError, type WidgetLoadErrorCode } from '../errors';
 import type { PortDefinition, PropertyDefinition, WidgetDefinition, WidgetModule } from '../types';
 

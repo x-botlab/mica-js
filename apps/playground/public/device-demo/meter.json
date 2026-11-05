@@ -1,0 +1,47 @@
+{
+  "kind": "device",
+  "id": "meter",
+  "version": "1.0.0",
+  "displayName": "Meter",
+  "designatorPrefix": "M",
+  "ports": { "reading": { "direction": "output", "type": "number", "delivery": "level" } },
+  "pins": { "positive": { "label": "+" }, "negative": { "label": "-" } },
+  "symbol": {
+    "bounds": { "x": -50, "y": -35, "width": 100, "height": 70 },
+    "graphics": [
+      { "type": "circle", "center": [0, 0], "radius": 32, "fill": "background" },
+      {
+        "type": "arc",
+        "center": [0, 5],
+        "radius": 21,
+        "startAngle": 205,
+        "sweepAngle": 130,
+        "strokeWidth": 1
+      },
+      { "type": "line", "from": [0, 12], "to": [12, -10], "strokeWidth": 2 },
+      { "type": "circle", "center": [0, 12], "radius": 2, "fill": "foreground" },
+      { "type": "line", "from": [-50, 0], "to": [-32, 0] },
+      { "type": "line", "from": [32, 0], "to": [50, 0] },
+      {
+        "type": "text",
+        "position": [0, 45],
+        "text": "Voltmeter",
+        "align": "center",
+        "fontSize": 11
+      }
+    ],
+    "pins": {
+      "positive": {
+        "position": [-50, 0],
+        "direction": "left",
+        "label": { "visible": true, "position": [-41, -10], "align": "center" }
+      },
+      "negative": {
+        "position": [50, 0],
+        "direction": "right",
+        "label": { "visible": true, "position": [41, -10], "align": "center" }
+      }
+    },
+    "annotations": { "designator": { "position": [0, -43], "align": "center" } }
+  }
+}

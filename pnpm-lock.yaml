@@ -229,18 +229,21 @@ importers:
 
   apps/playground:
     dependencies:
-      '@mica-js/canvas-editor':
-        specifier: workspace:*
-        version: link:../../packages/canvas-editor
       '@mica-js/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../../packages/document
+      '@mica-js/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
       '@mica-js/sandbox':
         specifier: workspace:*
         version: link:../../packages/sandbox
-      '@mica-js/schematic-editor':
+      '@mica-js/sdk':
         specifier: workspace:*
-        version: link:../../packages/schematic-editor
+        version: link:../../packages/sdk
       '@mica-js/simulator':
         specifier: workspace:*
         version: link:../../packages/simulator
@@ -269,6 +272,9 @@ importers:
         specifier: ^3.3.1
         version: 3.7.0
     devDependencies:
+      '@mica-js/playground-components':
+        specifier: workspace:*
+        version: link:../../examples/playground-components
       '@tailwindcss/vite':
         specifier: ^4.1.14
         version: 4.3.3(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
@@ -291,30 +297,23 @@ importers:
         specifier: 'catalog:'
         version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
 
-  packages/canvas-editor:
-    dependencies:
-      '@mica-js/core':
+  examples/playground-components:
+    devDependencies:
+      '@mica-js/ddl':
         specifier: workspace:*
-        version: link:../core
-      '@mica-js/sandbox':
+        version: link:../../packages/ddl
+      '@mica-js/sdk':
         specifier: workspace:*
-        version: link:../sandbox
+        version: link:../../packages/sdk
       '@mica-js/simulator':
         specifier: workspace:*
-        version: link:../simulator
-      '@mica-js/widget':
-        specifier: workspace:*
-        version: link:../widget
-    devDependencies:
+        version: link:../../packages/simulator
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
-      vite:
-        specifier: 'catalog:'
-        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
-      vite-plugin-dts:
-        specifier: 'catalog:'
-        version: 5.1.2(@microsoft/api-extractor@7.59.4(@types/node@24.19.2))(rolldown@1.2.14)(supports-color@8.1.1)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
       vitest:
         specifier: 'catalog:'
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
@@ -348,10 +347,6 @@ importers:
         version: 2.9.1
 
   packages/core:
-    dependencies:
-      '@mica-js/ir':
-        specifier: workspace:*
-        version: link:../ir
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -394,7 +389,42 @@ importers:
         specifier: 'catalog:'
         version: 5.1.2(@microsoft/api-extractor@7.59.4(@types/node@24.19.2))(rolldown@1.2.14)(supports-color@8.1.1)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
 
-  packages/ir:
+  packages/document:
+    dependencies:
+      '@mica-js/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
+      vite-plugin-dts:
+        specifier: 'catalog:'
+        version: 5.1.2(@microsoft/api-extractor@7.59.4(@types/node@24.19.2))(rolldown@1.2.14)(supports-color@8.1.1)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  packages/editor:
+    dependencies:
+      '@mica-js/core':
+        specifier: workspace:*
+        version: link:../core
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../document
+      '@mica-js/sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      '@mica-js/simulator':
+        specifier: workspace:*
+        version: link:../simulator
+      '@mica-js/widget':
+        specifier: workspace:*
+        version: link:../widget
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -414,25 +444,6 @@ importers:
       rolldown:
         specifier: 'catalog:'
         version: 1.2.14
-    devDependencies:
-      typescript:
-        specifier: 'catalog:'
-        version: 6.0.3
-      vite:
-        specifier: 'catalog:'
-        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
-      vite-plugin-dts:
-        specifier: 'catalog:'
-        version: 5.1.2(@microsoft/api-extractor@7.59.4(@types/node@24.19.2))(rolldown@1.2.14)(supports-color@7.2.0)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
-      vitest:
-        specifier: 'catalog:'
-        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
-
-  packages/schematic-editor:
-    dependencies:
-      '@mica-js/core':
-        specifier: workspace:*
-        version: link:../core
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -470,6 +481,9 @@ importers:
       rolldown:
         specifier: 'catalog:'
         version: 1.2.14
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
     devDependencies:
       '@types/node':
         specifier: ^24.19.2
@@ -477,9 +491,6 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
-      vite:
-        specifier: 'catalog:'
-        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
       vitest:
         specifier: 'catalog:'
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
@@ -498,6 +509,12 @@ importers:
       '@mica-js/device-model':
         specifier: workspace:*
         version: link:../device-model
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../document
+      '@mica-js/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -508,18 +525,21 @@ importers:
       vite-plugin-dts:
         specifier: 'catalog:'
         version: 5.1.2(@microsoft/api-extractor@7.59.4(@types/node@24.19.2))(rolldown@1.2.14)(supports-color@8.1.1)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
 
   packages/widget:
     dependencies:
       '@mica-js/core':
         specifier: workspace:*
         version: link:../core
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../document
       '@mica-js/sandbox':
         specifier: workspace:*
         version: link:../sandbox
-      '@mica-js/simulator':
-        specifier: workspace:*
-        version: link:../simulator
       rolldown:
         specifier: 'catalog:'
         version: 1.2.14

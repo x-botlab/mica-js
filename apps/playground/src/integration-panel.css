@@ -1,0 +1,223 @@
+.host-sidebar {
+  width: 280px;
+  max-width: 45vw;
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: auto;
+  border-left: 1px solid var(--border);
+  background: var(--background);
+  font-size: 12px;
+}
+.host-sidebar[hidden] {
+  display: none;
+}
+.host-sidebar section {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.host-sidebar h2 {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.host-sidebar label {
+  display: block;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+}
+.host-sidebar input:not([type='checkbox']),
+.host-sidebar select {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 3px 6px;
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+}
+.host-sidebar input[type='color'] {
+  padding: 2px;
+}
+.host-sidebar input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--primary);
+}
+.host-sidebar select + label,
+.host-sidebar input + label {
+  margin-top: 8px;
+}
+.host-sidebar button {
+  cursor: pointer;
+}
+.host-sidebar button:disabled,
+.host-sidebar input:disabled,
+.host-sidebar select:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.host-sidebar button:focus-visible,
+.host-sidebar input:focus-visible,
+.host-sidebar select:focus-visible,
+.host-context-menu button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+.host-object-list {
+  max-height: 190px;
+  overflow: auto;
+}
+.host-object-list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 5px 6px;
+  border-radius: 3px;
+}
+.host-object-list button:hover,
+.host-object-list button[aria-pressed='true'] {
+  background: var(--accent);
+}
+.host-object-list span,
+.host-object-list small {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.host-object-list small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+.host-muted {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+.host-selected {
+  margin-bottom: 10px;
+  overflow-wrap: anywhere;
+}
+.host-property {
+  padding: 7px 0;
+}
+.host-property-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: space-between;
+}
+.host-property-heading label {
+  min-width: 0;
+}
+.host-property-heading button,
+.host-property-control button {
+  display: grid;
+  place-items: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 26px;
+  border-radius: 3px;
+}
+.host-property-control {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.host-default {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.host-error {
+  color: var(--destructive);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  margin-top: 5px;
+}
+.host-text-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 6px;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-height: 26px;
+}
+.host-text-button:hover:not(:disabled),
+.host-property button:hover:not(:disabled) {
+  background: var(--accent);
+}
+.host-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.host-binding {
+  padding: 6px 0;
+}
+.host-binding small {
+  display: block;
+  margin-bottom: 4px;
+}
+.host-selection-status {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  padding: 4px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--background);
+  color: var(--muted-foreground);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.host-context-menu {
+  position: fixed;
+  z-index: 100;
+  width: 180px;
+  max-width: calc(100vw - 8px);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: 0 3px 12px #0002;
+  font-size: 12px;
+}
+.host-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 3px;
+  text-align: left;
+}
+.host-context-menu button:hover:not(:disabled),
+.host-context-menu button:focus {
+  background: var(--accent);
+}
+.host-context-menu button:disabled {
+  opacity: 0.5;
+}
+@media (max-width: 600px) {
+  .host-sidebar {
+    width: 240px;
+    max-width: 44vw;
+  }
+  .host-sidebar section {
+    padding: 8px;
+  }
+}

@@ -1,10 +1,5 @@
-import type { CanvasBindingCatalog, CanvasCommand, CanvasDocument } from '@mica-js/core/canvas';
-import type { Event } from '@mica-js/core/lifecycle';
 import type { HostFs } from '../host-fs/types';
-import type { DeviceSimulationHost } from '@mica-js/simulator';
-import type { WidgetProvider } from '../types';
-import type { WidgetAssetRef, WidgetInputEvent } from '../guest/widget/types';
-import type { WidgetAudioControls, WidgetAudioOptions } from './audio/types';
+import type { WidgetAssetRef } from '../guest/widget/types';
 import type { WidgetAudioState } from '../guest/audio/protocol';
 
 export type { WidgetAssetRef } from '../guest/widget/types';
@@ -100,118 +95,6 @@ export interface WidgetPublish {
   readonly simTime: number;
 }
 
-export type WidgetHostMode = 'edit' | 'simulation';
-
-export interface WidgetHost {
-  /**
-   * Snapshot the host currently coordinates: the last document accepted by `loadDocument` or
-   * `applyCommand`. Starts as the empty document `{ version: 1, widgets: [] }`.
-   *
-   * Every call returns the current value, so a long-lived reference stays live.
-   */
-  getDocument(): CanvasDocument;
-
-  /**
-   * Commits a document and mounts the instances it lists.
-   *
-   * Accepts an already parsed `CanvasDocument`, or the absolute URI of a `.cnv` resource. The URI
-   * form reads the bytes through `WidgetHostOptions.fs` (a `data:` URI is decoded locally),
-   * decodes them as UTF-8 text, parses with `parseCanvas`, and then runs the same validation and
-   * mount flow as the parsed form.
-   *
-   * The document's `schematic` is resolved against the document URI and loaded through
-   * `deviceHost` before any instance mounts (RFC 0018 step 2), regardless of the current host mode.
-   *
-   * Resolves once the instances of this first pass finished mounting. A widget that fails to mount
-   * is reported through `onDiagnostic` and left out of `getLayers()` instead of rejecting this
-   * promise.
-   *
-   * Binding endpoint and type diagnostics skip only the affected instances and are reported through
-   * `onDiagnostic`; valid instances still mount. Schema, schematic-loading, and other document-level
-   * errors reject the call and leave the previous document and instances unchanged.
-   * @throws {HostFsError} when reading the URI fails, or when no `fs` is configured for a
-   * non-`data:` URI.
-   * @throws {TypeError} when the URI is relative or a `data:` URI is malformed.
-   * @throws whatever `DeviceSimulationHost.loadSchematic` rejects with when a device host is configured;
-   * the document and the instances keep the state they had before the call.
-   */
-  loadDocument(document: CanvasDocument): Promise<void>;
-  loadDocument(uri: string): Promise<void>;
-
-  /**
-   * Applies one command to the current document.
-   *
-   * The new snapshot and the `onDocumentChange` notification happen synchronously; coordinating
-   * instances runs in the background and never rolls the document back. A rejected command leaves
-   * both the document and the instances untouched.
-   *
-   * Binding endpoint and type diagnostics skip only affected instances and are reported through
-   * `onDiagnostic`; other invalid commands and document-level diagnostics still throw.
-   */
-  applyCommand(command: CanvasCommand): void;
-
-  /** Current widget runtime mode; only `simulation` advances the device host. */
-  getMode(): WidgetHostMode;
-
-  /** Switches widget runtime modes and resets the device and widget state. */
-  setMode(mode: WidgetHostMode): Promise<void>;
-
-  /** Subscribes to committed snapshots; returns the unsubscribe function. */
-  onDocumentChange(listener: (document: CanvasDocument) => void): () => void;
-
-  /**
-   * Drops every instance and mounts the current document again, so widgets restart from their
-   * initial state. Layers are emptied and repopulated.
-   *
-   * With a URI-loaded document this re-executes `loadDocument`: the bytes are read and parsed
-   * again, and the document's schematic is handed to the device host once more, so the simulation
-   * does not keep the state of a killed widget.
-   *
-   * Each mount runs the widget factory again (fresh closure, canvas and subscriptions, initial
-   * props), but the guest keeps its module cache: a widget module is evaluated once per session.
-   * Module-level state is therefore not reset — the contract puts instance state in the factory.
-   *
-   * Resolves once every instance of the current document has mounted again. Failures are reported
-   * through `onDiagnostic` instead of rejecting, like every other coordination step.
-   */
-  reset(): Promise<void>;
-
-  deliver(instanceId: string, port: string, payload: unknown, simTime: number): void;
-  /**
-   * Hands one input event to an instance.
-   *
-   * The event is queued and dispatched at the start of the next step (RFC 0018).
-   */
-  dispatch(instanceId: string, event: WidgetInputEvent): void;
-  /** Bulk instance projection in drawing order; carries no bitmaps. */
-  listInstances(): readonly WidgetInstance[];
-  /** Fires once the instance is mounted, with its complete state. */
-  readonly onDidAddWidget: Event<Widget>;
-  /** Fires when geometry, properties, bindings, the pixel ratio or the bitmap changed. */
-  readonly onDidChangeWidget: Event<Widget>;
-  /** Fires when an instance is unloaded; the payload is the `instanceId`. */
-  readonly onDidRemoveWidget: Event<string>;
-  /** Fires with the new drawing order; the elements are `instanceId`s. */
-  readonly onDidReorderWidgets: Event<readonly string[]>;
-  /** Requests a full sync: every instance is reported as removed and then added, in current order. */
-  invalidate(): void;
-  /** Bitmaps in document order; the same store for the lifetime of the host. */
-  getLayers(): WidgetLayers;
-  /** Changes the device pixel ratio of every layer and repaints all instances. */
-  resize(dpr: number): void;
-  /** Freezes the frame clock; the document and the instances stay untouched. */
-  pause(): void;
-  /** Resumes the frame clock and re-times it from now. */
-  resume(): void;
-  /**
-   * Audio controls for every instance (RFC 0016). Without `WidgetHostOptions.audio` the state stays
-   * `unavailable` and the controls are no-ops.
-   */
-  readonly audio: WidgetAudioControls;
-  /** Terminates the sandbox and closes every bitmap. */
-  dispose(): Promise<void>;
-}
-
 export type WidgetDiagnosticCode =
   | 'widget/runtime-failed'
   | 'widget/unknown-widget'
@@ -258,9 +141,8 @@ export interface WidgetSandbox {
   /** Host → guest audio lane; without it `api.audio` stays `unavailable`. */
   readonly audio?: WidgetSandboxAudio;
   /**
-   * The guest holds the direct device channel (RFC 0018), so it delivers widget publishes to the
-   * device guest and fans device publishes out to its instances itself. The host then keeps the
-   * binding map, the level cache and the diagnostics, and stops relaying topic traffic.
+   * The guest holds a direct simulation-runtime channel and routes bound topic traffic itself.
+   * Observers must not relay publishes marked as direct a second time.
    */
   readonly directDevice?: boolean;
   terminate(reason?: string): Promise<void>;
@@ -274,82 +156,10 @@ export interface WidgetSandboxHostOptions {
   /**
    * One end of the direct device channel, transferred to the guest with its first message.
    *
-   * A port can be transferred once, so the host hands it to the first sandbox it starts; a sandbox
-   * started after a crash runs without one and the host relays topic traffic again.
+   * A port can be transferred once. A replacement sandbox needs a fresh port; without one the
+   * caller routes topic traffic through the runtime events.
    */
   readonly devicePort?: MessagePort;
 }
 
 export type WidgetSandboxFactory = (options: WidgetSandboxHostOptions) => Promise<WidgetSandbox>;
-
-/**
- * Frame clock policy. The host decides how much one frame advances; the backlog of a stalled frame
- * is dropped instead of being simulated later.
- */
-export interface WidgetHostFrameOptions {
-  /** Length of one fixed step, in milliseconds. Defaults to 25 ms. */
-  readonly stepMs?: number;
-  /** Frame scheduler; the default uses `setTimeout` with the configured step duration. */
-  readonly requestFrame?: (callback: () => void) => () => void;
-}
-
-export interface WidgetHostOptions {
-  /** Widget definitions and implementations (RFC 0014). Required together with {@link provider}. */
-  readonly widgetProvider?: WidgetProvider;
-  /** @deprecated Use {@link widgetProvider}. */
-  readonly provider?: WidgetProvider;
-  /**
-   * Simulation runtime kept loaded by the widget host in both edit and simulation modes.
-   */
-  readonly deviceHost: DeviceSimulationHost;
-  /** Initial runtime mode. Defaults to `simulation`. */
-  readonly mode?: WidgetHostMode;
-  /**
-   * Reads the bytes of a document URI for `loadDocument(uri)`. `data:` URIs are decoded locally
-   * and never reach `fs`; without this option only `data:` URIs and the parsed-document form work.
-   */
-  readonly fs?: HostFs;
-  readonly container?: HTMLElement;
-  /** Device pixel ratio for new layers. Defaults to `devicePixelRatio`, or 1 outside a browser. */
-  readonly dpr?: number;
-  /** Receives failures that must not interrupt the caller. */
-  readonly onDidReportDiagnostic?: (diagnostic: WidgetDiagnostic) => void;
-  /** @deprecated Use {@link onDidReportDiagnostic}. */
-  readonly onDiagnostic?: (diagnostic: WidgetDiagnostic) => void;
-  /** Receives port payloads published by widgets outside every binding. */
-  readonly onDidPublish?: (publish: WidgetPublish) => void;
-  /** @deprecated Use {@link onDidPublish}. */
-  readonly onPublish?: (publish: WidgetPublish) => void;
-  /** Frame clock policy. */
-  readonly frame?: WidgetHostFrameOptions;
-  /**
-   * Prefetches image / binary property values when an instance mounts. Without it nothing is
-   * prefetched and `api.assets.readBinary` rejects.
-   */
-  readonly assets?: WidgetAssetProvider;
-  /**
-   * Overrides the binding catalog the host assembles itself (RFC 0018).
-   *
-   * By default the host validates every `loadDocument` / `applyCommand` against the definitions
-   * resolved through `widgetProvider`, the endpoints `deviceHost.getTopics()` reports when a device
-   * host is configured, and the schematic the device host loaded.
-   *
-   * Pass a catalog to validate against a different registry — for example a static list of
-   * endpoints before a simulation exists.
-   */
-  readonly catalog?: CanvasBindingCatalog;
-  /**
-   * One end of the direct device channel between the widget guest and the device guest (RFC 0018).
-   *
-   * Handed to the first sandbox the host starts and never reused: a guest restarted after a crash
-   * runs without it, and the host relays topic traffic as before.
-   */
-  readonly devicePort?: MessagePort;
-  /**
-   * Enables `api.audio`. Without it every widget sees `api.audio.state === 'unavailable'`.
-   *
-   * The host never closes the `AudioContext`: the caller keeps ownership, including the user
-   * gesture that unlocks it.
-   */
-  readonly audio?: WidgetAudioOptions;
-}

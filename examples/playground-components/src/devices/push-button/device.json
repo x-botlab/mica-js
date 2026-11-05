@@ -1,0 +1,26 @@
+{
+  "kind": "device",
+  "id": "push-button",
+  "version": "1.0.0",
+  "displayName": "Push Button",
+  "designatorPrefix": "SW",
+  "description": "Normally open momentary switch: 1 ohm pressed, 1 Gohm released. Initial state is released; leakage prevents an isolated open branch.",
+  "pins": { "a": { "label": "A" }, "b": { "label": "B" } },
+  "ports": { "press": { "direction": "input", "type": "boolean", "delivery": "level" } },
+  "symbol": {
+    "bounds": { "x": -40, "y": -24, "width": 80, "height": 48 },
+    "graphics": [
+      { "type": "line", "from": [-40, 0], "to": [-20, 0] },
+      { "type": "circle", "center": [-20, 0], "radius": 2 },
+      { "type": "line", "from": [-20, 0], "to": [18, -12] },
+      { "type": "circle", "center": [20, 0], "radius": 2 },
+      { "type": "line", "from": [20, 0], "to": [40, 0] },
+      { "type": "line", "from": [-6, -18], "to": [6, -18] }
+    ],
+    "pins": {
+      "a": { "position": [-40, 0], "direction": "left", "label": { "visible": false } },
+      "b": { "position": [40, 0], "direction": "right", "label": { "visible": false } }
+    },
+    "annotations": { "designator": { "position": [0, 20], "align": "center" } }
+  }
+}

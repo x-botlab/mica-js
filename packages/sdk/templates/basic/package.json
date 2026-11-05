@@ -4,13 +4,11 @@
   "type": "module",
   "scripts": {
     "prepare": "mica prepare",
-    "dev": "vite",
-    "build": "vite build",
+    "build": "mica build",
     "typecheck": "mica prepare && tsc --noEmit"
   },
   "devDependencies": {
     "@mica-js/sdk": "^0.1.0",
-    "typescript": "^6.0.3",
-    "vite": "^8.0.0"
+    "typescript": "^6.0.3"
   }
 }
