@@ -20,15 +20,16 @@ function pair() {
     setBindings: vi.fn(async () => {}),
     step: vi.fn(async () => {}),
     dispatch: vi.fn(async () => {}),
+    audio: { suspend: vi.fn(), resume: vi.fn() },
   };
   const simulation = {
     load: vi.fn(async () => {}),
-    tick: vi.fn(async () => ({ simTime: timePs(25_000_000_000), executed: 1 })),
+    tick: vi.fn(async () => ({ simTime: timePs(20_000_000_000), executed: 1 })),
   };
   const dispose = vi.fn(async () => {});
-  return { frames, widgets, simulation, dispose };
+  return { frames, widgets, simulation, dispose, resumeAudio: vi.fn(async () => {}) };
 }
-function setup() {
+function setup(stepMs?: number) {
   const pairs: ReturnType<typeof pair>[] = [];
   const factory = {
     create: vi.fn(async () => {
@@ -37,17 +38,142 @@ function setup() {
       return result as unknown as ICanvasRuntimes;
     }),
   };
+  const container = new EventTarget() as HTMLElement;
   const session = new CanvasSession(
-    { uri: 'https://test/main.cnv', container: {} as HTMLElement },
+    {
+      uri: 'https://test/main.cnv',
+      container,
+      ...(stepMs === undefined ? {} : { stepMs }),
+    },
     { read: vi.fn() },
     { resolve: async () => undefined },
     { resolve: async () => module },
     factory,
   );
-  return { session, factory, pairs };
+  return { session, factory, pairs, container };
 }
 
 describe('editor-owned canvas runtime session', () => {
+  it('resumes audio on run and gestures, and suspends it on pause and reset', async () => {
+    const { session, pairs, container } = setup();
+    const remove = vi.spyOn(container, 'removeEventListener');
+    try {
+      await session.synchronize(document);
+      container.dispatchEvent(new Event('pointerdown'));
+      expect(pairs[0]!.resumeAudio).not.toHaveBeenCalled();
+      await session.setMode('simulation');
+      const active = pairs[1]!;
+      await session.step();
+      expect(active.widgets.audio.resume).not.toHaveBeenCalled();
+      session.run();
+      expect(active.widgets.audio.resume).toHaveBeenCalledOnce();
+      expect(active.resumeAudio).toHaveBeenCalledOnce();
+      container.dispatchEvent(new Event('pointerdown'));
+      container.dispatchEvent(new Event('keydown'));
+      expect(active.resumeAudio).toHaveBeenCalledTimes(3);
+      session.pause();
+      expect(active.widgets.audio.suspend).toHaveBeenCalledOnce();
+      container.dispatchEvent(new Event('pointerdown'));
+      expect(active.resumeAudio).toHaveBeenCalledTimes(3);
+      session.run();
+      await session.reset();
+      expect(active.widgets.audio.suspend).toHaveBeenCalledTimes(2);
+      expect(active.dispose).toHaveBeenCalledOnce();
+      expect(pairs[2]!.widgets.audio.resume).not.toHaveBeenCalled();
+      session.run();
+      await session.setMode('edit');
+      expect(pairs[2]!.widgets.audio.suspend).toHaveBeenCalledOnce();
+      expect(pairs[3]!.widgets.audio.resume).not.toHaveBeenCalled();
+    } finally {
+      await session.dispose();
+    }
+    expect(remove).toHaveBeenCalledWith('pointerdown', expect.any(Function), true);
+    expect(remove).toHaveBeenCalledWith('keydown', expect.any(Function), true);
+  });
+
+  it('reports resume failures without stopping simulation and retries on the next gesture', async () => {
+    const { session, pairs, container } = setup();
+    const report = vi.fn();
+    session.onDidError(report);
+    try {
+      await session.synchronize(document);
+      await session.setMode('simulation');
+      const active = pairs[1]!;
+      const error = new Error('autoplay blocked');
+      active.resumeAudio.mockRejectedValueOnce(error);
+      session.run();
+      await Promise.resolve();
+      expect(report).toHaveBeenCalledWith(error);
+      expect(session.status.running).toBe(true);
+      container.dispatchEvent(new Event('pointerdown'));
+      expect(active.resumeAudio).toHaveBeenCalledTimes(2);
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  it.each([undefined, 10])(
+    'keeps frame deadlines with stepMs=%s despite execution time',
+    async (stepMs) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+      const period = stepMs ?? 20;
+      const { session, pairs } = setup(stepMs);
+      try {
+        await session.synchronize(document);
+        await session.setMode('simulation');
+        const active = pairs[1]!;
+        const starts: number[] = [];
+        active.simulation.tick.mockImplementation(async () => {
+          starts.push(performance.now());
+          await new Promise<void>((resolve) => setTimeout(resolve, 3));
+          return { simTime: timePs(20_000_000_000), executed: 1 };
+        });
+        session.run();
+        await vi.advanceTimersByTimeAsync(period * 3 + 3);
+        expect(starts).toEqual([period, period * 2, period * 3]);
+        expect(active.simulation.tick).toHaveBeenLastCalledWith(timePs(period * 1_000_000_000));
+      } finally {
+        await session.dispose();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('skips missed frame slots without overlapping or catching up', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const { session, pairs } = setup();
+    try {
+      await session.synchronize(document);
+      await session.setMode('simulation');
+      const active = pairs[1]!;
+      const starts: number[] = [];
+      active.simulation.tick.mockImplementation(async () => {
+        starts.push(performance.now());
+        await new Promise<void>((resolve) => setTimeout(resolve, 45));
+        return { simTime: timePs(20_000_000_000), executed: 1 };
+      });
+      session.run();
+      await vi.advanceTimersByTimeAsync(125);
+      expect(starts).toEqual([20, 80]);
+      expect(active.simulation.tick).toHaveBeenLastCalledWith(timePs(20_000_000_000));
+      session.pause();
+      await vi.advanceTimersByTimeAsync(15);
+      expect(active.simulation.tick).toHaveBeenCalledTimes(2);
+      expect(active.widgets.step).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dt: timePs(0) }),
+      );
+      await session.dispose();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(starts).toEqual([20, 80]);
+    } finally {
+      await session.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([0, -1, NaN, Infinity])('rejects invalid stepMs=%s', (stepMs) => {
+    expect(() => setup(stepMs)).toThrow('stepMs');
+  });
   it('keeps placement changes in the editor without remounting runtime instances', async () => {
     const { session, factory, pairs } = setup();
     await session.synchronize(document);
@@ -83,10 +209,10 @@ describe('editor-owned canvas runtime session', () => {
     await session.setMode('simulation');
     const active = pairs[1]!;
     await session.step();
-    expect(active.simulation.tick).toHaveBeenCalledExactlyOnceWith(timePs(25_000_000_000));
+    expect(active.simulation.tick).toHaveBeenCalledExactlyOnceWith(timePs(20_000_000_000));
     expect(active.widgets.step).toHaveBeenLastCalledWith({
-      simTime: timePs(25_000_000_000),
-      dt: timePs(25_000_000_000),
+      simTime: timePs(20_000_000_000),
+      dt: timePs(20_000_000_000),
       mode: 'simulation',
     });
     expect(active.simulation.tick.mock.invocationCallOrder[0]).toBeLessThan(
@@ -95,7 +221,7 @@ describe('editor-owned canvas runtime session', () => {
     expect(session.status).toEqual({
       mode: 'simulation',
       running: false,
-      simTime: timePs(25_000_000_000),
+      simTime: timePs(20_000_000_000),
     });
     await session.dispose();
   });

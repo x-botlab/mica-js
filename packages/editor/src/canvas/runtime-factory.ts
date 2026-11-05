@@ -5,6 +5,7 @@ import { createDecorator } from '../instantiation';
 export interface ICanvasRuntimes {
   readonly simulation: ISimulationRuntime;
   readonly widgets: IWidgetRuntime;
+  resumeAudio(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -26,6 +27,7 @@ export class CanvasRuntimeFactory implements ICanvasRuntimeFactory {
     let widgetWorker: ReturnType<typeof createWidgetHostGuestSandbox> | undefined;
     let simulation: ISimulationRuntime | undefined;
     let widgets: IWidgetRuntime | undefined;
+    let audioContext: AudioContext | undefined;
     try {
       deviceWorker = createSimulationRuntimeGuestSandbox({ container });
       simulation = await createSimulationRuntimeFromWorker(deviceWorker, {
@@ -36,17 +38,25 @@ export class CanvasRuntimeFactory implements ICanvasRuntimeFactory {
         container,
         devicePort: channel.port2,
       });
-      widgets = createWidgetRuntime(sandbox);
+      if (typeof globalThis.AudioContext === 'function') audioContext = new AudioContext();
+      widgets = createWidgetRuntime(sandbox, {
+        ...(audioContext === undefined ? {} : { audio: { context: audioContext } }),
+      });
+      widgets.audio.suspend();
       const ownedSimulation = simulation;
       const ownedWidgets = widgets;
       let disposal: Promise<void> | undefined;
       return {
         simulation,
         widgets,
+        async resumeAudio() {
+          if (!disposal && audioContext?.state === 'suspended') await audioContext.resume();
+        },
         dispose() {
           return (disposal ??= Promise.allSettled([
             ownedWidgets.dispose(),
             ownedSimulation.dispose(),
+            audioContext?.close(),
           ]).then((results) => {
             const errors = results
               .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
@@ -62,6 +72,7 @@ export class CanvasRuntimeFactory implements ICanvasRuntimeFactory {
       await Promise.allSettled([
         widgets?.dispose() ?? widgetWorker?.terminate('Canvas initialization failed'),
         simulation?.dispose() ?? deviceWorker?.terminate('Canvas initialization failed'),
+        audioContext?.close(),
       ]);
       throw error;
     }

@@ -15,6 +15,7 @@ import { ICanvasRuntimeFactory, type ICanvasRuntimes } from './runtime-factory';
 export interface ICanvasConfiguration {
   readonly uri: string;
   readonly projectRoot?: string;
+  readonly stepMs?: number;
   readonly voltageReferences?: Readonly<Record<string, number>>;
   readonly container: HTMLElement;
 }
@@ -92,10 +93,19 @@ export class CanvasSession {
   #simTime = timePs(0);
   #running = false;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  #nextFrame: number | undefined;
   #disposed = false;
   #queue: Promise<void> = Promise.resolve();
   #disposal: Promise<void> | undefined;
-  readonly #step = toTimePs(25, 'ms');
+  readonly #frameMs: number;
+  readonly #step: TimePs;
+  readonly #unlockAudio = (): void => {
+    const active = this.#active;
+    if (this.#disposed || !this.#running || !active) return;
+    void active.runtimes.resumeAudio().catch((error: unknown) => {
+      if (!this.#disposed && this.#active === active) this.#errors.fire(error);
+    });
+  };
 
   constructor(
     @ICanvasConfiguration private readonly configuration: ICanvasConfiguration,
@@ -103,7 +113,15 @@ export class CanvasSession {
     @IDeviceLibraryResolver private readonly devices: IDeviceLibrary,
     @IWidgetLibraryResolver private readonly widgets: IWidgetLibrary,
     @ICanvasRuntimeFactory private readonly factory: ICanvasRuntimeFactory,
-  ) {}
+  ) {
+    this.#frameMs = configuration.stepMs ?? 20;
+    if (!Number.isFinite(this.#frameMs) || this.#frameMs <= 0)
+      throw new Error('stepMs must be a positive finite number.');
+    this.#step = toTimePs(this.#frameMs, 'ms');
+    if (this.#step <= 0) throw new Error('stepMs must represent at least one picosecond.');
+    configuration.container.addEventListener('pointerdown', this.#unlockAudio, true);
+    configuration.container.addEventListener('keydown', this.#unlockAudio, true);
+  }
 
   get mode() {
     return this.#mode;
@@ -186,6 +204,8 @@ export class CanvasSession {
     if (this.#mode !== 'simulation') throw new Error('Switch to simulation mode before running.');
     if (this.#running) return;
     this.#running = true;
+    this.#active?.runtimes.widgets.audio.resume();
+    this.#unlockAudio();
     this.#changes.fire();
     this.#schedule();
   }
@@ -193,6 +213,7 @@ export class CanvasSession {
   pause(): void {
     if (!this.#running) return;
     this.#running = false;
+    this.#active?.runtimes.widgets.audio.suspend();
     this.#changes.fire();
   }
 
@@ -211,9 +232,12 @@ export class CanvasSession {
   dispose(): Promise<void> {
     if (this.#disposal) return this.#disposal;
     this.#disposed = true;
+    this.configuration.container.removeEventListener('pointerdown', this.#unlockAudio, true);
+    this.configuration.container.removeEventListener('keydown', this.#unlockAudio, true);
     this.pause();
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#timer = undefined;
+    this.#nextFrame = undefined;
     this.#disposal = this.#queue.then(async () => {
       const active = this.#active;
       this.#active = undefined;
@@ -298,16 +322,23 @@ export class CanvasSession {
 
   #schedule(): void {
     if (this.#disposed || !this.#active || this.#timer !== undefined) return;
+    const now = performance.now();
+    this.#nextFrame ??= now + this.#frameMs;
+    // Keep the original frame cadence, skipping elapsed slots instead of accumulating work.
+    if (this.#nextFrame < now)
+      this.#nextFrame += Math.ceil((now - this.#nextFrame) / this.#frameMs) * this.#frameMs;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
+      this.#nextFrame! += this.#frameMs;
       void this.#enqueue(() => this.#advance(this.#running ? this.#step : timePs(0))).then(
         () => this.#schedule(),
         (error) => {
+          this.#nextFrame = undefined;
           this.pause();
           if (!this.#disposed) this.#errors.fire(error);
         },
       );
-    }, 25);
+    }, this.#nextFrame - now);
   }
 
   async #release(active: IRunningCanvas): Promise<void> {
