@@ -3,6 +3,11 @@
   "version": "0.2.1",
   "description": "Device and widget author APIs with CLI-managed content builds",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/sdk"
+  },
   "type": "module",
   "sideEffects": false,
   "bin": {

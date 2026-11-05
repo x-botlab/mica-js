@@ -3,6 +3,11 @@
   "version": "0.5.0",
   "description": "Device IR contracts, validation and typed construction",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/device-model"
+  },
   "type": "module",
   "sideEffects": false,
   "exports": {
