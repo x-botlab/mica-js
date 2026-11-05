@@ -36,8 +36,8 @@ Builder 构造出一个写入操作时，只生成描述。实际资源更新发
 语义保持
 ------------------------------------------------
 
-编译器可以内联函数、合并计算或复用缓存，但 **MUST** 保持资源变化、时间、采样、消息、控制转向和故障的可观察结果。实现优化不能通过改变同步片段、重放已执行前缀或返回陈旧派生值改变模型行为。
+编译器可以内联函数、合并计算或复用缓存，但 **MUST** 保持适用执行模式下资源变化、时间、采样、消息、控制转向和故障的可观察结果。除吞吐模式明确允许的边界合并外，优化不能通过改变同步片段、重放已执行前缀或返回陈旧派生值改变模型行为。
 
-JIT 还需保留逐指令边界，见 :doc:`/jit/execution` 和 :doc:`/jit/interrupts`。reaction 保留每次发布的源快照，以及全部捕获先于全部响应的轮次边界。代码版本与活动恢复状态的关系由 :doc:`/jit/code-memory` 定义。
+JIT 保留逻辑指令身份；精确模式保留逐指令调度边界，默认吞吐模式只按 :doc:`/jit/throughput` 合并受保护执行段内的检查，见 :doc:`/jit/execution` 和 :doc:`/jit/interrupts`。reaction 保留每次发布的源快照，以及全部捕获先于全部响应的轮次边界。代码版本与活动恢复状态的关系由 :doc:`/jit/code-memory` 定义。
 
 :doc:`resources` 定义操作对象，:doc:`operations` 定义执行效果；:doc:`schema` 和 :doc:`validation` 提供结构及检查合同，:doc:`builder` 与 :doc:`builder-api` 定义构造语义和完整签名。执行、电气与宿主接口的运行时边界分别由 :doc:`/execution/index`、:doc:`/electrical` 与 :doc:`/javascript/host` 维护。

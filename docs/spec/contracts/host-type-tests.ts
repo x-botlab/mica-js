@@ -43,6 +43,7 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
     entry: 'step',
     code: 'code',
     pc: 'position',
+    polling: [{ pc: 0, predicate: 'ready' }],
     translate(input, builder) {
       const byte: number | undefined = input.code[0];
       void byte;
@@ -108,8 +109,8 @@ const description: BoardDescription = {
   ],
   nets: [{ id: 'ground', voltage: 0, pins: [{ instance: 'node', pin: 'reference' }] }],
 };
-const validOptions: BoardOptions = { seed: 0 };
-const onlyOption: Record<keyof BoardOptions, number> = { seed: 0 };
+const validOptions: BoardOptions = { seed: 0, execution: 'throughput', cpuQuantum: 10_000_000 };
+const onlyOption: Record<keyof BoardOptions, number> = { seed: 0, execution: 0, cpuQuantum: 0 };
 void onlyOption;
 const board: Board = createBoard(library, description, validOptions);
 const errorEvent: Event<RuntimeDiagnostic> = board.onDidError;
@@ -157,6 +158,15 @@ function rejectsWrongShapes(
   const undefinedSeed: BoardOptions = { seed: undefined };
   // @ts-expect-error Explicit null is not a seed.
   const nullSeed: BoardOptions = { seed: null };
+  // @ts-expect-error Only the two execution modes are supported.
+  const badExecution: BoardOptions = { execution: 'fast' };
+  // @ts-expect-error Explicit undefined is not omission.
+  const undefinedExecution: BoardOptions = { execution: undefined };
+  // @ts-expect-error Explicit undefined is not omission.
+  const undefinedQuantum: BoardOptions = { cpuQuantum: undefined };
+  // @ts-expect-error Quantum uses integer picoseconds, not a duration string.
+  const badQuantum: BoardOptions = { cpuQuantum: '10us' };
+  void [badExecution, undefinedExecution, undefinedQuantum, badQuantum];
   // @ts-expect-error Context properties are fixed values.
   context.props.count = 3;
   // @ts-expect-error Input channel payloads keep their generated types.

@@ -16,6 +16,11 @@
 - 包的开发入口在 `exports` 中用 `source` 指向源码；发布入口在 `publishConfig.exports` 中仅指向 `dist`，两份公开子路径保持一致。
 - 只针对相关功能运行包级 `typecheck`、`test`、`build`；发布流程不靠功能测试验证。RFC 文档另遵守 `.github/instructions/rfc.instructions.md`。
 
+## 性能优化与验证
+
+- 遵循 fail fast：先用最小、可复现的基准验证本次任务的核心指标；未达预期时优先定位瓶颈、调整实现，再复测。
+- 不在每轮迭代运行完整性能矩阵或无关基准；仅在核心指标达到预期、需要确认关联回归或收尾时扩大验证范围，并保留相关正确性回归。
+
 ## Agent skills
 
 - 项目级 skill 存放在 `.agents/skills/`，版本由 `skills-lock.json` 锁定；增删用 `npx skills@latest add mattpocock/skills -s <name>`。

@@ -65,6 +65,80 @@ Compilation uses `new Function` once per body and requires a host CSP that permi
 dynamic JavaScript compilation. Generated execution itself requires no Node APIs.
 No asynchronous execution, scheduling or electrical solving is implemented here.
 
+## Bounded Direct JIT
+
+`compileDirectJit(instructions, binding)` optionally compiles an entire cached PC
+trace into one numeric-bank switch/loop. Each instruction supplies `pc`, `nextPc`
+and its already validated `body`. Unsupported instructions are omitted; an unknown
+or unsupported PC exits with `fallback` before changing that instruction's PC or
+performing any of its effects. The first occurrence of each PC owns lookup, even
+when unsupported. If nothing is supported, compilation returns `undefined`.
+Optional binding `blockedStates?: ReadonlySet<string>` and
+`blockedMemories?: ReadonlySet<string>` are compile-time write barriers. A write to
+any blocked name, including implicit PC assignment or a write in either `if`/`select`
+branch, excludes that complete instruction before any effect or PC change. Other
+cached PCs remain compilable, and excluded instructions contribute no resource
+metadata. Reading a blocked resource is still supported. No barrier Set lookups
+occur during execution. Recompile when membership changes; finish any old pending
+instruction with `stopAfterInstruction` before switching programs.
+
+`DirectJitBinding` supplies `states` and `memories` as `ReadonlyMap<string, number>`
+and an explicit `pc: { name, index }` matching the state bank. `DirectJitFrame` is
+runtime-owned reusable storage: `states: unknown[]`, `memories: Uint8Array[]`,
+`stateDirty: number[]`, `memoryDirty: number[]`, `time`, `due`, `resume`,
+`locals: unknown[]`, and optional `stopAfterInstruction`.
+Initialize `resume` to zero and allocate `locals` with `program.localCount` slots.
+Allocate dirty arrays with `Math.ceil(bank.length / 32)` words and clear both arrays
+before each `run` invocation. Each completed write sets its resource's bit using
+`dirty[index >>> 5] |= 1 << (index & 31)`, including implicit and redirected PC writes.
+Bits are set after validation and the write; reads and failed writes do not set bits.
+Nonzero resume IDs and saved locals belong to the producing program; never transfer
+an outstanding continuation to a newly compiled program. `due` is an absolute wake
+time. Times and durations use integer picoseconds in the existing time range.
+
+`program.run(frame, deadline)` returns `deadline`, `fallback`, `stopped`, or
+`invalidated`. It executes multiple instructions without generators, per-instruction
+objects, host callbacks, or runtime Map lookups. Scalar intermediates stay in native
+locals until a horizon requires saving them. State/memory effects accumulate in the
+supplied reusable banks; the runtime must commit/invalidate only resources marked
+in the current invocation's dirty words in `finally`, including when execution
+throws. Conservative resource lists are eligibility guards, not flush lists: a
+resumed suffix must not republish a prefix write after an external event.
+Memory addressing and store values follow the
+generic host's safe-integer checks; `store8` uses Uint8Array wrapping semantics.
+
+The supported subset includes number/bool constants, state reads/writes, scalar
+unary/binary arithmetic, bitwise operations, comparisons, numeric builtins, mutable
+scalar locals, static-memory `load8`/`store8` with checked dynamic numeric offsets,
+scalar `select`/`if` regions with value yields,
+and one positive constant `elapse` per instruction. Numeric suffixes may run after
+the elapse, including a captured load's delayed register write and optional `stop`.
+Alternatively a terminal redirect accepts a dynamic finite numeric target with a
+positive constant delay; the target PC is written before time advances. A terminal
+standalone stop is supported. Other control flow, resource parameters, non-state
+reads, dynamic durations, multiple delays, calls, and other host operations fall
+back as complete instructions, never after partially running an unsupported body.
+
+Before a body starts, PC is set to `nextPc`. A horizon can split any elapse without
+replaying prefix effects or rereading captured loads. At `time === deadline`, no
+instruction starts and no continuation or post-elapse suffix executes. Absolute
+due times beyond `7200000000000000` throw after preserving completed prefix effects.
+For code invalidation or eligibility changes, retain the old program and frame,
+set `stopAfterInstruction`, and run only that pending instruction to completion.
+The result is `invalidated` before another instruction begins; an idle frame with
+this flag exits immediately. A pending stop instead returns `stopped`.
+
+`readStates`, `writeStates`, `readMemories`, and `writeMemories` conservatively cover
+the whole accepted program, including both branches and implicit PC reads/writes.
+The binding runtime must guard these lists against observers, derived/hook read
+dependencies, code memories, waiters, and incompatible ownership before entering.
+The compiler does not choose throughput policy or schedule peripherals: callers
+supply exact horizons, including events and any CPU visibility quantum. Keep the
+generator backend for precise execution and unsupported instructions.
+
+Focused tests: build this package, then run
+`node --test packages/compiler/tests/direct-jit.test.mjs` from the repository root.
+
 ## First-Release Analysis And Maps
 
 Every compilation indexes the original body before optimization. `compileBody` and

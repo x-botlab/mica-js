@@ -67,6 +67,7 @@ export interface JitOptions {
   readonly code: string;
   readonly pc: string;
   readonly beforeInstruction?: InstructionHook;
+  readonly polling?: readonly { readonly pc: number; readonly predicate: string }[];
   readonly translate: JitTranslate;
 }
 export interface JitHost {
@@ -138,6 +139,9 @@ export interface BoardDescription {
 export interface BoardOptions {
   /** uint32，省略为 0；实例派生算法见 execution/random。 */
   readonly seed?: number;
+  readonly execution?: 'throughput' | 'precise';
+  /** CPU execution quantum in integer picoseconds, default 10_000_000. */
+  readonly cpuQuantum?: number;
 }
 export type BoardStatus = 'ready' | 'faulted' | 'disposed';
 export type RuntimePhase =

@@ -1,4 +1,4 @@
-/** D5 宿主与器件 SDK 合同；声明附件不表示运行时已经实现。 */
+/** 宿主与器件 SDK 合同；行为与校验规则见对应规范正文。 */
 import type { Disposable, Event } from '@mica-js/core/lifecycle';
 import type { BlockIR, DeviceIR, InputPath, SourceInfo } from './ir';
 import type { JitBlockBuilder } from './builder';
@@ -62,6 +62,8 @@ export interface JitOptions {
   readonly code: string;
   readonly pc: string;
   readonly beforeInstruction?: InstructionHook;
+  /** 有限且互异的 PC；predicate 绑定本实例无参 bool pure fn，声明循环头的等待语义。 */
+  readonly polling?: readonly { readonly pc: number; readonly predicate: string }[];
   readonly translate: JitTranslate;
 }
 export interface JitHost {
@@ -133,6 +135,10 @@ export interface BoardDescription {
 export interface BoardOptions {
   /** uint32，省略为 0；实例派生算法见 execution/random。 */
   readonly seed?: number;
+  /** 仅省略时默认为 throughput；precise 保留逐指令边界调度。 */
+  readonly execution?: 'throughput' | 'precise';
+  /** 整数 ps，范围 1..10_000_000，省略为 10_000_000；precise 仍校验但不使用。 */
+  readonly cpuQuantum?: number;
 }
 export type BoardStatus = 'ready' | 'faulted' | 'disposed';
 export type RuntimePhase =

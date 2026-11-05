@@ -84,7 +84,7 @@ DDL、Builder 与手工 IR 输入共享校验规则。TypeScript 类型检查提
      - 拒绝 redirect、JIT elapse / waitUntil / stop。
    * - JIT 指令
      - 普通同步效果，另有 elapse、尾部 waitUntil、stop 和 redirect。
-     - 拒绝过程 wait / receive；保留逐指令边界。
+     - 拒绝过程 wait / receive；保留逻辑指令边界，检查合并遵守 :doc:`/jit/throughput` 的执行模式合同。
    * - 同步计算子区域
      - 所属上下文允许的同步效果，包括局部计算与内部循环。
      - 不挂起，不返回外层函数，也不跳转区域外的循环；允许绑定调用产生的跨层 redirect。

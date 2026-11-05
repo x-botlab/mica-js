@@ -4,6 +4,7 @@ export {
   compileComputation,
   compileComputationArtifact,
 } from './compiler.js';
+export { compileDirectJit } from './direct-jit.js';
 export {
   checkBoolean,
   checkDuration,
@@ -26,6 +27,10 @@ export type {
   BaselinePosition,
   BasicBlock,
   CompileOptions,
+  DirectJitBinding,
+  DirectJitFrame,
+  DirectJitProgram,
+  DirectJitReason,
   ConstantMaterialization,
   ControlEdge,
   EdgeKind,

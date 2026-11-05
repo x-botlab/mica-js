@@ -18,7 +18,7 @@
 
 ``when`` 引用本实例 bool 条件资源，``call`` 引用本实例无参、无返回值的同步函数。精确 ``InstructionHook`` 签名引用 :download:`host.d.ts <../contracts/host.d.ts>`。同步处理函数及 JIT 路径不能 ``receive``，通道消费只在过程内发生，见 :doc:`/channels`。
 
-每次允许进入新指令时，边界按以下顺序执行：
+精确模式每次允许进入新指令时，边界按以下顺序执行。吞吐模式保持该可观察顺序；只有证明 ``when`` 在整个受保护段内恒为 false 时，才可合并钩子检查，否则逐指令检查或回退，见 :doc:`throughput`：
 
 #. 当前指令完成，当前时刻前序模型队列及全部同步边界反应闭包已经按调度规则处理。
 #. 确认目标时间允许继续执行，读取 ``when``。
@@ -65,7 +65,7 @@ delay 期间依赖可以变化，但该延时先完成，再重入边界；它�
 条件等待
 ------------------------------------------------
 
-``instruction.waitUntil(predicate)`` 接收本实例显式声明为 pure fn、无参且返回 bool 的函数名称。构造签名见 :doc:`/ir/builder-api`。
+``instruction.waitUntil(predicate)`` 接收本实例显式声明为 pure fn、无参且返回 bool 的函数名称。构造签名见 :doc:`/ir/builder-api`。本节条件等待在两种执行模式下均保持精确的事件与稳定点语义；WFI 的事件驱动推进与循环头 ``polling`` 声明见 :doc:`throughput`。
 
 纯函数沿调用图只调用纯函数，可读取 ``props``、``state``、``derived``、``pin.sample`` 和 ``memory`` 长度或内容；允许局部更新、循环和断言，也可构造或合并 ``intent`` 值。它不写资源或通道，不等待、不控制转向，也不调用 ``random``、``now``；构造意图值与向引脚赋予意图是不同操作。内置纯函数可用；语言不提供读取时钟或宿主随机源的隐式纯操作。
 
