@@ -120,8 +120,8 @@ function name(prefix: string, id: number): string {
     throw new TypeError('IR identifiers must be nonnegative safe integers');
   return `${prefix}${id}`;
 }
-const value = (id: number): string => name('v', id);
-const local = (id: number): string => name('l', id);
+export const value = (id: number): string => name('v', id);
+export const local = (id: number): string => name('l', id);
 const quote = (text: string): string => JSON.stringify(text);
 
 function snapshotSource(source: SourceInfo): SourceInfo {
@@ -137,24 +137,29 @@ function snapshotSource(source: SourceInfo): SourceInfo {
   return Object.freeze({ ...source });
 }
 
-class Emitter {
+export class Emitter {
   constructor(
-    private readonly analysis: BodyAnalysis,
-    private readonly options: CompileOptions,
+    protected readonly analysis: BodyAnalysis,
+    protected readonly options: CompileOptions,
     private readonly captureMetadata = true,
   ) {}
 
   private readonly ranges = new Map<number, GeneratedRange>();
   private readonly temporaries: GeneratedTemporary[] = [];
-  private readonly lines: string[] = [];
-  private readonly constants: unknown[] = [];
+  protected lines: string[] = [];
+  protected readonly constants: unknown[] = [];
   private readonly primitiveConstants = new Map<unknown, number>();
   private readonly negativeZero = Symbol('negative zero');
   private readonly positions: GeneratedPosition[] = [];
   private readonly resume: ResumePoint[] = [];
-  private readonly types = new Map<number, ValueTypeIR>();
-  private indent = 0;
-  private serial = 0;
+  protected readonly types = new Map<number, ValueTypeIR>();
+  protected indent = 0;
+  protected serial = 0;
+  /**
+   * Resumable bodies may bind a fixed resource name to a per-instance handle. The
+   * generator path leaves this undefined, so its emitted code is unchanged.
+   */
+  protected bindingFor?: (kind: 'pin' | 'state' | 'memory', name: string) => string | undefined;
 
   compileExecutable(region: RegionIR): CompiledBody {
     return this.generate(region).execute;
@@ -222,11 +227,11 @@ class Emitter {
     return { execute: factory(constants, runtimeHelpers), source, constants };
   }
 
-  private line(text: string): void {
+  protected line(text: string): void {
     this.lines.push(`${'  '.repeat(this.indent)}${text}`);
   }
 
-  private block(header: string, body: () => void): void {
+  protected block(header: string, body: () => void): void {
     this.line(`${header} {`);
     this.indent++;
     body();
@@ -234,7 +239,7 @@ class Emitter {
     this.line('}');
   }
 
-  private capture(input: unknown): string {
+  protected capture(input: unknown): string {
     const primitive = input === null || typeof input !== 'object';
     const key = Object.is(input, -0) ? this.negativeZero : input;
     const existing = primitive ? this.primitiveConstants.get(key) : undefined;
@@ -246,6 +251,14 @@ class Emitter {
 
   private ref(ref: PinRefIR | MemoryRefIR): string {
     return ref.kind === 'parameter' ? `args[${ref.index}]` : this.capture(ref.name);
+  }
+  /** Bound handle for a fixed resource name; parameter refs never bind. */
+  private boundRef(kind: 'pin' | 'memory', ref: PinRefIR | MemoryRefIR): string | undefined {
+    if (!this.bindingFor || ref.kind === 'parameter') return undefined;
+    return this.bindingFor(kind, ref.name);
+  }
+  private boundName(name: string): string | undefined {
+    return this.bindingFor?.('state', name);
   }
 
   private argument(argument: ArgumentIR): string {
@@ -308,7 +321,7 @@ class Emitter {
     });
   }
 
-  private valueRegion(region: ValueRegionIR, slot: string, path: InputPath): void {
+  protected valueRegion(region: ValueRegionIR, slot: string, path: InputPath): void {
     if (this.captureMetadata && !slot.startsWith('v')) {
       const key = JSON.stringify([...path, 'body']);
       const owner = this.analysis.nodes.find((node) =>
@@ -338,7 +351,7 @@ class Emitter {
     return `H.equalValues(${value(left)}, ${value(right)})`;
   }
 
-  private operation(
+  protected operation(
     operation: OperationIR,
     path: InputPath,
     output?: { slot: string; label: string },
@@ -386,9 +399,15 @@ class Emitter {
         assign(operation.constant.kind === 'bytes' ? `H.createBytes(${captured})` : captured);
         break;
       }
-      case 'read':
-        assign(`host.read(${this.capture(operation.resource)}, ${this.capture(operation.name)})`);
+      case 'read': {
+        const bound = operation.resource === 'state' ? this.boundName(operation.name) : undefined;
+        assign(
+          bound
+            ? `${bound}.read()`
+            : `host.read(${this.capture(operation.resource)}, ${this.capture(operation.name)})`,
+        );
         break;
+      }
       case 'parameter':
         assign(`args[${operation.index}]`);
         break;
@@ -458,50 +477,81 @@ class Emitter {
       case 'localWrite':
         this.line(`${local(operation.local)} = ${value(operation.value)};`);
         break;
-      case 'write':
-        this.line(`host.write(${this.capture(operation.name)}, ${value(operation.value)});`);
+      case 'write': {
+        const bound = this.boundName(operation.name);
+        if (bound) this.line(`${bound}.write(${value(operation.value)});`);
+        else this.line(`host.write(${this.capture(operation.name)}, ${value(operation.value)});`);
         break;
-      case 'memoryLength':
-        assign(`host.memoryLength(${this.ref(operation.memory)})`);
+      }
+      case 'memoryLength': {
+        const bound = this.boundRef('memory', operation.memory);
+        assign(bound ? `${bound}.length()` : `host.memoryLength(${this.ref(operation.memory)})`);
         break;
+      }
       case 'load8':
       case 'load16le':
       case 'load16be':
       case 'load32le':
-      case 'load32be':
+      case 'load32be': {
+        const bound = this.boundRef('memory', operation.memory);
         assign(
-          `host.load(${quote(operation.kind)}, ${this.ref(operation.memory)}, ${value(operation.offset)})`,
+          bound
+            ? `${bound}.${operation.kind}(${value(operation.offset)})`
+            : `host.load(${quote(operation.kind)}, ${this.ref(operation.memory)}, ${value(operation.offset)})`,
         );
         break;
+      }
       case 'store8':
       case 'store16le':
       case 'store16be':
       case 'store32le':
-      case 'store32be':
-        this.line(
-          `host.store(${quote(operation.kind)}, ${this.ref(operation.memory)}, ${value(operation.offset)}, ${value(operation.value)});`,
-        );
+      case 'store32be': {
+        const bound = this.boundRef('memory', operation.memory);
+        if (bound)
+          this.line(
+            `${bound}.${operation.kind}(${value(operation.offset)}, ${value(operation.value)});`,
+          );
+        else
+          this.line(
+            `host.store(${quote(operation.kind)}, ${this.ref(operation.memory)}, ${value(operation.offset)}, ${value(operation.value)});`,
+          );
         break;
-      case 'copyBytes':
+      }
+      case 'copyBytes': {
+        const bound = this.boundRef('memory', operation.memory);
         assign(
-          `host.copyBytes(${this.ref(operation.memory)}, ${value(operation.offset)}, ${value(operation.length)})`,
+          bound
+            ? `${bound}.copy(${value(operation.offset)}, ${value(operation.length)})`
+            : `host.copyBytes(${this.ref(operation.memory)}, ${value(operation.offset)}, ${value(operation.length)})`,
         );
         break;
-      case 'readSample':
-        assign(`host.sample(${this.ref(operation.pin)})`);
+      }
+      case 'readSample': {
+        const bound = this.boundRef('pin', operation.pin);
+        assign(bound ? `${bound}.sample()` : `host.sample(${this.ref(operation.pin)})`);
         break;
-      case 'resistor':
-        assign(`host.resistor(${this.ref(operation.to)}, ${value(operation.resistance)})`);
+      }
+      case 'resistor': {
+        const bound = this.boundRef('pin', operation.to);
+        assign(
+          bound
+            ? `${bound}.resistor(${value(operation.resistance)})`
+            : `host.resistor(${this.ref(operation.to)}, ${value(operation.resistance)})`,
+        );
         break;
+      }
       case 'combineIntents':
         assign(`H.combineIntents([${operation.values.map(value).join(', ')}])`);
         break;
       case 'refEqual':
         assign(`(${this.ref(operation.left)} === ${this.ref(operation.right)})`);
         break;
-      case 'writeIntent':
-        this.line(`host.intent(${this.ref(operation.pin)}, ${value(operation.value)});`);
+      case 'writeIntent': {
+        const bound = this.boundRef('pin', operation.pin);
+        if (bound) this.line(`${bound}.intent(${value(operation.value)});`);
+        else this.line(`host.intent(${this.ref(operation.pin)}, ${value(operation.value)});`);
         break;
+      }
       case 'call':
       case 'callValue': {
         this.suspension(position, true);

@@ -13,6 +13,35 @@ export interface ReactionFrame {
   readonly captures: readonly unknown[];
 }
 
+/**
+ * Per-instance handle for one fixed resource name. A resumable process body binds its
+ * resources once per frame and then calls these methods instead of resolving a name on
+ * every operation. Every method keeps the exact behaviour of the corresponding
+ * `ExecutionHost` operation, including validation, snapshotting and invalidation.
+ */
+export interface ResourceHandle {
+  /** State read; the value is the live stored value. */
+  read?: () => unknown;
+  /** State write: validates, snapshots and invalidates like `ExecutionHost.write`. */
+  write?: (value: unknown) => void;
+  /** Current immutable sample of the pin, read fresh on every call. */
+  sample?: () => unknown;
+  intent?: (value: unknown) => void;
+  resistor?: (resistance: unknown) => unknown;
+  load8?: (offset: unknown) => number;
+  load16le?: (offset: unknown) => number;
+  load16be?: (offset: unknown) => number;
+  load32le?: (offset: unknown) => number;
+  load32be?: (offset: unknown) => number;
+  store8?: (offset: unknown, value: unknown) => void;
+  store16le?: (offset: unknown, value: unknown) => void;
+  store16be?: (offset: unknown, value: unknown) => void;
+  store32le?: (offset: unknown, value: unknown) => void;
+  store32be?: (offset: unknown, value: unknown) => void;
+  length?: () => number;
+  copy?: (offset: unknown, length: unknown) => unknown;
+}
+
 export interface ExecutionHost {
   read(resource: 'property' | 'const' | 'state' | 'derived', name: string): unknown;
   write(name: string, value: unknown): void;
@@ -29,6 +58,12 @@ export interface ExecutionHost {
   random(): number;
   call(name: string, args: readonly unknown[]): Generator<ExecutionSignal, unknown, unknown>;
   assert(condition: unknown, message: unknown): void;
+  /**
+   * Binds fixed resource names to per-instance handles. A resumable process body calls
+   * this once per frame, so all instances and processes stay isolated. Hosts that never
+   * opt into `CompileOptions.bindResources` do not need it.
+   */
+  bind?(specs: readonly (readonly [string, string])[]): readonly ResourceHandle[];
 }
 
 export type CompiledBody = (
@@ -36,6 +71,43 @@ export type CompiledBody = (
   args?: readonly unknown[],
   reaction?: ReactionFrame,
 ) => Generator<ExecutionSignal, unknown, unknown>;
+
+/** Suspension kinds a resumable body writes to its frame before returning. */
+export const RESUMABLE_TICKS = 1;
+export const RESUMABLE_RECEIVE = 2;
+
+/**
+ * Reusable per-process frame for a resumable body. `pc` is opaque to the runtime:
+ * zero restarts the body, any other value continues the suspension the body recorded.
+ */
+export interface ResumableFrame {
+  pc: number;
+  /** Body-owned local frame; sized by `ResumableProgram.slotCount` and reused. */
+  readonly slots: unknown[];
+  /** `RESUMABLE_TICKS` or `RESUMABLE_RECEIVE` when `run` returned true. */
+  kind: number;
+  duration: number;
+  channel: string;
+  /** Value delivered to the pending receive continuation before the next `run`. */
+  value: unknown;
+  /** Per-instance resource handles, bound on the first run of this frame. */
+  resources?: readonly ResourceHandle[];
+}
+
+/** Returns true when the body suspended, false when it completed. */
+export type ResumableBody = (
+  host: ExecutionHost,
+  args: readonly unknown[] | undefined,
+  reaction: ReactionFrame | undefined,
+  frame: ResumableFrame,
+) => boolean;
+
+export interface ResumableProgram {
+  readonly run: ResumableBody;
+  readonly slotCount: number;
+  /** Initial `pc` of a fresh activation; always zero so a frame needs no setup. */
+  readonly start: number;
+}
 
 export type CompiledComputation = (host: ExecutionHost) => unknown;
 
@@ -127,6 +199,11 @@ export interface CompileOptions {
   readonly optimize?: boolean;
   /** Optional identity supplied by the binding runtime; it is never guessed from a body. */
   readonly binding?: ArtifactBinding;
+  /**
+   * Emit per-instance resource handles for fixed pin/state/memory names. The runtime
+   * then supports `ExecutionHost.bind`, which is called once per resumable frame.
+   */
+  readonly bindResources?: boolean;
 }
 
 export interface ArtifactBinding {
