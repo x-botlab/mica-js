@@ -118,33 +118,33 @@ const sceneDocument: Scene3DDocument = {
     ),
     model(
       'chassis',
-      { type: 'box', size: { x: 0.12, y: 0.03, z: 0.16 } },
+      { type: 'box', size: { x: 0.1, y: 0.03, z: 0.16 } },
       { x: 0.012, y: 0.052, z: 0 },
       // The in-memory engine has no contacts yet, so a dynamic body would fall through the plate.
       { bodyType: 'dynamic', mass: 0.2, constraints: { freezePosition: { y: true } } },
       '#e45757',
-      { type: 'box', size: { x: 0.12, y: 0.03, z: 0.16 } },
+      { type: 'box', size: { x: 0.1, y: 0.03, z: 0.16 } },
     ),
     model(
       'wheel-left',
-      { type: 'cylinder', radius: 0.032, height: 0.02 },
-      { x: -0.06, y: 0.02, z: 0 },
+      { type: 'cylinder', radius: 0.032, height: 0.016 },
+      { x: -0.058, y: 0.032, z: 0 },
       { bodyType: 'dynamic', mass: 0.05, constraints: { freezePosition: { y: true } } },
       '#202020',
-      { type: 'cylinder', radius: 0.032, height: 0.02 },
+      { type: 'cylinder', radius: 0.032, height: 0.016 },
       { x: 0, y: 0, z: Math.SQRT1_2, w: Math.SQRT1_2 },
     ),
     model(
       'wheel-right',
-      { type: 'cylinder', radius: 0.032, height: 0.02 },
-      { x: 0.06, y: 0.02, z: 0 },
+      { type: 'cylinder', radius: 0.032, height: 0.016 },
+      { x: 0.058, y: 0.032, z: 0 },
       { bodyType: 'dynamic', mass: 0.05, constraints: { freezePosition: { y: true } } },
       '#202020',
-      { type: 'cylinder', radius: 0.032, height: 0.02 },
+      { type: 'cylinder', radius: 0.032, height: 0.016 },
       { x: 0, y: 0, z: Math.SQRT1_2, w: Math.SQRT1_2 },
     ),
-    joint('joint-left', 'wheel-left', -0.06),
-    joint('joint-right', 'wheel-right', 0.06),
+    joint('joint-left', 'wheel-left', -0.058),
+    joint('joint-right', 'wheel-right', 0.058),
     sensor(
       'color-left',
       { x: -0.025, y: -0.017, z: -0.06 },
@@ -288,17 +288,18 @@ async function applyControl(): Promise<void> {
     linearVelocity,
     angularVelocity: { x: 0, y: yawRate, z: 0 },
   });
-  // The mock engine does not constrain jointed bodies yet, so the wheels are driven with the same
-  // velocity as the chassis plus their rolling spin; a real engine would derive this from contact.
-  const wheelSpeed = speed / 0.032;
+  // The mock engine neither constrains jointed bodies nor models tyre contact, so the wheels are
+  // carried along: same translational velocity plus the chassis yaw. Giving them their own rolling
+  // spin would compose two non-commuting world-space rotations and make the discs visibly wobble;
+  // a plain cylinder shows no spin anyway, and a real engine will derive it from contact.
   for (const wheel of ['wheel-left', 'wheel-right']) {
     await client.setBodyVelocity(wheel, {
       linearVelocity,
-      angularVelocity: { x: wheelSpeed, y: yawRate, z: 0 },
+      angularVelocity: { x: 0, y: yawRate, z: 0 },
     });
   }
-  await client.setJointTarget('joint-left', { kind: 'velocity', value: wheelSpeed });
-  await client.setJointTarget('joint-right', { kind: 'velocity', value: wheelSpeed });
+  await client.setJointTarget('joint-left', { kind: 'velocity', value: speed / 0.032 });
+  await client.setJointTarget('joint-right', { kind: 'velocity', value: speed / 0.032 });
 }
 
 /** Floats per entity in a transform batch, matching `THREE.Matrix4.elements`. */
