@@ -125,6 +125,7 @@ export function computeAcrylicPhysics(
     inertia,
     collider: { type: options.convex ? 'convex-hull' : 'trimesh', source: 'geometry' },
     boundingRadius,
+    bounds: mesh.bounds,
     friction: material.friction,
     restitution: material.restitution,
   };

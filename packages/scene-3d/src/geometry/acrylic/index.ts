@@ -3,6 +3,7 @@ export {
   parseAcrylicContour,
   parseSvgPath,
   validateAcrylicDefinition,
+  validateAcrylicPaint,
   normalizeAcrylicContour,
   normaliseAcrylicContour,
 } from './contour';
@@ -15,6 +16,8 @@ export type {
   AcrylicDefinition,
   AcrylicMaterialOverride,
   AcrylicMesh,
+  AcrylicPaint,
+  AcrylicPaintStroke,
   AcrylicPhysics,
   AcrylicRing,
   ParsedAcrylicContour,

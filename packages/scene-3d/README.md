@@ -156,6 +156,26 @@ const hit = physics.raycast(Vec3d.zero, Vec3d.unitY, 10);
 
 渲染端从 `@mica-js/scene-3d/client/three` 导入 `createAcrylicThreeMesh(definition, library)`，它生成带 position/normal/uv/index 的 `BufferGeometry` 和双面 `MeshStandardMaterial`。UV 按轮廓包围盒归一化。赛道贴图由 `SurfaceColorResolver.samplers[entityId]` 提供：采样函数收到 `RaycastHit`（`bodyId` / `point` / `normal` / `distance`），可用 `hit.point` 结合板材包围盒换算 uv 后查表取色。网格顶点按面组分离（顶盖 / 底盖 / 侧壁），侧壁法线朝外、孔洞侧壁法线朝孔内，可直接交给渲染器。
 
+#### 印刷图案（循迹赛道）
+
+`AcrylicDefinition.paint` 用**数据**描述板面印刷内容，传感器与渲染共用同一份定义，不必把位图跨沙箱传递：
+
+```ts
+{
+  contour: { type: 'rect', width: 0.4, height: 0.6 },
+  thickness: 0.003,
+  paint: {
+    base: '#f5f5f5',
+    strokes: [{ axis: 'z', center: 0, width: 0.05, color: '#141414' }],
+  },
+}
+```
+
+- `base` 是板面底色，`strokes` 是沿 `axis`（`'x'` 或 `'z'`）延伸、在另一轴上位于 `center`、宽 `width` 的条带
+- 颜色传感器自动读取：`createMaterialColorResolver` 命中带 `paint` 的亚克力板时，先按 `hit.point` 判断是否落在条带内，落在条带返回条带色，否则返回 `base`
+- 渲染端自动生成画布纹理（`acrylicPaintRectangles` 负责 UV 映射，可在无 DOM 环境下单测），贴在板材顶面
+- 需要位图级别的复杂图案时再用 `SurfaceColorResolver.samplers[entityId]` 覆写采样逻辑
+
 ### `.assembly.json` 装配体定义格式
 
 `ASSEMBLY_VERSION`（当前为 `1`）标识装配体定义的 schema 版本；读取方应拒绝不认识的版本。
@@ -220,11 +240,12 @@ const host = await createScene3DHost({ document, physics, renderer, sensors });
 `physics/` 提供与具体引擎解耦的 `PhysicsRuntime` 适配层（#180）：
 
 - `PhysicsRuntime` — `initialize` / `step` / `addBody` / `addJoint` / `setJointTarget` / `getBodyTransform` / `getJointState` / `raycast` / `dispose`
-- `RigidBodyConfig` — 刚体描述：`collider` 必填，`bodyType`、`position`、`rotation`、`mass`、`velocity`、`angularVelocity`、`constraints` 可选
+- `RigidBodyConfig` — 刚体描述：`collider` 必填，`bodyType`、`position`、`rotation`、`mass`、`velocity`、`angularVelocity`、`constraints`、`bounds` 可选；`bounds` 是碰撞体的局部 AABB，网格类碰撞体（亚克力板等）靠它让射线打到真实厚度而不是包围球
 - `JointConfig` — `revolute` / `prismatic` / `spherical` / `fixed`，连接 `bodyA`（与可选的 `bodyB`，省略表示世界），支持 `limits` 与 `motor`
 - `JointTarget` — `position` / `velocity` / `torque` 三种命令；`JointState` 返回 `position` / `velocity` / `torque`
 - `RaycastHit` — 命中的 `bodyId`、`distance`、`point` 与 `normal`
-- `MujocoRuntime` — 当前为确定性的内存替身：世界坐标系 Y 轴向上（`DEFAULT_GRAVITY` 为 `-9.81`），模拟重力自由落体、逐轴运动约束、关节伺服与包围球射线检测；接触、摩擦、转动惯量与精确网格射线检测留给真实 MuJoCo WASM 适配
+- 可选能力：`getBodyMotion`（读取刚体线速度/角速度，IMU 依赖）、`setBodyVelocity`（遥操作/测试直接设定刚体速度）、`removeBody`
+- `MujocoRuntime` — 当前为确定性的内存替身：世界坐标系 Y 轴向上（`DEFAULT_GRAVITY` 为 `-9.81`），模拟重力自由落体、逐轴运动约束、关节伺服与**按碰撞体形状的射线检测**（`box` 精确、`sphere` 用半径、`capsule`/`cylinder` 用包围球、`trimesh`/`convex-hull` 用 `bounds` 或包围盒）；接触、摩擦、转动惯量与精确网格射线检测留给真实 MuJoCo WASM 适配
 
 ```ts
 import { MujocoRuntime, Vec3d } from '@mica-js/scene-3d';
@@ -341,6 +362,14 @@ await host.dispose();
 7. 提交虚拟时钟并返回 `entityCount * 16` 的列主序变换批次。
 
 `PhysicsRuntime.removeBody` 为可选能力；`MujocoRuntime` 已实现，移除实体时会同时清理其关节。
+
+主线程还可以直接干预仿真，用于遥操作、调试与演示：
+
+- `client.setJointTarget(jointId, target)` — 不经电路仿真器直接下达关节指令
+- `client.setBodyVelocity(bodyId, motion)` — 直接设定刚体线速度/角速度（需要 `PhysicsRuntime.setBodyVelocity`；真实 MuJoCo 适配后由求解器接管速度时可省略）
+- `client.readSensors()` — 读取每个传感器最近一次采样，供 HUD 与调试可视化使用
+
+`apps/playground/scene3d.html` 是一个完整的端到端示例：亚克力循迹底板（印刷 50 mm 黑线）+ 双轮机器人 + 两个朝下颜色传感器，主线程用左右灰度差做比例转向，通过 `setBodyVelocity` 驱动底盘并同步驱动车轮。当前内存引擎没有接触与轮胎约束，机器人因此以运动学方式驱动；接入真实 MuJoCo 后可改为关节力矩驱动。
 
 ## 依赖方向
 

@@ -11,10 +11,12 @@ import { createRpc } from '@mica-js/core/rpc';
 import type { RpcEndpoint } from '@mica-js/core/rpc';
 import { SCENE3D_VERSION } from '../../format/version';
 import type { Scene3DDocument } from '../../format/document';
-import type { AssemblyInstance, ModelEntity, SceneEntity } from '../../entities';
+import type { SensorData } from '../../sensors/types';
+import type { AssemblyInstance, JointEntity, ModelEntity, SceneEntity } from '../../entities';
 import { createMujocoRuntime } from '../../physics/mujoco-runtime';
 import { createOffscreenRenderer } from '../../rendering/renderer.mock';
 import {
+  sceneHostGuest,
   sceneHostHost,
   type CircuitSandboxOptions,
   type SceneHostHostContract,
@@ -48,6 +50,19 @@ function assembly(id: string): AssemblyInstance {
   };
 }
 
+function joint(id: string): JointEntity {
+  return {
+    id,
+    type: 'joint',
+    position: { x: 0, y: 0, z: 0 },
+    rotation: IDENTITY,
+    jointType: 'revolute',
+    bodyA: 'body-a',
+    bodyB: 'body-b',
+    axis: { x: 1, y: 0, z: 0 },
+  };
+}
+
 function documentWith(entities: readonly SceneEntity[]): Scene3DDocument {
   return {
     version: SCENE3D_VERSION,
@@ -65,6 +80,13 @@ interface Harness {
   readonly created: CircuitSandboxOptions[];
   readonly circuits: Map<string, CircuitWorkerRuntime>;
   readonly mainEndpoint: RpcEndpoint;
+  readonly sceneProxy: {
+    setJointTarget(
+      jointId: string,
+      target: { kind: 'position' | 'velocity' | 'torque'; value: number },
+    ): Promise<void>;
+    getSensors(): Promise<readonly { readonly sensorId: string; readonly data: SensorData }[]>;
+  };
   dispose(): Promise<void>;
 }
 
@@ -85,6 +107,7 @@ async function createHarness(entities: readonly SceneEntity[]): Promise<Harness>
 
   const services: SceneHostHostContract = {
     getDocument: () => documentWith(entities),
+    ready: () => undefined,
     async createCircuitSandbox(options) {
       created.push(options);
       const circuitChannel = new MessageChannel();
@@ -110,6 +133,7 @@ async function createHarness(entities: readonly SceneEntity[]): Promise<Harness>
       member === 'createCircuitSandbox' && value instanceof MessagePort ? [value] : [],
   });
 
+  const sceneProxy = mainEndpoint.getProxy(sceneHostGuest);
   const runtime = await startSceneHostRuntime(channel.port2, {
     createPhysics: () => createMujocoRuntime(),
     createRenderer: () => createOffscreenRenderer(),
@@ -122,6 +146,7 @@ async function createHarness(entities: readonly SceneEntity[]): Promise<Harness>
     created,
     circuits,
     mainEndpoint,
+    sceneProxy,
     async dispose() {
       await runtime.dispose();
       registration.dispose();
@@ -175,6 +200,15 @@ describe('scene host guest wiring', () => {
     await harness.runtime.host.dispose();
 
     expect(harness.released.sort()).toEqual(['circuit-car-1', 'circuit-car-2']);
+
+    await harness.dispose();
+  });
+
+  it('exposes direct joint targets and cached sensor reads through the guest RPC', async () => {
+    const harness = await createHarness([model('body-a'), model('body-b'), joint('wheel')]);
+
+    await harness.sceneProxy.setJointTarget('wheel', { kind: 'velocity', value: 3 });
+    await expect(harness.sceneProxy.getSensors()).resolves.toEqual([]);
 
     await harness.dispose();
   });

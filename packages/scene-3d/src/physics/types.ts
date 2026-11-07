@@ -88,11 +88,18 @@ export interface RigidBodyConfig {
   /** Per-axis motion locks. */
   readonly constraints?: MotionConstraints;
   /**
-   * Bounding radius used by {@link PhysicsRuntime.raycast} when the collider is a trimesh or a
-   * convex hull, which carry no measurable extent of their own. Mesh bodies without a radius are
-   * invisible to raycasts.
+   * Bounding box used by {@link PhysicsRuntime.raycast} when the collider is a trimesh, a convex
+   * hull or a compound, which carry no measurable extent of their own. Bodies without either a
+   * bounds box or a radius are invisible to raycasts.
    */
   readonly boundingRadius?: number;
+  /**
+   * Local-space axis-aligned bounding box of the collision shape.
+   *
+   * Mesh colliders (laser-cut plates, imported models) pass this so raycasts can hit the real
+   * extent instead of a sphere that swallows the whole object.
+   */
+  readonly bounds?: { readonly min: Vec3d; readonly max: Vec3d };
 }
 
 /** Description of a joint the runtime should create. */
@@ -175,6 +182,14 @@ export interface PhysicsRuntime {
   getBodyTransform(bodyId: string): { position: Vec3d; rotation: Quaternion };
   /** Reads optional world-space linear and angular velocity of a body. */
   getBodyMotion?(bodyId: string): BodyMotion;
+  /**
+   * Overrides the world-space velocity of a dynamic body.
+   *
+   * Optional: it backs teleoperation and tests that need to drive a body without simulating
+   * contacts. An engine that owns velocity through its solver omits it, and callers then fall back
+   * to joint targets.
+   */
+  setBodyVelocity?(bodyId: string, motion: BodyMotion): void;
   /** Reads the state of a joint. */
   getJointState(jointId: string): JointState;
   /**

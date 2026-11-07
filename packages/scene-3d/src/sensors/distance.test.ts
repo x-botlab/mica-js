@@ -63,6 +63,35 @@ describe('DistanceSensor', () => {
     expect(raycast).toHaveBeenCalledTimes(5);
   });
 
+  it('skips a hit on the mounted body and reads the next surface', () => {
+    const raycast = vi
+      .fn<PhysicsRuntime['raycast']>()
+      .mockReturnValueOnce({
+        distance: 0.01,
+        bodyId: 'body',
+        point: { x: 0, y: 0, z: 0 },
+        normal: { x: 0, y: 1, z: 0 },
+      })
+      .mockReturnValueOnce({
+        distance: 2,
+        bodyId: 'ground',
+        point: { x: 0, y: -2, z: 0 },
+        normal: { x: 0, y: 1, z: 0 },
+      });
+    const sensor = new DistanceSensor(entity({ fov: 0 }, 'body'));
+
+    const runtime = {
+      ...physics(raycast),
+      getBodyTransform: vi.fn().mockReturnValue({
+        position: { x: 0, y: 0, z: 0 },
+        rotation: Quaternion.identity,
+      }),
+    } as unknown as PhysicsRuntime;
+
+    expect(sensor.tryUpdate(runtime, 0n)?.distance).toBe(2);
+    expect(raycast).toHaveBeenCalledTimes(2);
+  });
+
   it('rotates the forward ray with a mounted parent and throttles updates', () => {
     const raycast = vi.fn<PhysicsRuntime['raycast']>().mockReturnValue(null);
     const parentRotation = Quaternion.fromAxisAngle({ x: 0, y: 1, z: 0 }, Math.PI / 2);

@@ -1,0 +1,104 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #e8edf5;
+  background: #101318;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+.scene3d-demo {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+.scene3d-demo header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid #2a303b;
+}
+.scene3d-demo h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0.03em;
+}
+.scene3d-demo h1 span {
+  color: #8dd7ff;
+  font-weight: 400;
+}
+.scene3d-demo header p {
+  margin: 0;
+  color: #8e99a9;
+  font-size: 13px;
+}
+.scene3d-stage {
+  position: relative;
+  flex: 1;
+  min-height: 520px;
+}
+#scene {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 78px);
+  min-height: 520px;
+}
+.scene3d-hud {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 230px;
+  padding: 15px;
+  border: 1px solid #3a4655;
+  border-radius: 12px;
+  background: rgb(16 19 24 / 88%);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 25%);
+}
+.scene3d-hud #status {
+  color: #8fe0a8;
+  font-size: 13px;
+  margin-bottom: 12px;
+  word-break: break-word;
+}
+.scene3d-hud #status.error {
+  color: #ff9a9a;
+}
+.scene3d-hud dl {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 7px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+.scene3d-hud dt {
+  color: #8e99a9;
+}
+.scene3d-hud dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.scene3d-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+  margin-top: 16px;
+}
+.scene3d-controls button {
+  border: 1px solid #4d5b6d;
+  border-radius: 6px;
+  background: #202936;
+  color: #e8edf5;
+  padding: 7px 4px;
+  cursor: pointer;
+}
+.scene3d-controls button:hover {
+  border-color: #8dd7ff;
+  background: #263545;
+}

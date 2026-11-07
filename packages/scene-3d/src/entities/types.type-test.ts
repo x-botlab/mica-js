@@ -69,6 +69,10 @@ const joint: JointEntity = {
   type: 'joint',
   position,
   rotation,
+  jointType: 'revolute',
+  bodyA: 'chassis',
+  bodyB: 'left-wheel',
+  axis: { x: 1, y: 0, z: 0 },
   bindings: {
     torque: { symbol: 'motor-left', port: 'torque' },
     position: { symbol: 'encoder-left', port: 'position' },

@@ -16,6 +16,7 @@
 
 import type { AcrylicDefinition } from '../geometry/acrylic';
 import type { Quaternion, Vec2d, Vec3d } from '../math';
+import type { JointLimits, JointMotorConfig, JointType } from '../physics';
 
 /** Endpoint of an entity port: a port of one symbol instance in the bound schematic. */
 export interface BindingTarget {
@@ -219,11 +220,25 @@ export interface ModelEntity extends SceneEntity {
  * A joint between two bodies.
  *
  * Joints can expose multiple ports (for example, `"torque"` input and `"position"`/`"velocity"`
- * outputs). The joint payload (type, connected bodies, anchors, limits and motor) is introduced by
- * the joint system types.
+ * outputs). `jointType` and `bodyA` are the minimum a physics engine needs: they describe how the
+ * bodies move relative to each other. `bodyB` may be omitted to anchor the joint to the world.
  */
 export interface JointEntity extends SceneEntity {
   readonly type: 'joint';
+  /** Joint kind, mirroring {@link JointType} of the physics contract. */
+  readonly jointType: JointType;
+  /** Body the joint is attached to, by entity id. */
+  readonly bodyA: string;
+  /** Second body, by entity id; omitted anchors the joint to the world. */
+  readonly bodyB?: string;
+  /** Anchor in `bodyA`'s local frame; defaults to that body's origin. */
+  readonly anchorA?: Vec3d;
+  /** Anchor in `bodyB`'s local frame; defaults to that body's origin. */
+  readonly anchorB?: Vec3d;
+  /** Rotation or translation axis in `bodyA`'s local frame. */
+  readonly axis?: Vec3d;
+  readonly limits?: JointLimits;
+  readonly motor?: JointMotorConfig;
   /** Port key → endpoint; only bound ports take part in messaging. */
   readonly bindings?: Readonly<Record<string, BindingTarget>>;
 }

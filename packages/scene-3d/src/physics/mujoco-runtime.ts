@@ -13,7 +13,7 @@
  * - semi-implicit Euler integration of linear and angular velocity,
  * - per-axis `freezePosition` / `freezeRotation` locks,
  * - revolute and prismatic joint servos with travel limits and motor speed limits,
- * - raycasts against per-body bounding spheres.
+ * - raycasts against primitive colliders, with documented bounding approximations for meshes.
  *
  * Not modelled yet — these belong to the real engine or to later issues: contacts, friction,
  * restitution, inertia tensors, constraints between bodies, spherical joint degrees of freedom
@@ -66,7 +66,10 @@ interface BodyRecord {
   readonly friction: number;
   readonly restitution: number;
   readonly constraints: MotionConstraints;
+  readonly collider: ColliderDescriptor;
   readonly boundingRadius: number | null;
+  /** Local-space AABB of a mesh collider, when the document supplied one. */
+  readonly bounds: { readonly min: MutableVec3; readonly max: MutableVec3 } | null;
   position: MutableVec3;
   rotation: MutableQuaternion;
   velocity: MutableVec3;
@@ -208,7 +211,15 @@ export class MujocoRuntime implements PhysicsRuntime {
       friction,
       restitution,
       constraints: config.constraints ?? this.defaults.constraints ?? {},
+      collider: config.collider,
       boundingRadius,
+      bounds:
+        config.bounds === undefined
+          ? null
+          : {
+              min: toMutableVec3(config.bounds.min),
+              max: toMutableVec3(config.bounds.max),
+            },
       position: toMutableVec3(position),
       rotation: normalizeQuaternion(rotation),
       velocity: toMutableVec3(velocity),
@@ -310,6 +321,23 @@ export class MujocoRuntime implements PhysicsRuntime {
     };
   }
 
+  /** Overrides the world-space velocity of a body; static bodies reject the change. */
+  public setBodyVelocity(bodyId: string, motion: BodyMotion): void {
+    this.assertReady('setBodyVelocity');
+    const body = this.bodyOrThrow(bodyId);
+    if (body.bodyType !== 'dynamic') {
+      throw new TypeError(`MujocoRuntime.setBodyVelocity: body "${bodyId}" is not dynamic`);
+    }
+    assertVec3d('setBodyVelocity.linearVelocity', motion.linearVelocity);
+    assertVec3d('setBodyVelocity.angularVelocity', motion.angularVelocity);
+    body.velocity.x = motion.linearVelocity.x;
+    body.velocity.y = motion.linearVelocity.y;
+    body.velocity.z = motion.linearVelocity.z;
+    body.angularVelocity.x = motion.angularVelocity.x;
+    body.angularVelocity.y = motion.angularVelocity.y;
+    body.angularVelocity.z = motion.angularVelocity.z;
+  }
+
   /** Returns a copy of the latest joint state. */
   public getJointState(jointId: string): JointState {
     this.assertReady('getJointState');
@@ -333,10 +361,13 @@ export class MujocoRuntime implements PhysicsRuntime {
   }
 
   /**
-   * Casts a ray against the bounding sphere of every body and returns the nearest hit.
+   * Casts a ray against every body's collider and returns the nearest hit.
    *
-   * Bounding spheres are centred on the body origin and ignore rotation, which is precise enough
-   * for picking and distance sensors until the engine provides exact collisions.
+   * Box colliders are intersected in local space, while capsules and cylinders deliberately use
+   * their bounding sphere. Meshes, convex hulls and compounds use a pose-aware box whose half-size
+   * is `boundingRadius` when one is available; without a radius they have no measurable extent in
+   * this in-memory placeholder and are skipped. A ray whose origin is inside a shape returns no
+   * hit, rather than the far exit point, so a sensor cannot hit the body it is mounted on.
    */
   public raycast(origin: Vec3d, direction: Vec3d, maxDistance: number): RaycastHit | null {
     this.assertReady('raycast');
@@ -353,18 +384,7 @@ export class MujocoRuntime implements PhysicsRuntime {
 
     let nearest: RaycastHit | null = null;
     for (const body of this.bodies.values()) {
-      const radius = body.boundingRadius;
-      if (radius === null) {
-        continue;
-      }
-      const hit = intersectSphere(
-        origin,
-        unitDirection,
-        maxDistance,
-        body.id,
-        body.position,
-        radius,
-      );
+      const hit = intersectCollider(origin, unitDirection, maxDistance, body);
       if (hit !== null && (nearest === null || hit.distance < nearest.distance)) {
         nearest = hit;
       }
@@ -577,6 +597,83 @@ function colliderBoundingRadius(collider: ColliderDescriptor): number | null {
   }
 }
 
+function intersectCollider(
+  origin: Vec3d,
+  direction: Vec3d,
+  maxDistance: number,
+  body: BodyRecord,
+): RaycastHit | null {
+  switch (body.collider.type) {
+    case 'box':
+      return intersectBox(origin, direction, maxDistance, body.id, body.position, body.rotation, {
+        x: body.collider.size.x / 2,
+        y: body.collider.size.y / 2,
+        z: body.collider.size.z / 2,
+      });
+    case 'sphere':
+      return intersectSphere(
+        origin,
+        direction,
+        maxDistance,
+        body.id,
+        body.position,
+        body.collider.radius,
+      );
+    case 'capsule':
+    case 'cylinder':
+      // The in-memory runtime intentionally approximates these shapes with their bounding sphere.
+      return body.boundingRadius === null
+        ? null
+        : intersectSphere(
+            origin,
+            direction,
+            maxDistance,
+            body.id,
+            body.position,
+            body.boundingRadius,
+          );
+    case 'trimesh':
+    case 'convex-hull':
+    case 'compound':
+      // A compound is deliberately reduced to the same AABB approximation. The real extent comes
+      // from the document when it supplied one: a laser-cut plate is 3 mm thick, so a single
+      // bounding sphere would swallow the whole board and hide its surface from sensors.
+      if (body.bounds !== null) {
+        const center = {
+          x: (body.bounds.min.x + body.bounds.max.x) / 2,
+          y: (body.bounds.min.y + body.bounds.max.y) / 2,
+          z: (body.bounds.min.z + body.bounds.max.z) / 2,
+        };
+        return intersectBox(
+          origin,
+          direction,
+          maxDistance,
+          body.id,
+          body.position,
+          body.rotation,
+          {
+            x: (body.bounds.max.x - body.bounds.min.x) / 2,
+            y: (body.bounds.max.y - body.bounds.min.y) / 2,
+            z: (body.bounds.max.z - body.bounds.min.z) / 2,
+          },
+          center,
+        );
+      }
+      if (body.boundingRadius === null) {
+        // Mesh and hull descriptors do not carry dimensions by themselves; retain the old
+        // no-measurable-extent behaviour until a real geometry-aware engine is connected.
+        return null;
+      }
+      return intersectBox(origin, direction, maxDistance, body.id, body.position, body.rotation, {
+        x: body.boundingRadius,
+        y: body.boundingRadius,
+        z: body.boundingRadius,
+      });
+    default:
+      return assertNever(body.collider);
+  }
+}
+
 function intersectSphere(
   origin: Vec3d,
   direction: Vec3d,
@@ -590,18 +687,21 @@ function intersectSphere(
   }
 
   const offset = Vec3d.sub(origin, center);
+  const radiusSquared = radius * radius;
+  // Treat an origin inside a shape as a miss. This avoids returning the far exit point and lets
+  // mounted sensors avoid reporting their own parent body.
+  if (Vec3d.dot(offset, offset) < radiusSquared) {
+    return null;
+  }
+
   const projection = Vec3d.dot(offset, direction);
-  const discriminant = projection * projection - (Vec3d.dot(offset, offset) - radius * radius);
+  const discriminant = projection * projection - (Vec3d.dot(offset, offset) - radiusSquared);
   if (discriminant < 0) {
     return null;
   }
 
   const root = Math.sqrt(discriminant);
-  let distance = -projection - root;
-  if (distance < 0) {
-    // The origin is inside the sphere; take the far intersection instead.
-    distance = -projection + root;
-  }
+  const distance = -projection - root;
   if (distance < 0 || distance > maxDistance) {
     return null;
   }
@@ -613,6 +713,99 @@ function intersectSphere(
     point,
     normal: Vec3d.normalize(Vec3d.sub(point, center)),
   };
+}
+
+function intersectBox(
+  origin: Vec3d,
+  direction: Vec3d,
+  maxDistance: number,
+  bodyId: string,
+  center: Vec3d,
+  rotation: Quaternion,
+  halfExtents: Vec3d,
+  localCenter: Vec3d = Vec3d.zero,
+): RaycastHit | null {
+  const inverseRotation = Quaternion.conjugate(rotation);
+  const localOrigin = Quaternion.rotate(
+    inverseRotation,
+    Vec3d.sub(Vec3d.sub(origin, center), localCenter),
+  );
+  const localDirection = Quaternion.rotate(inverseRotation, direction);
+
+  // As with spheres, an origin strictly inside the box is a miss rather than an exit hit.
+  if (
+    Math.abs(localOrigin.x) < halfExtents.x &&
+    Math.abs(localOrigin.y) < halfExtents.y &&
+    Math.abs(localOrigin.z) < halfExtents.z
+  ) {
+    return null;
+  }
+
+  let near = Number.NEGATIVE_INFINITY;
+  let far = maxDistance;
+  let nearNormal: Vec3d = Vec3d.zero;
+  const axes = [
+    {
+      origin: localOrigin.x,
+      direction: localDirection.x,
+      extent: halfExtents.x,
+      axis: 'x' as const,
+    },
+    {
+      origin: localOrigin.y,
+      direction: localDirection.y,
+      extent: halfExtents.y,
+      axis: 'y' as const,
+    },
+    {
+      origin: localOrigin.z,
+      direction: localDirection.z,
+      extent: halfExtents.z,
+      axis: 'z' as const,
+    },
+  ];
+
+  for (const axis of axes) {
+    if (Math.abs(axis.direction) < Number.EPSILON) {
+      if (axis.origin < -axis.extent || axis.origin > axis.extent) {
+        return null;
+      }
+      continue;
+    }
+
+    const first = (-axis.extent - axis.origin) / axis.direction;
+    const second = (axis.extent - axis.origin) / axis.direction;
+    const entry = Math.min(first, second);
+    const exit = Math.max(first, second);
+    if (entry > near) {
+      near = entry;
+      nearNormal = boxFaceNormal(axis.axis, first < second ? -1 : 1);
+    }
+    far = Math.min(far, exit);
+    if (near > far) {
+      return null;
+    }
+  }
+
+  // A negative entry is an exit-only intersection (the ray starts on the boundary and points
+  // away), not a forward-facing surface hit.
+  if (near < 0 || near > maxDistance || near > far) {
+    return null;
+  }
+
+  const point = Vec3d.add(origin, Vec3d.scale(direction, near));
+  return {
+    bodyId,
+    distance: near,
+    point,
+    normal: Quaternion.rotate(rotation, nearNormal),
+  };
+}
+
+function boxFaceNormal(axis: 'x' | 'y' | 'z', sign: number): Vec3d {
+  if (axis === 'x') return { x: sign, y: 0, z: 0 };
+  if (axis === 'y') return { x: 0, y: sign, z: 0 };
+  return { x: 0, y: 0, z: sign };
 }
 
 function clamp(value: number, min: number, max: number): number {

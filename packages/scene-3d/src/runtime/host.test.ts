@@ -851,6 +851,59 @@ describe('Scene3DHost disposal', () => {
   });
 });
 
+describe('Scene3DHost direct controls', () => {
+  it('forwards validated joint targets to physics and rejects malformed input', async () => {
+    const physics = new RecordingPhysics();
+    const { host } = await createHost({ entities: [], physics });
+
+    await host.setJointTarget('elbow', { kind: 'velocity', value: 2.5 });
+    expect(physics.targets).toEqual([
+      { jointId: 'elbow', target: { kind: 'velocity', value: 2.5 } },
+    ]);
+    await expect(host.setJointTarget('', { kind: 'velocity', value: 1 })).rejects.toThrow(
+      /jointId/,
+    );
+    await expect(host.setJointTarget('elbow', { kind: 'bad', value: 1 } as never)).rejects.toThrow(
+      /kind/,
+    );
+    await expect(
+      host.setJointTarget('elbow', { kind: 'torque', value: Number.NaN }),
+    ).rejects.toThrow(/finite/);
+
+    await host.dispose();
+    await expect(host.setJointTarget('elbow', { kind: 'torque', value: 1 })).rejects.toThrow(
+      /disposed/,
+    );
+  });
+
+  it('returns the latest sensor reading and an empty array when none sampled', async () => {
+    const registry = new SensorRegistry();
+    registry.register(
+      'distance',
+      (entity) => new MockSensor(entity, { type: 'distance', distance: 1.23, timestamp: 0n }),
+    );
+    const { host } = await createHost({
+      entities: [distanceSensor('front', 10)],
+      sensors: registry,
+    });
+
+    expect(host.getSensors()).toEqual([]);
+    await host.step(16);
+    expect(host.getSensors()).toEqual([
+      { sensorId: 'front', data: { type: 'distance', distance: 1.23, timestamp: 16_000_000_000n } },
+    ]);
+    await host.step(16);
+    expect(host.getSensors()).toEqual([
+      { sensorId: 'front', data: { type: 'distance', distance: 1.23, timestamp: 16_000_000_000n } },
+    ]);
+    await host.dispose();
+
+    const empty = await createHost({ entities: [] });
+    expect(empty.host.getSensors()).toEqual([]);
+    await empty.host.dispose();
+  });
+});
+
 describe('Scene3DHost sensors', () => {
   afterEach(() => {
     sensorRegistry.unregister('distance');

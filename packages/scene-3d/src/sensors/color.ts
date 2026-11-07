@@ -1,4 +1,5 @@
 import type { ColorConfig, ModelEntity, SceneEntity, SensorEntity } from '../entities';
+import type { AcrylicPaint } from '../geometry/acrylic';
 import { Quaternion, Vec3d } from '../math';
 import type { PhysicsRuntime, RaycastHit } from '../physics';
 import { Sensor } from './base';
@@ -16,6 +17,26 @@ export interface Rgb {
 export interface SurfaceColorResolver {
   /** Returns a surface colour, or null when the hit has no usable colour. */
   resolve(hit: RaycastHit): Rgb | null;
+}
+
+/**
+ * Resolves the painted colour of an acrylic plate at a world-space point.
+ *
+ * Strokes are tested in declaration order, so a later stroke paints over an earlier one. Returns
+ * `null` when the painter defines neither a base colour nor a matching stroke, letting the caller
+ * fall back to the material colour.
+ */
+export function resolveAcrylicPaint(
+  paint: AcrylicPaint,
+  point: { readonly x: number; readonly z: number },
+): Rgb | null {
+  for (const stroke of paint.strokes ?? []) {
+    const offset = stroke.axis === 'x' ? point.z : point.x;
+    if (Math.abs(offset - stroke.center) <= stroke.width / 2) {
+      return parseCssColor(stroke.color);
+    }
+  }
+  return paint.base === undefined ? null : parseCssColor(paint.base);
 }
 
 /** Resolves model material colours, with optional per-entity hit samplers taking precedence. */
@@ -36,6 +57,11 @@ export function createMaterialColorResolver(
       if (model === undefined) return null;
       const sampler = options.samplers?.[hit.bodyId];
       if (sampler !== undefined) return sampler(hit);
+      const geometry = model.geometry;
+      if (geometry?.type === 'acrylic' && geometry.acrylic.paint !== undefined) {
+        const painted = resolveAcrylicPaint(geometry.acrylic.paint, hit.point);
+        if (painted !== null) return painted;
+      }
       const color = model.material.color;
       return color === undefined ? null : parseCssColor(color);
     },
@@ -89,7 +115,7 @@ export class ColorSensor extends Sensor<ColorSensorData> {
         transform.position,
         Quaternion.rotate(transform.rotation, localOffset),
       );
-      const hit = physics.raycast(origin, direction, maxRange);
+      const hit = raycastIgnoringMountedBody(physics, origin, direction, maxRange, this.mountedOn);
       if (
         hit === null ||
         !Number.isFinite(hit.distance) ||
@@ -145,4 +171,21 @@ function parseCssColor(value: string): Rgb | null {
     };
   }
   return null;
+}
+
+/** Ignores the mounted body; the physics engine may return it before the surface being sampled. */
+function raycastIgnoringMountedBody(
+  physics: PhysicsRuntime,
+  origin: Vec3d,
+  direction: Vec3d,
+  maxDistance: number,
+  mountedOn: string | undefined,
+): RaycastHit | null {
+  let hit = physics.raycast(origin, direction, maxDistance);
+  if (mountedOn !== undefined && hit?.bodyId === mountedOn) {
+    // The in-memory runtime returns null when the origin is inside a shape. A second query also
+    // lets physics adapters that advance through filtered hits expose the next surface.
+    hit = physics.raycast(origin, direction, maxDistance);
+  }
+  return hit?.bodyId === mountedOn ? null : hit;
 }

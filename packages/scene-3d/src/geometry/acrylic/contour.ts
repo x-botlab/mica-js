@@ -3,6 +3,7 @@ import type {
   AcrylicContour,
   AcrylicContourOptions,
   AcrylicDefinition,
+  AcrylicPaint,
   AcrylicRing,
   ParsedAcrylicContour,
 } from './types';
@@ -361,7 +362,44 @@ export function validateAcrylicDefinition(definition: AcrylicDefinition): void {
     throw new TypeError('Acrylic definition is required');
   if (!finite(definition.thickness) || definition.thickness <= 0)
     throw new RangeError('Acrylic thickness must be a positive finite number in metres');
+  validateAcrylicPaint(definition.paint);
   parseAcrylicContour(definition.contour);
+}
+
+/** Checks the printed artwork of a plate; omitted paint is valid. */
+export function validateAcrylicPaint(paint: AcrylicPaint | undefined): void {
+  if (paint === undefined) return;
+  if (typeof paint !== 'object' || paint === null) {
+    throw new TypeError('Acrylic paint must be an object');
+  }
+  if (paint.base !== undefined && !isColor(paint.base)) {
+    throw new TypeError('Acrylic paint.base must be a CSS colour string');
+  }
+  if (paint.strokes === undefined) return;
+  if (!Array.isArray(paint.strokes)) {
+    throw new TypeError('Acrylic paint.strokes must be an array');
+  }
+  for (const [index, stroke] of paint.strokes.entries()) {
+    if (typeof stroke !== 'object' || stroke === null) {
+      throw new TypeError(`Acrylic paint.strokes[${index}] must be an object`);
+    }
+    if (stroke.axis !== 'x' && stroke.axis !== 'z') {
+      throw new RangeError(`Acrylic paint.strokes[${index}].axis must be "x" or "z"`);
+    }
+    if (!finite(stroke.center)) {
+      throw new RangeError(`Acrylic paint.strokes[${index}].center must be a finite number`);
+    }
+    if (!finite(stroke.width) || stroke.width <= 0) {
+      throw new RangeError(`Acrylic paint.strokes[${index}].width must be greater than 0`);
+    }
+    if (!isColor(stroke.color)) {
+      throw new TypeError(`Acrylic paint.strokes[${index}].color must be a CSS colour string`);
+    }
+  }
+}
+
+function isColor(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '';
 }
 export const normaliseAcrylicContour = parseAcrylicContour;
 export const normalizeAcrylicContour = parseAcrylicContour;

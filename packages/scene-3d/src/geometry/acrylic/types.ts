@@ -29,6 +29,36 @@ export interface AcrylicMaterialOverride {
   readonly opacity?: number;
 }
 
+/**
+ * One printed stroke on a plate surface.
+ *
+ * A stroke runs parallel to `axis` and is centred at `center` on the other in-plane axis, which is
+ * what a line-following track is: a black band printed down the middle of the plate.
+ */
+export interface AcrylicPaintStroke {
+  /** Axis the stroke runs along, in contour coordinates. */
+  readonly axis: 'x' | 'z';
+  /** Offset of the stroke centre on the perpendicular axis, in metres. */
+  readonly center: number;
+  /** Full width of the stroke in metres. */
+  readonly width: number;
+  /** CSS colour of the stroke. */
+  readonly color: string;
+}
+
+/**
+ * Printed artwork on one face of a plate.
+ *
+ * The host turns this into sensor samplers, so a colour sensor reads the painted surface without
+ * shipping a bitmap across the sandbox boundary.
+ */
+export interface AcrylicPaint {
+  /** Base colour of the surface; falls back to the material colour. */
+  readonly base?: string;
+  /** Strokes drawn over the base colour, in declaration order. */
+  readonly strokes?: readonly AcrylicPaintStroke[];
+}
+
 /** A laser-cut plate. Lengths are metres, matching the scene document convention. */
 export interface AcrylicDefinition {
   readonly contour: AcrylicContour;
@@ -46,6 +76,8 @@ export interface AcrylicDefinition {
   readonly opacity?: number;
   /** Alignment of the contour origin. The default is the bounding-box centre. */
   readonly origin?: 'center' | 'min' | 'max' | Vec2d;
+  /** Printed artwork on the top face, read by surface sensors such as the colour sensor. */
+  readonly paint?: AcrylicPaint;
 }
 
 export type AcrylicRing = readonly Vec2d[];
@@ -81,6 +113,8 @@ export interface AcrylicPhysics {
   readonly inertia: { readonly x: number; readonly y: number; readonly z: number };
   readonly collider: { readonly type: 'convex-hull' | 'trimesh'; readonly source: 'geometry' };
   readonly boundingRadius: number;
+  /** Local-space AABB of the extruded plate, for raycasts and broad-phase shapes. */
+  readonly bounds: { readonly min: Vec3d; readonly max: Vec3d };
   readonly friction: number;
   readonly restitution: number;
 }

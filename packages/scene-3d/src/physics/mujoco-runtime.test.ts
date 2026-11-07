@@ -256,6 +256,62 @@ describe('MujocoRuntime raycast', () => {
     expect(() => runtime.raycast(Vec3d.zero, Vec3d.unitZ, -1)).toThrow(RangeError);
   });
 
+  it('hits a thin full-size box at its top face instead of its bounding sphere', async () => {
+    const runtime = await createRuntime();
+    const plateId = runtime.addBody({
+      position: Vec3d.zero,
+      collider: { type: 'box', size: { x: 0.4, y: 0.003, z: 0.6 } },
+      boundingRadius: Math.hypot(0.2, 0.0015, 0.3),
+    });
+
+    const hit = runtime.raycast({ x: 0, y: 0.05, z: 0 }, { x: 0, y: -1, z: 0 }, 1);
+
+    expect(hit?.bodyId).toBe(plateId);
+    expect(hit?.distance).toBeCloseTo(0.05 - 0.0015, 3);
+    expect(hit?.point.y).toBeCloseTo(0.0015, 6);
+    expect(hit?.normal).toEqual({ x: 0, y: 1, z: 0 });
+  });
+
+  it('reports the entry point and front-facing normal for a side box hit', async () => {
+    const runtime = await createRuntime();
+    const boxId = runtime.addBody({
+      position: { x: 2, y: 0, z: 0 },
+      collider: { type: 'box', size: { x: 1, y: 2, z: 2 } },
+    });
+
+    const hit = runtime.raycast(Vec3d.zero, Vec3d.unitX, 10);
+
+    expect(hit?.bodyId).toBe(boxId);
+    expect(hit?.distance).toBeCloseTo(1.5, 9);
+    expect(hit?.point).toEqual({ x: 1.5, y: 0, z: 0 });
+    expect(hit?.normal).toEqual({ x: -1, y: 0, z: 0 });
+  });
+
+  it('transforms a rotated box into local space before intersecting it', async () => {
+    const runtime = await createRuntime();
+    const boxId = runtime.addBody({
+      position: { x: 2, y: 0, z: 0 },
+      rotation: Quaternion.fromAxisAngle(Vec3d.unitY, Math.PI / 2),
+      collider: { type: 'box', size: { x: 0.2, y: 1, z: 1 } },
+    });
+
+    const hit = runtime.raycast(Vec3d.zero, Vec3d.unitX, 10);
+
+    expect(hit?.bodyId).toBe(boxId);
+    expect(hit?.distance).toBeCloseTo(1.5, 9);
+    expect(hit?.point.x).toBeCloseTo(1.5, 9);
+    expect(hit?.normal.x).toBeCloseTo(-1, 9);
+    expect(hit?.normal.y).toBeCloseTo(0, 9);
+    expect(hit?.normal.z).toBeCloseTo(0, 9);
+  });
+
+  it('returns null when the ray starts inside a collision shape', async () => {
+    const runtime = await createRuntime();
+    runtime.addBody({ collider: { type: 'box', size: { x: 2, y: 2, z: 2 } } });
+
+    expect(runtime.raycast(Vec3d.zero, Vec3d.unitX, 10)).toBeNull();
+  });
+
   it('derives bounding radii for boxes and compound colliders', async () => {
     const runtime = await createRuntime();
     const boxId = runtime.addBody({ position: { x: 0, y: 0, z: 2 }, collider: BOX });
@@ -286,6 +342,39 @@ describe('MujocoRuntime raycast', () => {
       boundingRadius: 1,
     });
     expect(runtime.raycast(Vec3d.zero, Vec3d.unitZ, 10)?.bodyId).toBe(meshId);
+  });
+
+  it('uses the mesh bounds for raycasts so a flat plate stays hittable', async () => {
+    const runtime = await createRuntime();
+    // A 0.4 × 0.6 m laser-cut plate: its bounding sphere (0.36 m) would hide the 3 mm surface.
+    const plateId = runtime.addBody({
+      position: { x: 0, y: 0.0015, z: 0 },
+      collider: MESH,
+      boundingRadius: Math.hypot(0.2, 0.0015, 0.3),
+      bounds: { min: { x: -0.2, y: -0.0015, z: -0.3 }, max: { x: 0.2, y: 0.0015, z: 0.3 } },
+    });
+
+    const hit = runtime.raycast({ x: 0.1, y: 0.05, z: 0.2 }, { x: 0, y: -1, z: 0 }, 1);
+
+    expect(hit?.bodyId).toBe(plateId);
+    expect(hit?.distance).toBeCloseTo(0.047, 6);
+    expect(hit?.point.y).toBeCloseTo(0.003, 6);
+    expect(hit?.normal).toEqual({ x: 0, y: 1, z: 0 });
+  });
+
+  it('respects an off-centre mesh bounds box', async () => {
+    const runtime = await createRuntime();
+    runtime.addBody({
+      collider: MESH,
+      boundingRadius: 1,
+      bounds: { min: { x: 0.5, y: -0.5, z: -0.5 }, max: { x: 1.5, y: 0.5, z: 0.5 } },
+    });
+
+    // The box spans x = 0.5…1.5, so a ray along +X from the origin enters at 0.5.
+    const hit = runtime.raycast(Vec3d.zero, Vec3d.unitX, 5);
+
+    expect(hit?.distance).toBeCloseTo(0.5, 6);
+    expect(hit?.normal).toEqual({ x: -1, y: 0, z: 0 });
   });
 });
 

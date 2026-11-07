@@ -1,6 +1,6 @@
 import type { DistanceConfig, SensorEntity } from '../entities';
 import { Quaternion, Vec3d } from '../math';
-import type { PhysicsRuntime } from '../physics';
+import type { PhysicsRuntime, RaycastHit } from '../physics';
 import { Sensor } from './base';
 import type { DistanceSensorData } from './types';
 
@@ -23,7 +23,13 @@ export class DistanceSensor extends Sensor<DistanceSensorData> {
     let nearest: number | null = null;
 
     for (const direction of directions) {
-      const hit = physics.raycast(transform.position, direction, this.config.maxRange);
+      const hit = raycastIgnoringMountedBody(
+        physics,
+        transform.position,
+        direction,
+        this.config.maxRange,
+        this.mountedOn,
+      );
       if (
         hit !== null &&
         Number.isFinite(hit.distance) &&
@@ -58,4 +64,21 @@ export class DistanceSensor extends Sensor<DistanceSensorData> {
       ),
     ];
   }
+}
+
+/** Ignores the mounted body; the physics engine may return it before the surface being sensed. */
+function raycastIgnoringMountedBody(
+  physics: PhysicsRuntime,
+  origin: Vec3d,
+  direction: Vec3d,
+  maxDistance: number,
+  mountedOn: string | undefined,
+): RaycastHit | null {
+  let hit = physics.raycast(origin, direction, maxDistance);
+  if (mountedOn !== undefined && hit?.bodyId === mountedOn) {
+    // The in-memory runtime returns null when the origin is inside a shape. A second query also
+    // lets physics adapters that advance through filtered hits expose the next surface.
+    hit = physics.raycast(origin, direction, maxDistance);
+  }
+  return hit?.bodyId === mountedOn ? null : hit;
 }

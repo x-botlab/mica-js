@@ -5,6 +5,7 @@ import type { PhysicsRuntime } from '../../physics';
 import { createOffscreenRenderer } from '../../rendering/renderer.browser';
 import type { OffscreenRenderer } from '../../rendering/renderer';
 import { createScene3DHost, type Scene3DHostAPI } from '../../runtime/host';
+import { createDefaultSensorRegistry } from '../../sensors';
 import type {
   CircuitSandboxHandle,
   CircuitSandboxOptions,
@@ -34,6 +35,7 @@ export async function startSceneHostRuntime(
   const endpoint = options.createEndpoint?.(port) ?? createRpc(port);
   const hostServices = endpoint.getProxy<SceneHostHostContract>(sceneHostHost);
   const document = await hostServices.getDocument();
+  const sensors = createDefaultSensorRegistry({ document });
   const createCircuitSandbox = async (
     circuitOptions: CircuitSandboxOptions,
   ): Promise<CircuitSandboxHandle> => {
@@ -48,12 +50,16 @@ export async function startSceneHostRuntime(
     document,
     physics: options.createPhysics?.() ?? createMujocoRuntime(),
     renderer: options.createRenderer?.() ?? createOffscreenRenderer(),
+    sensors,
     circuits: { createCircuitSandbox },
   });
 
   const registration = endpoint.register(sceneHostGuest, host, {
     transfer: (_member, value) => transferTransformPayload(value),
   });
+  // Only now can the client reach `sceneHostGuest`; without this the first `step()` races the
+  // registration and fails with "Unknown service".
+  await hostServices.ready();
   const closeDisposable = endpoint.onDidClose(() => {
     void host.dispose().catch(() => undefined);
   });

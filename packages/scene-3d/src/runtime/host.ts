@@ -31,6 +31,7 @@ import type {
   AssemblyInstance,
   EntityType,
   ModelEntity,
+  JointEntity,
   SceneEntity,
   SensorEntity,
 } from '../entities';
@@ -39,7 +40,13 @@ import type { Scene3DDocument } from '../format/document';
 import type { MaterialLibrary } from '../format/materials';
 import { computeAcrylicPhysics } from '../geometry/acrylic';
 import { JOINT_TARGET_KINDS } from '../physics';
-import type { JointTarget, JointTargetKind, PhysicsRuntime, RigidBodyConfig } from '../physics';
+import type {
+  BodyMotion,
+  JointTarget,
+  JointTargetKind,
+  PhysicsRuntime,
+  RigidBodyConfig,
+} from '../physics';
 import type { OffscreenRenderer } from '../rendering/renderer';
 import { createDefaultSensorRegistry } from '../sensors/defaults';
 import { SensorRegistry } from '../sensors/registry';
@@ -92,6 +99,8 @@ interface SensorSlot {
   readonly entityId: string;
   /** Assembly instance that owns the sensor, or `null` for a top-level sensor. */
   readonly assemblyId: string | null;
+  /** Most recent successful reading, omitted before the first sample. */
+  data?: SensorData;
 }
 
 /** Options of {@link Scene3DHost.create}. */
@@ -157,6 +166,7 @@ export class Scene3DHost implements Scene3DHostAPI {
     | undefined;
   private readonly entities: SceneEntity[] = [];
   private readonly bodies = new Map<string, string>();
+  private readonly joints = new Map<string, string>();
   private readonly circuits = new Map<string, CircuitSlot>();
   private readonly sensors: SensorSlot[] = [];
 
@@ -283,6 +293,36 @@ export class Scene3DHost implements Scene3DHostAPI {
     };
   }
 
+  /** Sets a joint target directly, bypassing circuit simulation. */
+  public async setJointTarget(jointId: string, target: JointTarget): Promise<void> {
+    this.assertUsable('setJointTarget');
+    this.assertIdle('setJointTarget');
+    assertJointTarget(jointId, target);
+    this.physics.setJointTarget(jointId, target);
+  }
+
+  /** Overrides a body's world-space velocity when the engine supports direct drive. */
+  public async setBodyVelocity(bodyId: string, motion: BodyMotion): Promise<void> {
+    this.assertUsable('setBodyVelocity');
+    this.assertIdle('setBodyVelocity');
+    assertBodyVelocity(bodyId, motion);
+    const setVelocity = this.physics.setBodyVelocity;
+    if (setVelocity === undefined) {
+      throw new Error(
+        'Scene3DHost.setBodyVelocity: this physics runtime cannot drive bodies directly',
+      );
+    }
+    setVelocity.call(this.physics, bodyId, motion);
+  }
+
+  /** Returns the latest successful sample in sensor declaration order. */
+  public getSensors(): readonly { readonly sensorId: string; readonly data: SensorData }[] {
+    this.assertUsable('getSensors');
+    return this.sensors.flatMap((slot) =>
+      slot.data === undefined ? [] : [{ sensorId: slot.sensor.id, data: slot.data }],
+    );
+  }
+
   /** Adds an entity, creating its rigid body and — for assemblies — its circuit sandbox. */
   public async addEntity(entity: SceneEntity): Promise<void> {
     this.assertUsable('addEntity');
@@ -301,6 +341,8 @@ export class Scene3DHost implements Scene3DHostAPI {
           await this.attachAssembly(entity);
         } else if (isSensorEntity(entity)) {
           this.attachSensor(entity, null);
+        } else if (isJointEntity(entity)) {
+          this.attachJoint(entity);
         }
       } catch (error) {
         this.detachBody(entity.id);
@@ -342,6 +384,7 @@ export class Scene3DHost implements Scene3DHostAPI {
       }
 
       this.removeSensorsFor(id);
+      this.detachJoint(id);
       this.detachBody(id);
       this.entities.splice(index, 1);
     } finally {
@@ -390,6 +433,7 @@ export class Scene3DHost implements Scene3DHostAPI {
     }
 
     this.bodies.clear();
+    this.joints.clear();
     this.sensors.length = 0;
     this.entities.length = 0;
 
@@ -411,6 +455,10 @@ export class Scene3DHost implements Scene3DHostAPI {
       this.entities.push(entity);
       this.attachBody(entity);
       if (isSensorEntity(entity)) this.attachSensor(entity, null);
+    }
+
+    for (const entity of this.document.entities) {
+      if (isJointEntity(entity)) this.attachJoint(entity);
     }
 
     for (const entity of this.document.entities) {
@@ -453,6 +501,28 @@ export class Scene3DHost implements Scene3DHostAPI {
     if (!isModelEntity(entity)) return;
     const bodyId = this.physics.addBody(toRigidBodyConfig(entity, this.document.materials));
     this.bodies.set(entity.id, bodyId);
+  }
+
+  private attachJoint(entity: JointEntity): void {
+    const bodyA = this.bodies.get(entity.bodyA) ?? entity.bodyA;
+    const bodyB =
+      entity.bodyB === undefined ? undefined : (this.bodies.get(entity.bodyB) ?? entity.bodyB);
+    const jointId = this.physics.addJoint({
+      id: entity.id,
+      type: entity.jointType,
+      bodyA,
+      ...(bodyB === undefined ? {} : { bodyB }),
+      ...(entity.anchorA === undefined ? {} : { anchorA: entity.anchorA }),
+      ...(entity.anchorB === undefined ? {} : { anchorB: entity.anchorB }),
+      ...(entity.axis === undefined ? {} : { axis: entity.axis }),
+      ...(entity.limits === undefined ? {} : { limits: entity.limits }),
+      ...(entity.motor === undefined ? {} : { motor: entity.motor }),
+    });
+    this.joints.set(entity.id, jointId);
+  }
+
+  private detachJoint(entityId: string): void {
+    this.joints.delete(entityId);
   }
 
   private detachBody(entityId: string): void {
@@ -571,7 +641,9 @@ export class Scene3DHost implements Scene3DHostAPI {
         console.error(`Scene3DHost.step: Sensor ${slot.sensor.id} update failed:`, error);
         continue;
       }
-      if (data === null || slot.assemblyId === null) continue;
+      if (data === null) continue;
+      slot.data = data;
+      if (slot.assemblyId === null) continue;
 
       const circuit = this.circuits.get(slot.assemblyId);
       if (circuit === undefined) continue;
@@ -633,6 +705,10 @@ function isModelEntity(entity: SceneEntity): entity is ModelEntity {
   return entity.type === 'model';
 }
 
+function isJointEntity(entity: SceneEntity): entity is JointEntity {
+  return entity.type === 'joint';
+}
+
 function isAssemblyInstance(entity: SceneEntity): entity is AssemblyInstance {
   return entity.type === 'assembly';
 }
@@ -662,6 +738,52 @@ function millisecondsToPs(milliseconds: number): bigint {
   const whole = Math.floor(milliseconds);
   const fraction = milliseconds - whole;
   return BigInt(whole) * PS_PER_MILLISECOND + BigInt(Math.round(fraction * 1e9));
+}
+
+/** Validates a direct joint target received through the host RPC surface. */
+function assertJointTarget(jointId: unknown, target: unknown): asserts target is JointTarget {
+  if (typeof jointId !== 'string' || jointId === '') {
+    throw new TypeError('Scene3DHost.setJointTarget: jointId must be a non-empty string');
+  }
+  if (typeof target !== 'object' || target === null) {
+    throw new TypeError('Scene3DHost.setJointTarget: target must be an object');
+  }
+  const value = target as { readonly kind?: unknown; readonly value?: unknown };
+  if (
+    typeof value.kind !== 'string' ||
+    !JOINT_TARGET_KINDS.includes(value.kind as JointTargetKind)
+  ) {
+    throw new TypeError(
+      'Scene3DHost.setJointTarget: target.kind must be position, velocity or torque',
+    );
+  }
+  if (typeof value.value !== 'number' || !Number.isFinite(value.value)) {
+    throw new TypeError('Scene3DHost.setJointTarget: target.value must be a finite number');
+  }
+}
+
+/** Validates a direct body velocity received through the host RPC surface. */
+function assertBodyVelocity(bodyId: unknown, motion: unknown): asserts motion is BodyMotion {
+  if (typeof bodyId !== 'string' || bodyId === '') {
+    throw new TypeError('Scene3DHost.setBodyVelocity: bodyId must be a non-empty string');
+  }
+  if (typeof motion !== 'object' || motion === null) {
+    throw new TypeError('Scene3DHost.setBodyVelocity: motion must be an object');
+  }
+  for (const key of ['linearVelocity', 'angularVelocity'] as const) {
+    const value = (motion as Record<string, unknown>)[key];
+    if (typeof value !== 'object' || value === null) {
+      throw new TypeError(`Scene3DHost.setBodyVelocity: motion.${key} must be a vector`);
+    }
+    for (const axis of ['x', 'y', 'z'] as const) {
+      const component = (value as Record<string, unknown>)[axis];
+      if (typeof component !== 'number' || !Number.isFinite(component)) {
+        throw new TypeError(
+          `Scene3DHost.setBodyVelocity: motion.${key}.${axis} must be a finite number`,
+        );
+      }
+    }
+  }
 }
 
 /** Validates a `jointCommand` payload arriving from a circuit simulator. */
@@ -716,7 +838,9 @@ function toRigidBodyConfig(entity: ModelEntity, library?: MaterialLibrary): Rigi
         ? {}
         : { mass: acrylic.mass }
       : { mass: physics.mass }),
-    ...(acrylic === undefined ? {} : { boundingRadius: acrylic.boundingRadius }),
+    ...(acrylic === undefined
+      ? {}
+      : { boundingRadius: acrylic.boundingRadius, bounds: acrylic.bounds }),
     ...(physics.velocity === undefined ? {} : { velocity: physics.velocity }),
     ...(physics.angularVelocity === undefined ? {} : { angularVelocity: physics.angularVelocity }),
     ...(physics.constraints === undefined ? {} : { constraints: physics.constraints }),

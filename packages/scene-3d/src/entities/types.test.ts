@@ -224,6 +224,10 @@ describe('JointEntity', () => {
       type: 'joint',
       position: Vec3d.zero,
       rotation: Quaternion.identity,
+      jointType: 'revolute',
+      bodyA: 'chassis',
+      bodyB: 'left-wheel',
+      axis: { x: 1, y: 0, z: 0 },
       bindings: {
         torque: { symbol: 'motor-left', port: 'torque' },
         position: { symbol: 'encoder-left', port: 'position' },
@@ -243,9 +247,12 @@ describe('JointEntity', () => {
       type: 'joint',
       position: Vec3d.zero,
       rotation: Quaternion.identity,
+      jointType: 'fixed',
+      bodyA: 'chassis',
     };
 
     expect(passive.bindings).toBeUndefined();
+    expect(passive.bodyB).toBeUndefined();
   });
 });
 
@@ -326,6 +333,9 @@ describe('entity kinds', () => {
         type: 'joint',
         position: Vec3d.zero,
         rotation: Quaternion.identity,
+        jointType: 'revolute',
+        bodyA: 'floor',
+        axis: { x: 0, y: 1, z: 0 },
         bindings: {
           torque: { symbol: 'motor-left', port: 'torque' },
         },

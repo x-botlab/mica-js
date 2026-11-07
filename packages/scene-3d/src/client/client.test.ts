@@ -189,6 +189,37 @@ describe('Scene3DClient creation', () => {
   });
 });
 
+describe('Scene3DClient direct host controls', () => {
+  it('forwards joint targets and reads cached sensors', async () => {
+    const { client, host } = await createClient();
+    host.handler = (method) => {
+      if (method === 'getSensors') {
+        return [
+          {
+            sensorId: 'color-left',
+            data: { type: 'color', color: [20, 20, 20], grayscale: 20, timestamp: 1n },
+          },
+        ];
+      }
+      return undefined;
+    };
+
+    await client.setJointTarget('joint-left', { kind: 'velocity', value: 6 });
+    expect(host.calls[0]).toEqual({
+      method: 'setJointTarget',
+      args: ['joint-left', { kind: 'velocity', value: 6 }],
+    });
+    await expect(client.readSensors()).resolves.toEqual([
+      {
+        sensorId: 'color-left',
+        data: { type: 'color', color: [20, 20, 20], grayscale: 20, timestamp: 1n },
+      },
+    ]);
+
+    await client.dispose();
+  });
+});
+
 describe('Scene3DClient stepping', () => {
   it('sends the delta to the host, applies the batch and draws one frame', async () => {
     const { client, view, host } = await createClient();

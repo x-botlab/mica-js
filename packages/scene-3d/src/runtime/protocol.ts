@@ -22,7 +22,7 @@
 import { defineRpcService } from '@mica-js/core/rpc';
 import type { AssemblyInstance, SceneEntity } from '../entities';
 import type { Scene3DDocument } from '../format/document';
-import type { JointTarget } from '../physics';
+import type { BodyMotion, JointTarget } from '../physics';
 import type { SensorData } from '../sensors/types';
 
 /** Number of floats per entity in a transform batch, matching `THREE.Matrix4.elements`. */
@@ -35,6 +35,9 @@ export const SCENE3D_HOST_METHODS = [
   'removeEntity',
   'getTransforms',
   'getState',
+  'setJointTarget',
+  'setBodyVelocity',
+  'getSensors',
   'dispose',
 ] as const;
 
@@ -108,6 +111,16 @@ export interface Scene3DHostContract {
   getTransforms(): Float32Array;
   /** Reads the clock and entity counters. */
   getState(): Scene3DHostState;
+  /** Sets a joint target directly, bypassing circuit simulation. */
+  setJointTarget(jointId: string, target: JointTarget): Promise<void>;
+  /**
+   * Overrides the world-space velocity of a dynamic body, for teleoperation and tests.
+   *
+   * Rejects when the physics runtime cannot drive a body directly.
+   */
+  setBodyVelocity(bodyId: string, motion: BodyMotion): Promise<void>;
+  /** Reads the most recent sample from every sensor that has sampled. */
+  getSensors(): readonly { readonly sensorId: string; readonly data: SensorData }[];
   /** Terminates circuit sandboxes and releases physics and rendering resources. */
   dispose(): Promise<void>;
 }
@@ -128,6 +141,13 @@ export interface Scene3DHostProxy {
 export interface SceneHostHostContract {
   /** Returns the document captured by the main-thread client. */
   getDocument(): Scene3DDocument;
+  /**
+   * Signals that the guest finished booting and registered its RPC surface.
+   *
+   * The guest cannot answer `sceneHostGuest` calls before it has the document, so the client waits
+   * for this signal instead of racing the first `step()` against guest startup.
+   */
+  ready(): void;
   /** Creates a circuit guest and transfers its direct RPC port to the scene-host guest. */
   createCircuitSandbox(options: CircuitSandboxOptions): Promise<MessagePort>;
   /**

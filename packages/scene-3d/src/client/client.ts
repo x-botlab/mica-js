@@ -31,6 +31,8 @@
 import { createRpc } from '@mica-js/core/rpc';
 import { SandboxWorker } from '@mica-js/sandbox';
 import type { SceneEntity } from '../entities';
+import type { BodyMotion, JointTarget } from '../physics';
+import type { SensorData } from '../sensors/types';
 import type { Scene3DDocument } from '../format/document';
 import { circuitGuestWorkerScript } from './host-sandbox';
 import {
@@ -201,6 +203,28 @@ export class Scene3DClient {
     return transforms;
   }
 
+  /** Sets a joint target directly on the sandboxed host. */
+  public async setJointTarget(jointId: string, target: JointTarget): Promise<void> {
+    this.assertUsable('setJointTarget');
+    await this.host.call('setJointTarget', jointId, target);
+  }
+
+  /** Reads the most recent sample from every sensor that has produced one. */
+  public async readSensors(): Promise<
+    readonly { readonly sensorId: string; readonly data: SensorData }[]
+  > {
+    this.assertUsable('readSensors');
+    return this.host.call<readonly { readonly sensorId: string; readonly data: SensorData }[]>(
+      'getSensors',
+    );
+  }
+
+  /** Overrides a body's world-space velocity; requires a physics runtime that supports it. */
+  public async setBodyVelocity(bodyId: string, motion: BodyMotion): Promise<void> {
+    this.assertUsable('setBodyVelocity');
+    await this.host.call('setBodyVelocity', bodyId, motion);
+  }
+
   /** Adds an entity to the host and to the visible scene. */
   public async addEntity(entity: SceneEntity): Promise<void> {
     this.assertUsable('addEntity');
@@ -369,9 +393,23 @@ async function connectScene3DHostProxy(
   const endpoint = createRpc(channel.port1);
   const children = new Map<string, SandboxWorker>();
   let closed = false;
+  let markReady: (() => void) | undefined;
+  let failReady: ((error: Error) => void) | undefined;
+  const guestReady = new Promise<void>((resolve, reject) => {
+    markReady = resolve;
+    failReady = reject;
+  });
+  // A guest that throws while booting never calls `ready()`; surface the worker error instead of
+  // waiting out the timeout.
+  const stopErrorWatch = worker.onError((error) => {
+    failReady?.(new Error(`Scene3DHost guest failed to boot: ${error.message}`));
+  });
 
   const hostServices: SceneHostHostContract = {
     getDocument: () => options.document,
+    ready: () => {
+      markReady?.();
+    },
     async createCircuitSandbox(circuitOptions: CircuitSandboxOptions): Promise<MessagePort> {
       const child = new SandboxWorker(circuitGuestWorkerScript, {
         name: circuitOptions.name,
@@ -400,6 +438,15 @@ async function connectScene3DHostProxy(
       member === 'createCircuitSandbox' && isMessagePort(value) ? [value] : [],
   });
   worker.postMessage(null, [channel.port2]);
+  try {
+    await waitForGuestReady(guestReady);
+  } catch (error) {
+    stopErrorWatch();
+    registration.dispose();
+    endpoint.dispose();
+    await worker.terminate('scene3d host failed to boot').catch(() => undefined);
+    throw error;
+  }
   const guest = endpoint.getProxy(sceneHostGuest);
   return {
     call<T = unknown>(method: string, ...args: unknown[]): Promise<T> {
@@ -414,6 +461,7 @@ async function connectScene3DHostProxy(
     async terminate(reason = 'scene3d client disposed'): Promise<void> {
       if (closed) return;
       closed = true;
+      stopErrorWatch();
       registration.dispose();
       endpoint.dispose();
       await Promise.allSettled(
@@ -423,6 +471,32 @@ async function connectScene3DHostProxy(
       await worker.terminate(reason);
     },
   };
+}
+
+/** How long the main thread waits for the guest to register its RPC surface. */
+const GUEST_READY_TIMEOUT_MS = 10_000;
+
+/**
+ * Waits for the guest's `ready()` signal.
+ *
+ * The sandbox forwards a worker boot error through `onError`, but a guest that never boots would
+ * otherwise hang the caller, so the wait is bounded.
+ */
+async function waitForGuestReady(ready: Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      ready,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Scene3DHost guest did not become ready in time')),
+          GUEST_READY_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function isSandboxWorker(value: unknown): value is SandboxWorker {
