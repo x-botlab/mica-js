@@ -1,0 +1,66 @@
+{
+  "name": "@mica-js/scene-3d",
+  "version": "0.0.0",
+  "description": "Mica 3D scene: .scene3d documents, physics entities and a deterministic scene runtime",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/scene-3d"
+  },
+  "type": "module",
+  "sideEffects": [
+    "./dist/runtime/host.browser.js",
+    "./dist/runtime/host.node.js",
+    "./dist/runtime/host.mock.js"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    },
+    "./client/three": {
+      "types": "./dist/client/three.d.ts",
+      "import": "./dist/client/three.js"
+    },
+    "./runtime/host": {
+      "types": "./dist/runtime/host.d.ts",
+      "browser": "./dist/runtime/host.browser.js",
+      "node": "./dist/runtime/host.node.js",
+      "test": "./dist/runtime/host.mock.js",
+      "default": "./dist/runtime/host.browser.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build && node scripts/build-entries.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "three": ">=0.160.0"
+  },
+  "peerDependenciesMeta": {
+    "three": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/three": "catalog:",
+    "three": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-dts": "catalog:",
+    "vitest": "catalog:"
+  }
+}
