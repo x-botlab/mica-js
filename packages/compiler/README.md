@@ -65,6 +65,72 @@ Compilation uses `new Function` once per body and requires a host CSP that permi
 dynamic JavaScript compilation. Generated execution itself requires no Node APIs.
 No asynchronous execution, scheduling or electrical solving is implemented here.
 
+## Resumable Process Blocks
+
+`compileResumableBody(region)` is the optional non-generator form of the same body.
+It compiles the region into one plain function with an explicit program counter and a
+reused frame, and returns `{ run, slotCount, start }`:
+
+```ts
+import { compileResumableBody, RESUMABLE_RECEIVE, RESUMABLE_TICKS } from '@mica-js/compiler';
+```
+
+`run(host, args, reaction, frame)` executes until the body suspends or completes and
+returns `true` when it suspended. A suspension writes `frame.kind`
+(`RESUMABLE_TICKS` or `RESUMABLE_RECEIVE`), the validated `frame.duration` or the
+channel name, and the continuation in `frame.pc`; the driver supplies the received
+value in `frame.value` before resuming. The frame is allocated once per process and
+reused, so a suspension allocates no new signal or frame object; host calls and the
+generated `args = []` default still allocate as before. `resumeMap`/`exitMap` metadata
+is not produced for this form; use `compileBodyArtifact` when the map is needed.
+
+Control flow becomes a block graph: `if`, `match`, `while`, `loop`, `break`,
+`continue`, `return` and `returnValue` are lowered to explicit block transitions, and
+`wait`/`receive` end a block. Value slots and locals live in the function scope; only
+the slots the analysis reports live at the resume point are copied into `frame.slots`
+before returning and restored on resume, so a local keeps its pre-suspension value
+while a later `read` observes current state. Straight-line operations are emitted by
+the generator emitter itself and only hoisted from `const`/`let` declarations to
+assignments, so both forms produce the same expressions, checks and host calls.
+
+The body is admitted only as a whole. `call`/`callValue` (generator delegation),
+`elapse`, `waitUntil`, `redirect`, `stop`, statement-level `yield`, any value region
+containing a suspension, and every execution gap the emitter cannot prove become
+`undefined`, and the caller must keep using the generator body for that process. It
+never switches from a partially executed block to the general path. Callers own the
+suspension protocol: the block reports ticks and receives only.
+
+### Bound resource handles
+
+`compileResumableBody(region, { bindResources: true })` additionally binds the fixed
+`pin`/`state`/`memory` names a body uses to per-instance handles. The generated body
+calls `host.bind(specs)` once per frame (`frame.resources ??= ...`) and then uses the
+handle methods instead of name lookups:
+
+```ts
+interface ResourceHandle {
+  read?(): unknown;                                  // state
+  write?(value: unknown): void;
+  sample?(): unknown;                                // pin, read fresh every call
+  intent?(value: unknown): void;
+  resistor?(resistance: unknown): unknown;
+  load8?(offset: unknown): number;                   // memory, per width/endianness
+  load16le?/load16be?/load32le?/load32be?(offset: unknown): number;
+  store8?/store16le?/store16be?/store32le?/store32be?(offset: unknown, value: unknown): void;
+  length?(): number;
+  copy?(offset: unknown, length: unknown): unknown;
+}
+```
+
+`ExecutionHost.bind` is optional and only consulted when the option is set, so existing
+hosts and the generator path emit exactly the same code as before. Handles are supplied
+by the host per instance; the program text stays shared and no handle is ever captured
+at compile time. Resource parameters (`pin`/`memory` values passed through `args`) are
+never bound and keep the generic `host.load/store/sample` calls. The contract for
+implementers is exact equivalence with the generic operation, including lazy name
+resolution, state snapshots and invalidation, live sample reads, memory
+bounds/endianness, and any code-memory invalidation the host performs on stores.
+
 ## Bounded Direct JIT
 
 `compileDirectJit(instructions, binding)` optionally compiles an entire cached PC

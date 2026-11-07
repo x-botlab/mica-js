@@ -50,7 +50,8 @@
     "bench:workloads": "node bench/workloads.mjs",
     "bench:propagation": "node bench/propagation.mjs",
     "bench:mcu": "node bench/mcu.mjs",
-    "bench:mcu:typical": "node bench/typical-mcu.mjs"
+    "bench:mcu:typical": "node bench/typical-mcu.mjs",
+    "bench:mcu:camera": "node bench/camera-mcu.mjs"
   },
   "publishConfig": {
     "access": "public",

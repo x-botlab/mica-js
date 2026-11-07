@@ -5,6 +5,8 @@ export {
   compileComputationArtifact,
 } from './compiler.js';
 export { compileDirectJit } from './direct-jit.js';
+export { compileResumableBody } from './resumable.js';
+export { RESUMABLE_RECEIVE, RESUMABLE_TICKS } from './types.js';
 export {
   checkBoolean,
   checkDuration,
@@ -59,4 +61,8 @@ export type {
   GeneratedPosition,
   ReactionFrame,
   ResumePoint,
+  ResumableBody,
+  ResumableFrame,
+  ResumableProgram,
+  ResourceHandle,
 } from './types.js';

@@ -688,7 +688,9 @@ async function verifyCacheTransitions() {
         output.intent = [{ to: target, resistance: resistance * (step + 1) }];
       const before = digital.stats;
       const touched = new Set(step % 2 === 0 ? outputs : [...outputs].reverse());
-      const changed = builds(() => digital.solve(touched), step < 3 ? 1 : 0, step < 3 ? 2 : 0);
+      // Each output node keeps exactly one branch to a fixed reference, so no component
+      // can gain or lose a coupling and the block partition is provably unchanged.
+      const changed = builds(() => digital.solve(touched), 0, 0);
       assert.deepEqual(changed, outputs, 'changed pins retain board ordering');
       assert.equal(digital.stats.components, 2);
       assert.equal(digital.stats.floatingComponents, 0);
@@ -702,6 +704,19 @@ async function verifyCacheTransitions() {
       outputs.forEach((output) => checkPin(output, target === high ? 5 : 0, true));
       assert.equal(high.sample, fixed[0]);
       assert.equal(low.sample, fixed[1]);
+    }
+    if (count > 1) {
+      // Coupling a locally updated node to an unknown neighbour must fall back and rebuild
+      // the partition from the current pin edges, not from the bypassed blocks.
+      outputs[0].intent = [
+        { to: low, resistance },
+        { to: outputs[1], resistance },
+      ];
+      assert.ok(digital.solve([outputs[0]]).length > 0);
+      checkPin(outputs[0], 0.5);
+      checkPin(outputs[1], 1);
+      assert.equal(digital.stats.components, 1, 'the new bridge joins both rails');
+      assert.equal(digital.stats.floatingComponents, 0);
     }
   }
   const railHigh = pin('restored.high');
@@ -929,6 +944,162 @@ async function verifyCacheTransitions() {
     '24 distinct frames exceed the eight-descriptor window',
   );
   assert.equal(coldHandle.transitions.size, 8);
+  // Local reference-leaf updates must never mutate the component bookkeeping that admitted
+  // topology snapshots still own, and they must not rebuild the partition themselves.
+  const aliasHigh = pin('alias.high');
+  const aliasLow = pin('alias.low');
+  const aliasLeaf = pin('alias.leaf');
+  const aliasFirst = pin('alias.first');
+  const aliasSecond = pin('alias.second');
+  aliasLeaf.intent = [{ to: aliasHigh, resistance }];
+  aliasFirst.intent = [{ to: aliasHigh, resistance }];
+  aliasSecond.intent = [{ to: aliasFirst, resistance }];
+  const aliasing = createNetwork(
+    [aliasHigh, aliasLow, aliasLeaf, aliasFirst, aliasSecond],
+    [
+      { id: 'alias-high', pins: [aliasHigh], voltage: 10 },
+      { id: 'alias-low', pins: [aliasLow], voltage: 0 },
+    ],
+  );
+  const aliasHandle = probes.caches.at(-1);
+  aliasing.solve();
+  const coupled = [{ to: aliasFirst, resistance }];
+  const opened = [];
+  for (let round = 0; round < 4; round++) {
+    aliasSecond.intent = round % 2 === 0 ? opened : coupled;
+    aliasing.solve([aliasSecond]);
+  }
+  aliasSecond.intent = opened;
+  aliasing.solve([aliasSecond]);
+  const admitted = new Map(
+    [...aliasHandle.transitions]
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [
+        key,
+        {
+          components: [...value.topology.nodeComponents],
+          uniform: [...value.topology.nodeUniform],
+        },
+      ]),
+  );
+  assert.ok(admitted.size >= 2, 'alternating coupled shapes are admitted for reuse');
+  const buildsBeforeLocal = probes.topology;
+  aliasSecond.intent = opened;
+  aliasing.solve([aliasSecond]);
+  assert.equal(
+    probes.topology,
+    buildsBeforeLocal,
+    'a repeated descriptor restores the admitted graph instead of rebuilding',
+  );
+  for (let step = 0; step < 5; step++) {
+    aliasLeaf.intent = [{ to: step % 2 === 0 ? aliasLow : aliasHigh, resistance }];
+    aliasing.solve([aliasLeaf]);
+    checkPin(aliasLeaf, step % 2 === 0 ? 0 : 10, true);
+    assert.equal(probes.topology, buildsBeforeLocal, 'local leaf updates rebuild nothing');
+  }
+  for (const [key, value] of aliasHandle.transitions) {
+    if (value === undefined || !admitted.has(key)) continue;
+    assert.deepEqual(
+      {
+        components: [...value.topology.nodeComponents],
+        uniform: [...value.topology.nodeUniform],
+      },
+      admitted.get(key),
+      'admitted snapshots keep their own component bookkeeping',
+    );
+  }
+  aliasSecond.intent = coupled;
+  aliasing.solve([aliasSecond]);
+  aliasLeaf.intent = [{ to: aliasLow, resistance }];
+  aliasing.solve([aliasLeaf]);
+  checkPin(aliasLeaf, 0, true);
+  checkPin(aliasFirst, 10, true);
+  assert.equal(aliasing.stats.components, 2);
+  assert.equal(aliasing.stats.floatingComponents, 0);
+  // A single-branch leaf whose old target is another unknown node is not yet a digital
+  // leaf: leaving that node can detach the last branch of a floating component. The local
+  // path must decline even though the leaf's own incident count is one.
+  const pairHigh = pin('pair.high');
+  const pairLow = pin('pair.low');
+  const pairSource = pin('pair.source');
+  const pairSink = pin('pair.sink');
+  pairSource.intent = [{ to: pairSink, resistance }];
+  const pairing = createNetwork(
+    [pairHigh, pairLow, pairSource, pairSink],
+    [
+      { id: 'pair-high', pins: [pairHigh], voltage: 10 },
+      { id: 'pair-low', pins: [pairLow], voltage: 0 },
+    ],
+  );
+  pairing.solve();
+  assert.equal(pairing.stats.components, 3, 'two rails plus the floating pair');
+  assert.equal(pairing.stats.floatingComponents, 1, 'the pair has no fixed potential');
+  assert.deepEqual(pairSource.sample, { voltage: null, level: 'unknown', status: 'floating' });
+  assert.deepEqual(pairSink.sample, { voltage: null, level: 'unknown', status: 'floating' });
+  const beforePair = probes.topology;
+  pairSource.intent = [{ to: pairHigh, resistance }];
+  pairing.solve([pairSource]);
+  assert.equal(probes.topology - beforePair, 1, 'leaving an unknown neighbour rebuilds');
+  assert.equal(pairing.stats.components, 3, 'the abandoned node keeps its own component');
+  assert.equal(pairing.stats.floatingComponents, 1, 'the abandoned node stays floating');
+  checkPin(pairSource, 10, true);
+  assert.deepEqual(pairSink.sample, { voltage: null, level: 'unknown', status: 'floating' });
+  // Two mutually tied leaves have two incident branches each, so the leaf guard rejects the
+  // batch and the census still follows the rebuilt partition.
+  const tiedHigh = pin('tied.high');
+  const tiedLow = pin('tied.low');
+  const tiedFirst = pin('tied.first');
+  const tiedSecond = pin('tied.second');
+  tiedFirst.intent = [{ to: tiedSecond, resistance }];
+  tiedSecond.intent = [{ to: tiedFirst, resistance }];
+  const tied = createNetwork(
+    [tiedHigh, tiedLow, tiedFirst, tiedSecond],
+    [
+      { id: 'tied-high', pins: [tiedHigh], voltage: 10 },
+      { id: 'tied-low', pins: [tiedLow], voltage: 0 },
+    ],
+  );
+  tied.solve();
+  assert.equal(tied.stats.components, 3, 'two rails plus the floating pair');
+  assert.equal(tied.stats.floatingComponents, 1);
+  const beforeTied = probes.topology;
+  tiedFirst.intent = [{ to: tiedHigh, resistance }];
+  tiedSecond.intent = [{ to: tiedLow, resistance }];
+  tied.solve([tiedFirst, tiedSecond]);
+  assert.equal(probes.topology - beforeTied, 1, 'a mutual pair keeps the general solver');
+  assert.equal(tied.stats.components, 2);
+  assert.equal(tied.stats.floatingComponents, 0);
+  checkPin(tiedFirst, 10, true);
+  checkPin(tiedSecond, 0, true);
+  // A branch from another pin into the candidate node also blocks the local path, because
+  // that inbound edge is part of the node's incident set.
+  const backHigh = pin('back.high');
+  const backLow = pin('back.low');
+  const backLeaf = pin('back.leaf');
+  const backDriver = pin('back.driver');
+  backLeaf.intent = [{ to: backHigh, resistance }];
+  backDriver.intent = [
+    { to: backLeaf, resistance },
+    { to: backHigh, resistance },
+  ];
+  const backed = createNetwork(
+    [backHigh, backLow, backLeaf, backDriver],
+    [
+      { id: 'back-high', pins: [backHigh], voltage: 10 },
+      { id: 'back-low', pins: [backLow], voltage: 0 },
+    ],
+  );
+  backed.solve();
+  checkPin(backLeaf, 10, true);
+  checkPin(backDriver, 10, true);
+  const beforeBack = probes.topology;
+  backLeaf.intent = [{ to: backLow, resistance }];
+  assert.ok(backed.solve([backLeaf]).length > 0);
+  assert.equal(probes.topology - beforeBack, 1, 'an inbound branch keeps the general solver');
+  assert.equal(backed.stats.components, 1, 'the divider ties both rails');
+  assert.equal(backed.stats.floatingComponents, 0);
+  checkPin(backLeaf, 10 / 3);
+  checkPin(backDriver, 20 / 3);
   let maximumSnapshots = 0;
   let maximumTopologies = 0;
   for (const handle of probes.caches) {
@@ -961,7 +1132,7 @@ async function verifyCacheTransitions() {
     cold_descriptor_entries: coldHandle.transitions.size,
     cold_retained_graphs: [...coldHandle.transitions.values()].filter(Boolean).length,
     assertions:
-      'stable identity/dirty hints, resistance block metadata reuse, exact reference-switch restoration, order/multiplicity, shared-reference merge/split, diagonal/coupled 32/33-node transitions, floating/reference-only transitions, nonfinite result rejection, complete failure diagnostics and atomic cache retry, 52-block zero-copy restores, two-observation admission, cold bus churn retains descriptors only, bounded ownership without history or numerical-cache chains',
+      'stable identity/dirty hints, resistance block metadata reuse, exact reference-switch restoration, order/multiplicity, shared-reference merge/split, diagonal/coupled 32/33-node transitions, floating/reference-only transitions, nonfinite result rejection, complete failure diagnostics and atomic cache retry, 52-block zero-copy restores, two-observation admission, cold bus churn retains descriptors only, bounded ownership without history or numerical-cache chains, local reference-leaf updates that never rebuild the partition or mutate admitted bookkeeping',
     instrumentation:
       'separate untimed module only; measured workloads use unmodified transpilation',
   };
