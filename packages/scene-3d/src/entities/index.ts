@@ -1,5 +1,6 @@
-export { BODY_TYPES, ENTITY_TYPES, GEOMETRY_TYPES, SENSOR_TYPES } from './types';
+export { BODY_TYPES, ENTITY_TYPES, GEOMETRY_TYPES, SENSOR_TYPES, isAcrylicGeometry } from './types';
 export type {
+  AcrylicGeometry,
   AssemblyInstance,
   AxisConstraint,
   BodyType,

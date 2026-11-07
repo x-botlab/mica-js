@@ -148,6 +148,14 @@ const hit = physics.raycast(Vec3d.zero, Vec3d.unitY, 10);
 
 单元测试校验所有预设的 `density > 0`，且 `friction` / `restitution` / 视觉系数均落在 0–1。
 
+### 亚克力板
+
+`AcrylicDefinition` 用 2D 轮廓和厚度生成确定性的挤出网格。轮廓支持 `rect`（可选圆角）、`circle`、`polygon`、`svg` 和 `compound`（`outer` + `holes`）。SVG 只接受 `M/m L/l H/h V/v C/c Q/q Z/z`；其它指令会抛出包含指令名的 `TypeError`，曲线按固定步数折线化。
+
+场景长度统一用米：例如 200×300 mm 底板在 JSON 中写作 `width: 0.2`、`height: 0.3`，厚度 `0.003`。默认轮廓包围盒中心为原点，也可用 `origin` 指定对齐方式。材质默认引用内置 `acrylic`；`document.materials` 的预设**叠加**在内置预设之上（同名覆盖，未声明 `default` 时仍用 `acrylic`），也可用材质对象或局部字段覆盖颜色、透明度、粗糙度、摩擦、弹性和密度。`computeAcrylicPhysics` 按面积 × 厚度 × 密度（g/cm³ 转 kg/m³）计算质量，并用薄板长方体近似主惯性矩；`convex: true` 选择 `convex-hull`，否则选择 `trimesh`，两者都标记 `source: 'geometry'`。宿主在实体未显式给出 `physics.mass` 时使用该质量，且只在实体碰撞体是 `trimesh` / `convex-hull` 时替换为网格碰撞体，显式的 `box` 等基础形状保持原样。
+
+渲染端从 `@mica-js/scene-3d/client/three` 导入 `createAcrylicThreeMesh(definition, library)`，它生成带 position/normal/uv/index 的 `BufferGeometry` 和双面 `MeshStandardMaterial`。UV 按轮廓包围盒归一化。赛道贴图由 `SurfaceColorResolver.samplers[entityId]` 提供：采样函数收到 `RaycastHit`（`bodyId` / `point` / `normal` / `distance`），可用 `hit.point` 结合板材包围盒换算 uv 后查表取色。网格顶点按面组分离（顶盖 / 底盖 / 侧壁），侧壁法线朝外、孔洞侧壁法线朝孔内，可直接交给渲染器。
+
 ### `.assembly.json` 装配体定义格式
 
 `ASSEMBLY_VERSION`（当前为 `1`）标识装配体定义的 schema 版本；读取方应拒绝不认识的版本。

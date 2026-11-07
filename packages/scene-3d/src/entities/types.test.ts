@@ -32,6 +32,8 @@ function describeGeometry(geometry: GeometryDescriptor): string {
       return `capsule r=${geometry.radius} h=${geometry.height}`;
     case 'plane':
       return `plane ${geometry.size.x}x${geometry.size.y}`;
+    case 'acrylic':
+      return `acrylic ${geometry.acrylic.thickness}mm`;
     default:
       return assertNever(geometry);
   }
@@ -51,7 +53,7 @@ describe('entity type catalogue', () => {
   });
 
   it('lists every primitive geometry kind', () => {
-    expect(GEOMETRY_TYPES).toEqual(['box', 'sphere', 'cylinder', 'capsule', 'plane']);
+    expect(GEOMETRY_TYPES).toEqual(['box', 'sphere', 'cylinder', 'capsule', 'plane', 'acrylic']);
   });
 });
 
@@ -103,6 +105,10 @@ describe('GeometryDescriptor', () => {
       { type: 'cylinder', radius: 0.25, height: 1 },
       { type: 'capsule', radius: 0.1, height: 0.5 },
       { type: 'plane', size: { x: 4, y: 2 } },
+      {
+        type: 'acrylic',
+        acrylic: { contour: { type: 'rect', width: 0.01, height: 0.005 }, thickness: 0.003 },
+      },
     ];
 
     expect(geometries.map((geometry) => geometry.type)).toEqual([...GEOMETRY_TYPES]);
@@ -112,6 +118,7 @@ describe('GeometryDescriptor', () => {
       'cylinder r=0.25 h=1',
       'capsule r=0.1 h=0.5',
       'plane 4x2',
+      'acrylic 0.003mm',
     ]);
   });
 });

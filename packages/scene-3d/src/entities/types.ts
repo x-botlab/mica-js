@@ -14,6 +14,7 @@
  * example, `"torque"` or `"position"`), mirroring the 2D Widget binding model.
  */
 
+import type { AcrylicDefinition } from '../geometry/acrylic';
 import type { Quaternion, Vec2d, Vec3d } from '../math';
 
 /** Endpoint of an entity port: a port of one symbol instance in the bound schematic. */
@@ -101,7 +102,7 @@ export interface PhysicsConfig {
 }
 
 /** Primitive geometry kinds supported by {@link GeometryDescriptor}. */
-export const GEOMETRY_TYPES = ['box', 'sphere', 'cylinder', 'capsule', 'plane'] as const;
+export const GEOMETRY_TYPES = ['box', 'sphere', 'cylinder', 'capsule', 'plane', 'acrylic'] as const;
 
 /** A box; `size` is the full extent along each local axis, in metres. */
 export interface BoxGeometry {
@@ -139,14 +140,29 @@ export interface PlaneGeometry {
   readonly size: Vec2d;
 }
 
-/**
- * Shape of a model, discriminated by `type`.
- *
- * Phase 1 covers the primitive solids; mesh, heightmap and acrylic shapes are added by the issues
- * that own their payloads.
- */
+/** An extruded laser-cut acrylic plate. */
+export interface AcrylicGeometry {
+  readonly type: 'acrylic';
+  readonly acrylic: AcrylicDefinition;
+}
+
+/** Runtime guard for geometry values received from JSON or another package boundary. */
+export function isAcrylicGeometry(value: unknown): value is AcrylicGeometry {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    (value as { readonly type?: unknown }).type === 'acrylic' &&
+    'acrylic' in value
+  );
+}
+
 export type GeometryDescriptor =
-  BoxGeometry | SphereGeometry | CylinderGeometry | CapsuleGeometry | PlaneGeometry;
+  | BoxGeometry
+  | SphereGeometry
+  | CylinderGeometry
+  | CapsuleGeometry
+  | PlaneGeometry
+  | AcrylicGeometry;
 
 /**
  * Collision shape of a model, discriminated by `type`.

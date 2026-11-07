@@ -14,6 +14,7 @@
 
 import * as THREE from 'three';
 import type { GeometryDescriptor, ModelEntity, SceneEntity } from '../entities';
+import { createAcrylicThreeMesh } from './three';
 import { TRANSFORM_STRIDE } from '../runtime/protocol';
 import type { Scene3DView } from './client';
 
@@ -152,6 +153,11 @@ export function createThreeScene3DView(options: ThreeScene3DViewOptions): ThreeS
 
 function createViewEntity(entity: SceneEntity): ViewEntity {
   if (isModelEntity(entity)) {
+    if (entity.geometry.type === 'acrylic') {
+      const mesh = createAcrylicThreeMesh(entity.geometry.acrylic);
+      mesh.name = entity.id;
+      return { object: mesh, resources: [mesh.geometry, mesh.material] };
+    }
     const geometry = createGeometry(entity.geometry);
     const opacity = entity.material.opacity ?? 1;
     const material = new THREE.MeshStandardMaterial({
@@ -190,6 +196,8 @@ function createGeometry(geometry: GeometryDescriptor): THREE.BufferGeometry {
       );
     case 'plane':
       return new THREE.PlaneGeometry(geometry.size.x, geometry.size.y);
+    case 'acrylic':
+      return new THREE.BufferGeometry();
   }
 }
 

@@ -10,6 +10,7 @@ import type {
 } from '../entities';
 import { SCENE3D_VERSION } from '../format';
 import type { Scene3DDocument } from '../format';
+import type { MaterialLibrary } from '../format/materials';
 import type { Vec3d } from '../math';
 import { createMujocoRuntime } from '../physics/mujoco-runtime';
 import type {
@@ -71,10 +72,15 @@ function assembly(id: string): AssemblyInstance {
   };
 }
 
-function documentWith(entities: readonly SceneEntity[], schematic?: string): Scene3DDocument {
+function documentWith(
+  entities: readonly SceneEntity[],
+  schematic?: string,
+  materials?: MaterialLibrary,
+): Scene3DDocument {
   return {
     version: SCENE3D_VERSION,
     ...(schematic === undefined ? {} : { schematic }),
+    ...(materials === undefined ? {} : { materials }),
     world: {
       gravity: { x: 0, y: -9.81, z: 0 },
       physicsStep: 1000 / 60,
@@ -114,6 +120,7 @@ class FailingSensor extends Sensor {
 /** Delegating wrapper that records the calls the host makes, in order. */
 class RecordingPhysics implements PhysicsRuntime {
   public readonly log: string[] = [];
+  public readonly bodyConfigs: RigidBodyConfig[] = [];
   public readonly targets: Array<{ readonly jointId: string; readonly target: JointTarget }> = [];
   public disposed = false;
   private readonly inner = createMujocoRuntime();
@@ -134,6 +141,7 @@ class RecordingPhysics implements PhysicsRuntime {
 
   public addBody(config: RigidBodyConfig): string {
     this.log.push(`physics.addBody:${config.id ?? ''}`);
+    this.bodyConfigs.push(config);
     return this.inner.addBody(config);
   }
 
@@ -267,6 +275,7 @@ interface HostHarness {
 async function createHost(options: {
   entities: readonly SceneEntity[];
   schematic?: string;
+  materials?: MaterialLibrary;
   circuits?: Scene3DCircuitOptions;
   assemblyFor?: (entity: AssemblyInstance, document: Scene3DDocument) => AssemblyDefinition;
   physics?: RecordingPhysics;
@@ -277,7 +286,7 @@ async function createHost(options: {
   const physics = options.physics ?? new RecordingPhysics();
   const renderer = options.renderer ?? createOffscreenRenderer();
   const host = await createScene3DHost({
-    document: documentWith(options.entities, options.schematic),
+    document: documentWith(options.entities, options.schematic, options.materials),
     physics,
     renderer,
     ...(options.circuits === undefined ? {} : { circuits: options.circuits }),
@@ -289,6 +298,75 @@ async function createHost(options: {
 }
 
 describe('Scene3DHost initialisation', () => {
+  it('derives acrylic mass and collider, honouring the document material library', async () => {
+    const acrylic = {
+      id: 'track-base',
+      type: 'model',
+      position: { x: 0, y: 0.0015, z: 0 },
+      rotation: IDENTITY,
+      geometry: {
+        type: 'acrylic',
+        acrylic: {
+          contour: { type: 'rect', width: 0.1, height: 0.1 },
+          thickness: 0.003,
+        },
+      },
+      material: { friction: 0.4, restitution: 0.1 },
+      collider: { type: 'trimesh', source: 'geometry' },
+      physics: { bodyType: 'static' },
+    } as unknown as ModelEntity;
+    const materials: MaterialLibrary = {
+      presets: {
+        'carbon-plate': {
+          displayName: '碳纤板',
+          density: 1.6,
+          friction: 0.9,
+          restitution: 0.05,
+        },
+      },
+      default: 'carbon-plate',
+    };
+
+    const { physics, host } = await createHost({ entities: [acrylic], materials });
+
+    // 0.1 m × 0.1 m × 0.003 m × 1600 kg/m³ = 0.048 kg.
+    expect(physics.bodyConfigs[0]?.mass).toBeCloseTo(0.048, 6);
+    expect(physics.bodyConfigs[0]?.collider).toEqual({ type: 'trimesh', source: 'geometry' });
+    // The entity's own material still wins for contact properties.
+    expect(physics.bodyConfigs[0]?.friction).toBe(0.4);
+    expect(physics.bodyConfigs[0]?.boundingRadius).toBeGreaterThan(0);
+
+    await host.dispose();
+  });
+
+  it('keeps an explicit primitive collider on an acrylic entity', async () => {
+    const acrylic = {
+      id: 'bracket',
+      type: 'model',
+      position: { x: 0, y: 0.01, z: 0 },
+      rotation: IDENTITY,
+      geometry: {
+        type: 'acrylic',
+        acrylic: {
+          contour: { type: 'rect', width: 0.04, height: 0.06 },
+          thickness: 0.003,
+        },
+      },
+      material: { friction: 0.5, restitution: 0.2 },
+      collider: { type: 'box', size: { x: 0.04, y: 0.003, z: 0.06 } },
+      physics: { bodyType: 'static' },
+    } as unknown as ModelEntity;
+
+    const { physics, host } = await createHost({ entities: [acrylic] });
+
+    expect(physics.bodyConfigs[0]?.collider).toEqual({
+      type: 'box',
+      size: { x: 0.04, y: 0.003, z: 0.06 },
+    });
+
+    await host.dispose();
+  });
+
   it('creates one circuit sandbox per assembly instance, in document order', async () => {
     const circuits = createCircuitHarness();
     const { host } = await createHost({

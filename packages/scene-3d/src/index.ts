@@ -1,7 +1,14 @@
 export { Quaternion, Transform, Vec3d } from './math';
 export type { Vec2d } from './math';
-export { BODY_TYPES, ENTITY_TYPES, GEOMETRY_TYPES, SENSOR_TYPES } from './entities';
+export {
+  BODY_TYPES,
+  ENTITY_TYPES,
+  GEOMETRY_TYPES,
+  SENSOR_TYPES,
+  isAcrylicGeometry,
+} from './entities';
 export type {
+  AcrylicGeometry,
   AssemblyInstance,
   AxisConstraint,
   BodyType,
@@ -127,3 +134,6 @@ export type {
 
 // Sensor runtime: base class, factory registry and the reading types.
 export * from './sensors';
+
+// Acrylic contour, mesh and physics core.
+export * from './geometry';

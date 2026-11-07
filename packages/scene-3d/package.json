@@ -56,6 +56,7 @@
   "dependencies": {
     "@mica-js/core": "workspace:*",
     "@mica-js/sandbox": "workspace:*",
+    "earcut": "2.2.4",
     "rolldown": "catalog:"
   },
   "peerDependencies": {
@@ -67,6 +68,7 @@
     }
   },
   "devDependencies": {
+    "@types/earcut": "2.1.4",
     "@types/three": "catalog:",
     "three": "catalog:",
     "typescript": "catalog:",

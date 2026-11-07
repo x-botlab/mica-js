@@ -26,7 +26,7 @@
  */
 
 import type { AssemblyDefinition } from '../assembly';
-import { BODY_TYPES, ENTITY_TYPES } from '../entities';
+import { BODY_TYPES, ENTITY_TYPES, isAcrylicGeometry } from '../entities';
 import type {
   AssemblyInstance,
   EntityType,
@@ -36,6 +36,8 @@ import type {
 } from '../entities';
 import { SCENE3D_VERSION } from '../format';
 import type { Scene3DDocument } from '../format/document';
+import type { MaterialLibrary } from '../format/materials';
+import { computeAcrylicPhysics } from '../geometry/acrylic';
 import { JOINT_TARGET_KINDS } from '../physics';
 import type { JointTarget, JointTargetKind, PhysicsRuntime, RigidBodyConfig } from '../physics';
 import type { OffscreenRenderer } from '../rendering/renderer';
@@ -449,7 +451,7 @@ export class Scene3DHost implements Scene3DHostAPI {
 
   private attachBody(entity: SceneEntity): void {
     if (!isModelEntity(entity)) return;
-    const bodyId = this.physics.addBody(toRigidBodyConfig(entity));
+    const bodyId = this.physics.addBody(toRigidBodyConfig(entity, this.document.materials));
     this.bodies.set(entity.id, bodyId);
   }
 
@@ -687,17 +689,34 @@ function parseJointCommand(payload: unknown): CircuitJointCommand | null {
 }
 
 /** Maps a model entity onto the physics runtime contract. */
-function toRigidBodyConfig(entity: ModelEntity): RigidBodyConfig {
+function toRigidBodyConfig(entity: ModelEntity, library?: MaterialLibrary): RigidBodyConfig {
   const physics = entity.physics;
+  const acrylic = isAcrylicGeometry(entity.geometry)
+    ? computeAcrylicPhysics(entity.geometry.acrylic, {
+        convex: entity.collider.type === 'convex-hull',
+        ...(library === undefined ? {} : { library }),
+      })
+    : undefined;
   return {
     id: entity.id,
     bodyType: physics.bodyType,
     position: entity.position,
     rotation: entity.rotation,
-    collider: entity.collider,
+    // The mesh-derived collider only replaces a "from geometry" request; an explicit primitive
+    // stays authoritative, and an acrylic entity without one still gets the exact mesh.
+    collider:
+      acrylic === undefined ||
+      (entity.collider.type !== 'trimesh' && entity.collider.type !== 'convex-hull')
+        ? entity.collider
+        : acrylic.collider,
     friction: entity.material.friction,
     restitution: entity.material.restitution,
-    ...(physics.mass === undefined ? {} : { mass: physics.mass }),
+    ...(physics.mass === undefined
+      ? acrylic === undefined
+        ? {}
+        : { mass: acrylic.mass }
+      : { mass: physics.mass }),
+    ...(acrylic === undefined ? {} : { boundingRadius: acrylic.boundingRadius }),
     ...(physics.velocity === undefined ? {} : { velocity: physics.velocity }),
     ...(physics.angularVelocity === undefined ? {} : { angularVelocity: physics.angularVelocity }),
     ...(physics.constraints === undefined ? {} : { constraints: physics.constraints }),
