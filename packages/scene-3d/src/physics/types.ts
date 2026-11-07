@@ -123,6 +123,12 @@ export interface BodyTransform {
   readonly rotation: Quaternion;
 }
 
+/** Linear and angular velocity of a body in world space. */
+export interface BodyMotion {
+  readonly linearVelocity: Vec3d;
+  readonly angularVelocity: Vec3d;
+}
+
 /** Intersection of a ray with a body's collision shape. */
 export interface RaycastHit {
   /** Body that was hit. */
@@ -167,6 +173,8 @@ export interface PhysicsRuntime {
   removeBody?(bodyId: string): void;
   /** Reads the pose of a body. */
   getBodyTransform(bodyId: string): { position: Vec3d; rotation: Quaternion };
+  /** Reads optional world-space linear and angular velocity of a body. */
+  getBodyMotion?(bodyId: string): BodyMotion;
   /** Reads the state of a joint. */
   getJointState(jointId: string): JointState;
   /**

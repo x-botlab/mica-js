@@ -27,7 +27,7 @@ import { createOffscreenRenderer } from '../rendering/renderer.mock';
 import type { MockOffscreenRenderer } from '../rendering/renderer.mock';
 import { Sensor } from '../sensors/base';
 import { MockSensor } from '../sensors/base';
-import { sensorRegistry } from '../sensors/registry';
+import { SensorRegistry, sensorRegistry } from '../sensors/registry';
 import type { SensorData } from '../sensors/types';
 import { createScene3DHost } from './host';
 import { Scene3DProtocolError } from './protocol';
@@ -272,6 +272,7 @@ async function createHost(options: {
   physics?: RecordingPhysics;
   renderer?: MockOffscreenRenderer;
   startTime?: number;
+  sensors?: SensorRegistry;
 }): Promise<HostHarness> {
   const physics = options.physics ?? new RecordingPhysics();
   const renderer = options.renderer ?? createOffscreenRenderer();
@@ -282,6 +283,7 @@ async function createHost(options: {
     ...(options.circuits === undefined ? {} : { circuits: options.circuits }),
     ...(options.assemblyFor === undefined ? {} : { assemblyFor: options.assemblyFor }),
     ...(options.startTime === undefined ? {} : { startTime: options.startTime }),
+    sensors: options.sensors ?? sensorRegistry,
   });
   return { host, physics, renderer };
 }
@@ -783,6 +785,30 @@ describe('Scene3DHost sensors', () => {
     sensorRegistry.unregister('distance');
     sensorRegistry.register('distance', (entity) => new MockSensor(entity, data));
   }
+
+  it('uses an injected registry and keeps sensorData notifications intact', async () => {
+    const registry = new SensorRegistry();
+    registry.register(
+      'distance',
+      (entity) => new MockSensor(entity, { type: 'distance', distance: 0.75, timestamp: 0n }),
+    );
+    const circuits = createCircuitHarness();
+    const definition = assemblyDefinition([distanceSensor('custom-distance')]);
+    const { host } = await createHost({
+      entities: [assembly('robot')],
+      circuits: { createCircuitSandbox: circuits.factory },
+      assemblyFor: () => definition,
+      sensors: registry,
+    });
+
+    await host.step(16);
+    expect(host.sensorCount).toBe(1);
+    expect(circuits.created[0]?.notifications[0]).toMatchObject({
+      method: 'sensorData',
+      args: [{ sensorId: 'custom-distance', data: { type: 'distance', distance: 0.75 } }],
+    });
+    await host.dispose();
+  });
 
   it('pushes assembly sensor readings to the owning circuit at the configured rate', async () => {
     registerDistanceSensor();

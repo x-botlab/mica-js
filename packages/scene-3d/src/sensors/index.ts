@@ -1,3 +1,15 @@
+export { ColorSensor, createMaterialColorResolver, createSolidColorResolver } from './color';
+export type { Rgb, SurfaceColorResolver } from './color';
+export { DistanceSensor } from './distance';
+export { GPSSensor } from './gps';
+export { IMUSensor } from './imu';
+export type { IMUSensorOptions } from './imu';
+export {
+  createDefaultSensorRegistry,
+  getDefaultSensorRegistry,
+  registerDefaultSensors,
+} from './defaults';
+export type { DefaultSensorOptions } from './defaults';
 export { DEFAULT_SENSOR_UPDATE_RATE, MockSensor, Sensor } from './base';
 export { SensorRegistry, sensorRegistry } from './registry';
 export type { SensorFactory } from './registry';

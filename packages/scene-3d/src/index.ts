@@ -43,6 +43,7 @@ export {
   MujocoRuntime,
 } from './physics';
 export type {
+  BodyMotion,
   BodyTransform,
   JointConfig,
   JointLimits,

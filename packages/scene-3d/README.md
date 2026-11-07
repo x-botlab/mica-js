@@ -2,7 +2,7 @@
 
 3D 场景核心包：`.scene3d` 文档、物理实体、传感器与确定性运行时。
 
-当前处于 Phase 1 阶段：提供跨层共用的 3D 数学类型（`Vec2d` / `Vec3d` / `Quaternion` / `Transform`）、`.scene3d` 文档格式类型、`.assembly.json` 装配体定义类型、实体系统类型（`SceneEntity` / `ModelEntity` / `AssemblyInstance` / `JointEntity` / `SensorEntity`、几何、碰撞体、材质与物理描述符）、`physics/` 物理运行时适配层（`PhysicsRuntime` 契约与确定性的 `MujocoRuntime` 内存替身），以及 `runtime/` 的 `Scene3DRuntime`（锁步时间同步）。真实 MuJoCo WASM 引擎、传感器系统与电路仿真器由后续 issue 逐步接入。
+当前处于 Phase 1 阶段：提供跨层共用的 3D 数学类型（`Vec2d` / `Vec3d` / `Quaternion` / `Transform`）、`.scene3d` 文档格式类型、`.assembly.json` 装配体定义类型、实体系统类型（`SceneEntity` / `ModelEntity` / `AssemblyInstance` / `JointEntity` / `SensorEntity`、几何、碰撞体、材质与物理描述符）、`physics/` 物理运行时适配层（`PhysicsRuntime` 契约与确定性的 `MujocoRuntime` 内存替身），以及 `runtime/` 的 `Scene3DRuntime`（锁步时间同步）。真实 MuJoCo WASM 引擎与电路仿真器由后续 issue 逐步接入。
 
 ## 安装与构建
 
@@ -189,13 +189,23 @@ const hit = physics.raycast(Vec3d.zero, Vec3d.unitY, 10);
 
 ### 传感器系统
 
-`sensors/` 提供传感器运行时架构（#192）：
+`sensors/` 提供确定性的距离、IMU、GPS 和颜色传感器：
 
 - `SensorData` — 10 种传感器读数的判别联合，每条读数带 picoseconds 虚拟时间戳
 - `Sensor` — 抽象基类；`tryUpdate(physics, currentTime)` 按 `config.updateRate` 节流，未到采样时间返回 `null`
-- `MockSensor` — 返回固定读数的测试替身
-- `SensorRegistry` / `sensorRegistry` — 按 `sensorType` 注册工厂；未注册的类型由宿主告警并跳过
-- 挂载：`mountedOn` 指定父实体时，`getWorldTransform()` 组合父刚体位姿与传感器局部偏移
+- `createDefaultSensorRegistry({ document })` — 为每个场景创建独立的默认注册表；传入文档会自动为颜色传感器建立材质颜色解析器
+- `SensorRegistry` — 可注册自定义工厂：`registry.register('my-sensor', entity => new MySensor(entity))`
+- 颜色传感器从世界位姿**朝下发射射线读取赛道颜色**，将命中的材质颜色或 `SurfaceColorResolver` 解析结果转换为 RGB；没有命中或没有颜色时按白色 `[255, 255, 255]` 处理
+- `createMaterialColorResolver` 使用命中 `bodyId` 对应模型的 `material.color`（支持 `#rrggbb` / `#rgb`），`samplers` 可按命中点覆写赛道位图颜色；`createSolidColorResolver` 适合测试
+- `mountedOn` 指定父实体时，`getWorldTransform()` 组合父刚体位姿与传感器局部偏移；IMU 的 `.getBodyMotion()` 是物理运行时可选能力，不支持时退化为零运动
+- IMU 读数在**传感器自身坐标系**：`angularVelocity` 与 `linearAcceleration`（比力，含重力反作用，静止时沿背离地面轴向读 `+9.81`）都按 `orientation` 的逆旋转到局部轴；`orientation` 仍是世界系四元数
+
+宿主默认每次创建自己的注册表，也可以通过 `Scene3DHostOptions.sensors` 注入自定义注册表：
+
+```ts
+const sensors = createDefaultSensorRegistry({ document });
+const host = await createScene3DHost({ document, physics, renderer, sensors });
+```
 
 ### 物理运行时
 
@@ -326,4 +336,6 @@ await host.dispose();
 
 ## 依赖方向
 
-`@mica-js/scene-3d` 复用 `@mica-js/core`（虚拟时间与调度）、`@mica-js/device`（器件层）与 `@mica-js/simulator`（器件实例执行器）；`@mica-js/scene-editor` 只依赖本包。骨架阶段尚未引入这些依赖，接入文档格式与运行时后按此方向添加。
+`@mica-js/scene-3d` 只依赖 `@mica-js/core`（虚拟时间与 RPC）；沙箱相关代码（`client` 与 `guest`）另外使用 `@mica-js/sandbox` 的传输层，`three` 是 `client/three` 的可选 peer。渲染、物理与传感器都在本包内，因此无头环境可以直接在进程内运行 host。
+
+向上不依赖 `@mica-js/editor`：3D 编辑器（视口、gizmo、属性面板）作为 `@mica-js/editor` 的第三个组合根，依赖本包的 `@mica-js/scene-3d/client`，方向始终是 editor → scene-3d。

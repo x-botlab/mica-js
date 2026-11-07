@@ -53,11 +53,16 @@ export interface ColorSensorData {
 /** Inertial measurement: angular velocity, linear acceleration and orientation. */
 export interface IMUSensorData {
   readonly type: 'imu';
-  /** Angular velocity in rad/s, `[x, y, z]`. */
+  /** Angular velocity in rad/s, `[x, y, z]`, in the sensor's own axes. */
   readonly angularVelocity: [number, number, number];
-  /** Linear acceleration in m/s², `[x, y, z]`. */
+  /**
+   * Specific force in m/s², `[x, y, z]`, in the sensor's own axes.
+   *
+   * This is what a real accelerometer measures: gravity reaction included, so a sensor at rest
+   * reads `+9.81` along the axis pointing away from the ground.
+   */
   readonly linearAcceleration: [number, number, number];
-  /** Orientation quaternion, `[x, y, z, w]`. */
+  /** World-space orientation quaternion, `[x, y, z, w]`. */
   readonly orientation: [number, number, number, number];
   readonly timestamp: bigint;
 }

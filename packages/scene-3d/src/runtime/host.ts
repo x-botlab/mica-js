@@ -39,7 +39,8 @@ import type { Scene3DDocument } from '../format/document';
 import { JOINT_TARGET_KINDS } from '../physics';
 import type { JointTarget, JointTargetKind, PhysicsRuntime, RigidBodyConfig } from '../physics';
 import type { OffscreenRenderer } from '../rendering/renderer';
-import { sensorRegistry } from '../sensors/registry';
+import { createDefaultSensorRegistry } from '../sensors/defaults';
+import { SensorRegistry } from '../sensors/registry';
 import type { Sensor } from '../sensors/base';
 import { PS_PER_MILLISECOND } from '../sensors/types';
 import type { SensorData } from '../sensors/types';
@@ -101,6 +102,8 @@ export interface Scene3DHostOptions {
   readonly renderer: OffscreenRenderer;
   /** Circuit simulators to attach; omit for a physics-only scene. */
   readonly circuits?: Scene3DCircuitOptions;
+  /** Sensor factories used by this host; defaults to the built-in sensor registry. */
+  readonly sensors?: SensorRegistry;
   /**
    * Resolves the definition of an assembly instance.
    *
@@ -146,6 +149,7 @@ export class Scene3DHost implements Scene3DHostAPI {
   private readonly physics: PhysicsRuntime;
   private readonly renderer: OffscreenRenderer;
   private readonly circuitOptions: Scene3DCircuitOptions | undefined;
+  private readonly sensorRegistry: SensorRegistry;
   private readonly assemblyFor:
     | ((entity: AssemblyInstance, document: Scene3DDocument) => AssemblyDefinition | undefined)
     | undefined;
@@ -165,6 +169,8 @@ export class Scene3DHost implements Scene3DHostAPI {
     this.physics = options.physics;
     this.renderer = options.renderer;
     this.circuitOptions = options.circuits;
+    this.sensorRegistry =
+      options.sensors ?? createDefaultSensorRegistry({ document: this.document });
     this.assemblyFor = options.assemblyFor;
     this.timeMs = options.startTime ?? 0;
   }
@@ -525,7 +531,7 @@ export class Scene3DHost implements Scene3DHostAPI {
     if (this.sensors.some((slot) => slot.key === key)) return;
 
     try {
-      const sensor = sensorRegistry.create(entity);
+      const sensor = this.sensorRegistry.create(entity);
       this.sensors.push({ key, sensor, entityId: entity.id, assemblyId });
     } catch (error) {
       console.warn(`Scene3DHost: Failed to create sensor ${entity.id}:`, error);

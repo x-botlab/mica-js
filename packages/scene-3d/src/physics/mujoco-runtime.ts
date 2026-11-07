@@ -31,6 +31,7 @@ import {
   JOINT_TYPES,
 } from './types';
 import type {
+  BodyMotion,
   BodyTransform,
   JointConfig,
   JointLimits,
@@ -296,6 +297,16 @@ export class MujocoRuntime implements PhysicsRuntime {
     return {
       position: toVec3(body.position),
       rotation: toQuaternion(body.rotation),
+    };
+  }
+
+  /** Returns a copy of the latest world-space body velocities. */
+  public getBodyMotion(bodyId: string): BodyMotion {
+    this.assertReady('getBodyMotion');
+    const body = this.bodyOrThrow(bodyId);
+    return {
+      linearVelocity: toVec3(body.velocity),
+      angularVelocity: toVec3(body.angularVelocity),
     };
   }
 

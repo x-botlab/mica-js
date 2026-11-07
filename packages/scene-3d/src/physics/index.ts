@@ -5,6 +5,7 @@ export {
   JOINT_TYPES,
 } from './types';
 export type {
+  BodyMotion,
   BodyTransform,
   JointConfig,
   JointLimits,

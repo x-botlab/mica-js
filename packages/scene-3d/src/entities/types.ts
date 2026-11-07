@@ -260,6 +260,10 @@ export interface DistanceConfig {
 /** Configuration of a colour sensor used for line following. */
 export interface ColorConfig {
   readonly type: 'color';
+  /** Ray direction in the sensor's local coordinates; defaults to straight down. */
+  readonly direction?: Vec3d;
+  /** Maximum ray distance in metres; defaults to one metre. */
+  readonly maxRange?: number;
   /** Radius of the sampled patch in metres. */
   readonly sampleRadius: number;
   /** Sampling frequency in hertz. */
