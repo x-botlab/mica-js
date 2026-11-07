@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "name": "robot-car",
+  "displayName": "双轮循迹小车",
+  "schematic": "./robot-car.sch",
+  "entities": [
+    {
+      "id": "chassis",
+      "type": "model",
+      "name": "底盘",
+      "position": { "x": 0, "y": 0.025, "z": 0 },
+      "rotation": { "x": 0, "y": 0, "z": 0, "w": 1 },
+      "geometry": { "type": "box", "size": { "x": 0.15, "y": 0.05, "z": 0.1 } },
+      "material": { "color": "#2f6fed", "friction": 0.5, "restitution": 0.1 },
+      "collider": { "type": "box", "size": { "x": 0.15, "y": 0.05, "z": 0.1 } },
+      "physics": { "bodyType": "dynamic", "mass": 0.18 }
+    },
+    {
+      "id": "left-wheel",
+      "type": "model",
+      "name": "左轮",
+      "position": { "x": 0, "y": 0.03, "z": -0.055 },
+      "rotation": { "x": 0.7071068, "y": 0, "z": 0, "w": 0.7071068 },
+      "geometry": { "type": "cylinder", "radius": 0.03, "height": 0.02 },
+      "material": { "color": "#333333", "friction": 0.9, "restitution": 0.05 },
+      "collider": { "type": "cylinder", "radius": 0.03, "height": 0.02 },
+      "physics": {
+        "bodyType": "dynamic",
+        "mass": 0.02,
+        "constraints": {
+          "freezePosition": { "x": true, "z": true },
+          "freezeRotation": { "x": true, "z": true }
+        }
+      }
+    },
+    {
+      "id": "right-wheel",
+      "type": "model",
+      "name": "右轮",
+      "position": { "x": 0, "y": 0.03, "z": 0.055 },
+      "rotation": { "x": 0.7071068, "y": 0, "z": 0, "w": 0.7071068 },
+      "geometry": { "type": "cylinder", "radius": 0.03, "height": 0.02 },
+      "material": { "color": "#333333", "friction": 0.9, "restitution": 0.05 },
+      "collider": { "type": "cylinder", "radius": 0.03, "height": 0.02 },
+      "physics": {
+        "bodyType": "dynamic",
+        "mass": 0.02,
+        "constraints": {
+          "freezePosition": { "x": true, "z": true },
+          "freezeRotation": { "x": true, "z": true }
+        }
+      }
+    },
+    {
+      "id": "left-motor",
+      "type": "joint",
+      "name": "左电机",
+      "position": { "x": 0, "y": 0.03, "z": -0.055 },
+      "rotation": { "x": 0, "y": 0, "z": 0, "w": 1 },
+      "jointType": "revolute",
+      "bodyA": "chassis",
+      "bodyB": "left-wheel",
+      "axis": { "x": 0, "y": 0, "z": 1 },
+      "bindings": {
+        "torque": { "symbol": "motor-left", "port": "torque" },
+        "position": { "symbol": "encoder-left", "port": "angle" }
+      }
+    },
+    {
+      "id": "right-motor",
+      "type": "joint",
+      "name": "右电机",
+      "position": { "x": 0, "y": 0.03, "z": 0.055 },
+      "rotation": { "x": 0, "y": 0, "z": 0, "w": 1 },
+      "jointType": "revolute",
+      "bodyA": "chassis",
+      "bodyB": "right-wheel",
+      "axis": { "x": 0, "y": 0, "z": 1 },
+      "bindings": {
+        "torque": { "symbol": "motor-right", "port": "torque" },
+        "position": { "symbol": "encoder-right", "port": "angle" }
+      }
+    },
+    {
+      "id": "left-line-sensor",
+      "type": "sensor",
+      "name": "左循迹传感器",
+      "position": { "x": 0.07, "y": 0.005, "z": -0.02 },
+      "rotation": { "x": 0, "y": 0, "z": 0, "w": 1 },
+      "sensorType": "line",
+      "config": { "type": "line", "sampleRate": 100 },
+      "bindings": {
+        "intensity": { "symbol": "line-left", "port": "intensity" }
+      },
+      "mountedOn": "chassis"
+    },
+    {
+      "id": "right-line-sensor",
+      "type": "sensor",
+      "name": "右循迹传感器",
+      "position": { "x": 0.07, "y": 0.005, "z": 0.02 },
+      "rotation": { "x": 0, "y": 0, "z": 0, "w": 1 },
+      "sensorType": "line",
+      "config": { "type": "line", "sampleRate": 100 },
+      "bindings": {
+        "intensity": { "symbol": "line-right", "port": "intensity" }
+      },
+      "mountedOn": "chassis"
+    },
+    {
+      "id": "distance-sensor",
+      "type": "sensor",
+      "name": "超声波传感器",
+      "position": { "x": 0.085, "y": 0.05, "z": 0 },
+      "rotation": { "x": 0, "y": 0, "z": 0, "w": 1 },
+      "sensorType": "distance",
+      "config": { "type": "distance", "maxRange": 2, "fov": 15, "updateRate": 10 },
+      "bindings": {
+        "distance": { "symbol": "ultrasonic-1", "port": "distance" }
+      },
+      "mountedOn": "chassis"
+    }
+  ],
+  "centerOfMass": { "x": 0.01, "y": 0.028, "z": 0 },
+  "metadata": {
+    "author": "Mica",
+    "description": "双轮差速循迹小车：底盘、两个驱动轮、两个电机与循迹/测距传感器。",
+    "thumbnail": "./thumbnails/robot-car.png",
+    "tags": ["robot", "line-follower", "two-wheel"]
+  }
+}

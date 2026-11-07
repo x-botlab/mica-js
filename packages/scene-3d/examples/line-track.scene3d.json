@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "world": {
+    "gravity": { "x": 0, "y": -9.81, "z": 0 },
+    "physicsStep": 16.6666667,
+    "ground": { "enabled": true, "friction": 0.8, "restitution": 0.1 }
+  },
+  "environment": { "ambientLight": { "color": "#ffffff", "intensity": 0.8 } },
+  "materials": { "presets": {}, "default": "acrylic" },
+  "entities": [
+    {
+      "id": "track-base",
+      "type": "model",
+      "name": "200×300 mm 亚克力循迹底板",
+      "position": { "x": 0, "y": 0.0015, "z": 0 },
+      "rotation": { "x": 0, "y": 0, "z": 0, "w": 1 },
+      "geometry": {
+        "type": "acrylic",
+        "acrylic": {
+          "contour": { "type": "rect", "width": 0.2, "height": 0.3, "radius": 0.01 },
+          "thickness": 0.003,
+          "material": "acrylic",
+          "texture": "assets/track-black-line.png"
+        }
+      },
+      "material": { "friction": 0.8, "restitution": 0.1 },
+      "collider": { "type": "trimesh", "source": "geometry" },
+      "physics": { "bodyType": "static" }
+    },
+    {
+      "id": "servo-bracket-left",
+      "type": "model",
+      "name": "左舵机支架",
+      "position": { "x": -0.07, "y": 0.012, "z": 0 },
+      "rotation": { "x": 0, "y": 0, "z": 0, "w": 1 },
+      "geometry": {
+        "type": "acrylic",
+        "acrylic": {
+          "contour": {
+            "type": "compound",
+            "outer": { "type": "rect", "width": 0.04, "height": 0.06, "radius": 0.002 },
+            "holes": [
+              {
+                "type": "polygon",
+                "points": [
+                  { "x": -0.0115, "y": -0.0015 },
+                  { "x": -0.0085, "y": -0.0015 },
+                  { "x": -0.0085, "y": 0.0015 },
+                  { "x": -0.0115, "y": 0.0015 }
+                ]
+              },
+              {
+                "type": "polygon",
+                "points": [
+                  { "x": 0.0085, "y": -0.0015 },
+                  { "x": 0.0115, "y": -0.0015 },
+                  { "x": 0.0115, "y": 0.0015 },
+                  { "x": 0.0085, "y": 0.0015 }
+                ]
+              }
+            ]
+          },
+          "thickness": 0.003,
+          "material": "acrylic"
+        }
+      },
+      "material": { "friction": 0.5, "restitution": 0.3 },
+      "collider": { "type": "convex-hull", "source": "geometry" },
+      "physics": { "bodyType": "static" }
+    },
+    {
+      "id": "servo-bracket-right",
+      "type": "model",
+      "name": "右舵机支架",
+      "position": { "x": 0.07, "y": 0.012, "z": 0 },
+      "rotation": { "x": 0, "y": 0, "z": 0, "w": 1 },
+      "geometry": {
+        "type": "acrylic",
+        "acrylic": {
+          "contour": {
+            "type": "compound",
+            "outer": { "type": "rect", "width": 0.04, "height": 0.06, "radius": 0.002 },
+            "holes": [
+              {
+                "type": "polygon",
+                "points": [
+                  { "x": -0.0115, "y": -0.0015 },
+                  { "x": -0.0085, "y": -0.0015 },
+                  { "x": -0.0085, "y": 0.0015 },
+                  { "x": -0.0115, "y": 0.0015 }
+                ]
+              },
+              {
+                "type": "polygon",
+                "points": [
+                  { "x": 0.0085, "y": -0.0015 },
+                  { "x": 0.0115, "y": -0.0015 },
+                  { "x": 0.0115, "y": 0.0015 },
+                  { "x": 0.0085, "y": 0.0015 }
+                ]
+              }
+            ]
+          },
+          "thickness": 0.003,
+          "material": "acrylic"
+        }
+      },
+      "material": { "friction": 0.5, "restitution": 0.3 },
+      "collider": { "type": "convex-hull", "source": "geometry" },
+      "physics": { "bodyType": "static" }
+    }
+  ]
+}

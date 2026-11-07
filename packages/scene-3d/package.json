@@ -1,0 +1,79 @@
+{
+  "name": "@mica-js/scene-3d",
+  "version": "0.0.0",
+  "description": "Mica 3D scene documents, physics entities, sensors and deterministic runtime",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/x-botlab/mica-js.git",
+    "directory": "packages/scene-3d"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "source": "./src/client/index.ts",
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    },
+    "./client/three": {
+      "source": "./src/client/three.ts",
+      "types": "./dist/client/three.d.ts",
+      "import": "./dist/client/three.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./client": {
+        "types": "./dist/client/index.d.ts",
+        "import": "./dist/client/index.js"
+      },
+      "./client/three": {
+        "types": "./dist/client/three.d.ts",
+        "import": "./dist/client/three.js"
+      }
+    }
+  },
+  "dependencies": {
+    "@mica-js/core": "workspace:*",
+    "@mica-js/sandbox": "workspace:*",
+    "earcut": "2.2.4",
+    "rolldown": "catalog:"
+  },
+  "peerDependencies": {
+    "three": ">=0.160.0"
+  },
+  "peerDependenciesMeta": {
+    "three": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/earcut": "2.1.4",
+    "@types/three": "catalog:",
+    "three": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-dts": "catalog:",
+    "vitest": "catalog:"
+  }
+}
