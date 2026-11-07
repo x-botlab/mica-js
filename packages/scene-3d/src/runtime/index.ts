@@ -9,6 +9,8 @@ export {
   CIRCUIT_EVENT_SENSOR_DATA,
   CIRCUIT_METHOD_STEP,
   SCENE3D_HOST_METHODS,
+  sceneHostGuest,
+  sceneHostHost,
   Scene3DProtocolError,
 } from './protocol';
 export type {
@@ -23,6 +25,7 @@ export type {
   Scene3DHostContract,
   Scene3DHostMethod,
   Scene3DHostProxy,
+  SceneHostHostContract,
   Scene3DHostState,
   StepResult,
 } from './protocol';

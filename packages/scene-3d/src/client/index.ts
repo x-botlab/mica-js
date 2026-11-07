@@ -6,8 +6,10 @@
  */
 
 export { createScene3DHostProxy, Scene3DClient } from './client';
+export { createScene3DHostSandbox, scene3dHostGuestScript } from './host-sandbox';
 export type {
-  SandboxScene3DHostHandle,
+  Scene3DHostLike,
+  Scene3DHostWorkerOptions,
   Scene3DClientOptions,
   Scene3DHostBootstrap,
   Scene3DView,

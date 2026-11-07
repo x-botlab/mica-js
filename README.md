@@ -40,6 +40,7 @@ pnpm --filter @mica-js/playground dev
 | [`@mica-js/sdk`](packages/sdk)                   | Device / Widget 作者 API、DDL 类型生成与 Vite 独立双文件构建      |
 | [`@mica-js/sandbox`](packages/sandbox)           | 通用 JS 沙箱：iframe + Worker 隔离与离屏渲染合成                  |
 | [`@mica-js/widget`](packages/widget)             | Widget 契约与运行时：包加载、`IWidgetRuntime`、帧、音频与话题通信 |
+| [`@mica-js/scene-3d`](packages/scene-3d)         | 3D 场景文档、物理实体、传感器与 SandboxWorker 仿真运行时          |
 | [`@mica-js/editor`](packages/editor)             | 原理图与画布编辑器：文档、交互、历史、依赖注入及内部运行会话      |
 
 ## 文档

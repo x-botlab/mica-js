@@ -78,6 +78,8 @@ export {
   CIRCUIT_EVENT_JOINT_COMMAND,
   CIRCUIT_EVENT_SENSOR_DATA,
   Scene3DProtocolError,
+  sceneHostGuest,
+  sceneHostHost,
 } from './runtime';
 export type {
   CircuitJointCommand,
@@ -92,19 +94,26 @@ export type {
   Scene3DHostContract,
   Scene3DHostOptions,
   Scene3DHostProxy,
+  SceneHostHostContract,
   Scene3DHostState,
   StepResult,
 } from './runtime';
 export { readBatchTranslation } from './runtime';
 
-// Environment-neutral offscreen rendering contracts. The implementations live in the
-// `runtime/host.*` entries, so this root stays free of browser-only modules.
+// Environment-neutral offscreen rendering contracts.
 export {
   OffscreenRendererDisposedError,
   OffscreenRenderingUnavailableError,
   PIXEL_CHANNELS,
+  createHeadlessRenderer,
 } from './rendering';
-export type { OffscreenRenderer, OffscreenSurface, WebGL2LikeContext } from './rendering';
+export type {
+  HeadlessCanvas,
+  HeadlessRendererOptions,
+  OffscreenRenderer,
+  OffscreenSurface,
+  WebGL2LikeContext,
+} from './rendering';
 
 export { ASSEMBLY_VERSION, validateAssemblyDefinition } from './assembly';
 export type {

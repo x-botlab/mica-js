@@ -5,7 +5,7 @@ import type { Scene3DDocument } from '../format';
 import { Scene3DProtocolError, TRANSFORM_STRIDE } from '../runtime/protocol';
 import type { Scene3DHostProxy, StepResult } from '../runtime/protocol';
 import { createScene3DHostProxy, Scene3DClient } from './client';
-import type { SandboxScene3DHostHandle, Scene3DView } from './client';
+import type { Scene3DHostLike, Scene3DView } from './client';
 
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -383,7 +383,7 @@ describe('createScene3DHostProxy', () => {
   it('adapts call and terminate of a sandbox handle', async () => {
     const calls: Array<{ readonly method: string; readonly args: readonly unknown[] }> = [];
     let terminated = false;
-    const handle: SandboxScene3DHostHandle = {
+    const handle: Scene3DHostLike = {
       async call(method, ...args) {
         calls.push({ method, args });
         return 42;
@@ -409,8 +409,6 @@ describe('createScene3DHostProxy', () => {
   });
 
   it('rejects a missing handle', () => {
-    expect(() => createScene3DHostProxy(null as unknown as SandboxScene3DHostHandle)).toThrow(
-      TypeError,
-    );
+    expect(() => createScene3DHostProxy(null as unknown as Scene3DHostLike)).toThrow(TypeError);
   });
 });

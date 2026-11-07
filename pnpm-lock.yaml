@@ -465,6 +465,16 @@ importers:
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
 
   packages/scene-3d:
+    dependencies:
+      '@mica-js/core':
+        specifier: workspace:*
+        version: link:../core
+      '@mica-js/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
+      rolldown:
+        specifier: 'catalog:'
+        version: 1.2.14
     devDependencies:
       '@types/three':
         specifier: 'catalog:'

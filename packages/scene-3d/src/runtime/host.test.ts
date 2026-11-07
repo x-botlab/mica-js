@@ -292,7 +292,7 @@ describe('Scene3DHost initialisation', () => {
     const { host } = await createHost({
       entities: [assembly('robot-a'), model('plate'), assembly('robot-b')],
       schematic: 'robot.schematic.json',
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
     });
 
     expect(circuits.created.map((circuit) => circuit.options.name)).toEqual([
@@ -318,7 +318,7 @@ describe('Scene3DHost initialisation', () => {
       entities: [assembly('robot-a'), assembly('robot-b')],
       schematic: 'shared.schematic.json',
       circuits: {
-        createSandbox: circuits.factory,
+        createCircuitSandbox: circuits.factory,
         schematicFor: (entity) => `schematics/${entity.id}.json`,
       },
     });
@@ -416,7 +416,7 @@ describe('Scene3DHost lockstep step', () => {
     const physics = new RecordingPhysics(events);
     const { host } = await createHost({
       entities: [assembly('robot-a'), assembly('robot-b')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       physics,
     });
 
@@ -443,7 +443,7 @@ describe('Scene3DHost lockstep step', () => {
     const physics = new RecordingPhysics(events);
     const { host } = await createHost({
       entities: [assembly('robot-a'), assembly('robot-b')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       physics,
     });
 
@@ -469,7 +469,7 @@ describe('Scene3DHost lockstep step', () => {
     const physics = new RecordingPhysics(events);
     const { host } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       physics,
     });
 
@@ -495,7 +495,7 @@ describe('Scene3DHost lockstep step', () => {
     const physics = new RecordingPhysics();
     const { host } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       physics,
     });
 
@@ -515,7 +515,7 @@ describe('Scene3DHost lockstep step', () => {
     const physics = new RecordingPhysics(events);
     const { host } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       physics,
     });
 
@@ -534,7 +534,7 @@ describe('Scene3DHost lockstep step', () => {
     });
     const { host } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
     });
 
     await expect(host.step(16)).rejects.toThrow(/circuit "circuit-robot" failed to advance/);
@@ -557,7 +557,7 @@ describe('Scene3DHost lockstep step', () => {
     const circuits = createCircuitHarness(() => gate);
     const { host } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
     });
 
     const pending = host.step(16);
@@ -650,7 +650,7 @@ describe('Scene3DHost transform batches', () => {
     const circuits = createCircuitHarness();
     const { host } = await createHost({
       entities: [model('a')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
     });
 
     await host.addEntity(model('b', { x: 0, y: 3, z: 0 }));
@@ -675,7 +675,7 @@ describe('Scene3DHost transform batches', () => {
     };
     const { host } = await createHost({
       entities: [],
-      circuits: { createSandbox: failing },
+      circuits: { createCircuitSandbox: failing },
     });
 
     await expect(host.addEntity(assembly('robot'))).rejects.toThrow(/schematic unavailable/);
@@ -694,7 +694,7 @@ describe('Scene3DHost entity removal', () => {
     const physics = new RecordingPhysics();
     const { host } = await createHost({
       entities: [assembly('robot'), model('plate')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       physics,
     });
 
@@ -736,7 +736,7 @@ describe('Scene3DHost disposal', () => {
     const physics = new RecordingPhysics();
     const { host } = await createHost({
       entities: [assembly('robot'), model('plate')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       physics,
       renderer,
     });
@@ -757,7 +757,7 @@ describe('Scene3DHost disposal', () => {
     const physics = new RecordingPhysics();
     const { host, renderer } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       physics,
     });
     const circuit = circuits.created[0];
@@ -790,7 +790,7 @@ describe('Scene3DHost sensors', () => {
     const definition = assemblyDefinition([distanceSensor('sensor-1', 10)]);
     const { host } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       assemblyFor: () => definition,
     });
     const circuit = circuits.created[0];
@@ -852,7 +852,7 @@ describe('Scene3DHost sensors', () => {
     const definition = assemblyDefinition([distanceSensor('broken')]);
     const { host } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       assemblyFor: () => definition,
     });
 
@@ -871,7 +871,7 @@ describe('Scene3DHost sensors', () => {
     const definition = assemblyDefinition([distanceSensor('sensor-1')]);
     const { host } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       assemblyFor: () => definition,
     });
     const circuit = circuits.created[0];
@@ -912,7 +912,7 @@ describe('Scene3DHost sensors', () => {
     const definition = assemblyDefinition([distanceSensor('sensor-1')]);
     const { host } = await createHost({
       entities: [assembly('robot')],
-      circuits: { createSandbox: circuits.factory },
+      circuits: { createCircuitSandbox: circuits.factory },
       assemblyFor: () => definition,
       startTime: 1000,
     });

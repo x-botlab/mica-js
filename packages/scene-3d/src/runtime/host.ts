@@ -17,7 +17,7 @@
  * The clock is committed last, so a failing phase leaves the host at the previous fully
  * synchronised time and the client can retry the frame. The class itself is environment-neutral:
  * the physics engine, the offscreen renderer and the circuit sandbox factory are injected, which is
- * what lets `host.browser.ts`, `host.node.ts` and `host.mock.ts` compose it at build time.
+ * what lets the guest runtime and injected renderer implementations` compose it at build time.
  *
  * ```ts
  * const host = await createScene3DHost({ document, physics, renderer });
@@ -67,7 +67,7 @@ const NO_COLLISIONS: readonly CollisionEvent[] = Object.freeze([]);
 
 /** One live circuit simulator sandbox plus the commands it emitted during the current step. */
 interface CircuitSlot {
-  /** Diagnostic name passed to `createChildSandbox()`. */
+  /** Diagnostic name passed to the circuit factory. */
   readonly name: string;
   /** Assembly instance the simulator belongs to. */
   readonly entityId: string;
@@ -468,7 +468,7 @@ export class Scene3DHost implements Scene3DHostAPI {
       ...(schematic === undefined ? {} : { schematic }),
     };
 
-    const handle = await circuits.createSandbox(options);
+    const handle = await circuits.createCircuitSandbox(options);
     const commands: unknown[] = [];
     let unsubscribe: () => void;
     try {
@@ -746,9 +746,9 @@ function assertHostOptions(options: Scene3DHostOptions): void {
     if (
       typeof options.circuits !== 'object' ||
       options.circuits === null ||
-      typeof options.circuits.createSandbox !== 'function'
+      typeof options.circuits.createCircuitSandbox !== 'function'
     ) {
-      throw new TypeError('Scene3DHost: options.circuits.createSandbox must be a function');
+      throw new TypeError('Scene3DHost: options.circuits.createCircuitSandbox must be a function');
     }
   }
 

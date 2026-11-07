@@ -131,3 +131,6 @@ class HeadlessSurface implements OffscreenSurface {
     }
   }
 }
+
+/** Public name for the process-local renderer used by Node and CI. */
+export const createHeadlessRenderer = createOffscreenRenderer;

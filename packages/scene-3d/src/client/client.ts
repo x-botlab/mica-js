@@ -19,7 +19,7 @@
  *   document,
  *   view: createThreeScene3DView({ canvas }),
  *   createHost: async ({ document }) => {
- *     const sandbox = await createSandbox({ … , capabilities: { getDocument: () => document } });
+ *     const sandbox = await createScene3DHostSandbox();
  *     return createScene3DHostProxy(sandbox);
  *   },
  * });
@@ -28,12 +28,19 @@
  * ```
  */
 
+import { createRpc } from '@mica-js/core/rpc';
+import { SandboxWorker } from '@mica-js/sandbox';
 import type { SceneEntity } from '../entities';
 import type { Scene3DDocument } from '../format/document';
+import { circuitGuestWorkerScript } from './host-sandbox';
 import {
   Scene3DProtocolError,
   TRANSFORM_STRIDE,
+  sceneHostGuest,
+  sceneHostHost,
   type Scene3DHostProxy,
+  type SceneHostHostContract,
+  type CircuitSandboxOptions,
   type StepResult,
 } from '../runtime/protocol';
 
@@ -59,7 +66,7 @@ export interface Scene3DView {
 
 /** Context handed to the host factory. */
 export interface Scene3DHostBootstrap {
-  /** Document the host must simulate; also the document the sandbox capability serves. */
+  /** Document the host must simulate; also the document the main-thread service provides. */
   readonly document: Scene3DDocument;
 }
 
@@ -73,9 +80,9 @@ export interface Scene3DClientOptions {
    * Boots the `Scene3DHost` sandbox and returns its RPC proxy.
    *
    * The client cannot import a guest entry itself, so the application wires the sandbox here
-   * (usually with `createSandbox({ source: { type: 'module', url: hostUrl } })`).
+   * (usually with `createScene3DHostSandbox()`).
    */
-  readonly createHost: (context: Scene3DHostBootstrap) => Promise<Scene3DHostProxy>;
+  readonly createHost: (context: Scene3DHostBootstrap) => Promise<Scene3DHostProxy | SandboxWorker>;
 }
 
 /**
@@ -109,7 +116,10 @@ export class Scene3DClient {
   public static async create(options: Scene3DClientOptions): Promise<Scene3DClient> {
     assertClientOptions(options);
 
-    const host = await options.createHost({ document: options.document });
+    const hostResult = await options.createHost({ document: options.document });
+    const host = isSandboxWorker(hostResult)
+      ? await createScene3DHostProxy(hostResult, { document: options.document })
+      : hostResult;
     if (typeof host !== 'object' || host === null || typeof host.call !== 'function') {
       throw new TypeError('Scene3DClient.create: createHost() must return a Scene3DHostProxy');
     }
@@ -309,39 +319,124 @@ export class Scene3DClient {
   }
 }
 
-/**
- * Structural view of a host sandbox handle.
- *
- * `SandboxHandle` satisfies it; declaring it locally keeps this module independent of the sandbox
- * package while still type-checking the adapter in one place.
- */
-export interface SandboxScene3DHostHandle {
-  call(method: string, ...args: never[]): Promise<unknown>;
+/** Minimal injectable host seam used by unit tests and embedders with an existing RPC link. */
+export interface Scene3DHostLike {
+  call(method: string, ...args: unknown[]): Promise<unknown>;
   terminate?(reason?: string): Promise<void>;
 }
 
-/**
- * Adapts a `SandboxHandle` to {@link Scene3DHostProxy}.
- *
- * ```ts
- * const sandbox = await createSandbox({ … });
- * const client = await Scene3DClient.create({ …, createHost: async () => createScene3DHostProxy(sandbox) });
- * ```
- */
-export function createScene3DHostProxy(handle: SandboxScene3DHostHandle): Scene3DHostProxy {
-  if (typeof handle !== 'object' || handle === null || typeof handle.call !== 'function') {
-    throw new TypeError('createScene3DHostProxy: a sandbox handle is required');
-  }
+/** Options used while connecting a real `SandboxWorker` to the scene host guest. */
+export interface Scene3DHostWorkerOptions {
+  readonly document: Scene3DDocument;
+}
 
+/** Adapts a fake host seam without creating a worker. */
+export function createScene3DHostProxy(handle: Scene3DHostLike): Scene3DHostProxy;
+/** Wires the scene-host RPC endpoint and its main-thread services. */
+export function createScene3DHostProxy(
+  worker: SandboxWorker,
+  options: Scene3DHostWorkerOptions,
+): Promise<Scene3DHostProxy>;
+export function createScene3DHostProxy(
+  handle: Scene3DHostLike | SandboxWorker,
+  options?: Scene3DHostWorkerOptions,
+): Scene3DHostProxy | Promise<Scene3DHostProxy> {
+  if (isSandboxWorker(handle)) {
+    if (options === undefined) {
+      throw new TypeError('createScene3DHostProxy: worker options are required');
+    }
+    return connectScene3DHostProxy(handle, options);
+  }
+  if (typeof handle !== 'object' || handle === null || typeof handle.call !== 'function') {
+    throw new TypeError('createScene3DHostProxy: a host seam is required');
+  }
   const terminate =
     typeof handle.terminate === 'function' ? handle.terminate.bind(handle) : undefined;
-
   return {
     call<T = unknown>(method: string, ...args: unknown[]): Promise<T> {
-      return handle.call(method, ...(args as never[])) as Promise<T>;
+      return handle.call(method, ...args) as Promise<T>;
     },
     ...(terminate === undefined ? {} : { terminate: (reason?: string) => terminate(reason) }),
   };
+}
+
+async function connectScene3DHostProxy(
+  worker: SandboxWorker,
+  options: Scene3DHostWorkerOptions,
+): Promise<Scene3DHostProxy> {
+  await worker.ready;
+  const channel = new MessageChannel();
+  const endpoint = createRpc(channel.port1);
+  const children = new Map<string, SandboxWorker>();
+  let closed = false;
+
+  const hostServices: SceneHostHostContract = {
+    getDocument: () => options.document,
+    async createCircuitSandbox(circuitOptions: CircuitSandboxOptions): Promise<MessagePort> {
+      const child = new SandboxWorker(circuitGuestWorkerScript, {
+        name: circuitOptions.name,
+      });
+      try {
+        await child.ready;
+        const childChannel = new MessageChannel();
+        children.set(circuitOptions.name, child);
+        child.postMessage(null, [childChannel.port2]);
+        return childChannel.port1;
+      } catch (error) {
+        await child.terminate('circuit sandbox failed to start').catch(() => undefined);
+        throw error;
+      }
+    },
+    async releaseCircuitSandbox(name: string): Promise<void> {
+      const child = children.get(name);
+      if (child === undefined) return;
+      children.delete(name);
+      await child.terminate(`circuit "${name}" released`).catch(() => undefined);
+    },
+  };
+
+  const registration = endpoint.register(sceneHostHost, hostServices, {
+    transfer: (member, value) =>
+      member === 'createCircuitSandbox' && isMessagePort(value) ? [value] : [],
+  });
+  worker.postMessage(null, [channel.port2]);
+  const guest = endpoint.getProxy(sceneHostGuest);
+  return {
+    call<T = unknown>(method: string, ...args: unknown[]): Promise<T> {
+      const member = (
+        guest as unknown as Record<string, (...values: unknown[]) => Promise<unknown>>
+      )[method];
+      if (typeof member !== 'function') {
+        return Promise.reject(new Error(`Unknown Scene3DHost method: ${method}`));
+      }
+      return member(...args) as Promise<T>;
+    },
+    async terminate(reason = 'scene3d client disposed'): Promise<void> {
+      if (closed) return;
+      closed = true;
+      registration.dispose();
+      endpoint.dispose();
+      await Promise.allSettled(
+        [...children.values()].map((child) => child.terminate(`parent terminated: ${reason}`)),
+      );
+      children.clear();
+      await worker.terminate(reason);
+    },
+  };
+}
+
+function isSandboxWorker(value: unknown): value is SandboxWorker {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'ready' in value &&
+    typeof (value as { readonly postMessage?: unknown }).postMessage === 'function' &&
+    typeof (value as { readonly terminate?: unknown }).terminate === 'function'
+  );
+}
+
+function isMessagePort(value: unknown): value is MessagePort {
+  return typeof MessagePort !== 'undefined' && value instanceof MessagePort;
 }
 
 function assertClientOptions(options: Scene3DClientOptions): void {

@@ -12,14 +12,16 @@
  *   `getState` and `dispose`. Every payload is plain data or a typed array so it survives
  *   structured cloning; transform batches are one `Float32Array` instead of one message per
  *   entity.
- * - **Host ↔ circuit** is a direct `MessageChannel` opened by `$sandbox.createChildSandbox()`
+ * - **Host ↔ circuit** is a direct `MessageChannel` opened by `a direct MessageChannel`
  *  . The child calls `step()` on the lockstep barrier and emits `jointCommand` events while
  *   it advances; the host buffers them and applies them before the physics step. Sensor frames go
  *   the other way: after physics advances, the host notifies the circuit that owns the sensor with
  *   a `sensorData` payload.
  */
 
+import { defineRpcService } from '@mica-js/core/rpc';
 import type { AssemblyInstance, SceneEntity } from '../entities';
+import type { Scene3DDocument } from '../format/document';
 import type { JointTarget } from '../physics';
 import type { SensorData } from '../sensors/types';
 
@@ -38,6 +40,12 @@ export const SCENE3D_HOST_METHODS = [
 
 /** Name of one host RPC method. */
 export type Scene3DHostMethod = (typeof SCENE3D_HOST_METHODS)[number];
+
+/** RPC service exposed by the scene-host guest to its main-thread client. */
+export const sceneHostGuest = defineRpcService<Scene3DHostContract>('scene-host-guest');
+
+/** RPC service exposed by the main thread to the scene-host guest. */
+export const sceneHostHost = defineRpcService<SceneHostHostContract>('scene-host-host');
 
 /** A contact reported by the physics engine during the last step. */
 export interface CollisionEvent {
@@ -87,8 +95,7 @@ export interface StepResult {
 /**
  * Host API as seen from the main thread.
  *
- * `Scene3DHost` implements it directly; `Scene3DClient` only depends on
- * {@link Scene3DHostProxy}, which `SandboxHandle` satisfies through a small adapter.
+ * `Scene3DHost` implements it directly; the guest registers it on `sceneHostGuest`.
  */
 export interface Scene3DHostContract {
   /** Advances physics and every circuit simulator by the same virtual delta. */
@@ -108,14 +115,29 @@ export interface Scene3DHostContract {
 /**
  * Minimal RPC handle the client needs.
  *
- * A `SandboxHandle` wraps a guest method table, so its generic `call` has a different signature;
- * `createScene3DHostProxy()` in `@mica-js/scene-3d/client` adapts it in one line.
+ * A The host proxy is an RPC proxy created by `@mica-js/scene-3d/client`.
  */
 export interface Scene3DHostProxy {
   /** Calls one host method. */
   call<T = unknown>(method: string, ...args: unknown[]): Promise<T>;
   /** Terminates the host sandbox; when omitted the client can only dispose the host itself. */
   terminate?(reason?: string): Promise<void>;
+}
+
+/** Main-thread services used by the scene-host guest. */
+export interface SceneHostHostContract {
+  /** Returns the document captured by the main-thread client. */
+  getDocument(): Scene3DDocument;
+  /** Creates a circuit guest and transfers its direct RPC port to the scene-host guest. */
+  createCircuitSandbox(options: CircuitSandboxOptions): Promise<MessagePort>;
+  /**
+   * Terminates the circuit worker the main thread created for `name`.
+   *
+   * The guest owns the direct channel, not the worker: closing the port silences the channel but
+   * leaves the worker alive, so removing an entity mid-session has to ask the main thread to stop
+   * it. Resolves when the worker is gone or was already unknown.
+   */
+  releaseCircuitSandbox(name: string): Promise<void>;
 }
 
 /** Joint command a circuit simulator emits while it advances. */
@@ -150,10 +172,7 @@ export interface CircuitSandboxContract {
 }
 
 /**
- * Structural view of a child sandbox handle.
- *
- * Only the members the host uses are declared, so `$sandbox.createChildSandbox()` results and test
- * doubles are both assignable without importing `@mica-js/sandbox` at runtime.
+ * Structural view of a direct circuit RPC handle.
  */
 export interface CircuitSandboxHandle {
   /** Diagnostic name of the child sandbox. */
@@ -165,9 +184,7 @@ export interface CircuitSandboxHandle {
   /**
    * Sends a one-way notification to the child.
    *
-   * Optional so a test double or an older child sandbox can omit it; the host then skips sensor
-   * frames for that circuit instead of failing the step. `$sandbox.createChildSandbox()` handles
-   * implement the native `(method, args, transfer)` signature.
+   * Optional so a test double can omit it; the host then skips sensor frames for that circuit.
    */
   notify?(
     method: string,
@@ -190,15 +207,15 @@ export interface CircuitSandboxOptions {
   readonly schematic?: string;
 }
 
-/** Creates a child sandbox for one circuit simulator. Injected by the environment entry. */
+/** Creates a direct circuit guest for one simulator. */
 export type CircuitSandboxFactory = (
   options: CircuitSandboxOptions,
 ) => Promise<CircuitSandboxHandle>;
 
 /** Circuit wiring of a host. Omit it to run a physics-only scene. */
 export interface Scene3DCircuitOptions {
-  /** Creates one child sandbox per assembly instance. */
-  readonly createSandbox: CircuitSandboxFactory;
+  /** Creates one direct circuit guest per assembly instance. */
+  readonly createCircuitSandbox: CircuitSandboxFactory;
   /**
    * Resolves the schematic an assembly instance loads. Defaults to `document.schematic`, the
    * schematic shared with the 2D canvas, because an `.assembly.json` definition is not part of the

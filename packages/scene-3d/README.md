@@ -262,50 +262,55 @@ runtime.getCurrentTime(); // 16.666…
 
 `RuntimeOptions` 支持注入 `physics`（调用方负责先 `initialize()`）与设置起始虚拟时间 `startTime`（毫秒，默认 `0`）。
 
-## 仿真主机（sandbox）
+## 仿真主机（SandboxWorker）
 
-`Scene3DHost` 把物理、传感器与电路协调移入 sandbox，主线程只保留渲染与交互：
+`Scene3DHost` 把物理、传感器与电路协调放在隔离 guest 中，主线程只保留渲染与交互：
 
 ```
-Main Thread
-├── Scene3DClient（渲染 + 用户输入）
-└── Scene3DHost sandbox
-    ├── PhysicsRuntime（MuJoCo）
-    ├── Sensor System（#192，待接入）
-    └── Circuit Simulators（子 sandboxes，MessageChannel 直通）
+Main Thread ── RPC ── Scene host guest
+     │                     ├── PhysicsRuntime（MuJoCo）
+     │                     ├── Sensor System
+     │                     └── Circuit guests（父子 MessageChannel 直连）
+     └── Scene3DClient + Three.js view
 ```
 
-`runtime/host.ts` 只包含与运行环境无关的编排逻辑（锁步、子 sandbox 协调、变换批量传输），环境差异通过编译期组合注入：
-
-| 入口                      | 物理            | 渲染                           |
-| ------------------------- | --------------- | ------------------------------ |
-| `runtime/host.browser.js` | `MujocoRuntime` | `OffscreenCanvas` + WebGL2     |
-| `runtime/host.node.js`    | `MujocoRuntime` | headless（可注入 headless-gl） |
-| `runtime/host.mock.js`    | `MujocoRuntime` | 确定性内存 mock                |
-
-`package.json` 的条件导出会把 `@mica-js/scene-3d/runtime/host` 解析到对应入口：
+浏览器应用从 `@mica-js/scene-3d/client` 获取 worker 工厂和客户端：
 
 ```ts
-const hostSandbox = await createSandbox({
-  name: 'scene3d-host',
-  source: { type: 'module', url: hostEntryUrl },
-  capabilities: {
-    getDocument: () => document,
-    // 可选：电路仿真器 guest 的模块地址；返回 null 时只运行物理
-    getCircuitSource: () => ({ type: 'module', url: circuitGuestUrl }),
-  },
-});
+import {
+  createScene3DHostSandbox,
+  createScene3DHostProxy,
+  Scene3DClient,
+} from '@mica-js/scene-3d/client';
 
+const worker = createScene3DHostSandbox();
 const client = await Scene3DClient.create({
   document,
   view: createThreeScene3DView({ canvas }),
-  createHost: async () => createScene3DHostProxy(hostSandbox),
+  createHost: async ({ document }) => createScene3DHostProxy(worker, { document }),
 });
 
-await client.step(1000 / 60); // 一步：host 锁步推进 → 批量变换 → 渲染
+await client.step(1000 / 60); // host 锁步推进 → 批量变换 → 渲染
 ```
 
-主线程侧由 `@mica-js/scene-3d/client` 提供与渲染器无关的 `Scene3DClient`，Three.js 适配器在 `@mica-js/scene-3d/client/three`，`three` 为可选 peer 依赖，核心包与 sandbox 入口都不会引入它。
+宿主 guest 通过 `sceneHostHost` RPC 服务取得文档并请求电路 guest；主线程只创建和终止
+`SandboxWorker`，电路的 `MessagePort` 在场景 guest 与电路 guest 之间直连。guest 只持有通道，
+因此删除装配体实例时它会通过 `releaseCircuitSandbox` 请主线程终止对应 worker，避免中途移除实体后
+遗留后台 worker。
+
+无头环境不需要浏览器沙箱，可直接在进程内创建一等 host：
+
+```ts
+import { createHeadlessRenderer, createMujocoRuntime, createScene3DHost } from '@mica-js/scene-3d';
+
+const host = await createScene3DHost({
+  document,
+  physics: createMujocoRuntime(),
+  renderer: createHeadlessRenderer(),
+});
+await host.step(1000 / 60);
+await host.dispose();
+```
 
 `Scene3DHost.step(deltaMs)` 的固定顺序：
 
@@ -314,10 +319,10 @@ await client.step(1000 / 60); // 一步：host 锁步推进 → 批量变换 →
 3. 收集电路在推进期间发出的 `jointCommand`；
 4. 在物理步进前应用指令；
 5. 物理步进相同 `deltaMs`；
-6. 读取到期传感器并通过 `sensorData` 通知推送到所属装配体的电路；
+6. 读取到期传感器并通过 `sensorData` 通知所属装配体的电路；
 7. 提交虚拟时钟并返回 `entityCount * 16` 的列主序变换批次。
 
-电路仿真器通过 `$sandbox.createChildSandbox()` 创建，父子之间使用 `MessageChannel` 直通，不经过主线程。`PhysicsRuntime.removeBody` 为可选能力；`MujocoRuntime` 已实现，移除实体时会同时清理其关节。
+`PhysicsRuntime.removeBody` 为可选能力；`MujocoRuntime` 已实现，移除实体时会同时清理其关节。
 
 ## 依赖方向
 

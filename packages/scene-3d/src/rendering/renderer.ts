@@ -9,8 +9,7 @@
  * - `renderer.headless.ts` runs without a GPU and lets the embedder plug in `headless-gl`;
  * - `renderer.mock.ts` is a deterministic in-memory surface for tests.
  *
- * The core never branches on the environment: `host.browser.ts`, `host.node.ts` and
- * `host.mock.ts` pick an implementation at build time and inject it through
+ * The core never branches on the environment: the guest runtime selects the browser renderer while tests inject headless implementations
  * `Scene3DHostOptions.renderer`.
  *
  * ```ts

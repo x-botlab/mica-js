@@ -1,7 +1,10 @@
 import dts from 'vite-plugin-dts';
 import { defineConfig } from 'vitest/config';
+import { micaSandboxPlugins } from '@mica-js/sandbox/vite';
 
 export default defineConfig({
+  base: './',
+  resolve: { conditions: ['source', 'module', 'browser', 'development|production'] },
   build: {
     lib: {
       entry: {
@@ -10,25 +13,29 @@ export default defineConfig({
         'client/three': 'src/client/three.ts',
       },
       formats: ['es'],
+      fileName: (_format, entryName) => `${entryName}.js`,
     },
     target: 'es2022',
     sourcemap: true,
     minify: false,
     rollupOptions: {
-      // The client subpath is the only consumer; applications install Three.js themselves.
-      external: ['three'],
-      output: {
-        entryFileNames: '[name].js',
-        chunkFileNames: 'chunks/[name]-[hash].js',
-      },
+      external: [
+        '@mica-js/core',
+        '@mica-js/core/rpc',
+        '@mica-js/sandbox',
+        'rolldown',
+        'three',
+        'vite',
+      ],
     },
   },
   plugins: [
+    ...micaSandboxPlugins(),
     dts({
       tsconfigPath: './tsconfig.build.json',
       entryRoot: 'src',
-      bundleTypes: false,
       exclude: ['src/**/*.test.ts', 'src/**/*.type-test.ts'],
+      bundleTypes: true,
     }),
   ],
   test: {
