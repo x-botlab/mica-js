@@ -4,8 +4,6 @@ export {
   parseSvgPath,
   validateAcrylicDefinition,
   validateAcrylicPaint,
-  normalizeAcrylicContour,
-  normaliseAcrylicContour,
 } from './contour';
 export { buildAcrylicMesh, createAcrylicMesh, triangulateAcrylicContour } from './mesh';
 export { calculateAcrylicMass, computeAcrylicPhysics, resolveAcrylicMaterial } from './physics';

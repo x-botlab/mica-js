@@ -26,7 +26,7 @@ export interface SurfaceColorResolver {
  * `null` when the painter defines neither a base colour nor a matching stroke, letting the caller
  * fall back to the material colour.
  */
-export function resolveAcrylicPaint(
+function resolveAcrylicPaint(
   paint: AcrylicPaint,
   point: { readonly x: number; readonly z: number },
 ): Rgb | null {

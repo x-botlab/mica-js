@@ -7,6 +7,10 @@
  *
  * The types are plain readonly objects. Camera frames are the only large payload; every other
  * sensor returns a handful of numbers.
+ *
+ * Only `distance`, `color`, `imu` and `gps` have built-in implementations today; the remaining
+ * kinds describe the payload contract so documents and the wiring layer can be authored before
+ * those sensors land.
  */
 
 /**

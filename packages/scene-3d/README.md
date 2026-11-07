@@ -2,7 +2,14 @@
 
 3D 场景核心包：`.scene3d` 文档、物理实体、传感器与确定性运行时。
 
-当前处于 Phase 1 阶段：提供跨层共用的 3D 数学类型（`Vec2d` / `Vec3d` / `Quaternion` / `Transform`）、`.scene3d` 文档格式类型、`.assembly.json` 装配体定义类型、实体系统类型（`SceneEntity` / `ModelEntity` / `AssemblyInstance` / `JointEntity` / `SensorEntity`、几何、碰撞体、材质与物理描述符）、`physics/` 物理运行时适配层（`PhysicsRuntime` 契约与确定性的 `MujocoRuntime` 内存替身），以及 `runtime/` 的 `Scene3DRuntime`（锁步时间同步）。真实 MuJoCo WASM 引擎与电路仿真器由后续 issue 逐步接入。
+已实现的基础设施：跨层共用的 3D 数学类型（`Vec2d` / `Vec3d` / `Quaternion` / `Transform`）、
+`.scene3d` 与 `.assembly.json` 文档格式、实体系统（模型 / 装配体 / 关节 / 传感器、几何、碰撞体、
+材质与物理描述符）、亚克力板建模（轮廓、挤出网格、质量与惯性、板面印刷）、`physics/` 物理运行时
+适配层（`PhysicsRuntime` 契约与确定性的 `MujocoRuntime` 内存替身）、`sensors/` 传感器框架与四种
+传感器实现，以及隔离在 sandbox 中的 `Scene3DHost` + 主线程 `Scene3DClient`。
+
+仍在推进：真实 MuJoCo WASM 引擎（#180）取代内存替身、关节 ↔ 话题集成（#188–#190）、摄像头与
+其余传感器（#196）、3D 编辑器（#197–#203，位于 `@mica-js/editor`）。
 
 ## 安装与构建
 
@@ -230,6 +237,22 @@ const hit = physics.raycast(Vec3d.zero, Vec3d.unitY, 10);
 
 宿主默认每次创建自己的注册表，也可以通过 `Scene3DHostOptions.sensors` 注入自定义注册表：
 
+| 传感器      | 状态 | 说明                                            |
+| ----------- | ---- | ----------------------------------------------- |
+| `distance`  | ✅   | 锥形固定射线图案取最近命中                      |
+| `color`     | ✅   | 沿 `direction` 射线取命中表面颜色，可读任意表面 |
+| `imu`       | ✅   | 传感器局部系的角速度与比力                      |
+| `gps`       | ✅   | WGS84 近似，噪声按 `sensor.id` 播种             |
+| `camera`    | ⏳   | 类型契约已定义，离屏渲染待 #196                 |
+| `light`     | ⏳   | 类型契约已定义                                  |
+| `sound`     | ⏳   | 类型契约已定义                                  |
+| `magnetic`  | ⏳   | 类型契约已定义                                  |
+| `occlusion` | ⏳   | 类型契约已定义                                  |
+| `touch`     | ⏳   | 类型契约已定义                                  |
+
+`SENSOR_TYPES` 是文档格式契约（10 种都可写进 `.scene3d`），`registerDefaultSensors` 只注册已
+实现的 4 种；宿主遇到未注册的种类会告警并跳过，不阻塞场景加载。
+
 ```ts
 const sensors = createDefaultSensorRegistry({ document });
 const host = await createScene3DHost({ document, physics, renderer, sensors });
@@ -263,43 +286,18 @@ const { position } = physics.getBodyTransform(ball);
 const hit = physics.raycast(Vec3d.zero, Vec3d.unitY, 10);
 ```
 
-### 场景运行时与时间同步
+### 时间同步与确定性
 
-`runtime/` 提供 `Scene3DRuntime`（#182）：它把物理引擎与（后续接入的）电路仿真器放在同一条虚拟时间轴上，采用**锁步（lockstep）**推进。
+物理引擎与电路仿真器共享同一条虚拟时间轴，采用**锁步（lockstep）**推进：所有子系统都到达目标
+时间后物理才前进一步，因此不存在"电路已经跑到刚体前面"的帧。
 
-`step(deltaMs)` 的固定执行顺序：
-
-1. 采集传感器数据（#192 接入前为空实现）
-2. 把所有电路仿真器推进到同一目标时间 `currentTime + deltaMs`，并等待全部完成（#214 接入前为空实现）
-3. 收集电路发布的关节指令
-4. 将指令应用为关节目标（`PhysicsRuntime.setJointTarget`）
-5. `PhysicsRuntime.step(deltaMs)` 推进物理
-6. 提交 `currentTime = currentTime + deltaMs`
-
-时间同步要点：
-
-- 所有子系统都到达目标时间后物理才前进一步，因此不存在"电路已经跑到刚体前面"的帧
-- `currentTime` / `getCurrentTime()` 以毫秒（`TimeMs`）表示；电路层的 `TimePs`（皮秒）在边界处换算
-- 时钟最后提交：若 `step` 中途抛错，`currentTime` 停留在上一个完整同步的时间点，可安全重试该帧
+- 文档与宿主用毫秒；电路与传感器读数用 `TimePs`（皮秒），在边界处换算
+- 时钟最后提交：若 `step` 中途抛错，虚拟时钟停留在上一个完整同步的时间点，可安全重试该帧
 - 相同的初始状态 + 相同的 `deltaMs` 序列 → 相同的刚体位姿与关节状态，便于回放和调试
 - `deltaMs` 必须为有限且非负的数值，否则抛出 `RangeError`
+- 最慢的仿真器决定整体帧率；后续可加超时降级
 
-```ts
-import { createMujocoRuntime, Scene3DRuntime } from '@mica-js/scene-3d';
-
-const physics = createMujocoRuntime();
-await physics.initialize({ bodyType: 'dynamic' });
-physics.addBody({
-  position: { x: 0, y: 1.5, z: 0 },
-  collider: { type: 'sphere', radius: 0.1 },
-});
-
-const runtime = new Scene3DRuntime({ physics });
-await runtime.step(1000 / 60);
-runtime.getCurrentTime(); // 16.666…
-```
-
-`RuntimeOptions` 支持注入 `physics`（调用方负责先 `initialize()`）与设置起始虚拟时间 `startTime`（毫秒，默认 `0`）。
+锁步的执行顺序见下一节的 `Scene3DHost.step`。
 
 ## 仿真主机（SandboxWorker）
 

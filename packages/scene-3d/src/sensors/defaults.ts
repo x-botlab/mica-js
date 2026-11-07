@@ -9,7 +9,12 @@ export interface DefaultSensorOptions {
   readonly color?: { readonly resolver: SurfaceColorResolver };
 }
 
-/** Registers the built-in concrete sensors that are available in this package. */
+/**
+ * Registers the built-in concrete sensors that are available in this package.
+ *
+ * Only `distance`, `color`, `imu` and `gps` have implementations; other kinds declared by a
+ * document stay unregistered and are skipped by the host.
+ */
 export function registerDefaultSensors(
   registry: SensorRegistry,
   options: DefaultSensorOptions = {},
@@ -47,9 +52,4 @@ export function createDefaultSensorRegistry(
     new SensorRegistry(),
     resolver === undefined ? {} : { color: { resolver } },
   );
-}
-
-/** @deprecated Use {@link createDefaultSensorRegistry}; each scene needs its own registry. */
-export function getDefaultSensorRegistry(): SensorRegistry {
-  return createDefaultSensorRegistry();
 }

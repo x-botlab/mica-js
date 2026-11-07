@@ -22,7 +22,7 @@ import type { Quaternion, Vec3d } from '../math';
 import { TRANSFORM_STRIDE } from './protocol';
 
 /** Writes an identity matrix at `offset` (in floats). */
-export function writeIdentityMatrix(target: Float32Array, offset = 0): void {
+function writeIdentityMatrix(target: Float32Array, offset = 0): void {
   target.fill(0, offset, offset + TRANSFORM_STRIDE);
   target[offset] = 1;
   target[offset + 5] = 1;
@@ -36,7 +36,7 @@ export function writeIdentityMatrix(target: Float32Array, offset = 0): void {
  * The quaternion is normalized first: a zero or slightly denormalized rotation from a physics
  * engine must not shear the mesh on screen.
  */
-export function writeTransformMatrix(
+function writeTransformMatrix(
   target: Float32Array,
   offset: number,
   position: Vec3d,

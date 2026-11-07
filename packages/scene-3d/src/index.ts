@@ -77,10 +77,6 @@ export type {
   WorldConfig,
 } from './format';
 
-export { Scene3DRuntime } from './runtime';
-export type { JointCommand, RuntimeOptions, TimeMs } from './runtime';
-
-// Scene3DHost: the sandboxed simulation half of the split runtime.
 export { createScene3DHost, Scene3DHost, TRANSFORM_STRIDE } from './runtime';
 export {
   CIRCUIT_EVENT_JOINT_COMMAND,

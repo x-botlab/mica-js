@@ -1,6 +1,3 @@
-export { Scene3DRuntime } from './scene-runtime';
-export type { JointCommand, RuntimeOptions, TimeMs } from './types';
-
 export { createScene3DHost, Scene3DHost, TRANSFORM_STRIDE } from './host';
 export type { Scene3DHostAPI, Scene3DHostOptions } from './host';
 

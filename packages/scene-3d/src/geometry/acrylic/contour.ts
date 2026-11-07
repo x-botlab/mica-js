@@ -401,5 +401,3 @@ export function validateAcrylicPaint(paint: AcrylicPaint | undefined): void {
 function isColor(value: unknown): value is string {
   return typeof value === 'string' && value.trim() !== '';
 }
-export const normaliseAcrylicContour = parseAcrylicContour;
-export const normalizeAcrylicContour = parseAcrylicContour;

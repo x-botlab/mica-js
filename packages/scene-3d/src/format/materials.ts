@@ -46,8 +46,9 @@ export interface MaterialLibrary {
 /**
  * Material presets shipped with every scene.
  *
- * Densities and coefficients follow the values in `docs/3d-scene-mode-design.md` §2.2. The set is
- * frozen so every document can share it without defensive copies.
+ * Densities are reference values in g/cm³ (typical supplier data sheets for each material) and
+ * coefficients are unitless in the 0–1 range. The set is frozen so every document can share it
+ * without defensive copies.
  */
 export const BUILTIN_MATERIAL_PRESETS = Object.freeze({
   acrylic: Object.freeze({

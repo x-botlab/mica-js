@@ -243,7 +243,16 @@ export interface JointEntity extends SceneEntity {
   readonly bindings?: Readonly<Record<string, BindingTarget>>;
 }
 
-/** Every sensor kind understood by the sensor system. */
+/**
+ * Every sensor kind understood by the sensor system.
+ *
+ * The list is the *format contract*: documents may declare any of them. Built-in runtimes only
+ * exist for `distance`, `color`, `imu` and `gps` — see `registerDefaultSensors`. Instantiating a
+ * kind without a registered factory logs a warning and skips that sensor, so a document with e.g.
+ * a `camera` entity still loads after the camera milestone lands.
+ *
+ * Not yet implemented: `camera`, `light`, `sound`, `magnetic`, `occlusion`, `touch`.
+ */
 export const SENSOR_TYPES = [
   'camera',
   'distance',
@@ -257,7 +266,7 @@ export const SENSOR_TYPES = [
   'touch',
 ] as const;
 
-/** Kind of a {@link SensorEntity}. */
+/** Kind of a {@link SensorEntity}; see {@link SENSOR_TYPES} for which kinds have built-in runtimes. */
 export type SensorType = (typeof SENSOR_TYPES)[number];
 
 /** Configuration of a camera sensor; a camera renders to an offscreen surface. */
