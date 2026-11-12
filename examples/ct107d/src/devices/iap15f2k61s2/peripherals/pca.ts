@@ -261,18 +261,13 @@ const drivesPin = (b: Body, module: PcaModule): Value<number> => {
 
 /**
  * 模块输出电平：PWMn=1 取 PWM 比较结果，否则取高速输出锁存。
- *
- * 直接返回 bool：端口块在每次写入时都要展开这段表达式，`bytes`/`index` 与 0/1 打包
- * 会在解释执行时额外分配字节数组；这里只用移位、比较与一个惰性 select。
  */
 const outputLevel = (b: Body, module: PcaModule): Value<boolean> => {
   const control = readSfr(b, module.pwm);
   const width = b.add(b.shiftLeft(bitAt(b, control, 7), number(b, 1)), bitAt(b, control, 6));
-  const mask = b.select(
-    types.number,
-    b.equal(types.number, width, number(b, 3)),
-    (wide) => wide.constant(types.number, 0xff),
-    (narrow) => narrow.shiftRightUnsigned(narrow.constant(types.number, 0xff), width),
+  const mask = b.index(
+    b.bytes(number(b, 0xff), number(b, 0x7f), number(b, 0x3f), number(b, 0xff)),
+    width,
   );
   const compare = b.add(
     b.multiply(bitAt(b, control, 0), b.add(mask, number(b, 1))),
