@@ -70,6 +70,36 @@ export function modelExpression(value: unknown): string {
   throw new TypeError(`Cannot serialize model value: ${typeof value}`);
 }
 
+/**
+ * Deep-copies a compiled model while omitting `source` metadata for artifacts.
+ *
+ * Every operation and region carries a `source: { uri, range }` pointing back at
+ * model.ddl, which dominates the embedded IR payload and the deep copy
+ * `createDeviceLibrary` performs on cold start. `source` is optional throughout
+ * the IR, so shipped models remain valid without it; the tradeoff is that
+ * runtime diagnostics can no longer report DDL file and line locations.
+ *
+ * Numbers (including NaN, ±Infinity and -0) are preserved by construction, and
+ * Uint8Array values are copied so `modelExpression` keeps emitting
+ * `new Uint8Array([...])`.
+ */
+export function stripModelSource(value: unknown): unknown {
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (Array.isArray(value)) return value.map(stripModelSource);
+  if (value === null || typeof value !== 'object') return value;
+  const copy: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'source') continue;
+    Object.defineProperty(copy, key, {
+      value: stripModelSource(item),
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  }
+  return copy;
+}
+
 /** Builds each registration separately so no shared chunk or runtime import escapes. */
 export async function buildContent(options: ContentBuildOptions): Promise<readonly ContentFile[]> {
   const files: ContentFile[] = [];
@@ -97,7 +127,7 @@ export async function buildContent(options: ContentBuildOptions): Promise<readon
           uri: `mica:devices/${id}/model.ddl`,
         });
         const adapter = resolve(base, 'index.ts');
-        source = `export const model = ${modelExpression(model)};\n`;
+        source = `export const model = ${modelExpression(stripModelSource(model))};\n`;
         source += (await exists(adapter))
           ? `export { default as create } from ${JSON.stringify(normalizePath(adapter))};\n`
           : 'export function create() { return { sync() {}, dispose() {} }; }\n';
