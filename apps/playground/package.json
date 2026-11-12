@@ -7,7 +7,8 @@
     "dev": "node scripts/components.mjs dev",
     "build": "node scripts/components.mjs build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/*.test.mjs\""
   },
   "dependencies": {
     "@mica-js/core": "workspace:*",

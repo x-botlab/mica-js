@@ -99,7 +99,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "bench:cold-start": "node scripts/cold-start.mjs"
   },
   "dependencies": {
     "@mica-js/core": "workspace:*",
