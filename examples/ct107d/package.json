@@ -9,6 +9,7 @@
     "build": "mica build",
     "typecheck": "mica prepare && tsc --noEmit",
     "test": "mica build && vitest run",
+    "bench": "vitest run --config vitest.perf.config.ts",
     "schematic": "mica build && node verify-schematic.mjs",
     "canvas": "mica build && node verify-canvas.mjs",
     "firmware": "node assemble-firmware.mjs"
