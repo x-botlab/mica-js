@@ -105,6 +105,13 @@ export const GPIO_PORT_STRIDE = 0x400;
 export const GPIO_STATE = 0x100;
 export const GPIO_STATE_STRIDE = 0x40;
 
+/** 引脚意图需要的端口配置寄存器；每个都有对应的影子 state（见 model.ddl）。 */
+export const gpioModerState = (port: number): string => `gpioModer${port}`;
+export const gpioOtyperState = (port: number): string => `gpioOtyper${port}`;
+export const gpioPupdrState = (port: number): string => `gpioPupdr${port}`;
+export const gpioAfr0State = (port: number): string => `gpioAfr0${port}`;
+export const gpioAfr1State = (port: number): string => `gpioAfr1${port}`;
+
 export const USART1_BASE = 0x40013800;
 export const USART2_BASE = 0x40004400;
 export const USART3_BASE = 0x40004800;

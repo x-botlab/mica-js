@@ -10,3 +10,4 @@
 - 条件检查（`if`/`select`/`and`/`or`/`assert`）内联 `typeof` 判断，非布尔值才调用 `H.checkBoolean`。
 - `elapse` 接受运算得到的时长：动态时长保留槽位，在操作所在位置经 `H.checkDuration` 校验后使用，与 generator 后端一致。
 - `JitOptions.delays` 声明寄存器递减型忙等环（`subs`/`bne`）。运行时在环头按剩余推进窗口取整折叠轮次，越过窗口时仍逐轮执行，不越过推进目标与下一事件。
+- 器件侧：32/16 位访存改用 `load32le`/`store32le` 一类的宽操作（一次按宽度校验，而不是每字节一次）；GPIO 配置寄存器（MODER/OTYPER/PUPDR/AFR）在 state 里维护影子，引脚意图只读 state，写寄存器时写穿到寄存器映像。

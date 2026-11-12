@@ -8,6 +8,11 @@ import {
   GPIO_STATE_STRIDE,
   GPIO_SYNC,
   PERIPH,
+  gpioAfr0State,
+  gpioAfr1State,
+  gpioModerState,
+  gpioOtyperState,
+  gpioPupdrState,
 } from './layout';
 import { PORTS, machine } from './machine';
 import type { AlternateDriver, PortPins } from './machine';
@@ -110,12 +115,12 @@ interface PortRegisters {
 /** 读一次端口配置；16 根脚复用同一份快照，避免每根脚重读 6 个字。 */
 function portRegisters(b: Body, portIndex: number): PortRegisters {
   return {
-    moder: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_MODER),
-    otyper: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_OTYPER),
-    pupdr: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_PUPDR),
+    moder: b.readState(gpioModerState(portIndex), types.number),
+    otyper: b.readState(gpioOtyperState(portIndex), types.number),
+    pupdr: b.readState(gpioPupdrState(portIndex), types.number),
     odr: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_ODR),
-    afr0: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_AFR0),
-    afr1: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_AFR1),
+    afr0: b.readState(gpioAfr0State(portIndex), types.number),
+    afr1: b.readState(gpioAfr1State(portIndex), types.number),
     supplied: powered(b),
   };
 }
@@ -419,6 +424,17 @@ function writeRegister(
           );
 
           storeWord(body2, portIndex, wordOffset, merged);
+          // 引脚意图读的是影子 state，这里写穿：存储器仍是固件可见的寄存器映像。
+          for (const [offsetOf, stateOf] of [
+            [GPIO_MODER, gpioModerState],
+            [GPIO_OTYPER, gpioOtyperState],
+            [GPIO_PUPDR, gpioPupdrState],
+            [GPIO_AFR0, gpioAfr0State],
+            [GPIO_AFR1, gpioAfr1State],
+          ] as const)
+            body2.if(body2.equal(types.number, wordOffset, num(body2, offsetOf)), (hit) =>
+              asBody(hit).writeState(stateOf(portIndex), merged),
+            );
         },
       );
     },
