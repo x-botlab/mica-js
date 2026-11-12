@@ -50,6 +50,28 @@ interface DirectStats {
   readonly directFallbacks: number;
 }
 
+/**
+ * 发射器挂在每个直接程序上的统计（#256）。在这里汇总而不是自己重算，是为了让验收指标
+ * ——「每条 IR op 花几条宿主语句」——测的是真实固件，而不是手写的复刻。
+ */
+interface EmitStats {
+  readonly blocks: number;
+  readonly operations: number;
+  readonly nestedOperations: number;
+  readonly statements: number;
+  readonly statementsPerOperation: number;
+  readonly foldedOperations: number;
+  readonly selectBlocks: number;
+  readonly worst: {
+    readonly pc: number;
+    readonly operations: number;
+    readonly statements: number;
+    readonly statementsPerOperation: number;
+    readonly foldedOperations: number;
+    readonly selectBlocks: number;
+  } | null;
+}
+
 interface JitLike {
   readonly directPrograms: ReadonlyMap<string, unknown>;
   readonly directStats?: DirectStats;
@@ -81,6 +103,7 @@ interface ProbeSnapshot {
   readonly counters: WindowCounters;
   readonly compileDirectJit: number;
   readonly directPrograms: number;
+  readonly emit: EmitStats & { readonly statementsPerNestedOperation: number };
   readonly direct: boolean;
   readonly digest: string;
   readonly finalDigest: string;
@@ -230,8 +253,35 @@ function createProbe(board: unknown): Probe {
     },
     read() {
       let directPrograms = 0;
+      const emit = {
+        blocks: 0,
+        operations: 0,
+        nestedOperations: 0,
+        statements: 0,
+        foldedOperations: 0,
+        selectBlocks: 0,
+      };
+      let worst: EmitStats['worst'] = null;
 
-      for (const jit of runtime.jits ?? []) directPrograms += jit.directPrograms.size;
+      for (const jit of runtime.jits ?? []) {
+        directPrograms += jit.directPrograms.size;
+        for (const execution of jit.directPrograms.values()) {
+          const stats = (execution as { program?: { emitStats?: EmitStats } } | undefined)?.program
+            ?.emitStats;
+          if (stats === undefined) continue;
+          emit.blocks += stats.blocks;
+          emit.operations += stats.operations;
+          emit.nestedOperations += stats.nestedOperations;
+          emit.statements += stats.statements;
+          emit.foldedOperations += stats.foldedOperations;
+          emit.selectBlocks += stats.selectBlocks;
+          if (
+            stats.worst !== null &&
+            (worst === null || stats.worst.statementsPerOperation > worst.statementsPerOperation)
+          )
+            worst = stats.worst;
+        }
+      }
 
       // `compileDirectJit` 整轮累加（编译只在装配与预热期发生），调用与回退取窗口增量。
       counters.directCalls = totalDirect('directCalls') - directBaseline;
@@ -244,6 +294,16 @@ function createProbe(board: unknown): Probe {
           0,
         ),
         directPrograms,
+        emit: {
+          ...emit,
+          worst,
+          statementsPerOperation:
+            emit.operations === 0 ? 0 : Number((emit.statements / emit.operations).toFixed(3)),
+          statementsPerNestedOperation:
+            emit.nestedOperations === 0
+              ? 0
+              : Number((emit.statements / emit.nestedOperations).toFixed(3)),
+        },
         direct: directJits().length > 0 && counters.directCalls > 0,
         digest: `sha256:${hasher.digest('hex').slice(0, 16)}`,
         finalDigest: `sha256:${createHash('sha256')
@@ -309,6 +369,25 @@ export interface MeasureResult {
   readonly compileDirectJit: number;
   readonly directCalls: number;
   readonly fallbackRate: number;
+  /**
+   * 语句/IR op 比（#256 验收口径）：分子是发射器为指令体写出的宿主语句数（写栅栏、
+   * 忙等折叠、前缀与后缀，按字符串字面量之外的 `;` 计数）；分母只算指令体的顶层 IR op，
+   * 与 #256 引用的「258 个 IR op → 381 条语句」同口径。
+   */
+  readonly statementsPerOperation: number;
+  /**
+   * 同一分子除以**全部** IR op（含 `select`/`if`/`match` 分支里的嵌套 op）。语句数两者相同，
+   * 嵌套 op 不会出现在 `body.operations` 里，所以这个比值才是「每条被发射的 IR op 花几条语句」。
+   */
+  readonly statementsPerNestedOperation: number;
+  readonly emittedStatements: number;
+  readonly emittedOperations: number;
+  readonly emittedNestedOperations: number;
+  readonly emittedBlocks: number;
+  readonly foldedOperations: number;
+  readonly selectBlocks: number;
+  /** 语句/op 比最高的那一块，用来定位仍在小号语句的地方。 */
+  readonly worstBlock: EmitStats['worst'];
   readonly topicDigest: string;
   readonly topicDigestStable: boolean;
   /**
@@ -320,6 +399,16 @@ export interface MeasureResult {
   readonly topicFinalTopics: Readonly<Record<string, string>>;
   readonly unavailable: Readonly<Record<string, string>>;
   readonly faults: readonly string[];
+}
+
+/**
+ * `MICA_CT107D_EXECUTION=precise` 让同一窗口走解释器，作为直接后端任何改动的差分对照。
+ * 其他取值一律忽略，保持默认后端。
+ */
+function environmentExecution(): 'throughput' | 'precise' | undefined {
+  const value = process.env['MICA_CT107D_EXECUTION'];
+
+  return value === 'precise' || value === 'throughput' ? value : undefined;
 }
 
 interface RoundSample {
@@ -335,6 +424,7 @@ interface RoundSample {
 
 export async function measureCt107d(options: MeasureOptions = {}): Promise<MeasureResult> {
   const firmware = options.firmware ?? demoFirmware();
+  const execution = options.execution ?? environmentExecution();
   const warmUpMs = options.warmUpMs ?? WARM_UP_MS;
   const measureMs = options.measureMs ?? MEASURE_MS;
   const rounds = Math.max(1, options.rounds ?? ROUNDS);
@@ -353,7 +443,7 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     const assembled = await createCt107dBoard({
       firmware,
       ...(options.props === undefined ? {} : { props: options.props }),
-      ...(options.execution === undefined ? {} : { execution: options.execution }),
+      ...(execution === undefined ? {} : { execution }),
     });
     const probe = createProbe(assembled.board);
 
@@ -447,6 +537,15 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
       counters.directCalls === 0
         ? 0
         : Number((counters.directFallbacks / counters.directCalls).toFixed(4)),
+    statementsPerOperation: best.snapshot.emit.statementsPerOperation,
+    statementsPerNestedOperation: best.snapshot.emit.statementsPerNestedOperation,
+    emittedStatements: best.snapshot.emit.statements,
+    emittedOperations: best.snapshot.emit.operations,
+    emittedNestedOperations: best.snapshot.emit.nestedOperations,
+    emittedBlocks: best.snapshot.emit.blocks,
+    foldedOperations: best.snapshot.emit.foldedOperations,
+    selectBlocks: best.snapshot.emit.selectBlocks,
+    worstBlock: best.snapshot.emit.worst,
     topicDigest: digests[0] ?? '',
     topicDigestStable: new Set(digests).size === 1,
     topicFinalDigest: finalDigests[0] ?? '',

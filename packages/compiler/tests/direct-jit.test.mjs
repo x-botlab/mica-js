@@ -995,8 +995,10 @@ test('safe integer and boolean literals, PCs and durations are inlined', () => {
   assert.doesNotMatch(source, /C\[/);
   assert.match(source, /case 5: \{/);
   assert.match(source, /S\[0\] = 9;/);
-  assert.match(source, /v\d+ = 7;\nS\[1\] = v\d+;/);
-  assert.match(source, /v\d+ = true;\nS\[3\] = v\d+;/);
+  // 常量不占语句：`7` / `true` 直接内联到写入点，没有中间的 `v = 7;`。
+  assert.match(source, /S\[1\] = 7;/);
+  assert.match(source, /S\[3\] = true;/);
+  assert.doesNotMatch(source, /v\d+ = 7;/);
   assert.match(source, /F\.due = F\.time \+ 3;/);
   const f = frame(program, [5, 1, 0, true, 0, 0]);
   assert.equal(program.run(f, 5), 'fallback');
@@ -1012,8 +1014,7 @@ test('safe integer and boolean literals, PCs and durations are inlined', () => {
   const jumping = compileDirectJit([redirect.instruction(3, 4)], binding);
   const jumpSource = generated(jumping);
   assert.doesNotMatch(jumpSource, /C\[/);
-  assert.match(jumpSource, /v\d+ = 12;/);
-  assert.match(jumpSource, /S\[0\] = H\.checkPc\(v\d+\);/);
+  assert.match(jumpSource, /S\[0\] = H\.checkPc\(12\);/);
   assert.match(jumpSource, /F\.due = F\.time \+ 4;/);
   const r = frame(jumping, [3, 0, 0, true, 0, 0]);
   assert.equal(jumping.run(r, 10), 'fallback');
@@ -1031,9 +1032,11 @@ test('captured NaN, infinities and fractional numbers keep compileBody semantics
   const instructions = [b.instruction(0, 99)];
   const program = compileDirectJit(instructions, binding);
   const source = generated(program);
-  assert.match(source, /v\d+ = -0;\nS\[1\] = v\d+;/);
-  assert.match(source, /v\d+ = C\[0\];\nS\[2\] = v\d+;/);
-  assert.match(source, /v\d+ = C\[1\];\nS\[5\] = v\d+;/);
+  assert.match(source, /S\[1\] = -0;/);
+  assert.match(source, /S\[2\] = C\[0\];/);
+  assert.match(source, /S\[5\] = C\[1\];/);
+  // `equal(1.5, 1.5)` 在编译期求值为 `true`，两个小数常量连捕获都不需要。
+  assert.match(source, /S\[3\] = true;/);
   assert.doesNotMatch(source, /= NaN|= Infinity|= 1\.5/);
   const f = frame(program);
   const reference = generic(instructions, f.states, f.memories);
@@ -1043,6 +1046,138 @@ test('captured NaN, infinities and fractional numbers keep compileBody semantics
   assert.equal(Number.isNaN(f.states[2]), true);
   assert.equal(f.states[5], Infinity);
   assert.equal(f.states[3], true);
+});
+
+test('constant operand arithmetic evaluates at compile time and matches compileBody', () => {
+  // Every operator the analyzer folds: the direct backend must reproduce the same primitive,
+  // including signed zero, NaN, infinities, wrap-around shifts and truncated remainder.
+  const cases = [
+    ['add', 2, 3],
+    ['subtract', 0, 1],
+    ['multiply', 0, -1],
+    ['divide', 1, 0],
+    ['divide', 0, 0],
+    ['remainder', -7, 3],
+    ['power', 2, 31],
+    ['lessThan', -1, 0],
+    ['greaterThanOrEqual', 0, -0],
+    ['notEqual', NaN, NaN],
+    ['bitAnd', -1, 255],
+    ['bitOr', 1, 2],
+    ['bitXor', 5, 3],
+    ['shiftLeft', 1, 33],
+    ['shiftRight', -8, 2],
+    ['shiftRightUnsigned', -1, 0],
+  ];
+  const unaries = [
+    ['positive', -3],
+    ['negate', 0],
+    ['not', 0],
+    ['bitNot', 0],
+  ];
+  const numeric = [
+    ['abs', -4],
+    ['floor', 1.5],
+    ['round', 2.5],
+    ['sqrt', -1],
+    ['max', 1],
+    ['isNaN', 0],
+  ];
+  const compare = (label, build) => {
+    const b = builder();
+    build(b);
+    b.delay(1);
+    const instructions = [b.instruction(0, 99)];
+    const program = compileDirectJit(instructions, binding);
+    assert(program, label);
+    const f = frame(program);
+    const reference = generic(instructions, f.states, f.memories);
+    assert.equal(program.run(f, 2), reference.run(2), label);
+    assert.deepEqual(f.states, reference.states, label);
+    assert(Object.is(f.states[1], reference.states[1]), `${label}: ${f.states[1]}`);
+    // Folded values own no slot: the block emits nothing but the write itself.
+    assert.doesNotMatch(generated(program), /\bv\d+\b/, label);
+  };
+  for (const [operator, left, right] of cases)
+    compare(`binary ${operator}`, (b) =>
+      b.write('x', b.binary(operator, b.constant(left), b.constant(right), 'number')),
+    );
+  for (const [operator, value] of unaries)
+    compare(`unary ${operator}`, (b) =>
+      b.write('x', b.value({ kind: 'unary', operator, value: b.constant(value) })),
+    );
+  for (const [builtin, value] of numeric)
+    compare(`numeric ${builtin}`, (b) =>
+      b.write('x', b.value({ kind: 'numeric', builtin, args: [b.constant(value)] })),
+    );
+
+  const folded = builder();
+  folded.write('x', folded.binary('add', folded.constant(2), folded.constant(3)));
+  folded.write('flag', folded.binary('equal', folded.constant(2), folded.constant(3), 'bool'));
+  folded.delay(1);
+  const source = generated(compileDirectJit([folded.instruction(0, 99)], binding));
+  assert.match(source, /S\[1\] = 5;/);
+  assert.match(source, /S\[3\] = false;/);
+});
+
+test('an operand known only at run time keeps its slot and stays unfolded', () => {
+  const b = builder();
+  b.write('x', b.binary('add', b.read('y'), b.constant(5)));
+  b.delay(1);
+  const program = compileDirectJit([b.instruction(0, 99)], binding);
+  const source = generated(program);
+  // The constant is inlined into the expression; the unknown operand keeps one slot.
+  assert.match(source, /v\d+ = \(v\d+ \+ 5\);/);
+  assert.doesNotMatch(source, /v\d+ = 5;/);
+  const f = frame(program);
+  const reference = generic([b.instruction(0, 99)], f.states, f.memories);
+  assert.equal(program.run(f, 2), reference.run(2));
+  assert.deepEqual(f.states, reference.states);
+});
+
+test('an IT guard chain stays inside the statements-per-operation budget', () => {
+  // The shape #256 targets: repeated `equal(read, literal)` feeding a `select` ladder. The
+  // literals must cost nothing, so the ratio is measured as emitted statements per IR op.
+  const b = builder();
+  let selected = b.read('x');
+  for (let lane = 0; lane < 14; lane++) {
+    const condition = b.binary('equal', b.read('y'), b.constant(lane), 'bool');
+    const yes = [];
+    const level = b.value(
+      { kind: 'constant', constant: { kind: 'number', value: lane } },
+      'number',
+      yes,
+    );
+    yes.push({ kind: 'yield', value: level });
+    const no = [];
+    no.push({ kind: 'yield', value: selected });
+    selected = b.value({
+      kind: 'select',
+      condition,
+      yes: { type: { kind: 'number' }, body: { operations: yes } },
+      no: { type: { kind: 'number' }, body: { operations: no } },
+    });
+  }
+  b.write('marker', selected);
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  const { emitStats } = program;
+  assert(emitStats, 'emitStats is a development-only diagnostic on the program');
+  assert.equal(Object.keys(program).includes('emitStats'), false, 'diagnostic stays hidden');
+  assert.equal(emitStats.selectBlocks, 0, 'every pure select folds into a ternary');
+  assert.equal(emitStats.operations, instructions[0].body.operations.length);
+  assert(
+    emitStats.statementsPerOperation <= 1.1,
+    `statements/op ${emitStats.statementsPerOperation} over ${emitStats.statements} statements`,
+  );
+  for (const y of [0, 5, 13, 14]) {
+    const f = frame(program, [0, 3, y, true, 0, 0]);
+    const reference = generic(instructions, f.states, f.memories);
+    assert.equal(program.run(f, 5), reference.run(5));
+    assert.deepEqual(f.states, reference.states);
+    assert.equal(f.states[5], y < 14 ? y : 3);
+  }
 });
 
 test('pure scalar select folds into one conditional expression', () => {
@@ -1669,6 +1804,41 @@ test('a declared busy-wait head folds rounds and never crosses the deadline', ()
   assert.equal(unfolded.time, 2);
 });
 
+test('a folded elapse duration becomes a literal due time', () => {
+  const b = builder();
+  const summed = b.binary('add', b.constant(2), b.constant(3));
+  b.operations.push({ kind: 'elapse', duration: summed });
+  b.write('x', b.read('y'));
+  const instruction = b.instruction(0, 99);
+  const program = compileDirectJit([instruction], binding);
+  const source = generated(program);
+  // The analyzer evaluated the sum, so the runtime needs neither a slot nor a duration check.
+  assert.match(source, /F\.due = F\.time \+ 5;/);
+  assert.doesNotMatch(source, /H\.checkDuration/);
+  const f = frame(program, [0, 0, 4, false, 0, 0]);
+  const reference = generic([instruction], f.states, f.memories);
+  assert.equal(program.run(f, 2), 'deadline');
+  assert.equal(program.run(f, 1_000), reference.run(1_000));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.time, 5);
+  assert.equal(f.states[1], 4);
+
+  // A folded zero duration is the immediate path: no due time, no continuation slot.
+  const immediate = builder();
+  const zero = immediate.binary('subtract', immediate.constant(2), immediate.constant(2));
+  immediate.operations.push({ kind: 'elapse', duration: zero });
+  immediate.write('x', immediate.read('y'));
+  const zeroProgram = compileDirectJit([immediate.instruction(0, 99)], binding);
+  assert.doesNotMatch(generated(zeroProgram), /F\.due = F\.time \+/);
+  const z = frame(zeroProgram, [0, 0, 9, false, 0, 0]);
+  const zeroReference = generic([immediate.instruction(0, 99)], z.states, z.memories);
+  assert.equal(zeroProgram.run(z, 30), zeroReference.run(30));
+  assert.equal(z.time, zeroReference.time);
+  assert.deepEqual(z.states, zeroReference.states);
+  assert.equal(z.resume, 0);
+  assert.equal(z.states[1], 9);
+});
+
 test('a computed elapse duration advances by the runtime value', () => {
   const b = builder();
   const amount = b.read('x');
@@ -2262,8 +2432,9 @@ test('byte literals and indexing stay direct and match compileBody', () => {
   assert(program, 'bytes and index must not disqualify the block');
   const source = generated(program);
   assert.match(source, /H\.createBytes\(C\[\d+\]\)/);
-  assert.match(source, /H\.createBytes\(\[v\d+,v\d+,v\d+\]\)/);
+  assert.match(source, /H\.createBytes\(\[7,v\d+,255\]\)/);
   assert.match(source, /H\.readIndex\(v\d+,v\d+\)/);
+  assert.match(source, /H\.readIndex\(v\d+,1\)/);
   assert.doesNotMatch(source, /65|66|67/);
   const states = [0, 0, 3, true, 2, 0];
   const f = frame(program, states);
