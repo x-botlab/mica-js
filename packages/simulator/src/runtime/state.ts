@@ -102,6 +102,8 @@ export interface Jit {
   readonly options: JitOptions;
   readonly cache: Map<number, JitInstruction>;
   readonly polling: ReadonlyMap<number, string>;
+  /** Validated delay-loop descriptors, keyed by loop-head PC. */
+  readonly delays: ReadonlyMap<number, { readonly counter: string; readonly cycles: number }>;
   revision: number;
   directRevision: number;
   directObserverRevision: number;

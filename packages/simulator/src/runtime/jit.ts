@@ -1,4 +1,10 @@
-import { compileDirectJit, type DirectJitProgram, type ExecutionSignal } from '@mica-js/compiler';
+import {
+  compileDirectJit,
+  type DirectJitFrame,
+  type DirectJitHost,
+  type DirectJitProgram,
+  type ExecutionSignal,
+} from '@mica-js/compiler';
 import { createJitBlockBuilder, validateBoundBlockIR } from '@mica-js/device-model';
 import { isPollingInstruction } from '../polling';
 import type { EventQueue } from '../queue';
@@ -8,6 +14,9 @@ import type { Instance, InstanceBoard } from './instance';
 import type { Decl, Dependencies, Jit } from './state';
 import type { RuntimeDiagnosticCode, RuntimePhase, SimulationError } from '../types';
 import { bytesView, finite } from '../values';
+
+/** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
+const DIRECT_SHARD_SIZE = 8;
 
 /** Scheduling capabilities needed by JIT execution; all queues remain board-owned. */
 export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
@@ -62,6 +71,74 @@ function refreshDirectGuards(jit: Jit, hookReads?: Dependencies): void {
     jit.directSkip = undefined;
   }
 }
+/**
+ * Direct programs advance `frame.time` between host calls, while the board only adopts the
+ * final time after `run` returns. Publish the current frame time before every host effect so
+ * channel publications, electrical intents and diagnostics carry the instruction's time.
+ */
+function directHost(
+  board: JitRuntimeHost,
+  instance: Instance,
+  frame: DirectJitFrame,
+): DirectJitHost {
+  const publishTime = (): void => {
+    board.time = frame.time;
+  };
+  return {
+    send: (name, value) => {
+      publishTime();
+      instance.host.send(name, value);
+    },
+    sample: (pin) => {
+      publishTime();
+      return instance.host.sample(pin);
+    },
+    intent: (pin, value) => {
+      publishTime();
+      instance.host.intent(pin, value);
+    },
+    resistor: (pin, resistance) => {
+      publishTime();
+      return instance.host.resistor(pin, resistance);
+    },
+    notify: (name) => {
+      publishTime();
+      instance.host.notify(name);
+    },
+    now: () => {
+      publishTime();
+      return instance.host.now();
+    },
+    random: () => {
+      publishTime();
+      return instance.host.random();
+    },
+    assert: (condition, message) => {
+      publishTime();
+      instance.host.assert(condition, message);
+    },
+  };
+}
+function createDirectFrame(
+  board: JitRuntimeHost,
+  instance: Instance,
+  stateNames: readonly string[],
+  memoryNames: readonly string[],
+  program: DirectJitProgram,
+): DirectJitFrame {
+  const frame: DirectJitFrame = {
+    states: new Array(stateNames.length),
+    memories: memoryNames.map((name) => instance.memory(name)),
+    locals: new Array(program.localCount),
+    stateDirty: new Array(Math.ceil(stateNames.length / 32)).fill(0),
+    memoryDirty: new Array(Math.ceil(memoryNames.length / 32)).fill(0),
+    time: board.time,
+    due: board.time,
+    resume: 0,
+  };
+  (frame as { host?: DirectJitHost }).host = directHost(board, instance, frame);
+  return frame;
+}
 function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): boolean {
   const instance = jit.instance;
   const pending = Boolean(jit.direct?.frame.resume);
@@ -84,9 +161,11 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
       const key = JSON.stringify([
         [...jit.directStateGuards].sort(),
         [...jit.directMemoryGuards].sort(),
+        [...jit.delays.keys()].sort((left, right) => left - right),
       ]);
-      if (jit.directPrograms.has(key)) {
-        jit.direct = jit.directPrograms.get(key);
+      const cached = jit.directPrograms.get(key);
+      if (cached) {
+        jit.direct = cached;
         jit.directRevision = jit.revision;
       } else {
         const stateNames = [...instance.states.keys()].filter((name) => {
@@ -96,18 +175,26 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
         const memoryNames = [...instance.memories.keys()];
         const states = new Map(stateNames.map((name, index) => [name, index]));
         const memories = new Map(memoryNames.map((name, index) => [name, index]));
-        const program = compileDirectJit(
-          [...jit.cache.values()].filter(
-            (instruction) => !instruction.polling && !jit.polling.has(instruction.pc),
-          ),
-          {
-            states,
-            memories,
-            pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
-            blockedStates: jit.directStateGuards,
-            blockedMemories: jit.directMemoryGuards,
-          },
+        const instructions = [...jit.cache.values()].filter(
+          (instruction) => !instruction.polling && !jit.polling.has(instruction.pc),
         );
+        /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
+        const delayLoops = new Map<number, { counter: number; cycles: number }>();
+        for (const [pc, delay] of jit.delays) {
+          const counter = states.get(delay.counter);
+          if (counter !== undefined) delayLoops.set(pc, { counter, cycles: delay.cycles });
+        }
+        const program = compileDirectJit(instructions, {
+          states,
+          memories,
+          pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
+          blockedStates: jit.directStateGuards,
+          blockedMemories: jit.directMemoryGuards,
+          host: true,
+          split: true,
+          shardSize: DIRECT_SHARD_SIZE,
+          delayLoops,
+        });
         jit.directRevision = jit.revision;
         jit.direct = program
           ? {
@@ -118,21 +205,16 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
                 (name) => [name, memories.get(name)!] as const,
               ),
               revision: jit.revision,
-              frame: {
-                states: new Array(stateNames.length),
-                memories: memoryNames.map((name) => instance.memory(name)),
-                locals: new Array(program.localCount),
-                stateDirty: new Array(Math.ceil(stateNames.length / 32)).fill(0),
-                memoryDirty: new Array(Math.ceil(memoryNames.length / 32)).fill(0),
-                time: board.time,
-                due: board.time,
-                resume: 0,
-              },
+              frame: createDirectFrame(board, instance, stateNames, memoryNames, program),
             }
           : undefined;
-        if (jit.directPrograms.size >= 8)
-          jit.directPrograms.delete(jit.directPrograms.keys().next().value!);
-        jit.directPrograms.set(key, jit.direct);
+        // A declined program must not be cached, or the key would keep answering `undefined`.
+        if (!jit.direct) jit.directPrograms.delete(key);
+        else {
+          if (jit.directPrograms.size >= 8)
+            jit.directPrograms.delete(jit.directPrograms.keys().next().value!);
+          jit.directPrograms.set(key, jit.direct);
+        }
       }
     }
     if (!jit.direct) return false;

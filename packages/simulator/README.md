@@ -58,7 +58,7 @@ JIT 在翻译并校验整个块后，将各 PC 直接绑定到已编译的指令
 
 板默认使用 `execution: 'throughput'`，可切换 `execution: 'precise'`。`cpuQuantum` 为整数皮秒，范围 1 到 10,000,000，默认 10 μs；精确模式仍校验该值但不使用它。吞吐模式允许 CPU 观察、轮询退出和 IRQ 响应的额外延迟不超过该预算；固有的指令耗时、中断屏蔽和模型等待另计。外设、通信边沿、FIFO 和已锁存事件不按该预算合并。
 
-吞吐模式将支持的缓存指令编译为紧凑 JS 执行循环，使用标量状态槽和原始 RAM 字节区，减少逐指令生成器、对象分配和通用派发。每段截止于下一普通事件或推进终点；资源屏障已排除中间可观察变化时，不因时间量子额外返回通用调度器。`cpuQuantum` 是额外可见性延迟的上界而非固定步长，当前实现保持精确事件期限，不故意引入延迟。直接执行目前只用于单 JIT 板上的标量运算、固定 RAM 区域（偏移可动态计算）、正固定耗时和分支；不支持的指令、观察者、中断条件依赖写入及代码写入形成逐指令屏障，其余指令继续直接执行。按守卫集合复用最多 8 份程序，代码失效时一起清除，避免 IRQ 分支切换导致重复编译。挂起后缀保留读取结果，实际写入用可复用脏位集提交；外部改码也不重放当前前缀。
+吞吐模式将支持的缓存指令编译为紧凑 JS 执行循环，使用标量状态槽和原始 RAM 字节区，减少逐指令生成器、对象分配和通用派发。每段截止于下一普通事件或推进终点；资源屏障已排除中间可观察变化时，不因时间量子额外返回通用调度器。`cpuQuantum` 是额外可见性延迟的上界而非固定步长，当前实现保持精确事件期限，不故意引入延迟。直接执行目前只用于单 JIT 板上的标量运算、固定 RAM 区域（偏移可动态计算）、正耗时（常量或动态计算，动态值在执行处校验）和分支；不支持的指令、观察者、中断条件依赖写入及代码写入形成逐指令屏障，其余指令继续直接执行。按守卫集合复用最多 8 份程序，代码失效时一起清除，避免 IRQ 分支切换导致重复编译。挂起后缀保留读取结果，实际写入用可复用脏位集提交；外部改码也不重放当前前缀。
 
 直接执行守卫缓存资源的观察订阅版本：资源首次被观察或最后一个观察订阅移除时更新版本，动态观察分支切换和共享订阅遵守同一规则。订阅版本未变且中断条件没有新增实际读取依赖时，复用已有守卫集合，省去每次交接对全部状态与内存的扫描；普通资源值变化仍使用原有数据版本和通知机制。
 
@@ -134,6 +134,32 @@ node --test packages\simulator\bench\mcu.test.mjs
 计时仅覆盖 `runUntil`，不包含建模、装配、预期计算、证据快照和事件循环让出。独立增量解释器在计时外核对 CPU/IRQ 状态、全部数据 RAM、定时器次数和 GPIO 采样，并核对已流逝周期等于已开始指令耗时加入口耗时、减去终点尚未消耗的部分。没有逐指令宿主计数、轨迹或状态观察反应。GPIO 验证是采样状态，不宣称覆盖全部边沿历史；多 MCU 使用同步起点和相同固件。预热不保证覆盖所有 JIT 路径，首次推进也不是新进程冷启动。
 
 作为模块导入时不运行 CLI；`create(sdk, { workload, size, stepCycles, cyclePs, irqPeriodCycles })` 返回独立场景，提供 `step(cycles?)`、`verify()`、`progress`、`dispose()` 及共享的 `model`。相同模型/时钟/中断周期配置在不同 SDK 间复用同一 IR 对象，供 AB/BA 对照；`progress` 不推进板，`verify()` 触发同终点快照，在首次推进前调用会使冷启动观测失效。通过 `step` 推进，不直接调用场景内板的 `runUntil`。CLI 的总工作量包含首次推进、预热和测量；每板每颗 MCU 最多 500 万周期、整个矩阵聚合最多 5000 万周期，其余参数边界见 `--help`。短批次的百分位及 MHz 仍受宿主 GC、调度和 V8 状态影响，不作为真实芯片或稳定实时延迟保证。
+
+### STM32G431 Thumb 固件基准
+
+[STM32G431 基准](bench/stm32g431.mjs)使用原创裸机固件的真实 Thumb 字节，经取指、译码、Builder IR、公开 SDK/JIT 执行。模型包含 r0–r15、NZCV、IT、基本异常栈、PRIMASK、128 KiB Flash、32 KiB SRAM，以及 GPIOA、RCC GPIO 时钟、SysTick 和 SCB 中断控制。GPIO PA5 连接现有电气模型。覆盖的指令族与 MMIO 行为由相应译码器、总线测试固定，未知指令和地址产生诊断。该器件用于评估真实指令与外设交互的执行成本；DSP/FPU、完整芯片外设和硬件精确周期需要另行扩展。
+
+```powershell
+pnpm --filter @mica-js/simulator... build
+pnpm --filter @mica-js/simulator test:mcu:stm32
+pnpm --filter @mica-js/simulator bench:mcu:stm32 --smoke
+pnpm --filter @mica-js/simulator bench:mcu:stm32 --workload=ram-copy --memory-access=wide
+pnpm --filter @mica-js/simulator bench:mcu:stm32 --workload=mixed --execution=precise --cycles=10000 --samples=5
+```
+
+固件覆盖整数/条件分支、RAM 搬运、GPIO 翻转、SysTick 中断、混合执行和大循环压力；源码与已编译字节保存在 [firmware/](bench/stm32g431/firmware/)。运行基准使用仓库中的字节夹具，再生成固件使用 Clang/LLVM ARM 工具链。默认每周期 10,000 ps；简化周期表采用 ALU 1、访存 2、跳转成功 3、条件未成立 1、栈操作寄存器数加 1、异常进入与返回各 12 周期。由此得到的周期吞吐描述该模型的执行进度。
+
+`stress` 固件的主循环展开 314 条不同 PC 的真实 Thumb 指令，单体生成时 `run` 达到十余万字节码偏移，适用于评估单函数体积、常量数组和 keyed access 的影响。direct 程序超过 8 条指令时，运行时会生成 `stepShardN` 分片函数：分片按「局部槽预算」分组（默认 1536 个槽、最多 8 条一组），让单个生成函数保持在 V8 可优化的规模内，超大指令体单独成片；更小的程序继续使用单体函数。真实 `stress` 中 `run` 现已进入 TurboFan，分片函数保持 Maglev；同机多次测量中位数约为 200ms → 175–190ms 量级（每轮 4 次 20k 周期采样，宿主调度仍有波动）。V8 层验证可单独运行：
+
+```powershell
+pnpm --filter @mica-js/simulator bench:mcu:stm32:v8 -- stress 200000
+```
+
+该工具以 `--trace-opt --trace-deopt` 在子进程中执行基准，按 `run`、`stepShardN`、`resumeShardN` 汇总进入的优化层、完成的编译和去优化原因及字节码偏移。基线（Node 24.18 / 随附 V8，20 万周期）显示 `run` 完成 TurboFan 编译，全部分片函数完成 Maglev 编译；仍有 `Insufficient type feedback for generic keyed access` 和分片调用的反馈去优化，偏移随反馈时序变化。
+
+每组报告单独列出装配、首次推进、预热后的稳态样本和固件 SHA-256。计时只覆盖 `runUntil`；独立 Thumb 参考机在计时外核对 CPU 状态、全部 SRAM、GPIO 输出写序列、PA5 电平、RCC/GPIO/SysTick/SCB 可见寄存器，并提供客体指令已开始数及异常进入次数。`guestMipsIssued` 使用样本内客体指令已开始数除以墙钟时间，硬件异常进入和模型服务过程不计为客体指令。译码时间采集发生在首次翻译回调中，属于推进耗时；参考机、快照和离线 IR 分析均在计时外。首次推进是新板冷启动，Node/V8 模块及共享模型可能已被前一组预热。
+
+`profile` 报告已翻译 PC 的 IR 种类分布、每条指令的 direct 可编译性、生成函数字符数、局部槽、常量数组访问、布尔检查和 select 标签数；`excludedByKind`、`excludedTypes` 和 `excludedStateWrites` 汇总被排除指令包含的操作、类型和写屏障。该分析使用 IRQ hook 写屏障；静态可编译覆盖率与运行时回退率分别定义，报告中的覆盖率只表示前者。`bytes` 将宽访问生成逐字节 IR，`wide` 使用 canonical 宽访存 IR，供 #254 的后端支持对照；两种配置执行同一固件并检查相同结果。CLI 支持 `--workload`、`--execution`、`--memory-access`、`--samples`、`--cycles`、`--warmup`、`--cold-cycles`，每板累计最多 1,000 万周期。
 
 ### 典型 MCU 固件基准
 

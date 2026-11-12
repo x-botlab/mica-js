@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/ddl",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Browser-compatible Langium frontend and TypeScript projection for Mica DDL",
   "license": "MIT",
   "repository": {

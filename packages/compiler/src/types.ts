@@ -119,6 +119,34 @@ export interface DirectJitBinding {
   /** Compile-time write barriers; recompile when membership changes. */
   readonly blockedStates?: ReadonlySet<string>;
   readonly blockedMemories?: ReadonlySet<string>;
+  /** Set when the runtime supplies `DirectJitFrame.host` for side-effecting operations. */
+  readonly host?: boolean;
+  /** Emit a small set of shard functions instead of one monolithic function. */
+  readonly split?: boolean;
+  /** Instructions per split shard; defaults to 48. */
+  readonly shardSize?: number;
+  /** Summed slot count above which `split` emits shards; defaults to 2048. */
+  readonly shardSlotLimit?: number;
+  /**
+   * PC → `{ counter slot, ps per round }` of a declared busy-wait loop head. The emitted
+   * body collapses every round the deadline allows before executing the real iteration.
+   */
+  readonly delayLoops?: ReadonlyMap<number, { readonly counter: number; readonly cycles: number }>;
+}
+
+/**
+ * Runtime host calls available to a direct program. The simulator supplies its instance
+ * host; methods retain the generic execution contract, including validation and snapshotting.
+ */
+export interface DirectJitHost {
+  send(name: string, value: unknown): void;
+  sample(pin: unknown): unknown;
+  intent(pin: unknown, value: unknown): void;
+  resistor(pin: unknown, resistance: unknown): unknown;
+  notify(name: string): void;
+  now(): number;
+  random(): number;
+  assert(condition: unknown, message: unknown): void;
 }
 
 /** Reusable runtime-owned bank. Flush completed effects even when run throws. */
@@ -137,6 +165,8 @@ export interface DirectJitFrame {
   locals: unknown[];
   /** Complete a pending old instruction, then exit before starting another. */
   stopAfterInstruction?: boolean;
+  /** Present when the program was compiled with `DirectJitBinding.host`. */
+  readonly host?: DirectJitHost;
 }
 
 export type DirectJitReason = 'deadline' | 'fallback' | 'stopped' | 'invalidated';

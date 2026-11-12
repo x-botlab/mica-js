@@ -845,7 +845,15 @@ export class Instance {
     this.guard();
     if (this.board.phase !== 'initialize' || this.board.current !== this)
       throw this.board.error('INVALID_CALL_STATE', 'attachJit is initialization-only', this);
-    dataObject(options, ['entry', 'code', 'pc', 'beforeInstruction', 'polling', 'translate']);
+    dataObject(options, [
+      'entry',
+      'code',
+      'pc',
+      'beforeInstruction',
+      'polling',
+      'delays',
+      'translate',
+    ]);
     identity(options.entry);
     identity(options.code);
     identity(options.pc);
@@ -893,6 +901,8 @@ export class Instance {
         polling.set(pc, predicate);
       }
     }
+    if (Object.hasOwn(options, 'delays') && !(options.delays instanceof Map))
+      throw new TypeError('delays must be a Map');
     const jit: Jit = {
       instance: this,
       options: Object.freeze({
@@ -903,6 +913,7 @@ export class Instance {
       }),
       cache: new Map(),
       polling,
+      delays: options.delays ?? new Map(),
       revision: 0,
       directRevision: -1,
       directObserverRevision: -1,
