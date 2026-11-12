@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/editor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Mica editors: independent composition roots, commands and scoped services",
   "license": "MIT",
   "repository": {
