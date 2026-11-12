@@ -1,0 +1,13 @@
+export const FLASH_BASE = 0x08000000;
+export const FLASH_SIZE = 128 * 1024;
+export const SRAM_BASE = 0x20000000;
+export const SRAM_SIZE = 32 * 1024;
+export const GPIOA_BASE = 0x48000000;
+export const RCC_AHB2ENR = 0x4002104c;
+export const SYSTICK_BASE = 0xe000e010;
+export const SCB_ICSR = 0xe000ed04;
+export const SCB_VTOR = 0xe000ed08;
+export const EXC_RETURN = 0xfffffff9;
+export const RESET_PC = FLASH_BASE + 0x100;
+export const STACK_TOP = SRAM_BASE + SRAM_SIZE;
+export const DEFAULT_CYCLE_PS = 10_000;

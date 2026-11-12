@@ -135,6 +135,32 @@ node --test packages\simulator\bench\mcu.test.mjs
 
 作为模块导入时不运行 CLI；`create(sdk, { workload, size, stepCycles, cyclePs, irqPeriodCycles })` 返回独立场景，提供 `step(cycles?)`、`verify()`、`progress`、`dispose()` 及共享的 `model`。相同模型/时钟/中断周期配置在不同 SDK 间复用同一 IR 对象，供 AB/BA 对照；`progress` 不推进板，`verify()` 触发同终点快照，在首次推进前调用会使冷启动观测失效。通过 `step` 推进，不直接调用场景内板的 `runUntil`。CLI 的总工作量包含首次推进、预热和测量；每板每颗 MCU 最多 500 万周期、整个矩阵聚合最多 5000 万周期，其余参数边界见 `--help`。短批次的百分位及 MHz 仍受宿主 GC、调度和 V8 状态影响，不作为真实芯片或稳定实时延迟保证。
 
+### STM32G431 Thumb 固件基准
+
+[STM32G431 基准](bench/stm32g431.mjs)使用原创裸机固件的真实 Thumb 字节，经取指、译码、Builder IR、公开 SDK/JIT 执行。模型包含 r0–r15、NZCV、IT、基本异常栈、PRIMASK、128 KiB Flash、32 KiB SRAM，以及 GPIOA、RCC GPIO 时钟、SysTick 和 SCB 中断控制。GPIO PA5 连接现有电气模型。覆盖的指令族与 MMIO 行为由相应译码器、总线测试固定，未知指令和地址产生诊断。该器件用于评估真实指令与外设交互的执行成本；DSP/FPU、完整芯片外设和硬件精确周期需要另行扩展。
+
+```powershell
+pnpm --filter @mica-js/simulator... build
+pnpm --filter @mica-js/simulator test:mcu:stm32
+pnpm --filter @mica-js/simulator bench:mcu:stm32 --smoke
+pnpm --filter @mica-js/simulator bench:mcu:stm32 --workload=ram-copy --memory-access=wide
+pnpm --filter @mica-js/simulator bench:mcu:stm32 --workload=mixed --execution=precise --cycles=10000 --samples=5
+```
+
+固件覆盖整数/条件分支、RAM 搬运、GPIO 翻转、SysTick 中断、混合执行和大循环压力；源码与已编译字节保存在 [firmware/](bench/stm32g431/firmware/)。运行基准使用仓库中的字节夹具，再生成固件使用 Clang/LLVM ARM 工具链。默认每周期 10,000 ps；简化周期表采用 ALU 1、访存 2、跳转成功 3、条件未成立 1、栈操作寄存器数加 1、异常进入与返回各 12 周期。由此得到的周期吞吐描述该模型的执行进度。
+
+`stress` 固件的主循环展开 314 条不同 PC 的真实 Thumb 指令，单体生成时 `run` 达到十余万字节码偏移，适用于评估单函数体积、常量数组和 keyed access 的影响。direct 程序超过 128 条指令时，运行时会按 48 条一组生成 `stepShardN` 分片函数；小固件继续使用单体函数。真实 `stress` 中 `run` 现已进入 TurboFan，分片函数保持 Maglev；同机多次测量中位数约为 200ms → 175–190ms 量级（每轮 4 次 20k 周期采样，宿主调度仍有波动）。V8 层验证可单独运行：
+
+```powershell
+pnpm --filter @mica-js/simulator bench:mcu:stm32:v8 -- stress 200000
+```
+
+该工具以 `--trace-opt --trace-deopt` 在子进程中执行基准，按 `run`、`stepShardN`、`resumeShardN` 汇总进入的优化层、完成的编译和去优化原因及字节码偏移。基线（Node 24.18 / 随附 V8，20 万周期）显示 `run` 完成 TurboFan 编译，5 个 `stepShardN` 完成 Maglev；仍有 `Insufficient type feedback for generic keyed access` 和分片调用的反馈去优化，偏移随反馈时序变化。
+
+每组报告单独列出装配、首次推进、预热后的稳态样本和固件 SHA-256。计时只覆盖 `runUntil`；独立 Thumb 参考机在计时外核对 CPU 状态、全部 SRAM、GPIO 输出写序列、PA5 电平、RCC/GPIO/SysTick/SCB 可见寄存器，并提供客体指令已开始数及异常进入次数。`guestMipsIssued` 使用样本内客体指令已开始数除以墙钟时间，硬件异常进入和模型服务过程不计为客体指令。译码时间采集发生在首次翻译回调中，属于推进耗时；参考机、快照和离线 IR 分析均在计时外。首次推进是新板冷启动，Node/V8 模块及共享模型可能已被前一组预热。
+
+`profile` 报告已翻译 PC 的 IR 种类分布、每条指令的 direct 可编译性、生成函数字符数、局部槽、常量数组访问、布尔检查和 select 标签数；`excludedByKind`、`excludedTypes` 和 `excludedStateWrites` 汇总被排除指令包含的操作、类型和写屏障。该分析使用 IRQ hook 写屏障；静态可编译覆盖率与运行时回退率分别定义，报告中的覆盖率只表示前者。`bytes` 将宽访问生成逐字节 IR，`wide` 使用 canonical 宽访存 IR，供 #254 的后端支持对照；两种配置执行同一固件并检查相同结果。CLI 支持 `--workload`、`--execution`、`--memory-access`、`--samples`、`--cycles`、`--warmup`、`--cold-cycles`，每板累计最多 1,000 万周期。
+
 ### 典型 MCU 固件基准
 
 `bench:mcu:typical` 使用单颗标称 100 MHz 的合成 MCU，覆盖 1%、10%、30% 有效计算和持续满载，分别采用 WFI 与显式轮询等待。定时 IRQ 为 1 kHz，GPIO 每 10 ms 切换；UART 保留真实 115200 baud 逐位电气传输、独立字节解码、16 字节 FIFO 和 IRQ 服务。
