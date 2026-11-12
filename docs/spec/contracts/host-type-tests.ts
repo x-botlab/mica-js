@@ -52,12 +52,6 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
     },
   });
   context.loadBytes('code', new Uint8Array([1, 2]));
-  // The host listener count is a live, owner-less reading of the shared bridge.
-  const hostListeners: number = context.topics.hostListenerCount;
-  void hostListeners;
-  // The guard shares every publish rejection without copying or fanning out.
-  const preflight: void = context.topics.assertCanPublish();
-  void preflight;
   const subscription = context.topics.onDidReceive((message) => {
     const payload: unknown = message.payload;
     void payload;
@@ -119,9 +113,7 @@ const validOptions: BoardOptions = { seed: 0, execution: 'throughput', cpuQuantu
 const onlyOption: Record<keyof BoardOptions, number> = { seed: 0, execution: 0, cpuQuantum: 0 };
 void onlyOption;
 const board: Board = createBoard(library, description, validOptions);
-const boardHostListeners: number = board.topics.hostListenerCount;
-const boardPreflight: void = board.topics.assertCanPublish();
-void [boardHostListeners, boardPreflight];
+void board;
 const errorEvent: Event<RuntimeDiagnostic> = board.onDidError;
 const diagnosticEvent: Event<RuntimeDiagnostic> = board.onDidDiagnostic;
 const subscription: Disposable = errorEvent((diagnostic) => {
@@ -146,8 +138,6 @@ function rejectsWrongShapes(
   board.time = 0;
   // @ts-expect-error State is observed, not assigned by the host.
   board.status = 'ready';
-  // @ts-expect-error The host listener count is observed, not assigned by the host.
-  board.topics.hostListenerCount = 0;
   // @ts-expect-error The new library field is model, not definition.
   createDeviceLibrary([{ id: 'x', definition: model, create: createNode }]);
   // @ts-expect-error The library receives DeviceIR, not DDL source text.

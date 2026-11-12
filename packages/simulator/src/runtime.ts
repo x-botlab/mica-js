@@ -10,6 +10,7 @@ import {
 import { ActivationQueue, EventQueue, Fifo } from './queue';
 import { compileObservation } from './observations';
 import { Instance } from './runtime/instance';
+import { registerPublishGate } from './runtime/publish-gate';
 import { runJit } from './runtime/jit';
 import { body, computation, frame, MAX_TIME, time } from './runtime/execution';
 import {
@@ -332,15 +333,23 @@ class BoardRuntime implements Board {
       bindings: Object.freeze(this.instances.map((instance) => instance.bindingReport())),
     });
   }
-  validity(instance?: Instance): void {
+  assertAlive(instance?: Instance): void {
     if (this.status === 'disposed' || (instance && !instance.valid))
       throw this.error('OBJECT_DISPOSED', 'Object is disposed', instance);
   }
-  guard(instance?: Instance, readOnly = false): void {
-    this.validity(instance);
+  /** Admission for a call that may change board state or is visible to a device. */
+  assertCallAllowed(instance?: Instance): void {
+    this.admit(instance, false);
+  }
+  /** Admission for a read-only entry point: a faulted board stays inspectable. */
+  assertReadAllowed(instance?: Instance): void {
+    this.admit(instance, true);
+  }
+  private admit(instance: Instance | undefined, allowFaulted: boolean): void {
+    this.assertAlive(instance);
     if (instance && ['execute', 'translate', 'dispose', 'assembly'].includes(this.phase))
       throw this.error('INVALID_CALL_STATE', 'Operation is not allowed in this phase', instance);
-    if (!readOnly && this.status === 'faulted')
+    if (!allowFaulted && this.status === 'faulted')
       throw this.error('BOARD_FAULTED', 'Board is faulted', instance);
   }
   error(
@@ -450,18 +459,13 @@ class BoardRuntime implements Board {
     );
   }
   topicBridge(owner?: Instance): TopicBridge {
-    // A getter over this closure keeps the reading live for every frozen facade sharing the set.
-    const hostListenerCount = (): number => this.hostListeners;
-    return Object.freeze({
-      get hostListenerCount(): number {
-        return hostListenerCount();
-      },
+    const facade = Object.freeze({
       onDidReceive: ((
         listener: (message: TopicMessage) => unknown,
         thisArgs?: unknown,
         disposables?: Disposable[],
       ) => {
-        this.guard(owner);
+        this.assertCallAllowed(owner);
         const entry: TopicListener = {
           ...(owner ? { owner } : {}),
           call: (message) => listener.call(thisArgs, message),
@@ -482,9 +486,8 @@ class BoardRuntime implements Board {
         owner?.resources.push(disposable);
         return disposable;
       }) as Event<TopicMessage>,
-      assertCanPublish: () => this.guard(owner),
       publish: (topic: string, payload: unknown) => {
-        this.guard(owner);
+        this.assertCallAllowed(owner);
         if (typeof topic !== 'string') throw new TypeError('Topic must be a string');
         this.dispatchDepth++;
         try {
@@ -505,6 +508,13 @@ class BoardRuntime implements Board {
         }
       },
     });
+    // The admission check and the owner-less listener count stay off the public contract: they
+    // exist for the adapter layer, which decides whether anyone would receive a message.
+    registerPublishGate(facade, {
+      assertPublishAllowed: () => this.assertCallAllowed(owner),
+      hostListeners: () => this.hostListeners,
+    });
+    return facade;
   }
   private enqueue(process: Process): void {
     if (process.state === 'idle') {
@@ -851,7 +861,7 @@ class BoardRuntime implements Board {
     }
   }
   runUntil(target: number): void {
-    this.validity();
+    this.assertAlive();
     if (this.phase !== 'idle' || this.dispatchDepth)
       throw this.error('INVALID_CALL_STATE', 'Board is busy');
     if (this.status === 'faulted') throw this.error('BOARD_FAULTED', 'Board is faulted');

@@ -49,18 +49,7 @@ export interface TopicMessage {
 }
 export interface TopicBridge {
   readonly onDidReceive: Event<TopicMessage>;
-  /**
-   * 未携带 owner 的监听者数量，即宿主对板级根 bridge 的直连订阅数；实例作用域包装注册的
-   * 监听者不计入。计数覆盖整块板共享的话题分发集合，因此器件 `ctx.topics` 读到的是同一个
-   * 宿主订阅数。只读视图，随订阅创建与释放实时变化。
-   */
-  readonly hostListenerCount: number;
   publish(topic: string, payload: unknown): void;
-  /**
-   * 按 `publish` 相同的失效、非法阶段与故障规则校验，但不复制载荷、不组装消息、不派发。
-   * 发布者可在确认无人接收时先校验再跳过复制与扇出。
-   */
-  assertCanPublish(): void;
 }
 
 export interface JitTranslateInput {
