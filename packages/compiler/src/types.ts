@@ -125,6 +125,8 @@ export interface DirectJitBinding {
   readonly split?: boolean;
   /** Instructions per split shard; defaults to 48. */
   readonly shardSize?: number;
+  /** Summed slot count above which `split` emits shards; defaults to 2048. */
+  readonly shardSlotLimit?: number;
 }
 
 /**

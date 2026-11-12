@@ -149,13 +149,13 @@ pnpm --filter @mica-js/simulator bench:mcu:stm32 --workload=mixed --execution=pr
 
 固件覆盖整数/条件分支、RAM 搬运、GPIO 翻转、SysTick 中断、混合执行和大循环压力；源码与已编译字节保存在 [firmware/](bench/stm32g431/firmware/)。运行基准使用仓库中的字节夹具，再生成固件使用 Clang/LLVM ARM 工具链。默认每周期 10,000 ps；简化周期表采用 ALU 1、访存 2、跳转成功 3、条件未成立 1、栈操作寄存器数加 1、异常进入与返回各 12 周期。由此得到的周期吞吐描述该模型的执行进度。
 
-`stress` 固件的主循环展开 314 条不同 PC 的真实 Thumb 指令，单体生成时 `run` 达到十余万字节码偏移，适用于评估单函数体积、常量数组和 keyed access 的影响。direct 程序超过 128 条指令时，运行时会按 48 条一组生成 `stepShardN` 分片函数；小固件继续使用单体函数。真实 `stress` 中 `run` 现已进入 TurboFan，分片函数保持 Maglev；同机多次测量中位数约为 200ms → 175–190ms 量级（每轮 4 次 20k 周期采样，宿主调度仍有波动）。V8 层验证可单独运行：
+`stress` 固件的主循环展开 314 条不同 PC 的真实 Thumb 指令，单体生成时 `run` 达到十余万字节码偏移，适用于评估单函数体积、常量数组和 keyed access 的影响。direct 程序超过 8 条指令时，运行时会生成 `stepShardN` 分片函数：分片按「局部槽预算」分组（默认 1536 个槽、最多 8 条一组），让单个生成函数保持在 V8 可优化的规模内，超大指令体单独成片；更小的程序继续使用单体函数。真实 `stress` 中 `run` 现已进入 TurboFan，分片函数保持 Maglev；同机多次测量中位数约为 200ms → 175–190ms 量级（每轮 4 次 20k 周期采样，宿主调度仍有波动）。V8 层验证可单独运行：
 
 ```powershell
 pnpm --filter @mica-js/simulator bench:mcu:stm32:v8 -- stress 200000
 ```
 
-该工具以 `--trace-opt --trace-deopt` 在子进程中执行基准，按 `run`、`stepShardN`、`resumeShardN` 汇总进入的优化层、完成的编译和去优化原因及字节码偏移。基线（Node 24.18 / 随附 V8，20 万周期）显示 `run` 完成 TurboFan 编译，5 个 `stepShardN` 完成 Maglev；仍有 `Insufficient type feedback for generic keyed access` 和分片调用的反馈去优化，偏移随反馈时序变化。
+该工具以 `--trace-opt --trace-deopt` 在子进程中执行基准，按 `run`、`stepShardN`、`resumeShardN` 汇总进入的优化层、完成的编译和去优化原因及字节码偏移。基线（Node 24.18 / 随附 V8，20 万周期）显示 `run` 完成 TurboFan 编译，全部分片函数完成 Maglev 编译；仍有 `Insufficient type feedback for generic keyed access` 和分片调用的反馈去优化，偏移随反馈时序变化。
 
 每组报告单独列出装配、首次推进、预热后的稳态样本和固件 SHA-256。计时只覆盖 `runUntil`；独立 Thumb 参考机在计时外核对 CPU 状态、全部 SRAM、GPIO 输出写序列、PA5 电平、RCC/GPIO/SysTick/SCB 可见寄存器，并提供客体指令已开始数及异常进入次数。`guestMipsIssued` 使用样本内客体指令已开始数除以墙钟时间，硬件异常进入和模型服务过程不计为客体指令。译码时间采集发生在首次翻译回调中，属于推进耗时；参考机、快照和离线 IR 分析均在计时外。首次推进是新板冷启动，Node/V8 模块及共享模型可能已被前一组预热。
 
