@@ -14,8 +14,48 @@ import { validateMetadata, type DeviceMetadata } from '@mica-js/sdk/metadata';
 
 export type DemoDocumentKind = 'schematic' | 'canvas';
 
-const ASSET_ROOT = 'runtime-demo';
+/** 主页面文档选择器的一项；`path` 相对站点根，由宿主按自身规则解析。 */
+export interface IDemoDocument {
+  readonly id: string;
+  readonly kind: DemoDocumentKind;
+  readonly label: string;
+  readonly path: string;
+  /**
+   * 仿真步长（ms）。8051 板按指令推进，步长越大每个 UI 帧要跑的指令越多；
+   * CT107D 需要更细的步长才能在预览里看到扫描与走马灯。
+   */
+  readonly stepMs?: number;
+}
+
+export const DEMO_DOCUMENTS: readonly IDemoDocument[] = [
+  {
+    id: 'example-canvas',
+    kind: 'canvas',
+    label: '画布 · example.cnv',
+    path: 'runtime-demo/example.cnv',
+  },
+  {
+    id: 'example-schematic',
+    kind: 'schematic',
+    label: '原理图 · example.sch',
+    path: 'runtime-demo/example.sch',
+  },
+  {
+    id: 'ct107d-canvas',
+    kind: 'canvas',
+    label: '画布 · ct107d.cnv',
+    path: 'components/ct107d/ct107d.cnv',
+    stepMs: 2,
+  },
+];
+
+export function demoDocument(id: string): IDemoDocument {
+  return DEMO_DOCUMENTS.find((candidate) => candidate.id === id) ?? DEMO_DOCUMENTS[0]!;
+}
+
 const COMPONENT_ROOT = 'components';
+/** CT107D 示例包的产物由 `scripts/components.mjs` 复制到这里（目录被仓库忽略）。 */
+const CT107D_ROOT = `${COMPONENT_ROOT}/ct107d`;
 
 interface IDemoAsset {
   readonly metadata: string;
@@ -25,21 +65,56 @@ interface IDemoAsset {
 function componentAssets(
   category: 'devices' | 'widgets',
   ids: readonly string[],
+  prefix = 'demo',
+  root = COMPONENT_ROOT,
 ): Readonly<Record<string, IDemoAsset>> {
   const kind = category === 'devices' ? 'device' : 'widget';
   return Object.fromEntries(
     ids.map((id) => [
-      `demo:${id}`,
+      `${prefix}:${id}`,
       {
-        metadata: `${COMPONENT_ROOT}/${category}/${id}/${kind}.json`,
-        code: `${COMPONENT_ROOT}/${category}/${id}/${kind}.js`,
+        metadata: `${root}/${category}/${id}/${kind}.json`,
+        code: `${root}/${category}/${id}/${kind}.js`,
       },
     ]),
   );
 }
 
-const DEVICE_ASSETS = componentAssets('devices', ['resistor', 'push-button', 'led', 'voltmeter']);
-const WIDGET_ASSETS = componentAssets('widgets', ['button', 'led-indicator', 'voltmeter']);
+/** CT107D 工程使用自己的包 id `xbotlab`，与示例包 `demo` 并行解析。 */
+function ct107dAssets(
+  category: 'devices' | 'widgets',
+  ids: readonly string[],
+): Readonly<Record<string, IDemoAsset>> {
+  return componentAssets(category, ids, 'xbotlab', CT107D_ROOT);
+}
+
+const DEVICE_ASSETS = {
+  ...componentAssets('devices', ['resistor', 'push-button', 'led', 'voltmeter']),
+  ...ct107dAssets('devices', [
+    '74hc02',
+    '74hc138',
+    '74hc573',
+    '74ls04',
+    'at24c02',
+    'cx20106a',
+    'ds1302',
+    'ds18b20',
+    'lm386',
+    'ne555',
+    'pcf8591',
+    'push-button',
+    'uln2003',
+    'vs1838',
+    'seg4',
+    'blue-led',
+    'iap15f2k61s2',
+  ]),
+};
+
+const WIDGET_ASSETS = {
+  ...componentAssets('widgets', ['button', 'led-indicator', 'voltmeter']),
+  ...ct107dAssets('widgets', ['button', 'segment', 'image', 'led-indicator']),
+};
 
 function assetUri(path: string): string {
   return new URL(path, globalThis.document.baseURI).href;
@@ -75,7 +150,7 @@ export const demoDeviceLibrary: IDeviceLibrary = {
       readDefinition<unknown>(asset.metadata),
       readText(asset.code),
     ]);
-    validateMetadata(definition, 'device', id.slice('demo:'.length));
+    validateMetadata(definition, 'device', id.slice(id.indexOf(':') + 1));
     return { definition: definition as DeviceMetadata, code };
   },
 };
@@ -88,23 +163,21 @@ export const demoWidgetLibrary: IWidgetLibrary = {
       readDefinition<IWidgetDescription['definition']>(asset.metadata),
       readText(asset.code),
     ]);
-    validateMetadata(definition, 'widget', id.slice('demo:'.length));
+    validateMetadata(definition, 'widget', id.slice(id.indexOf(':') + 1));
     return { definition, code };
   },
 };
 
 /** Reads current host snapshots when switching between document editors. */
 export function createDemoFileSystem(
-  snapshots: () => readonly DemoSnapshot[],
+  snapshots: () => readonly IDemoLoadedDocument[],
 ): IFileSystemProvider {
   return {
     async read(uri) {
-      const snapshot = snapshots().find(
-        (entry) => uri === assetUri(`${ASSET_ROOT}/${demoFileName(entry)}`),
-      );
+      const snapshot = snapshots().find((entry) => uri === entry.uri);
       return snapshot === undefined
         ? demoFileSystem.read(uri)
-        : new TextEncoder().encode(serializeDemoSnapshot(snapshot));
+        : new TextEncoder().encode(serializeDemoSnapshot(snapshot.snapshot));
     },
   };
 }
@@ -120,15 +193,15 @@ export type DemoSnapshot =
 
 /** Reads and parses the initial snapshot the app keeps for its own download action. */
 export async function loadDemoDocument(
-  kind: DemoDocumentKind,
+  id: string,
   fileSystem: IFileSystemProvider = demoFileSystem,
 ): Promise<IDemoLoadedDocument> {
-  const path = kind === 'canvas' ? `${ASSET_ROOT}/example.cnv` : `${ASSET_ROOT}/example.sch`;
-  const uri = assetUri(path);
+  const descriptor = demoDocument(id);
+  const uri = assetUri(descriptor.path);
   const text = new TextDecoder('utf-8', { fatal: true }).decode(await fileSystem.read(uri));
-  return kind === 'canvas'
-    ? { uri, snapshot: { kind, document: parseCanvas(text) } }
-    : { uri, snapshot: { kind, document: parseSchematic(text) } };
+  return descriptor.kind === 'canvas'
+    ? { uri, snapshot: { kind: 'canvas', document: parseCanvas(text) } }
+    : { uri, snapshot: { kind: 'schematic', document: parseSchematic(text) } };
 }
 
 export function serializeDemoSnapshot(snapshot: DemoSnapshot): string {
@@ -137,6 +210,7 @@ export function serializeDemoSnapshot(snapshot: DemoSnapshot): string {
     : serializeSchematic(snapshot.document);
 }
 
-export function demoFileName(snapshot: DemoSnapshot): string {
-  return snapshot.kind === 'canvas' ? 'example.cnv' : 'example.sch';
+/** 下载文件名取文档自身的文件名，与选择器里的标签一致。 */
+export function demoFileName(id: string): string {
+  return demoDocument(id).path.split('/').pop() ?? 'example.cnv';
 }

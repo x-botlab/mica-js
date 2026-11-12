@@ -1,0 +1,9 @@
+{
+  "kind": "device",
+  "id": "ideal-led",
+  "version": "0.1.0",
+  "displayName": "Ideal LED",
+  "description": "测试夹具：阳极相对阴极为高电平时发布满亮度，否则为零。",
+  "designatorPrefix": "D",
+  "pins": { "anode": { "label": "A" }, "cathode": { "label": "K" } }
+}

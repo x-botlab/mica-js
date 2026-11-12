@@ -1,0 +1,118 @@
+{
+  "kind": "device",
+  "id": "74hc573",
+  "version": "1.0.0",
+  "displayName": "74HC573 八路透明锁存器",
+  "description": "八路 D 型透明锁存器：LE 高电平时 Q 跟随 D，LE 下降沿锁存当前字节；OE# 高电平时八路输出全部释放为高阻。零传播延迟，不含驱动强度与电源电流。",
+  "designatorPrefix": "U",
+  "tags": ["logic", "latch", "74hc", "ct107d"],
+  "properties": {
+    "outputResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "输出电阻",
+      "unit": "ohm",
+      "description": "推挽输出的等效串联电阻，决定高/低电平的负载能力。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "lowThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "title": "低电平上限",
+      "unit": "V",
+      "description": "采样电压低于该值判为逻辑低。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    },
+    "highThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 2,
+      "title": "高电平下限",
+      "unit": "V",
+      "description": "采样电压高于该值判为逻辑高。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    }
+  },
+  "pins": {
+    "oe": { "label": "OE#", "description": "输出使能，低有效" },
+    "d0": { "label": "D0" },
+    "d1": { "label": "D1" },
+    "d2": { "label": "D2" },
+    "d3": { "label": "D3" },
+    "d4": { "label": "D4" },
+    "d5": { "label": "D5" },
+    "d6": { "label": "D6" },
+    "d7": { "label": "D7" },
+    "le": { "label": "LE", "description": "锁存使能，高电平透明" },
+    "q0": { "label": "Q0" },
+    "q1": { "label": "Q1" },
+    "q2": { "label": "Q2" },
+    "q3": { "label": "Q3" },
+    "q4": { "label": "Q4" },
+    "q5": { "label": "Q5" },
+    "q6": { "label": "Q6" },
+    "q7": { "label": "Q7" },
+    "vcc": { "label": "VCC", "group": "Power" },
+    "gnd": { "label": "GND", "group": "Power" }
+  },
+  "ports": {
+    "latch": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "锁存字节",
+      "description": "最近一次锁存的 8 位数据（0–255），LE 下降沿与透明阶段改变时发布"
+    }
+  },
+  "symbol": {
+    "bounds": { "x": -50, "y": -70, "width": 100, "height": 140 },
+    "graphics": [
+      { "type": "rect", "x": -30, "y": -60, "width": 60, "height": 120, "fill": "background" },
+      { "type": "line", "from": [-50, -54], "to": [-30, -54] },
+      { "type": "line", "from": [-50, -42], "to": [-30, -42] },
+      { "type": "line", "from": [-50, -30], "to": [-30, -30] },
+      { "type": "line", "from": [-50, -18], "to": [-30, -18] },
+      { "type": "line", "from": [-50, -6], "to": [-30, -6] },
+      { "type": "line", "from": [-50, 6], "to": [-30, 6] },
+      { "type": "line", "from": [-50, 18], "to": [-30, 18] },
+      { "type": "line", "from": [-50, 30], "to": [-30, 30] },
+      { "type": "line", "from": [-50, 42], "to": [-30, 42] },
+      { "type": "line", "from": [-50, 54], "to": [-30, 54] },
+      { "type": "line", "from": [30, -54], "to": [50, -54] },
+      { "type": "line", "from": [30, -42], "to": [50, -42] },
+      { "type": "line", "from": [30, -30], "to": [50, -30] },
+      { "type": "line", "from": [30, -18], "to": [50, -18] },
+      { "type": "line", "from": [30, -6], "to": [50, -6] },
+      { "type": "line", "from": [30, 6], "to": [50, 6] },
+      { "type": "line", "from": [30, 18], "to": [50, 18] },
+      { "type": "line", "from": [30, 30], "to": [50, 30] },
+      { "type": "line", "from": [30, 42], "to": [50, 42] },
+      { "type": "line", "from": [30, 54], "to": [50, 54] }
+    ],
+    "pins": {
+      "oe": { "position": [-50, -54], "direction": "left" },
+      "d0": { "position": [-50, -42], "direction": "left" },
+      "d1": { "position": [-50, -30], "direction": "left" },
+      "d2": { "position": [-50, -18], "direction": "left" },
+      "d3": { "position": [-50, -6], "direction": "left" },
+      "d4": { "position": [-50, 6], "direction": "left" },
+      "d5": { "position": [-50, 18], "direction": "left" },
+      "d6": { "position": [-50, 30], "direction": "left" },
+      "d7": { "position": [-50, 42], "direction": "left" },
+      "le": { "position": [-50, 54], "direction": "left" },
+      "q0": { "position": [50, -54], "direction": "right" },
+      "q1": { "position": [50, -42], "direction": "right" },
+      "q2": { "position": [50, -30], "direction": "right" },
+      "q3": { "position": [50, -18], "direction": "right" },
+      "q4": { "position": [50, -6], "direction": "right" },
+      "q5": { "position": [50, 6], "direction": "right" },
+      "q6": { "position": [50, 18], "direction": "right" },
+      "q7": { "position": [50, 30], "direction": "right" },
+      "vcc": { "position": [50, 42], "direction": "right" },
+      "gnd": { "position": [50, 54], "direction": "right" }
+    },
+    "annotations": { "designator": { "position": [0, 68], "align": "center" } }
+  }
+}

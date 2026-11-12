@@ -1,0 +1,64 @@
+{
+  "kind": "device",
+  "id": "ds1302",
+  "version": "1.0.0",
+  "displayName": "DS1302 涓流充电实时时钟",
+  "description": "三线接口实时时钟：RST/SCLK/IO 上 LSB first 传命令与数据，命令 bit7 必须为 1、bit6 选 RAM 面、bit5..1 为地址（31 = 突发）、bit0 读写；时钟寄存器为 BCD 编码，WP = 1 时时钟与 RAM 写被忽略（WP 寄存器自身仍可写）。内部 1 s tick 驱动 BCD 进位级联（闰年至 2096、大小月），CH = 1 停振。datetime 端口发布 19 字节 ASCII `YYYY-MM-DD HH:MM:SS`（逐字节数字 = 0x30 + 数码），running 表示 CH = 0。理想化：晶振物理层不模拟、走时与供电解耦、涓流充电与 12 小时制不模拟、无效 BCD 原样存储、突发写超长回绕；IO 为开漏双向端，需外部上拉，未知电平按低处理。",
+  "designatorPrefix": "U",
+  "tags": ["rtc", "clock", "three-wire", "ct107d"],
+  "properties": {
+    "outputResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "输出电阻",
+      "unit": "ohm",
+      "description": "IO 拉低时的等效串联电阻（开漏输出）。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "lowThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "title": "低电平上限",
+      "unit": "V",
+      "description": "采样电压低于该值判为逻辑低。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    },
+    "highThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 2,
+      "title": "高电平下限",
+      "unit": "V",
+      "description": "采样电压高于该值判为逻辑高。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    }
+  },
+  "pins": {
+    "rst": { "label": "RST", "description": "接口使能与复位，高电平使能三线传输" },
+    "sclk": { "label": "SCLK", "description": "串行时钟，上升沿采样写数据、下降沿驱动读数据" },
+    "io": { "label": "I/O", "description": "双向开漏数据线，需外部上拉" },
+    "x1": { "label": "X1", "description": "32.768 kHz 晶振引脚（振荡器不建模）" },
+    "x2": { "label": "X2", "description": "32.768 kHz 晶振引脚（振荡器不建模）" },
+    "vcc": { "label": "VCC", "group": "Power", "description": "主电源（数据手册 VCC2）" },
+    "vcc1": { "label": "VCC1", "group": "Power", "description": "备用电池电源，走时与其解耦" },
+    "gnd": { "label": "GND", "group": "Power" }
+  },
+  "ports": {
+    "datetime": {
+      "direction": "output",
+      "type": "bytes",
+      "delivery": "level",
+      "title": "日期时间",
+      "description": "当前走时，固定 19 字节 ASCII `YYYY-MM-DD HH:MM:SS`（数字为 0x30 + 数码，分隔符为 '-'、' '、':'）；每秒走时后以及每次写入时间寄存器后发布，CH = 1 期间不按时钟发布"
+    },
+    "running": {
+      "direction": "output",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "走时状态",
+      "description": "秒寄存器 CH 位为 0 时发布 true（时钟在走），为 1 时发布 false（停振）"
+    }
+  }
+}

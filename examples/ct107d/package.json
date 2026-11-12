@@ -1,0 +1,24 @@
+{
+  "name": "@mica-js/example-ct107d",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CT107D 竞赛板示例：13 种芯片与轻触按键、3 个板面 widget、整板原理图与画布，以及 IAP15F2K61S2 的 8051 演示固件",
+  "scripts": {
+    "prepare:types": "mica prepare",
+    "build": "mica build",
+    "typecheck": "mica prepare && tsc --noEmit",
+    "test": "mica build && vitest run",
+    "schematic": "mica build && node verify-schematic.mjs",
+    "canvas": "mica build && node verify-canvas.mjs",
+    "firmware": "node assemble-firmware.mjs"
+  },
+  "devDependencies": {
+    "@mica-js/document": "workspace:*",
+    "@mica-js/sdk": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
+    "@types/node": "^24.19.2",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

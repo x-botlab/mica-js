@@ -1,0 +1,54 @@
+{
+  "kind": "device",
+  "id": "74ls04",
+  "version": "1.0.0",
+  "displayName": "74LS04 六反相器",
+  "description": "六路独立反相器，Y = !A，推挽输出。零传播延迟、无毛刺、无电源电流；不模拟 TTL/LS 输入阈值与 LS 输入电流，悬空输入按低处理（电平由板级网络决定）。",
+  "designatorPrefix": "U",
+  "tags": ["logic", "inverter", "74ls", "ct107d"],
+  "properties": {
+    "outputResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "输出电阻",
+      "unit": "ohm",
+      "description": "推挽输出的等效串联电阻，决定高/低电平的负载能力。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "lowThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "title": "低电平上限",
+      "unit": "V",
+      "description": "采样电压低于该值判为逻辑低。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    },
+    "highThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 2,
+      "title": "高电平下限",
+      "unit": "V",
+      "description": "采样电压高于该值判为逻辑高。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    }
+  },
+  "pins": {
+    "a1": { "label": "1A", "description": "第 1 路输入", "group": "Input" },
+    "y1": { "label": "1Y", "description": "第 1 路输出", "group": "Output" },
+    "a2": { "label": "2A", "description": "第 2 路输入", "group": "Input" },
+    "y2": { "label": "2Y", "description": "第 2 路输出", "group": "Output" },
+    "a3": { "label": "3A", "description": "第 3 路输入", "group": "Input" },
+    "y3": { "label": "3Y", "description": "第 3 路输出", "group": "Output" },
+    "a4": { "label": "4A", "description": "第 4 路输入", "group": "Input" },
+    "y4": { "label": "4Y", "description": "第 4 路输出", "group": "Output" },
+    "a5": { "label": "5A", "description": "第 5 路输入", "group": "Input" },
+    "y5": { "label": "5Y", "description": "第 5 路输出", "group": "Output" },
+    "a6": { "label": "6A", "description": "第 6 路输入", "group": "Input" },
+    "y6": { "label": "6Y", "description": "第 6 路输出", "group": "Output" },
+    "vcc": { "label": "VCC", "description": "5 V 逻辑电源", "group": "Power" },
+    "gnd": { "label": "GND", "description": "地", "group": "Power" }
+  }
+}

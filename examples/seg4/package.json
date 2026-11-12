@@ -1,0 +1,19 @@
+{
+  "name": "@mica-js/example-seg4",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "共阴四位七段数码管的 Mica 器件工程：段/位等效电阻 + 扫描锁存段码，构建为 dist/devices/seg4",
+  "scripts": {
+    "prepare:types": "mica prepare",
+    "build": "mica build",
+    "typecheck": "mica prepare && tsc --noEmit",
+    "test": "mica build && vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@mica-js/document": "workspace:*",
+    "@mica-js/sdk": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "kind": "widget",
+  "id": "led-indicator",
+  "version": "1.0.0",
+  "displayName": "LED 指示灯",
+  "description": "发光叠层：按 brightness（0–1）在板面照片的 LED 上画出光晕，不遮挡照片本身。",
+  "properties": {
+    "color": { "type": "string", "required": false, "default": "#3b82f6ff", "title": "点亮颜色" },
+    "glow": {
+      "type": "number",
+      "required": false,
+      "default": 1,
+      "title": "光晕强度",
+      "description": "光晕相对实例短边的扩散倍数，1 表示与短边同宽",
+      "editor": { "kind": "number", "min": 0, "max": 3, "step": 0.1 }
+    }
+  },
+  "ports": {
+    "brightness": { "direction": "input", "type": "number", "delivery": "level", "title": "亮度" }
+  }
+}

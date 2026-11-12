@@ -1,0 +1,550 @@
+{
+  "version": 1,
+  "schematic": "ct107d.sch",
+  "widgets": [
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000001",
+      "widget": "xbotlab:image",
+      "x": 0,
+      "y": 0,
+      "width": 1068,
+      "height": 768,
+      "rotation": 0,
+      "properties": {
+        "image": {
+          "src": "assets/ct107d-board.webp",
+          "mode": "file"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000002",
+      "widget": "xbotlab:button",
+      "x": 123,
+      "y": 471,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-00000000022c",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000003",
+      "widget": "xbotlab:button",
+      "x": 123,
+      "y": 520,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000227",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000004",
+      "widget": "xbotlab:button",
+      "x": 123,
+      "y": 568,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000222",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000005",
+      "widget": "xbotlab:button",
+      "x": 123,
+      "y": 617,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-00000000021d",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000006",
+      "widget": "xbotlab:button",
+      "x": 182,
+      "y": 471,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000240",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000007",
+      "widget": "xbotlab:button",
+      "x": 182,
+      "y": 519,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-00000000023b",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000008",
+      "widget": "xbotlab:button",
+      "x": 182,
+      "y": 568,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000236",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000009",
+      "widget": "xbotlab:button",
+      "x": 183,
+      "y": 617,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000231",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-00000000000a",
+      "widget": "xbotlab:button",
+      "x": 241,
+      "y": 471,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000254",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-00000000000b",
+      "widget": "xbotlab:button",
+      "x": 241,
+      "y": 519,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-00000000024f",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-00000000000c",
+      "widget": "xbotlab:button",
+      "x": 241,
+      "y": 568,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-00000000024a",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-00000000000d",
+      "widget": "xbotlab:button",
+      "x": 241,
+      "y": 617,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000245",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-00000000000e",
+      "widget": "xbotlab:button",
+      "x": 300,
+      "y": 471,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000268",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-00000000000f",
+      "widget": "xbotlab:button",
+      "x": 300,
+      "y": 519,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000263",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000010",
+      "widget": "xbotlab:button",
+      "x": 300,
+      "y": 568,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-00000000025e",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000011",
+      "widget": "xbotlab:button",
+      "x": 300,
+      "y": 617,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000259",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000012",
+      "widget": "xbotlab:button",
+      "x": 359,
+      "y": 520,
+      "width": 40,
+      "height": 40,
+      "rotation": 0,
+      "properties": {
+        "color": "#38bdf8ff",
+        "radius": 8
+      },
+      "bindings": {
+        "press": {
+          "symbol": "c7d00000-0000-4000-8000-000000000218",
+          "port": "press"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000013",
+      "widget": "xbotlab:segment",
+      "x": 502,
+      "y": 206,
+      "width": 126,
+      "height": 60,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff3b30ff",
+        "background": "#0b0d0eff"
+      },
+      "bindings": {
+        "digit1": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001e6",
+          "port": "digit1"
+        },
+        "digit2": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001e6",
+          "port": "digit2"
+        },
+        "digit3": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001e6",
+          "port": "digit3"
+        },
+        "digit4": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001e6",
+          "port": "digit4"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000014",
+      "widget": "xbotlab:segment",
+      "x": 636,
+      "y": 206,
+      "width": 127,
+      "height": 60,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff3b30ff",
+        "background": "#0b0d0eff"
+      },
+      "bindings": {
+        "digit1": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001ff",
+          "port": "digit1"
+        },
+        "digit2": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001ff",
+          "port": "digit2"
+        },
+        "digit3": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001ff",
+          "port": "digit3"
+        },
+        "digit4": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001ff",
+          "port": "digit4"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000015",
+      "widget": "xbotlab:led-indicator",
+      "x": 329.5,
+      "y": 306,
+      "width": 18,
+      "height": 26,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff4d4fff"
+      },
+      "bindings": {
+        "brightness": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001be",
+          "port": "brightness"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000016",
+      "widget": "xbotlab:led-indicator",
+      "x": 349.5,
+      "y": 306,
+      "width": 18,
+      "height": 26,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff4d4fff"
+      },
+      "bindings": {
+        "brightness": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001c3",
+          "port": "brightness"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000017",
+      "widget": "xbotlab:led-indicator",
+      "x": 369,
+      "y": 306,
+      "width": 18,
+      "height": 26,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff4d4fff"
+      },
+      "bindings": {
+        "brightness": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001c8",
+          "port": "brightness"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000018",
+      "widget": "xbotlab:led-indicator",
+      "x": 389,
+      "y": 306,
+      "width": 18,
+      "height": 26,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff4d4fff"
+      },
+      "bindings": {
+        "brightness": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001cd",
+          "port": "brightness"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-000000000019",
+      "widget": "xbotlab:led-indicator",
+      "x": 408.5,
+      "y": 306,
+      "width": 18,
+      "height": 26,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff4d4fff"
+      },
+      "bindings": {
+        "brightness": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001d2",
+          "port": "brightness"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-00000000001a",
+      "widget": "xbotlab:led-indicator",
+      "x": 428,
+      "y": 306,
+      "width": 18,
+      "height": 26,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff4d4fff"
+      },
+      "bindings": {
+        "brightness": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001d7",
+          "port": "brightness"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-00000000001b",
+      "widget": "xbotlab:led-indicator",
+      "x": 448,
+      "y": 306,
+      "width": 18,
+      "height": 26,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff4d4fff"
+      },
+      "bindings": {
+        "brightness": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001dc",
+          "port": "brightness"
+        }
+      }
+    },
+    {
+      "id": "b0a1d000-0000-4000-8000-00000000001c",
+      "widget": "xbotlab:led-indicator",
+      "x": 467.5,
+      "y": 306,
+      "width": 18,
+      "height": 26,
+      "rotation": 0,
+      "properties": {
+        "color": "#ff4d4fff"
+      },
+      "bindings": {
+        "brightness": {
+          "symbol": "c7d00000-0000-4000-8000-0000000001e1",
+          "port": "brightness"
+        }
+      }
+    }
+  ]
+}

@@ -24,13 +24,15 @@ import '@mica-js/editor/style.css';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
+  demoDocument,
   demoDeviceLibrary,
   createDemoFileSystem,
   demoFileName,
   demoWidgetLibrary,
   loadDemoDocument,
   serializeDemoSnapshot,
-  type DemoDocumentKind,
+  DEMO_DOCUMENTS,
+  type IDemoLoadedDocument,
   type DemoSnapshot,
 } from '@/runtime-demo';
 
@@ -49,11 +51,6 @@ type ToolbarAction =
   | 'resetView'
   | 'fitView';
 
-const DOCUMENT_LABELS: Readonly<Record<DemoDocumentKind, string>> = {
-  canvas: '画布 · example.cnv',
-  schematic: '原理图 · example.sch',
-};
-
 export function App() {
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorSession | undefined>(undefined);
@@ -61,8 +58,13 @@ export function App() {
   const [panelOpen, setPanelOpen] = useState(true);
   const [focusProperties, setFocusProperties] = useState(0);
   const latest = useRef<DemoSnapshot | undefined>(undefined);
-  const documents = useRef<Partial<Record<DemoDocumentKind, DemoSnapshot>>>({});
-  const [kind, setKind] = useState<DemoDocumentKind>('canvas');
+  const documents = useRef<Record<string, IDemoLoadedDocument>>({});
+  const [documentId, setDocumentId] = useState(() => {
+    // 深链接：`?doc=ct107d-canvas` 直接打开指定文档，方便分享预览。
+    const requested = new URLSearchParams(globalThis.location.search).get('doc');
+    return demoDocument(requested ?? 'example-canvas').id;
+  });
+  const descriptor = demoDocument(documentId);
   const [reloadKey, setReloadKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [ready, setReady] = useState(false);
@@ -93,9 +95,11 @@ export function App() {
     const start = async (): Promise<void> => {
       try {
         const fileSystem = createDemoFileSystem(() => Object.values(documents.current));
-        const loaded = await loadDemoDocument(kind, fileSystem);
+        const loaded = await loadDemoDocument(documentId, fileSystem);
         if (cancelled) return;
         latest.current = loaded.snapshot;
+        documents.current[documentId] = loaded;
+        const kind = descriptor.kind;
         const created: EditorSession =
           kind === 'canvas'
             ? {
@@ -107,6 +111,7 @@ export function App() {
                   deviceLibrary: demoDeviceLibrary,
                   widgetLibrary: demoWidgetLibrary,
                   voltageReferences: { VCC: 5 },
+                  ...(descriptor.stepMs === undefined ? {} : { stepMs: descriptor.stepMs }),
                 }),
               }
             : {
@@ -130,7 +135,7 @@ export function App() {
             created.kind === 'canvas'
               ? { kind: 'canvas', document: created.editor.getDocument() }
               : { kind: 'schematic', document: created.editor.getDocument() };
-          documents.current[created.kind] = latest.current;
+          documents.current[documentId] = { uri: loaded.uri, snapshot: latest.current };
         };
         snapshot();
         subscriptions.push(
@@ -172,7 +177,7 @@ export function App() {
         void instance.editor.dispose().catch(() => undefined);
       }
     };
-  }, [kind, reloadKey]);
+  }, [documentId, reloadKey]);
   const pending = useRef<EditorSession | undefined>(undefined);
   const perform = useCallback(
     async (owner: EditorSession, action: () => Promise<unknown>): Promise<void> => {
@@ -223,7 +228,7 @@ export function App() {
       );
       const link = document.createElement('a');
       link.href = url;
-      link.download = demoFileName(snapshot);
+      link.download = demoFileName(documentId);
       document.body.append(link);
       link.click();
       link.remove();
@@ -231,10 +236,10 @@ export function App() {
     } catch (cause) {
       setActionError(errorMessage(cause));
     }
-  }, []);
+  }, [documentId]);
 
   const controlsDisabled = !ready || busy;
-  const simulationMode = kind === 'canvas' && status?.mode === 'simulation';
+  const simulationMode = descriptor.kind === 'canvas' && status?.mode === 'simulation';
   const simulationActionsDisabled = controlsDisabled || !simulationMode;
   const canEdit = !controlsDisabled && status?.mode === 'edit' && !status.readOnly;
 
@@ -246,19 +251,19 @@ export function App() {
         </span>
         <select
           aria-label="示例文档"
-          value={kind}
+          value={documentId}
           disabled={busy}
-          onChange={(event) => setKind(event.target.value as DemoDocumentKind)}
+          onChange={(event) => setDocumentId(event.target.value)}
           className="border-input bg-background focus-visible:ring-ring/50 h-7 shrink-0 rounded-md border px-2 text-xs outline-none focus-visible:ring-[3px] disabled:opacity-50"
         >
-          {(Object.keys(DOCUMENT_LABELS) as DemoDocumentKind[]).map((candidate) => (
-            <option key={candidate} value={candidate}>
-              {DOCUMENT_LABELS[candidate]}
+          {DEMO_DOCUMENTS.map((candidate) => (
+            <option key={candidate.id} value={candidate.id}>
+              {candidate.label}
             </option>
           ))}
         </select>
 
-        {kind === 'canvas' ? (
+        {descriptor.kind === 'canvas' ? (
           <div
             role="group"
             aria-label="画布模式"
@@ -286,7 +291,7 @@ export function App() {
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <span className="text-muted-foreground mr-1 hidden text-[11px] tabular-nums sm:inline">
-            {kind === 'schematic'
+            {descriptor.kind === 'schematic'
               ? '原理图'
               : status === null
                 ? '—'
@@ -319,7 +324,7 @@ export function App() {
             <Redo2 />
           </Button>
 
-          {kind === 'canvas' ? (
+          {descriptor.kind === 'canvas' ? (
             <>
               <span className="bg-border mx-1 h-4 w-px" aria-hidden />
               <Button
@@ -486,7 +491,7 @@ export function App() {
         </main>
         {session ? (
           <IntegrationPanel
-            key={`${kind}:${reloadKey}`}
+            key={`${documentId}:${reloadKey}`}
             session={session}
             open={panelOpen}
             focusProperties={focusProperties}

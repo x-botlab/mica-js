@@ -1,0 +1,72 @@
+{
+  "kind": "device",
+  "id": "uln2003",
+  "version": "1.0.0",
+  "displayName": "ULN2003 七路达林顿驱动阵列",
+  "description": "七路开集电极达林顿灌电流驱动：IN 为高时 OUT 通过 25 Ω 拉低，IN 为低或未知时 OUT 释放（高阻，电平由负载侧决定）。端口 mask 为七路输入位掩码，channels 为七字符 '0'/'1' 状态串。无 VCC 引脚；COM 为被动续流端。导通压降按 0 V，不模拟输入电流、电流限幅与续流二极管。",
+  "designatorPrefix": "U",
+  "tags": ["driver", "darlington", "open-collector", "ct107d"],
+  "properties": {
+    "outputResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "灌电流电阻",
+      "unit": "ohm",
+      "description": "导通通道对地的等效串联电阻，决定灌电流能力。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "lowThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "title": "低电平上限",
+      "unit": "V",
+      "description": "采样电压低于该值判为逻辑低。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    },
+    "highThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 2,
+      "title": "高电平下限",
+      "unit": "V",
+      "description": "采样电压高于该值判为逻辑高。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    }
+  },
+  "pins": {
+    "in1": { "label": "IN1", "description": "第 1 路输入（步进电机 A 相）", "group": "Input" },
+    "in2": { "label": "IN2", "description": "第 2 路输入（步进电机 B 相）", "group": "Input" },
+    "in3": { "label": "IN3", "description": "第 3 路输入（步进电机 C 相）", "group": "Input" },
+    "in4": { "label": "IN4", "description": "第 4 路输入（步进电机 D 相）", "group": "Input" },
+    "in5": { "label": "IN5", "description": "第 5 路输入（继电器）", "group": "Input" },
+    "in6": { "label": "IN6", "description": "第 6 路输入（直流电机）", "group": "Input" },
+    "in7": { "label": "IN7", "description": "第 7 路输入（蜂鸣器）", "group": "Input" },
+    "out1": { "label": "OUT1", "description": "第 1 路开集电极输出", "group": "Output" },
+    "out2": { "label": "OUT2", "description": "第 2 路开集电极输出", "group": "Output" },
+    "out3": { "label": "OUT3", "description": "第 3 路开集电极输出", "group": "Output" },
+    "out4": { "label": "OUT4", "description": "第 4 路开集电极输出", "group": "Output" },
+    "out5": { "label": "OUT5", "description": "第 5 路开集电极输出", "group": "Output" },
+    "out6": { "label": "OUT6", "description": "第 6 路开集电极输出", "group": "Output" },
+    "out7": { "label": "OUT7", "description": "第 7 路开集电极输出", "group": "Output" },
+    "com": { "label": "COM", "description": "感性负载续流公共端，被动引脚", "group": "Load" },
+    "gnd": { "label": "GND", "description": "地", "group": "Power" }
+  },
+  "ports": {
+    "mask": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "通道掩码",
+      "description": "七路输入状态的位掩码（0–127），bit0..bit6 依次对应 IN1..IN7。"
+    },
+    "channels": {
+      "direction": "output",
+      "type": "bytes",
+      "delivery": "level",
+      "title": "通道状态串",
+      "description": "七个 ASCII 字节，IN1..IN7 依次为 '1' 或 '0'，例如 \"1010000\"。"
+    }
+  }
+}

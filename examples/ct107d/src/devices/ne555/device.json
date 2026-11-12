@@ -1,0 +1,91 @@
+{
+  "kind": "device",
+  "id": "ne555",
+  "version": "1.0.0",
+  "displayName": "NE555 定时器（无稳态振荡）",
+  "description": "无稳态多谐振荡器：创建期把 rA/rB/c 折叠为 tHigh = 0.693×(rA+rB)×c 与 tLow = 0.693×rB×c 两个整数皮秒半周期，OUT 与开漏 DISCH 在两相之间自续翻转。RST# 低电平立刻停振并把 OUT、DISCH 拉低，高电平从充电相重启；frequency 与 dutyCycle 端口在启动时按参数发布一次。理想化：RC 斜坡、1/3·VCC 与 2/3·VCC 比较器、CTRL 输入、DISCH 饱和压降与电源敏感性均不模拟，半周期取整到整皮秒且输出无传播延迟。",
+  "designatorPrefix": "U",
+  "tags": ["timer", "oscillator", "analog", "ct107d"],
+  "properties": {
+    "rA": {
+      "type": "number",
+      "required": false,
+      "default": 10000,
+      "title": "充电电阻 R_A",
+      "unit": "ohm",
+      "description": "VCC 到 DISCH 之间的定时电阻。",
+      "editor": { "kind": "number", "min": 1, "max": 1000000000, "step": 1 }
+    },
+    "rB": {
+      "type": "number",
+      "required": false,
+      "default": 10000,
+      "title": "放电电阻 R_B",
+      "unit": "ohm",
+      "description": "DISCH 到 TRIG 之间的定时电阻。",
+      "editor": { "kind": "number", "min": 1, "max": 1000000000, "step": 1 }
+    },
+    "c": {
+      "type": "number",
+      "required": false,
+      "default": 1e-8,
+      "title": "定时电容 C",
+      "unit": "F",
+      "description": "TRIG 对地的时间电容。",
+      "editor": { "kind": "number", "min": 1e-12, "max": 0.001, "step": 1e-12 }
+    },
+    "outputResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "输出电阻",
+      "unit": "ohm",
+      "description": "OUT 推挽驱动与 DISCH 开漏拉低时的等效串联电阻。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "lowThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "title": "低电平上限",
+      "unit": "V",
+      "description": "RST# 采样电压低于该值判为逻辑低。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    },
+    "highThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 2,
+      "title": "高电平下限",
+      "unit": "V",
+      "description": "RST# 采样电压高于该值判为逻辑高。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    }
+  },
+  "pins": {
+    "out": { "label": "OUT", "description": "振荡方波输出（推挽）" },
+    "disch": { "label": "DISCH", "description": "放电端（开漏）：低相拉低，高相释放" },
+    "rst": { "label": "RST#", "description": "复位，低有效：低电平停振，高电平从充电相重启" },
+    "thres": { "label": "THRES", "description": "阈值输入，被动；本模型不模拟比较器" },
+    "trig": { "label": "TRIG", "description": "触发输入，被动；本模型不模拟比较器" },
+    "ctrl": { "label": "CTRL", "description": "控制电压输入，被动；本模型不模拟" },
+    "vcc": { "label": "VCC", "description": "5 V 电源", "group": "Power" },
+    "gnd": { "label": "GND", "description": "地", "group": "Power" }
+  },
+  "ports": {
+    "frequency": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "振荡频率",
+      "description": "1/(tHigh+tLow)，单位 Hz；启动时按参数发布一次。"
+    },
+    "dutyCycle": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "占空比",
+      "description": "OUT 高电平时间占整个周期的百分比（0–100）；启动时按参数发布一次。"
+    }
+  }
+}

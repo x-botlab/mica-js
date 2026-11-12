@@ -1,0 +1,65 @@
+{
+  "kind": "device",
+  "id": "lm386",
+  "version": "1.0.0",
+  "displayName": "LM386 音频功率放大器",
+  "description": "理想数字跟随器：INP 为高且 INN 为低时 OUT 推挽到 VCC，否则推挽到 GND；INN 接地时 OUT 跟随 INP，INP/INN 同电平则输出被抑制。端口 active 报告 OUT 是否为高。不建模电压增益（gain 仅元数据）、偏置、GAIN/BYPASS 网络与模拟波形。",
+  "designatorPrefix": "U",
+  "tags": ["amplifier", "analog", "audio", "ct107d"],
+  "properties": {
+    "gain": {
+      "type": "number",
+      "required": false,
+      "default": 20,
+      "title": "电压增益",
+      "description": "20（GAIN 脚开路）或 200（GAIN 脚间接 10 µF）；数字跟随模型中两档结果相同，仅作元数据。",
+      "editor": { "kind": "number", "min": 20, "max": 200, "step": 180 }
+    },
+    "outputResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "输出电阻",
+      "unit": "ohm",
+      "description": "推挽输出的等效串联电阻，决定高/低电平的负载能力。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "lowThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "title": "低电平上限",
+      "unit": "V",
+      "description": "采样电压低于该值判为逻辑低。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    },
+    "highThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 2,
+      "title": "高电平下限",
+      "unit": "V",
+      "description": "采样电压高于该值判为逻辑高。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    }
+  },
+  "pins": {
+    "inp": { "label": "INP", "description": "同相输入（板上接音频/ PWM 信号）", "group": "Input" },
+    "inn": { "label": "INN", "description": "反相输入（板上通常接地）", "group": "Input" },
+    "out": { "label": "OUT", "description": "逻辑电平输出", "group": "Output" },
+    "gain1": { "label": "GAIN1", "description": "增益设置脚 1，被动", "group": "Passive" },
+    "gain8": { "label": "GAIN8", "description": "增益设置脚 8，被动", "group": "Passive" },
+    "bypass": { "label": "BYPASS", "description": "旁路电容脚，被动", "group": "Passive" },
+    "vcc": { "label": "VCC", "description": "5 V 电源（数据手册 VS）", "group": "Power" },
+    "gnd": { "label": "GND", "description": "地", "group": "Power" }
+  },
+  "ports": {
+    "active": {
+      "direction": "output",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "输出高电平",
+      "description": "true 表示 OUT 当前被驱动为高电平。"
+    }
+  }
+}
