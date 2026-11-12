@@ -1,5 +1,13 @@
 # @mica-js/editor
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [a935edb]
+  - @mica-js/simulator@2.1.1
+  - @mica-js/sdk@0.2.2
+
 ## 0.2.0
 
 ### Minor Changes
