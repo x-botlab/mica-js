@@ -1,8 +1,21 @@
 import type { PayloadType } from '@mica-js/document/canvas';
+import { isBytesView } from '../values';
 
 /** Stable key of one device endpoint. */
 export function targetKey(symbol: string, port: string): string {
   return `${symbol}\u0000${port}`;
+}
+
+/** Indexable byte content: an owned array or the read-only view of one. */
+interface IByteContent {
+  readonly length: number;
+  readonly [index: number]: number | undefined;
+}
+
+/** Bytes reach a publisher either as an owned array or as the read-only view of one. */
+function byteContent(payload: unknown): IByteContent | undefined {
+  if (payload instanceof Uint8Array) return payload;
+  return isBytesView(payload) ? payload : undefined;
 }
 
 /**
@@ -10,14 +23,17 @@ export function targetKey(symbol: string, port: string): string {
  *
  * A canvas topic is a `level` unless it carries text or bytes (RFC 0017), so re-sending the value a
  * device already published only costs a widget repaint. Byte payloads compare by content because a
- * device may hand out a fresh buffer per step.
+ * device may hand out a fresh buffer per step, and a batch output may be a read-only view while the
+ * published baseline is an owned array.
  */
 export function samePayload(previous: unknown, next: unknown): boolean {
   if (Object.is(previous, next)) return true;
-  if (previous instanceof Uint8Array && next instanceof Uint8Array) {
-    if (previous.length !== next.length) return false;
-    for (let index = 0; index < previous.length; index += 1) {
-      if (previous[index] !== next[index]) return false;
+  const left = byteContent(previous);
+  const right = byteContent(next);
+  if (left !== undefined || right !== undefined) {
+    if (left === undefined || right === undefined || left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index] !== right[index]) return false;
     }
     return true;
   }
@@ -46,7 +62,7 @@ export function payloadMatches(type: PayloadType, payload: unknown): boolean {
     case 'bytes':
     case 'bytes<rgb565>':
     case 'bytes<segments>':
-      return payload instanceof Uint8Array;
+      return byteContent(payload) !== undefined;
     case 'vec2d':
       return isVec2d(payload);
     case 'vec3d':
@@ -56,11 +72,13 @@ export function payloadMatches(type: PayloadType, payload: unknown): boolean {
 
 /** Copies a byte payload so an RPC transfer never detaches the producer's buffer. */
 export function copyBytePayload(payload: unknown): unknown {
-  return payload instanceof Uint8Array ? new Uint8Array(payload) : payload;
+  if (payload instanceof Uint8Array) return new Uint8Array(payload);
+  return isBytesView(payload) ? payload.slice() : payload;
 }
 
 /** Snapshots mutable payloads accepted by the prepared topic contract. */
 export function copyPayload(payload: unknown): unknown {
   if (payload instanceof Uint8Array) return new Uint8Array(payload);
+  if (isBytesView(payload)) return payload.slice();
   return typeof payload === 'object' && payload !== null ? { ...payload } : payload;
 }

@@ -71,6 +71,13 @@ export function snapshot(value: unknown): unknown {
     Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshot(item)])),
   );
 }
+/** Proxies erase their nominal tags, so the factory records which objects it produced. */
+const byteViews = new WeakSet<object>();
+
+/** Whether `value` is a read-only byte view created by `bytesView`. */
+export function isBytesView(value: unknown): value is ReadonlyBytes | BorrowedBytes {
+  return typeof value === 'object' && value !== null && byteViews.has(value);
+}
 export function bytesView(
   bytes: Uint8Array,
   check: () => void = () => {},
@@ -96,7 +103,7 @@ export function bytesView(
       check();
     },
   });
-  return new Proxy(target, {
+  const view = new Proxy(target, {
     get(object, key, receiver) {
       check();
       if (typeof key === 'string' && /^(0|[1-9]\d*)$/.test(key)) return bytes[Number(key)];
@@ -109,6 +116,8 @@ export function bytesView(
       throw new TypeError('Bytes are read-only');
     },
   }) as unknown as ReadonlyBytes;
+  byteViews.add(view);
+  return view;
 }
 export function captureValue(
   type: ValueTypeIR,
