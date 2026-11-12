@@ -84,9 +84,12 @@ function createMachine(clock: Clock): Machine {
   };
 
   // 外设 SFR 写入后立即重算活动门控：门控因此总是最新的，空闲的节拍点不必进服务块。
+  // 端口锁存/口模式不参与任何外设的 `active` 条件，写端口时重算只会把整段门控表达式
+  // 展开进每个端口写块；这里跳过 ports，端口写入只重算引脚意图。
   for (const peripheral of peripherals)
-    for (const address of peripheral.writes ?? [])
-      sfr.onWrite(address, (b) => refreshBusy(machine, b));
+    if (peripheral.id !== 'ports')
+      for (const address of peripheral.writes ?? [])
+        sfr.onWrite(address, (b) => refreshBusy(machine, b));
 
   // 读外设状态之前先把累积的时间推进给外设，避免读到最多一个节拍的旧值。
   sfr.synchronize = (b, address) => {

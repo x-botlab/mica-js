@@ -1,11 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { DeviceMetadata } from '@mica-js/document/schematic';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { DeviceLibraryEntry } from '@mica-js/sdk';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import { validateMetadata } from '@mica-js/sdk/metadata';
 import type { DeviceIR } from '@mica-js/sdk/model';
+import { createSimulationRuntime } from '@mica-js/simulator';
+import type { ISimulationDiagnostic } from '@mica-js/simulator';
 
 /**
  * 板级夹具：现场编译某个器件的 `model.ddl`，直接装载 `src/` 里的适配器，再按用例声明的
@@ -77,6 +80,80 @@ export function readMetadata(id: string): Record<string, unknown> {
   validateMetadata(metadata, 'device', id);
 
   return metadata;
+}
+
+const RUNTIME_SYMBOL = '11111111-1111-4111-8111-111111111111';
+
+/** `ISimulationRuntime.tick` 的皮秒参数带品牌；测试里的常量按同一合同转换。 */
+type TickDuration = Parameters<ReturnType<typeof createSimulationRuntime>['tick']>[0];
+
+export interface RuntimeRun {
+  /** `onDidPublish` 收到的最后一条负载，按本地端口名归档。 */
+  readonly publishes: Readonly<Record<string, unknown>>;
+  /** `onDidDiagnostic` 收到的全部诊断。 */
+  readonly diagnostics: readonly ISimulationDiagnostic[];
+}
+
+/**
+ * 用真实 `simulation-runtime` 跑一颗 `src/devices/` 里的器件一次起始批次。
+ *
+ * `createTestBoard` 直接建 Board，绕过了运行时对输出负载的类型校验；这里改用
+ * `createSimulationRuntime`，让适配器的发布先经过 `payloadMatches`，从而能观察
+ * `device/output-failed`。器件引脚全部悬空，只依赖 `process start` 的发布。
+ */
+export async function runRuntimeOnce(
+  id: string,
+  durationPs = US as TickDuration,
+): Promise<RuntimeRun> {
+  const device = await loadSourceDevice(id);
+  const publishes: Record<string, unknown> = {};
+  const diagnostics: ISimulationDiagnostic[] = [];
+  const runtime = createSimulationRuntime({
+    importer: async () => ({ model: device.model, create: device.create }),
+  });
+  const subscriptions = [
+    runtime.onDidPublish((message) => {
+      publishes[message.target.port] = message.payload;
+    }),
+    runtime.onDidDiagnostic((diagnostic) => {
+      diagnostics.push(diagnostic);
+    }),
+  ];
+
+  try {
+    await runtime.load({
+      schematic: {
+        version: 1,
+        sheet: {
+          symbols: [
+            {
+              id: RUNTIME_SYMBOL,
+              device: `xbotlab:${id}`,
+              designator: 'U1',
+              x: 0,
+              y: 0,
+              rotation: 0,
+            },
+          ],
+          wires: [],
+          junctions: [],
+        },
+      },
+      devices: [
+        {
+          id: `xbotlab:${id}`,
+          definition: readMetadata(id) as unknown as DeviceMetadata,
+          code: 'export {};',
+        },
+      ],
+    });
+    await runtime.tick(durationPs);
+  } finally {
+    for (const subscription of subscriptions) subscription.dispose();
+    await runtime.dispose();
+  }
+
+  return { publishes, diagnostics };
 }
 
 const resistorModels = new Map<number, Promise<DeviceIR>>();

@@ -110,7 +110,52 @@ export const CODE_MASK = 0xffff;
 export const XRAM_MASK = 0x6ff;
 export const LOW_RAM_SIZE = 0x80;
 
-export const number = (b: Body, value: number): Value<number> => b.constant(types.number, value);
+const numberConstants = new WeakMap<Body, Map<string, Value<number>>>();
+const booleanConstants = new WeakMap<Body, Map<boolean, Value<boolean>>>();
+
+/**
+ * 常量在同一个指令体内只生成一次。
+ *
+ * IR 的 `constant` 是一条操作，重复写 `0`/`1`/掩码会按出现次数放大块体积；同一个
+ * `Value` 可以在后续操作里复用（DAG），因此这里按执行体缓存。`-0` 与 `0` 在 IR 常量里
+ * 语义不同，键要分开。
+ */
+export const number = (b: Body, value: number): Value<number> => {
+  let cache = numberConstants.get(b);
+
+  if (cache === undefined) {
+    cache = new Map();
+    numberConstants.set(b, cache);
+  }
+
+  const key = Object.is(value, -0) ? '-0' : String(value);
+  let constant = cache.get(key);
+
+  if (constant === undefined) {
+    constant = b.constant(types.number, value);
+    cache.set(key, constant);
+  }
+
+  return constant;
+};
+
+export const boolean = (b: Body, value: boolean): Value<boolean> => {
+  let cache = booleanConstants.get(b);
+
+  if (cache === undefined) {
+    cache = new Map();
+    booleanConstants.set(b, cache);
+  }
+
+  let constant = cache.get(value);
+
+  if (constant === undefined) {
+    constant = b.constant(types.bool, value);
+    cache.set(value, constant);
+  }
+
+  return constant;
+};
 
 /** 一个系统时钟周期的整数皮秒数（当前实例）。 */
 export const cyclePicoseconds = (): number => machine().cyclePs;
@@ -118,8 +163,6 @@ export const cyclePicoseconds = (): number => machine().cyclePs;
 /** 把经过的仿真时间换算成系统时钟数（向下取整）。 */
 export const toCycles = (b: Body, elapsedPs: Value<number>): Value<number> =>
   b.floor(b.divide(elapsedPs, number(b, machine().cyclePs)));
-
-export const boolean = (b: Body, value: boolean): Value<boolean> => b.constant(types.bool, value);
 
 /** 取低 8 位：IR 的 `number` 是 binary64，字节语义要自己截断。 */
 export const byte = (b: Body, value: Value<number> | number): Value<number> =>

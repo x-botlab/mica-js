@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTestBoard, readMetadata, US } from './harness.ts';
+import { createTestBoard, readMetadata, runRuntimeOnce, US } from './harness.ts';
 import type { NetDescription, TestBoard } from './harness.ts';
 
 /**
@@ -422,6 +422,28 @@ describe('DS1302', () => {
 
       expect(decode(board)).toBe('2028-02-29 00:00:00');
       expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('datetime 端口发布真实 Uint8Array，运行时不再产生 device/output-failed', async () => {
+    const { board } = await fixture();
+
+    try {
+      expect(board.topics.datetime).toBeInstanceOf(Uint8Array);
+      expect(decode(board)).toBe('2026-01-01 00:00:00');
+
+      // 走真实 simulation-runtime：只读代理会被 payloadMatches 拒绝并记入诊断。
+      const runtime = await runRuntimeOnce('ds1302');
+
+      expect(runtime.publishes.datetime).toBeInstanceOf(Uint8Array);
+      expect(String.fromCharCode(...(runtime.publishes.datetime as Iterable<number>))).toBe(
+        '2026-01-01 00:00:00',
+      );
+      expect(runtime.diagnostics.filter((entry) => entry.code === 'device/output-failed')).toEqual(
+        [],
+      );
     } finally {
       board.dispose();
     }

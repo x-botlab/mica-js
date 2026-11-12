@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTestBoard, readMetadata, US } from './harness.ts';
+import { createTestBoard, readMetadata, runRuntimeOnce, US } from './harness.ts';
 import type { NetDescription, TestBoard } from './harness.ts';
 
 /**
@@ -181,6 +181,29 @@ describe('ULN2003', () => {
       expect(built.board.probe('comProbe')).toBe(2);
       for (const channel of CHANNELS) expect(built.out(channel)).toBe(0);
       expect(built.board.faults).toEqual([]);
+    } finally {
+      built.board.dispose();
+    }
+  });
+
+  it('channels 端口发布真实 Uint8Array，运行时不再产生 device/output-failed', async () => {
+    const built = await fixture();
+
+    try {
+      built.drive(7, 1);
+      built.board.run(US);
+
+      expect(built.board.topics.channels).toBeInstanceOf(Uint8Array);
+      expect(text(built.board.topics.channels)).toBe('0000001');
+
+      // 走真实 simulation-runtime：只读代理会被 payloadMatches 拒绝并记入诊断。
+      const runtime = await runRuntimeOnce('uln2003');
+
+      expect(runtime.publishes.channels).toBeInstanceOf(Uint8Array);
+      expect(text(runtime.publishes.channels)).toBe('0000000');
+      expect(runtime.diagnostics.filter((entry) => entry.code === 'device/output-failed')).toEqual(
+        [],
+      );
     } finally {
       built.board.dispose();
     }

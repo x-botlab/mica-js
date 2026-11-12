@@ -1,5 +1,5 @@
 ﻿import { types } from '@mica-js/sdk/model';
-import type { Value } from '@mica-js/sdk/model';
+import type { IntentValue, Value } from '@mica-js/sdk/model';
 import {
   SFR_P0,
   SFR_P0M0,
@@ -126,6 +126,42 @@ export function readPin(b: Body, port: number, bit: number): Value<number> {
   );
 }
 
+/** 一次端口写入里所有引脚共用的取值与常量。 */
+interface PinContext {
+  readonly latch: Value<number>;
+  readonly mode0: Value<number>;
+  readonly mode1: Value<number>;
+  readonly high: Value<IntentValue>;
+  readonly low: Value<IntentValue>;
+  readonly idle: Value<IntentValue>;
+  readonly zero: Value<number>;
+  readonly masks: (Value<number> | undefined)[];
+}
+
+function pinContext(b: Body, descriptor: Port): PinContext {
+  return {
+    latch: readSfrLatch(b, descriptor.latch),
+    mode0: readSfrLatch(b, descriptor.mode0),
+    mode1: readSfrLatch(b, descriptor.mode1),
+    high: b.resistor(SUPPLY_PIN, number(b, DRIVE_RESISTANCE)),
+    low: b.resistor(GROUND_PIN, number(b, DRIVE_RESISTANCE)),
+    idle: b.combineIntents(),
+    zero: number(b, 0),
+    masks: [],
+  };
+}
+
+function maskOf(b: Body, context: PinContext, bit: number): Value<number> {
+  let mask = context.masks[bit];
+
+  if (mask === undefined) {
+    mask = number(b, 1 << bit);
+    context.masks[bit] = mask;
+  }
+
+  return mask;
+}
+
 /**
  * 把口锁存器、口模式与复用功能翻译成引脚意图。
  *
@@ -135,62 +171,80 @@ export function readPin(b: Body, port: number, bit: number): Value<number> {
  * - 开漏（11）：锁存 0 下拉，锁存 1 释放。
  *
  * 复用功能启用时由外设推挽驱动该脚，锁存器与口模式不再影响输出。
+ *
+ * 每个引脚只做位掩码运算：`highCode`/`lowCode` 为 0 表示该脚不驱动。这样同一口写块
+ * 里 8 个引脚共用锁存/模式读取、两个电阻意图与空意图，常量也由内核按执行体去重。
  */
+function syncPinWith(b: Body, port: number, bit: number, context: PinContext): void {
+  const mask = maskOf(b, context, bit);
+  const latchBit = b.bitAnd(context.latch, mask);
+  const mode0Bit = b.bitAnd(context.mode0, mask);
+  const mode1Bit = b.bitAnd(context.mode1, mask);
+  const highCode = b.bitAnd(b.bitAnd(latchBit, mode0Bit), b.bitXor(mode1Bit, mask));
+  const lowCode = b.bitAnd(b.bitXor(latchBit, mask), b.bitOr(b.bitXor(mode1Bit, mask), mode0Bit));
+  const pin = pinName(port, bit);
+  const drivesHigh = b.notEqual(types.number, highCode, context.zero);
+  const drivesLow = b.notEqual(types.number, lowCode, context.zero);
+  let intent = b.select(
+    types.intent,
+    drivesHigh,
+    () => context.high,
+    (rest) =>
+      rest.select(
+        types.intent,
+        drivesLow,
+        () => context.low,
+        () => context.idle,
+      ),
+  );
+
+  const drivers = driversFor(port, bit);
+
+  if (drivers.length > 0) {
+    const notInputOnly = b.not(
+      b.notEqual(types.number, b.bitAnd(mode1Bit, b.bitXor(mode0Bit, mask)), context.zero),
+    );
+
+    for (const driver of drivers) {
+      const active = b.and(driver.enabled(b), () => notInputOnly);
+
+      intent = b.select(
+        types.intent,
+        active,
+        (on) => {
+          const body = asBody(on);
+
+          return body.select(
+            types.intent,
+            driver.level(body),
+            () => context.high,
+            () => context.low,
+          );
+        },
+        () => intent,
+      );
+    }
+  }
+
+  b.writeIntent(pin, intent);
+}
+
 export function syncPin(b: Body, port: number, bit: number): void {
   const descriptor = PORTS[port];
 
   if (descriptor === undefined) return;
 
-  const latchBit = b.equal(types.number, readSfrBit(b, descriptor.latch, bit), number(b, 1));
-  const mode = b.bitOr(
-    b.shiftLeft(readSfrBit(b, descriptor.mode1, bit), number(b, 1)),
-    readSfrBit(b, descriptor.mode0, bit),
-  );
-  const pushPull = b.equal(types.number, mode, number(b, 1));
-  const inputOnly = b.equal(types.number, mode, number(b, 2));
-  const released = b.not(latchBit);
-  const driveHigh = b.and(pushPull, () => latchBit);
-  const driveLow = b.and(b.not(inputOnly), () => released);
-  const high = b.resistor(SUPPLY_PIN, number(b, DRIVE_RESISTANCE));
-  const low = b.resistor(GROUND_PIN, number(b, DRIVE_RESISTANCE));
-  const idle = b.combineIntents();
-  const lowOrIdle = b.select(
-    types.intent,
-    driveLow,
-    () => low,
-    () => idle,
-  );
-  const portIntent = b.select(
-    types.intent,
-    driveHigh,
-    () => high,
-    () => lowOrIdle,
-  );
-
-  let intent = portIntent;
-
-  for (const driver of driversFor(port, bit)) {
-    const active = b.and(driver.enabled(b), (inner) => asBody(inner).not(inputOnly));
-
-    intent = b.select(
-      types.intent,
-      active,
-      (inner) =>
-        inner.select(
-          types.intent,
-          driver.level(asBody(inner)),
-          () => high,
-          () => low,
-        ),
-      () => intent,
-    );
-  }
-
-  b.writeIntent(pinName(port, bit), intent);
+  syncPinWith(b, port, bit, pinContext(b, descriptor));
 }
 
 export function syncPort(b: Body, port: number): void {
-  for (let bit = 0; bit < 8; bit += 1) syncPin(b, port, bit);
+  const descriptor = PORTS[port];
+
+  if (descriptor === undefined) return;
+
+  const context = pinContext(b, descriptor);
+
+  for (let bit = 0; bit < 8; bit += 1) syncPinWith(b, port, bit, context);
 }
 
 export const ports: Peripheral = {

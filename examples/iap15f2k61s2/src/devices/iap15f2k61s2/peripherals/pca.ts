@@ -259,23 +259,43 @@ const drivesPin = (b: Body, module: PcaModule): Value<number> => {
   );
 };
 
-/** 模块输出电平（0/1）：PWMn=1 取 PWM 比较结果，否则取高速输出锁存。 */
-const outputLevel = (b: Body, module: PcaModule): Value<number> => {
+/**
+ * 模块输出电平：PWMn=1 取 PWM 比较结果，否则取高速输出锁存。
+ *
+ * 直接返回 bool：端口块在每次写入时都要展开这段表达式，`bytes`/`index` 与 0/1 打包
+ * 会在解释执行时额外分配字节数组；这里只用移位、比较与一个惰性 select。
+ */
+const outputLevel = (b: Body, module: PcaModule): Value<boolean> => {
   const control = readSfr(b, module.pwm);
   const width = b.add(b.shiftLeft(bitAt(b, control, 7), number(b, 1)), bitAt(b, control, 6));
-  const mask = b.index(
-    b.bytes(number(b, 0xff), number(b, 0x7f), number(b, 0x3f), number(b, 0xff)),
-    width,
+  const mask = b.select(
+    types.number,
+    b.equal(types.number, width, number(b, 3)),
+    (wide) => wide.constant(types.number, 0xff),
+    (narrow) => narrow.shiftRightUnsigned(narrow.constant(types.number, 0xff), width),
   );
   const compare = b.add(
     b.multiply(bitAt(b, control, 0), b.add(mask, number(b, 1))),
     b.bitAnd(readSfr(b, module.low), mask),
   );
-  const pwm = bitAt(b, readSfr(b, module.mode), PWMn);
-  const pwmLevel = bitOf(b, b.greaterThanOrEqual(b.bitAnd(readSfr(b, SFR_CL), mask), compare));
-  const toggle = bitAt(b, periph8(b, TOGGLE), module.index);
+  const pwm = b.notEqual(
+    types.number,
+    b.bitAnd(readSfr(b, module.mode), number(b, PWMn)),
+    number(b, 0),
+  );
+  const pwmLevel = b.greaterThanOrEqual(b.bitAnd(readSfr(b, SFR_CL), mask), compare);
+  const toggle = b.notEqual(
+    types.number,
+    b.bitAnd(periph8(b, TOGGLE), number(b, 1 << module.index)),
+    number(b, 0),
+  );
 
-  return b.add(b.multiply(pwm, pwmLevel), b.multiply(b.subtract(number(b, 1), pwm), toggle));
+  return b.select(
+    types.bool,
+    pwm,
+    () => pwmLevel,
+    () => toggle,
+  );
 };
 
 /** 模式/复用变化后重算端口意图：把引脚交还给锁存器或交给外设。 */
@@ -308,7 +328,7 @@ for (const pcaModule of MODULES) {
 
         return nonZero(b, b.bitAnd(selected, drivesPin(b, pcaModule)));
       },
-      level: (b) => nonZero(b, outputLevel(b, pcaModule)),
+      level: (b) => outputLevel(b, pcaModule),
     });
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTestBoard, readMetadata, US } from './harness.ts';
+import { createTestBoard, readMetadata, runRuntimeOnce, US } from './harness.ts';
 import type { NetDescription, TestBoard } from './harness.ts';
 
 /**
@@ -362,6 +362,26 @@ describe('AT24C02', () => {
 
       expect(board.history.dump?.length ?? 0).toBe(changedPublishes);
       expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('dump 端口发布真实 Uint8Array，运行时不再产生 device/output-failed', async () => {
+    const { board } = await fixture();
+
+    try {
+      expect(board.topics.dump).toBeInstanceOf(Uint8Array);
+      expect(dump(board)).toHaveLength(256);
+
+      // 走真实 simulation-runtime：只读代理会被 payloadMatches 拒绝并记入诊断。
+      const runtime = await runRuntimeOnce('at24c02');
+
+      expect(runtime.publishes.dump).toBeInstanceOf(Uint8Array);
+      expect((runtime.publishes.dump as Uint8Array).length).toBe(256);
+      expect(runtime.diagnostics.filter((entry) => entry.code === 'device/output-failed')).toEqual(
+        [],
+      );
     } finally {
       board.dispose();
     }

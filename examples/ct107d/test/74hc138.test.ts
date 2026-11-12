@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createTestBoard, readMetadata, US } from './harness.ts';
+import { createTestBoard, readMetadata, runRuntimeOnce, US } from './harness.ts';
 import type { NetDescription, TestBoard } from './harness.ts';
 
 /**
@@ -178,6 +178,30 @@ describe('74HC138', () => {
       expect(built.board.topics.select).toBe(-1);
       expect(built.board.topics.enabled).toBe(false);
       expect(built.board.faults).toEqual([]);
+    } finally {
+      built.board.dispose();
+    }
+  });
+
+  it('code 端口发布真实 Uint8Array，运行时不再产生 device/output-failed', async () => {
+    const built = await fixture();
+
+    try {
+      built.enable(0, 0, 1);
+      built.select(6);
+      built.board.run(US);
+
+      expect(built.board.topics.code).toBeInstanceOf(Uint8Array);
+      expect(text(built.board.topics.code)).toBe('Y6');
+
+      // 走真实 simulation-runtime：只读代理会被 payloadMatches 拒绝并记入诊断。
+      const runtime = await runRuntimeOnce('74hc138');
+
+      expect(runtime.publishes.code).toBeInstanceOf(Uint8Array);
+      expect(text(runtime.publishes.code)).toBe('--');
+      expect(runtime.diagnostics.filter((entry) => entry.code === 'device/output-failed')).toEqual(
+        [],
+      );
     } finally {
       built.board.dispose();
     }
