@@ -1,0 +1,2 @@
+# v8-optimize.mjs 的 trace/字节码落盘目录；正常退出时自删，崩溃时留在这里也不该进版本库。
+.v8-optimize-*/

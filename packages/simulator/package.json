@@ -54,7 +54,8 @@
     "bench:mcu:typical": "node bench/typical-mcu.mjs",
     "bench:mcu:camera": "node bench/camera-mcu.mjs",
     "bench:mcu:stm32": "node bench/stm32g431.mjs",
-    "bench:mcu:stm32:v8": "node bench/stm32g431/v8-trace.mjs"
+    "bench:mcu:stm32:v8": "node bench/stm32g431/v8-trace.mjs",
+    "bench:v8-optimize": "node bench/v8-optimize.mjs"
   },
   "publishConfig": {
     "access": "public",
