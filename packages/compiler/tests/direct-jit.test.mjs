@@ -685,7 +685,8 @@ test('all unsupported bodies and invalid static bindings decline compilation', (
   );
   const dynamic = builder();
   dynamic.operations.push({ kind: 'elapse', duration: dynamic.read('x') });
-  assert.equal(compileDirectJit([dynamic.instruction(0, 1)], binding), undefined);
+  // A computed duration is supported: it is validated at run time, not declined.
+  assert(compileDirectJit([dynamic.instruction(0, 1)], binding));
   const missing = builder();
   missing.value({
     kind: 'load8',
@@ -1070,7 +1071,10 @@ test('pure scalar select folds into one conditional expression', () => {
   const instructions = [b.instruction(0, 99)];
   const program = compileDirectJit(instructions, binding);
   const source = generated(program);
-  assert.match(source, /H\.checkBoolean\(v\d+\) \? \(4 \+ 3\) : S\[2\];/);
+  assert.match(
+    source,
+    /v\d+ = \(typeof v\d+ === "boolean" \? v\d+ : H\.checkBoolean\(v\d+\)\) \? \(4 \+ 3\) : S\[2\];/,
+  );
   assert.doesNotMatch(source, /select\d+:/);
   assert(program.readStates.includes('y'));
   for (const flag of [true, false]) {
@@ -1114,7 +1118,8 @@ test('select branches with effects or extra yields keep the labeled block', () =
   const program = compileDirectJit(instructions, binding);
   const source = generated(program);
   assert.match(source, /select0: \{/);
-  assert.doesNotMatch(source, /\?/);
+  // 条件守卫自身带三目；这里只要求分支没有被折成 `cond ? (…) : (…)` 的单表达式。
+  assert.doesNotMatch(source, /\) \? \(/);
   for (const flag of [true, false]) {
     const f = frame(program, [0, 1, 0, flag, 0, 0]);
     const reference = generic(instructions, f.states, f.memories);
@@ -1573,6 +1578,125 @@ test('resistor, combineIntents and writeIntent record in program order', () => {
   assert(Object.isFrozen(log.entries[2][2]));
 });
 
+test('a wide select over pin intents stays direct and runs only the taken branch', () => {
+  const b = builder();
+  const condition = b.read('flag', 'bool');
+  const yes = [];
+  const no = [];
+  const yesIntent = b.value(
+    { kind: 'resistor', to: { kind: 'pin', name: 'p1' }, resistance: b.constant(100) },
+    'intent',
+    yes,
+  );
+  yes.push({ kind: 'yield', value: yesIntent });
+  const noIntent = b.value(
+    { kind: 'resistor', to: { kind: 'pin', name: 'p2' }, resistance: b.constant(200) },
+    'intent',
+    no,
+  );
+  no.push({ kind: 'yield', value: noIntent });
+  const chosen = b.value(
+    {
+      kind: 'select',
+      condition,
+      yes: { type: { kind: 'intent' }, body: { operations: yes } },
+      no: { type: { kind: 'intent' }, body: { operations: no } },
+    },
+    'intent',
+  );
+  b.operations.push({ kind: 'writeIntent', pin: { kind: 'pin', name: 'p3' }, value: chosen });
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, hostBinding);
+  assert(program, 'wide select must not disqualify the instruction');
+  const source = generated(program);
+  assert.match(source, /select\d+: \{/);
+  assert.doesNotMatch(source, /p1|p2|p3/);
+  for (const [flag, expected] of [
+    [true, ['resistor', 'p1', 100, 0]],
+    [false, ['resistor', 'p2', 200, 0]],
+  ]) {
+    const f = frame(program);
+    f.states[3] = flag;
+    const log = hostRecorder(() => f.time);
+    f.host = log;
+    const reference = generic(instructions, f.states, f.memories, (machine) =>
+      hostRecorder(() => machine.time),
+    );
+    assert.equal(program.run(f, 5), reference.run(5));
+    assert.deepEqual(f.states, reference.states);
+    assert.deepEqual(log.entries, [expected, ['intent', 'p3', ['pullUp'], 0]]);
+    assert.deepEqual(log.entries, reference.log);
+  }
+});
+
+test('a declared busy-wait head folds rounds and never crosses the deadline', () => {
+  const b = builder();
+  b.write('marker', b.constant(1));
+  b.delay(2);
+  const instruction = b.instruction(0, 2);
+  const delayed = {
+    ...binding,
+    delayLoops: new Map([[0, { counter: binding.states.get('x'), cycles: 1000 }]]),
+  };
+  const program = compileDirectJit([instruction], delayed);
+  assert(program);
+  const source = generated(program);
+  assert.match(
+    source,
+    /const rounds = Math\.min\(S\[\d+\] - 1, Math\.floor\(\(deadline - F\.time\) \/ 1000\)\);/,
+  );
+
+  // Horizon inside the wait: only the rounds that fit are folded and no instruction starts.
+  const short = frame(program, [0, 11, 0, false, 0, 0]);
+  assert.equal(program.run(short, 5000), 'deadline');
+  assert.equal(short.time, 5000);
+  assert.equal(short.states[1], 6);
+  assert.equal(short.states[5], 0);
+
+  // Horizon beyond the wait: every remaining round folds, then the real body runs once.
+  const long = frame(program, [0, 11, 0, false, 0, 0]);
+  assert.equal(program.run(long, 60_000), 'fallback');
+  assert.equal(long.states[1], 1);
+  assert.equal(long.time, 10 * 1000 + 2);
+  assert.equal(long.states[5], 1);
+
+  // The same body without the declaration executes once and costs one round only.
+  const plain = compileDirectJit([instruction], binding);
+  assert(plain);
+  const unfolded = frame(plain, [0, 11, 0, false, 0, 0]);
+  assert.equal(plain.run(unfolded, 60_000), 'fallback');
+  assert.equal(unfolded.time, 2);
+});
+
+test('a computed elapse duration advances by the runtime value', () => {
+  const b = builder();
+  const amount = b.read('x');
+  b.operations.push({ kind: 'elapse', duration: amount });
+  const instruction = b.instruction(0, 99);
+  const program = compileDirectJit([instruction], binding);
+  assert(program);
+  assert.match(generated(program), /F\.due = F\.time \+ H\.checkDuration\(v\d+\);/);
+
+  const whole = frame(program, [0, 30, 0, false, 0, 0]);
+  assert.equal(program.run(whole, 1_000), 'fallback');
+  assert.equal(whole.time, 30);
+
+  const split = frame(program, [0, 30, 0, false, 0, 0]);
+  assert.equal(program.run(split, 10), 'deadline');
+  assert.equal(split.time, 10);
+  assert.equal(split.resume, 1);
+
+  const zero = frame(program, [0, 0, 0, false, 0, 0]);
+  assert.equal(program.run(zero, 1_000), 'fallback');
+  assert.equal(zero.time, 0);
+
+  const bad = frame(program, [0, 1.5, 0, false, 0, 0]);
+  assert.throws(() => program.run(bad, 1_000), /finite integer/);
+  const huge = frame(program, [0, 7_200_000_000_000_001, 0, false, 0, 0]);
+  assert.throws(() => program.run(huge, 1_000), /picoseconds/);
+});
+
 test('refEqual compares names at compile time and declines parameter references', () => {
   const b = builder();
   b.write(
@@ -1663,7 +1787,10 @@ test('assert defers messages until the condition fails', () => {
   const program = compileDirectJit(trueCase, hostBinding);
   assert(program);
   const source = generated(program);
-  assert.match(source, /if \(!H\.checkBoolean\(v\d+\)\) F\.host\.assert\(false, "boom"\);/);
+  assert.match(
+    source,
+    /if \(!\(typeof v\d+ === "boolean" \? v\d+ : H\.checkBoolean\(v\d+\)\)\) F\.host\.assert\(false, "boom"\);/,
+  );
   assert.doesNotMatch(source, /F\.host\.assert\(false, C\[/);
   const f = frame(program);
   const log = hostRecorder(() => f.time);
@@ -2051,7 +2178,12 @@ test('split mode emits a shard dispatcher instead of per-instruction cases', () 
   assert.match(split, /else return "fallback";/);
   assert.match(split, /const pc = H\.checkPc\(S\[0\]\);/);
   assert.match(split, /return run;$/);
-  assert.doesNotMatch(split, /continue;/);
+  // A shard keeps executing while the next PC stays inside its own range.
+  assert.match(split, /while \(true\) \{\nswitch \(pc\) \{/);
+  assert.match(
+    split,
+    /pc = S\[0\]; if \(!\(typeof pc === "number" && pc < Infinity && pc > -Infinity\)\) H\.checkPc\(pc\); if \(pc <= \d+(?: && pc > \d+)?\) continue; return "next";/,
+  );
   const whole = compileDirectJit(instructions, binding);
   const halves = compileDirectJit(instructions, {
     ...binding,

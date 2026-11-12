@@ -127,6 +127,11 @@ export interface DirectJitBinding {
   readonly shardSize?: number;
   /** Summed slot count above which `split` emits shards; defaults to 2048. */
   readonly shardSlotLimit?: number;
+  /**
+   * PC → `{ counter slot, ps per round }` of a declared busy-wait loop head. The emitted
+   * body collapses every round the deadline allows before executing the real iteration.
+   */
+  readonly delayLoops?: ReadonlyMap<number, { readonly counter: number; readonly cycles: number }>;
 }
 
 /**
