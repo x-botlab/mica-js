@@ -31,6 +31,7 @@ export type {
   CompileOptions,
   DirectJitBinding,
   DirectJitFrame,
+  DirectJitHost,
   DirectJitProgram,
   DirectJitReason,
   ConstantMaterialization,

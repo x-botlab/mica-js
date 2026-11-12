@@ -1,11 +1,26 @@
-import type { BinaryOperator, MemoryRefIR, OperationIR, RegionIR } from '@mica-js/device-model';
+import type {
+  BinaryOperator,
+  MatchPatternIR,
+  MemoryRefIR,
+  OperationIR,
+  RegionIR,
+  UnaryOperator,
+  ValueRegionIR,
+} from '@mica-js/device-model';
 import type {
   DirectJitBinding,
   DirectJitFrame,
   DirectJitProgram,
   DirectJitReason,
 } from './types.js';
-import { checkBoolean, checkDuration, checkPc } from './values.js';
+import {
+  checkBoolean,
+  checkDuration,
+  checkPc,
+  combineIntents,
+  equalValues,
+  nonNull,
+} from './values.js';
 
 const binary: Partial<Record<BinaryOperator, string>> = {
   add: '+',
@@ -27,6 +42,12 @@ const binary: Partial<Record<BinaryOperator, string>> = {
   shiftRight: '>>',
   shiftRightUnsigned: '>>>',
 };
+const unary: Partial<Record<UnaryOperator, string>> = {
+  positive: '+',
+  negate: '-',
+  not: '!',
+  bitNot: '~',
+};
 const numeric = new Set([
   'isNaN',
   'isFinite',
@@ -43,6 +64,25 @@ const numeric = new Set([
   'pow',
 ]);
 const predicates = new Set(['isNaN', 'isFinite', 'isInteger', 'isSafeInteger']);
+/** Operations whose results may stay outside the scalar number/bool slot set. */
+const wideResults = new Set([
+  'field',
+  'optional',
+  'nonNull',
+  'readSample',
+  'resistor',
+  'combineIntents',
+]);
+/** Operations admitted only when the runtime supplied a direct host for the frame. */
+const hosted = new Set([
+  'send',
+  'notify',
+  'readSample',
+  'writeIntent',
+  'resistor',
+  'random',
+  'assert',
+]);
 
 function offset(memory: Uint8Array, value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value))
@@ -58,7 +98,59 @@ function byte(value: unknown): number {
   return value;
 }
 
-const helpers = Object.freeze({ checkBoolean, checkPc, offset, byte });
+const views = new WeakMap<Uint8Array, DataView>();
+
+/** One cached wrapper per bank; wide accesses never assemble bytes or allocate per operation. */
+function view(memory: Uint8Array): DataView {
+  let cached = views.get(memory);
+  if (cached === undefined) {
+    cached = new DataView(memory.buffer, memory.byteOffset, memory.byteLength);
+    views.set(memory, cached);
+  }
+  return cached;
+}
+
+/** Address check order matches the generic host: safe integer, nonnegative, whole range. */
+function address(memory: Uint8Array, value: unknown, size: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value))
+    throw new TypeError('offset must be a safe integer');
+  if (value < 0) throw new RangeError('offset must be nonnegative');
+  if (value > memory.length || size > memory.length - value)
+    throw new RangeError('Memory range is out of bounds');
+  return value;
+}
+
+function load16(memory: Uint8Array, value: unknown, little: boolean): number {
+  return view(memory).getUint16(address(memory, value, 2), little);
+}
+
+function load32(memory: Uint8Array, value: unknown, little: boolean): number {
+  return view(memory).getUint32(address(memory, value, 4), little);
+}
+
+function store16(memory: Uint8Array, value: unknown, stored: unknown, little: boolean): void {
+  const at = address(memory, value, 2);
+  view(memory).setUint16(at, byte(stored), little);
+}
+
+function store32(memory: Uint8Array, value: unknown, stored: unknown, little: boolean): void {
+  const at = address(memory, value, 4);
+  view(memory).setUint32(at, byte(stored), little);
+}
+
+const helpers = Object.freeze({
+  checkBoolean,
+  checkPc,
+  combineIntents,
+  equalValues,
+  nonNull,
+  offset,
+  byte,
+  load16,
+  load32,
+  store16,
+  store32,
+});
 const unsupported = Symbol('unsupported direct instruction');
 
 /** Inputs have already passed model validation and contextual binding. */
@@ -90,6 +182,50 @@ export function compileDirectJit(
   if (!entries.length) return undefined;
   const localCount = Math.max(...entries.map((entry) => entry.slots.length));
   const registers = Array.from({ length: localCount }, (_, index) => `v${index}`);
+  const options = binding as DirectJitBinding & {
+    readonly split?: boolean;
+    readonly shardSize?: number;
+  };
+  const split = options.split === true;
+  const shardSize = validIndex(options.shardSize) && options.shardSize > 0 ? options.shardSize : 48;
+  const lines = split
+    ? shardProgram(entries, binding, shardSize)
+    : monolithicProgram(entries, binding, registers);
+  // Only compiler templates/indices and compiler-validated primitive number, boolean and
+  // JSON-encoded string literals enter source; every other IR value stays closure data in C.
+  const factory = new Function(
+    'C',
+    'H',
+    split
+      ? `"use strict";\n${lines.join('\n')}\nreturn run;`
+      : `"use strict"; return (${lines.join('\n')});`,
+  ) as (
+    constants: readonly unknown[],
+    runtimeHelpers: typeof helpers,
+  ) => (frame: DirectJitFrame, deadline: number) => DirectJitReason;
+  const names = (field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories') =>
+    Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
+  return Object.freeze({
+    run: factory(Object.freeze(constants), helpers),
+    localCount,
+    readStates: names('readStates'),
+    writeStates: names('writeStates'),
+    readMemories: names('readMemories'),
+    writeMemories: names('writeMemories'),
+  });
+}
+
+const prelude = (slots: readonly string[]): string[] => [
+  'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty;',
+  ...(slots.length ? [`let ${slots.join(',')};`] : []),
+];
+
+/** One function holds the dispatcher, every continuation and every instruction body. */
+function monolithicProgram(
+  entries: readonly Instruction[],
+  binding: DirectJitBinding,
+  registers: readonly string[],
+): string[] {
   const lines = [
     'function run(F, deadline) {',
     'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty;',
@@ -120,38 +256,132 @@ export function compileDirectJit(
       dirty('SD', binding.pc.index),
       ...entry.prefix,
     );
-    if (entry.duration !== undefined) {
-      lines.push(
-        `F.due = F.time + ${entry.duration};`,
-        'if (F.due > 7200000000000000) throw new RangeError("Time out of range");',
-        'if (F.due >= deadline) {',
-      );
-      entry.slots.forEach((slot, slotIndex) => lines.push(`L[${slotIndex}] = ${slot};`));
-      lines.push(`F.resume = ${index + 1};`, 'F.time = deadline;', 'return "deadline";', '}');
-      lines.push('F.time = F.due;');
-    }
+    if (entry.duration !== undefined) lines.push(...elapsed(entry, index));
     lines.push(...entry.suffix, finish(entry.stop), '}');
   });
   lines.push('default: return "fallback";', '}', '}', '}');
-  // Only compiler-owned templates/indices enter source; all IR constants are closure data.
-  const factory = new Function('C', 'H', `"use strict"; return (${lines.join('\n')});`) as (
-    constants: readonly unknown[],
-    runtimeHelpers: typeof helpers,
-  ) => (frame: DirectJitFrame, deadline: number) => DirectJitReason;
-  const names = (field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories') =>
-    Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
-  return Object.freeze({
-    run: factory(Object.freeze(constants), helpers),
-    localCount,
-    readStates: names('readStates'),
-    writeStates: names('writeStates'),
-    readMemories: names('readMemories'),
-    writeMemories: names('writeMemories'),
+  return lines;
+}
+
+/** A light dispatcher plus one step/resume shard keeps every generated function small. */
+function shardProgram(
+  entries: readonly Instruction[],
+  binding: DirectJitBinding,
+  shardSize: number,
+): string[] {
+  const sorted = [...entries].sort((left, right) => left.pcValue - right.pcValue);
+  const shards = Array.from({ length: Math.ceil(sorted.length / shardSize) }, (_, shard) => {
+    const start = shard * shardSize;
+    const slice = sorted.slice(start, start + shardSize);
+    return {
+      start,
+      entries: slice,
+      maxSlots: Math.max(...slice.map((entry) => entry.slots.length)),
+      lastPc: slice[slice.length - 1]!.pc,
+      lastResume: start + slice.length,
+      resumable: slice.some((entry) => entry.duration !== undefined),
+    };
   });
+  const registers = (count: number): string[] =>
+    Array.from({ length: count }, (_, index) => `v${index}`);
+  const lines: string[] = [];
+  shards.forEach((shard, shardIndex) => {
+    lines.push(
+      `function stepShard${shardIndex}(F, deadline, pc) {`,
+      ...prelude(registers(shard.maxSlots)),
+      'switch (pc) {',
+    );
+    shard.entries.forEach((entry, offset) => {
+      lines.push(
+        `case ${entry.pc}: {`,
+        `S[${binding.pc.index}] = ${entry.nextPc};`,
+        dirty('SD', binding.pc.index),
+        ...entry.prefix,
+        ...elapsed(entry, shard.start + offset),
+        ...entry.suffix,
+        splitFinish(entry.stop),
+        '}',
+      );
+    });
+    lines.push('default: return "fallback";', '}', '}');
+  });
+  shards.forEach((shard, shardIndex) => {
+    if (!shard.resumable) return;
+    lines.push(
+      `function resumeShard${shardIndex}(F, resume) {`,
+      ...prelude(registers(shard.maxSlots)),
+      'switch (resume) {',
+    );
+    shard.entries.forEach((entry, offset) => {
+      if (entry.duration === undefined) return;
+      lines.push(`case ${shard.start + offset + 1}: {`);
+      entry.slots.forEach((slot, slotIndex) => lines.push(`${slot} = L[${slotIndex}];`));
+      lines.push('F.resume = 0;', ...entry.suffix, splitFinish(entry.stop), '}');
+    });
+    lines.push('default: throw new TypeError("Unknown direct JIT continuation");', '}', '}');
+  });
+  lines.push(
+    'function run(F, deadline) {',
+    'const S = F.states;',
+    'while (true) {',
+    'if (F.time >= deadline) return "deadline";',
+    'let status;',
+    'if (F.resume !== 0) {',
+    'if (F.due >= deadline) { F.time = deadline; return "deadline"; }',
+    'F.time = Math.max(F.time, F.due);',
+    'const resume = F.resume;',
+  );
+  const resumable = shards
+    .map((shard, shardIndex) => ({ shard, shardIndex }))
+    .filter(({ shard }) => shard.resumable);
+  if (resumable.length) {
+    resumable.forEach(({ shard, shardIndex }, position) => {
+      const keyword = position ? 'else if' : 'if';
+      lines.push(
+        `${keyword} (resume <= ${shard.lastResume}) status = resumeShard${shardIndex}(F, resume);`,
+      );
+    });
+    lines.push('else throw new TypeError("Unknown direct JIT continuation");');
+  } else lines.push('throw new TypeError("Unknown direct JIT continuation");');
+  lines.push(
+    '} else {',
+    'if (F.stopAfterInstruction) return "invalidated";',
+    `const pc = H.checkPc(S[${binding.pc.index}]);`,
+  );
+  shards.forEach((shard, shardIndex) => {
+    const keyword = shardIndex ? 'else if' : 'if';
+    lines.push(
+      `${keyword} (pc <= ${shard.lastPc}) status = stepShard${shardIndex}(F, deadline, pc);`,
+    );
+  });
+  lines.push('else return "fallback";', '}', 'if (status !== "next") return status;', '}', '}');
+  return lines;
+}
+
+/** Elapse due time, resume save and deadline split shared by both emitters. */
+function elapsed(entry: Instruction, index: number): string[] {
+  if (entry.duration === undefined) return [];
+  return [
+    `F.due = F.time + ${entry.duration};`,
+    'if (F.due > 7200000000000000) throw new RangeError("Time out of range");',
+    'if (F.due >= deadline) {',
+    ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
+    `F.resume = ${index + 1};`,
+    'F.time = deadline;',
+    'return "deadline";',
+    '}',
+    'F.time = F.due;',
+  ];
 }
 
 function finish(stop: boolean): string {
   return stop ? 'return "stopped";' : 'if (F.stopAfterInstruction) return "invalidated"; continue;';
+}
+
+function splitFinish(stop: boolean): string {
+  return stop
+    ? 'return "stopped";'
+    : 'if (F.stopAfterInstruction) return "invalidated"; return "next";';
 }
 
 function dirty(bank: 'SD' | 'MD', index: number): string {
@@ -170,6 +400,8 @@ class Instruction {
   readonly slots: string[] = [];
   prefix: string[] = [];
   suffix: string[] = [];
+  /** Numeric instruction key; shards sort by it while `pc` holds the emitted literal. */
+  pcValue = 0;
   pc = '';
   nextPc = '';
   duration?: string;
@@ -185,8 +417,9 @@ class Instruction {
   ) {}
 
   compile(instruction: { pc: number; nextPc: number; body: RegionIR }): this {
-    this.pc = this.capture(instruction.pc);
-    this.nextPc = this.capture(instruction.nextPc);
+    this.pcValue = instruction.pc;
+    this.pc = this.literal(instruction.pc);
+    this.nextPc = this.literal(instruction.nextPc);
     this.readStates.add(this.binding.pc.name);
     this.state(this.binding.pc.name, true);
     let output = this.prefix;
@@ -227,7 +460,26 @@ class Instruction {
       throw unsupported;
     }
     if (duration <= 0) throw unsupported;
-    return this.capture(duration);
+    return this.literal(duration);
+  }
+
+  /**
+   * Literal source text for values the compiler has already validated as primitive numbers or
+   * booleans. NaN, infinities and non-safe integers keep travelling as closure data.
+   */
+  private literal(value: unknown): string {
+    if (typeof value === 'boolean') return value ? 'true' : 'false';
+    if (typeof value === 'number' && Number.isSafeInteger(value)) {
+      return Object.is(value, -0) ? '-0' : String(value);
+    }
+    if (typeof value === 'string') {
+      // JSON encoding is a complete, injection-safe JavaScript string literal; the line
+      // separators need escaping for older parsers but remain the same string at runtime.
+      return JSON.stringify(value)
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
+    }
+    return this.capture(value);
   }
 
   private value(id: number): string {
@@ -253,13 +505,119 @@ class Instruction {
     if (operation.memory.kind !== 'memory') throw unsupported;
     const name = operation.memory.name;
     const index = this.binding.memories.get(name);
+    const write = operation.kind.startsWith('store');
+    // Only stores are write barriers; every load kind, including the wide ones, stays eligible.
+    if (!validIndex(index) || (write && this.binding.blockedMemories?.has(name))) throw unsupported;
+    (write ? this.writeMemories : this.readMemories).add(name);
+    return index;
+  }
+
+  /**
+   * A value region that is exactly one last yield over pure scalar operations folds into a
+   * single expression. Anything else returns undefined and keeps the labeled block.
+   */
+  private expression(region: ValueRegionIR): string | undefined {
+    if (region.type.kind !== 'number' && region.type.kind !== 'bool') return undefined;
+    const { operations } = region.body;
+    const last = operations[operations.length - 1];
+    if (last?.kind !== 'yield') return undefined;
+    const values = new Map<number, string>();
+    for (let index = 0; index < operations.length - 1; index++) {
+      if (!this.fold(operations[index]!, values)) return undefined;
+    }
+    return values.get(last.value) ?? this.values.get(last.value);
+  }
+
+  /** Local expression for one pure scalar operation; operands fall back to emitted slots. */
+  private fold(operation: OperationIR, values: Map<number, string>): boolean {
+    if (!('result' in operation) || !('type' in operation)) return false;
+    if (operation.type.kind !== 'number' && operation.type.kind !== 'bool') return false;
+    const operand = (id: number): string | undefined => values.get(id) ?? this.values.get(id);
+    switch (operation.kind) {
+      case 'constant': {
+        if (operation.constant.kind !== 'number' && operation.constant.kind !== 'bool')
+          return false;
+        this.literals.set(operation.result, operation.constant.value);
+        values.set(operation.result, this.literal(operation.constant.value));
+        return true;
+      }
+      case 'read': {
+        if (operation.resource !== 'state') return false;
+        values.set(operation.result, `S[${this.state(operation.name, false)}]`);
+        return true;
+      }
+      case 'localRead': {
+        const slot = this.locals.get(operation.local);
+        if (!slot) return false;
+        values.set(operation.result, slot);
+        return true;
+      }
+      case 'unary': {
+        const operator = unary[operation.operator];
+        const value = operand(operation.value);
+        if (!operator || value === undefined) return false;
+        values.set(operation.result, `(${operator}${value})`);
+        return true;
+      }
+      case 'binary': {
+        const operator = binary[operation.operator];
+        const left = operand(operation.left);
+        const right = operand(operation.right);
+        if (!operator || left === undefined || right === undefined) return false;
+        values.set(operation.result, `(${left} ${operator} ${right})`);
+        return true;
+      }
+      case 'numeric': {
+        if (!numeric.has(operation.builtin)) return false;
+        const args: string[] = [];
+        for (const id of operation.args) {
+          const value = operand(id);
+          if (value === undefined) return false;
+          args.push(value);
+        }
+        const owner = predicates.has(operation.builtin) ? 'Number' : 'Math';
+        values.set(operation.result, `${owner}.${operation.builtin}(${args.join(',')})`);
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+
+  /** Host-based operations require the runtime to have supplied a frame host. */
+  private requireHost(): void {
+    if (this.binding.host !== true) throw unsupported;
+  }
+
+  /** Assertion messages admit only a string constant region, so they stay compile-time data. */
+  private message(region: ValueRegionIR): string {
+    const operations = region.body.operations;
+    const constant = operations[0];
+    const delivered = operations[1];
     if (
-      !validIndex(index) ||
-      (operation.kind !== 'load8' && this.binding.blockedMemories?.has(name))
+      operations.length !== 2 ||
+      constant?.kind !== 'constant' ||
+      constant.constant.kind !== 'string' ||
+      delivered?.kind !== 'yield' ||
+      delivered.value !== constant.result
     )
       throw unsupported;
-    (operation.kind === 'load8' ? this.readMemories : this.writeMemories).add(name);
-    return index;
+    return this.literal(constant.constant.value);
+  }
+
+  /** Match constants: validated numbers/booleans inline, names and strings stay data. */
+  private pattern(pattern: MatchPatternIR): string {
+    switch (pattern.kind) {
+      case 'none':
+        return 'null';
+      case 'number':
+      case 'bool':
+        return this.literal(pattern.value);
+      case 'string':
+        return this.literal(pattern.value);
+      case 'enum':
+        return this.literal(pattern.member);
+    }
   }
 
   private region(
@@ -283,8 +641,15 @@ class Instruction {
     output?: { slot: string; label: string },
   ): void {
     let result: string | undefined;
+    if (hosted.has(operation.kind)) this.requireHost();
     if ('result' in operation) {
-      if (operation.type.kind !== 'number' && operation.type.kind !== 'bool') throw unsupported;
+      const kind = operation.type.kind;
+      if (kind !== 'number' && kind !== 'bool') {
+        const allowed =
+          wideResults.has(operation.kind) ||
+          (operation.kind === 'constant' && (kind === 'string' || kind === 'enum'));
+        if (!allowed) throw unsupported;
+      }
       result = this.slot();
       this.values.set(operation.result, result);
     }
@@ -292,12 +657,18 @@ class Instruction {
       lines.push(`${result!} = ${expression};`);
     };
     switch (operation.kind) {
-      case 'constant':
-        if (operation.constant.kind !== 'number' && operation.constant.kind !== 'bool')
-          throw unsupported;
-        this.literals.set(operation.result, operation.constant.value);
-        assign(this.capture(operation.constant.value));
+      case 'constant': {
+        const { constant } = operation;
+        if (constant.kind === 'number' || constant.kind === 'bool') {
+          this.literals.set(operation.result, constant.value);
+          assign(this.literal(constant.value));
+        } else if (constant.kind === 'string') {
+          assign(this.literal(constant.value));
+        } else if (constant.kind === 'enum') {
+          assign(this.literal(constant.member));
+        } else throw unsupported;
         break;
+      }
       case 'read':
         if (operation.resource !== 'state') throw unsupported;
         assign(`S[${this.state(operation.name, false)}]`);
@@ -308,7 +679,7 @@ class Instruction {
         break;
       }
       case 'unary': {
-        const operator = { positive: '+', negate: '-', not: '!', bitNot: '~' }[operation.operator];
+        const operator = unary[operation.operator];
         if (!operator) throw unsupported;
         assign(`(${operator}${this.value(operation.value)})`);
         break;
@@ -325,6 +696,68 @@ class Instruction {
           `${predicates.has(operation.builtin) ? 'Number' : 'Math'}.${operation.builtin}(${operation.args.map((id) => this.value(id)).join(',')})`,
         );
         break;
+      case 'send':
+        lines.push(
+          `F.host.send(${this.capture(operation.channel)}, ${this.value(operation.value)});`,
+        );
+        break;
+      case 'notify':
+        lines.push(`F.host.notify(${this.capture(operation.notification)});`);
+        break;
+      case 'readSample':
+        if (operation.pin.kind !== 'pin') throw unsupported;
+        assign(`F.host.sample(${this.capture(operation.pin.name)})`);
+        break;
+      case 'writeIntent':
+        if (operation.pin.kind !== 'pin') throw unsupported;
+        lines.push(
+          `F.host.intent(${this.capture(operation.pin.name)}, ${this.value(operation.value)});`,
+        );
+        break;
+      case 'resistor':
+        if (operation.to.kind !== 'pin') throw unsupported;
+        assign(
+          `F.host.resistor(${this.capture(operation.to.name)}, ${this.value(operation.resistance)})`,
+        );
+        break;
+      case 'combineIntents':
+        assign(`H.combineIntents([${operation.values.map((id) => this.value(id)).join(',')}])`);
+        break;
+      case 'field':
+        assign(`${this.value(operation.value)}[${this.capture(operation.field)}]`);
+        break;
+      case 'refEqual':
+        if (operation.left.kind === 'parameter' || operation.right.kind === 'parameter')
+          throw unsupported;
+        assign(operation.left.name === operation.right.name ? 'true' : 'false');
+        break;
+      case 'length':
+        assign(`${this.value(operation.value)}.length`);
+        break;
+      case 'optional':
+        assign(this.value(operation.value));
+        break;
+      case 'isNone':
+        assign(`(${this.value(operation.value)} === null)`);
+        break;
+      case 'nonNull':
+        assign(`H.nonNull(${this.value(operation.value)})`);
+        break;
+      case 'now':
+        // The frame clock already holds this board time; host.now() would lag it.
+        assign('F.time');
+        break;
+      case 'random':
+        assign('F.host.random()');
+        break;
+      case 'assert': {
+        const message =
+          operation.message === undefined ? 'undefined' : this.message(operation.message);
+        lines.push(
+          `if (!H.checkBoolean(${this.value(operation.condition)})) F.host.assert(false, ${message});`,
+        );
+        break;
+      }
       case 'local': {
         if (operation.type.kind !== 'number' && operation.type.kind !== 'bool') throw unsupported;
         const slot = this.slot();
@@ -359,6 +792,65 @@ class Instruction {
         );
         break;
       }
+      case 'load16le':
+      case 'load16be': {
+        const memory = `M[${this.memory(operation)}]`;
+        const little = operation.kind.endsWith('le') ? 'true' : 'false';
+        assign(`H.load16(${memory},${this.value(operation.offset)},${little})`);
+        break;
+      }
+      case 'load32le':
+      case 'load32be': {
+        const memory = `M[${this.memory(operation)}]`;
+        const little = operation.kind.endsWith('le') ? 'true' : 'false';
+        assign(`H.load32(${memory},${this.value(operation.offset)},${little})`);
+        break;
+      }
+      case 'store16le':
+      case 'store16be':
+      case 'store32le':
+      case 'store32be': {
+        const index = this.memory(operation);
+        const memory = `M[${index}]`;
+        const store = operation.kind.startsWith('store16') ? 'store16' : 'store32';
+        const little = operation.kind.endsWith('le') ? 'true' : 'false';
+        // Address validation precedes the stored-value check inside the helper.
+        lines.push(
+          `H.${store}(${memory},${this.value(operation.offset)},${this.value(operation.value)},${little});`,
+          dirty('MD', index),
+        );
+        break;
+      }
+      case 'and':
+      case 'or': {
+        if (operation.right.body.operations.at(-1)?.kind !== 'yield') throw unsupported;
+        const label = `${operation.kind}${this.labels++}`;
+        lines.push(
+          `${result} = H.checkBoolean(${this.value(operation.left)});`,
+          `${operation.kind === 'or' ? 'if (!' : 'if ('}${result}) {`,
+          `${label}: {`,
+        );
+        this.region(operation.right.body, lines, { slot: result!, label });
+        lines.push('}', `${result} = H.checkBoolean(${result});`, '}');
+        break;
+      }
+      case 'match': {
+        const value = this.value(operation.value);
+        if (!operation.arms.length && !operation.otherwise) throw unsupported;
+        // Without an else arm a value-position match could leave its output unassigned.
+        if (!operation.otherwise && output) throw unsupported;
+        operation.arms.forEach((arm, index) => {
+          const pattern = this.pattern(arm.pattern);
+          lines.push(`${index ? '} else if' : 'if'} (H.equalValues(${value}, ${pattern})) {`);
+          this.region(arm.body, lines, output);
+        });
+        if (operation.otherwise) {
+          lines.push(operation.arms.length ? '} else {' : '{');
+          this.region(operation.otherwise, lines, output);
+        }
+        lines.push('}');
+        break;
+      }
       case 'if':
         lines.push(`if (H.checkBoolean(${this.value(operation.condition)})) {`);
         this.region(operation.yes, lines, output);
@@ -369,8 +861,15 @@ class Instruction {
         lines.push('}');
         break;
       case 'select': {
+        const condition = this.value(operation.condition);
+        const yes = this.expression(operation.yes);
+        const no = yes === undefined ? undefined : this.expression(operation.no);
+        if (yes !== undefined && no !== undefined) {
+          lines.push(`${result} = H.checkBoolean(${condition}) ? ${yes} : ${no};`);
+          break;
+        }
         const label = `select${this.labels++}`;
-        lines.push(`${label}: {`, `if (H.checkBoolean(${this.value(operation.condition)})) {`);
+        lines.push(`${label}: {`, `if (H.checkBoolean(${condition})) {`);
         this.region(operation.yes.body, lines, { slot: result!, label });
         lines.push('} else {');
         this.region(operation.no.body, lines, { slot: result!, label });
