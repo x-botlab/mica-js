@@ -4,6 +4,7 @@ import { Emitter } from '@mica-js/core/lifecycle';
 import type { Disposable, Event } from '@mica-js/core/lifecycle';
 import type { DeliveryKind } from '@mica-js/document/canvas';
 import { createBoard, createDeviceLibrary } from '../runtime';
+import { publishGate } from '../runtime/publish-gate';
 import type { Board, DeviceContext, RuntimeDiagnostic, TopicBridge, TopicMessage } from '../types';
 import { errorMessage, SimulationRuntimeError } from './errors';
 import { copyPayload, payloadMatches, samePayload, targetKey } from './payload';
@@ -278,7 +279,8 @@ function buildLoadedRuntime(
  *
  * `publishObserved` reports whether anything outside the board consumes published messages; with no
  * scoped subscriber, no owner-less bridge listener and no consumer, an accepted output is dropped
- * before it is copied, fanned out or queued, while `assertCanPublish` keeps the publish guards.
+ * before it is copied, fanned out or queued, while the bridge's internal publish gate keeps the
+ * board's call admission.
  */
 export function scopeTopics(
   bridge: TopicBridge,
@@ -288,13 +290,11 @@ export function scopeTopics(
   publishObserved: () => boolean,
 ): TopicBridge {
   const prefix = `${encodeURIComponent(instance.symbol)}/`;
+  const gate = publishGate(bridge);
   let scopedListeners = 0;
   const unobserved = (): boolean =>
-    scopedListeners === 0 && bridge.hostListenerCount === 0 && !publishObserved();
+    scopedListeners === 0 && gate.hostListeners() === 0 && !publishObserved();
   return {
-    get hostListenerCount(): number {
-      return bridge.hostListenerCount;
-    },
     onDidReceive: ((listener, thisArgs, disposables) => {
       const subscription = bridge.onDidReceive(
         (message) => {
@@ -320,7 +320,6 @@ export function scopeTopics(
       disposables?.push(disposable);
       return disposable;
     }) as Event<TopicMessage>,
-    assertCanPublish: () => bridge.assertCanPublish(),
     publish(port, payload): void {
       const topic = instance.device.topics.get(port);
       if (topic?.direction !== 'output' || !payloadMatches(topic.type, payload)) {
@@ -336,7 +335,7 @@ export function scopeTopics(
       // Publish would copy first and only then enforce the phase, disposed and faulted guards, so
       // the skipped path keeps the guard on its own instead of losing the error.
       if (unobserved()) {
-        bridge.assertCanPublish();
+        gate.assertPublishAllowed();
         return;
       }
       const snapshot = copyPayload(payload);

@@ -5,6 +5,7 @@ import { createDeviceBuilder, types, type DeviceIR } from '@mica-js/device-model
 import type { DeviceMetadata } from '@mica-js/document/schematic';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBoard, createDeviceLibrary } from '../runtime';
+import { publishGate } from '../runtime/publish-gate';
 import type { DeviceAdapter, DeviceContext, InstanceDescription, TopicMessage } from '../types';
 import { copyPayload } from './payload';
 import type { IPreparedDeviceTopic, IPreparedInstance } from './prepare';
@@ -245,16 +246,17 @@ describe('topic publishing', () => {
     try {
       // The device subscribes through its instance, so the board bridge still has no host listener.
       expect(subscription).toBeDefined();
-      expect(board.topics.hostListenerCount).toBe(0);
+      // The count is internal: device and host code act through `onDidReceive`/`publish` only.
+      expect(publishGate(board.topics).hostListeners()).toBe(0);
       const first = board.topics.onDidReceive(() => {});
       const second = board.topics.onDidReceive(() => {});
-      expect(board.topics.hostListenerCount).toBe(2);
+      expect(publishGate(board.topics).hostListeners()).toBe(2);
       first.dispose();
       // Releasing twice keeps the symmetric count.
       first.dispose();
-      expect(board.topics.hostListenerCount).toBe(1);
+      expect(publishGate(board.topics).hostListeners()).toBe(1);
       second.dispose();
-      expect(board.topics.hostListenerCount).toBe(0);
+      expect(publishGate(board.topics).hostListeners()).toBe(0);
     } finally {
       board.dispose();
     }

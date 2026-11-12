@@ -51,8 +51,11 @@ export interface InstanceBoard {
   readonly dirtyElectricalSlots: Set<number>;
   readonly jits: Jit[];
   readonly waitingJits: Set<Jit>;
-  validity(instance?: Instance): void;
-  guard(instance?: Instance, readOnly?: boolean): void;
+  assertAlive(instance?: Instance): void;
+  /** Admission for a call that may change board state or is visible to a device. */
+  assertCallAllowed(instance?: Instance): void;
+  /** Admission for a read-only entry point: a faulted board stays inspectable. */
+  assertReadAllowed(instance?: Instance): void;
   error(
     code: RuntimeDiagnosticCode,
     message: string,
@@ -80,17 +83,17 @@ function hasEvery(
 function createContext(owner: Instance, board: InstanceBoard): DeviceContext {
   return Object.freeze({
     get props() {
-      board.guard(owner, true);
+      board.assertReadAllowed(owner);
       return Object.freeze(
         Object.fromEntries([...owner.props].map(([key, value]) => [key, externalValue(value)])),
       );
     },
     get inputs() {
-      owner.guard();
+      owner.assertCallAllowed();
       return owner.inputs();
     },
     get memory() {
-      board.guard(owner, true);
+      board.assertReadAllowed(owner);
       return owner.publicMemory();
     },
     topics: board.topicBridge(owner),
@@ -782,8 +785,8 @@ export class Instance {
     }
     this.memorySizes.clear();
   }
-  guard(): void {
-    this.board.guard(this);
+  assertCallAllowed(): void {
+    this.board.assertCallAllowed(this);
   }
   inputs(): Record<string, unknown> {
     const result: Record<string, unknown> = Object.create(null);
@@ -791,14 +794,14 @@ export class Instance {
       if (declaration.kind === 'channel' && declaration.direction === 'input')
         result[declaration.name] = Object.freeze({
           send: (value: unknown) => {
-            this.guard();
+            this.assertCallAllowed();
             this.send(declaration.name, value, true);
           },
         });
       if (declaration.kind === 'notification' && declaration.direction === 'input')
         result[declaration.name] = Object.freeze({
           notify: () => {
-            this.guard();
+            this.assertCallAllowed();
             this.notificationInputs.add(declaration.name);
           },
         });
@@ -810,7 +813,7 @@ export class Instance {
     for (const declaration of this.entry.model.declarations)
       if (declaration.kind === 'memory' && declaration.public)
         result[declaration.name] = bytesView(this.memory(declaration.name), () => {
-          this.board.validity(this);
+          this.board.assertAlive(this);
           if (!['idle', 'initialize', 'sync'].includes(this.board.phase))
             throw this.board.error(
               'INVALID_CALL_STATE',
@@ -842,7 +845,7 @@ export class Instance {
     queue.push({ time: this.board.time, value: captured });
   }
   attach(options: JitOptions): Disposable {
-    this.guard();
+    this.assertCallAllowed();
     if (this.board.phase !== 'initialize' || this.board.current !== this)
       throw this.board.error('INVALID_CALL_STATE', 'attachJit is initialization-only', this);
     dataObject(options, [
@@ -954,7 +957,7 @@ export class Instance {
     return disposable;
   }
   loadBytes(name: string, bytes: Uint8Array, offset: unknown): void {
-    this.guard();
+    this.assertCallAllowed();
     if (
       this.board.phase !== 'idle' &&
       !(this.board.phase === 'initialize' && this.board.current === this)
