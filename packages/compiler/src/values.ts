@@ -26,7 +26,14 @@ export function createBytes(elements: readonly unknown[]): Uint8Array {
   return bytes;
 }
 
+/** Shared empty intent: the same array is the "no contribution" value for every pin. */
+const noBranches: readonly unknown[] = Object.freeze([]);
+
 export function combineIntents(values: readonly unknown[]): readonly unknown[] {
+  // A single array already is a frozen branch list, and the empty case is a singleton:
+  // both keep identity stable, which the host uses to skip unchanged intent writes.
+  if (values.length === 0) return noBranches;
+  if (values.length === 1 && Array.isArray(values[0])) return values[0] as readonly unknown[];
   const branches: unknown[] = [];
   for (const value of values) {
     if (Array.isArray(value)) {

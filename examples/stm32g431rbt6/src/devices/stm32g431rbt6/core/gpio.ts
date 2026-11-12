@@ -96,7 +96,7 @@ function extract(
   return b.bitAnd(b.shiftRightUnsigned(value, shift), num(b, mask));
 }
 
-/** 一次端口同步共用的寄存器快照：6 个字 + 电源判定 + 电阻意图。 */
+/** 一次端口同步共用的寄存器快照：6 个字 + 电源判定。 */
 interface PortRegisters {
   readonly moder: Value<number>;
   readonly otyper: Value<number>;
@@ -105,11 +105,6 @@ interface PortRegisters {
   readonly afr0: Value<number>;
   readonly afr1: Value<number>;
   readonly supplied: Value<boolean>;
-  readonly high: Value<IntentValue>;
-  readonly low: Value<IntentValue>;
-  readonly pullUp: Value<IntentValue>;
-  readonly pullDown: Value<IntentValue>;
-  readonly empty: Value<IntentValue>;
 }
 
 /** 读一次端口配置；16 根脚复用同一份快照，避免每根脚重读 6 个字。 */
@@ -122,13 +117,15 @@ function portRegisters(b: Body, portIndex: number): PortRegisters {
     afr0: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_AFR0),
     afr1: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_AFR1),
     supplied: powered(b),
-    high: b.resistor('VDD1', num(b, DRIVE_RESISTANCE)),
-    low: b.resistor('VSS1', num(b, DRIVE_RESISTANCE)),
-    pullUp: b.resistor('VDD1', num(b, PULL_RESISTANCE)),
-    pullDown: b.resistor('VSS1', num(b, PULL_RESISTANCE)),
-    empty: b.combineIntents(),
   };
 }
+
+/**
+ * 一根脚在给定电阻下的意图。意图只在所在分支真正被选中时才求值：一次 GPIO 输出写只需要
+ * 一个电阻意图，不必把上拉/下拉/空意图也解析一遍。
+ */
+const resistorIntent = (b: Body, high: boolean, resistance: number): Value<IntentValue> =>
+  b.resistor(high ? 'VDD1' : 'VSS1', num(b, resistance));
 
 /** 把一根脚的 MODER/OTYPER/PUPDR/ODR/AFR 翻译成引脚意图。 */
 function emitPinIntent(b: Body, portIndex: number, bit: number, registers: PortRegisters): void {
@@ -137,7 +134,6 @@ function emitPinIntent(b: Body, portIndex: number, bit: number, registers: PortR
   if (pin === undefined || pin === null) return;
 
   const { moder, otyper, pupdr, odr, afr0, afr1, supplied: poweredPin } = registers;
-  const { high, low, pullUp, pullDown, empty } = registers;
   const mode = bits(b, moder, bit * 2, 2);
   const openDrain = bits(b, otyper, bit, 1);
   const pull = bits(b, pupdr, bit * 2, 2);
@@ -146,71 +142,87 @@ function emitPinIntent(b: Body, portIndex: number, bit: number, registers: PortR
     b.shiftRightUnsigned(bit < 8 ? afr0 : afr1, num(b, (bit & 7) * 4)),
     num(b, 0xf),
   );
-  const pullIntent = b.select(
-    types.intent,
-    b.equal(types.number, pull, num(b, 1)),
-    () => pullUp,
-    (inner) =>
-      inner.select(
-        types.intent,
-        inner.equal(types.number, pull, inner.constant(types.number, 2)),
-        () => pullDown,
-        () => empty,
-      ),
-  );
   const outputHigh = b.equal(types.number, output, num(b, 1));
-  const pushPull = b.select(
-    types.intent,
-    outputHigh,
-    () => high,
-    () => low,
-  );
-  const openDrainIntent = b.select(
-    types.intent,
-    outputHigh,
-    () => pullIntent,
-    () => low,
-  );
-  const outputIntent = b.select(
-    types.intent,
-    b.equal(types.number, openDrain, num(b, 1)),
-    () => openDrainIntent,
-    () => pushPull,
-  );
-  let alternate = pullIntent;
+  const pullIsUp = b.equal(types.number, pull, num(b, 1));
+  const pullIsDown = b.equal(types.number, pull, num(b, 2));
 
-  for (const driver of driversFor(portIndex, bit)) {
-    const selected = boolAnd(b, b.equal(types.number, af, num(b, driver.af)), driver.active(b));
-    const level = b.select(
+  const pullAt = (body: Body): Value<IntentValue> =>
+    body.select(
       types.intent,
-      driver.level(b),
-      () => high,
-      () => low,
+      pullIsUp,
+      (up) => resistorIntent(asBody(up), true, PULL_RESISTANCE),
+      (other) =>
+        other.select(
+          types.intent,
+          pullIsDown,
+          (down) => resistorIntent(asBody(down), false, PULL_RESISTANCE),
+          (none) => asBody(none).combineIntents(),
+        ),
     );
-
-    alternate = b.select(
+  const driveAt = (body: Body): Value<IntentValue> =>
+    body.select(
       types.intent,
-      selected,
-      () => level,
-      () => alternate,
+      outputHigh,
+      (high) => resistorIntent(asBody(high), true, DRIVE_RESISTANCE),
+      (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
     );
-  }
+  const outputAt = (body: Body): Value<IntentValue> =>
+    body.select(
+      types.intent,
+      body.equal(types.number, openDrain, num(body, 1)),
+      (open) =>
+        asBody(open).select(
+          types.intent,
+          outputHigh,
+          (high) => pullAt(asBody(high)),
+          (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+        ),
+      (push) => driveAt(asBody(push)),
+    );
+  const alternateAt = (body: Body): Value<IntentValue> => {
+    let intent = pullAt(body);
 
+    for (const driver of driversFor(portIndex, bit)) {
+      const selected = boolAnd(
+        body,
+        body.equal(types.number, af, num(body, driver.af)),
+        driver.active(body),
+      );
+
+      intent = body.select(
+        types.intent,
+        selected,
+        (level) => {
+          const inner = asBody(level);
+
+          return inner.select(
+            types.intent,
+            driver.level(inner),
+            (high) => resistorIntent(asBody(high), true, DRIVE_RESISTANCE),
+            (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+          );
+        },
+        () => intent,
+      );
+    }
+
+    return intent;
+  };
   const modeIntent = b.select(
     types.intent,
     b.equal(types.number, mode, num(b, 0)),
-    () => pullIntent,
+    (input) => pullAt(asBody(input)),
     (inner) =>
       inner.select(
         types.intent,
         inner.equal(types.number, mode, inner.constant(types.number, 1)),
-        () => outputIntent,
+        (out) => outputAt(asBody(out)),
         (inner2) =>
           inner2.select(
             types.intent,
             inner2.equal(types.number, mode, inner2.constant(types.number, 2)),
-            () => alternate,
-            () => empty,
+            (alt) => alternateAt(asBody(alt)),
+            (none) => asBody(none).combineIntents(),
           ),
       ),
   );
@@ -218,7 +230,7 @@ function emitPinIntent(b: Body, portIndex: number, bit: number, registers: PortR
     types.intent,
     poweredPin,
     () => modeIntent,
-    () => empty,
+    (none) => asBody(none).combineIntents(),
   );
 
   b.writeIntent(pin, intent);
