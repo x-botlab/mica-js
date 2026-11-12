@@ -10,8 +10,14 @@ import { compileDDL } from '@mica-js/ddl';
 import { createBoard, createDeviceLibrary } from '../dist/index.js';
 import { digitalNames, prepareDigital } from './workloads/digital.mjs';
 import { physicalNames, preparePhysical } from './workloads/physical.mjs';
+import { boardNames, prepareBoard } from './workloads/board.mjs';
 
-const names = [...digitalNames, ...physicalNames];
+const names = [...digitalNames, ...physicalNames, ...boardNames];
+const preparers = new Map([
+  ...digitalNames.map((name) => [name, prepareDigital]),
+  ...physicalNames.map((name) => [name, preparePhysical]),
+  ...boardNames.map((name) => [name, prepareBoard]),
+]);
 const options = {
   workloads: names,
   sizes: [1, 4, 16],
@@ -83,6 +89,12 @@ const denseEstimate = options.workloads.includes('electrical-chain')
     (options.samples + options.warmup)
   : 0;
 assert(denseEstimate <= 8e8, 'Combined dense workload exceeds budget 8e8');
+// Board loads are solver- and observer-heavy per size unit; one unit is `size * step`.
+const boardEstimate =
+  options.workloads.filter((name) => boardNames.includes(name)).length *
+  options.sizes.reduce((total, size) => total + size, 0) *
+  (options.samples + options.warmup);
+assert(boardEstimate <= 5e4, 'Combined board workloads exceed budget 5e4');
 
 function summary(values) {
   const sorted = [...values].sort((a, b) => a - b);
@@ -209,7 +221,7 @@ try {
       console.error(`[workloads] ${name}, size=${size}`);
       const preparation = { ddlCalls: 0, frontendMs: 0, libraryMs: 0 };
       const preparationStart = performance.now();
-      const prepare = digitalNames.includes(name) ? prepareDigital : preparePhysical;
+      const prepare = preparers.get(name);
       const prepared = await prepare(name, {
         size,
         async compile(source) {
@@ -363,6 +375,7 @@ console.log(
         'Optional allocation sampling estimates allocations including collected objects; it also samples benchmark/verification scaffolding and perturbs latency. Compare timing only in the same mode.',
         'Optional CPU profiles cover only the post-warmup measurement region, including verification and event-loop gaps; startup and warmups are excluded. Profiling perturbs timing.',
         'Sizes mean UART pairs, processors, SRAMs or PWMs; electrical workloads use size*8 unknown nodes. These fixtures are representative models, not complete chips.',
+        'Board workloads: port-model uses size*4 modelled ports, topology-churn size*2 driven networks, observer-churn size*2 observed states and wide-memory size*2 memory windows. Each is one board driven by the step index and each verify is a semantic assertion, so correctness regressions surface as failures rather than faster timings.',
       ],
       results,
     },

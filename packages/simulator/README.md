@@ -324,14 +324,20 @@ pnpm --filter @mica-js/simulator bench:workloads --workloads=sram --sizes=1 --sa
 pnpm --filter @mica-js/simulator bench:workloads --workloads=uart,sram --sizes=1,16 --samples=20 --cpu-profile-dir=C:\temp\mica-profiles
 ```
 
-| 负载                     | size 含义                | 吞吐单位与验证                                                     |
-| ------------------------ | ------------------------ | ------------------------------------------------------------------ |
-| `uart`                   | 独立双 UART 电气连线对数 | 帧；逐帧核对字节、顺序、标志、时刻与零丢弃                         |
-| `cpu-irq`                | 处理器数                 | 已处理中断；真实 WAIT/ADDI/IRET/JMP 路径，检查累加器回绕与返回等待 |
-| `sram`                   | SRAM 数                  | 写入/读回对；真实地址、控制与八位数据总线，校验所有读回值          |
-| `pwm`                    | PWM 计数器数             | 计数 tick；检查缓冲占空比、寄存器、电平与 wrap 通知                |
-| `electrical-chain`       | 未知节点数除以 8         | 节点更新；相连电阻链切换末端电阻，逐节点核对闭式电压               |
-| `electrical-independent` | 未知节点数除以 8         | 节点更新；独立分压器切换电阻，与相连网络对照                       |
+| 负载                     | size 含义                | 吞吐单位与验证                                                                                         |
+| ------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `uart`                   | 独立双 UART 电气连线对数 | 帧；逐帧核对字节、顺序、标志、时刻与零丢弃                                                             |
+| `cpu-irq`                | 处理器数                 | 已处理中断；真实 WAIT/ADDI/IRET/JMP 路径，检查累加器回绕与返回等待                                     |
+| `sram`                   | SRAM 数                  | 写入/读回对；真实地址、控制与八位数据总线，校验所有读回值                                              |
+| `pwm`                    | PWM 计数器数             | 计数 tick；检查缓冲占空比、寄存器、电平与 wrap 通知                                                    |
+| `electrical-chain`       | 未知节点数除以 8         | 节点更新；相连电阻链切换末端电阻，逐节点核对闭式电压                                                   |
+| `electrical-independent` | 未知节点数除以 8         | 节点更新；独立分压器切换电阻，与相连网络对照                                                           |
+| `port-model`             | 建模端口数除以 4         | 端口写；`bytes`/`index`/`resistor`/`combineIntents`/`writeIntent` 全走直接后端，按意图形状核对采样电平 |
+| `topology-churn`         | 驱动网络组数除以 2       | 网络更新；VCC 与 GND 经负载连通时每步换拓扑键，校验节点闭式电压与 leaf 电压等于目标节点                |
+| `observer-churn`         | 被观察 state 数除以 2    | 块执行；订阅集合每块迁移，断言 `directStateGuards` 抖动且投递不重不漏                                  |
+| `wide-memory`            | 内存窗口数除以 2         | 访存；`store32`/`load32`/`store16` 混合端序，整块内存镜像对参考模型逐字节校验                          |
+
+板级负载的 `size` 只表达端口数、网络组数、被观察 state 数或内存窗口数，不表达器件实例数：`runDirect` 要求同一块板只有一个 JIT 器件。
 
 默认规模为 1、4、16，每组预热 5 批、测量 100 批。CPU、SRAM 和 PWM 包含公开证据存储或引脚观察器的成本；SRAM 包含宿主总线刺激，UART 包含适配器收集。输出单位不同，不能把各项吞吐直接横向比较，也不能当作完整芯片性能承诺。
 
