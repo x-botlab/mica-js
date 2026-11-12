@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/sdk",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Device and widget author APIs with CLI-managed content builds",
   "license": "MIT",
   "repository": {
