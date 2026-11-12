@@ -1,0 +1,2 @@
+# 基准结果是追加式测量日志，不进版本库
+bench/results.jsonl

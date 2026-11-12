@@ -1,0 +1,1284 @@
+{
+  "kind": "device",
+  "id": "stm32g431rbt6",
+  "version": "0.1.0",
+  "displayName": "STM32G431RBT6",
+  "description": "Arm Cortex-M4F 32 ? MCU?LQFP64?128 KiB Flash / 32 KiB SRAM??JIT ?? Thumb/Thumb-2 ???GPIO?RCC?SysTick?NVIC ? USART1/2/3 ???????",
+  "designatorPrefix": "U",
+  "tags": ["mcu", "arm", "cortex-m4", "stm32", "lqfp64"],
+  "properties": {
+    "firmware": {
+      "type": "bytes",
+      "required": false,
+      "title": "??",
+      "description": "???????? 0x08000000 ?? Flash????? 0 ????? SP?? 1 ????????Thumb ??? 1??",
+      "editor": {
+        "kind": "file"
+      }
+    },
+    "clockFrequency": {
+      "type": "number",
+      "required": false,
+      "default": 16000000,
+      "title": "???? (Hz)",
+      "description": "????????????????SysTick ? USART ????????????? HSI16?????? PLL ?????????",
+      "editor": {
+        "kind": "number",
+        "min": 1000,
+        "max": 170000000,
+        "step": 1
+      }
+    }
+  },
+  "pins": {
+    "VBAT": {
+      "label": "VBAT",
+      "group": "POWER",
+      "description": "LQFP64 ? 1 ????????1.65?3.6 V?RTC ???????? VDD ????????"
+    },
+    "PC13": {
+      "label": "PC13",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 2 ??PC13?FT???? I/O??? WKUP2/RTC_TAMP1/RTC_TS/RTC_OUT1??????? 2 MHz?30 pF????????"
+    },
+    "PC14": {
+      "label": "PC14-OSC32_IN",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 3 ??PC14?FT???? I/O????? OSC32_IN???? EVENTOUT?"
+    },
+    "PC15": {
+      "label": "PC15-OSC32_OUT",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 4 ??PC15?FT???? I/O????? OSC32_OUT???? EVENTOUT?"
+    },
+    "PF0": {
+      "label": "PF0-OSC_IN",
+      "group": "GPIOF",
+      "description": "LQFP64 ? 5 ??PF0?FT_fa????? OSC_IN??? I2C2_SDA/SPI2_NSS/TIM1_CH3N/ADC1_IN10?"
+    },
+    "PF1": {
+      "label": "PF1-OSC_OUT",
+      "group": "GPIOF",
+      "description": "LQFP64 ? 6 ??PF1?FT_a????? OSC_OUT??? SPI2_SCK/ADC2_IN10/COMP3_INM?"
+    },
+    "NRST": {
+      "label": "PG10-NRST",
+      "group": "SYSTEM",
+      "description": "LQFP64 ? 7 ??PG10-NRST??????????????????????????? MCO/EVENTOUT?"
+    },
+    "PC0": {
+      "label": "PC0",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 8 ??PC0?FT_a?LPTIM1_IN1/TIM1_CH1/LPUART1_RX/ADC12_IN6/COMP3_INM?"
+    },
+    "PC1": {
+      "label": "PC1",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 9 ??PC1?TT_a?LPTIM1_OUT/TIM1_CH2/LPUART1_TX/SAI1_SD_A/ADC12_IN7/COMP3_INP?"
+    },
+    "PC2": {
+      "label": "PC2",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 10 ??PC2?FT_a?LPTIM1_IN2/TIM1_CH3/COMP3_OUT/ADC12_IN8?"
+    },
+    "PC3": {
+      "label": "PC3",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 11 ??PC3?FT_a?LPTIM1_ETR/TIM1_CH4/SAI1_D1/TIM1_BKIN2/ADC12_IN9?"
+    },
+    "PA0": {
+      "label": "PA0",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 12 ??PA0?TT_a?TIM2_CH1/USART2_CTS/COMP1_OUT/TIM8_BKIN/ADC12_IN1/COMP1_INM/COMP3_INP/RTC_TAMP2/WKUP1?"
+    },
+    "PA1": {
+      "label": "PA1",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 13 ??PA1?TT_a?RTC_REFIN/TIM2_CH2/USART2_RTS_DE/TIM15_CH1N/ADC12_IN2/COMP1_INP/OPAMP1_VINP/OPAMP3_VINP?"
+    },
+    "PA2": {
+      "label": "PA2",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 14 ??PA2?TT_a?TIM2_CH3/USART2_TX/COMP2_OUT/TIM15_CH1/LPUART1_TX/UCPD1_FRSTX/ADC1_IN3/COMP2_INM/OPAMP1_VOUT/WKUP4?"
+    },
+    "VSS1": {
+      "label": "VSS",
+      "group": "POWER",
+      "description": "LQFP64 ? 15 ??????LQFP64 ? 15 ????? VSS ??????"
+    },
+    "VDD1": {
+      "label": "VDD",
+      "group": "POWER",
+      "description": "LQFP64 ? 16 ???????LQFP64 ? 16 ??1.71?3.6 V??????????????????????????"
+    },
+    "PA3": {
+      "label": "PA3",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 17 ??PA3?TT_a?TIM2_CH4/SAI1_CK1/USART2_RX/TIM15_CH2/LPUART1_RX/ADC1_IN4/COMP2_INP/OPAMP1_VINM?"
+    },
+    "PA4": {
+      "label": "PA4",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 18 ??PA4?TT_a?TIM3_CH2/SPI1_NSS/SPI3_NSS/USART2_CK/SAI1_FS_B/ADC2_IN17/DAC1_OUT1/COMP1_INM?"
+    },
+    "PA5": {
+      "label": "PA5",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 19 ??PA5?TT_a?TIM2_CH1/TIM2_ETR/SPI1_SCK/UCPD1_FRSTX/ADC2_IN13/DAC1_OUT2/COMP2_INM/OPAMP2_VINM?"
+    },
+    "PA6": {
+      "label": "PA6",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 20 ??PA6?TT_a?TIM16_CH1/TIM3_CH1/TIM8_BKIN/SPI1_MISO/TIM1_BKIN/COMP1_OUT/LPUART1_CTS/ADC2_IN3/OPAMP2_VOUT?"
+    },
+    "PA7": {
+      "label": "PA7",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 21 ??PA7?TT_a?TIM17_CH1/TIM3_CH2/TIM8_CH1N/SPI1_MOSI/TIM1_CH1N/COMP2_OUT/UCPD1_FRSTX/ADC2_IN4/COMP2_INP?"
+    },
+    "PC4": {
+      "label": "PC4",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 22 ??PC4?FT_fa?TIM1_ETR/I2C2_SCL/USART1_TX/ADC2_IN5?"
+    },
+    "PC5": {
+      "label": "PC5",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 23 ??PC5?TT_a?TIM15_BKIN/SAI1_D3/TIM1_CH4N/USART1_RX/ADC2_IN11/OPAMP1_VINM/OPAMP2_VINM/WKUP5?"
+    },
+    "PB0": {
+      "label": "PB0",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 24 ??PB0?TT_a?TIM3_CH3/TIM8_CH2N/TIM1_CH2N/UCPD1_FRSTX/ADC1_IN15/COMP4_INP/OPAMP2_VINP/OPAMP3_VINP?"
+    },
+    "PB1": {
+      "label": "PB1",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 25 ??PB1?TT_a?TIM3_CH4/TIM8_CH3N/TIM1_CH3N/COMP4_OUT/LPUART1_RTS_DE/ADC1_IN12/COMP1_INP/OPAMP3_VOUT?"
+    },
+    "PB2": {
+      "label": "PB2",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 26 ??PB2?TT_a?RTC_OUT2/LPTIM1_OUT/I2C3_SMBA/ADC2_IN12/COMP4_INM/OPAMP3_VINM?"
+    },
+    "VSSA": {
+      "label": "VSSA",
+      "group": "POWER",
+      "description": "LQFP64 ? 27 ??????LQFP64 ? 27 ??? VSS ??????ADC/DAC/?????????"
+    },
+    "VREFP": {
+      "label": "VREF+",
+      "group": "POWER",
+      "description": "LQFP64 ? 28 ??ADC/DAC ???????LQFP64 ? 28 ????????? VREFBUF ???"
+    },
+    "VDDA": {
+      "label": "VDDA",
+      "group": "POWER",
+      "description": "LQFP64 ? 29 ???????LQFP64 ? 29 ??1.62?3.6 V?ADC/DAC/???/???????"
+    },
+    "PB10": {
+      "label": "PB10",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 30 ??PB10?TT_a?TIM2_CH3/USART3_TX/LPUART1_RX/TIM1_BKIN/SAI1_SCK_A/OPAMP3_VINM?"
+    },
+    "VSS2": {
+      "label": "VSS",
+      "group": "POWER",
+      "description": "LQFP64 ? 31 ??????LQFP64 ? 31 ????? VSS ??????"
+    },
+    "VDD2": {
+      "label": "VDD",
+      "group": "POWER",
+      "description": "LQFP64 ? 32 ???????LQFP64 ? 32 ??1.71?3.6 V?"
+    },
+    "PB11": {
+      "label": "PB11",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 33 ??PB11?FT_a?TIM2_CH4/USART3_RX/LPUART1_TX/ADC12_IN14?"
+    },
+    "PB12": {
+      "label": "PB12",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 34 ??PB12?FT_a?I2C2_SMBA/SPI2_NSS/TIM1_BKIN/USART3_CK/LPUART1_RTS_DE/ADC1_IN11?"
+    },
+    "PB13": {
+      "label": "PB13",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 35 ??PB13?TT_a?SPI2_SCK/TIM1_CH1N/USART3_CTS/LPUART1_CTS/OPAMP3_VINP?"
+    },
+    "PB14": {
+      "label": "PB14",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 36 ??PB14?TT_a?TIM15_CH1/SPI2_MISO/TIM1_CH2N/USART3_RTS_DE/COMP4_OUT/ADC1_IN5/OPAMP2_VINP?"
+    },
+    "PB15": {
+      "label": "PB15",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 37 ??PB15?FT_a?RTC_REFIN/TIM15_CH2/TIM15_CH1N/COMP3_OUT/TIM1_CH3N/SPI2_MOSI/ADC2_IN15?"
+    },
+    "PC6": {
+      "label": "PC6",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 38 ??PC6?FT?TIM3_CH1/TIM8_CH1/I2S2_MCK/EVENTOUT?"
+    },
+    "PC7": {
+      "label": "PC7",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 39 ??PC7?FT?TIM3_CH2/TIM8_CH2/I2S3_MCK/EVENTOUT?"
+    },
+    "PC8": {
+      "label": "PC8",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 40 ??PC8?FT_f?TIM3_CH3/TIM8_CH3/I2C3_SCL/EVENTOUT?"
+    },
+    "PC9": {
+      "label": "PC9",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 41 ??PC9?FT_f?TIM3_CH4/TIM8_CH4/I2SCKIN/TIM8_BKIN2/I2C3_SDA/EVENTOUT?"
+    },
+    "PA8": {
+      "label": "PA8",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 42 ??PA8?FT_f?MCO/I2C3_SCL/I2C2_SDA/I2S2_MCK/TIM1_CH1/USART1_CK/TIM4_ETR/SAI1_CK2/SAI1_SCK_A?"
+    },
+    "PA9": {
+      "label": "PA9",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 43 ??PA9?FT_fd?I2C3_SMBA/I2C2_SCL/I2S3_MCK/TIM1_CH2/USART1_TX/TIM15_BKIN/TIM2_CH3/SAI1_FS_A/UCPD1_DBCC1?"
+    },
+    "PA10": {
+      "label": "PA10",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 44 ??PA10?FT_da?TIM17_BKIN/USB_CRS_SYNC/I2C2_SMBA/SPI2_MISO/TIM1_CH3/USART1_RX/TIM2_CH4/TIM8_BKIN/SAI1_D1/UCPD1_DBCC2?"
+    },
+    "PA11": {
+      "label": "PA11",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 45 ??PA11?FT_u?SPI2_MOSI/TIM1_CH1N/USART1_CTS/COMP1_OUT/FDCAN1_RX/TIM4_CH1/TIM1_CH4/SAI1_SD_A/USB_DM?"
+    },
+    "PA12": {
+      "label": "PA12",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 46 ??PA12?FT_u?TIM16_CH1/I2SCKIN/TIM1_CH2N/USART1_RTS_DE/COMP2_OUT/FDCAN1_TX/TIM4_CH2/TIM1_ETR/USB_DP?"
+    },
+    "VSS3": {
+      "label": "VSS",
+      "group": "POWER",
+      "description": "LQFP64 ? 47 ??????LQFP64 ? 47 ????? VSS ??????"
+    },
+    "VDD3": {
+      "label": "VDD",
+      "group": "POWER",
+      "description": "LQFP64 ? 48 ???????LQFP64 ? 48 ??1.71?3.6 V?"
+    },
+    "PA13": {
+      "label": "PA13",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 49 ??PA13?FT_f????? SWDIO-JTMS???????? TIM16_CH1N/I2C1_SCL/IR_OUT/USART3_CTS/TIM4_CH3/SAI1_SD_B?"
+    },
+    "PA14": {
+      "label": "PA14",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 50 ??PA14?FT_f????? SWCLK-JTCK???????? LPTIM1_OUT/I2C1_SDA/TIM8_CH2/TIM1_BKIN/USART2_TX/SAI1_FS_B?"
+    },
+    "PA15": {
+      "label": "PA15",
+      "group": "GPIOA",
+      "description": "LQFP64 ? 51 ??PA15?FT_f????? JTDI???????? TIM2_CH1/TIM8_CH1/I2C1_SCL/SPI1_NSS/SPI3_NSS/USART2_RX/TIM1_BKIN?"
+    },
+    "PC10": {
+      "label": "PC10",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 52 ??PC10?FT?TIM8_CH1N/UART4_TX/SPI3_SCK/USART3_TX/EVENTOUT?"
+    },
+    "PC11": {
+      "label": "PC11",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 53 ??PC11?FT_f?TIM8_CH2N/UART4_RX/SPI3_MISO/USART3_RX/I2C3_SDA/EVENTOUT?"
+    },
+    "PC12": {
+      "label": "PC12",
+      "group": "GPIOC",
+      "description": "LQFP64 ? 54 ??PC12?FT?TIM8_CH3N/SPI3_MOSI/USART3_CK/UCPD1_FRSTX/EVENTOUT?"
+    },
+    "PD2": {
+      "label": "PD2",
+      "group": "GPIOD",
+      "description": "LQFP64 ? 55 ??PD2?FT?TIM3_ETR/TIM8_BKIN/EVENTOUT?"
+    },
+    "PB3": {
+      "label": "PB3",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 56 ??PB3?FT????? JTDO-TRACESWO??? TIM2_CH2/TIM4_ETR/USB_CRS_SYNC/TIM8_CH1N/SPI1_SCK/SPI3_SCK/USART2_TX/TIM3_ETR/SAI1_SCK_B?"
+    },
+    "PB4": {
+      "label": "PB4",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 57 ??PB4?FT_c????? JTRST??? TIM16_CH1/TIM3_CH1/TIM8_CH2N/SPI1_MISO/SPI3_MISO/USART2_RX/TIM17_BKIN/SAI1_MCLK_B/UCPD1_CC2?"
+    },
+    "PB5": {
+      "label": "PB5",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 58 ??PB5?FT_f?TIM16_BKIN/TIM3_CH2/TIM8_CH3N/I2C1_SMBA/SPI1_MOSI/SPI3_MOSI/USART2_CK/I2C3_SDA/TIM17_CH1/LPTIM1_IN1/SAI1_SD_B?"
+    },
+    "PB6": {
+      "label": "PB6",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 59 ??PB6?FT_c?TIM16_CH1N/TIM4_CH1/TIM8_CH1/TIM8_ETR/USART1_TX/COMP4_OUT/TIM8_BKIN2/LPTIM1_ETR/SAI1_FS_B/UCPD1_CC1?"
+    },
+    "PB7": {
+      "label": "PB7",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 60 ??PB7?FT_f?TIM17_CH1N/TIM4_CH2/I2C1_SDA/TIM8_BKIN/USART1_RX/COMP3_OUT/TIM3_CH4/LPTIM1_IN2/UART4_CTS/PVD_IN?"
+    },
+    "PB8": {
+      "label": "PB8-BOOT0",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 61 ??PB8?FT_f?????? BOOT0??? TIM16_CH1/TIM4_CH3/SAI1_CK1/I2C1_SCL/USART3_RX/COMP1_OUT/FDCAN1_RX/TIM8_CH2/TIM1_BKIN/SAI1_MCLK_A?"
+    },
+    "PB9": {
+      "label": "PB9",
+      "group": "GPIOB",
+      "description": "LQFP64 ? 62 ??PB9?FT_f?TIM17_CH1/TIM4_CH4/SAI1_D2/I2C1_SDA/IR_OUT/USART3_TX/COMP2_OUT/FDCAN1_TX/TIM8_CH3/TIM1_CH3N/SAI1_FS_A?"
+    },
+    "VSS4": {
+      "label": "VSS",
+      "group": "POWER",
+      "description": "LQFP64 ? 63 ??????LQFP64 ? 63 ????? VSS ??????"
+    },
+    "VDD4": {
+      "label": "VDD",
+      "group": "POWER",
+      "description": "LQFP64 ? 64 ???????LQFP64 ? 64 ??1.71?3.6 V?"
+    }
+  },
+  "symbol": {
+    "bounds": {
+      "x": -340,
+      "y": -322.0,
+      "width": 680,
+      "height": 644.0
+    },
+    "graphics": [
+      {
+        "type": "rect",
+        "x": -300,
+        "y": -322.0,
+        "width": 600,
+        "height": 644.0,
+        "fill": "background"
+      },
+      {
+        "type": "text",
+        "position": [0, -308.0],
+        "text": "STM32G431RBT6",
+        "align": "center",
+        "fontSize": 12
+      },
+      {
+        "type": "line",
+        "from": [-300, -310.0],
+        "to": [-340, -310.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -290.0],
+        "to": [-340, -290.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -270.0],
+        "to": [-340, -270.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -250.0],
+        "to": [-340, -250.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -230.0],
+        "to": [-340, -230.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -210.0],
+        "to": [-340, -210.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -190.0],
+        "to": [-340, -190.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -170.0],
+        "to": [-340, -170.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -150.0],
+        "to": [-340, -150.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -130.0],
+        "to": [-340, -130.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -110.0],
+        "to": [-340, -110.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -90.0],
+        "to": [-340, -90.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -70.0],
+        "to": [-340, -70.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -50.0],
+        "to": [-340, -50.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -30.0],
+        "to": [-340, -30.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, -10.0],
+        "to": [-340, -10.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 10.0],
+        "to": [-340, 10.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 30.0],
+        "to": [-340, 30.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 50.0],
+        "to": [-340, 50.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 70.0],
+        "to": [-340, 70.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 90.0],
+        "to": [-340, 90.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 110.0],
+        "to": [-340, 110.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 130.0],
+        "to": [-340, 130.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 150.0],
+        "to": [-340, 150.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 170.0],
+        "to": [-340, 170.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 190.0],
+        "to": [-340, 190.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 210.0],
+        "to": [-340, 210.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 230.0],
+        "to": [-340, 230.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 250.0],
+        "to": [-340, 250.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 270.0],
+        "to": [-340, 270.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 290.0],
+        "to": [-340, 290.0]
+      },
+      {
+        "type": "line",
+        "from": [-300, 310.0],
+        "to": [-340, 310.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -310.0],
+        "to": [340, -310.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -290.0],
+        "to": [340, -290.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -270.0],
+        "to": [340, -270.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -250.0],
+        "to": [340, -250.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -230.0],
+        "to": [340, -230.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -210.0],
+        "to": [340, -210.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -190.0],
+        "to": [340, -190.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -170.0],
+        "to": [340, -170.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -150.0],
+        "to": [340, -150.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -130.0],
+        "to": [340, -130.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -110.0],
+        "to": [340, -110.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -90.0],
+        "to": [340, -90.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -70.0],
+        "to": [340, -70.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -50.0],
+        "to": [340, -50.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -30.0],
+        "to": [340, -30.0]
+      },
+      {
+        "type": "line",
+        "from": [300, -10.0],
+        "to": [340, -10.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 10.0],
+        "to": [340, 10.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 30.0],
+        "to": [340, 30.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 50.0],
+        "to": [340, 50.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 70.0],
+        "to": [340, 70.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 90.0],
+        "to": [340, 90.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 110.0],
+        "to": [340, 110.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 130.0],
+        "to": [340, 130.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 150.0],
+        "to": [340, 150.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 170.0],
+        "to": [340, 170.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 190.0],
+        "to": [340, 190.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 210.0],
+        "to": [340, 210.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 230.0],
+        "to": [340, 230.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 250.0],
+        "to": [340, 250.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 270.0],
+        "to": [340, 270.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 290.0],
+        "to": [340, 290.0]
+      },
+      {
+        "type": "line",
+        "from": [300, 310.0],
+        "to": [340, 310.0]
+      }
+    ],
+    "pins": {
+      "VBAT": {
+        "position": [-340, -310.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -313.0],
+          "align": "left"
+        }
+      },
+      "PC13": {
+        "position": [-340, -290.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -293.0],
+          "align": "left"
+        }
+      },
+      "PC14": {
+        "position": [-340, -270.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -273.0],
+          "align": "left"
+        }
+      },
+      "PC15": {
+        "position": [-340, -250.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -253.0],
+          "align": "left"
+        }
+      },
+      "PF0": {
+        "position": [-340, -230.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -233.0],
+          "align": "left"
+        }
+      },
+      "PF1": {
+        "position": [-340, -210.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -213.0],
+          "align": "left"
+        }
+      },
+      "NRST": {
+        "position": [-340, -190.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -193.0],
+          "align": "left"
+        }
+      },
+      "PC0": {
+        "position": [-340, -170.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -173.0],
+          "align": "left"
+        }
+      },
+      "PC1": {
+        "position": [-340, -150.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -153.0],
+          "align": "left"
+        }
+      },
+      "PC2": {
+        "position": [-340, -130.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -133.0],
+          "align": "left"
+        }
+      },
+      "PC3": {
+        "position": [-340, -110.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -113.0],
+          "align": "left"
+        }
+      },
+      "PA0": {
+        "position": [-340, -90.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -93.0],
+          "align": "left"
+        }
+      },
+      "PA1": {
+        "position": [-340, -70.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -73.0],
+          "align": "left"
+        }
+      },
+      "PA2": {
+        "position": [-340, -50.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -53.0],
+          "align": "left"
+        }
+      },
+      "VSS1": {
+        "position": [-340, -30.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -33.0],
+          "align": "left"
+        }
+      },
+      "VDD1": {
+        "position": [-340, -10.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, -13.0],
+          "align": "left"
+        }
+      },
+      "PA3": {
+        "position": [-340, 10.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 7.0],
+          "align": "left"
+        }
+      },
+      "PA4": {
+        "position": [-340, 30.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 27.0],
+          "align": "left"
+        }
+      },
+      "PA5": {
+        "position": [-340, 50.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 47.0],
+          "align": "left"
+        }
+      },
+      "PA6": {
+        "position": [-340, 70.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 67.0],
+          "align": "left"
+        }
+      },
+      "PA7": {
+        "position": [-340, 90.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 87.0],
+          "align": "left"
+        }
+      },
+      "PC4": {
+        "position": [-340, 110.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 107.0],
+          "align": "left"
+        }
+      },
+      "PC5": {
+        "position": [-340, 130.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 127.0],
+          "align": "left"
+        }
+      },
+      "PB0": {
+        "position": [-340, 150.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 147.0],
+          "align": "left"
+        }
+      },
+      "PB1": {
+        "position": [-340, 170.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 167.0],
+          "align": "left"
+        }
+      },
+      "PB2": {
+        "position": [-340, 190.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 187.0],
+          "align": "left"
+        }
+      },
+      "VSSA": {
+        "position": [-340, 210.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 207.0],
+          "align": "left"
+        }
+      },
+      "VREFP": {
+        "position": [-340, 230.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 227.0],
+          "align": "left"
+        }
+      },
+      "VDDA": {
+        "position": [-340, 250.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 247.0],
+          "align": "left"
+        }
+      },
+      "PB10": {
+        "position": [-340, 270.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 267.0],
+          "align": "left"
+        }
+      },
+      "VSS2": {
+        "position": [-340, 290.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 287.0],
+          "align": "left"
+        }
+      },
+      "VDD2": {
+        "position": [-340, 310.0],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-294, 307.0],
+          "align": "left"
+        }
+      },
+      "PB11": {
+        "position": [340, -310.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -313.0],
+          "align": "right"
+        }
+      },
+      "PB12": {
+        "position": [340, -290.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -293.0],
+          "align": "right"
+        }
+      },
+      "PB13": {
+        "position": [340, -270.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -273.0],
+          "align": "right"
+        }
+      },
+      "PB14": {
+        "position": [340, -250.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -253.0],
+          "align": "right"
+        }
+      },
+      "PB15": {
+        "position": [340, -230.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -233.0],
+          "align": "right"
+        }
+      },
+      "PC6": {
+        "position": [340, -210.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -213.0],
+          "align": "right"
+        }
+      },
+      "PC7": {
+        "position": [340, -190.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -193.0],
+          "align": "right"
+        }
+      },
+      "PC8": {
+        "position": [340, -170.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -173.0],
+          "align": "right"
+        }
+      },
+      "PC9": {
+        "position": [340, -150.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -153.0],
+          "align": "right"
+        }
+      },
+      "PA8": {
+        "position": [340, -130.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -133.0],
+          "align": "right"
+        }
+      },
+      "PA9": {
+        "position": [340, -110.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -113.0],
+          "align": "right"
+        }
+      },
+      "PA10": {
+        "position": [340, -90.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -93.0],
+          "align": "right"
+        }
+      },
+      "PA11": {
+        "position": [340, -70.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -73.0],
+          "align": "right"
+        }
+      },
+      "PA12": {
+        "position": [340, -50.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -53.0],
+          "align": "right"
+        }
+      },
+      "VSS3": {
+        "position": [340, -30.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -33.0],
+          "align": "right"
+        }
+      },
+      "VDD3": {
+        "position": [340, -10.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, -13.0],
+          "align": "right"
+        }
+      },
+      "PA13": {
+        "position": [340, 10.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 7.0],
+          "align": "right"
+        }
+      },
+      "PA14": {
+        "position": [340, 30.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 27.0],
+          "align": "right"
+        }
+      },
+      "PA15": {
+        "position": [340, 50.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 47.0],
+          "align": "right"
+        }
+      },
+      "PC10": {
+        "position": [340, 70.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 67.0],
+          "align": "right"
+        }
+      },
+      "PC11": {
+        "position": [340, 90.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 87.0],
+          "align": "right"
+        }
+      },
+      "PC12": {
+        "position": [340, 110.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 107.0],
+          "align": "right"
+        }
+      },
+      "PD2": {
+        "position": [340, 130.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 127.0],
+          "align": "right"
+        }
+      },
+      "PB3": {
+        "position": [340, 150.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 147.0],
+          "align": "right"
+        }
+      },
+      "PB4": {
+        "position": [340, 170.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 167.0],
+          "align": "right"
+        }
+      },
+      "PB5": {
+        "position": [340, 190.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 187.0],
+          "align": "right"
+        }
+      },
+      "PB6": {
+        "position": [340, 210.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 207.0],
+          "align": "right"
+        }
+      },
+      "PB7": {
+        "position": [340, 230.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 227.0],
+          "align": "right"
+        }
+      },
+      "PB8": {
+        "position": [340, 250.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 247.0],
+          "align": "right"
+        }
+      },
+      "PB9": {
+        "position": [340, 270.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 267.0],
+          "align": "right"
+        }
+      },
+      "VSS4": {
+        "position": [340, 290.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 287.0],
+          "align": "right"
+        }
+      },
+      "VDD4": {
+        "position": [340, 310.0],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [294, 307.0],
+          "align": "right"
+        }
+      }
+    },
+    "annotations": {
+      "designator": {
+        "position": [294, -308.0],
+        "align": "right"
+      }
+    }
+  }
+}
