@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/scene-3d",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mica 3D scene documents, physics entities, sensors and deterministic runtime",
   "license": "MIT",
   "repository": {

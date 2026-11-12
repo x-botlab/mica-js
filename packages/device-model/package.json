@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/device-model",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Device IR contracts, validation and typed construction",
   "license": "MIT",
   "repository": {
