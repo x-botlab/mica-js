@@ -18,6 +18,84 @@ import { bytesView, finite } from '../values';
 /** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
 const DIRECT_SHARD_SIZE = 8;
 
+/**
+ * Deterministic direct-execution counters, kept on the `Jit` itself so `Board.jits` stays the
+ * only diagnostic surface: the benchmark reads them instead of patching runtime internals.
+ */
+export interface DirectJitStats {
+  /** Successful program builds; one per compile, so observer churn must not move it. */
+  directCompiles: number;
+  directCalls: number;
+  directFallbacks: number;
+  directDeadlines: number;
+  directStopped: number;
+}
+
+type CountedJit = Jit & { directStats?: DirectJitStats };
+
+/** Word masks the compiled blocks test at entry; mutated in place, so programs stay valid. */
+interface DirectBarriers {
+  readonly stateMask: number[];
+  readonly memoryMask: number[];
+  /** Bank layout of the current program; absent until one has been compiled. */
+  stateIndex?: ReadonlyMap<string, number>;
+  memoryIndex?: ReadonlyMap<string, number>;
+}
+
+/** Frame fields `compileDirectJit` reads but `DirectJitFrame` does not declare. */
+interface BarrierFrame extends DirectJitFrame {
+  blockedStates?: number[];
+  blockedMemories?: number[];
+}
+
+const barriers = new WeakMap<Jit, DirectBarriers>();
+
+function directBarriers(jit: Jit): DirectBarriers {
+  let entry = barriers.get(jit);
+  if (entry === undefined) {
+    entry = { stateMask: [], memoryMask: [] };
+    barriers.set(jit, entry);
+  }
+  return entry;
+}
+
+function directStats(jit: Jit): DirectJitStats {
+  const counted = jit as CountedJit;
+  return (counted.directStats ??= {
+    directCompiles: 0,
+    directCalls: 0,
+    directFallbacks: 0,
+    directDeadlines: 0,
+    directStopped: 0,
+  });
+}
+
+/** Direct-execution counters of one JIT; absent until the runtime attempted a direct run. */
+export function directJitStats(jit: Jit): DirectJitStats | undefined {
+  return (jit as CountedJit).directStats;
+}
+
+/** Publish the current guard sets into the masks the compiled blocks test at entry. */
+function syncDirectBarriers(jit: Jit): void {
+  const entry = directBarriers(jit);
+  const { stateIndex, memoryIndex } = entry;
+  if (stateIndex === undefined || memoryIndex === undefined) return;
+  const fill = (
+    mask: number[],
+    index: ReadonlyMap<string, number>,
+    guards: ReadonlySet<string>,
+  ): void => {
+    mask.fill(0);
+    for (const name of guards) {
+      const slot = index.get(name);
+      if (slot === undefined) continue;
+      mask[slot >>> 5] = (mask[slot >>> 5] ?? 0) | (1 << (slot & 31));
+    }
+  };
+  fill(entry.stateMask, stateIndex, jit.directStateGuards);
+  fill(entry.memoryMask, memoryIndex, jit.directMemoryGuards);
+}
+
 /** Scheduling capabilities needed by JIT execution; all queues remain board-owned. */
 export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
   time: number;
@@ -66,8 +144,10 @@ function refreshDirectGuards(jit: Jit, hookReads?: Dependencies): void {
     changed = true;
   }
   if (changed) {
-    jit.direct = undefined;
-    jit.directRevision = -1;
+    // Guards no longer invalidate the program: the compiled blocks test these masks at entry,
+    // so a membership change only flips individual blocks between direct and interpreted.
+    syncDirectBarriers(jit);
+    // A block that fell back while it was blocked may be eligible again.
     jit.directSkip = undefined;
   }
 }
@@ -125,6 +205,7 @@ function createDirectFrame(
   stateNames: readonly string[],
   memoryNames: readonly string[],
   program: DirectJitProgram,
+  barrier: DirectBarriers,
 ): DirectJitFrame {
   const frame: DirectJitFrame = {
     states: new Array(stateNames.length),
@@ -137,6 +218,9 @@ function createDirectFrame(
     resume: 0,
   };
   (frame as { host?: DirectJitHost }).host = directHost(board, instance, frame);
+  // Both masks are shared with every frame of this JIT and refreshed in place on guard churn.
+  (frame as BarrierFrame).blockedStates = barrier.stateMask;
+  (frame as BarrierFrame).blockedMemories = barrier.memoryMask;
   return frame;
 }
 function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): boolean {
@@ -158,11 +242,10 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
         jit.directPrograms.clear();
         jit.directProgramRevision = jit.revision;
       }
-      const key = JSON.stringify([
-        [...jit.directStateGuards].sort(),
-        [...jit.directMemoryGuards].sort(),
-        [...jit.delays.keys()].sort((left, right) => left - right),
-      ]);
+      // Guards stay out of the key: blocks test the barriers at entry, so one program serves
+      // every observer set. Only the delay fold changes the emitted bodies within a revision,
+      // and `directProgramRevision` clears this cache whenever a block is translated.
+      const key = JSON.stringify([...jit.delays.keys()].sort((left, right) => left - right));
       const cached = jit.directPrograms.get(key);
       if (cached) {
         jit.direct = cached;
@@ -188,14 +271,19 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
           states,
           memories,
           pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
-          blockedStates: jit.directStateGuards,
-          blockedMemories: jit.directMemoryGuards,
           host: true,
           split: true,
           shardSize: DIRECT_SHARD_SIZE,
           delayLoops,
         });
         jit.directRevision = jit.revision;
+        if (program) directStats(jit).directCompiles++;
+        const barrier = directBarriers(jit);
+        barrier.stateIndex = states;
+        barrier.memoryIndex = memories;
+        barrier.stateMask.length = Math.ceil(stateNames.length / 32);
+        barrier.memoryMask.length = Math.ceil(memoryNames.length / 32);
+        syncDirectBarriers(jit);
         jit.direct = program
           ? {
               program,
@@ -205,16 +293,14 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
                 (name) => [name, memories.get(name)!] as const,
               ),
               revision: jit.revision,
-              frame: createDirectFrame(board, instance, stateNames, memoryNames, program),
+              frame: createDirectFrame(board, instance, stateNames, memoryNames, program, barrier),
             }
           : undefined;
         // A declined program must not be cached, or the key would keep answering `undefined`.
         if (!jit.direct) jit.directPrograms.delete(key);
-        else {
-          if (jit.directPrograms.size >= 8)
-            jit.directPrograms.delete(jit.directPrograms.keys().next().value!);
-          jit.directPrograms.set(key, jit.direct);
-        }
+        // The key no longer carries the guard set, so one program covers every observer set:
+        // the eight-slot cap (and its eviction churn) has nothing left to bound.
+        else jit.directPrograms.set(key, jit.direct);
       }
     }
     if (!jit.direct) return false;
@@ -229,6 +315,8 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   const start = board.time;
   let reason: ReturnType<DirectJitProgram['run']>;
   let wrote = false;
+  const stats = directStats(jit);
+  stats.directCalls++;
   try {
     // Resource barriers exclude intermediate observers; real events retain exact deadlines.
     reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
@@ -250,9 +338,11 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   // instruction on the interpreter path, whose own boundary converges the frame instead.
   if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
   if (reason === 'fallback') {
+    stats.directFallbacks++;
     jit.directSkip = finite(instance.states.get(jit.options.pc), 'pc');
     if (board.time === start && board.time < board.executionEnd) return false;
   } else if (reason === 'stopped') {
+    stats.directStopped++;
     jit.stopped = true;
     return true;
   } else if (reason === 'invalidated') {
@@ -261,7 +351,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
       jit.direct = undefined;
       jit.directRevision = -1;
     }
-  }
+  } else stats.directDeadlines++;
   if (frame.resume && frame.due > board.time)
     board.events.push(frame.due, () => board.queueJit(jit));
   else board.queueJit(jit);

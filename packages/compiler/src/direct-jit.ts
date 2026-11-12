@@ -250,8 +250,15 @@ export function compileDirectJit(
   });
 }
 
+/**
+ * `BS` / `BM` are the runtime write barriers: word masks of the state and memory slots the
+ * simulator currently observes. They stay outside `DirectJitFrame` because the runtime
+ * mutates them in place, so one compiled program stays valid across observer changes. A frame
+ * built without them (compiler tests) yields an empty mask and never blocks.
+ */
 const prelude = (slots: readonly string[]): string[] => [
   'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty;',
+  'const BS = F.blockedStates ?? [], BM = F.blockedMemories ?? [];',
   ...(slots.length ? [`let ${slots.join(',')};`] : []),
 ];
 
@@ -263,8 +270,7 @@ function monolithicProgram(
 ): string[] {
   const lines = [
     'function run(F, deadline) {',
-    'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty;',
-    ...(registers.length ? [`let ${registers.join(',')};`] : []),
+    ...prelude(registers),
     'while (true) {',
     'if (F.time >= deadline) return "deadline";',
     'if (F.resume !== 0) {',
@@ -287,6 +293,7 @@ function monolithicProgram(
   entries.forEach((entry, index) => {
     lines.push(
       `case ${entry.pc}: {`,
+      ...entry.barrier,
       ...entry.guard,
       `S[${binding.pc.index}] = ${entry.nextPc};`,
       dirty('SD', binding.pc.index),
@@ -351,6 +358,7 @@ function shardProgram(
     shard.entries.forEach((entry, offset) => {
       lines.push(
         `case ${entry.pc}: {`,
+        ...entry.barrier,
         ...entry.guard,
         `S[${binding.pc.index}] = ${entry.nextPc};`,
         dirty('SD', binding.pc.index),
@@ -489,6 +497,8 @@ class Instruction {
   size = 0;
   /** Emitted before the implicit PC write; a declared busy-wait head folds rounds here. */
   readonly guard: string[] = [];
+  /** Entry test against the runtime write barrier; empty when the block writes no slot. */
+  barrier: string[] = [];
   prefix: string[] = [];
   suffix: string[] = [];
   /** Numeric instruction key; shards sort by it while `pc` holds the emitted literal. */
@@ -504,6 +514,9 @@ class Instruction {
   private readonly values = new Map<number, string>();
   private readonly locals = new Map<number, string>();
   private readonly literals = new Map<number, number | boolean>();
+  /** Slots this block writes; the runtime barrier is emitted from these indices. */
+  private readonly writtenStates = new Set<number>();
+  private readonly writtenMemories = new Set<number>();
   /** Results whose type is an object value; identity comparison would change their meaning. */
   private readonly references = new Set<number>();
   private labels = 0;
@@ -570,11 +583,35 @@ class Instruction {
     }
     if (!this.terminated && !this.stop) throw unsupported;
     this.compact();
-    this.size = [...this.guard, ...this.prefix, ...this.suffix].reduce(
+    this.barrier = this.emitBarrier();
+    this.size = [...this.barrier, ...this.guard, ...this.prefix, ...this.suffix].reduce(
       (sum, line) => sum + line.length,
       0,
     );
     return this;
+  }
+
+  /**
+   * Runtime write barrier. A block that may write a state or memory the runtime currently
+   * observes returns `fallback` before it touches any slot, so the interpreter performs that
+   * instruction and observers still see every write. Testing the masks at entry — instead of
+   * declining the block at compile time — keeps one program valid across observer changes.
+   * Resumed instructions keep their old behaviour: a continuation always completes its
+   * suffix, because the interpreter can no longer replay it from that PC.
+   */
+  private emitBarrier(): string[] {
+    const lines: string[] = [];
+    const emit = (bank: 'BS' | 'BM', indices: ReadonlySet<number>): void => {
+      if (!indices.size) return;
+      const words = new Map<number, number>();
+      for (const index of indices)
+        words.set(index >>> 5, (words.get(index >>> 5) ?? 0) | (1 << (index & 31)));
+      for (const [word, mask] of [...words].sort(([left], [right]) => left - right))
+        lines.push(`if (${bank}[${word}] & ${mask >>> 0}) return "fallback";`);
+    };
+    emit('BS', this.writtenStates);
+    emit('BM', this.writtenMemories);
+    return lines;
   }
 
   private get terminated(): boolean {
@@ -722,6 +759,7 @@ class Instruction {
     const index = this.binding.states.get(name);
     if (!validIndex(index) || (write && this.binding.blockedStates?.has(name))) throw unsupported;
     (write ? this.writeStates : this.readStates).add(name);
+    if (write) this.writtenStates.add(index);
     return index;
   }
 
@@ -733,6 +771,7 @@ class Instruction {
     // Only stores are write barriers; every load kind, including the wide ones, stays eligible.
     if (!validIndex(index) || (write && this.binding.blockedMemories?.has(name))) throw unsupported;
     (write ? this.writeMemories : this.readMemories).add(name);
+    if (write) this.writtenMemories.add(index);
     return index;
   }
 

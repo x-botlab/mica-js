@@ -2379,3 +2379,50 @@ test('a statement-position yield at the body tail terminates the instruction', (
   afterElapse.operations.push({ kind: 'yield', value: afterElapse.constant(1) });
   assert.equal(compileDirectJit([afterElapse.instruction(0, 99)], binding), undefined);
 });
+
+test('runtime write barriers keep one program valid while the observed slots move', () => {
+  const b = builder();
+  b.write('x', b.constant(5));
+  b.operations.push({
+    kind: 'store8',
+    memory: ram,
+    offset: b.constant(0),
+    value: b.constant(9),
+  });
+  b.delay(1);
+  const instructions = [b.instruction(0, 1)];
+  // 写成块入口的一条位掩码测试；没有运行期栅栏字段的帧填入空掩码，行为与从前一致。
+  const monolithic = compileDirectJit(instructions, binding);
+  assert(monolithic);
+  assert.match(generated(monolithic), /if \(BS\[0\] & 3\) return "fallback";/);
+  for (const options of [binding, { ...binding, split: true, shardSlotLimit: 0, shardSize: 4 }]) {
+    const program = compileDirectJit(instructions, options);
+    assert(program);
+    // 编译期不再丢弃块：被观察的写入留在程序里，由块入口的运行期判定拦截。
+    assert.deepEqual(new Set(program.writeStates), new Set(['pc', 'x']));
+    assert.deepEqual(program.writeMemories, ['ram']);
+    const f = frame(program);
+    f.blockedStates = [1 << 1];
+    f.blockedMemories = [0];
+    assert.equal(program.run(f, 10), 'fallback');
+    assert.equal(f.states[0], 0, 'a blocked block leaves the PC untouched');
+    assert.equal(f.states[1], 1, 'and does not write the observed state');
+    assert.equal(f.time, 0, 'nor advance time');
+    assert.deepEqual(f.stateDirty, [0]);
+    assert.deepEqual(f.memoryDirty, [0]);
+    // 被观察的 memory 同样是块入口条件，而不是整块被拒。
+    f.blockedStates = [0];
+    f.blockedMemories = [1];
+    assert.equal(program.run(f, 10), 'fallback');
+    assert.equal(f.states[0], 0);
+    assert.deepEqual(f.memoryDirty, [0]);
+    // 观察者集合清空后同一份程序继续执行：没有任何重新编译。
+    f.blockedMemories = [0];
+    assert.equal(program.run(f, 10), 'fallback');
+    assert.equal(f.states[0], 1);
+    assert.equal(f.states[1], 5);
+    assert.equal(f.time, 1);
+    assert.deepEqual(f.memoryDirty, [1]);
+    assert.equal(f.memories[0][0], 9);
+  }
+});

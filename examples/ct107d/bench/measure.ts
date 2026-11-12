@@ -43,16 +43,16 @@ interface ElectricalNetwork {
   readonly stats: ElectricalStats;
 }
 
-interface DirectProgram {
-  run(frame: unknown, deadline: number): string;
-}
-
-interface DirectExecution {
-  program: DirectProgram;
+/** Deterministic counters the runtime keeps on each JIT; no runtime patching required. */
+interface DirectStats {
+  readonly directCompiles: number;
+  readonly directCalls: number;
+  readonly directFallbacks: number;
 }
 
 interface JitLike {
-  readonly directPrograms: Map<string, DirectExecution | undefined>;
+  readonly directPrograms: ReadonlyMap<string, unknown>;
+  readonly directStats?: DirectStats;
 }
 
 /** 运行时内部结构：`Board` 只公开 `runUntil`，其余字段按现有实现读取。 */
@@ -142,8 +142,16 @@ function createProbe(board: unknown): Probe {
   };
   const restores: (() => void)[] = [];
   let active = false;
-  let compiles = 0;
-  let instrumented = false;
+  /** Counter totals sampled when the window opens; `directCalls` stays window-scoped. */
+  let directBaseline = 0;
+  let fallbackBaseline = 0;
+
+  /** Every JIT that ran the direct backend; the counters appear with its first direct run. */
+  const directJits = (): JitLike[] =>
+    (runtime.jits ?? []).filter((jit) => jit.directStats !== undefined);
+
+  const totalDirect = (field: 'directCalls' | 'directFallbacks'): number =>
+    directJits().reduce((sum, jit) => sum + (jit.directStats?.[field] ?? 0), 0);
 
   /** Last payload per topic: the message count may coalesce without losing the final value. */
   const finals = new Map<string, string>();
@@ -211,51 +219,11 @@ function createProbe(board: unknown): Probe {
     }
   }
 
-  for (const jit of runtime.jits ?? []) {
-    const programs = jit.directPrograms;
-
-    if (!(programs instanceof Map)) continue;
-
-    const set = programs.set.bind(programs);
-    const mutable = programs as Map<string, DirectExecution | undefined>;
-
-    mutable.set = (key: string, execution: DirectExecution | undefined) => {
-      if (execution !== undefined) {
-        compiles++;
-        // 直接程序本身是冻结的，运行时持有的执行壳不是：换掉 `program` 即可统计调用与回退原因。
-        try {
-          const program = execution.program;
-          const run = program.run.bind(program);
-
-          (execution as { program: DirectProgram }).program = {
-            ...program,
-            run(frame: unknown, deadline: number) {
-              const reason = run(frame, deadline);
-
-              if (active) {
-                counters.directCalls++;
-                if (reason === 'fallback') counters.directFallbacks++;
-              }
-
-              return reason;
-            },
-          };
-          instrumented = true;
-        } catch {
-          // 结构变化时放弃直接 JIT 计数，其余指标照常输出。
-        }
-      }
-
-      return set(key, execution);
-    };
-    restores.push(() => {
-      delete (mutable as Partial<Map<string, DirectExecution | undefined>>).set;
-    });
-  }
-
   return {
     begin() {
       active = true;
+      directBaseline = totalDirect('directCalls');
+      fallbackBaseline = totalDirect('directFallbacks');
     },
     end() {
       active = false;
@@ -265,11 +233,18 @@ function createProbe(board: unknown): Probe {
 
       for (const jit of runtime.jits ?? []) directPrograms += jit.directPrograms.size;
 
+      // `compileDirectJit` 整轮累加（编译只在装配与预热期发生），调用与回退取窗口增量。
+      counters.directCalls = totalDirect('directCalls') - directBaseline;
+      counters.directFallbacks = totalDirect('directFallbacks') - fallbackBaseline;
+
       return {
         counters: { ...counters },
-        compileDirectJit: compiles,
+        compileDirectJit: directJits().reduce(
+          (sum, jit) => sum + (jit.directStats?.directCompiles ?? 0),
+          0,
+        ),
         directPrograms,
-        direct: instrumented && counters.directCalls > 0,
+        direct: directJits().length > 0 && counters.directCalls > 0,
         digest: `sha256:${hasher.digest('hex').slice(0, 16)}`,
         finalDigest: `sha256:${createHash('sha256')
           .update(
