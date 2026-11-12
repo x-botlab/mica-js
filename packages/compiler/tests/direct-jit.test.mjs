@@ -2242,3 +2242,140 @@ test('shard size groups instructions into contiguous range dispatches', () => {
   assert.equal(pair.left.frame.states[1], pair.right.frame.states[1]);
   assert(pair.left.frame.states[1] > 0);
 });
+
+test('byte literals and indexing stay direct and match compileBody', () => {
+  const b = builder();
+  const literal = b.value(
+    { kind: 'constant', constant: { kind: 'bytes', value: [0x41, 0x42, 0x43] } },
+    'bytes',
+  );
+  const built = b.value(
+    { kind: 'bytes', elements: [b.constant(7), b.read('y'), b.constant(255)] },
+    'bytes',
+  );
+  b.write('x', b.value({ kind: 'index', value: literal, index: b.constant(1) }));
+  b.write('marker', b.value({ kind: 'index', value: built, index: b.read('offset') }));
+  b.operations.push({ kind: 'send', channel: 'out', value: built });
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, hostBinding);
+  assert(program, 'bytes and index must not disqualify the block');
+  const source = generated(program);
+  assert.match(source, /H\.createBytes\(C\[\d+\]\)/);
+  assert.match(source, /H\.createBytes\(\[v\d+,v\d+,v\d+\]\)/);
+  assert.match(source, /H\.readIndex\(v\d+,v\d+\)/);
+  assert.doesNotMatch(source, /65|66|67/);
+  const states = [0, 0, 3, true, 2, 0];
+  const f = frame(program, states);
+  const log = hostRecorder(() => f.time);
+  f.host = log;
+  const reference = generic(instructions, f.states, f.memories, (machine) =>
+    hostRecorder(() => machine.time),
+  );
+  assert.equal(program.run(f, 5), reference.run(5));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.states[1], 0x42);
+  assert.equal(f.states[5], 255);
+  assert.deepEqual(log.entries, reference.log);
+  const sent = log.entries[0][2];
+  assert(sent instanceof Uint8Array, 'bytes must materialise as a Uint8Array');
+  assert.deepEqual(Array.from(sent), [7, 3, 255]);
+  const pair = duet(instructions, { binding: hostBinding, host: true, states });
+  assert.equal(pair.run(5), 'fallback');
+  assert.deepEqual(pair.left.frame.states, pair.right.frame.states);
+});
+
+test('byte elements and indices keep host validation order and messages', () => {
+  for (const [element, error, message] of [
+    [300, RangeError, /Byte value must be in \[0, 255\]/],
+    [1.5, TypeError, /Byte value must be an integer number/],
+  ]) {
+    const b = builder();
+    const built = b.value({ kind: 'bytes', elements: [b.constant(1), b.read('y')] }, 'bytes');
+    b.write('x', b.value({ kind: 'index', value: built, index: b.constant(0) }));
+    b.delay(1);
+    const instructions = [b.instruction(0, 99)];
+    const program = compileDirectJit(instructions, binding);
+    assert(program, String(element));
+    const capture = (run) => {
+      try {
+        run();
+        return null;
+      } catch (thrown) {
+        return thrown;
+      }
+    };
+    const f = frame(program, [0, 0, element, true, 0, 0]);
+    const reference = generic(instructions, f.states, f.memories);
+    const direct = capture(() => program.run(f, 5));
+    const expected = capture(() => reference.run(5));
+    assert(direct instanceof error, String(element));
+    assert.match(direct.message, message);
+    assert.equal(direct.constructor, expected.constructor);
+    assert.equal(direct.message, expected.message);
+  }
+  const b = builder();
+  const outOfRange = b.value(
+    { kind: 'constant', constant: { kind: 'bytes', value: [1, 300] } },
+    'bytes',
+  );
+  b.write('x', b.value({ kind: 'index', value: outOfRange, index: b.constant(0) }));
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  // The generic backend materialises literals while compiling the body, so an invalid
+  // element must keep declining compilation instead of failing on the first execution.
+  assert.equal(compileDirectJit(instructions, binding), undefined);
+  assert.throws(() => compileBody(instructions[0].body), /Byte value must be in \[0, 255\]/);
+});
+
+test('a value comparison keeps byte content equality and intent identity direct', () => {
+  const b = builder();
+  const left = b.value({ kind: 'bytes', elements: [b.constant(1), b.constant(2)] }, 'bytes');
+  const right = b.value({ kind: 'bytes', elements: [b.constant(1), b.constant(2)] }, 'bytes');
+  const same = b.value({ kind: 'binary', operator: 'equal', left, right }, 'bool');
+  const different = b.value({ kind: 'binary', operator: 'notEqual', left, right }, 'bool');
+  b.write('flag', same);
+  b.write('marker', different);
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  assert(program);
+  assert.match(generated(program), /H\.equalValues\(v\d+,v\d+\)/);
+  assert.match(generated(program), /!H\.equalValues\(v\d+,v\d+\)/);
+  const f = frame(program, [0, 0, 0, true, 0, 0]);
+  const reference = generic(instructions, f.states, f.memories);
+  assert.equal(program.run(f, 5), reference.run(5));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.states[3], true);
+  assert.equal(f.states[5], false);
+});
+
+test('a statement-position yield at the body tail terminates the instruction', () => {
+  const b = builder();
+  const value = b.constant(5);
+  b.write('x', value);
+  b.operations.push({ kind: 'yield', value });
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  assert(program, 'a bare tail yield must not disqualify the block');
+  const source = generated(program);
+  assert.doesNotMatch(source, /F\.resume = 1/);
+  const f = frame(program);
+  assert.equal(program.run(f, 5), 'fallback');
+  assert.equal(f.states[0], 99);
+  assert.equal(f.states[1], 5);
+  const pair = duet(instructions);
+  assert.equal(pair.run(5), 'fallback');
+  // Model validation rejects the shape today, so the interpreter only defines an error.
+  assert.throws(() => compileBody(instructions[0].body), /outside a value region/);
+  const trailing = builder();
+  const earlier = trailing.constant(1);
+  trailing.operations.push({ kind: 'yield', value: earlier });
+  trailing.write('x', trailing.constant(2));
+  trailing.delay(1);
+  assert.equal(compileDirectJit([trailing.instruction(0, 99)], binding), undefined);
+  const afterElapse = builder();
+  afterElapse.delay(1);
+  afterElapse.operations.push({ kind: 'yield', value: afterElapse.constant(1) });
+  assert.equal(compileDirectJit([afterElapse.instruction(0, 99)], binding), undefined);
+});

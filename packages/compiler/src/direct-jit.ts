@@ -18,8 +18,10 @@ import {
   checkDuration,
   checkPc,
   combineIntents,
+  createBytes,
   equalValues,
   nonNull,
+  readIndex,
 } from './values.js';
 
 const binary: Partial<Record<BinaryOperator, string>> = {
@@ -72,11 +74,19 @@ const wideResults = new Set([
   'readSample',
   'resistor',
   'combineIntents',
+  'bytes',
+  // A string result is only produced by indexing a string, which stays a plain slot value.
+  'index',
   // A wide select keeps its branches in one slot and never enters the state bank, so a
   // pin-intent choice such as `select(level, [resistor(...)], [])` stays direct.
   'select',
   'match',
 ]);
+/**
+ * Result types whose runtime value is an object, so `===` is not the host's value equality.
+ * Bytes compare element by element in `equalValues`, and intents compare by branch content.
+ */
+const referenceResults = new Set(['bytes', 'record', 'sample', 'intent', 'optional']);
 /** Operations admitted only when the runtime supplied a direct host for the frame. */
 const hosted = new Set([
   'send',
@@ -147,8 +157,10 @@ const helpers = Object.freeze({
   checkDuration,
   checkPc,
   combineIntents,
+  createBytes,
   equalValues,
   nonNull,
+  readIndex,
   offset,
   byte,
   load16,
@@ -492,6 +504,8 @@ class Instruction {
   private readonly values = new Map<number, string>();
   private readonly locals = new Map<number, string>();
   private readonly literals = new Map<number, number | boolean>();
+  /** Results whose type is an object value; identity comparison would change their meaning. */
+  private readonly references = new Set<number>();
   private labels = 0;
 
   constructor(
@@ -541,6 +555,14 @@ class Instruction {
         terminal = true;
       } else if (operation.kind === 'stop') {
         this.stop = true;
+        terminal = true;
+      } else if (operation.kind === 'yield') {
+        // A bare yield carries no result. Model validation rejects it today, so only the
+        // tail-of-body shape is admitted: any later operation is dead code and declines the
+        // whole block. Treating it as a zero-duration exit reuses the `elapse 0` path, which
+        // advances no time and needs no continuation slot.
+        if (this.terminated) throw unsupported;
+        this.terminate({ value: '0', zero: true, dynamic: false });
         terminal = true;
       } else {
         this.operation(operation, output);
@@ -849,11 +871,13 @@ class Instruction {
       if (kind !== 'number' && kind !== 'bool') {
         const allowed =
           wideResults.has(operation.kind) ||
-          (operation.kind === 'constant' && (kind === 'string' || kind === 'enum'));
+          (operation.kind === 'constant' &&
+            (kind === 'string' || kind === 'enum' || kind === 'bytes'));
         if (!allowed) throw unsupported;
       }
       result = this.slot();
       this.values.set(operation.result, result);
+      if (referenceResults.has(kind)) this.references.add(operation.result);
     }
     const assign = (expression: string): void => {
       lines.push(`${result!} = ${expression};`);
@@ -868,6 +892,17 @@ class Instruction {
           assign(this.literal(constant.value));
         } else if (constant.kind === 'enum') {
           assign(this.literal(constant.member));
+        } else if (constant.kind === 'bytes') {
+          // The generic host materialises the literal when it compiles the body, so an
+          // out-of-range element declines compilation here and keeps that same error.
+          let bytes: readonly number[];
+          try {
+            bytes = Object.freeze(Array.from(createBytes(constant.value)));
+          } catch {
+            throw unsupported;
+          }
+          // Every evaluation still gets a fresh Uint8Array, exactly like `H.createBytes`.
+          assign(`H.createBytes(${this.capture(bytes)})`);
         } else throw unsupported;
         break;
       }
@@ -889,7 +924,18 @@ class Instruction {
       case 'binary': {
         const operator = binary[operation.operator];
         if (!operator) throw unsupported;
-        assign(`(${this.value(operation.left)} ${operator} ${this.value(operation.right)})`);
+        const left = this.value(operation.left);
+        const right = this.value(operation.right);
+        // Byte sequences and intents compare by content in the generic host; `===` would
+        // compare identity and silently change the result.
+        if (
+          (operation.operator === 'equal' || operation.operator === 'notEqual') &&
+          (this.references.has(operation.left) || this.references.has(operation.right))
+        ) {
+          assign(`${operation.operator === 'notEqual' ? '!' : ''}H.equalValues(${left},${right})`);
+          break;
+        }
+        assign(`(${left} ${operator} ${right})`);
         break;
       }
       case 'numeric':
@@ -927,6 +973,12 @@ class Instruction {
         break;
       case 'field':
         assign(`${this.value(operation.value)}[${this.capture(operation.field)}]`);
+        break;
+      case 'bytes':
+        assign(`H.createBytes([${operation.elements.map((id) => this.value(id)).join(',')}])`);
+        break;
+      case 'index':
+        assign(`H.readIndex(${this.value(operation.value)},${this.value(operation.index)})`);
         break;
       case 'refEqual':
         if (operation.left.kind === 'parameter' || operation.right.kind === 'parameter')
