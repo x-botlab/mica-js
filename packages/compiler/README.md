@@ -134,7 +134,10 @@ bounds/endianness, and any code-memory invalidation the host performs on stores.
 ## Bounded Direct JIT
 
 `compileDirectJit(instructions, binding)` optionally compiles an entire cached PC
-trace into one numeric-bank switch/loop. Each instruction supplies `pc`, `nextPc`
+trace into one numeric-bank switch/loop. Traces whose emitted source exceeds the
+monolithic budget are split into shards, each a small function with its own
+dispatcher range, because generated size — not instruction count — decides whether
+V8 keeps optimizing a function. Each instruction supplies `pc`, `nextPc`
 and its already validated `body`. Unsupported instructions are omitted; an unknown
 or unsupported PC exits with `fallback` before changing that instruction's PC or
 performing any of its effects. The first occurrence of each PC owns lookup, even
@@ -165,7 +168,9 @@ time. Times and durations use integer picoseconds in the existing time range.
 `program.run(frame, deadline)` returns `deadline`, `fallback`, `stopped`, or
 `invalidated`. It executes multiple instructions without generators, per-instruction
 objects, host callbacks, or runtime Map lookups. Scalar intermediates stay in native
-locals until a horizon requires saving them. State/memory effects accumulate in the
+locals until a horizon requires saving them, and values whose live ranges do not
+overlap share one local, so a block that decodes thousands of IR operations still
+emits a handful of registers. State/memory effects accumulate in the
 supplied reusable banks; the runtime must commit/invalidate only resources marked
 in the current invocation's dirty words in `finally`, including when execution
 throws. Conservative resource lists are eligibility guards, not flush lists: a
@@ -177,12 +182,13 @@ The supported subset includes number/bool constants, state reads/writes, scalar
 unary/binary arithmetic, bitwise operations, comparisons, numeric builtins, mutable
 scalar locals, static-memory `load8`/`store8` with checked dynamic numeric offsets,
 scalar `select`/`if` regions with value yields,
-and one positive constant `elapse` per instruction. Numeric suffixes may run after
+and one positive `elapse` per instruction, whose duration is a constant or a computed
+value validated at the operation's own position. Numeric suffixes may run after
 the elapse, including a captured load's delayed register write and optional `stop`.
 Alternatively a terminal redirect accepts a dynamic finite numeric target with a
-positive constant delay; the target PC is written before time advances. A terminal
+positive delay; the target PC is written before time advances. A terminal
 standalone stop is supported. Other control flow, resource parameters, non-state
-reads, dynamic durations, multiple delays, calls, and other host operations fall
+reads, multiple delays, calls, and other host operations fall
 back as complete instructions, never after partially running an unsupported body.
 
 Before a body starts, PC is set to `nextPc`. A horizon can split any elapse without

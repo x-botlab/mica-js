@@ -72,6 +72,10 @@ const wideResults = new Set([
   'readSample',
   'resistor',
   'combineIntents',
+  // A wide select keeps its branches in one slot and never enters the state bank, so a
+  // pin-intent choice such as `select(level, [resistor(...)], [])` stays direct.
+  'select',
+  'match',
 ]);
 /** Operations admitted only when the runtime supplied a direct host for the frame. */
 const hosted = new Set([
@@ -140,6 +144,7 @@ function store32(memory: Uint8Array, value: unknown, stored: unknown, little: bo
 
 const helpers = Object.freeze({
   checkBoolean,
+  checkDuration,
   checkPc,
   combineIntents,
   equalValues,
@@ -152,13 +157,16 @@ const helpers = Object.freeze({
   store32,
 });
 const unsupported = Symbol('unsupported direct instruction');
-/** Slot budget for one generated shard; bounds the size of each emitted function. */
-const SHARD_SLOT_BUDGET = 1536;
 /**
- * Below this summed slot count the monolithic form stays smaller than the point where V8
- * stops optimizing, and it avoids the dispatcher hop; larger programs split into shards.
+ * Code budget for one generated shard. Emitted characters, not registers, predict where V8
+ * stops optimizing a function: measured blocks slow down sharply from ~35 KB of source.
  */
-const MONOLITH_SLOT_LIMIT = 2048;
+const SHARD_CODE_BUDGET = 36_000;
+/**
+ * Below this summed source size the monolithic form stays inside the range V8 optimizes, and
+ * it avoids the dispatcher hop; larger programs split into shards.
+ */
+const MONOLITH_CODE_LIMIT = 48_000;
 
 /** Inputs have already passed model validation and contextual binding. */
 export function compileDirectJit(
@@ -194,9 +202,14 @@ export function compileDirectJit(
     readonly shardSize?: number;
     readonly shardSlotLimit?: number;
   };
-  const limit = validIndex(options.shardSlotLimit) ? options.shardSlotLimit : MONOLITH_SLOT_LIMIT;
+  // An explicit slot limit keeps the historical slot-based switch; otherwise the emitted
+  // source size decides, because register reuse makes slot counts wildly optimistic.
+  const slotLimit = validIndex(options.shardSlotLimit) ? options.shardSlotLimit : undefined;
   const split =
-    options.split === true && entries.reduce((sum, entry) => sum + entry.slots.length, 0) > limit;
+    options.split === true &&
+    (slotLimit === undefined
+      ? entries.reduce((sum, entry) => sum + entry.size, 0) > MONOLITH_CODE_LIMIT
+      : entries.reduce((sum, entry) => sum + entry.slots.length, 0) > slotLimit);
   const shardSize = validIndex(options.shardSize) && options.shardSize > 0 ? options.shardSize : 48;
   const lines = split
     ? shardProgram(entries, binding, shardSize)
@@ -262,6 +275,7 @@ function monolithicProgram(
   entries.forEach((entry, index) => {
     lines.push(
       `case ${entry.pc}: {`,
+      ...entry.guard,
       `S[${binding.pc.index}] = ${entry.nextPc};`,
       dirty('SD', binding.pc.index),
       ...entry.prefix,
@@ -280,20 +294,22 @@ function shardProgram(
   shardSize: number,
 ): string[] {
   const sorted = [...entries].sort((left, right) => left.pcValue - right.pcValue);
-  // Generated function size follows the summed slots, so group by a slot budget instead of
-  // a fixed count: one oversized dispatch trampoline then gets a shard of its own.
+  // Generated function size follows the emitted source, so group by a code budget instead of
+  // a fixed count: one oversized block then gets a shard of its own.
   const groups: Instruction[][] = [];
   let current: Instruction[] = [];
   let budget = 0;
   for (const entry of sorted) {
-    const slots = entry.slots.length;
-    if (current.length && (current.length >= shardSize || budget + slots > SHARD_SLOT_BUDGET)) {
+    if (
+      current.length &&
+      (current.length >= shardSize || budget + entry.size > SHARD_CODE_BUDGET)
+    ) {
       groups.push(current);
       current = [];
       budget = 0;
     }
     current.push(entry);
-    budget += slots;
+    budget += entry.size;
   }
   if (current.length) groups.push(current);
   let start = 0;
@@ -313,24 +329,27 @@ function shardProgram(
     Array.from({ length: count }, (_, index) => `v${index}`);
   const lines: string[] = [];
   shards.forEach((shard, shardIndex) => {
+    const lower = shardIndex ? shards[shardIndex - 1]!.lastPc : undefined;
     lines.push(
       `function stepShard${shardIndex}(F, deadline, pc) {`,
       ...prelude(registers(shard.maxSlots)),
+      'while (true) {',
       'switch (pc) {',
     );
     shard.entries.forEach((entry, offset) => {
       lines.push(
         `case ${entry.pc}: {`,
+        ...entry.guard,
         `S[${binding.pc.index}] = ${entry.nextPc};`,
         dirty('SD', binding.pc.index),
         ...entry.prefix,
         ...elapsed(entry, shard.start + offset),
         ...entry.suffix,
-        splitFinish(entry.stop),
+        stepFinish(entry.stop, lower, shard.lastPc, binding.pc.index),
         '}',
       );
     });
-    lines.push('default: return "fallback";', '}', '}');
+    lines.push('default: return "fallback";', '}', '}', '}');
   });
   shards.forEach((shard, shardIndex) => {
     if (!shard.resumable) return;
@@ -388,8 +407,10 @@ function shardProgram(
 /** Elapse due time, resume save and deadline split shared by both emitters. */
 function elapsed(entry: Instruction, index: number): string[] {
   if (entry.duration === undefined) return [];
+  // A computed duration is validated where the generic host validates it, before it is used.
+  const duration = entry.dynamicDuration ? `H.checkDuration(${entry.duration})` : entry.duration;
   return [
-    `F.due = F.time + ${entry.duration};`,
+    `F.due = F.time + ${duration};`,
     'if (F.due > 7200000000000000) throw new RangeError("Time out of range");',
     'if (F.due >= deadline) {',
     ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
@@ -411,6 +432,33 @@ function splitFinish(stop: boolean): string {
     : 'if (F.stopAfterInstruction) return "invalidated"; return "next";';
 }
 
+/**
+ * A condition slot holds a boolean in every conforming program, so the type check is a
+ * `typeof` test inlined at the use site; the host helper only runs on the failure path.
+ * A call per condition dominated small instruction blocks.
+ */
+function guard(condition: string): string {
+  return `(typeof ${condition} === "boolean" ? ${condition} : H.checkBoolean(${condition}))`;
+}
+
+/**
+ * A shard keeps executing while the next PC still routes to it, which removes the
+ * dispatcher hop (and its range checks) from every instruction inside one shard. The
+ * bounds repeat the dispatcher's own routing predicate, so a PC outside them returns
+ * exactly as before.
+ */
+function stepFinish(
+  stop: boolean,
+  lower: string | undefined,
+  upper: string,
+  pcIndex: number,
+): string {
+  if (stop) return 'return "stopped";';
+  const inside = lower === undefined ? `pc <= ${upper}` : `pc <= ${upper} && pc > ${lower}`;
+  // The finite-number guard is inlined: a call per instruction costs more than the test.
+  return `if (F.stopAfterInstruction) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return "next";`;
+}
+
 function dirty(bank: 'SD' | 'MD', index: number): string {
   return `${bank}[${index >>> 5}] |= ${1 << (index & 31)};`;
 }
@@ -424,7 +472,11 @@ class Instruction {
   readonly writeStates = new Set<string>();
   readonly readMemories = new Set<string>();
   readonly writeMemories = new Set<string>();
-  readonly slots: string[] = [];
+  slots: string[] = [];
+  /** Emitted source characters (bodies and guard); bounds the size of one generated function. */
+  size = 0;
+  /** Emitted before the implicit PC write; a declared busy-wait head folds rounds here. */
+  readonly guard: string[] = [];
   prefix: string[] = [];
   suffix: string[] = [];
   /** Numeric instruction key; shards sort by it while `pc` holds the emitted literal. */
@@ -432,6 +484,8 @@ class Instruction {
   pc = '';
   nextPc = '';
   duration?: string;
+  /** Set when `duration` is a computed slot instead of a compile-time literal. */
+  dynamicDuration = false;
   /** Zero-duration terminator: no due time, no continuation, prefix and suffix stay inline. */
   immediate = false;
   stop = false;
@@ -451,6 +505,22 @@ class Instruction {
     this.nextPc = this.literal(instruction.nextPc);
     this.readStates.add(this.binding.pc.name);
     this.state(this.binding.pc.name, true);
+    const delay = this.binding.delayLoops?.get(instruction.pc);
+    if (delay !== undefined && validIndex(delay.counter) && validIndex(delay.cycles))
+      this.guard.push(
+        `if (S[${delay.counter}] > 1) {`,
+        // Fold only the rounds that end before the horizon: the deadline split stays exact,
+        // and a short horizon still makes progress instead of failing to skip at all.
+        `const rounds = Math.min(S[${delay.counter}] - 1, Math.floor((deadline - F.time) / ${delay.cycles}));`,
+        'if (rounds > 0) {',
+        `F.time += rounds * ${delay.cycles};`,
+        'if (F.time > 7200000000000000) throw new RangeError("Time out of range");',
+        `S[${delay.counter}] = S[${delay.counter}] - rounds;`,
+        dirty('SD', delay.counter),
+        '}',
+        'if (F.time >= deadline) { F.time = deadline; return "deadline"; }',
+        '}',
+      );
     let output = this.prefix;
     let terminal = false;
     for (const operation of instruction.body.operations) {
@@ -477,6 +547,11 @@ class Instruction {
       }
     }
     if (!this.terminated && !this.stop) throw unsupported;
+    this.compact();
+    this.size = [...this.guard, ...this.prefix, ...this.suffix].reduce(
+      (sum, line) => sum + line.length,
+      0,
+    );
     return this;
   }
 
@@ -484,21 +559,110 @@ class Instruction {
     return this.duration !== undefined || this.immediate;
   }
 
-  /** A zero duration advances no time, so the instruction needs no continuation slot. */
-  private terminate(delay: { value: string; zero: boolean }): void {
-    if (delay.zero) this.immediate = true;
-    else this.duration = delay.value;
+  /**
+   * Register reuse. Every IR result takes its own virtual slot, and a fully decoded Thumb
+   * instruction produces well over a thousand of them: the generated function then carries
+   * a thousand locals, which keeps V8 from optimising it and makes every execution pay for
+   * a huge frame. Values whose live ranges do not overlap can share one slot, so the
+   * emitted lines are scanned once: a slot is allocated at its definition and released
+   * after the last line that mentions it. Slots assigned more than once (locals, branch
+   * outputs) keep the same slot from the first definition through the last use.
+   */
+  private compact(): void {
+    const bound = this.prefix.length;
+    const lines = [...this.prefix, ...this.suffix];
+    const names = (line: string): number[] =>
+      (line.match(/\bv\d+\b/g) ?? []).map((name) => Number(name.slice(1)));
+    const definedAt: number[][] = lines.map(() => []);
+    const usesAt: number[][] = [];
+    const lastDef = new Map<number, number>();
+    const firstUse = new Map<number, number>();
+    const lastUse = new Map<number, number>();
+
+    lines.forEach((line, index) => {
+      const used = names(line);
+      const head = /^v(\d+) = /.exec(line);
+      if (head !== null) {
+        const virtual = Number(head[1]);
+        definedAt[index]!.push(virtual);
+        lastDef.set(virtual, index);
+        const position = used.indexOf(virtual);
+        if (position >= 0) used.splice(position, 1);
+      }
+      for (const virtual of used) {
+        if (!firstUse.has(virtual)) firstUse.set(virtual, index);
+        lastUse.set(virtual, index);
+      }
+      usesAt.push(used);
+    });
+
+    // Only the define-before-use shape is compacted; anything else keeps the virtual slots,
+    // which is always correct.
+    const firstDef = new Map<number, number>();
+    definedAt.forEach((defs, index) => {
+      for (const virtual of defs) if (!firstDef.has(virtual)) firstDef.set(virtual, index);
+    });
+    for (const [virtual, index] of firstUse)
+      if ((firstDef.get(virtual) ?? Infinity) > index) return;
+
+    const end = new Map<number, number>();
+    for (const virtual of lastDef.keys())
+      end.set(virtual, Math.max(lastDef.get(virtual)!, lastUse.get(virtual) ?? -1));
+
+    const physical = new Map<number, string>();
+    const live = new Map<number, string>();
+    const free: string[] = [];
+    let count = 0;
+    const release = (virtual: number): void => {
+      const slot = live.get(virtual);
+      if (slot === undefined) return;
+      live.delete(virtual);
+      free.push(slot);
+    };
+
+    lines.forEach((_, index) => {
+      for (const virtual of definedAt[index]!) {
+        if (physical.has(virtual)) continue;
+        const slot = free.pop() ?? `v${count++}`;
+        physical.set(virtual, slot);
+        live.set(virtual, slot);
+      }
+      for (const virtual of [...definedAt[index]!, ...usesAt[index]!])
+        if (end.get(virtual) === index) release(virtual);
+    });
+
+    const rewrite = (line: string): string =>
+      line.replace(/\bv(\d+)\b/g, (whole, digits: string) => physical.get(Number(digits)) ?? whole);
+    this.prefix = lines.slice(0, bound).map((line) => rewrite(line));
+    this.suffix = lines.slice(bound).map((line) => rewrite(line));
+    if (this.duration !== undefined) this.duration = rewrite(this.duration);
+    this.slots = Array.from({ length: count }, (_, index) => `v${index}`);
   }
 
-  private delay(id: number): { value: string; zero: boolean } {
-    const duration = this.literals.get(id);
-    if (typeof duration !== 'number') throw unsupported;
-    try {
-      checkDuration(duration);
-    } catch {
-      throw unsupported;
+  /** A zero duration advances no time, so the instruction needs no continuation slot. */
+  private terminate(delay: { value: string; zero: boolean; dynamic: boolean }): void {
+    if (delay.zero) this.immediate = true;
+    else {
+      this.duration = delay.value;
+      this.dynamicDuration = delay.dynamic;
     }
-    return { value: this.literal(duration), zero: duration === 0 };
+  }
+
+  private delay(id: number): { value: string; zero: boolean; dynamic: boolean } {
+    const literal = this.literals.get(id);
+    if (typeof literal === 'number') {
+      try {
+        checkDuration(literal);
+      } catch {
+        throw unsupported;
+      }
+      return { value: this.literal(literal), zero: literal === 0, dynamic: false };
+    }
+    // A computed duration keeps its slot: the emitted body validates it at the operation's
+    // own position, exactly like the generator backend's `H.checkDuration`.
+    const slot = this.values.get(id);
+    if (slot === undefined) throw unsupported;
+    return { value: slot, zero: false, dynamic: true };
   }
 
   /**
@@ -792,7 +956,7 @@ class Instruction {
         const message =
           operation.message === undefined ? 'undefined' : this.message(operation.message);
         lines.push(
-          `if (!H.checkBoolean(${this.value(operation.condition)})) F.host.assert(false, ${message});`,
+          `if (!${guard(this.value(operation.condition))}) F.host.assert(false, ${message});`,
         );
         break;
       }
@@ -864,12 +1028,12 @@ class Instruction {
         if (operation.right.body.operations.at(-1)?.kind !== 'yield') throw unsupported;
         const label = `${operation.kind}${this.labels++}`;
         lines.push(
-          `${result} = H.checkBoolean(${this.value(operation.left)});`,
+          `${result} = ${guard(this.value(operation.left))};`,
           `${operation.kind === 'or' ? 'if (!' : 'if ('}${result}) {`,
           `${label}: {`,
         );
         this.region(operation.right.body, lines, { slot: result!, label });
-        lines.push('}', `${result} = H.checkBoolean(${result});`, '}');
+        lines.push('}', `${result} = ${guard(result!)};`, '}');
         break;
       }
       case 'match': {
@@ -890,7 +1054,7 @@ class Instruction {
         break;
       }
       case 'if':
-        lines.push(`if (H.checkBoolean(${this.value(operation.condition)})) {`);
+        lines.push(`if (${guard(this.value(operation.condition))}) {`);
         this.region(operation.yes, lines, output);
         if (operation.no) {
           lines.push('} else {');
@@ -903,11 +1067,11 @@ class Instruction {
         const yes = this.expression(operation.yes);
         const no = yes === undefined ? undefined : this.expression(operation.no);
         if (yes !== undefined && no !== undefined) {
-          lines.push(`${result} = H.checkBoolean(${condition}) ? ${yes} : ${no};`);
+          lines.push(`${result} = ${guard(condition)} ? ${yes} : ${no};`);
           break;
         }
         const label = `select${this.labels++}`;
-        lines.push(`${label}: {`, `if (H.checkBoolean(${condition})) {`);
+        lines.push(`${label}: {`, `if (${guard(condition)}) {`);
         this.region(operation.yes.body, lines, { slot: result!, label });
         lines.push('} else {');
         this.region(operation.no.body, lines, { slot: result!, label });

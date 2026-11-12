@@ -1,9 +1,22 @@
 import { types } from '@mica-js/sdk/model';
 import type { IntentValue, Value } from '@mica-js/sdk/model';
-import { GPIO_BASE, GPIO_STATE, GPIO_STATE_STRIDE, GPIO_SYNC, PERIPH } from './layout';
+import {
+  GPIO_BASE,
+  GPIO_PIN_MASK,
+  GPIO_POWERED,
+  GPIO_STATE,
+  GPIO_STATE_STRIDE,
+  GPIO_SYNC,
+  PERIPH,
+  gpioAfr0State,
+  gpioAfr1State,
+  gpioModerState,
+  gpioOtyperState,
+  gpioPupdrState,
+} from './layout';
 import { PORTS, machine } from './machine';
 import type { AlternateDriver, PortPins } from './machine';
-import { asBody, boolAnd, boolOr, num, readWord, readWordAt, u32, writeWord } from './ir';
+import { asBody, boolAnd, boolBit, boolOr, num, readWord, readWordAt, u32, writeWord } from './ir';
 import type { Body } from './ir';
 
 /** GPIOA–GPIOF 的寄存器偏移。 */
@@ -88,7 +101,7 @@ function extract(
   return b.bitAnd(b.shiftRightUnsigned(value, shift), num(b, mask));
 }
 
-/** 一次端口同步共用的寄存器快照：6 个字 + 电源判定 + 电阻意图。 */
+/** 一次端口同步共用的寄存器快照：6 个字 + 电源判定。 */
 interface PortRegisters {
   readonly moder: Value<number>;
   readonly otyper: Value<number>;
@@ -97,30 +110,27 @@ interface PortRegisters {
   readonly afr0: Value<number>;
   readonly afr1: Value<number>;
   readonly supplied: Value<boolean>;
-  readonly high: Value<IntentValue>;
-  readonly low: Value<IntentValue>;
-  readonly pullUp: Value<IntentValue>;
-  readonly pullDown: Value<IntentValue>;
-  readonly empty: Value<IntentValue>;
 }
 
 /** 读一次端口配置；16 根脚复用同一份快照，避免每根脚重读 6 个字。 */
 function portRegisters(b: Body, portIndex: number): PortRegisters {
   return {
-    moder: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_MODER),
-    otyper: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_OTYPER),
-    pupdr: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_PUPDR),
+    moder: b.readState(gpioModerState(portIndex), types.number),
+    otyper: b.readState(gpioOtyperState(portIndex), types.number),
+    pupdr: b.readState(gpioPupdrState(portIndex), types.number),
     odr: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_ODR),
-    afr0: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_AFR0),
-    afr1: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_AFR1),
+    afr0: b.readState(gpioAfr0State(portIndex), types.number),
+    afr1: b.readState(gpioAfr1State(portIndex), types.number),
     supplied: powered(b),
-    high: b.resistor('VDD1', num(b, DRIVE_RESISTANCE)),
-    low: b.resistor('VSS1', num(b, DRIVE_RESISTANCE)),
-    pullUp: b.resistor('VDD1', num(b, PULL_RESISTANCE)),
-    pullDown: b.resistor('VSS1', num(b, PULL_RESISTANCE)),
-    empty: b.combineIntents(),
   };
 }
+
+/**
+ * 一根脚在给定电阻下的意图。意图只在所在分支真正被选中时才求值：一次 GPIO 输出写只需要
+ * 一个电阻意图，不必把上拉/下拉/空意图也解析一遍。
+ */
+const resistorIntent = (b: Body, high: boolean, resistance: number): Value<IntentValue> =>
+  b.resistor(high ? 'VDD1' : 'VSS1', num(b, resistance));
 
 /** 把一根脚的 MODER/OTYPER/PUPDR/ODR/AFR 翻译成引脚意图。 */
 function emitPinIntent(b: Body, portIndex: number, bit: number, registers: PortRegisters): void {
@@ -129,7 +139,6 @@ function emitPinIntent(b: Body, portIndex: number, bit: number, registers: PortR
   if (pin === undefined || pin === null) return;
 
   const { moder, otyper, pupdr, odr, afr0, afr1, supplied: poweredPin } = registers;
-  const { high, low, pullUp, pullDown, empty } = registers;
   const mode = bits(b, moder, bit * 2, 2);
   const openDrain = bits(b, otyper, bit, 1);
   const pull = bits(b, pupdr, bit * 2, 2);
@@ -138,71 +147,87 @@ function emitPinIntent(b: Body, portIndex: number, bit: number, registers: PortR
     b.shiftRightUnsigned(bit < 8 ? afr0 : afr1, num(b, (bit & 7) * 4)),
     num(b, 0xf),
   );
-  const pullIntent = b.select(
-    types.intent,
-    b.equal(types.number, pull, num(b, 1)),
-    () => pullUp,
-    (inner) =>
-      inner.select(
-        types.intent,
-        inner.equal(types.number, pull, inner.constant(types.number, 2)),
-        () => pullDown,
-        () => empty,
-      ),
-  );
   const outputHigh = b.equal(types.number, output, num(b, 1));
-  const pushPull = b.select(
-    types.intent,
-    outputHigh,
-    () => high,
-    () => low,
-  );
-  const openDrainIntent = b.select(
-    types.intent,
-    outputHigh,
-    () => pullIntent,
-    () => low,
-  );
-  const outputIntent = b.select(
-    types.intent,
-    b.equal(types.number, openDrain, num(b, 1)),
-    () => openDrainIntent,
-    () => pushPull,
-  );
-  let alternate = pullIntent;
+  const pullIsUp = b.equal(types.number, pull, num(b, 1));
+  const pullIsDown = b.equal(types.number, pull, num(b, 2));
 
-  for (const driver of driversFor(portIndex, bit)) {
-    const selected = boolAnd(b, b.equal(types.number, af, num(b, driver.af)), driver.active(b));
-    const level = b.select(
+  const pullAt = (body: Body): Value<IntentValue> =>
+    body.select(
       types.intent,
-      driver.level(b),
-      () => high,
-      () => low,
+      pullIsUp,
+      (up) => resistorIntent(asBody(up), true, PULL_RESISTANCE),
+      (other) =>
+        other.select(
+          types.intent,
+          pullIsDown,
+          (down) => resistorIntent(asBody(down), false, PULL_RESISTANCE),
+          (none) => asBody(none).combineIntents(),
+        ),
     );
-
-    alternate = b.select(
+  const driveAt = (body: Body): Value<IntentValue> =>
+    body.select(
       types.intent,
-      selected,
-      () => level,
-      () => alternate,
+      outputHigh,
+      (high) => resistorIntent(asBody(high), true, DRIVE_RESISTANCE),
+      (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
     );
-  }
+  const outputAt = (body: Body): Value<IntentValue> =>
+    body.select(
+      types.intent,
+      body.equal(types.number, openDrain, num(body, 1)),
+      (open) =>
+        asBody(open).select(
+          types.intent,
+          outputHigh,
+          (high) => pullAt(asBody(high)),
+          (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+        ),
+      (push) => driveAt(asBody(push)),
+    );
+  const alternateAt = (body: Body): Value<IntentValue> => {
+    let intent = pullAt(body);
 
+    for (const driver of driversFor(portIndex, bit)) {
+      const selected = boolAnd(
+        body,
+        body.equal(types.number, af, num(body, driver.af)),
+        driver.active(body),
+      );
+
+      intent = body.select(
+        types.intent,
+        selected,
+        (level) => {
+          const inner = asBody(level);
+
+          return inner.select(
+            types.intent,
+            driver.level(inner),
+            (high) => resistorIntent(asBody(high), true, DRIVE_RESISTANCE),
+            (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+          );
+        },
+        () => intent,
+      );
+    }
+
+    return intent;
+  };
   const modeIntent = b.select(
     types.intent,
     b.equal(types.number, mode, num(b, 0)),
-    () => pullIntent,
+    (input) => pullAt(asBody(input)),
     (inner) =>
       inner.select(
         types.intent,
         inner.equal(types.number, mode, inner.constant(types.number, 1)),
-        () => outputIntent,
+        (out) => outputAt(asBody(out)),
         (inner2) =>
           inner2.select(
             types.intent,
             inner2.equal(types.number, mode, inner2.constant(types.number, 2)),
-            () => alternate,
-            () => empty,
+            (alt) => alternateAt(asBody(alt)),
+            (none) => asBody(none).combineIntents(),
           ),
       ),
   );
@@ -210,7 +235,7 @@ function emitPinIntent(b: Body, portIndex: number, bit: number, registers: PortR
     types.intent,
     poweredPin,
     () => modeIntent,
-    () => empty,
+    (none) => asBody(none).combineIntents(),
   );
 
   b.writeIntent(pin, intent);
@@ -220,17 +245,33 @@ function driversFor(port: number, bit: number): readonly AlternateDriver[] {
   return machine().alternateDrivers.filter((driver) => driver.port === port && driver.pin === bit);
 }
 
-/** 刷新一个端口的全部引脚意图：配置寄存器只读一次。 */
-export function syncPort(b: Body, portIndex: number): void {
+/**
+ * 刷新一个端口里 `mask` 选中的引脚意图：配置寄存器只读一次。
+ *
+ * 只有引脚自己的寄存器位、或端口供电状态变化才会改变它的意图，因此按位刷新与整端口
+ * 刷新等价；供电状态变化时退回整端口。
+ */
+export function syncPort(b: Body, portIndex: number, mask: Value<number>): void {
   const port = PORTS[portIndex];
 
   if (port === undefined) return;
 
   const registers = portRegisters(b, portIndex);
+  const poweredBefore = b.readState(GPIO_POWERED, types.bool);
+  const refresh = b.select(
+    types.number,
+    b.notEqual(types.bool, poweredBefore, registers.supplied),
+    (inner) => num(asBody(inner), 0xffff),
+    () => mask,
+  );
+
+  b.writeState(GPIO_POWERED, registers.supplied);
 
   for (let bit = 0; bit < port.pins.length; bit += 1) {
     if (port.pins[bit] === null) continue;
-    emitPinIntent(b, portIndex, bit, registers);
+    b.if(boolBit(b, refresh, 1 << bit), (pin) => {
+      emitPinIntent(asBody(pin), portIndex, bit, registers);
+    });
   }
 }
 
@@ -311,6 +352,8 @@ function writeRegister(
 
   const wordOffset = b.bitAnd(offset, num(b, 0x3c));
   const output = isOutputWrite(b, wordOffset);
+  /** 需要重算意图的引脚；配置写默认整端口，输出写按位算出。 */
+  const changed = b.local(types.number, num(b, 0xffff));
 
   // ODR / BSRR / BRR 都只改 ODR。
   b.if(
@@ -326,6 +369,7 @@ function writeRegister(
           const setBits = scope.bitAnd(u32(scope, value), num(scope, 0xffff));
           const clearBits = scope.shiftRightUnsigned(u32(scope, value), num(scope, 16));
 
+          scope.setLocal(changed, scope.bitOr(setBits, clearBits));
           storeWord(
             scope,
             portIndex,
@@ -343,6 +387,7 @@ function writeRegister(
               const current = loadWord(last, portIndex, num(last, GPIO_ODR));
               const clearBits = last.bitAnd(u32(last, value), num(last, 0xffff));
 
+              last.setLocal(changed, clearBits);
               storeWord(
                 last,
                 portIndex,
@@ -352,14 +397,10 @@ function writeRegister(
             },
             (plain) => {
               const last = asBody(plain);
-              const next = mergeWord(
-                last,
-                loadWord(last, portIndex, num(last, GPIO_ODR)),
-                value,
-                offset,
-                size,
-              );
+              const current = loadWord(last, portIndex, num(last, GPIO_ODR));
+              const next = mergeWord(last, current, value, offset, size);
 
+              last.setLocal(changed, last.bitAnd(last.bitXor(current, next), num(last, 0xffff)));
               storeWord(last, portIndex, num(last, GPIO_ODR), next);
             },
           );
@@ -383,6 +424,17 @@ function writeRegister(
           );
 
           storeWord(body2, portIndex, wordOffset, merged);
+          // 引脚意图读的是影子 state，这里写穿：存储器仍是固件可见的寄存器映像。
+          for (const [offsetOf, stateOf] of [
+            [GPIO_MODER, gpioModerState],
+            [GPIO_OTYPER, gpioOtyperState],
+            [GPIO_PUPDR, gpioPupdrState],
+            [GPIO_AFR0, gpioAfr0State],
+            [GPIO_AFR1, gpioAfr1State],
+          ] as const)
+            body2.if(body2.equal(types.number, wordOffset, num(body2, offsetOf)), (hit) =>
+              asBody(hit).writeState(stateOf(portIndex), merged),
+            );
         },
       );
     },
@@ -390,7 +442,7 @@ function writeRegister(
 
   // 输出寄存器与模式/上下拉/复用功能寄存器会改变引脚意图。引脚同步（16 根脚的
   // intent 树）体积很大，会让整段直接程序超出 V8 的优化范围，因此这里只登记待同步的
-  // 端口，由服务块在这个块结束时统一刷新。
+  // 端口与引脚位，由服务块在这个块结束时统一刷新。
   b.if(boolOr(b, output, isConfigWrite(b, wordOffset)), (sync) => {
     const scope = asBody(sync);
 
@@ -398,6 +450,7 @@ function writeRegister(
       GPIO_SYNC,
       scope.bitOr(scope.readState(GPIO_SYNC, types.number), num(scope, 1 << portIndex)),
     );
+    scope.writeState(GPIO_PIN_MASK, scope.getLocal(changed));
   });
 }
 

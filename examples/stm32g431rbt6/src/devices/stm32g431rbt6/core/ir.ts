@@ -54,8 +54,9 @@ export const boolBitAt = (b: Body, value: Value<number>, index: number): Value<b
   boolBit(b, value, 1 << index);
 
 /*
- * 32/16 位访存一律拆成 8 位访问：direct 后端只接受 `load8`/`store8`，`load32le` 之类
- * 会让整块回退解释路径。语义与小端字访问一致（未对齐访问仍按字节序）。
+ * 32/16 位访存走 `load32le`/`store32le` 一类的宽操作：direct 后端用缓存好的 `DataView`
+ * 一次完成按宽度校验与读写，而拆成 8 位访问时每个字节都要一次地址校验。两种形式的
+ * 小端语义（含未对齐访问）相同。
  */
 
 export const readByte = (b: Body, memory: string, offset: Value<number>): Value<number> =>
@@ -71,97 +72,44 @@ export const writeByte = (
 };
 
 /** 读 32 位小端字；`offset` 运行期求值。 */
-export function readWord(b: Body, memory: string, offset: Value<number>): Value<number> {
-  const b0 = b.load8(memory, offset);
-  const b1 = b.load8(memory, b.add(offset, num(b, 1)));
-  const b2 = b.load8(memory, b.add(offset, num(b, 2)));
-  const b3 = b.load8(memory, b.add(offset, num(b, 3)));
-
-  return u32(
-    b,
-    b.bitOr(
-      b.bitOr(b0, b.shiftLeft(b1, num(b, 8))),
-      b.bitOr(b.shiftLeft(b2, num(b, 16)), b.shiftLeft(b3, num(b, 24))),
-    ),
-  );
-}
+export const readWord = (b: Body, memory: string, offset: Value<number>): Value<number> =>
+  b.load32le(memory, offset);
 
 /** 读常量偏移的 32 位小端字（外设寄存器）。 */
-export function readWordAt(b: Body, memory: string, offset: number): Value<number> {
-  return u32(
-    b,
-    b.bitOr(
-      b.bitOr(
-        b.load8(memory, num(b, offset)),
-        b.shiftLeft(b.load8(memory, num(b, offset + 1)), num(b, 8)),
-      ),
-      b.bitOr(
-        b.shiftLeft(b.load8(memory, num(b, offset + 2)), num(b, 16)),
-        b.shiftLeft(b.load8(memory, num(b, offset + 3)), num(b, 24)),
-      ),
-    ),
-  );
-}
+export const readWordAt = (b: Body, memory: string, offset: number): Value<number> =>
+  b.load32le(memory, num(b, offset));
 
 /** 写 32 位小端字；`offset` 运行期求值。 */
-export function writeWord(
+export const writeWord = (
   b: Body,
   memory: string,
   offset: Value<number>,
   value: Value<number>,
-): void {
-  const word = u32(b, value);
-
-  b.store8(memory, offset, b.bitAnd(word, num(b, 0xff)));
-  b.store8(
-    memory,
-    b.add(offset, num(b, 1)),
-    b.bitAnd(b.shiftRightUnsigned(word, num(b, 8)), num(b, 0xff)),
-  );
-  b.store8(
-    memory,
-    b.add(offset, num(b, 2)),
-    b.bitAnd(b.shiftRightUnsigned(word, num(b, 16)), num(b, 0xff)),
-  );
-  b.store8(memory, b.add(offset, num(b, 3)), b.shiftRightUnsigned(word, num(b, 24)));
-}
+): void => {
+  b.store32le(memory, offset, value);
+};
 
 /** 写常量偏移的 32 位小端字（外设寄存器）。 */
-export function writeWordAt(b: Body, memory: string, offset: number, value: Value<number>): void {
-  const word = u32(b, value);
+export const writeWordAt = (
+  b: Body,
+  memory: string,
+  offset: number,
+  value: Value<number>,
+): void => {
+  b.store32le(memory, num(b, offset), value);
+};
 
-  b.store8(memory, num(b, offset), b.bitAnd(word, num(b, 0xff)));
-  b.store8(
-    memory,
-    num(b, offset + 1),
-    b.bitAnd(b.shiftRightUnsigned(word, num(b, 8)), num(b, 0xff)),
-  );
-  b.store8(
-    memory,
-    num(b, offset + 2),
-    b.bitAnd(b.shiftRightUnsigned(word, num(b, 16)), num(b, 0xff)),
-  );
-  b.store8(memory, num(b, offset + 3), b.shiftRightUnsigned(word, num(b, 24)));
-}
+export const readHalf = (b: Body, memory: string, offset: Value<number>): Value<number> =>
+  b.load16le(memory, offset);
 
-export function readHalf(b: Body, memory: string, offset: Value<number>): Value<number> {
-  const low = b.load8(memory, offset);
-  const high = b.load8(memory, b.add(offset, num(b, 1)));
-
-  return b.bitOr(low, b.shiftLeft(high, num(b, 8)));
-}
-
-export function writeHalf(
+export const writeHalf = (
   b: Body,
   memory: string,
   offset: Value<number>,
   value: Value<number>,
-): void {
-  const half = b.bitAnd(u32(b, value), num(b, 0xffff));
-
-  b.store8(memory, offset, b.bitAnd(half, num(b, 0xff)));
-  b.store8(memory, b.add(offset, num(b, 1)), b.shiftRightUnsigned(half, num(b, 8)));
-}
+): void => {
+  b.store16le(memory, offset, value);
+};
 
 export const readReg = (b: Body, index: number): Value<number> =>
   b.readState(regState(index), types.number);

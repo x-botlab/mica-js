@@ -161,6 +161,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
       const key = JSON.stringify([
         [...jit.directStateGuards].sort(),
         [...jit.directMemoryGuards].sort(),
+        [...jit.delays.keys()].sort((left, right) => left - right),
       ]);
       const cached = jit.directPrograms.get(key);
       if (cached) {
@@ -177,6 +178,12 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
         const instructions = [...jit.cache.values()].filter(
           (instruction) => !instruction.polling && !jit.polling.has(instruction.pc),
         );
+        /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
+        const delayLoops = new Map<number, { counter: number; cycles: number }>();
+        for (const [pc, delay] of jit.delays) {
+          const counter = states.get(delay.counter);
+          if (counter !== undefined) delayLoops.set(pc, { counter, cycles: delay.cycles });
+        }
         const program = compileDirectJit(instructions, {
           states,
           memories,
@@ -186,6 +193,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
           host: true,
           split: true,
           shardSize: DIRECT_SHARD_SIZE,
+          delayLoops,
         });
         jit.directRevision = jit.revision;
         jit.direct = program

@@ -64,6 +64,11 @@ export interface JitOptions {
   readonly beforeInstruction?: InstructionHook;
   /** 有限且互异的 PC；predicate 绑定本实例无参 bool pure fn，声明循环头的等待语义。 */
   readonly polling?: readonly { readonly pc: number; readonly predicate: string }[];
+  /**
+   * 忙等延时环声明：键为环头 PC，`counter` 是每轮减一的 number 状态，`cycles` 是一轮消耗的 ps。
+   * 环内除该递减外无可观察效果；运行时按时间窗折叠轮次，最后一轮仍正常执行。
+   */
+  readonly delays?: ReadonlyMap<number, { readonly counter: string; readonly cycles: number }>;
   readonly translate: JitTranslate;
 }
 export interface JitHost {

@@ -61,11 +61,45 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   state serviceResume: number = 0;
   /** 待刷新引脚意图的端口位掩码（bit0=GPIOA … bit4=GPIOF）。 */
   state gpioSync: number = 0;
+  /** 待刷新的引脚位掩码，只对最新一次待执行写有效；配置写视为整端口。 */
+  state gpioPinMask: number = 0;
+  /** 上一次同步时端口是否供电；供电变化会同时改变所有引脚的意图。 */
+  state gpioPowered: bool = false;
   /** 延迟到服务块执行的 GPIO 写。 */
   state gpioWrite: number = 0;
   state gpioWriteAddr: number = 0;
   state gpioWriteValue: number = 0;
   state gpioWriteSize: number = 4;
+  /**
+   * GPIO 配置寄存器影子（端口 0–4 × MODER/OTYPER/PUPDR/AFR0/AFR1）。引脚意图每根脚都要
+   * 读这几个字，从字节内存取一次字要一次按宽度校验的加载；写寄存器时顺带同步影子，
+   * 意图计算就只剩一次数组读。存储器里的字节仍是固件可见的寄存器映像。
+   */
+  state gpioModer0: number = 0;
+  state gpioModer1: number = 0;
+  state gpioModer2: number = 0;
+  state gpioModer3: number = 0;
+  state gpioModer4: number = 0;
+  state gpioOtyper0: number = 0;
+  state gpioOtyper1: number = 0;
+  state gpioOtyper2: number = 0;
+  state gpioOtyper3: number = 0;
+  state gpioOtyper4: number = 0;
+  state gpioPupdr0: number = 0;
+  state gpioPupdr1: number = 0;
+  state gpioPupdr2: number = 0;
+  state gpioPupdr3: number = 0;
+  state gpioPupdr4: number = 0;
+  state gpioAfr00: number = 0;
+  state gpioAfr01: number = 0;
+  state gpioAfr02: number = 0;
+  state gpioAfr03: number = 0;
+  state gpioAfr04: number = 0;
+  state gpioAfr10: number = 0;
+  state gpioAfr11: number = 0;
+  state gpioAfr12: number = 0;
+  state gpioAfr13: number = 0;
+  state gpioAfr14: number = 0;
   /** 可能已具备中断条件；为 true 的块才扫描异常。 */
   state irqDirty: bool = false;
   /** SysTick CTRL.ENABLE 的影子，省掉每拍读 CTRL。 */

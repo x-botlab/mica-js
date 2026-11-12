@@ -1,9 +1,10 @@
 import type { Factory } from './model.ddl';
 import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
-import type { BlockIR } from '@mica-js/sdk/model';
+import type { BlockIR, Local } from '@mica-js/sdk/model';
 import type { JitTranslate, JitTranslateInput } from '@mica-js/sdk/device';
 import {
   CODE,
+  GPIO_PIN_MASK,
   GPIO_SYNC,
   GPIO_WRITE,
   GPIO_WRITE_ADDR,
@@ -208,7 +209,8 @@ function buildService(machine: Machine, pc: number): BlockIR {
       body.if(boolBit(body, body.readState(GPIO_SYNC, types.number), 1 << port), (sync) => {
         const scope = asBody(sync);
 
-        syncPort(scope, port);
+        syncPort(scope, port, scope.readState(GPIO_PIN_MASK, types.number));
+        scope.writeState(GPIO_PIN_MASK, num(scope, 0));
         scope.writeState(
           GPIO_SYNC,
           scope.bitAnd(scope.readState(GPIO_SYNC, types.number), num(scope, ~(1 << port))),
@@ -232,7 +234,8 @@ function buildService(machine: Machine, pc: number): BlockIR {
 function syncMarkedPorts(b: Body): void {
   for (let port = 0; port < 5; port += 1) {
     b.if(boolBit(b, b.readState(GPIO_SYNC, types.number), 1 << port), (mark) => {
-      syncPort(asBody(mark), port);
+      // 非 CPU 写触发的刷新（USART 复用/使能）没有引脚位信息，按整端口处理。
+      syncPort(asBody(mark), port, num(asBody(mark), 0xffff));
     });
   }
   b.writeState(GPIO_SYNC, num(b, 0));
@@ -255,13 +258,119 @@ function cacheKey(
 const blockCache = new Map<string, BlockIR>();
 const BLOCK_CACHE_LIMIT = 8192;
 
+/**
+ * `subs rN, #imm8` immediately followed by `bne` back to itself is the classic busy-wait
+ * delay loop: every round only decrements rN and re-tests it, so the runtime may collapse
+ * whole rounds into one time advance. Anything else (16-bit `subs` only, straight-line
+ * neighbour, self-target) keeps the ordinary path.
+ */
+function delayLoopAt(
+  code: JitTranslateInput['code'],
+  fetchPc: number,
+  pc: number,
+  size: number,
+  cyclePs: number,
+): { counter: string; cycles: number } | undefined {
+  if (size !== 2) return undefined;
+  const half = (offset: number): number =>
+    (code[offset & 0x1ffff] ?? 0) | ((code[(offset + 1) & 0x1ffff] ?? 0) << 8);
+  const first = half(fetchPc);
+  let register: number;
+  if ((first & 0xfe00) === 0x1e00) {
+    // SUBS Rd, Rn, #imm3: the counter must be both source and destination and step by one,
+    // otherwise a round does not consume exactly one count.
+    if ((first & 7) !== ((first >> 3) & 7) || ((first >> 6) & 7) !== 1) return undefined;
+    register = first & 7;
+  } else if ((first & 0xf800) === 0x3800) {
+    // SUBS Rd, #imm8
+    if ((first & 0xff) !== 1) return undefined;
+    register = first & 7;
+  } else return undefined;
+  const second = half(fetchPc + 2);
+  if ((second & 0xff00) !== 0xd100) return undefined;
+  const displacement = (((second & 0xff) << 24) >> 24) * 2;
+  if ((pc + size + 4 + displacement) >>> 0 !== pc) return undefined;
+  return { counter: `r${register}`, cycles: 2 * cyclePs };
+}
+
+/**
+ * `b .` 的编码（`11100 imm11`，位移指回自身）。这类块除了一次 `pc` 写入之外没有可观察
+ * 效果，因此落在下一次服务节拍之前的轮次可以折成一次时间推进。
+ */
+function selfBranchAt(
+  code: JitTranslateInput['code'],
+  fetchPc: number,
+  pc: number,
+  size: number,
+): boolean {
+  if (size !== 2) return false;
+  const half = (code[fetchPc] ?? 0) | ((code[(fetchPc + 1) & 0x1ffff] ?? 0) << 8);
+  if ((half & 0xf800) !== 0xe000) return false;
+  return (((pc + 4 + (((half & 0x7ff) << 21) >> 21) * 2) >>> 0) & 0xfffffffe) === (pc & 0xfffffffe);
+}
+
+/**
+ * 自旋折算。`b .` 每轮只写一次 `pc`，`pendingPs` 之外的累加没有副作用，于是把 `tickPs`
+ * 之前的整段轮次一次记进 `pendingPs` 与本次 elapse：折算后的累积值与逐轮执行完全相同，
+ * `tick` 里 `due` 首次为真的轮次不变，服务块、SysTick 推进与中断派发的时刻也不变。
+ *
+ * 折算后本块的 elapse 变长，届时由运行时按推进目标与下一事件切分，因此时间不会越过任何
+ * 待处理事件；外部事件引起的 CPU 重新观察最多晚一个服务节拍（`tickPs`），与逐轮执行时
+ * `due` 的粒度相同。
+ *
+ * 与时间无关的"立刻就要服务"条件成立时不折算——它们不随轮次消失，折算只会把本该发生在
+ * 本轮的服务推迟。IT 块里的 `b` 可能被掩码掉，同样保持逐轮执行；节拍未激活时 `tickPs`
+ * 只是上限而非真实节拍，折算会跨过观察窗口，因此也保持逐轮执行。
+ */
+function foldSpin(b: Body, cycles: number, total: Local<number>): void {
+  const pending = b.readState(PENDING_PS, types.number);
+  const busy = boolOr(
+    b,
+    boolOr(
+      b,
+      boolAnd(
+        b,
+        b.readState(IRQ_DIRTY, types.bool),
+        b.equal(types.number, b.readState('primask', types.number), num(b, 0)),
+      ),
+      b.notEqual(types.number, b.readState(GPIO_WRITE, types.number), num(b, 0)),
+    ),
+    boolOr(
+      b,
+      b.notEqual(types.number, b.readState(GPIO_SYNC, types.number), num(b, 0)),
+      b.notEqual(types.number, b.readState('itState', types.number), num(b, 0)),
+    ),
+  );
+  b.if(boolAnd(b, b.readState(TICK_ACTIVE, types.bool), b.not(busy)), (free) => {
+    const scope = asBody(free);
+    const room = scope.subtract(
+      scope.subtract(scope.readState(TICK_PS, types.number), pending),
+      num(scope, cycles),
+    );
+    scope.if(scope.greaterThanOrEqual(room, num(scope, cycles)), (enough) => {
+      const inner = asBody(enough);
+      const extra = inner.multiply(
+        inner.floor(inner.divide(room, num(inner, cycles))),
+        num(inner, cycles),
+      );
+
+      inner.writeState(PENDING_PS, inner.add(pending, extra));
+      inner.setLocal(total, inner.add(num(inner, cycles), extra));
+    });
+  });
+}
+
 const createTranslate =
-  (machine: Machine): JitTranslate =>
+  (machine: Machine, delays: Map<number, { counter: string; cycles: number }>): JitTranslate =>
   (input) => {
     const pc = input.pc >>> 0;
     const service = isServicePc(pc);
     const fetchPc = pc & 0x1ffff;
     const instruction = service ? undefined : decode(input.code, fetchPc);
+    if (instruction !== undefined) {
+      const declared = delayLoopAt(input.code, fetchPc, pc, instruction.size, machine.cyclePs);
+      if (declared !== undefined) delays.set(pc, declared);
+    }
     const key = service
       ? `service:${machine.cyclePs}:${pc}`
       : cacheKey(input.code, fetchPc, instruction!.size, machine.cyclePs);
@@ -274,8 +383,11 @@ const createTranslate =
 
       const builder = createJitBlockBuilder();
       const cycles = instruction!.cycles * machine.cyclePs;
+      const spins = selfBranchAt(input.code, fetchPc, pc, instruction!.size);
 
       builder.instruction({ pc, nextPc: (pc + instruction!.size) >>> 0 }, (body) => {
+        const total = spins ? body.local(types.number, num(body, cycles)) : undefined;
+
         body.if(
           body.readState('halted', types.bool),
           () => {},
@@ -283,10 +395,11 @@ const createTranslate =
             const scope = asBody(run);
 
             instruction!.emit(scope, pc);
+            if (total !== undefined) foldSpin(scope, cycles, total);
             tick(machine, scope, cycles);
           },
         );
-        body.elapse(num(body, cycles));
+        body.elapse(total === undefined ? num(body, cycles) : body.getLocal(total));
       });
 
       return builder.finish();
@@ -303,11 +416,13 @@ const create: Factory = (context) => {
   const machine = createMachine(frequency);
   const firmware = context.props.firmware;
 
+  const delays = new Map<number, { counter: string; cycles: number }>();
   context.attachJit({
     entry: 'cpu',
     code: CODE,
     pc: 'pc',
-    translate: createTranslate(machine),
+    translate: createTranslate(machine, delays),
+    delays,
   });
 
   if (firmware !== undefined && firmware.length > 0) context.loadBytes(CODE, firmware.slice());
