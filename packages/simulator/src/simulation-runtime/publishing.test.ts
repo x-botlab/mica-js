@@ -1,9 +1,11 @@
 import { timePs } from '@mica-js/core';
+import type { Disposable } from '@mica-js/core/lifecycle';
 import { compileDDL } from '@mica-js/ddl';
+import { createDeviceBuilder, types, type DeviceIR } from '@mica-js/device-model';
 import type { DeviceMetadata } from '@mica-js/document/schematic';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBoard, createDeviceLibrary } from '../runtime';
-import type { TopicMessage } from '../types';
+import type { DeviceAdapter, DeviceContext, InstanceDescription, TopicMessage } from '../types';
 import { copyPayload } from './payload';
 import type { IPreparedDeviceTopic, IPreparedInstance } from './prepare';
 import { createSimulationRuntime, scopeTopics } from './runtime';
@@ -99,6 +101,82 @@ function codeSimulation(code: string): IPreparedSimulation {
   return { ...toggleSimulation(), devices: [{ id: DEVICE, definition: DEFINITION, code }] };
 }
 
+const OUTPUT_TOPICS: readonly (readonly [string, IPreparedDeviceTopic])[] = [
+  ['echo', { port: 'echo', direction: 'output', type: 'string', delivery: 'message' }],
+  ['blob', { port: 'blob', direction: 'output', type: 'bytes', delivery: 'message' }],
+];
+
+function fakeInstance(symbol = SYMBOL): IPreparedInstance {
+  return {
+    symbol,
+    device: { topics: new Map<string, IPreparedDeviceTopic>(OUTPUT_TOPICS) },
+  } as unknown as IPreparedInstance;
+}
+
+interface IBoardObservation {
+  readonly topic: string;
+  readonly payload: unknown;
+  readonly time: number;
+}
+
+/**
+ * One real board whose single device publishes through an instance-scoped bridge. Each run picks the
+ * surfaces that observe the fan-out, so the same messages can be compared across all of them.
+ */
+function publishOnBoard(surfaces: { readonly host: boolean; readonly scoped: boolean }): {
+  readonly host: IBoardObservation[];
+  readonly outputs: Parameters<typeof scopeTopics>[2];
+  readonly diagnostics: Parameters<typeof scopeTopics>[3];
+  readonly copies: number;
+} {
+  const instance = fakeInstance();
+  const host: IBoardObservation[] = [];
+  const outputs: Parameters<typeof scopeTopics>[2] = [];
+  const diagnostics: Parameters<typeof scopeTopics>[3] = [];
+  const buffer = new Uint8Array([1, 2, 3]);
+  let sent = false;
+  let subscription: Disposable | undefined;
+  const library = createDeviceLibrary([
+    {
+      id: DEVICE,
+      model: TOGGLE_MODEL,
+      create: (context) => {
+        // The runtime hands factories an owner-scoped facade over the board bridge.
+        const topics = scopeTopics(context.topics, instance, outputs, diagnostics, () => false);
+        if (surfaces.scoped) subscription = topics.onDidReceive(() => {});
+        return {
+          sync() {
+            if (sent) return;
+            sent = true;
+            topics.publish('echo', 'tick');
+            topics.publish('blob', buffer);
+            // The device reuses its buffer; every surface must keep the publish snapshot instead.
+            buffer[0] = 9;
+          },
+          dispose() {
+            subscription?.dispose();
+          },
+        };
+      },
+    },
+  ]);
+  const board = createBoard(library, {
+    instances: [{ id: SYMBOL, type: DEVICE, props: { panel: new Uint8Array([1]) } }],
+    nets: [],
+  });
+  const observing: Disposable | undefined = surfaces.host
+    ? board.topics.onDidReceive((entry) => host.push({ ...entry, time: board.time }))
+    : undefined;
+  vi.mocked(copyPayload).mockClear();
+  try {
+    board.runUntil(timePs(10));
+  } finally {
+    observing?.dispose();
+    board.dispose();
+  }
+  return { host, outputs, diagnostics, copies: vi.mocked(copyPayload).mock.calls.length };
+}
+
 describe('topic publishing', () => {
   it('publishes byte channel outputs that pass their own payload contract', async () => {
     const api = runtime();
@@ -126,20 +204,11 @@ describe('topic publishing', () => {
       const received: TopicMessage[] = [];
       // A direct subscriber on the exported bridge, as an embedding harness does.
       board.topics.onDidReceive((entry) => received.push(entry));
-      const instance = {
-        symbol: SYMBOL,
-        device: {
-          topics: new Map<string, IPreparedDeviceTopic>([
-            ['echo', { port: 'echo', direction: 'output', type: 'string', delivery: 'message' }],
-            ['blob', { port: 'blob', direction: 'output', type: 'bytes', delivery: 'message' }],
-          ]),
-        },
-      } as unknown as IPreparedInstance;
       const outputs: Parameters<typeof scopeTopics>[2] = [];
       const diagnostics: Parameters<typeof scopeTopics>[3] = [];
       // The runtime hands factories an owner-scoped facade over this same bridge; the fan-out a
       // direct `board.topics` listener observes is identical.
-      const topics = scopeTopics(board.topics, instance, outputs, diagnostics);
+      const topics = scopeTopics(board.topics, fakeInstance(), outputs, diagnostics, () => false);
       const bytes = new Uint8Array([1, 2, 3]);
       topics.publish('echo', 'tick');
       topics.publish('blob', bytes);
@@ -155,6 +224,165 @@ describe('topic publishing', () => {
     } finally {
       board.dispose();
     }
+  });
+
+  it('counts owner-less host subscriptions and ignores scoped ones', () => {
+    let subscription: Disposable | undefined;
+    const library = createDeviceLibrary([
+      {
+        id: DEVICE,
+        model: TOGGLE_MODEL,
+        create: (context) => {
+          subscription = context.topics.onDidReceive(() => {});
+          return { sync() {}, dispose: () => subscription?.dispose() };
+        },
+      },
+    ]);
+    const board = createBoard(library, {
+      instances: [{ id: SYMBOL, type: DEVICE, props: { panel: new Uint8Array([1]) } }],
+      nets: [],
+    });
+    try {
+      // The device subscribes through its instance, so the board bridge still has no host listener.
+      expect(subscription).toBeDefined();
+      expect(board.topics.hostListenerCount).toBe(0);
+      const first = board.topics.onDidReceive(() => {});
+      const second = board.topics.onDidReceive(() => {});
+      expect(board.topics.hostListenerCount).toBe(2);
+      first.dispose();
+      // Releasing twice keeps the symmetric count.
+      first.dispose();
+      expect(board.topics.hostListenerCount).toBe(1);
+      second.dispose();
+      expect(board.topics.hostListenerCount).toBe(0);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('keeps the whole output stream for a host listening on board.topics', () => {
+    const scoped = publishOnBoard({ host: true, scoped: true });
+    const hostOnly = publishOnBoard({ host: true, scoped: false });
+    const silent = publishOnBoard({ host: false, scoped: false });
+    const expected: IBoardObservation[] = [
+      { topic: `${SYMBOL}/echo`, payload: 'tick', time: timePs(10) },
+      { topic: `${SYMBOL}/blob`, payload: new Uint8Array([1, 2, 3]), time: timePs(10) },
+    ];
+    // A device without any scoped subscriber still fans out to a direct host subscription, on the
+    // same schedule and from the publish snapshot rather than the device's mutated buffer.
+    expect(hostOnly.host).toEqual(expected);
+    expect(scoped.host).toEqual(expected);
+    // The batch entries `flush` turns into `ISimulationMessage`s track that stream one to one.
+    expect(hostOnly.outputs).toEqual([
+      { symbol: SYMBOL, port: 'echo', payload: 'tick', delivery: 'message' },
+      { symbol: SYMBOL, port: 'blob', payload: new Uint8Array([1, 2, 3]), delivery: 'message' },
+    ]);
+    // With nothing observing the topics, neither the snapshot nor the batch entry is produced.
+    expect(silent.outputs).toEqual([]);
+    expect(silent.copies).toBe(0);
+    expect(silent.diagnostics).toEqual([]);
+    expect(hostOnly.diagnostics).toEqual([]);
+  });
+
+  it('keeps the publish guards on the skipped path', () => {
+    interface IGuardCase {
+      readonly model: DeviceIR;
+      readonly props: NonNullable<InstanceDescription['props']>;
+      readonly create: (context: DeviceContext, publish: (port: string) => void) => DeviceAdapter;
+    }
+    /** Runs one board whose device publishes from a callback that `publish` must reject. */
+    function guardedPublish(entry: IGuardCase, scoped: boolean): string | undefined {
+      const errors: { code?: string }[] = [];
+      let subscription: Disposable | undefined;
+      const library = createDeviceLibrary([
+        {
+          id: DEVICE,
+          model: entry.model,
+          create: (context) => {
+            const topics = scopeTopics(context.topics, fakeInstance(), [], [], () => false);
+            if (scoped) subscription = topics.onDidReceive(() => {});
+            return entry.create(context, (port) => {
+              try {
+                topics.publish(port, 'tick');
+              } catch (cause) {
+                errors.push(cause as { code?: string });
+              }
+            });
+          },
+        },
+      ]);
+      const board = createBoard(library, {
+        instances: [{ id: SYMBOL, type: DEVICE, props: entry.props }],
+        nets: [],
+      });
+      try {
+        board.runUntil(timePs(10));
+      } catch {
+        /* A faulted board rejects the run; the publish guard is what this test reads. */
+      } finally {
+        subscription?.dispose();
+        board.dispose();
+      }
+      return errors[0]?.code;
+    }
+
+    const toggle: Omit<IGuardCase, 'create'> = {
+      model: TOGGLE_MODEL,
+      props: { panel: new Uint8Array([1]) },
+    };
+    for (const scoped of [false, true]) {
+      // Disposal invalidates the instance before its adapter disposes.
+      expect(
+        guardedPublish(
+          {
+            ...toggle,
+            create: (_context, publish) => ({ sync() {}, dispose: () => publish('echo') }),
+          },
+          scoped,
+        ),
+      ).toBe('OBJECT_DISPOSED');
+      // A faulted board keeps rejecting publishes even when nothing observes the topics.
+      expect(
+        guardedPublish(
+          {
+            ...toggle,
+            create: (context, publish) => ({
+              sync() {
+                context.reportError(new Error('boom'));
+                publish('echo');
+              },
+              dispose() {},
+            }),
+          },
+          scoped,
+        ),
+      ).toBe('BOARD_FAULTED');
+    }
+
+    // Blocks are translated while the board is in a phase that forbids publishing.
+    const builder = createDeviceBuilder({ name: 'Guard' });
+    builder.memory({ name: 'code', length: 4 });
+    builder.state({ name: 'pc', type: types.number, initial: 0 });
+    const jit: IGuardCase = {
+      model: builder.finish(),
+      props: {},
+      create: (context, publish) => {
+        const registration = context.attachJit({
+          entry: 'guard',
+          code: 'code',
+          pc: 'pc',
+          translate: (input, block) => {
+            publish('echo');
+            block.instruction({ pc: input.pc, nextPc: input.pc + 1 }, (body) => body.stop());
+            return block.finish();
+          },
+        });
+        context.loadBytes('code', new Uint8Array(4));
+        return { sync() {}, dispose: () => registration.dispose() };
+      },
+    };
+    expect(guardedPublish(jit, false)).toBe('INVALID_CALL_STATE');
+    expect(guardedPublish(jit, true)).toBe('INVALID_CALL_STATE');
   });
 
   it('drops the flush-stage copies and messages, not the delivered stream, without a listener', async () => {
@@ -181,18 +409,17 @@ describe('topic publishing', () => {
     const unlistened = await run(false);
     const listened = await run(true);
     expect(listened.publishes).toEqual(expected);
-    // Without a listener the only remaining copies are the per-publish snapshots that keep the
-    // board fan-out (and batch outputs) independent from the device's own buffers.
-    expect(unlistened.copies).toBe(PUBLISHED_TOPICS.length);
+    // Nothing observes the topics: no snapshot is taken and no message is assembled.
+    expect(unlistened.copies).toBe(0);
+    expect(unlistened.publishes).toEqual([]);
     // With a listener the level baseline is copied on change, and no message payload is copied twice.
     expect(listened.copies).toBe(PUBLISHED_TOPICS.length + LEVEL_TOPICS);
   });
 
-  it('keeps publishing through the bridge while the instance has no scoped subscriber', async () => {
+  it('keeps the snapshot when only the device subscribes to its own topics', async () => {
     async function run(subscribe: boolean) {
       const api = runtime();
       const publishes: ISimulationMessage[] = [];
-      api.onDidPublish((publish) => publishes.push(publish));
       await api.load(codeSimulation(deviceCode(subscribe)));
       vi.mocked(copyPayload).mockClear();
       await api.tick(timePs(4));
@@ -200,9 +427,12 @@ describe('topic publishing', () => {
     }
     const unsubscribed = await run(false);
     const subscribed = await run(true);
-    expect(unsubscribed.publishes).toHaveLength(PUBLISHED_TOPICS.length);
-    expect(unsubscribed.publishes).toEqual(subscribed.publishes);
-    expect(unsubscribed.copies).toBe(PUBLISHED_TOPICS.length + LEVEL_TOPICS);
-    expect(subscribed.copies).toBe(PUBLISHED_TOPICS.length + LEVEL_TOPICS);
+    // The device's own subscription keeps the per-publish snapshot and the board fan-out alive.
+    expect(subscribed.copies).toBe(PUBLISHED_TOPICS.length);
+    // Without it the accepted outputs are dropped before they are copied or queued.
+    expect(unsubscribed.copies).toBe(0);
+    // Neither run has a publish listener, so no message reaches the delivery surface.
+    expect(unsubscribed.publishes).toEqual([]);
+    expect(subscribed.publishes).toEqual([]);
   });
 });

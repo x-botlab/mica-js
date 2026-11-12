@@ -117,12 +117,13 @@ export function createSimulationRuntime(
       );
       assertActive();
       if (current !== generation) return;
-      install(buildLoadedRuntime(prepared));
+      install(buildLoadedRuntime(prepared, () => publishes.hasListeners));
     },
     async reset(): Promise<void> {
       assertActive();
       ++generation;
-      if (active !== undefined) install(buildLoadedRuntime(active.prepared));
+      if (active !== undefined)
+        install(buildLoadedRuntime(active.prepared, () => publishes.hasListeners));
       else {
         pending.length = 0;
         published.clear();
@@ -203,7 +204,10 @@ export function createSimulationRuntime(
   };
 }
 
-function buildLoadedRuntime(prepared: IResolvedSimulation): ILoadedRuntime {
+function buildLoadedRuntime(
+  prepared: IResolvedSimulation,
+  publishObserved: () => boolean,
+): ILoadedRuntime {
   const outputs: IOutput[] = [];
   const found: ISimulationDiagnostic[] = [];
   const inputs = new Map<string, IPreparedDeviceTopic>();
@@ -218,7 +222,7 @@ function buildLoadedRuntime(prepared: IResolvedSimulation): ILoadedRuntime {
         create: (context: DeviceContext) =>
           instance.device.create({
             ...context,
-            topics: scopeTopics(context.topics, instance, outputs, found),
+            topics: scopeTopics(context.topics, instance, outputs, found, publishObserved),
           }),
       };
     }),
@@ -271,17 +275,28 @@ function buildLoadedRuntime(prepared: IResolvedSimulation): ILoadedRuntime {
  *
  * Exported for the fan-out regression test, which drives it against a real `Board`: every accepted
  * output must still reach `board.topics` listeners even when the instance has no scoped subscriber.
+ *
+ * `publishObserved` reports whether anything outside the board consumes published messages; with no
+ * scoped subscriber, no owner-less bridge listener and no consumer, an accepted output is dropped
+ * before it is copied, fanned out or queued, while `assertCanPublish` keeps the publish guards.
  */
 export function scopeTopics(
   bridge: TopicBridge,
   instance: IPreparedInstance,
   outputs: IOutput[],
   diagnostics: ISimulationDiagnostic[],
+  publishObserved: () => boolean,
 ): TopicBridge {
   const prefix = `${encodeURIComponent(instance.symbol)}/`;
+  let scopedListeners = 0;
+  const unobserved = (): boolean =>
+    scopedListeners === 0 && bridge.hostListenerCount === 0 && !publishObserved();
   return {
-    onDidReceive: ((listener, thisArgs, disposables) =>
-      bridge.onDidReceive(
+    get hostListenerCount(): number {
+      return bridge.hostListenerCount;
+    },
+    onDidReceive: ((listener, thisArgs, disposables) => {
+      const subscription = bridge.onDidReceive(
         (message) => {
           if (!message.topic.startsWith(prefix)) return;
           const port = message.topic.slice(prefix.length);
@@ -289,8 +304,23 @@ export function scopeTopics(
           return listener.call(thisArgs, { topic: port, payload: copyPayload(message.payload) });
         },
         undefined,
-        disposables,
-      )) as Event<TopicMessage>,
+        undefined,
+      );
+      scopedListeners++;
+      let active = true;
+      const disposable = {
+        dispose: () => {
+          if (active) {
+            active = false;
+            scopedListeners--;
+            subscription.dispose();
+          }
+        },
+      };
+      disposables?.push(disposable);
+      return disposable;
+    }) as Event<TopicMessage>,
+    assertCanPublish: () => bridge.assertCanPublish(),
     publish(port, payload): void {
       const topic = instance.device.topics.get(port);
       if (topic?.direction !== 'output' || !payloadMatches(topic.type, payload)) {
@@ -301,6 +331,12 @@ export function scopeTopics(
           message: `Unknown output or invalid payload for ${instance.symbol}.${port}`,
           simTime: timePs(0),
         });
+        return;
+      }
+      // Publish would copy first and only then enforce the phase, disposed and faulted guards, so
+      // the skipped path keeps the guard on its own instead of losing the error.
+      if (unobserved()) {
+        bridge.assertCanPublish();
         return;
       }
       const snapshot = copyPayload(payload);
