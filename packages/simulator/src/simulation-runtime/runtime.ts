@@ -60,6 +60,7 @@ export function createSimulationRuntime(
       }
       publishes.fire({
         target: { symbol: output.symbol, port: output.port },
+        // A batch output may still alias device memory, so every listener gets its own copy.
         payload: copyPayload(output.payload),
         simTime,
       });
@@ -254,7 +255,14 @@ function buildLoadedRuntime(prepared: IResolvedSimulation): ILoadedRuntime {
   };
 }
 
-/** Board topics are opaque global strings; this boundary gives each factory local port names. */
+/**
+ * Board topics are opaque global strings; this boundary gives each factory local port names.
+ *
+ * A scoped bridge delivers only to listeners of the same instance, and only for its input ports, so
+ * a published output port never reaches a listener here. While the device holds no subscription the
+ * copy and the fan-out are unobservable, and only the batch output entry is recorded. Any
+ * subscription keeps the previous publish path, including the board guard it enforces.
+ */
 function scopeTopics(
   bridge: TopicBridge,
   instance: IPreparedInstance,
@@ -262,9 +270,10 @@ function scopeTopics(
   diagnostics: ISimulationDiagnostic[],
 ): TopicBridge {
   const prefix = `${encodeURIComponent(instance.symbol)}/`;
+  let listeners = 0;
   return {
-    onDidReceive: ((listener, thisArgs, disposables) =>
-      bridge.onDidReceive(
+    onDidReceive: ((listener, thisArgs, disposables) => {
+      const subscription = bridge.onDidReceive(
         (message) => {
           if (!message.topic.startsWith(prefix)) return;
           const port = message.topic.slice(prefix.length);
@@ -273,7 +282,21 @@ function scopeTopics(
         },
         undefined,
         disposables,
-      )) as Event<TopicMessage>,
+      );
+      listeners += 1;
+      let active = true;
+      const handle: Disposable = {
+        dispose: () => {
+          if (!active) return;
+          active = false;
+          listeners -= 1;
+          subscription.dispose();
+        },
+      };
+      // The bridge already queued its own disposable; keep both so a shared bag releases the count.
+      disposables?.push(handle);
+      return handle;
+    }) as Event<TopicMessage>,
     publish(port, payload): void {
       const topic = instance.device.topics.get(port);
       if (topic?.direction !== 'output' || !payloadMatches(topic.type, payload)) {
@@ -286,9 +309,13 @@ function scopeTopics(
         });
         return;
       }
+      if (listeners === 0) {
+        outputs.push({ symbol: instance.symbol, port, payload });
+        return;
+      }
       const snapshot = copyPayload(payload);
       // Publish first so Board still enforces its phase and disposed/faulted guards.
-      bridge.publish(scopedTopic(instance.symbol, port), snapshot);
+      bridge.publish(prefix + port, snapshot);
       outputs.push({ symbol: instance.symbol, port, payload: snapshot });
     },
   };
