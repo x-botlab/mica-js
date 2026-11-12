@@ -277,7 +277,7 @@ pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.per
 | `coldMs`                                      | 装配 + `runUntil(0)` + 预热的 CPU 时间（不含测量窗口）                                                   |
 | `usPerSolve`                                  | 每次电气求解摊到的时钟时间：`network.solveSlots` 内用 `hrtime` 累计 / 调用次数                           |
 | `solves`                                      | 窗口内 `ElectricalStats.solves` 的增量                                                                   |
-| `prepareTopology`                             | 恒为 `null`：`prepareTopology` 是 `electrical.ts` 的模块私有函数，公开 stats 没有对应计数                |
+| `prepareTopology`                             | 整图重建次数；迁移桶命中时走恢复而不是重建                                                               |
 | `components` / `factorizations` / `leafPlans` | 同一次求解统计里的分量数、矩阵分解次数、叶计划（复用形状）数，用来观察拓扑重建频率                       |
 | `boundaryCalls`                               | 窗口内运行时 `boundary()` 的调用次数（每次块边界都会经过它）                                             |
 | `publishCalls` / `electricalPublishes`        | 窗口内 `publish()` 的调用次数 / 其中真正推进了电气求解的次数                                             |

@@ -35,6 +35,7 @@ interface ElectricalStats {
   readonly cacheHits: number;
   readonly leafPlans: number;
   readonly leafPropagations: number;
+  readonly topologyPrepares: number;
 }
 
 interface ElectricalNetwork {
@@ -318,7 +319,8 @@ export interface MeasureResult {
   readonly rtf: number;
   readonly usPerSolve: number;
   readonly solves: number;
-  readonly prepareTopology: number | null;
+  /** Whole-graph topology rebuilds; a transition-bucket hit restores instead. */
+  readonly prepareTopology: number;
   readonly components: number;
   readonly factorizations: number;
   readonly leafPlans: number;
@@ -352,6 +354,7 @@ interface RoundSample {
   components: number;
   factorizations: number;
   leafPlans: number;
+  topologyPrepares: number;
   snapshot: ProbeSnapshot;
 }
 
@@ -364,10 +367,7 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
   const digests: string[] = [];
   const finalDigests: string[] = [];
   const faults: string[] = [];
-  const unavailable: Record<string, string> = {
-    prepareTopology:
-      '`prepareTopology` 是 `packages/simulator/src/electrical.ts` 的模块私有函数，公开的 `ElectricalStats` 没有对应计数；用 `factorizations` / `leafPlans` 观察拓扑重建频率，要精确计数需要给 `ElectricalStats` 补 `topologyPrepares`（#274 后续）。',
-  };
+  const unavailable: Record<string, string> = {};
   let coldMs = 0;
   let devices = 0;
   let nets = 0;
@@ -417,6 +417,7 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
         components: statistics?.components ?? 0,
         factorizations: statistics?.factorizations ?? 0,
         leafPlans: statistics?.leafPlans ?? 0,
+        topologyPrepares: statistics?.topologyPrepares ?? 0,
         snapshot,
       });
       digests.push(snapshot.digest);
@@ -454,7 +455,7 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     rtf: Number((best.cpuMs / measureMs).toFixed(3)),
     usPerSolve: Number(usPerSolve.toFixed(2)),
     solves: best.solves,
-    prepareTopology: null,
+    prepareTopology: best.topologyPrepares,
     components: best.components,
     factorizations: best.factorizations,
     leafPlans: best.leafPlans,
