@@ -228,19 +228,27 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   frame.memoryDirty.fill(0);
   const start = board.time;
   let reason: ReturnType<DirectJitProgram['run']>;
+  let wrote = false;
   try {
     // Resource barriers exclude intermediate observers; real events retain exact deadlines.
     reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
   } finally {
     board.time = frame.time;
     for (const [name, index] of direct.stateWrites)
-      if ((frame.stateDirty[index >>> 5]! & (1 << (index & 31))) !== 0)
+      if ((frame.stateDirty[index >>> 5]! & (1 << (index & 31))) !== 0) {
         instance.host.write(name, frame.states[index]);
+        wrote = true;
+      }
     for (const [name, index] of direct.memoryWrites)
-      if ((frame.memoryDirty[index >>> 5]! & (1 << (index & 31))) !== 0)
+      if ((frame.memoryDirty[index >>> 5]! & (1 << (index & 31))) !== 0) {
         instance.memoryChanged(name);
+        wrote = true;
+      }
   }
-  board.boundary();
+  // A frame that only dispatched an unknown PC changed no slot and advanced no time, so the
+  // convergence pass would find nothing dirty to solve. The fallback re-enters the same
+  // instruction on the interpreter path, whose own boundary converges the frame instead.
+  if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
   if (reason === 'fallback') {
     jit.directSkip = finite(instance.states.get(jit.options.pc), 'pc');
     if (board.time === start && board.time < board.executionEnd) return false;
