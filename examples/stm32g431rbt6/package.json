@@ -1,0 +1,21 @@
+{
+  "name": "@mica-js/example-stm32g431rbt6",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "STM32G431RBT6 器件示例：LQFP64 引脚、Cortex-M4 Thumb 子集、GPIO/RCC/SysTick/USART",
+  "scripts": {
+    "prepare:types": "mica prepare",
+    "build": "mica build",
+    "typecheck": "mica prepare && tsc --noEmit",
+    "test": "mica build && vitest run --config vitest.config.ts",
+    "bench": "mica build && vitest run --config vitest.perf.config.ts"
+  },
+  "devDependencies": {
+    "@mica-js/sdk": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
+    "@types/node": "^24.19.2",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
