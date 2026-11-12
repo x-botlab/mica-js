@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/document",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Mica document contracts: schematic and canvas formats, topic delivery and shared format models",
   "license": "MIT",
   "repository": {
