@@ -5,8 +5,9 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/simulator';
 import type { DeviceIR } from '@mica-js/device-model';
+import { compileDDL } from '@mica-js/ddl';
 import type { DeviceFactory } from '../device.js';
-import { buildContent, modelExpression } from './content.js';
+import { buildContent, modelExpression, stripModelSource } from './content.js';
 import { runCli } from './cli.js';
 
 const roots: string[] = [];
@@ -30,6 +31,15 @@ async function load(source: string) {
   return (await import(
     /* @vite-ignore */ `data:text/javascript,${encodeURIComponent(source)}`
   )) as Record<string, unknown>;
+}
+function countSourceKeys(value: unknown): number {
+  if (value === null || typeof value !== 'object') return 0;
+  if (Array.isArray(value))
+    return value.reduce<number>((sum, item) => sum + countSourceKeys(item), 0);
+  return Object.entries(value).reduce(
+    (sum, [key, item]) => sum + (key === 'source' ? 1 : countSourceKeys(item)),
+    0,
+  );
 }
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -84,6 +94,71 @@ describe('standalone content builds', () => {
     expect(Object.is(value.values[3], -0)).toBe(true);
     expect(value.bytes).toEqual(new Uint8Array([0, 255]));
     expect(Object.hasOwn(value, '__proto__')).toBe(true);
+  });
+
+  it('copies models without source while preserving special values and bytes', async () => {
+    const input = Object.freeze({
+      source: {
+        uri: 'mica:devices/probe/model.ddl',
+        range: { start: { line: 1, column: 1 }, end: { line: 1, column: 6 } },
+      },
+      values: Object.freeze([NaN, Infinity, -Infinity, -0]),
+      bytes: new Uint8Array([0, 255]),
+      nested: Object.freeze({ source: { label: 'generated' }, keep: true }),
+    });
+    const result = await load(`export const value = ${modelExpression(stripModelSource(input))};`);
+    const value = result.value as {
+      values: number[];
+      bytes: Uint8Array;
+      nested: { source?: unknown; keep: boolean };
+    };
+    expect(Object.hasOwn(value, 'source')).toBe(false);
+    expect(Object.hasOwn(value.nested, 'source')).toBe(false);
+    expect(value.nested.keep).toBe(true);
+    expect(Number.isNaN(value.values[0])).toBe(true);
+    expect(value.values.slice(1, 3)).toEqual([Infinity, -Infinity]);
+    expect(Object.is(value.values[3], -0)).toBe(true);
+    expect(value.bytes).toBeInstanceOf(Uint8Array);
+    expect(value.bytes).toEqual(new Uint8Array([0, 255]));
+    // The source model is left untouched.
+    expect(input.source.uri).toBe('mica:devices/probe/model.ddl');
+    expect(Object.hasOwn(input.nested, 'source')).toBe(true);
+  });
+
+  it('strips DDL source locations from built models and still runs the device', async () => {
+    const root = await fixture();
+    const compiled = await compileDDL(
+      await readFile(resolve(root, 'src/devices/resistor/model.ddl'), 'utf8'),
+      { uri: 'mica:devices/resistor/model.ddl' },
+    );
+    const operations = (
+      compiled.declarations as unknown as {
+        initial?: { body?: { operations?: readonly { source?: unknown }[] } };
+        body?: { operations?: readonly { source?: unknown }[] };
+      }[]
+    ).flatMap((declaration) => [
+      ...(declaration.initial?.body?.operations ?? []),
+      ...(declaration.body?.operations ?? []),
+    ]);
+    expect(operations.some((operation) => operation.source !== undefined)).toBe(true);
+
+    const files = await buildContent({ root });
+    const device = await load(files[1]!.source);
+    expect(countSourceKeys(device.model)).toBe(0);
+
+    const library = createDeviceLibrary([
+      { id: 'resistor', model: device.model as DeviceIR, create: device.create as DeviceFactory },
+    ]);
+    const board = createBoard(library, {
+      instances: [{ id: 'r1', type: 'resistor' }],
+      nets: [
+        { id: 'vcc', voltage: 3.3, pins: [{ instance: 'r1', pin: 'a' }] },
+        { id: 'gnd', voltage: 0, pins: [{ instance: 'r1', pin: 'b' }] },
+      ],
+    });
+    board.runUntil(100);
+    expect(board.time).toBe(100);
+    board.dispose();
   });
 
   it('inlines shared code, literal dynamic imports and URL resources', async () => {

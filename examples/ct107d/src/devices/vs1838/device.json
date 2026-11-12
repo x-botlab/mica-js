@@ -1,0 +1,59 @@
+{
+  "kind": "device",
+  "id": "vs1838",
+  "version": "1.0.0",
+  "displayName": "VS1838 一体化红外接收头",
+  "description": "一体化 38 kHz 红外接收头：光电二极管在封装内，照明经布尔输入通道 carrier 注入。载波出现 50 µs 后把开漏 OUT 拉低（短于 50 µs 的毛刺不触发），消失 200 µs 后释放；输入翻转会取消相反相位的挂起定时，重复电平不重臂。receiving 端口跟随解调状态，只在变化时发布。理想化：不模拟 38 kHz 频率匹配、AGC（连续载波约 60 ms 后停止响应）与脉冲整形，照明是布尔值而非波形。",
+  "designatorPrefix": "U",
+  "tags": ["ir", "receiver", "demodulator", "analog", "ct107d"],
+  "properties": {
+    "outputResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "输出电阻",
+      "unit": "ohm",
+      "description": "OUT 开漏拉低时的等效串联电阻。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "lowThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "title": "低电平上限",
+      "unit": "V",
+      "description": "预留阈值属性；本器件没有采样引脚，行为不使用该值。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    },
+    "highThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 2,
+      "title": "高电平下限",
+      "unit": "V",
+      "description": "预留阈值属性；本器件没有采样引脚，行为不使用该值。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    }
+  },
+  "pins": {
+    "out": { "label": "OUT", "description": "解调输出（开漏）：检出载波拉低，空闲释放" },
+    "vcc": { "label": "VCC", "description": "5 V 电源", "group": "Power" },
+    "gnd": { "label": "GND", "description": "地", "group": "Power" }
+  },
+  "ports": {
+    "carrier": {
+      "direction": "input",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "载波输入",
+      "description": "true 表示 38 kHz 红外载波正在照射接收头；光电二极管在封装内部，照明不经过引脚。"
+    },
+    "receiving": {
+      "direction": "output",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "检出载波",
+      "description": "true 表示已检出载波并把 OUT 拉低（解调输出有效）；只在解调状态变化时发布。"
+    }
+  }
+}

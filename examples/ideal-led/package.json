@@ -1,0 +1,16 @@
+{
+  "name": "@mica-js/example-ideal-led",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "测试夹具：理想 LED，亮度端口按引脚电平发布",
+  "scripts": {
+    "prepare:types": "mica prepare",
+    "build": "mica build",
+    "typecheck": "mica prepare && tsc --noEmit"
+  },
+  "devDependencies": {
+    "@mica-js/sdk": "workspace:*",
+    "typescript": "catalog:"
+  }
+}

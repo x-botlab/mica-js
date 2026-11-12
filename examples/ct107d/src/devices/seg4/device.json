@@ -1,0 +1,367 @@
+{
+  "kind": "device",
+  "id": "seg4",
+  "version": "1.0.0",
+  "displayName": "四位数码管",
+  "description": "共阴四位七段数码管：8 段阳极与 4 位公共阴极之间各是一段等效串联电阻；扫描选中某一位时锁存该时刻的段码（bit0=a…bit7=dp），保持到下一次选中。",
+  "designatorPrefix": "DS",
+  "tags": ["display", "led", "seven-segment", "multiplexed"],
+  "properties": {
+    "forwardResistance": {
+      "type": "number",
+      "required": false,
+      "default": 500,
+      "title": "段等效电阻",
+      "unit": "ohm",
+      "description": "段阳极到公共阴极的等效串联电阻。与 blue-led 相同，线性模型不含正向压降；板级限流电阻可并入本值（例如 1 kΩ 串联时取 1500）。",
+      "editor": {
+        "kind": "number",
+        "min": 0.001,
+        "max": 1000000000,
+        "step": 1
+      }
+    }
+  },
+  "pins": {
+    "a": {
+      "label": "A",
+      "description": "A 段阳极"
+    },
+    "b": {
+      "label": "B",
+      "description": "B 段阳极"
+    },
+    "c": {
+      "label": "C",
+      "description": "C 段阳极"
+    },
+    "d": {
+      "label": "D",
+      "description": "D 段阳极"
+    },
+    "e": {
+      "label": "E",
+      "description": "E 段阳极"
+    },
+    "f": {
+      "label": "F",
+      "description": "F 段阳极"
+    },
+    "g": {
+      "label": "G",
+      "description": "G 段阳极"
+    },
+    "dp": {
+      "label": "DP",
+      "description": "DP 段阳极"
+    },
+    "com1": {
+      "label": "COM1",
+      "description": "第 1 位公共阴极，低电平选中该位"
+    },
+    "com2": {
+      "label": "COM2",
+      "description": "第 2 位公共阴极，低电平选中该位"
+    },
+    "com3": {
+      "label": "COM3",
+      "description": "第 3 位公共阴极，低电平选中该位"
+    },
+    "com4": {
+      "label": "COM4",
+      "description": "第 4 位公共阴极，低电平选中该位"
+    }
+  },
+  "ports": {
+    "digit1": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "第 1 位",
+      "description": "第 1 位最近一次被选中时的段码：bit0=a、bit1=b、…、bit7=dp"
+    },
+    "digit2": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "第 2 位",
+      "description": "第 2 位最近一次被选中时的段码：bit0=a、bit1=b、…、bit7=dp"
+    },
+    "digit3": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "第 3 位",
+      "description": "第 3 位最近一次被选中时的段码：bit0=a、bit1=b、…、bit7=dp"
+    },
+    "digit4": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "第 4 位",
+      "description": "第 4 位最近一次被选中时的段码：bit0=a、bit1=b、…、bit7=dp"
+    }
+  },
+  "symbol": {
+    "bounds": {
+      "x": -70,
+      "y": -45,
+      "width": 140,
+      "height": 90
+    },
+    "graphics": [
+      {
+        "type": "line",
+        "from": [-45, -12],
+        "to": [-33, -12]
+      },
+      {
+        "type": "line",
+        "from": [-33, -12],
+        "to": [-33, 0]
+      },
+      {
+        "type": "line",
+        "from": [-33, 0],
+        "to": [-33, 12]
+      },
+      {
+        "type": "line",
+        "from": [-45, 12],
+        "to": [-33, 12]
+      },
+      {
+        "type": "line",
+        "from": [-45, 0],
+        "to": [-45, 12]
+      },
+      {
+        "type": "line",
+        "from": [-45, -12],
+        "to": [-45, 0]
+      },
+      {
+        "type": "line",
+        "from": [-45, 0],
+        "to": [-33, 0]
+      },
+      {
+        "type": "circle",
+        "center": [-30, 10],
+        "radius": 1.4
+      },
+      {
+        "type": "line",
+        "from": [-19, -12],
+        "to": [-7, -12]
+      },
+      {
+        "type": "line",
+        "from": [-7, -12],
+        "to": [-7, 0]
+      },
+      {
+        "type": "line",
+        "from": [-7, 0],
+        "to": [-7, 12]
+      },
+      {
+        "type": "line",
+        "from": [-19, 12],
+        "to": [-7, 12]
+      },
+      {
+        "type": "line",
+        "from": [-19, 0],
+        "to": [-19, 12]
+      },
+      {
+        "type": "line",
+        "from": [-19, -12],
+        "to": [-19, 0]
+      },
+      {
+        "type": "line",
+        "from": [-19, 0],
+        "to": [-7, 0]
+      },
+      {
+        "type": "circle",
+        "center": [-4, 10],
+        "radius": 1.4
+      },
+      {
+        "type": "line",
+        "from": [7, -12],
+        "to": [19, -12]
+      },
+      {
+        "type": "line",
+        "from": [19, -12],
+        "to": [19, 0]
+      },
+      {
+        "type": "line",
+        "from": [19, 0],
+        "to": [19, 12]
+      },
+      {
+        "type": "line",
+        "from": [7, 12],
+        "to": [19, 12]
+      },
+      {
+        "type": "line",
+        "from": [7, 0],
+        "to": [7, 12]
+      },
+      {
+        "type": "line",
+        "from": [7, -12],
+        "to": [7, 0]
+      },
+      {
+        "type": "line",
+        "from": [7, 0],
+        "to": [19, 0]
+      },
+      {
+        "type": "circle",
+        "center": [22, 10],
+        "radius": 1.4
+      },
+      {
+        "type": "line",
+        "from": [33, -12],
+        "to": [45, -12]
+      },
+      {
+        "type": "line",
+        "from": [45, -12],
+        "to": [45, 0]
+      },
+      {
+        "type": "line",
+        "from": [45, 0],
+        "to": [45, 12]
+      },
+      {
+        "type": "line",
+        "from": [33, 12],
+        "to": [45, 12]
+      },
+      {
+        "type": "line",
+        "from": [33, 0],
+        "to": [33, 12]
+      },
+      {
+        "type": "line",
+        "from": [33, -12],
+        "to": [33, 0]
+      },
+      {
+        "type": "line",
+        "from": [33, 0],
+        "to": [45, 0]
+      },
+      {
+        "type": "circle",
+        "center": [48, 10],
+        "radius": 1.4
+      }
+    ],
+    "pins": {
+      "a": {
+        "position": [-80, -35],
+        "direction": "left",
+        "label": {
+          "visible": true
+        }
+      },
+      "b": {
+        "position": [-80, -25],
+        "direction": "left",
+        "label": {
+          "visible": true
+        }
+      },
+      "c": {
+        "position": [-80, -15],
+        "direction": "left",
+        "label": {
+          "visible": true
+        }
+      },
+      "d": {
+        "position": [-80, -5],
+        "direction": "left",
+        "label": {
+          "visible": true
+        }
+      },
+      "e": {
+        "position": [-80, 5],
+        "direction": "left",
+        "label": {
+          "visible": true
+        }
+      },
+      "f": {
+        "position": [-80, 15],
+        "direction": "left",
+        "label": {
+          "visible": true
+        }
+      },
+      "g": {
+        "position": [-80, 25],
+        "direction": "left",
+        "label": {
+          "visible": true
+        }
+      },
+      "dp": {
+        "position": [-80, 35],
+        "direction": "left",
+        "label": {
+          "visible": true
+        }
+      },
+      "com1": {
+        "position": [80, -15],
+        "direction": "right",
+        "label": {
+          "visible": true
+        }
+      },
+      "com2": {
+        "position": [80, -5],
+        "direction": "right",
+        "label": {
+          "visible": true
+        }
+      },
+      "com3": {
+        "position": [80, 5],
+        "direction": "right",
+        "label": {
+          "visible": true
+        }
+      },
+      "com4": {
+        "position": [80, 15],
+        "direction": "right",
+        "label": {
+          "visible": true
+        }
+      }
+    },
+    "annotations": {
+      "designator": {
+        "position": [-70, -50],
+        "align": "left"
+      }
+    }
+  }
+}

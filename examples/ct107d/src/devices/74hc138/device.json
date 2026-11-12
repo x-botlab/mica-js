@@ -1,0 +1,79 @@
+{
+  "kind": "device",
+  "id": "74hc138",
+  "version": "1.0.0",
+  "displayName": "74HC138 3-8 译码器",
+  "description": "3-8 译码器，输出低有效：E1#=0、E2#=0、E3=1 时仅选中的 Yn# 拉低，否则八路输出全高。端口 select 给出 0–7（禁用 -1），enabled 给出使能状态，code 以 ASCII 字节给出 \"Y0\"..\"Y7\" 或 \"--\"。零传播延迟、无毛刺、无电源电流。",
+  "designatorPrefix": "U",
+  "tags": ["logic", "decoder", "74hc", "ct107d"],
+  "properties": {
+    "outputResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "输出电阻",
+      "unit": "ohm",
+      "description": "推挽输出的等效串联电阻，决定高/低电平的负载能力。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "lowThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "title": "低电平上限",
+      "unit": "V",
+      "description": "采样电压低于该值判为逻辑低。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    },
+    "highThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 2,
+      "title": "高电平下限",
+      "unit": "V",
+      "description": "采样电压高于该值判为逻辑高。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    }
+  },
+  "pins": {
+    "a": { "label": "A", "description": "选择位 LSB", "group": "Input" },
+    "b": { "label": "B", "description": "选择位", "group": "Input" },
+    "c": { "label": "C", "description": "选择位 MSB", "group": "Input" },
+    "e1": { "label": "E1#", "description": "使能 1，低有效", "group": "Input" },
+    "e2": { "label": "E2#", "description": "使能 2，低有效", "group": "Input" },
+    "e3": { "label": "E3", "description": "使能 3，高有效", "group": "Input" },
+    "y0": { "label": "Y0#", "description": "译码输出 0，低有效", "group": "Output" },
+    "y1": { "label": "Y1#", "description": "译码输出 1，低有效", "group": "Output" },
+    "y2": { "label": "Y2#", "description": "译码输出 2，低有效", "group": "Output" },
+    "y3": { "label": "Y3#", "description": "译码输出 3，低有效", "group": "Output" },
+    "y4": { "label": "Y4#", "description": "译码输出 4，低有效", "group": "Output" },
+    "y5": { "label": "Y5#", "description": "译码输出 5，低有效", "group": "Output" },
+    "y6": { "label": "Y6#", "description": "译码输出 6，低有效", "group": "Output" },
+    "y7": { "label": "Y7#", "description": "译码输出 7，低有效", "group": "Output" },
+    "vcc": { "label": "VCC", "description": "5 V 逻辑电源", "group": "Power" },
+    "gnd": { "label": "GND", "description": "地", "group": "Power" }
+  },
+  "ports": {
+    "select": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "选中的输出",
+      "description": "当前选中的译码输出序号 0–7；任一使能条件不满足时为 -1。"
+    },
+    "enabled": {
+      "direction": "output",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "使能状态",
+      "description": "true 表示 E1#=0、E2#=0 且 E3=1，译码有效。"
+    },
+    "code": {
+      "direction": "output",
+      "type": "bytes",
+      "delivery": "level",
+      "title": "译码输出代码",
+      "description": "两个 ASCII 字节：选中的输出写作 \"Y0\"..\"Y7\"，禁用时写作 \"--\"（0x2D 0x2D）。"
+    }
+  }
+}

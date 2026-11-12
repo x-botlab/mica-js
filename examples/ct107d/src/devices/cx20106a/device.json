@@ -1,0 +1,76 @@
+{
+  "kind": "device",
+  "id": "cx20106a",
+  "version": "1.0.0",
+  "displayName": "CX20106A 红外接收前置放大/整形",
+  "description": "红外接收前置放大与整形：照明经布尔输入通道 carrier 注入，载波出现 100 µs 后把开漏 OUT 拉低，消失 150 µs 后释放；输入翻转会取消相反相位的挂起定时，重复电平不重臂。receiving 端口跟随解调状态，只在变化时发布。f0KHz 仅作元数据。理想化：放大、f0 带通滤波、检波积分、脉冲整形与 inhibit/AGC 均不模拟，载波检出是布尔阈值而非波形。",
+  "designatorPrefix": "U",
+  "tags": ["ir", "receiver", "demodulator", "analog", "ct107d"],
+  "properties": {
+    "f0KHz": {
+      "type": "number",
+      "required": false,
+      "default": 38,
+      "title": "中心频率 f0",
+      "unit": "kHz",
+      "description": "由 F0 脚外接电阻设定的带通中心频率；本模型不参与行为，仅作元数据。",
+      "editor": { "kind": "number", "min": 30, "max": 60, "step": 1 }
+    },
+    "outputResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "输出电阻",
+      "unit": "ohm",
+      "description": "OUT 开漏拉低时的等效串联电阻。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "lowThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 0.8,
+      "title": "低电平上限",
+      "unit": "V",
+      "description": "IN 采样电压低于该值判为逻辑低。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    },
+    "highThreshold": {
+      "type": "number",
+      "required": false,
+      "default": 2,
+      "title": "高电平下限",
+      "unit": "V",
+      "description": "IN 采样电压高于该值判为逻辑高。",
+      "editor": { "kind": "number", "min": 0, "max": 5, "step": 0.1 }
+    }
+  },
+  "pins": {
+    "out": { "label": "OUT", "description": "解调输出（开漏）：检出载波拉低，空闲释放" },
+    "in": {
+      "label": "IN",
+      "description": "光电二极管输入，被动；照明经 carrier 通道注入，无电平语义"
+    },
+    "c1": { "label": "C1", "description": "外接电容，被动" },
+    "c2": { "label": "C2", "description": "外接电容，被动" },
+    "c3": { "label": "C3", "description": "外接电容，被动" },
+    "f0": { "label": "F0", "description": "f0 设定电阻输入，被动；对应 f0KHz 属性" },
+    "vcc": { "label": "VCC", "description": "5 V 电源", "group": "Power" },
+    "gnd": { "label": "GND", "description": "地", "group": "Power" }
+  },
+  "ports": {
+    "carrier": {
+      "direction": "input",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "载波输入",
+      "description": "true 表示红外载波正在照射外接光电二极管；载波检出简化为布尔阈值。"
+    },
+    "receiving": {
+      "direction": "output",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "检出载波",
+      "description": "true 表示已检出载波并把 OUT 拉低；只在解调状态变化时发布。"
+    }
+  }
+}

@@ -1,0 +1,669 @@
+{
+  "kind": "device",
+  "id": "iap15f2k61s2",
+  "version": "0.2.0",
+  "displayName": "IAP15F2K61S2",
+  "description": "STC15F2K60S2 系列 8051 单片机：JIT 取指执行 8051 指令集与中断，P0–P3、定时器 T0/T1/T2、双串口、ADC、PCA/CCP、SPI、IAP/EEPROM 与看门狗均按手册建模。",
+  "designatorPrefix": "U",
+  "tags": ["mcu", "8051", "stc15"],
+  "properties": {
+    "firmware": {
+      "type": "bytes",
+      "required": false,
+      "title": "固件",
+      "description": "裸二进制映像：字节写入 0000H 起的程序存储器，创建后从 0000H 取指。",
+      "editor": {
+        "kind": "file"
+      }
+    },
+    "clockFrequency": {
+      "type": "number",
+      "required": false,
+      "default": 11059200,
+      "title": "系统时钟 (Hz)",
+      "description": "STC15 的 1T 系统时钟：指令耗时、定时器计数与串口波特率都按它换算。",
+      "editor": {
+        "kind": "number",
+        "min": 1000000,
+        "max": 40000000,
+        "step": 1
+      }
+    }
+  },
+  "pins": {
+    "P0_0": {
+      "label": "P0_0",
+      "group": "GPIO"
+    },
+    "P0_1": {
+      "label": "P0_1",
+      "group": "GPIO"
+    },
+    "P0_2": {
+      "label": "P0_2",
+      "group": "GPIO"
+    },
+    "P0_3": {
+      "label": "P0_3",
+      "group": "GPIO"
+    },
+    "P0_4": {
+      "label": "P0_4",
+      "group": "GPIO"
+    },
+    "P0_5": {
+      "label": "P0_5",
+      "group": "GPIO"
+    },
+    "P0_6": {
+      "label": "P0_6",
+      "group": "GPIO"
+    },
+    "P0_7": {
+      "label": "P0_7",
+      "group": "GPIO"
+    },
+    "P1_0": {
+      "label": "P1_0",
+      "group": "GPIO"
+    },
+    "P1_1": {
+      "label": "P1_1",
+      "group": "GPIO"
+    },
+    "P1_2": {
+      "label": "P1_2",
+      "group": "GPIO"
+    },
+    "P1_3": {
+      "label": "P1_3",
+      "group": "GPIO"
+    },
+    "P1_4": {
+      "label": "P1_4",
+      "group": "GPIO"
+    },
+    "P1_5": {
+      "label": "P1_5",
+      "group": "GPIO"
+    },
+    "P1_6": {
+      "label": "P1_6",
+      "group": "GPIO"
+    },
+    "P1_7": {
+      "label": "P1_7",
+      "group": "GPIO"
+    },
+    "P2_0": {
+      "label": "P2_0",
+      "group": "GPIO"
+    },
+    "P2_1": {
+      "label": "P2_1",
+      "group": "GPIO"
+    },
+    "P2_2": {
+      "label": "P2_2",
+      "group": "GPIO"
+    },
+    "P2_3": {
+      "label": "P2_3",
+      "group": "GPIO"
+    },
+    "P2_4": {
+      "label": "P2_4",
+      "group": "GPIO"
+    },
+    "P2_5": {
+      "label": "P2_5",
+      "group": "GPIO"
+    },
+    "P2_6": {
+      "label": "P2_6",
+      "group": "GPIO"
+    },
+    "P2_7": {
+      "label": "P2_7",
+      "group": "GPIO"
+    },
+    "P3_0": {
+      "label": "P3_0",
+      "group": "GPIO"
+    },
+    "P3_1": {
+      "label": "P3_1",
+      "group": "GPIO"
+    },
+    "P3_2": {
+      "label": "P3_2",
+      "group": "GPIO"
+    },
+    "P3_3": {
+      "label": "P3_3",
+      "group": "GPIO"
+    },
+    "P3_4": {
+      "label": "P3_4",
+      "group": "GPIO"
+    },
+    "P3_5": {
+      "label": "P3_5",
+      "group": "GPIO"
+    },
+    "P3_6": {
+      "label": "P3_6",
+      "group": "GPIO"
+    },
+    "P3_7": {
+      "label": "P3_7",
+      "group": "GPIO"
+    },
+    "VCC": {
+      "label": "VCC",
+      "description": "供电，接固定电位网络"
+    },
+    "GND": {
+      "label": "GND",
+      "description": "地，接 0 V 网络"
+    }
+  },
+  "symbol": {
+    "bounds": {
+      "x": -160,
+      "y": -150,
+      "width": 320,
+      "height": 300
+    },
+    "graphics": [
+      {
+        "type": "rect",
+        "x": -140,
+        "y": -120,
+        "width": 280,
+        "height": 240,
+        "fill": "background"
+      },
+      {
+        "type": "line",
+        "from": [0, -120],
+        "to": [0, -150]
+      },
+      {
+        "type": "line",
+        "from": [0, 120],
+        "to": [0, 150]
+      },
+      {
+        "type": "line",
+        "from": [-140, -105],
+        "to": [-160, -105]
+      },
+      {
+        "type": "line",
+        "from": [-140, -91],
+        "to": [-160, -91]
+      },
+      {
+        "type": "line",
+        "from": [-140, -77],
+        "to": [-160, -77]
+      },
+      {
+        "type": "line",
+        "from": [-140, -63],
+        "to": [-160, -63]
+      },
+      {
+        "type": "line",
+        "from": [-140, -49],
+        "to": [-160, -49]
+      },
+      {
+        "type": "line",
+        "from": [-140, -35],
+        "to": [-160, -35]
+      },
+      {
+        "type": "line",
+        "from": [-140, -21],
+        "to": [-160, -21]
+      },
+      {
+        "type": "line",
+        "from": [-140, -7],
+        "to": [-160, -7]
+      },
+      {
+        "type": "line",
+        "from": [-140, 7],
+        "to": [-160, 7]
+      },
+      {
+        "type": "line",
+        "from": [-140, 21],
+        "to": [-160, 21]
+      },
+      {
+        "type": "line",
+        "from": [-140, 35],
+        "to": [-160, 35]
+      },
+      {
+        "type": "line",
+        "from": [-140, 49],
+        "to": [-160, 49]
+      },
+      {
+        "type": "line",
+        "from": [-140, 63],
+        "to": [-160, 63]
+      },
+      {
+        "type": "line",
+        "from": [-140, 77],
+        "to": [-160, 77]
+      },
+      {
+        "type": "line",
+        "from": [-140, 91],
+        "to": [-160, 91]
+      },
+      {
+        "type": "line",
+        "from": [-140, 105],
+        "to": [-160, 105]
+      },
+      {
+        "type": "line",
+        "from": [140, -105],
+        "to": [160, -105]
+      },
+      {
+        "type": "line",
+        "from": [140, -91],
+        "to": [160, -91]
+      },
+      {
+        "type": "line",
+        "from": [140, -77],
+        "to": [160, -77]
+      },
+      {
+        "type": "line",
+        "from": [140, -63],
+        "to": [160, -63]
+      },
+      {
+        "type": "line",
+        "from": [140, -49],
+        "to": [160, -49]
+      },
+      {
+        "type": "line",
+        "from": [140, -35],
+        "to": [160, -35]
+      },
+      {
+        "type": "line",
+        "from": [140, -21],
+        "to": [160, -21]
+      },
+      {
+        "type": "line",
+        "from": [140, -7],
+        "to": [160, -7]
+      },
+      {
+        "type": "line",
+        "from": [140, 7],
+        "to": [160, 7]
+      },
+      {
+        "type": "line",
+        "from": [140, 21],
+        "to": [160, 21]
+      },
+      {
+        "type": "line",
+        "from": [140, 35],
+        "to": [160, 35]
+      },
+      {
+        "type": "line",
+        "from": [140, 49],
+        "to": [160, 49]
+      },
+      {
+        "type": "line",
+        "from": [140, 63],
+        "to": [160, 63]
+      },
+      {
+        "type": "line",
+        "from": [140, 77],
+        "to": [160, 77]
+      },
+      {
+        "type": "line",
+        "from": [140, 91],
+        "to": [160, 91]
+      },
+      {
+        "type": "line",
+        "from": [140, 105],
+        "to": [160, 105]
+      }
+    ],
+    "pins": {
+      "P0_0": {
+        "position": [-160, -105],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, -109],
+          "align": "left"
+        }
+      },
+      "P0_1": {
+        "position": [-160, -91],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, -95],
+          "align": "left"
+        }
+      },
+      "P0_2": {
+        "position": [-160, -77],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, -81],
+          "align": "left"
+        }
+      },
+      "P0_3": {
+        "position": [-160, -63],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, -67],
+          "align": "left"
+        }
+      },
+      "P0_4": {
+        "position": [-160, -49],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, -53],
+          "align": "left"
+        }
+      },
+      "P0_5": {
+        "position": [-160, -35],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, -39],
+          "align": "left"
+        }
+      },
+      "P0_6": {
+        "position": [-160, -21],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, -25],
+          "align": "left"
+        }
+      },
+      "P0_7": {
+        "position": [-160, -7],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, -11],
+          "align": "left"
+        }
+      },
+      "P1_0": {
+        "position": [-160, 7],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, 3],
+          "align": "left"
+        }
+      },
+      "P1_1": {
+        "position": [-160, 21],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, 17],
+          "align": "left"
+        }
+      },
+      "P1_2": {
+        "position": [-160, 35],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, 31],
+          "align": "left"
+        }
+      },
+      "P1_3": {
+        "position": [-160, 49],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, 45],
+          "align": "left"
+        }
+      },
+      "P1_4": {
+        "position": [-160, 63],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, 59],
+          "align": "left"
+        }
+      },
+      "P1_5": {
+        "position": [-160, 77],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, 73],
+          "align": "left"
+        }
+      },
+      "P1_6": {
+        "position": [-160, 91],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, 87],
+          "align": "left"
+        }
+      },
+      "P1_7": {
+        "position": [-160, 105],
+        "direction": "left",
+        "label": {
+          "visible": true,
+          "position": [-150, 101],
+          "align": "left"
+        }
+      },
+      "P2_0": {
+        "position": [160, -105],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, -109],
+          "align": "right"
+        }
+      },
+      "P2_1": {
+        "position": [160, -91],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, -95],
+          "align": "right"
+        }
+      },
+      "P2_2": {
+        "position": [160, -77],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, -81],
+          "align": "right"
+        }
+      },
+      "P2_3": {
+        "position": [160, -63],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, -67],
+          "align": "right"
+        }
+      },
+      "P2_4": {
+        "position": [160, -49],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, -53],
+          "align": "right"
+        }
+      },
+      "P2_5": {
+        "position": [160, -35],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, -39],
+          "align": "right"
+        }
+      },
+      "P2_6": {
+        "position": [160, -21],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, -25],
+          "align": "right"
+        }
+      },
+      "P2_7": {
+        "position": [160, -7],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, -11],
+          "align": "right"
+        }
+      },
+      "P3_0": {
+        "position": [160, 7],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, 3],
+          "align": "right"
+        }
+      },
+      "P3_1": {
+        "position": [160, 21],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, 17],
+          "align": "right"
+        }
+      },
+      "P3_2": {
+        "position": [160, 35],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, 31],
+          "align": "right"
+        }
+      },
+      "P3_3": {
+        "position": [160, 49],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, 45],
+          "align": "right"
+        }
+      },
+      "P3_4": {
+        "position": [160, 63],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, 59],
+          "align": "right"
+        }
+      },
+      "P3_5": {
+        "position": [160, 77],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, 73],
+          "align": "right"
+        }
+      },
+      "P3_6": {
+        "position": [160, 91],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, 87],
+          "align": "right"
+        }
+      },
+      "P3_7": {
+        "position": [160, 105],
+        "direction": "right",
+        "label": {
+          "visible": true,
+          "position": [150, 101],
+          "align": "right"
+        }
+      },
+      "VCC": {
+        "position": [0, -150],
+        "direction": "up",
+        "label": {
+          "visible": true
+        }
+      },
+      "GND": {
+        "position": [0, 150],
+        "direction": "down",
+        "label": {
+          "visible": true
+        }
+      }
+    },
+    "annotations": {
+      "designator": {
+        "position": [0, -100],
+        "align": "center"
+      }
+    }
+  }
+}

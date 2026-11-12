@@ -1,0 +1,22 @@
+{
+  "kind": "widget",
+  "id": "button",
+  "version": "1.0.0",
+  "displayName": "按键",
+  "description": "半透明按键热区：按下时输出 press=true，松开或取消指针时回到 false。遮罩在板面照片的按键位置上。",
+  "properties": {
+    "label": { "type": "string", "required": false, "default": "", "title": "标签" },
+    "color": { "type": "string", "required": false, "default": "#38bdf8ff", "title": "高亮颜色" },
+    "radius": {
+      "type": "number",
+      "required": false,
+      "default": 10,
+      "title": "圆角",
+      "description": "圆角半径，逻辑单位；不超过实例短边的一半",
+      "editor": { "kind": "number", "min": 0, "max": 64, "step": 1 }
+    }
+  },
+  "ports": {
+    "press": { "direction": "output", "type": "boolean", "delivery": "level", "title": "按下状态" }
+  }
+}

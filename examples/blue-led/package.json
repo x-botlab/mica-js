@@ -1,0 +1,19 @@
+{
+  "name": "@mica-js/example-blue-led",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "蓝色 LED 的 Mica 器件工程：正向电流决定亮度，构建为 dist/devices/blue-led",
+  "scripts": {
+    "prepare:types": "mica prepare",
+    "build": "mica build",
+    "typecheck": "mica prepare && tsc --noEmit",
+    "test": "mica build && vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@mica-js/document": "workspace:*",
+    "@mica-js/sdk": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

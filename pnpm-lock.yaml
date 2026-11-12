@@ -312,6 +312,75 @@ importers:
         specifier: 'catalog:'
         version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
 
+  examples/blue-led:
+    devDependencies:
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../../packages/document
+      '@mica-js/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  examples/ct107d:
+    devDependencies:
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../../packages/document
+      '@mica-js/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      '@mica-js/simulator':
+        specifier: workspace:*
+        version: link:../../packages/simulator
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  examples/iap15f2k61s2:
+    devDependencies:
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../../packages/document
+      '@mica-js/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  examples/ideal-led:
+    devDependencies:
+      '@mica-js/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+
+  examples/led8:
+    devDependencies:
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../../packages/document
+      '@mica-js/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+
   examples/playground-components:
     devDependencies:
       '@mica-js/ddl':
@@ -326,6 +395,21 @@ importers:
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  examples/seg4:
+    devDependencies:
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../../packages/document
+      '@mica-js/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

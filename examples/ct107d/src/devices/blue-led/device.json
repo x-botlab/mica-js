@@ -1,0 +1,97 @@
+{
+  "kind": "device",
+  "id": "blue-led",
+  "version": "1.0.0",
+  "displayName": "蓝色 LED",
+  "description": "蓝色 LED：阳极–阴极按等效串联电阻导通，亮度取正向电流相对额定电流的比值（钳到 0..1）。平台电气合同只支持线性电阻，因此不含正向压降、反向截止与发光效率。",
+  "designatorPrefix": "D",
+  "tags": ["led", "diode", "indicator", "optoelectronic"],
+  "properties": {
+    "forwardResistance": {
+      "type": "number",
+      "required": false,
+      "default": 500,
+      "title": "正向等效电阻",
+      "unit": "ohm",
+      "description": "阳极–阴极的等效串联电阻，决定正向电流。线性模型，不含二极管压降；默认 500 Ω 让 5 V / 330 Ω 接法落在约 3.0 V、6 mA。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    },
+    "ratedCurrent": {
+      "type": "number",
+      "required": false,
+      "default": 0.02,
+      "title": "额定电流",
+      "unit": "A",
+      "description": "达到该正向电流时亮度为 1，更大的电流仍按 1 处理。",
+      "editor": { "kind": "number", "min": 0.0001, "max": 1, "step": 0.001 }
+    }
+  },
+  "pins": {
+    "anode": { "label": "A", "description": "阳极：相对阴极为正时导通并发光" },
+    "cathode": { "label": "K", "description": "阴极：接较低电位" }
+  },
+  "ports": {
+    "brightness": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "亮度",
+      "description": "正向电流 / 额定电流，钳到 [0, 1]"
+    },
+    "current": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "正向电流",
+      "description": "阳极到阴极的电流，单位 A；反向为负"
+    },
+    "voltage": {
+      "direction": "output",
+      "type": "number",
+      "delivery": "level",
+      "title": "正向电压",
+      "description": "阳极相对阴极的电压，单位 V"
+    }
+  },
+  "symbol": {
+    "bounds": { "x": -40, "y": -30, "width": 80, "height": 54 },
+    "graphics": [
+      { "type": "line", "from": [-40, 0], "to": [-12, 0] },
+      {
+        "type": "polyline",
+        "points": [
+          [-12, -12],
+          [12, 0],
+          [-12, 12]
+        ],
+        "closed": true,
+        "fill": "none"
+      },
+      { "type": "line", "from": [12, -12], "to": [12, 12] },
+      { "type": "line", "from": [12, 0], "to": [40, 0] },
+      { "type": "line", "from": [4, -16], "to": [14, -26] },
+      {
+        "type": "polyline",
+        "points": [
+          [8, -26],
+          [14, -26],
+          [14, -20]
+        ]
+      },
+      { "type": "line", "from": [16, -14], "to": [26, -24] },
+      {
+        "type": "polyline",
+        "points": [
+          [20, -24],
+          [26, -24],
+          [26, -18]
+        ]
+      }
+    ],
+    "pins": {
+      "anode": { "position": [-40, 0], "direction": "left", "label": { "visible": false } },
+      "cathode": { "position": [40, 0], "direction": "right", "label": { "visible": false } }
+    },
+    "annotations": { "designator": { "position": [0, 20], "align": "center" } }
+  }
+}

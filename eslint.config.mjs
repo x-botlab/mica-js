@@ -16,7 +16,12 @@ export default defineConfig([
     // Standalone Node ESM helpers sit outside the TypeScript projects.
     files: ['**/*.mjs'],
     languageOptions: {
-      globals: { console: 'readonly', process: 'readonly', URL: 'readonly' },
+      globals: {
+        Buffer: 'readonly',
+        console: 'readonly',
+        process: 'readonly',
+        URL: 'readonly',
+      },
     },
   },
 ]);

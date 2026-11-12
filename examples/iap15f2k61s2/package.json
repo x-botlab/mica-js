@@ -1,0 +1,20 @@
+{
+  "name": "@mica-js/example-iap15f2k61s2",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "IAP15F2K61S2 的 Mica 器件工程：8051 内核与 GPIO，JIT 取指，构建为 dist/devices/iap15f2k61s2",
+  "scripts": {
+    "prepare:types": "mica prepare",
+    "build": "mica build",
+    "typecheck": "mica prepare && tsc --noEmit",
+    "test": "mica build && pnpm --dir ../ideal-led run build && vitest run --config vitest.config.ts",
+    "bench": "mica build && pnpm --dir ../ideal-led run build && vitest run --config vitest.perf.config.ts"
+  },
+  "devDependencies": {
+    "@mica-js/document": "workspace:*",
+    "@mica-js/sdk": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

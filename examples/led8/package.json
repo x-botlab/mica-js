@@ -1,0 +1,14 @@
+{
+  "name": "@mica-js/example-led8",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "IAP15F2K61S2 驱动 8 颗蓝色 LED 的原理图与无头验证（Project.hex）",
+  "scripts": {
+    "test": "node verify.mjs"
+  },
+  "devDependencies": {
+    "@mica-js/document": "workspace:*",
+    "@mica-js/sdk": "workspace:*"
+  }
+}

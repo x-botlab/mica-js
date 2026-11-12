@@ -27,6 +27,26 @@ pnpm --filter @mica-js/playground dev
 
 打开终端输出的地址，在工具栏切换原理图或画布。画布切换到仿真模式并运行后，按住按钮可观察通过器件回送话题驱动的指示灯。文档下载由 Playground 自行处理。
 
+## 示例
+
+| 示例                                                       | 内容                                                                     |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------ |
+| [`examples/playground-components`](examples/playground-components) | Playground 用的最小器件与 widget 包：电阻、按键、LED、电压表             |
+| [`examples/ct107d`](examples/ct107d)                       | CT107D 竞赛板整板工程：17 个器件、4 个板面 widget、原理图、画布与 8051 固件 |
+| [`examples/iap15f2k61s2`](examples/iap15f2k61s2)           | STC15 系列 8051 器件：内核、外设、JIT 取指与性能基准                      |
+| [`examples/seg4`](examples/seg4)                           | 共阴四位七段数码管器件                                                    |
+| [`examples/blue-led`](examples/blue-led)                   | 蓝色 LED 器件                                                             |
+| [`examples/ideal-led`](examples/ideal-led)                 | 测试夹具：理想 LED                                                        |
+| [`examples/led8`](examples/led8)                           | IAP15F2K61S2 驱动 8 颗 LED 的最小板与无头验证                             |
+| [`examples/stm32g431rbt6`](examples/stm32g431rbt6)         | STM32G431RBT6 器件：Thumb 子集、GPIO/RCC/SysTick/USART 与基准             |
+
+示例都是 private 包，按需构建或测试，例如：
+
+```bash
+pnpm --filter @mica-js/example-ct107d build
+pnpm --filter @mica-js/example-iap15f2k61s2 test
+```
+
 ## 包
 
 | 包                                               | 职责                                                              |

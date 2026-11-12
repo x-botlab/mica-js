@@ -1,0 +1,20 @@
+{
+  "kind": "widget",
+  "id": "image",
+  "version": "1.0.0",
+  "displayName": "背景图",
+  "description": "把工程内的位图按比例铺满实例区域；CT107D 画布用它承载开发板照片。",
+  "properties": {
+    "image": {
+      "type": "bytes",
+      "required": true,
+      "title": "图片",
+      "description": "资源引用 { src, mode }，src 相对 .cnv 所在目录解析",
+      "editor": {
+        "kind": "file",
+        "extensions": [".webp", ".png", ".jpg", ".jpeg", ".gif", ".avif"]
+      }
+    }
+  },
+  "ports": {}
+}

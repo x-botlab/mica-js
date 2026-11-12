@@ -1,0 +1,67 @@
+{
+  "kind": "widget",
+  "id": "segment",
+  "version": "1.0.0",
+  "displayName": "四位数码管",
+  "description": "四位共阴七段数码管：四个输入端口各接 8 位段码（bit0=a … bit6=g、bit7=dp），与 seg4 器件的 digit1–digit4 端口一一对应。",
+  "properties": {
+    "color": { "type": "string", "required": false, "default": "#ff3b30ff", "title": "点亮颜色" },
+    "offColor": {
+      "type": "string",
+      "required": false,
+      "default": "#1f242766",
+      "title": "熄灭颜色"
+    },
+    "background": { "type": "string", "required": false, "default": "#0b0d0eff", "title": "底色" },
+    "thickness": {
+      "type": "number",
+      "required": false,
+      "default": 0.12,
+      "title": "笔画粗细",
+      "description": "笔画宽度占字高的比例",
+      "editor": { "kind": "number", "min": 0.04, "max": 0.3, "step": 0.01 }
+    },
+    "spacing": {
+      "type": "number",
+      "required": false,
+      "default": 0.08,
+      "title": "位间距",
+      "description": "每个数位格子左右留白的比例",
+      "editor": { "kind": "number", "min": 0, "max": 0.5, "step": 0.01 }
+    },
+    "pointSize": {
+      "type": "number",
+      "required": false,
+      "default": 0.1,
+      "title": "小数点大小",
+      "description": "占字高的比例，0 表示不画",
+      "editor": { "kind": "number", "min": 0, "max": 0.3, "step": 0.01 }
+    }
+  },
+  "ports": {
+    "digit1": {
+      "direction": "input",
+      "type": "number",
+      "delivery": "level",
+      "title": "第 1 位段码"
+    },
+    "digit2": {
+      "direction": "input",
+      "type": "number",
+      "delivery": "level",
+      "title": "第 2 位段码"
+    },
+    "digit3": {
+      "direction": "input",
+      "type": "number",
+      "delivery": "level",
+      "title": "第 3 位段码"
+    },
+    "digit4": {
+      "direction": "input",
+      "type": "number",
+      "delivery": "level",
+      "title": "第 4 位段码"
+    }
+  }
+}
