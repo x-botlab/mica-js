@@ -1,13 +1,22 @@
 import type { Diagnostic, DiagnosticCode, DiagnosticPhase, InputPath, SourceInfo } from './ir.js';
 
-export function snapshot<T>(input: T, ancestors = new Set<object>(), path: InputPath = []): T {
+export function snapshot<T>(input: T): T {
+  return capture(input, new Set<object>(), []);
+}
+
+/**
+ * Recursive copy behind `snapshot`. `path` is a mutable stack: an array copy is
+ * only made when a diagnostic is raised, which keeps the hot path allocation-free.
+ * Output properties are created by assignment, so `__proto__` needs `defineProperty`.
+ */
+function capture<T>(input: T, ancestors: Set<object>, path: (string | number)[]): T {
   if (input === null || typeof input !== 'object') {
     if (typeof input === 'function' || typeof input === 'symbol' || typeof input === 'bigint') {
-      fail('IR_SCHEMA', 'Expected ordinary IR data.', path);
+      fail('IR_SCHEMA', 'Expected ordinary IR data.', path.slice());
     }
     return input;
   }
-  if (ancestors.has(input)) fail('IR_SCHEMA', 'Cyclic IR data is not supported.', path);
+  if (ancestors.has(input)) fail('IR_SCHEMA', 'Cyclic IR data is not supported.', path.slice());
   ancestors.add(input);
   let output: unknown;
   if (input instanceof Uint8Array)
@@ -25,9 +34,9 @@ export function snapshot<T>(input: T, ancestors = new Set<object>(), path: Input
     }
     for (let i = 0; i < input.length; i++) {
       if (!Object.hasOwn(input, i)) fail('IR_SCHEMA', 'IR arrays cannot be sparse.');
-      result.push(
-        snapshot(Object.getOwnPropertyDescriptor(input, i)!.value, ancestors, [...path, i]),
-      );
+      path.push(i);
+      result.push(capture(Object.getOwnPropertyDescriptor(input, i)!.value, ancestors, path));
+      path.pop();
     }
     output = Object.freeze(result);
   } else {
@@ -39,10 +48,11 @@ export function snapshot<T>(input: T, ancestors = new Set<object>(), path: Input
       const descriptor = Object.getOwnPropertyDescriptor(input, key)!;
       if (typeof key !== 'string' || !('value' in descriptor))
         fail('IR_SCHEMA', 'IR data cannot contain symbols or accessors.');
-      Object.defineProperty(result, key, {
-        value: snapshot(descriptor.value, ancestors, [...path, key]),
-        enumerable: true,
-      });
+      path.push(key);
+      const value = capture(descriptor.value, ancestors, path);
+      path.pop();
+      if (key === '__proto__') Object.defineProperty(result, key, { value, enumerable: true });
+      else result[key] = value;
     }
     output = Object.freeze(result);
   }

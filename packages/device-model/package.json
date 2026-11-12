@@ -31,7 +31,8 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "catalog:",
