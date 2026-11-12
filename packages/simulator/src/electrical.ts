@@ -84,7 +84,6 @@ export interface ElectricalStats {
   readonly leafPlans: number;
   /** Solves served by replaying an admitted leaf plan instead of rebuilding edges. */
   readonly leafPropagations: number;
-  readonly topologyPrepares: number;
   /** Whole-graph rebuilds (`prepareTopology`); a bucket hit restores instead. */
   readonly topologyPrepares: number;
 }
@@ -825,7 +824,6 @@ export function createElectricalNetwork(
     leafPlans: 0,
     leafPropagations: 0,
     topologyPrepares: 0,
-    topologyPrepares: 0,
   };
   const emptySlots: readonly number[] = Object.freeze([]);
   /** Dirty slots supplied by the caller, deduplicated in place without an iterator per pin. */
@@ -1323,7 +1321,6 @@ export function createElectricalNetwork(
         const nextEdges = pinEdges.slice();
         for (const [index, update] of updates) nextEdges[index] = update.edges;
         topology = prepareTopology(nodes, nextEdges);
-        statistics.topologyPrepares++;
         statistics.topologyPrepares++;
       }
     } else {
