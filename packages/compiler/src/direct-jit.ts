@@ -13,13 +13,16 @@ import type {
   DirectJitProgram,
   DirectJitReason,
 } from './types.js';
+import { analyzeBody, type Primitive } from './analysis.js';
 import {
   checkBoolean,
   checkDuration,
   checkPc,
   combineIntents,
+  createBytes,
   equalValues,
   nonNull,
+  readIndex,
 } from './values.js';
 
 const binary: Partial<Record<BinaryOperator, string>> = {
@@ -72,11 +75,19 @@ const wideResults = new Set([
   'readSample',
   'resistor',
   'combineIntents',
+  'bytes',
+  // A string result is only produced by indexing a string, which stays a plain slot value.
+  'index',
   // A wide select keeps its branches in one slot and never enters the state bank, so a
   // pin-intent choice such as `select(level, [resistor(...)], [])` stays direct.
   'select',
   'match',
 ]);
+/**
+ * Result types whose runtime value is an object, so `===` is not the host's value equality.
+ * Bytes compare element by element in `equalValues`, and intents compare by branch content.
+ */
+const referenceResults = new Set(['bytes', 'record', 'sample', 'intent', 'optional']);
 /** Operations admitted only when the runtime supplied a direct host for the frame. */
 const hosted = new Set([
   'send',
@@ -147,8 +158,10 @@ const helpers = Object.freeze({
   checkDuration,
   checkPc,
   combineIntents,
+  createBytes,
   equalValues,
   nonNull,
+  readIndex,
   offset,
   byte,
   load16,
@@ -157,6 +170,57 @@ const helpers = Object.freeze({
   store32,
 });
 const unsupported = Symbol('unsupported direct instruction');
+/**
+ * Compile-time values the reference analyzer proved for one body. Folding is shared rather
+ * than reimplemented: `analyzeBody` runs the exact arithmetic `compileBody` emits, so both
+ * backends agree on every operator, including `-0`, `NaN`, `%` and the shifts.
+ */
+const analyses = new WeakMap<RegionIR, ReadonlyMap<number, Primitive>>();
+
+function constantsOf(body: RegionIR): ReadonlyMap<number, Primitive> {
+  let constants = analyses.get(body);
+  if (constants === undefined) {
+    try {
+      constants = analyzeBody(body, {}, false).constants;
+    } catch {
+      // Analysis is an optimisation only: an unexpected shape keeps every value dynamic.
+      constants = new Map();
+    }
+    analyses.set(body, constants);
+  }
+  return constants;
+}
+
+/** One compile-time value and the literal source text that reproduces it exactly. */
+interface Folded {
+  readonly value: Primitive;
+  readonly text: string;
+}
+
+/** Development-only code shape: how many host statements one IR operation costs. */
+export interface DirectJitEmitStats {
+  readonly blocks: number;
+  /** Top-level IR operations, the denominator #256 quotes for one instruction block. */
+  readonly operations: number;
+  /** IR operations including nested value and statement regions. */
+  readonly nestedOperations: number;
+  readonly statements: number;
+  readonly statementsPerOperation: number;
+  readonly statementsPerNestedOperation: number;
+  /** Operations that cost no statement because they folded; adds back the pre-folding count. */
+  readonly foldedOperations: number;
+  readonly selectBlocks: number;
+  /** Worst block by statements per operation; `null` for an empty program. */
+  readonly worst: {
+    readonly pc: number;
+    readonly operations: number;
+    readonly statements: number;
+    readonly statementsPerOperation: number;
+    readonly foldedOperations: number;
+    readonly selectBlocks: number;
+  } | null;
+}
+
 /**
  * Code budget for one generated shard. Emitted characters, not registers, predict where V8
  * stops optimizing a function: measured blocks slow down sharply from ~35 KB of source.
@@ -228,18 +292,118 @@ export function compileDirectJit(
   ) => (frame: DirectJitFrame, deadline: number) => DirectJitReason;
   const names = (field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories') =>
     Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
-  return Object.freeze({
+  const program = {
     run: factory(Object.freeze(constants), helpers),
     localCount,
     readStates: names('readStates'),
     writeStates: names('writeStates'),
     readMemories: names('readMemories'),
     writeMemories: names('writeMemories'),
+  } satisfies DirectJitProgram;
+  // Diagnostic only, and non-enumerable so the published shape of a program is unchanged.
+  Object.defineProperty(program, 'emitStats', { value: emitStats(entries) });
+  return Object.freeze(program);
+}
+
+/**
+ * Statements per IR operation, the acceptance metric of #256. `statements` counts the
+ * semicolons of the emitted instruction body (write barrier, busy-wait fold, prefix and
+ * suffix); the fixed per-instruction bookkeeping the dispatcher emits (PC write, dirty word,
+ * continuation return) is excluded, because it does not depend on the body's shape.
+ */
+function emitStats(entries: readonly Instruction[]): DirectJitEmitStats {
+  let operations = 0;
+  let nested = 0;
+  let total = 0;
+  let folded = 0;
+  let selectBlocks = 0;
+  let worst: DirectJitEmitStats['worst'] = null;
+  const round = (value: number): number => Number(value.toFixed(3));
+  for (const entry of entries) {
+    operations += entry.operations;
+    nested += entry.nestedOperations;
+    total += entry.statements;
+    folded += entry.foldedOperations;
+    selectBlocks += entry.selects;
+    const ratio = entry.operations ? entry.statements / entry.operations : 0;
+    if (worst === null || ratio > worst.statementsPerOperation)
+      worst = Object.freeze({
+        pc: entry.pcValue,
+        operations: entry.operations,
+        statements: entry.statements,
+        statementsPerOperation: round(ratio),
+        foldedOperations: entry.foldedOperations,
+        selectBlocks: entry.selects,
+      });
+  }
+  return Object.freeze({
+    blocks: entries.length,
+    operations,
+    nestedOperations: nested,
+    statements: total,
+    statementsPerOperation: round(operations ? total / operations : 0),
+    statementsPerNestedOperation: round(nested ? total / nested : 0),
+    foldedOperations: folded,
+    selectBlocks,
+    worst,
   });
 }
 
+/** Every IR operation the emitter walks, nested value and statement regions included. */
+function countOperations(region: RegionIR): number {
+  let total = 0;
+  for (const operation of region.operations) {
+    total++;
+    switch (operation.kind) {
+      case 'if':
+        total += countOperations(operation.yes);
+        if (operation.no) total += countOperations(operation.no);
+        break;
+      case 'match':
+        for (const arm of operation.arms) total += countOperations(arm.body);
+        if (operation.otherwise) total += countOperations(operation.otherwise);
+        break;
+      case 'select':
+        total += countOperations(operation.yes.body) + countOperations(operation.no.body);
+        break;
+      case 'and':
+      case 'or':
+        total += countOperations(operation.right.body);
+        break;
+      case 'assert':
+        if (operation.message) total += countOperations(operation.message.body);
+        break;
+      default:
+        break;
+    }
+  }
+  return total;
+}
+
+/** Semicolons outside string literals: one per emitted statement (no line holds two). */
+function countStatements(line: string): number {
+  let count = 0;
+  let quoted = false;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (quoted) {
+      if (character === '\\') index++;
+      else if (character === '"') quoted = false;
+    } else if (character === '"') quoted = true;
+    else if (character === ';') count++;
+  }
+  return count;
+}
+
+/**
+ * `BS` / `BM` are the runtime write barriers: word masks of the state and memory slots the
+ * simulator currently observes. They stay outside `DirectJitFrame` because the runtime
+ * mutates them in place, so one compiled program stays valid across observer changes. A frame
+ * built without them (compiler tests) yields an empty mask and never blocks.
+ */
 const prelude = (slots: readonly string[]): string[] => [
   'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty;',
+  'const BS = F.blockedStates ?? [], BM = F.blockedMemories ?? [];',
   ...(slots.length ? [`let ${slots.join(',')};`] : []),
 ];
 
@@ -251,8 +415,7 @@ function monolithicProgram(
 ): string[] {
   const lines = [
     'function run(F, deadline) {',
-    'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty;',
-    ...(registers.length ? [`let ${registers.join(',')};`] : []),
+    ...prelude(registers),
     'while (true) {',
     'if (F.time >= deadline) return "deadline";',
     'if (F.resume !== 0) {',
@@ -275,6 +438,7 @@ function monolithicProgram(
   entries.forEach((entry, index) => {
     lines.push(
       `case ${entry.pc}: {`,
+      ...entry.barrier,
       ...entry.guard,
       `S[${binding.pc.index}] = ${entry.nextPc};`,
       dirty('SD', binding.pc.index),
@@ -339,6 +503,7 @@ function shardProgram(
     shard.entries.forEach((entry, offset) => {
       lines.push(
         `case ${entry.pc}: {`,
+        ...entry.barrier,
         ...entry.guard,
         `S[${binding.pc.index}] = ${entry.nextPc};`,
         dirty('SD', binding.pc.index),
@@ -475,8 +640,20 @@ class Instruction {
   slots: string[] = [];
   /** Emitted source characters (bodies and guard); bounds the size of one generated function. */
   size = 0;
+  /** Emitted statements, reported by `emitStats` against the block's IR operation count. */
+  statements = 0;
+  /** IR operations in this block, folded or not: the denominator of the statement ratio. */
+  operations = 0;
+  /** Labeled `select` blocks that survived the pure-expression form. */
+  selects = 0;
+  /** Operations whose statement was removed by folding; the counterfactual of `statements`. */
+  foldedOperations = 0;
+  /** IR operations anywhere in the block, nested value and statement regions included. */
+  nestedOperations = 0;
   /** Emitted before the implicit PC write; a declared busy-wait head folds rounds here. */
   readonly guard: string[] = [];
+  /** Entry test against the runtime write barrier; empty when the block writes no slot. */
+  barrier: string[] = [];
   prefix: string[] = [];
   suffix: string[] = [];
   /** Numeric instruction key; shards sort by it while `pc` holds the emitted literal. */
@@ -491,7 +668,19 @@ class Instruction {
   stop = false;
   private readonly values = new Map<number, string>();
   private readonly locals = new Map<number, string>();
-  private readonly literals = new Map<number, number | boolean>();
+  /**
+   * Compile-time known primitive results. These emit no statement at all: every use inlines
+   * the literal instead, so a constant used by an operation costs zero statements rather
+   * than one.
+   */
+  private readonly folded = new Map<number, Folded>();
+  /** Constant values the reference analyzer proved for this body; undefined if it declined. */
+  private constants?: ReadonlyMap<number, Primitive>;
+  /** Slots this block writes; the runtime barrier is emitted from these indices. */
+  private readonly writtenStates = new Set<number>();
+  private readonly writtenMemories = new Set<number>();
+  /** Results whose type is an object value; identity comparison would change their meaning. */
+  private readonly references = new Set<number>();
   private labels = 0;
 
   constructor(
@@ -501,6 +690,9 @@ class Instruction {
 
   compile(instruction: { pc: number; nextPc: number; body: RegionIR }): this {
     this.pcValue = instruction.pc;
+    this.constants = constantsOf(instruction.body);
+    this.operations = instruction.body.operations.length;
+    this.nestedOperations = countOperations(instruction.body);
     this.pc = this.literal(instruction.pc);
     this.nextPc = this.literal(instruction.nextPc);
     this.readStates.add(this.binding.pc.name);
@@ -542,17 +734,49 @@ class Instruction {
       } else if (operation.kind === 'stop') {
         this.stop = true;
         terminal = true;
+      } else if (operation.kind === 'yield') {
+        // A bare yield carries no result. Model validation rejects it today, so only the
+        // tail-of-body shape is admitted: any later operation is dead code and declines the
+        // whole block. Treating it as a zero-duration exit reuses the `elapse 0` path, which
+        // advances no time and needs no continuation slot.
+        if (this.terminated) throw unsupported;
+        this.terminate({ value: '0', zero: true, dynamic: false });
+        terminal = true;
       } else {
         this.operation(operation, output);
       }
     }
     if (!this.terminated && !this.stop) throw unsupported;
     this.compact();
-    this.size = [...this.guard, ...this.prefix, ...this.suffix].reduce(
-      (sum, line) => sum + line.length,
-      0,
-    );
+    this.barrier = this.emitBarrier();
+    const emitted = [...this.barrier, ...this.guard, ...this.prefix, ...this.suffix];
+    this.size = emitted.reduce((sum, line) => sum + line.length, 0);
+    this.statements = emitted.reduce((sum, line) => sum + countStatements(line), 0);
+    this.selects = emitted.filter((line) => /^select\d+: \{/.test(line)).length;
     return this;
+  }
+
+  /**
+   * Runtime write barrier. A block that may write a state or memory the runtime currently
+   * observes returns `fallback` before it touches any slot, so the interpreter performs that
+   * instruction and observers still see every write. Testing the masks at entry — instead of
+   * declining the block at compile time — keeps one program valid across observer changes.
+   * Resumed instructions keep their old behaviour: a continuation always completes its
+   * suffix, because the interpreter can no longer replay it from that PC.
+   */
+  private emitBarrier(): string[] {
+    const lines: string[] = [];
+    const emit = (bank: 'BS' | 'BM', indices: ReadonlySet<number>): void => {
+      if (!indices.size) return;
+      const words = new Map<number, number>();
+      for (const index of indices)
+        words.set(index >>> 5, (words.get(index >>> 5) ?? 0) | (1 << (index & 31)));
+      for (const [word, mask] of [...words].sort(([left], [right]) => left - right))
+        lines.push(`if (${bank}[${word}] & ${mask >>> 0}) return "fallback";`);
+    };
+    emit('BS', this.writtenStates);
+    emit('BM', this.writtenMemories);
+    return lines;
   }
 
   private get terminated(): boolean {
@@ -649,14 +873,16 @@ class Instruction {
   }
 
   private delay(id: number): { value: string; zero: boolean; dynamic: boolean } {
-    const literal = this.literals.get(id);
-    if (typeof literal === 'number') {
+    const folded = this.folded.get(id);
+    if (folded !== undefined && typeof folded.value === 'number') {
+      // A folded duration is validated at compile time by the same helper the runtime uses;
+      // a rejected value declines the block, so the interpreter raises the original error.
       try {
-        checkDuration(literal);
+        checkDuration(folded.value);
       } catch {
         throw unsupported;
       }
-      return { value: this.literal(literal), zero: literal === 0, dynamic: false };
+      return { value: folded.text, zero: folded.value === 0, dynamic: false };
     }
     // A computed duration keeps its slot: the emitted body validates it at the operation's
     // own position, exactly like the generator backend's `H.checkDuration`.
@@ -685,9 +911,61 @@ class Instruction {
   }
 
   private value(id: number): string {
-    const slot = this.values.get(id);
+    const slot = this.expressionOf(id);
     if (!slot) throw unsupported;
     return slot;
+  }
+
+  /** A compiled value: its slot when it has one, otherwise the inlined literal text. */
+  private expressionOf(id: number): string | undefined {
+    return this.values.get(id) ?? this.folded.get(id)?.text;
+  }
+
+  /**
+   * A condition slot holds a boolean in every conforming program, so the type check is a
+   * `typeof` test inlined at the use site; the host helper only runs on the failure path.
+   * A call per condition dominated small instruction blocks. A condition the analyzer proved
+   * boolean needs no test at all.
+   */
+  private condition(id: number): string {
+    const folded = this.folded.get(id);
+    if (folded !== undefined && typeof folded.value === 'boolean') return folded.text;
+    return guard(this.value(id));
+  }
+
+  /**
+   * Records a value the analyzer proved constant and emits nothing. Only `constant` and the
+   * arithmetic shapes the reference analyzer folds qualify: their results are primitives, so
+   * the inlined literal reproduces the runtime value bit for bit. Everything else keeps a
+   * slot, because its value is only known once the instruction runs — or because evaluating
+   * it can throw (`nonNull` of a known null) or allocate (`bytes`).
+   */
+  private foldResult(operation: OperationIR): boolean {
+    if (!('result' in operation)) return false;
+    switch (operation.kind) {
+      case 'constant': {
+        const { constant } = operation;
+        if (constant.kind === 'string') return this.foldConstant(operation.result, constant.value);
+        if (constant.kind === 'enum') return this.foldConstant(operation.result, constant.member);
+        if (constant.kind === 'number' || constant.kind === 'bool')
+          return this.foldConstant(operation.result, constant.value);
+        return false;
+      }
+      case 'unary':
+      case 'binary':
+      case 'numeric': {
+        const value = this.constants?.get(operation.result);
+        return value === undefined ? false : this.foldConstant(operation.result, value);
+      }
+      default:
+        return false;
+    }
+  }
+
+  private foldConstant(id: number, value: Primitive): true {
+    this.folded.set(id, { value, text: this.literal(value) });
+    this.foldedOperations++;
+    return true;
   }
 
   private slot(): string {
@@ -700,6 +978,7 @@ class Instruction {
     const index = this.binding.states.get(name);
     if (!validIndex(index) || (write && this.binding.blockedStates?.has(name))) throw unsupported;
     (write ? this.writeStates : this.readStates).add(name);
+    if (write) this.writtenStates.add(index);
     return index;
   }
 
@@ -711,6 +990,7 @@ class Instruction {
     // Only stores are write barriers; every load kind, including the wide ones, stays eligible.
     if (!validIndex(index) || (write && this.binding.blockedMemories?.has(name))) throw unsupported;
     (write ? this.writeMemories : this.readMemories).add(name);
+    if (write) this.writtenMemories.add(index);
     return index;
   }
 
@@ -727,19 +1007,18 @@ class Instruction {
     for (let index = 0; index < operations.length - 1; index++) {
       if (!this.fold(operations[index]!, values)) return undefined;
     }
-    return values.get(last.value) ?? this.values.get(last.value);
+    return values.get(last.value) ?? this.expressionOf(last.value);
   }
 
-  /** Local expression for one pure scalar operation; operands fall back to emitted slots. */
+  /** Local expression for one pure scalar operation; operands fall back to emitted values. */
   private fold(operation: OperationIR, values: Map<number, string>): boolean {
     if (!('result' in operation) || !('type' in operation)) return false;
     if (operation.type.kind !== 'number' && operation.type.kind !== 'bool') return false;
-    const operand = (id: number): string | undefined => values.get(id) ?? this.values.get(id);
+    const operand = (id: number): string | undefined => values.get(id) ?? this.expressionOf(id);
     switch (operation.kind) {
       case 'constant': {
         if (operation.constant.kind !== 'number' && operation.constant.kind !== 'bool')
           return false;
-        this.literals.set(operation.result, operation.constant.value);
         values.set(operation.result, this.literal(operation.constant.value));
         return true;
       }
@@ -849,26 +1128,34 @@ class Instruction {
       if (kind !== 'number' && kind !== 'bool') {
         const allowed =
           wideResults.has(operation.kind) ||
-          (operation.kind === 'constant' && (kind === 'string' || kind === 'enum'));
+          (operation.kind === 'constant' &&
+            (kind === 'string' || kind === 'enum' || kind === 'bytes'));
         if (!allowed) throw unsupported;
       }
+      // A folded value needs no slot: folding is what removes host statements per IR op.
+      if (this.foldResult(operation)) return;
       result = this.slot();
       this.values.set(operation.result, result);
+      if (referenceResults.has(kind)) this.references.add(operation.result);
     }
     const assign = (expression: string): void => {
       lines.push(`${result!} = ${expression};`);
     };
     switch (operation.kind) {
       case 'constant': {
-        const { constant } = operation;
-        if (constant.kind === 'number' || constant.kind === 'bool') {
-          this.literals.set(operation.result, constant.value);
-          assign(this.literal(constant.value));
-        } else if (constant.kind === 'string') {
-          assign(this.literal(constant.value));
-        } else if (constant.kind === 'enum') {
-          assign(this.literal(constant.member));
-        } else throw unsupported;
+        // Numbers, booleans, strings and enum members folded above; only a byte literal still
+        // materialises a fresh value at every evaluation.
+        if (operation.constant.kind !== 'bytes') throw unsupported;
+        // The generic host materialises the literal when it compiles the body, so an
+        // out-of-range element declines compilation here and keeps that same error.
+        let bytes: readonly number[];
+        try {
+          bytes = Object.freeze(Array.from(createBytes(operation.constant.value)));
+        } catch {
+          throw unsupported;
+        }
+        // Every evaluation still gets a fresh Uint8Array, exactly like `H.createBytes`.
+        assign(`H.createBytes(${this.capture(bytes)})`);
         break;
       }
       case 'read':
@@ -889,7 +1176,18 @@ class Instruction {
       case 'binary': {
         const operator = binary[operation.operator];
         if (!operator) throw unsupported;
-        assign(`(${this.value(operation.left)} ${operator} ${this.value(operation.right)})`);
+        const left = this.value(operation.left);
+        const right = this.value(operation.right);
+        // Byte sequences and intents compare by content in the generic host; `===` would
+        // compare identity and silently change the result.
+        if (
+          (operation.operator === 'equal' || operation.operator === 'notEqual') &&
+          (this.references.has(operation.left) || this.references.has(operation.right))
+        ) {
+          assign(`${operation.operator === 'notEqual' ? '!' : ''}H.equalValues(${left},${right})`);
+          break;
+        }
+        assign(`(${left} ${operator} ${right})`);
         break;
       }
       case 'numeric':
@@ -928,6 +1226,12 @@ class Instruction {
       case 'field':
         assign(`${this.value(operation.value)}[${this.capture(operation.field)}]`);
         break;
+      case 'bytes':
+        assign(`H.createBytes([${operation.elements.map((id) => this.value(id)).join(',')}])`);
+        break;
+      case 'index':
+        assign(`H.readIndex(${this.value(operation.value)},${this.value(operation.index)})`);
+        break;
       case 'refEqual':
         if (operation.left.kind === 'parameter' || operation.right.kind === 'parameter')
           throw unsupported;
@@ -956,7 +1260,7 @@ class Instruction {
         const message =
           operation.message === undefined ? 'undefined' : this.message(operation.message);
         lines.push(
-          `if (!${guard(this.value(operation.condition))}) F.host.assert(false, ${message});`,
+          `if (!${this.condition(operation.condition)}) F.host.assert(false, ${message});`,
         );
         break;
       }
@@ -1028,7 +1332,7 @@ class Instruction {
         if (operation.right.body.operations.at(-1)?.kind !== 'yield') throw unsupported;
         const label = `${operation.kind}${this.labels++}`;
         lines.push(
-          `${result} = ${guard(this.value(operation.left))};`,
+          `${result} = ${this.condition(operation.left)};`,
           `${operation.kind === 'or' ? 'if (!' : 'if ('}${result}) {`,
           `${label}: {`,
         );
@@ -1054,7 +1358,7 @@ class Instruction {
         break;
       }
       case 'if':
-        lines.push(`if (${guard(this.value(operation.condition))}) {`);
+        lines.push(`if (${this.condition(operation.condition)}) {`);
         this.region(operation.yes, lines, output);
         if (operation.no) {
           lines.push('} else {');
@@ -1063,15 +1367,15 @@ class Instruction {
         lines.push('}');
         break;
       case 'select': {
-        const condition = this.value(operation.condition);
+        const condition = this.condition(operation.condition);
         const yes = this.expression(operation.yes);
         const no = yes === undefined ? undefined : this.expression(operation.no);
         if (yes !== undefined && no !== undefined) {
-          lines.push(`${result} = ${guard(condition)} ? ${yes} : ${no};`);
+          lines.push(`${result} = ${condition} ? ${yes} : ${no};`);
           break;
         }
         const label = `select${this.labels++}`;
-        lines.push(`${label}: {`, `if (${guard(condition)}) {`);
+        lines.push(`${label}: {`, `if (${condition}) {`);
         this.region(operation.yes.body, lines, { slot: result!, label });
         lines.push('} else {');
         this.region(operation.no.body, lines, { slot: result!, label });

@@ -6,5 +6,5 @@
     "allowArbitraryExtensions": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src", "test", "mica.config.ts", "vitest.config.ts"]
+  "include": ["src", "test", "bench", "mica.config.ts", "vitest.config.ts", "vitest.perf.config.ts"]
 }

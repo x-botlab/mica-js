@@ -115,6 +115,8 @@ class BoardRuntime implements Board {
   private readonly errors = new Emitter<RuntimeDiagnostic>();
   private readonly diagnostics = new Emitter<RuntimeDiagnostic>();
   private readonly listeners = new Set<TopicListener>();
+  /** Owner-less listeners of the shared set: the host's direct subscriptions on `topics`. */
+  private hostListeners = 0;
   private readonly models = new Fifo<Process>();
   readonly events = new EventQueue<() => void>();
   private readonly readyJits = new Fifo<Jit>();
@@ -448,7 +450,12 @@ class BoardRuntime implements Board {
     );
   }
   topicBridge(owner?: Instance): TopicBridge {
+    // A getter over this closure keeps the reading live for every frozen facade sharing the set.
+    const hostListenerCount = (): number => this.hostListeners;
     return Object.freeze({
+      get hostListenerCount(): number {
+        return hostListenerCount();
+      },
       onDidReceive: ((
         listener: (message: TopicMessage) => unknown,
         thisArgs?: unknown,
@@ -460,12 +467,14 @@ class BoardRuntime implements Board {
           call: (message) => listener.call(thisArgs, message),
         };
         this.listeners.add(entry);
+        if (!owner) this.hostListeners++;
         let active = true;
         const disposable = {
           dispose: () => {
             if (active) {
               active = false;
-              this.listeners.delete(entry);
+              // Deleting decides the decrement, so a cleared set cannot drive the count negative.
+              if (this.listeners.delete(entry) && !owner) this.hostListeners--;
             }
           },
         };
@@ -473,6 +482,7 @@ class BoardRuntime implements Board {
         owner?.resources.push(disposable);
         return disposable;
       }) as Event<TopicMessage>,
+      assertCanPublish: () => this.guard(owner),
       publish: (topic: string, payload: unknown) => {
         this.guard(owner);
         if (typeof topic !== 'string') throw new TypeError('Topic must be a string');
@@ -1023,6 +1033,7 @@ class BoardRuntime implements Board {
     this.changeCurrent.length = 0;
     this.sampleSlots.clear();
     this.listeners.clear();
+    this.hostListeners = 0;
     this.errors.dispose();
     this.diagnostics.dispose();
     this.status = 'disposed';

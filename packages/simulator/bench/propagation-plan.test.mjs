@@ -203,6 +203,214 @@ test('single branches between unknown nodes are never admitted as leaves', () =>
   assert.equal(first.sample.status, 'valid');
 });
 
+// A real board bridges its rails with a load, so VCC and GND end up inside one component.
+// That is exactly the shape in which "every fixed potential in the component agrees" is
+// false while a leaf branch is still pinned to its target by KCL alone.
+function bridgedLeafFixture(prefix = 'bridged') {
+  const high = pin(`${prefix}.high`);
+  const low = pin(`${prefix}.low`);
+  const bridge = pin(`${prefix}.bridge`);
+  const sender = pin(`${prefix}.sender`, true);
+  const receiver = pin(`${prefix}.receiver`, true);
+  const senderHigh = Object.freeze([Object.freeze({ to: high, resistance })]);
+  const senderLow = Object.freeze([Object.freeze({ to: low, resistance })]);
+  bridge.intent = Object.freeze([Object.freeze({ to: low, resistance: 470 })]);
+  sender.intent = senderHigh;
+  return {
+    high,
+    low,
+    bridge,
+    sender,
+    receiver,
+    senderHigh,
+    senderLow,
+    network: createElectricalNetwork(
+      [high, low, bridge, sender, receiver],
+      [
+        // The load keeps both rails in one component with two different potentials.
+        { id: 'high', pins: [high, bridge], voltage: 5 },
+        { id: 'low', pins: [low], voltage: 0 },
+        { id: 'signal', pins: [sender, receiver] },
+      ],
+    ),
+  };
+}
+
+test('a leaf onto a mixed-reference component still takes the target reference', () => {
+  const { network, sender, receiver, senderHigh, senderLow } = bridgedLeafFixture();
+  network.solve();
+  assert.equal(sender.sample.voltage, 5);
+  assert.equal(receiver.sample.voltage, 5);
+  const replays = network.stats.leafPropagations;
+  for (let round = 1; round <= 6; round++) {
+    const towardsLow = round % 2 === 1;
+    sender.intent = towardsLow ? senderLow : senderHigh;
+    const voltage = towardsLow ? 0 : 5;
+    assert.deepEqual(
+      network.solve([sender]).map((endpoint) => endpoint.id),
+      ['bridged.sender', 'bridged.receiver'],
+      'the whole leaf net publishes atomically',
+    );
+    assert.equal(sender.sample.voltage, voltage);
+    assert.equal(receiver.sample.voltage, voltage);
+    assert.equal(sender.sample.level, towardsLow ? 'low' : 'high');
+  }
+  assert.ok(
+    network.stats.leafPropagations - replays === 6,
+    'every switch is served by the leaf path, not by a matrix',
+  );
+  assert.equal(network.stats.components, 1, 'both rails stay inside one component');
+});
+
+test('a batch of leaves onto a mixed-reference component publishes every switch', () => {
+  const high = pin('batch.high');
+  const low = pin('batch.low');
+  const bridge = pin('batch.bridge');
+  const first = pin('batch.first', true);
+  const firstReceiver = pin('batch.firstReceiver', true);
+  const second = pin('batch.second', true);
+  const secondReceiver = pin('batch.secondReceiver', true);
+  const firstHigh = Object.freeze([Object.freeze({ to: high, resistance })]);
+  const firstLow = Object.freeze([Object.freeze({ to: low, resistance })]);
+  const secondHigh = Object.freeze([Object.freeze({ to: high, resistance: 2200 })]);
+  const secondLow = Object.freeze([Object.freeze({ to: low, resistance: 2200 })]);
+  bridge.intent = Object.freeze([Object.freeze({ to: low, resistance: 470 })]);
+  first.intent = firstHigh;
+  second.intent = secondLow;
+  const network = createElectricalNetwork(
+    [high, low, bridge, first, firstReceiver, second, secondReceiver],
+    [
+      { id: 'high', pins: [high, bridge], voltage: 5 },
+      { id: 'low', pins: [low], voltage: 0 },
+      { id: 'first', pins: [first, firstReceiver] },
+      { id: 'second', pins: [second, secondReceiver] },
+    ],
+  );
+  network.solve();
+  const replays = network.stats.leafPropagations;
+  for (let round = 1; round <= 4; round++) {
+    const towardsLow = round % 2 === 1;
+    first.intent = towardsLow ? firstLow : firstHigh;
+    second.intent = towardsLow ? secondHigh : secondLow;
+    // Both leaves switch in one batch, so the joint solve is skipped for both of them.
+    const changed = network.solve([first, second]);
+    assert.deepEqual(
+      changed.map((endpoint) => endpoint.id),
+      ['batch.first', 'batch.firstReceiver', 'batch.second', 'batch.secondReceiver'],
+      'one batch publishes both nets in board order',
+    );
+    assert.equal(firstReceiver.sample.voltage, towardsLow ? 0 : 5);
+    assert.equal(secondReceiver.sample.voltage, towardsLow ? 5 : 0);
+  }
+  assert.equal(network.stats.leafPropagations - replays, 4, 'one batch is one propagated solve');
+  assert.equal(network.stats.components, 1);
+});
+
+test('a full solve after leaf replay publishes nothing and keeps components exact', () => {
+  const { network, sender, receiver, senderHigh, senderLow } = bridgedLeafFixture('exact');
+  network.solve();
+  for (let round = 1; round <= 5; round++) {
+    sender.intent = round % 2 === 1 ? senderLow : senderHigh;
+    network.solve([sender]);
+  }
+  assert.ok(network.stats.leafPropagations > 0, 'the leaf path served the switches');
+  const voltage = sender.sample.voltage;
+  assert.equal(receiver.sample.voltage, voltage);
+  // The incremental node arrays are only correct if a partition rebuilt from scratch
+  // reproduces the same voltages and disagrees with nothing.
+  assert.deepEqual(network.solve(), [], 'the rebuilt partition corrects no pin');
+  assert.equal(sender.sample.voltage, voltage);
+  assert.equal(receiver.sample.voltage, voltage);
+  assert.equal(network.stats.components, 1);
+  const replays = network.stats.leafPropagations;
+  sender.intent = voltage === 5 ? senderLow : senderHigh;
+  network.solve([sender]);
+  assert.equal(
+    network.stats.leafPropagations,
+    replays + 1,
+    'the leaf path still replays across the rebuilt partition',
+  );
+});
+
+test('a branch onto a floating node keeps the general solver', () => {
+  const high = pin('float.high');
+  const low = pin('float.low');
+  const dangler = pin('float.dangler', true);
+  const floater = pin('float.floater', true);
+  const peer = pin('float.peer', true);
+  const danglerHigh = Object.freeze([Object.freeze({ to: high, resistance })]);
+  dangler.intent = danglerHigh;
+  const network = createElectricalNetwork(
+    [high, low, dangler, floater, peer],
+    [
+      { id: 'high', pins: [high], voltage: 5 },
+      { id: 'low', pins: [low], voltage: 0 },
+      { id: 'dangling', pins: [dangler] },
+      // No reference anywhere in this component.
+      { id: 'floating', pins: [floater, peer] },
+    ],
+  );
+  network.solve();
+  assert.equal(dangler.sample.voltage, 5);
+  for (let round = 0; round < 4; round++) {
+    dangler.intent = round % 2 === 0 ? [{ to: floater, resistance }] : danglerHigh;
+    network.solve([dangler]);
+  }
+  assert.equal(network.stats.leafPlans, 0, 'a floating target never admits a leaf shape');
+  assert.equal(network.stats.leafPropagations, 0, 'the general solver keeps the floating net');
+  assert.equal(dangler.sample.voltage, 5);
+  dangler.intent = [{ to: floater, resistance }];
+  network.solve([dangler]);
+  assert.equal(dangler.sample.voltage, null);
+  assert.equal(dangler.sample.status, 'floating');
+  assert.equal(floater.sample.status, 'floating');
+  assert.equal(peer.sample.status, 'floating');
+});
+
+test('a board-sized leaf batch stays off the general solver', () => {
+  const drivers = [];
+  const pins = [];
+  const nets = [];
+  const high = pin('board.high');
+  const low = pin('board.low');
+  const bridge = pin('board.bridge');
+  bridge.intent = Object.freeze([Object.freeze({ to: low, resistance: 470 })]);
+  pins.push(high, low, bridge);
+  nets.push(
+    { id: 'high', pins: [high, bridge], voltage: 3.3 },
+    { id: 'low', pins: [low], voltage: 0 },
+  );
+  for (let index = 0; index < 48; index++) {
+    const driver = pin(`board.driver${index}`, true);
+    const reader = pin(`board.reader${index}`, true);
+    const driverHigh = Object.freeze([Object.freeze({ to: high, resistance })]);
+    const driverLow = Object.freeze([Object.freeze({ to: low, resistance })]);
+    driver.intent = index % 2 === 0 ? driverHigh : driverLow;
+    pins.push(driver, reader);
+    nets.push({ id: `board.signal${index}`, pins: [driver, reader] });
+    drivers.push({ driver, reader, driverHigh, driverLow });
+  }
+  const network = createElectricalNetwork(pins, nets);
+  network.solve();
+  const replays = network.stats.leafPropagations;
+  for (let round = 0; round < 4; round++) {
+    const towardsLow = round % 2 === 0;
+    for (const entry of drivers)
+      entry.driver.intent = towardsLow ? entry.driverLow : entry.driverHigh;
+    network.solve(drivers.map((entry) => entry.driver));
+    for (const entry of drivers) {
+      assert.equal(entry.reader.sample.voltage, towardsLow ? 0 : 3.3);
+    }
+  }
+  assert.equal(
+    network.stats.leafPropagations - replays,
+    4,
+    'each whole-board batch is one propagated solve',
+  );
+  assert.equal(network.stats.components, 1);
+  assert.deepEqual(network.solve(), [], 'the rebuilt partition corrects no pin');
+});
+
 test('an invalid intent in an admitted leaf batch publishes and admits nothing', () => {
   const fixture = leafFixture();
   const { sender, receiver, senderHigh, senderLow } = fixture;

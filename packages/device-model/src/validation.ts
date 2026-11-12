@@ -1364,33 +1364,48 @@ function locateError(error: unknown, input: unknown): never {
     Object.defineProperty(located, 'code', runtimeCode);
   throw located;
 }
-const validatedDevices = new WeakSet<DeviceIR>();
-const validatedBlocks = new WeakSet<BlockIR>();
+/**
+ * 校验结果按输入对象身份缓存：同一份 IR 被多个器件库、多块板或多次装载复用时只做一次
+ * 深拷贝与校验。键是调用方传入的对象，也登记校验后的冻结副本，因此把已校验结果再传回来
+ * 同样命中。只缓存成功结果，非法 IR 每次都重跑校验并抛出相同诊断。
+ * 边界：输入对象在首次校验成功后必须视为不可变（IR 类型全为 readonly，生成方每次构建
+ * 新对象）；就地改写同一对象后再校验不会反映到缓存结果。
+ */
+const validatedDevices = new WeakMap<object, DeviceIR>();
+const validatedBlocks = new WeakMap<object, BlockIR>();
 const boundBlocks = new WeakMap<BlockIR, WeakSet<DeviceIR>>();
 
+function remembered<T>(cache: WeakMap<object, T>, input: unknown): T | undefined {
+  return typeof input === 'object' && input !== null ? cache.get(input) : undefined;
+}
+function remember<T extends object>(cache: WeakMap<object, T>, input: unknown, result: T): void {
+  if (typeof input === 'object' && input !== null) cache.set(input, result);
+  cache.set(result, result);
+}
+
 export function validateDeviceIR(input: unknown): DeviceIR {
-  if (typeof input === 'object' && input !== null && validatedDevices.has(input as DeviceIR))
-    return input as DeviceIR;
+  const cached = remembered(validatedDevices, input);
+  if (cached !== undefined) return cached;
   const captured = snapshot(input);
   try {
     deviceSchema(captured);
     new Validator(captured).validateDevice();
     const result = captured as unknown as DeviceIR;
-    validatedDevices.add(result);
+    remember(validatedDevices, input, result);
     return result;
   } catch (error) {
     return locateError(error, captured);
   }
 }
 export function validateBlockIR(input: unknown): BlockIR {
-  if (typeof input === 'object' && input !== null && validatedBlocks.has(input as BlockIR))
-    return input as BlockIR;
+  const cached = remembered(validatedBlocks, input);
+  if (cached !== undefined) return cached;
   const captured = snapshot(input);
   try {
     blockSchema(captured);
     new Validator().validateBlock(captured);
     const result = captured as unknown as BlockIR;
-    validatedBlocks.add(result);
+    remember(validatedBlocks, input, result);
     return result;
   } catch (error) {
     return locateError(error, captured);

@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   Download,
+  Loader2,
   LocateFixed,
   Maximize,
   PanelRight,
@@ -14,7 +15,7 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   createCanvasEditor,
   createSchematicEditor,
@@ -30,12 +31,19 @@ import {
   demoFileName,
   demoWidgetLibrary,
   loadDemoDocument,
+  resetDemoDeviceReads,
+  onDemoDeviceResolved,
   serializeDemoSnapshot,
   DEMO_DOCUMENTS,
   type IDemoLoadedDocument,
   type DemoSnapshot,
 } from '@/runtime-demo';
 
+import {
+  createSimulationPrepareStore,
+  prepareText,
+  runSimulationPrepare,
+} from '@/sim/simulation-prepare';
 import { IntegrationPanel } from '@/integration-panel';
 import { errorMessage, type EditorSession } from '@/host-integration';
 
@@ -59,6 +67,9 @@ export function App() {
   const [focusProperties, setFocusProperties] = useState(0);
   const latest = useRef<DemoSnapshot | undefined>(undefined);
   const documents = useRef<Record<string, IDemoLoadedDocument>>({});
+  const [prepare] = useState(createSimulationPrepareStore);
+  const prepareState = useSyncExternalStore(prepare.subscribe, prepare.get);
+  const prepareStatus = prepareText(prepareState);
   const [documentId, setDocumentId] = useState(() => {
     // 深链接：`?doc=ct107d-canvas` 直接打开指定文档，方便分享预览。
     const requested = new URLSearchParams(globalThis.location.search).get('doc');
@@ -72,10 +83,13 @@ export function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [status, setStatus] = useState<IEditorIntegrationState | null>(null);
+  /** 每次挂载的读取窗口编号；StrictMode 里被丢弃的那次挂载不能结束新窗口。 */
+  const readingEpoch = useRef(0);
 
   useEffect(() => {
     const container = host.current;
     if (container === null) return;
+    const epoch = (readingEpoch.current += 1);
     let cancelled = false;
     let instance: EditorSession | undefined;
     const subscriptions: { dispose(): void }[] = [];
@@ -91,6 +105,14 @@ export function App() {
     setStatus(null);
     setLoadError(null);
     setActionError(null);
+    // 打开文档就是准备过程的第一段：读取并解析器件库，读数来自真实的器件包解析次数。
+    prepare.dispatch({ type: 'reset' });
+    resetDemoDeviceReads();
+    prepare.dispatch({ type: 'read-start' });
+    const stopReading = onDemoDeviceResolved((count) => {
+      if (prepare.get().phase !== 'reading') return;
+      prepare.dispatch({ type: 'device-read', count });
+    });
 
     const start = async (): Promise<void> => {
       try {
@@ -161,12 +183,16 @@ export function App() {
           setLoadError(errorMessage(cause));
           setLoading(false);
         }
+      } finally {
+        stopReading();
+        if (epoch === readingEpoch.current) prepare.endReading();
       }
     };
     void start();
 
     return () => {
       cancelled = true;
+      stopReading();
       for (const subscription of subscriptions) subscription.dispose();
       if (editor.current === instance) {
         editor.current = undefined;
@@ -214,9 +240,25 @@ export function App() {
   const setCanvasMode = (mode: 'edit' | 'simulation'): void => {
     const current = editor.current;
     if (current?.kind !== 'canvas') return;
-    void perform(current, () => current.editor.executeCommand('canvas.setMode', { mode })).catch(
-      () => undefined,
-    );
+    if (mode === 'edit') {
+      prepare.dispatch({ type: 'reset' });
+      void perform(current, () => current.editor.executeCommand('canvas.setMode', { mode })).catch(
+        () => undefined,
+      );
+      return;
+    }
+    // 切到仿真：装配 → 首次推进都在可见的准备状态里完成，帧循环接手时编译已经发生过。
+    prepare.dispatch({ type: 'reset' });
+    void perform(current, () =>
+      runSimulationPrepare(
+        {
+          switchToSimulation: () => current.editor.executeCommand('canvas.setMode', { mode }),
+          firstAdvance: () => current.editor.executeCommand('canvas.step'),
+          paint: nextPaint,
+        },
+        prepare.dispatch,
+      ),
+    ).catch(() => undefined);
   };
 
   const download = useCallback((): void => {
@@ -242,6 +284,18 @@ export function App() {
   const simulationMode = descriptor.kind === 'canvas' && status?.mode === 'simulation';
   const simulationActionsDisabled = controlsDisabled || !simulationMode;
   const canEdit = !controlsDisabled && status?.mode === 'edit' && !status.readOnly;
+  const modeLabel =
+    descriptor.kind === 'schematic'
+      ? '原理图'
+      : prepareStatus !== undefined
+        ? '准备中'
+        : status === null
+          ? '—'
+          : status.mode === 'edit'
+            ? '编辑'
+            : status.running
+              ? '运行中'
+              : '已暂停';
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -291,15 +345,7 @@ export function App() {
 
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <span className="text-muted-foreground mr-1 hidden text-[11px] tabular-nums sm:inline">
-            {descriptor.kind === 'schematic'
-              ? '原理图'
-              : status === null
-                ? '—'
-                : status.mode === 'edit'
-                  ? '编辑'
-                  : status.running
-                    ? '运行中'
-                    : '已暂停'}
+            {modeLabel}
           </span>
           <Button
             variant="ghost"
@@ -469,9 +515,28 @@ export function App() {
           <div ref={host} className="absolute inset-0" />
           {loading ? (
             <div className="bg-background/70 text-muted-foreground pointer-events-none absolute inset-0 grid place-items-center text-xs">
-              正在打开示例…
+              <div role="status" aria-live="polite" className="text-center">
+                <p>正在打开示例…</p>
+                {prepareStatus === undefined ? null : (
+                  <p className="mt-1 text-[11px]">{prepareStatus}</p>
+                )}
+              </div>
             </div>
-          ) : null}
+          ) : prepareStatus === undefined ? null : (
+            <div className="bg-background/70 absolute inset-0 grid place-items-center p-6">
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex max-w-sm flex-col items-center gap-2 text-center"
+              >
+                <Loader2 className="text-muted-foreground size-4 animate-spin" aria-hidden />
+                <p className="text-xs font-medium">{prepareStatus}</p>
+                <p className="text-muted-foreground text-[11px] leading-relaxed">
+                  首次进入仿真要先翻译器件程序并编译一次，之后每帧直接复用编译结果。
+                </p>
+              </div>
+            </div>
+          )}
           {loadError === null ? null : (
             <div className="bg-background absolute inset-0 grid place-items-center p-6">
               <div className="max-w-sm text-center">
@@ -502,4 +567,23 @@ export function App() {
       </div>
     </div>
   );
+}
+
+/**
+ * 等宿主把当前状态真正画到屏幕上。
+ *
+ * 两帧 rAF 保证第一次回调里的状态更新已经提交并绘制；后台标签页里 rAF 不触发，用定时器
+ * 兜底，避免准备流程在不可见的页面上永远挂住。
+ */
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(finish));
+    globalThis.setTimeout(finish, 100);
+  });
 }

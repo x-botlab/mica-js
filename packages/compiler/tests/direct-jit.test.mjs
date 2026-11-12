@@ -995,8 +995,10 @@ test('safe integer and boolean literals, PCs and durations are inlined', () => {
   assert.doesNotMatch(source, /C\[/);
   assert.match(source, /case 5: \{/);
   assert.match(source, /S\[0\] = 9;/);
-  assert.match(source, /v\d+ = 7;\nS\[1\] = v\d+;/);
-  assert.match(source, /v\d+ = true;\nS\[3\] = v\d+;/);
+  // 常量不占语句：`7` / `true` 直接内联到写入点，没有中间的 `v = 7;`。
+  assert.match(source, /S\[1\] = 7;/);
+  assert.match(source, /S\[3\] = true;/);
+  assert.doesNotMatch(source, /v\d+ = 7;/);
   assert.match(source, /F\.due = F\.time \+ 3;/);
   const f = frame(program, [5, 1, 0, true, 0, 0]);
   assert.equal(program.run(f, 5), 'fallback');
@@ -1012,8 +1014,7 @@ test('safe integer and boolean literals, PCs and durations are inlined', () => {
   const jumping = compileDirectJit([redirect.instruction(3, 4)], binding);
   const jumpSource = generated(jumping);
   assert.doesNotMatch(jumpSource, /C\[/);
-  assert.match(jumpSource, /v\d+ = 12;/);
-  assert.match(jumpSource, /S\[0\] = H\.checkPc\(v\d+\);/);
+  assert.match(jumpSource, /S\[0\] = H\.checkPc\(12\);/);
   assert.match(jumpSource, /F\.due = F\.time \+ 4;/);
   const r = frame(jumping, [3, 0, 0, true, 0, 0]);
   assert.equal(jumping.run(r, 10), 'fallback');
@@ -1031,9 +1032,11 @@ test('captured NaN, infinities and fractional numbers keep compileBody semantics
   const instructions = [b.instruction(0, 99)];
   const program = compileDirectJit(instructions, binding);
   const source = generated(program);
-  assert.match(source, /v\d+ = -0;\nS\[1\] = v\d+;/);
-  assert.match(source, /v\d+ = C\[0\];\nS\[2\] = v\d+;/);
-  assert.match(source, /v\d+ = C\[1\];\nS\[5\] = v\d+;/);
+  assert.match(source, /S\[1\] = -0;/);
+  assert.match(source, /S\[2\] = C\[0\];/);
+  assert.match(source, /S\[5\] = C\[1\];/);
+  // `equal(1.5, 1.5)` 在编译期求值为 `true`，两个小数常量连捕获都不需要。
+  assert.match(source, /S\[3\] = true;/);
   assert.doesNotMatch(source, /= NaN|= Infinity|= 1\.5/);
   const f = frame(program);
   const reference = generic(instructions, f.states, f.memories);
@@ -1043,6 +1046,138 @@ test('captured NaN, infinities and fractional numbers keep compileBody semantics
   assert.equal(Number.isNaN(f.states[2]), true);
   assert.equal(f.states[5], Infinity);
   assert.equal(f.states[3], true);
+});
+
+test('constant operand arithmetic evaluates at compile time and matches compileBody', () => {
+  // Every operator the analyzer folds: the direct backend must reproduce the same primitive,
+  // including signed zero, NaN, infinities, wrap-around shifts and truncated remainder.
+  const cases = [
+    ['add', 2, 3],
+    ['subtract', 0, 1],
+    ['multiply', 0, -1],
+    ['divide', 1, 0],
+    ['divide', 0, 0],
+    ['remainder', -7, 3],
+    ['power', 2, 31],
+    ['lessThan', -1, 0],
+    ['greaterThanOrEqual', 0, -0],
+    ['notEqual', NaN, NaN],
+    ['bitAnd', -1, 255],
+    ['bitOr', 1, 2],
+    ['bitXor', 5, 3],
+    ['shiftLeft', 1, 33],
+    ['shiftRight', -8, 2],
+    ['shiftRightUnsigned', -1, 0],
+  ];
+  const unaries = [
+    ['positive', -3],
+    ['negate', 0],
+    ['not', 0],
+    ['bitNot', 0],
+  ];
+  const numeric = [
+    ['abs', -4],
+    ['floor', 1.5],
+    ['round', 2.5],
+    ['sqrt', -1],
+    ['max', 1],
+    ['isNaN', 0],
+  ];
+  const compare = (label, build) => {
+    const b = builder();
+    build(b);
+    b.delay(1);
+    const instructions = [b.instruction(0, 99)];
+    const program = compileDirectJit(instructions, binding);
+    assert(program, label);
+    const f = frame(program);
+    const reference = generic(instructions, f.states, f.memories);
+    assert.equal(program.run(f, 2), reference.run(2), label);
+    assert.deepEqual(f.states, reference.states, label);
+    assert(Object.is(f.states[1], reference.states[1]), `${label}: ${f.states[1]}`);
+    // Folded values own no slot: the block emits nothing but the write itself.
+    assert.doesNotMatch(generated(program), /\bv\d+\b/, label);
+  };
+  for (const [operator, left, right] of cases)
+    compare(`binary ${operator}`, (b) =>
+      b.write('x', b.binary(operator, b.constant(left), b.constant(right), 'number')),
+    );
+  for (const [operator, value] of unaries)
+    compare(`unary ${operator}`, (b) =>
+      b.write('x', b.value({ kind: 'unary', operator, value: b.constant(value) })),
+    );
+  for (const [builtin, value] of numeric)
+    compare(`numeric ${builtin}`, (b) =>
+      b.write('x', b.value({ kind: 'numeric', builtin, args: [b.constant(value)] })),
+    );
+
+  const folded = builder();
+  folded.write('x', folded.binary('add', folded.constant(2), folded.constant(3)));
+  folded.write('flag', folded.binary('equal', folded.constant(2), folded.constant(3), 'bool'));
+  folded.delay(1);
+  const source = generated(compileDirectJit([folded.instruction(0, 99)], binding));
+  assert.match(source, /S\[1\] = 5;/);
+  assert.match(source, /S\[3\] = false;/);
+});
+
+test('an operand known only at run time keeps its slot and stays unfolded', () => {
+  const b = builder();
+  b.write('x', b.binary('add', b.read('y'), b.constant(5)));
+  b.delay(1);
+  const program = compileDirectJit([b.instruction(0, 99)], binding);
+  const source = generated(program);
+  // The constant is inlined into the expression; the unknown operand keeps one slot.
+  assert.match(source, /v\d+ = \(v\d+ \+ 5\);/);
+  assert.doesNotMatch(source, /v\d+ = 5;/);
+  const f = frame(program);
+  const reference = generic([b.instruction(0, 99)], f.states, f.memories);
+  assert.equal(program.run(f, 2), reference.run(2));
+  assert.deepEqual(f.states, reference.states);
+});
+
+test('an IT guard chain stays inside the statements-per-operation budget', () => {
+  // The shape #256 targets: repeated `equal(read, literal)` feeding a `select` ladder. The
+  // literals must cost nothing, so the ratio is measured as emitted statements per IR op.
+  const b = builder();
+  let selected = b.read('x');
+  for (let lane = 0; lane < 14; lane++) {
+    const condition = b.binary('equal', b.read('y'), b.constant(lane), 'bool');
+    const yes = [];
+    const level = b.value(
+      { kind: 'constant', constant: { kind: 'number', value: lane } },
+      'number',
+      yes,
+    );
+    yes.push({ kind: 'yield', value: level });
+    const no = [];
+    no.push({ kind: 'yield', value: selected });
+    selected = b.value({
+      kind: 'select',
+      condition,
+      yes: { type: { kind: 'number' }, body: { operations: yes } },
+      no: { type: { kind: 'number' }, body: { operations: no } },
+    });
+  }
+  b.write('marker', selected);
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  const { emitStats } = program;
+  assert(emitStats, 'emitStats is a development-only diagnostic on the program');
+  assert.equal(Object.keys(program).includes('emitStats'), false, 'diagnostic stays hidden');
+  assert.equal(emitStats.selectBlocks, 0, 'every pure select folds into a ternary');
+  assert.equal(emitStats.operations, instructions[0].body.operations.length);
+  assert(
+    emitStats.statementsPerOperation <= 1.1,
+    `statements/op ${emitStats.statementsPerOperation} over ${emitStats.statements} statements`,
+  );
+  for (const y of [0, 5, 13, 14]) {
+    const f = frame(program, [0, 3, y, true, 0, 0]);
+    const reference = generic(instructions, f.states, f.memories);
+    assert.equal(program.run(f, 5), reference.run(5));
+    assert.deepEqual(f.states, reference.states);
+    assert.equal(f.states[5], y < 14 ? y : 3);
+  }
 });
 
 test('pure scalar select folds into one conditional expression', () => {
@@ -1669,6 +1804,41 @@ test('a declared busy-wait head folds rounds and never crosses the deadline', ()
   assert.equal(unfolded.time, 2);
 });
 
+test('a folded elapse duration becomes a literal due time', () => {
+  const b = builder();
+  const summed = b.binary('add', b.constant(2), b.constant(3));
+  b.operations.push({ kind: 'elapse', duration: summed });
+  b.write('x', b.read('y'));
+  const instruction = b.instruction(0, 99);
+  const program = compileDirectJit([instruction], binding);
+  const source = generated(program);
+  // The analyzer evaluated the sum, so the runtime needs neither a slot nor a duration check.
+  assert.match(source, /F\.due = F\.time \+ 5;/);
+  assert.doesNotMatch(source, /H\.checkDuration/);
+  const f = frame(program, [0, 0, 4, false, 0, 0]);
+  const reference = generic([instruction], f.states, f.memories);
+  assert.equal(program.run(f, 2), 'deadline');
+  assert.equal(program.run(f, 1_000), reference.run(1_000));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.time, 5);
+  assert.equal(f.states[1], 4);
+
+  // A folded zero duration is the immediate path: no due time, no continuation slot.
+  const immediate = builder();
+  const zero = immediate.binary('subtract', immediate.constant(2), immediate.constant(2));
+  immediate.operations.push({ kind: 'elapse', duration: zero });
+  immediate.write('x', immediate.read('y'));
+  const zeroProgram = compileDirectJit([immediate.instruction(0, 99)], binding);
+  assert.doesNotMatch(generated(zeroProgram), /F\.due = F\.time \+/);
+  const z = frame(zeroProgram, [0, 0, 9, false, 0, 0]);
+  const zeroReference = generic([immediate.instruction(0, 99)], z.states, z.memories);
+  assert.equal(zeroProgram.run(z, 30), zeroReference.run(30));
+  assert.equal(z.time, zeroReference.time);
+  assert.deepEqual(z.states, zeroReference.states);
+  assert.equal(z.resume, 0);
+  assert.equal(z.states[1], 9);
+});
+
 test('a computed elapse duration advances by the runtime value', () => {
   const b = builder();
   const amount = b.read('x');
@@ -2241,4 +2411,189 @@ test('shard size groups instructions into contiguous range dispatches', () => {
   for (const deadline of [0, 1, 2, 3, 4, 6, 9, 15, 30]) pair.run(deadline);
   assert.equal(pair.left.frame.states[1], pair.right.frame.states[1]);
   assert(pair.left.frame.states[1] > 0);
+});
+
+test('byte literals and indexing stay direct and match compileBody', () => {
+  const b = builder();
+  const literal = b.value(
+    { kind: 'constant', constant: { kind: 'bytes', value: [0x41, 0x42, 0x43] } },
+    'bytes',
+  );
+  const built = b.value(
+    { kind: 'bytes', elements: [b.constant(7), b.read('y'), b.constant(255)] },
+    'bytes',
+  );
+  b.write('x', b.value({ kind: 'index', value: literal, index: b.constant(1) }));
+  b.write('marker', b.value({ kind: 'index', value: built, index: b.read('offset') }));
+  b.operations.push({ kind: 'send', channel: 'out', value: built });
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, hostBinding);
+  assert(program, 'bytes and index must not disqualify the block');
+  const source = generated(program);
+  assert.match(source, /H\.createBytes\(C\[\d+\]\)/);
+  assert.match(source, /H\.createBytes\(\[7,v\d+,255\]\)/);
+  assert.match(source, /H\.readIndex\(v\d+,v\d+\)/);
+  assert.match(source, /H\.readIndex\(v\d+,1\)/);
+  assert.doesNotMatch(source, /65|66|67/);
+  const states = [0, 0, 3, true, 2, 0];
+  const f = frame(program, states);
+  const log = hostRecorder(() => f.time);
+  f.host = log;
+  const reference = generic(instructions, f.states, f.memories, (machine) =>
+    hostRecorder(() => machine.time),
+  );
+  assert.equal(program.run(f, 5), reference.run(5));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.states[1], 0x42);
+  assert.equal(f.states[5], 255);
+  assert.deepEqual(log.entries, reference.log);
+  const sent = log.entries[0][2];
+  assert(sent instanceof Uint8Array, 'bytes must materialise as a Uint8Array');
+  assert.deepEqual(Array.from(sent), [7, 3, 255]);
+  const pair = duet(instructions, { binding: hostBinding, host: true, states });
+  assert.equal(pair.run(5), 'fallback');
+  assert.deepEqual(pair.left.frame.states, pair.right.frame.states);
+});
+
+test('byte elements and indices keep host validation order and messages', () => {
+  for (const [element, error, message] of [
+    [300, RangeError, /Byte value must be in \[0, 255\]/],
+    [1.5, TypeError, /Byte value must be an integer number/],
+  ]) {
+    const b = builder();
+    const built = b.value({ kind: 'bytes', elements: [b.constant(1), b.read('y')] }, 'bytes');
+    b.write('x', b.value({ kind: 'index', value: built, index: b.constant(0) }));
+    b.delay(1);
+    const instructions = [b.instruction(0, 99)];
+    const program = compileDirectJit(instructions, binding);
+    assert(program, String(element));
+    const capture = (run) => {
+      try {
+        run();
+        return null;
+      } catch (thrown) {
+        return thrown;
+      }
+    };
+    const f = frame(program, [0, 0, element, true, 0, 0]);
+    const reference = generic(instructions, f.states, f.memories);
+    const direct = capture(() => program.run(f, 5));
+    const expected = capture(() => reference.run(5));
+    assert(direct instanceof error, String(element));
+    assert.match(direct.message, message);
+    assert.equal(direct.constructor, expected.constructor);
+    assert.equal(direct.message, expected.message);
+  }
+  const b = builder();
+  const outOfRange = b.value(
+    { kind: 'constant', constant: { kind: 'bytes', value: [1, 300] } },
+    'bytes',
+  );
+  b.write('x', b.value({ kind: 'index', value: outOfRange, index: b.constant(0) }));
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  // The generic backend materialises literals while compiling the body, so an invalid
+  // element must keep declining compilation instead of failing on the first execution.
+  assert.equal(compileDirectJit(instructions, binding), undefined);
+  assert.throws(() => compileBody(instructions[0].body), /Byte value must be in \[0, 255\]/);
+});
+
+test('a value comparison keeps byte content equality and intent identity direct', () => {
+  const b = builder();
+  const left = b.value({ kind: 'bytes', elements: [b.constant(1), b.constant(2)] }, 'bytes');
+  const right = b.value({ kind: 'bytes', elements: [b.constant(1), b.constant(2)] }, 'bytes');
+  const same = b.value({ kind: 'binary', operator: 'equal', left, right }, 'bool');
+  const different = b.value({ kind: 'binary', operator: 'notEqual', left, right }, 'bool');
+  b.write('flag', same);
+  b.write('marker', different);
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  assert(program);
+  assert.match(generated(program), /H\.equalValues\(v\d+,v\d+\)/);
+  assert.match(generated(program), /!H\.equalValues\(v\d+,v\d+\)/);
+  const f = frame(program, [0, 0, 0, true, 0, 0]);
+  const reference = generic(instructions, f.states, f.memories);
+  assert.equal(program.run(f, 5), reference.run(5));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.states[3], true);
+  assert.equal(f.states[5], false);
+});
+
+test('a statement-position yield at the body tail terminates the instruction', () => {
+  const b = builder();
+  const value = b.constant(5);
+  b.write('x', value);
+  b.operations.push({ kind: 'yield', value });
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  assert(program, 'a bare tail yield must not disqualify the block');
+  const source = generated(program);
+  assert.doesNotMatch(source, /F\.resume = 1/);
+  const f = frame(program);
+  assert.equal(program.run(f, 5), 'fallback');
+  assert.equal(f.states[0], 99);
+  assert.equal(f.states[1], 5);
+  const pair = duet(instructions);
+  assert.equal(pair.run(5), 'fallback');
+  // Model validation rejects the shape today, so the interpreter only defines an error.
+  assert.throws(() => compileBody(instructions[0].body), /outside a value region/);
+  const trailing = builder();
+  const earlier = trailing.constant(1);
+  trailing.operations.push({ kind: 'yield', value: earlier });
+  trailing.write('x', trailing.constant(2));
+  trailing.delay(1);
+  assert.equal(compileDirectJit([trailing.instruction(0, 99)], binding), undefined);
+  const afterElapse = builder();
+  afterElapse.delay(1);
+  afterElapse.operations.push({ kind: 'yield', value: afterElapse.constant(1) });
+  assert.equal(compileDirectJit([afterElapse.instruction(0, 99)], binding), undefined);
+});
+
+test('runtime write barriers keep one program valid while the observed slots move', () => {
+  const b = builder();
+  b.write('x', b.constant(5));
+  b.operations.push({
+    kind: 'store8',
+    memory: ram,
+    offset: b.constant(0),
+    value: b.constant(9),
+  });
+  b.delay(1);
+  const instructions = [b.instruction(0, 1)];
+  // 写成块入口的一条位掩码测试；没有运行期栅栏字段的帧填入空掩码，行为与从前一致。
+  const monolithic = compileDirectJit(instructions, binding);
+  assert(monolithic);
+  assert.match(generated(monolithic), /if \(BS\[0\] & 3\) return "fallback";/);
+  for (const options of [binding, { ...binding, split: true, shardSlotLimit: 0, shardSize: 4 }]) {
+    const program = compileDirectJit(instructions, options);
+    assert(program);
+    // 编译期不再丢弃块：被观察的写入留在程序里，由块入口的运行期判定拦截。
+    assert.deepEqual(new Set(program.writeStates), new Set(['pc', 'x']));
+    assert.deepEqual(program.writeMemories, ['ram']);
+    const f = frame(program);
+    f.blockedStates = [1 << 1];
+    f.blockedMemories = [0];
+    assert.equal(program.run(f, 10), 'fallback');
+    assert.equal(f.states[0], 0, 'a blocked block leaves the PC untouched');
+    assert.equal(f.states[1], 1, 'and does not write the observed state');
+    assert.equal(f.time, 0, 'nor advance time');
+    assert.deepEqual(f.stateDirty, [0]);
+    assert.deepEqual(f.memoryDirty, [0]);
+    // 被观察的 memory 同样是块入口条件，而不是整块被拒。
+    f.blockedStates = [0];
+    f.blockedMemories = [1];
+    assert.equal(program.run(f, 10), 'fallback');
+    assert.equal(f.states[0], 0);
+    assert.deepEqual(f.memoryDirty, [0]);
+    // 观察者集合清空后同一份程序继续执行：没有任何重新编译。
+    f.blockedMemories = [0];
+    assert.equal(program.run(f, 10), 'fallback');
+    assert.equal(f.states[0], 1);
+    assert.equal(f.states[1], 5);
+    assert.equal(f.time, 1);
+    assert.deepEqual(f.memoryDirty, [1]);
+    assert.equal(f.memories[0][0], 9);
+  }
 });

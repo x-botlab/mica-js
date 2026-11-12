@@ -9,6 +9,7 @@ CT107D 竞赛板的 Mica 示例工程：17 个器件（13 种芯片 + 轻触按�
 ```bash
 pnpm --filter @mica-js/example-ct107d build       # 输出 dist/devices、dist/widgets
 pnpm --filter @mica-js/example-ct107d test        # 器件与 widget 用例
+pnpm --filter @mica-js/example-ct107d bench       # 整板性能基准（不进 test）
 pnpm --filter @mica-js/example-ct107d typecheck
 pnpm --filter @mica-js/example-ct107d schematic   # 原理图校验
 pnpm --filter @mica-js/example-ct107d canvas      # 画布校验
@@ -57,6 +58,11 @@ examples/ct107d/
   package.json                    build = mica build，typecheck = mica prepare && tsc --noEmit
   tsconfig.json
   vitest.config.ts
+  vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
+  bench/
+    board.ts                      整板夹具：按 ct107d.sch 装配 44 颗器件（装载 src/，不依赖 dist）
+    measure.ts                    测量核心：进程 CPU 时间读数、电气/运行时/JIT 指标、topicDigest
+    perf.test.ts                  基准用例：只断言下限，并追加一行到 bench/results.jsonl
   src/devices/<id>/
     model.ddl                     器件行为：引脚、状态、通道、进程与反应
     index.ts                      适配器：把输出通道转发到同名话题
@@ -237,6 +243,60 @@ node build-canvas.mjs     # 修改坐标或位号后重新生成 ct107d.cnv
 盖住两个黑色窗口）；用假 2D 上下文跑三个 widget 的实现（位图绘制、按下/松开发布、段码点亮
 段数）；最后用 `ct107d.sch` 的按键网表建一块只含按键与辅助器件的板，逐个按下 17 个键，
 确认矩阵行/列与 `RST` 的电平按 PDF 的接法变化。
+
+## 基准
+
+`bench/` 是整板性能基准，与 `examples/stm32g431rbt6`、`examples/iap15f2k61s2` 同构，差别只有两处：
+
+- 读数用**进程 CPU 时间**（`process.cpuUsage`）而不是挂钟，避免并行任务抢 CPU 时读数抖动；
+- 器件从 `src/` 装载：`bench/board.ts` 按 `ct107d.sch` 折出网表，现场编译 `model.ddl` 并导入
+  适配器（同 `test/harness.ts`），因此 `bench` 不依赖 `mica build`。
+
+```powershell
+pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.perf.config.ts
+```
+
+口径：装配整板 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`wallMs` / `rtf`
+取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（1 MHz 8051，
+8 位数码管逐位扫描 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 44 颗器件、96 条网络，
+电气求解、通道与执行引擎都走真实运行时。
+
+**行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按
+[吞吐合同](../../docs/spec/jit/throughput.rst)允许错过 GPIO 中间态、合并受保护执行段内的检查，
+因此同一份固件在两种模式下 `topicDigest` 本来就会不同：实测同一份源码下 `throughput` 给出
+`sha256:99fe7dca…`（窗口内 20 条消息、末值 `latch=191`），`precise` 给出
+`sha256:ccf49864…`（29 条消息、末值 `latch=254`），而后者与「端口写指令回退解释器」的旧版本
+逐条一致。跨模式比较只按合同允许的可见性差异判定，见
+[conformance](../../docs/spec/conformance.rst)；`MICA_PERF_STREAM=<path>` 可导出原始
+`(simTime, topic, payload)` 流做差分。
+
+| 字段                                          | 含义                                                                                                     |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `rtf`                                         | 墙钟（CPU 时间）/ 仿真时间，1 表示实时；越小越快                                                         |
+| `wallMs` / `simMs`                            | 测量窗口的 CPU 时间与仿真时间（毫秒）                                                                    |
+| `coldMs`                                      | 装配 + `runUntil(0)` + 预热的 CPU 时间（不含测量窗口）                                                   |
+| `usPerSolve`                                  | 每次电气求解摊到的时钟时间：`network.solveSlots` 内用 `hrtime` 累计 / 调用次数                           |
+| `solves`                                      | 窗口内 `ElectricalStats.solves` 的增量                                                                   |
+| `prepareTopology`                             | 整图重建次数；迁移桶命中时走恢复而不是重建                                                               |
+| `components` / `factorizations` / `leafPlans` | 同一次求解统计里的分量数、矩阵分解次数、叶计划（复用形状）数，用来观察拓扑重建频率                       |
+| `boundaryCalls`                               | 窗口内运行时 `boundary()` 的调用次数（每次块边界都会经过它）                                             |
+| `publishCalls` / `electricalPublishes`        | 窗口内 `publish()` 的调用次数 / 其中真正推进了电气求解的次数                                             |
+| `topicMessages`                               | 窗口内话题消息条数，也就是参与 `topicDigest` 的消息数                                                    |
+| `dirtySlots`                                  | 每次电气发布前脏槽数量的峰值                                                                             |
+| `direct` / `directCalls`                      | 直接 JIT 是否接管 MCU / 直接程序的调用次数                                                               |
+| `directPrograms` / `compileDirectJit`         | 直接程序缓存条数 / 成功编译次数（整轮累计，含预热；预热期间就会编译完，只统计窗口内会恒为 0）            |
+| `fallbackRate`                                | 直接程序返回 `fallback` 的比例                                                                           |
+| `topicDigest`                                 | 窗口内每条消息按 `(simTime, topic, payload)` 规范化后取 SHA-256 的前 16 位，作为「行为不变」的统一对照值 |
+| `topicDigestStable`                           | 同一次测量的多轮摘要是否完全一致                                                                         |
+| `unavailable`                                 | 拿不到或退化了的指标及原因                                                                               |
+
+每次运行把整份结果追加到 `bench/results.jsonl`（gitignore 已忽略），`vitest` 只在用例失败时
+回显 `console`，所以基线用 `process.stdout.write` 打印 `PERF {...}`。
+
+`topicDigest` 是跨改动比对的锚点：改引擎或编译器之后摘要不变，说明话题层面的行为没变；
+它只覆盖话题消息、不覆盖引脚电平，电气层面的等价性仍由 `test/` 的用例负责。用例里另有一轮
+`SJMP $` 空转固件，确认摘要对行为敏感（两次摘要必须不同）。`prepareTopology` 这类拿不到的
+指标列在 `unavailable` 里，需要精确计数时给 `ElectricalStats` 补计数器，而不是在基准里猜。
 
 ## 验证
 

@@ -141,6 +141,32 @@ async function readDefinition<T>(path: string): Promise<T> {
   return JSON.parse(await readText(path)) as T;
 }
 
+const resolvedDevices = new Set<string>();
+const deviceResolvedListeners = new Set<(count: number) => void>();
+
+/**
+ * 订阅「器件包已解析」的真实读数，供准备状态显示读库进度；返回退订函数。
+ *
+ * 计数按包去重：同一包被多个文档或 StrictMode 的二次挂载重复解析时不会虚增。
+ */
+export function onDemoDeviceResolved(listener: (count: number) => void): () => void {
+  deviceResolvedListeners.add(listener);
+  return () => {
+    deviceResolvedListeners.delete(listener);
+  };
+}
+
+/** 打开新文档时重开读取窗口，下一次读取从 0 开始计数。 */
+export function resetDemoDeviceReads(): void {
+  resolvedDevices.clear();
+}
+
+function noteDeviceResolved(id: string): void {
+  if (resolvedDevices.has(id)) return;
+  resolvedDevices.add(id);
+  for (const listener of deviceResolvedListeners) listener(resolvedDevices.size);
+}
+
 /** Metadata plus self-contained ESM source, resolved by full ID without touching the code. */
 export const demoDeviceLibrary: IDeviceLibrary = {
   async resolve(id) {
@@ -151,6 +177,7 @@ export const demoDeviceLibrary: IDeviceLibrary = {
       readText(asset.code),
     ]);
     validateMetadata(definition, 'device', id.slice(id.indexOf(':') + 1));
+    noteDeviceResolved(id);
     return { definition: definition as DeviceMetadata, code };
   },
 };

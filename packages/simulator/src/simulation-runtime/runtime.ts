@@ -2,6 +2,7 @@ import { addTime, timePs } from '@mica-js/core';
 import type { TimePs } from '@mica-js/core';
 import { Emitter } from '@mica-js/core/lifecycle';
 import type { Disposable, Event } from '@mica-js/core/lifecycle';
+import type { DeliveryKind } from '@mica-js/document/canvas';
 import { createBoard, createDeviceLibrary } from '../runtime';
 import type { Board, DeviceContext, RuntimeDiagnostic, TopicBridge, TopicMessage } from '../types';
 import { errorMessage, SimulationRuntimeError } from './errors';
@@ -21,6 +22,12 @@ interface IOutput {
   readonly symbol: string;
   readonly port: string;
   readonly payload: unknown;
+  readonly delivery: DeliveryKind;
+}
+interface IDelivery {
+  readonly symbol: string;
+  readonly port: string;
+  readonly payload: unknown;
 }
 interface ILoadedRuntime {
   readonly prepared: IResolvedSimulation;
@@ -37,7 +44,7 @@ export function createSimulationRuntime(
 ): ISimulationRuntime {
   const publishes = new Emitter<ISimulationMessage>();
   const diagnostics = new Emitter<ISimulationDiagnostic>();
-  const pending: IOutput[] = [];
+  const pending: IDelivery[] = [];
   const published = new Map<string, unknown>();
   let active: ILoadedRuntime | undefined;
   let simTime = timePs(0);
@@ -49,20 +56,25 @@ export function createSimulationRuntime(
       throw new SimulationRuntimeError('disposed', 'Simulation runtime has been disposed');
   };
   const flush = (loaded: ILoadedRuntime): void => {
-    for (const output of loaded.outputs.splice(0)) {
-      const instance = loaded.prepared.instances.find((entry) => entry.symbol === output.symbol)!;
-      const topic = instance.device.topics.get(output.port)!;
-      const key = targetKey(output.symbol, output.port);
-      if (topic.delivery === 'level') {
-        if (published.has(key) && samePayload(published.get(key), output.payload)) continue;
-        // Keep the equality baseline independent from buffers/objects handed to listeners.
-        if (publishes.hasListeners) published.set(key, copyPayload(output.payload));
+    // Without a publish listener nothing can observe these messages, and no listener can be added
+    // while this loop runs, so the copies and messages are skipped instead of built and dropped.
+    if (publishes.hasListeners) {
+      for (const output of loaded.outputs.splice(0)) {
+        if (output.delivery === 'level') {
+          const key = targetKey(output.symbol, output.port);
+          if (published.has(key) && samePayload(published.get(key), output.payload)) continue;
+          // Keep the equality baseline independent from buffers/objects handed to listeners.
+          if (publishes.hasListeners) published.set(key, copyPayload(output.payload));
+        }
+        // The publish snapshot in `outputs` is already an owned copy, so listeners may share it.
+        publishes.fire({
+          target: { symbol: output.symbol, port: output.port },
+          payload: output.payload,
+          simTime,
+        });
       }
-      publishes.fire({
-        target: { symbol: output.symbol, port: output.port },
-        payload: copyPayload(output.payload),
-        simTime,
-      });
+    } else {
+      loaded.outputs.length = 0;
     }
     for (const diagnostic of loaded.diagnostics.splice(0)) {
       diagnostics.fire(
@@ -105,12 +117,13 @@ export function createSimulationRuntime(
       );
       assertActive();
       if (current !== generation) return;
-      install(buildLoadedRuntime(prepared));
+      install(buildLoadedRuntime(prepared, () => publishes.hasListeners));
     },
     async reset(): Promise<void> {
       assertActive();
       ++generation;
-      if (active !== undefined) install(buildLoadedRuntime(active.prepared));
+      if (active !== undefined)
+        install(buildLoadedRuntime(active.prepared, () => publishes.hasListeners));
       else {
         pending.length = 0;
         published.clear();
@@ -191,7 +204,10 @@ export function createSimulationRuntime(
   };
 }
 
-function buildLoadedRuntime(prepared: IResolvedSimulation): ILoadedRuntime {
+function buildLoadedRuntime(
+  prepared: IResolvedSimulation,
+  publishObserved: () => boolean,
+): ILoadedRuntime {
   const outputs: IOutput[] = [];
   const found: ISimulationDiagnostic[] = [];
   const inputs = new Map<string, IPreparedDeviceTopic>();
@@ -206,7 +222,7 @@ function buildLoadedRuntime(prepared: IResolvedSimulation): ILoadedRuntime {
         create: (context: DeviceContext) =>
           instance.device.create({
             ...context,
-            topics: scopeTopics(context.topics, instance, outputs, found),
+            topics: scopeTopics(context.topics, instance, outputs, found, publishObserved),
           }),
       };
     }),
@@ -254,17 +270,33 @@ function buildLoadedRuntime(prepared: IResolvedSimulation): ILoadedRuntime {
   };
 }
 
-/** Board topics are opaque global strings; this boundary gives each factory local port names. */
-function scopeTopics(
+/**
+ * Board topics are opaque global strings; this boundary gives each factory local port names.
+ *
+ * Exported for the fan-out regression test, which drives it against a real `Board`: every accepted
+ * output must still reach `board.topics` listeners even when the instance has no scoped subscriber.
+ *
+ * `publishObserved` reports whether anything outside the board consumes published messages; with no
+ * scoped subscriber, no owner-less bridge listener and no consumer, an accepted output is dropped
+ * before it is copied, fanned out or queued, while `assertCanPublish` keeps the publish guards.
+ */
+export function scopeTopics(
   bridge: TopicBridge,
   instance: IPreparedInstance,
   outputs: IOutput[],
   diagnostics: ISimulationDiagnostic[],
+  publishObserved: () => boolean,
 ): TopicBridge {
   const prefix = `${encodeURIComponent(instance.symbol)}/`;
+  let scopedListeners = 0;
+  const unobserved = (): boolean =>
+    scopedListeners === 0 && bridge.hostListenerCount === 0 && !publishObserved();
   return {
-    onDidReceive: ((listener, thisArgs, disposables) =>
-      bridge.onDidReceive(
+    get hostListenerCount(): number {
+      return bridge.hostListenerCount;
+    },
+    onDidReceive: ((listener, thisArgs, disposables) => {
+      const subscription = bridge.onDidReceive(
         (message) => {
           if (!message.topic.startsWith(prefix)) return;
           const port = message.topic.slice(prefix.length);
@@ -272,8 +304,23 @@ function scopeTopics(
           return listener.call(thisArgs, { topic: port, payload: copyPayload(message.payload) });
         },
         undefined,
-        disposables,
-      )) as Event<TopicMessage>,
+        undefined,
+      );
+      scopedListeners++;
+      let active = true;
+      const disposable = {
+        dispose: () => {
+          if (active) {
+            active = false;
+            scopedListeners--;
+            subscription.dispose();
+          }
+        },
+      };
+      disposables?.push(disposable);
+      return disposable;
+    }) as Event<TopicMessage>,
+    assertCanPublish: () => bridge.assertCanPublish(),
     publish(port, payload): void {
       const topic = instance.device.topics.get(port);
       if (topic?.direction !== 'output' || !payloadMatches(topic.type, payload)) {
@@ -286,10 +333,16 @@ function scopeTopics(
         });
         return;
       }
+      // Publish would copy first and only then enforce the phase, disposed and faulted guards, so
+      // the skipped path keeps the guard on its own instead of losing the error.
+      if (unobserved()) {
+        bridge.assertCanPublish();
+        return;
+      }
       const snapshot = copyPayload(payload);
       // Publish first so Board still enforces its phase and disposed/faulted guards.
       bridge.publish(scopedTopic(instance.symbol, port), snapshot);
-      outputs.push({ symbol: instance.symbol, port, payload: snapshot });
+      outputs.push({ symbol: instance.symbol, port, payload: snapshot, delivery: topic.delivery });
     },
   };
 }
