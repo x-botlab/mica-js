@@ -44,6 +44,8 @@ describe('CT107D 整板基准', () => {
 
     expect(result.topicDigest).toMatch(/^sha256:[0-9a-f]{16}$/);
     expect(result.topicDigest).not.toBe(EMPTY_DIGEST);
+    expect(result.topicFinalDigest).toMatch(/^sha256:[0-9a-f]{16}$/);
+    expect(result.topicFinalDigest).not.toBe(EMPTY_DIGEST);
     // 同一轮里跑 3 次，摘要必须完全一致：这是「行为不变」对照值的前提。
     expect(result.topicDigestStable).toBe(true);
   }, 1_800_000);

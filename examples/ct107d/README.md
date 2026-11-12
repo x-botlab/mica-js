@@ -261,6 +261,15 @@ pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.per
 8 位数码管逐位扫描 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 44 颗器件、96 条网络，
 电气求解、通道与执行引擎都走真实运行时。
 
+**行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按
+[吞吐合同](../../docs/spec/jit/throughput.rst)允许错过 GPIO 中间态、合并受保护执行段内的检查，
+因此同一份固件在两种模式下 `topicDigest` 本来就会不同：实测同一份源码下 `throughput` 给出
+`sha256:99fe7dca…`（窗口内 20 条消息、末值 `latch=191`），`precise` 给出
+`sha256:ccf49864…`（29 条消息、末值 `latch=254`），而后者与「端口写指令回退解释器」的旧版本
+逐条一致。跨模式比较只按合同允许的可见性差异判定，见
+[conformance](../../docs/spec/conformance.rst)；`MICA_PERF_STREAM=<path>` 可导出原始
+`(simTime, topic, payload)` 流做差分。
+
 | 字段                                          | 含义                                                                                                     |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
 | `rtf`                                         | 墙钟（CPU 时间）/ 仿真时间，1 表示实时；越小越快                                                         |

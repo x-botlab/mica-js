@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { createCt107dBoard, demoFirmware } from './board';
 
 /**
@@ -81,6 +82,8 @@ interface ProbeSnapshot {
   readonly directPrograms: number;
   readonly direct: boolean;
   readonly digest: string;
+  readonly finalDigest: string;
+  readonly finalTopics: Readonly<Record<string, string>>;
 }
 
 interface Probe {
@@ -141,10 +144,16 @@ function createProbe(board: unknown): Probe {
   let compiles = 0;
   let instrumented = false;
 
+  /** Last payload per topic: the message count may coalesce without losing the final value. */
+  const finals = new Map<string, string>();
+  const stream: string[] = [];
   const subscription = (board as { topics: TopicBridge }).topics.onDidReceive((message) => {
     if (!active) return;
     counters.topicMessages++;
-    hasher.update(`${runtime.time}|${message.topic}|${canonical(message.payload)}\n`);
+    const text = canonical(message.payload);
+    hasher.update(`${runtime.time}|${message.topic}|${text}\n`);
+    finals.set(message.topic, text);
+    if (process.env['MICA_PERF_STREAM']) stream.push(`${runtime.time}|${message.topic}|${text}`);
   });
 
   // `boundary()` / `publish()` 是原型方法，实例自有属性会遮蔽它们，内部 `this.boundary()` 同样命中。
@@ -261,10 +270,24 @@ function createProbe(board: unknown): Probe {
         directPrograms,
         direct: instrumented && counters.directCalls > 0,
         digest: `sha256:${hasher.digest('hex').slice(0, 16)}`,
+        finalDigest: `sha256:${createHash('sha256')
+          .update(
+            [...finals.entries()]
+              .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+              .map(([topic, text]) => `${topic}|${text}\n`)
+              .join(''),
+          )
+          .digest('hex')
+          .slice(0, 16)}`,
+        finalTopics: Object.fromEntries(finals),
       };
     },
     dispose() {
       subscription.dispose();
+
+      // Diagnostic only: `MICA_PERF_STREAM=<path>` dumps the raw (simTime, topic, payload) stream.
+      const streamPath = process.env['MICA_PERF_STREAM'];
+      if (streamPath && stream.length) writeFileSync(streamPath, `${stream.join('\n')}\n`);
 
       for (const restore of restores.reverse()) restore();
     },
@@ -276,6 +299,8 @@ export interface MeasureOptions {
   readonly firmware?: Uint8Array;
   /** 覆盖 MCU 属性，例如 `clockFrequency`。 */
   readonly props?: Readonly<Record<string, unknown>>;
+  /** 执行后端；`precise` 走解释器，用于与直接后端做差分对照。 */
+  readonly execution?: 'throughput' | 'precise';
   readonly warmUpMs?: number;
   readonly measureMs?: number;
   readonly rounds?: number;
@@ -309,6 +334,13 @@ export interface MeasureResult {
   readonly fallbackRate: number;
   readonly topicDigest: string;
   readonly topicDigestStable: boolean;
+  /**
+   * 每话题的最终载荷摘要。消息条数会因为直接后端按 slice 批量 flush 而合并，
+   * 终值摘要用来区分「合并」与「丢值」。
+   */
+  readonly topicFinalDigest: string;
+  /** 每话题的最终载荷，供跨版本差分定位；不参与断言。 */
+  readonly topicFinalTopics: Readonly<Record<string, string>>;
   readonly unavailable: Readonly<Record<string, string>>;
   readonly faults: readonly string[];
 }
@@ -330,6 +362,7 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
   const rounds = Math.max(1, options.rounds ?? ROUNDS);
   const samples: RoundSample[] = [];
   const digests: string[] = [];
+  const finalDigests: string[] = [];
   const faults: string[] = [];
   const unavailable: Record<string, string> = {
     prepareTopology:
@@ -345,6 +378,7 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     const assembled = await createCt107dBoard({
       firmware,
       ...(options.props === undefined ? {} : { props: options.props }),
+      ...(options.execution === undefined ? {} : { execution: options.execution }),
     });
     const probe = createProbe(assembled.board);
 
@@ -386,6 +420,7 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
         snapshot,
       });
       digests.push(snapshot.digest);
+      finalDigests.push(snapshot.finalDigest);
 
       if (statistics === undefined)
         unavailable.solves =
@@ -438,6 +473,8 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
         : Number((counters.directFallbacks / counters.directCalls).toFixed(4)),
     topicDigest: digests[0] ?? '',
     topicDigestStable: new Set(digests).size === 1,
+    topicFinalDigest: finalDigests[0] ?? '',
+    topicFinalTopics: best.snapshot.finalTopics,
     unavailable,
     faults,
   };

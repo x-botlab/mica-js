@@ -71,6 +71,8 @@ export interface BoardOptions {
   readonly firmware: Uint8Array;
   /** 覆盖 MCU 的其它属性，例如 `clockFrequency`。 */
   readonly props?: Readonly<Record<string, unknown>>;
+  /** 执行后端；`precise` 拒绝直接程序，用作差分对照。 */
+  readonly execution?: 'throughput' | 'precise';
 }
 
 export interface BenchBoard {
@@ -201,10 +203,15 @@ export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoa
     };
   });
 
-  const board = createBoard(createDeviceLibrary(entries), {
+  const library = createDeviceLibrary(entries);
+  const description = {
     instances: instances as never,
     nets: nets as never,
-  });
+  };
+  const board =
+    options.execution === undefined
+      ? createBoard(library, description)
+      : createBoard(library, description, { execution: options.execution });
   const subscription = board.onDidError((event) => faults.push(event.message));
   const mcu = components.find((component) => 'firmware' in component.props);
   const clockFrequency = Number(options.props?.clockFrequency ?? mcu?.props.clockFrequency ?? 0);
