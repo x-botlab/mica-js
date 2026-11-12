@@ -366,7 +366,7 @@ async function verifyCacheTransitions() {
   for (const [before, after] of [
     [
       /const transitions = new Map\(\);/g,
-      'const transitions = new Map(); probes.caches.push({ transitions, ages: transitionAges, current: () => snapshot });',
+      'const transitions = new Map(); probes.caches.push({ transitions, current: () => prepared });',
     ],
     [
       /if \(edges === undefined\)\s+return block;/g,
@@ -398,12 +398,7 @@ async function verifyCacheTransitions() {
     ).toString('base64')}`
   );
   const ownership = (handle) => {
-    assert.ok(handle.transitions.size <= 8, 'transition entry bound');
-    assert.equal(handle.ages.size, handle.transitions.size, 'recency metadata is evicted together');
-    for (const [key, age] of handle.ages) {
-      assert.ok(handle.transitions.has(key));
-      assert.equal(typeof age, 'number');
-    }
+    assert.ok(handle.transitions.size <= 4096, 'transition entry bound');
     const roots = [...handle.transitions.values(), handle.current()].filter(Boolean);
     const seen = new Set();
     let snapshots = 0;
@@ -434,7 +429,7 @@ async function verifyCacheTransitions() {
       }
       if ('topology' in value) {
         snapshots++;
-        assert.deepEqual(Object.keys(value).sort(), ['cost', 'id', 'topology']);
+        assert.deepEqual(Object.keys(value).sort(), ['cost', 'hashes', 'id', 'topology']);
       }
       if ('blocks' in value && 'edgeBlocks' in value) topologies++;
       if (value.physical !== undefined)
@@ -442,8 +437,8 @@ async function verifyCacheTransitions() {
       for (const item of Object.values(value)) visit(item);
     };
     for (const root of roots) visit(root);
-    assert.ok(snapshots <= 9, 'eight transitions plus current snapshot');
-    assert.ok(topologies <= snapshots, 'no hidden historical topology chain');
+    assert.ok(snapshots <= 4097, 'buckets plus current snapshot');
+    assert.ok(topologies <= snapshots + 1, 'no hidden historical topology chain');
     assert.equal(numericArrays, 0, 'topology snapshots retain no numerical factorization caches');
     for (const [descriptor, target] of handle.transitions) {
       assert.equal(typeof descriptor, 'string');
@@ -742,7 +737,6 @@ async function verifyCacheTransitions() {
   builds(() => switched.solve([signal]), 1, 2);
   const switchedHandle = probes.caches.at(-1);
   const admissionBeforeFailure = [...switchedHandle.transitions];
-  const agesBeforeFailure = [...switchedHandle.ages];
   const lowSnapshot = signal.sample;
   const lowStats = switched.stats;
   signal.intent = [
@@ -765,11 +759,6 @@ async function verifyCacheTransitions() {
     [...switchedHandle.transitions],
     admissionBeforeFailure,
     'failed solve cannot admit a graph',
-  );
-  assert.deepEqual(
-    [...switchedHandle.ages],
-    agesBeforeFailure,
-    'failed solve cannot advance admission recency',
   );
   signal.intent = [
     { to: railHigh, resistance: resistance * 5 },
@@ -842,7 +831,13 @@ async function verifyCacheTransitions() {
     { to: censusLow, resistance },
   ];
   const censusOutputs = Array.from({ length: 51 }, (_, index) => pin(`ownership.${index}`));
-  for (const output of censusOutputs) output.intent = [{ to: censusLow, resistance }];
+  // Two parallel branches onto the same rail keep this pin a divider shape: a single
+  // branch would now be served by the leaf fast path and never reach the partition.
+  const censusIntent = (target, first = resistance) => [
+    { to: target, resistance: first },
+    { to: target, resistance: 4 * resistance },
+  ];
+  for (const output of censusOutputs) output.intent = censusIntent(censusLow);
   const retained = createNetwork(
     [censusHigh, censusLow, divider, ...censusOutputs],
     [
@@ -853,15 +848,15 @@ async function verifyCacheTransitions() {
   const retainedHandle = probes.caches.at(-1);
   builds(() => retained.solve(), 1, 52);
   const toggled = censusOutputs[0];
-  toggled.intent = [{ to: censusHigh, resistance }];
+  toggled.intent = censusIntent(censusHigh);
   builds(() => retained.solve([toggled]), 1, 52);
   assert.ok(
     [...retainedHandle.transitions.values()].every((value) => value === undefined),
     'first observations retain descriptors only',
   );
-  assert.deepEqual(ownership(retainedHandle), { snapshots: 1, topologies: 1 });
+  assert.deepEqual(ownership(retainedHandle), { snapshots: 0, topologies: 1 });
   for (const target of [censusLow, censusHigh]) {
-    toggled.intent = [{ to: target, resistance }];
+    toggled.intent = censusIntent(target);
     builds(() => retained.solve([toggled]), 1, 52);
   }
   assert.equal(
@@ -873,7 +868,7 @@ async function verifyCacheTransitions() {
   const beforeZeroCopy = probes.zeroCopyRestores;
   for (let step = 0; step < 8; step++) {
     const target = step % 2 === 0 ? censusLow : censusHigh;
-    toggled.intent = [{ to: target, resistance }];
+    toggled.intent = censusIntent(target);
     builds(() => retained.solve([toggled]), 0, 0);
     checkPin(toggled, target === censusHigh ? 10 : 0, true);
   }
@@ -885,7 +880,7 @@ async function verifyCacheTransitions() {
   assert.equal(probes.zeroCopyRestores - beforeZeroCopy, 8);
   assert.deepEqual(ownership(retainedHandle), { snapshots: 2, topologies: 2 });
   const beforeStableResistance = retained.stats;
-  toggled.intent = [{ to: censusHigh, resistance: resistance * 2 }];
+  toggled.intent = censusIntent(censusHigh, resistance * 2);
   builds(() => retained.solve([toggled]), 0, 0);
   assert.equal(
     probes.reboundBlocks - beforeRebinding,
@@ -893,7 +888,7 @@ async function verifyCacheTransitions() {
     'stable slots find older equivalent edge objects',
   );
   assert.equal(retained.stats.cacheHits - beforeStableResistance.cacheHits, 51);
-  toggled.intent = [{ to: censusLow, resistance: resistance * 2 }];
+  toggled.intent = censusIntent(censusLow, resistance * 2);
   builds(() => retained.solve([toggled]), 0, 0);
   assert.equal(
     probes.reboundBlocks - beforeRebinding,
@@ -909,7 +904,11 @@ async function verifyCacheTransitions() {
     { to: coldLow, resistance },
   ];
   const coldBus = Array.from({ length: 51 }, (_, index) => pin(`cold.${index}`));
-  for (const output of coldBus) output.intent = [{ to: coldLow, resistance }];
+  const coldIntent = (rail, first = resistance) => [
+    { to: rail, resistance: first },
+    { to: rail, resistance: 4 * resistance },
+  ];
+  for (const output of coldBus) output.intent = coldIntent(coldLow);
   const cold = createNetwork(
     [coldHigh, coldLow, coldDivider, ...coldBus],
     [
@@ -919,31 +918,40 @@ async function verifyCacheTransitions() {
   );
   const coldHandle = probes.caches.at(-1);
   builds(() => cold.solve(), 1, 52);
-  const beforeColdRestores = probes.restores;
   const coldTouched = new Set(coldBus);
-  for (let round = 0; round < 2; round++) {
+  for (let round = 0; round < 3; round++) {
+    const beforeRoundRestores = probes.restores;
+    const beforeRoundTopology = probes.topology;
     for (let frame = 1; frame <= 24; frame++) {
       coldBus.forEach((output, index) => {
-        output.intent = [{ to: (frame >> (index % 5)) & 1 ? coldHigh : coldLow, resistance }];
+        output.intent = coldIntent((frame >> (index % 5)) & 1 ? coldHigh : coldLow);
       });
-      builds(() => cold.solve(coldTouched), 1, 52);
+      // The first two rounds observe each frame for the first and the second time; the
+      // third replays the admitted graphs instead of rebuilding the partition.
+      builds(() => cold.solve(coldTouched), round < 2 ? 1 : 0, round < 2 ? 52 : 0);
       coldBus.forEach((output, index) =>
         checkPin(output, (frame >> (index % 5)) & 1 ? 10 : 0, true),
       );
       checkPin(coldDivider, 5, true);
+    }
+    if (round === 0)
       assert.ok(
         [...coldHandle.transitions.values()].every((value) => value === undefined),
-        'cold bus churn must not retain historical graphs',
+        'a first observation never retains a graph',
       );
-      assert.deepEqual(ownership(coldHandle), { snapshots: 1, topologies: 1 });
+    else assert.ok([...coldHandle.transitions.values()].filter(Boolean).length > 0);
+    if (round === 2) {
+      assert.equal(
+        probes.topology - beforeRoundTopology,
+        0,
+        'a repeated frame restores the admitted graph',
+      );
+      assert.equal(probes.restores - beforeRoundRestores, 24);
     }
+    const { snapshots } = ownership(coldHandle);
+    assert.equal(snapshots, round === 0 ? 0 : 24, 'admitted frames stay bounded');
   }
-  assert.equal(
-    probes.restores,
-    beforeColdRestores,
-    '24 distinct frames exceed the eight-descriptor window',
-  );
-  assert.equal(coldHandle.transitions.size, 8);
+  assert.equal(coldHandle.transitions.size, 25, 'descriptors fill the whole-board budget');
   // Local reference-leaf updates must never mutate the component bookkeeping that admitted
   // topology snapshots still own, and they must not rebuild the partition themselves.
   const aliasHigh = pin('alias.high');
@@ -1128,11 +1136,11 @@ async function verifyCacheTransitions() {
     rebound_blocks: probes.reboundBlocks,
     ownership_maximum_snapshots: maximumSnapshots,
     ownership_maximum_topologies: maximumTopologies,
-    cold_observations: 48,
+    cold_observations: 72,
     cold_descriptor_entries: coldHandle.transitions.size,
     cold_retained_graphs: [...coldHandle.transitions.values()].filter(Boolean).length,
     assertions:
-      'stable identity/dirty hints, resistance block metadata reuse, exact reference-switch restoration, order/multiplicity, shared-reference merge/split, diagonal/coupled 32/33-node transitions, floating/reference-only transitions, nonfinite result rejection, complete failure diagnostics and atomic cache retry, 52-block zero-copy restores, two-observation admission, cold bus churn retains descriptors only, bounded ownership without history or numerical-cache chains, local reference-leaf updates that never rebuild the partition or mutate admitted bookkeeping',
+      'stable identity/dirty hints, resistance block metadata reuse, exact reference-switch restoration, order/multiplicity, shared-reference merge/split, diagonal/coupled 32/33-node transitions, floating/reference-only transitions, nonfinite result rejection, complete failure diagnostics and atomic cache retry, 52-block zero-copy restores, two-observation admission, cold bus churn reuses every admitted frame instead of rebuilding it, bounded ownership without history or numerical-cache chains, local reference-leaf updates that never rebuild the partition or mutate admitted bookkeeping',
     instrumentation:
       'separate untimed module only; measured workloads use unmodified transpilation',
   };
