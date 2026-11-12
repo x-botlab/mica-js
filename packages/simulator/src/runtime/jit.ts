@@ -16,8 +16,7 @@ import type { RuntimeDiagnosticCode, RuntimePhase, SimulationError } from '../ty
 import { bytesView, finite } from '../values';
 
 /** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
-const DIRECT_SPLIT_THRESHOLD = 128;
-const DIRECT_SHARD_SIZE = 48;
+const DIRECT_SHARD_SIZE = 8;
 
 /** Scheduling capabilities needed by JIT execution; all queues remain board-owned. */
 export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
@@ -163,8 +162,9 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
         [...jit.directStateGuards].sort(),
         [...jit.directMemoryGuards].sort(),
       ]);
-      if (jit.directPrograms.has(key)) {
-        jit.direct = jit.directPrograms.get(key);
+      const cached = jit.directPrograms.get(key);
+      if (cached) {
+        jit.direct = cached;
         jit.directRevision = jit.revision;
       } else {
         const stateNames = [...instance.states.keys()].filter((name) => {
@@ -184,7 +184,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
           blockedStates: jit.directStateGuards,
           blockedMemories: jit.directMemoryGuards,
           host: true,
-          split: instructions.length >= DIRECT_SPLIT_THRESHOLD,
+          split: true,
           shardSize: DIRECT_SHARD_SIZE,
         });
         jit.directRevision = jit.revision;
@@ -200,9 +200,13 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
               frame: createDirectFrame(board, instance, stateNames, memoryNames, program),
             }
           : undefined;
-        if (jit.directPrograms.size >= 8)
-          jit.directPrograms.delete(jit.directPrograms.keys().next().value!);
-        jit.directPrograms.set(key, jit.direct);
+        // A declined program must not be cached, or the key would keep answering `undefined`.
+        if (!jit.direct) jit.directPrograms.delete(key);
+        else {
+          if (jit.directPrograms.size >= 8)
+            jit.directPrograms.delete(jit.directPrograms.keys().next().value!);
+          jit.directPrograms.set(key, jit.direct);
+        }
       }
     }
     if (!jit.direct) return false;

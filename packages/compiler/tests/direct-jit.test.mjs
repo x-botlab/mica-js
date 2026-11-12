@@ -114,7 +114,12 @@ function duet(instructions, options = {}) {
   const settings = options.binding ?? binding;
   const shardSize = options.shardSize ?? 4;
   const whole = compileDirectJit(instructions, settings);
-  const split = compileDirectJit(instructions, { ...settings, split: true, shardSize });
+  const split = compileDirectJit(instructions, {
+    ...settings,
+    split: true,
+    shardSlotLimit: 0,
+    shardSize,
+  });
   assert(whole, 'monolithic program');
   assert(split, 'split program');
   const make = (program) => {
@@ -613,10 +618,62 @@ test('resource lists conservatively include implicit PC and both branch resource
   assert(Object.isFrozen(program.readStates));
 });
 
+test('zero-duration elapse runs inline without consuming time or a continuation', () => {
+  const zero = builder();
+  zero.write('x', zero.constant(5));
+  zero.delay(0);
+  zero.write('y', zero.constant(7));
+  const paced = builder();
+  paced.delay(1);
+  const instructions = [zero.instruction(0, 2), paced.instruction(2, 0)];
+  const program = compileDirectJit(instructions, binding);
+  assert(program);
+  const f = frame(program);
+  const reference = generic(instructions, f.states, f.memories);
+  assert.equal(program.run(f, 10), reference.run(10));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.time, reference.time);
+  assert.equal(f.time, 10);
+  // The last one-cycle elapse lands exactly on the deadline, so only that suffix stays pending.
+  assert.equal(f.resume, 2);
+  assert.equal(f.states[1], 5);
+  assert.equal(f.states[2], 7);
+  assert.equal(program.run(f, 11), 'deadline');
+  assert.equal(f.resume, 2);
+  // A zero-duration redirect targets the new PC immediately and keeps the same time.
+  const start = builder();
+  start.write('x', start.constant(3));
+  start.operations.push({ kind: 'redirect', target: start.constant(9), delay: start.constant(0) });
+  const next = builder();
+  next.write('y', next.constant(4));
+  next.delay(1);
+  const redirected = compileDirectJit([start.instruction(0, 1), next.instruction(9, 11)], binding);
+  assert(redirected);
+  const g = frame(redirected, [0, 0, 0, true, 0, 0]);
+  assert.equal(redirected.run(g, 10), 'fallback');
+  assert.equal(g.states[0], 11);
+  assert.equal(g.states[1], 3);
+  assert.equal(g.states[2], 4);
+  assert.equal(g.time, 1);
+  assert.equal(g.resume, 0);
+});
+
+test('slot budget selects the monolithic form for small programs', () => {
+  const small = compileDirectJit(scalarLoop(), { ...binding, split: true });
+  assert(small);
+  assert(!small.run.toString().includes('stepShard0'));
+  const large = compileDirectJit(scalarLoop(), {
+    ...binding,
+    split: true,
+    shardSlotLimit: 0,
+    shardSize: 1,
+  });
+  assert(large);
+  assert(large.run.toString().includes('stepShard0'));
+  assert(small.run.toString().includes('stepShard0') === false);
+});
+
 test('all unsupported bodies and invalid static bindings decline compilation', () => {
-  const invalid = builder();
-  invalid.delay(0);
-  assert.equal(compileDirectJit([invalid.instruction(0, 1)], binding), undefined);
   assert.equal(compileDirectJit([], binding), undefined);
   assert.equal(
     compileDirectJit(scalarLoop(), { ...binding, pc: { name: 'pc', index: 2 } }),
@@ -1901,7 +1958,12 @@ test('split code generation matches monolithic for select, wide memory, and/or, 
   b.write('x', b.value({ kind: 'now' }));
   const instructions = [b.instruction(0, 0)];
   const source = captureFactory(() =>
-    compileDirectJit(instructions, { ...hostBinding, split: true, shardSize: 4 }),
+    compileDirectJit(instructions, {
+      ...hostBinding,
+      split: true,
+      shardSlotLimit: 0,
+      shardSize: 4,
+    }),
   );
   assert.match(source, /function stepShard0\(F, deadline, pc\) \{/);
   assert.match(source, /function resumeShard0\(F, resume\) \{/);
@@ -1978,7 +2040,7 @@ test('split mode emits a shard dispatcher instead of per-instruction cases', () 
   const instructions = scalarLoop();
   const monolithic = captureFactory(() => compileDirectJit(instructions, binding));
   const split = captureFactory(() =>
-    compileDirectJit(instructions, { ...binding, split: true, shardSize: 4 }),
+    compileDirectJit(instructions, { ...binding, split: true, shardSlotLimit: 0, shardSize: 4 }),
   );
   assert.match(monolithic, /return \(function run\(F, deadline\) \{/);
   assert.doesNotMatch(monolithic, /function stepShard/);
@@ -1991,7 +2053,12 @@ test('split mode emits a shard dispatcher instead of per-instruction cases', () 
   assert.match(split, /return run;$/);
   assert.doesNotMatch(split, /continue;/);
   const whole = compileDirectJit(instructions, binding);
-  const halves = compileDirectJit(instructions, { ...binding, split: true, shardSize: 4 });
+  const halves = compileDirectJit(instructions, {
+    ...binding,
+    split: true,
+    shardSlotLimit: 0,
+    shardSize: 4,
+  });
   assert.equal(halves.localCount, whole.localCount);
   assert.deepEqual(halves.readStates, whole.readStates);
   assert.deepEqual(halves.writeStates, whole.writeStates);
@@ -2016,14 +2083,19 @@ test('shard size groups instructions into contiguous range dispatches', () => {
     return b.instruction(index * 2, index === 8 ? 0 : (index + 1) * 2);
   });
   const source = captureFactory(() =>
-    compileDirectJit(instructions, { ...binding, split: true, shardSize: 4 }),
+    compileDirectJit(instructions, { ...binding, split: true, shardSlotLimit: 0, shardSize: 4 }),
   );
   for (const shard of [0, 1, 2]) {
     assert.match(source, new RegExp(`function stepShard${shard}\\(F, deadline, pc\\) \\{`));
     assert.match(source, new RegExp(`function resumeShard${shard}\\(F, resume\\) \\{`));
   }
   assert.doesNotMatch(source, /function stepShard3\(/);
-  const dispatcher = compileDirectJit(instructions, { ...binding, split: true, shardSize: 4 });
+  const dispatcher = compileDirectJit(instructions, {
+    ...binding,
+    split: true,
+    shardSlotLimit: 0,
+    shardSize: 4,
+  });
   const run = generated(dispatcher);
   assert.equal(run.match(/stepShard\d+\(F, deadline, pc\)/g).length, 3);
   assert.equal(run.match(/resumeShard\d+\(F, resume\)/g).length, 3);

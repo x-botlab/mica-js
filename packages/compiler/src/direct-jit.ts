@@ -152,6 +152,13 @@ const helpers = Object.freeze({
   store32,
 });
 const unsupported = Symbol('unsupported direct instruction');
+/** Slot budget for one generated shard; bounds the size of each emitted function. */
+const SHARD_SLOT_BUDGET = 1536;
+/**
+ * Below this summed slot count the monolithic form stays smaller than the point where V8
+ * stops optimizing, and it avoids the dispatcher hop; larger programs split into shards.
+ */
+const MONOLITH_SLOT_LIMIT = 2048;
 
 /** Inputs have already passed model validation and contextual binding. */
 export function compileDirectJit(
@@ -185,8 +192,11 @@ export function compileDirectJit(
   const options = binding as DirectJitBinding & {
     readonly split?: boolean;
     readonly shardSize?: number;
+    readonly shardSlotLimit?: number;
   };
-  const split = options.split === true;
+  const limit = validIndex(options.shardSlotLimit) ? options.shardSlotLimit : MONOLITH_SLOT_LIMIT;
+  const split =
+    options.split === true && entries.reduce((sum, entry) => sum + entry.slots.length, 0) > limit;
   const shardSize = validIndex(options.shardSize) && options.shardSize > 0 ? options.shardSize : 48;
   const lines = split
     ? shardProgram(entries, binding, shardSize)
@@ -270,10 +280,25 @@ function shardProgram(
   shardSize: number,
 ): string[] {
   const sorted = [...entries].sort((left, right) => left.pcValue - right.pcValue);
-  const shards = Array.from({ length: Math.ceil(sorted.length / shardSize) }, (_, shard) => {
-    const start = shard * shardSize;
-    const slice = sorted.slice(start, start + shardSize);
-    return {
+  // Generated function size follows the summed slots, so group by a slot budget instead of
+  // a fixed count: one oversized dispatch trampoline then gets a shard of its own.
+  const groups: Instruction[][] = [];
+  let current: Instruction[] = [];
+  let budget = 0;
+  for (const entry of sorted) {
+    const slots = entry.slots.length;
+    if (current.length && (current.length >= shardSize || budget + slots > SHARD_SLOT_BUDGET)) {
+      groups.push(current);
+      current = [];
+      budget = 0;
+    }
+    current.push(entry);
+    budget += slots;
+  }
+  if (current.length) groups.push(current);
+  let start = 0;
+  const shards = groups.map((slice) => {
+    const shard = {
       start,
       entries: slice,
       maxSlots: Math.max(...slice.map((entry) => entry.slots.length)),
@@ -281,6 +306,8 @@ function shardProgram(
       lastResume: start + slice.length,
       resumable: slice.some((entry) => entry.duration !== undefined),
     };
+    start += slice.length;
+    return shard;
   });
   const registers = (count: number): string[] =>
     Array.from({ length: count }, (_, index) => `v${index}`);
@@ -405,6 +432,8 @@ class Instruction {
   pc = '';
   nextPc = '';
   duration?: string;
+  /** Zero-duration terminator: no due time, no continuation, prefix and suffix stay inline. */
+  immediate = false;
   stop = false;
   private readonly values = new Map<number, string>();
   private readonly locals = new Map<number, string>();
@@ -427,17 +456,17 @@ class Instruction {
     for (const operation of instruction.body.operations) {
       if (terminal) throw unsupported;
       if (operation.kind === 'elapse') {
-        if (this.duration !== undefined) throw unsupported;
-        this.duration = this.delay(operation.duration);
+        if (this.terminated) throw unsupported;
+        this.terminate(this.delay(operation.duration));
         output = this.suffix;
       } else if (operation.kind === 'redirect') {
-        if (this.duration !== undefined) throw unsupported;
-        const duration = this.delay(operation.delay);
+        if (this.terminated) throw unsupported;
+        const delay = this.delay(operation.delay);
         output.push(
           `S[${this.binding.pc.index}] = H.checkPc(${this.value(operation.target)});`,
           dirty('SD', this.binding.pc.index),
         );
-        this.duration = duration;
+        this.terminate(delay);
         output = this.suffix;
         terminal = true;
       } else if (operation.kind === 'stop') {
@@ -447,11 +476,21 @@ class Instruction {
         this.operation(operation, output);
       }
     }
-    if (this.duration === undefined && !this.stop) throw unsupported;
+    if (!this.terminated && !this.stop) throw unsupported;
     return this;
   }
 
-  private delay(id: number): string {
+  private get terminated(): boolean {
+    return this.duration !== undefined || this.immediate;
+  }
+
+  /** A zero duration advances no time, so the instruction needs no continuation slot. */
+  private terminate(delay: { value: string; zero: boolean }): void {
+    if (delay.zero) this.immediate = true;
+    else this.duration = delay.value;
+  }
+
+  private delay(id: number): { value: string; zero: boolean } {
     const duration = this.literals.get(id);
     if (typeof duration !== 'number') throw unsupported;
     try {
@@ -459,8 +498,7 @@ class Instruction {
     } catch {
       throw unsupported;
     }
-    if (duration <= 0) throw unsupported;
-    return this.literal(duration);
+    return { value: this.literal(duration), zero: duration === 0 };
   }
 
   /**
