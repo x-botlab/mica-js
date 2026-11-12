@@ -2,6 +2,7 @@ import { addTime, timePs } from '@mica-js/core';
 import type { TimePs } from '@mica-js/core';
 import { Emitter } from '@mica-js/core/lifecycle';
 import type { Disposable, Event } from '@mica-js/core/lifecycle';
+import type { DeliveryKind } from '@mica-js/document/canvas';
 import { createBoard, createDeviceLibrary } from '../runtime';
 import type { Board, DeviceContext, RuntimeDiagnostic, TopicBridge, TopicMessage } from '../types';
 import { errorMessage, SimulationRuntimeError } from './errors';
@@ -21,6 +22,12 @@ interface IOutput {
   readonly symbol: string;
   readonly port: string;
   readonly payload: unknown;
+  readonly delivery: DeliveryKind;
+}
+interface IDelivery {
+  readonly symbol: string;
+  readonly port: string;
+  readonly payload: unknown;
 }
 interface ILoadedRuntime {
   readonly prepared: IResolvedSimulation;
@@ -37,7 +44,7 @@ export function createSimulationRuntime(
 ): ISimulationRuntime {
   const publishes = new Emitter<ISimulationMessage>();
   const diagnostics = new Emitter<ISimulationDiagnostic>();
-  const pending: IOutput[] = [];
+  const pending: IDelivery[] = [];
   const published = new Map<string, unknown>();
   let active: ILoadedRuntime | undefined;
   let simTime = timePs(0);
@@ -49,20 +56,25 @@ export function createSimulationRuntime(
       throw new SimulationRuntimeError('disposed', 'Simulation runtime has been disposed');
   };
   const flush = (loaded: ILoadedRuntime): void => {
-    for (const output of loaded.outputs.splice(0)) {
-      const instance = loaded.prepared.instances.find((entry) => entry.symbol === output.symbol)!;
-      const topic = instance.device.topics.get(output.port)!;
-      const key = targetKey(output.symbol, output.port);
-      if (topic.delivery === 'level') {
-        if (published.has(key) && samePayload(published.get(key), output.payload)) continue;
-        // Keep the equality baseline independent from buffers/objects handed to listeners.
-        if (publishes.hasListeners) published.set(key, copyPayload(output.payload));
+    // Without a publish listener nothing can observe these messages, and no listener can be added
+    // while this loop runs, so the copies and messages are skipped instead of built and dropped.
+    if (publishes.hasListeners) {
+      for (const output of loaded.outputs.splice(0)) {
+        if (output.delivery === 'level') {
+          const key = targetKey(output.symbol, output.port);
+          if (published.has(key) && samePayload(published.get(key), output.payload)) continue;
+          // Keep the equality baseline independent from buffers/objects handed to listeners.
+          if (publishes.hasListeners) published.set(key, copyPayload(output.payload));
+        }
+        // The publish snapshot in `outputs` is already an owned copy, so listeners may share it.
+        publishes.fire({
+          target: { symbol: output.symbol, port: output.port },
+          payload: output.payload,
+          simTime,
+        });
       }
-      publishes.fire({
-        target: { symbol: output.symbol, port: output.port },
-        payload: copyPayload(output.payload),
-        simTime,
-      });
+    } else {
+      loaded.outputs.length = 0;
     }
     for (const diagnostic of loaded.diagnostics.splice(0)) {
       diagnostics.fire(
@@ -254,8 +266,13 @@ function buildLoadedRuntime(prepared: IResolvedSimulation): ILoadedRuntime {
   };
 }
 
-/** Board topics are opaque global strings; this boundary gives each factory local port names. */
-function scopeTopics(
+/**
+ * Board topics are opaque global strings; this boundary gives each factory local port names.
+ *
+ * Exported for the fan-out regression test, which drives it against a real `Board`: every accepted
+ * output must still reach `board.topics` listeners even when the instance has no scoped subscriber.
+ */
+export function scopeTopics(
   bridge: TopicBridge,
   instance: IPreparedInstance,
   outputs: IOutput[],
@@ -289,7 +306,7 @@ function scopeTopics(
       const snapshot = copyPayload(payload);
       // Publish first so Board still enforces its phase and disposed/faulted guards.
       bridge.publish(scopedTopic(instance.symbol, port), snapshot);
-      outputs.push({ symbol: instance.symbol, port, payload: snapshot });
+      outputs.push({ symbol: instance.symbol, port, payload: snapshot, delivery: topic.delivery });
     },
   };
 }
