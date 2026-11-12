@@ -1,9 +1,17 @@
 import { types } from '@mica-js/sdk/model';
 import type { IntentValue, Value } from '@mica-js/sdk/model';
-import { GPIO_BASE, GPIO_STATE, GPIO_STATE_STRIDE, GPIO_SYNC, PERIPH } from './layout';
+import {
+  GPIO_BASE,
+  GPIO_PIN_MASK,
+  GPIO_POWERED,
+  GPIO_STATE,
+  GPIO_STATE_STRIDE,
+  GPIO_SYNC,
+  PERIPH,
+} from './layout';
 import { PORTS, machine } from './machine';
 import type { AlternateDriver, PortPins } from './machine';
-import { asBody, boolAnd, boolOr, num, readWord, readWordAt, u32, writeWord } from './ir';
+import { asBody, boolAnd, boolBit, boolOr, num, readWord, readWordAt, u32, writeWord } from './ir';
 import type { Body } from './ir';
 
 /** GPIOA–GPIOF 的寄存器偏移。 */
@@ -220,17 +228,33 @@ function driversFor(port: number, bit: number): readonly AlternateDriver[] {
   return machine().alternateDrivers.filter((driver) => driver.port === port && driver.pin === bit);
 }
 
-/** 刷新一个端口的全部引脚意图：配置寄存器只读一次。 */
-export function syncPort(b: Body, portIndex: number): void {
+/**
+ * 刷新一个端口里 `mask` 选中的引脚意图：配置寄存器只读一次。
+ *
+ * 只有引脚自己的寄存器位、或端口供电状态变化才会改变它的意图，因此按位刷新与整端口
+ * 刷新等价；供电状态变化时退回整端口。
+ */
+export function syncPort(b: Body, portIndex: number, mask: Value<number>): void {
   const port = PORTS[portIndex];
 
   if (port === undefined) return;
 
   const registers = portRegisters(b, portIndex);
+  const poweredBefore = b.readState(GPIO_POWERED, types.bool);
+  const refresh = b.select(
+    types.number,
+    b.notEqual(types.bool, poweredBefore, registers.supplied),
+    (inner) => num(asBody(inner), 0xffff),
+    () => mask,
+  );
+
+  b.writeState(GPIO_POWERED, registers.supplied);
 
   for (let bit = 0; bit < port.pins.length; bit += 1) {
     if (port.pins[bit] === null) continue;
-    emitPinIntent(b, portIndex, bit, registers);
+    b.if(boolBit(b, refresh, 1 << bit), (pin) => {
+      emitPinIntent(asBody(pin), portIndex, bit, registers);
+    });
   }
 }
 
@@ -311,6 +335,8 @@ function writeRegister(
 
   const wordOffset = b.bitAnd(offset, num(b, 0x3c));
   const output = isOutputWrite(b, wordOffset);
+  /** 需要重算意图的引脚；配置写默认整端口，输出写按位算出。 */
+  const changed = b.local(types.number, num(b, 0xffff));
 
   // ODR / BSRR / BRR 都只改 ODR。
   b.if(
@@ -326,6 +352,7 @@ function writeRegister(
           const setBits = scope.bitAnd(u32(scope, value), num(scope, 0xffff));
           const clearBits = scope.shiftRightUnsigned(u32(scope, value), num(scope, 16));
 
+          scope.setLocal(changed, scope.bitOr(setBits, clearBits));
           storeWord(
             scope,
             portIndex,
@@ -343,6 +370,7 @@ function writeRegister(
               const current = loadWord(last, portIndex, num(last, GPIO_ODR));
               const clearBits = last.bitAnd(u32(last, value), num(last, 0xffff));
 
+              last.setLocal(changed, clearBits);
               storeWord(
                 last,
                 portIndex,
@@ -352,14 +380,10 @@ function writeRegister(
             },
             (plain) => {
               const last = asBody(plain);
-              const next = mergeWord(
-                last,
-                loadWord(last, portIndex, num(last, GPIO_ODR)),
-                value,
-                offset,
-                size,
-              );
+              const current = loadWord(last, portIndex, num(last, GPIO_ODR));
+              const next = mergeWord(last, current, value, offset, size);
 
+              last.setLocal(changed, last.bitAnd(last.bitXor(current, next), num(last, 0xffff)));
               storeWord(last, portIndex, num(last, GPIO_ODR), next);
             },
           );
@@ -390,7 +414,7 @@ function writeRegister(
 
   // 输出寄存器与模式/上下拉/复用功能寄存器会改变引脚意图。引脚同步（16 根脚的
   // intent 树）体积很大，会让整段直接程序超出 V8 的优化范围，因此这里只登记待同步的
-  // 端口，由服务块在这个块结束时统一刷新。
+  // 端口与引脚位，由服务块在这个块结束时统一刷新。
   b.if(boolOr(b, output, isConfigWrite(b, wordOffset)), (sync) => {
     const scope = asBody(sync);
 
@@ -398,6 +422,7 @@ function writeRegister(
       GPIO_SYNC,
       scope.bitOr(scope.readState(GPIO_SYNC, types.number), num(scope, 1 << portIndex)),
     );
+    scope.writeState(GPIO_PIN_MASK, scope.getLocal(changed));
   });
 }
 

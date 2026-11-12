@@ -61,6 +61,10 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   state serviceResume: number = 0;
   /** 待刷新引脚意图的端口位掩码（bit0=GPIOA … bit4=GPIOF）。 */
   state gpioSync: number = 0;
+  /** 待刷新的引脚位掩码，只对最新一次待执行写有效；配置写视为整端口。 */
+  state gpioPinMask: number = 0;
+  /** 上一次同步时端口是否供电；供电变化会同时改变所有引脚的意图。 */
+  state gpioPowered: bool = false;
   /** 延迟到服务块执行的 GPIO 写。 */
   state gpioWrite: number = 0;
   state gpioWriteAddr: number = 0;

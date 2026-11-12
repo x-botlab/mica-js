@@ -58,6 +58,10 @@ export const TICK_ACTIVE = 'tickActive';
 export const SERVICE_RESUME = 'serviceResume';
 /** 待刷新引脚意图的端口位掩码（bit0=GPIOA … bit4=GPIOF）。 */
 export const GPIO_SYNC = 'gpioSync';
+/** 待刷新的引脚位掩码，只对最新一次待执行的 GPIO 写有效。 */
+export const GPIO_PIN_MASK = 'gpioPinMask';
+/** 上一次同步时的供电状态：变化时整端口重新生成意图。 */
+export const GPIO_POWERED = 'gpioPowered';
 /** 延迟到服务块执行的 GPIO 写：地址、值、宽度与「有写待执行」标志。 */
 export const GPIO_WRITE = 'gpioWrite';
 export const GPIO_WRITE_ADDR = 'gpioWriteAddr';

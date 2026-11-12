@@ -62,12 +62,22 @@ export interface InstructionHook {
   readonly when: string;
   readonly call: string;
 }
+/**
+ * 一条忙等延时环的声明：入口 `pc` 每轮把 number 状态 `counter` 减一，消耗 `cycles` ps。
+ * 环内不得产生其他可观察效果，因此跳过多轮只推进时间、只留下最后一轮的效果。
+ */
+export interface JitDelay {
+  readonly counter: string;
+  readonly cycles: number;
+}
+
 export interface JitOptions {
   readonly entry: string;
   readonly code: string;
   readonly pc: string;
   readonly beforeInstruction?: InstructionHook;
   readonly polling?: readonly { readonly pc: number; readonly predicate: string }[];
+  readonly delays?: ReadonlyMap<number, JitDelay>;
   readonly translate: JitTranslate;
 }
 export interface JitHost {
