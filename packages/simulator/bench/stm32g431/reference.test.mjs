@@ -1,13 +1,9 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 
+import { fixtureNames, firmwareFor } from './firmware/index.mjs';
 import { createReference } from './reference.mjs';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const BUILD_DIR = path.join(HERE, 'firmware', 'build');
 const CYCLE_PS = 10_000;
 const WINDOW_CYCLES = 10_000;
 const WINDOW_PS = WINDOW_CYCLES * CYCLE_PS;
@@ -127,21 +123,14 @@ function runSliced(bytes, cycles = WINDOW_CYCLES) {
   return reference.advance(total);
 }
 
+/** Tracked flash images; the benchmark fixtures need no ARM toolchain at test time. */
 function loadFirmware() {
-  if (!fs.existsSync(BUILD_DIR)) return [];
-  return fs
-    .readdirSync(BUILD_DIR)
-    .filter((name) => name.endsWith('.bin'))
-    .sort()
-    .map((name) => ({
-      name: name.replace(/\.bin$/, ''),
-      bytes: new Uint8Array(fs.readFileSync(path.join(BUILD_DIR, name))),
-    }));
+  return fixtureNames.map((name) => ({ name, bytes: firmwareFor(name).bytes }));
 }
 
 function firmwareByName(images, name) {
   const image = images.find((candidate) => candidate.name === name);
-  assert.ok(image, `firmware image ${name}.bin is missing from ${BUILD_DIR}`);
+  assert.ok(image, `firmware fixture ${name} is missing`);
   return image;
 }
 
@@ -177,7 +166,7 @@ function findFlashCopies(ram, flash, words) {
 const images = loadFirmware();
 
 test('firmware images run 10000 cycles deterministically and publish signatures', (t) => {
-  assert.ok(images.length > 0, `no firmware images in ${BUILD_DIR}`);
+  assert.ok(images.length > 0, 'no firmware fixtures');
   for (const image of images) {
     const whole = runWhole(image.bytes);
     const sliced = runSliced(image.bytes);
