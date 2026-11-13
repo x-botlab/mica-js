@@ -12,6 +12,9 @@
  *   --ms=<n>            每个固件的仿真时长（毫秒），默认 200
  *   --step=<n>          推进步长（毫秒），默认 2（与 Playground 画布预览一致）
  *   --clock=<hz>        MCU 时钟，默认 11059200；原理图里是 12000000
+ *   --execution=<mode>  执行模式：precise（默认，逐指令求解）或 throughput（预览一致的批量推进）
+ *   --quantum=<ps>      CPU 可见性量子（`cpuQuantum`），默认 10000000 = 10 us；
+ *                       只用于 throughput，且当前实现只校验不使用
  *   --press=<位号>@<起始 ms>[:<持续 ms>]
  *                       注入按键，可重复；例如 `--press=S9@300:150`
  *   --temp=<℃>          注入 DS18B20 环境温度
@@ -21,6 +24,11 @@
  *
  * 准双向口的上拉：STC15 靠内部弱上拉把释放的引脚拉到高电平，而器件模型按合同把「释放」
  * 实现为高阻、原理图里也没有实现电阻，因此默认给 23 根 GPIO 各补一个 10 kΩ 外部上拉。
+ *
+ * 默认用 `precise`：官方固件的 I²C（10.0/11.0/12.0/14.0）与 1-Wire（9.0/10.0/…）都是软件
+ * 位冲击，`throughput` 把几十条指令合并成一段后只发布段末电平，字节会错位（见
+ * docs/official-firmware-simulation.md 的问题 3）。`--execution=throughput --step=2`
+ * 用于复现 Playground 预览的可见性行为。
  *
  * 需要 Node ≥ 22：DDL 编译器依赖 `Object.groupBy`。
  *
@@ -46,6 +54,8 @@ const options = {
   ms: 200,
   step: 2,
   clock: 11059200,
+  execution: 'precise',
+  quantum: undefined,
   pullups: true,
   presses: [],
   temperature: undefined,
@@ -54,11 +64,13 @@ const options = {
 };
 const hexFiles = [];
 for (const argument of process.argv.slice(2)) {
-  const match = /^--(ms|step|clock)=(.+)$/.exec(argument);
+  const match = /^--(ms|step|clock|quantum)=(.+)$/.exec(argument);
   const press = /^--press=([^@]+)@(\d+)(?::(\d+))?$/.exec(argument);
   const ain = /^--(ain[0-3]?)=(.+)$/.exec(argument);
   const temp = /^--temp=(.+)$/.exec(argument);
+  const execution = /^--execution=(throughput|precise)$/.exec(argument);
   if (match !== null) options[match[1]] = Number(match[2]);
+  else if (execution !== null) options.execution = execution[1];
   else if (press !== null)
     options.presses.push({
       designator: press[1],
@@ -296,13 +308,19 @@ function buildBoard(firmware) {
 
   const library = createDeviceLibrary(entries);
   const faults = [];
-  const board = createBoard(library, {
-    instances,
-    // 装配只认 id/pins/voltage；网名只用于注入上拉时定位网络。
-    nets: nets.map(({ id, pins, voltage }) =>
-      voltage === undefined ? { id, pins } : { id, pins, voltage },
-    ),
-  });
+  const board = createBoard(
+    library,
+    {
+      instances,
+      // 装配只认 id/pins/voltage；网名只用于注入上拉时定位网络。
+      nets: nets.map(({ id, pins, voltage }) =>
+        voltage === undefined ? { id, pins } : { id, pins, voltage },
+      ),
+    },
+    options.quantum === undefined
+      ? { execution: options.execution }
+      : { execution: options.execution, cpuQuantum: options.quantum },
+  );
   board.onDidError((event) => faults.push(event.message));
   return { board, faults };
 }
@@ -340,7 +358,7 @@ const summarize = (topic, payload) => {
   return JSON.stringify(payload);
 };
 
-/** 共阳/共阴两种极性的七段解码：`xor` 为 0xFF 时按低电平点亮解释。 */
+/** 七段解码：`digit` 端口按「点亮的段」编码（bit0=a…bit7=dp），与共阴/共阳无关。 */
 const SEG_GLYPHS = new Map([
   [0x3f, '0'],
   [0x06, '1'],
@@ -365,10 +383,12 @@ const SEG_GLYPHS = new Map([
   [0x38, 'L'],
   [0x73, 'P'],
   [0x6e, 'u'],
-  [0x80, '.'],
-  [0x01, '.'],
 ]);
-const glyph = (mask, commonAnode) => SEG_GLYPHS.get((commonAnode ? ~mask : mask) & 0xff) ?? '?';
+/** 七段字形 + 可选小数点：bit7 单独拼到字符后面。 */
+const glyph = (mask) => {
+  const base = SEG_GLYPHS.get(mask & 0x7f) ?? '?';
+  return (mask & 0x80) === 0 ? base : `${base}.`;
+};
 
 const sendInput = (symbolId, channel, value) => {
   const input = inputsOf.get(symbolId)?.[channel];
@@ -377,11 +397,15 @@ const sendInput = (symbolId, channel, value) => {
   return true;
 };
 
-const pressesByDesignator = new Map(options.presses.map((press) => [press.designator, press]));
-const pressTargets = new Map();
-for (const symbol of components) {
-  const press = pressesByDesignator.get(symbol.designator);
-  if (press !== undefined) pressTargets.set(symbol.id, { ...press, state: false });
+/** 每个 `--press` 各自一份状态：同一个位号可以重复给出，用于连按切页。 */
+const pressTargets = [];
+for (const press of options.presses) {
+  const symbol = components.find((candidate) => candidate.designator === press.designator);
+  if (symbol === undefined) {
+    console.warn(`未知位号 ${press.designator}，忽略对应的 --press`);
+    continue;
+  }
+  pressTargets.push({ symbolId: symbol.id, ...press, state: false });
 }
 
 for (const hexFile of hexFiles) {
@@ -392,7 +416,7 @@ for (const hexFile of hexFiles) {
   history.clear();
   inputsOf.clear();
   now = 0;
-  for (const target of pressTargets.values()) target.state = false;
+  for (const target of pressTargets) target.state = false;
   const { board, faults } = buildBoard(image);
 
   // 上电注入：温度与 ADC 输入只发一次，器件保持最新值。
@@ -417,13 +441,13 @@ for (const hexFile of hexFiles) {
   while (now < targetPs) {
     now = Math.min(targetPs, now + stepPs);
     const atMs = now / PS_PER_MS;
-    for (const [symbolId, target] of pressTargets) {
+    for (const target of pressTargets) {
       const wanted = atMs >= target.start && atMs < target.start + target.duration;
       if (wanted === target.state) continue;
       target.state = wanted;
-      sendInput(symbolId, 'press', wanted);
+      sendInput(target.symbolId, 'press', wanted);
       pressTrail.push(
-        `${atMs.toFixed(0)}ms:${designatorOf.get(symbolId)}.press=${wanted ? '1' : '0'}`,
+        `${atMs.toFixed(0)}ms:${designatorOf.get(target.symbolId)}.press=${wanted ? '1' : '0'}`,
       );
     }
     board.runUntil(now);
@@ -457,10 +481,9 @@ for (const hexFile of hexFiles) {
     const masks = ['digit1', 'digit2', 'digit3', 'digit4'].map((name) =>
       Number(topics?.get(name)?.last ?? 0),
     );
-    const cathode = masks.map((mask) => glyph(mask, false)).join('');
-    const anode = masks.map((mask) => glyph(mask, true)).join('');
+    const shown = masks.map((mask) => glyph(mask)).join('');
     console.log(
-      `  ${symbol.designator}: 末值 ${masks.map((mask) => `0x${mask.toString(16).padStart(2, '0')}`).join(' ')}  共阴「${cathode}」/ 共阳「${anode}」  ${displaySeen.get(symbol.id).size} 种组合`,
+      `  ${symbol.designator}: 末值 ${masks.map((mask) => `0x${mask.toString(16).padStart(2, '0')}`).join(' ')}  显示「${shown}」  ${displaySeen.get(symbol.id).size} 种组合`,
     );
     const digits = history.get(symbol.id);
     if (digits !== undefined) {
@@ -468,7 +491,7 @@ for (const hexFile of hexFiles) {
       if (trail.length > 1) {
         const timeline = trail
           .slice(0, 12)
-          .map((entry) => `${(entry.at / 1e9).toFixed(0)}ms:${glyph(entry.value, true)}`);
+          .map((entry) => `${(entry.at / 1e9).toFixed(0)}ms:${glyph(entry.value)}`);
         console.log(
           `    digit1 变化: ${timeline.join(' ')}${trail.length > 12 ? ` … 共 ${trail.length} 次` : ''}`,
         );

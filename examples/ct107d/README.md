@@ -84,6 +84,7 @@ examples/ct107d/
   docs/<id>.md                    器件说明：引脚、行为、端口、理想化
   docs/official-firmware-simulation.md
                                   官方工程固件（dist/代码）整板联合仿真实测记录与问题清单
+  docs/official-firmware-gaps.md  同一批固件的验收缺口与需要补的器件/网络/夹具
   assets/ct107d-board.webp        板面照片（画布背景图，1068×768）
   assets/ct107d-demo.bin          演示固件（70 字节，assemble-firmware.mjs 生成）
   firmware/demo.asm               8051 汇编源
@@ -97,6 +98,11 @@ examples/ct107d/
   verify-canvas.mjs               画布校验：解析、绑定、对位、widget 渲染、按键网络
   verify-firmware.mjs             固件联调：把外部 HEX/bin（如 dist/代码）装进整板看输出
 ```
+
+`docs/official-firmware-simulation.md` 记录 14 份官方固件的实测结果与已修复的模型问题；
+`docs/official-firmware-gaps.md` 单独列出仍无法完整验收的工程（`12.0`、`13.0`、`14.0` 的
+超声/测频页，以及 `6.0`/`7.0` 的串口）和需要补的网络与夹具。串口按该文档第 3 节同时补
+MCU 的 `uart1Tx` 端口与原理图里的独立 `uart-probe` 器件，两者缺一不可。
 
 ## 器件
 
@@ -187,7 +193,8 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
   U8 Q0–Q7 → `com1`–`com8`；U9 Q0–Q6 → U10 IN1–IN7（网名 `U9Q0`–`U9Q6`）→ `STEPA`–`STEPD`/`N_RELAY`/`N_MOTOR`/
   `N_BUZZ`，Q7 → `N_SPK` → U14 IN1+ → `SPK`。
 - **数码管**：DS1 的 `a`–`dp` 并到段总线、`com1`–`com4` 接 `com1`–`com4`；DS2 同样并段总线、
-  `com1`–`com4` 接 `com5`–`com8`。
+  `com1`–`com4` 接 `com5`–`com8`。两片都是**共阳**管（`seg4.commonAnode = true`）：U8 的位选
+  高电平选中该位，U7 的段码低电平点亮该段，`digit1`–`digit4` 仍按「点亮的段」编码。
 - **按键**：S4–S7 一端接地（J5 的 2-3 短接）、另一端接 `P30/TXD`–`P33`；S8–S19 构成 3×4
   矩阵，行同上四根、列接 `P42/WR`/`P35`/`P34`；S1 接在 `VCC` 与 `RST` 之间。详见
   [`docs/push-button.md`](docs/push-button.md)。
@@ -275,18 +282,16 @@ pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.per
 
 口径：装配整板 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`wallMs` / `rtf`
 取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（12 MHz 8051，
-8 位数码管逐位扫描 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 48 颗器件、99 条网络，
+8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 48 颗器件、99 条网络，
 电气求解、通道与执行引擎都走真实运行时。
 
 **行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按
 [吞吐合同](../../docs/spec/jit/throughput.rst)允许错过 GPIO 中间态、合并受保护执行段内的检查，
-因此同一份固件在两种模式下 `topicDigest` 本来就会不同：实测 12 MHz 下 `throughput` 给出
-`sha256:7aa61d7d…`、`precise` 给出 `sha256:22525356…`，两边都是 29 条消息、末值 `latch=239`、
-终值摘要同为 `sha256:5d658c26…`。差异来自 74HC573 的 LE 脉冲：电气网络只在推进边界求解，
-244 µs 的透明相位在 2 ms 步进下约 12% 的帧会被采样到，`throughput` 的走马灯因此会不规则跳变；
-`precise` 逐指令求解，序列与旧版逐条一致。跨模式比较只按合同允许的可见性差异判定，见
-[conformance](../../docs/spec/conformance.rst)；`MICA_PERF_STREAM=<path>` 可导出原始
-`(simTime, topic, payload)` 流做差分。
+因此同一份固件在两种模式下 `topicDigest` 本来就会不同。演示固件把每个锁存的 LE 高电平相位
+保持一整个 `DELAY`（实测约 4 ms，长于预览的 2 ms 推进步长），并且两次刷新之间 `P0` 一直等于
+LED 图案，所以两种模式都能稳定锁存；差异只能来自其它引脚中间态，跨模式比较仍按合同允许的
+可见性差异判定，见 [conformance](../../docs/spec/conformance.rst)；
+`MICA_PERF_STREAM=<path>` 可导出原始 `(simTime, topic, payload)` 流做差分。
 
 | 字段                                          | 含义                                                                                                     |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
