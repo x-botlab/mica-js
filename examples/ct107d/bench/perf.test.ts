@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { measureCt107d } from './measure';
 
 /**
- * CT107D 整板基准：44 颗器件按 `ct107d.sch` 装配，固件是 `assets/ct107d-demo.bin`
+ * CT107D 整板基准：48 颗器件按 `ct107d.sch` 装配，固件是 `assets/ct107d-demo.bin`
  * （12 MHz 8051，8 位数码管逐位扫描 + 8 路 LED 走马灯），读数取进程 CPU 时间。
  *
  * 断言只做下限与宽松区间：并行任务与 CI 都在抢 CPU，精确值没有意义，这里守住的是

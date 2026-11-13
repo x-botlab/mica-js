@@ -13,7 +13,7 @@ import { compileDDL } from '@mica-js/sdk/ddl';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
 /**
- * 整板基准夹具：按 `ct107d.sch` 的网表装配 44 颗器件，器件行为来自 `src/devices/`。
+ * 整板基准夹具：按 `ct107d.sch` 的网表装配 48 颗器件，器件行为来自 `src/devices/`。
  *
  * 与 `verify-schematic.mjs` 的差异只有一处：那里装的是 `dist/devices/<id>/device.js`，
  * 这里像 `test/harness.ts` 一样现场编译 `model.ddl` 并直接装载 `src/devices/<id>/index.ts`。
@@ -158,12 +158,8 @@ function describeBoard(): Promise<Description> {
       pins: net.members
         .filter((member) => member.kind === 'pin')
         .map((member) => ({ instance: member.symbolId, pin: member.pinId })),
-      // 电源轨换成理想电压源；`P42/WR` 按 J13 的 2-3 位置接 0 V（模型没有 P4 端口）。
-      ...(net.name === 'VCC'
-        ? { voltage: 5 }
-        : net.name === 'GND' || net.name === 'P42/WR'
-          ? { voltage: 0 }
-          : {}),
+      // 电源轨换成理想电压源；`P42/WR` 由原理图里的 J13（WR 选择跳线）接到 GND。
+      ...(net.name === 'VCC' ? { voltage: 5 } : net.name === 'GND' ? { voltage: 0 } : {}),
     }));
 
     return { components, nets };
@@ -172,7 +168,7 @@ function describeBoard(): Promise<Description> {
   return described;
 }
 
-/** 建一块整板 CT107D：44 颗器件 + 原理图网表。 */
+/** 建一块整板 CT107D：48 颗器件 + 原理图网表。 */
 export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoard> {
   const { components, nets } = await describeBoard();
   const faults: string[] = [];
