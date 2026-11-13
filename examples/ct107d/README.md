@@ -257,16 +257,17 @@ pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.per
 ```
 
 口径：装配整板 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`wallMs` / `rtf`
-取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（1 MHz 8051，
+取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（12 MHz 8051，
 8 位数码管逐位扫描 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 44 颗器件、96 条网络，
 电气求解、通道与执行引擎都走真实运行时。
 
 **行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按
 [吞吐合同](../../docs/spec/jit/throughput.rst)允许错过 GPIO 中间态、合并受保护执行段内的检查，
-因此同一份固件在两种模式下 `topicDigest` 本来就会不同：实测同一份源码下 `throughput` 给出
-`sha256:99fe7dca…`（窗口内 20 条消息、末值 `latch=191`），`precise` 给出
-`sha256:ccf49864…`（29 条消息、末值 `latch=254`），而后者与「端口写指令回退解释器」的旧版本
-逐条一致。跨模式比较只按合同允许的可见性差异判定，见
+因此同一份固件在两种模式下 `topicDigest` 本来就会不同：实测 12 MHz 下 `throughput` 给出
+`sha256:7aa61d7d…`、`precise` 给出 `sha256:22525356…`，两边都是 29 条消息、末值 `latch=239`、
+终值摘要同为 `sha256:5d658c26…`。差异来自 74HC573 的 LE 脉冲：电气网络只在推进边界求解，
+244 µs 的透明相位在 2 ms 步进下约 12% 的帧会被采样到，`throughput` 的走马灯因此会不规则跳变；
+`precise` 逐指令求解，序列与旧版逐条一致。跨模式比较只按合同允许的可见性差异判定，见
 [conformance](../../docs/spec/conformance.rst)；`MICA_PERF_STREAM=<path>` 可导出原始
 `(simTime, topic, payload)` 流做差分。
 

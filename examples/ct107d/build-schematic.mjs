@@ -282,10 +282,10 @@ connect('OUT', [['U16', 'dac']]);
 /** 演示固件：8 位数码管全亮扫描 + 8 路 LED 走马灯（`firmware/demo.asm`，由 assemble-firmware.mjs 汇编）。 */
 const FIRMWARE = { src: 'assets/ct107d-demo.bin', mode: 'file' };
 /**
- * 演示板把系统时钟降到 1 MHz：仿真按指令逐条推进，11.0592 MHz 下每个 20 ms 仿真步要跑
- * 22 万条指令，预览会被拖到每秒不到一帧；1 MHz 让扫描与走马灯在预览里保持流畅。
+ * 演示板按板载 12 MHz 晶振运行：固件 `firmware/demo.asm` 的延时按同一频率配平，
+ * 数码管每位约 244 µs、走马灯约 17.6 ms 移一位，可见节奏与早期 1 MHz 演示一致。
  */
-const DEMO_CLOCK = 1_000_000;
+const DEMO_CLOCK = 12_000_000;
 
 const PLACEMENTS = [
   {

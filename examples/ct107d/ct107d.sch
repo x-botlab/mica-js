@@ -14,7 +14,7 @@
             "src": "assets/ct107d-demo.bin",
             "mode": "file"
           },
-          "clockFrequency": 1000000
+          "clockFrequency": 12000000
         }
       },
       {

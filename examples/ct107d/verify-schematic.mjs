@@ -298,7 +298,13 @@ const demoBytes = new Uint8Array(readFileSync(join(PROJECT, 'assets', 'ct107d-de
 if (demoBytes.length === 0)
   failures.push('assets/ct107d-demo.bin 是空文件（先运行 node assemble-firmware.mjs）');
 const demo = buildBoard(demoBytes, 0);
-demo.board.runUntil(120_000_000_000); // 120 ms：约 8 个走马灯步
+/**
+ * 采样步长与 Playground 画布预览一致（2 ms）。74HC573 的 LE 脉冲只有几百 µs，
+ * 电气网络只在推进边界求解；步长拉到 10 ms 时大部分脉冲落在两次采样之间，
+ * 走马灯会看起来卡住——这是采样粒度问题，不是固件行为。
+ */
+const SAMPLE_PS = 2_000_000_000;
+for (let step = 0; step < 60; step += 1) demo.board.runUntil(demo.board.time + SAMPLE_PS); // 120 ms 预热
 if (demo.faults.length > 0) failures.push(`demo board faults: ${demo.faults.join('; ')}`);
 
 const demoDs1 = digitValues.get(components.find((symbol) => symbol.designator === 'DS1').id) ?? {};
@@ -319,10 +325,10 @@ const litNow = () =>
     .filter(([, value]) => value > 0.1)
     .map(([id]) => designatorOf.get(id) ?? id)
     .sort();
-/** 采样 16 × 10 ms，记录每一刻点亮的 LED。 */
+/** 采样 250 × 2 ms（约 4 个走马灯周期），记录每一刻点亮的 LED。 */
 const trail = [];
-for (let step = 0; step < 16; step += 1) {
-  demo.board.runUntil(demo.board.time + 10_000_000_000);
+for (let step = 0; step < 250; step += 1) {
+  demo.board.runUntil(demo.board.time + SAMPLE_PS);
   trail.push(litNow());
 }
 demo.board.dispose();

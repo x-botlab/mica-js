@@ -5,7 +5,7 @@ import { measureCt107d } from './measure';
 
 /**
  * CT107D 整板基准：44 颗器件按 `ct107d.sch` 装配，固件是 `assets/ct107d-demo.bin`
- * （1 MHz 8051，8 位数码管逐位扫描 + 8 路 LED 走马灯），读数取进程 CPU 时间。
+ * （12 MHz 8051，8 位数码管逐位扫描 + 8 路 LED 走马灯），读数取进程 CPU 时间。
  *
  * 断言只做下限与宽松区间：并行任务与 CI 都在抢 CPU，精确值没有意义，这里守住的是
  * 「字段齐全、板能跑完、行为摘要稳定且对行为敏感」。读数含义见 `README.md` 的「基准」。
@@ -17,7 +17,7 @@ const EMPTY_DIGEST = 'sha256:e3b0c44298fc1c14';
 let demoDigest = '';
 
 describe('CT107D 整板基准', () => {
-  it('ct107d-demo：1 MHz 扫描 8 位数码管与 8 路 LED', async () => {
+  it('ct107d-demo：12 MHz 扫描 8 位数码管与 8 路 LED', async () => {
     const result = await measureCt107d();
 
     demoDigest = result.topicDigest;
