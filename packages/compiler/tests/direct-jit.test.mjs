@@ -1779,7 +1779,7 @@ test('a declared busy-wait head folds rounds and never crosses the deadline', ()
   const source = generated(program);
   assert.match(
     source,
-    /const rounds = Math\.min\(S\[\d+\] - 1, Math\.floor\(\(deadline - F\.time\) \/ 1000\)\);/,
+    /let rounds = Math\.min\(S\[\d+\] - 1, Math\.floor\(\(deadline - F\.time\) \/ 1000\)\);\n/,
   );
 
   // Horizon inside the wait: only the rounds that fit are folded and no instruction starts.
@@ -1802,6 +1802,55 @@ test('a declared busy-wait head folds rounds and never crosses the deadline', ()
   const unfolded = frame(plain, [0, 11, 0, false, 0, 0]);
   assert.equal(plain.run(unfolded, 60_000), 'fallback');
   assert.equal(unfolded.time, 2);
+});
+
+test('a paced busy-wait head folds into the service accumulator and stops at its boundary', () => {
+  const b = builder();
+  b.write('marker', b.constant(1));
+  b.delay(2);
+  const instruction = b.instruction(0, 2);
+  const paced = {
+    ...binding,
+    delayLoops: new Map([
+      [
+        0,
+        {
+          counter: binding.states.get('x'),
+          cycles: 1000,
+          // `offset` accumulates the folded time, `y` is the service period (0 here, so the
+          // very first round reaches the boundary) and `flag` says pacing is active.
+          pending: {
+            state: binding.states.get('offset'),
+            period: binding.states.get('y'),
+            active: binding.states.get('flag'),
+          },
+        },
+      ],
+    ]),
+  };
+  const program = compileDirectJit([instruction], paced);
+  assert(program);
+  const source = generated(program);
+  // The fold stops on the first round that reaches the service boundary and records it.
+  assert.match(source, /if \(S\[3\]\) rounds = Math\.min\(rounds,/);
+  assert.match(source, /S\[4\] \+= rounds \* 1000;/);
+
+  // Paced: one round crosses the boundary, then the real body runs once.
+  const crossing = frame(program, [0, 11, 0, true, 0, 0]);
+  assert.equal(program.run(crossing, 60_000), 'fallback');
+  assert.equal(crossing.states[1], 10);
+  assert.equal(crossing.states[4], 1000);
+  assert.equal(crossing.time, 1000 + 2);
+  assert.equal(crossing.states[5], 1);
+
+  // Unpaced: no boundary clamp, so every allowed round folds; the accumulator still tracks
+  // elapsed time (the device resets it when a paced peripheral activates).
+  const idle = frame(program, [0, 11, 0, false, 0, 0]);
+  assert.equal(program.run(idle, 60_000), 'fallback');
+  assert.equal(idle.states[1], 1);
+  assert.equal(idle.states[4], 10 * 1000);
+  assert.equal(idle.time, 10 * 1000 + 2);
+  assert.equal(idle.states[5], 1);
 });
 
 test('a folded elapse duration becomes a literal due time', () => {

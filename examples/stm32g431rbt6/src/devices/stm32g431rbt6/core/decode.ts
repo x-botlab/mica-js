@@ -10,6 +10,14 @@ import { decode32 } from './thumb32';
 export interface Instruction {
   readonly size: 2 | 4;
   readonly cycles: number;
+  /**
+   * 这条指令是否可能把 pc 改写成新的取指位置。批处理在它之后收块：块体是单个
+   * `InstructionIR`，把分支之后的死代码编进来只会放大块体积（直接后端无法在 body
+   * 内再分片）。判错不影响正确性——块内每条指令前都会复位 pc，运行期守卫会停掉后续指令。
+   */
+  readonly endsBatch: boolean;
+  /** IT 指令覆盖的后续指令条数；非 IT 指令为 0。 */
+  readonly itCount: number;
   readonly emit: (b: Body, pc: number) => void;
 }
 
@@ -17,15 +25,67 @@ const byteAt = (code: JitTranslateInput['code'], offset: number): number =>
   code[offset & 0x1ffff] ?? 0;
 
 /**
+ * 16 位指令里会写 pc 的形式：分支、`bx/blx`、hi-reg 操作、`pop {pc}`、`ldm {pc}`、
+ * `ldr pc` 与 misc 指令（CBZ 等）。0xB100–0xBFFF 整段按保守处理，除了 `add/sub sp`。
+ */
+function writesPc16(instr: number): boolean {
+  if ((instr & 0xf000) === 0xd000) return true; // B<cond> / SVC / UDF
+  if ((instr & 0xf800) === 0xe000) return true; // B
+  if ((instr & 0xfc00) === 0x4400) return true; // hi-reg ops / BX / BLX
+  if (instr >= 0xb100 && instr < 0xc000) return true; // CBZ / push / pop（可含 pc）
+  if ((instr & 0xf000) === 0xc000) return (instr & 0x0800) !== 0; // ldm {pc}
+  if ((instr & 0xf800) === 0x4800) return ((instr >> 8) & 7) === 7; // ldr pc, literal
+  if ((instr & 0xf800) === 0x9800) return ((instr >> 8) & 7) === 7; // ldr pc, [sp, #imm]
+
+  return false;
+}
+
+/** 32 位指令里会写 pc 的形式：B/BL/BLX、`pop.w {pc}`、`ldm {pc}`、`tbb/tbh`、`ldr.w pc`、
+ * 目标寄存器为 pc 的数据处理指令。`B<cond>.W` 的 h2 bit15 与数据处理立即数天然区分。
+ */
+function writesPc32(h1: number, h2: number): boolean {
+  if ((h1 & 0xf800) === 0xf000 && (h2 & 0x8000) !== 0) return true;
+  if (h1 === 0xe8bd) return (h2 & 0x8000) !== 0;
+  if ((h1 & 0xffd0) === 0xe890) return (h2 & 0x8000) !== 0;
+  if (h1 >= 0xe8d0 && h1 <= 0xe8d7) return true;
+
+  const kind = h1 & 0xfff0;
+  const load =
+    kind === 0xf8d0 ||
+    kind === 0xf890 ||
+    kind === 0xf8b0 ||
+    kind === 0xf990 ||
+    kind === 0xf9b0 ||
+    kind === 0xf850 ||
+    kind === 0xf810 ||
+    kind === 0xf830;
+
+  if (load && ((h2 >> 12) & 0xf) === 15) return true;
+
+  const rd = (h2 >> 8) & 0xf;
+  if ((h1 & 0xfe00) === 0xea00 && rd === 15) return true;
+  if (((h1 & 0xfbe0) === 0xf200 || (h1 & 0xfbe0) === 0xf2a0) && rd === 15) return true;
+  if (((h1 & 0xfbf0) === 0xf240 || (h1 & 0xfbf0) === 0xf2c0) && rd === 15) return true;
+
+  return false;
+}
+
+/**
  * IT 块的条件执行。
  *
  * ITSTATE 高 4 位是首条件，低 4 位是掩码；当前指令的条件由首条件与掩码最低位组成。
  * 执行后把掩码左移一位，移空即离开 IT 块。IT 指令本身不走这个包装。
+ *
+ * 只有静态判定在 IT 块内的指令才需要这层包装：包装本身要读写 `itState` 并多三次 `if`，
+ * 而真实固件里绝大多数指令不在 IT 块内。批处理不会在 IT 块中间切开，所以一条指令是否
+ * 受 IT 控制在翻译期就能确定（见 `index.ts` 的 `collectBatch`）。
  */
-function guarded(instruction: Instruction): Instruction {
+export function guard(instruction: Instruction): Instruction {
   return {
     size: instruction.size,
     cycles: instruction.cycles,
+    endsBatch: instruction.endsBatch,
+    itCount: 0,
     emit: (b, pc) => {
       const state = b.readState('itState', types.number);
       const active = b.notEqual(types.number, b.bitAnd(state, num(b, 0xf)), num(b, 0));
@@ -56,17 +116,33 @@ function guarded(instruction: Instruction): Instruction {
 const hint = (): Instruction => ({
   size: 2,
   cycles: 1,
+  endsBatch: false,
+  itCount: 0,
   emit: () => {},
 });
 
-const itInstruction = (h1: number): Instruction => ({
-  size: 2,
-  cycles: 1,
-  emit: (b) => {
-    b.writeState('itState', num(b, h1 & 0xff));
-  },
-});
+/**
+ * `it` 指令：`1111 1011 cond mask`。掩码每左移一位消耗一条被控指令，左移到低 4 位全 0
+ * 即离开 IT 块，因此覆盖条数是「掩码最低置位之上的左移次数」。
+ *
+ * 例：掩码 `1000` 覆盖 1 条，`1100` 覆盖 2 条，`0110` 覆盖 3 条，`1111` 覆盖 4 条。
+ */
+const itInstruction = (h1: number): Instruction => {
+  const mask = h1 & 0xf;
+  let count = 1;
 
+  while (count < 4 && ((mask << count) & 0xf) !== 0) count += 1;
+
+  return {
+    size: 2,
+    cycles: 1,
+    endsBatch: false,
+    itCount: count,
+    emit: (b) => {
+      b.writeState('itState', num(b, h1 & 0xff));
+    },
+  };
+};
 export function decode(code: JitTranslateInput['code'], pc: number): Instruction {
   const h1 = byteAt(code, pc) | (byteAt(code, pc + 1) << 8);
 
@@ -76,7 +152,7 @@ export function decode(code: JitTranslateInput['code'], pc: number): Instruction
   if (h1 >= 0xe800) {
     const h2 = byteAt(code, pc + 2) | (byteAt(code, pc + 3) << 8);
 
-    return guarded(decode32(h1, h2));
+    return { ...decode32(h1, h2), endsBatch: writesPc32(h1, h2), itCount: 0 };
   }
 
   if ((h1 & 0xff00) === 0xbf00) {
@@ -86,5 +162,5 @@ export function decode(code: JitTranslateInput['code'], pc: number): Instruction
     return itInstruction(h1);
   }
 
-  return guarded(decode16(h1));
+  return { ...decode16(h1), endsBatch: writesPc16(h1), itCount: 0 };
 }

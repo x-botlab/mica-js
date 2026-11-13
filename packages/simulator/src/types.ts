@@ -65,10 +65,21 @@ export interface InstructionHook {
 /**
  * 一条忙等延时环的声明：入口 `pc` 每轮把 number 状态 `counter` 减一，消耗 `cycles` ps。
  * 环内不得产生其他可观察效果，因此跳过多轮只推进时间、只留下最后一轮的效果。
+ *
+ * `pending` 给按累加器计时的外设（SysTick、USART 位时钟）：折算必须停在下一次服务边界，
+ * 并把折叠掉的时间记进 `state`，否则跳过轮次会让这些外设永远等不到自己的节拍。
  */
 export interface JitDelay {
   readonly counter: string;
   readonly cycles: number;
+  readonly pending?: {
+    /** 已累积的节拍时长（ps）。 */
+    readonly state: string;
+    /** 一次服务的粒度（ps）。 */
+    readonly period: string;
+    /** 是否需要按时间推进外设。 */
+    readonly active: string;
+  };
 }
 
 export interface JitOptions {

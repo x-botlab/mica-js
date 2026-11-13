@@ -11,7 +11,7 @@ import type {
 import type { Instance } from './instance';
 import type { CompiledObservation } from '../observations';
 import type { Fifo } from '../queue';
-import type { DeviceLibraryEntry, JitOptions } from '../types';
+import type { DeviceLibraryEntry, JitDelay, JitOptions } from '../types';
 
 export type Decl<K extends DeclarationIR['kind']> = Extract<DeclarationIR, { kind: K }>;
 export type Execution = Generator<ExecutionSignal, unknown, unknown>;
@@ -92,6 +92,8 @@ export interface JitInstruction {
 export interface DirectExecution {
   readonly program: DirectJitProgram;
   readonly frame: DirectJitFrame;
+  /** PCs the current program compiled; a PC outside it needs the interpreter. */
+  readonly pcs: ReadonlySet<number>;
   readonly stateReads: readonly (readonly [string, number])[];
   readonly stateWrites: readonly (readonly [string, number])[];
   readonly memoryWrites: readonly (readonly [string, number])[];
@@ -103,7 +105,7 @@ export interface Jit {
   readonly cache: Map<number, JitInstruction>;
   readonly polling: ReadonlyMap<number, string>;
   /** Validated delay-loop descriptors, keyed by loop-head PC. */
-  readonly delays: ReadonlyMap<number, { readonly counter: string; readonly cycles: number }>;
+  readonly delays: ReadonlyMap<number, JitDelay>;
   revision: number;
   directRevision: number;
   directObserverRevision: number;
@@ -114,6 +116,8 @@ export interface Jit {
   directProgramRevision: number;
   direct: DirectExecution | undefined;
   directSkip: number | undefined;
+  /** Blocks translated since the last direct program build; bounds the rebuild frequency. */
+  directMisses: number;
   pollReads: Dependencies | undefined;
   currentPc: number | undefined;
   automaticPolling: boolean;

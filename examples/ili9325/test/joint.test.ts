@@ -142,7 +142,7 @@ describe.skipIf(!process.env.MICA_JOINT)('MCU + LCD 联合仿真', () => {
         ],
         nets,
       } as never,
-      { execution: 'precise' },
+      // 默认走 throughput（直接后端）：这是运行时的主路径。
     );
 
     const subscription = board.topics.onDidReceive((message) => {

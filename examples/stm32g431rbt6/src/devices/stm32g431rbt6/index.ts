@@ -1,9 +1,20 @@
 import type { Factory } from './model.ddl';
 import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
-import type { BlockIR, Local } from '@mica-js/sdk/model';
+import type { BlockIR, Local, Value } from '@mica-js/sdk/model';
 import type { JitTranslate, JitTranslateInput } from '@mica-js/sdk/device';
+import type { JitDelay } from '@mica-js/sdk/device';
 import {
   CODE,
+  DEFER_READ,
+  DEFER_READ_OFFSET,
+  DEFER_READ_PORT,
+  DEFER_READ_SIGNED,
+  DEFER_READ_SIZE,
+  DEFER_READ_TARGET,
+  DEFER_WRITE,
+  DEFER_WRITE_ADDR,
+  DEFER_WRITE_SIZE,
+  DEFER_WRITE_VALUE,
   GPIO_PIN_MASK,
   GPIO_SYNC,
   GPIO_WRITE,
@@ -12,18 +23,36 @@ import {
   GPIO_WRITE_VALUE,
   IRQ_DIRTY,
   PENDING_PS,
+  SERVICE_ALL,
+  SERVICE_DEFER_READ,
+  SERVICE_DEFER_WRITE,
+  SERVICE_GPIO_WRITE,
+  SERVICE_MASK,
+  SERVICE_PIN_SYNC,
   SERVICE_RESUME,
   SYSTICK_ON,
   TICK_ACTIVE,
   TICK_PS,
   TX_MASK,
 } from './core/layout';
-import { asBody, boolAnd, boolBit, boolOr, num } from './core/ir';
+import {
+  asBody,
+  bool,
+  boolAnd,
+  boolBit,
+  boolOr,
+  clearService,
+  num,
+  syncIrqService,
+  writeReg,
+} from './core/ir';
 import type { Body } from './core/ir';
-import { decode } from './core/decode';
+import { decode, guard } from './core/decode';
+import type { Instruction } from './core/decode';
 import { activateMachine } from './core/machine';
 import type { Machine } from './core/machine';
-import { gpioOffsetOf, gpioPortOf, syncPort, writeGpioPort } from './core/gpio';
+import { gpioOffsetOf, gpioPortOf, readIdrDeferred, syncPort, writeGpioPort } from './core/gpio';
+import { writeMemory } from './core/memory';
 import { advanceSystick } from './core/systick';
 import { advanceUsart, usartDrivers } from './core/usart';
 import { dispatchExceptions } from './core/nvic';
@@ -31,17 +60,21 @@ import { dispatchExceptions } from './core/nvic';
 /**
  * STM32G431RBT6 的器件实现。
  *
- * JIT 按 PC 翻译一条 Thumb/Thumb-2 指令。外设推进、异常派发与 GPIO 引脚意图都**不内联
- * 进指令块**，而是集中在一组固定 PC 的服务块里：
+ * JIT 按 PC 翻译一段连续的 Thumb/Thumb-2 指令。外设推进、异常派发与 GPIO 引脚意图都
+ * **不内联进指令块**，而是集中在一组固定 PC 的服务块里：
  *
- * 1. 指令块：指令数据通路 → 把本块耗时累加进 `pendingPs` → 若累积到一次节拍、有中断
- *    待扫描、或有延迟的 GPIO 写/引脚刷新，就把 PC 转给对应服务块；最后顶层 `elapse`；
+ * 1. 指令块：逐条发射数据通路，每条指令前把 pc 复位成它的顺序后继、每条之后调用
+ *    `tick`；`pc` 被分支或服务块改写后，后续指令由守卫跳过；块尾只 `elapse` 一次；
  * 2. 服务块：`SERVICE_TICK` 推进 SysTick 与 USART 并派发中断；`SERVICE_GPIO + port`
  *    执行延迟的 GPIO 寄存器写并刷新该端口；`SERVICE_SYNC` 只刷新标记过的端口。
  *
- * 指令块因此只剩 200 个左右的 IR 操作，整段直接程序能留在 V8 的优化范围内；服务块按
- * 需翻译（只用到 GPIOA 的固件不会付其它端口的代码体积）。块内只用 state 读写、8 位
- * 访存、`if`/`select` 与算术运算。
+ * 批处理把精确模式下「每条指令一次调度往返」摊到一个块里。每条指令前把 `pc` 复位为
+ * 顺序后继，既让守卫只需比较一次 `pc`，也让 `tick` 沿用「`pc` 就是服务返回位置」的
+ * 约定：写成非顺序后继的指令（分支、异常返回）被服务打断时，服务块会返回到分支目标。
+ *
+ * 指令块因此只剩几百个 IR 操作，整段直接程序能留在 V8 的优化范围内；服务块按需翻译
+ * （只用到 GPIOA 的固件不会付其它端口的代码体积）。块内只用 state 读写、8 位访存、
+ * `if`/`select` 与算术运算。
  */
 
 const DEFAULT_CLOCK_FREQUENCY = 16_000_000;
@@ -55,9 +88,26 @@ const SERVICE_TICK = 0x20000;
 const SERVICE_GPIO = 0x20010;
 /** 只刷新引脚意图（USART 使能/复用变化）时的服务块。 */
 const SERVICE_SYNC = 0x20020;
+/** GPIO IDR 延迟读的组包服务块：逐脚采样只在这一点翻译一次。 */
+const SERVICE_READ = 0x20030;
+/** 非 GPIO 外设写的延迟执行服务块：寄存器读改写链只在这里翻译一次。 */
+const SERVICE_WRITE = 0x20040;
+
+/**
+ * 一个块最多合并的指令条数。
+ *
+ * 块体是单个 `InstructionIR`，direct 后端无法在 body 内再分片；按现有单条指令块
+ * （约 150–200 个 op、5–7 KB 生成源码）估算，4 条一批约 20–28 KB，仍在 V8 约 35 KB
+ * 的优化悬崖以内。指令条数只是上限，实际批还在自旋/忙等循环头处截断。
+ */
+const MAX_BATCH_INSTRUCTIONS = 8;
 
 const isServicePc = (pc: number): boolean =>
-  pc === SERVICE_TICK || pc === SERVICE_SYNC || (pc >= SERVICE_GPIO && pc < SERVICE_GPIO + 5);
+  pc === SERVICE_TICK ||
+  pc === SERVICE_SYNC ||
+  pc === SERVICE_READ ||
+  pc === SERVICE_WRITE ||
+  (pc >= SERVICE_GPIO && pc < SERVICE_GPIO + 5);
 
 function clockFrequency(value: unknown): number {
   return typeof value === 'number' &&
@@ -77,54 +127,86 @@ function createMachine(frequency: number): Machine {
 }
 
 /**
- * 每个块只把耗时累加进 `pendingPs`，再和 `tickPs` 比一次；越过粒度、或有中断待扫描、
- * 或有延迟的 GPIO 写/引脚刷新时，把 PC 转给对应的服务块。
+ * 每个块把耗时累加进 `pendingPs`，再判一次「要不要服务」；条件成立时把 PC 转给对应
+ * 的服务块。
  *
- * 粒度由 `refreshTick` 依据外设配置维护：空闲时放大到 64 µs，SysTick 周期或 USART 位
- * 时长更短时自动收紧，因此指令块里不再需要判断「要不要按时间推进」。
+ * 判断只看三个东西：时间是否到粒度（`pendingPs` / `tickPs` / `tickActive`）、是否有中
+ * 断待扫描（`irqDirty` 与 `primask`），以及 `serviceMask` 里是否有待执行的延迟请求。
+ * 延迟请求的触发点很多（GPIO 写、IDR 读、外设写、引脚刷新），逐位读会在每条指令上
+ * 付九次 state 读；归并成一个字后只剩一次。
+ *
+ * 粒度由 `refreshTick` 依据外设配置维护：空闲时放大到 1 s，SysTick 周期或 USART 位
+ * 时长更短时自动收紧。
+ *
+ * `withTime` 只有批次最后一条指令为真：批量内非末条指令只判「有延迟请求」（单槽状态
+ * 必须逐条取走），时间条件推到批尾。推迟量最多是「批内指令数 − 1」个周期（80 MHz、
+ * 8 条一批时不到 90 ns），远小于最小节拍粒度 1 µs。
  */
-function tick(machine: Machine, b: Body, cyclePs: number): void {
+function tick(machine: Machine, b: Body, cyclePs: number, withTime = true): void {
   const pending = b.add(b.readState(PENDING_PS, types.number), num(b, cyclePs));
+  const mask = b.readState(SERVICE_MASK, types.number);
   // 没有需要按时间推进的外设时，时间累积本身没有意义，跳过服务块。
-  const due = boolAnd(
-    b,
-    b.greaterThanOrEqual(pending, b.readState(TICK_PS, types.number)),
-    b.readState(TICK_ACTIVE, types.bool),
-  );
-  const unmasked = b.equal(types.number, b.readState('primask', types.number), num(b, 0));
-  const irqUp = boolAnd(b, b.readState(IRQ_DIRTY, types.bool), unmasked);
-  const pinUp = b.notEqual(types.number, b.readState(GPIO_SYNC, types.number), num(b, 0));
-  const wrote = b.notEqual(types.number, b.readState(GPIO_WRITE, types.number), num(b, 0));
+  const due = !withTime
+    ? undefined
+    : boolAnd(
+        b,
+        b.greaterThanOrEqual(pending, b.readState(TICK_PS, types.number)),
+        b.readState(TICK_ACTIVE, types.bool),
+      );
+  const deferred = b.notEqual(types.number, b.bitAnd(mask, num(b, SERVICE_ALL)), num(b, 0));
+  const need = due === undefined ? deferred : boolOr(b, due, deferred);
 
   b.writeState(PENDING_PS, pending);
-  b.if(boolOr(b, boolOr(b, due, irqUp), boolOr(b, pinUp, wrote)), (service) => {
+  b.if(need, (service) => {
     const body = asBody(service);
+    const wrote = boolBit(body, mask, SERVICE_GPIO_WRITE);
 
     // 引擎在块体之前已经把 pc 写成顺序后继（或分支目标），它就是服务块要回到的位置。
     body.writeState(SERVICE_RESUME, body.readState('pc', types.number));
+    // 待执行的 GPIO 写先落地，延迟读与延迟写再各执行一次，最后才是引脚刷新与节拍。
     body.if(
       wrote,
       (hit) => {
-        const scope = asBody(hit);
+        const inner = asBody(hit);
 
-        scope.writeState(
+        inner.writeState(
           'pc',
-          scope.add(
-            num(scope, SERVICE_GPIO),
-            gpioPortOf(scope, scope.readState(GPIO_WRITE_ADDR, types.number)),
+          inner.add(
+            num(inner, SERVICE_GPIO),
+            gpioPortOf(inner, inner.readState(GPIO_WRITE_ADDR, types.number)),
           ),
         );
       },
-      (next) => {
-        const scope = asBody(next);
+      (afterGpio) => {
+        const first = asBody(afterGpio);
 
-        scope.if(
-          pinUp,
-          (pins) => {
-            asBody(pins).writeState('pc', num(asBody(pins), SERVICE_SYNC));
+        first.if(
+          boolBit(first, mask, SERVICE_DEFER_READ),
+          (read) => {
+            asBody(read).writeState('pc', num(asBody(read), SERVICE_READ));
           },
-          (tick) => {
-            asBody(tick).writeState('pc', num(asBody(tick), SERVICE_TICK));
+          (afterRead) => {
+            const second = asBody(afterRead);
+
+            second.if(
+              boolBit(second, mask, SERVICE_DEFER_WRITE),
+              (write) => {
+                asBody(write).writeState('pc', num(asBody(write), SERVICE_WRITE));
+              },
+              (next) => {
+                const inner = asBody(next);
+
+                inner.if(
+                  boolBit(inner, mask, SERVICE_PIN_SYNC),
+                  (pins) => {
+                    asBody(pins).writeState('pc', num(asBody(pins), SERVICE_SYNC));
+                  },
+                  (tickUp) => {
+                    asBody(tickUp).writeState('pc', num(asBody(tickUp), SERVICE_TICK));
+                  },
+                );
+              },
+            );
           },
         );
       },
@@ -133,10 +215,12 @@ function tick(machine: Machine, b: Body, cyclePs: number): void {
 }
 
 /**
- * 服务块。三种入口共用同一套尾部（跳回保存的 PC）：
+ * 服务块。五种入口共用同一套尾部（跳回保存的 PC）：
  * - `SERVICE_TICK`：把累积的时间交给 SysTick 与 USART，并派发中断；
  * - `SERVICE_GPIO + port`：执行延迟的 GPIO 寄存器写并刷新该端口的引脚意图；
- * - `SERVICE_SYNC`：只刷新标记过的端口（USART 使能/复用变化）。
+ * - `SERVICE_SYNC`：只刷新标记过的端口（USART 使能/复用变化）；
+ * - `SERVICE_READ`：为延迟的 GPIO IDR 读逐脚组包并写回目标寄存器；
+ * - `SERVICE_WRITE`：执行延迟的非 GPIO 外设写。
  *
  * 每个服务块都是独立 PC，只有真正被跳转到时才会翻译。结尾是 `elapse(0)`，因此永远
  * 不会进入直接后端。
@@ -177,8 +261,52 @@ function buildService(machine: Machine, pc: number): BlockIR {
           },
         );
       });
+      // 派发可能再次置位 `irqDirty`（多个源同时挂起），也可能因为屏蔽而没取；
+      // 这里重算一次服务位，下一拍才能继续扫描。
+      syncIrqService(body);
     } else if (pc === SERVICE_SYNC) {
       syncMarkedPorts(body);
+    } else if (pc === SERVICE_READ) {
+      // 幂等保护：只有登记位仍有效时才写回，重复派发也不会重复执行。
+      body.if(body.readState(DEFER_READ, types.bool), (pending) => {
+        const scope = asBody(pending);
+        const port = scope.readState(DEFER_READ_PORT, types.number);
+        const offset = scope.readState(DEFER_READ_OFFSET, types.number);
+        const target = scope.readState(DEFER_READ_TARGET, types.number);
+        const size = scope.readState(DEFER_READ_SIZE, types.number);
+        const signed = scope.readState(DEFER_READ_SIGNED, types.bool);
+        const value = readIdrDeferred(scope, port, offset, size, signed);
+
+        scope.writeState(DEFER_READ, bool(scope, false));
+        clearService(scope, SERVICE_DEFER_READ);
+        writeDeferredReg(scope, target, value);
+      });
+    } else if (pc === SERVICE_WRITE) {
+      // 幂等保护：有登记时才写，写完立即清标志；重复派发不会重复执行写。
+      body.if(body.readState(DEFER_WRITE, types.bool), (pending) => {
+        const scope = asBody(pending);
+        const address = scope.readState(DEFER_WRITE_ADDR, types.number);
+        const size = scope.readState(DEFER_WRITE_SIZE, types.number);
+        const value = scope.readState(DEFER_WRITE_VALUE, types.number);
+
+        scope.writeState(DEFER_WRITE, bool(scope, false));
+        clearService(scope, SERVICE_DEFER_WRITE);
+        // 宽度是运行期值，按 1/2/4 各展开一条完整写路径；指令块因此不必为每种宽度
+        // 各带一份分派树。
+        scope.if(
+          scope.equal(types.number, size, num(scope, 1)),
+          (byte) => writeMemory(asBody(byte), address, 1, value),
+          (wide) => {
+            const next = asBody(wide);
+
+            next.if(
+              next.equal(types.number, size, num(next, 2)),
+              (half) => writeMemory(asBody(half), address, 2, value),
+              (word) => writeMemory(asBody(word), address, 4, value),
+            );
+          },
+        );
+      });
     } else {
       const port = pc - SERVICE_GPIO;
       const address = body.readState(GPIO_WRITE_ADDR, types.number);
@@ -206,15 +334,22 @@ function buildService(machine: Machine, pc: number): BlockIR {
         },
       );
       body.writeState(GPIO_WRITE, num(body, 0));
+      clearService(body, SERVICE_GPIO_WRITE);
       body.if(boolBit(body, body.readState(GPIO_SYNC, types.number), 1 << port), (sync) => {
         const scope = asBody(sync);
 
         syncPort(scope, port, scope.readState(GPIO_PIN_MASK, types.number));
         scope.writeState(GPIO_PIN_MASK, num(scope, 0));
-        scope.writeState(
-          GPIO_SYNC,
-          scope.bitAnd(scope.readState(GPIO_SYNC, types.number), num(scope, ~(1 << port))),
+        const remaining = scope.bitAnd(
+          scope.readState(GPIO_SYNC, types.number),
+          num(scope, ~(1 << port)),
         );
+
+        scope.writeState(GPIO_SYNC, remaining);
+        // 掩码清零后位同步清掉：否则每个后续指令都会白白派发一次 SERVICE_SYNC。
+        scope.if(scope.equal(types.number, remaining, num(scope, 0)), (empty) => {
+          clearService(asBody(empty), SERVICE_PIN_SYNC);
+        });
       });
     }
     body.if(
@@ -230,6 +365,15 @@ function buildService(machine: Machine, pc: number): BlockIR {
   return builder.finish();
 }
 
+/** 延迟读的目标寄存器在运行期才知道，按寄存器号展开一条写入链。 */
+function writeDeferredReg(b: Body, index: Value<number>, value: Value<number>): void {
+  for (let register = 0; register < 16; register += 1) {
+    b.if(b.equal(types.number, index, num(b, register)), (hit) => {
+      writeReg(asBody(hit), register, value);
+    });
+  }
+}
+
 /** 刷新所有被标记的端口，然后清空标记。 */
 function syncMarkedPorts(b: Body): void {
   for (let port = 0; port < 5; port += 1) {
@@ -239,6 +383,7 @@ function syncMarkedPorts(b: Body): void {
     });
   }
   b.writeState(GPIO_SYNC, num(b, 0));
+  clearService(b, SERVICE_PIN_SYNC);
 }
 
 function cacheKey(
@@ -272,7 +417,7 @@ function delayLoopAt(
   pc: number,
   size: number,
   cyclePs: number,
-): { counter: string; cycles: number } | undefined {
+): JitDelay | undefined {
   if (size !== 2) return undefined;
   const half = (offset: number): number =>
     (code[offset & 0x1ffff] ?? 0) | ((code[(offset + 1) & 0x1ffff] ?? 0) << 8);
@@ -292,7 +437,14 @@ function delayLoopAt(
   if ((second & 0xff00) !== 0xd100) return undefined;
   const displacement = (((second & 0xff) << 24) >> 24) * 2;
   if ((pc + size + 4 + displacement) >>> 0 !== pc) return undefined;
-  return { counter: `r${register}`, cycles: 2 * cyclePs };
+
+  // 折算直接推进 `frame.time`，而本器件的外设靠 `pendingPs` 累加器计时：不带 `pending`
+  // 的折算会让 SysTick/USART 永远等不到节拍（`uwTick` 不增长，`HAL_Delay` 死循环）。
+  return {
+    counter: `r${register}`,
+    cycles: 2 * cyclePs,
+    pending: { state: PENDING_PS, period: TICK_PS, active: TICK_ACTIVE },
+  };
 }
 
 /**
@@ -362,20 +514,145 @@ function foldSpin(b: Body, cycles: number, total: Local<number>): void {
   });
 }
 
+/** 一个批次里的一条指令：地址、译码结果与取下一条指令的位置。 */
+interface Segment {
+  readonly pc: number;
+  readonly size: 2 | 4;
+  readonly cycles: number;
+  readonly instruction: Instruction;
+}
+
+/** 半字取指；与 `decode` 的窗口取模一致。 */
+const halfAt = (code: JitTranslateInput['code'], offset: number): number =>
+  (code[offset & 0x1ffff] ?? 0) | ((code[(offset + 1) & 0x1ffff] ?? 0) << 8);
+
+/** 一条 Thumb 指令的长度（按首半字判断 16/32 位）。 */
+const sizeAt = (code: JitTranslateInput['code'], offset: number): number => {
+  const h1 = halfAt(code, offset);
+
+  return h1 >= 0xe800 ? 4 : 2;
+};
+
+/** IT 掩码覆盖的指令条数：左移到低 4 位全 0 需要几次。 */
+function itCountOf(mask: number): number {
+  let count = 1;
+
+  while (count < 4 && ((mask << count) & 0xf) !== 0) count += 1;
+
+  return count;
+}
+
+/**
+ * 翻译期估计 `pc` 处还剩多少条受 IT 控制的指令。
+ *
+ * 批首通常就是分支目标或上一批的顺延，IT 状态为零；但只要 IT 块内有一条指令触发服务，
+ * `SERVICE_RESUME` 就会落到 IT 块中间，批首于是带着非零 ITSTATE。无法从 pc 单独确定时，
+ * 向后扫描最多 18 字节（IT 本身 2 字节 + 4 条 4 字节指令）找「覆盖 pc 的 IT」并取**最大**
+ * 剩余条数。
+ *
+ * 多估是安全的：没有活动 IT 时 `guard()` 只读一次 `itState`、不执行任何条件逻辑；少估会
+ * 把条件指令当成无条件执行。
+ */
+function itRemainingAt(code: JitTranslateInput['code'], pc: number): number {
+  let remaining = 0;
+
+  for (let back = 2; back <= 18; back += 2) {
+    const start = (pc - back) >>> 0;
+    const h1 = halfAt(code, start);
+
+    if ((h1 & 0xff00) !== 0xbf00) continue;
+    const mask = h1 & 0xf;
+
+    if (mask === 0 || ((h1 >> 4) & 0xf) === 0xf) continue;
+    const count = itCountOf(mask);
+    let cursor = (start + 2) >>> 0;
+
+    for (let index = 0; index < count; index += 1) {
+      if (cursor === pc) {
+        remaining = Math.max(remaining, count - index);
+        break;
+      }
+      if (cursor > pc) break;
+      cursor = (cursor + sizeAt(code, cursor)) >>> 0;
+    }
+  }
+
+  return remaining;
+}
+
+/**
+ * 从 `pc` 起收集一个连续的指令批。
+ *
+ * 三条收块规则：
+ * - 自旋 `b .` 与忙等循环头必须独占或收尾一个块：直接后端的轮次折算按块首 PC 查
+ *   `delays`，把它们放进批中间会让折算失效；
+ * - 写 pc 的指令之后收块（`endsBatch`），块体积只算真正会顺序执行的指令；
+ * - 不在 IT 块中间收块。IT 状态于是可以在翻译期静态跟踪，只有真正受 IT 控制的指令
+ *   才需要 IT 守卫包装，普通指令不必为它付三次 `if` 与一次 `itState` 读写。
+ */
+function collectBatch(
+  code: JitTranslateInput['code'],
+  pc: number,
+  cyclePs: number,
+  limit: number,
+): readonly Segment[] {
+  const segments: Segment[] = [];
+  let cursor = pc;
+  // 批首的 IT 状态必须查一次：服务返回可能落在 IT 块中间（见 `itRemainingAt`）。
+  let itRemaining = itRemainingAt(code, pc);
+
+  while (segments.length < limit || itRemaining > 0) {
+    const fetchPc = cursor & 0x1ffff;
+    const decoded = decode(code, fetchPc);
+
+    if (itRemaining === 0 && segments.length > 0) {
+      if (selfBranchAt(code, fetchPc, cursor, decoded.size)) break;
+      if (delayLoopAt(code, fetchPc, cursor, decoded.size, cyclePs) !== undefined) break;
+    }
+    const inIt = itRemaining > 0;
+    const instruction = inIt ? guard(decoded) : decoded;
+
+    segments.push({
+      pc: cursor,
+      size: decoded.size,
+      cycles: decoded.cycles,
+      instruction,
+    });
+    if (inIt) itRemaining -= 1;
+    if (decoded.itCount > 0) itRemaining = decoded.itCount;
+    if (itRemaining > 0) {
+      cursor = (cursor + decoded.size) >>> 0;
+      continue;
+    }
+    if (segments.length === 1 && selfBranchAt(code, fetchPc, cursor, decoded.size)) break;
+    if (decoded.endsBatch) break;
+    cursor = (cursor + decoded.size) >>> 0;
+    if (isServicePc(cursor)) break;
+  }
+
+  return segments;
+}
+
 const createTranslate =
-  (machine: Machine, delays: Map<number, { counter: string; cycles: number }>): JitTranslate =>
+  (machine: Machine, delays: Map<number, JitDelay>): JitTranslate =>
   (input) => {
     const pc = input.pc >>> 0;
     const service = isServicePc(pc);
     const fetchPc = pc & 0x1ffff;
-    const instruction = service ? undefined : decode(input.code, fetchPc);
-    if (instruction !== undefined) {
-      const declared = delayLoopAt(input.code, fetchPc, pc, instruction.size, machine.cyclePs);
+    const segments = service
+      ? []
+      : collectBatch(input.code, pc, machine.cyclePs, MAX_BATCH_INSTRUCTIONS);
+    const first = segments[0];
+    if (first !== undefined) {
+      const declared = delayLoopAt(input.code, fetchPc, pc, first.size, machine.cyclePs);
       if (declared !== undefined) delays.set(pc, declared);
     }
+    const size = segments.reduce((total, segment) => total + segment.size, 0);
+    // 批首的 IT 状态来自「pc 之前的字节」，不在块字节速记内，必须进缓存键。
+    const itState = service ? 0 : itRemainingAt(input.code, pc);
     const key = service
       ? `service:${machine.cyclePs}:${pc}`
-      : cacheKey(input.code, pc, instruction!.size, machine.cyclePs);
+      : `${itState}:${cacheKey(input.code, pc, size, machine.cyclePs)}`;
     const cached = blockCache.get(key);
 
     if (cached !== undefined) return cached;
@@ -383,25 +660,81 @@ const createTranslate =
     const block = activateMachine(machine, () => {
       if (service) return buildService(machine, pc);
 
+      const head = segments[0]!;
+      const tail = segments[segments.length - 1]!;
+      const batchNextPc = (tail.pc + tail.size) >>> 0;
       const builder = createJitBlockBuilder();
-      const cycles = instruction!.cycles * machine.cyclePs;
-      const spins = selfBranchAt(input.code, fetchPc, pc, instruction!.size);
 
-      builder.instruction({ pc, nextPc: (pc + instruction!.size) >>> 0 }, (body) => {
-        const total = spins ? body.local(types.number, num(body, cycles)) : undefined;
+      builder.instruction({ pc, nextPc: batchNextPc }, (body) => {
+        if (segments.length === 1) {
+          const cycles = head.cycles * machine.cyclePs;
+          const spins = selfBranchAt(input.code, fetchPc, pc, head.size);
+          const total = spins ? body.local(types.number, num(body, cycles)) : undefined;
 
-        body.if(
-          body.readState('halted', types.bool),
-          () => {},
-          (run) => {
+          body.if(
+            body.readState('halted', types.bool),
+            () => {},
+            (run) => {
+              const scope = asBody(run);
+
+              head.instruction.emit(scope, head.pc);
+              if (total !== undefined) foldSpin(scope, cycles, total);
+              tick(machine, scope, cycles);
+            },
+          );
+          body.elapse(total === undefined ? num(body, cycles) : body.getLocal(total));
+
+          return;
+        }
+
+        // 每条指令前把 pc 复位成它的顺序后继：指令若分支/异常返回，pc 会变成目标；
+        // 若服务块接手，pc 会变成服务 PC。两种情况都让守卫停掉后续指令，而 `tick`
+        // 继续把当前 pc 当作服务返回位置，与单条指令块的语义完全一致。
+        const running = body.local(types.bool, body.not(body.readState('halted', types.bool)));
+        const total = body.local(types.number, num(body, 0));
+        let cumulative = 0;
+
+        for (let index = 0; index < segments.length; index += 1) {
+          const segment = segments[index]!;
+
+          cumulative += segment.cycles * machine.cyclePs;
+          const nextPc = (segment.pc + segment.size) >>> 0;
+          const step = cumulative;
+
+          body.if(body.getLocal(running), (run) => {
             const scope = asBody(run);
 
-            instruction!.emit(scope, pc);
-            if (total !== undefined) foldSpin(scope, cycles, total);
-            tick(machine, scope, cycles);
-          },
-        );
-        body.elapse(total === undefined ? num(body, cycles) : body.getLocal(total));
+            scope.setLocal(total, num(scope, step));
+            scope.writeState('pc', num(scope, nextPc));
+            segment.instruction.emit(scope, segment.pc);
+            tick(machine, scope, segment.cycles * machine.cyclePs, index === segments.length - 1);
+            // 最后一条之后没有指令需要跳过，省掉一次 halted/pc 读取与比较。
+            if (index < segments.length - 1)
+              scope.setLocal(
+                running,
+                boolAnd(
+                  scope,
+                  scope.not(scope.readState('halted', types.bool)),
+                  scope.equal(
+                    types.number,
+                    scope.readState('pc', types.number),
+                    num(scope, nextPc),
+                  ),
+                ),
+              );
+          });
+        }
+
+        // 进入块时已 halt：本批一条指令都不执行，但仍按整批周期推进时间，避免 JIT
+        // 在没有任何时间事件的情况下空转。
+        const batchCycles = cumulative;
+
+        body.if(body.equal(types.number, body.getLocal(total), num(body, 0)), (stopped) => {
+          const scope = asBody(stopped);
+
+          scope.setLocal(total, num(scope, batchCycles));
+        });
+        body.elapse(body.getLocal(total));
       });
 
       return builder.finish();
@@ -418,7 +751,7 @@ const create: Factory = (context) => {
   const machine = createMachine(frequency);
   const firmware = context.props.firmware;
 
-  const delays = new Map<number, { counter: string; cycles: number }>();
+  const delays = new Map<number, JitDelay>();
   context.attachJit({
     entry: 'cpu',
     code: CODE,

@@ -4,6 +4,8 @@ import {
   GPIO_SYNC,
   IRQ_DIRTY,
   PERIPH,
+  SERVICE_IRQ,
+  SERVICE_PIN_SYNC,
   TX_MASK,
   USART1_BASE,
   USART2_BASE,
@@ -20,6 +22,7 @@ import {
   boolAnd,
   boolBitAt,
   boolOr,
+  markService,
   num,
   readWord,
   readWordAt,
@@ -187,6 +190,7 @@ function syncTxPins(b: Body, config: UsartConfig): void {
 
   for (const pin of config.txPins) mask |= 1 << pin.port;
   b.writeState(GPIO_SYNC, b.bitOr(b.readState(GPIO_SYNC, types.number), num(b, mask)));
+  markService(b, SERVICE_PIN_SYNC);
 }
 
 /** 标记该路有发送活动，节拍推进才会看它。 */
@@ -295,6 +299,7 @@ function advanceTransmitter(b: Body, config: UsartConfig, elapsedPs: Value<numbe
                 writeTx(done, config, 'Remaining', num(done, 0));
                 // 字节结束：TXE/TC 可能变为有效，需要重新扫描异常。
                 done.writeState(IRQ_DIRTY, bool(done, true));
+                markService(done, SERVICE_IRQ);
                 done.if(
                   done.greaterThan(count, num(done, 0)),
                   (more) => dequeue(asBody(more), config),
@@ -469,6 +474,7 @@ export function writeUsart(
 
               syncTxPins(body2, config);
               body2.writeState(IRQ_DIRTY, bool(body2, true));
+              markService(body2, SERVICE_IRQ);
             },
           );
           scope.if(scope.equal(types.number, wordOffset, num(scope, BRR)), (brr) =>

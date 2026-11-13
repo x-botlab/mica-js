@@ -1,8 +1,8 @@
 # STM32G431RBT6 器件包
 
 ST 的 Arm Cortex-M4F 32 位 MCU（LQFP64，128 KiB Flash / 22 KiB SRAM + 10 KiB CCM SRAM）的
-Mica 器件工程。器件 ID 是 `stm32g431rbt6`：JIT 按 PC 翻译一条 Thumb/Thumb-2 指令，GPIO、
-RCC、SysTick、NVIC 与 USART1/2/3 发送器按寄存器建模。
+Mica 器件工程。器件 ID 是 `stm32g431rbt6`：JIT 按 PC 翻译一段连续的 Thumb/Thumb-2 指令
+（默认最多 8 条一批），GPIO、RCC、SysTick、NVIC 与 USART1/2/3 发送器按寄存器建模。
 
 属性：`firmware`（bytes，默认空）写入 `0x08000000` 起的 Flash，前两字是初始 SP 与复位入口；
 `clockFrequency`（number，默认 16000000 Hz，DDL 断言落在 1000–170000000）给出指令耗时、
@@ -12,78 +12,87 @@ SysTick 与 USART 的时间基准。
 `@mica-js/sdk` 与 `@mica-js/simulator` 的 `workspace:*`（走 `source` 导出条件，不需要先构建
 packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{device.json, device.js}`。
 
-## 性能现状
+## 性能
 
-读数方式：`bench/measure.mjs` 用**进程 CPU 时间**（不是挂钟）测量，同机多轮取最小值；
-`bench/perf.test.ts` 的挂钟读数受宿主负载影响更大。下表的读数为 Node 24.18 / Windows x64、
-单进程独占运行，仅用于同机前后对照。
+**主路径是运行时的默认值 `execution: 'throughput'`**（直接后端）。性能读数用真实工程固件，
+不用合成夹具：`HAL_06_LCD.bin` 是 CT117E-M4 的 Keil 产物，复位后要跑完时钟树（HSI16 → PLL
+80 MHz，轮询 PWR 的 VOSF）、`MX_GPIO_Init`、`MX_USART1_UART_Init`，然后是 ILI9325 的 BSP
+初始化（背光、寄存器序列、多次 `HAL_Delay`）。`HAL_Delay` 靠 SysTick 中断推进 `uwTick`，
+因此同一段窗口覆盖 GPIO、RCC、PWR、USART、SysTick、NVIC 与 Flash 取指。
 
-### 交付基准（`bench/perf.test.ts`）
+测量口径：裸 MCU 板（只接 VDD/VSS，去掉 LCD 与探针）、80 MHz（固件自己配置的主频）、
+进程 CPU 时间、三轮取最小值。两个窗口：**冷启动** 0 → 200 µs；**稳态** 200 µs → 220 ms。
 
-`gpio-blink`、1 MHz、20 ms 预热 + 500 ms 测量，11 引脚夹具（探针 + 驱动源）：
+### 实测（`bench/hal-throughput.test.ts` / `bench/hal-precise.test.ts`）
+
+| 指标                    | `throughput`（主路径） | `precise`（对照） |
+| ----------------------- | ---------------------- | ----------------- |
+| 0 → 200 µs 冷启动       | **953–998 ms** CPU     | 34–55 ms CPU      |
+| 200 µs → 220 ms 稳态    | **2.58–2.67 s** CPU    | 13.32–13.67 s     |
+| 稳态实时倍率            | **0.08×**（慢 12×）    | 0.02×（慢 50×）   |
+| 整段 220 ms（含冷启动） | **3.55–3.67 s**        | 13.35–13.71 s     |
+| 缓存指令块              | 411                    | 411               |
+
+`precise` 每条指令走一次 generator 往返，稳态慢 5.1 倍；`throughput` 的代价是冷启动——
+直接后端按整程序编译，首个 200 µs 内 411 个块触发 25 次重建。按块增量编译是下一步的主要
+方向。
+
+### 轻量基线（`bench/perf.test.ts`）
+
+`gpio-blink`、1 MHz、20 ms 预热 + 500 ms 测量、11 引脚夹具（探针 + 驱动源）：
 
 | 指标                               | 读数                                                                     |
 | ---------------------------------- | ------------------------------------------------------------------------ |
-| `coldMs`（搭板 + 首次翻译 + 预热） | 约 0.9 s                                                                 |
-| `wallMs`（稳态 500 ms 仿真）       | 约 0.1 s                                                                 |
-| `slowdown`（墙钟 / 仿真时间）      | 约 0.2×                                                                  |
-| `jit`                              | `direct: true`；`cache: 20`（19 条指令块 + GPIOA 服务块），`programs: 1` |
+| `coldMs`（搭板 + 首次翻译 + 预热） | 约 0.5–0.7 s                                                             |
+| `wallMs`（稳态 500 ms 仿真）       | 约 3 ms                                                                  |
+| `slowdown`（墙钟 / 仿真时间）      | 约 0.01×                                                                 |
+| `jit`                              | `direct: true`；`cache: 12`（11 个指令块 + GPIOA 服务块），`programs: 1` |
 
-### 裸板多主频
+这个夹具的延时是 `subs; bne` 忙等循环，`delayLoops` 会把整圈折算成一次时间推进，所以它的
+墙钟/MIPS **不能**当作逐指令成本；`bench/measure.mjs` 的 BARE 行同理，只适合同口径对照。
 
-只有 MCU + 电源网络，100 ms 仿真，排除夹具的探针与驱动源开销。宿主为共享机器，同一份代码
-的读数在本机可相差 ±40%，下表给出多次运行的范围：
-
-| `clockFrequency` | `gpio-blink` slowdown | `gpio-blink` MIPS | `systick` slowdown | `systick` MIPS |
-| ---------------- | --------------------- | ----------------- | ------------------ | -------------- |
-| 1 MHz            | 0.16×                 | 6.3               | < 0.01×            | > 100          |
-| 16 MHz（默认）   | 1.6–2.4×              | 7–10              | 0.6×               | 26             |
-| 80 MHz           | 8–11×                 | 9–10              | 2.3–4.2×           | 19–34          |
-| 100 MHz          | 7.7–12×               | 11–13             | 2.8–3.3×           | 30–36          |
-| 170 MHz          | 13×                   | 13                | 4.5–7.8×           | 22–38          |
-
-`systick` 与 `gpio-blink` 处于同一量级：`SERVICE_TICK` 现在也走直接后端，只做计数与异常
-派发，路径比 GPIO 翻转短。两条固件的瓶颈都是「每条指令的固定成本」，因此降低实时倍率要
-看引擎的派发与块开销，而不是固件本身。
-
-`gpio-input` 是已知的慢用例（约 0.26 MIPS，两种后端都一样）：它在指令块里反复采样浮空引脚
-并等待电平，每个采样都要触发电气求解，属于器件电学模型的成本，不是 direct 后端的问题。
+`gpio-input` 是已知的慢用例：它在指令块里反复采样浮空引脚并等待电平，每个采样都要触发电气
+求解，属于器件电学模型的成本，与后端无关。
 
 ### 器件侧的做法
 
-指令块只保留「指令数据通路 + 累加耗时 + 一次粒度比较」，外设推进、异常派发与 GPIO 引脚
-意图全部搬进按需翻译的服务块（`SERVICE_TICK`、`SERVICE_GPIO + port`、`SERVICE_SYNC`）：
+指令块只保留「指令数据通路 + 累加耗时 + 一次服务判定」，外设推进、异常派发与 GPIO 引脚
+意图全部搬进按需翻译的服务块（`SERVICE_TICK`、`SERVICE_GPIO + port`、`SERVICE_SYNC`、
+`SERVICE_READ`、`SERVICE_WRITE`）：
 
+- **连续指令合成一个块**：`collectBatch` 从批首起收集最多 8 条顺序指令，发射进同一个块体，
+  块尾只 `elapse` 一次（时长为已执行指令的周期和）。三条收块规则：写 pc 的指令之后收块；
+  自旋 `b .` 与忙等循环头独占或收尾一个块（否则直接后端的轮次折算失效）；不在 IT 块中间收块。
+- **pc 守卫表达「已离开顺序路径」**：每条指令前把 `pc` 复位成它的顺序后继。分支/异常返回
+  写成目标、服务块接手写成服务 PC，两者都让下一条之前的守卫停掉批内剩余指令；`tick` 因此
+  可以继续把 `pc` 当作服务返回位置。
 - **节拍粒度按活跃外设取值**：`tickPs` 由 `refreshTick` 在会改变条件的寄存器写入处重算——
-  SysTick 使能时取它的周期，有发送活动时取 1 µs，两者同时活跃取较小值。两者都不活跃时
-  `tickActive` 为 false，指令块直接跳过服务，空闲固件完全不付这份成本。
+  SysTick 使能时取它的周期，有发送活动时取 1 µs，两者同时活跃取较小值；都不活跃时
+  `tickActive` 为 false，指令块直接跳过时间判定，空闲固件不付这份成本。
+- **服务判定归并成一个字**：`serviceMask` 的 bit0–bit3 对应 GPIO 写、IDR 读、外设写、引脚刷新，
+  bit4 是 `irqDirty && primask == 0` 的镜像；指令块每条指令从 9 次 state 读降到 3 次。单槽延迟
+  状态必须逐条取走，时间条件（`pendingPs >= tickPs`）则推到批尾。
+- **IT 守卫按需发射**：`decode` 给出 `endsBatch` 与 `itCount`，批处理静态跟踪 IT 掩码，只有
+  真正受 IT 控制的指令才读 `itState` 并发射条件选择链。
+- **延时环折算计入服务累加器**：声明的 `delayLoops` 带 `pending`，折算停在下一次服务边界并把
+  折叠掉的时间记进 `pendingPs`，否则 SysTick/USART 会因为跳过轮次而饿死。
 - **USART 字节发布延迟到服务块**：TDR 写入只锁存待发字节，发布统一发生在服务块，使通道
   发布与节拍边界对齐、指令块保持无 `send` 的均匀成本。直接后端已支持内联 `send`，这条
   仍保留是因为它让发布时机可预期，而不是后端限制。
-- **IT 块只在 `itState` 非零时求值**：指令体只发射一次（结果写进 local），条件码用
-  「bit0 取反 + bit3..1 选 8 个基条件」的选择链，而不是 14 路逐值比较。
 
-指令块因此只剩 150–200 个 IR 操作；`SERVICE_GPIO + port` 只在固件真的写某个端口时才翻译。
+热点指令块（`ldr`/`adds`/`str` 一类）因此只剩几十个 IR 操作；`SERVICE_GPIO + port` 只在固件
+真的写某个端口时才翻译。块结构与根因见 `docs/mcu-jit-block-inflation.md`，缺陷与限制见
+`docs/stm32g431rbt6-issues.md`。
 
-### 直接后端的派发成本
+### 直接后端的剩余成本
 
-早期版本把常量与分支标签都发射成闭包数组下标（`case C[0]:`、`S[i] = C[17]`），每条指令都要
-线性扫描块表，19 块器件上限约 11 MIPS。引擎侧已完成三项修复：
-
-- `case` 标签、`pc`/`nextPc`、时长与安全整数/布尔/字符串常量都按字面量发射，派发不再走
-  `C[]`；
-- 服务块结尾的 `elapse(0)` 也能进入直接后端（零时长不需要续点），因此 `SERVICE_TICK`、
-  `SERVICE_GPIO`、`SERVICE_SYNC` 不再退回解释路径；
-- 超过 8 条指令的直接程序按「局部槽预算」切成若干 `stepShardN` 函数，由轻量 `run` 派发：
-  单个函数保持在 V8 可优化的大小内，服务块这类巨型块单独成片。
-
-修复前后同机对照（`bench/measure.mjs`，100 MHz，进程 CPU 时间，取多次运行的低端值）：
-`gpio-blink` 约 5.1 → 11 MIPS，`systick` 约 2.8 → 30 MIPS。
-
-剩余成本分两类：一是冷启动，首次翻译与每次新增块的整程序重编译仍占大头（`coldMs` 约
-0.9 s，其中稳态仿真仅约 0.1 s）；二是服务块体量，`SERVICE_TICK` 展开后约 1300 个 SSA
-局部槽，只能靠分片隔离而不能靠指令级优化。按块增量编译（而不是整程序重建）是下一步的
-主要方向。
+- **冷启动**：首次翻译与整程序重建占大头。直接程序暴露它编译过的 PC 集合，翻译只增不改，
+  因此旧程序对已覆盖的 PC 继续有效；重建按 `max(步长, 已编译块数)` 摊薄，并对反复回退的 PC
+  提前触发。即便如此，411 个块仍要 25 次重建、近 1 s。
+- **服务块体量**：`SERVICE_WRITE` 展开后约 3,600 个 IR 操作、三个 GPIO 端口块的引脚意图
+  `select` 链各约 2,300 个，只能靠分片隔离。它们只影响首次翻译。
+- **板上只能有一个 JIT 设备**：`runDirect` 在 `board.jits.length !== 1` 时关闭，多 MCU 板会
+  静默退回解释器。
 
 ## 验证
 
@@ -94,14 +103,18 @@ pnpm run test             # mica build + vitest（源码用例 + 交付产物用
 pnpm run bench            # mica build + vitest --config vitest.perf.config.ts（性能基准）
 ```
 
-`pnpm run bench` 跑 `bench/perf.test.ts`（`gpio-blink`，1 MHz，500 ms 仿真），把一次
-`{device, firmware, clockFrequency, simMs, coldMs, wallMs, slowdown, jit}` 结果**追加**到
-`bench/results.jsonl`，并同时打印到标准输出。基准要求独占 CPU：每轮只跑一次、需要读数时
-连跑 3 次取最小值；`jit.direct` 应为 `true`、`programs` 为 1（`direct:false` + `programs:1`
-说明整程序被直接后端拒绝并写了否定缓存）。
+`pnpm run bench` 跑三个文件：`bench/perf.test.ts`（`gpio-blink`，1 MHz，500 ms 仿真，结果
+**追加**到 `bench/results.jsonl`）、`bench/hal-throughput.test.ts` 与 `bench/hal-precise.test.ts`
+（`HAL_06_LCD`，80 MHz，冷启动 + 稳态，只把 `HAL {...}` 打到标准输出）。基准要求独占 CPU：
+每轮只跑一次、需要读数时连跑 3 次取最小值；`jit.direct` 应为 `true`、`programs` 为 1
+（`direct:false` + `programs:1` 说明整程序被直接后端拒绝并写了否定缓存）。
 
-`bench/measure.mjs` 用**进程 CPU 时间**重跑同样的口径，并额外给出裸板多主频读数
-（BENCH / BARE 两类 JSON 行），受宿主负载影响小，适合与上面的表对照：
+两个 HAL 基准必须**分开进程**运行：器件的翻译缓存是模块级的，同进程里先跑完一种模式会把
+缓存焐热，另一种模式的冷启动读数就不可信了。
+
+`bench/measure.mjs` 用**进程 CPU 时间**重跑 `gpio-blink` 与 `systick` 的多主频读数
+（BENCH / BARE 两类 JSON 行）。注意这两条固件的延时都能被 `delayLoops` 折算，BARE 行只适合
+同口径对照，不代表逐指令成本。
 
 ```powershell
 node bench/measure.mjs

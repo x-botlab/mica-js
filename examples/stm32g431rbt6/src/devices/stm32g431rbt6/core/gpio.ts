@@ -1,6 +1,12 @@
 import { types } from '@mica-js/sdk/model';
 import type { IntentValue, Value } from '@mica-js/sdk/model';
 import {
+  DEFER_READ,
+  DEFER_READ_OFFSET,
+  DEFER_READ_PORT,
+  DEFER_READ_SIGNED,
+  DEFER_READ_SIZE,
+  DEFER_READ_TARGET,
   GPIO_BASE,
   GPIO_PIN_MASK,
   GPIO_POWERED,
@@ -8,6 +14,8 @@ import {
   GPIO_STATE_STRIDE,
   GPIO_SYNC,
   PERIPH,
+  SERVICE_DEFER_READ,
+  SERVICE_PIN_SYNC,
   gpioAfr0State,
   gpioAfr1State,
   gpioModerState,
@@ -16,8 +24,23 @@ import {
 } from './layout';
 import { PORTS, machine } from './machine';
 import type { AlternateDriver, PortPins } from './machine';
-import { asBody, boolAnd, boolBit, boolOr, num, readWord, readWordAt, u32, writeWord } from './ir';
+import {
+  asBody,
+  bool,
+  boolAnd,
+  boolBit,
+  boolOr,
+  markService,
+  maskWidth,
+  num,
+  readWord,
+  readWordAt,
+  signExtendDynamic,
+  u32,
+  writeWord,
+} from './ir';
 import type { Body } from './ir';
+import type { DeferRead } from './memory';
 
 /** GPIOA–GPIOF 的寄存器偏移。 */
 export const GPIO_MODER = 0x00;
@@ -297,6 +320,7 @@ function readRegister(
   portIndex: number,
   offset: Value<number>,
   size: number,
+  defer?: DeferRead,
 ): Value<number> {
   const port = PORTS[portIndex];
 
@@ -308,7 +332,23 @@ function readRegister(
   b.if(
     b.equal(types.number, wordOffset, num(b, GPIO_IDR)),
     (idr) => {
-      idr.setLocal(result, readIdr(asBody(idr), port));
+      if (defer === undefined) {
+        idr.setLocal(result, readIdr(asBody(idr), port));
+
+        return;
+      }
+
+      // 逐脚组包树只属于服务块：指令块只记下目标寄存器与访问形状，值稍后写回。
+      const scope = asBody(idr);
+
+      scope.writeState(DEFER_READ, bool(scope, true));
+      scope.writeState(DEFER_READ_PORT, num(scope, portIndex));
+      scope.writeState(DEFER_READ_OFFSET, offset);
+      scope.writeState(DEFER_READ_TARGET, num(scope, defer.target));
+      scope.writeState(DEFER_READ_SIZE, num(scope, size));
+      scope.writeState(DEFER_READ_SIGNED, bool(scope, defer.signed));
+      markService(scope, SERVICE_DEFER_READ);
+      idr.setLocal(result, num(scope, 0));
     },
     (other) => {
       const body = asBody(other);
@@ -451,6 +491,7 @@ function writeRegister(
       scope.bitOr(scope.readState(GPIO_SYNC, types.number), num(scope, 1 << portIndex)),
     );
     scope.writeState(GPIO_PIN_MASK, scope.getLocal(changed));
+    markService(scope, SERVICE_PIN_SYNC);
   });
 }
 
@@ -500,16 +541,62 @@ function selectPort(
   );
 }
 
-export function readGpio(b: Body, address: Value<number>, size: number): Value<number> {
+export function readGpio(
+  b: Body,
+  address: Value<number>,
+  size: number,
+  defer?: DeferRead,
+): Value<number> {
   const portValue = gpioPortIndex(b, address);
   const offset = b.bitAnd(b.subtract(address, num(b, GPIO_BASE)), num(b, 0x3ff));
   const result = b.local(types.number, 0);
 
   selectPort(b, portValue, 0, (body, port) => {
-    body.setLocal(result, readRegister(body, port, offset, size));
+    body.setLocal(result, readRegister(body, port, offset, size, defer));
   });
 
   return b.getLocal(result);
+}
+
+/**
+ * 服务块用：按延迟读记录拼出一次 IDR 访问。`port`、`offset`、`size` 与 `signed` 都是
+ * 运行期值，因此端口选择与宽度掩码在服务块里求值一次即可，与指令块数量无关。
+ */
+export function readIdrDeferred(
+  b: Body,
+  port: Value<number>,
+  offset: Value<number>,
+  size: Value<number>,
+  signed: Value<boolean>,
+): Value<number> {
+  const packed = b.local(types.number, 0);
+
+  selectPort(b, port, 0, (body, index) => {
+    const portPins = PORTS[index];
+
+    if (portPins !== undefined) body.setLocal(packed, readIdr(body, portPins));
+  });
+
+  // 与内联路径的 `extract` 一致：字访问忽略字节偏移，字节/半字按偏移右移。
+  const shift = b.select(
+    types.number,
+    b.equal(types.number, size, num(b, 4)),
+    (word) => num(asBody(word), 0),
+    (narrow) => {
+      const scope = asBody(narrow);
+
+      return scope.multiply(scope.bitAnd(offset, num(scope, 3)), num(scope, 8));
+    },
+  );
+  const width = b.multiply(size, num(b, 8));
+  const value = b.bitAnd(b.shiftRightUnsigned(b.getLocal(packed), shift), maskWidth(b, width));
+
+  return b.select(
+    types.number,
+    signed,
+    (inner) => signExtendDynamic(asBody(inner), value, width),
+    () => value,
+  );
 }
 
 /** 端口号：地址落在 GPIO 区间时取 `(address - GPIO_BASE) >> 10`。 */

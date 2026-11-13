@@ -53,10 +53,15 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   state pc: number = 0;
   /** 本块累加的指令耗时（皮秒）；越过一次节拍的量后交给 SysTick 与 USART。 */
   state pendingPs: number = 0;
-  /** 当前服务节拍粒度（ps）：空闲 64 µs，SysTick 周期或 USART 位时长更短时收紧。 */
-  state tickPs: number = 64000000;
+  /** 当前服务节拍粒度（ps）：空闲 1 s，SysTick 周期或 USART 位时长更短时收紧。 */
+  state tickPs: number = 1000000000000;
   /** 是否有需要按时间推进的外设；为 false 时指令块不必进服务块。 */
   state tickActive: bool = false;
+  /**
+   * 延迟请求位掩码（bit0=GPIO 写，bit1=IDR 读，bit2=外设写，bit3=引脚刷新）。
+   * 指令块每条指令只判这一次，而不是逐个读四个标志。
+   */
+  state serviceMask: number = 0;
   /** 服务块要返回的 PC（节拍点指令顺序执行后的位置）。 */
   state serviceResume: number = 0;
   /** 待刷新引脚意图的端口位掩码（bit0=GPIOA … bit4=GPIOF）。 */
@@ -70,6 +75,23 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   state gpioWriteAddr: number = 0;
   state gpioWriteValue: number = 0;
   state gpioWriteSize: number = 4;
+  /**
+   * 延迟到服务块执行的 GPIO IDR 读。IDR 需要逐脚读采样再拼字，全内联会让每条动态
+   * 地址访存都带上 5 个端口的组包树；这里只记下地址、目标寄存器与宽度。
+   */
+  state deferRead: bool = false;
+  state deferReadPort: number = 0;
+  state deferReadOffset: number = 0;
+  state deferReadTarget: number = 0;
+  state deferReadSize: number = 4;
+  state deferReadSigned: bool = false;
+  /**
+   * 延迟到服务块执行的非 GPIO 外设写。GPIO 写仍在块内登记，服务块随后立即取走。
+   */
+  state deferWrite: bool = false;
+  state deferWriteAddr: number = 0;
+  state deferWriteValue: number = 0;
+  state deferWriteSize: number = 4;
   /**
    * GPIO 配置寄存器影子（端口 0–4 × MODER/OTYPER/PUPDR/AFR0/AFR1）。引脚意图每根脚都要
    * 读这几个字，从字节内存取一次字要一次按宽度校验的加载；写寄存器时顺带同步影子，

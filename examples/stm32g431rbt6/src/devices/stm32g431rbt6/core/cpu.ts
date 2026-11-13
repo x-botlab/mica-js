@@ -15,6 +15,7 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { readMemory, writeMemory } from './memory';
+import type { At } from './memory';
 
 /** 读取通用寄存器；R15 返回当前指令地址 + 4（Thumb 约定）。 */
 export const readAnyReg = (b: Body, index: number, pc: number): Value<number> =>
@@ -26,6 +27,10 @@ export const writeAnyReg = (b: Body, index: number, value: Value<number>): void 
   else writeReg(b, index, value);
 };
 
+/**
+ * 装载一个寄存器。`defer` 只对单寄存器装载有效：命中 GPIO IDR 时由 `SERVICE_READ`
+ * 组包后写回，块内不再展开逐脚采样。多寄存器装载与写 PC 必须保持内联。
+ */
 export function loadRegister(
   b: Body,
   target: number,
@@ -33,8 +38,16 @@ export function loadRegister(
   size: number,
   pc: number,
   signed = false,
+  at?: At,
+  defer = false,
 ): void {
-  const raw = readMemory(b, address, size);
+  const raw = readMemory(
+    b,
+    address,
+    size,
+    at,
+    defer && target !== 15 ? { target, signed } : undefined,
+  );
   const value = signed ? signExtend(b, raw, size * 8) : raw;
 
   writeAnyReg(b, target, value);
@@ -46,8 +59,10 @@ export function storeRegister(
   address: Value<number>,
   size: number,
   pc: number,
+  at?: At,
+  defer = false,
 ): void {
-  writeMemory(b, address, size, readAnyReg(b, source, pc));
+  writeMemory(b, address, size, readAnyReg(b, source, pc), at, defer);
 }
 
 export const mul = (b: Body, left: Value<number>, right: Value<number>): Value<number> =>

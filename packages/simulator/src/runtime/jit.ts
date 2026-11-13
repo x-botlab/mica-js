@@ -17,6 +17,20 @@ import { bytesView, finite } from '../values';
 
 /** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
 const DIRECT_SHARD_SIZE = 8;
+/**
+ * Program size above which whole-program rebuilds are amortized instead of immediate.
+ *
+ * Translation only ever adds cache entries, so a compiled program stays valid for every PC it
+ * already contains; only a missing PC needs a rebuild. Rebuilding on every new block is
+ * quadratic, and that dominated warm-up on a real firmware image (411 blocks: 43 rebuilds and
+ * ~1.7 s before any simulated time). Small programs rebuild in milliseconds, so they keep the
+ * exact behaviour; only larger ones switch to a stride that grows with the program.
+ */
+const DIRECT_REBUILD_LINEAR_LIMIT = 16;
+/** Stride floor once a program exceeds `DIRECT_REBUILD_LINEAR_LIMIT`. */
+const DIRECT_REBUILD_MIN_BLOCKS = 64;
+/** A PC that keeps falling back buys an early rebuild instead of waiting out a full stride. */
+const DIRECT_REBUILD_PATIENCE = 512;
 
 /**
  * Deterministic direct-execution counters, kept on the `Jit` itself so `Board.jits` stays the
@@ -237,70 +251,133 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
       return false;
     refreshDirectGuards(jit, hookReads);
     if (jit.directSkip === pc) return false;
+    // A newer revision only adds cache entries: bodies of already compiled PCs never change,
+    // so the current program keeps running as long as it covers this PC. Rebuilds are
+    // amortized over a stride of new blocks, but a stride always catches up eventually:
+    // otherwise a PC that runs once would stay uncompiled and its neighbours would keep
+    // falling back on every visit.
     if (jit.directRevision !== jit.revision) {
-      if (jit.directProgramRevision !== jit.revision) {
-        jit.directPrograms.clear();
-        jit.directProgramRevision = jit.revision;
-      }
-      // Guards stay out of the key: blocks test the barriers at entry, so one program serves
-      // every observer set. Only the delay fold changes the emitted bodies within a revision,
-      // and `directProgramRevision` clears this cache whenever a block is translated.
-      const key = JSON.stringify([...jit.delays.keys()].sort((left, right) => left - right));
-      const cached = jit.directPrograms.get(key);
-      if (cached) {
-        jit.direct = cached;
-        jit.directRevision = jit.revision;
-      } else {
-        const stateNames = [...instance.states.keys()].filter((name) => {
-          const declaration = instance.declarations.get(name) as Decl<'state'>;
-          return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
-        });
-        const memoryNames = [...instance.memories.keys()];
-        const states = new Map(stateNames.map((name, index) => [name, index]));
-        const memories = new Map(memoryNames.map((name, index) => [name, index]));
-        const instructions = [...jit.cache.values()].filter(
-          (instruction) => !instruction.polling && !jit.polling.has(instruction.pc),
-        );
-        /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
-        const delayLoops = new Map<number, { counter: number; cycles: number }>();
-        for (const [pc, delay] of jit.delays) {
-          const counter = states.get(delay.counter);
-          if (counter !== undefined) delayLoops.set(pc, { counter, cycles: delay.cycles });
+      const compiled = jit.direct?.pcs.size ?? 0;
+      const stale = jit.revision - jit.directRevision;
+      const stride =
+        compiled < DIRECT_REBUILD_LINEAR_LIMIT ? 1 : Math.max(DIRECT_REBUILD_MIN_BLOCKS, compiled);
+      const covered = jit.direct?.pcs.has(pc) === true;
+      const rebuild =
+        jit.direct === undefined ||
+        stale >= stride ||
+        (!covered && jit.directMisses >= DIRECT_REBUILD_PATIENCE);
+
+      if (!rebuild) {
+        if (!covered) {
+          // The interpreter runs this instruction; the catch-up rebuild picks it up. It is
+          // still a direct attempt that fell back, so the counters keep describing "how many
+          // dispatches reached the compiled program" rather than where the decision was made.
+          const stats = directStats(jit);
+          stats.directCalls++;
+          stats.directFallbacks++;
+          jit.directMisses += 1;
+
+          return false;
         }
-        const program = compileDirectJit(instructions, {
-          states,
-          memories,
-          pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
-          host: true,
-          split: true,
-          shardSize: DIRECT_SHARD_SIZE,
-          delayLoops,
-        });
-        jit.directRevision = jit.revision;
-        if (program) directStats(jit).directCompiles++;
-        const barrier = directBarriers(jit);
-        barrier.stateIndex = states;
-        barrier.memoryIndex = memories;
-        barrier.stateMask.length = Math.ceil(stateNames.length / 32);
-        barrier.memoryMask.length = Math.ceil(memoryNames.length / 32);
-        syncDirectBarriers(jit);
-        jit.direct = program
-          ? {
-              program,
-              stateReads: program.readStates.map((name) => [name, states.get(name)!] as const),
-              stateWrites: program.writeStates.map((name) => [name, states.get(name)!] as const),
-              memoryWrites: program.writeMemories.map(
-                (name) => [name, memories.get(name)!] as const,
-              ),
-              revision: jit.revision,
-              frame: createDirectFrame(board, instance, stateNames, memoryNames, program, barrier),
+        // Covered: reuse the current program and fall through to the shared execution tail.
+      } else {
+        if (jit.directProgramRevision !== jit.revision) {
+          jit.directPrograms.clear();
+          jit.directProgramRevision = jit.revision;
+        }
+        // Guards stay out of the key: blocks test the barriers at entry, so one program serves
+        // every observer set. Only the delay fold changes the emitted bodies within a revision,
+        // and `directProgramRevision` clears this cache whenever a block is translated.
+        const key = JSON.stringify([...jit.delays.keys()].sort((left, right) => left - right));
+        const cached = jit.directPrograms.get(key);
+        if (cached) {
+          jit.direct = cached;
+          jit.directRevision = jit.revision;
+        } else {
+          const stateNames = [...instance.states.keys()].filter((name) => {
+            const declaration = instance.declarations.get(name) as Decl<'state'>;
+            return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
+          });
+          const memoryNames = [...instance.memories.keys()];
+          const states = new Map(stateNames.map((name, index) => [name, index]));
+          const memories = new Map(memoryNames.map((name, index) => [name, index]));
+          const instructions = [...jit.cache.values()].filter(
+            (instruction) => !instruction.polling && !jit.polling.has(instruction.pc),
+          );
+          /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
+          const delayLoops = new Map<
+            number,
+            {
+              counter: number;
+              cycles: number;
+              pending?: { state: number; period: number; active: number };
             }
-          : undefined;
-        // A declined program must not be cached, or the key would keep answering `undefined`.
-        if (!jit.direct) jit.directPrograms.delete(key);
-        // The key no longer carries the guard set, so one program covers every observer set:
-        // the eight-slot cap (and its eviction churn) has nothing left to bound.
-        else jit.directPrograms.set(key, jit.direct);
+          >();
+          for (const [headPc, delay] of jit.delays) {
+            const counter = states.get(delay.counter);
+            if (counter === undefined) continue;
+            const pending =
+              delay.pending === undefined
+                ? undefined
+                : {
+                    state: states.get(delay.pending.state),
+                    period: states.get(delay.pending.period),
+                    active: states.get(delay.pending.active),
+                  };
+            delayLoops.set(
+              headPc,
+              pending !== undefined &&
+                pending.state !== undefined &&
+                pending.period !== undefined &&
+                pending.active !== undefined
+                ? { counter, cycles: delay.cycles, pending: pending as never }
+                : { counter, cycles: delay.cycles },
+            );
+          }
+          const program = compileDirectJit(instructions, {
+            states,
+            memories,
+            pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
+            host: true,
+            split: true,
+            shardSize: DIRECT_SHARD_SIZE,
+            delayLoops,
+          });
+          jit.directRevision = jit.revision;
+          jit.directMisses = 0;
+          if (program) directStats(jit).directCompiles++;
+          const barrier = directBarriers(jit);
+          barrier.stateIndex = states;
+          barrier.memoryIndex = memories;
+          barrier.stateMask.length = Math.ceil(stateNames.length / 32);
+          barrier.memoryMask.length = Math.ceil(memoryNames.length / 32);
+          syncDirectBarriers(jit);
+          jit.direct = program
+            ? {
+                program,
+                pcs: new Set(program.pcs),
+                stateReads: program.readStates.map((name) => [name, states.get(name)!] as const),
+                stateWrites: program.writeStates.map((name) => [name, states.get(name)!] as const),
+                memoryWrites: program.writeMemories.map(
+                  (name) => [name, memories.get(name)!] as const,
+                ),
+                revision: jit.revision,
+                frame: createDirectFrame(
+                  board,
+                  instance,
+                  stateNames,
+                  memoryNames,
+                  program,
+                  barrier,
+                ),
+              }
+            : undefined;
+          // A declined program must not be cached, or the key would keep answering `undefined`.
+          if (!jit.direct) jit.directPrograms.delete(key);
+          // The key no longer carries the guard set, so one program covers every observer set:
+          // the eight-slot cap (and its eviction churn) has nothing left to bound.
+          else jit.directPrograms.set(key, jit.direct);
+        }
       }
     }
     if (!jit.direct) return false;

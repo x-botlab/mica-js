@@ -14,6 +14,7 @@ import {
   signExtend,
   signIsSet,
   subtractWithCarry,
+  syncIrqService,
   u32,
   u8,
   writeNz,
@@ -23,6 +24,7 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { conditional, loadRegister, readAnyReg, storeRegister, writeAnyReg } from './cpu';
+import { atCode, atSram } from './memory';
 import { exceptionReturn, isExceptionReturn } from './nvic';
 
 export interface Instruction16 {
@@ -307,7 +309,7 @@ function emit16(b: Body, pc: number, instr: number): void {
     const rt = (instr >> 8) & 7;
     const address = (pc + 4 + ((instr & 0xff) << 2)) >>> 0;
 
-    loadRegister(b, rt, num(b, address & ~3), 4, pc);
+    loadRegister(b, rt, num(b, address & ~3), 4, pc, false, atCode(address & ~3 & 0x1ffff));
 
     return;
   }
@@ -322,28 +324,28 @@ function emit16(b: Body, pc: number, instr: number): void {
 
     switch (op) {
       case 0:
-        storeRegister(b, rt, address, 4, pc);
+        storeRegister(b, rt, address, 4, pc, undefined, true);
         break;
       case 1:
-        storeRegister(b, rt, address, 2, pc);
+        storeRegister(b, rt, address, 2, pc, undefined, true);
         break;
       case 2:
-        storeRegister(b, rt, address, 1, pc);
+        storeRegister(b, rt, address, 1, pc, undefined, true);
         break;
       case 3:
-        loadRegister(b, rt, address, 1, pc, true);
+        loadRegister(b, rt, address, 1, pc, true, undefined, true);
         break;
       case 4:
-        loadRegister(b, rt, address, 4, pc);
+        loadRegister(b, rt, address, 4, pc, false, undefined, true);
         break;
       case 5:
-        loadRegister(b, rt, address, 2, pc);
+        loadRegister(b, rt, address, 2, pc, false, undefined, true);
         break;
       case 6:
-        loadRegister(b, rt, address, 1, pc);
+        loadRegister(b, rt, address, 1, pc, false, undefined, true);
         break;
       default:
-        loadRegister(b, rt, address, 2, pc, true);
+        loadRegister(b, rt, address, 2, pc, true, undefined, true);
     }
 
     return;
@@ -359,8 +361,8 @@ function emit16(b: Body, pc: number, instr: number): void {
     const size = kind === 6 ? 4 : kind === 7 ? 1 : 2;
     const address = b.add(readReg(b, rn), num(b, imm * size));
 
-    if (load) loadRegister(b, rt, address, size, pc);
-    else storeRegister(b, rt, address, size, pc);
+    if (load) loadRegister(b, rt, address, size, pc, false, undefined, true);
+    else storeRegister(b, rt, address, size, pc, undefined, true);
 
     return;
   }
@@ -371,8 +373,8 @@ function emit16(b: Body, pc: number, instr: number): void {
     const rt = (instr >> 8) & 7;
     const address = b.add(readSp(b), num(b, (instr & 0xff) << 2));
 
-    if (load) loadRegister(b, rt, address, 4, pc);
-    else storeRegister(b, rt, address, 4, pc);
+    if (load) loadRegister(b, rt, address, 4, pc, false, atSram());
+    else storeRegister(b, rt, address, 4, pc, atSram());
 
     return;
   }
@@ -409,8 +411,9 @@ function emit16(b: Body, pc: number, instr: number): void {
     const base = readAnyReg(b, rn, pc);
 
     if (load) {
+      // LDM 的地址逐字递增，最多只有一个寄存器会命中 IDR，因此延迟读可以共用同一槽位。
       registers.forEach((register, offset) =>
-        loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc),
+        loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, false, undefined, true),
       );
       if (!registers.includes(rn)) writeReg(b, rn, b.add(base, num(b, registers.length * 4)));
     } else {
@@ -533,7 +536,7 @@ function emitMisc16(b: Body, pc: number, instr: number): void {
     const base = b.subtract(readSp(b), num(b, size));
 
     registers.forEach((register, offset) =>
-      storeRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc),
+      storeRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, atSram()),
     );
     writeSp(b, base);
 
@@ -551,8 +554,9 @@ function emitMisc16(b: Body, pc: number, instr: number): void {
     const base = readSp(b);
 
     registers.forEach((register, offset) => {
-      if (register === 15) loadRegister(b, 15, b.add(base, num(b, offset * 4)), 4, pc);
-      else loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc);
+      if (register === 15)
+        loadRegister(b, 15, b.add(base, num(b, offset * 4)), 4, pc, false, atSram());
+      else loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, false, atSram());
     });
     writeSp(b, b.add(base, num(b, registers.length * 4)));
 
@@ -561,12 +565,14 @@ function emitMisc16(b: Body, pc: number, instr: number): void {
 
   if ((instr & 0xfff7) === 0xb662) {
     b.writeState('primask', num(b, 0));
+    syncIrqService(b);
 
     return;
   }
 
   if ((instr & 0xfff7) === 0xb672) {
     b.writeState('primask', num(b, 1));
+    syncIrqService(b);
 
     return;
   }

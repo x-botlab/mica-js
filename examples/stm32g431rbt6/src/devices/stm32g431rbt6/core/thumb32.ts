@@ -19,6 +19,7 @@ import {
   signIsSet,
   subRaw,
   subtractWithCarry,
+  syncIrqService,
   u32,
   writeLr,
   writeNz,
@@ -28,7 +29,7 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { conditional, loadRegister, readAnyReg, storeRegister, writeAnyReg } from './cpu';
-import { readMemory } from './memory';
+import { atCode, atSram, readMemory } from './memory';
 import { halt } from './thumb16';
 
 /** 32 位 Thumb-2 指令的子集；未覆盖的编码在 `decode32` 中报告故障。 */
@@ -536,9 +537,12 @@ function loadStoreImmediate(b: Body, pc: number, h1: number, h2: number): void {
   const size = kind === 0xf890 || kind === 0xf880 ? 1 : kind === 0xf8b0 || kind === 0xf8a0 ? 2 : 4;
   const address =
     rn === 15 ? num(b, (((pc + 4) & ~3) + imm12) >>> 0) : b.add(readReg(b, rn), num(b, imm12));
+  // PC 相对只可能取 `code`；SP 相对只可能落在 SRAM。其余寄存器动态地址走完整分派。
+  const at =
+    rn === 15 ? atCode((((pc + 4) & ~3) + imm12) & 0x1ffff) : rn === 13 ? atSram() : undefined;
 
-  if (load) loadRegister(b, rt, address, size, pc);
-  else storeRegister(b, rt, address, size, pc);
+  if (load) loadRegister(b, rt, address, size, pc, false, at, rn !== 15 && rn !== 13);
+  else storeRegister(b, rt, address, size, pc, at, rn !== 15 && rn !== 13);
 }
 
 function loadStoreSigned(b: Body, pc: number, h1: number, h2: number): void {
@@ -548,8 +552,10 @@ function loadStoreSigned(b: Body, pc: number, h1: number, h2: number): void {
   const size = (h1 & 0xfff0) === 0xf990 ? 1 : 2;
   const address =
     rn === 15 ? num(b, (((pc + 4) & ~3) + imm12) >>> 0) : b.add(readReg(b, rn), num(b, imm12));
+  const at =
+    rn === 15 ? atCode((((pc + 4) & ~3) + imm12) & 0x1ffff) : rn === 13 ? atSram() : undefined;
 
-  loadRegister(b, rt, address, size, pc, true);
+  loadRegister(b, rt, address, size, pc, true, at, rn !== 15 && rn !== 13);
 }
 
 function loadStoreRegister(b: Body, pc: number, h1: number, h2: number): void {
@@ -561,9 +567,11 @@ function loadStoreRegister(b: Body, pc: number, h1: number, h2: number): void {
   const address = b.add(readAnyReg(b, rn, pc), b.shiftLeft(readAnyReg(b, rm, pc), num(b, shift)));
   const load = kind === 0xf850 || kind === 0xf810 || kind === 0xf830;
   const size = kind === 0xf810 || kind === 0xf800 ? 1 : kind === 0xf830 || kind === 0xf820 ? 2 : 4;
+  // `ldr.w rd, [sp, rm]` 落在 SRAM；`ldr.w rd, [pc, rm]` 落在 `code`。
+  const at = rn === 13 ? atSram() : rn === 15 ? atCode() : undefined;
 
-  if (load) loadRegister(b, rt, address, size, pc);
-  else storeRegister(b, rt, address, size, pc);
+  if (load) loadRegister(b, rt, address, size, pc, false, at, rn !== 13 && rn !== 15);
+  else storeRegister(b, rt, address, size, pc, at, rn !== 13 && rn !== 15);
 }
 
 function pushPopWide(b: Body, pc: number, h1: number, h2: number): void {
@@ -576,14 +584,14 @@ function pushPopWide(b: Body, pc: number, h1: number, h2: number): void {
     const base = b.subtract(readSp(b), num(b, registers.length * 4));
 
     registers.forEach((register, offset) =>
-      storeRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc),
+      storeRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, atSram()),
     );
     writeSp(b, base);
   } else {
     const base = readSp(b);
 
     registers.forEach((register, offset) =>
-      loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc),
+      loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, false, atSram()),
     );
     writeSp(b, b.add(base, num(b, registers.length * 4)));
   }
@@ -600,12 +608,14 @@ function loadStoreMultiple(b: Body, pc: number, h1: number, h2: number): void {
 
   for (let index = 0; index < 16; index += 1) if (list & (1 << index)) registers.push(index);
   const base = readAnyReg(b, rn, pc);
+  // `ldmia sp!` 一类落在 SRAM；`ldm pc` 取 `code`。
+  const at = rn === 13 ? atSram() : rn === 15 ? atCode() : undefined;
 
   registers.forEach((register, offset) => {
     const address = b.add(base, num(b, offset * 4));
 
-    if (load) loadRegister(b, register, address, 4, pc);
-    else storeRegister(b, register, address, 4, pc);
+    if (load) loadRegister(b, register, address, 4, pc, false, at, true);
+    else storeRegister(b, register, address, 4, pc, at);
   });
 
   if (writeBack && !(load && registers.includes(rn)))
@@ -624,13 +634,14 @@ function dualLoadStore(b: Body, pc: number, h1: number, h2: number): void {
   const base = readAnyReg(b, rn, pc);
   const address = add ? b.add(base, num(b, offset)) : b.subtract(base, num(b, offset));
   const second = b.add(address, num(b, 4));
+  const at = rn === 13 ? atSram() : undefined;
 
   if (load) {
-    loadRegister(b, rt, address, 4, pc);
-    loadRegister(b, rt2, second, 4, pc);
+    loadRegister(b, rt, address, 4, pc, false, at, true);
+    loadRegister(b, rt2, second, 4, pc, false, at, true);
   } else {
-    storeRegister(b, rt, address, 4, pc);
-    storeRegister(b, rt2, second, 4, pc);
+    storeRegister(b, rt, address, 4, pc, at);
+    storeRegister(b, rt2, second, 4, pc, at);
   }
   if (writeBack) writeAnyReg(b, rn, address);
 }
@@ -640,7 +651,8 @@ function tableBranch(b: Body, pc: number, h1: number, h2: number): void {
   const rm = h2 & 0xf;
   const half = (h2 & 0x10) !== 0;
   const indexAddress = b.add(readReg(b, rn), readAnyReg(b, rm, pc));
-  const raw = readMemory(b, indexAddress, half ? 2 : 1);
+  // `tbb [pc, rm]` 的跳转表在 `code`。
+  const raw = readMemory(b, indexAddress, half ? 2 : 1, rn === 15 ? atCode() : undefined);
   const target = b.add(num(b, (pc + 4) >>> 0), b.shiftLeft(raw, num(b, 1)));
 
   setPc(b, target);
@@ -650,13 +662,14 @@ function exclusiveAccess(b: Body, pc: number, h1: number, h2: number): void {
   const rn = h1 & 0xf;
   const rt = (h2 >> 12) & 0xf;
   const address = b.add(readReg(b, rn), num(b, (h2 & 0xff) << 2));
+  const at = rn === 13 ? atSram() : undefined;
 
   if ((h1 & 0xfff0) === 0xe850) {
-    loadRegister(b, rt, address, 4, pc);
+    loadRegister(b, rt, address, 4, pc, false, at, rn !== 13);
   } else {
     const rd = (h2 >> 8) & 0xf;
 
-    storeRegister(b, rt, address, 4, pc);
+    storeRegister(b, rt, address, 4, pc, at, rn !== 13);
     writeReg(b, rd, num(b, 0));
   }
 }
@@ -799,5 +812,6 @@ function moveToSpecial(b: Body, h2: number): void {
 
   if (sysm === 16) {
     b.writeState('primask', b.bitAnd(readReg(b, rn), num(b, 1)));
+    syncIrqService(b);
   }
 }

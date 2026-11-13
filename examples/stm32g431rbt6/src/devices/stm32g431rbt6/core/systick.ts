@@ -2,6 +2,7 @@ import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
 import {
   IRQ_DIRTY,
+  SERVICE_IRQ,
   SYSTICK_COUNT,
   SYSTICK_CTRL,
   SYSTICK_LOAD,
@@ -9,7 +10,7 @@ import {
   SYSTICK_PENDING,
   SYSTICK_VAL,
 } from './layout';
-import { asBody, bool, boolBitAt, num, u32 } from './ir';
+import { asBody, bool, boolBitAt, markService, num, u32 } from './ir';
 import type { Body } from './ir';
 import { machine } from './machine';
 import { refreshTick } from './tick';
@@ -139,6 +140,7 @@ export function writeSystick(
             store(body2, CTRL, merged);
             body2.writeState(SYSTICK_ON, boolBitAt(body2, merged, 0));
             body2.writeState(IRQ_DIRTY, bool(body2, true));
+            markService(body2, SERVICE_IRQ);
             // 使能状态变化会改变可用的服务节拍粒度。
             refreshTick(body2);
           });
@@ -185,6 +187,7 @@ export function advanceSystick(b: Body, elapsedPs: Value<number>): void {
 
           body2.writeState(SYSTICK_PENDING, num(body2, 1));
           body2.writeState(IRQ_DIRTY, bool(body2, true));
+          markService(body2, SERVICE_IRQ);
         });
       },
       (normal) => {

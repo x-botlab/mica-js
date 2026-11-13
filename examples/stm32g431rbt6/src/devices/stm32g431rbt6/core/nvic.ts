@@ -13,6 +13,7 @@ import {
   NVIC_STATE,
   SCB_BASE,
   SCB_STATE,
+  SERVICE_IRQ,
   SRAM,
   SRAM_BASE,
   SRAM_SIZE,
@@ -24,6 +25,7 @@ import {
   bool,
   boolAnd,
   boolOr,
+  markService,
   num,
   readApsr,
   readLr,
@@ -142,6 +144,7 @@ export function writeNvic(
 
       store(body, ISER, body.bitOr(load(body, ISER), u32(body, value)));
       body.writeState(IRQ_DIRTY, bool(body, true));
+      markService(body, SERVICE_IRQ);
     },
     (other) => {
       const body = asBody(other);
@@ -153,6 +156,7 @@ export function writeNvic(
 
           store(scope, ISER, scope.bitAnd(load(scope, ISER), scope.bitNot(u32(scope, value))));
           scope.writeState(IRQ_DIRTY, bool(scope, true));
+          markService(scope, SERVICE_IRQ);
         },
         (next) => {
           const scope = asBody(next);
@@ -164,6 +168,7 @@ export function writeNvic(
 
               store(body2, ISPR, body2.bitOr(load(body2, ISPR), u32(body2, value)));
               body2.writeState(IRQ_DIRTY, bool(body2, true));
+              markService(body2, SERVICE_IRQ);
             },
             (after) => {
               const scope2 = asBody(after);
@@ -512,6 +517,7 @@ export function dispatchExceptions(b: Body, returnPc: number | Value<number>): V
 
         enterException(scope, scope.getLocal(exception), returnPc);
         scope.writeState(IRQ_DIRTY, bool(scope, true));
+        markService(scope, SERVICE_IRQ);
       });
     },
   );

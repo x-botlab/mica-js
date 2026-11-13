@@ -128,10 +128,26 @@ export interface DirectJitBinding {
   /** Summed slot count above which `split` emits shards; defaults to 2048. */
   readonly shardSlotLimit?: number;
   /**
-   * PC → `{ counter slot, ps per round }` of a declared busy-wait loop head. The emitted
-   * body collapses every round the deadline allows before executing the real iteration.
+   * PC → `{ counter slot, ps per round, optional service accumulator }` of a declared
+   * busy-wait loop head. The emitted body collapses every round the deadline allows before
+   * executing the real iteration.
+   *
+   * A device whose paced peripherals are driven by an accumulator (SysTick, UART bit clocks)
+   * supplies `pending`: the fold then stops at the next service boundary and adds the folded
+   * time to the accumulator, so skipping rounds cannot starve those peripherals.
    */
-  readonly delayLoops?: ReadonlyMap<number, { readonly counter: number; readonly cycles: number }>;
+  readonly delayLoops?: ReadonlyMap<
+    number,
+    {
+      readonly counter: number;
+      readonly cycles: number;
+      readonly pending?: {
+        readonly state: number;
+        readonly period: number;
+        readonly active: number;
+      };
+    }
+  >;
 }
 
 /**
@@ -174,6 +190,8 @@ export type DirectJitReason = 'deadline' | 'fallback' | 'stopped' | 'invalidated
 export interface DirectJitProgram {
   /** At time === deadline neither an instruction nor its suffix executes. */
   run(frame: DirectJitFrame, deadline: number): DirectJitReason;
+  /** PCs this program compiled, and therefore can execute without the interpreter. */
+  readonly pcs: readonly number[];
   readonly localCount: number;
   readonly readStates: readonly string[];
   readonly writeStates: readonly string[];

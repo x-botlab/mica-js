@@ -15,6 +15,7 @@ export type {
   JitOptions,
   JitTranslate,
   JitTranslateInput,
+  JitDelay,
   InstructionHook,
   Disposable,
   Event,

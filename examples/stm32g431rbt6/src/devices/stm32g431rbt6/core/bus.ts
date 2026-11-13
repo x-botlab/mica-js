@@ -1,6 +1,10 @@
 import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
 import {
+  DEFER_WRITE,
+  DEFER_WRITE_ADDR,
+  DEFER_WRITE_SIZE,
+  DEFER_WRITE_VALUE,
   FLASH_BASE_REGISTER,
   GPIO_BASE,
   GPIO_WRITE,
@@ -12,13 +16,16 @@ import {
   PERIPH,
   PWR_BASE,
   RCC_BASE,
+  SERVICE_DEFER_WRITE,
+  SERVICE_GPIO_WRITE,
   USART1_BASE,
   USART2_BASE,
   USART3_BASE,
 } from './layout';
-import { asBody, num, readWord, u32, writeWord } from './ir';
+import { asBody, bool, markService, num, readWord, u32, writeWord } from './ir';
 import type { Body } from './ir';
 import { gpioPortOf, readGpio } from './gpio';
+import type { DeferRead } from './memory';
 import { readPwr } from './pwr';
 import { readRcc, writeRcc } from './rcc';
 import { USARTS, readUsart, writeUsart } from './usart';
@@ -99,7 +106,12 @@ function merge(
   return u32(b, b.bitOr(b.bitAnd(current, b.bitNot(mask)), placed));
 }
 
-export function readPeripheral(b: Body, address: Value<number>, size: number): Value<number> {
+export function readPeripheral(
+  b: Body,
+  address: Value<number>,
+  size: number,
+  defer?: DeferRead,
+): Value<number> {
   const result = b.local(types.number, 0);
 
   b.if(
@@ -115,7 +127,7 @@ export function readPeripheral(b: Body, address: Value<number>, size: number): V
       body.if(
         inRegion(body, address, GPIO_BASE, 0x2000),
         (gpio) => {
-          gpio.setLocal(result, readGpio(asBody(gpio), address, size));
+          gpio.setLocal(result, readGpio(asBody(gpio), address, size, defer));
         },
         (rest) => {
           const inner = asBody(rest);
@@ -245,7 +257,40 @@ export function writePeripheral(
   address: Value<number>,
   size: number,
   value: Value<number>,
+  defer = false,
 ): void {
+  if (defer) {
+    // GPIO 写必须立即登记：同一块的 tick 要把 PC 转给该端口的服务块。其余外设
+    // 寄存器的读改写链只在服务块里展开一次，块内只登记地址、宽度与值。
+    b.if(
+      inRegion(b, address, GPIO_BASE, 0x2000),
+      (gpio) => {
+        const scope = asBody(gpio);
+
+        scope.if(scope.lessThan(gpioPortOf(scope, address), num(scope, 5)), (hit) => {
+          const inner = asBody(hit);
+
+          inner.writeState(GPIO_WRITE_ADDR, u32(inner, address));
+          inner.writeState(GPIO_WRITE_VALUE, u32(inner, value));
+          inner.writeState(GPIO_WRITE_SIZE, num(inner, size));
+          inner.writeState(GPIO_WRITE, num(inner, 1));
+          markService(inner, SERVICE_GPIO_WRITE);
+        });
+      },
+      (other) => {
+        const scope = asBody(other);
+
+        scope.writeState(DEFER_WRITE, bool(scope, true));
+        scope.writeState(DEFER_WRITE_ADDR, u32(scope, address));
+        scope.writeState(DEFER_WRITE_VALUE, u32(scope, value));
+        scope.writeState(DEFER_WRITE_SIZE, num(scope, size));
+        markService(scope, SERVICE_DEFER_WRITE);
+      },
+    );
+
+    return;
+  }
+
   b.if(
     inRegion(b, address, RCC_BASE, 0x400),
     (rcc) => {
@@ -270,6 +315,7 @@ export function writePeripheral(
             inner.writeState(GPIO_WRITE_VALUE, u32(inner, value));
             inner.writeState(GPIO_WRITE_SIZE, num(inner, size));
             inner.writeState(GPIO_WRITE, num(inner, 1));
+            markService(inner, SERVICE_GPIO_WRITE);
           });
         },
         (rest) => {

@@ -294,6 +294,10 @@ export function compileDirectJit(
     Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
   const program = {
     run: factory(Object.freeze(constants), helpers),
+    // Every PC this program can dispatch. The runtime keeps executing an older program
+    // while it still contains the current PC: translation only ever adds cache entries, so
+    // existing bodies never change and only the missing PCs justify a rebuild.
+    pcs: Object.freeze(entries.map((entry) => entry.pcValue)),
     localCount,
     readStates: names('readStates'),
     writeStates: names('writeStates'),
@@ -698,21 +702,43 @@ class Instruction {
     this.readStates.add(this.binding.pc.name);
     this.state(this.binding.pc.name, true);
     const delay = this.binding.delayLoops?.get(instruction.pc);
-    if (delay !== undefined && validIndex(delay.counter) && validIndex(delay.cycles))
+    if (delay !== undefined && validIndex(delay.counter) && validIndex(delay.cycles)) {
+      const pending = delay.pending;
+      const paced =
+        pending !== undefined &&
+        validIndex(pending.state) &&
+        validIndex(pending.period) &&
+        validIndex(pending.active)
+          ? pending
+          : undefined;
+
       this.guard.push(
         `if (S[${delay.counter}] > 1) {`,
         // Fold only the rounds that end before the horizon: the deadline split stays exact,
         // and a short horizon still makes progress instead of failing to skip at all.
-        `const rounds = Math.min(S[${delay.counter}] - 1, Math.floor((deadline - F.time) / ${delay.cycles}));`,
+        `let rounds = Math.min(S[${delay.counter}] - 1, Math.floor((deadline - F.time) / ${delay.cycles}));`,
+      );
+      if (paced !== undefined)
+        this.guard.push(
+          // A paced device consumes time through its service accumulator; stop on the first
+          // round that reaches the next service boundary, so the following dispatch still
+          // advances SysTick / the UART bit clock by exactly the folded time.
+          `if (S[${paced.active}]) rounds = Math.min(rounds, Math.floor(Math.max(0, S[${paced.period}] - S[${paced.state}]) / ${delay.cycles}) + 1);`,
+        );
+      this.guard.push(
         'if (rounds > 0) {',
         `F.time += rounds * ${delay.cycles};`,
         'if (F.time > 7200000000000000) throw new RangeError("Time out of range");',
         `S[${delay.counter}] = S[${delay.counter}] - rounds;`,
         dirty('SD', delay.counter),
+        ...(paced !== undefined
+          ? [`S[${paced.state}] += rounds * ${delay.cycles};`, dirty('SD', paced.state)]
+          : []),
         '}',
         'if (F.time >= deadline) { F.time = deadline; return "deadline"; }',
         '}',
       );
+    }
     let output = this.prefix;
     let terminal = false;
     for (const operation of instruction.body.operations) {

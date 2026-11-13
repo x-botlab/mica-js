@@ -1,6 +1,18 @@
 import { types } from '@mica-js/sdk/model';
 import type { JitInstructionBuilder, Value } from '@mica-js/sdk/model';
-import { APSR_C, APSR_N, APSR_T, APSR_V, APSR_Z, LR_STATE, SP_STATE, regState } from './layout';
+import {
+  APSR_C,
+  APSR_N,
+  APSR_T,
+  APSR_V,
+  APSR_Z,
+  IRQ_DIRTY,
+  LR_STATE,
+  SERVICE_IRQ,
+  SERVICE_MASK,
+  SP_STATE,
+  regState,
+} from './layout';
 
 export type Body = JitInstructionBuilder;
 
@@ -113,6 +125,44 @@ export const writeHalf = (
 
 export const readReg = (b: Body, index: number): Value<number> =>
   b.readState(regState(index), types.number);
+
+/**
+ * 标记「这条指令需要服务块」，同时也保存对应的真实标志。
+ *
+ * 指令块每条指令都要判断要不要进服务块；把所有可能的触发条件归并到一个字以后，判断
+ * 从九次 state 读降到三次（`serviceMask`、`tickPs`、`tickActive`）。真实标志仍然保
+ * 留，因为服务块需要区分具体是哪一类请求、各自要清哪个位。幂等：重复标记只会多派
+ * 发一次服务，不会漏服务。
+ */
+export function markService(b: Body, bit: number): void {
+  b.writeState(SERVICE_MASK, b.bitOr(b.readState(SERVICE_MASK, types.number), num(b, bit)));
+}
+
+/** 服务块清对应标志时同时清掩码位，避免陈旧位反复派发空服务。 */
+export function clearService(b: Body, bit: number): void {
+  b.writeState(SERVICE_MASK, b.bitAnd(b.readState(SERVICE_MASK, types.number), num(b, ~bit)));
+}
+
+/**
+ * 中断待扫描位的镜像同步：`irqDirty && primask == 0` 时才置位。
+ *
+ * `irqDirty` 与 `primask` 都可以被单独改写，因此两个写入点都要调用一次（`primask`
+ * 的 `cpsid/cpsie/msr` 与 `SERVICE_TICK` 的尾部）。这样指令块的快路径只需要读一次
+ * `serviceMask`，不必每指令再判一次屏蔽与中断标志。
+ */
+export function syncIrqService(b: Body): void {
+  const ready = boolAnd(
+    b,
+    b.readState(IRQ_DIRTY, types.bool),
+    b.equal(types.number, b.readState('primask', types.number), num(b, 0)),
+  );
+
+  b.if(
+    ready,
+    (set) => markService(asBody(set), SERVICE_IRQ),
+    (clear) => clearService(asBody(clear), SERVICE_IRQ),
+  );
+}
 
 export const writeReg = (b: Body, index: number, value: Value<number>): void => {
   b.writeState(regState(index), u32(b, value));

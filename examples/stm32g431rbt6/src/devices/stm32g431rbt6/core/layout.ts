@@ -62,15 +62,55 @@ export const GPIO_SYNC = 'gpioSync';
 export const GPIO_PIN_MASK = 'gpioPinMask';
 /** 上一次同步时的供电状态：变化时整端口重新生成意图。 */
 export const GPIO_POWERED = 'gpioPowered';
-/** 延迟到服务块执行的 GPIO 写：地址、值、宽度与「有写待执行」标志。 */
+/** 延迟到服务块执行的 GPIO 写。 */
 export const GPIO_WRITE = 'gpioWrite';
 export const GPIO_WRITE_ADDR = 'gpioWriteAddr';
 export const GPIO_WRITE_VALUE = 'gpioWriteValue';
 export const GPIO_WRITE_SIZE = 'gpioWriteSize';
+/**
+ * 延迟到服务块执行的 GPIO IDR 读。IDR 要逐脚读采样再拼字，5 个端口全内联会让每条
+ * 动态地址访存都背上整棵组包树；寄存器号、地址与宽度先记在这里，由 `SERVICE_READ`
+ * 组包后写回。
+ */
+export const DEFER_READ = 'deferRead';
+export const DEFER_READ_PORT = 'deferReadPort';
+export const DEFER_READ_OFFSET = 'deferReadOffset';
+export const DEFER_READ_TARGET = 'deferReadTarget';
+export const DEFER_READ_SIZE = 'deferReadSize';
+export const DEFER_READ_SIGNED = 'deferReadSigned';
+/**
+ * 延迟到服务块执行的非 GPIO 外设写。GPIO 写仍然在块内登记，因为服务块要在同一块之后
+ * 立即取走它；其余外设寄存器的读改写链很宽，适合统一放到 `SERVICE_WRITE`。
+ */
+export const DEFER_WRITE = 'deferWrite';
+export const DEFER_WRITE_ADDR = 'deferWriteAddr';
+export const DEFER_WRITE_VALUE = 'deferWriteValue';
+export const DEFER_WRITE_SIZE = 'deferWriteSize';
 /** 可能已具备中断条件；只在为 true 的块里扫描异常。 */
 export const IRQ_DIRTY = 'irqDirty';
 /** SysTick CTRL.ENABLE 的影子，避免每拍读 CTRL。 */
 export const SYSTICK_ON = 'systickOn';
+
+/**
+ * 「现在就需要服务」的位掩码。
+ *
+ * 指令块每条指令都要判断要不要进服务块，把四个延迟请求合并成一个字以后，判断从四次
+ * state 读降到一次。设置位的地方就是原来设置对应标志的地方；清除位的地方是服务块清
+ * 对应标志处。陈旧位只会多派发一次服务（服务块自己什么也不做），不会漏服务。
+ */
+export const SERVICE_MASK = 'serviceMask';
+/** 有延迟的 GPIO 寄存器写。 */
+export const SERVICE_GPIO_WRITE = 1;
+/** 有延迟的 GPIO IDR 读。 */
+export const SERVICE_DEFER_READ = 2;
+/** 有延迟的非 GPIO 外设写。 */
+export const SERVICE_DEFER_WRITE = 4;
+/** 有端口需要刷新引脚意图。 */
+export const SERVICE_PIN_SYNC = 8;
+/** 有中断待扫描（还需要 `primask` 为 0 才能派发，由服务块自己判断）。 */
+export const SERVICE_IRQ = 16;
+/** 全部立即生效的请求位。 */
+export const SERVICE_ALL = 31;
 /** 有发送活动（TX_ACTIVE 或排队字节）的 USART 位掩码。 */
 export const TX_MASK = 'txMask';
 

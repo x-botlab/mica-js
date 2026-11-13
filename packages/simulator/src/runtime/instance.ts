@@ -520,6 +520,7 @@ export class Instance {
         jit.directPrograms.clear();
         jit.directProgramRevision = -1;
         jit.directSkip = undefined;
+        jit.directMisses = 0;
         if (jit.direct?.frame.resume) jit.direct.frame.stopAfterInstruction = true;
         else jit.direct = undefined;
       }
@@ -927,6 +928,7 @@ export class Instance {
       directProgramRevision: -1,
       direct: undefined,
       directSkip: undefined,
+      directMisses: 0,
       pollReads: undefined,
       currentPc: undefined,
       automaticPolling: false,
