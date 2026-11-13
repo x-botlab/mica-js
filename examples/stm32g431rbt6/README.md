@@ -25,17 +25,19 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
 
 ### 实测（`bench/hal-throughput.test.ts` / `bench/hal-precise.test.ts`）
 
-| 指标                    | `throughput`（主路径） | `precise`（对照） |
-| ----------------------- | ---------------------- | ----------------- |
-| 0 → 200 µs 冷启动       | **953–998 ms** CPU     | 34–55 ms CPU      |
-| 200 µs → 220 ms 稳态    | **2.58–2.67 s** CPU    | 13.32–13.67 s     |
-| 稳态实时倍率            | **0.08×**（慢 12×）    | 0.02×（慢 50×）   |
-| 整段 220 ms（含冷启动） | **3.55–3.67 s**        | 13.35–13.71 s     |
-| 缓存指令块              | 411                    | 411               |
+2026-11-14 当前快照（精确值随宿主和 V8 状态变化，以测试 stdout 为准）：
 
-`precise` 每条指令走一次 generator 往返，稳态慢 5.1 倍；`throughput` 的代价是冷启动——
-直接后端按整程序编译，首个 200 µs 内 411 个块触发 25 次重建。按块增量编译是下一步的主要
-方向。
+| 指标                    | `throughput`（主路径） |
+| ----------------------- | ---------------------- |
+| 0 → 200 µs 冷启动       | 约 358–361 ms CPU      |
+| 200 µs → 220 ms 稳态    | 约 1.007–1.013 s CPU   |
+| 稳态实时倍率            | 约 0.22×               |
+| 整段 220 ms（含冷启动） | 约 1.368–1.370 s       |
+| 缓存指令块              | 411                    |
+
+`throughput` 已按 PC 缓存已编译 `Instruction`，首个 200 µs 的 25 次程序级重建不再重复执行
+块级 `emit/compact/rewrite`；剩余冷启动成本主要是 full dispatcher/shard 组装和 V8 首次优化。
+`precise` 只作为同固件对照，精确值以 `bench/hal-precise.test.ts` 输出为准。
 
 ### 轻量基线（`bench/perf.test.ts`）
 
@@ -80,8 +82,9 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
   发布与节拍边界对齐、指令块保持无 `send` 的均匀成本。直接后端已支持内联 `send`，这条
   仍保留是因为它让发布时机可预期，而不是后端限制。
 
-热点指令块（`ldr`/`adds`/`str` 一类）因此只剩几十个 IR 操作；`SERVICE_GPIO + port` 只在固件
-真的写某个端口时才翻译。块结构与根因见 `docs/mcu-jit-block-inflation.md`，缺陷与限制见
+当前 411 个可编译块共约 310,231 个含嵌套 IR 操作、186,350 条发射语句、约 5.4 MB 生成源码。
+普通块平均约 733 个嵌套操作、438 条语句；`SERVICE_GPIO + port` 只有固件写到对应端口时才翻译，
+但执行频率很高。块结构与根因见 `docs/mcu-jit-block-inflation.md`，缺陷与限制见
 `docs/stm32g431rbt6-issues.md`。
 
 ### 直接后端的剩余成本
@@ -89,8 +92,11 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
 - **冷启动**：首次翻译与整程序重建占大头。直接程序暴露它编译过的 PC 集合，翻译只增不改，
   因此旧程序对已覆盖的 PC 继续有效；重建按 `max(步长, 已编译块数)` 摊薄，并对反复回退的 PC
   提前触发。即便如此，411 个块仍要 25 次重建、近 1 s。
-- **服务块体量**：`SERVICE_WRITE` 展开后约 3,600 个 IR 操作、三个 GPIO 端口块的引脚意图
-  `select` 链各约 2,300 个，只能靠分片隔离。它们只影响首次翻译。
+- **服务块体量**：`SERVICE_WRITE` / IDR 大块主要影响首次翻译；GPIO 写服务在稳态也高频执行。
+  已改为按 ODR/BSRR/BRR 的实际变化位生成精确掩码，并按 4 位分组刷新引脚意图；同引擎 A/B
+  下 GPIO 服务优化约带来 11% 稳态提升。
+- **shard/dispatcher**：最终程序约 146 个 step shard，220 ms 内平均每个 shard 只执行约 1.32 个块；
+  16 路以上已改用平衡区间树路由，稳定窗口约再提升 5%。
 - **板上只能有一个 JIT 设备**：`runDirect` 在 `board.jits.length !== 1` 时关闭，多 MCU 板会
   静默退回解释器。
 

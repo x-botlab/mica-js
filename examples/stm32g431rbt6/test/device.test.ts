@@ -167,6 +167,47 @@ describe('STM32G431RBT6 源码级行为', () => {
     }
   });
 
+  it('BSRR 同位 set/reset 时 set 胜出，并只刷新真正变化的引脚', async () => {
+    const board = await circuit({
+      firmware: firmware('gpio-bsrr-conflict.bin'),
+      clockFrequency: 1_000_000,
+    });
+
+    try {
+      board.run(10_000_000_000);
+      expect(board.faults).toEqual([]);
+      // PA5 先为高，随后同一 BSRR 同时 set/reset：保持高且不应被误清；
+      // PA7 先为低，同样的冲突必须变为高；PA6 单独 reset 后为低。
+      expect(board.levels.PA5).toBe(1);
+      expect(board.levels.PA6).toBe(0);
+      expect(board.levels.PA7).toBe(1);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('MODER/OTYPER/PUPDR 变化只影响目标引脚，未变化引脚保留旧意图', async () => {
+    const board = await circuit({
+      firmware: firmware('gpio-config-sync.bin'),
+      clockFrequency: 1_000_000,
+    });
+
+    try {
+      board.run(10_000_000_000);
+      expect(board.faults).toEqual([]);
+      // 固件先使能 GPIOA 时钟，再把 PA5/PA7/PA8 配成输出并拉高，PA6 配置上拉输入。
+      // 当前模型沿用 rcc.ts 的已知简化：AHB2ENR 只保存使能位，不据此阻断 GPIO 寄存器
+      // 访问；优化必须保持“先开时钟再配置 GPIO”的既有路径。
+      // 随后只把 PA5 改成下拉输入、只把 PA7 改成开漏输出；未触碰的 PA8 必须仍为高。
+      expect(board.levels.PA5).toBe(0);
+      expect(board.levels.PA6).toBe(1);
+      expect(board.levels.PA7).toBe(0);
+      expect(board.levels.PA8).toBe(1);
+    } finally {
+      board.dispose();
+    }
+  });
+
   it('IT 块只执行条件成立的那一条', async () => {
     const board = await circuit({
       firmware: itBlockFirmware(),

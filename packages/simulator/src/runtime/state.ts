@@ -94,11 +94,26 @@ export interface DirectExecution {
   readonly frame: DirectJitFrame;
   /** PCs the current program compiled; a PC outside it needs the interpreter. */
   readonly pcs: ReadonlySet<number>;
-  readonly stateReads: readonly (readonly [string, number])[];
-  readonly stateWrites: readonly (readonly [string, number])[];
-  readonly memoryWrites: readonly (readonly [string, number])[];
+  readonly stateReads: readonly string[];
+  readonly stateReadSlots: readonly number[];
+  readonly stateWrites: readonly string[];
+  readonly stateWriteSlots: readonly number[];
+  readonly memoryWrites: readonly string[];
+  readonly memoryWriteSlots: readonly number[];
   readonly revision: number;
 }
+/** Immutable bank layout shared by every direct program built for one JIT. */
+export interface DirectJitLayout {
+  readonly stateNames: readonly string[];
+  readonly memoryNames: readonly string[];
+  readonly states: ReadonlyMap<string, number>;
+  readonly memories: ReadonlyMap<string, number>;
+  readonly memoryBanks: readonly Uint8Array[];
+  readonly memoryViews: readonly DataView[];
+}
+export type DirectJitCache = ReturnType<
+  typeof import('@mica-js/compiler').compileDirectJit.createCache
+>;
 export interface Jit {
   readonly instance: Instance;
   readonly options: JitOptions;
@@ -114,6 +129,10 @@ export interface Jit {
   readonly directHookReads: Set<ResourceSlot>;
   readonly directPrograms: Map<string, DirectExecution | undefined>;
   directProgramRevision: number;
+  /** Opaque compiler-owned incremental body cache; initialized on the first build. */
+  directCache?: DirectJitCache;
+  /** Bank names and maps are stable for the lifetime of a JIT. */
+  directLayout?: DirectJitLayout;
   direct: DirectExecution | undefined;
   directSkip: number | undefined;
   /** Blocks translated since the last direct program build; bounds the rebuild frequency. */

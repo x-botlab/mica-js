@@ -8,14 +8,11 @@ import {
   DEFER_READ_SIZE,
   DEFER_READ_TARGET,
   GPIO_BASE,
-  GPIO_PIN_MASK,
   GPIO_POWERED,
   GPIO_STATE,
   GPIO_STATE_STRIDE,
-  GPIO_SYNC,
   PERIPH,
   SERVICE_DEFER_READ,
-  SERVICE_PIN_SYNC,
   gpioAfr0State,
   gpioAfr1State,
   gpioModerState,
@@ -57,6 +54,9 @@ export const GPIO_BRR = 0x28;
 
 const DRIVE_RESISTANCE = 25;
 const PULL_RESISTANCE = 40_000;
+
+/** 端口同步只看低 16 位引脚变化。 */
+const GPIO_PIN_MASK_PINS = 0xffff;
 
 const stateBase = (port: number): number => GPIO_STATE + port * GPIO_STATE_STRIDE;
 
@@ -269,10 +269,10 @@ function driversFor(port: number, bit: number): readonly AlternateDriver[] {
 }
 
 /**
- * 刷新一个端口里 `mask` 选中的引脚意图：配置寄存器只读一次。
+ * 刷新一个端口里 `mask` 选中的引脚意图。
  *
- * 只有引脚自己的寄存器位、或端口供电状态变化才会改变它的意图，因此按位刷新与整端口
- * 刷新等价；供电状态变化时退回整端口。
+ * `mask` 的低 16 位是真正变化的引脚。只有引脚自己的寄存器位、或端口供电状态变化
+ * 才会改变它的意图；供电变化时退回整端口完整刷新。
  */
 export function syncPort(b: Body, portIndex: number, mask: Value<number>): void {
   const port = PORTS[portIndex];
@@ -281,19 +281,34 @@ export function syncPort(b: Body, portIndex: number, mask: Value<number>): void 
 
   const registers = portRegisters(b, portIndex);
   const poweredBefore = b.readState(GPIO_POWERED, types.bool);
+  const powerChanged = b.notEqual(types.bool, poweredBefore, registers.supplied);
   const refresh = b.select(
     types.number,
-    b.notEqual(types.bool, poweredBefore, registers.supplied),
-    (inner) => num(asBody(inner), 0xffff),
-    () => mask,
+    powerChanged,
+    (inner) => num(asBody(inner), GPIO_PIN_MASK_PINS),
+    (inner) => inner.bitAnd(mask, num(asBody(inner), GPIO_PIN_MASK_PINS)),
   );
 
-  b.writeState(GPIO_POWERED, registers.supplied);
+  // 电源状态只在变化时写回。稳态的每次输出写都重复写同一个 true 会额外触发状态
+  // 写屏障和依赖失效；读取保留，外部掉电仍会在下一次 GPIO 同步被观察到。
+  b.if(powerChanged, (changed) => {
+    asBody(changed).writeState(GPIO_POWERED, registers.supplied);
+  });
 
-  for (let bit = 0; bit < port.pins.length; bit += 1) {
-    if (port.pins[bit] === null) continue;
-    b.if(boolBit(b, refresh, 1 << bit), (pin) => {
-      emitPinIntent(asBody(pin), portIndex, bit, registers);
+  // 四位一组先筛掉整组，组内再逐位判断。常见的单引脚输出写在 4 次组判断加至多
+  // 4 次位判断内完成，且每根引脚的意图树仍只发射一次。
+  for (let group = 0; group < port.pins.length; group += 4) {
+    const groupMask = 0xf << group;
+
+    b.if(boolBit(b, refresh, groupMask), (selected) => {
+      const scope = asBody(selected);
+
+      for (let bit = group; bit < group + 4; bit += 1) {
+        if (port.pins[bit] === null) continue;
+        scope.if(boolBit(scope, refresh, 1 << bit), (pin) => {
+          emitPinIntent(asBody(pin), portIndex, bit, registers);
+        });
+      }
     });
   }
 }
@@ -364,6 +379,21 @@ function readRegister(
   return extract(b, b.getLocal(result), offset, size);
 }
 
+/** 将窄写放在目标寄存器内的正确字节位置；配置映射与 BSRR/BRR 共用。 */
+function placeWord(
+  b: Body,
+  value: Value<number>,
+  offset: Value<number>,
+  size: number,
+): Value<number> {
+  if (size === 4) return u32(b, value);
+
+  const width = size === 2 ? 0xffff : 0xff;
+  const shift = b.multiply(b.bitAnd(offset, num(b, 3)), num(b, 8));
+
+  return b.shiftLeft(b.bitAnd(u32(b, value), num(b, width)), shift);
+}
+
 function mergeWord(
   b: Body,
   current: Value<number>,
@@ -375,10 +405,67 @@ function mergeWord(
 
   const width = size === 2 ? 0xffff : 0xff;
   const shift = b.multiply(b.bitAnd(offset, num(b, 3)), num(b, 8));
-  const placed = b.shiftLeft(b.bitAnd(u32(b, value), num(b, width)), shift);
+  const placed = placeWord(b, value, offset, size);
   const mask = b.shiftLeft(num(b, width), shift);
 
   return u32(b, b.bitOr(b.bitAnd(current, b.bitNot(mask)), placed));
+}
+
+/**
+ * MODER/PUPDR 的差值是每脚 2 位。先算“字段内至少一位变化”，再用并行移位把 16 个
+ * even-bit 标志压到低 16 位，避免逐脚生成比较与 select。
+ */
+function changedPairPins(b: Body, diff: Value<number>): Value<number> {
+  const paired = b.bitAnd(b.bitOr(diff, b.shiftRightUnsigned(diff, num(b, 1))), num(b, 0x55555555));
+  const twoPerNibble = b.bitOr(
+    b.bitAnd(paired, num(b, 0x11111111)),
+    b.bitAnd(b.shiftRightUnsigned(paired, num(b, 1)), num(b, 0x22222222)),
+  );
+  const fourPerByte = b.bitOr(
+    b.bitAnd(twoPerNibble, num(b, 0x03030303)),
+    b.bitAnd(b.shiftRightUnsigned(twoPerNibble, num(b, 2)), num(b, 0x0c0c0c0c)),
+  );
+  const eightPerHalf = b.bitOr(
+    b.bitAnd(fourPerByte, num(b, 0x000f000f)),
+    b.bitAnd(b.shiftRightUnsigned(fourPerByte, num(b, 4)), num(b, 0x00f000f0)),
+  );
+
+  return b.bitAnd(
+    b.bitOr(
+      b.bitAnd(eightPerHalf, num(b, 0xffff)),
+      b.bitAnd(b.shiftRightUnsigned(eightPerHalf, num(b, 8)), num(b, 0xff00)),
+    ),
+    num(b, 0xffff),
+  );
+}
+
+/** AFR0/AFR1 每脚 4 位；把 8 个 nibble 标志压到低 8 位，再放到对应端口位。 */
+function changedNibblePins(b: Body, diff: Value<number>, firstPin: number): Value<number> {
+  const any = b.bitOr(
+    diff,
+    b.bitOr(
+      b.shiftRightUnsigned(diff, num(b, 1)),
+      b.bitOr(b.shiftRightUnsigned(diff, num(b, 2)), b.shiftRightUnsigned(diff, num(b, 3))),
+    ),
+  );
+  const nibbleLsb = b.bitAnd(any, num(b, 0x11111111));
+  const twoPerByte = b.bitOr(
+    b.bitAnd(nibbleLsb, num(b, 0x11111111)),
+    b.bitAnd(b.shiftRightUnsigned(nibbleLsb, num(b, 3)), num(b, 0x22222222)),
+  );
+  const fourPerHalf = b.bitOr(
+    b.bitAnd(twoPerByte, num(b, 0x00030003)),
+    b.bitAnd(b.shiftRightUnsigned(twoPerByte, num(b, 6)), num(b, 0x000c000c)),
+  );
+  const packed = b.bitAnd(
+    b.bitOr(
+      b.bitAnd(fourPerHalf, num(b, 0x0000000f)),
+      b.bitAnd(b.shiftRightUnsigned(fourPerHalf, num(b, 12)), num(b, 0x000000f0)),
+    ),
+    num(b, 0xff),
+  );
+
+  return firstPin === 0 ? packed : b.shiftLeft(packed, num(b, firstPin));
 }
 
 function writeRegister(
@@ -387,13 +474,13 @@ function writeRegister(
   offset: Value<number>,
   size: number,
   value: Value<number>,
-): void {
-  if (PORTS[portIndex] === undefined) return;
+): Value<number> {
+  if (PORTS[portIndex] === undefined) return num(b, 0);
 
   const wordOffset = b.bitAnd(offset, num(b, 0x3c));
   const output = isOutputWrite(b, wordOffset);
-  /** 需要重算意图的引脚；配置写默认整端口，输出写按位算出。 */
-  const changed = b.local(types.number, num(b, 0xffff));
+  /** 真正需要重算意图的引脚；输出写按 ODR 前后差值，配置写按字段差值计算。 */
+  const changed = b.local(types.number, num(b, 0));
 
   // ODR / BSRR / BRR 都只改 ODR。
   b.if(
@@ -406,16 +493,17 @@ function writeRegister(
         (bsrr) => {
           const scope = asBody(bsrr);
           const current = loadWord(scope, portIndex, num(scope, GPIO_ODR));
-          const setBits = scope.bitAnd(u32(scope, value), num(scope, 0xffff));
-          const clearBits = scope.shiftRightUnsigned(u32(scope, value), num(scope, 16));
-
-          scope.setLocal(changed, scope.bitOr(setBits, clearBits));
-          storeWord(
-            scope,
-            portIndex,
-            num(scope, GPIO_ODR),
-            scope.bitOr(scope.bitAnd(current, scope.bitNot(clearBits)), setBits),
+          const placed = placeWord(scope, value, offset, size);
+          const setBits = scope.bitAnd(placed, num(scope, 0xffff));
+          const clearBits = scope.bitAnd(
+            scope.shiftRightUnsigned(placed, num(scope, 16)),
+            num(scope, 0xffff),
           );
+          // 同一位同时 set/reset 时 set 优先，与 STM32 BSRR 的约定一致。
+          const next = scope.bitOr(scope.bitAnd(current, scope.bitNot(clearBits)), setBits);
+
+          scope.setLocal(changed, scope.bitAnd(scope.bitXor(current, next), num(scope, 0xffff)));
+          storeWord(scope, portIndex, num(scope, GPIO_ODR), next);
         },
         (other) => {
           const scope = asBody(other);
@@ -425,15 +513,14 @@ function writeRegister(
             (brr) => {
               const last = asBody(brr);
               const current = loadWord(last, portIndex, num(last, GPIO_ODR));
-              const clearBits = last.bitAnd(u32(last, value), num(last, 0xffff));
-
-              last.setLocal(changed, clearBits);
-              storeWord(
-                last,
-                portIndex,
-                num(last, GPIO_ODR),
-                last.bitAnd(current, last.bitNot(clearBits)),
+              const clearBits = last.bitAnd(
+                placeWord(last, value, offset, size),
+                num(last, 0xffff),
               );
+              const next = last.bitAnd(current, last.bitNot(clearBits));
+
+              last.setLocal(changed, last.bitAnd(last.bitXor(current, next), num(last, 0xffff)));
+              storeWord(last, portIndex, num(last, GPIO_ODR), next);
             },
             (plain) => {
               const last = asBody(plain);
@@ -455,13 +542,9 @@ function writeRegister(
         () => {},
         (stored) => {
           const body2 = asBody(stored);
-          const merged = mergeWord(
-            body2,
-            loadWord(body2, portIndex, wordOffset),
-            value,
-            offset,
-            size,
-          );
+          const current = loadWord(body2, portIndex, wordOffset);
+          const merged = mergeWord(body2, current, value, offset, size);
+          const diff = body2.bitXor(current, merged);
 
           storeWord(body2, portIndex, wordOffset, merged);
           // 引脚意图读的是影子 state，这里写穿：存储器仍是固件可见的寄存器映像。
@@ -472,27 +555,26 @@ function writeRegister(
             [GPIO_AFR0, gpioAfr0State],
             [GPIO_AFR1, gpioAfr1State],
           ] as const)
-            body2.if(body2.equal(types.number, wordOffset, num(body2, offsetOf)), (hit) =>
-              asBody(hit).writeState(stateOf(portIndex), merged),
-            );
+            body2.if(body2.equal(types.number, wordOffset, num(body2, offsetOf)), (hit) => {
+              const scope = asBody(hit);
+
+              scope.writeState(stateOf(portIndex), merged);
+
+              if (offsetOf === GPIO_OTYPER)
+                scope.setLocal(changed, scope.bitAnd(diff, num(scope, 0xffff)));
+              else if (offsetOf === GPIO_MODER || offsetOf === GPIO_PUPDR)
+                scope.setLocal(changed, changedPairPins(scope, diff));
+              else if (offsetOf === GPIO_AFR0)
+                scope.setLocal(changed, changedNibblePins(scope, diff, 0));
+              else scope.setLocal(changed, changedNibblePins(scope, diff, 8));
+            });
         },
       );
     },
   );
 
-  // 输出寄存器与模式/上下拉/复用功能寄存器会改变引脚意图。引脚同步（16 根脚的
-  // intent 树）体积很大，会让整段直接程序超出 V8 的优化范围，因此这里只登记待同步的
-  // 端口与引脚位，由服务块在这个块结束时统一刷新。
-  b.if(boolOr(b, output, isConfigWrite(b, wordOffset)), (sync) => {
-    const scope = asBody(sync);
-
-    scope.writeState(
-      GPIO_SYNC,
-      scope.bitOr(scope.readState(GPIO_SYNC, types.number), num(scope, 1 << portIndex)),
-    );
-    scope.writeState(GPIO_PIN_MASK, scope.getLocal(changed));
-    markService(scope, SERVICE_PIN_SYNC);
-  });
+  // 服务块立即消费这个精确掩码，不再经过 GPIO_SYNC/GPIO_PIN_MASK 的写回与读回。
+  return b.getLocal(changed);
 }
 
 function isOutputWrite(b: Body, wordOffset: Value<number>): Value<boolean> {
@@ -505,18 +587,6 @@ function isOutputWrite(b: Body, wordOffset: Value<number>): Value<boolean> {
       b.equal(types.number, wordOffset, num(b, GPIO_BRR)),
     ),
   );
-}
-
-function isConfigWrite(b: Body, wordOffset: Value<number>): Value<boolean> {
-  let matched: Value<boolean> | undefined;
-
-  for (const offset of [GPIO_MODER, GPIO_OTYPER, GPIO_PUPDR, GPIO_AFR0, GPIO_AFR1]) {
-    const check = b.equal(types.number, wordOffset, num(b, offset));
-
-    matched = matched === undefined ? check : boolOr(b, matched, check);
-  }
-
-  return matched!;
 }
 
 /** 地址落在 GPIO 区间时取端口号（0–4）。 */
@@ -614,8 +684,8 @@ export function writeGpioPort(
   offset: Value<number>,
   size: number,
   value: Value<number>,
-): void {
-  writeRegister(b, port, offset, size, value);
+): Value<number> {
+  return writeRegister(b, port, offset, size, value);
 }
 
 export { DRIVE_RESISTANCE, PULL_RESISTANCE };

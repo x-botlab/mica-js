@@ -15,7 +15,6 @@ import {
   DEFER_WRITE_ADDR,
   DEFER_WRITE_SIZE,
   DEFER_WRITE_VALUE,
-  GPIO_PIN_MASK,
   GPIO_SYNC,
   GPIO_WRITE,
   GPIO_WRITE_ADDR,
@@ -313,11 +312,14 @@ function buildService(machine: Machine, pc: number): BlockIR {
       const value = body.readState(GPIO_WRITE_VALUE, types.number);
       const size = body.readState(GPIO_WRITE_SIZE, types.number);
       const offset = gpioOffsetOf(body, address);
+      const changed = body.local(types.number, num(body, 0));
 
       body.if(
         body.equal(types.number, size, num(body, 1)),
         (byte) => {
-          writeGpioPort(asBody(byte), port, offset, 1, value);
+          const scope = asBody(byte);
+
+          scope.setLocal(changed, writeGpioPort(scope, port, offset, 1, value));
         },
         (half) => {
           const next = asBody(half);
@@ -325,31 +327,26 @@ function buildService(machine: Machine, pc: number): BlockIR {
           next.if(
             next.equal(types.number, size, num(next, 2)),
             (two) => {
-              writeGpioPort(asBody(two), port, offset, 2, value);
+              const scope = asBody(two);
+
+              scope.setLocal(changed, writeGpioPort(scope, port, offset, 2, value));
             },
             (word) => {
-              writeGpioPort(asBody(word), port, offset, 4, value);
+              const scope = asBody(word);
+
+              scope.setLocal(changed, writeGpioPort(scope, port, offset, 4, value));
             },
           );
         },
       );
       body.writeState(GPIO_WRITE, num(body, 0));
       clearService(body, SERVICE_GPIO_WRITE);
-      body.if(boolBit(body, body.readState(GPIO_SYNC, types.number), 1 << port), (sync) => {
+      // 本次 GPIO 写的变化位已由 writeGpioPort 精确算出，直接同步；仅 USART 等
+      // 无引脚位信息的刷新才继续走 SERVICE_SYNC / GPIO_SYNC。
+      body.if(body.notEqual(types.number, body.getLocal(changed), num(body, 0)), (sync) => {
         const scope = asBody(sync);
 
-        syncPort(scope, port, scope.readState(GPIO_PIN_MASK, types.number));
-        scope.writeState(GPIO_PIN_MASK, num(scope, 0));
-        const remaining = scope.bitAnd(
-          scope.readState(GPIO_SYNC, types.number),
-          num(scope, ~(1 << port)),
-        );
-
-        scope.writeState(GPIO_SYNC, remaining);
-        // 掩码清零后位同步清掉：否则每个后续指令都会白白派发一次 SERVICE_SYNC。
-        scope.if(scope.equal(types.number, remaining, num(scope, 0)), (empty) => {
-          clearService(asBody(empty), SERVICE_PIN_SYNC);
-        });
+        syncPort(scope, port, scope.getLocal(changed));
       });
     }
     body.if(

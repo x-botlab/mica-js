@@ -111,6 +111,43 @@ export interface ResumableProgram {
 
 export type CompiledComputation = (host: ExecutionHost) => unknown;
 
+declare const directJitCacheOpaque: unique symbol;
+
+/**
+ * Opaque, reusable compilation state for the direct backend.
+ *
+ * A cache owns compiled instruction bodies and the constant indices they reference. Callers
+ * must obtain one from `compileDirectJit.createCache()` and may discard it at any time; every
+ * program produced by the compiler remains self-contained.
+ */
+export interface DirectJitCache {
+  readonly [directJitCacheOpaque]: true;
+}
+
+/** Deterministic cache counters; useful for diagnostics and targeted regression tests. */
+export interface DirectJitCacheStats {
+  /** Instruction bodies emitted after a cache miss. */
+  readonly compiledBlocks: number;
+  /** Instruction bodies reused without running the emitter. */
+  readonly reusedBlocks: number;
+  /** Previously cached bodies replaced because their PC/body/binding fingerprint changed. */
+  readonly invalidatedBlocks: number;
+  /** Cached entries, including bodies the direct emitter declined. */
+  readonly entries: number;
+  /** Explicit cache clears requested by the runtime or a caller. */
+  readonly clears: number;
+}
+
+export interface DirectJitDelay {
+  readonly counter: number;
+  readonly cycles: number;
+  readonly pending?: {
+    readonly state: number;
+    readonly period: number;
+    readonly active: number;
+  };
+}
+
 /** Static numeric bank layout; the runtime guards ownership/observers before entry. */
 export interface DirectJitBinding {
   readonly states: ReadonlyMap<string, number>;
@@ -136,18 +173,7 @@ export interface DirectJitBinding {
    * supplies `pending`: the fold then stops at the next service boundary and adds the folded
    * time to the accumulator, so skipping rounds cannot starve those peripherals.
    */
-  readonly delayLoops?: ReadonlyMap<
-    number,
-    {
-      readonly counter: number;
-      readonly cycles: number;
-      readonly pending?: {
-        readonly state: number;
-        readonly period: number;
-        readonly active: number;
-      };
-    }
-  >;
+  readonly delayLoops?: ReadonlyMap<number, DirectJitDelay>;
 }
 
 /**
@@ -169,6 +195,8 @@ export interface DirectJitHost {
 export interface DirectJitFrame {
   states: unknown[];
   memories: Uint8Array[];
+  /** Optional per-bank wrappers prepared once by the runtime; absent in compiler-only frames. */
+  readonly memoryViews?: readonly DataView[];
   /** Reusable bit words indexed by bank index >>> 5; clear before each invocation. */
   stateDirty: number[];
   memoryDirty: number[];

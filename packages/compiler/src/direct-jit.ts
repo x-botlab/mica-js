@@ -9,6 +9,9 @@ import type {
 } from '@mica-js/device-model';
 import type {
   DirectJitBinding,
+  DirectJitCache,
+  DirectJitCacheStats,
+  DirectJitDelay,
   DirectJitFrame,
   DirectJitProgram,
   DirectJitReason,
@@ -135,22 +138,48 @@ function address(memory: Uint8Array, value: unknown, size: number): number {
   return value;
 }
 
-function load16(memory: Uint8Array, value: unknown, little: boolean): number {
-  return view(memory).getUint16(address(memory, value, 2), little);
+function dataView(memory: Uint8Array, cached: DataView | undefined): DataView {
+  return cached ?? view(memory);
 }
 
-function load32(memory: Uint8Array, value: unknown, little: boolean): number {
-  return view(memory).getUint32(address(memory, value, 4), little);
+function load16(
+  memory: Uint8Array,
+  cached: DataView | undefined,
+  value: unknown,
+  little: boolean,
+): number {
+  return dataView(memory, cached).getUint16(address(memory, value, 2), little);
 }
 
-function store16(memory: Uint8Array, value: unknown, stored: unknown, little: boolean): void {
+function load32(
+  memory: Uint8Array,
+  cached: DataView | undefined,
+  value: unknown,
+  little: boolean,
+): number {
+  return dataView(memory, cached).getUint32(address(memory, value, 4), little);
+}
+
+function store16(
+  memory: Uint8Array,
+  cached: DataView | undefined,
+  value: unknown,
+  stored: unknown,
+  little: boolean,
+): void {
   const at = address(memory, value, 2);
-  view(memory).setUint16(at, byte(stored), little);
+  dataView(memory, cached).setUint16(at, byte(stored), little);
 }
 
-function store32(memory: Uint8Array, value: unknown, stored: unknown, little: boolean): void {
+function store32(
+  memory: Uint8Array,
+  cached: DataView | undefined,
+  value: unknown,
+  stored: unknown,
+  little: boolean,
+): void {
   const at = address(memory, value, 4);
-  view(memory).setUint32(at, byte(stored), little);
+  dataView(memory, cached).setUint32(at, byte(stored), little);
 }
 
 const helpers = Object.freeze({
@@ -189,6 +218,158 @@ function constantsOf(body: RegionIR): ReadonlyMap<number, Primitive> {
     analyses.set(body, constants);
   }
   return constants;
+}
+
+interface DelayFingerprint {
+  readonly counter: number;
+  readonly cycles: number;
+  readonly pending?: {
+    readonly state: number;
+    readonly period: number;
+    readonly active: number;
+  };
+}
+
+interface BindingFingerprint {
+  readonly states: readonly (readonly [string, number])[];
+  readonly memories: readonly (readonly [string, number])[];
+  readonly pcName: string;
+  readonly pcIndex: number;
+  readonly host: boolean;
+  readonly blockedStates: readonly string[] | undefined;
+  readonly blockedMemories: readonly string[] | undefined;
+}
+
+interface CachedInstruction {
+  readonly body: RegionIR;
+  readonly nextPc: number;
+  readonly delay: DelayFingerprint | undefined;
+  readonly instruction: Instruction | undefined;
+}
+
+interface DirectJitCacheState {
+  readonly entries: Map<number, CachedInstruction>;
+  readonly constants: unknown[];
+  stats: {
+    compiledBlocks: number;
+    reusedBlocks: number;
+    invalidatedBlocks: number;
+    clears: number;
+  };
+  binding: BindingFingerprint | undefined;
+}
+
+const directJitCaches = new WeakMap<DirectJitCache, DirectJitCacheState>();
+
+function createDirectJitCache(): DirectJitCache {
+  const cache = Object.freeze({}) as unknown as DirectJitCache;
+  directJitCaches.set(cache, {
+    entries: new Map(),
+    constants: [],
+    stats: { compiledBlocks: 0, reusedBlocks: 0, invalidatedBlocks: 0, clears: 0 },
+    binding: undefined,
+  });
+  return cache;
+}
+
+function cacheState(cache: DirectJitCache): DirectJitCacheState {
+  const state = directJitCaches.get(cache);
+  if (state === undefined) throw new TypeError('Invalid direct JIT cache');
+  return state;
+}
+
+function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
+  return {
+    states: [...binding.states],
+    memories: [...binding.memories],
+    pcName: binding.pc.name,
+    pcIndex: binding.pc.index,
+    host: binding.host === true,
+    blockedStates:
+      binding.blockedStates === undefined ? undefined : [...binding.blockedStates].sort(),
+    blockedMemories:
+      binding.blockedMemories === undefined ? undefined : [...binding.blockedMemories].sort(),
+  };
+}
+
+function samePairs(
+  left: readonly (readonly [string, number])[],
+  right: readonly (readonly [string, number])[],
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (a[0] !== b[0] || a[1] !== b[1]) return false;
+  }
+  return true;
+}
+
+function sameNames(
+  left: readonly string[] | undefined,
+  right: readonly string[] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined || left.length !== right.length) return false;
+  return left.every((name, index) => name === right[index]);
+}
+
+function sameBinding(left: BindingFingerprint, right: BindingFingerprint): boolean {
+  return (
+    left.pcName === right.pcName &&
+    left.pcIndex === right.pcIndex &&
+    left.host === right.host &&
+    samePairs(left.states, right.states) &&
+    samePairs(left.memories, right.memories) &&
+    sameNames(left.blockedStates, right.blockedStates) &&
+    sameNames(left.blockedMemories, right.blockedMemories)
+  );
+}
+
+function delayFingerprint(delay: DirectJitDelay | undefined): DelayFingerprint | undefined {
+  if (delay === undefined) return undefined;
+  return {
+    counter: delay.counter,
+    cycles: delay.cycles,
+    ...(delay.pending === undefined ? {} : { pending: { ...delay.pending } }),
+  };
+}
+
+function sameDelay(
+  left: DelayFingerprint | undefined,
+  right: DelayFingerprint | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return false;
+  return (
+    left.counter === right.counter &&
+    left.cycles === right.cycles &&
+    left.pending?.state === right.pending?.state &&
+    left.pending?.period === right.pending?.period &&
+    left.pending?.active === right.pending?.active
+  );
+}
+
+function clearCacheState(state: DirectJitCacheState): void {
+  state.entries.clear();
+  state.constants.length = 0;
+  state.binding = undefined;
+  state.stats.clears++;
+}
+
+export interface DirectJitCompiler {
+  (
+    instructions: readonly {
+      readonly pc: number;
+      readonly nextPc: number;
+      readonly body: RegionIR;
+    }[],
+    binding: DirectJitBinding,
+    cache?: DirectJitCache,
+  ): DirectJitProgram | undefined;
+  createCache(): DirectJitCache;
+  clearCache(cache: DirectJitCache): void;
+  cacheStats(cache: DirectJitCache): DirectJitCacheStats;
 }
 
 /** One compile-time value and the literal source text that reproduces it exactly. */
@@ -231,32 +412,110 @@ const SHARD_CODE_BUDGET = 36_000;
  * it avoids the dispatcher hop; larger programs split into shards.
  */
 const MONOLITH_CODE_LIMIT = 48_000;
+/** Above this many routes, a linear chain spends more time comparing bounds than dispatching. */
+const SHARD_ROUTE_TREE_MIN = 16;
+
+interface ShardRoute {
+  readonly bound: string;
+  readonly call: string;
+}
+
+/**
+ * Emit a balanced search tree over ordered range bounds. Leaves stay direct calls to named
+ * shard functions so the call sites remain monomorphic; the extra miss leaf preserves exactly
+ * the old fallback / unknown-continuation behaviour.
+ */
+function emitShardRoutes(
+  lines: string[],
+  key: 'pc' | 'resume',
+  routes: readonly ShardRoute[],
+  miss: string,
+): void {
+  if (routes.length < SHARD_ROUTE_TREE_MIN) {
+    routes.forEach((route, index) => {
+      lines.push(`${index ? 'else if' : 'if'} (${key} <= ${route.bound}) ${route.call}`);
+    });
+    lines.push(`else ${miss}`);
+    return;
+  }
+  const actions = [...routes.map((route) => route.call), miss];
+  const emit = (lower: number, upper: number): void => {
+    if (lower === upper) {
+      lines.push(actions[lower]!);
+      return;
+    }
+    const middle = (lower + upper) >>> 1;
+    lines.push(`if (${key} <= ${routes[middle]!.bound}) {`);
+    emit(lower, middle);
+    lines.push('} else {');
+    emit(middle + 1, upper);
+    lines.push('}');
+  };
+  emit(0, routes.length);
+}
 
 /** Inputs have already passed model validation and contextual binding. */
-export function compileDirectJit(
+function compileDirectJitProgram(
   instructions: readonly {
     readonly pc: number;
     readonly nextPc: number;
     readonly body: RegionIR;
   }[],
   binding: DirectJitBinding,
+  suppliedCache?: DirectJitCache,
 ): DirectJitProgram | undefined {
   if (!validIndex(binding.pc.index) || binding.states.get(binding.pc.name) !== binding.pc.index)
     return undefined;
-  const constants: unknown[] = [];
-  const capture = (value: unknown): string => `C[${constants.push(value) - 1}]`;
+  const cache = suppliedCache ?? createDirectJitCache();
+  const state = cacheState(cache);
+  const fingerprint = bindingFingerprint(binding);
+  if (state.binding !== undefined && !sameBinding(state.binding, fingerprint)) {
+    // Slot indices are embedded in every emitted body. A layout change invalidates all of
+    // them, but old programs retain their own frozen constant table and stay self-contained.
+    state.stats.invalidatedBlocks += state.entries.size;
+    state.entries.clear();
+    state.constants.length = 0;
+  }
+  state.binding = fingerprint;
+  const capture = (value: unknown): string => `C[${state.constants.push(value) - 1}]`;
   const entries: Instruction[] = [];
   const seen = new Set<number>();
   for (const instruction of instructions) {
     if (!Number.isFinite(instruction.pc) || seen.has(instruction.pc)) continue;
     // Even an unsupported first occurrence owns this PC, matching runtime lookup.
     seen.add(instruction.pc);
-    if (!Number.isFinite(instruction.nextPc)) continue;
-    try {
-      entries.push(new Instruction(binding, capture).compile(instruction));
-    } catch (error) {
-      if (error !== unsupported) throw error;
+    if (!Number.isFinite(instruction.nextPc)) {
+      if (state.entries.delete(instruction.pc)) state.stats.invalidatedBlocks++;
+      continue;
     }
+    const delay = delayFingerprint(binding.delayLoops?.get(instruction.pc));
+    const cached = state.entries.get(instruction.pc);
+    let compiled: Instruction | undefined;
+    if (
+      cached !== undefined &&
+      cached.body === instruction.body &&
+      cached.nextPc === instruction.nextPc &&
+      sameDelay(cached.delay, delay)
+    ) {
+      compiled = cached.instruction;
+      state.stats.reusedBlocks++;
+    } else {
+      if (cached !== undefined) state.stats.invalidatedBlocks++;
+      try {
+        compiled = new Instruction(binding, capture).compile(instruction);
+      } catch (error) {
+        if (error !== unsupported) throw error;
+        compiled = undefined;
+      }
+      state.entries.set(instruction.pc, {
+        body: instruction.body,
+        nextPc: instruction.nextPc,
+        delay,
+        instruction: compiled,
+      });
+      state.stats.compiledBlocks++;
+    }
+    if (compiled !== undefined) entries.push(compiled);
   }
   if (!entries.length) return undefined;
   const localCount = Math.max(...entries.map((entry) => entry.slots.length));
@@ -293,7 +552,9 @@ export function compileDirectJit(
   const names = (field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories') =>
     Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
   const program = {
-    run: factory(Object.freeze(constants), helpers),
+    // Indices captured by cached instructions remain stable for this cache. The program owns
+    // a frozen snapshot so later incremental builds can keep appending without mutating it.
+    run: factory(Object.freeze([...state.constants]), helpers),
     // Every PC this program can dispatch. The runtime keeps executing an older program
     // while it still contains the current PC: translation only ever adds cache entries, so
     // existing bodies never change and only the missing PCs justify a rebuild.
@@ -308,6 +569,17 @@ export function compileDirectJit(
   Object.defineProperty(program, 'emitStats', { value: emitStats(entries) });
   return Object.freeze(program);
 }
+
+export const compileDirectJit: DirectJitCompiler = Object.assign(compileDirectJitProgram, {
+  createCache: createDirectJitCache,
+  clearCache(cache: DirectJitCache): void {
+    clearCacheState(cacheState(cache));
+  },
+  cacheStats(cache: DirectJitCache): DirectJitCacheStats {
+    const state = cacheState(cache);
+    return Object.freeze({ ...state.stats, entries: state.entries.size });
+  },
+});
 
 /**
  * Statements per IR operation, the acceptance metric of #256. `statements` counts the
@@ -406,7 +678,7 @@ function countStatements(line: string): number {
  * built without them (compiler tests) yields an empty mask and never blocks.
  */
 const prelude = (slots: readonly string[]): string[] => [
-  'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty;',
+  'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty, MV = F.memoryViews ?? [];',
   'const BS = F.blockedStates ?? [], BM = F.blockedMemories ?? [];',
   ...(slots.length ? [`let ${slots.join(',')};`] : []),
 ];
@@ -550,26 +822,31 @@ function shardProgram(
     .map((shard, shardIndex) => ({ shard, shardIndex }))
     .filter(({ shard }) => shard.resumable);
   if (resumable.length) {
-    resumable.forEach(({ shard, shardIndex }, position) => {
-      const keyword = position ? 'else if' : 'if';
-      lines.push(
-        `${keyword} (resume <= ${shard.lastResume}) status = resumeShard${shardIndex}(F, resume);`,
-      );
-    });
-    lines.push('else throw new TypeError("Unknown direct JIT continuation");');
+    emitShardRoutes(
+      lines,
+      'resume',
+      resumable.map(({ shard, shardIndex }) => ({
+        bound: String(shard.lastResume),
+        call: `status = resumeShard${shardIndex}(F, resume);`,
+      })),
+      'throw new TypeError("Unknown direct JIT continuation");',
+    );
   } else lines.push('throw new TypeError("Unknown direct JIT continuation");');
   lines.push(
     '} else {',
     'if (F.stopAfterInstruction) return "invalidated";',
-    `const pc = H.checkPc(S[${binding.pc.index}]);`,
+    `const pc = S[${binding.pc.index}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc);`,
   );
-  shards.forEach((shard, shardIndex) => {
-    const keyword = shardIndex ? 'else if' : 'if';
-    lines.push(
-      `${keyword} (pc <= ${shard.lastPc}) status = stepShard${shardIndex}(F, deadline, pc);`,
-    );
-  });
-  lines.push('else return "fallback";', '}', 'if (status !== "next") return status;', '}', '}');
+  emitShardRoutes(
+    lines,
+    'pc',
+    shards.map((shard, shardIndex) => ({
+      bound: String(shard.lastPc),
+      call: `status = stepShard${shardIndex}(F, deadline, pc);`,
+    })),
+    'return "fallback";',
+  );
+  lines.push('}', 'if (status !== "next") return status;', '}', '}');
   return lines;
 }
 
@@ -1326,16 +1603,18 @@ class Instruction {
       }
       case 'load16le':
       case 'load16be': {
-        const memory = `M[${this.memory(operation)}]`;
+        const index = this.memory(operation);
+        const memory = `M[${index}]`;
         const little = operation.kind.endsWith('le') ? 'true' : 'false';
-        assign(`H.load16(${memory},${this.value(operation.offset)},${little})`);
+        assign(`H.load16(${memory},MV[${index}],${this.value(operation.offset)},${little})`);
         break;
       }
       case 'load32le':
       case 'load32be': {
-        const memory = `M[${this.memory(operation)}]`;
+        const index = this.memory(operation);
+        const memory = `M[${index}]`;
         const little = operation.kind.endsWith('le') ? 'true' : 'false';
-        assign(`H.load32(${memory},${this.value(operation.offset)},${little})`);
+        assign(`H.load32(${memory},MV[${index}],${this.value(operation.offset)},${little})`);
         break;
       }
       case 'store16le':
@@ -1348,7 +1627,7 @@ class Instruction {
         const little = operation.kind.endsWith('le') ? 'true' : 'false';
         // Address validation precedes the stored-value check inside the helper.
         lines.push(
-          `H.${store}(${memory},${this.value(operation.offset)},${this.value(operation.value)},${little});`,
+          `H.${store}(${memory},MV[${index}],${this.value(operation.offset)},${this.value(operation.value)},${little});`,
           dirty('MD', index),
         );
         break;

@@ -47,9 +47,13 @@ function builder() {
 }
 
 function frame(program, states = [0, 1, 0, true, 0, 0], memory = [7, 8, 9]) {
+  const memories = [Uint8Array.from(memory)];
   return {
     states: [...states],
-    memories: [Uint8Array.from(memory)],
+    memories,
+    memoryViews: memories.map(
+      (bank) => new DataView(bank.buffer, bank.byteOffset, bank.byteLength),
+    ),
     stateDirty: new Array(Math.ceil(states.length / 32)).fill(0),
     memoryDirty: [0],
     time: 0,
@@ -1332,6 +1336,7 @@ test('wide loads and stores match compileBody for both byte orders and unaligned
   const instructions = [b.instruction(0, 99)];
   const program = compileDirectJit(instructions, binding);
   assert(program);
+  assert.match(generated(program), /MV\[0\]/);
   const first = frame(program, [0, 0, 0, true, 0, 0], [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
   const reference = generic(instructions, first.states, first.memories);
   assert.equal(program.run(first, 5), reference.run(5));
@@ -2395,7 +2400,10 @@ test('split mode emits a shard dispatcher instead of per-instruction cases', () 
   assert.match(split, /if \(status !== "next"\) return status;/);
   assert.match(split, /if \(pc <= \d+\) status = stepShard0\(F, deadline, pc\);/);
   assert.match(split, /else return "fallback";/);
-  assert.match(split, /const pc = H\.checkPc\(S\[0\]\);/);
+  assert.match(
+    split,
+    /const pc = S\[0\]; if \(!\(typeof pc === "number" && pc < Infinity && pc > -Infinity\)\) H\.checkPc\(pc\);/,
+  );
   assert.match(split, /return run;$/);
   // A shard keeps executing while the next PC stays inside its own range.
   assert.match(split, /while \(true\) \{\nswitch \(pc\) \{/);
@@ -2460,6 +2468,39 @@ test('shard size groups instructions into contiguous range dispatches', () => {
   for (const deadline of [0, 1, 2, 3, 4, 6, 9, 15, 30]) pair.run(deadline);
   assert.equal(pair.left.frame.states[1], pair.right.frame.states[1]);
   assert(pair.left.frame.states[1] > 0);
+});
+
+test('large shard sets use a balanced interval tree without changing fallback boundaries', () => {
+  const instructions = Array.from({ length: 20 }, (_, index) => {
+    const b = builder();
+    b.write('x', b.binary('add', b.read('x'), b.constant(1)));
+    b.delay(1);
+    return b.instruction(index * 2, ((index + 1) * 2) % 40);
+  });
+  const options = { ...binding, split: true, shardSlotLimit: 0, shardSize: 1 };
+  const program = compileDirectJit(instructions, options);
+  assert(program);
+  const source = generated(program);
+  assert.equal(source.match(/stepShard\d+\(F, deadline, pc\)/g).length, 20);
+  assert.equal(source.match(/resumeShard\d+\(F, resume\)/g).length, 20);
+  assert.match(source, /if \(pc <= \d+\) \{\nif \(pc <= \d+\) \{/);
+  assert.match(source, /return "fallback";/);
+
+  // A PC in a gap still reaches the next shard, whose switch default returns fallback rather
+  // than accidentally executing a neighboring block.
+  const gap = frame(program, [1, 0, 0, true, 0, 0]);
+  assert.equal(program.run(gap, 10), 'fallback');
+  const beyond = frame(program, [9999, 0, 0, true, 0, 0]);
+  assert.equal(program.run(beyond, 10), 'fallback');
+
+  // Unknown resume IDs stay an error, and every valid PC routes before its deadline check.
+  const invalidResume = frame(program);
+  invalidResume.resume = 9999;
+  assert.throws(() => program.run(invalidResume, 10), /Unknown direct JIT continuation/);
+  for (let pc = 0; pc < 40; pc += 2) {
+    const valid = frame(program, [pc, 0, 0, true, 0, 0]);
+    assert.equal(program.run(valid, 1), 'deadline');
+  }
 });
 
 test('byte literals and indexing stay direct and match compileBody', () => {
@@ -2645,4 +2686,129 @@ test('runtime write barriers keep one program valid while the observed slots mov
     assert.deepEqual(f.memoryDirty, [1]);
     assert.equal(f.memories[0][0], 9);
   }
+});
+
+test('incremental cache reuses old blocks and keeps constant indices stable', () => {
+  const cache = compileDirectJit.createCache();
+  const hostedBinding = { ...binding, host: true };
+  const sendBlock = (pc, channel) => {
+    const b = builder();
+    b.operations.push({ kind: 'send', channel, value: b.constant(pc + 1) });
+    b.delay(1);
+    return b.instruction(pc, pc + 1);
+  };
+  const first = sendBlock(0, 'alpha');
+  const second = sendBlock(1, 'beta');
+
+  const initial = compileDirectJit([first], hostedBinding, cache);
+  assert(initial);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 1,
+    reusedBlocks: 0,
+    invalidatedBlocks: 0,
+    entries: 1,
+    clears: 0,
+  });
+
+  const expanded = compileDirectJit([first, second], hostedBinding, cache);
+  assert(expanded);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 2,
+    reusedBlocks: 1,
+    invalidatedBlocks: 0,
+    entries: 2,
+    clears: 0,
+  });
+
+  const stable = compileDirectJit([first, second], hostedBinding, cache);
+  assert(stable);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 2,
+    reusedBlocks: 3,
+    invalidatedBlocks: 0,
+    entries: 2,
+    clears: 0,
+  });
+
+  // The second program exercises the reused C[0] capture followed by the newly appended C[1].
+  const f = frame(expanded);
+  f.host = hostRecorder(() => f.time);
+  assert.equal(expanded.run(f, 10), 'fallback');
+  assert.deepEqual(
+    f.host.entries.filter(([kind]) => kind === 'send'),
+    [
+      ['send', 'alpha', 1, 0],
+      ['send', 'beta', 2, 1],
+    ],
+  );
+});
+
+test('delay-loop changes invalidate only the affected cached guard', () => {
+  const cache = compileDirectJit.createCache();
+  const b = builder();
+  b.write('x', b.constant(5));
+  b.delay(1);
+  const instruction = b.instruction(10, 11);
+  const withDelay = (cycles) => ({
+    ...binding,
+    delayLoops: new Map([[10, { counter: 1, cycles }]]),
+  });
+
+  const oneCycle = compileDirectJit([instruction], withDelay(1), cache);
+  const twoCycles = compileDirectJit([instruction], withDelay(2), cache);
+  assert(oneCycle && twoCycles);
+  assert.match(generated(oneCycle), /\/ 1\)/);
+  assert.match(generated(twoCycles), /\/ 2\)/);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 2,
+    reusedBlocks: 0,
+    invalidatedBlocks: 1,
+    entries: 1,
+    clears: 0,
+  });
+
+  const unfolded = compileDirectJit([instruction], binding, cache);
+  assert(unfolded);
+  assert.doesNotMatch(generated(unfolded), /declared busy-wait|let rounds/);
+  assert.equal(compileDirectJit.cacheStats(cache).invalidatedBlocks, 2);
+});
+
+test('same-PC body changes and cache clears force recompilation without invalidating old programs', () => {
+  const cache = compileDirectJit.createCache();
+  const block = (value) => {
+    const b = builder();
+    b.write('x', b.constant(value));
+    b.delay(1);
+    return b.instruction(0, 1);
+  };
+
+  const firstBody = block(3);
+  const first = compileDirectJit([firstBody], binding, cache);
+  assert(first);
+  assert.equal(compileDirectJit.cacheStats(cache).entries, 1);
+
+  const second = compileDirectJit([block(9)], binding, cache);
+  assert(second);
+  assert.equal(compileDirectJit.cacheStats(cache).invalidatedBlocks, 1);
+  const changed = frame(second);
+  assert.equal(second.run(changed, 10), 'fallback');
+  assert.equal(changed.states[1], 9);
+
+  compileDirectJit.clearCache(cache);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 2,
+    reusedBlocks: 0,
+    invalidatedBlocks: 1,
+    entries: 0,
+    clears: 1,
+  });
+  const rebuilt = compileDirectJit([firstBody], binding, cache);
+  assert(rebuilt);
+  assert.equal(compileDirectJit.cacheStats(cache).compiledBlocks, 3);
+
+  // Programs own frozen constant tables, so clearing the reusable cache cannot mutate
+  // a previously returned program.
+  const old = frame(first);
+  assert.equal(first.run(old, 10), 'fallback');
+  assert.equal(old.states[1], 3);
 });

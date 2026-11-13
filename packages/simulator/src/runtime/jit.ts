@@ -11,7 +11,7 @@ import type { EventQueue } from '../queue';
 import { acceptSync } from './errors';
 import { body, time } from './execution';
 import type { Instance, InstanceBoard } from './instance';
-import type { Decl, Dependencies, Jit } from './state';
+import type { Decl, Dependencies, DirectJitLayout, Jit } from './state';
 import type { RuntimeDiagnosticCode, RuntimePhase, SimulationError } from '../types';
 import { bytesView, finite } from '../values';
 
@@ -213,20 +213,47 @@ function directHost(
     },
   };
 }
+
+/** Build the numeric bank layout once; rebuilds then only need the cached instruction bodies. */
+function directLayout(jit: Jit): DirectJitLayout {
+  if (jit.directLayout !== undefined) return jit.directLayout;
+  const instance = jit.instance;
+  const stateNames = [...instance.states.keys()].filter((name) => {
+    const declaration = instance.declarations.get(name) as Decl<'state'>;
+    return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
+  });
+  const memoryNames = [...instance.memories.keys()];
+  const states = new Map(stateNames.map((name, index) => [name, index]));
+  const memories = new Map(memoryNames.map((name, index) => [name, index]));
+  const memoryBanks = memoryNames.map((name) => instance.memory(name));
+  const memoryViews = memoryBanks.map(
+    (memory) => new DataView(memory.buffer, memory.byteOffset, memory.byteLength),
+  );
+  jit.directLayout = {
+    stateNames: Object.freeze(stateNames),
+    memoryNames: Object.freeze(memoryNames),
+    states,
+    memories,
+    memoryBanks: Object.freeze(memoryBanks),
+    memoryViews: Object.freeze(memoryViews),
+  };
+  return jit.directLayout;
+}
+
 function createDirectFrame(
   board: JitRuntimeHost,
   instance: Instance,
-  stateNames: readonly string[],
-  memoryNames: readonly string[],
+  layout: DirectJitLayout,
   program: DirectJitProgram,
   barrier: DirectBarriers,
 ): DirectJitFrame {
   const frame: DirectJitFrame = {
-    states: new Array(stateNames.length),
-    memories: memoryNames.map((name) => instance.memory(name)),
+    states: new Array(layout.stateNames.length),
+    memories: [...layout.memoryBanks],
+    memoryViews: layout.memoryViews,
     locals: new Array(program.localCount),
-    stateDirty: new Array(Math.ceil(stateNames.length / 32)).fill(0),
-    memoryDirty: new Array(Math.ceil(memoryNames.length / 32)).fill(0),
+    stateDirty: new Array(Math.ceil(layout.stateNames.length / 32)).fill(0),
+    memoryDirty: new Array(Math.ceil(layout.memoryNames.length / 32)).fill(0),
     time: board.time,
     due: board.time,
     resume: 0,
@@ -282,94 +309,92 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
         // Covered: reuse the current program and fall through to the shared execution tail.
       } else {
         if (jit.directProgramRevision !== jit.revision) {
+          // Code-memory replacement resets this marker to -1. The translated cache is gone, so
+          // cached instruction bodies must go with it; old programs stay self-contained.
+          if (jit.directProgramRevision === -1 && jit.directCache !== undefined)
+            compileDirectJit.clearCache(jit.directCache);
           jit.directPrograms.clear();
           jit.directProgramRevision = jit.revision;
         }
+        const layout = directLayout(jit);
+        const instructions = [...jit.cache.values()].filter(
+          (instruction) => !instruction.polling && !jit.polling.has(instruction.pc),
+        );
+        /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
+        const delayLoops = new Map<
+          number,
+          {
+            counter: number;
+            cycles: number;
+            pending?: { state: number; period: number; active: number };
+          }
+        >();
+        for (const [headPc, delay] of jit.delays) {
+          const counter = layout.states.get(delay.counter);
+          if (counter === undefined) continue;
+          const pending =
+            delay.pending === undefined
+              ? undefined
+              : {
+                  state: layout.states.get(delay.pending.state),
+                  period: layout.states.get(delay.pending.period),
+                  active: layout.states.get(delay.pending.active),
+                };
+          delayLoops.set(
+            headPc,
+            pending !== undefined &&
+              pending.state !== undefined &&
+              pending.period !== undefined &&
+              pending.active !== undefined
+              ? { counter, cycles: delay.cycles, pending: pending as never }
+              : { counter, cycles: delay.cycles },
+          );
+        }
         // Guards stay out of the key: blocks test the barriers at entry, so one program serves
-        // every observer set. Only the delay fold changes the emitted bodies within a revision,
-        // and `directProgramRevision` clears this cache whenever a block is translated.
-        const key = JSON.stringify([...jit.delays.keys()].sort((left, right) => left - right));
+        // every observer set. The full delay descriptor participates because it changes the
+        // emitted guard; translation revision changes still clear the program cache.
+        const key = JSON.stringify([...delayLoops].sort(([left], [right]) => left - right));
         const cached = jit.directPrograms.get(key);
         if (cached) {
           jit.direct = cached;
           jit.directRevision = jit.revision;
         } else {
-          const stateNames = [...instance.states.keys()].filter((name) => {
-            const declaration = instance.declarations.get(name) as Decl<'state'>;
-            return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
-          });
-          const memoryNames = [...instance.memories.keys()];
-          const states = new Map(stateNames.map((name, index) => [name, index]));
-          const memories = new Map(memoryNames.map((name, index) => [name, index]));
-          const instructions = [...jit.cache.values()].filter(
-            (instruction) => !instruction.polling && !jit.polling.has(instruction.pc),
-          );
-          /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
-          const delayLoops = new Map<
-            number,
+          const { states, memories } = layout;
+          const cache = (jit.directCache ??= compileDirectJit.createCache());
+          const program = compileDirectJit(
+            instructions,
             {
-              counter: number;
-              cycles: number;
-              pending?: { state: number; period: number; active: number };
-            }
-          >();
-          for (const [headPc, delay] of jit.delays) {
-            const counter = states.get(delay.counter);
-            if (counter === undefined) continue;
-            const pending =
-              delay.pending === undefined
-                ? undefined
-                : {
-                    state: states.get(delay.pending.state),
-                    period: states.get(delay.pending.period),
-                    active: states.get(delay.pending.active),
-                  };
-            delayLoops.set(
-              headPc,
-              pending !== undefined &&
-                pending.state !== undefined &&
-                pending.period !== undefined &&
-                pending.active !== undefined
-                ? { counter, cycles: delay.cycles, pending: pending as never }
-                : { counter, cycles: delay.cycles },
-            );
-          }
-          const program = compileDirectJit(instructions, {
-            states,
-            memories,
-            pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
-            host: true,
-            split: true,
-            shardSize: DIRECT_SHARD_SIZE,
-            delayLoops,
-          });
+              states,
+              memories,
+              pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
+              host: true,
+              split: true,
+              shardSize: DIRECT_SHARD_SIZE,
+              delayLoops,
+            },
+            cache,
+          );
           jit.directRevision = jit.revision;
           jit.directMisses = 0;
           if (program) directStats(jit).directCompiles++;
           const barrier = directBarriers(jit);
           barrier.stateIndex = states;
           barrier.memoryIndex = memories;
-          barrier.stateMask.length = Math.ceil(stateNames.length / 32);
-          barrier.memoryMask.length = Math.ceil(memoryNames.length / 32);
+          barrier.stateMask.length = Math.ceil(layout.stateNames.length / 32);
+          barrier.memoryMask.length = Math.ceil(layout.memoryNames.length / 32);
           syncDirectBarriers(jit);
           jit.direct = program
             ? {
                 program,
                 pcs: new Set(program.pcs),
-                stateReads: program.readStates.map((name) => [name, states.get(name)!] as const),
-                stateWrites: program.writeStates.map((name) => [name, states.get(name)!] as const),
-                memoryWrites: program.writeMemories.map(
-                  (name) => [name, memories.get(name)!] as const,
-                ),
+                stateReads: program.readStates,
+                stateReadSlots: program.readStates.map((name) => states.get(name)!),
+                stateWrites: program.writeStates,
+                stateWriteSlots: program.writeStates.map((name) => states.get(name)!),
+                memoryWrites: program.writeMemories,
+                memoryWriteSlots: program.writeMemories.map((name) => memories.get(name)!),
                 revision: jit.revision,
-                frame: createDirectFrame(
-                  board,
-                  instance,
-                  stateNames,
-                  memoryNames,
-                  program,
-                  barrier,
-                ),
+                frame: createDirectFrame(board, instance, layout, program, barrier),
               }
             : undefined;
           // A declined program must not be cached, or the key would keep answering `undefined`.
@@ -385,7 +410,8 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   const direct = jit.direct!;
   const frame = direct.frame;
   if (pending) frame.stopAfterInstruction = true;
-  for (const [name, index] of direct.stateReads) frame.states[index] = instance.states.get(name);
+  for (let index = 0; index < direct.stateReads.length; index++)
+    frame.states[direct.stateReadSlots[index]!] = instance.states.get(direct.stateReads[index]!);
   frame.time = board.time;
   frame.stateDirty.fill(0);
   frame.memoryDirty.fill(0);
@@ -399,16 +425,20 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
   } finally {
     board.time = frame.time;
-    for (const [name, index] of direct.stateWrites)
-      if ((frame.stateDirty[index >>> 5]! & (1 << (index & 31))) !== 0) {
-        instance.host.write(name, frame.states[index]);
+    for (let index = 0; index < direct.stateWrites.length; index++) {
+      const slot = direct.stateWriteSlots[index]!;
+      if ((frame.stateDirty[slot >>> 5]! & (1 << (slot & 31))) !== 0) {
+        instance.host.write(direct.stateWrites[index]!, frame.states[slot]);
         wrote = true;
       }
-    for (const [name, index] of direct.memoryWrites)
-      if ((frame.memoryDirty[index >>> 5]! & (1 << (index & 31))) !== 0) {
-        instance.memoryChanged(name);
+    }
+    for (let index = 0; index < direct.memoryWrites.length; index++) {
+      const slot = direct.memoryWriteSlots[index]!;
+      if ((frame.memoryDirty[slot >>> 5]! & (1 << (slot & 31))) !== 0) {
+        instance.memoryChanged(direct.memoryWrites[index]!);
         wrote = true;
       }
+    }
   }
   // A frame that only dispatched an unknown PC changed no slot and advanced no time, so the
   // convergence pass would find nothing dirty to solve. The fallback re-enters the same
