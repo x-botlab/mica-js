@@ -15,6 +15,8 @@ pnpm --filter @mica-js/example-ct107d typecheck
 pnpm --filter @mica-js/example-ct107d schematic   # 原理图校验
 pnpm --filter @mica-js/example-ct107d canvas      # 画布校验
 pnpm --filter @mica-js/example-ct107d firmware    # 重新汇编固件
+pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
+                                                  # 外部固件整板联调（见 docs/official-firmware-simulation.md）
 ```
 
 整板用到的器件全部在本包 `src/devices/` 下，`mica build` 一次输出 21 个器件，
@@ -80,6 +82,8 @@ examples/ct107d/
     widgets.test.ts               四个板面 widget 的元数据与绘制/交互
     <id>.test.ts                  各器件行为用例
   docs/<id>.md                    器件说明：引脚、行为、端口、理想化
+  docs/official-firmware-simulation.md
+                                  官方工程固件（dist/代码）整板联合仿真实测记录与问题清单
   assets/ct107d-board.webp        板面照片（画布背景图，1068×768）
   assets/ct107d-demo.bin          演示固件（70 字节，assemble-firmware.mjs 生成）
   firmware/demo.asm               8051 汇编源
@@ -91,6 +95,7 @@ examples/ct107d/
   build-canvas.mjs                画布生成器：照片像素坐标 → 实例摆放与绑定
   verify-schematic.mjs            原理图校验：网表、建板、锁存链路、数码管扫描
   verify-canvas.mjs               画布校验：解析、绑定、对位、widget 渲染、按键网络
+  verify-firmware.mjs             固件联调：把外部 HEX/bin（如 dist/代码）装进整板看输出
 ```
 
 ## 器件
