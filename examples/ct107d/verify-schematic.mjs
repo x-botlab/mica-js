@@ -226,12 +226,12 @@ const writeLatch = (byte, address) => [
   0x00, // MOV P2,#00H
 ];
 
-/** 依次写入八个数码管位的段码：0x06、0x5B、0x7F、0x00、0x3F、0x09、0x80、0x01。 */
-const DIGIT_CODES = [0x06, 0x5b, 0x7f, 0x00, 0x3f, 0x09, 0x80, 0x01];
+/** 依次写入八个数码管位的段码（共阳驱动码）：0、1、2、3、4、5、6、7。 */
+const DIGIT_CODES = [0xc0, 0xf9, 0xa4, 0xb0, 0x99, 0x92, 0x82, 0xf8];
 const SCAN = DIGIT_CODES.flatMap((code, index) => [
-  ...writeLatch(0xff, Y6), // 八位都不选中
+  ...writeLatch(0x00, Y6), // 八位都不选中（共阳：位选全低）
   ...writeLatch(code, Y7), // 段码
-  ...writeLatch(~(1 << index) & 0xff, Y6), // 只选中第 index + 1 位
+  ...writeLatch(1 << index, Y6), // 只选中第 index + 1 位
 ]);
 const firmware = Uint8Array.from([
   0x75,
@@ -287,8 +287,12 @@ for (const [designator, values, codes] of [
 ]) {
   for (const [index, code] of codes.entries()) {
     const name = `digit${index + 1}`;
-    if (values[name] !== code)
-      failures.push(`${designator} ${name} 段码 ${values[name]}，期望 0x${code.toString(16)}`);
+    // 段码端口按「点亮的段」编码，共阳驱动码因此取反。
+    const expected = ~code & 0xff;
+    if (values[name] !== expected)
+      failures.push(
+        `${designator} ${name} 段码 ${values[name]}，期望 0x${expected.toString(16)}（驱动码 0x${code.toString(16)}）`,
+      );
   }
 }
 

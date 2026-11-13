@@ -1,21 +1,25 @@
 /**
- * 共阴四位七段数码管（CT107D 的 DS1/DS2）。
+ * 四位七段数码管（CT107D 的 DS1/DS2）。
  *
- * 电气：每段阳极（a–g、dp）到每一位的公共阴极（com1–com4）之间是一段等效串联电阻，
+ * 电气：每段阳极（a–g、dp）到每一位的公共端（com1–com4）之间是一段等效串联电阻，
  * 与 `blue-led` 相同，平台只提供线性电阻意图，所以没有正向压降、反向截止与发光效率。
- * 8 段 × 4 位共 32 条支路：段脚为高、位脚为低时该段导通。
+ * 8 段 × 4 位共 32 条支路。
+ *
+ * 极性：`commonAnode` 为 false（默认）时是共阴管——公共端低电平选中该位、段脚高电平
+ * 点亮；为 true 时是共阳管——公共端高电平选中、段脚低电平点亮。两种极性下 `digit1`–
+ * `digit4` 都按「点亮的段」编码，因此适配器、话题与 UI 不随极性变化。
  *
  * 显示：真实数码管靠多路扫描刷新，人眼看到的是各段亮度的积分。模型不做时间积分，而是把
  * 每一位最近一次被选中时的段码保存下来——这就是「扫描结束后屏上留下的内容」。选中期间
- * 段脚变化会继续跟随（等价于先选位、后写段码也能显示），取消选中（拉高或悬空）后只保持，
- * 不清屏；写全 0 的段码会把该位保存为 0（熄灭）。
+ * 段脚变化会继续跟随（等价于先选位、后写段码也能显示），取消选中（释放或反极性）后只保持，
+ * 不清屏；选中期间没有任何段点亮会把该位保存为 0（熄灭）。
  *
- * 理想化：零传播延迟；不模拟亮度、余辉、扫描占空比与人眼积分；公共阴极低有效，
- * 没有共阳变体；段脚不需要外部限流电阻时可直接接驱动，外部电阻可按 blue-led 的做法
- * 并入 `forwardResistance`。
+ * 理想化：零传播延迟；不模拟亮度、余辉、扫描占空比与人眼积分；段脚不需要外部限流电阻
+ * 时可直接接驱动，外部电阻可按 blue-led 的做法并入 `forwardResistance`。
  */
 device Seg4(
-  forwardResistance: number default 500
+  forwardResistance: number default 500,
+  commonAnode: bool default false
 ) {
   assert isFinite(forwardResistance)
       && forwardResistance >= 0.001
@@ -70,8 +74,10 @@ device Seg4(
     resistor(to: com3, resistance: forwardResistance),
     resistor(to: com4, resistance: forwardResistance)
   ];
-  // 公共阴极的判定阈值高于普通逻辑脚：线性模型没有正向压降，选中位的公共阴极会被
-  // 导通的段路径抬起（8 段全亮时约 1.4 V），而被取消的位由驱动器拉高到 3.5 V 以上。
+  // 公共端的判定阈值高于普通逻辑脚：线性模型没有正向压降，选中位的公共端会被导通的
+  // 段路径拉动（共阴：8 段全亮时约 1.4 V；共阳：8 段全亮时约 4.4 V），而未选中的位由
+  // 驱动器拉到对侧电源轨（共阴 3.5 V 以上、共阳 0.6 V 以下），抬高后的阈值才能把这两态
+  // 分开。
   pin com1(low: 2.0, high: 3.0);
   pin com2(low: 2.0, high: 3.0);
   pin com3(low: 2.0, high: 3.0);
@@ -88,23 +94,39 @@ device Seg4(
   state shown3: number = 0;
   state shown4: number = 0;
 
-  pure fn bit(level: Logic) -> number {
-    if level == Logic.high {
+  /** 段脚为参与点亮的极性：共阴看高电平，共阳看低电平。 */
+  pure fn segmentLit(level: Logic) -> bool {
+    if commonAnode {
+      return level == Logic.low;
+    }
+    return level == Logic.high;
+  }
+
+  /** 公共端的选中极性：共阴低电平选中，共阳高电平选中。 */
+  pure fn digitSelected(level: Logic) -> bool {
+    if commonAnode {
+      return level == Logic.high;
+    }
+    return level == Logic.low;
+  }
+
+  pure fn bit(lit: bool) -> number {
+    if lit {
       return 1;
     }
     return 0;
   }
 
-  /** 当前段脚为高的段，编码成 8 位掩码。 */
+  /** 当前点亮的段，编码成 8 位掩码：bit0=a、bit1=b、…、bit7=dp。 */
   pure fn segmentMask() -> number {
-    return bit(a.sample.level)
-      + bit(b.sample.level) * 2
-      + bit(c.sample.level) * 4
-      + bit(d.sample.level) * 8
-      + bit(e.sample.level) * 16
-      + bit(f.sample.level) * 32
-      + bit(g.sample.level) * 64
-      + bit(dp.sample.level) * 128;
+    return bit(segmentLit(a.sample.level))
+      + bit(segmentLit(b.sample.level)) * 2
+      + bit(segmentLit(c.sample.level)) * 4
+      + bit(segmentLit(d.sample.level)) * 8
+      + bit(segmentLit(e.sample.level)) * 16
+      + bit(segmentLit(f.sample.level)) * 32
+      + bit(segmentLit(g.sample.level)) * 64
+      + bit(segmentLit(dp.sample.level)) * 128;
   }
 
   record DigitState {
@@ -113,19 +135,19 @@ device Seg4(
   }
 
   derived scan1: DigitState = {
-    active: com1.sample.level == Logic.low,
+    active: digitSelected(com1.sample.level),
     mask: segmentMask()
   };
   derived scan2: DigitState = {
-    active: com2.sample.level == Logic.low,
+    active: digitSelected(com2.sample.level),
     mask: segmentMask()
   };
   derived scan3: DigitState = {
-    active: com3.sample.level == Logic.low,
+    active: digitSelected(com3.sample.level),
     mask: segmentMask()
   };
   derived scan4: DigitState = {
-    active: com4.sample.level == Logic.low,
+    active: digitSelected(com4.sample.level),
     mask: segmentMask()
   };
 

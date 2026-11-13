@@ -2236,7 +2236,8 @@
         "y": 365,
         "rotation": 0,
         "properties": {
-          "forwardResistance": 1500
+          "forwardResistance": 1500,
+          "commonAnode": true
         }
       },
       {
@@ -2343,7 +2344,8 @@
         "y": 595,
         "rotation": 0,
         "properties": {
-          "forwardResistance": 1500
+          "forwardResistance": 1500,
+          "commonAnode": true
         }
       },
       {

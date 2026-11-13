@@ -23,8 +23,12 @@ interface ArtifactModule {
 
 const SEGMENTS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp'] as const;
 
-/** 静态板：段脚按掩码接 5 V / 0 V，选中位接 0 V，其余位接 5 V。 */
-async function staticDigits(mask: number, active: readonly number[]): Promise<number[]> {
+/** 静态板：段脚按掩码接 5 V / 0 V，选中位接 0 V，其余位接 5 V（共阴）。 */
+async function staticDigits(
+  mask: number,
+  active: readonly number[],
+  commonAnode = false,
+): Promise<number[]> {
   const module = (await import(
     pathToFileURL(join(ARTIFACT_DIR, 'device.js')).href
   )) as ArtifactModule;
@@ -52,19 +56,24 @@ async function staticDigits(mask: number, active: readonly number[]): Promise<nu
     },
   ]);
   const nets = [
-    ...SEGMENTS.map((pin, index) => ({
-      id: pin,
-      pins: [{ instance: 'display', pin }],
-      voltage: ((mask >> index) & 1) === 1 ? 5 : 0,
-    })),
+    ...SEGMENTS.map((pin, index) => {
+      const lit = ((mask >> index) & 1) === 1;
+      return {
+        id: pin,
+        pins: [{ instance: 'display', pin }],
+        voltage: lit === commonAnode ? 0 : 5,
+      };
+    }),
     ...Array.from({ length: 4 }, (_, index) => ({
       id: `com${index + 1}`,
       pins: [{ instance: 'display', pin: `com${index + 1}` }],
-      voltage: active.includes(index) ? 0 : 5,
+      voltage: active.includes(index) === commonAnode ? 5 : 0,
     })),
   ];
   const board = createBoard(library, {
-    instances: [{ id: 'display', type: 'display', props: { forwardResistance: 1500 } }],
+    instances: [
+      { id: 'display', type: 'display', props: { forwardResistance: 1500, commonAnode } },
+    ],
     nets,
   } as never);
 
@@ -95,5 +104,11 @@ describe.skipIf(!existsSync(join(ARTIFACT_DIR, 'device.js')))('交付产物', ()
 
   it('位脚为高时对应位不显示', async () => {
     expect(await staticDigits(0x81, [])).toEqual([0, 0, 0, 0]);
+  });
+
+  it('commonAnode 实例按共阳驱动码锁存点亮段', async () => {
+    // 掩码是「点亮的段」：0x3F 对应固件写入共阳 latch 的 0xC0，0x00 对应 0xFF。
+    expect(await staticDigits(0x3f, [0], true)).toEqual([0x3f, 0, 0, 0]);
+    expect(await staticDigits(0x00, [1], true)).toEqual([0, 0, 0, 0]);
   });
 });

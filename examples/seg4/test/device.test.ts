@@ -6,7 +6,7 @@ import { validateMetadata } from '@mica-js/sdk/metadata';
 import { circuit, readDigits } from './harness.ts';
 
 /**
- * 共阴四位七段数码管的行为基线。
+ * 四位七段数码管的行为基线（默认共阴，另按 commonAnode 验证共阳）。
  *
  * 电路由 12 个数字源直接驱动：段脚 a–dp 与位脚 com1–com4。电气求解、DDL 采样与通道
  * 都走真实仿真板。段码按 bit0=a…bit7=dp 编码。
@@ -51,12 +51,13 @@ describe('器件声明', () => {
     expect(() => validateMetadata(metadata(), 'device', 'seg4')).not.toThrow();
   });
 
-  it('声明 8 段 + 4 位共 12 根引脚、四个段码端口与一项属性', () => {
+  it('声明 8 段 + 4 位共 12 根引脚、四个段码端口与两项属性', () => {
     const device = metadata();
 
     expect(device.displayName).toBe('四位数码管');
     expect(Object.keys(device.pins).sort()).toEqual([...SEGMENTS, ...COMMONS].sort());
     expect(device.properties.forwardResistance?.default).toBe(500);
+    expect(device.properties.commonAnode).toMatchObject({ type: 'boolean', default: false });
 
     for (const name of ['digit1', 'digit2', 'digit3', 'digit4'])
       expect(device.ports[name]).toMatchObject({
@@ -199,6 +200,97 @@ describe('扫描保持', () => {
       expect(built.history.digit2?.at(-1)).toBe(0x45);
       // 未变化的位不重复发布。
       expect(built.topics.digit1).toBe(0);
+    } finally {
+      built.dispose();
+    }
+  });
+});
+
+describe('共阳极性', () => {
+  /** 把驱动码原样写到段脚，按极性只选中第 `digit` 位（`digit < 0` 表示都不选）。 */
+  const drive = (
+    built: Awaited<ReturnType<typeof circuit>>,
+    code: number,
+    digit: number,
+    anode: boolean,
+  ): void => {
+    for (const [index, pin] of SEGMENTS.entries())
+      built.set(pin, ((code >> index) & 1) === 1 ? 1 : 0);
+    for (let other = 0; other < 4; other += 1) {
+      const selected = other === digit;
+      built.set(COMMONS[other] as (typeof COMMONS)[number], selected === anode ? 1 : 0);
+    }
+  };
+
+  it('公共端高电平选中、段脚低电平点亮，段码仍按点亮编码', async () => {
+    const built = await circuit({ commonAnode: true });
+
+    try {
+      // 0xC0 是共阳「0」的驱动码：a–f 低、g/dp 高 → 点亮 a–f = 0x3F。
+      drive(built, 0xc0, 0, true);
+      built.run(1_000_000_000);
+      expect(built.outputs.digit1).toBe(0x3f);
+
+      // 0xFF 是共阳「全灭」：没有段被点亮。
+      drive(built, 0xff, 1, true);
+      built.run(1_000_000_000);
+      expect(built.outputs.digit2).toBe(0x00);
+    } finally {
+      built.dispose();
+    }
+  });
+
+  it('公共端为低时该位不被选中，显示内容保持', async () => {
+    const built = await circuit({ commonAnode: true });
+
+    try {
+      drive(built, 0xc0, 0, true);
+      built.run(1_000_000_000);
+      expect(built.outputs.digit1).toBe(0x3f);
+
+      // 段码换成「全灭」，但四位公共端都拉低：不选中任何位，显示保持。
+      drive(built, 0xff, -1, true);
+      built.run(1_000_000_000);
+      expect(built.outputs.digit1).toBe(0x3f);
+    } finally {
+      built.dispose();
+    }
+  });
+
+  it('共阴与共阳对同一驱动码给出互补的点亮集合', async () => {
+    const cathode = await circuit();
+
+    try {
+      drive(cathode, 0xc0, 0, false);
+      cathode.run(1_000_000_000);
+      expect(cathode.outputs.digit1).toBe(0xc0);
+    } finally {
+      cathode.dispose();
+    }
+
+    const anode = await circuit({ commonAnode: true });
+
+    try {
+      drive(anode, 0xc0, 0, true);
+      anode.run(1_000_000_000);
+      expect(anode.outputs.digit1).toBe(~0xc0 & 0xff);
+    } finally {
+      anode.dispose();
+    }
+  });
+
+  it('共阳下按位扫描，每位保留自己选中时的段码', async () => {
+    const built = await circuit({ commonAnode: true });
+
+    try {
+      built.show(0x06, [0]);
+      built.run(1_000_000_000);
+      built.show(0x5b, [1]);
+      built.run(1_000_000_000);
+
+      expect([1, 2, 3, 4].map((index) => built.outputs[`digit${index}`])).toEqual([
+        0x06, 0x5b, 0, 0,
+      ]);
     } finally {
       built.dispose();
     }

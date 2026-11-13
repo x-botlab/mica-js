@@ -360,7 +360,8 @@ const PLACEMENTS = [
     device: DISPLAY_REF,
     column: 6,
     order: index,
-    properties: { forwardResistance: 1500 },
+    // 板上两片数码管是共阳管：位选高电平选中、段脚低电平点亮。
+    properties: { forwardResistance: 1500, commonAnode: true },
   })),
   { designator: 'S1', device: BUTTON_REF, column: 7, order: 0 },
   ...[
