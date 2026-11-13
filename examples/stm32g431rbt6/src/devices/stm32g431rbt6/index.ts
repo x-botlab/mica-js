@@ -249,8 +249,10 @@ function cacheKey(
 ): string {
   let bytes = '';
 
+  // 取指用 0x1ffff 内的偏移，但缓存键必须带逻辑 PC：固件可以经 0 地址别名
+  // （0x00000000 起）或 0x08000000 起取同一段代码，两者是不同的执行位置。
   for (let offset = 0; offset < size; offset += 1)
-    bytes += (code[(pc + offset) & 0x1ffff] ?? 0).toString(16);
+    bytes += (code[((pc & 0x1ffff) + offset) & 0x1ffff] ?? 0).toString(16);
 
   return `${cyclePs}:${pc}:${bytes}`;
 }
@@ -373,7 +375,7 @@ const createTranslate =
     }
     const key = service
       ? `service:${machine.cyclePs}:${pc}`
-      : cacheKey(input.code, fetchPc, instruction!.size, machine.cyclePs);
+      : cacheKey(input.code, pc, instruction!.size, machine.cyclePs);
     const cached = blockCache.get(key);
 
     if (cached !== undefined) return cached;

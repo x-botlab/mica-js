@@ -378,11 +378,14 @@ function emit16(b: Body, pc: number, instr: number): void {
   }
 
   if (instr < 0xb000) {
-    // ADR / ADD SP.
+    // ADR / ADD rd, SP, #imm
     const rd = (instr >> 8) & 7;
     const imm = (instr & 0xff) << 2;
 
-    if (instr & 0x0800) writeSp(b, b.add(readSp(b), num(b, imm)));
+    // 0xA800–0xAFFF 是 `ADD rd, SP, #imm`：rd 只有 3 位，永远不可能是 SP，
+    // 所以这里必须写 rd。把它当成「调整 SP」会让 `add r0, sp, #56` 之类的
+    // 普通寻址把栈指针顶高，后续 pop 就会取到错位的返回地址。
+    if (instr & 0x0800) writeResult(b, rd, b.add(readSp(b), num(b, imm)));
     else writeResult(b, rd, num(b, (((pc + 4) & ~3) + imm) >>> 0));
 
     return;

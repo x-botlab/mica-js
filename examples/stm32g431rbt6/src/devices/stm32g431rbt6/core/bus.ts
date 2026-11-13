@@ -19,6 +19,7 @@ import {
 import { asBody, num, readWord, u32, writeWord } from './ir';
 import type { Body } from './ir';
 import { gpioPortOf, readGpio } from './gpio';
+import { readPwr } from './pwr';
 import { readRcc, writeRcc } from './rcc';
 import { USARTS, readUsart, writeUsart } from './usart';
 
@@ -194,12 +195,7 @@ export function readPeripheral(b: Body, address: Value<number>, size: number): V
 
                               body6.setLocal(
                                 result,
-                                readRegisterFile(
-                                  body6,
-                                  body6.subtract(address, num(body6, PWR_BASE)),
-                                  size,
-                                  0x740,
-                                ),
+                                readPwr(body6, body6.subtract(address, num(body6, PWR_BASE)), size),
                               );
                             },
                             (generic) => {

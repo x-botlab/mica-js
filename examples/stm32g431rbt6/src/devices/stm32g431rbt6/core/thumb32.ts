@@ -13,6 +13,7 @@ import {
   setPc,
   setPcConst,
   shiftRaw,
+  shiftValue,
   signExtend,
   signExtendDynamic,
   signIsSet,
@@ -380,6 +381,21 @@ function emit32(b: Body, pc: number, h1: number, h2: number): void {
     return;
   }
 
+  if ((h1 & 0xff80) === 0xfa00) {
+    // LSL/LSR/ASR/ROR (register)：`lsl.w r6, r5, r3` / `lsrs.w r6, r2, r3`。
+    // 编码是 `1111 1010 0<op2> S Rn | 1111 Rd 0000 Rm`：
+    // - h1 的 bit6..5 选移位类型（00 LSL、01 LSR、10 ASR、11 ROR）；
+    // - **Rn（h1 的低 4 位）是被移位的值，Rm（h2 的低 4 位）持有移位量**。
+    const rd = (h2 >> 8) & 0xf;
+    const value = readReg(b, h1 & 0xf);
+    const amount = b.bitAnd(readReg(b, h2 & 0xf), num(b, 0xff));
+    const type = (h1 >> 5) & 3;
+
+    writeReg(b, rd, shiftValue(b, value, amount, type));
+
+    return;
+  }
+
   if ((h1 & 0xfff0) === 0xfab0) {
     const rm = h2 & 0xf;
     const rd = (h2 >> 8) & 0xf;
@@ -491,6 +507,14 @@ function emit32(b: Body, pc: number, h1: number, h2: number): void {
     return;
   }
 
+  if ((h1 & 0xff40) === 0xe940) {
+    // LDRD/STRD (immediate, pre-indexed)：`strd r0, r1, [sp, #36]` 一类。
+    // bit5 选 load，bit4 是写回，bit7 选加/减，offset 以 4 字节为单位。
+    dualLoadStore(b, pc, h1, h2);
+
+    return;
+  }
+
   if ((h1 & 0xfff0) === 0xe850 || (h1 & 0xfff0) === 0xe840) {
     exclusiveAccess(b, pc, h1, h2);
 
@@ -567,6 +591,9 @@ function pushPopWide(b: Body, pc: number, h1: number, h2: number): void {
 
 function loadStoreMultiple(b: Body, pc: number, h1: number, h2: number): void {
   const load = (h1 & 0xffd0) === 0xe890;
+  // W 位（bit5）决定是否写回基址。LDM/STM 的 W=0 形式非常常见
+  // （`ldmia.w r4, {r0,r1,r2}` 不写回），无条件写回会让后续地址全部错位。
+  const writeBack = (h1 & 0x20) !== 0;
   const rn = h1 & 0xf;
   const list = h2 & 0xffff;
   const registers: number[] = [];
@@ -581,7 +608,31 @@ function loadStoreMultiple(b: Body, pc: number, h1: number, h2: number): void {
     else storeRegister(b, register, address, 4, pc);
   });
 
-  if (!load || !registers.includes(rn)) writeReg(b, rn, b.add(base, num(b, registers.length * 4)));
+  if (writeBack && !(load && registers.includes(rn)))
+    writeReg(b, rn, b.add(base, num(b, registers.length * 4)));
+}
+
+/** `ldrd`/`strd` 立即数寻址（前索引，可选写回）。 */
+function dualLoadStore(b: Body, pc: number, h1: number, h2: number): void {
+  const load = (h1 & 0x20) !== 0;
+  const writeBack = (h1 & 0x10) !== 0;
+  const add = (h1 & 0x80) !== 0;
+  const rn = h1 & 0xf;
+  const rt = (h2 >> 12) & 0xf;
+  const rt2 = (h2 >> 8) & 0xf;
+  const offset = (h2 & 0xff) * 4;
+  const base = readAnyReg(b, rn, pc);
+  const address = add ? b.add(base, num(b, offset)) : b.subtract(base, num(b, offset));
+  const second = b.add(address, num(b, 4));
+
+  if (load) {
+    loadRegister(b, rt, address, 4, pc);
+    loadRegister(b, rt2, second, 4, pc);
+  } else {
+    storeRegister(b, rt, address, 4, pc);
+    storeRegister(b, rt2, second, 4, pc);
+  }
+  if (writeBack) writeAnyReg(b, rn, address);
 }
 
 function tableBranch(b: Body, pc: number, h1: number, h2: number): void {

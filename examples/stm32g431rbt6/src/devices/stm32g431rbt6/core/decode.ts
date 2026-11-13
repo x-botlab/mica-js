@@ -70,7 +70,10 @@ const itInstruction = (h1: number): Instruction => ({
 export function decode(code: JitTranslateInput['code'], pc: number): Instruction {
   const h1 = byteAt(code, pc) | (byteAt(code, pc + 1) << 8);
 
-  if ((h1 & 0xf800) === 0xe800 || (h1 & 0xf800) === 0xf000) {
+  // Thumb 的 32 位前缀是 0xE800–0xFFFF（0b11101 / 11110 / 11111）；只判
+  // 0xE800 与 0xF000 两档会漏掉 0xF800–0xFFFF（`ldr.w`/`str.w` 等），把它们
+  // 当成 16 位指令解码后 PC 只会前进 2 字节，落到半条指令上继续执行垃圾。
+  if (h1 >= 0xe800) {
     const h2 = byteAt(code, pc + 2) | (byteAt(code, pc + 3) << 8);
 
     return guarded(decode32(h1, h2));
