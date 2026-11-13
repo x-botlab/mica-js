@@ -29,7 +29,7 @@ import {
 } from '../kernel/ir';
 import type { Body } from '../kernel/ir';
 import { IRQ_VECTORS, markIrqDirty } from '../kernel/interrupt';
-import { UART_BASE } from './layout';
+import { UART_BASE, UART_QUEUE_BASE } from './layout';
 import {
   DRIVE_RESISTANCE,
   GROUND_PIN,
@@ -102,10 +102,11 @@ const RX_SHIFT = 0x6;
 const RX_BUFFER = 0x7;
 /** 模式 0 的半位标记（bit0）；异步接收时存本帧的数据位数。 */
 const HALF = 0x8;
+/** 当前发送字节：帧字逐位移空后仍要保留它供端口发布。 */
+const TX_BYTE = 0x9;
 const TX_PHASE = 0xa;
 const RX_PHASE = 0xc;
 const BIT_PERIOD = 0xe;
-
 const F_TX_ACTIVE = 0x01;
 /** TXD 当前为低；模式 0 时它就是同步移位时钟的电平。 */
 const F_LINE_LOW = 0x02;
@@ -114,6 +115,10 @@ const F_TX_NINTH = 0x08;
 const F_RX_NINTH = 0x10;
 /** 镜像 SCON/S2CON 的 REN（模式 0 下恒为 0），供 `advance` 一次比较判断是否需要接收。 */
 const F_REN = 0x20;
+/** 数据位已发完，正在发送停止位；停止位结束后才发布 TX 字节。 */
+const F_TX_STOP = 0x40;
+/** 发送期间又写入了一个 SBUF，停止位结束后启动下一帧。 */
+const F_TX_QUEUED = 0x80;
 
 const RX_IDLE = 0;
 const RX_START = 1;
@@ -547,8 +552,15 @@ export function createUart(): Peripheral {
     setFlag(b, engine.base, F_LINE_LOW, low);
   };
 
-  /** 写 SBUF/S2BUF：装载帧字并启动一帧。 */
-  const startTransmit = (b: Body, engine: Engine, value: Value<number>): void => {
+  const txQueue = (engine: Engine): number => UART_QUEUE_BASE + (engine.id === 'uart1' ? 0 : 1);
+
+  /** 只发布 UART1 的完整帧；UART2 没有对外端口。 */
+  const publishTransmit = (b: Body, engine: Engine): void => {
+    if (engine.id === 'uart1') b.send('uart1Tx', b.bytes(periph8(b, engine.base + TX_BYTE)));
+  };
+
+  /** 立即装载帧字并启动一帧；调用方保证发送器当前空闲。 */
+  const startTransmitNow = (b: Body, engine: Engine, value: Value<number>): void => {
     const one = number(b, 1);
     const zero = number(b, 0);
     const nineBit = b.greaterThanOrEqual(modeOf(b, engine), number(b, 2));
@@ -568,6 +580,7 @@ export function createUart(): Peripheral {
       () => eightCount,
     );
 
+    setPeriph8(b, engine.base + TX_BYTE, value);
     setPeriph8(b, engine.base + TX_WORD, value);
     setPeriph8(b, engine.base + TX_WORD + 1, ninth);
     setPeriph8(b, engine.base + TX_COUNT, count);
@@ -576,7 +589,7 @@ export function createUart(): Peripheral {
     // 一次写完发送相关的标志位，避免逐位 read-modify-write。
     const kept = b.bitAnd(
       periph8(b, engine.base + FLAGS),
-      number(b, 0xff & ~(F_TX_ACTIVE | F_LINE_LOW | F_TX_NINTH)),
+      number(b, 0xff & ~(F_TX_ACTIVE | F_LINE_LOW | F_TX_NINTH | F_TX_STOP | F_TX_QUEUED)),
     );
     const ninthFlag = number(b, F_TX_NINTH);
     const ninthBit = b.select(
@@ -595,32 +608,83 @@ export function createUart(): Peripheral {
     writeTxdPin(b, engine);
   };
 
-  /** 异步帧的一步：帧字右移一位；计数到 0 时输出停止位并置 TI。 */
-  const stepAsync = (b: Body, engine: Engine): void => {
-    const count = periph8(b, engine.base + TX_COUNT);
+  /** 一帧真正结束：发布当前字节，并在有排队字节时立刻启动下一帧。 */
+  const finishTransmit = (b: Body, engine: Engine): void => {
+    const queued = flagIsSet(b, engine.base, F_TX_QUEUED);
+    const next = periph8(b, txQueue(engine));
+
+    publishTransmit(b, engine);
+    setPeriph8(
+      b,
+      engine.base + FLAGS,
+      b.bitAnd(
+        periph8(b, engine.base + FLAGS),
+        number(b, 0xff & ~(F_TX_ACTIVE | F_LINE_LOW | F_TX_STOP | F_TX_NINTH | F_TX_QUEUED)),
+      ),
+    );
+    b.if(queued, (inner) => startTransmitNow(asBody(inner), engine, next));
+  };
+
+  /** 写 SBUF/S2BUF：发送器忙时最多排队一个字节，空闲时立即启动。 */
+  const startTransmit = (b: Body, engine: Engine, value: Value<number>): void => {
+    const active = flagIsSet(b, engine.base, F_TX_ACTIVE);
 
     b.if(
-      b.equal(types.number, count, number(b, 0)),
-      (stop) => {
-        const body = asBody(stop);
+      active,
+      (busy) => {
+        const body = asBody(busy);
+        const queued = flagIsSet(body, engine.base, F_TX_QUEUED);
 
-        // 停止位开始发送时置 TI。
-        setLineLow(body, engine, boolean(body, false));
-        setFlag(body, engine.base, F_TX_ACTIVE, boolean(body, false));
-        setControlBit(body, engine.control, engine.tiBit, boolean(body, true));
-        markIrqDirty(body);
+        body.if(body.not(queued), (empty) => {
+          const slot = asBody(empty);
+
+          setPeriph8(slot, txQueue(engine), value);
+          setFlag(slot, engine.base, F_TX_QUEUED, boolean(slot, true));
+        });
       },
-      (next) => {
-        const body = asBody(next);
-        const word = periph16(body, engine.base + TX_WORD);
+      (idle) => startTransmitNow(asBody(idle), engine, value),
+    );
+  };
 
-        setLineLow(
-          body,
-          engine,
-          body.equal(types.number, body.bitAnd(word, number(body, 1)), number(body, 0)),
+  /** 异步帧的一步：帧字右移一位；计数到 0 时开始停止位，停止位满一拍后发布。 */
+  const stepAsync = (b: Body, engine: Engine): void => {
+    const count = periph8(b, engine.base + TX_COUNT);
+    const stopping = flagIsSet(b, engine.base, F_TX_STOP);
+
+    b.if(
+      stopping,
+      (done) => finishTransmit(asBody(done), engine),
+      (rest) => {
+        const body = asBody(rest);
+
+        body.if(
+          body.equal(types.number, count, number(body, 0)),
+          (stop) => {
+            const startingStop = asBody(stop);
+
+            // 停止位开始在 TXD 上出现时置 TI；端口在该停止位满一拍后发布。
+            setLineLow(startingStop, engine, boolean(startingStop, false));
+            setFlag(startingStop, engine.base, F_TX_STOP, boolean(startingStop, true));
+            setControlBit(startingStop, engine.control, engine.tiBit, boolean(startingStop, true));
+            markIrqDirty(startingStop);
+          },
+          (next) => {
+            const data = asBody(next);
+            const word = periph16(data, engine.base + TX_WORD);
+
+            setLineLow(
+              data,
+              engine,
+              data.equal(types.number, data.bitAnd(word, number(data, 1)), number(data, 0)),
+            );
+            setPeriph16(
+              data,
+              engine.base + TX_WORD,
+              data.shiftRightUnsigned(word, number(data, 1)),
+            );
+            setPeriph8(data, engine.base + TX_COUNT, data.subtract(count, number(data, 1)));
+          },
         );
-        setPeriph16(body, engine.base + TX_WORD, body.shiftRightUnsigned(word, number(body, 1)));
-        setPeriph8(body, engine.base + TX_COUNT, body.subtract(count, number(body, 1)));
       },
     );
   };
@@ -646,16 +710,9 @@ export function createUart(): Peripheral {
           (done) => {
             const branch = asBody(done);
 
-            setPeriph8(
-              branch,
-              engine.base + FLAGS,
-              branch.bitAnd(
-                periph8(branch, engine.base + FLAGS),
-                number(branch, 0xff & ~(F_TX_ACTIVE | F_LINE_LOW)),
-              ),
-            );
             setControlBit(branch, engine.control, engine.tiBit, boolean(branch, true));
             markIrqDirty(branch);
+            finishTransmit(branch, engine);
           },
           (more) => {
             const branch = asBody(more);
@@ -730,6 +787,7 @@ export function createUart(): Peripheral {
   /** 停止位中点：满足 RI=0 与 SM2/RB8 过滤时装载 SBUF 并置 RI。 */
   const receiveStopBit = (b: Body, engine: Engine, level: Value<number>): void => {
     const total = periph8(b, engine.base + HALF);
+    const received = periph8(b, engine.base + RX_SHIFT);
     const one = number(b, 1);
     const zero = number(b, 0);
     const ninth = b.select(
@@ -759,10 +817,11 @@ export function createUart(): Peripheral {
     b.if(accept, (inner) => {
       const body = asBody(inner);
 
-      setPeriph8(body, engine.base + RX_BUFFER, periph8(body, engine.base + RX_SHIFT));
+      setPeriph8(body, engine.base + RX_BUFFER, received);
       setControlBit(body, engine.control, engine.rb8Bit, rb8High);
       setControlBit(body, engine.control, engine.riBit, boolean(body, true));
       markIrqDirty(body);
+      if (engine.id === 'uart1') body.send('uart1Rx', body.bytes(received));
     });
 
     if (engine.synchronous) {

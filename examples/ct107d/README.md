@@ -1,7 +1,8 @@
 # CT107D 器件包
 
-CT107D 竞赛板的 Mica 示例工程：21 个器件（13 种芯片 + 轻触按键 + 有源蜂鸣器 + 继电器 +
-两脚跳线与 2×3 跳线排针 + IAP15F2K61S2、`seg4` 数码管、`blue-led` 指示灯）、4 个板面 widget
+CT107D 竞赛板的 Mica 示例工程：23 个器件（13 种芯片 + 轻触按键 + 有源蜂鸣器 + 继电器 +
+两脚跳线与 2×3 跳线排针 + 超声波收发器件与 UART 串口探针 + IAP15F2K61S2、`seg4` 数码管、
+`blue-led` 指示灯）、4 个板面 widget
 （背景图 / 按键 / 四位数码管 / 指示灯）、整板原理图 `ct107d.sch`、板面画布 `ct107d.cnv`
 与一段 8051 演示固件。
 
@@ -19,7 +20,7 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
                                                   # 外部固件整板联调（见 docs/official-firmware-simulation.md）
 ```
 
-整板用到的器件全部在本包 `src/devices/` 下，`mica build` 一次输出 21 个器件，
+整板用到的器件全部在本包 `src/devices/` 下，`mica build` 一次输出 23 个器件，
 不依赖其它工程的构建产物。Playground 的 `scripts/components.mjs` 会把本包的 `dist/`
 与 `ct107d.{sch,cnv,assets}` 复制到被忽略的 `public/components/ct107d/`。
 
@@ -63,7 +64,7 @@ examples/ct107d/
   vitest.config.ts
   vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
   bench/
-    board.ts                      整板夹具：按 ct107d.sch 装配 48 颗器件（装载 src/，不依赖 dist）
+    board.ts                      整板夹具：按 ct107d.sch 装配 51 颗器件（装载 src/，不依赖 dist）
     measure.ts                    测量核心：进程 CPU 时间读数、电气/运行时/JIT 指标、topicDigest
     perf.test.ts                  基准用例：只断言下限，并追加一行到 bench/results.jsonl
   src/devices/<id>/
@@ -100,9 +101,9 @@ examples/ct107d/
 ```
 
 `docs/official-firmware-simulation.md` 记录 14 份官方固件的实测结果与已修复的模型问题；
-`docs/official-firmware-gaps.md` 单独列出仍无法完整验收的工程（`12.0`、`13.0`、`14.0` 的
-超声/测频页，以及 `6.0`/`7.0` 的串口）和需要补的网络与夹具。串口按该文档第 3 节同时补
-MCU 的 `uart1Tx` 端口与原理图里的独立 `uart-probe` 器件，两者缺一不可。
+`docs/official-firmware-gaps.md` 记录 `12.0`、`13.0`、`14.0` 的超声/测频页以及 `6.0`/`7.0`
+串口验收所需补件。当前整板已加入 `J3`、`ultrasonic` 与 `uart-probe`，MCU 也提供
+`uart1Tx`/`uart1Rx` 话题；`verify-firmware.mjs` 的 `--uart` 可经探针注入命令并对照两侧帧。
 
 ## 器件
 
@@ -126,6 +127,8 @@ MCU 的 `uart1Tx` 端口与原理图里的独立 `uart-probe` 器件，两者缺
 | `relay`       | 电磁继电器（K1，双极常开） | 执行器         | `energized`                      |
 | `jumper`      | 两脚跳线（J13）            | 装配配置       | —                                |
 | `jumper-2x3`  | 2×3 跳线排针（J2）         | 装配配置       | —                                |
+| `ultrasonic`  | 超声波收发器件             | 传感器         | —                                |
+| `uart-probe`  | UART 串口探针              | 串行探针       | `send`（输入）、`tx`、`rx`       |
 
 每个器件的引脚表、行为、端口编码与理想化见 [`docs/<id>.md`](docs/)。
 
@@ -133,12 +136,14 @@ MCU 的 `uart1Tx` 端口与原理图里的独立 `uart-probe` 器件，两者缺
 
 DDL 通道没有 `string` 负载，旧版的字符串端口改为固定编码的 `bytes`：
 
-| 器件      | 端口       | 编码                                                     |
-| --------- | ---------- | -------------------------------------------------------- |
-| `74hc138` | `code`     | 2 字节 ASCII：`"Y0"`–`"Y7"`；禁用时 `"--"`               |
-| `uln2003` | `channels` | 7 字节 ASCII，IN1→IN7 对应 `'0'`/`'1'`（如 `"1010000"`） |
-| `ds1302`  | `datetime` | 19 字节 ASCII：`YYYY-MM-DD HH:MM:SS`                     |
-| `at24c02` | `dump`     | 256 字节原始内容                                         |
+| 器件           | 端口                  | 编码                                                     |
+| -------------- | --------------------- | -------------------------------------------------------- |
+| `74hc138`      | `code`                | 2 字节 ASCII：`"Y0"`–`"Y7"`；禁用时 `"--"`               |
+| `uln2003`      | `channels`            | 7 字节 ASCII，IN1→IN7 对应 `'0'`/`'1'`（如 `"1010000"`） |
+| `ds1302`       | `datetime`            | 19 字节 ASCII：`YYYY-MM-DD HH:MM:SS`                     |
+| `at24c02`      | `dump`                | 256 字节原始内容                                         |
+| `uart-probe`   | `tx` / `rx`           | 每个 8N1 帧 1 字节                                       |
+| `iap15f2k61s2` | `uart1Tx` / `uart1Rx` | 每个完整 UART1 帧 1 字节                                 |
 
 其余端口都是 `number` 或 `bool`。`pcf8591` 的模拟输入输出只有端口，没有电气语义，因此物理
 引脚用 `vin0`–`vin3` / `dac` 命名（`label` 保留 `AIN0`–`AIN3` / `AOUT`）。
@@ -172,9 +177,10 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 ## 原理图 `ct107d.sch`
 
 按 CT107D 原理图（仓库根的 `SCH_硬件原理图V30.pdf`）逐网络还原竞赛板，包含本包的
-18 个芯片/按键/执行器/跳线器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
-（DS1/DS2 两片）；这三个器件同时有独立源工程，见上文。未实现器件——电阻、电容、晶振、LCD、拨码开关、其余排针与跳线（J3/J5/J7/JS1/JS2）、CH340C、霍尔、
-运放、电机、红外发射管——暂时忽略。
+20 个芯片/按键/执行器/跳线/探针器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4`
+四位数码管（DS1/DS2 两片）；这三个器件同时有独立源工程，见上文。未实现器件——电阻、
+电容、晶振、LCD、拨码开关、其余排针与跳线（J5/J7/JS1/JS2）、CH340C、霍尔、运放、电机、
+红外发射管——暂时忽略。
 
 | 文件                   | 说明                                                                |
 | ---------------------- | ------------------------------------------------------------------- |
@@ -183,7 +189,7 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 | `build-schematic.mjs`  | 生成器：内含 PDF 逐网络对照表与布局，重新生成两个产物               |
 | `verify-schematic.mjs` | 校验：解析网表并对照、建板、跑通锁存链路与数码管扫描                |
 
-器件引用由宿主解析到本包的 `./dist/devices/<ID>/`（共 21 个器件，均由本包一次构建）。
+器件引用由宿主解析到本包的 `./dist/devices/<ID>/`（共 23 个器件，均由本包一次构建）。
 
 已实现的连接：
 
@@ -200,15 +206,19 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
   [`docs/push-button.md`](docs/push-button.md)。
 - **串行**：`P20/SCL`/`P21/SDA` → U4（地址脚与 WP 接地）与 U16（A0–A2/EXT 接地）；
   `P13`/`P23`/`P17/SCK` → U19；`P14` → U5；U16 模拟端为 `AIN0`–`AIN3` 与 `OUT` 网标。
+  MCU 的实际 UART1 复用方向是 `P3.1/TXD`、`P3.0/RXD`，探针的 `rxd` 与 `txd` 交叉接入，
+  分别复原 MCU 发送帧与向 MCU 注入命令。
 - **执行器**：U10 OUT5 → `N_RELAY` → K1 线圈（另一端接 VCC），K1 的 `com`（引脚 3）接
   `m2` 端子、`no`（引脚 6）与第二组触点公共端 `com2`（引脚 1）接 GND；U10 OUT7 →
   `N_BUZZ` → SP1 负端（正端接 VCC）。详见 [`docs/relay.md`](docs/relay.md)、
   [`docs/buzzer.md`](docs/buzzer.md)。
-- **定时/红外**：U15 OUT → `NET_SIG`，RST 与 VCC 接高；CX20106A 输出 `N_B1`、VS1838 输出
-  `N_B2` 接到 J2 的 2/6 脚，J2 的 1-3 固定短接（`P10` → U18 整形/驱动链 `N_A1`），接收端
-  公共脚 4（`P11`）由实例属性 `vs1838` 选择短接 4-6 或 2-4；J2 的 5 脚是红外发射管支路
-  `N_A2`。详见 [`docs/jumper-2x3.md`](docs/jumper-2x3.md)。
-- **跳线**：J13 的 `a` 接 `P42/WR`、`b` 接 GND，`closed` 属性模拟「WR 接 0 V」的装配位置。
+- **定时/红外/超声**：U15 OUT → `NET_SIG`，经默认闭合的 J3 接到 `P34`（PCA ECI），RST 与
+  VCC 接高；CX20106A 输出 `N_B1`、VS1838 输出 `N_B2` 接到 J2 的 2/6 脚，J2 的 1-3 固定短接
+  （`P10` → U18 整形/驱动链 `N_A1`），接收端公共脚 4（`P11`）由实例属性 `vs1838` 选择短接 4-6
+  或 2-4；J2 的 5 脚是红外发射管支路 `N_A2`。U22 的 `trig`/`echo` 并接 `P10`/`P11`。详见
+  [`docs/jumper-2x3.md`](docs/jumper-2x3.md)、[`docs/ultrasonic.md`](docs/ultrasonic.md)。
+- **跳线**：J13 的 `a` 接 `P42/WR`、`b` 接 GND，`closed` 属性模拟「WR 接 0 V」的装配位置；
+  J3 的 `a` 接 `NET_SIG`、`b` 接 `P34`，默认闭合。
 
 忽略器件后的替代约定：
 
@@ -220,8 +230,8 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 - `P42/WR` 除了 74HC02 的四个 B 输入，还接矩阵键盘的第二列；MCU 模型没有 P4 端口，
   J13 的 WR 源侧不建模，原理图里 J13 只把 `P42/WR` 短接到 GND（`closed = true`）。
 - `RST` 只连 S1 与网标：MCU 模型没有复位引脚，复位电路里的 CR1/R3 不建模。
-- 执行器输出 `STEPA`–`STEPD`/`N_MOTOR`、`SPK`、`AIN0`–`AIN3`、`OUT`、`m2`、
-  `NET_SIG` 等只保留驱动侧网标，作为未实现器件的接口桩；74HC138 的 Y0–Y3、NE555 的 RC 脚、
+- 执行器输出 `STEPA`–`STEPD`/`N_MOTOR`、`SPK`、`AIN0`–`AIN3`、`OUT`、`m2`
+  等只保留驱动侧网标，作为未实现器件的接口桩；74HC138 的 Y0–Y3、NE555 的 RC 脚、
   CX20106A 的 C1/C2/C3/f0、DS1302 的 X1/X2/VCC1、LM386 的 GAIN/BYPASS、PCF8591 的 OSC
   按 NC 处理。
 
@@ -232,7 +242,7 @@ node build-schematic.mjs  # 修改网表/布局后重新生成
 ```
 
 `verify-schematic.mjs` 依次做四件事：解析 `ct107d.sch` 折出网表并与 `ct107d.netlist.json`
-逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 48 个器件建板跑 1 ms 确认没有
+逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 51 个器件建板跑 1 ms 确认没有
 装配故障；装一段固件走 `P2 → 74HC138 → 74HC02 → 74HC573 → LED`，确认 D1 亮度 0.1639、其余
 熄灭；同一段固件再按 `Y7 → U7（段码）`、`Y6 → U8（位选）` 逐位扫描，确认 DS1/DS2 八位分别
 锁存到写入的段码。
@@ -282,7 +292,7 @@ pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.per
 
 口径：装配整板 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`wallMs` / `rtf`
 取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（12 MHz 8051，
-8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 48 颗器件、99 条网络，
+8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 51 颗器件、99 条网络，
 电气求解、通道与执行引擎都走真实运行时。
 
 **行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按

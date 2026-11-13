@@ -261,7 +261,11 @@ const create: Factory = (context) => {
   if (firmware !== undefined && firmware.length > 0) context.loadBytes(CODE, firmware.slice());
 
   return {
-    sync() {},
+    sync(batch) {
+      for (const name of ['uart1Tx', 'uart1Rx'] as const)
+        for (const message of batch.outputs[name])
+          context.topics.publish(name, message.value.slice());
+    },
     dispose() {},
   };
 };

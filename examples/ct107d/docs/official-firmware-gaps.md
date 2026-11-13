@@ -88,15 +88,11 @@
 
 ### 2. `12.0` / `14.0`：补超声波换能器
 
-两种做法，任选其一：
-
 - **新增器件**：一个超声波收发器件，`trig` 引脚检测 `P10` 的 8 个脉冲串后，在 `echo`
-  上延迟 `2 × distance / 340 m·s⁻¹` 输出高电平脉冲。可参考 `cx20106a`/`vs1838` 的
-  定时器写法（`now()` + `await ticks()` + 序号取消旧请求），距离用属性注入
-  （如 `echoUs` 或 `distanceCm`）。装配时把 `trig → P10`、`echo → P11` 接上，并让 J2 的
-  `vs1838` 选到红外一侧，避免与 VS1838 输出冲突。
-- **夹具注入**：在 `verify-firmware.mjs` 里给 `P11` 网络挂一个可控数字源，按 `--echo=<µs>`
-  在 `P10` 脉冲串结束后拉高指定时长。改动小，但只能用于联调脚本，Playground 预览看不到。
+  上等待 `2 × distance / 340 m·s⁻¹` 的往返传播时间再拉低一个等宽脉冲（固件实际等待
+  `P11` 由高变低）。可参考 `cx20106a`/`vs1838` 的定时器写法（`now()` + `await ticks()` +
+  序号取消旧请求），距离用 `distanceCm` / `echoUs` 属性注入。装配时把 `trig → P10`、
+  `echo → P11` 接上，并让 J2 的 `vs1838` 选择与回波高阻空闲兼容的红外接收侧。
 
 验收判据：`12.0` 第 4 页显示的厘米数与注入距离一致（源码公式 `time_us * 17 / 1000`）。
 
@@ -131,9 +127,10 @@
   `now()` + `await ticks()` 依次驱动起始位/8 数据位/停止位，并用序号取消未完成的注入。
   可参考 `vs1838`/`ds18b20` 的定时器写法；溢出与未知电平按低处理，帧错误丢弃并计数
   （可选 `errors` 端口）。
-- 装配：`build-schematic.mjs` 加 `UART_PROBE_REF`、实例与网络，把 `P30/TXD → probe.rxd`、
-  `P31/RXD → probe.txd`；同时在 `CHIP_IDS`（`verify-schematic.mjs`、`verify-firmware.mjs`）
-  与 `README.md` 的器件表/数量里登记（届时从 21 个变成 22 个）。
+- 装配：`build-schematic.mjs` 加 `UART_PROBE_REF`、实例与网络。MCU 的实际 UART1 复用方向是
+  `P3.1/TXD`、`P3.0/RXD`，因此把 `P31/RXD → probe.rxd`、`P30/TXD → probe.txd`；同时在
+  `CHIP_IDS`（`verify-schematic.mjs`、`verify-firmware.mjs`）与 `README.md` 的器件表/数量里
+  登记（连同超声波器件从 21 个变成 23 个）。
 - 夹具：`verify-firmware.mjs` 增加 `--uart=<text>`（按 9600 bps 经探针注入，自动补 `\r`），
   并打印 `tx`/`rx` 话题；`--uart-baud=<n>` 可选。
 - 单测不依赖 MCU：`test/uart-probe.test.ts` 用数字源按 9600 bps 逐位驱动 `rxd`、用探针读
@@ -154,11 +151,11 @@ export PATH="$HOME/.nvm/versions/node/v24.20.0/bin:$PATH"
 cd /home/ll/mica-js/examples/ct107d
 npx mica build
 
-# 12.0：连按 3 次切到超声页，观察 DS2 的 999
+# 12.0：连按 3 次切到超声页，默认 100 cm 应观测到 099（固件整数截断）
 node verify-firmware.mjs "/tmp/ct107d-firmware/12.0 超声波测距/Objects/project.hex" \
   --ms=900 --step=0.2 --press=S9@100:60 --press=S9@300:60 --press=S9@500:60
 
-# 13.0：连按 4 次切到频率页，观察五位的 0
+# 13.0：连按 4 次切到频率页，应观测到 04810
 node verify-firmware.mjs "/tmp/ct107d-firmware/13.0 NE555频率测量/Objects/project.hex" \
   --ms=2000 --press=S9@100:60 --press=S9@300:60 --press=S9@500:60 --press=S9@700:60
 
@@ -168,9 +165,27 @@ node verify-firmware.mjs "/tmp/ct107d-firmware/14.0 补充/Objects/project.hex" 
   --press=S9@100:60 --press=S9@300:60 --press=S9@500:60 \
   --press=S9@700:60 --press=S9@900:60 --press=S9@1100:60
 
-# 6.0 / 7.0：只有显示与时钟可判读（串口验收见上面第 3 节，需要方案 A + B）
-node verify-firmware.mjs "/tmp/ct107d-firmware/6.0 uart/Objects/project.hex" --ms=400
+# 6.0 / 7.0：经独立探针注入命令，同时打印 MCU 与线上两侧的字节流
+node verify-firmware.mjs "/tmp/ct107d-firmware/6.0 uart/Objects/project.hex" \
+  --ms=600 --uart=setTime:20:59:50
+node verify-firmware.mjs "/tmp/ct107d-firmware/7.0 uart_pro/Objects/project.hex" \
+  --ms=600 --uart=setTime:20:59:50
+node verify-firmware.mjs "/tmp/ct107d-firmware/7.0 uart_pro/Objects/project.hex" \
+  --ms=600 --uart=setTime:99:99:99
 ```
 
-第 3 节的 `--uart=<text>` 随方案 A/B 一起落地，当前版本还没有这个选项：它需要 MCU 的
-`uart1Tx` 端口与原理图里的 `UART_PROBE` 实例都存在，只加夹具参数没有意义。
+## 2026-11-14 落地与复测
+
+- `J3`、`ultrasonic`、`uart-probe` 已进入原理图；`iap15f2k61s2` 已增加 `uart1Tx` / `uart1Rx`
+  端口、话题转发和逐帧发布。`verify-firmware.mjs` 支持 `--distance`、`--uart`、`--uart-baud`、
+  `--uart-at` 与 `--display-after`。
+- `13.0` 在频率页观测到 `0/4/8/1/0` 各字形，即约 `04810`；`14.0` 六页切换无 faults，
+  温度页读到 `30.5`、ADC 与 LED PWM 均有动作。
+- `12.0` 在默认 `100 cm` 下观测到 `099`：固件以 `time_us * 17 / 1000` 做整数截断，`100 cm`
+  的理论回波时间会少算约 1 cm；不再出现超时值 `999`。
+- `7.0` 注入合法值得到两侧逐字节一致的 `success`，非法值得到两侧一致的 `failure`；
+  `U1.uart1Rx` 与 `UART_PROBE.rx` 都完整复原 17 字节的 `setTime:...\r`。
+- `6.0` 同样能完整接收 17 字节，但只发出响应首字节 `s` 或 `f` 后停住。其
+  `uart_send_byte()` 在主循环轮询 `TI`，而 UART ISR 同时清除了 `TI`；这是固件应用层竞争，
+  不是新增 MCU 串口端口或探针的模型缺陷。因此 `6.0` 的 A/B 可证明首字节确实上线，但完整
+  `success`/`failure` 验收仍需修正该固件。

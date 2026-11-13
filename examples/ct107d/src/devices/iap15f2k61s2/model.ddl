@@ -24,6 +24,11 @@ device Iap15f2k61s2(firmware: bytes default bytes[], clockFrequency: number defa
   /** 片内 EEPROM（Data Flash）：IAP 读写，1 KiB。 */
   memory flash[0x400];
 
+  /** 串口 1 的线上字节流：每个完整帧发布一条单字节消息。 */
+  output channel uart1Tx: bytes(maxLength: 1, capacity: 16, overflow: Overflow.drop_oldest);
+  /** 串口 1 实际写入接收缓冲的字节：每个完整帧发布一条单字节消息。 */
+  output channel uart1Rx: bytes(maxLength: 1, capacity: 16, overflow: Overflow.drop_oldest);
+
   /** 程序计数器；JIT 绑定到这条 state。 */
   state pc: number = 0;
   /**

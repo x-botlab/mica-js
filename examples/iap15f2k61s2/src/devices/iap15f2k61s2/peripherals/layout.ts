@@ -28,6 +28,8 @@ export const WDT_BASE = 0x88;
 export const EXTINT_BASE = 0x8c;
 /** 时钟与省电模式的内部状态。 */
 export const CLOCK_BASE = 0x90;
+/** 串口 1/2 在发送忙时各缓存一个待发送字节；位于时钟区间尾部，时钟本身只使用 0x90。 */
+export const UART_QUEUE_BASE = 0x98;
 /**
  * 节拍服务：活动门控字节、服务块返回地址。
  *

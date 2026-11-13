@@ -19,11 +19,16 @@
  *                       注入按键，可重复；例如 `--press=S9@300:150`
  *   --temp=<℃>          注入 DS18B20 环境温度
  *   --ain0..3=<0..1>    注入 PCF8591 模拟输入，`--ain=<v>` 表示四路同值
+ *   --distance=<cm>     覆盖超声波器件的目标距离，默认使用原理图属性（100 cm）
+ *   --uart=<text>       经 UART_PROBE 按 8N1 注入命令，未以 CR 结尾时自动补 `\r`
+ *   --uart-baud=<n>     UART_PROBE 波特率，默认 9600
+ *   --uart-at=<ms>      UART 命令注入时刻，默认 20 ms
+ *   --display-after=<ms> 只汇总该时刻之后各数码管位观测到的字形，默认 0
  *   --without=<id,...>  从整板移除器件（定位总线冲突时用）
  *   --no-pullups        不给 GPIO 加外部上拉
  *
  * 准双向口的上拉：STC15 靠内部弱上拉把释放的引脚拉到高电平，而器件模型按合同把「释放」
- * 实现为高阻、原理图里也没有实现电阻，因此默认给 23 根 GPIO 各补一个 10 kΩ 外部上拉。
+ * 实现为高阻、原理图里也没有实现电阻，因此默认给 25 根 GPIO 各补一个 10 kΩ 外部上拉。
  *
  * 默认用 `precise`：官方固件的 I²C（10.0/11.0/12.0/14.0）与 1-Wire（9.0/10.0/…）都是软件
  * 位冲击，`throughput` 把几十条指令合并成一段后只发布段末电平，字节会错位（见
@@ -60,6 +65,11 @@ const options = {
   presses: [],
   temperature: undefined,
   ain: {},
+  distance: undefined,
+  uart: undefined,
+  uartBaud: 9600,
+  uartAt: 20,
+  displayAfter: 0,
   without: new Set(),
 };
 const hexFiles = [];
@@ -68,6 +78,11 @@ for (const argument of process.argv.slice(2)) {
   const press = /^--press=([^@]+)@(\d+)(?::(\d+))?$/.exec(argument);
   const ain = /^--(ain[0-3]?)=(.+)$/.exec(argument);
   const temp = /^--temp=(.+)$/.exec(argument);
+  const distance = /^--distance=(.+)$/.exec(argument);
+  const uart = /^--uart=(.*)$/.exec(argument);
+  const uartBaud = /^--uart-baud=(\d+)$/.exec(argument);
+  const uartAt = /^--uart-at=(\d+(?:\.\d+)?)$/.exec(argument);
+  const displayAfter = /^--display-after=(\d+(?:\.\d+)?)$/.exec(argument);
   const execution = /^--execution=(throughput|precise)$/.exec(argument);
   if (match !== null) options[match[1]] = Number(match[2]);
   else if (execution !== null) options.execution = execution[1];
@@ -78,6 +93,11 @@ for (const argument of process.argv.slice(2)) {
       duration: Number(press[3] ?? 150),
     });
   else if (temp !== null) options.temperature = Number(temp[1]);
+  else if (distance !== null) options.distance = Number(distance[1]);
+  else if (uart !== null) options.uart = uart[1];
+  else if (uartBaud !== null) options.uartBaud = Number(uartBaud[1]);
+  else if (uartAt !== null) options.uartAt = Number(uartAt[1]);
+  else if (displayAfter !== null) options.displayAfter = Number(displayAfter[1]);
   else if (ain !== null) options.ain[ain[1]] = Number(ain[2]);
   else if (argument === '--no-pullups') options.pullups = false;
   else if (argument.startsWith('--without='))
@@ -131,6 +151,8 @@ const CHIP_IDS = [
   'push-button',
   'relay',
   'uln2003',
+  'ultrasonic',
+  'uart-probe',
   'vs1838',
   'blue-led',
   'seg4',
@@ -176,6 +198,18 @@ const asText = (payload) => {
   return String(payload);
 };
 
+const asBytes = (payload) =>
+  payload instanceof Uint8Array
+    ? payload
+    : typeof payload === 'number'
+      ? Uint8Array.of(payload)
+      : typeof payload === 'string'
+        ? Uint8Array.from(Buffer.from(payload, 'latin1'))
+        : Uint8Array.from(payload ?? []);
+
+const asciiBytes = (values) =>
+  Buffer.from(values).toString('latin1').replace(/\r/g, '\\r').replace(/\n/g, '\\n');
+
 /** 每颗器件的话题历史：topic → { count, last }。 */
 const captured = new Map();
 /** 每颗器件的话题变化序列（只记 latch / code / digit 等有意义的）：topic → [{ at, value }]。 */
@@ -194,6 +228,8 @@ const TRAILED = new Set([
   'datetime',
   'dump',
 ]);
+/** 字节流不去重，保留每个线上字节及其时刻。 */
+const STREAMED = new Set(['uart1Tx', 'uart1Rx', 'tx', 'rx']);
 
 function instrument(symbol, device) {
   const topics = new Map();
@@ -213,7 +249,11 @@ function instrument(symbol, device) {
           entry.first ??= payload;
           entry.last = payload;
           topics.set(topic, entry);
-          if (TRAILED.has(topic)) {
+          if (STREAMED.has(topic)) {
+            const trail = trails.get(topic) ?? [];
+            trail.push({ at: now, value: payload });
+            trails.set(topic, trail);
+          } else if (TRAILED.has(topic)) {
             const trail = trails.get(topic) ?? [];
             if (trail.length === 0 || trail.at(-1).value !== payload)
               trail.push({ at: now, value: payload });
@@ -255,6 +295,9 @@ function buildBoard(firmware) {
         props: { ...rest, clockFrequency: options.clock, firmware },
       };
     }
+    if (symbol.device === 'xbotlab:ultrasonic' && options.distance !== undefined)
+      rest.distanceCm = options.distance;
+    if (symbol.device === 'xbotlab:uart-probe') rest.baud = options.uartBaud;
     return { id: symbol.id, type: symbol.id, props: rest };
   });
   const entries = components.map((symbol) => {
@@ -274,6 +317,8 @@ function buildBoard(firmware) {
       'P05',
       'P06',
       'P07',
+      'P10',
+      'P11',
       'P13',
       'P14',
       'P17/SCK',
@@ -349,6 +394,10 @@ const summarize = (topic, payload) => {
       .join(' ');
     return `<${payload.length} B: ${bytes} …>`;
   }
+  if (STREAMED.has(topic)) {
+    const bytes = asBytes(payload);
+    return `"${asciiBytes(bytes)}"(${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(' ')})`;
+  }
   if (topic === 'datetime' || topic === 'channels' || topic === 'code')
     return `"${asText(payload)}"`;
   if (topic === 'latch') return `0x${Number(payload).toString(16).padStart(2, '0')}`;
@@ -408,6 +457,15 @@ for (const press of options.presses) {
   pressTargets.push({ symbolId: symbol.id, ...press, state: false });
 }
 
+const uartProbe = components.find((candidate) => candidate.device === 'xbotlab:uart-probe');
+const mcu = components.find((candidate) => candidate.device === MCU_REF);
+const uartCommand =
+  options.uart === undefined
+    ? undefined
+    : options.uart.endsWith('\r')
+      ? options.uart
+      : `${options.uart}\r`;
+
 for (const hexFile of hexFiles) {
   const image = hexFile.endsWith('.bin')
     ? new Uint8Array(readFileSync(hexFile))
@@ -417,6 +475,7 @@ for (const hexFile of hexFiles) {
   inputsOf.clear();
   now = 0;
   for (const target of pressTargets) target.state = false;
+  let uartInjected = false;
   const { board, faults } = buildBoard(image);
 
   // 上电注入：温度与 ADC 输入只发一次，器件保持最新值。
@@ -441,6 +500,14 @@ for (const hexFile of hexFiles) {
   while (now < targetPs) {
     now = Math.min(targetPs, now + stepPs);
     const atMs = now / PS_PER_MS;
+    if (!uartInjected && uartCommand !== undefined && atMs >= options.uartAt) {
+      uartInjected = true;
+      if (
+        uartProbe === undefined ||
+        !sendInput(uartProbe.id, 'send', new TextEncoder().encode(uartCommand))
+      )
+        console.warn('原理图中没有可用的 UART 探针，忽略 --uart');
+    }
     for (const target of pressTargets) {
       const wanted = atMs >= target.start && atMs < target.start + target.duration;
       if (wanted === target.state) continue;
@@ -472,6 +539,10 @@ for (const hexFile of hexFiles) {
     `\n=== ${basename(hexFile)}  ${image.length} B  模拟 ${seconds} s / 实际 ${wall.toFixed(2)} s  (RTF ${(seconds / wall).toFixed(3)})`,
   );
   console.log(`  faults: ${faults.length === 0 ? '无' : faults.slice(0, 5).join('; ')}`);
+  if (uartCommand !== undefined)
+    console.log(
+      `  UART 注入 @${options.uartAt}ms (${options.uartBaud} baud): "${asciiBytes(new TextEncoder().encode(uartCommand))}"`,
+    );
   if (pressTrail.length > 0) console.log(`  注入: ${pressTrail.join(' ')}`);
   console.log(
     `  LEDs(>0.1): ${ledTrail.map((entry) => `${entry.at.toFixed(0)}ms:${entry.lit || '-'}`).join('  ')}`,
@@ -486,6 +557,19 @@ for (const hexFile of hexFiles) {
       `  ${symbol.designator}: 末值 ${masks.map((mask) => `0x${mask.toString(16).padStart(2, '0')}`).join(' ')}  显示「${shown}」  ${displaySeen.get(symbol.id).size} 种组合`,
     );
     const digits = history.get(symbol.id);
+    const displayAfterPs = options.displayAfter * 1_000_000_000;
+    const glyphsSeen = ['digit1', 'digit2', 'digit3', 'digit4'].map((name) =>
+      [
+        ...new Set(
+          (digits?.get(name) ?? [])
+            .filter((entry) => entry.at >= displayAfterPs)
+            .map((entry) => glyph(Number(entry.value))),
+        ),
+      ].join(''),
+    );
+    console.log(
+      `    每位观测字形: ${glyphsSeen.map((value, index) => `digit${index + 1}="${value}"`).join(' ')}`,
+    );
     if (digits !== undefined) {
       const trail = digits.get('digit1') ?? [];
       if (trail.length > 1) {
@@ -518,5 +602,21 @@ for (const hexFile of hexFiles) {
         .map(([topic, entry]) => `${topic}=${summarize(topic, entry.last)}(${entry.count})`)
         .join(' ')}`,
     );
+  }
+
+  if (uartCommand !== undefined) {
+    const stream = (symbolId, topic) =>
+      Buffer.concat(
+        (history.get(symbolId)?.get(topic) ?? []).map((entry) => Buffer.from(asBytes(entry.value))),
+      );
+    const a = stream(mcu?.id, 'uart1Tx');
+    const b = stream(uartProbe?.id, 'tx');
+    const injected = stream(uartProbe?.id, 'rx');
+    const received = stream(mcu?.id, 'uart1Rx');
+    console.log(`  U1.uart1Tx: "${asciiBytes(a)}"  hex=${a.toString('hex')}`);
+    console.log(`  UART_PROBE.tx: "${asciiBytes(b)}"  hex=${b.toString('hex')}`);
+    console.log(`  UART_PROBE.rx: "${asciiBytes(injected)}"  hex=${injected.toString('hex')}`);
+    console.log(`  U1.uart1Rx: "${asciiBytes(received)}"  hex=${received.toString('hex')}`);
+    console.log(`  A/B 帧一致: ${a.length > 0 && b.length > 0 && a.equals(b) ? '是' : '否'}`);
   }
 }

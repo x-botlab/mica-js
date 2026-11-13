@@ -18,6 +18,8 @@ const BUZZER_REF = 'xbotlab:buzzer';
 const RELAY_REF = 'xbotlab:relay';
 const JUMPER_REF = 'xbotlab:jumper';
 const HEADER_REF = 'xbotlab:jumper-2x3';
+const ULTRASONIC_REF = 'xbotlab:ultrasonic';
+const UART_PROBE_REF = 'xbotlab:uart-probe';
 const CHIP_REF = (id) => `xbotlab:${id}`;
 const CHIPS = [
   '74hc02',
@@ -32,6 +34,8 @@ const CHIPS = [
   'ne555',
   'pcf8591',
   'uln2003',
+  'ultrasonic',
+  'uart-probe',
   'vs1838',
 ];
 
@@ -50,6 +54,8 @@ definitions.set(BUZZER_REF, readDefinition('buzzer'));
 definitions.set(RELAY_REF, readDefinition('relay'));
 definitions.set(JUMPER_REF, readDefinition('jumper'));
 definitions.set(HEADER_REF, readDefinition('jumper-2x3'));
+definitions.set(ULTRASONIC_REF, readDefinition('ultrasonic'));
+definitions.set(UART_PROBE_REF, readDefinition('uart-probe'));
 for (const id of CHIPS) definitions.set(CHIP_REF(id), readDefinition(id));
 
 const symbols = new Map();
@@ -100,6 +106,10 @@ for (const [designator, pins, net] of [
   ['U19', ['gnd'], GND],
   ['U20', ['vcc'], VCC],
   ['U20', ['gnd'], GND],
+  ['U22', ['vcc'], VCC],
+  ['U22', ['gnd'], GND],
+  ['UART_PROBE', ['vcc'], VCC],
+  ['UART_PROBE', ['gnd'], GND],
   ['U24', ['vcc', 'e3'], VCC],
   ['U24', ['gnd', 'e1', 'e2'], GND],
   ['U25', ['vcc'], VCC],
@@ -275,8 +285,8 @@ connect('N_B2', [
   ['U20', 'out'],
   ['J2', 'p6'],
 ]);
-nets.get('P10').push(['J2', 'p3']);
-nets.get('P11').push(['J2', 'p4']);
+nets.get('P10').push(['J2', 'p3'], ['U22', 'trig']);
+nets.get('P11').push(['J2', 'p4'], ['U22', 'echo']);
 connect('U18N1', [
   ['U18', 'a1'],
   ['U18', 'y3'],
@@ -297,8 +307,17 @@ connect('U18N4', [
   ['U18', 'y6'],
 ]);
 
+// MCU 的 UART1 复用方向是 P3.1=TXD、P3.0=RXD；探针交叉连接，独立复原 TXD 并驱动 RXD。
+nets.get('P31/RXD').push(['UART_PROBE', 'rxd']);
+nets.get('P30/TXD').push(['UART_PROBE', 'txd']);
+
 // 定时、模拟、串行
-connect('NET_SIG', [['U15', 'out']]);
+// 实物 J3 把 NE555 的 NET_SIG 接到 P34，作为 PCA 的 ECI 输入；默认插上跳线帽。
+connect('NET_SIG', [
+  ['U15', 'out'],
+  ['J3', 'a'],
+]);
+nets.get('P34').push(['J3', 'b']);
 nets.get('P13').push(['U19', 'rst']);
 nets.get('P23').push(['U19', 'io']);
 nets.get('P17/SCK').push(['U19', 'sclk']);
@@ -332,6 +351,7 @@ const PLACEMENTS = [
   { designator: 'U25', device: CHIP_REF('74hc02'), column: 0, order: 2 },
   { designator: 'J13', device: JUMPER_REF, column: 0, order: 3 },
   { designator: 'J2', device: HEADER_REF, column: 0, order: 4, properties: { vs1838: true } },
+  { designator: 'J3', device: JUMPER_REF, column: 0, order: 5 },
   { designator: 'U18', device: CHIP_REF('74ls04'), column: 1, order: 0 },
   { designator: 'U6', device: CHIP_REF('74hc573'), column: 2, order: 0 },
   { designator: 'U7', device: CHIP_REF('74hc573'), column: 2, order: 1 },
@@ -344,6 +364,8 @@ const PLACEMENTS = [
   { designator: 'U15', device: CHIP_REF('ne555'), column: 3, order: 4 },
   { designator: 'K1', device: RELAY_REF, column: 3, order: 5 },
   { designator: 'SP1', device: BUZZER_REF, column: 3, order: 6 },
+  { designator: 'U22', device: ULTRASONIC_REF, column: 3, order: 7 },
+  { designator: 'UART_PROBE', device: UART_PROBE_REF, column: 3, order: 8 },
   { designator: 'U4', device: CHIP_REF('at24c02'), column: 4, order: 0 },
   { designator: 'U16', device: CHIP_REF('pcf8591'), column: 4, order: 1 },
   { designator: 'U19', device: CHIP_REF('ds1302'), column: 4, order: 2 },

@@ -41,6 +41,8 @@ const CHIP_IDS = [
   'push-button',
   'relay',
   'uln2003',
+  'ultrasonic',
+  'uart-probe',
   'vs1838',
 ];
 const MCU_REF = 'xbotlab:iap15f2k61s2';

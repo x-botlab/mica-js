@@ -1,0 +1,58 @@
+{
+  "kind": "device",
+  "id": "uart-probe",
+  "version": "1.0.0",
+  "displayName": "UART 串口探针",
+  "description": "独立 UART 探针：rxd 以 8N1、LSB first 复原字节并从 tx 端口逐字节发布；txd 可经 send 输入通道注入字节，从 rx 端口逐字节回报。空闲高，下降沿开帧，在位中点采样并校验停止位；未知电平按低，帧错误静默丢弃。注入使用 now()+ticks 定时，新命令按序号取消旧注入。",
+  "designatorPrefix": "U",
+  "tags": ["uart", "serial", "probe", "8n1", "ct107d"],
+  "properties": {
+    "baud": {
+      "type": "number",
+      "required": false,
+      "default": 9600,
+      "title": "波特率",
+      "unit": "baud",
+      "description": "位时间按 round(1e12 / baud) ps 换算；默认 9600。",
+      "editor": { "kind": "number", "min": 1, "max": 1000000000, "step": 1 }
+    },
+    "driveResistance": {
+      "type": "number",
+      "required": false,
+      "default": 25,
+      "title": "驱动电阻",
+      "unit": "ohm",
+      "description": "TXD 拉高到 VCC 或拉低到 GND 时的等效串联电阻。",
+      "editor": { "kind": "number", "min": 0.001, "max": 1000000000, "step": 1 }
+    }
+  },
+  "pins": {
+    "rxd": { "label": "RXD", "description": "接收输入，接 MCU 的 TXD；8N1，阈值 0.8/2.0 V" },
+    "txd": { "label": "TXD", "description": "注入输出，接 MCU 的 RXD；空闲高" },
+    "vcc": { "label": "VCC", "description": "5 V 电源", "group": "Power" },
+    "gnd": { "label": "GND", "description": "地", "group": "Power" }
+  },
+  "ports": {
+    "send": {
+      "direction": "input",
+      "type": "bytes",
+      "delivery": "message",
+      "title": "注入字节",
+      "description": "每个 bytes 命令替换尚未完成的旧注入；字节依次按 8N1 驱动 TXD，单条最大 64 字节。"
+    },
+    "tx": {
+      "direction": "output",
+      "type": "bytes",
+      "delivery": "message",
+      "title": "线上接收字节",
+      "description": "从 RXD 复原的 UART 字节，每帧一条消息；停止位错误不发布。"
+    },
+    "rx": {
+      "direction": "output",
+      "type": "bytes",
+      "delivery": "message",
+      "title": "注入完成字节",
+      "description": "经 TXD 完成注入的 UART 字节，每帧一条消息。"
+    }
+  }
+}
