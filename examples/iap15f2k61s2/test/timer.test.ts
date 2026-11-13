@@ -514,3 +514,74 @@ describe('可编程时钟输出', () => {
     }
   });
 });
+
+describe('节拍覆盖', () => {
+  it('紧循环里没有对齐指令时，回跳仍是节拍点：T0 中断照常响应', async () => {
+    // 循环指令地址 0x16/0x17/0x19/0x1B/0x1D/0x1F/0x21 全都不是 TICK_DIVISOR 的倍数，
+    // 回跳距离又有 11 字节。只按 PC 取节拍点时整圈都不会推进外设，T0 永远不会溢出，
+    // 主循环也永远等不到计数满 5（官方 CT107D 的 1.0 led 固件就是这种形状）。
+    const image = new Uint8Array(0x60);
+    const put = (address: number, ...bytes: number[]): void => image.set(bytes, address);
+
+    put(0x000, 0x02, 0x00, 0x30); // LJMP 0030H
+    put(0x00b, 0x02, 0x00, 0x50); // LJMP 0050H（T0 中断）
+    put(
+      0x030,
+      0x75,
+      0x96,
+      0xff, // MOV P2M0,#0FFH
+      0x75,
+      0x95,
+      0x00, // MOV P2M1,#00H
+      0x75,
+      0x8e,
+      0x81, // MOV AUXR,#81H（T0 1T 模式）
+      0x75,
+      0x89,
+      0x00, // MOV TMOD,#00H（模式 0，16 位自动重装）
+      0x75,
+      0x8c,
+      0xd4, // MOV TH0,#0D4H
+      0x75,
+      0x8a,
+      0xcd, // MOV TL0,#0CDH
+      0xd2,
+      0x8c, // SETB TR0
+      0xd2,
+      0xa9, // SETB ET0
+      0xd2,
+      0xaf, // SETB EA
+      0x02,
+      0x00,
+      0x16, // LJMP 0016H
+    );
+    put(
+      0x016,
+      0xc3, // CLR C
+      0xe5,
+      0x09, // MOV A,09H
+      0x94,
+      0x05, // SUBB A,#05H
+      0xe5,
+      0x08, // MOV A,08H
+      0x64,
+      0x80, // XRL A,#80H
+      0x94,
+      0x80, // SUBB A,#80H
+      0x40,
+      0xf3, // JC 0016H
+    );
+    put(0x023, 0x75, 0xa0, 0xa5, 0x80, 0xfe); // MOV P2,#0A5H / SJMP $
+    put(0x050, 0x05, 0x08, 0xe5, 0x08, 0x70, 0x02, 0x05, 0x09, 0x32); // ISR：time_count++
+
+    const result = await runSource({
+      firmware: image,
+      milliseconds: 20,
+      clockFrequency: 11_059_200,
+      observePorts: [2],
+    });
+
+    expect(result.faults).toEqual([]);
+    expect(result.ports[2]).toBe(0xa5);
+  });
+});

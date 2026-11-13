@@ -157,15 +157,17 @@ function branchTarget(code: JitTranslateInput['code'], pc: number): number | und
 /**
  * 该 PC 的块是否推进外设。
  *
- * 任何长度不小于 `TICK_DIVISOR` 字节的循环都必然跨过 `TICK_DIVISOR` 的整数倍，因此
- * 只有回跳距离不足 `TICK_DIVISOR` 字节的循环需要额外推进。
+ * 节拍点先按 `pc % TICK_DIVISOR` 选取；回跳一律也算节拍点。只按 PC 取点会漏掉整圈
+ * 都没有对齐指令的紧循环（例如 8051 的 16 位比较环：0x16 CLR C、0x17 MOV A,direct、
+ * 0x19 SUBB、0x1B MOV A,direct、0x1D XRL、0x1F SUBB、0x21 JC 0x16），这类循环里
+ * 节拍点一次都不出现，外设推进与中断响应会完全停摆。
  */
 function ticksAt(code: JitTranslateInput['code'], pc: number): boolean {
   if (pc % TICK_DIVISOR === 0) return true;
 
   const target = branchTarget(code, pc);
 
-  return target !== undefined && target <= pc && pc - target < TICK_DIVISOR;
+  return target !== undefined && target <= pc;
 }
 
 /**
