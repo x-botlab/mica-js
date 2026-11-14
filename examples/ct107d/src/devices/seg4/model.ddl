@@ -98,6 +98,24 @@ device Seg4(
   state shown3: number = 0;
   state shown4: number = 0;
 
+  /**
+   * 候选段码与它开始连续稳定的时刻。reaction 在每次扫描状态发布变化时重置候选，
+   * 因此等待期间发生的消隐、换码或短暂回到旧码都会让原候选失效；普通过程只负责
+   * 等到候选连续稳定满 `settleUs`，再提交并发送。
+   */
+  state candidate1: number = 0;
+  state candidate2: number = 0;
+  state candidate3: number = 0;
+  state candidate4: number = 0;
+  state candidateSince1: number = 0;
+  state candidateSince2: number = 0;
+  state candidateSince3: number = 0;
+  state candidateSince4: number = 0;
+  state candidateActive1: bool = false;
+  state candidateActive2: bool = false;
+  state candidateActive3: bool = false;
+  state candidateActive4: bool = false;
+
   /** 段脚为参与点亮的极性：共阴看高电平，共阳看低电平。 */
   pure fn segmentLit(level: Logic) -> bool {
     if commonAnode {
@@ -178,43 +196,107 @@ device Seg4(
     digit4.send(shown4);
   }
 
-  /** 第 1 位选中期间跟随段码，取消选中后保持。 */
+  /**
+   * 每次扫描状态变化都重置对应候选：等待中的过程醒来时若候选已失效，不会提交
+   * 只稳定了不足 `settleUs` 的段码。
+   */
+  reaction track1 on scan1 as (previous, current) {
+    candidateActive1 = current.active;
+    candidate1 = current.mask;
+    candidateSince1 = now();
+  }
+
+  reaction track2 on scan2 as (previous, current) {
+    candidateActive2 = current.active;
+    candidate2 = current.mask;
+    candidateSince2 = now();
+  }
+
+  reaction track3 on scan3 as (previous, current) {
+    candidateActive3 = current.active;
+    candidate3 = current.mask;
+    candidateSince3 = now();
+  }
+
+  reaction track4 on scan4 as (previous, current) {
+    candidateActive4 = current.active;
+    candidate4 = current.mask;
+    candidateSince4 = now();
+  }
+
+  /** 第 1 位选中期间等待候选连续稳定，取消选中后保持。 */
   process scanDigit1 on scan1 {
     if scan1.active {
-      await ticks(settleDelay);
-      if scan1.active && shown1 != scan1.mask {
-        shown1 = scan1.mask;
-        digit1.send(scan1.mask);
+      const stableAt = candidateSince1 + settleDelay;
+      if (now() < stableAt) {
+        await ticks(stableAt - now());
+      }
+      if (
+        scan1.active
+          && candidateActive1
+          && candidate1 == scan1.mask
+          && now() - candidateSince1 >= settleDelay
+          && shown1 != candidate1
+      ) {
+        shown1 = candidate1;
+        digit1.send(candidate1);
       }
     }
   }
 
   process scanDigit2 on scan2 {
     if scan2.active {
-      await ticks(settleDelay);
-      if scan2.active && shown2 != scan2.mask {
-        shown2 = scan2.mask;
-        digit2.send(scan2.mask);
+      const stableAt = candidateSince2 + settleDelay;
+      if (now() < stableAt) {
+        await ticks(stableAt - now());
+      }
+      if (
+        scan2.active
+          && candidateActive2
+          && candidate2 == scan2.mask
+          && now() - candidateSince2 >= settleDelay
+          && shown2 != candidate2
+      ) {
+        shown2 = candidate2;
+        digit2.send(candidate2);
       }
     }
   }
 
   process scanDigit3 on scan3 {
     if scan3.active {
-      await ticks(settleDelay);
-      if scan3.active && shown3 != scan3.mask {
-        shown3 = scan3.mask;
-        digit3.send(scan3.mask);
+      const stableAt = candidateSince3 + settleDelay;
+      if (now() < stableAt) {
+        await ticks(stableAt - now());
+      }
+      if (
+        scan3.active
+          && candidateActive3
+          && candidate3 == scan3.mask
+          && now() - candidateSince3 >= settleDelay
+          && shown3 != candidate3
+      ) {
+        shown3 = candidate3;
+        digit3.send(candidate3);
       }
     }
   }
 
   process scanDigit4 on scan4 {
     if scan4.active {
-      await ticks(settleDelay);
-      if scan4.active && shown4 != scan4.mask {
-        shown4 = scan4.mask;
-        digit4.send(scan4.mask);
+      const stableAt = candidateSince4 + settleDelay;
+      if (now() < stableAt) {
+        await ticks(stableAt - now());
+      }
+      if (
+        scan4.active
+          && candidateActive4
+          && candidate4 == scan4.mask
+          && now() - candidateSince4 >= settleDelay
+          && shown4 != candidate4
+      ) {
+        shown4 = candidate4;
+        digit4.send(candidate4);
       }
     }
   }

@@ -9,9 +9,10 @@
  *   node verify-firmware.mjs <hex|bin> [<hex|bin> ...] [选项]
  *
  * 选项：
- *   --ms=<n>            每个固件的仿真时长（毫秒），默认 200
- *   --warmup-ms=<n>     计时前预热仿真时长（毫秒），默认 0；比较吞吐时用于摊销 JIT 编译
- *   --step=<n>          推进步长（毫秒），默认 2（与 Playground 画布预览一致）
+ *   --ms=<n>            每个固件的仿真时长（毫秒，正有限数），默认 200
+ *   --warmup-ms=<n>     计时前预热仿真时长（毫秒，非负有限数），默认 0；比较吞吐时用于摊销 JIT 编译
+ *   --step=<n>          推进步长（毫秒，正有限数），默认 2；这是 CLI 自己的采样粒度，
+ *                       不是 Playground 画布预览的 64 ms 批次
  *   --clock=<hz>        MCU 时钟，默认 11059200；原理图里是 12000000
  *   --execution=<mode>  执行模式：precise（默认，逐指令求解）或 throughput（预览一致的批量推进）
  *   --quantum=<ps>      CPU 可见性量子（`cpuQuantum`），默认 10000000 = 10 us；
@@ -32,11 +33,21 @@
  * 默认用 `precise`。`throughput` 首次运行会编译直接 JIT；对比稳态速度时用
  * `--warmup-ms` 在同一块板上预热后再计时，避免把一次性编译成本算入测量窗口。
  *
+ * 计时口径与 bench / 浏览器测量同名同义：`cpuMs` 是测量窗口的进程 CPU 时间
+ * （`user + system`），`elapsedWallMs` 是测量窗口的墙钟时间，
+ * `realtimeRatio = simMs / elapsedWallMs`。`coldCpuMs` / `coldElapsedWallMs` 覆盖
+ * 装配 + `runUntil(0)` + 预热；本文件顶部的器件模块导入不在冷启动计时内。
+ *
+ * CLI 在测量窗口内还要做 LED / 数码管 / 话题历史观测，这些开销计入 `cpuMs` 和
+ * `elapsedWallMs`；bench 测量的是另一套夹具，数字不能直接等价比较。
+ * 每个固件在输出末尾打印一行 `FIRMWARE_METRICS <json>`，供脚本读取。
+ *
  * 需要 Node ≥ 22：DDL 编译器依赖 `Object.groupBy`。
  *
  * 固件来自仓库根的 `dist/代码/*.zip`，解压后取 `Objects/*.hex`：
  *   unzip -q -o "dist/代码/1.0 led.zip" -d /tmp/ct107d-firmware
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -104,6 +115,13 @@ for (const argument of process.argv.slice(2)) {
 }
 if (!Number.isFinite(options.warmupMs) || options.warmupMs < 0)
   throw new RangeError('--warmup-ms must be a non-negative finite duration');
+for (const [flag, value] of [
+  ['--ms', options.ms],
+  ['--step', options.step],
+]) {
+  if (!Number.isFinite(value) || value <= 0)
+    throw new RangeError(`${flag} must be a positive finite duration`);
+}
 
 /** Intel HEX（记录类型 00/01/02/04）→ 从 0000H 起的裸二进制。 */
 function parseIntelHex(text) {
@@ -159,19 +177,41 @@ const CHIP_IDS = [
   'iap15f2k61s2',
 ];
 
+const deviceModulePath = (id) => join(PROJECT, 'dist', 'devices', id, 'device.js');
 const loadDefinition = (id) =>
   parseDeviceMetadata(
     JSON.parse(readFileSync(join(PROJECT, 'src', 'devices', id, 'device.json'), 'utf8')),
   );
-const loadModule = (id) =>
-  import(pathToFileURL(join(PROJECT, 'dist', 'devices', id, 'device.js')).href);
+const loadModule = (id) => import(pathToFileURL(deviceModulePath(id)).href);
 
 const devices = new Map();
+const deviceModuleSha256 = {};
 for (const id of CHIP_IDS) {
+  deviceModuleSha256[id] = createHash('sha256')
+    .update(readFileSync(deviceModulePath(id)))
+    .digest('hex');
   devices.set(`xbotlab:${id}`, { definition: loadDefinition(id), module: await loadModule(id) });
 }
 
-const schematic = parseSchematic(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
+const schematicText = readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8');
+const schematic = parseSchematic(schematicText);
+const artifacts = {
+  source: 'dist',
+  note: 'device modules from dist/devices/<id>/device.js; metadata from src/devices/<id>/device.json; firmware from the CLI input',
+  schematicSha256: createHash('sha256').update(schematicText).digest('hex'),
+  deviceModulesSha256: deviceModuleSha256,
+};
+
+/** 进程 CPU 时间增量（微秒）；与 bench 测量使用同一口径。 */
+const cpuMicrosSince = (before) => {
+  const usage = process.cpuUsage(before);
+  return usage.user + usage.system;
+};
+const cpuMsSince = (before) => cpuMicrosSince(before) / 1000;
+const round = (value, digits = 3) => {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+};
 const provider = {
   getDeviceName: (reference) => devices.get(reference.raw)?.definition.displayName,
   getDeviceSymbol: (reference) => {
@@ -413,15 +453,20 @@ const uartCommand =
       : `${options.uart}\r`;
 
 for (const hexFile of hexFiles) {
+  const firmwareName = basename(hexFile);
   const image = hexFile.endsWith('.bin')
     ? new Uint8Array(readFileSync(hexFile))
     : parseIntelHex(readFileSync(hexFile, 'utf8'));
+  const firmwareSha256 = createHash('sha256').update(image).digest('hex');
   captured.clear();
   history.clear();
   inputsOf.clear();
   now = 0;
   for (const target of pressTargets) target.state = false;
   let uartInjected = false;
+  // 冷启动从装配开始；文件顶部的模块导入不在这段计时内。
+  const coldCpuBefore = process.cpuUsage();
+  const coldWallBefore = performance.now();
   const { board, faults } = buildBoard(image);
 
   // 上电注入：温度与 ADC 输入只发一次，器件保持最新值。
@@ -443,9 +488,13 @@ for (const hexFile of hexFiles) {
   const warmupPs = options.warmupMs * 1_000_000_000;
   const measurementEndPs = warmupPs + options.ms * 1_000_000_000;
   const PS_PER_MS = 1_000_000_000;
+  /** 测量窗口内的 CPU 分段；advance 含 instrumented topic capture，observe 只含每步 LED/数码管读取。 */
+  const segmentCpuUs = { inject: 0, advance: 0, observe: 0 };
+  let recordingSegments = false;
   const advance = (endPs) => {
     now = Math.min(endPs, now + stepPs);
     const atMs = now / PS_PER_MS;
+    const injectStarted = recordingSegments ? process.cpuUsage() : undefined;
     if (!uartInjected && uartCommand !== undefined && atMs >= options.uartAt) {
       uartInjected = true;
       if (
@@ -463,7 +512,11 @@ for (const hexFile of hexFiles) {
         `${atMs.toFixed(0)}ms:${designatorOf.get(target.symbolId)}.press=${wanted ? '1' : '0'}`,
       );
     }
+    if (injectStarted !== undefined) segmentCpuUs.inject += cpuMicrosSince(injectStarted);
+    const advanceStarted = recordingSegments ? process.cpuUsage() : undefined;
     board.runUntil(now);
+    if (advanceStarted !== undefined) segmentCpuUs.advance += cpuMicrosSince(advanceStarted);
+    const observeStarted = recordingSegments ? process.cpuUsage() : undefined;
     const lit = leds.filter((symbol) => brightness(symbol.id) > 0.1).map((s) => s.designator);
     if (lit.join(',') !== (ledTrail.at(-1)?.lit ?? '')) {
       ledTrail.push({ at: atMs, lit: lit.join(',') });
@@ -476,20 +529,66 @@ for (const hexFile of hexFiles) {
       );
       displaySeen.get(symbol.id).add(codes.join('/'));
     }
+    if (observeStarted !== undefined) segmentCpuUs.observe += cpuMicrosSince(observeStarted);
   };
-  const warmupStarted = performance.now();
+  // 与 bench 一致：装配后先 runUntil(0)，再预热；冷启动计时覆盖到这里。
+  board.runUntil(0);
   while (now < warmupPs) advance(warmupPs);
-  const warmupWall = (performance.now() - warmupStarted) / 1000;
-  const measurementStarted = performance.now();
+  const coldCpuMs = cpuMsSince(coldCpuBefore);
+  const coldElapsedWallMs = performance.now() - coldWallBefore;
+  recordingSegments = true;
+  const windowCpuBefore = process.cpuUsage();
+  const windowWallBefore = performance.now();
   while (now < measurementEndPs) advance(measurementEndPs);
-  const wall = (performance.now() - measurementStarted) / 1000;
+  const windowCpuMs = cpuMsSince(windowCpuBefore);
+  const windowWallMs = performance.now() - windowWallBefore;
+  recordingSegments = false;
   board.dispose();
 
-  const seconds = options.ms / 1000;
+  const windowStartMs = warmupPs / PS_PER_MS;
+  const windowEndMs = measurementEndPs / PS_PER_MS;
+  const simMs = windowEndMs - windowStartMs;
+  const realtimeRatio = windowWallMs > 0 ? simMs / windowWallMs : 0;
   console.log(
-    `\n=== ${basename(hexFile)}  ${image.length} B  预热 ${options.warmupMs} ms (${warmupWall.toFixed(2)} s) + 测量模拟 ${seconds} s / 实际 ${wall.toFixed(2)} s  (RTF ${(seconds / wall).toFixed(3)})`,
+    `\n=== ${firmwareName}  ${image.length} B  冷启动 CPU ${coldCpuMs.toFixed(1)} ms / 墙钟 ${coldElapsedWallMs.toFixed(1)} ms（装配 + runUntil(0) + 预热 ${options.warmupMs} ms）`,
+  );
+  console.log(
+    `  测量窗口 sim ${simMs} ms / CPU ${windowCpuMs.toFixed(1)} ms / 墙钟 ${windowWallMs.toFixed(1)} ms  (realtimeRatio ${realtimeRatio.toFixed(3)})  含 CLI 观测开销`,
   );
   console.log(`  faults: ${faults.length === 0 ? '无' : faults.slice(0, 5).join('; ')}`);
+  const metrics = {
+    firmware: firmwareName,
+    firmwareSha256,
+    firmwareBytes: image.length,
+    execution: options.execution,
+    clockFrequency: options.clock,
+    tickMs: options.step,
+    warmUpMs: options.warmupMs,
+    windowStartMs,
+    windowEndMs,
+    simMs: round(simMs),
+    cpuMs: round(windowCpuMs),
+    elapsedWallMs: round(windowWallMs),
+    realtimeRatio: round(realtimeRatio),
+    coldCpuMs: round(coldCpuMs),
+    coldElapsedWallMs: round(coldElapsedWallMs),
+    coldRealtimeRatio: round(coldElapsedWallMs > 0 ? options.warmupMs / coldElapsedWallMs : 0),
+    segments: {
+      injectCpuMs: round(segmentCpuUs.inject / 1000),
+      advanceCpuMs: round(segmentCpuUs.advance / 1000),
+      observeCpuMs: round(segmentCpuUs.observe / 1000),
+      note: 'CPU subsets of cpuMs; advance includes instrumented topic capture, observe is per-step LED/display reads.',
+    },
+    observationIncluded: true,
+    artifacts,
+    faults: faults.length,
+    notes: [
+      'cpuMs/elapsedWallMs include CLI observation: instrumented LED/display/history capture and per-step LED/display reads.',
+      'Process CPU includes all Node threads (JIT/GC), so cpuMs may exceed elapsedWallMs.',
+      'The bench fixture measures a different window and harness; CLI numbers are not strictly comparable.',
+      'Cold start is per firmware: assembly + runUntil(0) + warmup; device module imports at file load are excluded.',
+    ],
+  };
   if (uartCommand !== undefined)
     console.log(
       `  UART 注入 @${options.uartAt}ms (${options.uartBaud} baud): "${asciiBytes(new TextEncoder().encode(uartCommand))}"`,
@@ -570,4 +669,5 @@ for (const hexFile of hexFiles) {
     console.log(`  U1.uart1Rx: "${asciiBytes(received)}"  hex=${received.toString('hex')}`);
     console.log(`  A/B 帧一致: ${a.length > 0 && b.length > 0 && a.equals(b) ? '是' : '否'}`);
   }
+  console.log(`FIRMWARE_METRICS ${JSON.stringify(metrics)}`);
 }

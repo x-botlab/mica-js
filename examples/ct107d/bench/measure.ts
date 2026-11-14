@@ -1,7 +1,9 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 import { createCt107dBoard, demoFirmware } from './board';
+import type { BoardFingerprints } from './board';
 
 /**
  * CT107D 整板基准的测量核心：与 `stm32g431rbt6/bench/measure.mjs` 同构，但读数用
@@ -24,6 +26,7 @@ const MS_PS = 1_000_000_000;
 export const WARM_UP_MS = 20;
 export const MEASURE_MS = 500;
 export const ROUNDS = 3;
+/** 兼容旧字段：默认固件名；实际固件可用 `firmwareName` 覆盖。 */
 export const FIRMWARE = 'ct107d-demo';
 
 interface ElectricalStats {
@@ -83,6 +86,11 @@ interface JitLike {
 /** 运行时内部结构：`Board` 只公开 `runUntil`，其余字段按现有实现读取。 */
 interface RuntimeLike {
   time: number;
+  /**
+   * 当前正在同步/执行/发布话题的器件实例。话题桥本身只带端口名，
+   * 用它把每条消息归属到 `Instance.id`，再由 `designators` 换成板面位号。
+   */
+  readonly current: { readonly id: string } | undefined;
   readonly dirtyElectricalSlots: Set<number> | undefined;
   readonly network: ElectricalNetwork | undefined;
   readonly jits: readonly JitLike[] | undefined;
@@ -114,12 +122,20 @@ interface ProbeSnapshot {
   readonly direct: boolean;
   readonly digest: string;
   readonly finalDigest: string;
+  readonly finalDigestLegacy: string;
+  /** 每个「实例 ID/端口」的最新值，包含预热期；窗口结束时的完全可观测状态。 */
   readonly finalTopics: Readonly<Record<string, string>>;
+  /** 旧口径：窗口内按裸端口名的最后值（后写覆盖前写）；仅为兼容保留。 */
+  readonly finalPorts: Readonly<Record<string, string>>;
+  /** 实例 ID → 板面位号；仅辅助人读，不参与话题唯一键。 */
+  readonly instanceDesignators: Readonly<Record<string, string>>;
 }
 
 interface Probe {
   begin(): void;
   end(): void;
+  /** 当前完整可观测状态（含预热期），键为「实例 ID/端口」。 */
+  checkpoint(): Readonly<Record<string, string>>;
   read(): ProbeSnapshot;
   dispose(): void;
 }
@@ -127,6 +143,25 @@ interface Probe {
 const cpuMs = (usage: NodeJS.CpuUsage): number => (usage.user + usage.system) / 1000;
 
 const elapsed = (before: NodeJS.CpuUsage): number => cpuMs(process.cpuUsage(before));
+
+/** 稳定顺序：检查点快照可逐字比较，不依赖话题首次出现的顺序。 */
+function sortedTopics(topics: ReadonlyMap<string, string>): Readonly<Record<string, string>> {
+  return Object.fromEntries(
+    [...topics.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+  );
+}
+
+function digestTopics(topics: ReadonlyMap<string, string>): string {
+  return `sha256:${createHash('sha256')
+    .update(
+      [...topics.entries()]
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([topic, text]) => `${topic}|${text}\n`)
+        .join(''),
+    )
+    .digest('hex')
+    .slice(0, 16)}`;
+}
 
 /** 话题负载的规范化：数值用最短表示、字节用十六进制、记录按键名排序。 */
 function canonical(value: unknown): string {
@@ -156,7 +191,7 @@ interface TopicBridge {
   };
 }
 
-function createProbe(board: unknown): Probe {
+function createProbe(board: unknown, designators: ReadonlyMap<string, string>): Probe {
   const runtime = board as RuntimeLike;
   const hasher = createHash('sha256');
   const counters: WindowCounters = {
@@ -183,15 +218,38 @@ function createProbe(board: unknown): Probe {
   const totalDirect = (field: 'directCalls' | 'directFallbacks'): number =>
     directJits().reduce((sum, jit) => sum + (jit.directStats?.[field] ?? 0), 0);
 
-  /** Last payload per topic: the message count may coalesce without losing the final value. */
-  const finals = new Map<string, string>();
+  /**
+   * 板级话题桥只传端口名；`runtime.current` 在同步/执行/发布期间指向发布者。
+   * 唯一键用「实例 ID / 端口」，避免 U7/U8 都发 `latch`、DS1/DS2 都发 `digit1`
+   * 时互相覆盖。位号只做辅助映射，可能重复，不能当唯一键。
+   */
+  const topicKey = (topic: string): string => {
+    const current = runtime.current;
+
+    if (current === undefined) return `@host/${topic}`;
+
+    return `${current.id}/${topic}`;
+  };
+
+  /** 实例 ID → 位号；仅用于结果展示和测试定位，不参与话题键。 */
+  const instanceDesignators = sortedTopics(designators);
+  /** 全量最新值（含预热期），供窗口检查点读取完整可观测状态。 */
+  const latest = new Map<string, string>();
+  /** 窗口内按「实例 ID/端口」的最后值。 */
+  const windowFinals = new Map<string, string>();
+  /** 旧口径：窗口内按裸端口名的最后值（后写覆盖前写）。 */
+  const legacyFinals = new Map<string, string>();
   const stream: string[] = [];
   const subscription = (board as { topics: TopicBridge }).topics.onDidReceive((message) => {
+    const text = canonical(message.payload);
+    const key = topicKey(message.topic);
+
+    latest.set(key, text);
     if (!active) return;
     counters.topicMessages++;
-    const text = canonical(message.payload);
     hasher.update(`${runtime.time}|${message.topic}|${text}\n`);
-    finals.set(message.topic, text);
+    windowFinals.set(key, text);
+    legacyFinals.set(message.topic, text);
     if (process.env['MICA_PERF_STREAM']) stream.push(`${runtime.time}|${message.topic}|${text}`);
   });
 
@@ -257,6 +315,9 @@ function createProbe(board: unknown): Probe {
     },
     end() {
       active = false;
+    },
+    checkpoint() {
+      return sortedTopics(latest);
     },
     read() {
       let directPrograms = 0;
@@ -325,16 +386,11 @@ function createProbe(board: unknown): Probe {
         },
         direct: directJits().length > 0 && counters.directCalls > 0,
         digest: `sha256:${hasher.digest('hex').slice(0, 16)}`,
-        finalDigest: `sha256:${createHash('sha256')
-          .update(
-            [...finals.entries()]
-              .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-              .map(([topic, text]) => `${topic}|${text}\n`)
-              .join(''),
-          )
-          .digest('hex')
-          .slice(0, 16)}`,
-        finalTopics: Object.fromEntries(finals),
+        finalDigest: digestTopics(windowFinals),
+        finalDigestLegacy: digestTopics(legacyFinals),
+        finalTopics: sortedTopics(latest),
+        finalPorts: sortedTopics(legacyFinals),
+        instanceDesignators,
       };
     },
     dispose() {
@@ -352,6 +408,8 @@ function createProbe(board: unknown): Probe {
 export interface MeasureOptions {
   /** 固件镜像；默认 `assets/ct107d-demo.bin`（8051 演示固件）。 */
   readonly firmware?: Uint8Array;
+  /** 固件名（写进结果与产物指纹）；默认 `ct107d-demo`。 */
+  readonly firmwareName?: string;
   /** 覆盖 MCU 属性，例如 `clockFrequency`。 */
   readonly props?: Readonly<Record<string, unknown>>;
   /** 执行后端；`precise` 走解释器，用于与直接后端做差分对照。 */
@@ -361,18 +419,69 @@ export interface MeasureOptions {
   /** Optional simulation time advanced by each runUntil call, as in the canvas frame loop. */
   readonly tickMs?: number;
   readonly rounds?: number;
+  /**
+   * 测量窗口内的共同仿真时间检查点（绝对毫秒，从板启动算起）。
+   * 除窗口终点外，检查点必须落在 `warmUpMs + k * tickMs` 的推进网格上；
+   * 否则为了命中检查点会额外切分一次 `runUntil`，改变批处理口径。
+   */
+  readonly checkpointMs?: readonly number[];
+}
+
+/** 共同仿真时间检查点上的完整可观测状态，键为「实例 ID/端口」。 */
+export interface TopicCheckpoint {
+  readonly simMs: number;
+  readonly topics: Readonly<Record<string, string>>;
 }
 
 export interface MeasureResult {
   readonly board: 'ct107d';
+  /** 固件名；兼容字段，等价于 `firmwareName`。 */
   readonly firmware: string;
+  readonly firmwareName: string;
+  readonly firmwareBytes: number;
+  /** 固件镜像的完整 SHA-256（十六进制），用于复现实验产物。 */
+  readonly firmwareSha256: string;
+  /** 原理图、固件与器件产物的哈希清单；`source` 标明基准读取的是 `src`。 */
+  readonly fingerprints: BoardFingerprints;
+  /** 实例 ID → 位号；仅辅助人读，话题唯一键仍为「实例 ID/端口」。 */
+  readonly instanceDesignators: Readonly<Record<string, string>>;
+  /** 实际使用的执行后端。 */
+  readonly execution: 'throughput' | 'precise';
   readonly clockFrequency: number;
   readonly devices: number;
   readonly nets: number;
+  /** 测量窗口的仿真时长（毫秒）。 */
   readonly simMs: number;
+  readonly warmUpMs: number;
+  readonly tickMs: number;
+  readonly rounds: number;
+  /** 测量窗口在板时间轴上的起止（绝对毫秒）。 */
+  readonly windowStartMs: number;
+  readonly windowEndMs: number;
+  /** 稳态窗口的进程 CPU 时间（`user + system`，毫秒）。 */
+  readonly cpuMs: number;
+  /** 稳态窗口的真实墙钟时间（毫秒）。 */
+  readonly elapsedWallMs: number;
+  /** `simMs / elapsedWallMs`：真实墙钟口径下每墙钟秒推进的仿真秒数。 */
+  readonly realtimeRatio: number;
+  /** 冷启动阶段（装配 + `runUntil(0)` + 预热）的进程 CPU 时间（毫秒）。 */
+  readonly coldCpuMs: number;
+  /** 冷启动阶段的真实墙钟时间（毫秒）。 */
+  readonly coldElapsedWallMs: number;
+  /** `warmUpMs / coldElapsedWallMs`；预热为 0 时记为 0。 */
+  readonly coldRealtimeRatio: number;
+  /**
+   * @deprecated 历史 CPU 指标：等价于 `cpuMs`（进程 CPU 时间），不是墙钟。
+   * 新代码请读 `cpuMs` / `elapsedWallMs` / `realtimeRatio`。
+   */
   readonly wallMs: number;
-  readonly coldMs: number;
+  /**
+   * @deprecated 历史 CPU 指标：`cpuMs / simMs`（CPU 时间 / 仿真时间），不是 `simMs / wall`。
+   * 实时比请读 `realtimeRatio`。
+   */
   readonly rtf: number;
+  /** @deprecated 历史 CPU 指标：等价于 `coldCpuMs`。 */
+  readonly coldMs: number;
   readonly usPerSolve: number;
   readonly solves: number;
   /** Whole-graph topology rebuilds; a transition-bucket hit restores instead. */
@@ -415,13 +524,28 @@ export interface MeasureResult {
   readonly worstBlock: EmitStats['worst'];
   readonly topicDigest: string;
   readonly topicDigestStable: boolean;
+  /** 各轮检查点快照是否完全一致。 */
+  readonly checkpointsStable: boolean;
+  /** 最佳轮在共同仿真时间检查点上的完整状态。 */
+  readonly checkpoints: readonly TopicCheckpoint[];
   /**
-   * 每话题的最终载荷摘要。消息条数会因为直接后端按 slice 批量 flush 而合并，
-   * 终值摘要用来区分「合并」与「丢值」。
+   * 旧口径：窗口内按裸端口名取最后载荷后计算的摘要（后写覆盖前写）。
+   * 新代码请读 `topicFinalDigestByDevice`（实例 ID + 端口）。
    */
   readonly topicFinalDigest: string;
-  /** 每话题的最终载荷，供跨版本差分定位；不参与断言。 */
+  /** 窗口内按「实例 ID/端口」最后载荷计算的摘要。 */
+  readonly topicFinalDigestByDevice: string;
+  /**
+   * 窗口结束时的完整状态，键为「实例 ID/端口」（含预热期最后已知值）。
+   * 同名端口（U7/U8 的 `latch`、DS1/DS2 的 `digit1`…）不会再互相覆盖。
+   * 位号只作辅助映射，见 `instanceDesignators`，可能重复。
+   */
   readonly topicFinalTopics: Readonly<Record<string, string>>;
+  /**
+   * @deprecated 旧口径：窗口内按裸端口名的最后值（后写覆盖前写）。
+   * 仅为兼容历史调用保留；需要区分同名器件请读 `topicFinalTopics`。
+   */
+  readonly topicFinalPorts: Readonly<Record<string, string>>;
   readonly unavailable: Readonly<Record<string, string>>;
   readonly faults: readonly string[];
 }
@@ -437,87 +561,171 @@ function environmentExecution(): 'throughput' | 'precise' | undefined {
 }
 
 interface RoundSample {
+  /** 稳态窗口的进程 CPU 时间（毫秒）。 */
   cpuMs: number;
+  /** 稳态窗口的真实墙钟时间（毫秒）。 */
+  wallMs: number;
+  /** 装配 + `runUntil(0)` + 预热的进程 CPU 时间（毫秒）。 */
+  coldCpuMs: number;
+  /** 装配 + `runUntil(0)` + 预热的真实墙钟时间（毫秒）。 */
+  coldWallMs: number;
   usPerSolve: number;
   solves: number;
   components: number;
   factorizations: number;
   leafPlans: number;
   topologyPrepares: number;
+  checkpoints: readonly TopicCheckpoint[];
   snapshot: ProbeSnapshot;
 }
 
 export async function measureCt107d(options: MeasureOptions = {}): Promise<MeasureResult> {
   const firmware = options.firmware ?? demoFirmware();
-  const execution = options.execution ?? environmentExecution();
+  const firmwareName = options.firmwareName ?? FIRMWARE;
+  const firmwareSha256 = createHash('sha256').update(firmware).digest('hex');
+  const execution = options.execution ?? environmentExecution() ?? 'throughput';
   const warmUpMs = options.warmUpMs ?? WARM_UP_MS;
+  const warmUpPs = warmUpMs * MS_PS;
+  // 预热现在按 `tickMs` 分批推进；`Infinity` 会让批次循环永不终止，NaN / 负数 /
+  // 超安全整数也必须在装配前拒绝，保持与单次 `runUntil` 相同的入参约束。
+  if (!Number.isSafeInteger(warmUpPs) || warmUpPs < 0)
+    throw new RangeError(
+      'warmUpMs must represent a non-negative safe integer number of picoseconds.',
+    );
   const measureMs = options.measureMs ?? MEASURE_MS;
   const tickMs = options.tickMs ?? measureMs;
   const tickPs = tickMs * MS_PS;
   if (!Number.isSafeInteger(tickPs) || tickPs <= 0)
     throw new RangeError('tickMs must represent a positive safe integer number of picoseconds.');
   const rounds = Math.max(1, options.rounds ?? ROUNDS);
+  const checkpointsMs = [...new Set(options.checkpointMs ?? [])].sort(
+    (left, right) => left - right,
+  );
+  for (const checkpoint of checkpointsMs) {
+    const checkpointPs = checkpoint * MS_PS;
+    if (!Number.isSafeInteger(checkpointPs) || checkpointPs < 0)
+      throw new RangeError(
+        'checkpointMs must represent a non-negative safe integer number of picoseconds.',
+      );
+  }
   const samples: RoundSample[] = [];
   const digests: string[] = [];
   const finalDigests: string[] = [];
+  const finalDigestsLegacy: string[] = [];
   const faults: string[] = [];
   const unavailable: Record<string, string> = {};
-  let coldMs = 0;
   let devices = 0;
   let nets = 0;
   let clockFrequency = 0;
+  let fingerprints: BoardFingerprints | undefined;
 
   for (let round = 0; round < rounds; round += 1) {
-    const coldStart = process.cpuUsage();
+    const coldCpuBefore = process.cpuUsage();
+    const coldWallBefore = performance.now();
     const assembled = await createCt107dBoard({
       firmware,
       ...(options.props === undefined ? {} : { props: options.props }),
-      ...(execution === undefined ? {} : { execution }),
+      execution,
     });
-    const probe = createProbe(assembled.board);
+    const probe = createProbe(assembled.board, assembled.designators);
 
     try {
       devices = assembled.devices;
       nets = assembled.nets;
       clockFrequency = assembled.clockFrequency;
+      fingerprints = assembled.fingerprints;
 
       assembled.board.runUntil(0);
-      assembled.board.runUntil(warmUpMs * MS_PS);
-      coldMs = round === 0 ? elapsed(coldStart) : Math.min(coldMs, elapsed(coldStart));
+      // 预热与画布帧循环同口径：按 `tickMs` 批次推进到 `warmUpMs`，末尾不足一个
+      // tick 时截到终点；512 ms / 64 ms 恰好 8 次。保留首次 `runUntil(0)`，
+      // 并在 `warmUpMs = 0` 时仍推进一次到终点，与旧行为一致。
+      const warmUpEnd = warmUpPs;
+
+      do {
+        assembled.board.runUntil(Math.min(assembled.board.time + tickPs, warmUpEnd));
+      } while (assembled.board.time < warmUpEnd);
+      // 冷启动只到预热结束；稳态窗口另有 CPU / 墙钟计时，两者不混在一起。
+      const coldCpuMs = elapsed(coldCpuBefore);
+      const coldWallMs = performance.now() - coldWallBefore;
+      const windowStart = assembled.board.time;
+      const end = windowStart + measureMs * MS_PS;
+      const checkpointPs = checkpointsMs.map((checkpoint) => checkpoint * MS_PS);
+
+      for (const checkpoint of checkpointPs) {
+        if (checkpoint < windowStart || checkpoint > end)
+          throw new RangeError(
+            `checkpointMs ${checkpoint / MS_PS} is outside the measurement window ` +
+              `[${windowStart / MS_PS}, ${end / MS_PS}].`,
+          );
+        if (checkpoint !== end && (checkpoint - windowStart) % tickPs !== 0)
+          throw new RangeError(
+            `checkpointMs ${checkpoint / MS_PS} is not on the tick grid ` +
+              `(window start ${windowStart / MS_PS} ms, tick ${tickMs} ms).`,
+          );
+      }
 
       const network = (assembled.board as unknown as RuntimeLike).network;
       const solvesBefore = network?.stats.solves ?? 0;
       const started = process.cpuUsage();
+      const wallStarted = performance.now();
 
       probe.begin();
-      const end = assembled.board.time + measureMs * MS_PS;
-      while (assembled.board.time < end)
-        assembled.board.runUntil(Math.min(end, assembled.board.time + tickPs));
+      const checkpoints: TopicCheckpoint[] = [];
+      let checkpointIndex = 0;
+      const capture = (timePs: number): void => {
+        checkpoints.push({ simMs: timePs / MS_PS, topics: probe.checkpoint() });
+      };
+
+      // 窗口起点本身也作为共同检查点；此后每次推进都停在 tick 或检查点边界。
+      while (
+        checkpointIndex < checkpointPs.length &&
+        checkpointPs[checkpointIndex] === windowStart
+      ) {
+        capture(checkpointPs[checkpointIndex]!);
+        checkpointIndex++;
+      }
+      while (assembled.board.time < end) {
+        const nextTick = Math.min(end, assembled.board.time + tickPs);
+        const nextCheckpoint = checkpointPs[checkpointIndex] ?? Number.POSITIVE_INFINITY;
+        const target = Math.min(nextTick, nextCheckpoint);
+
+        assembled.board.runUntil(target);
+        if (target === nextCheckpoint) {
+          capture(nextCheckpoint);
+          checkpointIndex++;
+        }
+      }
       probe.end();
 
-      const windowMs = elapsed(started);
+      const windowCpuMs = elapsed(started);
+      const windowWallMs = performance.now() - wallStarted;
       const snapshot = probe.read();
       const statistics = network?.stats;
       const { solveCalls, solveUs } = snapshot.counters;
       const solves = (statistics?.solves ?? 0) - solvesBefore;
 
       samples.push({
-        cpuMs: windowMs,
+        cpuMs: windowCpuMs,
+        wallMs: windowWallMs,
+        coldCpuMs,
+        coldWallMs,
         usPerSolve:
           solveCalls > 0 && solveUs > 0
             ? solveUs / solveCalls
             : solves === 0
               ? 0
-              : (windowMs * 1000) / solves,
+              : (windowCpuMs * 1000) / solves,
         solves,
         components: statistics?.components ?? 0,
         factorizations: statistics?.factorizations ?? 0,
         leafPlans: statistics?.leafPlans ?? 0,
         topologyPrepares: statistics?.topologyPrepares ?? 0,
+        checkpoints,
         snapshot,
       });
       digests.push(snapshot.digest);
       finalDigests.push(snapshot.finalDigest);
+      finalDigestsLegacy.push(snapshot.finalDigestLegacy);
 
       if (statistics === undefined)
         unavailable.solves =
@@ -538,17 +746,40 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
   const best = samples.reduce((left, right) => (right.cpuMs < left.cpuMs ? right : left));
   const { counters } = best.snapshot;
   const usPerSolve = Math.min(...samples.map((sample) => sample.usPerSolve));
+  const cpuMs = Number(best.cpuMs.toFixed(1));
+  const coldCpuMs = Number(best.coldCpuMs.toFixed(1));
+  const elapsedWallMs = Number(best.wallMs.toFixed(1));
+  const coldElapsedWallMs = Number(best.coldWallMs.toFixed(1));
 
   return {
     board: 'ct107d',
-    firmware: FIRMWARE,
+    firmware: firmwareName,
+    firmwareName,
+    firmwareBytes: firmware.length,
+    firmwareSha256,
+    fingerprints: fingerprints!,
+    instanceDesignators: best.snapshot.instanceDesignators,
+    execution,
     clockFrequency,
     devices,
     nets,
     simMs: measureMs,
-    wallMs: Number(best.cpuMs.toFixed(1)),
-    coldMs: Number(coldMs.toFixed(1)),
-    rtf: Number((best.cpuMs / measureMs).toFixed(3)),
+    warmUpMs,
+    tickMs,
+    rounds,
+    windowStartMs: warmUpMs,
+    windowEndMs: warmUpMs + measureMs,
+    cpuMs,
+    elapsedWallMs,
+    realtimeRatio: best.wallMs === 0 ? 0 : Number((measureMs / best.wallMs).toFixed(3)),
+    coldCpuMs,
+    coldElapsedWallMs,
+    coldRealtimeRatio:
+      warmUpMs === 0 || best.coldWallMs === 0 ? 0 : Number((warmUpMs / best.coldWallMs).toFixed(3)),
+    // 兼容历史字段：这两个值仍然是 CPU 时间口径，不是墙钟。
+    wallMs: cpuMs,
+    rtf: Number((cpuMs / measureMs).toFixed(3)),
+    coldMs: coldCpuMs,
     usPerSolve: Number(usPerSolve.toFixed(2)),
     solves: best.solves,
     prepareTopology: best.topologyPrepares,
@@ -583,8 +814,13 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     worstBlock: best.snapshot.emit.worst,
     topicDigest: digests[0] ?? '',
     topicDigestStable: new Set(digests).size === 1,
-    topicFinalDigest: finalDigests[0] ?? '',
+    checkpointsStable:
+      new Set(samples.map((sample) => JSON.stringify(sample.checkpoints))).size === 1,
+    checkpoints: best.checkpoints,
+    topicFinalDigest: finalDigestsLegacy[0] ?? '',
+    topicFinalDigestByDevice: finalDigests[0] ?? '',
     topicFinalTopics: best.snapshot.finalTopics,
+    topicFinalPorts: best.snapshot.finalPorts,
     unavailable,
     faults,
   };

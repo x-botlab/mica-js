@@ -1,9 +1,8 @@
 # CT107D 器件包
 
-CT107D 竞赛板的 Mica 示例工程：23 个器件（13 种芯片 + 轻触按键 + 有源蜂鸣器 + 继电器 +
-两脚跳线与 2×3 跳线排针 + 超声波收发器件与 UART 串口探针 + IAP15F2K61S2、`seg4` 数码管、
-`blue-led` 指示灯）、7 个板面 widget（背景图 / 按键 / 四位数码管 / 指示灯 / 蜂鸣器 /
-继电器 / 交互式跳线）、整板原理图 `ct107d.sch`、板面画布 `ct107d.cnv`
+CT107D 竞赛板的 Mica 示例工程：21 个器件（13 种芯片 + 轻触按键 + 有源蜂鸣器 + 继电器 +
+两脚跳线与 2×3 跳线排针 + IAP15F2K61S2、`seg4` 数码管、`blue-led` 指示灯）、4 个板面 widget
+（背景图 / 按键 / 四位数码管 / 指示灯）、整板原理图 `ct107d.sch`、板面画布 `ct107d.cnv`
 与一段 8051 演示固件。
 
 工程位于仓库的 `examples/ct107d`，纳入 pnpm workspace（包名 `@mica-js/example-ct107d`）：
@@ -20,7 +19,7 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
                                                   # 外部固件整板联调（见 docs/official-firmware-simulation.md）
 ```
 
-整板用到的器件全部在本包 `src/devices/` 下，`mica build` 一次输出 23 个器件，
+整板用到的器件全部在本包 `src/devices/` 下，`mica build` 一次输出 21 个器件，
 不依赖其它工程的构建产物。Playground 的 `scripts/components.mjs` 会把本包的 `dist/`
 与 `ct107d.{sch,cnv,assets}` 复制到被忽略的 `public/components/ct107d/`。
 
@@ -35,8 +34,8 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
 `mica build` 输出 `dist/devices/<id>/{device.json, device.js}`。
 
 画布控件按新端口重写为 `src/widgets/<id>/`，构建产物是 `dist/widgets/<id>/{widget.json, widget.js}`；
-`ct107d.cnv` 把背景图、17 个按键、2 片四位数码管、8 个 LED、蜂鸣器、继电器和交互式
-跳线铺在开发板照片上，并通过 `bindings` 接到 `ct107d.sch` 的器件端口。
+`ct107d.cnv` 把背景图与 17 个按键热区、2 片四位数码管铺在开发板照片上，并通过
+`bindings` 接到 `ct107d.sch` 里的按键与数码管器件。
 
 ## 与旧实现的对应
 
@@ -64,7 +63,7 @@ examples/ct107d/
   vitest.config.ts
   vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
   bench/
-    board.ts                      整板夹具：按 ct107d.sch 装配 51 颗器件（装载 src/，不依赖 dist）
+    board.ts                      整板夹具：按 ct107d.sch 装配 48 颗器件（装载 src/，不依赖 dist）
     measure.ts                    测量核心：进程 CPU 时间读数、电气/运行时/JIT 指标、topicDigest
     perf.test.ts                  基准用例：只断言下限，并追加一行到 bench/results.jsonl
   src/devices/<id>/
@@ -80,7 +79,7 @@ examples/ct107d/
   test/
     harness.ts                    共享板级夹具：DDL + src 适配器 + 电阻/探针/数字源
     manifest.test.ts              元数据、DDL、适配器三份声明的一致性
-    widgets.test.ts               板面 widget 的元数据与绘制/交互
+    widgets.test.ts               四个板面 widget 的元数据与绘制/交互
     <id>.test.ts                  各器件行为用例
   docs/<id>.md                    器件说明：引脚、行为、端口、理想化
   docs/official-firmware-simulation.md
@@ -91,7 +90,7 @@ examples/ct107d/
   firmware/demo.asm               8051 汇编源
   ct107d.sch                      整板原理图（生成物）
   ct107d.netlist.json             同一网表的可读形式（生成物）
-  ct107d.cnv                      板面画布：背景图 + 按键/显示/执行器/跳线 widget（生成物）
+  ct107d.cnv                      板面画布：背景图 + 按键热区 + 数码管（生成物）
   assemble-firmware.mjs           极简 8051 汇编器：firmware/demo.asm → assets/*.bin
   build-schematic.mjs             原理图生成器：PDF 逐网络对照表与布局
   build-canvas.mjs                画布生成器：照片像素坐标 → 实例摆放与绑定
@@ -101,34 +100,32 @@ examples/ct107d/
 ```
 
 `docs/official-firmware-simulation.md` 记录 14 份官方固件的实测结果与已修复的模型问题；
-`docs/official-firmware-gaps.md` 记录 `12.0`、`13.0`、`14.0` 的超声/测频页以及 `6.0`/`7.0`
-串口验收所需补件。当前整板已加入 `J3`、`ultrasonic` 与 `uart-probe`，MCU 也提供
-`uart1Tx`/`uart1Rx` 话题；`verify-firmware.mjs` 的 `--uart` 可经探针注入命令并对照两侧帧。
+`docs/official-firmware-gaps.md` 单独列出仍无法完整验收的工程（`12.0`、`13.0`、`14.0` 的
+超声/测频页，以及 `6.0`/`7.0` 的串口）和需要补的网络与夹具。串口按该文档第 3 节同时补
+MCU 的 `uart1Tx` 端口与原理图里的独立 `uart-probe` 器件，两者缺一不可。
 
 ## 器件
 
-| id            | 型号                       | 类别           | 端口（方向）                       |
-| ------------- | -------------------------- | -------------- | ---------------------------------- |
-| `74hc02`      | 四路 2 输入或非门          | 组合逻辑       | —                                  |
-| `74ls04`      | 六反相器                   | 组合逻辑       | —                                  |
-| `74hc138`     | 3-8 译码器（低有效）       | 组合逻辑       | `select`、`enabled`、`code`        |
-| `74hc573`     | 八路透明 D 锁存器          | 时序逻辑       | `latch`                            |
-| `uln2003`     | 七路达林顿驱动             | 驱动           | `mask`、`channels`                 |
-| `lm386`       | 音频功放（数字跟随）       | 模拟（数字化） | `active`                           |
-| `at24c02`     | 2 Kb I²C EEPROM            | 串行存储       | `dump`                             |
-| `pcf8591`     | 8 位 ADC + DAC（I²C）      | 混合信号       | `ain0`–`ain3`、`aout`、`channel`   |
-| `ds1302`      | 三线实时时钟               | 串行时钟       | `datetime`、`running`              |
-| `ds18b20`     | 1-Wire 温度传感器          | 串行传感器     | `temperature`、`temperatureOut`    |
-| `ne555`       | 无稳态定时器               | 定时           | `frequency`、`dutyCycle`           |
-| `cx20106a`    | 红外前置放大/整形          | 红外接收       | `carrier`、`receiving`             |
-| `vs1838`      | 一体化 38 kHz 红外接收头   | 红外接收       | `carrier`、`receiving`             |
-| `push-button` | 轻触按键（S1、S4–S19）     | 机电           | `press`                            |
-| `buzzer`      | 有源蜂鸣器（SP1）          | 执行器         | `active`                           |
-| `relay`       | 电磁继电器（K1，双极常开） | 执行器         | `energized`                        |
-| `jumper`      | 交互式两脚跳线（J13）      | 装配/交互      | `control`（输入）、`closedState`   |
-| `jumper-2x3`  | 交互式 2×3 跳线排针（J2）  | 装配/交互      | `control2`（输入）、`closedState2` |
-| `ultrasonic`  | 超声波收发器件             | 传感器         | —                                  |
-| `uart-probe`  | UART 串口探针              | 串行探针       | `send`（输入）、`tx`、`rx`         |
+| id            | 型号                       | 类别           | 端口（方向）                     |
+| ------------- | -------------------------- | -------------- | -------------------------------- |
+| `74hc02`      | 四路 2 输入或非门          | 组合逻辑       | —                                |
+| `74ls04`      | 六反相器                   | 组合逻辑       | —                                |
+| `74hc138`     | 3-8 译码器（低有效）       | 组合逻辑       | `select`、`enabled`、`code`      |
+| `74hc573`     | 八路透明 D 锁存器          | 时序逻辑       | `latch`                          |
+| `uln2003`     | 七路达林顿驱动             | 驱动           | `mask`、`channels`               |
+| `lm386`       | 音频功放（数字跟随）       | 模拟（数字化） | `active`                         |
+| `at24c02`     | 2 Kb I²C EEPROM            | 串行存储       | `dump`                           |
+| `pcf8591`     | 8 位 ADC + DAC（I²C）      | 混合信号       | `ain0`–`ain3`、`aout`、`channel` |
+| `ds1302`      | 三线实时时钟               | 串行时钟       | `datetime`、`running`            |
+| `ds18b20`     | 1-Wire 温度传感器          | 串行传感器     | `temperature`、`temperatureOut`  |
+| `ne555`       | 无稳态定时器               | 定时           | `frequency`、`dutyCycle`         |
+| `cx20106a`    | 红外前置放大/整形          | 红外接收       | `carrier`、`receiving`           |
+| `vs1838`      | 一体化 38 kHz 红外接收头   | 红外接收       | `carrier`、`receiving`           |
+| `push-button` | 轻触按键（S1、S4–S19）     | 机电           | `press`                          |
+| `buzzer`      | 有源蜂鸣器（SP1）          | 执行器         | `active`                         |
+| `relay`       | 电磁继电器（K1，双极常开） | 执行器         | `energized`                      |
+| `jumper`      | 两脚跳线（J13）            | 装配配置       | —                                |
+| `jumper-2x3`  | 2×3 跳线排针（J2）         | 装配配置       | —                                |
 
 每个器件的引脚表、行为、端口编码与理想化见 [`docs/<id>.md`](docs/)。
 
@@ -136,14 +133,12 @@ examples/ct107d/
 
 DDL 通道没有 `string` 负载，旧版的字符串端口改为固定编码的 `bytes`：
 
-| 器件           | 端口                  | 编码                                                     |
-| -------------- | --------------------- | -------------------------------------------------------- |
-| `74hc138`      | `code`                | 2 字节 ASCII：`"Y0"`–`"Y7"`；禁用时 `"--"`               |
-| `uln2003`      | `channels`            | 7 字节 ASCII，IN1→IN7 对应 `'0'`/`'1'`（如 `"1010000"`） |
-| `ds1302`       | `datetime`            | 19 字节 ASCII：`YYYY-MM-DD HH:MM:SS`                     |
-| `at24c02`      | `dump`                | 256 字节原始内容                                         |
-| `uart-probe`   | `tx` / `rx`           | 每个 8N1 帧 1 字节                                       |
-| `iap15f2k61s2` | `uart1Tx` / `uart1Rx` | 每个完整 UART1 帧 1 字节                                 |
+| 器件      | 端口       | 编码                                                     |
+| --------- | ---------- | -------------------------------------------------------- |
+| `74hc138` | `code`     | 2 字节 ASCII：`"Y0"`–`"Y7"`；禁用时 `"--"`               |
+| `uln2003` | `channels` | 7 字节 ASCII，IN1→IN7 对应 `'0'`/`'1'`（如 `"1010000"`） |
+| `ds1302`  | `datetime` | 19 字节 ASCII：`YYYY-MM-DD HH:MM:SS`                     |
+| `at24c02` | `dump`     | 256 字节原始内容                                         |
 
 其余端口都是 `number` 或 `bool`。`pcf8591` 的模拟输入输出只有端口，没有电气语义，因此物理
 引脚用 `vin0`–`vin3` / `dac` 命名（`label` 保留 `AIN0`–`AIN3` / `AOUT`）。
@@ -177,10 +172,9 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 ## 原理图 `ct107d.sch`
 
 按 CT107D 原理图（仓库根的 `SCH_硬件原理图V30.pdf`）逐网络还原竞赛板，包含本包的
-20 个芯片/按键/执行器/跳线/探针器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4`
-四位数码管（DS1/DS2 两片）；这三个器件同时有独立源工程，见上文。未实现器件——电阻、
-电容、晶振、LCD、拨码开关、其余排针与跳线（J5/J7/JS1/JS2）、CH340C、霍尔、运放、电机、
-红外发射管——暂时忽略。
+18 个芯片/按键/执行器/跳线器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
+（DS1/DS2 两片）；这三个器件同时有独立源工程，见上文。未实现器件——电阻、电容、晶振、LCD、拨码开关、其余排针与跳线（J3/J5/J7/JS1/JS2）、CH340C、霍尔、
+运放、电机、红外发射管——暂时忽略。
 
 | 文件                   | 说明                                                                |
 | ---------------------- | ------------------------------------------------------------------- |
@@ -189,7 +183,7 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 | `build-schematic.mjs`  | 生成器：内含 PDF 逐网络对照表与布局，重新生成两个产物               |
 | `verify-schematic.mjs` | 校验：解析网表并对照、建板、跑通锁存链路与数码管扫描                |
 
-器件引用由宿主解析到本包的 `./dist/devices/<ID>/`（共 23 个器件，均由本包一次构建）。
+器件引用由宿主解析到本包的 `./dist/devices/<ID>/`（共 21 个器件，均由本包一次构建）。
 
 已实现的连接：
 
@@ -206,19 +200,15 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
   [`docs/push-button.md`](docs/push-button.md)。
 - **串行**：`P20/SCL`/`P21/SDA` → U4（地址脚与 WP 接地）与 U16（A0–A2/EXT 接地）；
   `P13`/`P23`/`P17/SCK` → U19；`P14` → U5；U16 模拟端为 `AIN0`–`AIN3` 与 `OUT` 网标。
-  MCU 的实际 UART1 复用方向是 `P3.1/TXD`、`P3.0/RXD`，探针的 `rxd` 与 `txd` 交叉接入，
-  分别复原 MCU 发送帧与向 MCU 注入命令。
 - **执行器**：U10 OUT5 → `N_RELAY` → K1 线圈（另一端接 VCC），K1 的 `com`（引脚 3）接
   `m2` 端子、`no`（引脚 6）与第二组触点公共端 `com2`（引脚 1）接 GND；U10 OUT7 →
   `N_BUZZ` → SP1 负端（正端接 VCC）。详见 [`docs/relay.md`](docs/relay.md)、
   [`docs/buzzer.md`](docs/buzzer.md)。
-- **定时/红外/超声**：U15 OUT → `NET_SIG`，经默认闭合的 J3 接到 `P34`（PCA ECI），RST 与
-  VCC 接高；CX20106A 输出 `N_B1`、VS1838 输出 `N_B2` 接到 J2 的 2/6 脚，J2 的 1-3 固定短接
-  （`P10` → U18 整形/驱动链 `N_A1`），接收端公共脚 4（`P11`）由实例属性 `vs1838` 选择短接 4-6
-  或 2-4；J2 的 5 脚是红外发射管支路 `N_A2`。U22 的 `trig`/`echo` 并接 `P10`/`P11`。详见
-  [`docs/jumper-2x3.md`](docs/jumper-2x3.md)、[`docs/ultrasonic.md`](docs/ultrasonic.md)。
-- **跳线**：J13 的 `a` 接 `P42/WR`、`b` 接 GND，`closed` 属性给出装配初值，交互式跳线
-  widget 通过 `control` 在运行期切换；J3 的 `a` 接 `NET_SIG`、`b` 接 `P34`，默认闭合。
+- **定时/红外**：U15 OUT → `NET_SIG`，RST 与 VCC 接高；CX20106A 输出 `N_B1`、VS1838 输出
+  `N_B2` 接到 J2 的 2/6 脚，J2 的 1-3 固定短接（`P10` → U18 整形/驱动链 `N_A1`），接收端
+  公共脚 4（`P11`）由实例属性 `vs1838` 选择短接 4-6 或 2-4；J2 的 5 脚是红外发射管支路
+  `N_A2`。详见 [`docs/jumper-2x3.md`](docs/jumper-2x3.md)。
+- **跳线**：J13 的 `a` 接 `P42/WR`、`b` 接 GND，`closed` 属性模拟「WR 接 0 V」的装配位置。
 
 忽略器件后的替代约定：
 
@@ -230,8 +220,8 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 - `P42/WR` 除了 74HC02 的四个 B 输入，还接矩阵键盘的第二列；MCU 模型没有 P4 端口，
   J13 的 WR 源侧不建模，原理图里 J13 只把 `P42/WR` 短接到 GND（`closed = true`）。
 - `RST` 只连 S1 与网标：MCU 模型没有复位引脚，复位电路里的 CR1/R3 不建模。
-- 执行器输出 `STEPA`–`STEPD`/`N_MOTOR`、`SPK`、`AIN0`–`AIN3`、`OUT`、`m2`
-  等只保留驱动侧网标，作为未实现器件的接口桩；74HC138 的 Y0–Y3、NE555 的 RC 脚、
+- 执行器输出 `STEPA`–`STEPD`/`N_MOTOR`、`SPK`、`AIN0`–`AIN3`、`OUT`、`m2`、
+  `NET_SIG` 等只保留驱动侧网标，作为未实现器件的接口桩；74HC138 的 Y0–Y3、NE555 的 RC 脚、
   CX20106A 的 C1/C2/C3/f0、DS1302 的 X1/X2/VCC1、LM386 的 GAIN/BYPASS、PCF8591 的 OSC
   按 NC 处理。
 
@@ -242,25 +232,21 @@ node build-schematic.mjs  # 修改网表/布局后重新生成
 ```
 
 `verify-schematic.mjs` 依次做四件事：解析 `ct107d.sch` 折出网表并与 `ct107d.netlist.json`
-逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 51 个器件建板跑 1 ms 确认没有
+逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 48 个器件建板跑 1 ms 确认没有
 装配故障；装一段固件走 `P2 → 74HC138 → 74HC02 → 74HC573 → LED`，确认 D1 亮度 0.1639、其余
 熄灭；同一段固件再按 `Y7 → U7（段码）`、`Y6 → U8（位选）` 逐位扫描，确认 DS1/DS2 八位分别
 锁存到写入的段码。
 
 ## 板面画布 `ct107d.cnv`
 
-把 `assets/ct107d-board.webp`（1068×768 的板面照片）当背景，在上面覆盖 32 个 widget
-实例；每个实例都按照片像素定位，再通过 `bindings` 接到 `ct107d.sch` 的器件端口。
+把 `assets/ct107d-board.webp`（1068×768 的板面照片）当背景，在上面覆盖 17 个按键热区与
+2 片四位数码管；每个实例都按照片像素定位，再通过 `bindings` 接到 `ct107d.sch` 的器件端口。
 
-| widget                  | 数量 | 位置                                                                                                  | 绑定                                            |
-| ----------------------- | ---- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `xbotlab:image`         | 1    | (0, 0) 1068×768                                                                                       | —                                               |
-| `xbotlab:button`        | 17   | 独立按键一列 x≈143、矩阵三列 x≈202/261/320、行 y≈491/539/588/637，热区 40×40；复位键 S1 在 (379, 540) | `press` → 对应 `S*.press`                       |
-| `xbotlab:segment`       | 2    | DS1 (502, 206) 126×60、DS2 (636, 206) 127×60                                                          | `digit1`–`digit4` → `DS1/DS2.digit1`–`digit4`   |
-| `xbotlab:led-indicator` | 8    | D1–D8 一排，中心 y≈319                                                                                | `brightness` → `D1–D8.brightness`               |
-| `xbotlab:buzzer`        | 1    | SP1 (718, 390) 60×60                                                                                  | `active` → `SP1.active`                         |
-| `xbotlab:relay`         | 1    | K1 (806, 389) 88×62                                                                                   | `energized` → `K1.energized`                    |
-| `xbotlab:jumper`        | 2    | J13 (310, 406) 42×72；J2 (596, 168) 76×64                                                             | J13：`state1`/`closed1`；J2：`state2`/`closed2` |
+| widget            | 数量 | 位置                                                                                                  | 绑定                                          |
+| ----------------- | ---- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `xbotlab:image`   | 1    | (0, 0) 1068×768                                                                                       | —                                             |
+| `xbotlab:button`  | 17   | 独立按键一列 x≈143、矩阵三列 x≈202/261/320、行 y≈491/539/588/637，热区 40×40；复位键 S1 在 (379, 540) | `press` → 对应 `S*.press`                     |
+| `xbotlab:segment` | 2    | DS1 (502, 206) 126×60、DS2 (636, 206) 127×60                                                          | `digit1`–`digit4` → `DS1/DS2.digit1`–`digit4` |
 
 - **按键**：半透明圆角热区，`pointerdown` 落在热区内即输出 `press=true`，`pointerup` /
   `pointercancel` 回到 `false`；指针被捕获后拖出热区再松手同样会松开。
@@ -268,11 +254,7 @@ node build-schematic.mjs  # 修改网表/布局后重新生成
   输出一一对应；不做亮度积分，端口给什么就画什么。
 - **背景图**：`image` 属性用 `{ src, mode: "file" }` 资源引用，`src` 相对 `.cnv` 所在目录；
   读数来自宿主预取的字节，widget 自身没有网络访问。
-- **蜂鸣器/继电器**：分别订阅 `active`、`energized`，发声或吸合时在照片上叠加光晕、声波
-  或触点位置。
-- **跳线**：同一个 `jumper` widget 支持 1–2 路。J13 使用单路；J2 使用两路布局，第一路显示
-  固定短接，第二路点击切换接收支路。
-- 各 widget 的颜色与标签都可在 `.cnv` 的实例 `properties` 里覆盖。
+- 数码管默认红色、按键默认青色高亮，都可在 `.cnv` 的实例 `properties` 里覆盖。
 
 ```powershell
 cd dist\ct107d
@@ -281,9 +263,10 @@ node build-canvas.mjs     # 修改坐标或位号后重新生成 ct107d.cnv
 ```
 
 `verify-canvas.mjs` 做四件事：用 `parseCanvas` 解析画布并按 `ct107d.sch` 的 symbol/端口
-校验全部绑定；按照片尺寸检查背景图、按键、显示、LED、执行器与两路跳线的对位和越界；用
-假 2D 上下文跑全部 widget 的实现，验证绘制与端口交互；最后用 `ct107d.sch` 的按键网表建
-一块只含按键与辅助器件的板，逐个按下 17 个键，确认矩阵行/列与 `RST` 的电平按 PDF 的接法变化。
+校验全部绑定；按照片尺寸检查对位（背景图铺满整块板、17 个热区互不重叠且不出界、两片数码管
+盖住两个黑色窗口）；用假 2D 上下文跑三个 widget 的实现（位图绘制、按下/松开发布、段码点亮
+段数）；最后用 `ct107d.sch` 的按键网表建一块只含按键与辅助器件的板，逐个按下 17 个键，
+确认矩阵行/列与 `RST` 的电平按 PDF 的接法变化。
 
 ## 基准
 
@@ -299,7 +282,7 @@ pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.per
 
 口径：装配整板 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`wallMs` / `rtf`
 取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（12 MHz 8051，
-8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 51 颗器件、99 条网络，
+8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 48 颗器件、99 条网络，
 电气求解、通道与执行引擎都走真实运行时。
 
 **行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按
@@ -354,4 +337,4 @@ pnpm run canvas           # node verify-canvas.mjs
 `manifest.test.ts` 保证 `device.json`、`model.ddl` 与适配器描述的属性、引脚、端口不会漂移；
 `decode-chain.test.ts` 把 74HC138、74HC02、74HC573 接成 CT107D 真实的
 `P2.5–P2.7 → Y4# → WR 或非 → LE` 片选—锁存链路，端到端验证三颗器件的组合行为；
-`widgets.test.ts` 用最小 widget API 与假 2D 上下文覆盖全部板面 widget 的元数据与行为。
+`widgets.test.ts` 用最小 widget API 与假 2D 上下文覆盖四个板面 widget 的元数据与行为。

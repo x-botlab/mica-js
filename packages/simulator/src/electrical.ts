@@ -175,11 +175,6 @@ interface PreparedTopology {
   readonly nodeUniform: number[];
 }
 
-interface PinUpdate {
-  readonly intent: readonly ResistorBranch[];
-  readonly edges: readonly Edge[];
-}
-
 /** Dirty pin edges indexed by slot; `undefined` means the pin kept its committed edges. */
 type PinUpdates = readonly (readonly Edge[] | undefined)[];
 
@@ -1273,16 +1268,12 @@ export function createElectricalNetwork(
       cache = new Map();
       topologyChanged = true;
     }
-    const updates = new Map<number, PinUpdate>();
-    for (let position = 0; position < updatedSlots.length; position++)
-      updates.set(updatedSlots[position]!, {
-        intent: updatedIntents[position]!,
-        edges: updatedEdges[position]!,
-      });
+    const updated = updatedSlots.length;
     if (prepared !== undefined && !topologyChanged && replacedEdges.length === 0) {
-      for (const [index, update] of updates) {
-        intents[index] = update.intent;
-        pinEdges[index] = update.edges;
+      for (let position = 0; position < updated; position++) {
+        const index = updatedSlots[position]!;
+        intents[index] = updatedIntents[position]!;
+        pinEdges[index] = updatedEdges[position]!;
       }
       statistics.solves++;
       statistics.cacheHits += prepared.blocks.length;
@@ -1292,13 +1283,16 @@ export function createElectricalNetwork(
     let topology = prepared;
     let bucket: string | undefined;
     let restored: TopologySnapshot | undefined;
+    /** Prospective rebuilds; committed only when the batch is accepted. */
+    let topologyPrepares = 0;
     const dirtyBlocks = new Map<number, PreparedBlock>();
     // Dirty edges are also indexed by slot, so rebinding never hashes a pin number.
     for (let position = 0; position < updatedEdgeSlots.length; position++)
       updatedEdgeLists[updatedEdgeSlots[position]!] = undefined;
     updatedEdgeSlots.length = 0;
-    for (const [index, update] of updates) {
-      updatedEdgeLists[index] = update.edges;
+    for (let position = 0; position < updated; position++) {
+      const index = updatedSlots[position]!;
+      updatedEdgeLists[index] = updatedEdges[position]!;
       updatedEdgeSlots.push(index);
     }
     if (topologyChanged) {
@@ -1306,8 +1300,9 @@ export function createElectricalNetwork(
       // must not move the bucket a committed graph is filed under.
       let hash = topologyHash;
       let spread = topologySpread;
-      for (const [index, update] of updates) {
-        const next = hashEdges(index, update.edges);
+      for (let position = 0; position < updated; position++) {
+        const index = updatedSlots[position]!;
+        const next = hashEdges(index, updatedEdges[position]!);
         const previous = pinHashes[index]!;
         if (next === previous) continue;
         hash += next - previous;
@@ -1319,9 +1314,10 @@ export function createElectricalNetwork(
         topology = restoreTopology(restored.topology, pinEdges, updatedEdgeLists);
       else {
         const nextEdges = pinEdges.slice();
-        for (const [index, update] of updates) nextEdges[index] = update.edges;
+        for (let position = 0; position < updated; position++)
+          nextEdges[updatedSlots[position]!] = updatedEdges[position]!;
         topology = prepareTopology(nodes, nextEdges);
-        statistics.topologyPrepares++;
+        topologyPrepares++;
       }
     } else {
       const dirty = new Set<number>();
@@ -1492,11 +1488,13 @@ export function createElectricalNetwork(
     // No pin, intent snapshot, adjacency or factorization cache changes before acceptance.
     for (const [pin, sample] of pending) pin.sample = sample;
     for (const [node, voltage] of pendingVoltages) publishedVoltages[node] = voltage;
-    for (const [index, update] of updates) {
-      syncDegrees(pinEdges[index]!, update.edges);
-      intents[index] = update.intent;
-      pinEdges[index] = update.edges;
-      setPinHash(index, update.edges);
+    for (let position = 0; position < updated; position++) {
+      const index = updatedSlots[position]!;
+      const edges = updatedEdges[position]!;
+      syncDegrees(pinEdges[index]!, edges);
+      intents[index] = updatedIntents[position]!;
+      pinEdges[index] = edges;
+      setPinHash(index, edges);
     }
     if (topologyChanged) cache = nextCache ?? new Map();
     else {
@@ -1526,6 +1524,7 @@ export function createElectricalNetwork(
     statistics.factorizations += factorizations;
     statistics.factorizationReuses += factorizationReuses;
     statistics.cacheHits += cacheHits;
+    statistics.topologyPrepares += topologyPrepares;
     flushAdmissions();
     return changedSlots.length === 0 ? emptySlots : changedSlots;
   }

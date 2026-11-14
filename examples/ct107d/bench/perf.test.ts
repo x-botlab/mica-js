@@ -1,7 +1,8 @@
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { measureCt107d } from './measure';
+import { PREVIEW_CHECKPOINTS_MS, previewMeasureOptions } from './preview';
 
 /**
  * CT107D 整板基准：51 颗器件按 `ct107d.sch` 装配，固件是 `assets/ct107d-demo.bin`
@@ -13,16 +14,6 @@ import { measureCt107d } from './measure';
 
 /** 空话题流（消息数为 0）的摘要，用来确认演示固件确实产生了可观测输出。 */
 const EMPTY_DIGEST = 'sha256:e3b0c44298fc1c14';
-const PREVIEW_FIRMWARE = new Uint8Array(
-  readFileSync(join(import.meta.dirname, '../assets/digital-display-dynamic.bin')),
-);
-const PREVIEW_OPTIONS = {
-  firmware: PREVIEW_FIRMWARE,
-  props: { clockFrequency: 11_059_200 },
-  warmUpMs: 500,
-  measureMs: 500,
-  rounds: 1,
-};
 
 let demoDigest = '';
 
@@ -38,10 +29,12 @@ describe('CT107D 整板基准', () => {
     expect(result.faults).toEqual([]);
     expect(result.devices).toBeGreaterThanOrEqual(40);
     expect(result.simMs).toBeGreaterThan(0);
-    expect(result.wallMs).toBeGreaterThan(0);
-    // 只守一个下限：读数异常到接近 0 说明测量本身坏了，而不是「变得很快」。
-    expect(result.rtf).toBeGreaterThan(0.05);
-    expect(result.rtf).toBeLessThan(50);
+    expect(result.cpuMs).toBeGreaterThan(0);
+    expect(result.elapsedWallMs).toBeGreaterThan(0);
+    expect(result.realtimeRatio).toBeGreaterThan(0);
+    // 历史字段仍是 CPU 口径的别名，新字段才是墙钟/实时比。
+    expect(result.wallMs).toBe(result.cpuMs);
+    expect(result.rtf).toBeCloseTo(result.cpuMs / result.simMs, 2);
 
     expect(result.solves).toBeGreaterThan(100);
     expect(result.components).toBeGreaterThan(0);
@@ -81,43 +74,57 @@ describe('CT107D 整板基准', () => {
   }, 1_800_000);
 
   it('preview firmware preserves outputs and accelerates in throughput mode', async () => {
-    const throughput = await measureCt107d({
-      ...PREVIEW_OPTIONS,
-      tickMs: 16,
-      execution: 'throughput',
-    });
-    const precise = await measureCt107d({ ...PREVIEW_OPTIONS, tickMs: 16, execution: 'precise' });
-    const coarse = await measureCt107d({
-      ...PREVIEW_OPTIONS,
-      tickMs: 64,
-      execution: 'throughput',
-    });
+    const throughput = await measureCt107d(previewMeasureOptions({ tickMs: 16 }));
+    const precise = await measureCt107d(
+      previewMeasureOptions({ tickMs: 16, execution: 'precise' }),
+    );
+    const coarse = await measureCt107d(previewMeasureOptions({ tickMs: 64 }));
 
     process.stdout.write(
       `PREVIEW_FIRMWARE ${JSON.stringify({
         throughput: {
-          wallMs: throughput.wallMs,
+          cpuMs: throughput.cpuMs,
+          elapsedWallMs: throughput.elapsedWallMs,
+          realtimeRatio: throughput.realtimeRatio,
           direct: throughput.direct,
           directCalls: throughput.directCalls,
           cachedInstructions: throughput.cachedInstructions,
           directFallbackPcs: throughput.directFallbackPcs,
         },
-        precise: { wallMs: precise.wallMs },
-        coarseWallMs: coarse.wallMs,
+        precise: { cpuMs: precise.cpuMs, elapsedWallMs: precise.elapsedWallMs },
+        coarse: { cpuMs: coarse.cpuMs, elapsedWallMs: coarse.elapsedWallMs },
         topicFinalDigest: throughput.topicFinalDigest,
+        topicFinalDigestByDevice: throughput.topicFinalDigestByDevice,
+        checkpoints: PREVIEW_CHECKPOINTS_MS,
       })}\n`,
     );
 
     expect(throughput.faults).toEqual(precise.faults);
     expect(throughput.topicFinalDigest).toBe(precise.topicFinalDigest);
+    expect(throughput.topicFinalDigestByDevice).toBe(precise.topicFinalDigestByDevice);
     expect(throughput.topicFinalTopics).toEqual(precise.topicFinalTopics);
     expect(throughput.topicFinalTopics).toEqual(coarse.topicFinalTopics);
     expect(throughput.topicDigestStable).toBe(true);
     expect(precise.topicDigestStable).toBe(true);
     expect(coarse.topicDigestStable).toBe(true);
+    expect(throughput.checkpointsStable).toBe(true);
+    expect(precise.checkpointsStable).toBe(true);
+    expect(coarse.checkpointsStable).toBe(true);
+    expect(throughput.execution).toBe('throughput');
+    expect(precise.execution).toBe('precise');
     expect(throughput.direct).toBe(true);
     expect(throughput.directCalls).toBeGreaterThan(0);
-    expect(throughput.wallMs).toBeLessThan(precise.wallMs * 0.75);
+    expect(throughput.cpuMs).toBeLessThan(precise.cpuMs * 0.75);
+    // 同名端口不再互相覆盖：四个 573 的 latch 同时存在。唯一键是「实例 ID/端口」，
+    // 位号只作辅助定位。
+    for (const designator of ['U6', 'U7', 'U8', 'U9']) {
+      const instanceId = Object.entries(throughput.instanceDesignators).find(
+        ([, value]) => value === designator,
+      )?.[0];
+
+      expect(instanceId).toBeDefined();
+      expect(throughput.topicFinalTopics[`${instanceId}/latch`]).toBeDefined();
+    }
   }, 1_800_000);
 
   it('空转固件：行为摘要与演示固件不同', async () => {

@@ -8,11 +8,21 @@ export { createCanvasEditor } from './canvas-editor';
 export type {
   ICanvasEditor,
   ICanvasEditorOptions,
+  ICanvasEditorMeasurement,
   ICanvasCommandMap,
   ICanvasTarget,
   ICanvasBindingInfo,
   ICanvasBindingCandidate,
+  ICanvasRenderSample,
+  ICanvasRenderObserver,
+  ICanvasWidgetFrameSample,
+  ICanvasTopicMessageSample,
 } from './canvas-editor';
+export type {
+  CanvasAdvanceTrigger,
+  ICanvasAdvanceObserver,
+  ICanvasAdvanceSample,
+} from './canvas/session';
 export type {
   IEditorPoint,
   IEditorPointerEvent,

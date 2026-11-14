@@ -5,6 +5,7 @@ import {
 } from '@mica-js/document/canvas';
 import type { WidgetInputEvent } from '@mica-js/widget';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { ICanvasRenderSample } from '../canvas-host';
 import { CanvasModel } from './model';
 import {
   CANVAS_FIT_PADDING,
@@ -288,6 +289,7 @@ interface IHarnessOptions {
   /** Mutable mode flag, so a test can switch the view to simulation mid-gesture. */
   readonly simulationState?: { value: boolean };
   readonly frames?: ReadonlyMap<string, ICanvasFrame>;
+  readonly renders?: ICanvasRenderSample[];
   readonly devicePixelRatio?: number;
   readonly frameError?: unknown;
   readonly dispatchError?: unknown;
@@ -339,6 +341,9 @@ function createHarness(options: IHarnessOptions = {}): IHarness {
     },
     isSimulation: () => options.simulationState?.value ?? options.simulation ?? false,
     onError: (error) => errors.push(error),
+    ...(options.renders === undefined
+      ? {}
+      : { onRender: (sample: ICanvasRenderSample) => options.renders?.push(sample) }),
     onSelectionChange: (value) => hostEvents.push({ kind: 'selection', value }),
     onClick: (value) => hostEvents.push({ kind: 'click', value }),
     onDoubleClick: (value) => hostEvents.push({ kind: 'doubleClick', value }),
@@ -670,6 +675,25 @@ describe('canvas rotation geometry', () => {
 });
 
 describe('createCanvasView', () => {
+  it('reports whole-surface paint timing with render order and mode', () => {
+    const renders: ICanvasRenderSample[] = [];
+    const harness = createHarness({ renders, simulation: true });
+    harness.view.render();
+    harness.view.render();
+    expect(renders.length).toBeGreaterThanOrEqual(2);
+    const first = renders[0]!;
+    const second = renders[1]!;
+    expect(second.sequence).toBe(first.sequence + 1);
+    expect(first.startedAt).toBeLessThanOrEqual(first.completedAt);
+    expect(first.durationMs).toBeGreaterThanOrEqual(0);
+    expect(first.mode).toBe('simulation');
+    expect(first.widgets).toBe(1);
+    expect(first.width).toBe(400);
+    expect(first.height).toBe(300);
+    expect(first.dpr).toBe(1);
+    harness.dispose();
+  });
+
   it('mounts its own canvas and sizes the backing store', () => {
     const harness = createHarness();
 
