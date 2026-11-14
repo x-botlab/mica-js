@@ -185,56 +185,79 @@ device Ili9325(refreshRate: number default 60) {
     }
   }
 
-  /** 扩大脏矩形；第一笔写入同时排队一次发布。顺序填充只写变化的那一侧。 */
-  fn markDirty(panelColumn: number, panelRow: number) {
-    if dirty {
-      if panelColumn < dirtyX0 {
-        dirtyX0 = panelColumn;
-      } else if panelColumn > dirtyX1 {
-        dirtyX1 = panelColumn;
-      }
-      if panelRow < dirtyY0 {
-        dirtyY0 = panelRow;
-      } else if panelRow > dirtyY1 {
-        dirtyY1 = panelRow;
-      }
-    } else {
-      dirty = true;
-      dirtyX0 = panelColumn;
-      dirtyX1 = panelColumn;
-      dirtyY0 = panelRow;
-      dirtyY1 = panelRow;
-    }
-    if !scheduled {
-      scheduled = true;
-      frameSeq = frameSeq + 1;
-    }
-  }
-
-  /**
-   * 写一个 GRAM 像素。地址计数器保持寄存器原值（R20h 8 位、R21h 9 位），只有
-   * 落在窗口内且落在 GRAM 内才真正存储：参考程序的 `LCD_DrawRect` 会把行地址推到
-   * 269，真实芯片按 8 位截断后落在屏外或别的行，这里不做 clamp，避免把越界地址
-   * 折叠到 239 造出一个参考画面没有的像素。
-   */
-  fn writePixel(value: number) {
-    if addrX >= windowX0 && addrX <= windowX1 &&
-        addrY >= windowY0 && addrY <= windowY1 &&
-        addrX < GRAM_WIDTH && addrY < GRAM_HEIGHT {
-      // 面板坐标：列 = 319 - GRAM Y，行 = GRAM X。偏移内联，避免每像素三次纯函数调用。
-      store16le(gram, (addrX * PANEL_WIDTH + (PANEL_WIDTH - 1) - addrY) * 2, value);
-      markDirty((PANEL_WIDTH - 1) - addrY, addrX);
-    }
-    advanceAddress();
-  }
-
   fn writeCommand(value: number) {
     index = value & 0xff;
   }
 
   fn writeData(value: number) {
     if index == 0x22 {
-      writePixel(value);
+      // 一次锁存内无挂起：地址、窗口和模式只读一次，像素/脏区/推进共用局部值。
+      let x = addrX;
+      let y = addrY;
+      const x0 = windowX0;
+      const x1 = windowX1;
+      const y0 = windowY0;
+      const y1 = windowY1;
+      const mode = entryMode;
+      const stride = PANEL_WIDTH;
+
+      // R20h/R21h 保持原值；屏外或窗口外的写只推进地址，不把它钳制到屏内。
+      if x >= x0 && x <= x1 && y >= y0 && y <= y1 &&
+          x < GRAM_WIDTH && y < GRAM_HEIGHT {
+        const column = stride - 1 - y;
+
+        store16le(gram, (x * stride + column) * 2, value);
+        if dirty {
+          if column < dirtyX0 {
+            dirtyX0 = column;
+          } else if column > dirtyX1 {
+            dirtyX1 = column;
+          }
+          if x < dirtyY0 {
+            dirtyY0 = x;
+          } else if x > dirtyY1 {
+            dirtyY1 = x;
+          }
+        } else {
+          dirty = true;
+          dirtyX0 = column;
+          dirtyX1 = column;
+          dirtyY0 = x;
+          dirtyY1 = x;
+        }
+        if !scheduled {
+          scheduled = true;
+          frameSeq = frameSeq + 1;
+        }
+      }
+
+      if (mode & 8) == 0 {
+        x = x + ((mode & 16) != 0 ? 1 : -1);
+        if x > x1 || x < x0 {
+          x = x > x1 ? x0 : x1;
+          y = y + ((mode & 32) != 0 ? 1 : -1);
+          if y > y1 {
+            y = y0;
+          } else if y < y0 {
+            y = y1;
+          }
+          addrY = y;
+        }
+        addrX = x;
+      } else {
+        y = y + ((mode & 32) != 0 ? 1 : -1);
+        if y > y1 || y < y0 {
+          y = y > y1 ? y0 : y1;
+          x = x + ((mode & 16) != 0 ? 1 : -1);
+          if x > x1 {
+            x = x0;
+          } else if x < x0 {
+            x = x1;
+          }
+          addrX = x;
+        }
+        addrY = y;
+      }
       return;
     }
 

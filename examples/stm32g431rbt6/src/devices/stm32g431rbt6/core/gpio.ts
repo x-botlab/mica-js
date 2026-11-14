@@ -728,7 +728,6 @@ function writeRegister(
 
           scope.setLocal(changed, scope.bitAnd(scope.bitXor(current, next), num(scope, 0xffff)));
           scope.writeState(gpioOdrState(portIndex), next);
-          storeWord(scope, portIndex, num(scope, GPIO_ODR), next);
         },
         (other) => {
           const scope = asBody(other);
@@ -746,7 +745,6 @@ function writeRegister(
 
               last.setLocal(changed, last.bitAnd(last.bitXor(current, next), num(last, 0xffff)));
               last.writeState(gpioOdrState(portIndex), next);
-              storeWord(last, portIndex, num(last, GPIO_ODR), next);
             },
             (plain) => {
               const last = asBody(plain);
@@ -755,7 +753,6 @@ function writeRegister(
 
               last.setLocal(changed, last.bitAnd(last.bitXor(current, next), num(last, 0xffff)));
               last.writeState(gpioOdrState(portIndex), next);
-              storeWord(last, portIndex, num(last, GPIO_ODR), next);
             },
           );
         },
@@ -880,7 +877,7 @@ function markPowerChange(b: Body): void {
 }
 
 /**
- * 静态单/双引脚输出写：ODR 影子与寄存器映像在当前指令块内落地。稳态只重算候选
+ * 静态单/双引脚输出写：ODR 在当前指令块内落地，所有宽度的读均由 state 提供。稳态只重算候选
  * 引脚的电气 intent；供电跳变才把全端口刷新交给极少命中的服务块。
  */
 function inlineStaticGpioWrite(b: Body, portIndex: number, masks: StaticPinMasks): void {
@@ -894,7 +891,6 @@ function inlineStaticGpioWrite(b: Body, portIndex: number, masks: StaticPinMasks
     const scope = asBody(active);
 
     scope.writeState(gpioOdrState(portIndex), next);
-    storeWord(scope, portIndex, num(scope, GPIO_ODR), next);
 
     const isPowered = powered(scope);
     const wasPowered = scope.readState(GPIO_POWERED, types.bool);
@@ -1015,7 +1011,6 @@ export function deferGpioWrite(
     const scope = asBody(hit);
 
     scope.writeState(gpioOdrState(portIndex), transition.next);
-    storeWord(scope, portIndex, num(scope, GPIO_ODR), transition.next);
     scope.writeState(GPIO_PIN_MASK, changed);
     scope.writeState(GPIO_WRITE_ADDR, num(scope, staticAddress));
     scope.writeState(GPIO_WRITE_VALUE, u32(scope, value));

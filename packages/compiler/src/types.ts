@@ -213,6 +213,8 @@ export interface DirectJitFrame {
   locals: unknown[];
   /** Complete a pending old instruction, then exit before starting another. */
   stopAfterInstruction?: boolean;
+  /** Publish host effects at the next nonzero elapse or instruction end before continuing. */
+  publishPending?: boolean;
   /** Present when the program was compiled with `DirectJitBinding.host`. */
   readonly host?: DirectJitHost;
 }

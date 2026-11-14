@@ -1159,6 +1159,72 @@ test('an operand known only at run time keeps its slot and stays unfolded', () =
   assert.deepEqual(f.states, reference.states);
 });
 
+test('compact reuses registers for sequential values without changing results', () => {
+  // Each step reads a fresh operand and keeps only the running sum: the two live values
+  // overlap for one line, so a long chain needs a handful of registers instead of one per
+  // virtual result.
+  const b = builder();
+  let chain = b.read('x');
+  let values = 1;
+  for (let step = 0; step < 60; step++) {
+    chain = b.binary('add', chain, b.read('y'));
+    values += 2;
+  }
+  b.write('marker', chain);
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  assert(program);
+  assert(
+    program.localCount > 0 && program.localCount < 8,
+    `${program.localCount} slots for ${values} virtual results`,
+  );
+  const source = generated(program);
+  const indices = [...source.matchAll(/\bv(\d+)\b/g)].map((match) => Number(match[1]));
+  assert(Math.max(...indices) < program.localCount, 'every emitted token uses a compacted slot');
+  const f = frame(program, [0, 3, 4, true, 0, 0]);
+  const reference = generic(instructions, f.states, f.memories);
+  assert.equal(program.run(f, 5), reference.run(5));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.states[5], 3 + 60 * 4);
+});
+
+test('compact keeps redefined locals and a dynamic duration slot consistent', () => {
+  const b = builder();
+  const initial = b.read('x');
+  b.operations.push({ kind: 'local', local: 7, type: { kind: 'number' }, initial });
+  for (let step = 1; step <= 24; step++) {
+    const current = b.value({ kind: 'localRead', local: 7 });
+    const next = b.binary('add', current, b.constant(step));
+    b.operations.push({ kind: 'localWrite', local: 7, value: next });
+  }
+  // The duration owns a high virtual index but must reach the continuation under its
+  // compacted name; the local slot spans every redefinition up to the suffix read.
+  const duration = b.value({ kind: 'localRead', local: 7 });
+  b.operations.push({ kind: 'elapse', duration });
+  b.write('marker', b.value({ kind: 'localRead', local: 7 }));
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  assert(program);
+  const source = generated(program);
+  assert.match(source, /F\.due = F\.time \+ H\.checkDuration\(v\d+\);/);
+  const indices = [...source.matchAll(/\bv(\d+)\b/g)].map((match) => Number(match[1]));
+  assert(
+    Math.max(...indices) < program.localCount,
+    'duration and local tokens all use compacted slots',
+  );
+  assert(program.localCount < 8, `${program.localCount} slots for the local chain`);
+  const f = frame(program, [0, 0, 0, false, 0, 0]);
+  const reference = generic(instructions, f.states, f.memories);
+  assert.equal(program.run(f, 40), 'deadline');
+  assert(f.resume > 0);
+  assert.equal(f.time, 40);
+  assert.equal(program.run(f, 1_000), reference.run(1_000));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.time, 300);
+  assert.equal(f.states[5], 300);
+});
+
 test('an IT guard chain stays inside the statements-per-operation budget', () => {
   // The shape #256 targets: repeated `equal(read, literal)` feeding a `select` ladder. The
   // literals must cost nothing, so the ratio is measured as emitted statements per IR op.
@@ -1277,6 +1343,7 @@ test('select branches with effects or extra yields keep the labeled block', () =
   const program = compileDirectJit(instructions, binding);
   const source = generated(program);
   assert.match(source, /select0: \{/);
+  assert.equal(program.emitStats.selectBlocks, 1);
   // 条件守卫自身带三目；这里只要求分支没有被折成 `cond ? (…) : (…)` 的单表达式。
   assert.doesNotMatch(source, /\) \? \(/);
   for (const flag of [true, false]) {
@@ -1621,6 +1688,84 @@ test('statement match needs no output while value-position match requires otherw
 });
 
 const hostBinding = { ...binding, host: true };
+
+test('host publication suspends at elapse start and preserves captured suffixes in every emitter', () => {
+  for (const mode of ['whole', 'split', 'resident']) {
+    const b = builder();
+    b.write('x', b.binary('add', b.read('x'), b.constant(1)));
+    const loaded = b.value({ kind: 'load8', memory: ram, offset: b.constant(0) });
+    const intent = b.value(
+      { kind: 'resistor', to: { kind: 'pin', name: 'rail' }, resistance: b.constant(1000) },
+      'intent',
+    );
+    b.operations.push({ kind: 'writeIntent', pin: { kind: 'pin', name: 'out' }, value: intent });
+    b.delay(5);
+    b.write('y', loaded);
+    b.operations.push({ kind: 'writeIntent', pin: { kind: 'pin', name: 'peer' }, value: intent });
+    const program = compileDirectJit(
+      [b.instruction(0, 99)],
+      {
+        ...hostBinding,
+        split: mode !== 'whole',
+        shardSlotLimit: 0,
+        shardSize: 1,
+      },
+      mode === 'resident' ? compileDirectJit.createCache() : undefined,
+    );
+    const f = frame(program);
+    const log = hostRecorder(() => f.time);
+    f.host = {
+      ...log,
+      intent: (...args) => {
+        log.intent(...args);
+        f.publishPending = true;
+      },
+    };
+    assert.equal(program.run(f, 4), 'invalidated', mode);
+    assert.equal(f.time, 0, mode);
+    assert.equal(f.due, 5, mode);
+    assert(f.resume > 0, mode);
+    assert.equal(f.states[1], 2, mode);
+    f.publishPending = false;
+    f.memories[0][0] = 200;
+    assert.equal(program.run(f, 5), 'deadline', mode);
+    assert.equal(f.states[2], 0, mode);
+    assert.equal(program.run(f, 6), 'invalidated', mode);
+    assert.equal(f.time, 5, mode);
+    assert.equal(f.resume, 0, mode);
+    assert.equal(f.states[2], 7, mode);
+    assert.equal(f.states[1], 2, mode);
+    assert.deepEqual(
+      log.entries.filter(([kind]) => kind === 'intent').map((entry) => entry[3]),
+      [0, 5],
+    );
+    f.publishPending = false;
+    assert.equal(program.run(f, 6), 'fallback', mode);
+  }
+});
+
+test('publication preserves a zero-duration instruction as one atomic prefix and suffix', () => {
+  const b = builder();
+  const intent = b.value(
+    { kind: 'resistor', to: { kind: 'pin', name: 'rail' }, resistance: b.constant(1000) },
+    'intent',
+  );
+  b.operations.push({ kind: 'writeIntent', pin: { kind: 'pin', name: 'out' }, value: intent });
+  b.delay(0);
+  b.write('marker', b.constant(42));
+  const program = compileDirectJit([b.instruction(0, 0)], hostBinding);
+  const f = frame(program);
+  f.host = {
+    ...hostRecorder(() => f.time),
+    intent: () => {
+      f.publishPending = true;
+    },
+  };
+  assert.equal(program.run(f, 10), 'invalidated');
+  assert.equal(f.time, 0);
+  assert.equal(f.resume, 0);
+  assert.equal(f.states[5], 42);
+});
 
 function messageRegion(scope, text) {
   const operations = [];
@@ -2087,6 +2232,27 @@ test('assert defers messages until the condition fails', () => {
   });
   complex.delay(1);
   assert.equal(compileDirectJit([complex.instruction(0, 99)], hostBinding), undefined);
+});
+
+test('compaction rewrites only standalone vN tokens', () => {
+  const b = builder();
+  // v0 exists, so a careless rewriter would also touch the same-looking text below.
+  b.read('x');
+  b.operations.push({
+    kind: 'assert',
+    condition: b.read('flag', 'bool'),
+    message: messageRegion(b, 'av0 v0x v0_x v0 v1 "v2"'),
+  });
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, hostBinding);
+  assert(program);
+  assert(generated(program).includes(JSON.stringify('av0 v0x v0_x v0 v1 "v2"')));
+  const f = frame(program, [0, 0, 0, false, 0, 0]);
+  const log = hostRecorder(() => f.time);
+  f.host = log;
+  assert.throws(() => program.run(f, 5), { message: 'av0 v0x v0_x v0 v1 "v2"' });
+  assert.deepEqual(log.entries, [['assert', false, 'av0 v0x v0_x v0 v1 "v2"', 0]]);
 });
 
 test('scalar helpers and non-number constants match compileBody under a host', () => {

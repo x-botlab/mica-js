@@ -96,12 +96,6 @@ export interface DirectExecution {
   readonly frame: DirectJitFrame;
   /** PCs the current program compiled; a PC outside it needs the interpreter. */
   readonly pcs: ReadonlySet<number>;
-  readonly stateReads: readonly string[];
-  readonly stateReadSlots: readonly number[];
-  readonly stateWrites: readonly string[];
-  readonly stateWriteSlots: readonly number[];
-  readonly memoryWrites: readonly string[];
-  readonly memoryWriteSlots: readonly number[];
   readonly revision: number;
 }
 /** Immutable bank layout shared by every direct program built for one JIT. */
@@ -109,6 +103,8 @@ export interface DirectJitLayout {
   readonly stateNames: readonly string[];
   readonly memoryNames: readonly string[];
   readonly states: ReadonlyMap<string, number>;
+  /** Instance-owned bank, mirrored by every interpreted/process/reaction state write. */
+  readonly stateValues: unknown[];
   readonly memories: ReadonlyMap<string, number>;
   readonly memoryBanks: readonly Uint8Array[];
   readonly memoryViews: readonly DataView[];

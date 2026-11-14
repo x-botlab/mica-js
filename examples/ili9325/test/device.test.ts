@@ -226,6 +226,82 @@ describe('ILI9325', () => {
     expect(pixel(panel, 299, 9)).toBe(0xffff);
   });
 
+  it.each([0x00, 0x10, 0x20, 0x30, 0x08, 0x18, 0x28, 0x38])(
+    '入口模式 %#：全部快轴/方向在小窗口多次回卷，读写地址一致',
+    async (mode) => {
+      const value = await board({ refreshRate: 240 });
+      const xs = (mode & 16) !== 0 ? [10, 11] : [11, 10];
+      const ys = (mode & 32) !== 0 ? [20, 21, 22] : [22, 21, 20];
+      const positions: [number, number][] = [];
+
+      if ((mode & 8) === 0) {
+        for (const y of ys) for (const x of xs) positions.push([x, y]);
+      } else {
+        for (const x of xs) for (const y of ys) positions.push([x, y]);
+      }
+      value.command(0x03);
+      value.data(mode);
+      setWindow(value, 10, 11, 20, 22);
+      setCursor(value, xs[0]!, ys[0]!);
+      value.command(0x22);
+      const writes = positions.length * 2 + 3;
+      const expected = new Map<string, number>();
+
+      for (let index = 0; index < writes; index += 1) {
+        value.data(0x1200 + index);
+        expected.set(positions[index % positions.length]!.join(','), 0x1200 + index);
+      }
+      value.command(0x20);
+      value.read();
+      value.command(0x21);
+      value.read();
+      // 从写入终点再读两整圈，验证保留的读地址推进与写快路径完全一致。
+      value.command(0x22);
+      for (let index = 0; index < positions.length * 2; index += 1) value.read();
+      value.drain();
+      expect(value.reads.slice(0, 2)).toEqual(positions[writes % positions.length]);
+      expect(value.reads.slice(2)).toEqual(
+        Array.from({ length: positions.length * 2 }, (_, index) =>
+          expected.get(positions[(writes + index) % positions.length]!.join(',')),
+        ),
+      );
+      value.run(value.framePeriod + 1_000_000);
+      const panel = compose(value.frames, 0xffff);
+
+      for (const [x, y] of positions)
+        expect(pixel(panel, 319 - y, x)).toBe(expected.get(`${x},${y}`));
+      expect(pixel(panel, 319 - 19, 10)).toBe(0xffff);
+      expect(value.faults).toEqual([]);
+    },
+  );
+
+  it('屏外及窗口外写跳过像素后仍按入口模式回卷', async () => {
+    const value = await board({ refreshRate: 240 });
+
+    setWindow(value, 10, 11, 20, 22);
+    setCursor(value, 255, 511);
+    value.command(0x22);
+    value.data(0xdead); // 屏外；X 回卷到 10，Y 回卷到 20。
+    value.data(0x1234);
+    setCursor(value, 9, 19);
+    value.command(0x22);
+    value.data(0xbeef); // X 进入窗口、Y 仍在窗口外：不写像素，继续推进。
+    value.data(0xabcd);
+    value.data(0xcafe); // 快轴回卷后进入 (10, 20)。
+    value.data(0x5678);
+    value.command(0x20);
+    value.read();
+    value.command(0x21);
+    value.read();
+    value.drain();
+    expect(value.reads).toEqual([11, 20]);
+    value.run(value.framePeriod + 1_000_000);
+    expect(value.frames).toHaveLength(1);
+    expect(value.frames[0]).toMatchObject({ x: 299, y: 10, width: 1, height: 1 });
+    expect(value.frames[0]!.pixels).toEqual(new Uint16Array([0x5678]));
+    expect(value.faults).toEqual([]);
+  });
+
   it('读 R22h 返回 GRAM 像素并推进地址', async () => {
     const value = await board({ refreshRate: 240 });
 

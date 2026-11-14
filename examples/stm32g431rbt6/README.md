@@ -108,7 +108,8 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
   每轮重拼完整源码和重新优化已封闭 shard。311 个块仍需要首次翻译和 21 次增量程序组装，
   `0 → 200 µs` 约 0.24 s。
 - **GPIO 边沿块**：静态写已内联 ODR/intent，GPIOB service 基本消失；剩余成本集中在 intent
-  树、`sample('VDD1')` 与每边沿一次 ODR/periph 提交。不能通过合块继续削减，否则会吞掉
+  树、`sample('VDD1')` 与每边沿一次 ODR 状态提交。ODR 的全部宽度和地址路径统一从状态
+  读写，`periph` 不再保存重复副本。不能通过合块继续削减，否则会吞掉
   WR 等外部可观察脉冲。
 - **shard/dispatcher**：最终程序 71 个 step shard。8 个 LCD 边沿块仍分散在多个 shard，
   dispatcher 约占稳态 24.4% self samples；后续优先热 shard compaction / 下一 shard 句柄。

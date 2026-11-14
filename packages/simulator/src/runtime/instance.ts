@@ -9,6 +9,7 @@ import type {
   Channel,
   Decl,
   Dependencies,
+  DirectJitLayout,
   Entry,
   Execution,
   Jit,
@@ -110,6 +111,7 @@ export class Instance {
   readonly props = new Map<string, unknown>();
   readonly constants = new Map<string, unknown>();
   readonly states = new Map<string, unknown>();
+  private directBank?: Pick<DirectJitLayout, 'stateNames' | 'states' | 'stateValues'>;
   readonly memories = new Map<string, Uint8Array>();
   private readonly memoryViews = new Map<string, DataView>();
   private readonly memorySizes = new Map<string, number>();
@@ -186,11 +188,7 @@ export class Instance {
     this.random = randomState(seed, id, override);
     this.host = {
       read: (kind, name) => this.read(kind, name),
-      write: (name, value) => {
-        const slot = this.stateSlot(name);
-        this.states.set(name, snapshot(value));
-        this.board.invalidate(slot);
-      },
+      write: (name, value) => this.writeState(name, value, this.stateSlot(name)),
       sample: (ref) => {
         return this.readSample(ref);
       },
@@ -475,7 +473,28 @@ export class Instance {
     if (!bytes) throw new TypeError(`Unknown memory ${String(ref)}`);
     return bytes;
   }
-  /** Cached resource bookkeeping for state and memory, resolved once per declaration name. */
+  /** Instance-owned numeric bank, mirrored by every non-direct state write. */
+  directStateBank(): Pick<DirectJitLayout, 'stateNames' | 'states' | 'stateValues'> {
+    if (this.directBank === undefined) {
+      const stateNames = [...this.states.keys()].filter((name) => {
+        const declaration = this.declarations.get(name) as Decl<'state'>;
+        return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
+      });
+      this.directBank = {
+        stateNames: Object.freeze(stateNames),
+        states: new Map(stateNames.map((name, index) => [name, index])),
+        stateValues: stateNames.map((name) => this.states.get(name)),
+      };
+    }
+    return this.directBank;
+  }
+  private writeState(name: string, value: unknown, slot: ResourceSlot): void {
+    const captured = snapshot(value);
+    this.states.set(name, captured);
+    const index = this.directBank?.states.get(name);
+    if (index !== undefined) this.directBank!.stateValues[index] = captured;
+    this.board.invalidate(slot);
+  }
   private stateSlot(name: string): ResourceSlot {
     let slot = this.stateSlots.get(name);
     if (slot === undefined) {
@@ -599,8 +618,7 @@ export class Instance {
         },
         write: (value: unknown) => {
           const current = resolve();
-          states.set(name, snapshot(value));
-          this.board.invalidate(current);
+          this.writeState(name, value, current);
         },
       });
     }

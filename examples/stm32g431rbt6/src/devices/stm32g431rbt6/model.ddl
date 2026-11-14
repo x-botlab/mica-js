@@ -130,7 +130,7 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   state gpioAfr12: number = 0;
   state gpioAfr13: number = 0;
   state gpioAfr14: number = 0;
-  /** GPIO ODR 影子，避免端口同步反复从 periph 读取 ODR。 */
+  /** GPIO ODR：静态/动态地址的全部读写和引脚同步均访问此状态，periph 不保存副本。 */
   state gpioOdr0: number = 0;
   state gpioOdr1: number = 0;
   state gpioOdr2: number = 0;

@@ -1,10 +1,17 @@
+import { createHash } from 'node:crypto';
 import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  JOINT_440MS_EXPECTED,
   JOINT_CLOCK_FREQUENCY,
+  JOINT_FULL_FRAME_PIXELS,
   JOINT_TIME_QUANTUM_PS,
   createJointBoard,
+  gramMatchesOracle,
+  nonZeroGramPixels,
+  sameBytes,
+  type JointAccountingReadout,
   type JointBoard,
 } from '../test/joint-harness';
 
@@ -24,7 +31,19 @@ const MID_PS = 220_000_000_000;
 const END_PS = 440_000_000_000;
 const PS_PER_MS = 1_000_000_000;
 const ROUNDS = 3;
-const PANEL_WIDTH = 320;
+const FULL_FRAME_PIXELS = JOINT_FULL_FRAME_PIXELS;
+/**
+ * 完整 WR 边沿下的固定读数，见 docs/stm32g431rbt6-ili9325-joint-bottlenecks.md。
+ *
+ * 三者都是不带观察者的版本/内存读数，不向计时路径添加逐 intent 探针：
+ * - `WR` sample 版本 = MCU WR intent 电平变化数；
+ * - `gram` memory 版本 = `writePixel` 的 store 次数；
+ * - 最终非零像素 = 整屏蓝色背景（部分被后续绘图覆盖，但都非零）。
+ */
+const EXPECTED_WR_SAMPLES = JOINT_440MS_EXPECTED.wrLevelChanges;
+const EXPECTED_GRAM_STORES = JOINT_440MS_EXPECTED.gramStores;
+const EXPECTED_GRAM_NON_ZERO = JOINT_440MS_EXPECTED.nonZeroPixels;
+const CLEAR_COLOR = JOINT_440MS_EXPECTED.clearColor;
 
 interface DirectStats {
   readonly directCompiles: number;
@@ -66,6 +85,10 @@ interface Reading {
   readonly frameNonZeroPixels: number;
   readonly framePayloadBytes: number;
   readonly gramNonZeroPixels: number;
+  /** `WR` sample 版本：不带观察者的边沿计数。 */
+  readonly lcdWrSamples: number;
+  /** `gram` memory 版本：不带观察者的 store 计数。 */
+  readonly lcdGramStores: number;
   readonly jit: {
     readonly direct: boolean;
     readonly programs: number;
@@ -115,37 +138,108 @@ function summarizeFrames(frames: readonly Uint8Array[]): {
   return { pixels, nonZeroPixels, payloadBytes };
 }
 
-/** `gram` 以面板坐标行优先存储，发布帧应逐像素等于对应快照。 */
-function frameMatchesGram(frame: Uint8Array, gram: Uint8Array): boolean {
-  const pixels = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
-  const memory = new DataView(gram.buffer, gram.byteOffset, gram.byteLength);
-  const x = pixels.getUint16(0, true);
-  const y = pixels.getUint16(2, true);
-  const width = pixels.getUint16(4, true);
-  const height = pixels.getUint16(6, true);
+/** 运行时内部资源槽：版本号随每次电气 sample 变化 / `store16le` 递增。 */
+function lcdCounters(lcd: JointBoard['lcd']): {
+  readonly wrSamples: number;
+  readonly gramStores: number;
+} {
+  const internal = lcd as unknown as {
+    readonly sampleResources: ReadonlyMap<string, { readonly version: number }>;
+    readonly memoryResources: ReadonlyMap<string, { readonly version: number }>;
+  };
 
-  for (let row = 0; row < height; row += 1) {
-    for (let column = 0; column < width; column += 1) {
-      const panelX = x + column;
-      const panelY = y + row;
-      const fromFrame = pixels.getUint16(8 + (row * width + column) * 2, true);
-      const fromGram = memory.getUint16((panelY * PANEL_WIDTH + panelX) * 2, true);
-
-      if (fromFrame !== fromGram) return false;
-    }
-  }
-
-  return true;
+  return {
+    wrSamples: internal.sampleResources.get('WR')?.version ?? 0,
+    gramStores: internal.memoryResources.get('gram')?.version ?? 0,
+  };
 }
 
-function nonZeroWords(bytes: Uint8Array): number {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  let count = 0;
+/** 帧载荷必须等于模型在帧体发送时刻交给适配器的字节。 */
+function framesMatchSource(joint: JointBoard): boolean {
+  return (
+    joint.frames.length === joint.expectedFrames.length &&
+    joint.frames.every((frame, index) => sameBytes(frame, joint.expectedFrames[index]!))
+  );
+}
 
-  for (let offset = 0; offset < view.byteLength; offset += 2)
-    if (view.getUint16(offset, true) !== 0) count += 1;
+/** 计时之外的整屏内容摘要；只读取最终 GRAM，不参与计时。 */
+function digestBytes(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
 
-  return count;
+interface ReconcileResult {
+  readonly accounting: JointAccountingReadout;
+  /** 与独立 MCU oracle 逐像素一致后的整屏摘要。 */
+  readonly gramDigest: string;
+}
+
+/** 计时外的一次完整独立对账；不进入任何计时轮次。 */
+async function reconcile(key: string): Promise<ReconcileResult> {
+  const joint = await createJointBoard({ accounting: true });
+
+  try {
+    joint.board.runUntil(0);
+    joint.advanceTo(END_PS);
+
+    expect(joint.board.time).toBe(END_PS);
+    expect(joint.errors).toEqual([]);
+    expect(joint.faults).toEqual([]);
+    expect(joint.board.status).toBe('ready');
+
+    const accounting = joint.readAccounting()!;
+    const gram = joint.lcd.memories.get('gram')!;
+
+    // MCU 发出量 vs LCD 接收量：旧路径 272,007 次写只收到 136 次 store 会失败。
+    expect(accounting.wrLevelChanges).toBe(EXPECTED_WR_SAMPLES);
+    expect(accounting.selectedRises).toBe(JOINT_440MS_EXPECTED.selectedRises);
+    expect(accounting.wrSamples).toBe(accounting.wrLevelChanges);
+    expect(accounting.csSamples).toBe(accounting.csLevelChanges);
+    expect(accounting.rsSamples).toBe(accounting.rsLevelChanges);
+    expect(accounting.dataSamples).toBeGreaterThanOrEqual(accounting.dataBitLevelChanges);
+    expect(accounting.pixelWrites).toBe(EXPECTED_GRAM_STORES);
+    expect(accounting.gramStores).toBe(accounting.pixelWrites);
+    expect(accounting.oracleGramStores).toBe(accounting.pixelWrites);
+
+    // 独立参考图像与整屏蓝色清屏。
+    expect(gramMatchesOracle(gram, accounting.oracleGram)).toBe(true);
+    expect(nonZeroGramPixels(gram)).toBe(EXPECTED_GRAM_NON_ZERO);
+    expect(accounting.oracleFrames).toHaveLength(joint.frames.length);
+    expect(
+      joint.frames.every((frame, index) => sameBytes(frame, accounting.oracleFrames[index]!)),
+    ).toBe(true);
+    expect(
+      accounting.fullScreenFills.some(
+        (fill) => fill.value === CLEAR_COLOR && fill.pixels === FULL_FRAME_PIXELS && fill.uniform,
+      ),
+    ).toBe(true);
+
+    // 帧体在模型发送时刻的副本必须与话题载荷一致。
+    expect(joint.expectedFrames.length).toBeGreaterThan(0);
+    expect(framesMatchSource(joint)).toBe(true);
+
+    console.log(
+      'JOINT_ACCOUNTING',
+      JSON.stringify({
+        key,
+        timeMs: accounting.timePs / PS_PER_MS,
+        intentCalls: accounting.intentCalls,
+        wrLevelChanges: accounting.wrLevelChanges,
+        wrSamples: accounting.wrSamples,
+        csSamples: accounting.csSamples,
+        rsSamples: accounting.rsSamples,
+        dataBitLevelChanges: accounting.dataBitLevelChanges,
+        dataSamples: accounting.dataSamples,
+        pixelWrites: accounting.pixelWrites,
+        gramStores: accounting.gramStores,
+        fullScreenFills: accounting.fullScreenFills.length,
+        frames: joint.frames.length,
+      }),
+    );
+
+    return { accounting, gramDigest: digestBytes(gram) };
+  } finally {
+    joint.dispose();
+  }
 }
 
 function jitSnapshot(board: JointBoard['board']): Reading['jit'] {
@@ -169,6 +263,8 @@ describe('STM32G431RBT6 + ILI9325 联合性能', () => {
     // 预热 DDL 编译与模块装载，避免一次性模块初始化 skew 第一轮建板读数。
     // 不运行固件，因此不会预热模块级 Thumb 块缓存。
     (await createJointBoard()).dispose();
+
+    const roundDigests: string[] = [];
 
     for (let index = 0; index < ROUNDS; index += 1) {
       let joint: JointBoard | undefined;
@@ -217,12 +313,19 @@ describe('STM32G431RBT6 + ILI9325 联合性能', () => {
 
         const summary = summarizeFrames(joint.frames);
         const gram = joint.lcd.memories.get('gram')!;
+        const counters = lcdCounters(joint.lcd);
 
+        // 无观察者版本计数：完整边沿的固定读数，可直接抓住漏写而不影响计时。
+        expect(counters.wrSamples).toBe(EXPECTED_WR_SAMPLES);
+        expect(counters.gramStores).toBe(EXPECTED_GRAM_STORES);
+        expect(nonZeroGramPixels(gram)).toBe(EXPECTED_GRAM_NON_ZERO);
         expect(summary.pixels).toBeGreaterThan(0);
         expect(summary.nonZeroPixels).toBeGreaterThan(0);
-        expect(nonZeroWords(gram)).toBeGreaterThan(0);
-        expect(joint.frameGramSnapshots).toHaveLength(joint.frames.length);
-        expect(frameMatchesGram(joint.frames.at(-1)!, joint.frameGramSnapshots.at(-1)!)).toBe(true);
+        expect(joint.expectedFrames.length).toBeGreaterThan(0);
+        expect(framesMatchSource(joint)).toBe(true);
+        // 计时轮次不得安装逐 intent 对账探针。
+        expect(joint.readAccounting()).toBeUndefined();
+        roundDigests.push(digestBytes(gram));
 
         const totalMs = coldMs + activeMs + postMs;
         const activeSimMs = (MID_PS - COLD_PS) / PS_PER_MS;
@@ -251,7 +354,9 @@ describe('STM32G431RBT6 + ILI9325 联合性能', () => {
           framePixels: summary.pixels,
           frameNonZeroPixels: summary.nonZeroPixels,
           framePayloadBytes: summary.payloadBytes,
-          gramNonZeroPixels: nonZeroWords(gram),
+          gramNonZeroPixels: nonZeroGramPixels(gram),
+          lcdWrSamples: counters.wrSamples,
+          lcdGramStores: counters.gramStores,
           jit: jitSnapshot(joint.board),
         });
       } finally {
@@ -262,6 +367,13 @@ describe('STM32G431RBT6 + ILI9325 联合性能', () => {
     expect(readings).toHaveLength(ROUNDS);
     expect(readings.every((reading) => reading.jit.direct)).toBe(true);
     expect(readings.every((reading) => reading.frames > 0)).toBe(true);
+
+    // 计时之外的一次独立 MCU intent / LCD sample / GRAM oracle 完整对账。
+    // 计时轮次的最终整屏必须等于这次独立对账得到的参考图像；旧路径会在这里失败。
+    const reference = await reconcile('HAL_06_LCD-440ms');
+
+    expect(roundDigests).toHaveLength(ROUNDS);
+    expect(roundDigests.every((digest) => digest === reference.gramDigest)).toBe(true);
 
     const activeSimMs = (MID_PS - COLD_PS) / PS_PER_MS;
     const postSimMs = (END_PS - MID_PS) / PS_PER_MS;
@@ -281,6 +393,8 @@ describe('STM32G431RBT6 + ILI9325 联合性能', () => {
       framePixels: Math.min(...readings.map((reading) => reading.framePixels)),
       frameNonZeroPixels: Math.min(...readings.map((reading) => reading.frameNonZeroPixels)),
       gramNonZeroPixels: Math.min(...readings.map((reading) => reading.gramNonZeroPixels)),
+      lcdWrSamples: Math.min(...readings.map((reading) => reading.lcdWrSamples)),
+      lcdGramStores: Math.min(...readings.map((reading) => reading.lcdGramStores)),
     };
 
     console.log('JOINT_PERF', JSON.stringify(best));

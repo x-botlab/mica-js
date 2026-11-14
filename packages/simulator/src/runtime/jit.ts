@@ -11,7 +11,7 @@ import type { EventQueue } from '../queue';
 import { acceptSync } from './errors';
 import { body, time } from './execution';
 import type { Instance, InstanceBoard } from './instance';
-import type { Decl, Dependencies, DirectJitLayout, Jit } from './state';
+import type { Dependencies, DirectJitLayout, Jit } from './state';
 import type { RuntimeDiagnosticCode, RuntimePhase, SimulationError } from '../types';
 import { bytesView, finite } from '../values';
 
@@ -192,7 +192,9 @@ function directHost(
     },
     intent: (pin, value) => {
       publishTime();
+      const changed = instance.pin(pin).intent !== value;
       instance.host.intent(pin, value);
+      if (changed) frame.publishPending = true;
     },
     resistor: (pin, resistance) => {
       publishTime();
@@ -221,21 +223,16 @@ function directHost(
 function directLayout(jit: Jit): DirectJitLayout {
   if (jit.directLayout !== undefined) return jit.directLayout;
   const instance = jit.instance;
-  const stateNames = [...instance.states.keys()].filter((name) => {
-    const declaration = instance.declarations.get(name) as Decl<'state'>;
-    return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
-  });
+  const bank = instance.directStateBank();
   const memoryNames = [...instance.memories.keys()];
-  const states = new Map(stateNames.map((name, index) => [name, index]));
   const memories = new Map(memoryNames.map((name, index) => [name, index]));
   const memoryBanks = memoryNames.map((name) => instance.memory(name));
   const memoryViews = memoryBanks.map(
     (memory) => new DataView(memory.buffer, memory.byteOffset, memory.byteLength),
   );
   jit.directLayout = {
-    stateNames: Object.freeze(stateNames),
+    ...bank,
     memoryNames: Object.freeze(memoryNames),
-    states,
     memories,
     memoryBanks: Object.freeze(memoryBanks),
     memoryViews: Object.freeze(memoryViews),
@@ -251,7 +248,7 @@ function createDirectFrame(
   barrier: DirectBarriers,
 ): DirectJitFrame {
   const frame: DirectJitFrame = {
-    states: new Array(layout.stateNames.length),
+    states: layout.stateValues,
     memories: [...layout.memoryBanks],
     memoryViews: layout.memoryViews,
     locals: new Array(program.localCount),
@@ -393,12 +390,6 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
             ? {
                 program,
                 pcs: new Set(program.pcs),
-                stateReads: program.readStates,
-                stateReadSlots: program.readStates.map((name) => states.get(name)!),
-                stateWrites: program.writeStates,
-                stateWriteSlots: program.writeStates.map((name) => states.get(name)!),
-                memoryWrites: program.writeMemories,
-                memoryWriteSlots: program.writeMemories.map((name) => memories.get(name)!),
                 revision: jit.revision,
                 frame: createDirectFrame(board, instance, layout, program, barrier),
               }
@@ -416,8 +407,6 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   const direct = jit.direct!;
   const frame = direct.frame;
   if (pending) frame.stopAfterInstruction = true;
-  for (let index = 0; index < direct.stateReads.length; index++)
-    frame.states[direct.stateReadSlots[index]!] = instance.states.get(direct.stateReads[index]!);
   frame.time = board.time;
   frame.stateDirty.fill(0);
   frame.memoryDirty.fill(0);
@@ -431,17 +420,23 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
   } finally {
     board.time = frame.time;
-    for (let index = 0; index < direct.stateWrites.length; index++) {
-      const slot = direct.stateWriteSlots[index]!;
-      if ((frame.stateDirty[slot >>> 5]! & (1 << (slot & 31))) !== 0) {
-        instance.host.write(direct.stateWrites[index]!, frame.states[slot]);
+    frame.publishPending = false;
+    const layout = jit.directLayout!;
+    for (let word = 0; word < frame.stateDirty.length; word++) {
+      let bits = frame.stateDirty[word]!;
+      while (bits !== 0) {
+        const slot = word * 32 + 31 - Math.clz32(bits & -bits);
+        instance.host.write(layout.stateNames[slot]!, frame.states[slot]);
+        bits &= bits - 1;
         wrote = true;
       }
     }
-    for (let index = 0; index < direct.memoryWrites.length; index++) {
-      const slot = direct.memoryWriteSlots[index]!;
-      if ((frame.memoryDirty[slot >>> 5]! & (1 << (slot & 31))) !== 0) {
-        instance.memoryChanged(direct.memoryWrites[index]!);
+    for (let word = 0; word < frame.memoryDirty.length; word++) {
+      let bits = frame.memoryDirty[word]!;
+      while (bits !== 0) {
+        const slot = word * 32 + 31 - Math.clz32(bits & -bits);
+        instance.memoryChanged(layout.memoryNames[slot]!);
+        bits &= bits - 1;
         wrote = true;
       }
     }

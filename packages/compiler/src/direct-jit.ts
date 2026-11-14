@@ -220,6 +220,29 @@ function constantsOf(body: RegionIR): ReadonlyMap<number, Primitive> {
   return constants;
 }
 
+interface BodyShape {
+  readonly operations: number;
+  readonly nestedOperations: number;
+}
+
+/**
+ * Operation counts depend only on the immutable body, so a later cache (a new board reusing
+ * the module-level block IR) reuses them instead of walking every nested region again.
+ */
+const shapes = new WeakMap<RegionIR, BodyShape>();
+
+function shapeOf(body: RegionIR): BodyShape {
+  let shape = shapes.get(body);
+  if (shape === undefined) {
+    shape = Object.freeze({
+      operations: body.operations.length,
+      nestedOperations: countOperations(body),
+    });
+    shapes.set(body, shape);
+  }
+  return shape;
+}
+
 interface DelayFingerprint {
   readonly counter: number;
   readonly cycles: number;
@@ -571,7 +594,8 @@ function compileDirectJitProgram(
     }
   }
   if (!entries.length) return undefined;
-  const localCount = Math.max(...entries.map((entry) => entry.slots.length));
+  let localCount = 0;
+  for (const entry of entries) if (entry.slots.length > localCount) localCount = entry.slots.length;
   const registers = Array.from({ length: localCount }, (_, index) => `v${index}`);
   const options = binding as DirectJitBinding & {
     readonly split?: boolean;
@@ -606,8 +630,6 @@ function compileDirectJitProgram(
     constants: readonly unknown[],
     runtimeHelpers: typeof helpers,
   ) => (frame: DirectJitFrame, deadline: number) => DirectJitReason;
-  const names = (field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories') =>
-    Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
   const shardCount = lines.filter((line) => line.startsWith('function stepShard')).length;
   const program = {
     // Indices captured by cached instructions remain stable for this cache. The program owns
@@ -619,10 +641,10 @@ function compileDirectJitProgram(
     // existing bodies never change and only the missing PCs justify a rebuild.
     pcs: Object.freeze(entries.map((entry) => entry.pcValue)),
     localCount,
-    readStates: names('readStates'),
-    writeStates: names('writeStates'),
-    readMemories: names('readMemories'),
-    writeMemories: names('writeMemories'),
+    readStates: resourceNames(entries, 'readStates'),
+    writeStates: resourceNames(entries, 'writeStates'),
+    readMemories: resourceNames(entries, 'readMemories'),
+    writeMemories: resourceNames(entries, 'writeMemories'),
   } satisfies DirectJitProgram;
   // Diagnostic only, and non-enumerable so the published shape of a program is unchanged.
   Object.defineProperty(program, 'emitStats', { value: emitStats(entries) });
@@ -728,6 +750,50 @@ function countStatements(line: string): number {
     else if (character === ';') count++;
   }
   return count;
+}
+
+/** ASCII digits and the JavaScript `\w` set: the boundaries of an emitted `v<slot>` token. */
+function isAsciiDigit(code: number): boolean {
+  return code >= 48 && code <= 57;
+}
+
+function isWordCode(code: number): boolean {
+  return (
+    isAsciiDigit(code) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95
+  );
+}
+
+/** Skip a JSON-encoded literal; its contents are data, including text such as `v0`. */
+function afterString(line: string, start: number): number {
+  let index = start + 1;
+  while (index < line.length) {
+    const code = line.charCodeAt(index++);
+    if (code === 92) index++;
+    else if (code === 34) break;
+  }
+  return index;
+}
+
+/** `select<digits>: {` is the only emitted statement shape counted as a select block. */
+function isSelectLabel(line: string): boolean {
+  if (!line.startsWith('select')) return false;
+  let index = 'select'.length;
+  const digits = index;
+  while (index < line.length) {
+    if (!isAsciiDigit(line.charCodeAt(index))) break;
+    index++;
+  }
+  return index > digits && line.startsWith(': {', index);
+}
+
+/** Union of one resource field across blocks; insertion order matches Set construction. */
+function resourceNames(
+  entries: readonly Instruction[],
+  field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories',
+): readonly string[] {
+  const names = new Set<string>();
+  for (const entry of entries) for (const name of entry[field]) names.add(name);
+  return Object.freeze([...names]);
 }
 
 /**
@@ -1032,12 +1098,12 @@ function residentPcSpan(entries: readonly Instruction[]): string {
 
 function residentStepFinish(stop: boolean, inside: string, pcIndex: number): string {
   if (stop) return 'return "stopped";';
-  return `if (F.stopAfterInstruction) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
+  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
 }
 
 function residentResumeFinish(stop: boolean, pcIndex: number): string {
   if (stop) return 'return "stopped";';
-  return `if (F.stopAfterInstruction) return "invalidated"; const pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); return pc;`;
+  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; const pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); return pc;`;
 }
 
 /** Emit one independent shard factory. Its function object is never edited after creation. */
@@ -1199,18 +1265,17 @@ function residentProgram(
     for (const entry of shard.entries)
       if (entry.resumeId !== 0) resumes[entry.resumeId] = shard.functions!.resume;
   }
-  const localCount = Math.max(...entries.map((entry) => entry.slots.length));
-  const names = (field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories') =>
-    Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
+  let localCount = 0;
+  for (const entry of entries) if (entry.slots.length > localCount) localCount = entry.slots.length;
   const program = {
     run: factory(steps, Object.freeze(resumes)),
     shards: state.shards.length,
     pcs: Object.freeze(entries.map((entry) => entry.pcValue)),
     localCount,
-    readStates: names('readStates'),
-    writeStates: names('writeStates'),
-    readMemories: names('readMemories'),
-    writeMemories: names('writeMemories'),
+    readStates: resourceNames(entries, 'readStates'),
+    writeStates: resourceNames(entries, 'writeStates'),
+    readMemories: resourceNames(entries, 'readMemories'),
+    writeMemories: resourceNames(entries, 'writeMemories'),
   } satisfies DirectJitProgram;
   Object.defineProperty(program, 'emitStats', { value: emitStats(entries) });
   return Object.freeze(program);
@@ -1224,9 +1289,10 @@ function elapsed(entry: Instruction, resumeId: number): string[] {
   return [
     `F.due = F.time + ${duration};`,
     'if (F.due > 7200000000000000) throw new RangeError("Time out of range");',
-    'if (F.due >= deadline) {',
+    'if ((F.publishPending && F.due > F.time) || F.due >= deadline) {',
     ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
     `F.resume = ${resumeId};`,
+    'if (F.publishPending && F.due > F.time) return "invalidated";',
     'F.time = deadline;',
     'return "deadline";',
     '}',
@@ -1235,13 +1301,15 @@ function elapsed(entry: Instruction, resumeId: number): string[] {
 }
 
 function finish(stop: boolean): string {
-  return stop ? 'return "stopped";' : 'if (F.stopAfterInstruction) return "invalidated"; continue;';
+  return stop
+    ? 'return "stopped";'
+    : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; continue;';
 }
 
 function splitFinish(stop: boolean): string {
   return stop
     ? 'return "stopped";'
-    : 'if (F.stopAfterInstruction) return "invalidated"; return "next";';
+    : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; return "next";';
 }
 
 /**
@@ -1268,7 +1336,7 @@ function stepFinish(
   if (stop) return 'return "stopped";';
   const inside = lower === undefined ? `pc <= ${upper}` : `pc <= ${upper} && pc > ${lower}`;
   // The finite-number guard is inlined: a call per instruction costs more than the test.
-  return `if (F.stopAfterInstruction) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return "next";`;
+  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return "next";`;
 }
 
 function dirty(bank: 'SD' | 'MD', index: number): string {
@@ -1340,8 +1408,9 @@ class Instruction {
   compile(instruction: { pc: number; nextPc: number; body: RegionIR }): this {
     this.pcValue = instruction.pc;
     this.constants = constantsOf(instruction.body);
-    this.operations = instruction.body.operations.length;
-    this.nestedOperations = countOperations(instruction.body);
+    const shape = shapeOf(instruction.body);
+    this.operations = shape.operations;
+    this.nestedOperations = shape.nestedOperations;
     this.pc = this.literal(instruction.pc);
     this.nextPc = this.literal(instruction.nextPc);
     this.readStates.add(this.binding.pc.name);
@@ -1420,10 +1489,18 @@ class Instruction {
     if (!this.terminated && !this.stop) throw unsupported;
     this.compact();
     this.barrier = this.emitBarrier();
-    const emitted = [...this.barrier, ...this.guard, ...this.prefix, ...this.suffix];
-    this.size = emitted.reduce((sum, line) => sum + line.length, 0);
-    this.statements = emitted.reduce((sum, line) => sum + countStatements(line), 0);
-    this.selects = emitted.filter((line) => /^select\d+: \{/.test(line)).length;
+    let size = 0;
+    let statements = 0;
+    let selects = 0;
+    for (const block of [this.barrier, this.guard, this.prefix, this.suffix])
+      for (const line of block) {
+        size += line.length;
+        statements += countStatements(line);
+        if (isSelectLabel(line)) selects++;
+      }
+    this.size = size;
+    this.statements = statements;
+    this.selects = selects;
     return this;
   }
 
@@ -1464,74 +1541,162 @@ class Instruction {
    * outputs) keep the same slot from the first definition through the last use.
    */
   private compact(): void {
+    const total = this.slots.length;
+    // A single virtual slot cannot be reused and every emitted token already names it, so
+    // compaction is the identity. Constant-only bodies arrive here with no slots at all.
+    if (total <= 1) return;
     const bound = this.prefix.length;
     const lines = [...this.prefix, ...this.suffix];
-    const names = (line: string): number[] =>
-      (line.match(/\bv\d+\b/g) ?? []).map((name) => Number(name.slice(1)));
-    const definedAt: number[][] = lines.map(() => []);
-    const usesAt: number[][] = [];
-    const lastDef = new Map<number, number>();
-    const firstUse = new Map<number, number>();
-    const lastUse = new Map<number, number>();
+    const lineCount = lines.length;
+    const offsets = new Int32Array(lineCount + 1);
+    const definitions = new Int32Array(lineCount).fill(-1);
+    const firstDefinition = new Int32Array(total).fill(-1);
+    const lastDefinition = new Int32Array(total).fill(-1);
+    const lastUse = new Int32Array(total).fill(-1);
+    const end = new Int32Array(total).fill(-1);
+    const tokens: number[] = [];
 
-    lines.forEach((line, index) => {
-      const used = names(line);
-      const head = /^v(\d+) = /.exec(line);
-      if (head !== null) {
-        const virtual = Number(head[1]);
-        definedAt[index]!.push(virtual);
-        lastDef.set(virtual, index);
-        const position = used.indexOf(virtual);
-        if (position >= 0) used.splice(position, 1);
+    // The previous implementation scanned every line twice with `/\bv\d+\b/` and allocated a
+    // Map entry per virtual slot. This pass keeps the same token boundaries but stores
+    // definitions and uses in dense arrays plus one flat token buffer.
+    for (let index = 0; index < lineCount; index++) {
+      offsets[index] = tokens.length;
+      const line = lines[index]!;
+      let position = 0;
+      if (line.charCodeAt(0) === 118) {
+        let cursor = 1;
+        let virtual = 0;
+        while (cursor < line.length && isAsciiDigit(line.charCodeAt(cursor))) {
+          virtual = virtual * 10 + (line.charCodeAt(cursor) - 48);
+          cursor++;
+        }
+        if (
+          cursor > 1 &&
+          line.charCodeAt(cursor) === 32 &&
+          line.charCodeAt(cursor + 1) === 61 &&
+          line.charCodeAt(cursor + 2) === 32
+        ) {
+          if (virtual >= total) return;
+          definitions[index] = virtual;
+          if (firstDefinition[virtual]! < 0) firstDefinition[virtual] = index;
+          lastDefinition[virtual] = index;
+          position = cursor + 3;
+        }
       }
-      for (const virtual of used) {
-        if (!firstUse.has(virtual)) firstUse.set(virtual, index);
-        lastUse.set(virtual, index);
+      while (position < line.length) {
+        if (line.charCodeAt(position) === 34) {
+          position = afterString(line, position);
+          continue;
+        }
+        if (line.charCodeAt(position) !== 118) {
+          position++;
+          continue;
+        }
+        if (position > 0 && isWordCode(line.charCodeAt(position - 1))) {
+          position++;
+          continue;
+        }
+        let cursor = position + 1;
+        let virtual = 0;
+        while (cursor < line.length && isAsciiDigit(line.charCodeAt(cursor))) {
+          virtual = virtual * 10 + (line.charCodeAt(cursor) - 48);
+          cursor++;
+        }
+        if (cursor === position + 1) {
+          position++;
+          continue;
+        }
+        if (cursor < line.length && isWordCode(line.charCodeAt(cursor))) {
+          position = cursor;
+          continue;
+        }
+        if (virtual >= total) return;
+        tokens.push(virtual);
+        lastUse[virtual] = index;
+        position = cursor;
       }
-      usesAt.push(used);
-    });
+    }
+    offsets[lineCount] = tokens.length;
 
     // Only the define-before-use shape is compacted; anything else keeps the virtual slots,
     // which is always correct.
-    const firstDef = new Map<number, number>();
-    definedAt.forEach((defs, index) => {
-      for (const virtual of defs) if (!firstDef.has(virtual)) firstDef.set(virtual, index);
-    });
-    for (const [virtual, index] of firstUse)
-      if ((firstDef.get(virtual) ?? Infinity) > index) return;
-
-    const end = new Map<number, number>();
-    for (const virtual of lastDef.keys())
-      end.set(virtual, Math.max(lastDef.get(virtual)!, lastUse.get(virtual) ?? -1));
-
-    const physical = new Map<number, string>();
-    const live = new Map<number, string>();
-    const free: string[] = [];
-    let count = 0;
-    const release = (virtual: number): void => {
-      const slot = live.get(virtual);
-      if (slot === undefined) return;
-      live.delete(virtual);
-      free.push(slot);
-    };
-
-    lines.forEach((_, index) => {
-      for (const virtual of definedAt[index]!) {
-        if (physical.has(virtual)) continue;
-        const slot = free.pop() ?? `v${count++}`;
-        physical.set(virtual, slot);
-        live.set(virtual, slot);
+    for (let index = 0; index < lineCount; index++)
+      for (let token = offsets[index]!; token < offsets[index + 1]!; token++) {
+        const virtual = tokens[token]!;
+        if (firstDefinition[virtual]! < 0 || firstDefinition[virtual]! > index) return;
       }
-      for (const virtual of [...definedAt[index]!, ...usesAt[index]!])
-        if (end.get(virtual) === index) release(virtual);
-    });
 
-    const rewrite = (line: string): string =>
-      line.replace(/\bv(\d+)\b/g, (whole, digits: string) => physical.get(Number(digits)) ?? whole);
-    this.prefix = lines.slice(0, bound).map((line) => rewrite(line));
-    this.suffix = lines.slice(bound).map((line) => rewrite(line));
+    for (let virtual = 0; virtual < total; virtual++)
+      if (lastDefinition[virtual]! >= 0)
+        end[virtual] = Math.max(lastDefinition[virtual]!, lastUse[virtual]!);
+
+    const physical = new Int32Array(total).fill(-1);
+    const free: number[] = [];
+    let count = 0;
+    for (let index = 0; index < lineCount; index++) {
+      const definition = definitions[index]!;
+      if (definition >= 0 && physical[definition]! < 0)
+        physical[definition] = free.length > 0 ? free.pop()! : count++;
+      if (definition >= 0 && end[definition] === index) {
+        end[definition] = -1;
+        free.push(physical[definition]!);
+      }
+      for (let token = offsets[index]!; token < offsets[index + 1]!; token++) {
+        const virtual = tokens[token]!;
+        if (end[virtual] !== index) continue;
+        end[virtual] = -1;
+        free.push(physical[virtual]!);
+      }
+    }
+
+    const names = Array.from({ length: count }, (_, index) => `v${index}`);
+    const rewrite = (line: string): string => {
+      let output = '';
+      let cursor = 0;
+      let scan = 0;
+      while (scan < line.length) {
+        if (line.charCodeAt(scan) === 34) {
+          scan = afterString(line, scan);
+          continue;
+        }
+        if (line.charCodeAt(scan) !== 118) {
+          scan++;
+          continue;
+        }
+        if (scan > 0 && isWordCode(line.charCodeAt(scan - 1))) {
+          scan++;
+          continue;
+        }
+        let position = scan + 1;
+        let virtual = 0;
+        while (position < line.length && isAsciiDigit(line.charCodeAt(position))) {
+          virtual = virtual * 10 + (line.charCodeAt(position) - 48);
+          position++;
+        }
+        if (
+          position === scan + 1 ||
+          (position < line.length && isWordCode(line.charCodeAt(position)))
+        ) {
+          scan = position;
+          continue;
+        }
+        const slot = virtual < total ? physical[virtual]! : -1;
+        if (slot < 0) {
+          scan = position;
+          continue;
+        }
+        output += line.slice(cursor, scan);
+        output += names[slot]!;
+        cursor = position;
+        scan = position;
+      }
+      return cursor === 0 ? line : output + line.slice(cursor);
+    };
+    for (let index = 0; index < bound; index++) this.prefix[index] = rewrite(this.prefix[index]!);
+    for (let index = 0; index < this.suffix.length; index++)
+      this.suffix[index] = rewrite(this.suffix[index]!);
     if (this.duration !== undefined) this.duration = rewrite(this.duration);
-    this.slots = Array.from({ length: count }, (_, index) => `v${index}`);
+    this.slots = names;
   }
 
   /** A zero duration advances no time, so the instruction needs no continuation slot. */
