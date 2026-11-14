@@ -44,6 +44,7 @@ export interface IPreparedInstance {
 export interface IResolvedSimulation {
   readonly instances: readonly IPreparedInstance[];
   readonly description: BoardDescription;
+  readonly execution?: IPreparedSimulation['execution'];
 }
 
 /** Imports only referenced SDK modules and captures all inputs before any factory runs. */
@@ -183,6 +184,7 @@ export async function prepareSimulation(
       symbol: symbol.id,
       device: devices.get(symbol.device)!,
     })),
+    ...(input.execution === undefined ? {} : { execution: input.execution }),
     description: {
       instances: symbols.map((symbol) => ({
         id: symbol.id,

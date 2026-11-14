@@ -331,13 +331,10 @@ connect('AIN3', [['U16', 'vin3']]);
 connect('OUT', [['U16', 'dac']]);
 
 // ---- 布局 -------------------------------------------------------------------------------
-/** 演示固件：8 位数码管全亮扫描 + 8 路 LED 走马灯（`firmware/demo.asm`，由 assemble-firmware.mjs 汇编）。 */
-const FIRMWARE = { src: 'assets/ct107d-demo.bin', mode: 'file' };
-/**
- * 演示板按板载 12 MHz 晶振运行：固件 `firmware/demo.asm` 的延时按同一频率配平，
- * 数码管每位约 244 µs、走马灯约 17.6 ms 移一位，可见节奏与早期 1 MHz 演示一致。
- */
-const DEMO_CLOCK = 12_000_000;
+/** 当前预览固件：数码管动态显示，由 Intel HEX 转为裸二进制。 */
+const FIRMWARE = { src: 'assets/digital-display-dynamic.bin', mode: 'file' };
+/** 官方固件按 11.0592 MHz 编写；延时、定时器与串口波特率都依赖该频率。 */
+const FIRMWARE_CLOCK = 11_059_200;
 
 const PLACEMENTS = [
   {
@@ -345,7 +342,7 @@ const PLACEMENTS = [
     device: MCU_REF,
     column: 0,
     order: 0,
-    properties: { firmware: FIRMWARE, clockFrequency: DEMO_CLOCK },
+    properties: { firmware: FIRMWARE, clockFrequency: FIRMWARE_CLOCK },
   },
   { designator: 'U24', device: CHIP_REF('74hc138'), column: 0, order: 1 },
   { designator: 'U25', device: CHIP_REF('74hc02'), column: 0, order: 2 },

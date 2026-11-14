@@ -10,21 +10,25 @@
  * `digit4` 都按「点亮的段」编码，因此适配器、话题与 UI 不随极性变化。
  *
  * 显示：真实数码管靠多路扫描刷新，人眼看到的是各段亮度的积分。模型不做时间积分，而是把
- * 每一位最近一次被选中时的段码保存下来——这就是「扫描结束后屏上留下的内容」。选中期间
- * 段脚变化会继续跟随（等价于先选位、后写段码也能显示），取消选中（释放或反极性）后只保持，
- * 不清屏；选中期间没有任何段点亮会把该位保存为 0（熄灭）。
+ * 每一位最近一次选中并稳定 `settleUs` 后的段码保存下来——这就是「扫描结束后屏上留下的
+ * 内容」。稳定窗口滤除先选位、后写段码之间的中间电平；取消选中（释放或反极性）后只保持，
+ * 不清屏；稳定选中期间没有任何段点亮会把该位保存为 0（熄灭）。
  *
  * 理想化：零传播延迟；不模拟亮度、余辉、扫描占空比与人眼积分；段脚不需要外部限流电阻
  * 时可直接接驱动，外部电阻可按 blue-led 的做法并入 `forwardResistance`。
  */
 device Seg4(
   forwardResistance: number default 500,
-  commonAnode: bool default false
+  commonAnode: bool default false,
+  settleUs: number default 50
 ) {
   assert isFinite(forwardResistance)
       && forwardResistance >= 0.001
       && forwardResistance <= 1_000_000_000,
     "forwardResistance must be a finite ohm value within 0.001..1000000000";
+  assert isFinite(settleUs) && settleUs >= 1 && settleUs <= 10_000,
+    "settleUs must be within 1..10000 microseconds";
+  const settleDelay = round(settleUs * 1_000_000);
 
   pin a(low: 0.8, high: 2.0) = [
     resistor(to: com1, resistance: forwardResistance),
@@ -134,21 +138,24 @@ device Seg4(
     mask: number;
   }
 
+  // All four digits share the segment bus; compute its mask once per electrical change.
+  derived segments: number = segmentMask();
+
   derived scan1: DigitState = {
     active: digitSelected(com1.sample.level),
-    mask: segmentMask()
+    mask: segments
   };
   derived scan2: DigitState = {
     active: digitSelected(com2.sample.level),
-    mask: segmentMask()
+    mask: segments
   };
   derived scan3: DigitState = {
     active: digitSelected(com3.sample.level),
-    mask: segmentMask()
+    mask: segments
   };
   derived scan4: DigitState = {
     active: digitSelected(com4.sample.level),
-    mask: segmentMask()
+    mask: segments
   };
 
   /** 上电即锁存当前状态：固定电平的板（装配期就解出电压）不会再有变化事件。 */
@@ -173,30 +180,42 @@ device Seg4(
 
   /** 第 1 位选中期间跟随段码，取消选中后保持。 */
   process scanDigit1 on scan1 {
-    if scan1.active && shown1 != scan1.mask {
-      shown1 = scan1.mask;
-      digit1.send(scan1.mask);
+    if scan1.active {
+      await ticks(settleDelay);
+      if scan1.active && shown1 != scan1.mask {
+        shown1 = scan1.mask;
+        digit1.send(scan1.mask);
+      }
     }
   }
 
   process scanDigit2 on scan2 {
-    if scan2.active && shown2 != scan2.mask {
-      shown2 = scan2.mask;
-      digit2.send(scan2.mask);
+    if scan2.active {
+      await ticks(settleDelay);
+      if scan2.active && shown2 != scan2.mask {
+        shown2 = scan2.mask;
+        digit2.send(scan2.mask);
+      }
     }
   }
 
   process scanDigit3 on scan3 {
-    if scan3.active && shown3 != scan3.mask {
-      shown3 = scan3.mask;
-      digit3.send(scan3.mask);
+    if scan3.active {
+      await ticks(settleDelay);
+      if scan3.active && shown3 != scan3.mask {
+        shown3 = scan3.mask;
+        digit3.send(scan3.mask);
+      }
     }
   }
 
   process scanDigit4 on scan4 {
-    if scan4.active && shown4 != scan4.mask {
-      shown4 = scan4.mask;
-      digit4.send(scan4.mask);
+    if scan4.active {
+      await ticks(settleDelay);
+      if scan4.active && shown4 != scan4.mask {
+        shown4 = scan4.mask;
+        digit4.send(scan4.mask);
+      }
     }
   }
 }

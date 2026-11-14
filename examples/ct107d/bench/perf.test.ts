@@ -1,4 +1,4 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { measureCt107d } from './measure';
@@ -13,6 +13,16 @@ import { measureCt107d } from './measure';
 
 /** 空话题流（消息数为 0）的摘要，用来确认演示固件确实产生了可观测输出。 */
 const EMPTY_DIGEST = 'sha256:e3b0c44298fc1c14';
+const PREVIEW_FIRMWARE = new Uint8Array(
+  readFileSync(join(import.meta.dirname, '../assets/digital-display-dynamic.bin')),
+);
+const PREVIEW_OPTIONS = {
+  firmware: PREVIEW_FIRMWARE,
+  props: { clockFrequency: 11_059_200 },
+  warmUpMs: 500,
+  measureMs: 500,
+  rounds: 1,
+};
 
 let demoDigest = '';
 
@@ -48,6 +58,66 @@ describe('CT107D 整板基准', () => {
     expect(result.topicFinalDigest).not.toBe(EMPTY_DIGEST);
     // 同一轮里跑 3 次，摘要必须完全一致：这是「行为不变」对照值的前提。
     expect(result.topicDigestStable).toBe(true);
+  }, 1_800_000);
+
+  it('throughput preserves outputs and outpaces precise execution', async () => {
+    const throughput = await measureCt107d({ execution: 'throughput' });
+    const precise = await measureCt107d({ execution: 'precise' });
+
+    process.stdout.write(
+      `PERF_COMPARE ${JSON.stringify({
+        throughput: { wallMs: throughput.wallMs, boundaryCalls: throughput.boundaryCalls },
+        precise: { wallMs: precise.wallMs, boundaryCalls: precise.boundaryCalls },
+      })}\n`,
+    );
+
+    expect(throughput.faults).toEqual(precise.faults);
+    expect(throughput.topicDigest).toBe(precise.topicDigest);
+    expect(throughput.topicFinalDigest).toBe(precise.topicFinalDigest);
+    expect(throughput.topicDigestStable).toBe(true);
+    expect(precise.topicDigestStable).toBe(true);
+    expect(throughput.boundaryCalls).toBeLessThan(precise.boundaryCalls * 0.1);
+    expect(throughput.wallMs).toBeLessThan(precise.wallMs * 0.75);
+  }, 1_800_000);
+
+  it('preview firmware preserves outputs and accelerates in throughput mode', async () => {
+    const throughput = await measureCt107d({
+      ...PREVIEW_OPTIONS,
+      tickMs: 16,
+      execution: 'throughput',
+    });
+    const precise = await measureCt107d({ ...PREVIEW_OPTIONS, tickMs: 16, execution: 'precise' });
+    const coarse = await measureCt107d({
+      ...PREVIEW_OPTIONS,
+      tickMs: 64,
+      execution: 'throughput',
+    });
+
+    process.stdout.write(
+      `PREVIEW_FIRMWARE ${JSON.stringify({
+        throughput: {
+          wallMs: throughput.wallMs,
+          direct: throughput.direct,
+          directCalls: throughput.directCalls,
+          cachedInstructions: throughput.cachedInstructions,
+          directFallbackPcs: throughput.directFallbackPcs,
+        },
+        precise: { wallMs: precise.wallMs },
+        coarseWallMs: coarse.wallMs,
+        topicFinalDigest: throughput.topicFinalDigest,
+      })}\n`,
+    );
+
+    expect(throughput.faults).toEqual(precise.faults);
+    expect(throughput.topicFinalDigest).toBe(precise.topicFinalDigest);
+    expect(throughput.topicFinalTopics).toEqual(precise.topicFinalTopics);
+    expect(throughput.topicFinalTopics).toEqual(coarse.topicFinalTopics);
+    expect(throughput.topicDigestStable).toBe(true);
+    expect(precise.topicDigestStable).toBe(true);
+    expect(coarse.topicDigestStable).toBe(true);
+    expect(throughput.direct).toBe(true);
+    expect(throughput.directCalls).toBeGreaterThan(0);
+    expect(throughput.wallMs).toBeLessThan(precise.wallMs * 0.75);
   }, 1_800_000);
 
   it('空转固件：行为摘要与演示固件不同', async () => {

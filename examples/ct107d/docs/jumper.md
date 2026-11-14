@@ -1,7 +1,7 @@
 # 两脚跳线
 
-CT107D 板位号 **J13**（WR 源选择）：把 `P42/WR` 短接到 GND。同型号也用于 JS1/JS2 等
-其余两脚跳线。
+CT107D 板位号 **J13**（WR/IO 模式选择）：把 `P42/WR` 短接到 GND。同型号也用于 J3 与
+JS1/JS2 等其余两脚跳线。
 
 ## 元数据
 
@@ -27,7 +27,16 @@ a ↔ b ：closed 为 true 时 resistance（默认 0.05 Ω），false 时 openRe
 
 用有限电阻而不是真正断开，保证另一端仍被网络引用，电气求解不会出现孤立支路。
 
-跳线是**装配期配置**：运行期不变，因此没有输入端口，`closed` 只能在实例属性里给定。
+`closed` 属性给出装配初值；运行期可向 `control` 输入发送新状态，当前状态通过 `closedState`
+输出回传。通用交互式 `jumper` widget 支持 1–2 路，J13 使用单路 `state1`/`closed1`，J2
+复用同一个 widget 并绑定第二路 `state2`/`closed2`。
+
+## 端口
+
+| 端口          | 方向   | 类型    | 说明                         |
+| ------------- | ------ | ------- | ---------------------------- |
+| `control`     | input  | boolean | 运行期切换是否闭合           |
+| `closedState` | output | boolean | 当前闭合状态，供 widget 订阅 |
 
 ## 属性
 
@@ -39,9 +48,10 @@ a ↔ b ：closed 为 true 时 resistance（默认 0.05 Ω），false 时 openRe
 
 ## 理想化
 
-- 没有插拔过程、接触电阻漂移与氧化。
+- 切换立即生效，不模拟插拔过程、机械抖动、接触电阻漂移与氧化。
 - 不检查同一网络插多个跳线帽的冲突。
 
 ## 测试
 
-`test/jumper.test.ts`：默认插帽时两端导通、`closed: false` 时断开。
+`test/jumper.test.ts`：默认插帽时两端导通、`closed: false` 时断开，以及运行期通过
+`control` 反复切换并在 `state` 话题回传状态。

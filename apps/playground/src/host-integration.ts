@@ -36,5 +36,18 @@ export function propertyValue(value: unknown): PropertyValue {
 }
 
 export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  if (error !== null && typeof error === 'object') {
+    if ('message' in error && typeof error.message === 'string') return error.message;
+    try {
+      const serialized = JSON.stringify(error, (_key, value: unknown) =>
+        value instanceof Error ? { name: value.name, message: value.message } : value,
+      );
+      if (serialized !== undefined && serialized !== '{}') return serialized;
+    } catch {
+      // Fall through to a stable string for cyclic or non-serializable error objects.
+    }
+  }
+  return String(error);
 }

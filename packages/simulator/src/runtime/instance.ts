@@ -518,8 +518,9 @@ export class Instance {
         jit.cache.clear();
         jit.revision++;
         jit.directPrograms.clear();
-        jit.directProgramRevision = -1;
-        jit.directSkip = undefined;
+        jit.directCacheSize = -1;
+        jit.directFallbackPcs.clear();
+        jit.directFallbacksExhausted = false;
         if (jit.direct?.frame.resume) jit.direct.frame.stopAfterInstruction = true;
         else jit.direct = undefined;
       }
@@ -918,15 +919,15 @@ export class Instance {
       polling,
       delays: options.delays ?? new Map(),
       revision: 0,
-      directRevision: -1,
+      directCacheSize: -1,
       directObserverRevision: -1,
       directStateGuards: new Set(),
       directMemoryGuards: new Set(),
       directHookReads: new Set(),
       directPrograms: new Map(),
-      directProgramRevision: -1,
       direct: undefined,
-      directSkip: undefined,
+      directFallbackPcs: new Set(),
+      directFallbacksExhausted: false,
       pollReads: undefined,
       currentPc: undefined,
       automaticPolling: false,

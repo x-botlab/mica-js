@@ -134,6 +134,9 @@ export function App() {
                   widgetLibrary: demoWidgetLibrary,
                   voltageReferences: { VCC: 5 },
                   ...(descriptor.stepMs === undefined ? {} : { stepMs: descriptor.stepMs }),
+                  ...(descriptor.execution === undefined
+                    ? {}
+                    : { execution: descriptor.execution }),
                 }),
               }
             : {
@@ -203,7 +206,7 @@ export function App() {
         void instance.editor.dispose().catch(() => undefined);
       }
     };
-  }, [documentId, reloadKey]);
+  }, [documentId, reloadKey, descriptor]);
   const pending = useRef<EditorSession | undefined>(undefined);
   const perform = useCallback(
     async (owner: EditorSession, action: () => Promise<unknown>): Promise<void> => {

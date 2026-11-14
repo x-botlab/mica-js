@@ -295,6 +295,7 @@ export function compileDirectJit(
   const program = {
     run: factory(Object.freeze(constants), helpers),
     localCount,
+    instructionPcs: Object.freeze(entries.map((entry) => entry.pcValue)),
     readStates: names('readStates'),
     writeStates: names('writeStates'),
     readMemories: names('readMemories'),
@@ -438,6 +439,7 @@ function monolithicProgram(
   entries.forEach((entry, index) => {
     lines.push(
       `case ${entry.pc}: {`,
+      `if (F.fallbackPcs?.has(${entry.pc})) return "fallback";`,
       ...entry.barrier,
       ...entry.guard,
       `S[${binding.pc.index}] = ${entry.nextPc};`,
@@ -503,6 +505,7 @@ function shardProgram(
     shard.entries.forEach((entry, offset) => {
       lines.push(
         `case ${entry.pc}: {`,
+        `if (F.fallbackPcs?.has(${entry.pc})) return "fallback";`,
         ...entry.barrier,
         ...entry.guard,
         `S[${binding.pc.index}] = ${entry.nextPc};`,

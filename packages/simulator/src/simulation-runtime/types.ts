@@ -5,6 +5,7 @@ import type {
   DevicePortMetadata,
   SchematicDocument,
 } from '@mica-js/document/schematic';
+import type { BoardOptions } from '../types';
 
 export type ISimulationDeviceTopicDefinition = DevicePortMetadata;
 import type { RuntimeDiagnosticCode, RuntimePhase } from '../types';
@@ -21,6 +22,8 @@ export interface IPreparedSimulationDevice {
 export interface IPreparedSimulation {
   readonly schematic: SchematicDocument;
   readonly devices: readonly IPreparedSimulationDevice[];
+  /** Board CPU execution mode; omitted to retain the Board default. */
+  readonly execution?: BoardOptions['execution'];
   /** Fixed board voltages by exact schematic net name; ignored for empty sheets. Ground stays zero. */
   readonly voltageReferences?: Readonly<Record<string, number>>;
   /** assets[symbolId][src]; required for every effective image/binary resource reference. */

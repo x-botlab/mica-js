@@ -51,13 +51,14 @@ describe('器件声明', () => {
     expect(() => validateMetadata(metadata(), 'device', 'seg4')).not.toThrow();
   });
 
-  it('声明 8 段 + 4 位共 12 根引脚、四个段码端口与两项属性', () => {
+  it('声明 8 段 + 4 位共 12 根引脚、四个段码端口与三项属性', () => {
     const device = metadata();
 
     expect(device.displayName).toBe('四位数码管');
     expect(Object.keys(device.pins).sort()).toEqual([...SEGMENTS, ...COMMONS].sort());
     expect(device.properties.forwardResistance?.default).toBe(500);
     expect(device.properties.commonAnode).toMatchObject({ type: 'boolean', default: false });
+    expect(device.properties.settleUs).toMatchObject({ type: 'number', default: 50 });
 
     for (const name of ['digit1', 'digit2', 'digit3', 'digit4'])
       expect(device.ports[name]).toMatchObject({
@@ -136,6 +137,21 @@ describe('静态显示', () => {
 });
 
 describe('扫描保持', () => {
+  it('位选中后的短暂中间段码在稳定窗口内不会发布', async () => {
+    const built = await circuit();
+
+    try {
+      built.show(0x06, [0]);
+      built.run(40_000_000);
+      expect(built.outputs.digit1).toBe(0);
+
+      built.run(20_000_000);
+      expect(built.outputs.digit1).toBe(0x06);
+    } finally {
+      built.dispose();
+    }
+  });
+
   it('按位依次扫描后，每位保留自己选中时的段码', async () => {
     const built = await circuit();
 

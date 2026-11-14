@@ -105,15 +105,15 @@ export interface Jit {
   /** Validated delay-loop descriptors, keyed by loop-head PC. */
   readonly delays: ReadonlyMap<number, { readonly counter: string; readonly cycles: number }>;
   revision: number;
-  directRevision: number;
+  directCacheSize: number;
   directObserverRevision: number;
   readonly directStateGuards: Set<string>;
   readonly directMemoryGuards: Set<string>;
   readonly directHookReads: Set<ResourceSlot>;
   readonly directPrograms: Map<string, DirectExecution | undefined>;
-  directProgramRevision: number;
   direct: DirectExecution | undefined;
-  directSkip: number | undefined;
+  readonly directFallbackPcs: Set<number>;
+  directFallbacksExhausted: boolean;
   pollReads: Dependencies | undefined;
   currentPc: number | undefined;
   automaticPolling: boolean;

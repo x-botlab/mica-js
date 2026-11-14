@@ -21,10 +21,11 @@ export interface IDemoDocument {
   readonly label: string;
   readonly path: string;
   /**
-   * 仿真步长（ms）。8051 板按指令推进，步长越大每个 UI 帧要跑的指令越多；
-   * CT107D 需要更细的步长才能在预览里看到扫描与走马灯。
+   * 仿真步长与目标帧间隔（ms）。8051 扫描仍在仿真内逐指令执行；CT107D 的数码管会锁存
+   * 每一位扫描结果，因此无需每个扫描周期都跨 Worker 更新和重绘画布。
    */
   readonly stepMs?: number;
+  readonly execution?: 'throughput' | 'precise';
 }
 
 export const DEMO_DOCUMENTS: readonly IDemoDocument[] = [
@@ -43,9 +44,10 @@ export const DEMO_DOCUMENTS: readonly IDemoDocument[] = [
   {
     id: 'ct107d-canvas',
     kind: 'canvas',
-    label: '画布 · ct107d.cnv',
-    path: 'components/ct107d/ct107d.cnv',
-    stepMs: 2,
+    label: '画布 · CT107D 数码管动态显示',
+    path: 'components/ct107d/ct107d-digital-display.cnv',
+    stepMs: 64,
+    execution: 'throughput',
   },
 ];
 
@@ -96,14 +98,20 @@ const DEVICE_ASSETS = {
     '74hc573',
     '74ls04',
     'at24c02',
+    'buzzer',
     'cx20106a',
     'ds1302',
     'ds18b20',
+    'jumper',
+    'jumper-2x3',
     'lm386',
     'ne555',
     'pcf8591',
     'push-button',
+    'relay',
     'uln2003',
+    'ultrasonic',
+    'uart-probe',
     'vs1838',
     'seg4',
     'blue-led',
@@ -113,7 +121,15 @@ const DEVICE_ASSETS = {
 
 const WIDGET_ASSETS = {
   ...componentAssets('widgets', ['button', 'led-indicator', 'voltmeter']),
-  ...ct107dAssets('widgets', ['button', 'segment', 'image', 'led-indicator']),
+  ...ct107dAssets('widgets', [
+    'button',
+    'segment',
+    'image',
+    'led-indicator',
+    'buzzer',
+    'relay',
+    'jumper',
+  ]),
 };
 
 function assetUri(path: string): string {

@@ -5,7 +5,11 @@ import {
   type DirectJitProgram,
   type ExecutionSignal,
 } from '@mica-js/compiler';
-import { createJitBlockBuilder, validateBoundBlockIR } from '@mica-js/device-model';
+import {
+  createJitBlockBuilder,
+  type RegionIR,
+  validateBoundBlockIR,
+} from '@mica-js/device-model';
 import { isPollingInstruction } from '../polling';
 import type { EventQueue } from '../queue';
 import { acceptSync } from './errors';
@@ -17,6 +21,9 @@ import { bytesView, finite } from '../values';
 
 /** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
 const DIRECT_SHARD_SIZE = 8;
+// Wait for the instruction cache to fill, then avoid rebuilding the whole dispatcher per block.
+const DIRECT_JIT_INITIAL_INSTRUCTIONS = 8;
+const DIRECT_JIT_RECOMPILE_BATCH = 16;
 
 /**
  * Deterministic direct-execution counters, kept on the `Jit` itself so `Board.jits` stays the
@@ -148,7 +155,8 @@ function refreshDirectGuards(jit: Jit, hookReads?: Dependencies): void {
     // so a membership change only flips individual blocks between direct and interpreted.
     syncDirectBarriers(jit);
     // A block that fell back while it was blocked may be eligible again.
-    jit.directSkip = undefined;
+    jit.directFallbackPcs.clear();
+    jit.directFallbacksExhausted = false;
   }
 }
 /**
@@ -199,6 +207,35 @@ function directHost(
     },
   };
 }
+
+function hasPinIntent(region: RegionIR): boolean {
+  return region.operations.some((operation) => {
+    switch (operation.kind) {
+      case 'writeIntent':
+        return true;
+      case 'if':
+        return (
+          hasPinIntent(operation.yes) ||
+          (operation.no !== undefined && hasPinIntent(operation.no))
+        );
+      case 'match':
+        return (
+          operation.arms.some((arm) => hasPinIntent(arm.body)) ||
+          (operation.otherwise !== undefined && hasPinIntent(operation.otherwise))
+        );
+      case 'select':
+        return hasPinIntent(operation.yes.body) || hasPinIntent(operation.no.body);
+      case 'and':
+      case 'or':
+        return hasPinIntent(operation.right.body);
+      case 'while':
+        return hasPinIntent(operation.test.body) || hasPinIntent(operation.body);
+      default:
+        return false;
+    }
+  });
+}
+
 function createDirectFrame(
   board: JitRuntimeHost,
   instance: Instance,
@@ -223,6 +260,7 @@ function createDirectFrame(
   (frame as BarrierFrame).blockedMemories = barrier.memoryMask;
   return frame;
 }
+
 function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): boolean {
   const instance = jit.instance;
   const pending = Boolean(jit.direct?.frame.resume);
@@ -236,72 +274,70 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     )
       return false;
     refreshDirectGuards(jit, hookReads);
-    if (jit.directSkip === pc) return false;
-    if (jit.directRevision !== jit.revision) {
-      if (jit.directProgramRevision !== jit.revision) {
-        jit.directPrograms.clear();
-        jit.directProgramRevision = jit.revision;
-      }
+    if (jit.directFallbackPcs.has(pc)) return false;
+    const cachedInstructions = jit.cache.size;
+    const newInstructions = cachedInstructions - jit.directCacheSize;
+    const shouldCompile =
+      jit.directCacheSize < 0
+        ? cachedInstructions >= DIRECT_JIT_INITIAL_INSTRUCTIONS
+        : newInstructions >= DIRECT_JIT_RECOMPILE_BATCH;
+    if (shouldCompile) {
+      jit.directPrograms.clear();
       // Guards stay out of the key: blocks test the barriers at entry, so one program serves
-      // every observer set. Only the delay fold changes the emitted bodies within a revision,
-      // and `directProgramRevision` clears this cache whenever a block is translated.
+      // every observer set. Only the delay fold changes the emitted bodies for this cache.
       const key = JSON.stringify([...jit.delays.keys()].sort((left, right) => left - right));
-      const cached = jit.directPrograms.get(key);
-      if (cached) {
-        jit.direct = cached;
-        jit.directRevision = jit.revision;
-      } else {
-        const stateNames = [...instance.states.keys()].filter((name) => {
-          const declaration = instance.declarations.get(name) as Decl<'state'>;
-          return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
-        });
-        const memoryNames = [...instance.memories.keys()];
-        const states = new Map(stateNames.map((name, index) => [name, index]));
-        const memories = new Map(memoryNames.map((name, index) => [name, index]));
-        const instructions = [...jit.cache.values()].filter(
-          (instruction) => !instruction.polling && !jit.polling.has(instruction.pc),
-        );
-        /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
-        const delayLoops = new Map<number, { counter: number; cycles: number }>();
-        for (const [pc, delay] of jit.delays) {
-          const counter = states.get(delay.counter);
-          if (counter !== undefined) delayLoops.set(pc, { counter, cycles: delay.cycles });
-        }
-        const program = compileDirectJit(instructions, {
-          states,
-          memories,
-          pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
-          host: true,
-          split: true,
-          shardSize: DIRECT_SHARD_SIZE,
-          delayLoops,
-        });
-        jit.directRevision = jit.revision;
-        if (program) directStats(jit).directCompiles++;
-        const barrier = directBarriers(jit);
-        barrier.stateIndex = states;
-        barrier.memoryIndex = memories;
-        barrier.stateMask.length = Math.ceil(stateNames.length / 32);
-        barrier.memoryMask.length = Math.ceil(memoryNames.length / 32);
-        syncDirectBarriers(jit);
-        jit.direct = program
-          ? {
-              program,
-              stateReads: program.readStates.map((name) => [name, states.get(name)!] as const),
-              stateWrites: program.writeStates.map((name) => [name, states.get(name)!] as const),
-              memoryWrites: program.writeMemories.map(
-                (name) => [name, memories.get(name)!] as const,
-              ),
-              revision: jit.revision,
-              frame: createDirectFrame(board, instance, stateNames, memoryNames, program, barrier),
-            }
-          : undefined;
-        // A declined program must not be cached, or the key would keep answering `undefined`.
-        if (!jit.direct) jit.directPrograms.delete(key);
-        // The key no longer carries the guard set, so one program covers every observer set:
-        // the eight-slot cap (and its eviction churn) has nothing left to bound.
-        else jit.directPrograms.set(key, jit.direct);
+      const stateNames = [...instance.states.keys()].filter((name) => {
+        const declaration = instance.declarations.get(name) as Decl<'state'>;
+        return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
+      });
+      const memoryNames = [...instance.memories.keys()];
+      const states = new Map(stateNames.map((name, index) => [name, index]));
+      const memories = new Map(memoryNames.map((name, index) => [name, index]));
+      const instructions = [...jit.cache.values()].filter(
+        (instruction) =>
+          !instruction.polling &&
+          !jit.polling.has(instruction.pc) &&
+          !hasPinIntent(instruction.body),
+      );
+      /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
+      const delayLoops = new Map<number, { counter: number; cycles: number }>();
+      for (const [pc, delay] of jit.delays) {
+        const counter = states.get(delay.counter);
+        if (counter !== undefined) delayLoops.set(pc, { counter, cycles: delay.cycles });
       }
+      const program = compileDirectJit(instructions, {
+        states,
+        memories,
+        pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
+        host: true,
+        split: true,
+        shardSize: DIRECT_SHARD_SIZE,
+        delayLoops,
+      });
+      jit.directCacheSize = cachedInstructions;
+      if (program) directStats(jit).directCompiles++;
+      const barrier = directBarriers(jit);
+      barrier.stateIndex = states;
+      barrier.memoryIndex = memories;
+      barrier.stateMask.length = Math.ceil(stateNames.length / 32);
+      barrier.memoryMask.length = Math.ceil(memoryNames.length / 32);
+      syncDirectBarriers(jit);
+      jit.direct = program
+        ? {
+            program,
+            stateReads: program.readStates.map((name) => [name, states.get(name)!] as const),
+            stateWrites: program.writeStates.map((name) => [name, states.get(name)!] as const),
+            memoryWrites: program.writeMemories.map(
+              (name) => [name, memories.get(name)!] as const,
+            ),
+            revision: jit.revision,
+            frame: createDirectFrame(board, instance, stateNames, memoryNames, program, barrier),
+          }
+        : undefined;
+      // A declined program must not be cached, or the key would keep answering `undefined`.
+      if (!jit.direct) jit.directPrograms.delete(key);
+      // The key no longer carries the guard set, so one program covers every observer set.
+      else jit.directPrograms.set(key, jit.direct);
     }
     if (!jit.direct) return false;
   }
@@ -339,7 +375,13 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
   if (reason === 'fallback') {
     stats.directFallbacks++;
-    jit.directSkip = finite(instance.states.get(jit.options.pc), 'pc');
+    const pc = finite(instance.states.get(jit.options.pc), 'pc');
+    jit.directFallbackPcs.add(pc);
+    frame.fallbackPcs = jit.directFallbackPcs;
+    if (direct.program.instructionPcs.every((instructionPc) =>
+      jit.directFallbackPcs.has(instructionPc),
+    ))
+      jit.directFallbacksExhausted = true;
     if (board.time === start && board.time < board.executionEnd) return false;
   } else if (reason === 'stopped') {
     stats.directStopped++;
@@ -349,7 +391,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     frame.stopAfterInstruction = false;
     if (direct.revision !== jit.revision) {
       jit.direct = undefined;
-      jit.directRevision = -1;
+      jit.directCacheSize = -1;
     }
   } else stats.directDeadlines++;
   if (frame.resume && frame.due > board.time)
@@ -456,22 +498,33 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
     }
     const pc = finite(jit.instance.states.get(jit.options.pc), 'pc');
     if (board.execution === 'throughput') {
-      const predicate = jit.polling.get(pc);
-      if (predicate) {
-        const checked = jit.instance.evaluate(() => jit.instance.syncCall(predicate));
-        if (checked.value !== true) {
-          jit.dependencies = pollingDependencies(
-            jit,
-            new Map([...(hookReads ?? []), ...checked.dependencies]),
-          );
-          jit.pollingWait = true;
-          jit.pollingPeriod = 0;
-          board.waitingJits.add(jit);
-          board.boundary();
-          return;
+      if (jit.polling.size > 0) {
+        const predicate = jit.polling.get(pc);
+        if (predicate) {
+          const checked = jit.instance.evaluate(() => jit.instance.syncCall(predicate));
+          if (checked.value !== true) {
+            jit.dependencies = pollingDependencies(
+              jit,
+              new Map([...(hookReads ?? []), ...checked.dependencies]),
+            );
+            jit.pollingWait = true;
+            jit.pollingPeriod = 0;
+            board.waitingJits.add(jit);
+            board.boundary();
+            return;
+          }
         }
       }
-      if (!hookPending && board.jits.length === 1 && runDirect(board, jit, hookReads)) return;
+      const directUnavailable =
+        jit.directObserverRevision === jit.instance.observerRevision &&
+        (jit.directFallbacksExhausted || jit.directFallbackPcs.has(pc));
+      if (
+        !hookPending &&
+        board.jits.length === 1 &&
+        !directUnavailable &&
+        runDirect(board, jit, hookReads)
+      )
+        return;
     }
     let instruction = jit.cache.get(pc);
     if (!instruction) {
@@ -503,8 +556,8 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
           const entry = instructions[index]!;
           jit.cache.set(entry.pc, entry);
         }
-        jit.revision++;
-        jit.directSkip = undefined;
+        jit.directFallbackPcs.clear();
+        jit.directFallbacksExhausted = false;
         instruction = instructions[0]!;
       } catch (cause) {
         throw board.wrap(cause, 'JIT_FAILED', 'translate', jit.instance);

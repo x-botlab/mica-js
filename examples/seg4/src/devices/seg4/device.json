@@ -3,7 +3,7 @@
   "id": "seg4",
   "version": "1.0.0",
   "displayName": "四位数码管",
-  "description": "四位七段数码管：8 段阳极与 4 位公共端之间各是一段等效串联电阻；扫描选中某一位时锁存该时刻点亮的段码（bit0=a…bit7=dp），保持到下一次选中。commonAnode 为 false 时是共阴管（公共端低电平选中、段脚高电平点亮），为 true 时是共阳管（公共端高电平选中、段脚低电平点亮）。",
+  "description": "四位七段数码管：8 段阳极与 4 位公共端之间各是一段等效串联电阻；扫描选中某一位并稳定 settleUs 后锁存该时刻点亮的段码（bit0=a…bit7=dp），保持到下一次选中。commonAnode 为 false 时是共阴管（公共端低电平选中、段脚高电平点亮），为 true 时是共阳管（公共端高电平选中、段脚低电平点亮）。",
   "designatorPrefix": "DS",
   "tags": ["display", "led", "seven-segment", "multiplexed"],
   "properties": {
@@ -27,7 +27,23 @@
       "default": false,
       "title": "共阳",
       "description": "false = 共阴（公共端低电平选中、段脚高电平点亮）；true = 共阳（公共端高电平选中、段脚低电平点亮）。两种极性下 digit1–digit4 都按「点亮的段」编码。",
-      "editor": { "kind": "checkbox" }
+      "editor": {
+        "kind": "checkbox"
+      }
+    },
+    "settleUs": {
+      "type": "number",
+      "required": false,
+      "default": 50,
+      "title": "稳定窗口",
+      "unit": "µs",
+      "description": "位选中后等待该时长再锁存段码，滤除先选位、后写段码造成的中间电平；必须大于 0。",
+      "editor": {
+        "kind": "number",
+        "min": 1,
+        "max": 10000,
+        "step": 1
+      }
     }
   },
   "pins": {

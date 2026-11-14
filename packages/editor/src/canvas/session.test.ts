@@ -29,7 +29,7 @@ function pair() {
   const dispose = vi.fn(async () => {});
   return { frames, widgets, simulation, dispose, resumeAudio: vi.fn(async () => {}) };
 }
-function setup(stepMs?: number) {
+function setup(stepMs?: number, execution?: 'throughput' | 'precise') {
   const pairs: ReturnType<typeof pair>[] = [];
   const factory = {
     create: vi.fn(async () => {
@@ -44,6 +44,7 @@ function setup(stepMs?: number) {
       uri: 'https://test/main.cnv',
       container,
       ...(stepMs === undefined ? {} : { stepMs }),
+      ...(execution === undefined ? {} : { execution }),
     },
     { read: vi.fn() },
     { resolve: async () => undefined },
@@ -54,6 +55,18 @@ function setup(stepMs?: number) {
 }
 
 describe('editor-owned canvas runtime session', () => {
+  it('passes the configured CPU execution mode to the simulation runtime', async () => {
+    const { session, pairs } = setup(undefined, 'precise');
+    try {
+      await session.synchronize(document);
+      expect(pairs[0]!.simulation.load).toHaveBeenCalledWith(
+        expect.objectContaining({ execution: 'precise' }),
+      );
+    } finally {
+      await session.dispose();
+    }
+  });
+
   it('resumes audio on run and gestures, and suspends it on pause and reset', async () => {
     const { session, pairs, container } = setup();
     const remove = vi.spyOn(container, 'removeEventListener');

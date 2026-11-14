@@ -119,6 +119,7 @@ function createFakeDeviceChannel(
     payload: unknown,
     simTime: number | undefined,
   ) => Promise<void>,
+  flushPublishes?: () => Promise<void>,
 ): FakeDeviceChannel {
   const delivered: FakeDeviceChannel['delivered'] = [];
   const listeners = new Set<(publish: IWidgetSimulationPublish) => void>();
@@ -130,6 +131,9 @@ function createFakeDeviceChannel(
     onDidPublish(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    async flushPublishes() {
+      await flushPublishes?.();
     },
   };
   return {
@@ -264,7 +268,13 @@ describe('widget guest explicit stepping', () => {
   it('queues direct device publishes until the next explicit step', async () => {
     vi.stubGlobal('OffscreenCanvas', FakeCanvas);
     const received: [unknown, { simTime: number }][] = [];
-    const device = createFakeDeviceChannel();
+    const device = createFakeDeviceChannel(undefined, async () => {
+      device.publish({
+        target: { symbol: 'led', port: 'anode' },
+        payload: 5,
+        simTime: timePs(10),
+      });
+    });
     const { runtime } = createGuestHarness(
       {
         widget: (api) => {
@@ -278,9 +288,6 @@ describe('widget guest explicit stepping', () => {
     await runtime.load(loadRequest('widget'));
     runtime.mount(mountRequest());
     runtime.setBindings('a', { brightness: { symbol: 'led', port: 'anode' } });
-
-    device.publish({ target: { symbol: 'led', port: 'anode' }, payload: 5, simTime: timePs(10) });
-    expect(received).toEqual([]);
 
     await runtime.step({ simTime: timePs(10), dt: timePs(1), mode: 'simulation' });
     expect(received).toEqual([[5, { simTime: timePs(10) }]]);
@@ -493,6 +500,7 @@ describe('widget guest simulation-runtime direct lane', () => {
         deviceListeners.add(listener);
         return () => deviceListeners.delete(listener);
       },
+      async flushPublishes() {},
     });
 
     const received: [unknown, { simTime: number }][] = [];

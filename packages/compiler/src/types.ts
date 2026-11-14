@@ -165,6 +165,8 @@ export interface DirectJitFrame {
   locals: unknown[];
   /** Complete a pending old instruction, then exit before starting another. */
   stopAfterInstruction?: boolean;
+  /** PCs that have fallen back; checked inside a batch before the next instruction starts. */
+  fallbackPcs?: ReadonlySet<number>;
   /** Present when the program was compiled with `DirectJitBinding.host`. */
   readonly host?: DirectJitHost;
 }
@@ -175,6 +177,7 @@ export interface DirectJitProgram {
   /** At time === deadline neither an instruction nor its suffix executes. */
   run(frame: DirectJitFrame, deadline: number): DirectJitReason;
   readonly localCount: number;
+  readonly instructionPcs: readonly number[];
   readonly readStates: readonly string[];
   readonly writeStates: readonly string[];
   readonly readMemories: readonly string[];

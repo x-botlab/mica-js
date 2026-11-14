@@ -75,6 +75,9 @@ interface EmitStats {
 interface JitLike {
   readonly directPrograms: ReadonlyMap<string, unknown>;
   readonly directStats?: DirectStats;
+  readonly cache: ReadonlyMap<number, { readonly polling: boolean }>;
+  readonly directFallbackPcs: ReadonlySet<number>;
+  readonly directFallbacksExhausted: boolean;
 }
 
 /** 运行时内部结构：`Board` 只公开 `runUntil`，其余字段按现有实现读取。 */
@@ -103,6 +106,10 @@ interface ProbeSnapshot {
   readonly counters: WindowCounters;
   readonly compileDirectJit: number;
   readonly directPrograms: number;
+  readonly cachedInstructions: number;
+  readonly pollingInstructions: number;
+  readonly directFallbackPcs: number;
+  readonly directFallbacksExhausted: boolean;
   readonly emit: EmitStats & { readonly statementsPerNestedOperation: number };
   readonly direct: boolean;
   readonly digest: string;
@@ -253,6 +260,10 @@ function createProbe(board: unknown): Probe {
     },
     read() {
       let directPrograms = 0;
+      let cachedInstructions = 0;
+      let pollingInstructions = 0;
+      let directFallbackPcs = 0;
+      let directFallbacksExhausted = false;
       const emit = {
         blocks: 0,
         operations: 0,
@@ -265,6 +276,10 @@ function createProbe(board: unknown): Probe {
 
       for (const jit of runtime.jits ?? []) {
         directPrograms += jit.directPrograms.size;
+        cachedInstructions += jit.cache.size;
+        pollingInstructions += [...jit.cache.values()].filter((entry) => entry.polling).length;
+        directFallbackPcs += jit.directFallbackPcs.size;
+        directFallbacksExhausted ||= jit.directFallbacksExhausted;
         for (const execution of jit.directPrograms.values()) {
           const stats = (execution as { program?: { emitStats?: EmitStats } } | undefined)?.program
             ?.emitStats;
@@ -294,6 +309,10 @@ function createProbe(board: unknown): Probe {
           0,
         ),
         directPrograms,
+        cachedInstructions,
+        pollingInstructions,
+        directFallbackPcs,
+        directFallbacksExhausted,
         emit: {
           ...emit,
           worst,
@@ -339,6 +358,8 @@ export interface MeasureOptions {
   readonly execution?: 'throughput' | 'precise';
   readonly warmUpMs?: number;
   readonly measureMs?: number;
+  /** Optional simulation time advanced by each runUntil call, as in the canvas frame loop. */
+  readonly tickMs?: number;
   readonly rounds?: number;
 }
 
@@ -367,6 +388,10 @@ export interface MeasureResult {
   readonly direct: boolean;
   readonly directPrograms: number;
   readonly compileDirectJit: number;
+  readonly cachedInstructions: number;
+  readonly pollingInstructions: number;
+  readonly directFallbackPcs: number;
+  readonly directFallbacksExhausted: boolean;
   readonly directCalls: number;
   readonly fallbackRate: number;
   /**
@@ -427,6 +452,10 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
   const execution = options.execution ?? environmentExecution();
   const warmUpMs = options.warmUpMs ?? WARM_UP_MS;
   const measureMs = options.measureMs ?? MEASURE_MS;
+  const tickMs = options.tickMs ?? measureMs;
+  const tickPs = tickMs * MS_PS;
+  if (!Number.isSafeInteger(tickPs) || tickPs <= 0)
+    throw new RangeError('tickMs must represent a positive safe integer number of picoseconds.');
   const rounds = Math.max(1, options.rounds ?? ROUNDS);
   const samples: RoundSample[] = [];
   const digests: string[] = [];
@@ -461,7 +490,9 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
       const started = process.cpuUsage();
 
       probe.begin();
-      assembled.board.runUntil(assembled.board.time + measureMs * MS_PS);
+      const end = assembled.board.time + measureMs * MS_PS;
+      while (assembled.board.time < end)
+        assembled.board.runUntil(Math.min(end, assembled.board.time + tickPs));
       probe.end();
 
       const windowMs = elapsed(started);
@@ -532,6 +563,10 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     direct: best.snapshot.direct,
     directPrograms: best.snapshot.directPrograms,
     compileDirectJit: best.snapshot.compileDirectJit,
+    cachedInstructions: best.snapshot.cachedInstructions,
+    pollingInstructions: best.snapshot.pollingInstructions,
+    directFallbackPcs: best.snapshot.directFallbackPcs,
+    directFallbacksExhausted: best.snapshot.directFallbacksExhausted,
     directCalls: counters.directCalls,
     fallbackRate:
       counters.directCalls === 0

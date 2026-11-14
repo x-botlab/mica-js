@@ -16,6 +16,7 @@ export interface ICanvasConfiguration {
   readonly uri: string;
   readonly projectRoot?: string;
   readonly stepMs?: number;
+  readonly execution?: 'throughput' | 'precise';
   readonly voltageReferences?: Readonly<Record<string, number>>;
   readonly container: HTMLElement;
 }
@@ -273,6 +274,9 @@ export class CanvasSession {
       this.#assertAlive();
       await runtimes.simulation.load({
         schematic: resources.schematic,
+        ...(this.configuration.execution === undefined
+          ? {}
+          : { execution: this.configuration.execution }),
         ...(this.configuration.voltageReferences === undefined
           ? {}
           : { voltageReferences: this.configuration.voltageReferences }),

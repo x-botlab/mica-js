@@ -10,6 +10,7 @@
  *
  * 选项：
  *   --ms=<n>            每个固件的仿真时长（毫秒），默认 200
+ *   --warmup-ms=<n>     计时前预热仿真时长（毫秒），默认 0；比较吞吐时用于摊销 JIT 编译
  *   --step=<n>          推进步长（毫秒），默认 2（与 Playground 画布预览一致）
  *   --clock=<hz>        MCU 时钟，默认 11059200；原理图里是 12000000
  *   --execution=<mode>  执行模式：precise（默认，逐指令求解）或 throughput（预览一致的批量推进）
@@ -25,15 +26,11 @@
  *   --uart-at=<ms>      UART 命令注入时刻，默认 20 ms
  *   --display-after=<ms> 只汇总该时刻之后各数码管位观测到的字形，默认 0
  *   --without=<id,...>  从整板移除器件（定位总线冲突时用）
- *   --no-pullups        不给 GPIO 加外部上拉
  *
- * 准双向口的上拉：STC15 靠内部弱上拉把释放的引脚拉到高电平，而器件模型按合同把「释放」
- * 实现为高阻、原理图里也没有实现电阻，因此默认给 25 根 GPIO 各补一个 10 kΩ 外部上拉。
+ * IAP15 的准双向口弱上拉由 MCU 器件模型提供，与 Playground 使用同一电气模型。
  *
- * 默认用 `precise`：官方固件的 I²C（10.0/11.0/12.0/14.0）与 1-Wire（9.0/10.0/…）都是软件
- * 位冲击，`throughput` 把几十条指令合并成一段后只发布段末电平，字节会错位（见
- * docs/official-firmware-simulation.md 的问题 3）。`--execution=throughput --step=2`
- * 用于复现 Playground 预览的可见性行为。
+ * 默认用 `precise`。`throughput` 首次运行会编译直接 JIT；对比稳态速度时用
+ * `--warmup-ms` 在同一块板上预热后再计时，避免把一次性编译成本算入测量窗口。
  *
  * 需要 Node ≥ 22：DDL 编译器依赖 `Object.groupBy`。
  *
@@ -50,18 +47,18 @@ import {
   parseSchematic,
 } from '@mica-js/document/schematic';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { compileDDL } from '@mica-js/sdk/ddl';
 import { performance } from 'node:perf_hooks';
+import { TextEncoder } from 'node:util';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
 
 const options = {
   ms: 200,
+  warmupMs: 0,
   step: 2,
   clock: 11059200,
   execution: 'precise',
   quantum: undefined,
-  pullups: true,
   presses: [],
   temperature: undefined,
   ain: {},
@@ -75,6 +72,7 @@ const options = {
 const hexFiles = [];
 for (const argument of process.argv.slice(2)) {
   const match = /^--(ms|step|clock|quantum)=(.+)$/.exec(argument);
+  const warmup = /^--warmup-ms=(.+)$/.exec(argument);
   const press = /^--press=([^@]+)@(\d+)(?::(\d+))?$/.exec(argument);
   const ain = /^--(ain[0-3]?)=(.+)$/.exec(argument);
   const temp = /^--temp=(.+)$/.exec(argument);
@@ -84,7 +82,8 @@ for (const argument of process.argv.slice(2)) {
   const uartAt = /^--uart-at=(\d+(?:\.\d+)?)$/.exec(argument);
   const displayAfter = /^--display-after=(\d+(?:\.\d+)?)$/.exec(argument);
   const execution = /^--execution=(throughput|precise)$/.exec(argument);
-  if (match !== null) options[match[1]] = Number(match[2]);
+  if (warmup !== null) options.warmupMs = Number(warmup[1]);
+  else if (match !== null) options[match[1]] = Number(match[2]);
   else if (execution !== null) options.execution = execution[1];
   else if (press !== null)
     options.presses.push({
@@ -99,11 +98,12 @@ for (const argument of process.argv.slice(2)) {
   else if (uartAt !== null) options.uartAt = Number(uartAt[1]);
   else if (displayAfter !== null) options.displayAfter = Number(displayAfter[1]);
   else if (ain !== null) options.ain[ain[1]] = Number(ain[2]);
-  else if (argument === '--no-pullups') options.pullups = false;
   else if (argument.startsWith('--without='))
     options.without = new Set(argument.slice('--without='.length).split(','));
   else hexFiles.push(argument);
 }
+if (!Number.isFinite(options.warmupMs) || options.warmupMs < 0)
+  throw new RangeError('--warmup-ms must be a non-negative finite duration');
 
 /** Intel HEX（记录类型 00/01/02/04）→ 从 0000H 起的裸二进制。 */
 function parseIntelHex(text) {
@@ -267,14 +267,6 @@ function instrument(symbol, device) {
   };
 }
 
-const pullUpModel = await compileDDL(
-  `device PullUp(resistance: number default 10000) {
-     assert resistance >= 0.001 && resistance <= 1_000_000_000;
-     pin a = [resistor(to: b, resistance: resistance)];
-     pin b;
-   }`,
-);
-
 function buildBoard(firmware) {
   const present = new Set(components.map((symbol) => symbol.id));
   const nets = topology.nets.map((net, index) => ({
@@ -305,59 +297,13 @@ function buildBoard(firmware) {
     return { id: symbol.id, model: device.module.model, create: instrument(symbol, device) };
   });
 
-  if (options.pullups) {
-    // STC15 准双向口用内部弱上拉把释放的引脚拉到高电平；器件模型按合同「释放 = 高阻」，
-    // 原理图又没有实现电阻。整板联调时用外部 10 kΩ 补上这条内部通路。
-    const wanted = [
-      'P00',
-      'P01',
-      'P02',
-      'P03',
-      'P04',
-      'P05',
-      'P06',
-      'P07',
-      'P10',
-      'P11',
-      'P13',
-      'P14',
-      'P17/SCK',
-      'P20/SCL',
-      'P21/SDA',
-      'P23',
-      'P25',
-      'P26',
-      'P27',
-      'P30/TXD',
-      'P31/RXD',
-      'P32',
-      'P33',
-      'P34',
-      'P35',
-    ];
-    const vcc = nets.find((net) => net.name === 'VCC');
-    entries.push({
-      id: 'pull-up',
-      model: pullUpModel,
-      create: () => ({ sync() {}, dispose() {} }),
-    });
-    for (const name of wanted) {
-      const net = nets.find((candidate) => candidate.name === name);
-      if (net === undefined) continue;
-      const id = `RP:${name}`;
-      instances.push({ id, type: 'pull-up', props: { resistance: 10_000 } });
-      net.pins.push({ instance: id, pin: 'a' });
-      vcc.pins.push({ instance: id, pin: 'b' });
-    }
-  }
-
   const library = createDeviceLibrary(entries);
   const faults = [];
   const board = createBoard(
     library,
     {
       instances,
-      // 装配只认 id/pins/voltage；网名只用于注入上拉时定位网络。
+      // 装配只认 id/pins/voltage；网名只用于注入理想电源。
       nets: nets.map(({ id, pins, voltage }) =>
         voltage === undefined ? { id, pins } : { id, pins, voltage },
       ),
@@ -490,15 +436,15 @@ for (const hexFile of hexFiles) {
     for (const name of names) sendInput(converter.id, name, value);
   }
 
-  const started = performance.now();
   const ledTrail = [];
   const pressTrail = [];
   const displaySeen = new Map(displays.map((symbol) => [symbol.id, new Set()]));
   const stepPs = options.step * 1_000_000_000;
-  const targetPs = options.ms * 1_000_000_000;
+  const warmupPs = options.warmupMs * 1_000_000_000;
+  const measurementEndPs = warmupPs + options.ms * 1_000_000_000;
   const PS_PER_MS = 1_000_000_000;
-  while (now < targetPs) {
-    now = Math.min(targetPs, now + stepPs);
+  const advance = (endPs) => {
+    now = Math.min(endPs, now + stepPs);
     const atMs = now / PS_PER_MS;
     if (!uartInjected && uartCommand !== undefined && atMs >= options.uartAt) {
       uartInjected = true;
@@ -530,13 +476,18 @@ for (const hexFile of hexFiles) {
       );
       displaySeen.get(symbol.id).add(codes.join('/'));
     }
-  }
-  const wall = (performance.now() - started) / 1000;
+  };
+  const warmupStarted = performance.now();
+  while (now < warmupPs) advance(warmupPs);
+  const warmupWall = (performance.now() - warmupStarted) / 1000;
+  const measurementStarted = performance.now();
+  while (now < measurementEndPs) advance(measurementEndPs);
+  const wall = (performance.now() - measurementStarted) / 1000;
   board.dispose();
 
   const seconds = options.ms / 1000;
   console.log(
-    `\n=== ${basename(hexFile)}  ${image.length} B  模拟 ${seconds} s / 实际 ${wall.toFixed(2)} s  (RTF ${(seconds / wall).toFixed(3)})`,
+    `\n=== ${basename(hexFile)}  ${image.length} B  预热 ${options.warmupMs} ms (${warmupWall.toFixed(2)} s) + 测量模拟 ${seconds} s / 实际 ${wall.toFixed(2)} s  (RTF ${(seconds / wall).toFixed(3)})`,
   );
   console.log(`  faults: ${faults.length === 0 ? '无' : faults.slice(0, 5).join('; ')}`);
   if (uartCommand !== undefined)

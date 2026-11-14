@@ -11,10 +11,10 @@
         "rotation": 0,
         "properties": {
           "firmware": {
-            "src": "assets/ct107d-demo.bin",
+            "src": "assets/digital-display-dynamic.bin",
             "mode": "file"
           },
-          "clockFrequency": 12000000
+          "clockFrequency": 11059200
         }
       },
       {
