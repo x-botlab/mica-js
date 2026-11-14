@@ -1,5 +1,6 @@
 import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
+import type { JitTranslateInput } from '@mica-js/sdk/device';
 import { APSR_C } from './layout';
 import {
   addRaw,
@@ -29,15 +30,27 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { conditional, loadRegister, readAnyReg, storeRegister, writeAnyReg } from './cpu';
-import { atCode, atSram, readMemory } from './memory';
+import {
+  atAddress,
+  atCode,
+  atMayService,
+  atSram,
+  CODE_MASK,
+  gpioReadsAsZero,
+  readMemory,
+} from './memory';
 import { halt } from './thumb16';
+import type { KnownRegs } from './decode';
 
 /** 32 位 Thumb-2 指令的子集；未覆盖的编码在 `decode32` 中报告故障。 */
 export interface Instruction32 {
   readonly size: 4;
   readonly cycles: number;
+  readonly mayService: boolean;
   readonly emit: (b: Body, pc: number) => void;
 }
+
+type CodeBytes = JitTranslateInput['code'];
 
 const signExtendBits = (value: number, bits: number): number => {
   const shift = 32 - bits;
@@ -68,6 +81,107 @@ function thumbExpandImm(imm12: number): number {
 
   return rotation === 0 ? value >>> 0 : ((value >>> rotation) | (value << (32 - rotation))) >>> 0;
 }
+
+const known = (regs: KnownRegs | undefined, index: number): number | undefined =>
+  regs?.[index & 0xf];
+
+const remember = (regs: KnownRegs | undefined, index: number, value: number | undefined): void => {
+  if (regs !== undefined) regs[index & 0xf] = value === undefined ? undefined : value >>> 0;
+};
+
+const readConstant = (at: ReturnType<typeof atAddress> | undefined): number | undefined =>
+  at?.address !== undefined && gpioReadsAsZero(at.address) ? 0 : undefined;
+
+const shiftNumber = (value: number, amount: number, type: number): number => {
+  const count = amount & 0xff;
+
+  if (type === 0) return (value << count) >>> 0;
+  if (type === 1) return value >>> count;
+  if (type === 2) return (value >> count) >>> 0;
+
+  return count === 0 ? value >>> 0 : ((value >>> count) | (value << (32 - count))) >>> 0;
+};
+
+const firmwareValue = (
+  code: CodeBytes | undefined,
+  address: number,
+  size: number,
+  firmwareLength: number,
+  signed: boolean,
+): number | undefined => {
+  if (code === undefined) return undefined;
+
+  const offset = (address >>> 0) & CODE_MASK;
+
+  if (offset + size > Math.min(firmwareLength, code.byteLength)) return undefined;
+
+  let value = 0;
+  for (let index = 0; index < size; index += 1) value |= (code[offset + index] ?? 0) << (index * 8);
+
+  if (!signed) return value >>> 0;
+
+  const shift = 32 - size * 8;
+
+  return (value << shift) >> shift;
+};
+
+const isBranch32 = (h1: number, h2: number): boolean =>
+  (h1 & 0xf800) === 0xf000 &&
+  ((h2 & 0xd000) === 0xd000 ||
+    (h2 & 0xd000) === 0xc000 ||
+    (h2 & 0xd000) === 0x9000 ||
+    (h2 & 0xd000) === 0x8000);
+
+const immediateAt = (
+  regs: KnownRegs | undefined,
+  rn: number,
+  pc: number,
+  offset: number,
+  alignedPc = false,
+): ReturnType<typeof atAddress> | undefined => {
+  if (rn === 15) return atCode((((alignedPc ? (pc + 4) & ~3 : pc + 4) + offset) & CODE_MASK) >>> 0);
+  if (rn === 13) return atSram();
+
+  const base = known(regs, rn);
+
+  return base === undefined ? undefined : atAddress((base + offset) >>> 0);
+};
+
+const registerAt = (
+  regs: KnownRegs | undefined,
+  rn: number,
+  rm: number,
+  pc: number,
+  shift: number,
+): ReturnType<typeof atAddress> | undefined => {
+  if (rn === 13) return atSram();
+
+  const index = known(regs, rm);
+  if (rn === 15) {
+    return index === undefined
+      ? atCode()
+      : atAddress((((pc + 4) >>> 0) + ((index << shift) >>> 0)) >>> 0);
+  }
+
+  const base = known(regs, rn);
+
+  return base === undefined || index === undefined
+    ? undefined
+    : atAddress((base + ((index << shift) >>> 0)) >>> 0);
+};
+
+const multipleAt = (
+  regs: KnownRegs | undefined,
+  rn: number,
+  offset: number,
+): ReturnType<typeof atAddress> | undefined => {
+  if (rn === 13) return atSram();
+  if (rn === 15) return atCode();
+
+  const base = known(regs, rn);
+
+  return base === undefined ? undefined : atAddress((base + offset) >>> 0);
+};
 
 function writeData(b: Body, rd: number, value: Value<number>, setFlags: boolean): void {
   if (setFlags) writeNz(b, signIsSet(b, value), isZero(b, value));
@@ -311,15 +425,353 @@ function branchAndMisc(b: Body, pc: number, h1: number, h2: number): boolean {
   return false;
 }
 
-export function decode32(h1: number, h2: number): Instruction32 {
+function updateConstants32(
+  h1: number,
+  h2: number,
+  pc: number,
+  code: CodeBytes | undefined,
+  firmwareLength: number,
+  regs: KnownRegs | undefined,
+  snapshot: KnownRegs | undefined,
+): void {
+  if (regs === undefined) return;
+
+  const any = (index: number): number | undefined =>
+    index === 15 ? (pc + 4) >>> 0 : known(snapshot, index);
+
+  if (isBranch32(h1, h2)) {
+    if ((h2 & 0xd000) === 0xd000 || (h2 & 0xd000) === 0xc000) remember(regs, 14, undefined);
+
+    return;
+  }
+
+  if ((h1 & 0xfbe0) === 0xf200 || (h1 & 0xfbe0) === 0xf2a0) {
+    const sub = (h1 & 0x0080) !== 0;
+    const left = any(h1 & 0xf);
+    const rd = (h2 >> 8) & 0xf;
+    const imm = (((h1 >> 10) & 1) << 11) | (((h2 >> 12) & 7) << 8) | (h2 & 0xff);
+
+    remember(regs, rd, left === undefined ? undefined : sub ? left - imm : left + imm);
+
+    return;
+  }
+
+  if ((h1 & 0xfbf0) === 0xf240 || (h1 & 0xfbf0) === 0xf2c0) {
+    const rd = (h2 >> 8) & 0xf;
+    const imm =
+      (((h1 & 0xf) << 12) | (((h1 >> 10) & 1) << 11) | (((h2 >> 12) & 7) << 8) | (h2 & 0xff)) >>> 0;
+
+    if ((h1 & 0x0080) === 0) remember(regs, rd, imm);
+    else {
+      const current = known(snapshot, rd);
+
+      remember(regs, rd, current === undefined ? undefined : (current & 0xffff) | (imm << 16));
+    }
+
+    return;
+  }
+
+  if ((h1 & 0xfa00) === 0xf000 && (h1 & 0x0200) === 0) {
+    const op = (h1 >> 5) & 0xf;
+    const rd = (h2 >> 8) & 0xf;
+    const immediate = thumbExpandImm(
+      (((h1 >> 10) & 1) << 11) | (((h2 >> 12) & 7) << 8) | (h2 & 0xff),
+    );
+    const rn = h1 & 0xf;
+    const left = any(h1 & 0xf);
+    let value: number | undefined;
+
+    if (left !== undefined) {
+      if (rn === 15 && op === 2) value = immediate;
+      else if (rn === 15 && op === 1) value = ~immediate;
+      else if (op === 0) value = left & immediate;
+      else if (op === 1) value = left & ~immediate;
+      else if (op === 2) value = left | immediate;
+      else if (op === 3) value = left | ~immediate;
+      else if (op === 4) value = left ^ immediate;
+      else if (op === 8) value = left + immediate;
+      else if (op === 13) value = left - immediate;
+      else if (op === 14) value = -immediate;
+    }
+
+    if (rd !== 15) remember(regs, rd, value);
+
+    return;
+  }
+
+  if ((h1 & 0xfe00) === 0xea00) {
+    const op = (h1 >> 5) & 0xf;
+    const rn = h1 & 0xf;
+    const rd = (h2 >> 8) & 0xf;
+    const left = any(rn);
+    const rightValue = any(h2 & 0xf);
+    const right =
+      rightValue === undefined
+        ? undefined
+        : shiftNumber(rightValue, (((h2 >> 12) & 7) << 2) | ((h2 >> 6) & 3), (h2 >> 4) & 3);
+    let value: number | undefined;
+
+    if (left !== undefined && right !== undefined) {
+      if (rn === 15 && op === 2) value = right;
+      else if (rn === 15 && op === 1) value = ~right;
+      else if (op === 0) value = left & right;
+      else if (op === 1) value = left & ~right;
+      else if (op === 2) value = left | right;
+      else if (op === 3) value = left | ~right;
+      else if (op === 4) value = left ^ right;
+      else if (op === 8) value = left + right;
+      else if (op === 13) value = left - right;
+      else if (op === 14) value = -right;
+    }
+
+    if (rd !== 15) remember(regs, rd, value);
+
+    return;
+  }
+
+  if ((h1 & 0xfff0) === 0xf3c0 || (h1 & 0xfff0) === 0xf340 || (h1 & 0xfff0) === 0xf360) {
+    remember(regs, (h2 >> 8) & 0xf, undefined);
+    return;
+  }
+
+  if ((h1 & 0xff80) === 0xfa00) {
+    const source = known(snapshot, h1 & 0xf);
+    const amount = known(snapshot, h2 & 0xf);
+
+    remember(
+      regs,
+      (h2 >> 8) & 0xf,
+      source === undefined || amount === undefined
+        ? undefined
+        : shiftNumber(source, amount, (h1 >> 5) & 3),
+    );
+    return;
+  }
+
+  if ((h1 & 0xfff0) === 0xfab0 || (h1 & 0xfff0) === 0xfa90) {
+    remember(regs, (h2 >> 8) & 0xf, undefined);
+    return;
+  }
+
+  if ((h1 & 0xfff0) === 0xfbb0 || (h1 & 0xfff0) === 0xfb90 || (h1 & 0xfff0) === 0xfb00) {
+    remember(regs, (h2 >> 8) & 0xf, undefined);
+    return;
+  }
+
+  if ((h1 & 0xfff0) === 0xf3e0) {
+    const sysm = h2 & 0xff;
+
+    remember(regs, (h2 >> 8) & 0xf, sysm === 0 || sysm === 16 ? undefined : 0);
+    return;
+  }
+
+  if ((h1 & 0xfff0) === 0xf380) return;
+
+  if (
+    (h1 & 0xfff0) === 0xf8d0 ||
+    (h1 & 0xfff0) === 0xf8c0 ||
+    (h1 & 0xfff0) === 0xf890 ||
+    (h1 & 0xfff0) === 0xf880 ||
+    (h1 & 0xfff0) === 0xf8b0 ||
+    (h1 & 0xfff0) === 0xf8a0
+  ) {
+    const kind = h1 & 0xfff0;
+    const rn = h1 & 0xf;
+    const rt = (h2 >> 12) & 0xf;
+    const offset = h2 & 0xfff;
+    const load = kind === 0xf8d0 || kind === 0xf890 || kind === 0xf8b0;
+    const size =
+      kind === 0xf890 || kind === 0xf880 ? 1 : kind === 0xf8b0 || kind === 0xf8a0 ? 2 : 4;
+
+    if (load) {
+      const at = immediateAt(snapshot, rn, pc, offset, true);
+      const literal =
+        rn === 15
+          ? firmwareValue(code, (((pc + 4) & ~3) + offset) >>> 0, size, firmwareLength, false)
+          : undefined;
+
+      remember(regs, rt, literal ?? readConstant(at));
+    }
+    return;
+  }
+
+  if ((h1 & 0xfff0) === 0xf990 || (h1 & 0xfff0) === 0xf9b0) {
+    const rn = h1 & 0xf;
+    const rt = (h2 >> 12) & 0xf;
+    const offset = h2 & 0xfff;
+    const size = (h1 & 0xfff0) === 0xf990 ? 1 : 2;
+    const at = immediateAt(snapshot, rn, pc, offset, true);
+    const literal =
+      rn === 15
+        ? firmwareValue(code, (((pc + 4) & ~3) + offset) >>> 0, size, firmwareLength, true)
+        : undefined;
+
+    remember(regs, rt, literal ?? readConstant(at));
+    return;
+  }
+
+  if (
+    (h1 & 0xfff0) === 0xf850 ||
+    (h1 & 0xfff0) === 0xf840 ||
+    (h1 & 0xfff0) === 0xf810 ||
+    (h1 & 0xfff0) === 0xf800 ||
+    (h1 & 0xfff0) === 0xf830 ||
+    (h1 & 0xfff0) === 0xf820
+  ) {
+    const kind = h1 & 0xfff0;
+
+    if (kind === 0xf850 || kind === 0xf810 || kind === 0xf830) {
+      const at = registerAt(snapshot, h1 & 0xf, h2 & 0xf, pc, (h2 >> 4) & 3);
+
+      remember(regs, (h2 >> 12) & 0xf, readConstant(at));
+    }
+    return;
+  }
+
+  if (h1 === 0xe92d || h1 === 0xe8bd) {
+    if (h1 === 0xe8bd) {
+      for (let register = 0; register < 15; register += 1)
+        if ((h2 & (1 << register)) !== 0) remember(regs, register, undefined);
+    }
+    remember(regs, 13, undefined);
+    return;
+  }
+
+  if ((h1 & 0xffd0) === 0xe880 || (h1 & 0xffd0) === 0xe890) {
+    const load = (h1 & 0xffd0) === 0xe890;
+    const writeBack = (h1 & 0x20) !== 0;
+    const rn = h1 & 0xf;
+
+    if (load) {
+      for (let register = 0; register < 15; register += 1)
+        if ((h2 & (1 << register)) !== 0) remember(regs, register, undefined);
+    }
+    if (writeBack && (!load || (h2 & (1 << rn)) === 0)) remember(regs, rn, undefined);
+    return;
+  }
+
+  if (h1 >= 0xe8d0 && h1 <= 0xe8d7) return;
+
+  if ((h1 & 0xff40) === 0xe940) {
+    if ((h1 & 0x20) !== 0) {
+      remember(regs, (h2 >> 12) & 0xf, undefined);
+      remember(regs, (h2 >> 8) & 0xf, undefined);
+    }
+    if ((h1 & 0x10) !== 0) remember(regs, h1 & 0xf, undefined);
+    return;
+  }
+
+  if ((h1 & 0xfff0) === 0xe850 || (h1 & 0xfff0) === 0xe840) {
+    if ((h1 & 0xfff0) === 0xe850) remember(regs, (h2 >> 12) & 0xf, undefined);
+    else remember(regs, (h2 >> 8) & 0xf, 0);
+    return;
+  }
+
+  if ((h1 & 0xfff0) === 0xf3b0 && (h2 & 0xff00) === 0x8f00) return;
+  if (h1 === 0xf3af && h2 === 0x8000) return;
+
+  regs.fill(undefined);
+}
+
+function mayService32(h1: number, h2: number, pc: number, regs: KnownRegs | undefined): boolean {
+  const pure =
+    isBranch32(h1, h2) ||
+    (h1 & 0xfbe0) === 0xf200 ||
+    (h1 & 0xfbe0) === 0xf2a0 ||
+    (h1 & 0xfbf0) === 0xf240 ||
+    (h1 & 0xfbf0) === 0xf2c0 ||
+    ((h1 & 0xfa00) === 0xf000 && (h1 & 0x0200) === 0) ||
+    (h1 & 0xfe00) === 0xea00 ||
+    (h1 & 0xfff0) === 0xf3c0 ||
+    (h1 & 0xfff0) === 0xf340 ||
+    (h1 & 0xfff0) === 0xf360 ||
+    (h1 & 0xff80) === 0xfa00 ||
+    (h1 & 0xfff0) === 0xfab0 ||
+    (h1 & 0xfff0) === 0xfa90 ||
+    (h1 & 0xfff0) === 0xfbb0 ||
+    (h1 & 0xfff0) === 0xfb90 ||
+    (h1 & 0xfff0) === 0xfb00 ||
+    (h1 & 0xfff0) === 0xf3e0;
+
+  if (pure) return false;
+  if ((h1 & 0xfff0) === 0xf380) return true;
+
+  if (
+    (h1 & 0xfff0) === 0xf8d0 ||
+    (h1 & 0xfff0) === 0xf8c0 ||
+    (h1 & 0xfff0) === 0xf890 ||
+    (h1 & 0xfff0) === 0xf880 ||
+    (h1 & 0xfff0) === 0xf8b0 ||
+    (h1 & 0xfff0) === 0xf8a0 ||
+    (h1 & 0xfff0) === 0xf990 ||
+    (h1 & 0xfff0) === 0xf9b0
+  )
+    return atMayService(immediateAt(regs, h1 & 0xf, pc, h2 & 0xfff, true));
+
+  if (
+    (h1 & 0xfff0) === 0xf850 ||
+    (h1 & 0xfff0) === 0xf840 ||
+    (h1 & 0xfff0) === 0xf810 ||
+    (h1 & 0xfff0) === 0xf800 ||
+    (h1 & 0xfff0) === 0xf830 ||
+    (h1 & 0xfff0) === 0xf820
+  )
+    return atMayService(registerAt(regs, h1 & 0xf, h2 & 0xf, pc, (h2 >> 4) & 3));
+
+  if (h1 === 0xe92d || h1 === 0xe8bd) return false;
+
+  if ((h1 & 0xffd0) === 0xe880 || (h1 & 0xffd0) === 0xe890) {
+    if ((h2 & 0xffff) === 0) return false;
+    for (let register = 0; register < 16; register += 1)
+      if ((h2 & (1 << register)) !== 0 && atMayService(multipleAt(regs, h1 & 0xf, register * 4)))
+        return true;
+    return false;
+  }
+
+  if (h1 >= 0xe8d0 && h1 <= 0xe8d7)
+    return atMayService(registerAt(regs, h1 & 0xf, h2 & 0xf, pc, 0));
+
+  if ((h1 & 0xff40) === 0xe940) return atMayService(multipleAt(regs, h1 & 0xf, (h2 & 0xff) * 4));
+
+  if ((h1 & 0xfff0) === 0xe850 || (h1 & 0xfff0) === 0xe840)
+    return atMayService(multipleAt(regs, h1 & 0xf, (h2 & 0xff) << 2));
+
+  if ((h1 & 0xfff0) === 0xf3b0 && (h2 & 0xff00) === 0x8f00) return false;
+  if (h1 === 0xf3af && h2 === 0x8000) return false;
+
+  // 未覆盖编码会 halt；保守进入完整守卫以截停后续指令。
+  return true;
+}
+
+export function decode32(
+  h1: number,
+  h2: number,
+  knownRegs?: KnownRegs,
+  pc = 0,
+  code?: CodeBytes,
+  firmwareLength = code?.byteLength ?? 0,
+): Instruction32 {
+  const snapshot = knownRegs?.slice();
+
+  updateConstants32(h1, h2, pc, code, firmwareLength, knownRegs, snapshot);
+
   return {
     size: 4,
     cycles: 2,
-    emit: (b, pc) => emit32(b, pc, h1, h2),
+    mayService: mayService32(h1, h2, pc, snapshot),
+    emit: (b, currentPc) => emit32(b, currentPc, h1, h2, snapshot, code, firmwareLength),
   };
 }
 
-function emit32(b: Body, pc: number, h1: number, h2: number): void {
+function emit32(
+  b: Body,
+  pc: number,
+  h1: number,
+  h2: number,
+  knownRegs?: KnownRegs,
+  code?: CodeBytes,
+  firmwareLength = 0,
+): void {
   if ((h1 & 0xf800) === 0xf000 && branchAndMisc(b, pc, h1, h2)) return;
 
   if ((h1 & 0xfbe0) === 0xf200 || (h1 & 0xfbe0) === 0xf2a0) {
@@ -457,13 +909,13 @@ function emit32(b: Body, pc: number, h1: number, h2: number): void {
     (h1 & 0xfff0) === 0xf8b0 ||
     (h1 & 0xfff0) === 0xf8a0
   ) {
-    loadStoreImmediate(b, pc, h1, h2);
+    loadStoreImmediate(b, pc, h1, h2, knownRegs, code, firmwareLength);
 
     return;
   }
 
   if ((h1 & 0xfff0) === 0xf990 || (h1 & 0xfff0) === 0xf9b0) {
-    loadStoreSigned(b, pc, h1, h2);
+    loadStoreSigned(b, pc, h1, h2, knownRegs, code, firmwareLength);
 
     return;
   }
@@ -476,7 +928,7 @@ function emit32(b: Body, pc: number, h1: number, h2: number): void {
     (h1 & 0xfff0) === 0xf830 ||
     (h1 & 0xfff0) === 0xf820
   ) {
-    loadStoreRegister(b, pc, h1, h2);
+    loadStoreRegister(b, pc, h1, h2, knownRegs);
 
     return;
   }
@@ -488,7 +940,7 @@ function emit32(b: Body, pc: number, h1: number, h2: number): void {
   }
 
   if ((h1 & 0xffd0) === 0xe880 || (h1 & 0xffd0) === 0xe890) {
-    loadStoreMultiple(b, pc, h1, h2);
+    loadStoreMultiple(b, pc, h1, h2, knownRegs);
 
     return;
   }
@@ -503,7 +955,7 @@ function emit32(b: Body, pc: number, h1: number, h2: number): void {
     h1 === 0xe8d6 ||
     h1 === 0xe8d7
   ) {
-    tableBranch(b, pc, h1, h2);
+    tableBranch(b, pc, h1, h2, knownRegs);
 
     return;
   }
@@ -511,13 +963,13 @@ function emit32(b: Body, pc: number, h1: number, h2: number): void {
   if ((h1 & 0xff40) === 0xe940) {
     // LDRD/STRD (immediate, pre-indexed)：`strd r0, r1, [sp, #36]` 一类。
     // bit5 选 load，bit4 是写回，bit7 选加/减，offset 以 4 字节为单位。
-    dualLoadStore(b, pc, h1, h2);
+    dualLoadStore(b, pc, h1, h2, knownRegs);
 
     return;
   }
 
   if ((h1 & 0xfff0) === 0xe850 || (h1 & 0xfff0) === 0xe840) {
-    exclusiveAccess(b, pc, h1, h2);
+    exclusiveAccess(b, pc, h1, h2, knownRegs);
 
     return;
   }
@@ -528,37 +980,76 @@ function emit32(b: Body, pc: number, h1: number, h2: number): void {
   halt(b, pc, 0x10);
 }
 
-function loadStoreImmediate(b: Body, pc: number, h1: number, h2: number): void {
+function loadStoreImmediate(
+  b: Body,
+  pc: number,
+  h1: number,
+  h2: number,
+  knownRegs?: KnownRegs,
+  code?: CodeBytes,
+  firmwareLength = 0,
+): void {
   const kind = h1 & 0xfff0;
   const rn = h1 & 0xf;
   const rt = (h2 >> 12) & 0xf;
   const imm12 = h2 & 0xfff;
   const load = kind === 0xf8d0 || kind === 0xf890 || kind === 0xf8b0;
   const size = kind === 0xf890 || kind === 0xf880 ? 1 : kind === 0xf8b0 || kind === 0xf8a0 ? 2 : 4;
+  const literal =
+    load && rn === 15 && rt !== 15
+      ? firmwareValue(code, (((pc + 4) & ~3) + imm12) >>> 0, size, firmwareLength, false)
+      : undefined;
+
+  if (literal !== undefined) {
+    writeAnyReg(b, rt, num(b, literal));
+    return;
+  }
+
   const address =
     rn === 15 ? num(b, (((pc + 4) & ~3) + imm12) >>> 0) : b.add(readReg(b, rn), num(b, imm12));
-  // PC 相对只可能取 `code`；SP 相对只可能落在 SRAM。其余寄存器动态地址走完整分派。
-  const at =
-    rn === 15 ? atCode((((pc + 4) & ~3) + imm12) & 0x1ffff) : rn === 13 ? atSram() : undefined;
+  const at = immediateAt(knownRegs, rn, pc, imm12, true);
 
   if (load) loadRegister(b, rt, address, size, pc, false, at, rn !== 15 && rn !== 13);
   else storeRegister(b, rt, address, size, pc, at, rn !== 15 && rn !== 13);
 }
 
-function loadStoreSigned(b: Body, pc: number, h1: number, h2: number): void {
+function loadStoreSigned(
+  b: Body,
+  pc: number,
+  h1: number,
+  h2: number,
+  knownRegs?: KnownRegs,
+  code?: CodeBytes,
+  firmwareLength = 0,
+): void {
   const rn = h1 & 0xf;
   const rt = (h2 >> 12) & 0xf;
   const imm12 = h2 & 0xfff;
   const size = (h1 & 0xfff0) === 0xf990 ? 1 : 2;
+  const literal =
+    rn === 15 && rt !== 15
+      ? firmwareValue(code, (((pc + 4) & ~3) + imm12) >>> 0, size, firmwareLength, true)
+      : undefined;
+
+  if (literal !== undefined) {
+    writeAnyReg(b, rt, num(b, literal));
+    return;
+  }
+
   const address =
     rn === 15 ? num(b, (((pc + 4) & ~3) + imm12) >>> 0) : b.add(readReg(b, rn), num(b, imm12));
-  const at =
-    rn === 15 ? atCode((((pc + 4) & ~3) + imm12) & 0x1ffff) : rn === 13 ? atSram() : undefined;
+  const at = immediateAt(knownRegs, rn, pc, imm12, true);
 
   loadRegister(b, rt, address, size, pc, true, at, rn !== 15 && rn !== 13);
 }
 
-function loadStoreRegister(b: Body, pc: number, h1: number, h2: number): void {
+function loadStoreRegister(
+  b: Body,
+  pc: number,
+  h1: number,
+  h2: number,
+  knownRegs?: KnownRegs,
+): void {
   const kind = h1 & 0xfff0;
   const rn = h1 & 0xf;
   const rt = (h2 >> 12) & 0xf;
@@ -567,8 +1058,7 @@ function loadStoreRegister(b: Body, pc: number, h1: number, h2: number): void {
   const address = b.add(readAnyReg(b, rn, pc), b.shiftLeft(readAnyReg(b, rm, pc), num(b, shift)));
   const load = kind === 0xf850 || kind === 0xf810 || kind === 0xf830;
   const size = kind === 0xf810 || kind === 0xf800 ? 1 : kind === 0xf830 || kind === 0xf820 ? 2 : 4;
-  // `ldr.w rd, [sp, rm]` 落在 SRAM；`ldr.w rd, [pc, rm]` 落在 `code`。
-  const at = rn === 13 ? atSram() : rn === 15 ? atCode() : undefined;
+  const at = registerAt(knownRegs, rn, rm, pc, shift);
 
   if (load) loadRegister(b, rt, address, size, pc, false, at, rn !== 13 && rn !== 15);
   else storeRegister(b, rt, address, size, pc, at, rn !== 13 && rn !== 15);
@@ -597,7 +1087,13 @@ function pushPopWide(b: Body, pc: number, h1: number, h2: number): void {
   }
 }
 
-function loadStoreMultiple(b: Body, pc: number, h1: number, h2: number): void {
+function loadStoreMultiple(
+  b: Body,
+  pc: number,
+  h1: number,
+  h2: number,
+  knownRegs?: KnownRegs,
+): void {
   const load = (h1 & 0xffd0) === 0xe890;
   // W 位（bit5）决定是否写回基址。LDM/STM 的 W=0 形式非常常见
   // （`ldmia.w r4, {r0,r1,r2}` 不写回），无条件写回会让后续地址全部错位。
@@ -608,11 +1104,9 @@ function loadStoreMultiple(b: Body, pc: number, h1: number, h2: number): void {
 
   for (let index = 0; index < 16; index += 1) if (list & (1 << index)) registers.push(index);
   const base = readAnyReg(b, rn, pc);
-  // `ldmia sp!` 一类落在 SRAM；`ldm pc` 取 `code`。
-  const at = rn === 13 ? atSram() : rn === 15 ? atCode() : undefined;
-
   registers.forEach((register, offset) => {
     const address = b.add(base, num(b, offset * 4));
+    const at = multipleAt(knownRegs, rn, offset * 4);
 
     if (load) loadRegister(b, register, address, 4, pc, false, at, true);
     else storeRegister(b, register, address, 4, pc, at);
@@ -623,7 +1117,7 @@ function loadStoreMultiple(b: Body, pc: number, h1: number, h2: number): void {
 }
 
 /** `ldrd`/`strd` 立即数寻址（前索引，可选写回）。 */
-function dualLoadStore(b: Body, pc: number, h1: number, h2: number): void {
+function dualLoadStore(b: Body, pc: number, h1: number, h2: number, knownRegs?: KnownRegs): void {
   const load = (h1 & 0x20) !== 0;
   const writeBack = (h1 & 0x10) !== 0;
   const add = (h1 & 0x80) !== 0;
@@ -634,35 +1128,36 @@ function dualLoadStore(b: Body, pc: number, h1: number, h2: number): void {
   const base = readAnyReg(b, rn, pc);
   const address = add ? b.add(base, num(b, offset)) : b.subtract(base, num(b, offset));
   const second = b.add(address, num(b, 4));
-  const at = rn === 13 ? atSram() : undefined;
+  const firstAt = multipleAt(knownRegs, rn, add ? offset : -offset);
+  const secondAt = multipleAt(knownRegs, rn, add ? offset + 4 : -offset + 4);
 
   if (load) {
-    loadRegister(b, rt, address, 4, pc, false, at, true);
-    loadRegister(b, rt2, second, 4, pc, false, at, true);
+    loadRegister(b, rt, address, 4, pc, false, firstAt, true);
+    loadRegister(b, rt2, second, 4, pc, false, secondAt, true);
   } else {
-    storeRegister(b, rt, address, 4, pc, at);
-    storeRegister(b, rt2, second, 4, pc, at);
+    storeRegister(b, rt, address, 4, pc, firstAt);
+    storeRegister(b, rt2, second, 4, pc, secondAt);
   }
   if (writeBack) writeAnyReg(b, rn, address);
 }
 
-function tableBranch(b: Body, pc: number, h1: number, h2: number): void {
+function tableBranch(b: Body, pc: number, h1: number, h2: number, knownRegs?: KnownRegs): void {
   const rn = h1 & 0xf;
   const rm = h2 & 0xf;
   const half = (h2 & 0x10) !== 0;
   const indexAddress = b.add(readReg(b, rn), readAnyReg(b, rm, pc));
-  // `tbb [pc, rm]` 的跳转表在 `code`。
-  const raw = readMemory(b, indexAddress, half ? 2 : 1, rn === 15 ? atCode() : undefined);
+  const at = registerAt(knownRegs, rn, rm, pc, 0);
+  const raw = readMemory(b, indexAddress, half ? 2 : 1, undefined, at);
   const target = b.add(num(b, (pc + 4) >>> 0), b.shiftLeft(raw, num(b, 1)));
 
   setPc(b, target);
 }
 
-function exclusiveAccess(b: Body, pc: number, h1: number, h2: number): void {
+function exclusiveAccess(b: Body, pc: number, h1: number, h2: number, knownRegs?: KnownRegs): void {
   const rn = h1 & 0xf;
   const rt = (h2 >> 12) & 0xf;
   const address = b.add(readReg(b, rn), num(b, (h2 & 0xff) << 2));
-  const at = rn === 13 ? atSram() : undefined;
+  const at = multipleAt(knownRegs, rn, (h2 & 0xff) << 2);
 
   if ((h1 & 0xfff0) === 0xe850) {
     loadRegister(b, rt, address, 4, pc, false, at, rn !== 13);

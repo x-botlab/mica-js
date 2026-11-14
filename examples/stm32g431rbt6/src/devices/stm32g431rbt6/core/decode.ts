@@ -6,6 +6,9 @@ import { conditionValue } from './cpu';
 import { decode16 } from './thumb16';
 import { decode32 } from './thumb32';
 
+/** r0–r15 的块内编译期常量表；`undefined` 表示不可证明。 */
+export type KnownRegs = (number | undefined)[];
+
 /** 一条已译码的指令；`emit` 负责生成数据通路 IR。 */
 export interface Instruction {
   readonly size: 2 | 4;
@@ -16,6 +19,8 @@ export interface Instruction {
    * 内再分片）。判错不影响正确性——块内每条指令前都会复位 pc，运行期守卫会停掉后续指令。
    */
   readonly endsBatch: boolean;
+  /** 是否可能置位 `serviceMask`。 */
+  readonly mayService: boolean;
   /** IT 指令覆盖的后续指令条数；非 IT 指令为 0。 */
   readonly itCount: number;
   readonly emit: (b: Body, pc: number) => void;
@@ -85,6 +90,7 @@ export function guard(instruction: Instruction): Instruction {
     size: instruction.size,
     cycles: instruction.cycles,
     endsBatch: instruction.endsBatch,
+    mayService: instruction.mayService,
     itCount: 0,
     emit: (b, pc) => {
       const state = b.readState('itState', types.number);
@@ -117,6 +123,7 @@ const hint = (): Instruction => ({
   size: 2,
   cycles: 1,
   endsBatch: false,
+  mayService: false,
   itCount: 0,
   emit: () => {},
 });
@@ -137,14 +144,22 @@ const itInstruction = (h1: number): Instruction => {
     size: 2,
     cycles: 1,
     endsBatch: false,
+    mayService: false,
     itCount: count,
     emit: (b) => {
       b.writeState('itState', num(b, h1 & 0xff));
     },
   };
 };
-export function decode(code: JitTranslateInput['code'], pc: number): Instruction {
+export function decode(
+  code: JitTranslateInput['code'],
+  pc: number,
+  knownRegs?: KnownRegs,
+  firmwareLength = code.byteLength,
+  conditional = false,
+): Instruction {
   const h1 = byteAt(code, pc) | (byteAt(code, pc + 1) << 8);
+  let instruction: Instruction;
 
   // Thumb 的 32 位前缀是 0xE800–0xFFFF（0b11101 / 11110 / 11111）；只判
   // 0xE800 与 0xF000 两档会漏掉 0xF800–0xFFFF（`ldr.w`/`str.w` 等），把它们
@@ -152,15 +167,20 @@ export function decode(code: JitTranslateInput['code'], pc: number): Instruction
   if (h1 >= 0xe800) {
     const h2 = byteAt(code, pc + 2) | (byteAt(code, pc + 3) << 8);
 
-    return { ...decode32(h1, h2), endsBatch: writesPc32(h1, h2), itCount: 0 };
+    const decoded = decode32(h1, h2, knownRegs, pc, code, firmwareLength);
+
+    instruction = { ...decoded, endsBatch: writesPc32(h1, h2), itCount: 0 };
+  } else if ((h1 & 0xff00) === 0xbf00) {
+    if ((h1 & 0x0f) === 0 || ((h1 >> 4) & 0xf) === 0xf) instruction = hint();
+    else instruction = itInstruction(h1);
+  } else {
+    const decoded = decode16(h1, knownRegs, pc, code, firmwareLength);
+
+    instruction = { ...decoded, endsBatch: writesPc16(h1), itCount: 0 };
   }
 
-  if ((h1 & 0xff00) === 0xbf00) {
-    if ((h1 & 0x0f) === 0) return hint();
-    if (((h1 >> 4) & 0xf) === 0xf) return hint();
+  // IT 谓词可能让写失效；入口常量仍可用于该指令自身的静态地址，但离开后必须清空。
+  if (conditional) knownRegs?.fill(undefined);
 
-    return itInstruction(h1);
-  }
-
-  return { ...decode16(h1), endsBatch: writesPc16(h1), itCount: 0 };
+  return instruction;
 }

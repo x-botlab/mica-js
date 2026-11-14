@@ -1,8 +1,8 @@
 import type { Factory } from './model.ddl';
 import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
 import type { BlockIR, Local, Value } from '@mica-js/sdk/model';
-import type { JitTranslate, JitTranslateInput } from '@mica-js/sdk/device';
-import type { JitDelay } from '@mica-js/sdk/device';
+import type { JitTranslate, JitTranslateInput, ReadonlyBytes } from '@mica-js/sdk/device';
+import type { JitDelay, JitPolling } from '@mica-js/sdk/device';
 import {
   CODE,
   DEFER_READ,
@@ -15,6 +15,8 @@ import {
   DEFER_WRITE_ADDR,
   DEFER_WRITE_SIZE,
   DEFER_WRITE_VALUE,
+  FLASH_ALIAS_BASE,
+  FLASH_BASE,
   GPIO_SYNC,
   GPIO_WRITE,
   GPIO_WRITE_ADDR,
@@ -47,7 +49,7 @@ import {
 } from './core/ir';
 import type { Body } from './core/ir';
 import { decode, guard } from './core/decode';
-import type { Instruction } from './core/decode';
+import type { Instruction, KnownRegs } from './core/decode';
 import { activateMachine } from './core/machine';
 import type { Machine } from './core/machine';
 import { gpioOffsetOf, gpioPortOf, readIdrDeferred, syncPort, writeGpioPort } from './core/gpio';
@@ -55,6 +57,10 @@ import { writeMemory } from './core/memory';
 import { advanceSystick } from './core/systick';
 import { advanceUsart, usartDrivers } from './core/usart';
 import { dispatchExceptions } from './core/nvic';
+import { createRegisterFacts } from './core/register-facts';
+import type { RegisterFacts } from './core/register-facts';
+
+type CodeBytes = ReadonlyBytes;
 
 /**
  * STM32G431RBT6 的器件实现。
@@ -141,8 +147,14 @@ function createMachine(frequency: number): Machine {
  * 必须逐条取走），时间条件推到批尾。推迟量最多是「批内指令数 − 1」个周期（80 MHz、
  * 8 条一批时不到 90 ns），远小于最小节拍粒度 1 µs。
  */
-function tick(machine: Machine, b: Body, cyclePs: number, withTime = true): void {
-  const pending = b.add(b.readState(PENDING_PS, types.number), num(b, cyclePs));
+function tickValue(
+  machine: Machine,
+  b: Body,
+  current: Value<number>,
+  cyclePs: number,
+  withTime: boolean,
+): Value<number> {
+  const pending = b.add(current, num(b, cyclePs));
   const mask = b.readState(SERVICE_MASK, types.number);
   // 没有需要按时间推进的外设时，时间累积本身没有意义，跳过服务块。
   const due = !withTime
@@ -155,11 +167,12 @@ function tick(machine: Machine, b: Body, cyclePs: number, withTime = true): void
   const deferred = b.notEqual(types.number, b.bitAnd(mask, num(b, SERVICE_ALL)), num(b, 0));
   const need = due === undefined ? deferred : boolOr(b, due, deferred);
 
-  b.writeState(PENDING_PS, pending);
   b.if(need, (service) => {
     const body = asBody(service);
     const wrote = boolBit(body, mask, SERVICE_GPIO_WRITE);
 
+    // 服务块将在下一块读取累加器；批级累加只在真正需要服务时提前写回。
+    body.writeState(PENDING_PS, pending);
     // 引擎在块体之前已经把 pc 写成顺序后继（或分支目标），它就是服务块要回到的位置。
     body.writeState(SERVICE_RESUME, body.readState('pc', types.number));
     // 待执行的 GPIO 写先落地，延迟读与延迟写再各执行一次，最后才是引脚刷新与节拍。
@@ -211,6 +224,14 @@ function tick(machine: Machine, b: Body, cyclePs: number, withTime = true): void
       },
     );
   });
+
+  return pending;
+}
+
+function tick(machine: Machine, b: Body, cyclePs: number, withTime = true): void {
+  const pending = tickValue(machine, b, b.readState(PENDING_PS, types.number), cyclePs, withTime);
+
+  b.writeState(PENDING_PS, pending);
 }
 
 /**
@@ -402,6 +423,115 @@ function cacheKey(
 const blockCache = new Map<string, BlockIR>();
 const BLOCK_CACHE_LIMIT = 8192;
 
+const HAL_DELAY_POLL = 'halDelayPoll';
+const HAL_DELAY_CONSUME = 'halDelayConsume';
+const HAL_DELAY_WAIT_PS = 'halDelayWaitPs';
+const HAL_DELAY_ADVANCE = 'halDelayAdvance';
+
+const halfIn = (bytes: CodeBytes, offset: number): number =>
+  (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8);
+
+/** Decode the signed byte offset of a Thumb-2 BL at `offset`. */
+function thumbBlTarget(bytes: CodeBytes, offset: number, pc: number): number | undefined {
+  const first = halfIn(bytes, offset);
+  const second = halfIn(bytes, offset + 2);
+
+  if ((first & 0xf800) !== 0xf000 || (second & 0xd000) !== 0xd000) return undefined;
+  const sign = (first >>> 10) & 1;
+  const j1 = (second >>> 13) & 1;
+  const j2 = (second >>> 11) & 1;
+  const i1 = ~(j1 ^ sign) & 1;
+  const i2 = ~(j2 ^ sign) & 1;
+  const immediate =
+    sign * 0x1000000 +
+    i1 * 0x800000 +
+    i2 * 0x400000 +
+    (first & 0x3ff) * 0x1000 +
+    (second & 0x7ff) * 2;
+
+  return (pc + 4 + ((immediate << 7) >> 7)) >>> 0;
+}
+
+/**
+ * Match the exact HAL_GetTick stub shape used by this firmware: load an SRAM base from a
+ * literal, load the tick word at offset 8 through that same register, then return. Inline
+ * tick readers and other literal+load loops are deliberately not guessed.
+ */
+function isTickReader(bytes: CodeBytes, address: number): boolean {
+  const offset = address & 0x1ffff;
+  const literal = halfIn(bytes, offset);
+  const load = halfIn(bytes, offset + 2);
+  const returnFromCall = halfIn(bytes, offset + 4);
+  const register = (literal >>> 8) & 7;
+  const literalOffset = ((address + 4) & ~3) + ((literal & 0xff) << 2);
+  const tickBase =
+    (bytes[literalOffset & 0x1ffff] ?? 0) |
+    ((bytes[(literalOffset + 1) & 0x1ffff] ?? 0) << 8) |
+    ((bytes[(literalOffset + 2) & 0x1ffff] ?? 0) << 16) |
+    ((bytes[(literalOffset + 3) & 0x1ffff] ?? 0) << 24);
+  const inSram = tickBase >= 0x20000000 && tickBase <= 0x20005800 - 8;
+
+  return (
+    (literal & 0xf800) === 0x4800 &&
+    (load & 0xf800) === 0x6800 &&
+    (load & 7) === register &&
+    ((load >>> 3) & 7) === register &&
+    // LDR word immediate is imm5 * 4; the HAL tick reader loads [base + 8].
+    ((load >>> 6) & 0x1f) === 2 &&
+    inSram &&
+    returnFromCall === 0x4770
+  );
+}
+
+/**
+ * Find the common CMSIS HAL_Delay wait shape:
+ *
+ *   loop: bl HAL_GetTick
+ *         subs delta, tick, started
+ *         cmp delta, delay
+ *         bcc loop
+ *
+ * The polling declaration is installed on `loop`, where the runtime can park before the
+ * next HAL_GetTick call. Firmware is usually linked at 0x08000000, but the flash alias at
+ * zero executes identical bytes, so declarations are emitted for both logical PCs.
+ */
+function halDelayPolling(firmware: CodeBytes | undefined): JitPolling[] {
+  if (firmware === undefined || firmware.length < 12) return [];
+  const found = new Set<number>();
+  const limit = Math.min(firmware.length, 0x20000) - 10;
+
+  for (let offset = 0; offset <= limit; offset += 2) {
+    for (const base of [FLASH_BASE, FLASH_ALIAS_BASE]) {
+      const pc = (base + offset) >>> 0;
+      const target = thumbBlTarget(firmware, offset, pc);
+      if (target === undefined || !isTickReader(firmware, target)) continue;
+
+      const subs = halfIn(firmware, offset + 4);
+      const compare = halfIn(firmware, offset + 6);
+      const branch = halfIn(firmware, offset + 8);
+      if (
+        (subs & 0xfe00) !== 0x1a00 ||
+        (subs & 7) !== ((subs >>> 3) & 7) ||
+        (compare & 0xffc0) !== 0x4280 ||
+        (branch & 0xff00) !== 0xd300
+      )
+        continue;
+      const displacement = ((branch & 0xff) << 24) >> 23;
+      if ((pc + 12 + displacement) >>> 0 !== pc) continue;
+      found.add(pc);
+    }
+  }
+
+  return [...found]
+    .sort((left, right) => left - right)
+    .map((pc) => ({
+      pc,
+      predicate: HAL_DELAY_POLL,
+      consume: HAL_DELAY_CONSUME,
+      wait: { delay: HAL_DELAY_WAIT_PS, advance: HAL_DELAY_ADVANCE },
+    }));
+}
+
 /**
  * `subs rN, #imm8` immediately followed by `bne` back to itself is the classic busy-wait
  * delay loop: every round only decrements rN and re-tests it, so the runtime may collapse
@@ -592,15 +722,18 @@ function collectBatch(
   pc: number,
   cyclePs: number,
   limit: number,
+  firmwareLength: number,
+  entryRegs?: KnownRegs,
 ): readonly Segment[] {
   const segments: Segment[] = [];
   let cursor = pc;
+  const knownRegs = entryRegs?.slice() ?? Array<number | undefined>(16).fill(undefined);
   // 批首的 IT 状态必须查一次：服务返回可能落在 IT 块中间（见 `itRemainingAt`）。
   let itRemaining = itRemainingAt(code, pc);
 
   while (segments.length < limit || itRemaining > 0) {
     const fetchPc = cursor & 0x1ffff;
-    const decoded = decode(code, fetchPc);
+    const decoded = decode(code, cursor, knownRegs, firmwareLength, itRemaining > 0);
 
     if (itRemaining === 0 && segments.length > 0) {
       if (selfBranchAt(code, fetchPc, cursor, decoded.size)) break;
@@ -631,14 +764,26 @@ function collectBatch(
 }
 
 const createTranslate =
-  (machine: Machine, delays: Map<number, JitDelay>): JitTranslate =>
+  (
+    machine: Machine,
+    delays: Map<number, JitDelay>,
+    firmwareLength: number,
+    registerFacts: RegisterFacts | undefined,
+  ): JitTranslate =>
   (input) => {
     const pc = input.pc >>> 0;
     const service = isServicePc(pc);
     const fetchPc = pc & 0x1ffff;
     const segments = service
       ? []
-      : collectBatch(input.code, pc, machine.cyclePs, MAX_BATCH_INSTRUCTIONS);
+      : collectBatch(
+          input.code,
+          pc,
+          machine.cyclePs,
+          MAX_BATCH_INSTRUCTIONS,
+          firmwareLength,
+          registerFacts?.at(pc),
+        );
     const first = segments[0];
     if (first !== undefined) {
       const declared = delayLoopAt(input.code, fetchPc, pc, first.size, machine.cyclePs);
@@ -689,14 +834,24 @@ const createTranslate =
         // 继续把当前 pc 当作服务返回位置，与单条指令块的语义完全一致。
         const running = body.local(types.bool, body.not(body.readState('halted', types.bool)));
         const total = body.local(types.number, num(body, 0));
+        const pending = body.local(types.number, body.readState(PENDING_PS, types.number));
         let cumulative = 0;
+        let deferredCycles = 0;
 
         for (let index = 0; index < segments.length; index += 1) {
           const segment = segments[index]!;
+          const last = index === segments.length - 1;
+          const cycles = segment.cycles * machine.cyclePs;
+          const mayService = segment.instruction.mayService;
+          const mustCheck = last || mayService || segment.instruction.endsBatch;
 
-          cumulative += segment.cycles * machine.cyclePs;
+          cumulative += cycles;
+          deferredCycles += cycles;
           const nextPc = (segment.pc + segment.size) >>> 0;
           const step = cumulative;
+          const tickCycles = deferredCycles;
+
+          if (mustCheck) deferredCycles = 0;
 
           body.if(body.getLocal(running), (run) => {
             const scope = asBody(run);
@@ -704,9 +859,15 @@ const createTranslate =
             scope.setLocal(total, num(scope, step));
             scope.writeState('pc', num(scope, nextPc));
             segment.instruction.emit(scope, segment.pc);
-            tick(machine, scope, segment.cycles * machine.cyclePs, index === segments.length - 1);
-            // 最后一条之后没有指令需要跳过，省掉一次 halted/pc 读取与比较。
-            if (index < segments.length - 1)
+            if (mustCheck) {
+              scope.setLocal(
+                pending,
+                tickValue(machine, scope, scope.getLocal(pending), tickCycles, last),
+              );
+            }
+            // 纯寄存器/静态 SRAM 指令既不改变控制流也不会触发服务，下一条无需重新
+            // 检查 halted 与 pc；只有可能进入服务块或批次结束的指令才更新守卫。
+            if (!last && mustCheck)
               scope.setLocal(
                 running,
                 boolAnd(
@@ -731,6 +892,8 @@ const createTranslate =
 
           scope.setLocal(total, num(scope, batchCycles));
         });
+        // 整个批只写回一次内部累加器；中途真正进入服务块时 tickValue 会先写回当时的值。
+        body.writeState(PENDING_PS, body.getLocal(pending));
         body.elapse(body.getLocal(total));
       });
 
@@ -749,11 +912,14 @@ const create: Factory = (context) => {
   const firmware = context.props.firmware;
 
   const delays = new Map<number, JitDelay>();
+  const registerFacts =
+    firmware === undefined ? undefined : createRegisterFacts(firmware, firmware.length);
   context.attachJit({
     entry: 'cpu',
     code: CODE,
     pc: 'pc',
-    translate: createTranslate(machine, delays),
+    polling: halDelayPolling(firmware),
+    translate: createTranslate(machine, delays, firmware?.byteLength ?? 0, registerFacts),
     delays,
   });
 

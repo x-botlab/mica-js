@@ -7,24 +7,29 @@ import {
   DEFER_WRITE_VALUE,
   FLASH_BASE_REGISTER,
   GPIO_BASE,
-  GPIO_WRITE,
-  GPIO_WRITE_ADDR,
-  GPIO_WRITE_SIZE,
-  GPIO_WRITE_VALUE,
   PERIPHERAL_BASE,
   PERIPHERAL_END,
   PERIPH,
   PWR_BASE,
   RCC_BASE,
   SERVICE_DEFER_WRITE,
-  SERVICE_GPIO_WRITE,
   USART1_BASE,
   USART2_BASE,
   USART3_BASE,
 } from './layout';
-import { asBody, bool, markService, num, readWord, u32, writeWord } from './ir';
+import {
+  asBody,
+  bool,
+  markService,
+  num,
+  readWord,
+  readWordAt,
+  u32,
+  writeWord,
+  writeWordAt,
+} from './ir';
 import type { Body } from './ir';
-import { gpioPortOf, readGpio } from './gpio';
+import { deferGpioWrite, gpioPortOf, queueGpioWrite, readGpio, readGpioPort } from './gpio';
 import type { DeferRead } from './memory';
 import { readPwr } from './pwr';
 import { readRcc, writeRcc } from './rcc';
@@ -106,12 +111,160 @@ function merge(
   return u32(b, b.bitOr(b.bitAnd(current, b.bitNot(mask)), placed));
 }
 
+const inStaticRegion = (address: number, base: number, size: number): boolean =>
+  address >= base && address < base + size;
+
+/** 按静态字节偏移截取寄存器字。 */
+function extractAt(b: Body, word: Value<number>, offset: number, size: number): Value<number> {
+  if (size === 4) return word;
+  const shift = (offset & 3) * 8;
+  const shifted = shift === 0 ? word : b.shiftRightUnsigned(word, num(b, shift));
+
+  return b.bitAnd(shifted, num(b, size === 2 ? 0xffff : 0xff));
+}
+
+function readRegisterFileAt(b: Body, offset: number, size: number, base: number): Value<number> {
+  return extractAt(b, readWordAt(b, PERIPH, base + (offset & 0x3fc)), offset, size);
+}
+
+function writeRegisterFileAt(
+  b: Body,
+  offset: number,
+  size: number,
+  value: Value<number>,
+  base: number,
+): void {
+  const wordOffset = offset & 0x3fc;
+  const at = base + wordOffset;
+  const current = readWordAt(b, PERIPH, at);
+
+  writeWordAt(b, PERIPH, at, merge(b, current, value, num(b, offset), size));
+}
+
+/** 静态外设读：区间判定全部在翻译期完成，只发射命中的那一路。 */
+function readStaticPeripheral(
+  b: Body,
+  size: number,
+  defer: DeferRead | undefined,
+  staticAddress: number,
+): Value<number> {
+  if (inStaticRegion(staticAddress, RCC_BASE, 0x400))
+    return readRcc(b, num(b, staticAddress - RCC_BASE), size);
+
+  if (inStaticRegion(staticAddress, GPIO_BASE, 0x2000)) {
+    const relative = staticAddress - GPIO_BASE;
+    const port = relative >>> 10;
+    const offset = relative & 0x3ff;
+
+    return readGpioPort(b, port, offset, size, defer);
+  }
+
+  if (inStaticRegion(staticAddress, USART1_BASE, 0x400))
+    return readUsart(b, USARTS[0]!, num(b, staticAddress - USART1_BASE), size);
+
+  if (inStaticRegion(staticAddress, USART2_BASE, 0x400))
+    return readUsart(b, USARTS[1]!, num(b, staticAddress - USART2_BASE), size);
+
+  if (inStaticRegion(staticAddress, USART3_BASE, 0x400))
+    return readUsart(b, USARTS[2]!, num(b, staticAddress - USART3_BASE), size);
+
+  if (inStaticRegion(staticAddress, FLASH_BASE_REGISTER, 0x400))
+    return readRegisterFileAt(b, staticAddress - FLASH_BASE_REGISTER, size, 0x700);
+
+  if (inStaticRegion(staticAddress, PWR_BASE, 0x400))
+    return readPwr(b, num(b, staticAddress - PWR_BASE), size);
+
+  if (inStaticRegion(staticAddress, PERIPHERAL_BASE, PERIPHERAL_END - PERIPHERAL_BASE))
+    return readRegisterFileAt(b, staticAddress - PERIPHERAL_BASE, size, GENERIC_STATE);
+
+  return num(b, 0);
+}
+
+function registerDeferredWrite(
+  b: Body,
+  address: Value<number>,
+  size: number,
+  value: Value<number>,
+): void {
+  b.writeState(DEFER_WRITE, bool(b, true));
+  b.writeState(DEFER_WRITE_ADDR, u32(b, address));
+  b.writeState(DEFER_WRITE_VALUE, u32(b, value));
+  b.writeState(DEFER_WRITE_SIZE, num(b, size));
+  markService(b, SERVICE_DEFER_WRITE);
+}
+
+/** 静态外设写；GPIO 写仍登记给服务块，其余外设直接走各自的寄存器写路径。 */
+function writeStaticPeripheral(
+  b: Body,
+  address: Value<number>,
+  size: number,
+  value: Value<number>,
+  defer: boolean,
+  staticAddress: number,
+): void {
+  if (defer) {
+    if (inStaticRegion(staticAddress, GPIO_BASE, 0x2000))
+      deferGpioWrite(b, address, size, value, staticAddress);
+    else registerDeferredWrite(b, address, size, value);
+
+    return;
+  }
+
+  if (inStaticRegion(staticAddress, RCC_BASE, 0x400)) {
+    writeRcc(b, num(b, staticAddress - RCC_BASE), size, value);
+
+    return;
+  }
+
+  if (inStaticRegion(staticAddress, GPIO_BASE, 0x2000)) {
+    queueGpioWrite(b, address, size, value, staticAddress);
+
+    return;
+  }
+
+  if (inStaticRegion(staticAddress, USART1_BASE, 0x400)) {
+    writeUsart(b, USARTS[0]!, num(b, staticAddress - USART1_BASE), size, value);
+
+    return;
+  }
+
+  if (inStaticRegion(staticAddress, USART2_BASE, 0x400)) {
+    writeUsart(b, USARTS[1]!, num(b, staticAddress - USART2_BASE), size, value);
+
+    return;
+  }
+
+  if (inStaticRegion(staticAddress, USART3_BASE, 0x400)) {
+    writeUsart(b, USARTS[2]!, num(b, staticAddress - USART3_BASE), size, value);
+
+    return;
+  }
+
+  if (inStaticRegion(staticAddress, FLASH_BASE_REGISTER, 0x400)) {
+    writeRegisterFileAt(b, staticAddress - FLASH_BASE_REGISTER, size, value, 0x700);
+
+    return;
+  }
+
+  if (inStaticRegion(staticAddress, PWR_BASE, 0x400)) {
+    writeRegisterFileAt(b, staticAddress - PWR_BASE, size, value, 0x740);
+
+    return;
+  }
+
+  if (inStaticRegion(staticAddress, PERIPHERAL_BASE, PERIPHERAL_END - PERIPHERAL_BASE))
+    writeRegisterFileAt(b, staticAddress - PERIPHERAL_BASE, size, value, GENERIC_STATE);
+}
+
 export function readPeripheral(
   b: Body,
   address: Value<number>,
   size: number,
   defer?: DeferRead,
+  staticAddress?: number,
 ): Value<number> {
+  if (staticAddress !== undefined) return readStaticPeripheral(b, size, defer, staticAddress);
+
   const result = b.local(types.number, 0);
 
   b.if(
@@ -258,7 +411,14 @@ export function writePeripheral(
   size: number,
   value: Value<number>,
   defer = false,
+  staticAddress?: number,
 ): void {
+  if (staticAddress !== undefined) {
+    writeStaticPeripheral(b, address, size, value, defer, staticAddress);
+
+    return;
+  }
+
   if (defer) {
     // GPIO 写必须立即登记：同一块的 tick 要把 PC 转给该端口的服务块。其余外设
     // 寄存器的读改写链只在服务块里展开一次，块内只登记地址、宽度与值。
@@ -268,24 +428,10 @@ export function writePeripheral(
         const scope = asBody(gpio);
 
         scope.if(scope.lessThan(gpioPortOf(scope, address), num(scope, 5)), (hit) => {
-          const inner = asBody(hit);
-
-          inner.writeState(GPIO_WRITE_ADDR, u32(inner, address));
-          inner.writeState(GPIO_WRITE_VALUE, u32(inner, value));
-          inner.writeState(GPIO_WRITE_SIZE, num(inner, size));
-          inner.writeState(GPIO_WRITE, num(inner, 1));
-          markService(inner, SERVICE_GPIO_WRITE);
+          deferGpioWrite(asBody(hit), address, size, value);
         });
       },
-      (other) => {
-        const scope = asBody(other);
-
-        scope.writeState(DEFER_WRITE, bool(scope, true));
-        scope.writeState(DEFER_WRITE_ADDR, u32(scope, address));
-        scope.writeState(DEFER_WRITE_VALUE, u32(scope, value));
-        scope.writeState(DEFER_WRITE_SIZE, num(scope, size));
-        markService(scope, SERVICE_DEFER_WRITE);
-      },
+      (other) => registerDeferredWrite(asBody(other), address, size, value),
     );
 
     return;
@@ -309,13 +455,7 @@ export function writePeripheral(
           const scope = asBody(gpio);
 
           scope.if(scope.lessThan(gpioPortOf(scope, address), num(scope, 5)), (hit) => {
-            const inner = asBody(hit);
-
-            inner.writeState(GPIO_WRITE_ADDR, u32(inner, address));
-            inner.writeState(GPIO_WRITE_VALUE, u32(inner, value));
-            inner.writeState(GPIO_WRITE_SIZE, num(inner, size));
-            inner.writeState(GPIO_WRITE, num(inner, 1));
-            markService(inner, SERVICE_GPIO_WRITE);
+            queueGpioWrite(asBody(hit), address, size, value);
           });
         },
         (rest) => {

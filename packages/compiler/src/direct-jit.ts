@@ -245,15 +245,43 @@ interface CachedInstruction {
   readonly nextPc: number;
   readonly delay: DelayFingerprint | undefined;
   readonly instruction: Instruction | undefined;
+  /** Stable continuation ID once this body has ever emitted an elapse. */
+  readonly resumeId: number | undefined;
+}
+
+type ResidentStatus = DirectJitReason | number;
+type ResidentStep = (frame: DirectJitFrame, deadline: number, pc: number) => ResidentStatus;
+type ResidentResume = (frame: DirectJitFrame, resume: number) => ResidentStatus;
+
+interface ResidentFunctions {
+  readonly step: ResidentStep;
+  readonly resume: ResidentResume | undefined;
+}
+
+interface ResidentShard {
+  readonly id: number;
+  entries: Instruction[];
+  sourceSize: number;
+  maxSlots: number;
+  resumable: boolean;
+  functions: ResidentFunctions | undefined;
+  /** Exact instruction sequence represented by `functions`; cache hits compare references. */
+  signature: readonly Instruction[] | undefined;
+  dirty: boolean;
 }
 
 interface DirectJitCacheState {
   readonly entries: Map<number, CachedInstruction>;
   readonly constants: unknown[];
+  readonly shards: ResidentShard[];
+  nextResume: number;
+  nextShard: number;
   stats: {
     compiledBlocks: number;
     reusedBlocks: number;
     invalidatedBlocks: number;
+    compiledShards: number;
+    reusedShards: number;
     clears: number;
   };
   binding: BindingFingerprint | undefined;
@@ -266,7 +294,17 @@ function createDirectJitCache(): DirectJitCache {
   directJitCaches.set(cache, {
     entries: new Map(),
     constants: [],
-    stats: { compiledBlocks: 0, reusedBlocks: 0, invalidatedBlocks: 0, clears: 0 },
+    shards: [],
+    nextResume: 1,
+    nextShard: 1,
+    stats: {
+      compiledBlocks: 0,
+      reusedBlocks: 0,
+      invalidatedBlocks: 0,
+      compiledShards: 0,
+      reusedShards: 0,
+      clears: 0,
+    },
     binding: undefined,
   });
   return cache;
@@ -353,6 +391,9 @@ function sameDelay(
 function clearCacheState(state: DirectJitCacheState): void {
   state.entries.clear();
   state.constants.length = 0;
+  state.shards.length = 0;
+  state.nextResume = 1;
+  state.nextShard = 1;
   state.binding = undefined;
   state.stats.clears++;
 }
@@ -475,10 +516,14 @@ function compileDirectJitProgram(
     state.stats.invalidatedBlocks += state.entries.size;
     state.entries.clear();
     state.constants.length = 0;
+    state.shards.length = 0;
+    state.nextResume = 1;
+    state.nextShard = 1;
   }
   state.binding = fingerprint;
   const capture = (value: unknown): string => `C[${state.constants.push(value) - 1}]`;
   const entries: Instruction[] = [];
+  const active = new Map<number, Instruction>();
   const seen = new Set<number>();
   for (const instruction of instructions) {
     if (!Number.isFinite(instruction.pc) || seen.has(instruction.pc)) continue;
@@ -491,6 +536,7 @@ function compileDirectJitProgram(
     const delay = delayFingerprint(binding.delayLoops?.get(instruction.pc));
     const cached = state.entries.get(instruction.pc);
     let compiled: Instruction | undefined;
+    let resumeId = cached?.resumeId;
     if (
       cached !== undefined &&
       cached.body === instruction.body &&
@@ -498,6 +544,7 @@ function compileDirectJitProgram(
       sameDelay(cached.delay, delay)
     ) {
       compiled = cached.instruction;
+      if (compiled !== undefined) compiled.resumeId = resumeId ?? 0;
       state.stats.reusedBlocks++;
     } else {
       if (cached !== undefined) state.stats.invalidatedBlocks++;
@@ -507,15 +554,21 @@ function compileDirectJitProgram(
         if (error !== unsupported) throw error;
         compiled = undefined;
       }
+      if (compiled?.duration !== undefined && resumeId === undefined) resumeId = state.nextResume++;
+      if (compiled !== undefined) compiled.resumeId = resumeId ?? 0;
       state.entries.set(instruction.pc, {
         body: instruction.body,
         nextPc: instruction.nextPc,
         delay,
         instruction: compiled,
+        resumeId,
       });
       state.stats.compiledBlocks++;
     }
-    if (compiled !== undefined) entries.push(compiled);
+    if (compiled !== undefined) {
+      entries.push(compiled);
+      active.set(compiled.pcValue, compiled);
+    }
   }
   if (!entries.length) return undefined;
   const localCount = Math.max(...entries.map((entry) => entry.slots.length));
@@ -525,6 +578,11 @@ function compileDirectJitProgram(
     readonly shardSize?: number;
     readonly shardSlotLimit?: number;
   };
+  const shardSize = validIndex(options.shardSize) && options.shardSize > 0 ? options.shardSize : 48;
+  // A supplied cache makes the split form resident: instruction bodies and shard functions stay
+  // alive while each build only assembles a fresh dispatcher over the current shard set.
+  if (options.split === true && suppliedCache !== undefined)
+    return residentProgram(state, entries, binding, shardSize);
   // An explicit slot limit keeps the historical slot-based switch; otherwise the emitted
   // source size decides, because register reuse makes slot counts wildly optimistic.
   const slotLimit = validIndex(options.shardSlotLimit) ? options.shardSlotLimit : undefined;
@@ -533,7 +591,6 @@ function compileDirectJitProgram(
     (slotLimit === undefined
       ? entries.reduce((sum, entry) => sum + entry.size, 0) > MONOLITH_CODE_LIMIT
       : entries.reduce((sum, entry) => sum + entry.slots.length, 0) > slotLimit);
-  const shardSize = validIndex(options.shardSize) && options.shardSize > 0 ? options.shardSize : 48;
   const lines = split
     ? shardProgram(entries, binding, shardSize)
     : monolithicProgram(entries, binding, registers);
@@ -551,10 +608,12 @@ function compileDirectJitProgram(
   ) => (frame: DirectJitFrame, deadline: number) => DirectJitReason;
   const names = (field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories') =>
     Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
+  const shardCount = lines.filter((line) => line.startsWith('function stepShard')).length;
   const program = {
     // Indices captured by cached instructions remain stable for this cache. The program owns
     // a frozen snapshot so later incremental builds can keep appending without mutating it.
     run: factory(Object.freeze([...state.constants]), helpers),
+    shards: split ? shardCount : 1,
     // Every PC this program can dispatch. The runtime keeps executing an older program
     // while it still contains the current PC: translation only ever adds cache entries, so
     // existing bodies never change and only the missing PCs justify a rebuild.
@@ -720,7 +779,7 @@ function monolithicProgram(
       dirty('SD', binding.pc.index),
       ...entry.prefix,
     );
-    if (entry.duration !== undefined) lines.push(...elapsed(entry, index));
+    if (entry.duration !== undefined) lines.push(...elapsed(entry, index + 1));
     lines.push(...entry.suffix, finish(entry.stop), '}');
   });
   lines.push('default: return "fallback";', '}', '}', '}');
@@ -784,7 +843,7 @@ function shardProgram(
         `S[${binding.pc.index}] = ${entry.nextPc};`,
         dirty('SD', binding.pc.index),
         ...entry.prefix,
-        ...elapsed(entry, shard.start + offset),
+        ...elapsed(entry, shard.start + offset + 1),
         ...entry.suffix,
         stepFinish(entry.stop, lower, shard.lastPc, binding.pc.index),
         '}',
@@ -850,8 +909,315 @@ function shardProgram(
   return lines;
 }
 
+function sameInstructions(left: readonly Instruction[], right: readonly Instruction[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  return true;
+}
+
+function refreshShard(shard: ResidentShard): void {
+  shard.entries.sort((left, right) => left.pcValue - right.pcValue);
+  shard.sourceSize = shard.entries.reduce((sum, entry) => sum + entry.size, 0);
+  shard.maxSlots = Math.max(0, ...shard.entries.map((entry) => entry.slots.length));
+  shard.resumable = shard.entries.some((entry) => entry.duration !== undefined);
+}
+
+function shardCanAccept(shard: ResidentShard, entry: Instruction, shardSize: number): boolean {
+  return shard.entries.length < shardSize && shard.sourceSize + entry.size <= SHARD_CODE_BUDGET;
+}
+
+/** Distance from an entry to the closest PC already resident in a shard. */
+function shardDistance(shard: ResidentShard, entry: Instruction): number {
+  let closest = Infinity;
+  for (const resident of shard.entries)
+    closest = Math.min(closest, Math.abs(resident.pcValue - entry.pcValue));
+  return closest;
+}
+
+/** Prefer the nearest shard, then the least populated one to backfill sparse fragments. */
+function closestAcceptingShard(
+  shards: readonly ResidentShard[],
+  entry: Instruction,
+  shardSize: number,
+): ResidentShard | undefined {
+  let selected: ResidentShard | undefined;
+  let selectedDistance = Infinity;
+  for (const shard of shards) {
+    if (!shardCanAccept(shard, entry, shardSize)) continue;
+    const distance = shardDistance(shard, entry);
+    if (
+      distance < selectedDistance ||
+      (distance === selectedDistance &&
+        (selected === undefined || shard.entries.length < selected.entries.length))
+    ) {
+      selected = shard;
+      selectedDistance = distance;
+    }
+  }
+  return selected;
+}
+
+/**
+ * Reconcile resident shard generations with the current compiled instruction set. Any shard
+ * with capacity can absorb a later nearby block, so out-of-order translation can backfill the
+ * fragments it left behind. Only touched shards recompile; unchanged functions stay reusable.
+ */
+function syncResidentShards(
+  state: DirectJitCacheState,
+  entries: readonly Instruction[],
+  shardSize: number,
+): void {
+  const active = new Map(entries.map((entry) => [entry.pcValue, entry]));
+  const owners = new Map<number, ResidentShard>();
+
+  for (let shardIndex = state.shards.length - 1; shardIndex >= 0; shardIndex--) {
+    const shard = state.shards[shardIndex]!;
+    const next: Instruction[] = [];
+    let changed = false;
+    for (const old of shard.entries) {
+      const current = active.get(old.pcValue);
+      if (current === undefined) {
+        changed = true;
+        continue;
+      }
+      if (current !== old) changed = true;
+      next.push(current);
+    }
+    if (changed) {
+      shard.entries = next;
+      shard.dirty = true;
+    }
+    if (!next.length) {
+      state.shards.splice(shardIndex, 1);
+      continue;
+    }
+    refreshShard(shard);
+    for (const entry of shard.entries) owners.set(entry.pcValue, shard);
+  }
+
+  const pending = [...active.values()]
+    .filter((entry) => !owners.has(entry.pcValue))
+    .sort((left, right) => left.pcValue - right.pcValue);
+  for (const entry of pending) {
+    let shard = closestAcceptingShard(state.shards, entry, shardSize);
+    if (shard === undefined) {
+      shard = {
+        id: state.nextShard++,
+        entries: [],
+        sourceSize: 0,
+        maxSlots: 0,
+        resumable: false,
+        functions: undefined,
+        signature: undefined,
+        dirty: true,
+      };
+      state.shards.push(shard);
+    }
+    shard.entries.push(entry);
+    shard.dirty = true;
+    refreshShard(shard);
+    owners.set(entry.pcValue, shard);
+  }
+}
+
+/** Shortest safe membership fast path for the sorted entries of one resident shard. */
+function residentPcSpan(entries: readonly Instruction[]): string {
+  const first = entries[0]!;
+  if (entries.length === 1) return `pc === ${first.pc}`;
+  const last = entries[entries.length - 1]!;
+  // Every entry lies in this span. Gaps safely reach the shard switch default, which returns
+  // the PC to the dispatcher, so two bounds are shorter than enumerating sparse cases.
+  return `pc >= ${first.pc} && pc <= ${last.pc}`;
+}
+
+function residentStepFinish(stop: boolean, inside: string, pcIndex: number): string {
+  if (stop) return 'return "stopped";';
+  return `if (F.stopAfterInstruction) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
+}
+
+function residentResumeFinish(stop: boolean, pcIndex: number): string {
+  if (stop) return 'return "stopped";';
+  return `if (F.stopAfterInstruction) return "invalidated"; const pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); return pc;`;
+}
+
+/** Emit one independent shard factory. Its function object is never edited after creation. */
+function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): string[] {
+  const registers = Array.from({ length: shard.maxSlots }, (_, index) => `v${index}`);
+  const stepInside = residentPcSpan(shard.entries);
+  const lines = [
+    `function stepShard${shard.id}(F, deadline, pc) {`,
+    ...prelude(registers),
+    'while (true) {',
+    'switch (pc) {',
+  ];
+  shard.entries.forEach((entry) => {
+    lines.push(
+      `case ${entry.pc}: {`,
+      ...entry.barrier,
+      ...entry.guard,
+      `S[${binding.pc.index}] = ${entry.nextPc};`,
+      dirty('SD', binding.pc.index),
+      ...entry.prefix,
+      ...(entry.duration === undefined ? [] : elapsed(entry, entry.resumeId)),
+      ...entry.suffix,
+      residentStepFinish(entry.stop, stepInside, binding.pc.index),
+      '}',
+    );
+  });
+  // A later shard may overlap this shard's numeric span. Falling through to the dispatcher
+  // makes the range above a fast path rather than an ownership claim.
+  lines.push('default: return pc;', '}', '}', '}');
+  if (shard.resumable) {
+    lines.push(
+      `function resumeShard${shard.id}(F, resume) {`,
+      ...prelude(registers),
+      'switch (resume) {',
+    );
+    shard.entries.forEach((entry) => {
+      if (entry.duration === undefined) return;
+      lines.push(`case ${entry.resumeId}: {`);
+      entry.slots.forEach((slot, slotIndex) => lines.push(`${slot} = L[${slotIndex}];`));
+      lines.push(
+        'F.resume = 0;',
+        ...entry.suffix,
+        residentResumeFinish(entry.stop, binding.pc.index),
+        '}',
+      );
+    });
+    lines.push('default: throw new TypeError("Unknown direct JIT continuation");', '}', '}');
+  }
+  return lines;
+}
+
+function compileResidentShard(
+  state: DirectJitCacheState,
+  shard: ResidentShard,
+  binding: DirectJitBinding,
+): void {
+  const lines = residentShardProgram(shard, binding);
+  const resume = shard.resumable ? `resumeShard${shard.id}` : 'undefined';
+  const factory = new Function(
+    'C',
+    'H',
+    `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`,
+  ) as (
+    constants: readonly unknown[],
+    runtimeHelpers: typeof helpers,
+  ) => [ResidentStep, ResidentResume | undefined];
+  const [step, resumeFunction] = factory(Object.freeze([...state.constants]), helpers);
+  shard.functions = { step, resume: resumeFunction };
+  shard.signature = Object.freeze([...shard.entries]);
+  shard.dirty = false;
+  state.stats.compiledShards++;
+}
+
+/** Tiny generated router over resident functions; only this source is rebuilt per program. */
+function residentDispatcherProgram(
+  shards: readonly ResidentShard[],
+  entries: readonly Instruction[],
+  binding: DirectJitBinding,
+): string[] {
+  const shardIndex = new Map<number, number>();
+  shards.forEach((shard, index) => {
+    for (const entry of shard.entries) shardIndex.set(entry.pcValue, index);
+  });
+  const sorted = [...entries].sort((left, right) => left.pcValue - right.pcValue);
+  const lines = shards.map((_, index) => `const D${index} = SH[${index}];`);
+  lines.push(
+    'function run(F, deadline) {',
+    'const S = F.states;',
+    'if (F.time >= deadline) return "deadline";',
+    'let pc;',
+    'if (F.resume !== 0) {',
+    'if (F.due >= deadline) { F.time = deadline; return "deadline"; }',
+    'F.time = Math.max(F.time, F.due);',
+    'const resume = F.resume;',
+    'const resumed = RES[resume];',
+    'if (resumed === undefined) throw new TypeError("Unknown direct JIT continuation");',
+    'const next = resumed(F, resume);',
+    'if (typeof next !== "number") return next;',
+    'pc = next;',
+    '} else {',
+    'if (F.stopAfterInstruction) return "invalidated";',
+    `pc = S[${binding.pc.index}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc);`,
+    '}',
+    'while (true) {',
+    'let next;',
+    'switch (pc) {',
+  );
+  let current = -1;
+  for (const entry of sorted) {
+    const index = shardIndex.get(entry.pcValue)!;
+    if (index !== current) {
+      if (current >= 0) lines.push(`next = D${current}(F, deadline, pc); break;`);
+      current = index;
+    }
+    lines.push(`case ${entry.pc}:`);
+  }
+  if (current >= 0) lines.push(`next = D${current}(F, deadline, pc); break;`);
+  lines.push(
+    'default: return "fallback";',
+    '}',
+    'if (typeof next !== "number") return next;',
+    'pc = next;',
+    '}',
+    '}',
+  );
+  return lines;
+}
+
+function residentProgram(
+  state: DirectJitCacheState,
+  entries: readonly Instruction[],
+  binding: DirectJitBinding,
+  shardSize: number,
+): DirectJitProgram | undefined {
+  syncResidentShards(state, entries, shardSize);
+  if (!state.shards.length) return undefined;
+  for (const shard of state.shards) {
+    if (
+      shard.functions !== undefined &&
+      !shard.dirty &&
+      sameInstructions(shard.signature ?? [], shard.entries)
+    ) {
+      state.stats.reusedShards++;
+      continue;
+    }
+    compileResidentShard(state, shard, binding);
+  }
+
+  const lines = residentDispatcherProgram(state.shards, entries, binding);
+  const factory = new Function('SH', 'RES', `"use strict";\n${lines.join('\n')}\nreturn run;`) as (
+    shards: readonly ResidentStep[],
+    resumes: readonly (ResidentResume | undefined)[],
+  ) => (frame: DirectJitFrame, deadline: number) => DirectJitReason;
+  const steps = Object.freeze(state.shards.map((shard) => shard.functions!.step));
+  const resumeCount = state.nextResume;
+  const resumes = new Array<ResidentResume | undefined>(resumeCount);
+  for (const shard of state.shards) {
+    if (shard.functions!.resume === undefined) continue;
+    for (const entry of shard.entries)
+      if (entry.resumeId !== 0) resumes[entry.resumeId] = shard.functions!.resume;
+  }
+  const localCount = Math.max(...entries.map((entry) => entry.slots.length));
+  const names = (field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories') =>
+    Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
+  const program = {
+    run: factory(steps, Object.freeze(resumes)),
+    shards: state.shards.length,
+    pcs: Object.freeze(entries.map((entry) => entry.pcValue)),
+    localCount,
+    readStates: names('readStates'),
+    writeStates: names('writeStates'),
+    readMemories: names('readMemories'),
+    writeMemories: names('writeMemories'),
+  } satisfies DirectJitProgram;
+  Object.defineProperty(program, 'emitStats', { value: emitStats(entries) });
+  return Object.freeze(program);
+}
+
 /** Elapse due time, resume save and deadline split shared by both emitters. */
-function elapsed(entry: Instruction, index: number): string[] {
+function elapsed(entry: Instruction, resumeId: number): string[] {
   if (entry.duration === undefined) return [];
   // A computed duration is validated where the generic host validates it, before it is used.
   const duration = entry.dynamicDuration ? `H.checkDuration(${entry.duration})` : entry.duration;
@@ -860,7 +1226,7 @@ function elapsed(entry: Instruction, index: number): string[] {
     'if (F.due > 7200000000000000) throw new RangeError("Time out of range");',
     'if (F.due >= deadline) {',
     ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
-    `F.resume = ${index + 1};`,
+    `F.resume = ${resumeId};`,
     'F.time = deadline;',
     'return "deadline";',
     '}',
@@ -941,6 +1307,8 @@ class Instruction {
   pcValue = 0;
   pc = '';
   nextPc = '';
+  /** Cache-stable continuation key used by resident shards; zero when none is needed. */
+  resumeId = 0;
   duration?: string;
   /** Set when `duration` is a computed slot instead of a compile-time literal. */
   dynamicDuration = false;

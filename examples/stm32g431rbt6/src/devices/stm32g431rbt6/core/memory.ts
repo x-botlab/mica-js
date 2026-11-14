@@ -8,6 +8,8 @@ import {
   FLASH_ALIAS_BASE,
   FLASH_BASE,
   FLASH_SIZE,
+  GPIO_BASE,
+  GPIO_PORT_STRIDE,
   PERIPHERAL_BASE,
   PERIPHERAL_END,
   SRAM,
@@ -48,7 +50,7 @@ import { readSystem, writeSystem } from './nvic';
  */
 
 /** 编译期已知的访存区间。 */
-export type Region = 'code' | 'sram' | 'ccm' | 'peripheral' | 'system';
+export type Region = 'code' | 'sram' | 'ccm' | 'peripheral' | 'system' | 'none';
 
 /** 静态区间声明。`offset` 是区内偏移：给出时按常量偏移发射（地址本身在翻译期已知），
  * 省略时按 `address - 基址` 运行期计算。
@@ -56,6 +58,12 @@ export type Region = 'code' | 'sram' | 'ccm' | 'peripheral' | 'system';
 export interface At {
   readonly region: Region;
   readonly offset?: number;
+  /** 翻译期已经证明的具体地址；存在时静态消解整棵区间分派树。 */
+  readonly address?: number;
+  /** 静态地址的区间标志，便于分析与后续优化直接读取。 */
+  readonly code?: boolean;
+  readonly sram?: boolean;
+  readonly ccm?: boolean;
 }
 
 /**
@@ -77,6 +85,54 @@ export const atCode = (offset?: number): At => at('code', offset);
 export const atSram = (offset?: number): At => at('sram', offset);
 export const atCcm = (offset?: number): At => at('ccm', offset);
 
+/** 按 32 位地址空间把具体地址归类到唯一的静态访问区间。 */
+export function regionOfAddress(address: number): Region {
+  const addr = address >>> 0;
+
+  if ((addr - SRAM_BASE) >>> 0 < SRAM_SIZE) return 'sram';
+  if ((addr - FLASH_BASE) >>> 0 < FLASH_SIZE) return 'code';
+  if ((addr - CCM_BASE) >>> 0 < CCM_SIZE) return 'ccm';
+  if ((addr - PERIPHERAL_BASE) >>> 0 < PERIPHERAL_END - PERIPHERAL_BASE) return 'peripheral';
+  if ((addr - SYSTEM_BASE) >>> 0 < SYSTEM_END - SYSTEM_BASE) return 'system';
+  if ((addr - FLASH_ALIAS_BASE) >>> 0 < FLASH_SIZE) return 'code';
+
+  return 'none';
+}
+
+/** 为翻译期已知的具体地址生成静态访存描述。 */
+export const atAddress = (address: number): At => {
+  const addr = address >>> 0;
+  const region = regionOfAddress(addr);
+
+  return {
+    region,
+    address: addr,
+    code: region === 'code',
+    sram: region === 'sram',
+    ccm: region === 'ccm',
+  };
+};
+
+/** 该访问是否仍可能触发外设服务；动态地址必须保守地返回 true。 */
+export function atMayService(at: At | undefined): boolean {
+  if (at === undefined) return true;
+
+  const region = at.address === undefined ? at.region : regionOfAddress(at.address);
+
+  return region === 'peripheral' || region === 'system';
+}
+
+/** GPIO BSRR/BRR 是只写寄存器，读回值恒为 0。 */
+export function gpioReadsAsZero(address: number): boolean {
+  const offset = (address >>> 0) - GPIO_BASE;
+
+  if (offset < 0 || offset >= GPIO_PORT_STRIDE * 5) return false;
+
+  const register = offset & (GPIO_PORT_STRIDE - 1);
+
+  return register === 0x18 || register === 0x28;
+}
+
 /** `u32(address - base) < size`：一次减法加一次比较，越界与回绕都自然落到 false。 */
 const inRegion = (b: Body, address: Value<number>, base: number, size: number): Value<boolean> =>
   b.lessThan(u32(b, b.subtract(address, num(b, base))), num(b, size));
@@ -85,7 +141,17 @@ const inRegion = (b: Body, address: Value<number>, base: number, size: number): 
 function regionOffset(b: Body, address: Value<number>, at: At): Value<number> {
   if (at.offset !== undefined) return num(b, at.offset);
 
-  switch (at.region) {
+  const region = at.address === undefined ? at.region : regionOfAddress(at.address);
+
+  if (at.address !== undefined) {
+    if (region === 'code') return num(b, at.address & CODE_MASK);
+    if (region === 'sram') return num(b, (at.address - SRAM_BASE) >>> 0);
+    if (region === 'ccm') return num(b, (at.address - CCM_BASE) >>> 0);
+
+    return num(b, at.address);
+  }
+
+  switch (region) {
     case 'code':
       return b.bitAnd(address, num(b, CODE_MASK));
     case 'sram':
@@ -105,9 +171,10 @@ function readAt(
   at: At,
   defer?: DeferRead,
 ): Value<number> | undefined {
+  const region = at.address === undefined ? at.region : regionOfAddress(at.address);
   const offset = regionOffset(b, address, at);
 
-  switch (at.region) {
+  switch (region) {
     case 'code':
       return loadWidth(b, CODE, offset, size);
     case 'sram':
@@ -115,11 +182,11 @@ function readAt(
     case 'ccm':
       return loadWidth(b, CCM, offset, size);
     case 'peripheral':
-      return readPeripheral(b, address, size, defer);
+      return readPeripheral(b, address, size, defer, at.address);
     case 'system':
       return readSystem(b, address, size);
-    default:
-      return undefined;
+    case 'none':
+      return num(b, 0);
   }
 }
 
@@ -129,12 +196,14 @@ function writeAt(
   size: number,
   value: Value<number>,
   at: At,
+  defer: boolean,
 ): void {
+  const region = at.address === undefined ? at.region : regionOfAddress(at.address);
   const offset = regionOffset(b, address, at);
 
-  switch (at.region) {
+  switch (region) {
     case 'code':
-      storeWidth(b, CODE, offset, size, value);
+      // Flash 写入未建模，保留固件映像。
       return;
     case 'sram':
       storeWidth(b, SRAM, offset, size, value);
@@ -143,10 +212,13 @@ function writeAt(
       storeWidth(b, CCM, offset, size, value);
       return;
     case 'peripheral':
-      writePeripheral(b, address, size, value);
+      writePeripheral(b, address, size, value, defer, at.address);
       return;
     case 'system':
       writeSystem(b, address, size, value);
+      return;
+    case 'none':
+      return;
   }
 }
 
@@ -186,10 +258,12 @@ export function readMemory(
   b: Body,
   address: Value<number>,
   size: number,
+  defer: DeferRead | false = false,
   at?: At,
-  defer?: DeferRead,
 ): Value<number> {
-  if (at !== undefined) return readAt(b, address, size, at, defer)!;
+  const deferred = defer || undefined;
+
+  if (at !== undefined) return readAt(b, address, size, at, deferred)!;
 
   const result = b.local(types.number, 0);
 
@@ -232,7 +306,7 @@ export function readMemory(
               scope.if(
                 inRegion(scope, address, PERIPHERAL_BASE, PERIPHERAL_END - PERIPHERAL_BASE),
                 (periph) => {
-                  periph.setLocal(result, readPeripheral(asBody(periph), address, size, defer));
+                  periph.setLocal(result, readPeripheral(asBody(periph), address, size, deferred));
                 },
                 (after) => {
                   const tail = asBody(after);
@@ -277,11 +351,11 @@ export function writeMemory(
   address: Value<number>,
   size: number,
   value: Value<number>,
-  at?: At,
   defer = false,
+  at?: At,
 ): void {
   if (at !== undefined) {
-    writeAt(b, address, size, value, at);
+    writeAt(b, address, size, value, at, defer);
 
     return;
   }

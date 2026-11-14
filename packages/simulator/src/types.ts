@@ -82,12 +82,33 @@ export interface JitDelay {
   };
 }
 
+/**
+ * A throughput-only wait point. When `predicate` is false the JIT parks until a dependency
+ * changes. If `wait` is present, `delay` supplies the picoseconds to the next device time
+ * event and `advance` applies that elapsed interval before the JIT is re-queued.
+ *
+ * `consume` runs once after `predicate` becomes true, allowing a one-shot wake token to be
+ * cleared before the guest instruction executes. These functions take zero or one
+ * argument; only `predicate` and `delay` must be pure.
+ */
+export interface JitPolling {
+  readonly pc: number;
+  readonly predicate: string;
+  readonly consume?: string;
+  readonly wait?: {
+    /** Pure zero-argument function returning the delay in picoseconds, or zero to park. */
+    readonly delay: string;
+    /** Function receiving the elapsed picoseconds and applying the device time event. */
+    readonly advance: string;
+  };
+}
+
 export interface JitOptions {
   readonly entry: string;
   readonly code: string;
   readonly pc: string;
   readonly beforeInstruction?: InstructionHook;
-  readonly polling?: readonly { readonly pc: number; readonly predicate: string }[];
+  readonly polling?: readonly JitPolling[];
   readonly delays?: ReadonlyMap<number, JitDelay>;
   readonly translate: JitTranslate;
 }

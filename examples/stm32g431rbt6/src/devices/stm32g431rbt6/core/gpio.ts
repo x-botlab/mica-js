@@ -8,14 +8,21 @@ import {
   DEFER_READ_SIZE,
   DEFER_READ_TARGET,
   GPIO_BASE,
+  GPIO_PIN_MASK,
   GPIO_POWERED,
   GPIO_STATE,
   GPIO_STATE_STRIDE,
+  GPIO_WRITE,
+  GPIO_WRITE_ADDR,
+  GPIO_WRITE_SIZE,
+  GPIO_WRITE_VALUE,
   PERIPH,
   SERVICE_DEFER_READ,
+  SERVICE_GPIO_WRITE,
   gpioAfr0State,
   gpioAfr1State,
   gpioModerState,
+  gpioOdrState,
   gpioOtyperState,
   gpioPupdrState,
 } from './layout';
@@ -124,6 +131,15 @@ function extract(
   return b.bitAnd(b.shiftRightUnsigned(value, shift), num(b, mask));
 }
 
+/** 静态偏移版本的字节/半字截取；偏移在翻译期已知。 */
+function extractAt(b: Body, value: Value<number>, offset: number, size: number): Value<number> {
+  if (size === 4) return value;
+  const shift = (offset & 3) * 8;
+  const shifted = shift === 0 ? value : b.shiftRightUnsigned(value, num(b, shift));
+
+  return b.bitAnd(shifted, num(b, size === 2 ? 0xffff : 0xff));
+}
+
 /** 一次端口同步共用的寄存器快照：6 个字 + 电源判定。 */
 interface PortRegisters {
   readonly moder: Value<number>;
@@ -141,7 +157,7 @@ function portRegisters(b: Body, portIndex: number): PortRegisters {
     moder: b.readState(gpioModerState(portIndex), types.number),
     otyper: b.readState(gpioOtyperState(portIndex), types.number),
     pupdr: b.readState(gpioPupdrState(portIndex), types.number),
-    odr: readWordAt(b, PERIPH, stateBase(portIndex) + GPIO_ODR),
+    odr: b.readState(gpioOdrState(portIndex), types.number),
     afr0: b.readState(gpioAfr0State(portIndex), types.number),
     afr1: b.readState(gpioAfr1State(portIndex), types.number),
     supplied: powered(b),
@@ -371,12 +387,70 @@ function readRegister(
       body.if(
         isWriteOnly(body, wordOffset),
         (zero) => zero.setLocal(result, num(zero, 0)),
-        (stored) => stored.setLocal(result, loadWord(asBody(stored), portIndex, wordOffset)),
+        (stored) => {
+          const scope = asBody(stored);
+
+          scope.if(
+            scope.equal(types.number, wordOffset, num(scope, GPIO_ODR)),
+            (odr) => odr.setLocal(result, odr.readState(gpioOdrState(portIndex), types.number)),
+            (register) =>
+              register.setLocal(result, loadWord(asBody(register), portIndex, wordOffset)),
+          );
+        },
       );
     },
   );
 
   return extract(b, b.getLocal(result), offset, size);
+}
+
+/** 静态端口/偏移版本的寄存器读；不生成端口或寄存器偏移的运行时判定。 */
+function readRegisterStatic(
+  b: Body,
+  portIndex: number,
+  offset: number,
+  size: number,
+  defer?: DeferRead,
+): Value<number> {
+  const port = PORTS[portIndex];
+
+  if (port === undefined) return num(b, 0);
+
+  const wordOffset = offset & 0x3c;
+
+  if (wordOffset === GPIO_IDR) {
+    if (defer === undefined) return extractAt(b, readIdr(b, port), offset, size);
+
+    b.writeState(DEFER_READ, bool(b, true));
+    b.writeState(DEFER_READ_PORT, num(b, portIndex));
+    b.writeState(DEFER_READ_OFFSET, num(b, offset));
+    b.writeState(DEFER_READ_TARGET, num(b, defer.target));
+    b.writeState(DEFER_READ_SIZE, num(b, size));
+    b.writeState(DEFER_READ_SIGNED, bool(b, defer.signed));
+    markService(b, SERVICE_DEFER_READ);
+
+    return num(b, 0);
+  }
+
+  if (wordOffset === GPIO_BSRR || wordOffset === GPIO_BRR) return num(b, 0);
+
+  const stored =
+    wordOffset === GPIO_ODR
+      ? b.readState(gpioOdrState(portIndex), types.number)
+      : readWordAt(b, PERIPH, stateBase(portIndex) + wordOffset);
+
+  return extractAt(b, stored, offset, size);
+}
+
+/** 静态 GPIO 读入口；BSRR/BRR 恒为零，ODR 直接读影子 state。 */
+export function readGpioPort(
+  b: Body,
+  port: number,
+  offset: number,
+  size: number,
+  defer?: DeferRead,
+): Value<number> {
+  return readRegisterStatic(b, port, offset, size, defer);
 }
 
 /** 将窄写放在目标寄存器内的正确字节位置；配置映射与 BSRR/BRR 共用。 */
@@ -492,7 +566,7 @@ function writeRegister(
         body.equal(types.number, wordOffset, num(body, GPIO_BSRR)),
         (bsrr) => {
           const scope = asBody(bsrr);
-          const current = loadWord(scope, portIndex, num(scope, GPIO_ODR));
+          const current = scope.readState(gpioOdrState(portIndex), types.number);
           const placed = placeWord(scope, value, offset, size);
           const setBits = scope.bitAnd(placed, num(scope, 0xffff));
           const clearBits = scope.bitAnd(
@@ -503,6 +577,7 @@ function writeRegister(
           const next = scope.bitOr(scope.bitAnd(current, scope.bitNot(clearBits)), setBits);
 
           scope.setLocal(changed, scope.bitAnd(scope.bitXor(current, next), num(scope, 0xffff)));
+          scope.writeState(gpioOdrState(portIndex), next);
           storeWord(scope, portIndex, num(scope, GPIO_ODR), next);
         },
         (other) => {
@@ -512,7 +587,7 @@ function writeRegister(
             scope.equal(types.number, wordOffset, num(scope, GPIO_BRR)),
             (brr) => {
               const last = asBody(brr);
-              const current = loadWord(last, portIndex, num(last, GPIO_ODR));
+              const current = last.readState(gpioOdrState(portIndex), types.number);
               const clearBits = last.bitAnd(
                 placeWord(last, value, offset, size),
                 num(last, 0xffff),
@@ -520,14 +595,16 @@ function writeRegister(
               const next = last.bitAnd(current, last.bitNot(clearBits));
 
               last.setLocal(changed, last.bitAnd(last.bitXor(current, next), num(last, 0xffff)));
+              last.writeState(gpioOdrState(portIndex), next);
               storeWord(last, portIndex, num(last, GPIO_ODR), next);
             },
             (plain) => {
               const last = asBody(plain);
-              const current = loadWord(last, portIndex, num(last, GPIO_ODR));
+              const current = last.readState(gpioOdrState(portIndex), types.number);
               const next = mergeWord(last, current, value, offset, size);
 
               last.setLocal(changed, last.bitAnd(last.bitXor(current, next), num(last, 0xffff)));
+              last.writeState(gpioOdrState(portIndex), next);
               storeWord(last, portIndex, num(last, GPIO_ODR), next);
             },
           );
@@ -589,9 +666,135 @@ function isOutputWrite(b: Body, wordOffset: Value<number>): Value<boolean> {
   );
 }
 
+/** 静态输出寄存器写对应的 ODR 前后值。 */
+function odrTransition(
+  b: Body,
+  portIndex: number,
+  wordOffset: number,
+  offset: number,
+  size: number,
+  value: Value<number>,
+): { readonly current: Value<number>; readonly next: Value<number> } {
+  const current = b.readState(gpioOdrState(portIndex), types.number);
+
+  if (wordOffset === GPIO_BSRR) {
+    const placed = placeWord(b, value, num(b, offset), size);
+    const setBits = b.bitAnd(placed, num(b, 0xffff));
+    const clearBits = b.bitAnd(b.shiftRightUnsigned(placed, num(b, 16)), num(b, 0xffff));
+    const next = b.bitOr(b.bitAnd(current, b.bitNot(clearBits)), setBits);
+
+    return { current, next };
+  }
+
+  if (wordOffset === GPIO_BRR) {
+    const clearBits = b.bitAnd(placeWord(b, value, num(b, offset), size), num(b, 0xffff));
+
+    return { current, next: b.bitAnd(current, b.bitNot(clearBits)) };
+  }
+
+  return { current, next: mergeWord(b, current, value, num(b, offset), size) };
+}
+
 /** 地址落在 GPIO 区间时取端口号（0–4）。 */
 function gpioPortIndex(b: Body, address: Value<number>): Value<number> {
   return b.shiftRightUnsigned(b.subtract(address, num(b, GPIO_BASE)), num(b, 10));
+}
+
+/** 登记一次走服务块的 GPIO 写；`GPIO_PIN_MASK = 0` 表示服务块尚未预计算 ODR。 */
+function registerGpioWrite(
+  b: Body,
+  address: Value<number>,
+  size: number,
+  value: Value<number>,
+): void {
+  b.writeState(GPIO_PIN_MASK, num(b, 0));
+  b.writeState(GPIO_WRITE_ADDR, u32(b, address));
+  b.writeState(GPIO_WRITE_VALUE, u32(b, value));
+  b.writeState(GPIO_WRITE_SIZE, num(b, size));
+  b.writeState(GPIO_WRITE, num(b, 1));
+  markService(b, SERVICE_GPIO_WRITE);
+}
+
+/** 登记一次完整的 GPIO 寄存器写；静态地址仍会先做编译期端口校验。 */
+export function queueGpioWrite(
+  b: Body,
+  address: Value<number>,
+  size: number,
+  value: Value<number>,
+  staticAddress?: number,
+): void {
+  if (staticAddress !== undefined) {
+    const relative = staticAddress - GPIO_BASE;
+
+    if (relative < 0 || relative >= 0x2000 || relative >>> 10 >= PORTS.length) return;
+    registerGpioWrite(b, num(b, staticAddress), size, value);
+
+    return;
+  }
+
+  registerGpioWrite(b, address, size, value);
+}
+
+/**
+ * 延迟 GPIO 写。静态地址命中 ODR/BSRR/BRR 时在 Guest 块内直接算新 ODR 与变化位，
+ * 无变化就完全跳过服务调度；其他寄存器仍交给服务块处理。
+ *
+ * 基址无法证明的动态写继续走服务块：为每个动态站点展开端口选择树会放大生成的 Guest
+ * 代码。服务块里的 `writeGpioPort` 仍按 ODR 前后值计算精确 `changed`，为零时不会刷新
+ * 任何引脚意图。
+ */
+export function deferGpioWrite(
+  b: Body,
+  address: Value<number>,
+  size: number,
+  value: Value<number>,
+  staticAddress?: number,
+): void {
+  if (staticAddress === undefined) {
+    queueGpioWrite(b, address, size, value);
+
+    return;
+  }
+
+  const relative = staticAddress - GPIO_BASE;
+
+  if (relative < 0 || relative >= 0x2000) {
+    queueGpioWrite(b, address, size, value, staticAddress);
+
+    return;
+  }
+
+  const portIndex = relative >>> 10;
+
+  if (portIndex >= PORTS.length) return;
+
+  const offset = relative & 0x3ff;
+  const wordOffset = offset & 0x3c;
+
+  // 写 GPIO_IDR 在 STM32 上是只读访问，既不改变 ODR，也不需要服务。
+  if (wordOffset === GPIO_IDR) return;
+
+  if (wordOffset !== GPIO_ODR && wordOffset !== GPIO_BSRR && wordOffset !== GPIO_BRR) {
+    queueGpioWrite(b, address, size, value, staticAddress);
+
+    return;
+  }
+
+  const transition = odrTransition(b, portIndex, wordOffset, offset, size, value);
+  const changed = b.bitAnd(b.bitXor(transition.current, transition.next), num(b, 0xffff));
+
+  b.if(b.notEqual(types.number, changed, num(b, 0)), (hit) => {
+    const scope = asBody(hit);
+
+    scope.writeState(gpioOdrState(portIndex), transition.next);
+    storeWord(scope, portIndex, num(scope, GPIO_ODR), transition.next);
+    scope.writeState(GPIO_PIN_MASK, changed);
+    scope.writeState(GPIO_WRITE_ADDR, num(scope, staticAddress));
+    scope.writeState(GPIO_WRITE_VALUE, u32(scope, value));
+    scope.writeState(GPIO_WRITE_SIZE, num(scope, size));
+    scope.writeState(GPIO_WRITE, num(scope, 1));
+    markService(scope, SERVICE_GPIO_WRITE);
+  });
 }
 
 function selectPort(
@@ -685,7 +888,25 @@ export function writeGpioPort(
   size: number,
   value: Value<number>,
 ): Value<number> {
-  return writeRegister(b, port, offset, size, value);
+  const fastMask = b.readState(GPIO_PIN_MASK, types.number);
+  const changed = b.local(types.number, num(b, 0));
+
+  b.if(
+    b.notEqual(types.number, fastMask, num(b, 0)),
+    (fast) => {
+      const scope = asBody(fast);
+
+      scope.writeState(GPIO_PIN_MASK, num(scope, 0));
+      scope.setLocal(changed, fastMask);
+    },
+    (slow) => {
+      const scope = asBody(slow);
+
+      scope.setLocal(changed, writeRegister(scope, port, offset, size, value));
+    },
+  );
+
+  return b.getLocal(changed);
 }
 
 export { DRIVE_RESISTANCE, PULL_RESISTANCE };

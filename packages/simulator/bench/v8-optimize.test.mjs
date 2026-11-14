@@ -65,8 +65,8 @@ describe('v8-optimize 基准', () => {
     const names = source.functions.map((fn) => fn.name);
     assert.ok(names.includes('run'), '保留轻量派发器');
     assert.ok(
-      source.largestFunction.characters < source.largestProgramCharacters,
-      '最大函数必须小于整个程序的源码，否则说明还是一体化生成',
+      source.largestFunction.characters < source.totalCharacters,
+      '最大函数必须小于本次生成源码总量，否则说明还是一体化生成',
     );
     assert.ok(source.stepShards + source.resumeShards >= 4);
   });

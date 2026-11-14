@@ -72,13 +72,13 @@
 
 | 指标                        | `throughput`（主路径） |
 | --------------------------- | ---------------------- |
-| 0 → 200 µs 冷启动           | 约 358–361 ms CPU      |
-| 200 µs → 220 ms 稳态        | 约 1.007–1.013 s CPU   |
-| 稳态实时倍率                | 约 0.22×               |
-| 整段 220 ms（含冷启动）     | 约 1.368–1.370 s       |
+| 0 → 200 µs 冷启动           | 约 361–365 ms CPU      |
+| 200 µs → 220 ms 稳态        | 约 605–630 ms CPU      |
+| 稳态实时倍率                | 约 0.35–0.36×          |
+| 整段 220 ms（含冷启动）     | 约 967–995 ms          |
 | 缓存指令块                  | 411                    |
-| 直接程序数 / 整程序重编译数 | 1 / 25                 |
-| 直接回退次数（整段）        | 4,702                  |
+| 直接程序数 / 整程序重编译数 | 1 / 21                 |
+| 直接回退次数（整段）        | 5,041                  |
 
 `precise` 仅保留为同一固件的对照路径，其耗时随宿主和 V8 状态漂移；精确值以
 `bench/hal-precise.test.ts` 的输出为准，不在文档中重复维护。
@@ -91,13 +91,10 @@
 
 ### 2.3 冷启动是当前最大短板
 
-`throughput` 的直接后端首个 200 µs 仍会翻译 411 个块并触发 25 次程序级重建，但已按 PC
-缓存 `Instruction`，重复重建不再重新执行块级 `emit/compact/rewrite`；成本主要转向程序级
-shard/dispatcher 组装。程序完整后扣除重建约 0.46–0.73× 实时，仍未达到 1×。
-
-这一项已做过一轮收敛：优化前每新增 1 块就重建 1 次，首段 200 µs 内 43 次重建、冷启动 1.67 s；
-现在按 `max(步长, 已编译块数)` 摊薄，并对反复回退的 PC 提前触发（详见 2.4）。按块增量编译
-（只编译新增块、复用旧程序）是下一项确定收益的工作。
+`throughput` 的直接后端首个 200 µs 仍会翻译 411 个块并触发 21 次程序修订，但已按 PC
+缓存 `Instruction`，并让已生成的 shard 函数跨程序修订常驻；修订只生成小型 dispatcher 和受影响的
+开放尾 shard。成本主要留在首次设备 Thumb 翻译、IR builder、校验、compiledBody 生成以及 V8
+首次优化与 GC。发布口径冷启动约 0.36 s，后续要把差距继续压向 1×，需要优化设备块首次翻译链路。
 
 ### 2.4 已实施的优化
 
@@ -105,8 +102,8 @@ shard/dispatcher 组装。程序完整后扣除重建约 0.46–0.73× 实时，
   三条收块规则：写 pc 的指令之后收块（`decode.ts` 的 `endsBatch`）；自旋 `b .` 与忙等循环头
   独占或收尾一个块（否则直接后端的轮次折算失效）；不在 IT 块中间收块。
 - **pc 守卫表达「已离开顺序路径」**：每条指令前把 `pc` 复位成它的顺序后继。分支/异常返回写成
-  目标、服务块接手写成服务 PC，两者都让下一条之前的守卫（`!halted && pc == 后继`）停掉批内
-  剩余指令；`tick` 因此继续把 `pc` 当作服务返回位置，`SERVICE_RESUME` 不需要改成常量写入。
+  目标、服务块接手写成服务 PC，两者都让下一条之前的守卫（`pc == 后继`）停掉批内剩余指令；
+  停机路径把 `pc` 留在故障指令，批次不再逐条读取 `halted`。`tick` 继续把 `pc` 当作服务返回位置。
 - **IT 守卫静态化**：`decode` 给出 `itCount`，批处理静态跟踪 IT 掩码，只有真正受 IT 控制的指令
   才读 `itState` 并发射条件选择链；普通指令不再为 IT 付三次 `if` 与 7 段 `select`。
 - **服务判定归并**：新增 `serviceMask`（GPIO 写 / IDR 读 / 外设写 / 引脚刷新 / 中断待扫描），
@@ -124,13 +121,12 @@ shard/dispatcher 组装。程序完整后扣除重建约 0.46–0.73× 实时，
 
 ### 2.5 剩余瓶颈与下一步
 
-| #   | 事项                                  | 影响                                             | 位置                                    |
-| --- | ------------------------------------- | ------------------------------------------------ | --------------------------------------- |
-| 1   | 程序级 shard/dispatcher 组装          | 块级 Instruction 已缓存；完整函数组装仍是重建主成本 | `packages/compiler/src/direct-jit.ts` |
-| 2   | shard 往返与生成代码体量              | 程序稳定后约 0.46–0.73× 实时                    | `packages/compiler/src/direct-jit.ts` |
-| 3   | GPIO 写服务与引脚意图同步             | 已按变化位精确刷新；仍是 220 ms 内约 109 万次的热路径 | `core/gpio.ts`、`index.ts`          |
-| 4   | 每 guest 指令的 `tick` / `serviceMask` | 约 1,946 万次 `serviceMask` 读，固定热路径成本   | `index.ts`                              |
-| 5   | `SERVICE_WRITE` / IDR 与动态基址多寄存器访存 | 主要放大首次翻译和生成源码体积          | `index.ts`、`core/memory.ts`            |
+| #   | 事项                                         | 影响                                                                | 位置                         |
+| --- | -------------------------------------------- | ------------------------------------------------------------------- | ---------------------------- |
+| 1   | GPIO 写服务与引脚意图同步                    | 仍是 220 ms 内约 109 万次的热路径；端口快照与电气 helper 占主要成本 | `core/gpio.ts`、`index.ts`   |
+| 2   | 首次设备块翻译、IR builder 与校验            | 冷启动 0 → 200 µs 的主要成本                                        | `index.ts`、`core/**`        |
+| 3   | 每 guest 指令的 `tick` / `serviceMask`       | 高频固定热路径成本                                                  | `index.ts`                   |
+| 4   | `SERVICE_WRITE` / IDR 与动态基址多寄存器访存 | 主要放大首次翻译和生成源码体积                                      | `index.ts`、`core/memory.ts` |
 
 当前 411 个可编译块共约 310,231 个含嵌套 IR 操作、186,350 条发射语句、约 5.4 MB 生成源码。
 块级 Instruction 缓存、frame DataView、稳定 bank 布局和 146 路区间树 dispatcher 已实现。
@@ -150,9 +146,9 @@ shard/dispatcher 组装。程序完整后扣除重建约 0.46–0.73× 实时，
   35 KB 生成源码起停止优化；8 条一批在现有块体积下安全。
 - **IDR 在指令之后的下一个同步点采样**，不是块内采样。对「拉低 RD → 边界 → LCD 驱动 → 读 IDR」
   更贴近硬件；对「每条指令都读 IDR」的极端轮询循环，`precise` 下比内联慢约 30%。
-- **SysTick 由指令块驱动，不是时间驱动的 `process`**。因此 `JitOptions.polling` 不能跳过
-  `HAL_Delay` 这类循环：跳过就没人推进 `uwTick`。`delayLoops` 折算必须带 `pending`，让折算
-  时间同时记进服务累加器（见 2.4）。
+- **HAL_Delay 快进依赖可识别的轮询形态**：当前模型只识别本固件中指向 SRAM tick-word 的
+  `bl HAL_GetTick; subs; cmp; bcc` 形态。其他等待循环继续逐指令执行；`delayLoops` 折算仍须
+  带 `pending`，让折算时间同时记进服务累加器（见 2.4）。
 
 ## 4. 工具链与环境问题
 
@@ -172,7 +168,7 @@ shard/dispatcher 组装。程序完整后扣除重建约 0.46–0.73× 实时，
 cd examples/stm32g431rbt6
 ./node_modules/.bin/mica build
 ./node_modules/.bin/tsc --noEmit          # 需先 mica prepare
-./node_modules/.bin/vitest run --config vitest.config.ts        # 7 个用例
+./node_modules/.bin/vitest run --config vitest.config.ts        # 15 个用例
 ./node_modules/.bin/vitest run --config vitest.perf.config.ts   # 三个基准
 
 # LCD 示例与联合仿真（联合仿真走默认 throughput）
@@ -185,6 +181,6 @@ cd ../../packages/compiler && node --test tests/*.test.mjs
 cd ../simulator && ./node_modules/.bin/vitest run
 ```
 
-当前读数：`stm32g431rbt6` 7 通过；`ili9325` 17 通过 + 1 跳过；联合用例 1 通过（约 6.7 s，
+当前读数：`stm32g431rbt6` 15 通过；`ili9325` 17 通过 + 1 跳过；联合用例 1 通过（约 6.7 s，
 `throughput`）；`gpio-blink` 500 ms 仿真墙钟约 3 ms（`direct: true`、`programs: 1`、12 个块）；
 HAL 裸板 80 MHz 的性能范围见 2.2，精确值以基准 stdout 为准。

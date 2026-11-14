@@ -39,6 +39,8 @@ const DIRECT_REBUILD_PATIENCE = 512;
 export interface DirectJitStats {
   /** Successful program builds; one per compile, so observer churn must not move it. */
   directCompiles: number;
+  /** Resident shard functions backing the current direct program. */
+  directShards: number;
   directCalls: number;
   directFallbacks: number;
   directDeadlines: number;
@@ -77,6 +79,7 @@ function directStats(jit: Jit): DirectJitStats {
   const counted = jit as CountedJit;
   return (counted.directStats ??= {
     directCompiles: 0,
+    directShards: 0,
     directCalls: 0,
     directFallbacks: 0,
     directDeadlines: 0,
@@ -376,7 +379,10 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
           );
           jit.directRevision = jit.revision;
           jit.directMisses = 0;
-          if (program) directStats(jit).directCompiles++;
+          const stats = directStats(jit);
+
+          stats.directShards = program?.shards ?? 0;
+          if (program) stats.directCompiles++;
           const barrier = directBarriers(jit);
           barrier.stateIndex = states;
           barrier.memoryIndex = memories;
@@ -445,8 +451,15 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   // instruction on the interpreter path, whose own boundary converges the frame instead.
   if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
   if (reason === 'fallback') {
-    stats.directFallbacks++;
-    jit.directSkip = finite(instance.states.get(jit.options.pc), 'pc');
+    const nextPc = finite(instance.states.get(jit.options.pc), 'pc');
+    // Polling PCs are deliberately absent from direct programs. Reaching one is a normal
+    // shard boundary, not a failed direct dispatch, so it must neither compound fallback
+    // statistics nor poison the next interpreter attempt for this PC.
+    const polling = jit.polling.has(nextPc) || jit.cache.get(nextPc)?.polling;
+    if (!polling) {
+      stats.directFallbacks++;
+      jit.directSkip = nextPc;
+    }
     if (board.time === start && board.time < board.executionEnd) return false;
   } else if (reason === 'stopped') {
     stats.directStopped++;
@@ -474,6 +487,47 @@ function pollingDependencies(jit: Jit, dependencies: Dependencies): Dependencies
     result.set(slot, slot.version);
   return result;
 }
+
+/** Park a polling JIT and, when requested, schedule the next device time event. */
+function waitForPolling(
+  board: JitRuntimeHost,
+  jit: Jit,
+  dependencies: Dependencies,
+  duration: number,
+  advance: string | undefined,
+): void {
+  jit.dependencies = dependencies;
+  jit.pollingWait = true;
+  jit.pollingPeriod = 0;
+  board.waitingJits.add(jit);
+  const token = ++jit.pollingToken;
+
+  board.boundary();
+  if (duration === 0 || advance === undefined) return;
+  const due = time(board.time + duration);
+
+  board.events.push(due, () => {
+    if (token !== jit.pollingToken || !jit.active || jit.stopped || !board.waitingJits.has(jit))
+      return;
+    const pending = jit.dependencies;
+
+    jit.pollingWait = false;
+    delete jit.dependencies;
+    board.waitingJits.delete(jit);
+    jit.pollingToken++;
+    board.current = jit.instance;
+    // An external event won the race at the same timestamp. Re-evaluate the guest rather
+    // than applying a device step against a configuration that has already changed.
+    if (!jit.instance.dependenciesCurrent(pending)) {
+      board.queueJit(jit);
+      return;
+    }
+    jit.instance.syncCall(advance, [duration]);
+    board.boundary();
+    board.queueJit(jit);
+  });
+}
+
 function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): boolean {
   if (signal.kind === 'elapse') {
     const duration = time(signal.duration);
@@ -563,20 +617,30 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
     }
     const pc = finite(jit.instance.states.get(jit.options.pc), 'pc');
     if (board.execution === 'throughput') {
-      const predicate = jit.polling.get(pc);
-      if (predicate) {
-        const checked = jit.instance.evaluate(() => jit.instance.syncCall(predicate));
+      const declaration = jit.polling.get(pc);
+      if (declaration) {
+        const checked = jit.instance.evaluate(() => jit.instance.syncCall(declaration.predicate));
         if (checked.value !== true) {
-          jit.dependencies = pollingDependencies(
+          const dependencies = new Map([...(hookReads ?? []), ...checked.dependencies]);
+          let duration = 0;
+          const wait = declaration.wait;
+          if (wait) {
+            const delayed = jit.instance.evaluate(
+              () => jit.instance.syncCall(wait.delay),
+              dependencies,
+            );
+            duration = time(delayed.value);
+          }
+          waitForPolling(
+            board,
             jit,
-            new Map([...(hookReads ?? []), ...checked.dependencies]),
+            pollingDependencies(jit, dependencies),
+            duration,
+            wait?.advance,
           );
-          jit.pollingWait = true;
-          jit.pollingPeriod = 0;
-          board.waitingJits.add(jit);
-          board.boundary();
           return;
         }
+        if (declaration.consume) jit.instance.syncCall(declaration.consume);
       }
       if (!hookPending && board.jits.length === 1 && runDirect(board, jit, hookReads)) return;
     }

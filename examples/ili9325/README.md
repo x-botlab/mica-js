@@ -144,10 +144,9 @@ HSI16 → PLL M=2 / N=20 / R=2 配置主频，`HAL_Delay` 的 `uwTick` 换算依
 `R53=0x013F`）且命令索引停在 `0x13`。这证明 MCU → GPIO → 电气网络 → 总线锁存 →
 寄存器全程正确。
 
-**已知限制**：固件里累计有 4 秒以上的 `HAL_Delay` 空转，按当前模型执行速度完整跑完
-需要很长时间，因此用例只验证到 BSP 初始化写入。另外 `polling`（空闲等待声明）目前
-不能用于 `HAL_Delay`——模型的 SysTick 推进挂在指令块执行上，一旦循环体被跳过就再没
-人推进 `uwTick`。
+用例只验证到 BSP 初始化写入，以便把测试时间集中在 MCU → GPIO → 电气网络 → 总线锁存
+链路。`throughput` 会识别 HAL_Delay 的 `HAL_GetTick` 轮询形态，在 SysTick 边界推进
+`uwTick` 并复查终点；`precise` 仍逐指令执行同一循环。
 
 ## 验证
 

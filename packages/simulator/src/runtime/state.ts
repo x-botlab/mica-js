@@ -11,7 +11,7 @@ import type {
 import type { Instance } from './instance';
 import type { CompiledObservation } from '../observations';
 import type { Fifo } from '../queue';
-import type { DeviceLibraryEntry, JitDelay, JitOptions } from '../types';
+import type { DeviceLibraryEntry, JitDelay, JitOptions, JitPolling } from '../types';
 
 export type Decl<K extends DeclarationIR['kind']> = Extract<DeclarationIR, { kind: K }>;
 export type Execution = Generator<ExecutionSignal, unknown, unknown>;
@@ -89,6 +89,8 @@ export interface JitInstruction {
   readonly execute: CompiledBody;
   readonly polling: boolean;
 }
+/** Validated polling declaration minus its PC key. */
+export type JitPollingBinding = Omit<JitPolling, 'pc'>;
 export interface DirectExecution {
   readonly program: DirectJitProgram;
   readonly frame: DirectJitFrame;
@@ -118,7 +120,7 @@ export interface Jit {
   readonly instance: Instance;
   readonly options: JitOptions;
   readonly cache: Map<number, JitInstruction>;
-  readonly polling: ReadonlyMap<number, string>;
+  readonly polling: ReadonlyMap<number, JitPollingBinding>;
   /** Validated delay-loop descriptors, keyed by loop-head PC. */
   readonly delays: ReadonlyMap<number, JitDelay>;
   revision: number;
@@ -143,6 +145,8 @@ export interface Jit {
   pollingWait: boolean;
   pollingPeriod: number;
   pollingOrigin: number;
+  /** Invalidates a previously scheduled polling time event after any other wake. */
+  pollingToken: number;
   active: boolean;
   stopped: boolean;
   queued: boolean;

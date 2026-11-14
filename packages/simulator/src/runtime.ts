@@ -920,6 +920,7 @@ class BoardRuntime implements Board {
                 if (lastStart < MAX_TIME && lastStart < end) {
                   if (lastStart === this.time) {
                     jit.pollingWait = false;
+                    jit.pollingToken++;
                     delete jit.dependencies;
                     this.waitingJits.delete(jit);
                     this.queueJit(jit);
@@ -930,6 +931,7 @@ class BoardRuntime implements Board {
             }
             if (jit.pollingWait) {
               jit.pollingWait = false;
+              jit.pollingToken++;
               delete jit.dependencies;
               this.waitingJits.delete(jit);
               const remainder =

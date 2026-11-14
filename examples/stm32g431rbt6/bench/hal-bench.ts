@@ -51,13 +51,16 @@ interface Adapter {
 
 interface DirectStats {
   readonly directCompiles: number;
+  readonly directShards: number;
   readonly directCalls: number;
   readonly directFallbacks: number;
 }
 
 interface JitLike {
   readonly cache: ReadonlyMap<number, unknown>;
-  readonly direct?: unknown;
+  readonly direct?: {
+    readonly program?: { readonly run?: () => unknown; readonly shards?: number };
+  };
   readonly directPrograms?: ReadonlyMap<string, unknown>;
   readonly directStats?: DirectStats;
 }
@@ -98,6 +101,17 @@ const cpuMs = (fn: () => void): number => {
 
 const min = (values: readonly number[]): number => Math.min(...values);
 
+const shardCount = (jit: JitLike | undefined): number => {
+  const reported = jit?.directStats?.directShards ?? jit?.direct?.program?.shards;
+
+  if (reported !== undefined) return reported;
+  const dispatcher = jit?.direct?.program?.run?.toString() ?? '';
+  const resident = dispatcher.match(/const D\d+ = SH\[/g)?.length ?? 0;
+  const split = new Set(dispatcher.match(/stepShard\d+/g) ?? []).size;
+
+  return resident || split || (dispatcher ? 1 : 0);
+};
+
 export interface HalSample {
   readonly execution: 'precise' | 'throughput';
   readonly clockFrequency: number;
@@ -105,26 +119,42 @@ export interface HalSample {
   readonly coldMs: number;
   /** 200 µs → 220 ms 的 CPU 时间。 */
   readonly steadyMs: number;
+  /** 程序完整后 220 ms → 440 ms 的 CPU 时间；此窗口不再重建。 */
+  readonly postMs: number;
   readonly totalMs: number;
   /** 稳态窗口的仿真时间 / 墙钟时间：大于 1 表示快于实时。 */
   readonly steadyRealtimeFactor: number;
+  /** 无重建窗口的仿真时间 / 墙钟时间。 */
+  readonly postRealtimeFactor: number;
   /** 整段仿真（含冷启动）的实时倍率。 */
   readonly realtimeFactor: number;
   readonly direct: boolean;
   readonly programs: number;
   readonly blocks: number;
+  readonly shards: number;
   readonly compiles: number;
+  readonly calls: number;
   readonly fallbacks: number;
+  /** 220 ms → 440 ms 窗口内新增的编译、直接调用与回退次数。 */
+  readonly postCompiles: number;
+  readonly postCalls: number;
+  readonly postFallbacks: number;
 }
 
 export function measureHal(execution: 'precise' | 'throughput'): HalSample {
   const cold: number[] = [];
   const steady: number[] = [];
+  const post: number[] = [];
   let direct = false;
   let programs = 0;
   let blocks = 0;
+  let shards = 0;
   let compiles = 0;
+  let calls = 0;
   let fallbacks = 0;
+  let postCompiles = 0;
+  let postCalls = 0;
+  let postFallbacks = 0;
 
   for (let round = 0; round < ROUNDS; round += 1) {
     let board: Board | undefined;
@@ -140,21 +170,38 @@ export function measureHal(execution: 'precise' | 'throughput'): HalSample {
 
       while (board!.time < target) board!.runUntil(Math.min(board!.time + 10 * PS_PER_MS, target));
     });
+    const beforePost = {
+      compiles: probe?.directStats?.directCompiles ?? 0,
+      calls: probe?.directStats?.directCalls ?? 0,
+      fallbacks: probe?.directStats?.directFallbacks ?? 0,
+    };
+    const postMs = cpuMs(() => {
+      const target = COLD_PS + (STEADY_MS * 2 - COLD_PS / PS_PER_MS) * PS_PER_MS;
+
+      while (board!.time < target) board!.runUntil(Math.min(board!.time + 10 * PS_PER_MS, target));
+    });
 
     cold.push(coldMs);
     steady.push(steadyMs);
+    post.push(postMs);
     if (round === 0) {
       direct = probe?.direct !== undefined && probe.direct !== null;
       programs = probe?.directPrograms?.size ?? 0;
       blocks = probe?.cache.size ?? 0;
+      shards = shardCount(probe);
       compiles = probe?.directStats?.directCompiles ?? 0;
+      calls = probe?.directStats?.directCalls ?? 0;
       fallbacks = probe?.directStats?.directFallbacks ?? 0;
+      postCompiles = compiles - beforePost.compiles;
+      postCalls = calls - beforePost.calls;
+      postFallbacks = fallbacks - beforePost.fallbacks;
     }
     board!.dispose();
   }
 
   const coldMs = min(cold);
   const steadyMs = min(steady);
+  const postMs = min(post);
   const totalMs = coldMs + steadyMs;
   const steadySimMs = STEADY_MS - COLD_PS / PS_PER_MS;
 
@@ -163,15 +210,22 @@ export function measureHal(execution: 'precise' | 'throughput'): HalSample {
     clockFrequency: CLOCK,
     coldMs: Number(coldMs.toFixed(0)),
     steadyMs: Number(steadyMs.toFixed(0)),
+    postMs: Number(postMs.toFixed(0)),
     totalMs: Number(totalMs.toFixed(0)),
     /** 稳态窗口的仿真时间 / 墙钟时间；大于 1 表示快于实时。 */
     steadyRealtimeFactor: Number((steadySimMs / steadyMs).toFixed(2)),
+    postRealtimeFactor: Number((STEADY_MS / postMs).toFixed(2)),
     /** 整段仿真（含冷启动）的实时倍率。 */
     realtimeFactor: Number((STEADY_MS / totalMs).toFixed(2)),
     direct,
     programs,
     blocks,
+    shards,
     compiles,
+    calls,
     fallbacks,
+    postCompiles,
+    postCalls,
+    postFallbacks,
   };
 }

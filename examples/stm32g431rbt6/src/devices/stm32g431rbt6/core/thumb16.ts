@@ -1,5 +1,6 @@
 import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
+import type { JitTranslateInput } from '@mica-js/sdk/device';
 import { APSR_C } from './layout';
 import {
   addWithCarry,
@@ -24,14 +25,18 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { conditional, loadRegister, readAnyReg, storeRegister, writeAnyReg } from './cpu';
-import { atCode, atSram } from './memory';
+import { atAddress, atCode, atMayService, atSram, CODE_MASK, gpioReadsAsZero } from './memory';
 import { exceptionReturn, isExceptionReturn } from './nvic';
+import type { KnownRegs } from './decode';
 
 export interface Instruction16 {
   readonly size: 2;
   readonly cycles: number;
+  readonly mayService: boolean;
   readonly emit: (b: Body, pc: number) => void;
 }
+
+type CodeBytes = JitTranslateInput['code'];
 
 const signed8 = (value: number): number => (value & 0x80 ? value - 0x100 : value);
 const signed11 = (value: number): number => (value & 0x400 ? value - 0x800 : value);
@@ -41,6 +46,75 @@ const addFlags = (b: Body, left: Value<number>, right: Value<number>): Value<num
 
 const subFlags = (b: Body, left: Value<number>, right: Value<number>): Value<number> =>
   subtractWithCarry(b, left, right, num(b, 0));
+
+const known = (regs: KnownRegs | undefined, index: number): number | undefined =>
+  regs?.[index & 0xf];
+
+const remember = (regs: KnownRegs | undefined, index: number, value: number | undefined): void => {
+  if (regs !== undefined) regs[index & 0xf] = value === undefined ? undefined : value >>> 0;
+};
+
+const staticAddress = (base: number | undefined, offset: number) =>
+  base === undefined ? undefined : atAddress((base + offset) >>> 0);
+
+const shiftNumber = (value: number, amount: number, type: number): number => {
+  const count = amount & 0xff;
+
+  if (type === 0) return (value << count) >>> 0;
+  if (type === 1) return value >>> count;
+  if (type === 2) return (value >> count) >>> 0;
+
+  return count === 0 ? value >>> 0 : ((value >>> count) | (value << (32 - count))) >>> 0;
+};
+
+const literalValue16 = (
+  code: CodeBytes | undefined,
+  pc: number,
+  instr: number,
+  firmwareLength: number,
+): number | undefined => {
+  if (code === undefined) return undefined;
+
+  const offset = (((((pc + 4) & ~3) + ((instr & 0xff) << 2)) >>> 0) & CODE_MASK) >>> 0;
+
+  if (offset + 4 > Math.min(firmwareLength, code.byteLength)) return undefined;
+
+  return (
+    ((code[offset] ?? 0) |
+      ((code[offset + 1] ?? 0) << 8) |
+      ((code[offset + 2] ?? 0) << 16) |
+      ((code[offset + 3] ?? 0) << 24)) >>>
+    0
+  );
+};
+
+const readConstant = (at: ReturnType<typeof atAddress> | undefined): number | undefined =>
+  at?.address !== undefined && gpioReadsAsZero(at.address) ? 0 : undefined;
+
+const immediateAt16 = (
+  regs: KnownRegs | undefined,
+  rn: number,
+  offset: number,
+): ReturnType<typeof atAddress> | undefined => staticAddress(known(regs, rn), offset);
+
+const registerAt16 = (
+  regs: KnownRegs | undefined,
+  rn: number,
+  rm: number,
+): ReturnType<typeof atAddress> | undefined => {
+  const base = known(regs, rn);
+  const index = known(regs, rm);
+
+  return base === undefined || index === undefined ? undefined : atAddress((base + index) >>> 0);
+};
+
+const mayServiceMemory16 = (
+  regs: KnownRegs | undefined,
+  rn: number,
+  offset: number,
+  register = false,
+): boolean =>
+  atMayService(register ? registerAt16(regs, rn, offset) : immediateAt16(regs, rn, offset));
 
 const writeResult = (b: Body, index: number, value: Value<number>): void => {
   writeReg(b, index, value);
@@ -82,14 +156,279 @@ function reverse16(b: Body, value: Value<number>): Value<number> {
   );
 }
 
-export function decode16(instr: number): Instruction16 {
-  const emit = (b: Body, pc: number): void => emit16(b, pc, instr);
-  const cycles = 1;
+function updateConstants16(
+  instr: number,
+  pc: number,
+  code: CodeBytes | undefined,
+  firmwareLength: number,
+  regs: KnownRegs | undefined,
+  snapshot: KnownRegs | undefined,
+): void {
+  if (regs === undefined) return;
 
-  return { size: 2, cycles, emit };
+  if (instr < 0x1800) {
+    const op = (instr >> 11) & 3;
+    const rm = (instr >> 3) & 7;
+    const rd = instr & 7;
+    const amount = (instr >> 6) & 0x1f;
+    const source = known(snapshot, rm);
+
+    if (op === 3) return;
+    if (source === undefined) remember(regs, rd, undefined);
+    else if (op === 0 && amount === 0) remember(regs, rd, source);
+    else if (op === 0) remember(regs, rd, source << amount);
+    else if (op === 1) remember(regs, rd, amount === 0 ? 0 : source >>> amount);
+    else
+      remember(regs, rd, amount === 0 ? (source & 0x80000000 ? 0xffffffff : 0) : source >> amount);
+
+    return;
+  }
+
+  if (instr < 0x2000) {
+    const immediate = (instr & 0x0400) !== 0;
+    const sub = (instr & 0x0200) !== 0;
+    const rn = (instr >> 3) & 7;
+    const rd = instr & 7;
+    const left = known(snapshot, rn);
+    const right = immediate ? (instr >> 6) & 7 : known(snapshot, (instr >> 6) & 7);
+
+    remember(
+      regs,
+      rd,
+      left === undefined || right === undefined ? undefined : sub ? left - right : left + right,
+    );
+
+    return;
+  }
+
+  if (instr < 0x4000) {
+    const op = (instr >> 11) & 3;
+    const rd = (instr >> 8) & 7;
+    const imm = instr & 0xff;
+    const current = known(snapshot, rd);
+
+    if (op === 0) remember(regs, rd, imm);
+    else if (op === 1) return;
+    else
+      remember(
+        regs,
+        rd,
+        current === undefined ? undefined : op === 2 ? current + imm : current - imm,
+      );
+
+    return;
+  }
+
+  if (instr < 0x4400) {
+    const op = (instr >> 6) & 0xf;
+    const rm = (instr >> 3) & 7;
+    const rdn = instr & 7;
+    const left = known(snapshot, rdn);
+    const right = known(snapshot, rm);
+    let result: number | undefined;
+
+    if (left !== undefined && right !== undefined) {
+      switch (op) {
+        case 0:
+          result = left & right;
+          break;
+        case 1:
+          result = left ^ right;
+          break;
+        case 2:
+        case 3:
+        case 4:
+        case 7:
+          result = shiftNumber(left, right, op === 2 ? 0 : op === 3 ? 1 : op === 4 ? 2 : 3);
+          break;
+        case 9:
+          result = -right;
+          break;
+        case 12:
+          result = left | right;
+          break;
+        case 13:
+          result = Math.imul(left, right);
+          break;
+        case 14:
+          result = left & ~right;
+          break;
+        case 15:
+          result = ~right;
+          break;
+      }
+    }
+
+    if (op !== 8 && op !== 10 && op !== 11) remember(regs, rdn, result);
+
+    return;
+  }
+
+  if (instr < 0x4800) {
+    const op = (instr >> 8) & 3;
+    const rd = (instr & 7) | ((instr >> 4) & 8);
+    const rm = (instr >> 3) & 0xf;
+    const left = rd === 15 ? (pc + 4) >>> 0 : known(snapshot, rd);
+    const right = rm === 15 ? (pc + 4) >>> 0 : known(snapshot, rm);
+
+    if (op === 0)
+      remember(regs, rd, left === undefined || right === undefined ? undefined : left + right);
+    else if (op === 2) remember(regs, rd, right);
+    else if (op === 3 && (instr & 0x80) !== 0) remember(regs, 14, undefined);
+
+    return;
+  }
+
+  if (instr < 0x5000) {
+    remember(regs, (instr >> 8) & 7, literalValue16(code, pc, instr, firmwareLength));
+
+    return;
+  }
+
+  if (instr < 0x6000) {
+    const op = (instr >> 9) & 7;
+    const rm = (instr >> 6) & 7;
+    const rn = (instr >> 3) & 7;
+
+    if (op >= 3) remember(regs, instr & 7, readConstant(registerAt16(snapshot, rn, rm)));
+
+    return;
+  }
+
+  if (instr < 0x9000) {
+    const kind = (instr >> 12) & 0xf;
+    const load = (instr & 0x0800) !== 0;
+    const size = kind === 6 ? 4 : kind === 7 ? 1 : 2;
+    const rn = (instr >> 3) & 7;
+    const rt = instr & 7;
+
+    if (load)
+      remember(
+        regs,
+        rt,
+        readConstant(immediateAt16(snapshot, rn, (((instr >> 6) & 0x1f) * size) >>> 0)),
+      );
+
+    return;
+  }
+
+  if (instr < 0xa000) {
+    if ((instr & 0x0800) !== 0) remember(regs, (instr >> 8) & 7, undefined);
+
+    return;
+  }
+
+  if (instr < 0xb000) {
+    const rd = (instr >> 8) & 7;
+    const imm = (instr & 0xff) << 2;
+
+    if ((instr & 0x0800) !== 0) {
+      const sp = known(snapshot, 13);
+
+      remember(regs, rd, sp === undefined ? undefined : sp + imm);
+    } else remember(regs, rd, (((pc + 4) & ~3) + imm) >>> 0);
+
+    return;
+  }
+
+  if (instr < 0xc000) {
+    if ((instr & 0xff00) === 0xb000) {
+      const sp = known(snapshot, 13);
+      const imm = (instr & 0x7f) << 2;
+
+      remember(regs, 13, sp === undefined ? undefined : (instr & 0x80) !== 0 ? sp - imm : sp + imm);
+    } else if ((instr & 0xff00) === 0xb200 || (instr & 0xff00) === 0xb300) {
+      remember(regs, instr & 7, undefined);
+    } else if ((instr & 0xfe00) === 0xb400) {
+      remember(regs, 13, undefined);
+    } else if ((instr & 0xfe00) === 0xbc00) {
+      const list = instr & 0xff;
+
+      for (let register = 0; register < 8; register += 1)
+        if ((list & (1 << register)) !== 0) remember(regs, register, undefined);
+      if ((instr & 0x0100) !== 0) remember(regs, 15, undefined);
+      remember(regs, 13, undefined);
+    }
+
+    return;
+  }
+
+  if (instr < 0xd000) {
+    const load = (instr & 0x0800) !== 0;
+    const rn = (instr >> 8) & 7;
+    const list = instr & 0xff;
+
+    if (load) {
+      for (let register = 0; register < 8; register += 1)
+        if ((list & (1 << register)) !== 0) remember(regs, register, undefined);
+    }
+    if (!load || (list & (1 << rn)) === 0) remember(regs, rn, undefined);
+
+    return;
+  }
+
+  if (instr >= 0xf000) regs.fill(undefined);
 }
 
-function emit16(b: Body, pc: number, instr: number): void {
+function mayService16(instr: number, regs: KnownRegs | undefined): boolean {
+  if (instr < 0x5000) return false;
+
+  if (instr < 0x6000) return mayServiceMemory16(regs, (instr >> 3) & 7, (instr >> 6) & 7, true);
+
+  if (instr < 0x9000) {
+    const kind = (instr >> 12) & 0xf;
+    const size = kind === 6 ? 4 : kind === 7 ? 1 : 2;
+
+    return mayServiceMemory16(regs, (instr >> 3) & 7, (((instr >> 6) & 0x1f) * size) >>> 0);
+  }
+
+  if (instr < 0xc000) return (instr & 0xfff7) === 0xb662 || (instr & 0xfff7) === 0xb672;
+
+  if (instr < 0xd000) {
+    const rn = (instr >> 8) & 7;
+    const list = instr & 0xff;
+
+    if (list === 0) return false;
+    const base = known(regs, rn);
+
+    if (base === undefined) return true;
+    for (let register = 0; register < 8; register += 1)
+      if ((list & (1 << register)) !== 0 && atMayService(atAddress((base + register * 4) >>> 0)))
+        return true;
+
+    return false;
+  }
+
+  return false;
+}
+
+export function decode16(
+  instr: number,
+  knownRegs?: KnownRegs,
+  pc = 0,
+  code?: CodeBytes,
+  firmwareLength = code?.byteLength ?? 0,
+): Instruction16 {
+  const snapshot = knownRegs?.slice();
+
+  updateConstants16(instr, pc, code, firmwareLength, knownRegs, snapshot);
+
+  return {
+    size: 2,
+    cycles: 1,
+    mayService: mayService16(instr, snapshot),
+    emit: (b, currentPc) => emit16(b, currentPc, instr, snapshot, code, firmwareLength),
+  };
+}
+
+function emit16(
+  b: Body,
+  pc: number,
+  instr: number,
+  knownRegs?: KnownRegs,
+  code?: CodeBytes,
+  firmwareLength = 0,
+): void {
   if (instr < 0x1800) {
     // LSL/LSR/ASR immediate.
     const op = (instr >> 11) & 3;
@@ -308,6 +647,13 @@ function emit16(b: Body, pc: number, instr: number): void {
     // LDR literal.
     const rt = (instr >> 8) & 7;
     const address = (pc + 4 + ((instr & 0xff) << 2)) >>> 0;
+    const value = literalValue16(code, pc, instr, firmwareLength);
+
+    if (value !== undefined) {
+      writeResult(b, rt, num(b, value));
+
+      return;
+    }
 
     loadRegister(b, rt, num(b, address & ~3), 4, pc, false, atCode(address & ~3 & 0x1ffff));
 
@@ -321,31 +667,32 @@ function emit16(b: Body, pc: number, instr: number): void {
     const rn = (instr >> 3) & 7;
     const rt = instr & 7;
     const address = b.add(readReg(b, rn), readReg(b, rm));
+    const at = registerAt16(knownRegs, rn, rm);
 
     switch (op) {
       case 0:
-        storeRegister(b, rt, address, 4, pc, undefined, true);
+        storeRegister(b, rt, address, 4, pc, at, true);
         break;
       case 1:
-        storeRegister(b, rt, address, 2, pc, undefined, true);
+        storeRegister(b, rt, address, 2, pc, at, true);
         break;
       case 2:
-        storeRegister(b, rt, address, 1, pc, undefined, true);
+        storeRegister(b, rt, address, 1, pc, at, true);
         break;
       case 3:
-        loadRegister(b, rt, address, 1, pc, true, undefined, true);
+        loadRegister(b, rt, address, 1, pc, true, at, true);
         break;
       case 4:
-        loadRegister(b, rt, address, 4, pc, false, undefined, true);
+        loadRegister(b, rt, address, 4, pc, false, at, true);
         break;
       case 5:
-        loadRegister(b, rt, address, 2, pc, false, undefined, true);
+        loadRegister(b, rt, address, 2, pc, false, at, true);
         break;
       case 6:
-        loadRegister(b, rt, address, 1, pc, false, undefined, true);
+        loadRegister(b, rt, address, 1, pc, false, at, true);
         break;
       default:
-        loadRegister(b, rt, address, 2, pc, true, undefined, true);
+        loadRegister(b, rt, address, 2, pc, true, at, true);
     }
 
     return;
@@ -360,9 +707,10 @@ function emit16(b: Body, pc: number, instr: number): void {
     const rt = instr & 7;
     const size = kind === 6 ? 4 : kind === 7 ? 1 : 2;
     const address = b.add(readReg(b, rn), num(b, imm * size));
+    const at = immediateAt16(knownRegs, rn, imm * size);
 
-    if (load) loadRegister(b, rt, address, size, pc, false, undefined, true);
-    else storeRegister(b, rt, address, size, pc, undefined, true);
+    if (load) loadRegister(b, rt, address, size, pc, false, at, true);
+    else storeRegister(b, rt, address, size, pc, at, true);
 
     return;
   }
@@ -409,17 +757,22 @@ function emit16(b: Body, pc: number, instr: number): void {
     for (let index = 0; index < 8; index += 1) if (list & (1 << index)) registers.push(index);
 
     const base = readAnyReg(b, rn, pc);
+    const staticBase = known(knownRegs, rn);
 
     if (load) {
       // LDM 的地址逐字递增，最多只有一个寄存器会命中 IDR，因此延迟读可以共用同一槽位。
-      registers.forEach((register, offset) =>
-        loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, false, undefined, true),
-      );
+      registers.forEach((register, offset) => {
+        const at = staticAddress(staticBase, offset * 4);
+
+        loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, false, at, true);
+      });
       if (!registers.includes(rn)) writeReg(b, rn, b.add(base, num(b, registers.length * 4)));
     } else {
-      registers.forEach((register, offset) =>
-        storeRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc),
-      );
+      registers.forEach((register, offset) => {
+        const at = staticAddress(staticBase, offset * 4);
+
+        storeRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, at);
+      });
       writeReg(b, rn, b.add(base, num(b, registers.length * 4)));
     }
 

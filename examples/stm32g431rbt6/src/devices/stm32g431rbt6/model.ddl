@@ -64,9 +64,17 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   state serviceMask: number = 0;
   /** 服务块要返回的 PC（节拍点指令顺序执行后的位置）。 */
   state serviceResume: number = 0;
+  /**
+   * HAL 时间轮询的一次性放行位。SysTick 时间事件把 CPU 转到 SERVICE_TICK 后置位，
+   * 中断返回后的第一轮轮询消费它，让 HAL_Delay 能重新检查终点而不必再等一个整节拍。
+   */
+  state pollContinue: bool = false;
   /** 待刷新引脚意图的端口位掩码（bit0=GPIOA … bit4=GPIOF）。 */
   state gpioSync: number = 0;
-  /** 待刷新的引脚位掩码，只对最新一次待执行写有效；配置写视为整端口。 */
+  /**
+   * Guest 已预计算的变化位。非零时服务块只消费该掩码并跳过寄存器重算；为零时服务块
+   * 执行完整的 GPIO 寄存器写。配置写使用零值走完整路径。
+   */
   state gpioPinMask: number = 0;
   /** 上一次同步时端口是否供电；供电变化会同时改变所有引脚的意图。 */
   state gpioPowered: bool = false;
@@ -122,6 +130,12 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   state gpioAfr12: number = 0;
   state gpioAfr13: number = 0;
   state gpioAfr14: number = 0;
+  /** GPIO ODR 影子，避免端口同步反复从 periph 读取 ODR。 */
+  state gpioOdr0: number = 0;
+  state gpioOdr1: number = 0;
+  state gpioOdr2: number = 0;
+  state gpioOdr3: number = 0;
+  state gpioOdr4: number = 0;
   /** 可能已具备中断条件；为 true 的块才扫描异常。 */
   state irqDirty: bool = false;
   /** SysTick CTRL.ENABLE 的影子，省掉每拍读 CTRL。 */
@@ -165,6 +179,60 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   output channel uart1Tx: number(capacity: 64, overflow: Overflow.drop_oldest);
   output channel uart2Tx: number(capacity: 64, overflow: Overflow.drop_oldest);
   output channel uart3Tx: number(capacity: 64, overflow: Overflow.drop_oldest);
+
+  /**
+   * HAL_Delay 轮询点的放行条件：有立即服务、刚由一个 SysTick 时间事件唤醒，或当前
+   * 不能安全地跳过时间（USART 正在发送 / SysTick 未使能）。后两种情况必须回到逐指令
+   * 路径，否则 predicate=false 且没有时间事件会让 JIT 永久停住。
+   */
+  pure fn halDelayPoll() -> bool {
+    return serviceMask != 0 || pollContinue || txMask != 0 || !systickOn;
+  }
+
+  /** 一次性放行位在轮询谓词成立后由运行时消费。 */
+  fn halDelayConsume() {
+    pollContinue = false;
+  }
+
+  /**
+   * 轮询点距离设备内部下一次时间事件还有多久。只有 SysTick 是唯一时间驱动源时才允许
+   * 直接推进；USART 发送中必须继续走逐指令路径，保持位时序。
+   */
+  pure fn halDelayWaitPs() -> number {
+    if !systickOn || txMask != 0 || serviceMask != 0 || pollContinue {
+      return 0;
+    }
+    const remaining = tickPs - pendingPs;
+    return remaining > 0 ? remaining : 1;
+  }
+
+  /**
+   * 在运行时推进到 SysTick 边界后更新模型状态。中断可立即取走时直接把 PC 转向
+   * SERVICE_TICK；PRIMASK 屏蔽时只保留挂起位，下一次轮询仍会等待。
+   */
+  fn halDelayAdvance(elapsedPs: number) {
+    if !systickOn || txMask != 0 || elapsedPs <= 0 {
+      return;
+    }
+    const remaining = tickPs - pendingPs;
+    if elapsedPs < remaining {
+      return;
+    }
+
+    pendingPs = 0;
+    systickVal = systickLoad;
+    systickCount = 1;
+    if (systickCtrl & 2) != 0 {
+      systickPending = 1;
+      irqDirty = true;
+      if primask == 0 {
+        pollContinue = true;
+        serviceResume = pc;
+        serviceMask = serviceMask | 16;
+        pc = 0x20000;
+      }
+    }
+  }
 
   /**
    * 复位：从向量表取初始 SP 与复位入口。入口地址的 bit0 是 Thumb 状态位，进入 JIT

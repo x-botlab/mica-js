@@ -12,6 +12,7 @@ import type {
   Entry,
   Execution,
   Jit,
+  JitPollingBinding,
   Observation,
   Process,
   Reaction,
@@ -886,11 +887,11 @@ export class Instance {
         throw this.board.error('INVALID_BINDING', 'Invalid instruction hook', this);
     } else if (Object.hasOwn(options, 'beforeInstruction'))
       throw new TypeError('Invalid beforeInstruction');
-    const polling = new Map<number, string>();
+    const polling = new Map<number, JitPollingBinding>();
     if (Object.hasOwn(options, 'polling')) {
       if (!Array.isArray(options.polling)) throw new TypeError('polling must be an array');
       for (const item of options.polling) {
-        dataObject(item, ['pc', 'predicate']);
+        dataObject(item, ['pc', 'predicate', 'consume', 'wait']);
         const pc = finite(item.pc, 'polling pc');
         const predicate = identity(item.predicate);
         const declaration = this.declarations.get(predicate);
@@ -902,7 +903,41 @@ export class Instance {
           declaration.returns?.kind !== 'bool'
         )
           throw this.board.error('INVALID_BINDING', 'Invalid polling declaration', this);
-        polling.set(pc, predicate);
+        let consume: string | undefined;
+        if (Object.hasOwn(item, 'consume')) {
+          consume = identity(item.consume);
+          const fn = this.declarations.get(consume);
+          if (fn?.kind !== 'function' || fn.params.length !== 0 || fn.returns !== undefined)
+            throw this.board.error('INVALID_BINDING', 'Invalid polling consume function', this);
+        }
+        let wait: JitPollingBinding['wait'];
+        if (Object.hasOwn(item, 'wait')) {
+          dataObject(item.wait, ['delay', 'advance']);
+          const delay = identity(item.wait.delay);
+          const advance = identity(item.wait.advance);
+          const delayFn = this.declarations.get(delay);
+          const advanceFn = this.declarations.get(advance);
+          if (
+            delayFn?.kind !== 'function' ||
+            !delayFn.pure ||
+            delayFn.params.length !== 0 ||
+            delayFn.returns?.kind !== 'number' ||
+            advanceFn?.kind !== 'function' ||
+            advanceFn.params.length !== 1 ||
+            advanceFn.params[0]!.type.kind !== 'number' ||
+            advanceFn.returns !== undefined
+          )
+            throw this.board.error('INVALID_BINDING', 'Invalid polling wait functions', this);
+          wait = Object.freeze({ delay, advance });
+        }
+        polling.set(
+          pc,
+          Object.freeze({
+            predicate,
+            ...(consume === undefined ? {} : { consume }),
+            ...(wait === undefined ? {} : { wait }),
+          }),
+        );
       }
     }
     if (Object.hasOwn(options, 'delays') && !(options.delays instanceof Map))
@@ -935,6 +970,7 @@ export class Instance {
       pollingWait: false,
       pollingPeriod: 0,
       pollingOrigin: 0,
+      pollingToken: 0,
       active: true,
       stopped: false,
       queued: false,
@@ -948,6 +984,7 @@ export class Instance {
         jit.active = false;
         jit.execution = undefined;
         delete jit.predicate;
+        jit.pollingToken++;
         this.board.waitingJits.delete(jit);
         jit.cache.clear();
         jit.directPrograms.clear();

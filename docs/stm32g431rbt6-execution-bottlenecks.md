@@ -1,14 +1,14 @@
 # STM32G431RBT6 HAL 执行期瓶颈：等待循环、GPIO 服务与 shard 往返
 
 - 日期：2026-11-14
-- 快照：`d7a6bf6` + 增量 Instruction 缓存、区间树 dispatcher、GPIO 变化位优化
+- 快照：`d7a6bf6` + 增量 Instruction 缓存、区间树 dispatcher、GPIO 变化位优化；后续优化见第 15 节
 - 对象：`examples/ili9325/test/fixtures/HAL_06_LCD.bin`，裸 MCU、80 MHz、`execution: 'throughput'`
 - 相关文档：
   - 重建成本：`docs/direct-jit-rebuild-cost.md`
   - 块结构：`docs/mcu-jit-block-inflation.md`
   - 缺陷与基准口径：`docs/stm32g431rbt6-issues.md`
 
-本文记录优化后剩余差距的真实归因。四类读数必须分开理解：
+第 1–14 节记录优化前的真实归因；第 15 节记录随后落地的优化与最终复测。四类读数必须分开理解：
 
 1. **首次运行冷启动**：新进程第一次跑该固件；
 2. **预热冷启动**：同一进程后续 board 的 0 → 200 µs；
@@ -29,16 +29,16 @@
 
 ## 2. 测量口径
 
-| 维度 | 取值 |
-| --- | --- |
-| Node | 24.20.0 |
-| 宿主 | 12th Gen Intel Core i7-12700K |
-| 固件 | `HAL_06_LCD.bin` |
-| 频率 | 80 MHz |
-| 板级 | 裸 MCU，只接 VDD/VSS |
-| 执行模式 | `throughput` |
-| 稳态宿主步长 | 10 ms |
-| profiler | `node:inspector`，稳定窗口 25 µs 采样 |
+| 维度         | 取值                                  |
+| ------------ | ------------------------------------- |
+| Node         | 24.20.0                               |
+| 宿主         | 12th Gen Intel Core i7-12700K         |
+| 固件         | `HAL_06_LCD.bin`                      |
+| 频率         | 80 MHz                                |
+| 板级         | 裸 MCU，只接 VDD/VSS                  |
+| 执行模式     | `throughput`                          |
+| 稳态宿主步长 | 10 ms                                 |
+| profiler     | `node:inspector`，稳定窗口 25 µs 采样 |
 
 稳定窗口 profile 前后：
 
@@ -54,13 +54,13 @@ cache=411, directPcs=411, directPrograms=1
 
 ### 3.1 当前基线
 
-| 窗口 | CPU |
-| --- | ---: |
-| 首次运行 0 → 200 µs | 约 6.6–7.2 s |
-| 预热冷启动 0 → 200 µs | 约 358–361 ms |
-| 官方稳态 200 µs → 220 ms | 约 1.007–1.013 s |
+| 窗口                       |                    CPU |
+| -------------------------- | ---------------------: |
+| 首次运行 0 → 200 µs        |           约 6.6–7.2 s |
+| 预热冷启动 0 → 200 µs      |          约 358–361 ms |
+| 官方稳态 200 µs → 220 ms   |       约 1.007–1.013 s |
 | 无重建稳定窗口，10 ms 切片 | 约 480–532 ms / 220 ms |
-| 无重建稳定窗口，单次推进 | 约 303–346 ms / 220 ms |
+| 无重建稳定窗口，单次推进   | 约 303–346 ms / 220 ms |
 
 无重建稳定窗口对应约 `0.46×` 实时（10 ms 切片）到 `0.73×` 实时（单次推进）。
 
@@ -72,37 +72,37 @@ cache=411, directPcs=411, directPrograms=1
 
 首轮 CPU profile 的 active 样本为 4,619 个：
 
-| 类别 | 占 active |
-| --- | ---: |
-| 设备块翻译、IR builder | **59.04%** |
-| direct JIT 编译 | 13.12% |
-| compiledBody / body compile | 10.05% |
-| GC | 9.59% |
-| 其他 | 5.65% |
-| direct 执行 | **1.39%** |
-| interpreter/runtime | 0.91% |
-| generated/V8 code | 0.15% |
-| board/runtime | 0.11% |
+| 类别                        |  占 active |
+| --------------------------- | ---------: |
+| 设备块翻译、IR builder      | **59.04%** |
+| direct JIT 编译             |     13.12% |
+| compiledBody / body compile |     10.05% |
+| GC                          |      9.59% |
+| 其他                        |      5.65% |
+| direct 执行                 |  **1.39%** |
+| interpreter/runtime         |      0.91% |
+| generated/V8 code           |      0.15% |
+| board/runtime               |      0.11% |
 
 首轮插桩成本：
 
-| 阶段 | 时间 |
-| --- | ---: |
-| 设备 `translate` / builder | 约 5,168.6 ms |
-| `validateBoundBlockIR` | 约 549.7 ms |
-| `body()` / compiledBody 生成 | 约 1,008.6 ms |
-| direct JIT 编译 | 约 1,295.2 ms |
-| direct 执行，938 次 `program.run` | 约 45.4 ms |
+| 阶段                              |          时间 |
+| --------------------------------- | ------------: |
+| 设备 `translate` / builder        | 约 5,168.6 ms |
+| `validateBoundBlockIR`            |   约 549.7 ms |
+| `body()` / compiledBody 生成      | 约 1,008.6 ms |
+| direct JIT 编译                   | 约 1,295.2 ms |
+| direct 执行，938 次 `program.run` |    约 45.4 ms |
 
 V8 与 GC：
 
-| 项目 | 首轮 |
-| --- | ---: |
-| `--trace-opt` 事件 | 489 次 |
+| 项目                     |        首轮 |
+| ------------------------ | ----------: |
+| `--trace-opt` 事件       |      489 次 |
 | V8 reported optimization | 约 918.5 ms |
-| GC 次数 | 294 次 |
-| GC pause | 约 451.8 ms |
-| 最高观测 heap | 约 618 MB |
+| GC 次数                  |      294 次 |
+| GC pause                 | 约 451.8 ms |
+| 最高观测 heap            |   约 618 MB |
 
 首轮时间主要由以下链路组成：
 
@@ -127,15 +127,15 @@ V8 与 GC：
 
 预热冷启动约 0.36 s 的成本拆分：
 
-| 项目 | 时间 | 占 25 次程序构建 |
-| --- | ---: | ---: |
-| 411 个唯一 `Instruction.compile` | 约 339.5 ms | 76.0% |
-| cache-hit 扫描 | 约 1.6 ms | 0.4% |
-| `shardProgram` 生成 shard 行 | 约 36.4 ms | 8.2% |
-| source join | 约 51.2 ms | 11.5% |
-| `new Function` | 约 13.2 ms | 3.0% |
-| metadata / freeze | 约 4.0 ms | 0.9% |
-| factory 调用 | 约 0.25 ms | 0.06% |
+| 项目                             |        时间 | 占 25 次程序构建 |
+| -------------------------------- | ----------: | ---------------: |
+| 411 个唯一 `Instruction.compile` | 约 339.5 ms |            76.0% |
+| cache-hit 扫描                   |   约 1.6 ms |             0.4% |
+| `shardProgram` 生成 shard 行     |  约 36.4 ms |             8.2% |
+| source join                      |  约 51.2 ms |            11.5% |
+| `new Function`                   |  约 13.2 ms |             3.0% |
+| metadata / freeze                |   约 4.0 ms |             0.9% |
+| factory 调用                     |  约 0.25 ms |            0.06% |
 
 25 次程序构建累计拼接约 34.9 MB 源码，最终程序约 5.4 MB。
 
@@ -151,46 +151,46 @@ V8 与 GC：
 
 10 ms 切片：
 
-| 函数/组 | 占比 |
-| --- | ---: |
-| `stepShardN` 合计 | **56.65%** |
-| 生成 dispatcher `run` | **29.37%** |
-| `runDirect` | 2.63% |
-| `run` + `runDirect` | 31.99% |
-| GPIO/电气 helper 合计 | 8.66% |
-| direct/data helper 合计 | 1.80% |
-| GC | 0.53% |
-| `resumeShardN` | 0.02% |
-| boundary/publish/电气求解 | 约 0.02% |
+| 函数/组                   |       占比 |
+| ------------------------- | ---------: |
+| `stepShardN` 合计         | **56.65%** |
+| 生成 dispatcher `run`     | **29.37%** |
+| `runDirect`               |      2.63% |
+| `run` + `runDirect`       |     31.99% |
+| GPIO/电气 helper 合计     |      8.66% |
+| direct/data helper 合计   |      1.80% |
+| GC                        |      0.53% |
+| `resumeShardN`            |      0.02% |
+| boundary/publish/电气求解 |   约 0.02% |
 
 单次推进时 V8 会把 dispatcher 内联到 `runDirect`，因此函数名归因不同，但结构相同。
 
 ### 6.2 动态执行量
 
-| 指标 | 数量 |
-| --- | ---: |
-| guest 指令 | 约 19,290,214 |
-| block 入口 | 约 6,966,850 |
-| guest block 入口 | 约 5,875,031 |
-| service block 入口 | 约 1,091,819 |
-| guest block 平均指令数 | 3.28 |
-| `stepShardN` 调用 | 约 5,286,955 |
-| 平均每 shard 执行块数 | 1.32 |
-| `resumeShardN` 调用 | 0 |
-| direct state 读 | 约 110.15 M |
-| direct state 写 | 约 62.61 M |
-| `load32` | 约 4.89 M |
-| `store32` | 约 1.10 M |
+| 指标                   |          数量 |
+| ---------------------- | ------------: |
+| guest 指令             | 约 19,290,214 |
+| block 入口             |  约 6,966,850 |
+| guest block 入口       |  约 5,875,031 |
+| service block 入口     |  约 1,091,819 |
+| guest block 平均指令数 |          3.28 |
+| `stepShardN` 调用      |  约 5,286,955 |
+| 平均每 shard 执行块数  |          1.32 |
+| `resumeShardN` 调用    |             0 |
+| direct state 读        |   约 110.15 M |
+| direct state 写        |    约 62.61 M |
+| `load32`               |     约 4.89 M |
+| `store32`              |     约 1.10 M |
 
 ## 7. 热点一：HAL_Delay/HAL_GetTick 忙等循环
 
 ### 7.1 热点 guest 块
 
-| PC | 块入口 | 占全部块入口 | state 读 | state 写 | 语义 |
-| --- | ---: | ---: | ---: | ---: | --- |
-| `0x08000470` | 1,412,677 | 20.28% | 24,015,741 | 14,127,242 | `HAL_GetTick` |
-| `0x0800028C` | 1,412,668 | 20.28% | 9,888,908 | 5,651,144 | `HAL_Delay` 循环 |
-| `0x08000290` | 1,412,668 | 20.28% | 31,079,158 | 15,539,812 | `HAL_Delay` 比较/跳转 |
+| PC           |    块入口 | 占全部块入口 |   state 读 |   state 写 | 语义                  |
+| ------------ | --------: | -----------: | ---------: | ---------: | --------------------- |
+| `0x08000470` | 1,412,677 |       20.28% | 24,015,741 | 14,127,242 | `HAL_GetTick`         |
+| `0x0800028C` | 1,412,668 |       20.28% |  9,888,908 |  5,651,144 | `HAL_Delay` 循环      |
+| `0x08000290` | 1,412,668 |       20.28% | 31,079,158 | 15,539,812 | `HAL_Delay` 比较/跳转 |
 
 三块合计：
 
@@ -232,14 +232,14 @@ V8 与 GC：
 
 ### 8.1 服务次数
 
-| 服务 PC | 服务内容 | 次数 | 占 service 入口 |
-| --- | --- | ---: | ---: |
-| `0x20011` | GPIOB 写/同步 | 952,963 | 87.3% |
-| `0x20012` | GPIOC 写/同步 | 136,623 | 12.5% |
-| `0x20000` | SysTick/USART/中断 tick | 2,198 | 0.20% |
-| `0x20010` | GPIOA 写/同步 | 16 | 0.001% |
-| `0x20040` | 非 GPIO 延迟写 | 16 | 0.001% |
-| `0x20030` | GPIO IDR 延迟读 | 3 | 0.0003% |
+| 服务 PC   | 服务内容                |    次数 | 占 service 入口 |
+| --------- | ----------------------- | ------: | --------------: |
+| `0x20011` | GPIOB 写/同步           | 952,963 |           87.3% |
+| `0x20012` | GPIOC 写/同步           | 136,623 |           12.5% |
+| `0x20000` | SysTick/USART/中断 tick |   2,198 |           0.20% |
+| `0x20010` | GPIOA 写/同步           |      16 |          0.001% |
+| `0x20040` | 非 GPIO 延迟写          |      16 |          0.001% |
+| `0x20030` | GPIO IDR 延迟读         |       3 |         0.0003% |
 
 GPIO 服务合计约 109 万次，占全部块入口 15.6%，并伴随约 10.9 M state 读、4.36 M state 写。
 
@@ -273,17 +273,17 @@ profile 中：
 
 热点 guest 块的主要成本不是 ARM 语义本身，而是每条 guest 指令携带的通用守卫：
 
-| 状态/守卫 | 动态量 |
-| --- | ---: |
-| `pc` 读 | 约 23.63 M |
-| `pc` 写 | 约 27.05 M |
-| `serviceMask` 读 | 约 17.25 M |
-| `serviceMask` 写 | 约 2.18 M |
-| `pendingPs` 读/写 | 各约 15.07 M |
-| `halted` 读 | 约 16.16 M |
-| `tickActive` 读 | 约 4.79 M |
-| `tickPs` 读 | 约 4.79 M |
-| `running` 条件检查 | 约 17.47 M |
+| 状态/守卫          |       动态量 |
+| ------------------ | -----------: |
+| `pc` 读            |   约 23.63 M |
+| `pc` 写            |   约 27.05 M |
+| `serviceMask` 读   |   约 17.25 M |
+| `serviceMask` 写   |    约 2.18 M |
+| `pendingPs` 读/写  | 各约 15.07 M |
+| `halted` 读        |   约 16.16 M |
+| `tickActive` 读    |    约 4.79 M |
+| `tickPs` 读        |    约 4.79 M |
+| `running` 条件检查 |   约 17.47 M |
 
 约 90.6% 的 guest 指令执行前都要经过 `running` 守卫。
 
@@ -350,10 +350,10 @@ profile 中：
 
 稳定窗口剩余的约 2.2× 差距：
 
-| 来源 | 粗略占比 |
-| --- | ---: |
-| 器件生成代码、等待链、GPIO/电气路径 | 60–65% |
-| 通用 JIT dispatcher、shard 往返、frame 同步 | 35–40% |
+| 来源                                        | 粗略占比 |
+| ------------------------------------------- | -------: |
+| 器件生成代码、等待链、GPIO/电气路径         |   60–65% |
+| 通用 JIT dispatcher、shard 往返、frame 同步 |   35–40% |
 
 最重要的单一结论：
 
@@ -369,3 +369,59 @@ profile 中：
 - 稳定窗口必须确认 `directCompiles` 和 `directFallbacks` 不再增长；
 - 插桩会显著改变绝对耗时，动态计数只用于解释路径，不用于性能份额；
 - 当前精确读数随 V8、宿主和代码版本变化，以基准 stdout 为准。
+
+## 15. 已落地优化与复测
+
+2026-11-14 落地了等待循环和通用 JIT 调度两项结构性优化：
+
+1. **SysTick 时间事件轮询**：`JitOptions.polling` 增加 `consume` 与
+   `wait: { delay, advance }`。设备模型识别
+   `bl HAL_GetTick; subs; cmp; bcc` 的 HAL_Delay 形态，在轮询入口等待到 SysTick 边界；
+   `advance` 更新 SysTick、设置 pending 并按 PRIMASK 决定是否转入 `SERVICE_TICK`。
+   一轮中断返回后 `consume` 放行一次轮询，使终点判断立即完成。精确模式仍逐指令执行；
+   USART 活跃或 SysTick 未使能时回到逐指令服务路径。
+2. **shard 常驻与增量 dispatcher**：已封闭 `stepShardN` / `resumeShardN` 作为函数对象跨程序
+   修订复用，新块主要只影响开放尾 shard。每次程序修订只生成小型 PC switch dispatcher；
+   continuation ID 在 cache 内稳定，跨 shard 的下一 PC 在同一个 `run` 循环内续接。
+3. **批级守卫削减**：一个指令批的 `pendingPs` 先保存在局部槽，只在批尾或真正进入服务块时
+   写回；停机路径通过把 `pc` 留在故障指令来停止后续批次，不再逐条读取 `halted`。
+
+复测口径与第 2 节相同（Node 24.20.0、HAL_06_LCD、80 MHz、throughput、10 ms 切片、三进程）：
+
+| 指标                 |  优化前 |         优化后 |
+| -------------------- | ------: | -------------: |
+| 0 → 200 µs 冷启动    |  398 ms | **361–365 ms** |
+| 200 µs → 220 ms 稳态 | 1056 ms | **605–630 ms** |
+| 稳态实时倍率         |   0.21× | **0.35–0.36×** |
+| 整段 220 ms          | 1454 ms | **967–995 ms** |
+| `directCompiles`     |      25 |         **21** |
+| `directFallbacks`    |    4702 |       **5041** |
+
+这轮复测确认时间等待不再是主要执行路径：HAL_Delay 只在每个 SysTick 边界进入服务块，
+而不是逐轮执行上百万次 guest 块。剩余稳定窗口的主要成本转移到 GPIO 服务与器件生成代码。
+
+GPIO 侧验证了若干结构候选，包括供电状态事件缓存、输出/配置服务拆分、惰性配置读和组掩码
+路由。供电缓存能把 `sample('VDD1')` 从 220 ms 内约 54.5 万次降到 0。完整事件实现带来额外的
+初始化服务、反应链和状态开销，HAL 稳态中位数由约 608 ms 变为 645 ms；去掉额外状态的精简版
+交替 A/B 为 603/614 ms，对照基线为 614/612 ms，仍没有稳定收益。两版都没有保留生产改动，
+相关语义边界保留为 `test/gpio-sync.test.ts` 回归。下一步收益更大的方向仍是合并连续 GPIO
+写、按输出/配置拆分服务入口，或在电气边界延迟 pin intent 构造。
+
+### 15.1 三路并行优化集成后
+
+在轮询快速退出、resident shard 容量回填、GPIO ODR 影子与跨 service 寄存器事实传播完成后，
+同一 `HAL_06_LCD` 基准（三次独立进程，窗口内三轮取最小值）为：
+
+| 指标                                 |    `96e0305` |     当前工作树 |
+| ------------------------------------ | -----------: | -------------: |
+| 0 → 200 µs 冷启动                    |   378–410 ms | **300–316 ms** |
+| 200 µs → 220 ms 官方稳态             | 1109–1190 ms | **461–498 ms** |
+| 220 ms → 440 ms 无重建窗口           |   346–359 ms | **230–255 ms** |
+| 官方稳态实时倍率                     |   0.18–0.20× | **0.44–0.48×** |
+| 无重建实时倍率                       |   0.61–0.64× | **0.86–0.96×** |
+| resident shard                       |          147 |         **76** |
+| `directCompiles` / `directFallbacks` |    25 / 4702 |  **21 / 3323** |
+
+220 ms → 440 ms 窗口的块入口从 6,974,013 降到 1,918,086；GPIO service 入口从约 109 万降到
+约 54.6 万，GPIOC service 从 136,879 降到 892。详细热点表见
+`docs/stm32g431rbt6-steady-state-bottlenecks.md` 第 8 节。

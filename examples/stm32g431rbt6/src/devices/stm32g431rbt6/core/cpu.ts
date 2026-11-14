@@ -45,8 +45,8 @@ export function loadRegister(
     b,
     address,
     size,
-    at,
     defer && target !== 15 ? { target, signed } : undefined,
+    at,
   );
   const value = signed ? signExtend(b, raw, size * 8) : raw;
 
@@ -62,7 +62,7 @@ export function storeRegister(
   at?: At,
   defer = false,
 ): void {
-  writeMemory(b, address, size, readAnyReg(b, source, pc), at, defer);
+  writeMemory(b, address, size, readAnyReg(b, source, pc), defer, at);
 }
 
 export const mul = (b: Body, left: Value<number>, right: Value<number>): Value<number> =>

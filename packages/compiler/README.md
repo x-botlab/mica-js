@@ -137,8 +137,13 @@ bounds/endianness, and any code-memory invalidation the host performs on stores.
 trace into one numeric-bank switch/loop. Traces whose emitted source exceeds the
 monolithic budget are split into shards, each a small function with its own
 dispatcher range, because generated size — not instruction count — decides whether
-V8 keeps optimizing a function. Each instruction supplies `pc`, `nextPc`
-and its already validated `body`. Unsupported instructions are omitted; an unknown
+V8 keeps optimizing a function. When a reusable cache is supplied, split programs
+keep closed `stepShard` / `resumeShard` function objects resident across later cache
+revisions; each revision rebuilds only a small exact-PC dispatcher and the open tail
+shard affected by new or invalidated instructions. Continuation IDs are stable within
+that cache, so cached shard functions remain valid as more PCs are added. Each
+instruction supplies `pc`, `nextPc` and its already validated `body`. Unsupported
+instructions are omitted; an unknown
 or unsupported PC exits with `fallback` before changing that instruction's PC or
 performing any of its effects. The first occurrence of each PC owns lookup, even
 when unsupported. If nothing is supported, compilation returns `undefined`.
@@ -167,10 +172,12 @@ time. Times and durations use integer picoseconds in the existing time range.
 
 `program.run(frame, deadline)` returns `deadline`, `fallback`, `stopped`, or
 `invalidated`. It executes multiple instructions without generators, per-instruction
-objects, host callbacks, or runtime Map lookups. Scalar intermediates stay in native
-locals until a horizon requires saving them, and values whose live ranges do not
-overlap share one local, so a block that decodes thousands of IR operations still
-emits a handful of registers. State/memory effects accumulate in the
+objects, host callbacks, or runtime Map lookups. Cross-shard transitions stay inside
+the same `run` loop: a shard returns the validated next PC and the dispatcher re-routes
+it without re-entering the simulator. Scalar intermediates stay in native locals until
+a horizon requires saving them, and values whose live ranges do not overlap share one
+local, so a block that decodes thousands of IR operations still emits a handful of
+registers. State/memory effects accumulate in the
 supplied reusable banks; the runtime must commit/invalidate only resources marked
 in the current invocation's dirty words in `finally`, including when execution
 throws. Conservative resource lists are eligibility guards, not flush lists: a

@@ -113,17 +113,37 @@ function captureFactory(compile) {
   return source;
 }
 
+/** Captures every factory body created while compiling one revision. */
+function captureFactories(compile) {
+  const original = globalThis.Function;
+  const sources = [];
+  globalThis.Function = function (...args) {
+    sources.push(args.at(-1));
+    return original(...args);
+  };
+  try {
+    compile();
+  } finally {
+    globalThis.Function = original;
+  }
+  return sources;
+}
+
 /** Compiles both emitters and runs them side by side, comparing every observable. */
 function duet(instructions, options = {}) {
   const settings = options.binding ?? binding;
   const shardSize = options.shardSize ?? 4;
   const whole = compileDirectJit(instructions, settings);
-  const split = compileDirectJit(instructions, {
-    ...settings,
-    split: true,
-    shardSlotLimit: 0,
-    shardSize,
-  });
+  const split = compileDirectJit(
+    instructions,
+    {
+      ...settings,
+      split: true,
+      shardSlotLimit: 0,
+      shardSize,
+    },
+    options.cache,
+  );
   assert(whole, 'monolithic program');
   assert(split, 'split program');
   const make = (program) => {
@@ -2480,6 +2500,7 @@ test('large shard sets use a balanced interval tree without changing fallback bo
   const options = { ...binding, split: true, shardSlotLimit: 0, shardSize: 1 };
   const program = compileDirectJit(instructions, options);
   assert(program);
+  assert.equal(program.shards, 20);
   const source = generated(program);
   assert.equal(source.match(/stepShard\d+\(F, deadline, pc\)/g).length, 20);
   assert.equal(source.match(/resumeShard\d+\(F, resume\)/g).length, 20);
@@ -2501,6 +2522,171 @@ test('large shard sets use a balanced interval tree without changing fallback bo
     const valid = frame(program, [pc, 0, 0, true, 0, 0]);
     assert.equal(program.run(valid, 1), 'deadline');
   }
+});
+
+test('resident shards continue cross-shard transitions inside one program run', () => {
+  const cache = compileDirectJit.createCache();
+  const pair = duet(scalarLoop(), { cache, shardSize: 1 });
+  const reference = generic(scalarLoop(), [0, 1, 0, true, 0, 0], [Uint8Array.from([7, 8, 9])]);
+  for (const deadline of [0, 1, 2, 3, 5, 8, 13, 21, 39]) {
+    assert.equal(pair.run(deadline), reference.run(deadline));
+    assert.deepEqual(pair.left.frame.states, reference.states);
+    assert.deepEqual(pair.left.frame.memories, reference.memories);
+    assert.equal(pair.left.frame.time, reference.time);
+  }
+  assert(pair.left.frame.states[1] > 1);
+  const gap = frame(pair.right.program, [1, 0, 0, true, 0, 0]);
+  assert.equal(pair.right.program.run(gap, 10), 'fallback');
+  const invalidResume = frame(pair.right.program);
+  invalidResume.resume = 9999;
+  assert.throws(() => pair.right.program.run(invalidResume, 10), /Unknown direct JIT continuation/);
+
+  const loop = duet(scalarLoop(), { cache: compileDirectJit.createCache(), shardSize: 1 });
+  assert.equal(loop.run(1), 'deadline');
+  loop.left.frame.stopAfterInstruction = true;
+  loop.right.frame.stopAfterInstruction = true;
+  assert.equal(loop.run(2), 'deadline');
+  assert.equal(loop.run(100), 'invalidated');
+  assert.equal(loop.run(101), 'invalidated');
+});
+
+test('resident shard range fast paths fall through when newer shards overlap', () => {
+  const cache = compileDirectJit.createCache();
+  const options = { ...binding, split: true, shardSize: 2 };
+  const block = (pc, nextPc) => {
+    const b = builder();
+    b.write('x', b.binary('add', b.read('x'), b.constant(1)));
+    b.delay(1);
+    return b.instruction(pc, nextPc);
+  };
+  const zero = block(0, 2);
+  const two = block(2, 1);
+  const one = block(1, 0);
+  const initial = compileDirectJit([zero, two], options, cache);
+  const expanded = compileDirectJit([zero, two, one], options, cache);
+  assert(initial && expanded);
+  const f = frame(expanded, [0, 0, 0, true, 0, 0]);
+  assert.equal(expanded.run(f, 100), 'deadline');
+  assert.equal(f.time, 100);
+  assert.equal(f.states[1], 100);
+  assert.equal(f.states[0], 2);
+});
+
+test('resident continuations keep the captured pre-elapse load', () => {
+  const b = builder();
+  b.write('marker', b.constant(17));
+  const loaded = b.value({ kind: 'load8', memory: ram, offset: b.read('offset') });
+  b.delay(10);
+  b.write('x', loaded);
+  const pair = duet([b.instruction(0, 99)], {
+    cache: compileDirectJit.createCache(),
+    shardSize: 1,
+  });
+  assert.equal(pair.run(4), 'deadline');
+  for (const side of [pair.left, pair.right]) {
+    side.frame.stateDirty.fill(0);
+    side.frame.memories[0][0] = 200;
+    side.frame.states[4] = 2;
+  }
+  assert.equal(pair.run(10), 'deadline');
+  assert.equal(pair.right.frame.states[1], 1);
+  assert(pair.right.frame.resume > 0);
+  assert.equal(pair.run(11), 'fallback');
+  assert.equal(pair.right.frame.states[1], 7);
+  assert.equal(pair.right.frame.resume, 0);
+});
+
+test('resident shards rebuild only the open tail and keep closed functions reusable', () => {
+  const cache = compileDirectJit.createCache();
+  const hostedBinding = { ...binding, host: true, split: true, shardSize: 2 };
+  const block = (pc, channel) => {
+    const b = builder();
+    b.operations.push({ kind: 'send', channel, value: b.constant(pc + 1) });
+    b.delay(1);
+    return b.instruction(pc, pc + 1);
+  };
+  const blocks = Array.from({ length: 5 }, (_, index) => block(index, `c${index}`));
+  let initial;
+  const firstSources = captureFactories(() => {
+    initial = compileDirectJit(blocks.slice(0, 3), hostedBinding, cache);
+  });
+  assert(initial);
+  assert.equal(initial.shards, 2);
+  assert.equal(firstSources.filter((source) => /function stepShard/.test(source)).length, 2);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 3,
+    reusedBlocks: 0,
+    invalidatedBlocks: 0,
+    compiledShards: 2,
+    reusedShards: 0,
+    entries: 3,
+    clears: 0,
+  });
+
+  let expanded;
+  const expandedSources = captureFactories(() => {
+    expanded = compileDirectJit(blocks, hostedBinding, cache);
+  });
+  assert(expanded);
+  assert.equal(expanded.shards, 3);
+  // The closed two-block shard survives; the old open shard and the new tail are rebuilt.
+  assert.equal(expandedSources.filter((source) => /function stepShard/.test(source)).length, 2);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 5,
+    reusedBlocks: 3,
+    invalidatedBlocks: 0,
+    compiledShards: 4,
+    reusedShards: 1,
+    entries: 5,
+    clears: 0,
+  });
+
+  let stableProgram;
+  const stableSources = captureFactories(() => {
+    stableProgram = compileDirectJit(blocks, hostedBinding, cache);
+  });
+  assert.equal(stableSources.filter((source) => /function stepShard/.test(source)).length, 0);
+  assert(stableProgram);
+  assert.equal(stableProgram.shards, 3);
+  const stable = compileDirectJit.cacheStats(cache);
+  assert.equal(stable.compiledShards, 4);
+  assert.equal(stable.reusedShards, 4);
+
+  const run = (program) => {
+    const f = frame(program);
+    f.host = hostRecorder(() => f.time);
+    assert.equal(program.run(f, 10), 'fallback');
+    return f.host.entries.filter(([kind]) => kind === 'send');
+  };
+  const expected = blocks.map((_, pc) => ['send', `c${pc}`, pc + 1, pc]);
+  assert.deepEqual(run(initial), expected.slice(0, 3));
+  assert.deepEqual(run(expanded), expected);
+
+  compileDirectJit.clearCache(cache);
+  assert.deepEqual(run(initial), expected.slice(0, 3));
+  assert.deepEqual(run(expanded), expected);
+});
+
+test('resident delay-guard changes rebuild only the affected shard', () => {
+  const cache = compileDirectJit.createCache();
+  const first = scalarLoop()[0];
+  const second = scalarLoop()[1];
+  const withDelay = (cycles) => ({
+    ...binding,
+    split: true,
+    shardSize: 1,
+    delayLoops: new Map([[0, { counter: 1, cycles }]]),
+  });
+  const initial = compileDirectJit([first, second], withDelay(1), cache);
+  assert(initial);
+  const sources = captureFactories(() => {
+    assert(compileDirectJit([first, second], withDelay(2), cache));
+  });
+  assert.equal(sources.filter((source) => /function stepShard/.test(source)).length, 1);
+  const stats = compileDirectJit.cacheStats(cache);
+  assert.equal(stats.compiledShards, 3);
+  assert.equal(stats.reusedShards, 1);
+  assert.equal(stats.invalidatedBlocks, 1);
 });
 
 test('byte literals and indexing stay direct and match compileBody', () => {
@@ -2706,6 +2892,8 @@ test('incremental cache reuses old blocks and keeps constant indices stable', ()
     compiledBlocks: 1,
     reusedBlocks: 0,
     invalidatedBlocks: 0,
+    compiledShards: 0,
+    reusedShards: 0,
     entries: 1,
     clears: 0,
   });
@@ -2716,6 +2904,8 @@ test('incremental cache reuses old blocks and keeps constant indices stable', ()
     compiledBlocks: 2,
     reusedBlocks: 1,
     invalidatedBlocks: 0,
+    compiledShards: 0,
+    reusedShards: 0,
     entries: 2,
     clears: 0,
   });
@@ -2726,6 +2916,8 @@ test('incremental cache reuses old blocks and keeps constant indices stable', ()
     compiledBlocks: 2,
     reusedBlocks: 3,
     invalidatedBlocks: 0,
+    compiledShards: 0,
+    reusedShards: 0,
     entries: 2,
     clears: 0,
   });
@@ -2763,6 +2955,8 @@ test('delay-loop changes invalidate only the affected cached guard', () => {
     compiledBlocks: 2,
     reusedBlocks: 0,
     invalidatedBlocks: 1,
+    compiledShards: 0,
+    reusedShards: 0,
     entries: 1,
     clears: 0,
   });
@@ -2799,6 +2993,8 @@ test('same-PC body changes and cache clears force recompilation without invalida
     compiledBlocks: 2,
     reusedBlocks: 0,
     invalidatedBlocks: 1,
+    compiledShards: 0,
+    reusedShards: 0,
     entries: 0,
     clears: 1,
   });

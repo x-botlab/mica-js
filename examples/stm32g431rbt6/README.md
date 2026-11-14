@@ -21,22 +21,29 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
 因此同一段窗口覆盖 GPIO、RCC、PWR、USART、SysTick、NVIC 与 Flash 取指。
 
 测量口径：裸 MCU 板（只接 VDD/VSS，去掉 LCD 与探针）、80 MHz（固件自己配置的主频）、
-进程 CPU 时间、三轮取最小值。两个窗口：**冷启动** 0 → 200 µs；**稳态** 200 µs → 220 ms。
+进程 CPU 时间、三轮取最小值。三个窗口：**冷启动** 0 → 200 µs；**官方稳态** 200 µs → 220 ms；
+**无重建稳态** 220 ms → 440 ms。
 
 ### 实测（`bench/hal-throughput.test.ts` / `bench/hal-precise.test.ts`）
 
 2026-11-14 当前快照（精确值随宿主和 V8 状态变化，以测试 stdout 为准）：
 
-| 指标                    | `throughput`（主路径） |
-| ----------------------- | ---------------------- |
-| 0 → 200 µs 冷启动       | 约 358–361 ms CPU      |
-| 200 µs → 220 ms 稳态    | 约 1.007–1.013 s CPU   |
-| 稳态实时倍率            | 约 0.22×               |
-| 整段 220 ms（含冷启动） | 约 1.368–1.370 s       |
-| 缓存指令块              | 411                    |
+| 指标                    | `throughput`（主路径，三次独立进程） |
+| ----------------------- | ------------------------------------ |
+| 0 → 200 µs 冷启动       | 约 300–316 ms CPU                    |
+| 200 µs → 220 ms 稳态    | 约 461–498 ms CPU                    |
+| 220 ms → 440 ms 无重建  | 约 230–255 ms CPU                    |
+| 官方稳态实时倍率        | 约 0.44–0.48×                        |
+| 无重建实时倍率          | 约 0.86–0.96×                        |
+| 整段 220 ms（含冷启动） | 约 761–806 ms                        |
+| 缓存指令块              | 406                                  |
+| resident shard          | 76                                   |
+| 程序编译次数 / fallback | 21 / 3323                            |
 
-`throughput` 已按 PC 缓存已编译 `Instruction`，首个 200 µs 的 25 次程序级重建不再重复执行
-块级 `emit/compact/rewrite`；剩余冷启动成本主要是 full dispatcher/shard 组装和 V8 首次优化。
+`throughput` 已按 PC 缓存已编译 `Instruction`，并将已生成的 shard 函数常驻在 direct cache 中；
+每个程序修订只生成小的 PC dispatcher，新增块通常只重发开放尾 shard，并按容量回填相邻的
+稀疏 shard。220 ms 后 `directCompiles` 保持为 21，220 ms → 440 ms 没有新增编译或 fallback。
+剩余冷启动成本主要是首次设备 Thumb 翻译、IR builder 与校验，以及 V8 首次优化和 GC。
 `precise` 只作为同固件对照，精确值以 `bench/hal-precise.test.ts` 输出为准。
 
 ### 轻量基线（`bench/perf.test.ts`）
@@ -78,6 +85,9 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
   真正受 IT 控制的指令才读 `itState` 并发射条件选择链。
 - **延时环折算计入服务累加器**：声明的 `delayLoops` 带 `pending`，折算停在下一次服务边界并把
   折叠掉的时间记进 `pendingPs`，否则 SysTick/USART 会因为跳过轮次而饿死。
+- **HAL_Delay 使用时间事件轮询**：识别 `bl HAL_GetTick; subs; cmp; bcc` 等待形态，在 SysTick
+  边界推进模型并回到轮询头复查；`consume` 放行一轮，避免终点后多等一个 tick。`PRIMASK`
+  屏蔽时只保留 pending，USART 活跃或 SysTick 未使能时回到逐指令服务路径。
 - **USART 字节发布延迟到服务块**：TDR 写入只锁存待发字节，发布统一发生在服务块，使通道
   发布与节拍边界对齐、指令块保持无 `send` 的均匀成本。直接后端已支持内联 `send`，这条
   仍保留是因为它让发布时机可预期，而不是后端限制。
@@ -89,14 +99,15 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
 
 ### 直接后端的剩余成本
 
-- **冷启动**：首次翻译与整程序重建占大头。直接程序暴露它编译过的 PC 集合，翻译只增不改，
-  因此旧程序对已覆盖的 PC 继续有效；重建按 `max(步长, 已编译块数)` 摊薄，并对反复回退的 PC
-  提前触发。即便如此，411 个块仍要 25 次重建、近 1 s。
+- **冷启动**：首次设备 Thumb 翻译、IR builder 与校验占大头；直接程序的 shard 常驻已消除
+  每轮重拼完整源码和重新优化已封闭 shard。406 个块仍需要首次翻译和 21 次增量程序组装，
+  `0 → 200 µs` 约 0.30 s。
 - **服务块体量**：`SERVICE_WRITE` / IDR 大块主要影响首次翻译；GPIO 写服务在稳态也高频执行。
   已改为按 ODR/BSRR/BRR 的实际变化位生成精确掩码，并按 4 位分组刷新引脚意图；同引擎 A/B
   下 GPIO 服务优化约带来 11% 稳态提升。
-- **shard/dispatcher**：最终程序约 146 个 step shard，220 ms 内平均每个 shard 只执行约 1.32 个块；
-  16 路以上已改用平衡区间树路由，稳定窗口约再提升 5%。
+- **shard/dispatcher**：最终程序 76 个 step shard。shard 函数对象跨程序修订常驻，已封闭
+  shard 不重复生成，新增条目优先回填邻近容量；跨 shard 的下一 PC 在同一个 `run` 循环内精确
+  重路由。
 - **板上只能有一个 JIT 设备**：`runDirect` 在 `board.jits.length !== 1` 时关闭，多 MCU 板会
   静默退回解释器。
 

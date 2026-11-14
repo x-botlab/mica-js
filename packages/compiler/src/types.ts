@@ -132,6 +132,10 @@ export interface DirectJitCacheStats {
   readonly reusedBlocks: number;
   /** Previously cached bodies replaced because their PC/body/binding fingerprint changed. */
   readonly invalidatedBlocks: number;
+  /** Resident shard factories emitted for split programs. */
+  readonly compiledShards: number;
+  /** Resident shards reused unchanged across program assemblies. */
+  readonly reusedShards: number;
   /** Cached entries, including bodies the direct emitter declined. */
   readonly entries: number;
   /** Explicit cache clears requested by the runtime or a caller. */
@@ -218,6 +222,8 @@ export type DirectJitReason = 'deadline' | 'fallback' | 'stopped' | 'invalidated
 export interface DirectJitProgram {
   /** At time === deadline neither an instruction nor its suffix executes. */
   run(frame: DirectJitFrame, deadline: number): DirectJitReason;
+  /** Generated step/resume function groups; one for the monolithic form. */
+  readonly shards: number;
   /** PCs this program compiled, and therefore can execute without the interpreter. */
   readonly pcs: readonly number[];
   readonly localCount: number;

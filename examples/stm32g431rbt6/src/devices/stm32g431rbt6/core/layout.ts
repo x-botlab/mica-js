@@ -58,7 +58,9 @@ export const TICK_ACTIVE = 'tickActive';
 export const SERVICE_RESUME = 'serviceResume';
 /** 待刷新引脚意图的端口位掩码（bit0=GPIOA … bit4=GPIOF）。 */
 export const GPIO_SYNC = 'gpioSync';
-/** 待刷新的引脚位掩码，只对最新一次待执行的 GPIO 写有效。 */
+/**
+ * Guest 已预计算的变化位。非零时服务块只消费掩码；为零时服务块执行完整寄存器写。
+ */
 export const GPIO_PIN_MASK = 'gpioPinMask';
 /** 上一次同步时的供电状态：变化时整端口重新生成意图。 */
 export const GPIO_POWERED = 'gpioPowered';
@@ -151,6 +153,7 @@ export const gpioOtyperState = (port: number): string => `gpioOtyper${port}`;
 export const gpioPupdrState = (port: number): string => `gpioPupdr${port}`;
 export const gpioAfr0State = (port: number): string => `gpioAfr0${port}`;
 export const gpioAfr1State = (port: number): string => `gpioAfr1${port}`;
+export const gpioOdrState = (port: number): string => `gpioOdr${port}`;
 
 export const USART1_BASE = 0x40013800;
 export const USART2_BASE = 0x40004400;
