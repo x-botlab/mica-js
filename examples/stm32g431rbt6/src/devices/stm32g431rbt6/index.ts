@@ -99,13 +99,13 @@ const SERVICE_READ = 0x20030;
 const SERVICE_WRITE = 0x20040;
 
 /**
- * 一个块最多合并的指令条数。
- *
- * 块体是单个 `InstructionIR`，direct 后端无法在 body 内再分片；按现有单条指令块
- * （约 150–200 个 op、5–7 KB 生成源码）估算，4 条一批约 20–28 KB，仍在 V8 约 35 KB
- * 的优化悬崖以内。指令条数只是上限，实际批还在自旋/忙等循环头处截断。
+ * 一个块的复杂度预算。纯 ALU/NOP/静态访存计 1，有静态地址的外设访问计 2，未知
+ * 地址内存分派计 5。块体是单个 `InstructionIR`，direct 后端无法在 body 内再分片；
+ * 用权重而不是固定条数，才能让热点轻量函数合块，同时不让动态访存撑爆 shard。
  */
-const MAX_BATCH_INSTRUCTIONS = 8;
+const MAX_BATCH_COST = 36;
+/** 防御性硬上限；按重量预算通常远早于此收块。 */
+const MAX_BATCH_INSTRUCTIONS = 36;
 
 const isServicePc = (pc: number): boolean =>
   pc === SERVICE_TICK ||
@@ -710,10 +710,12 @@ function itRemainingAt(code: JitTranslateInput['code'], pc: number): number {
 /**
  * 从 `pc` 起收集一个连续的指令批。
  *
- * 三条收块规则：
+ * 收块规则：
  * - 自旋 `b .` 与忙等循环头必须独占或收尾一个块：直接后端的轮次折算按块首 PC 查
  *   `delays`，把它们放进批中间会让折算失效；
- * - 写 pc 的指令之后收块（`endsBatch`），块体积只算真正会顺序执行的指令；
+ * - 写 pc 或改变 GPIO 输出引脚之后收块（`endsBatch`）：前者避免编译死代码，后者让
+ *   宿主电气边界看到完整脉冲（例如 LCD 的 WR 边沿）；
+ * - 按复杂度预算而非固定条数收块，轻量静态指令仍可连续合块；
  * - 不在 IT 块中间收块。IT 状态于是可以在翻译期静态跟踪，只有真正受 IT 控制的指令
  *   才需要 IT 守卫包装，普通指令不必为它付三次 `if` 与一次 `itState` 读写。
  */
@@ -727,6 +729,7 @@ function collectBatch(
 ): readonly Segment[] {
   const segments: Segment[] = [];
   let cursor = pc;
+  let batchCost = 0;
   const knownRegs = entryRegs?.slice() ?? Array<number | undefined>(16).fill(undefined);
   // 批首的 IT 状态必须查一次：服务返回可能落在 IT 块中间（见 `itRemainingAt`）。
   let itRemaining = itRemainingAt(code, pc);
@@ -741,6 +744,9 @@ function collectBatch(
     }
     const inIt = itRemaining > 0;
     const instruction = inIt ? guard(decoded) : decoded;
+    const cost = !instruction.mayService ? 1 : instruction.dynamicMemory === true ? 5 : 2;
+
+    if (!inIt && segments.length > 0 && batchCost + cost > MAX_BATCH_COST) break;
 
     segments.push({
       pc: cursor,
@@ -748,6 +754,7 @@ function collectBatch(
       cycles: decoded.cycles,
       instruction,
     });
+    batchCost += cost;
     if (inIt) itRemaining -= 1;
     if (decoded.itCount > 0) itRemaining = decoded.itCount;
     if (itRemaining > 0) {
@@ -843,6 +850,8 @@ const createTranslate =
           const last = index === segments.length - 1;
           const cycles = segment.cycles * machine.cyclePs;
           const mayService = segment.instruction.mayService;
+          // 批次末条始终检查 serviceMask：静态内联 GPIO 写在极端电源跳变时留下的
+          // SERVICE_GPIO_SYNC 即使前面没有 mayService 指令，也会在这里被结算。
           const mustCheck = last || mayService || segment.instruction.endsBatch;
 
           cumulative += cycles;

@@ -1,6 +1,7 @@
 import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
 import { APSR_C, APSR_N, APSR_V, APSR_Z } from './layout';
+import type { AccessSize } from './layout';
 import {
   asBody,
   boolAnd,
@@ -57,7 +58,7 @@ export function storeRegister(
   b: Body,
   source: number,
   address: Value<number>,
-  size: number,
+  size: AccessSize,
   pc: number,
   at?: At,
   defer = false,

@@ -155,11 +155,12 @@ describe('STM32G431RBT6 源码级行为', () => {
       // LOAD = 15999 即每 16000 个周期（16 MHz 下 1 ms）一次中断，8.5 ms 内恰好 8 次翻转。
       for (let step = 0; step < 17; step += 1) board.run(500_000_000);
       expect(board.faults).toEqual([]);
-      // 首个采样发生在 PA5 尚未配置输出之前（未知电平 2），此后每毫秒翻转一次。
+      // 首个采样发生在 PA5 尚未配置输出之前（未知电平 2）。夹具记录每个同步批内的
+      // 全部变化后，8.5 ms 窗口内可见 9 次翻转；旧实现只保留批尾消息会漏掉其中一次。
       const levels = (board.history.PA5 ?? []).filter((value) => value !== 2);
       const changes = levels.filter((value, index) => index > 0 && value !== levels[index - 1]);
 
-      expect(changes).toHaveLength(8);
+      expect(changes).toHaveLength(9);
       expect(levels).toContain(1);
       expect(levels).toContain(0);
     } finally {

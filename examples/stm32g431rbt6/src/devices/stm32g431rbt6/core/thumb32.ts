@@ -2,6 +2,7 @@ import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
 import type { JitTranslateInput } from '@mica-js/sdk/device';
 import { APSR_C } from './layout';
+import type { AccessSize } from './layout';
 import {
   addRaw,
   addWithCarry,
@@ -33,12 +34,13 @@ import { conditional, loadRegister, readAnyReg, storeRegister, writeAnyReg } fro
 import {
   atAddress,
   atCode,
-  atMayService,
+  atAccessEffects,
   atSram,
   CODE_MASK,
   gpioReadsAsZero,
   readMemory,
 } from './memory';
+import type { AccessEffects } from './memory';
 import { halt } from './thumb16';
 import type { KnownRegs } from './decode';
 
@@ -47,6 +49,9 @@ export interface Instruction32 {
   readonly size: 4;
   readonly cycles: number;
   readonly mayService: boolean;
+  readonly dynamicMemory?: boolean;
+  /** 静态 GPIO 输出写之后必须收块，使电气边界看到脉冲。 */
+  readonly boundaryAfter?: boolean;
   readonly emit: (b: Body, pc: number) => void;
 }
 
@@ -84,6 +89,8 @@ function thumbExpandImm(imm12: number): number {
 
 const known = (regs: KnownRegs | undefined, index: number): number | undefined =>
   regs?.[index & 0xf];
+
+const knownValue = known;
 
 const remember = (regs: KnownRegs | undefined, index: number, value: number | undefined): void => {
   if (regs !== undefined) regs[index & 0xf] = value === undefined ? undefined : value >>> 0;
@@ -138,13 +145,14 @@ const immediateAt = (
   pc: number,
   offset: number,
   alignedPc = false,
+  value?: number,
 ): ReturnType<typeof atAddress> | undefined => {
   if (rn === 15) return atCode((((alignedPc ? (pc + 4) & ~3 : pc + 4) + offset) & CODE_MASK) >>> 0);
   if (rn === 13) return atSram();
 
   const base = known(regs, rn);
 
-  return base === undefined ? undefined : atAddress((base + offset) >>> 0);
+  return base === undefined ? undefined : atAddress((base + offset) >>> 0, value);
 };
 
 const registerAt = (
@@ -153,6 +161,7 @@ const registerAt = (
   rm: number,
   pc: number,
   shift: number,
+  value?: number,
 ): ReturnType<typeof atAddress> | undefined => {
   if (rn === 13) return atSram();
 
@@ -160,27 +169,28 @@ const registerAt = (
   if (rn === 15) {
     return index === undefined
       ? atCode()
-      : atAddress((((pc + 4) >>> 0) + ((index << shift) >>> 0)) >>> 0);
+      : atAddress((((pc + 4) >>> 0) + ((index << shift) >>> 0)) >>> 0, value);
   }
 
   const base = known(regs, rn);
 
   return base === undefined || index === undefined
     ? undefined
-    : atAddress((base + ((index << shift) >>> 0)) >>> 0);
+    : atAddress((base + ((index << shift) >>> 0)) >>> 0, value);
 };
 
 const multipleAt = (
   regs: KnownRegs | undefined,
   rn: number,
   offset: number,
+  value?: number,
 ): ReturnType<typeof atAddress> | undefined => {
   if (rn === 13) return atSram();
   if (rn === 15) return atCode();
 
   const base = known(regs, rn);
 
-  return base === undefined ? undefined : atAddress((base + offset) >>> 0);
+  return base === undefined ? undefined : atAddress((base + offset) >>> 0, value);
 };
 
 function writeData(b: Body, rd: number, value: Value<number>, setFlags: boolean): void {
@@ -673,7 +683,13 @@ function updateConstants32(
   regs.fill(undefined);
 }
 
-function mayService32(h1: number, h2: number, pc: number, regs: KnownRegs | undefined): boolean {
+function mayService32(
+  h1: number,
+  h2: number,
+  pc: number,
+  regs: KnownRegs | undefined,
+  effects: AccessEffects,
+): boolean {
   const pure =
     isBranch32(h1, h2) ||
     (h1 & 0xfbe0) === 0xf200 ||
@@ -705,8 +721,135 @@ function mayService32(h1: number, h2: number, pc: number, regs: KnownRegs | unde
     (h1 & 0xfff0) === 0xf8a0 ||
     (h1 & 0xfff0) === 0xf990 ||
     (h1 & 0xfff0) === 0xf9b0
+  ) {
+    const kind = h1 & 0xfff0;
+    const load =
+      kind === 0xf8d0 || kind === 0xf890 || kind === 0xf8b0 || kind === 0xf990 || kind === 0xf9b0;
+    const size: AccessSize =
+      kind === 0xf890 || kind === 0xf880 || kind === 0xf990
+        ? 1
+        : kind === 0xf8b0 || kind === 0xf8a0 || kind === 0xf9b0
+          ? 2
+          : 4;
+    const rt = (h2 >> 12) & 0xf;
+    const at = immediateAt(
+      regs,
+      h1 & 0xf,
+      pc,
+      h2 & 0xfff,
+      true,
+      load ? undefined : knownValue(regs, rt),
+    );
+
+    return atAccessEffects(at, load ? 'read' : 'write', size, effects);
+  }
+
+  if (
+    (h1 & 0xfff0) === 0xf850 ||
+    (h1 & 0xfff0) === 0xf840 ||
+    (h1 & 0xfff0) === 0xf810 ||
+    (h1 & 0xfff0) === 0xf800 ||
+    (h1 & 0xfff0) === 0xf830 ||
+    (h1 & 0xfff0) === 0xf820
+  ) {
+    const kind = h1 & 0xfff0;
+    const load = kind === 0xf850 || kind === 0xf810 || kind === 0xf830;
+    const size: AccessSize =
+      kind === 0xf810 || kind === 0xf800 ? 1 : kind === 0xf830 || kind === 0xf820 ? 2 : 4;
+    const rt = (h2 >> 12) & 0xf;
+    const at = registerAt(
+      regs,
+      h1 & 0xf,
+      h2 & 0xf,
+      pc,
+      (h2 >> 4) & 3,
+      load ? undefined : knownValue(regs, rt),
+    );
+
+    return atAccessEffects(at, load ? 'read' : 'write', size, effects);
+  }
+
+  if (h1 === 0xe92d || h1 === 0xe8bd) return false;
+
+  if ((h1 & 0xffd0) === 0xe880 || (h1 & 0xffd0) === 0xe890) {
+    const load = (h1 & 0xffd0) === 0xe890;
+
+    if ((h2 & 0xffff) === 0) return false;
+    for (let register = 0; register < 16; register += 1)
+      if (h2 & (1 << register)) {
+        const at = multipleAt(
+          regs,
+          h1 & 0xf,
+          register * 4,
+          load ? undefined : knownValue(regs, register),
+        );
+
+        if (atAccessEffects(at, load ? 'read' : 'write', 4, effects)) return true;
+      }
+    return false;
+  }
+
+  if (h1 >= 0xe8d0 && h1 <= 0xe8d7) {
+    const at = registerAt(regs, h1 & 0xf, h2 & 0xf, pc, 0);
+
+    return atAccessEffects(at, 'read', (h2 & 0x10) !== 0 ? 2 : 1, effects);
+  }
+
+  if ((h1 & 0xff40) === 0xe940) {
+    const load = (h1 & 0x20) !== 0;
+    const add = (h1 & 0x80) !== 0;
+    const offset = (h2 & 0xff) * 4;
+    const firstAt = multipleAt(
+      regs,
+      h1 & 0xf,
+      add ? offset : -offset,
+      load ? undefined : knownValue(regs, (h2 >> 12) & 0xf),
+    );
+    const secondAt = multipleAt(
+      regs,
+      h1 & 0xf,
+      add ? offset + 4 : -offset + 4,
+      load ? undefined : knownValue(regs, (h2 >> 8) & 0xf),
+    );
+    const access = load ? 'read' : 'write';
+
+    return (
+      atAccessEffects(firstAt, access, 4, effects) || atAccessEffects(secondAt, access, 4, effects)
+    );
+  }
+
+  if ((h1 & 0xfff0) === 0xe850 || (h1 & 0xfff0) === 0xe840) {
+    const load = (h1 & 0xfff0) === 0xe850;
+    const at = multipleAt(
+      regs,
+      h1 & 0xf,
+      (h2 & 0xff) << 2,
+      load ? undefined : knownValue(regs, (h2 >> 12) & 0xf),
+    );
+
+    return atAccessEffects(at, load ? 'read' : 'write', 4, effects);
+  }
+
+  if ((h1 & 0xfff0) === 0xf3b0 && (h2 & 0xff00) === 0x8f00) return false;
+  if (h1 === 0xf3af && h2 === 0x8000) return false;
+
+  // 未覆盖编码会 halt；保守进入完整守卫以截停后续指令。
+  return true;
+}
+
+/** 是否需要在指令块内发射完整的动态内存分派树。 */
+function dynamicMemory32(h1: number, h2: number, pc: number, regs: KnownRegs | undefined): boolean {
+  if (
+    (h1 & 0xfff0) === 0xf8d0 ||
+    (h1 & 0xfff0) === 0xf8c0 ||
+    (h1 & 0xfff0) === 0xf890 ||
+    (h1 & 0xfff0) === 0xf880 ||
+    (h1 & 0xfff0) === 0xf8b0 ||
+    (h1 & 0xfff0) === 0xf8a0 ||
+    (h1 & 0xfff0) === 0xf990 ||
+    (h1 & 0xfff0) === 0xf9b0
   )
-    return atMayService(immediateAt(regs, h1 & 0xf, pc, h2 & 0xfff, true));
+    return immediateAt(regs, h1 & 0xf, pc, h2 & 0xfff, true) === undefined;
 
   if (
     (h1 & 0xfff0) === 0xf850 ||
@@ -716,31 +859,20 @@ function mayService32(h1: number, h2: number, pc: number, regs: KnownRegs | unde
     (h1 & 0xfff0) === 0xf830 ||
     (h1 & 0xfff0) === 0xf820
   )
-    return atMayService(registerAt(regs, h1 & 0xf, h2 & 0xf, pc, (h2 >> 4) & 3));
+    return registerAt(regs, h1 & 0xf, h2 & 0xf, pc, (h2 >> 4) & 3) === undefined;
 
   if (h1 === 0xe92d || h1 === 0xe8bd) return false;
 
-  if ((h1 & 0xffd0) === 0xe880 || (h1 & 0xffd0) === 0xe890) {
-    if ((h2 & 0xffff) === 0) return false;
-    for (let register = 0; register < 16; register += 1)
-      if ((h2 & (1 << register)) !== 0 && atMayService(multipleAt(regs, h1 & 0xf, register * 4)))
-        return true;
-    return false;
-  }
+  if ((h1 & 0xffd0) === 0xe880 || (h1 & 0xffd0) === 0xe890)
+    return (h2 & 0xffff) !== 0 && multipleAt(regs, h1 & 0xf, 0) === undefined;
 
   if (h1 >= 0xe8d0 && h1 <= 0xe8d7)
-    return atMayService(registerAt(regs, h1 & 0xf, h2 & 0xf, pc, 0));
+    return registerAt(regs, h1 & 0xf, h2 & 0xf, pc, 0) === undefined;
 
-  if ((h1 & 0xff40) === 0xe940) return atMayService(multipleAt(regs, h1 & 0xf, (h2 & 0xff) * 4));
+  if ((h1 & 0xff40) === 0xe940 || (h1 & 0xfff0) === 0xe850 || (h1 & 0xfff0) === 0xe840)
+    return multipleAt(regs, h1 & 0xf, 0) === undefined;
 
-  if ((h1 & 0xfff0) === 0xe850 || (h1 & 0xfff0) === 0xe840)
-    return atMayService(multipleAt(regs, h1 & 0xf, (h2 & 0xff) << 2));
-
-  if ((h1 & 0xfff0) === 0xf3b0 && (h2 & 0xff00) === 0x8f00) return false;
-  if (h1 === 0xf3af && h2 === 0x8000) return false;
-
-  // 未覆盖编码会 halt；保守进入完整守卫以截停后续指令。
-  return true;
+  return false;
 }
 
 export function decode32(
@@ -755,10 +887,14 @@ export function decode32(
 
   updateConstants32(h1, h2, pc, code, firmwareLength, knownRegs, snapshot);
 
+  const effects: AccessEffects = { boundaryAfter: false };
+
   return {
     size: 4,
     cycles: 2,
-    mayService: mayService32(h1, h2, pc, snapshot),
+    mayService: mayService32(h1, h2, pc, snapshot, effects),
+    dynamicMemory: dynamicMemory32(h1, h2, pc, snapshot),
+    boundaryAfter: effects.boundaryAfter,
     emit: (b, currentPc) => emit32(b, currentPc, h1, h2, snapshot, code, firmwareLength),
   };
 }
@@ -1007,7 +1143,14 @@ function loadStoreImmediate(
 
   const address =
     rn === 15 ? num(b, (((pc + 4) & ~3) + imm12) >>> 0) : b.add(readReg(b, rn), num(b, imm12));
-  const at = immediateAt(knownRegs, rn, pc, imm12, true);
+  const at = immediateAt(
+    knownRegs,
+    rn,
+    pc,
+    imm12,
+    true,
+    load ? undefined : knownValue(knownRegs, rt),
+  );
 
   if (load) loadRegister(b, rt, address, size, pc, false, at, rn !== 15 && rn !== 13);
   else storeRegister(b, rt, address, size, pc, at, rn !== 15 && rn !== 13);
@@ -1058,7 +1201,7 @@ function loadStoreRegister(
   const address = b.add(readAnyReg(b, rn, pc), b.shiftLeft(readAnyReg(b, rm, pc), num(b, shift)));
   const load = kind === 0xf850 || kind === 0xf810 || kind === 0xf830;
   const size = kind === 0xf810 || kind === 0xf800 ? 1 : kind === 0xf830 || kind === 0xf820 ? 2 : 4;
-  const at = registerAt(knownRegs, rn, rm, pc, shift);
+  const at = registerAt(knownRegs, rn, rm, pc, shift, load ? undefined : knownValue(knownRegs, rt));
 
   if (load) loadRegister(b, rt, address, size, pc, false, at, rn !== 13 && rn !== 15);
   else storeRegister(b, rt, address, size, pc, at, rn !== 13 && rn !== 15);
@@ -1106,7 +1249,12 @@ function loadStoreMultiple(
   const base = readAnyReg(b, rn, pc);
   registers.forEach((register, offset) => {
     const address = b.add(base, num(b, offset * 4));
-    const at = multipleAt(knownRegs, rn, offset * 4);
+    const at = multipleAt(
+      knownRegs,
+      rn,
+      offset * 4,
+      load ? undefined : knownValue(knownRegs, register),
+    );
 
     if (load) loadRegister(b, register, address, 4, pc, false, at, true);
     else storeRegister(b, register, address, 4, pc, at);
@@ -1128,8 +1276,18 @@ function dualLoadStore(b: Body, pc: number, h1: number, h2: number, knownRegs?: 
   const base = readAnyReg(b, rn, pc);
   const address = add ? b.add(base, num(b, offset)) : b.subtract(base, num(b, offset));
   const second = b.add(address, num(b, 4));
-  const firstAt = multipleAt(knownRegs, rn, add ? offset : -offset);
-  const secondAt = multipleAt(knownRegs, rn, add ? offset + 4 : -offset + 4);
+  const firstAt = multipleAt(
+    knownRegs,
+    rn,
+    add ? offset : -offset,
+    load ? undefined : knownValue(knownRegs, rt),
+  );
+  const secondAt = multipleAt(
+    knownRegs,
+    rn,
+    add ? offset + 4 : -offset + 4,
+    load ? undefined : knownValue(knownRegs, rt2),
+  );
 
   if (load) {
     loadRegister(b, rt, address, 4, pc, false, firstAt, true);
@@ -1157,9 +1315,15 @@ function exclusiveAccess(b: Body, pc: number, h1: number, h2: number, knownRegs?
   const rn = h1 & 0xf;
   const rt = (h2 >> 12) & 0xf;
   const address = b.add(readReg(b, rn), num(b, (h2 & 0xff) << 2));
-  const at = multipleAt(knownRegs, rn, (h2 & 0xff) << 2);
+  const load = (h1 & 0xfff0) === 0xe850;
+  const at = multipleAt(
+    knownRegs,
+    rn,
+    (h2 & 0xff) << 2,
+    load ? undefined : knownValue(knownRegs, rt),
+  );
 
-  if ((h1 & 0xfff0) === 0xe850) {
+  if (load) {
     loadRegister(b, rt, address, 4, pc, false, at, rn !== 13);
   } else {
     const rd = (h2 >> 8) & 0xf;

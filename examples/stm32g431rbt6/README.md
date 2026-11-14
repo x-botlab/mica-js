@@ -2,7 +2,7 @@
 
 ST 的 Arm Cortex-M4F 32 位 MCU（LQFP64，128 KiB Flash / 22 KiB SRAM + 10 KiB CCM SRAM）的
 Mica 器件工程。器件 ID 是 `stm32g431rbt6`：JIT 按 PC 翻译一段连续的 Thumb/Thumb-2 指令
-（默认最多 8 条一批），GPIO、RCC、SysTick、NVIC 与 USART1/2/3 发送器按寄存器建模。
+（按复杂度预算合批，硬上限 36 条），GPIO、RCC、SysTick、NVIC 与 USART1/2/3 发送器按寄存器建模。
 
 属性：`firmware`（bytes，默认空）写入 `0x08000000` 起的 Flash，前两字是初始 SP 与复位入口；
 `clockFrequency`（number，默认 16000000 Hz，DDL 断言落在 1000–170000000）给出指令耗时、
@@ -30,21 +30,25 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
 
 | 指标                    | `throughput`（主路径，三次独立进程） |
 | ----------------------- | ------------------------------------ |
-| 0 → 200 µs 冷启动       | 约 300–316 ms CPU                    |
-| 200 µs → 220 ms 稳态    | 约 461–498 ms CPU                    |
-| 220 ms → 440 ms 无重建  | 约 230–255 ms CPU                    |
-| 官方稳态实时倍率        | 约 0.44–0.48×                        |
-| 无重建实时倍率          | 约 0.86–0.96×                        |
-| 整段 220 ms（含冷启动） | 约 761–806 ms                        |
-| 缓存指令块              | 406                                  |
-| resident shard          | 76                                   |
-| 程序编译次数 / fallback | 21 / 3323                            |
+| 0 → 200 µs 冷启动       | 约 236–243 ms CPU                    |
+| 200 µs → 220 ms 稳态    | 约 415–433 ms CPU                    |
+| 220 ms → 440 ms 无重建  | 约 161–179 ms CPU                    |
+| 官方稳态实时倍率        | 约 0.51–0.53×                        |
+| 无重建实时倍率          | 约 1.23–1.36×                        |
+| 整段 220 ms（含冷启动） | 约 658–670 ms                        |
+| 缓存指令块              | 311                                  |
+| resident shard          | 71                                   |
+| 程序编译次数 / fallback | 21 / 2873                            |
 
 `throughput` 已按 PC 缓存已编译 `Instruction`，并将已生成的 shard 函数常驻在 direct cache 中；
 每个程序修订只生成小的 PC dispatcher，新增块通常只重发开放尾 shard，并按容量回填相邻的
 稀疏 shard。220 ms 后 `directCompiles` 保持为 21，220 ms → 440 ms 没有新增编译或 fallback。
 剩余冷启动成本主要是首次设备 Thumb 翻译、IR builder 与校验，以及 V8 首次优化和 GC。
 `precise` 只作为同固件对照，精确值以 `bench/hal-precise.test.ts` 输出为准。
+
+静态 BSRR/BRR 写会直接生成 ODR 与引脚 intent；若该写可能改变引脚，基本块在其后收束，让宿主
+电气边界看到完整脉冲。`0x08001104..0x08001152` 因此形成 8 个边沿块，而不是一个会吞掉 WR
+低→高跳变的大块。真实 ILI9325 联合测试和 `gpio-sync` 的 `[2,0,1,0]` 历史断言覆盖这一约束。
 
 ### 轻量基线（`bench/perf.test.ts`）
 
@@ -69,8 +73,9 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
 意图全部搬进按需翻译的服务块（`SERVICE_TICK`、`SERVICE_GPIO + port`、`SERVICE_SYNC`、
 `SERVICE_READ`、`SERVICE_WRITE`）：
 
-- **连续指令合成一个块**：`collectBatch` 从批首起收集最多 8 条顺序指令，发射进同一个块体，
-  块尾只 `elapse` 一次（时长为已执行指令的周期和）。三条收块规则：写 pc 的指令之后收块；
+- **连续指令合成一个块**：`collectBatch` 从批首起按复杂度预算收集顺序指令（硬上限 36 条），
+  发射进同一个块体，块尾只 `elapse` 一次（时长为已执行指令的周期和）。四条收块规则：
+  写 pc 的指令之后收块；可能改变 GPIO 引脚的静态写之后收块，保证电气边界看到完整脉冲；
   自旋 `b .` 与忙等循环头独占或收尾一个块（否则直接后端的轮次折算失效）；不在 IT 块中间收块。
 - **pc 守卫表达「已离开顺序路径」**：每条指令前把 `pc` 复位成它的顺序后继。分支/异常返回
   写成目标、服务块接手写成服务 PC，两者都让下一条之前的守卫停掉批内剩余指令；`tick` 因此
@@ -92,22 +97,21 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
   发布与节拍边界对齐、指令块保持无 `send` 的均匀成本。直接后端已支持内联 `send`，这条
   仍保留是因为它让发布时机可预期，而不是后端限制。
 
-当前 411 个可编译块共约 310,231 个含嵌套 IR 操作、186,350 条发射语句、约 5.4 MB 生成源码。
-普通块平均约 733 个嵌套操作、438 条语句；`SERVICE_GPIO + port` 只有固件写到对应端口时才翻译，
-但执行频率很高。块结构与根因见 `docs/mcu-jit-block-inflation.md`，缺陷与限制见
-`docs/stm32g431rbt6-issues.md`。
+当前基准缓存 311 个块、71 个 resident shard。`0x08001104` 边沿块生成约 36.6 KB JS；
+8 个 LCD 边沿块合计约 251 KB。静态 GPIO 写不再经过 GPIOB service：220 ms → 440 ms 窗口
+中 GPIOB service 仅 54 次、GPIOC service 892 次，全部块入口 1,372,502 次。块结构与根因见
+`docs/mcu-jit-block-inflation.md`，缺陷与限制见 `docs/stm32g431rbt6-issues.md`。
 
 ### 直接后端的剩余成本
 
 - **冷启动**：首次设备 Thumb 翻译、IR builder 与校验占大头；直接程序的 shard 常驻已消除
-  每轮重拼完整源码和重新优化已封闭 shard。406 个块仍需要首次翻译和 21 次增量程序组装，
-  `0 → 200 µs` 约 0.30 s。
-- **服务块体量**：`SERVICE_WRITE` / IDR 大块主要影响首次翻译；GPIO 写服务在稳态也高频执行。
-  已改为按 ODR/BSRR/BRR 的实际变化位生成精确掩码，并按 4 位分组刷新引脚意图；同引擎 A/B
-  下 GPIO 服务优化约带来 11% 稳态提升。
-- **shard/dispatcher**：最终程序 76 个 step shard。shard 函数对象跨程序修订常驻，已封闭
-  shard 不重复生成，新增条目优先回填邻近容量；跨 shard 的下一 PC 在同一个 `run` 循环内精确
-  重路由。
+  每轮重拼完整源码和重新优化已封闭 shard。311 个块仍需要首次翻译和 21 次增量程序组装，
+  `0 → 200 µs` 约 0.24 s。
+- **GPIO 边沿块**：静态写已内联 ODR/intent，GPIOB service 基本消失；剩余成本集中在 intent
+  树、`sample('VDD1')` 与每边沿一次 ODR/periph 提交。不能通过合块继续削减，否则会吞掉
+  WR 等外部可观察脉冲。
+- **shard/dispatcher**：最终程序 71 个 step shard。8 个 LCD 边沿块仍分散在多个 shard，
+  dispatcher 约占稳态 24.4% self samples；后续优先热 shard compaction / 下一 shard 句柄。
 - **板上只能有一个 JIT 设备**：`runDirect` 在 `board.jits.length !== 1` 时关闭，多 MCU 板会
   静默退回解释器。
 

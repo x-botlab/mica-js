@@ -17,6 +17,7 @@ import {
   USART2_BASE,
   USART3_BASE,
 } from './layout';
+import type { AccessSize } from './layout';
 import {
   asBody,
   bool,
@@ -193,18 +194,19 @@ function registerDeferredWrite(
   markService(b, SERVICE_DEFER_WRITE);
 }
 
-/** 静态外设写；GPIO 写仍登记给服务块，其余外设直接走各自的寄存器写路径。 */
+/** 静态外设写；GPIO 延迟写携带静态值，其余外设直接走各自的寄存器写路径。 */
 function writeStaticPeripheral(
   b: Body,
   address: Value<number>,
-  size: number,
+  size: AccessSize,
   value: Value<number>,
   defer: boolean,
   staticAddress: number,
+  staticValue?: number,
 ): void {
   if (defer) {
     if (inStaticRegion(staticAddress, GPIO_BASE, 0x2000))
-      deferGpioWrite(b, address, size, value, staticAddress);
+      deferGpioWrite(b, address, size, value, staticAddress, staticValue);
     else registerDeferredWrite(b, address, size, value);
 
     return;
@@ -408,13 +410,14 @@ export function readPeripheral(
 export function writePeripheral(
   b: Body,
   address: Value<number>,
-  size: number,
+  size: AccessSize,
   value: Value<number>,
   defer = false,
   staticAddress?: number,
+  staticValue?: number,
 ): void {
   if (staticAddress !== undefined) {
-    writeStaticPeripheral(b, address, size, value, defer, staticAddress);
+    writeStaticPeripheral(b, address, size, value, defer, staticAddress, staticValue);
 
     return;
   }

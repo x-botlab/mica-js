@@ -170,6 +170,9 @@ describe('GPIO 端口同步边界', () => {
       expect(board.faults).toEqual([]);
       expect(board.levels.PA5).toBe(0);
       expect(board.levels.PA6).toBe(1);
+      // BSRR set 后紧跟 BRR clear：两个边沿都必须经过宿主电气边界，不能被合块吞掉。
+      expect(board.history.PA5).toEqual([2, 0, 1, 0]);
+      expect(board.history.PA6).toEqual([2, 0, 1]);
     } finally {
       board.dispose();
     }

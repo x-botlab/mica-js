@@ -9,6 +9,8 @@ interface CodeBytes {
 }
 
 const CODE_WINDOW = 0x20000;
+/** 线性扫描上限；36 条左右的轻量函数仍能完整建立入口常量事实。 */
+const MAX_LINEAR_STEPS = 96;
 
 const emptyRegs = (): KnownRegs => Array<number | undefined>(16).fill(undefined);
 
@@ -102,7 +104,14 @@ interface Flow {
   readonly clearsCallerSaved?: boolean;
 }
 
-function flowAt(pc: number, h1: number, h2: number, regs: KnownRegs, endsBatch: boolean): Flow {
+function flowAt(
+  pc: number,
+  h1: number,
+  h2: number,
+  regs: KnownRegs,
+  endsBatch: boolean,
+  boundaryAfter: boolean,
+): Flow {
   if (h1 >= 0xe800) {
     const branch = branchTarget32(h1, h2, pc);
 
@@ -114,7 +123,7 @@ function flowAt(pc: number, h1: number, h2: number, regs: KnownRegs, endsBatch: 
         clearsCallerSaved: branch.kind === 'call',
       };
 
-    return { fallthrough: !endsBatch };
+    return { fallthrough: !endsBatch || boundaryAfter };
   }
 
   const branch = branchTarget16(h1, pc);
@@ -153,7 +162,7 @@ function flowAt(pc: number, h1: number, h2: number, regs: KnownRegs, endsBatch: 
   if ((h1 & 0xf000) === 0xc000) return { fallthrough: (h1 & 0x0800) === 0 || (h1 & 0x0100) === 0 };
   if (h1 >= 0xb000 && h1 < 0xc000) return { fallthrough: true };
 
-  return { fallthrough: !endsBatch };
+  return { fallthrough: !endsBatch || boundaryAfter };
 }
 
 const clobberCallerSaved = (regs: KnownRegs): void => {
@@ -200,13 +209,22 @@ function discoverFunctions(
       visited.add(block.pc);
       let cursor = block.pc;
       const regs = block.regs;
+      let steps = 0;
 
-      while (inside(cursor, firmwareLength)) {
+      while (inside(cursor, firmwareLength) && steps < MAX_LINEAR_STEPS) {
+        steps += 1;
         const h1 = halfAt(code, cursor);
         const h2 = h1 >= 0xe800 ? halfAt(code, cursor + 2) : 0;
         const snapshot = regs.slice();
         const decoded = decodeAt(cursor, regs);
-        const flow = flowAt(cursor, h1, h2, snapshot, decoded.endsBatch);
+        const flow = flowAt(
+          cursor,
+          h1,
+          h2,
+          snapshot,
+          decoded.endsBatch,
+          decoded.boundaryAfter === true,
+        );
 
         if (flow.target !== undefined) {
           if (flow.kind === 'call') addFunction(flow.target);
@@ -259,8 +277,10 @@ export function createRegisterFacts(code: CodeBytes, firmwareLength: number): Re
     for (const start of entries) {
       const regs = emptyRegs();
       let cursor = start;
+      let steps = 0;
 
-      while (inside(cursor, length)) {
+      while (inside(cursor, length) && steps < MAX_LINEAR_STEPS) {
+        steps += 1;
         const current = facts.get(cursor);
 
         if (current === undefined) facts.set(cursor, regs.slice());
@@ -269,7 +289,14 @@ export function createRegisterFacts(code: CodeBytes, firmwareLength: number): Re
         const decoded = decodeAt(cursor, regs);
         const h1 = halfAt(code, cursor);
         const h2 = h1 >= 0xe800 ? halfAt(code, cursor + 2) : 0;
-        const flow = flowAt(cursor, h1, h2, regs.slice(), decoded.endsBatch);
+        const flow = flowAt(
+          cursor,
+          h1,
+          h2,
+          regs.slice(),
+          decoded.endsBatch,
+          decoded.boundaryAfter === true,
+        );
 
         if (flow.target !== undefined || !flow.fallthrough || decoded.itCount > 0) break;
         cursor = (cursor + decoded.size) >>> 0;

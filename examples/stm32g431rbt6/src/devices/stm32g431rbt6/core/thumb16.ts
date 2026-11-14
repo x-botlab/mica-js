@@ -2,6 +2,7 @@ import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
 import type { JitTranslateInput } from '@mica-js/sdk/device';
 import { APSR_C } from './layout';
+import type { AccessSize } from './layout';
 import {
   addWithCarry,
   asBody,
@@ -25,7 +26,8 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { conditional, loadRegister, readAnyReg, storeRegister, writeAnyReg } from './cpu';
-import { atAddress, atCode, atMayService, atSram, CODE_MASK, gpioReadsAsZero } from './memory';
+import { atAddress, atCode, atAccessEffects, atSram, CODE_MASK, gpioReadsAsZero } from './memory';
+import type { AccessEffects } from './memory';
 import { exceptionReturn, isExceptionReturn } from './nvic';
 import type { KnownRegs } from './decode';
 
@@ -33,6 +35,9 @@ export interface Instruction16 {
   readonly size: 2;
   readonly cycles: number;
   readonly mayService: boolean;
+  readonly dynamicMemory?: boolean;
+  /** 静态 GPIO 输出写之后必须收块，使电气边界看到脉冲。 */
+  readonly boundaryAfter?: boolean;
   readonly emit: (b: Body, pc: number) => void;
 }
 
@@ -50,12 +55,14 @@ const subFlags = (b: Body, left: Value<number>, right: Value<number>): Value<num
 const known = (regs: KnownRegs | undefined, index: number): number | undefined =>
   regs?.[index & 0xf];
 
+const knownValue = known;
+
 const remember = (regs: KnownRegs | undefined, index: number, value: number | undefined): void => {
   if (regs !== undefined) regs[index & 0xf] = value === undefined ? undefined : value >>> 0;
 };
 
-const staticAddress = (base: number | undefined, offset: number) =>
-  base === undefined ? undefined : atAddress((base + offset) >>> 0);
+const staticAddress = (base: number | undefined, offset: number, value?: number) =>
+  base === undefined ? undefined : atAddress((base + offset) >>> 0, value);
 
 const shiftNumber = (value: number, amount: number, type: number): number => {
   const count = amount & 0xff;
@@ -95,26 +102,22 @@ const immediateAt16 = (
   regs: KnownRegs | undefined,
   rn: number,
   offset: number,
-): ReturnType<typeof atAddress> | undefined => staticAddress(known(regs, rn), offset);
+  value?: number,
+): ReturnType<typeof atAddress> | undefined => staticAddress(known(regs, rn), offset, value);
 
 const registerAt16 = (
   regs: KnownRegs | undefined,
   rn: number,
   rm: number,
+  value?: number,
 ): ReturnType<typeof atAddress> | undefined => {
   const base = known(regs, rn);
   const index = known(regs, rm);
 
-  return base === undefined || index === undefined ? undefined : atAddress((base + index) >>> 0);
+  return base === undefined || index === undefined
+    ? undefined
+    : atAddress((base + index) >>> 0, value);
 };
-
-const mayServiceMemory16 = (
-  regs: KnownRegs | undefined,
-  rn: number,
-  offset: number,
-  register = false,
-): boolean =>
-  atMayService(register ? registerAt16(regs, rn, offset) : immediateAt16(regs, rn, offset));
 
 const writeResult = (b: Body, index: number, value: Value<number>): void => {
   writeReg(b, index, value);
@@ -370,21 +373,41 @@ function updateConstants16(
   if (instr >= 0xf000) regs.fill(undefined);
 }
 
-function mayService16(instr: number, regs: KnownRegs | undefined): boolean {
+function mayService16(instr: number, regs: KnownRegs | undefined, effects: AccessEffects): boolean {
   if (instr < 0x5000) return false;
 
-  if (instr < 0x6000) return mayServiceMemory16(regs, (instr >> 3) & 7, (instr >> 6) & 7, true);
+  if (instr < 0x6000) {
+    const op = (instr >> 9) & 7;
+    const rm = (instr >> 6) & 7;
+    const rn = (instr >> 3) & 7;
+    const rt = instr & 7;
+    const load = op >= 3;
+    const size: AccessSize = op === 0 || op === 4 ? 4 : op === 1 || op === 5 || op === 7 ? 2 : 1;
+    const at = registerAt16(regs, rn, rm, load ? undefined : knownValue(regs, rt));
+
+    return atAccessEffects(at, load ? 'read' : 'write', size, effects);
+  }
 
   if (instr < 0x9000) {
     const kind = (instr >> 12) & 0xf;
+    const load = (instr & 0x0800) !== 0;
+    const rn = (instr >> 3) & 7;
+    const rt = instr & 7;
     const size = kind === 6 ? 4 : kind === 7 ? 1 : 2;
+    const at = immediateAt16(
+      regs,
+      rn,
+      (((instr >> 6) & 0x1f) * size) >>> 0,
+      load ? undefined : knownValue(regs, rt),
+    );
 
-    return mayServiceMemory16(regs, (instr >> 3) & 7, (((instr >> 6) & 0x1f) * size) >>> 0);
+    return atAccessEffects(at, load ? 'read' : 'write', size as AccessSize, effects);
   }
 
   if (instr < 0xc000) return (instr & 0xfff7) === 0xb662 || (instr & 0xfff7) === 0xb672;
 
   if (instr < 0xd000) {
+    const load = (instr & 0x0800) !== 0;
     const rn = (instr >> 8) & 7;
     const list = instr & 0xff;
 
@@ -393,10 +416,42 @@ function mayService16(instr: number, regs: KnownRegs | undefined): boolean {
 
     if (base === undefined) return true;
     for (let register = 0; register < 8; register += 1)
-      if ((list & (1 << register)) !== 0 && atMayService(atAddress((base + register * 4) >>> 0)))
-        return true;
+      if (list & (1 << register)) {
+        const at = atAddress(
+          (base + register * 4) >>> 0,
+          load ? undefined : knownValue(regs, register),
+        );
+
+        if (atAccessEffects(at, load ? 'read' : 'write', 4, effects)) return true;
+      }
 
     return false;
+  }
+
+  return false;
+}
+
+/** 是否需要在指令块内发射完整的动态内存分派树。 */
+function dynamicMemory16(instr: number, regs: KnownRegs | undefined): boolean {
+  if (instr >= 0x5000 && instr < 0x6000) {
+    const rn = (instr >> 3) & 7;
+    const rm = (instr >> 6) & 7;
+
+    return registerAt16(regs, rn, rm) === undefined;
+  }
+
+  if (instr >= 0x6000 && instr < 0x9000) {
+    const kind = (instr >> 12) & 0xf;
+    const rn = (instr >> 3) & 7;
+    const size = kind === 6 ? 4 : kind === 7 ? 1 : 2;
+
+    return immediateAt16(regs, rn, (((instr >> 6) & 0x1f) * size) >>> 0) === undefined;
+  }
+
+  if (instr >= 0xc000 && instr < 0xd000) {
+    const rn = (instr >> 8) & 7;
+
+    return (instr & 0xff) !== 0 && rn !== 13 && rn !== 15 && known(regs, rn) === undefined;
   }
 
   return false;
@@ -413,10 +468,14 @@ export function decode16(
 
   updateConstants16(instr, pc, code, firmwareLength, knownRegs, snapshot);
 
+  const effects: AccessEffects = { boundaryAfter: false };
+
   return {
     size: 2,
     cycles: 1,
-    mayService: mayService16(instr, snapshot),
+    mayService: mayService16(instr, snapshot, effects),
+    dynamicMemory: dynamicMemory16(instr, snapshot),
+    boundaryAfter: effects.boundaryAfter,
     emit: (b, currentPc) => emit16(b, currentPc, instr, snapshot, code, firmwareLength),
   };
 }
@@ -667,7 +726,7 @@ function emit16(
     const rn = (instr >> 3) & 7;
     const rt = instr & 7;
     const address = b.add(readReg(b, rn), readReg(b, rm));
-    const at = registerAt16(knownRegs, rn, rm);
+    const at = registerAt16(knownRegs, rn, rm, op < 3 ? knownValue(knownRegs, rt) : undefined);
 
     switch (op) {
       case 0:
@@ -707,7 +766,12 @@ function emit16(
     const rt = instr & 7;
     const size = kind === 6 ? 4 : kind === 7 ? 1 : 2;
     const address = b.add(readReg(b, rn), num(b, imm * size));
-    const at = immediateAt16(knownRegs, rn, imm * size);
+    const at = immediateAt16(
+      knownRegs,
+      rn,
+      imm * size,
+      load ? undefined : knownValue(knownRegs, rt),
+    );
 
     if (load) loadRegister(b, rt, address, size, pc, false, at, true);
     else storeRegister(b, rt, address, size, pc, at, true);
@@ -769,7 +833,7 @@ function emit16(
       if (!registers.includes(rn)) writeReg(b, rn, b.add(base, num(b, registers.length * 4)));
     } else {
       registers.forEach((register, offset) => {
-        const at = staticAddress(staticBase, offset * 4);
+        const at = staticAddress(staticBase, offset * 4, knownValue(knownRegs, register));
 
         storeRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, at);
       });

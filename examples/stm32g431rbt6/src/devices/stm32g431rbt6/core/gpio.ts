@@ -12,6 +12,7 @@ import {
   GPIO_POWERED,
   GPIO_STATE,
   GPIO_STATE_STRIDE,
+  GPIO_SYNC,
   GPIO_WRITE,
   GPIO_WRITE_ADDR,
   GPIO_WRITE_SIZE,
@@ -19,6 +20,7 @@ import {
   PERIPH,
   SERVICE_DEFER_READ,
   SERVICE_GPIO_WRITE,
+  SERVICE_PIN_SYNC,
   gpioAfr0State,
   gpioAfr1State,
   gpioModerState,
@@ -26,6 +28,7 @@ import {
   gpioOtyperState,
   gpioPupdrState,
 } from './layout';
+import type { AccessSize } from './layout';
 import { PORTS, machine } from './machine';
 import type { AlternateDriver, PortPins } from './machine';
 import {
@@ -64,6 +67,9 @@ const PULL_RESISTANCE = 40_000;
 
 /** 端口同步只看低 16 位引脚变化。 */
 const GPIO_PIN_MASK_PINS = 0xffff;
+/** `0x20020` 同时承担引脚刷新；全端口请求用于极罕见的 GPIO 供电跳变。 */
+const SERVICE_GPIO_SYNC = SERVICE_PIN_SYNC;
+const GPIO_ALL_PORT_MASK = (1 << PORTS.length) - 1;
 
 const stateBase = (port: number): number => GPIO_STATE + port * GPIO_STATE_STRIDE;
 
@@ -161,6 +167,34 @@ function portRegisters(b: Body, portIndex: number): PortRegisters {
     afr0: b.readState(gpioAfr0State(portIndex), types.number),
     afr1: b.readState(gpioAfr1State(portIndex), types.number),
     supplied: powered(b),
+  };
+}
+
+/**
+ * 单个候选脚只读取 intent 实际会用到的寄存器。候选位跨 7/8 边界时两侧 AFR 都要读，
+ * 否则未涉及的一半保持常量 0，避免每次稳态翻转都多读一个 state。
+ */
+function candidateRegisters(
+  b: Body,
+  portIndex: number,
+  candidateMask: number,
+  odr: Value<number>,
+  supplied: Value<boolean>,
+): PortRegisters {
+  return {
+    moder: b.readState(gpioModerState(portIndex), types.number),
+    otyper: b.readState(gpioOtyperState(portIndex), types.number),
+    pupdr: b.readState(gpioPupdrState(portIndex), types.number),
+    odr,
+    afr0:
+      (candidateMask & 0xff) === 0
+        ? num(b, 0)
+        : b.readState(gpioAfr0State(portIndex), types.number),
+    afr1:
+      (candidateMask & 0xff00) === 0
+        ? num(b, 0)
+        : b.readState(gpioAfr1State(portIndex), types.number),
+    supplied,
   };
 }
 
@@ -468,6 +502,122 @@ function placeWord(
   return b.shiftLeft(b.bitAnd(u32(b, value), num(b, width)), shift);
 }
 
+/** 编译期按访问宽度把写入值放到目标寄存器字的位置；语义与 `placeWord` 一致。 */
+export function placeStaticWord(value: number, offset: number, size: AccessSize): number {
+  if (size === 4) return value >>> 0;
+
+  const width = size === 2 ? 0xffff : 0xff;
+  const shift = (size === 2 ? offset & 2 : offset & 3) * 8;
+
+  return ((value & width) << shift) >>> 0;
+}
+
+function countSetBits(value: number): number {
+  let count = 0;
+
+  for (let rest = value >>> 0; rest !== 0; rest &= rest - 1) count += 1;
+
+  return count;
+}
+
+interface StaticPinMasks {
+  readonly setMask: number;
+  readonly effectiveClearMask: number;
+  readonly candidateMask: number;
+}
+
+/** 编译期推导一次静态 BSRR/BRR 写可能改变哪些引脚。 */
+function staticPinMasks(
+  wordOffset: number,
+  offset: number,
+  size: AccessSize,
+  staticValue: number,
+): StaticPinMasks | undefined {
+  const placed = placeStaticWord(staticValue, offset, size);
+
+  if (wordOffset === GPIO_BSRR) {
+    const setMask = placed & 0xffff;
+    const clearMask = (placed >>> 16) & 0xffff;
+    // STM32 规定同一位同时 set/reset 时 set 优先。
+    const effectiveClearMask = clearMask & ~setMask & 0xffff;
+
+    return { setMask, effectiveClearMask, candidateMask: setMask | effectiveClearMask };
+  }
+
+  if (wordOffset === GPIO_BRR) {
+    const effectiveClearMask = placed & 0xffff;
+
+    return { setMask: 0, effectiveClearMask, candidateMask: effectiveClearMask };
+  }
+
+  return undefined;
+}
+
+interface StaticGpioLocation {
+  readonly portIndex: number;
+  readonly offset: number;
+  readonly wordOffset: number;
+}
+
+function staticGpioLocation(staticAddress: number | undefined): StaticGpioLocation | undefined {
+  if (staticAddress === undefined) return undefined;
+
+  const relative = staticAddress - GPIO_BASE;
+
+  if (relative < 0 || relative >= 0x2000) return undefined;
+
+  const portIndex = relative >>> 10;
+
+  if (portIndex >= PORTS.length) return undefined;
+
+  const offset = relative & 0x3ff;
+
+  return { portIndex, offset, wordOffset: offset & 0x3c };
+}
+
+/**
+ * 判断一个静态 GPIO 访问是否能完全在 Guest 块内处理：IDR 是只读访问；BSRR/BRR
+ * 只有在值已知且候选引脚不超过两根时才能内联。
+ */
+export function canInlineStaticGpioWrite(
+  staticAddress?: number,
+  size: AccessSize = 4,
+  staticValue?: number,
+): boolean {
+  const location = staticGpioLocation(staticAddress);
+
+  if (location === undefined) return false;
+  if (location.wordOffset === GPIO_IDR) return true;
+  if (staticValue === undefined) return false;
+  if (location.wordOffset !== GPIO_BSRR && location.wordOffset !== GPIO_BRR) return false;
+
+  const masks = staticPinMasks(location.wordOffset, location.offset, size, staticValue);
+
+  return masks !== undefined && countSetBits(masks.candidateMask) <= 2;
+}
+
+/**
+ * 静态 BSRR/BRR 内联后是否可能改变引脚电平。宿主的电气求解只在块边界运行，
+ * 因此这类写之后必须收块，否则同一块内的多个脉冲（例如 LCD WR 低→高）会被合并。
+ */
+export function inlineStaticGpioWriteChangesPin(
+  staticAddress?: number,
+  size: AccessSize = 4,
+  staticValue?: number,
+): boolean {
+  const location = staticGpioLocation(staticAddress);
+
+  if (location === undefined || staticValue === undefined) return false;
+  if (location.wordOffset !== GPIO_BSRR && location.wordOffset !== GPIO_BRR) return false;
+
+  const masks = staticPinMasks(location.wordOffset, location.offset, size, staticValue);
+
+  if (masks === undefined) return false;
+  const candidates = countSetBits(masks.candidateMask);
+
+  return candidates > 0 && candidates <= 2;
+}
+
 function mergeWord(
   b: Body,
   current: Value<number>,
@@ -695,6 +845,73 @@ function odrTransition(
   return { current, next: mergeWord(b, current, value, num(b, offset), size) };
 }
 
+/** 稳态快路径：外层已确认 changed 非零，只对候选脚中真正变化的位重发 intent。 */
+function emitStaticCandidateIntents(
+  b: Body,
+  portIndex: number,
+  candidateMask: number,
+  changed: Value<number>,
+  registers: PortRegisters,
+): void {
+  if (countSetBits(candidateMask) === 1) {
+    emitPinIntent(b, portIndex, 31 - Math.clz32(candidateMask), registers);
+
+    return;
+  }
+
+  for (let bit = 0; bit < 16; bit += 1) {
+    const bitMask = 1 << bit;
+
+    if ((candidateMask & bitMask) === 0 || PORTS[portIndex]?.pins[bit] === null) continue;
+
+    b.if(boolBit(b, changed, bitMask), (selected) => {
+      emitPinIntent(asBody(selected), portIndex, bit, registers);
+    });
+  }
+}
+
+/** 供电状态跳变时登记一次全端口刷新；服务块最多执行一次。 */
+function markPowerChange(b: Body): void {
+  b.writeState(
+    GPIO_SYNC,
+    b.bitOr(b.readState(GPIO_SYNC, types.number), num(b, GPIO_ALL_PORT_MASK)),
+  );
+  markService(b, SERVICE_GPIO_SYNC);
+}
+
+/**
+ * 静态单/双引脚输出写：ODR 影子与寄存器映像在当前指令块内落地。稳态只重算候选
+ * 引脚的电气 intent；供电跳变才把全端口刷新交给极少命中的服务块。
+ */
+function inlineStaticGpioWrite(b: Body, portIndex: number, masks: StaticPinMasks): void {
+  const { setMask, effectiveClearMask, candidateMask } = masks;
+  const current = b.readState(gpioOdrState(portIndex), types.number);
+  const clearKeepMask = ~effectiveClearMask & 0xffff;
+  const next = b.bitOr(b.bitAnd(current, num(b, clearKeepMask)), num(b, setMask));
+  const changed = b.bitAnd(b.bitXor(current, next), num(b, candidateMask));
+
+  b.if(b.notEqual(types.number, changed, num(b, 0)), (active) => {
+    const scope = asBody(active);
+
+    scope.writeState(gpioOdrState(portIndex), next);
+    storeWord(scope, portIndex, num(scope, GPIO_ODR), next);
+
+    const isPowered = powered(scope);
+    const wasPowered = scope.readState(GPIO_POWERED, types.bool);
+
+    scope.if(
+      scope.notEqual(types.bool, isPowered, wasPowered),
+      (onPowerChange) => markPowerChange(asBody(onPowerChange)),
+      (onStablePower) => {
+        const stable = asBody(onStablePower);
+        const registers = candidateRegisters(stable, portIndex, candidateMask, next, isPowered);
+
+        emitStaticCandidateIntents(stable, portIndex, candidateMask, changed, registers);
+      },
+    );
+  });
+}
+
 /** 地址落在 GPIO 区间时取端口号（0–4）。 */
 function gpioPortIndex(b: Body, address: Value<number>): Value<number> {
   return b.shiftRightUnsigned(b.subtract(address, num(b, GPIO_BASE)), num(b, 10));
@@ -737,7 +954,8 @@ export function queueGpioWrite(
 
 /**
  * 延迟 GPIO 写。静态地址命中 ODR/BSRR/BRR 时在 Guest 块内直接算新 ODR 与变化位，
- * 无变化就完全跳过服务调度；其他寄存器仍交给服务块处理。
+ * 无变化就完全跳过服务调度。静态值为单/双引脚的 BSRR/BRR 写进一步在 Guest 块内完成
+ * 稳态 intent 刷新；其他寄存器或超过两根候选脚的写仍交给服务块处理。
  *
  * 基址无法证明的动态写继续走服务块：为每个动态站点展开端口选择树会放大生成的 Guest
  * 代码。服务块里的 `writeGpioPort` 仍按 ODR 前后值计算精确 `changed`，为零时不会刷新
@@ -746,9 +964,10 @@ export function queueGpioWrite(
 export function deferGpioWrite(
   b: Body,
   address: Value<number>,
-  size: number,
+  size: AccessSize,
   value: Value<number>,
   staticAddress?: number,
+  staticValue?: number,
 ): void {
   if (staticAddress === undefined) {
     queueGpioWrite(b, address, size, value);
@@ -756,23 +975,32 @@ export function deferGpioWrite(
     return;
   }
 
-  const relative = staticAddress - GPIO_BASE;
+  const location = staticGpioLocation(staticAddress);
 
-  if (relative < 0 || relative >= 0x2000) {
+  if (location === undefined) {
     queueGpioWrite(b, address, size, value, staticAddress);
 
     return;
   }
 
-  const portIndex = relative >>> 10;
-
-  if (portIndex >= PORTS.length) return;
-
-  const offset = relative & 0x3ff;
-  const wordOffset = offset & 0x3c;
+  const { portIndex, offset, wordOffset } = location;
 
   // 写 GPIO_IDR 在 STM32 上是只读访问，既不改变 ODR，也不需要服务。
   if (wordOffset === GPIO_IDR) return;
+
+  if (staticValue !== undefined) {
+    const masks = staticPinMasks(wordOffset, offset, size, staticValue);
+
+    if (masks !== undefined) {
+      if (masks.candidateMask === 0) return;
+
+      if (countSetBits(masks.candidateMask) <= 2) {
+        inlineStaticGpioWrite(b, portIndex, masks);
+
+        return;
+      }
+    }
+  }
 
   if (wordOffset !== GPIO_ODR && wordOffset !== GPIO_BSRR && wordOffset !== GPIO_BRR) {
     queueGpioWrite(b, address, size, value, staticAddress);

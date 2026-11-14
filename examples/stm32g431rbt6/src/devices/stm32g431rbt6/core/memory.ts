@@ -18,6 +18,7 @@ import {
   SYSTEM_BASE,
   SYSTEM_END,
 } from './layout';
+import type { AccessSize } from './layout';
 import {
   asBody,
   num,
@@ -31,6 +32,12 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { readPeripheral, writePeripheral } from './bus';
+import {
+  GPIO_BRR,
+  GPIO_BSRR,
+  canInlineStaticGpioWrite,
+  inlineStaticGpioWriteChangesPin,
+} from './gpio';
 import { readSystem, writeSystem } from './nvic';
 
 /**
@@ -60,6 +67,8 @@ export interface At {
   readonly offset?: number;
   /** 翻译期已经证明的具体地址；存在时静态消解整棵区间分派树。 */
   readonly address?: number;
+  /** 翻译期已经证明的写入常量；仅对写访问有意义。 */
+  readonly value?: number;
   /** 静态地址的区间标志，便于分析与后续优化直接读取。 */
   readonly code?: boolean;
   readonly sram?: boolean;
@@ -100,35 +109,93 @@ export function regionOfAddress(address: number): Region {
 }
 
 /** 为翻译期已知的具体地址生成静态访存描述。 */
-export const atAddress = (address: number): At => {
+export const atAddress = (address: number, value?: number): At => {
   const addr = address >>> 0;
   const region = regionOfAddress(addr);
 
   return {
     region,
     address: addr,
+    ...(value === undefined ? {} : { value: value >>> 0 }),
     code: region === 'code',
     sram: region === 'sram',
     ccm: region === 'ccm',
   };
 };
 
+/** 具体地址对应的已建模 GPIO 端口；端口 4 不存在，端口 5 对应 GPIOF。 */
+function gpioPortAt(address: number): number | undefined {
+  const relative = (address - GPIO_BASE) >>> 0;
+  const port = relative >>> 10;
+
+  if (relative >= GPIO_PORT_STRIDE * 6) return undefined;
+  if (port === 0 || port === 1 || port === 2 || port === 3 || port === 5) return port;
+
+  return undefined;
+}
+
 /** 该访问是否仍可能触发外设服务；动态地址必须保守地返回 true。 */
-export function atMayService(at: At | undefined): boolean {
+export function atMayService(
+  at: At | undefined,
+  access: 'read' | 'write',
+  size: AccessSize = 4,
+): boolean {
   if (at === undefined) return true;
 
   const region = at.address === undefined ? at.region : regionOfAddress(at.address);
 
-  return region === 'peripheral' || region === 'system';
+  if (region === 'system') return true;
+  if (region !== 'peripheral' || at.address === undefined) return region === 'peripheral';
+
+  if (gpioPortAt(at.address) === undefined) return true;
+
+  const offset = (at.address - GPIO_BASE) & 0x3ff;
+  const wordOffset = offset & 0x3c;
+
+  // BSRR/BRR 读回恒为零。IDR 写以及最多两根候选引脚的静态 BSRR/BRR 写由
+  // deferGpioWrite 原地处理；极端电源跳变留下的同步请求由批次末尾的 tickValue 结算。
+  if (access === 'read' && (wordOffset === GPIO_BSRR || wordOffset === GPIO_BRR)) return false;
+  if (access === 'write' && canInlineStaticGpioWrite(at.address, size, at.value)) return false;
+
+  return true;
+}
+
+/** 一次访存对批次控制流的附加影响。 */
+export interface AccessEffects {
+  boundaryAfter: boolean;
+}
+
+/** 该静态写之后是否必须结束基本块，让宿主电气边界看到引脚变化。 */
+export function atEndsBatch(
+  at: At | undefined,
+  access: 'read' | 'write',
+  size: AccessSize = 4,
+): boolean {
+  return (
+    access === 'write' &&
+    at?.address !== undefined &&
+    inlineStaticGpioWriteChangesPin(at.address, size, at.value)
+  );
+}
+
+/** 查询访问是否触发服务，并累计静态 GPIO 输出边沿所需的批次边界。 */
+export function atAccessEffects(
+  at: At | undefined,
+  access: 'read' | 'write',
+  size: AccessSize,
+  effects: AccessEffects,
+): boolean {
+  if (atEndsBatch(at, access, size)) effects.boundaryAfter = true;
+
+  return atMayService(at, access, size);
 }
 
 /** GPIO BSRR/BRR 是只写寄存器，读回值恒为 0。 */
 export function gpioReadsAsZero(address: number): boolean {
-  const offset = (address >>> 0) - GPIO_BASE;
+  const addr = address >>> 0;
 
-  if (offset < 0 || offset >= GPIO_PORT_STRIDE * 5) return false;
-
-  const register = offset & (GPIO_PORT_STRIDE - 1);
+  if (gpioPortAt(addr) === undefined) return false;
+  const register = (addr - GPIO_BASE) & (GPIO_PORT_STRIDE - 1);
 
   return register === 0x18 || register === 0x28;
 }
@@ -193,7 +260,7 @@ function readAt(
 function writeAt(
   b: Body,
   address: Value<number>,
-  size: number,
+  size: AccessSize,
   value: Value<number>,
   at: At,
   defer: boolean,
@@ -212,7 +279,7 @@ function writeAt(
       storeWidth(b, CCM, offset, size, value);
       return;
     case 'peripheral':
-      writePeripheral(b, address, size, value, defer, at.address);
+      writePeripheral(b, address, size, value, defer, at.address, at.value);
       return;
     case 'system':
       writeSystem(b, address, size, value);
@@ -349,7 +416,7 @@ export function readMemory(
 export function writeMemory(
   b: Body,
   address: Value<number>,
-  size: number,
+  size: AccessSize,
   value: Value<number>,
   defer = false,
   at?: At,

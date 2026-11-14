@@ -14,13 +14,16 @@ export interface Instruction {
   readonly size: 2 | 4;
   readonly cycles: number;
   /**
-   * 这条指令是否可能把 pc 改写成新的取指位置。批处理在它之后收块：块体是单个
-   * `InstructionIR`，把分支之后的死代码编进来只会放大块体积（直接后端无法在 body
-   * 内再分片）。判错不影响正确性——块内每条指令前都会复位 pc，运行期守卫会停掉后续指令。
+   * 这条指令之后是否必须收块。写 pc 会在分支后留下死代码；静态 GPIO 输出写需要让宿主
+   * 电气边界看到每个脉冲。块体是单个 `InstructionIR`，直接后端无法在 body 内再分片。
    */
   readonly endsBatch: boolean;
   /** 是否可能置位 `serviceMask`。 */
   readonly mayService: boolean;
+  /** 是否需要在块内发射未知地址的完整内存分派树。 */
+  readonly dynamicMemory?: boolean;
+  /** 静态 GPIO 输出写之后必须收块，让电气求解看到脉冲。 */
+  readonly boundaryAfter?: boolean;
   /** IT 指令覆盖的后续指令条数；非 IT 指令为 0。 */
   readonly itCount: number;
   readonly emit: (b: Body, pc: number) => void;
@@ -29,15 +32,28 @@ export interface Instruction {
 const byteAt = (code: JitTranslateInput['code'], offset: number): number =>
   code[offset & 0x1ffff] ?? 0;
 
-/**
- * 16 位指令里会写 pc 的形式：分支、`bx/blx`、hi-reg 操作、`pop {pc}`、`ldm {pc}`、
- * `ldr pc` 与 misc 指令（CBZ 等）。0xB100–0xBFFF 整段按保守处理，除了 `add/sub sp`。
- */
+/** 16 位指令里真正会改写 pc 的形式。 */
 function writesPc16(instr: number): boolean {
   if ((instr & 0xf000) === 0xd000) return true; // B<cond> / SVC / UDF
   if ((instr & 0xf800) === 0xe000) return true; // B
-  if ((instr & 0xfc00) === 0x4400) return true; // hi-reg ops / BX / BLX
-  if (instr >= 0xb100 && instr < 0xc000) return true; // CBZ / push / pop（可含 pc）
+
+  if ((instr & 0xfc00) === 0x4400) {
+    if ((instr & 0xff00) === 0x4700) return true; // BX / BLX
+    if ((instr & 0xff00) === 0x4500) return false; // CMP
+
+    const rd = (instr & 0x7) | ((instr >>> 4) & 0x8);
+
+    return rd === 15; // ADD/MOV 只有目标为 PC 才改变控制流
+  }
+
+  if ((instr & 0xf000) === 0xb000) {
+    if ((instr & 0xf500) === 0xb100) return true; // CBZ / CBNZ
+    if ((instr & 0xfe00) === 0xbc00) return (instr & 0x0100) !== 0; // POP {..., pc}
+    if ((instr & 0xff00) === 0xbe00) return true; // BKPT
+
+    return false;
+  }
+
   if ((instr & 0xf000) === 0xc000) return (instr & 0x0800) !== 0; // ldm {pc}
   if ((instr & 0xf800) === 0x4800) return ((instr >> 8) & 7) === 7; // ldr pc, literal
   if ((instr & 0xf800) === 0x9800) return ((instr >> 8) & 7) === 7; // ldr pc, [sp, #imm]
@@ -91,6 +107,9 @@ export function guard(instruction: Instruction): Instruction {
     cycles: instruction.cycles,
     endsBatch: instruction.endsBatch,
     mayService: instruction.mayService,
+    ...(instruction.dynamicMemory === undefined
+      ? {}
+      : { dynamicMemory: instruction.dynamicMemory }),
     itCount: 0,
     emit: (b, pc) => {
       const state = b.readState('itState', types.number);
@@ -169,14 +188,22 @@ export function decode(
 
     const decoded = decode32(h1, h2, knownRegs, pc, code, firmwareLength);
 
-    instruction = { ...decoded, endsBatch: writesPc32(h1, h2), itCount: 0 };
+    instruction = {
+      ...decoded,
+      endsBatch: writesPc32(h1, h2) || decoded.boundaryAfter === true,
+      itCount: 0,
+    };
   } else if ((h1 & 0xff00) === 0xbf00) {
     if ((h1 & 0x0f) === 0 || ((h1 >> 4) & 0xf) === 0xf) instruction = hint();
     else instruction = itInstruction(h1);
   } else {
     const decoded = decode16(h1, knownRegs, pc, code, firmwareLength);
 
-    instruction = { ...decoded, endsBatch: writesPc16(h1), itCount: 0 };
+    instruction = {
+      ...decoded,
+      endsBatch: writesPc16(h1) || decoded.boundaryAfter === true,
+      itCount: 0,
+    };
   }
 
   // IT 谓词可能让写失效；入口常量仍可用于该指令自身的静态地址，但离开后必须清空。
