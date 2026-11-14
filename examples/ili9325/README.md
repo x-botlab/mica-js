@@ -79,8 +79,9 @@ GRAM 是 240（X）× 320（Y），面板横向安装成 320×240：
 
 ### 读数
 
-`pnpm run bench` 跑 `bench/perf.test.ts`，读数追加到 `bench/results.jsonl`。下表为
-Linux x64、Node 24.20、单进程串行运行的一组读数（宿主共享，仅用于同机前后对照）：
+`pnpm run bench` 跑 `bench/perf.test.ts` 与 `bench/joint-perf.test.ts`，读数都追加到
+`bench/results.jsonl`。下表为器件侧基准：Linux x64、Node 24.20、单进程串行运行的一组
+读数（宿主共享，仅用于同机前后对照）：
 
 | 用例               | 像素   | 仿真时间 | 墙钟   | 倍率 | 吞吐      | 消息数 |
 | ------------------ | ------ | -------- | ------ | ---- | --------- | ------ |
@@ -117,12 +118,14 @@ src/devices/ili9325/
   index.ts        把帧信息 + 像素分块组装成 bytes<rgb565> 并发布话题
   device.json     引脚、端口、符号与属性元数据
 test/
-  master.ts       8080 总线主设备（DDL），以及同引脚的空白对照器件
-  harness.ts      真实 createBoard 板级夹具、帧解码与面板合成
-  device.test.ts  协议、寄存器、地址推进、映射、合帧、参考 BSP 回归
-  joint.test.ts   MCU + LCD 联合仿真（跑真实 Keil 固件，默认跳过）
+  master.ts         8080 总线主设备（DDL），以及同引脚的空白对照器件
+  harness.ts        真实 createBoard 板级夹具、帧解码与面板合成
+  joint-harness.ts  STM32 + ILI9325 联合板、帧与发布时 GRAM 快照
+  device.test.ts    协议、寄存器、地址推进、映射、合帧、参考 BSP 回归
+  joint.test.ts     MCU + LCD 联合仿真（跑真实 Keil 固件，默认跳过）
 bench/
-  perf.test.ts    整屏 / 文本带 / 小矩形 / 空白对照的吞吐读数
+  perf.test.ts      整屏 / 文本带 / 小矩形 / 空白对照的吞吐读数
+  joint-perf.test.ts  0 → 440 ms 的真实 MCU + LCD 帧发布流水线
 ```
 
 ## MCU 联合仿真
@@ -147,6 +150,39 @@ HSI16 → PLL M=2 / N=20 / R=2 配置主频，`HAL_Delay` 的 `uwTick` 换算依
 用例只验证到 BSP 初始化写入，以便把测试时间集中在 MCU → GPIO → 电气网络 → 总线锁存
 链路。`throughput` 会识别 HAL_Delay 的 `HAL_GetTick` 轮询形态，在 SysTick 边界推进
 `uwTick` 并复查终点；`precise` 仍逐指令执行同一循环。
+
+### 联合性能基准
+
+完整测试记录见
+[`docs/stm32g431rbt6-ili9325-joint-benchmark.md`](../../docs/stm32g431rbt6-ili9325-joint-benchmark.md)。
+
+`bench/joint-perf.test.ts` 使用同一块联合板从复位推进到 **440 ms**，覆盖多个
+`HAL_Delay`、LCD 初始化、真实 GRAM 写入与 `framebuffer` 发布。每轮创建新板，进程 CPU
+时间三轮取最小值；首轮同时承担模块级 Thumb 块缓存冷启动。
+
+```bash
+./node_modules/.bin/vitest run --config vitest.perf.config.ts bench/joint-perf.test.ts
+```
+
+推进窗口必须使用不超过 SysTick 周期（约 200 µs）的 `runUntil` 量子；本固件当前运行路径下，
+大切片会少计 `uwTick`，从而把固件错误地停在延时循环。
+
+当前 Linux x64、Node 24.20.0、`throughput` 读数：
+
+| 窗口                   | 仿真时间 | CPU 最好值 | 实时倍率 |
+| ---------------------- | -------- | ---------- | -------- |
+| 0 → 200 µs 冷启动      | 200 µs   | 215 ms     | —        |
+| 200 µs → 220 ms        | 219.8 ms | 411 ms     | 0.535×   |
+| 220 → 440 ms           | 220 ms   | 169 ms     | 1.299×   |
+| 0 → 440 ms（含冷启动） | 440 ms   | 795 ms     | 0.553×   |
+
+首轮冷缓存总耗时为 6006.5 ms CPU / 3819.9 ms 墙钟；表中最好值来自后续轮次。完整
+440 ms 的墙钟最好值为 509 ms。440 ms 内共发布 10 帧、132 个像素，其中 131 个非零；
+220 ms 时已有 4 帧。最终 GRAM 有 135 个非零像素。基准同时断言每个发布帧与其发布瞬间的
+GRAM 快照逐像素一致，因此数据确实经过 MCU GPIO → 电气网络 → ILI9325 GRAM → 合帧发布链路。
+
+Direct JIT 统计：`programs=1`、`blocks=311`、`shards=72`、`compiles=22`、
+`calls=6783`、`fallbacks=2720`。
 
 ## 验证
 

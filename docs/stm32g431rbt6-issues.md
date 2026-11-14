@@ -86,8 +86,8 @@
 同一份固件的 `gpio-blink` 对照（`bench/perf.test.ts`，1 MHz、500 ms 仿真、交付产物）：
 稳态墙钟 **3 ms**、`direct: true`、`programs: 1`、12 个块。
 
-`ili9325` 的 MCU + LCD 联合仿真已改为默认 `throughput`，用例通过（约 6.7 s；200 µs 的窗口里
-冷启动占大头，见 2.3）。
+`ili9325` 的 MCU + LCD 联合仿真走默认 `throughput` 并通过。0 → 440 ms 的联合性能、帧发布与
+GRAM 一致性读数见 `docs/stm32g431rbt6-ili9325-joint-benchmark.md`。
 
 ### 2.3 冷启动是当前最大短板
 
@@ -182,6 +182,7 @@ cd ../../packages/compiler && node --test tests/*.test.mjs
 cd ../simulator && ./node_modules/.bin/vitest run
 ```
 
-当前读数：`stm32g431rbt6` 15 通过；`ili9325` 17 通过 + 1 跳过；联合用例 1 通过（约 6.7 s，
-`throughput`）；`gpio-blink` 500 ms 仿真墙钟约 3 ms（`direct: true`、`programs: 1`、12 个块）；
-HAL 裸板 80 MHz 的性能范围见 2.2，精确值以基准 stdout 为准。
+当前读数：`stm32g431rbt6` 15 通过；`ili9325` 17 通过 + 1 跳过；联合正确性用例 1 通过；
+联合 440 ms 性能基准 1 通过，详细读数见 `docs/stm32g431rbt6-ili9325-joint-benchmark.md`；
+`gpio-blink` 500 ms 仿真墙钟约 3 ms（`direct: true`、`programs: 1`、12 个块）；HAL 裸板
+80 MHz 的性能范围见 2.2，精确值以基准 stdout 为准。
