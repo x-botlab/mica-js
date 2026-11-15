@@ -14,9 +14,8 @@ import {
 /**
  * 默认路径逐窗口对账诊断。
  *
- * 历史 `yield-on-intent` 反事实与其 CPU profile 已记录在
- * docs/stm32g431rbt6-ili9325-joint-bottlenecks.md；这里只跑正式路径，避免默认
- * perf 配置重复执行两套 440 ms + 六个 profile。需要显式开启：
+ * 这里只跑正式路径，避免默认 perf 配置重复执行两套 440 ms + 六个 profile。
+ * 需要显式开启：
  * `MICA_JOINT=1 ./node_modules/.bin/vitest run --config vitest.perf.config.ts bench/joint-diagnosis.test.ts`。
  */
 

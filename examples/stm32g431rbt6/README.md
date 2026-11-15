@@ -99,8 +99,7 @@ packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{de
 
 当前基准缓存 311 个块、71 个 resident shard。`0x08001104` 边沿块生成约 36.6 KB JS；
 8 个 LCD 边沿块合计约 251 KB。静态 GPIO 写不再经过 GPIOB service：220 ms → 440 ms 窗口
-中 GPIOB service 仅 54 次、GPIOC service 892 次，全部块入口 1,372,502 次。块结构与根因见
-`docs/mcu-jit-block-inflation.md`，缺陷与限制见 `docs/stm32g431rbt6-issues.md`。
+中 GPIOB service 仅 54 次、GPIOC service 892 次，全部块入口 1,372,502 次。
 
 ### 直接后端的剩余成本
 

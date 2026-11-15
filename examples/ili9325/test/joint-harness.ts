@@ -147,8 +147,7 @@ export const JOINT_PANEL_HEIGHT = PANEL_HEIGHT;
 export const JOINT_FULL_FRAME_PIXELS = PANEL_WIDTH * PANEL_HEIGHT;
 
 /**
- * 完整 WR 边沿下 0 → 440 ms 的固定工作量，见
- * docs/stm32g431rbt6-ili9325-joint-bottlenecks.md 第 2 节。
+ * 完整 WR 边沿下 0 → 440 ms 的固定工作量。
  *
  * 这些数字约束 MCU 实际发出的写周期，不是允许漏边沿的容差：
  * - `wrLevelChanges` 是 MCU WR intent 的全部电平变化；

@@ -33,7 +33,7 @@ const PS_PER_MS = 1_000_000_000;
 const ROUNDS = 3;
 const FULL_FRAME_PIXELS = JOINT_FULL_FRAME_PIXELS;
 /**
- * 完整 WR 边沿下的固定读数，见 docs/stm32g431rbt6-ili9325-joint-bottlenecks.md。
+ * 完整 WR 边沿下的固定读数。
  *
  * 三者都是不带观察者的版本/内存读数，不向计时路径添加逐 intent 探针：
  * - `WR` sample 版本 = MCU WR intent 电平变化数；

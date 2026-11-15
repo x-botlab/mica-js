@@ -153,9 +153,6 @@ HSI16 → PLL M=2 / N=20 / R=2 配置主频，`HAL_Delay` 的 `uwTick` 换算依
 
 ### 联合性能基准
 
-完整测试记录见
-[`docs/stm32g431rbt6-ili9325-joint-benchmark.md`](../../docs/stm32g431rbt6-ili9325-joint-benchmark.md)。
-
 `bench/joint-perf.test.ts` 使用同一块联合板从复位推进到 **440 ms**，覆盖多个
 `HAL_Delay`、LCD 初始化、真实 GRAM 写入与 `framebuffer` 发布。每轮创建新板，进程 CPU
 时间三轮取最小值；首轮同时承担模块级 Thumb 块缓存冷启动。
