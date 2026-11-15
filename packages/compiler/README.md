@@ -7,6 +7,8 @@ there is no runtime IR dispatcher or dependency on the old IR or simulator.
 ## API
 
 - `compileBody(region)` returns `(host, args?, reaction?) => Generator`.
+- `compileSynchronousBody(region, { resolveFunction })` returns a bindable synchronous
+  `SynchronousProgram` for acyclic, suspension-free bodies and their static call graph.
 - `compileComputation(computation)` returns `(host) => unknown`. It synchronously
   completes nested calls and rejects any yielded execution signal.
 - `compileBodyArtifact` and `compileComputationArtifact` additionally return the
@@ -130,6 +132,60 @@ never bound and keep the generic `host.load/store/sample` calls. The contract fo
 implementers is exact equivalence with the generic operation, including lazy name
 resolution, state snapshots and invalidation, live sample reads, memory
 bounds/endianness, and any code-memory invalidation the host performs on stores.
+
+## Synchronous Reaction and Function Compilation
+
+`compileSynchronousBody(region, { resolveFunction })` is the optional non-generator form
+for bodies that never suspend, such as reactions. It returns a `SynchronousProgram` or
+`undefined`:
+
+```ts
+import { compileSynchronousBody } from '@mica-js/compiler';
+
+const program = compileSynchronousBody(reaction.body, {
+  resolveFunction: (name) => functions.get(name)?.body,
+});
+const runner = program?.bind(host);
+runner?.(args, { previous, current, captures });
+```
+
+The program owns the emitted functions and a compiler-owned constant pool. It never
+captures a host, instance or handle. `bind(host)` allocates the per-instance resource
+handles once and returns a synchronous runner; the same program can be bound to several
+instances independently. Calls with no arguments reuse one frozen empty argument list.
+
+Static `call`/`callValue` targets are compiled into ordinary JavaScript functions in the
+same factory and called directly. They do not create generators or call
+`host.call`/`delegate`. The reachable static call graph must be acyclic. Recursive and
+mutually recursive graphs are rejected as a whole, rather than relying on native
+JavaScript stack depth or generator-delegation differences. Resource parameters
+(`pin`/`memory` passed through `args`) remain generic `host.sample`/`host.load` calls.
+
+Callees do not inherit the caller's reaction frame: like `Instance.invoke`, a model
+function called from a reaction receives `undefined` as its reaction context. A callee
+that tries to read `previous`, `current` or a capture therefore fails with the same
+`Reaction value requires a reaction frame` / `Reaction capture is not available` error
+as the generator backend. Only the reaction body itself receives the frame.
+
+Admission is all-or-nothing before execution. The root and every reachable callee are
+rejected as a whole when they contain `wait`, `elapse`, `receive`, `waitUntil`,
+`redirect`, `stop`, an unresolvable call, a call cycle, or any emitter shape that cannot
+be emitted. The caller keeps the existing generator body for that reaction. Comments,
+captures and reaction frames are unchanged; the runtime must still complete every capture
+before running any reaction body.
+
+Fixed `pin`/`state`/`memory` names use `host.bind(specs)` by default, with the same lazy
+name-resolution and invalidation contract as resumable process handles. Pass
+`{ bindResources: false }` to force the generic `host.read`/`host.sample`/`host.load`
+operations and skip `host.bind` entirely. A host without `bind` also gets an equivalent
+synchronous runner whose handle methods call the generic host operations at the original
+execution position. Invalid resource names are therefore reported at the operation that
+uses them, never by `bind` for a name in an unexecuted branch.
+
+Focused tests: build this package, then run
+`node --test packages/compiler/tests/synchronous.test.mjs` from the repository root.
+The real ILI9325 integration test lives in the example package:
+`cd examples/ili9325 && ./node_modules/.bin/vitest run --config vitest.config.ts test/synchronous.test.ts`.
 
 ## Bounded Direct JIT
 

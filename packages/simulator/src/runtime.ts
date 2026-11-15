@@ -12,7 +12,7 @@ import { compileObservation } from './observations';
 import { Instance } from './runtime/instance';
 import { registerPublishGate } from './runtime/publish-gate';
 import { runJit } from './runtime/jit';
-import { body, computation, frame, MAX_TIME, time } from './runtime/execution';
+import { body, computation, frame, MAX_TIME, synchronousBody, time } from './runtime/execution';
 import {
   acceptSync,
   AsyncHookError,
@@ -88,6 +88,13 @@ export function createDeviceLibrary(entries: readonly DeviceLibraryEntry[]): Dev
 interface TopicListener {
   readonly owner?: Instance;
   readonly call: (message: TopicMessage) => unknown;
+}
+
+/** Mutable view of the compiler's readonly reaction frame, reused across boundaries. */
+interface MutableReactionFrame {
+  previous: unknown;
+  current: unknown;
+  captures: unknown[];
 }
 
 class BoardRuntime implements Board {
@@ -312,6 +319,25 @@ class BoardRuntime implements Board {
         ),
       ),
       skipped: Object.freeze(this.skippedPlans.map((entry) => Object.freeze({ ...entry }))),
+      reactions: Object.freeze(
+        this.instances.flatMap((instance) =>
+          instance.reactions.map((reaction) =>
+            Object.freeze({
+              instance: instance.id,
+              name: reaction.declaration.name,
+              mode:
+                reaction.synchronousProgram === undefined
+                  ? 'pending'
+                  : reaction.synchronousProgram === null
+                    ? 'generic'
+                    : reaction.synchronous !== undefined && reaction.synchronous !== null
+                      ? 'sync'
+                      : 'ready',
+              functions: reaction.synchronousProgram?.functions.length ?? 0,
+            }),
+          ),
+        ),
+      ),
     });
   }
   /**
@@ -528,6 +554,32 @@ class BoardRuntime implements Board {
       this.readyJits.push(jit);
     }
   }
+  /**
+   * Fail-closed admission for staying inside generated code after a publication checkpoint.
+   * The JIT must be the only direct owner, all same-time scheduler stages must be empty,
+   * and no event may be due through the requested horizon. The target time is exclusive:
+   * code must not resume at `executionEnd`.
+   */
+  canContinueDirect(jit: Jit, horizon: number): boolean {
+    return (
+      this.status === 'ready' &&
+      this.phase === 'execute' &&
+      !this.isFaulted &&
+      this.execution === 'throughput' &&
+      this.jits.length === 1 &&
+      this.jits[0] === jit &&
+      jit.active &&
+      !jit.stopped &&
+      !jit.queued &&
+      this.readyJits.length === 0 &&
+      this.models.length === 0 &&
+      this.waitingJits.size === 0 &&
+      this.time < this.executionEnd &&
+      horizon >= this.time &&
+      horizon < this.executionEnd &&
+      this.events.time > horizon
+    );
+  }
   invalidate(slot: ResourceSlot): void {
     slot.version++;
     if (slot.subscribers.size === 0) return;
@@ -679,23 +731,46 @@ class BoardRuntime implements Board {
   private applyChange(observation: Receiver, previous: unknown, current: unknown): void {
     if (observation.declaration.kind === 'reaction') {
       const reaction = observation as Reaction;
-      reaction.frame = { previous, current, captures: [] };
+      const frame = reaction.frame as MutableReactionFrame | undefined;
+      if (frame === undefined) reaction.frame = { previous, current, captures: [] };
+      else {
+        frame.previous = previous;
+        frame.current = current;
+        frame.captures.length = 0;
+      }
       this.reactionBatch.push(reaction);
     } else this.enqueue(observation as Process);
   }
   private recordChange(observation: Receiver, previous: unknown, current: unknown): void {
-    const list = this.changeObservations;
-    let at = list.length;
+    this.insertOrderedChange(
+      this.changeObservations,
+      this.changePrevious,
+      this.changeCurrent,
+      observation,
+      previous,
+      current,
+    );
+  }
+  /** Shared stable insertion; receivers are few, so in-place insertion beats a sort. */
+  private insertOrderedChange(
+    receivers: Receiver[],
+    previous: unknown[],
+    current: unknown[],
+    observation: Receiver,
+    before: unknown,
+    after: unknown,
+  ): void {
+    let at = receivers.length;
     const order = observation.order!;
-    while (at > 0 && list[at - 1]!.order! > order) at--;
-    if (at === list.length) {
-      list.push(observation);
-      this.changePrevious.push(previous);
-      this.changeCurrent.push(current);
+    while (at > 0 && receivers[at - 1]!.order! > order) at--;
+    if (at === receivers.length) {
+      receivers.push(observation);
+      previous.push(before);
+      current.push(after);
     } else {
-      list.splice(at, 0, observation);
-      this.changePrevious.splice(at, 0, previous);
-      this.changeCurrent.splice(at, 0, current);
+      receivers.splice(at, 0, observation);
+      previous.splice(at, 0, before);
+      current.splice(at, 0, after);
     }
   }
   boundary(): void {
@@ -708,55 +783,87 @@ class BoardRuntime implements Board {
       changes.length = 0;
       this.changePrevious.length = 0;
       this.changeCurrent.length = 0;
-      try {
-        const batch = this.observations.take();
-        for (let index = 0; index < batch.length; index++) {
-          const observation = batch[index]!;
-          if ('plan' in observation) {
-            this.collectChain(observation);
-            continue;
-          }
-          const current = observation.readSource!();
-          if (same(observation.previous, current)) continue;
-          const previous = observation.previous;
-          observation.previous = current;
-          // Once a collapsed chain buffered its receivers, later effects must wait for
-          // the ordered table; otherwise the original inline application is kept.
-          if (changes.length) this.recordChange(observation, previous, current);
-          else this.applyChange(observation, previous, current);
+      const batch = this.observations.take();
+      for (let index = 0; index < batch.length; index++) {
+        const observation = batch[index]!;
+        if ('plan' in observation) {
+          this.collectChain(observation);
+          continue;
         }
-        const count = changes.length;
-        if (count) {
-          for (let index = 0; index < count; index++)
-            this.applyChange(
-              changes[index]!,
-              this.changePrevious[index],
-              this.changeCurrent[index],
-            );
-          changes.length = 0;
-          this.changePrevious.length = 0;
-          this.changeCurrent.length = 0;
-        }
-        if (!reactions.length) return;
-        // Every instance completes observation and capture before any reaction body runs.
-        for (const reaction of reactions)
-          if (reaction.declaration.captures.length)
-            reaction.frame = {
-              ...reaction.frame!,
-              captures: reaction.declaration.captures.map((capture) =>
-                snapshot(computation(capture.value, reaction.instance.host)),
-              ),
-            };
-        for (const reaction of reactions) {
-          this.current = reaction.instance;
-          reaction.execute ??= body(reaction.declaration.body);
-          const step = reaction.execute(reaction.instance.host, [], reaction.frame).next();
-          if (!step.done) throw new TypeError('Reaction cannot suspend');
-        }
-      } finally {
-        for (const reaction of reactions) reaction.frame = undefined;
+        const current = observation.readSource!();
+        if (same(observation.previous, current)) continue;
+        const previous = observation.previous;
+        observation.previous = current;
+        // Once a collapsed chain buffered its receivers, later effects must wait for
+        // the ordered table; otherwise the original inline application is kept.
+        if (changes.length) this.recordChange(observation, previous, current);
+        else this.applyChange(observation, previous, current);
       }
+      const count = changes.length;
+      if (count) {
+        for (let index = 0; index < count; index++)
+          this.applyChange(changes[index]!, this.changePrevious[index], this.changeCurrent[index]);
+        changes.length = 0;
+        this.changePrevious.length = 0;
+        this.changeCurrent.length = 0;
+      }
+      if (reactions.length) this.runBoundaryReactions(reactions);
+      else return;
     }
+  }
+  /** Shared capture barrier and ordered body runner for generic and static boundaries. */
+  private runBoundaryReactions(reactions: Reaction[]): void {
+    try {
+      // Every instance completes observation and capture before any reaction body runs.
+      for (const reaction of reactions)
+        if (reaction.declaration.captures.length) {
+          const frame = reaction.frame as MutableReactionFrame;
+          frame.captures = reaction.declaration.captures.map((capture) =>
+            snapshot(computation(capture.value, reaction.instance.host)),
+          );
+        }
+      for (const reaction of reactions) {
+        this.current = reaction.instance;
+        this.runReaction(reaction);
+      }
+    } finally {
+      this.clearReactionFrames(reactions);
+    }
+  }
+  private clearReactionFrames(reactions: Reaction[]): void {
+    for (const reaction of reactions) {
+      const frame = reaction.frame as MutableReactionFrame | undefined;
+      if (frame === undefined) continue;
+      frame.previous = undefined;
+      frame.current = undefined;
+      frame.captures.length = 0;
+    }
+  }
+  /**
+   * Execute one synchronous boundary reaction. The capture barrier already froze every
+   * frame before this method runs. Admission is whole-body: a compiler decline selects
+   * the generator path before any effect, while bind/execution errors propagate without
+   * a catch-and-replay fallback.
+   */
+  private runReaction(reaction: Reaction): void {
+    const instance = reaction.instance;
+    let program = reaction.synchronousProgram;
+    if (program === undefined) {
+      program = synchronousBody(instance, reaction.declaration.body) ?? null;
+      reaction.synchronousProgram = program;
+    }
+    if (program !== null) {
+      let runner = reaction.synchronous;
+      if (runner === undefined || runner === null) {
+        runner = program.bind(instance.host);
+        reaction.synchronous = runner;
+      }
+      runner(undefined, reaction.frame);
+      return;
+    }
+    reaction.execute ??= body(reaction.declaration.body);
+    const step = reaction.execute(instance.host, [], reaction.frame).next();
+    if (!step.done) throw new TypeError('Reaction cannot suspend');
   }
   private drive(process: Process, value?: unknown): void {
     const program = process.resumable;

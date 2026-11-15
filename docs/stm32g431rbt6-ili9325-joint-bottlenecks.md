@@ -1,15 +1,18 @@
 # STM32G431RBT6 + ILI9325 联合路径瓶颈调查
 
 - 调查日期：2026-11-14
-- 调查代码基线：`297b03f`；第 1–7 节记录修复前调查，第 8 节记录引擎修复，第 9 节记录器件优化
+- 调查代码基线：`297b03f`；第 1–7 节记录修复前调查，第 8 节记录引擎修复，第 9 节记录器件优化，第 10 节记录本轮最终实现、负结果与暂停状态
+- 本轮最终正式基线：HEAD `08b28c6`，最终读数见第 10 节
 - 环境：Linux x64、Node.js 24.20.0、Vitest 5.0.5
 - 固件与板级连接：沿用 `test/joint-harness.ts`，80 MHz、200 µs 量子、0 → 440 ms
 - 诊断入口：`examples/ili9325/bench/joint-diagnosis.test.ts`
 - 调查分工：STM32 执行路径、ILI9325 接收路径分别交给 DeepSeek V4.1 Flash 1017
   （opencodego）子代理，主线程完成动态对账与 CPU 采样，另一次子代理调用独立复核探针。
 
-当前状态：电气发布边界、常驻状态银行、脏位写回、编译扫描及 MCU/LCD 热路径优化已实现，
-并通过真实固件的发出/接收对账和独立图像 oracle。当前正式读数与剩余瓶颈见第 9 节。
+当前状态：**本阶段实现与正式性能验收已完成，未达 1×，按用户要求暂停。** 电气发布边界、
+常驻状态银行、脏位写回、编译扫描、同步 reaction、Direct 常驻 tail 与 MCU/LCD 热路径
+优化已实现；静态封闭 plan 负结果已撤回。当前正式读数、剩余瓶颈与暂停状态见第 10 节；
+第 1–9 节保留历史调查与上一阶段结论。
 
 ## 1. 结论
 
@@ -307,3 +310,92 @@ state/sample 操作绑定资源句柄；为 MCU 的供电判定和 GPIO 意图�
 指定模型子代理完成了两个器件的只读调查、ODR 契约复核及新增 ODR 回归；一次实际编辑
 请求连接失败，由主线程完成两个生产实现。STM32 7 个文件 **20 项**、ILI9325 3 个文件
 **28 项**、两包类型检查和构建、三轮正式基准及独立对账通过。
+
+## 10. 本轮实现、负结果、剩余瓶颈与暂停状态
+
+**状态：本阶段实现与正式性能验收已完成，未达 1×，按用户要求暂停。** 下一步只保留候选方向，不继续实现，也没有证据承诺可以达到 1×。
+
+### 10.1 保留的生产实现
+
+- **Direct 同步发布检查点与常驻 tail**：
+  - `packages/compiler/src/types.ts` 增加 `DirectJitPublishPhase`、可选 `DirectJitHost.publish` 与 `DirectJitProgram.tailResumes`；
+  - `packages/compiler/src/direct-jit.ts` 统一 `publishCheckpoint`，对已证明空 suffix 的 tail 在 prefix 阶段可同步发布；
+  - `packages/simulator/src/runtime/jit.ts` 的 `publishDirectFrame`、`completeTailDirect` 与 `for(;;)` 常驻循环保留 prefix/suffix/invalidated 的精确边界；
+  - `BoardRuntime.canContinueDirect` 对 model 队列、事件视界、ready/waiting JIT、目标时刻和多 JIT 做 fail-closed 准入。
+- **银行绑定与 frame 复用**：
+  - `directStateBank`、`layout.stateSlots/memorySlots`、`commitDirectState/commitDirectMemory` 按脏槽提交；
+  - `setIntent` 复用身份变化结果；state 标量读取走同一银行；
+  - 旧的全银行逐槽写回已删除，但 Map 同步与 snapshot/version 语义保留。
+- **同步 reaction / 静态调用图**：
+  - `compileSynchronousBody` 对无挂起、无环的 body 和静态 callee 生成普通函数；
+  - 程序按 `DeviceIR + RegionIR` 缓存，按实例 `bind` 资源；
+  - 编译器拒绝时整 body 回退 generator，不半执行、不 catch 后重放；
+  - 全轮 capture-before-body、previous/current/captures 和失败前缀保持。
+- **MCU GPIO descriptor**：
+  - `gpioSimpleOutState` 记录 MODER=01 且 OTYPER=0 的简单推挽输出脚；
+  - 稳态 ODR/BSRR/BRR 只对 changed 候选脚重发由 ODR 与供电决定的 intent；
+  - 开漏、输入、AF、浮空、供电变化回退完整配置路径。
+- **ILI9325 热路径**：保留上一阶段的像素写/地址推进合并、脏区快照与 sample 复用；本轮未再新增 LCD 生产实现。
+
+### 10.2 静态封闭 plan 负结果
+
+StaticPlan A/B 的 post-only 单次 CPU（ms）：
+
+| 运行 |     off |      on |
+| ---- | ------: | ------: |
+| 1    | 920.470 | 929.387 |
+| 2    | 933.400 | 924.662 |
+| 3    | 942.935 | 927.401 |
+
+中位数为 off **933.400**、on **927.401**，差异不足 **1%**，且两组范围重叠；没有稳定收益。该静态封闭 plan 已**撤回**，没有默认开启、没有生产代码残留。不能把静态传播方向写成已生产达标。
+
+### 10.3 正式最终读数
+
+正式三轮为 `results.jsonl` 第 35–37 行，基线为第 32–34 行。各窗口最小值：
+
+| 指标       | 初始基线 |                    最终 | 实时倍率 / 差距              |
+| ---------- | -------: | ----------------------: | ---------------------------- |
+| 冷启动 CPU |  188.280 |             **168.017** | 首轮仍约 4.4 s               |
+| 活跃 CPU   | 1700.018 |            **1246.256** | **0.176×**                   |
+| 后段 CPU   | 1486.540 |             **891.174** | **0.247×**，仍差约 **4.05×** |
+| 总 CPU     | 3380.531 |            **2305.447** | **0.191×**，仍差约 **5.24×** |
+| 总墙钟     | 3038.735 |            **1881.480** | **0.234×**                   |
+| 后段墙钟   |        — | **799.527（第 35 轮）** | **0.275×**                   |
+
+- 后段 CPU 减少约 **40.05%**，速度约 **1.668×**；总 CPU 减少约 **31.80%**，速度约 **1.466×**。
+- 后段墙钟最好值与 CPU 最好值不在同一轮，报告时必须按窗口分别取最小值。
+- 第 35 轮冷启动 **4405.964 ms**；完整窗口仍未实时，不能称 1×。
+- 三轮是同机最小值，不是稳定延迟保证。
+
+详细逐轮读数、Direct 统计和复现命令见[基准记录第 13 节](stm32g431rbt6-ili9325-joint-benchmark.md#13-本轮最终正式基准与验收2026-11-15)。
+
+### 10.4 真实 counts 与逐沿工作
+
+计数产物：`/tmp/opencode/mica-joint-hotpath-M0QDjV/calls.json` 与 `window.json`。计数运行的后段时间只用于诊断，**不能作为吞吐**。
+
+- MCU publish：prefix **544,763**、instruction **394**、suffix **0**，合计 **545,157**。
+- MCU `sample:VDD1` **545,157**；intent `PB5` **272,498**、`PB9` **272,017**。
+- MCU state commit 按 `commit` 字段求和约 **3.29M**（3,292,316）。这证明保留银行 Map 同步后，每个可见边沿的工作仍在，并没有被“常驻”抹除。
+- LCD bound sample 16 个数据脚各 **136,247**；bound `store16le:gram` **135,999**；generic + bound 拆分生效。
+- 这些真实 reason/commit 计数纠正了此前把 intent 近似成精确 `2×` 的做法；不能再以近似倍数代替 reason 分解。
+
+### 10.5 剩余瓶颈与候选方向
+
+阶段 2 profile 路径：`/tmp/opencode/mica-joint-hotpath-DxIy7y/summary.json`。它只有互斥栈采样份额，不能乘正式 CPU 得到绝对毫秒，也不能据此计算精确加速；本阶段不把它写成最终精确归因。
+
+剩余主要成本仍来自每个可见边沿的发布/恢复、boundary 观察与捕获、状态提交、电气求解和 LCD reaction；完整窗口还受首轮冷启动约 4.4 s 限制。
+
+仅列候选、不继续实现：
+
+1. 冷启动/首轮模板复用与持久预编译；
+2. 降低发布/恢复和 commit 的每沿胶水；
+3. 电气/观察/反应的更紧密批处理；
+4. 器件侧进一步减少每像素固定 helper 成本。
+
+以上都需要保持逐沿采样、同指令多引脚原子性、capture-before-body、失败前缀和 same-time 顺序；没有证据保证这些候选可达 1×。
+
+### 10.6 验证与暂停
+
+最终验证：compiler **98** 项；simulator `src/simulation-runtime` **11 files / 61 tests**；LCD 完整 `MICA_JOINT=1` **4 files / 31 tests**；MCU **29** 项；真实 adapter conformance **419/419**；generated PR expressions **50**、electrical **50**；相关 runtime correctness **48**；compiler/simulator build 与四包直接 `tsc --noEmit` 通过；全目标 ESLint 通过；两处测试文件经 Prettier 格式化并复检通过。
+
+**本阶段到此暂停，不开新优化，不继续实现候选。**

@@ -3,6 +3,7 @@ import {
   type DirectJitFrame,
   type DirectJitHost,
   type DirectJitProgram,
+  type DirectJitPublishPhase,
   type ExecutionSignal,
 } from '@mica-js/compiler';
 import { createJitBlockBuilder, validateBoundBlockIR } from '@mica-js/device-model';
@@ -125,6 +126,12 @@ export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
   readonly events: Pick<EventQueue<() => void>, 'time' | 'push'>;
   boundary(): void;
   queueJit(jit: Jit): void;
+  /**
+   * Conservative inline-continuation admission. The horizon is the absolute time through
+   * which generated execution may run without the outer scheduler. Any due event, model,
+   * ready/waiting JIT, end-of-run target, fault or multi-JIT ownership fails closed.
+   */
+  canContinueDirect(jit: Jit, horizon: number): boolean;
   wrap(
     cause: unknown,
     code: RuntimeDiagnosticCode,
@@ -173,11 +180,8 @@ function refreshDirectGuards(jit: Jit, hookReads?: Dependencies): void {
  * final time after `run` returns. Publish the current frame time before every host effect so
  * channel publications, electrical intents and diagnostics carry the instruction's time.
  */
-function directHost(
-  board: JitRuntimeHost,
-  instance: Instance,
-  frame: DirectJitFrame,
-): DirectJitHost {
+function directHost(board: JitRuntimeHost, jit: Jit, frame: DirectJitFrame): DirectJitHost {
+  const instance = jit.instance;
   const publishTime = (): void => {
     board.time = frame.time;
   };
@@ -192,9 +196,18 @@ function directHost(
     },
     intent: (pin, value) => {
       publishTime();
-      const changed = instance.pin(pin).intent !== value;
-      instance.host.intent(pin, value);
-      if (changed) frame.publishPending = true;
+      if (!instance.board.electricalDirty) {
+        // No prior dirty pin in this fragment: the existing dirty signal is an exact
+        // change detector, so the direct host does not need to resolve the pin twice.
+        instance.host.intent(pin, value);
+        if (instance.board.electricalDirty) frame.publishPending = true;
+      } else {
+        // A prior pin (or an external boundary owner) already dirtied the electrical
+        // graph; keep the identity check so an unchanged intent adds no publication.
+        const changed = instance.pin(pin).intent !== value;
+        instance.host.intent(pin, value);
+        if (changed) frame.publishPending = true;
+      }
     },
     resistor: (pin, resistance) => {
       publishTime();
@@ -216,6 +229,7 @@ function directHost(
       publishTime();
       instance.host.assert(condition, message);
     },
+    publish: (phase) => publishDirectFrame(board, jit, frame, phase),
   };
 }
 
@@ -230,19 +244,24 @@ function directLayout(jit: Jit): DirectJitLayout {
   const memoryViews = memoryBanks.map(
     (memory) => new DataView(memory.buffer, memory.byteOffset, memory.byteLength),
   );
+  const stateSlots = bank.stateNames.map((name) => instance.stateResources.get(name)!);
+  const memorySlots = memoryNames.map((name) => instance.memoryResources.get(name)!);
   jit.directLayout = {
     ...bank,
+    stateSlots: Object.freeze(stateSlots),
     memoryNames: Object.freeze(memoryNames),
     memories,
     memoryBanks: Object.freeze(memoryBanks),
     memoryViews: Object.freeze(memoryViews),
+    memorySlots: Object.freeze(memorySlots),
+    memoryIsCode: Object.freeze(memoryNames.map((name) => name === jit.options.code)),
   };
   return jit.directLayout;
 }
 
 function createDirectFrame(
   board: JitRuntimeHost,
-  instance: Instance,
+  jit: Jit,
   layout: DirectJitLayout,
   program: DirectJitProgram,
   barrier: DirectBarriers,
@@ -258,12 +277,134 @@ function createDirectFrame(
     due: board.time,
     resume: 0,
   };
-  (frame as { host?: DirectJitHost }).host = directHost(board, instance, frame);
+  (frame as { host?: DirectJitHost }).host = directHost(board, jit, frame);
   // Both masks are shared with every frame of this JIT and refreshed in place on guard churn.
   (frame as BarrierFrame).blockedStates = barrier.stateMask;
   (frame as BarrierFrame).blockedMemories = barrier.memoryMask;
   return frame;
 }
+/** Commit dirty bank words in place, clearing the words so a later checkpoint cannot replay them. */
+function commitDirectFrame(jit: Jit, frame: DirectJitFrame): boolean {
+  const layout = jit.directLayout;
+  if (layout === undefined) return false;
+  let wrote = false;
+  for (let word = 0; word < frame.stateDirty.length; word++) {
+    let bits = frame.stateDirty[word]!;
+    while (bits !== 0) {
+      const slot = word * 32 + 31 - Math.clz32(bits & -bits);
+      jit.instance.commitDirectState(layout, slot);
+      bits &= bits - 1;
+      frame.stateDirty[word] = bits;
+      wrote = true;
+    }
+  }
+  for (let word = 0; word < frame.memoryDirty.length; word++) {
+    let bits = frame.memoryDirty[word]!;
+    while (bits !== 0) {
+      const slot = word * 32 + 31 - Math.clz32(bits & -bits);
+      jit.instance.commitDirectMemory(layout, slot);
+      bits &= bits - 1;
+      frame.memoryDirty[word] = bits;
+      wrote = true;
+    }
+  }
+  return wrote;
+}
+
+function scheduleDirect(board: JitRuntimeHost, jit: Jit, frame: DirectJitFrame): void {
+  if (frame.resume !== 0 && frame.due > board.time)
+    board.events.push(frame.due, () => board.queueJit(jit));
+  else board.queueJit(jit);
+}
+
+/**
+ * State after a callback checkpoint. `wait` means the original scheduler must run
+ * (event, model, deadline or unsafe continuation); `stop` means this invocation ends
+ * without starting another instruction even though no later scheduler work is due.
+ */
+type DirectTailOutcome = 'continue' | 'wait' | 'stop';
+
+/** Whether starting the next direct instruction in this call preserves the scheduler contract. */
+function canStartDirectInstruction(jit: Jit): boolean {
+  // Hooks are checked by runJit between invocations; a resident continuation must not
+  // skip that entry check. Polling is PC-specific and checked below.
+  if (jit.options.beforeInstruction !== undefined) return false;
+  const value = jit.instance.states.get(jit.options.pc);
+  if (typeof value !== 'number' || !Number.isFinite(value)) return false;
+  if (jit.polling.has(value) || jit.cache.get(value)?.polling) return false;
+  refreshDirectGuards(jit);
+  if (jit.directSkip === value) return false;
+  const direct = jit.direct;
+  return direct !== undefined && direct.pcs.has(value);
+}
+
+/**
+ * Complete a continuation whose suffix emitted no effects. This only advances the
+ * elapsed stage: no boundary is added because there is nothing to publish. Target-time
+ * and event-horizon checks stay in the caller (and in BoardRuntime.canContinueDirect).
+ */
+function completeTailDirect(
+  board: JitRuntimeHost,
+  jit: Jit,
+  frame: DirectJitFrame,
+  allowJump: boolean,
+): DirectTailOutcome {
+  const direct = jit.direct;
+  if (direct === undefined || direct.frame !== frame) return 'stop';
+  if (!direct.program.tailResumes.has(frame.resume)) return 'wait';
+  if (frame.due > board.time) {
+    if (!allowJump || !board.canContinueDirect(jit, frame.due)) return 'wait';
+    board.time = frame.due;
+    frame.time = frame.due;
+  } else {
+    frame.time = Math.max(frame.time, frame.due, board.time);
+    board.time = frame.time;
+  }
+  frame.resume = 0;
+  const stopped = frame.stopAfterInstruction === true;
+  frame.stopAfterInstruction = false;
+  if (jit.direct !== direct || direct.revision !== jit.revision) {
+    jit.direct = undefined;
+    jit.directRevision = -1;
+    return 'stop';
+  }
+  if (stopped) return 'stop';
+  if (board.time >= board.executionEnd) return 'wait';
+  board.current = jit.instance;
+  if (!canStartDirectInstruction(jit)) return 'wait';
+  return board.canContinueDirect(jit, board.time) ? 'continue' : 'wait';
+}
+
+/**
+ * Synchronous publication checkpoint called by generated direct code.
+ *
+ * It performs exactly the effects the old return path performed in `runDirect`'s
+ * `finally`/boundary block: commit dirty words, publish the electrical/observation/
+ * reaction closure at `frame.time`, and restore the executing instance. It then decides
+ * whether returning to the scheduler is still required. `true` returns `"invalidated"`
+ * in generated code; `false` lets the same invocation continue.
+ */
+function publishDirectFrame(
+  board: JitRuntimeHost,
+  jit: Jit,
+  frame: DirectJitFrame,
+  phase: DirectJitPublishPhase,
+): boolean {
+  board.time = frame.time;
+  commitDirectFrame(jit, frame);
+  frame.publishPending = false;
+  board.boundary();
+  board.current = jit.instance;
+  const direct = jit.direct;
+  if (direct === undefined || direct.frame !== frame) return true;
+  if (frame.stopAfterInstruction) return true;
+  if (direct.revision !== jit.revision) return true;
+  if (phase === 'prefix')
+    return !canStartDirectInstruction(jit) || !board.canContinueDirect(jit, frame.due);
+  if (!canStartDirectInstruction(jit)) return true;
+  return !board.canContinueDirect(jit, board.time);
+}
+
 function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): boolean {
   const instance = jit.instance;
   const pending = Boolean(jit.direct?.frame.resume);
@@ -391,7 +532,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
                 program,
                 pcs: new Set(program.pcs),
                 revision: jit.revision,
-                frame: createDirectFrame(board, instance, layout, program, barrier),
+                frame: createDirectFrame(board, jit, layout, program, barrier),
               }
             : undefined;
           // A declined program must not be cached, or the key would keep answering `undefined`.
@@ -406,71 +547,103 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   }
   const direct = jit.direct!;
   const frame = direct.frame;
-  if (pending) frame.stopAfterInstruction = true;
-  frame.time = board.time;
-  frame.stateDirty.fill(0);
-  frame.memoryDirty.fill(0);
-  const start = board.time;
-  let reason: ReturnType<DirectJitProgram['run']>;
-  let wrote = false;
   const stats = directStats(jit);
-  stats.directCalls++;
-  try {
-    // Resource barriers exclude intermediate observers; real events retain exact deadlines.
-    reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
-  } finally {
-    board.time = frame.time;
-    frame.publishPending = false;
-    const layout = jit.directLayout!;
-    for (let word = 0; word < frame.stateDirty.length; word++) {
-      let bits = frame.stateDirty[word]!;
-      while (bits !== 0) {
-        const slot = word * 32 + 31 - Math.clz32(bits & -bits);
-        instance.host.write(layout.stateNames[slot]!, frame.states[slot]);
-        bits &= bits - 1;
-        wrote = true;
+  for (;;) {
+    // A tail continuation owns no suffix effects. It still obeys target/event horizons;
+    // when those are not yet safe the original due event schedules it again.
+    if (frame.resume !== 0 && direct.program.tailResumes.has(frame.resume)) {
+      const outcome = completeTailDirect(board, jit, frame, false);
+      if (outcome !== 'continue') {
+        if (outcome === 'wait') scheduleDirect(board, jit, frame);
+        else board.queueJit(jit);
+        return true;
       }
     }
-    for (let word = 0; word < frame.memoryDirty.length; word++) {
-      let bits = frame.memoryDirty[word]!;
-      while (bits !== 0) {
-        const slot = word * 32 + 31 - Math.clz32(bits & -bits);
-        instance.memoryChanged(layout.memoryNames[slot]!);
-        bits &= bits - 1;
-        wrote = true;
+    const resumed = frame.resume !== 0;
+    // Compiler-only/legacy hosts keep the forced stop. A publishing host gets a suffix
+    // checkpoint and may continue after the suffix was committed and published.
+    if (resumed && frame.host?.publish === undefined) frame.stopAfterInstruction = true;
+    frame.time = board.time;
+    frame.stateDirty.fill(0);
+    frame.memoryDirty.fill(0);
+    const start = board.time;
+    let reason: ReturnType<DirectJitProgram['run']>;
+    let wrote: boolean;
+    stats.directCalls++;
+    try {
+      // Resource barriers exclude intermediate observers; real events retain exact deadlines.
+      reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
+    } finally {
+      board.time = frame.time;
+      frame.publishPending = false;
+      wrote = commitDirectFrame(jit, frame);
+    }
+    // A frame that only dispatched an unknown PC changed no slot and advanced no time, so the
+    // convergence pass would find nothing dirty to solve. The fallback re-enters the same
+    // instruction on the interpreter path, whose own boundary converges the frame instead.
+    if (reason !== 'fallback' || wrote || board.time !== start) {
+      board.boundary();
+      board.current = instance;
+    }
+    if (reason === 'fallback') {
+      const nextPc = finite(instance.states.get(jit.options.pc), 'pc');
+      // Polling PCs are deliberately absent from direct programs. Reaching one is a normal
+      // shard boundary, not a failed direct dispatch, so it must neither compound fallback
+      // statistics nor poison the next interpreter attempt for this PC.
+      const polling = jit.polling.has(nextPc) || jit.cache.get(nextPc)?.polling;
+      if (!polling) {
+        stats.directFallbacks++;
+        jit.directSkip = nextPc;
       }
+      if (board.time === start && board.time < board.executionEnd) return false;
+      scheduleDirect(board, jit, frame);
+      return true;
     }
-  }
-  // A frame that only dispatched an unknown PC changed no slot and advanced no time, so the
-  // convergence pass would find nothing dirty to solve. The fallback re-enters the same
-  // instruction on the interpreter path, whose own boundary converges the frame instead.
-  if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
-  if (reason === 'fallback') {
-    const nextPc = finite(instance.states.get(jit.options.pc), 'pc');
-    // Polling PCs are deliberately absent from direct programs. Reaching one is a normal
-    // shard boundary, not a failed direct dispatch, so it must neither compound fallback
-    // statistics nor poison the next interpreter attempt for this PC.
-    const polling = jit.polling.has(nextPc) || jit.cache.get(nextPc)?.polling;
-    if (!polling) {
-      stats.directFallbacks++;
-      jit.directSkip = nextPc;
+    if (reason === 'stopped') {
+      stats.directStopped++;
+      jit.stopped = true;
+      return true;
     }
-    if (board.time === start && board.time < board.executionEnd) return false;
-  } else if (reason === 'stopped') {
-    stats.directStopped++;
-    jit.stopped = true;
+    if (reason === 'invalidated') {
+      if (frame.resume === 0) {
+        frame.stopAfterInstruction = false;
+        if (direct.revision !== jit.revision) {
+          jit.direct = undefined;
+          jit.directRevision = -1;
+        }
+      } else if (direct.revision !== jit.revision) {
+        // Code replacement happened while a prefix continuation is outstanding. Keep the
+        // old program/frame so the suffix completes exactly once, but stop after it.
+        frame.stopAfterInstruction = true;
+      }
+    } else stats.directDeadlines++;
+    if (jit.direct !== direct) {
+      scheduleDirect(board, jit, frame);
+      return true;
+    }
+    // Prefix publication with a positive elapse: `frame.resume` is set. If no event and no
+    // model queue is due at/ before `due`, the same call can run the suffix (or complete a
+    // proven tail) without a heap wake-up.
+    if (frame.resume !== 0) {
+      if (direct.program.tailResumes.has(frame.resume)) {
+        const outcome = completeTailDirect(board, jit, frame, true);
+        if (outcome === 'continue') continue;
+        if (outcome === 'wait') scheduleDirect(board, jit, frame);
+        else board.queueJit(jit);
+        return true;
+      }
+      if (!board.canContinueDirect(jit, frame.due)) {
+        scheduleDirect(board, jit, frame);
+        return true;
+      }
+      continue;
+    }
+    // Instruction-end publication: only continue when the next instruction is still a
+    // direct, non-polling, unguarded PC and no same-time scheduler entry is pending.
+    if (canStartDirectInstruction(jit) && board.canContinueDirect(jit, board.time)) continue;
+    board.queueJit(jit);
     return true;
-  } else if (reason === 'invalidated') {
-    frame.stopAfterInstruction = false;
-    if (direct.revision !== jit.revision) {
-      jit.direct = undefined;
-      jit.directRevision = -1;
-    }
-  } else stats.directDeadlines++;
-  if (frame.resume && frame.due > board.time)
-    board.events.push(frame.due, () => board.queueJit(jit));
-  else board.queueJit(jit);
-  return true;
+  }
 }
 function pollingDependencies(jit: Jit, dependencies: Dependencies): Dependencies {
   const result = new Map(dependencies);

@@ -154,6 +154,11 @@ export const gpioPupdrState = (port: number): string => `gpioPupdr${port}`;
 export const gpioAfr0State = (port: number): string => `gpioAfr0${port}`;
 export const gpioAfr1State = (port: number): string => `gpioAfr1${port}`;
 export const gpioOdrState = (port: number): string => `gpioOdr${port}`;
+/**
+ * MODER=输出且 OTYPER=推挽的引脚位图。只在配置写时维护，稳态输出写据此跳过
+ * MODER/OTYPER/PUPDR/AFR 的完整意图分支。
+ */
+export const gpioSimpleOutState = (port: number): string => `gpioSimpleOut${port}`;
 
 export const USART1_BASE = 0x40013800;
 export const USART2_BASE = 0x40004400;

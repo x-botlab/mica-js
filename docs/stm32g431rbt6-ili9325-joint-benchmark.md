@@ -12,8 +12,7 @@
 > 仿真吞吐。根因、独立对账与 CPU 归因见
 > [联合路径瓶颈调查](stm32g431rbt6-ili9325-joint-bottlenecks.md)。
 >
-> 本工作区已完成发布边界修复、银行同步与器件热路径优化。**当前有效基准见第 12 节**；第 4–9 节
-> 描述修复前的历史断言与读数，不能作为完整工作量的性能基线。
+> 本工作区已完成发布边界修复、银行同步与器件热路径优化。**当前有效基准见第 13 节**；第 12 节保留上一阶段读数，第 4–9 节描述修复前的历史断言与读数，不能作为完整工作量的性能基线。
 
 ## 1. 目的
 
@@ -230,3 +229,66 @@ Direct 的块、shard、调用、编译和回退统计与第 11 节一致。
 静态/动态地址、字/半字/字节与 BSRR/BRR 的两模式读回），两包类型检查、构建及正式
 联合性能基准通过。剩余成本的独立 CPU 采样与复现入口见
 [瓶颈调查第 9 节](stm32g431rbt6-ili9325-joint-bottlenecks.md#9-器件热路径优化与剩余瓶颈)。
+
+## 13. 本轮最终正式基准与验收（2026-11-15）
+
+**状态：本阶段实现与正式性能验收已完成，未达 1×，按用户要求暂停。** 下一步仅保留候选方向，不继续实现，也不承诺可达 1×。
+
+本轮最终基线为 HEAD `08b28c6`，环境仍为 Linux x64、Node.js 24.20.0、Vitest 5.0.5；真实固件、真实 MCU/LCD、200 µs 量子、0 → 440 ms 窗口和计时外独立 oracle 均保持不变。正式三轮原始读数为 `examples/ili9325/bench/results.jsonl` 第 35–37 行；本轮初始正式基线为第 32–34 行。
+
+### 13.1 正式三轮
+
+| 轮次 | 冷启动 CPU | 活跃 CPU | 后段 CPU |   总 CPU |   总墙钟 |
+| ---- | ---------: | -------: | -------: | -------: | -------: |
+| 35   |   4405.964 | 2178.862 |  920.893 | 7505.719 | 5178.006 |
+| 36   |    265.138 | 1394.637 |  970.675 | 2630.450 | 2044.385 |
+| 37   |    168.017 | 1246.256 |  891.174 | 2305.447 | 1881.480 |
+
+各窗口最好值与初始正式基线对比：
+
+| 指标       | 初始基线（32–34 行） |        最终（35–37 行） | 变化                     |
+| ---------- | -------------------: | ----------------------: | ------------------------ |
+| 冷启动 CPU |              188.280 |             **168.017** | 首轮仍约 4.4 s           |
+| 活跃 CPU   |             1700.018 |            **1246.256** | 约 0.176× 实时           |
+| 后段 CPU   |             1486.540 |             **891.174** | 减少约 40.05%，约 0.247× |
+| 总 CPU     |             3380.531 |            **2305.447** | 减少约 31.80%，约 0.191× |
+| 总墙钟     |             3038.735 |            **1881.480** | 约 0.234× 实时           |
+| 后段墙钟   |                    — | **799.527（第 35 轮）** | 约 0.275× 实时           |
+
+- 后段 CPU 速度比约 **1.668×**，总 CPU 约 **1.466×**。
+- 后段墙钟最好值出现在第 35 轮，和 CPU 最好值所在轮不同；报告窗口最小值时不能混轮。
+- 第 35 轮冷启动 **4405.964 ms**，首轮仍约 4.4 s；因此不能称为完整窗口实时。
+- 以上是同机三轮最小值，不是稳定延迟保证；后段仍有约 **4.05×**、完整窗口仍有约 **5.24×** 的 CPU 差距。
+
+### 13.2 工作量与 Direct 统计
+
+三轮完整窗口始终为：**545,004 次 WR sample 变化、272,007 次 GRAM store、76,800 个非零像素、3 次完整蓝色清屏、10 帧、436,480 个发布像素**；最终 GRAM 与每个发布帧的独立 MCU 总线 oracle 全部通过。
+
+- Direct 总调用 **2,184,168 → 4,566**；后段 **1,818**。
+- 总 fallback 保持 **1,057**；块 **311**、shards **73**（+1）、编译 **92**。
+- Direct 调用数不能直接当工作量：旧路径每次边界返回/恢复都计数，新尾续体把后续执行留在同一调用内。必须同时看逐沿工作量、suffix 次数和真实 CPU。
+
+### 13.3 阶段诊断与负结果
+
+- post-only 单次诊断：stage1 **1150.629 ms**、stage2 **926.320 ms**、stage3 **918.251 ms**。这些只是单次诊断，不是正式三轮，也不能替代第 13.1 节读数。
+- 阶段 2 profile 路径：`/tmp/opencode/mica-joint-hotpath-DxIy7y/summary.json`。它只有互斥栈采样份额，不能乘正式 CPU 得到绝对毫秒或精确加速，也不是最终精确归因。
+- 静态封闭 plan A/B 负结果与保留/撤回清单见[瓶颈调查第 10 节](stm32g431rbt6-ili9325-joint-bottlenecks.md#10-本轮实现负结果剩余瓶颈与暂停状态)；本阶段没有默认开启或生产残留。
+
+### 13.4 正确性与复现
+
+最终独立验证记录：
+
+- compiler **98** 项；simulator `src/simulation-runtime` **11 files / 61 tests**（含 pub 10、cache 4 等）；LCD 完整 `MICA_JOINT=1` **4 files / 31 tests**；MCU **29** 项（descriptor 最终无新增变化）。
+- 真实 adapter conformance **419/419** 通过（static 250、semantics 68、host 43、jit 32、devices 15、consistency 11）。
+- generated PR：expressions **50**、electrical **50** 全过；相关 runtime correctness **48** 项全过。
+- compiler、simulator build 通过；compiler/simulator/MCU/LCD 四包直接 `tsc --noEmit` 均通过。
+- 全目标 ESLint 通过；Prettier 独立检查后，两处测试文件已格式化并复检通过。
+
+复现入口（在 `examples/ili9325` 下）：
+
+```sh
+MICA_JOINT=1 ./node_modules/.bin/vitest run --config vitest.config.ts test/joint.test.ts
+./node_modules/.bin/vitest run --config vitest.perf.config.ts bench/joint-perf.test.ts
+MICA_JOINT_POST_ONLY=1 ./node_modules/.bin/vitest run --config vitest.perf.config.ts bench/joint-post-only.test.ts
+MICA_JOINT_PROFILE=cpu ./node_modules/.bin/vitest run --config vitest.perf.config.ts bench/joint-profile.test.ts
+```

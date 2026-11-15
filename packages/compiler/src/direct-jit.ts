@@ -640,6 +640,7 @@ function compileDirectJitProgram(
     // while it still contains the current PC: translation only ever adds cache entries, so
     // existing bodies never change and only the missing PCs justify a rebuild.
     pcs: Object.freeze(entries.map((entry) => entry.pcValue)),
+    tailResumes: transientTailResumes(entries, split, shardSize),
     localCount,
     readStates: resourceNames(entries, 'readStates'),
     writeStates: resourceNames(entries, 'writeStates'),
@@ -827,7 +828,7 @@ function monolithicProgram(
   entries.forEach((entry, index) => {
     lines.push(`case ${index + 1}: {`);
     entry.slots.forEach((slot, slotIndex) => lines.push(`${slot} = L[${slotIndex}];`));
-    lines.push('F.resume = 0;', ...entry.suffix, finish(entry.stop), '}');
+    lines.push('F.resume = 0;', ...entry.suffix, finish(entry.stop, 'suffix'), '}');
   });
   lines.push(
     'default: throw new TypeError("Unknown direct JIT continuation");',
@@ -852,12 +853,13 @@ function monolithicProgram(
   return lines;
 }
 
-/** A light dispatcher plus one step/resume shard keeps every generated function small. */
-function shardProgram(
-  entries: readonly Instruction[],
-  binding: DirectJitBinding,
-  shardSize: number,
-): string[] {
+/** Contiguous PC groups of the transient (non-resident) shard emitter. */
+interface ShardSlice {
+  readonly start: number;
+  readonly entries: readonly Instruction[];
+}
+
+function shardSlices(entries: readonly Instruction[], shardSize: number): ShardSlice[] {
   const sorted = [...entries].sort((left, right) => left.pcValue - right.pcValue);
   // Generated function size follows the emitted source, so group by a code budget instead of
   // a fixed count: one oversized block then gets a shard of its own.
@@ -878,18 +880,47 @@ function shardProgram(
   }
   if (current.length) groups.push(current);
   let start = 0;
-  const shards = groups.map((slice) => {
-    const shard = {
-      start,
-      entries: slice,
-      maxSlots: Math.max(...slice.map((entry) => entry.slots.length)),
-      lastPc: slice[slice.length - 1]!.pc,
-      lastResume: start + slice.length,
-      resumable: slice.some((entry) => entry.duration !== undefined),
-    };
-    start += slice.length;
-    return shard;
+  return groups.map((group) => {
+    const slice = { start, entries: group };
+    start += group.length;
+    return slice;
   });
+}
+
+/** Resume numbers actually emitted by the transient emitters, indexed by emission order. */
+function transientTailResumes(
+  entries: readonly Instruction[],
+  split: boolean,
+  shardSize: number,
+): Set<number> {
+  const tail = new Set<number>();
+  if (!split) {
+    entries.forEach((entry, index) => {
+      if (entry.tail) tail.add(index + 1);
+    });
+    return tail;
+  }
+  for (const slice of shardSlices(entries, shardSize))
+    slice.entries.forEach((entry, offset) => {
+      if (entry.tail) tail.add(slice.start + offset + 1);
+    });
+  return tail;
+}
+
+/** A light dispatcher plus one step/resume shard keeps every generated function small. */
+function shardProgram(
+  entries: readonly Instruction[],
+  binding: DirectJitBinding,
+  shardSize: number,
+): string[] {
+  const shards = shardSlices(entries, shardSize).map(({ start, entries: slice }) => ({
+    start,
+    entries: slice,
+    maxSlots: Math.max(...slice.map((entry) => entry.slots.length)),
+    lastPc: slice[slice.length - 1]!.pc,
+    lastResume: start + slice.length,
+    resumable: slice.some((entry) => entry.duration !== undefined),
+  }));
   const registers = (count: number): string[] =>
     Array.from({ length: count }, (_, index) => `v${index}`);
   const lines: string[] = [];
@@ -928,7 +959,7 @@ function shardProgram(
       if (entry.duration === undefined) return;
       lines.push(`case ${shard.start + offset + 1}: {`);
       entry.slots.forEach((slot, slotIndex) => lines.push(`${slot} = L[${slotIndex}];`));
-      lines.push('F.resume = 0;', ...entry.suffix, splitFinish(entry.stop), '}');
+      lines.push('F.resume = 0;', ...entry.suffix, splitFinish(entry.stop, 'suffix'), '}');
     });
     lines.push('default: throw new TypeError("Unknown direct JIT continuation");', '}', '}');
   });
@@ -1098,12 +1129,12 @@ function residentPcSpan(entries: readonly Instruction[]): string {
 
 function residentStepFinish(stop: boolean, inside: string, pcIndex: number): string {
   if (stop) return 'return "stopped";';
-  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
+  return `${publishCheckpoint('instruction')} if (F.stopAfterInstruction || F.publishPending) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
 }
 
 function residentResumeFinish(stop: boolean, pcIndex: number): string {
   if (stop) return 'return "stopped";';
-  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; const pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); return pc;`;
+  return `${publishCheckpoint('suffix')} const pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); return pc;`;
 }
 
 /** Emit one independent shard factory. Its function object is never edited after creation. */
@@ -1271,6 +1302,9 @@ function residentProgram(
     run: factory(steps, Object.freeze(resumes)),
     shards: state.shards.length,
     pcs: Object.freeze(entries.map((entry) => entry.pcValue)),
+    tailResumes: new Set(
+      entries.filter((entry) => entry.tail && entry.resumeId !== 0).map((entry) => entry.resumeId),
+    ),
     localCount,
     readStates: resourceNames(entries, 'readStates'),
     writeStates: resourceNames(entries, 'writeStates'),
@@ -1286,9 +1320,39 @@ function elapsed(entry: Instruction, resumeId: number): string[] {
   if (entry.duration === undefined) return [];
   // A computed duration is validated where the generic host validates it, before it is used.
   const duration = entry.dynamicDuration ? `H.checkDuration(${entry.duration})` : entry.duration;
-  return [
+  const due = [
     `F.due = F.time + ${duration};`,
     'if (F.due > 7200000000000000) throw new RangeError("Time out of range");',
+  ];
+  if (entry.tail) {
+    // Proven empty suffix: no local spill is needed. A synchronous publish checkpoint can
+    // complete the stage in this invocation when the runtime's horizon is safe; otherwise
+    // the continuation is kept exactly as before.
+    return [
+      ...due,
+      'if (F.publishPending && F.due > F.time) {',
+      'if (F.host !== undefined && F.host.publish !== undefined) {',
+      'if (F.host.publish("prefix")) { F.resume = ' + resumeId + '; return "invalidated"; }',
+      'F.publishPending = false;',
+      'if (F.due >= deadline) { F.resume = ' +
+        resumeId +
+        '; F.time = deadline; return "deadline"; }',
+      'F.time = F.due;',
+      '} else {',
+      `F.resume = ${resumeId};`,
+      'return "invalidated";',
+      '}',
+      '} else if (F.due >= deadline) {',
+      `F.resume = ${resumeId};`,
+      'F.time = deadline;',
+      'return "deadline";',
+      '} else {',
+      'F.time = F.due;',
+      '}',
+    ];
+  }
+  return [
+    ...due,
     'if ((F.publishPending && F.due > F.time) || F.due >= deadline) {',
     ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
     `F.resume = ${resumeId};`,
@@ -1300,16 +1364,27 @@ function elapsed(entry: Instruction, resumeId: number): string[] {
   ];
 }
 
-function finish(stop: boolean): string {
-  return stop
-    ? 'return "stopped";'
-    : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; continue;';
+/** One generated publication checkpoint shared by every emitter finish path. */
+function publishCheckpoint(phase: 'instruction' | 'suffix'): string {
+  return phase === 'suffix'
+    ? 'if (F.host !== undefined && F.host.publish !== undefined) { if (F.host.publish("suffix")) return "invalidated"; F.publishPending = false; } else if (F.stopAfterInstruction || F.publishPending) return "invalidated";'
+    : 'if (F.publishPending) { if (F.host === undefined || F.host.publish === undefined) return "invalidated"; if (F.host.publish("instruction")) return "invalidated"; F.publishPending = false; }';
 }
 
-function splitFinish(stop: boolean): string {
-  return stop
-    ? 'return "stopped";'
-    : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; return "next";';
+function finish(stop: boolean, phase: 'instruction' | 'suffix' = 'instruction'): string {
+  if (stop) return 'return "stopped";';
+  const checkpoint = publishCheckpoint(phase);
+  return phase === 'suffix'
+    ? `${checkpoint} continue;`
+    : `${checkpoint} if (F.stopAfterInstruction || F.publishPending) return "invalidated"; continue;`;
+}
+
+function splitFinish(stop: boolean, phase: 'instruction' | 'suffix' = 'instruction'): string {
+  if (stop) return 'return "stopped";';
+  const checkpoint = publishCheckpoint(phase);
+  return phase === 'suffix'
+    ? `${checkpoint} return "next";`
+    : `${checkpoint} if (F.stopAfterInstruction || F.publishPending) return "invalidated"; return "next";`;
 }
 
 /**
@@ -1382,6 +1457,11 @@ class Instruction {
   dynamicDuration = false;
   /** Zero-duration terminator: no due time, no continuation, prefix and suffix stay inline. */
   immediate = false;
+  /**
+   * Positive duration with a proven empty suffix and no stop: its continuation only
+   * completes elapsed time. Runtime may finish it without entering generated code.
+   */
+  tail = false;
   stop = false;
   private readonly values = new Map<number, string>();
   private readonly locals = new Map<number, string>();
@@ -1487,6 +1567,7 @@ class Instruction {
       }
     }
     if (!this.terminated && !this.stop) throw unsupported;
+    this.tail = this.duration !== undefined && !this.stop && this.suffix.length === 0;
     this.compact();
     this.barrier = this.emitBarrier();
     let size = 0;

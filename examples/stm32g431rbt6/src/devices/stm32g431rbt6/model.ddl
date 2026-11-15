@@ -136,6 +136,15 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   state gpioOdr2: number = 0;
   state gpioOdr3: number = 0;
   state gpioOdr4: number = 0;
+  /**
+   * MODER=01 且 OTYPER=0 的引脚位图。配置写维护；稳态输出写命中时只需由 ODR 和
+   * 当前供电选择缓存的电阻意图，未命中则回到完整 MODER/OTYPER/PUPDR/AFR 分支。
+   */
+  state gpioSimpleOut0: number = 0;
+  state gpioSimpleOut1: number = 0;
+  state gpioSimpleOut2: number = 0;
+  state gpioSimpleOut3: number = 0;
+  state gpioSimpleOut4: number = 0;
   /** 可能已具备中断条件；为 true 的块才扫描异常。 */
   state irqDirty: bool = false;
   /** SysTick CTRL.ENABLE 的影子，省掉每拍读 CTRL。 */

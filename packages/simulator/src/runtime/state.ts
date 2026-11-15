@@ -7,6 +7,8 @@ import type {
   ReactionFrame,
   ResumableFrame,
   ResumableProgram,
+  SynchronousProgram,
+  SynchronousRunner,
 } from '@mica-js/compiler';
 import type { Instance } from './instance';
 import type { CompiledObservation } from '../observations';
@@ -80,6 +82,16 @@ export interface Reaction {
   previous: unknown;
   order?: number;
   execute?: CompiledBody;
+  /**
+   * Static whole-body admission. `undefined` means not compiled yet; `null` records a
+   * compiler decline and selects the generator fallback.
+   */
+  synchronousProgram?: SynchronousProgram | null;
+  /**
+   * Bound synchronous runner for this instance. `undefined` means not bound yet;
+   * `null` is unused and reserved for an explicit fallback marker.
+   */
+  synchronous?: SynchronousRunner | null;
   frame: ReactionFrame | undefined;
 }
 export interface JitInstruction {
@@ -105,9 +117,14 @@ export interface DirectJitLayout {
   readonly states: ReadonlyMap<string, number>;
   /** Instance-owned bank, mirrored by every interpreted/process/reaction state write. */
   readonly stateValues: unknown[];
+  /** Resource slots in bank order, so dirty-word commit never resolves a name again. */
+  readonly stateSlots: readonly ResourceSlot[];
   readonly memories: ReadonlyMap<string, number>;
   readonly memoryBanks: readonly Uint8Array[];
   readonly memoryViews: readonly DataView[];
+  /** Resource slots in bank order; code memories still run the JIT invalidation path. */
+  readonly memorySlots: readonly ResourceSlot[];
+  readonly memoryIsCode: readonly boolean[];
 }
 export type DirectJitCache = ReturnType<
   typeof import('@mica-js/compiler').compileDirectJit.createCache

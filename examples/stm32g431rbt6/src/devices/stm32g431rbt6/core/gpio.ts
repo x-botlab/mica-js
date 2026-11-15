@@ -27,6 +27,7 @@ import {
   gpioOdrState,
   gpioOtyperState,
   gpioPupdrState,
+  gpioSimpleOutState,
 } from './layout';
 import type { AccessSize } from './layout';
 import { PORTS, machine } from './machine';
@@ -636,31 +637,50 @@ function mergeWord(
 }
 
 /**
+ * 把位于偶数位（0、2、…、30）的标志压到低 16 位。MODER/PUPDR 的每脚字段和
+ * output descriptor 都使用这种布局；输入必须已经只含 even-bit 标志。
+ */
+function packEvenBits(b: Body, value: Value<number>): Value<number> {
+  const pairs = b.bitAnd(
+    b.bitOr(value, b.shiftRightUnsigned(value, num(b, 1))),
+    num(b, 0x33333333),
+  );
+  const nibbles = b.bitAnd(
+    b.bitOr(pairs, b.shiftRightUnsigned(pairs, num(b, 2))),
+    num(b, 0x0f0f0f0f),
+  );
+  const bytes = b.bitAnd(
+    b.bitOr(nibbles, b.shiftRightUnsigned(nibbles, num(b, 4))),
+    num(b, 0x00ff00ff),
+  );
+
+  return b.bitAnd(b.bitOr(bytes, b.shiftRightUnsigned(bytes, num(b, 8))), num(b, 0xffff));
+}
+
+/**
+ * 把 MODER 中每脚 2 位字段恰好为 `01`（通用输出）的脚压成 16 位位图。
+ * 这里只做位运算，配置写路径才求值，稳态输出写只读一次结果。
+ */
+function outputModePins(b: Body, moder: Value<number>): Value<number> {
+  const low = b.bitAnd(moder, num(b, 0x55555555));
+  const high = b.bitAnd(b.shiftRightUnsigned(moder, num(b, 1)), num(b, 0x55555555));
+
+  return packEvenBits(b, b.bitAnd(low, b.bitNot(high)));
+}
+
+/** MODER=01 且 OTYPER=0 的简单推挽输出脚。 */
+function simpleOutputPins(b: Body, moder: Value<number>, otyper: Value<number>): Value<number> {
+  return b.bitAnd(outputModePins(b, moder), b.bitAnd(b.bitNot(otyper), num(b, 0xffff)));
+}
+
+/**
  * MODER/PUPDR 的差值是每脚 2 位。先算“字段内至少一位变化”，再用并行移位把 16 个
  * even-bit 标志压到低 16 位，避免逐脚生成比较与 select。
  */
 function changedPairPins(b: Body, diff: Value<number>): Value<number> {
   const paired = b.bitAnd(b.bitOr(diff, b.shiftRightUnsigned(diff, num(b, 1))), num(b, 0x55555555));
-  const twoPerNibble = b.bitOr(
-    b.bitAnd(paired, num(b, 0x11111111)),
-    b.bitAnd(b.shiftRightUnsigned(paired, num(b, 1)), num(b, 0x22222222)),
-  );
-  const fourPerByte = b.bitOr(
-    b.bitAnd(twoPerNibble, num(b, 0x03030303)),
-    b.bitAnd(b.shiftRightUnsigned(twoPerNibble, num(b, 2)), num(b, 0x0c0c0c0c)),
-  );
-  const eightPerHalf = b.bitOr(
-    b.bitAnd(fourPerByte, num(b, 0x000f000f)),
-    b.bitAnd(b.shiftRightUnsigned(fourPerByte, num(b, 4)), num(b, 0x00f000f0)),
-  );
 
-  return b.bitAnd(
-    b.bitOr(
-      b.bitAnd(eightPerHalf, num(b, 0xffff)),
-      b.bitAnd(b.shiftRightUnsigned(eightPerHalf, num(b, 8)), num(b, 0xff00)),
-    ),
-    num(b, 0xffff),
-  );
+  return packEvenBits(b, paired);
 }
 
 /** AFR0/AFR1 每脚 4 位；把 8 个 nibble 标志压到低 8 位，再放到对应端口位。 */
@@ -783,6 +803,23 @@ function writeRegister(
               const scope = asBody(hit);
 
               scope.writeState(stateOf(portIndex), merged);
+              // 只有 MODER/OTYPER 会改变“简单推挽输出”的判定；PUPDR/AFR 在输出模式下
+              // 不参与 intent，因此不必更新 descriptor。
+              if (offsetOf === GPIO_MODER) {
+                const otyper = scope.readState(gpioOtyperState(portIndex), types.number);
+
+                scope.writeState(
+                  gpioSimpleOutState(portIndex),
+                  simpleOutputPins(scope, merged, otyper),
+                );
+              } else if (offsetOf === GPIO_OTYPER) {
+                const moder = scope.readState(gpioModerState(portIndex), types.number);
+
+                scope.writeState(
+                  gpioSimpleOutState(portIndex),
+                  simpleOutputPins(scope, moder, merged),
+                );
+              }
 
               if (offsetOf === GPIO_OTYPER)
                 scope.setLocal(changed, scope.bitAnd(diff, num(scope, 0xffff)));
@@ -867,6 +904,61 @@ function emitStaticCandidateIntents(
   }
 }
 
+/** 简单推挽输出脚的意图只由 ODR 位与当前供电决定，不读取其它配置寄存器。 */
+function emitSimpleIntent(
+  b: Body,
+  portIndex: number,
+  bit: number,
+  nextOdr: Value<number>,
+  poweredPin: Value<boolean>,
+): void {
+  const pin = PORTS[portIndex]?.pins[bit];
+
+  if (pin === undefined || pin === null) return;
+
+  const high = boolBit(b, nextOdr, 1 << bit);
+  const driven = b.select(
+    types.intent,
+    high,
+    (on) => resistorIntent(asBody(on), true, DRIVE_RESISTANCE),
+    (off) => resistorIntent(asBody(off), false, DRIVE_RESISTANCE),
+  );
+  const intent = b.select(
+    types.intent,
+    poweredPin,
+    () => driven,
+    (none) => asBody(none).combineIntents(),
+  );
+
+  b.writeIntent(pin, intent);
+}
+
+/** descriptor 命中时的稳态输出：只对真正变化的候选脚重发电阻 intent。 */
+function emitStaticSimpleIntents(
+  b: Body,
+  portIndex: number,
+  candidateMask: number,
+  changed: Value<number>,
+  nextOdr: Value<number>,
+  poweredPin: Value<boolean>,
+): void {
+  if (countSetBits(candidateMask) === 1) {
+    emitSimpleIntent(b, portIndex, 31 - Math.clz32(candidateMask), nextOdr, poweredPin);
+
+    return;
+  }
+
+  for (let bit = 0; bit < 16; bit += 1) {
+    const bitMask = 1 << bit;
+
+    if ((candidateMask & bitMask) === 0 || PORTS[portIndex]?.pins[bit] === null) continue;
+
+    b.if(boolBit(b, changed, bitMask), (selected) => {
+      emitSimpleIntent(asBody(selected), portIndex, bit, nextOdr, poweredPin);
+    });
+  }
+}
+
 /** 供电状态跳变时登记一次全端口刷新；服务块最多执行一次。 */
 function markPowerChange(b: Body): void {
   b.writeState(
@@ -900,9 +992,32 @@ function inlineStaticGpioWrite(b: Body, portIndex: number, masks: StaticPinMasks
       (onPowerChange) => markPowerChange(asBody(onPowerChange)),
       (onStablePower) => {
         const stable = asBody(onStablePower);
-        const registers = candidateRegisters(stable, portIndex, candidateMask, next, isPowered);
+        const simple = stable.readState(gpioSimpleOutState(portIndex), types.number);
+        const allSimple = stable.equal(
+          types.number,
+          stable.bitAnd(changed, stable.bitNot(simple)),
+          num(stable, 0),
+        );
 
-        emitStaticCandidateIntents(stable, portIndex, candidateMask, changed, registers);
+        stable.if(
+          allSimple,
+          (fast) => {
+            emitStaticSimpleIntents(
+              asBody(fast),
+              portIndex,
+              candidateMask,
+              changed,
+              next,
+              isPowered,
+            );
+          },
+          (slow) => {
+            const full = asBody(slow);
+            const registers = candidateRegisters(full, portIndex, candidateMask, next, isPowered);
+
+            emitStaticCandidateIntents(full, portIndex, candidateMask, changed, registers);
+          },
+        );
       },
     );
   });

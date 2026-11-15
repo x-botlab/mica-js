@@ -43,6 +43,9 @@ const FULL_FRAME_PIXELS = JOINT_FULL_FRAME_PIXELS;
 const EXPECTED_WR_SAMPLES = JOINT_440MS_EXPECTED.wrLevelChanges;
 const EXPECTED_GRAM_STORES = JOINT_440MS_EXPECTED.gramStores;
 const EXPECTED_GRAM_NON_ZERO = JOINT_440MS_EXPECTED.nonZeroPixels;
+const EXPECTED_CLEARS = 3;
+const EXPECTED_FRAMES = 10;
+const EXPECTED_FRAME_PIXELS = 436_480;
 const CLEAR_COLOR = JOINT_440MS_EXPECTED.clearColor;
 
 interface DirectStats {
@@ -200,21 +203,22 @@ async function reconcile(key: string): Promise<ReconcileResult> {
     expect(accounting.gramStores).toBe(accounting.pixelWrites);
     expect(accounting.oracleGramStores).toBe(accounting.pixelWrites);
 
-    // 独立参考图像与整屏蓝色清屏。
+    // 独立参考图像与固定工作量：三次整屏蓝色清屏、10 帧、436,480 累计像素。
     expect(gramMatchesOracle(gram, accounting.oracleGram)).toBe(true);
     expect(nonZeroGramPixels(gram)).toBe(EXPECTED_GRAM_NON_ZERO);
-    expect(accounting.oracleFrames).toHaveLength(joint.frames.length);
+    expect(accounting.oracleFrames).toHaveLength(EXPECTED_FRAMES);
+    expect(joint.frames).toHaveLength(EXPECTED_FRAMES);
+    expect(summarizeFrames(joint.frames).pixels).toBe(EXPECTED_FRAME_PIXELS);
     expect(
       joint.frames.every((frame, index) => sameBytes(frame, accounting.oracleFrames[index]!)),
     ).toBe(true);
-    expect(
-      accounting.fullScreenFills.some(
-        (fill) => fill.value === CLEAR_COLOR && fill.pixels === FULL_FRAME_PIXELS && fill.uniform,
-      ),
-    ).toBe(true);
+    const clears = accounting.fullScreenFills.filter(
+      (fill) => fill.value === CLEAR_COLOR && fill.pixels === FULL_FRAME_PIXELS && fill.uniform,
+    );
+
+    expect(clears).toHaveLength(EXPECTED_CLEARS);
 
     // 帧体在模型发送时刻的副本必须与话题载荷一致。
-    expect(joint.expectedFrames.length).toBeGreaterThan(0);
     expect(framesMatchSource(joint)).toBe(true);
 
     console.log(
@@ -319,9 +323,10 @@ describe('STM32G431RBT6 + ILI9325 联合性能', () => {
         expect(counters.wrSamples).toBe(EXPECTED_WR_SAMPLES);
         expect(counters.gramStores).toBe(EXPECTED_GRAM_STORES);
         expect(nonZeroGramPixels(gram)).toBe(EXPECTED_GRAM_NON_ZERO);
-        expect(summary.pixels).toBeGreaterThan(0);
+        expect(joint.frames).toHaveLength(EXPECTED_FRAMES);
+        expect(joint.expectedFrames).toHaveLength(EXPECTED_FRAMES);
+        expect(summary.pixels).toBe(EXPECTED_FRAME_PIXELS);
         expect(summary.nonZeroPixels).toBeGreaterThan(0);
-        expect(joint.expectedFrames.length).toBeGreaterThan(0);
         expect(framesMatchSource(joint)).toBe(true);
         // 计时轮次不得安装逐 intent 对账探针。
         expect(joint.readAccounting()).toBeUndefined();

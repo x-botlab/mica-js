@@ -249,7 +249,7 @@ export class Emitter {
     return `C[${index}]`;
   }
 
-  private ref(ref: PinRefIR | MemoryRefIR): string {
+  protected ref(ref: PinRefIR | MemoryRefIR): string {
     return ref.kind === 'parameter' ? `args[${ref.index}]` : this.capture(ref.name);
   }
   /** Bound handle for a fixed resource name; parameter refs never bind. */
@@ -261,7 +261,7 @@ export class Emitter {
     return this.bindingFor?.('state', name);
   }
 
-  private argument(argument: ArgumentIR): string {
+  protected argument(argument: ArgumentIR): string {
     return argument.kind === 'value' ? value(argument.value) : this.ref(argument);
   }
 
@@ -311,7 +311,7 @@ export class Emitter {
     );
   }
 
-  private region(
+  protected region(
     region: RegionIR,
     path: InputPath,
     output?: { slot: string; label: string },
@@ -381,7 +381,7 @@ export class Emitter {
     }
   }
 
-  private emitOperation(
+  protected emitOperation(
     operation: OperationIR,
     path: InputPath,
     position: GeneratedPosition | undefined,
