@@ -133,6 +133,7 @@ function parseProgram(source) {
     characters: source.length,
     functions,
     cases: (source.match(/^case /gm) ?? []).length,
+    residentDispatcher: /const D\d+ = SH\[/.test(source),
   };
 }
 
@@ -408,6 +409,7 @@ export function summarize(input) {
     (input.bytecode ? parseDirectRuns(input.bytecode.text) : []).map((run) => [run.index, run]),
   );
   const dispatchers = bytecodePrograms
+    .filter((program) => program.functions.some((fn) => fn.kind === 'dispatcher'))
     .map((program) => {
       const run = ranks.get(program.index);
       const measured = run?.sfi ? bytecode.bySfi.get(run.sfi) : undefined;
@@ -415,21 +417,30 @@ export function summarize(input) {
         index: program.index,
         characters: program.characters,
         shards: program.functions.filter((fn) => fn.kind !== 'dispatcher').length,
+        resident: program.residentDispatcher === true,
         bytecode: measured?.length ?? null,
       };
     })
     .sort((left, right) => right.characters - left.characters);
 
   const selected = [...programs].sort((left, right) => right.characters - left.characters)[0];
+  const allFunctions = programs.flatMap((program) => program.functions);
   const monoliths = programs.filter(
-    (program) => !program.functions.some((fn) => fn.kind === 'step'),
+    (program) =>
+      program.functions.some((fn) => fn.kind === 'dispatcher') &&
+      !program.functions.some((fn) => fn.kind === 'step') &&
+      program.residentDispatcher !== true,
   );
   const largestMonolith = monoliths.sort((left, right) => right.characters - left.characters)[0];
-  const sharded = programs.filter((program) => program.functions.some((fn) => fn.kind === 'step'));
-  const largestFunction = selected
-    ? [...selected.functions].sort((left, right) => right.characters - left.characters)[0]
-    : undefined;
-  const selectedShards = (selected?.functions ?? []).filter((fn) => fn.kind !== 'dispatcher');
+  const sharded = programs.filter(
+    (program) =>
+      program.functions.some((fn) => fn.kind === 'step') || program.residentDispatcher === true,
+  );
+  const allShards = allFunctions.filter((fn) => fn.kind === 'step' || fn.kind === 'resume');
+  const largestFunction = [...allFunctions].sort(
+    (left, right) => right.characters - left.characters,
+  )[0];
+  const totalCharacters = programs.reduce((sum, program) => sum + program.characters, 0);
   const shardBytecode = [...bytecode.byName.values()]
     .filter((entry) => SHARD_NAME.test(entry.name))
     .sort((left, right) => right.max - left.max);
@@ -438,7 +449,9 @@ export function summarize(input) {
   const maxDispatcherBytecode = Math.max(0, ...measuredDispatchers.map((entry) => entry.bytecode));
   const maxMonolithDispatcherBytecode = Math.max(
     0,
-    ...measuredDispatchers.filter((entry) => entry.shards === 0).map((entry) => entry.bytecode),
+    ...measuredDispatchers
+      .filter((entry) => !entry.resident && entry.shards === 0)
+      .map((entry) => entry.bytecode),
   );
   const overBudget = [
     ...shardBytecode
@@ -456,13 +469,15 @@ export function summarize(input) {
   for (const deopt of events.deopts)
     deoptReasons[deopt.reason] = (deoptReasons[deopt.reason] ?? 0) + 1;
 
-  const statuses = programs.map((program) => ({
-    index: program.index,
-    key: program.key ?? null,
-    status: program.status ?? 0,
-    bits: decodeStatus(program.status ?? 0),
-    turboFanned: ((program.status ?? 0) & TURBOFAN_BIT) !== 0,
-  }));
+  const statuses = programs
+    .filter((program) => program.functions.some((fn) => fn.kind === 'dispatcher'))
+    .map((program) => ({
+      index: program.index,
+      key: program.key ?? null,
+      status: program.status ?? 0,
+      bits: decodeStatus(program.status ?? 0),
+      turboFanned: ((program.status ?? 0) & TURBOFAN_BIT) !== 0,
+    }));
   const turboFanned = statuses.filter((entry) => entry.turboFanned);
 
   return {
@@ -484,17 +499,18 @@ export function summarize(input) {
     generatedSource: {
       programs: programs.length,
       shardedPrograms: sharded.length,
-      monolithicPrograms: programs.length - sharded.length,
+      monolithicPrograms: monoliths.length,
+      totalCharacters,
       largestProgramCharacters: selected?.characters ?? 0,
       largestMonolithCharacters: largestMonolith?.characters ?? null,
-      stepShards: countKind(selected, 'step'),
-      resumeShards: countKind(selected, 'resume'),
-      cases: selected?.cases ?? 0,
+      stepShards: allShards.filter((fn) => fn.kind === 'step').length,
+      resumeShards: allShards.filter((fn) => fn.kind === 'resume').length,
+      cases: programs.reduce((sum, program) => sum + program.cases, 0),
       largestFunction: largestFunction && {
         name: largestFunction.name,
         characters: largestFunction.characters,
       },
-      functions: (selected?.functions ?? []).map((fn) => ({
+      functions: allFunctions.map((fn) => ({
         name: fn.name,
         kind: fn.kind,
         characters: fn.characters,
@@ -502,7 +518,7 @@ export function summarize(input) {
       })),
       bytecodeBudget: BYTECODE_BUDGET,
       measuredShards: shardBytecode.length,
-      shardBytecodeCoverage: `${shardBytecode.length}/${selectedShards.length}`,
+      shardBytecodeCoverage: `${shardBytecode.length}/${allShards.length}`,
       maxShardBytecode: maxShardBytecode || null,
       maxShardBytecodeFunction: shardBytecode[0]?.name ?? null,
       dispatchers,
@@ -542,8 +558,8 @@ export function summarize(input) {
       interpreted: statuses.filter((entry) => entry.bits.includes('interpreted')).length,
     },
     verdict: {
-      sharded: selectedShards.length >= 2,
-      shardFunctionCount: selectedShards.length,
+      sharded: allShards.length >= 2,
+      shardFunctionCount: allShards.length,
       turboFanObserved: generatedTurboFan.length > 0 || turboFanned.length > 0,
       allShardsTurboFanned:
         generatedMaglev.length > 0 &&
@@ -554,10 +570,6 @@ export function summarize(input) {
       maxBytecode: Math.max(maxShardBytecode, maxDispatcherBytecode) || null,
     },
   };
-}
-
-function countKind(program, kind) {
-  return (program?.functions ?? []).filter((fn) => fn.kind === kind).length;
 }
 
 /** V8 8.9 起 `%GetOptimizationStatus` 的位定义（runtime-test.cc）。 */

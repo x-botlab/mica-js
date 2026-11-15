@@ -1,0 +1,35 @@
+{
+  "name": "@mica-js/stm32g431rbt6-core",
+  "version": "0.0.0",
+  "private": true,
+  "description": "STM32G431RBT6 MCU core shared by the stm32g431rbt6 and ct117e-m4 examples",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./*": {
+      "source": "./src/*.ts",
+      "types": "./dist/*.d.ts",
+      "import": "./dist/*.js"
+    }
+  },
+  "publishConfig": {
+    "exports": {
+      "./*": {
+        "types": "./dist/*.d.ts",
+        "import": "./dist/*.js"
+      }
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@mica-js/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plugin-dts": "catalog:"
+  }
+}

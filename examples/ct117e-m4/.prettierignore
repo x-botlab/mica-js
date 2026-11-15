@@ -1,0 +1,3 @@
+src/devices/ct117e-m4/hot-model.ts
+src/devices/ct117e-m4/model.d.ddl.ts
+dist/
