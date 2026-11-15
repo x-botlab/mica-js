@@ -298,6 +298,8 @@ type Context = {
 export interface DeviceInstance {
   readonly id: string;
   readonly type: string;
+  /** 省略时装载 `src/devices/<type>`；给出时直接用该模型与工厂替代。 */
+  readonly device?: DeviceModule;
   readonly props?: Readonly<Record<string, unknown>>;
 }
 
@@ -367,7 +369,7 @@ export async function createBoardWith(
     if (used.has(instance.id)) throw new Error(`实例名重复：${instance.id}`);
     used.add(instance.id);
 
-    const device = await loadSourceDevice(instance.type);
+    const device = instance.device ?? (await loadSourceDevice(instance.type));
 
     entries.push({
       id: instance.id,

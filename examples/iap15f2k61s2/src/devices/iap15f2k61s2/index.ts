@@ -2,7 +2,7 @@ import type { Factory } from './model.ddl';
 import { createJitBlockBuilder } from '@mica-js/sdk/model';
 import type { BlockIR } from '@mica-js/sdk/model';
 import type { JitTranslate, JitTranslateInput } from '@mica-js/sdk/device';
-import { CODE } from './kernel/ir';
+import { CODE, SFR_SBUF, SFR_SCON } from './kernel/ir';
 import { InterruptController, watchInterruptEnables } from './kernel/interrupt';
 import { activateMachine } from './kernel/machine';
 import type { Machine } from './kernel/machine';
@@ -10,14 +10,16 @@ import { SfrHooks } from './kernel/sfr-hooks';
 import { decode } from './kernel/decode';
 import {
   SERVICE_PC,
+  SETTLE_PC,
   accumulate,
-  advanceDevices,
   buildService,
+  buildSettle,
   refreshService,
   settleBeforeInstruction,
   tickTail,
 } from './kernel/tick';
 import { createPeripherals, SYNC_ON_READ } from './peripherals';
+import { canSkipUart1Sync } from './peripherals/uart';
 import { readPin, readPort } from './peripherals/ports';
 import type { Clock } from './peripherals/types';
 
@@ -123,10 +125,11 @@ function createMachine(clock: Clock): Machine {
       for (const address of peripheral.writes ?? [])
         sfr.onWrite(address, (b) => refreshService(machine, b));
 
-  // 读外设状态之前先把累积的时间推进给外设，避免读到最多一个节拍的旧值。
-  sfr.synchronize = (b, address) => {
-    if (SYNC_ON_READ.has(address)) advanceDevices(machine, b);
-  };
+  // 读时间相关 SFR 的指令由翻译器在指令体之前请求共享结算块（`SETTLE_PC`）：
+  // 结算块执行后 `clockPs` 归零，指令再完整执行一次。只读 SCON/SBUF 且 UART1
+  // 空闲谓词为真时会跳过这次结算，此时指令直接读当前锁存值，`clockPs` 保留到
+  // 下一次服务/结算。这里不能再注册读同步钩子：它会把整段 `advanceDevices`
+  // 内联回每个 timed 指令块，抵消共享结算块。
 
   return machine;
 }
@@ -210,7 +213,8 @@ function ticksAt(code: JitTranslateInput['code'], pc: number): boolean {
  * 板可以直接复用已验证、已编译的 `BlockIR`；运行时的编译缓存与块校验都以对象身份为键，
  * 复用同一个对象等于跳过整条翻译链路。
  *
- * 键里带上指令字节，自修改代码改写该指令后自然失效；容量上限用于约束长固件的内存。
+ * 键里带上指令字节，自修改代码改写该指令后自然失效。服务块与结算块位于代码空间之外，
+ * 不读指令字节，按角色取键以避免与固件 PC 冲突；容量上限用于约束长固件的内存。
  */
 const blockCache = new Map<string, BlockIR>();
 const BLOCK_CACHE_LIMIT = 4096;
@@ -222,6 +226,7 @@ function cacheKey(
   cyclePs: number,
 ): string {
   if (pc === SERVICE_PC) return `${cyclePs}:service`;
+  if (pc === SETTLE_PC) return `${cyclePs}:settle`;
 
   let bytes = '';
 
@@ -235,22 +240,54 @@ const createTranslate =
   (machine: Machine, cyclePs: number): JitTranslate =>
   (input) => {
     const pc = input.pc & 0xffff;
-    const instruction = pc === SERVICE_PC ? undefined : decode(input.code, pc);
+    const instruction = pc === SERVICE_PC || pc === SETTLE_PC ? undefined : decode(input.code, pc);
     const key = cacheKey(input.code, pc, instruction?.size ?? 0, cyclePs);
     const cached = blockCache.get(key);
 
     if (cached !== undefined) return cached;
 
     const block =
-      instruction === undefined
-        ? activateMachine(machine, () => buildService(machine))
-        : translateInstruction(machine, input.code, pc, instruction, cyclePs);
+      pc === SETTLE_PC
+        ? activateMachine(machine, () => buildSettle(machine))
+        : instruction === undefined
+          ? activateMachine(machine, () => buildService(machine))
+          : translateInstruction(machine, input.code, pc, instruction, cyclePs);
 
     if (blockCache.size >= BLOCK_CACHE_LIMIT) blockCache.delete(blockCache.keys().next().value!);
     blockCache.set(key, block);
 
     return block;
   };
+
+/**
+ * 时间相关 SFR 访问的结算分类。
+ *
+ * - `always`：任意 timed 写/读-改-写，或读 SCON/SBUF 之外的 timed SFR；
+ * - `uart1`：只读 SCON/SBUF，由 UART1 边沿空闲谓词决定能否跳过结算；
+ * - `none`：没有 timed 访问，保持零开销。
+ */
+type SettleMode = 'always' | 'uart1' | 'none';
+
+function settleMode(
+  machine: Machine,
+  access: { reads: ReadonlySet<number>; writes: ReadonlySet<number> },
+): SettleMode {
+  for (const address of access.writes) if (machine.timedWrites.has(address)) return 'always';
+
+  let timedRead = false;
+  let uart1Only = true;
+
+  for (const address of access.reads) {
+    if (!machine.timedReads.has(address)) continue;
+
+    timedRead = true;
+    if (address !== SFR_SCON && address !== SFR_SBUF) uart1Only = false;
+  }
+
+  if (!timedRead) return 'none';
+
+  return uart1Only ? 'uart1' : 'always';
+}
 
 function translateInstruction(
   machine: Machine,
@@ -262,41 +299,39 @@ function translateInstruction(
   const tick = ticksAt(code, pc);
 
   return activateMachine(machine, () => {
-    const build = (settle: boolean): BlockIR => {
+    const build = (settle: SettleMode): BlockIR => {
       const builder = createJitBlockBuilder();
 
       builder.instruction({ pc, nextPc: (pc + instruction.size) & 0xffff }, (body) => {
-        // 读-改-写必须先结算，再读旧字节。指令体内部不再重复触发展开式读同步；
-        // 非时间 SFR 的普通读仍然保持零开销。
-        if (settle) settleBeforeInstruction(machine, body);
+        // 读-改-写必须先结算，再读旧字节。待推进时间交给共享结算块处理，指令块本身
+        // 不再内联推进；只读 SCON/SBUF 时由 UART1 空闲谓词决定是否省掉这次跳转。
+        if (settle === 'always') settleBeforeInstruction(machine, body, pc);
+        else if (settle === 'uart1') settleBeforeInstruction(machine, body, pc, canSkipUart1Sync);
         machine.sfr.muted(() => instruction.emit(body));
         body.elapse(instruction.cycles * cyclePs);
         if (tick) tickTail(machine, body, instruction.cycles * cyclePs);
-        else accumulate(body, instruction.cycles * cyclePs);
+        else accumulate(machine, body, instruction.cycles * cyclePs);
       });
 
       return builder.finish();
     };
 
-    // 先用真实指令体生成一次，并记录实际访问的 SFR；只有确实访问时间相关 SFR
-    // 才丢弃草案、带结算重建。端口写/纯算术等绝大多数块因此只翻译一次。
+    // 先用真实指令体生成一次，并记录实际访问的 SFR；按分类只重建需要结算的块。
+    // 端口写/纯算术等绝大多数块因此只翻译一次。
     machine.beginAccessProbe();
 
     let draft: BlockIR;
     let access: ReturnType<Machine['endAccessProbe']>;
 
     try {
-      draft = build(false);
+      draft = build('none');
     } finally {
       access = machine.endAccessProbe();
     }
 
-    let settle = false;
+    const settle = settleMode(machine, access);
 
-    for (const address of access.reads) if (machine.timedReads.has(address)) settle = true;
-    for (const address of access.writes) if (machine.timedWrites.has(address)) settle = true;
-
-    return settle ? build(true) : draft;
+    return settle === 'none' ? draft : build(settle);
   });
 }
 

@@ -1,9 +1,10 @@
 /**
  * IAP15F2K61S2 的器件模型：存储器、状态与引脚。
  *
- * 行为不写在 DDL 里：8051 内核与外设都在 `kernel/` 与 `peripherals/` 中生成 IR，DDL 只声明
- * 资源。外设不可见的内部实现状态放在 `periph` 里，由各外设模块按 `peripherals/layout.ts`
- * 的分区使用。
+ * DDL 声明资源与引脚级响应：存储器、状态、通道，以及 UART1 在 P3_0 上的起始位观察
+ * （`uart1RxHigh` / `uart1RxEdge`）。8051 内核与外设的时序行为仍在 `kernel/` 与
+ * `peripherals/` 中生成 IR；外设不可见的内部实现状态放在 `periph` 里，由各外设模块按
+ * `peripherals/layout.ts` 的分区使用。
  */
 device Iap15f2k61s2(firmware: bytes default bytes[], clockFrequency: number default 11059200) {
   assert isSafeInteger(clockFrequency)
@@ -54,6 +55,41 @@ device Iap15f2k61s2(firmware: bytes default bytes[], clockFrequency: number defa
   state t0Deadline: number = 0;
   state t1Deadline: number = 0;
   state t2Deadline: number = 0;
+
+  /** UART1 默认 RXD（P3_0）的边沿观察开关；禁用时 derived 保持高，不产生候选沿。 */
+  state uart1EdgeEnabled: bool = false;
+  /** P3_0 已出现高→非高候选沿，等待内核消费。 */
+  state uart1Wake: bool = false;
+  /** 最近一次候选沿的仿真时刻（ps）。 */
+  state uart1EdgeAt: number = 0;
+  /**
+   * 当前候选沿是否可作为起始位。每次接受候选沿后置否，线上回到高电平后才恢复；
+   * 因此一段连续低电平只能开一帧，下一帧必须来自新的高→低电平。
+   */
+  state uart1EdgeArmed: bool = true;
+  /** UART1 接收配置快照：bit0-1 有效模式、bit2-3 路由、bit4 REN；初值与复位一致。 */
+  state uart1RxConfig: number = 0;
+
+  /** 未知电平按低：只有确定的高电平记作高；禁用时保持高。 */
+  derived uart1RxHigh: bool = !uart1EdgeEnabled || P3_0.sample.level == Logic.high;
+
+  /**
+   * P3_0 高→非高候选沿：记录时刻；只有仍然保有资格的候选才置唤醒。
+   *
+   * 唤醒同时消费资格，保证同一段低电平不会被重复当成起始位。
+   */
+  reaction uart1RxEdge on uart1RxHigh as (previous, current) {
+    if previous && !current {
+      uart1EdgeAt = now();
+      if uart1EdgeArmed {
+        uart1Wake = true;
+        uart1EdgeArmed = false;
+      }
+    }
+    if !previous && current {
+      uart1EdgeArmed = true;
+    }
+  }
 
   /**
    * 复位值：SP=07H、PCON=30H、AUXR=01H、SPCTL=04H、P0–P3 锁存全 1（准双向、释放）。

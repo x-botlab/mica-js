@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BlockIR, OperationIR, RegionIR } from '@mica-js/sdk/model';
+import { SETTLE_PC } from '../src/devices/iap15f2k61s2/kernel/tick.ts';
 import create from '../src/devices/iap15f2k61s2/index.ts';
 
 /**
@@ -38,6 +39,7 @@ interface Stats {
   operations: number;
   readSamples: number;
   intents: number;
+  redirects: number;
   /** `advanceDevices` → `refreshService` 写出的期限 state；结算内联的直接证据。 */
   deadlineWrites: number;
 }
@@ -52,6 +54,9 @@ function collect(region: RegionIR, stats: Stats): void {
         break;
       case 'writeIntent':
         stats.intents += 1;
+        break;
+      case 'redirect':
+        stats.redirects += 1;
         break;
       case 'write':
         if (operation.resource === 'state' && operation.name === 'serviceDeadline')
@@ -90,21 +95,35 @@ function collect(region: RegionIR, stats: Stats): void {
 }
 
 function statsOf(block: BlockIR): Stats {
-  const stats: Stats = { operations: 0, readSamples: 0, intents: 0, deadlineWrites: 0 };
+  const stats: Stats = {
+    operations: 0,
+    readSamples: 0,
+    intents: 0,
+    redirects: 0,
+    deadlineWrites: 0,
+  };
 
   for (const instruction of block.instructions) collect(instruction.body, stats);
 
   return stats;
 }
 
-function translateAt(pc: number, bytes: readonly number[]): BlockIR {
+function translateWith(
+  translate: Translate,
+  pc: number,
+  bytes: readonly number[],
+): BlockIR {
   const code = new Uint8Array(0x10000);
 
   bytes.forEach((value, index) => {
     code[(pc + index) & 0xffff] = value;
   });
 
-  return translator()({ pc, code }) as BlockIR;
+  return translate({ pc, code }) as BlockIR;
+}
+
+function translateAt(pc: number, bytes: readonly number[]): BlockIR {
+  return translateWith(translator(), pc, bytes);
 }
 
 /** 预览固件的热 PC（见 docs/rfc 之外的性能记录）：普通 GPIO 写，不得携带外设结算。 */
@@ -116,12 +135,17 @@ const GPIO_WRITES: readonly { pc: number; bytes: readonly number[]; label: strin
   { pc: 0x0922, bytes: [0x8e, 0x80], label: 'MOV P0,R6 @0922' },
 ];
 
-/** 时间相关访问：必须在第一次读旧锁存器之前结算。 */
-const SETTLED_ACCESSES: readonly { pc: number; bytes: readonly number[]; label: string }[] = [
-  { pc: 0x0a00, bytes: [0xc5, 0x8a], label: 'XCH A,TL0' },
-  { pc: 0x0a03, bytes: [0xd2, 0x8c], label: 'SETB TR0' },
-  { pc: 0x0a06, bytes: [0x75, 0x88, 0x10], label: 'MOV TCON,#10H' },
-  { pc: 0x0a09, bytes: [0xe5, 0x8a], label: 'MOV A,TL0' },
+/** 时间相关访问：必须在第一次读旧锁存器之前请求共享结算。 */
+const SETTLED_ACCESSES: readonly {
+  pc: number;
+  bytes: readonly number[];
+  label: string;
+  kind: 'read' | 'write';
+}[] = [
+  { pc: 0x0a00, bytes: [0xc5, 0x8a], label: 'XCH A,TL0', kind: 'write' },
+  { pc: 0x0a03, bytes: [0xd2, 0x8c], label: 'SETB TR0', kind: 'write' },
+  { pc: 0x0a06, bytes: [0x75, 0x88, 0x10], label: 'MOV TCON,#10H', kind: 'write' },
+  { pc: 0x0a09, bytes: [0xe5, 0x8a], label: 'MOV A,TL0', kind: 'read' },
 ];
 
 describe('SFR 访问探针', () => {
@@ -138,12 +162,24 @@ describe('SFR 访问探针', () => {
     }
   });
 
-  it('时间相关 SFR 的读-改-写仍在读旧值前结算', () => {
-    for (const { pc, bytes, label } of SETTLED_ACCESSES) {
-      const stats = statsOf(translateAt(pc, bytes));
+  it('时间相关 SFR 在读旧值前请求共享结算', () => {
+    const translate = translator();
+    const settle = statsOf(translateWith(translate, SETTLE_PC, []));
 
-      expect(stats.deadlineWrites, `${label} settled`).toBeGreaterThan(0);
-      expect(stats.readSamples, `${label} sampled pins`).toBeGreaterThan(0);
+    for (const { pc, bytes, label, kind } of SETTLED_ACCESSES) {
+      const stats = statsOf(translateWith(translate, pc, bytes));
+
+      expect(stats.redirects, `${label} settle redirect`).toBeGreaterThan(0);
+
+      if (kind === 'read') {
+        expect(stats.deadlineWrites, `${label} inlined advance`).toBe(0);
+        expect(stats.readSamples, `${label} sampled pins`).toBe(0);
+        expect(stats.operations, `${label} IR 操作数`).toBeLessThan(200);
+        continue;
+      }
+
+      // 写钩子本身可以采样引脚或刷新期限；判据是块体积远小于共享结算块。
+      expect(stats.operations, `${label} IR 操作数`).toBeLessThan(settle.operations / 4);
     }
   });
 });

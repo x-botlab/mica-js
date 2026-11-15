@@ -15,19 +15,27 @@ import type { Advance } from '../peripherals/types';
  * 后端（直接后端给紧循环两个数量级的加速）。这里因此把推进搬到**一个**固定 PC 的
  * 服务块：
  *
- * - 每个指令块末尾：`clockPs += 本条指令的时钟数`，若是节拍点，再读两个字节
- *   （中断脏标志、活动门控）决定是否把 PC 转给服务块；
+ * - 每个指令块末尾：`clockPs += 本条指令的时钟数`；节拍点再读中断脏标志与活动门控，
+ *   所有指令都读 UART1 起始位唤醒，任一条件成立就把 PC 转给服务块；
  * - 服务块（`SERVICE_PC`）：一次性推进全部外设、重算活动门控、派发中断，然后跳回
  *   保存的下一条 PC。它含引脚采样与嵌套 redirect，因此永远不会被直接后端接受。
  *
- * 语义与「每个节拍点内联推进」等价：节拍点位置不变，累积的时间精确到皮秒，中断仍只在
- * 节拍点响应，只是推进发生在节拍点指令**之后**（返回地址因此是运行期值）。
+ * 语义与「每个节拍点内联推进」等价：节拍点位置不变，累积的时间精确到皮秒，中断只在
+ * 服务块响应，只是推进发生在触发指令**之后**（返回地址因此是运行期值）；UART 起始位
+ * 唤醒可以在任意指令尾部触发服务，不必等下一个节拍点。
+ *
+ * 读时间相关 SFR 的指令还需要「读旧值之前先结算」。这类指令不再把推进内联进指令块：
+ * 有待推进时间时保存当前 PC 常量并转到**共享结算块**（`SETTLE_PC`），由它推进一次，
+ * 再回到同一条指令重新执行。指令体、计时与外设写因此都只发生一次。
  */
 
 /**
  * 服务块的 PC。选在 IAP15F2K61S2 的 61 KiB 代码空间之外，固件不会执行到这里。
  */
 export const SERVICE_PC = 0xfffe;
+
+/** 前置结算块的 PC。与服务块相邻但在代码空间之外，JIT 缓存按 PC 区分两者。 */
+export const SETTLE_PC = 0xfffd;
 
 /** `periph` 里的节拍簿记：活动门控字节与保存的返回 PC（低字节在前）。 */
 const BUSY = TICK_BASE;
@@ -36,6 +44,12 @@ const SAVED_HIGH = TICK_BASE + 2;
 
 /** 服务期限 state：初始 0，1 表示下一节拍点服务，正数为相对上次结算的 ps。 */
 export const SERVICE_DEADLINE = 'serviceDeadline';
+/**
+ * UART1 起始位唤醒 state（DDL `uart1Wake`）。
+ *
+ * 由 P3_0 的下降沿反应置位；内核只在指令尾部读取它来请求服务，清除由 UART 负责。
+ */
+const UART1_WAKE = 'uart1Wake';
 /**
  * `refreshService` 合并期限时使用的「无期限」哨兵。
  *
@@ -47,44 +61,55 @@ const NO_SERVICE_DEADLINE = 1_000_000_000_000_000;
 const nonZero = (b: Body, value: Value<number>): Value<boolean> =>
   b.notEqual(types.number, value, number(b, 0));
 
-/** 节拍服务块要返回的 PC：节拍点指令顺序执行后的位置。 */
+/** 共享块要返回的 PC：服务块的下一条指令，或结算块要重新执行的当前指令。 */
 const savedPc = (b: Body): Value<number> =>
   b.bitOr(b.shiftLeft(periph8(b, SAVED_HIGH), number(b, 8)), periph8(b, SAVED_LOW));
 
 /**
- * 指令块末尾：累积本条指令的时间，并在节拍点决定是否转给服务块。
+ * 请求服务块：保存顺序执行后的 PC、记下待推进时间，再转到 `SERVICE_PC`。
  *
- * 空闲（没有外设可能自行变化、也没有待派发的中断）时，累积值直接清零，因此空闲循环
- * 里只剩「读两个字节、加一个常量、写一个 state」，整块仍可直接编译。
+ * `pending` 在调用处算好：节拍点与普通指令都会先把本条指令的时钟数累加进去。
+ */
+const requestService = (machine: Machine, b: Body, pending: Value<number>): void => {
+  const next = b.readState(machine.pcState, types.number);
+
+  b.writeState(CLOCK, pending);
+  setPeriph8(b, SAVED_LOW, next);
+  setPeriph8(b, SAVED_HIGH, b.shiftRightUnsigned(next, number(b, 8)));
+  b.writeState(machine.pcState, number(b, SERVICE_PC));
+};
+
+/**
+ * 指令块末尾：累积本条指令的时间，并在节拍点或 UART 起始位唤醒时转给服务块。
+ *
+ * 空闲（没有外设可能自行变化、没有待派发的中断、也没有 UART 起始位唤醒）时，累积值
+ * 直接清零，因此空闲循环在门控为零时只做少量读取与写入，整块仍可直接编译。
  */
 export function tickTail(machine: Machine, b: Body, cyclesPs: number): void {
   const pending = b.add(b.readState(CLOCK, types.number), number(b, cyclesPs));
   const irq = b.load8(PERIPH, number(b, IRQ_DIRTY));
   const busy = b.load8(PERIPH, number(b, BUSY));
-  // 只有 IRQ 脏或外设活跃时才需要看期限。空闲轮询路径在 gate==0 处短路，
-  // 不读 state、不做时间比较，也不写非零时间；动态成本与旧实现基本一致。
+  const wake = b.readState(UART1_WAKE, types.bool);
+  // 只有 IRQ 脏、外设活跃或 UART 起始位唤醒时才需要看期限。空闲轮询路径在 gate==0
+  // 处短路，不读期限 state、不做时间比较，也不写非零时间；动态成本与旧实现基本一致。
   b.if(
-    b.notEqual(types.number, b.bitOr(irq, busy), number(b, 0)),
+    b.or(b.notEqual(types.number, b.bitOr(irq, busy), number(b, 0)), () => wake),
     (working) => {
       const w = asBody(working);
-      const urgent = w.or(w.notEqual(types.number, irq, number(w, 0)), (inner) =>
-        asBody(inner).greaterThanOrEqual(
-          pending,
-          asBody(inner).readState(SERVICE_DEADLINE, types.number),
+      const urgent = w.or(wake, (inner) =>
+        asBody(inner).or(
+          asBody(inner).notEqual(types.number, irq, number(asBody(inner), 0)),
+          (deep) =>
+            asBody(deep).greaterThanOrEqual(
+              pending,
+              asBody(deep).readState(SERVICE_DEADLINE, types.number),
+            ),
         ),
       );
 
       w.if(
         urgent,
-        (service) => {
-          const s = asBody(service);
-          const next = s.readState(machine.pcState, types.number);
-
-          s.writeState(CLOCK, pending);
-          setPeriph8(s, SAVED_LOW, next);
-          setPeriph8(s, SAVED_HIGH, s.shiftRightUnsigned(next, number(s, 8)));
-          s.writeState(machine.pcState, number(s, SERVICE_PC));
-        },
+        (service) => requestService(machine, asBody(service), pending),
         (keeping) => asBody(keeping).writeState(CLOCK, pending),
       );
     },
@@ -92,9 +117,21 @@ export function tickTail(machine: Machine, b: Body, cyclesPs: number): void {
   );
 }
 
-/** 非节拍点：只累积时间，不读门控字节。 */
-export function accumulate(b: Body, cyclesPs: number): void {
-  b.writeState(CLOCK, b.add(b.readState(CLOCK, types.number), number(b, cyclesPs)));
+/**
+ * 非节拍点：累积时间；UART 起始位唤醒时仍需请求服务块。
+ *
+ * 唤醒不能等到下一个稀疏节拍点：长直线代码可能整段没有节拍点，起始位会被整段吞掉。
+ * 这里与节拍点一样保存下一条指令的 PC 并转到服务块；未唤醒时只做一次累加。
+ */
+export function accumulate(machine: Machine, b: Body, cyclesPs: number): void {
+  const pending = b.add(b.readState(CLOCK, types.number), number(b, cyclesPs));
+  const wake = b.readState(UART1_WAKE, types.bool);
+
+  b.if(
+    wake,
+    (service) => requestService(machine, asBody(service), pending),
+    (keeping) => asBody(keeping).writeState(CLOCK, pending),
+  );
 }
 
 /**
@@ -190,6 +227,29 @@ export function buildService(machine: Machine): BlockIR {
   return builder.finish();
 }
 
+/**
+ * 构造共享结算块：推进外设一次，然后回到保存的 PC 重新执行当前指令。
+ *
+ * 进入时 `clockPs` 一定大于 0（指令块只在有待推进时间时才转进来）。这里不派发中断：
+ * 中断只能由服务块在指令边界响应，前置结算只负责把外设状态推到当前时刻。`elapse(0)`
+ * 保证这次额外块切换不再记时；时间账本已由 `advanceDevices` 清零。
+ */
+export function buildSettle(machine: Machine): BlockIR {
+  const builder = createJitBlockBuilder();
+
+  machine.sfr.muted(() =>
+    builder.instruction({ pc: SETTLE_PC, nextPc: SETTLE_PC }, (b) => {
+      const returnPc = savedPc(b);
+
+      advanceDevices(machine, b);
+      jumpToValue(b, returnPc);
+      b.elapse(number(b, 0));
+    }),
+  );
+
+  return builder.finish();
+}
+
 /** 翻译期递归保护：推进代码自己也会读 SFR，不能在推进里再嵌一层推进。 */
 let advancing = 0;
 
@@ -228,18 +288,39 @@ export function advanceDevices(machine: Machine, b: Body): void {
 }
 
 /**
- * 时间相关 SFR 访问前的结算。
+ * 时间相关 SFR 访问前的结算请求。
  *
  * 必须在指令体第一次读锁存器之前调用：`writeBit`/`ANL TCON` 这类读-改-写会先读旧字节，
- * 若等到写钩子才结算，硬件在结算中置起的 TF 等标志会被旧字节回写覆盖。`clockPs` 为 0
- * 时不生成推进分支，普通 ACC/PSW 访问不会走到这里。
+ * 若等到写钩子才结算，硬件在结算中置起的 TF 等标志会被旧字节回写覆盖。
+ *
+ * 有待推进时间时不内联 `advanceDevices`：把当前 PC 常量写进节拍区的返回地址，再转到
+ * 共享结算块。本条指令的第一条路径到此终止（不执行指令体、不记时、不写硬件）；结算块
+ * 推进一次后跳回同一 PC，此时 `clockPs` 已为 0，指令完整执行一次。`clockPs` 为 0 时
+ * 不请求结算，普通 ACC/PSW 访问不会走到这里。
+ *
+ * 传入 `canSkip` 时，只有谓词为假才请求结算。跳过时既不推进外设，也不清 `clockPs`
+ * 或重算期限：待推进时间原样留给下一次服务/结算，指令直接读当前锁存值。
  */
-export function settleBeforeInstruction(machine: Machine, b: Body): void {
+export function settleBeforeInstruction(
+  machine: Machine,
+  b: Body,
+  pc: number,
+  canSkip?: (b: Body) => Value<boolean>,
+): void {
   if (advancing > 0) return;
 
   const pending = b.readState(CLOCK, types.number);
+  const waiting = b.greaterThan(pending, number(b, 0));
+  const settle =
+    canSkip === undefined
+      ? waiting
+      : b.and(waiting, (inner) => asBody(inner).not(canSkip(asBody(inner))));
 
-  b.if(b.greaterThan(pending, number(b, 0)), (step) => {
-    advanceDevices(machine, asBody(step));
+  b.if(settle, (branch) => {
+    const body = asBody(branch);
+
+    setPeriph8(body, SAVED_LOW, number(body, pc & 0xff));
+    setPeriph8(body, SAVED_HIGH, number(body, (pc >>> 8) & 0xff));
+    body.redirect(number(body, SETTLE_PC), number(body, 0));
   });
 }
