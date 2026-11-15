@@ -21,9 +21,7 @@ import {
  * 真实 `HAL_06_LCD.bin` 从复位开始推进到 440 ms，覆盖时钟/GPIO/PWR/USART/SysTick、
  * LCD 初始化、HAL_Delay 以及首帧之后的持续 GRAM 写入与 framebuffer 发布。
  *
- * 时间量子不能大于 SysTick 周期（约 200 µs）：运行时单次 `runUntil` 不会消费同一调用
- * 内的多个轮询边界，大切片会少计 `uwTick`。进程 CPU 时间包含建板与运行，三轮取最小值；
- * 首轮同时承担模块级翻译缓存冷启动。
+ * 进程 CPU 时间包含建板与运行，三轮取最小值；首轮同时承担模块级翻译缓存冷启动。
  */
 
 const COLD_PS = 200_000_000;

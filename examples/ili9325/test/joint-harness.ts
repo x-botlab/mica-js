@@ -27,10 +27,7 @@ const FIRMWARE = join(import.meta.dirname, 'fixtures', 'HAL_06_LCD.bin');
 
 /** 固件 `SystemClock_Config`：HSI16 → PLL M=2 / N=20 / R=2，SYSCLK = 80 MHz。 */
 export const JOINT_CLOCK_FREQUENCY = 80_000_000;
-/**
- * 固件 SysTick 每约 200 µs 到期。运行时单次 `runUntil` 不会自动消费同一调用内的多个
- * 轮询边界，因此长窗口必须用不超过该周期的步长推进，否则 `uwTick` 会明显少计。
- */
+/** 与历次基准读数保持一致的单次 `runUntil` 跨度。 */
 export const JOINT_TIME_QUANTUM_PS = 200_000_000;
 
 interface Adapter {
@@ -131,7 +128,7 @@ export interface JointBoard {
   readonly errors: string[];
   readonly mcu: JointInstance;
   readonly lcd: JointInstance;
-  /** 以能覆盖每个 SysTick 边界的步长推进到目标仿真时间。 */
+  /** 按固定步长推进到目标仿真时间。 */
   advanceTo(targetPs: number): void;
   /** 仅在 `createJointBoard({ accounting: true })` 时可用。 */
   readAccounting(): JointAccountingReadout | undefined;

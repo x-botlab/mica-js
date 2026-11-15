@@ -161,9 +161,6 @@ HSI16 → PLL M=2 / N=20 / R=2 配置主频，`HAL_Delay` 的 `uwTick` 换算依
 ./node_modules/.bin/vitest run --config vitest.perf.config.ts bench/joint-perf.test.ts
 ```
 
-推进窗口必须使用不超过 SysTick 周期（约 200 µs）的 `runUntil` 量子；本固件当前运行路径下，
-大切片会少计 `uwTick`，从而把固件错误地停在延时循环。
-
 当前 Linux x64、Node 24.20.0、`throughput` 读数：
 
 | 窗口                   | 仿真时间 | CPU 最好值 | 实时倍率 |

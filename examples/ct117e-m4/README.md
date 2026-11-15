@@ -97,7 +97,6 @@ board.topics.onDidReceive(({ topic, payload }) => {
 
 board.runUntil(0);
 
-// 固件 SysTick 约 200 µs 到期；长窗口按不超过该周期的步长推进。
 const target = 440_000_000_000;
 while (board.time < target) board.runUntil(Math.min(board.time + 200_000_000, target));
 board.dispose();
@@ -113,8 +112,7 @@ board.dispose();
 - `clockFrequency` 是模型的时间基准，必须与固件实际配置的主频一致；本固件为
   80 MHz。它不是自动从 RCC 寄存器反推的值。
 - `refreshRate` 默认 60 Hz，控制脏矩形合帧发布的最大频率。
-- `runUntil(0)` 完成复位和初始化；之后建议以 **200 µs** 为上限逐步推进。运行时单次
-  `runUntil` 不会自动消费同一调用内的多个轮询边界，步长过大会让 `uwTick` 明显少计。
+- `runUntil(0)` 完成复位和初始化；之后可用任意步长推进到目标时间。
 - `execution` 使用默认的 `throughput`（直接后端）；本示例没有单独维护 precise 路径。
 
 ## 输出话题
