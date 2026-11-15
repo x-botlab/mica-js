@@ -1,0 +1,22 @@
+{
+  "name": "@mica-js/example-ct117e-m4",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "CT117E-M4 单器件融合工程：STM32G431RBT6 与 ILI9325 固定数字总线",
+  "scripts": {
+    "prepare:types": "node scripts/prepare-model.mjs && mica prepare",
+    "build": "node scripts/prepare-model.mjs && mica build",
+    "typecheck": "pnpm prepare:types && tsc --noEmit",
+    "test": "pnpm build && vitest run --config vitest.config.ts",
+    "bench": "pnpm build && vitest run --config vitest.perf.config.ts"
+  },
+  "devDependencies": {
+    "@mica-js/sdk": "workspace:*",
+    "@mica-js/simulator": "workspace:*",
+    "@mica-js/stm32g431rbt6-core": "workspace:*",
+    "@types/node": "^24.19.2",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

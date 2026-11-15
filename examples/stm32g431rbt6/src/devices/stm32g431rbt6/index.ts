@@ -35,7 +35,7 @@ import {
   TICK_ACTIVE,
   TICK_PS,
   TX_MASK,
-} from './core/layout';
+} from '@mica-js/stm32g431rbt6-core/layout';
 import {
   asBody,
   bool,
@@ -46,19 +46,25 @@ import {
   num,
   syncIrqService,
   writeReg,
-} from './core/ir';
-import type { Body } from './core/ir';
-import { decode, guard } from './core/decode';
-import type { Instruction, KnownRegs } from './core/decode';
-import { activateMachine } from './core/machine';
-import type { Machine } from './core/machine';
-import { gpioOffsetOf, gpioPortOf, readIdrDeferred, syncPort, writeGpioPort } from './core/gpio';
-import { writeMemory } from './core/memory';
-import { advanceSystick } from './core/systick';
-import { advanceUsart, usartDrivers } from './core/usart';
-import { dispatchExceptions } from './core/nvic';
-import { createRegisterFacts } from './core/register-facts';
-import type { RegisterFacts } from './core/register-facts';
+} from '@mica-js/stm32g431rbt6-core/ir';
+import type { Body } from '@mica-js/stm32g431rbt6-core/ir';
+import { decode, guard } from '@mica-js/stm32g431rbt6-core/decode';
+import type { Instruction, KnownRegs } from '@mica-js/stm32g431rbt6-core/decode';
+import { activateMachine } from '@mica-js/stm32g431rbt6-core/machine';
+import type { Machine } from '@mica-js/stm32g431rbt6-core/machine';
+import {
+  gpioOffsetOf,
+  gpioPortOf,
+  readIdrDeferred,
+  syncPort,
+  writeGpioPort,
+} from '@mica-js/stm32g431rbt6-core/gpio';
+import { writeMemory } from '@mica-js/stm32g431rbt6-core/memory';
+import { advanceSystick } from '@mica-js/stm32g431rbt6-core/systick';
+import { advanceUsart, usartDrivers } from '@mica-js/stm32g431rbt6-core/usart';
+import { dispatchExceptions } from '@mica-js/stm32g431rbt6-core/nvic';
+import { createRegisterFacts } from '@mica-js/stm32g431rbt6-core/register-facts';
+import type { RegisterFacts } from '@mica-js/stm32g431rbt6-core/register-facts';
 
 type CodeBytes = ReadonlyBytes;
 

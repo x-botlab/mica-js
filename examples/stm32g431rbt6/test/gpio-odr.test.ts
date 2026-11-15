@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { Board } from '@mica-js/sdk';
 import { compileDDL } from '@mica-js/sdk/ddl';
-import { GPIO_ODR } from '../src/devices/stm32g431rbt6/core/gpio';
-import { GPIO_STATE } from '../src/devices/stm32g431rbt6/core/layout';
+import { GPIO_ODR } from '@mica-js/stm32g431rbt6-core/gpio';
+import { GPIO_STATE } from '@mica-js/stm32g431rbt6-core/layout';
 
 /**
  * ODR 影子 state 的行为回归。

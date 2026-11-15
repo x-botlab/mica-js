@@ -2,12 +2,12 @@
  * STM32G431RBT6（LQFP64，Arm Cortex-M4F）的器件模型。
  *
  * 行为不写在 DDL 里：Thumb/Thumb-2 指令、GPIO、RCC、SysTick、NVIC 与 USART 都由
- * `core/` 在翻译期生成 IR。DDL 只声明资源与复位值：
+ * `@mica-js/stm32g431rbt6-core` 在翻译期生成 IR。DDL 只声明资源与复位值：
  * - `code` 是 128 KiB Flash 的字节映像，JIT 从它的 0x00000–0x1FFFF 偏移取指；
  * - `sram` 是 22 KiB SRAM1（0x20000000），`ccm` 是 10 KiB CCM SRAM（0x10000000）；
  * - `r0`–`r12`、`sp`、`lr` 用 state 保存（寄存器不可寻址，state 比字节内存快），
  *   PC 单独作为 JIT 绑定的 state；
- * - `periph` 保存外设寄存器的不可见后备值，分区见 `core/layout.ts`；
+ * - `periph` 保存外设寄存器的不可见后备值，分区见 `@mica-js/stm32g431rbt6-core/layout`；
  * - `sys` 保存 NVIC 与 SCB 的模型状态；SysTick 与 USART 发送器的内部寄存器用 state。
  *
  * 引脚按 LQFP64 物理顺序声明（见 device.json 的脚注说明）。VDD1 是推挽输出的高电平
@@ -23,7 +23,7 @@ device Stm32g431rbt6(firmware: bytes default bytes[], clockFrequency: number def
   memory sram[0x5800];
   /** 10 KiB CCM SRAM：0x10000000–0x100027FF。 */
   memory ccm[0x2800];
-  /** 外设寄存器后备值；分区见 core/layout.ts。 */
+  /** 外设寄存器后备值；分区见 @mica-js/stm32g431rbt6-core/layout。 */
   memory periph[0x1000];
   /** SysTick、NVIC、SCB 的模型状态。 */
   memory sys[0x200];

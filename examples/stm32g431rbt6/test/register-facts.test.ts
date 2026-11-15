@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createRegisterFacts } from '../src/devices/stm32g431rbt6/core/register-facts';
+import { createRegisterFacts } from '@mica-js/stm32g431rbt6-core/register-facts';
 
 const FIRMWARE = join(
   import.meta.dirname,

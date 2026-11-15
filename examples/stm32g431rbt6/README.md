@@ -9,8 +9,15 @@ Mica 器件工程。器件 ID 是 `stm32g431rbt6`：JIT 按 PC 翻译一段连�
 SysTick 与 USART 的时间基准。
 
 工程位于 `examples/stm32g431rbt6`，作为 `@mica-js/example-stm32g431rbt6` 加入工作区，依赖
-`@mica-js/sdk` 与 `@mica-js/simulator` 的 `workspace:*`（走 `source` 导出条件，不需要先构建
-packages）。`mica build` 把产物写到包内 `dist/devices/stm32g431rbt6/{device.json, device.js}`。
+`@mica-js/sdk`、`@mica-js/simulator` 与 `@mica-js/stm32g431rbt6-core` 的 `workspace:*`（走
+`source` 导出条件，不需要先构建 packages）。
+
+MCU 内核位于 `examples/stm32g431rbt6-core`（包名 `@mica-js/stm32g431rbt6-core`）：Thumb/Thumb-2
+译码与执行、总线与内存布局、GPIO/RCC/PWR/SysTick/NVIC/USART 模型、寄存器常量与寄存器事实
+都由共享包提供，并按模块导出子路径。本工程与 `examples/ct117e-m4` 共用这份内核；器件 ID、
+属性、DDL 模型、JIT 合批与服务块编排仍在本工程。
+`mica build` 在构建期把该依赖打进 `dist/devices/stm32g431rbt6/device.js`，该模块自包含，
+运行时不加载共享包。
 
 ## 性能
 
