@@ -18,10 +18,7 @@ export const CT117E_M4_INSTANCE_ID = 'ct117e-m4';
 export const CT117E_M4_CLOCK_FREQUENCY = 80_000_000;
 export const CT117E_M4_REFRESH_RATE = 60;
 
-/**
- * 固件 SysTick 约每 200 µs 到期。运行时单次 `runUntil` 不会自动消费同一调用内的
- * 多个轮询边界，因此长窗口必须用不超过该周期的步长推进，否则 `uwTick` 会少计。
- */
+/** 与历次基准读数保持一致的单次 `runUntil` 跨度。 */
 export const CT117E_M4_TIME_QUANTUM_PS = 200_000_000;
 /** 220 ms：前半程检查点，覆盖初始化后的持续绘图与首屏清屏。 */
 export const CT117E_M4_MID_TIME_PS = 220_000_000_000;
@@ -118,7 +115,7 @@ export interface Harness {
   state(name: string): unknown;
   memory(name: string): Uint8Array;
   workload(): Workload;
-  /** 以 200 µs 为上限的步长推进到目标虚拟时间。 */
+  /** 按固定步长推进到目标虚拟时间。 */
   advanceTo(targetPs: number): void;
   dispose(): void;
 }
