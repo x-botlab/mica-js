@@ -7,6 +7,8 @@ there is no runtime IR dispatcher or dependency on the old IR or simulator.
 ## API
 
 - `compileBody(region)` returns `(host, args?, reaction?) => Generator`.
+- `compileSynchronousBody(region, { resolveFunction })` returns a bindable synchronous
+  `SynchronousProgram` for acyclic, suspension-free bodies and their static call graph.
 - `compileComputation(computation)` returns `(host) => unknown`. It synchronously
   completes nested calls and rejects any yielded execution signal.
 - `compileBodyArtifact` and `compileComputationArtifact` additionally return the
@@ -131,14 +133,73 @@ implementers is exact equivalence with the generic operation, including lazy nam
 resolution, state snapshots and invalidation, live sample reads, memory
 bounds/endianness, and any code-memory invalidation the host performs on stores.
 
+## Synchronous Reaction and Function Compilation
+
+`compileSynchronousBody(region, { resolveFunction })` is the optional non-generator form
+for bodies that never suspend, such as reactions. It returns a `SynchronousProgram` or
+`undefined`:
+
+```ts
+import { compileSynchronousBody } from '@mica-js/compiler';
+
+const program = compileSynchronousBody(reaction.body, {
+  resolveFunction: (name) => functions.get(name)?.body,
+});
+const runner = program?.bind(host);
+runner?.(args, { previous, current, captures });
+```
+
+The program owns the emitted functions and a compiler-owned constant pool. It never
+captures a host, instance or handle. `bind(host)` allocates the per-instance resource
+handles once and returns a synchronous runner; the same program can be bound to several
+instances independently. Calls with no arguments reuse one frozen empty argument list.
+
+Static `call`/`callValue` targets are compiled into ordinary JavaScript functions in the
+same factory and called directly. They do not create generators or call
+`host.call`/`delegate`. The reachable static call graph must be acyclic. Recursive and
+mutually recursive graphs are rejected as a whole, rather than relying on native
+JavaScript stack depth or generator-delegation differences. Resource parameters
+(`pin`/`memory` passed through `args`) remain generic `host.sample`/`host.load` calls.
+
+Callees do not inherit the caller's reaction frame: like `Instance.invoke`, a model
+function called from a reaction receives `undefined` as its reaction context. A callee
+that tries to read `previous`, `current` or a capture therefore fails with the same
+`Reaction value requires a reaction frame` / `Reaction capture is not available` error
+as the generator backend. Only the reaction body itself receives the frame.
+
+Admission is all-or-nothing before execution. The root and every reachable callee are
+rejected as a whole when they contain `wait`, `elapse`, `receive`, `waitUntil`,
+`redirect`, `stop`, an unresolvable call, a call cycle, or any emitter shape that cannot
+be emitted. The caller keeps the existing generator body for that reaction. Comments,
+captures and reaction frames are unchanged; the runtime must still complete every capture
+before running any reaction body.
+
+Fixed `pin`/`state`/`memory` names use `host.bind(specs)` by default, with the same lazy
+name-resolution and invalidation contract as resumable process handles. Pass
+`{ bindResources: false }` to force the generic `host.read`/`host.sample`/`host.load`
+operations and skip `host.bind` entirely. A host without `bind` also gets an equivalent
+synchronous runner whose handle methods call the generic host operations at the original
+execution position. Invalid resource names are therefore reported at the operation that
+uses them, never by `bind` for a name in an unexecuted branch.
+
+Focused tests: build this package, then run
+`node --test packages/compiler/tests/synchronous.test.mjs` from the repository root.
+The real ILI9325 integration test lives in the example package:
+`cd examples/ili9325 && ./node_modules/.bin/vitest run --config vitest.config.ts test/synchronous.test.ts`.
+
 ## Bounded Direct JIT
 
 `compileDirectJit(instructions, binding)` optionally compiles an entire cached PC
 trace into one numeric-bank switch/loop. Traces whose emitted source exceeds the
 monolithic budget are split into shards, each a small function with its own
 dispatcher range, because generated size — not instruction count — decides whether
-V8 keeps optimizing a function. Each instruction supplies `pc`, `nextPc`
-and its already validated `body`. Unsupported instructions are omitted; an unknown
+V8 keeps optimizing a function. When a reusable cache is supplied, split programs
+keep closed `stepShard` / `resumeShard` function objects resident across later cache
+revisions; each revision rebuilds only a small exact-PC dispatcher and the open tail
+shard affected by new or invalidated instructions. Continuation IDs are stable within
+that cache, so cached shard functions remain valid as more PCs are added. Each
+instruction supplies `pc`, `nextPc` and its already validated `body`. Unsupported
+instructions are omitted; an unknown
 or unsupported PC exits with `fallback` before changing that instruction's PC or
 performing any of its effects. The first occurrence of each PC owns lookup, even
 when unsupported. If nothing is supported, compilation returns `undefined`.
@@ -167,10 +228,12 @@ time. Times and durations use integer picoseconds in the existing time range.
 
 `program.run(frame, deadline)` returns `deadline`, `fallback`, `stopped`, or
 `invalidated`. It executes multiple instructions without generators, per-instruction
-objects, host callbacks, or runtime Map lookups. Scalar intermediates stay in native
-locals until a horizon requires saving them, and values whose live ranges do not
-overlap share one local, so a block that decodes thousands of IR operations still
-emits a handful of registers. State/memory effects accumulate in the
+objects, host callbacks, or runtime Map lookups. Cross-shard transitions stay inside
+the same `run` loop: a shard returns the validated next PC and the dispatcher re-routes
+it without re-entering the simulator. Scalar intermediates stay in native locals until
+a horizon requires saving them, and values whose live ranges do not overlap share one
+local, so a block that decodes thousands of IR operations still emits a handful of
+registers. State/memory effects accumulate in the
 supplied reusable banks; the runtime must commit/invalidate only resources marked
 in the current invocation's dirty words in `finally`, including when execution
 throws. Conservative resource lists are eligibility guards, not flush lists: a

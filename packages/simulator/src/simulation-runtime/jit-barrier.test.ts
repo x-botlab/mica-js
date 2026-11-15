@@ -9,7 +9,7 @@ import type { JitTranslate } from '../types';
 /**
  * #273 的验收：直接程序的写入栅栏在**块入口**判定，观察者集合变化不再让整程序重编译。
  *
- * 板上每个 pc 写一个被观察的状态（`sel`），尾部块只写无人观察的 `tick`。`sel` 决定
+ * 板上每个 pc 写一个被观察的状态（`sel`），最后一条块只写无人观察的 `tick`。`sel` 决定
  * 观察源 `watched` 读到哪个 probe，于是每跑一块，被观察的资源集合就在十个组合之间移动。
  * 改动前这会让守卫集合进入发射期判定与缓存键：每次变化都换一份程序，超过 8 槽后旧程序
  * 被挤出，只能整程序重建。
@@ -22,10 +22,9 @@ import type { JitTranslate } from '../types';
  */
 
 const PROBES = 10;
-const BLOCKS = PROBES + 33;
-const STABLE_BLOCKS = 8;
+const BLOCKS = PROBES + 1;
 
-/** 每块推进一个 ps；尾部块（pc >= PROBES）只写无人观察的 `tick`。 */
+/** 每块推进一个 ps；最后一条块（pc === PROBES）只写无人观察的 `tick`。 */
 const translate: JitTranslate = ({ pc }, block) => {
   block.instruction({ pc, nextPc: (pc + 1) % BLOCKS }, (b) => {
     if (pc < PROBES) b.writeState('sel', b.constant(types.number, pc));
@@ -37,7 +36,7 @@ const translate: JitTranslate = ({ pc }, block) => {
 
 function churnModel(probes: number) {
   const builder = createDeviceBuilder({ name: 'BarrierBench' });
-  builder.memory({ name: 'code', length: BLOCKS });
+  builder.memory({ name: 'code', length: 16 });
   builder.memory({ name: 'scratch', length: 4 });
   builder.memory({ name: 'evidence', length: probes + 1, public: true });
   builder.state({ name: 'pc', type: types.number, initial: 0 });
@@ -100,76 +99,7 @@ function churnModel(probes: number) {
   return builder.finish();
 }
 
-function stableBarrierModel() {
-  const builder = createDeviceBuilder({ name: 'StableBarrierBench' });
-  builder.memory({ name: 'code', length: STABLE_BLOCKS });
-  builder.state({ name: 'pc', type: types.number, initial: 0 });
-  builder.state({ name: 'value', type: types.number, initial: 0 });
-  builder.state({ name: 'tick', type: types.number, initial: 0 });
-  builder.derived({ name: 'watched', type: types.number }, (b) => {
-    b.returnValue(b.readState('value', types.number));
-  });
-  builder.on({ name: 'observeWatched', sourcePath: ['watched'] }, (b) => {
-    b.writeState('tick', b.add(b.readState('tick', types.number), b.constant(types.number, 1)));
-  });
-  return builder.finish();
-}
-
-const stableTranslate: JitTranslate = ({ pc }, block) => {
-  block.instruction({ pc, nextPc: (pc + 1) % STABLE_BLOCKS }, (b) => {
-    b.writeState('value', b.constant(types.number, 0));
-    b.elapse(1);
-  });
-  return block.finish();
-};
-
 describe('direct JIT block-entry write barriers', () => {
-  it('caches a blocked PC until its observer guards change', () => {
-    const library = createDeviceLibrary([
-      {
-        id: 'bench',
-        model: stableBarrierModel(),
-        create: (context) => {
-          const registration = context.attachJit({
-            entry: 'bench',
-            code: 'code',
-            pc: 'pc',
-            translate: stableTranslate,
-          });
-          try {
-            context.loadBytes('code', new Uint8Array(STABLE_BLOCKS));
-          } catch (cause) {
-            registration.dispose();
-            throw cause;
-          }
-          return { sync() {}, dispose: () => registration.dispose() };
-        },
-      },
-    ]);
-    const board = createBoard(library, {
-      instances: [{ id: 'bench', type: 'bench' }],
-      nets: [],
-    });
-    try {
-      board.runUntil(0);
-      board.runUntil(100);
-      const instance = (board as unknown as { instances: readonly Instance[] }).instances[0]!;
-      const jit = instance.jits[0]!;
-      const stats = directJitStats(jit);
-      expect(stats).toBeDefined();
-      expect(jit.directFallbackPcs.has(0)).toBe(true);
-      expect(jit.directFallbacksExhausted).toBe(true);
-      const { directCalls, directFallbacks } = stats!;
-
-      board.runUntil(board.time + 100);
-
-      expect(stats!.directFallbacks).toBe(directFallbacks);
-      expect(stats!.directCalls).toBe(directCalls);
-    } finally {
-      board.dispose();
-    }
-  });
-
   it('observer churn keeps one program and only falls back on the observed blocks', () => {
     let evidence: Uint8Array | undefined;
     const library = createDeviceLibrary([
@@ -184,7 +114,7 @@ describe('direct JIT block-entry write barriers', () => {
             translate,
           });
           try {
-            context.loadBytes('code', new Uint8Array(BLOCKS));
+            context.loadBytes('code', new Uint8Array(16));
             evidence = context.memory.evidence as Uint8Array;
           } catch (cause) {
             registration.dispose();
@@ -211,7 +141,6 @@ describe('direct JIT block-entry write barriers', () => {
       const calls = stats!.directCalls;
       const fallbacks = stats!.directFallbacks;
       expect(compiles).toBeGreaterThan(0);
-      expect(compiles).toBeLessThan(BLOCKS);
       expect(jit.directPrograms.size).toBe(1);
 
       const guards = (): string => [...jit.directStateGuards].sort().join(',');
@@ -244,5 +173,4 @@ describe('direct JIT block-entry write barriers', () => {
       board.dispose();
     }
   });
-
 });

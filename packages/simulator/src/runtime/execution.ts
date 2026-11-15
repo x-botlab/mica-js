@@ -2,16 +2,25 @@ import {
   compileBody,
   compileComputation,
   compileResumableBody,
+  compileSynchronousBody,
   type CompiledBody,
   type ExecutionHost,
   type ResumableFrame,
   type ResumableProgram,
+  type SynchronousProgram,
 } from '@mica-js/compiler';
-import type { ComputationIR, RegionIR } from '@mica-js/device-model';
+import type { ComputationIR, DeviceIR, RegionIR } from '@mica-js/device-model';
+import type { Instance } from './instance';
 
 const compiledBodies = new WeakMap<RegionIR, CompiledBody>();
 const resumablePrograms = new WeakMap<RegionIR, ResumableProgram | null>();
 const compiledComputations = new WeakMap<ComputationIR, (host: ExecutionHost) => unknown>();
+/**
+ * Synchronous programs are instance independent, but their static function resolution
+ * belongs to one device model. The outer key prevents reusing a root region compiled
+ * against another model's function table; `null` records a whole-body fallback.
+ */
+const synchronousPrograms = new WeakMap<DeviceIR, WeakMap<RegionIR, SynchronousProgram | null>>();
 export const MAX_TIME = 7_200_000_000_000_000;
 export function time(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value))
@@ -26,6 +35,33 @@ export function body(region: RegionIR): CompiledBody {
     compiledBodies.set(region, result);
   }
   return result;
+}
+/**
+ * Compile one reaction body for one device model. Static callees are resolved from the
+ * same declaration environment the generator uses. A compiler decline is cached as a
+ * whole-body fallback; execution errors are never caught here and never replay effects.
+ */
+export function synchronousBody(
+  instance: Instance,
+  region: RegionIR,
+): SynchronousProgram | undefined {
+  const model = instance.entry.model;
+  let cache = synchronousPrograms.get(model);
+  if (cache === undefined) {
+    cache = new WeakMap();
+    synchronousPrograms.set(model, cache);
+  }
+  const cached = cache.get(region);
+  if (cached !== undefined) return cached ?? undefined;
+  const program = compileSynchronousBody(region, {
+    bindResources: true,
+    resolveFunction: (name) => {
+      const declaration = instance.declarations.get(name);
+      return declaration?.kind === 'function' ? declaration.body : undefined;
+    },
+  });
+  cache.set(region, program ?? null);
+  return program;
 }
 export function resumable(region: RegionIR): ResumableProgram | undefined {
   let result = resumablePrograms.get(region);

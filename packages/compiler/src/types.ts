@@ -111,6 +111,47 @@ export interface ResumableProgram {
 
 export type CompiledComputation = (host: ExecutionHost) => unknown;
 
+declare const directJitCacheOpaque: unique symbol;
+
+/**
+ * Opaque, reusable compilation state for the direct backend.
+ *
+ * A cache owns compiled instruction bodies and the constant indices they reference. Callers
+ * must obtain one from `compileDirectJit.createCache()` and may discard it at any time; every
+ * program produced by the compiler remains self-contained.
+ */
+export interface DirectJitCache {
+  readonly [directJitCacheOpaque]: true;
+}
+
+/** Deterministic cache counters; useful for diagnostics and targeted regression tests. */
+export interface DirectJitCacheStats {
+  /** Instruction bodies emitted after a cache miss. */
+  readonly compiledBlocks: number;
+  /** Instruction bodies reused without running the emitter. */
+  readonly reusedBlocks: number;
+  /** Previously cached bodies replaced because their PC/body/binding fingerprint changed. */
+  readonly invalidatedBlocks: number;
+  /** Resident shard factories emitted for split programs. */
+  readonly compiledShards: number;
+  /** Resident shards reused unchanged across program assemblies. */
+  readonly reusedShards: number;
+  /** Cached entries, including bodies the direct emitter declined. */
+  readonly entries: number;
+  /** Explicit cache clears requested by the runtime or a caller. */
+  readonly clears: number;
+}
+
+export interface DirectJitDelay {
+  readonly counter: number;
+  readonly cycles: number;
+  readonly pending?: {
+    readonly state: number;
+    readonly period: number;
+    readonly active: number;
+  };
+}
+
 /** Static numeric bank layout; the runtime guards ownership/observers before entry. */
 export interface DirectJitBinding {
   readonly states: ReadonlyMap<string, number>;
@@ -128,10 +169,15 @@ export interface DirectJitBinding {
   /** Summed slot count above which `split` emits shards; defaults to 2048. */
   readonly shardSlotLimit?: number;
   /**
-   * PC → `{ counter slot, ps per round }` of a declared busy-wait loop head. The emitted
-   * body collapses every round the deadline allows before executing the real iteration.
+   * PC → `{ counter slot, ps per round, optional service accumulator }` of a declared
+   * busy-wait loop head. The emitted body collapses every round the deadline allows before
+   * executing the real iteration.
+   *
+   * A device whose paced peripherals are driven by an accumulator (SysTick, UART bit clocks)
+   * supplies `pending`: the fold then stops at the next service boundary and adds the folded
+   * time to the accumulator, so skipping rounds cannot starve those peripherals.
    */
-  readonly delayLoops?: ReadonlyMap<number, { readonly counter: number; readonly cycles: number }>;
+  readonly delayLoops?: ReadonlyMap<number, DirectJitDelay>;
 }
 
 /**
@@ -153,6 +199,8 @@ export interface DirectJitHost {
 export interface DirectJitFrame {
   states: unknown[];
   memories: Uint8Array[];
+  /** Optional per-bank wrappers prepared once by the runtime; absent in compiler-only frames. */
+  readonly memoryViews?: readonly DataView[];
   /** Reusable bit words indexed by bank index >>> 5; clear before each invocation. */
   stateDirty: number[];
   memoryDirty: number[];
@@ -165,8 +213,8 @@ export interface DirectJitFrame {
   locals: unknown[];
   /** Complete a pending old instruction, then exit before starting another. */
   stopAfterInstruction?: boolean;
-  /** PCs that have fallen back; checked inside a batch before the next instruction starts. */
-  fallbackPcs?: ReadonlySet<number>;
+  /** Publish host effects at the next nonzero elapse or instruction end before continuing. */
+  publishPending?: boolean;
   /** Present when the program was compiled with `DirectJitBinding.host`. */
   readonly host?: DirectJitHost;
 }
@@ -176,8 +224,11 @@ export type DirectJitReason = 'deadline' | 'fallback' | 'stopped' | 'invalidated
 export interface DirectJitProgram {
   /** At time === deadline neither an instruction nor its suffix executes. */
   run(frame: DirectJitFrame, deadline: number): DirectJitReason;
+  /** Generated step/resume function groups; one for the monolithic form. */
+  readonly shards: number;
+  /** PCs this program compiled, and therefore can execute without the interpreter. */
+  readonly pcs: readonly number[];
   readonly localCount: number;
-  readonly instructionPcs: readonly number[];
   readonly readStates: readonly string[];
   readonly writeStates: readonly string[];
   readonly readMemories: readonly string[];

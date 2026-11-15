@@ -193,13 +193,11 @@ export async function circuit(options: CircuitOptions = {}): Promise<Circuit> {
 
   const createProbe = (pin: string) => () => ({
     sync(batch: { readonly outputs: Readonly<Record<string, readonly Message[]>> }) {
-      const messages = batch.outputs.level;
-      const latest = messages?.[messages.length - 1];
+      const messages = batch.outputs.level ?? [];
 
-      if (latest !== undefined) {
-        (history[pin] ??= []).push(latest.value as number);
-        levels[pin] = latest.value as number;
-      }
+      for (const message of messages) (history[pin] ??= []).push(message.value as number);
+      const latest = messages[messages.length - 1];
+      if (latest !== undefined) levels[pin] = latest.value as number;
     },
     dispose() {},
   });

@@ -7,11 +7,13 @@ import type {
   ReactionFrame,
   ResumableFrame,
   ResumableProgram,
+  SynchronousProgram,
+  SynchronousRunner,
 } from '@mica-js/compiler';
 import type { Instance } from './instance';
 import type { CompiledObservation } from '../observations';
 import type { Fifo } from '../queue';
-import type { DeviceLibraryEntry, JitOptions } from '../types';
+import type { DeviceLibraryEntry, JitDelay, JitOptions, JitPolling } from '../types';
 
 export type Decl<K extends DeclarationIR['kind']> = Extract<DeclarationIR, { kind: K }>;
 export type Execution = Generator<ExecutionSignal, unknown, unknown>;
@@ -80,6 +82,13 @@ export interface Reaction {
   previous: unknown;
   order?: number;
   execute?: CompiledBody;
+  /**
+   * Static whole-body admission. `undefined` means not compiled yet; `null` records a
+   * compiler decline and selects the generator fallback.
+   */
+  synchronousProgram?: SynchronousProgram | null;
+  /** Bound synchronous runner for this instance; `undefined` until first run. */
+  synchronous?: SynchronousRunner | null;
   frame: ReactionFrame | undefined;
 }
 export interface JitInstruction {
@@ -89,45 +98,60 @@ export interface JitInstruction {
   readonly execute: CompiledBody;
   readonly polling: boolean;
 }
+/** Validated polling declaration minus its PC key. */
+export type JitPollingBinding = Omit<JitPolling, 'pc'>;
 export interface DirectExecution {
   readonly program: DirectJitProgram;
   readonly frame: DirectJitFrame;
-  readonly stateReads: readonly (readonly [string, number])[];
-  readonly stateWrites: readonly (readonly [string, number])[];
-  readonly memoryWrites: readonly (readonly [string, number])[];
-  readonly revision: number;
-  /** PCs this program can execute; misses are candidates for a lazy rebuild. */
+  /** PCs the current program compiled; a PC outside it needs the interpreter. */
   readonly pcs: ReadonlySet<number>;
-  /** Pure cached PCs the compiler already considered and declined for this build. */
-  readonly unsupportedPcs: ReadonlySet<number>;
+  readonly revision: number;
 }
+/** Immutable bank layout shared by every direct program built for one JIT. */
+export interface DirectJitLayout {
+  readonly stateNames: readonly string[];
+  readonly memoryNames: readonly string[];
+  readonly states: ReadonlyMap<string, number>;
+  /** Instance-owned bank, mirrored by every interpreted/process/reaction state write. */
+  readonly stateValues: unknown[];
+  readonly memories: ReadonlyMap<string, number>;
+  readonly memoryBanks: readonly Uint8Array[];
+  readonly memoryViews: readonly DataView[];
+}
+export type DirectJitCache = ReturnType<
+  typeof import('@mica-js/compiler').compileDirectJit.createCache
+>;
 export interface Jit {
   readonly instance: Instance;
   readonly options: JitOptions;
   readonly cache: Map<number, JitInstruction>;
-  readonly polling: ReadonlyMap<number, string>;
+  readonly polling: ReadonlyMap<number, JitPollingBinding>;
   /** Validated delay-loop descriptors, keyed by loop-head PC. */
-  readonly delays: ReadonlyMap<number, { readonly counter: string; readonly cycles: number }>;
+  readonly delays: ReadonlyMap<number, JitDelay>;
   revision: number;
-  directCacheSize: number;
+  directRevision: number;
   directObserverRevision: number;
   readonly directStateGuards: Set<string>;
   readonly directMemoryGuards: Set<string>;
   readonly directHookReads: Set<ResourceSlot>;
   readonly directPrograms: Map<string, DirectExecution | undefined>;
+  directProgramRevision: number;
+  /** Opaque compiler-owned incremental body cache; initialized on the first build. */
+  directCache?: DirectJitCache;
+  /** Bank names and maps are stable for the lifetime of a JIT. */
+  directLayout?: DirectJitLayout;
   direct: DirectExecution | undefined;
-  readonly directFallbackPcs: Set<number>;
-  /** Missing pure PCs observed since their block was translated; retry on the second hit. */
-  readonly directMisses: Map<number, number>;
-  /** Missing PCs already retried at the current code revision. */
-  readonly directRetryPcs: Set<number>;
-  directFallbacksExhausted: boolean;
+  directSkip: number | undefined;
+  /** Blocks translated since the last direct program build; bounds the rebuild frequency. */
+  directMisses: number;
   pollReads: Dependencies | undefined;
   currentPc: number | undefined;
   automaticPolling: boolean;
   pollingWait: boolean;
   pollingPeriod: number;
   pollingOrigin: number;
+  /** Invalidates a previously scheduled polling time event after any other wake. */
+  pollingToken: number;
   active: boolean;
   stopped: boolean;
   queued: boolean;

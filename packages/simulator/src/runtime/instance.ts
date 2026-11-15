@@ -3,15 +3,17 @@ import type { DeclarationIR } from '@mica-js/device-model';
 import type { ExecutionHost, ResourceHandle } from '@mica-js/compiler';
 import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
-import { body, computation, resumable } from './execution';
+import { body, computation, resumable, synchronousBody } from './execution';
 import { electricalNumber, ElectricalParameterError } from './errors';
 import type {
   Channel,
   Decl,
   Dependencies,
+  DirectJitLayout,
   Entry,
   Execution,
   Jit,
+  JitPollingBinding,
   Observation,
   Process,
   Reaction,
@@ -109,6 +111,7 @@ export class Instance {
   readonly props = new Map<string, unknown>();
   readonly constants = new Map<string, unknown>();
   readonly states = new Map<string, unknown>();
+  private directBank?: Pick<DirectJitLayout, 'stateNames' | 'states' | 'stateValues'>;
   readonly memories = new Map<string, Uint8Array>();
   private readonly memoryViews = new Map<string, DataView>();
   private readonly memorySizes = new Map<string, number>();
@@ -185,11 +188,7 @@ export class Instance {
     this.random = randomState(seed, id, override);
     this.host = {
       read: (kind, name) => this.read(kind, name),
-      write: (name, value) => {
-        const slot = this.stateSlot(name);
-        this.states.set(name, snapshot(value));
-        this.board.invalidate(slot);
-      },
+      write: (name, value) => this.writeState(name, value, this.stateSlot(name)),
       sample: (ref) => {
         return this.readSample(ref);
       },
@@ -474,7 +473,28 @@ export class Instance {
     if (!bytes) throw new TypeError(`Unknown memory ${String(ref)}`);
     return bytes;
   }
-  /** Cached resource bookkeeping for state and memory, resolved once per declaration name. */
+  /** Instance-owned numeric bank, mirrored by every non-direct state write. */
+  directStateBank(): Pick<DirectJitLayout, 'stateNames' | 'states' | 'stateValues'> {
+    if (this.directBank === undefined) {
+      const stateNames = [...this.states.keys()].filter((name) => {
+        const declaration = this.declarations.get(name) as Decl<'state'>;
+        return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
+      });
+      this.directBank = {
+        stateNames: Object.freeze(stateNames),
+        states: new Map(stateNames.map((name, index) => [name, index])),
+        stateValues: stateNames.map((name) => this.states.get(name)),
+      };
+    }
+    return this.directBank;
+  }
+  private writeState(name: string, value: unknown, slot: ResourceSlot): void {
+    const captured = snapshot(value);
+    this.states.set(name, captured);
+    const index = this.directBank?.states.get(name);
+    if (index !== undefined) this.directBank!.stateValues[index] = captured;
+    this.board.invalidate(slot);
+  }
   private stateSlot(name: string): ResourceSlot {
     let slot = this.stateSlots.get(name);
     if (slot === undefined) {
@@ -518,11 +538,9 @@ export class Instance {
         jit.cache.clear();
         jit.revision++;
         jit.directPrograms.clear();
-        jit.directCacheSize = -1;
-        jit.directFallbackPcs.clear();
-        jit.directMisses.clear();
-        jit.directRetryPcs.clear();
-        jit.directFallbacksExhausted = false;
+        jit.directProgramRevision = -1;
+        jit.directSkip = undefined;
+        jit.directMisses = 0;
         if (jit.direct?.frame.resume) jit.direct.frame.stopAfterInstruction = true;
         else jit.direct = undefined;
       }
@@ -600,8 +618,7 @@ export class Instance {
         },
         write: (value: unknown) => {
           const current = resolve();
-          states.set(name, snapshot(value));
-          this.board.invalidate(current);
+          this.writeState(name, value, current);
         },
       });
     }
@@ -725,6 +742,7 @@ export class Instance {
             instance: this,
             declaration,
             previous: undefined,
+            synchronousProgram: synchronousBody(this, declaration.body) ?? null,
             frame: undefined,
           });
           break;
@@ -888,11 +906,11 @@ export class Instance {
         throw this.board.error('INVALID_BINDING', 'Invalid instruction hook', this);
     } else if (Object.hasOwn(options, 'beforeInstruction'))
       throw new TypeError('Invalid beforeInstruction');
-    const polling = new Map<number, string>();
+    const polling = new Map<number, JitPollingBinding>();
     if (Object.hasOwn(options, 'polling')) {
       if (!Array.isArray(options.polling)) throw new TypeError('polling must be an array');
       for (const item of options.polling) {
-        dataObject(item, ['pc', 'predicate']);
+        dataObject(item, ['pc', 'predicate', 'consume', 'wait']);
         const pc = finite(item.pc, 'polling pc');
         const predicate = identity(item.predicate);
         const declaration = this.declarations.get(predicate);
@@ -904,7 +922,41 @@ export class Instance {
           declaration.returns?.kind !== 'bool'
         )
           throw this.board.error('INVALID_BINDING', 'Invalid polling declaration', this);
-        polling.set(pc, predicate);
+        let consume: string | undefined;
+        if (Object.hasOwn(item, 'consume')) {
+          consume = identity(item.consume);
+          const fn = this.declarations.get(consume);
+          if (fn?.kind !== 'function' || fn.params.length !== 0 || fn.returns !== undefined)
+            throw this.board.error('INVALID_BINDING', 'Invalid polling consume function', this);
+        }
+        let wait: JitPollingBinding['wait'];
+        if (Object.hasOwn(item, 'wait')) {
+          dataObject(item.wait, ['delay', 'advance']);
+          const delay = identity(item.wait.delay);
+          const advance = identity(item.wait.advance);
+          const delayFn = this.declarations.get(delay);
+          const advanceFn = this.declarations.get(advance);
+          if (
+            delayFn?.kind !== 'function' ||
+            !delayFn.pure ||
+            delayFn.params.length !== 0 ||
+            delayFn.returns?.kind !== 'number' ||
+            advanceFn?.kind !== 'function' ||
+            advanceFn.params.length !== 1 ||
+            advanceFn.params[0]!.type.kind !== 'number' ||
+            advanceFn.returns !== undefined
+          )
+            throw this.board.error('INVALID_BINDING', 'Invalid polling wait functions', this);
+          wait = Object.freeze({ delay, advance });
+        }
+        polling.set(
+          pc,
+          Object.freeze({
+            predicate,
+            ...(consume === undefined ? {} : { consume }),
+            ...(wait === undefined ? {} : { wait }),
+          }),
+        );
       }
     }
     if (Object.hasOwn(options, 'delays') && !(options.delays instanceof Map))
@@ -921,23 +973,23 @@ export class Instance {
       polling,
       delays: options.delays ?? new Map(),
       revision: 0,
-      directCacheSize: -1,
+      directRevision: -1,
       directObserverRevision: -1,
       directStateGuards: new Set(),
       directMemoryGuards: new Set(),
       directHookReads: new Set(),
       directPrograms: new Map(),
+      directProgramRevision: -1,
       direct: undefined,
-      directFallbackPcs: new Set(),
-      directMisses: new Map(),
-      directRetryPcs: new Set(),
-      directFallbacksExhausted: false,
+      directSkip: undefined,
+      directMisses: 0,
       pollReads: undefined,
       currentPc: undefined,
       automaticPolling: false,
       pollingWait: false,
       pollingPeriod: 0,
       pollingOrigin: 0,
+      pollingToken: 0,
       active: true,
       stopped: false,
       queued: false,
@@ -951,6 +1003,7 @@ export class Instance {
         jit.active = false;
         jit.execution = undefined;
         delete jit.predicate;
+        jit.pollingToken++;
         this.board.waitingJits.delete(jit);
         jit.cache.clear();
         jit.directPrograms.clear();

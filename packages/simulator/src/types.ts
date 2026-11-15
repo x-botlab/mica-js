@@ -65,10 +65,42 @@ export interface InstructionHook {
 /**
  * 一条忙等延时环的声明：入口 `pc` 每轮把 number 状态 `counter` 减一，消耗 `cycles` ps。
  * 环内不得产生其他可观察效果，因此跳过多轮只推进时间、只留下最后一轮的效果。
+ *
+ * `pending` 给按累加器计时的外设（SysTick、USART 位时钟）：折算必须停在下一次服务边界，
+ * 并把折叠掉的时间记进 `state`，否则跳过轮次会让这些外设永远等不到自己的节拍。
  */
 export interface JitDelay {
   readonly counter: string;
   readonly cycles: number;
+  readonly pending?: {
+    /** 已累积的节拍时长（ps）。 */
+    readonly state: string;
+    /** 一次服务的粒度（ps）。 */
+    readonly period: string;
+    /** 是否需要按时间推进外设。 */
+    readonly active: string;
+  };
+}
+
+/**
+ * A throughput-only wait point. When `predicate` is false the JIT parks until a dependency
+ * changes. If `wait` is present, `delay` supplies the picoseconds to the next device time
+ * event and `advance` applies that elapsed interval before the JIT is re-queued.
+ *
+ * `consume` runs once after `predicate` becomes true, allowing a one-shot wake token to be
+ * cleared before the guest instruction executes. These functions take zero or one
+ * argument; only `predicate` and `delay` must be pure.
+ */
+export interface JitPolling {
+  readonly pc: number;
+  readonly predicate: string;
+  readonly consume?: string;
+  readonly wait?: {
+    /** Pure zero-argument function returning the delay in picoseconds, or zero to park. */
+    readonly delay: string;
+    /** Function receiving the elapsed picoseconds and applying the device time event. */
+    readonly advance: string;
+  };
 }
 
 export interface JitOptions {
@@ -76,7 +108,7 @@ export interface JitOptions {
   readonly code: string;
   readonly pc: string;
   readonly beforeInstruction?: InstructionHook;
-  readonly polling?: readonly { readonly pc: number; readonly predicate: string }[];
+  readonly polling?: readonly JitPolling[];
   readonly delays?: ReadonlyMap<number, JitDelay>;
   readonly translate: JitTranslate;
 }
