@@ -63,6 +63,8 @@ export interface JointInstance {
 }
 
 export interface JointBoardOptions {
+  /** Alternative Flash image loaded at 0x08000000; omitted for the historical BIN fixture. */
+  readonly firmware?: Uint8Array;
   /**
    * 安装独立对账：按 MCU 的 WR/CS/RS/PC intent 发出量解码总线写，并维护一份不经过
    * ILI9325 模型的 GRAM oracle。该模式会增加每个 intent 的宿主调用开销，只用于显式
@@ -115,6 +117,8 @@ interface JointDevices {
 export interface JointBoard {
   readonly board: Board;
   readonly frames: Uint8Array[];
+  /** Model frameInfo send times, before adapter delivery at the quantum boundary. */
+  readonly frameTimes: number[];
   /**
    * 与 `frames` 一一对应，记录模型在帧体发送时刻交给适配器的完整载荷。
    *
@@ -379,7 +383,7 @@ function memoryVersion(instance: InternalInstance, name: string): number {
 }
 
 /** 按适配器的配对规则重建模型在帧体发送时刻交给它的完整帧载荷。 */
-function assembleFrames(outputs: BatchOutputs['outputs']): Uint8Array[] {
+export function assembleFrames(outputs: BatchOutputs['outputs']): Uint8Array[] {
   const infos = outputs.frameInfo ?? [];
   const rows = outputs.frameRows ?? [];
   const frames: Uint8Array[] = [];
@@ -478,7 +482,7 @@ function loadDevices(): Promise<JointDevices> {
   return devicesPromise;
 }
 
-function instance(
+export function instance(
   instances:
     | Map<string, JointInstance>
     | readonly (JointInstance & { readonly id?: string })[]
@@ -498,6 +502,7 @@ function instance(
 export async function createJointBoard(options: JointBoardOptions = {}): Promise<JointBoard> {
   const { mcuModel, lcdModel, mcuModule, lcdModule } = await loadDevices();
   const expectedFrames: Uint8Array[] = [];
+  const frameTimes: number[] = [];
   const wrap =
     (id: string, module: { readonly default: (context: never) => Adapter }) => (context: never) => {
       const adapter = module.default(context);
@@ -505,7 +510,14 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
       return {
         sync: (batch: unknown) => {
           // 适配器拿到的帧体就是模型 `copyBytes` 的结果，在这里捕获发送时刻的载荷。
-          if (id === 'lcd') expectedFrames.push(...assembleFrames((batch as BatchOutputs).outputs));
+          if (id === 'lcd') {
+            expectedFrames.push(...assembleFrames((batch as BatchOutputs).outputs));
+            frameTimes.push(
+              ...(batch as { outputs: { frameInfo: { time: number }[] } }).outputs.frameInfo.map(
+                (info) => info.time,
+              ),
+            );
+          }
           adapter.sync(batch);
         },
         dispose: () => adapter.dispose(),
@@ -555,7 +567,7 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
           id: 'mcu',
           type: 'mcu',
           props: {
-            firmware: new Uint8Array(readFileSync(FIRMWARE)),
+            firmware: options.firmware?.slice() ?? new Uint8Array(readFileSync(FIRMWARE)),
             clockFrequency: JOINT_CLOCK_FREQUENCY,
           },
         },
@@ -687,6 +699,7 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
   return {
     board,
     frames,
+    frameTimes,
     expectedFrames,
     faults,
     errors,

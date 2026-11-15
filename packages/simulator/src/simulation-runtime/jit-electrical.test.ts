@@ -23,7 +23,7 @@ const TARGET_PS = 81;
 const EDGE_BYTES = 8;
 
 const translation =
-  (stable: boolean, tail = false): JitTranslate =>
+  (stable: boolean): JitTranslate =>
   ({ pc }, block) => {
     block.instruction({ pc, nextPc: pc === 0 ? 1 : 0 }, (b) => {
       const one = b.constant(types.number, 1);
@@ -43,7 +43,7 @@ const translation =
       b.writeIntent('gate', intent);
       b.elapse(b.constant(types.number, CYCLE_PS));
       // 只有恢复路径会执行到这里；计数用来说明 suffix 恰好一次。
-      if (!tail) b.writeState('suffixes', b.add(b.readState('suffixes', types.number), one));
+      b.writeState('suffixes', b.add(b.readState('suffixes', types.number), one));
     });
     return block.finish();
   };
@@ -138,11 +138,7 @@ interface Scenario {
   readonly evidence: Uint8Array;
 }
 
-function createScenario(
-  execution: 'throughput' | 'precise',
-  stable = false,
-  tail = false,
-): Scenario {
+function createScenario(execution: 'throughput' | 'precise', stable = false): Scenario {
   let evidence: Uint8Array | undefined;
   const library = createDeviceLibrary([
     {
@@ -153,7 +149,7 @@ function createScenario(
           entry: 'dut',
           code: 'code',
           pc: 'pc',
-          translate: translation(stable, tail),
+          translate: translation(stable),
         });
         try {
           context.loadBytes('code', new Uint8Array(16));
@@ -259,33 +255,6 @@ describe('direct JIT electrical publication', () => {
       }
     } finally {
       scenario.board.dispose();
-    }
-  });
-
-  it('completes a proven tail at due without a suffix resume', () => {
-    const tail = createScenario('throughput', false, true);
-    const regular = createScenario('throughput', false, false);
-    try {
-      warmDirect(tail);
-      warmDirect(regular);
-      const tailCalls = directJitStats(tail.jit)!.directCalls;
-      const regularCalls = directJitStats(regular.jit)!.directCalls;
-      tail.board.runUntil(TARGET_PS);
-      regular.board.runUntil(TARGET_PS);
-
-      const tailPrefixes = tail.instance.states.get('prefixes') as number;
-      const regularPrefixes = regular.instance.states.get('prefixes') as number;
-      expect(tailPrefixes).toBe(regularPrefixes);
-      expect(tail.instance.states.get('suffixes')).toBe(0);
-      expect(regular.instance.states.get('suffixes')).toBe(regularPrefixes - 1);
-      expect(edgeRecords(tail)).toEqual(edgeRecords(regular));
-      // The empty suffix no longer needs a resumed generated invocation.
-      expect(directJitStats(tail.jit)!.directCalls - tailCalls).toBeLessThan(
-        directJitStats(regular.jit)!.directCalls - regularCalls,
-      );
-    } finally {
-      tail.board.dispose();
-      regular.board.dispose();
     }
   });
 

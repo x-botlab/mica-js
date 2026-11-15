@@ -184,9 +184,6 @@ export interface DirectJitBinding {
  * Runtime host calls available to a direct program. The simulator supplies its instance
  * host; methods retain the generic execution contract, including validation and snapshotting.
  */
-/** Checkpoint at which queued host effects are published. */
-export type DirectJitPublishPhase = 'prefix' | 'suffix' | 'instruction';
-
 export interface DirectJitHost {
   send(name: string, value: unknown): void;
   sample(pin: unknown): unknown;
@@ -196,29 +193,6 @@ export interface DirectJitHost {
   now(): number;
   random(): number;
   assert(condition: unknown, message: unknown): void;
-  /**
-   * Optional synchronous publication checkpoint.
-   *
-   * `prefix` runs before a positive `elapse` only when the instruction's suffix was
-   * proven effect-free (no emitted suffix statements and no `stop`). `suffix` runs
-   * after a resumed suffix; `instruction` runs at an instruction end that changed a
-   * pin intent. For `suffix`, the callback is called even when `publishPending` is
-   * clear, because state/memory effects of the resumed suffix still need the elapsed
-   * stage's commit boundary.
-   *
-   * The callback must commit the frame's dirty state/memory words, set the board time
-   * to `frame.time`, run the normal boundary closure, and leave `frame.publishPending`
-   * clear. It returns `true` when execution must stop and return `"invalidated"`
-   * (code/PC/observer/queue/event-horizon safety failed), or `false` when the generated
-   * program may continue in the same invocation. A callback that returns `false` must
-   * not leave `stopAfterInstruction` set. Without this method (compiler-only frames and
-   * older hosts), the generated code keeps the old return-to-scheduler contract.
-   *
-   * Dirty words are cleared as they commit. If the callback or its boundary throws, the
-   * successfully published prefix remains visible, uncommitted dirty bits stay available
-   * to `run`'s `finally`, and the callback is never retried or replayed.
-   */
-  publish?(phase: DirectJitPublishPhase): boolean;
 }
 
 /** Reusable runtime-owned bank. Flush completed effects even when run throws. */
@@ -252,13 +226,6 @@ export interface DirectJitProgram {
   run(frame: DirectJitFrame, deadline: number): DirectJitReason;
   /** Generated step/resume function groups; one for the monolithic form. */
   readonly shards: number;
-  /**
-   * Continuation IDs whose remaining work is only the elapsed stage: the suffix emitted
-   * no statements and the instruction does not stop. The generated resume stays valid;
-   * a runtime may complete such a stage without re-entering generated code when the
-   * event horizon and target-time rules allow it.
-   */
-  readonly tailResumes: ReadonlySet<number>;
   /** PCs this program compiled, and therefore can execute without the interpreter. */
   readonly pcs: readonly number[];
   readonly localCount: number;

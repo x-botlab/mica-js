@@ -193,7 +193,12 @@ export class Instance {
         return this.readSample(ref);
       },
       intent: (pin, value) => {
-        this.setIntent(pin, value);
+        const target = this.pin(pin);
+        // Reassigning the same immutable intent value is already the current contribution.
+        if (target.intent === value) return;
+        target.intent = value as readonly ResistorBranch[];
+        board.dirtyElectricalSlots.add(board.electricalSlot(target));
+        board.electricalDirty = true;
       },
       resistor: (pin, resistance) => {
         const r = electricalNumber(resistance);
@@ -428,20 +433,6 @@ export class Instance {
     return pin;
   }
   /**
-   * Assign one pin intent and report identity change. The direct host uses the return
-   * value for its publication flag, so a direct intent call resolves the pin only once.
-   */
-  setIntent(ref: unknown, value: unknown): boolean {
-    const target = this.pin(ref);
-    // Reassigning the same immutable intent value is already the current contribution.
-    if (target.intent === value) return false;
-    target.intent = value as readonly ResistorBranch[];
-    const board = this.board;
-    board.dirtyElectricalSlots.add(board.electricalSlot(target));
-    board.electricalDirty = true;
-    return true;
-  }
-  /**
    * One frozen, reusable intent value per (pin, resistance); intents are immutable. The
    * outer map is keyed by pin name and the inner one by resistance, so the hot path builds
    * no key string. Bounds: at most 64 names, and at most 8 resistances per name; a full
@@ -504,23 +495,6 @@ export class Instance {
     if (index !== undefined) this.directBank!.stateValues[index] = captured;
     this.board.invalidate(slot);
   }
-  /**
-   * Dirty-word commit for the runtime-owned direct bank. The value already lives in the
-   * bank array; this keeps the public `states` Map, snapshot semantics and resource
-   * version/observer invalidation without resolving the state name through a Map again.
-   */
-  commitDirectState(layout: DirectJitLayout, index: number): void {
-    const name = layout.stateNames[index]!;
-    const captured = snapshot(layout.stateValues[index]);
-    layout.stateValues[index] = captured;
-    this.states.set(name, captured);
-    this.board.invalidate(layout.stateSlots[index]!);
-  }
-  /** Dirty-word commit for one memory: skip the per-JIT code scan for ordinary memories. */
-  commitDirectMemory(layout: DirectJitLayout, index: number): void {
-    this.board.invalidate(layout.memorySlots[index]!);
-    if (layout.memoryIsCode[index]) this.invalidateCodeMemory(layout.memoryNames[index]!);
-  }
   private stateSlot(name: string): ResourceSlot {
     let slot = this.stateSlots.get(name);
     if (slot === undefined) {
@@ -559,10 +533,6 @@ export class Instance {
   }
   private memoryChangedSlot(name: string, slot: ResourceSlot): void {
     this.board.invalidate(slot);
-    this.invalidateCodeMemory(name);
-  }
-  /** Code-memory replacement invalidates every JIT bound to that memory on this instance. */
-  private invalidateCodeMemory(name: string): void {
     for (const jit of this.jits)
       if (jit.options.code === name) {
         jit.cache.clear();
@@ -571,9 +541,8 @@ export class Instance {
         jit.directProgramRevision = -1;
         jit.directSkip = undefined;
         jit.directMisses = 0;
-        // Keep an outstanding frame/program alive so a prefix/suffix already in flight
-        // completes exactly once; runDirect clears it after the pending instruction ends.
-        if (jit.direct) jit.direct.frame.stopAfterInstruction = true;
+        if (jit.direct?.frame.resume) jit.direct.frame.stopAfterInstruction = true;
+        else jit.direct = undefined;
       }
   }
   /**
@@ -640,24 +609,11 @@ export class Instance {
       let slot: ResourceSlot | undefined;
       const resolve = (): ResourceSlot => (slot ??= this.stateSlot(name));
       const states = this.states;
-      const declaration = this.declarations.get(name);
-      const scalar =
-        declaration?.kind === 'state' &&
-        (declaration.type.kind === 'number' || declaration.type.kind === 'bool');
-      let bank: Pick<DirectJitLayout, 'states' | 'stateValues'> | undefined;
-      let bankIndex = -1;
       return Object.freeze({
         read: () => {
           const current = resolve();
           const dependencies = this.dependencyStack.at(-1);
           if (dependencies) dependencies.set(current, current.version);
-          if (scalar) {
-            if (bank === undefined) {
-              bank = this.directStateBank();
-              bankIndex = bank.states.get(name)!;
-            }
-            if (bankIndex >= 0) return bank.stateValues[bankIndex];
-          }
           return states.get(name);
         },
         write: (value: unknown) => {

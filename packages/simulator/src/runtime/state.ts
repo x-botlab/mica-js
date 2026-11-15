@@ -87,10 +87,7 @@ export interface Reaction {
    * compiler decline and selects the generator fallback.
    */
   synchronousProgram?: SynchronousProgram | null;
-  /**
-   * Bound synchronous runner for this instance. `undefined` means not bound yet;
-   * `null` is unused and reserved for an explicit fallback marker.
-   */
+  /** Bound synchronous runner for this instance; `undefined` until first run. */
   synchronous?: SynchronousRunner | null;
   frame: ReactionFrame | undefined;
 }
@@ -117,14 +114,9 @@ export interface DirectJitLayout {
   readonly states: ReadonlyMap<string, number>;
   /** Instance-owned bank, mirrored by every interpreted/process/reaction state write. */
   readonly stateValues: unknown[];
-  /** Resource slots in bank order, so dirty-word commit never resolves a name again. */
-  readonly stateSlots: readonly ResourceSlot[];
   readonly memories: ReadonlyMap<string, number>;
   readonly memoryBanks: readonly Uint8Array[];
   readonly memoryViews: readonly DataView[];
-  /** Resource slots in bank order; code memories still run the JIT invalidation path. */
-  readonly memorySlots: readonly ResourceSlot[];
-  readonly memoryIsCode: readonly boolean[];
 }
 export type DirectJitCache = ReturnType<
   typeof import('@mica-js/compiler').compileDirectJit.createCache

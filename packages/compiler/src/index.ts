@@ -41,7 +41,6 @@ export type {
   DirectJitFrame,
   DirectJitHost,
   DirectJitProgram,
-  DirectJitPublishPhase,
   DirectJitReason,
   ConstantMaterialization,
   ControlEdge,
