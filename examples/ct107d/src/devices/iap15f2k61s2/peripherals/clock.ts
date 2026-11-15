@@ -103,7 +103,7 @@ export function createClockControl(): Peripheral {
           },
         );
         body.if(
-          body.and(body.not(low), (inner) => wasLow),
+          body.and(body.not(low), () => wasLow),
           (recovered) => {
             setPeriph8(asBody(recovered), LOW_VOLTAGE, 0);
           },

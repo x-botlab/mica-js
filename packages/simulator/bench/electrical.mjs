@@ -1608,7 +1608,7 @@ async function verifyLeafCacheRetention() {
   assert.equal(network.stats.factorizations, 1, 'only the coupled display block owns a matrix');
   display.checkDisplay();
   display.checkLeaves();
-  let displaySamples = [seg0.sample, seg1.sample, common.sample];
+  const displaySamples = [seg0.sample, seg1.sample, common.sample];
   let postLeafFullSolves = 0;
   let referenceReuses = 0;
   let resistanceFactorizations = 0;
@@ -1668,7 +1668,6 @@ async function verifyLeafCacheRetention() {
     'the reference swap reuses exactly one factorization',
   );
   display.checkDisplay();
-  displaySamples = [seg0.sample, seg1.sample, common.sample];
   referenceReuses++;
 
   // A resistance change alters the matrix, so it must produce a new factorization while
@@ -1692,7 +1691,6 @@ async function verifyLeafCacheRetention() {
     'the untouched leaf blocks stay cache hits',
   );
   display.checkDisplay();
-  displaySamples = [seg0.sample, seg1.sample, common.sample];
   resistanceFactorizations++;
 
   display.switchLeaves();
