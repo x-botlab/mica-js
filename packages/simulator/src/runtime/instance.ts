@@ -520,6 +520,8 @@ export class Instance {
         jit.directPrograms.clear();
         jit.directCacheSize = -1;
         jit.directFallbackPcs.clear();
+        jit.directMisses.clear();
+        jit.directRetryPcs.clear();
         jit.directFallbacksExhausted = false;
         if (jit.direct?.frame.resume) jit.direct.frame.stopAfterInstruction = true;
         else jit.direct = undefined;
@@ -927,6 +929,8 @@ export class Instance {
       directPrograms: new Map(),
       direct: undefined,
       directFallbackPcs: new Set(),
+      directMisses: new Map(),
+      directRetryPcs: new Set(),
       directFallbacksExhausted: false,
       pollReads: undefined,
       currentPc: undefined,

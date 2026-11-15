@@ -179,6 +179,8 @@ export interface HarnessResult {
   readonly coldMs: number;
   /** 推进 `milliseconds` 的墙钟时间（不含预热）；未推进时为 0。 */
   readonly wallMs: number;
+  /** 推进 `milliseconds` 的进程 CPU 时间（不含预热）；未推进时为 0。 */
+  readonly cpuMs: number;
 }
 
 interface Fixture {
@@ -356,6 +358,7 @@ export async function run(options: RunOptions = {}): Promise<HarnessResult> {
 
     const coldMs = performance.now() - constructed;
     const started = performance.now();
+    const cpuBefore = process.cpuUsage();
     const whole = Math.floor(milliseconds);
 
     for (let step = 0; step < whole; step += 1) {
@@ -374,6 +377,8 @@ export async function run(options: RunOptions = {}): Promise<HarnessResult> {
     if (remainder > 0) board.runUntil(board.time + remainder);
 
     const wallMs = performance.now() - started;
+    const usage = process.cpuUsage(cpuBefore);
+    const cpuMs = (usage.user + usage.system) / 1000;
     const jit = (board as unknown as { jits?: readonly unknown[] }).jits?.[0] as
       | { direct?: unknown; cache?: Map<number, unknown>; directPrograms?: Map<string, unknown> }
       | undefined;
@@ -400,6 +405,7 @@ export async function run(options: RunOptions = {}): Promise<HarnessResult> {
       },
       coldMs,
       wallMs,
+      cpuMs,
     };
   } finally {
     subscription.dispose();

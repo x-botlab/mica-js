@@ -5,12 +5,13 @@ import {
   SFR_IE,
   SFR_TCON,
   asBody,
+  clearSfrBitLatch,
   latchBitIsSet,
   number,
   periph8,
   sfrBitIsSet,
   setPeriph8,
-  setSfrBit,
+  setSfrBitLatch,
 } from '../kernel/ir';
 import type { Body } from '../kernel/ir';
 import { IRQ_VECTORS, markIrqDirty } from '../kernel/interrupt';
@@ -100,7 +101,7 @@ function sources(): readonly InterruptSource[] {
       priority: { register: 'IP', bit: 0 },
       enabled: (b) => sfrBitIsSet(b, SFR_IE, 0),
       pending: (b) => sfrBitIsSet(b, SFR_TCON, TCON_IE0),
-      acknowledge: (b) => setSfrBit(b, SFR_TCON, TCON_IE0, false),
+      acknowledge: (b) => clearSfrBitLatch(b, SFR_TCON, TCON_IE0),
     },
     {
       id: 'int1',
@@ -109,7 +110,7 @@ function sources(): readonly InterruptSource[] {
       priority: { register: 'IP', bit: 2 },
       enabled: (b) => sfrBitIsSet(b, SFR_IE, 2),
       pending: (b) => sfrBitIsSet(b, SFR_TCON, TCON_IE1),
-      acknowledge: (b) => setSfrBit(b, SFR_TCON, TCON_IE1, false),
+      acknowledge: (b) => clearSfrBitLatch(b, SFR_TCON, TCON_IE1),
     },
     {
       id: 'int2',
@@ -147,7 +148,7 @@ export function createExtint(): Peripheral {
     },
     /** 任一边沿输入使能、或还没建立首个采样基线时才需要推进。 */
     active(b) {
-      return b.or(b.notEqual(types.number, periph8(b, INITIALIZED), number(b, 0)), (inner) => {
+      return b.or(b.equal(types.number, periph8(b, INITIALIZED), number(b, 0)), (inner) => {
         const s = asBody(inner);
 
         return s.or(latchBitIsSet(s, SFR_IE, 0), (next) =>
@@ -202,7 +203,7 @@ export function createExtint(): Peripheral {
 
                 setPeriph8(watching, LEVEL(index), current);
                 watching.if(trigger, (hit) => {
-                  setSfrBit(hit, SFR_TCON, flag, true);
+                  setSfrBitLatch(hit, SFR_TCON, flag);
                   markIrqDirty(hit);
                 });
               } else {

@@ -17,6 +17,7 @@ import {
   SFR_TMOD,
   asBody,
   boolean,
+  cyclePicoseconds,
   number,
   periph8,
   periph16,
@@ -1057,6 +1058,63 @@ export function createUart(): Peripheral {
 
           return s.notEqual(types.number, stages, number(s, 0));
         },
+      );
+    },
+    /**
+     * 空闲 REN 以 1/8 位时间采样 RXD：这是检测起始位所需的安全粒度，而不是把
+     * CPU quantum 当作采样周期。发送或帧内继续保持原来的逐节拍保守服务。
+     */
+    deadline(b) {
+      const txActive = b.notEqual(
+        types.number,
+        b.bitAnd(
+          b.bitOr(periph8(b, UART1.base + FLAGS), periph8(b, UART2.base + FLAGS)),
+          number(b, F_TX_ACTIVE),
+        ),
+        number(b, 0),
+      );
+      const receiving = b.notEqual(
+        types.number,
+        b.bitOr(periph8(b, UART1.base + RX_STAGE), periph8(b, UART2.base + RX_STAGE)),
+        number(b, 0),
+      );
+      const idleRen = (engine: Engine): Value<number> =>
+        b.select(
+          types.number,
+          flagIsSet(b, engine.base, F_REN),
+          (inner) => {
+            const s = asBody(inner);
+            const period = periph16(s, engine.base + BIT_PERIOD);
+            const interval = s.floor(
+              s.divide(s.multiply(period, number(s, cyclePicoseconds())), number(s, 8)),
+            );
+
+            return s.max(interval, number(s, 1));
+          },
+          (inner) => inner.constant(types.number, 0),
+        );
+      const uart1Idle = idleRen(UART1);
+      const uart2Idle = idleRen(UART2);
+      // 0 = 该组没有需求，必须是 min 的单位元；只开一组 REN 时不能被另一组的 0
+      // 吞掉。两组都有需求时取较小的安全采样期限。
+      const idle = b.select(
+        types.number,
+        b.equal(types.number, uart1Idle, number(b, 0)),
+        () => uart2Idle,
+        (inner) =>
+          inner.select(
+            types.number,
+            inner.equal(types.number, uart2Idle, number(asBody(inner), 0)),
+            () => uart1Idle,
+            (deeper) => deeper.min(uart1Idle, uart2Idle),
+          ),
+      );
+
+      return b.select(
+        types.number,
+        b.or(txActive, () => receiving),
+        (inner) => inner.constant(types.number, 1),
+        () => idle,
       );
     },
     interrupts: [

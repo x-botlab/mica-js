@@ -13,7 +13,8 @@ import {
   accumulate,
   advanceDevices,
   buildService,
-  refreshBusy,
+  refreshService,
+  settleBeforeInstruction,
   tickTail,
 } from './kernel/tick';
 import { createPeripherals, SYNC_ON_READ } from './peripherals';
@@ -73,6 +74,15 @@ function createMachine(clock: Clock): Machine {
 
   for (const peripheral of peripherals) irq.register(...(peripheral.interrupts ?? []));
 
+  const timedReads = new Set<number>(SYNC_ON_READ);
+  const timedWrites = new Set<number>();
+  for (const peripheral of peripherals)
+    if (peripheral.id !== 'ports')
+      for (const address of peripheral.writes ?? []) timedWrites.add(address);
+  // 中断允许/优先级写入会改变可响应性与期限重算时机；它们不在外设 writes 里。
+  for (const address of [0xa8, 0xb5, 0xb6, 0xb7, 0xb8]) timedWrites.add(address);
+
+  let accessProbe: { reads: Set<number>; writes: Set<number> } | undefined;
   const machine: Machine = {
     clockFrequency: clock.frequency,
     cyclePs: clock.cyclePs,
@@ -81,15 +91,37 @@ function createMachine(clock: Clock): Machine {
     irq,
     peripherals,
     ports: { readPort, readPin },
+    timedReads,
+    timedWrites,
+    beginAccessProbe() {
+      accessProbe = { reads: new Set(), writes: new Set() };
+    },
+    endAccessProbe() {
+      const probe = accessProbe ?? { reads: new Set<number>(), writes: new Set<number>() };
+
+      accessProbe = undefined;
+
+      return probe;
+    },
+    noteSfrRead(address) {
+      if (sfr.withinHook) return;
+
+      accessProbe?.reads.add(address & 0xff);
+    },
+    noteSfrWrite(address) {
+      if (sfr.withinHook) return;
+
+      accessProbe?.writes.add(address & 0xff);
+    },
   };
 
-  // 外设 SFR 写入后立即重算活动门控：门控因此总是最新的，空闲的节拍点不必进服务块。
-  // 端口锁存/口模式不参与任何外设的 `active` 条件，写端口时重算只会把整段门控表达式
-  // 展开进每个端口写块；这里跳过 ports，端口写入只重算引脚意图。
+  // 外设 SFR 写入后立即重算活动门控与期限：门控/期限因此总是最新的，空闲的节拍点
+  // 不必进服务块。端口锁存/口模式不参与，写端口时重算只会把整段门控表达式展开进
+  // 每个端口写块；这里跳过 ports，端口写入只重算引脚意图。
   for (const peripheral of peripherals)
     if (peripheral.id !== 'ports')
       for (const address of peripheral.writes ?? [])
-        sfr.onWrite(address, (b) => refreshBusy(machine, b));
+        sfr.onWrite(address, (b) => refreshService(machine, b));
 
   // 读外设状态之前先把累积的时间推进给外设，避免读到最多一个节拍的旧值。
   sfr.synchronize = (b, address) => {
@@ -230,16 +262,41 @@ function translateInstruction(
   const tick = ticksAt(code, pc);
 
   return activateMachine(machine, () => {
-    const builder = createJitBlockBuilder();
+    const build = (settle: boolean): BlockIR => {
+      const builder = createJitBlockBuilder();
 
-    builder.instruction({ pc, nextPc: (pc + instruction.size) & 0xffff }, (body) => {
-      instruction.emit(body);
-      body.elapse(instruction.cycles * cyclePs);
-      if (tick) tickTail(machine, body, instruction.cycles * cyclePs);
-      else accumulate(body, instruction.cycles * cyclePs);
-    });
+      builder.instruction({ pc, nextPc: (pc + instruction.size) & 0xffff }, (body) => {
+        // 读-改-写必须先结算，再读旧字节。指令体内部不再重复触发展开式读同步；
+        // 非时间 SFR 的普通读仍然保持零开销。
+        if (settle) settleBeforeInstruction(machine, body);
+        machine.sfr.muted(() => instruction.emit(body));
+        body.elapse(instruction.cycles * cyclePs);
+        if (tick) tickTail(machine, body, instruction.cycles * cyclePs);
+        else accumulate(body, instruction.cycles * cyclePs);
+      });
 
-    return builder.finish();
+      return builder.finish();
+    };
+
+    // 先用真实指令体生成一次，并记录实际访问的 SFR；只有确实访问时间相关 SFR
+    // 才丢弃草案、带结算重建。端口写/纯算术等绝大多数块因此只翻译一次。
+    machine.beginAccessProbe();
+
+    let draft: BlockIR;
+    let access: ReturnType<Machine['endAccessProbe']>;
+
+    try {
+      draft = build(false);
+    } finally {
+      access = machine.endAccessProbe();
+    }
+
+    let settle = false;
+
+    for (const address of access.reads) if (machine.timedReads.has(address)) settle = true;
+    for (const address of access.writes) if (machine.timedWrites.has(address)) settle = true;
+
+    return settle ? build(true) : draft;
   });
 }
 

@@ -79,6 +79,7 @@ export interface ElectricalStats {
   readonly floatingComponents: number;
   readonly factorizations: number;
   readonly factorizationReuses: number;
+  /** Block results served from a cache entry, including one retained across a rebuild. */
   readonly cacheHits: number;
   /** Distinct `(pin, target, resistance)` leaf shapes admitted for reuse. */
   readonly leafPlans: number;
@@ -153,6 +154,10 @@ interface Factorization {
 }
 
 interface CachedComponent {
+  /** Node layout the entry was solved for; equal slots mean the same equation order. */
+  readonly nodes: readonly number[];
+  /** Fixed potential per layout slot; `undefined` marks that slot's node as unknown. */
+  readonly references: readonly (number | undefined)[];
   readonly edges: readonly Edge[];
   readonly voltages: readonly (number | null)[];
   readonly factorization: Factorization | undefined;
@@ -450,8 +455,21 @@ function arraysEqual(first: Float64Array, second: Float64Array): boolean {
   return true;
 }
 
-function sameConfiguration(previous: CachedComponent, component: Component): boolean {
-  if (previous.edges.length !== component.edges.length) return false;
+function sameConfiguration(
+  previous: CachedComponent,
+  component: Component,
+  nodes: readonly Node[],
+): boolean {
+  const layout = component.nodes;
+  if (previous.nodes.length !== layout.length || previous.edges.length !== component.edges.length)
+    return false;
+  for (let index = 0; index < layout.length; index++) {
+    const node = layout[index]!;
+    if (previous.nodes[index] !== node) return false;
+    // A cached voltage belongs to one fixed-potential assignment, and the unknown set is
+    // exactly the subset without a reference. Both are revalidated instead of assumed.
+    if (!Object.is(previous.references[index], nodes[node]!.reference)) return false;
+  }
   for (let index = 0; index < previous.edges.length; index++) {
     const edge = previous.edges[index]!;
     const other = component.edges[index]!;
@@ -1058,7 +1076,7 @@ export function createElectricalNetwork(
     }
     // Only the matrix partition is bypassed. The component arrays above were updated in
     // place and the buckets follow the committed edges, so the next general solve rebuilds
-    // blocks from pinEdges without discarding the admitted graphs.
+    // blocks from pinEdges without discarding the admitted graphs or the numerical cache.
     blocksStale = true;
     statistics.solves++;
     statistics.leafPropagations++;
@@ -1262,10 +1280,10 @@ export function createElectricalNetwork(
       return changedSlots.length === 0 ? emptySlots : changedSlots;
     }
     if (blocksStale) {
-      // The partition is rebuilt from pinEdges, but the buckets survive: the pin hashes
-      // already describe the committed leaf edges, so admitted graphs stay reusable.
-      blocksStale = false;
-      cache = new Map();
+      // The partition is rebuilt from pinEdges, but neither the buckets nor the numerical
+      // cache is discarded. Every retained entry is revalidated by layout, fixed
+      // potentials, edges and resistance before reuse, and its factorization is reused
+      // only when the normalized matrix and anchors are identical.
       topologyChanged = true;
     }
     const updated = updatedSlots.length;
@@ -1337,7 +1355,7 @@ export function createElectricalNetwork(
     for (const block of topologyChanged ? topology!.blocks : dirtyBlocks.values()) {
       const { component, key } = block;
       const previous = cache.get(key);
-      if (previous !== undefined && sameConfiguration(previous, component)) {
+      if (previous !== undefined && sameConfiguration(previous, component, nodes)) {
         cacheHits++;
         (nextCache ??= new Map()).set(key, previous);
         continue;
@@ -1443,6 +1461,8 @@ export function createElectricalNetwork(
         }
       }
       const entry: CachedComponent = {
+        nodes: component.nodes,
+        references: component.nodes.map((node) => nodes[node]!.reference),
         edges: component.edges,
         voltages: component.nodes.map((node) => voltages.get(node)!),
         factorization,
@@ -1504,6 +1524,9 @@ export function createElectricalNetwork(
     }
     prepared = topology!;
     componentArraysOwned = false;
+    // A rejected solve leaves the stale flag set, so a retry rebuilds and revalidates the
+    // partition instead of trusting blocks it never committed.
+    blocksStale = false;
     if (topologyChanged) {
       const admitted: TopologySnapshot =
         restored !== undefined && topology === restored.topology

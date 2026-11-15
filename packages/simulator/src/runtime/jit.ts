@@ -5,11 +5,7 @@ import {
   type DirectJitProgram,
   type ExecutionSignal,
 } from '@mica-js/compiler';
-import {
-  createJitBlockBuilder,
-  type RegionIR,
-  validateBoundBlockIR,
-} from '@mica-js/device-model';
+import { createJitBlockBuilder, type RegionIR, validateBoundBlockIR } from '@mica-js/device-model';
 import { isPollingInstruction } from '../polling';
 import type { EventQueue } from '../queue';
 import { acceptSync } from './errors';
@@ -36,6 +32,11 @@ export interface DirectJitStats {
   directFallbacks: number;
   directDeadlines: number;
   directStopped: number;
+  /**
+   * Recursive static pin-effect scans. Summaries are cached per translated IR, so this only
+   * counts newly translated bodies and must not grow with steady fallbacks or observer churn.
+   */
+  directPinScans: number;
 }
 
 type CountedJit = Jit & { directStats?: DirectJitStats };
@@ -74,6 +75,7 @@ function directStats(jit: Jit): DirectJitStats {
     directFallbacks: 0,
     directDeadlines: 0,
     directStopped: 0,
+    directPinScans: 0,
   });
 }
 
@@ -208,32 +210,55 @@ function directHost(
   };
 }
 
-function hasPinIntent(region: RegionIR): boolean {
+/**
+ * Static pin-effect summaries keyed by the translated IR object itself. A body belongs to one
+ * code version, so re-translation after invalidation produces new keys and can never read a
+ * stale summary; the weak key lets the summary die with the instruction cache instead of
+ * growing per PC or per fallback.
+ */
+const pinIntentSummaries = new WeakMap<RegionIR, boolean>();
+
+/** One recursive walk over a body; the cached wrapper below pays for it at most once. */
+function scanPinIntent(region: RegionIR): boolean {
   return region.operations.some((operation) => {
     switch (operation.kind) {
       case 'writeIntent':
         return true;
       case 'if':
         return (
-          hasPinIntent(operation.yes) ||
-          (operation.no !== undefined && hasPinIntent(operation.no))
+          scanPinIntent(operation.yes) ||
+          (operation.no !== undefined && scanPinIntent(operation.no))
         );
       case 'match':
         return (
-          operation.arms.some((arm) => hasPinIntent(arm.body)) ||
-          (operation.otherwise !== undefined && hasPinIntent(operation.otherwise))
+          operation.arms.some((arm) => scanPinIntent(arm.body)) ||
+          (operation.otherwise !== undefined && scanPinIntent(operation.otherwise))
         );
       case 'select':
-        return hasPinIntent(operation.yes.body) || hasPinIntent(operation.no.body);
+        return scanPinIntent(operation.yes.body) || scanPinIntent(operation.no.body);
       case 'and':
       case 'or':
-        return hasPinIntent(operation.right.body);
+        return scanPinIntent(operation.right.body);
       case 'while':
-        return hasPinIntent(operation.test.body) || hasPinIntent(operation.body);
+        return scanPinIntent(operation.test.body) || scanPinIntent(operation.body);
       default:
         return false;
     }
   });
+}
+
+/**
+ * Static effect summary of one translated body: whether it can write a pin intent anywhere in
+ * its region tree. Compilation and every fallback/probe read this instead of re-walking the
+ * same immutable IR; observer sets, code revision and pending continuations stay dynamic.
+ */
+function pinIntent(jit: Jit, region: RegionIR): boolean {
+  const cached = pinIntentSummaries.get(region);
+  if (cached !== undefined) return cached;
+  directStats(jit).directPinScans++;
+  const summary = scanPinIntent(region);
+  pinIntentSummaries.set(region, summary);
+  return summary;
 }
 
 function createDirectFrame(
@@ -293,11 +318,16 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
       const memoryNames = [...instance.memories.keys()];
       const states = new Map(stateNames.map((name, index) => [name, index]));
       const memories = new Map(memoryNames.map((name, index) => [name, index]));
+      const excludedPcs = new Set<number>();
+      for (const instruction of jit.cache.values())
+        if (
+          instruction.polling ||
+          jit.polling.has(instruction.pc) ||
+          pinIntent(jit, instruction.body)
+        )
+          excludedPcs.add(instruction.pc);
       const instructions = [...jit.cache.values()].filter(
-        (instruction) =>
-          !instruction.polling &&
-          !jit.polling.has(instruction.pc) &&
-          !hasPinIntent(instruction.body),
+        (instruction) => !excludedPcs.has(instruction.pc),
       );
       /** Declared busy-wait heads fold their remaining rounds inside the emitted body. */
       const delayLoops = new Map<number, { counter: number; cycles: number }>();
@@ -327,10 +357,20 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
             program,
             stateReads: program.readStates.map((name) => [name, states.get(name)!] as const),
             stateWrites: program.writeStates.map((name) => [name, states.get(name)!] as const),
-            memoryWrites: program.writeMemories.map(
-              (name) => [name, memories.get(name)!] as const,
-            ),
+            memoryWrites: program.writeMemories.map((name) => [name, memories.get(name)!] as const),
             revision: jit.revision,
+            pcs: new Set(program.instructionPcs),
+            // A pure cached PC absent from the emitted program was considered by the
+            // compiler and declined; never probe it through the late-PC retry path.
+            unsupportedPcs: new Set(
+              [...jit.cache.values()]
+                .filter(
+                  (instruction) =>
+                    !excludedPcs.has(instruction.pc) &&
+                    !program.instructionPcs.includes(instruction.pc),
+                )
+                .map((instruction) => instruction.pc),
+            ),
             frame: createDirectFrame(board, instance, stateNames, memoryNames, program, barrier),
           }
         : undefined;
@@ -376,11 +416,44 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   if (reason === 'fallback') {
     stats.directFallbacks++;
     const pc = finite(instance.states.get(jit.options.pc), 'pc');
-    jit.directFallbackPcs.add(pc);
+    const entry = jit.cache.get(pc);
+    const excluded =
+      entry === undefined || entry.polling || jit.polling.has(pc) || pinIntent(jit, entry.body);
+    const directHasPc = direct.pcs.has(pc);
+
+    if (direct.unsupportedPcs.has(pc)) {
+      // The previous build already saw this pure PC and the compiler declined it. Do not
+      // probe/rebuild on every fallback; it stays interpreted until code revision changes.
+      jit.directFallbackPcs.add(pc);
+    } else if (!directHasPc && !excluded) {
+      // A hot pure PC can be missing because the program was built before its block was
+      // translated (the rebuild threshold is 16 new instructions). Defer the first miss:
+      // one-shot late PCs must not rebuild the whole dispatcher, while a PC that keeps
+      // falling back is retried once. A retry still missing it treats it as unsupported.
+      const misses = (jit.directMisses.get(pc) ?? 0) + 1;
+      jit.directMisses.set(pc, misses);
+      const canGrow =
+        jit.directCacheSize !== jit.cache.size && jit.cache.size >= DIRECT_JIT_INITIAL_INSTRUCTIONS;
+      if (misses >= 2 && !jit.directRetryPcs.has(pc) && canGrow) {
+        jit.directRetryPcs.add(pc);
+        jit.directCacheSize = -1;
+        jit.directFallbackPcs.clear();
+        jit.directFallbacksExhausted = false;
+      } else if (jit.directRetryPcs.has(pc)) {
+        // The rebuilt program still lacks this pure block: cache it as unsupported.
+        jit.directFallbackPcs.add(pc);
+      }
+      // Otherwise leave the PC out of the fallback set so the next hit can observe cache
+      // growth before deciding to rebuild.
+    } else {
+      jit.directFallbackPcs.add(pc);
+    }
     frame.fallbackPcs = jit.directFallbackPcs;
-    if (direct.program.instructionPcs.every((instructionPc) =>
-      jit.directFallbackPcs.has(instructionPc),
-    ))
+    if (
+      direct.program.instructionPcs.every((instructionPc) =>
+        jit.directFallbackPcs.has(instructionPc),
+      )
+    )
       jit.directFallbacksExhausted = true;
     if (board.time === start && board.time < board.executionEnd) return false;
   } else if (reason === 'stopped') {
@@ -555,6 +628,8 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
         for (let index = instructions.length - 1; index >= 0; index--) {
           const entry = instructions[index]!;
           jit.cache.set(entry.pc, entry);
+          jit.directMisses.delete(entry.pc);
+          jit.directRetryPcs.delete(entry.pc);
         }
         jit.directFallbackPcs.clear();
         jit.directFallbacksExhausted = false;

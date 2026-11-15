@@ -34,6 +34,16 @@ const BUSY = TICK_BASE;
 const SAVED_LOW = TICK_BASE + 1;
 const SAVED_HIGH = TICK_BASE + 2;
 
+/** 服务期限 state：初始 0，1 表示下一节拍点服务，正数为相对上次结算的 ps。 */
+export const SERVICE_DEADLINE = 'serviceDeadline';
+/**
+ * `refreshService` 合并期限时使用的「无期限」哨兵。
+ *
+ * 必须大于所有外设可能返回的正期限。当前最长的是 1 MHz、12T、16 位定时器的
+ * 65536 × 12 × 10^6 = 786432000000 ps；1e15 仍在安全整数范围内。
+ */
+const NO_SERVICE_DEADLINE = 1_000_000_000_000_000;
+
 const nonZero = (b: Body, value: Value<number>): Value<boolean> =>
   b.notEqual(types.number, value, number(b, 0));
 
@@ -49,27 +59,36 @@ const savedPc = (b: Body): Value<number> =>
  */
 export function tickTail(machine: Machine, b: Body, cyclesPs: number): void {
   const pending = b.add(b.readState(CLOCK, types.number), number(b, cyclesPs));
-  // 直接后端没有 `and`/`or` 短路口，这里用按位或把两个字节合成一个判断。
-  const urgent = b.notEqual(
-    types.number,
-    b.bitOr(b.load8(PERIPH, number(b, IRQ_DIRTY)), b.load8(PERIPH, number(b, BUSY))),
-    number(b, 0),
-  );
-
+  const irq = b.load8(PERIPH, number(b, IRQ_DIRTY));
+  const busy = b.load8(PERIPH, number(b, BUSY));
+  // 只有 IRQ 脏或外设活跃时才需要看期限。空闲轮询路径在 gate==0 处短路，
+  // 不读 state、不做时间比较，也不写非零时间；动态成本与旧实现基本一致。
   b.if(
-    urgent,
-    (service) => {
-      const s = asBody(service);
-      const next = s.readState(machine.pcState, types.number);
+    b.notEqual(types.number, b.bitOr(irq, busy), number(b, 0)),
+    (working) => {
+      const w = asBody(working);
+      const urgent = w.or(w.notEqual(types.number, irq, number(w, 0)), (inner) =>
+        asBody(inner).greaterThanOrEqual(
+          pending,
+          asBody(inner).readState(SERVICE_DEADLINE, types.number),
+        ),
+      );
 
-      s.writeState(CLOCK, pending);
-      setPeriph8(s, SAVED_LOW, next);
-      setPeriph8(s, SAVED_HIGH, s.shiftRightUnsigned(next, number(s, 8)));
-      s.writeState(machine.pcState, number(s, SERVICE_PC));
+      w.if(
+        urgent,
+        (service) => {
+          const s = asBody(service);
+          const next = s.readState(machine.pcState, types.number);
+
+          s.writeState(CLOCK, pending);
+          setPeriph8(s, SAVED_LOW, next);
+          setPeriph8(s, SAVED_HIGH, s.shiftRightUnsigned(next, number(s, 8)));
+          s.writeState(machine.pcState, number(s, SERVICE_PC));
+        },
+        (keeping) => asBody(keeping).writeState(CLOCK, pending),
+      );
     },
-    (idle) => {
-      asBody(idle).writeState(CLOCK, number(asBody(idle), 0));
-    },
+    (quiet) => asBody(quiet).writeState(CLOCK, number(asBody(quiet), 0)),
   );
 }
 
@@ -79,32 +98,70 @@ export function accumulate(b: Body, cyclesPs: number): void {
 }
 
 /**
- * 重算活动门控：任一外设「可能自行变化」时置 1。
+ * 重算活动门控与服务期限。
  *
- * 外设 SFR 写入后与每次推进后各算一次。写入时算一次是为了让门控立刻反映新的使能位，
- * 空闲时就不必每个节拍都进服务块；推进后算一次是因为推进本身可能让外设转入或退出活动。
+ * `BUSY` 只表示「是否必须保留待推进时间」；`serviceDeadline` 才表示「何时必须进服务块」。
+ * 活跃但没有期限能力的外设按原粒度服务（期限 1），避免把采样敏感路径（串口输入、
+ * 外部中断、GATE/外部计数、PCA 捕获等）误当成可以跨过的纯计数。
+ *
+ * 外设 SFR 写入后与每次推进后各算一次。写入时算一次是为了让门控和期限立刻反映新的
+ * 配置；推进后算一次是因为推进本身可能让外设转入或退出活动。
  */
-export function refreshBusy(machine: Machine, b: Body): void {
+export function refreshService(machine: Machine, b: Body): void {
+  // 推进代码内部可能通过 SFR 写钩子再次触发；统一结算结束后由 advanceDevices 调用一次。
+  if (advancing > 0) return;
+
   const one = number(b, 1);
   const zero = number(b, 0);
+  const sentinel = number(b, NO_SERVICE_DEADLINE);
   let busy = zero;
+  let forced = b.constant(types.bool, false);
 
   for (const peripheral of machine.peripherals) {
     const active = peripheral.active?.(b);
 
-    if (active !== undefined)
-      busy = b.bitOr(
-        busy,
-        b.select(
-          types.number,
-          active,
-          () => one,
-          () => zero,
-        ),
-      );
+    if (active === undefined) continue;
+
+    busy = b.bitOr(
+      busy,
+      b.select(
+        types.number,
+        active,
+        () => one,
+        () => zero,
+      ),
+    );
+    if (peripheral.deadline === undefined) forced = b.or(forced, () => active);
   }
 
   setPeriph8(b, BUSY, busy);
+  b.if(
+    forced,
+    (now) => asBody(now).writeState(SERVICE_DEADLINE, one),
+    (rest) => {
+      const r = asBody(rest);
+      const none = number(r, 0);
+      let best = sentinel;
+
+      for (const peripheral of machine.peripherals) {
+        if (peripheral.deadline === undefined) continue;
+
+        const candidate = peripheral.deadline(r);
+        const normalized = r.select(
+          types.number,
+          r.equal(types.number, candidate, none),
+          () => sentinel,
+          () => candidate,
+        );
+
+        best = r.min(best, normalized);
+      }
+
+      // 没有定时服务时写哨兵而不是 0：tickTail 只做 `pending >= deadline`，
+      // 不再为每个节拍点额外判断“是否没有期限”。
+      r.writeState(SERVICE_DEADLINE, best);
+    },
+  );
 }
 
 /**
@@ -161,9 +218,28 @@ export function advanceDevices(machine: Machine, b: Body): void {
       b.if(b.greaterThan(pending, number(b, 0)), (step) => {
         for (const peripheral of machine.peripherals) peripheral.advance(asBody(step), advance);
       });
-      refreshBusy(machine, b);
     });
   } finally {
     advancing -= 1;
   }
+
+  // 推进期间外设写钩子里的 refreshService 被 advancing 门控跳过；这里统一重算一次。
+  machine.sfr.muted(() => refreshService(machine, b));
+}
+
+/**
+ * 时间相关 SFR 访问前的结算。
+ *
+ * 必须在指令体第一次读锁存器之前调用：`writeBit`/`ANL TCON` 这类读-改-写会先读旧字节，
+ * 若等到写钩子才结算，硬件在结算中置起的 TF 等标志会被旧字节回写覆盖。`clockPs` 为 0
+ * 时不生成推进分支，普通 ACC/PSW 访问不会走到这里。
+ */
+export function settleBeforeInstruction(machine: Machine, b: Body): void {
+  if (advancing > 0) return;
+
+  const pending = b.readState(CLOCK, types.number);
+
+  b.if(b.greaterThan(pending, number(b, 0)), (step) => {
+    advanceDevices(machine, asBody(step));
+  });
 }

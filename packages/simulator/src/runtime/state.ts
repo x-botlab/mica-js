@@ -96,6 +96,10 @@ export interface DirectExecution {
   readonly stateWrites: readonly (readonly [string, number])[];
   readonly memoryWrites: readonly (readonly [string, number])[];
   readonly revision: number;
+  /** PCs this program can execute; misses are candidates for a lazy rebuild. */
+  readonly pcs: ReadonlySet<number>;
+  /** Pure cached PCs the compiler already considered and declined for this build. */
+  readonly unsupportedPcs: ReadonlySet<number>;
 }
 export interface Jit {
   readonly instance: Instance;
@@ -113,6 +117,10 @@ export interface Jit {
   readonly directPrograms: Map<string, DirectExecution | undefined>;
   direct: DirectExecution | undefined;
   readonly directFallbackPcs: Set<number>;
+  /** Missing pure PCs observed since their block was translated; retry on the second hit. */
+  readonly directMisses: Map<number, number>;
+  /** Missing PCs already retried at the current code revision. */
+  readonly directRetryPcs: Set<number>;
   directFallbacksExhausted: boolean;
   pollReads: Dependencies | undefined;
   currentPc: number | undefined;
