@@ -10,11 +10,12 @@ import type { DeviceIR } from '@mica-js/sdk/model';
 import type { DeviceContext } from '@mica-js/simulator/device';
 
 /**
- * 整板基准夹具：按 `ct107d.sch` 的网表装配 51 颗器件，器件行为来自
- * `examples/devices/dist/<id>/model.js`。
+ * Test-only discrete oracle: assemble the historical 54-device board from
+ * `ct107d.sch` and `examples/devices/dist/<id>/model.js`.
  *
- * 统一器件包通过显式旧消费投影接入：清单投影成旧符号/端口，模型事件映射回旧话题；
- * 这不是融合运行时，也不把旧 `.sch v1` 当作 RFC 0024 文档。
+ * This fixture is intentionally not used by the fused performance benchmark. It keeps
+ * the legacy projection so correctness tests can compare the fused device against the
+ * independent device graph; it is not a runtime for the fused device package.
  */
 
 const PROJECT = join(import.meta.dirname, '..');
@@ -101,8 +102,20 @@ const modules = new Map<string, Promise<DeviceModule>>();
 const eventTopic = (name: string): string => name.slice(5, 6).toLowerCase() + name.slice(6);
 
 function legacyEvents(manifest: Manifest): Record<string, string> {
+  // A unified device can expose an input method and an output event under the same legacy
+  // topic (`push-button` has `press` for both). Bridging the event back into the input
+  // creates a self-feeding queue, so colliding events use their output state topic.
+  const aliases: Record<string, Record<string, string>> = {
+    'push-button': { onDidPress: 'pressed' },
+  };
+  const inputs = new Set(Object.keys(legacyInputs(manifest)));
+  const table = aliases[manifest.name] ?? {};
   return Object.fromEntries(
-    Object.keys(manifest.model?.events ?? {}).map((name) => [name, eventTopic(name)]),
+    Object.keys(manifest.model?.events ?? {}).map((name) => {
+      const topic = table[name] ?? eventTopic(name);
+
+      return [name, inputs.has(topic) ? `${topic}State` : topic];
+    }),
   );
 }
 
@@ -232,6 +245,7 @@ export interface BoardOptions {
 export interface BenchBoard {
   readonly board: {
     readonly time: number;
+    readonly status: string;
     readonly topics: {
       onDidReceive(listener: (message: { topic: string; payload: unknown }) => unknown): {
         dispose(): void;
@@ -258,6 +272,8 @@ export interface BenchBoard {
   readonly topicOrigin: () => string | undefined;
   /** 原理图、固件与所有器件产物的哈希清单；`source` 标明取自 `dist`（统一器件包）。 */
   readonly fingerprints: BoardFingerprints;
+  /** 测试专用：按位号向某个器件的输入通道注入值。 */
+  sendInput(designator: string, channel: string, value: unknown): boolean;
   dispose(): void;
 }
 
@@ -334,10 +350,15 @@ export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoa
   const { components, nets, designators, deviceTypes } = await describeBoard();
   const faults: string[] = [];
   const entries: DeviceLibraryEntry[] = [];
+  /** Instance ID → input channels, captured at factory time for test-only injection. */
+  const inputsByInstance = new Map<
+    string,
+    Readonly<Record<string, { send(value: unknown): void }>>
+  >();
 
   for (const component of components) {
     const device = await loadDevice(component.device);
-    const create =
+    const baseCreate =
       device.firmware === undefined
         ? device.create
         : (context: DeviceContext) =>
@@ -354,6 +375,14 @@ export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoa
                 ]),
               },
             });
+    const create = (context: DeviceContext) => {
+      inputsByInstance.set(
+        component.id,
+        (context as unknown as { inputs: Readonly<Record<string, { send(value: unknown): void }>> })
+          .inputs,
+      );
+      return baseCreate(context);
+    };
 
     entries.push({
       id: component.id,
@@ -421,6 +450,16 @@ export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoa
       return runtime.current?.id;
     },
     fingerprints,
+    sendInput(designator, channel, value) {
+      const component = components.find(
+        (candidate) => designators.get(candidate.id) === designator,
+      );
+      const input =
+        component === undefined ? undefined : inputsByInstance.get(component.id)?.[channel];
+      if (input === undefined) return false;
+      input.send(value);
+      return true;
+    },
     dispose() {
       subscription.dispose();
       board.dispose();

@@ -72,51 +72,32 @@ function glyph(mask: number): string {
 
 function displayText(
   topics: Readonly<Record<string, string>>,
-  result: Pick<MeasureResult, 'instanceDesignators'>,
+  _result: Pick<MeasureResult, 'instanceDesignators'>,
   designator: string,
 ): string {
   return `${[1, 2, 3, 4]
-    .map((index) =>
-      glyph(Number(topicValue(topics, result, designator, `digit${index}`) ?? Number.NaN)),
-    )
+    .map((index) => glyph(Number(topicValue(topics, designator, `digit${index}`) ?? Number.NaN)))
     .join('')}`;
 }
 
-/** 位号只是辅助标签；按它找实例 ID，再拼「实例 ID/端口」唯一键。 */
-function instanceIdsByDesignator(
-  result: Pick<MeasureResult, 'instanceDesignators'>,
-  designator: string,
-): readonly string[] {
-  return Object.entries(result.instanceDesignators)
-    .filter(([, value]) => value === designator)
-    .map(([instanceId]) => instanceId)
-    .sort();
-}
-
+/** The fused device publishes `designator/port` directly; there is no fake instance ID. */
 function topicValue(
   topics: Readonly<Record<string, string>>,
-  result: Pick<MeasureResult, 'instanceDesignators'>,
   designator: string,
   port: string,
 ): string | undefined {
-  for (const instanceId of instanceIdsByDesignator(result, designator)) {
-    const value = topics[`${instanceId}/${port}`];
-
-    if (value !== undefined) return value;
-  }
-
-  return undefined;
+  return topics[`${designator}/${port}`];
 }
 
 function topicKeysForDesignator(
   topics: Readonly<Record<string, string>>,
-  result: Pick<MeasureResult, 'instanceDesignators'>,
+  _result: Pick<MeasureResult, 'instanceDesignators'>,
   designator: string,
   port: string,
 ): readonly string[] {
-  return instanceIdsByDesignator(result, designator)
-    .map((instanceId) => `${instanceId}/${port}`)
-    .filter((key) => Object.hasOwn(topics, key));
+  const key = `${designator}/${port}`;
+
+  return Object.hasOwn(topics, key) ? [key] : [];
 }
 
 /** 八位数码管：两块 seg4 的 4 位字形。 */
@@ -178,6 +159,8 @@ function baselineSummary(result: MeasureResult): Record<string, unknown> {
     clockFrequency: result.clockFrequency,
     devices: result.devices,
     nets: result.nets,
+    instances: result.instances,
+    jits: result.jits,
     warmUpMs: result.warmUpMs,
     simMs: result.simMs,
     tickMs: result.tickMs,
@@ -297,21 +280,18 @@ describe('CT107D 实际预览固件基准', () => {
       topicKeysForDesignator(result.topicFinalTopics, result, 'U24', 'enabled').length,
     ).toBeGreaterThan(0);
 
-    // 每个话题键的实例段都必须是真实实例 ID；位号（DS1/U7…）不能当唯一键。
+    // 融合器件的身份是板块 payload 里的位号，不是伪造的 54 个实例 ID。
     for (const key of Object.keys(result.topicFinalTopics)) {
-      const instanceId = key.slice(0, key.lastIndexOf('/'));
+      const designator = key.slice(0, key.lastIndexOf('/'));
 
-      expect(instanceId).not.toBe('');
-      expect(instanceId).not.toBe('DS1');
-      expect(instanceId).not.toBe('U7');
-      if (instanceId === '@host') continue;
-      expect(result.instanceDesignators[instanceId]).toBeDefined();
+      expect(designator).not.toBe('');
+      expect(designator).not.toContain('/');
     }
 
-    // 旧键只有裸端口名，会覆盖同名器件；新键用「实例 ID/端口」。
+    // 裸端口键仍只作为旧口径保留；新键带显式位号。
     expect(Object.hasOwn(result.topicFinalTopics, 'latch')).toBe(false);
     expect(Object.hasOwn(result.topicFinalTopics, 'digit1')).toBe(false);
-    expect(Object.hasOwn(result.topicFinalTopics, 'DS1/digit1')).toBe(false);
+    expect(Object.hasOwn(result.topicFinalTopics, 'DS1/digit1')).toBe(true);
     expect(Object.hasOwn(result.topicFinalPorts, 'latch')).toBe(true);
 
     // 基准夹具与浏览器核对同一批构建产物。
@@ -321,11 +301,17 @@ describe('CT107D 实际预览固件基准', () => {
       createHash('sha256').update(readFileSync(SCHEMATIC_PATH)).digest('hex'),
     );
     for (const digest of [
-      result.fingerprints.models,
-      result.fingerprints.code,
-      result.fingerprints.definitions,
+      result.fingerprints.model,
+      result.fingerprints.manifest,
+      result.fingerprints.generatedModel,
     ])
       expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.devices).toBe(1);
+    expect(result.nets).toBe(2);
+    expect(result.instances).toBe(1);
+    expect(result.jits).toBe(1);
+    expect(result.solves).toBe(0);
+    expect(result.topicMessages).toBeGreaterThan(0);
 
     // 八位显示（两块 4 位）在窗口内可观测，且字形全部可解码。
     for (const designator of DISPLAYS) {
@@ -437,7 +423,7 @@ describe('CT107D 实际预览固件基准', () => {
       expect(
         topicKeysForDesignator(result.topicFinalTopics, result, 'DS2', 'digit4').length,
       ).toBeGreaterThan(0);
-      expect(result.topicFinalTopics['DS1/digit1']).toBeUndefined();
+      expect(result.topicFinalTopics['DS1/digit1']).toBeDefined();
       expect(result.topicFinalTopics['latch']).toBeUndefined();
       expect(result.fingerprints.source).toBe('dist');
     }

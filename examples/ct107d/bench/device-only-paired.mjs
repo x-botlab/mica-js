@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 /**
+ * CT107D 器件侧配对工具（不是融合整板基准）。它通过 legacy 整板联调对比 HEAD 与工作树
+ * 的器件库源码；融合器件的正式性能基准是 `bench/perf.test.ts` + `bench/preview.test.ts`。
+ *
  * CT107D 器件侧配对基准：固定当前引擎、原理图与两套固件，AB/BA 交替对比 HEAD 与工作树器件。
  * HEAD 用 `git ls-tree` + `git show <commit>:<path>` 导出 `examples/devices` 的统一包根；
  * worktree 复制当前 `examples/devices`。两侧在独立临时目录里逐个单器件项目构建，再把

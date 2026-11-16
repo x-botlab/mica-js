@@ -1,35 +1,54 @@
-# CT107D 整板示例
+# CT107D 整板示例（融合器件 + legacy 板面）
 
-CT107D 竞赛板的 Mica 示例工程：7 种板面 widget（背景图 / 按键 / 四位数码管 / 指示灯 /
-蜂鸣器 / 继电器 / 交互式跳线）、整板原理图 `ct107d.sch`、板面画布 `ct107d.cnv` 与一段 8051
-演示固件。整板使用的器件全部来自 [`examples/devices`](../devices/README.md) 器件库。
+CT107D 竞赛板的 Mica 示例工程。**正式运行模型是 `device/` 下的统一融合器件**：
+一个 `DeviceIR`、一个实例、一个 8051 JIT，外部只保留 `VCC`/`GND`，历史 54 个器件和
+102 条网络都折叠为器件内部槽。`src/widgets`、`ct107d.sch`、`ct107d.cnv` 继续保留为
+legacy 板面展示与编辑资料，不参与融合运行时；本次工作不新增/迁移 widget。
 
 工程位于仓库的 `examples/ct107d`，纳入 pnpm workspace（包名 `@mica-js/example-ct107d`）：
 
 ```bash
-pnpm --filter @mica-js/example-devices build      # 先构建器件库（原理图/画布/固件联调依赖它）
-pnpm --filter @mica-js/example-ct107d build       # 输出 dist/widgets
-pnpm --filter @mica-js/example-ct107d test        # widget 与板级集成用例
-pnpm --filter @mica-js/example-ct107d bench       # 整板性能基准（不进 test）
+pnpm --filter @mica-js/example-devices build      # 构建器件库（legacy 校验与 MCU 源）
+pnpm --filter @mica-js/example-ct107d build       # 默认产正式融合器件：device/dist
+pnpm --filter @mica-js/example-ct107d build:devices
+pnpm --filter @mica-js/example-ct107d build:fused # build 的显式别名：MCU + 生成 + device/dist
+pnpm --filter @mica-js/example-ct107d build:widgets # legacy 板面 widget → dist/widgets
+pnpm --filter @mica-js/example-ct107d check:fused # 校验 MCU 源/产物内容身份与生成物一致
 pnpm --filter @mica-js/example-ct107d typecheck
-pnpm --filter @mica-js/example-ct107d schematic   # 原理图校验
-pnpm --filter @mica-js/example-ct107d canvas      # 画布校验
-pnpm --filter @mica-js/example-ct107d firmware    # 重新汇编固件
+pnpm --filter @mica-js/example-ct107d typecheck:fused
+pnpm --filter @mica-js/example-ct107d test        # 融合轨迹/oracle + widget 用例
+pnpm --filter @mica-js/example-ct107d bench       # 融合器件性能基准（不进 test）
+pnpm --filter @mica-js/example-ct107d schematic   # legacy 原理图校验
+pnpm --filter @mica-js/example-ct107d canvas      # legacy 画布校验
+pnpm --filter @mica-js/example-ct107d firmware    # 重新汇编演示固件
 pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
-                                                  # 外部固件整板联调
+                                                  # 外部固件分立板联调（测试工具）
 ```
 
-整板用到的器件全部来自 [`examples/devices`](../devices/README.md) 器件库，本包不再复制
-器件源码。`mica build` 只输出板面 legacy widget；统一器件包由器件库逐项目构建到
-`examples/devices/dist/<id>/{package.json, model.js}`。整板共 **54 个器件实例、102 条网络、
-26 种器件包**（器件库现有 30 个包）。
+构建需要 Node.js 24。根 `build` 与 `build:fused` 都会先运行 `build:mcu`：它把
+`examples/devices/iap15f2k61s2` 构建到 `examples/devices/dist/iap15f2k61s2/`，并写入
+记录源码（含 `examples/devices/shared/serial.ts` 本地依赖）与构建产物内容哈希的
+`examples/devices/dist/iap15f2k61s2.source.json`。随后
+`device/scripts/generate.mjs` 校验这份内容哈希（不是 mtime），从 `examples/devices`
+的 DDL 与 `ct107d.sch`/`ct107d.netlist.json` 生成
+`device/src/{model.ddl,nets.ts,channels.ts}`，最后执行 `mica build --root device`；
+产物为自包含的 `device/dist/{package.json,model.js}`。`check:fused` 会重新构建 MCU
+并执行同一套内容校验与生成物比对，`--check` 先编译生成的 DDL 再比较文件。
+`device/dist/`、`device/dist.release.json` 与 `device/.mica/` 已忽略。
 
-原理图/画布链路也读取统一器件包：`bench/board.ts`、`verify-firmware.mjs`、
+融合器件复用的数字器件源码来自 [`examples/devices`](../devices/README.md) 器件库；本包
+不复制器件实现。默认 `build` 只把生成物写入 `device/dist`；legacy 板面 widget 已移到
+`build:widgets`，供旧画布/原理图脚本使用。融合前的历史板由 **54 个器件实例、102 条网络、
+26 种器件包** 组成；融合后图内只有 **1 个实例、2 个外部网络（VCC/GND）和 1 个 JIT**。
+
+历史原理图/画布链路继续读取统一器件包：`bench/board.ts`、`verify-firmware.mjs`、
 `verify-schematic.mjs` 与 `seg4-preview.test.ts` 通过 `legacy/device-package.mjs` 把统一
 工厂、完整属性和事件接到旧 simulator；`build-schematic.mjs`、`verify-schematic.mjs` 与
 `verify-canvas.mjs` 再用 `legacy/schematic-metadata.mjs` 把清单引脚与端口投影成 v1 文档
 需要的符号和端口。`build-canvas.mjs` 只按位号查询 `.sch`，不需要器件包。这仍是旧
 `.sch v1` / `.cnv v1` 文档，不代表已经实现融合编辑器或 RFC 0024 文档迁移。
+`bench/board.ts` 现在只作为 correctness oracle，不进入性能计时。默认 `test` 会同时构建
+融合器件与 legacy widget：前者由新用例验证，后者保留旧画布/原理图回归。
 
 ## 旧格式边界
 
@@ -53,6 +72,86 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
 把旧输入话题映射到统一方法。它不生成 `DeviceMetadata`、不生成符号，也不把旧文档伪装成
 新格式。
 
+## 融合器件 `device/`
+
+`device/` 是正式的 SDK unified-device 工程，不是旧 widget/content 包：
+
+- 清单：`device/package.json`（`publisher: example`、`name: ct107d-board`），
+  属性为 `firmware`（`code` 地址空间，起点 0，`maxBytes: 61440`，`nullable: true`）、
+  `clockFrequency` 与 `ultrasonicDistanceCm`；引脚只有 `VCC`/`GND`，与 `model.ddl` 完全一致。
+- 构建：`device/scripts/generate.mjs` 生成 `src/model.ddl`、`src/nets.ts`、
+  `src/channels.ts`；`mica build --root device` 输出自包含
+  `device/dist/{package.json,model.js}`，`model.js` 导出 `model` 与同步 `create`。
+- 执行：`src/index.ts` 复用 `examples/devices/iap15f2k61s2` 构建产物的 8051
+  translator；`src/fuse.ts` 在原始 translate 之后把 `readSample`/`writeIntent`/
+  `resistor` 降为内部 `fusedPins`/`fusedMcuDrives` 槽，融合块单独缓存，不污染
+  独立 MCU 器件的原始块缓存。图内只有一个 JIT。
+- 数字器件：74HC02/14/138/573、ULN2003、AT24C02、PCF8591、DS1302、DS18B20、
+  NE555、CX20106A、VS1838、LM386、霍尔、超声波、UART probe 与红外发射按实例
+  命名空间 source-merge，符号和引脚访问改写为内部网；I²C、DS1302、1-Wire、
+  UART 等协议状态机保留。
+- 模拟/显示/交互：LED 亮度、seg4 扫描稳定窗口、继电器/蜂鸣器、LM324 的
+  position/gain/outputVoltage、按键矩阵、J13/J2/J3 跳线由板级逻辑按原理图固定属性
+  实现；PCF8591 AIN2 保持独立输入，不自动接 LM324 输出。
+- 统一接口：`onDidSignal`（`{designator, port, value}`）、`onDidBytes`
+  （`{designator, port, data}`）、`onDidAmplifier`（`{position, gain, outputVoltage}`）与
+  MCU 的 `onDidUart1Tx`/`onDidUart1Rx`；方法包括 `setSwitch`、`setJumper`、
+  `setHallField`、`setWiper`、`setAmplifierInputs`、`setIrCarrier`、`setTemperature`、
+  `setAnalogInput`、`sendUart`、`getSnapshot`、`getAmplifier`、`getEeprom`、`getRtc`、
+  `readSerial`、`getSerialStatus`。`setIrCarrier` 必须显式给 `designator`：
+  `LD1`（发射端）、`U11`（CX20106A）或 `U20`（VS1838），不会同时驱动三个源；
+  J2 的 `vs1838` 选择仍由 `setJumper` 与板级网表决定。
+  方法和事件均为同步接口，业务参数错误使用 `MethodError`；`bytes` 查询与事件各返回
+  独立快照。`getSnapshot` 同时包含 latches/displays、`leds`（亮度兼容数组）与
+  `ledStates`（每颗 LED 的 brightness/current/voltage）、relay/buzzer/hall/amplifier、
+  `temperature`（converted/value）、`lm386.active`、17 键 switches、J13/J3/J2 jumpers、
+  LD1/U11/U20 infrared、NE555、ULN2003、74HC138 decoder 与 PCF8591（AIN0–AIN3、
+  channel、DAC 输出）的当前值。`setAnalogInput` 在送入模型前按 0..1 钳位，查询缓存同一值。
+- 身份：事件 payload 中的 `designator`/`port` 是板面位号与端口，不是 54 个实例 ID；
+  bench 直接按 `DS1/digit1`、`U6/latch` 这类“位号/端口”键汇总轨迹。
+
+### 接线与理想化
+
+融合模型把历史板内网络折叠为理想数字网，并保留 strong high/low、weak high/low 与
+release 驱动码。当前支持的电阻合同是 **1 Ω/25 Ω → strong，10 kΩ/1 MΩ → weak**；其它
+值在生成阶段或 MCU 降级阶段直接报错，不会静默归入 strong。网络结果区分确定 low、确定
+high 与 unknown（没有任何有效驱动时），
+`Logic.unknown` 不会静默压成高。电压采样把 unknown 记为 0，这是融合器件的显式理想化。
+跳线/按键只按网表连通关系生效，`VCC`/`GND` 是唯一外接引脚。它不再运行板级电阻网络求解，因此
+`network.stats.solves` 在测量窗口内为 0。可观察的模拟量按原器件公式计算：
+
+- LED：`forwardResistance` 取原理图 1500 Ω，亮度 `5 / (1500 + 25) / 0.02`；
+- seg4：DS1/DS2 为共阳，段低点亮、位选高选中，稳定窗口 50 µs；
+- LM324：`gain = 1 + 2 × 100 kΩ / RB4`，输出钳到 0–5 V 后通过 `onDidAmplifier`/
+  `getAmplifier` 暴露。初始滑臂 0 对应 gain 21；position/gain/outputVoltage 任一变化都会
+  发事件（即使输入为 0、输出仍为 0），工厂初始查询同样是 21。PCF8591 AIN2 仍由
+  `setAnalogInput(2, …)` 独立注入；
+- 继电器/蜂鸣器：ULN2003 对应通道拉低即吸合/发声。
+
+这是本融合器件的明确边界：它保留固件可观察行为、交互和官方示例固件支持，但不是
+任意外部模拟接线或电气竞争的等价模型。固定属性直接取 `ct107d.sch`（不是清单默认值）：
+DS1/DS2 `commonAnode=true`、LED/数码管 `forwardResistance=1500`、J2 `vs1838=true`、
+J3/J13 闭合。
+
+### 正确性验证
+
+- `test/fused-preview.test.ts`：真实预览固件在 0→4096 ms 的 64 ms 检查点与 1 ms
+  首帧轨迹上，与离散 54 器件 oracle 对比完整 DS1/DS2 8 位段码、U6–U9 锁存和
+  board ready/faults；
+- `test/seg4-preview.test.ts`：保留原离散 oracle 的数码管轨迹回归；
+- `test/fused-firmware.test.ts`：只使用仓库内 `test/fixtures/8051/*.asm` 和严格
+  8051 assembler 生成固件，覆盖 AT24C02+PCF8591、UART echo、DS18B20、DS1302、
+  超声波、继电器/蜂鸣器、独立红外源/J2 选择和 16 键矩阵（另验证 S1），每项都与离散 oracle 比较；不依赖 `/tmp` 或跳过；
+- `test/fused-inputs.test.ts`：验证按键/跳线/霍尔/独立红外源/LM324 输入、原型键
+  拒绝、事件内重入查询、晚订阅快照与 bytes/快照副本隔离，以及 AIN 输入钳位。
+- `test/fused-startup.test.ts`：在 `runUntil(0)` 对照融合/离散的启动 LED 轨迹，确认
+  融合 glue 不会先发布一个尚未初始化的假 off 状态。
+- `test/fused-resistance.test.ts`：验证 10 kΩ 准双向弱上拉被强低覆盖、25 Ω 推挽强高
+  压过 1 MΩ 弱下拉、开漏释放的 unknown 以及弱下拉下的低电平。
+- `bench/`：从正式 `device/dist` 装载并断言 1 instance/1 JIT；报告 `fallbackRate`、
+  `solves=0` 的设计说明与真实 JIT/话题工作量。运行时不公开 fallback PC 集合时
+  `directFallbackPcs` 明确为 null，并在 `unavailable` 说明，不伪造 0。
+
 ## 与旧实现的对应
 
 | 旧路径                               | 新路径                                   |
@@ -64,7 +163,8 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
 | `dist/public/<id>/widgets/<id>.js`   | `src/widgets/<id>/index.ts`（legacy）    |
 | `dist/public/<id>/canvases/*.cnv`    | `ct107d.cnv`（legacy，单块板面画布）     |
 
-器件统一放在器件库的 `<id>/src/`，器件库逐项目构建输出独立 `package.json` / `model.js`。
+分立器件统一放在器件库的 `<id>/src/`，器件库逐项目构建输出独立 `package.json` / `model.js`。
+整板融合器件是 `device/src` + `device/dist/{package.json,model.js}`，不属于器件库。
 旧 `.js` 的 `@mica-js/device` IR API 在当前运行时已不工作；DDL 行为已迁移，旧编辑器的
 widget 与文档适配留待后续独立工作。
 
@@ -72,25 +172,47 @@ widget 与文档适配留待后续独立工作。
 
 ```
 examples/ct107d/
-  mica.config.ts                  Mica 工程标志（读取 src/，输出 dist/）
-  package.json                    build = mica build，typecheck = mica prepare && tsc --noEmit
+  mica.config.ts                  legacy 板面工程标志（读取 src/，输出 dist/）
+  package.json                    工作区脚本：build/build:fused/test/bench/typecheck:fused
   tsconfig.json
   vitest.config.ts
   vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
+  device/                        正式融合器件工程（unified device manifest + DDL + 工厂）
+    package.json                  publisher/name、firmware/clockFrequency/ultrasonicDistanceCm
+    mica.config.ts                mica build --root device
+    scripts/generate.mjs          从器件 DDL/原理图/网表生成 model.ddl、nets.ts、channels.ts
+    scripts/mcu-source.mjs        MCU 源码（含 shared/serial.ts）与产物内容哈希
+    shared/drive-code.mjs         生成器与 fuse.ts 共用的电阻/驱动码合同
+    scripts/build-mcu.mjs         构建 MCU 并写入 source.json 内容身份
+    scripts/board-fragment.ddl    板级模拟/显示/交互逻辑与事件通道
+    src/model.ddl                 生成的单 DeviceIR（MCU + 21 个 source-merge 数字器件 + 板级逻辑）
+    src/index.ts                  同步 create：复用 MCU translator、降级引脚、typed methods/events
+    src/fuse.ts                   MCU BlockIR → fusedPins/fusedMcuDrives 的内部网络降级
+    src/mcu.ts                    从 examples/devices/dist 复用 IAP15F2K61S2 构建产物
+    src/mcu-package.d.ts          外部 MCU 工厂的精确类型声明
+    src/{nets,channels}.ts        生成的网络索引与输出通道 → 位号/端口映射
   bench/
-    board.ts                      整板夹具：按 ct107d.sch 折出网表装配 54 颗器件（装载统一 dist 包）
-    measure.ts                    测量核心：进程 CPU 时间读数、电气/运行时/JIT 指标、topicDigest
-    perf.test.ts                  基准用例：只断言下限，并追加一行到 bench/results.jsonl
+    fused.ts                      正式 dist 夹具：一个 instance、一个 JIT、VCC/GND 外部网
+    board.ts                      仅测试 oracle：按 ct107d.sch 装配 54 颗分立器件
+    measure.ts                    融合基准核心：进程 CPU、JIT、话题/事件、检查点与 workload
+    perf.test.ts                  融合性能用例：断言 1 instance/1 JIT、演示固件与 behavior digest
+    preview.test.ts               真实预览固件：64/16 ms 轨迹与共同检查点
   src/widgets/                   板面 legacy widget（器件源码在 ../devices/<id>/src/）
   src/widgets/<id>/
     widget.json                   元数据：属性、端口
     index.ts                      widget 实现（render / input / dispose）
   src/widgets/drawing.ts          颜色、裁剪、文字等共用绘制工具
-  legacy/device-package.mjs       旧 simulator 引擎兼容桥（非编辑器元数据投影）
+  legacy/device-package.mjs       旧 simulator 引擎兼容桥（仅 legacy/测试）
   legacy/schematic-metadata.mjs   v1 文档校验用的符号/端口投影（非运行时）
   test/
     widgets.test.ts               全部板面 widget 的元数据与绘制/交互
-    seg4-preview.test.ts          真实预览固件的数码管轨迹回归
+    fused-preview.test.ts         融合器件 vs 离散 oracle：预览固件轨迹
+    fused-startup.test.ts         启动 LED 事件轨迹对照
+    fused-resistance.test.ts      strong/weak/release/unknown 驱动回归
+    fused-firmware.test.ts        仓库内 8051 fixtures：I²C/UART/1-Wire/RTC/超声/执行器/键盘
+    fused-inputs.test.ts          输入方法、快照一致性与副本隔离
+    fixtures/8051/                自制汇编、严格 assembler 与固件回归
+    seg4-preview.test.ts          离散 oracle 的真实预览固件数码管轨迹回归
   ../devices/<id>/src/
     model.ddl                     器件行为：引脚、状态、通道、进程与反应
     index.ts                      统一适配器：同步 methods 与 ctx.events
@@ -327,69 +449,86 @@ node build-canvas.mjs     # 修改坐标或位号后重新生成 ct107d.cnv
 
 ## 基准
 
-`bench/` 是整板性能基准，与 `examples/devices/bench` 里的器件基准同构，差别只有两处：
-
-- 读数用**进程 CPU 时间**（`process.cpuUsage`）而不是挂钟，避免并行任务抢 CPU 时读数抖动；
-- 器件从器件库 `examples/devices/` 装载：`bench/board.ts` 按 `ct107d.sch` 折出网表，
-  装载统一包 `examples/devices/dist/<id>/{package.json, model.js}`，因此 `bench` 脚本
-  先运行 `pnpm run build:devices`。
+`bench/` 是**融合器件**性能基准。`bench/fused.ts` 只装载正式产物
+`device/dist/{package.json,model.js}`，创建一个实例，并断言图内恰好 1 个 JIT；外部只接
+`VCC`/`GND`。`bench/board.ts` 的 54 器件整板只作为测试 oracle，不进入计时。
 
 ```powershell
-pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.perf.config.ts
+pnpm --filter @mica-js/example-ct107d bench     # 先 build:devices + build:fused，再 vitest
 ```
 
-口径：装配整板 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`wallMs` / `rtf`
-取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（12 MHz 8051，
-8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 54 颗器件、102 条网络，
-电气求解、通道与执行引擎都走真实运行时。
+口径：装配 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`cpuMs` / `realtimeRatio`
+取 CPU 时间最小的一轮。演示夹具 `assets/ct107d-demo.bin` 按原理图使用 **12 MHz** MCU
+（8 位数码管全亮 + 8 路 LED 走马灯）；`measureCt107d` 的默认 demo clock 是 12 MHz，
+显式 props 优先。预览基准使用 `digital-display-dynamic.bin`、11.0592 MHz、512 ms 预热、1024 ms 窗口、
+64 ms 批次，并在每个 64 ms 共同检查点上保留 DS1/DS2 文本与 U6–U9 锁存轨迹。
 
-**行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按
-[吞吐合同](../../docs/spec/jit/throughput.rst)允许错过 GPIO 中间态、合并受保护执行段内的检查，
-因此同一份固件在两种模式下 `topicDigest` 本来就会不同。演示固件把每个锁存的 LE 高电平相位
-保持一整个 `DELAY`（实测约 4 ms，长于预览的 2 ms 推进步长），并且两次刷新之间 `P0` 一直等于
-LED 图案，所以两种模式都能稳定锁存；差异只能来自其它引脚中间态，跨模式比较仍按合同允许的
-可见性差异判定，见 [conformance](../../docs/spec/conformance.rst)；
-`MICA_PERF_STREAM=<path>` 可导出原始 `(simTime, topic, payload)` 流做差分。
+融合后没有板内电气网络，因此 `solves`、`electricalPublishes`、`dirtySlots` 为 0，
+`components` 只剩外部 VCC/GND 两个分量。`unavailable.solves` 会明确说明这是设计结果；
+工作量改由 `boundaryCalls`、`topicMessages`、`directCalls`、检查点轨迹和固定显示/锁存断言
+共同约束，而不是用“非空输出”模糊通过。
 
-| 字段                                          | 含义                                                                                                     |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `rtf`                                         | 墙钟（CPU 时间）/ 仿真时间，1 表示实时；越小越快                                                         |
-| `wallMs` / `simMs`                            | 测量窗口的 CPU 时间与仿真时间（毫秒）                                                                    |
-| `coldMs`                                      | 装配 + `runUntil(0)` + 预热的 CPU 时间（不含测量窗口）                                                   |
-| `usPerSolve`                                  | 每次电气求解摊到的时钟时间：`network.solveSlots` 内用 `hrtime` 累计 / 调用次数                           |
-| `solves`                                      | 窗口内 `ElectricalStats.solves` 的增量                                                                   |
-| `prepareTopology`                             | 整图重建次数；迁移桶命中时走恢复而不是重建                                                               |
-| `components` / `factorizations` / `leafPlans` | 同一次求解统计里的分量数、矩阵分解次数、叶计划（复用形状）数，用来观察拓扑重建频率                       |
-| `boundaryCalls`                               | 窗口内运行时 `boundary()` 的调用次数（每次块边界都会经过它）                                             |
-| `publishCalls` / `electricalPublishes`        | 窗口内 `publish()` 的调用次数 / 其中真正推进了电气求解的次数                                             |
-| `topicMessages`                               | 窗口内话题消息条数，也就是参与 `topicDigest` 的消息数                                                    |
-| `dirtySlots`                                  | 每次电气发布前脏槽数量的峰值                                                                             |
-| `direct` / `directCalls`                      | 直接 JIT 是否接管 MCU / 直接程序的调用次数                                                               |
-| `directPrograms` / `compileDirectJit`         | 直接程序缓存条数 / 成功编译次数（整轮累计，含预热；预热期间就会编译完，只统计窗口内会恒为 0）            |
-| `fallbackRate`                                | 直接程序返回 `fallback` 的比例                                                                           |
-| `topicDigest`                                 | 窗口内每条消息按 `(simTime, topic, payload)` 规范化后取 SHA-256 的前 16 位，作为「行为不变」的统一对照值 |
-| `topicDigestStable`                           | 同一次测量的多轮摘要是否完全一致                                                                         |
-| `unavailable`                                 | 拿不到或退化了的指标及原因                                                                               |
+| 字段                                          | 含义                                                                                                 |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `rtf`                                         | 历史 CPU 口径：`cpuMs / simMs`；实时比请读 `realtimeRatio`                                           |
+| `cpuMs` / `simMs`                             | 测量窗口的进程 CPU 时间与仿真时间（毫秒）                                                            |
+| `realtimeRatio`                               | `simMs / elapsedWallMs`，1 表示实时                                                                  |
+| `coldCpuMs`                                   | 装配 + `runUntil(0)` + 预热的 CPU 时间（不含测量窗口）                                               |
+| `instances` / `jits`                          | 图内实例数 / JIT 数；融合产物必须为 1 / 1                                                            |
+| `devices` / `nets`                            | 器件实例数 / 网络数；融合产物为 1 / 2                                                                |
+| `solves` / `usPerSolve`                       | 窗口内电气求解增量与单次耗时；融合产物按设计为 0                                                     |
+| `components` / `factorizations` / `leafPlans` | 求解统计；融合产物只保留外部 VCC/GND 的两个分量                                                      |
+| `boundaryCalls`                               | 窗口内运行时 `boundary()` 的调用次数                                                                 |
+| `publishCalls` / `electricalPublishes`        | `publish()` 调用次数 / 真正推进电气求解的次数                                                        |
+| `topicMessages`                               | 窗口内 `onDidSignal`/`onDidBytes` 事件条数，也就是参与 `topicDigest` 的消息数                        |
+| `direct` / `directCalls`                      | 直接 JIT 是否接管 MCU / 直接程序调用次数                                                             |
+| `directPrograms` / `compileDirectJit`         | 直接程序缓存条数 / 成功编译次数（整轮累计，含预热）                                                  |
+| `fallbackRate`                                | 窗口内 `directFallbacks / directCalls` 的比例                                                        |
+| `directFallbackPcs`                           | 运行时不公开 fallback PC 集合时为 null，并写入 `unavailable` 说明；不伪造 0                          |
+| `directFallbacksExhausted`                    | 窗口内所有直接调用都回退时为 true                                                                    |
+| `topicDigest`                                 | 窗口内每条事件按 `(simTime, 位号/端口, payload)` 规范化后取 SHA-256 前 16 位，作为「行为不变」对照值 |
+| `topicDigestStable`                           | 同一次测量的多轮摘要是否完全一致                                                                     |
+| `checkpoints` / `checkpointsStable`           | 共同仿真时间检查点上的完整 `位号/端口` 状态及跨轮稳定性                                              |
+| `unavailable`                                 | 拿不到或按设计退化的指标及原因                                                                       |
+
+事件身份直接使用 payload 中的 `designator`/`port`（如 `DS1/digit1`、`U6/latch`）；不再用
+`topicOrigin` 把单实例拆成 54 个伪实例。`bench/results.jsonl` 只记录本轮读数，已忽略。
+
+**性能读数。** bench 只对正式 `device/dist` 计时，离散 oracle 只做 correctness 对照，不进入
+性能窗口。旧的 fused/分立对照表是在 **demo 11.0592 MHz vs 分立 12 MHz** 不同频条件下生成的，
+不具可比性，已删除；本文不再据此声称提速。当前 `ct107d-demo` 按原理图 12 MHz 运行，
+preview 保持 11.0592 MHz；每次运行的绝对读数以 `PERF`/`PREVIEW_*` stdout 为准。
+`MICA_PERF_STREAM=<path>` 可导出原始 `(simTime, designator/port, payload)` 流做差分。
 
 每次运行把整份结果追加到 `bench/results.jsonl`（gitignore 已忽略），`vitest` 只在用例失败时
 回显 `console`，所以基线用 `process.stdout.write` 打印 `PERF {...}`。
 
-`topicDigest` 是跨改动比对的锚点：改引擎或编译器之后摘要不变，说明话题层面的行为没变；
-它只覆盖话题消息、不覆盖引脚电平，电气层面的等价性仍由 `test/` 的用例负责。用例里另有一轮
-`SJMP $` 空转固件，确认摘要对行为敏感（两次摘要必须不同）。`prepareTopology` 这类拿不到的
-指标列在 `unavailable` 里，需要精确计数时给 `ElectricalStats` 补计数器，而不是在基准里猜。
+`topicDigest` 是跨改动比对的锚点：改融合生成器或引擎之后摘要不变，说明事件层面的行为没变；
+它只覆盖事件、不覆盖内部引脚电平，内部等价性仍由 `test/fused-*` 与离散 oracle 负责。用例
+另有一轮 `SJMP $` 空转固件，确认摘要对行为敏感（两次摘要必须不同）。
 
 ## 验证
 
 ```powershell
-cd dist\ct107d
-pnpm run typecheck        # mica prepare && tsc --noEmit
-pnpm run test             # mica build + vitest
-pnpm run schematic        # node verify-schematic.mjs
-pnpm run canvas           # node verify-canvas.mjs
+pnpm --filter @mica-js/example-ct107d build:devices
+pnpm --filter @mica-js/example-ct107d build:fused
+pnpm --filter @mica-js/example-ct107d check:fused
+pnpm --filter @mica-js/example-ct107d typecheck
+pnpm --filter @mica-js/example-ct107d typecheck:fused
+pnpm --filter @mica-js/example-ct107d test
+pnpm --filter @mica-js/example-ct107d bench
 ```
 
 器件行为用例和板级夹具随器件源码迁到 `examples/devices/test/`；本包保留
-`widgets.test.ts` 与 `seg4-preview.test.ts`。`test/seg4-preview.test.ts` 使用
-`bench/board.ts` 装配整板，覆盖真实预览固件的数码管轨迹；`widgets.test.ts` 用最小
-widget API 与假 2D 上下文覆盖全部板面 widget 的元数据与行为。
+`widgets.test.ts`、`test/fused-preview.test.ts`、`test/fused-firmware.test.ts`、
+`test/fused-inputs.test.ts`、`test/fused-startup.test.ts`、`test/fused-resistance.test.ts`
+与 `test/seg4-preview.test.ts`。`fused-preview` 在 64 ms 检查点与
+1 ms 首帧轨迹上对比融合与离散 oracle；`fused-firmware` 只使用仓库内
+`test/fixtures/8051/*.asm` 和严格 assembler 覆盖 EEPROM/PCF、UART、1-Wire、DS1302、
+超声波和 17 键，缺失 fixture 会直接失败而不是跳过；`seg4-preview` 保留原离散整板的预览
+轨迹；`widgets.test.ts` 用最小 widget API 与假 2D 上下文覆盖全部板面 widget 的元数据
+与行为（legacy）。
+
+正式融合产物只从 `device/dist` 装载；`test/` 与 `bench/` 中的 `adaptModelFactory`
+只用于把 `FirmwareImage` 和输入事件接到旧 `createBoard` 消费边界，不进入
+`device/src` 运行时。
