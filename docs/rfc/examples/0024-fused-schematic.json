@@ -1,0 +1,102 @@
+{
+  "version": 2,
+  "dependencies": {
+    "example:button": {
+      "version": "1.0.0",
+      "integrity": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "example:label": {
+      "version": "1.0.0",
+      "integrity": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "instances": [
+    {
+      "id": "11111111-1111-4111-8111-111111111111",
+      "device": "example:button",
+      "designator": "S1",
+      "placement": { "x": 20, "y": 15, "rotation": 0 },
+      "properties": {
+        "label": "启动",
+        "debounceSamples": 8,
+        "actuationForce": 1.8,
+        "travel": 0.3,
+        "normallyClosed": false,
+        "capColor": "#33AA55FF",
+        "mode": "momentary",
+        "icon": { "src": "assets/button-icon.png", "mode": "file" },
+        "profile": null,
+        "firmware": {
+          "mode": "project",
+          "projectId": "controller",
+          "addressSpace": "code",
+          "loadAddress": 256
+        }
+      },
+      "display": { "body": true },
+      "viewLayout": {
+        "properties": { "height": 200, "collapsed": false },
+        "views": [
+          {
+            "viewId": "monitor",
+            "location": "floating",
+            "height": 240,
+            "collapsed": false,
+            "floatingBounds": { "x": 40, "y": 60, "width": 480, "height": 320 }
+          }
+        ]
+      }
+    },
+    {
+      "id": "66666666-6666-4666-8666-666666666666",
+      "device": "example:label",
+      "designator": "T1",
+      "placement": { "x": 10, "y": 3, "rotation": 0, "width": 30, "height": 8 },
+      "properties": { "text": "启动按钮" },
+      "display": { "body": true },
+      "viewLayout": {
+        "properties": { "height": 160, "collapsed": true },
+        "views": []
+      }
+    }
+  ],
+  "nodes": [
+    { "id": "22222222-2222-4222-8222-222222222222", "kind": "free", "x": 10, "y": 16 },
+    { "id": "77777777-7777-4777-8777-777777777777", "kind": "free", "x": 10, "y": 25 }
+  ],
+  "wires": [
+    {
+      "id": "33333333-3333-4333-8333-333333333333",
+      "from": { "kind": "pin", "instance": "11111111-1111-4111-8111-111111111111", "pin": "a1" },
+      "to": { "kind": "node", "node": "22222222-2222-4222-8222-222222222222" },
+      "bends": [{ "x": 14, "y": 16 }]
+    }
+  ],
+  "labels": [
+    {
+      "id": "44444444-4444-4444-8444-444444444444",
+      "target": { "kind": "pin", "instance": "11111111-1111-4111-8111-111111111111", "pin": "b1" },
+      "name": "KEY",
+      "offset": { "x": 0, "y": -2 }
+    }
+  ],
+  "references": [
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "target": { "kind": "node", "node": "22222222-2222-4222-8222-222222222222" },
+      "voltage": 5,
+      "symbol": "power",
+      "rotation": 90,
+      "label": { "name": "VCC", "offset": { "x": 0, "y": -2 } }
+    },
+    {
+      "id": "99999999-9999-4999-8999-999999999999",
+      "target": { "kind": "node", "node": "77777777-7777-4777-8777-777777777777" },
+      "voltage": 0,
+      "symbol": "ground",
+      "rotation": 0,
+      "label": { "name": "GND", "offset": { "x": 2, "y": 0 } }
+    }
+  ],
+  "display": { "body": true, "designators": false }
+}
