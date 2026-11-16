@@ -1,0 +1,180 @@
+{
+  "name": "button",
+  "publisher": "example",
+  "version": "1.0.0",
+  "description": "全字段轻触开关清单示例",
+  "license": "MIT",
+  "engines": { "mica": "^1.0.0" },
+  "displayName": "轻触开关",
+  "icon": "assets/device-icon.svg",
+  "designatorPrefix": "S",
+  "entries": {
+    "view3d": "views/3d/index.js"
+  },
+  "properties": {
+    "label": {
+      "type": "string",
+      "title": "按键文字",
+      "description": "按帽显示文字",
+      "default": "启动",
+      "nullable": false,
+      "maxLength": 16,
+      "group": "外观",
+      "order": 0
+    },
+    "debounceSamples": {
+      "type": "integer",
+      "title": "去抖采样数",
+      "description": "模型使用的连续稳定采样数",
+      "default": 4,
+      "nullable": false,
+      "min": 1,
+      "max": 32,
+      "step": 1,
+      "group": "行为",
+      "order": 1
+    },
+    "actuationForce": {
+      "type": "number",
+      "title": "触发力",
+      "description": "闭合触点所需的力",
+      "default": 1.6,
+      "nullable": false,
+      "min": 0,
+      "max": 10,
+      "step": 0.1,
+      "unit": "N",
+      "group": "机械",
+      "order": 2
+    },
+    "travel": {
+      "type": "number",
+      "title": "行程",
+      "description": "按帽到触发位置的距离",
+      "default": 0.25,
+      "nullable": false,
+      "exclusiveMin": 0,
+      "max": 2,
+      "step": 0.05,
+      "unit": "mm",
+      "group": "机械",
+      "order": 3
+    },
+    "normallyClosed": {
+      "type": "boolean",
+      "title": "常闭",
+      "description": "未按下时是否闭合",
+      "default": false,
+      "nullable": false,
+      "group": "行为",
+      "order": 4
+    },
+    "capColor": {
+      "type": "color",
+      "title": "按帽颜色",
+      "description": "按帽的 RGBA 颜色",
+      "default": "#333333FF",
+      "nullable": false,
+      "alpha": false,
+      "group": "外观",
+      "order": 5
+    },
+    "mode": {
+      "type": "enum",
+      "title": "触发模式",
+      "description": "瞬时闭合或自锁切换",
+      "default": "momentary",
+      "nullable": false,
+      "options": [
+        { "value": "momentary", "label": "瞬时" },
+        { "value": "latching", "label": "自锁" }
+      ],
+      "group": "行为",
+      "order": 6
+    },
+    "icon": {
+      "type": "image",
+      "title": "按帽图标",
+      "description": "绘制在按帽上的图片",
+      "default": { "src": "assets/icon.png", "mode": "package" },
+      "nullable": true,
+      "maxBytes": 4096,
+      "maxPixels": 1024,
+      "group": "外观",
+      "order": 7
+    },
+    "profile": {
+      "type": "binary",
+      "title": "触点配置数据",
+      "description": "由模型解释的二进制配置",
+      "default": { "src": "assets/profile.bin", "mode": "package" },
+      "nullable": true,
+      "maxBytes": 2048,
+      "extensions": [".bin", ".hex"],
+      "group": "行为",
+      "order": 8
+    },
+    "firmware": {
+      "type": "firmware",
+      "title": "固件",
+      "description": "演示固定文件与宿主项目的固件来源选择",
+      "default": null,
+      "nullable": true,
+      "maxBytes": 65536,
+      "addressSpaces": {
+        "code": {
+          "title": "程序存储器",
+          "start": 0,
+          "size": 8192
+        }
+      },
+      "addressSpace": "code",
+      "loadAddress": 0,
+      "group": "行为",
+      "order": 9
+    }
+  },
+  "pins": {
+    "a1": { "label": "1 / A1", "description": "触点 A 的第一端" },
+    "a2": { "label": "2 / A2", "description": "触点 A 的第二端" },
+    "b1": { "label": "3 / B1", "description": "触点 B 的第一端" },
+    "b2": { "label": "4 / B2", "description": "触点 B 的第二端" }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {
+      "ButtonState": {
+        "type": "object",
+        "properties": {
+          "pressed": { "type": "boolean" },
+          "samples": { "type": "array", "items": { "type": "number" } }
+        },
+        "optional": ["samples"],
+        "additionalProperties": { "type": "string" }
+      }
+    },
+    "methods": {
+      "press": {
+        "params": { "type": "boolean" },
+        "returns": { "type": "null" }
+      },
+      "getStatus": {
+        "params": { "type": "null" },
+        "returns": { "ref": "ButtonState" }
+      }
+    },
+    "events": { "onDidStateChange": { "ref": "ButtonState" } }
+  },
+  "view2d": {
+    "geometry": "views/2d/geometry.json",
+    "entry": "views/2d/index.js"
+  },
+  "view": {
+    "monitor": {
+      "title": "按键状态",
+      "entry": "views/index.html",
+      "defaultLocation": "sidebar",
+      "icon": "dashboard"
+    }
+  }
+}

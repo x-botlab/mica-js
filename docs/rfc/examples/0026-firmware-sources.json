@@ -1,0 +1,23 @@
+{
+  "bin": {
+    "mode": "file",
+    "src": "firmware/main.bin",
+    "addressSpace": "code",
+    "loadAddress": 256
+  },
+  "hex": {
+    "mode": "file",
+    "src": "firmware/main.hex",
+    "addressSpace": "code"
+  },
+  "elf": {
+    "mode": "file",
+    "src": "firmware/main.elf"
+  },
+  "project": {
+    "mode": "project",
+    "projectId": "controller",
+    "addressSpace": "code",
+    "loadAddress": 256
+  }
+}
