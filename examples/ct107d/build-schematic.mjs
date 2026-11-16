@@ -1,13 +1,16 @@
 /**
- * 从 PDF 网表生成 CT107D 原理图（未实现器件忽略，只保留已迁移植物的引脚与内建电源/地/网标）。
- * 生成后删除；产物是 ct107d.sch。
+ * 从 PDF 网表生成 CT107D 原理图（只保留器件库已交付的引脚与内建电源/地/网标）。
+ * 器件来自 `examples/devices/dist/<id>/package.json`，旧 `.sch v1` 的符号按引脚集合合成。
+ * 先运行 `pnpm --filter @mica-js/example-devices build`；产物是 ct107d.sch 与
+ * ct107d.netlist.json。
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseDeviceMetadata, deviceMetadataSymbol } from '@mica-js/document/schematic';
+import { legacyDeviceSymbol, loadDevicePackage } from './legacy/schematic-metadata.mjs';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
+const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
 const OUTPUT = join(PROJECT, 'ct107d.sch');
 
 const MCU_REF = 'xbotlab:iap15f2k61s2';
@@ -39,30 +42,26 @@ const CHIPS = [
   'vs1838',
 ];
 
-function readDefinition(id) {
-  return parseDeviceMetadata(
-    JSON.parse(
-      readFileSync(join(PROJECT, '..', 'devices', 'src', 'devices', id, 'device.json'), 'utf8'),
-    ),
-  );
+function readManifest(id) {
+  return loadDevicePackage(DEVICES_PROJECT, id).manifest;
 }
 
-const definitions = new Map();
-definitions.set(MCU_REF, readDefinition('iap15f2k61s2'));
-definitions.set(LED_REF, readDefinition('blue-led'));
-definitions.set(DISPLAY_REF, readDefinition('seg4'));
-definitions.set(BUTTON_REF, readDefinition('push-button'));
-definitions.set(BUZZER_REF, readDefinition('buzzer'));
-definitions.set(RELAY_REF, readDefinition('relay'));
-definitions.set(JUMPER_REF, readDefinition('jumper'));
-definitions.set(HEADER_REF, readDefinition('jumper-2x3'));
-definitions.set(ULTRASONIC_REF, readDefinition('ultrasonic'));
-definitions.set(UART_PROBE_REF, readDefinition('uart-probe'));
-for (const id of CHIPS) definitions.set(CHIP_REF(id), readDefinition(id));
+const manifests = new Map();
+manifests.set(MCU_REF, readManifest('iap15f2k61s2'));
+manifests.set(LED_REF, readManifest('blue-led'));
+manifests.set(DISPLAY_REF, readManifest('seg4'));
+manifests.set(BUTTON_REF, readManifest('push-button'));
+manifests.set(BUZZER_REF, readManifest('buzzer'));
+manifests.set(RELAY_REF, readManifest('relay'));
+manifests.set(JUMPER_REF, readManifest('jumper'));
+manifests.set(HEADER_REF, readManifest('jumper-2x3'));
+manifests.set(ULTRASONIC_REF, readManifest('ultrasonic'));
+manifests.set(UART_PROBE_REF, readManifest('uart-probe'));
+for (const id of CHIPS) manifests.set(CHIP_REF(id), readManifest(id));
 
 const symbols = new Map();
-for (const [reference, definition] of definitions) {
-  symbols.set(reference, deviceMetadataSymbol(definition));
+for (const [reference, manifest] of manifests) {
+  symbols.set(reference, legacyDeviceSymbol(manifest));
 }
 
 // ---- 网表（来自 SCH_硬件原理图V30.pdf 逐页对照）----------------------------------------
@@ -538,8 +537,8 @@ writeFileSync(join(PROJECT, 'ct107d.netlist.json'), `${JSON.stringify(netlist, n
 
 // ---- 自检 -------------------------------------------------------------------------------
 const unplaced = [];
-for (const [reference, definition] of definitions) {
-  for (const pin of Object.keys(definition.pins)) {
+for (const [reference, manifest] of manifests) {
+  for (const pin of Object.keys(manifest.pins ?? {})) {
     for (const placement of PLACEMENTS) {
       if (placement.device !== reference) continue;
       if (!placedPins.has(`${placement.designator}/${pin}`))

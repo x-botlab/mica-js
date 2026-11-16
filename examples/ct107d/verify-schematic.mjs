@@ -4,80 +4,50 @@
  * 2. 按原理图建板跑 1 ms，确认所有器件能初始化；
  * 3. 装一段固件走完 `P2 → 74HC138 → 74HC02 → 74HC573 → LED` 链路，确认 D1 点亮、D2–D8 熄灭；
  * 4. 同一段固件按 `Y7 → U7（段码）`、`Y6 → U8（位选）` 逐位扫描，确认 DS1/DS2 的八位各锁存到写入的段码；
- * 5. 再装入原理图 U1 自带的演示固件（`assets/ct107d-demo.bin`），确认 8 位都显示 0xFF（8.8.8.8），
+ * 5. 再装入 `assets/ct107d-demo.bin`，确认 8 位都显示 0xFF（8.8.8.8），
  *    并且走马灯逐位移动、同一时刻只有一颗 LED 点亮。
  *
  * 说明：`P42/WR` 由原理图里的 J13（WR 选择跳线，1-2/2-3）短接到 GND，不需要在装配侧
  * 注入电压；器件模型没有 P4 端口，因此 J13 的 WR 源侧不建模。
+ *
+ * 器件来自 `examples/devices/dist/<id>/{package.json, model.js}`（统一器件包），
+ * 先运行 `pnpm --filter @mica-js/example-devices build`。旧 `.sch v1` 需要的符号由
+ * `legacy/schematic-metadata.mjs` 按清单引脚合成。
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
-import {
-  deriveSchematicTopology,
-  deviceMetadataSymbol,
-  parseDeviceMetadata,
-  parseSchematic,
-} from '@mica-js/document/schematic';
+import { deriveSchematicTopology, parseSchematic } from '@mica-js/document/schematic';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { loadLegacyDevice, legacyCreateWithFirmware } from './legacy/device-package.mjs';
+import { legacyDeviceSymbol, loadDevicePackage } from './legacy/schematic-metadata.mjs';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
 const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
-const CHIP_IDS = [
-  '74hc02',
-  '74hc138',
-  '74hc573',
-  '74hc14',
-  'at24c02',
-  'buzzer',
-  'cx20106a',
-  'ds1302',
-  'ds18b20',
-  'jumper',
-  'jumper-2x3',
-  'lm386',
-  'ne555',
-  'pcf8591',
-  'push-button',
-  'relay',
-  'uln2003',
-  'ultrasonic',
-  'uart-probe',
-  'vs1838',
-];
 const MCU_REF = 'xbotlab:iap15f2k61s2';
 const LED_REF = 'xbotlab:blue-led';
 const DISPLAY_REF = 'xbotlab:seg4';
 
-const loadDefinition = (id) =>
-  parseDeviceMetadata(
-    JSON.parse(readFileSync(join(DEVICES_PROJECT, 'src', 'devices', id, 'device.json'), 'utf8')),
-  );
-const loadModule = (id) =>
-  import(pathToFileURL(join(DEVICES_PROJECT, 'dist', 'devices', id, 'device.js')).href);
-
-const devices = new Map();
-for (const id of CHIP_IDS) {
-  devices.set(`xbotlab:${id}`, {
-    definition: loadDefinition(id),
-    module: await loadModule(id),
-  });
-}
-for (const id of ['iap15f2k61s2', 'blue-led', 'seg4']) {
-  devices.set(`xbotlab:${id}`, {
-    definition: loadDefinition(id),
-    module: await loadModule(id),
-  });
-}
-
 const schematic = parseSchematic(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
+const components = schematic.sheet.symbols.filter((symbol) => symbol.designator);
+
+/** 原理图引用 → 统一器件包（清单 + 旧模型桥 + 合成符号）。 */
+const devices = new Map();
+for (const reference of new Set(components.map((symbol) => symbol.device))) {
+  const id = reference.slice('xbotlab:'.length);
+  const { manifest } = loadDevicePackage(DEVICES_PROJECT, id);
+  const loaded = await loadLegacyDevice(join(DEVICES_PROJECT, 'dist'), id);
+  devices.set(reference, {
+    manifest,
+    symbol: legacyDeviceSymbol(manifest),
+    module: loaded.module,
+    package: loaded,
+  });
+}
+
 const provider = {
-  getDeviceName: (reference) => devices.get(reference.raw)?.definition.displayName,
-  getDeviceSymbol: (reference) => {
-    const device = devices.get(reference.raw);
-    return device === undefined ? undefined : deviceMetadataSymbol(device.definition);
-  },
+  getDeviceName: (reference) => devices.get(reference.raw)?.manifest.displayName,
+  getDeviceSymbol: (reference) => devices.get(reference.raw)?.symbol,
 };
 const topology = deriveSchematicTopology(schematic, { devices: provider });
 
@@ -103,18 +73,16 @@ if (topology.danglingWireEnds.length > 0)
   failures.push(`dangling wire ends: ${topology.danglingWireEnds.length}`);
 
 // 器件本体不应重叠（标签与引脚桩不参与）。
-const bodies = schematic.sheet.symbols
-  .filter((symbol) => symbol.designator)
-  .map((symbol) => {
-    const bounds = deviceMetadataSymbol(devices.get(symbol.device).definition).bounds;
-    return {
-      designator: symbol.designator,
-      x: symbol.x + bounds.x,
-      y: symbol.y + bounds.y,
-      width: bounds.width,
-      height: bounds.height,
-    };
-  });
+const bodies = components.map((symbol) => {
+  const bounds = devices.get(symbol.device).symbol.bounds;
+  return {
+    designator: symbol.designator,
+    x: symbol.x + bounds.x,
+    y: symbol.y + bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+  };
+});
 for (let left = 0; left < bodies.length; left += 1) {
   for (let right = left + 1; right < bodies.length; right += 1) {
     const a = bodies[left];
@@ -141,7 +109,6 @@ for (const [name, members] of expected) {
 }
 for (const [name] of actual) if (!expected.has(name)) failures.push(`unexpected net ${name}`);
 
-const components = schematic.sheet.symbols.filter((symbol) => symbol.designator);
 const ledSymbols = components.filter((symbol) => symbol.device === LED_REF);
 const brightness = new Map(ledSymbols.map((symbol) => [symbol.id, 0]));
 const digitValues = new Map(
@@ -149,13 +116,19 @@ const digitValues = new Map(
 );
 
 /** 拦截器件话题：LED 记亮度、数码管记四位段码，其余原样转发。 */
-function instrument(symbol, device) {
+function instrument(symbol, device, firmware) {
+  // 原理图里 `firmware` 是资源引用，实例属性只保留可校验的属性；固件按字节注入工厂上下文。
+  const create =
+    symbol.device === MCU_REF
+      ? legacyCreateWithFirmware(device.package, firmware)
+      : device.module.create;
+
   return (context) => {
     const digits = digitValues.get(symbol.id);
 
-    if (symbol.device !== LED_REF && digits === undefined) return device.module.create(context);
+    if (symbol.device !== LED_REF && digits === undefined) return create(context);
 
-    return device.module.create({
+    return create({
       ...context,
       topics: {
         ...context.topics,
@@ -180,7 +153,11 @@ function buildBoard(firmware) {
   const library = createDeviceLibrary(
     components.map((symbol) => {
       const device = devices.get(symbol.device);
-      return { id: symbol.id, model: device.module.model, create: instrument(symbol, device) };
+      return {
+        id: symbol.id,
+        model: device.module.model,
+        create: instrument(symbol, device, firmware),
+      };
     }),
   );
   const nets = topology.nets.map((net, index) => ({
@@ -191,12 +168,10 @@ function buildBoard(firmware) {
     ...(net.name === 'VCC' ? { voltage: 5 } : net.name === 'GND' ? { voltage: 0 } : {}),
   }));
   const instances = components.map((symbol) => {
-    if (symbol.device !== MCU_REF)
-      return { id: symbol.id, type: symbol.id, props: symbol.properties ?? {} };
-    // 原理图里 `firmware` 是资源引用；板级装配需要真实字节，因此这里用参数覆盖它。
-    const rest = { ...(symbol.properties ?? {}) };
-    delete rest.firmware;
-    return { id: symbol.id, type: symbol.id, props: { ...rest, firmware } };
+    const props = { ...(symbol.properties ?? {}) };
+    // `firmware` 是资源引用，不属于 DDL 属性；板级装配走 `legacyCreateWithFirmware`。
+    if (symbol.device === MCU_REF) delete props.firmware;
+    return { id: symbol.id, type: symbol.id, props };
   });
   const faults = [];
   const board = createBoard(library, { instances, nets });

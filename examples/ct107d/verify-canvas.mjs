@@ -7,23 +7,28 @@
  *    继电器与交互式跳线均产生预期绘制或端口输出；
  * 4. 用原理图建一块只含按键与辅助器件的板，逐个按下 17 个键，确认矩阵行/列与复位网络
  *    确实按 PDF 的接法闭合。
+ *
+ * 器件来自 `examples/devices/dist/<id>/package.json`，旧 `.cnv v1` 需要的端口表由
+ * `legacy/schematic-metadata.mjs` 按统一清单推导；先构建器件库。
  */
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
 import { assertCanvasBindings, parseCanvas } from '@mica-js/document/canvas';
-import {
-  deriveSchematicTopology,
-  deviceMetadataSymbol,
-  parseDeviceMetadata,
-  parseSchematic,
-} from '@mica-js/document/schematic';
+import { deriveSchematicTopology, parseSchematic } from '@mica-js/document/schematic';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import { validateMetadata } from '@mica-js/sdk/metadata';
+import { loadLegacyDevice } from './legacy/device-package.mjs';
+import {
+  legacyDevicePorts,
+  legacyDeviceSymbol,
+  loadDevicePackage,
+} from './legacy/schematic-metadata.mjs';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
+const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
 const BOARD_IMAGE = join(PROJECT, 'assets', 'ct107d-board.webp');
 const failures = [];
 const fail = (message) => failures.push(message);
@@ -32,16 +37,16 @@ const fail = (message) => failures.push(message);
 const canvas = parseCanvas(readFileSync(join(PROJECT, 'ct107d.cnv'), 'utf8'));
 const schematic = parseSchematic(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
 
-/** 器件引用 → 元数据目录：本工程芯片 + 相邻的三个器件工程。 */
-const deviceDir = (reference) =>
-  join(PROJECT, '..', 'devices', 'dist', 'devices', reference.slice('xbotlab:'.length));
-
-const definitions = new Map();
+/** 器件引用 → 统一器件包：清单、旧端口投影与合成符号。 */
+const devices = new Map();
 for (const reference of new Set(schematic.sheet.symbols.map((symbol) => symbol.device))) {
   if (reference.startsWith('builtin:')) continue;
-  const directory = deviceDir(reference);
-  const raw = JSON.parse(readFileSync(join(directory, 'device.json'), 'utf8'));
-  definitions.set(reference, parseDeviceMetadata(raw));
+  const { manifest } = loadDevicePackage(DEVICES_PROJECT, reference.slice('xbotlab:'.length));
+  devices.set(reference, {
+    manifest,
+    ports: legacyDevicePorts(manifest),
+    symbol: legacyDeviceSymbol(manifest),
+  });
 }
 const symbolsById = new Map(
   schematic.sheet.symbols
@@ -82,7 +87,7 @@ assertCanvasBindings(canvas, {
     hasSymbol: (id) => symbolsById.has(id),
     symbolPort(id, port) {
       const symbol = symbolsById.get(id);
-      return symbol === undefined ? undefined : definitions.get(symbol.device)?.ports?.[port];
+      return symbol === undefined ? undefined : devices.get(symbol.device)?.ports[port];
     },
   },
 });
@@ -509,11 +514,8 @@ if (headerMount.published.at(-1)?.payload !== false)
 // ---- 4. 按键网络 ------------------------------------------------------------------------
 const topology = deriveSchematicTopology(schematic, {
   devices: {
-    getDeviceName: (reference) => definitions.get(reference.raw)?.displayName,
-    getDeviceSymbol: (reference) => {
-      const definition = definitions.get(reference.raw);
-      return definition === undefined ? undefined : deviceMetadataSymbol(definition);
-    },
+    getDeviceName: (reference) => devices.get(reference.raw)?.manifest.displayName,
+    getDeviceSymbol: (reference) => devices.get(reference.raw)?.symbol,
   },
 });
 const netOfPin = new Map();
@@ -585,19 +587,16 @@ for (const net of PROBES) addPin(net, `probe_${net}`, 'y');
 
 const probeReadings = new Map();
 const buttonTopics = new Map(buttonSymbols.map((symbol) => [symbol.id, new Set()]));
+const buttonPackage = await loadLegacyDevice(join(DEVICES_PROJECT, 'dist'), 'push-button');
 const library = [];
 const instances = [];
 for (const symbol of buttonSymbols) {
-  const module = await import(
-    pathToFileURL(join(PROJECT, '..', 'devices', 'dist', 'devices', 'push-button', 'device.js'))
-      .href
-  );
   const listeners = buttonTopics.get(symbol.id);
   library.push({
     id: symbol.id,
-    model: module.model,
+    model: buttonPackage.module.model,
     create: (context) =>
-      module.create({
+      buttonPackage.module.create({
         ...context,
         topics: {
           ...context.topics,

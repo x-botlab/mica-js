@@ -37,7 +37,9 @@ interface Manifest {
   readonly view2d?: {
     readonly geometry?:
       | string
-      | { readonly pins?: Readonly<Record<string, { readonly outward?: { x: number; y: number } }>> };
+      | {
+          readonly pins?: Readonly<Record<string, { readonly outward?: { x: number; y: number } }>>;
+        };
   };
 }
 
@@ -96,8 +98,7 @@ function aggregate(entries: readonly (readonly [string, string])[]): string {
 
 const modules = new Map<string, Promise<DeviceModule>>();
 
-const eventTopic = (name: string): string =>
-  name.slice(5, 6).toLowerCase() + name.slice(6);
+const eventTopic = (name: string): string => name.slice(5, 6).toLowerCase() + name.slice(6);
 
 function legacyEvents(manifest: Manifest): Record<string, string> {
   return Object.fromEntries(
@@ -170,7 +171,11 @@ function loadDevice(id: string): Promise<DeviceModule> {
               topics: {
                 ...context.topics,
                 publish(topic, payload) {
-                  if (topic !== 'displayChange' || payload === null || typeof payload !== 'object') {
+                  if (
+                    topic !== 'displayChange' ||
+                    payload === null ||
+                    typeof payload !== 'object'
+                  ) {
                     context.topics.publish(topic, payload);
                     return;
                   }
@@ -251,7 +256,7 @@ export interface BenchBoard {
    * 仅在设备适配器 `sync` / 模型 `publish` 期间有效（调用方需在话题回调内读取）。
    */
   readonly topicOrigin: () => string | undefined;
-  /** 原理图、固件与所有器件产物的哈希清单；`source` 标明取自 `src` 而非 `dist`。 */
+  /** 原理图、固件与所有器件产物的哈希清单；`source` 标明取自 `dist`（统一器件包）。 */
   readonly fingerprints: BoardFingerprints;
   dispose(): void;
 }
