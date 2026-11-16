@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { SERVICE_PC } from '../../src/devices/iap15f2k61s2/kernel/tick.ts';
-import { decode } from '../../src/devices/iap15f2k61s2/kernel/decode.ts';
+import { SERVICE_PC } from '../../iap15f2k61s2/src/kernel/tick.ts';
+import { decode } from '../../iap15f2k61s2/src/kernel/decode.ts';
 import { createSourceHarness, runSource } from './source-harness.ts';
 
 /**

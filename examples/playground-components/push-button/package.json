@@ -1,0 +1,50 @@
+{
+  "name": "push-button",
+  "publisher": "demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "两脚抽象常开轻触开关：按下建立 1 Ω 支路，松开移除支路。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "Push Button",
+  "designatorPrefix": "SW",
+  "properties": {},
+  "pins": {
+    "a": {
+      "label": "A"
+    },
+    "b": {
+      "label": "B"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {
+      "press": {
+        "params": {
+          "type": "boolean"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "isPressed": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "boolean"
+        }
+      }
+    },
+    "events": {
+      "onDidPress": {
+        "type": "boolean"
+      }
+    }
+  }
+}

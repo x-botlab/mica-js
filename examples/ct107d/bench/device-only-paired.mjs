@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
  * CT107D 器件侧配对基准：固定当前引擎、原理图与两套固件，AB/BA 交替对比 HEAD 与工作树器件。
- * HEAD 用 `git ls-tree` + `git show <commit>:<path>` 导出旧版 CT107D 器件目录；worktree 复制
- * `examples/devices/src/devices`。两侧在独立临时目录里用当前 mica CLI 构建器件库，再把
+ * HEAD 用 `git ls-tree` + `git show <commit>:<path>` 导出 `examples/devices` 的统一包根；
+ * worktree 复制当前 `examples/devices`。两侧在独立临时目录里逐个单器件项目构建，再把
  * ct107d 的 verify-firmware 指向该构建产物；仅器件源码不同，每次测量是独立子进程。
+ * 该脚本只支持已迁移成 `<id>/package.json` 统一布局的提交；旧 `src/devices` 布局会明确失败。
  * 输出：原始 stdout/stderr、JSON 中位数与轨迹对比；metrics 核验固定固件的 sha/字节数、名与 faults，
  * 以及 execution/clock/tick/warmup/window、原理图摘要和 dist 器件模块摘要。
  * 轨迹是 verify-firmware 过滤计时行后的 CLI 汇总输出（LED/数码管/话题），不是逐电气沿断言。
@@ -19,6 +20,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
   symlinkSync,
@@ -31,14 +33,11 @@ import { fileURLToPath } from 'node:url';
 
 const PROJECT = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
 const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
-const DEVICE_SOURCE = join(DEVICES_PROJECT, 'src', 'devices');
+const DEVICE_SOURCE = DEVICES_PROJECT;
 const SCHEMATIC = join(PROJECT, 'ct107d.sch');
 const VERIFY_ENTRY = join(PROJECT, 'verify-firmware.mjs');
 const PROJECT_MODULES = join(DEVICES_PROJECT, 'node_modules');
-const DEVICE_PROJECT_FILES = [
-  [join(DEVICES_PROJECT, 'mica.config.ts'), 'mica.config.ts'],
-  [join(DEVICES_PROJECT, 'package.json'), 'package.json'],
-];
+const DEVICE_PROJECT_FILES = [[join(DEVICES_PROJECT, 'package.json'), 'package.json']];
 const BOARD_PROJECT_FILES = [
   [VERIFY_ENTRY, 'verify-firmware.mjs'],
   [SCHEMATIC, 'ct107d.sch'],
@@ -139,7 +138,7 @@ function gitStatus(path) {
 
 const REPO_ROOT = realpathSync(git(['rev-parse', '--show-toplevel']).trim());
 const DEVICE_REL = relative(REPO_ROOT, DEVICE_SOURCE).split(sep).join('/');
-const HEAD_DEVICE_REL = 'examples/ct107d/src/devices';
+const HEAD_DEVICE_REL = 'examples/devices';
 if (DEVICE_REL === '' || DEVICE_REL.startsWith('..'))
   throw new Error(`器件目录不在仓库内：${DEVICE_SOURCE}`);
 const CHILD_ENV = {
@@ -197,7 +196,7 @@ function prepareVariant(kind, commit, tempRoot) {
   const directory = join(tempRoot, kind);
   const devicesDirectory = join(directory, 'devices');
   const boardDirectory = join(directory, 'ct107d');
-  const destination = join(devicesDirectory, 'src', 'devices');
+  const destination = devicesDirectory;
   mkdirSync(destination, { recursive: true });
   mkdirSync(boardDirectory, { recursive: true });
   if (kind === 'head') {
@@ -206,10 +205,6 @@ function prepareVariant(kind, commit, tempRoot) {
       commit,
       'examples/ct107d/verify-firmware.mjs',
       join(boardDirectory, 'verify-firmware.mjs'),
-      [
-        ["join(PROJECT, 'src', 'devices'", "join(PROJECT, '..', 'devices', 'src', 'devices'"],
-        ["join(PROJECT, 'dist', 'devices'", "join(PROJECT, '..', 'devices', 'dist', 'devices'"],
-      ],
     );
     exportHeadFile(commit, 'examples/ct107d/ct107d.sch', join(boardDirectory, 'ct107d.sch'));
   } else {
@@ -246,21 +241,54 @@ function resolveMicaCli() {
   return realpathSync(found);
 }
 
+function deviceProjects(directory) {
+  return readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .filter((name) => {
+      try {
+        const manifest = JSON.parse(readFileSync(join(directory, name, 'package.json'), 'utf8'));
+        return (
+          typeof manifest.publisher === 'string' &&
+          typeof manifest.name === 'string' &&
+          typeof manifest.displayName === 'string'
+        );
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+}
+
 function buildVariant(variant, micaCli, outDir) {
   const started = performance.now();
-  const result = execute(
-    process.execPath,
-    [micaCli, 'build', '--root', variant.devicesDirectory],
-    variant.directory,
-  );
-  writeFileSync(join(outDir, `build-${variant.id}.stdout.txt`), result.stdout);
-  writeFileSync(join(outDir, `build-${variant.id}.stderr.txt`), result.stderr);
-  if (result.status !== 0)
-    throw new Error(
-      `${variant.label} mica build 失败（exit ${result.status}）；见 build-${variant.id}.stdout/stderr.txt` +
-        (result.stderr.trim() === '' ? '' : `\n${result.stderr.trim()}`),
+  const projects = deviceProjects(variant.devicesDirectory);
+  if (projects.length === 0)
+    throw new Error(`${variant.label} 不包含统一器件包；基准只支持统一包布局的提交`);
+  const stdout = [];
+  const stderr = [];
+  let status = 0;
+  for (const id of projects) {
+    const result = execute(
+      process.execPath,
+      [micaCli, 'build', '--root', join(variant.devicesDirectory, id)],
+      variant.directory,
     );
-  return { status: result.status, wallMs: round(performance.now() - started) };
+    stdout.push(`[${id}]\n${result.stdout}`);
+    stderr.push(`[${id}]\n${result.stderr}`);
+    if (result.status !== 0) {
+      status = result.status;
+      break;
+    }
+  }
+  writeFileSync(join(outDir, `build-${variant.id}.stdout.txt`), stdout.join('\n'));
+  writeFileSync(join(outDir, `build-${variant.id}.stderr.txt`), stderr.join('\n'));
+  if (status !== 0)
+    throw new Error(
+      `${variant.label} mica build 失败（exit ${status}）；见 build-${variant.id}.stdout/stderr.txt` +
+        (stderr.join('').trim() === '' ? '' : `\n${stderr.join('').trim()}`),
+    );
+  return { status, wallMs: round(performance.now() - started) };
 }
 
 /** 去掉含计时的头行；留下的板面汇总用于跨变体逐字比较。 */
@@ -311,7 +339,7 @@ function assertDistArtifacts(variant, caseDefinition, artifacts) {
     throw new Error(`${variant.label} ${caseDefinition.id} metrics 缺少 dist 摘要`);
   const ids = Object.keys(modules);
   const wrong = ids.filter((id) => {
-    const path = join(variant.devicesDirectory, 'dist', 'devices', id, 'device.js');
+    const path = join(variant.devicesDirectory, 'dist', id, 'model.js');
     return modules[id] !== sha256(readFileSync(path));
   });
   if (ids.length === 0 || wrong.length > 0)

@@ -112,6 +112,44 @@ describe('loadProjectConfig', () => {
     });
   });
 
+  it('detects a unified device manifest without a config file', async () => {
+    const root = await fixture();
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({
+        publisher: 'example',
+        name: 'probe',
+        displayName: 'Probe',
+        engines: { mica: '^0.3.0' },
+      }),
+      'utf8',
+    );
+    expect(await loadProjectConfig({ root })).toEqual({
+      root,
+      configFile: join(root, 'mica.config.ts'),
+      config: { sourceDir: 'src', outDir: 'dist', base: '/', device: {} },
+    });
+  });
+
+  it('prefers a local device manifest over an aggregate config above it', async () => {
+    const root = await fixture();
+    await marker(root);
+    const device = join(root, 'device');
+    await mkdir(device);
+    await writeFile(
+      join(device, 'package.json'),
+      JSON.stringify({
+        publisher: 'example',
+        name: 'probe',
+        displayName: 'Probe',
+        engines: { mica: '^0.3.0' },
+      }),
+      'utf8',
+    );
+    expect((await loadProjectConfig({ root: device })).root).toBe(device);
+    expect((await loadProjectConfig({ root: device })).config.device).toEqual({});
+  });
+
   it('returns the same object from defineConfig', () => {
     const config = { sourceDir: 'content' };
     expect(defineConfig(config)).toBe(config);
@@ -130,6 +168,8 @@ describe('loadProjectConfig', () => {
     ['server: {}', 'server'],
     ['plugins: []', 'plugins'],
     ['sorceDir: "src"', 'sorceDir'],
+    ['device: []', 'device'],
+    ['device: { model: "" }', 'device.model'],
   ])('rejects invalid config %s', async (source, field) => {
     const root = await fixture();
     await marker(root, `export default { ${source} };`);

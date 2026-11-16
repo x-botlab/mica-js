@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { deviceMetadataSymbol, parseDeviceMetadata } from '@mica-js/document/schematic';
-import { validateMetadata } from '@mica-js/sdk/metadata';
 import { circuit, readDigits } from './harness.ts';
 
 /**
@@ -12,7 +10,7 @@ import { circuit, readDigits } from './harness.ts';
  * 都走真实仿真板。段码按 bit0=a…bit7=dp 编码。
  */
 
-const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'seg4');
+const PACKAGE_DIR = join(import.meta.dirname, '..', '..', 'seg4');
 const SEGMENTS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp'] as const;
 const COMMONS = ['com1', 'com2', 'com3', 'com4'] as const;
 
@@ -22,70 +20,69 @@ const B = 2;
 const G = 64;
 const DP = 128;
 
-interface DeviceJson {
-  readonly kind: string;
-  readonly id: string;
+interface PackageJson {
+  readonly publisher: string;
+  readonly name: string;
   readonly displayName: string;
   readonly properties: Readonly<
     Record<string, { readonly type: string; readonly default?: unknown }>
   >;
   readonly pins: Readonly<Record<string, unknown>>;
-  readonly ports: Readonly<
-    Record<
-      string,
-      { readonly direction: string; readonly type: string; readonly delivery?: string }
-    >
-  >;
-  readonly symbol: {
-    readonly bounds: { readonly width: number; readonly height: number };
-    readonly graphics: readonly unknown[];
-    readonly pins: Readonly<Record<string, { readonly position: readonly [number, number] }>>;
+  readonly model: {
+    readonly methods: Readonly<Record<string, unknown>>;
+    readonly events: Readonly<Record<string, unknown>>;
   };
+  readonly view2d?: unknown;
 }
 
-const metadata = (): DeviceJson =>
-  JSON.parse(readFileSync(join(DEVICE_DIR, 'device.json'), 'utf8')) as DeviceJson;
+const metadata = (): PackageJson =>
+  JSON.parse(readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8')) as PackageJson;
 
 describe('器件声明', () => {
-  it('元数据通过 SDK 校验，ID 与目录名一致', () => {
-    expect(() => validateMetadata(metadata(), 'device', 'seg4')).not.toThrow();
-  });
-
-  it('声明 8 段 + 4 位共 12 根引脚、四个段码端口与三项属性', () => {
+  it('清单身份、属性与引脚与模型一致，纯 headless 暂无 view2d', () => {
     const device = metadata();
 
+    expect(device.publisher).toBe('example');
+    expect(device.name).toBe('seg4');
     expect(device.displayName).toBe('四位数码管');
     expect(Object.keys(device.pins).sort()).toEqual([...SEGMENTS, ...COMMONS].sort());
     expect(device.properties.forwardResistance?.default).toBe(500);
     expect(device.properties.commonAnode).toMatchObject({ type: 'boolean', default: false });
     expect(device.properties.settleUs).toMatchObject({ type: 'number', default: 50 });
-
-    for (const name of ['digit1', 'digit2', 'digit3', 'digit4'])
-      expect(device.ports[name]).toMatchObject({
-        direction: 'output',
-        type: 'number',
-        delivery: 'level',
-      });
+    expect(Object.keys(device.model.methods)).toEqual(['getDisplay']);
+    expect(Object.keys(device.model.events)).toEqual(['onDidDisplayChange']);
+    expect(device.view2d).toBeUndefined();
   });
+});
 
-  it('符号把段脚放在左侧、位脚放在右侧，并画出四位数字轮廓', () => {
-    const device = metadata();
+interface DisplayMethods {
+  getDisplay(params: null): { digit1: number; digit2: number; digit3: number; digit4: number };
+}
 
-    expect(Object.keys(device.symbol.pins).sort()).toEqual([...SEGMENTS, ...COMMONS].sort());
-    for (const pin of SEGMENTS) expect(device.symbol.pins[pin]?.position[0]).toBeLessThan(0);
-    for (const pin of COMMONS) expect(device.symbol.pins[pin]?.position[0]).toBeGreaterThan(0);
-    // 每位 7 段 + 1 个小数点。
-    expect(device.symbol.graphics.length).toBe(32);
-    expect(device.symbol.bounds.width).toBeGreaterThan(0);
-    expect(device.symbol.bounds.height).toBeGreaterThan(0);
-  });
+function displayMethods(value: unknown): DisplayMethods {
+  if (value === null || typeof value !== 'object') throw new Error('Missing model methods');
 
-  it('文档解析器能把符号转换成 12 个引脚锚点', () => {
-    const definition = parseDeviceMetadata(metadata());
-    const symbol = deviceMetadataSymbol(definition);
+  const method = (value as Record<string, unknown>).getDisplay;
 
-    expect(definition.id).toBe('seg4');
-    expect(Object.keys(symbol.pins).sort()).toEqual([...SEGMENTS, ...COMMONS].sort());
+  if (typeof method !== 'function') throw new Error('Missing getDisplay');
+
+  return value as DisplayMethods;
+}
+
+describe('状态查询', () => {
+  it('getDisplay 返回独立快照，修改结果不影响模型状态', async () => {
+    const built = await circuit();
+
+    try {
+      const methods = displayMethods(built.methods);
+      const first = methods.getDisplay(null);
+
+      first.digit1 = 0x7f;
+
+      expect(methods.getDisplay(null).digit1).toBe(0);
+    } finally {
+      built.dispose();
+    }
   });
 });
 
@@ -205,17 +202,20 @@ describe('扫描保持', () => {
     }
   });
 
-  it('适配器把四位段码发布到同名话题', async () => {
+  it('显示事件携带四位段码，未变化的位不重复发布', async () => {
     const built = await circuit();
 
     try {
       built.show(0x45, [1]);
       built.run(1_000_000_000);
 
-      expect(built.topics.digit2).toBe(0x45);
-      expect(built.history.digit2?.at(-1)).toBe(0x45);
-      // 未变化的位不重复发布。
-      expect(built.topics.digit1).toBe(0);
+      const latest = built.topics.display as { readonly digit1: number; readonly digit2: number };
+      const history = built.history.display?.at(-1) as { readonly digit2: number };
+
+      expect(latest.digit2).toBe(0x45);
+      expect(history.digit2).toBe(0x45);
+      // 未变化的位仍为 0。
+      expect(latest.digit1).toBe(0);
     } finally {
       built.dispose();
     }

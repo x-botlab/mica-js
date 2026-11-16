@@ -2,28 +2,44 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import {
-  deriveSchematicTopology,
-  deviceMetadataSymbol,
-  parseDeviceMetadata,
-  parseSchematic,
-} from '@mica-js/document/schematic';
+import { parseSchematic } from '@mica-js/document/schematic';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { DeviceLibraryEntry } from '@mica-js/sdk';
-import { compileDDL } from '@mica-js/sdk/ddl';
+import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
 import type { DeviceIR } from '@mica-js/sdk/model';
 import type { DeviceContext } from '@mica-js/simulator/device';
 
 /**
- * 整板基准夹具：按 `ct107d.sch` 的网表装配 51 颗器件，器件行为来自 `examples/devices/src/devices/`。
+ * 整板基准夹具：按 `ct107d.sch` 的网表装配 51 颗器件，器件行为来自
+ * `examples/devices/dist/<id>/model.js`。
  *
- * 与 `verify-schematic.mjs` 的差异只有一处：那里装的是 `examples/devices/dist/devices/<id>/device.js`，
- * 这里像器件库的测试夹具一样现场编译 `model.ddl` 并直接装载 `src/devices/<id>/index.ts`。
- * 基准因此不依赖 `mica build`，也不会被并行构建打断。
+ * 统一器件包通过显式旧消费投影接入：清单投影成旧符号/端口，模型事件映射回旧话题；
+ * 这不是融合运行时，也不把旧 `.sch v1` 当作 RFC 0024 文档。
  */
 
 const PROJECT = join(import.meta.dirname, '..');
-const DEVICE_ROOT = join(PROJECT, '..', 'devices', 'src', 'devices');
+const DEVICE_ROOT = join(PROJECT, '..', 'devices');
+
+interface Manifest {
+  readonly name: string;
+  readonly displayName: string;
+  readonly properties?: Readonly<
+    Record<
+      string,
+      { readonly type?: string; readonly addressSpace?: string; readonly loadAddress?: number }
+    >
+  >;
+  readonly pins?: Readonly<Record<string, unknown>>;
+  readonly model?: {
+    readonly events?: Readonly<Record<string, unknown>>;
+    readonly methods?: Readonly<Record<string, { readonly params?: { readonly type?: string } }>>;
+  };
+  readonly view2d?: {
+    readonly geometry?:
+      | string
+      | { readonly pins?: Readonly<Record<string, { readonly outward?: { x: number; y: number } }>> };
+  };
+}
 
 export interface Adapter {
   sync(batch: { readonly outputs: Readonly<Record<string, readonly unknown[]>> }): void;
@@ -41,19 +57,23 @@ export interface DeviceModule {
   readonly model: DeviceIR;
   readonly create: (context: DeviceContext) => Adapter;
   readonly fingerprints: DeviceFingerprints;
+  readonly firmware?: {
+    readonly name: string;
+    readonly addressSpace: string;
+    readonly loadAddress: number;
+  };
 }
 
 /**
  * 产物清单：原理图 + 固件 + 按实例 ID 排序后的模型/适配器/器件定义聚合哈希。
  *
- * 基准夹具实际读取的是 `examples/devices/src/devices/<id>/{model.ddl,index.ts,device.json}`，
- * 由 vitest 现场转译并编译 DDL；**不是** `dist/`。浏览器侧核对的是构建后的
- * `examples/devices/dist/devices/<id>/{device.js,device.json}`，两边格式不同，不能直接比较原始哈希。
- * 这里用 `source: 'src'` 明确口径；跨侧比较时请先确认同一构建输入。
+ * 基准夹具实际读取的是 `examples/devices/dist/<id>/{package.json,model.js}`。
+ * 浏览器侧核对的也是同一批构建产物；两边不比较源码哈希。
+ * 这里用 `source: 'dist'` 明确口径。
  */
 export interface BoardFingerprints {
-  /** 哈希来源：基准固定为 `src`（源码 + 现场编译的 DDL）。 */
-  readonly source: 'src';
+  /** 哈希来源：基准固定为 `dist`（构建后的统一器件包）。 */
+  readonly source: 'dist';
   readonly schematic: string;
   readonly firmware: string;
   readonly models: string;
@@ -76,33 +96,110 @@ function aggregate(entries: readonly (readonly [string, string])[]): string {
 
 const modules = new Map<string, Promise<DeviceModule>>();
 
+const eventTopic = (name: string): string =>
+  name.slice(5, 6).toLowerCase() + name.slice(6);
+
+function legacyEvents(manifest: Manifest): Record<string, string> {
+  return Object.fromEntries(
+    Object.keys(manifest.model?.events ?? {}).map((name) => [name, eventTopic(name)]),
+  );
+}
+
+function legacyInputs(manifest: Manifest): Record<string, string> {
+  const aliases: Record<string, Record<string, string>> = {
+    jumper: { control: 'setClosed' },
+    'jumper-2x3': { control2: 'selectVs1838' },
+  };
+  const table = aliases[manifest.name] ?? {};
+  const result: Record<string, string> = {};
+  for (const [name, method] of Object.entries(manifest.model?.methods ?? {})) {
+    if (method.params === undefined || method.params.type === 'null') continue;
+    const port = Object.entries(table).find(([, target]) => target === name)?.[0] ?? name;
+    result[port] = name;
+  }
+  return result;
+}
+
 function loadDevice(id: string): Promise<DeviceModule> {
   const cached = modules.get(id);
 
   if (cached !== undefined) return cached;
 
-  const directory = join(DEVICE_ROOT, id);
+  const directory = join(DEVICE_ROOT, 'dist', id);
   const loaded = (async (): Promise<DeviceModule> => {
-    const [modelSource, codeSource, definitionSource] = await Promise.all([
-      Promise.resolve(readFileSync(join(directory, 'model.ddl'))),
-      Promise.resolve(readFileSync(join(directory, 'index.ts'))),
-      Promise.resolve(readFileSync(join(directory, 'device.json'))),
+    const [manifestSource, codeSource] = await Promise.all([
+      Promise.resolve(readFileSync(join(directory, 'package.json'))),
+      Promise.resolve(readFileSync(join(directory, 'model.js'))),
     ]);
-    const [model, adapter] = await Promise.all([
-      compileDDL(modelSource.toString('utf8'), { uri: `mica:devices/${id}/model.ddl` }),
-      import(pathToFileURL(join(directory, 'index.ts')).href) as Promise<{
-        default: (context: DeviceContext) => Adapter;
-      }>,
-    ]);
+    const manifest = JSON.parse(manifestSource.toString('utf8')) as Manifest;
+    const module = (await import(pathToFileURL(join(directory, 'model.js')).href)) as {
+      readonly model: DeviceIR;
+      readonly create: (context: DeviceContext) => Adapter;
+    };
+    const firmware = Object.entries(manifest.properties ?? {}).filter(
+      ([, property]) => property.type === 'firmware',
+    );
+    const create = adaptModelFactory(module.create as never, {
+      events: legacyEvents(manifest),
+      inputs: legacyInputs(manifest),
+      ...(firmware.length === 0
+        ? {}
+        : {
+            props: (context: DeviceContext) => {
+              const props = { ...context.props } as Record<string, unknown>;
+              for (const [name, property] of firmware) {
+                const value = props[name];
+                if (!(value instanceof Uint8Array)) continue;
+                props[name] = firmwareImage([
+                  {
+                    addressSpace: property.addressSpace!,
+                    address: property.loadAddress!,
+                    data: value,
+                  },
+                ]);
+              }
+              return props;
+            },
+          }),
+    });
+    const legacyCreate =
+      manifest.name === 'seg4'
+        ? (context: DeviceContext) =>
+            create({
+              ...context,
+              topics: {
+                ...context.topics,
+                publish(topic, payload) {
+                  if (topic !== 'displayChange' || payload === null || typeof payload !== 'object') {
+                    context.topics.publish(topic, payload);
+                    return;
+                  }
+                  const values = payload as Record<string, unknown>;
+                  for (const digit of ['digit1', 'digit2', 'digit3', 'digit4'])
+                    if (typeof values[digit] === 'number')
+                      context.topics.publish(digit, values[digit]);
+                },
+              },
+            })
+        : create;
 
     return {
-      model,
-      create: adapter.default,
+      model: module.model,
+      create: legacyCreate as (context: DeviceContext) => Adapter,
       fingerprints: {
-        model: sha256(modelSource),
+        model: sha256(codeSource),
         code: sha256(codeSource),
-        definition: sha256(definitionSource),
+        definition: sha256(manifestSource),
       },
+      ...(firmware.length === 0
+        ? {}
+        : {
+            firmware: {
+              name: firmware[0]![0],
+              addressSpace: firmware[0]![1].addressSpace!,
+              loadAddress: firmware[0]![1].loadAddress!,
+            },
+          }),
     };
   })();
 
@@ -180,63 +277,44 @@ interface Description {
 
 let described: Promise<Description> | undefined;
 
-/** 解析原理图并折出网表；只按器件 id 读取 `device.json`，不依赖构建产物。 */
+/** 解析原理图实例与生成好的净网表；仿真夹具不依赖器件符号或编辑器元数据。 */
 function describeBoard(): Promise<Description> {
   if (described !== undefined) return described;
 
   described = (async (): Promise<Description> => {
     const schematic = parseSchematic(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
-    const definitions = new Map<string, ReturnType<typeof parseDeviceMetadata>>();
+    const netlist = JSON.parse(
+      readFileSync(join(PROJECT, 'ct107d.netlist.json'), 'utf8'),
+    ) as Record<string, readonly string[]>;
+    const symbols = schematic.sheet.symbols.filter(
+      (symbol) => symbol.designator && symbol.device.startsWith('xbotlab:'),
+    );
+    const byDesignator = new Map<string, (typeof symbols)[number]>();
+    for (const symbol of symbols) byDesignator.set(symbol.designator!, symbol);
 
-    for (const symbol of schematic.sheet.symbols) {
-      if (!symbol.device.startsWith('xbotlab:')) continue;
-
-      const id = referenceId(symbol.device);
-
-      if (definitions.has(id)) continue;
-      definitions.set(
-        id,
-        parseDeviceMetadata(JSON.parse(readFileSync(join(DEVICE_ROOT, id, 'device.json'), 'utf8'))),
-      );
-    }
-
-    const topology = deriveSchematicTopology(schematic, {
-      devices: {
-        getDeviceName: (reference) => definitions.get(referenceId(reference.raw))?.displayName,
-        getDeviceSymbol: (reference) => {
-          const definition = definitions.get(referenceId(reference.raw));
-
-          return definition === undefined ? undefined : deviceMetadataSymbol(definition);
-        },
-      },
-    });
-
-    const components = schematic.sheet.symbols
-      .filter((symbol) => symbol.designator)
-      .map((symbol) => ({
-        id: symbol.id,
-        device: referenceId(symbol.device),
-        props: (symbol.properties ?? {}) as Readonly<Record<string, unknown>>,
-      }));
-
-    const nets = topology.nets.map((net, index) => ({
+    const components = symbols.map((symbol) => ({
+      id: symbol.id,
+      device: referenceId(symbol.device),
+      props: (symbol.properties ?? {}) as Readonly<Record<string, unknown>>,
+    }));
+    const nets = Object.entries(netlist).map(([name, members], index) => ({
       id: `net:${index}`,
-      pins: net.members
-        .filter((member) => member.kind === 'pin')
-        .map((member) => ({ instance: member.symbolId, pin: member.pinId })),
-      // 电源轨换成理想电压源；`P42/WR` 由原理图里的 J13（WR 选择跳线）接到 GND。
-      ...(net.name === 'VCC' ? { voltage: 5 } : net.name === 'GND' ? { voltage: 0 } : {}),
+      pins: members.map((member) => {
+        const separator = member.lastIndexOf('.');
+        const designator = member.slice(0, separator);
+        const pin = member.slice(separator + 1);
+        const symbol = byDesignator.get(designator);
+        if (symbol === undefined)
+          throw new Error(`netlist ${name}: unknown designator ${JSON.stringify(designator)}`);
+        return { instance: symbol.id, pin };
+      }),
+      ...(name === 'VCC' ? { voltage: 5 } : name === 'GND' ? { voltage: 0 } : {}),
     }));
 
-    // 板面话题在 `createBoard` 这条运行时路径上只带端口名（`latch`、`digit1` …）。
-    // 位号只作为人读标签；话题唯一键由实例 ID + 端口组成，避免同名位号互相覆盖。
     const designators = new Map<string, string>();
     const deviceTypes = new Map<string, string>();
-
-    for (const symbol of schematic.sheet.symbols) {
-      if (!symbol.designator) continue;
-
-      designators.set(symbol.id, symbol.designator);
+    for (const symbol of symbols) {
+      designators.set(symbol.id, symbol.designator!);
       deviceTypes.set(symbol.id, referenceId(symbol.device));
     }
 
@@ -254,11 +332,28 @@ export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoa
 
   for (const component of components) {
     const device = await loadDevice(component.device);
+    const create =
+      device.firmware === undefined
+        ? device.create
+        : (context: DeviceContext) =>
+            device.create({
+              ...context,
+              props: {
+                ...context.props,
+                [device.firmware!.name]: firmwareImage([
+                  {
+                    addressSpace: device.firmware!.addressSpace,
+                    address: device.firmware!.loadAddress,
+                    data: options.firmware,
+                  },
+                ]),
+              },
+            });
 
     entries.push({
       id: component.id,
       model: device.model,
-      create: device.create as unknown as DeviceLibraryEntry['create'],
+      create: create as unknown as DeviceLibraryEntry['create'],
     });
   }
 
@@ -267,13 +362,14 @@ export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoa
 
     if (!('firmware' in props)) return { id: component.id, type: component.id, props };
 
-    // 原理图里 `firmware` 是 `{ src, mode }` 资源引用，装配侧换成真实字节。
+    // 旧原理图把 firmware 保存为资源引用；运行时通过上面的工厂包装注入 FirmwareImage，
+    // 不再把裸字节放进旧板会校验的实例属性。
     delete props.firmware;
 
     return {
       id: component.id,
       type: component.id,
-      props: { ...props, ...options.props, firmware: options.firmware } as never,
+      props: { ...props, ...options.props },
     };
   });
 
@@ -300,7 +396,7 @@ export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoa
     }),
   );
   const fingerprints: BoardFingerprints = {
-    source: 'src',
+    source: 'dist',
     schematic: sha256(readFileSync(join(PROJECT, 'ct107d.sch'))),
     firmware: sha256(options.firmware),
     models: aggregate(fingerprintEntries.map(([id, item]) => [id, item.model] as const)),

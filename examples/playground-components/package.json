@@ -3,14 +3,16 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Playground 演示器件：每个子目录是一套统一器件开发项目",
   "scripts": {
-    "build": "mica build",
-    "typecheck": "mica prepare && tsc --noEmit",
+    "prepare:types": "node scripts/components.mjs prepare",
+    "build": "node scripts/components.mjs build",
+    "typecheck": "node scripts/components.mjs typecheck",
     "test": "vitest run"
   },
   "devDependencies": {
-    "@mica-js/sdk": "workspace:*",
     "@mica-js/ddl": "workspace:*",
+    "@mica-js/sdk": "workspace:*",
     "@mica-js/simulator": "workspace:*",
     "@types/node": "^24.19.2",
     "typescript": "catalog:",

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { adaptModelFactory } from '@mica-js/sdk/device';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import type { DeviceIR } from '@mica-js/sdk/model';
 import { MASTER_MODEL, SINK_MODEL } from './master';
@@ -12,15 +13,14 @@ import { MASTER_MODEL, SINK_MODEL } from './master';
  * 反应、通道与话题都是运行时行为，不做替身。
  */
 
-const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'ili9325');
+const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'ili9325', 'src');
 const ARTIFACT_JS = join(
   import.meta.dirname,
   '..',
   '..',
   'dist',
-  'devices',
   'ili9325',
-  'device.js',
+  'model.js',
 );
 
 export const PANEL_WIDTH = 320;
@@ -73,6 +73,8 @@ export interface Circuit {
   readonly stats: ChannelStats;
   readonly reads: readonly number[];
   readonly faults: readonly string[];
+  /** 统一模型实例方法；测试用清单形状读取完整帧缓冲。 */
+  readonly methods: unknown;
   readonly time: number;
   /** 一帧的合帧周期（ps）。 */
   readonly framePeriod: number;
@@ -108,21 +110,54 @@ function loadSource(): Promise<DeviceModule> {
         uri: 'mica:devices/ili9325/model.ddl',
       }),
       import(pathToFileURL(join(DEVICE_DIR, 'index.ts')).href) as Promise<{
-        default: (context: never) => Adapter;
+        create: unknown;
       }>,
     ]);
 
-    return { model, create: adapter.default };
+    return { model, create: adapted(adapter.create) };
   })();
 
   return sourceCache;
 }
 
+/** 统一帧事件 -> 旧 `framebuffer` 话题：8 字节像素头 + 行优先像素。 */
+function adapted(factory: unknown): (context: never) => Adapter {
+  return adaptModelFactory(factory as never, {
+    events: {
+      onDidFrame: {
+        topic: 'framebuffer',
+        transform: (value) => {
+          const frame = value as {
+            readonly x: number;
+            readonly y: number;
+            readonly width: number;
+            readonly height: number;
+            readonly pixels: Uint8Array;
+          };
+          const payload = new Uint8Array(8 + frame.pixels.length);
+          const header = new DataView(payload.buffer);
+
+          header.setUint16(0, frame.x, true);
+          header.setUint16(2, frame.y, true);
+          header.setUint16(4, frame.width, true);
+          header.setUint16(6, frame.height, true);
+          payload.set(frame.pixels, 8);
+
+          return payload;
+        },
+      },
+    },
+  }) as unknown as (context: never) => Adapter;
+}
+
 function loadArtifact(): Promise<DeviceModule> {
   artifactCache ??= (async () => {
-    const module = (await import(pathToFileURL(ARTIFACT_JS).href)) as DeviceModule;
+    const module = (await import(pathToFileURL(ARTIFACT_JS).href)) as {
+      model: DeviceIR;
+      create: unknown;
+    };
 
-    return { model: module.model, create: module.create };
+    return { model: module.model, create: adapted(module.create) };
   })();
 
   return artifactCache;
@@ -205,11 +240,14 @@ export async function circuit(options: CircuitOptions = {}): Promise<Circuit> {
   const faults: string[] = [];
   const pending: Op[] = [];
   let queue: ((value: unknown) => void) | undefined;
+  let methods: unknown;
 
   const instrument = (context: {
     readonly topics: { publish(topic: string, payload: unknown): void };
   }) => {
     const adapter = device.create(context as never);
+
+    methods = (adapter as typeof adapter & { readonly methods?: unknown }).methods;
 
     return {
       sync(batch: {
@@ -325,6 +363,7 @@ export async function circuit(options: CircuitOptions = {}): Promise<Circuit> {
     stats,
     reads,
     faults,
+    methods,
     framePeriod: Math.round(1_000_000_000_000 / refreshRate),
     get time() {
       return board.time;

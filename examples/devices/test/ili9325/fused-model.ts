@@ -37,9 +37,9 @@ function body(source: string): string {
 /** Assemble source, rather than copying the evolving CPU/LCD implementations. */
 export function fusedSource(): string {
   const mcu = body(
-    readFileSync(resolve(ROOT, 'src', 'devices', 'stm32g431rbt6', 'model.ddl'), 'utf8'),
+    readFileSync(resolve(ROOT, 'stm32g431rbt6', 'src', 'model.ddl'), 'utf8'),
   );
-  let lcd = body(readFileSync(resolve(ROOT, 'src/devices/ili9325/model.ddl'), 'utf8'));
+  let lcd = body(readFileSync(resolve(ROOT, 'ili9325', 'src', 'model.ddl'), 'utf8'));
   // LCD pins become internal wires. Keep its register/GRAM/address/frame code unchanged.
   lcd = lcd.replace(/^ {2}pin \w+(?:\([^;]*\))?;$/gm, '');
   lcd = lcd.replace(

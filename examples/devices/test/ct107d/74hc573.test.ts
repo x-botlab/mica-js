@@ -16,10 +16,7 @@ const DATA = [0, 1, 2, 3, 4, 5, 6, 7] as const;
 const PROBES = DATA.map((bit) => `q${bit}Probe`);
 const SOURCES = ['leSrc', 'oeSrc', ...DATA.map((bit) => `d${bit}Src`)];
 const STEP = 1_000_000;
-const DEVICE_SOURCE = readFileSync(
-  new URL('../../src/devices/74hc573/model.ddl', import.meta.url),
-  'utf8',
-);
+const DEVICE_SOURCE = readFileSync(new URL('../../74hc573/src/model.ddl', import.meta.url), 'utf8');
 
 /** 由探针网络读取 Q0–Q7，不依赖器件内部 `stored`。 */
 function readQ(board: TestBoard): number {
@@ -225,14 +222,14 @@ let instrumented: Promise<DeviceModule> | undefined;
 
 /** 编译一次测试期模型；夹具只替换模型，适配器仍用生产实现。 */
 function instrumentedDevice(): Promise<DeviceModule> {
-  instrumented ??= (async () => {
+  const task = (instrumented ??= (async () => {
     const device = await loadSourceDevice('74hc573');
     const model = await compileDDL(instrumentedSource(DEVICE_SOURCE));
 
-    return { model, create: device.create };
-  })();
+    return { ...device, model };
+  })());
 
-  return instrumented;
+  return task;
 }
 
 async function instrumentedBoard(): Promise<TestBoard> {
@@ -273,14 +270,12 @@ function poweredNets(byte: number): NetDescription[] {
 }
 
 describe('74HC573', () => {
-  it('元数据声明 20 根引脚与 latch 端口', () => {
-    const metadata = readMetadata('74hc573') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports: Readonly<Record<string, { readonly type: string }>>;
-    };
+  it('清单声明 20 根引脚与 latch 查询/事件', () => {
+    const metadata = readMetadata('74hc573');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(20);
-    expect(metadata.ports.latch?.type).toBe('number');
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(20);
+    expect(metadata.model.methods.getLatch).toBeDefined();
+    expect(metadata.model.events.onDidLatch).toMatchObject({ type: 'number' });
   });
 
   it('LE 高时透明跟随 D，下降沿锁存当时的字节', async () => {
@@ -424,7 +419,7 @@ describe('74HC573', () => {
 
       expect(baseline).toBe(0);
 
-      board.send('dut', 'probeCommand', 1);
+      board.injectInput('dut', 'probeCommand', 1);
       board.run(STEP);
       expect(wakes(board)).toBe(baseline);
       expect(board.faults).toEqual([]);
@@ -479,7 +474,7 @@ describe('74HC573', () => {
       driveData(board, 0x00);
       board.run(STEP);
 
-      board.send('dut', 'probeCommand', 1);
+      board.injectInput('dut', 'probeCommand', 1);
       board.run(STEP);
       expect(board.faults).toEqual([]);
 
@@ -502,7 +497,7 @@ describe('74HC573', () => {
       expect(board.faults).toEqual([]);
 
       // 同一批内启用探针并拉低 LE，形成一次带探针的下降沿锁存捕获。
-      board.send('dut', 'probeCommand', 1);
+      board.injectInput('dut', 'probeCommand', 1);
       driveLevel(board, 'leSrc', false);
       expect(() => board.run(STEP)).toThrow('dataByte evaluated');
 

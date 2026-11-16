@@ -3,13 +3,13 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Mica 示例器件库：CT107D 板级芯片、IAP15F2K61S2、STM32G431RBT6、ILI9325、seg4 与 blue-led",
+  "description": "Mica 统一器件开发项目集合：一器件一 package，聚合 prepare/build/typecheck 与板级测试",
   "scripts": {
-    "prepare:types": "mica prepare",
-    "build": "mica build",
-    "typecheck": "mica prepare && tsc --noEmit",
-    "test": "mica build && pnpm --dir ../ideal-led run build && vitest run",
-    "bench": "mica build && pnpm --dir ../ideal-led run build && vitest run --config vitest.perf.config.ts"
+    "prepare:types": "node scripts/for-each-device.mjs prepare",
+    "build": "node scripts/for-each-device.mjs build",
+    "typecheck": "node scripts/for-each-device.mjs prepare && node scripts/for-each-device.mjs typecheck && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run build && pnpm --dir ../ideal-led run build && vitest run",
+    "bench": "pnpm run build && pnpm --dir ../ideal-led run build && vitest run --config vitest.perf.config.ts"
   },
   "devDependencies": {
     "@mica-js/document": "workspace:*",

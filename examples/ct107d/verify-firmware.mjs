@@ -2,7 +2,9 @@
  * 固件联调：把一个或多个 Intel HEX（或裸 `.bin`）装进 `ct107d.sch` 整板跑联合仿真，
  * 打印板面可观测输出（LED 亮度、数码管段码、锁存器/译码器话题、串行器件话题）。
  *
- * 与 `verify-schematic.mjs` 一样装载 `examples/devices/dist/devices/<id>/device.js`，因此先构建器件库。
+ * 与 `verify-schematic.mjs` 一样装载 `examples/devices/dist/<id>/model.js`，因此先构建器件库。
+ * 统一器件包通过 `legacy/device-package.mjs` 的显式旧消费投影接入；这里不把旧 `.sch v1`
+ * 当作 RFC 0024 的 `.sch v2`，也不声称已迁移到融合运行时。
  * 与它的区别是固件由命令行给出，而不是用 `assets/` 里自带的演示固件。
  *
  * 用法：
@@ -50,16 +52,12 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import {
-  deriveSchematicTopology,
-  deviceMetadataSymbol,
-  parseDeviceMetadata,
-  parseSchematic,
-} from '@mica-js/document/schematic';
+import { fileURLToPath } from 'node:url';
+import { parseSchematic } from '@mica-js/document/schematic';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import { performance } from 'node:perf_hooks';
 import { TextEncoder } from 'node:util';
+import { loadLegacyDevice, legacyCreateWithFirmware } from './legacy/device-package.mjs';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
 
@@ -178,27 +176,28 @@ const CHIP_IDS = [
 ];
 
 const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
-const deviceModulePath = (id) => join(DEVICES_PROJECT, 'dist', 'devices', id, 'device.js');
-const loadDefinition = (id) =>
-  parseDeviceMetadata(
-    JSON.parse(readFileSync(join(DEVICES_PROJECT, 'src', 'devices', id, 'device.json'), 'utf8')),
-  );
-const loadModule = (id) => import(pathToFileURL(deviceModulePath(id)).href);
+const DEVICES_DIST = join(DEVICES_PROJECT, 'dist');
+const loadDevice = (id) => loadLegacyDevice(DEVICES_DIST, id);
+const loadModuleFile = (id) => join(DEVICES_DIST, id, 'model.js');
 
 const devices = new Map();
 const deviceModuleSha256 = {};
 for (const id of CHIP_IDS) {
   deviceModuleSha256[id] = createHash('sha256')
-    .update(readFileSync(deviceModulePath(id)))
+    .update(readFileSync(loadModuleFile(id)))
     .digest('hex');
-  devices.set(`xbotlab:${id}`, { definition: loadDefinition(id), module: await loadModule(id) });
+  const loaded = await loadDevice(id);
+  devices.set(`xbotlab:${id}`, {
+    manifest: loaded.manifest,
+    module: loaded.module,
+  });
 }
 
 const schematicText = readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8');
 const schematic = parseSchematic(schematicText);
 const artifacts = {
   source: 'dist',
-  note: 'device modules from examples/devices/dist/devices/<id>/device.js; metadata from examples/devices/src/devices/<id>/device.json; firmware from the CLI input',
+  note: 'device modules from examples/devices/dist/<id>/model.js; unified factory/event adapter; firmware from the CLI input',
   schematicSha256: createHash('sha256').update(schematicText).digest('hex'),
   deviceModulesSha256: deviceModuleSha256,
 };
@@ -213,22 +212,29 @@ const round = (value, digits = 3) => {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
 };
-const provider = {
-  getDeviceName: (reference) => devices.get(reference.raw)?.definition.displayName,
-  getDeviceSymbol: (reference) => {
-    const device = devices.get(reference.raw);
-    return device === undefined ? undefined : deviceMetadataSymbol(device.definition);
-  },
-};
-const topology = deriveSchematicTopology(schematic, { devices: provider });
+const netlist = JSON.parse(
+  readFileSync(join(PROJECT, 'ct107d.netlist.json'), 'utf8'),
+);
 const components = schematic.sheet.symbols
-  .filter((symbol) => symbol.designator)
+  .filter((symbol) => symbol.designator && symbol.device.startsWith('xbotlab:'))
   .filter(
     (symbol) =>
       options.without.size === 0 || !options.without.has(symbol.device.replace(/^xbotlab:/, '')),
   );
 const designatorOf = new Map(components.map((symbol) => [symbol.id, symbol.designator]));
 const deviceOf = new Map(components.map((symbol) => [symbol.id, symbol.device]));
+const byDesignator = new Map(components.map((symbol) => [symbol.designator, symbol]));
+const nets = Object.entries(netlist).map(([name, members]) => ({
+  name,
+  pins: members.flatMap((member) => {
+    const separator = member.lastIndexOf('.');
+    const symbol = byDesignator.get(member.slice(0, separator));
+    return symbol === undefined
+      ? []
+      : [{ instance: symbol.id, pin: member.slice(separator + 1) }];
+  }),
+  ...(name === 'VCC' ? { voltage: 5 } : name === 'GND' ? { voltage: 0 } : {}),
+}));
 const MCU_REF = 'xbotlab:iap15f2k61s2';
 
 const asText = (payload) => {
@@ -272,11 +278,13 @@ const TRAILED = new Set([
 /** 字节流不去重，保留每个线上字节及其时刻。 */
 const STREAMED = new Set(['uart1Tx', 'uart1Rx', 'tx', 'rx']);
 
-function instrument(symbol, device) {
+function instrument(symbol, device, firmware) {
   const topics = new Map();
   const trails = new Map();
   captured.set(symbol.id, topics);
   history.set(symbol.id, trails);
+  const create =
+    symbol.device === MCU_REF ? legacyCreateWithFirmware(device, firmware) : device.module.create;
 
   return (context) => {
     inputsOf.set(symbol.id, context.inputs);
@@ -304,19 +312,17 @@ function instrument(symbol, device) {
         },
       },
     };
-    return device.module.create(wrapped);
+    return create(wrapped);
   };
 }
 
 function buildBoard(firmware) {
   const present = new Set(components.map((symbol) => symbol.id));
-  const nets = topology.nets.map((net, index) => ({
+  const boardNets = nets.map((net, index) => ({
     id: `net:${index}`,
     name: net.name,
-    pins: net.members
-      .filter((member) => member.kind === 'pin' && present.has(member.symbolId))
-      .map((member) => ({ instance: member.symbolId, pin: member.pinId })),
-    ...(net.name === 'VCC' ? { voltage: 5 } : net.name === 'GND' ? { voltage: 0 } : {}),
+    pins: net.pins.filter((pin) => present.has(pin.instance)),
+    ...(net.voltage === undefined ? {} : { voltage: net.voltage }),
   }));
   const instances = components.map((symbol) => {
     const rest = { ...(symbol.properties ?? {}) };
@@ -325,7 +331,7 @@ function buildBoard(firmware) {
       return {
         id: symbol.id,
         type: symbol.id,
-        props: { ...rest, clockFrequency: options.clock, firmware },
+        props: { ...rest, clockFrequency: options.clock },
       };
     }
     if (symbol.device === 'xbotlab:ultrasonic' && options.distance !== undefined)
@@ -335,7 +341,11 @@ function buildBoard(firmware) {
   });
   const entries = components.map((symbol) => {
     const device = devices.get(symbol.device);
-    return { id: symbol.id, model: device.module.model, create: instrument(symbol, device) };
+    return {
+      id: symbol.id,
+      model: device.module.model,
+      create: instrument(symbol, device, firmware),
+    };
   });
 
   const library = createDeviceLibrary(entries);
@@ -345,7 +355,7 @@ function buildBoard(firmware) {
     {
       instances,
       // 装配只认 id/pins/voltage；网名只用于注入理想电源。
-      nets: nets.map(({ id, pins, voltage }) =>
+      nets: boardNets.map(({ id, pins, voltage }) =>
         voltage === undefined ? { id, pins } : { id, pins, voltage },
       ),
     },

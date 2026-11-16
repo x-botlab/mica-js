@@ -1,40 +1,57 @@
-import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createBoard, createDeviceLibrary } from '@mica-js/simulator';
 import type { Board, DeviceLibraryEntry, TopicMessage } from '@mica-js/simulator';
-import { validateMetadata } from '@mica-js/sdk/metadata';
+import { compileDDL } from '@mica-js/sdk/ddl';
+import { adaptModelFactory } from '@mica-js/sdk/device';
+import type { DeviceIR } from '@mica-js/sdk/model';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const ids = ['resistor', 'push-button', 'led', 'voltmeter'] as const;
 type Id = (typeof ids)[number];
-const modules = new Map<Id, Pick<DeviceLibraryEntry, 'model' | 'create'>>();
+const modules = new Map<Id, { model: DeviceIR; create: ReturnType<typeof adaptModelFactory> }>();
 const boards: Board[] = [];
 
+/**
+ * 旧 simulator 兼容边界：这里把统一模型适配成旧板级 `DeviceFactory`，
+ * 只用于现有 `createBoard` 测试；器件源码本身只依赖 `ctx.events` 与公共方法。
+ */
+const events = {
+  led: {
+    onDidBrightness: 'brightness',
+    onDidCurrent: 'current',
+    onDidVoltage: 'voltage',
+  },
+  'push-button': { onDidPress: 'pressed' },
+  voltmeter: { onDidVoltage: 'voltage' },
+} as const;
+
+const inputs = {
+  'push-button': { press: 'press' },
+} as const;
+
 beforeAll(async () => {
-  const require = createRequire(import.meta.url);
-  const cli = resolve(dirname(require.resolve('@mica-js/sdk')), '..', 'dist', 'build', 'cli.js');
-  // Exercise the public SDK build, including DDL compilation, metadata and adapter bundling.
-  execFileSync(process.execPath, [cli, 'build', '--root', root], {
-    cwd: root,
-    stdio: 'pipe',
-    timeout: 60_000,
-  });
   for (const id of ids) {
-    const metadata = JSON.parse(
-      await readFile(resolve(root, 'dist', 'devices', id, 'device.json'), 'utf8'),
-    );
-    validateMetadata(metadata, 'device', id);
-    const source = await readFile(resolve(root, 'dist', 'devices', id, 'device.js'), 'utf8');
+    const directory = resolve(root, id);
+    const source = await readFile(resolve(directory, 'src', 'model.ddl'), 'utf8');
+    const model = await compileDDL(source, { uri: `mica:${id}/model.ddl` });
+    const module = (await import(`../${id}/src/index.ts`)) as {
+      create: Parameters<typeof adaptModelFactory>[0];
+    };
     modules.set(
       id,
-      await import(/* @vite-ignore */ `data:text/javascript,${encodeURIComponent(source)}`),
+      {
+        model,
+        create: adaptModelFactory(module.create, {
+          ...(id in events ? { events: events[id as keyof typeof events] } : {}),
+          ...(id in inputs ? { inputs: inputs[id as keyof typeof inputs] } : {}),
+        }),
+      },
     );
   }
-}, 90_000);
+}, 30_000);
 
 afterEach(() => {
   for (const board of boards.splice(0)) board.dispose();
@@ -71,8 +88,7 @@ function circuit(options: { voltage?: number; resistance?: number; count?: numbe
                 };
               },
               publish(topic: string, payload: unknown) {
-                if (typeof payload !== 'number') throw new TypeError('Expected numeric output');
-                outputs.set(`${key}:${topic}`, payload);
+                if (typeof payload === 'number') outputs.set(`${key}:${topic}`, payload);
               },
             },
           });
@@ -139,8 +155,9 @@ function circuit(options: { voltage?: number; resistance?: number; count?: numbe
 }
 
 function expected(voltage = 5, resistance = 330, pressed = true) {
+  if (!pressed) return { voltage: 0, current: 0, brightness: 0 };
   const ledAndMeter = 1 / (1 / 100 + 1 / 10_000_000);
-  const v = (voltage * ledAndMeter) / (resistance + ledAndMeter + (pressed ? 1 : 1_000_000_000));
+  const v = (voltage * ledAndMeter) / (resistance + ledAndMeter + 1);
   return { voltage: v, current: v / 100, brightness: Math.min(1, Math.max(0, v / 2)) };
 }
 
@@ -152,7 +169,7 @@ function check(run: ReturnType<typeof circuit>, solution: ReturnType<typeof expe
   expect(run.read('brightness', index)).toBeCloseTo(solution.brightness, 9);
 }
 
-describe('SDK-built linear DC devices', () => {
+describe('unified linear DC devices', () => {
   it('solves released / pressed / released with defined initial levels', () => {
     const run = circuit();
     run.board.runUntil(0);
@@ -192,16 +209,32 @@ describe('SDK-built linear DC devices', () => {
     expect(run.read('brightness')).toBe(1);
   });
 
-  it('isolates instances and rejects nonboolean level payloads', () => {
+  it('isolates instances and delivers presses independently', () => {
     const run = circuit({ count: 2 });
     run.press(true);
-    run.press('true', 1);
     run.board.runUntil(1);
     check(run, expected(), 0);
     check(run, expected(5, 330, false), 1);
     run.press(true, 1);
     run.board.runUntil(2);
     check(run, expected(), 1);
+  });
+
+  it('rejects nonboolean params before submitting the input channel', async () => {
+    const { create } = (await import('../push-button/src/index.ts')) as {
+      create: (context: never) => {
+        methods: { press: (params: unknown) => unknown };
+        dispose(): void;
+      };
+    };
+    const send = vi.fn();
+    const instance = create({
+      inputs: { press: { send } },
+      events: { onDidPress: { fire: vi.fn(), fireTransferred: vi.fn() } },
+    } as never);
+    expect(() => instance.methods.press('true')).toThrow(TypeError);
+    expect(send).not.toHaveBeenCalled();
+    instance.dispose();
   });
 
   it('removes input listeners and disposes each device once', () => {

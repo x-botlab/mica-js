@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { BlockIR, OperationIR, RegionIR } from '@mica-js/sdk/model';
-import { SERVICE_PC, SETTLE_PC } from '../../src/devices/iap15f2k61s2/kernel/tick.ts';
-import { decode } from '../../src/devices/iap15f2k61s2/kernel/decode.ts';
-import create from '../../src/devices/iap15f2k61s2/index.ts';
+import { SERVICE_PC, SETTLE_PC } from '../../iap15f2k61s2/src/kernel/tick.ts';
+import { decode } from '../../iap15f2k61s2/src/kernel/decode.ts';
+import { loadSourceCreate } from './load-create.ts';
+
+const create = await loadSourceCreate();
 import { createSourceHarness } from './source-harness.ts';
 
 /**
@@ -23,7 +25,7 @@ type Translate = (input: { pc: number; code: Uint8Array }) => unknown;
 function translator(): Translate {
   let options: { translate: Translate } | undefined;
   const context = {
-    props: { firmware: new Uint8Array(0), clockFrequency: 11_059_200 },
+    props: { firmware: null, clockFrequency: 11_059_200 },
     attachJit(value: { translate: Translate }) {
       options = value;
 

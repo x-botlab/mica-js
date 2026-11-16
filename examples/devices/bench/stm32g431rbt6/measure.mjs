@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
 import { compileDDL } from '@mica-js/sdk/ddl';
-import { model, create } from '../../dist/devices/stm32g431rbt6/device.js';
+import { model, create as unifiedCreate } from '../../dist/stm32g431rbt6/model.js';
 
 /**
  * 临时测量脚本：与 bench/perf.test.ts 同构，但用进程 CPU 时间读数，
@@ -54,14 +55,41 @@ const PINS = ['PA0', 'PA1', 'PA2', 'PA3', 'PA4', 'PA5', 'PA6', 'PA7', 'PA8', 'PA
 const VDD = ['VDD1', 'VDD2', 'VDD3', 'VDD4', 'VDDA', 'VREFP', 'VBAT'];
 const VSS = ['VSS1', 'VSS2', 'VSS3', 'VSS4', 'VSSA'];
 
+function adapted(clock, code) {
+  return adaptModelFactory(unifiedCreate, {
+    props: {
+      clockFrequency: clock,
+      firmware: firmwareImage([
+        { addressSpace: 'code', address: 0x0800_0000, data: code },
+      ]),
+    },
+    events: {
+      onDidUart1Tx: {
+        topic: 'serial1.tx',
+        transform: (value) => value.data,
+      },
+      onDidUart2Tx: {
+        topic: 'serial2.tx',
+        transform: (value) => value.data,
+      },
+      onDidUart3Tx: {
+        topic: 'serial3.tx',
+        transform: (value) => value.data,
+      },
+      onDidFault: 'fault',
+    },
+  });
+}
+
 function benchBoard(clock, code) {
+  const create = adapted(clock, code);
   const entries = [
     { id: 'mcu', model, create },
     ...PINS.map((pin) => ({ id: `probe_${pin}`, model: probeModel, create: NOOP })),
     ...PINS.map((pin) => ({ id: `src_${pin}`, model: sourceModel, create: NOOP })),
   ];
   const instances = [
-    { id: 'mcu', type: 'mcu', props: { firmware: code, clockFrequency: clock } },
+    { id: 'mcu', type: 'mcu', props: { clockFrequency: clock } },
     ...PINS.map((pin) => ({ id: `probe_${pin}`, type: `probe_${pin}` })),
     ...PINS.map((pin) => ({ id: `src_${pin}`, type: `src_${pin}` })),
   ];
@@ -96,8 +124,8 @@ function benchBoard(clock, code) {
 }
 
 function bareBoard(clock, code) {
-  return createBoard(createDeviceLibrary([{ id: 'mcu', model, create }]), {
-    instances: [{ id: 'mcu', type: 'mcu', props: { firmware: code, clockFrequency: clock } }],
+  return createBoard(createDeviceLibrary([{ id: 'mcu', model, create: adapted(clock, code) }]), {
+    instances: [{ id: 'mcu', type: 'mcu', props: { clockFrequency: clock } }],
     nets: [
       { id: 'vdd', pins: VDD.map((pin) => ({ instance: 'mcu', pin })), voltage: 3.3 },
       { id: 'vss', pins: VSS.map((pin) => ({ instance: 'mcu', pin })), voltage: 0 },

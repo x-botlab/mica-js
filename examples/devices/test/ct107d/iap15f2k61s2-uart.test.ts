@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createTestBoard, US } from './harness.ts';
+import { iapDeviceWithFirmware } from '../iap15f2k61s2/firmware-device.ts';
+import { createBoardWith, US } from './harness.ts';
 
 /** 1 MHz 系统时钟、T2 12 分频重载 10：UART 位时间为 40 个系统周期。 */
 const BIT_PS = 40 * US;
@@ -22,37 +23,46 @@ function bytes(values: readonly unknown[]): number[][] {
 
 describe('IAP15F2K61S2 UART1 端口', () => {
   it('发送时每帧只在停止位完成后发布一条单字节消息', async () => {
-    const board = await createTestBoard('iap15f2k61s2', {
-      props: {
-        clockFrequency: 1_000_000,
-        firmware: Uint8Array.from([
-          0x75,
-          0x98,
-          0x40, // MOV SCON,#40H：模式 1
-          ...UART_BASE,
-          0x75,
-          0x99,
-          0x55, // MOV SBUF,#55H
-          0x30,
-          0x99,
-          0xfd, // JNB TI,$
-          0xc2,
-          0x99, // CLR TI
-          0x75,
-          0x99,
-          0xaa, // 在停止位尚未结束时写入下一字节
-          0x30,
-          0x99,
-          0xfd, // JNB TI,$
-          0x80,
-          0xfe, // SJMP $
-        ]),
-      },
-      nets: [
-        { id: 'vcc', pins: [{ instance: 'dut', pin: 'VCC' }], voltage: 5 },
-        { id: 'gnd', pins: [{ instance: 'dut', pin: 'GND' }], voltage: 0 },
+    const device = await iapDeviceWithFirmware(
+      Uint8Array.from([
+        0x75,
+        0x98,
+        0x40, // MOV SCON,#40H：模式 1
+        ...UART_BASE,
+        0x75,
+        0x99,
+        0x55, // MOV SBUF,#55H
+        0x30,
+        0x99,
+        0xfd, // JNB TI,$
+        0xc2,
+        0x99, // CLR TI
+        0x75,
+        0x99,
+        0xaa, // 在停止位尚未结束时写入下一字节
+        0x30,
+        0x99,
+        0xfd, // JNB TI,$
+        0x80,
+        0xfe, // SJMP $
+      ]),
+    );
+    const board = await createBoardWith(
+      [
+        {
+          id: 'dut',
+          type: 'iap15f2k61s2',
+          device,
+          props: { clockFrequency: 1_000_000 },
+        },
       ],
-    });
+      {
+        nets: [
+          { id: 'vcc', pins: [{ instance: 'dut', pin: 'VCC' }], voltage: 5 },
+          { id: 'gnd', pins: [{ instance: 'dut', pin: 'GND' }], voltage: 0 },
+        ],
+      },
+    );
 
     try {
       board.run(2_000 * US);
@@ -67,52 +77,61 @@ describe('IAP15F2K61S2 UART1 端口', () => {
   });
 
   it('接收一帧后把写入接收缓冲的字节发布到 uart1Rx', async () => {
-    const board = await createTestBoard('iap15f2k61s2', {
-      props: {
-        clockFrequency: 1_000_000,
-        firmware: Uint8Array.from([
-          0x75,
-          0x98,
-          0x50, // MOV SCON,#50H：模式 1、REN=1
-          ...UART_BASE,
-          0x30,
-          0x98,
-          0xfd, // JNB RI,$
-          0xe5,
-          0x99, // MOV A,SBUF
-          0xf5,
-          0xa0, // MOV P2,A
-          0x80,
-          0xfe, // SJMP $
-        ]),
-      },
-      sources: ['src'],
-      nets: [
+    const device = await iapDeviceWithFirmware(
+      Uint8Array.from([
+        0x75,
+        0x98,
+        0x50, // MOV SCON,#50H：模式 1、REN=1
+        ...UART_BASE,
+        0x30,
+        0x98,
+        0xfd, // JNB RI,$
+        0xe5,
+        0x99, // MOV A,SBUF
+        0xf5,
+        0xa0, // MOV P2,A
+        0x80,
+        0xfe, // SJMP $
+      ]),
+    );
+    const board = await createBoardWith(
+      [
         {
-          id: 'vcc',
-          pins: [
-            { instance: 'dut', pin: 'VCC' },
-            { instance: 'src', pin: 'vcc' },
-          ],
-          voltage: 5,
-        },
-        {
-          id: 'gnd',
-          pins: [
-            { instance: 'dut', pin: 'GND' },
-            { instance: 'src', pin: 'gnd' },
-          ],
-          voltage: 0,
-        },
-        {
-          id: 'rxd',
-          pins: [
-            { instance: 'dut', pin: 'P3_0' },
-            { instance: 'src', pin: 'y' },
-          ],
+          id: 'dut',
+          type: 'iap15f2k61s2',
+          device,
+          props: { clockFrequency: 1_000_000 },
         },
       ],
-    });
+      {
+        sources: ['src'],
+        nets: [
+          {
+            id: 'vcc',
+            pins: [
+              { instance: 'dut', pin: 'VCC' },
+              { instance: 'src', pin: 'vcc' },
+            ],
+            voltage: 5,
+          },
+          {
+            id: 'gnd',
+            pins: [
+              { instance: 'dut', pin: 'GND' },
+              { instance: 'src', pin: 'gnd' },
+            ],
+            voltage: 0,
+          },
+          {
+            id: 'rxd',
+            pins: [
+              { instance: 'dut', pin: 'P3_0' },
+              { instance: 'src', pin: 'y' },
+            ],
+          },
+        ],
+      },
+    );
 
     try {
       const value = 0x69;

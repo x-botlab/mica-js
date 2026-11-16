@@ -7,8 +7,9 @@
  *   pnpm --filter @mica-js/device-model build
  *   node packages/device-model/bench/library.mjs
  *
- * 数据来源是两套真实器件库产物：`examples/ct107d/dist/devices/*` 与
- * `examples/devices/dist/devices/*`（共 25 份 device.js）。
+ * 数据来源是统一器件包产物：`examples/devices/dist/<id>/model.js` 与
+ * `examples/playground-components/dist/<id>/model.js`。每个目录是一份完整器件包，
+ * 清单和资源不在这里导入，只测量 `model.js` 的冷启动与模型校验缓存。
  *
  * 断言只做方向性判断（第二次远快于第一次）与身份判断（缓存命中后模型还是同一份冻结
  * 快照），不断言绝对毫秒；精确的「校验次数为 1」由
@@ -16,15 +17,15 @@
  * 不可改写，这里只能观察身份稳定。
  */
 import assert from 'node:assert/strict';
-import { readdir } from 'node:fs/promises';
+import { access, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const sources = [
-  { label: 'ct107d', directory: join(root, 'examples/ct107d/dist/devices') },
-  { label: 'devices', directory: join(root, 'examples/devices/dist/devices') },
+  { label: 'devices', directory: join(root, 'examples/devices/dist') },
+  { label: 'playground', directory: join(root, 'examples/playground-components/dist') },
 ];
 
 const importModule = (specifier) => import(pathToFileURL(specifier).href);
@@ -40,9 +41,14 @@ const models = [];
 const importTimes = [];
 for (const source of sources) {
   const started = performance.now();
-  const ids = (await readdir(source.directory)).sort();
+  const directories = (await readdir(source.directory).catch(() => [])).sort();
+  const ids = [];
+  for (const id of directories) {
+    const model = join(source.directory, id, 'model.js');
+    if (await access(model).then(() => true, () => false)) ids.push(id);
+  }
   for (const id of ids) {
-    const module = await importModule(join(source.directory, id, 'device.js'));
+    const module = await importModule(join(source.directory, id, 'model.js'));
     models.push(module.model);
     entries.push({ id: `${source.label}/${id}`, model: module.model, create: module.create });
   }
@@ -61,7 +67,7 @@ const [second, secondTime, secondLabel] = measure('createDeviceLibrary #2');
 console.log(`device-model bench: ${entries.length} models from ${sources.length} libraries`);
 console.log(`  import sdk + device-model: ${format(libraryImport)}`);
 for (const [source, count, time] of importTimes)
-  console.log(`  import ${source.label} (${count} device.js): ${format(time)}`);
+  console.log(`  import ${source.label} (${count} package model.js): ${format(time)}`);
 console.log(`  ${firstLabel} (cold): ${format(firstTime)}`);
 console.log(`  ${secondLabel} (cached): ${format(secondTime)}`);
 

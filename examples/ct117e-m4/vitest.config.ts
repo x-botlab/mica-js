@@ -4,8 +4,7 @@ import { defineConfig } from 'vitest/config';
  * 器件包自己的 vitest 配置。
  *
  * 每个用例都会新建一块板并翻译指令块，并发只会互相抢线程，因此文件串行执行。
- * 测试从 `dist/devices/ct117e-m4/device.js` 装载构建产物；`pnpm test` 会先运行
- * `mica build`。
+ * 测试从 `dist/model.js` 装载构建产物；`pnpm test` 会先运行 `mica build`。
  */
 export default defineConfig({
   resolve: { conditions: ['source', 'module', 'browser', 'development|production'] },

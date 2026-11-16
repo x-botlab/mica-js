@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { Board } from '@mica-js/sdk';
+import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
@@ -13,8 +14,8 @@ import type { DeviceIR } from '@mica-js/sdk/model';
  * 这里复用真实电气网络、适配器和话题发布，供正确性用例与性能基准共同使用。
  */
 
-const ILI_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'ili9325');
-const MCU_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'stm32g431rbt6');
+const ILI_DIR = join(import.meta.dirname, '..', '..', 'ili9325', 'src');
+const MCU_DIR = join(import.meta.dirname, '..', '..', 'stm32g431rbt6', 'src');
 const FIRMWARE = join(import.meta.dirname, 'fixtures', 'HAL_06_LCD.bin');
 
 /** 固件 `SystemClock_Config`：HSI16 → PLL M=2 / N=20 / R=2，SYSCLK = 80 MHz。 */
@@ -99,8 +100,8 @@ export interface JointAccountingReadout {
 interface JointDevices {
   readonly mcuModel: DeviceIR;
   readonly lcdModel: DeviceIR;
-  readonly mcuModule: { readonly default: (context: never) => Adapter };
-  readonly lcdModule: { readonly default: (context: never) => Adapter };
+  readonly mcuModule: { readonly create: unknown };
+  readonly lcdModule: { readonly create: unknown };
 }
 
 export interface JointBoard {
@@ -491,9 +492,63 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
   const { mcuModel, lcdModel, mcuModule, lcdModule } = await loadDevices();
   const expectedFrames: Uint8Array[] = [];
   const frameTimes: number[] = [];
+  const firmware = firmwareImage([
+    {
+      addressSpace: 'code',
+      address: 0x0800_0000,
+      data: options.firmware?.slice() ?? new Uint8Array(readFileSync(FIRMWARE)),
+    },
+  ]);
+  const mcuCreate = adaptModelFactory(mcuModule.create as never, {
+    props: {
+      clockFrequency: JOINT_CLOCK_FREQUENCY,
+      firmware,
+    },
+    events: {
+      onDidUart1Tx: {
+        topic: 'serial1.tx',
+        transform: (value) => (value as { data: Uint8Array }).data,
+      },
+      onDidUart2Tx: {
+        topic: 'serial2.tx',
+        transform: (value) => (value as { data: Uint8Array }).data,
+      },
+      onDidUart3Tx: {
+        topic: 'serial3.tx',
+        transform: (value) => (value as { data: Uint8Array }).data,
+      },
+      onDidFault: 'fault',
+    },
+  }) as unknown as (context: never) => Adapter;
+  const lcdCreate = adaptModelFactory(lcdModule.create as never, {
+    events: {
+      onDidFrame: {
+        topic: 'framebuffer',
+        transform: (value) => {
+          const frame = value as {
+            readonly x: number;
+            readonly y: number;
+            readonly width: number;
+            readonly height: number;
+            readonly pixels: Uint8Array;
+          };
+          const payload = new Uint8Array(8 + frame.pixels.length);
+          const header = new DataView(payload.buffer);
+
+          header.setUint16(0, frame.x, true);
+          header.setUint16(2, frame.y, true);
+          header.setUint16(4, frame.width, true);
+          header.setUint16(6, frame.height, true);
+          payload.set(frame.pixels, 8);
+
+          return payload;
+        },
+      },
+    },
+  }) as unknown as (context: never) => Adapter;
   const wrap =
-    (id: string, module: { readonly default: (context: never) => Adapter }) => (context: never) => {
-      const adapter = module.default(context);
+    (id: string, create: (context: never) => Adapter) => (context: never) => {
+      const adapter = create(context);
 
       return {
         sync: (batch: unknown) => {
@@ -546,8 +601,8 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
 
   const board = createBoard(
     createDeviceLibrary([
-      { id: 'mcu', model: mcuModel, create: wrap('mcu', mcuModule) as never },
-      { id: 'lcd', model: lcdModel, create: wrap('lcd', lcdModule) as never },
+      { id: 'mcu', model: mcuModel, create: wrap('mcu', mcuCreate) as never },
+      { id: 'lcd', model: lcdModel, create: wrap('lcd', lcdCreate) as never },
     ] as never),
     {
       instances: [
@@ -555,7 +610,6 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
           id: 'mcu',
           type: 'mcu',
           props: {
-            firmware: options.firmware?.slice() ?? new Uint8Array(readFileSync(FIRMWARE)),
             clockFrequency: JOINT_CLOCK_FREQUENCY,
           },
         },

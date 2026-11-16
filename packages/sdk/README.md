@@ -6,6 +6,30 @@
 - **Widget**：使用 TypeScript 绘制界面，通过端口接收和发送数据。
 - **组件产物**：每个组件一份 JS 和一份 JSON，依赖与资源全部内联。
 
+## 统一单器件项目
+
+RFC 0020–0027 的单器件项目以工程根 `package.json` 为唯一清单，模型源码为 `src/model.ddl` 与具名导出 `create` 的 `src/index.ts`。工程可省略 `mica.config.ts`；存在统一清单（`publisher`、`name`、`displayName`、`engines.mica`）时 SDK 自动进入该模式。**本轮只支持不执行视图运行时代码、无 HTML 的统一模型包**；静态 `view2d` 声明可校验/复制，`View2D` / HTML 相关类型仅作为合同声明保留，不提供视图构建、编辑器或运行时适配。需要显式路径或输出位置时使用：
+
+```ts
+import { defineConfig } from '@mica-js/sdk/config';
+
+export default defineConfig({
+  outDir: '../dist',
+  device: {
+    model: 'src/model.ddl', // 默认值
+    entry: 'src/index.ts', // 默认值
+    // output: '../dist/my-device', // 默认见下方输出规则
+    // release: '../dist/my-device.release.json', // 默认 <output>.release.json
+  },
+});
+```
+
+`mica prepare` 校验清单、DDL 属性/引脚、几何引脚与 `model.types/methods/events`，生成 `.mica/device.d.ts` 与 `.mica/tsconfig.json`；工程 `tsconfig.json` 通过 `extends: "./.mica/tsconfig.json"` 使用固定的 `DeviceProps`、`DeviceMethods`、`DeviceEvents`、`DeviceModelContext`、`DeviceFactory`、`DeviceClient` 和 `DevicePinId`。不要手写同义声明，也不要在 `prepare` 期间执行 `src/index.ts`。
+
+`mica build` 默认把包根写到 `outDir`：默认 `dist`、或 basename 与器件名相同的专用 `outDir`（如 `../dist/led`）；共享聚合目录（如 `../dist`）下自动追加器件名。生成的 `package.json`、自包含 ESM `model.js` 与声明的静态图标/属性资源位于包根；`<output>.release.json` 在包外，按实际文件字节记录 `sha256` 摘要。带 `view2d.entry`、`entries` 或 HTML `view` 的清单本轮会被拒绝，静态 `view2d.geometry` 只做声明校验/静态资源复制，不执行视图代码。
+
+旧 simulator 的 `context.topics` 消费方使用 `@mica-js/sdk/device` 的 `adaptModelFactory()` 显式配置事件到话题、话题到方法的映射。该适配器只用于现有引擎的兼容边界：不提供 `ModelClient`、事件仿真时间/序号、RPC、transfer hooks 或完整融合运行时；`fireTransferred` 只是把 payload 发布到旧话题，不 detach/转移缓冲所有权。完整属性由适配器按实例深拷贝并冻结，firmware 等复合值通过工厂闭包注入，不放入 `BoardDescription.props`。
+
 ## 快速开始
 
 建议使用 Node.js 24 和 pnpm。`mica` 命令随 `@mica-js/sdk` 安装，不需要另外安装名为 `mica` 的包，也不需要自行配置 Vite。
@@ -301,7 +325,7 @@ dist/
 | 入口                    | 用途                                                |
 | ----------------------- | --------------------------------------------------- |
 | `@mica-js/sdk/widget`   | `WidgetFactory`、绘制、输入、端口、资源与音频类型   |
-| `@mica-js/sdk/device`   | 器件上下文、工厂、批次、通道与 JIT 类型             |
+| `@mica-js/sdk/device`   | 统一模型/2D 类型、旧 simulator 上下文与兼容适配器   |
 | `@mica-js/sdk/metadata` | Device / Widget 元数据类型、Schema 与校验           |
 | `@mica-js/sdk/config`   | `defineConfig()` 与 `MicaConfig`                    |
 | `@mica-js/sdk/prepare`  | 程序化类型生成和监听                                |

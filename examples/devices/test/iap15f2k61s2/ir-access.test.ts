@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { BlockIR, OperationIR, RegionIR } from '@mica-js/sdk/model';
-import { SETTLE_PC } from '../../src/devices/iap15f2k61s2/kernel/tick.ts';
-import create from '../../src/devices/iap15f2k61s2/index.ts';
+import { SETTLE_PC } from '../../iap15f2k61s2/src/kernel/tick.ts';
+import { loadSourceCreate } from './load-create.ts';
+
+const create = await loadSourceCreate();
 
 /**
  * SFR 访问探针的回归：探针只能反映 CPU 指令自身的架构访问。
@@ -19,7 +21,7 @@ type Translate = (input: { pc: number; code: Uint8Array }) => unknown;
 function translator(): Translate {
   let options: { translate: Translate } | undefined;
   const context = {
-    props: { firmware: new Uint8Array(0), clockFrequency: 11_059_200 },
+    props: { firmware: null, clockFrequency: 11_059_200 },
     attachJit(value: { translate: Translate }) {
       options = value;
 

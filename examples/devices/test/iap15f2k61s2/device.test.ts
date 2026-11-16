@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { deviceMetadataSymbol, parseDeviceMetadata } from '@mica-js/document/schematic';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import { createDeviceBuilder, types, validateDeviceIR } from '@mica-js/sdk/model';
 import {
@@ -7,6 +6,7 @@ import {
   PUSH_PULL_OUTPUTS,
   PUSH_PULL_P2,
   type DeviceAdapter,
+  adapt,
   loadDevice,
   readMetadata,
   run,
@@ -58,22 +58,21 @@ const HALT = [0x80, 0xfe]; // SJMP $
 const P2 = PUSH_PULL_P2;
 
 describe('器件声明与产物', () => {
-  it('声明 32 根 GPIO、两根供电引脚，端口只有 UART1 收发且均为 output bytes', async () => {
+  it('声明 32 根 GPIO、两根供电引脚，模型公开串口收发事件', async () => {
     const metadata = readMetadata('iap15f2k61s2');
     const module = await loadDevice('iap15f2k61s2');
 
-    expect(metadata.kind).toBe('device');
+    expect(metadata.publisher).toBe('example');
+    expect(metadata.name).toBe('iap15f2k61s2');
     expect(Object.keys(metadata.pins ?? {})).toEqual([...GPIO_PINS, 'VCC', 'GND']);
-    // 固件只是 `bytes` 属性，不占端口；端口只有 UART1 的线上收发两路。
-    const ports = metadata.ports ?? {};
-
-    expect(Object.keys(ports).sort()).toEqual(['uart1Rx', 'uart1Tx']);
-
-    for (const port of Object.values(ports)) {
-      expect(port.direction).toBe('output');
-      expect(port.type).toBe('bytes');
-    }
-
+    expect(Object.keys(metadata.model?.events ?? {}).sort()).toEqual([
+      'onDidUart1Rx',
+      'onDidUart1Tx',
+    ]);
+    expect(Object.keys(metadata.model?.methods ?? {}).sort()).toEqual([
+      'getSerialStatus',
+      'readSerial',
+    ]);
     expect(Object.keys(module).sort()).toEqual(['create', 'model']);
 
     const pins = module.model.declarations.filter((declaration) => declaration.kind === 'pin');
@@ -81,19 +80,20 @@ describe('器件声明与产物', () => {
     expect(pins.map((pin) => pin.name)).toEqual([...GPIO_PINS, 'VCC', 'GND']);
   });
 
-  it('产物元数据能被消费方解析：document 只认已知的 editor 字段', async () => {
-    // 回归保护：`@mica-js/document` 解析 metadata 时拒绝未知字段。曾因 `editor.extensions`/
-    // `editor.maxSize` 让器件在编辑器与仿真侧都无法注册；这里直接解析 dist 产物，任何人再加
-    // document 不认识的字段都会失败。
-    const definition = parseDeviceMetadata(readMetadata('iap15f2k61s2'));
+  it('清单引脚与模型 IR 完全一致，DDL 不再声明复合固件属性', async () => {
+    const metadata = readMetadata('iap15f2k61s2');
+    const module = await loadDevice('iap15f2k61s2');
+    const pins = module.model.declarations
+      .filter((declaration) => declaration.kind === 'pin')
+      .map((declaration) => declaration.name)
+      .sort();
 
-    expect(definition.id).toBe('iap15f2k61s2');
-    expect(definition.properties?.firmware?.editor).toEqual({ kind: 'file' });
-    expect(Object.keys(deviceMetadataSymbol(definition).pins)).toEqual([
-      ...GPIO_PINS,
-      'VCC',
-      'GND',
-    ]);
+    expect(Object.keys(metadata.pins ?? {}).sort()).toEqual(pins);
+    expect(
+      module.model.declarations.some(
+        (declaration) => declaration.kind === 'property' && declaration.name === 'firmware',
+      ),
+    ).toBe(false);
   });
 });
 
@@ -244,8 +244,24 @@ async function runWithPullDown(resistance: number): Promise<number> {
     });
   });
 
+  const firmware = Uint8Array.from([
+    0x75,
+    0x96,
+    0x01, // MOV P2M0,#01H → P2.0 推挽
+    0x75,
+    0x95,
+    0x00, // MOV P2M1,#00H
+    0x75,
+    0x90,
+    0xff, // MOV P1,#0FFH（准双向释放）
+    0xa2,
+    0x91, // MOV C,P1.1
+    0x92,
+    0xa0, // MOV P2.0,C
+    ...HALT,
+  ]);
   const library = createDeviceLibrary([
-    { id: 'mcu', model: mcu.model, create: mcu.create },
+    { id: 'mcu', model: mcu.model, create: adapt(mcu, { firmware }) },
     {
       id: 'pulldown',
       model: validateDeviceIR(builder.finish()),
@@ -269,22 +285,6 @@ async function runWithPullDown(resistance: number): Promise<number> {
           type: 'mcu',
           props: {
             clockFrequency: 1_000_000,
-            firmware: Uint8Array.from([
-              0x75,
-              0x96,
-              0x01, // MOV P2M0,#01H → P2.0 推挽
-              0x75,
-              0x95,
-              0x00, // MOV P2M1,#00H
-              0x75,
-              0x90,
-              0xff, // MOV P1,#0FFH（准双向释放）
-              0xa2,
-              0x91, // MOV C,P1.1
-              0x92,
-              0xa0, // MOV P2.0,C
-              ...HALT,
-            ]),
           },
         },
         { id: 'pulldown', type: 'pulldown' },

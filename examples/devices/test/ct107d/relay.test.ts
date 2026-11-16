@@ -14,7 +14,11 @@ interface Fixture {
   driveCoil(level: number): void;
 }
 
-async function fixture(props: Record<string, unknown> = {}, coilSupply = 5): Promise<Fixture> {
+async function fixture(
+  props: Record<string, unknown> = {},
+  coilSupply = 5,
+  pull = true,
+): Promise<Fixture> {
   const nets: NetDescription[] = [
     {
       id: 'coilv',
@@ -54,10 +58,10 @@ async function fixture(props: Record<string, unknown> = {}, coilSupply = 5): Pro
       pins: [
         { instance: 'dut', pin: 'no' },
         { instance: 'probe', pin: 'y' },
-        { instance: 'pull', pin: 'a' },
+        ...(pull ? [{ instance: 'pull', pin: 'a' }] : []),
       ],
     },
-    { id: 'pullg', pins: [{ instance: 'pull', pin: 'b' }], voltage: 0 },
+    ...(pull ? [{ id: 'pullg', pins: [{ instance: 'pull', pin: 'b' }], voltage: 0 }] : []),
     {
       id: 'com2',
       pins: [
@@ -70,20 +74,24 @@ async function fixture(props: Record<string, unknown> = {}, coilSupply = 5): Pro
       pins: [
         { instance: 'dut', pin: 'no2' },
         { instance: 'probe2', pin: 'y' },
-        { instance: 'pull2', pin: 'a' },
+        ...(pull ? [{ instance: 'pull2', pin: 'a' }] : []),
       ],
     },
-    { id: 'pull2g', pins: [{ instance: 'pull2', pin: 'b' }], voltage: 0 },
+    ...(pull ? [{ id: 'pull2g', pins: [{ instance: 'pull2', pin: 'b' }], voltage: 0 }] : []),
   ];
 
   const board = await createTestBoard('relay', {
     nets,
     probes: ['probe', 'probe2'],
     sources: ['coilSrc', 'contactSrc', 'contactSrc2'],
-    resistors: [
-      { id: 'pull', resistance: 1_000_000 },
-      { id: 'pull2', resistance: 1_000_000 },
-    ],
+    ...(pull
+      ? {
+          resistors: [
+            { id: 'pull', resistance: 1_000_000 },
+            { id: 'pull2', resistance: 1_000_000 },
+          ],
+        }
+      : {}),
     props,
   });
 
@@ -91,16 +99,20 @@ async function fixture(props: Record<string, unknown> = {}, coilSupply = 5): Pro
 }
 
 describe('电磁继电器', () => {
-  it('元数据声明 6 根引脚、5 个属性与 energized 端口', () => {
-    const metadata = readMetadata('relay') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly properties: Readonly<Record<string, { readonly default: unknown }>>;
-      readonly ports: Readonly<Record<string, { readonly type: string }>>;
-    };
+  it('清单声明 6 根引脚、线圈/触点属性与 energized 查询/事件', () => {
+    const metadata = readMetadata('relay');
 
-    expect(Object.keys(metadata.pins).sort()).toEqual(['coil', 'com', 'com2', 'no', 'no2', 'vcc']);
-    expect(metadata.properties.coilResistance?.default).toBe(400);
-    expect(metadata.ports.energized?.type).toBe('boolean');
+    expect(Object.keys(metadata.pins ?? {}).sort()).toEqual([
+      'coil',
+      'com',
+      'com2',
+      'no',
+      'no2',
+      'vcc',
+    ]);
+    expect(metadata.properties?.coilResistance?.default).toBe(400);
+    expect(metadata.model.methods.isEnergized).toBeDefined();
+    expect(metadata.model.events.onDidEnergized).toMatchObject({ type: 'boolean' });
   });
 
   it('线圈拉低时吸合并闭合两组触点，释放后断开', async () => {
@@ -137,6 +149,33 @@ describe('电磁继电器', () => {
 
       expect(built.board.topics.energized).toBe(false);
       expect(built.board.probe('probe')).toBe(0);
+      expect(built.board.faults).toEqual([]);
+    } finally {
+      built.board.dispose();
+    }
+  });
+
+  it('释放后两组触点真正悬空，没有残留假断开支路', async () => {
+    const built = await fixture({}, 5, false);
+
+    try {
+      built.board.send('contactSrc', 'level', 1);
+      built.board.send('contactSrc2', 'level', 1);
+      built.board.run(US);
+
+      // 未吸合、没有下拉：触点网络应保持未知，而不是被有限大电阻拉高。
+      expect(built.board.probe('probe')).toBe(2);
+      expect(built.board.probe('probe2')).toBe(2);
+
+      built.driveCoil(0);
+      built.board.run(US);
+      expect(built.board.probe('probe')).toBe(1);
+      expect(built.board.probe('probe2')).toBe(1);
+
+      built.driveCoil(2);
+      built.board.run(US);
+      expect(built.board.probe('probe')).toBe(2);
+      expect(built.board.probe('probe2')).toBe(2);
       expect(built.board.faults).toEqual([]);
     } finally {
       built.board.dispose();

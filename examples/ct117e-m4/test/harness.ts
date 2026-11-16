@@ -3,15 +3,19 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
 import type { Board } from '@mica-js/sdk';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
 /**
- * CT117E-M4 单器件夹具：只装载构建产物 `dist/devices/ct117e-m4/device.js`。
+ * CT117E-M4 单器件夹具：只装载构建产物 `dist/model.js`。
  *
  * 器件把 STM32G431RBT6 与 ILI9325 的固定接线合成一个模型：一个 instance、一个
  * JIT，外部只接 VDD1/VSS1。测试不退回 `src/`，也不重新拼接两个兄弟 example。
+ * 旧 `createBoard` 兼容边界把统一事件映射回旧话题，并把测试固件包装成 FirmwareImage。
  */
+
+const FLASH_BASE = 0x0800_0000;
 
 export const CT117E_M4_DEVICE_ID = 'ct117e-m4';
 export const CT117E_M4_INSTANCE_ID = 'ct117e-m4';
@@ -46,14 +50,7 @@ export const CT117E_M4_EXPECTED = Object.freeze({
   }),
 });
 
-const ARTIFACT_JS = resolve(
-  import.meta.dirname,
-  '..',
-  'dist',
-  'devices',
-  CT117E_M4_DEVICE_ID,
-  'device.js',
-);
+const ARTIFACT_JS = resolve(import.meta.dirname, '..', 'dist', 'model.js');
 
 interface OutputMessage {
   readonly time: number;
@@ -63,7 +60,8 @@ interface OutputMessage {
 type Outputs = Readonly<Record<string, readonly OutputMessage[]>>;
 
 interface ArtifactAdapter {
-  sync(batch: { readonly outputs: Outputs }): void;
+  readonly methods?: Readonly<Record<string, (params: unknown) => unknown>>;
+  sync(batch: { readonly from: number; readonly to: number; readonly outputs: Outputs }): void;
   dispose(): void;
 }
 
@@ -312,9 +310,29 @@ export async function createHarness(options: HarnessOptions): Promise<Harness> {
   const errors: string[] = [];
 
   const createAdapter = (context: never): ArtifactAdapter => {
-    const adapter = create(context);
+    const adapted = adaptModelFactory(create as never, {
+      props: (legacy) => ({
+        ...(legacy.props as Readonly<Record<string, unknown>>),
+        firmware: firmwareImage([
+          {
+            addressSpace: 'flash',
+            address: FLASH_BASE,
+            data: options.firmware,
+          },
+        ]),
+      }),
+      events: {
+        onDidFramebuffer: 'framebuffer',
+        onDidFault: 'fault',
+        onDidSerial1Tx: 'serial1.tx',
+        onDidSerial2Tx: 'serial2.tx',
+        onDidSerial3Tx: 'serial3.tx',
+      },
+    });
+    const adapter = adapted(context);
 
     return {
+      methods: adapter.methods as Readonly<Record<string, (params: unknown) => unknown>>,
       sync(batch) {
         if (captureExpectedFrames) captureOutputs(batch.outputs, expectedFrames, frameTimes);
         adapter.sync(batch);
@@ -331,7 +349,6 @@ export async function createHarness(options: HarnessOptions): Promise<Harness> {
           id: CT117E_M4_INSTANCE_ID,
           type: CT117E_M4_DEVICE_ID,
           props: {
-            firmware: options.firmware.slice(),
             clockFrequency: options.clockFrequency ?? CT117E_M4_CLOCK_FREQUENCY,
             refreshRate: options.refreshRate ?? CT117E_M4_REFRESH_RATE,
           },

@@ -154,15 +154,10 @@ async function fixture(): Promise<Fixture> {
 }
 
 describe('DS1302', () => {
-  it('元数据声明 8 根引脚与 datetime/running 端口', () => {
-    const metadata = readMetadata('ds1302') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports: Readonly<
-        Record<string, { readonly type: string; readonly direction: string }>
-      >;
-    };
+  it('清单声明 8 根引脚与 datetime/running 查询/事件', () => {
+    const metadata = readMetadata('ds1302');
 
-    expect(Object.keys(metadata.pins).sort()).toEqual([
+    expect(Object.keys(metadata.pins ?? {}).sort()).toEqual([
       'gnd',
       'io',
       'rst',
@@ -172,10 +167,10 @@ describe('DS1302', () => {
       'x1',
       'x2',
     ]);
-    expect(metadata.ports.datetime?.type).toBe('bytes');
-    expect(metadata.ports.datetime?.direction).toBe('output');
-    expect(metadata.ports.running?.type).toBe('boolean');
-    expect(metadata.ports.running?.direction).toBe('output');
+    expect(metadata.model.methods.getDatetime).toBeDefined();
+    expect(metadata.model.methods.isRunning).toBeDefined();
+    expect(metadata.model.events.onDidDatetime).toMatchObject({ type: 'binary' });
+    expect(metadata.model.events.onDidRunning).toMatchObject({ type: 'boolean' });
   });
 
   it('上电发布 2026-01-01 00:00:00，写入 23:59:58 后 3 秒跨日跨月', async () => {

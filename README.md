@@ -7,7 +7,7 @@ Mica 是一套基于 TypeScript 的电路仿真与可视化编辑工具集，把
 ## 特色
 
 - **原理图与交互面板联动**：在原理图中放置器件、连线和配置属性，再用画布上的按钮、电位器、指示灯等 widget 与仿真器件交互。
-- **可扩展的器件与 widget**：JSON 声明展示元数据，DDL 定义器件模型；SDK 生成自包含的 JavaScript 模型与同步适配器，应用提供自己的器件库和 widget 包。
+- **可扩展的器件与 widget**：统一器件包以 `package.json` 为唯一清单、DDL 定义模型；SDK 生成自包含的 `model.js` 与 `.mica` 类型环境。本轮示例只迁移 headless 模型与包组织；旧编辑器、2D 视图和融合文档运行时不在此轮范围内。
 - **虚拟时间驱动的仿真**：支持单步、批量执行与复位，不依赖墙上时钟决定电路行为。DDL 和 TypeScript Builder 共用新器件模型与 JavaScript 编译后端。
 - **真实的电阻网络求解**：支持显式电压源、电阻、有限内阻 GPIO、上下拉和双向理想触点，可观察节点电压与支路电流，而不只是传播布尔电平。
 - **隔离运行扩展脚本**：提供沙箱与跨边界通信能力，供宿主隔离运行器件和 widget 脚本。
@@ -31,8 +31,8 @@ pnpm --filter @mica-js/playground dev
 
 | 示例                                                               | 内容                                                                          |
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| [`examples/playground-components`](examples/playground-components) | Playground 用的最小器件与 widget 包：电阻、按键、LED、电压表                  |
-| [`examples/ct107d`](examples/ct107d)                               | CT107D 竞赛板整板工程：4 个板面 widget、原理图、画布与 8051 固件              |
+| [`examples/playground-components`](examples/playground-components) | Playground 用的 headless 统一器件子项目：电阻、按键、LED、电压表；旧 widget 测试保留 |
+| [`examples/ct107d`](examples/ct107d)                               | CT107D 竞赛板整板工程：legacy 板面 widget、v1 原理图/画布、8051 固件与仿真联调      |
 | [`examples/devices`](examples/devices)                             | 器件库：CT107D 板级芯片、IAP15F2K61S2、STM32G431RBT6、ILI9325、seg4、blue-led |
 | [`examples/ideal-led`](examples/ideal-led)                         | 测试夹具：理想 LED                                                            |
 | [`examples/led8`](examples/led8)                                   | IAP15F2K61S2 驱动 8 颗 LED 的最小板与无头验证                                 |

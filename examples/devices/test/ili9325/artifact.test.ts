@@ -1,8 +1,23 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PANEL_HEIGHT, PANEL_WIDTH, artifactAvailable, circuit } from './harness';
 
+const ARTIFACT_DIR = join(import.meta.dirname, '..', '..', 'dist', 'ili9325');
+
 describe.skipIf(!artifactAvailable())('ILI9325 交付产物', () => {
-  it('从 device.js 走通初始化、整屏填充与帧发布', async () => {
+  it('交付清单与 headless 模型文件齐全', () => {
+    const artifact = JSON.parse(readFileSync(join(ARTIFACT_DIR, 'package.json'), 'utf8'));
+    const source = JSON.parse(
+      readFileSync(join(import.meta.dirname, '..', '..', 'ili9325', 'package.json'), 'utf8'),
+    );
+
+    expect(artifact).toEqual(source);
+    expect(artifact.view2d).toBeUndefined();
+    expect(existsSync(join(ARTIFACT_DIR, 'model.js'))).toBe(true);
+  });
+
+  it('从 model.js 走通初始化、整屏填充与帧发布', async () => {
     const value = await circuit({ refreshRate: 60, variant: 'artifact' });
 
     try {

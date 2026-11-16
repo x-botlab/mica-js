@@ -4,14 +4,14 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { Board } from '@mica-js/sdk';
-import type { DeviceAdapter, DeviceBatch, DeviceContext, InputChannel } from '@mica-js/sdk/device';
+import type { DeviceBatch, DeviceContext, InputChannel } from '@mica-js/sdk/device';
 import { compileDDL } from '@mica-js/sdk/ddl';
-import { circuit } from './harness';
+import { adaptDevice, circuit } from './harness';
 
-const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'stm32g431rbt6');
-const [device, model] = await Promise.all([
+const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'stm32g431rbt6', 'src');
+const [module, model] = await Promise.all([
   import(pathToFileURL(join(DEVICE_DIR, 'index.ts')).href) as Promise<{
-    default: (context: DeviceContext) => DeviceAdapter;
+    create: unknown;
   }>,
   compileDDL(readFileSync(join(DEVICE_DIR, 'model.ddl'), 'utf8'), {
     uri: 'mica:devices/stm32g431rbt6/model.ddl',
@@ -98,13 +98,13 @@ function createPowerBoard(firmware: Uint8Array, options: PowerBoardOptions = {})
   };
   const board = createBoard(
     createDeviceLibrary([
-      { id: 'mcu', model, create: device.default as never },
+      { id: 'mcu', model, create: adaptDevice(module, { firmware }) as never },
       { id: 'probe', model: probeModel, create: probe as never },
       { id: 'power', model: sourceModel, create: powerSource as never },
     ]),
     {
       instances: [
-        { id: 'mcu', type: 'mcu', props: { firmware, clockFrequency: 1_000_000 } },
+        { id: 'mcu', type: 'mcu', props: { clockFrequency: 1_000_000 } },
         { id: 'probe', type: 'probe' },
         {
           id: 'power',

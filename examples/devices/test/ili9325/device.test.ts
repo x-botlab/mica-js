@@ -18,6 +18,25 @@ import {
 
 const boards: Awaited<ReturnType<typeof circuit>>[] = [];
 
+interface FramebufferMethods {
+  getFramebuffer(params: null): {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+    pixels: Uint8Array;
+  };
+}
+
+function framebufferMethods(value: unknown): FramebufferMethods {
+  if (value === null || typeof value !== 'object') throw new Error('Missing model methods');
+
+  if (typeof (value as Record<string, unknown>).getFramebuffer !== 'function')
+    throw new Error('Missing getFramebuffer');
+
+  return value as FramebufferMethods;
+}
+
 async function board(options: Parameters<typeof circuit>[0] = {}) {
   const value = await circuit(options);
 
@@ -532,5 +551,31 @@ describe('ILI9325', () => {
 
     expect(value.frames).toHaveLength(1);
     expect(value.frames[0]).toMatchObject({ x: 312, y: 5, width: 1, height: 1 });
+  });
+
+  it('getFramebuffer 返回完整面板的独立快照', async () => {
+    const value = await board({ refreshRate: 240 });
+
+    setCursor(value, 0, 0);
+    value.command(0x22);
+    value.data(0x1234);
+    value.drain();
+    value.run(value.framePeriod + 1_000_000);
+
+    const methods = framebufferMethods(value.methods);
+    const frame = methods.getFramebuffer(null);
+
+    expect(frame).toMatchObject({ x: 0, y: 0, width: PANEL_WIDTH, height: PANEL_HEIGHT });
+    expect(frame.pixels).toHaveLength(PANEL_WIDTH * PANEL_HEIGHT * 2);
+
+    const at = (0 * PANEL_WIDTH + 319) * 2;
+
+    expect([frame.pixels[at], frame.pixels[at + 1]]).toEqual([0x34, 0x12]);
+
+    frame.pixels[at] = 0xff;
+
+    const again = methods.getFramebuffer(null);
+
+    expect(again.pixels[at]).toBe(0x34);
   });
 });

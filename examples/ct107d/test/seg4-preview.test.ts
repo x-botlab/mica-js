@@ -19,9 +19,10 @@ import {
  *
  * 两个用例分工：
  * - 主用例从 0 推进到 4096 ms，保留每个 64 ms 检查点的八位 digit 值与整段变化计数；
- * - 1 ms 控制用例跑满 0→4096 ms，证明跨位提交并非同时发生、锁定内部进位时刻，
- *   并保留 DS2 第 4 位的 `0x06 → 0x5b` 瞬态。64 ms 批次只保留批次末值，因此主用例
- *   看不到该瞬态；不能把主用例的「同一批次里八位都变了」误读成扫描原子性。
+ * - 1 ms 控制用例跑满 0→4096 ms，保留 DS2 从初始 0 到 `0x5b` 的逐步快照与内部进位时刻。
+ *
+ * 统一模型以「整份显示快照」发事件：同一快照的四位共享 `simTime`，不再提供逐位提交事件。
+ * 兼容投影把快照展开为 digit1–digit4 话题，供旧画布和本用例消费。
  */
 
 const STEP_MS = PREVIEW_TICK_MS;
@@ -232,10 +233,8 @@ describe(`seg4 真实预览固件 ${PREVIEW_FIRMWARE_NAME}`, () => {
       expect(event.timePs % (STEP_MS * MS_PS)).toBe(0);
     }
 
-    // 上电 `process start` 的八个 0 是启动值，不是非法段码。
-    const boot = trace.events.filter((event) => event.simMs === 0);
-    expect(boot).toHaveLength(DIGITS.length * DISPLAYS.length);
-    expect(boot.every((event) => event.value === 0)).toBe(true);
+    // 统一模型只在状态变化时发事件；上电零值通过 `getDisplay` 查询，不补发历史事件。
+    expect(trace.events.filter((event) => event.simMs === 0)).toHaveLength(0);
 
     // 首帧在第一个 64 ms 批次边界出现；内部提交时间见下面的 1 ms 控制用例。
     const firstFrame = trace.events.filter((event) => event.simMs === STEP_MS);
@@ -276,38 +275,38 @@ describe(`seg4 真实预览固件 ${PREVIEW_FIRMWARE_NAME}`, () => {
     expect(trace.checkpoints.map((checkpoint) => checkpoint.texts.DS2)).toEqual(expectedDs2);
     expect(new Set(trace.checkpoints.map((checkpoint) => checkpoint.texts.DS2)).size).toBe(4);
 
-    // 变化计数（含上电 0 与首帧）：只有 DS2 digit4 在预热后继续变化。
+    // 变化计数（首帧 + 预热后的进位）：只有 DS2 digit4 在预热后继续变化。
     const counts = countChanges(trace.events);
 
     expect(counts).toEqual({
-      'DS1/digit1': 2,
-      'DS1/digit2': 2,
-      'DS1/digit3': 2,
-      'DS1/digit4': 2,
-      'DS2/digit1': 2,
-      'DS2/digit2': 2,
-      'DS2/digit3': 2,
-      'DS2/digit4': 5,
+      'DS1/digit1': 1,
+      'DS1/digit2': 1,
+      'DS1/digit3': 1,
+      'DS1/digit4': 1,
+      'DS2/digit1': 4,
+      'DS2/digit2': 4,
+      'DS2/digit3': 4,
+      'DS2/digit4': 4,
     });
 
     const afterWarmup = trace.events.filter((event) => event.simMs >= PREVIEW_WARMUP_MS);
 
-    expect(
-      afterWarmup.map((event) => ({
-        simMs: event.simMs,
-        instance: event.instance,
-        port: event.port,
-        value: event.value,
-      })),
-    ).toEqual([
-      { simMs: 1152, instance: ds2, port: 'digit4', value: 0x4f },
-      { simMs: 2304, instance: ds2, port: 'digit4', value: 0x66 },
-      { simMs: 3392, instance: ds2, port: 'digit4', value: 0x6d },
-    ]);
-    // 两片 seg4 各自扫描：预热后 DS1 完全没有变化，不能把 DS2 的计数当成
-    // 两片同步的「整帧」更新，也不要在任意时刻假设八位来自同一帧。
+    // 统一事件按一次完整显示快照发出：同一快照内的四位共享 simTime。
+    const snapshots = new Map<number, Map<string, number>>();
+    for (const event of afterWarmup) {
+      const snapshot = snapshots.get(event.simMs) ?? new Map<string, number>();
+      snapshot.set(event.port, event.value);
+      snapshots.set(event.simMs, snapshot);
+    }
+    expect([...snapshots.keys()]).toEqual([1152, 2304, 3392]);
+    for (const [simMs, snapshot] of snapshots) {
+      expect(snapshot.size).toBe(4);
+      expect(snapshot.get('digit4')).toBe(
+        simMs === 1152 ? 0x4f : simMs === 2304 ? 0x66 : 0x6d,
+      );
+    }
+    // 两片 seg4 各自扫描；预热后只有 DS2 发出新快照，不假设两片同步刷新。
     expect(new Set(afterWarmup.map((event) => event.instance))).toEqual(new Set([ds2]));
-    expect(new Set(afterWarmup.map((event) => event.port))).toEqual(new Set(['digit4']));
 
     for (const event of afterWarmup) {
       expect(event.value).not.toBe(0);
@@ -337,7 +336,7 @@ describe(`seg4 真实预览固件 ${PREVIEW_FIRMWARE_NAME}`, () => {
     );
   }, 900_000);
 
-  it('1 ms 控制：首帧跨位提交不同时，DS2 digit4 保留 0x06→0x5b 瞬态，内部进位早于 64 ms 边界', async () => {
+  it('1 ms 控制：显示快照从 0 逐步到 0x5b，内部进位早于 64 ms 边界', async () => {
     const trace = await runTrace(1, END_MS, Number.POSITIVE_INFINITY);
 
     expect(trace.faults).toEqual([]);
@@ -351,39 +350,38 @@ describe(`seg4 真实预览固件 ${PREVIEW_FIRMWARE_NAME}`, () => {
       firstFrameMs.set(`${event.designator}/${event.port}`, event.simMs);
     }
 
-    // 八位不是同一时刻提交的：扫描顺序决定各自锁存时间；DS2 第 4 位最后才稳定。
+    // 每片显示器的四位在同一个快照事件里共享 simTime；两片各自扫描，稳定时刻不同。
     expect(Object.fromEntries(firstFrameMs)).toEqual({
-      'DS1/digit1': 1,
-      'DS1/digit2': 1,
-      'DS1/digit3': 2,
+      'DS1/digit1': 3,
+      'DS1/digit2': 3,
+      'DS1/digit3': 3,
       'DS1/digit4': 3,
-      'DS2/digit1': 3,
-      'DS2/digit2': 4,
-      'DS2/digit3': 5,
+      'DS2/digit1': 11,
+      'DS2/digit2': 11,
+      'DS2/digit3': 11,
       'DS2/digit4': 11,
     });
 
-    // 64 ms 批次末值是正确的 --02；中间那次 0x06 是合法段码（字符 1），
-    // 但出现在 DS2 第 4 位属于扫描顺序造成的瞬态，主用例的批次末值把它隐藏了。
-    // 后面的 1126/2241/3355 是真实内部进位，主用例只会看到 1152/2304/3392 的批次边界。
+    // 1 ms 批次保留 DS2 第 4 位从 0 到 0x06、0x5b 的中间快照；后面的
+    // 1126/2241/3355 是真实内部进位，主用例只会看到 1152/2304/3392 的批次边界。
     const ds2Digit4 = trace.events.filter(
       (event) => event.instance === ds2 && event.port === 'digit4',
     );
 
     expect(ds2Digit4.map((event) => [event.simMs, event.value])).toEqual([
-      [0, 0x00],
+      [3, 0x00],
+      [4, 0x00],
       [5, 0x06],
       [11, 0x5b],
       [1126, 0x4f],
       [2241, 0x66],
       [3355, 0x6d],
     ]);
-    expect(GLYPHS.get(0x06)).toBe('1');
     expect(displayText(digitsAt(trace.events, STEP_MS), 'DS2')).toBe('--02');
     expect(displayText(digitsAt(trace.events, END_MS), 'DS2')).toBe('--05');
     expect(displayText(digitsAt(trace.events, END_MS), 'DS1')).toBe('2018');
 
-    for (const event of trace.events.filter((item) => item.simMs > 0)) {
+    for (const event of trace.events.filter((item) => item.simMs >= 11)) {
       expect(event.value).not.toBe(0);
       expect(GLYPHS.has(event.value)).toBe(true);
     }

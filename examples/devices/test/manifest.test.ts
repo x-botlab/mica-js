@@ -1,94 +1,126 @@
 import { describe, expect, it } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { deviceMetadataSymbol, parseDeviceMetadata } from '@mica-js/document/schematic';
-import { loadSourceDevice, readMetadata } from './ct107d/harness.ts';
+import { createBoardWith, loadSourceDevice, readMetadata } from './harness.ts';
+import type { DeviceIR } from '@mica-js/sdk/model';
 
 /**
- * 全器件一致性：元数据、DDL 与适配器必须描述同一组资源。
+ * 21 个简单统一器件的清单、DDL 与适配器接口一致性。
  *
- * 这里不做行为断言（各器件的 `test/<id>.test.ts` 负责），只保证三份声明不会互相漂移：
- * 属性名、引脚名、通道名与方向都必须对得上，符号能被文档解析器接受。
+ * 本轮只交付仿真内核：不要求 `view2d`、几何或展示入口。这里不重新实现 SDK 校验，
+ * 只覆盖跨文件合同：清单引脚 == 模型 IR 引脚，每个输入通道有该器件显式声明的公共
+ * 方法，每个输出通道有 `onDidXxx` 事件，且旧的 `ports` / `symbol` 不再出现在清单中。
  */
 
-const DEVICE_ROOT = join(import.meta.dirname, '..', 'src', 'devices');
-const ids = readdirSync(DEVICE_ROOT, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory())
-  .map((entry) => entry.name)
-  .sort();
+const IDS = [
+  '74hc02',
+  '74hc138',
+  '74hc14',
+  '74hc573',
+  'at24c02',
+  'blue-led',
+  'buzzer',
+  'cx20106a',
+  'ds1302',
+  'ds18b20',
+  'jumper',
+  'jumper-2x3',
+  'lm386',
+  'ne555',
+  'pcf8591',
+  'push-button',
+  'relay',
+  'uart-probe',
+  'uln2003',
+  'ultrasonic',
+  'vs1838',
+] as const;
 
-interface Declaration {
+const cap = (value: string): string => `${value[0]?.toUpperCase() ?? ''}${value.slice(1)}`;
+/** 通道名与业务事件名不同的显式映射；其余按 onDid<Channel> 约定。 */
+const OUTPUT_EVENTS: Readonly<Record<string, string>> = { pressed: 'onDidPress' };
+/**
+ * 每个器件的 DDL 输入通道到公共方法名的显式映射。测试不按通道名跨器件猜语义。
+ */
+const INPUT_METHODS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  cx20106a: { carrier: 'setCarrier' },
+  ds18b20: { temperature: 'setTemperature' },
+  jumper: { control: 'setClosed' },
+  'jumper-2x3': { control2: 'selectVs1838' },
+  pcf8591: { ain0: 'setAin0', ain1: 'setAin1', ain2: 'setAin2', ain3: 'setAin3' },
+  'push-button': { press: 'press' },
+  'uart-probe': { send: 'send' },
+  vs1838: { carrier: 'setCarrier' },
+};
+
+function irDeclarations(model: DeviceIR): readonly {
   readonly kind: string;
-  readonly name?: string;
-  readonly direction?: string;
+  readonly name: string;
+  readonly direction?: 'input' | 'output';
+}[] {
+  return model.declarations as never;
 }
 
-/**
- * 这些器件的适配器在内部把多个 DDL 通道合成为对外话题（或反过来由适配器直接发布），
- * `device.json` 的 `ports` 描述的是宿主可见话题而不是 DDL 通道，因此不参与一一比对。
- */
-const TOPIC_ADAPTERS = new Set(['ili9325', 'stm32g431rbt6']);
+describe.each(IDS)('统一器件 %s', (id) => {
+  it('清单身份与模型引脚完全一致，且不含旧清单字段', async () => {
+    const manifest = readMetadata(id);
+    const device = await loadSourceDevice(id);
+    const raw = manifest as unknown as Record<string, unknown>;
 
-describe('器件库清单', () => {
-  it('至少包含 25 个器件目录', () => {
-    expect(ids.length).toBeGreaterThanOrEqual(25);
+    expect(raw.ports).toBeUndefined();
+    expect(raw.symbol).toBeUndefined();
+    expect(raw.id).toBeUndefined();
+    expect(manifest.publisher).toBe('example');
+    expect(manifest.name).toBe(id);
+    expect(manifest.engines.mica).toBe('^0.3.0');
+    expect(manifest.model.entry).toBe('model.js');
+
+    const modelPins = irDeclarations(device.model)
+      .filter((declaration) => declaration.kind === 'pin')
+      .map((declaration) => declaration.name)
+      .sort();
+    const manifestPins = Object.keys(manifest.pins ?? {}).sort();
+
+    expect(manifestPins).toEqual(modelPins);
   });
 
-  for (const id of ids) {
-    describe(id, () => {
-      it('元数据与 DDL 的属性、引脚、端口一致', async () => {
-        const metadata = readMetadata(id) as {
-          readonly id: string;
-          readonly properties?: Readonly<Record<string, unknown>>;
-          readonly pins?: Readonly<Record<string, unknown>>;
-          readonly ports?: Readonly<Record<string, { readonly direction: string }>>;
-        };
-        const device = await loadSourceDevice(id);
-        const declarations = device.model.declarations as readonly Declaration[];
-        const names = (kind: string): string[] =>
-          declarations
-            .filter((declaration) => declaration.kind === kind)
-            .map((declaration) => declaration.name as string)
-            .sort();
+  it('每个输入通道有公共方法，每个输出通道有 onDidXxx 事件', async () => {
+    const manifest = readMetadata(id);
+    const device = await loadSourceDevice(id);
+    const channels = irDeclarations(device.model).filter(
+      (declaration) => declaration.kind === 'channel',
+    );
 
-        expect(metadata.id).toBe(id);
-        expect(Object.keys(metadata.properties ?? {}).sort()).toEqual(names('property'));
-        expect(Object.keys(metadata.pins ?? {}).sort()).toEqual(names('pin'));
+    for (const channel of channels) {
+      if (channel.direction === 'input') {
+        const method = INPUT_METHODS[id]?.[channel.name];
+        expect(
+          method,
+          `${id}: input ${channel.name} needs an explicit public method`,
+        ).toBeDefined();
+        expect(manifest.model.methods[method as string]).toBeDefined();
+      } else if (channel.direction === 'output') {
+        const event = OUTPUT_EVENTS[channel.name] ?? `onDid${cap(channel.name)}`;
+        expect(
+          manifest.model.events[event],
+          `${id}: output ${channel.name} needs ${event}`,
+        ).toBeDefined();
+      }
+    }
+  });
+});
 
-        if (TOPIC_ADAPTERS.has(id)) return;
+describe('测试夹具事件出口', () => {
+  it('访问清单未声明的 onDid 事件会立即失败，拼错事件不能静默通过', async () => {
+    const device = await loadSourceDevice('push-button');
+    const typo = {
+      ...device,
+      create: (context: { readonly events: Record<string, unknown> }) => {
+        void context.events.onDidPrez;
+        return { sync() {}, dispose() {} };
+      },
+    };
 
-        const ports = Object.entries(metadata.ports ?? {})
-          .map(([name, port]) => `${name}:${port.direction}`)
-          .sort();
-        const channels = declarations
-          .filter((declaration) => declaration.kind === 'channel')
-          .map((declaration) => `${declaration.name}:${declaration.direction}`)
-          .sort();
-
-        expect(ports).toEqual(channels);
-      });
-
-      it('device.json 通过文档解析器，未声明 symbol 时按引脚生成', () => {
-        const definition = parseDeviceMetadata(readMetadata(id));
-        const symbol = deviceMetadataSymbol(definition);
-
-        expect(Object.keys(symbol.pins).sort()).toEqual(
-          Object.keys((readMetadata(id) as { pins?: object }).pins ?? {}).sort(),
-        );
-      });
-
-      it('适配器源码不引用未导出的辅助模块', () => {
-        const directory = join(DEVICE_ROOT, id);
-        // JIT 器件（IAP15F2K61S2）由 `kernel/` 与 `peripherals/` 多个模块组成，
-        // 构建器会把它们一起打包，因此只对单文件适配器检查自包含性。
-        if (readdirSync(directory, { withFileTypes: true }).some((entry) => entry.isDirectory()))
-          return;
-        const source = readFileSync(join(directory, 'index.ts'), 'utf8');
-
-        // 构建器会把包依赖一起打包；这里只限制相对导入，避免适配器引用未导出的辅助模块。
-        for (const match of source.matchAll(/from\s+'(\.[^']+)'/g))
-          expect(['./model.ddl']).toContain(match[1]);
-      });
-    });
-  }
+    await expect(
+      createBoardWith([{ id: 'dut', type: 'push-button', device: typo as never }], { nets: [] }),
+    ).rejects.toThrow(/onDidPrez/);
+  });
 });

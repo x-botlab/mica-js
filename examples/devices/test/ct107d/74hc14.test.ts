@@ -143,14 +143,12 @@ async function hysteresisFixture(): Promise<{
 }
 
 describe('74HC14', () => {
-  it('元数据声明 14 根引脚且没有端口', () => {
-    const metadata = readMetadata('74hc14') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports?: Readonly<Record<string, unknown>>;
-    };
+  it('清单声明 14 根引脚，模型没有公共方法与事件', () => {
+    const metadata = readMetadata('74hc14');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(14);
-    expect(metadata.ports).toBeUndefined();
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(14);
+    expect(Object.keys(metadata.model.methods)).toEqual([]);
+    expect(Object.keys(metadata.model.events)).toEqual([]);
   });
 
   it('六通道在 A=0 / A=1 下逐路反相', async () => {

@@ -1,1 +1,6 @@
-/src/devices/ct117e-m4/hot-model.ts
+node_modules/
+dist/
+.mica/
+**/*.d.ddl.ts
+/src/hot-model.ts
+dist.release.json

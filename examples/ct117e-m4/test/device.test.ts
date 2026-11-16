@@ -1,5 +1,4 @@
 import { expect, it } from 'vitest';
-import { createJointBoard, gramMatchesOracle } from '../../devices/test/ili9325/joint-harness';
 import { loadFirmware } from './firmware';
 import {
   CT117E_M4_END_TIME_PS,
@@ -10,6 +9,67 @@ import {
   sameBytes,
   sameFrames,
 } from './harness';
+
+interface JointAccounting {
+  readonly wrLevelChanges: number;
+  readonly pixelWrites: number;
+  readonly gramStores: number;
+  readonly oracleGramStores: number;
+  readonly wrSamples: number;
+  readonly csSamples: number;
+  readonly csLevelChanges: number;
+  readonly rsSamples: number;
+  readonly rsLevelChanges: number;
+  readonly oracleFrames: readonly Uint8Array[];
+  readonly oracleGram: Uint8Array;
+  readonly fullScreenFills: readonly {
+    readonly value: number;
+    readonly pixels: number;
+    readonly uniform: boolean;
+  }[];
+}
+
+interface JointOracle {
+  readonly board: {
+    readonly time: number;
+    readonly status: string;
+    runUntil(target: number): void;
+    dispose(): void;
+  };
+  readonly frames: readonly Uint8Array[];
+  readonly expectedFrames: readonly Uint8Array[];
+  readonly frameTimes: readonly number[];
+  readonly errors: readonly string[];
+  readonly faults: readonly number[];
+  readonly lcd: {
+    readonly memories: ReadonlyMap<string, Uint8Array>;
+    readonly states: ReadonlyMap<string, unknown>;
+  };
+  readonly mcu: {
+    readonly states: ReadonlyMap<string, unknown>;
+    readonly memories: ReadonlyMap<string, Uint8Array>;
+  };
+  advanceTo(target: number): void;
+  readAccounting(): JointAccounting | undefined;
+  dispose(): void;
+}
+
+interface JointHarnessModule {
+  createJointBoard(options: {
+    readonly firmware: Uint8Array;
+    readonly accounting?: boolean;
+  }): Promise<JointOracle>;
+  gramMatchesOracle(left: Uint8Array, right: Uint8Array): boolean;
+}
+
+// 通过变量说明符导入兄弟示例的 oracle，避免把未迁移的夹具源纳入本包类型检查。
+const jointSpecifier = new URL(
+  '../../devices/test/ili9325/joint-harness.ts',
+  import.meta.url,
+).href;
+const { createJointBoard, gramMatchesOracle } = (await import(
+  jointSpecifier as string
+)) as unknown as JointHarnessModule;
 
 const PANEL_WIDTH = 320;
 const PANEL_HEIGHT = 240;
@@ -33,7 +93,7 @@ function expectFrameLayout(frames: readonly Uint8Array[]): void {
 }
 
 /**
- * 正式交付产物用例：只从 `dist/devices/ct117e-m4/device.js` 装配一个 instance。
+ * 正式交付产物用例：只从 `dist/model.js` 装配一个 instance。
  *
  * 真实 `HAL_06_LCD.hex` 映像按 80 MHz 从复位推进到 440 ms；固定工作量、最终
  * GRAM、逐帧内容、精确 frameInfo 时间与 MCU 状态同时与旧的分立 joint-harness

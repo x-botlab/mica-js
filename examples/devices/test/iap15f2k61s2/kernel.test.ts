@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import create from '../../src/devices/iap15f2k61s2/index.ts';
+import { loadSourceCreate } from './load-create.ts';
+
+const create = await loadSourceCreate();
 
 /**
  * 内核取指基线：256 个操作码的指令长度必须与 8051 操作码表一致。
@@ -12,7 +14,7 @@ type Translate = (input: { pc: number; code: Uint8Array }, builder: unknown) => 
 function translator(): { translate: Translate } {
   let options: { translate: Translate } | undefined;
   const context = {
-    props: { firmware: new Uint8Array(0), clockFrequency: 11_059_200 },
+    props: { firmware: null, clockFrequency: 11_059_200 },
     attachJit(value: { translate: Translate }) {
       options = value;
 

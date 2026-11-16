@@ -1,21 +1,25 @@
 import { describe, expect, it } from 'vitest';
+import { iapDeviceWithFirmware } from '../iap15f2k61s2/firmware-device.ts';
 import { createBoardWith, US } from './harness.ts';
 
 async function probePort1Bit0(loadResistance?: number) {
+  const device = await iapDeviceWithFirmware(
+    Uint8Array.from([
+      0x75,
+      0x90,
+      0xff, // MOV P1,#0FFH: quasi-bidirectional latch high
+      0x80,
+      0xfe, // SJMP $
+    ]),
+  );
   const board = await createBoardWith(
     [
       {
         id: 'dut',
         type: 'iap15f2k61s2',
+        device,
         props: {
           clockFrequency: 1_000_000,
-          firmware: Uint8Array.from([
-            0x75,
-            0x90,
-            0xff, // MOV P1,#0FFH: quasi-bidirectional latch high
-            0x80,
-            0xfe, // SJMP $
-          ]),
         },
       },
     ],

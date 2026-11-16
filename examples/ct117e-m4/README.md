@@ -1,14 +1,14 @@
 # CT117E-M4 单器件工程（STM32G431RBT6 + ILI9325）
 
-`@mica-js/example-ct117e-m4` 把 CT117E-M4 上 MCU 与 ILI9325 的固定接线合成一个
-器件模型：**一个 instance、一个 JIT**。它用于验证单器件融合路径和真实 Keil 固件的
-运行行为，不是完整 CT117E-M4 开发板仿真。
+`ct117e-m4` 把 CT117E-M4 上 MCU 与 ILI9325 的固定接线合成一个器件模型：
+**一个 instance、一个 JIT**。它用于验证单器件融合路径和真实 Keil 固件的运行行为，
+不是完整 CT117E-M4 开发板仿真。
 
-- 器件 ID：`ct117e-m4`
-- 源码：`src/devices/ct117e-m4/{model.ddl,index.ts,device.json}`
-- 构建产物：`dist/devices/ct117e-m4/{device.js,device.json}`
-- 参考固件：`HAL_06_LCD.hex`（测试夹具位于 `examples/devices/bench/stm32g431rbt6`；器件运行时接收
-  Flash 字节映像）
+- 器件 ID：`example:ct117e-m4`
+- 源码：`src/{model.ddl,index.ts,mcu.ts,lcd.ts}`
+- 构建产物：包根 `dist/{package.json,model.js}`
+- 参考固件：`HAL_06_LCD.hex`（测试夹具位于 `examples/devices/bench/stm32g431rbt6`；
+  统一模型从 `ctx.props.firmware` 接收 `FirmwareImage`）
 
 ## 构建与检查
 
@@ -22,8 +22,8 @@ pnpm test         # 构建并运行正确性测试
 pnpm bench        # 构建并运行三轮基准
 ```
 
-`pnpm test` 会先构建，再只从 `dist/devices/ct117e-m4/device.js` 装载产物；测试不会
-退回 `src/`，也不会在测试里重新编译 DDL。
+`pnpm test` 会先构建，再只从 `dist/model.js` 装载产物；测试不会退回 `src/`，也不会在
+测试里重新编译 DDL。
 
 本工程本地保存 LCD 模型、适配器、融合变换和热函数展开器；MCU 内核来自工作区包
 `@mica-js/stm32g431rbt6-core`（`examples/stm32g431rbt6-core`，`workspace:*` 开发依赖），
@@ -37,70 +37,24 @@ pnpm bench        # 构建并运行三轮基准
 `scripts/prepare-model.mjs` 在构建期编译本地 `model.ddl`，生成忽略提交的
 `hot-model.ts`，供运行时展开 BlockIR 热函数；SDK 同时把完整模型编进最终产物。
 `mica build` 在构建期把共享内核打包进产物，构建与运行不引用兄弟 example 的源码或
-测试文件。`device.js` 是单个自包含模块，导出 `model` 和 `create`，运行时不加载共享包。
+测试文件。`model.js` 是单个自包含模块，导出 `model` 和同步 `create`，运行时不加载共享包。
 
-## 从构建产物加载
+## 统一模型接口
 
-当前 SDK 的公开装配接口是 `createDeviceLibrary` + `createBoard`；器件包通过
-`device.js` 导出的 `model`/`create` 登记。`device.json` 是给编辑器和目录扫描用的
-元数据，不参与仿真装配。
+`src/index.ts` 使用 `.mica/device.d.ts` 生成的 `DeviceFactory`、`DeviceMethods` 和
+`DeviceEvents`：模型方法固定为 `getFramebuffer`，事件固定为 `onDidFramebuffer`、
+`onDidFault` 与 `onDidSerial1Tx`–`onDidSerial3Tx`。`create` 返回的实例同步执行并公开
+`methods`；内部 MCU/LCD 只通过 `ctx.events` 发事件，不再使用旧话题。
 
-```ts
-import { readFileSync } from 'node:fs';
-import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { create, model } from './dist/devices/ct117e-m4/device.js';
+固件属性由清单声明为 `firmware`，工厂拿到的是按 `flash` 地址空间解析后的只读
+`FirmwareImage`；模型 IR 不声明同名 DDL 属性。`mcu.ts` 在工厂执行前把镜像段映射到
+`code` 内存，并拒绝未知地址空间或越界段。
 
-// firmware 必须是以 0x08000000 为起点的 Flash 字节映像。
-// 本工程测试用 test/firmware.ts 解析 Intel HEX；HEX 文本不能直接传进来。
-const firmware = new Uint8Array(readFileSync('firmware.bin'));
+## 旧 simulator 兼容边界
 
-const board = createBoard(createDeviceLibrary([{ id: 'ct117e-m4', model, create }]), {
-  instances: [
-    {
-      id: 'lcd-mcu',
-      type: 'ct117e-m4',
-      props: {
-        firmware,
-        clockFrequency: 80_000_000, // 固件 SystemClock_Config 配置的 SYSCLK
-        refreshRate: 60,
-      },
-    },
-  ],
-  nets: [
-    {
-      id: 'vdd',
-      voltage: 3.3,
-      pins: [{ instance: 'lcd-mcu', pin: 'VDD1' }],
-    },
-    {
-      id: 'vss',
-      voltage: 0,
-      pins: [{ instance: 'lcd-mcu', pin: 'VSS1' }],
-    },
-  ],
-});
-
-board.topics.onDidReceive(({ topic, payload }) => {
-  if (topic !== 'framebuffer') return;
-
-  const frame = payload as Uint8Array;
-  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
-
-  console.log({
-    x: view.getUint16(0, true),
-    y: view.getUint16(2, true),
-    width: view.getUint16(4, true),
-    height: view.getUint16(6, true),
-    bytes: frame.length,
-  });
-});
-
-board.runUntil(0);
-
-const target = 440_000_000_000;
-while (board.time < target) board.runUntil(Math.min(board.time + 200_000_000, target));
-board.dispose();
-```
+旧 `createBoard` 仍使用话题与裸字节属性；测试夹具通过 SDK 的 `adaptModelFactory` +
+`firmwareImage` 做显式投影，并把测试固件包装成 `FirmwareImage`。这只是旧消费适配，
+不是融合运行时实现。
 
 ## 接线与运行设置
 
@@ -115,24 +69,26 @@ board.dispose();
 - `runUntil(0)` 完成复位和初始化；之后可用任意步长推进到目标时间。
 - `execution` 使用默认的 `throughput`（直接后端）；本示例没有单独维护 precise 路径。
 
-## 输出话题
+## 输出事件
 
-- `framebuffer`：`Uint8Array`。开头是 8 字节小端矩形头：
+- `onDidFramebuffer`：载荷为 `Uint8Array`。开头是 8 字节小端矩形头：
   `x:u16, y:u16, width:u16, height:u16`；随后是 `width × height` 个
   **RGB565 小端**像素，行优先。总长度必须等于 `8 + width × height × 2`。
   每次发布的是一个合帧脏矩形，不保证是整屏；坐标以 320×240 面板为准。
-- `fault`：`number`。MCU 模型报告的故障通知；载荷语义沿用 MCU 子集。
-- `serial1.tx`、`serial2.tx`、`serial3.tx`：`number`。从 MCU 子集继承的 USART
-  发送字节；没有发送活动时不会发布。
+  `getFramebuffer` 返回最近合成的整屏快照。
+- `onDidFault`：`number`。MCU 模型报告的故障通知；载荷语义沿用 MCU 子集。
+- `onDidSerial1Tx`、`onDidSerial2Tx`、`onDidSerial3Tx`：`number`。从 MCU 子集继承的
+  USART 发送字节；没有发送活动时不会发布。
 
-`framebuffer` 的矩形可能重叠或只覆盖局部区域，消费方应按顺序合成。没有脏像素时
-不会发布空帧。
+旧兼容投影把上述事件映射回 `framebuffer`、`fault`、`serial1.tx`–`serial3.tx` 话题。
+`framebuffer` 的矩形可能重叠或只覆盖局部区域，消费方应按顺序合成；没有脏像素时不会
+发布空帧。
 
 ## 测试覆盖
 
 `test/device.test.ts` 是正式交付产物用例：
 
-- 从 `dist/devices/ct117e-m4/device.js` 装载并创建**单个** instance；
+- 从 `dist/model.js` 装载并创建**单个** instance；
 - 严格解析 `examples/devices/bench/stm32g431rbt6/HAL_06_LCD.hex`，按 80 MHz 从复位推进到 220 ms / 440 ms；
 - 固定工作量：220 ms 为 272,506 次 WR 电平变化、136,008 次 GRAM store、5 帧；
   440 ms 为 **545,004 次 WR 变化、272,007 次像素 store、10 帧、76,800 个非零
@@ -202,6 +158,6 @@ stdout 会输出 `CT117E_M4_PERF` 行和 `CT117E_M4_REPORT` 临时目录；`read
   所需）、SysTick、NVIC、USART1–3 发送、128 KiB Flash、22 KiB SRAM、10 KiB CCM
   SRAM；LCD 侧为 16 位 8080 并口、窗口寻址、GRAM 与 RGB565 帧发布。ADC、DAC、
   比较器、运算放大器、SPI、I²C、CAN、USB、RTC、看门狗和通用定时器等未建模。
-- 器件运行时只接收 `firmware` 字节，不读取 HEX/BIN 文件；文件解析属于测试夹具。
+- 器件运行时只接收解析后的 `FirmwareImage`，不读取 HEX/BIN 文件；文件解析属于宿主或测试夹具。
 - 本示例不能用来证明任意 CT117E-M4 固件或任意外部接线都与真实硬件等价；它只覆盖
   上述固定接法和 MCU 子集。

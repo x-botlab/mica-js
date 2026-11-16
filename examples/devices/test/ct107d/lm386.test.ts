@@ -57,16 +57,13 @@ async function fixture(props: Record<string, unknown> = {}): Promise<Fixture> {
 }
 
 describe('LM386', () => {
-  it('元数据声明 8 根引脚、gain 属性与 active 端口', () => {
-    const metadata = readMetadata('lm386') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly properties: Readonly<Record<string, { readonly default: unknown }>>;
-      readonly ports: Readonly<Record<string, { readonly type: string }>>;
-    };
+  it('清单声明 8 根引脚、gain 属性与 active 查询/事件', () => {
+    const metadata = readMetadata('lm386');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(8);
-    expect(metadata.properties.gain?.default).toBe(20);
-    expect(metadata.ports.active?.type).toBe('boolean');
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(8);
+    expect(metadata.properties?.gain?.default).toBe(20);
+    expect(metadata.model.methods.isActive).toBeDefined();
+    expect(metadata.model.events.onDidActive).toMatchObject({ type: 'boolean' });
   });
 
   it('INN 接地时 OUT 跟随 INP', async () => {

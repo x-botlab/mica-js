@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { deviceMetadataSymbol, parseDeviceMetadata } from '@mica-js/document/schematic';
-import { validateMetadata } from '@mica-js/sdk/metadata';
+import { readMetadata } from '../harness.ts';
 import { circuit, measure } from './harness.ts';
 
 /**
@@ -13,68 +10,27 @@ import { circuit, measure } from './harness.ts';
  * 6.02 mA，亮度 0.30——与典型蓝色 LED 在 5 V 下的工作点接近。
  */
 
-const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'blue-led');
-
-interface DeviceJson {
-  readonly kind: string;
-  readonly id: string;
-  readonly displayName: string;
-  readonly properties: Readonly<
-    Record<string, { readonly type: string; readonly default?: unknown }>
-  >;
-  readonly pins: Readonly<Record<string, unknown>>;
-  readonly ports: Readonly<
-    Record<
-      string,
-      { readonly direction: string; readonly type: string; readonly delivery?: string }
-    >
-  >;
-  readonly symbol: {
-    readonly bounds: { readonly width: number; readonly height: number };
-    readonly graphics: readonly unknown[];
-    readonly pins: Readonly<Record<string, unknown>>;
-  };
-}
-
-const metadata = (): DeviceJson =>
-  JSON.parse(readFileSync(join(DEVICE_DIR, 'device.json'), 'utf8')) as DeviceJson;
-
 describe('器件声明', () => {
-  it('元数据通过 SDK 校验，ID 与目录名一致', () => {
-    expect(() => validateMetadata(metadata(), 'device', 'blue-led')).not.toThrow();
+  it('清单通过严格校验，publisher:name 与目录一致', () => {
+    const manifest = readMetadata('blue-led');
+
+    expect(`${manifest.publisher}:${manifest.name}`).toBe('example:blue-led');
+    expect(manifest.engines.mica).toBe('^0.3.0');
   });
 
-  it('声明阳极/阴极两根引脚、三个数值输出端口与两项属性', () => {
-    const device = metadata();
+  it('声明阳极/阴极两根引脚、三个查询方法与两项属性', () => {
+    const device = readMetadata('blue-led');
 
     expect(device.displayName).toBe('蓝色 LED');
-    expect(Object.keys(device.pins).sort()).toEqual(['anode', 'cathode']);
-    expect(device.properties.forwardResistance?.default).toBe(500);
-    expect(device.properties.ratedCurrent?.default).toBe(0.02);
+    expect(Object.keys(device.pins ?? {}).sort()).toEqual(['anode', 'cathode']);
+    expect(device.properties?.forwardResistance?.default).toBe(500);
+    expect(device.properties?.ratedCurrent?.default).toBe(0.02);
 
-    for (const name of ['brightness', 'current', 'voltage'])
-      expect(device.ports[name]).toMatchObject({
-        direction: 'output',
-        type: 'number',
-        delivery: 'level',
-      });
-  });
-
-  it('符号覆盖两个引脚并画出发光箭头', () => {
-    const device = metadata();
-
-    expect(Object.keys(device.symbol.pins).sort()).toEqual(['anode', 'cathode']);
-    expect(device.symbol.graphics.length).toBeGreaterThanOrEqual(6);
-    expect(device.symbol.bounds.width).toBeGreaterThan(0);
-    expect(device.symbol.bounds.height).toBeGreaterThan(0);
-  });
-
-  it('文档解析器能把符号转换成两个引脚锚点', () => {
-    const definition = parseDeviceMetadata(metadata());
-    const symbol = deviceMetadataSymbol(definition);
-
-    expect(definition.id).toBe('blue-led');
-    expect(Object.keys(symbol.pins).sort()).toEqual(['anode', 'cathode']);
+    expect(device.model.methods.getBrightness).toBeDefined();
+    expect(device.model.methods.getCurrent).toBeDefined();
+    expect(device.model.methods.getVoltage).toBeDefined();
+    for (const name of ['onDidBrightness', 'onDidCurrent', 'onDidVoltage'])
+      expect(device.model.events[name]).toMatchObject({ type: 'number' });
   });
 });
 

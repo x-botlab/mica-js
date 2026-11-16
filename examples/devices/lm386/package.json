@@ -1,0 +1,111 @@
+{
+  "publisher": "example",
+  "name": "lm386",
+  "version": "1.0.0",
+  "description": "理想数字跟随器：INP 为高且 INN 为低时 OUT 推挽到 VCC，否则推挽到 GND；INN 接地时 OUT 跟随 INP，INP/INN 同电平则输出被抑制。端口 active 报告 OUT 是否为高。不建模电压增益（gain 仅元数据）、偏置、GAIN/BYPASS 网络与模拟波形。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "LM386 音频功率放大器",
+  "designatorPrefix": "U",
+  "properties": {
+    "gain": {
+      "type": "number",
+      "title": "电压增益",
+      "description": "20（GAIN 脚开路）或 200（GAIN 脚间接 10 µF）；数字跟随模型中两档结果相同，仅作元数据。",
+      "default": 20,
+      "nullable": false,
+      "min": 20,
+      "max": 200,
+      "step": 180
+    },
+    "outputResistance": {
+      "type": "number",
+      "title": "输出电阻",
+      "description": "推挽输出的等效串联电阻，决定高/低电平的负载能力。",
+      "default": 25,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "lowThreshold": {
+      "type": "number",
+      "title": "低电平上限",
+      "description": "采样电压低于该值判为逻辑低。",
+      "default": 0.8,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    },
+    "highThreshold": {
+      "type": "number",
+      "title": "高电平下限",
+      "description": "采样电压高于该值判为逻辑高。",
+      "default": 2,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    }
+  },
+  "pins": {
+    "inp": {
+      "label": "INP",
+      "description": "同相输入（板上接音频/ PWM 信号）"
+    },
+    "inn": {
+      "label": "INN",
+      "description": "反相输入（板上通常接地）"
+    },
+    "out": {
+      "label": "OUT",
+      "description": "逻辑电平输出"
+    },
+    "gain1": {
+      "label": "GAIN1",
+      "description": "增益设置脚 1，被动"
+    },
+    "gain8": {
+      "label": "GAIN8",
+      "description": "增益设置脚 8，被动"
+    },
+    "bypass": {
+      "label": "BYPASS",
+      "description": "旁路电容脚，被动"
+    },
+    "vcc": {
+      "label": "VCC",
+      "description": "5 V 电源（数据手册 VS）"
+    },
+    "gnd": {
+      "label": "GND",
+      "description": "地"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {
+      "isActive": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "boolean"
+        }
+      }
+    },
+    "events": {
+      "onDidActive": {
+        "type": "boolean"
+      }
+    }
+  },
+  "type": "module"
+}

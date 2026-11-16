@@ -1,0 +1,104 @@
+{
+  "publisher": "example",
+  "name": "relay",
+  "version": "1.0.0",
+  "description": "电磁继电器：线圈由开集输出拉低时吸合，两组常开触点随之闭合；isEnergized 查询吸合状态并发出 onDidEnergized。CT107D 的 K1（值 RELAY-SPDT）：线圈接 N_RELAY 与继电器电源，触点把 m2 接到 GND。释放时两组触点都移除支路。不模拟吸合延时、弹跳、线圈电感与反激电压。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "电磁继电器（双极常开）",
+  "designatorPrefix": "K",
+  "properties": {
+    "coilResistance": {
+      "type": "number",
+      "title": "线圈电阻",
+      "description": "线圈两端的等效直流电阻，决定吸合电流。",
+      "default": 400,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "contactResistance": {
+      "type": "number",
+      "title": "触点闭合电阻",
+      "description": "触点吸合时的等效导通电阻。",
+      "default": 0.05,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000,
+      "step": 0.01
+    },
+    "lowThreshold": {
+      "type": "number",
+      "title": "低电平上限",
+      "description": "线圈驱动端采样电压低于该值判为逻辑低。",
+      "default": 0.8,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    },
+    "highThreshold": {
+      "type": "number",
+      "title": "高电平下限",
+      "description": "线圈正端采样电压高于该值判为逻辑高。",
+      "default": 2,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    }
+  },
+  "pins": {
+    "coil": {
+      "label": "COIL-",
+      "description": "线圈驱动端（引脚 4），接 ULN2003 OUT5"
+    },
+    "vcc": {
+      "label": "COIL+",
+      "description": "线圈正端（引脚 5）"
+    },
+    "com": {
+      "label": "COM",
+      "description": "触点公共端（引脚 3），板上接 m2"
+    },
+    "no": {
+      "label": "NO",
+      "description": "常开触点（引脚 6），板上接 GND"
+    },
+    "com2": {
+      "label": "COM2",
+      "description": "第二组触点公共端（引脚 1），板上接 GND"
+    },
+    "no2": {
+      "label": "NO2",
+      "description": "第二组常开触点（引脚 2），板上悬空"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {
+      "isEnergized": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "boolean"
+        }
+      }
+    },
+    "events": {
+      "onDidEnergized": {
+        "type": "boolean"
+      }
+    }
+  },
+  "type": "module"
+}

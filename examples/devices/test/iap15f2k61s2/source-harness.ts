@@ -1,10 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import type { FirmwareImage } from '@mica-js/sdk/device';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import { createDeviceBuilder, types, validateDeviceIR } from '@mica-js/sdk/model';
 import type { DeviceIR } from '@mica-js/sdk/model';
-import create from '../../src/devices/iap15f2k61s2/index.ts';
 
 /**
  * 源码级板级夹具：用 `compileDDL` 现场编译 `model.ddl`，直接装载 `src/` 里的适配器。
@@ -14,7 +16,8 @@ import create from '../../src/devices/iap15f2k61s2/index.ts';
  */
 
 const PACKAGE_DIR = join(import.meta.dirname, '..', '..');
-const MODEL_PATH = join(PACKAGE_DIR, 'src', 'devices', 'iap15f2k61s2', 'model.ddl');
+const MODEL_PATH = join(PACKAGE_DIR, 'iap15f2k61s2', 'src', 'model.ddl');
+const ENTRY_PATH = join(PACKAGE_DIR, 'iap15f2k61s2', 'src', 'index.ts');
 
 let cached: Promise<DeviceIR> | undefined;
 
@@ -22,6 +25,30 @@ export function sourceModel(): Promise<DeviceIR> {
   cached ??= compileDDL(readFileSync(MODEL_PATH, 'utf8'));
 
   return cached;
+}
+
+let createCache: Promise<unknown> | undefined;
+
+/** 动态装载统一模型工厂，避免把器件全局 `Device*` 类型带进共享测试 tsconfig。 */
+function loadCreate(): Promise<unknown> {
+  createCache ??= import(pathToFileURL(ENTRY_PATH).href).then(
+    (module) => (module as { create: unknown }).create,
+  );
+
+  return createCache;
+}
+
+function serialEvents() {
+  return {
+    onDidUart1Tx: {
+      topic:  'uart1Tx',
+      transform: (value: unknown) => (value as { data: Uint8Array }).data,
+    },
+    onDidUart1Rx: {
+      topic:  'uart1Rx',
+      transform: (value: unknown) => (value as { data: Uint8Array }).data,
+    },
+  };
 }
 
 interface Message {
@@ -106,6 +133,8 @@ function pullUpModel(name: string, resistance: number): DeviceIR {
 
 export interface SourceHarnessOptions {
   readonly firmware?: Uint8Array;
+  /** 直接提供分段镜像；优先于 `firmware`。 */
+  readonly image?: FirmwareImage;
   readonly clockFrequency?: number;
   /** 需要采样的引脚，例如 `['P2_0', 'P3_1']`。 */
   readonly observe?: readonly string[];
@@ -132,6 +161,25 @@ export async function createSourceHarness(
   options: SourceHarnessOptions = {},
 ): Promise<SourceHarness> {
   const model = await sourceModel();
+  const factory = await loadCreate();
+  const image =
+    options.image ??
+    (options.firmware === undefined || options.firmware.length === 0
+      ? null
+      : firmwareImage([
+          {
+            addressSpace: 'code',
+            address: 0,
+            data: new Uint8Array(options.firmware),
+          },
+        ]));
+  const create = adaptModelFactory(factory as never, {
+    props: {
+      clockFrequency: options.clockFrequency ?? 1_000_000,
+      firmware: image,
+    },
+    events: serialEvents(),
+  }) as unknown as (context: never) => Adapter;
   const observe = options.observe ?? [];
   const drive = options.drive ?? [];
   const pullUps = Object.entries(options.pullUp ?? {});
@@ -246,7 +294,6 @@ export async function createSourceHarness(
 
   const props: Record<string, number | boolean | string | null | Uint8Array> = {
     clockFrequency: options.clockFrequency ?? 1_000_000,
-    ...(options.firmware === undefined ? {} : { firmware: options.firmware }),
   };
   const library = createDeviceLibrary(entries as never);
   const faults: string[] = [];

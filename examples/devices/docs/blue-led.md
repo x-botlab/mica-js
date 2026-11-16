@@ -1,28 +1,26 @@
 # 蓝色 LED 器件包
 
-蓝色 LED（InGaN，典型正向电压 3.0 V 级、额定电流 20 mA）的 Mica 器件工程。器件 ID 是
-`blue-led`：阳极–阴极之间是一段等效串联电阻，亮度取正向电流相对额定电流的比值。
-构建产物是 `dist/devices/blue-led/{device.json, device.js}`。
+蓝色 LED（InGaN，典型正向电压 3.0 V 级、额定电流 20 mA）的统一器件项目。器件 ID 是
+`example:blue-led`：阳极–阴极之间是一段等效串联电阻，亮度取正向电流相对额定电流的比值。
+构建产物是 `dist/blue-led/{package.json, model.js}`；本轮不提供 2D/编辑器视图资源。
 
-器件源码位于器件库 `examples/devices/src/devices/blue-led`，随
+器件源码位于 `examples/devices/blue-led`，随
 `pnpm --filter @mica-js/example-devices build|typecheck|test` 一起构建与验证。
 
 ## 目录
 
 ```
-examples/devices/
-  mica.config.ts                       器件库工程标志
-  package.json                         build = mica build，typecheck = mica prepare && tsc --noEmit
-  tsconfig.json
-  vitest.config.ts
-  src/devices/blue-led/
-    device.json                        引脚、属性、三个数值端口、LED 符号
+examples/devices/blue-led/
+  package.json                         清单：pins、properties、model
+  mica.config.ts                       输出到 ../dist/blue-led/
+  tsconfig.json                        extends ./.mica/tsconfig.json
+  src/
     model.ddl                          采样、亮度换算与输出通道
-    index.ts                           把输出通道发布到同名话题
-  test/blue-led/
-    harness.ts                         板级夹具：DDL + 适配器 + 测试电阻 + 电源网络
-    device.test.ts                     源码级行为用例
-    artifact.test.ts                   交付产物用例（device.js / device.json）
+    index.ts                           具名 create；缓存状态并发出 onDidXxx
+test/blue-led/
+  harness.ts                           板级夹具：DDL + 适配器 + 测试电阻 + 电源网络
+  device.test.ts                       源码级行为用例
+  artifact.test.ts                     交付产物用例（model.js / package.json）
 ```
 
 ## 模型要点
@@ -35,9 +33,10 @@ examples/devices/
 - **默认工作点**：`forwardResistance = 500 Ω`、`ratedCurrent = 20 mA`。5 V 经 330 Ω 串联时
   LED 分得约 3.01 V、6.02 mA，亮度 0.30，与典型蓝色 LED 的 3.0 V / 6 mA 接近；直接把
   LED 接到 5 V 时电流 10 mA、亮度 0.50。
-- **输出**：`voltage`、`current`、`brightness` 三个 `delivery: level` 端口。模型在
-  `anode`/`cathode` 的采样电压变化时重新计算并发送，不需要额外时钟；适配器把每批里的
-  最后一条发布到同名话题。
+- **输出**：`voltage`、`current`、`brightness` 三个输出通道。模型在
+  `anode`/`cathode` 的采样电压变化时重新计算并发送，不需要额外时钟；`src/index.ts`
+  缓存每批最后一条，供 `getVoltage()` / `getCurrent()` / `getBrightness()` 查询，并发出
+  对应的 `onDidVoltage` / `onDidCurrent` / `onDidBrightness` 事件。
 - **浮空**：任一端没有确定电压时发送 `0 V / 0 A / 0 亮度`，指示器保持熄灭，不把浮空
   当成低电平参与物理解算。
 
@@ -50,21 +49,23 @@ examples/devices/
 
 DDL 断言：`forwardResistance ∈ [0.001, 1e9]`，`ratedCurrent ∈ (0, 1]`。
 
-## 引脚与端口
+## 引脚与公共接口
 
 | 引脚      | 说明                           |
 | --------- | ------------------------------ |
 | `anode`   | 阳极：相对阴极为正时导通并发光 |
 | `cathode` | 阴极：接较低电位               |
 
-| 端口         | 方向   | 负载   | 说明                             |
-| ------------ | ------ | ------ | -------------------------------- |
-| `brightness` | output | number | 正向电流 / 额定电流，钳到 [0, 1] |
-| `current`    | output | number | 阳极到阴极的电流（A），反向为负  |
-| `voltage`    | output | number | 阳极相对阴极的电压（V）          |
+| 成员                  | 类型     | 说明                             |
+| --------------------- | -------- | -------------------------------- |
+| `getBrightness(null)` | `number` | 正向电流 / 额定电流，钳到 [0, 1] |
+| `getCurrent(null)`    | `number` | 阳极到阴极的电流（A），反向为负  |
+| `getVoltage(null)`    | `number` | 阳极相对阴极的电压（V）          |
+| `onDidBrightness`     | 事件     | 亮度变化                         |
+| `onDidCurrent`        | 事件     | 电流变化                         |
+| `onDidVoltage`        | 事件     | 电压变化                         |
 
-配对指示器：仓库的 `led-indicator` 控件（`brightness` 输入端口），把「点亮颜色」设为
-`#3b82f6` 即可显示蓝色发光。器件符号本身已画出 LED 三角、阴极线与两支发光箭头。
+本轮只提供仿真内核与模型接口，不提供新的 2D 光晕或编辑器展示适配。
 
 ## 已知简化
 
@@ -79,10 +80,11 @@ DDL 断言：`forwardResistance ∈ [0.001, 1e9]`，`ratedCurrent ∈ (0, 1]`。
 
 ```powershell
 cd examples/devices
-pnpm run typecheck        # mica prepare && tsc --noEmit
-pnpm run test             # mica build + vitest（源码用例 + 交付产物用例）
+pnpm run typecheck        # 逐器件 mica prepare + tsc -p <id>
+pnpm run test             # 聚合 build + vitest（源码用例 + 交付产物用例）
 ```
 
-`test/blue-led/harness.ts` 用 `compileDDL` 现场编译 `model.ddl` 并直接装载 `src/`，同时就地建立
-测试电阻与电压源网络；`test/blue-led/artifact.test.ts` 装载 `dist/` 里的交付文件，保证真正上传的
-JS/JSON 也能在真实仿真板上工作（未构建时跳过）。
+`test/blue-led/harness.ts` 使用共享夹具：现场编译 `src/model.ddl`、装载具名 `create`，
+并通过真实仿真板建立测试电阻与电压源网络；读数经 `getBrightness()` 等方法查询。
+`test/blue-led/artifact.test.ts` 装载 `dist/blue-led/` 里的 `model.js` 与 `package.json`，
+保证真正交付的文件也能在真实仿真板上工作（未构建时跳过）。

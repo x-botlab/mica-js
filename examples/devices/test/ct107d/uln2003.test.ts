@@ -90,17 +90,16 @@ async function fixture(): Promise<Fixture> {
 }
 
 describe('ULN2003', () => {
-  it('元数据声明 16 根引脚（无 VCC）与 mask/channels 端口', () => {
-    const metadata = readMetadata('uln2003') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports: Readonly<Record<string, { readonly type: string }>>;
-    };
+  it('清单声明 16 根引脚（无 VCC）与 mask/channels 查询/事件', () => {
+    const metadata = readMetadata('uln2003');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(16);
-    expect(metadata.pins.vcc).toBeUndefined();
-    expect(metadata.pins.com).toBeDefined();
-    expect(metadata.ports.mask?.type).toBe('number');
-    expect(metadata.ports.channels?.type).toBe('bytes');
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(16);
+    expect(metadata.pins?.vcc).toBeUndefined();
+    expect(metadata.pins?.com).toBeDefined();
+    expect(metadata.model.methods.getMask).toBeDefined();
+    expect(metadata.model.methods.getChannels).toBeDefined();
+    expect(metadata.model.events.onDidMask).toMatchObject({ type: 'number' });
+    expect(metadata.model.events.onDidChannels).toMatchObject({ type: 'binary' });
   });
 
   it('IN=1 逐路灌低，IN=0 释放并由上拉读高', async () => {

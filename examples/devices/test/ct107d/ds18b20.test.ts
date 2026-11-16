@@ -127,21 +127,15 @@ async function fixture(): Promise<Fixture> {
 }
 
 describe('DS18B20', () => {
-  it('元数据声明 3 根引脚与温度端口', () => {
-    const metadata = readMetadata('ds18b20') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly properties: Readonly<Record<string, { readonly default?: number }>>;
-      readonly ports: Readonly<
-        Record<string, { readonly type: string; readonly direction: string }>
-      >;
-    };
+  it('清单声明 3 根引脚与温度注入/查询/事件', () => {
+    const metadata = readMetadata('ds18b20');
 
-    expect(Object.keys(metadata.pins).sort()).toEqual(['dq', 'gnd', 'vcc']);
-    expect(metadata.properties.serial?.default).toBe(47049);
-    expect(metadata.ports.temperature?.type).toBe('number');
-    expect(metadata.ports.temperature?.direction).toBe('input');
-    expect(metadata.ports.temperatureOut?.type).toBe('number');
-    expect(metadata.ports.temperatureOut?.direction).toBe('output');
+    expect(Object.keys(metadata.pins ?? {}).sort()).toEqual(['dq', 'gnd', 'vcc']);
+    expect(metadata.properties?.serial?.default).toBe(47049);
+    expect(metadata.model.methods.setTemperature).toBeDefined();
+    expect(metadata.model.methods.hasTemperature).toBeDefined();
+    expect(metadata.model.methods.getTemperature).toBeDefined();
+    expect(metadata.model.events.onDidTemperatureOut).toMatchObject({ type: 'number' });
   });
 
   it('复位存在脉冲落在 +30..+120 us，短脉冲不判复位', async () => {
@@ -212,7 +206,7 @@ describe('DS18B20', () => {
     const { board, wire } = await fixture();
 
     try {
-      board.send('dut', 'temperature', -10.5);
+      board.send('dut', 'setTemperature', -10.5);
       board.run(10 * US);
 
       wire.reset();
@@ -253,7 +247,7 @@ describe('DS18B20', () => {
     const { board, wire } = await fixture();
 
     try {
-      board.send('dut', 'temperature', -10.5);
+      board.send('dut', 'setTemperature', -10.5);
       board.run(10 * US);
 
       wire.reset();

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { adaptModelFactory } from '@mica-js/sdk/device';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
@@ -13,7 +14,7 @@ import type { DeviceIR } from '@mica-js/sdk/model';
  * gnd，其他值释放。这样就能用 `send` 模拟多路扫描：先摆好段码，再选中某一位。
  */
 
-const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'seg4');
+const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'seg4', 'src');
 
 export const PINS = [
   'a',
@@ -47,7 +48,7 @@ export interface DeviceModule {
 
 let moduleCache: Promise<DeviceModule> | undefined;
 
-/** 装载 `src/devices/seg4/`：编译 DDL 并导入适配器。 */
+/** 装载 `<id>/src/`：编译 DDL 并导入统一模型工厂；事件经兼容适配器转到旧话题。 */
 export function loadSourceDevice(): Promise<DeviceModule> {
   moduleCache ??= (async () => {
     const [model, adapter] = await Promise.all([
@@ -55,11 +56,14 @@ export function loadSourceDevice(): Promise<DeviceModule> {
         uri: 'mica:devices/seg4/model.ddl',
       }),
       import(pathToFileURL(join(DEVICE_DIR, 'index.ts')).href) as Promise<{
-        default: (context: never) => Adapter;
+        create: (context: never) => Adapter;
       }>,
     ]);
+    const create = adaptModelFactory(adapter.create as never, {
+      events: { onDidDisplayChange: 'display' },
+    }) as unknown as (context: never) => Adapter;
 
-    return { model, create: adapter.default };
+    return { model, create };
   })();
 
   return moduleCache;
@@ -107,6 +111,8 @@ export interface Circuit {
   readonly history: Readonly<Record<string, readonly unknown[]>>;
   /** 板级错误。 */
   readonly faults: readonly string[];
+  /** 统一模型实例方法；测试用清单形状调用状态查询。 */
+  readonly methods: unknown;
   /** 驱动一根引脚：1 高、0 低、2 释放。 */
   set(pin: Pin, level: 0 | 1 | 2): void;
   /** 摆好段码并选中指定位，极性跟随 `commonAnode`。 */
@@ -122,6 +128,7 @@ export async function circuit(props: Readonly<Record<string, unknown>> = {}): Pr
   const history: Record<string, unknown[]> = {};
   const inputs: Record<string, Record<string, { send(value: unknown): void }>> = {};
   const faults: string[] = [];
+  let methods: unknown;
 
   const instrument = (context: {
     readonly inputs: Record<string, { send(value: unknown): void }>;
@@ -139,6 +146,8 @@ export async function circuit(props: Readonly<Record<string, unknown>> = {}): Pr
         },
       },
     } as never);
+
+    methods = (adapter as typeof adapter & { readonly methods?: unknown }).methods;
 
     return {
       sync(batch: { readonly outputs: Readonly<Record<string, readonly Message[]>> }) {
@@ -210,6 +219,7 @@ export async function circuit(props: Readonly<Record<string, unknown>> = {}): Pr
     topics,
     history,
     faults,
+    methods,
     set,
     show,
     run: (durationPs) => board.runUntil(board.time + durationPs),

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
 import { createDeviceBuilder, types, validateDeviceIR } from '@mica-js/sdk/model';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
@@ -44,7 +45,7 @@ export const SIBLING_DEVICES = join(PACKAGE_DIR, '..', 'ideal-led');
 
 const cache = new Map<string, Promise<DeviceModule>>();
 
-/** 加载 `dist/devices/<id>/device.js`：测试针对交付产物，而不是另一份源码副本。 */
+/** 加载 `dist/<id>/model.js`：测试针对交付产物，而不是另一份源码副本。 */
 export function loadDevice(deviceId: string, packageDir = PACKAGE_DIR): Promise<DeviceModule> {
   const key = `${packageDir}\0${deviceId}`;
   const cached = cache.get(key);
@@ -52,7 +53,7 @@ export function loadDevice(deviceId: string, packageDir = PACKAGE_DIR): Promise<
   if (cached !== undefined) return cached;
 
   const loaded = import(
-    pathToFileURL(join(packageDir, 'dist', 'devices', deviceId, 'device.js')).href
+    pathToFileURL(join(packageDir, 'dist', deviceId, 'model.js')).href
   ) as Promise<DeviceModule>;
 
   cache.set(key, loaded);
@@ -60,14 +61,53 @@ export function loadDevice(deviceId: string, packageDir = PACKAGE_DIR): Promise<
   return loaded;
 }
 
-/** 读取产物里的元数据，用于校验端口/引脚声明。 */
+/** 把统一模型工厂接到旧仿真板：显式构造 FirmwareImage，并把事件映射到旧话题。 */
+export function adapt(
+  module: DeviceModule,
+  options: { readonly firmware?: Uint8Array; readonly clockFrequency?: number },
+): (context: DeviceContext) => DeviceAdapter {
+  const image =
+    options.firmware === undefined || options.firmware.length === 0
+      ? null
+      : firmwareImage([
+          {
+            addressSpace: 'code',
+            address: 0,
+            data: new Uint8Array(options.firmware),
+          },
+        ]);
+
+  return adaptModelFactory(module.create as never, {
+    props: {
+      clockFrequency: options.clockFrequency ?? 1_000_000,
+      firmware: image,
+    },
+    events: {
+      onDidUart1Tx: {
+        topic: 'uart1Tx',
+        transform: (value) => (value as { data: Uint8Array }).data,
+      },
+      onDidUart1Rx: {
+        topic: 'uart1Rx',
+        transform: (value) => (value as { data: Uint8Array }).data,
+      },
+    },
+  }) as unknown as (context: DeviceContext) => DeviceAdapter;
+}
+
+/** 读取产物里的清单，用于校验引脚/模型声明。 */
 export function readMetadata(deviceId: string): {
-  readonly kind: string;
-  readonly ports?: Readonly<Record<string, { readonly direction: string; readonly type: string }>>;
+  readonly publisher: string;
+  readonly name: string;
   readonly pins?: Readonly<Record<string, unknown>>;
+  readonly model?: {
+    readonly types?: Readonly<Record<string, unknown>>;
+    readonly methods?: Readonly<Record<string, unknown>>;
+    readonly events?: Readonly<Record<string, unknown>>;
+  };
 } {
   return JSON.parse(
-    readFileSync(join(PACKAGE_DIR, 'dist', 'devices', deviceId, 'device.json'), 'utf8'),
+    readFileSync(join(PACKAGE_DIR, 'dist', deviceId, 'package.json'), 'utf8'),
   );
 }
 
@@ -167,6 +207,8 @@ export interface HarnessResult {
   /** LED 端口最后一次发布的亮度。 */
   readonly brightness: number | undefined;
   readonly faults: readonly string[];
+  /** 统一模型实例方法；测试用清单形状读取串口历史。 */
+  readonly methods: unknown;
   /** 诊断：JIT 是否走直接路径、缓存块数与直接程序数。 */
   readonly jit: {
     readonly direct: boolean;
@@ -193,6 +235,7 @@ interface Fixture {
   }[];
   readonly levels: readonly number[][];
   readonly brightness: number[];
+  readonly methods: unknown;
 }
 
 interface Pin {
@@ -206,16 +249,32 @@ interface Net {
   readonly voltage?: number;
 }
 
-async function createFixture(options: HarnessOptions): Promise<Fixture> {
+async function createFixture(
+  options: HarnessOptions & { readonly firmware?: Uint8Array; readonly clockFrequency?: number },
+): Promise<Fixture> {
   const mcu = await loadDevice('iap15f2k61s2');
   const levels = Array.from({ length: 17 }, () => [] as number[]);
-  const brightness: number[] = [];
+  const brightness: number[] = [0];
+  const create = adapt(mcu, options);
+  let methods: unknown;
 
   const entries: {
     id: string;
     model: DeviceIR;
     create: (context: DeviceContext) => DeviceAdapter;
-  }[] = [{ id: 'mcu', model: mcu.model, create: mcu.create }];
+  }[] = [
+    {
+      id: 'mcu',
+      model: mcu.model,
+      create: (context) => {
+        const adapter = create(context);
+
+        methods = (adapter as typeof adapter & { readonly methods?: unknown }).methods;
+
+        return adapter;
+      },
+    },
+  ];
   const instances: { id: string; type: string }[] = [{ id: 'mcu', type: 'mcu' }];
 
   const addProbe = (slot: string): void => {
@@ -280,13 +339,18 @@ async function createFixture(options: HarnessOptions): Promise<Fixture> {
   }
 
   if (options.led === true) {
-    const led = await loadDevice('ideal-led', SIBLING_DEVICES);
+    const led = (await import(
+      pathToFileURL(join(SIBLING_DEVICES, 'dist', 'model.js')).href
+    )) as { readonly model: DeviceIR; readonly create: unknown };
+    const create = adaptModelFactory(led.create as never, {
+      events: { onDidBrightness: 'brightness' },
+    }) as unknown as (context: DeviceContext) => DeviceAdapter;
 
     entries.push({
       id: 'led',
       model: led.model,
       create: (context) =>
-        led.create({
+        create({
           ...context,
           topics: {
             onDidReceive: context.topics.onDidReceive,
@@ -305,7 +369,16 @@ async function createFixture(options: HarnessOptions): Promise<Fixture> {
 
   nets.push({ id: 'signal', pins: signalPins });
 
-  return { library: createDeviceLibrary(entries), instances, nets, levels, brightness };
+  return {
+    library: createDeviceLibrary(entries),
+    instances,
+    nets,
+    levels,
+    brightness,
+    get methods() {
+      return methods;
+    },
+  };
 }
 
 /** 探针槽位：`20`…`27` 是 P2，`30`…`37` 是 P3，`signal` 是 P1_1。 */
@@ -335,7 +408,6 @@ export async function run(options: RunOptions = {}): Promise<HarnessResult> {
   const milliseconds = options.milliseconds ?? 1;
   const props: Record<string, number | string | boolean | null | Uint8Array> = {
     clockFrequency: options.clockFrequency ?? 1_000_000,
-    ...(options.firmware === undefined ? {} : { firmware: options.firmware }),
   };
 
   const faults: string[] = [];
@@ -397,6 +469,7 @@ export async function run(options: RunOptions = {}): Promise<HarnessResult> {
       signal: latest(fixture.levels[16]),
       brightness: fixture.brightness[fixture.brightness.length - 1],
       faults,
+      methods: fixture.methods,
       jit: {
         direct: jit?.direct !== undefined,
         cache: jit?.cache?.size ?? 0,

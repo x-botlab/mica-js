@@ -46,21 +46,17 @@ async function fixture(): Promise<TestBoard> {
 }
 
 function carrier(board: TestBoard, on: boolean): void {
-  board.send('dut', 'carrier', on);
+  board.send('dut', 'setCarrier', on);
 }
 
 describe('CX20106A', () => {
-  it('元数据声明 8 根引脚与布尔端口', () => {
-    const metadata = readMetadata('cx20106a') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports: Readonly<
-        Record<string, { readonly direction: string; readonly type: string }>
-      >;
-    };
+  it('清单声明 8 根引脚与布尔查询/事件', () => {
+    const metadata = readMetadata('cx20106a');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(8);
-    expect(metadata.ports.carrier).toMatchObject({ direction: 'input', type: 'boolean' });
-    expect(metadata.ports.receiving).toMatchObject({ direction: 'output', type: 'boolean' });
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(8);
+    expect(metadata.model.methods.setCarrier).toBeDefined();
+    expect(metadata.model.methods.isReceiving).toBeDefined();
+    expect(metadata.model.events.onDidReceiving).toMatchObject({ type: 'boolean' });
   });
 
   it('载波出现后 99 µs 仍释放，100 µs 已把 OUT 拉低', async () => {

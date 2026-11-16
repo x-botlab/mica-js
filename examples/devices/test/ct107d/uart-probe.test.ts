@@ -84,23 +84,15 @@ function bytesOn(board: TestBoard, topic: 'tx' | 'rx'): number[][] {
 }
 
 describe('UART 探针', () => {
-  it('元数据声明 4 根引脚、波特率/驱动电阻属性与 bytes 端口', () => {
-    const metadata = readMetadata('uart-probe') as {
-      readonly properties: Readonly<
-        Record<string, { readonly default?: number; readonly type: string }>
-      >;
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports: Readonly<
-        Record<string, { readonly direction: string; readonly type: string }>
-      >;
-    };
+  it('清单声明 4 根引脚、波特率/驱动电阻属性与 binary 方法/事件', () => {
+    const metadata = readMetadata('uart-probe');
 
-    expect(Object.keys(metadata.pins).sort()).toEqual(['gnd', 'rxd', 'txd', 'vcc']);
-    expect(metadata.properties.baud).toMatchObject({ type: 'number', default: 9600 });
-    expect(metadata.properties.driveResistance).toMatchObject({ type: 'number', default: 25 });
-    expect(metadata.ports.send).toMatchObject({ direction: 'input', type: 'bytes' });
-    expect(metadata.ports.tx).toMatchObject({ direction: 'output', type: 'bytes' });
-    expect(metadata.ports.rx).toMatchObject({ direction: 'output', type: 'bytes' });
+    expect(Object.keys(metadata.pins ?? {}).sort()).toEqual(['gnd', 'rxd', 'txd', 'vcc']);
+    expect(metadata.properties?.baud).toMatchObject({ type: 'number', default: 9600 });
+    expect(metadata.properties?.driveResistance).toMatchObject({ type: 'number', default: 25 });
+    expect(metadata.model.methods.send).toBeDefined();
+    expect(metadata.model.events.onDidTx).toMatchObject({ type: 'binary' });
+    expect(metadata.model.events.onDidRx).toMatchObject({ type: 'binary' });
   });
 
   it('空闲时 TXD 为高，RXD 上逐位发送的字节按 LSB first 从 tx 复原', async () => {

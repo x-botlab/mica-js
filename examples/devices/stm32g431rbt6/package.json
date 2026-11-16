@@ -1,0 +1,412 @@
+{
+  "publisher": "example",
+  "name": "stm32g431rbt6",
+  "version": "0.1.0",
+  "description": "Arm Cortex-M4F 32 位 MCU（LQFP64，128 KiB Flash / 22 KiB SRAM + 10 KiB CCM）。JIT 执行 Thumb/Thumb-2，GPIO、RCC、SysTick、NVIC 与 USART1/2/3 均按寄存器建模。",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "STM32G431RBT6",
+  "designatorPrefix": "U",
+  "properties": {
+    "clockFrequency": {
+      "type": "number",
+      "title": "???? (Hz)",
+      "description": "????????????????SysTick ? USART ????????????? HSI16?????? PLL ?????????",
+      "default": 16000000,
+      "nullable": false,
+      "min": 1000,
+      "max": 170000000,
+      "step": 1,
+      "unit": "Hz"
+    },
+    "firmware": {
+      "type": "firmware",
+      "title": "固件",
+      "description": "BIN/HEX/ELF 固件：装载到 0x08000000 起的 128 KiB Flash；前两个字是初始 SP 与复位入口。空值保持零初始化 Flash（SP=0、PC=0），不是错误。",
+      "default": null,
+      "nullable": true,
+      "maxBytes": 131072,
+      "addressSpaces": {
+        "code": {
+          "title": "程序 Flash",
+          "start": 134217728,
+          "size": 131072
+        }
+      },
+      "addressSpace": "code",
+      "loadAddress": 134217728,
+      "group": "固件",
+      "order": 0
+    }
+  },
+  "pins": {
+    "VBAT": {
+      "label": "VBAT",
+      "description": "LQFP64 第 1 脚，电源"
+    },
+    "PC13": {
+      "label": "PC13",
+      "description": "LQFP64 第 2 脚，GPIOC"
+    },
+    "PC14": {
+      "label": "PC14-OSC32_IN",
+      "description": "LQFP64 第 3 脚，GPIOC"
+    },
+    "PC15": {
+      "label": "PC15-OSC32_OUT",
+      "description": "LQFP64 第 4 脚，GPIOC"
+    },
+    "PF0": {
+      "label": "PF0-OSC_IN",
+      "description": "LQFP64 第 5 脚，GPIOF"
+    },
+    "PF1": {
+      "label": "PF1-OSC_OUT",
+      "description": "LQFP64 第 6 脚，GPIOF"
+    },
+    "NRST": {
+      "label": "PG10-NRST",
+      "description": "LQFP64 第 7 脚，系统与复位"
+    },
+    "PC0": {
+      "label": "PC0",
+      "description": "LQFP64 第 8 脚，GPIOC"
+    },
+    "PC1": {
+      "label": "PC1",
+      "description": "LQFP64 第 9 脚，GPIOC"
+    },
+    "PC2": {
+      "label": "PC2",
+      "description": "LQFP64 第 10 脚，GPIOC"
+    },
+    "PC3": {
+      "label": "PC3",
+      "description": "LQFP64 第 11 脚，GPIOC"
+    },
+    "PA0": {
+      "label": "PA0",
+      "description": "LQFP64 第 12 脚，GPIOA"
+    },
+    "PA1": {
+      "label": "PA1",
+      "description": "LQFP64 第 13 脚，GPIOA"
+    },
+    "PA2": {
+      "label": "PA2",
+      "description": "LQFP64 第 14 脚，GPIOA"
+    },
+    "VSS1": {
+      "label": "VSS",
+      "description": "LQFP64 第 15 脚，电源"
+    },
+    "VDD1": {
+      "label": "VDD",
+      "description": "LQFP64 第 16 脚，电源"
+    },
+    "PA3": {
+      "label": "PA3",
+      "description": "LQFP64 第 17 脚，GPIOA"
+    },
+    "PA4": {
+      "label": "PA4",
+      "description": "LQFP64 第 18 脚，GPIOA"
+    },
+    "PA5": {
+      "label": "PA5",
+      "description": "LQFP64 第 19 脚，GPIOA"
+    },
+    "PA6": {
+      "label": "PA6",
+      "description": "LQFP64 第 20 脚，GPIOA"
+    },
+    "PA7": {
+      "label": "PA7",
+      "description": "LQFP64 第 21 脚，GPIOA"
+    },
+    "PC4": {
+      "label": "PC4",
+      "description": "LQFP64 第 22 脚，GPIOC"
+    },
+    "PC5": {
+      "label": "PC5",
+      "description": "LQFP64 第 23 脚，GPIOC"
+    },
+    "PB0": {
+      "label": "PB0",
+      "description": "LQFP64 第 24 脚，GPIOB"
+    },
+    "PB1": {
+      "label": "PB1",
+      "description": "LQFP64 第 25 脚，GPIOB"
+    },
+    "PB2": {
+      "label": "PB2",
+      "description": "LQFP64 第 26 脚，GPIOB"
+    },
+    "VSSA": {
+      "label": "VSSA",
+      "description": "LQFP64 第 27 脚，电源"
+    },
+    "VREFP": {
+      "label": "VREF+",
+      "description": "LQFP64 第 28 脚，电源"
+    },
+    "VDDA": {
+      "label": "VDDA",
+      "description": "LQFP64 第 29 脚，电源"
+    },
+    "PB10": {
+      "label": "PB10",
+      "description": "LQFP64 第 30 脚，GPIOB"
+    },
+    "VSS2": {
+      "label": "VSS",
+      "description": "LQFP64 第 31 脚，电源"
+    },
+    "VDD2": {
+      "label": "VDD",
+      "description": "LQFP64 第 32 脚，电源"
+    },
+    "PB11": {
+      "label": "PB11",
+      "description": "LQFP64 第 33 脚，GPIOB"
+    },
+    "PB12": {
+      "label": "PB12",
+      "description": "LQFP64 第 34 脚，GPIOB"
+    },
+    "PB13": {
+      "label": "PB13",
+      "description": "LQFP64 第 35 脚，GPIOB"
+    },
+    "PB14": {
+      "label": "PB14",
+      "description": "LQFP64 第 36 脚，GPIOB"
+    },
+    "PB15": {
+      "label": "PB15",
+      "description": "LQFP64 第 37 脚，GPIOB"
+    },
+    "PC6": {
+      "label": "PC6",
+      "description": "LQFP64 第 38 脚，GPIOC"
+    },
+    "PC7": {
+      "label": "PC7",
+      "description": "LQFP64 第 39 脚，GPIOC"
+    },
+    "PC8": {
+      "label": "PC8",
+      "description": "LQFP64 第 40 脚，GPIOC"
+    },
+    "PC9": {
+      "label": "PC9",
+      "description": "LQFP64 第 41 脚，GPIOC"
+    },
+    "PA8": {
+      "label": "PA8",
+      "description": "LQFP64 第 42 脚，GPIOA"
+    },
+    "PA9": {
+      "label": "PA9",
+      "description": "LQFP64 第 43 脚，GPIOA"
+    },
+    "PA10": {
+      "label": "PA10",
+      "description": "LQFP64 第 44 脚，GPIOA"
+    },
+    "PA11": {
+      "label": "PA11",
+      "description": "LQFP64 第 45 脚，GPIOA"
+    },
+    "PA12": {
+      "label": "PA12",
+      "description": "LQFP64 第 46 脚，GPIOA"
+    },
+    "VSS3": {
+      "label": "VSS",
+      "description": "LQFP64 第 47 脚，电源"
+    },
+    "VDD3": {
+      "label": "VDD",
+      "description": "LQFP64 第 48 脚，电源"
+    },
+    "PA13": {
+      "label": "PA13",
+      "description": "LQFP64 第 49 脚，GPIOA"
+    },
+    "PA14": {
+      "label": "PA14",
+      "description": "LQFP64 第 50 脚，GPIOA"
+    },
+    "PA15": {
+      "label": "PA15",
+      "description": "LQFP64 第 51 脚，GPIOA"
+    },
+    "PC10": {
+      "label": "PC10",
+      "description": "LQFP64 第 52 脚，GPIOC"
+    },
+    "PC11": {
+      "label": "PC11",
+      "description": "LQFP64 第 53 脚，GPIOC"
+    },
+    "PC12": {
+      "label": "PC12",
+      "description": "LQFP64 第 54 脚，GPIOC"
+    },
+    "PD2": {
+      "label": "PD2",
+      "description": "LQFP64 第 55 脚，GPIOD"
+    },
+    "PB3": {
+      "label": "PB3",
+      "description": "LQFP64 第 56 脚，GPIOB"
+    },
+    "PB4": {
+      "label": "PB4",
+      "description": "LQFP64 第 57 脚，GPIOB"
+    },
+    "PB5": {
+      "label": "PB5",
+      "description": "LQFP64 第 58 脚，GPIOB"
+    },
+    "PB6": {
+      "label": "PB6",
+      "description": "LQFP64 第 59 脚，GPIOB"
+    },
+    "PB7": {
+      "label": "PB7",
+      "description": "LQFP64 第 60 脚，GPIOB"
+    },
+    "PB8": {
+      "label": "PB8-BOOT0",
+      "description": "LQFP64 第 61 脚，GPIOB"
+    },
+    "PB9": {
+      "label": "PB9",
+      "description": "LQFP64 第 62 脚，GPIOB"
+    },
+    "VSS4": {
+      "label": "VSS",
+      "description": "LQFP64 第 63 脚，电源"
+    },
+    "VDD4": {
+      "label": "VDD",
+      "description": "LQFP64 第 64 脚，电源"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {
+      "SerialData": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "number"
+          },
+          "data": {
+            "type": "binary"
+          }
+        }
+      },
+      "SerialChunk": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "number"
+          },
+          "end": {
+            "type": "number"
+          },
+          "dropped": {
+            "type": "number"
+          },
+          "data": {
+            "type": "binary"
+          }
+        }
+      },
+      "SerialStatus": {
+        "type": "object",
+        "properties": {
+          "capacity": {
+            "type": "number"
+          },
+          "oldest": {
+            "type": "number"
+          },
+          "next": {
+            "type": "number"
+          },
+          "droppedTotal": {
+            "type": "number"
+          }
+        }
+      },
+      "SerialReadParams": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "number"
+          }
+        }
+      },
+      "SerialChannelParams": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "methods": {
+      "readSerial": {
+        "params": {
+          "ref": "SerialReadParams"
+        },
+        "returns": {
+          "ref": "SerialChunk"
+        }
+      },
+      "getSerialStatus": {
+        "params": {
+          "ref": "SerialChannelParams"
+        },
+        "returns": {
+          "ref": "SerialStatus"
+        }
+      },
+      "getLastFault": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      }
+    },
+    "events": {
+      "onDidUart1Tx": {
+        "ref": "SerialData"
+      },
+      "onDidUart2Tx": {
+        "ref": "SerialData"
+      },
+      "onDidUart3Tx": {
+        "ref": "SerialData"
+      },
+      "onDidFault": {
+        "type": "number"
+      }
+    }
+  }
+}

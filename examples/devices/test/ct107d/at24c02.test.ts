@@ -151,17 +151,12 @@ function dump(board: TestBoard): number[] {
 }
 
 describe('AT24C02', () => {
-  it('元数据声明 8 根引脚与 bytes 类型的 dump 端口', () => {
-    const metadata = readMetadata('at24c02') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports: Readonly<
-        Record<string, { readonly type: string; readonly direction: string }>
-      >;
-    };
+  it('清单声明 8 根引脚与 binary 类型的 dump 查询/事件', () => {
+    const metadata = readMetadata('at24c02');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(8);
-    expect(metadata.ports.dump?.type).toBe('bytes');
-    expect(metadata.ports.dump?.direction).toBe('output');
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(8);
+    expect(metadata.model.methods.getDump).toBeDefined();
+    expect(metadata.model.events.onDidDump).toMatchObject({ type: 'binary' });
   });
 
   it('位级写入两个字节后可随机读回，且应答脚为低', async () => {

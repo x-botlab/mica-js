@@ -314,8 +314,8 @@ describe('CT107D 实际预览固件基准', () => {
     expect(Object.hasOwn(result.topicFinalTopics, 'DS1/digit1')).toBe(false);
     expect(Object.hasOwn(result.topicFinalPorts, 'latch')).toBe(true);
 
-    // 基准夹具读的是 src，不是 dist；浏览器核对的是 dist，两者不能直接比原始哈希。
-    expect(result.fingerprints.source).toBe('src');
+    // 基准夹具与浏览器核对同一批构建产物。
+    expect(result.fingerprints.source).toBe('dist');
     expect(result.fingerprints.firmware).toBe(result.firmwareSha256);
     expect(result.fingerprints.schematic).toBe(
       createHash('sha256').update(readFileSync(SCHEMATIC_PATH)).digest('hex'),
@@ -439,7 +439,7 @@ describe('CT107D 实际预览固件基准', () => {
       ).toBeGreaterThan(0);
       expect(result.topicFinalTopics['DS1/digit1']).toBeUndefined();
       expect(result.topicFinalTopics['latch']).toBeUndefined();
-      expect(result.fingerprints.source).toBe('src');
+      expect(result.fingerprints.source).toBe('dist');
     }
     expect(fine.instanceDesignators).toEqual(coarse.instanceDesignators);
     expect(fine.fingerprints).toEqual(coarse.fingerprints);

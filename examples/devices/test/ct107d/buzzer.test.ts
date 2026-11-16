@@ -33,16 +33,13 @@ async function fixture(props: Record<string, unknown> = {}): Promise<TestBoard> 
 }
 
 describe('有源蜂鸣器', () => {
-  it('元数据声明 2 根引脚、3 个属性与 active 端口', () => {
-    const metadata = readMetadata('buzzer') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly properties: Readonly<Record<string, { readonly default: unknown }>>;
-      readonly ports: Readonly<Record<string, { readonly type: string }>>;
-    };
+  it('清单声明 2 根引脚、3 个属性与 active 查询/事件', () => {
+    const metadata = readMetadata('buzzer');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(2);
-    expect(metadata.properties.loadResistance?.default).toBe(100);
-    expect(metadata.ports.active?.type).toBe('boolean');
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(2);
+    expect(metadata.properties?.loadResistance?.default).toBe(100);
+    expect(metadata.model.methods.isActive).toBeDefined();
+    expect(metadata.model.events.onDidActive).toMatchObject({ type: 'boolean' });
   });
 
   it('负端被拉低时发声，释放后停止', async () => {

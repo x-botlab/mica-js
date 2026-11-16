@@ -3,22 +3,19 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { validateMetadata } from '@mica-js/sdk/metadata';
+import { adaptModelFactory } from '@mica-js/sdk/device';
 
 /**
- * 交付产物用例：`pnpm test` 先执行 `mica build`，这里装载 `dist/` 里的 JS 与 JSON，保证
- * 真正交付的文件也能在真实仿真板上工作。直接 `vitest` 而没先构建时跳过。
+ * 交付产物用例：`pnpm test` 先执行 `mica build`，这里装载 `dist/<id>/` 里的 JS 与 JSON，
+ * 保证真正交付的文件也能在真实仿真板上工作。直接 `vitest` 而没先构建时跳过。
  */
 
 const PACKAGE_DIR = join(import.meta.dirname, '..', '..');
-const ARTIFACT_DIR = join(PACKAGE_DIR, 'dist', 'devices', 'seg4');
+const ARTIFACT_DIR = join(PACKAGE_DIR, 'dist', 'seg4');
 
 interface ArtifactModule {
   readonly model: unknown;
-  readonly create: (context: unknown) => {
-    sync(batch: { outputs: Readonly<Record<string, readonly { value: unknown }[]>> }): void;
-    dispose(): void;
-  };
+  readonly create: unknown;
 }
 
 const SEGMENTS = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp'] as const;
@@ -30,15 +27,21 @@ async function staticDigits(
   commonAnode = false,
 ): Promise<number[]> {
   const module = (await import(
-    pathToFileURL(join(ARTIFACT_DIR, 'device.js')).href
+    pathToFileURL(join(ARTIFACT_DIR, 'model.js')).href
   )) as ArtifactModule;
+  const create = adaptModelFactory(module.create as never, {
+    events: { onDidDisplayChange: 'display' },
+  }) as unknown as (context: never) => {
+    sync(batch: { outputs: Readonly<Record<string, readonly { value: unknown }[]>> }): void;
+    dispose(): void;
+  };
   const readings: Record<string, unknown> = {};
   const library = createDeviceLibrary([
     {
       id: 'display',
       model: module.model as never,
       create: ((context: never) => {
-        const adapter = module.create(context);
+        const adapter = create(context);
 
         return {
           sync(batch: Parameters<typeof adapter.sync>[0]) {
@@ -86,18 +89,17 @@ async function staticDigits(
   return [1, 2, 3, 4].map((index) => readings[`digit${index}`] as number);
 }
 
-describe.skipIf(!existsSync(join(ARTIFACT_DIR, 'device.js')))('交付产物', () => {
-  it('device.json 通过 SDK 校验且与源码一致', () => {
-    const artifact = JSON.parse(readFileSync(join(ARTIFACT_DIR, 'device.json'), 'utf8'));
-    const source = JSON.parse(
-      readFileSync(join(PACKAGE_DIR, 'src', 'devices', 'seg4', 'device.json'), 'utf8'),
-    );
+describe.skipIf(!existsSync(join(ARTIFACT_DIR, 'model.js')))('交付产物', () => {
+  it('package.json 与源码清单一致，交付物为 headless 模型', () => {
+    const artifact = JSON.parse(readFileSync(join(ARTIFACT_DIR, 'package.json'), 'utf8'));
+    const source = JSON.parse(readFileSync(join(PACKAGE_DIR, 'seg4', 'package.json'), 'utf8'));
 
-    expect(() => validateMetadata(artifact, 'device', 'seg4')).not.toThrow();
     expect(artifact).toEqual(source);
+    expect(artifact.view2d).toBeUndefined();
+    expect(existsSync(join(ARTIFACT_DIR, 'model.js'))).toBe(true);
   });
 
-  it('device.js 能在真实板上锁存段码', async () => {
+  it('model.js 能在真实板上锁存段码', async () => {
     expect(await staticDigits(0xff, [0])).toEqual([0xff, 0, 0, 0]);
     expect(await staticDigits(0x06, [2])).toEqual([0, 0, 0x06, 0]);
   });

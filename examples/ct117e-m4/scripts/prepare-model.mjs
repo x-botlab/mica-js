@@ -3,9 +3,9 @@ import { compileDDL } from '@mica-js/sdk/ddl';
 
 // Only functions and their constants are needed by the local BlockIR expander. The SDK
 // independently compiles the full model.ddl into the artifact's exported device model.
-const directory = new URL('../src/devices/ct117e-m4/', import.meta.url);
+const directory = new URL('../src/', import.meta.url);
 const model = await compileDDL(await readFile(new URL('model.ddl', directory), 'utf8'), {
-  uri: 'mica:devices/ct117e-m4/model.ddl',
+  uri: 'mica:ct117e-m4/model.ddl',
 });
 const hot = {
   ...model,

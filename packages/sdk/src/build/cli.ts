@@ -20,7 +20,12 @@ export interface CliArguments {
   readonly sourceDir?: string;
 }
 
-type PrepareOptions = { readonly root: string; readonly sourceDir: string };
+type PrepareOptions = {
+  readonly root: string;
+  readonly sourceDir: string;
+  readonly config: import('./config.js').MicaConfig;
+  readonly configFile: string;
+};
 
 const USAGE = `Usage: mica <command> [options]
 
@@ -138,11 +143,20 @@ export async function runCli(
     };
     if (options.command === 'build') {
       const { buildProject } = await import('./project.js');
-      await buildProject(configured);
-      streams.out.write('mica build: complete\n');
+      const result = await buildProject(configured);
+      streams.out.write(
+        result === undefined
+          ? 'mica build: complete\n'
+          : `mica build: ${relative(process.cwd(), result.packageDir)} ready\n`,
+      );
       return 0;
     }
-    const preparation = { root: project.root, sourceDir: configured.config.sourceDir ?? 'src' };
+    const preparation = {
+      root: project.root,
+      sourceDir: configured.config.sourceDir ?? 'src',
+      config: configured.config,
+      configFile: project.configFile,
+    };
     return options.watch
       ? await watchLoop(preparation, streams)
       : await prepareOnce(preparation, streams);
@@ -154,7 +168,16 @@ export async function runCli(
 
 async function prepareOnce(options: PrepareOptions, streams: CliStreams): Promise<number> {
   try {
-    report(await prepare({ root: options.root, sourceDir: options.sourceDir }), streams);
+    report(
+      await prepare({
+        root: options.root,
+        sourceDir: options.sourceDir,
+        config: options.config,
+        configFile: options.configFile,
+        ...(options.config.device === undefined ? {} : { device: options.config.device }),
+      }),
+      streams,
+    );
     return 0;
   } catch (error) {
     streams.err.write(`mica prepare: ${messageOf(error)}\n`);
@@ -169,6 +192,9 @@ function watchLoop(options: PrepareOptions, streams: CliStreams): Promise<number
       watcher = watchDevices({
         root: options.root,
         sourceDir: options.sourceDir,
+        config: options.config,
+        configFile: options.configFile,
+        ...(options.config.device === undefined ? {} : { device: options.config.device }),
         onPrepare: (files) => report(files, streams),
         onError: (error) => streams.err.write(`mica prepare: ${messageOf(error)}\n`),
       });
@@ -198,7 +224,10 @@ function watchLoop(options: PrepareOptions, streams: CliStreams): Promise<number
 
     void watcher.ready.then(() => {
       if (closing) return;
-      const sourceRoot = resolve(options.root, options.sourceDir);
+      const sourceRoot =
+        options.config.device === undefined
+          ? resolve(options.root, options.sourceDir)
+          : options.root;
       streams.out.write(`mica prepare: watching ${sourceRoot} for changes\n`);
     });
   });

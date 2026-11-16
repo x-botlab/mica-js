@@ -1,6 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { circuit, firmware } from './harness';
 
+interface SerialMethods {
+  readSerial(params: { readonly channel: string; readonly cursor: number }): {
+    readonly start: number;
+    readonly end: number;
+    readonly dropped: number;
+    readonly data: Uint8Array;
+  };
+  getSerialStatus(params: { readonly channel: string }): {
+    readonly capacity: number;
+    readonly oldest: number;
+    readonly next: number;
+    readonly droppedTotal: number;
+  };
+  getLastFault(params: null): number;
+}
+
+function serialMethods(value: unknown): SerialMethods {
+  if (value === null || typeof value !== 'object') throw new Error('Missing model methods');
+
+  const record = value as Record<string, unknown>;
+
+  for (const name of ['readSerial', 'getSerialStatus', 'getLastFault'])
+    if (typeof record[name] !== 'function') throw new Error(`Missing ${name}`);
+
+  return value as SerialMethods;
+}
+
 /**
  * 手写的 IT 块固件：开 GPIOA 时钟、PA5/PA6 推挽输出，然后两段 `it eq` 各做一次 BSRR 写。
  *
@@ -103,7 +130,45 @@ describe('STM32G431RBT6 源码级行为', () => {
     try {
       board.run(20_000_000_000);
       expect(board.faults).toEqual([]);
-      expect(board.topics['serial2.tx']).toEqual([0x4f, 0x4b]);
+      expect(
+        (board.topics['serial2.tx'] as Uint8Array[]).flatMap((bytes) => [...bytes]),
+      ).toEqual([0x4f, 0x4b]);
+
+      const methods = serialMethods(board.methods);
+      const status = methods.getSerialStatus({ channel: 'uart2Tx' });
+
+      expect(status).toEqual({ capacity: 4096, oldest: 0, next: 2, droppedTotal: 0 });
+
+      const chunk = methods.readSerial({ channel: 'uart2Tx', cursor: 0 });
+
+      expect(chunk).toMatchObject({ start: 0, end: 2, dropped: 0 });
+      expect([...chunk.data]).toEqual([0x4f, 0x4b]);
+
+      chunk.data[0] = 0;
+      expect([...methods.readSerial({ channel: 'uart2Tx', cursor: 0 }).data]).toEqual([
+        0x4f, 0x4b,
+      ]);
+      expect(methods.getLastFault(null)).toBe(-1);
+
+      let failure: unknown;
+
+      try {
+        methods.readSerial({ channel: 'uart9Tx', cursor: 0 });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toMatchObject({ name: 'MethodError', code: 'serial/unknown-channel' });
+
+      failure = undefined;
+
+      try {
+        methods.readSerial({ channel: 'uart2Tx', cursor: -1 });
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toMatchObject({ name: 'MethodError', code: 'serial/invalid-cursor' });
     } finally {
       board.dispose();
     }

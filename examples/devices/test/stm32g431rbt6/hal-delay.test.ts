@@ -5,8 +5,9 @@ import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { Board } from '@mica-js/sdk';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import { describe, expect, it } from 'vitest';
+import { adaptDevice } from './harness';
 
-const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'stm32g431rbt6');
+const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'stm32g431rbt6', 'src');
 const FIRMWARE = join(import.meta.dirname, '..', 'ili9325', 'fixtures', 'HAL_06_LCD.bin');
 const CLOCK = 80_000_000;
 /** 与发布基准相同：先越过时钟/外设初始化，再比较一段包含真实 HAL_Delay 的窗口。 */
@@ -16,11 +17,6 @@ const SLICE_PS = 1_000_000_000;
 
 const VDD = ['VDD1', 'VDD2', 'VDD3', 'VDD4', 'VDDA', 'VREFP', 'VBAT'] as const;
 const VSS = ['VSS1', 'VSS2', 'VSS3', 'VSS4', 'VSSA'] as const;
-
-interface Adapter {
-  sync(batch: unknown): void;
-  dispose(): void;
-}
 
 interface InstanceView {
   readonly states: ReadonlyMap<string, unknown>;
@@ -39,14 +35,16 @@ const model = await compileDDL(readFileSync(join(DEVICE_DIR, 'model.ddl'), 'utf8
   uri: 'mica:devices/stm32g431rbt6/model.ddl',
 });
 const module = (await import(pathToFileURL(join(DEVICE_DIR, 'index.ts')).href)) as {
-  default: (context: never) => Adapter;
+  create: unknown;
 };
 
 function bareBoard(execution: 'throughput' | 'precise'): Board {
   return createBoard(
-    createDeviceLibrary([{ id: 'mcu', model, create: module.default as never }]),
+    createDeviceLibrary([
+      { id: 'mcu', model, create: adaptDevice(module, { firmware, clockFrequency: CLOCK }) as never },
+    ]),
     {
-      instances: [{ id: 'mcu', type: 'mcu', props: { firmware, clockFrequency: CLOCK } }],
+      instances: [{ id: 'mcu', type: 'mcu', props: { clockFrequency: CLOCK } }],
       nets: [
         { id: 'vdd', voltage: 3.3, pins: VDD.map((pin) => ({ instance: 'mcu', pin })) },
         { id: 'vss', voltage: 0, pins: VSS.map((pin) => ({ instance: 'mcu', pin })) },

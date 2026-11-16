@@ -129,30 +129,26 @@ async function fixture(): Promise<{ board: TestBoard; bus: I2cBus }> {
 }
 
 function inject(board: TestBoard, channel: string, value: number): void {
-  board.send('dut', channel, value);
+  const method = `set${channel[0]?.toUpperCase() ?? ''}${channel.slice(1)}`;
+  board.send('dut', method, value);
   board.run(STEP);
 }
 
 describe('PCF8591', () => {
-  it('元数据声明 14 根引脚、四路输入与两路输出端口', () => {
-    const metadata = readMetadata('pcf8591') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports: Readonly<
-        Record<string, { readonly type: string; readonly direction: string }>
-      >;
-    };
+  it('清单声明 14 根引脚、四路输入方法与两路查询/事件', () => {
+    const metadata = readMetadata('pcf8591');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(14);
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(14);
 
-    for (const name of ['ain0', 'ain1', 'ain2', 'ain3']) {
-      expect(metadata.ports[name]?.type).toBe('number');
-      expect(metadata.ports[name]?.direction).toBe('input');
-    }
+    for (const name of ['ain0', 'ain1', 'ain2', 'ain3'])
+      expect(
+        metadata.model.methods[`set${name[0]?.toUpperCase() ?? ''}${name.slice(1)}`],
+      ).toBeDefined();
 
-    expect(metadata.ports.aout?.type).toBe('number');
-    expect(metadata.ports.aout?.direction).toBe('output');
-    expect(metadata.ports.channel?.type).toBe('number');
-    expect(metadata.ports.channel?.direction).toBe('output');
+    expect(metadata.model.methods.getAout).toBeDefined();
+    expect(metadata.model.methods.getChannel).toBeDefined();
+    expect(metadata.model.events.onDidAout).toMatchObject({ type: 'number' });
+    expect(metadata.model.events.onDidChannel).toMatchObject({ type: 'number' });
   });
 
   it('DAC 使能位为 0 时写入数据仍更新 aout 端口', async () => {

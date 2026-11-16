@@ -1,9 +1,15 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "./.mica/tsconfig.json",
   "compilerOptions": {
-    "lib": ["ES2023", "DOM"],
-    "types": ["node"],
-    "allowArbitraryExtensions": true
+    "allowImportingTsExtensions": true
   },
-  "include": ["src", "test", "bench", "mica.config.ts", "vitest.config.ts", "vitest.perf.config.ts"]
+  "include": [
+    "src",
+    "views",
+    "mica.config.ts",
+    "test",
+    "bench",
+    "vitest.config.ts",
+    "vitest.perf.config.ts"
+  ]
 }

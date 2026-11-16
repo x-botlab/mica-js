@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
 import type { Board } from '@mica-js/sdk';
 import { compileDDL } from '@mica-js/sdk/ddl';
 
@@ -22,7 +23,7 @@ import { compileDDL } from '@mica-js/sdk/ddl';
  *   一种模式会把翻译缓存焐热，让另一种模式的冷启动读数失真。
  */
 
-const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'stm32g431rbt6');
+const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'stm32g431rbt6', 'src');
 const FIRMWARE = join(
   import.meta.dirname,
   '..',
@@ -72,14 +73,35 @@ const model = await compileDDL(readFileSync(join(DEVICE_DIR, 'model.ddl'), 'utf8
 });
 
 const module = (await import(pathToFileURL(join(DEVICE_DIR, 'index.ts')).href)) as {
-  default: (context: never) => Adapter;
+  create: unknown;
 };
+const image = firmwareImage([
+  { addressSpace: 'code', address: 0x0800_0000, data: firmware },
+]);
+const create = adaptModelFactory(module.create as never, {
+  props: { clockFrequency: CLOCK, firmware: image },
+  events: {
+    onDidUart1Tx: {
+      topic: 'serial1.tx',
+      transform: (value) => (value as { data: Uint8Array }).data,
+    },
+    onDidUart2Tx: {
+      topic: 'serial2.tx',
+      transform: (value) => (value as { data: Uint8Array }).data,
+    },
+    onDidUart3Tx: {
+      topic: 'serial3.tx',
+      transform: (value) => (value as { data: Uint8Array }).data,
+    },
+    onDidFault: 'fault',
+  },
+}) as unknown as (context: never) => Adapter;
 
 function bareBoard(execution: 'precise' | 'throughput'): Board {
   return createBoard(
-    createDeviceLibrary([{ id: 'mcu', model, create: module.default as never }]),
+    createDeviceLibrary([{ id: 'mcu', model, create: create as never }]),
     {
-      instances: [{ id: 'mcu', type: 'mcu', props: { firmware, clockFrequency: CLOCK } }],
+      instances: [{ id: 'mcu', type: 'mcu', props: { clockFrequency: CLOCK } }],
       nets: [
         { id: 'vdd', voltage: 3.3, pins: VDD.map((pin) => ({ instance: 'mcu', pin })) },
         { id: 'vss', voltage: 0, pins: VSS.map((pin) => ({ instance: 'mcu', pin })) },

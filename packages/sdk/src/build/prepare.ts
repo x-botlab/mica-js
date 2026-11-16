@@ -3,6 +3,7 @@ import { readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { compileDDL, generateDeviceTypeScript, type DeviceIR } from '@mica-js/ddl';
+import type { DeviceConfig, MicaConfig } from './config.js';
 
 /** Device definition file expected inside every device directory. */
 export const DEVICE_SOURCE_FILE = 'model.ddl';
@@ -36,6 +37,12 @@ export interface PrepareOptions {
   readonly root?: string;
   /** Source directory inside the root that holds `devices/`; defaults to `src`. */
   readonly sourceDir?: string;
+  /** Unified single-device settings; presence selects `.mica` generation. */
+  readonly device?: DeviceConfig;
+  /** Full loaded config, used by the unified mode for paths and aliases. */
+  readonly config?: MicaConfig;
+  /** Config file path reported to the unified watcher. */
+  readonly configFile?: string;
 }
 
 export interface WatchOptions extends PrepareOptions {
@@ -71,6 +78,11 @@ export interface PrepareWatcher {
  */
 export async function prepare(options: PrepareOptions = {}): Promise<readonly string[]> {
   const root = resolve(options.root ?? process.cwd());
+  if (options.device !== undefined) {
+    const { prepareDeviceProject } = await import('./device-project.js');
+    const result = await prepareDeviceProject(root, options.config ?? { device: options.device });
+    return result.files;
+  }
   const sourceDir = options.sourceDir ?? DEFAULT_SOURCE_DIR;
   const devicesDir = resolve(root, sourceDir, DEVICE_DIRECTORY);
 
@@ -109,6 +121,31 @@ export async function prepare(options: PrepareOptions = {}): Promise<readonly st
  */
 export function watchDevices(options: WatchOptions = {}): PrepareWatcher {
   const root = resolve(options.root ?? process.cwd());
+  if (options.device !== undefined) {
+    const device = options.device;
+    let disposed = false;
+    let inner: PrepareWatcher | undefined;
+    const ready = import('./device-project.js').then(async ({ watchDeviceProject }) => {
+      if (disposed) return [];
+      inner = watchDeviceProject({
+        root,
+        configFile: options.configFile ?? resolve(root, 'mica.config.ts'),
+        config: options.config ?? { device },
+        ...(options.debounceMs === undefined ? {} : { debounceMs: options.debounceMs }),
+        ...(options.onPrepare === undefined ? {} : { onPrepare: options.onPrepare }),
+        ...(options.onError === undefined ? {} : { onError: options.onError }),
+      });
+      return inner.ready;
+    });
+    return {
+      ready,
+      async dispose() {
+        disposed = true;
+        await inner?.dispose();
+        await ready;
+      },
+    };
+  }
   const sourceDir = options.sourceDir ?? DEFAULT_SOURCE_DIR;
   const sourceRoot = resolve(root, sourceDir);
   const debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;

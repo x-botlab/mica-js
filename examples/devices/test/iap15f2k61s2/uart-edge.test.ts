@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SERVICE_PC, SETTLE_PC } from '../../src/devices/iap15f2k61s2/kernel/tick.ts';
+import { SERVICE_PC, SETTLE_PC } from '../../iap15f2k61s2/src/kernel/tick.ts';
 import { createSourceHarness } from './source-harness.ts';
 import type { SourceHarness } from './source-harness.ts';
 

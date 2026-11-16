@@ -1,0 +1,41 @@
+{
+  "name": "resistor",
+  "publisher": "demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "理想线性电阻：两端以声明的等效电阻导通。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "Resistor",
+  "designatorPrefix": "R",
+  "properties": {
+    "resistance": {
+      "type": "number",
+      "title": "电阻",
+      "description": "两端之间的等效电阻。",
+      "default": 330,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    }
+  },
+  "pins": {
+    "a": {
+      "label": "A"
+    },
+    "b": {
+      "label": "B"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {},
+    "events": {}
+  }
+}

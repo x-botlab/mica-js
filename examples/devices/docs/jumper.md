@@ -1,16 +1,20 @@
 # 两脚跳线
 
+> 统一器件迁移说明：本文旧称的“端口”已改为模型的公共方法与 `onDidXxx` 事件；
+> 清单为项目根 `package.json`，源码在 `src/`，发布包在聚合 `dist/jumper/`。本轮只
+> 交付仿真内核，不提供新 2D/编辑器视图；历史电气语义与测试基线保持不变。
+
 CT107D 板位号 **J13**（WR/IO 模式选择）：把 `P42/WR` 短接到 GND。同型号也用于 J3 与
 JS1/JS2 等其余两脚跳线。
 
 ## 元数据
 
-| 项       | 值                                                    |
-| -------- | ----------------------------------------------------- |
-| 器件 id  | `jumper`                                              |
-| 文件     | `src/devices/jumper/{model.ddl,index.ts,device.json}` |
-| 位号前缀 | `J`                                                   |
-| 引脚数   | 2                                                     |
+| 项       | 值                                         |
+| -------- | ------------------------------------------ |
+| 器件 id  | `jumper`                                   |
+| 文件     | `jumper/{model.ddl,index.ts,package.json}` |
+| 位号前缀 | `J`                                        |
+| 引脚数   | 2                                          |
 
 ## 引脚
 
@@ -22,29 +26,27 @@ JS1/JS2 等其余两脚跳线。
 ## 行为
 
 ```
-a ↔ b ：closed 为 true 时 resistance（默认 0.05 Ω），false 时 openResistance（默认 1 GΩ）
+a ↔ b ：closed 为 true 时 resistance（默认 0.05 Ω）；false 时移除 a 的支路，两端悬空
 ```
 
-用有限电阻而不是真正断开，保证另一端仍被网络引用，电气求解不会出现孤立支路。
+断开不保留有限大假电阻，符合统一器件合同“断开即移除支路”。`closed` 属性给出装配初值；
+运行期通过 `setClosed(value)` 方法切换，当前状态由 `closedState` 输出通道回传，并发出
+`onDidClosedState` 事件。
 
-`closed` 属性给出装配初值；运行期可向 `control` 输入发送新状态，当前状态通过 `closedState`
-输出回传。通用交互式 `jumper` widget 支持 1–2 路，J13 使用单路 `state1`/`closed1`，J2
-复用同一个 widget 并绑定第二路 `state2`/`closed2`。
+## 公共接口
 
-## 端口
-
-| 端口          | 方向   | 类型    | 说明                         |
-| ------------- | ------ | ------- | ---------------------------- |
-| `control`     | input  | boolean | 运行期切换是否闭合           |
-| `closedState` | output | boolean | 当前闭合状态，供 widget 订阅 |
+| 成员               | 类型                         | 说明             |
+| ------------------ | ---------------------------- | ---------------- |
+| `setClosed(value)` | `(boolean) => null`          | 切换是否闭合     |
+| `isClosed()`       | `() => boolean`              | 查询当前闭合状态 |
+| `onDidClosedState` | `Event<ModelEvent<boolean>>` | 状态变化         |
 
 ## 属性
 
-| 属性             | 类型    | 默认 | 说明                  |
-| ---------------- | ------- | ---- | --------------------- |
-| `closed`         | boolean | true | 是否插上跳线帽        |
-| `resistance`     | number  | 0.05 | 短接时的导通电阻（Ω） |
-| `openResistance` | number  | 1e9  | 拔掉时的绝缘电阻（Ω） |
+| 属性         | 类型    | 默认 | 说明                  |
+| ------------ | ------- | ---- | --------------------- |
+| `closed`     | boolean | true | 是否插上跳线帽        |
+| `resistance` | number  | 0.05 | 短接时的导通电阻（Ω） |
 
 ## 理想化
 

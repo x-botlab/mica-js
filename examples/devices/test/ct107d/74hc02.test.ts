@@ -78,14 +78,12 @@ async function fixture(): Promise<Fixture> {
 }
 
 describe('74HC02', () => {
-  it('元数据声明 14 根引脚且没有端口', () => {
-    const metadata = readMetadata('74hc02') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports?: Readonly<Record<string, unknown>>;
-    };
+  it('清单声明 14 根引脚，模型没有公共方法与事件', () => {
+    const metadata = readMetadata('74hc02');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(14);
-    expect(metadata.ports).toBeUndefined();
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(14);
+    expect(Object.keys(metadata.model.methods)).toEqual([]);
+    expect(Object.keys(metadata.model.events)).toEqual([]);
   });
 
   it('四门在全部输入组合下都满足 Y = !(A || B)', async () => {

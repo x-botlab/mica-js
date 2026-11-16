@@ -76,15 +76,14 @@ function start(board: TestBoard): void {
 }
 
 describe('NE555', () => {
-  it('元数据声明 8 根引脚与频率/占空比端口', () => {
-    const metadata = readMetadata('ne555') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports: Readonly<Record<string, { readonly type: string }>>;
-    };
+  it('清单声明 8 根引脚与频率/占空比查询/事件', () => {
+    const metadata = readMetadata('ne555');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(8);
-    expect(metadata.ports.frequency?.type).toBe('number');
-    expect(metadata.ports.dutyCycle?.type).toBe('number');
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(8);
+    expect(metadata.model.methods.getFrequency).toBeDefined();
+    expect(metadata.model.methods.getDutyCycle).toBeDefined();
+    expect(metadata.model.events.onDidFrequency).toMatchObject({ type: 'number' });
+    expect(metadata.model.events.onDidDutyCycle).toMatchObject({ type: 'number' });
   });
 
   it('RST# 悬空按低处理：不上电起振', async () => {

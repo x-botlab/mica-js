@@ -1,0 +1,160 @@
+{
+  "publisher": "example",
+  "name": "ili9325",
+  "version": "0.1.0",
+  "description": "ILI9325 TFT 控制器（240×320 GRAM，横向 320×240 面板）：16 位 8080 并口、命令/数据选择、窗口寻址与 RGB565 帧输出。",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "ILI9325 TFT LCD 320×240",
+  "designatorPrefix": "DS",
+  "properties": {
+    "refreshRate": {
+      "type": "number",
+      "title": "刷新率 (Hz)",
+      "description": "脏矩形合帧发布的最大频率；写入期间按该周期最多发布一帧。",
+      "default": 60,
+      "nullable": false,
+      "min": 1,
+      "max": 240,
+      "step": 1,
+      "unit": "Hz"
+    }
+  },
+  "pins": {
+    "D0": {
+      "label": "DB0",
+      "description": "数据总线 bit0"
+    },
+    "D1": {
+      "label": "DB1",
+      "description": "数据总线 bit1"
+    },
+    "D2": {
+      "label": "DB2",
+      "description": "数据总线 bit2"
+    },
+    "D3": {
+      "label": "DB3",
+      "description": "数据总线 bit3"
+    },
+    "D4": {
+      "label": "DB4",
+      "description": "数据总线 bit4"
+    },
+    "D5": {
+      "label": "DB5",
+      "description": "数据总线 bit5"
+    },
+    "D6": {
+      "label": "DB6",
+      "description": "数据总线 bit6"
+    },
+    "D7": {
+      "label": "DB7",
+      "description": "数据总线 bit7"
+    },
+    "D8": {
+      "label": "DB8",
+      "description": "数据总线 bit8"
+    },
+    "D9": {
+      "label": "DB9",
+      "description": "数据总线 bit9"
+    },
+    "D10": {
+      "label": "DB10",
+      "description": "数据总线 bit10"
+    },
+    "D11": {
+      "label": "DB11",
+      "description": "数据总线 bit11"
+    },
+    "D12": {
+      "label": "DB12",
+      "description": "数据总线 bit12"
+    },
+    "D13": {
+      "label": "DB13",
+      "description": "数据总线 bit13"
+    },
+    "D14": {
+      "label": "DB14",
+      "description": "数据总线 bit14"
+    },
+    "D15": {
+      "label": "DB15",
+      "description": "数据总线 bit15"
+    },
+    "WR": {
+      "label": "WR",
+      "description": "写选通，低有效：CS 有效时下降沿锁存"
+    },
+    "RD": {
+      "label": "RD",
+      "description": "读选通，低有效：与 CS 同时有效时驱动数据总线"
+    },
+    "RS": {
+      "label": "RS",
+      "description": "寄存器选择：低为命令，高为数据"
+    },
+    "CS": {
+      "label": "CS",
+      "description": "片选，低有效"
+    },
+    "RST": {
+      "label": "RST",
+      "description": "复位，低有效"
+    },
+    "VDD": {
+      "label": "VDD",
+      "description": "3.3 V 供电"
+    },
+    "VSS": {
+      "label": "VSS",
+      "description": "地"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {
+      "Frame": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
+          "width": {
+            "type": "number"
+          },
+          "height": {
+            "type": "number"
+          },
+          "pixels": {
+            "type": "binary"
+          }
+        }
+      }
+    },
+    "methods": {
+      "getFramebuffer": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "ref": "Frame"
+        }
+      }
+    },
+    "events": {
+      "onDidFrame": {
+        "ref": "Frame"
+      }
+    }
+  }
+}

@@ -1,23 +1,51 @@
 # STM32G431RBT6 器件包
 
 ST 的 Arm Cortex-M4F 32 位 MCU（LQFP64，128 KiB Flash / 22 KiB SRAM + 10 KiB CCM SRAM）的
-Mica 器件工程。器件 ID 是 `stm32g431rbt6`：JIT 按 PC 翻译一段连续的 Thumb/Thumb-2 指令
-（按复杂度预算合批，硬上限 36 条），GPIO、RCC、SysTick、NVIC 与 USART1/2/3 发送器按寄存器建模。
+Mica 统一器件工程。器件 ID 是 `example:stm32g431rbt6`：JIT 按 PC 翻译一段连续的
+Thumb/Thumb-2 指令（按复杂度预算合批，硬上限 36 条），GPIO、RCC、SysTick、NVIC 与
+USART1/2/3 发送器按寄存器建模。构建产物是
+`dist/stm32g431rbt6/{package.json, model.js}`；当前只提供无头仿真模型，暂无新视图或
+编辑器接入。
 
-属性：`firmware`（bytes，默认空）写入 `0x08000000` 起的 Flash，前两字是初始 SP 与复位入口；
-`clockFrequency`（number，默认 16000000 Hz，DDL 断言落在 1000–170000000）给出指令耗时、
-SysTick 与 USART 的时间基准。
+属性：`firmware`（firmware，默认 `null`）按 `code` 空间装载到 `0x08000000` 起的 128 KiB
+Flash，前两字是初始 SP 与复位入口；`clockFrequency`（number，默认 16000000 Hz，DDL 断言
+落在 1000–170000000）给出指令耗时、SysTick 与 USART 的时间基准。`null` 表示空 Flash
+（SP=0、PC=0），不是错误。
 
-器件源码位于器件库 `examples/devices/src/devices/stm32g431rbt6`，随
-`@mica-js/example-devices` 一起构建，依赖 `@mica-js/sdk`、`@mica-js/simulator` 与
-`@mica-js/stm32g431rbt6-core` 的 `workspace:*`（走 `source` 导出条件，不需要先构建 packages）。
+器件源码位于 `examples/devices/stm32g431rbt6`，作为独立单器件项目构建；子项目不登记为
+pnpm workspace 包，由 `examples/devices` 聚合脚本执行 `mica prepare`、`mica build` 与
+`tsc --noEmit`。它依赖 `@mica-js/sdk`、`@mica-js/simulator` 与
+`@mica-js/stm32g431rbt6-core` 的 `workspace:*`（走 `source` 导出条件，不需要先构建
+packages）。
 
 MCU 内核位于 `examples/stm32g431rbt6-core`（包名 `@mica-js/stm32g431rbt6-core`）：Thumb/Thumb-2
 译码与执行、总线与内存布局、GPIO/RCC/PWR/SysTick/NVIC/USART 模型、寄存器常量与寄存器事实
 都由共享包提供，并按模块导出子路径。器件库与 `examples/ct117e-m4` 共用这份内核；器件 ID、
-属性、DDL 模型、JIT 合批与服务块编排仍在本工程。
-器件库的 `mica build` 在构建期把该依赖打进 `dist/devices/stm32g431rbt6/device.js`，该模块自包含，
-运行时不加载共享包。
+属性、DDL 模型、JIT 合批与服务块编排仍在本工程。单器件构建在构建期把该依赖打进
+`dist/stm32g431rbt6/model.js`，该模块自包含，运行时不加载共享包。
+
+## 固件与模型接口
+
+`firmware` 是统一器件的复合属性，不在 DDL 中声明。框架把 BIN/HEX/ELF 解析为
+`FirmwareImage`；工厂按 `code` 空间绝对地址换算 `0x08000000` 偏移后调用 `ctx.loadBytes`，
+保留段间空洞，不把非连续段拼成连续镜像。JIT 只从装载后的 `code` 内存取指；寄存器事实与
+HAL_Delay 轮询分析都读取模型内存快照，装载后另做一次一致性复核。
+
+| 成员 | 载荷 | 说明 |
+| ---- | ---- | ---- |
+| `onDidUart1Tx` / `onDidUart2Tx` / `onDidUart3Tx` | `SerialData` | 对应 USART 每批发送字节 |
+| `onDidFault` | number | 未实现指令/非法访存的 PC |
+| `readSerial({ channel, cursor })` | `SerialChunk` | 读取游标之后的保留历史，返回独立副本 |
+| `getSerialStatus({ channel })` | `SerialStatus` | 容量、最旧/下一个游标与累计丢弃字节 |
+| `getLastFault(null)` | number | 最近一次故障 PC；无故障为 -1 |
+
+串口通道 ID 是 DDL 名：`uart1Tx`、`uart2Tx`、`uart3Tx`。每通道保留最近 4096 字节；
+`SerialData.cursor` 是本批第一个字节的序号，`SerialChunk` 的 `start`/`end`/`dropped`
+明确给出返回范围与请求游标之后已丢弃的数量。事件与历史查询可能重叠，界面按游标去重；
+不维护无界数组。实现位于 `examples/devices/shared/serial.ts`，构建时打包进自包含的
+`model.js`，发布物不依赖共享源码目录。
+
+当前版本只实现仿真引擎运行适配，清单不含 `view2d`，不提供二维/HTML 视图或编辑器接入。
 
 ## 性能
 
@@ -124,12 +152,19 @@ MCU 内核位于 `examples/stm32g431rbt6-core`（包名 `@mica-js/stm32g431rbt6-
 
 ## 验证
 
-```powershell
-cd examples/devices
-pnpm run typecheck        # mica prepare && tsc --noEmit
-pnpm run test             # mica build + vitest（源码用例 + 交付产物用例）
-pnpm run bench            # mica build + vitest --config vitest.perf.config.ts（性能基准）
+```bash
+cd examples/devices/stm32g431rbt6
+mica prepare && tsc --noEmit
+mica build
+cd ..
+pnpm exec vitest run test/stm32g431rbt6
+pnpm exec vitest run --config vitest.perf.config.ts bench/stm32g431rbt6
 ```
+
+`test/stm32g431rbt6/harness.ts` 通过 `adaptModelFactory` 装载源码或 `dist/stm32g431rbt6/model.js`，
+把统一事件映射回旧话题供既有电气/固件回归使用。`firmware-mapping.test.ts` 覆盖非零绝对
+地址、分段空洞、输入快照隔离与 128 KiB 边界；`device.test.ts` 同时验证 USART 历史游标与
+`getLastFault`。
 
 `pnpm run bench` 会运行本包全部基准；与 STM32 相关的是 `bench/stm32g431rbt6/perf.test.ts`（`gpio-blink`，1 MHz，500 ms 仿真，结果
 **追加**到 `bench/stm32g431rbt6/results.jsonl`）、`bench/stm32g431rbt6/hal-throughput.test.ts` 与 `bench/stm32g431rbt6/hal-precise.test.ts`

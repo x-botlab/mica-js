@@ -4,7 +4,7 @@ import {
   EXTINT_BASE,
   PERIPHERAL_REGIONS,
   PERIPH_SIZE,
-} from '../../src/devices/iap15f2k61s2/peripherals/layout.ts';
+} from '../../iap15f2k61s2/src/peripherals/layout.ts';
 
 /**
  * `periph` 布局回归。

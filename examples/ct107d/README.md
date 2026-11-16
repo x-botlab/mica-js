@@ -20,34 +20,41 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
 ```
 
 整板用到的器件全部来自 [`examples/devices`](../devices/README.md) 器件库，本包不再复制
-器件源码。`mica build` 只输出 4 个板面 widget；原理图、画布与固件联调脚本从器件库的
-`src/devices/` 读取元数据，并从 `examples/devices/dist/devices/` 装载构建产物。
-Playground 的 `scripts/components.mjs` 会先构建器件库，再把器件、本包的 widget、
-`ct107d.{sch,cnv,assets}` 复制到被忽略的 `public/components/ct107d/`。
+器件源码。`mica build` 只输出板面 legacy widget；统一器件包由器件库逐项目构建到
+`examples/devices/dist/<id>/{package.json, model.js}`。
 
-器件是 `dist/public` 里旧版 playground 器件（`<id>/devices/<id>.{json,js,md}`，基于已退役的
-`@mica-js/device` IR API）的迁移版本，现统一维护在器件库 `examples/devices/src/devices/<id>/`，
-用 DDL 描述行为；器件库的 `mica build` 输出 `dist/devices/<id>/{device.json, device.js}`。
+本轮迁移只覆盖仿真消费者：`bench/board.ts`、`verify-firmware.mjs` 与 `seg4-preview.test.ts`
+通过 `legacy/device-package.mjs` 把统一工厂、完整属性和事件接到旧 simulator。旧
+`src/widgets/`、`ct107d.sch`、`ct107d.cnv`、`build-schematic.mjs`、`build-canvas.mjs`、
+`verify-schematic.mjs` 与 `verify-canvas.mjs` 保持迁移前实现，**不**在本轮适配统一器件包，
+也不代表已经实现融合编辑器或 RFC 0024 文档迁移。
 
-画布控件按新端口重写为 `src/widgets/<id>/`，构建产物是 `dist/widgets/<id>/{widget.json, widget.js}`；
-`ct107d.cnv` 把背景图与 17 个按键热区、2 片四位数码管铺在开发板照片上，并通过
-`bindings` 接到 `ct107d.sch` 里的按键与数码管器件。
+## 旧格式边界
+
+`ct107d.sch` 与 `ct107d.cnv` 仍是 **v1** 文档，不是 RFC 0024/0025 的融合文档。旧编辑器的
+widget、原理图/画布验证脚本仍按旧 `device.json` / `device.js` 路径工作，未做统一包适配；
+运行它们需要迁移前的器件产物。仿真联调改用 `verify-firmware.mjs`，它读取
+`ct107d.netlist.json` 和统一 `model.js`，不需要旧符号或器件元数据。
+
+`legacy/device-package.mjs` 只做引擎桥接：从 `<id>/package.json` 与 `model.js` 加载统一工厂，
+用 SDK `adaptModelFactory` 交付完整属性（含 `FirmwareImage`）、把统一事件映射回旧话题、
+把旧输入话题映射到统一方法。它不生成 `DeviceMetadata`、不生成符号，也不把旧文档伪装成
+新格式。
 
 ## 与旧实现的对应
 
-| 旧路径                               | 新路径                                                     |
-| ------------------------------------ | ---------------------------------------------------------- |
-| `dist/public/<id>/devices/<id>.json` | `examples/devices/src/devices/<id>/device.json`            |
-| `dist/public/<id>/devices/<id>.js`   | `examples/devices/src/devices/<id>/model.ddl` + `index.ts` |
-| `dist/public/<id>/devices/<id>.md`   | `examples/devices/docs/<id>.md`                            |
-| `dist/public/<id>/widgets/<id>.json` | `src/widgets/<id>/widget.json`                             |
-| `dist/public/<id>/widgets/<id>.js`   | `src/widgets/<id>/index.ts`                                |
-| `dist/public/<id>/canvases/*.cnv`    | `ct107d.cnv`（单块板面画布）                               |
+| 旧路径                               | 新路径                                     |
+| ------------------------------------ | ------------------------------------------ |
+| `dist/public/<id>/devices/<id>.json` | `examples/devices/<id>/package.json`       |
+| `dist/public/<id>/devices/<id>.js`   | `examples/devices/<id>/model.js`           |
+| `dist/public/<id>/devices/<id>.md`   | `examples/devices/docs/<id>.md`            |
+| `dist/public/<id>/widgets/<id>.json` | `src/widgets/<id>/widget.json`（legacy）   |
+| `dist/public/<id>/widgets/<id>.js`   | `src/widgets/<id>/index.ts`（legacy）      |
+| `dist/public/<id>/canvases/*.cnv`    | `ct107d.cnv`（legacy，单块板面画布）       |
 
-旧 `.js` 使用已退役的 `@mica-js/device` IR API（`api.ir.pin.writeDigital`、`observeDigital`、
-`event.at`），在当前运行时不工作；迁移保留其行为契约与理想化说明，但把实现换成 DDL。器件
-统一放在器件库的 `src/devices/<id>/`，器件库 `mica build` 为每个目录输出独立的
-`device.json` / `device.js`，可单独上传；widget 同理。
+器件统一放在器件库的 `<id>/src/`，器件库逐项目构建输出独立 `package.json` / `model.js`。
+旧 `.js` 的 `@mica-js/device` IR API 在当前运行时已不工作；DDL 行为已迁移，旧编辑器的
+widget 与文档适配留待后续独立工作。
 
 ## 目录
 
@@ -59,21 +66,21 @@ examples/ct107d/
   vitest.config.ts
   vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
   bench/
-    board.ts                      整板夹具：按 ct107d.sch 装配 48 颗器件（装载器件库 src/，不依赖 dist）
+    board.ts                      整板夹具：按 ct107d.netlist.json 装配 51 颗器件（装载统一 dist 包）
     measure.ts                    测量核心：进程 CPU 时间读数、电气/运行时/JIT 指标、topicDigest
     perf.test.ts                  基准用例：只断言下限，并追加一行到 bench/results.jsonl
-  src/widgets/                   板面 widget（器件源码在 ../devices/src/devices/）
+  src/widgets/                   板面 legacy widget（器件源码在 ../devices/<id>/src/）
   src/widgets/<id>/
     widget.json                   元数据：属性、端口
     index.ts                      widget 实现（render / input / dispose）
   src/widgets/drawing.ts          颜色、裁剪、文字等共用绘制工具
+  legacy/device-package.mjs       旧 simulator 引擎兼容桥（非编辑器元数据投影）
   test/
     widgets.test.ts               四个板面 widget 的元数据与绘制/交互
     seg4-preview.test.ts          真实预览固件的数码管轨迹回归
-  ../devices/src/devices/<id>/
+  ../devices/<id>/src/
     model.ddl                     器件行为：引脚、状态、通道、进程与反应
-    index.ts                      适配器：把输出通道转发到同名话题
-    device.json                   元数据：属性、引脚、端口（省略 symbol，按引脚自动生成）
+    index.ts                      统一适配器：同步 methods 与 ctx.events
   ../devices/test/<id>.test.ts    各器件行为用例（含 manifest 与 DDL/元数据一致性）
   ../devices/docs/<id>.md         器件说明：引脚、行为、端口、理想化
   assets/ct107d-board.webp        板面照片（画布背景图，1068×768）
@@ -131,7 +138,7 @@ DDL 通道没有 `string` 负载，旧版的字符串端口改为固定编码的
 
 ## 引脚命名
 
-DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了机械改名，`device.json` 的 `label`
+DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了机械改名，`package.json` 的 `pins.*.label`
 保留数据手册名称：`D0`–`D7` → `d0`–`d7`、`OE#` → `oe`、`E1#`/`E2#` → `e1`/`e2`、
 `Y0#`–`Y7#` → `y0`–`y7`、`RST#` → `rst`、`IN1`–`IN7` → `in1`–`in7` 等。
 
@@ -145,7 +152,7 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 - **组合逻辑**用 `derived` + `process ... on <derived>`；**边沿**用 `reaction` 配合
   `capture`；**定时/超时**用 `now()` + `await ticks(remaining)`，进程源变化即取消旧定时。
 - **通道负载**只能是 `number`、`bool`、`bytes`、扁平 `record`。旧版的 `string` 端口改为
-  `bytes`（ASCII）或 `number`，见各器件文档与 `device.json` 的 `description`。
+  `bytes`（ASCII）或 `number`，见各器件文档与 `package.json` 的 `properties.*.description`。
 - **器件状态**（协议位计数、移位寄存器、暂存器）放在 `state` 里；批量数据（EEPROM、RTC RAM）
   放在 `memory` 里。
 
@@ -169,7 +176,7 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 | `build-schematic.mjs`  | 生成器：内含 PDF 逐网络对照表与布局，重新生成两个产物               |
 | `verify-schematic.mjs` | 校验：解析网表并对照、建板、跑通锁存链路与数码管扫描                |
 
-器件引用由宿主解析到器件库的 `examples/devices/dist/devices/<ID>/`（共 25 个器件，由器件库一次构建）。
+器件引用由宿主解析到器件库的 `examples/devices/dist/<ID>/`（共 25 个器件，由器件库一次构建）。
 
 已实现的连接：
 
@@ -259,7 +266,7 @@ node build-canvas.mjs     # 修改坐标或位号后重新生成 ct107d.cnv
 `bench/` 是整板性能基准，与 `examples/devices/bench` 里的器件基准同构，差别只有两处：
 
 - 读数用**进程 CPU 时间**（`process.cpuUsage`）而不是挂钟，避免并行任务抢 CPU 时读数抖动；
-- 器件从器件库 `examples/devices/src/devices/` 装载：`bench/board.ts` 按 `ct107d.sch` 折出网表，
+- 器件从器件库 `examples/devices/` 装载：`bench/board.ts` 按 `ct107d.sch` 折出网表，
   现场编译 `model.ddl` 并导入适配器，因此 `bench` 不依赖器件库的 `mica build`。
 
 ```powershell

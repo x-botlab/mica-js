@@ -1,0 +1,87 @@
+{
+  "name": "led",
+  "publisher": "demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "线性双向 100 Ω 电气负载，仅正向电流产生亮度。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "LED",
+  "designatorPrefix": "D",
+  "properties": {
+    "forwardResistance": {
+      "type": "number",
+      "title": "正向等效电阻",
+      "description": "阳极–阴极的等效串联电阻。线性模型，不含二极管压降。",
+      "default": 100,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "ratedCurrent": {
+      "type": "number",
+      "title": "额定电流",
+      "description": "达到该正向电流时亮度为 1。",
+      "default": 0.02,
+      "nullable": false,
+      "unit": "A",
+      "min": 0.0001,
+      "max": 1,
+      "step": 0.001
+    }
+  },
+  "pins": {
+    "anode": {
+      "label": "A"
+    },
+    "cathode": {
+      "label": "K"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {
+      "getBrightness": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      },
+      "getCurrent": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      },
+      "getVoltage": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      }
+    },
+    "events": {
+      "onDidBrightness": {
+        "type": "number"
+      },
+      "onDidCurrent": {
+        "type": "number"
+      },
+      "onDidVoltage": {
+        "type": "number"
+      }
+    }
+  }
+}

@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import type { FirmwareImage } from '@mica-js/sdk/device';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
@@ -10,7 +12,7 @@ import type { DeviceIR } from '@mica-js/sdk/model';
  * 探针器件和电源网络。固件、电气求解、JIT 全部走真实 `@mica-js/simulator` 板。
  */
 
-const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'stm32g431rbt6');
+const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'stm32g431rbt6', 'src');
 
 const PROBE_MODEL = `
 device TestProbe {
@@ -72,6 +74,8 @@ export interface SourceHandle {
 
 export interface CircuitOptions {
   readonly firmware?: Uint8Array;
+  /** 直接提供分段镜像；优先于 `firmware`。 */
+  readonly image?: FirmwareImage;
   readonly clockFrequency?: number;
   readonly pins?: readonly string[];
   /** `artifact` 装载构建产物，默认装载 `src/`。 */
@@ -84,43 +88,45 @@ export interface Circuit {
   readonly topics: Readonly<Record<string, unknown[]>>;
   readonly faults: readonly string[];
   readonly inputs: Readonly<Record<string, SourceHandle>>;
+  /** 模型内存中装载后的 code 快照，用于验证分段映射与空洞。 */
+  readonly code: Uint8Array;
+  /** 统一模型实例方法；测试用清单形状读取串口历史与故障状态。 */
+  readonly methods: unknown;
   /** 诊断：JIT 是否走直接路径、缓存块数与直接程序数。 */
   readonly jit: () => { direct: boolean; cache: number; programs: number };
   run(durationPs: number): void;
   dispose(): void;
 }
 
-let moduleCache: Promise<{ model: DeviceIR; create: (context: never) => Adapter }> | undefined;
-let artifactCache: Promise<{ model: DeviceIR; create: (context: never) => Adapter }> | undefined;
+let moduleCache: Promise<{ model: DeviceIR; create: unknown }> | undefined;
+let artifactCache: Promise<{ model: DeviceIR; create: unknown }> | undefined;
 let probeCache: Promise<DeviceIR> | undefined;
 let sourceCache: Promise<DeviceIR> | undefined;
 
-function loadDevice(): Promise<{ model: DeviceIR; create: (context: never) => Adapter }> {
+function loadDevice(): Promise<{ model: DeviceIR; create: unknown }> {
   moduleCache ??= (async () => {
     const [model, adapter] = await Promise.all([
       compileDDL(readFileSync(join(DEVICE_DIR, 'model.ddl'), 'utf8'), {
         uri: 'mica:devices/stm32g431rbt6/model.ddl',
       }),
       import(pathToFileURL(join(DEVICE_DIR, 'index.ts')).href) as Promise<{
-        default: (context: never) => Adapter;
+        create: unknown;
       }>,
     ]);
 
-    return { model, create: adapter.default };
+    return { model, create: adapter.create };
   })();
 
   return moduleCache;
 }
 
 const ARTIFACT_JS = join(
-  DEVICE_DIR,
-  '..',
+  import.meta.dirname,
   '..',
   '..',
   'dist',
-  'devices',
   'stm32g431rbt6',
-  'device.js',
+  'model.js',
 );
 
 /** 装载构建产物；未构建时返回 undefined，调用方跳过用例。 */
@@ -128,17 +134,57 @@ export function artifactAvailable(): boolean {
   return existsSync(ARTIFACT_JS);
 }
 
-function loadArtifact(): Promise<{ model: DeviceIR; create: (context: never) => Adapter }> {
+function loadArtifact(): Promise<{ model: DeviceIR; create: unknown }> {
   artifactCache ??= (async () => {
     const module = (await import(pathToFileURL(ARTIFACT_JS).href)) as {
       model: DeviceIR;
-      create: (context: never) => Adapter;
+      create: unknown;
     };
 
     return { model: module.model, create: module.create };
   })();
 
   return artifactCache;
+}
+
+/** 显式构造 FirmwareImage，并把统一模型事件映射回旧话题。 */
+export function adaptDevice(
+  module: { readonly create: unknown },
+  options: CircuitOptions,
+): (context: never) => Adapter {
+  const image =
+    options.image ??
+    (options.firmware === undefined || options.firmware.length === 0
+      ? null
+      : firmwareImage([
+          {
+            addressSpace: 'code',
+            address: 0x0800_0000,
+            data: new Uint8Array(options.firmware),
+          },
+        ]));
+
+  return adaptModelFactory(module.create as never, {
+    props: {
+      clockFrequency: options.clockFrequency ?? 16_000_000,
+      firmware: image,
+    },
+    events: {
+      onDidUart1Tx: {
+        topic: 'serial1.tx',
+        transform: (value) => (value as { data: Uint8Array }).data,
+      },
+      onDidUart2Tx: {
+        topic: 'serial2.tx',
+        transform: (value) => (value as { data: Uint8Array }).data,
+      },
+      onDidUart3Tx: {
+        topic: 'serial3.tx',
+        transform: (value) => (value as { data: Uint8Array }).data,
+      },
+      onDidFault: 'fault',
+    },
+  }) as unknown as (context: never) => Adapter;
 }
 
 function probeModel(): Promise<DeviceIR> {
@@ -177,11 +223,15 @@ export async function circuit(options: CircuitOptions = {}): Promise<Circuit> {
   const faults: string[] = [];
   const inputs: Record<string, SourceHandle> = {};
   const pins = options.pins ?? PROBE_PINS;
+  const create = adaptDevice(device, options);
+  let methods: unknown;
 
   const instrument = (context: {
     readonly topics: { publish(topic: string, payload: unknown): void };
   }) => {
-    const adapter = device.create(context as never);
+    const adapter = create(context as never);
+
+    methods = (adapter as typeof adapter & { readonly methods?: unknown }).methods;
 
     return {
       sync(batch: { readonly outputs: Readonly<Record<string, readonly Message[]>> }) {
@@ -222,7 +272,6 @@ export async function circuit(options: CircuitOptions = {}): Promise<Circuit> {
       id: 'mcu',
       type: 'mcu',
       props: {
-        firmware: options.firmware ?? new Uint8Array(),
         clockFrequency: options.clockFrequency ?? 16_000_000,
       },
     },
@@ -272,12 +321,23 @@ export async function circuit(options: CircuitOptions = {}): Promise<Circuit> {
 
   board.runUntil(0);
 
+  const internal = (
+    board as unknown as {
+      readonly instances?: readonly {
+        readonly memories?: ReadonlyMap<string, Uint8Array>;
+      }[];
+    }
+  ).instances?.[0];
   return {
     levels,
     history,
     topics,
     faults,
     inputs,
+    get code() {
+      return new Uint8Array(internal?.memories?.get('code') ?? []);
+    },
+    methods,
     jit: () => {
       const jit = (board as unknown as { jits?: readonly unknown[] }).jits?.[0] as
         | { direct?: unknown; cache?: Map<number, unknown>; directPrograms?: Map<string, unknown> }

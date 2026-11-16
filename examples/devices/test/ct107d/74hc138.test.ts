@@ -82,16 +82,16 @@ async function fixture(): Promise<Fixture> {
 }
 
 describe('74HC138', () => {
-  it('元数据声明 16 根引脚与 number/boolean/bytes 三个端口', () => {
-    const metadata = readMetadata('74hc138') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly ports: Readonly<Record<string, { readonly type: string }>>;
-    };
+  it('清单声明 16 根引脚与 number/boolean/binary 三个查询/事件', () => {
+    const metadata = readMetadata('74hc138');
 
-    expect(Object.keys(metadata.pins)).toHaveLength(16);
-    expect(metadata.ports.select?.type).toBe('number');
-    expect(metadata.ports.enabled?.type).toBe('boolean');
-    expect(metadata.ports.code?.type).toBe('bytes');
+    expect(Object.keys(metadata.pins ?? {})).toHaveLength(16);
+    expect(metadata.model.methods.getSelect).toBeDefined();
+    expect(metadata.model.methods.isEnabled).toBeDefined();
+    expect(metadata.model.methods.getCode).toBeDefined();
+    expect(metadata.model.events.onDidSelect).toMatchObject({ type: 'number' });
+    expect(metadata.model.events.onDidEnabled).toMatchObject({ type: 'boolean' });
+    expect(metadata.model.events.onDidCode).toMatchObject({ type: 'binary' });
   });
 
   it('使能时恰好一路拉低，序号由 A/B/C 选择', async () => {

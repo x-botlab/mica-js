@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { Board } from '@mica-js/sdk';
 import { compileDDL } from '@mica-js/sdk/ddl';
+import { adaptDevice } from './harness';
 import { GPIO_ODR } from '@mica-js/stm32g431rbt6-core/gpio';
 import { GPIO_STATE } from '@mica-js/stm32g431rbt6-core/layout';
 
@@ -17,15 +18,15 @@ import { GPIO_STATE } from '@mica-js/stm32g431rbt6-core/layout';
  * BSRR/BRR 冲突与窄写都在 precise/throughput 两种执行模式下各跑一遍。
  */
 
-const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'src', 'devices', 'stm32g431rbt6');
+const DEVICE_DIR = join(import.meta.dirname, '..', '..', 'stm32g431rbt6', 'src');
 /** 固件把结果写到 [SP + 0]，SP 由向量表设为 SRAM 内偏移 0x5000。 */
 const RESULT_BASE = 0x5000;
 /** 旧 `periph` 镜像里 GPIOA/ODR 的位置；现在必须保持为 0。 */
 const PERIPH_ODR = GPIO_STATE + GPIO_ODR;
 
-const [device, model] = await Promise.all([
+const [module, model] = await Promise.all([
   import(pathToFileURL(join(DEVICE_DIR, 'index.ts')).href) as Promise<{
-    default: (context: never) => { sync(batch: unknown): void; dispose(): void };
+    create: unknown;
   }>,
   compileDDL(readFileSync(join(DEVICE_DIR, 'model.ddl'), 'utf8'), {
     uri: 'mica:devices/stm32g431rbt6/model.ddl',
@@ -50,9 +51,11 @@ interface Snapshot {
 
 function mcuBoard(firmware: Uint8Array, execution: Execution): Board {
   return createBoard(
-    createDeviceLibrary([{ id: 'mcu', model, create: device.default as never }]),
+    createDeviceLibrary([
+      { id: 'mcu', model, create: adaptDevice(module, { firmware }) as never },
+    ]),
     {
-      instances: [{ id: 'mcu', type: 'mcu', props: { firmware, clockFrequency: 1_000_000 } }],
+      instances: [{ id: 'mcu', type: 'mcu', props: { clockFrequency: 1_000_000 } }],
       nets: [
         { id: 'vdd', voltage: 3.3, pins: VDD.map((pin) => ({ instance: 'mcu', pin })) },
         { id: 'vss', voltage: 0, pins: VSS.map((pin) => ({ instance: 'mcu', pin })) },

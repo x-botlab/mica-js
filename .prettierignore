@@ -7,4 +7,5 @@ test-results
 playwright-report
 tests/**/*.md
 **/*.d.ddl.ts
-examples/ct117e-m4/src/devices/ct117e-m4/hot-model.ts
+**/.mica/**
+examples/ct117e-m4/src/hot-model.ts

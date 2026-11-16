@@ -34,6 +34,13 @@ function viteConfig(project: Project): InlineConfig {
   };
 }
 
-export async function buildProject(project: Project): Promise<void> {
+export async function buildProject(
+  project: Project,
+): Promise<{ readonly packageDir: string; readonly releaseFile: string } | undefined> {
+  if (project.config.device !== undefined) {
+    const { buildDeviceProject } = await import('./device-project.js');
+    return buildDeviceProject(project.root, project.config);
+  }
   await build(viteConfig(project));
+  return undefined;
 }

@@ -80,20 +80,14 @@ async function fixture(props: Record<string, unknown> = {}): Promise<Fixture> {
 }
 
 describe('2×3 跳线排针', () => {
-  it('元数据声明 6 根引脚、2 个属性以及控制/状态端口', () => {
-    const metadata = readMetadata('jumper-2x3') as {
-      readonly pins: Readonly<Record<string, unknown>>;
-      readonly properties: Readonly<Record<string, { readonly default: unknown }>>;
-      readonly ports: Readonly<
-        Record<string, { readonly direction: string; readonly type: string }>
-      >;
-    };
+  it('清单声明 6 根引脚、2 个属性以及控制/状态方法与事件', () => {
+    const metadata = readMetadata('jumper-2x3');
 
-    expect(Object.keys(metadata.pins).sort()).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
-    expect(metadata.properties.vs1838?.default).toBe(true);
-    expect(Object.keys(metadata.ports).sort()).toEqual(['closedState2', 'control2']);
-    expect(metadata.ports.control2).toMatchObject({ direction: 'input', type: 'boolean' });
-    expect(metadata.ports.closedState2).toMatchObject({ direction: 'output', type: 'boolean' });
+    expect(Object.keys(metadata.pins ?? {}).sort()).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+    expect(metadata.properties?.vs1838?.default).toBe(true);
+    expect(metadata.model.methods.selectVs1838).toBeDefined();
+    expect(metadata.model.methods.isVs1838).toBeDefined();
+    expect(metadata.model.events.onDidClosedState2).toMatchObject({ type: 'boolean' });
   });
 
   it('1-3 固定短接', async () => {
@@ -136,7 +130,7 @@ describe('2×3 跳线排针', () => {
       built.board.run(US);
       expect(built.board.probe('probe2')).toBe(1);
 
-      built.board.send('dut', 'control2', false);
+      built.board.send('dut', 'selectVs1838', false);
       built.board.run(US);
       expect(built.board.topics.closedState2).toBe(false);
       expect(built.board.probe('probe2')).toBe(0);
@@ -146,7 +140,7 @@ describe('2×3 跳线排针', () => {
       built.board.run(US);
       expect(built.board.probe('probe2')).toBe(1);
 
-      built.board.send('dut', 'control2', true);
+      built.board.send('dut', 'selectVs1838', true);
       built.board.run(US);
       expect(built.board.topics.closedState2).toBe(true);
       expect(built.board.probe('probe2')).toBe(0);

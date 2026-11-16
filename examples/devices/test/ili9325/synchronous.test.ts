@@ -15,7 +15,7 @@ import type { RegionIR } from '@mica-js/sdk/model';
  */
 
 const source = readFileSync(
-  join(import.meta.dirname, '..', '..', 'src', 'devices', 'ili9325', 'model.ddl'),
+  join(import.meta.dirname, '..', '..', 'ili9325', 'src', 'model.ddl'),
   'utf8',
 );
 const model = await compileDDL(source, { uri: 'mica:test/ili9325-synchronous.ddl' });
