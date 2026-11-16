@@ -23,6 +23,9 @@ const JUMPER_REF = 'xbotlab:jumper';
 const HEADER_REF = 'xbotlab:jumper-2x3';
 const ULTRASONIC_REF = 'xbotlab:ultrasonic';
 const UART_PROBE_REF = 'xbotlab:uart-probe';
+const HALL_REF = 'xbotlab:hall';
+const LM324_REF = 'xbotlab:lm324';
+const IR_EMITTER_REF = 'xbotlab:ir-emitter';
 const CHIP_REF = (id) => `xbotlab:${id}`;
 const CHIPS = [
   '74hc02',
@@ -57,6 +60,9 @@ manifests.set(JUMPER_REF, readManifest('jumper'));
 manifests.set(HEADER_REF, readManifest('jumper-2x3'));
 manifests.set(ULTRASONIC_REF, readManifest('ultrasonic'));
 manifests.set(UART_PROBE_REF, readManifest('uart-probe'));
+manifests.set(HALL_REF, readManifest('hall'));
+manifests.set(LM324_REF, readManifest('lm324'));
+manifests.set(IR_EMITTER_REF, readManifest('ir-emitter'));
 for (const id of CHIPS) manifests.set(CHIP_REF(id), readManifest(id));
 
 const symbols = new Map();
@@ -109,6 +115,13 @@ for (const [designator, pins, net] of [
   ['U20', ['gnd'], GND],
   ['U22', ['vcc'], VCC],
   ['U22', ['gnd'], GND],
+  // hall（U21）、lm324（U26）与红外发射管（LD1）的供电脚；OUT/IN±/MOD 见下方信号网。
+  ['U21', ['vcc'], VCC],
+  ['U21', ['gnd'], GND],
+  ['U26', ['vcc'], VCC],
+  ['U26', ['gnd'], GND],
+  ['LD1', ['vcc'], VCC],
+  ['LD1', ['gnd'], GND],
   ['UART_PROBE', ['vcc'], VCC],
   ['UART_PROBE', ['gnd'], GND],
   ['U24', ['vcc', 'e3'], VCC],
@@ -277,7 +290,10 @@ connect('N_A1', [
   ['U18', 'a2'],
   ['J2', 'p1'],
 ]);
-connect('N_A2', [['J2', 'p5']]);
+connect('N_A2', [
+  ['J2', 'p5'],
+  ['LD1', 'mod'],
+]);
 connect('N_B1', [
   ['U11', 'out'],
   ['J2', 'p2'],
@@ -327,9 +343,20 @@ nets.get('P20/SCL').push(['U4', 'scl'], ['U16', 'scl']);
 nets.get('P21/SDA').push(['U4', 'sda'], ['U16', 'sda']);
 connect('AIN0', [['U16', 'vin0']]);
 connect('AIN1', [['U16', 'vin1']]);
-connect('AIN2', [['U16', 'vin2']]);
+// U26（LM324 可调差分放大器）的输出就是 AIN2：与 PCF8591 的模拟输入同网。
+connect('AIN2', [
+  ['U16', 'vin2'],
+  ['U26', 'out'],
+]);
 connect('AIN3', [['U16', 'vin3']]);
 connect('OUT', [['U16', 'dac']]);
+
+// 板上器件库外部接口：U21 霍尔 OUT、U26 的差分输入 IN±。
+// 基准图纸上它们分别落到 J3 的 1 脚与 J7 的引脚；这两个排针尚未建模，
+// 按仓库既有约定保留为接口桩网标（与 STEPA/SPK/m2 同类）。
+connect('N_HALL', [['U21', 'out']]);
+connect('IN+', [['U26', 'inPlus']]);
+connect('IN-', [['U26', 'inMinus']]);
 
 // ---- 布局 -------------------------------------------------------------------------------
 /** 当前预览固件：数码管动态显示，由 Intel HEX 转为裸二进制。 */
@@ -364,6 +391,10 @@ const PLACEMENTS = [
   { designator: 'SP1', device: BUZZER_REF, column: 3, order: 6 },
   { designator: 'U22', device: ULTRASONIC_REF, column: 3, order: 7 },
   { designator: 'UART_PROBE', device: UART_PROBE_REF, column: 3, order: 8 },
+  // 基准 USER 页的霍尔接口（U21）、可调放大前端（U26）与红外发射支路（LD1）。
+  { designator: 'U21', device: HALL_REF, column: 12, order: 0 },
+  { designator: 'U26', device: LM324_REF, column: 12, order: 1 },
+  { designator: 'LD1', device: IR_EMITTER_REF, column: 12, order: 2 },
   { designator: 'U4', device: CHIP_REF('at24c02'), column: 4, order: 0 },
   { designator: 'U16', device: CHIP_REF('pcf8591'), column: 4, order: 1 },
   { designator: 'U19', device: CHIP_REF('ds1302'), column: 4, order: 2 },

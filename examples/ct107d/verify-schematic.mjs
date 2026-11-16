@@ -5,7 +5,8 @@
  * 3. 装一段固件走完 `P2 → 74HC138 → 74HC02 → 74HC573 → LED` 链路，确认 D1 点亮、D2–D8 熄灭；
  * 4. 同一段固件按 `Y7 → U7（段码）`、`Y6 → U8（位选）` 逐位扫描，确认 DS1/DS2 的八位各锁存到写入的段码；
  * 5. 再装入 `assets/ct107d-demo.bin`，确认 8 位都显示 0xFF（8.8.8.8），
- *    并且走马灯逐位移动、同一时刻只有一颗 LED 点亮。
+ *    并且走马灯逐位移动、同一时刻只有一颗 LED 点亮；
+ * 6. 用临时探针/电压源核对 U21（霍尔）、U26（可调放大）与 LD1（红外发射）的接线。
  *
  * 说明：`P42/WR` 由原理图里的 J13（WR 选择跳线，1-2/2-3）短接到 GND，不需要在装配侧
  * 注入电压；器件模型没有 P4 端口，因此 J13 的 WR 源侧不建模。
@@ -19,6 +20,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deriveSchematicTopology, parseSchematic } from '@mica-js/document/schematic';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { compileDDL } from '@mica-js/sdk/ddl';
 import { loadLegacyDevice, legacyCreateWithFirmware } from './legacy/device-package.mjs';
 import { legacyDeviceSymbol, loadDevicePackage } from './legacy/schematic-metadata.mjs';
 
@@ -27,6 +29,7 @@ const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
 const MCU_REF = 'xbotlab:iap15f2k61s2';
 const LED_REF = 'xbotlab:blue-led';
 const DISPLAY_REF = 'xbotlab:seg4';
+const IR_EMITTER_REF = 'xbotlab:ir-emitter';
 
 const schematic = parseSchematic(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
 const components = schematic.sheet.symbols.filter((symbol) => symbol.designator);
@@ -114,8 +117,14 @@ const brightness = new Map(ledSymbols.map((symbol) => [symbol.id, 0]));
 const digitValues = new Map(
   components.filter((symbol) => symbol.device === DISPLAY_REF).map((symbol) => [symbol.id, {}]),
 );
+/** 红外发射管的载波状態：由 `carrier` 话题记录。 */
+const carrierStates = new Map(
+  components
+    .filter((symbol) => symbol.device === IR_EMITTER_REF)
+    .map((symbol) => [symbol.id, false]),
+);
 
-/** 拦截器件话题：LED 记亮度、数码管记四位段码，其余原样转发。 */
+/** 拦截器件话题：LED 记亮度、数码管记四位段码、红外发射记载波，其余原样转发。 */
 function instrument(symbol, device, firmware) {
   // 原理图里 `firmware` 是资源引用，实例属性只保留可校验的属性；固件按字节注入工厂上下文。
   const create =
@@ -125,8 +134,9 @@ function instrument(symbol, device, firmware) {
 
   return (context) => {
     const digits = digitValues.get(symbol.id);
+    const carrier = symbol.device === IR_EMITTER_REF;
 
-    if (symbol.device !== LED_REF && digits === undefined) return create(context);
+    if (symbol.device !== LED_REF && digits === undefined && !carrier) return create(context);
 
     return create({
       ...context,
@@ -135,6 +145,8 @@ function instrument(symbol, device, firmware) {
         publish(topic, payload) {
           if (topic === 'brightness' && typeof payload === 'number') {
             brightness.set(symbol.id, payload);
+          } else if (topic === 'carrier' && typeof payload === 'boolean') {
+            carrierStates.set(symbol.id, payload);
           } else if (
             digits !== undefined &&
             topic.startsWith('digit') &&
@@ -149,32 +161,52 @@ function instrument(symbol, device, firmware) {
   };
 }
 
-function buildBoard(firmware) {
-  const library = createDeviceLibrary(
-    components.map((symbol) => {
-      const device = devices.get(symbol.device);
-      return {
-        id: symbol.id,
-        model: device.module.model,
-        create: instrument(symbol, device, firmware),
-      };
-    }),
-  );
-  const nets = topology.nets.map((net, index) => ({
+function buildBoard(firmware, extras = []) {
+  const entries = components.map((symbol) => {
+    const device = devices.get(symbol.device);
+    return {
+      id: symbol.id,
+      model: device.module.model,
+      create: instrument(symbol, device, firmware),
+    };
+  });
+  const netList = topology.nets.map((net, index) => ({
     id: `net:${index}`,
+    name: net.name,
     pins: net.members
       .filter((member) => member.kind === 'pin')
       .map((member) => ({ instance: member.symbolId, pin: member.pinId })),
-    ...(net.name === 'VCC' ? { voltage: 5 } : net.name === 'GND' ? { voltage: 0 } : {}),
   }));
+  const netByName = new Map(
+    netList.filter((net) => net.name !== undefined).map((net) => [net.name, net]),
+  );
   const instances = components.map((symbol) => {
     const props = { ...(symbol.properties ?? {}) };
     // `firmware` 是资源引用，不属于 DDL 属性；板级装配走 `legacyCreateWithFirmware`。
     if (symbol.device === MCU_REF) delete props.firmware;
     return { id: symbol.id, type: symbol.id, props };
   });
+  // 附加只在校验板上存在的探针/电压源；它们不属于 `ct107d.sch`。
+  for (const extra of extras) {
+    entries.push({ id: extra.id, model: extra.model, create: extra.create });
+    instances.push({ id: extra.id, type: extra.id, props: extra.props ?? {} });
+    for (const [name, pin] of Object.entries(extra.nets ?? {})) {
+      const target = netByName.get(name);
+      if (target === undefined) {
+        const created = { id: `net:extra:${name}`, name, pins: [{ instance: extra.id, pin }] };
+        netList.push(created);
+        netByName.set(name, created);
+      } else target.pins.push({ instance: extra.id, pin });
+    }
+  }
+  // `createBoard` 的网络只接受 id/pins/voltage；`name` 是校验脚本内部索引，不传给板。
+  const nets = netList.map((net) => ({
+    id: net.id,
+    pins: net.pins,
+    ...(net.name === 'VCC' ? { voltage: 5 } : net.name === 'GND' ? { voltage: 0 } : {}),
+  }));
   const faults = [];
-  const board = createBoard(library, { instances, nets });
+  const board = createBoard(createDeviceLibrary(entries), { instances, nets });
   board.onDidError((event) => faults.push(event.message));
   return { board, faults };
 }
@@ -325,6 +357,109 @@ for (const symbol of leds) {
   if (!seen.has(symbol.designator)) failures.push(`走马灯没有轮到 ${symbol.designator}`);
 }
 
+// 4) 扩展器件接线：霍尔（U21）、可调放大前端（U26）与红外发射支路（LD1）。
+//    三者的板外端口在基准图纸上落到尚未建模的 J3/J7 排针，因此用临时探针与电压源
+//    核对 `N_HALL`、`IN+`/`IN-`、`AIN2` 与 `N_A2` 的连通性；这些附加实例只存在于
+//    本次校验板，不写入 `ct107d.sch`。
+const probeModel = await compileDDL(
+  `device TestProbe {
+     pin y;
+     output channel voltage: number(capacity: 8, overflow: Overflow.drop_oldest);
+     pure fn voltageOf(sampled: number?) -> number {
+       if sampled == none {
+         return -1;
+       }
+       return sampled;
+     }
+     derived sampledVoltage: number = voltageOf(y.sample.voltage);
+     process start {
+       voltage.send(sampledVoltage);
+     }
+     process changed on sampledVoltage {
+       voltage.send(sampledVoltage);
+     }
+   }`,
+);
+/** 固定分压电压源：p 的电压 = 5 V × lowOhms / (highOhms + lowOhms)。 */
+const sourceModel = async (highOhms, lowOhms) =>
+  compileDDL(`device TestSource {
+     pin p = [
+       resistor(to: vcc, resistance: ${highOhms}),
+       resistor(to: gnd, resistance: ${lowOhms})
+     ];
+     pin vcc;
+     pin gnd;
+   }`);
+const sourceInPlus = await sourceModel(4000, 1000); // 1.0 V
+const sourceInMinus = await sourceModel(4100, 900); // 0.9 V
+const sourceNA2 = await sourceModel(500, 4500); // 4.5 V
+
+const probeReadings = new Map();
+const isProbe = (model) => model === probeModel;
+const extras = [
+  { id: 'probe_hall', net: 'N_HALL', pin: 'y' },
+  { id: 'probe_ain2', net: 'AIN2', pin: 'y' },
+  { id: 'source_in_plus', net: 'IN+', pin: 'p', supply: true, model: sourceInPlus },
+  { id: 'source_in_minus', net: 'IN-', pin: 'p', supply: true, model: sourceInMinus },
+  // `N_A2` 在 J2 不插跳线帽时悬空；这里用 4.5 V 源把发射支路驱动到高电平。
+  { id: 'source_n_a2', net: 'N_A2', pin: 'p', supply: true, model: sourceNA2 },
+].map((extra) => {
+  const model = extra.model ?? probeModel;
+  return {
+    id: extra.id,
+    model,
+    props: {},
+    nets:
+      extra.supply === undefined
+        ? { [extra.net]: extra.pin }
+        : { [extra.net]: extra.pin, VCC: 'vcc', GND: 'gnd' },
+    create: isProbe(model)
+      ? () => ({
+          sync(batch) {
+            const entry = probeReadings.get(extra.id) ?? {};
+            for (const message of batch.outputs.voltage ?? []) entry.voltage = message.value;
+            probeReadings.set(extra.id, entry);
+          },
+          dispose() {},
+        })
+      : () => ({ sync() {}, dispose() {} }),
+  };
+});
+
+const extension = buildBoard(new Uint8Array([0x80, 0xfe]), extras);
+extension.board.runUntil(5_000_000_000); // 5 ms：覆盖 lm324 的 10 µs 采样周期
+if (extension.faults.length > 0)
+  failures.push(`extension board faults: ${extension.faults.join('; ')}`);
+
+const hall = components.find((symbol) => symbol.device === 'xbotlab:hall');
+const lm324 = components.find((symbol) => symbol.device === 'xbotlab:lm324');
+const emitter = components.find((symbol) => symbol.device === IR_EMITTER_REF);
+if (hall === undefined) failures.push('原理图缺少霍尔（U21）实例');
+if (lm324 === undefined) failures.push('原理图缺少可调放大前端（U26）实例');
+if (emitter === undefined) failures.push('原理图缺少红外发射管（LD1）实例');
+
+// 霍尔：默认磁场 0 mT → 开漏释放，`N_HALL` 悬空（电压 none → -1）；磁场达吸合点后拉低。
+const hallVoltage = () => probeReadings.get('probe_hall')?.voltage ?? 0;
+if (hallVoltage() !== -1) failures.push(`N_HALL 在释放状态应为悬空（-1），实际 ${hallVoltage()}`);
+extension.board.topics.publish('setField', 20);
+extension.board.runUntil(extension.board.time + 5_000_000_000);
+if (!(hallVoltage() >= 0 && hallVoltage() < 0.1))
+  failures.push(`U21 吸合后 N_HALL 应被拉低，实际 ${hallVoltage().toFixed(3)} V`);
+
+// lm324：IN+ = 1.0 V、IN- = 0.9 V，默认滑臂 gain = 21 → AIN2 ≈ 2.1 V。
+const aIn2 = () => probeReadings.get('probe_ain2')?.voltage ?? -1;
+if (!(Math.abs(aIn2() - 2.1) < 0.15))
+  failures.push(`U26 默认增益下 AIN2 应约 2.1 V，实际 ${aIn2().toFixed(3)} V`);
+extension.board.topics.publish('setWiper', 1); // 增益 2001 → 200 V，被电源轨夹到 5 V
+extension.board.runUntil(extension.board.time + 5_000_000_000);
+if (!(aIn2() > 4.5))
+  failures.push(`U26 最大增益下 AIN2 应饱和到电源轨，实际 ${aIn2().toFixed(3)} V`);
+
+// 红外发射：`N_A2` 的 4.5 V 应让 LD1 的 mod 判定为高，载波开启。
+const emitterCarrier = emitter === undefined ? undefined : carrierStates.get(emitter.id);
+if (emitterCarrier !== true) failures.push('N_A2 为高时 LD1 的载波应为开启');
+extension.board.dispose();
+
 console.log(
   `symbols ${schematic.sheet.symbols.length}  wires ${schematic.sheet.wires.length}  nets ${topology.nets.length}`,
 );
@@ -339,6 +474,9 @@ console.log(
 );
 console.log(`DS1 ${JSON.stringify(functionalDs1)}  DS2 ${JSON.stringify(functionalDs2)}`);
 console.log(
+  `U21 N_HALL ${hallVoltage().toFixed(3)} V（吸合）  U26 AIN2 ${aIn2().toFixed(3)} V（最大增益）  LD1 carrier ${String(emitterCarrier)}`,
+);
+console.log(
   `demo firmware ${demoBytes.length} 字节  走马灯 ${trail.map((lit) => lit[0] ?? '-').join(' → ')}`,
 );
 
@@ -347,6 +485,6 @@ if (failures.length > 0) {
   process.exitCode = 1;
 } else {
   console.log(
-    '✓ 网表一致；Y4 锁存点亮 D1；Y7/Y6 扫描写入八位段码；演示固件显示 8.8.8.8 并逐位走马灯',
+    '✓ 网表一致；Y4 锁存点亮 D1；Y7/Y6 扫描写入八位段码；演示固件显示 8.8.8.8 并逐位走马灯；U21/U26/LD1 接线可观测',
   );
 }

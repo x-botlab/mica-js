@@ -149,40 +149,26 @@ function parseIntelHex(text) {
   return image;
 }
 
-const CHIP_IDS = [
-  '74hc02',
-  '74hc138',
-  '74hc573',
-  '74hc14',
-  'at24c02',
-  'buzzer',
-  'cx20106a',
-  'ds1302',
-  'ds18b20',
-  'jumper',
-  'jumper-2x3',
-  'lm386',
-  'ne555',
-  'pcf8591',
-  'push-button',
-  'relay',
-  'uln2003',
-  'ultrasonic',
-  'uart-probe',
-  'vs1838',
-  'blue-led',
-  'seg4',
-  'iap15f2k61s2',
-];
+const schematicText = readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8');
+const schematic = parseSchematic(schematicText);
 
 const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
 const DEVICES_DIST = join(DEVICES_PROJECT, 'dist');
 const loadDevice = (id) => loadLegacyDevice(DEVICES_DIST, id);
 const loadModuleFile = (id) => join(DEVICES_DIST, id, 'model.js');
 
+/** 器件清单由原理图引用决定：新增实例不需要同步维护第二份 id 列表。 */
+const deviceIds = [
+  ...new Set(
+    schematic.sheet.symbols
+      .filter((symbol) => symbol.designator && symbol.device.startsWith('xbotlab:'))
+      .map((symbol) => symbol.device.slice('xbotlab:'.length)),
+  ),
+].sort();
+
 const devices = new Map();
 const deviceModuleSha256 = {};
-for (const id of CHIP_IDS) {
+for (const id of deviceIds) {
   deviceModuleSha256[id] = createHash('sha256')
     .update(readFileSync(loadModuleFile(id)))
     .digest('hex');
@@ -192,9 +178,6 @@ for (const id of CHIP_IDS) {
     module: loaded.module,
   });
 }
-
-const schematicText = readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8');
-const schematic = parseSchematic(schematicText);
 const artifacts = {
   source: 'dist',
   note: 'device modules from examples/devices/dist/<id>/model.js; unified factory/event adapter; firmware from the CLI input',
@@ -212,9 +195,7 @@ const round = (value, digits = 3) => {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
 };
-const netlist = JSON.parse(
-  readFileSync(join(PROJECT, 'ct107d.netlist.json'), 'utf8'),
-);
+const netlist = JSON.parse(readFileSync(join(PROJECT, 'ct107d.netlist.json'), 'utf8'));
 const components = schematic.sheet.symbols
   .filter((symbol) => symbol.designator && symbol.device.startsWith('xbotlab:'))
   .filter(
@@ -229,9 +210,7 @@ const nets = Object.entries(netlist).map(([name, members]) => ({
   pins: members.flatMap((member) => {
     const separator = member.lastIndexOf('.');
     const symbol = byDesignator.get(member.slice(0, separator));
-    return symbol === undefined
-      ? []
-      : [{ instance: symbol.id, pin: member.slice(separator + 1) }];
+    return symbol === undefined ? [] : [{ instance: symbol.id, pin: member.slice(separator + 1) }];
   }),
   ...(name === 'VCC' ? { voltage: 5 } : name === 'GND' ? { voltage: 0 } : {}),
 }));

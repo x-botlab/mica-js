@@ -329,7 +329,7 @@ function describeBoard(): Promise<Description> {
   return described;
 }
 
-/** 建一块整板 CT107D：51 颗器件 + 原理图网表。 */
+/** 建一块整板 CT107D：54 颗器件 + 原理图网表。 */
 export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoard> {
   const { components, nets, designators, deviceTypes } = await describeBoard();
   const faults: string[] = [];

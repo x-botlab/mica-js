@@ -21,8 +21,8 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
 
 整板用到的器件全部来自 [`examples/devices`](../devices/README.md) 器件库，本包不再复制
 器件源码。`mica build` 只输出板面 legacy widget；统一器件包由器件库逐项目构建到
-`examples/devices/dist/<id>/{package.json, model.js}`。整板共 **51 个器件实例、99 条网络、
-23 种器件包**（器件库现有 30 个包）。
+`examples/devices/dist/<id>/{package.json, model.js}`。整板共 **54 个器件实例、102 条网络、
+26 种器件包**（器件库现有 30 个包）。
 
 原理图/画布链路也读取统一器件包：`bench/board.ts`、`verify-firmware.mjs`、
 `verify-schematic.mjs` 与 `seg4-preview.test.ts` 通过 `legacy/device-package.mjs` 把统一
@@ -78,7 +78,7 @@ examples/ct107d/
   vitest.config.ts
   vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
   bench/
-    board.ts                      整板夹具：按 ct107d.sch 折出网表装配 51 颗器件（装载统一 dist 包）
+    board.ts                      整板夹具：按 ct107d.sch 折出网表装配 54 颗器件（装载统一 dist 包）
     measure.ts                    测量核心：进程 CPU 时间读数、电气/运行时/JIT 指标、topicDigest
     perf.test.ts                  基准用例：只断言下限，并追加一行到 bench/results.jsonl
   src/widgets/                   板面 legacy widget（器件源码在 ../devices/<id>/src/）
@@ -132,6 +132,9 @@ examples/ct107d/
 | `relay`        | 电磁继电器（K1，双极常开）            | 执行器         | `energized`（输出）                              |
 | `jumper`       | 两脚跳线（J13；另以 2 脚形式简化 J3） | 装配配置       | `control`（输入）、`closedState`（输出）         |
 | `jumper-2x3`   | 2×3 跳线排针（J2）                    | 装配配置       | `control2`（输入）、`closedState2`（输出）       |
+| `hall`         | 三脚开关型霍尔（U21）                 | 传感器         | `setField`（方法）、`active`（输出）             |
+| `lm324`        | 可调差分放大器（U26 + RB4）           | 模拟前端       | `setWiper`（方法）、`setting`（输出）            |
+| `ir-emitter`   | 红外发射调制端（LD1）                 | 红外发射       | `setCarrier`（方法）、`carrier`（输出）          |
 | `ultrasonic`   | 超声波收发器件（U22）                 | 传感器         | —（`trig` 上升沿触发，`echo` 输出脉宽）          |
 | `uart-probe`   | UART 8N1 探针                         | 串行           | `send`（输入）、`tx`、`rx`（输出）               |
 | `iap15f2k61s2` | IAP15F2K61S2 8051 MCU（JIT）          | MCU            | `uart1Tx`、`uart1Rx`（输出）                     |
@@ -183,11 +186,11 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 ## 原理图 `ct107d.sch`
 
 按 CT107D 原理图（仓库根的 `SCH_硬件原理图V30.pdf`）逐网络还原竞赛板，包含器件库中的
-20 种芯片/按键/执行器/跳线器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
-（DS1/DS2 两片），合计 23 种器件包、51 个实例；器件源码统一维护在
+23 种芯片/传感器/按键/执行器/跳线器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
+（DS1/DS2 两片），合计 26 种器件包、54 个实例；器件源码统一维护在
 [`examples/devices`](../devices/README.md)。
 
-未接入整板的器件、基准位号差异与后续上板计划见[与基准原理图的差距](#与基准原理图的差距)。
+基准位号差异与后续上板计划见[与基准原理图的差距](#与基准原理图的差距)。
 
 | 文件                   | 说明                                                                |
 | ---------------------- | ------------------------------------------------------------------- |
@@ -196,7 +199,7 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 | `build-schematic.mjs`  | 生成器：统一器件包清单 + 合成符号，输出 `.sch` 与网表               |
 | `verify-schematic.mjs` | 校验：解析网表并对照、建板、跑通锁存链路与数码管扫描                |
 
-器件引用由宿主解析到器件库的 `examples/devices/dist/<ID>/`（共 23 种器件包、51 个实例，
+器件引用由宿主解析到器件库的 `examples/devices/dist/<ID>/`（共 26 种器件包、54 个实例，
 由器件库一次构建）。
 
 已实现的连接：
@@ -225,8 +228,12 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
   [`docs/buzzer.md`](../devices/docs/buzzer.md)。
 - **红外**：CX20106A 输出 `N_B1`、VS1838 输出 `N_B2` 接到 J2 的 2/6 脚，J2 的 1-3 固定
   短接（`P10` → U18 整形/驱动链 `N_A1`），接收端公共脚 4（`P11`）由实例属性 `vs1838`
-  选择短接 4-6 或 2-4；J2 的 5 脚是红外发射管支路 `N_A2`。U15 的 RST 与 VCC 接高。详见
-  [`docs/jumper-2x3.md`](../devices/docs/jumper-2x3.md)。
+  选择短接 4-6 或 2-4；J2 的 5 脚是红外发射管支路 `N_A2`，接 LD1（`ir-emitter`）的
+  `mod`。U15 的 RST 与 VCC 接高。详见 [`docs/jumper-2x3.md`](../devices/docs/jumper-2x3.md)。
+- **传感器/模拟前端**：U21（`hall`）的 `out` 接 `N_HALL`，`vcc`/`gnd` 接 5 V/GND；
+  U26（`lm324`）的 `out` 与 PCF8591 的 `vin2` 同网 `AIN2`，差分输入 `inPlus`/`inMinus`
+  接 `IN+`/`IN-` 网标。两者的板外端口在基准图纸上落在尚未建模的 J3.1 与 J7，因此按
+  仓库既有约定保留为接口桩网标（详见下一节）。
 - **跳线**：J13 的 `a` 接 `P42/WR`、`b` 接 GND，`closed` 属性模拟「WR 接 0 V」的装配位置。
 
 忽略器件后的替代约定：
@@ -240,29 +247,26 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
   J13 的 WR 源侧不建模，原理图里 J13 只把 `P42/WR` 短接到 GND（`closed = true`）。
 - `RST` 只连 S1 与网标：MCU 模型没有复位引脚，复位电路里的 CR1/R3 不建模。
 - 执行器输出 `STEPA`–`STEPD`/`N_MOTOR`、`SPK`、`AIN0`–`AIN3`、`OUT`、`m2`、
-  `NET_SIG` 等只保留驱动侧网标，作为未实现器件的接口桩；74HC138 的 Y0–Y3、NE555 的 RC 脚、
-  CX20106A 的 C1/C2/C3/f0、DS1302 的 X1/X2/VCC1、LM386 的 GAIN/BYPASS、PCF8591 的 OSC
-  按 NC 处理。
+  `NET_SIG`、`N_HALL`、`IN+`/`IN-` 等只保留驱动/接收侧网标，作为未建模排针的接口桩；
+  74HC138 的 Y0–Y3、NE555 的 RC 脚、CX20106A 的 C1/C2/C3/f0、DS1302 的 X1/X2/VCC1、
+  LM386 的 GAIN/BYPASS、PCF8591 的 OSC 按 NC 处理。
 
 ## 与基准原理图的差距
 
-以下是有意保留的当前范围；器件库已交付对应包不等于已接入整板，本轮也不为
-`examples/ct107d` 新增器件实例。
+以下是有意保留的当前范围。
 
-- **未上板**：`hall`（基准 U21，`U21.2 → N_HALL → J3.1`）、`lm324`（基准 U26 + RB4，
-  `IN± → J7`、`out → AIN2 → U16.vin2`）与 `ir-emitter`（基准 LD1，`mod → J2.5`/`N_A2`）
-  暂不新增实例；网表中因此没有 `N_HALL`、`IN+`、`IN-`，`AIN2` 只接 `U16.vin2`，
-  `N_A2` 只接 `J2.p5`。
-- **J3 简化**：基准 J3 是 20 脚扩展排针（pin 15 = `NET_SIG`、pin 16 = `P34`），本示例只用
-  2 脚 `jumper` 模拟 15–16 的跳线帽，其余 18 脚未建模；接入 `hall` 前需要先建模该排针。
+- **J3 简化**：基准 J3 是 20 脚扩展排针（pin 1 = `N_HALL`、pin 15 = `NET_SIG`、
+  pin 16 = `P34`），本示例只用 2 脚 `jumper` 模拟 15–16 的跳线帽，其余 18 脚未建模；
+  U21（`hall`）的 `out` 因此只接到 `N_HALL` 网标。
+- **J7 未建模**：基准 J7 是 4 脚模拟输入排针，接 U26（`lm324`）的 `IN+`/`IN-`；本示例把
+  这两个引脚保留为 `IN+`/`IN-` 网标。
 - **U22 位号冲突**：基准的 `U22`/`U23` 是 8 脚数码管扩展排针，本示例的 `U22` 是
   `ultrasonic` 实例；这两个排针尚未建模。
 - **LED 位号**：基准 LED 位号是 `L1`–`L8`，`D1`–`D8` 是 1N4148；本示例沿用旧生成器把 LED
   记为 `D1`–`D8`、把网络记为 `L1`–`L8`。电气连接与画布绑定不受影响，但位号不能与基准
   逐一对读。
 
-后续若把 `hall`/`ir-emitter`/`lm324` 上板，需要同步处理 20 脚 J3（pin 1 = `N_HALL`）、
-4 脚模拟输入 J7 与 U22 位号冲突。
+后续若建模 20 脚 J3 与 4 脚 J7，把 `N_HALL`/`IN+`/`IN-` 改接排针引脚即可，器件侧无需改动。
 
 ```powershell
 cd dist\ct107d
@@ -272,11 +276,13 @@ node build-schematic.mjs  # 修改网表/布局后重新生成
 ```
 
 `verify-schematic.mjs` 依次做五件事：解析 `ct107d.sch` 折出网表并与 `ct107d.netlist.json`
-逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 51 个器件建板跑 1 ms 确认没有
+逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 54 个器件建板跑 1 ms 确认没有
 装配故障；装一段固件走 `P2 → 74HC138 → 74HC02 → 74HC573 → LED`，确认 D1 亮度 0.1639、其余
 熄灭；同一段固件再按 `Y7 → U7（段码）`、`Y6 → U8（位选）` 逐位扫描，确认 DS1/DS2 八位分别
-锁存到写入的段码；最后装入 `assets/ct107d-demo.bin`，确认 8 位全亮且走马灯逐位轮转。器件
-来自统一包，符号由 `legacy/schematic-metadata.mjs` 按清单引脚合成。
+锁存到写入的段码；接着装入 `assets/ct107d-demo.bin`，确认 8 位全亮且走马灯逐位轮转；最后
+用临时探针与电压源核对 U21（`N_HALL` 悬空→拉低）、U26（`AIN2` 默认增益约 2.1 V、最大增益
+饱和到电源轨）与 LD1（`N_A2` 高电平时载波开启）。器件来自统一包，符号由
+`legacy/schematic-metadata.mjs` 按清单引脚合成。
 
 ## 板面画布 `ct107d.cnv`
 
@@ -334,7 +340,7 @@ pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.per
 
 口径：装配整板 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`wallMs` / `rtf`
 取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（12 MHz 8051，
-8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 51 颗器件、99 条网络，
+8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 54 颗器件、102 条网络，
 电气求解、通道与执行引擎都走真实运行时。
 
 **行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按
