@@ -130,6 +130,7 @@ describe('loadProjectConfig', () => {
     ['server: {}', 'server'],
     ['plugins: []', 'plugins'],
     ['sorceDir: "src"', 'sorceDir'],
+    ['testbenches: {}', 'testbenches'],
   ])('rejects invalid config %s', async (source, field) => {
     const root = await fixture();
     await marker(root, `export default { ${source} };`);

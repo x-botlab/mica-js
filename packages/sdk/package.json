@@ -28,6 +28,21 @@
       "types": "./dist/device.d.ts",
       "import": "./dist/device.js"
     },
+    "./fused": {
+      "source": "./src/fused/index.ts",
+      "types": "./dist/fused/index.d.ts",
+      "import": "./dist/fused/index.js"
+    },
+    "./fused/node": {
+      "source": "./src/fused/node.ts",
+      "types": "./dist/fused/node.d.ts",
+      "import": "./dist/fused/node.js"
+    },
+    "./device-build": {
+      "source": "./src/build/unified-build.ts",
+      "types": "./dist/build/unified-build.d.ts",
+      "import": "./dist/build/unified-build.js"
+    },
     "./widget": {
       "source": "./src/widget.ts",
       "types": "./dist/widget.d.ts",
@@ -70,6 +85,18 @@
         "types": "./dist/device.d.ts",
         "import": "./dist/device.js"
       },
+      "./fused": {
+        "types": "./dist/fused/index.d.ts",
+        "import": "./dist/fused/index.js"
+      },
+      "./fused/node": {
+        "types": "./dist/fused/node.d.ts",
+        "import": "./dist/fused/node.js"
+      },
+      "./device-build": {
+        "types": "./dist/build/unified-build.d.ts",
+        "import": "./dist/build/unified-build.js"
+      },
       "./widget": {
         "types": "./dist/widget.d.ts",
         "import": "./dist/widget.js"
@@ -106,14 +133,18 @@
     "@mica-js/core": "workspace:*",
     "@mica-js/ddl": "workspace:*",
     "@mica-js/device-model": "workspace:*",
+    "@mica-js/document": "workspace:*",
     "@mica-js/simulator": "workspace:*",
     "@mica-js/widget": "workspace:*",
+    "@noble/hashes": "^2.4.0",
     "ajv": "^8.17.1",
     "rolldown": "catalog:",
+    "semver": "^7.8.5",
     "vite": "catalog:"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "@types/semver": "^7.7.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

@@ -25,6 +25,11 @@
       "source": "./src/canvas/index.ts",
       "types": "./dist/canvas/index.d.ts",
       "import": "./dist/canvas/index.js"
+    },
+    "./fused": {
+      "source": "./src/fused/index.ts",
+      "types": "./dist/fused/index.d.ts",
+      "import": "./dist/fused/index.js"
     }
   },
   "files": [
@@ -50,6 +55,10 @@
       "./canvas": {
         "types": "./dist/canvas/index.d.ts",
         "import": "./dist/canvas/index.js"
+      },
+      "./fused": {
+        "types": "./dist/fused/index.d.ts",
+        "import": "./dist/fused/index.js"
       }
     }
   },

@@ -1,0 +1,56 @@
+:root {
+  color-scheme: dark;
+}
+html,
+body {
+  margin: 0;
+  background: #111111;
+  color: #e5e5e5;
+  font:
+    13px system-ui,
+    sans-serif;
+}
+main {
+  padding: 20px;
+}
+.host-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.host-controls label {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.host-controls button,
+.host-controls select {
+  padding: 6px 10px;
+  font: inherit;
+}
+#workbench {
+  width: 720px;
+  max-width: 100%;
+  height: 640px;
+  min-width: 320px;
+  border: 1px solid #383838;
+  border-radius: 8px;
+  overflow: hidden;
+  resize: horizontal;
+  background: #1c1c1c;
+}
+#error {
+  padding: 10px;
+  border: 1px solid #a75e5e;
+  color: #f28b82;
+  white-space: pre-wrap;
+}
+.demo-device {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  text-align: left;
+  border: 1px solid var(--mica-border) !important;
+}

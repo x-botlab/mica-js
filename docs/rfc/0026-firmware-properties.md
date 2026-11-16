@@ -1,10 +1,10 @@
 # 固件属性与装载配置
 
 - Start Date: 2026-11-16
-- Reference Issues: —（尚未实现）
+- Reference Issues: [x-botlab/xbotlab#1113](https://github.com/x-botlab/xbotlab/issues/1113)
 - Implementation PR: —（尚未实现）
 
-规定统一器件的 `firmware` 属性、属性内地址空间、文件与宿主项目引用、项目产物、格式转换、运行时镜像，以及编辑器的选择和装载配置交互。本合同为待实现草案。MUST / MUST NOT 表示强制要求，SHOULD 为推荐，MAY 为可选。
+规定统一器件的 `firmware` 属性、属性内地址空间与推荐代码模板、文件与宿主项目引用、项目产物、格式转换、运行时镜像，以及编辑器的选择和装载配置交互。推荐模板随属性声明发布，供宿主创建固件项目。本合同为待实现草案。MUST / MUST NOT 表示强制要求，SHOULD 为推荐，MAY 为可选。
 
 ## 声明
 
@@ -12,14 +12,15 @@
 
 `firmware` 复用 [RFC 0009](./0009-device-properties.md) 的通用属性描述字段与 `maxBytes`，并复用 [RFC 0020](./0020-unified-device-package.md) 的 `group` / `order`；额外字段均定义在对应属性对象内。
 
-| 字段                    | 类型    | 必填 | 约束                                                |
-| ----------------------- | ------- | ---- | --------------------------------------------------- |
-| `addressSpaces`         | object  | 是   | 非空的空间 ID 到地址空间描述的映射                  |
-| `addressSpaces.*.title` | string  | 否   | 非空展示名称；省略时使用空间 ID                     |
-| `addressSpaces.*.start` | integer | 是   | 空间允许装载范围的起始地址                          |
-| `addressSpaces.*.size`  | integer | 是   | 允许装载范围的字节数，正安全整数                    |
-| `addressSpace`          | string  | 是   | BIN / HEX 的默认空间 ID，必须存在于 `addressSpaces` |
-| `loadAddress`           | integer | 是   | BIN 的默认装载地址，必须位于默认空间范围内          |
+| 字段                    | 类型     | 必填 | 约束                                                     |
+| ----------------------- | -------- | ---- | -------------------------------------------------------- |
+| `addressSpaces`         | object   | 是   | 非空的空间 ID 到地址空间描述的映射                       |
+| `addressSpaces.*.title` | string   | 否   | 非空展示名称；省略时使用空间 ID                          |
+| `addressSpaces.*.start` | integer  | 是   | 空间允许装载范围的起始地址                               |
+| `addressSpaces.*.size`  | integer  | 是   | 允许装载范围的字节数，正安全整数                         |
+| `addressSpace`          | string   | 是   | BIN / HEX 的默认空间 ID，必须存在于 `addressSpaces`      |
+| `loadAddress`           | integer  | 是   | BIN 的默认装载地址，必须位于默认空间范围内               |
+| `templates`             | string[] | 否   | 推荐代码模板的稳定标识列表；省略或空数组表示没有推荐模板 |
 
 - 空间 ID 为非空、区分大小写的稳定字符串，仅在当前固件属性内有效；模型按属性名与空间 ID 映射实际存储器。
 - `start`、`loadAddress` 为非负安全整数，`start + size` MUST 为安全整数；地址和长度统一以字节计。
@@ -27,6 +28,13 @@
 - 同一空间内每段完整字节范围必须落在声明范围内；不同空间允许使用相同数值地址。
 - 地址空间与范围声明只描述该属性允许装载的位置；模型映射 MUST 与声明一致。
 - 文件型默认值使用 `package` 模式；清单默认值不绑定宿主项目，`nullable: true` 时允许 `null`。
+
+### 推荐代码模板
+
+- `templates` 的每项为非空、区分大小写且不重复的宿主稳定标识，按声明顺序展示；标识不使用数据库自增 ID、展示名称或下载 URL，具体命名空间由宿主管理。
+- 推荐列表属于当前发布版本的包清单，修改列表需要发布新版本；每个 `firmware` 属性独立声明列表。
+- 列表用于推荐新建项目，已有项目、工程文件与内置固件继续按来源规则选择；模板关联不替代固件格式、空间、范围和大小校验。
+- 模板由宿主解析和授权；模板不存在、不可访问或解析失败时明确显示不可用并允许重试，不阻止器件发布、装载或使用其他固件来源。
 
 ### 来源与实例覆盖
 
@@ -106,6 +114,14 @@ interface FirmwareImage {
 - 点击打开按钮按当前 `projectId` 触发 `onDidRequestOpenProject`，由宿主打开项目；保持属性、文档历史和仿真状态不变。
 - 项目来源未提供或已选项目不存在时，保留引用并显示无法解析的状态；列表读取失败明确显示错误，允许重试，不自动改选其他来源。
 
+### 从模板创建项目
+
+- 宿主提供模板来源且当前属性的 `templates` 非空时，属性面板提供“从模板创建项目”入口，按声明顺序展示解析后的模板；未提供模板来源时省略入口。
+- 用户选择可用模板后，由宿主创建项目并返回稳定项目身份；创建成功后，编辑器按属性事务保存 `{ mode: "project", projectId }`，空间与基址沿用属性默认值，支持统一撤销。
+- 取消或创建失败时保留原属性与历史；宿主项目创建与文档属性事务分别生效，撤销属性选择不删除已创建项目。
+- 模板标识只保存在包清单，实例保存创建后的项目引用；运行和暂停期间模板创建入口只读。
+- 模板解析、项目创建与宿主接口由 [RFC 0025](./0025-fused-runtime.md) 规定。
+
 ### 展开装载配置
 
 - 下拉框最右侧提供 Codicons `settings-gear` 图标按钮，提示和可访问名称为“装载配置”；选中项目时排列为下拉框、打开项目按钮、装载配置按钮。
@@ -118,24 +134,26 @@ interface FirmwareImage {
 
 ## 校验
 
-| 诊断码                             | 条件与行为                                                                                 |
-| ---------------------------------- | ------------------------------------------------------------------------------------------ |
-| `package/invalid-manifest`         | 空间映射为空、空间描述或默认空间/基址非法，拒绝装载包                                      |
-| `schema/invalid-value`             | 固件引用结构非法、覆盖不适用于当前格式或非固件属性、空间未知，拒绝非法编辑或报告文档错误   |
-| `firmware/unknown-format`          | 固定资源无可靠文件名或扩展名未知，保留引用并拒绝运行准备                                   |
-| `firmware/invalid-format`          | 内容、记录、段表或装载形式不符合所选格式，保留引用并拒绝运行准备                           |
-| `firmware/ambiguous-address-space` | ELF 装载段完整范围匹配多个声明空间，拒绝运行准备                                           |
-| `firmware/invalid-image`           | 镜像结构非法、段字节为空、引用未知空间或同空间段重叠，拒绝运行准备                         |
-| `firmware/out-of-range`            | 基址或任一完整装载段超出声明范围，拒绝非法编辑或运行准备                                   |
-| `firmware/project-list-failed`     | 项目列表读取失败或列表非法，保留引用并显示错误，合同见 [RFC 0025](./0025-fused-runtime.md) |
-| `firmware/project-resolve-failed`  | 项目产物获取失败或结构非法，保留引用并显示错误，合同见 [RFC 0025](./0025-fused-runtime.md) |
+| 诊断码                             | 条件与行为                                                                                        |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `package/invalid-manifest`         | 空间映射为空、空间描述或默认空间/基址非法，或模板列表不是字符串数组、含空标识或重复项，拒绝装载包 |
+| `schema/invalid-value`             | 固件引用结构非法、覆盖不适用于当前格式或非固件属性、空间未知，拒绝非法编辑或报告文档错误          |
+| `firmware/unknown-format`          | 固定资源无可靠文件名或扩展名未知，保留引用并拒绝运行准备                                          |
+| `firmware/invalid-format`          | 内容、记录、段表或装载形式不符合所选格式，保留引用并拒绝运行准备                                  |
+| `firmware/ambiguous-address-space` | ELF 装载段完整范围匹配多个声明空间，拒绝运行准备                                                  |
+| `firmware/invalid-image`           | 镜像结构非法、段字节为空、引用未知空间或同空间段重叠，拒绝运行准备                                |
+| `firmware/out-of-range`            | 基址或任一完整装载段超出声明范围，拒绝非法编辑或运行准备                                          |
+| `firmware/project-list-failed`     | 项目列表读取失败或列表非法，保留引用并显示错误，合同见 [RFC 0025](./0025-fused-runtime.md)        |
+| `firmware/project-resolve-failed`  | 项目产物获取失败或结构非法，保留引用并显示错误，合同见 [RFC 0025](./0025-fused-runtime.md)        |
+| `firmware/template-resolve-failed` | 推荐模板不存在、不可访问、解析失败或返回结构非法，显示不可用，其他来源可继续使用                  |
+| `firmware/template-create-failed`  | 从模板创建项目失败或返回项目非法，保留原属性与历史并显示错误                                      |
 
 - 无法解析的已保存引用保持原样并显示错误；就地输入错误不提交，已有值和历史保持不变。
 - 文件读取继续执行资源存在、访问范围、发布摘要及 `maxBytes` 检查，规则见 [RFC 0020](./0020-unified-device-package.md)。
 
 ## 示例
 
-完整属性描述见 [全字段器件清单](./examples/0020-device-package.json) 的 `properties.firmware`，包含全部通用字段、空间描述与 BIN 默认地址；固定文件覆盖和宿主项目分别见 [完整来源示例](./examples/0026-firmware-sources.json)，项目实例见 [完整文档](./examples/0024-fused-schematic.json)。全字段清单中的固件用于展示属性结构，非轻触开关的运行功能。
+完整属性描述见 [全字段器件清单](./examples/0020-device-package.json) 的 `properties.firmware`，包含全部通用字段、空间描述、BIN 默认地址与推荐模板列表；示例模板标识 `example:controller` 由宿主解析，不表示已发布模板。固定文件覆盖和宿主项目分别见 [完整来源示例](./examples/0026-firmware-sources.json)，项目实例见 [完整文档](./examples/0024-fused-schematic.json)。全字段清单中的固件用于展示属性结构，非轻触开关的运行功能。
 
 来源示例的 BIN 文件和 BIN 项目产物基址均为 `256`，在 `code` 空间的第一个字节地址为 `0x0100`；该空间范围为 `0x0000–0x1FFF`，允许装载的 BIN 最大长度为 `7936` 字节。
 

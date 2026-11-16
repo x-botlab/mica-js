@@ -2,6 +2,96 @@
 
 独立组合根的编辑器。原理图工厂提供 URI 加载、器件解析、Canvas 渲染、编辑、撤销与重做；画布工厂提供 widget 合成、布局编辑和仿真会话。两个工厂分别拥有服务容器和内部实现。
 
+## 融合工作台
+
+`@mica-js/editor/fused` 提供 React 19 工作台，直接编辑融合 `.sch` v2 文档。器件底图、逐引脚接线与动态覆盖共用实例坐标；主线程处理文档和交互，模型与 `view2d.js` 分别运行在现有 `SandboxWorker` 中。进入 Run 自动启动，返回 Edit 释放运行会话；下次运行从初态开始。
+
+```typescript
+import { createWorkbench } from '@mica-js/editor/fused';
+import '@mica-js/editor/fused/style.css';
+
+const workbench = await createWorkbench({
+  container,
+  uri,
+  fileSystemProvider,
+  deviceProvider,
+  firmwareProjectProvider,
+  accessProvider,
+  viewBaseUrlTemplate: 'https://${id}.views.example.com/v1/',
+  theme: {
+    appearance: 'dark',
+    colors: {
+      accent: '#7c3aed',
+      'accent.foreground': '#ffffff',
+      'canvas.background': '#141821',
+    },
+  },
+});
+
+await workbench.save();
+await workbench.dispose();
+```
+
+文件系统 Provider 使用 `HostFs.read` 并提供 `write(uri, bytes)`；器件 Provider 返回锁定发布版本的 `PackageFiles`，工作台校验文件清单和摘要。固件项目 Provider 的 `list`、`resolve` 与可选 `create` 由宿主实现；创建向导、模板选择与导入属于宿主流程，取消创建返回 `undefined`。
+
+`contributions.containers`、`views`、`toolbar` 为宿主扩展点，ID 使用宿主命名空间，`mica.*` 保留。视图的 `mount` 接收 DOM 容器与带取消信号的作用域，返回 Disposable。工具条按钮可以执行 `workbench.openContainer`，例如打开器件库并聚焦搜索；编辑器不要求特定的器件库角色。`when` 与 `enablement` 使用 Context Key 条件，宿主通过 `workbench.contextKeys` 注册自己的 Key；内置模式、编辑权限、撤销状态与选择 Key 由工作台维护。
+
+`accessProvider.evaluateDocument` 分别决定编辑和运行权限，`canAddDevice` 决定能否新增指定发布版本。新增、属性修改、通用事务、粘贴、撤销重做与保存均经过文档会话授权。宿主可将包含付费器件的文档整体设为只读，并通过 `onDidChange` 通知授权变化；持久化服务仍应验证最终写入。只读文档中的面板位置调整仅保留在当前工作台会话。
+
+器件声明的 HTML Views 在 Run 中开放。侧栏属性固定在顶部，HTML Views 支持折叠、排序、调整高度与浮动；浮动面板可拖动四条边与四个角调整尺寸，最小 180×100，键盘方向键每次调整 10px、按住 Shift 调整 40px。浮动面板保留所属实例，停靠切换保留同一 iframe 与同一套订阅；折叠只隐藏页面，不卸载。运行结束释放这些环境。
+
+每个视图环境是两个同源（但与工作台隔离）的 frame，两者都是部署目录里的真实文档：可信外层页 `index.html` 只保留生命周期控制通道（加载、主题中继、失败上报）与作者文档写入，并在整个视图生命周期内不变；内层沙箱 frame 加载同一目录的 `content.html`，因此两边的 origin 都是具体值、按精确值校验。编辑器为每个视图创建两条专用 `MessagePort`：一条直连内层作者 frame（`DeviceViewApi` 的 props、模型方法与事件、包资源读取、视图身份与关闭通知），一条直连该环境的 Service Worker（包资源读取）。外层只在内层 frame 报出本次环境令牌后转交端口，自身不转发任何作者调用或包读取。内层 bootstrap 先安装 `acquireDeviceViewApi`、监听器与包资源授权，再向外层宣告就绪；外层随后把作者文档写入 `frame.contentDocument`（`document.open/write/close`），window 与两个 frame 身份都保持不变。作者侧只拿到一次性的 `acquireDeviceViewApi`，拿不到 `MessagePort`、宿主代理或编辑器 DOM；包资源只有授予该环境的页面与它用令牌授权的内层 frame 可读，其它客户端、页面跳转与未声明文件一律拒绝。专用端口与当前视图租约绑定，视图释放或任一端关闭时立即关闭相关订阅与端口，失败后不会重新授予端口；作者文档的跳转或重新加载（重新启动 `content.html` 的 bootstrap）会明确报告 `view/execution-failed`，不会重新打开环境。
+
+工作台主题以计算后的颜色转发给每个环境：`--mica-*` 变量与 `color-scheme` 在任意作者脚本执行前注入内层文档根，之后主题或系统明暗变化就地更新同一文档根，不重载 frame，也不丢失作者输入、模型会话或文档历史。加载期的底色也不会白闪：加载中的视图由容器槽位绘制当前视图背景（`panel.background`，即 `--mica-panel`，同时保留既有加载提示），owner 在加载期间保持透明，frame 在作者文档写入并应用主题前保持隐藏（`visibility`，不卸载、不重建，脚本照常运行），因此浏览器为未着色子文档绘制的白色画布不会被看到；环境报告就绪后 owner 取得当前主题底色并显示 frame。这条链路由 `setTheme` / 主题中继实时重绘，所以外层模块或内层 bootstrap 被延迟时切换主题，显示的始终是最新颜色而不是首次快照。没有转发主题的独立宿主使用完整暗色默认值，示例监视器的 `body` 也使用同一 `--mica-panel`，作者样式加载前后底色一致。
+
+部署时把构建产物 `dist/view-environment/` 中的五个文件（`index.html`、`content.html`、`environment.js`、`environment-sw.js`、`content.js`）部署到 `viewBaseUrlTemplate` 对应目录；需要 HTTPS 或开发用的 `*.localhost` 安全上下文、独立子域名及 Service Worker 支持。宿主构建从源码消费时启用 `micaSandboxPlugins()`；发布包已内联 worker 脚本与内层 bootstrap。
+
+### 主题与颜色 Token
+
+信息容器固定在活动栏首位。当前模式只有属性视图时，容器头部合并为“属性”及其操作，内容始终展开，保留收起整个侧栏的操作；包含器件视图时，头部显示“信息”，各视图保留自己的标题并支持折叠。最后一个展开的视图填满剩余高度，其后的折叠标题随之推到底部，保持视图顺序；空间不足时在容器内滚动。已打开的浮动视图隐藏头部入口，关闭后重新显示入口。折叠、停靠和浮动均不改变可用视图的计数；属性视图固定在首位。
+
+电源、接地端子和网络标签的符号、文字与默认偏移使用场景单位，已放置内容与幽灵预览均随画布缩放。导线预览、提交和器件移动使用共用的正交路由；端子、网标与器件放置一次后返回选择工具，Esc 取消放置且不写入文档。
+
+工作台界面使用简体中文。工具条固定在画布左上角，模式切换位于最左侧，选中背景以胶囊滑动，并尊重系统的减少动态效果设置。宿主按钮与内置按钮共用实际宽度测量：依次使用图标与文字、仅图标、部分按钮进入“更多工具”的方式收纳；下拉菜单始终显示完整文字。编辑模式下双击器件会选中器件并展开属性侧栏；窄屏侧栏从顶部覆盖画布，通过向右箭头收起。
+
+融合工作台默认使用中性暗色，以黑、白、灰区分背景、面板、操作与接线。`theme` 接受 `'dark'`、`'light'`、`'system'`，或 `{ appearance, colors }`；只有显式选择 `system` 才跟随系统主题。`colors` 按语义 Token 覆盖基础色板，覆盖值不会因系统明暗切换而丢失。
+
+```typescript
+workbench.setTheme({
+  appearance: 'dark',
+  colors: {
+    accent: '#7c3aed',
+    'accent.foreground': '#ffffff',
+    'panel.background': '#23212c',
+    'canvas.background': '#15131b',
+    'canvas.wire': '#b6d7a8',
+    'canvas.pin': '#c4b5fd',
+  },
+});
+```
+
+`setTheme` 即时更新画布、工具条、侧栏和浮动面板，不修改文档、撤销历史或运行会话。`getTheme` 返回当前只读配置快照。Token 名与覆盖值由 TypeScript 约束；未知 Token、空值和无效 CSS 颜色会明确报错。可使用在宿主容器可解析的 CSS 变量，例如 `var(--app-accent)`。
+
+| Token                                           | 用途                         |
+| ----------------------------------------------- | ---------------------------- |
+| `workbench.background` / `workbench.foreground` | 工作台背景和主要文字         |
+| `workbench.mutedForeground`                     | 次要文字和图标               |
+| `panel.background`                              | 侧栏、面板标题与模式背景     |
+| `border`                                        | 工具条、输入框与面板边框     |
+| `accent` / `accent.foreground`                  | 主操作、活动模式及其前景     |
+| `selection.background`                          | 活动项与悬停背景             |
+| `focus.border`                                  | 键盘焦点                     |
+| `canvas.background` / `canvas.grid`             | 画布底色和网格               |
+| `canvas.foreground`                             | 引脚名、位号、网标与参考符号 |
+| `canvas.wire` / `canvas.pin`                    | 接线与引脚锚点               |
+| `canvas.selection`                              | 选择边框、选中接线与预览     |
+| `error.foreground`                              | 故障提示                     |
+| `shadow`                                        | 浮动表面的阴影颜色           |
+
+`WorkbenchColorToken` 与 `WorkbenchThemeColors` 提供 Token 类型；`WORKBENCH_DARK_COLORS`、`WORKBENCH_LIGHT_COLORS` 和 `WORKBENCH_THEME_CSS_VARIABLES` 提供默认色板及 CSS 变量映射。器件底图与动态业务图形由器件作者绘制，工作台主题不改写这些资源；HTML 视图不同，环境会把同一组语义 Token 作为 `--mica-*` 变量注入作者文档根，作者用 `var(--mica-bg)` 之类的写法即可跟随工作台明暗。示例监视器就是这样去掉硬编码暗色的。
+
+可运行的按钮、LED 与 HTML 监视器示例：先构建 SDK 依赖及编辑器，再运行 `pnpm --filter @mica-js/playground dev:workbench`，打开 `http://127.0.0.1:5193/workbench.html`。示例宿主提供宽度、主题、强调色和付费授权切换，以及保存、重开和器件库扩展。
+
 ## 使用
 
 ```ts

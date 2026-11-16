@@ -130,6 +130,7 @@
       },
       "addressSpace": "code",
       "loadAddress": 0,
+      "templates": ["example:controller"],
       "group": "行为",
       "order": 9
     }

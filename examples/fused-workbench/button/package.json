@@ -1,0 +1,62 @@
+{
+  "publisher": "workbench",
+  "name": "button",
+  "version": "1.0.0",
+  "private": true,
+  "displayName": "轻触开关",
+  "designatorPrefix": "S",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "properties": {
+    "label": {
+      "type": "string",
+      "default": "按下",
+      "maxLength": 16
+    }
+  },
+  "pins": {
+    "a1": {
+      "label": "A1"
+    },
+    "a2": {
+      "label": "A2"
+    },
+    "b1": {
+      "label": "B1"
+    },
+    "b2": {
+      "label": "B2"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "methods": {
+      "press": {
+        "params": {
+          "type": "boolean"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "getPressed": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "boolean"
+        }
+      }
+    },
+    "events": {
+      "onDidPressedChange": {
+        "type": "boolean"
+      }
+    }
+  },
+  "view2d": {
+    "geometry": "geometry.json",
+    "entry": "view.js"
+  }
+}

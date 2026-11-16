@@ -2,11 +2,23 @@ import { stat } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { loadConfigFromFile } from 'vite';
 
+/** Additive unified device package mode; absent keeps the component build. */
+export interface DeviceBuildOptions {
+  /**
+   * Path to the unified device manifest, relative to the project root. The manifest is a
+   * `package.json`-shaped object that ships as the package manifest of the built device.
+   */
+  readonly manifest: string;
+  /** Path to the DDL model source, relative to the project root. */
+  readonly model?: string;
+}
+
 export interface MicaConfig {
   readonly sourceDir?: string;
   readonly outDir?: string;
   readonly base?: string;
   readonly alias?: Readonly<Record<string, string>>;
+  readonly device?: DeviceBuildOptions;
 }
 
 export function defineConfig(config: MicaConfig): MicaConfig {
@@ -73,9 +85,25 @@ function knownKeys(value: Record<string, unknown>, keys: readonly string[], fiel
   }
 }
 
+function validateDeviceBuild(value: unknown): DeviceBuildOptions {
+  const device = plainObject(value, 'device');
+  knownKeys(device, ['manifest', 'model'], 'device');
+  if (typeof device.manifest !== 'string' || device.manifest.trim().length === 0)
+    invalid('device.manifest', 'a nonempty string');
+  if (
+    device.model !== undefined &&
+    (typeof device.model !== 'string' || device.model.trim().length === 0)
+  )
+    invalid('device.model', 'a nonempty string');
+  return {
+    manifest: device.manifest,
+    ...(device.model === undefined ? {} : { model: device.model }),
+  };
+}
+
 function validateConfig(value: unknown): MicaConfig {
   const config = plainObject(value, 'default export');
-  knownKeys(config, ['sourceDir', 'outDir', 'base', 'alias'], 'default export');
+  knownKeys(config, ['sourceDir', 'outDir', 'base', 'alias', 'device'], 'default export');
   for (const field of ['sourceDir', 'outDir', 'base'] as const) {
     const entry = config[field];
     if (entry !== undefined && (typeof entry !== 'string' || entry.trim().length === 0)) {
@@ -95,6 +123,7 @@ function validateConfig(value: unknown): MicaConfig {
     sourceDir: (config.sourceDir as string | undefined) ?? 'src',
     outDir: (config.outDir as string | undefined) ?? 'dist',
     base: (config.base as string | undefined) ?? '/',
+    ...(config.device === undefined ? {} : { device: validateDeviceBuild(config.device) }),
   };
 }
 

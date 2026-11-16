@@ -1,7 +1,7 @@
 # 融合器件运行时
 
 - Start Date: 2026-11-15
-- Reference Issues: —（尚未实现）
+- Reference Issues: [x-botlab/xbotlab#1113](https://github.com/x-botlab/xbotlab/issues/1113)
 - Implementation PR: —（尚未实现）
 
 规定统一器件在 2D 编辑、运行和无头执行中的装配、时间推进、事件派发与生命周期。本文是融合合同组的阅读入口，接口为本轮待评审草案；实现状态以头部为准。MUST / MUST NOT 为强制要求，SHOULD 为推荐，MAY 为可选。
@@ -51,8 +51,17 @@ interface FirmwareProjectSource {
   list(): Promise<readonly FirmwareProject[]>;
   resolve(projectId: string): Promise<FirmwareArtifact>;
 }
+interface FirmwareCodeTemplate {
+  readonly id: string;
+  readonly title: string;
+}
+interface FirmwareTemplateSource {
+  resolve(templateId: string): Promise<FirmwareCodeTemplate>;
+  create(templateId: string): Promise<FirmwareProject | undefined>;
+}
 interface FirmwareEditorOptions {
   readonly projects?: FirmwareProjectSource;
+  readonly templates?: FirmwareTemplateSource;
 }
 interface FirmwareEditorEvents {
   readonly onDidRequestOpenProject: Event<{ readonly projectId: string }>;
@@ -65,6 +74,10 @@ interface FirmwareEditorEvents {
 - 获取产物失败、项目缺失、返回值格式枚举或字节类型非法时报告 `firmware/project-resolve-failed`，保留引用；解析内容的错误由 [RFC 0026](./0026-firmware-properties.md) 报告，BIN 的空间与基址由编辑器确定。
 - `onDidRequestOpenProject` 使用核心 `Event`，订阅返回 Disposable；每次点击按当前值发送一次 `projectId`，宿主订阅并负责打开项目。
 - 项目打开请求独立于构建、固件装载和仿真推进，不提交文档修改；编辑、运行和暂停期间均可触发。
+- 模板推荐与选择由 [RFC 0026](./0026-firmware-properties.md) 的 `firmware.templates` 规定；宿主通过 `FirmwareEditorOptions.templates` 提供模板解析与项目创建，配置模板来源时 MUST 同时提供项目来源。
+- `resolve(templateId)` 校验模板访问权限并返回同一稳定标识和非空标题；模板缺失、不可访问、解析失败或返回结构非法时报告 `firmware/template-resolve-failed`，不阻止其他来源选择与运行准备。
+- `create(templateId)` 在创建时重新检查访问权限，成功返回非空稳定 `id` 与非空 `title` 的项目，并使该项目可通过项目来源列举和解析；取消返回 `undefined`，失败或返回项目非法时报告 `firmware/template-create-failed`。
+- 模板创建按用户明确操作执行，编辑器在成功后提交项目引用；器件发布、装载、运行准备和虚拟时间推进均不触发模板解析或项目创建。
 
 ### 会话与推进
 
@@ -148,15 +161,17 @@ interface FusedRuntime {
 
 ## 校验
 
-| 诊断码                            | 行为                                                         |
-| --------------------------------- | ------------------------------------------------------------ |
-| `runtime/invalid-time`            | 拒绝非法步长，推进越界时停止并报告                           |
-| `runtime/prepare-failed`          | 保留原文档和原会话，报告准备失败                             |
-| `runtime/unavailable-state`       | 当前状态不允许请求的推进操作                                 |
-| `runtime/model-failed`            | 模型故障，停止推进并等待复位                                 |
-| `runtime/presentation-failed`     | 标记界面故障、停输入、释放监听和展示资源；其他界面和模型继续 |
-| `firmware/project-list-failed`    | 宿主项目列表读取失败或列表非法，保留引用并显示错误           |
-| `firmware/project-resolve-failed` | 项目产物无法获取或返回结构非法，保留引用并阻止运行准备       |
+| 诊断码                             | 行为                                                         |
+| ---------------------------------- | ------------------------------------------------------------ |
+| `runtime/invalid-time`             | 拒绝非法步长，推进越界时停止并报告                           |
+| `runtime/prepare-failed`           | 保留原文档和原会话，报告准备失败                             |
+| `runtime/unavailable-state`        | 当前状态不允许请求的推进操作                                 |
+| `runtime/model-failed`             | 模型故障，停止推进并等待复位                                 |
+| `runtime/presentation-failed`      | 标记界面故障、停输入、释放监听和展示资源；其他界面和模型继续 |
+| `firmware/project-list-failed`     | 宿主项目列表读取失败或列表非法，保留引用并显示错误           |
+| `firmware/project-resolve-failed`  | 项目产物无法获取或返回结构非法，保留引用并阻止运行准备       |
+| `firmware/template-resolve-failed` | 推荐模板无法解析或返回结构非法，显示不可用，其他来源继续可用 |
+| `firmware/template-create-failed`  | 项目创建失败或返回项目非法，保留原属性与历史并显示错误       |
 
 ### 验收条件
 
@@ -170,6 +185,7 @@ interface FusedRuntime {
 - [ ] 相同器件类型的两个实例独立保存 `viewLayout`；调整其中一个实例不改变另一个，切换选择及保存重开后分别恢复侧栏顺序、折叠、高度、停靠位置与浮动矩形，重开不自动创建浮动页面。
 - [ ] 运行期间调整和撤销视图布局不重建模型；复位重建已打开 HTML 视图并保留布局，退出运行后布局仍保存在文档中。
 - [ ] 固件只使用一个混合来源下拉框；选中项目时显示打开按钮，点击仅通知宿主；文件值隐藏打开项目按钮，项目列表失败或项目缺失保留引用并显示错误。
+- [ ] 固件属性按 `templates` 展示推荐模板；模板缺失或无权限不阻止其他来源使用，创建成功保存项目引用，取消或失败保留原值，撤销选择保留宿主已创建的项目。
 - [ ] 宿主项目服务只返回确定产物的格式和字节；BIN 在编辑器配置空间与基址，HEX 可选空间且保留数值地址，ELF 按装载段唯一匹配空间，展开不修改文档。
 - [ ] 固件解析成只读分段镜像后交付模型工厂，DDL 不接收复合固件属性；运行面板展示当前会话镜像，后续构建不替换它，复位沿用相同内容。
 - [ ] 先注册的监听在查询前生效，查询之后的状态事件不会被旧快照覆盖；二进制快照互不影响。
@@ -206,7 +222,7 @@ sequenceDiagram
 
 ## 范围
 
-- 本组合同按 [RFC 0020](./0020-unified-device-package.md) 与 [RFC 0024](./0024-fused-schematic-format.md) 的身份和版本规则加载新资产；旧格式自动转换另行安排，不属于首版能力。
+- 本组合同按 [RFC 0020](./0020-unified-device-package.md) 与 [RFC 0024](./0024-fused-schematic-format.md) 的融合器件身份、包结构和文档版本规则加载资产。
 - 器件工厂、方法和事件由 [RFC 0021](./0021-device-model-api.md) 规定，场景与 HTML 外观分别由 [RFC 0022](./0022-device-2d-presentation.md)、[RFC 0023](./0023-device-html-ui.md) 规定。
 
 ## 关联

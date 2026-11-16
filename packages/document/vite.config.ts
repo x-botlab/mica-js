@@ -9,6 +9,7 @@ export default defineConfig({
         index: 'src/index.ts',
         'schematic/index': 'src/schematic/index.ts',
         'canvas/index': 'src/canvas/index.ts',
+        'fused/index': 'src/fused/index.ts',
       },
       formats: ['es'],
       fileName: (_format, entryName) => `${entryName}.js`,
