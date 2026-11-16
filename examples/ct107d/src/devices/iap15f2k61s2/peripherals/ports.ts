@@ -57,6 +57,8 @@ const PORT_BY_CONTROL = new Map<number, Port>(
 
 /** 推挽驱动的等效支路电阻：25 Ω 与 100 Ω 负载串在 5 V 上仍能给出接近满量程的电流。 */
 export const DRIVE_RESISTANCE = 25;
+/** 准双向口锁存为高时的内部弱上拉。 */
+export const WEAK_PULLUP_RESISTANCE = 10_000;
 export const SUPPLY_PIN = 'VCC';
 export const GROUND_PIN = 'GND';
 
@@ -133,6 +135,7 @@ interface PinContext {
   readonly mode1: Value<number>;
   readonly high: Value<IntentValue>;
   readonly low: Value<IntentValue>;
+  readonly weakPullup: Value<IntentValue>;
   readonly idle: Value<IntentValue>;
   readonly zero: Value<number>;
   readonly masks: (Value<number> | undefined)[];
@@ -145,6 +148,7 @@ function pinContext(b: Body, descriptor: Port): PinContext {
     mode1: readSfrLatch(b, descriptor.mode1),
     high: b.resistor(SUPPLY_PIN, number(b, DRIVE_RESISTANCE)),
     low: b.resistor(GROUND_PIN, number(b, DRIVE_RESISTANCE)),
+    weakPullup: b.resistor(SUPPLY_PIN, number(b, WEAK_PULLUP_RESISTANCE)),
     idle: b.combineIntents(),
     zero: number(b, 0),
     masks: [],
@@ -165,15 +169,15 @@ function maskOf(b: Body, context: PinContext, bit: number): Value<number> {
 /**
  * 把口锁存器、口模式与复用功能翻译成引脚意图。
  *
- * - 准双向（00）：锁存 0 强下拉，锁存 1 释放（不建模弱上拉）；
+ * - 准双向（00）：锁存 0 强下拉，锁存 1 通过内部弱上拉拉高；
  * - 推挽（01）：按锁存位推挽到 VCC 或 GND；
  * - 仅输入（10）：始终释放；
  * - 开漏（11）：锁存 0 下拉，锁存 1 释放。
  *
  * 复用功能启用时由外设推挽驱动该脚，锁存器与口模式不再影响输出。
  *
- * 每个引脚只做位掩码运算：`highCode`/`lowCode` 为 0 表示该脚不驱动。这样同一口写块
- * 里 8 个引脚共用锁存/模式读取、两个电阻意图与空意图，常量也由内核按执行体去重。
+ * 每个引脚只做位掩码运算：`highCode`/`lowCode` 为 0 表示该脚不强驱动。这样同一口写块
+ * 里 8 个引脚共用锁存/模式读取、驱动与上拉意图，常量也由内核按执行体去重。
  */
 function syncPinWith(b: Body, port: number, bit: number, context: PinContext): void {
   const mask = maskOf(b, context, bit);
@@ -185,6 +189,13 @@ function syncPinWith(b: Body, port: number, bit: number, context: PinContext): v
   const pin = pinName(port, bit);
   const drivesHigh = b.notEqual(types.number, highCode, context.zero);
   const drivesLow = b.notEqual(types.number, lowCode, context.zero);
+  const mode0IsZero = b.equal(types.number, mode0Bit, context.zero);
+  const mode1IsZero = b.equal(types.number, mode1Bit, context.zero);
+  const quasiBidirectional = b.and(mode0IsZero, () => mode1IsZero);
+  const weakPullup = b.and(
+    b.notEqual(types.number, latchBit, context.zero),
+    () => quasiBidirectional,
+  );
   let intent = b.select(
     types.intent,
     drivesHigh,
@@ -194,7 +205,13 @@ function syncPinWith(b: Body, port: number, bit: number, context: PinContext): v
         types.intent,
         drivesLow,
         () => context.low,
-        () => context.idle,
+        (released) =>
+          released.select(
+            types.intent,
+            weakPullup,
+            () => context.weakPullup,
+            () => context.idle,
+          ),
       ),
   );
 

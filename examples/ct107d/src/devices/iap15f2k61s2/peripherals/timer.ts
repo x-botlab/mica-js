@@ -25,7 +25,7 @@ import {
   readSfrLatch,
   setPeriph8,
   setPeriph16,
-  setSfrBit,
+  clearSfrBitLatch,
   sfrBitIsSet,
 } from '../kernel/ir';
 import type { Body } from '../kernel/ir';
@@ -104,6 +104,11 @@ interface TimerSpec {
   readonly haltOnMode3: boolean;
   readonly low: number;
   readonly high: number;
+  /** 定时器中断允许位所在的 SFR 与位号；T0/T1 在 IE，T2 在 IE2。 */
+  readonly irqAddress: number;
+  readonly irqBit: number;
+  /** 该定时器最近一次结算后写下的期限 state 名。 */
+  readonly deadlineState: string;
 }
 
 const TIMER0: TimerSpec = {
@@ -122,6 +127,9 @@ const TIMER0: TimerSpec = {
   haltOnMode3: false,
   low: SFR_TL0,
   high: SFR_TH0,
+  irqAddress: SFR_IE,
+  irqBit: 1,
+  deadlineState: 't0Deadline',
 };
 
 const TIMER1: TimerSpec = {
@@ -140,6 +148,9 @@ const TIMER1: TimerSpec = {
   haltOnMode3: true,
   low: SFR_TL1,
   high: SFR_TH1,
+  irqAddress: SFR_IE,
+  irqBit: 3,
+  deadlineState: 't1Deadline',
 };
 
 const TIMER2: TimerSpec = {
@@ -158,6 +169,9 @@ const TIMER2: TimerSpec = {
   haltOnMode3: false,
   low: SFR_T2L,
   high: SFR_T2H,
+  irqAddress: SFR_IE2,
+  irqBit: 2,
+  deadlineState: 't2Deadline',
 };
 
 /** 一次 `advance` 内复用的常量与读数：同一个数只生成一个 `Value`。 */
@@ -284,6 +298,7 @@ const runCondition = (b: Body, timer: TimerSpec, ctx: Context): Value<number> =>
  */
 const advanceOneTimer = (
   b: Body,
+  timer: TimerSpec,
   index: Value<number>,
   ctx: Context,
   sampleCount: (b: Body) => Value<number>,
@@ -344,106 +359,183 @@ const advanceOneTimer = (
     halted,
   );
 
-  b.if(b.notEqual(types.number, active, ctx.num(0)), (running) => {
-    const s = asBody(running);
-    const fast = s.bitAnd(s.shiftRightUnsigned(ctx.auxr, speedBit), ctx.num(1));
-    const period = s.subtract(
-      s.multiply(ctx.num(12), ctx.num(ctx.cyclePs)),
-      s.multiply(fast, ctx.num(11 * ctx.cyclePs)),
-    );
-    const total = s.add(s.load32le(PERIPH, phaseOffset), ctx.elapsedPs);
-    const timed = s.floor(s.divide(total, period));
-    const previous = s.load8(PERIPH, pinOffset);
+  // 模式/重装值在计数前后都要用到：先算一次，计数与期限共用。
+  const lowIndex = b.select(
+    types.number,
+    b.notEqual(types.number, isT2, ctx.num(0)),
+    (inner) => inner.constant(types.number, SFR_T2L & 0x7f),
+    (inner) => inner.add(inner.constant(types.number, SFR_TL0 & 0x7f), second),
+  );
+  const highIndex = b.select(
+    types.number,
+    b.notEqual(types.number, isT2, ctx.num(0)),
+    (inner) => inner.constant(types.number, SFR_T2H & 0x7f),
+    (inner) => inner.add(inner.constant(types.number, SFR_TH0 & 0x7f), second),
+  );
+  const highLatch = b.load8(SFR, highIndex);
+  const lowLatch = b.load8(SFR, lowIndex);
+  const latch16 = b.bitOr(b.shiftLeft(highLatch, ctx.num(8)), lowLatch);
+  const modeIs2 = b.equal(types.number, mode, ctx.num(2));
+  const modulus = b.select(
+    types.number,
+    modeIs2,
+    (inner) => inner.constant(types.number, FULL_8),
+    (inner) => inner.constant(types.number, FULL_16),
+  );
+  const autoReload = b.select(
+    types.number,
+    b.equal(types.number, mode, ctx.num(1)),
+    (inner) => inner.constant(types.number, 0),
+    (inner) => inner.constant(types.number, 1),
+  );
+  const reload = b.select(
+    types.number,
+    modeIs2,
+    () => highLatch,
+    () => latch16,
+  );
+  // 自动重装模式的计数跨度是 `modulus - reload`（模式 2 是 8 位减去 THn）；
+  // 不重装模式（模式 1）按整个模数回绕。
+  const span = b.subtract(modulus, b.multiply(autoReload, reload));
+  const offset = b.multiply(autoReload, reload);
+  const runBitIsSet = b.notEqual(
+    types.number,
+    b.bitAnd(b.shiftRightUnsigned(control, runBit), ctx.num(1)),
+    ctx.num(0),
+  );
+  const configuredUnsafe = b.and(runBitIsSet, (inner) => {
+    const s = asBody(inner);
 
-    s.store32le(PERIPH, phaseOffset, s.subtract(total, s.multiply(timed, period)));
-    s.store8(PERIPH, pinOffset, countLevel);
-    const ticks = s.add(
-      s.multiply(counter, s.multiply(previous, s.subtract(ctx.num(1), countLevel))),
-      s.multiply(s.subtract(ctx.num(1), counter), timed),
-    );
+    return s.and(s.notEqual(types.number, halted, ctx.num(0)), (deeper) => {
+      const t = asBody(deeper);
 
-    s.if(s.notEqual(types.number, ticks, ctx.num(0)), (counted) => {
-      const t = asBody(counted);
-      // T2 的 T2L/T2H 与 T0/T1 的 TLx/THx 地址不连续（D7H/D6H），用下标选一次。
-      const lowIndex = t.select(
-        types.number,
-        t.notEqual(types.number, isT2, ctx.num(0)),
-        (inner) => inner.constant(types.number, SFR_T2L & 0x7f),
-        (inner) => inner.add(inner.constant(types.number, SFR_TL0 & 0x7f), second),
+      return t.or(t.notEqual(types.number, gate, ctx.num(0)), (last) =>
+        last.notEqual(types.number, counter, ctx.num(0)),
       );
-      const highIndex = t.select(
-        types.number,
-        t.notEqual(types.number, isT2, ctx.num(0)),
-        (inner) => inner.constant(types.number, SFR_T2H & 0x7f),
-        (inner) => inner.add(inner.constant(types.number, SFR_TH0 & 0x7f), second),
-      );
-      const highLatch = t.load8(SFR, highIndex);
-      const lowLatch = t.load8(SFR, lowIndex);
-      const latch16 = t.bitOr(t.shiftLeft(highLatch, ctx.num(8)), lowLatch);
-      const modeIs2 = t.equal(types.number, mode, ctx.num(2));
-      const modulus = t.select(
-        types.number,
-        modeIs2,
-        (inner) => inner.constant(types.number, FULL_8),
-        (inner) => inner.constant(types.number, FULL_16),
-      );
-      const autoReload = t.select(
-        types.number,
-        t.equal(types.number, mode, ctx.num(1)),
-        (inner) => inner.constant(types.number, 0),
-        (inner) => inner.constant(types.number, 1),
-      );
-      const reload = t.select(
-        types.number,
-        modeIs2,
-        () => highLatch,
-        () => latch16,
-      );
-      const current = t.bitAnd(t.load16le(PERIPH, countOffset), t.subtract(modulus, ctx.num(1)));
-      // 自动重装模式的计数跨度是 `modulus - reload`（模式 2 是 8 位减去 THn）；
-      // 不重装模式（模式 1）按整个模数回绕。
-      const span = t.subtract(modulus, t.multiply(autoReload, reload));
-      const offset = t.multiply(autoReload, reload);
-      const distance = t.subtract(t.add(current, ticks), offset);
-      const wraps = t.floor(t.divide(distance, span));
-      const wrapped = t.min(wraps, ctx.num(1));
-      const next = t.add(offset, t.subtract(distance, t.multiply(wraps, span)));
-
-      t.store16le(PERIPH, countOffset, next);
-      t.if(t.notEqual(types.number, wrapped, ctx.num(0)), (overflow) => {
-        const o = asBody(overflow);
-        const flagBit = o.add(ctx.num(5), o.multiply(second, ctx.num(2)));
-
-        // T0/T1 的溢出标志在 TCON，T2 的隐藏标志在 periph。
-        o.if(o.equal(types.number, isT2, ctx.num(0)), (standard) => {
-          const x = asBody(standard);
-
-          writeLatch(
-            x,
-            SFR_TCON,
-            x.bitOr(x.load8(SFR, number(x, SFR_TCON & 0x7f)), x.shiftLeft(number(x, 1), flagBit)),
-          );
-        });
-        o.if(o.equal(types.number, isT2, ctx.num(1)), (timer2) => {
-          const x = asBody(timer2);
-
-          setPeriph8(
-            x,
-            T2_REQUEST,
-            x.select(
-              types.number,
-              sfrBitIsSet(x, SFR_IE2, 2),
-              (inner) => inner.constant(types.number, 1),
-              (inner) => inner.constant(types.number, 0),
-            ),
-          );
-        });
-        o.store8(PERIPH, clockOffset, o.subtract(ctx.num(1), o.load8(PERIPH, clockOffset)));
-        setPeriph8(o, OVERFLOWED, o.bitOr(periph8(o, OVERFLOWED), o.shiftLeft(ctx.num(1), index)));
-        markIrqDirty(o);
-      });
     });
   });
+
+  b.if(
+    b.notEqual(types.number, active, ctx.num(0)),
+    (running) => {
+      const s = asBody(running);
+      const fast = s.bitAnd(s.shiftRightUnsigned(ctx.auxr, speedBit), ctx.num(1));
+      const period = s.subtract(
+        s.multiply(ctx.num(12), ctx.num(ctx.cyclePs)),
+        s.multiply(fast, ctx.num(11 * ctx.cyclePs)),
+      );
+      const total = s.add(s.load32le(PERIPH, phaseOffset), ctx.elapsedPs);
+      const timed = s.floor(s.divide(total, period));
+      const previous = s.load8(PERIPH, pinOffset);
+
+      s.store32le(PERIPH, phaseOffset, s.subtract(total, s.multiply(timed, period)));
+      s.store8(PERIPH, pinOffset, countLevel);
+      const ticks = s.add(
+        s.multiply(counter, s.multiply(previous, s.subtract(ctx.num(1), countLevel))),
+        s.multiply(s.subtract(ctx.num(1), counter), timed),
+      );
+      const current = s.bitAnd(s.load16le(PERIPH, countOffset), s.subtract(modulus, ctx.num(1)));
+
+      s.if(s.notEqual(types.number, ticks, ctx.num(0)), (counted) => {
+        const t = asBody(counted);
+        const distance = t.subtract(t.add(current, ticks), offset);
+        // 运行中把自动重装影子改到当前计数以上时，distance 会暂时为负；此时尚未发生
+        // 溢出，不能把 floor 的负商当成溢出。先钳到 0，计数沿原轨迹走到模数后才用新
+        // reload 值。
+        const wraps = t.max(t.floor(t.divide(distance, span)), ctx.num(0));
+        const wrapped = t.min(wraps, ctx.num(1));
+        const next = t.add(offset, t.subtract(distance, t.multiply(wraps, span)));
+
+        t.store16le(PERIPH, countOffset, next);
+        t.if(t.notEqual(types.number, wrapped, ctx.num(0)), (overflow) => {
+          const o = asBody(overflow);
+          const flagBit = o.add(ctx.num(5), o.multiply(second, ctx.num(2)));
+
+          // T0/T1 的溢出标志在 TCON，T2 的隐藏标志在 periph。
+          o.if(o.equal(types.number, isT2, ctx.num(0)), (standard) => {
+            const x = asBody(standard);
+
+            writeLatch(
+              x,
+              SFR_TCON,
+              x.bitOr(x.load8(SFR, number(x, SFR_TCON & 0x7f)), x.shiftLeft(number(x, 1), flagBit)),
+            );
+          });
+          o.if(o.equal(types.number, isT2, ctx.num(1)), (timer2) => {
+            const x = asBody(timer2);
+
+            setPeriph8(
+              x,
+              T2_REQUEST,
+              x.select(
+                types.number,
+                sfrBitIsSet(x, SFR_IE2, 2),
+                (inner) => inner.constant(types.number, 1),
+                (inner) => inner.constant(types.number, 0),
+              ),
+            );
+          });
+          // 一次 advance 可能跨过多个溢出；CLKO 关闭时内部电平仍按溢出次数奇偶翻转，
+          // 之后打开 CLKO 时 syncPin 读到的相位才是正确的。
+          o.store8(
+            PERIPH,
+            clockOffset,
+            o.bitXor(o.load8(PERIPH, clockOffset), o.bitAnd(wraps, ctx.num(1))),
+          );
+          setPeriph8(
+            o,
+            OVERFLOWED,
+            o.bitOr(periph8(o, OVERFLOWED), o.shiftLeft(ctx.num(1), index)),
+          );
+          markIrqDirty(o);
+        });
+      });
+
+      // 下一次可观察事件：中断允许且全局开中断、或时钟输出（保守逐节拍）。
+      const clockOut = latchBitIsSet(s, SFR_INT_CLKO, timer.clockBit);
+      const irqOn = s.and(latchBitIsSet(s, SFR_IE, 7), (inner) =>
+        latchBitIsSet(asBody(inner), timer.irqAddress, timer.irqBit),
+      );
+      const observable = s.or(clockOut, () => irqOn);
+      const sampled = s.or(s.notEqual(types.number, counter, ctx.num(0)), (inner) =>
+        inner.or(inner.notEqual(types.number, gate, ctx.num(0)), () => clockOut),
+      );
+      const countAfter = s.load16le(PERIPH, countOffset);
+      const phaseAfter = s.load32le(PERIPH, phaseOffset);
+      // 到下一次回绕的计数 = 模数 − 当前计数；这同时覆盖「当前计数仍低于新 reload」
+      // 的首次回绕，不能再用 span − (count − offset)。
+      const remaining = s.subtract(modulus, countAfter);
+      const until = s.max(s.subtract(s.multiply(remaining, period), phaseAfter), ctx.num(1));
+      const deadline = s.select(
+        types.number,
+        sampled,
+        () => ctx.num(1),
+        (inner) =>
+          inner.select(
+            types.number,
+            observable,
+            () => until,
+            () => ctx.num(0),
+          ),
+      );
+
+      s.writeState(timer.deadlineState, deadline);
+    },
+    (idle) => {
+      const i = asBody(idle);
+
+      // GATE 低或外部计数时 active 为 0，但仍需逐节拍采样引脚，否则门控恢复/边沿会被漏掉。
+      i.writeState(
+        timer.deadlineState,
+        i.select(
+          types.number,
+          configuredUnsafe,
+          () => ctx.num(1),
+          () => ctx.num(0),
+        ),
+      );
+    },
+  );
 };
 
 /** 溢出后把翻转过的时钟输出电平写到对应引脚（同一引脚只在真的溢出时写一次意图）。 */
@@ -478,9 +570,9 @@ const advanceTimers = (b: Body, ctx: Context): void => {
   const gate = (pin: string) => (target: Body) => asNumber(target, pinIsHigh(target, pin), ctx);
 
   setPeriph8(b, OVERFLOWED, ctx.num(0));
-  advanceOneTimer(b, ctx.num(0), ctx, count(TIMER0.countPin), gate(TIMER0.gatePin));
-  advanceOneTimer(b, ctx.num(1), ctx, count(TIMER1.countPin), gate(TIMER1.gatePin));
-  advanceOneTimer(b, ctx.num(2), ctx, count(TIMER2.countPin), gate(TIMER2.gatePin));
+  advanceOneTimer(b, TIMER0, ctx.num(0), ctx, count(TIMER0.countPin), gate(TIMER0.gatePin));
+  advanceOneTimer(b, TIMER1, ctx.num(1), ctx, count(TIMER1.countPin), gate(TIMER1.gatePin));
+  advanceOneTimer(b, TIMER2, ctx.num(2), ctx, count(TIMER2.countPin), gate(TIMER2.gatePin));
   flushClockOutputs(b, ctx);
 };
 
@@ -564,7 +656,7 @@ const interrupts: readonly InterruptSource[] = [
     priority: { register: 'IP', bit: 1 },
     enabled: (b) => sfrBitIsSet(b, SFR_IE, 1),
     pending: (b) => sfrBitIsSet(b, SFR_TCON, 5),
-    acknowledge: (b) => setSfrBit(b, SFR_TCON, 5, false),
+    acknowledge: (b) => clearSfrBitLatch(b, SFR_TCON, 5),
   },
   {
     id: 'timer1',
@@ -573,7 +665,7 @@ const interrupts: readonly InterruptSource[] = [
     priority: { register: 'IP', bit: 3 },
     enabled: (b) => sfrBitIsSet(b, SFR_IE, 3),
     pending: (b) => sfrBitIsSet(b, SFR_TCON, 7),
-    acknowledge: (b) => setSfrBit(b, SFR_TCON, 7, false),
+    acknowledge: (b) => clearSfrBitLatch(b, SFR_TCON, 7),
   },
   {
     id: 'timer2',
@@ -644,7 +736,8 @@ registerAlternateDriver({
   port: 3,
   bit: TIMER0.clockPin,
   enabled: (b) => clockOutputEnabled(b, TIMER0),
-  level: (b) => sfrBitIsSet(b, T0_CLOCK, 0),
+  // CLKO 电平保存在 periph 的 clockOffset，不是 SFR 锁存器。
+  level: (b) => b.notEqual(types.number, periph8(b, T0_CLOCK), number(b, 0)),
 });
 
 registerAlternateDriver({
@@ -652,7 +745,7 @@ registerAlternateDriver({
   port: 3,
   bit: TIMER1.clockPin,
   enabled: (b) => clockOutputEnabled(b, TIMER1),
-  level: (b) => sfrBitIsSet(b, T1_CLOCK, 0),
+  level: (b) => b.notEqual(types.number, periph8(b, T1_CLOCK), number(b, 0)),
 });
 
 registerAlternateDriver({
@@ -661,7 +754,7 @@ registerAlternateDriver({
   bit: TIMER2.clockPin,
   enabled: (b) =>
     b.and(sfrBitIsSet(b, SFR_INT_CLKO, TIMER2.clockBit), (inner) => timer2Running(asBody(inner))),
-  level: (b) => sfrBitIsSet(b, T2_CLOCK, 0),
+  level: (b) => b.notEqual(types.number, periph8(b, T2_CLOCK), number(b, 0)),
 });
 
 export function createTimer(clock: Clock): Peripheral {
@@ -684,20 +777,33 @@ export function createTimer(clock: Clock): Peripheral {
     ],
     reads: [SFR_TL0, SFR_TH0, SFR_TL1, SFR_TH1, SFR_T2L, SFR_T2H],
     onWrite(b, address) {
+      /** 配置变化后旧期限失效；下一节拍点统一结算并按新配置重算。 */
+      const forceDeadline = (timer: TimerSpec): void => {
+        b.writeState(timer.deadlineState, number(b, 1));
+      };
+
       switch (address) {
         case SFR_TL0:
         case SFR_TH0:
           writeStandardCount(b, TIMER0, address === SFR_TH0);
+          forceDeadline(TIMER0);
 
           return;
         case SFR_TL1:
         case SFR_TH1:
           writeStandardCount(b, TIMER1, address === SFR_TH1);
+          forceDeadline(TIMER1);
 
           return;
         case SFR_T2L:
         case SFR_T2H:
           writeTimer2Count(b, address === SFR_T2H);
+          forceDeadline(TIMER2);
+
+          return;
+        case SFR_TMOD:
+          forceDeadline(TIMER0);
+          forceDeadline(TIMER1);
 
           return;
         case SFR_TCON:
@@ -706,17 +812,25 @@ export function createTimer(clock: Clock): Peripheral {
           sampleCounterPin(b, TIMER1);
           syncPin(b, 3, TIMER0.clockPin);
           syncPin(b, 3, TIMER1.clockPin);
+          forceDeadline(TIMER0);
+          forceDeadline(TIMER1);
 
           return;
         case SFR_AUXR:
           sampleCounterPin(b, TIMER2);
           syncPin(b, 3, TIMER2.clockPin);
+          forceDeadline(TIMER0);
+          forceDeadline(TIMER1);
+          forceDeadline(TIMER2);
 
           return;
         case SFR_INT_CLKO:
           syncPin(b, 3, TIMER0.clockPin);
           syncPin(b, 3, TIMER1.clockPin);
           syncPin(b, 3, TIMER2.clockPin);
+          forceDeadline(TIMER0);
+          forceDeadline(TIMER1);
+          forceDeadline(TIMER2);
 
           return;
         case SFR_IE2:
@@ -724,6 +838,7 @@ export function createTimer(clock: Clock): Peripheral {
           b.if(b.not(sfrBitIsSet(b, SFR_IE2, 2)), (cleared) =>
             setPeriph8(cleared, T2_REQUEST, number(cleared, 0)),
           );
+          forceDeadline(TIMER2);
 
           return;
         default:
@@ -748,6 +863,33 @@ export function createTimer(clock: Clock): Peripheral {
     },
     advance(b, advance) {
       advanceTimers(b, contextOf(b, advance.elapsedPs, cyclePs));
+    },
+    /**
+     * 三个定时器在上次结算后写下的期限取最小正值；0 表示没有可观察事件。
+     *
+     * 期限本身由 `advanceOneTimer` 用当前计数、相位余数、重装值和 1T/12T 计算，
+     * 这里只读取结果，避免在服务块里重复展开三份定时器数学。
+     */
+    deadline(b) {
+      const zero = number(b, 0);
+      const d0 = b.readState(TIMER0.deadlineState, types.number);
+      const d1 = b.readState(TIMER1.deadlineState, types.number);
+      const d2 = b.readState(TIMER2.deadlineState, types.number);
+      const choose = (x: Value<number>, y: Value<number>): Value<number> =>
+        b.select(
+          types.number,
+          b.equal(types.number, x, zero),
+          () => y,
+          (inner) =>
+            inner.select(
+              types.number,
+              inner.equal(types.number, y, zero),
+              () => x,
+              (deeper) => deeper.min(x, y),
+            ),
+        );
+
+      return choose(choose(d0, d1), d2);
     },
     /** 任一定时器在跑（含时钟输出）时才需要按时间推进。 */
     active(b) {

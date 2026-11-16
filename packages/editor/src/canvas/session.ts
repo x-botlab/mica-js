@@ -12,12 +12,62 @@ import { canvasSnapshot } from '../canvas-host';
 import type { IEditorProperty } from '../host';
 import { ICanvasRuntimeFactory, type ICanvasRuntimes } from './runtime-factory';
 
+/** What started one canvas advance round. */
+export type CanvasAdvanceTrigger = 'frame' | 'step' | 'dispatch';
+
+/**
+ * One completed canvas advance round.
+ *
+ * Automatic frames report scheduling fields. Manual steps and dispatch refreshes report the same
+ * round-trip fields but consume no frame slot. A caller can separate cold start from steady state
+ * with `sequence`, `idleMs`, `periodMs` and `skippedSlots`.
+ */
+export interface ICanvasAdvanceSample {
+  /** 1-based observation order within the session. */
+  readonly sequence: number;
+  readonly trigger: CanvasAdvanceTrigger;
+  /** Wall-clock start of the round, in milliseconds on the performance timeline. */
+  readonly startedAt: number;
+  /** Wall clock when the simulation tick settled; equals `startedAt` when no tick ran. */
+  readonly tickCompletedAt: number;
+  /** Wall clock when the widget step settled. */
+  readonly completedAt: number;
+  /** Simulation tick round trip in milliseconds; `undefined` when the round ran no tick. */
+  readonly tickMs: number | undefined;
+  /** Widget step round trip in milliseconds. */
+  readonly widgetMs: number;
+  /** Idle time between the previous round's completion and this round's start. */
+  readonly idleMs: number | undefined;
+  /** Time between the previous round's start and this round's start. */
+  readonly periodMs: number | undefined;
+  /** Whole frame periods this round started behind its target; zero for manual rounds. */
+  readonly skippedSlots: number;
+  /** Completed simulation time after the round. */
+  readonly simTime: TimePs;
+  /** Simulation step requested for the round; zero for paused frames and dispatch refreshes. */
+  readonly dt: TimePs;
+  readonly running: boolean;
+  readonly mode: 'edit' | 'simulation';
+  /** Configured frame period in milliseconds. */
+  readonly frameMs: number;
+}
+
+/** Optional synchronous sink for browser-side scheduling measurement. */
+export type ICanvasAdvanceObserver = (sample: ICanvasAdvanceSample) => void;
+
 export interface ICanvasConfiguration {
   readonly uri: string;
   readonly projectRoot?: string;
   readonly stepMs?: number;
+  readonly execution?: 'throughput' | 'precise';
   readonly voltageReferences?: Readonly<Record<string, number>>;
   readonly container: HTMLElement;
+  /** Optional timing sink; omitted means no samples are built. */
+  readonly observer?: ICanvasAdvanceObserver;
+  /** Called synchronously before an advance round starts awaiting the tick. */
+  readonly onAdvanceStart?: () => void;
+  /** Called in `finally` after an advance round settles, including on failure. */
+  readonly onAdvanceSettled?: () => void;
 }
 export const ICanvasConfiguration = createDecorator<ICanvasConfiguration>(
   'editor.canvasConfiguration',
@@ -94,6 +144,10 @@ export class CanvasSession {
   #running = false;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #nextFrame: number | undefined;
+  #advancing = false;
+  #advanceSequence = 0;
+  #lastStartedAt: number | undefined;
+  #lastCompletedAt: number | undefined;
   #disposed = false;
   #queue: Promise<void> = Promise.resolve();
   #disposal: Promise<void> | undefined;
@@ -218,14 +272,14 @@ export class CanvasSession {
   }
 
   step(): Promise<void> {
-    return this.#enqueue(() => this.#advance(this.#step));
+    return this.#enqueue(() => this.#advance(this.#step, 'step'));
   }
 
   dispatch(id: string, event: WidgetInputEvent): Promise<void> {
     return this.#enqueue(async () => {
       if (this.#mode !== 'simulation') return;
       await this.#active?.runtimes.widgets.dispatch(id, event);
-      if (!this.#running) await this.#advance(timePs(0));
+      if (!this.#running) await this.#advance(timePs(0), 'dispatch');
     });
   }
 
@@ -273,6 +327,9 @@ export class CanvasSession {
       this.#assertAlive();
       await runtimes.simulation.load({
         schematic: resources.schematic,
+        ...(this.configuration.execution === undefined
+          ? {}
+          : { execution: this.configuration.execution }),
         ...(this.configuration.voltageReferences === undefined
           ? {}
           : { voltageReferences: this.configuration.voltageReferences }),
@@ -308,37 +365,137 @@ export class CanvasSession {
     this.#schedule();
   }
 
-  async #advance(dt: TimePs): Promise<void> {
+  async #advance(
+    dt: TimePs,
+    trigger: CanvasAdvanceTrigger,
+    frame?: { readonly target: number },
+  ): Promise<void> {
     const active = this.#active;
     if (!active) return;
-    if (this.#mode === 'simulation' && dt > 0) {
-      const report = await active.runtimes.simulation.tick(dt);
+    this.#notifyAdvance('onAdvanceStart');
+    try {
+      const observer = this.configuration.observer;
+      const running = this.#running;
+      const startedAt = observer === undefined ? 0 : performance.now();
+      const skippedSlots =
+        frame === undefined || observer === undefined
+          ? 0
+          : Math.max(0, Math.floor((startedAt - frame.target) / this.#frameMs));
+      let tickStartedAt: number | undefined;
+      let tickCompletedAt = startedAt;
+      if (this.#mode === 'simulation' && dt > 0) {
+        if (observer !== undefined) tickStartedAt = performance.now();
+        const report = await active.runtimes.simulation.tick(dt);
+        if (observer !== undefined) tickCompletedAt = performance.now();
+        this.#assertAlive();
+        this.#simTime = report.simTime;
+      }
+      const widgetStartedAt = observer === undefined ? 0 : performance.now();
+      await active.runtimes.widgets.step({ simTime: this.#simTime, dt, mode: this.#mode });
+      const completedAt = observer === undefined ? 0 : performance.now();
       this.#assertAlive();
-      this.#simTime = report.simTime;
+      if (observer !== undefined && !this.#disposed)
+        this.#observe(observer, {
+          trigger,
+          startedAt,
+          tickStartedAt,
+          tickCompletedAt,
+          widgetStartedAt,
+          completedAt,
+          skippedSlots,
+          dt,
+          running,
+        });
+    } finally {
+      this.#notifyAdvance('onAdvanceSettled');
     }
-    await active.runtimes.widgets.step({ simTime: this.#simTime, dt, mode: this.#mode });
-    this.#assertAlive();
+  }
+
+  #notifyAdvance(hook: 'onAdvanceStart' | 'onAdvanceSettled'): void {
+    try {
+      this.configuration[hook]?.();
+    } catch (error) {
+      if (!this.#disposed) this.#errors.fire(error);
+    }
+  }
+
+  #observe(
+    observer: ICanvasAdvanceObserver,
+    details: {
+      readonly trigger: CanvasAdvanceTrigger;
+      readonly startedAt: number;
+      readonly tickStartedAt: number | undefined;
+      readonly tickCompletedAt: number;
+      readonly widgetStartedAt: number;
+      readonly completedAt: number;
+      readonly skippedSlots: number;
+      readonly dt: TimePs;
+      readonly running: boolean;
+    },
+  ): void {
+    const idleMs =
+      this.#lastCompletedAt === undefined ? undefined : details.startedAt - this.#lastCompletedAt;
+    const periodMs =
+      this.#lastStartedAt === undefined ? undefined : details.startedAt - this.#lastStartedAt;
+    this.#lastStartedAt = details.startedAt;
+    this.#lastCompletedAt = details.completedAt;
+    this.#advanceSequence += 1;
+    try {
+      observer({
+        sequence: this.#advanceSequence,
+        trigger: details.trigger,
+        startedAt: details.startedAt,
+        tickCompletedAt: details.tickCompletedAt,
+        completedAt: details.completedAt,
+        tickMs:
+          details.tickStartedAt === undefined
+            ? undefined
+            : details.tickCompletedAt - details.tickStartedAt,
+        widgetMs: details.completedAt - details.widgetStartedAt,
+        idleMs,
+        periodMs,
+        skippedSlots: details.skippedSlots,
+        simTime: this.#simTime,
+        dt: details.dt,
+        running: details.running,
+        mode: this.#mode,
+        frameMs: this.#frameMs,
+      });
+    } catch (error) {
+      if (!this.#disposed) this.#errors.fire(error);
+    }
   }
 
   #schedule(): void {
-    if (this.#disposed || !this.#active || this.#timer !== undefined) return;
+    if (this.#disposed || !this.#active || this.#timer !== undefined || this.#advancing) return;
     const now = performance.now();
     this.#nextFrame ??= now + this.#frameMs;
-    // Keep the original frame cadence, skipping elapsed slots instead of accumulating work.
-    if (this.#nextFrame < now)
-      this.#nextFrame += Math.ceil((now - this.#nextFrame) / this.#frameMs) * this.#frameMs;
-    this.#timer = setTimeout(() => {
-      this.#timer = undefined;
-      this.#nextFrame! += this.#frameMs;
-      void this.#enqueue(() => this.#advance(this.#running ? this.#step : timePs(0))).then(
-        () => this.#schedule(),
-        (error) => {
-          this.#nextFrame = undefined;
-          this.pause();
-          if (!this.#disposed) this.#errors.fire(error);
-        },
-      );
-    }, this.#nextFrame - now);
+    // A late deadline stays late: the next round starts immediately after yielding to the event
+    // loop instead of idling until an aligned slot, and one round is in flight per slot.
+    this.#timer = setTimeout(() => this.#onFrame(), Math.max(0, this.#nextFrame - now));
+  }
+
+  #onFrame(): void {
+    this.#timer = undefined;
+    if (this.#disposed || !this.#active) return;
+    const wakeAt = performance.now();
+    const target = this.#nextFrame ?? wakeAt;
+    this.#nextFrame = wakeAt + this.#frameMs;
+    this.#advancing = true;
+    void this.#enqueue(() =>
+      this.#advance(this.#running ? this.#step : timePs(0), 'frame', { target }),
+    ).then(
+      () => {
+        this.#advancing = false;
+        this.#schedule();
+      },
+      (error) => {
+        this.#advancing = false;
+        this.#nextFrame = undefined;
+        this.pause();
+        if (!this.#disposed) this.#errors.fire(error);
+      },
+    );
   }
 
   async #release(active: IRunningCanvas): Promise<void> {

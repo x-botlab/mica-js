@@ -109,7 +109,7 @@ export interface Circuit {
   readonly faults: readonly string[];
   /** 驱动一根引脚：1 高、0 低、2 释放。 */
   set(pin: Pin, level: 0 | 1 | 2): void;
-  /** 摆好段码并选中指定位：`active` 里的位号（0–3）拉低，其余拉高。 */
+  /** 摆好段码并选中指定位，极性跟随 `commonAnode`。 */
   show(mask: number, active: readonly number[]): void;
   run(durationPs: number): void;
   dispose(): void;
@@ -192,10 +192,17 @@ export async function circuit(props: Readonly<Record<string, unknown>> = {}): Pr
 
   const show = (mask: number, active: readonly number[]): void => {
     const segments = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'dp'] as const;
+    // 共阴：段高点亮、公共端低选中；共阳：段低点亮、公共端高选中。
+    const anode = props.commonAnode === true;
 
-    for (const [index, pin] of segments.entries()) set(pin, ((mask >> index) & 1) === 1 ? 1 : 0);
-    for (let digit = 0; digit < 4; digit += 1)
-      set(`com${digit + 1}` as Pin, active.includes(digit) ? 0 : 1);
+    for (const [index, pin] of segments.entries()) {
+      const lit = ((mask >> index) & 1) === 1;
+      set(pin, lit === anode ? 0 : 1);
+    }
+    for (let digit = 0; digit < 4; digit += 1) {
+      const selected = active.includes(digit);
+      set(`com${digit + 1}` as Pin, selected === anode ? 1 : 0);
+    }
   };
 
   return {

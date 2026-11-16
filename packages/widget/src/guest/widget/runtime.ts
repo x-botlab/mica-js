@@ -843,6 +843,8 @@ export function createWidgetRuntime(
         // A widget publish that started before this step reaches the simulation before new input
         // is consumed and before the caller ticks the primary channel.
         await settleDirectDeliveries();
+        // Tick replies use another port; wait for its publish callbacks before painting this step.
+        if (context.mode === 'simulation') await device?.flushPublishes();
         // Inputs first: a direct publish queued since the last step is consumed at this step's start.
         for (const publish of pendingDevicePublishes.splice(0)) {
           fanOutDevicePublish(publish);

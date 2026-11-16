@@ -4,6 +4,8 @@ import {
   type CanvasCommand,
   type CanvasDocument,
 } from '@mica-js/document/canvas';
+import type { ISimulationMessage } from '@mica-js/simulator';
+import type { IWidgetFrame } from '@mica-js/widget';
 import type {
   EditorCommandArgs,
   IEditorErrorEvent,
@@ -12,9 +14,24 @@ import type {
   IEditorProperty,
 } from './host';
 import type { ICanvasCommandMap } from './canvas-commands';
-import { canvasSnapshot, type ICanvasTarget, type ICanvasBindingInfo } from './canvas-host';
+import {
+  canvasSnapshot,
+  type ICanvasBindingInfo,
+  type ICanvasRenderObserver,
+  type ICanvasTarget,
+  type ICanvasTopicMessageSample,
+  type ICanvasWidgetFrameSample,
+} from './canvas-host';
 export type { ICanvasCommandMap } from './canvas-commands';
-export type { ICanvasTarget, ICanvasBindingInfo, ICanvasBindingCandidate } from './canvas-host';
+export type {
+  ICanvasTarget,
+  ICanvasBindingInfo,
+  ICanvasBindingCandidate,
+  ICanvasRenderSample,
+  ICanvasRenderObserver,
+  ICanvasWidgetFrameSample,
+  ICanvasTopicMessageSample,
+} from './canvas-host';
 import { Commands, ICommandService } from './commands';
 import type { EditorState } from './editor';
 import { InstantiationService, ServiceCollection, SyncDescriptor } from './instantiation';
@@ -25,11 +42,41 @@ import {
   WidgetLibraryResolver,
   IWidgetLibraryResolver,
 } from './libraries';
-import { ICanvasConfiguration, CanvasSession, ICanvasSession } from './canvas/session';
-import { CanvasRuntimeFactory, ICanvasRuntimeFactory } from './canvas/runtime-factory';
+import {
+  ICanvasConfiguration,
+  CanvasSession,
+  ICanvasSession,
+  type ICanvasAdvanceObserver,
+} from './canvas/session';
+import {
+  CanvasRuntimeFactory,
+  ICanvasRuntimeFactory,
+  type ICanvasRuntimes,
+} from './canvas/runtime-factory';
 import { CanvasDocumentService, ICanvasDocumentService } from './canvas/document';
 import { createCanvasView } from './canvas/view';
 import './canvas/styles.css';
+
+/**
+ * Optional low-overhead sinks for browser-side measurement.
+ *
+ * Every sink is synchronous and purely additive: the canvas session still awaits the same tick and
+ * widget steps, and the runtime keeps delivering topic traffic over its existing channel.
+ */
+export interface ICanvasEditorMeasurement {
+  /** Completed advance rounds from the canvas session. */
+  readonly advance?: ICanvasAdvanceObserver;
+  /** Called before an advance round starts awaiting its tick. */
+  readonly advanceStart?: () => void;
+  /** Called after an advance round settles, including when its tick or widget step fails. */
+  readonly advanceSettled?: () => void;
+  /** Whole-surface paints on the host thread. */
+  readonly render?: ICanvasRenderObserver;
+  /** Committed widget bitmaps, including the instance and the runtime frame sequence. */
+  readonly widgetFrame?: (sample: ICanvasWidgetFrameSample) => void;
+  /** Device publications already crossing the widget topic bridge. */
+  readonly topic?: (message: ICanvasTopicMessageSample) => void;
+}
 
 export interface ICanvasEditorOptions {
   readonly container: HTMLElement;
@@ -39,10 +86,77 @@ export interface ICanvasEditorOptions {
   readonly widgetLibrary: IWidgetLibrary;
   /** Simulation step and target frame period in milliseconds; defaults to 20. */
   readonly stepMs?: number;
+  /** CPU execution mode; defaults to the simulator's throughput mode. */
+  readonly execution?: 'throughput' | 'precise';
   readonly readOnly?: boolean;
   /** Fixed board voltages by exact schematic net name; ignored without a schematic. Ground stays zero. */
   readonly voltageReferences?: Readonly<Record<string, number>>;
   readonly projectRoot?: string;
+  /** Optional measurement sinks; omitted means no timing or event sampling is installed. */
+  readonly measurement?: ICanvasEditorMeasurement;
+}
+
+/** Wraps the existing runtime factory so measurement taps the same events it already exposes. */
+function measurementRuntimeFactory(
+  measurement: ICanvasEditorMeasurement,
+  reportError: (source: 'runtime', error: unknown) => void,
+): ICanvasRuntimeFactory {
+  const base = new CanvasRuntimeFactory();
+  return {
+    async create(container: HTMLElement): Promise<ICanvasRuntimes> {
+      const runtimes = await base.create(container);
+      const subscriptions = new DisposableStore();
+      const tap = (run: () => void): void => {
+        try {
+          run();
+        } catch (error) {
+          reportError('runtime', error);
+        }
+      };
+      const widgetFrame = measurement.widgetFrame;
+      if (widgetFrame !== undefined) {
+        subscriptions.add(
+          runtimes.widgets.onDidRender((frame: IWidgetFrame) => {
+            tap(() =>
+              widgetFrame({
+                at: performance.now(),
+                instanceId: frame.instanceId,
+                sequence: frame.sequence,
+                width: frame.width,
+                height: frame.height,
+                dpr: frame.dpr,
+              }),
+            );
+          }),
+        );
+      }
+      const topic = measurement.topic;
+      if (topic !== undefined) {
+        subscriptions.add(
+          runtimes.simulation.onDidPublish((message: ISimulationMessage) => {
+            tap(() =>
+              topic({
+                at: performance.now(),
+                symbol: message.target.symbol,
+                port: message.target.port,
+                simTime: message.simTime,
+                payload: message.payload,
+              }),
+            );
+          }),
+        );
+      }
+      return {
+        simulation: runtimes.simulation,
+        widgets: runtimes.widgets,
+        resumeAudio: () => runtimes.resumeAudio(),
+        async dispose() {
+          subscriptions.dispose();
+          await runtimes.dispose();
+        },
+      };
+    },
+  };
 }
 
 export interface ICanvasEditor {
@@ -88,6 +202,7 @@ export async function createCanvasEditor(options: ICanvasEditorOptions): Promise
       'Expected a plain voltageReferences map with nonempty net names and finite numeric voltages',
     );
   }
+  const measurement = options.measurement;
   const uri = new URL(options.uri).href;
   const projectRoot =
     options.projectRoot === undefined ? new URL('.', uri).href : new URL(options.projectRoot).href;
@@ -120,14 +235,27 @@ export async function createCanvasEditor(options: ICanvasEditorOptions): Promise
     ...(options.projectRoot === undefined ? {} : { projectRoot: root }),
     container: options.container,
     ...(options.stepMs === undefined ? {} : { stepMs: options.stepMs }),
+    ...(options.execution === undefined ? {} : { execution: options.execution }),
     ...(options.voltageReferences === undefined
       ? {}
       : { voltageReferences: Object.freeze(structuredClone(options.voltageReferences)) }),
+    ...(measurement?.advance === undefined ? {} : { observer: measurement.advance }),
+    ...(measurement?.advanceStart === undefined
+      ? {}
+      : { onAdvanceStart: measurement.advanceStart }),
+    ...(measurement?.advanceSettled === undefined
+      ? {}
+      : { onAdvanceSettled: measurement.advanceSettled }),
   });
   services.set(ICommandService, new SyncDescriptor(Commands));
   services.set(IDeviceLibraryResolver, new SyncDescriptor(DeviceLibraryResolver));
   services.set(IWidgetLibraryResolver, new SyncDescriptor(WidgetLibraryResolver));
-  services.set(ICanvasRuntimeFactory, new SyncDescriptor(CanvasRuntimeFactory));
+  services.set(
+    ICanvasRuntimeFactory,
+    measurement?.widgetFrame === undefined && measurement?.topic === undefined
+      ? new SyncDescriptor(CanvasRuntimeFactory)
+      : measurementRuntimeFactory(measurement, reportError),
+  );
   services.set(ICanvasSession, new SyncDescriptor(CanvasSession));
   services.set(ICanvasDocumentService, new SyncDescriptor(CanvasDocumentService));
   const scope = new InstantiationService(services);
@@ -146,6 +274,7 @@ export async function createCanvasEditor(options: ICanvasEditorOptions): Promise
       isSimulation: () => session.mode === 'simulation',
       onDispatch: (id, event) => session.dispatch(id, event),
       onError: (error, source = 'render') => reportError(source, error),
+      ...(measurement?.render === undefined ? {} : { onRender: measurement.render }),
       onSelectionChange: (value) => selection.fire(canvasSnapshot(value)),
       onClick: (event) => clicks.fire(canvasSnapshot(event)),
       onDoubleClick: (event) => doubleClicks.fire(canvasSnapshot(event)),

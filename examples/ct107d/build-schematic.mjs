@@ -14,6 +14,12 @@ const MCU_REF = 'xbotlab:iap15f2k61s2';
 const LED_REF = 'xbotlab:blue-led';
 const DISPLAY_REF = 'xbotlab:seg4';
 const BUTTON_REF = 'xbotlab:push-button';
+const BUZZER_REF = 'xbotlab:buzzer';
+const RELAY_REF = 'xbotlab:relay';
+const JUMPER_REF = 'xbotlab:jumper';
+const HEADER_REF = 'xbotlab:jumper-2x3';
+const ULTRASONIC_REF = 'xbotlab:ultrasonic';
+const UART_PROBE_REF = 'xbotlab:uart-probe';
 const CHIP_REF = (id) => `xbotlab:${id}`;
 const CHIPS = [
   '74hc02',
@@ -28,6 +34,8 @@ const CHIPS = [
   'ne555',
   'pcf8591',
   'uln2003',
+  'ultrasonic',
+  'uart-probe',
   'vs1838',
 ];
 
@@ -42,6 +50,12 @@ definitions.set(MCU_REF, readDefinition('iap15f2k61s2'));
 definitions.set(LED_REF, readDefinition('blue-led'));
 definitions.set(DISPLAY_REF, readDefinition('seg4'));
 definitions.set(BUTTON_REF, readDefinition('push-button'));
+definitions.set(BUZZER_REF, readDefinition('buzzer'));
+definitions.set(RELAY_REF, readDefinition('relay'));
+definitions.set(JUMPER_REF, readDefinition('jumper'));
+definitions.set(HEADER_REF, readDefinition('jumper-2x3'));
+definitions.set(ULTRASONIC_REF, readDefinition('ultrasonic'));
+definitions.set(UART_PROBE_REF, readDefinition('uart-probe'));
 for (const id of CHIPS) definitions.set(CHIP_REF(id), readDefinition(id));
 
 const symbols = new Map();
@@ -92,10 +106,19 @@ for (const [designator, pins, net] of [
   ['U19', ['gnd'], GND],
   ['U20', ['vcc'], VCC],
   ['U20', ['gnd'], GND],
+  ['U22', ['vcc'], VCC],
+  ['U22', ['gnd'], GND],
+  ['UART_PROBE', ['vcc'], VCC],
+  ['UART_PROBE', ['gnd'], GND],
   ['U24', ['vcc', 'e3'], VCC],
   ['U24', ['gnd', 'e1', 'e2'], GND],
   ['U25', ['vcc'], VCC],
   ['U25', ['gnd'], GND],
+  // 蜂鸣器正端、继电器线圈正端接 VCC；继电器两组触点的另一端与 J13 的公共端接 GND。
+  ['SP1', ['p'], VCC],
+  ['K1', ['vcc'], VCC],
+  ['K1', ['no', 'com2'], GND],
+  ['J13', ['b'], GND],
 ]) {
   for (const pin of pins) (net === VCC ? VCC : GND).push([designator, pin]);
 }
@@ -170,6 +193,7 @@ connect('P42/WR', [
   ['U25', 'b2'],
   ['U25', 'b3'],
   ['U25', 'b4'],
+  ['J13', 'a'],
 ]);
 connect('Y4C', [
   ['U25', 'y4'],
@@ -233,17 +257,36 @@ connect('STEPA', [['U10', 'out1']]);
 connect('STEPB', [['U10', 'out2']]);
 connect('STEPC', [['U10', 'out3']]);
 connect('STEPD', [['U10', 'out4']]);
-connect('N_RELAY', [['U10', 'out5']]);
-connect('N_MOTOR', [['U10', 'out6']]);
-connect('N_BUZZ', [['U10', 'out7']]);
-connect('SPK', [['U14', 'out']]);
-
-// IR 链路：J2（1-2、5-6）按短接处理，N_B1/N_B2 并入 N_A1/N_A2
-connect('N_A1', [
-  ['U11', 'out'],
-  ['U18', 'a2'],
+connect('N_RELAY', [
+  ['U10', 'out5'],
+  ['K1', 'coil'],
 ]);
-connect('N_A2', [['U20', 'out']]);
+connect('N_MOTOR', [['U10', 'out6']]);
+connect('N_BUZZ', [
+  ['U10', 'out7'],
+  ['SP1', 'n'],
+]);
+connect('SPK', [['U14', 'out']]);
+// 继电器触点把 m2 接到 GND；m2 是板上的接线端子（未建模），因此只保留驱动侧网标。
+connect('m2', [['K1', 'com']]);
+
+// IR 链路：J2 是 2×3 跳线排针，1-3 固定短接（P1.0 → U18 发送链），
+// 接收端公共脚 4 由实例属性 vs1838 选择 4-6（VS1838）或 2-4（CX20106A）。
+connect('N_A1', [
+  ['U18', 'a2'],
+  ['J2', 'p1'],
+]);
+connect('N_A2', [['J2', 'p5']]);
+connect('N_B1', [
+  ['U11', 'out'],
+  ['J2', 'p2'],
+]);
+connect('N_B2', [
+  ['U20', 'out'],
+  ['J2', 'p6'],
+]);
+nets.get('P10').push(['J2', 'p3'], ['U22', 'trig']);
+nets.get('P11').push(['J2', 'p4'], ['U22', 'echo']);
 connect('U18N1', [
   ['U18', 'a1'],
   ['U18', 'y3'],
@@ -264,8 +307,17 @@ connect('U18N4', [
   ['U18', 'y6'],
 ]);
 
+// MCU 的 UART1 复用方向是 P3.1=TXD、P3.0=RXD；探针交叉连接，独立复原 TXD 并驱动 RXD。
+nets.get('P31/RXD').push(['UART_PROBE', 'rxd']);
+nets.get('P30/TXD').push(['UART_PROBE', 'txd']);
+
 // 定时、模拟、串行
-connect('NET_SIG', [['U15', 'out']]);
+// 实物 J3 把 NE555 的 NET_SIG 接到 P34，作为 PCA 的 ECI 输入；默认插上跳线帽。
+connect('NET_SIG', [
+  ['U15', 'out'],
+  ['J3', 'a'],
+]);
+nets.get('P34').push(['J3', 'b']);
 nets.get('P13').push(['U19', 'rst']);
 nets.get('P23').push(['U19', 'io']);
 nets.get('P17/SCK').push(['U19', 'sclk']);
@@ -279,13 +331,10 @@ connect('AIN3', [['U16', 'vin3']]);
 connect('OUT', [['U16', 'dac']]);
 
 // ---- 布局 -------------------------------------------------------------------------------
-/** 演示固件：8 位数码管全亮扫描 + 8 路 LED 走马灯（`firmware/demo.asm`，由 assemble-firmware.mjs 汇编）。 */
-const FIRMWARE = { src: 'assets/ct107d-demo.bin', mode: 'file' };
-/**
- * 演示板把系统时钟降到 1 MHz：仿真按指令逐条推进，11.0592 MHz 下每个 20 ms 仿真步要跑
- * 22 万条指令，预览会被拖到每秒不到一帧；1 MHz 让扫描与走马灯在预览里保持流畅。
- */
-const DEMO_CLOCK = 1_000_000;
+/** 当前预览固件：数码管动态显示，由 Intel HEX 转为裸二进制。 */
+const FIRMWARE = { src: 'assets/digital-display-dynamic.bin', mode: 'file' };
+/** 官方固件按 11.0592 MHz 编写；延时、定时器与串口波特率都依赖该频率。 */
+const FIRMWARE_CLOCK = 11_059_200;
 
 const PLACEMENTS = [
   {
@@ -293,10 +342,13 @@ const PLACEMENTS = [
     device: MCU_REF,
     column: 0,
     order: 0,
-    properties: { firmware: FIRMWARE, clockFrequency: DEMO_CLOCK },
+    properties: { firmware: FIRMWARE, clockFrequency: FIRMWARE_CLOCK },
   },
   { designator: 'U24', device: CHIP_REF('74hc138'), column: 0, order: 1 },
   { designator: 'U25', device: CHIP_REF('74hc02'), column: 0, order: 2 },
+  { designator: 'J13', device: JUMPER_REF, column: 0, order: 3 },
+  { designator: 'J2', device: HEADER_REF, column: 0, order: 4, properties: { vs1838: true } },
+  { designator: 'J3', device: JUMPER_REF, column: 0, order: 5 },
   { designator: 'U18', device: CHIP_REF('74ls04'), column: 1, order: 0 },
   { designator: 'U6', device: CHIP_REF('74hc573'), column: 2, order: 0 },
   { designator: 'U7', device: CHIP_REF('74hc573'), column: 2, order: 1 },
@@ -307,6 +359,10 @@ const PLACEMENTS = [
   { designator: 'U11', device: CHIP_REF('cx20106a'), column: 3, order: 2 },
   { designator: 'U20', device: CHIP_REF('vs1838'), column: 3, order: 3 },
   { designator: 'U15', device: CHIP_REF('ne555'), column: 3, order: 4 },
+  { designator: 'K1', device: RELAY_REF, column: 3, order: 5 },
+  { designator: 'SP1', device: BUZZER_REF, column: 3, order: 6 },
+  { designator: 'U22', device: ULTRASONIC_REF, column: 3, order: 7 },
+  { designator: 'UART_PROBE', device: UART_PROBE_REF, column: 3, order: 8 },
   { designator: 'U4', device: CHIP_REF('at24c02'), column: 4, order: 0 },
   { designator: 'U16', device: CHIP_REF('pcf8591'), column: 4, order: 1 },
   { designator: 'U19', device: CHIP_REF('ds1302'), column: 4, order: 2 },
@@ -323,7 +379,8 @@ const PLACEMENTS = [
     device: DISPLAY_REF,
     column: 6,
     order: index,
-    properties: { forwardResistance: 1500 },
+    // 板上两片数码管是共阳管：位选高电平选中、段脚低电平点亮。
+    properties: { forwardResistance: 1500, commonAnode: true },
   })),
   { designator: 'S1', device: BUTTON_REF, column: 7, order: 0 },
   ...[

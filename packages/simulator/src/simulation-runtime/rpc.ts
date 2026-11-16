@@ -31,6 +31,8 @@ export const simulationRuntimeService =
 export interface ISimulationRuntimeTopicRpc {
   deliver(message: ISimulationMessage): Promise<void>;
   onDidPublish(listener: (message: ISimulationMessage) => void): () => void;
+  /** Resolves after earlier publish notifications have crossed this port. */
+  flushPublishes(): Promise<void>;
 }
 
 /** Topic-port view of the same wire service registered by the runtime guest. */

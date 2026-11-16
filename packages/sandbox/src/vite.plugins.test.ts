@@ -1,5 +1,8 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { micaSandboxPlugins } from '../vite.plugins';
 
 const SANDBOX_QUERY = '?sandbox-worker';
@@ -20,15 +23,36 @@ function resolverFor(id: string, calls: ResolveCall[]) {
   };
 }
 
-function pluginHandle() {
-  const plugin = micaSandboxPlugins()[0]!;
+interface HotContext {
+  readonly file: string;
+  readonly server: {
+    readonly environments: {
+      readonly client: {
+        readonly moduleGraph: {
+          getModuleById(id: string): object | undefined;
+          invalidateModule(module: object): void;
+        };
+      };
+    };
+    readonly ws: { send(payload: { readonly type: 'full-reload' }): void };
+  };
+}
+
+function pluginHandle(plugin = micaSandboxPlugins()[0]!) {
   const resolveId = plugin.resolveId as unknown as (
     this: { resolve: ReturnType<typeof resolverFor> },
     id: string,
     importer: string,
   ) => Promise<string | null>;
-  const load = plugin.load as (id: string) => Promise<string | null>;
-  return { resolveId, load };
+  const load = plugin.load as unknown as (
+    this: { addWatchFile(file: string): void },
+    id: string,
+  ) => Promise<string | null>;
+  const handleHotUpdate = plugin.handleHotUpdate as unknown as (
+    this: unknown,
+    context: HotContext,
+  ) => Promise<unknown>;
+  return { resolveId, load, handleHotUpdate };
 }
 
 const forms = [
@@ -91,7 +115,7 @@ describe('micaSandboxPlugins', () => {
         importer,
       );
 
-      const generated = await load(virtualId!);
+      const generated = await load.call({ addWatchFile() {} }, virtualId!);
 
       expect(generated).toContain(`export default class ${className} extends SandboxWorker`);
       expect(generated).toContain("import { SandboxWorker } from '@mica-js/sandbox'");
@@ -126,5 +150,57 @@ describe('micaSandboxPlugins', () => {
     expect(
       await resolveId.call({ resolve }, './host/frame-document.ts?sandbox-worker-extra', importer),
     ).toBeNull();
+  });
+
+  it('rebuilds changed worker dependencies and reloads the client', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'mica-sandbox-vite-'));
+    try {
+      const entry = join(directory, 'entry.js');
+      const dependency = join(directory, 'dependency.js');
+      await writeFile(entry, `import { message } from './dependency.js'; self.message = message;`);
+      await writeFile(dependency, `export const message = 'before';`);
+
+      const plugin = micaSandboxPlugins()[0]!;
+      const { resolveId, load, handleHotUpdate } = pluginHandle(plugin);
+      const virtualId = await resolveId.call(
+        { resolve: resolverFor(entry, []) },
+        `${entry}?sandbox-worker-code`,
+        importer,
+      );
+      const watched: string[] = [];
+      const generated = await load.call({ addWatchFile: (file) => watched.push(file) }, virtualId!);
+      const before = JSON.parse(generated!.replace(/^export default |;$/g, '')) as string;
+      expect(before).toContain('before');
+      expect(watched).toContain(entry);
+      expect(watched).toContain(dependency);
+
+      await writeFile(dependency, `export const message = 'after';`);
+      const send = vi.fn();
+      const workerModule = {};
+      const getModuleById = vi.fn(() => workerModule);
+      const invalidateModule = vi.fn();
+      await handleHotUpdate.call(plugin, {
+        file: dependency,
+        server: {
+          environments: {
+            client: {
+              moduleGraph: {
+                getModuleById,
+                invalidateModule,
+              },
+            },
+          },
+          ws: { send },
+        },
+      });
+
+      const rebuilt = await load.call({ addWatchFile() {} }, virtualId!);
+      expect(JSON.parse(rebuilt!.replace(/^export default |;$/g, ''))).toContain('after');
+      expect(send).toHaveBeenCalledWith({ type: 'full-reload' });
+      expect(getModuleById).toHaveBeenCalledTimes(2);
+      expect(invalidateModule).toHaveBeenCalledTimes(2);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

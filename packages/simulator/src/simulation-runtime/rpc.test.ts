@@ -60,7 +60,9 @@ describe('simulation runtime RPC guest', () => {
 
     await api.load(toggleSimulation());
     await api.tick(timePs(10_000));
-    await waitFor(() => primaryPublishes.length === 5 && topicPublishes.length === 5);
+    await topicApi.flushPublishes();
+    await waitFor(() => primaryPublishes.length === 5);
+    expect(topicPublishes).toHaveLength(5);
     expect(topicPublishes.map((publish) => publish.target.port)).toEqual(
       primaryPublishes.map((publish) => publish.target.port),
     );
@@ -74,10 +76,9 @@ describe('simulation runtime RPC guest', () => {
     primaryPublishes.length = 0;
     topicPublishes.length = 0;
     await api.tick(timePs(10_000));
+    await topicApi.flushPublishes();
     await waitFor(
-      () =>
-        primaryPublishes.some((publish) => publish.target.port === 'state') &&
-        topicPublishes.some((publish) => publish.target.port === 'state'),
+      () => primaryPublishes.some((publish) => publish.target.port === 'state'),
     );
     expect(primaryPublishes.find((publish) => publish.target.port === 'state')?.payload).toBe(true);
     expect(topicPublishes.some((publish) => publish.target.port === 'state')).toBe(true);
@@ -87,6 +88,7 @@ describe('simulation runtime RPC guest', () => {
     topicPublishes.length = 0;
     await topicApi.deliver(message(SYMBOL, 'lamp', false));
     await api.tick(timePs(10_000));
+    await topicApi.flushPublishes();
     await waitFor(() => primaryPublishes.some((publish) => publish.target.port === 'state'));
     expect(primaryPublishes.find((publish) => publish.target.port === 'state')?.payload).toBe(
       false,

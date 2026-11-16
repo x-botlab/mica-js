@@ -65,6 +65,12 @@ const LEDS = [
 const LED_SIZE = { width: 18, height: 26 };
 const LED_CENTER_Y = 319;
 
+/** 执行器与跳线：照片上的 SP1、K1、J13。 */
+const BUZZERS = [['SP1', 718, 390, 60, 60]];
+const RELAYS = [['K1', 806, 389, 88, 62]];
+const JUMPERS = [['J13', 310, 406, 42, 72]];
+const HEADERS = [['J2', 596, 168, 76, 64]];
+
 const schematic = JSON.parse(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
 const symbols = new Map(
   schematic.sheet.symbols
@@ -137,10 +143,83 @@ for (const [designator, cx] of LEDS) {
   });
 }
 
+for (const [designator, cx, cy, width, height] of BUZZERS) {
+  widgets.push({
+    id: nextId(),
+    widget: `${PACKAGE}:buzzer`,
+    x: cx - width / 2,
+    y: cy - height / 2,
+    width,
+    height,
+    rotation: 0,
+    properties: { color: '#f59e0bff', label: designator },
+    bindings: { active: { symbol: symbolOf(designator), port: 'active' } },
+  });
+}
+
+for (const [designator, cx, cy, width, height] of RELAYS) {
+  widgets.push({
+    id: nextId(),
+    widget: `${PACKAGE}:relay`,
+    x: cx - width / 2,
+    y: cy - height / 2,
+    width,
+    height,
+    rotation: 0,
+    properties: { color: '#f59e0bff', label: designator },
+    bindings: { energized: { symbol: symbolOf(designator), port: 'energized' } },
+  });
+}
+
+for (const [designator, cx, cy, width, height] of JUMPERS) {
+  const symbol = symbolOf(designator);
+  widgets.push({
+    id: nextId(),
+    widget: `${PACKAGE}:jumper`,
+    x: cx - width / 2,
+    y: cy - height / 2,
+    width,
+    height,
+    rotation: 0,
+    properties: { color: '#22c55eff', label: designator, channels: 1, closed1: true },
+    bindings: {
+      state1: { symbol, port: 'closedState' },
+      closed1: { symbol, port: 'control' },
+    },
+  });
+}
+
+for (const [designator, cx, cy, width, height] of HEADERS) {
+  const symbol = symbolOf(designator);
+  widgets.push({
+    id: nextId(),
+    widget: `${PACKAGE}:jumper`,
+    x: cx - width / 2,
+    y: cy - height / 2,
+    width,
+    height,
+    rotation: 0,
+    properties: {
+      color: '#22c55eff',
+      label: designator,
+      label1: '1-3',
+      label2: '2-4 / 4-6',
+      channels: 2,
+      fixed1: true,
+      closed1: true,
+      closed2: true,
+    },
+    bindings: {
+      state2: { symbol, port: 'closedState2' },
+      closed2: { symbol, port: 'control2' },
+    },
+  });
+}
+
 const document = { version: 1, schematic: 'ct107d.sch', widgets };
 writeFileSync(OUTPUT, `${JSON.stringify(document, null, 2)}\n`);
 console.log(
   'widgets',
   widgets.length,
-  `（按键 ${KEYS.length}、数码管 ${DISPLAYS.length}、LED ${LEDS.length}、背景图 1）`,
+  `（按键 ${KEYS.length}、数码管 ${DISPLAYS.length}、LED ${LEDS.length}、蜂鸣器 ${BUZZERS.length}、继电器 ${RELAYS.length}、跳线 J13 ${JUMPERS.length}、跳线 J2 ${HEADERS.length}、背景图 1）`,
 );

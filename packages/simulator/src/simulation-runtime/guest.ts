@@ -60,6 +60,8 @@ export function registerSimulationRuntimeServices(
           {
             deliver: service.deliver,
             onDidPublish: service.onDidPublish,
+            // The empty reply follows earlier callbacks on this port, providing a FIFO barrier.
+            async flushPublishes() {},
           },
           { transfer: simulationRuntimeEventTransfer },
         );

@@ -7,7 +7,8 @@
  * 5. 再装入原理图 U1 自带的演示固件（`assets/ct107d-demo.bin`），确认 8 位都显示 0xFF（8.8.8.8），
  *    并且走马灯逐位移动、同一时刻只有一颗 LED 点亮。
  *
- * 说明：器件模型没有 P4 端口，`P42/WR` 网络在板级验证时按 J13 的 2-3 位置接 0 V（WR 接地）。
+ * 说明：`P42/WR` 由原理图里的 J13（WR 选择跳线，1-2/2-3）短接到 GND，不需要在装配侧
+ * 注入电压；器件模型没有 P4 端口，因此 J13 的 WR 源侧不建模。
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -28,14 +29,20 @@ const CHIP_IDS = [
   '74hc573',
   '74ls04',
   'at24c02',
+  'buzzer',
   'cx20106a',
   'ds1302',
   'ds18b20',
+  'jumper',
+  'jumper-2x3',
   'lm386',
   'ne555',
   'pcf8591',
   'push-button',
+  'relay',
   'uln2003',
+  'ultrasonic',
+  'uart-probe',
   'vs1838',
 ];
 const MCU_REF = 'xbotlab:iap15f2k61s2';
@@ -168,7 +175,7 @@ function instrument(symbol, device) {
   };
 }
 
-function buildBoard(firmware, wrVoltage) {
+function buildBoard(firmware) {
   const library = createDeviceLibrary(
     components.map((symbol) => {
       const device = devices.get(symbol.device);
@@ -180,13 +187,7 @@ function buildBoard(firmware, wrVoltage) {
     pins: net.members
       .filter((member) => member.kind === 'pin')
       .map((member) => ({ instance: member.symbolId, pin: member.pinId })),
-    ...(net.name === 'VCC'
-      ? { voltage: 5 }
-      : net.name === 'GND'
-        ? { voltage: 0 }
-        : net.name === 'P42/WR' && wrVoltage !== undefined
-          ? { voltage: wrVoltage }
-          : {}),
+    ...(net.name === 'VCC' ? { voltage: 5 } : net.name === 'GND' ? { voltage: 0 } : {}),
   }));
   const instances = components.map((symbol) => {
     if (symbol.device !== MCU_REF)
@@ -203,7 +204,7 @@ function buildBoard(firmware, wrVoltage) {
 }
 
 // 1) 空转：所有器件初始化 + 电气网络求解。
-const idle = buildBoard(new Uint8Array([0x80, 0xfe]), undefined); // SJMP $
+const idle = buildBoard(new Uint8Array([0x80, 0xfe])); // SJMP $
 idle.board.runUntil(1_000_000_000);
 idle.board.dispose();
 if (idle.faults.length > 0) failures.push(`idle board faults: ${idle.faults.join('; ')}`);
@@ -227,12 +228,12 @@ const writeLatch = (byte, address) => [
   0x00, // MOV P2,#00H
 ];
 
-/** 依次写入八个数码管位的段码：0x06、0x5B、0x7F、0x00、0x3F、0x09、0x80、0x01。 */
-const DIGIT_CODES = [0x06, 0x5b, 0x7f, 0x00, 0x3f, 0x09, 0x80, 0x01];
+/** 依次写入八个数码管位的段码（共阳驱动码）：0、1、2、3、4、5、6、7。 */
+const DIGIT_CODES = [0xc0, 0xf9, 0xa4, 0xb0, 0x99, 0x92, 0x82, 0xf8];
 const SCAN = DIGIT_CODES.flatMap((code, index) => [
-  ...writeLatch(0xff, Y6), // 八位都不选中
+  ...writeLatch(0x00, Y6), // 八位都不选中（共阳：位选全低）
   ...writeLatch(code, Y7), // 段码
-  ...writeLatch(~(1 << index) & 0xff, Y6), // 只选中第 index + 1 位
+  ...writeLatch(1 << index, Y6), // 只选中第 index + 1 位
 ]);
 const firmware = Uint8Array.from([
   0x75,
@@ -255,7 +256,7 @@ const firmware = Uint8Array.from([
   0x80,
   0xfe, // SJMP $
 ]);
-const running = buildBoard(firmware, 0);
+const running = buildBoard(firmware);
 running.board.runUntil(30_000_000_000);
 running.board.dispose();
 if (running.faults.length > 0)
@@ -288,8 +289,12 @@ for (const [designator, values, codes] of [
 ]) {
   for (const [index, code] of codes.entries()) {
     const name = `digit${index + 1}`;
-    if (values[name] !== code)
-      failures.push(`${designator} ${name} 段码 ${values[name]}，期望 0x${code.toString(16)}`);
+    // 段码端口按「点亮的段」编码，共阳驱动码因此取反。
+    const expected = ~code & 0xff;
+    if (values[name] !== expected)
+      failures.push(
+        `${designator} ${name} 段码 ${values[name]}，期望 0x${expected.toString(16)}（驱动码 0x${code.toString(16)}）`,
+      );
   }
 }
 
@@ -297,8 +302,14 @@ for (const [designator, values, codes] of [
 const demoBytes = new Uint8Array(readFileSync(join(PROJECT, 'assets', 'ct107d-demo.bin')));
 if (demoBytes.length === 0)
   failures.push('assets/ct107d-demo.bin 是空文件（先运行 node assemble-firmware.mjs）');
-const demo = buildBoard(demoBytes, 0);
-demo.board.runUntil(120_000_000_000); // 120 ms：约 8 个走马灯步
+const demo = buildBoard(demoBytes);
+/**
+ * 采样步长与 Playground 画布预览一致（2 ms）。74HC573 的 LE 脉冲只有几百 µs，
+ * 电气网络只在推进边界求解；步长拉到 10 ms 时大部分脉冲落在两次采样之间，
+ * 走马灯会看起来卡住——这是采样粒度问题，不是固件行为。
+ */
+const SAMPLE_PS = 2_000_000_000;
+for (let step = 0; step < 60; step += 1) demo.board.runUntil(demo.board.time + SAMPLE_PS); // 120 ms 预热
 if (demo.faults.length > 0) failures.push(`demo board faults: ${demo.faults.join('; ')}`);
 
 const demoDs1 = digitValues.get(components.find((symbol) => symbol.designator === 'DS1').id) ?? {};
@@ -319,10 +330,10 @@ const litNow = () =>
     .filter(([, value]) => value > 0.1)
     .map(([id]) => designatorOf.get(id) ?? id)
     .sort();
-/** 采样 16 × 10 ms，记录每一刻点亮的 LED。 */
+/** 采样 250 × 2 ms（约 4 个走马灯周期），记录每一刻点亮的 LED。 */
 const trail = [];
-for (let step = 0; step < 16; step += 1) {
-  demo.board.runUntil(demo.board.time + 10_000_000_000);
+for (let step = 0; step < 250; step += 1) {
+  demo.board.runUntil(demo.board.time + SAMPLE_PS);
   trail.push(litNow());
 }
 demo.board.dispose();

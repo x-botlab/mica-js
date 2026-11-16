@@ -43,6 +43,15 @@ function collect(api: ISimulationRuntime): ISimulationMessage[] {
 }
 
 describe('prepared SDK Board runtime', () => {
+  it('preserves the requested Board execution mode during preparation', async () => {
+    const prepared = await prepareSimulation(
+      { ...toggleSimulation(), execution: 'precise' },
+      importer,
+      () => {},
+    );
+    expect(prepared.execution).toBe('precise');
+  });
+
   it('runs real DDL channels, queues inputs, coalesces levels, preserves messages and resets', async () => {
     const api = runtime();
     const publishes = collect(api);

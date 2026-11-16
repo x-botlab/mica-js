@@ -1,5 +1,6 @@
 import { build } from 'rolldown';
 import type { Plugin, ResolvedConfig } from 'vite';
+import { isAbsolute, resolve } from 'node:path';
 
 const SANDBOX_QUERY = '?sandbox-worker';
 const SANDBOX_CODE_QUERY = '?sandbox-worker-code';
@@ -21,7 +22,8 @@ export interface SandboxPluginOptions {
 }
 
 function sandboxWorkerPlugin(explicitAliases: readonly SandboxAlias[]): Plugin {
-  const bundles = new Map<string, Promise<string>>();
+  const bundles = new Map<string, Promise<BundledWorker>>();
+  const bundleDependencies = new Map<string, ReadonlySet<string>>();
   let aliases: readonly SandboxAlias[] = explicitAliases;
   let config: ResolvedConfig | undefined;
 
@@ -66,7 +68,14 @@ function sandboxWorkerPlugin(explicitAliases: readonly SandboxAlias[]): Plugin {
         });
         bundles.set(entry, bundled);
       }
-      const code = await bundled;
+      const { code, dependencies } = await bundled;
+      const files = new Set(
+        dependencies
+          .map(normalizeFileId)
+          .filter((file): file is string => file !== undefined),
+      );
+      bundleDependencies.set(entry, files);
+      for (const file of files) this.addWatchFile(file);
       // A package that ships its guest inline imports the code string and builds the worker itself.
       if (isCode) return `export default ${JSON.stringify(code)};`;
       return `import { SandboxWorker } from '@mica-js/sandbox';\n\
@@ -75,6 +84,23 @@ export default class ${sandboxClassName(entry)} extends SandboxWorker {\n\
     super(${JSON.stringify(code)}, options);\n\
   }\n\
 }\n`;
+    },
+    handleHotUpdate({ file, server }) {
+      const changed = normalizeFileId(file);
+      if (changed === undefined) return;
+      const affected = [...bundleDependencies].filter(([, files]) => files.has(changed));
+      if (affected.length === 0) return;
+
+      const graph = server.environments.client.moduleGraph;
+      for (const [entry] of affected) {
+        bundles.delete(entry);
+        for (const prefix of [SANDBOX_PREFIX, SANDBOX_CODE_PREFIX]) {
+          const module = graph.getModuleById(`${prefix}${entry}`);
+          if (module) graph.invalidateModule(module);
+        }
+      }
+      server.ws.send({ type: 'full-reload' });
+      return [];
     },
   };
 }
@@ -104,6 +130,17 @@ interface BundleOptions {
   readonly minify: boolean;
 }
 
+interface BundledWorker {
+  readonly code: string;
+  readonly dependencies: readonly string[];
+}
+
+function normalizeFileId(id: string): string | undefined {
+  if (id.startsWith('\0') || id.startsWith('node:')) return undefined;
+  const file = id.replace(/[?#].*$/, '');
+  return isAbsolute(file) ? resolve(file) : undefined;
+}
+
 /**
  * Bundles one sandbox entry into a single classic script: IIFE output, no code splitting, every
  * dependency inlined. Production builds also minify the result and assert that no module syntax
@@ -113,12 +150,21 @@ async function bundleSelfContainedScript(
   entry: string,
   aliases: readonly SandboxAlias[],
   options: BundleOptions,
-): Promise<string> {
+): Promise<BundledWorker> {
   const alias: Record<string, string> = {};
   for (const item of aliases) alias[item.find] = item.replacement;
+  const dependencies = new Set<string>();
   const result = await build({
     input: entry,
     external: [],
+    plugins: [
+      {
+        name: 'mica-sandbox:track-worker-dependencies',
+        moduleParsed(module) {
+          dependencies.add(module.id);
+        },
+      },
+    ],
     resolve: { conditionNames: ['source', 'import', 'browser', 'default'], alias },
     output: {
       format: 'iife',
@@ -133,7 +179,7 @@ async function bundleSelfContainedScript(
   if (chunks.length !== 1) {
     throw new Error(`mica-sandbox: expected one self-contained entry bundle for "${entry}"`);
   }
-  return chunks[0]!.code;
+  return { code: chunks[0]!.code, dependencies: [...dependencies] };
 }
 
 /**

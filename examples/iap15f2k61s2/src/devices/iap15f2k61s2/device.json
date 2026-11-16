@@ -30,6 +30,22 @@
       }
     }
   },
+  "ports": {
+    "uart1Tx": {
+      "direction": "output",
+      "type": "bytes",
+      "delivery": "level",
+      "title": "串口 1 发送",
+      "description": "UART1 每完成一帧（停止位结束）发布一条单字节 TXD 数据，顺序与固件写入 SBUF 的顺序一致。"
+    },
+    "uart1Rx": {
+      "direction": "output",
+      "type": "bytes",
+      "delivery": "level",
+      "title": "串口 1 接收",
+      "description": "UART1 每完成一帧（停止位采样）且写入接收缓冲时发布一条单字节 RXD 数据；被 RI 或 SM2/RB8 过滤的帧不发布。"
+    }
+  },
   "pins": {
     "P0_0": {
       "label": "P0_0",

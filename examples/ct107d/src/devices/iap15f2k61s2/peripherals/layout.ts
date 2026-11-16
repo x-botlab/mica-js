@@ -26,8 +26,15 @@ export const IAP_BASE = 0x80;
 export const WDT_BASE = 0x88;
 /** 外部中断 2/3/4 的边沿锁存。 */
 export const EXTINT_BASE = 0x8c;
-/** 时钟与省电模式的内部状态。 */
-export const CLOCK_BASE = 0x90;
+/**
+ * 时钟与省电模式的内部状态。
+ *
+ * 0x90 曾是低压标志，但外部中断的 LEVEL(4)（P3_0 的采样电平）也落在 0x90；
+ * 两者会互相覆盖。外部中断区间止于 0x94，因此时钟区改到完整的空隙 0x95–0x97。
+ */
+export const CLOCK_BASE = 0x95;
+/** 串口 1/2 在发送忙时各缓存一个待发送字节。 */
+export const UART_QUEUE_BASE = 0x98;
 /**
  * 节拍服务：活动门控字节、服务块返回地址。
  *
@@ -35,3 +42,28 @@ export const CLOCK_BASE = 0x90;
  * `active` 条件重算。空闲时指令块只读它一个字节就能跳过整个推进服务。
  */
 export const TICK_BASE = 0xa0;
+
+/**
+ * 各模块在 `periph` 中实际占用的闭区间。
+ *
+ * 这些区间必须两两不重叠，并且整体落在 `PERIPH_SIZE` 内。测试会据此检查布局；
+ * 新增状态时先在这里登记，避免再次出现「外部中断电平覆盖低压标志」这类静默冲突。
+ */
+export const PERIPHERAL_REGIONS: readonly {
+  readonly name: string;
+  readonly start: number;
+  readonly end: number;
+}[] = Object.freeze([
+  { name: 'interrupt', start: 0x00, end: 0x1f },
+  { name: 'timer', start: TIMER_BASE, end: 0x3f },
+  { name: 'uart', start: UART_BASE, end: 0x5f },
+  { name: 'adc', start: ADC_BASE, end: 0x67 },
+  { name: 'pca', start: PCA_BASE, end: 0x77 },
+  { name: 'spi', start: SPI_BASE, end: 0x7f },
+  { name: 'iap', start: IAP_BASE, end: 0x87 },
+  { name: 'watchdog', start: WDT_BASE, end: 0x8b },
+  { name: 'extint', start: EXTINT_BASE, end: 0x94 },
+  { name: 'clock', start: CLOCK_BASE, end: 0x97 },
+  { name: 'uartQueue', start: UART_QUEUE_BASE, end: 0x99 },
+  { name: 'tick', start: TICK_BASE, end: 0xa2 },
+]);
