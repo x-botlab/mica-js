@@ -7,7 +7,7 @@
 - 器件 ID：`ct117e-m4`
 - 源码：`src/devices/ct117e-m4/{model.ddl,index.ts,device.json}`
 - 构建产物：`dist/devices/ct117e-m4/{device.js,device.json}`
-- 参考固件：`HAL_06_LCD.hex`（测试夹具位于 `examples/stm32g431rbt6/bench`；器件运行时接收
+- 参考固件：`HAL_06_LCD.hex`（测试夹具位于 `examples/devices/bench/stm32g431rbt6`；器件运行时接收
   Flash 字节映像）
 
 ## 构建与检查
@@ -27,7 +27,7 @@ pnpm bench        # 构建并运行三轮基准
 
 本工程本地保存 LCD 模型、适配器、融合变换和热函数展开器；MCU 内核来自工作区包
 `@mica-js/stm32g431rbt6-core`（`examples/stm32g431rbt6-core`，`workspace:*` 开发依赖），
-与 `examples/stm32g431rbt6` 共用同一份 Thumb 译码、总线/内存布局与外设模型。该包对外
+与器件库 `examples/devices` 中的 STM32G431RBT6 器件共用同一份 Thumb 译码、总线/内存布局与外设模型。该包对外
 提供 `/bus`、`/cpu`、`/decode`、`/gpio`、`/ir`、`/layout`、`/machine`、`/memory`、
 `/nvic`、`/pwr`、`/rcc`、`/register-facts`、`/systick`、`/thumb16`、`/thumb32`、`/tick`、
 `/usart` 子路径；`mcu.ts` 通过 `/layout`、`/ir`、`/decode`、`/machine`、`/gpio`、
@@ -133,13 +133,13 @@ board.dispose();
 `test/device.test.ts` 是正式交付产物用例：
 
 - 从 `dist/devices/ct117e-m4/device.js` 装载并创建**单个** instance；
-- 严格解析 `examples/stm32g431rbt6/bench/HAL_06_LCD.hex`，按 80 MHz 从复位推进到 220 ms / 440 ms；
+- 严格解析 `examples/devices/bench/stm32g431rbt6/HAL_06_LCD.hex`，按 80 MHz 从复位推进到 220 ms / 440 ms；
 - 固定工作量：220 ms 为 272,506 次 WR 电平变化、136,008 次 GRAM store、5 帧；
   440 ms 为 **545,004 次 WR 变化、272,007 次像素 store、10 帧、76,800 个非零
   像素**；
 - 板状态保持 `ready`，无 error/fault；
 - 最终 GRAM、寄存器文件、逐帧内容、精确 `frameInfo` 时间以及 MCU 状态/内存摘要
-  与旧的分立 `examples/ili9325/test/joint-harness.ts` oracle 对账；
+  与旧的分立 `examples/devices/test/ili9325/joint-harness.ts` oracle 对账；
 - 额外用独立总线 oracle 核对 MCU intent 计数、像素写次数与最终图像。
 
 oracle 只在正确性用例中运行，不进入任何性能计时。它依赖兄弟 example 的测试夹具，
@@ -148,8 +148,8 @@ oracle 只在正确性用例中运行，不进入任何性能计时。它依赖�
 `test/firmware.test.ts` 覆盖 HEX 解析器的记录格式、校验和、地址范围、EOF、重叠冲突
 和不支持的记录类型。
 
-测试默认读取 `examples/stm32g431rbt6/bench/HAL_06_LCD.hex`（与 `examples/stm32g431rbt6`
-的基准共用同一份夹具）；如果夹具放在别处，可设置：
+测试默认读取 `examples/devices/bench/stm32g431rbt6/HAL_06_LCD.hex`（与器件库的 STM32
+基准共用同一份夹具）；如果夹具放在别处，可设置：
 
 ```bash
 MICA_CT117E_M4_HEX=/path/to/HAL_06_LCD.hex pnpm test

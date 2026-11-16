@@ -13,7 +13,7 @@ Mica 是一套基于 TypeScript 的电路仿真与可视化编辑工具集，把
 - **隔离运行扩展脚本**：提供沙箱与跨边界通信能力，供宿主隔离运行器件和 widget 脚本。
 - **按需组合的包结构**：编辑器、仿真器、文档模型和运行基础设施分别提供，应用自行掌握界面集成、器件来源与文档持久化。
 
-当前电气模型以线性电阻网络为主，尚不覆盖完整 SPICE 模拟器的非线性器件与储能元件瞬态分析。仿真包不内置具体器件库，示例器件由 Playground 提供。
+当前电气模型以线性电阻网络为主，尚不覆盖完整 SPICE 模拟器的非线性器件与储能元件瞬态分析。仿真包不内置具体器件库，示例器件由 [`examples/devices`](examples/devices) 提供。
 
 ## 本地体验
 
@@ -29,22 +29,19 @@ pnpm --filter @mica-js/playground dev
 
 ## 示例
 
-| 示例                                                       | 内容                                                                     |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------ |
-| [`examples/playground-components`](examples/playground-components) | Playground 用的最小器件与 widget 包：电阻、按键、LED、电压表             |
-| [`examples/ct107d`](examples/ct107d)                       | CT107D 竞赛板整板工程：17 个器件、4 个板面 widget、原理图、画布与 8051 固件 |
-| [`examples/iap15f2k61s2`](examples/iap15f2k61s2)           | STC15 系列 8051 器件：内核、外设、JIT 取指与性能基准                      |
-| [`examples/seg4`](examples/seg4)                           | 共阴四位七段数码管器件                                                    |
-| [`examples/blue-led`](examples/blue-led)                   | 蓝色 LED 器件                                                             |
-| [`examples/ideal-led`](examples/ideal-led)                 | 测试夹具：理想 LED                                                        |
-| [`examples/led8`](examples/led8)                           | IAP15F2K61S2 驱动 8 颗 LED 的最小板与无头验证                             |
-| [`examples/stm32g431rbt6`](examples/stm32g431rbt6)         | STM32G431RBT6 器件：Thumb 子集、GPIO/RCC/SysTick/USART 与基准             |
+| 示例                                                               | 内容                                                                          |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| [`examples/playground-components`](examples/playground-components) | Playground 用的最小器件与 widget 包：电阻、按键、LED、电压表                  |
+| [`examples/ct107d`](examples/ct107d)                               | CT107D 竞赛板整板工程：4 个板面 widget、原理图、画布与 8051 固件              |
+| [`examples/devices`](examples/devices)                             | 器件库：CT107D 板级芯片、IAP15F2K61S2、STM32G431RBT6、ILI9325、seg4、blue-led |
+| [`examples/ideal-led`](examples/ideal-led)                         | 测试夹具：理想 LED                                                            |
+| [`examples/led8`](examples/led8)                                   | IAP15F2K61S2 驱动 8 颗 LED 的最小板与无头验证                                 |
 
 示例都是 private 包，按需构建或测试，例如：
 
 ```bash
 pnpm --filter @mica-js/example-ct107d build
-pnpm --filter @mica-js/example-iap15f2k61s2 test
+pnpm --filter @mica-js/example-devices test
 ```
 
 ## 包

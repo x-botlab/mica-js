@@ -25,7 +25,7 @@ const CHIPS = [
   '74hc02',
   '74hc138',
   '74hc573',
-  '74ls04',
+  '74hc14',
   'at24c02',
   'cx20106a',
   'ds1302',
@@ -41,7 +41,9 @@ const CHIPS = [
 
 function readDefinition(id) {
   return parseDeviceMetadata(
-    JSON.parse(readFileSync(join(PROJECT, 'src', 'devices', id, 'device.json'), 'utf8')),
+    JSON.parse(
+      readFileSync(join(PROJECT, '..', 'devices', 'src', 'devices', id, 'device.json'), 'utf8'),
+    ),
   );
 }
 
@@ -349,7 +351,7 @@ const PLACEMENTS = [
   { designator: 'J13', device: JUMPER_REF, column: 0, order: 3 },
   { designator: 'J2', device: HEADER_REF, column: 0, order: 4, properties: { vs1838: true } },
   { designator: 'J3', device: JUMPER_REF, column: 0, order: 5 },
-  { designator: 'U18', device: CHIP_REF('74ls04'), column: 1, order: 0 },
+  { designator: 'U18', device: CHIP_REF('74hc14'), column: 1, order: 0 },
   { designator: 'U6', device: CHIP_REF('74hc573'), column: 2, order: 0 },
   { designator: 'U7', device: CHIP_REF('74hc573'), column: 2, order: 1 },
   { designator: 'U8', device: CHIP_REF('74hc573'), column: 2, order: 2 },

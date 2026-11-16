@@ -96,7 +96,7 @@ const DEVICE_ASSETS = {
     '74hc02',
     '74hc138',
     '74hc573',
-    '74ls04',
+    '74hc14',
     'at24c02',
     'buzzer',
     'cx20106a',

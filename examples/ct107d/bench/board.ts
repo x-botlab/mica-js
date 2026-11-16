@@ -15,15 +15,15 @@ import type { DeviceIR } from '@mica-js/sdk/model';
 import type { DeviceContext } from '@mica-js/simulator/device';
 
 /**
- * 整板基准夹具：按 `ct107d.sch` 的网表装配 51 颗器件，器件行为来自 `src/devices/`。
+ * 整板基准夹具：按 `ct107d.sch` 的网表装配 51 颗器件，器件行为来自 `examples/devices/src/devices/`。
  *
- * 与 `verify-schematic.mjs` 的差异只有一处：那里装的是 `dist/devices/<id>/device.js`，
- * 这里像 `test/harness.ts` 一样现场编译 `model.ddl` 并直接装载 `src/devices/<id>/index.ts`。
+ * 与 `verify-schematic.mjs` 的差异只有一处：那里装的是 `examples/devices/dist/devices/<id>/device.js`，
+ * 这里像器件库的测试夹具一样现场编译 `model.ddl` 并直接装载 `src/devices/<id>/index.ts`。
  * 基准因此不依赖 `mica build`，也不会被并行构建打断。
  */
 
 const PROJECT = join(import.meta.dirname, '..');
-const DEVICE_ROOT = join(PROJECT, 'src', 'devices');
+const DEVICE_ROOT = join(PROJECT, '..', 'devices', 'src', 'devices');
 
 export interface Adapter {
   sync(batch: { readonly outputs: Readonly<Record<string, readonly unknown[]>> }): void;
@@ -46,9 +46,9 @@ export interface DeviceModule {
 /**
  * 产物清单：原理图 + 固件 + 按实例 ID 排序后的模型/适配器/器件定义聚合哈希。
  *
- * 基准夹具实际读取的是 `src/devices/<id>/{model.ddl,index.ts,device.json}`，
+ * 基准夹具实际读取的是 `examples/devices/src/devices/<id>/{model.ddl,index.ts,device.json}`，
  * 由 vitest 现场转译并编译 DDL；**不是** `dist/`。浏览器侧核对的是构建后的
- * `dist/devices/<id>/{device.js,device.json}`，两边格式不同，不能直接比较原始哈希。
+ * `examples/devices/dist/devices/<id>/{device.js,device.json}`，两边格式不同，不能直接比较原始哈希。
  * 这里用 `source: 'src'` 明确口径；跨侧比较时请先确认同一构建输入。
  */
 export interface BoardFingerprints {

@@ -48,9 +48,9 @@ function serverOptions(args) {
 }
 
 /**
- * 把 `examples/ct107d` 的交付物复制到被忽略的 `public/components/ct107d`，让主页面能
- * 打开 `ct107d.cnv`。该示例包已包含整板用到的全部器件（含 IAP15F2K61S2、seg4 与
- * blue-led），因此不需要再从别的工程取器件；没有产物时只提示并跳过。
+ * 把 `examples/devices` 的器件与 `examples/ct107d` 的 widget/原理图/画布复制到被忽略的
+ * `public/components/ct107d`，让主页面能打开 `ct107d.cnv`。器件库统一提供整板用到的
+ * 全部器件（含 IAP15F2K61S2、seg4 与 blue-led）；没有产物时只提示并跳过。
  */
 async function copyCt107d(artifacts) {
   const source = resolve(repository, 'examples', 'ct107d');
@@ -58,8 +58,9 @@ async function copyCt107d(artifacts) {
     console.log('components: 未找到 examples/ct107d/ct107d.cnv，跳过 CT107D 画布预览');
     return;
   }
-  if (!existsSync(resolve(source, 'dist', 'devices'))) {
-    console.log('components: 未找到 examples/ct107d/dist，请先构建该示例包，跳过 CT107D 预览');
+  const devicesRoot = resolve(repository, 'examples', 'devices');
+  if (!existsSync(resolve(devicesRoot, 'dist', 'devices'))) {
+    console.log('components: 未找到 examples/devices/dist，请先构建器件库，跳过 CT107D 预览');
     return;
   }
   const target = resolve(artifacts, 'ct107d');
@@ -76,7 +77,9 @@ async function copyCt107d(artifacts) {
   canvas.schematic = previewSchematic;
   writeFileSync(resolve(target, previewCanvas), `${JSON.stringify(canvas, null, 2)}\n`);
   await cp(resolve(source, 'assets'), resolve(target, 'assets'), { recursive: true });
-  await cp(resolve(source, 'dist', 'devices'), resolve(target, 'devices'), { recursive: true });
+  await cp(resolve(devicesRoot, 'dist', 'devices'), resolve(target, 'devices'), {
+    recursive: true,
+  });
   await cp(resolve(source, 'dist', 'widgets'), resolve(target, 'widgets'), { recursive: true });
   console.log('components: 已复制 CT107D 的器件、widget、原理图与画布');
 }
@@ -85,10 +88,13 @@ try {
   if (mode !== 'build' && mode !== 'dev') throw new Error('Usage: components.mjs <dev|build>');
   await bootstrap();
   await run(process.execPath, [cli, 'build', '--root', components]);
-  const ct107dCli = resolve(repository, 'packages', 'sdk', 'dist', 'build', 'cli.js');
+  const componentCli = resolve(repository, 'packages', 'sdk', 'dist', 'build', 'cli.js');
+  const devicesRoot = resolve(repository, 'examples', 'devices');
   const ct107dRoot = resolve(repository, 'examples', 'ct107d');
-  if (existsSync(resolve(ct107dRoot, 'mica.config.ts')))
-    await run(process.execPath, [ct107dCli, 'build', '--root', ct107dRoot]);
+  for (const root of [devicesRoot, ct107dRoot]) {
+    if (existsSync(resolve(root, 'mica.config.ts')))
+      await run(process.execPath, [componentCli, 'build', '--root', root]);
+  }
   const artifacts = resolve(app, 'public', 'components');
   await rm(artifacts, { recursive: true, force: true });
   await cp(resolve(components, 'dist'), artifacts, { recursive: true });

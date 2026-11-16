@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
  * CT107D 器件侧配对基准：固定当前引擎、原理图与两套固件，AB/BA 交替对比 HEAD 与工作树器件。
- * HEAD 用 `git ls-tree` + `git show <commit>:<path>` 导出；worktree 复制当前 `src/devices`。
- * 两侧在独立临时项目中用当前 mica CLI 构建 dist，仅器件源码不同；每次测量是独立子进程。
+ * HEAD 用 `git ls-tree` + `git show <commit>:<path>` 导出旧版 CT107D 器件目录；worktree 复制
+ * `examples/devices/src/devices`。两侧在独立临时目录里用当前 mica CLI 构建器件库，再把
+ * ct107d 的 verify-firmware 指向该构建产物；仅器件源码不同，每次测量是独立子进程。
  * 输出：原始 stdout/stderr、JSON 中位数与轨迹对比；metrics 核验固定固件的 sha/字节数、名与 faults，
  * 以及 execution/clock/tick/warmup/window、原理图摘要和 dist 器件模块摘要。
  * 轨迹是 verify-firmware 过滤计时行后的 CLI 汇总输出（LED/数码管/话题），不是逐电气沿断言。
@@ -29,13 +30,16 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 const PROJECT = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
-const DEVICE_SOURCE = join(PROJECT, 'src', 'devices');
+const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
+const DEVICE_SOURCE = join(DEVICES_PROJECT, 'src', 'devices');
 const SCHEMATIC = join(PROJECT, 'ct107d.sch');
 const VERIFY_ENTRY = join(PROJECT, 'verify-firmware.mjs');
-const PROJECT_MODULES = join(PROJECT, 'node_modules');
-const PROJECT_FILES = [
-  [join(PROJECT, 'mica.config.ts'), 'mica.config.ts'],
-  [join(PROJECT, 'package.json'), 'package.json'],
+const PROJECT_MODULES = join(DEVICES_PROJECT, 'node_modules');
+const DEVICE_PROJECT_FILES = [
+  [join(DEVICES_PROJECT, 'mica.config.ts'), 'mica.config.ts'],
+  [join(DEVICES_PROJECT, 'package.json'), 'package.json'],
+];
+const BOARD_PROJECT_FILES = [
   [VERIFY_ENTRY, 'verify-firmware.mjs'],
   [SCHEMATIC, 'ct107d.sch'],
 ];
@@ -93,8 +97,8 @@ function parseOptions(argv) {
 }
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
-let schematicSha256;
-const schematicDigest = () => (schematicSha256 ??= sha256(readFileSync(SCHEMATIC)));
+const schematicDigestOf = (variant) =>
+  sha256(readFileSync(join(variant.boardDirectory, 'ct107d.sch')));
 const round = (value, digits = 3) => Number(value.toFixed(digits));
 const format = (value, digits = 3) => (Number.isFinite(value) ? value.toFixed(digits) : '-');
 
@@ -135,6 +139,7 @@ function gitStatus(path) {
 
 const REPO_ROOT = realpathSync(git(['rev-parse', '--show-toplevel']).trim());
 const DEVICE_REL = relative(REPO_ROOT, DEVICE_SOURCE).split(sep).join('/');
+const HEAD_DEVICE_REL = 'examples/ct107d/src/devices';
 if (DEVICE_REL === '' || DEVICE_REL.startsWith('..'))
   throw new Error(`器件目录不在仓库内：${DEVICE_SOURCE}`);
 const CHILD_ENV = {
@@ -160,7 +165,7 @@ const excluded = (path) =>
 
 /** 基线导出：列出提交中的器件文件后逐个 git show；跳过生成声明与构建产物。 */
 function exportHeadDevices(commit, destination) {
-  const prefix = `${DEVICE_REL}/`;
+  const prefix = `${HEAD_DEVICE_REL}/`;
   const files = git([
     'ls-tree',
     '-r',
@@ -169,11 +174,11 @@ function exportHeadDevices(commit, destination) {
     '-z',
     commit,
     '--',
-    `:/${DEVICE_REL}`,
+    `:/${HEAD_DEVICE_REL}`,
   ])
     .split('\0')
     .filter((path) => path.startsWith(prefix) && !excluded(path.slice(prefix.length)));
-  if (files.length === 0) throw new Error(`提交 ${commit} 中没有器件源码：${DEVICE_REL}`);
+  if (files.length === 0) throw new Error(`提交 ${commit} 中没有器件源码：${HEAD_DEVICE_REL}`);
   for (const path of files) {
     const target = join(destination, ...path.slice(prefix.length).split('/'));
     mkdirSync(dirname(target), { recursive: true });
@@ -181,23 +186,53 @@ function exportHeadDevices(commit, destination) {
   }
 }
 
+function exportHeadFile(commit, path, destination, replacements = []) {
+  let source = git(['show', `${commit}:${path}`], 'buffer').toString('utf8');
+  for (const [from, to] of replacements) source = source.replaceAll(from, to);
+  mkdirSync(dirname(destination), { recursive: true });
+  writeFileSync(destination, source);
+}
+
 function prepareVariant(kind, commit, tempRoot) {
   const directory = join(tempRoot, kind);
-  const destination = join(directory, 'src', 'devices');
+  const devicesDirectory = join(directory, 'devices');
+  const boardDirectory = join(directory, 'ct107d');
+  const destination = join(devicesDirectory, 'src', 'devices');
   mkdirSync(destination, { recursive: true });
-  if (kind === 'head') exportHeadDevices(commit, destination);
-  else
+  mkdirSync(boardDirectory, { recursive: true });
+  if (kind === 'head') {
+    exportHeadDevices(commit, destination);
+    exportHeadFile(
+      commit,
+      'examples/ct107d/verify-firmware.mjs',
+      join(boardDirectory, 'verify-firmware.mjs'),
+      [
+        ["join(PROJECT, 'src', 'devices'", "join(PROJECT, '..', 'devices', 'src', 'devices'"],
+        ["join(PROJECT, 'dist', 'devices'", "join(PROJECT, '..', 'devices', 'dist', 'devices'"],
+      ],
+    );
+    exportHeadFile(commit, 'examples/ct107d/ct107d.sch', join(boardDirectory, 'ct107d.sch'));
+  } else {
     cpSync(DEVICE_SOURCE, destination, {
       recursive: true,
       filter: (source) => !excluded(basename(source)),
     });
-  for (const [from, to] of PROJECT_FILES) cpSync(from, join(directory, to));
+    for (const [from, to] of BOARD_PROJECT_FILES) cpSync(from, join(boardDirectory, to));
+  }
+  for (const [from, to] of DEVICE_PROJECT_FILES) cpSync(from, join(devicesDirectory, to));
+  cpSync(join(REPO_ROOT, 'tsconfig.base.json'), join(devicesDirectory, 'tsconfig.base.json'));
   symlinkSync(
     PROJECT_MODULES,
     join(directory, 'node_modules'),
     process.platform === 'win32' ? 'junction' : 'dir',
   );
-  return { id: kind, label: kind === 'head' ? 'HEAD' : 'worktree', directory };
+  return {
+    id: kind,
+    label: kind === 'head' ? 'HEAD' : 'worktree',
+    directory,
+    devicesDirectory,
+    boardDirectory,
+  };
 }
 
 function resolveMicaCli() {
@@ -215,7 +250,7 @@ function buildVariant(variant, micaCli, outDir) {
   const started = performance.now();
   const result = execute(
     process.execPath,
-    [micaCli, 'build', '--root', variant.directory],
+    [micaCli, 'build', '--root', variant.devicesDirectory],
     variant.directory,
   );
   writeFileSync(join(outDir, `build-${variant.id}.stdout.txt`), result.stdout);
@@ -262,7 +297,7 @@ function assertMetrics(variant, caseDefinition, metrics) {
   if (mismatched.length > 0)
     throw new Error(`${variant.label} ${caseDefinition.id} metrics 不符：${mismatched.join(', ')}`);
   const artifacts = metrics.artifacts ?? {};
-  if (artifacts.schematicSha256 !== schematicDigest())
+  if (artifacts.schematicSha256 !== schematicDigestOf(variant))
     throw new Error(
       `${variant.label} ${caseDefinition.id} 原理图摘要不符：${artifacts.schematicSha256}`,
     );
@@ -276,7 +311,7 @@ function assertDistArtifacts(variant, caseDefinition, artifacts) {
     throw new Error(`${variant.label} ${caseDefinition.id} metrics 缺少 dist 摘要`);
   const ids = Object.keys(modules);
   const wrong = ids.filter((id) => {
-    const path = join(variant.directory, 'dist', 'devices', id, 'device.js');
+    const path = join(variant.devicesDirectory, 'dist', 'devices', id, 'device.js');
     return modules[id] !== sha256(readFileSync(path));
   });
   if (ids.length === 0 || wrong.length > 0)
@@ -291,7 +326,7 @@ function runCase(variant, caseDefinition, outDir, roundIndex, seq) {
   const result = execute(
     process.execPath,
     [
-      join(variant.directory, 'verify-firmware.mjs'),
+      join(variant.boardDirectory, 'verify-firmware.mjs'),
       caseDefinition.firmwarePath,
       `--warmup-ms=${caseDefinition.warmupMs}`,
       `--ms=${caseDefinition.windowMs}`,
@@ -299,7 +334,7 @@ function runCase(variant, caseDefinition, outDir, roundIndex, seq) {
       `--execution=${EXECUTION}`,
       `--clock=${CLOCK_FREQUENCY}`,
     ],
-    variant.directory,
+    variant.boardDirectory,
   );
   writeFileSync(join(outDir, raw.stdout), result.stdout);
   writeFileSync(join(outDir, raw.stderr), result.stderr);

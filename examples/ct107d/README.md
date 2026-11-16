@@ -1,37 +1,33 @@
-# CT107D 器件包
+# CT107D 整板示例
 
-CT107D 竞赛板的 Mica 示例工程：21 个器件（13 种芯片 + 轻触按键 + 有源蜂鸣器 + 继电器 +
-两脚跳线与 2×3 跳线排针 + IAP15F2K61S2、`seg4` 数码管、`blue-led` 指示灯）、4 个板面 widget
-（背景图 / 按键 / 四位数码管 / 指示灯）、整板原理图 `ct107d.sch`、板面画布 `ct107d.cnv`
-与一段 8051 演示固件。
+CT107D 竞赛板的 Mica 示例工程：4 个板面 widget（背景图 / 按键 / 四位数码管 / 指示灯）、
+整板原理图 `ct107d.sch`、板面画布 `ct107d.cnv` 与一段 8051 演示固件。
+整板使用的器件全部来自 [`examples/devices`](../devices/README.md) 器件库。
 
 工程位于仓库的 `examples/ct107d`，纳入 pnpm workspace（包名 `@mica-js/example-ct107d`）：
 
 ```bash
-pnpm --filter @mica-js/example-ct107d build       # 输出 dist/devices、dist/widgets
-pnpm --filter @mica-js/example-ct107d test        # 器件与 widget 用例
+pnpm --filter @mica-js/example-devices build      # 先构建器件库（原理图/画布/固件联调依赖它）
+pnpm --filter @mica-js/example-ct107d build       # 输出 dist/widgets
+pnpm --filter @mica-js/example-ct107d test        # widget 与板级集成用例
 pnpm --filter @mica-js/example-ct107d bench       # 整板性能基准（不进 test）
 pnpm --filter @mica-js/example-ct107d typecheck
 pnpm --filter @mica-js/example-ct107d schematic   # 原理图校验
 pnpm --filter @mica-js/example-ct107d canvas      # 画布校验
 pnpm --filter @mica-js/example-ct107d firmware    # 重新汇编固件
 pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
-                                                  # 外部固件整板联调（见 docs/official-firmware-simulation.md）
+                                                  # 外部固件整板联调
 ```
 
-整板用到的器件全部在本包 `src/devices/` 下，`mica build` 一次输出 21 个器件，
-不依赖其它工程的构建产物。Playground 的 `scripts/components.mjs` 会把本包的 `dist/`
-与 `ct107d.{sch,cnv,assets}` 复制到被忽略的 `public/components/ct107d/`。
-
-其中 `seg4`、`blue-led`、`iap15f2k61s2` 另有独立的源工程
-（[`../seg4`](../seg4/README.md)、[`../blue-led`](../blue-led/README.md)、
-[`../iap15f2k61s2`](../iap15f2k61s2/README.md)），带各自的测试、基准与文档。本包里的
-这三份是**镜像副本**，`test/mirrors.test.ts` 会逐文件比对，防止两边漂移；修改器件行为
-时两处都要改（或先改独立工程再同步过来）。
+整板用到的器件全部来自 [`examples/devices`](../devices/README.md) 器件库，本包不再复制
+器件源码。`mica build` 只输出 4 个板面 widget；原理图、画布与固件联调脚本从器件库的
+`src/devices/` 读取元数据，并从 `examples/devices/dist/devices/` 装载构建产物。
+Playground 的 `scripts/components.mjs` 会先构建器件库，再把器件、本包的 widget、
+`ct107d.{sch,cnv,assets}` 复制到被忽略的 `public/components/ct107d/`。
 
 器件是 `dist/public` 里旧版 playground 器件（`<id>/devices/<id>.{json,js,md}`，基于已退役的
-`@mica-js/device` IR API）的迁移版本：每个器件一个 `src/devices/<id>/` 目录，用 DDL 描述行为，
-`mica build` 输出 `dist/devices/<id>/{device.json, device.js}`。
+`@mica-js/device` IR API）的迁移版本，现统一维护在器件库 `examples/devices/src/devices/<id>/`，
+用 DDL 描述行为；器件库的 `mica build` 输出 `dist/devices/<id>/{device.json, device.js}`。
 
 画布控件按新端口重写为 `src/widgets/<id>/`，构建产物是 `dist/widgets/<id>/{widget.json, widget.js}`；
 `ct107d.cnv` 把背景图与 17 个按键热区、2 片四位数码管铺在开发板照片上，并通过
@@ -39,19 +35,19 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
 
 ## 与旧实现的对应
 
-| 旧路径                               | 新路径                                    |
-| ------------------------------------ | ----------------------------------------- |
-| `dist/public/<id>/devices/<id>.json` | `src/devices/<id>/device.json`            |
-| `dist/public/<id>/devices/<id>.js`   | `src/devices/<id>/model.ddl` + `index.ts` |
-| `dist/public/<id>/devices/<id>.md`   | `docs/<id>.md`                            |
-| `dist/public/<id>/widgets/<id>.json` | `src/widgets/<id>/widget.json`            |
-| `dist/public/<id>/widgets/<id>.js`   | `src/widgets/<id>/index.ts`               |
-| `dist/public/<id>/canvases/*.cnv`    | `ct107d.cnv`（单块板面画布）              |
+| 旧路径                               | 新路径                                                     |
+| ------------------------------------ | ---------------------------------------------------------- |
+| `dist/public/<id>/devices/<id>.json` | `examples/devices/src/devices/<id>/device.json`            |
+| `dist/public/<id>/devices/<id>.js`   | `examples/devices/src/devices/<id>/model.ddl` + `index.ts` |
+| `dist/public/<id>/devices/<id>.md`   | `examples/devices/docs/<id>.md`                            |
+| `dist/public/<id>/widgets/<id>.json` | `src/widgets/<id>/widget.json`                             |
+| `dist/public/<id>/widgets/<id>.js`   | `src/widgets/<id>/index.ts`                                |
+| `dist/public/<id>/canvases/*.cnv`    | `ct107d.cnv`（单块板面画布）                               |
 
 旧 `.js` 使用已退役的 `@mica-js/device` IR API（`api.ir.pin.writeDigital`、`observeDigital`、
 `event.at`），在当前运行时不工作；迁移保留其行为契约与理想化说明，但把实现换成 DDL。器件
-放在同一个 Mica 包里（旧 playground 也是单个 `demo` 包），`mica build` 为每个
-`src/devices/<id>/` 输出独立的 `device.json` / `device.js`，可单独上传；widget 同理。
+统一放在器件库的 `src/devices/<id>/`，器件库 `mica build` 为每个目录输出独立的
+`device.json` / `device.js`，可单独上传；widget 同理。
 
 ## 目录
 
@@ -63,28 +59,23 @@ examples/ct107d/
   vitest.config.ts
   vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
   bench/
-    board.ts                      整板夹具：按 ct107d.sch 装配 48 颗器件（装载 src/，不依赖 dist）
+    board.ts                      整板夹具：按 ct107d.sch 装配 48 颗器件（装载器件库 src/，不依赖 dist）
     measure.ts                    测量核心：进程 CPU 时间读数、电气/运行时/JIT 指标、topicDigest
     perf.test.ts                  基准用例：只断言下限，并追加一行到 bench/results.jsonl
-  src/devices/<id>/
-    model.ddl                     器件行为：引脚、状态、通道、进程与反应
-    index.ts                      适配器：把输出通道转发到同名话题
-    device.json                   元数据：属性、引脚、端口（省略 symbol，按引脚自动生成）
-  src/devices/iap15f2k61s2/       JIT 器件：kernel/ 与 peripherals/ 多个模块
-  src/devices/{seg4,blue-led}/    板级显示器件（与整板同步迁移进来）
+  src/widgets/                   板面 widget（器件源码在 ../devices/src/devices/）
   src/widgets/<id>/
     widget.json                   元数据：属性、端口
     index.ts                      widget 实现（render / input / dispose）
   src/widgets/drawing.ts          颜色、裁剪、文字等共用绘制工具
   test/
-    harness.ts                    共享板级夹具：DDL + src 适配器 + 电阻/探针/数字源
-    manifest.test.ts              元数据、DDL、适配器三份声明的一致性
     widgets.test.ts               四个板面 widget 的元数据与绘制/交互
-    <id>.test.ts                  各器件行为用例
-  docs/<id>.md                    器件说明：引脚、行为、端口、理想化
-  docs/official-firmware-simulation.md
-                                  官方工程固件（dist/代码）整板联合仿真实测记录与问题清单
-  docs/official-firmware-gaps.md  同一批固件的验收缺口与需要补的器件/网络/夹具
+    seg4-preview.test.ts          真实预览固件的数码管轨迹回归
+  ../devices/src/devices/<id>/
+    model.ddl                     器件行为：引脚、状态、通道、进程与反应
+    index.ts                      适配器：把输出通道转发到同名话题
+    device.json                   元数据：属性、引脚、端口（省略 symbol，按引脚自动生成）
+  ../devices/test/<id>.test.ts    各器件行为用例（含 manifest 与 DDL/元数据一致性）
+  ../devices/docs/<id>.md         器件说明：引脚、行为、端口、理想化
   assets/ct107d-board.webp        板面照片（画布背景图，1068×768）
   assets/ct107d-demo.bin          演示固件（70 字节，assemble-firmware.mjs 生成）
   firmware/demo.asm               8051 汇编源
@@ -99,17 +90,12 @@ examples/ct107d/
   verify-firmware.mjs             固件联调：把外部 HEX/bin（如 dist/代码）装进整板看输出
 ```
 
-`docs/official-firmware-simulation.md` 记录 14 份官方固件的实测结果与已修复的模型问题；
-`docs/official-firmware-gaps.md` 单独列出仍无法完整验收的工程（`12.0`、`13.0`、`14.0` 的
-超声/测频页，以及 `6.0`/`7.0` 的串口）和需要补的网络与夹具。串口按该文档第 3 节同时补
-MCU 的 `uart1Tx` 端口与原理图里的独立 `uart-probe` 器件，两者缺一不可。
-
 ## 器件
 
 | id            | 型号                       | 类别           | 端口（方向）                     |
 | ------------- | -------------------------- | -------------- | -------------------------------- |
 | `74hc02`      | 四路 2 输入或非门          | 组合逻辑       | —                                |
-| `74ls04`      | 六反相器                   | 组合逻辑       | —                                |
+| `74hc14`      | 六施密特触发反相器         | 组合逻辑       | —                                |
 | `74hc138`     | 3-8 译码器（低有效）       | 组合逻辑       | `select`、`enabled`、`code`      |
 | `74hc573`     | 八路透明 D 锁存器          | 时序逻辑       | `latch`                          |
 | `uln2003`     | 七路达林顿驱动             | 驱动           | `mask`、`channels`               |
@@ -127,7 +113,7 @@ MCU 的 `uart1Tx` 端口与原理图里的独立 `uart-probe` 器件，两者缺
 | `jumper`      | 两脚跳线（J13）            | 装配配置       | —                                |
 | `jumper-2x3`  | 2×3 跳线排针（J2）         | 装配配置       | —                                |
 
-每个器件的引脚表、行为、端口编码与理想化见 [`docs/<id>.md`](docs/)。
+每个器件的引脚表、行为、端口编码与理想化见 [`examples/devices/docs/<id>.md`](../devices/docs/)。
 
 ## 端口负载编码
 
@@ -171,9 +157,9 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 
 ## 原理图 `ct107d.sch`
 
-按 CT107D 原理图（仓库根的 `SCH_硬件原理图V30.pdf`）逐网络还原竞赛板，包含本包的
-18 个芯片/按键/执行器/跳线器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
-（DS1/DS2 两片）；这三个器件同时有独立源工程，见上文。未实现器件——电阻、电容、晶振、LCD、拨码开关、其余排针与跳线（J3/J5/J7/JS1/JS2）、CH340C、霍尔、
+按 CT107D 原理图（仓库根的 `SCH_硬件原理图V30.pdf`）逐网络还原竞赛板，包含器件库中的
+20 个芯片/按键/执行器/跳线器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
+（DS1/DS2 两片）；器件源码统一维护在 [`examples/devices`](../devices/README.md)。未实现器件——电阻、电容、晶振、LCD、拨码开关、其余排针与跳线（J3/J5/J7/JS1/JS2）、CH340C、霍尔、
 运放、电机、红外发射管——暂时忽略。
 
 | 文件                   | 说明                                                                |
@@ -183,7 +169,7 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 | `build-schematic.mjs`  | 生成器：内含 PDF 逐网络对照表与布局，重新生成两个产物               |
 | `verify-schematic.mjs` | 校验：解析网表并对照、建板、跑通锁存链路与数码管扫描                |
 
-器件引用由宿主解析到本包的 `./dist/devices/<ID>/`（共 21 个器件，均由本包一次构建）。
+器件引用由宿主解析到器件库的 `examples/devices/dist/devices/<ID>/`（共 25 个器件，由器件库一次构建）。
 
 已实现的连接：
 
@@ -197,17 +183,17 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
   高电平选中该位，U7 的段码低电平点亮该段，`digit1`–`digit4` 仍按「点亮的段」编码。
 - **按键**：S4–S7 一端接地（J5 的 2-3 短接）、另一端接 `P30/TXD`–`P33`；S8–S19 构成 3×4
   矩阵，行同上四根、列接 `P42/WR`/`P35`/`P34`；S1 接在 `VCC` 与 `RST` 之间。详见
-  [`docs/push-button.md`](docs/push-button.md)。
+  [`docs/push-button.md`](../devices/docs/push-button.md)。
 - **串行**：`P20/SCL`/`P21/SDA` → U4（地址脚与 WP 接地）与 U16（A0–A2/EXT 接地）；
   `P13`/`P23`/`P17/SCK` → U19；`P14` → U5；U16 模拟端为 `AIN0`–`AIN3` 与 `OUT` 网标。
 - **执行器**：U10 OUT5 → `N_RELAY` → K1 线圈（另一端接 VCC），K1 的 `com`（引脚 3）接
   `m2` 端子、`no`（引脚 6）与第二组触点公共端 `com2`（引脚 1）接 GND；U10 OUT7 →
-  `N_BUZZ` → SP1 负端（正端接 VCC）。详见 [`docs/relay.md`](docs/relay.md)、
-  [`docs/buzzer.md`](docs/buzzer.md)。
+  `N_BUZZ` → SP1 负端（正端接 VCC）。详见 [`docs/relay.md`](../devices/docs/relay.md)、
+  [`docs/buzzer.md`](../devices/docs/buzzer.md)。
 - **定时/红外**：U15 OUT → `NET_SIG`，RST 与 VCC 接高；CX20106A 输出 `N_B1`、VS1838 输出
   `N_B2` 接到 J2 的 2/6 脚，J2 的 1-3 固定短接（`P10` → U18 整形/驱动链 `N_A1`），接收端
   公共脚 4（`P11`）由实例属性 `vs1838` 选择短接 4-6 或 2-4；J2 的 5 脚是红外发射管支路
-  `N_A2`。详见 [`docs/jumper-2x3.md`](docs/jumper-2x3.md)。
+  `N_A2`。详见 [`docs/jumper-2x3.md`](../devices/docs/jumper-2x3.md)。
 - **跳线**：J13 的 `a` 接 `P42/WR`、`b` 接 GND，`closed` 属性模拟「WR 接 0 V」的装配位置。
 
 忽略器件后的替代约定：
@@ -270,11 +256,11 @@ node build-canvas.mjs     # 修改坐标或位号后重新生成 ct107d.cnv
 
 ## 基准
 
-`bench/` 是整板性能基准，与 `examples/stm32g431rbt6`、`examples/iap15f2k61s2` 同构，差别只有两处：
+`bench/` 是整板性能基准，与 `examples/devices/bench` 里的器件基准同构，差别只有两处：
 
 - 读数用**进程 CPU 时间**（`process.cpuUsage`）而不是挂钟，避免并行任务抢 CPU 时读数抖动；
-- 器件从 `src/` 装载：`bench/board.ts` 按 `ct107d.sch` 折出网表，现场编译 `model.ddl` 并导入
-  适配器（同 `test/harness.ts`），因此 `bench` 不依赖 `mica build`。
+- 器件从器件库 `examples/devices/src/devices/` 装载：`bench/board.ts` 按 `ct107d.sch` 折出网表，
+  现场编译 `model.ddl` 并导入适配器，因此 `bench` 不依赖器件库的 `mica build`。
 
 ```powershell
 pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.perf.config.ts
@@ -331,10 +317,7 @@ pnpm run schematic        # node verify-schematic.mjs
 pnpm run canvas           # node verify-canvas.mjs
 ```
 
-`test/harness.ts` 用 `compileDDL` 现场编译 `model.ddl` 并直接装载 `src/` 适配器，同时就地
-声明三种辅助器件：线性电阻（上拉/下拉/串联）、电平探针（`pin y` → `level` 通道）、数字源
-（`level` 通道 → `pin y`）。被测器件不被 mock，电气求解与通道都走真实仿真板。
-`manifest.test.ts` 保证 `device.json`、`model.ddl` 与适配器描述的属性、引脚、端口不会漂移；
-`decode-chain.test.ts` 把 74HC138、74HC02、74HC573 接成 CT107D 真实的
-`P2.5–P2.7 → Y4# → WR 或非 → LE` 片选—锁存链路，端到端验证三颗器件的组合行为；
-`widgets.test.ts` 用最小 widget API 与假 2D 上下文覆盖四个板面 widget 的元数据与行为。
+器件行为用例和板级夹具随器件源码迁到 `examples/devices/test/`；本包保留
+`widgets.test.ts` 与 `seg4-preview.test.ts`。`test/seg4-preview.test.ts` 使用
+`bench/board.ts` 装配整板，覆盖真实预览固件的数码管轨迹；`widgets.test.ts` 用最小
+widget API 与假 2D 上下文覆盖四个板面 widget 的元数据与行为。

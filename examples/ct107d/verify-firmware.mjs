@@ -2,7 +2,7 @@
  * 固件联调：把一个或多个 Intel HEX（或裸 `.bin`）装进 `ct107d.sch` 整板跑联合仿真，
  * 打印板面可观测输出（LED 亮度、数码管段码、锁存器/译码器话题、串行器件话题）。
  *
- * 与 `verify-schematic.mjs` 一样装载 `dist/devices/<id>/device.js`，因此先跑 `mica build`。
+ * 与 `verify-schematic.mjs` 一样装载 `examples/devices/dist/devices/<id>/device.js`，因此先构建器件库。
  * 与它的区别是固件由命令行给出，而不是用 `assets/` 里自带的演示固件。
  *
  * 用法：
@@ -155,7 +155,7 @@ const CHIP_IDS = [
   '74hc02',
   '74hc138',
   '74hc573',
-  '74ls04',
+  '74hc14',
   'at24c02',
   'buzzer',
   'cx20106a',
@@ -177,10 +177,11 @@ const CHIP_IDS = [
   'iap15f2k61s2',
 ];
 
-const deviceModulePath = (id) => join(PROJECT, 'dist', 'devices', id, 'device.js');
+const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
+const deviceModulePath = (id) => join(DEVICES_PROJECT, 'dist', 'devices', id, 'device.js');
 const loadDefinition = (id) =>
   parseDeviceMetadata(
-    JSON.parse(readFileSync(join(PROJECT, 'src', 'devices', id, 'device.json'), 'utf8')),
+    JSON.parse(readFileSync(join(DEVICES_PROJECT, 'src', 'devices', id, 'device.json'), 'utf8')),
   );
 const loadModule = (id) => import(pathToFileURL(deviceModulePath(id)).href);
 
@@ -197,7 +198,7 @@ const schematicText = readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8');
 const schematic = parseSchematic(schematicText);
 const artifacts = {
   source: 'dist',
-  note: 'device modules from dist/devices/<id>/device.js; metadata from src/devices/<id>/device.json; firmware from the CLI input',
+  note: 'device modules from examples/devices/dist/devices/<id>/device.js; metadata from examples/devices/src/devices/<id>/device.json; firmware from the CLI input',
   schematicSha256: createHash('sha256').update(schematicText).digest('hex'),
   deviceModulesSha256: deviceModuleSha256,
 };

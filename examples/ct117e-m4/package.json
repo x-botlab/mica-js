@@ -12,6 +12,7 @@
     "bench": "pnpm build && vitest run --config vitest.perf.config.ts"
   },
   "devDependencies": {
+    "@mica-js/example-devices": "workspace:*",
     "@mica-js/sdk": "workspace:*",
     "@mica-js/simulator": "workspace:*",
     "@mica-js/stm32g431rbt6-core": "workspace:*",

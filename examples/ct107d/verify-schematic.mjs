@@ -23,11 +23,12 @@ import {
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
+const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
 const CHIP_IDS = [
   '74hc02',
   '74hc138',
   '74hc573',
-  '74ls04',
+  '74hc14',
   'at24c02',
   'buzzer',
   'cx20106a',
@@ -51,10 +52,10 @@ const DISPLAY_REF = 'xbotlab:seg4';
 
 const loadDefinition = (id) =>
   parseDeviceMetadata(
-    JSON.parse(readFileSync(join(PROJECT, 'src', 'devices', id, 'device.json'), 'utf8')),
+    JSON.parse(readFileSync(join(DEVICES_PROJECT, 'src', 'devices', id, 'device.json'), 'utf8')),
   );
 const loadModule = (id) =>
-  import(pathToFileURL(join(PROJECT, 'dist', 'devices', id, 'device.js')).href);
+  import(pathToFileURL(join(DEVICES_PROJECT, 'dist', 'devices', id, 'device.js')).href);
 
 const devices = new Map();
 for (const id of CHIP_IDS) {
@@ -230,10 +231,13 @@ const writeLatch = (byte, address) => [
 
 /** 依次写入八个数码管位的段码（共阳驱动码）：0、1、2、3、4、5、6、7。 */
 const DIGIT_CODES = [0xc0, 0xf9, 0xa4, 0xb0, 0x99, 0x92, 0x82, 0xf8];
+/** MOV R7,#0 / DJNZ R7,$：256 × 4 个 1T 周期，12 MHz 下约 85 µs，覆盖默认 50 µs 稳定窗口。 */
+const SETTLE_DELAY = [0x7f, 0x00, 0xdf, 0xfe];
 const SCAN = DIGIT_CODES.flatMap((code, index) => [
   ...writeLatch(0x00, Y6), // 八位都不选中（共阳：位选全低）
   ...writeLatch(code, Y7), // 段码
   ...writeLatch(1 << index, Y6), // 只选中第 index + 1 位
+  ...SETTLE_DELAY, // 保持选中，等待 seg4 的稳定窗口提交段码
 ]);
 const firmware = Uint8Array.from([
   0x75,

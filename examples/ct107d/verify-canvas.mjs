@@ -34,7 +34,7 @@ const schematic = parseSchematic(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8
 
 /** 器件引用 → 元数据目录：本工程芯片 + 相邻的三个器件工程。 */
 const deviceDir = (reference) =>
-  join(PROJECT, 'dist', 'devices', reference.slice('xbotlab:'.length));
+  join(PROJECT, '..', 'devices', 'dist', 'devices', reference.slice('xbotlab:'.length));
 
 const definitions = new Map();
 for (const reference of new Set(schematic.sheet.symbols.map((symbol) => symbol.device))) {
@@ -589,7 +589,8 @@ const library = [];
 const instances = [];
 for (const symbol of buttonSymbols) {
   const module = await import(
-    pathToFileURL(join(PROJECT, 'dist', 'devices', 'push-button', 'device.js')).href
+    pathToFileURL(join(PROJECT, '..', 'devices', 'dist', 'devices', 'push-button', 'device.js'))
+      .href
   );
   const listeners = buttonTopics.get(symbol.id);
   library.push({

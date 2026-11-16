@@ -12,7 +12,7 @@ pnpm --filter @mica-js/example-ideal-led build
 pnpm --filter @mica-js/example-ideal-led typecheck
 ```
 
-它不是独立发布的器件，而是 [`../iap15f2k61s2`](../iap15f2k61s2/README.md) 测试与基准的
+它不是独立发布的器件，而是 [`../devices`](../devices/README.md) 测试与基准的
 兄弟工程夹具：后者的 `test/` 与 `bench/` 通过 `../ideal-led/dist/devices/ideal-led`
 装载本包产物，因此两个目录必须并排放在 `examples/` 下。
 

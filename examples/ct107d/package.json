@@ -3,20 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "CT107D 竞赛板示例：13 种芯片与轻触按键、3 个板面 widget、整板原理图与画布，以及 IAP15F2K61S2 的 8051 演示固件",
+  "description": "CT107D 竞赛板示例：板面 widget、整板原理图与画布，器件来自 @mica-js/example-devices",
   "scripts": {
     "prepare:types": "mica prepare",
     "build": "mica build",
+    "build:devices": "pnpm --dir ../devices run build",
     "typecheck": "mica prepare && tsc --noEmit",
     "test": "mica build && vitest run",
     "bench": "vitest run --config vitest.perf.config.ts",
-    "schematic": "mica build && node verify-schematic.mjs",
-    "canvas": "mica build && node verify-canvas.mjs",
+    "schematic": "pnpm run build:devices && mica build && node verify-schematic.mjs",
+    "canvas": "pnpm run build:devices && mica build && node verify-canvas.mjs",
     "firmware": "node assemble-firmware.mjs",
-    "firmware:sim": "node verify-firmware.mjs"
+    "firmware:sim": "pnpm run build:devices && node verify-firmware.mjs"
   },
   "devDependencies": {
     "@mica-js/document": "workspace:*",
+    "@mica-js/example-devices": "workspace:*",
     "@mica-js/sdk": "workspace:*",
     "@mica-js/simulator": "workspace:*",
     "@types/node": "^24.19.2",

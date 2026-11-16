@@ -8,7 +8,7 @@
  *   node packages/device-model/bench/library.mjs
  *
  * 数据来源是两套真实器件库产物：`examples/ct107d/dist/devices/*` 与
- * `examples/stm32g431rbt6/dist/devices/*`（共 18 份 device.js）。
+ * `examples/devices/dist/devices/*`（共 25 份 device.js）。
  *
  * 断言只做方向性判断（第二次远快于第一次）与身份判断（缓存命中后模型还是同一份冻结
  * 快照），不断言绝对毫秒；精确的「校验次数为 1」由
@@ -24,7 +24,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const sources = [
   { label: 'ct107d', directory: join(root, 'examples/ct107d/dist/devices') },
-  { label: 'stm32g431rbt6', directory: join(root, 'examples/stm32g431rbt6/dist/devices') },
+  { label: 'devices', directory: join(root, 'examples/devices/dist/devices') },
 ];
 
 const importModule = (specifier) => import(pathToFileURL(specifier).href);

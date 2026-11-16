@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 /**
  * CT117E-M4 参考固件的默认 HEX 路径。
  *
- * 与实际固件夹具共用 `examples/stm32g431rbt6/bench`，避免同一映像维护两份。
+ * 与实际固件夹具共用 `examples/devices/bench/stm32g431rbt6`，避免同一映像维护两份。
  * 这是测试夹具：测试把 HEX 严格解析成 `0x08000000` 起的 Flash 映像后作为
  * `firmware` 属性传入。构建产物和器件运行时从不读取文件系统。
  */
@@ -13,8 +13,9 @@ export const DEFAULT_FIRMWARE_HEX = resolve(
   import.meta.dirname,
   '..',
   '..',
-  'stm32g431rbt6',
+  'devices',
   'bench',
+  'stm32g431rbt6',
   'HAL_06_LCD.hex',
 );
 

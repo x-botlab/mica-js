@@ -2,7 +2,7 @@
 
 STM32G431RBT6 的 MCU 内核，作为内部 workspace 包被两个器件工程共用：
 
-- `examples/stm32g431rbt6`
+- `examples/devices`（STM32G431RBT6 器件）
 - `examples/ct117e-m4`
 
 包内包含 Thumb/Thumb-2 译码与执行、总线与内存布局、GPIO/RCC/PWR/SysTick/NVIC/USART

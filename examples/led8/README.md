@@ -1,6 +1,6 @@
 # led8：IAP15F2K61S2 驱动 8 颗蓝色 LED
 
-用 [`iap15f2k61s2`](../iap15f2k61s2/README.md) 与 [`blue-led`](../blue-led/README.md) 两个器件工程的交付产物搭一块最小板：
+用器件库 [`iap15f2k61s2`](../devices/docs/iap15f2k61s2.md) 与 [`blue-led`](../devices/docs/blue-led.md) 的交付产物搭一块最小板：
 P2.0–P2.7 各接一颗蓝色 LED，用 `Project.hex` 固件跑走马灯。
 
 ```
@@ -58,8 +58,8 @@ node verify.mjs --quiet      # 只输出结论
 1. `parseSchematic` 读取 `led8.sch`，`deriveSchematicTopology` 用两个器件的符号几何折出网表；
    检查悬空端点、P2 引脚网络名、每颗 LED 阴极与对应引脚同网、VCC/GND 成员数。
 2. 读取 `Project.bin`（缺失时就地转换同目录的 `Project.hex`）作为 `firmware` 资源。
-3. 用 `createDeviceLibrary` / `createBoard` 装载 `../iap15f2k61s2/dist/devices/iap15f2k61s2/device.js`
-   与 `../blue-led/dist/devices/blue-led/device.js`，按原理图实例属性与网表建板。
+3. 用 `createDeviceLibrary` / `createBoard` 装载 `../devices/dist/devices/iap15f2k61s2/device.js`
+   与 `../devices/dist/devices/blue-led/device.js`，按原理图实例属性与网表建板。
 4. 以 10 ms 为步长推进，记录 `brightness` 话题，断言：同一时刻只有一颗亮、顺序为
    D1 → D8、8 颗都亮过、点亮亮度 ≈ 5 V / (500 Ω + 25 Ω) / 20 mA。
 
@@ -92,7 +92,7 @@ node verify.mjs --quiet      # 只输出结论
 ## 依赖
 
 `verify.mjs` 优先使用本目录安装的 `@mica-js/document` / `@mica-js/sdk`；未安装时回退到
-`../iap15f2k61s2/node_modules` 里的同一套依赖（两个器件工程已装好）。要建立本地副本：
+`../devices/node_modules` 里的同一套依赖（器件库已装好）。要建立本地副本：
 
 ```powershell
 cd dist\led8

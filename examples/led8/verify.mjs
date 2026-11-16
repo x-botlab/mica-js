@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 无头验证：把 `led8.sch` 折成网表，装载 `../iap15f2k61s2` 与 `../blue-led` 的交付产物，
+ * 无头验证：把 `led8.sch` 折成网表，装载 `../devices` 里 IAP15F2K61S2 与 blue-led 的交付产物，
  * 用 `Project.hex` 的固件跑真实仿真，检查 8 颗 LED 是否按 P2.0 → P2.7 依次点亮。
  *
  * 用法：node verify.mjs [--ms 800] [--quiet]
@@ -16,9 +16,9 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const HERE = import.meta.dirname;
-const DIST = join(HERE, '..');
-const MCU_PROJECT = join(DIST, 'iap15f2k61s2');
-const LED_PROJECT = join(DIST, 'blue-led');
+const DEVICES_PROJECT = join(HERE, '..', 'devices');
+const MCU_PROJECT = DEVICES_PROJECT;
+const LED_PROJECT = DEVICES_PROJECT;
 
 const MCU_REF = 'xbotlab:iap15f2k61s2';
 const LED_REF = 'xbotlab:blue-led';
@@ -48,7 +48,7 @@ async function loadToolchain() {
       console.warn(
         `本工程未安装 @mica-js 工具链，改用器件工程的依赖（${cause.code ?? cause.message}）`,
       );
-    const base = pathToFileURL(join(MCU_PROJECT, 'node_modules', '@mica-js') + '/');
+    const base = pathToFileURL(join(HERE, '..', 'devices', 'node_modules', '@mica-js') + '/');
     return {
       document: await import(new URL('document/dist/schematic/index.js', base)),
       sdk: await import(new URL('sdk/dist/index.js', base)),

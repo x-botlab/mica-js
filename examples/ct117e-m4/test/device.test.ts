@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { createJointBoard, gramMatchesOracle } from '../../ili9325/test/joint-harness';
+import { createJointBoard, gramMatchesOracle } from '../../devices/test/ili9325/joint-harness';
 import { loadFirmware } from './firmware';
 import {
   CT117E_M4_END_TIME_PS,
