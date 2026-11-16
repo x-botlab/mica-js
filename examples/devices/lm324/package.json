@@ -1,0 +1,149 @@
+{
+  "publisher": "example",
+  "name": "lm324",
+  "version": "1.0.0",
+  "description": "CT107D U26 模拟前端的 fused 业务模型：RB4 电位器作为内部增益控制，IN+/IN- 差分电压经可调增益放大后由 AIN2 输出；输出用正电阻网络接到 VCC/GND，具有有限输出电阻并饱和到 0–VCC。不是通用 14 脚 LM324，不含四路独立运放、外部反馈求解或 VEE 负电源。",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "CT107D 融合式可调放大器（LM324 模拟前端）",
+  "designatorPrefix": "U",
+  "properties": {
+    "feedbackResistance": {
+      "type": "number",
+      "title": "反馈电阻 R34/R35",
+      "description": "U26 输入级的固定反馈电阻。默认按原图取 100 kΩ，与内部电位器共同决定差分增益。",
+      "default": 100000,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "potResistance": {
+      "type": "number",
+      "title": "RB4 最大阻值",
+      "description": "内部增益电位器的最大阻值。默认按原图取 10 kΩ。",
+      "default": 10000,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "minPotResistance": {
+      "type": "number",
+      "title": "RB4 端停电阻",
+      "description": "滑臂到端部时保留的最小电阻，避免零电阻导致无限增益。默认 100 Ω，对应默认参数下最大增益 2001。",
+      "default": 100,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "initialWiper": {
+      "type": "number",
+      "title": "初始滑臂位置",
+      "description": "上电时内部 RB4 的位置，0 = 最小增益，1 = 最大增益。运行期通过 setWiper 改变。",
+      "default": 0,
+      "nullable": false,
+      "min": 0,
+      "max": 1,
+      "step": 0.001
+    },
+    "outputResistance": {
+      "type": "number",
+      "title": "输出电阻",
+      "description": "AIN2 输出的戴维南等效串联电阻，决定外部负载下的压降。上限 100 kΩ 用于把近轨单支路近似的绝对误差限制在 outputResistance×(VCC−GND)/1 GΩ 以内。",
+      "default": 25,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 100000,
+      "step": 1
+    },
+    "updatePeriodUs": {
+      "type": "number",
+      "title": "更新周期",
+      "description": "输入采样与输出更新的周期。输入或增益变化后，输出最多延迟一个周期；这是行为采样模型，不是零延迟连续求解。",
+      "default": 10,
+      "nullable": false,
+      "unit": "µs",
+      "min": 0.1,
+      "max": 1000000,
+      "step": 0.1
+    }
+  },
+  "pins": {
+    "inMinus": {
+      "label": "IN−",
+      "description": "差分反相输入，接 J7 的 IN-；只读取 sample.voltage，不加载网络"
+    },
+    "inPlus": {
+      "label": "IN+",
+      "description": "差分同相输入，接 J7 的 IN+；只读取 sample.voltage，不加载网络"
+    },
+    "out": {
+      "label": "AIN2",
+      "description": "放大输出，接 PCF8591 的 AIN2；由正电阻网络推挽到 VCC/GND"
+    },
+    "vcc": {
+      "label": "VCC",
+      "description": "正电源；输出上轨取该引脚采样电压"
+    },
+    "gnd": {
+      "label": "GND",
+      "description": "下轨；输出下轨取该引脚采样电压。原图 U26 的 VEE 负电源不在本 fused 模型中"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {
+      "AmplifierSetting": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "number"
+          },
+          "gain": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "methods": {
+      "setWiper": {
+        "params": {
+          "type": "number"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "getWiper": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      },
+      "getGain": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      }
+    },
+    "events": {
+      "onDidSetting": {
+        "ref": "AmplifierSetting"
+      }
+    }
+  }
+}

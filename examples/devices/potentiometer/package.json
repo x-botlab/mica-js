@@ -1,0 +1,99 @@
+{
+  "publisher": "example",
+  "name": "potentiometer",
+  "version": "1.0.0",
+  "description": "三端线性电位器：VDD–滑臂与滑臂–GND 两段有限电阻按 position 实时分配总轨道电阻，滑臂电压由板级线性电阻网络求解。position 0 表示滑臂靠近 GND、1 表示靠近 VDD；两端保留 endResistance，避免零欧端点。电压经 sample.voltage 读取并以 voltage 端口发布；浮空网络不伪造电压。理想化：无触点噪声、无机械行程/锥度、无功率与温度系数。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "三端线性电位器",
+  "designatorPrefix": "RV",
+  "properties": {
+    "trackResistance": {
+      "type": "number",
+      "title": "轨道总电阻",
+      "description": "VDD 到 GND 的标称总电阻，不含两端各一份端点电阻。",
+      "default": 10000,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "endResistance": {
+      "type": "number",
+      "title": "端点电阻",
+      "description": "position 为 0 或 1 时仍保留在滑臂与对应端点之间的有限电阻。",
+      "default": 10,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 0.1
+    },
+    "initialPosition": {
+      "type": "number",
+      "title": "初始位置",
+      "description": "上电位置，0 靠近 GND，1 靠近 VDD。",
+      "default": 0.5,
+      "nullable": false,
+      "min": 0,
+      "max": 1,
+      "step": 0.01
+    }
+  },
+  "pins": {
+    "vdd": {
+      "label": "VDD",
+      "description": "轨道上端，接板级正电源"
+    },
+    "gnd": {
+      "label": "GND",
+      "description": "轨道下端，接板级地"
+    },
+    "wiper": {
+      "label": "W",
+      "description": "滑臂，输出两段电阻分压后的电压"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {
+      "setPosition": {
+        "params": {
+          "type": "number"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "getPosition": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      },
+      "getVoltage": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      }
+    },
+    "events": {
+      "onDidPosition": {
+        "type": "number"
+      },
+      "onDidVoltage": {
+        "type": "number"
+      }
+    }
+  },
+  "type": "module"
+}

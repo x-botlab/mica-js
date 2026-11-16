@@ -1,38 +1,17 @@
 import { describe, expect, it } from 'vitest';
+import { SIMPLE_DEVICE_IDS } from './device-projects.ts';
 import { createBoardWith, loadSourceDevice, readMetadata } from './harness.ts';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
 /**
- * 21 个简单统一器件的清单、DDL 与适配器接口一致性。
+ * 简单统一器件的清单、DDL 与适配器接口一致性。
  *
  * 本轮只交付仿真内核：不要求 `view2d`、几何或展示入口。这里不重新实现 SDK 校验，
  * 只覆盖跨文件合同：清单引脚 == 模型 IR 引脚，每个输入通道有该器件显式声明的公共
  * 方法，每个输出通道有 `onDidXxx` 事件，且旧的 `ports` / `symbol` 不再出现在清单中。
+ *
+ * 器件发现与专项排除规则集中在 `test/device-projects.ts`，新增简单器件会自动纳入。
  */
-
-const IDS = [
-  '74hc02',
-  '74hc138',
-  '74hc14',
-  '74hc573',
-  'at24c02',
-  'blue-led',
-  'buzzer',
-  'cx20106a',
-  'ds1302',
-  'ds18b20',
-  'jumper',
-  'jumper-2x3',
-  'lm386',
-  'ne555',
-  'pcf8591',
-  'push-button',
-  'relay',
-  'uart-probe',
-  'uln2003',
-  'ultrasonic',
-  'vs1838',
-] as const;
 
 const cap = (value: string): string => `${value[0]?.toUpperCase() ?? ''}${value.slice(1)}`;
 /** 通道名与业务事件名不同的显式映射；其余按 onDid<Channel> 约定。 */
@@ -43,9 +22,13 @@ const OUTPUT_EVENTS: Readonly<Record<string, string>> = { pressed: 'onDidPress' 
 const INPUT_METHODS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   cx20106a: { carrier: 'setCarrier' },
   ds18b20: { temperature: 'setTemperature' },
+  hall: { fieldInput: 'setField' },
+  'ir-emitter': { request: 'setCarrier' },
   jumper: { control: 'setClosed' },
   'jumper-2x3': { control2: 'selectVs1838' },
+  lm324: { setWiper: 'setWiper' },
   pcf8591: { ain0: 'setAin0', ain1: 'setAin1', ain2: 'setAin2', ain3: 'setAin3' },
+  potentiometer: { setPosition: 'setPosition' },
   'push-button': { press: 'press' },
   'uart-probe': { send: 'send' },
   vs1838: { carrier: 'setCarrier' },
@@ -59,7 +42,7 @@ function irDeclarations(model: DeviceIR): readonly {
   return model.declarations as never;
 }
 
-describe.each(IDS)('统一器件 %s', (id) => {
+describe.each(SIMPLE_DEVICE_IDS)('统一器件 %s', (id) => {
   it('清单身份与模型引脚完全一致，且不含旧清单字段', async () => {
     const manifest = readMetadata(id);
     const device = await loadSourceDevice(id);

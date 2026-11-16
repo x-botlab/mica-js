@@ -6,13 +6,5 @@
     "allowArbitraryExtensions": true,
     "allowImportingTsExtensions": true
   },
-  "include": [
-    "test/harness.ts",
-    "test/manifest.test.ts",
-    "test/artifact.test.ts",
-    "test/ct107d/**/*.ts",
-    "test/blue-led/**/*.ts",
-    "vitest.config.ts",
-    "vitest.perf.config.ts"
-  ]
+  "include": ["test/**/*.ts", "vitest.config.ts", "vitest.perf.config.ts"]
 }
