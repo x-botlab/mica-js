@@ -6,7 +6,8 @@ import { build, normalizePath, type AliasOptions } from 'vite';
 import { parseAst } from 'rolldown/parseAst';
 import { validateMetadata } from '../metadata/index.js';
 
-function assertSelfContained(code: string, label: string): void {
+/** Rejects any runtime module, asset or `import.meta` reference left in a bundled entry. */
+export function assertSelfContained(code: string, label: string): void {
   const visit = (node: unknown): void => {
     if (node === null || typeof node !== 'object') return;
     if (Array.isArray(node)) {

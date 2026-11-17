@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { realpathSync } from 'node:fs';
-import { loadProjectConfig } from './config.js';
+import { loadProjectConfig, type MicaConfig } from './config.js';
 import { relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepare, watchDevices, type PrepareWatcher } from './prepare.js';
+import { prepareDevice, watchDevice, type PrepareDeviceOptions } from './unified-prepare.js';
 
 /** Writable half of `process.stdout` / `process.stderr`, so tests can capture CLI output. */
 export interface CliStreams {
@@ -22,19 +23,25 @@ export interface CliArguments {
 
 type PrepareOptions = { readonly root: string; readonly sourceDir: string };
 
+/** Resolved project configuration; unified device projects reload it in watch mode. */
+interface Project extends Awaited<ReturnType<typeof loadProjectConfig>> {
+  readonly config: MicaConfig;
+}
+
 const USAGE = `Usage: mica <command> [options]
 
 Commands:
-  build              build standalone Device / Widget artifacts
-  prepare            generate model.d.ddl.ts declarations
+  build              build one unified device package or standalone component artifacts
+  prepare            generate the type environment of the configured project
 
 A mica.config.ts file identifies the project; it is discovered upwards from --root.
+Projects that configure \`device\` build a unified device package and generate .mica types.
 
 Options:
   --config <file>     explicit mica.config.ts, relative to --root
   --root <dir>        discovery directory (default: current directory)
   --source-dir <dir>  override the configured source directory
-  --watch            watch DDL definitions (prepare only)
+  --watch            watch prepare inputs (prepare only)
   -h, --help         show this help`;
 
 /** Parses SDK commands without reading or executing project configuration. */
@@ -124,25 +131,47 @@ export async function runCli(
     streams.out.write(`${USAGE}\n`);
     return 0;
   }
-  try {
+  const load = async (): Promise<Project> => {
     const project = await loadProjectConfig({
       root: options.root,
       ...(options.config === undefined ? {} : { config: options.config }),
     });
-    const configured = {
+    return {
       ...project,
       config: {
         ...project.config,
         ...(options.sourceDir === undefined ? {} : { sourceDir: options.sourceDir }),
       },
     };
+  };
+  try {
+    const project = await load();
     if (options.command === 'build') {
       const { buildProject } = await import('./project.js');
-      await buildProject(configured);
+      await buildProject(project);
       streams.out.write('mica build: complete\n');
       return 0;
     }
-    const preparation = { root: project.root, sourceDir: configured.config.sourceDir ?? 'src' };
+    if (project.config.device !== undefined) {
+      const loadDevice = async (): Promise<PrepareDeviceOptions> => {
+        const next = await load();
+        const device = next.config.device;
+        if (device === undefined)
+          throw new Error('The unified device configuration was removed from mica.config.ts.');
+        return {
+          root: next.root,
+          sourceDir: next.config.sourceDir ?? 'src',
+          manifest: device.manifest,
+          ...(device.model === undefined ? {} : { model: device.model }),
+          configFile: next.configFile,
+        };
+      };
+      const initial = await loadDevice();
+      return options.watch
+        ? await watchDeviceLoop(loadDevice, initial, streams)
+        : await prepareDeviceOnce(initial, streams);
+    }
+    const preparation = { root: project.root, sourceDir: project.config.sourceDir ?? 'src' };
     return options.watch
       ? await watchLoop(preparation, streams)
       : await prepareOnce(preparation, streams);
@@ -177,30 +206,82 @@ function watchLoop(options: PrepareOptions, streams: CliStreams): Promise<number
       settle(1);
       return;
     }
+    awaitWatch(watcher, streams, settle, () => resolve(options.root, options.sourceDir));
+  });
+}
 
-    let closing = false;
-    const stop = (): void => {
-      // A second signal must not wait for a regeneration that may already be stuck.
-      if (closing) process.exit(0);
-      closing = true;
-      process.off('SIGINT', stop);
-      process.off('SIGTERM', stop);
-      void watcher.dispose().then(
-        () => settle(0),
-        (error: unknown) => {
-          streams.err.write(`mica prepare: ${messageOf(error)}\n`);
-          settle(1);
+async function prepareDeviceOnce(
+  options: PrepareDeviceOptions,
+  streams: CliStreams,
+): Promise<number> {
+  try {
+    const prepared = await prepareDevice(options);
+    for (const file of prepared.files) streams.out.write(`${relative(process.cwd(), file)}\n`);
+    streams.out.write(`mica prepare: device type environment ready for ${options.manifest}\n`);
+    return 0;
+  } catch (error) {
+    streams.err.write(`mica prepare: ${messageOf(error)}\n`);
+    return 1;
+  }
+}
+
+function watchDeviceLoop(
+  load: () => Promise<PrepareDeviceOptions>,
+  initial: PrepareDeviceOptions,
+  streams: CliStreams,
+): Promise<number> {
+  return new Promise<number>((settle) => {
+    let watcher: PrepareWatcher;
+    try {
+      watcher = watchDevice({
+        load,
+        onPrepare: (files) => {
+          for (const file of files) streams.out.write(`${relative(process.cwd(), file)}\n`);
         },
-      );
-    };
-    process.on('SIGINT', stop);
-    process.on('SIGTERM', stop);
+        onError: (error) => streams.err.write(`mica prepare: ${messageOf(error)}\n`),
+      });
+    } catch (error) {
+      streams.err.write(`mica prepare: ${messageOf(error)}\n`);
+      settle(1);
+      return;
+    }
+    awaitWatch(watcher, streams, settle, () =>
+      [initial.manifest, initial.model, initial.configFile]
+        .filter((file): file is string => file !== undefined)
+        .map((file) => relative(process.cwd(), resolve(initial.root, file)))
+        .join(', '),
+    );
+  });
+}
 
-    void watcher.ready.then(() => {
-      if (closing) return;
-      const sourceRoot = resolve(options.root, options.sourceDir);
-      streams.out.write(`mica prepare: watching ${sourceRoot} for changes\n`);
-    });
+/** Reports readiness and stops the watcher on the first termination signal. */
+function awaitWatch(
+  watcher: PrepareWatcher,
+  streams: CliStreams,
+  settle: (code: number) => void,
+  watching: () => string,
+): void {
+  let closing = false;
+  const stop = (): void => {
+    // A second signal must not wait for a regeneration that may already be stuck.
+    if (closing) process.exit(0);
+    closing = true;
+    process.off('SIGINT', stop);
+    process.off('SIGTERM', stop);
+    void watcher.dispose().then(
+      () => settle(0),
+      (error: unknown) => {
+        streams.err.write(`mica prepare: ${messageOf(error)}\n`);
+        settle(1);
+      },
+    );
+  };
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+
+  void watcher.ready.then(() => {
+    if (closing) return;
+    streams.out.write(`mica prepare: watching ${watching()} for changes\n`);
   });
 }
 

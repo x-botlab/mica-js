@@ -4,6 +4,9 @@ import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { compileDDL, generateDeviceTypeScript, type DeviceIR } from '@mica-js/ddl';
 
+export { renderModelTypeNamespace } from './unified-types.js';
+export { watchPreparation } from './unified-prepare.js';
+
 /** Device definition file expected inside every device directory. */
 export const DEVICE_SOURCE_FILE = 'model.ddl';
 

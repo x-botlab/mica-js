@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      Device HTML view environment (RFC 0023). Deploy this file, content.html, environment.js,
+      environment-sw.js and content.js together in the directory behind viewBaseUrlTemplate. This
+      trusted document keeps its own page for the life of the view and creates the inner sandbox
+      frame from the real content.html document of the same directory, then writes the author
+      document into that frame; it never rewrites itself, so an author navigation is a fault. The
+      inline policy mirrors HTML_VIEW_ENVIRONMENT_POLICY in paths.ts: it allows the one inner frame
+      of this deployment directory plus the asset worker. content.html repeats
+      HTML_VIEW_CONTENT_POLICY and still refuses every further frame.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' blob:; worker-src 'self'; frame-src 'self'; object-src 'none'; form-action 'none'; base-uri 'self'"
+    />
+    <title>Mica device view</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+      }
+    </style>
+    <script type="module" src="./environment.js"></script>
+  </head>
+  <body></body>
+</html>

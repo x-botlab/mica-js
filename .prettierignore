@@ -2,6 +2,7 @@ pnpm-lock.yaml
 **/dist
 **/coverage
 **/node_modules
+apps/playground/public/draco
 packages/ddl/src/generated
 test-results
 playwright-report

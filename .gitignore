@@ -13,4 +13,6 @@ playwright-report/
 .release-pack/
 .claude/skills/
 **/*.d.ddl.ts
+**/.mica/
+**/.mitest/
 /apps/playground/public/components/

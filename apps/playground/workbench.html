@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>融合电路工作台</title>
+  </head>
+  <body>
+    <main>
+      <div class="host-controls">
+        <strong>嵌入式电路工作台</strong>
+        <label>宽度 <input id="width" type="range" min="360" max="1280" value="720" /></label>
+        <label><input id="entitled" type="checkbox" checked /> 启用付费器件</label>
+        <label
+          >主题
+          <select id="theme">
+            <option value="dark">深色</option>
+            <option value="light">浅色</option>
+            <option value="system">跟随系统</option>
+          </select></label
+        >
+        <label>强调色 <input id="accent" type="color" value="#d4d4d4" /></label>
+        <button id="save">保存</button>
+        <button id="reopen">重新打开已保存</button>
+        <button id="reset">重置示例</button>
+        <button id="free">打开免费电路</button>
+        <button id="mcu">89C52 示例</button>
+        <span id="status" role="status">正在准备…</span>
+      </div>
+      <p>
+        运行后按住 S1 即可点亮 D1。89C52 示例通过 HEX 固件读取按键，再驱动 LED
+        和蜂鸣器。编辑模式支持引脚连线与拖动。LED 用于演示宿主访问策略。
+      </p>
+      <pre id="error" role="alert" hidden></pre>
+      <div id="workbench"></div>
+    </main>
+    <script type="module" src="/src/workbench-demo.ts"></script>
+  </body>
+</html>

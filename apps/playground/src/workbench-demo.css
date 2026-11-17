@@ -1,0 +1,85 @@
+:root {
+  color-scheme: dark;
+}
+html,
+body {
+  margin: 0;
+  background: #111111;
+  color: #e5e5e5;
+  font:
+    13px system-ui,
+    sans-serif;
+}
+main {
+  padding: 20px;
+}
+.host-controls {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.host-controls label {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+.host-controls button,
+.host-controls select {
+  padding: 6px 10px;
+  font: inherit;
+}
+#workbench {
+  width: 720px;
+  max-width: 100%;
+  height: 640px;
+  min-width: 320px;
+  border: 1px solid #383838;
+  border-radius: 8px;
+  overflow: hidden;
+  resize: horizontal;
+  background: #1c1c1c;
+}
+#error {
+  padding: 10px;
+  border: 1px solid #a75e5e;
+  color: #f28b82;
+  white-space: pre-wrap;
+}
+.workbench-host-picker {
+  min-width: 260px;
+  max-width: min(400px, 90vw);
+  padding: 18px;
+  border: 1px solid #666;
+  border-radius: 8px;
+  background: #222;
+  color: #eee;
+}
+.workbench-host-picker h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+.workbench-host-picker button {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px;
+  text-align: left;
+  border: 1px solid #666;
+  border-radius: 4px;
+  background: #333;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.workbench-host-picker::backdrop {
+  background: #0008;
+}
+.demo-device {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  text-align: left;
+  border: 1px solid var(--mica-border) !important;
+}
