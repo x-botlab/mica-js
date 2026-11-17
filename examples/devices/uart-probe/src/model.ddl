@@ -21,6 +21,8 @@ device UartProbe(
   const halfBitTime = floor(bitTime / 2);
   const maxSendLength = 64;
 
+  assert isSafeInteger(baud) && baud >= 1 && baud <= 1_000_000_000,
+    "baud must be an integer within 1..1000000000";
   assert isSafeInteger(bitTime) && bitTime >= 2,
     "baud must produce an integer bit time of at least 2 ps";
   assert driveResistance >= 0.001 && driveResistance <= 1_000_000_000,
@@ -36,8 +38,9 @@ device UartProbe(
     capacity: 8,
     overflow: Overflow.drop_oldest
   );
-  output channel tx: bytes(maxLength: 1, capacity: 32, overflow: Overflow.drop_oldest);
-  output channel rx: bytes(maxLength: 1, capacity: 32, overflow: Overflow.drop_oldest);
+  // 与 SerialLog 一样保留 4096 个单字节观察消息；单批超限显式报错，不静默丢前缀。
+  output channel tx: bytes(maxLength: 1, capacity: 4096, overflow: Overflow.error);
+  output channel rx: bytes(maxLength: 1, capacity: 4096, overflow: Overflow.error);
 
   memory injectBuffer[64];
 

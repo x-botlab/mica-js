@@ -29,10 +29,14 @@ device Iap15f2k61s2(clockFrequency: number default 11059200) {
   /** 片内 EEPROM（Data Flash）：IAP 读写，1 KiB。 */
   memory flash[0x400];
 
-  /** 串口 1 的线上字节流：每个完整帧发布一条单字节消息。 */
-  output channel uart1Tx: bytes(maxLength: 1, capacity: 16, overflow: Overflow.drop_oldest);
+  /**
+   * 串口 1 的线上字节流：每个完整帧发布一条单字节消息。
+   * capacity 与 shared/serial.ts 的 SERIAL_CAPACITY（4096 字节）对齐；单批超限显式
+   * CHANNEL_OVERFLOW，跨批历史仍由 SerialLog 的 cursor/dropped 语义裁剪。
+   */
+  output channel uart1Tx: bytes(maxLength: 1, capacity: 4096, overflow: Overflow.error);
   /** 串口 1 实际写入接收缓冲的字节：每个完整帧发布一条单字节消息。 */
-  output channel uart1Rx: bytes(maxLength: 1, capacity: 16, overflow: Overflow.drop_oldest);
+  output channel uart1Rx: bytes(maxLength: 1, capacity: 4096, overflow: Overflow.error);
 
   /** 程序计数器；JIT 绑定到这条 state。 */
   state pc: number = 0;
@@ -96,8 +100,12 @@ device Iap15f2k61s2(clockFrequency: number default 11059200) {
   }
 
   /**
-   * 复位值：SP=07H、PCON=30H、AUXR=01H、SPCTL=04H、P0–P3 锁存全 1（准双向、释放）。
+   * 复位值：SP=07H、PCON=30H、AUXR=01H、SPCTL=04H、P0–P4 锁存全 1（准双向、释放）。
    * 其余 SFR 与 `periph` 按零初始化；启动过程先于 JIT 的第一条指令执行。
+   *
+   * 端口引脚的初始意图就是复位后的准双向弱上拉（10 kΩ 到 VCC），不是 unknown 或
+   * 高阻。这样第一条 `MOV A,P3` / `JB P3.2` 在没有任何外部上拉时也能读到高；外部
+   * 强下拉仍然按电阻分压覆盖弱上拉。P4 的 weak-up 同样从复位时刻生效。
    */
   process start {
     store8(sfr, 0x00, 0xff);
@@ -107,40 +115,51 @@ device Iap15f2k61s2(clockFrequency: number default 11059200) {
     store8(sfr, 0x10, 0xff);
     store8(sfr, 0x20, 0xff);
     store8(sfr, 0x30, 0xff);
+    store8(sfr, 0x40, 0xff);
     store8(sfr, 0x4e, 0x04);
   }
-  pin P0_0(low: 1.5, high: 3.5);
-  pin P0_1(low: 1.5, high: 3.5);
-  pin P0_2(low: 1.5, high: 3.5);
-  pin P0_3(low: 1.5, high: 3.5);
-  pin P0_4(low: 1.5, high: 3.5);
-  pin P0_5(low: 1.5, high: 3.5);
-  pin P0_6(low: 1.5, high: 3.5);
-  pin P0_7(low: 1.5, high: 3.5);
-  pin P1_0(low: 1.5, high: 3.5);
-  pin P1_1(low: 1.5, high: 3.5);
-  pin P1_2(low: 1.5, high: 3.5);
-  pin P1_3(low: 1.5, high: 3.5);
-  pin P1_4(low: 1.5, high: 3.5);
-  pin P1_5(low: 1.5, high: 3.5);
-  pin P1_6(low: 1.5, high: 3.5);
-  pin P1_7(low: 1.5, high: 3.5);
-  pin P2_0(low: 1.5, high: 3.5);
-  pin P2_1(low: 1.5, high: 3.5);
-  pin P2_2(low: 1.5, high: 3.5);
-  pin P2_3(low: 1.5, high: 3.5);
-  pin P2_4(low: 1.5, high: 3.5);
-  pin P2_5(low: 1.5, high: 3.5);
-  pin P2_6(low: 1.5, high: 3.5);
-  pin P2_7(low: 1.5, high: 3.5);
-  pin P3_0(low: 1.5, high: 3.5);
-  pin P3_1(low: 1.5, high: 3.5);
-  pin P3_2(low: 1.5, high: 3.5);
-  pin P3_3(low: 1.5, high: 3.5);
-  pin P3_4(low: 1.5, high: 3.5);
-  pin P3_5(low: 1.5, high: 3.5);
-  pin P3_6(low: 1.5, high: 3.5);
-  pin P3_7(low: 1.5, high: 3.5);
+  pin P0_0(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P0_1(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P0_2(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P0_3(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P0_4(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P0_5(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P0_6(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P0_7(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P1_0(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P1_1(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P1_2(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P1_3(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P1_4(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P1_5(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P1_6(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P1_7(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P2_0(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P2_1(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P2_2(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P2_3(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P2_4(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P2_5(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P2_6(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P2_7(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P3_0(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P3_1(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P3_2(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P3_3(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P3_4(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P3_5(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P3_6(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P3_7(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P4_0(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P4_1(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  /** P4.2 可复用 WR；本模型按 GPIO 参与口模式与键盘列。 */
+  pin P4_2(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P4_3(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  /** P4.4 可复用 RD；本模型按 GPIO 参与口模式与键盘列。 */
+  pin P4_4(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P4_5(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P4_6(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
+  pin P4_7(low: 1.5, high: 3.5) = [resistor(to: VCC, resistance: 10_000)];
 
   /** 供电与地：装配必须把它们接到固定电位网络，推挽输出才有参考。 */
   pin VCC;

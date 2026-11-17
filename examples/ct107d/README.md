@@ -1,8 +1,8 @@
 # CT107D 整板示例（融合器件 + legacy 板面）
 
 CT107D 竞赛板的 Mica 示例工程。**正式运行模型是 `device/` 下的统一融合器件**：
-一个 `DeviceIR`、一个实例、一个 8051 JIT，外部只保留 `VCC`/`GND`，历史 54 个器件和
-102 条网络都折叠为器件内部槽。`src/widgets`、`ct107d.sch`、`ct107d.cnv` 继续保留为
+一个 `DeviceIR`、一个实例、一个 8051 JIT，外部只保留 `VCC`/`GND`，历史 54 个器件加
+J5 独立/矩阵选择器（共 55 个实例）和 111 条网络都折叠为器件内部槽。`src/widgets`、`ct107d.sch`、`ct107d.cnv` 继续保留为
 legacy 板面展示与编辑资料，不参与融合运行时；本次工作不新增/迁移 widget。
 
 工程位于仓库的 `examples/ct107d`，纳入 pnpm workspace（包名 `@mica-js/example-ct107d`）：
@@ -23,7 +23,18 @@ pnpm --filter @mica-js/example-ct107d canvas      # legacy 画布校验
 pnpm --filter @mica-js/example-ct107d firmware    # 重新汇编演示固件
 pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
                                                   # 外部固件分立板联调（测试工具）
+pnpm --filter @mica-js/example-ct107d firmware:suite -- --list
+                                                  # 全部课程程序清单/覆盖（opt-in）
+pnpm --filter @mica-js/example-ct107d firmware:suite -- --jobs 4
+                                                  # 26 HEX 隔离进程全固件套件
+pnpm --filter @mica-js/example-ct107d firmware:suite:tool
+                                                  # 套件自身严格 HEX/清单测试
 ```
+
+`firmware:suite` 是独立的 opt-in 测试工具，不进入日常 `vitest`：输入是未跟踪的
+`dist/蓝桥杯单片机程序`，被测对象仍是正式 `device/dist/model.js`（单实例/单 JIT）。
+严格 HEX 解析、每个项目的时钟证据、场景、断言、limitations 和 `/tmp/opencode` 报告格式见
+[`scripts/README.md`](scripts/README.md)。
 
 构建需要 Node.js 24。根 `build` 与 `build:fused` 都会先运行 `build:mcu`：它把
 `examples/devices/iap15f2k61s2` 构建到 `examples/devices/dist/iap15f2k61s2/`，并写入
@@ -38,8 +49,9 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
 
 融合器件复用的数字器件源码来自 [`examples/devices`](../devices/README.md) 器件库；本包
 不复制器件实现。默认 `build` 只把生成物写入 `device/dist`；legacy 板面 widget 已移到
-`build:widgets`，供旧画布/原理图脚本使用。融合前的历史板由 **54 个器件实例、102 条网络、
-26 种器件包** 组成；融合后图内只有 **1 个实例、2 个外部网络（VCC/GND）和 1 个 JIT**。
+`build:widgets`，供旧画布/原理图脚本使用。融合前的历史板由 **54 个历史器件 + J5
+选择器（55 个实例）、111 条网络、26 种器件包** 组成；融合后图内只有
+**1 个实例、2 个外部网络（VCC/GND）和 1 个 JIT**。
 
 历史原理图/画布链路继续读取统一器件包：`bench/board.ts`、`verify-firmware.mjs`、
 `verify-schematic.mjs` 与 `seg4-preview.test.ts` 通过 `legacy/device-package.mjs` 把统一
@@ -78,7 +90,7 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
 
 - 清单：`device/package.json`（`publisher: example`、`name: ct107d-board`），
   属性为 `firmware`（`code` 地址空间，起点 0，`maxBytes: 61440`，`nullable: true`）、
-  `clockFrequency` 与 `ultrasonicDistanceCm`；引脚只有 `VCC`/`GND`，与 `model.ddl` 完全一致。
+  `clockFrequency`、`ultrasonicDistanceCm` 与 `uartBaud`（UART 探针波特率，默认 9600）；引脚只有 `VCC`/`GND`，与 `model.ddl` 完全一致。
 - 构建：`device/scripts/generate.mjs` 生成 `src/model.ddl`、`src/nets.ts`、
   `src/channels.ts`；`mica build --root device` 输出自包含
   `device/dist/{package.json,model.js}`，`model.js` 导出 `model` 与同步 `create`。
@@ -91,7 +103,7 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
   命名空间 source-merge，符号和引脚访问改写为内部网；I²C、DS1302、1-Wire、
   UART 等协议状态机保留。
 - 模拟/显示/交互：LED 亮度、seg4 扫描稳定窗口、继电器/蜂鸣器、LM324 的
-  position/gain/outputVoltage、按键矩阵、J13/J2/J3 跳线由板级逻辑按原理图固定属性
+  position/gain/outputVoltage、按键矩阵、J13/J5/J2/J3 跳线由板级逻辑按原理图固定属性
   实现；PCF8591 AIN2 保持独立输入，不自动接 LM324 输出。
 - 统一接口：`onDidSignal`（`{designator, port, value}`）、`onDidBytes`
   （`{designator, port, data}`）、`onDidAmplifier`（`{position, gain, outputVoltage}`）与
@@ -100,14 +112,17 @@ pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
   `setAnalogInput`、`sendUart`、`getSnapshot`、`getAmplifier`、`getEeprom`、`getRtc`、
   `readSerial`、`getSerialStatus`。`setIrCarrier` 必须显式给 `designator`：
   `LD1`（发射端）、`U11`（CX20106A）或 `U20`（VS1838），不会同时驱动三个源；
-  J2 的 `vs1838` 选择仍由 `setJumper` 与板级网表决定。
+  J2 的 `vs1838` 选择仍由 `setJumper` 与板级网表决定。J13/J5 是真实三针选择器，
+  `setJumper` 的 `closed` 是默认 2-3 位置的投影：J13 `true` = WR 接地（IO），
+  `false` = WR 跟随 P42（memory）；J5 `true` = S4–S7 独立接地，`false` = 接 P44
+  组成 4×4 矩阵。切换立即重算当前按住的键，不需要重新按下。
   方法和事件均为同步接口，业务参数错误使用 `MethodError`；`bytes` 查询与事件各返回
   独立快照。`getSnapshot` 同时包含 latches/displays、`leds`（亮度兼容数组）与
   `ledStates`（每颗 LED 的 brightness/current/voltage）、relay/buzzer/hall/amplifier、
-  `temperature`（converted/value）、`lm386.active`、17 键 switches、J13/J3/J2 jumpers、
+  `temperature`（converted/value）、`lm386.active`、17 键 switches、J13/J5/J3/J2 jumpers、
   LD1/U11/U20 infrared、NE555、ULN2003、74HC138 decoder 与 PCF8591（AIN0–AIN3、
   channel、DAC 输出）的当前值。`setAnalogInput` 在送入模型前按 0..1 钳位，查询缓存同一值。
-- 身份：事件 payload 中的 `designator`/`port` 是板面位号与端口，不是 54 个实例 ID；
+- 身份：事件 payload 中的 `designator`/`port` 是板面位号与端口，不是 55 个实例 ID；
   bench 直接按 `DS1/digit1`、`U6/latch` 这类“位号/端口”键汇总轨迹。
 
 ### 接线与理想化
@@ -131,12 +146,13 @@ high 与 unknown（没有任何有效驱动时），
 这是本融合器件的明确边界：它保留固件可观察行为、交互和官方示例固件支持，但不是
 任意外部模拟接线或电气竞争的等价模型。固定属性直接取 `ct107d.sch`（不是清单默认值）：
 DS1/DS2 `commonAnode=true`、LED/数码管 `forwardResistance=1500`、J2 `vs1838=true`、
-J3/J13 闭合。
+J3/J13 为 2-3/闭合位置，J5 默认 2-3 独立键。J13/J5 是真实三针选择器，`.sch v1` 的
+两脚 jumper 只投影默认 2-3 位置；1-2 的 P42/P44 选择由融合板级 fragment 补全。
 
 ### 正确性验证
 
 - `test/fused-preview.test.ts`：真实预览固件在 0→4096 ms 的 64 ms 检查点与 1 ms
-  首帧轨迹上，与离散 54 器件 oracle 对比完整 DS1/DS2 8 位段码、U6–U9 锁存和
+  首帧轨迹上，与离散 55 器件 oracle 对比完整 DS1/DS2 8 位段码、U6–U9 锁存和
   board ready/faults；
 - `test/seg4-preview.test.ts`：保留原离散 oracle 的数码管轨迹回归；
 - `test/fused-firmware.test.ts`：只使用仓库内 `test/fixtures/8051/*.asm` 和严格
@@ -178,7 +194,7 @@ examples/ct107d/
   vitest.config.ts
   vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
   device/                        正式融合器件工程（unified device manifest + DDL + 工厂）
-    package.json                  publisher/name、firmware/clockFrequency/ultrasonicDistanceCm
+    package.json                  publisher/name、firmware/clockFrequency/ultrasonicDistanceCm/uartBaud
     mica.config.ts                mica build --root device
     scripts/generate.mjs          从器件 DDL/原理图/网表生成 model.ddl、nets.ts、channels.ts
     scripts/mcu-source.mjs        MCU 源码（含 shared/serial.ts）与产物内容哈希
@@ -193,7 +209,7 @@ examples/ct107d/
     src/{nets,channels}.ts        生成的网络索引与输出通道 → 位号/端口映射
   bench/
     fused.ts                      正式 dist 夹具：一个 instance、一个 JIT、VCC/GND 外部网
-    board.ts                      仅测试 oracle：按 ct107d.sch 装配 54 颗分立器件
+    board.ts                      仅测试 oracle：按 ct107d.sch 装配 55 颗分立器件
     measure.ts                    融合基准核心：进程 CPU、JIT、话题/事件、检查点与 workload
     perf.test.ts                  融合性能用例：断言 1 instance/1 JIT、演示固件与 behavior digest
     preview.test.ts               真实预览固件：64/16 ms 轨迹与共同检查点
@@ -230,6 +246,10 @@ examples/ct107d/
   verify-schematic.mjs            原理图校验：网表、建板、锁存链路、数码管扫描
   verify-canvas.mjs               画布校验：解析、绑定、对位、widget 渲染、按键网络
   verify-firmware.mjs             固件联调：把外部 HEX/bin（如 dist/代码）装进整板看输出
+  scripts/test-firmware-suite.mjs opt-in 全固件套件：严格 HEX + 26 项目隔离运行/报告
+  scripts/firmware-suite.manifest.json 项目身份、时钟证据、场景、断言与 limitations
+  scripts/firmware-hex.mjs        8051 60 KiB 严格 Intel HEX 解析器
+  scripts/README.md               套件用法、输出、状态语义与维护约定
 ```
 
 ## 器件
@@ -309,7 +329,7 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 
 按 CT107D 原理图（仓库根的 `SCH_硬件原理图V30.pdf`）逐网络还原竞赛板，包含器件库中的
 23 种芯片/传感器/按键/执行器/跳线器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
-（DS1/DS2 两片），合计 26 种器件包、54 个实例；器件源码统一维护在
+（DS1/DS2 两片）与 J5 选择器，合计 26 种器件包、55 个实例；器件源码统一维护在
 [`examples/devices`](../devices/README.md)。
 
 基准位号差异与后续上板计划见[与基准原理图的差距](#与基准原理图的差距)。
@@ -321,7 +341,7 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 | `build-schematic.mjs`  | 生成器：统一器件包清单 + 合成符号，输出 `.sch` 与网表               |
 | `verify-schematic.mjs` | 校验：解析网表并对照、建板、跑通锁存链路与数码管扫描                |
 
-器件引用由宿主解析到器件库的 `examples/devices/dist/<ID>/`（共 26 种器件包、54 个实例，
+器件引用由宿主解析到器件库的 `examples/devices/dist/<ID>/`（共 26 种器件包、55 个实例，
 由器件库一次构建）。
 
 已实现的连接：
@@ -334,13 +354,17 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 - **数码管**：DS1 的 `a`–`dp` 并到段总线、`com1`–`com4` 接 `com1`–`com4`；DS2 同样并段总线、
   `com1`–`com4` 接 `com5`–`com8`。两片都是**共阳**管（`seg4.commonAnode = true`）：U8 的位选
   高电平选中该位，U7 的段码低电平点亮该段，`digit1`–`digit4` 仍按「点亮的段」编码。
-- **按键**：S4–S7 一端接地（J5 的 2-3 短接）、另一端接 `P30/TXD`–`P33`；S8–S19 构成 3×4
-  矩阵，行同上四根、列接 `P42/WR`/`P35`/`P34`；S1 接在 `VCC` 与 `RST` 之间。详见
-  [`docs/push-button.md`](../devices/docs/push-button.md)。
+- **按键**：S4–S19 为 4×4 矩阵，行 `P30/TXD`–`P33`，列 `KCOL0`（S4–S7 公共端）、
+  `P42`（S8–S11）、`P35`（S12–S15）、`P34`（S16–S19）。J5 三针选择：2-3 把 KCOL0
+  接地（默认独立键），1-2 把 KCOL0 接到 `P44/RD`（矩阵第 1 列）。S1 接在 `VCC` 与
+  `RST` 之间。详见 [`docs/push-button.md`](../devices/docs/push-button.md)。
 - **串行**：`P20/SCL`/`P21/SDA` → U4（地址脚与 WP 接地）与 U16（A0–A2/EXT 接地）；
   `P13`/`P23`/`P17/SCK` → U19；`P14` → U5；U16 模拟端为 `AIN0`–`AIN3` 与 `OUT` 网标。
   `P10`/`P11` → U22（`trig`/`echo`），UART_PROBE 交叉接到 `P31/RXD`（`rxd`）与
-  `P30/TXD`（`txd`），把 MCU 的 UART1 接收与发送分别复原。
+  `P30/TXD`（`txd`），把 MCU 的 UART1 接收与发送分别复原；融合板用 `uartBaud` 属性
+  配置探针位时间（默认 9600，课程常用 1200/4800/9600）。UART 观察通道容量为
+  4096 条单字节消息；这是每批观察队列边界，不是无限 stream。单次 batch 超限显式
+  `CHANNEL_OVERFLOW`，跨批历史仍按 `SerialLog` 的 cursor/`droppedTotal` 语义裁剪。
 - **定时/跳线 J3**：U15 OUT → `NET_SIG` → J3 的 `a`，J3 的 `b` → `P34`。实物 J3 是 20 脚
   扩展排针（pin 15 = `NET_SIG`、pin 16 = `P34`），本示例只用 2 脚 `jumper` 模拟 15–16 的
   跳线帽，其余 18 脚未建模。
@@ -356,7 +380,10 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
   U26（`lm324`）的 `out` 与 PCF8591 的 `vin2` 同网 `AIN2`，差分输入 `inPlus`/`inMinus`
   接 `IN+`/`IN-` 网标。两者的板外端口在基准图纸上落在尚未建模的 J3.1 与 J7，因此按
   仓库既有约定保留为接口桩网标（详见下一节）。
-- **跳线**：J13 的 `a` 接 `P42/WR`、`b` 接 GND，`closed` 属性模拟「WR 接 0 V」的装配位置。
+- **跳线**：J13 是 CON3：1=`P42`、2=`WR`（U25 的四个 B 输入）、3=GND。默认
+  `closed=true` 对应 2-3（WR 接地，P42 仍自由作为矩阵列）；`closed=false` 对应 1-2
+  （WR 跟随 P42，用于 memory 写选通）。J5 同型：1=`P44/RD`、2=S4–S7 公共端、3=GND；
+  默认 `closed=true` 是 2-3 独立键，`false` 是 1-2 矩阵。
 
 忽略器件后的替代约定：
 
@@ -365,8 +392,11 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 - LED 阳极经 1 kΩ 限流电阻接 VCC；电阻不建模，改为每颗 LED 的 `forwardResistance = 1500 Ω`
   （500 Ω 器件等效 + 1 kΩ 外部），5 V 时亮度约 0.164。数码管的段阳极同样按
   `seg4.forwardResistance = 1500 Ω` 并入 1 kΩ 排阻。
-- `P42/WR` 除了 74HC02 的四个 B 输入，还接矩阵键盘的第二列；MCU 模型没有 P4 端口，
-  J13 的 WR 源侧不建模，原理图里 J13 只把 `P42/WR` 短接到 GND（`closed = true`）。
+- 真实 J13 的三针拓扑已按 2019-03-04 CT107D_CX 原理图校正：`P42` 是独立的 MCU/键盘
+  列网络，`WR` 是 U25 B 输入网络。旧两脚 jumper 投影只表达默认 2-3（`WR` 接地），
+  不会再把 `P42` 一起接地；1-2 的 `WR` 跟随 `P42` 由融合 fragment 实现。P4.2/P4.4
+  已在 MCU 模型中作为 GPIO/键盘列参与读引脚与 RMW，`WR/RD` 的 MOVX 外部总线脉冲仍未
+  建模，因此 memory 模式只验证显式 P42 低电平选通。
 - `RST` 只连 S1 与网标：MCU 模型没有复位引脚，复位电路里的 CR1/R3 不建模。
 - 执行器输出 `STEPA`–`STEPD`/`N_MOTOR`、`SPK`、`AIN0`–`AIN3`、`OUT`、`m2`、
   `NET_SIG`、`N_HALL`、`IN+`/`IN-` 等只保留驱动/接收侧网标，作为未建模排针的接口桩；
@@ -398,7 +428,7 @@ node build-schematic.mjs  # 修改网表/布局后重新生成
 ```
 
 `verify-schematic.mjs` 依次做五件事：解析 `ct107d.sch` 折出网表并与 `ct107d.netlist.json`
-逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 54 个器件建板跑 1 ms 确认没有
+逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 55 个器件建板跑 1 ms 确认没有
 装配故障；装一段固件走 `P2 → 74HC138 → 74HC02 → 74HC573 → LED`，确认 D1 亮度 0.1639、其余
 熄灭；同一段固件再按 `Y7 → U7（段码）`、`Y6 → U8（位选）` 逐位扫描，确认 DS1/DS2 八位分别
 锁存到写入的段码；接着装入 `assets/ct107d-demo.bin`，确认 8 位全亮且走马灯逐位轮转；最后
@@ -407,6 +437,10 @@ node build-schematic.mjs  # 修改网表/布局后重新生成
 `legacy/schematic-metadata.mjs` 按清单引脚合成。
 
 ## 板面画布 `ct107d.cnv`
+
+> `build-schematic.mjs` 按 designator 固定器件 symbol id：前 54 个保持原有 id，J5 使用
+> 新增固定 id。因此新增 P4 pin/J5 不会让 legacy `ct107d.cnv` 的 symbol 引用漂移；
+> 本次 `schematic` 与 `canvas` 校验均通过。
 
 把 `assets/ct107d-board.webp`（1068×768 的板面照片）当背景，在上面覆盖 17 个按键热区、
 8 个 LED 指示器、2 片四位数码管、蜂鸣器、继电器与 2 个交互式跳线，共 32 个实例；每个实例
@@ -430,7 +464,8 @@ node build-schematic.mjs  # 修改网表/布局后重新生成
 - **指示灯/执行器**：LED 按 `brightness` 点亮，蜂鸣器按 `active` 画光晕，继电器按
   `energized` 切换高亮。
 - **交互式跳线**：J13 点击切换 `closed1`（对应 `control`）；J2 的通道 1（1-3）固定短接，
-  只有通道 2（2-4/4-6）的 `closed2` 可切换。
+  只有通道 2（2-4/4-6）的 `closed2` 可切换。J5 的独立/矩阵选择只通过融合器件
+  `setJumper({designator:'J5', closed})` 暴露，本任务不修改 legacy canvas/widget。
 - **背景图**：`image` 属性用 `{ src, mode: "file" }` 资源引用，`src` 相对 `.cnv` 所在目录；
   读数来自宿主预取的字节，widget 自身没有网络访问。
 - 数码管默认红色、按键默认青色高亮，都可在 `.cnv` 的实例 `properties` 里覆盖。
@@ -451,7 +486,7 @@ node build-canvas.mjs     # 修改坐标或位号后重新生成 ct107d.cnv
 
 `bench/` 是**融合器件**性能基准。`bench/fused.ts` 只装载正式产物
 `device/dist/{package.json,model.js}`，创建一个实例，并断言图内恰好 1 个 JIT；外部只接
-`VCC`/`GND`。`bench/board.ts` 的 54 器件整板只作为测试 oracle，不进入计时。
+`VCC`/`GND`。`bench/board.ts` 的 55 器件整板只作为测试 oracle，不进入计时。
 
 ```powershell
 pnpm --filter @mica-js/example-ct107d bench     # 先 build:devices + build:fused，再 vitest
@@ -492,7 +527,7 @@ pnpm --filter @mica-js/example-ct107d bench     # 先 build:devices + build:fuse
 | `unavailable`                                 | 拿不到或按设计退化的指标及原因                                                                       |
 
 事件身份直接使用 payload 中的 `designator`/`port`（如 `DS1/digit1`、`U6/latch`）；不再用
-`topicOrigin` 把单实例拆成 54 个伪实例。`bench/results.jsonl` 只记录本轮读数，已忽略。
+`topicOrigin` 把单实例拆成 55 个伪实例。`bench/results.jsonl` 只记录本轮读数，已忽略。
 
 **性能读数。** bench 只对正式 `device/dist` 计时，离散 oracle 只做 correctness 对照，不进入
 性能窗口。旧的 fused/分立对照表是在 **demo 11.0592 MHz vs 分立 12 MHz** 不同频条件下生成的，

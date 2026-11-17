@@ -556,7 +556,10 @@ const buttonSymbols = schematic.sheet.symbols.filter(
   (symbol) => symbol.device === 'xbotlab:push-button',
 );
 const ROWS = ['P30/TXD', 'P31/RXD', 'P32', 'P33'];
-const COLUMNS = ['P42/WR', 'P35', 'P34'];
+// Legacy canvas uses the default J5 2-3 assembly: KCOL0 is the grounded independent
+// column. The netlist keeps P42 separate from WR so S8-S11 are still P42 keys.
+const COLUMNS = ['KCOL0', 'P42', 'P35', 'P34'];
+const MATRIX_COLUMNS = ['P42', 'P35', 'P34'];
 const PULL_UP = 1000;
 const PULL_DOWN = 10000;
 
@@ -571,12 +574,13 @@ for (const symbol of buttonSymbols) {
   addPin(netOfPin.get(`${symbol.id}/a`), symbol.id, 'a');
   addPin(netOfPin.get(`${symbol.id}/b`), symbol.id, 'b');
 }
-// 行 1 kΩ 上拉、列 10 kΩ 下拉：独立按键按下把行拉到 0 V，矩阵键按下把列抬到 4.5 V。
+// 行 1 kΩ 上拉、矩阵列 10 kΩ 下拉：独立按键按下把行拉到 0 V，矩阵键按下把列抬到 4.5 V。
+// J5 默认 2-3 把 KCOL0 直接接地，不能再用 10 kΩ 下拉，否则行不会被拉成低。
 for (const row of ROWS) {
   addPin(row, `pull_up_${row}`, 'b');
   addPin('VCC', `pull_up_${row}`, 'a');
 }
-for (const column of COLUMNS) {
+for (const column of MATRIX_COLUMNS) {
   addPin(column, `pull_down_${column}`, 'a');
   addPin('GND', `pull_down_${column}`, 'b');
 }
@@ -610,7 +614,7 @@ for (const symbol of buttonSymbols) {
   instances.push({ id: symbol.id, type: symbol.id, props: {} });
 }
 for (const name of ['pull_up', 'pull_down']) {
-  for (const net of name === 'pull_up' ? ROWS : [...COLUMNS, 'RST']) {
+  for (const net of name === 'pull_up' ? ROWS : [...MATRIX_COLUMNS, 'RST']) {
     const id = `${name}_${net}`;
     library.push({
       id,
@@ -641,7 +645,7 @@ const board = createBoard(createDeviceLibrary(library), {
   nets: [...nets].map(([name, pins]) => ({
     id: name,
     pins,
-    ...(name === 'VCC' ? { voltage: 5 } : name === 'GND' ? { voltage: 0 } : {}),
+    ...(name === 'VCC' ? { voltage: 5 } : name === 'GND' || name === 'KCOL0' ? { voltage: 0 } : {}),
   })),
 });
 const faults = [];
@@ -659,10 +663,10 @@ const EXPECTED = [
   ['S6', 'P31/RXD'],
   ['S5', 'P32'],
   ['S4', 'P33'],
-  ['S11', 'P42/WR'],
-  ['S10', 'P42/WR'],
-  ['S9', 'P42/WR'],
-  ['S8', 'P42/WR'],
+  ['S11', 'P42'],
+  ['S10', 'P42'],
+  ['S9', 'P42'],
+  ['S8', 'P42'],
   ['S15', 'P35'],
   ['S14', 'P35'],
   ['S13', 'P35'],

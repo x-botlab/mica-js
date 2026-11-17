@@ -220,7 +220,7 @@ function createProbe(board: unknown): Probe {
 
   /**
    * The fused device publishes board-level identities in the payload or in explicit
-   * compatibility topics (`uart1.tx`). There is no synthetic 54-instance namespace:
+   * compatibility topics (`uart1.tx`). There is no synthetic 55-instance namespace:
    * `DS1/digit1` is a designator + port, not an instance ID.
    */
   const identityOf = (message: {

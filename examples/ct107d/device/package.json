@@ -32,6 +32,17 @@
       "step": 0.1,
       "unit": "cm"
     },
+    "uartBaud": {
+      "type": "number",
+      "title": "UART 探针波特率",
+      "description": "板内 UART 探针的 8N1 位时间基准；应与固件实际波特率一致，默认 9600，课程常用 1200/4800/9600。",
+      "default": 9600,
+      "nullable": false,
+      "min": 1,
+      "max": 1000000000,
+      "step": 1,
+      "unit": "baud"
+    },
     "firmware": {
       "type": "firmware",
       "title": "固件",
@@ -346,6 +357,9 @@
                 "type": "boolean"
               },
               "J2": {
+                "type": "boolean"
+              },
+              "J5": {
                 "type": "boolean"
               }
             }

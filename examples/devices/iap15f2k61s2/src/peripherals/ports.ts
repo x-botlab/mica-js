@@ -13,6 +13,9 @@ import {
   SFR_P3,
   SFR_P3M0,
   SFR_P3M1,
+  SFR_P4,
+  SFR_P4M0,
+  SFR_P4M1,
   SFR_P_SW1,
   asBody,
   boolean,
@@ -25,11 +28,14 @@ import type { Body } from '../kernel/ir';
 import type { Peripheral } from './types';
 
 /**
- * P0–P3 的端口结构与复用功能。
+ * P0–P4 的端口结构与复用功能。
  *
  * 引脚意图按「准双向 / 推挽 / 仅输入 / 开漏」四种口模式生成；外设复用输出（UART 的
  * TXD、PCA 的 PWM/高速输出、SPI 的时钟与 MOSI、定时器时钟输出）在启用时覆盖锁存器，
  * 与手册的「复用功能优先」一致。读口返回引脚电平，读-改-写指令读锁存器（由内核区分）。
+ *
+ * P4.2/P4.4 在真实 STC15 上可复用为 WR/RD；本模型不实现外部数据总线的 WR/RD 脉冲，
+ * 只把这两脚按普通 GPIO 参与口模式/键盘列扫描。MOVX 仍按片内扩展 RAM 语义处理。
  */
 
 export interface Port {
@@ -39,12 +45,13 @@ export interface Port {
   readonly mode1: number;
 }
 
-/** P0–P3 的锁存器与口模式寄存器。模式位序是 `PxM1:PxM0`。 */
+/** P0–P4 的锁存器与口模式寄存器。模式位序是 `PxM1:PxM0`。 */
 export const PORTS: readonly Port[] = [
   { index: 0, latch: SFR_P0, mode0: SFR_P0M0, mode1: SFR_P0M1 },
   { index: 1, latch: SFR_P1, mode0: SFR_P1M0, mode1: SFR_P1M1 },
   { index: 2, latch: SFR_P2, mode0: SFR_P2M0, mode1: SFR_P2M1 },
   { index: 3, latch: SFR_P3, mode0: SFR_P3M0, mode1: SFR_P3M1 },
+  { index: 4, latch: SFR_P4, mode0: SFR_P4M0, mode1: SFR_P4M1 },
 ];
 
 const PORT_BY_CONTROL = new Map<number, Port>(

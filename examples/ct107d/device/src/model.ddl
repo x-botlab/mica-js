@@ -5,7 +5,7 @@
  * device shares internal net states. Digital device bodies are source-merged from
  * examples/devices; analog/display/interactive behavior lives in the board fragment.
  */
-device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm: number default 100) {
+device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm: number default 100, uartBaud: number default 9600) {
   /** External power rails; all other historical pins are internal. */
   pin VCC;
   pin GND;
@@ -14,9 +14,9 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
    * MCU pin levels mirrored for fast JIT loads: 0 = low, 1 = high, 2 = unknown.
    * Board devices read the pure `fusedNetN()` functions directly.
    */
-  memory fusedPins[32];
+  memory fusedPins[40];
   /** MCU pin drive codes: 0 strong low, 1 strong high, 2 weak high, 3 weak low, 4 release. */
-  memory fusedMcuDrives[32];
+  memory fusedMcuDrives[40];
   /** Monotonic trigger for the MCU pin-level refresh process. */
   state fusedSeq: number = 0;
   state fusedStarted: bool = false;
@@ -123,28 +123,28 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   derived fusedCode33: number = load8(fusedPins, 31);
   derived fusedWire33: Logic = fusedCode33 == 1 ? Logic.high : fusedCode33 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage33: number = fusedCode33 == 1 ? 5 : 0;
-  derived fusedCode34: number = fusedNet34();
+  derived fusedCode34: number = load8(fusedPins, 32);
   derived fusedWire34: Logic = fusedCode34 == 1 ? Logic.high : fusedCode34 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage34: number = fusedCode34 == 1 ? 5 : 0;
-  derived fusedCode35: number = fusedNet35();
+  derived fusedCode35: number = load8(fusedPins, 33);
   derived fusedWire35: Logic = fusedCode35 == 1 ? Logic.high : fusedCode35 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage35: number = fusedCode35 == 1 ? 5 : 0;
-  derived fusedCode36: number = fusedNet36();
+  derived fusedCode36: number = load8(fusedPins, 34);
   derived fusedWire36: Logic = fusedCode36 == 1 ? Logic.high : fusedCode36 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage36: number = fusedCode36 == 1 ? 5 : 0;
-  derived fusedCode37: number = fusedNet37();
+  derived fusedCode37: number = load8(fusedPins, 35);
   derived fusedWire37: Logic = fusedCode37 == 1 ? Logic.high : fusedCode37 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage37: number = fusedCode37 == 1 ? 5 : 0;
-  derived fusedCode38: number = fusedNet38();
+  derived fusedCode38: number = load8(fusedPins, 36);
   derived fusedWire38: Logic = fusedCode38 == 1 ? Logic.high : fusedCode38 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage38: number = fusedCode38 == 1 ? 5 : 0;
-  derived fusedCode39: number = fusedNet39();
+  derived fusedCode39: number = load8(fusedPins, 37);
   derived fusedWire39: Logic = fusedCode39 == 1 ? Logic.high : fusedCode39 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage39: number = fusedCode39 == 1 ? 5 : 0;
-  derived fusedCode40: number = fusedNet40();
+  derived fusedCode40: number = load8(fusedPins, 38);
   derived fusedWire40: Logic = fusedCode40 == 1 ? Logic.high : fusedCode40 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage40: number = fusedCode40 == 1 ? 5 : 0;
-  derived fusedCode41: number = fusedNet41();
+  derived fusedCode41: number = load8(fusedPins, 39);
   derived fusedWire41: Logic = fusedCode41 == 1 ? Logic.high : fusedCode41 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage41: number = fusedCode41 == 1 ? 5 : 0;
   derived fusedCode42: number = fusedNet42();
@@ -327,6 +327,33 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   derived fusedCode101: number = fusedNet101();
   derived fusedWire101: Logic = fusedCode101 == 1 ? Logic.high : fusedCode101 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage101: number = fusedCode101 == 1 ? 5 : 0;
+  derived fusedCode102: number = fusedNet102();
+  derived fusedWire102: Logic = fusedCode102 == 1 ? Logic.high : fusedCode102 == 0 ? Logic.low : Logic.unknown;
+  derived fusedVoltage102: number = fusedCode102 == 1 ? 5 : 0;
+  derived fusedCode103: number = fusedNet103();
+  derived fusedWire103: Logic = fusedCode103 == 1 ? Logic.high : fusedCode103 == 0 ? Logic.low : Logic.unknown;
+  derived fusedVoltage103: number = fusedCode103 == 1 ? 5 : 0;
+  derived fusedCode104: number = fusedNet104();
+  derived fusedWire104: Logic = fusedCode104 == 1 ? Logic.high : fusedCode104 == 0 ? Logic.low : Logic.unknown;
+  derived fusedVoltage104: number = fusedCode104 == 1 ? 5 : 0;
+  derived fusedCode105: number = fusedNet105();
+  derived fusedWire105: Logic = fusedCode105 == 1 ? Logic.high : fusedCode105 == 0 ? Logic.low : Logic.unknown;
+  derived fusedVoltage105: number = fusedCode105 == 1 ? 5 : 0;
+  derived fusedCode106: number = fusedNet106();
+  derived fusedWire106: Logic = fusedCode106 == 1 ? Logic.high : fusedCode106 == 0 ? Logic.low : Logic.unknown;
+  derived fusedVoltage106: number = fusedCode106 == 1 ? 5 : 0;
+  derived fusedCode107: number = fusedNet107();
+  derived fusedWire107: Logic = fusedCode107 == 1 ? Logic.high : fusedCode107 == 0 ? Logic.low : Logic.unknown;
+  derived fusedVoltage107: number = fusedCode107 == 1 ? 5 : 0;
+  derived fusedCode108: number = fusedNet108();
+  derived fusedWire108: Logic = fusedCode108 == 1 ? Logic.high : fusedCode108 == 0 ? Logic.low : Logic.unknown;
+  derived fusedVoltage108: number = fusedCode108 == 1 ? 5 : 0;
+  derived fusedCode109: number = fusedNet109();
+  derived fusedWire109: Logic = fusedCode109 == 1 ? Logic.high : fusedCode109 == 0 ? Logic.low : Logic.unknown;
+  derived fusedVoltage109: number = fusedCode109 == 1 ? 5 : 0;
+  derived fusedCode110: number = fusedNet110();
+  derived fusedWire110: Logic = fusedCode110 == 1 ? Logic.high : fusedCode110 == 0 ? Logic.low : Logic.unknown;
+  derived fusedVoltage110: number = fusedCode110 == 1 ? 5 : 0;
 
   assert isSafeInteger(clockFrequency)
       && clockFrequency >= 1_000_000
@@ -346,10 +373,14 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   /** 片内 EEPROM（Data Flash）：IAP 读写，1 KiB。 */
   memory flash[0x400];
 
-  /** 串口 1 的线上字节流：每个完整帧发布一条单字节消息。 */
-  output channel uart1Tx: bytes(maxLength: 1, capacity: 16, overflow: Overflow.drop_oldest);
+  /**
+   * 串口 1 的线上字节流：每个完整帧发布一条单字节消息。
+   * capacity 与 shared/serial.ts 的 SERIAL_CAPACITY（4096 字节）对齐；单批超限显式
+   * CHANNEL_OVERFLOW，跨批历史仍由 SerialLog 的 cursor/dropped 语义裁剪。
+   */
+  output channel uart1Tx: bytes(maxLength: 1, capacity: 4096, overflow: Overflow.error);
   /** 串口 1 实际写入接收缓冲的字节：每个完整帧发布一条单字节消息。 */
-  output channel uart1Rx: bytes(maxLength: 1, capacity: 16, overflow: Overflow.drop_oldest);
+  output channel uart1Rx: bytes(maxLength: 1, capacity: 4096, overflow: Overflow.error);
 
   /** 程序计数器；JIT 绑定到这条 state。 */
   state pc: number = 0;
@@ -413,8 +444,12 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   /**
-   * 复位值：SP=07H、PCON=30H、AUXR=01H、SPCTL=04H、P0–P3 锁存全 1（准双向、释放）。
+   * 复位值：SP=07H、PCON=30H、AUXR=01H、SPCTL=04H、P0–P4 锁存全 1（准双向、释放）。
    * 其余 SFR 与 `periph` 按零初始化；启动过程先于 JIT 的第一条指令执行。
+   *
+   * 端口引脚的初始意图就是复位后的准双向弱上拉（10 kΩ 到 VCC），不是 unknown 或
+   * 高阻。这样第一条 `MOV A,P3` / `JB P3.2` 在没有任何外部上拉时也能读到高；外部
+   * 强下拉仍然按电阻分压覆盖弱上拉。P4 的 weak-up 同样从复位时刻生效。
    */
   process u1_start on u1_started {
     store8(sfr, 0x00, 0xff);
@@ -424,8 +459,11 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     store8(sfr, 0x10, 0xff);
     store8(sfr, 0x20, 0xff);
     store8(sfr, 0x30, 0xff);
+    store8(sfr, 0x40, 0xff);
     store8(sfr, 0x4e, 0x04);
   }
+  /** P4.2 可复用 WR；本模型按 GPIO 参与口模式与键盘列。 */
+  /** P4.4 可复用 RD；本模型按 GPIO 参与口模式与键盘列。 */
 
   /** 供电与地：装配必须把它们接到固定电位网络，推挽输出才有参考。 */
 
@@ -838,7 +876,8 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
 
   fn u5_armRelease() {
     u5_releaseGeneration = u5_busGeneration;
-    u5_releaseAt = now() + 45 * u5_MICROSECOND;
+    // 读 0 位从下降沿起保持低到 +60 us；不能从 +15 us 的决策时刻再算 45 us。
+    u5_releaseAt = u5_fallTime + 60 * u5_MICROSECOND;
     u5_releaseSequence = u5_releaseSequence + 1;
   }
 
@@ -973,12 +1012,15 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   /** 主机下降沿开时隙；>= 480 us 的低脉冲在上升沿判为复位。 */
   fn u5_openSlot() {
     u5_slotGeneration = u5_busGeneration;
-    u5_slotAt = now() + 15 * u5_MICROSECOND;
     if u5_phase == u5_Phase.transmit {
+      // 读时隙：datasheet p16 要求输出在下降沿后 15 us 内有效，立即驱动 0 位。
       u5_slotKind = u5_SlotKind.driveSlot;
+      u5_slotAt = now();
       u5_slotSequence = u5_slotSequence + 1;
     } else if u5_phase == u5_Phase.command || u5_phase == u5_Phase.receive {
+      // 写时隙：从机在下降沿 +15 us 采样。
       u5_slotKind = u5_SlotKind.sampleSlot;
+      u5_slotAt = now() + 15 * u5_MICROSECOND;
       u5_slotSequence = u5_slotSequence + 1;
     }
   }
@@ -1038,7 +1080,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     }
   }
 
-  /** 写时隙：从机在下降沿 +15 us 采样。 */
+  /** 写时隙在下降沿 +15 us 采样；读时隙在下降沿立即驱动 0 位。 */
   process u5_slotTimer on u5_slotSequence {
     if u5_slotSequence == 0 {
       return;
@@ -1138,7 +1180,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       + u6_bit(fusedWire9) * 128;
   }
 
-  derived u6_transparent: bool = fusedWire39 == Logic.high;
+  derived u6_transparent: bool = fusedWire47 == Logic.high;
   derived u6_outputsEnabled: bool = fusedWire1 == Logic.low;
   derived u6_inputs: number = u6_dataByte();
 
@@ -1206,9 +1248,14 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   process u6_start on u6_started {
-    const current = u6_inputs;
-    u6_stored = current;
-    u6_latch.send(current);
+    // 573 只在 LE 为高时透明跟随 D。上电时 LE 已低的口不应伪造一次「锁存」；
+    // 保持 stored=0 的确定性初始值，等第一个透明相位或下降沿再更新。latch 仍发布
+    // 这个确定初始值，便于观察端不需要区分「尚未发布」与「锁存为 0」。
+    if fusedWire47 == Logic.high {
+      const current = u6_inputs;
+      u6_stored = current;
+    }
+    u6_latch.send(u6_stored);
     u6_publishAll();
   }
 
@@ -1224,7 +1271,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   /** LE 下降沿：锁存此刻的字节。 */
-  reaction u6_latchEdge on fusedWire39 as (previous, current) {
+  reaction u6_latchEdge on fusedWire47 as (previous, current) {
     if previous == Logic.high && current != Logic.high {
       const value = u6_inputs;
       u6_stored = value;
@@ -1270,7 +1317,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       + u7_bit(fusedWire9) * 128;
   }
 
-  derived u7_transparent: bool = fusedWire42 == Logic.high;
+  derived u7_transparent: bool = fusedWire50 == Logic.high;
   derived u7_outputsEnabled: bool = fusedWire1 == Logic.low;
   derived u7_inputs: number = u7_dataByte();
 
@@ -1338,9 +1385,14 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   process u7_start on u7_started {
-    const current = u7_inputs;
-    u7_stored = current;
-    u7_latch.send(current);
+    // 573 只在 LE 为高时透明跟随 D。上电时 LE 已低的口不应伪造一次「锁存」；
+    // 保持 stored=0 的确定性初始值，等第一个透明相位或下降沿再更新。latch 仍发布
+    // 这个确定初始值，便于观察端不需要区分「尚未发布」与「锁存为 0」。
+    if fusedWire50 == Logic.high {
+      const current = u7_inputs;
+      u7_stored = current;
+    }
+    u7_latch.send(u7_stored);
     u7_publishAll();
   }
 
@@ -1356,7 +1408,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   /** LE 下降沿：锁存此刻的字节。 */
-  reaction u7_latchEdge on fusedWire42 as (previous, current) {
+  reaction u7_latchEdge on fusedWire50 as (previous, current) {
     if previous == Logic.high && current != Logic.high {
       const value = u7_inputs;
       u7_stored = value;
@@ -1402,7 +1454,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       + u8_bit(fusedWire9) * 128;
   }
 
-  derived u8_transparent: bool = fusedWire41 == Logic.high;
+  derived u8_transparent: bool = fusedWire49 == Logic.high;
   derived u8_outputsEnabled: bool = fusedWire1 == Logic.low;
   derived u8_inputs: number = u8_dataByte();
 
@@ -1470,9 +1522,14 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   process u8_start on u8_started {
-    const current = u8_inputs;
-    u8_stored = current;
-    u8_latch.send(current);
+    // 573 只在 LE 为高时透明跟随 D。上电时 LE 已低的口不应伪造一次「锁存」；
+    // 保持 stored=0 的确定性初始值，等第一个透明相位或下降沿再更新。latch 仍发布
+    // 这个确定初始值，便于观察端不需要区分「尚未发布」与「锁存为 0」。
+    if fusedWire49 == Logic.high {
+      const current = u8_inputs;
+      u8_stored = current;
+    }
+    u8_latch.send(u8_stored);
     u8_publishAll();
   }
 
@@ -1488,7 +1545,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   /** LE 下降沿：锁存此刻的字节。 */
-  reaction u8_latchEdge on fusedWire41 as (previous, current) {
+  reaction u8_latchEdge on fusedWire49 as (previous, current) {
     if previous == Logic.high && current != Logic.high {
       const value = u8_inputs;
       u8_stored = value;
@@ -1534,7 +1591,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       + u9_bit(fusedWire9) * 128;
   }
 
-  derived u9_transparent: bool = fusedWire40 == Logic.high;
+  derived u9_transparent: bool = fusedWire48 == Logic.high;
   derived u9_outputsEnabled: bool = fusedWire1 == Logic.low;
   derived u9_inputs: number = u9_dataByte();
 
@@ -1602,9 +1659,14 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   process u9_start on u9_started {
-    const current = u9_inputs;
-    u9_stored = current;
-    u9_latch.send(current);
+    // 573 只在 LE 为高时透明跟随 D。上电时 LE 已低的口不应伪造一次「锁存」；
+    // 保持 stored=0 的确定性初始值，等第一个透明相位或下降沿再更新。latch 仍发布
+    // 这个确定初始值，便于观察端不需要区分「尚未发布」与「锁存为 0」。
+    if fusedWire48 == Logic.high {
+      const current = u9_inputs;
+      u9_stored = current;
+    }
+    u9_latch.send(u9_stored);
     u9_publishAll();
   }
 
@@ -1620,7 +1682,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   /** LE 下降沿：锁存此刻的字节。 */
-  reaction u9_latchEdge on fusedWire40 as (previous, current) {
+  reaction u9_latchEdge on fusedWire48 as (previous, current) {
     if previous == Logic.high && current != Logic.high {
       const value = u9_inputs;
       u9_stored = value;
@@ -1652,13 +1714,13 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   pure fn u10_composeMask() -> number {
-    return (u10_isHigh(fusedWire68) ? 1 : 0)
-      | (u10_isHigh(fusedWire69) ? 2 : 0)
-      | (u10_isHigh(fusedWire70) ? 4 : 0)
-      | (u10_isHigh(fusedWire71) ? 8 : 0)
-      | (u10_isHigh(fusedWire72) ? 16 : 0)
-      | (u10_isHigh(fusedWire73) ? 32 : 0)
-      | (u10_isHigh(fusedWire74) ? 64 : 0);
+    return (u10_isHigh(fusedWire77) ? 1 : 0)
+      | (u10_isHigh(fusedWire78) ? 2 : 0)
+      | (u10_isHigh(fusedWire79) ? 4 : 0)
+      | (u10_isHigh(fusedWire80) ? 8 : 0)
+      | (u10_isHigh(fusedWire81) ? 16 : 0)
+      | (u10_isHigh(fusedWire82) ? 32 : 0)
+      | (u10_isHigh(fusedWire83) ? 64 : 0);
   }
 
   pure fn u10_statusOf(value: number) -> bytes {
@@ -1844,7 +1906,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     return level == Logic.high;
   }
 
-  derived u14_outHigh: bool = u14_isHigh(fusedWire75) && !u14_isHigh(fusedWire1);
+  derived u14_outHigh: bool = u14_isHigh(fusedWire84) && !u14_isHigh(fusedWire1);
 
   fn u14_driveOut(high: bool) {
     if high {
@@ -2317,54 +2379,54 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   fn u18_update1() {
-    if fusedWire89 == Logic.high {
+    if fusedWire98 == Logic.high {
       u18_inputHigh1 = true;
-    } else if fusedWire89 == Logic.low {
+    } else if fusedWire98 == Logic.low {
       u18_inputHigh1 = false;
     }
     u18_driveY1();
   }
 
   fn u18_update2() {
-    if fusedWire85 == Logic.high {
+    if fusedWire94 == Logic.high {
       u18_inputHigh2 = true;
-    } else if fusedWire85 == Logic.low {
+    } else if fusedWire94 == Logic.low {
       u18_inputHigh2 = false;
     }
     u18_driveY2();
   }
 
   fn u18_update3() {
-    if fusedWire91 == Logic.high {
+    if fusedWire100 == Logic.high {
       u18_inputHigh3 = true;
-    } else if fusedWire91 == Logic.low {
+    } else if fusedWire100 == Logic.low {
       u18_inputHigh3 = false;
     }
     u18_driveY3();
   }
 
   fn u18_update4() {
-    if fusedWire89 == Logic.high {
+    if fusedWire98 == Logic.high {
       u18_inputHigh4 = true;
-    } else if fusedWire89 == Logic.low {
+    } else if fusedWire98 == Logic.low {
       u18_inputHigh4 = false;
     }
     u18_driveY4();
   }
 
   fn u18_update5() {
-    if fusedWire91 == Logic.high {
+    if fusedWire100 == Logic.high {
       u18_inputHigh5 = true;
-    } else if fusedWire91 == Logic.low {
+    } else if fusedWire100 == Logic.low {
       u18_inputHigh5 = false;
     }
     u18_driveY5();
   }
 
   fn u18_update6() {
-    if fusedWire91 == Logic.high {
+    if fusedWire100 == Logic.high {
       u18_inputHigh6 = true;
-    } else if fusedWire91 == Logic.low {
+    } else if fusedWire100 == Logic.low {
       u18_inputHigh6 = false;
     }
     u18_driveY6();
@@ -2379,27 +2441,27 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     u18_update6();
   }
 
-  process u18_input1 on fusedWire89 {
+  process u18_input1 on fusedWire98 {
     u18_update1();
   }
 
-  process u18_input2 on fusedWire85 {
+  process u18_input2 on fusedWire94 {
     u18_update2();
   }
 
-  process u18_input3 on fusedWire91 {
+  process u18_input3 on fusedWire100 {
     u18_update3();
   }
 
-  process u18_input4 on fusedWire89 {
+  process u18_input4 on fusedWire98 {
     u18_update4();
   }
 
-  process u18_input5 on fusedWire91 {
+  process u18_input5 on fusedWire100 {
     u18_update5();
   }
 
-  process u18_input6 on fusedWire91 {
+  process u18_input6 on fusedWire100 {
     u18_update6();
   }
 
@@ -3305,10 +3367,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     }
   }
 
-  derived u25_y1Out: bool = !(u25_isHigh(fusedWire37) || u25_isHigh(fusedWire38));
-  derived u25_y2Out: bool = !(u25_isHigh(fusedWire35) || u25_isHigh(fusedWire38));
-  derived u25_y3Out: bool = !(u25_isHigh(fusedWire36) || u25_isHigh(fusedWire38));
-  derived u25_y4Out: bool = !(u25_isHigh(fusedWire34) || u25_isHigh(fusedWire38));
+  derived u25_y1Out: bool = !(u25_isHigh(fusedWire45) || u25_isHigh(fusedWire46));
+  derived u25_y2Out: bool = !(u25_isHigh(fusedWire43) || u25_isHigh(fusedWire46));
+  derived u25_y3Out: bool = !(u25_isHigh(fusedWire44) || u25_isHigh(fusedWire46));
+  derived u25_y4Out: bool = !(u25_isHigh(fusedWire42) || u25_isHigh(fusedWire46));
 
   process u25_start on u25_started {
     u25_driveY1(u25_y1Out);
@@ -3334,12 +3396,14 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
 
-  const uart_probe_bitTime = round(1e12 / 9600);
+  const uart_probe_bitTime = round(1e12 / uartBaud);
   const uart_probe_halfBitTime = floor(uart_probe_bitTime / 2);
   const uart_probe_maxSendLength = 64;
 
+  assert isSafeInteger(uartBaud) && uartBaud >= 1 && uartBaud <= 1_000_000_000,
+    "uartBaud must be an integer within 1..1000000000";
   assert isSafeInteger(uart_probe_bitTime) && uart_probe_bitTime >= 2,
-    "9600 must produce an integer bit time of at least 2 ps";
+    "uartBaud must produce an integer bit time of at least 2 ps";
   assert 25 >= 0.001 && 25 <= 1_000_000_000,
     "25 must be within the supported range";
 
@@ -3349,8 +3413,9 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     capacity: 8,
     overflow: Overflow.drop_oldest
   );
-  output channel uart_probe_tx: bytes(maxLength: 1, capacity: 32, overflow: Overflow.drop_oldest);
-  output channel uart_probe_rx: bytes(maxLength: 1, capacity: 32, overflow: Overflow.drop_oldest);
+  // 与 SerialLog 一样保留 4096 个单字节观察消息；单批超限显式报错，不静默丢前缀。
+  output channel uart_probe_tx: bytes(maxLength: 1, capacity: 4096, overflow: Overflow.error);
+  output channel uart_probe_rx: bytes(maxLength: 1, capacity: 4096, overflow: Overflow.error);
 
   memory uart_probe_injectBuffer[64];
 
@@ -3514,7 +3579,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   /** 只有 VCC 确定拉高且 GND 确定拉低时才认为器件获得供电。 */
   derived ld1_powered: bool = ld1_isHigh(Logic.high) && ld1_isLow(Logic.low);
   /** mod 引脚上的数字调制电平；未知按未调制处理。 */
-  derived ld1_modulation: bool = ld1_isHigh(fusedWire86);
+  derived ld1_modulation: bool = ld1_isHigh(fusedWire95);
   /** 对外可见的逻辑载波。 */
   derived ld1_carrierState: bool = ld1_powered && (ld1_hostRequest || ld1_modulation);
 
@@ -3586,7 +3651,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
 
   /** Matrix keys and independent keys, indexed by the schematic designator. */
   memory keyStates[24];
+  /** J13 CON3: true = 2-3 (WR grounded, default IO); false = 1-2 (WR follows P42). */
   state j13Closed: bool = true;
+  /** J5 CON3: true = 2-3 (S4-S7 grounded, default independent); false = 1-2 (P44 column). */
+  state j5Closed: bool = true;
   state j3Closed: bool = true;
   state j2Vs1838: bool = true;
 
@@ -4177,7 +4245,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     }
   }
 
-  memory fusedButtonLow[7];
+  memory fusedButtonLow[8];
   fn fusedComputeButtons() {
     store8(fusedButtonLow, 0, 0);
     store8(fusedButtonLow, 1, 0);
@@ -4186,62 +4254,80 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     store8(fusedButtonLow, 4, 0);
     store8(fusedButtonLow, 5, 0);
     store8(fusedButtonLow, 6, 0);
-    if (load8(fusedMcuDrives, 24) == 0 || uart_probe_txd_drive == 0 || load8(keyStates, 4) == 1) { store8(fusedButtonLow, 0, 1); }
-    if (load8(fusedMcuDrives, 25) == 0 || load8(keyStates, 3) == 1) { store8(fusedButtonLow, 1, 1); }
-    if (load8(fusedMcuDrives, 26) == 0 || load8(keyStates, 2) == 1) { store8(fusedButtonLow, 2, 1); }
-    if (load8(fusedMcuDrives, 27) == 0 || load8(keyStates, 1) == 1) { store8(fusedButtonLow, 3, 1); }
-    if (j13Closed) { store8(fusedButtonLow, 4, 1); }
-    if (load8(fusedMcuDrives, 29) == 0) { store8(fusedButtonLow, 5, 1); }
-    if (load8(fusedMcuDrives, 28) == 0 || j3Closed && u15_out_drive == 0) { store8(fusedButtonLow, 6, 1); }
+    store8(fusedButtonLow, 7, 0);
+    if (load8(fusedMcuDrives, 24) == 0 || uart_probe_txd_drive == 0) { store8(fusedButtonLow, 0, 1); }
+    if (load8(fusedMcuDrives, 25) == 0) { store8(fusedButtonLow, 1, 1); }
+    if (load8(fusedMcuDrives, 26) == 0) { store8(fusedButtonLow, 2, 1); }
+    if (load8(fusedMcuDrives, 27) == 0) { store8(fusedButtonLow, 3, 1); }
+    if (fusedNet75() == 0) { store8(fusedButtonLow, 4, 1); }
+    if (load8(fusedMcuDrives, 34) == 0) { store8(fusedButtonLow, 5, 1); }
+    if (load8(fusedMcuDrives, 29) == 0) { store8(fusedButtonLow, 6, 1); }
+    if (load8(fusedMcuDrives, 28) == 0 || j3Closed && u15_out_drive == 0) { store8(fusedButtonLow, 7, 1); }
     let iteration = 0;
     while iteration < 8 {
-      if load8(keyStates, 5) == 1 && (load8(fusedButtonLow, 3) == 1 || load8(fusedButtonLow, 4) == 1) {
+      if load8(keyStates, 1) == 1 && (load8(fusedButtonLow, 3) == 1 || load8(fusedButtonLow, 4) == 1) {
         store8(fusedButtonLow, 3, 1);
         store8(fusedButtonLow, 4, 1);
       }
-      if load8(keyStates, 6) == 1 && (load8(fusedButtonLow, 2) == 1 || load8(fusedButtonLow, 4) == 1) {
+      if load8(keyStates, 2) == 1 && (load8(fusedButtonLow, 2) == 1 || load8(fusedButtonLow, 4) == 1) {
         store8(fusedButtonLow, 2, 1);
         store8(fusedButtonLow, 4, 1);
       }
-      if load8(keyStates, 7) == 1 && (load8(fusedButtonLow, 1) == 1 || load8(fusedButtonLow, 4) == 1) {
+      if load8(keyStates, 3) == 1 && (load8(fusedButtonLow, 1) == 1 || load8(fusedButtonLow, 4) == 1) {
         store8(fusedButtonLow, 1, 1);
         store8(fusedButtonLow, 4, 1);
       }
-      if load8(keyStates, 8) == 1 && (load8(fusedButtonLow, 0) == 1 || load8(fusedButtonLow, 4) == 1) {
+      if load8(keyStates, 4) == 1 && (load8(fusedButtonLow, 0) == 1 || load8(fusedButtonLow, 4) == 1) {
         store8(fusedButtonLow, 0, 1);
         store8(fusedButtonLow, 4, 1);
       }
-      if load8(keyStates, 9) == 1 && (load8(fusedButtonLow, 3) == 1 || load8(fusedButtonLow, 5) == 1) {
+      if load8(keyStates, 5) == 1 && (load8(fusedButtonLow, 3) == 1 || load8(fusedButtonLow, 5) == 1) {
         store8(fusedButtonLow, 3, 1);
         store8(fusedButtonLow, 5, 1);
       }
-      if load8(keyStates, 10) == 1 && (load8(fusedButtonLow, 2) == 1 || load8(fusedButtonLow, 5) == 1) {
+      if load8(keyStates, 6) == 1 && (load8(fusedButtonLow, 2) == 1 || load8(fusedButtonLow, 5) == 1) {
         store8(fusedButtonLow, 2, 1);
         store8(fusedButtonLow, 5, 1);
       }
-      if load8(keyStates, 11) == 1 && (load8(fusedButtonLow, 1) == 1 || load8(fusedButtonLow, 5) == 1) {
+      if load8(keyStates, 7) == 1 && (load8(fusedButtonLow, 1) == 1 || load8(fusedButtonLow, 5) == 1) {
         store8(fusedButtonLow, 1, 1);
         store8(fusedButtonLow, 5, 1);
       }
-      if load8(keyStates, 12) == 1 && (load8(fusedButtonLow, 0) == 1 || load8(fusedButtonLow, 5) == 1) {
+      if load8(keyStates, 8) == 1 && (load8(fusedButtonLow, 0) == 1 || load8(fusedButtonLow, 5) == 1) {
         store8(fusedButtonLow, 0, 1);
         store8(fusedButtonLow, 5, 1);
       }
-      if load8(keyStates, 13) == 1 && (load8(fusedButtonLow, 3) == 1 || load8(fusedButtonLow, 6) == 1) {
+      if load8(keyStates, 9) == 1 && (load8(fusedButtonLow, 3) == 1 || load8(fusedButtonLow, 6) == 1) {
         store8(fusedButtonLow, 3, 1);
         store8(fusedButtonLow, 6, 1);
       }
-      if load8(keyStates, 14) == 1 && (load8(fusedButtonLow, 2) == 1 || load8(fusedButtonLow, 6) == 1) {
+      if load8(keyStates, 10) == 1 && (load8(fusedButtonLow, 2) == 1 || load8(fusedButtonLow, 6) == 1) {
         store8(fusedButtonLow, 2, 1);
         store8(fusedButtonLow, 6, 1);
       }
-      if load8(keyStates, 15) == 1 && (load8(fusedButtonLow, 1) == 1 || load8(fusedButtonLow, 6) == 1) {
+      if load8(keyStates, 11) == 1 && (load8(fusedButtonLow, 1) == 1 || load8(fusedButtonLow, 6) == 1) {
         store8(fusedButtonLow, 1, 1);
         store8(fusedButtonLow, 6, 1);
       }
-      if load8(keyStates, 16) == 1 && (load8(fusedButtonLow, 0) == 1 || load8(fusedButtonLow, 6) == 1) {
+      if load8(keyStates, 12) == 1 && (load8(fusedButtonLow, 0) == 1 || load8(fusedButtonLow, 6) == 1) {
         store8(fusedButtonLow, 0, 1);
         store8(fusedButtonLow, 6, 1);
+      }
+      if load8(keyStates, 13) == 1 && (load8(fusedButtonLow, 3) == 1 || load8(fusedButtonLow, 7) == 1) {
+        store8(fusedButtonLow, 3, 1);
+        store8(fusedButtonLow, 7, 1);
+      }
+      if load8(keyStates, 14) == 1 && (load8(fusedButtonLow, 2) == 1 || load8(fusedButtonLow, 7) == 1) {
+        store8(fusedButtonLow, 2, 1);
+        store8(fusedButtonLow, 7, 1);
+      }
+      if load8(keyStates, 15) == 1 && (load8(fusedButtonLow, 1) == 1 || load8(fusedButtonLow, 7) == 1) {
+        store8(fusedButtonLow, 1, 1);
+        store8(fusedButtonLow, 7, 1);
+      }
+      if load8(keyStates, 16) == 1 && (load8(fusedButtonLow, 0) == 1 || load8(fusedButtonLow, 7) == 1) {
+        store8(fusedButtonLow, 0, 1);
+        store8(fusedButtonLow, 7, 1);
       }
       iteration = iteration + 1;
     }
@@ -4724,10 +4810,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     else if load8(fusedMcuDrives, 28) == 2 { weakHigh = true; }
     else if load8(fusedMcuDrives, 28) == 3 { weakLow = true; }
     if j3Closed {
-      if fusedNet93() == 0 { strongLow = true; }
-      else if fusedNet93() == 1 { strongHigh = true; }
+      if fusedNet102() == 0 { strongLow = true; }
+      else if fusedNet102() == 1 { strongHigh = true; }
     }
-    if load8(fusedButtonLow, 6) == 1 { strongLow = true; }
+    if load8(fusedButtonLow, 7) == 1 { strongLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4743,7 +4829,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     else if load8(fusedMcuDrives, 29) == 1 { strongHigh = true; }
     else if load8(fusedMcuDrives, 29) == 2 { weakHigh = true; }
     else if load8(fusedMcuDrives, 29) == 3 { weakLow = true; }
-    if load8(fusedButtonLow, 5) == 1 { strongLow = true; }
+    if load8(fusedButtonLow, 6) == 1 { strongLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4785,6 +4871,128 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
+    if load8(fusedMcuDrives, 32) == 0 { strongLow = true; }
+    else if load8(fusedMcuDrives, 32) == 1 { strongHigh = true; }
+    else if load8(fusedMcuDrives, 32) == 2 { weakHigh = true; }
+    else if load8(fusedMcuDrives, 32) == 3 { weakLow = true; }
+    if strongLow { return 0; }
+    if strongHigh { return 1; }
+    if weakHigh { return 1; }
+    if weakLow { return 0; }
+    return 2;
+  }
+  pure fn fusedNet35() -> number {
+    let strongLow = false;
+    let strongHigh = false;
+    let weakHigh = false;
+    let weakLow = false;
+    if load8(fusedMcuDrives, 33) == 0 { strongLow = true; }
+    else if load8(fusedMcuDrives, 33) == 1 { strongHigh = true; }
+    else if load8(fusedMcuDrives, 33) == 2 { weakHigh = true; }
+    else if load8(fusedMcuDrives, 33) == 3 { weakLow = true; }
+    if strongLow { return 0; }
+    if strongHigh { return 1; }
+    if weakHigh { return 1; }
+    if weakLow { return 0; }
+    return 2;
+  }
+  pure fn fusedNet36() -> number {
+    let strongLow = false;
+    let strongHigh = false;
+    let weakHigh = false;
+    let weakLow = false;
+    if load8(fusedMcuDrives, 34) == 0 { strongLow = true; }
+    else if load8(fusedMcuDrives, 34) == 1 { strongHigh = true; }
+    else if load8(fusedMcuDrives, 34) == 2 { weakHigh = true; }
+    else if load8(fusedMcuDrives, 34) == 3 { weakLow = true; }
+    if load8(fusedButtonLow, 5) == 1 { strongLow = true; }
+    if strongLow { return 0; }
+    if strongHigh { return 1; }
+    if weakHigh { return 1; }
+    if weakLow { return 0; }
+    return 2;
+  }
+  pure fn fusedNet37() -> number {
+    let strongLow = false;
+    let strongHigh = false;
+    let weakHigh = false;
+    let weakLow = false;
+    if load8(fusedMcuDrives, 35) == 0 { strongLow = true; }
+    else if load8(fusedMcuDrives, 35) == 1 { strongHigh = true; }
+    else if load8(fusedMcuDrives, 35) == 2 { weakHigh = true; }
+    else if load8(fusedMcuDrives, 35) == 3 { weakLow = true; }
+    if strongLow { return 0; }
+    if strongHigh { return 1; }
+    if weakHigh { return 1; }
+    if weakLow { return 0; }
+    return 2;
+  }
+  pure fn fusedNet38() -> number {
+    let strongLow = false;
+    let strongHigh = false;
+    let weakHigh = false;
+    let weakLow = false;
+    if load8(fusedMcuDrives, 36) == 0 { strongLow = true; }
+    else if load8(fusedMcuDrives, 36) == 1 { strongHigh = true; }
+    else if load8(fusedMcuDrives, 36) == 2 { weakHigh = true; }
+    else if load8(fusedMcuDrives, 36) == 3 { weakLow = true; }
+    if !j5Closed && load8(fusedButtonLow, 4) == 1 { strongLow = true; }
+    if strongLow { return 0; }
+    if strongHigh { return 1; }
+    if weakHigh { return 1; }
+    if weakLow { return 0; }
+    return 2;
+  }
+  pure fn fusedNet39() -> number {
+    let strongLow = false;
+    let strongHigh = false;
+    let weakHigh = false;
+    let weakLow = false;
+    if load8(fusedMcuDrives, 37) == 0 { strongLow = true; }
+    else if load8(fusedMcuDrives, 37) == 1 { strongHigh = true; }
+    else if load8(fusedMcuDrives, 37) == 2 { weakHigh = true; }
+    else if load8(fusedMcuDrives, 37) == 3 { weakLow = true; }
+    if strongLow { return 0; }
+    if strongHigh { return 1; }
+    if weakHigh { return 1; }
+    if weakLow { return 0; }
+    return 2;
+  }
+  pure fn fusedNet40() -> number {
+    let strongLow = false;
+    let strongHigh = false;
+    let weakHigh = false;
+    let weakLow = false;
+    if load8(fusedMcuDrives, 38) == 0 { strongLow = true; }
+    else if load8(fusedMcuDrives, 38) == 1 { strongHigh = true; }
+    else if load8(fusedMcuDrives, 38) == 2 { weakHigh = true; }
+    else if load8(fusedMcuDrives, 38) == 3 { weakLow = true; }
+    if strongLow { return 0; }
+    if strongHigh { return 1; }
+    if weakHigh { return 1; }
+    if weakLow { return 0; }
+    return 2;
+  }
+  pure fn fusedNet41() -> number {
+    let strongLow = false;
+    let strongHigh = false;
+    let weakHigh = false;
+    let weakLow = false;
+    if load8(fusedMcuDrives, 39) == 0 { strongLow = true; }
+    else if load8(fusedMcuDrives, 39) == 1 { strongHigh = true; }
+    else if load8(fusedMcuDrives, 39) == 2 { weakHigh = true; }
+    else if load8(fusedMcuDrives, 39) == 3 { weakLow = true; }
+    if strongLow { return 0; }
+    if strongHigh { return 1; }
+    if weakHigh { return 1; }
+    if weakLow { return 0; }
+    return 2;
+  }
+  pure fn fusedNet42() -> number {
+    let strongLow = false;
+    let strongHigh = false;
+    let weakHigh = false;
+    let weakLow = false;
     if u24_y4_drive == 0 { strongLow = true; }
     else if u24_y4_drive == 1 { strongHigh = true; }
     else if u24_y4_drive == 2 { weakHigh = true; }
@@ -4795,7 +5003,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet35() -> number {
+  pure fn fusedNet43() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4810,7 +5018,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet36() -> number {
+  pure fn fusedNet44() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4825,7 +5033,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet37() -> number {
+  pure fn fusedNet45() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4840,20 +5048,23 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet38() -> number {
+  pure fn fusedNet46() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
     if j13Closed { strongLow = true; }
-    if load8(fusedButtonLow, 4) == 1 { strongLow = true; }
+    else {
+      if fusedNet36() == 0 { strongLow = true; }
+      else if fusedNet36() == 1 { strongHigh = true; }
+    }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet39() -> number {
+  pure fn fusedNet47() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4868,7 +5079,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet40() -> number {
+  pure fn fusedNet48() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4883,7 +5094,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet41() -> number {
+  pure fn fusedNet49() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4898,7 +5109,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet42() -> number {
+  pure fn fusedNet50() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4913,7 +5124,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet43() -> number {
+  pure fn fusedNet51() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4928,7 +5139,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet44() -> number {
+  pure fn fusedNet52() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4943,7 +5154,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet45() -> number {
+  pure fn fusedNet53() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4958,7 +5169,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet46() -> number {
+  pure fn fusedNet54() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4973,7 +5184,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet47() -> number {
+  pure fn fusedNet55() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -4988,7 +5199,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet48() -> number {
+  pure fn fusedNet56() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5003,7 +5214,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet49() -> number {
+  pure fn fusedNet57() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5018,7 +5229,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet50() -> number {
+  pure fn fusedNet58() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5033,7 +5244,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet51() -> number {
+  pure fn fusedNet59() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5048,7 +5259,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet52() -> number {
+  pure fn fusedNet60() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5063,7 +5274,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet53() -> number {
+  pure fn fusedNet61() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5078,7 +5289,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet54() -> number {
+  pure fn fusedNet62() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5093,7 +5304,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet55() -> number {
+  pure fn fusedNet63() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5108,7 +5319,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet56() -> number {
+  pure fn fusedNet64() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5123,7 +5334,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet57() -> number {
+  pure fn fusedNet65() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5138,7 +5349,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet58() -> number {
+  pure fn fusedNet66() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5153,7 +5364,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet59() -> number {
+  pure fn fusedNet67() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5168,7 +5379,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet60() -> number {
+  pure fn fusedNet68() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5183,7 +5394,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet61() -> number {
+  pure fn fusedNet69() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5198,7 +5409,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet62() -> number {
+  pure fn fusedNet70() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5213,7 +5424,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet63() -> number {
+  pure fn fusedNet71() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5228,7 +5439,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet64() -> number {
+  pure fn fusedNet72() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5243,7 +5454,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet65() -> number {
+  pure fn fusedNet73() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5258,7 +5469,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet66() -> number {
+  pure fn fusedNet74() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5273,7 +5484,24 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet67() -> number {
+  pure fn fusedNet75() -> number {
+    let strongLow = false;
+    let strongHigh = false;
+    let weakHigh = false;
+    let weakLow = false;
+    if j5Closed { strongLow = true; }
+    else {
+      if fusedNet38() == 0 { strongLow = true; }
+      else if fusedNet38() == 1 { strongHigh = true; }
+    }
+    if load8(fusedButtonLow, 4) == 1 { strongLow = true; }
+    if strongLow { return 0; }
+    if strongHigh { return 1; }
+    if weakHigh { return 1; }
+    if weakLow { return 0; }
+    return 2;
+  }
+  pure fn fusedNet76() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5284,7 +5512,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet68() -> number {
+  pure fn fusedNet77() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5299,7 +5527,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet69() -> number {
+  pure fn fusedNet78() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5314,7 +5542,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet70() -> number {
+  pure fn fusedNet79() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5329,7 +5557,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet71() -> number {
+  pure fn fusedNet80() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5344,7 +5572,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet72() -> number {
+  pure fn fusedNet81() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5359,7 +5587,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet73() -> number {
+  pure fn fusedNet82() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5374,7 +5602,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet74() -> number {
+  pure fn fusedNet83() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5389,7 +5617,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet75() -> number {
+  pure fn fusedNet84() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5404,7 +5632,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet76() -> number {
+  pure fn fusedNet85() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5419,7 +5647,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet77() -> number {
+  pure fn fusedNet86() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5434,7 +5662,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet78() -> number {
+  pure fn fusedNet87() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5449,7 +5677,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet79() -> number {
+  pure fn fusedNet88() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5464,7 +5692,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet80() -> number {
+  pure fn fusedNet89() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5480,7 +5708,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet81() -> number {
+  pure fn fusedNet90() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5495,7 +5723,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet82() -> number {
+  pure fn fusedNet91() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5511,7 +5739,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet83() -> number {
+  pure fn fusedNet92() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5526,7 +5754,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet84() -> number {
+  pure fn fusedNet93() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5537,13 +5765,13 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet85() -> number {
+  pure fn fusedNet94() -> number {
     return fusedNet10();
   }
-  pure fn fusedNet86() -> number {
+  pure fn fusedNet95() -> number {
     return 2;
   }
-  pure fn fusedNet87() -> number {
+  pure fn fusedNet96() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5558,7 +5786,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet88() -> number {
+  pure fn fusedNet97() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5573,7 +5801,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet89() -> number {
+  pure fn fusedNet98() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5588,7 +5816,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet90() -> number {
+  pure fn fusedNet99() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5607,7 +5835,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet91() -> number {
+  pure fn fusedNet100() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5622,7 +5850,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet92() -> number {
+  pure fn fusedNet101() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5641,7 +5869,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet93() -> number {
+  pure fn fusedNet102() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5656,7 +5884,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet94() -> number {
+  pure fn fusedNet103() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5667,7 +5895,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet95() -> number {
+  pure fn fusedNet104() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5678,7 +5906,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet96() -> number {
+  pure fn fusedNet105() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5689,7 +5917,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet97() -> number {
+  pure fn fusedNet106() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5700,7 +5928,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet98() -> number {
+  pure fn fusedNet107() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5711,7 +5939,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet99() -> number {
+  pure fn fusedNet108() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5726,7 +5954,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet100() -> number {
+  pure fn fusedNet109() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5737,7 +5965,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if weakLow { return 0; }
     return 2;
   }
-  pure fn fusedNet101() -> number {
+  pure fn fusedNet110() -> number {
     let strongLow = false;
     let strongHigh = false;
     let weakHigh = false;
@@ -5771,22 +5999,22 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn publishLeds() {
     let bits = 0;
     let ready = true;
-    if fusedNet43() == 0 { bits = bits | 1; }
-    else if fusedNet43() == 2 { ready = false; }
-    if fusedNet44() == 0 { bits = bits | 2; }
-    else if fusedNet44() == 2 { ready = false; }
-    if fusedNet45() == 0 { bits = bits | 4; }
-    else if fusedNet45() == 2 { ready = false; }
-    if fusedNet46() == 0 { bits = bits | 8; }
-    else if fusedNet46() == 2 { ready = false; }
-    if fusedNet47() == 0 { bits = bits | 16; }
-    else if fusedNet47() == 2 { ready = false; }
-    if fusedNet48() == 0 { bits = bits | 32; }
-    else if fusedNet48() == 2 { ready = false; }
-    if fusedNet49() == 0 { bits = bits | 64; }
-    else if fusedNet49() == 2 { ready = false; }
-    if fusedNet50() == 0 { bits = bits | 128; }
-    else if fusedNet50() == 2 { ready = false; }
+    if fusedNet51() == 0 { bits = bits | 1; }
+    else if fusedNet51() == 2 { ready = false; }
+    if fusedNet52() == 0 { bits = bits | 2; }
+    else if fusedNet52() == 2 { ready = false; }
+    if fusedNet53() == 0 { bits = bits | 4; }
+    else if fusedNet53() == 2 { ready = false; }
+    if fusedNet54() == 0 { bits = bits | 8; }
+    else if fusedNet54() == 2 { ready = false; }
+    if fusedNet55() == 0 { bits = bits | 16; }
+    else if fusedNet55() == 2 { ready = false; }
+    if fusedNet56() == 0 { bits = bits | 32; }
+    else if fusedNet56() == 2 { ready = false; }
+    if fusedNet57() == 0 { bits = bits | 64; }
+    else if fusedNet57() == 2 { ready = false; }
+    if fusedNet58() == 0 { bits = bits | 128; }
+    else if fusedNet58() == 2 { ready = false; }
     // Do not publish a fabricated off state before the latch has driven all LED nets.
     if !ready { return; }
     if bits == ledMask && ledsInitialized { return; }
@@ -5806,8 +6034,8 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   fn publishActuators() {
-    const relay = fusedNet80() == 0;
-    const buzzer = fusedNet82() == 0;
+    const relay = fusedNet89() == 0;
+    const buzzer = fusedNet91() == 0;
     if !actuatorsInitialized || relay != relayEnergized {
       relayEnergized = relay;
       actuator.send({ target: 0, active: relay, value: 0 });
@@ -5821,14 +6049,14 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
 
   pure fn segmentMask() -> number {
     let mask = 0;
-    if fusedNet51() == 0 { mask = mask | 1; }
-    if fusedNet52() == 0 { mask = mask | 2; }
-    if fusedNet53() == 0 { mask = mask | 4; }
-    if fusedNet54() == 0 { mask = mask | 8; }
-    if fusedNet55() == 0 { mask = mask | 16; }
-    if fusedNet56() == 0 { mask = mask | 32; }
-    if fusedNet57() == 0 { mask = mask | 64; }
-    if fusedNet58() == 0 { mask = mask | 128; }
+    if fusedNet59() == 0 { mask = mask | 1; }
+    if fusedNet60() == 0 { mask = mask | 2; }
+    if fusedNet61() == 0 { mask = mask | 4; }
+    if fusedNet62() == 0 { mask = mask | 8; }
+    if fusedNet63() == 0 { mask = mask | 16; }
+    if fusedNet64() == 0 { mask = mask | 32; }
+    if fusedNet65() == 0 { mask = mask | 64; }
+    if fusedNet66() == 0 { mask = mask | 128; }
     return mask;
   }
 
@@ -5837,14 +6065,14 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     mask: number;
   }
 
-  derived ds1Scan1: Scan = { active: fusedNet59() == 1, mask: segmentMask() };
-  derived ds1Scan2: Scan = { active: fusedNet60() == 1, mask: segmentMask() };
-  derived ds1Scan3: Scan = { active: fusedNet61() == 1, mask: segmentMask() };
-  derived ds1Scan4: Scan = { active: fusedNet62() == 1, mask: segmentMask() };
-  derived ds2Scan1: Scan = { active: fusedNet63() == 1, mask: segmentMask() };
-  derived ds2Scan2: Scan = { active: fusedNet64() == 1, mask: segmentMask() };
-  derived ds2Scan3: Scan = { active: fusedNet65() == 1, mask: segmentMask() };
-  derived ds2Scan4: Scan = { active: fusedNet66() == 1, mask: segmentMask() };
+  derived ds1Scan1: Scan = { active: fusedNet67() == 1, mask: segmentMask() };
+  derived ds1Scan2: Scan = { active: fusedNet68() == 1, mask: segmentMask() };
+  derived ds1Scan3: Scan = { active: fusedNet69() == 1, mask: segmentMask() };
+  derived ds1Scan4: Scan = { active: fusedNet70() == 1, mask: segmentMask() };
+  derived ds2Scan1: Scan = { active: fusedNet71() == 1, mask: segmentMask() };
+  derived ds2Scan2: Scan = { active: fusedNet72() == 1, mask: segmentMask() };
+  derived ds2Scan3: Scan = { active: fusedNet73() == 1, mask: segmentMask() };
+  derived ds2Scan4: Scan = { active: fusedNet74() == 1, mask: segmentMask() };
 
   reaction trackDs1Digit1 on ds1Scan1 as (previous, current) {
     ds1Active1 = current.active;
@@ -5997,6 +6225,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       if event.index == 0 { j13Closed = event.closed; }
       else if event.index == 1 { j3Closed = event.closed; }
       else if event.index == 2 { j2Vs1838 = event.closed; }
+      else if event.index == 3 { j5Closed = event.closed; }
       else { continue; }
       jumper.send({ index: event.index, closed: event.closed });
       fusedSeq = fusedSeq + 1;
@@ -6041,13 +6270,51 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
 
   process start {
     fusedStarted = true;
-    // MCU pins are released until the firmware writes a port mode/latch (the original
-    // electrical model also has no pin intent before the first port write).
-    let index = 0;
-    while index < 32 {
-      store8(fusedMcuDrives, index, 4);
-      index = index + 1;
-    }
+    // STC15 reset ports are quasi-bidirectional with weak pull-ups. The generator reads
+    // every P0-P4 pin's initial intent from the standalone MCU DDL and emits the drive
+    // list once here, so the fused reset cannot drift from the source package. A first
+    // `MOV A,P3` / `MOV A,P4` sees the real reset level; a strong external low still wins
+    // in fusedNet. Release (4) is only for later open-drain/input modes.
+    store8(fusedMcuDrives, 0, 2);
+    store8(fusedMcuDrives, 1, 2);
+    store8(fusedMcuDrives, 2, 2);
+    store8(fusedMcuDrives, 3, 2);
+    store8(fusedMcuDrives, 4, 2);
+    store8(fusedMcuDrives, 5, 2);
+    store8(fusedMcuDrives, 6, 2);
+    store8(fusedMcuDrives, 7, 2);
+    store8(fusedMcuDrives, 8, 2);
+    store8(fusedMcuDrives, 9, 2);
+    store8(fusedMcuDrives, 10, 2);
+    store8(fusedMcuDrives, 11, 2);
+    store8(fusedMcuDrives, 12, 2);
+    store8(fusedMcuDrives, 13, 2);
+    store8(fusedMcuDrives, 14, 2);
+    store8(fusedMcuDrives, 15, 2);
+    store8(fusedMcuDrives, 16, 2);
+    store8(fusedMcuDrives, 17, 2);
+    store8(fusedMcuDrives, 18, 2);
+    store8(fusedMcuDrives, 19, 2);
+    store8(fusedMcuDrives, 20, 2);
+    store8(fusedMcuDrives, 21, 2);
+    store8(fusedMcuDrives, 22, 2);
+    store8(fusedMcuDrives, 23, 2);
+    store8(fusedMcuDrives, 24, 2);
+    store8(fusedMcuDrives, 25, 2);
+    store8(fusedMcuDrives, 26, 2);
+    store8(fusedMcuDrives, 27, 2);
+    store8(fusedMcuDrives, 28, 2);
+    store8(fusedMcuDrives, 29, 2);
+    store8(fusedMcuDrives, 30, 2);
+    store8(fusedMcuDrives, 31, 2);
+    store8(fusedMcuDrives, 32, 2);
+    store8(fusedMcuDrives, 33, 2);
+    store8(fusedMcuDrives, 34, 2);
+    store8(fusedMcuDrives, 35, 2);
+    store8(fusedMcuDrives, 36, 2);
+    store8(fusedMcuDrives, 37, 2);
+    store8(fusedMcuDrives, 38, 2);
+    store8(fusedMcuDrives, 39, 2);
         u1_started = true;
     u4_started = true;
     u5_started = true;
@@ -6081,6 +6348,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     jumper.send({ index: 0, closed: j13Closed });
     jumper.send({ index: 1, closed: j3Closed });
     jumper.send({ index: 2, closed: j2Vs1838 });
+    jumper.send({ index: 3, closed: j5Closed });
     amplifier.send({ position: lm324Position, gain: lm324Gain, outputVoltage: lm324Out });
   }
 
@@ -6149,6 +6417,22 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     if load8(fusedPins, 30) != next30 { store8(fusedPins, 30, next30); }
     const next31 = fusedNet33();
     if load8(fusedPins, 31) != next31 { store8(fusedPins, 31, next31); }
+    const next32 = fusedNet34();
+    if load8(fusedPins, 32) != next32 { store8(fusedPins, 32, next32); }
+    const next33 = fusedNet35();
+    if load8(fusedPins, 33) != next33 { store8(fusedPins, 33, next33); }
+    const next34 = fusedNet36();
+    if load8(fusedPins, 34) != next34 { store8(fusedPins, 34, next34); }
+    const next35 = fusedNet37();
+    if load8(fusedPins, 35) != next35 { store8(fusedPins, 35, next35); }
+    const next36 = fusedNet38();
+    if load8(fusedPins, 36) != next36 { store8(fusedPins, 36, next36); }
+    const next37 = fusedNet39();
+    if load8(fusedPins, 37) != next37 { store8(fusedPins, 37, next37); }
+    const next38 = fusedNet40();
+    if load8(fusedPins, 38) != next38 { store8(fusedPins, 38, next38); }
+    const next39 = fusedNet41();
+    if load8(fusedPins, 39) != next39 { store8(fusedPins, 39, next39); }
   }
 
 }

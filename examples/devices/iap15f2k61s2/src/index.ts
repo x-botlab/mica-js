@@ -2,8 +2,19 @@ import { createJitBlockBuilder } from '@mica-js/sdk/model';
 import type { BlockIR } from '@mica-js/sdk/model';
 import type { JitTranslate, JitTranslateInput } from '@mica-js/sdk/device';
 import { MethodError } from '@mica-js/sdk/device';
-import { CODE, SFR_SBUF, SFR_SCON } from './kernel/ir';
-import { SerialLog } from '../../shared/serial';
+import {
+  CODE,
+  SFR_IE,
+  SFR_IE2,
+  SFR_INT_CLKO,
+  SFR_IP,
+  SFR_IP2,
+  SFR_IP2H,
+  SFR_IPH,
+  SFR_SBUF,
+  SFR_SCON,
+} from './kernel/ir';
+import { SERIAL_CAPACITY, SerialLog } from '../../shared/serial';
 import { InterruptController, watchInterruptEnables } from './kernel/interrupt';
 import { activateMachine } from './kernel/machine';
 import type { Machine } from './kernel/machine';
@@ -72,7 +83,19 @@ function createMachine(clock: Clock): Machine {
       }
   }
 
-  for (const address of [0xa8, 0xb8, 0xb5, 0xb7, 0xb6])
+  // 含中断允许/优先级位的全部已建模 SFR：写入后进入一指令保护窗口（IE/IP 手册明确，
+  // IE2/INT_CLKO/IP2 系列按同一模型合同）。
+  const interruptControlWrites = [
+    SFR_IE,
+    SFR_IE2,
+    SFR_INT_CLKO,
+    SFR_IP,
+    SFR_IP2,
+    SFR_IPH,
+    SFR_IP2H,
+  ] as const;
+
+  for (const address of interruptControlWrites)
     sfr.onWrite(address, (b, target) => watchInterruptEnables(b, target));
 
   for (const peripheral of peripherals) irq.register(...(peripheral.interrupts ?? []));
@@ -83,7 +106,7 @@ function createMachine(clock: Clock): Machine {
     if (peripheral.id !== 'ports')
       for (const address of peripheral.writes ?? []) timedWrites.add(address);
   // 中断允许/优先级写入会改变可响应性与期限重算时机；它们不在外设 writes 里。
-  for (const address of [0xa8, 0xb5, 0xb6, 0xb7, 0xb8]) timedWrites.add(address);
+  for (const address of interruptControlWrites) timedWrites.add(address);
 
   let accessProbe: { reads: Set<number>; writes: Set<number> } | undefined;
   const machine: Machine = {
@@ -338,11 +361,10 @@ function translateInstruction(
 
 /** 物理 Flash 合同：64 KiB 地址空间的前 60 KiB 可装载固件。 */
 const FLASH_CONTRACT_SIZE = 0xf000;
-const SERIAL_CAPACITY = 4096;
 
 const SERIAL_CHANNELS = {
-  'uart1Tx': 'onDidUart1Tx',
-  'uart1Rx': 'onDidUart1Rx',
+  uart1Tx: 'onDidUart1Tx',
+  uart1Rx: 'onDidUart1Rx',
 } as const;
 
 type SerialChannel = keyof typeof SERIAL_CHANNELS;

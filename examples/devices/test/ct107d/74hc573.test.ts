@@ -172,15 +172,25 @@ function instrumentedSource(source: string): string {
   text = replaceOnce(
     text,
     `  process start {
-    const current = inputs;
-    stored = current;
-    latch.send(current);
+    // 573 只在 LE 为高时透明跟随 D。上电时 LE 已低的口不应伪造一次「锁存」；
+    // 保持 stored=0 的确定性初始值，等第一个透明相位或下降沿再更新。latch 仍发布
+    // 这个确定初始值，便于观察端不需要区分「尚未发布」与「锁存为 0」。
+    if le.sample.level == Logic.high {
+      const current = inputs;
+      stored = current;
+    }
+    latch.send(stored);
     publishAll();
   }`,
     `  process start {
-    const current = inputs;
-    stored = current;
-    latch.send(current);
+    // 573 只在 LE 为高时透明跟随 D。上电时 LE 已低的口不应伪造一次「锁存」；
+    // 保持 stored=0 的确定性初始值，等第一个透明相位或下降沿再更新。latch 仍发布
+    // 这个确定初始值，便于观察端不需要区分「尚未发布」与「锁存为 0」。
+    if le.sample.level == Logic.high {
+      const current = inputs;
+      stored = current;
+    }
+    latch.send(stored);
     publishAll();
     wakeLog.send(wakeCount);
     loop {
@@ -386,7 +396,7 @@ describe('74HC573', () => {
     }
   });
 
-  it('LE 低时上电仍把固定 D 字节锁存', async () => {
+  it('LE 低时上电不伪造锁存，Q 保持确定的 0 值', async () => {
     const byte = 0x96;
     const device = await loadSourceDevice('74hc573');
     const board = await createBoardWith([{ id: 'dut', type: '74hc573', device }], {
@@ -397,8 +407,10 @@ describe('74HC573', () => {
     try {
       board.run(STEP);
 
-      expect(readQ(board)).toBe(byte);
-      expect(board.topics.latch).toBe(byte);
+      // 只有透明相位或下降沿才捕获 D；上电 LE 低时 stored 保持 0，并且 start 会
+      // 明确发布一次 latch=0，观察端不能把「事件缺失」误当成锁存为 0。
+      expect(readQ(board)).toBe(0);
+      expect(board.topics.latch).toBe(0);
       expect(board.faults).toEqual([]);
     } finally {
       board.dispose();

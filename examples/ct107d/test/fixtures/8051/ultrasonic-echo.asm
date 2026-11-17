@@ -1,6 +1,9 @@
 ; Self-made CT107D ultrasonic regression: send eight P1.0 pulses, wait for the
 ; U22 echo on P1.1 to go low, then latch 0xA5 into U6.
         ORG 0
+        ; Reset P1.0 is weak-high. Drive it low first so the first SETB is a real
+        ; rising edge; otherwise only seven of the eight ultrasonic pulses count.
+        CLR P1.0
         MOV R2,#8
 PULSE:
         SETB P1.0

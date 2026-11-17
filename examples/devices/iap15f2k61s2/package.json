@@ -2,7 +2,7 @@
   "publisher": "example",
   "name": "iap15f2k61s2",
   "version": "0.2.0",
-  "description": "STC15F2K60S2 系列 8051 单片机：JIT 取指执行 8051 指令集与中断，P0–P3、定时器 T0/T1/T2、双串口、ADC、PCA/CCP、SPI、IAP/EEPROM 与看门狗均按手册建模。",
+  "description": "STC15F2K60S2 系列 8051 单片机：JIT 取指执行 8051 指令集与中断，P0–P4、定时器 T0/T1/T2、双串口、ADC、PCA/CCP、SPI、IAP/EEPROM 与看门狗均按手册建模。",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -138,6 +138,30 @@
     },
     "P3_7": {
       "label": "P3_7"
+    },
+    "P4_0": {
+      "label": "P4_0"
+    },
+    "P4_1": {
+      "label": "P4_1"
+    },
+    "P4_2": {
+      "label": "P4_2/WR"
+    },
+    "P4_3": {
+      "label": "P4_3"
+    },
+    "P4_4": {
+      "label": "P4_4/RD"
+    },
+    "P4_5": {
+      "label": "P4_5"
+    },
+    "P4_6": {
+      "label": "P4_6"
+    },
+    "P4_7": {
+      "label": "P4_7"
     },
     "VCC": {
       "label": "VCC",

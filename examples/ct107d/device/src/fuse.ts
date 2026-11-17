@@ -264,52 +264,101 @@ export function fuseBlock(block: BlockIR): BlockIR {
     dirtyLocal = undefined;
     dirtyPrefix = [];
     const body = transform(entry.body, new Map()) as RegionIR;
-    if (!wroteDrive) return { ...entry, body };
-    // The 8051 translator puts `elapse` before its service/prologue tail, so the pin
-    // write barrier must be inserted before the first top-level elapse, not at the end.
-    const at = body.operations.findIndex((operation) => operation.kind === 'elapse');
-    if (at < 0) throw new Error(`Fused MCU instruction has no elapse (pc ${entry.pc})`);
-    if (dirtyLocal === undefined) return { ...entry, body };
-    const dirty = id();
-    const read = id();
-    const one = id();
-    const sum = id();
+    if (!wroteDrive || dirtyLocal === undefined) return { ...entry, body };
+
+    /**
+     * A drive change only becomes visible to the rest of the board when `fusedSeq`
+     * changes. The 8051 translator can end an instruction through `elapse`, a normal
+     * `redirect`, or a redirect nested inside an IRQ-take branch; all of them are
+     * reachable before the top-level service `elapse`. Insert a changed-only commit
+     * immediately before every block-exiting operation in every reachable region.
+     * `dirty` is cleared after the commit, so one path cannot bump twice for the same
+     * drive change, while a later write in the same instruction can still commit again.
+     */
+    const dirtyLocalId = dirtyLocal;
+    const commit = (): OperationIR[] => {
+      const dirty = id();
+      const read = id();
+      const one = id();
+      const sum = id();
+      const clean = id();
+
+      return [
+        { kind: 'localRead', local: dirtyLocalId, result: dirty, type: { kind: 'bool' } },
+        {
+          kind: 'if',
+          condition: dirty,
+          yes: {
+            operations: [
+              {
+                kind: 'read',
+                resource: 'state',
+                name: 'fusedSeq',
+                result: read,
+                type: { kind: 'number' },
+              },
+              constant(one, 1),
+              {
+                kind: 'binary',
+                operator: 'add',
+                left: read,
+                right: one,
+                result: sum,
+                type: { kind: 'number' },
+              },
+              { kind: 'write', resource: 'state', name: 'fusedSeq', value: sum },
+              boolConstant(clean, false),
+              { kind: 'localWrite', local: dirtyLocalId, value: clean },
+            ],
+          },
+        },
+      ];
+    };
+    const exits = new Set<OperationIR['kind']>([
+      'elapse',
+      'redirect',
+      'stop',
+      'wait',
+      'waitUntil',
+      'return',
+      'returnValue',
+    ]);
+    const mapRegion = (region: RegionIR): RegionIR => ({
+      ...region,
+      operations: region.operations.flatMap((operation) => [
+        ...(exits.has(operation.kind) ? commit() : []),
+        mapOperation(operation),
+      ]),
+    });
+    const mapOperation = (operation: OperationIR): OperationIR => {
+      switch (operation.kind) {
+        case 'if':
+          return {
+            ...operation,
+            yes: mapRegion(operation.yes),
+            ...(operation.no === undefined ? {} : { no: mapRegion(operation.no) }),
+          };
+        case 'match':
+          return {
+            ...operation,
+            arms: operation.arms.map((arm) => ({ ...arm, body: mapRegion(arm.body) })),
+            ...(operation.otherwise === undefined
+              ? {}
+              : { otherwise: mapRegion(operation.otherwise) }),
+          };
+        case 'while':
+          return { ...operation, body: mapRegion(operation.body) };
+        case 'loop':
+          return { ...operation, body: mapRegion(operation.body) };
+        default:
+          return operation;
+      }
+    };
+    const mapped = mapRegion(body);
+
     return {
       ...entry,
-      body: {
-        ...body,
-        operations: [
-          ...dirtyPrefix,
-          ...body.operations.slice(0, at),
-          { kind: 'localRead', local: dirtyLocal, result: dirty, type: { kind: 'bool' } },
-          {
-            kind: 'if',
-            condition: dirty,
-            yes: {
-              operations: [
-                {
-                  kind: 'read',
-                  resource: 'state',
-                  name: 'fusedSeq',
-                  result: read,
-                  type: { kind: 'number' },
-                },
-                constant(one, 1),
-                {
-                  kind: 'binary',
-                  operator: 'add',
-                  left: read,
-                  right: one,
-                  result: sum,
-                  type: { kind: 'number' },
-                },
-                { kind: 'write', resource: 'state', name: 'fusedSeq', value: sum },
-              ],
-            },
-          },
-          ...body.operations.slice(at),
-        ],
-      },
+      body: { ...mapped, operations: [...dirtyPrefix, ...mapped.operations] },
     };
   };
 

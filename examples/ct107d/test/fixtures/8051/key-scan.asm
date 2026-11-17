@@ -1,14 +1,23 @@
-; Self-made CT107D key-matrix scan: three P3 snapshots under different driven
-; patterns, latched into U6/U7/U8 for fused-vs-discrete port comparison.
-;   U6: P3 all weak-high (detects independent keys and P42/GND column keys)
-;   U7: P3.4 low (detects P34 column keys)
-;   U8: P3.5 low (detects P35 column keys)
+; Self-made CT107D key-matrix scan with real column drives. Each scan grounds one
+; column and reads the four P3 rows; latches are U6=P42, U8=P35, U7=P34, U9=P44.
+; The J5 selector decides whether the S4-S7 common column is GND (independent) or
+; P44 (4x4 matrix), so U9 is meaningful only with J5 in the 1-2 position.
         ORG 0
 LOOP:
+        MOV P4,#0xFF
         MOV P3,#0xFF
+        CLR P4.2
         MOV A,P3
         MOV P0,A
         MOV P2,#0x80
+        ACALL DELAY
+        MOV P2,#0x00
+        SETB P4.2
+
+        MOV P3,#0xDF
+        MOV A,P3
+        MOV P0,A
+        MOV P2,#0xC0
         ACALL DELAY
         MOV P2,#0x00
 
@@ -19,12 +28,14 @@ LOOP:
         ACALL DELAY
         MOV P2,#0x00
 
-        MOV P3,#0xDF
+        MOV P3,#0xFF
+        CLR P4.4
         MOV A,P3
         MOV P0,A
-        MOV P2,#0xC0
+        MOV P2,#0xA0
         ACALL DELAY
         MOV P2,#0x00
+        SETB P4.4
 
         SJMP LOOP
 

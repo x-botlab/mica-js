@@ -30,6 +30,7 @@ const JUMPER_INDEX: ReadonlyMap<string, number> = new Map([
   ['J13', 0],
   ['J3', 1],
   ['J2', 2],
+  ['J5', 3],
 ]);
 
 type Batch = Parameters<ReturnType<DeviceFactory>['sync']>[0];
@@ -136,6 +137,7 @@ export const create: DeviceFactory = (context) => {
     BOARD_DEFAULTS.j13Closed,
     BOARD_DEFAULTS.j3Closed,
     BOARD_DEFAULTS.j2Vs1838,
+    BOARD_DEFAULTS.j5Closed,
   ];
   const infrared: InfraredValue = { LD1: false, U11: false, U20: false };
   const ne555: Ne555Value = { frequency: 0, dutyCycle: 0 };
@@ -340,7 +342,12 @@ export const create: DeviceFactory = (context) => {
         S18: switchStates[15]!,
         S19: switchStates[16]!,
       },
-      jumpers: { J13: jumperStates[0]!, J3: jumperStates[1]!, J2: jumperStates[2]! },
+      jumpers: {
+        J13: jumperStates[0]!,
+        J3: jumperStates[1]!,
+        J2: jumperStates[2]!,
+        J5: jumperStates[3]!,
+      },
       infrared: { ...infrared },
       ne555: { ...ne555 },
       uln2003: { ...uln2003 },
@@ -450,7 +457,8 @@ export const create: DeviceFactory = (context) => {
       }
       for (const message of (outputs['jumper'] ?? []) as readonly { value: JumperValue }[]) {
         const value = message.value;
-        const designator = value.index === 0 ? 'J13' : value.index === 1 ? 'J3' : 'J2';
+        const designator =
+          value.index === 0 ? 'J13' : value.index === 1 ? 'J3' : value.index === 2 ? 'J2' : 'J5';
         signal(
           designator,
           value.index === 2 ? 'closedState2' : 'closedState',

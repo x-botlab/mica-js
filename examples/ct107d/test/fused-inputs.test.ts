@@ -60,12 +60,13 @@ describe('fused board input methods', () => {
       fused.board.runUntil(0);
       const initial = snapshot(fused);
       expect(initial.switches.S9).toBe(false);
-      expect(initial.jumpers).toEqual({ J13: true, J3: true, J2: true });
+      expect(initial.jumpers).toEqual({ J13: true, J3: true, J2: true, J5: true });
       expect(initial.infrared).toEqual({ LD1: false, U11: false, U20: false });
       expect(initial.ne555.frequency).toBeGreaterThan(0);
       expect(initial.ne555.dutyCycle).toBeGreaterThan(0);
       expect(initial.uln2003).toEqual({ mask: 0, channels: '0000000' });
-      expect(initial.decoder).toMatchObject({ select: 0, enabled: true });
+      // Reset P2 is weak-high, so 74HC138 A/B/C = 111 selects Y7 before firmware init.
+      expect(initial.decoder).toMatchObject({ select: 7, enabled: true });
       expect(initial.decoder.code).toHaveLength(2);
       expect(initial.pcf8591).toEqual({ channel: 0, output: 0, analog: [0, 0, 0, 0] });
       expect(initial.amplifier.gain).toBeCloseTo(21, 6);
@@ -81,6 +82,7 @@ describe('fused board input methods', () => {
       fused.methods.setSwitch!({ designator: 'S9', pressed: true });
       fused.methods.setJumper!({ designator: 'J13', closed: false });
       fused.methods.setJumper!({ designator: 'J2', closed: true });
+      fused.methods.setJumper!({ designator: 'J5', closed: false });
       fused.methods.setHallField!({ value: 20 });
       fused.methods.setIrCarrier!({ designator: 'LD1', value: true });
       fused.methods.setIrCarrier!({ designator: 'U11', value: true });
@@ -91,12 +93,13 @@ describe('fused board input methods', () => {
 
       expect(signals.get('S9/pressed')).toBe(1);
       expect(signals.get('J13/closedState')).toBe(0);
+      expect(signals.get('J5/closedState')).toBe(0);
       expect(signals.get('U21/active')).toBe(1);
       expect(signals.get('LD1/carrier')).toBe(1);
       expect(signals.get('U11/receiving')).toBe(1);
       const routed = snapshot(fused);
       expect(routed.switches.S9).toBe(true);
-      expect(routed.jumpers).toEqual({ J13: false, J3: true, J2: true });
+      expect(routed.jumpers).toEqual({ J13: false, J3: true, J2: true, J5: false });
       expect(routed.infrared).toEqual({ LD1: true, U11: true, U20: false });
       expect(routed.pcf8591.analog).toEqual([0, 0, 0.5, 0]);
       expect(routed.hall).toBe(true);

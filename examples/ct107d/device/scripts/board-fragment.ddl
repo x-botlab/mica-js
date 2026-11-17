@@ -50,7 +50,10 @@
 
   /** Matrix keys and independent keys, indexed by the schematic designator. */
   memory keyStates[24];
+  /** J13 CON3: true = 2-3 (WR grounded, default IO); false = 1-2 (WR follows P42). */
   state j13Closed: bool = {{J13_CLOSED}};
+  /** J5 CON3: true = 2-3 (S4-S7 grounded, default independent); false = 1-2 (P44 column). */
+  state j5Closed: bool = {{J5_CLOSED}};
   state j3Closed: bool = {{J3_CLOSED}};
   state j2Vs1838: bool = {{J2_VS1838}};
 
@@ -377,6 +380,7 @@
       if event.index == 0 { j13Closed = event.closed; }
       else if event.index == 1 { j3Closed = event.closed; }
       else if event.index == 2 { j2Vs1838 = event.closed; }
+      else if event.index == 3 { j5Closed = event.closed; }
       else { continue; }
       jumper.send({ index: event.index, closed: event.closed });
       fusedSeq = fusedSeq + 1;
@@ -421,13 +425,12 @@
 
   process start {
     fusedStarted = true;
-    // MCU pins are released until the firmware writes a port mode/latch (the original
-    // electrical model also has no pin intent before the first port write).
-    let index = 0;
-    while index < 32 {
-      store8(fusedMcuDrives, index, 4);
-      index = index + 1;
-    }
+    // STC15 reset ports are quasi-bidirectional with weak pull-ups. The generator reads
+    // every P0-P4 pin's initial intent from the standalone MCU DDL and emits the drive
+    // list once here, so the fused reset cannot drift from the source package. A first
+    // `MOV A,P3` / `MOV A,P4` sees the real reset level; a strong external low still wins
+    // in fusedNet. Release (4) is only for later open-drain/input modes.
+{{MCU_RESET_DRIVES}}
     {{START_FLAGS}}
     fusedRefresh();
     emitDisplay1();
@@ -441,6 +444,7 @@
     jumper.send({ index: 0, closed: j13Closed });
     jumper.send({ index: 1, closed: j3Closed });
     jumper.send({ index: 2, closed: j2Vs1838 });
+    jumper.send({ index: 3, closed: j5Closed });
     amplifier.send({ position: lm324Position, gain: lm324Gain, outputVoltage: lm324Out });
   }
 

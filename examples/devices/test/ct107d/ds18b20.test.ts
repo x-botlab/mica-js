@@ -27,10 +27,23 @@ function crc8(bytes: readonly number[]): number {
 const ROM_BODY = [0x28, SERIAL & 0xff, (SERIAL >>> 8) & 0xff, 0x00, 0x00, 0x00, 0x00];
 const ROM = [...ROM_BODY, crc8(ROM_BODY)];
 
+/** 温度按 T×16 四舍五入（中点远离零）后取 16 位二进制补码。 */
+function encodeTemperature(celsius: number): number {
+  const scaled = celsius * 16;
+  const truncated = Math.trunc(scaled);
+  const residual = scaled - truncated;
+  const rounded = residual >= 0.5 ? truncated + 1 : residual <= -0.5 ? truncated - 1 : truncated;
+
+  return rounded & 0xffff;
+}
+
 interface OneWire {
   /** 复位脉冲（500 us 低）+ 等待存在脉冲结束。 */
   reset(): void;
   writeByte(value: number): void;
+  /** 读一个字节，每次都在下降沿 +`sampleAt` us 采样，并把时隙补齐到 61 us。 */
+  readByteAt(sampleAt: number): number;
+  /** 读一个字节，在 datasheet 允许窗口内的 +14 us 采样。 */
   readByte(): number;
 }
 
@@ -84,6 +97,24 @@ async function fixture(): Promise<Fixture> {
     board.send('dqSrc', 'level', 2);
     board.run(ps);
   };
+  const readByteAt = (sampleAt: number): number => {
+    let value = 0;
+
+    for (let bit = 0; bit < 8; bit += 1) {
+      const fall = board.time;
+      low(1 * US);
+      // datasheet p16：下降沿后 15 us 内采样；sampleAt=14 是通用基线。
+      release(Math.max(0, sampleAt - 1) * US);
+      const level = board.probe('dqProbe');
+
+      expect([0, 1]).toContain(level);
+      if (level === 1) value |= 1 << bit;
+      // 0 位由从机保持低到下降沿 +60 us；整个时隙补齐到 61 us。
+      if (fall + 61 * US > board.time) board.run(fall + 61 * US - board.time);
+    }
+
+    return value;
+  };
 
   return {
     board,
@@ -98,29 +129,18 @@ async function fixture(): Promise<Fixture> {
           low(2 * US);
           if (((value >> bit) & 1) === 0) {
             // 写 0：整个时隙保持低，从机在 +15 us 采样到低。
-            board.run(60 * US);
+            board.run(58 * US);
           } else {
             // 写 1：释放后由上拉拉高，从机在 +15 us 采样到高。
-            release(13 * US);
+            release(58 * US);
           }
-          release(10 * US);
+          // 时隙 >= 60 us，再加 1 us 恢复。
+          release(1 * US);
         }
       },
+      readByteAt,
       readByte() {
-        let value = 0;
-
-        for (let bit = 0; bit < 8; bit += 1) {
-          low(1 * US);
-          // 从机在下降沿 +15 us 决定输出，0 位保持低到 +60 us。
-          release(30 * US);
-          const level = board.probe('dqProbe');
-
-          expect([0, 1]).toContain(level);
-          if (level === 1) value |= 1 << bit;
-          board.run(40 * US);
-        }
-
-        return value;
+        return readByteAt(14);
       },
     },
   };
@@ -274,6 +294,40 @@ describe('DS18B20', () => {
     }
   });
 
+  it('合法读窗口读取正/负/边界温度，编码与 CRC 一致', async () => {
+    const { board, wire } = await fixture();
+
+    try {
+      for (const celsius of [125, 85, 25.0625, 0, -0.5, -10.5, -55]) {
+        board.send('dut', 'setTemperature', celsius);
+        board.run(10 * US);
+
+        wire.reset();
+        wire.writeByte(0xcc);
+        wire.writeByte(0x44);
+        board.run(750 * MS);
+
+        wire.reset();
+        wire.writeByte(0xcc);
+        wire.writeByte(0xbe);
+
+        const scratch: number[] = [];
+
+        // readByte 在下降沿 +14 us 采样，位于 datasheet 允许的 15 us 窗口内。
+        for (let index = 0; index < 9; index += 1) scratch.push(wire.readByte());
+
+        const raw = encodeTemperature(celsius);
+
+        expect(scratch.slice(0, 2), `${celsius} °C`).toEqual([raw & 0xff, raw >>> 8]);
+        expect(scratch.slice(2, 5), `${celsius} °C 阈值/配置`).toEqual([75, 70, 0x5f]);
+        expect(scratch[8], `${celsius} °C CRC`).toBe(crc8(scratch.slice(0, 8)));
+      }
+      expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
   it('Read ROM 返回工厂 ROM，Match ROM 命中可继续、失配后静默', async () => {
     const { board, wire } = await fixture();
 
@@ -338,6 +392,144 @@ describe('DS18B20', () => {
       // 保留字节固定，CRC 按新内容重算。
       expect(scratch.slice(5, 8)).toEqual([0xff, 0x0c, 0x00]);
       expect(scratch[8]).toBe(crc8(scratch.slice(0, 8)));
+      expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('合法读窗口在 +10/+14 us 与边界 +15 us 采样同一 0 位都得到低', async () => {
+    const { board, wire } = await fixture();
+
+    try {
+      for (const sampleAt of [10, 14, 15]) {
+        wire.reset();
+        wire.writeByte(0xcc);
+        wire.writeByte(0xbe);
+        // 上电暂存器 LSB = 0x90：bit0..3 为 0，bit4 为 1，bit5..6 为 0，bit7 为 1。
+        // +15 us 是 datasheet 允许窗口的边界，不是严格小于 15 us 的内部点；
+        // 模型在下降沿已经驱动 0 位，边界也必须读到低。
+        expect(wire.readByteAt(sampleAt), `LSB @ +${sampleAt} us`).toBe(0x90);
+      }
+      expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('连续 0/1、9 字节 CRC 与 Read ROM 不因从机自拉低边沿丢位', async () => {
+    const { board, wire } = await fixture();
+
+    try {
+      wire.reset();
+      wire.writeByte(0xcc);
+      wire.writeByte(0xbe);
+
+      const scratch: number[] = [];
+
+      for (let index = 0; index < 9; index += 1) scratch.push(wire.readByte());
+      expect(scratch).toHaveLength(9);
+      expect(scratch.slice(0, 2)).toEqual([0x90, 0x01]);
+      // byte5 是连续 8 个 1，byte7 是连续 8 个 0；按字节连续读完可暴露
+      // “从机自拉低边沿被当成新时隙/复位”导致的位序错位。
+      expect(scratch[5]).toBe(0xff);
+      expect(scratch[7]).toBe(0x00);
+      expect(scratch[8]).toBe(crc8(scratch.slice(0, 8)));
+
+      // 换一个事务：从机在 72 个读时隙里多次自己拉低，若自拉低被当成新时隙，
+      // 位序会错位；Read ROM 的混合位型与 CRC 会立即暴露。
+      wire.reset();
+      wire.writeByte(0x33);
+
+      const rom: number[] = [];
+
+      for (let index = 0; index < 8; index += 1) rom.push(wire.readByte());
+      expect(rom).toEqual(ROM);
+      expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('读事务中途一次重叠复位会丢弃旧事务，随后 9 字节 CRC 读取完整', async () => {
+    const { board, wire } = await fixture();
+
+    try {
+      wire.reset();
+      wire.writeByte(0xcc);
+      wire.writeByte(0xbe);
+      expect(wire.readByte()).toBe(0x90);
+      expect(wire.readByte()).toBe(0x01);
+      expect(wire.readByte()).toBe(75);
+
+      // 第四个字节 TL = 0x46，bit0 = 0；在它的读 0 位时隙中途复位。
+      // 此时从机正在自己拉低，总线没有新的下降沿；复位必须靠上升沿和
+      // 从该读时隙下降沿起算的 >=480 us 低电平识别。只做这一次复位。
+      board.send('dqSrc', 'level', 0);
+      board.run(1 * US);
+      board.send('dqSrc', 'level', 2);
+      board.run(13 * US);
+      expect(board.probe('dqProbe')).toBe(0);
+      wire.reset();
+
+      wire.writeByte(0xcc);
+      wire.writeByte(0xbe);
+
+      const scratch: number[] = [];
+
+      for (let index = 0; index < 9; index += 1) scratch.push(wire.readByte());
+      expect(scratch.slice(0, 2)).toEqual([0x90, 0x01]);
+      expect(scratch[8]).toBe(crc8(scratch.slice(0, 8)));
+      expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('读 0 位保持到 +60 us，+61 us 已释放并可供下一时隙使用', async () => {
+    const { board, wire } = await fixture();
+
+    try {
+      // 0.125 °C × 16 = 0x0002，LSB 的 bit0 = 0、bit1 = 1、其余为 0。
+      board.send('dut', 'setTemperature', 0.125);
+      board.run(10 * US);
+      wire.reset();
+      wire.writeByte(0xcc);
+      wire.writeByte(0x44);
+      board.run(750 * MS);
+      wire.reset();
+      wire.writeByte(0xcc);
+      wire.writeByte(0xbe);
+
+      const fall = board.time;
+      board.send('dqSrc', 'level', 0);
+      board.run(1 * US);
+      board.send('dqSrc', 'level', 2);
+      board.run(58 * US);
+      // 下降沿 +59 us：从机仍在驱动 bit0 的 0。
+      expect(board.probe('dqProbe')).toBe(0);
+      board.run(2 * US);
+      // +61 us：从机已在 +60 us 释放，总线回到上拉高。
+      expect(board.probe('dqProbe')).toBe(1);
+      expect(board.time).toBe(fall + 61 * US);
+
+      const readSlotAt14 = (): number => {
+        const slotFall = board.time;
+        board.send('dqSrc', 'level', 0);
+        board.run(1 * US);
+        board.send('dqSrc', 'level', 2);
+        board.run(13 * US);
+        const level = board.probe('dqProbe');
+        if (slotFall + 61 * US > board.time) board.run(slotFall + 61 * US - board.time);
+        return level;
+      };
+
+      // 下一时隙从 +61 us 开始：bit1 = 1，随后 bit2..7 = 0。
+      expect(readSlotAt14(), 'LSB bit1').toBe(1);
+      for (let bit = 2; bit < 8; bit += 1) expect(readSlotAt14(), `LSB bit${bit}`).toBe(0);
+
+      // LSB 0x02，下一字节 MSB 为 0x00。
+      expect(wire.readByte()).toBe(0x00);
       expect(board.faults).toEqual([]);
     } finally {
       board.dispose();

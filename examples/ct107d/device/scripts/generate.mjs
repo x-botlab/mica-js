@@ -86,6 +86,7 @@ const BOARD_LEVEL = new Set([
   'S18',
   'S19',
   'J13',
+  'J5',
   'J2',
   'J3',
   'U26',
@@ -126,7 +127,8 @@ const deviceOf = (designator) => symbolByDesignator.get(designator).device.repla
   const missing = symbols
     .map((symbol) => symbol.designator)
     .filter((designator) => !covered.includes(designator));
-  if (symbols.length !== 54 || duplicates.length || unknown.length || missing.length)
+  // 54 个历史实例 + J5（独立/矩阵选择器）；两侧覆盖表必须与此计数一致。
+  if (symbols.length !== 55 || duplicates.length || unknown.length || missing.length)
     throw new Error(
       `Schema coverage mismatch: instances=${symbols.length}, ` +
         `duplicates=[${duplicates}], unknown=[${unknown}], missing=[${missing}]`,
@@ -500,8 +502,9 @@ async function fuseInstance(designator) {
   const pins = model.declarations.filter((declaration) => declaration.kind === 'pin');
   const properties = propertiesOf(designator);
 
-  // Replace property references with this instance's board values. The fused package
-  // does not expose per-device tuning knobs; probe/counter defaults stay fixed.
+  // Replace property references with this instance's board values (or a board-level
+  // property such as ultrasonicDistanceCm / uartBaud). Other probe/counter defaults
+  // stay fixed because they are assembly properties in the schematic.
   for (const declaration of model.declarations)
     if (declaration.kind === 'property' && declaration.name !== 'clockFrequency') {
       if (!(declaration.name in properties))
@@ -509,18 +512,38 @@ async function fuseInstance(designator) {
       const replacement =
         designator === 'U22' && declaration.name === 'distanceCm'
           ? 'ultrasonicDistanceCm'
-          : literal(properties[declaration.name]);
+          : designator === 'UART_PROBE' && declaration.name === 'baud'
+            ? 'uartBaud'
+            : literal(properties[declaration.name]);
       body = body.replace(new RegExp(`\\b${declaration.name}\\b`, 'g'), replacement);
     }
 
   const driveStates = [];
   const setters = [];
   const pinNets = new Map();
+  const resetDrives = new Map();
   for (const pin of pins) {
     const power =
       pin.name === 'vcc' || pin.name === 'vcc1' ? 'vcc' : pin.name === 'gnd' ? 'gnd' : undefined;
     const hasIntent = new RegExp(`\\b${pin.name}\\.intent\\s*<-`).test(body);
-    const initial = power === undefined ? initialDriveCode(pin, designator) : undefined;
+    // U1 is the MCU itself. Its reset pin intents are materialised once in the board
+    // start (`fusedMcuDrives`), not by a second source-merged `u1_Px_y_drive` state. A
+    // duplicate weak-high driver would mask open-drain release and input-only modes.
+    // Read the actual initial intents from the MCU DDL so the fused reset cannot drift
+    // from the standalone package; the current contract is 10 kΩ weak-high (code 2).
+    if (designator === 'U1' && /^P\d_[0-7]$/.test(pin.name)) {
+      if (pin.initial === undefined)
+        throw new Error(`${designator}.${pin.name}: missing reset initial intent`);
+      const code = initialDriveCode(pin, designator);
+
+      if (code !== 2)
+        throw new Error(
+          `${designator}.${pin.name}: reset initial intent must be weak-high code 2 (got ${code})`,
+        );
+      resetDrives.set(pin.name, code);
+    }
+    const initial =
+      designator !== 'U1' && power === undefined ? initialDriveCode(pin, designator) : undefined;
     const rewritten = rewritePin(body, designator, prefix, pin.name, power);
     body = rewritten.source;
     pinNets.set(pin.name, rewritten.net);
@@ -575,6 +598,7 @@ async function fuseInstance(designator) {
     pinNets,
     driveStates,
     setters,
+    resetDrives,
     hasStart,
     outputs: model.declarations
       .filter((declaration) => declaration.kind === 'channel' && declaration.direction === 'output')
@@ -602,7 +626,7 @@ function generateNets(instances) {
 
   // MCU pins are written through `fusedMcuDrives` by the JIT fusion transform.
   const mcuPins = [];
-  for (const port of [0, 1, 2, 3])
+  for (const port of [0, 1, 2, 3, 4])
     for (let bit = 0; bit < 8; bit += 1) {
       const pin = `P${port}_${bit}`;
       const drive = port * 8 + bit;
@@ -610,6 +634,12 @@ function generateNets(instances) {
       mcuPins.push({ pin, net, drive });
       add(net, `load8(fusedMcuDrives, ${drive})`);
     }
+  // Fail fast if one of the eight P4 pins is missing from the schematic netlist instead
+  // of silently letting only P4.2/P4.4 work. Drives are also the fusedPins indices.
+  if (mcuPins.length !== 40 || mcuPins.filter((pin) => pin.pin.startsWith('P4_')).length !== 8)
+    throw new Error(`MCU pin map must contain 40 pins incl. P4_0..P4_7 (got ${mcuPins.length})`);
+  if (new Set(mcuPins.map((pin) => pin.drive)).size !== 40)
+    throw new Error('MCU pin drives are not unique');
 
   for (const instance of instances)
     for (const pin of instance.pins)
@@ -620,14 +650,14 @@ function generateNets(instances) {
         add(instance.pinNets.get(pin), `${instance.prefix}_${pin}_drive`);
 
   // Derive the key matrix from netlist endpoints instead of trusting a hand-written
-  // row order. S4-S7 are independent keys to GND; S8-S19 are row/column keys.
+  // row order. S4-S19 are all row/column keys; J5 selects whether the first column is
+  // grounded (independent) or follows P44 (4x4 matrix). J13 no longer grounds P42.
   const BUTTON_ROWS = ['P30/TXD', 'P31/RXD', 'P32', 'P33'];
-  const BUTTON_COLS = ['P42/WR', 'P35', 'P34'];
+  const BUTTON_COLS = ['KCOL0', 'P42', 'P35', 'P34'];
   const keyNet = (designator, pin) => {
     const net = pinNet.get(`${designator}.${pin}`);
     return net === undefined ? undefined : netNames[net];
   };
-  const independentKeys = [];
   const matrixKeys = [];
   for (const symbol of symbols) {
     const designator = symbol.designator;
@@ -638,14 +668,6 @@ function generateNets(instances) {
     if (a === undefined || b === undefined)
       throw new Error(`${designator}: missing push-button net`);
     const nets = [a, b];
-    const ground = nets.includes('GND');
-    if (ground) {
-      const row = nets.find((net) => net !== 'GND');
-      const rowIndex = BUTTON_ROWS.indexOf(row);
-      if (rowIndex < 0) throw new Error(`${designator}: unknown independent row ${row}`);
-      independentKeys.push({ key: designator, row: rowIndex });
-      continue;
-    }
     const row = nets.find((net) => BUTTON_ROWS.includes(net));
     const col = nets.find((net) => BUTTON_COLS.includes(net));
     if (row === undefined || col === undefined)
@@ -657,37 +679,27 @@ function generateNets(instances) {
     });
   }
   const expectedKeys = KEYS.filter((key) => key !== 'S1');
-  if (independentKeys.length + matrixKeys.length !== expectedKeys.length)
+  if (matrixKeys.length !== expectedKeys.length)
     throw new Error('Button matrix does not cover every S4-S19 key');
   for (const key of expectedKeys)
-    if (![...independentKeys, ...matrixKeys].some((entry) => entry.key === key))
+    if (!matrixKeys.some((entry) => entry.key === key))
       throw new Error(`Button matrix is missing ${key}`);
 
   const directLow = (netName) => [
     ...(drivers.get(indexOfNet(netName)) ?? []).map((driver) => `${driver} == 0`),
   ];
-  const independentLow = new Map();
-  for (const entry of independentKeys) {
-    const list = independentLow.get(entry.row) ?? [];
-    list.push(`load8(keyStates, ${keyIndex(entry.key)}) == 1`);
-    independentLow.set(entry.row, list);
-  }
-  const rowLow = BUTTON_ROWS.map((row, index) => {
-    const lows = directLow(row);
-    for (const condition of independentLow.get(index) ?? []) lows.push(condition);
-    return lows;
-  });
+  const rowLow = BUTTON_ROWS.map((row) => directLow(row));
   const colLow = BUTTON_COLS.map((col) => {
+    if (col === 'KCOL0') return [`fusedNet${indexOfNet('KCOL0')}() == 0`];
     const lows = directLow(col);
-    if (col === 'P42/WR') lows.push('j13Closed');
     if (col === 'P34') lows.push('j3Closed && u15_out_drive == 0');
     return lows;
   });
 
   const buttonLines = [
-    '  memory fusedButtonLow[7];',
+    '  memory fusedButtonLow[8];',
     '  fn fusedComputeButtons() {',
-    ...Array.from({ length: 7 }, (_, index) => `    store8(fusedButtonLow, ${index}, 0);`),
+    ...Array.from({ length: 8 }, (_, index) => `    store8(fusedButtonLow, ${index}, 0);`),
   ];
   for (let row = 0; row < BUTTON_ROWS.length; row += 1) {
     const lows = rowLow[row];
@@ -702,7 +714,7 @@ function generateNets(instances) {
   buttonLines.push('    let iteration = 0;', '    while iteration < 8 {');
   // Only the keys that actually exist may merge a row and a column. Treating every
   // row/column pair as connected would ground the whole matrix whenever one column is
-  // held low (J13 grounds P42/WR permanently).
+  // held low (J5 grounds the first column in independent mode).
   for (const entry of matrixKeys) {
     const connected = `load8(fusedButtonLow, ${entry.row}) == 1 || load8(fusedButtonLow, ${4 + entry.col}) == 1`;
     buttonLines.push(
@@ -748,8 +760,26 @@ function generateNets(instances) {
         lines.push('      if u11_out_drive == 0 { strongLow = true; }');
         lines.push('    }');
       }
-      // J13 grounds the WR column.
-      if (name === 'P42/WR') lines.push('    if j13Closed { strongLow = true; }');
+      // J13 (CON3) selects the U25 WR net: 2-3 grounds it (default IO mode), 1-2
+      // follows P42. P42 itself stays a free matrix column in both positions.
+      if (name === 'WR') {
+        lines.push('    if j13Closed { strongLow = true; }');
+        lines.push('    else {');
+        lines.push(`      if fusedNet${indexOfNet('P42')}() == 0 { strongLow = true; }`);
+        lines.push(`      else if fusedNet${indexOfNet('P42')}() == 1 { strongHigh = true; }`);
+        lines.push('    }');
+      }
+      // J5 (CON3) selects the S4-S7 common column: 2-3 grounds it (default independent),
+      // 1-2 follows P44. Only the matrix position lets P44 be pulled down by a key.
+      if (name === 'KCOL0') {
+        lines.push('    if j5Closed { strongLow = true; }');
+        lines.push('    else {');
+        lines.push(`      if fusedNet${indexOfNet('P44/RD')}() == 0 { strongLow = true; }`);
+        lines.push(`      else if fusedNet${indexOfNet('P44/RD')}() == 1 { strongHigh = true; }`);
+        lines.push('    }');
+      }
+      if (name === 'P44/RD')
+        lines.push('    if !j5Closed && load8(fusedButtonLow, 4) == 1 { strongLow = true; }');
 
       if (BUTTON_ROWS.includes(name)) {
         const row = BUTTON_ROWS.indexOf(name);
@@ -773,9 +803,9 @@ function generateNets(instances) {
     }
     functions.push(`  pure fn fusedNet${net}() -> number {\n${body}\n  }`);
   }
-  // Only the 32 MCU pin levels are materialised for the JIT. Board devices and the
+  // Only the 40 MCU pin levels are materialised for the JIT. Board devices and the
   // hand-written glue read the pure net functions directly; this keeps the refresh
-  // proportional to the MCU pins instead of all 102 historical nets.
+  // proportional to the MCU pins instead of all historical nets.
   const refresh = mcuPins
     .map((pin) => {
       return (
@@ -788,10 +818,23 @@ function generateNets(instances) {
 }
 
 function boardReplacements(instances, nets) {
+  const mcu = instances.find((instance) => instance.designator === 'U1');
+
+  if (mcu === undefined) throw new Error('Missing source-merged MCU instance');
+
+  const resetDrives = nets.mcuPins
+    .map(({ pin, drive }) => {
+      const code = mcu.resetDrives.get(pin);
+
+      if (code === undefined) throw new Error(`Missing reset drive for ${pin}`);
+      return `    store8(fusedMcuDrives, ${drive}, ${code});`;
+    })
+    .join('\n');
   const replacements = {
     NET_FUNCTIONS: nets.functions.join('\n'),
     FUSED_REFRESH_BODY: nets.refresh,
     BUTTON_FUNCTION: nets.buttonFunction,
+    MCU_RESET_DRIVES: resetDrives,
     DRIVE_STATES: instances.flatMap((instance) => instance.driveStates).join('\n'),
     DRIVE_SETTERS: instances.flatMap((instance) => instance.setters).join('\n'),
     START_FLAGS: instances
@@ -827,11 +870,12 @@ function boardReplacements(instances, nets) {
   if (segProps.some((item) => item.settleUs !== seg.settleUs))
     throw new Error('DS1/DS2 settleUs values differ; board display formula is shared');
   const j13Closed = propsOf('J13').closed ?? true;
+  const j5Closed = propsOf('J5').closed ?? true;
   const j3Closed = propsOf('J3').closed ?? true;
   const j2Vs1838 = propsOf('J2').vs1838 ?? true;
-  if (j13Closed !== true || j3Closed !== true || j2Vs1838 !== true)
+  if (j13Closed !== true || j5Closed !== true || j3Closed !== true || j2Vs1838 !== true)
     throw new Error(
-      `J2/J3/J13 assembly must stay vs1838/closed (got ${j13Closed}/${j3Closed}/${j2Vs1838})`,
+      `J2/J3/J5/J13 assembly must stay vs1838/closed/independent (got ${j13Closed}/${j5Closed}/${j3Closed}/${j2Vs1838})`,
     );
   const led = { forwardResistance: ledForward };
   const lm324 = propertiesOf('U26');
@@ -844,6 +888,7 @@ function boardReplacements(instances, nets) {
     SEG_SELECT_LEVEL: literal(seg.commonAnode ? 1 : 0),
     SEG_SETTLE_PS: literal(Math.round((seg.settleUs ?? 50) * 1_000_000)),
     J13_CLOSED: literal(propsOf('J13').closed ?? true),
+    J5_CLOSED: literal(propsOf('J5').closed ?? true),
     J3_CLOSED: literal(propsOf('J3').closed ?? true),
     J2_VS1838: literal(propsOf('J2').vs1838 ?? true),
     LM324_FEEDBACK: literal(lm324.feedbackResistance),
@@ -929,6 +974,7 @@ async function main() {
         (lm324.potResistance - lm324.minPotResistance) * (1 - lm324Position));
   const boardDefaults = {
     j13Closed: propsOf('J13').closed ?? true,
+    j5Closed: propsOf('J5').closed ?? true,
     j3Closed: propsOf('J3').closed ?? true,
     j2Vs1838: propsOf('J2').vs1838 ?? true,
     lm324: { position: lm324Position, gain: lm324Gain, outputVoltage: 0 },
@@ -945,6 +991,7 @@ export const CHANNELS: Readonly<Record<string, ChannelInfo>> = ${JSON.stringify(
 export const BOARD_DEFAULTS = ${JSON.stringify(boardDefaults, null, 2)} as const;
 `;
 
+  const probeBaud = Number(propertiesOf('UART_PROBE').baud ?? 9600);
   const header = [
     '/**',
     ' * CT107D fused board model. Generated by scripts/generate.mjs; do not edit.',
@@ -953,7 +1000,7 @@ export const BOARD_DEFAULTS = ${JSON.stringify(boardDefaults, null, 2)} as const
     ' * device shares internal net states. Digital device bodies are source-merged from',
     ' * examples/devices; analog/display/interactive behavior lives in the board fragment.',
     ' */',
-    'device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm: number default 100) {',
+    `device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm: number default 100, uartBaud: number default ${literal(probeBaud)}) {`,
     '  /** External power rails; all other historical pins are internal. */',
     '  pin VCC;',
     '  pin GND;',
@@ -962,9 +1009,9 @@ export const BOARD_DEFAULTS = ${JSON.stringify(boardDefaults, null, 2)} as const
     '   * MCU pin levels mirrored for fast JIT loads: 0 = low, 1 = high, 2 = unknown.',
     '   * Board devices read the pure `fusedNetN()` functions directly.',
     '   */',
-    '  memory fusedPins[32];',
+    '  memory fusedPins[40];',
     '  /** MCU pin drive codes: 0 strong low, 1 strong high, 2 weak high, 3 weak low, 4 release. */',
-    '  memory fusedMcuDrives[32];',
+    '  memory fusedMcuDrives[40];',
     '  /** Monotonic trigger for the MCU pin-level refresh process. */',
     '  state fusedSeq: number = 0;',
     '  state fusedStarted: bool = false;',

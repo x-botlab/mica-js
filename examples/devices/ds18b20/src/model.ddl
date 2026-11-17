@@ -7,7 +7,9 @@
  *   形成存在脉冲，协议状态归零。进行中的温度转换不受复位影响——与真实芯片一致，
  *   转换由内部定时器独立完成。
  * - 主机写位：下降沿开时隙，从机在 +15 us 采样 DQ，LSB first 移位。
- * - 从机读位：下降沿开时隙，从机在 +15 us 决定输出，0 位拉低到 +60 us，1 位保持释放。
+ * - 从机读位：下降沿开时隙，从机立即驱动 0 位并保持到 +60 us，1 位保持释放。
+ *   datasheet p16 要求主机在下降沿后 15 us 内采样（TINIT + TRC + TSAMPLE < 15 us），
+ *   因此 0 位必须在下降沿附近有效，不能等到 +15 us 才驱动。
  *
  * ROM 命令：0xCC Skip ROM、0x55 Match ROM（随后比对 8 字节 ROM，失配后静默）、
  * 0x33 Read ROM；0xF0 Search ROM 与 0xEC Alarm Search 未实现，未知 ROM 命令静默。
@@ -220,7 +222,8 @@ device Ds18b20(
 
   fn armRelease() {
     releaseGeneration = busGeneration;
-    releaseAt = now() + 45 * MICROSECOND;
+    // 读 0 位从下降沿起保持低到 +60 us；不能从 +15 us 的决策时刻再算 45 us。
+    releaseAt = fallTime + 60 * MICROSECOND;
     releaseSequence = releaseSequence + 1;
   }
 
@@ -355,12 +358,15 @@ device Ds18b20(
   /** 主机下降沿开时隙；>= 480 us 的低脉冲在上升沿判为复位。 */
   fn openSlot() {
     slotGeneration = busGeneration;
-    slotAt = now() + 15 * MICROSECOND;
     if phase == Phase.transmit {
+      // 读时隙：datasheet p16 要求输出在下降沿后 15 us 内有效，立即驱动 0 位。
       slotKind = SlotKind.driveSlot;
+      slotAt = now();
       slotSequence = slotSequence + 1;
     } else if phase == Phase.command || phase == Phase.receive {
+      // 写时隙：从机在下降沿 +15 us 采样。
       slotKind = SlotKind.sampleSlot;
+      slotAt = now() + 15 * MICROSECOND;
       slotSequence = slotSequence + 1;
     }
   }
@@ -420,7 +426,7 @@ device Ds18b20(
     }
   }
 
-  /** 写时隙：从机在下降沿 +15 us 采样。 */
+  /** 写时隙在下降沿 +15 us 采样；读时隙在下降沿立即驱动 0 位。 */
   process slotTimer on slotSequence {
     if slotSequence == 0 {
       return;

@@ -10,7 +10,8 @@ import type { DeviceIR } from '@mica-js/sdk/model';
 import type { DeviceContext } from '@mica-js/simulator/device';
 
 /**
- * Test-only discrete oracle: assemble the historical 54-device board from
+ * Test-only discrete oracle: assemble the historical 54-device board plus the J5
+ * selector (55 instances) from
  * `ct107d.sch` and `examples/devices/dist/<id>/model.js`.
  *
  * This fixture is intentionally not used by the fused performance benchmark. It keeps
@@ -345,7 +346,7 @@ function describeBoard(): Promise<Description> {
   return described;
 }
 
-/** 建一块整板 CT107D：54 颗器件 + 原理图网表。 */
+/** 建一块整板 CT107D：54 颗历史器件 + J5 选择器（55 颗）+ 原理图网表。 */
 export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoard> {
   const { components, nets, designators, deviceTypes } = await describeBoard();
   const faults: string[] = [];

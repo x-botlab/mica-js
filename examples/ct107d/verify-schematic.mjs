@@ -8,8 +8,10 @@
  *    并且走马灯逐位移动、同一时刻只有一颗 LED 点亮；
  * 6. 用临时探针/电压源核对 U21（霍尔）、U26（可调放大）与 LD1（红外发射）的接线。
  *
- * 说明：`P42/WR` 由原理图里的 J13（WR 选择跳线，1-2/2-3）短接到 GND，不需要在装配侧
- * 注入电压；器件模型没有 P4 端口，因此 J13 的 WR 源侧不建模。
+ * 说明（legacy 两脚投影）：原理图里 J13 的 2-3 位置把独立的 `WR` 网络接到 GND；
+ * `P42` 是 MCU/键盘独立网络，不再与 WR 合并。J13 的 1-2（WR 跟随 P42）与 J5 的
+ * 1-2（S4-S7 接 P44）由融合器件的三针 selector 行为覆盖，本 legacy 脚本只装配
+ * 默认 2-3 位置，不声称验证这两种 matrix/memory 模式。
  *
  * 器件来自 `examples/devices/dist/<id>/{package.json, model.js}`（统一器件包），
  * 先运行 `pnpm --filter @mica-js/example-devices build`。旧 `.sch v1` 需要的符号由

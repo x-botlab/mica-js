@@ -20,7 +20,9 @@
     "schematic": "pnpm run build:devices && pnpm run build:widgets && node verify-schematic.mjs",
     "canvas": "pnpm run build:devices && pnpm run build:widgets && node verify-canvas.mjs",
     "firmware": "node assemble-firmware.mjs",
-    "firmware:sim": "pnpm run build:devices && node verify-firmware.mjs"
+    "firmware:sim": "pnpm run build:devices && node verify-firmware.mjs",
+    "firmware:suite": "node scripts/test-firmware-suite.mjs",
+    "firmware:suite:tool": "node --test scripts/firmware-hex.test.mjs scripts/firmware-suite.test.mjs"
   },
   "devDependencies": {
     "@mica-js/document": "workspace:*",

@@ -25,6 +25,7 @@ const SFR: Readonly<Record<string, number>> = {
   P2: 0xa0,
   IE: 0xa8,
   P3: 0xb0,
+  P4: 0xc0,
   IP: 0xb8,
   PSW: 0xd0,
   ACC: 0xe0,
@@ -37,6 +38,8 @@ const SFR: Readonly<Record<string, number>> = {
   P2M0: 0x96,
   P3M1: 0xb1,
   P3M0: 0xb2,
+  P4M1: 0xb3,
+  P4M0: 0xb4,
 };
 
 const BIT: Readonly<Record<string, number>> = {
@@ -199,6 +202,7 @@ function sizeOf(mnemonic: string, operands: string, line: number): number {
   switch (mnemonic) {
     case 'NOP':
     case 'RET':
+    case 'RETI':
       requireNoOperands(mnemonic, operands, line);
       return 1;
     case 'SJMP':
@@ -260,9 +264,17 @@ function sizeOf(mnemonic: string, operands: string, line: number): number {
     case 'ORL':
     case 'XRL': {
       const [target, source] = splitOperands(operands, 2, line);
+      if (target!.toUpperCase() === 'A') {
+        if (isRegister(source!)) {
+          registerNumber(source!, line);
+          return 1;
+        }
+        if (!source!.startsWith('#')) throw new Error(`line ${line}: expected #immediate`);
+        parseByte(source!.slice(1), line);
+        return 2;
+      }
       if (!source!.startsWith('#')) throw new Error(`line ${line}: expected #immediate`);
       parseByte(source!.slice(1), line);
-      if (target!.toUpperCase() === 'A') return 2;
       directForm(target!, line);
       return 3;
     }
@@ -352,6 +364,9 @@ function encode(
     case 'RET':
       requireNoOperands(mnemonic, operands, line);
       return [0x22];
+    case 'RETI':
+      requireNoOperands(mnemonic, operands, line);
+      return [0x32];
     case 'SJMP':
       return [0x80, relative(labelValue(operands, labels, line), pc, 2, line)];
     case 'LJMP':
@@ -425,10 +440,14 @@ function encode(
     case 'ORL':
     case 'XRL': {
       const [target, source] = splitOperands(operands, 2, line);
+      if (target!.toUpperCase() === 'A') {
+        if (isRegister(source!))
+          return [{ ANL: 0x58, ORL: 0x48, XRL: 0x68 }[mnemonic]! + registerNumber(source!, line)];
+        if (!source!.startsWith('#')) throw new Error(`line ${line}: expected #immediate`);
+        return [{ ANL: 0x54, ORL: 0x44, XRL: 0x64 }[mnemonic]!, parseByte(source!.slice(1), line)];
+      }
       if (!source!.startsWith('#')) throw new Error(`line ${line}: expected #immediate`);
       const immediate = parseByte(source!.slice(1), line);
-      if (target!.toUpperCase() === 'A')
-        return [{ ANL: 0x54, ORL: 0x44, XRL: 0x64 }[mnemonic]!, immediate];
       return [
         { ANL: 0x53, ORL: 0x43, XRL: 0x63 }[mnemonic]!,
         parseDirect(target!, labels, line),

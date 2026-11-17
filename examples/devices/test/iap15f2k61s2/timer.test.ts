@@ -972,3 +972,220 @@ describe('时钟输出相位', () => {
     }
   });
 });
+
+/**
+ * 中断门控计数器回归：外部下降沿计数与完成时刻上界必须同时成立。
+ *
+ * 固件：T1 1T、重装 0xFF88（12 MHz 下 120 个周期 = 10 µs），累计 0x2710 = 10000 次
+ * 中断后停 T0，并把 T0 的 16 位计数写到 IRAM 0x33/0x34。T0 工作于计数方式，对
+ * P3.4 的下降沿计数；P3.4 由测试按真实 NE555 的半周期驱动：
+ *   tHigh = round(0.693 * (10k + 10k) * 10nF) = 138.6 µs
+ *   tLow  = round(0.693 * 10k * 10nF)       = 69.3 µs
+ *   频率 4810.00481000481 Hz
+ *
+ * 这是「中断入口的 2 个系统时钟必须进入外设时间账本」的最小回归。修复前，
+ * 每次中断的 redirect delay 推进 wall time 但未记入 clockPs，10000 次中断把完成
+ * 时刻拉长约 10000×2/12MHz = 1.667 ms，T0 多计约 8 个边沿（489 而不是约 481）。
+ * 修复后完成时刻回到约 100 ms，计数约 481。`captureMs` 是复位启动到测试发现
+ * done 的绝对时刻，不是精确的 TR0 开门→关门门宽；它还包含启动设置、最后一次
+ * ISR 的采样/停表指令和 20 µs 轮询粒度，因此只用它做完成时刻上界辅助判据。
+ * 测试同时断言计数与该上界，避免只靠一个数字或「NE555 频率正确，所以任意门控
+ * 必然正确」的推论。
+ */
+const GATE_INTERRUPTS = 0x2710;
+const GATE_PERIOD_CYCLES = 120;
+const GATE_CLOCK_HZ = 12_000_000;
+const NE555_FREQUENCY_HZ = 4810.00481000481;
+const NE555_HIGH_PS = 138_600_000;
+const NE555_LOW_PS = 69_300_000;
+
+/** 门控固件：只在 0x30..0x34 写状态，测试直接读 IRAM。 */
+function gateFirmware(): Uint8Array {
+  const image = new Uint8Array(0x100);
+  const put = (address: number, ...bytes: number[]): void => image.set(bytes, address);
+
+  put(0x0000, 0x02, 0x00, 0x30); // LJMP 0030H
+  put(0x001b, 0x02, 0x00, 0x70); // T1 向量：LJMP 0070H
+  put(
+    0x0030,
+    0x75,
+    AUXR,
+    0xc0, // MOV AUXR,#0C0H：T0/T1 均为 1T
+    0x75,
+    TMOD,
+    0x04, // MOV TMOD,#04H：T0 计数方式、T1 模式 0
+    0x75,
+    TH0,
+    0x00, // MOV TH0,#00H
+    0x75,
+    TL0,
+    0x00, // MOV TL0,#00H
+    0x75,
+    TH1,
+    0xff, // MOV TH1,#0FFH
+    0x75,
+    TL1,
+    0x88, // MOV TL1,#88H：16 位重装 0xFF88，间隔 120 个周期
+    0x75,
+    0x30,
+    0x00, // MOV 30H,#00H：中断低字节
+    0x75,
+    0x31,
+    0x00, // MOV 31H,#00H：中断高字节
+    0x75,
+    0x32,
+    0x00, // MOV 32H,#00H：done
+    0x75,
+    0x33,
+    0x00, // MOV 33H,#00H：T0 低字节
+    0x75,
+    0x34,
+    0x00, // MOV 34H,#00H：T0 高字节
+    0xd2,
+    TR0, // SETB TR0：开始对外部下降沿计数
+    0xd2,
+    0xab, // SETB IE.3：ET1
+    0xd2,
+    0xaf, // SETB EA
+    0xd2,
+    TR1, // SETB TR1：启动 10 µs 门控节拍
+    0x05,
+    0x40, // INC 40H：主循环保持执行，避免被当成空闲等待
+    0x80,
+    0xfc, // SJMP 0059H（回 INC 40H）
+  );
+  put(
+    0x0070,
+    0x05,
+    0x30, // INC 30H
+    0xe5,
+    0x30, // MOV A,30H
+    0x70,
+    0x02, // JNZ 0078H（低字节非零，跳到 check）
+    0x05,
+    0x31, // INC 31H
+    0xe5,
+    0x31, // MOV A,31H
+    0x64,
+    0x27, // XRL A,#27H
+    0x70,
+    0x15, // JNZ 0093H（不是 0x2700）
+    0xe5,
+    0x30, // MOV A,30H
+    0x64,
+    0x10, // XRL A,#10H
+    0x70,
+    0x0f, // JNZ 0093H（不是 0x2710）
+    0xe5,
+    TL0, // MOV A,TL0
+    0xf5,
+    0x33, // MOV 33H,A
+    0xe5,
+    TH0, // MOV A,TH0
+    0xf5,
+    0x34, // MOV 34H,A
+    0x75,
+    0x32,
+    0x01, // MOV 32H,#01H：done
+    0xc2,
+    TR0, // CLR TR0
+    0xc2,
+    TR1, // CLR TR1
+    0x32, // RETI
+  );
+
+  return image;
+}
+
+/** 让 P3.4 按 NE555 的高/低半周期走，直到固件在第 N 次 T1 中断后置 done。 */
+async function runGate(execution: 'throughput' | 'precise'): Promise<{
+  readonly count: number;
+  readonly capturePs: number;
+  readonly faults: readonly string[];
+}> {
+  const harness = await createSourceHarness({
+    firmware: gateFirmware(),
+    clockFrequency: GATE_CLOCK_HZ,
+    drive: ['P3_4'],
+    execution,
+  });
+
+  try {
+    const runtime = harness.board as unknown as {
+      readonly instances: readonly {
+        readonly memories?: ReadonlyMap<string, Uint8Array>;
+      }[];
+    };
+    const iram = runtime.instances[0]?.memories?.get('iram');
+
+    if (iram === undefined) throw new Error('gateFirmware: missing iram memory');
+
+    const done = (): boolean => iram[0x32] === 1;
+    let nextEdge = NE555_HIGH_PS;
+    let high = true;
+    let capturePs = 0;
+
+    harness.drive('P3_4', 1);
+    harness.board.runUntil(0);
+
+    while (capturePs === 0) {
+      if (harness.board.time >= 120_000_000_000)
+        throw new Error(`gateFirmware: no capture within 120 ms (${harness.board.time} ps)`);
+
+      // 20 µs 轮询上界 + 精确的 NE555 边沿二者取较早者；这样 capture 时间的检测
+      // 误差不超过 20 µs，不会把 1 ms 轮询误差误当成门宽结论。
+      if (nextEdge <= harness.board.time + 20_000_000) {
+        harness.board.runUntil(nextEdge - 1);
+        if (done()) {
+          capturePs = harness.board.time;
+          break;
+        }
+        high = !high;
+        harness.drive('P3_4', high ? 1 : 0);
+        harness.board.runUntil(nextEdge);
+        if (done()) {
+          capturePs = harness.board.time;
+          break;
+        }
+        nextEdge += high ? NE555_HIGH_PS : NE555_LOW_PS;
+      } else {
+        harness.board.runUntil(harness.board.time + 20_000_000);
+        if (done()) capturePs = harness.board.time;
+      }
+    }
+
+    return {
+      count: iram[0x33]! | (iram[0x34]! << 8),
+      capturePs,
+      faults: [...harness.faults],
+    };
+  } finally {
+    harness.dispose();
+  }
+}
+
+describe('中断入口时间账本', () => {
+  const nominalGateMs = (GATE_INTERRUPTS * GATE_PERIOD_CYCLES * 1000) / GATE_CLOCK_HZ;
+  const expectedEdges = (NE555_FREQUENCY_HZ * nominalGateMs) / 1000;
+
+  for (const execution of ['throughput', 'precise'] as const) {
+    it(`${execution}：外部下降沿计数在名义门宽内，完成时刻上界一致，入口 2 时钟不漏账`, async () => {
+      const result = await runGate(execution);
+      const captureMs = result.capturePs / 1e9;
+
+      expect(result.faults).toEqual([]);
+      // expectedEdges 是「频率 × 名义门宽」的理想值，不是边沿级精确计数证明：
+      // TR0 开门相对 NE555 相位任意，首/末边沿最多差 1；P3.4 只在指令/服务边界
+      // 采样，20 µs 轮询只用于发现 done，不参与计数。这里 ±1（含 ceil）是相位与
+      // 采样量化容差；7 个以上的偏差（修复前约 489）仍会失败。若固定开门相位与
+      // 门边界，理论上可以做到 exact 481，本测试不额外强求。
+      expect(result.count).toBeGreaterThanOrEqual(Math.floor(expectedEdges) - 1);
+      expect(result.count).toBeLessThanOrEqual(Math.ceil(expectedEdges) + 1);
+      // captureMs 是复位启动到发现 done 的绝对时刻，不是精确的 TR0 门宽；0.5 ms
+      // 上界覆盖启动设置、最后一次 ISR 的采样/停表指令和 20 µs 轮询粒度。
+      // 修复前约 101.7 ms；修复后约 100.0 ms；它不是硬件常数。
+      expect(captureMs).toBeGreaterThan(nominalGateMs - 0.5);
+      expect(captureMs).toBeLessThan(nominalGateMs + 0.5);
+    });
+  }
+});

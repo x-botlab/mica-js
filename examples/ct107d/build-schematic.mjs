@@ -4,6 +4,7 @@
  * 先运行 `pnpm --filter @mica-js/example-devices build`；产物是 ct107d.sch 与
  * ct107d.netlist.json。
  */
+import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -133,6 +134,7 @@ for (const [designator, pins, net] of [
   ['K1', ['vcc'], VCC],
   ['K1', ['no', 'com2'], GND],
   ['J13', ['b'], GND],
+  ['J5', ['b'], GND],
 ]) {
   for (const pin of pins) (net === VCC ? VCC : GND).push([designator, pin]);
 }
@@ -173,6 +175,14 @@ const mcuPorts = {
   P35: 'P3_5',
   P36: 'P3_6',
   P37: 'P3_7',
+  P40: 'P4_0',
+  P41: 'P4_1',
+  P42: 'P4_2',
+  P43: 'P4_3',
+  'P44/RD': 'P4_4',
+  P45: 'P4_5',
+  P46: 'P4_6',
+  P47: 'P4_7',
 };
 for (const [net, pin] of Object.entries(mcuPorts)) connect(net, [['U1', pin]]);
 
@@ -202,7 +212,9 @@ connect('Y7', [
   ['U24', 'y7'],
   ['U25', 'a1'],
 ]);
-connect('P42/WR', [
+// J13 是三针选择器：1=P42、2=WR（U25 的 B 输入）、3=GND。当前两脚 jumper 符号
+// 只表达默认 2-3（WR 接地）位置；P42 与 WR 必须是独立网络，否则矩阵列会被 WR 永久拉低。
+connect('WR', [
   ['U25', 'b1'],
   ['U25', 'b2'],
   ['U25', 'b3'],
@@ -241,21 +253,25 @@ for (let digit = 0; digit < 4; digit += 1) {
   nets.get(`com${digit + 1}`).push(['DS1', `com${digit + 1}`]);
   nets.get(`com${digit + 5}`).push(['DS2', `com${digit + 1}`]);
 }
-// 按键：S4–S7 是独立按键（J5 的 2-3 短接，直接接地），S8–S19 是 3×4 矩阵键盘。
-// 矩阵行为 P30/TXD、P31/RXD、P32、P33，列为 GND、P42/WR、P35、P34；S1 是复位键（VCC → RST）。
+// 按键：S4–S19 组成 4×4 矩阵。真实 J5 是三针选择器：1=P44、2=S4–S7 公共端、3=GND；
+// 2-3 是独立键，1-2 才把第一列接到 P44。两脚 jumper 符号只表达默认 2-3（公共端接地）。
+// 行为 P30/TXD、P31/RXD、P32、P33；列为 KCOL0、P42、P35、P34。S1 是复位键（VCC → RST）。
 const KEY_ROWS = ['P30/TXD', 'P31/RXD', 'P32', 'P33'];
 const KEYPAD = [
-  { column: 'GND', keys: ['S7', 'S6', 'S5', 'S4'] },
-  { column: 'P42/WR', keys: ['S11', 'S10', 'S9', 'S8'] },
+  { column: 'KCOL0', keys: ['S7', 'S6', 'S5', 'S4'] },
+  { column: 'P42', keys: ['S11', 'S10', 'S9', 'S8'] },
   { column: 'P35', keys: ['S15', 'S14', 'S13', 'S12'] },
   { column: 'P34', keys: ['S19', 'S18', 'S17', 'S16'] },
 ];
+connect('KCOL0', []);
 for (const { column, keys } of KEYPAD) {
   for (const [row, designator] of keys.entries()) {
     nets.get(column).push([designator, 'a']);
     nets.get(KEY_ROWS[row]).push([designator, 'b']);
   }
 }
+// J5 的两脚符号只保留 2-3 位置；1-2 的 P44 选择由融合板级选择器实现。
+nets.get('KCOL0').push(['J5', 'a']);
 nets.get('VCC').push(['S1', 'a']);
 connect('RST', [['S1', 'b']]);
 for (let bit = 0; bit < 7; bit += 1)
@@ -375,8 +391,9 @@ const PLACEMENTS = [
   { designator: 'U24', device: CHIP_REF('74hc138'), column: 0, order: 1 },
   { designator: 'U25', device: CHIP_REF('74hc02'), column: 0, order: 2 },
   { designator: 'J13', device: JUMPER_REF, column: 0, order: 3 },
-  { designator: 'J2', device: HEADER_REF, column: 0, order: 4, properties: { vs1838: true } },
-  { designator: 'J3', device: JUMPER_REF, column: 0, order: 5 },
+  { designator: 'J5', device: JUMPER_REF, column: 0, order: 4 },
+  { designator: 'J2', device: HEADER_REF, column: 0, order: 5, properties: { vs1838: true } },
+  { designator: 'J3', device: JUMPER_REF, column: 0, order: 6 },
   { designator: 'U18', device: CHIP_REF('74hc14'), column: 1, order: 0 },
   { designator: 'U6', device: CHIP_REF('74hc573'), column: 2, order: 0 },
   { designator: 'U7', device: CHIP_REF('74hc573'), column: 2, order: 1 },
@@ -430,6 +447,73 @@ const PLACEMENTS = [
   ),
 ];
 
+/**
+ * 板面器件 symbol id 与 designator 绑定，不能随生成顺序、pin 数或插入位置漂移。
+ *
+ * 前 54 项取自本轮修改前的 `ct107d.sch`（HEAD），保证 legacy `ct107d.cnv` 的
+ * symbol 引用继续有效；J5 是本轮新增的选择器，使用其后的固定 id。新增 designator
+ * 若未登记在这里，会由 designator 哈希得到稳定 id 并参与冲突检查，而不是再退回
+ * 全局递增序号。
+ */
+// prettier-ignore
+const FIXED_SYMBOL_IDS = {
+  U1: 'c7d00000-0000-4000-8000-000000000001',
+  U24: 'c7d00000-0000-4000-8000-000000000046',
+  U25: 'c7d00000-0000-4000-8000-00000000005f',
+  J13: 'c7d00000-0000-4000-8000-00000000007c',
+  J2: 'c7d00000-0000-4000-8000-000000000081',
+  J3: 'c7d00000-0000-4000-8000-00000000008e',
+  U18: 'c7d00000-0000-4000-8000-000000000093',
+  U6: 'c7d00000-0000-4000-8000-0000000000b0',
+  U7: 'c7d00000-0000-4000-8000-0000000000d9',
+  U8: 'c7d00000-0000-4000-8000-000000000102',
+  U9: 'c7d00000-0000-4000-8000-00000000012b',
+  U10: 'c7d00000-0000-4000-8000-000000000154',
+  U14: 'c7d00000-0000-4000-8000-000000000175',
+  U11: 'c7d00000-0000-4000-8000-000000000180',
+  U20: 'c7d00000-0000-4000-8000-000000000187',
+  U15: 'c7d00000-0000-4000-8000-00000000018e',
+  K1: 'c7d00000-0000-4000-8000-000000000197',
+  SP1: 'c7d00000-0000-4000-8000-0000000001a2',
+  U22: 'c7d00000-0000-4000-8000-0000000001a7',
+  UART_PROBE: 'c7d00000-0000-4000-8000-0000000001b0',
+  U21: 'c7d00000-0000-4000-8000-0000000001b9',
+  U26: 'c7d00000-0000-4000-8000-0000000001c0',
+  LD1: 'c7d00000-0000-4000-8000-0000000001cb',
+  U4: 'c7d00000-0000-4000-8000-0000000001d2',
+  U16: 'c7d00000-0000-4000-8000-0000000001e3',
+  U19: 'c7d00000-0000-4000-8000-0000000001fe',
+  U5: 'c7d00000-0000-4000-8000-000000000209',
+  D1: 'c7d00000-0000-4000-8000-000000000210',
+  D2: 'c7d00000-0000-4000-8000-000000000215',
+  D3: 'c7d00000-0000-4000-8000-00000000021a',
+  D4: 'c7d00000-0000-4000-8000-00000000021f',
+  D5: 'c7d00000-0000-4000-8000-000000000224',
+  D6: 'c7d00000-0000-4000-8000-000000000229',
+  D7: 'c7d00000-0000-4000-8000-00000000022e',
+  D8: 'c7d00000-0000-4000-8000-000000000233',
+  DS1: 'c7d00000-0000-4000-8000-000000000238',
+  DS2: 'c7d00000-0000-4000-8000-000000000251',
+  S1: 'c7d00000-0000-4000-8000-00000000026a',
+  S4: 'c7d00000-0000-4000-8000-00000000026f',
+  S5: 'c7d00000-0000-4000-8000-000000000274',
+  S6: 'c7d00000-0000-4000-8000-000000000279',
+  S7: 'c7d00000-0000-4000-8000-00000000027e',
+  S8: 'c7d00000-0000-4000-8000-000000000283',
+  S9: 'c7d00000-0000-4000-8000-000000000288',
+  S10: 'c7d00000-0000-4000-8000-00000000028d',
+  S11: 'c7d00000-0000-4000-8000-000000000292',
+  S12: 'c7d00000-0000-4000-8000-000000000297',
+  S13: 'c7d00000-0000-4000-8000-00000000029c',
+  S14: 'c7d00000-0000-4000-8000-0000000002a1',
+  S15: 'c7d00000-0000-4000-8000-0000000002a6',
+  S16: 'c7d00000-0000-4000-8000-0000000002ab',
+  S17: 'c7d00000-0000-4000-8000-0000000002b0',
+  S18: 'c7d00000-0000-4000-8000-0000000002b5',
+  S19: 'c7d00000-0000-4000-8000-0000000002ba',
+  J5: 'c7d00000-0000-4000-8000-0000000002bf',
+};
+
 const STUB = 40;
 const MARGIN = 120;
 const GAP_X = 160;
@@ -471,8 +555,36 @@ for (const index of [...columns.keys()].sort((a, b) => a - b)) {
 }
 
 // ---- 生成图元 ---------------------------------------------------------------------------
+// 先预留所有器件 symbol id；wire/label/power 的序号 id 跳过它们。这样新增 pin、
+// 新增实例或调整 PLACEMENTS 顺序都不会改变既有 designator 的 symbol id。
+const usedIds = new Set(Object.values(FIXED_SYMBOL_IDS));
 let counter = 0;
-const nextId = () => `c7d00000-0000-4000-8000-${(++counter).toString(16).padStart(12, '0')}`;
+const nextId = () => {
+  let id;
+
+  do {
+    id = `c7d00000-0000-4000-8000-${(++counter).toString(16).padStart(12, '0')}`;
+  } while (usedIds.has(id));
+  usedIds.add(id);
+  return id;
+};
+
+function symbolId(designator) {
+  const fixed = FIXED_SYMBOL_IDS[designator];
+
+  if (fixed !== undefined) return fixed;
+
+  // Future designators get a deterministic id from their designator, not the global
+  // generation order. Collisions still fail fast instead of silently overwriting.
+  const id = `c7d00000-0000-4000-8000-${createHash('sha256')
+    .update(`ct107d:${designator}`)
+    .digest('hex')
+    .slice(0, 12)}`;
+
+  if (usedIds.has(id)) throw new Error(`Duplicate generated symbol id for ${designator}`);
+  usedIds.add(id);
+  return id;
+}
 
 const sheetSymbols = [];
 const sheetWires = [];
@@ -507,7 +619,7 @@ for (const placement of PLACEMENTS) {
   const position = positions.get(designator);
   const properties = placement.properties;
   sheetSymbols.push({
-    id: nextId(),
+    id: symbolId(designator),
     device,
     designator,
     x: position.x,

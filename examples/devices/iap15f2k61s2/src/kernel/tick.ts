@@ -2,7 +2,7 @@ import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
 import type { BlockIR, Value } from '@mica-js/sdk/model';
 import { CLOCK, PERIPH, asBody, jumpToValue, number, periph8, setPeriph8, toCycles } from './ir';
 import type { Body } from './ir';
-import { IRQ_DIRTY } from './interrupt';
+import { IRQ_DIRTY, interruptInstructionComplete } from './interrupt';
 import type { Machine } from './machine';
 import { TICK_BASE } from '../peripherals/layout';
 import type { Advance } from '../peripherals/types';
@@ -86,11 +86,21 @@ const requestService = (machine: Machine, b: Body, pending: Value<number>): void
  * 直接清零，因此空闲循环在门控为零时只做少量读取与写入，整块仍可直接编译。
  */
 export function tickTail(machine: Machine, b: Body, cyclesPs: number): void {
+  // 真实固件指令结束：推进 RETI/IE/IP 写后的中断保护窗口。SERVICE/SETTLE 不走这里。
+  const irqEligible = interruptInstructionComplete(b);
   const pending = b.add(b.readState(CLOCK, types.number), number(b, cyclesPs));
-  const irq = b.load8(PERIPH, number(b, IRQ_DIRTY));
   const busy = b.load8(PERIPH, number(b, BUSY));
   const wake = b.readState(UART1_WAKE, types.bool);
-  // 只有 IRQ 脏、外设活跃或 UART 起始位唤醒时才需要看期限。空闲轮询路径在 gate==0
+  // 保护窗口内保留 dirty，但不能把“仅 dirty”当成额外 service 的理由；否则每个被保护
+  // 指令都会多进一次服务块。这里用同一次 hold 读取的结果屏蔽 dirty，外设 busy 与
+  // UART 唤醒仍照常触发；dirty 本身不清，窗口结束后下一次 tail 自然重新可见。
+  const irq = b.select(
+    types.number,
+    irqEligible,
+    (inner) => asBody(inner).load8(PERIPH, number(asBody(inner), IRQ_DIRTY)),
+    (inner) => number(asBody(inner), 0),
+  );
+  // 只有可响应 IRQ、外设活跃或 UART 起始位唤醒时才需要看期限。空闲轮询路径在 gate==0
   // 处短路，不读期限 state、不做时间比较，也不写非零时间；动态成本与旧实现基本一致。
   b.if(
     b.or(b.notEqual(types.number, b.bitOr(irq, busy), number(b, 0)), () => wake),
@@ -124,6 +134,8 @@ export function tickTail(machine: Machine, b: Body, cyclesPs: number): void {
  * 这里与节拍点一样保存下一条指令的 PC 并转到服务块；未唤醒时只做一次累加。
  */
 export function accumulate(machine: Machine, b: Body, cyclesPs: number): void {
+  // 非节拍点同样是一条真实固件指令的结束；保护窗口不能只在节拍点推进。
+  interruptInstructionComplete(b);
   const pending = b.add(b.readState(CLOCK, types.number), number(b, cyclesPs));
   const wake = b.readState(UART1_WAKE, types.bool);
 

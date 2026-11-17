@@ -130,6 +130,7 @@ export const CHANNELS: Readonly<Record<string, ChannelInfo>> = {
 // prettier-ignore
 export const BOARD_DEFAULTS = {
   "j13Closed": true,
+  "j5Closed": true,
   "j3Closed": true,
   "j2Vs1838": true,
   "lm324": {

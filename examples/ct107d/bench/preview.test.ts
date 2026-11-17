@@ -280,7 +280,7 @@ describe('CT107D 实际预览固件基准', () => {
       topicKeysForDesignator(result.topicFinalTopics, result, 'U24', 'enabled').length,
     ).toBeGreaterThan(0);
 
-    // 融合器件的身份是板块 payload 里的位号，不是伪造的 54 个实例 ID。
+    // 融合器件的身份是板块 payload 里的位号，不是伪造的 55 个实例 ID。
     for (const key of Object.keys(result.topicFinalTopics)) {
       const designator = key.slice(0, key.lastIndexOf('/'));
 

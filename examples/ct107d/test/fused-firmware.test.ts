@@ -137,6 +137,98 @@ function expectReady(captures: readonly Captured[]): void {
 }
 
 describe('fused board self-made firmware fixtures', () => {
+  it('reset P3/P4 reads are FF without external load in throughput and precise', async () => {
+    const image = Uint8Array.from([
+      0xe5,
+      0xb0, // MOV A,P3
+      0xf5,
+      0x80,
+      0x75,
+      0xa0,
+      0x80,
+      0x75,
+      0xa0,
+      0x00,
+      0xe5,
+      0xc0, // MOV A,P4
+      0xf5,
+      0x80,
+      0x75,
+      0xa0,
+      0xe0,
+      0x75,
+      0xa0,
+      0x00,
+      0x80,
+      0xfe,
+    ]);
+    for (const execution of ['throughput', 'precise'] as const) {
+      const fused = await createFusedCt107dBoard({ firmware: image, execution });
+      const signals = new Map<string, number>();
+      const subscription = fused.board.topics.onDidReceive((message) => {
+        if (message.topic !== 'signal') return;
+        const value = message.payload as { designator: string; port: string; value: number };
+        signals.set(`${value.designator}/${value.port}`, value.value);
+      });
+      try {
+        fused.board.runUntil(1_000_000_000);
+        expect(signals.get('U6/latch'), `${execution} P3 reset`).toBe(0xff);
+        expect(signals.get('U7/latch'), `${execution} P4 reset`).toBe(0xff);
+        expect(fused.faults).toEqual([]);
+      } finally {
+        subscription.dispose();
+        fused.dispose();
+      }
+    }
+  }, 60_000);
+
+  it('reset P3/P4 reads are weak-high before any port write; external S4 can pull P33 low', async () => {
+    // First instructions read the reset pins directly and latch them through the normal
+    // J13 2-3 IO path (WR grounded). No MOV P3,#FF / MOV P4,#FF priming is present.
+    const image = Uint8Array.from([
+      0xe5,
+      0xb0, // MOV A,P3
+      0xf5,
+      0x80, // MOV P0,A
+      0x75,
+      0xa0,
+      0x80, // MOV P2,#80H (U6 latch)
+      0x75,
+      0xa0,
+      0x00,
+      0xe5,
+      0xc0, // MOV A,P4
+      0xf5,
+      0x80,
+      0x75,
+      0xa0,
+      0xe0, // MOV P2,#E0H (U7 latch)
+      0x75,
+      0xa0,
+      0x00,
+      0x80,
+      0xfe, // SJMP $
+    ]);
+    const fused = await createFusedCt107dBoard({ firmware: image });
+    const signals = new Map<string, number>();
+    const subscription = fused.board.topics.onDidReceive((message) => {
+      if (message.topic !== 'signal') return;
+      const value = message.payload as { designator: string; port: string; value: number };
+      signals.set(`${value.designator}/${value.port}`, value.value);
+    });
+    try {
+      fused.methods.setSwitch!({ designator: 'S4', pressed: true });
+      fused.board.runUntil(1_000_000_000);
+      // S4 is an independent key in the default J5 2-3 assembly: it pulls P3.3 low.
+      expect(signals.get('U6/latch')).toBe(0xf7);
+      expect(signals.get('U7/latch')).toBe(0xff);
+      expect(fused.faults).toEqual([]);
+    } finally {
+      subscription.dispose();
+      fused.dispose();
+    }
+  }, 60_000);
+
   it('I2C: AT24C02 write/read-back and independent PCF8591 AIN2', async () => {
     const { fused, discrete, actual, oracle } = await boards('i2c-eeprom-pcf');
     try {
@@ -380,7 +472,9 @@ describe('fused board self-made firmware fixtures', () => {
       for (const [key, row, column] of keys) {
         fused.methods.setSwitch!({ designator: key, pressed: true });
         expect(discrete.sendInput(key, 'press', true)).toBe(true);
-        runFor(10);
+        // The scan loop includes a debounce-sized delay; hold each key across at least
+        // one complete U6/U8/U7 scan before sampling the latches.
+        runFor(50);
         const fusedLatch = actual.signals;
         const discreteLatch = oracle.signals;
         for (const designator of ['U6', 'U7', 'U8'])
@@ -398,22 +492,22 @@ describe('fused board self-made firmware fixtures', () => {
         );
         fused.methods.setSwitch!({ designator: key, pressed: false });
         expect(discrete.sendInput(key, 'press', false)).toBe(true);
-        runFor(10);
+        runFor(50);
       }
 
-      // Independent S4 pulls P33 low; S12 connects P33 to P35; S9 connects P32 to GND.
+      // U6 drives P42 low: S4's independent GND column pulls P33 low and S9 pulls
+      // P32 low through the real P42 column; S12 pulls P35 low in the U8 scan.
       for (const key of ['S4', 'S9', 'S12']) {
         fused.methods.setSwitch!({ designator: key, pressed: true });
         expect(discrete.sendInput(key, 'press', true)).toBe(true);
       }
-      runFor(20);
+      runFor(50);
       const u6 = actual.signals.get('U6/latch')!;
       const u8 = actual.signals.get('U8/latch')!;
       expect(u6 & (1 << 3)).toBe(0); // S4/S12 row P33
-      expect(u6 & (1 << 2)).toBe(0); // S9 row P32 via GND column
+      expect(u6 & (1 << 2)).toBe(0); // S9 row P32 via the driven P42 column
       expect(u6 & (1 << 5)).toBe(0); // S12 pulls P35 low through S4
-      expect(u8 & (1 << 3)).toBe(0);
-      expect(u8 & (1 << 2)).toBe(0);
+      expect(u8 & (1 << 3)).toBe(0); // S12 row P33 via the driven P35 column
       for (const designator of ['U6', 'U7', 'U8'])
         expect(actual.signals.get(`${designator}/latch`)).toBe(
           oracle.signals.get(`${designator}/latch`),
@@ -423,4 +517,112 @@ describe('fused board self-made firmware fixtures', () => {
       closeBoards(fused, discrete, actual, oracle);
     }
   }, 180_000);
+
+  it('J5=1-2: the exact P42/P44 two-phase scan produces all 16 source key codes', async () => {
+    const image = firmware('key-matrix-p4');
+    const fused = await createFusedCt107dBoard({
+      firmware: image,
+      props: { clockFrequency: 12_000_000 },
+    });
+    const signals = new Map<string, number>();
+    const subscription = fused.board.topics.onDidReceive((message) => {
+      if (message.topic !== 'signal') return;
+      const value = message.payload as { designator: string; port: string; value: number };
+      signals.set(`${value.designator}/${value.port}`, value.value);
+    });
+    const codes = {
+      S4: 0x77,
+      S5: 0x7b,
+      S6: 0x7d,
+      S7: 0x7e,
+      S8: 0xb7,
+      S9: 0xbb,
+      S10: 0xbd,
+      S11: 0xbe,
+      S12: 0xd7,
+      S13: 0xdb,
+      S14: 0xdd,
+      S15: 0xde,
+      S16: 0xe7,
+      S17: 0xeb,
+      S18: 0xed,
+      S19: 0xee,
+    } as const;
+    let nowMs = 0;
+    const runFor = (ms: number): void => {
+      nowMs += ms;
+      fused.board.runUntil(nowMs * 1_000_000_000);
+    };
+    try {
+      // Explicit matrix assembly: J5 1-2 (closed=false) and J3 open. J13 stays in its
+      // default 2-3 IO position, so WR is grounded and latch writes remain valid.
+      fused.methods.setJumper!({ designator: 'J5', closed: false });
+      fused.methods.setJumper!({ designator: 'J3', closed: false });
+      runFor(20);
+      expect(fused.methods.getSnapshot!(null)).toMatchObject({
+        jumpers: { J5: false, J3: false, J13: true },
+      });
+      expect(signals.get('U6/latch')).toBe(0xff);
+
+      // A held key must be recomputed immediately when J5 changes. In independent mode
+      // S4 reads 0xF7 (GND column, P44 high); switching to matrix makes the same held
+      // key read 0x77 (P44 column low in phase 1 and pulled low in phase 2).
+      fused.methods.setJumper!({ designator: 'J5', closed: true });
+      fused.methods.setSwitch!({ designator: 'S4', pressed: true });
+      runFor(50);
+      expect(signals.get('U6/latch')).toBe(0xf7);
+      fused.methods.setJumper!({ designator: 'J5', closed: false });
+      runFor(50);
+      expect(signals.get('U6/latch')).toBe(0x77);
+      fused.methods.setSwitch!({ designator: 'S4', pressed: false });
+      runFor(50);
+      expect(signals.get('U6/latch')).toBe(0xff);
+
+      for (const [key, code] of Object.entries(codes)) {
+        fused.methods.setSwitch!({ designator: key, pressed: true });
+        runFor(20);
+        expect(signals.get('U6/latch'), `${key} source key code`).toBe(code);
+        fused.methods.setSwitch!({ designator: key, pressed: false });
+        runFor(10);
+        expect(signals.get('U6/latch'), `${key} release`).toBe(0xff);
+      }
+      expect(fused.faults).toEqual([]);
+    } finally {
+      subscription.dispose();
+      fused.dispose();
+    }
+  }, 180_000);
+
+  it('J13 2-3 grounds WR by default; 1-2 follows P42 instead of floating', async () => {
+    const io = await createFusedCt107dBoard({ firmware: firmware('latch') });
+    const memoryWithoutStrobe = await createFusedCt107dBoard({ firmware: firmware('latch') });
+    const memoryWithStrobe = await createFusedCt107dBoard({ firmware: firmware('latch-p42-wr') });
+    const read = (fused: Awaited<ReturnType<typeof createFusedCt107dBoard>>): number => {
+      const snapshot = fused.methods.getSnapshot!(null) as {
+        readonly latches: { readonly U6: number };
+      };
+      return snapshot.latches.U6;
+    };
+    try {
+      memoryWithoutStrobe.methods.setJumper!({ designator: 'J13', closed: false });
+      memoryWithStrobe.methods.setJumper!({ designator: 'J13', closed: false });
+      io.board.runUntil(1_000_000_000);
+      memoryWithoutStrobe.board.runUntil(1_000_000_000);
+      memoryWithStrobe.board.runUntil(1_000_000_000);
+
+      // Default IO (2-3): WR grounded, so a plain P2/P0 write latches 0xA5.
+      expect(read(io)).toBe(0xa5);
+      // 1-2: WR follows P42. P42 stays weak-high, so there is no latch strobe; the
+      // latch keeps its deterministic power-on value 0.
+      expect(read(memoryWithoutStrobe)).toBe(0x00);
+      // 1-2 + firmware drives P42 low: the real memory-mode strobe works.
+      expect(read(memoryWithStrobe)).toBe(0x5a);
+      for (const fused of [io, memoryWithoutStrobe, memoryWithStrobe])
+        expect(fused.faults).toEqual([]);
+    } finally {
+      io.dispose();
+      memoryWithoutStrobe.dispose();
+      memoryWithStrobe.dispose();
+    }
+  }, 60_000);
 });
