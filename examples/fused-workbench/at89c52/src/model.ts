@@ -71,6 +71,7 @@ export const create: DeviceFactory = (context) => {
     sfr.onRead(address, unsupported);
     sfr.onWrite(address, unsupported);
   }
+  let accessProbe: { reads: Set<number>; writes: Set<number> } | undefined;
   const machine: Machine = {
     clockFrequency: context.props.clockFrequency,
     cyclePs,
@@ -79,6 +80,22 @@ export const create: DeviceFactory = (context) => {
     irq: new InterruptController(),
     peripherals: [],
     ports: { readPin, readPort },
+    timedReads: new Set(),
+    timedWrites: new Set(),
+    beginAccessProbe() {
+      accessProbe = { reads: new Set(), writes: new Set() };
+    },
+    endAccessProbe() {
+      const probe = accessProbe ?? { reads: new Set<number>(), writes: new Set<number>() };
+      accessProbe = undefined;
+      return probe;
+    },
+    noteSfrRead(address) {
+      if (!sfr.withinHook) accessProbe?.reads.add(address & 0xff);
+    },
+    noteSfrWrite(address) {
+      if (!sfr.withinHook) accessProbe?.writes.add(address & 0xff);
+    },
   };
   context.attachJit({
     entry: 'cpu',

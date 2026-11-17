@@ -168,15 +168,23 @@ export const toCycles = (b: Body, elapsedPs: Value<number>): Value<number> =>
 export const byte = (b: Body, value: Value<number> | number): Value<number> =>
   b.bitAnd(typeof value === 'number' ? number(b, value) : value, number(b, 0xff));
 
-export const readSfr = (b: Body, address: number): Value<number> => machine().sfr.read(b, address);
+export const readSfr = (b: Body, address: number): Value<number> => {
+  machine().noteSfrRead(address);
+
+  return machine().sfr.read(b, address);
+};
 
 export const writeSfr = (b: Body, address: number, value: Value<number>): void => {
+  machine().noteSfrWrite(address);
   machine().sfr.write(b, address & 0xff, value);
 };
 
 /** SFR 锁存器原值：不经过读钩子（读-改-写指令用）。 */
-export const readSfrLatch = (b: Body, address: number): Value<number> =>
-  b.load8(SFR, number(b, address & 0x7f));
+export const readSfrLatch = (b: Body, address: number): Value<number> => {
+  machine().noteSfrRead(address);
+
+  return b.load8(SFR, number(b, address & 0x7f));
+};
 
 /** 读 SFR 的单个位，返回 0/1。 */
 export const readSfrBit = (b: Body, address: number, bit: number): Value<number> =>
@@ -197,6 +205,25 @@ export const latchBitIsSet = (b: Body, address: number, bit: number): Value<bool
 
 export const sfrBitIsSet = (b: Body, address: number, bit: number): Value<boolean> =>
   b.equal(types.number, readSfrBit(b, address, bit), number(b, 1));
+
+/**
+ * 硬件清 SFR 标志位：直接写锁存器，不经过软件写钩子。
+ *
+ * 中断响应清 TF0/TF1/IE0/IE1 只改变标志，不改变定时器运行/重装配置，因此不能触发
+ * 定时器的「配置已变化」期限刷新，否则每次中断都会额外要求一次服务。
+ */
+export const clearSfrBitLatch = (b: Body, address: number, bit: number): void => {
+  const index = number(b, address & 0x7f);
+
+  b.store8(SFR, index, b.bitAnd(b.load8(SFR, index), number(b, 0xff & ~(1 << bit))));
+};
+
+/** 硬件置 SFR 标志位：同样绕过软件写钩子。 */
+export const setSfrBitLatch = (b: Body, address: number, bit: number): void => {
+  const index = number(b, address & 0x7f);
+
+  b.store8(SFR, index, b.bitOr(b.load8(SFR, index), number(b, 1 << bit)));
+};
 
 /** 把 SFR 的一个位改成 `one`，其余位保持。 */
 export const writeSfrBit = (b: Body, address: number, bit: number, one: Value<boolean>): void => {

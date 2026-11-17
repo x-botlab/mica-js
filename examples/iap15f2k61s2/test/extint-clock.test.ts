@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SERVICE_PC } from '../src/devices/iap15f2k61s2/kernel/tick.ts';
 import { createSourceHarness, runSource } from './source-harness.ts';
 
 /**
@@ -266,4 +267,73 @@ describe('看门狗', () => {
     expect(result.faults).toEqual([]);
     expect(result.ports[2]).toBeGreaterThanOrEqual(2);
   }, 120_000);
+});
+
+describe('服务门控', () => {
+  it('外部中断初始化后未使能任何边沿输入，不保持周期服务', async () => {
+    const firmware = image(
+      [
+        0x75,
+        0x8e,
+        0x81, // MOV AUXR,#81H（T0 1T）
+        0x75,
+        0x89,
+        0x00, // MOV TMOD,#00H（模式 0，16 位自动重装）
+        0x75,
+        0x8c,
+        0xff, // MOV TH0,#0FFH
+        0x75,
+        0x8a,
+        0x9c, // MOV TL0,#9CH（100 个周期后溢出）
+        0xd2,
+        0x8c, // SETB TR0
+        0xd2,
+        0xa9, // SETB ET0
+        0xd2,
+        0xaf, // SETB EA
+        0x7f,
+        0xff, // MOV R7,#0FFH
+        0xdf,
+        0xfe, // DJNZ R7,$（约 510 个周期）
+        0xc2,
+        0x8c, // CLR TR0
+        ...HALT,
+      ],
+      { 0x000b: [0x32] }, // T0 中断只 RETI
+    );
+    const harness = await createSourceHarness({
+      firmware,
+      clockFrequency: 1_000_000,
+    });
+
+    try {
+      // 先让定时器活跃并进入一次服务块，完成 EXTINT 的首次采样基线。
+      harness.board.runUntil(1_000_000_000);
+      const jit = (
+        harness.board as unknown as {
+          jits?: readonly { cache?: Map<number, { execute: (...args: never[]) => unknown }> }[];
+        }
+      ).jits?.[0];
+      const service = jit?.cache?.get(SERVICE_PC);
+
+      expect(service).toBeDefined();
+
+      const original = service!.execute;
+      let services = 0;
+
+      service!.execute = (...args: never[]) => {
+        services++;
+        return original(...args);
+      };
+
+      // 定时器已停，且没有使能任何 EXTINT 输入；修复前 EXTINT.active 会永久为真，
+      // 10 ms 内每个节拍点都进服务块（数万次）。现在只应剩 CLR TR0 后的期限重算
+      // 及窗口边界的少量服务；阈值留出实现细节变化，但远离旧的逐节拍数量级。
+      harness.board.runUntil(11_000_000_000);
+      expect(harness.faults).toEqual([]);
+      expect(services).toBeLessThan(10);
+    } finally {
+      harness.dispose();
+    }
+  });
 });

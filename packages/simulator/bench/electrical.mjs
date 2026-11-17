@@ -366,7 +366,7 @@ async function verifyCacheTransitions() {
   for (const [before, after] of [
     [
       /const transitions = new Map\(\);/g,
-      'const transitions = new Map(); probes.caches.push({ transitions, current: () => prepared });',
+      'const transitions = new Map(); probes.caches.push({ transitions, current: () => prepared, numeric: () => cache });',
     ],
     [
       /if \(edges === undefined\)\s+return block;/g,
@@ -440,6 +440,21 @@ async function verifyCacheTransitions() {
     assert.ok(snapshots <= 4097, 'buckets plus current snapshot');
     assert.ok(topologies <= snapshots + 1, 'no hidden historical topology chain');
     assert.equal(numericArrays, 0, 'topology snapshots retain no numerical factorization caches');
+    const numeric = handle.numeric();
+    const committed = handle.current();
+    assert.equal(
+      numeric.size,
+      committed === undefined ? 0 : committed.blocks.length,
+      'the numerical cache holds exactly the committed block set',
+    );
+    for (const entry of numeric.values()) {
+      assert.equal(entry.nodes.length, entry.voltages.length, 'cached layout and voltages agree');
+      assert.equal(
+        entry.nodes.length,
+        entry.references.length,
+        'cached layout and references agree',
+      );
+    }
     for (const [descriptor, target] of handle.transitions) {
       assert.equal(typeof descriptor, 'string');
       if (target !== undefined) assert.ok(target.cost <= 65_536);
@@ -1487,6 +1502,374 @@ async function verifyReferenceAssembly() {
   };
 }
 
+/**
+ * P3 regression: a leaf batch only makes the block partition stale. The next general
+ * solve must revalidate the retained numerical cache instead of discarding every
+ * factorization, and a reference-only change must reuse an equal matrix and anchors with a
+ * new right-hand side. The same fixture also proves that a rejected attempt commits no
+ * statistic and retries from the last accepted state.
+ */
+async function verifyLeafCacheRetention() {
+  let instrumented = compiled.outputText;
+  assert.equal(instrumented.split('return solution;').length, 2);
+  instrumented = instrumented.replace(
+    'return solution;',
+    'if (probes.corrupt) solution[0] = NaN; return solution;',
+  );
+  const { createElectricalNetwork: createNetwork, probes } = await import(
+    `data:text/javascript;base64,${Buffer.from(
+      'export const probes = { corrupt: false };\n' + instrumented,
+    ).toString('base64')}`
+  );
+
+  const ids = (endpoints) => endpoints.map((endpoint) => endpoint.id);
+
+  // Two rails joined by a load, a coupled three-node display mesh and four independent
+  // leaves in the same physical component. Each leaf is its own solve block, so switching
+  // one moves no display node and must preserve the display factorization.
+  function displayFixture(prefix) {
+    const high = pin(`${prefix}.high`);
+    const low = pin(`${prefix}.low`);
+    const bridge = pin(`${prefix}.bridge`);
+    const seg0 = pin(`${prefix}.seg0`);
+    const seg1 = pin(`${prefix}.seg1`);
+    const common = pin(`${prefix}.common`);
+    const leaves = Array.from({ length: 4 }, (_, index) => pin(`${prefix}.leaf${index}`, true));
+    bridge.intent = [{ to: low, resistance: 470 }];
+    const branch = (to, value = resistance) => Object.freeze({ to, resistance: value });
+    const mesh = (to) => Object.freeze([branch(common), branch(to)]);
+    const seg0High = mesh(high);
+    const seg0Low = mesh(low);
+    const seg1High = mesh(high);
+    const seg1Low = mesh(low);
+    const commonIntent = (value) => Object.freeze([branch(low, value)]);
+    seg0.intent = seg0High;
+    seg1.intent = seg1Low;
+    common.intent = commonIntent(resistance);
+    const rails = leaves.map((_, index) => (index % 2 === 0 ? high : low));
+    leaves.forEach((leaf, index) => {
+      leaf.intent = [branch(rails[index])];
+    });
+    const network = createNetwork(
+      [high, low, bridge, seg0, seg1, common, ...leaves],
+      [
+        { id: `${prefix}.high`, pins: [high, bridge], voltage: 10 },
+        { id: `${prefix}.low`, pins: [low], voltage: 0 },
+      ],
+    );
+    const state = { reversed: false, multiplier: 1 };
+    return {
+      high,
+      low,
+      bridge,
+      seg0,
+      seg1,
+      common,
+      leaves,
+      rails,
+      network,
+      state,
+      setDisplay(reversed = state.reversed, multiplier = state.multiplier) {
+        state.reversed = reversed;
+        state.multiplier = multiplier;
+        seg0.intent = reversed ? seg0Low : seg0High;
+        seg1.intent = reversed ? seg1High : seg1Low;
+        common.intent = commonIntent(multiplier * resistance);
+      },
+      switchLeaves() {
+        for (let index = 0; index < leaves.length; index++) {
+          rails[index] = rails[index] === high ? low : high;
+          leaves[index].intent = [branch(rails[index])];
+        }
+      },
+      checkLeaves() {
+        leaves.forEach((leaf, index) => checkPin(leaf, rails[index] === high ? 10 : 0, true));
+      },
+      checkDisplay() {
+        if (state.multiplier === 1) {
+          checkPin(seg0, state.reversed ? 1.25 : 6.25);
+          checkPin(seg1, state.reversed ? 6.25 : 1.25);
+          checkPin(common, 2.5);
+        } else {
+          // The common branch doubles: vc = 10/3, the driven segment takes 20/3.
+          checkPin(seg0, state.reversed ? 5 / 3 : 20 / 3);
+          checkPin(seg1, state.reversed ? 20 / 3 : 5 / 3);
+          checkPin(common, 10 / 3);
+        }
+      },
+    };
+  }
+
+  const display = displayFixture('retain');
+  const { network, seg0, seg1, common, leaves } = display;
+  network.solve();
+  assert.equal(network.stats.components, 1);
+  assert.equal(network.stats.floatingComponents, 0);
+  assert.equal(network.stats.factorizations, 1, 'only the coupled display block owns a matrix');
+  display.checkDisplay();
+  display.checkLeaves();
+  const displaySamples = [seg0.sample, seg1.sample, common.sample];
+  let postLeafFullSolves = 0;
+  let referenceReuses = 0;
+  let resistanceFactorizations = 0;
+
+  const fullAfterLeaf = (label) => {
+    const before = { ...network.stats };
+    assert.deepEqual(network.solve(), [], `${label}: the rebuilt partition corrects no pin`);
+    assert.equal(
+      network.stats.factorizations - before.factorizations,
+      0,
+      `${label}: the display factorization survives the rebuild`,
+    );
+    assert.equal(
+      network.stats.cacheHits - before.cacheHits,
+      1,
+      `${label}: only the unaffected display block is served from the retained cache`,
+    );
+    display.checkDisplay();
+    display.checkLeaves();
+    postLeafFullSolves++;
+  };
+
+  // Alternate the independent leaves while the coupled display block stays untouched.
+  for (const round of [1, 2]) {
+    const before = { ...network.stats };
+    display.switchLeaves();
+    assert.deepEqual(ids(network.solve(leaves)), ids(leaves), 'a leaf batch publishes its pins');
+    assert.equal(
+      network.stats.leafPropagations - before.leafPropagations,
+      1,
+      `leaf batch ${round}: one propagated solve`,
+    );
+    assert.deepEqual(
+      [seg0.sample, seg1.sample, common.sample],
+      displaySamples,
+      `leaf batch ${round}: no display pin is republished`,
+    );
+    fullAfterLeaf(`leaf batch ${round}`);
+  }
+
+  // A pure reference swap keeps the display matrix and anchors, so only the RHS is rebuilt.
+  display.setDisplay(true, 1);
+  const beforeSwap = { ...network.stats };
+  assert.deepEqual(
+    ids(network.solve([seg0, seg1])),
+    ids([seg0, seg1]),
+    'the symmetric swap leaves the common node at the same voltage',
+  );
+  assert.equal(
+    network.stats.factorizations - beforeSwap.factorizations,
+    0,
+    'a reference swap reuses the display factorization',
+  );
+  assert.equal(
+    network.stats.factorizationReuses - beforeSwap.factorizationReuses,
+    1,
+    'the reference swap reuses exactly one factorization',
+  );
+  display.checkDisplay();
+  referenceReuses++;
+
+  // A resistance change alters the matrix, so it must produce a new factorization while
+  // the four leaf blocks stay cached.
+  display.setDisplay(true, 2);
+  const beforeMatrix = { ...network.stats };
+  assert.deepEqual(ids(network.solve([common])), ids([seg0, seg1, common]));
+  assert.equal(
+    network.stats.factorizations - beforeMatrix.factorizations,
+    1,
+    'a resistance change refactorizes the display block',
+  );
+  assert.equal(
+    network.stats.factorizationReuses - beforeMatrix.factorizationReuses,
+    0,
+    'a changed matrix never reuses the old factorization',
+  );
+  assert.equal(
+    network.stats.cacheHits - beforeMatrix.cacheHits,
+    leaves.length,
+    'the untouched leaf blocks stay cache hits',
+  );
+  display.checkDisplay();
+  resistanceFactorizations++;
+
+  display.switchLeaves();
+  network.solve(leaves);
+  fullAfterLeaf('leaf batch after a display resistance change');
+
+  // A rejected solve must leave the accepted topology, cache, samples and counters intact;
+  // the retry then republishes the pending display state exactly once.
+  display.switchLeaves();
+  assert.equal(network.solve(leaves).length, leaves.length);
+  display.setDisplay(true, 1);
+  const beforeFailure = { ...network.stats };
+  const retainedSamples = [...leaves, seg0, seg1, common].map((endpoint) => endpoint.sample);
+  probes.corrupt = true;
+  assert.throws(
+    () => network.solve(),
+    (error) => {
+      assert.equal(error.code, 'ELECTRICAL_SOLVE_FAILED');
+      assert.equal(error.reason, 'Non-finite node voltage.');
+      assert.deepEqual(
+        new Set(error.component),
+        new Set(ids([display.high, display.low, display.bridge, seg0, seg1, common, ...leaves])),
+      );
+      return true;
+    },
+  );
+  probes.corrupt = false;
+  assert.deepEqual(network.stats, beforeFailure, 'a rejected attempt commits no statistic');
+  [...leaves, seg0, seg1, common].forEach((endpoint, index) =>
+    assert.equal(endpoint.sample, retainedSamples[index], 'a rejected attempt publishes nothing'),
+  );
+  const beforeRetry = { ...network.stats };
+  assert.deepEqual(ids(network.solve()), ids([seg0, seg1, common]), 'the retry publishes once');
+  assert.equal(
+    network.stats.factorizations - beforeRetry.factorizations,
+    1,
+    'the retry factorizes the rejected display state once',
+  );
+  assert.equal(network.stats.solves - beforeRetry.solves, 1);
+  display.checkDisplay();
+  display.checkLeaves();
+  assert.deepEqual(network.solve(), [], 'the retried state is stable');
+  assert.equal(
+    network.stats.factorizations - beforeRetry.factorizations,
+    1,
+    'a stable solve after the retry adds no factorization',
+  );
+
+  let rounds = 0;
+  for (let round = 0; round < 4; round++) {
+    display.switchLeaves();
+    assert.equal(network.solve(leaves).length, leaves.length);
+    const fullBefore = { ...network.stats };
+    assert.deepEqual(network.solve(), []);
+    assert.equal(
+      network.stats.factorizations - fullBefore.factorizations,
+      0,
+      'the rebuilt partition reuses the unaffected display factorization',
+    );
+    assert.equal(
+      network.stats.cacheHits - fullBefore.cacheHits,
+      1,
+      'the display block is the only retained hit after a leaf batch',
+    );
+    display.checkLeaves();
+    display.checkDisplay();
+    postLeafFullSolves++;
+
+    display.setDisplay(!display.state.reversed, display.state.multiplier);
+    const swapBefore = { ...network.stats };
+    assert.deepEqual(ids(network.solve([seg0, seg1])), ids([seg0, seg1]));
+    assert.equal(network.stats.factorizations - swapBefore.factorizations, 0);
+    assert.equal(network.stats.factorizationReuses - swapBefore.factorizationReuses, 1);
+    display.checkDisplay();
+    referenceReuses++;
+
+    display.setDisplay(display.state.reversed, display.state.multiplier === 1 ? 2 : 1);
+    const matrixBefore = { ...network.stats };
+    assert.deepEqual(ids(network.solve([common])), ids([seg0, seg1, common]));
+    assert.equal(network.stats.factorizations - matrixBefore.factorizations, 1);
+    display.checkDisplay();
+    resistanceFactorizations++;
+    rounds++;
+  }
+
+  // A bridged board keeps both rails in one mixed-reference block, so a leaf switch only
+  // changes the right-hand side. The retained entry's matrix and anchors are identical and
+  // the same dense factorization must be reused after the partition rebuild.
+  function bridgedFixture(prefix) {
+    const high = pin(`${prefix}.high`);
+    const low = pin(`${prefix}.low`);
+    const bridge = pin(`${prefix}.bridge`);
+    const leaves = Array.from({ length: 4 }, (_, index) => pin(`${prefix}.leaf${index}`, true));
+    bridge.intent = [{ to: low, resistance: 470 }];
+    const rails = [high, low, high, low];
+    leaves.forEach((leaf, index) => {
+      leaf.intent = [{ to: rails[index], resistance }];
+    });
+    return {
+      high,
+      low,
+      bridge,
+      leaves,
+      rails,
+      network: createNetwork(
+        [high, low, bridge, ...leaves],
+        [
+          { id: `${prefix}.high`, pins: [high, bridge], voltage: 10 },
+          { id: `${prefix}.low`, pins: [low], voltage: 0 },
+        ],
+      ),
+    };
+  }
+
+  const bridged = bridgedFixture('rhs');
+  bridged.network.solve();
+  assert.equal(bridged.network.stats.components, 1);
+  assert.equal(bridged.network.stats.factorizations, 1, 'one mixed-reference block');
+  bridged.leaves.forEach((leaf, index) =>
+    checkPin(leaf, bridged.rails[index] === bridged.high ? 10 : 0, true),
+  );
+  const leaf0 = bridged.leaves[0];
+  bridged.rails[0] = bridged.low;
+  leaf0.intent = [{ to: bridged.low, resistance }];
+  assert.deepEqual(ids(bridged.network.solve([leaf0])), [leaf0.id]);
+  const rhsBefore = { ...bridged.network.stats };
+  assert.deepEqual(bridged.network.solve(), [], 'the rebuilt single block publishes nothing');
+  assert.equal(
+    bridged.network.stats.factorizations - rhsBefore.factorizations,
+    0,
+    'the same matrix and anchors keep the factorization',
+  );
+  assert.equal(
+    bridged.network.stats.factorizationReuses - rhsBefore.factorizationReuses,
+    1,
+    'only the fixed reference changed',
+  );
+  checkPin(leaf0, 0, true);
+  leaf0.intent = [{ to: bridged.low, resistance: 2 * resistance }];
+  const resistanceBefore = { ...bridged.network.stats };
+  assert.deepEqual(bridged.network.solve(), []);
+  assert.equal(
+    bridged.network.stats.factorizations - resistanceBefore.factorizations,
+    1,
+    'a changed anchor requires a new factorization',
+  );
+  checkPin(leaf0, 0, true);
+  leaf0.intent = [{ to: bridged.high, resistance: 2 * resistance }];
+  const referenceBefore = { ...bridged.network.stats };
+  assert.deepEqual(ids(bridged.network.solve()), [leaf0.id]);
+  assert.equal(
+    bridged.network.stats.factorizations - referenceBefore.factorizations,
+    0,
+    'the reference change returns to a reusable factorization',
+  );
+  assert.equal(bridged.network.stats.factorizationReuses - referenceBefore.factorizationReuses, 1);
+  checkPin(leaf0, 10, true);
+  bridged.leaves
+    .slice(1)
+    .forEach((leaf, index) =>
+      checkPin(leaf, bridged.rails[index + 1] === bridged.high ? 10 : 0, true),
+    );
+
+  return {
+    display_blocks: leaves.length + 1,
+    display_leaf_rounds: rounds,
+    post_leaf_full_solves: postLeafFullSolves,
+    post_leaf_factorizations: 0,
+    reference_reuses: referenceReuses,
+    resistance_factorizations: resistanceFactorizations,
+    bridged_block_rhs_reuses: 1,
+    failure_retries: 1,
+    assertions:
+      'leaf batches invalidate only the partition, the retained display factorization survives every rebuild with zero new factorizations and one cache hit, reference swaps reuse the matrix with a new RHS, resistance changes refactorize exactly one block while leaf blocks stay cached, a bridged single-block leaf switch reuses its factorization across the rebuild, a rejected attempt rolls back statistics and samples and the retry publishes exactly once, alternating leaf/display rounds keep the counts separated',
+    instrumentation:
+      'untimed corrupted-substitution variant only; measured workloads are unaffected',
+  };
+}
+
 function measure(workload) {
   for (let iteration = 0; iteration < options.warmup; iteration++) {
     workload.run(iteration);
@@ -1530,6 +1913,7 @@ function measure(workload) {
 
 const cacheVerification = await verifyCacheTransitions();
 cacheVerification.reference_assembly = await verifyReferenceAssembly();
+cacheVerification.leaf_cache_retention = await verifyLeafCacheRetention();
 if (verifyOnly) {
   console.log(
     JSON.stringify(

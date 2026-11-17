@@ -12,7 +12,8 @@
     "bench": "vitest run --config vitest.perf.config.ts",
     "schematic": "mica build && node verify-schematic.mjs",
     "canvas": "mica build && node verify-canvas.mjs",
-    "firmware": "node assemble-firmware.mjs"
+    "firmware": "node assemble-firmware.mjs",
+    "firmware:sim": "node verify-firmware.mjs"
   },
   "devDependencies": {
     "@mica-js/document": "workspace:*",

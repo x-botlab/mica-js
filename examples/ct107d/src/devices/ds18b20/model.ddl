@@ -4,24 +4,23 @@
  * 时隙与复位都理想化为整微秒调度事件，DQ 是开漏双向端，只在存在脉冲与读 0 位时
  * 通过 `outputResistance` 拉低，其余时刻释放，高电平必须由外部 10 kΩ 上拉提供。
  * - 复位：主机拉低 >= 480 us 后释放判复位；从机在释放后 +30 us 拉低、+120 us 释放
- *   形成存在脉冲，协议状态归零，进行中的温度转换被中止（真实芯片不会因复位中止
- *   转换，见理想化）。
+ *   形成存在脉冲，协议状态归零。进行中的温度转换不受复位影响——与真实芯片一致，
+ *   转换由内部定时器独立完成。
  * - 主机写位：下降沿开时隙，从机在 +15 us 采样 DQ，LSB first 移位。
  * - 从机读位：下降沿开时隙，从机在 +15 us 决定输出，0 位拉低到 +60 us，1 位保持释放。
  *
  * ROM 命令：0xCC Skip ROM、0x55 Match ROM（随后比对 8 字节 ROM，失配后静默）、
  * 0x33 Read ROM；0xF0 Search ROM 与 0xEC Alarm Search 未实现，未知 ROM 命令静默。
  * 功能命令：0x44 Convert T（固定 750 ms 虚拟时间，完成时采样 `temperature` 输入写入
- * 暂存器并发布 `temperatureOut`）、0xBE Read Scratchpad（9 字节，末尾 CRC 动态计算）、
- * 0x4E Write Scratchpad（TH/TL/Cfg）；0xB4 Read Power Supply 与 0xB8 Copy Scratchpad
- * 为文档化空操作。
+ * 暂存器并发布 `temperatureOut`；转换进行中的再次 Convert T 被忽略）、0xBE Read
+ * Scratchpad（9 字节，末尾 CRC 动态计算）、0x4E Write Scratchpad（TH/TL/Cfg）；
+ * 0xB4 Read Power Supply 与 0xB8 Copy Scratchpad 为文档化空操作。
  *
  * 温度编码为 T x 16 的 16 位二进制补码（0.0625 °C 分辨率）；ROM 为族码 0x28 + serial
  * 属性 + 两个 0x00 + Dallas CRC8，创建时固定。暂存器保留字节固定为 0xFF/0x0C/0x00。
  *
  * 理想化：时隙与复位时序为整微秒调度事件、无传播延迟；保留字节固定；无寄生供电；
- * 复位中止进行中的转换（与真实芯片不同）；不模拟驱动强度与电源电流；未知电平按低
- * 处理。
+ * 不模拟驱动强度与电源电流；未知电平按低处理；转换进行中的 Convert T 被忽略。
  */
 device Ds18b20(
   serial: number default 47049,
@@ -95,7 +94,7 @@ device Ds18b20(
   state sinking: bool = false;
   state lastFallSelf: bool = false;
   state fallTime: number = 0;
-  /** 每次总线复位递增；各定时器用它在触发时判断自己的请求是否过期。 */
+  /** 每次总线复位递增；读写时隙与读 0 位释放用它判断自己的请求是否过期。 */
   state busGeneration: number = 0;
 
   state slotKind: SlotKind = SlotKind.sampleSlot;
@@ -111,7 +110,6 @@ device Ds18b20(
   state releaseSequence: number = 0;
 
   state convertAt: number = 0;
-  state convertGeneration: number = 0;
   state convertSequence: number = 0;
 
   // --- 纯函数：CRC8、ROM 内容、暂存器内容 ---------------------------------------------
@@ -333,9 +331,12 @@ device Ds18b20(
   }
 
   fn beginConversion() {
-    convertGeneration = busGeneration;
-    convertAt = now() + CONVERT_TIME;
-    convertSequence = convertSequence + 1;
+    // 正在转换时忽略新的 Convert T：官方模板每 50 ms 读一次温度，每次都会发 Convert T，
+    // 若每次都重启 750 ms 定时器就永远拿不到结果。
+    if convertAt <= now() {
+      convertAt = now() + CONVERT_TIME;
+      convertSequence = convertSequence + 1;
+    }
     phase = Phase.idle;
   }
 
@@ -472,7 +473,7 @@ device Ds18b20(
     }
   }
 
-  /** Convert T：固定 750 ms 后采样注入温度并写入暂存器。 */
+  /** Convert T：固定 750 ms 后采样注入温度并写入暂存器；总线复位不取消这次转换。 */
   process convertTimer on convertSequence {
     if convertSequence == 0 {
       return;
@@ -480,9 +481,7 @@ device Ds18b20(
     loop {
       const remaining = convertAt - now();
       if remaining <= 0 {
-        if convertGeneration == busGeneration {
-          finishConversion();
-        }
+        finishConversion();
         return;
       }
       await ticks(remaining);

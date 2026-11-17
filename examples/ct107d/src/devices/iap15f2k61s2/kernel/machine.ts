@@ -29,6 +29,23 @@ export interface Machine {
   readonly irq: InterruptController;
   readonly peripherals: readonly Peripheral[];
   readonly ports: PortAccess;
+  /** 读取前必须把时间账本结算到当前时刻的 SFR 地址（来自 `SYNC_ON_READ`）。 */
+  readonly timedReads: ReadonlySet<number>;
+  /** 写入会改变时间语义的 SFR 地址（外设 writes 与中断允许/优先级）。 */
+  readonly timedWrites: ReadonlySet<number>;
+  /**
+   * 翻译期 SFR 访问探针。
+   *
+   * 指令体先生成到一次性的 probe 里，由 `readSfr`/`readSfrLatch`/`writeSfr`
+   * 在翻译期记录真实访问到的地址；翻译器据此决定是否在指令体前插入统一结算，
+   * 不再维护第二份 opcode/寻址分类表。外设钩子内部的读取（复用驱动读控制位、
+   * PCA 读 CL 等）不是这条指令的架构访问，由 `SfrHooks.withinHook` 排除。
+   * 探针只在 `beginAccessProbe` 到 `endAccessProbe` 之间生效。
+   */
+  beginAccessProbe(): void;
+  endAccessProbe(): { readonly reads: ReadonlySet<number>; readonly writes: ReadonlySet<number> };
+  noteSfrRead(address: number): void;
+  noteSfrWrite(address: number): void;
 }
 
 let active: Machine | undefined;

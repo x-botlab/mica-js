@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { Emitter } from '@mica-js/core/lifecycle';
 import { timePs } from '@mica-js/core';
 import type { CanvasDocument } from '@mica-js/document/canvas';
-import type { IWidgetFrame } from '@mica-js/widget';
-import { CanvasSession } from './session';
+import type { IWidgetFrame, IWidgetFrameContext } from '@mica-js/widget';
+import { CanvasSession, type ICanvasAdvanceObserver, type ICanvasAdvanceSample } from './session';
 import type { ICanvasRuntimes } from './runtime-factory';
 
 const id = '11111111-1111-4111-8111-111111111111';
@@ -18,7 +18,7 @@ function pair() {
     onDidRender: frames.event,
     mount: vi.fn(async () => {}),
     setBindings: vi.fn(async () => {}),
-    step: vi.fn(async () => {}),
+    step: vi.fn<(_context: IWidgetFrameContext) => Promise<void>>(async () => {}),
     dispatch: vi.fn(async () => {}),
     audio: { suspend: vi.fn(), resume: vi.fn() },
   };
@@ -29,7 +29,15 @@ function pair() {
   const dispose = vi.fn(async () => {});
   return { frames, widgets, simulation, dispose, resumeAudio: vi.fn(async () => {}) };
 }
-function setup(stepMs?: number) {
+function setup(
+  stepMs?: number,
+  execution?: 'throughput' | 'precise',
+  observer?: ICanvasAdvanceObserver,
+  hooks?: {
+    readonly onAdvanceStart?: () => void;
+    readonly onAdvanceSettled?: () => void;
+  },
+) {
   const pairs: ReturnType<typeof pair>[] = [];
   const factory = {
     create: vi.fn(async () => {
@@ -44,6 +52,12 @@ function setup(stepMs?: number) {
       uri: 'https://test/main.cnv',
       container,
       ...(stepMs === undefined ? {} : { stepMs }),
+      ...(execution === undefined ? {} : { execution }),
+      ...(observer === undefined ? {} : { observer }),
+      ...(hooks?.onAdvanceStart === undefined ? {} : { onAdvanceStart: hooks.onAdvanceStart }),
+      ...(hooks?.onAdvanceSettled === undefined
+        ? {}
+        : { onAdvanceSettled: hooks.onAdvanceSettled }),
     },
     { read: vi.fn() },
     { resolve: async () => undefined },
@@ -53,7 +67,28 @@ function setup(stepMs?: number) {
   return { session, factory, pairs, container };
 }
 
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Lets every in-flight fake-time round settle before disposal when an assertion fails early. */
+async function settleAndDispose(session: CanvasSession): Promise<void> {
+  session.pause();
+  await vi.advanceTimersByTimeAsync(1_000);
+  await session.dispose();
+}
+
 describe('editor-owned canvas runtime session', () => {
+  it('passes the configured CPU execution mode to the simulation runtime', async () => {
+    const { session, pairs } = setup(undefined, 'precise');
+    try {
+      await session.synchronize(document);
+      expect(pairs[0]!.simulation.load).toHaveBeenCalledWith(
+        expect.objectContaining({ execution: 'precise' }),
+      );
+    } finally {
+      await session.dispose();
+    }
+  });
+
   it('resumes audio on run and gestures, and suspends it on pause and reset', async () => {
     const { session, pairs, container } = setup();
     const remove = vi.spyOn(container, 'removeEventListener');
@@ -139,9 +174,328 @@ describe('editor-owned canvas runtime session', () => {
     },
   );
 
-  it('skips missed frame slots without overlapping or catching up', async () => {
+  it('measures round trips, cadence, idle and completed simTime without changing cadence', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
-    const { session, pairs } = setup();
+    const samples: ICanvasAdvanceSample[] = [];
+    const { session, pairs } = setup(20, undefined, (sample) => samples.push(sample));
+    try {
+      await session.synchronize(document);
+      await session.setMode('simulation');
+      const active = pairs[1]!;
+      let simTime = timePs(0);
+      active.simulation.tick.mockImplementation(async () => {
+        await delay(5);
+        simTime = timePs(simTime + 20_000_000_000);
+        return { simTime, executed: 1 };
+      });
+      active.widgets.step.mockImplementation(() => delay(3));
+      session.run();
+      await vi.advanceTimersByTimeAsync(49);
+      expect(samples.map((sample) => sample.startedAt)).toEqual([20, 40]);
+      expect(samples[0]).toMatchObject({
+        sequence: 1,
+        trigger: 'frame',
+        tickMs: 5,
+        widgetMs: 3,
+        idleMs: undefined,
+        periodMs: undefined,
+        skippedSlots: 0,
+        simTime: timePs(20_000_000_000),
+        dt: timePs(20_000_000_000),
+        running: true,
+        mode: 'simulation',
+        frameMs: 20,
+      });
+      expect(samples[1]).toMatchObject({
+        sequence: 2,
+        tickMs: 5,
+        widgetMs: 3,
+        idleMs: 12,
+        periodMs: 20,
+        skippedSlots: 0,
+        simTime: timePs(40_000_000_000),
+      });
+    } finally {
+      await session.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('signals advance start before a slow tick and settle after it completes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const events: string[] = [];
+    const { session, pairs } = setup(20, undefined, undefined, {
+      onAdvanceStart: () => events.push('start'),
+      onAdvanceSettled: () => events.push('settled'),
+    });
+    try {
+      await session.synchronize(document);
+      await session.setMode('simulation');
+      const active = pairs[1]!;
+      let release!: () => void;
+      active.simulation.tick.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            release = () => resolve({ simTime: timePs(20_000_000_000), executed: 1 });
+          }),
+      );
+      session.run();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(events).toEqual(['start']);
+      release();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(events).toEqual(['start', 'settled']);
+    } finally {
+      await settleAndDispose(session);
+      vi.useRealTimers();
+    }
+  });
+
+  it('observes manual steps without consuming a frame slot', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const samples: ICanvasAdvanceSample[] = [];
+    const { session } = setup(20, undefined, (sample) => samples.push(sample));
+    try {
+      await session.synchronize(document);
+      await session.setMode('simulation');
+      await session.step();
+      expect(samples).toHaveLength(1);
+      expect(samples[0]).toMatchObject({
+        sequence: 1,
+        trigger: 'step',
+        tickMs: 0,
+        widgetMs: 0,
+        idleMs: undefined,
+        periodMs: undefined,
+        skippedSlots: 0,
+        dt: timePs(20_000_000_000),
+        running: false,
+        mode: 'simulation',
+        frameMs: 20,
+      });
+    } finally {
+      await session.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('continues immediately after an overrunning tick without overlapping rounds', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const samples: ICanvasAdvanceSample[] = [];
+    const { session, pairs } = setup(20, undefined, (sample) => samples.push(sample));
+    try {
+      await session.synchronize(document);
+      await session.setMode('simulation');
+      const active = pairs[1]!;
+      const starts: number[] = [];
+      let activeTicks = 0;
+      let maxActiveTicks = 0;
+      let completed = 0;
+      active.simulation.tick.mockImplementation(async () => {
+        starts.push(performance.now());
+        activeTicks += 1;
+        maxActiveTicks = Math.max(maxActiveTicks, activeTicks);
+        await delay(45);
+        activeTicks -= 1;
+        completed += 1;
+        return { simTime: timePs(completed * 20_000_000_000), executed: 1 };
+      });
+      session.run();
+      await vi.advanceTimersByTimeAsync(125);
+      // Each late round yields through a zero-delay timer before starting, so fake time advances
+      // by one millisecond per continuation.
+      expect(starts).toEqual([20, 66, 112]);
+      expect(maxActiveTicks).toBe(1);
+      expect(active.simulation.tick).toHaveBeenCalledTimes(3);
+      expect(session.status.simTime).toBe(timePs(40_000_000_000));
+      expect(samples).toHaveLength(2);
+      expect(samples[1]).toMatchObject({
+        startedAt: 66,
+        tickMs: 45,
+        widgetMs: 0,
+        idleMs: 1,
+        periodMs: 46,
+        skippedSlots: 1,
+        simTime: timePs(40_000_000_000),
+        dt: timePs(20_000_000_000),
+        running: true,
+      });
+      for (const [index, sample] of samples.entries())
+        if (index > 0)
+          expect(sample.startedAt).toBeGreaterThanOrEqual(samples[index - 1]!.completedAt);
+
+      session.pause();
+      await vi.advanceTimersByTimeAsync(45);
+      expect(starts).toEqual([20, 66, 112]);
+      expect(active.simulation.tick).toHaveBeenCalledTimes(3);
+      expect(session.status.simTime).toBe(timePs(60_000_000_000));
+      expect(active.widgets.step).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dt: timePs(0) }),
+      );
+    } finally {
+      await settleAndDispose(session);
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps one round in flight when the widget step overruns and reports its round trip', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const samples: ICanvasAdvanceSample[] = [];
+    const { session, pairs } = setup(20, undefined, (sample) => samples.push(sample));
+    try {
+      await session.synchronize(document);
+      await session.setMode('simulation');
+      const active = pairs[1]!;
+      const widgetStarts: number[] = [];
+      let activeWidgets = 0;
+      let maxActiveWidgets = 0;
+      active.simulation.tick.mockImplementation(() =>
+        delay(2).then(() => ({ simTime: timePs(20_000_000_000), executed: 1 })),
+      );
+      active.widgets.step.mockImplementation(async (context) => {
+        if (context.dt === timePs(0)) return;
+        widgetStarts.push(performance.now());
+        activeWidgets += 1;
+        maxActiveWidgets = Math.max(maxActiveWidgets, activeWidgets);
+        await delay(45);
+        activeWidgets -= 1;
+      });
+      session.run();
+      await vi.advanceTimersByTimeAsync(120);
+      expect(widgetStarts).toEqual([22, 70, 118]);
+      expect(maxActiveWidgets).toBe(1);
+      expect(active.simulation.tick).toHaveBeenCalledTimes(3);
+      expect(samples).toHaveLength(2);
+      expect(samples[0]).toMatchObject({
+        startedAt: 20,
+        tickMs: 2,
+        widgetMs: 45,
+        skippedSlots: 0,
+        dt: timePs(20_000_000_000),
+      });
+      expect(samples[1]).toMatchObject({
+        startedAt: 68,
+        tickMs: 2,
+        widgetMs: 45,
+        idleMs: 1,
+        periodMs: 48,
+        skippedSlots: 1,
+        dt: timePs(20_000_000_000),
+      });
+
+      session.pause();
+      await vi.advanceTimersByTimeAsync(45);
+      expect(widgetStarts).toEqual([22, 70, 118]);
+      expect(active.widgets.step).toHaveBeenLastCalledWith(
+        expect.objectContaining({ dt: timePs(0) }),
+      );
+    } finally {
+      await settleAndDispose(session);
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not compensate missed slots after long ticks or grow simTime beyond completed ticks', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const samples: ICanvasAdvanceSample[] = [];
+    const { session, pairs } = setup(20, undefined, (sample) => samples.push(sample));
+    try {
+      await session.synchronize(document);
+      await session.setMode('simulation');
+      const active = pairs[1]!;
+      const starts: number[] = [];
+      let activeTicks = 0;
+      let maxActiveTicks = 0;
+      let completed = 0;
+      active.simulation.tick.mockImplementation(async () => {
+        starts.push(performance.now());
+        activeTicks += 1;
+        maxActiveTicks = Math.max(maxActiveTicks, activeTicks);
+        await delay(50);
+        activeTicks -= 1;
+        completed += 1;
+        return { simTime: timePs(completed * 20_000_000_000), executed: 1 };
+      });
+      session.run();
+      await vi.advanceTimersByTimeAsync(300);
+      expect(starts).toEqual([20, 71, 122, 173, 224, 275]);
+      expect(maxActiveTicks).toBe(1);
+      expect(completed).toBe(5);
+      expect(session.status.simTime).toBe(timePs(100_000_000_000));
+      expect(samples).toHaveLength(5);
+      expect(starts.length).toBeLessThan(10);
+
+      session.pause();
+      await vi.advanceTimersByTimeAsync(30);
+      expect(starts).toEqual([20, 71, 122, 173, 224, 275]);
+      expect(completed).toBe(6);
+      expect(session.status.simTime).toBe(timePs(120_000_000_000));
+      for (const [index, sample] of samples.entries())
+        if (index > 0)
+          expect(sample.startedAt).toBeGreaterThanOrEqual(samples[index - 1]!.completedAt);
+    } finally {
+      await settleAndDispose(session);
+      vi.useRealTimers();
+    }
+  });
+
+  it('settles the in-flight round on pause and resumes on the same cadence', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const samples: ICanvasAdvanceSample[] = [];
+    const { session, pairs } = setup(20, undefined, (sample) => samples.push(sample));
+    try {
+      await session.synchronize(document);
+      await session.setMode('simulation');
+      const active = pairs[1]!;
+      const starts: number[] = [];
+      let simTime = timePs(0);
+      active.simulation.tick.mockImplementation(async () => {
+        starts.push(performance.now());
+        await delay(40);
+        simTime = timePs(simTime + 20_000_000_000);
+        return { simTime, executed: 1 };
+      });
+      active.widgets.step.mockClear();
+      session.run();
+      await vi.advanceTimersByTimeAsync(30);
+      expect(starts).toEqual([20]);
+      session.pause();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(starts).toEqual([20]);
+      expect(active.simulation.tick).toHaveBeenCalledTimes(1);
+      expect(samples[0]).toMatchObject({
+        trigger: 'frame',
+        dt: timePs(20_000_000_000),
+        running: true,
+      });
+      expect(samples.slice(1).every((sample) => sample.running === false)).toBe(true);
+      expect(samples.slice(1).every((sample) => sample.dt === timePs(0))).toBe(true);
+      const stepCalls = active.widgets.step.mock.calls.map(([context]) => context.dt);
+      expect(stepCalls[0]).toBe(timePs(20_000_000_000));
+      expect(stepCalls.slice(1).every((dt) => dt === timePs(0))).toBe(true);
+      expect(session.status.simTime).toBe(timePs(20_000_000_000));
+
+      session.run();
+      await vi.advanceTimersByTimeAsync(15);
+      expect(starts).toEqual([20, 141]);
+      expect(session.status.running).toBe(true);
+      session.pause();
+      await vi.advanceTimersByTimeAsync(40);
+      expect(active.simulation.tick).toHaveBeenCalledTimes(2);
+      expect(session.status.simTime).toBe(timePs(40_000_000_000));
+    } finally {
+      await settleAndDispose(session);
+      vi.useRealTimers();
+    }
+  });
+
+  it('contains observer failures so the frame loop keeps its cadence', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const error = new Error('observer failed');
+    const observer = vi.fn((sample: ICanvasAdvanceSample) => {
+      if (sample.sequence === 1) throw error;
+    });
+    const { session, pairs } = setup(20, undefined, observer);
     try {
       await session.synchronize(document);
       await session.setMode('simulation');
@@ -149,22 +503,16 @@ describe('editor-owned canvas runtime session', () => {
       const starts: number[] = [];
       active.simulation.tick.mockImplementation(async () => {
         starts.push(performance.now());
-        await new Promise<void>((resolve) => setTimeout(resolve, 45));
+        await delay(5);
         return { simTime: timePs(20_000_000_000), executed: 1 };
       });
+      const report = vi.fn();
+      session.onDidError(report);
       session.run();
-      await vi.advanceTimersByTimeAsync(125);
-      expect(starts).toEqual([20, 80]);
-      expect(active.simulation.tick).toHaveBeenLastCalledWith(timePs(20_000_000_000));
-      session.pause();
-      await vi.advanceTimersByTimeAsync(15);
-      expect(active.simulation.tick).toHaveBeenCalledTimes(2);
-      expect(active.widgets.step).toHaveBeenLastCalledWith(
-        expect.objectContaining({ dt: timePs(0) }),
-      );
-      await session.dispose();
-      await vi.advanceTimersByTimeAsync(100);
-      expect(starts).toEqual([20, 80]);
+      await vi.advanceTimersByTimeAsync(49);
+      expect(starts).toEqual([20, 40]);
+      expect(observer).toHaveBeenCalledTimes(2);
+      expect(report).toHaveBeenCalledWith(error);
     } finally {
       await session.dispose();
       vi.useRealTimers();

@@ -1,0 +1,59 @@
+{
+  "kind": "widget",
+  "version": "1.0.0",
+  "id": "jumper",
+  "displayName": "交互式跳线",
+  "description": "通用单路/两路跳线叠层：每个通道有 state 输入与 closed 输出；两路布局可把第一路设为固定短接，用于 2×3 排针。",
+  "properties": {
+    "color": { "type": "string", "required": false, "default": "#22c55eff", "title": "高亮颜色" },
+    "label": { "type": "string", "required": false, "default": "J13", "title": "单路标签" },
+    "label1": { "type": "string", "required": false, "default": "", "title": "通道 1 标签" },
+    "label2": { "type": "string", "required": false, "default": "2", "title": "通道 2 标签" },
+    "channels": {
+      "type": "number",
+      "required": false,
+      "default": 1,
+      "title": "通道数",
+      "editor": { "kind": "number", "min": 1, "max": 2, "step": 1 }
+    },
+    "fixed1": {
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "title": "通道 1 固定短接"
+    },
+    "closed1": {
+      "type": "boolean",
+      "required": false,
+      "default": true,
+      "title": "通道 1 初始闭合"
+    },
+    "closed2": { "type": "boolean", "required": false, "default": true, "title": "通道 2 初始闭合" }
+  },
+  "ports": {
+    "state1": {
+      "direction": "input",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "通道 1 当前状态"
+    },
+    "closed1": {
+      "direction": "output",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "切换通道 1"
+    },
+    "state2": {
+      "direction": "input",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "通道 2 当前状态"
+    },
+    "closed2": {
+      "direction": "output",
+      "type": "boolean",
+      "delivery": "level",
+      "title": "切换通道 2"
+    }
+  }
+}

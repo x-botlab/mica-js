@@ -7,16 +7,22 @@ import type {
   WidgetPortListener,
 } from '@mica-js/sdk/widget';
 import button from '../src/widgets/button/index.js';
+import buzzer from '../src/widgets/buzzer/index.js';
+import jumper from '../src/widgets/jumper/index.js';
 import image from '../src/widgets/image/index.js';
 import indicator from '../src/widgets/led-indicator/index.js';
+import relay from '../src/widgets/relay/index.js';
 import segment from '../src/widgets/segment/index.js';
 import buttonMetadata from '../src/widgets/button/widget.json';
+import buzzerMetadata from '../src/widgets/buzzer/widget.json';
+import jumperMetadata from '../src/widgets/jumper/widget.json';
 import imageMetadata from '../src/widgets/image/widget.json';
 import indicatorMetadata from '../src/widgets/led-indicator/widget.json';
+import relayMetadata from '../src/widgets/relay/widget.json';
 import segmentMetadata from '../src/widgets/segment/widget.json';
 
 /**
- * 三个板面 widget 的行为基线：元数据、按键发布、段码点亮，以及背景图的加载/占位两条路径。
+ * 板面 widget 的行为基线：元数据、按键/跳线发布、段码点亮、执行器状态和背景图加载。
  *
  * widget 运行在 guest worker 里，这里用最小 API 与假 2D 上下文替代，不涉及沙箱与 DOM。
  */
@@ -114,6 +120,9 @@ describe('板面 widget 定义', () => {
     [buttonMetadata, 'button'],
     [segmentMetadata, 'segment'],
     [indicatorMetadata, 'led-indicator'],
+    [buzzerMetadata, 'buzzer'],
+    [jumperMetadata, 'jumper'],
+    [relayMetadata, 'relay'],
   ])('%s 通过 SDK 校验', (metadata, id) => {
     expect(() => validateMetadata(metadata, 'widget', id)).not.toThrow();
   });
@@ -150,6 +159,68 @@ describe('按键', () => {
     widget.input?.({ type: 'pointerdown', button: 2, x: 1, y: 1 });
     widget.input?.({ type: 'keydown', key: 'Enter' });
     expect(published).toEqual([{ port: 'press', payload: false }]);
+  });
+});
+
+describe('蜂鸣器', () => {
+  it('active=true 时绘制光晕与声波，false 时保持透明', () => {
+    const { widget, deliver } = mount(buzzer, { width: 60, height: 60 });
+    const idle = canvas();
+    widget.render?.(idle.context);
+    expect(idle.fills).toEqual([]);
+
+    deliver('active', true);
+    const active = canvas();
+    widget.render?.(active.context);
+    expect(active.fills).toHaveLength(2);
+    expect(typeof active.fills[0]).toBe('object');
+  });
+});
+
+describe('继电器', () => {
+  it('energized 驱动吸合高亮与触点位置', () => {
+    const { widget, deliver } = mount(relay, { width: 88, height: 62 });
+    const idle = canvas();
+    widget.render?.(idle.context);
+    expect(idle.fills[0]).toBe('rgba(245, 158, 11, 0.08)');
+
+    deliver('energized', true);
+    const active = canvas();
+    widget.render?.(active.context);
+    expect(active.fills[0]).toBe('rgba(245, 158, 11, 0.32)');
+  });
+});
+
+describe('交互式跳线', () => {
+  it('单路点击切换 closed1，state1 输入可同步器件状态', () => {
+    const { widget, published, deliver } = mount(jumper, { width: 42, height: 72 });
+    widget.input?.({ type: 'pointerdown', button: 0, x: 20, y: 36 });
+    expect(published.at(-1)).toEqual({ port: 'closed1', payload: false });
+
+    deliver('state1', true);
+    widget.input?.({ type: 'pointerdown', button: 0, x: 20, y: 36 });
+    expect(published.at(-1)).toEqual({ port: 'closed1', payload: false });
+
+    widget.input?.({ type: 'pointerdown', button: 0, x: 400, y: 400 });
+    expect(published).toHaveLength(2);
+  });
+
+  it('两路模式显示固定通道 1，只切换通道 2', () => {
+    const { widget, published, deliver } = mount(jumper, {
+      width: 72,
+      height: 64,
+      props: { channels: 2, fixed1: true },
+    });
+
+    widget.input?.({ type: 'pointerdown', button: 0, x: 36, y: 16 });
+    expect(published).toEqual([]);
+
+    widget.input?.({ type: 'pointerdown', button: 0, x: 36, y: 48 });
+    expect(published.at(-1)).toEqual({ port: 'closed2', payload: false });
+
+    deliver('state2', true);
+    widget.input?.({ type: 'pointerdown', button: 0, x: 36, y: 48 });
+    expect(published.at(-1)).toEqual({ port: 'closed2', payload: false });
   });
 });
 

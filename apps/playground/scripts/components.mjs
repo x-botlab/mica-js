@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { cp, mkdir, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -67,6 +67,14 @@ async function copyCt107d(artifacts) {
   for (const file of ['ct107d.cnv', 'ct107d.sch']) {
     await cp(resolve(source, file), resolve(target, file));
   }
+  // 预览使用独立文件名，避免浏览器继续命中旧画布/原理图缓存，也明确固定当前数码管动态显示固件工程。
+  const previewSchematic = 'ct107d-digital-display.sch';
+  const previewCanvas = 'ct107d-digital-display.cnv';
+  const schematic = JSON.parse(readFileSync(resolve(source, 'ct107d.sch'), 'utf8'));
+  writeFileSync(resolve(target, previewSchematic), `${JSON.stringify(schematic, null, 2)}\n`);
+  const canvas = JSON.parse(readFileSync(resolve(source, 'ct107d.cnv'), 'utf8'));
+  canvas.schematic = previewSchematic;
+  writeFileSync(resolve(target, previewCanvas), `${JSON.stringify(canvas, null, 2)}\n`);
   await cp(resolve(source, 'assets'), resolve(target, 'assets'), { recursive: true });
   await cp(resolve(source, 'dist', 'devices'), resolve(target, 'devices'), { recursive: true });
   await cp(resolve(source, 'dist', 'widgets'), resolve(target, 'widgets'), { recursive: true });

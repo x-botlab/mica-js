@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { deviceMetadataSymbol, parseDeviceMetadata } from '@mica-js/document/schematic';
+import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import { createDeviceBuilder, types, validateDeviceIR } from '@mica-js/sdk/model';
 import {
   DUMP_RESULT,
   PUSH_PULL_OUTPUTS,
   PUSH_PULL_P2,
+  type DeviceAdapter,
   loadDevice,
   readMetadata,
   run,
@@ -55,14 +58,22 @@ const HALT = [0x80, 0xfe]; // SJMP $
 const P2 = PUSH_PULL_P2;
 
 describe('器件声明与产物', () => {
-  it('声明 32 根 GPIO、两根供电引脚，且不声明固件端口', async () => {
+  it('声明 32 根 GPIO、两根供电引脚，端口只有 UART1 收发且均为 output bytes', async () => {
     const metadata = readMetadata('iap15f2k61s2');
     const module = await loadDevice('iap15f2k61s2');
 
     expect(metadata.kind).toBe('device');
     expect(Object.keys(metadata.pins ?? {})).toEqual([...GPIO_PINS, 'VCC', 'GND']);
-    // 固件只是 `bytes` 属性，没有专门的上传通道。
-    expect(metadata.ports).toBeUndefined();
+    // 固件只是 `bytes` 属性，不占端口；端口只有 UART1 的线上收发两路。
+    const ports = metadata.ports ?? {};
+
+    expect(Object.keys(ports).sort()).toEqual(['uart1Rx', 'uart1Tx']);
+
+    for (const port of Object.values(ports)) {
+      expect(port.direction).toBe('output');
+      expect(port.type).toBe('bytes');
+    }
+
     expect(Object.keys(module).sort()).toEqual(['create', 'model']);
 
     const pins = module.model.declarations.filter((declaration) => declaration.kind === 'pin');
@@ -187,6 +198,135 @@ describe('GPIO 四模式', () => {
   });
 });
 
+/**
+ * 外部下拉对照：`run()` 夹具只提供上拉，这里搭一块最小板，把 `P1_1` 经 `resistance`
+ * 接到地，再让固件读回该脚并由探针观察 `P2.0`。
+ */
+async function runWithPullDown(resistance: number): Promise<number> {
+  const mcu = await loadDevice('iap15f2k61s2');
+  const levels: number[] = [];
+  const builder = createDeviceBuilder({ name: `PullDown${resistance}` });
+
+  builder.pin({
+    name: 'D',
+    initial: (body) =>
+      body.returnValue(body.resistor('A', body.constant(types.number, resistance))),
+  });
+  builder.pin({ name: 'A', initial: (body) => body.returnValue(body.combineIntents()) });
+  builder.pin({ name: 'Y', low: 1.5, high: 3.5 });
+  builder.channel({
+    name: 'level',
+    direction: 'output',
+    type: types.number,
+    capacity: 1,
+    overflow: types.overflow.members.drop_oldest,
+  });
+  builder.start((body) => {
+    body.loop((loop) => {
+      loop.wait(50_000_000);
+
+      const level = loop.field(loop.readSample('Y'), 'level');
+      const high = loop.equal(
+        types.logic,
+        level,
+        loop.constant(types.logic, types.logic.members.high),
+      );
+
+      loop.send(
+        'level',
+        loop.select(
+          types.number,
+          high,
+          (inner) => inner.constant(types.number, 1),
+          (inner) => inner.constant(types.number, 0),
+        ),
+      );
+    });
+  });
+
+  const library = createDeviceLibrary([
+    { id: 'mcu', model: mcu.model, create: mcu.create },
+    {
+      id: 'pulldown',
+      model: validateDeviceIR(builder.finish()),
+      create: (): DeviceAdapter => ({
+        sync(batch) {
+          const messages = batch.outputs.level ?? [];
+          const latest = messages[messages.length - 1];
+
+          if (latest !== undefined) levels.push(latest.value as number);
+        },
+        dispose() {},
+      }),
+    },
+  ]);
+  const board = createBoard(
+    library,
+    {
+      instances: [
+        {
+          id: 'mcu',
+          type: 'mcu',
+          props: {
+            clockFrequency: 1_000_000,
+            firmware: Uint8Array.from([
+              0x75,
+              0x96,
+              0x01, // MOV P2M0,#01H → P2.0 推挽
+              0x75,
+              0x95,
+              0x00, // MOV P2M1,#00H
+              0x75,
+              0x90,
+              0xff, // MOV P1,#0FFH（准双向释放）
+              0xa2,
+              0x91, // MOV C,P1.1
+              0x92,
+              0xa0, // MOV P2.0,C
+              ...HALT,
+            ]),
+          },
+        },
+        { id: 'pulldown', type: 'pulldown' },
+      ],
+      nets: [
+        { id: 'vcc', pins: [{ instance: 'mcu', pin: 'VCC' }], voltage: 5 },
+        {
+          id: 'gnd',
+          pins: [
+            { instance: 'mcu', pin: 'GND' },
+            { instance: 'pulldown', pin: 'A' },
+          ],
+          voltage: 0,
+        },
+        {
+          id: 'signal',
+          pins: [
+            { instance: 'mcu', pin: 'P1_1' },
+            { instance: 'pulldown', pin: 'D' },
+          ],
+        },
+        {
+          id: 'p20',
+          pins: [
+            { instance: 'mcu', pin: 'P2_0' },
+            { instance: 'pulldown', pin: 'Y' },
+          ],
+        },
+      ],
+    },
+    { cpuQuantum: 1_000_000 },
+  );
+
+  try {
+    board.runUntil(1_000_000_000);
+
+    return levels[levels.length - 1] ?? -1;
+  } finally {
+    board.dispose();
+  }
+}
+
 describe('口线读回', () => {
   it('MOV A,P1 读的是引脚电平', async () => {
     // P1 全推挽输出高 → 读回 0FFH；把低半字节送到 P2 观察到 0FH。
@@ -215,7 +355,9 @@ describe('口线读回', () => {
     expect(result.p2).toBe(0x0f);
   });
 
-  it('准双向锁存 1 但外线浮空时读引脚得到 0', async () => {
+  it('准双向锁存 1 且外线浮空：内部 10 kΩ 弱上拉使引脚读回高（0FFH）', async () => {
+    // 准双向锁存 1 不是高阻：器件在引脚上保留 10 kΩ 到 VCC 的弱上拉，
+    // 没有外部负载时 P1.0–P1.7 都读到高。
     const result = await run({
       firmware: Uint8Array.from([
         0x75,
@@ -230,7 +372,12 @@ describe('口线读回', () => {
       ]),
     });
 
-    expect(result.p2).toBe(0x00);
+    expect(result.p2).toBe(0xff);
+  });
+
+  it('准双向锁存 1 但外线被 1 kΩ 下拉时读引脚得到 0', async () => {
+    // 内部 10 kΩ 弱上拉与外部 1 kΩ 下拉分压约 0.45 V，低于 1.5 V 的低电平阈值。
+    expect(await runWithPullDown(1_000)).toBe(0);
   });
 });
 
@@ -664,7 +811,7 @@ describe('ALU 与参考实现差分', () => {
 });
 
 describe('理想 LED 联动', () => {
-  it('推挽高点亮到满亮度，低电平与释放都熄灭', async () => {
+  it('理想 LED 按数字化电平点亮：推挽高与准双向弱上拉为亮，推挽低与仅输入高阻为灭', async () => {
     const on = await run({
       firmware: Uint8Array.from([...P1_PUSH_PULL, 0x75, 0x90, 0x02, ...HALT]),
       led: true,
@@ -677,10 +824,17 @@ describe('理想 LED 联动', () => {
       firmware: Uint8Array.from([0x75, 0x90, 0x02, ...HALT]),
       led: true,
     });
+    const floating = await run({
+      firmware: Uint8Array.from([...P1_INPUT_ONLY, 0x75, 0x90, 0x02, ...HALT]),
+      led: true,
+    });
 
     expect(on.brightness).toBeCloseTo(1, 5);
     expect(off.brightness).toBeCloseTo(0, 5);
-    expect(released.brightness).toBeCloseTo(0, 5);
+    // 准双向锁存 1 时内部 10 kΩ 弱上拉把阳极拉到数字化高，LED 因此点亮。
+    expect(released.brightness).toBeCloseTo(1, 5);
+    // 仅输入模式真正释放引脚；没有外接上拉时阳极悬空，不等同于 Logic.high。
+    expect(floating.brightness).toBeCloseTo(0, 5);
   });
 
   it('stc15-led-blink 固件按 1 MHz 时钟约 16.6 ms 翻转一次', async () => {

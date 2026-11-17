@@ -69,16 +69,20 @@ device Latch74hc573(
   derived outputsEnabled: bool = oe.sample.level == Logic.low;
   derived inputs: number = dataByte();
 
-  /** 透明阶段的观察源：LE 电平与数据字节任一项变化都会重算 Q。 */
+  /**
+   * 透明阶段的观察源：LE 为高时记录当刻 D 字节；LE 为低时记录固定占位值 0。
+   *
+   * 非透明阶段的 value 不读取 D，因此 D 变化不会改变记录；这既避免重算 dataByte，
+   * 也不会唤醒 follow。静态订阅仍覆盖两个分支的依赖，D 发布只会触发一次求值。
+   */
   record FollowState {
     transparent: bool;
     value: number;
   }
 
-  derived followState: FollowState = {
-    transparent: le.sample.level == Logic.high,
-    value: dataByte()
-  };
+  derived followState: FollowState = transparent
+    ? { transparent: true, value: dataByte() }
+    : { transparent: false, value: 0 };
 
   fn driveBit(index: number, level: number) {
     if !outputsEnabled {
@@ -137,10 +141,10 @@ device Latch74hc573(
 
   /** 透明阶段：LE 为高时 D 的任意变化直接传到 Q。 */
   process follow on followState {
-    if !transparent {
+    if !followState.transparent {
       return;
     }
-    const current = inputs;
+    const current = followState.value;
     stored = current;
     latch.send(current);
     publishAll();

@@ -47,9 +47,13 @@ function builder() {
 }
 
 function frame(program, states = [0, 1, 0, true, 0, 0], memory = [7, 8, 9]) {
+  const memories = [Uint8Array.from(memory)];
   return {
     states: [...states],
-    memories: [Uint8Array.from(memory)],
+    memories,
+    memoryViews: memories.map(
+      (bank) => new DataView(bank.buffer, bank.byteOffset, bank.byteLength),
+    ),
     stateDirty: new Array(Math.ceil(states.length / 32)).fill(0),
     memoryDirty: [0],
     time: 0,
@@ -109,17 +113,37 @@ function captureFactory(compile) {
   return source;
 }
 
+/** Captures every factory body created while compiling one revision. */
+function captureFactories(compile) {
+  const original = globalThis.Function;
+  const sources = [];
+  globalThis.Function = function (...args) {
+    sources.push(args.at(-1));
+    return original(...args);
+  };
+  try {
+    compile();
+  } finally {
+    globalThis.Function = original;
+  }
+  return sources;
+}
+
 /** Compiles both emitters and runs them side by side, comparing every observable. */
 function duet(instructions, options = {}) {
   const settings = options.binding ?? binding;
   const shardSize = options.shardSize ?? 4;
   const whole = compileDirectJit(instructions, settings);
-  const split = compileDirectJit(instructions, {
-    ...settings,
-    split: true,
-    shardSlotLimit: 0,
-    shardSize,
-  });
+  const split = compileDirectJit(
+    instructions,
+    {
+      ...settings,
+      split: true,
+      shardSlotLimit: 0,
+      shardSize,
+    },
+    options.cache,
+  );
   assert(whole, 'monolithic program');
   assert(split, 'split program');
   const make = (program) => {
@@ -1135,6 +1159,72 @@ test('an operand known only at run time keeps its slot and stays unfolded', () =
   assert.deepEqual(f.states, reference.states);
 });
 
+test('compact reuses registers for sequential values without changing results', () => {
+  // Each step reads a fresh operand and keeps only the running sum: the two live values
+  // overlap for one line, so a long chain needs a handful of registers instead of one per
+  // virtual result.
+  const b = builder();
+  let chain = b.read('x');
+  let values = 1;
+  for (let step = 0; step < 60; step++) {
+    chain = b.binary('add', chain, b.read('y'));
+    values += 2;
+  }
+  b.write('marker', chain);
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  assert(program);
+  assert(
+    program.localCount > 0 && program.localCount < 8,
+    `${program.localCount} slots for ${values} virtual results`,
+  );
+  const source = generated(program);
+  const indices = [...source.matchAll(/\bv(\d+)\b/g)].map((match) => Number(match[1]));
+  assert(Math.max(...indices) < program.localCount, 'every emitted token uses a compacted slot');
+  const f = frame(program, [0, 3, 4, true, 0, 0]);
+  const reference = generic(instructions, f.states, f.memories);
+  assert.equal(program.run(f, 5), reference.run(5));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.states[5], 3 + 60 * 4);
+});
+
+test('compact keeps redefined locals and a dynamic duration slot consistent', () => {
+  const b = builder();
+  const initial = b.read('x');
+  b.operations.push({ kind: 'local', local: 7, type: { kind: 'number' }, initial });
+  for (let step = 1; step <= 24; step++) {
+    const current = b.value({ kind: 'localRead', local: 7 });
+    const next = b.binary('add', current, b.constant(step));
+    b.operations.push({ kind: 'localWrite', local: 7, value: next });
+  }
+  // The duration owns a high virtual index but must reach the continuation under its
+  // compacted name; the local slot spans every redefinition up to the suffix read.
+  const duration = b.value({ kind: 'localRead', local: 7 });
+  b.operations.push({ kind: 'elapse', duration });
+  b.write('marker', b.value({ kind: 'localRead', local: 7 }));
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, binding);
+  assert(program);
+  const source = generated(program);
+  assert.match(source, /F\.due = F\.time \+ H\.checkDuration\(v\d+\);/);
+  const indices = [...source.matchAll(/\bv(\d+)\b/g)].map((match) => Number(match[1]));
+  assert(
+    Math.max(...indices) < program.localCount,
+    'duration and local tokens all use compacted slots',
+  );
+  assert(program.localCount < 8, `${program.localCount} slots for the local chain`);
+  const f = frame(program, [0, 0, 0, false, 0, 0]);
+  const reference = generic(instructions, f.states, f.memories);
+  assert.equal(program.run(f, 40), 'deadline');
+  assert(f.resume > 0);
+  assert.equal(f.time, 40);
+  assert.equal(program.run(f, 1_000), reference.run(1_000));
+  assert.deepEqual(f.states, reference.states);
+  assert.equal(f.time, 300);
+  assert.equal(f.states[5], 300);
+});
+
 test('an IT guard chain stays inside the statements-per-operation budget', () => {
   // The shape #256 targets: repeated `equal(read, literal)` feeding a `select` ladder. The
   // literals must cost nothing, so the ratio is measured as emitted statements per IR op.
@@ -1253,6 +1343,7 @@ test('select branches with effects or extra yields keep the labeled block', () =
   const program = compileDirectJit(instructions, binding);
   const source = generated(program);
   assert.match(source, /select0: \{/);
+  assert.equal(program.emitStats.selectBlocks, 1);
   // 条件守卫自身带三目；这里只要求分支没有被折成 `cond ? (…) : (…)` 的单表达式。
   assert.doesNotMatch(source, /\) \? \(/);
   for (const flag of [true, false]) {
@@ -1332,6 +1423,7 @@ test('wide loads and stores match compileBody for both byte orders and unaligned
   const instructions = [b.instruction(0, 99)];
   const program = compileDirectJit(instructions, binding);
   assert(program);
+  assert.match(generated(program), /MV\[0\]/);
   const first = frame(program, [0, 0, 0, true, 0, 0], [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc]);
   const reference = generic(instructions, first.states, first.memories);
   assert.equal(program.run(first, 5), reference.run(5));
@@ -1597,6 +1689,84 @@ test('statement match needs no output while value-position match requires otherw
 
 const hostBinding = { ...binding, host: true };
 
+test('host publication suspends at elapse start and preserves captured suffixes in every emitter', () => {
+  for (const mode of ['whole', 'split', 'resident']) {
+    const b = builder();
+    b.write('x', b.binary('add', b.read('x'), b.constant(1)));
+    const loaded = b.value({ kind: 'load8', memory: ram, offset: b.constant(0) });
+    const intent = b.value(
+      { kind: 'resistor', to: { kind: 'pin', name: 'rail' }, resistance: b.constant(1000) },
+      'intent',
+    );
+    b.operations.push({ kind: 'writeIntent', pin: { kind: 'pin', name: 'out' }, value: intent });
+    b.delay(5);
+    b.write('y', loaded);
+    b.operations.push({ kind: 'writeIntent', pin: { kind: 'pin', name: 'peer' }, value: intent });
+    const program = compileDirectJit(
+      [b.instruction(0, 99)],
+      {
+        ...hostBinding,
+        split: mode !== 'whole',
+        shardSlotLimit: 0,
+        shardSize: 1,
+      },
+      mode === 'resident' ? compileDirectJit.createCache() : undefined,
+    );
+    const f = frame(program);
+    const log = hostRecorder(() => f.time);
+    f.host = {
+      ...log,
+      intent: (...args) => {
+        log.intent(...args);
+        f.publishPending = true;
+      },
+    };
+    assert.equal(program.run(f, 4), 'invalidated', mode);
+    assert.equal(f.time, 0, mode);
+    assert.equal(f.due, 5, mode);
+    assert(f.resume > 0, mode);
+    assert.equal(f.states[1], 2, mode);
+    f.publishPending = false;
+    f.memories[0][0] = 200;
+    assert.equal(program.run(f, 5), 'deadline', mode);
+    assert.equal(f.states[2], 0, mode);
+    assert.equal(program.run(f, 6), 'invalidated', mode);
+    assert.equal(f.time, 5, mode);
+    assert.equal(f.resume, 0, mode);
+    assert.equal(f.states[2], 7, mode);
+    assert.equal(f.states[1], 2, mode);
+    assert.deepEqual(
+      log.entries.filter(([kind]) => kind === 'intent').map((entry) => entry[3]),
+      [0, 5],
+    );
+    f.publishPending = false;
+    assert.equal(program.run(f, 6), 'fallback', mode);
+  }
+});
+
+test('publication preserves a zero-duration instruction as one atomic prefix and suffix', () => {
+  const b = builder();
+  const intent = b.value(
+    { kind: 'resistor', to: { kind: 'pin', name: 'rail' }, resistance: b.constant(1000) },
+    'intent',
+  );
+  b.operations.push({ kind: 'writeIntent', pin: { kind: 'pin', name: 'out' }, value: intent });
+  b.delay(0);
+  b.write('marker', b.constant(42));
+  const program = compileDirectJit([b.instruction(0, 0)], hostBinding);
+  const f = frame(program);
+  f.host = {
+    ...hostRecorder(() => f.time),
+    intent: () => {
+      f.publishPending = true;
+    },
+  };
+  assert.equal(program.run(f, 10), 'invalidated');
+  assert.equal(f.time, 0);
+  assert.equal(f.resume, 0);
+  assert.equal(f.states[5], 42);
+});
+
 function messageRegion(scope, text) {
   const operations = [];
   const result = scope.value(
@@ -1779,7 +1949,7 @@ test('a declared busy-wait head folds rounds and never crosses the deadline', ()
   const source = generated(program);
   assert.match(
     source,
-    /const rounds = Math\.min\(S\[\d+\] - 1, Math\.floor\(\(deadline - F\.time\) \/ 1000\)\);/,
+    /let rounds = Math\.min\(S\[\d+\] - 1, Math\.floor\(\(deadline - F\.time\) \/ 1000\)\);\n/,
   );
 
   // Horizon inside the wait: only the rounds that fit are folded and no instruction starts.
@@ -1802,6 +1972,55 @@ test('a declared busy-wait head folds rounds and never crosses the deadline', ()
   const unfolded = frame(plain, [0, 11, 0, false, 0, 0]);
   assert.equal(plain.run(unfolded, 60_000), 'fallback');
   assert.equal(unfolded.time, 2);
+});
+
+test('a paced busy-wait head folds into the service accumulator and stops at its boundary', () => {
+  const b = builder();
+  b.write('marker', b.constant(1));
+  b.delay(2);
+  const instruction = b.instruction(0, 2);
+  const paced = {
+    ...binding,
+    delayLoops: new Map([
+      [
+        0,
+        {
+          counter: binding.states.get('x'),
+          cycles: 1000,
+          // `offset` accumulates the folded time, `y` is the service period (0 here, so the
+          // very first round reaches the boundary) and `flag` says pacing is active.
+          pending: {
+            state: binding.states.get('offset'),
+            period: binding.states.get('y'),
+            active: binding.states.get('flag'),
+          },
+        },
+      ],
+    ]),
+  };
+  const program = compileDirectJit([instruction], paced);
+  assert(program);
+  const source = generated(program);
+  // The fold stops on the first round that reaches the service boundary and records it.
+  assert.match(source, /if \(S\[3\]\) rounds = Math\.min\(rounds,/);
+  assert.match(source, /S\[4\] \+= rounds \* 1000;/);
+
+  // Paced: one round crosses the boundary, then the real body runs once.
+  const crossing = frame(program, [0, 11, 0, true, 0, 0]);
+  assert.equal(program.run(crossing, 60_000), 'fallback');
+  assert.equal(crossing.states[1], 10);
+  assert.equal(crossing.states[4], 1000);
+  assert.equal(crossing.time, 1000 + 2);
+  assert.equal(crossing.states[5], 1);
+
+  // Unpaced: no boundary clamp, so every allowed round folds; the accumulator still tracks
+  // elapsed time (the device resets it when a paced peripheral activates).
+  const idle = frame(program, [0, 11, 0, false, 0, 0]);
+  assert.equal(program.run(idle, 60_000), 'fallback');
+  assert.equal(idle.states[1], 1);
+  assert.equal(idle.states[4], 10 * 1000);
+  assert.equal(idle.time, 10 * 1000 + 2);
+  assert.equal(idle.states[5], 1);
 });
 
 test('a folded elapse duration becomes a literal due time', () => {
@@ -2013,6 +2232,27 @@ test('assert defers messages until the condition fails', () => {
   });
   complex.delay(1);
   assert.equal(compileDirectJit([complex.instruction(0, 99)], hostBinding), undefined);
+});
+
+test('compaction rewrites only standalone vN tokens', () => {
+  const b = builder();
+  // v0 exists, so a careless rewriter would also touch the same-looking text below.
+  b.read('x');
+  b.operations.push({
+    kind: 'assert',
+    condition: b.read('flag', 'bool'),
+    message: messageRegion(b, 'av0 v0x v0_x v0 v1 "v2"'),
+  });
+  b.delay(1);
+  const instructions = [b.instruction(0, 99)];
+  const program = compileDirectJit(instructions, hostBinding);
+  assert(program);
+  assert(generated(program).includes(JSON.stringify('av0 v0x v0_x v0 v1 "v2"')));
+  const f = frame(program, [0, 0, 0, false, 0, 0]);
+  const log = hostRecorder(() => f.time);
+  f.host = log;
+  assert.throws(() => program.run(f, 5), { message: 'av0 v0x v0_x v0 v1 "v2"' });
+  assert.deepEqual(log.entries, [['assert', false, 'av0 v0x v0_x v0 v1 "v2"', 0]]);
 });
 
 test('scalar helpers and non-number constants match compileBody under a host', () => {
@@ -2346,7 +2586,10 @@ test('split mode emits a shard dispatcher instead of per-instruction cases', () 
   assert.match(split, /if \(status !== "next"\) return status;/);
   assert.match(split, /if \(pc <= \d+\) status = stepShard0\(F, deadline, pc\);/);
   assert.match(split, /else return "fallback";/);
-  assert.match(split, /const pc = H\.checkPc\(S\[0\]\);/);
+  assert.match(
+    split,
+    /const pc = S\[0\]; if \(!\(typeof pc === "number" && pc < Infinity && pc > -Infinity\)\) H\.checkPc\(pc\);/,
+  );
   assert.match(split, /return run;$/);
   // A shard keeps executing while the next PC stays inside its own range.
   assert.match(split, /while \(true\) \{\nswitch \(pc\) \{/);
@@ -2411,6 +2654,205 @@ test('shard size groups instructions into contiguous range dispatches', () => {
   for (const deadline of [0, 1, 2, 3, 4, 6, 9, 15, 30]) pair.run(deadline);
   assert.equal(pair.left.frame.states[1], pair.right.frame.states[1]);
   assert(pair.left.frame.states[1] > 0);
+});
+
+test('large shard sets use a balanced interval tree without changing fallback boundaries', () => {
+  const instructions = Array.from({ length: 20 }, (_, index) => {
+    const b = builder();
+    b.write('x', b.binary('add', b.read('x'), b.constant(1)));
+    b.delay(1);
+    return b.instruction(index * 2, ((index + 1) * 2) % 40);
+  });
+  const options = { ...binding, split: true, shardSlotLimit: 0, shardSize: 1 };
+  const program = compileDirectJit(instructions, options);
+  assert(program);
+  assert.equal(program.shards, 20);
+  const source = generated(program);
+  assert.equal(source.match(/stepShard\d+\(F, deadline, pc\)/g).length, 20);
+  assert.equal(source.match(/resumeShard\d+\(F, resume\)/g).length, 20);
+  assert.match(source, /if \(pc <= \d+\) \{\nif \(pc <= \d+\) \{/);
+  assert.match(source, /return "fallback";/);
+
+  // A PC in a gap still reaches the next shard, whose switch default returns fallback rather
+  // than accidentally executing a neighboring block.
+  const gap = frame(program, [1, 0, 0, true, 0, 0]);
+  assert.equal(program.run(gap, 10), 'fallback');
+  const beyond = frame(program, [9999, 0, 0, true, 0, 0]);
+  assert.equal(program.run(beyond, 10), 'fallback');
+
+  // Unknown resume IDs stay an error, and every valid PC routes before its deadline check.
+  const invalidResume = frame(program);
+  invalidResume.resume = 9999;
+  assert.throws(() => program.run(invalidResume, 10), /Unknown direct JIT continuation/);
+  for (let pc = 0; pc < 40; pc += 2) {
+    const valid = frame(program, [pc, 0, 0, true, 0, 0]);
+    assert.equal(program.run(valid, 1), 'deadline');
+  }
+});
+
+test('resident shards continue cross-shard transitions inside one program run', () => {
+  const cache = compileDirectJit.createCache();
+  const pair = duet(scalarLoop(), { cache, shardSize: 1 });
+  const reference = generic(scalarLoop(), [0, 1, 0, true, 0, 0], [Uint8Array.from([7, 8, 9])]);
+  for (const deadline of [0, 1, 2, 3, 5, 8, 13, 21, 39]) {
+    assert.equal(pair.run(deadline), reference.run(deadline));
+    assert.deepEqual(pair.left.frame.states, reference.states);
+    assert.deepEqual(pair.left.frame.memories, reference.memories);
+    assert.equal(pair.left.frame.time, reference.time);
+  }
+  assert(pair.left.frame.states[1] > 1);
+  const gap = frame(pair.right.program, [1, 0, 0, true, 0, 0]);
+  assert.equal(pair.right.program.run(gap, 10), 'fallback');
+  const invalidResume = frame(pair.right.program);
+  invalidResume.resume = 9999;
+  assert.throws(() => pair.right.program.run(invalidResume, 10), /Unknown direct JIT continuation/);
+
+  const loop = duet(scalarLoop(), { cache: compileDirectJit.createCache(), shardSize: 1 });
+  assert.equal(loop.run(1), 'deadline');
+  loop.left.frame.stopAfterInstruction = true;
+  loop.right.frame.stopAfterInstruction = true;
+  assert.equal(loop.run(2), 'deadline');
+  assert.equal(loop.run(100), 'invalidated');
+  assert.equal(loop.run(101), 'invalidated');
+});
+
+test('resident shard range fast paths fall through when newer shards overlap', () => {
+  const cache = compileDirectJit.createCache();
+  const options = { ...binding, split: true, shardSize: 2 };
+  const block = (pc, nextPc) => {
+    const b = builder();
+    b.write('x', b.binary('add', b.read('x'), b.constant(1)));
+    b.delay(1);
+    return b.instruction(pc, nextPc);
+  };
+  const zero = block(0, 2);
+  const two = block(2, 1);
+  const one = block(1, 0);
+  const initial = compileDirectJit([zero, two], options, cache);
+  const expanded = compileDirectJit([zero, two, one], options, cache);
+  assert(initial && expanded);
+  const f = frame(expanded, [0, 0, 0, true, 0, 0]);
+  assert.equal(expanded.run(f, 100), 'deadline');
+  assert.equal(f.time, 100);
+  assert.equal(f.states[1], 100);
+  assert.equal(f.states[0], 2);
+});
+
+test('resident continuations keep the captured pre-elapse load', () => {
+  const b = builder();
+  b.write('marker', b.constant(17));
+  const loaded = b.value({ kind: 'load8', memory: ram, offset: b.read('offset') });
+  b.delay(10);
+  b.write('x', loaded);
+  const pair = duet([b.instruction(0, 99)], {
+    cache: compileDirectJit.createCache(),
+    shardSize: 1,
+  });
+  assert.equal(pair.run(4), 'deadline');
+  for (const side of [pair.left, pair.right]) {
+    side.frame.stateDirty.fill(0);
+    side.frame.memories[0][0] = 200;
+    side.frame.states[4] = 2;
+  }
+  assert.equal(pair.run(10), 'deadline');
+  assert.equal(pair.right.frame.states[1], 1);
+  assert(pair.right.frame.resume > 0);
+  assert.equal(pair.run(11), 'fallback');
+  assert.equal(pair.right.frame.states[1], 7);
+  assert.equal(pair.right.frame.resume, 0);
+});
+
+test('resident shards rebuild only the open tail and keep closed functions reusable', () => {
+  const cache = compileDirectJit.createCache();
+  const hostedBinding = { ...binding, host: true, split: true, shardSize: 2 };
+  const block = (pc, channel) => {
+    const b = builder();
+    b.operations.push({ kind: 'send', channel, value: b.constant(pc + 1) });
+    b.delay(1);
+    return b.instruction(pc, pc + 1);
+  };
+  const blocks = Array.from({ length: 5 }, (_, index) => block(index, `c${index}`));
+  let initial;
+  const firstSources = captureFactories(() => {
+    initial = compileDirectJit(blocks.slice(0, 3), hostedBinding, cache);
+  });
+  assert(initial);
+  assert.equal(initial.shards, 2);
+  assert.equal(firstSources.filter((source) => /function stepShard/.test(source)).length, 2);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 3,
+    reusedBlocks: 0,
+    invalidatedBlocks: 0,
+    compiledShards: 2,
+    reusedShards: 0,
+    entries: 3,
+    clears: 0,
+  });
+
+  let expanded;
+  const expandedSources = captureFactories(() => {
+    expanded = compileDirectJit(blocks, hostedBinding, cache);
+  });
+  assert(expanded);
+  assert.equal(expanded.shards, 3);
+  // The closed two-block shard survives; the old open shard and the new tail are rebuilt.
+  assert.equal(expandedSources.filter((source) => /function stepShard/.test(source)).length, 2);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 5,
+    reusedBlocks: 3,
+    invalidatedBlocks: 0,
+    compiledShards: 4,
+    reusedShards: 1,
+    entries: 5,
+    clears: 0,
+  });
+
+  let stableProgram;
+  const stableSources = captureFactories(() => {
+    stableProgram = compileDirectJit(blocks, hostedBinding, cache);
+  });
+  assert.equal(stableSources.filter((source) => /function stepShard/.test(source)).length, 0);
+  assert(stableProgram);
+  assert.equal(stableProgram.shards, 3);
+  const stable = compileDirectJit.cacheStats(cache);
+  assert.equal(stable.compiledShards, 4);
+  assert.equal(stable.reusedShards, 4);
+
+  const run = (program) => {
+    const f = frame(program);
+    f.host = hostRecorder(() => f.time);
+    assert.equal(program.run(f, 10), 'fallback');
+    return f.host.entries.filter(([kind]) => kind === 'send');
+  };
+  const expected = blocks.map((_, pc) => ['send', `c${pc}`, pc + 1, pc]);
+  assert.deepEqual(run(initial), expected.slice(0, 3));
+  assert.deepEqual(run(expanded), expected);
+
+  compileDirectJit.clearCache(cache);
+  assert.deepEqual(run(initial), expected.slice(0, 3));
+  assert.deepEqual(run(expanded), expected);
+});
+
+test('resident delay-guard changes rebuild only the affected shard', () => {
+  const cache = compileDirectJit.createCache();
+  const first = scalarLoop()[0];
+  const second = scalarLoop()[1];
+  const withDelay = (cycles) => ({
+    ...binding,
+    split: true,
+    shardSize: 1,
+    delayLoops: new Map([[0, { counter: 1, cycles }]]),
+  });
+  const initial = compileDirectJit([first, second], withDelay(1), cache);
+  assert(initial);
+  const sources = captureFactories(() => {
+    assert(compileDirectJit([first, second], withDelay(2), cache));
+  });
+  assert.equal(sources.filter((source) => /function stepShard/.test(source)).length, 1);
+  const stats = compileDirectJit.cacheStats(cache);
+  assert.equal(stats.compiledShards, 3);
+  assert.equal(stats.reusedShards, 1);
+  assert.equal(stats.invalidatedBlocks, 1);
 });
 
 test('byte literals and indexing stay direct and match compileBody', () => {
@@ -2596,4 +3038,139 @@ test('runtime write barriers keep one program valid while the observed slots mov
     assert.deepEqual(f.memoryDirty, [1]);
     assert.equal(f.memories[0][0], 9);
   }
+});
+
+test('incremental cache reuses old blocks and keeps constant indices stable', () => {
+  const cache = compileDirectJit.createCache();
+  const hostedBinding = { ...binding, host: true };
+  const sendBlock = (pc, channel) => {
+    const b = builder();
+    b.operations.push({ kind: 'send', channel, value: b.constant(pc + 1) });
+    b.delay(1);
+    return b.instruction(pc, pc + 1);
+  };
+  const first = sendBlock(0, 'alpha');
+  const second = sendBlock(1, 'beta');
+
+  const initial = compileDirectJit([first], hostedBinding, cache);
+  assert(initial);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 1,
+    reusedBlocks: 0,
+    invalidatedBlocks: 0,
+    compiledShards: 0,
+    reusedShards: 0,
+    entries: 1,
+    clears: 0,
+  });
+
+  const expanded = compileDirectJit([first, second], hostedBinding, cache);
+  assert(expanded);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 2,
+    reusedBlocks: 1,
+    invalidatedBlocks: 0,
+    compiledShards: 0,
+    reusedShards: 0,
+    entries: 2,
+    clears: 0,
+  });
+
+  const stable = compileDirectJit([first, second], hostedBinding, cache);
+  assert(stable);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 2,
+    reusedBlocks: 3,
+    invalidatedBlocks: 0,
+    compiledShards: 0,
+    reusedShards: 0,
+    entries: 2,
+    clears: 0,
+  });
+
+  // The second program exercises the reused C[0] capture followed by the newly appended C[1].
+  const f = frame(expanded);
+  f.host = hostRecorder(() => f.time);
+  assert.equal(expanded.run(f, 10), 'fallback');
+  assert.deepEqual(
+    f.host.entries.filter(([kind]) => kind === 'send'),
+    [
+      ['send', 'alpha', 1, 0],
+      ['send', 'beta', 2, 1],
+    ],
+  );
+});
+
+test('delay-loop changes invalidate only the affected cached guard', () => {
+  const cache = compileDirectJit.createCache();
+  const b = builder();
+  b.write('x', b.constant(5));
+  b.delay(1);
+  const instruction = b.instruction(10, 11);
+  const withDelay = (cycles) => ({
+    ...binding,
+    delayLoops: new Map([[10, { counter: 1, cycles }]]),
+  });
+
+  const oneCycle = compileDirectJit([instruction], withDelay(1), cache);
+  const twoCycles = compileDirectJit([instruction], withDelay(2), cache);
+  assert(oneCycle && twoCycles);
+  assert.match(generated(oneCycle), /\/ 1\)/);
+  assert.match(generated(twoCycles), /\/ 2\)/);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 2,
+    reusedBlocks: 0,
+    invalidatedBlocks: 1,
+    compiledShards: 0,
+    reusedShards: 0,
+    entries: 1,
+    clears: 0,
+  });
+
+  const unfolded = compileDirectJit([instruction], binding, cache);
+  assert(unfolded);
+  assert.doesNotMatch(generated(unfolded), /declared busy-wait|let rounds/);
+  assert.equal(compileDirectJit.cacheStats(cache).invalidatedBlocks, 2);
+});
+
+test('same-PC body changes and cache clears force recompilation without invalidating old programs', () => {
+  const cache = compileDirectJit.createCache();
+  const block = (value) => {
+    const b = builder();
+    b.write('x', b.constant(value));
+    b.delay(1);
+    return b.instruction(0, 1);
+  };
+
+  const firstBody = block(3);
+  const first = compileDirectJit([firstBody], binding, cache);
+  assert(first);
+  assert.equal(compileDirectJit.cacheStats(cache).entries, 1);
+
+  const second = compileDirectJit([block(9)], binding, cache);
+  assert(second);
+  assert.equal(compileDirectJit.cacheStats(cache).invalidatedBlocks, 1);
+  const changed = frame(second);
+  assert.equal(second.run(changed, 10), 'fallback');
+  assert.equal(changed.states[1], 9);
+
+  compileDirectJit.clearCache(cache);
+  assert.deepEqual(compileDirectJit.cacheStats(cache), {
+    compiledBlocks: 2,
+    reusedBlocks: 0,
+    invalidatedBlocks: 1,
+    compiledShards: 0,
+    reusedShards: 0,
+    entries: 0,
+    clears: 1,
+  });
+  const rebuilt = compileDirectJit([firstBody], binding, cache);
+  assert(rebuilt);
+  assert.equal(compileDirectJit.cacheStats(cache).compiledBlocks, 3);
+
+  // Programs own frozen constant tables, so clearing the reusable cache cannot mutate
+  // a previously returned program.
+  const old = frame(first);
+  assert.equal(first.run(old, 10), 'fallback');
+  assert.equal(old.states[1], 3);
 });

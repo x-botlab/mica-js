@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { SERVICE_PC } from '../src/devices/iap15f2k61s2/kernel/tick.ts';
 import { decode } from '../src/devices/iap15f2k61s2/kernel/decode.ts';
 import { createSourceHarness, runSource } from './source-harness.ts';
 
@@ -172,7 +173,9 @@ describe('T0 定时方式', () => {
     expect(elapsed).toBeGreaterThan(0);
     expect(elapsed).toBeLessThan(0x1000);
     expect(result.faults).toEqual([]);
-    expectCountClose(result.ports[2], elapsed & 0xff, 0x100);
+    // 写前结算必须在 CLR TR0 之前把 SETB TR0 起的时钟全部计入；旧服务粒度允许
+    // 一个节拍内的偏差，这里用精确值守住「停表不丢时间」。
+    expect(result.ports[2]).toBe(elapsed & 0xff);
   });
 
   it('模式 1 溢出后 TF0 保持到软件清零', async () => {
@@ -428,7 +431,7 @@ describe('T2', () => {
     image.set(main.image, 0x30);
     image.set([...mov(P2, 0x5a), 0x32], 0x70);
 
-    const result = await runSource({ firmware: image, milliseconds: 2, observePorts: [2] });
+    const result = await runSource({ firmware: image, milliseconds: 3, observePorts: [2] });
 
     expect(result.faults).toEqual([]);
     expect(result.ports[2]).toBe(0x5a);
@@ -511,6 +514,461 @@ describe('可编程时钟输出', () => {
       expect(samples.length).toBeGreaterThan(0);
     } finally {
       harness.dispose();
+    }
+  });
+});
+
+describe('节拍覆盖', () => {
+  it('紧循环里没有对齐指令时，回跳仍是节拍点：T0 中断照常响应', async () => {
+    // 循环指令地址 0x16/0x17/0x19/0x1B/0x1D/0x1F/0x21 全都不是 TICK_DIVISOR 的倍数，
+    // 回跳距离又有 11 字节。只按 PC 取节拍点时整圈都不会推进外设，T0 永远不会溢出，
+    // 主循环也永远等不到计数满 5（官方 CT107D 的 1.0 led 固件就是这种形状）。
+    const image = new Uint8Array(0x60);
+    const put = (address: number, ...bytes: number[]): void => image.set(bytes, address);
+
+    put(0x000, 0x02, 0x00, 0x30); // LJMP 0030H
+    put(0x00b, 0x02, 0x00, 0x50); // LJMP 0050H（T0 中断）
+    put(
+      0x030,
+      0x75,
+      0x96,
+      0xff, // MOV P2M0,#0FFH
+      0x75,
+      0x95,
+      0x00, // MOV P2M1,#00H
+      0x75,
+      0x8e,
+      0x81, // MOV AUXR,#81H（T0 1T 模式）
+      0x75,
+      0x89,
+      0x00, // MOV TMOD,#00H（模式 0，16 位自动重装）
+      0x75,
+      0x8c,
+      0xd4, // MOV TH0,#0D4H
+      0x75,
+      0x8a,
+      0xcd, // MOV TL0,#0CDH
+      0xd2,
+      0x8c, // SETB TR0
+      0xd2,
+      0xa9, // SETB ET0
+      0xd2,
+      0xaf, // SETB EA
+      0x02,
+      0x00,
+      0x16, // LJMP 0016H
+    );
+    put(
+      0x016,
+      0xc3, // CLR C
+      0xe5,
+      0x09, // MOV A,09H
+      0x94,
+      0x05, // SUBB A,#05H
+      0xe5,
+      0x08, // MOV A,08H
+      0x64,
+      0x80, // XRL A,#80H
+      0x94,
+      0x80, // SUBB A,#80H
+      0x40,
+      0xf3, // JC 0016H
+    );
+    put(0x023, 0x75, 0xa0, 0xa5, 0x80, 0xfe); // MOV P2,#0A5H / SJMP $
+    put(0x050, 0x05, 0x08, 0xe5, 0x08, 0x70, 0x02, 0x05, 0x09, 0x32); // ISR：time_count++
+
+    const result = await runSource({
+      firmware: image,
+      milliseconds: 20,
+      clockFrequency: 11_059_200,
+      observePorts: [2],
+    });
+
+    expect(result.faults).toEqual([]);
+    expect(result.ports[2]).toBe(0xa5);
+  });
+});
+
+describe('时间账本与期限', () => {
+  it('读-改-写先结算：ORL TCON 不覆盖刚置起的 TF0', async () => {
+    const { image } = assemble(
+      PUSH_PULL_P2,
+      mov(AUXR, 0x81),
+      mov(TMOD, 0x01),
+      mov(TH0, 0xff),
+      mov(TL0, 0xff),
+      setb(TR0),
+      movR7(4),
+      djnzR7,
+      [0x43, TCON, 0x01], // ORL TCON,#01H（置 IT0，保留 TF0）
+      movADirect(TCON),
+      [0x54, 0x20], // ANL A,#20H
+      movDirectA(P2),
+      sjmpSelf,
+    );
+    const result = await runSource({ firmware: image, milliseconds: 1, observePorts: [2] });
+
+    expect(result.faults).toEqual([]);
+    expect(result.ports[2]).toBe(0x20);
+  });
+
+  it('运行中切换 12T→1T：旧配置结算到切换点，余数按新周期继续计数', async () => {
+    const { image, at } = assemble(
+      PUSH_PULL_P2,
+      mov(AUXR, 0x01), // T0x12=0（12T）
+      mov(TMOD, 0x01),
+      mov(TH0, 0x00),
+      mov(TL0, 0x00),
+      setb(TR0),
+      movR7(20),
+      djnzR7,
+      mov(AUXR, 0x81), // 切到 1T
+      movR7(20),
+      djnzR7,
+      movADirect(TL0),
+      movDirectA(P2),
+      sjmpSelf,
+    );
+    const oldCycles = cyclesBetween(image, at[5] as number, at[8] as number);
+    const newCycles = cyclesBetween(image, at[8] as number, at[11] as number);
+    const result = await runSource({ firmware: image, milliseconds: 1, observePorts: [2] });
+
+    expect(result.faults).toEqual([]);
+    // 12T 段只积 floor(old/12) 个计数，余数相位保留；切到 1T 后余数按每周期 1 个计数补齐。
+    // 12T 段贡献 floor(old/12) 个计数；余数相位在 1T 下逐周期补齐。
+    expect(result.ports[2]).toBe(
+      (Math.floor(oldCycles / 12) + (oldCycles % 12) + newCycles) & 0xff,
+    );
+  });
+
+  it('多次溢出：1 ms 自动重装中断在 21 ms 内响应 21 次', async () => {
+    const image = new Uint8Array(0x100);
+
+    image.set([0x02, 0x00, 0x30], 0x000); // LJMP 0030H
+    image.set([0x02, 0x00, 0x60], 0x00b); // T0 向量 → 0060H
+    image.set(
+      [
+        0x75,
+        P2M0,
+        0xff, // MOV P2M0,#0FFH
+        0x75,
+        P2M1,
+        0x00, // MOV P2M1,#00H
+        0x75,
+        P2,
+        0x00, // MOV P2,#00H
+        0x75,
+        AUXR,
+        0x81, // T0 1T
+        0x75,
+        TMOD,
+        0x00, // 模式 0，16 位自动重装
+        0x75,
+        TH0,
+        0xfc, // 重装 0xFC18 → 1000 个 1T 周期 = 1 ms @ 1 MHz
+        0x75,
+        TL0,
+        0x18,
+        0xd2,
+        TR0, // SETB TR0
+        0xd2,
+        0xa9, // SETB ET0
+        0xd2,
+        0xaf, // SETB EA
+        0x80,
+        0xfe, // SJMP $
+      ],
+      0x30,
+    );
+    image.set([0x05, P2, 0x32], 0x60); // INC P2; RETI
+
+    const harness = await createSourceHarness({
+      firmware: image,
+      clockFrequency: 1_000_000,
+      observe: ['P2_0', 'P2_1', 'P2_2', 'P2_3', 'P2_4', 'P2_5', 'P2_6', 'P2_7'],
+    });
+
+    try {
+      harness.board.runUntil(100_000_000); // 先越过启动配置
+      harness.board.runUntil(21_100_000_000); // 再跑 21 ms
+      expect(harness.faults).toEqual([]);
+      expect(harness.port(2)).toBe(21);
+    } finally {
+      harness.dispose();
+    }
+  });
+});
+
+describe('批量重装与中断使能边界', () => {
+  it('运行中提高 mode2 重装影子：首次回绕前沿原计数，回绕后才用新 reload', async () => {
+    const build = (count: number): Assembly =>
+      assemble(
+        PUSH_PULL_P2,
+        [0x75, 0xb2, 0xff, 0x75, 0xb1, 0x00], // P3 推挽
+        mov(AUXR, 0x81),
+        mov(TMOD, 0x02), // T0 模式 2（8 位自动重装）
+        mov(TH0, 0xfc), // 初始 reload=0xFC
+        mov(TL0, 0x00),
+        setb(TR0),
+        mov(TH0, 0x80), // 运行中把 reload 提到 0x80（高于当前计数）
+        movR7(count),
+        djnzR7,
+        movADirect(TL0),
+        movDirectA(P2),
+        movADirect(TCON),
+        [0x54, 0x20], // ANL A,#20H → TF0
+        movDirectA(0xb0), // MOV P3,A
+        sjmpSelf,
+      );
+
+    const expected = (cycles: number): number =>
+      cycles < 0x100 ? cycles : 0x80 + ((cycles - 0x100) % 0x80);
+    const short = build(4);
+    const shortCycles = cyclesBetween(short.image, short.at[6] as number, short.at[10] as number);
+    const shortResult = await runSource({
+      firmware: short.image,
+      milliseconds: 1,
+      observePorts: [2, 3],
+    });
+
+    expect(shortResult.faults).toEqual([]);
+    expect(shortCycles).toBeLessThan(0x100);
+    expect(shortResult.ports[2]).toBe(expected(shortCycles));
+    expect((shortResult.ports[3] as number) & 0x20).toBe(0);
+
+    const long = build(200);
+    const longCycles = cyclesBetween(long.image, long.at[6] as number, long.at[10] as number);
+    const longFlagCycles = cyclesBetween(long.image, long.at[6] as number, long.at[12] as number);
+    const longResult = await runSource({
+      firmware: long.image,
+      milliseconds: 1,
+      observePorts: [2, 3],
+    });
+
+    expect(longResult.faults).toEqual([]);
+    expect(longCycles).toBeGreaterThanOrEqual(0x100);
+    expect(longResult.ports[2]).toBe(expected(longCycles));
+    expect((longResult.ports[3] as number) & 0x20).toBe(0x20);
+    expect(longFlagCycles).toBeGreaterThanOrEqual(0x100);
+  });
+
+  it('屏蔽中断时一次推进跨多个回绕：计数与 TF0 与不规则切片一致', async () => {
+    const { image, at } = assemble(
+      PUSH_PULL_P2,
+      [0x75, 0xb2, 0xff, 0x75, 0xb1, 0x00],
+      mov(AUXR, 0x81),
+      mov(TMOD, 0x02), // span = 256 - 0xFC = 4 个周期
+      mov(TH0, 0xfc),
+      mov(TL0, 0x00),
+      setb(TR0),
+      movR7(200),
+      djnzR7,
+      movADirect(TL0),
+      movDirectA(P2),
+      movADirect(TCON),
+      [0x54, 0x20],
+      movDirectA(0xb0),
+      sjmpSelf,
+    );
+    const cycles = cyclesBetween(image, at[6] as number, at[9] as number);
+    const expected = (0xfc + (cycles % 4)) & 0xff;
+
+    const one = await runSource({ firmware: image, milliseconds: 1, observePorts: [2, 3] });
+    expect(one.faults).toEqual([]);
+    expect(cycles).toBeGreaterThan(0x100); // 一次 advance 至少跨 64 次回绕
+    expect(one.ports[2], `cycles=${cycles} expected=${expected}`).toBe(expected);
+    expect((one.ports[3] as number) & 0x20).toBe(0x20);
+
+    const harness = await createSourceHarness({
+      firmware: image,
+      clockFrequency: 1_000_000,
+      observe: ['P2_0', 'P2_1', 'P2_2', 'P2_3', 'P2_4', 'P2_5', 'P2_6', 'P2_7', 'P3_5'],
+    });
+    try {
+      const end = (cycles + 32) * 1_000_000;
+      let time = 0;
+      for (const step of [13, 7, 3, 29, 11, 41]) {
+        time = Math.min(end, time + step * 1_000_000);
+        harness.board.runUntil(time);
+        if (time === end) break;
+      }
+      if (harness.board.time < end) harness.board.runUntil(end);
+      expect(harness.faults).toEqual([]);
+      expect(harness.port(2)).toBe(expected);
+      expect(harness.level('P3_5')).toBe(1);
+    } finally {
+      harness.dispose();
+    }
+  });
+
+  it('运行很久后再开中断：已发生的溢出在使能边界后响应一次', async () => {
+    const image = new Uint8Array(0x100);
+    image.set([0x02, 0x00, 0x30], 0); // LJMP main
+    image.set([0x02, 0x00, 0x60], 0x0b); // T0 向量
+
+    const main = [
+      ...PUSH_PULL_P2,
+      0x75,
+      0xa0,
+      0x00, // MOV P2,#00H
+      0x75,
+      0x8e,
+      0x81, // AUXR: T0 1T
+      0x75,
+      0x89,
+      0x00, // TMOD: 模式 0，16 位自动重装
+      0x75,
+      0x8c,
+      0xfc, // TH0
+      0x75,
+      0x8a,
+      0x18, // TL0（span=1000）
+      0xd2,
+      0x8c, // SETB TR0
+      0x7f,
+      0xff, // MOV R7,#0FFH
+      0xdf,
+      0xfe, // DJNZ R7,$（510 个周期）
+      0x7f,
+      0xff,
+      0xdf,
+      0xfe, // 再 510 个周期，已跨过第一次溢出
+      0xd2,
+      0xa9, // SETB ET0
+      0xd2,
+      0xaf, // SETB EA
+      0x80,
+      0xfe, // SJMP $
+    ];
+    main.forEach((value, index) => {
+      image[0x30 + index] = value;
+    });
+    // ISR：置 P2.0、停表，确保只响应一次。
+    image.set([0xd2, 0xa0, 0xc2, 0x8c, 0x32], 0x60);
+
+    const result = await runSource({ firmware: image, milliseconds: 3, observePorts: [2] });
+    expect(result.faults).toEqual([]);
+    expect(result.ports[2]).toBe(1);
+  });
+});
+
+it('XCH A,direct 也在首次读锁存器前结算，读到刚置起的 TF0', async () => {
+  const { image } = assemble(
+    PUSH_PULL_P2,
+    mov(AUXR, 0x81),
+    mov(TMOD, 0x01),
+    mov(TH0, 0xff),
+    mov(TL0, 0xff),
+    setb(TR0),
+    movR7(4),
+    djnzR7,
+    [0x74, 0x00], // MOV A,#00H
+    [0xc5, TCON], // XCH A,TCON
+    [0x54, 0x20], // ANL A,#20H
+    movDirectA(P2),
+    sjmpSelf,
+  );
+  const result = await runSource({ firmware: image, milliseconds: 1, observePorts: [2] });
+
+  expect(result.faults).toEqual([]);
+  expect(result.ports[2]).toBe(0x20);
+});
+
+it('1 ms 定时中断期间服务次数保持约每中断一次，不退回逐节拍服务', async () => {
+  const image = new Uint8Array(0x100);
+  image.set([0x02, 0x00, 0x30], 0);
+  image.set([0x02, 0x00, 0x60], 0x0b);
+  const main = [
+    0x75,
+    0x8e,
+    0x81, // AUXR: T0 1T
+    0x75,
+    0x89,
+    0x00, // TMOD: 16 位自动重装
+    0x75,
+    0x8c,
+    0xfc, // TH0
+    0x75,
+    0x8a,
+    0x18, // TL0（span=1000）
+    0xd2,
+    0x8c, // TR0
+    0xd2,
+    0xa9, // ET0
+    0xd2,
+    0xaf, // EA
+    0x80,
+    0xfe, // SJMP $
+  ];
+  main.forEach((value, index) => {
+    image[0x30 + index] = value;
+  });
+  image.set([0x32], 0x60); // RETI
+
+  const harness = await createSourceHarness({ firmware: image, clockFrequency: 1_000_000 });
+  try {
+    harness.board.runUntil(2_000_000_000);
+    const jit = (
+      harness.board as unknown as {
+        jits?: readonly { cache?: Map<number, { execute: (...args: never[]) => unknown }> }[];
+      }
+    ).jits?.[0];
+    const service = jit?.cache?.get(SERVICE_PC);
+
+    expect(service).toBeDefined();
+
+    const original = service!.execute;
+    let services = 0;
+
+    service!.execute = (...args: never[]) => {
+      services++;
+      return original(...args);
+    };
+    harness.board.runUntil(22_000_000_000);
+    expect(harness.faults).toEqual([]);
+    // 20 ms / 1 ms = 20 次中断；每次期限服务 + RETI 后的重扫最多两次。
+    expect(services).toBeLessThanOrEqual(45);
+  } finally {
+    harness.dispose();
+  }
+});
+
+describe('时钟输出相位', () => {
+  it('CLKO 关闭期间跨偶数/奇数次溢出后，重新启用时的初始相位按回绕奇偶翻转', async () => {
+    const build = (count: number): Assembly =>
+      assemble(
+        PUSH_PULL_P2,
+        [0x75, 0xb2, 0x20, 0x75, 0xb1, 0x00], // P3M0=0x20（P3.5 推挽）
+        mov(AUXR, 0x81),
+        mov(TMOD, 0x00), // 模式 0，16 位自动重装
+        mov(TH0, 0xff),
+        mov(TL0, 0x00), // span=256 个周期
+        setb(TR0),
+        movR7(count),
+        djnzR7,
+        clr(TR0),
+        mov(INT_CLKO, 0x01), // 打开 T0CLKO；此时定时器已停
+        setb(TR0), // 重新启动，syncPin 按内部 clock latch 驱动 P3.5
+        sjmpSelf,
+      );
+
+    for (const count of [128, 192]) {
+      const { image, at } = build(count);
+      const cycles = cyclesBetween(image, at[6] as number, at[9] as number);
+      const wraps = Math.floor(cycles / 0x100);
+      const restart = cyclesBetween(image, 0, at[11] as number);
+      const harness = await createSourceHarness({
+        firmware: image,
+        clockFrequency: 1_000_000,
+        observe: ['P3_5'],
+      });
+      try {
+        harness.board.runUntil((restart + 5) * 1_000_000);
+        expect(harness.faults).toEqual([]);
+        expect(harness.level('P3_5')).toBe(wraps & 1);
+      } finally {
+        harness.dispose();
+      }
     }
   });
 });

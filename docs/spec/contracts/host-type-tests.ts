@@ -43,7 +43,14 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
     entry: 'step',
     code: 'code',
     pc: 'position',
-    polling: [{ pc: 0, predicate: 'ready' }],
+    polling: [
+      {
+        pc: 0,
+        predicate: 'ready',
+        consume: 'consume',
+        wait: { delay: 'waitPs', advance: 'advance' },
+      },
+    ],
     translate(input, builder) {
       const byte: number | undefined = input.code[0];
       void byte;

@@ -22,6 +22,29 @@ export class SfrHooks {
    */
   synchronize?: (b: Body, address: number) => void;
   private suppress = 0;
+  /**
+   * 外设钩子的嵌套深度。
+   *
+   * 钩子里的 SFR 访问是外设实现细节（端口复用驱动读 SCON/P_SW1、PCA 读 CL 等），
+   * 不是当前 CPU 指令的架构访问。翻译期探针用 `withinHook` 把它们排除，否则普通
+   * 端口写会因为内部读取被误判为时间相关访问，从而内联整段外设结算。
+   */
+  private internal = 0;
+
+  /** 当前是否在生成外设钩子内部的 IR。 */
+  get withinHook(): boolean {
+    return this.internal > 0;
+  }
+
+  private hooked<T>(run: () => T): T {
+    this.internal += 1;
+
+    try {
+      return run();
+    } finally {
+      this.internal -= 1;
+    }
+  }
 
   /**
    * 在该回调里生成的 IR 不触发读之前的同步。
@@ -59,7 +82,7 @@ export class SfrHooks {
 
     return hook === undefined
       ? b.load8(SFR, b.constant(types.number, address & 0x7f))
-      : hook(b, address);
+      : this.hooked(() => hook(b, address));
   }
 
   write(b: Body, address: number, value: Value<number>): void {
@@ -72,11 +95,14 @@ export class SfrHooks {
     if (hooks === undefined) return;
 
     // 写入钩子是外设自己的逻辑：它们按「写入那一刻」的状态工作，不需要也不会在钩子里
-    // 再插一段推进（那会让每个 SFR 写块都内联整段推进代码）。
+    // 再插一段推进（那会让每个 SFR 写块都内联整段推进代码）。钩子内部的 SFR 读取同样
+    // 不是这条指令的架构访问，探针通过 `withinHook` 排除。
     this.suppress += 1;
 
     try {
-      for (const hook of hooks) hook(b, address, stored);
+      this.hooked(() => {
+        for (const hook of hooks) hook(b, address, stored);
+      });
     } finally {
       this.suppress -= 1;
     }

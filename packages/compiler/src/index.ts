@@ -5,6 +5,14 @@ export {
   compileComputationArtifact,
 } from './compiler.js';
 export { compileDirectJit } from './direct-jit.js';
+export {
+  compileSynchronousBody,
+  type ResourceKind,
+  type SynchronousCompileOptions,
+  type SynchronousProgram,
+  type SynchronousResolver,
+  type SynchronousRunner,
+} from './synchronous.js';
 export { compileResumableBody } from './resumable.js';
 export { RESUMABLE_RECEIVE, RESUMABLE_TICKS } from './types.js';
 export {

@@ -6,7 +6,7 @@ import type {
 } from '@mica-js/document/canvas';
 import type { WidgetInputEvent } from '@mica-js/widget';
 import type { CanvasModel } from './model';
-import type { ICanvasTarget } from '../canvas-host';
+import type { ICanvasRenderObserver, ICanvasTarget } from '../canvas-host';
 import { canvasSnapshot } from '../canvas-host';
 import type { IEditorPointerEvent } from '../host';
 
@@ -408,6 +408,8 @@ export interface ICanvasViewOptions {
   readonly isSimulation: () => boolean;
   /** Receives rendering, dispatch and document failures; the view keeps running. */
   readonly onError?: (error: unknown, source?: 'render' | 'runtime' | 'command') => void;
+  /** Optional synchronous sink for the duration of one whole-surface paint. */
+  readonly onRender?: ICanvasRenderObserver;
   readonly onSelectionChange?: (selection: readonly ICanvasTarget[]) => void;
   readonly onClick?: (event: IEditorPointerEvent<ICanvasTarget>) => void;
   readonly onDoubleClick?: (event: IEditorPointerEvent<ICanvasTarget>) => void;
@@ -487,6 +489,7 @@ class CanvasView implements ICanvasView {
   #gesture: Gesture | undefined;
   #preview: IPreview | undefined;
   #pointerId: number | undefined;
+  #renderSequence = 0;
   #disposed = false;
   #hostPress:
     | { pointerId: number; origin: ICanvasPoint; target: ICanvasTarget | null; moved: boolean }
@@ -618,10 +621,31 @@ class CanvasView implements ICanvasView {
 
   render(): void {
     if (this.#disposed) return;
+    const observer = this.#options.onRender;
+    const startedAt = observer === undefined ? 0 : performance.now();
     try {
       this.#render();
     } catch (error) {
       this.#report(error);
+    } finally {
+      if (observer !== undefined) {
+        const completedAt = performance.now();
+        try {
+          observer({
+            sequence: ++this.#renderSequence,
+            startedAt,
+            completedAt,
+            durationMs: completedAt - startedAt,
+            mode: this.#isSimulation() ? 'simulation' : 'edit',
+            widgets: this.#options.model.document.widgets.length,
+            width: this.#width,
+            height: this.#height,
+            dpr: this.#dpr,
+          });
+        } catch (error) {
+          this.#report(error);
+        }
+      }
     }
   }
 

@@ -79,6 +79,7 @@ export interface ElectricalStats {
   readonly floatingComponents: number;
   readonly factorizations: number;
   readonly factorizationReuses: number;
+  /** Block results served from a cache entry, including one retained across a rebuild. */
   readonly cacheHits: number;
   /** Distinct `(pin, target, resistance)` leaf shapes admitted for reuse. */
   readonly leafPlans: number;
@@ -153,6 +154,10 @@ interface Factorization {
 }
 
 interface CachedComponent {
+  /** Node layout the entry was solved for; equal slots mean the same equation order. */
+  readonly nodes: readonly number[];
+  /** Fixed potential per layout slot; `undefined` marks that slot's node as unknown. */
+  readonly references: readonly (number | undefined)[];
   readonly edges: readonly Edge[];
   readonly voltages: readonly (number | null)[];
   readonly factorization: Factorization | undefined;
@@ -173,11 +178,6 @@ interface PreparedTopology {
   readonly nodeComponents: number[];
   /** 1 when every fixed potential inside the node's component is the same value. */
   readonly nodeUniform: number[];
-}
-
-interface PinUpdate {
-  readonly intent: readonly ResistorBranch[];
-  readonly edges: readonly Edge[];
 }
 
 /** Dirty pin edges indexed by slot; `undefined` means the pin kept its committed edges. */
@@ -455,8 +455,21 @@ function arraysEqual(first: Float64Array, second: Float64Array): boolean {
   return true;
 }
 
-function sameConfiguration(previous: CachedComponent, component: Component): boolean {
-  if (previous.edges.length !== component.edges.length) return false;
+function sameConfiguration(
+  previous: CachedComponent,
+  component: Component,
+  nodes: readonly Node[],
+): boolean {
+  const layout = component.nodes;
+  if (previous.nodes.length !== layout.length || previous.edges.length !== component.edges.length)
+    return false;
+  for (let index = 0; index < layout.length; index++) {
+    const node = layout[index]!;
+    if (previous.nodes[index] !== node) return false;
+    // A cached voltage belongs to one fixed-potential assignment, and the unknown set is
+    // exactly the subset without a reference. Both are revalidated instead of assumed.
+    if (!Object.is(previous.references[index], nodes[node]!.reference)) return false;
+  }
   for (let index = 0; index < previous.edges.length; index++) {
     const edge = previous.edges[index]!;
     const other = component.edges[index]!;
@@ -1063,7 +1076,7 @@ export function createElectricalNetwork(
     }
     // Only the matrix partition is bypassed. The component arrays above were updated in
     // place and the buckets follow the committed edges, so the next general solve rebuilds
-    // blocks from pinEdges without discarding the admitted graphs.
+    // blocks from pinEdges without discarding the admitted graphs or the numerical cache.
     blocksStale = true;
     statistics.solves++;
     statistics.leafPropagations++;
@@ -1267,22 +1280,18 @@ export function createElectricalNetwork(
       return changedSlots.length === 0 ? emptySlots : changedSlots;
     }
     if (blocksStale) {
-      // The partition is rebuilt from pinEdges, but the buckets survive: the pin hashes
-      // already describe the committed leaf edges, so admitted graphs stay reusable.
-      blocksStale = false;
-      cache = new Map();
+      // The partition is rebuilt from pinEdges, but neither the buckets nor the numerical
+      // cache is discarded. Every retained entry is revalidated by layout, fixed
+      // potentials, edges and resistance before reuse, and its factorization is reused
+      // only when the normalized matrix and anchors are identical.
       topologyChanged = true;
     }
-    const updates = new Map<number, PinUpdate>();
-    for (let position = 0; position < updatedSlots.length; position++)
-      updates.set(updatedSlots[position]!, {
-        intent: updatedIntents[position]!,
-        edges: updatedEdges[position]!,
-      });
+    const updated = updatedSlots.length;
     if (prepared !== undefined && !topologyChanged && replacedEdges.length === 0) {
-      for (const [index, update] of updates) {
-        intents[index] = update.intent;
-        pinEdges[index] = update.edges;
+      for (let position = 0; position < updated; position++) {
+        const index = updatedSlots[position]!;
+        intents[index] = updatedIntents[position]!;
+        pinEdges[index] = updatedEdges[position]!;
       }
       statistics.solves++;
       statistics.cacheHits += prepared.blocks.length;
@@ -1292,13 +1301,16 @@ export function createElectricalNetwork(
     let topology = prepared;
     let bucket: string | undefined;
     let restored: TopologySnapshot | undefined;
+    /** Prospective rebuilds; committed only when the batch is accepted. */
+    let topologyPrepares = 0;
     const dirtyBlocks = new Map<number, PreparedBlock>();
     // Dirty edges are also indexed by slot, so rebinding never hashes a pin number.
     for (let position = 0; position < updatedEdgeSlots.length; position++)
       updatedEdgeLists[updatedEdgeSlots[position]!] = undefined;
     updatedEdgeSlots.length = 0;
-    for (const [index, update] of updates) {
-      updatedEdgeLists[index] = update.edges;
+    for (let position = 0; position < updated; position++) {
+      const index = updatedSlots[position]!;
+      updatedEdgeLists[index] = updatedEdges[position]!;
       updatedEdgeSlots.push(index);
     }
     if (topologyChanged) {
@@ -1306,8 +1318,9 @@ export function createElectricalNetwork(
       // must not move the bucket a committed graph is filed under.
       let hash = topologyHash;
       let spread = topologySpread;
-      for (const [index, update] of updates) {
-        const next = hashEdges(index, update.edges);
+      for (let position = 0; position < updated; position++) {
+        const index = updatedSlots[position]!;
+        const next = hashEdges(index, updatedEdges[position]!);
         const previous = pinHashes[index]!;
         if (next === previous) continue;
         hash += next - previous;
@@ -1319,9 +1332,10 @@ export function createElectricalNetwork(
         topology = restoreTopology(restored.topology, pinEdges, updatedEdgeLists);
       else {
         const nextEdges = pinEdges.slice();
-        for (const [index, update] of updates) nextEdges[index] = update.edges;
+        for (let position = 0; position < updated; position++)
+          nextEdges[updatedSlots[position]!] = updatedEdges[position]!;
         topology = prepareTopology(nodes, nextEdges);
-        statistics.topologyPrepares++;
+        topologyPrepares++;
       }
     } else {
       const dirty = new Set<number>();
@@ -1341,7 +1355,7 @@ export function createElectricalNetwork(
     for (const block of topologyChanged ? topology!.blocks : dirtyBlocks.values()) {
       const { component, key } = block;
       const previous = cache.get(key);
-      if (previous !== undefined && sameConfiguration(previous, component)) {
+      if (previous !== undefined && sameConfiguration(previous, component, nodes)) {
         cacheHits++;
         (nextCache ??= new Map()).set(key, previous);
         continue;
@@ -1447,6 +1461,8 @@ export function createElectricalNetwork(
         }
       }
       const entry: CachedComponent = {
+        nodes: component.nodes,
+        references: component.nodes.map((node) => nodes[node]!.reference),
         edges: component.edges,
         voltages: component.nodes.map((node) => voltages.get(node)!),
         factorization,
@@ -1492,11 +1508,13 @@ export function createElectricalNetwork(
     // No pin, intent snapshot, adjacency or factorization cache changes before acceptance.
     for (const [pin, sample] of pending) pin.sample = sample;
     for (const [node, voltage] of pendingVoltages) publishedVoltages[node] = voltage;
-    for (const [index, update] of updates) {
-      syncDegrees(pinEdges[index]!, update.edges);
-      intents[index] = update.intent;
-      pinEdges[index] = update.edges;
-      setPinHash(index, update.edges);
+    for (let position = 0; position < updated; position++) {
+      const index = updatedSlots[position]!;
+      const edges = updatedEdges[position]!;
+      syncDegrees(pinEdges[index]!, edges);
+      intents[index] = updatedIntents[position]!;
+      pinEdges[index] = edges;
+      setPinHash(index, edges);
     }
     if (topologyChanged) cache = nextCache ?? new Map();
     else {
@@ -1506,6 +1524,9 @@ export function createElectricalNetwork(
     }
     prepared = topology!;
     componentArraysOwned = false;
+    // A rejected solve leaves the stale flag set, so a retry rebuilds and revalidates the
+    // partition instead of trusting blocks it never committed.
+    blocksStale = false;
     if (topologyChanged) {
       const admitted: TopologySnapshot =
         restored !== undefined && topology === restored.topology
@@ -1526,6 +1547,7 @@ export function createElectricalNetwork(
     statistics.factorizations += factorizations;
     statistics.factorizationReuses += factorizationReuses;
     statistics.cacheHits += cacheHits;
+    statistics.topologyPrepares += topologyPrepares;
     flushAdmissions();
     return changedSlots.length === 0 ? emptySlots : changedSlots;
   }

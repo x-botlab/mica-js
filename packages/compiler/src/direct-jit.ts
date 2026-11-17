@@ -9,6 +9,9 @@ import type {
 } from '@mica-js/device-model';
 import type {
   DirectJitBinding,
+  DirectJitCache,
+  DirectJitCacheStats,
+  DirectJitDelay,
   DirectJitFrame,
   DirectJitProgram,
   DirectJitReason,
@@ -135,22 +138,48 @@ function address(memory: Uint8Array, value: unknown, size: number): number {
   return value;
 }
 
-function load16(memory: Uint8Array, value: unknown, little: boolean): number {
-  return view(memory).getUint16(address(memory, value, 2), little);
+function dataView(memory: Uint8Array, cached: DataView | undefined): DataView {
+  return cached ?? view(memory);
 }
 
-function load32(memory: Uint8Array, value: unknown, little: boolean): number {
-  return view(memory).getUint32(address(memory, value, 4), little);
+function load16(
+  memory: Uint8Array,
+  cached: DataView | undefined,
+  value: unknown,
+  little: boolean,
+): number {
+  return dataView(memory, cached).getUint16(address(memory, value, 2), little);
 }
 
-function store16(memory: Uint8Array, value: unknown, stored: unknown, little: boolean): void {
+function load32(
+  memory: Uint8Array,
+  cached: DataView | undefined,
+  value: unknown,
+  little: boolean,
+): number {
+  return dataView(memory, cached).getUint32(address(memory, value, 4), little);
+}
+
+function store16(
+  memory: Uint8Array,
+  cached: DataView | undefined,
+  value: unknown,
+  stored: unknown,
+  little: boolean,
+): void {
   const at = address(memory, value, 2);
-  view(memory).setUint16(at, byte(stored), little);
+  dataView(memory, cached).setUint16(at, byte(stored), little);
 }
 
-function store32(memory: Uint8Array, value: unknown, stored: unknown, little: boolean): void {
+function store32(
+  memory: Uint8Array,
+  cached: DataView | undefined,
+  value: unknown,
+  stored: unknown,
+  little: boolean,
+): void {
   const at = address(memory, value, 4);
-  view(memory).setUint32(at, byte(stored), little);
+  dataView(memory, cached).setUint32(at, byte(stored), little);
 }
 
 const helpers = Object.freeze({
@@ -189,6 +218,222 @@ function constantsOf(body: RegionIR): ReadonlyMap<number, Primitive> {
     analyses.set(body, constants);
   }
   return constants;
+}
+
+interface BodyShape {
+  readonly operations: number;
+  readonly nestedOperations: number;
+}
+
+/**
+ * Operation counts depend only on the immutable body, so a later cache (a new board reusing
+ * the module-level block IR) reuses them instead of walking every nested region again.
+ */
+const shapes = new WeakMap<RegionIR, BodyShape>();
+
+function shapeOf(body: RegionIR): BodyShape {
+  let shape = shapes.get(body);
+  if (shape === undefined) {
+    shape = Object.freeze({
+      operations: body.operations.length,
+      nestedOperations: countOperations(body),
+    });
+    shapes.set(body, shape);
+  }
+  return shape;
+}
+
+interface DelayFingerprint {
+  readonly counter: number;
+  readonly cycles: number;
+  readonly pending?: {
+    readonly state: number;
+    readonly period: number;
+    readonly active: number;
+  };
+}
+
+interface BindingFingerprint {
+  readonly states: readonly (readonly [string, number])[];
+  readonly memories: readonly (readonly [string, number])[];
+  readonly pcName: string;
+  readonly pcIndex: number;
+  readonly host: boolean;
+  readonly blockedStates: readonly string[] | undefined;
+  readonly blockedMemories: readonly string[] | undefined;
+}
+
+interface CachedInstruction {
+  readonly body: RegionIR;
+  readonly nextPc: number;
+  readonly delay: DelayFingerprint | undefined;
+  readonly instruction: Instruction | undefined;
+  /** Stable continuation ID once this body has ever emitted an elapse. */
+  readonly resumeId: number | undefined;
+}
+
+type ResidentStatus = DirectJitReason | number;
+type ResidentStep = (frame: DirectJitFrame, deadline: number, pc: number) => ResidentStatus;
+type ResidentResume = (frame: DirectJitFrame, resume: number) => ResidentStatus;
+
+interface ResidentFunctions {
+  readonly step: ResidentStep;
+  readonly resume: ResidentResume | undefined;
+}
+
+interface ResidentShard {
+  readonly id: number;
+  entries: Instruction[];
+  sourceSize: number;
+  maxSlots: number;
+  resumable: boolean;
+  functions: ResidentFunctions | undefined;
+  /** Exact instruction sequence represented by `functions`; cache hits compare references. */
+  signature: readonly Instruction[] | undefined;
+  dirty: boolean;
+}
+
+interface DirectJitCacheState {
+  readonly entries: Map<number, CachedInstruction>;
+  readonly constants: unknown[];
+  readonly shards: ResidentShard[];
+  nextResume: number;
+  nextShard: number;
+  stats: {
+    compiledBlocks: number;
+    reusedBlocks: number;
+    invalidatedBlocks: number;
+    compiledShards: number;
+    reusedShards: number;
+    clears: number;
+  };
+  binding: BindingFingerprint | undefined;
+}
+
+const directJitCaches = new WeakMap<DirectJitCache, DirectJitCacheState>();
+
+function createDirectJitCache(): DirectJitCache {
+  const cache = Object.freeze({}) as unknown as DirectJitCache;
+  directJitCaches.set(cache, {
+    entries: new Map(),
+    constants: [],
+    shards: [],
+    nextResume: 1,
+    nextShard: 1,
+    stats: {
+      compiledBlocks: 0,
+      reusedBlocks: 0,
+      invalidatedBlocks: 0,
+      compiledShards: 0,
+      reusedShards: 0,
+      clears: 0,
+    },
+    binding: undefined,
+  });
+  return cache;
+}
+
+function cacheState(cache: DirectJitCache): DirectJitCacheState {
+  const state = directJitCaches.get(cache);
+  if (state === undefined) throw new TypeError('Invalid direct JIT cache');
+  return state;
+}
+
+function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
+  return {
+    states: [...binding.states],
+    memories: [...binding.memories],
+    pcName: binding.pc.name,
+    pcIndex: binding.pc.index,
+    host: binding.host === true,
+    blockedStates:
+      binding.blockedStates === undefined ? undefined : [...binding.blockedStates].sort(),
+    blockedMemories:
+      binding.blockedMemories === undefined ? undefined : [...binding.blockedMemories].sort(),
+  };
+}
+
+function samePairs(
+  left: readonly (readonly [string, number])[],
+  right: readonly (readonly [string, number])[],
+): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (a[0] !== b[0] || a[1] !== b[1]) return false;
+  }
+  return true;
+}
+
+function sameNames(
+  left: readonly string[] | undefined,
+  right: readonly string[] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined || left.length !== right.length) return false;
+  return left.every((name, index) => name === right[index]);
+}
+
+function sameBinding(left: BindingFingerprint, right: BindingFingerprint): boolean {
+  return (
+    left.pcName === right.pcName &&
+    left.pcIndex === right.pcIndex &&
+    left.host === right.host &&
+    samePairs(left.states, right.states) &&
+    samePairs(left.memories, right.memories) &&
+    sameNames(left.blockedStates, right.blockedStates) &&
+    sameNames(left.blockedMemories, right.blockedMemories)
+  );
+}
+
+function delayFingerprint(delay: DirectJitDelay | undefined): DelayFingerprint | undefined {
+  if (delay === undefined) return undefined;
+  return {
+    counter: delay.counter,
+    cycles: delay.cycles,
+    ...(delay.pending === undefined ? {} : { pending: { ...delay.pending } }),
+  };
+}
+
+function sameDelay(
+  left: DelayFingerprint | undefined,
+  right: DelayFingerprint | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return false;
+  return (
+    left.counter === right.counter &&
+    left.cycles === right.cycles &&
+    left.pending?.state === right.pending?.state &&
+    left.pending?.period === right.pending?.period &&
+    left.pending?.active === right.pending?.active
+  );
+}
+
+function clearCacheState(state: DirectJitCacheState): void {
+  state.entries.clear();
+  state.constants.length = 0;
+  state.shards.length = 0;
+  state.nextResume = 1;
+  state.nextShard = 1;
+  state.binding = undefined;
+  state.stats.clears++;
+}
+
+export interface DirectJitCompiler {
+  (
+    instructions: readonly {
+      readonly pc: number;
+      readonly nextPc: number;
+      readonly body: RegionIR;
+    }[],
+    binding: DirectJitBinding,
+    cache?: DirectJitCache,
+  ): DirectJitProgram | undefined;
+  createCache(): DirectJitCache;
+  clearCache(cache: DirectJitCache): void;
+  cacheStats(cache: DirectJitCache): DirectJitCacheStats;
 }
 
 /** One compile-time value and the literal source text that reproduces it exactly. */
@@ -231,41 +476,137 @@ const SHARD_CODE_BUDGET = 36_000;
  * it avoids the dispatcher hop; larger programs split into shards.
  */
 const MONOLITH_CODE_LIMIT = 48_000;
+/** Above this many routes, a linear chain spends more time comparing bounds than dispatching. */
+const SHARD_ROUTE_TREE_MIN = 16;
+
+interface ShardRoute {
+  readonly bound: string;
+  readonly call: string;
+}
+
+/**
+ * Emit a balanced search tree over ordered range bounds. Leaves stay direct calls to named
+ * shard functions so the call sites remain monomorphic; the extra miss leaf preserves exactly
+ * the old fallback / unknown-continuation behaviour.
+ */
+function emitShardRoutes(
+  lines: string[],
+  key: 'pc' | 'resume',
+  routes: readonly ShardRoute[],
+  miss: string,
+): void {
+  if (routes.length < SHARD_ROUTE_TREE_MIN) {
+    routes.forEach((route, index) => {
+      lines.push(`${index ? 'else if' : 'if'} (${key} <= ${route.bound}) ${route.call}`);
+    });
+    lines.push(`else ${miss}`);
+    return;
+  }
+  const actions = [...routes.map((route) => route.call), miss];
+  const emit = (lower: number, upper: number): void => {
+    if (lower === upper) {
+      lines.push(actions[lower]!);
+      return;
+    }
+    const middle = (lower + upper) >>> 1;
+    lines.push(`if (${key} <= ${routes[middle]!.bound}) {`);
+    emit(lower, middle);
+    lines.push('} else {');
+    emit(middle + 1, upper);
+    lines.push('}');
+  };
+  emit(0, routes.length);
+}
 
 /** Inputs have already passed model validation and contextual binding. */
-export function compileDirectJit(
+function compileDirectJitProgram(
   instructions: readonly {
     readonly pc: number;
     readonly nextPc: number;
     readonly body: RegionIR;
   }[],
   binding: DirectJitBinding,
+  suppliedCache?: DirectJitCache,
 ): DirectJitProgram | undefined {
   if (!validIndex(binding.pc.index) || binding.states.get(binding.pc.name) !== binding.pc.index)
     return undefined;
-  const constants: unknown[] = [];
-  const capture = (value: unknown): string => `C[${constants.push(value) - 1}]`;
+  const cache = suppliedCache ?? createDirectJitCache();
+  const state = cacheState(cache);
+  const fingerprint = bindingFingerprint(binding);
+  if (state.binding !== undefined && !sameBinding(state.binding, fingerprint)) {
+    // Slot indices are embedded in every emitted body. A layout change invalidates all of
+    // them, but old programs retain their own frozen constant table and stay self-contained.
+    state.stats.invalidatedBlocks += state.entries.size;
+    state.entries.clear();
+    state.constants.length = 0;
+    state.shards.length = 0;
+    state.nextResume = 1;
+    state.nextShard = 1;
+  }
+  state.binding = fingerprint;
+  const capture = (value: unknown): string => `C[${state.constants.push(value) - 1}]`;
   const entries: Instruction[] = [];
+  const active = new Map<number, Instruction>();
   const seen = new Set<number>();
   for (const instruction of instructions) {
     if (!Number.isFinite(instruction.pc) || seen.has(instruction.pc)) continue;
     // Even an unsupported first occurrence owns this PC, matching runtime lookup.
     seen.add(instruction.pc);
-    if (!Number.isFinite(instruction.nextPc)) continue;
-    try {
-      entries.push(new Instruction(binding, capture).compile(instruction));
-    } catch (error) {
-      if (error !== unsupported) throw error;
+    if (!Number.isFinite(instruction.nextPc)) {
+      if (state.entries.delete(instruction.pc)) state.stats.invalidatedBlocks++;
+      continue;
+    }
+    const delay = delayFingerprint(binding.delayLoops?.get(instruction.pc));
+    const cached = state.entries.get(instruction.pc);
+    let compiled: Instruction | undefined;
+    let resumeId = cached?.resumeId;
+    if (
+      cached !== undefined &&
+      cached.body === instruction.body &&
+      cached.nextPc === instruction.nextPc &&
+      sameDelay(cached.delay, delay)
+    ) {
+      compiled = cached.instruction;
+      if (compiled !== undefined) compiled.resumeId = resumeId ?? 0;
+      state.stats.reusedBlocks++;
+    } else {
+      if (cached !== undefined) state.stats.invalidatedBlocks++;
+      try {
+        compiled = new Instruction(binding, capture).compile(instruction);
+      } catch (error) {
+        if (error !== unsupported) throw error;
+        compiled = undefined;
+      }
+      if (compiled?.duration !== undefined && resumeId === undefined) resumeId = state.nextResume++;
+      if (compiled !== undefined) compiled.resumeId = resumeId ?? 0;
+      state.entries.set(instruction.pc, {
+        body: instruction.body,
+        nextPc: instruction.nextPc,
+        delay,
+        instruction: compiled,
+        resumeId,
+      });
+      state.stats.compiledBlocks++;
+    }
+    if (compiled !== undefined) {
+      entries.push(compiled);
+      active.set(compiled.pcValue, compiled);
     }
   }
   if (!entries.length) return undefined;
-  const localCount = Math.max(...entries.map((entry) => entry.slots.length));
+  let localCount = 0;
+  for (const entry of entries) if (entry.slots.length > localCount) localCount = entry.slots.length;
   const registers = Array.from({ length: localCount }, (_, index) => `v${index}`);
   const options = binding as DirectJitBinding & {
     readonly split?: boolean;
     readonly shardSize?: number;
     readonly shardSlotLimit?: number;
   };
+  const shardSize = validIndex(options.shardSize) && options.shardSize > 0 ? options.shardSize : 48;
+  // A supplied cache makes the split form resident: instruction bodies and shard functions stay
+  // alive while each build only assembles a fresh dispatcher over the current shard set.
+  if (options.split === true && suppliedCache !== undefined)
+    return residentProgram(state, entries, binding, shardSize);
   // An explicit slot limit keeps the historical slot-based switch; otherwise the emitted
   // source size decides, because register reuse makes slot counts wildly optimistic.
   const slotLimit = validIndex(options.shardSlotLimit) ? options.shardSlotLimit : undefined;
@@ -274,7 +615,6 @@ export function compileDirectJit(
     (slotLimit === undefined
       ? entries.reduce((sum, entry) => sum + entry.size, 0) > MONOLITH_CODE_LIMIT
       : entries.reduce((sum, entry) => sum + entry.slots.length, 0) > slotLimit);
-  const shardSize = validIndex(options.shardSize) && options.shardSize > 0 ? options.shardSize : 48;
   const lines = split
     ? shardProgram(entries, binding, shardSize)
     : monolithicProgram(entries, binding, registers);
@@ -290,20 +630,37 @@ export function compileDirectJit(
     constants: readonly unknown[],
     runtimeHelpers: typeof helpers,
   ) => (frame: DirectJitFrame, deadline: number) => DirectJitReason;
-  const names = (field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories') =>
-    Object.freeze([...new Set(entries.flatMap((entry) => [...entry[field]]))]);
+  const shardCount = lines.filter((line) => line.startsWith('function stepShard')).length;
   const program = {
-    run: factory(Object.freeze(constants), helpers),
+    // Indices captured by cached instructions remain stable for this cache. The program owns
+    // a frozen snapshot so later incremental builds can keep appending without mutating it.
+    run: factory(Object.freeze([...state.constants]), helpers),
+    shards: split ? shardCount : 1,
+    // Every PC this program can dispatch. The runtime keeps executing an older program
+    // while it still contains the current PC: translation only ever adds cache entries, so
+    // existing bodies never change and only the missing PCs justify a rebuild.
+    pcs: Object.freeze(entries.map((entry) => entry.pcValue)),
     localCount,
-    readStates: names('readStates'),
-    writeStates: names('writeStates'),
-    readMemories: names('readMemories'),
-    writeMemories: names('writeMemories'),
+    readStates: resourceNames(entries, 'readStates'),
+    writeStates: resourceNames(entries, 'writeStates'),
+    readMemories: resourceNames(entries, 'readMemories'),
+    writeMemories: resourceNames(entries, 'writeMemories'),
   } satisfies DirectJitProgram;
   // Diagnostic only, and non-enumerable so the published shape of a program is unchanged.
   Object.defineProperty(program, 'emitStats', { value: emitStats(entries) });
   return Object.freeze(program);
 }
+
+export const compileDirectJit: DirectJitCompiler = Object.assign(compileDirectJitProgram, {
+  createCache: createDirectJitCache,
+  clearCache(cache: DirectJitCache): void {
+    clearCacheState(cacheState(cache));
+  },
+  cacheStats(cache: DirectJitCache): DirectJitCacheStats {
+    const state = cacheState(cache);
+    return Object.freeze({ ...state.stats, entries: state.entries.size });
+  },
+});
 
 /**
  * Statements per IR operation, the acceptance metric of #256. `statements` counts the
@@ -395,6 +752,50 @@ function countStatements(line: string): number {
   return count;
 }
 
+/** ASCII digits and the JavaScript `\w` set: the boundaries of an emitted `v<slot>` token. */
+function isAsciiDigit(code: number): boolean {
+  return code >= 48 && code <= 57;
+}
+
+function isWordCode(code: number): boolean {
+  return (
+    isAsciiDigit(code) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 95
+  );
+}
+
+/** Skip a JSON-encoded literal; its contents are data, including text such as `v0`. */
+function afterString(line: string, start: number): number {
+  let index = start + 1;
+  while (index < line.length) {
+    const code = line.charCodeAt(index++);
+    if (code === 92) index++;
+    else if (code === 34) break;
+  }
+  return index;
+}
+
+/** `select<digits>: {` is the only emitted statement shape counted as a select block. */
+function isSelectLabel(line: string): boolean {
+  if (!line.startsWith('select')) return false;
+  let index = 'select'.length;
+  const digits = index;
+  while (index < line.length) {
+    if (!isAsciiDigit(line.charCodeAt(index))) break;
+    index++;
+  }
+  return index > digits && line.startsWith(': {', index);
+}
+
+/** Union of one resource field across blocks; insertion order matches Set construction. */
+function resourceNames(
+  entries: readonly Instruction[],
+  field: 'readStates' | 'writeStates' | 'readMemories' | 'writeMemories',
+): readonly string[] {
+  const names = new Set<string>();
+  for (const entry of entries) for (const name of entry[field]) names.add(name);
+  return Object.freeze([...names]);
+}
+
 /**
  * `BS` / `BM` are the runtime write barriers: word masks of the state and memory slots the
  * simulator currently observes. They stay outside `DirectJitFrame` because the runtime
@@ -402,7 +803,7 @@ function countStatements(line: string): number {
  * built without them (compiler tests) yields an empty mask and never blocks.
  */
 const prelude = (slots: readonly string[]): string[] => [
-  'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty;',
+  'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty, MV = F.memoryViews ?? [];',
   'const BS = F.blockedStates ?? [], BM = F.blockedMemories ?? [];',
   ...(slots.length ? [`let ${slots.join(',')};`] : []),
 ];
@@ -444,7 +845,7 @@ function monolithicProgram(
       dirty('SD', binding.pc.index),
       ...entry.prefix,
     );
-    if (entry.duration !== undefined) lines.push(...elapsed(entry, index));
+    if (entry.duration !== undefined) lines.push(...elapsed(entry, index + 1));
     lines.push(...entry.suffix, finish(entry.stop), '}');
   });
   lines.push('default: return "fallback";', '}', '}', '}');
@@ -508,7 +909,7 @@ function shardProgram(
         `S[${binding.pc.index}] = ${entry.nextPc};`,
         dirty('SD', binding.pc.index),
         ...entry.prefix,
-        ...elapsed(entry, shard.start + offset),
+        ...elapsed(entry, shard.start + offset + 1),
         ...entry.suffix,
         stepFinish(entry.stop, lower, shard.lastPc, binding.pc.index),
         '}',
@@ -546,40 +947,352 @@ function shardProgram(
     .map((shard, shardIndex) => ({ shard, shardIndex }))
     .filter(({ shard }) => shard.resumable);
   if (resumable.length) {
-    resumable.forEach(({ shard, shardIndex }, position) => {
-      const keyword = position ? 'else if' : 'if';
-      lines.push(
-        `${keyword} (resume <= ${shard.lastResume}) status = resumeShard${shardIndex}(F, resume);`,
-      );
-    });
-    lines.push('else throw new TypeError("Unknown direct JIT continuation");');
+    emitShardRoutes(
+      lines,
+      'resume',
+      resumable.map(({ shard, shardIndex }) => ({
+        bound: String(shard.lastResume),
+        call: `status = resumeShard${shardIndex}(F, resume);`,
+      })),
+      'throw new TypeError("Unknown direct JIT continuation");',
+    );
   } else lines.push('throw new TypeError("Unknown direct JIT continuation");');
   lines.push(
     '} else {',
     'if (F.stopAfterInstruction) return "invalidated";',
-    `const pc = H.checkPc(S[${binding.pc.index}]);`,
+    `const pc = S[${binding.pc.index}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc);`,
   );
-  shards.forEach((shard, shardIndex) => {
-    const keyword = shardIndex ? 'else if' : 'if';
-    lines.push(
-      `${keyword} (pc <= ${shard.lastPc}) status = stepShard${shardIndex}(F, deadline, pc);`,
-    );
-  });
-  lines.push('else return "fallback";', '}', 'if (status !== "next") return status;', '}', '}');
+  emitShardRoutes(
+    lines,
+    'pc',
+    shards.map((shard, shardIndex) => ({
+      bound: String(shard.lastPc),
+      call: `status = stepShard${shardIndex}(F, deadline, pc);`,
+    })),
+    'return "fallback";',
+  );
+  lines.push('}', 'if (status !== "next") return status;', '}', '}');
   return lines;
 }
 
+function sameInstructions(left: readonly Instruction[], right: readonly Instruction[]): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) if (left[index] !== right[index]) return false;
+  return true;
+}
+
+function refreshShard(shard: ResidentShard): void {
+  shard.entries.sort((left, right) => left.pcValue - right.pcValue);
+  shard.sourceSize = shard.entries.reduce((sum, entry) => sum + entry.size, 0);
+  shard.maxSlots = Math.max(0, ...shard.entries.map((entry) => entry.slots.length));
+  shard.resumable = shard.entries.some((entry) => entry.duration !== undefined);
+}
+
+function shardCanAccept(shard: ResidentShard, entry: Instruction, shardSize: number): boolean {
+  return shard.entries.length < shardSize && shard.sourceSize + entry.size <= SHARD_CODE_BUDGET;
+}
+
+/** Distance from an entry to the closest PC already resident in a shard. */
+function shardDistance(shard: ResidentShard, entry: Instruction): number {
+  let closest = Infinity;
+  for (const resident of shard.entries)
+    closest = Math.min(closest, Math.abs(resident.pcValue - entry.pcValue));
+  return closest;
+}
+
+/** Prefer the nearest shard, then the least populated one to backfill sparse fragments. */
+function closestAcceptingShard(
+  shards: readonly ResidentShard[],
+  entry: Instruction,
+  shardSize: number,
+): ResidentShard | undefined {
+  let selected: ResidentShard | undefined;
+  let selectedDistance = Infinity;
+  for (const shard of shards) {
+    if (!shardCanAccept(shard, entry, shardSize)) continue;
+    const distance = shardDistance(shard, entry);
+    if (
+      distance < selectedDistance ||
+      (distance === selectedDistance &&
+        (selected === undefined || shard.entries.length < selected.entries.length))
+    ) {
+      selected = shard;
+      selectedDistance = distance;
+    }
+  }
+  return selected;
+}
+
+/**
+ * Reconcile resident shard generations with the current compiled instruction set. Any shard
+ * with capacity can absorb a later nearby block, so out-of-order translation can backfill the
+ * fragments it left behind. Only touched shards recompile; unchanged functions stay reusable.
+ */
+function syncResidentShards(
+  state: DirectJitCacheState,
+  entries: readonly Instruction[],
+  shardSize: number,
+): void {
+  const active = new Map(entries.map((entry) => [entry.pcValue, entry]));
+  const owners = new Map<number, ResidentShard>();
+
+  for (let shardIndex = state.shards.length - 1; shardIndex >= 0; shardIndex--) {
+    const shard = state.shards[shardIndex]!;
+    const next: Instruction[] = [];
+    let changed = false;
+    for (const old of shard.entries) {
+      const current = active.get(old.pcValue);
+      if (current === undefined) {
+        changed = true;
+        continue;
+      }
+      if (current !== old) changed = true;
+      next.push(current);
+    }
+    if (changed) {
+      shard.entries = next;
+      shard.dirty = true;
+    }
+    if (!next.length) {
+      state.shards.splice(shardIndex, 1);
+      continue;
+    }
+    refreshShard(shard);
+    for (const entry of shard.entries) owners.set(entry.pcValue, shard);
+  }
+
+  const pending = [...active.values()]
+    .filter((entry) => !owners.has(entry.pcValue))
+    .sort((left, right) => left.pcValue - right.pcValue);
+  for (const entry of pending) {
+    let shard = closestAcceptingShard(state.shards, entry, shardSize);
+    if (shard === undefined) {
+      shard = {
+        id: state.nextShard++,
+        entries: [],
+        sourceSize: 0,
+        maxSlots: 0,
+        resumable: false,
+        functions: undefined,
+        signature: undefined,
+        dirty: true,
+      };
+      state.shards.push(shard);
+    }
+    shard.entries.push(entry);
+    shard.dirty = true;
+    refreshShard(shard);
+    owners.set(entry.pcValue, shard);
+  }
+}
+
+/** Shortest safe membership fast path for the sorted entries of one resident shard. */
+function residentPcSpan(entries: readonly Instruction[]): string {
+  const first = entries[0]!;
+  if (entries.length === 1) return `pc === ${first.pc}`;
+  const last = entries[entries.length - 1]!;
+  // Every entry lies in this span. Gaps safely reach the shard switch default, which returns
+  // the PC to the dispatcher, so two bounds are shorter than enumerating sparse cases.
+  return `pc >= ${first.pc} && pc <= ${last.pc}`;
+}
+
+function residentStepFinish(stop: boolean, inside: string, pcIndex: number): string {
+  if (stop) return 'return "stopped";';
+  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
+}
+
+function residentResumeFinish(stop: boolean, pcIndex: number): string {
+  if (stop) return 'return "stopped";';
+  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; const pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); return pc;`;
+}
+
+/** Emit one independent shard factory. Its function object is never edited after creation. */
+function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): string[] {
+  const registers = Array.from({ length: shard.maxSlots }, (_, index) => `v${index}`);
+  const stepInside = residentPcSpan(shard.entries);
+  const lines = [
+    `function stepShard${shard.id}(F, deadline, pc) {`,
+    ...prelude(registers),
+    'while (true) {',
+    'switch (pc) {',
+  ];
+  shard.entries.forEach((entry) => {
+    lines.push(
+      `case ${entry.pc}: {`,
+      ...entry.barrier,
+      ...entry.guard,
+      `S[${binding.pc.index}] = ${entry.nextPc};`,
+      dirty('SD', binding.pc.index),
+      ...entry.prefix,
+      ...(entry.duration === undefined ? [] : elapsed(entry, entry.resumeId)),
+      ...entry.suffix,
+      residentStepFinish(entry.stop, stepInside, binding.pc.index),
+      '}',
+    );
+  });
+  // A later shard may overlap this shard's numeric span. Falling through to the dispatcher
+  // makes the range above a fast path rather than an ownership claim.
+  lines.push('default: return pc;', '}', '}', '}');
+  if (shard.resumable) {
+    lines.push(
+      `function resumeShard${shard.id}(F, resume) {`,
+      ...prelude(registers),
+      'switch (resume) {',
+    );
+    shard.entries.forEach((entry) => {
+      if (entry.duration === undefined) return;
+      lines.push(`case ${entry.resumeId}: {`);
+      entry.slots.forEach((slot, slotIndex) => lines.push(`${slot} = L[${slotIndex}];`));
+      lines.push(
+        'F.resume = 0;',
+        ...entry.suffix,
+        residentResumeFinish(entry.stop, binding.pc.index),
+        '}',
+      );
+    });
+    lines.push('default: throw new TypeError("Unknown direct JIT continuation");', '}', '}');
+  }
+  return lines;
+}
+
+function compileResidentShard(
+  state: DirectJitCacheState,
+  shard: ResidentShard,
+  binding: DirectJitBinding,
+): void {
+  const lines = residentShardProgram(shard, binding);
+  const resume = shard.resumable ? `resumeShard${shard.id}` : 'undefined';
+  const factory = new Function(
+    'C',
+    'H',
+    `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`,
+  ) as (
+    constants: readonly unknown[],
+    runtimeHelpers: typeof helpers,
+  ) => [ResidentStep, ResidentResume | undefined];
+  const [step, resumeFunction] = factory(Object.freeze([...state.constants]), helpers);
+  shard.functions = { step, resume: resumeFunction };
+  shard.signature = Object.freeze([...shard.entries]);
+  shard.dirty = false;
+  state.stats.compiledShards++;
+}
+
+/** Tiny generated router over resident functions; only this source is rebuilt per program. */
+function residentDispatcherProgram(
+  shards: readonly ResidentShard[],
+  entries: readonly Instruction[],
+  binding: DirectJitBinding,
+): string[] {
+  const shardIndex = new Map<number, number>();
+  shards.forEach((shard, index) => {
+    for (const entry of shard.entries) shardIndex.set(entry.pcValue, index);
+  });
+  const sorted = [...entries].sort((left, right) => left.pcValue - right.pcValue);
+  const lines = shards.map((_, index) => `const D${index} = SH[${index}];`);
+  lines.push(
+    'function run(F, deadline) {',
+    'const S = F.states;',
+    'if (F.time >= deadline) return "deadline";',
+    'let pc;',
+    'if (F.resume !== 0) {',
+    'if (F.due >= deadline) { F.time = deadline; return "deadline"; }',
+    'F.time = Math.max(F.time, F.due);',
+    'const resume = F.resume;',
+    'const resumed = RES[resume];',
+    'if (resumed === undefined) throw new TypeError("Unknown direct JIT continuation");',
+    'const next = resumed(F, resume);',
+    'if (typeof next !== "number") return next;',
+    'pc = next;',
+    '} else {',
+    'if (F.stopAfterInstruction) return "invalidated";',
+    `pc = S[${binding.pc.index}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc);`,
+    '}',
+    'while (true) {',
+    'let next;',
+    'switch (pc) {',
+  );
+  let current = -1;
+  for (const entry of sorted) {
+    const index = shardIndex.get(entry.pcValue)!;
+    if (index !== current) {
+      if (current >= 0) lines.push(`next = D${current}(F, deadline, pc); break;`);
+      current = index;
+    }
+    lines.push(`case ${entry.pc}:`);
+  }
+  if (current >= 0) lines.push(`next = D${current}(F, deadline, pc); break;`);
+  lines.push(
+    'default: return "fallback";',
+    '}',
+    'if (typeof next !== "number") return next;',
+    'pc = next;',
+    '}',
+    '}',
+  );
+  return lines;
+}
+
+function residentProgram(
+  state: DirectJitCacheState,
+  entries: readonly Instruction[],
+  binding: DirectJitBinding,
+  shardSize: number,
+): DirectJitProgram | undefined {
+  syncResidentShards(state, entries, shardSize);
+  if (!state.shards.length) return undefined;
+  for (const shard of state.shards) {
+    if (
+      shard.functions !== undefined &&
+      !shard.dirty &&
+      sameInstructions(shard.signature ?? [], shard.entries)
+    ) {
+      state.stats.reusedShards++;
+      continue;
+    }
+    compileResidentShard(state, shard, binding);
+  }
+
+  const lines = residentDispatcherProgram(state.shards, entries, binding);
+  const factory = new Function('SH', 'RES', `"use strict";\n${lines.join('\n')}\nreturn run;`) as (
+    shards: readonly ResidentStep[],
+    resumes: readonly (ResidentResume | undefined)[],
+  ) => (frame: DirectJitFrame, deadline: number) => DirectJitReason;
+  const steps = Object.freeze(state.shards.map((shard) => shard.functions!.step));
+  const resumeCount = state.nextResume;
+  const resumes = new Array<ResidentResume | undefined>(resumeCount);
+  for (const shard of state.shards) {
+    if (shard.functions!.resume === undefined) continue;
+    for (const entry of shard.entries)
+      if (entry.resumeId !== 0) resumes[entry.resumeId] = shard.functions!.resume;
+  }
+  let localCount = 0;
+  for (const entry of entries) if (entry.slots.length > localCount) localCount = entry.slots.length;
+  const program = {
+    run: factory(steps, Object.freeze(resumes)),
+    shards: state.shards.length,
+    pcs: Object.freeze(entries.map((entry) => entry.pcValue)),
+    localCount,
+    readStates: resourceNames(entries, 'readStates'),
+    writeStates: resourceNames(entries, 'writeStates'),
+    readMemories: resourceNames(entries, 'readMemories'),
+    writeMemories: resourceNames(entries, 'writeMemories'),
+  } satisfies DirectJitProgram;
+  Object.defineProperty(program, 'emitStats', { value: emitStats(entries) });
+  return Object.freeze(program);
+}
+
 /** Elapse due time, resume save and deadline split shared by both emitters. */
-function elapsed(entry: Instruction, index: number): string[] {
+function elapsed(entry: Instruction, resumeId: number): string[] {
   if (entry.duration === undefined) return [];
   // A computed duration is validated where the generic host validates it, before it is used.
   const duration = entry.dynamicDuration ? `H.checkDuration(${entry.duration})` : entry.duration;
   return [
     `F.due = F.time + ${duration};`,
     'if (F.due > 7200000000000000) throw new RangeError("Time out of range");',
-    'if (F.due >= deadline) {',
+    'if ((F.publishPending && F.due > F.time) || F.due >= deadline) {',
     ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
-    `F.resume = ${index + 1};`,
+    `F.resume = ${resumeId};`,
+    'if (F.publishPending && F.due > F.time) return "invalidated";',
     'F.time = deadline;',
     'return "deadline";',
     '}',
@@ -588,13 +1301,15 @@ function elapsed(entry: Instruction, index: number): string[] {
 }
 
 function finish(stop: boolean): string {
-  return stop ? 'return "stopped";' : 'if (F.stopAfterInstruction) return "invalidated"; continue;';
+  return stop
+    ? 'return "stopped";'
+    : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; continue;';
 }
 
 function splitFinish(stop: boolean): string {
   return stop
     ? 'return "stopped";'
-    : 'if (F.stopAfterInstruction) return "invalidated"; return "next";';
+    : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; return "next";';
 }
 
 /**
@@ -621,7 +1336,7 @@ function stepFinish(
   if (stop) return 'return "stopped";';
   const inside = lower === undefined ? `pc <= ${upper}` : `pc <= ${upper} && pc > ${lower}`;
   // The finite-number guard is inlined: a call per instruction costs more than the test.
-  return `if (F.stopAfterInstruction) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return "next";`;
+  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return "next";`;
 }
 
 function dirty(bank: 'SD' | 'MD', index: number): string {
@@ -660,6 +1375,8 @@ class Instruction {
   pcValue = 0;
   pc = '';
   nextPc = '';
+  /** Cache-stable continuation key used by resident shards; zero when none is needed. */
+  resumeId = 0;
   duration?: string;
   /** Set when `duration` is a computed slot instead of a compile-time literal. */
   dynamicDuration = false;
@@ -691,28 +1408,51 @@ class Instruction {
   compile(instruction: { pc: number; nextPc: number; body: RegionIR }): this {
     this.pcValue = instruction.pc;
     this.constants = constantsOf(instruction.body);
-    this.operations = instruction.body.operations.length;
-    this.nestedOperations = countOperations(instruction.body);
+    const shape = shapeOf(instruction.body);
+    this.operations = shape.operations;
+    this.nestedOperations = shape.nestedOperations;
     this.pc = this.literal(instruction.pc);
     this.nextPc = this.literal(instruction.nextPc);
     this.readStates.add(this.binding.pc.name);
     this.state(this.binding.pc.name, true);
     const delay = this.binding.delayLoops?.get(instruction.pc);
-    if (delay !== undefined && validIndex(delay.counter) && validIndex(delay.cycles))
+    if (delay !== undefined && validIndex(delay.counter) && validIndex(delay.cycles)) {
+      const pending = delay.pending;
+      const paced =
+        pending !== undefined &&
+        validIndex(pending.state) &&
+        validIndex(pending.period) &&
+        validIndex(pending.active)
+          ? pending
+          : undefined;
+
       this.guard.push(
         `if (S[${delay.counter}] > 1) {`,
         // Fold only the rounds that end before the horizon: the deadline split stays exact,
         // and a short horizon still makes progress instead of failing to skip at all.
-        `const rounds = Math.min(S[${delay.counter}] - 1, Math.floor((deadline - F.time) / ${delay.cycles}));`,
+        `let rounds = Math.min(S[${delay.counter}] - 1, Math.floor((deadline - F.time) / ${delay.cycles}));`,
+      );
+      if (paced !== undefined)
+        this.guard.push(
+          // A paced device consumes time through its service accumulator; stop on the first
+          // round that reaches the next service boundary, so the following dispatch still
+          // advances SysTick / the UART bit clock by exactly the folded time.
+          `if (S[${paced.active}]) rounds = Math.min(rounds, Math.floor(Math.max(0, S[${paced.period}] - S[${paced.state}]) / ${delay.cycles}) + 1);`,
+        );
+      this.guard.push(
         'if (rounds > 0) {',
         `F.time += rounds * ${delay.cycles};`,
         'if (F.time > 7200000000000000) throw new RangeError("Time out of range");',
         `S[${delay.counter}] = S[${delay.counter}] - rounds;`,
         dirty('SD', delay.counter),
+        ...(paced !== undefined
+          ? [`S[${paced.state}] += rounds * ${delay.cycles};`, dirty('SD', paced.state)]
+          : []),
         '}',
         'if (F.time >= deadline) { F.time = deadline; return "deadline"; }',
         '}',
       );
+    }
     let output = this.prefix;
     let terminal = false;
     for (const operation of instruction.body.operations) {
@@ -749,10 +1489,18 @@ class Instruction {
     if (!this.terminated && !this.stop) throw unsupported;
     this.compact();
     this.barrier = this.emitBarrier();
-    const emitted = [...this.barrier, ...this.guard, ...this.prefix, ...this.suffix];
-    this.size = emitted.reduce((sum, line) => sum + line.length, 0);
-    this.statements = emitted.reduce((sum, line) => sum + countStatements(line), 0);
-    this.selects = emitted.filter((line) => /^select\d+: \{/.test(line)).length;
+    let size = 0;
+    let statements = 0;
+    let selects = 0;
+    for (const block of [this.barrier, this.guard, this.prefix, this.suffix])
+      for (const line of block) {
+        size += line.length;
+        statements += countStatements(line);
+        if (isSelectLabel(line)) selects++;
+      }
+    this.size = size;
+    this.statements = statements;
+    this.selects = selects;
     return this;
   }
 
@@ -793,74 +1541,162 @@ class Instruction {
    * outputs) keep the same slot from the first definition through the last use.
    */
   private compact(): void {
+    const total = this.slots.length;
+    // A single virtual slot cannot be reused and every emitted token already names it, so
+    // compaction is the identity. Constant-only bodies arrive here with no slots at all.
+    if (total <= 1) return;
     const bound = this.prefix.length;
     const lines = [...this.prefix, ...this.suffix];
-    const names = (line: string): number[] =>
-      (line.match(/\bv\d+\b/g) ?? []).map((name) => Number(name.slice(1)));
-    const definedAt: number[][] = lines.map(() => []);
-    const usesAt: number[][] = [];
-    const lastDef = new Map<number, number>();
-    const firstUse = new Map<number, number>();
-    const lastUse = new Map<number, number>();
+    const lineCount = lines.length;
+    const offsets = new Int32Array(lineCount + 1);
+    const definitions = new Int32Array(lineCount).fill(-1);
+    const firstDefinition = new Int32Array(total).fill(-1);
+    const lastDefinition = new Int32Array(total).fill(-1);
+    const lastUse = new Int32Array(total).fill(-1);
+    const end = new Int32Array(total).fill(-1);
+    const tokens: number[] = [];
 
-    lines.forEach((line, index) => {
-      const used = names(line);
-      const head = /^v(\d+) = /.exec(line);
-      if (head !== null) {
-        const virtual = Number(head[1]);
-        definedAt[index]!.push(virtual);
-        lastDef.set(virtual, index);
-        const position = used.indexOf(virtual);
-        if (position >= 0) used.splice(position, 1);
+    // The previous implementation scanned every line twice with `/\bv\d+\b/` and allocated a
+    // Map entry per virtual slot. This pass keeps the same token boundaries but stores
+    // definitions and uses in dense arrays plus one flat token buffer.
+    for (let index = 0; index < lineCount; index++) {
+      offsets[index] = tokens.length;
+      const line = lines[index]!;
+      let position = 0;
+      if (line.charCodeAt(0) === 118) {
+        let cursor = 1;
+        let virtual = 0;
+        while (cursor < line.length && isAsciiDigit(line.charCodeAt(cursor))) {
+          virtual = virtual * 10 + (line.charCodeAt(cursor) - 48);
+          cursor++;
+        }
+        if (
+          cursor > 1 &&
+          line.charCodeAt(cursor) === 32 &&
+          line.charCodeAt(cursor + 1) === 61 &&
+          line.charCodeAt(cursor + 2) === 32
+        ) {
+          if (virtual >= total) return;
+          definitions[index] = virtual;
+          if (firstDefinition[virtual]! < 0) firstDefinition[virtual] = index;
+          lastDefinition[virtual] = index;
+          position = cursor + 3;
+        }
       }
-      for (const virtual of used) {
-        if (!firstUse.has(virtual)) firstUse.set(virtual, index);
-        lastUse.set(virtual, index);
+      while (position < line.length) {
+        if (line.charCodeAt(position) === 34) {
+          position = afterString(line, position);
+          continue;
+        }
+        if (line.charCodeAt(position) !== 118) {
+          position++;
+          continue;
+        }
+        if (position > 0 && isWordCode(line.charCodeAt(position - 1))) {
+          position++;
+          continue;
+        }
+        let cursor = position + 1;
+        let virtual = 0;
+        while (cursor < line.length && isAsciiDigit(line.charCodeAt(cursor))) {
+          virtual = virtual * 10 + (line.charCodeAt(cursor) - 48);
+          cursor++;
+        }
+        if (cursor === position + 1) {
+          position++;
+          continue;
+        }
+        if (cursor < line.length && isWordCode(line.charCodeAt(cursor))) {
+          position = cursor;
+          continue;
+        }
+        if (virtual >= total) return;
+        tokens.push(virtual);
+        lastUse[virtual] = index;
+        position = cursor;
       }
-      usesAt.push(used);
-    });
+    }
+    offsets[lineCount] = tokens.length;
 
     // Only the define-before-use shape is compacted; anything else keeps the virtual slots,
     // which is always correct.
-    const firstDef = new Map<number, number>();
-    definedAt.forEach((defs, index) => {
-      for (const virtual of defs) if (!firstDef.has(virtual)) firstDef.set(virtual, index);
-    });
-    for (const [virtual, index] of firstUse)
-      if ((firstDef.get(virtual) ?? Infinity) > index) return;
-
-    const end = new Map<number, number>();
-    for (const virtual of lastDef.keys())
-      end.set(virtual, Math.max(lastDef.get(virtual)!, lastUse.get(virtual) ?? -1));
-
-    const physical = new Map<number, string>();
-    const live = new Map<number, string>();
-    const free: string[] = [];
-    let count = 0;
-    const release = (virtual: number): void => {
-      const slot = live.get(virtual);
-      if (slot === undefined) return;
-      live.delete(virtual);
-      free.push(slot);
-    };
-
-    lines.forEach((_, index) => {
-      for (const virtual of definedAt[index]!) {
-        if (physical.has(virtual)) continue;
-        const slot = free.pop() ?? `v${count++}`;
-        physical.set(virtual, slot);
-        live.set(virtual, slot);
+    for (let index = 0; index < lineCount; index++)
+      for (let token = offsets[index]!; token < offsets[index + 1]!; token++) {
+        const virtual = tokens[token]!;
+        if (firstDefinition[virtual]! < 0 || firstDefinition[virtual]! > index) return;
       }
-      for (const virtual of [...definedAt[index]!, ...usesAt[index]!])
-        if (end.get(virtual) === index) release(virtual);
-    });
 
-    const rewrite = (line: string): string =>
-      line.replace(/\bv(\d+)\b/g, (whole, digits: string) => physical.get(Number(digits)) ?? whole);
-    this.prefix = lines.slice(0, bound).map((line) => rewrite(line));
-    this.suffix = lines.slice(bound).map((line) => rewrite(line));
+    for (let virtual = 0; virtual < total; virtual++)
+      if (lastDefinition[virtual]! >= 0)
+        end[virtual] = Math.max(lastDefinition[virtual]!, lastUse[virtual]!);
+
+    const physical = new Int32Array(total).fill(-1);
+    const free: number[] = [];
+    let count = 0;
+    for (let index = 0; index < lineCount; index++) {
+      const definition = definitions[index]!;
+      if (definition >= 0 && physical[definition]! < 0)
+        physical[definition] = free.length > 0 ? free.pop()! : count++;
+      if (definition >= 0 && end[definition] === index) {
+        end[definition] = -1;
+        free.push(physical[definition]!);
+      }
+      for (let token = offsets[index]!; token < offsets[index + 1]!; token++) {
+        const virtual = tokens[token]!;
+        if (end[virtual] !== index) continue;
+        end[virtual] = -1;
+        free.push(physical[virtual]!);
+      }
+    }
+
+    const names = Array.from({ length: count }, (_, index) => `v${index}`);
+    const rewrite = (line: string): string => {
+      let output = '';
+      let cursor = 0;
+      let scan = 0;
+      while (scan < line.length) {
+        if (line.charCodeAt(scan) === 34) {
+          scan = afterString(line, scan);
+          continue;
+        }
+        if (line.charCodeAt(scan) !== 118) {
+          scan++;
+          continue;
+        }
+        if (scan > 0 && isWordCode(line.charCodeAt(scan - 1))) {
+          scan++;
+          continue;
+        }
+        let position = scan + 1;
+        let virtual = 0;
+        while (position < line.length && isAsciiDigit(line.charCodeAt(position))) {
+          virtual = virtual * 10 + (line.charCodeAt(position) - 48);
+          position++;
+        }
+        if (
+          position === scan + 1 ||
+          (position < line.length && isWordCode(line.charCodeAt(position)))
+        ) {
+          scan = position;
+          continue;
+        }
+        const slot = virtual < total ? physical[virtual]! : -1;
+        if (slot < 0) {
+          scan = position;
+          continue;
+        }
+        output += line.slice(cursor, scan);
+        output += names[slot]!;
+        cursor = position;
+        scan = position;
+      }
+      return cursor === 0 ? line : output + line.slice(cursor);
+    };
+    for (let index = 0; index < bound; index++) this.prefix[index] = rewrite(this.prefix[index]!);
+    for (let index = 0; index < this.suffix.length; index++)
+      this.suffix[index] = rewrite(this.suffix[index]!);
     if (this.duration !== undefined) this.duration = rewrite(this.duration);
-    this.slots = Array.from({ length: count }, (_, index) => `v${index}`);
+    this.slots = names;
   }
 
   /** A zero duration advances no time, so the instruction needs no continuation slot. */
@@ -1300,16 +2136,18 @@ class Instruction {
       }
       case 'load16le':
       case 'load16be': {
-        const memory = `M[${this.memory(operation)}]`;
+        const index = this.memory(operation);
+        const memory = `M[${index}]`;
         const little = operation.kind.endsWith('le') ? 'true' : 'false';
-        assign(`H.load16(${memory},${this.value(operation.offset)},${little})`);
+        assign(`H.load16(${memory},MV[${index}],${this.value(operation.offset)},${little})`);
         break;
       }
       case 'load32le':
       case 'load32be': {
-        const memory = `M[${this.memory(operation)}]`;
+        const index = this.memory(operation);
+        const memory = `M[${index}]`;
         const little = operation.kind.endsWith('le') ? 'true' : 'false';
-        assign(`H.load32(${memory},${this.value(operation.offset)},${little})`);
+        assign(`H.load32(${memory},MV[${index}],${this.value(operation.offset)},${little})`);
         break;
       }
       case 'store16le':
@@ -1322,7 +2160,7 @@ class Instruction {
         const little = operation.kind.endsWith('le') ? 'true' : 'false';
         // Address validation precedes the stored-value check inside the helper.
         lines.push(
-          `H.${store}(${memory},${this.value(operation.offset)},${this.value(operation.value)},${little});`,
+          `H.${store}(${memory},MV[${index}],${this.value(operation.offset)},${this.value(operation.value)},${little});`,
           dirty('MD', index),
         );
         break;

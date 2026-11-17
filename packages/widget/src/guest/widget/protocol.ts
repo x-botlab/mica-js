@@ -236,6 +236,8 @@ export interface IWidgetSimulationRuntimeChannel {
   deliver(message: IWidgetSimulationPublish): Promise<void>;
   /** Subscribes to simulation publishes; the guest fans them out to its bound instances. */
   onDidPublish(listener: (publish: IWidgetSimulationPublish) => void): () => void;
+  /** Waits until earlier simulation publishes have reached this guest. */
+  flushPublishes(): Promise<void>;
 }
 
 /** Wire name of {@link IWidgetSimulationRuntimeChannel}. */

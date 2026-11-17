@@ -380,6 +380,7 @@ describe('widget worker entry', () => {
         deviceListeners.add(listener);
         return () => deviceListeners.delete(listener);
       },
+      async flushPublishes() {},
     });
 
     startWidgetRuntime(guestPort as unknown as MessagePort, {
@@ -961,6 +962,7 @@ function createFakeDeviceChannel() {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
+    async flushPublishes() {},
   };
   return {
     channel,

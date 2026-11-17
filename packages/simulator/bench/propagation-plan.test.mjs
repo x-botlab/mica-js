@@ -581,6 +581,67 @@ test('a set batch with an invalid intent is rejected atomically too', () => {
   assert.equal(freshReceiver.sample, frozenSamples[3]);
 });
 
+test('a dirty slot repeated in one batch is applied exactly once', () => {
+  const fixture = publishFixture();
+  const { network, sender, receiver, fresh, freshReceiver, senderHigh, senderLow, slots } = fixture;
+  network.solve();
+  // The baseline admitted the low shape; the first high switch still needs the general
+  // solver to create and admit its shape.
+  sender.intent = senderHigh;
+  assert.deepEqual(
+    network.solveSlots([slots.sender, slots.sender, slots.sender]),
+    [slots.sender, slots.sender + 1],
+    'a slot repeated three times publishes its net once, in board order',
+  );
+  assert.equal(sender.sample.voltage, 3.3);
+  assert.equal(receiver.sample.voltage, 3.3);
+  const replays = network.stats.leafPropagations;
+  // Both shapes are admitted now, so the duplicate low switch replays one plan.
+  sender.intent = senderLow;
+  assert.deepEqual(network.solveSlots([slots.sender, slots.sender]), [
+    slots.sender,
+    slots.sender + 1,
+  ]);
+  assert.equal(sender.sample.voltage, 0);
+  assert.equal(receiver.sample.voltage, 0);
+  assert.equal(
+    network.stats.leafPropagations,
+    replays + 1,
+    'a repeated dirty slot is one replayed switch, not two',
+  );
+  // A materialised one-shot iterable with duplicates keeps the same deduplication.
+  fresh.intent = senderHigh;
+  const repeated = function* () {
+    yield slots.fresh;
+    yield slots.fresh;
+    yield slots.fresh;
+  };
+  assert.deepEqual(
+    network.solveSlots(repeated()),
+    [slots.fresh, slots.fresh + 1],
+    'the generator duplicate takes the general path once',
+  );
+  assert.equal(fresh.sample.voltage, 3.3);
+  assert.equal(freshReceiver.sample.voltage, 3.3);
+  // The duplicate must not bypass validation or publish a partial batch.
+  const frozenStats = network.stats;
+  const frozenSamples = [sender.sample, receiver.sample, fresh.sample, freshReceiver.sample];
+  sender.intent = [{ to: senderHigh[0].to, resistance: Number.NaN }];
+  assert.throws(
+    () => network.solveSlots([slots.sender, slots.sender]),
+    (error) => {
+      assert.equal(error.code, 'INVALID_ELECTRICAL_PARAMETER');
+      return true;
+    },
+    'the invalid duplicate is still validated',
+  );
+  assert.deepEqual(network.stats, frozenStats);
+  assert.equal(sender.sample, frozenSamples[0]);
+  assert.equal(receiver.sample, frozenSamples[1]);
+  assert.equal(fresh.sample, frozenSamples[2]);
+  assert.equal(freshReceiver.sample, frozenSamples[3]);
+});
+
 // --- public SDK: one published round, several real instances -----------------------
 
 const driverModel = await compileDDL(`device Driver {

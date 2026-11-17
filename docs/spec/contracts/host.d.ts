@@ -57,13 +57,24 @@ export interface InstructionHook {
   readonly when: string;
   readonly call: string;
 }
+export interface JitPolling {
+  readonly pc: number;
+  readonly predicate: string;
+  /** 谓词成立后、指令执行前调用一次的无参无返回函数。 */
+  readonly consume?: string;
+  /** 设备时间事件；delay 返回 ps，advance 在事件到期后应用该时长。 */
+  readonly wait?: {
+    readonly delay: string;
+    readonly advance: string;
+  };
+}
 export interface JitOptions {
   readonly entry: string;
   readonly code: string;
   readonly pc: string;
   readonly beforeInstruction?: InstructionHook;
   /** 有限且互异的 PC；predicate 绑定本实例无参 bool pure fn，声明循环头的等待语义。 */
-  readonly polling?: readonly { readonly pc: number; readonly predicate: string }[];
+  readonly polling?: readonly JitPolling[];
   /**
    * 忙等延时环声明：键为环头 PC，`counter` 是每轮减一的 number 状态，`cycles` 是一轮消耗的 ps。
    * 环内除该递减外无可观察效果；运行时按时间窗折叠轮次，最后一轮仍正常执行。

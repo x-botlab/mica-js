@@ -2,7 +2,7 @@ import type { Factory } from './model.ddl';
 import { createJitBlockBuilder } from '@mica-js/sdk/model';
 import type { BlockIR } from '@mica-js/sdk/model';
 import type { JitTranslate, JitTranslateInput } from '@mica-js/sdk/device';
-import { CODE } from './kernel/ir';
+import { CODE, SFR_SBUF, SFR_SCON } from './kernel/ir';
 import { InterruptController, watchInterruptEnables } from './kernel/interrupt';
 import { activateMachine } from './kernel/machine';
 import type { Machine } from './kernel/machine';
@@ -10,13 +10,16 @@ import { SfrHooks } from './kernel/sfr-hooks';
 import { decode } from './kernel/decode';
 import {
   SERVICE_PC,
+  SETTLE_PC,
   accumulate,
-  advanceDevices,
   buildService,
-  refreshBusy,
+  buildSettle,
+  refreshService,
+  settleBeforeInstruction,
   tickTail,
 } from './kernel/tick';
 import { createPeripherals, SYNC_ON_READ } from './peripherals';
+import { canSkipUart1Sync } from './peripherals/uart';
 import { readPin, readPort } from './peripherals/ports';
 import type { Clock } from './peripherals/types';
 
@@ -73,6 +76,15 @@ function createMachine(clock: Clock): Machine {
 
   for (const peripheral of peripherals) irq.register(...(peripheral.interrupts ?? []));
 
+  const timedReads = new Set<number>(SYNC_ON_READ);
+  const timedWrites = new Set<number>();
+  for (const peripheral of peripherals)
+    if (peripheral.id !== 'ports')
+      for (const address of peripheral.writes ?? []) timedWrites.add(address);
+  // 中断允许/优先级写入会改变可响应性与期限重算时机；它们不在外设 writes 里。
+  for (const address of [0xa8, 0xb5, 0xb6, 0xb7, 0xb8]) timedWrites.add(address);
+
+  let accessProbe: { reads: Set<number>; writes: Set<number> } | undefined;
   const machine: Machine = {
     clockFrequency: clock.frequency,
     cyclePs: clock.cyclePs,
@@ -81,20 +93,43 @@ function createMachine(clock: Clock): Machine {
     irq,
     peripherals,
     ports: { readPort, readPin },
+    timedReads,
+    timedWrites,
+    beginAccessProbe() {
+      accessProbe = { reads: new Set(), writes: new Set() };
+    },
+    endAccessProbe() {
+      const probe = accessProbe ?? { reads: new Set<number>(), writes: new Set<number>() };
+
+      accessProbe = undefined;
+
+      return probe;
+    },
+    noteSfrRead(address) {
+      if (sfr.withinHook) return;
+
+      accessProbe?.reads.add(address & 0xff);
+    },
+    noteSfrWrite(address) {
+      if (sfr.withinHook) return;
+
+      accessProbe?.writes.add(address & 0xff);
+    },
   };
 
-  // 外设 SFR 写入后立即重算活动门控：门控因此总是最新的，空闲的节拍点不必进服务块。
-  // 端口锁存/口模式不参与任何外设的 `active` 条件，写端口时重算只会把整段门控表达式
-  // 展开进每个端口写块；这里跳过 ports，端口写入只重算引脚意图。
+  // 外设 SFR 写入后立即重算活动门控与期限：门控/期限因此总是最新的，空闲的节拍点
+  // 不必进服务块。端口锁存/口模式不参与，写端口时重算只会把整段门控表达式展开进
+  // 每个端口写块；这里跳过 ports，端口写入只重算引脚意图。
   for (const peripheral of peripherals)
     if (peripheral.id !== 'ports')
       for (const address of peripheral.writes ?? [])
-        sfr.onWrite(address, (b) => refreshBusy(machine, b));
+        sfr.onWrite(address, (b) => refreshService(machine, b));
 
-  // 读外设状态之前先把累积的时间推进给外设，避免读到最多一个节拍的旧值。
-  sfr.synchronize = (b, address) => {
-    if (SYNC_ON_READ.has(address)) advanceDevices(machine, b);
-  };
+  // 读时间相关 SFR 的指令由翻译器在指令体之前请求共享结算块（`SETTLE_PC`）：
+  // 结算块执行后 `clockPs` 归零，指令再完整执行一次。只读 SCON/SBUF 且 UART1
+  // 空闲谓词为真时会跳过这次结算，此时指令直接读当前锁存值，`clockPs` 保留到
+  // 下一次服务/结算。这里不能再注册读同步钩子：它会把整段 `advanceDevices`
+  // 内联回每个 timed 指令块，抵消共享结算块。
 
   return machine;
 }
@@ -157,15 +192,17 @@ function branchTarget(code: JitTranslateInput['code'], pc: number): number | und
 /**
  * 该 PC 的块是否推进外设。
  *
- * 任何长度不小于 `TICK_DIVISOR` 字节的循环都必然跨过 `TICK_DIVISOR` 的整数倍，因此
- * 只有回跳距离不足 `TICK_DIVISOR` 字节的循环需要额外推进。
+ * 节拍点先按 `pc % TICK_DIVISOR` 选取；回跳一律也算节拍点。只按 PC 取点会漏掉整圈
+ * 都没有对齐指令的紧循环（例如 8051 的 16 位比较环：0x16 CLR C、0x17 MOV A,direct、
+ * 0x19 SUBB、0x1B MOV A,direct、0x1D XRL、0x1F SUBB、0x21 JC 0x16），这类循环里
+ * 节拍点一次都不出现，外设推进与中断响应会完全停摆。
  */
 function ticksAt(code: JitTranslateInput['code'], pc: number): boolean {
   if (pc % TICK_DIVISOR === 0) return true;
 
   const target = branchTarget(code, pc);
 
-  return target !== undefined && target <= pc && pc - target < TICK_DIVISOR;
+  return target !== undefined && target <= pc;
 }
 
 /**
@@ -176,7 +213,8 @@ function ticksAt(code: JitTranslateInput['code'], pc: number): boolean {
  * 板可以直接复用已验证、已编译的 `BlockIR`；运行时的编译缓存与块校验都以对象身份为键，
  * 复用同一个对象等于跳过整条翻译链路。
  *
- * 键里带上指令字节，自修改代码改写该指令后自然失效；容量上限用于约束长固件的内存。
+ * 键里带上指令字节，自修改代码改写该指令后自然失效。服务块与结算块位于代码空间之外，
+ * 不读指令字节，按角色取键以避免与固件 PC 冲突；容量上限用于约束长固件的内存。
  */
 const blockCache = new Map<string, BlockIR>();
 const BLOCK_CACHE_LIMIT = 4096;
@@ -188,6 +226,7 @@ function cacheKey(
   cyclePs: number,
 ): string {
   if (pc === SERVICE_PC) return `${cyclePs}:service`;
+  if (pc === SETTLE_PC) return `${cyclePs}:settle`;
 
   let bytes = '';
 
@@ -201,22 +240,54 @@ const createTranslate =
   (machine: Machine, cyclePs: number): JitTranslate =>
   (input) => {
     const pc = input.pc & 0xffff;
-    const instruction = pc === SERVICE_PC ? undefined : decode(input.code, pc);
+    const instruction = pc === SERVICE_PC || pc === SETTLE_PC ? undefined : decode(input.code, pc);
     const key = cacheKey(input.code, pc, instruction?.size ?? 0, cyclePs);
     const cached = blockCache.get(key);
 
     if (cached !== undefined) return cached;
 
     const block =
-      instruction === undefined
-        ? activateMachine(machine, () => buildService(machine))
-        : translateInstruction(machine, input.code, pc, instruction, cyclePs);
+      pc === SETTLE_PC
+        ? activateMachine(machine, () => buildSettle(machine))
+        : instruction === undefined
+          ? activateMachine(machine, () => buildService(machine))
+          : translateInstruction(machine, input.code, pc, instruction, cyclePs);
 
     if (blockCache.size >= BLOCK_CACHE_LIMIT) blockCache.delete(blockCache.keys().next().value!);
     blockCache.set(key, block);
 
     return block;
   };
+
+/**
+ * 时间相关 SFR 访问的结算分类。
+ *
+ * - `always`：任意 timed 写/读-改-写，或读 SCON/SBUF 之外的 timed SFR；
+ * - `uart1`：只读 SCON/SBUF，由 UART1 边沿空闲谓词决定能否跳过结算；
+ * - `none`：没有 timed 访问，保持零开销。
+ */
+type SettleMode = 'always' | 'uart1' | 'none';
+
+function settleMode(
+  machine: Machine,
+  access: { reads: ReadonlySet<number>; writes: ReadonlySet<number> },
+): SettleMode {
+  for (const address of access.writes) if (machine.timedWrites.has(address)) return 'always';
+
+  let timedRead = false;
+  let uart1Only = true;
+
+  for (const address of access.reads) {
+    if (!machine.timedReads.has(address)) continue;
+
+    timedRead = true;
+    if (address !== SFR_SCON && address !== SFR_SBUF) uart1Only = false;
+  }
+
+  if (!timedRead) return 'none';
+
+  return uart1Only ? 'uart1' : 'always';
+}
 
 function translateInstruction(
   machine: Machine,
@@ -228,16 +299,39 @@ function translateInstruction(
   const tick = ticksAt(code, pc);
 
   return activateMachine(machine, () => {
-    const builder = createJitBlockBuilder();
+    const build = (settle: SettleMode): BlockIR => {
+      const builder = createJitBlockBuilder();
 
-    builder.instruction({ pc, nextPc: (pc + instruction.size) & 0xffff }, (body) => {
-      instruction.emit(body);
-      body.elapse(instruction.cycles * cyclePs);
-      if (tick) tickTail(machine, body, instruction.cycles * cyclePs);
-      else accumulate(body, instruction.cycles * cyclePs);
-    });
+      builder.instruction({ pc, nextPc: (pc + instruction.size) & 0xffff }, (body) => {
+        // 读-改-写必须先结算，再读旧字节。待推进时间交给共享结算块处理，指令块本身
+        // 不再内联推进；只读 SCON/SBUF 时由 UART1 空闲谓词决定是否省掉这次跳转。
+        if (settle === 'always') settleBeforeInstruction(machine, body, pc);
+        else if (settle === 'uart1') settleBeforeInstruction(machine, body, pc, canSkipUart1Sync);
+        machine.sfr.muted(() => instruction.emit(body));
+        body.elapse(instruction.cycles * cyclePs);
+        if (tick) tickTail(machine, body, instruction.cycles * cyclePs);
+        else accumulate(machine, body, instruction.cycles * cyclePs);
+      });
 
-    return builder.finish();
+      return builder.finish();
+    };
+
+    // 先用真实指令体生成一次，并记录实际访问的 SFR；按分类只重建需要结算的块。
+    // 端口写/纯算术等绝大多数块因此只翻译一次。
+    machine.beginAccessProbe();
+
+    let draft: BlockIR;
+    let access: ReturnType<Machine['endAccessProbe']>;
+
+    try {
+      draft = build('none');
+    } finally {
+      access = machine.endAccessProbe();
+    }
+
+    const settle = settleMode(machine, access);
+
+    return settle === 'none' ? draft : build(settle);
   });
 }
 
@@ -259,7 +353,11 @@ const create: Factory = (context) => {
   if (firmware !== undefined && firmware.length > 0) context.loadBytes(CODE, firmware.slice());
 
   return {
-    sync() {},
+    sync(batch) {
+      for (const name of ['uart1Tx', 'uart1Rx'] as const)
+        for (const message of batch.outputs[name])
+          context.topics.publish(name, message.value.slice());
+    },
     dispose() {},
   };
 };

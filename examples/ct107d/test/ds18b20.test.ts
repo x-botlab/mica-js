@@ -4,7 +4,7 @@ import type { NetDescription, TestBoard } from './harness.ts';
 
 /**
  * DS18B20 位级行为基线：存在脉冲时序、Skip ROM + Convert + Read Scratchpad 事务、
- * 温度编码与 CRC、Match ROM 失配静默、Write Scratchpad，以及复位中止转换。
+ * 温度编码与 CRC、Match ROM 失配静默、Write Scratchpad，以及「复位不中止转换」。
  *
  * 主机用数字源 `dqSrc` 逐位驱动 DQ（拉低或释放），10 kΩ 外部上拉到 5 V；从机驱动
  * 的低电平由 `dqProbe` 探针确认。所有时间按整微秒推进。
@@ -208,7 +208,7 @@ describe('DS18B20', () => {
     }
   });
 
-  it('转换完成前 Read Scratchpad 仍返回上电值，750 ms 后才更新', async () => {
+  it('转换未完成时读上电值；Convert 后的复位不中止转换', async () => {
     const { board, wire } = await fixture();
 
     try {
@@ -220,6 +220,7 @@ describe('DS18B20', () => {
       wire.writeByte(0x44);
       board.run(700 * MS);
 
+      // 官方模板在 Convert T 之后立刻复位再读暂存器：转换继续走完 750 ms，此刻仍是上电值。
       wire.reset();
       wire.writeByte(0xcc);
       wire.writeByte(0xbe);
@@ -230,7 +231,7 @@ describe('DS18B20', () => {
       expect(before.slice(0, 2)).toEqual([0x90, 0x01]);
       expect(board.topics.temperatureOut).toBeUndefined();
 
-      // 复位会中止进行中的转换：等待期过后仍是上电值。
+      // 等待期满后转换完成：暂存器变为注入值，端口也发布一次。
       board.run(100 * MS);
 
       wire.reset();
@@ -240,7 +241,8 @@ describe('DS18B20', () => {
       const after: number[] = [];
 
       for (let index = 0; index < 9; index += 1) after.push(wire.readByte());
-      expect(after.slice(0, 2)).toEqual([0x90, 0x01]);
+      expect(after.slice(0, 2)).toEqual([0x58, 0xff]);
+      expect(board.topics.temperatureOut).toBe(-10.5);
       expect(board.faults).toEqual([]);
     } finally {
       board.dispose();

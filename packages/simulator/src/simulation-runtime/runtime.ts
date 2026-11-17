@@ -241,7 +241,11 @@ function buildLoadedRuntime(
       ),
     })),
   };
-  const board = createBoard(library, description);
+  const board = createBoard(
+    library,
+    description,
+    prepared.execution === undefined ? {} : { execution: prepared.execution },
+  );
   const project = (diagnostic: RuntimeDiagnostic, fatal: boolean): void => {
     found.push({
       code: fatal

@@ -1,0 +1,21 @@
+{
+  "kind": "widget",
+  "id": "buzzer",
+  "version": "1.0.0",
+  "displayName": "蜂鸣器",
+  "description": "有源蜂鸣器叠层：active=true 时在板面照片的 SP1 上绘制发光与声波，不发声时只显示标签。",
+  "properties": {
+    "color": { "type": "string", "required": false, "default": "#f59e0bff", "title": "高亮颜色" },
+    "label": { "type": "string", "required": false, "default": "SP1", "title": "标签" },
+    "glow": {
+      "type": "number",
+      "required": false,
+      "default": 1.2,
+      "title": "光晕强度",
+      "editor": { "kind": "number", "min": 0.2, "max": 3, "step": 0.1 }
+    }
+  },
+  "ports": {
+    "active": { "direction": "input", "type": "boolean", "delivery": "level", "title": "发声" }
+  }
+}

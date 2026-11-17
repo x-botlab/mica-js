@@ -1,8 +1,9 @@
 # CT107D 器件包
 
-CT107D 竞赛板的 Mica 示例工程：17 个器件（13 种芯片 + 轻触按键 + IAP15F2K61S2、
-`seg4` 数码管、`blue-led` 指示灯）、4 个板面 widget（背景图 / 按键 / 四位数码管 /
-指示灯）、整板原理图 `ct107d.sch`、板面画布 `ct107d.cnv` 与一段 8051 演示固件。
+CT107D 竞赛板的 Mica 示例工程：21 个器件（13 种芯片 + 轻触按键 + 有源蜂鸣器 + 继电器 +
+两脚跳线与 2×3 跳线排针 + IAP15F2K61S2、`seg4` 数码管、`blue-led` 指示灯）、4 个板面 widget
+（背景图 / 按键 / 四位数码管 / 指示灯）、整板原理图 `ct107d.sch`、板面画布 `ct107d.cnv`
+与一段 8051 演示固件。
 
 工程位于仓库的 `examples/ct107d`，纳入 pnpm workspace（包名 `@mica-js/example-ct107d`）：
 
@@ -14,9 +15,11 @@ pnpm --filter @mica-js/example-ct107d typecheck
 pnpm --filter @mica-js/example-ct107d schematic   # 原理图校验
 pnpm --filter @mica-js/example-ct107d canvas      # 画布校验
 pnpm --filter @mica-js/example-ct107d firmware    # 重新汇编固件
+pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
+                                                  # 外部固件整板联调（见 docs/official-firmware-simulation.md）
 ```
 
-整板用到的器件全部在本包 `src/devices/` 下，`mica build` 一次输出 17 个器件，
+整板用到的器件全部在本包 `src/devices/` 下，`mica build` 一次输出 21 个器件，
 不依赖其它工程的构建产物。Playground 的 `scripts/components.mjs` 会把本包的 `dist/`
 与 `ct107d.{sch,cnv,assets}` 复制到被忽略的 `public/components/ct107d/`。
 
@@ -60,7 +63,7 @@ examples/ct107d/
   vitest.config.ts
   vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
   bench/
-    board.ts                      整板夹具：按 ct107d.sch 装配 44 颗器件（装载 src/，不依赖 dist）
+    board.ts                      整板夹具：按 ct107d.sch 装配 48 颗器件（装载 src/，不依赖 dist）
     measure.ts                    测量核心：进程 CPU 时间读数、电气/运行时/JIT 指标、topicDigest
     perf.test.ts                  基准用例：只断言下限，并追加一行到 bench/results.jsonl
   src/devices/<id>/
@@ -79,6 +82,9 @@ examples/ct107d/
     widgets.test.ts               四个板面 widget 的元数据与绘制/交互
     <id>.test.ts                  各器件行为用例
   docs/<id>.md                    器件说明：引脚、行为、端口、理想化
+  docs/official-firmware-simulation.md
+                                  官方工程固件（dist/代码）整板联合仿真实测记录与问题清单
+  docs/official-firmware-gaps.md  同一批固件的验收缺口与需要补的器件/网络/夹具
   assets/ct107d-board.webp        板面照片（画布背景图，1068×768）
   assets/ct107d-demo.bin          演示固件（70 字节，assemble-firmware.mjs 生成）
   firmware/demo.asm               8051 汇编源
@@ -90,26 +96,36 @@ examples/ct107d/
   build-canvas.mjs                画布生成器：照片像素坐标 → 实例摆放与绑定
   verify-schematic.mjs            原理图校验：网表、建板、锁存链路、数码管扫描
   verify-canvas.mjs               画布校验：解析、绑定、对位、widget 渲染、按键网络
+  verify-firmware.mjs             固件联调：把外部 HEX/bin（如 dist/代码）装进整板看输出
 ```
+
+`docs/official-firmware-simulation.md` 记录 14 份官方固件的实测结果与已修复的模型问题；
+`docs/official-firmware-gaps.md` 单独列出仍无法完整验收的工程（`12.0`、`13.0`、`14.0` 的
+超声/测频页，以及 `6.0`/`7.0` 的串口）和需要补的网络与夹具。串口按该文档第 3 节同时补
+MCU 的 `uart1Tx` 端口与原理图里的独立 `uart-probe` 器件，两者缺一不可。
 
 ## 器件
 
-| id            | 型号                     | 类别           | 端口（方向）                     |
-| ------------- | ------------------------ | -------------- | -------------------------------- |
-| `74hc02`      | 四路 2 输入或非门        | 组合逻辑       | —                                |
-| `74ls04`      | 六反相器                 | 组合逻辑       | —                                |
-| `74hc138`     | 3-8 译码器（低有效）     | 组合逻辑       | `select`、`enabled`、`code`      |
-| `74hc573`     | 八路透明 D 锁存器        | 时序逻辑       | `latch`                          |
-| `uln2003`     | 七路达林顿驱动           | 驱动           | `mask`、`channels`               |
-| `lm386`       | 音频功放（数字跟随）     | 模拟（数字化） | `active`                         |
-| `at24c02`     | 2 Kb I²C EEPROM          | 串行存储       | `dump`                           |
-| `pcf8591`     | 8 位 ADC + DAC（I²C）    | 混合信号       | `ain0`–`ain3`、`aout`、`channel` |
-| `ds1302`      | 三线实时时钟             | 串行时钟       | `datetime`、`running`            |
-| `ds18b20`     | 1-Wire 温度传感器        | 串行传感器     | `temperature`、`temperatureOut`  |
-| `ne555`       | 无稳态定时器             | 定时           | `frequency`、`dutyCycle`         |
-| `cx20106a`    | 红外前置放大/整形        | 红外接收       | `carrier`、`receiving`           |
-| `vs1838`      | 一体化 38 kHz 红外接收头 | 红外接收       | `carrier`、`receiving`           |
-| `push-button` | 轻触按键（S1、S4–S19）   | 机电           | `press`                          |
+| id            | 型号                       | 类别           | 端口（方向）                     |
+| ------------- | -------------------------- | -------------- | -------------------------------- |
+| `74hc02`      | 四路 2 输入或非门          | 组合逻辑       | —                                |
+| `74ls04`      | 六反相器                   | 组合逻辑       | —                                |
+| `74hc138`     | 3-8 译码器（低有效）       | 组合逻辑       | `select`、`enabled`、`code`      |
+| `74hc573`     | 八路透明 D 锁存器          | 时序逻辑       | `latch`                          |
+| `uln2003`     | 七路达林顿驱动             | 驱动           | `mask`、`channels`               |
+| `lm386`       | 音频功放（数字跟随）       | 模拟（数字化） | `active`                         |
+| `at24c02`     | 2 Kb I²C EEPROM            | 串行存储       | `dump`                           |
+| `pcf8591`     | 8 位 ADC + DAC（I²C）      | 混合信号       | `ain0`–`ain3`、`aout`、`channel` |
+| `ds1302`      | 三线实时时钟               | 串行时钟       | `datetime`、`running`            |
+| `ds18b20`     | 1-Wire 温度传感器          | 串行传感器     | `temperature`、`temperatureOut`  |
+| `ne555`       | 无稳态定时器               | 定时           | `frequency`、`dutyCycle`         |
+| `cx20106a`    | 红外前置放大/整形          | 红外接收       | `carrier`、`receiving`           |
+| `vs1838`      | 一体化 38 kHz 红外接收头   | 红外接收       | `carrier`、`receiving`           |
+| `push-button` | 轻触按键（S1、S4–S19）     | 机电           | `press`                          |
+| `buzzer`      | 有源蜂鸣器（SP1）          | 执行器         | `active`                         |
+| `relay`       | 电磁继电器（K1，双极常开） | 执行器         | `energized`                      |
+| `jumper`      | 两脚跳线（J13）            | 装配配置       | —                                |
+| `jumper-2x3`  | 2×3 跳线排针（J2）         | 装配配置       | —                                |
 
 每个器件的引脚表、行为、端口编码与理想化见 [`docs/<id>.md`](docs/)。
 
@@ -156,9 +172,9 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 ## 原理图 `ct107d.sch`
 
 按 CT107D 原理图（仓库根的 `SCH_硬件原理图V30.pdf`）逐网络还原竞赛板，包含本包的
-14 个芯片/按键器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
-（DS1/DS2 两片）；这三个器件同时有独立源工程，见上文。未实现器件——电阻、电容、晶振、LCD、拨码开关、排针与跳线、CH340C、霍尔、
-运放、继电器、蜂鸣器、电机、红外发射管——暂时忽略。
+18 个芯片/按键/执行器/跳线器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
+（DS1/DS2 两片）；这三个器件同时有独立源工程，见上文。未实现器件——电阻、电容、晶振、LCD、拨码开关、其余排针与跳线（J3/J5/J7/JS1/JS2）、CH340C、霍尔、
+运放、电机、红外发射管——暂时忽略。
 
 | 文件                   | 说明                                                                |
 | ---------------------- | ------------------------------------------------------------------- |
@@ -167,7 +183,7 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 | `build-schematic.mjs`  | 生成器：内含 PDF 逐网络对照表与布局，重新生成两个产物               |
 | `verify-schematic.mjs` | 校验：解析网表并对照、建板、跑通锁存链路与数码管扫描                |
 
-器件引用由宿主解析到本包的 `./dist/devices/<ID>/`（共 17 个器件，均由本包一次构建）。
+器件引用由宿主解析到本包的 `./dist/devices/<ID>/`（共 21 个器件，均由本包一次构建）。
 
 已实现的连接：
 
@@ -177,14 +193,22 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
   U8 Q0–Q7 → `com1`–`com8`；U9 Q0–Q6 → U10 IN1–IN7（网名 `U9Q0`–`U9Q6`）→ `STEPA`–`STEPD`/`N_RELAY`/`N_MOTOR`/
   `N_BUZZ`，Q7 → `N_SPK` → U14 IN1+ → `SPK`。
 - **数码管**：DS1 的 `a`–`dp` 并到段总线、`com1`–`com4` 接 `com1`–`com4`；DS2 同样并段总线、
-  `com1`–`com4` 接 `com5`–`com8`。
+  `com1`–`com4` 接 `com5`–`com8`。两片都是**共阳**管（`seg4.commonAnode = true`）：U8 的位选
+  高电平选中该位，U7 的段码低电平点亮该段，`digit1`–`digit4` 仍按「点亮的段」编码。
 - **按键**：S4–S7 一端接地（J5 的 2-3 短接）、另一端接 `P30/TXD`–`P33`；S8–S19 构成 3×4
   矩阵，行同上四根、列接 `P42/WR`/`P35`/`P34`；S1 接在 `VCC` 与 `RST` 之间。详见
   [`docs/push-button.md`](docs/push-button.md)。
 - **串行**：`P20/SCL`/`P21/SDA` → U4（地址脚与 WP 接地）与 U16（A0–A2/EXT 接地）；
   `P13`/`P23`/`P17/SCK` → U19；`P14` → U5；U16 模拟端为 `AIN0`–`AIN3` 与 `OUT` 网标。
-- **定时/红外**：U15 OUT → `NET_SIG`，RST 与 VCC 接高；CX20106A 与 VS1838 的输出经
-  J2 短接后进 U18 的整形/并联门（`U18N1`–`U18N4`）。
+- **执行器**：U10 OUT5 → `N_RELAY` → K1 线圈（另一端接 VCC），K1 的 `com`（引脚 3）接
+  `m2` 端子、`no`（引脚 6）与第二组触点公共端 `com2`（引脚 1）接 GND；U10 OUT7 →
+  `N_BUZZ` → SP1 负端（正端接 VCC）。详见 [`docs/relay.md`](docs/relay.md)、
+  [`docs/buzzer.md`](docs/buzzer.md)。
+- **定时/红外**：U15 OUT → `NET_SIG`，RST 与 VCC 接高；CX20106A 输出 `N_B1`、VS1838 输出
+  `N_B2` 接到 J2 的 2/6 脚，J2 的 1-3 固定短接（`P10` → U18 整形/驱动链 `N_A1`），接收端
+  公共脚 4（`P11`）由实例属性 `vs1838` 选择短接 4-6 或 2-4；J2 的 5 脚是红外发射管支路
+  `N_A2`。详见 [`docs/jumper-2x3.md`](docs/jumper-2x3.md)。
+- **跳线**：J13 的 `a` 接 `P42/WR`、`b` 接 GND，`closed` 属性模拟「WR 接 0 V」的装配位置。
 
 忽略器件后的替代约定：
 
@@ -193,10 +217,10 @@ DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了
 - LED 阳极经 1 kΩ 限流电阻接 VCC；电阻不建模，改为每颗 LED 的 `forwardResistance = 1500 Ω`
   （500 Ω 器件等效 + 1 kΩ 外部），5 V 时亮度约 0.164。数码管的段阳极同样按
   `seg4.forwardResistance = 1500 Ω` 并入 1 kΩ 排阻。
-- `N_A1` / `N_A2` 表示 J2 的 1-2、5-6 已短接；`P42/WR` 除了 74HC02 的四个 B 输入，还接矩阵
-  键盘的第二列——MCU 模型没有 P4 端口，J13 的 WR 源不建模，板级验证按 J13 2-3（WR 接 0 V）处理。
+- `P42/WR` 除了 74HC02 的四个 B 输入，还接矩阵键盘的第二列；MCU 模型没有 P4 端口，
+  J13 的 WR 源侧不建模，原理图里 J13 只把 `P42/WR` 短接到 GND（`closed = true`）。
 - `RST` 只连 S1 与网标：MCU 模型没有复位引脚，复位电路里的 CR1/R3 不建模。
-- 执行器输出 `STEPA`–`STEPD`/`N_RELAY`/`N_MOTOR`/`N_BUZZ`、`SPK`、`AIN0`–`AIN3`、`OUT`、
+- 执行器输出 `STEPA`–`STEPD`/`N_MOTOR`、`SPK`、`AIN0`–`AIN3`、`OUT`、`m2`、
   `NET_SIG` 等只保留驱动侧网标，作为未实现器件的接口桩；74HC138 的 Y0–Y3、NE555 的 RC 脚、
   CX20106A 的 C1/C2/C3/f0、DS1302 的 X1/X2/VCC1、LM386 的 GAIN/BYPASS、PCF8591 的 OSC
   按 NC 处理。
@@ -208,7 +232,7 @@ node build-schematic.mjs  # 修改网表/布局后重新生成
 ```
 
 `verify-schematic.mjs` 依次做四件事：解析 `ct107d.sch` 折出网表并与 `ct107d.netlist.json`
-逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 44 个器件建板跑 1 ms 确认没有
+逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 48 个器件建板跑 1 ms 确认没有
 装配故障；装一段固件走 `P2 → 74HC138 → 74HC02 → 74HC573 → LED`，确认 D1 亮度 0.1639、其余
 熄灭；同一段固件再按 `Y7 → U7（段码）`、`Y6 → U8（位选）` 逐位扫描，确认 DS1/DS2 八位分别
 锁存到写入的段码。
@@ -257,18 +281,17 @@ pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.per
 ```
 
 口径：装配整板 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`wallMs` / `rtf`
-取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（1 MHz 8051，
-8 位数码管逐位扫描 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 44 颗器件、96 条网络，
+取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（12 MHz 8051，
+8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 48 颗器件、99 条网络，
 电气求解、通道与执行引擎都走真实运行时。
 
 **行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按
 [吞吐合同](../../docs/spec/jit/throughput.rst)允许错过 GPIO 中间态、合并受保护执行段内的检查，
-因此同一份固件在两种模式下 `topicDigest` 本来就会不同：实测同一份源码下 `throughput` 给出
-`sha256:99fe7dca…`（窗口内 20 条消息、末值 `latch=191`），`precise` 给出
-`sha256:ccf49864…`（29 条消息、末值 `latch=254`），而后者与「端口写指令回退解释器」的旧版本
-逐条一致。跨模式比较只按合同允许的可见性差异判定，见
-[conformance](../../docs/spec/conformance.rst)；`MICA_PERF_STREAM=<path>` 可导出原始
-`(simTime, topic, payload)` 流做差分。
+因此同一份固件在两种模式下 `topicDigest` 本来就会不同。演示固件把每个锁存的 LE 高电平相位
+保持一整个 `DELAY`（实测约 4 ms，长于预览的 2 ms 推进步长），并且两次刷新之间 `P0` 一直等于
+LED 图案，所以两种模式都能稳定锁存；差异只能来自其它引脚中间态，跨模式比较仍按合同允许的
+可见性差异判定，见 [conformance](../../docs/spec/conformance.rst)；
+`MICA_PERF_STREAM=<path>` 可导出原始 `(simTime, topic, payload)` 流做差分。
 
 | 字段                                          | 含义                                                                                                     |
 | --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |

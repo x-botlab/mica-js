@@ -21,6 +21,7 @@ import {
   createSchematicEditor,
   type IEditorIntegrationState,
 } from '@mica-js/editor';
+import { parseSchematic } from '@mica-js/document/schematic';
 import '@mica-js/editor/style.css';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -44,6 +45,12 @@ import {
   prepareText,
   runSimulationPrepare,
 } from '@/sim/simulation-prepare';
+import {
+  browserMeasurement,
+  type IMeasurementArtifact,
+  type IMeasurementArtifacts,
+  type IMeasurementScenario,
+} from '@/measure';
 import { IntegrationPanel } from '@/integration-panel';
 import { errorMessage, type EditorSession } from '@/host-integration';
 
@@ -58,6 +65,125 @@ type ToolbarAction =
   | 'zoomOut'
   | 'resetView'
   | 'fitView';
+
+function artifactPath(uri: string): string {
+  const base = globalThis.document.baseURI;
+  return uri.startsWith(base) ? uri.slice(base.length) : uri;
+}
+
+function packageArtifacts(id: string, kind: 'devices' | 'widgets'): string[] {
+  const [prefix, name] = id.split(':');
+  const root = prefix === 'xbotlab' ? 'components/ct107d' : 'components';
+  const file = kind === 'devices' ? 'device' : 'widget';
+  return [`${root}/${kind}/${name}/${file}.json`, `${root}/${kind}/${name}/${file}.js`];
+}
+
+async function hashArtifacts(
+  specs: readonly { readonly path: string; readonly source: string }[],
+): Promise<IMeasurementArtifacts> {
+  const files: IMeasurementArtifact[] = [];
+  for (const spec of specs) {
+    try {
+      const response = await fetch(new URL(spec.path, globalThis.document.baseURI));
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const copy = new Uint8Array(bytes.byteLength);
+      copy.set(bytes);
+      const subtle = globalThis.crypto?.subtle;
+      if (subtle === undefined)
+        throw new Error(
+          'crypto.subtle is unavailable in this context (insecure HTTP origin); SHA-256 was not computed.',
+        );
+      const digest = await subtle.digest('SHA-256', copy);
+      files.push({
+        ...spec,
+        bytes: bytes.byteLength,
+        sha256: [...new Uint8Array(digest)]
+          .map((byte) => byte.toString(16).padStart(2, '0'))
+          .join(''),
+        error: null,
+      });
+    } catch (error) {
+      files.push({
+        ...spec,
+        bytes: null,
+        sha256: null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const failed = files.filter((file) => file.error !== null).length;
+  return {
+    status: failed === 0 ? 'ok' : failed === files.length ? 'failed' : 'partial',
+    note: 'Served bytes were hashed before measurement; no source SHA-256 was supplied, so no source match is claimed.',
+    files,
+  };
+}
+
+/** Reads the schematic referenced by the loaded canvas and hashes only what that document uses. */
+async function configureMeasurement(
+  loaded: IDemoLoadedDocument,
+  descriptor: {
+    readonly id: string;
+    readonly stepMs?: number;
+    readonly execution?: 'throughput' | 'precise';
+  },
+  read: (uri: string) => Promise<Uint8Array>,
+): Promise<void> {
+  if (loaded.snapshot.kind !== 'canvas') return;
+  const canvas = loaded.snapshot.document;
+  const specs = new Map<string, string>();
+  specs.set(artifactPath(loaded.uri), `loaded canvas ${artifactPath(loaded.uri)}`);
+  let clockFrequencyHz: number | undefined;
+  let firmware: string | undefined;
+  const notes: string[] = ['warmup and window are simulated 512 ms / 1024 ms, not wall time.'];
+  if (canvas.schematic !== undefined) {
+    const schematicUri = new URL(canvas.schematic, loaded.uri).href;
+    const schematic = parseSchematic(
+      new TextDecoder('utf-8', { fatal: true }).decode(await read(schematicUri)),
+    );
+    specs.set(artifactPath(schematicUri), `schematic ${canvas.schematic}`);
+    const mcu = schematic.sheet.symbols.find(
+      (symbol) => typeof symbol.properties?.clockFrequency === 'number',
+    );
+    const clock = mcu?.properties?.clockFrequency;
+    if (typeof clock === 'number') clockFrequencyHz = clock;
+    const firmwareValue = mcu?.properties?.firmware;
+    const firmwareSrc =
+      typeof firmwareValue === 'object' && firmwareValue !== null && 'src' in firmwareValue
+        ? (firmwareValue as { readonly src?: unknown }).src
+        : undefined;
+    if (typeof firmwareSrc === 'string') {
+      firmware = firmwareSrc;
+      specs.set(artifactPath(new URL(firmwareSrc, schematicUri).href), `firmware ${firmwareSrc}`);
+    }
+    for (const symbol of schematic.sheet.symbols)
+      for (const path of packageArtifacts(symbol.device, 'devices'))
+        specs.set(path, `device ${symbol.device}`);
+    notes.push(
+      clockFrequencyHz === undefined
+        ? `clockFrequency was not found in ${canvas.schematic}.`
+        : `clockFrequency=${clockFrequencyHz} Hz and firmware=${firmware ?? 'none'} read from ${canvas.schematic}.`,
+    );
+  } else {
+    notes.push('The canvas has no schematic; clockFrequency is unavailable.');
+  }
+  for (const widget of canvas.widgets)
+    for (const path of packageArtifacts(widget.widget, 'widgets'))
+      specs.set(path, `widget ${widget.widget}`);
+  const scenario: IMeasurementScenario = {
+    documentId: descriptor.id,
+    ...(descriptor.stepMs === undefined ? {} : { stepMs: descriptor.stepMs }),
+    ...(descriptor.execution === undefined ? {} : { execution: descriptor.execution }),
+    ...(clockFrequencyHz === undefined ? {} : { clockFrequencyHz }),
+    ...(firmware === undefined ? {} : { firmware }),
+    notes,
+  };
+  browserMeasurement.setScenario(scenario);
+  browserMeasurement.setArtifacts(
+    await hashArtifacts([...specs].map(([path, source]) => ({ path, source }))),
+  );
+}
 
 export function App() {
   const host = useRef<HTMLDivElement>(null);
@@ -122,6 +248,12 @@ export function App() {
         latest.current = loaded.snapshot;
         documents.current[documentId] = loaded;
         const kind = descriptor.kind;
+        if (browserMeasurement.enabled && kind === 'canvas' && loaded.snapshot.kind === 'canvas')
+          await configureMeasurement(loaded, descriptor, (uri) => fileSystem.read(uri));
+        // StrictMode may have dropped this mount while artifacts were hashed; do not create an
+        // editor for a discarded mount.
+        if (cancelled) return;
+        const measurement = browserMeasurement.editorMeasurement;
         const created: EditorSession =
           kind === 'canvas'
             ? {
@@ -134,6 +266,10 @@ export function App() {
                   widgetLibrary: demoWidgetLibrary,
                   voltageReferences: { VCC: 5 },
                   ...(descriptor.stepMs === undefined ? {} : { stepMs: descriptor.stepMs }),
+                  ...(descriptor.execution === undefined
+                    ? {}
+                    : { execution: descriptor.execution }),
+                  ...(measurement === undefined ? {} : { measurement }),
                 }),
               }
             : {
@@ -203,7 +339,7 @@ export function App() {
         void instance.editor.dispose().catch(() => undefined);
       }
     };
-  }, [documentId, reloadKey]);
+  }, [documentId, reloadKey, descriptor]);
   const pending = useRef<EditorSession | undefined>(undefined);
   const perform = useCallback(
     async (owner: EditorSession, action: () => Promise<unknown>): Promise<void> => {

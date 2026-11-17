@@ -17,6 +17,8 @@ import {
   SFR_TMOD,
   asBody,
   boolean,
+  cyclePicoseconds,
+  latchBitIsSet,
   number,
   periph8,
   periph16,
@@ -29,7 +31,7 @@ import {
 } from '../kernel/ir';
 import type { Body } from '../kernel/ir';
 import { IRQ_VECTORS, markIrqDirty } from '../kernel/interrupt';
-import { UART_BASE } from './layout';
+import { UART_BASE, UART_QUEUE_BASE } from './layout';
 import {
   DRIVE_RESISTANCE,
   GROUND_PIN,
@@ -42,9 +44,13 @@ import type { Peripheral } from './types';
 /**
  * 串行口 1 与串行口 2（STC15F2K60S2 只具备这两个 UART）。
  *
- * `advance` 会被复制进每一条指令的 IR，因此它只做「读一次忙标志 → 按位相位推进」；
- * 波特率位时间在控制寄存器写入时算好存进 `periph`，单位是系统时钟周期（16 位）。
- * 发送用「帧字右移」而不是逐位展开，接收用一个 3 段状态机。
+ * `advance` 不内联进每条指令，而是由共享服务路径（服务块与读 SFR 前的同步）按累计
+ * 时间推进一次；因此它读一次忙标志后按位相位推进；波特率位时间在控制寄存器写入时
+ * 算好存进 `periph`，单位是系统时钟周期（16 位）。发送用「帧字右移」而不是逐位展开，
+ * 接收用一个 3 段状态机。
+ *
+ * 默认 UART1 通道（P3_0、异步模式、REN=1）在位时间 >= 32 个系统时钟时，空闲接收由
+ * P3_0 下降沿唤醒服务块；短位时间、非默认路由与串口 2 仍按 1/8 位时间轮询 RXD。
  *
  * 位时间 `period`（系统时钟周期）：
  * - 模式 0：`12`，`AUXR.UART_M0x6=1` 时为 `2`（再折半作为半位时钟相位）；
@@ -102,10 +108,11 @@ const RX_SHIFT = 0x6;
 const RX_BUFFER = 0x7;
 /** 模式 0 的半位标记（bit0）；异步接收时存本帧的数据位数。 */
 const HALF = 0x8;
+/** 当前发送字节：帧字逐位移空后仍要保留它供端口发布。 */
+const TX_BYTE = 0x9;
 const TX_PHASE = 0xa;
 const RX_PHASE = 0xc;
 const BIT_PERIOD = 0xe;
-
 const F_TX_ACTIVE = 0x01;
 /** TXD 当前为低；模式 0 时它就是同步移位时钟的电平。 */
 const F_LINE_LOW = 0x02;
@@ -114,6 +121,10 @@ const F_TX_NINTH = 0x08;
 const F_RX_NINTH = 0x10;
 /** 镜像 SCON/S2CON 的 REN（模式 0 下恒为 0），供 `advance` 一次比较判断是否需要接收。 */
 const F_REN = 0x20;
+/** 数据位已发完，正在发送停止位；停止位结束后才发布 TX 字节。 */
+const F_TX_STOP = 0x40;
+/** 发送期间又写入了一个 SBUF，停止位结束后启动下一帧。 */
+const F_TX_QUEUED = 0x80;
 
 const RX_IDLE = 0;
 const RX_START = 1;
@@ -122,6 +133,13 @@ const RX_STOP = 3;
 
 /** 位时间的上限：65535 个系统时钟周期（1 MHz 时约 65 ms/位）。 */
 const MAX_PERIOD = 0xffff;
+
+/** DDL 中的 UART1 起始位观察状态（由边沿反应维护）。 */
+const UART1_EDGE_ENABLED = 'uart1EdgeEnabled';
+const UART1_WAKE = 'uart1Wake';
+const UART1_EDGE_AT = 'uart1EdgeAt';
+const UART1_EDGE_ARMED = 'uart1EdgeArmed';
+const UART1_RX_CONFIG = 'uart1RxConfig';
 
 interface Engine {
   readonly id: 'uart1' | 'uart2';
@@ -338,6 +356,32 @@ registerAlternateDriver({
   level: (b) => txdLevel(b, UART2),
 });
 
+/**
+ * 只读 SCON/SBUF 的指令能否跳过前置结算。
+ *
+ * 条件：UART1 已启用默认通道的起始沿接收，且没有待消费的起始沿、两个发送器都空闲、
+ * 两个接收状态机都在空闲。此时 SCON/SBUF 的锁存值在下一个服务块之前不会变化，读它们
+ * 不需要先推进外设；待推进时间原样保留给服务块或下一次结算。
+ *
+ * 接收忙帧或任一路发送进行中时谓词为假，回到逐指令结算。谓词不覆盖串口 2 的空闲
+ * 轮询：REN2=1 且接收状态机空闲时谓词仍可为真，但串口 2 按 1/8 位时间设置的服务
+ * 期限仍然生效——跳过只保留待推进时间，期限到点后照常由服务块推进。
+ *
+ * 布局知识留在本模块：发送/接收状态与边沿资格都按这里的 `periph` 窗口解释。
+ */
+export function canSkipUart1Sync(b: Body): Value<boolean> {
+  const flags = b.bitOr(periph8(b, UART1.base + FLAGS), periph8(b, UART2.base + FLAGS));
+  const stages = b.bitOr(periph8(b, UART1.base + RX_STAGE), periph8(b, UART2.base + RX_STAGE));
+  const edgeEnabled = b.readState(UART1_EDGE_ENABLED, types.bool);
+  const wake = b.readState(UART1_WAKE, types.bool);
+  const txActive = b.notEqual(types.number, b.bitAnd(flags, number(b, F_TX_ACTIVE)), number(b, 0));
+  const rxIdle = b.equal(types.number, stages, number(b, 0));
+
+  return b.and(edgeEnabled, (inner) =>
+    inner.and(inner.not(wake), (deep) => deep.and(deep.not(txActive), () => rxIdle)),
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* 外设                                                                */
 /* ------------------------------------------------------------------ */
@@ -547,8 +591,15 @@ export function createUart(): Peripheral {
     setFlag(b, engine.base, F_LINE_LOW, low);
   };
 
-  /** 写 SBUF/S2BUF：装载帧字并启动一帧。 */
-  const startTransmit = (b: Body, engine: Engine, value: Value<number>): void => {
+  const txQueue = (engine: Engine): number => UART_QUEUE_BASE + (engine.id === 'uart1' ? 0 : 1);
+
+  /** 只发布 UART1 的完整帧；UART2 没有对外端口。 */
+  const publishTransmit = (b: Body, engine: Engine): void => {
+    if (engine.id === 'uart1') b.send('uart1Tx', b.bytes(periph8(b, engine.base + TX_BYTE)));
+  };
+
+  /** 立即装载帧字并启动一帧；调用方保证发送器当前空闲。 */
+  const startTransmitNow = (b: Body, engine: Engine, value: Value<number>): void => {
     const one = number(b, 1);
     const zero = number(b, 0);
     const nineBit = b.greaterThanOrEqual(modeOf(b, engine), number(b, 2));
@@ -568,6 +619,7 @@ export function createUart(): Peripheral {
       () => eightCount,
     );
 
+    setPeriph8(b, engine.base + TX_BYTE, value);
     setPeriph8(b, engine.base + TX_WORD, value);
     setPeriph8(b, engine.base + TX_WORD + 1, ninth);
     setPeriph8(b, engine.base + TX_COUNT, count);
@@ -576,7 +628,7 @@ export function createUart(): Peripheral {
     // 一次写完发送相关的标志位，避免逐位 read-modify-write。
     const kept = b.bitAnd(
       periph8(b, engine.base + FLAGS),
-      number(b, 0xff & ~(F_TX_ACTIVE | F_LINE_LOW | F_TX_NINTH)),
+      number(b, 0xff & ~(F_TX_ACTIVE | F_LINE_LOW | F_TX_NINTH | F_TX_STOP | F_TX_QUEUED)),
     );
     const ninthFlag = number(b, F_TX_NINTH);
     const ninthBit = b.select(
@@ -595,32 +647,83 @@ export function createUart(): Peripheral {
     writeTxdPin(b, engine);
   };
 
-  /** 异步帧的一步：帧字右移一位；计数到 0 时输出停止位并置 TI。 */
-  const stepAsync = (b: Body, engine: Engine): void => {
-    const count = periph8(b, engine.base + TX_COUNT);
+  /** 一帧真正结束：发布当前字节，并在有排队字节时立刻启动下一帧。 */
+  const finishTransmit = (b: Body, engine: Engine): void => {
+    const queued = flagIsSet(b, engine.base, F_TX_QUEUED);
+    const next = periph8(b, txQueue(engine));
+
+    publishTransmit(b, engine);
+    setPeriph8(
+      b,
+      engine.base + FLAGS,
+      b.bitAnd(
+        periph8(b, engine.base + FLAGS),
+        number(b, 0xff & ~(F_TX_ACTIVE | F_LINE_LOW | F_TX_STOP | F_TX_NINTH | F_TX_QUEUED)),
+      ),
+    );
+    b.if(queued, (inner) => startTransmitNow(asBody(inner), engine, next));
+  };
+
+  /** 写 SBUF/S2BUF：发送器忙时最多排队一个字节，空闲时立即启动。 */
+  const startTransmit = (b: Body, engine: Engine, value: Value<number>): void => {
+    const active = flagIsSet(b, engine.base, F_TX_ACTIVE);
 
     b.if(
-      b.equal(types.number, count, number(b, 0)),
-      (stop) => {
-        const body = asBody(stop);
+      active,
+      (busy) => {
+        const body = asBody(busy);
+        const queued = flagIsSet(body, engine.base, F_TX_QUEUED);
 
-        // 停止位开始发送时置 TI。
-        setLineLow(body, engine, boolean(body, false));
-        setFlag(body, engine.base, F_TX_ACTIVE, boolean(body, false));
-        setControlBit(body, engine.control, engine.tiBit, boolean(body, true));
-        markIrqDirty(body);
+        body.if(body.not(queued), (empty) => {
+          const slot = asBody(empty);
+
+          setPeriph8(slot, txQueue(engine), value);
+          setFlag(slot, engine.base, F_TX_QUEUED, boolean(slot, true));
+        });
       },
-      (next) => {
-        const body = asBody(next);
-        const word = periph16(body, engine.base + TX_WORD);
+      (idle) => startTransmitNow(asBody(idle), engine, value),
+    );
+  };
 
-        setLineLow(
-          body,
-          engine,
-          body.equal(types.number, body.bitAnd(word, number(body, 1)), number(body, 0)),
+  /** 异步帧的一步：帧字右移一位；计数到 0 时开始停止位，停止位满一拍后发布。 */
+  const stepAsync = (b: Body, engine: Engine): void => {
+    const count = periph8(b, engine.base + TX_COUNT);
+    const stopping = flagIsSet(b, engine.base, F_TX_STOP);
+
+    b.if(
+      stopping,
+      (done) => finishTransmit(asBody(done), engine),
+      (rest) => {
+        const body = asBody(rest);
+
+        body.if(
+          body.equal(types.number, count, number(body, 0)),
+          (stop) => {
+            const startingStop = asBody(stop);
+
+            // 停止位开始在 TXD 上出现时置 TI；端口在该停止位满一拍后发布。
+            setLineLow(startingStop, engine, boolean(startingStop, false));
+            setFlag(startingStop, engine.base, F_TX_STOP, boolean(startingStop, true));
+            setControlBit(startingStop, engine.control, engine.tiBit, boolean(startingStop, true));
+            markIrqDirty(startingStop);
+          },
+          (next) => {
+            const data = asBody(next);
+            const word = periph16(data, engine.base + TX_WORD);
+
+            setLineLow(
+              data,
+              engine,
+              data.equal(types.number, data.bitAnd(word, number(data, 1)), number(data, 0)),
+            );
+            setPeriph16(
+              data,
+              engine.base + TX_WORD,
+              data.shiftRightUnsigned(word, number(data, 1)),
+            );
+            setPeriph8(data, engine.base + TX_COUNT, data.subtract(count, number(data, 1)));
+          },
         );
-        setPeriph16(body, engine.base + TX_WORD, body.shiftRightUnsigned(word, number(body, 1)));
-        setPeriph8(body, engine.base + TX_COUNT, body.subtract(count, number(body, 1)));
       },
     );
   };
@@ -646,16 +749,9 @@ export function createUart(): Peripheral {
           (done) => {
             const branch = asBody(done);
 
-            setPeriph8(
-              branch,
-              engine.base + FLAGS,
-              branch.bitAnd(
-                periph8(branch, engine.base + FLAGS),
-                number(branch, 0xff & ~(F_TX_ACTIVE | F_LINE_LOW)),
-              ),
-            );
             setControlBit(branch, engine.control, engine.tiBit, boolean(branch, true));
             markIrqDirty(branch);
+            finishTransmit(branch, engine);
           },
           (more) => {
             const branch = asBody(more);
@@ -691,7 +787,13 @@ export function createUart(): Peripheral {
   const receiveStartBit = (b: Body, engine: Engine, level: Value<number>): void => {
     b.if(
       b.equal(types.number, level, number(b, 1)),
-      (high) => setPeriph8(asBody(high), engine.base + RX_STAGE, number(high, RX_IDLE)),
+      (high) => {
+        const body = asBody(high);
+
+        setPeriph8(body, engine.base + RX_STAGE, number(body, RX_IDLE));
+        // 干扰被采样为高：空闲轮询已见到高电平，下一次下降沿才是新起始位。
+        setFlag(body, engine.base, F_RX_LAST, boolean(body, true));
+      },
       (low) => {
         const body = asBody(low);
 
@@ -730,6 +832,7 @@ export function createUart(): Peripheral {
   /** 停止位中点：满足 RI=0 与 SM2/RB8 过滤时装载 SBUF 并置 RI。 */
   const receiveStopBit = (b: Body, engine: Engine, level: Value<number>): void => {
     const total = periph8(b, engine.base + HALF);
+    const received = periph8(b, engine.base + RX_SHIFT);
     const one = number(b, 1);
     const zero = number(b, 0);
     const ninth = b.select(
@@ -759,10 +862,11 @@ export function createUart(): Peripheral {
     b.if(accept, (inner) => {
       const body = asBody(inner);
 
-      setPeriph8(body, engine.base + RX_BUFFER, periph8(body, engine.base + RX_SHIFT));
+      setPeriph8(body, engine.base + RX_BUFFER, received);
       setControlBit(body, engine.control, engine.rb8Bit, rb8High);
       setControlBit(body, engine.control, engine.riBit, boolean(body, true));
       markIrqDirty(body);
+      if (engine.id === 'uart1') body.send('uart1Rx', body.bytes(received));
     });
 
     if (engine.synchronous) {
@@ -776,6 +880,9 @@ export function createUart(): Peripheral {
       });
     }
 
+    // 帧结束时用停止位采样刷新空闲轮询的「上次高电平」：低停止位会让线上继续保持
+    // 低电平，但这段连续低电平不是新的下降沿，只有先见到高电平才能再开一帧。
+    setFlag(b, engine.base, F_RX_LAST, b.equal(types.number, level, number(b, 1)));
     setPeriph8(b, engine.base + RX_STAGE, zero);
   };
 
@@ -820,8 +927,35 @@ export function createUart(): Peripheral {
     setFlag(b, engine.base, F_RX_LAST, b.equal(types.number, level, number(b, 1)));
   };
 
-  /** 一个引擎的推进：发送相位与接收相位各一次比较。 */
-  const advanceEngine = (b: Body, engine: Engine, elapsed: Value<number>): void => {
+  /**
+   * 由 P3_0 候选沿启动一帧。
+   *
+   * `RX_PHASE` 是距上次采样点已经过的时间，达到 `period` 时采样；因此用
+   * `period/2 + 沿后年龄` 初始化，下一次采样正好落在起始位中点。这里只计入沿之后的
+   * 时间：唤醒前的 `clockPs` 属于空闲期，不能整段推进到新帧。
+   */
+  const startReceiveFromEdge = (b: Body): void => {
+    const base = UART1.base;
+    const period = periph16(b, base + BIT_PERIOD);
+    const age = b.floor(
+      b.divide(
+        b.subtract(b.now(), b.readState(UART1_EDGE_AT, types.number)),
+        number(b, cyclePicoseconds()),
+      ),
+    );
+    const phase = b.min(b.add(b.divide(period, number(b, 2)), age), number(b, MAX_PERIOD));
+
+    setPeriph8(b, base + RX_STAGE, number(b, RX_START));
+    setPeriph8(b, base + RX_INDEX, number(b, 0));
+    setPeriph8(b, base + RX_SHIFT, number(b, 0));
+    setPeriph8(b, base + HALF, frameDataBits(b, UART1));
+    setPeriph16(b, base + RX_PHASE, phase);
+    // 候选沿落在低电平上：空闲轮询必须等线上重新回到高电平，才能识别下一次下降沿。
+    setFlag(b, base, F_RX_LAST, boolean(b, false));
+  };
+
+  /** 发送相位推进：与起始位唤醒无关，始终使用完整经过时间。 */
+  const advanceTransmit = (b: Body, engine: Engine, elapsed: Value<number>): void => {
     const base = engine.base;
 
     b.if(flagIsSet(b, base, F_TX_ACTIVE), (tx) => {
@@ -842,6 +976,11 @@ export function createUart(): Peripheral {
         (miss) => setPeriph16(asBody(miss), base + TX_PHASE, next),
       );
     });
+  };
+
+  /** 接收相位推进：忙帧逐节拍服务采样；未启用边沿优化的空闲口按 1/8 位时间轮询。 */
+  const advanceReceive = (b: Body, engine: Engine, elapsed: Value<number>): void => {
+    const base = engine.base;
 
     b.if(flagIsSet(b, base, F_REN), (rx) => {
       const body = asBody(rx);
@@ -872,6 +1011,12 @@ export function createUart(): Peripheral {
     });
   };
 
+  /** 一个引擎的推进：发送与接收各一次比较。 */
+  const advanceEngine = (b: Body, engine: Engine, elapsed: Value<number>): void => {
+    advanceTransmit(b, engine, elapsed);
+    advanceReceive(b, engine, elapsed);
+  };
+
   const engineFor = (address: number): Engine | undefined =>
     address === SFR_SBUF ? UART1 : address === SFR_S2BUF ? UART2 : undefined;
 
@@ -893,6 +1038,94 @@ export function createUart(): Peripheral {
       F_REN,
       b.and(ren, () => asynchronous),
     );
+  };
+
+  /** UART1 接收配置快照（有效模式、路由、REN）；初值与复位状态一致。 */
+  const uart1RxConfig = (b: Body) => {
+    const mode = modeOf(b, UART1);
+    const route = s1Position(b);
+    const ren = latchBitIsSet(b, SFR_SCON, SCON_REN);
+    const renSet = number(b, 0x10);
+    const renClear = number(b, 0);
+    const renBit = b.select(
+      types.number,
+      ren,
+      () => renSet,
+      () => renClear,
+    );
+
+    return {
+      packed: b.bitOr(b.bitOr(mode, b.shiftLeft(route, number(b, 2))), renBit),
+      mode,
+      route,
+      ren,
+    };
+  };
+
+  /**
+   * 配置写入后同步 UART1 的边沿接收资格（默认 P3_0、异步模式、REN=1、位时间 >= 32
+   * 个系统时钟）。
+   *
+   * 只有 REN 真正关闭、有效模式、位时间或路由变化才取消接收并清除唤醒；写
+   * SM2/TB8/RI/TI 等不改变这些条件，不会打断当前帧。资格由假变真时，只有 REN
+   * 真正由关到开（或线上已经是高电平）才接受派生候选沿，避免模式/周期/路由写操作
+   * 凭当前低电平误开新帧。
+   */
+  const syncUart1Edge = (b: Body, previousPeriod: Value<number>): void => {
+    const period = periph16(b, UART1.base + BIT_PERIOD);
+    const next = uart1RxConfig(b);
+    const previous = b.readState(UART1_RX_CONFIG, types.number);
+    const enabled = b.readState(UART1_EDGE_ENABLED, types.bool);
+    const asyncMode = b.notEqual(types.number, next.mode, number(b, 0));
+    const defaultRoute = b.equal(types.number, next.route, number(b, 0));
+    const wide = b.greaterThanOrEqual(period, number(b, 32));
+    const asyncAndWide = b.and(asyncMode, () => wide);
+    const routeAndWide = b.and(defaultRoute, () => asyncAndWide);
+    const eligible = b.and(next.ren, () => routeAndWide);
+
+    const previousMode = b.bitAnd(previous, number(b, 0x03));
+    const previousRoute = b.bitAnd(b.shiftRightUnsigned(previous, number(b, 2)), number(b, 0x03));
+    const previousRen = b.notEqual(types.number, b.bitAnd(previous, number(b, 0x10)), number(b, 0));
+    const renLow = b.not(next.ren);
+    const renWasLow = b.not(previousRen);
+    const renOff = b.and(previousRen, () => renLow);
+    const renRising = b.and(renWasLow, () => next.ren);
+    const modeChanged = b.notEqual(types.number, previousMode, next.mode);
+    const routeChanged = b.notEqual(types.number, previousRoute, next.route);
+    const periodChanged = b.notEqual(types.number, previousPeriod, period);
+    const modeOrRoute = b.or(modeChanged, () => routeChanged);
+    const configChanged = b.or(modeOrRoute, () => periodChanged);
+    const changed = b.or(renOff, () => configChanged);
+
+    b.if(changed, (inner) => {
+      const body = asBody(inner);
+
+      setPeriph8(body, UART1.base + RX_STAGE, number(body, RX_IDLE));
+      setPeriph8(body, UART1.base + RX_INDEX, number(body, 0));
+      setPeriph8(body, UART1.base + RX_SHIFT, number(body, 0));
+      // 配置变化不能凭当前低电平直接开帧：要求线上先出现一次高电平。
+      setFlag(body, UART1.base, F_RX_LAST, boolean(body, false));
+      body.writeState(UART1_WAKE, boolean(body, false));
+    });
+    b.if(
+      b.and(b.not(enabled), () => eligible),
+      (inner) => {
+        const body = asBody(inner);
+        const lineHigh = body.equal(types.number, pinLevel(body, 'P3_0'), number(body, 1));
+
+        body.writeState(
+          UART1_EDGE_ARMED,
+          body.or(renRising, () => lineHigh),
+        );
+      },
+    );
+    b.writeState(UART1_EDGE_ENABLED, eligible);
+    b.writeState(UART1_RX_CONFIG, next.packed);
+    b.if(b.not(eligible), (inner) => {
+      const body = asBody(inner);
+
+      body.writeState(UART1_WAKE, boolean(body, false));
+    });
   };
 
   return {
@@ -924,8 +1157,11 @@ export function createUart(): Peripheral {
       }
 
       if (address === SFR_SCON) {
+        const previousPeriod = periph16(b, UART1.base + BIT_PERIOD);
+
         refreshRen(b, UART1);
         storePeriod(b, UART1);
+        syncUart1Edge(b, previousPeriod);
         syncUart1Pins(b);
 
         return;
@@ -940,6 +1176,7 @@ export function createUart(): Peripheral {
       }
 
       if (address === SFR_P_SW1) {
+        syncUart1Edge(b, periph16(b, UART1.base + BIT_PERIOD));
         syncUart1Pins(b);
 
         return;
@@ -959,8 +1196,11 @@ export function createUart(): Peripheral {
       }
 
       // PCON/AUXR/TMOD/TH1/TL1/T2H/T2L：波特率源变化，两个引擎都重算。
+      const previousPeriod = periph16(b, UART1.base + BIT_PERIOD);
+
       storePeriod(b, UART1);
       storePeriod(b, UART2);
+      syncUart1Edge(b, previousPeriod);
     },
     onRead(b, address) {
       const engine = engineFor(address) ?? UART1;
@@ -978,15 +1218,40 @@ export function createUart(): Peripheral {
       );
       const receiving = b.notEqual(types.number, stages, number(b, 0));
       const busy = b.or(driving, () => receiving);
+      const wake = b.readState(UART1_WAKE, types.bool);
+      const enabled = b.readState(UART1_EDGE_ENABLED, types.bool);
+      const idle = b.equal(types.number, periph8(b, UART1.base + RX_STAGE), number(b, 0));
+      const enabledIdle = b.and(enabled, () => idle);
+      const consume = b.and(wake, () => enabledIdle);
 
-      b.if(busy, (inner) => {
-        const body = asBody(inner);
+      b.if(
+        consume,
+        (edge) => {
+          const body = asBody(edge);
 
-        advanceEngine(body, UART1, elapsed);
-        advanceEngine(body, UART2, elapsed);
-      });
+          startReceiveFromEdge(body);
+          body.writeState(UART1_WAKE, boolean(body, false));
+          // 只跳过接收相位：发送与串口 2 仍使用完整经过时间。
+          advanceTransmit(body, UART1, elapsed);
+          advanceEngine(body, UART2, elapsed);
+        },
+        (rest) => {
+          const body = asBody(rest);
+
+          body.if(busy, (inner) => {
+            const work = asBody(inner);
+
+            advanceEngine(work, UART1, elapsed);
+            advanceEngine(work, UART2, elapsed);
+          });
+          // 忙帧（数据位沿）或已失去资格时，唤醒不能留到下一帧。
+          body.if(wake, (stale) =>
+            asBody(stale).writeState(UART1_WAKE, boolean(asBody(stale), false)),
+          );
+        },
+      );
     },
-    /** 发送引擎在跑、接收使能（要采起始位）或有半个字节在移位里。 */
+    /** 发送引擎在跑、接收使能或有半个字节在移位里。 */
     active(b) {
       const flags = b.bitOr(periph8(b, UART1.base + FLAGS), periph8(b, UART2.base + FLAGS));
       const stages = b.bitOr(periph8(b, UART1.base + RX_STAGE), periph8(b, UART2.base + RX_STAGE));
@@ -998,6 +1263,79 @@ export function createUart(): Peripheral {
 
           return s.notEqual(types.number, stages, number(s, 0));
         },
+      );
+    },
+    /**
+     * 默认 UART1 通道（P3_0、异步模式、REN=1、位时间 >= 32 个系统时钟）的空闲接收由
+     * 起始位沿唤醒，不设轮询期限；其余空闲 REN 以 1/8 位时间采样 RXD，这是检测起始位
+     * 所需的安全粒度，而不是把 CPU quantum 当作采样周期。发送或帧内继续保持逐节拍
+     * 保守服务。
+     */
+    deadline(b) {
+      const txActive = b.notEqual(
+        types.number,
+        b.bitAnd(
+          b.bitOr(periph8(b, UART1.base + FLAGS), periph8(b, UART2.base + FLAGS)),
+          number(b, F_TX_ACTIVE),
+        ),
+        number(b, 0),
+      );
+      const receiving = b.notEqual(
+        types.number,
+        b.bitOr(periph8(b, UART1.base + RX_STAGE), periph8(b, UART2.base + RX_STAGE)),
+        number(b, 0),
+      );
+      const idleRen = (engine: Engine): Value<number> => {
+        // 串口 1 的合格空闲口（默认 P3_0、异步模式、位时间 >= 32 个系统时钟）由
+        // 起始位沿唤醒，不再需要 1/8 位时间的轮询期限；其余口（短位时间、非默认
+        // 路由、串口 2）保持原轮询粒度。
+        const ren = flagIsSet(b, engine.base, F_REN);
+        let polled = ren;
+
+        if (engine.id === 'uart1') {
+          const edgeEnabled = b.readState(UART1_EDGE_ENABLED, types.bool);
+          const notEdge = b.not(edgeEnabled);
+
+          polled = b.and(ren, () => notEdge);
+        }
+
+        return b.select(
+          types.number,
+          polled,
+          (inner) => {
+            const s = asBody(inner);
+            const period = periph16(s, engine.base + BIT_PERIOD);
+            const interval = s.floor(
+              s.divide(s.multiply(period, number(s, cyclePicoseconds())), number(s, 8)),
+            );
+
+            return s.max(interval, number(s, 1));
+          },
+          (inner) => inner.constant(types.number, 0),
+        );
+      };
+      const uart1Idle = idleRen(UART1);
+      const uart2Idle = idleRen(UART2);
+      // 0 = 该组没有需求，必须是 min 的单位元；只开一组 REN 时不能被另一组的 0
+      // 吞掉。两组都有需求时取较小的安全采样期限。
+      const idle = b.select(
+        types.number,
+        b.equal(types.number, uart1Idle, number(b, 0)),
+        () => uart2Idle,
+        (inner) =>
+          inner.select(
+            types.number,
+            inner.equal(types.number, uart2Idle, number(asBody(inner), 0)),
+            () => uart1Idle,
+            (deeper) => deeper.min(uart1Idle, uart2Idle),
+          ),
+      );
+
+      return b.select(
+        types.number,
+        b.or(txActive, () => receiving),
+        (inner) => inner.constant(types.number, 1),
+        () => idle,
       );
     },
     interrupts: [
