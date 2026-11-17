@@ -7,9 +7,14 @@
  *   形成存在脉冲，协议状态归零。进行中的温度转换不受复位影响——与真实芯片一致，
  *   转换由内部定时器独立完成。
  * - 主机写位：下降沿开时隙，从机在 +15 us 采样 DQ，LSB first 移位。
- * - 从机读位：下降沿开时隙，从机立即驱动 0 位并保持到 +60 us，1 位保持释放。
- *   datasheet p16 要求主机在下降沿后 15 us 内采样（TINIT + TRC + TSAMPLE < 15 us），
- *   因此 0 位必须在下降沿附近有效，不能等到 +15 us 才驱动。
+ * - 从机读位：下降沿开时隙，从机立即驱动 0 位，并在该下降沿 +15 us 释放；1 位保持
+ *   释放。datasheet p16 要求主机在下降沿后 15 us 内采样（TINIT + TRC + TSAMPLE
+ *   < 15 us），因此 0 位必须在下降沿附近有效，不能等到 +15 us 才驱动。
+ *
+ * 宽松功能模型：不要求主机时隙达到 datasheet 的 60 us 最小值。约 58 us 的读时隙在
+ * 下一拍下降沿前已释放 0 位，56.25 us 的写 0 也能在 +15 us 被采样。该兼容性只说明
+ * 模型能完成可识别的事务，不表示真实器件满足数据手册时序；更短到写采样或下一拍
+ * 重叠的波形不承诺还原正确字节。
  *
  * ROM 命令：0xCC Skip ROM、0x55 Match ROM（随后比对 8 字节 ROM，失配后静默）、
  * 0x33 Read ROM；0xF0 Search ROM 与 0xEC Alarm Search 未实现，未知 ROM 命令静默。
@@ -31,6 +36,8 @@ device Ds18b20(
   highThreshold: number default 2.0
 ) {
   const MICROSECOND = 1_000_000;
+  const WRITE_SAMPLE_DELAY = 15 * MICROSECOND;
+  const READ_ZERO_HOLD = 15 * MICROSECOND;
   const CONVERT_TIME = 750_000_000_000;
 
   assert isSafeInteger(serial) && serial >= 0 && serial <= 0xffffffff,
@@ -74,11 +81,6 @@ device Ds18b20(
     scratchpadBytes
   }
 
-  enum SlotKind {
-    sampleSlot,
-    driveSlot
-  }
-
   state phase: Phase = Phase.idle;
   state stage: Stage = Stage.romCommand;
   state rxTarget: RxTarget = RxTarget.matchRom;
@@ -96,10 +98,9 @@ device Ds18b20(
   state sinking: bool = false;
   state lastFallSelf: bool = false;
   state fallTime: number = 0;
-  /** 每次总线复位递增；读写时隙与读 0 位释放用它判断自己的请求是否过期。 */
+  /** 每次总线复位递增；写时隙、存在脉冲与读 0 位释放用它判断请求是否过期。 */
   state busGeneration: number = 0;
 
-  state slotKind: SlotKind = SlotKind.sampleSlot;
   state slotAt: number = 0;
   state slotGeneration: number = 0;
   state slotSequence: number = 0;
@@ -222,8 +223,8 @@ device Ds18b20(
 
   fn armRelease() {
     releaseGeneration = busGeneration;
-    // 读 0 位从下降沿起保持低到 +60 us；不能从 +15 us 的决策时刻再算 45 us。
-    releaseAt = fallTime + 60 * MICROSECOND;
+    // 以读时隙下降沿为绝对基准，+15 us 释放；不能从决策时刻再开始计时。
+    releaseAt = fallTime + READ_ZERO_HOLD;
     releaseSequence = releaseSequence + 1;
   }
 
@@ -298,6 +299,7 @@ device Ds18b20(
     }
   }
 
+  /** 读时隙在下降沿立即消费一位：0 位立即拉低，1 位保持释放。 */
   fn driveSlot() {
     if slotGeneration != busGeneration {
       return;
@@ -359,14 +361,12 @@ device Ds18b20(
   fn openSlot() {
     slotGeneration = busGeneration;
     if phase == Phase.transmit {
-      // 读时隙：datasheet p16 要求输出在下降沿后 15 us 内有效，立即驱动 0 位。
-      slotKind = SlotKind.driveSlot;
-      slotAt = now();
-      slotSequence = slotSequence + 1;
+      // 读时隙在反应体内同步消费并立即驱动 0 位；不经过可挂起 process，
+      // 避免旧时隙的等待把下降沿后的即时驱动推迟到旧期限。
+      driveSlot();
     } else if phase == Phase.command || phase == Phase.receive {
       // 写时隙：从机在下降沿 +15 us 采样。
-      slotKind = SlotKind.sampleSlot;
-      slotAt = now() + 15 * MICROSECOND;
+      slotAt = now() + WRITE_SAMPLE_DELAY;
       slotSequence = slotSequence + 1;
     }
   }
@@ -426,56 +426,77 @@ device Ds18b20(
     }
   }
 
-  /** 写时隙在下降沿 +15 us 采样；读时隙在下降沿立即驱动 0 位。 */
+  /**
+   * 写时隙在下降沿 +15 us 采样。process on 是非重入的：等待期间的新触发只记
+   * pending，不会提前唤醒；旧等待被唤醒后若序号已变必须让位，由 pending 重跑
+   * 等待当前绝对期限，避免同一时隙被重复采样。
+   */
   process slotTimer on slotSequence {
     if slotSequence == 0 {
       return;
     }
+    const sequence = slotSequence;
     loop {
       const remaining = slotAt - now();
       if remaining <= 0 {
-        if slotKind == SlotKind.driveSlot {
-          driveSlot();
-        } else {
+        if sequence == slotSequence {
           sampleSlot();
         }
         return;
       }
       await ticks(remaining);
+      if sequence != slotSequence {
+        return;
+      }
     }
   }
 
-  /** 存在脉冲：下降沿 +30 us 拉低，保持 90 us 后释放。 */
+  /** 存在脉冲：下降沿 +30 us 拉低，保持 90 us 后释放；被新复位取代后不再改线。 */
   process presenceTimer on presenceSequence {
     if presenceSequence == 0 {
       return;
     }
+    const sequence = presenceSequence;
+    const generation = busGeneration;
     loop {
       const remaining = presenceAt - now();
       if remaining <= 0 {
         break;
       }
       await ticks(remaining);
+      if sequence != presenceSequence || generation != busGeneration {
+        return;
+      }
+    }
+    if sequence != presenceSequence || generation != busGeneration {
+      return;
     }
     sinkLine(true);
     await ticks(90 * MICROSECOND);
-    sinkLine(false);
+    if sequence == presenceSequence && generation == busGeneration {
+      sinkLine(false);
+    }
   }
 
-  /** 读 0 位的释放：驱动 +45 us（即时隙 +60 us）释放总线。 */
+  /** 读 0 位的释放：以读时隙下降沿为基准，+15 us 撤销从机驱动。 */
   process releaseTimer on releaseSequence {
     if releaseSequence == 0 {
       return;
     }
+    const sequence = releaseSequence;
     loop {
       const remaining = releaseAt - now();
       if remaining <= 0 {
-        if releaseGeneration == busGeneration {
+        // 新读位或复位已经接管总线时，旧释放不得释放新的拉低驱动。
+        if sequence == releaseSequence && releaseGeneration == busGeneration {
           sinkLine(false);
         }
         return;
       }
       await ticks(remaining);
+      if sequence != releaseSequence || releaseGeneration != busGeneration {
+        return;
+      }
     }
   }
 

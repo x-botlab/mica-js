@@ -75,8 +75,15 @@ DLY2_LOOP:
         DJNZ R7,DLY2_LOOP
         RET
 
+; DS18B20 read sample delay. STC15 is 1T, so count cycles, not 12T machine cycles.
+; From the host falling edge to MOV C,P1.4:
+;   CLR is assumed complete before t=0; then ACALL+DLY2+SETB = 36 cycles,
+;   and ACALL+MOV+DJNZ*N+RET+MOV C = 11 + 4*N cycles after release.
+; With N=24: 143 cycles = 12.93 us @11.0592 MHz, 11.92 us @12 MHz.
+; Both are inside the model's +15 us read-zero window with margin. The old N=60
+; took 287 cycles = 25.95 us / 23.92 us and sampled after the +15 us release.
 DLY_SAMPLE:
-        MOV R7,#60
+        MOV R7,#24
 DLY_SAMPLE_LOOP:
         DJNZ R7,DLY_SAMPLE_LOOP
         RET

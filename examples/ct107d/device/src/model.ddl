@@ -688,6 +688,8 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
 
 
   const u5_MICROSECOND = 1_000_000;
+  const u5_WRITE_SAMPLE_DELAY = 15 * u5_MICROSECOND;
+  const u5_READ_ZERO_HOLD = 15 * u5_MICROSECOND;
   const u5_CONVERT_TIME = 750_000_000_000;
 
   assert isSafeInteger(47049) && 47049 >= 0 && 47049 <= 0xffffffff,
@@ -728,11 +730,6 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     scratchpadBytes
   }
 
-  enum u5_SlotKind {
-    sampleSlot,
-    driveSlot
-  }
-
   state u5_phase: u5_Phase = u5_Phase.idle;
   state u5_stage: u5_Stage = u5_Stage.romCommand;
   state u5_rxTarget: u5_RxTarget = u5_RxTarget.matchRom;
@@ -750,10 +747,9 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   state u5_sinking: bool = false;
   state u5_lastFallSelf: bool = false;
   state u5_fallTime: number = 0;
-  /** 每次总线复位递增；读写时隙与读 0 位释放用它判断自己的请求是否过期。 */
+  /** 每次总线复位递增；写时隙、存在脉冲与读 0 位释放用它判断请求是否过期。 */
   state u5_busGeneration: number = 0;
 
-  state u5_slotKind: u5_SlotKind = u5_SlotKind.sampleSlot;
   state u5_slotAt: number = 0;
   state u5_slotGeneration: number = 0;
   state u5_slotSequence: number = 0;
@@ -876,8 +872,8 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
 
   fn u5_armRelease() {
     u5_releaseGeneration = u5_busGeneration;
-    // 读 0 位从下降沿起保持低到 +60 us；不能从 +15 us 的决策时刻再算 45 us。
-    u5_releaseAt = u5_fallTime + 60 * u5_MICROSECOND;
+    // 以读时隙下降沿为绝对基准，+15 us 释放；不能从决策时刻再开始计时。
+    u5_releaseAt = u5_fallTime + u5_READ_ZERO_HOLD;
     u5_releaseSequence = u5_releaseSequence + 1;
   }
 
@@ -952,6 +948,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     }
   }
 
+  /** 读时隙在下降沿立即消费一位：0 位立即拉低，1 位保持释放。 */
   fn u5_driveSlot() {
     if u5_slotGeneration != u5_busGeneration {
       return;
@@ -1013,14 +1010,12 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u5_openSlot() {
     u5_slotGeneration = u5_busGeneration;
     if u5_phase == u5_Phase.transmit {
-      // 读时隙：datasheet p16 要求输出在下降沿后 15 us 内有效，立即驱动 0 位。
-      u5_slotKind = u5_SlotKind.driveSlot;
-      u5_slotAt = now();
-      u5_slotSequence = u5_slotSequence + 1;
+      // 读时隙在反应体内同步消费并立即驱动 0 位；不经过可挂起 process，
+      // 避免旧时隙的等待把下降沿后的即时驱动推迟到旧期限。
+      u5_driveSlot();
     } else if u5_phase == u5_Phase.command || u5_phase == u5_Phase.receive {
       // 写时隙：从机在下降沿 +15 us 采样。
-      u5_slotKind = u5_SlotKind.sampleSlot;
-      u5_slotAt = now() + 15 * u5_MICROSECOND;
+      u5_slotAt = now() + u5_WRITE_SAMPLE_DELAY;
       u5_slotSequence = u5_slotSequence + 1;
     }
   }
@@ -1080,56 +1075,77 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     }
   }
 
-  /** 写时隙在下降沿 +15 us 采样；读时隙在下降沿立即驱动 0 位。 */
+  /**
+   * 写时隙在下降沿 +15 us 采样。process on 是非重入的：等待期间的新触发只记
+   * pending，不会提前唤醒；旧等待被唤醒后若序号已变必须让位，由 pending 重跑
+   * 等待当前绝对期限，避免同一时隙被重复采样。
+   */
   process u5_slotTimer on u5_slotSequence {
     if u5_slotSequence == 0 {
       return;
     }
+    const sequence = u5_slotSequence;
     loop {
       const remaining = u5_slotAt - now();
       if remaining <= 0 {
-        if u5_slotKind == u5_SlotKind.driveSlot {
-          u5_driveSlot();
-        } else {
+        if sequence == u5_slotSequence {
           u5_sampleSlot();
         }
         return;
       }
       await ticks(remaining);
+      if sequence != u5_slotSequence {
+        return;
+      }
     }
   }
 
-  /** 存在脉冲：下降沿 +30 us 拉低，保持 90 us 后释放。 */
+  /** 存在脉冲：下降沿 +30 us 拉低，保持 90 us 后释放；被新复位取代后不再改线。 */
   process u5_presenceTimer on u5_presenceSequence {
     if u5_presenceSequence == 0 {
       return;
     }
+    const sequence = u5_presenceSequence;
+    const generation = u5_busGeneration;
     loop {
       const remaining = u5_presenceAt - now();
       if remaining <= 0 {
         break;
       }
       await ticks(remaining);
+      if sequence != u5_presenceSequence || generation != u5_busGeneration {
+        return;
+      }
+    }
+    if sequence != u5_presenceSequence || generation != u5_busGeneration {
+      return;
     }
     u5_sinkLine(true);
     await ticks(90 * u5_MICROSECOND);
-    u5_sinkLine(false);
+    if sequence == u5_presenceSequence && generation == u5_busGeneration {
+      u5_sinkLine(false);
+    }
   }
 
-  /** 读 0 位的释放：驱动 +45 us（即时隙 +60 us）释放总线。 */
+  /** 读 0 位的释放：以读时隙下降沿为基准，+15 us 撤销从机驱动。 */
   process u5_releaseTimer on u5_releaseSequence {
     if u5_releaseSequence == 0 {
       return;
     }
+    const sequence = u5_releaseSequence;
     loop {
       const remaining = u5_releaseAt - now();
       if remaining <= 0 {
-        if u5_releaseGeneration == u5_busGeneration {
+        // 新读位或复位已经接管总线时，旧释放不得释放新的拉低驱动。
+        if sequence == u5_releaseSequence && u5_releaseGeneration == u5_busGeneration {
           u5_sinkLine(false);
         }
         return;
       }
       await ticks(remaining);
+      if sequence != u5_releaseSequence || u5_releaseGeneration != u5_busGeneration {
+        return;
+      }
     }
   }
 
@@ -3058,8 +3074,6 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
 
   const u22_MICROSECOND = 1_000_000;
   const u22_MAX_TIME = 7_200_000_000_000_000;
-  const u22_TRIGGER_PULSES = 8;
-  const u22_BURST_GAP = 1_000 * u22_MICROSECOND;
 
   assert isFinite(ultrasonicDistanceCm) && ultrasonicDistanceCm >= 0,
     "ultrasonicDistanceCm must be a finite non-negative distance";
@@ -3081,19 +3095,15 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     "the calculated echo width exceeds the supported time range";
 
 
-  derived u22_trigHigh: bool = fusedWire10 == Logic.high;
-
-  /** 当前脉冲串已累计的上升沿数。 */
-  state u22_pulseCount: number = 0;
-  /** 每个 TRIG 上升沿递增，用于重启脉冲间隔定时器。 */
-  state u22_pulseSequence: number = 0;
-  /** 最近一个 TRIG 上升沿时刻，用于判断脉冲串是否已经中断。 */
-  state u22_lastPulseAt: number = 0;
-  /** ECHO 拉低（回波到达）的时刻。 */
+  /** 已观察到一个明确的低→高边沿，等待同一脉冲的下降沿。 */
+  state u22_pulseArmed: bool = false;
+  /** 当前请求是否已经建立回波截止；上升沿与未知电平均会清除它。 */
+  state u22_echoPending: bool = false;
+  /** ECHO 拉低（回波到达）的绝对截止时间。 */
   state u22_echoLowAt: number = 0;
-  /** ECHO 恢复空闲高电平的时刻。 */
+  /** ECHO 恢复空闲高电平的绝对截止时间。 */
   state u22_echoHighAt: number = 0;
-  /** 每次检测到完整脉冲串递增，用于取消旧请求的回波定时。 */
+  /** 每次撤销或建立请求时递增，用于让旧定时任务失效。 */
   state u22_echoSequence: number = 0;
 
   fn u22_driveEcho(high: bool) {
@@ -3104,84 +3114,91 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     }
   }
 
-  fn u22_beginEcho() {
-    u22_pulseCount = 0;
+  /** 撤销旧请求并回到空闲高；序号递增使所有旧等待在下次唤醒时退出。 */
+  fn u22_cancelEcho() {
+    u22_echoPending = false;
+    u22_echoSequence = u22_echoSequence + 1;
+    u22_driveEcho(true);
+  }
+
+  /** 完整脉冲下降沿建立新请求，两个截止都从 F 起算。 */
+  fn u22_scheduleEcho() {
     u22_echoLowAt = now() + u22_ECHO_WIDTH;
     u22_echoHighAt = u22_echoLowAt + u22_ECHO_WIDTH;
     assert isSafeInteger(u22_echoLowAt) && u22_echoLowAt <= u22_MAX_TIME,
       "the echo arrival deadline exceeds the supported time range";
     assert isSafeInteger(u22_echoHighAt) && u22_echoHighAt <= u22_MAX_TIME,
       "the echo release deadline exceeds the supported time range";
+    u22_echoPending = true;
     u22_echoSequence = u22_echoSequence + 1;
   }
 
-  reaction u22_trigEdge on u22_trigHigh as (previous, current) {
-    if previous == current {
+  /**
+   * TRIG 逻辑边沿。只有明确的低→高才武装，只有已武装的高→低才完成候选；unknown
+   * 与无配对下降都不建立请求。
+   */
+  reaction u22_trigEdge on fusedWire10 as (previous, current) {
+    if current == Logic.unknown {
+      u22_pulseArmed = false;
+      u22_cancelEcho();
       return;
     }
 
-    if current {
-      u22_pulseSequence = u22_pulseSequence + 1;
-      u22_lastPulseAt = now();
-      if u22_pulseCount < u22_TRIGGER_PULSES {
-        u22_pulseCount = u22_pulseCount + 1;
+    if current == Logic.high {
+      if previous == Logic.low {
+        u22_pulseArmed = true;
+        u22_cancelEcho();
       }
       return;
     }
 
-    // 第 8 个脉冲完整结束；此时固件刚好启动接收计时。
-    if u22_pulseCount == u22_TRIGGER_PULSES {
-      u22_beginEcho();
+    // current == Logic.low
+    if previous == Logic.high && u22_pulseArmed {
+      u22_pulseArmed = false;
+      u22_scheduleEcho();
     }
   }
 
-  /** 最后一个 TRIG 上升沿后 1 ms 没有新边沿，则丢弃不完整的脉冲串。 */
-  process u22_burstGapTimer on u22_pulseSequence {
-    if u22_pulseSequence == 0 {
+  /**
+   * ECHO 低电平阶段。旧请求醒来时序号已变化，直接退出；若新的 low 截止更早，旧 high
+   * 等待不会占用本过程。D=0 时不驱动低电平，避免制造正宽度伪脉冲。
+   */
+  process u22_echoLow on u22_echoSequence {
+    if !u22_echoPending || u22_ECHO_WIDTH == 0 {
       return;
     }
 
+    const sequence = u22_echoSequence;
     loop {
-      // 进程源变化只登记 pending；从最近边沿重新计算期限，确保每次唤醒都收敛到
-      // 「最后一个上升沿 + 1 ms」，而不是沿用首个边沿的旧期限。
-      const deadline = u22_lastPulseAt + u22_BURST_GAP;
-      assert isSafeInteger(deadline) && deadline <= u22_MAX_TIME,
-        "the burst-gap deadline exceeds the supported time range";
-      const remaining = deadline - now();
+      if !u22_echoPending || u22_echoSequence != sequence {
+        return;
+      }
+      const remaining = u22_echoLowAt - now();
       if remaining <= 0 {
-        u22_pulseCount = 0;
+        u22_driveEcho(false);
         return;
       }
       await ticks(remaining);
     }
   }
 
-  /** 回波到达后拉低，低电平结束后恢复空闲高；旧请求不得改动新请求的线路。 */
-  process u22_echoPulse on u22_echoSequence {
-    if u22_echoSequence == 0 {
+  /** ECHO 恢复高电平阶段；与低电平过程独立，彼此不阻塞新请求。 */
+  process u22_echoHigh on u22_echoSequence {
+    if !u22_echoPending {
       return;
     }
 
     const sequence = u22_echoSequence;
-    while u22_echoSequence == sequence {
-      const toLow = u22_echoLowAt - now();
-      if toLow > 0 {
-        await ticks(toLow);
-      }
-      if u22_echoSequence != sequence {
+    loop {
+      if !u22_echoPending || u22_echoSequence != sequence {
         return;
       }
-      u22_driveEcho(false);
-
-      const toHigh = u22_echoHighAt - now();
-      if toHigh > 0 {
-        await ticks(toHigh);
-      }
-      if u22_echoSequence != sequence {
+      const remaining = u22_echoHighAt - now();
+      if remaining <= 0 {
+        u22_driveEcho(true);
         return;
       }
-      u22_driveEcho(true);
-      return;
+      await ticks(remaining);
     }
   }
 
@@ -3639,6 +3656,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     active: bool;
     value: number;
   }
+  record ActuatorState {
+    relay: bool;
+    buzzer: bool;
+  }
   record JumperSignal {
     index: number;
     closed: bool;
@@ -3667,6 +3688,8 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   output channel display: DisplaySignal(capacity: 32, overflow: Overflow.drop_oldest);
   output channel switch: SwitchSignal(capacity: 32, overflow: Overflow.drop_oldest);
   output channel actuator: ActuatorSignal(capacity: 32, overflow: Overflow.drop_oldest);
+  /** Complete latest state for the adapter snapshot; capacity 1 is safe because later state replaces older state wholesale. */
+  output channel actuatorState: ActuatorState(capacity: 1, overflow: Overflow.drop_oldest);
   output channel jumper: JumperSignal(capacity: 16, overflow: Overflow.drop_oldest);
   output channel amplifier: AmplifierSignal(capacity: 32, overflow: Overflow.drop_oldest);
 
@@ -6036,13 +6059,20 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn publishActuators() {
     const relay = fusedNet89() == 0;
     const buzzer = fusedNet91() == 0;
-    if !actuatorsInitialized || relay != relayEnergized {
-      relayEnergized = relay;
+    const relayChanged = !actuatorsInitialized || relay != relayEnergized;
+    const buzzerChanged = !actuatorsInitialized || buzzer != buzzerActive;
+    relayEnergized = relay;
+    buzzerActive = buzzer;
+    if relayChanged {
       actuator.send({ target: 0, active: relay, value: 0 });
     }
-    if !actuatorsInitialized || buzzer != buzzerActive {
-      buzzerActive = buzzer;
+    if buzzerChanged {
       actuator.send({ target: 1, active: buzzer, value: 0 });
+    }
+    // The bounded history above can drop changes of one target behind noise from the
+    // other. Every refresh that changes anything carries the complete latest state.
+    if !actuatorsInitialized || relayChanged || buzzerChanged {
+      actuatorState.send({ relay: relay, buzzer: buzzer });
     }
     actuatorsInitialized = true;
   }

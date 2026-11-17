@@ -2,7 +2,7 @@
   "publisher": "example",
   "name": "ds18b20",
   "version": "1.0.0",
-  "description": "1-Wire 数字温度传感器：DQ 为开漏双向端（需外部 10 kΩ 上拉），主机拉低 >= 480 us 判复位，从机在释放后 +30 us..+120 us 发存在脉冲；写时隙在下降沿 +15 us 采样、读时隙在下降沿立即驱动 0 位并保持到 +60 us（主机须在 15 us 内采样）。ROM 命令支持 Skip ROM、Match ROM、Read ROM；功能命令支持 Convert T（固定 750 ms 虚拟时间）、Read Scratchpad（9 字节，末尾 Dallas CRC8 动态计算）、Write Scratchpad（TH/TL/Cfg），0xB4/0xB8 为文档化空操作，Search ROM/Alarm Search 未实现。温度在转换完成时从 temperature 输入采样，写入暂存器为 T×16 的 16 位二进制补码，并经 temperatureOut 发布。理想化：时隙与复位为整微秒调度事件、保留字节固定、无寄生供电、复位不中止进行中的转换、未知电平按低处理。",
+  "description": "1-Wire 数字温度传感器：DQ 为开漏双向端（需外部 10 kΩ 上拉），主机拉低 >= 480 us 判复位，从机在释放后 +30 us..+120 us 发存在脉冲；写时隙在下降沿 +15 us 采样，读时隙在下降沿立即驱动 0 位并在 +15 us 释放（宽松功能模型：接受约 58 us 的短读时隙与 56.25 us 的写 0，不表示真实器件满足数据手册 60 us 最小值；主机通用采样基线为 +14 us）。ROM 命令支持 Skip ROM、Match ROM、Read ROM；功能命令支持 Convert T（固定 750 ms 虚拟时间）、Read Scratchpad（9 字节，末尾 Dallas CRC8 动态计算）、Write Scratchpad（TH/TL/Cfg），0xB4/0xB8 为文档化空操作，Search ROM/Alarm Search 未实现。温度在转换完成时从 temperature 输入采样，写入暂存器为 T×16 的 16 位二进制补码，并经 temperatureOut 发布。理想化：时隙与复位为整微秒调度事件、保留字节固定、无寄生供电、复位不中止进行中的转换、未知电平按低处理。",
   "license": "MIT",
   "engines": {
     "mica": "^0.3.0"

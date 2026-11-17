@@ -38,6 +38,10 @@
     active: bool;
     value: number;
   }
+  record ActuatorState {
+    relay: bool;
+    buzzer: bool;
+  }
   record JumperSignal {
     index: number;
     closed: bool;
@@ -66,6 +70,8 @@
   output channel display: DisplaySignal(capacity: 32, overflow: Overflow.drop_oldest);
   output channel switch: SwitchSignal(capacity: 32, overflow: Overflow.drop_oldest);
   output channel actuator: ActuatorSignal(capacity: 32, overflow: Overflow.drop_oldest);
+  /** Complete latest state for the adapter snapshot; capacity 1 is safe because later state replaces older state wholesale. */
+  output channel actuatorState: ActuatorState(capacity: 1, overflow: Overflow.drop_oldest);
   output channel jumper: JumperSignal(capacity: 16, overflow: Overflow.drop_oldest);
   output channel amplifier: AmplifierSignal(capacity: 32, overflow: Overflow.drop_oldest);
 
@@ -191,13 +197,20 @@
   fn publishActuators() {
     const relay = fusedNet{{NET_N_RELAY}}() == 0;
     const buzzer = fusedNet{{NET_N_BUZZ}}() == 0;
-    if !actuatorsInitialized || relay != relayEnergized {
-      relayEnergized = relay;
+    const relayChanged = !actuatorsInitialized || relay != relayEnergized;
+    const buzzerChanged = !actuatorsInitialized || buzzer != buzzerActive;
+    relayEnergized = relay;
+    buzzerActive = buzzer;
+    if relayChanged {
       actuator.send({ target: 0, active: relay, value: 0 });
     }
-    if !actuatorsInitialized || buzzer != buzzerActive {
-      buzzerActive = buzzer;
+    if buzzerChanged {
       actuator.send({ target: 1, active: buzzer, value: 0 });
+    }
+    // The bounded history above can drop changes of one target behind noise from the
+    // other. Every refresh that changes anything carries the complete latest state.
+    if !actuatorsInitialized || relayChanged || buzzerChanged {
+      actuatorState.send({ relay: relay, buzzer: buzzer });
     }
     actuatorsInitialized = true;
   }

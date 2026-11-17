@@ -1444,7 +1444,7 @@
           "J5 is set at 0 ms with closed:false (1-2 matrix) and J3 is open; S8 is the P42 setting key.",
           "Each temperature is held for at least 1.3 s to cover the 750 ms DS18B20 conversion. Source thresholds are Tmin=20/Tmax=30, so 19/25.0625/31 select low/normal/high.",
           "S8 is the P42 setting key; the setting page is asserted with its real source layout (DS1 [40,00,00,00], DS2 [00,40,00,00]). If S8 is unreachable, that is a functional failure, a required failure, not a pass.",
-          "Relay diagnostic (f07, /tmp/opencode/ct107d-provincial5-relay-diagnostic.md sha256 dfb6b292f0bcfd98e4e078060e264ff613c23d895ae4e649c01feb2393af86d7): two facts remain separate. (1) Source/HEX relay_open sets P2=0xA0 (LE high) before P0=0x10, so U9 briefly transparently latches the previous segment value. (2) U9/ULN/relayEnergized reach true while getSnapshot().relay is false and step-sensitive; the cache/commit root cause is not isolated. high-relay remains notMet; this is not P3/P4/1-Wire regression evidence."
+          "Relay diagnostic (f07, /tmp/opencode/ct107d-provincial5-relay-diagnostic.md sha256 dfb6b292f0bcfd98e4e078060e264ff613c23d895ae4e649c01feb2393af86d7): source/HEX relay_open sets P2=0xA0 (LE high) before P0=0x10, so U9 briefly transparently latches the previous segment value; that real short transient is retained and is not erased by the fix. U9/ULN/relayEnergized reach true and the finished 4100 ms snapshot must report relay=true through the complete actuatorState channel. high-relay is a required source expectation, not a latch relaxation."
         ],
         "limitations": [],
         "notCovered": []
@@ -2946,7 +2946,7 @@
             "type": "eeprom",
             "address": 0,
             "atMs": 600,
-            "equals": 99
+            "equals": 100
           },
           {
             "id": "dac-after-measure",
@@ -2961,7 +2961,7 @@
             "type": "display",
             "designator": "DS1",
             "atMs": 600,
-            "text": "C 09"
+            "text": "C 10"
           },
           {
             "id": "measure-two",
@@ -2975,7 +2975,7 @@
             "type": "display",
             "designator": "DS2",
             "atMs": 600,
-            "text": "9000"
+            "text": "0000"
           },
           {
             "id": "startup-distance-ds1",
@@ -2993,7 +2993,7 @@
           }
         ],
         "notes": [
-          "Startup writes 222 to EEPROM[0] and shows C 00 / 0000. Manual S4 starts two measurements; 100 cm measures 99, so the measured display is C 09 / 9000 and LED history holds 99. S4 is an independent key; failure is behavior-fail, not a limited pass.",
+          "Startup writes 222 to EEPROM[0] and shows C 00 / 0000. Manual S4 starts two measurements. The first real measurement is 100: wave_send sends five 12 us pulses, F=305291.446 us; Timer1 restarts at 305303.946 us (PC 0x28); ECHO low is at F+5882=311173.446 us; Timer2 ISR enters at 311172.672 us and returns to PC 0x2A at 311196.172 us, so JNB observes RX low only then and CLR TR1 executes at 311196.506 us. The T1 count is 0x1704=5892 (periph and R4/R5 agree), 5892*0.017=100.164 -> 100; display is C 10 with distance_last 0 -> 0000. The second measurement has no ISR overlap: T1 count 0x16EF=5871, 5871*0.017=99.807 -> 99 and remains the measure-two expectation. The old 99 for the first slot was only the 8-pulse-threshold timeout fallback (HEX 0x35-0x3D sets distance=99), not a real echo measurement. The three first-measurement expectations are exact source/timing-derived values, not actual backfill.",
           "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
         ],
         "limitations": [],
@@ -3366,7 +3366,7 @@
             "type": "uart",
             "channel": "uart1Tx",
             "atMs": 4870,
-            "includesAscii": "$99,"
+            "ascii": "$35,30\r\n$99,25.0\r\n"
           },
           {
             "id": "national10-error-mcu",
@@ -3398,10 +3398,10 @@
           }
         ],
         "notes": [
-          "All original temperature/distance/DAC/EEPROM checks and their 1200/2600/3800 ms events remain unchanged through 4300 ms. UART commands are injected only after that: PARA at 4407 ms, ST at 4707 ms, BAD at 5007 ms; the 4800-baud probe and MCU uart1Tx are asserted after each response. PARA replies exactly $35,30; ST replies with a $99, prefix (the complete temperature field remains affected by the separate 1-Wire host-slot failure); BAD replies ERROR. probeTx must equal uart1Tx byte-for-byte at 5170 ms.",
+          "All original temperature/distance/DAC/EEPROM checks and their 1200/2600/3800 ms events remain unchanged through 4300 ms. UART commands are injected only after that: PARA at 4407 ms, ST at 4707 ms, BAD at 5007 ms; the 4800-baud probe and MCU uart1Tx are asserted after each response. PARA replies exactly $35,30; ST replies exactly $99,25.0\\r\\n: temperature=(u16)(rd_temperature()*100)=2500, distance=99, and the source sprintf($%d,%d.%d) prints 25 and 0 without a second decimal zero. BAD replies ERROR. probeTx must equal uart1Tx byte-for-byte at 5170 ms.",
           "UART RX uses the source's 50 ms receive timeout; request times are intentionally non-round and assertions stay after last-byte+50 ms. Temperature/distance/DAC and EEPROM marker are required; S12 page changes and long-S13 DAC disable are required P35/P34 key paths.",
           "The source displays distance 99 for 100 cm; DAC=204 for distance above the 35 cm threshold and 21 when the DAC is disabled.",
-          "1-Wire firmware-timing diagnosis (f07): measured host read slots are 57.75-58.0 us, below the datasheet tSLOT minimum of 60 us; the next host slot begins 2.25 us before the model legal read-0 release at +60 us. Absolute transaction times are 407.727-407.787 ms (not us). Sensor raw 0x0190 and the embedded C51 float*100/cast to 2500 are correct; there is no source/HEX mismatch. tSLOT is a host minimum slot, not a fixed slave hold requirement. Strict temperature-digits notMet is retained. The shared interrupt-entry fix changes timer/UART wall phase, so the old v7 1200 ms actual must not be reused; expected temperature remains source-derived 25.00 (masks [91,237,63,63]) and the new artifact must be re-observed."
+          "1-Wire timing: at 12 MHz the host read slots are 57.833/58.083 us (694/697 cycles) and write-0 low is 56.250 us. The relaxed functional model releases read-0 at +15 us while keeping +15 us write sampling, so the original HEX reads sensor raw 0x0190 and the source float*100/cast yields 2500. This is model compatibility, not datasheet compliance; expected temperature remains source-derived 25.00 (masks [91,237,63,63]) and no source/HEX mismatch is present."
         ],
         "limitations": [],
         "notCovered": []
@@ -3497,6 +3497,7 @@
         ],
         "notes": [
           "Startup actively drives LEDs on and the buzzer for 1 s, then allinit turns them off. S7 opens the ultrasonic page; 20 cm is measured as 19, below the 30 cm alarm threshold. The S7 toggle is a strict independent-key path.",
+          "wave_rec flips TX 10 times with the Timer0 12T/12 us reload, i.e. five complete 12 us pulses; the last falling edge is F=120 us. With distanceCm=20, D=round(2*0.20/340*1e6)=1176 us; Timer0 restarts at 0 with 1 us counts, so count~1176 and dis=count*0.017=19.992 -> 19. The old 255 was the previous model's 8-pulse threshold timeout, not a timer/formula error; 019 and relay=true remain exact source expectations.",
           "The 100 cm non-alarm case is not covered in this run.",
           "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
         ],

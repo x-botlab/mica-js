@@ -58,6 +58,10 @@ interface ActuatorValue {
   readonly active: boolean;
   readonly value: number;
 }
+interface ActuatorStateValue {
+  readonly relay: boolean;
+  readonly buzzer: boolean;
+}
 interface JumperValue {
   readonly index: number;
   readonly closed: boolean;
@@ -128,6 +132,10 @@ export const create: DeviceFactory = (context) => {
   const leds = Array.from({ length: 8 }, () => 0);
   let relay = false;
   let buzzer = false;
+  // Last value announced by the bounded history channel. Kept separately from the
+  // authoritative snapshot so a dropped event can be converged once at batch end.
+  let lastNotifiedRelay: boolean | undefined;
+  let lastNotifiedBuzzer: boolean | undefined;
   let hall = false;
   let amplifier: AmplifierValue = { ...BOARD_DEFAULTS.lm324 };
   let eeprom = new Uint8Array(0);
@@ -393,9 +401,13 @@ export const create: DeviceFactory = (context) => {
           value.digit4,
         ];
       }
-      for (const message of (outputs['actuator'] ?? []) as readonly { value: ActuatorValue }[]) {
-        if (message.value.target === 0) relay = message.value.active;
-        else if (message.value.target === 1) buzzer = message.value.active;
+      // The bounded `actuator` channel is history only. Snapshot state comes from the
+      // complete-state channel, whose capacity 1 always retains the latest value.
+      for (const message of (outputs['actuatorState'] ?? []) as readonly {
+        value: ActuatorStateValue;
+      }[]) {
+        relay = message.value.relay;
+        buzzer = message.value.buzzer;
       }
       for (const message of (outputs['amplifier'] ?? []) as readonly {
         value: AmplifierValue;
@@ -452,8 +464,25 @@ export const create: DeviceFactory = (context) => {
       }
       for (const message of (outputs['actuator'] ?? []) as readonly { value: ActuatorValue }[]) {
         const value = message.value;
-        if (value.target === 0) signal('K1', 'energized', value.active ? 1 : 0);
-        else if (value.target === 1) signal('SP1', 'active', value.active ? 1 : 0);
+        if (value.target === 0) {
+          lastNotifiedRelay = value.active;
+          signal('K1', 'energized', value.active ? 1 : 0);
+        } else if (value.target === 1) {
+          lastNotifiedBuzzer = value.active;
+          signal('SP1', 'active', value.active ? 1 : 0);
+        }
+      }
+      // History is bounded, so the final transition of one target can be evicted by
+      // noise from the other. Converge once per batch when the last notification does
+      // not equal the complete state. This is an end-of-batch state, not a fabricated
+      // historical edge; the callback already sees the final batch snapshot.
+      if (lastNotifiedRelay !== relay) {
+        lastNotifiedRelay = relay;
+        signal('K1', 'energized', relay ? 1 : 0);
+      }
+      if (lastNotifiedBuzzer !== buzzer) {
+        lastNotifiedBuzzer = buzzer;
+        signal('SP1', 'active', buzzer ? 1 : 0);
       }
       for (const message of (outputs['jumper'] ?? []) as readonly { value: JumperValue }[]) {
         const value = message.value;
