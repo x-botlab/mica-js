@@ -181,6 +181,9 @@ export function startFusedDisplayGuest(
   async function activate(): Promise<void> {
     if (closing) return;
     const attempt = sequence;
+    // Host activation and model events use different ports; synchronize on the model lane first.
+    await modelChannel?.settle();
+    if (closing || attempt !== sequence) return;
     for (const [instanceId, session] of [...sessions]) {
       try {
         await session.activate();

@@ -243,6 +243,8 @@ export interface IFusedModelChannelService {
   call(instanceId: string, method: string, params: Value): Promise<Value>;
   subscribe(instanceId: string, event: string): void;
   unsubscribe(instanceId: string, event: string): void;
+  /** Replies on the model lane after every event already sent on that lane. */
+  settle(): void;
 }
 
 /** Model event lane served by the display guest to the simulation guest. */

@@ -44,6 +44,7 @@ export function startSimulationModelChannel(
     unsubscribe(instanceId, event) {
       subscriptions.delete(channelKey(instanceId, event));
     },
+    settle: () => undefined,
   });
   return {
     deliver(event) {

@@ -39,6 +39,7 @@ const cleanup: Array<() => void> = [];
 afterEach(() => {
   for (const dispose of cleanup.splice(0)) dispose();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 // ---------------------------------------------------------------- fake DOM
@@ -417,6 +418,7 @@ function harness(
     readonly gate?: Promise<void>;
     readonly withWorkers?: boolean;
     readonly workerTimeoutMs?: number;
+    readonly contentTimeoutMs?: number;
   } = {},
 ): IHarness {
   const outer = new FakeOuterWindow(options.withWorkers ?? true);
@@ -433,8 +435,9 @@ function harness(
   });
   if (outer.workers !== undefined) outer.workers.controller.gate = options.gate;
   const started = startHtmlViewEnvironment({
-    workerTimeoutMs: options.workerTimeoutMs ?? 50,
-    contentTimeoutMs: 50,
+    workerTimeoutMs: options.workerTimeoutMs ?? 10_000,
+    // Deadline tests opt into a budget and advance a controlled clock.
+    contentTimeoutMs: options.contentTimeoutMs ?? 0,
     contentUrl: `${ENVIRONMENT_ORIGIN}/p/__mica_view__/content.html`,
   });
   void started.catch(() => undefined);
@@ -797,7 +800,8 @@ describe('HTML view environment bootstrap', () => {
   });
 
   it('ignores a handshake from a foreign origin and fails after the budget', async () => {
-    const run = harness();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const run = harness({ contentTimeoutMs: 50 });
     await run.started;
     const frame = run.frame();
     frame.dispatch('load');
@@ -810,6 +814,9 @@ describe('HTML view environment bootstrap', () => {
     expect(frame.contentWindow.connectMessage()).toBeUndefined();
     // A handshake of another origin never consumes the author port of this view.
     expect(run.host.contentPortCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(49);
+    expect(run.host.failures).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() =>
       expect(run.host.failures).toEqual([
         { code: 'view/execution-failed', message: 'The HTML view document did not start in time.' },
@@ -818,18 +825,20 @@ describe('HTML view environment bootstrap', () => {
   });
 
   it('refuses a late hello of a view that already failed instead of granting a port', async () => {
-    const run = harness();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const run = harness({ contentTimeoutMs: 50 });
     await run.started;
     const frame = run.frame();
     frame.dispatch('load');
     const token = new URL(frame.src).searchParams.get(HTML_VIEW_FRAME_PARAM) ?? '';
+    await vi.advanceTimersByTimeAsync(50);
     await vi.waitFor(() =>
       expect(run.host.failures).toEqual([
         { code: 'view/execution-failed', message: 'The HTML view document did not start in time.' },
       ]),
     );
     frame.contentWindow.postToParent({ type: HTML_VIEW_CHILD_HELLO, token });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await vi.advanceTimersByTimeAsync(10);
     expect(run.host.contentPortCalls).toBe(0);
     expect(frame.contentWindow.connectMessage()).toBeUndefined();
     expect(run.host.failures).toHaveLength(1);

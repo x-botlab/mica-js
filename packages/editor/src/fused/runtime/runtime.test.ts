@@ -6,7 +6,7 @@ import type {
   UnifiedDeviceManifest,
 } from '@mica-js/document/fused';
 import type { ModelEvent, Value } from '@mica-js/sdk/fused';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startFusedDisplayGuest } from './display/guest';
 import type { IFusedOverlaySurface } from './display/view';
 import { createFusedRuntime } from './host/runtime';
@@ -330,6 +330,7 @@ function fakeWorker(
 interface WorkbenchOptions {
   /** Makes the model fire an event while it initializes, before any presentation initialize runs. */
   readonly initialEvent?: boolean;
+  readonly modelMessageDelayMs?: number;
   /** Makes the next view factory call throw, to prove one broken presentation is contained. */
   readonly failFirstView?: boolean;
 }
@@ -377,6 +378,13 @@ function workbench(options: WorkbenchOptions = {}): Workbench {
   const workers: IFusedWorkerFactories = {
     createSimulationWorker() {
       const worker = fakeWorker((port, ports) => {
+        const modelPort = ports[0];
+        if (modelPort !== undefined && options.modelMessageDelayMs !== undefined) {
+          const postMessage = modelPort.postMessage.bind(modelPort);
+          vi.spyOn(modelPort, 'postMessage').mockImplementation((...args) => {
+            setTimeout(() => postMessage(...args), options.modelMessageDelayMs);
+          });
+        }
         const guest = startFusedSimulationGuest(port, {
           ports,
           importModule: async (code) => {
@@ -760,17 +768,23 @@ describe('fused runtime bridge', () => {
     }
   });
 
-  it('delivers initial model events to factory subscriptions before initialize', async () => {
-    const bench = workbench({ initialEvent: true });
-    const { runtime } = await start({ mode: 'run', bench });
+  it.each([0, 25])(
+    'delivers initial model events before initialize with model lane delay %s',
+    async (modelMessageDelayMs) => {
+      const bench = workbench({ initialEvent: true, modelMessageDelayMs });
+      const { runtime } = await start({ mode: 'run', bench });
 
-    expect(runtime.getState().status).toBe('running');
-    const view = bench.views[0]!;
-    // The subscription was registered by the factory, before the models existed.
-    expect(view.events).toEqual([true]);
-    // Initial events precede the author initialize hook (RFC 0025 startup barrier).
-    expect(view.trace).toEqual(['event:true', 'initialize']);
-  });
+      expect(runtime.getState().status).toBe('running');
+      const view = bench.views[0]!;
+      // The subscription was registered by the factory, before the models existed.
+      expect(view.events).toEqual([true]);
+      // Initial events precede the author initialize hook (RFC 0025 startup barrier).
+      expect(view.trace).toEqual(['event:true', 'initialize']);
+
+      await runtime.reset();
+      expect(bench.views.at(-1)!.trace).toEqual(['event:true', 'initialize']);
+    },
+  );
 
   it('rebuilds models and presentation on reset', async () => {
     const { runtime, bench } = await start({ mode: 'run' });

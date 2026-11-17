@@ -27,7 +27,7 @@ export interface IFusedDisplayModelChannel {
   /** Drops every listener of a released instance. */
   release(instanceId: string): void;
   /**
-   * Resolves once every subscription started so far reached the simulation guest.
+   * Resolves once subscriptions reach the simulation guest and prior model events reach this guest.
    *
    * Preparation awaits this before the models are mounted, so an event produced while a model
    * initializes is never lost to a subscription that is still in flight.
@@ -89,6 +89,7 @@ export function startDisplayModelChannel(
       while (inFlight.size > 0) {
         await Promise.allSettled([...inFlight]);
       }
+      await lane.settle();
     },
     dispose() {
       router.dispose();
