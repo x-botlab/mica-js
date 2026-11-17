@@ -1,25 +1,24 @@
 import type { Event } from '@mica-js/core/lifecycle';
 import type { DeviceLock, FusedDocument } from '@mica-js/document/fused';
-import type { FirmwareArtifact, FirmwareProject, FirmwareProjectSource } from '@mica-js/sdk/fused';
-import type { HostFs } from '@mica-js/widget';
 
-export interface IFileSystemProvider extends HostFs {
-  write(uri: string, data: Uint8Array): Promise<void>;
+export interface IAssetInfo {
+  readonly id: string;
+  /** File name including its extension; used to identify program formats. */
+  readonly name: string;
 }
 
-export type { DeviceRegistry as IDeviceProvider } from '@mica-js/document/fused';
-
-export interface IFirmwareProjectCreationContext {
-  readonly documentUri: string;
-  readonly instanceId: string;
-  readonly device: DeviceLock;
-  readonly propertyKey: string;
+export interface IAssetRequest {
+  readonly kind: 'image' | 'binary' | 'program';
+  readonly formats?: readonly string[];
   readonly signal: AbortSignal;
 }
 
-export interface IFirmwareProjectProvider extends FirmwareProjectSource {
-  create?(context: IFirmwareProjectCreationContext): Promise<FirmwareProject | undefined>;
+export interface IAssetProvider {
+  select(request: IAssetRequest): Promise<IAssetInfo | undefined>;
+  read(assetId: string, signal: AbortSignal): Promise<Uint8Array>;
 }
+
+export type { DeviceRegistry as IDeviceProvider } from '@mica-js/document/fused';
 
 export type AccessDecision =
   | { readonly allowed: true }
@@ -31,7 +30,6 @@ export interface IDocumentAccess {
 }
 
 export interface IDocumentAccessContext {
-  readonly uri: string;
   readonly document: FusedDocument;
 }
 
@@ -44,5 +42,3 @@ export interface IWorkbenchAccessProvider {
   canAddDevice(context: IDeviceAdditionContext): Promise<AccessDecision>;
   readonly onDidChange: Event<void>;
 }
-
-export type { FirmwareArtifact, FirmwareProject };

@@ -4,6 +4,10 @@ export type {
   DevicePropertyType,
   PropertyOption,
   FirmwareAddressSpace,
+  ProgramAddressSpace,
+  ProgramDefaults,
+  ProgramFormat,
+  ProgramLoader,
   DevicePropertyDescriptor,
   PinDeclaration,
   UnifiedDeviceEntries,
@@ -15,8 +19,10 @@ export type {
   ResourceMode,
   ResourceReference,
   FirmwareFileReference,
-  FirmwareProjectReference,
   FirmwareReference,
+  ProgramFileReference,
+  ProgramProjectReference,
+  ProgramReference,
   PropertyValue,
 } from './property';
 export { FUSED_DOCUMENT_VERSION } from './document';
@@ -45,4 +51,7 @@ export type {
   ReadonlyBytes,
   FirmwareSegment,
   FirmwareImage,
+  MemoryProgram,
+  ProgramFiles,
+  ProgramSegment,
 } from './package';

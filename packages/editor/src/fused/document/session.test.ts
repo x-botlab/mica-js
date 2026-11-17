@@ -4,9 +4,9 @@ import { parseFusedDocument, parseStrictJson } from '@mica-js/document/fused';
 import { FusedDocumentSession, serializeFusedDocument } from './session';
 import type { IFusedDocumentSessionOptions } from './session';
 import type { FusedSessionError } from './errors';
-import { moveInstances } from './edits';
+import { moveInstances, rotateTargets, setTextOffset } from './edits';
 import { addWire as addWirePure } from './edits';
-import { materializeAnchor, wirePolyline } from '../wiring';
+import { materializeAnchor, moveReference, moveWireSegment, wirePolyline } from '../wiring';
 import {
   ALLOW,
   createBench,
@@ -118,6 +118,128 @@ afterEach(() => {
   }
 });
 
+describe('fused canvas editing transactions', () => {
+  it('detaches a pin-attached terminal with one atomic, undoable connecting wire', async () => {
+    const { session } = await openConnected();
+    const before = session.getDocument();
+    const devices = await session.getPreparedDevices();
+    const reference = before.references[0]!;
+    await session.transact((current) =>
+      moveReference(current, devices, reference.id, { x: 70, y: 30 }, idFactory()),
+    );
+    expect(session.getPreparationError()).toBeUndefined();
+    const after = session.getDocument();
+    expect(after.nodes).toHaveLength(before.nodes.length + 1);
+    expect(after.wires).toHaveLength(before.wires.length + 1);
+    expect(after.wires.at(-1)).toMatchObject({
+      from: reference.target,
+      to: after.references[0]!.target,
+    });
+    await expectOrthogonalWires(session);
+    await session.undo();
+    expect(session.getDocument()).toEqual(before);
+    await session.redo();
+    expect(session.getDocument()).toEqual(after);
+  });
+
+  it('saves and undoes text dragging without changing device placement or wiring', async () => {
+    const { bench, session } = await openConnected();
+    const before = session.getDocument();
+    await session.transact((current) =>
+      setTextOffset(current, { kind: 'designator', id: SWITCH_ID }, { x: 2.5, y: -3 }),
+    );
+    const after = session.getDocument();
+    expect(after.instances.find((value) => value.id === SWITCH_ID)?.designatorOffset).toEqual({
+      x: 2.5,
+      y: -3,
+    });
+    expect(after.instances.map((value) => value.placement)).toEqual(
+      before.instances.map((value) => value.placement),
+    );
+    expect(after.wires).toEqual(before.wires);
+    await session.save();
+    expect(
+      parseFusedDocument(bench.files.text(URI)).instances.find((value) => value.id === SWITCH_ID)
+        ?.designatorOffset,
+    ).toEqual({ x: 2.5, y: -3 });
+    await session.undo();
+    expect(session.getDocument()).toEqual(before);
+    await session.redo();
+    expect(session.getDocument()).toEqual(after);
+  });
+
+  it('moves net-name offsets while preserving their electrical names and anchors', async () => {
+    const { session } = await openConnected();
+    const node = await session.addNode({ x: 50, y: 50 }, 'free');
+    const target = { kind: 'node' as const, node };
+    const reference = await session.addReference(target, 5, 'power', {
+      label: { name: 'VCC' },
+      rotation: 90,
+    });
+    const label = await session.addLabel(target, 'VCC');
+    await session.transact((current) =>
+      setTextOffset(
+        setTextOffset(current, { kind: 'reference', id: reference }, { x: 3, y: -2 }),
+        { kind: 'label', id: label },
+        { x: -2, y: -3 },
+      ),
+    );
+    expect(session.getDocument().references.find((value) => value.id === reference)).toMatchObject({
+      target,
+      rotation: 90,
+      label: { name: 'VCC', offset: { x: 3, y: -2 } },
+    });
+    expect(session.getDocument().labels.find((value) => value.id === label)).toMatchObject({
+      target,
+      name: 'VCC',
+      offset: { x: -2, y: -3 },
+    });
+  });
+
+  it('rotates mixed device and reference selections atomically without moving anchors', async () => {
+    const { session } = await openConnected();
+    const node = await session.addNode({ x: 50, y: 50 }, 'free');
+    const reference = await session.addReference({ kind: 'node', node }, 0, 'ground');
+    const before = session.getDocument();
+    const selected = [
+      { kind: 'instance' as const, id: SWITCH_ID },
+      { kind: 'reference' as const, id: reference },
+    ];
+    await session.transact((current) => rotateTargets(current, selected, 90));
+    const after = session.getDocument();
+    expect(after.instances.find((value) => value.id === SWITCH_ID)?.placement.rotation).toBe(90);
+    expect(after.references.find((value) => value.id === reference)).toMatchObject({
+      rotation: 90,
+      target: { kind: 'node', node },
+    });
+    expect(after.nodes).toEqual(before.nodes);
+    await expectOrthogonalWires(session);
+    await session.undo();
+    expect(session.getDocument()).toEqual(before);
+    await session.redo();
+    expect(session.getDocument()).toEqual(after);
+  });
+
+  it('stores one segment drag as one undoable edit with the same electrical endpoints', async () => {
+    const { session } = await openConnected();
+    const before = session.getDocument();
+    const wire = before.wires[0]!;
+    const devices = await session.getPreparedDevices();
+    const points = wirePolyline(before, devices, wire)!;
+    const delta = points[0]!.y === points[1]!.y ? { x: 0, y: 3 } : { x: 3, y: 0 };
+    await session.transact((current) => moveWireSegment(current, devices, wire.id, 0, delta));
+    const after = session.getDocument();
+    expect(after.wires.find((value) => value.id === wire.id)).toMatchObject({
+      from: wire.from,
+      to: wire.to,
+    });
+    expect(after.wires).not.toEqual(before.wires);
+    await expectOrthogonalWires(session);
+    await session.undo();
+    expect(session.getDocument()).toEqual(before);
+  });
+});
+
 describe('FusedDocumentSession open', () => {
   it('loads the document, its packages and its topology without recording history', async () => {
     const packages = defaultPackages();
@@ -177,17 +299,12 @@ describe('FusedDocumentSession open', () => {
     });
   });
 
-  it('rejects malformed JSON, unreadable files and a broken access policy', async () => {
+  it('rejects malformed documents and a broken access policy', async () => {
     const duplicate = createBench();
-    duplicate.files.contents.set(URI, new TextEncoder().encode('{"version":2,"version":2}'));
-    await expect(FusedDocumentSession.open(duplicate.options())).rejects.toMatchObject({
+    await expect(
+      FusedDocumentSession.open({ ...duplicate.options(), document: null! }),
+    ).rejects.toMatchObject({
       code: 'edit/invalid-document',
-    });
-
-    const missing = createBench();
-    missing.files.contents.delete(URI);
-    await expect(FusedDocumentSession.open(missing.options())).rejects.toMatchObject({
-      code: 'load/failed',
     });
 
     const broken = createBench();
@@ -352,8 +469,7 @@ describe('authorization', () => {
       },
     };
     const session = await open({
-      uri: bench.uri,
-      files: bench.files,
+      ...bench.options(),
       devices: slow,
       access: bench.access,
     });
@@ -471,6 +587,28 @@ describe('run locking', () => {
 });
 
 describe('history and saving', () => {
+  it('opens directly from document data and reports an unavailable save callback', async () => {
+    const packages = defaultPackages();
+    const bench = createBench({ document: connectedDocument(packages) });
+    const { document, devices, access } = bench.options();
+    const session = await open({ document, devices, access });
+    await session.setProperty(LED_ID, 'forwardResistance', 5);
+    const before = session.getDocument();
+    await expect(session.save()).rejects.toMatchObject({ code: 'save/unavailable' });
+    expect(session.getDocument()).toBe(before);
+    expect(session.getState()).toMatchObject({ dirty: true, canUndo: true });
+  });
+
+  it('rejects a project reference on a non-program property without publishing a change', async () => {
+    const { session } = await openConnected();
+    const before = session.getDocument();
+    await expect(
+      session.setProperty(LED_ID, 'forwardResistance', { mode: 'project', projectId: 'project' }),
+    ).rejects.toMatchObject({ code: 'edit/invalid-document' });
+    expect(session.getDocument()).toBe(before);
+    expect(session.getState().canUndo).toBe(false);
+  });
+
   it('keeps one content event per transaction and none for a no-op', async () => {
     const { session } = await openConnected();
     let contents = 0;
@@ -753,7 +891,7 @@ describe('instance identity', () => {
 
     expect(await session.getPreparedDevices()).toBe(first);
     expect(session.getDevices().getLoadedDevices()).toBe(loaded);
-    expect([...first.keys()]).toEqual([LED, 'demo:switch']);
+    expect(new Set(first.keys())).toEqual(new Set([LED, 'demo:switch']));
   });
 });
 

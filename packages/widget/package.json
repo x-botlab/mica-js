@@ -11,6 +11,16 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
+    "./audio-host": {
+      "source": "./src/audio-host.ts",
+      "types": "./dist/audio-host.d.ts",
+      "import": "./dist/audio-host.js"
+    },
+    "./audio-guest": {
+      "source": "./src/audio-guest.ts",
+      "types": "./dist/audio-guest.d.ts",
+      "import": "./dist/audio-guest.js"
+    },
     ".": {
       "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
@@ -39,6 +49,14 @@
   "publishConfig": {
     "access": "public",
     "exports": {
+      "./audio-host": {
+        "types": "./dist/audio-host.d.ts",
+        "import": "./dist/audio-host.js"
+      },
+      "./audio-guest": {
+        "types": "./dist/audio-guest.d.ts",
+        "import": "./dist/audio-guest.js"
+      },
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"

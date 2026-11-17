@@ -7,11 +7,13 @@
  * simulation guest through the host.
  */
 import { Emitter } from '@mica-js/core/lifecycle';
+import { createWidgetAudioRuntime } from '@mica-js/widget/audio-guest';
+import { fusedAudio } from '../audio';
 import { createRpc } from '@mica-js/core/rpc';
 import type { RpcEndpoint } from '@mica-js/core/rpc';
 import type { DeviceLock } from '@mica-js/document/fused';
 import type { RuntimeDiagnostic } from '@mica-js/sdk/fused';
-import { fusedDisplayService } from '../protocol';
+import { fusedDisplayService, fusedHostAudioService } from '../protocol';
 import type {
   IFusedDisplayPrepareRequest,
   IFusedInvalidateEvent,
@@ -60,6 +62,16 @@ export function startFusedDisplayGuest(
     options.createSurface ?? ((width, height) => new OffscreenCanvas(width, height));
   const packages = createHostPackageGateway(endpoint);
   const diagnostics = new Emitter<RuntimeDiagnostic>();
+  const audio = createWidgetAudioRuntime({
+    onListenerError: (instanceId, cause) =>
+      diagnostics.fire({
+        code: 'audio/listener-failed',
+        message: messageOf(cause),
+        instanceId,
+      }),
+  });
+  const hostAudio = endpoint.getProxy(fusedHostAudioService);
+  const audioSessions = new Map<string, string>();
   const invalidations = new Emitter<IFusedInvalidateEvent>();
   const modelPort = options.ports?.[0];
   const modelChannel: IFusedDisplayModelChannel | undefined =
@@ -75,6 +87,8 @@ export function startFusedDisplayGuest(
   endpoint.register(
     fusedDisplayService,
     {
+      attachAudio: (port) => audio.attachPort(port),
+      setAudioState: (state) => audio.setState(state),
       prepare,
       activate,
       render,
@@ -112,12 +126,24 @@ export function startFusedDisplayGuest(
     const attempt = ++sequence;
     dropSessions();
     for (const instance of request.instances) {
+      if (instance.view === undefined) continue;
       const instanceId = instance.instanceId;
       try {
+        if (request.mode === 'run') {
+          const info = await hostAudio.open(instanceId);
+          if (closing || attempt !== sequence) {
+            if (info.session !== undefined)
+              void hostAudio.close(instanceId, info.session).catch(() => undefined);
+            return;
+          }
+          audio.open(instanceId, info);
+          if (info.session !== undefined) audioSessions.set(instanceId, info.session);
+        } else audio.open(instanceId, undefined);
         const session = await createViewSession({
           instance,
           mode: request.mode,
           model: request.mode === 'run' ? modelChannel?.client(instance) : undefined,
+          audio: fusedAudio(audio.api(instanceId)),
           readAsset: (path) => readAsset(instance.lock, path),
           importModule,
           createSurface,
@@ -132,6 +158,7 @@ export function startFusedDisplayGuest(
         }
         sessions.set(instanceId, session);
       } catch (cause) {
+        releaseAudio(instanceId);
         // One broken presentation must not take the other instances down (RFC 0025).
         report({
           code: 'runtime/presentation-failed',
@@ -209,6 +236,7 @@ export function startFusedDisplayGuest(
   }
 
   function release(instanceId: string): void {
+    releaseAudio(instanceId);
     const session = sessions.get(instanceId);
     if (session === undefined) return;
     sessions.delete(instanceId);
@@ -223,9 +251,11 @@ export function startFusedDisplayGuest(
   }
 
   function dropSessions(): void {
+    for (const instanceId of [...audioSessions.keys()]) releaseAudio(instanceId);
     const current = sessions;
     sessions = new Map<string, IFusedViewSession>();
     for (const session of current.values()) {
+      releaseAudio(session.instanceId);
       session.dispose();
       modelChannel?.release(session.instanceId);
     }
@@ -238,11 +268,19 @@ export function startFusedDisplayGuest(
       sequence += 1;
       dropSessions();
       modelChannel?.dispose();
+      audio.dispose();
       endpoint.dispose();
       diagnostics.dispose();
       invalidations.dispose();
     })();
     return disposal;
+  }
+
+  function releaseAudio(instanceId: string): void {
+    audio.release(instanceId);
+    const token = audioSessions.get(instanceId);
+    audioSessions.delete(instanceId);
+    if (token !== undefined) void hostAudio.close(instanceId, token).catch(() => undefined);
   }
 }
 

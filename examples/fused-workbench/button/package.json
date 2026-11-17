@@ -3,12 +3,49 @@
   "name": "button",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "displayName": "轻触开关",
   "designatorPrefix": "S",
   "engines": {
     "mica": "^1.0.0"
   },
   "properties": {
+    "program": {
+      "type": "program",
+      "title": "内存程序示例",
+      "loader": "memory",
+      "formats": [
+        "bin",
+        "hex",
+        "elf"
+      ],
+      "addressSpaces": {
+        "flash": {
+          "title": "Flash",
+          "start": 0,
+          "size": 65536
+        }
+      },
+      "defaults": {
+        "addressSpace": "flash",
+        "loadAddress": 256
+      },
+      "templates": [
+        "demo-memory"
+      ],
+      "nullable": true,
+      "default": null
+    },
+    "scripts": {
+      "type": "program",
+      "title": "文件集程序示例",
+      "loader": "filesystem",
+      "templates": [
+        "demo-scripts"
+      ],
+      "nullable": true,
+      "default": null
+    },
     "label": {
       "type": "string",
       "default": "按下",

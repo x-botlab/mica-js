@@ -10,7 +10,25 @@ import type { PropertyValue } from './property';
 
 /** Predefined property value kinds of a device property description (RFC 0009 / RFC 0020). */
 export type DevicePropertyType =
-  'string' | 'integer' | 'number' | 'boolean' | 'color' | 'enum' | 'image' | 'binary' | 'firmware';
+  | 'string'
+  | 'integer'
+  | 'number'
+  | 'boolean'
+  | 'color'
+  | 'enum'
+  | 'image'
+  | 'binary'
+  | 'firmware'
+  | 'program';
+
+export type ProgramLoader = 'memory' | 'filesystem';
+export type ProgramFormat = 'bin' | 'hex' | 'elf';
+export type ProgramAddressSpace = FirmwareAddressSpace;
+
+export interface ProgramDefaults {
+  readonly addressSpace: string;
+  readonly loadAddress?: number;
+}
 
 /** One selectable `enum` option (RFC 0009). */
 export interface PropertyOption {
@@ -72,6 +90,10 @@ export interface DevicePropertyDescriptor {
   readonly addressSpace?: string;
   /** `firmware`: default BIN load address inside the default address space. */
   readonly loadAddress?: number;
+  readonly loader?: ProgramLoader;
+  readonly formats?: readonly ProgramFormat[];
+  readonly defaults?: ProgramDefaults;
+  readonly templates?: readonly string[];
 }
 
 /** Display information of one declared pin (RFC 0020). */

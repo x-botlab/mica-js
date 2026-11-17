@@ -7,6 +7,7 @@ import { build, normalizePath, type AliasOptions } from 'vite';
 import { assertSelfContained, modelExpression, stripModelSource } from './content.js';
 import type { UnifiedDeviceManifest } from '@mica-js/document/fused';
 import type { LoadedDevicePackage } from './unified-manifest.js';
+import { readProgramDirectory } from '../fused/node.js';
 import {
   findSource,
   isContained,
@@ -194,6 +195,16 @@ export async function collectDevicePackage(
     const reference = property.default;
     if (reference === null || typeof reference !== 'object') continue;
     if (reference.mode !== 'package' || typeof reference.src !== 'string') continue;
+    if (property.type === 'program' && property.loader === 'filesystem') {
+      const files = await readProgramDirectory(sourceRoot, reference.src);
+      if (files.length === 0)
+        throw new Error(`Program default directory '${reference.src}' has no files to publish.`);
+      for (const file of files) {
+        const path = `${reference.src}/${file.path}`;
+        claim(path, resolve(sourceRoot, ...path.split('/')), file.data);
+      }
+      continue;
+    }
     await claimSource(reference.src, `properties.${name}.default`);
   }
 

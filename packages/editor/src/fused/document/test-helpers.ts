@@ -3,6 +3,7 @@
  * access policy. Nothing here is shipped code; the module is not a test file so it can be shared.
  */
 import { createHash } from 'node:crypto';
+import { parseFusedDocument } from '@mica-js/document/fused';
 import { Emitter } from '@mica-js/core/lifecycle';
 import type { Event } from '@mica-js/core/lifecycle';
 import type {
@@ -443,8 +444,9 @@ export function createBench(options: IBenchOptions = {}): IBench {
     packages,
     access,
     options: () => ({
-      uri: URI,
-      files,
+      document: parseFusedDocument(files.text(URI)),
+      saveDocument: async (value) =>
+        files.write(URI, new TextEncoder().encode(`${JSON.stringify(value, null, 2)}\n`)),
       devices: packages.registry,
       access,
       ...(options.historyLimit === undefined ? {} : { historyLimit: options.historyLimit }),

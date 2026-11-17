@@ -4,12 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { buildDevice } from '@mica-js/sdk/device-build';
 import { readDirectoryPackage } from '@mica-js/sdk/fused/node';
 import { build, createServer } from 'vite';
+import { createMcuCircuit } from './workbench-circuits.mjs';
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = resolve(app, '..', '..', 'examples', 'fused-workbench');
 const artifacts = resolve(app, 'public', 'components', 'workbench');
 const devices = [];
-for (const name of ['button', 'led']) {
+for (const name of ['button', 'led', 'at89c52', 'buzzer']) {
   const root = resolve(source, name);
   const outDir = resolve(root, 'dist');
   await buildDevice({ root, manifest: 'package.json', model: 'src/model.ddl', outDir });
@@ -64,6 +65,7 @@ const document = {
 };
 await writeFile(resolve(artifacts, 'catalog.json'), JSON.stringify(devices));
 await writeFile(resolve(artifacts, 'circuit.sch'), JSON.stringify(document, null, 2));
+await writeFile(resolve(artifacts, 'mcu.sch'), JSON.stringify(createMcuCircuit(devices), null, 2));
 await cp(
   resolve(app, '..', '..', 'packages', 'editor', 'dist', 'view-environment'),
   resolve(artifacts, 'environment'),

@@ -1,5 +1,6 @@
 export { createWorkbench } from './workbench';
 export type * from './types';
+export type * from './runtime/audio';
 export type * from './providers';
 export type {
   IWorkbenchTheme,

@@ -1,5 +1,6 @@
+import { isAbsolute } from 'node:path';
 import { build } from 'rolldown';
-import type { Plugin, ResolvedConfig } from 'vite';
+import { normalizePath, type Plugin, type ResolvedConfig } from 'vite';
 
 const SANDBOX_QUERY = '?sandbox-worker';
 const SANDBOX_CODE_QUERY = '?sandbox-worker-code';
@@ -22,6 +23,7 @@ export interface SandboxPluginOptions {
 
 function sandboxWorkerPlugin(explicitAliases: readonly SandboxAlias[]): Plugin {
   const bundles = new Map<string, Promise<string>>();
+  const dependencies = new Map<string, Set<string>>();
   let aliases: readonly SandboxAlias[] = explicitAliases;
   let config: ResolvedConfig | undefined;
 
@@ -58,15 +60,25 @@ function sandboxWorkerPlugin(explicitAliases: readonly SandboxAlias[]): Plugin {
       const entry = id.slice((isCode ? SANDBOX_CODE_PREFIX : SANDBOX_PREFIX).length);
       let bundled = bundles.get(entry);
       if (!bundled) {
+        const files = new Set<string>();
+        dependencies.set(entry, files);
         bundled = bundleSelfContainedScript(entry, aliases, {
           minify: config?.command === 'build',
+          dependencies: files,
         }).then((code) => {
           config?.logger.info(`mica-sandbox: bundled guest entry ${describeEntry(entry)}`);
           return code;
         });
         bundles.set(entry, bundled);
       }
-      const code = await bundled;
+      let code: string;
+      try {
+        code = await bundled;
+      } catch (error) {
+        if (bundles.get(entry) === bundled) bundles.delete(entry);
+        throw error;
+      }
+      for (const file of dependencies.get(entry) ?? []) this.addWatchFile(file);
       // A package that ships its guest inline imports the code string and builds the worker itself.
       if (isCode) return `export default ${JSON.stringify(code)};`;
       return `import { SandboxWorker } from '@mica-js/sandbox';\n\
@@ -75,6 +87,20 @@ export default class ${sandboxClassName(entry)} extends SandboxWorker {\n\
     super(${JSON.stringify(code)}, options);\n\
   }\n\
 }\n`;
+    },
+    handleHotUpdate(context) {
+      const affected = new Set(context.modules);
+      for (const [entry, files] of dependencies) {
+        if (!files.has(normalizePath(context.file))) continue;
+        bundles.delete(entry);
+        for (const prefix of [SANDBOX_PREFIX, SANDBOX_CODE_PREFIX]) {
+          const module = context.server.moduleGraph.getModuleById(`${prefix}${entry}`);
+          if (module === undefined) continue;
+          context.server.moduleGraph.invalidateModule(module);
+          affected.add(module);
+        }
+      }
+      return [...affected];
     },
   };
 }
@@ -102,6 +128,7 @@ function toPascalCase(value: string): string {
 
 interface BundleOptions {
   readonly minify: boolean;
+  readonly dependencies: Set<string>;
 }
 
 /**
@@ -127,6 +154,14 @@ async function bundleSelfContainedScript(
       minify: options.minify,
     },
     write: false,
+    plugins: [
+      {
+        name: 'mica-sandbox:dependencies',
+        moduleParsed(module) {
+          if (isAbsolute(module.id)) options.dependencies.add(normalizePath(module.id));
+        },
+      },
+    ],
   });
   const outputs = Array.isArray(result) ? result : [result];
   const chunks = outputs.flatMap((output) => output.output).filter((item) => item.type === 'chunk');

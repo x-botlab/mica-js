@@ -8,3 +8,6 @@
 
 - `@mica-js/sandbox`：`SandboxWorker` 及沙箱运行时类型。
 - `@mica-js/sandbox/vite`：`micaSandboxPlugins()`，支持沙箱 worker 的构建与加载。
+
+开发服务器会监听 worker 入口及其传递依赖；文件变化时重新打包，并使
+`?sandbox-worker` 和 `?sandbox-worker-code` 两种导入失效，触发页面热更新。

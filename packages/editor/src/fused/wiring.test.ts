@@ -3,8 +3,11 @@ import type { ConnectionWire, FusedDocument, Point2D } from '@mica-js/document/f
 import { DeviceCache } from './devices';
 import {
   endpointPoint,
+  hasWireConnection,
   isOrthogonalPolyline,
   materializeAnchor,
+  moveWireSegment,
+  moveReference,
   orthogonalPath,
   routeDocumentWires,
   wirePolyline,
@@ -43,6 +46,26 @@ function legs(points: readonly Point2D[]): boolean {
   return isOrthogonalPolyline(points);
 }
 
+describe('hasWireConnection', () => {
+  it('recognizes both connected ends but leaves unused and coincident endpoints available', () => {
+    const document = connectedDocument(defaultPackages());
+    const wire = document.wires[0]!;
+    expect(hasWireConnection(document, wire.from)).toBe(true);
+    expect(hasWireConnection(document, wire.to)).toBe(true);
+    expect(hasWireConnection(document, document.references[0]!.target)).toBe(false);
+    expect(hasWireConnection(document, { kind: 'node', node: 'unwired' })).toBe(false);
+    const free: FusedDocument = {
+      ...document,
+      nodes: [
+        { id: 'unwired', kind: 'free', x: 0, y: 0 },
+        { id: 'other', kind: 'free', x: 0, y: 0 },
+      ],
+      wires: [{ ...wire, from: { kind: 'node', node: 'other' } }],
+    };
+    expect(hasWireConnection(free, { kind: 'node', node: 'unwired' })).toBe(false);
+  });
+});
+
 describe('orthogonalPath', () => {
   it('keeps aligned points and returns an empty path for no input', () => {
     expect(orthogonalPath([])).toEqual([]);
@@ -58,6 +81,119 @@ describe('orthogonalPath', () => {
       { x: 10, y: 0 },
       { x: 10, y: 10 },
     ]);
+  });
+
+  describe('moveWireSegment', () => {
+    function wired(bends: readonly Point2D[], end = { x: 20, y: 10 }): FusedDocument {
+      return {
+        ...documentWith({
+          id: WIRE_ID,
+          from: { kind: 'node', node: 'a' },
+          to: { kind: 'node', node: 'b' },
+          bends,
+        }),
+        nodes: [
+          { id: 'a', kind: 'free', x: 0, y: 0 },
+          { id: 'b', kind: 'free', ...end },
+        ],
+      };
+    }
+
+    it('slides only the chosen interior segment along its normal', () => {
+      const document = wired([
+        { x: 10, y: 0 },
+        { x: 10, y: 10 },
+      ]);
+      const moved = moveWireSegment(document, new Map(), WIRE_ID, 1, { x: 3, y: 9 });
+      expect(moved.wires[0]?.bends).toEqual([
+        { x: 13, y: 0 },
+        { x: 13, y: 10 },
+      ]);
+      expect(moved.nodes).toBe(document.nodes);
+      expect(moved.wires[0]?.from).toBe(document.wires[0]?.from);
+      expect(moved.wires[0]?.to).toBe(document.wires[0]?.to);
+      expect(document.wires[0]?.bends).toEqual([
+        { x: 10, y: 0 },
+        { x: 10, y: 10 },
+      ]);
+    });
+
+    describe('moveReference', () => {
+      it('keeps a pin connected through a new node and wire, then reuses that node on later moves', async () => {
+        const document = connectedDocument(defaultPackages());
+        const devices = await prepare(document);
+        const reference = document.references[0]!;
+        const moved = moveReference(document, devices, reference.id, { x: 70, y: 30 }, idFactory());
+        const target = moved.references[0]!.target;
+        expect(target.kind).toBe('node');
+        expect(moved.nodes).toHaveLength(document.nodes.length + 1);
+        expect(moved.wires.at(-1)).toMatchObject({ from: reference.target, to: target });
+        expect(moved.instances).toBe(document.instances);
+        const again = moveReference(moved, devices, reference.id, { x: 75, y: 35 }, idFactory());
+        expect(again.nodes).toHaveLength(moved.nodes.length);
+        expect(again.wires).toHaveLength(moved.wires.length);
+        expect(again.references[0]!.target).toEqual(target);
+        expect(endpointPoint(again, devices, target)).toMatchObject({ x: 75, y: 35 });
+        expect(
+          again.wires.every((wire) => isOrthogonalPolyline(wirePolyline(again, devices, wire)!)),
+        ).toBe(true);
+      });
+
+      it('leaves shared anchors and their other labels in place when a terminal is pulled away', () => {
+        const referenceId = 'ref';
+        const document: FusedDocument = {
+          ...documentWith({
+            id: WIRE_ID,
+            from: { kind: 'node', node: 'a' },
+            to: { kind: 'node', node: 'b' },
+            bends: [],
+          }),
+          nodes: [
+            { id: 'a', kind: 'junction', x: 0, y: 0 },
+            { id: 'b', kind: 'free', x: 10, y: 0 },
+          ],
+          labels: [{ id: 'label', target: { kind: 'node', node: 'a' }, name: 'VCC' }],
+          references: [
+            {
+              id: referenceId,
+              target: { kind: 'node', node: 'a' },
+              voltage: 5,
+              symbol: 'power',
+              rotation: 90,
+            },
+          ],
+        };
+        const moved = moveReference(document, new Map(), referenceId, { x: -5, y: 5 }, idFactory());
+        expect(moved.nodes.find((value) => value.id === 'a')).toEqual(document.nodes[0]);
+        expect(moved.labels).toBe(document.labels);
+        expect(moved.wires[0]).toBe(document.wires[0]);
+        expect(moved.wires.at(-1)?.from).toEqual({ kind: 'node', node: 'a' });
+        expect(moved.references[0]?.rotation).toBe(90);
+        expect(moveReference(document, new Map(), referenceId, { x: 0, y: 0 }, idFactory())).toBe(
+          document,
+        );
+      });
+    });
+
+    it('adds doglegs rather than moving either anchor of a straight connected wire', () => {
+      const document = wired([], { x: 20, y: 0 });
+      const moved = moveWireSegment(document, new Map(), WIRE_ID, 0, { x: 0, y: 5 });
+      expect(wirePolyline(moved, new Map(), moved.wires[0]!)).toEqual([
+        { x: 0, y: 0 },
+        { x: 0, y: 5 },
+        { x: 20, y: 5 },
+        { x: 20, y: 0 },
+      ]);
+      expect(moved.nodes).toBe(document.nodes);
+    });
+
+    it('ignores tangential motion and rejects stale segment indices', () => {
+      const document = wired([], { x: 20, y: 0 });
+      expect(moveWireSegment(document, new Map(), WIRE_ID, 0, { x: 5, y: 0 })).toBe(document);
+      expect(() => moveWireSegment(document, new Map(), WIRE_ID, 4, { x: 0, y: 5 })).toThrow(
+        'Invalid wire segment',
+      );
+    });
   });
 
   it('picks the long-axis elbow first', () => {

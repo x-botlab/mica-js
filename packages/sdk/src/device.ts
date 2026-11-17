@@ -47,3 +47,4 @@ export type {
 } from './fused/model.js';
 export type { MethodError } from './fused/model.js';
 export type { FirmwareImage, FirmwareSegment } from '@mica-js/document/fused';
+export type { MemoryProgram, ProgramFiles, ProgramSegment } from '@mica-js/document/fused';

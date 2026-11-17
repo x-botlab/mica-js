@@ -13,7 +13,11 @@ import {
   endpointPosition,
   fitViewport,
   pickInstance,
+  pickAnnotation,
   pickPins,
+  pickWireSegment,
+  pickText,
+  textDragOffset,
   sceneToLocal,
   toScene,
   type ICanvasDevice,
@@ -21,9 +25,10 @@ import {
   type IViewport,
 } from '../canvas/geometry';
 import { drawCanvas } from '../canvas/renderer';
-import { orthogonalPath } from '../wiring';
+import { hasWireConnection, orthogonalPath } from '../wiring';
 import { projectOnSegment } from '@mica-js/document/schematic';
 import { readCanvasTheme, type IResolvedWorkbenchTheme } from '../theme';
+import type { IFusedTextTarget } from '../document/edits';
 
 export interface ICanvasHandle {
   readonly scale: number;
@@ -47,6 +52,7 @@ export interface ICanvasPartProps {
   readonly state: IWorkbenchState;
   readonly selection: readonly IWorkbenchTarget[];
   readonly placement: DeviceLock | undefined;
+  readonly placementRotation: number;
   readonly labelName: string;
   readonly theme: IResolvedWorkbenchTheme;
   readonly frame: number;
@@ -55,6 +61,10 @@ export interface ICanvasPartProps {
   readonly onOpenProperties: () => void;
   readonly onPlace: (device: DeviceLock, position: Point2D) => Promise<void>;
   readonly onMove: (instanceId: string, position: Point2D) => Promise<void>;
+  readonly onMoveSegment: (wireId: string, segment: number, delta: Point2D) => Promise<void>;
+  readonly onMoveText: (target: IFusedTextTarget, offset: Point2D) => Promise<void>;
+  readonly onMoveReference: (referenceId: string, position: Point2D) => Promise<void>;
+  readonly onStartWire: () => Promise<void>;
   readonly onConnect: (
     from: Endpoint | Point2D,
     to: Endpoint | Point2D,
@@ -82,7 +92,21 @@ export function CanvasPart(props: ICanvasPartProps) {
     readonly endpoint: Endpoint | Point2D;
     readonly bends: readonly Point2D[];
   }>();
+  const pendingWireStart = useRef<Endpoint | Point2D | undefined>(undefined);
   const [drag, setDrag] = useState<{ readonly instanceId: string; readonly position: Point2D }>();
+  const [wireDrag, setWireDrag] = useState<{
+    readonly wireId: string;
+    readonly segment: number;
+    readonly delta: Point2D;
+  }>();
+  const [textDrag, setTextDrag] = useState<{
+    readonly target: IFusedTextTarget;
+    readonly offset: Point2D;
+  }>();
+  const [referenceDrag, setReferenceDrag] = useState<{
+    readonly referenceId: string;
+    readonly position: Point2D;
+  }>();
   const [candidates, setCandidates] = useState<readonly IPinHit[]>([]);
   const gesture = useRef<
     | {
@@ -91,6 +115,27 @@ export function CanvasPart(props: ICanvasPartProps) {
         readonly start: Point2D;
         readonly original: Point2D;
         readonly instanceId?: string;
+      }
+    | {
+        readonly kind: 'wire';
+        readonly pointerId: number;
+        readonly start: Point2D;
+        readonly wireId: string;
+        readonly segment: number;
+      }
+    | {
+        readonly kind: 'text';
+        readonly pointerId: number;
+        readonly start: Point2D;
+        readonly target: IFusedTextTarget;
+      }
+    | {
+        readonly kind: 'reference';
+        readonly pointerId: number;
+        readonly start: Point2D;
+        readonly original: Point2D;
+        readonly referenceId: string;
+        moved: boolean;
       }
     | undefined
   >(undefined);
@@ -103,7 +148,6 @@ export function CanvasPart(props: ICanvasPartProps) {
       }
     | undefined
   >(undefined);
-  const space = useRef(false);
   const current = useRef(props);
   current.current = props;
 
@@ -154,6 +198,9 @@ export function CanvasPart(props: ICanvasPartProps) {
     business.current = undefined;
     gesture.current = undefined;
     setDrag(undefined);
+    setWireDrag(undefined);
+    setTextDrag(undefined);
+    setReferenceDrag(undefined);
     if (active !== undefined)
       current.current.onInput(active.instanceId, {
         type: 'pointerup',
@@ -163,7 +210,6 @@ export function CanvasPart(props: ICanvasPartProps) {
       });
     if (pointerId !== undefined && canvas.current?.hasPointerCapture(pointerId))
       canvas.current.releasePointerCapture(pointerId);
-    space.current = false;
   }
   useLayoutEffect(() => {
     props.onReady({ fit, zoom, reveal, scale: viewport.scale });
@@ -187,7 +233,16 @@ export function CanvasPart(props: ICanvasPartProps) {
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    setConnection(undefined);
+    const endpoint = pendingWireStart.current;
+    pendingWireStart.current = undefined;
+    setConnection(
+      props.state.mode === 'edit' &&
+        !props.state.readOnly &&
+        props.state.tool === 'wire' &&
+        endpoint !== undefined
+        ? { endpoint, bends: [] }
+        : undefined,
+    );
     setCandidates([]);
     cancelGesture();
   }, [props.state.mode, props.state.tool, props.state.readOnly]);
@@ -215,16 +270,30 @@ export function CanvasPart(props: ICanvasPartProps) {
           selection: props.selection,
           colors: readCanvasTheme(canvas.current),
           ...(drag === undefined ? {} : { drag }),
+          ...(wireDrag === undefined ? {} : { wireDrag }),
+          ...(textDrag === undefined ? {} : { textDrag }),
+          ...(referenceDrag === undefined ? {} : { referenceDrag }),
           ...(!hovered || props.placement === undefined
             ? {}
-            : { ghost: { device: props.placement.id, position: pointer } }),
+            : {
+                ghost: {
+                  device: props.placement.id,
+                  position: pointer,
+                  rotation: props.placementRotation,
+                },
+              }),
           ...(!hovered ||
           props.state.mode !== 'edit' ||
           props.state.readOnly ||
           annotationTool === undefined
             ? {}
             : {
-                annotation: { kind: annotationTool, position: pointer, name: props.labelName },
+                annotation: {
+                  kind: annotationTool,
+                  position: pointer,
+                  name: props.labelName,
+                  rotation: props.placementRotation,
+                },
               }),
           ...(connection === undefined
             ? {}
@@ -251,6 +320,7 @@ export function CanvasPart(props: ICanvasPartProps) {
     props.theme,
     props.frame,
     props.placement,
+    props.placementRotation,
     props.labelName,
     props.state.tool,
     props.state.readOnly,
@@ -260,6 +330,9 @@ export function CanvasPart(props: ICanvasPartProps) {
     connection,
     pointer,
     drag,
+    wireDrag,
+    textDrag,
+    referenceDrag,
   ]);
 
   function local(
@@ -274,6 +347,11 @@ export function CanvasPart(props: ICanvasPartProps) {
     return 'kind' in anchor ? endpointPosition(props.document, props.devices, anchor) : anchor;
   }
   function snappedAnchor(point: Point2D, alt: boolean): Endpoint | Point2D {
+    const annotation = pickAnnotation(props.document, props.devices, point, 3 / viewport.scale);
+    if (annotation?.kind === 'reference') {
+      const reference = props.document.references.find((value) => value.id === annotation.id);
+      if (reference !== undefined) return reference.target;
+    }
     const pin = pickPins(props.document, props.devices, point, 7 / viewport.scale)[0];
     if (pin !== undefined) return pin.endpoint;
     const node = props.document.nodes.find(
@@ -313,6 +391,16 @@ export function CanvasPart(props: ICanvasPartProps) {
   }
   function useEndpoint(endpoint: Endpoint | Point2D) {
     setCandidates([]);
+    if (props.state.tool === 'select') {
+      if ('kind' in endpoint)
+        props.onSelection([
+          endpoint.kind === 'pin'
+            ? { kind: 'instance', id: endpoint.instance }
+            : { kind: 'node', id: endpoint.node },
+        ]);
+      startWire(endpoint);
+      return;
+    }
     if (props.state.tool !== 'wire') {
       commit(() => props.onEndpoint(endpoint));
       return;
@@ -325,6 +413,23 @@ export function CanvasPart(props: ICanvasPartProps) {
         props.onCancel();
       });
     }
+  }
+  function startWire(endpoint: Endpoint | Point2D): void {
+    if (props.state.readOnly || props.state.mode !== 'edit') return;
+    if ('kind' in endpoint && hasWireConnection(props.document, endpoint)) return;
+    if (props.state.tool === 'wire') {
+      setConnection({ endpoint, bends: [] });
+      return;
+    }
+    pendingWireStart.current = endpoint;
+    commit(async () => {
+      try {
+        await props.onStartWire();
+      } catch (error) {
+        pendingWireStart.current = undefined;
+        throw error;
+      }
+    });
   }
   function input(event: ReactPointerEvent<HTMLCanvasElement>, type: IViewInput['type']): void {
     const active = business.current;
@@ -359,10 +464,6 @@ export function CanvasPart(props: ICanvasPartProps) {
           props.onCancel();
         }}
         onKeyDown={(event) => {
-          if (event.code === 'Space') {
-            event.preventDefault();
-            space.current = true;
-          }
           if (event.key === 'Escape') {
             setConnection(undefined);
             setCandidates([]);
@@ -375,18 +476,19 @@ export function CanvasPart(props: ICanvasPartProps) {
             props.state.mode === 'edit'
           ) {
             event.preventDefault();
+            setConnection(undefined);
+            setCandidates([]);
+            cancelGesture();
+            props.onCancel();
             run(props.onDelete());
           }
-        }}
-        onKeyUp={(event) => {
-          if (event.code === 'Space') space.current = false;
         }}
         onPointerDown={(event) => {
           if (gesture.current !== undefined || business.current !== undefined) return;
           event.currentTarget.focus();
           const screen = local(event);
           const point = toScene(screen, viewport);
-          if (event.button === 1 || (event.button === 0 && space.current)) {
+          if (event.button === 1) {
             gesture.current = {
               kind: 'pan',
               pointerId: event.pointerId,
@@ -432,6 +534,23 @@ export function CanvasPart(props: ICanvasPartProps) {
             return;
           }
           if (props.state.tool !== 'select' && !props.state.readOnly) {
+            if (props.state.tool === 'wire') {
+              const annotation = pickAnnotation(
+                props.document,
+                props.devices,
+                point,
+                3 / viewport.scale,
+              );
+              if (annotation?.kind === 'reference') {
+                const reference = props.document.references.find(
+                  (value) => value.id === annotation.id,
+                );
+                if (reference !== undefined) {
+                  useEndpoint(reference.target);
+                  return;
+                }
+              }
+            }
             const pins = pickPins(props.document, props.devices, point, 7 / viewport.scale);
             if (pins.length > 1) {
               setCandidates(pins);
@@ -479,6 +598,76 @@ export function CanvasPart(props: ICanvasPartProps) {
               });
             return;
           }
+          const text = pickText(props.document, props.devices, point, viewport.scale);
+          if (text !== undefined) {
+            const target: IWorkbenchTarget = {
+              kind: text.kind === 'designator' ? 'instance' : text.kind,
+              id: text.id,
+            };
+            props.onSelection(
+              event.shiftKey
+                ? [...props.selection.filter((value) => value.id !== target.id), target]
+                : [target],
+            );
+            if (!props.state.readOnly) {
+              gesture.current = {
+                kind: 'text',
+                pointerId: event.pointerId,
+                start: point,
+                target: text,
+              };
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }
+            return;
+          }
+          const annotation = pickAnnotation(
+            props.document,
+            props.devices,
+            point,
+            3 / viewport.scale,
+          );
+          if (annotation !== undefined) {
+            props.onSelection(
+              event.shiftKey
+                ? [...props.selection.filter((value) => value.id !== annotation.id), annotation]
+                : [annotation],
+            );
+            if (annotation.kind === 'reference' && !props.state.readOnly) {
+              const reference = props.document.references.find(
+                (value) => value.id === annotation.id,
+              );
+              if (reference !== undefined) {
+                gesture.current = {
+                  kind: 'reference',
+                  pointerId: event.pointerId,
+                  start: point,
+                  original: endpointPosition(props.document, props.devices, reference.target),
+                  referenceId: reference.id,
+                  moved: false,
+                };
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }
+            }
+            return;
+          }
+          if (!props.state.readOnly) {
+            const pins = pickPins(props.document, props.devices, point, 7 / viewport.scale);
+            if (pins.length > 1) {
+              setCandidates(pins);
+              return;
+            }
+            if (pins[0] !== undefined) {
+              useEndpoint(pins[0].endpoint);
+              return;
+            }
+            const node = props.document.nodes.find(
+              (value) => Math.hypot(value.x - point.x, value.y - point.y) <= 7 / viewport.scale,
+            );
+            if (node !== undefined) {
+              useEndpoint({ kind: 'node', node: node.id });
+              return;
+            }
+          }
           const instance = pickInstance(props.document, props.devices, point);
           if (instance !== undefined) {
             const target: IWorkbenchTarget = { kind: 'instance', id: instance.id };
@@ -499,19 +688,18 @@ export function CanvasPart(props: ICanvasPartProps) {
             }
             return;
           }
-          const wire = props.document.wires.find((value) => {
-            const points = [
-              endpointPosition(props.document, props.devices, value.from),
-              ...value.bends,
-              endpointPosition(props.document, props.devices, value.to),
-            ];
-            return points.some(
-              (p, index) =>
-                index > 0 &&
-                distanceToSegment(point, points[index - 1] ?? p, p) <= 6 / viewport.scale,
-            );
-          });
-          props.onSelection(wire === undefined ? [] : [{ kind: 'wire', id: wire.id }]);
+          const wire = pickWireSegment(props.document, props.devices, point, 6 / viewport.scale);
+          props.onSelection(wire === undefined ? [] : [{ kind: 'wire', id: wire.wireId }]);
+          if (wire !== undefined && !props.state.readOnly) {
+            gesture.current = {
+              kind: 'wire',
+              pointerId: event.pointerId,
+              start: point,
+              wireId: wire.wireId,
+              segment: wire.segment,
+            };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }
         }}
         onDoubleClick={(event) => {
           if (props.state.mode !== 'edit' || props.state.busy || props.placement !== undefined)
@@ -561,6 +749,41 @@ export function CanvasPart(props: ICanvasPartProps) {
                 event.altKey,
               ),
             });
+          } else if (active?.kind === 'wire') {
+            setWireDrag({
+              wireId: active.wireId,
+              segment: active.segment,
+              delta: snap(
+                { x: point.x - active.start.x, y: point.y - active.start.y },
+                event.altKey,
+              ),
+            });
+          } else if (active?.kind === 'text') {
+            const delta = snap(
+              { x: point.x - active.start.x, y: point.y - active.start.y },
+              event.altKey,
+            );
+            setTextDrag({
+              target: active.target,
+              offset: textDragOffset(props.document, props.devices, active.target, delta),
+            });
+          } else if (active?.kind === 'reference') {
+            if (
+              Math.hypot(point.x - active.start.x, point.y - active.start.y) * viewport.scale >=
+              3
+            )
+              active.moved = true;
+            if (active.moved)
+              setReferenceDrag({
+                referenceId: active.referenceId,
+                position: snap(
+                  {
+                    x: active.original.x + point.x - active.start.x,
+                    y: active.original.y + point.y - active.start.y,
+                  },
+                  event.altKey,
+                ),
+              });
           }
         }}
         onPointerUp={(event) => {
@@ -581,9 +804,57 @@ export function CanvasPart(props: ICanvasPartProps) {
             );
             if (position.x !== active.original.x || position.y !== active.original.y)
               run(props.onMove(active.instanceId, position));
+          } else if (active?.kind === 'wire') {
+            const point = toScene(local(event), viewport);
+            const delta = snap(
+              { x: point.x - active.start.x, y: point.y - active.start.y },
+              event.altKey,
+            );
+            if (delta.x !== 0 || delta.y !== 0)
+              commit(() => props.onMoveSegment(active.wireId, active.segment, delta));
+          } else if (active?.kind === 'text') {
+            const point = toScene(local(event), viewport);
+            const delta = snap(
+              { x: point.x - active.start.x, y: point.y - active.start.y },
+              event.altKey,
+            );
+            if (delta.x !== 0 || delta.y !== 0)
+              commit(() =>
+                props.onMoveText(
+                  active.target,
+                  textDragOffset(props.document, props.devices, active.target, delta),
+                ),
+              );
+            else if (active.target.kind === 'reference') {
+              const reference = props.document.references.find(
+                (value) => value.id === active.target.id,
+              );
+              if (reference !== undefined) startWire(reference.target);
+            }
+          } else if (active?.kind === 'reference') {
+            if (active.moved) {
+              const point = toScene(local(event), viewport);
+              const position = snap(
+                {
+                  x: active.original.x + point.x - active.start.x,
+                  y: active.original.y + point.y - active.start.y,
+                },
+                event.altKey,
+              );
+              if (position.x !== active.original.x || position.y !== active.original.y)
+                commit(() => props.onMoveReference(active.referenceId, position));
+            } else {
+              const reference = props.document.references.find(
+                (value) => value.id === active.referenceId,
+              );
+              if (reference !== undefined) startWire(reference.target);
+            }
           }
           gesture.current = undefined;
           setDrag(undefined);
+          setWireDrag(undefined);
+          setTextDrag(undefined);
+          setReferenceDrag(undefined);
           if (event.currentTarget.hasPointerCapture(event.pointerId))
             event.currentTarget.releasePointerCapture(event.pointerId);
         }}

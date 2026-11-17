@@ -26,7 +26,6 @@ import type { RuntimeModelClient, RuntimeModelEvent } from './models.js';
 import { MICA_HOST_API_VERSION } from './package.js';
 import { prepareFusedSession } from './prepare.js';
 import type { PreparedSession } from './prepare.js';
-import type { FirmwareProjectSource } from './firmware.js';
 import type { ResourceResolver } from './properties.js';
 import { snapshotValue } from './values.js';
 
@@ -39,10 +38,10 @@ export interface HeadlessRuntimeOptions {
   readonly loadModule: (files: PackageFiles, path: string) => Promise<unknown>;
   /** Fixed positive step of every advance; constant for the whole session. */
   readonly step: TimePs;
-  /** Explicit resolver of `file` and `store` property resources. */
+  /** Explicit resolver of asset-library property resources. */
   readonly resolveResource?: ResourceResolver;
-  /** Firmware project service; required by `firmware` properties with project references. */
-  readonly projects?: FirmwareProjectSource;
+  /** Program project and template sources. */
+  readonly programs?: import('./program.js').ProgramSources;
   /** Observer of every model event, installed before model initialization. */
   readonly onModelEvent?: (event: RuntimeModelEvent) => void;
   /** Receives preparation and runtime diagnostics that have no event subscriber yet. */
@@ -707,7 +706,7 @@ export async function createHeadlessRuntime(
     loadModule: options.loadModule,
     hostApiVersion: MICA_HOST_API_VERSION,
     ...(options.resolveResource === undefined ? {} : { resolveResource: options.resolveResource }),
-    ...(options.projects === undefined ? {} : { projects: options.projects }),
+    ...(options.programs === undefined ? {} : { programs: options.programs }),
     ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
   });
   return new HeadlessRuntimeImpl(prepared, options, step);

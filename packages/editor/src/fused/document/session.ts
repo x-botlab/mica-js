@@ -13,7 +13,7 @@
  */
 import { DisposableStore, Emitter } from '@mica-js/core/lifecycle';
 import type { Event } from '@mica-js/core/lifecycle';
-import { parseFusedDocument, parseStrictJson } from '@mica-js/document/fused';
+import { parseFusedDocument } from '@mica-js/document/fused';
 import type {
   DeviceLock,
   Endpoint,
@@ -28,7 +28,6 @@ import type {
   AccessDecision,
   IDeviceProvider,
   IDocumentAccess,
-  IFileSystemProvider,
   IWorkbenchAccessProvider,
 } from '../providers';
 import { DeviceCache } from '../devices';
@@ -62,9 +61,8 @@ type DeniedDecision = Extract<AccessDecision, { readonly allowed: false }>;
 type WriteMode = 'content' | 'layout';
 
 export interface IFusedDocumentSessionOptions {
-  /** Host URI of the `.sch` file; it is both the read and the save target. */
-  readonly uri: string;
-  readonly files: IFileSystemProvider;
+  readonly document: FusedDocument;
+  readonly saveDocument?: (document: FusedDocument) => Promise<void>;
   /** Locked package registry; the session owns its verified cache. */
   readonly devices: IDeviceProvider;
   readonly access: IWorkbenchAccessProvider;
@@ -109,8 +107,7 @@ interface IHistoryEntry {
  * `edit` permission and how it behaves while a run is active.
  */
 export class FusedDocumentSession {
-  readonly #uri: string;
-  readonly #files: IFileSystemProvider;
+  readonly #saveDocument: ((document: FusedDocument) => Promise<void>) | undefined;
   readonly #access: IWorkbenchAccessProvider;
   readonly #packages: DeviceCache;
   readonly #createId: () => string;
@@ -142,8 +139,7 @@ export class FusedDocumentSession {
     document: FusedDocument,
     decisions: IDocumentAccess,
   ) {
-    this.#uri = options.uri;
-    this.#files = options.files;
+    this.#saveDocument = options.saveDocument;
     this.#access = options.access;
     this.#packages = new DeviceCache(options.devices);
     this.#createId = options.createId ?? (() => globalThis.crypto.randomUUID());
@@ -159,12 +155,17 @@ export class FusedDocumentSession {
    * A document whose packages or connection graph cannot be verified still opens for browsing; the
    * failure is reported by {@link getPreparationError} and every content edit then fails closed.
    *
-   * @throws {FusedSessionError} when the file cannot be read, is not strict JSON, violates RFC 0024,
-   * or the access policy cannot be evaluated.
+   * @throws {FusedSessionError} when the supplied document violates RFC 0024 or the access policy
+   * cannot be evaluated.
    */
   static async open(options: IFusedDocumentSessionOptions): Promise<FusedDocumentSession> {
-    const document = await loadDocument(options);
-    const decisions = await evaluateDecisions(options.access, options.uri, document);
+    let document: FusedDocument;
+    try {
+      document = parseFusedDocument(options.document);
+    } catch (cause) {
+      throw toSessionError(cause, 'edit/invalid-document');
+    }
+    const decisions = await evaluateDecisions(options.access, document);
     const session = new FusedDocumentSession(options, document, decisions);
     await session.#start();
     session.#subscriptions.add(
@@ -181,10 +182,6 @@ export class FusedDocumentSession {
   readonly onDidChangeState: Event<IFusedDocumentState> = this.#state.event;
   /** Fires for every rejected operation and access-policy failure with its code and problems. */
   readonly onDidError: Event<FusedSessionError> = this.#errors.event;
-
-  get uri(): string {
-    return this.#uri;
-  }
 
   /** Current immutable snapshot; the same reference until the next commit. */
   getDocument(): FusedDocument {
@@ -476,11 +473,15 @@ export class FusedDocumentSession {
       this.#requireEdit('layout');
       const document = this.#document;
       await this.#authorize('layout', document, document);
-      const text = serializeFusedDocument(document);
+      if (this.#saveDocument === undefined)
+        throw new FusedSessionError(
+          'save/unavailable',
+          'The host does not provide document saving.',
+        );
       try {
-        await this.#files.write(this.#uri, new TextEncoder().encode(text));
+        await this.#saveDocument(document);
       } catch (cause) {
-        throw new FusedSessionError('save/failed', `Cannot save ${this.#uri}.`, { cause });
+        throw new FusedSessionError('save/failed', 'Cannot save the document.', { cause });
       }
       this.#assertAlive();
       this.#savedKey = this.#documentKey(document);
@@ -729,7 +730,6 @@ export class FusedDocumentSession {
     let decision: AccessDecision;
     try {
       decision = await this.#access.canAddDevice({
-        uri: this.#uri,
         document,
         device,
       });
@@ -757,7 +757,7 @@ export class FusedDocumentSession {
     const revision = (this.#evaluationRevision += 1);
     let decisions: IDocumentAccess;
     try {
-      decisions = await evaluateDecisions(this.#access, this.#uri, target);
+      decisions = await evaluateDecisions(this.#access, target);
     } catch (cause) {
       if (revision > this.#appliedRevision) {
         this.#appliedRevision = revision;
@@ -907,36 +907,13 @@ export function serializeFusedDocument(document: FusedDocument): string {
   return `${JSON.stringify(document, null, 2)}\n`;
 }
 
-async function loadDocument(options: IFusedDocumentSessionOptions): Promise<FusedDocument> {
-  let bytes: Uint8Array;
-  try {
-    bytes = await options.files.read(options.uri);
-  } catch (cause) {
-    throw new FusedSessionError('load/failed', `Cannot read ${options.uri}.`, { cause });
-  }
-  let text: string;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch (cause) {
-    throw new FusedSessionError('edit/invalid-document', `${options.uri} is not UTF-8 JSON text.`, {
-      cause,
-    });
-  }
-  try {
-    return parseFusedDocument(parseStrictJson(text));
-  } catch (cause) {
-    throw toSessionError(cause, 'edit/invalid-document');
-  }
-}
-
 async function evaluateDecisions(
   access: IWorkbenchAccessProvider,
-  uri: string,
   document: FusedDocument,
 ): Promise<IDocumentAccess> {
   let decisions: IDocumentAccess | undefined;
   try {
-    decisions = await access.evaluateDocument({ uri, document });
+    decisions = await access.evaluateDocument({ document });
   } catch (cause) {
     throw new FusedSessionError(
       'access/check-failed',

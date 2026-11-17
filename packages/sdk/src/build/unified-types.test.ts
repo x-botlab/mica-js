@@ -95,6 +95,23 @@ describe('renderDeviceDeclaration', () => {
     expect(text).toContain('  FirmwareImage,');
   });
 
+  it('projects each program loader as a precise factory input type', () => {
+    const text = renderDeviceDeclaration({
+      manifest: {
+        ...manifest,
+        properties: {
+          program: { type: 'program', loader: 'memory', nullable: true },
+          scripts: { type: 'program', loader: 'filesystem' },
+        },
+      },
+      manifestPath: 'package.json',
+    });
+    expect(text).toContain('readonly program: MemoryProgram | null;');
+    expect(text).toContain('readonly scripts: ProgramFiles;');
+    expect(text).toContain('  MemoryProgram,');
+    expect(text).toContain('  ProgramFiles,');
+  });
+
   it('quotes payload keys and namespaces payload aliases', () => {
     const text = renderDeviceDeclaration({
       manifest: {

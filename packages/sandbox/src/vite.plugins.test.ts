@@ -1,5 +1,9 @@
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'vite';
+import { describe, expect, it, vi } from 'vitest';
 import { micaSandboxPlugins } from '../vite.plugins';
 
 const SANDBOX_QUERY = '?sandbox-worker';
@@ -27,8 +31,11 @@ function pluginHandle() {
     id: string,
     importer: string,
   ) => Promise<string | null>;
-  const load = plugin.load as (id: string) => Promise<string | null>;
-  return { resolveId, load };
+  const load = plugin.load as (
+    this: { addWatchFile(file: string): void },
+    id: string,
+  ) => Promise<string | null>;
+  return { resolveId, load: (id: string) => load.call({ addWatchFile() {} }, id) };
 }
 
 const forms = [
@@ -59,6 +66,47 @@ const forms = [
 ];
 
 describe('micaSandboxPlugins', () => {
+  it('rebuilds both worker forms when a bundled dependency changes in the running dev server', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mica-sandbox-hmr-'));
+    const dependency = join(root, 'schema.js');
+    await writeFile(dependency, 'export const schema = "old-schema";');
+    await writeFile(join(root, 'schema-entry.js'), 'export { schema } from "./schema.js";');
+    await writeFile(
+      join(root, 'guest.js'),
+      'import { schema } from "./schema-entry.js"; globalThis.schema = schema;',
+    );
+    const server = await createServer({
+      configFile: false,
+      root,
+      plugins: micaSandboxPlugins(),
+      logLevel: 'silent',
+      resolve: {
+        alias: { '@mica-js/sandbox': fileURLToPath(new URL('./index.ts', import.meta.url)) },
+      },
+      server: { port: 0, host: '127.0.0.1' },
+    });
+    try {
+      await server.listen();
+      const urls = ['/guest.js?sandbox-worker', '/guest.js?sandbox-worker-code'];
+      for (const url of urls)
+        expect((await server.transformRequest(url))?.code).toContain('old-schema');
+      await writeFile(dependency, 'export const schema = "new-schema";');
+      await vi.waitFor(
+        async () => {
+          for (const url of urls) {
+            const result = await server.transformRequest(url);
+            expect(result?.code).toContain('new-schema');
+            expect(result?.code).not.toContain('old-schema');
+          }
+        },
+        { timeout: 10000 },
+      );
+    } finally {
+      await server.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('only provides the consumer sandbox worker transform', () => {
     const plugins = micaSandboxPlugins();
 

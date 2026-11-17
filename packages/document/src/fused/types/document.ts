@@ -60,6 +60,8 @@ export interface FusedInstance {
   /** Full `publisher:name` device id, locked by the dependency table. */
   readonly device: string;
   readonly designator?: string;
+  /** Offset from the package's designator anchor, in device-local millimetres. */
+  readonly designatorOffset?: Point2D;
   readonly placement: Placement2D;
   readonly properties?: Readonly<Record<string, PropertyValue>>;
   /** Per-instance body image override; falls back to the document setting. */

@@ -1,190 +1,200 @@
-# 固件属性与装载配置
+# 程序属性与装载配置
 
 - Start Date: 2026-11-16
 - Reference Issues: [x-botlab/xbotlab#1113](https://github.com/x-botlab/xbotlab/issues/1113)
-- Implementation PR: —（尚未实现）
+- Implementation PR: —（本地实现，待提交）
 
-规定统一器件的 `firmware` 属性、属性内地址空间与推荐代码模板、文件与宿主项目引用、项目产物、格式转换、运行时镜像，以及编辑器的选择和装载配置交互。推荐模板随属性声明发布，供宿主创建固件项目。本合同为待实现草案。MUST / MUST NOT 表示强制要求，SHOULD 为推荐，MAY 为可选。
+规定统一器件的 `program` 属性、程序来源、构建产物、内存与文件集装载结果，以及编辑器的选择交互。MUST / MUST NOT 表示强制要求，SHOULD 为推荐，MAY 为可选。
+
+修订（2026-11-17）：统一 `program` 的内存与文件集装载；按宿主接入需求将来源收敛为资产、项目与包资源，选择交给宿主 UI；既有 `firmware` 保留资产与包资源装载，关联实现见文首 PR 字段。
 
 ## 声明
 
-### 属性与地址空间
+### 属性描述
 
-`firmware` 复用 [RFC 0009](./0009-device-properties.md) 的通用属性描述字段与 `maxBytes`，并复用 [RFC 0020](./0020-unified-device-package.md) 的 `group` / `order`；额外字段均定义在对应属性对象内。
+`program` 复用 [RFC 0009](./0009-device-properties.md) 的 `title`、`description`、`default`、`nullable` 和 [RFC 0020](./0020-unified-device-package.md) 的 `group` / `order`；下表字段位于属性对象内。
 
-| 字段                    | 类型     | 必填 | 约束                                                     |
-| ----------------------- | -------- | ---- | -------------------------------------------------------- |
-| `addressSpaces`         | object   | 是   | 非空的空间 ID 到地址空间描述的映射                       |
-| `addressSpaces.*.title` | string   | 否   | 非空展示名称；省略时使用空间 ID                          |
-| `addressSpaces.*.start` | integer  | 是   | 空间允许装载范围的起始地址                               |
-| `addressSpaces.*.size`  | integer  | 是   | 允许装载范围的字节数，正安全整数                         |
-| `addressSpace`          | string   | 是   | BIN / HEX 的默认空间 ID，必须存在于 `addressSpaces`      |
-| `loadAddress`           | integer  | 是   | BIN 的默认装载地址，必须位于默认空间范围内               |
-| `templates`             | string[] | 否   | 推荐代码模板的稳定标识列表；省略或空数组表示没有推荐模板 |
+| 字段                    | 类型     | 必填 | 约束                                                                |
+| ----------------------- | -------- | ---- | ------------------------------------------------------------------- |
+| `type`                  | string   | 是   | 固定 `program`                                                      |
+| `loader`                | enum     | 是   | `memory` / `filesystem`，决定模型取得的值类型                       |
+| `templates`             | string[] | 否   | 每项为非空、区分大小写、不重复的宿主模板 ID；省略或空数组表示无推荐 |
+| `formats`               | string[] | 条件 | `memory` 必填，非空且不重复的 `bin` / `hex` / `elf` 子集            |
+| `addressSpaces`         | object   | 条件 | `memory` 必填，非空的空间 ID 到空间描述的映射                       |
+| `addressSpaces.*.title` | string   | 否   | 非空展示名称；省略时使用空间 ID                                     |
+| `addressSpaces.*.start` | integer  | 条件 | 每个空间必填，允许装载范围的非负起始字节地址                        |
+| `addressSpaces.*.size`  | integer  | 条件 | 每个空间必填，允许装载范围的正安全整数字节数                        |
+| `defaults`              | object   | 条件 | 接受 BIN 或 HEX 时必填；仅接受 ELF 时省略                           |
+| `defaults.addressSpace` | string   | 条件 | `defaults` 存在时必填，引用已声明空间，供 BIN / HEX 使用            |
+| `defaults.loadAddress`  | integer  | 条件 | 接受 BIN 时必填，位于默认空间内的非负安全整数；其余省略             |
 
-- 空间 ID 为非空、区分大小写的稳定字符串，仅在当前固件属性内有效；模型按属性名与空间 ID 映射实际存储器。
-- `start`、`loadAddress` 为非负安全整数，`start + size` MUST 为安全整数；地址和长度统一以字节计。
-- 一个空间的有效范围为 `[start, start + size)`；装载地址是该空间内的绝对字节地址，不相对 `start` 再次偏移。
-- 同一空间内每段完整字节范围必须落在声明范围内；不同空间允许使用相同数值地址。
-- 地址空间与范围声明只描述该属性允许装载的位置；模型映射 MUST 与声明一致。
-- 文件型默认值使用 `package` 模式；清单默认值不绑定宿主项目，`nullable: true` 时允许 `null`。
-
-### 推荐代码模板
-
-- `templates` 的每项为非空、区分大小写且不重复的宿主稳定标识，按声明顺序展示；标识不使用数据库自增 ID、展示名称或下载 URL，具体命名空间由宿主管理。
-- 推荐列表属于当前发布版本的包清单，修改列表需要发布新版本；每个 `firmware` 属性独立声明列表。
-- 列表用于推荐新建项目，已有项目、工程文件与内置固件继续按来源规则选择；模板关联不替代固件格式、空间、范围和大小校验。
-- 模板由宿主解析和授权；模板不存在、不可访问或解析失败时明确显示不可用并允许重试，不阻止器件发布、装载或使用其他固件来源。
+- `filesystem` 只声明通用字段、`loader` 与可选 `templates`；启动文件、执行顺序、语言和 API 版本由器件运行时定义。
+- 默认值使用包内引用或在可空时使用 `null`；`nullable` 缺省 `false`，缺值按默认值补全，必需值缺失拒绝准备。
+- `program` 使用框架统一的固定资源限制，属性不声明 `maxFiles`、`maxFileBytes`、`maxTotalBytes`、`maxBytes` 或路径额度。
+- 模板 ID 是宿主稳定身份，随器件版本发布；选择项目时按声明顺序透传为 `templateIds`，宿主决定推荐项的展示与可用性。
+- `memory` 的空间 ID 为非空且区分大小写的稳定字符串，仅在当前属性内有效；模型按属性名与空间 ID 映射实际存储器。
+- 空间范围为 `[start, start + size)`，`start + size` MUST 为安全整数；装载地址是绝对字节地址，不相对 `start` 再偏移。
+- 不同空间允许使用相同数值地址；每个段的完整范围必须落在所属空间内，声明空间 MUST 与模型映射一致。
 
 ### 来源与实例覆盖
 
-持久类型 `ResourceReference`、`FirmwareFileReference` 和 `FirmwareReference` 见 [RFC 0024](./0024-fused-schematic-format.md)。
+持久类型 `ProgramReference` 见 [RFC 0024](./0024-fused-schematic-format.md)，属性的 `loader` 决定引用的解释。
 
-| 引用字段       | 类型    | 必填 | 约束                                                                  |
-| -------------- | ------- | ---- | --------------------------------------------------------------------- |
-| `mode`         | enum    | 是   | 固定资源使用带路径文件名的 `file` / `package`；宿主项目使用 `project` |
-| `src`          | string  | 条件 | 固定资源时要求此字段，含义沿用资源引用；项目引用不含此字段            |
-| `projectId`    | string  | 条件 | 项目引用时要求此字段，宿主提供的非空、区分大小写的稳定身份            |
-| `addressSpace` | string  | 否   | BIN / HEX 文件或项目产物的空间覆盖，必须引用当前属性声明的空间        |
-| `loadAddress`  | integer | 否   | BIN 文件或项目产物的基址覆盖，非负安全整数，必须位于所选空间内        |
+| 引用字段       | 类型    | 必填 | 约束                                                       |
+| -------------- | ------- | ---- | ---------------------------------------------------------- |
+| `mode`         | enum    | 是   | `asset` / `package` / `project`                            |
+| `src`          | string  | 条件 | `package` 必填；`memory` 指文件，`filesystem` 指程序根目录 |
+| `assetId`      | string  | 条件 | `asset` 必填，非空资产身份                                 |
+| `name`         | string  | 条件 | `asset` 必填且包含格式扩展名，`project` 可选展示名称       |
+| `projectId`    | string  | 条件 | `project` 必填，宿主非空、区分大小写的稳定项目 ID          |
+| `addressSpace` | string  | 否   | 仅 BIN / HEX，覆盖默认空间且必须引用已声明空间             |
+| `loadAddress`  | integer | 否   | 仅 BIN，覆盖默认基址，非负安全整数且位于所选空间内         |
 
-- 文件和项目引用的空间覆盖省略时使用属性 `addressSpace`；BIN 基址覆盖独立省略时使用属性 `loadAddress`，不得根据所选空间起始地址自动修正基址。
-- BIN 的第 `i` 个字节装载到所选空间的 `loadAddress + i`；文件或项目产物的完整字节长度参与范围校验。
-- HEX 文件及项目产物保留记录中的绝对地址，允许空间覆盖；HEX / ELF 均拒绝 `loadAddress` 覆盖，ELF 同时拒绝 `addressSpace` 覆盖。
-- 项目引用保存 `mode`、`projectId` 及当前格式允许的覆盖，项目名称、构建目标、临时产物路径和解析出的装载区域均不进入引用。
-- 装载地址与 MCU 启动位置独立，复位向量和启动流程由器件模型负责。
+- `package` 的 `src` 相对当前锁定包根；目录使用无末尾 `/` 的非空路径，资产由宿主按 `assetId` 读取二进制。
+- `filesystem` 目录递归收集普通文件，产物路径相对此目录；包内目录从发布文件清单按精确目录前缀列举，每个文件继续验证大小与摘要。
+- 包内目录以存在 `<src>/` 前缀的文件记录为依据，无记录按 `package/not-found` 拒绝，前缀匹配保留目录边界。
+- 文件集资产使用 ZIP；解包前按中央目录校验路径、重复项和未压缩额度，解包后按文件集规则再次验证，错误拒绝整个资产。
+- 项目引用保存稳定 ID 与可选展示名称；临时路径、产物内容及打开状态属于宿主与会话数据，项目来源仅用于 `program`。
+- BIN / HEX 空间覆盖省略时使用 `defaults.addressSpace`，BIN 基址独立省略时使用 `defaults.loadAddress`，不得按新空间起点自动修正。
+- BIN 的第 `i` 个字节装载到 `loadAddress + i`；HEX 保留记录绝对地址；HEX 拒绝基址覆盖，ELF 和文件集拒绝空间与基址覆盖。
 
-### 项目产物
+### 构建产物
 
 ```ts
-interface FirmwareArtifact {
-  readonly format: 'bin' | 'hex' | 'elf';
+interface ProgramFile {
+  readonly path: string;
   readonly data: Uint8Array;
 }
+type ProgramArtifact =
+  | {
+      readonly kind: 'memory';
+      readonly format: 'bin' | 'hex' | 'elf';
+      readonly data: Uint8Array;
+    }
+  | {
+      readonly kind: 'filesystem';
+      readonly files: readonly ProgramFile[];
+    };
 ```
 
-- 宿主通过 [RFC 0025](./0025-fused-runtime.md) 的项目服务返回格式和原始产物字节；格式分别表示 BIN、Intel HEX 和 ELF，地址配置由编辑器管理。
-- 框架捕获独立字节快照并执行 `maxBytes` 检查，再按声明格式解码；解码失败明确报告，不尝试其他格式继续装载。
+- 项目来源返回原始产物，`kind` 必须等于属性 `loader`；内存产物的 `format` 必须属于属性 `formats`，内容与格式不符明确拒绝。
+- 框架在运行准备时捕获产物及其字节的独立快照；资产 ZIP 由框架解包，项目直接返回文件集，模型消费相同的规范化结果。
 
-### 运行时镜像
+### 模型输入
 
 ```ts
-interface FirmwareSegment {
+interface ProgramSegment {
   readonly addressSpace: string;
   readonly address: number;
   readonly data: ReadonlyBytes;
 }
-interface FirmwareImage {
-  readonly segments: readonly FirmwareSegment[];
+interface MemoryProgram {
+  readonly segments: readonly ProgramSegment[];
+}
+interface ProgramFiles {
+  readonly paths: readonly string[];
+  read(path: string): ReadonlyBytes;
 }
 ```
 
-- 框架统一解析固件来源，将 BIN / Intel HEX / ELF 转成 `FirmwareImage`；每段以声明的空间 ID、绝对字节地址和只读字节快照表达，保留分段，不为地址空洞分配填充字节。
-- `ReadonlyBytes` 复用现行[核心只读字节快照合同](../spec/javascript/interfaces.rst)；镜像的段数组、段描述及字节在捕获后保持只读，调用 `data.slice()` 可取得独立可写副本。
-- 段数组及每段 `data` 非空，`address` 为非负安全整数，完整段范围 MUST 位于对应声明空间内；同一空间内的段范围 MUST NOT 重叠，段数组按空间 ID 的 UTF-16 代码单元顺序、段起始地址升序排列。
-- JavaScript 模型工厂从 `ctx.props.<属性名>` 取得 `FirmwareImage`；空值仅在属性允许时交付 `null`。该复合属性由工厂消费，模型 IR MUST NOT 声明同名 DDL 属性。
-- 工厂按属性名和空间 ID 映射模型内存，将绝对地址转换为目标内存偏移，使用现有 `loadBytes` 在首次推进前完成装载；模型保留复位向量和启动位置的控制权。
+- `memory` 经解码交付 `MemoryProgram`，`filesystem` 交付 `ProgramFiles`；生成类型按属性的 `loader` 确定，可空属性另加 `null`。
+- `ReadonlyBytes` 复用现行[核心只读字节快照合同](../spec/javascript/interfaces.rst)；数组、描述与字节均只读，`slice()` 返回独立可写副本。
+- 内存段及每段字节非空，地址为非负安全整数；同空间段范围 MUST NOT 重叠，段按空间 ID 的 UTF-16 代码单元顺序、地址升序排列，空洞保持未写入。
+- 文件路径是区分大小写的相对 POSIX 路径；拒绝空路径、空段、`.`、`..`、反斜杠、绝对路径、盘符、NUL、重复路径和文件与目录前缀冲突。
+- 文件集只包含普通文件，零字节文件和空文件集合法；目录由路径隐含表达，`paths` 按 UTF-16 代码单元顺序排列。
+- `read` 按精确路径同步读取快照，缺失按 `program/file-not-found` 抛错，非法路径按 `program/invalid-path` 抛错；必需文件及启动失败由器件运行时诊断。
+- JavaScript 模型工厂从 `ctx.props.<属性名>` 取得准备结果；模型 IR MUST NOT 声明同名 DDL 属性，普通属性继续按类型校验后传给 IR。
+- 内存模型在首次推进前按空间映射装载，复位向量和启动位置由模型控制；脚本模型读取文件集并按自身规则执行。
+- 输入文件集保持只读；程序运行中产生的可写数据由器件运行时管理，与输入快照分离。
 
-### 格式与空间转换
+### 内存格式转换
 
-- 固定资源按可靠文件名的最后一个扩展名忽略 ASCII 大小写识别：`.bin` 为 BIN，`.hex` / `.ihx` 为 Intel HEX，`.elf` / `.axf` 为 ELF；引用不增加格式字段。
-- `file` / `package` 使用 `src` 路径最后一段的文件名；`inline` 是 base64 文本，`store` 是宿主资源库标识，两者缺少本合同可用的文件名，在固件中按 `firmware/unknown-format` 拒绝；未知扩展名同样拒绝，不根据内容、媒体类型或标题猜测格式。
-- 项目产物以宿主返回的 `format` 为准；格式识别后执行对应解析，内容与格式不符时按 `firmware/invalid-format` 拒绝，保持原引用。
-- BIN 原始字节生成一个段，空间和基址由编辑器按属性默认值及实例覆盖确定。
-- HEX 校验记录长度、校验和、记录类型、地址及结束记录；扩展段地址和扩展线性地址参与绝对地址计算，全部数据记录进入所选空间，保留数值地址与空洞；入口记录仅校验，不改变模型启动位置。
-- ELF 接受已链接的可执行镜像 `ET_EXEC`，支持 ELF32 / ELF64 及两种字节序；文件结构、段表、文件内范围和地址整数均须合法，需要动态链接或装载时重定位的镜像按格式错误拒绝。
-- ELF 仅将 `PT_LOAD` 的 `p_filesz` 文件字节作为装载数据，以 `p_paddr` 为绝对装载地址；要求 `p_filesz <= p_memsz`，零文件长度段跳过，`p_vaddr`、入口地址和额外 `p_memsz` 区域由模型及固件启动流程处理。
-- 每个 ELF 装载段的完整范围须恰好落入一个声明空间；无匹配按 `firmware/out-of-range` 拒绝，多匹配按 `firmware/ambiguous-address-space` 拒绝，不用默认空间消除歧义，也不拆段跨空间装载。
-- 所有格式在转换后统一检查非空镜像、完整范围和同空间段重叠；相邻段 MAY 合并，空洞保持未写入，错误时不交付部分镜像。
+- 固定文件按可靠文件名最后一个扩展名忽略 ASCII 大小写识别：`.bin`、`.hex` / `.ihx`、`.elf` / `.axf`；未知格式拒绝，不猜测内容格式。
+- 项目以返回的 `format` 为准；BIN 使用选定空间与基址生成一个段，完整字节长度参与范围校验。
+- HEX 校验记录长度、校验和、类型、地址及结束记录；扩展段和扩展线性地址参与绝对地址计算，入口记录仅校验，所有数据进入所选空间。
+- ELF 接受已链接 `ET_EXEC`，支持 ELF32 / ELF64 及两种字节序；结构、段表、文件内范围和地址整数均须合法，拒绝动态链接或装载时重定位。
+- ELF 的每个 `PT_LOAD` 只装载 `p_filesz` 字节，以 `p_paddr` 为绝对地址，要求 `p_filesz <= p_memsz`；零文件长度段跳过，其余内存初始化及入口由模型处理。
+- 每个 ELF 装载段须恰好落入一个声明空间；无匹配报越界，多匹配报空间歧义，不按默认空间消歧或拆段跨空间。
+- 解码后统一检查非空镜像、完整范围和同空间重叠；相邻段 MAY 合并，失败不交付部分镜像。
+
+### 固定资源限制
+
+- 框架对全部来源执行同一组固定的产物输入字节、文件数量、单文件字节、总文件字节、路径长度与深度限制；包来源同时遵守包资源额度。
+- 额度按单个程序属性的捕获结果计算；文件数包含零字节文件，总字节为全部文件长度之和，路径长度按 UTF-8 字节计，深度按路径段数计。
+- 限制按未压缩字节计算，内存格式的原始字节和解码结果均受限；遍历和捕获过程中超限立即终止，按 `program/resource-limit` 拒绝准备。
+- 固定上限由 SDK 的 `PROGRAM_LIMITS` 公开：文件集每属性最多 `1024` 个文件，单文件 `32 MiB`，文件总量 `64 MiB`；内存输入与解码结果各 `64 MiB`；路径 `1024` 个 UTF-8 字节、深度 `32`；`1 MiB = 1048576` 字节。
+- 器件清单与项目 Provider 使用统一额度；旧 `firmware` 属性保留既有装载行为，新声明使用 `program`。
 
 ## 运行时
 
-### 解析与运行快照
+### 准备与快照
 
-- 运行准备时，框架解析全部固件引用，完成镜像结构、空间、段范围和重叠校验后才执行任何模型工厂；失败保留引用并报告准备错误。
-- 传入工厂的是已解析的镜像快照；同次运行中，编辑器装载区域与模型工厂读取同一份镜像内容的独立只读快照。
-- 项目后续构建或文件变更不替换当前运行镜像；运行与暂停时，装载面板展示当前会话镜像，`reset` 沿用已捕获内容，重新解析遵循 [RFC 0024](./0024-fused-schematic-format.md) 的新运行准备边界。
+- 框架解析全部程序引用，校验装载类型、格式、文件路径、资源限制及内存范围后，才执行任何模型工厂；失败保留引用并报告准备错误。
+- 工厂与展示取得内容相同的独立只读快照；同步文件读取在隔离执行环境内完成，不在模型执行期间请求宿主 I/O。
+- 当前运行及 `reset` 复用已捕获内容，项目重建和文件变更不替换当前程序；重新解析遵循 [RFC 0024](./0024-fused-schematic-format.md) 的新运行准备边界。
 
-### 来源选择与打开项目
+### 选择与项目
 
-- 编辑器提供一个下拉框，按来源分组混合列出宿主项目、工程文件和内置固件，并提供“选择其他文件…”入口；内置文件沿用 [RFC 0020](./0020-unified-device-package.md) 的 `assets/` 列举规则。
-- 打开下拉框时通过 [RFC 0025](./0025-fused-runtime.md) 的 `projects.list()` 读取当前项目列表；未提供项目来源时省略该分组。
-- 选择项目保存项目引用，选择文件保存资源引用；均按 [RFC 0024](./0024-fused-schematic-format.md) 的文档属性事务提交，支持统一撤销。
-- 当前值为项目引用时，下拉框右侧显示 Codicons `folder-open` 图标按钮，提示和可访问名称为“打开项目”；文件或空值隐藏此按钮。
-- 点击打开按钮按当前 `projectId` 触发 `onDidRequestOpenProject`，由宿主打开项目；保持属性、文档历史和仿真状态不变。
-- 项目来源未提供或已选项目不存在时，保留引用并显示无法解析的状态；列表读取失败明确显示错误，允许重试，不自动改选其他来源。
+- 字段以单行显示来源图标、当前名称和默认标记；来源图标按钮打开浮层菜单，提供资产库、项目和内置资源入口，资产与项目通过宿主 UI 返回单个引用，接口见 [RFC 0025](./0025-fused-runtime.md) 与 [RFC 0028](./0028-workbench-host-resources.md)。
+- `memory` 按 `formats` 筛选；`filesystem` 选择 ZIP 资产、项目文件集或包内目录，包内候选目录从发布清单的 `assets/` 下推导。
+- 选择通过 [RFC 0024](./0024-fused-schematic-format.md) 的属性事务提交；缺失项目、目录或解析失败保留引用并显示错误，允许重试。
+- 项目值旁提供 Codicons `folder-open` 按钮“打开项目”，点击按当前项目 ID 触发宿主事件，保持文档历史与仿真状态；非项目值隐藏按钮。
+- 选择项目时将属性的推荐模板 ID 传给宿主，宿主可返回已有或新建项目；取消或失败保留原属性，实例只保存最终项目引用。
 
-### 从模板创建项目
+### 装载详情
 
-- 宿主提供模板来源且当前属性的 `templates` 非空时，属性面板提供“从模板创建项目”入口，按声明顺序展示解析后的模板；未提供模板来源时省略入口。
-- 用户选择可用模板后，由宿主创建项目并返回稳定项目身份；创建成功后，编辑器按属性事务保存 `{ mode: "project", projectId }`，空间与基址沿用属性默认值，支持统一撤销。
-- 取消或创建失败时保留原属性与历史；宿主项目创建与文档属性事务分别生效，撤销属性选择不删除已创建项目。
-- 模板标识只保存在包清单，实例保存创建后的项目引用；运行和暂停期间模板创建入口只读。
-- 模板解析、项目创建与宿主接口由 [RFC 0025](./0025-fused-runtime.md) 规定。
-
-### 展开装载配置
-
-- 下拉框最右侧提供 Codicons `settings-gear` 图标按钮，提示和可访问名称为“装载配置”；选中项目时排列为下拉框、打开项目按钮、装载配置按钮。
-- 点击装载配置按钮，在当前属性下方展开配置，再次点击收起；展开状态属于编辑器会话，不写入文档或撤销历史。
-- BIN 文件和 BIN 项目产物均展示所选空间的名称、ID、有效范围和可编辑基址；只有一个空间时只读展示空间，多个空间时允许选择。
-- 基址输入接受十进制或 `0x` 前缀十六进制，确认为非负安全整数后保存 JSON 数字；空间与基址的一次有效编辑作为一个属性事务提交。
-- HEX 文件和项目产物可选择目标空间，只有一个空间时只读展示；段地址与 ELF 的全部装载区域只读，允许显示多个段；待解析显示加载状态，失败显示错误，不以默认基址代替解析结果。
-- 已保存基址而产物变为 HEX / ELF，或已保存空间覆盖而产物变为 ELF 时，保留引用并报告配置不适用；重新选择来源会创建不含旧覆盖的新引用，再按当前格式展示配置。
-- 空值展开后提示“未选择固件”；运行与暂停期间允许展开和打开项目，来源、空间与基址保持只读。
+- `memory` 在字段同一行提供“装载设置”图标，点击打开浮层；展示格式、空间名称、范围和段地址，BIN 基址可编辑，BIN / HEX 空间可选择，ELF 结果只读。
+- 只有一个空间时只读展示空间；多个空间时 BIN / HEX 允许选择；地址原点为零的模型内存可直接以段地址为偏移，其他模型按映射转换。
+- 基址接受十进制或 `0x` 十六进制，校验后保存 JSON 数字；空间及基址的有效编辑作为一次属性事务，待解析显示加载状态，失败明确显示错误。
+- 已存覆盖与新产物格式不适用时保留引用并报错；重新选择来源创建不含旧覆盖的新引用。
+- `filesystem` 字段显示来源和名称；文件缺失及运行入口问题按器件规则报告。
+- 运行与暂停期间可浏览内存装载设置和打开项目，来源及装载覆盖只读。
+- 异步解析结果只应用于仍匹配的当前属性与会话；过期结果丢弃，读取失败保留当前引用和历史，就地输入校验失败不提交。
 
 ## 校验
 
-| 诊断码                             | 条件与行为                                                                                        |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `package/invalid-manifest`         | 空间映射为空、空间描述或默认空间/基址非法，或模板列表不是字符串数组、含空标识或重复项，拒绝装载包 |
-| `schema/invalid-value`             | 固件引用结构非法、覆盖不适用于当前格式或非固件属性、空间未知，拒绝非法编辑或报告文档错误          |
-| `firmware/unknown-format`          | 固定资源无可靠文件名或扩展名未知，保留引用并拒绝运行准备                                          |
-| `firmware/invalid-format`          | 内容、记录、段表或装载形式不符合所选格式，保留引用并拒绝运行准备                                  |
-| `firmware/ambiguous-address-space` | ELF 装载段完整范围匹配多个声明空间，拒绝运行准备                                                  |
-| `firmware/invalid-image`           | 镜像结构非法、段字节为空、引用未知空间或同空间段重叠，拒绝运行准备                                |
-| `firmware/out-of-range`            | 基址或任一完整装载段超出声明范围，拒绝非法编辑或运行准备                                          |
-| `firmware/project-list-failed`     | 项目列表读取失败或列表非法，保留引用并显示错误，合同见 [RFC 0025](./0025-fused-runtime.md)        |
-| `firmware/project-resolve-failed`  | 项目产物获取失败或结构非法，保留引用并显示错误，合同见 [RFC 0025](./0025-fused-runtime.md)        |
-| `firmware/template-resolve-failed` | 推荐模板不存在、不可访问、解析失败或返回结构非法，显示不可用，其他来源可继续使用                  |
-| `firmware/template-create-failed`  | 从模板创建项目失败或返回项目非法，保留原属性与历史并显示错误                                      |
+| 诊断码                            | 条件与行为                                                           |
+| --------------------------------- | -------------------------------------------------------------------- |
+| `package/invalid-manifest`        | 装载方式、格式、空间、默认地址、模板或通用属性字段非法，拒绝装载     |
+| `schema/invalid-value`            | 来源结构非法，或空间与基址覆盖不适用，拒绝编辑或运行准备             |
+| `program/unknown-format`          | 固定文件扩展名未知，保留引用并拒绝准备                               |
+| `program/unsupported-format`      | 已知内存格式未在当前属性接受列表中，拒绝准备                         |
+| `program/invalid-format`          | 内容与声明格式不符或内存文件结构非法，拒绝准备                       |
+| `program/loader-mismatch`         | 项目产物 `kind` 与属性 `loader` 不一致，拒绝准备                     |
+| `program/ambiguous-address-space` | ELF 段匹配多个空间，拒绝准备                                         |
+| `program/invalid-image`           | 空镜像、非法段、重叠或未知空间，拒绝准备                             |
+| `program/out-of-range`            | 基址或完整段越界，拒绝编辑或准备                                     |
+| `program/invalid-path`            | 文件集含非法、重复路径或文件与目录冲突，拒绝准备或读取               |
+| `program/file-not-found`          | 快照内读取的文件不存在，向调用方抛错                                 |
+| `program/resource-limit`          | 任一固定资源限制超限，拒绝准备                                       |
+| `program/source-resolve-failed`   | 工程目录缺失、授权或读取失败、返回文件集结构非法，保留引用并拒绝准备 |
+| `program/project-list-failed`     | 项目列表读取失败或结构非法，保留引用并显示错误                       |
+| `program/project-resolve-failed`  | 项目缺失、产物读取失败或结构非法，保留引用并拒绝准备                 |
 
-- 无法解析的已保存引用保持原样并显示错误；就地输入错误不提交，已有值和历史保持不变。
-- 文件读取继续执行资源存在、访问范围、发布摘要及 `maxBytes` 检查，规则见 [RFC 0020](./0020-unified-device-package.md)。
+资源读取继续保留 HostFs 的失败分类与包摘要校验；错误不交付部分结果，不自动改选程序来源。
 
 ## 示例
 
-完整属性描述见 [全字段器件清单](./examples/0020-device-package.json) 的 `properties.firmware`，包含全部通用字段、空间描述、BIN 默认地址与推荐模板列表；示例模板标识 `example:controller` 由宿主解析，不表示已发布模板。固定文件覆盖和宿主项目分别见 [完整来源示例](./examples/0026-firmware-sources.json)，项目实例见 [完整文档](./examples/0024-fused-schematic.json)。全字段清单中的固件用于展示属性结构，非轻触开关的运行功能。
-
-来源示例的 BIN 文件和 BIN 项目产物基址均为 `256`，在 `code` 空间的第一个字节地址为 `0x0100`；该空间范围为 `0x0000–0x1FFF`，允许装载的 BIN 最大长度为 `7936` 字节。
-
-对于地址原点为 `0` 的模型内存 `code`，工厂可按以下片段装载；`data.slice()` 交付给核心的是独立字节副本，段的绝对地址直接作为该内存偏移。
+- [全字段器件清单](./examples/0020-device-package.json) 的 `properties.program` 演示内存属性，`properties.scripts` 演示文件集属性；两者仅用于展示结构。
+- [完整来源示例](./examples/0026-firmware-sources.json) 覆盖内存文件、地址覆盖、项目与目录来源；[完整文档](./examples/0024-fused-schematic.json) 保存项目引用。
+- 示例 BIN 基址为 `256`，空间范围为 `0x0000–0x1FFF`，允许装载的 BIN 最大长度为 `7936` 字节。
 
 ```js
-for (const segment of ctx.props.firmware?.segments ?? []) {
-  if (segment.addressSpace !== 'code') throw new Error('Unsupported firmware address space');
+for (const segment of ctx.props.program?.segments ?? []) {
+  if (segment.addressSpace !== 'code') throw new Error('Unsupported program address space');
   ctx.loadBytes('code', segment.data.slice(), segment.address);
 }
 ```
 
-`[folder-open]` 和 `[settings-gear]` 表示对应的 Codicons 图标按钮。
-
-```text
-固件    [ main.bin                 ▾ ] [settings-gear]
-        ┌ 装载配置 ──────────────────────────┐
-        │ 地址空间    程序存储器（code）     │
-        │ 有效范围    0x0000–0x1FFF           │
-        │ 装载地址    [0x0100             ]  │
-        └────────────────────────────────────┘
-
-固件    [ controller               ▾ ] [folder-open] [settings-gear]
-```
+OpenMV 类模型可从 `ctx.props.scripts.read('main.py')` 取得只读字节；是否执行 `boot.py`、`main.py`、其他文件及其先后顺序由该器件运行时规定。
 
 ## 范围
 
-- 包资源、属性默认值和资源浏览由 [RFC 0020](./0020-unified-device-package.md) 规定。
-- 持久引用类型和属性事务由 [RFC 0024](./0024-fused-schematic-format.md) 规定。
-- 宿主项目列表、产物获取、打开项目事件及运行生命周期由 [RFC 0025](./0025-fused-runtime.md) 规定。
+- 包资源、默认值和资源浏览由 [RFC 0020](./0020-unified-device-package.md) 规定。
+- 持久引用和属性事务由 [RFC 0024](./0024-fused-schematic-format.md) 规定。
+- 宿主项目选择、模板 ID 透传、打开事件及运行生命周期由 [RFC 0025](./0025-fused-runtime.md) 规定。
+- 模型工厂与同步执行边界由 [RFC 0021](./0021-device-model-api.md) 规定，属性类型投影由 [RFC 0027](./0027-device-type-generation.md) 规定。
 
 ## 关联
 
-- [RFC 0009](./0009-device-properties.md)：既有属性基础；本文为尚未实现的融合合同增加独立固件属性，不改变既有二进制属性。
+- [RFC 0009](./0009-device-properties.md)：既有属性基础；本文的程序属性属于融合合同，普通二进制属性继续按原合同解释。

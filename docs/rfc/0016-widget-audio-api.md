@@ -2,7 +2,7 @@
 
 - Start Date: 2026-10-23
 - Reference Issues: [#133](https://github.com/x-botlab/mica-js/issues/133)
-- Implementation PR: —（尚未实现）
+- Implementation PR: —（已在本地实现；尚未关联 PR）
 
 在 [Widget JavaScript API](./0015-widget-js-api.md) 之上增加实例级音频能力 `api.audio`：持续振荡器与 PCM 流。Widget 只提交参数与样本；振荡器合成、PCM 缓冲、重采样、混音与音量全部由音频渲染线程完成，与「guest 离屏绘制 + 宿主合成」的画面模型对称。
 
@@ -200,14 +200,12 @@ interface WidgetAudioControls {
 export default function buzzer(api) {
   let on = false;
   const tone = api.audio.tone({ type: 'square', frequency: api.props.frequency, volume: 0 });
-
   api.subscribe('on', (value) => {
     on = value;
     tone.set({ volume: on ? api.props.volume : 0 }, { rampMs: 5 });
     api.invalidate();
   });
   api.subscribe('frequency', (hz) => tone.set({ frequency: hz }));
-
   return {};
 }
 ```

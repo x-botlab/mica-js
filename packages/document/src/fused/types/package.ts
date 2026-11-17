@@ -61,3 +61,11 @@ export interface FirmwareSegment {
 export interface FirmwareImage {
   readonly segments: readonly FirmwareSegment[];
 }
+
+export type ProgramSegment = FirmwareSegment;
+export type MemoryProgram = FirmwareImage;
+
+export interface ProgramFiles {
+  readonly paths: readonly string[];
+  read(path: string): ReadonlyBytes;
+}

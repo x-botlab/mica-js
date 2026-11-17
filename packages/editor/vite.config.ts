@@ -1,6 +1,7 @@
 import dts from 'vite-plugin-dts';
 import { defineConfig } from 'vitest/config';
 import { micaSandboxPlugins } from '@mica-js/sandbox/vite';
+import { micaWidgetPlugins } from '@mica-js/widget/vite';
 import { copyFile } from 'node:fs/promises';
 import { build, type Plugin } from 'vite';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +67,7 @@ export default defineConfig({
   },
   plugins: [
     ...micaSandboxPlugins(),
+    ...micaWidgetPlugins(),
     htmlEnvironmentAssets(),
     dts({
       tsconfigPath: './tsconfig.build.json',

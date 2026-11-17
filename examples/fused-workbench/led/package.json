@@ -3,6 +3,7 @@
   "name": "led",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "displayName": "LED（付费示例）",
   "designatorPrefix": "D",
   "engines": {

@@ -21,9 +21,19 @@ import type {
 import { projectOnSegment } from '@mica-js/document/schematic';
 import { extendWirePath, orthogonalWaypoints } from '../schematic/editor/snapping/wire';
 import { localToScene, type ICanvasDevice } from './canvas/geometry';
+import { planPolylineSegmentDrag } from '../schematic/editing/segment-drag';
+import { FusedSessionError } from './document/errors';
+import { addNode, addWire, sameEndpoint, type IdFactory } from './document/edits';
 
 /** Verified device geometry keyed by full device id; prepared devices and canvas devices match. */
 export type WiringDevices = ReadonlyMap<string, ICanvasDevice>;
+
+/** Explicit wire membership is based on endpoint identity, never coordinate overlap. */
+export function hasWireConnection(document: FusedDocument, endpoint: Endpoint): boolean {
+  return document.wires.some(
+    (wire) => sameEndpoint(wire.from, endpoint) || sameEndpoint(wire.to, endpoint),
+  );
+}
 
 /** Distance under which a tapped point counts as lying on a wire, in scene millimetres. */
 const TAP_EPSILON = 1e-6;
@@ -100,6 +110,109 @@ export function wirePolyline(
     return undefined;
   }
   return [from, ...wire.bends, to];
+}
+
+/** Slides one wire segment while retaining both explicit electrical endpoints. */
+export function moveWireSegment(
+  document: FusedDocument,
+  devices: WiringDevices,
+  wireId: string,
+  segment: number,
+  delta: Point2D,
+): FusedDocument {
+  const wire = document.wires.find((value) => value.id === wireId);
+  const points = wire === undefined ? undefined : wirePolyline(document, devices, wire);
+  const start = points?.[segment];
+  const end = points?.[segment + 1];
+  if (
+    points === undefined ||
+    !Number.isInteger(segment) ||
+    start === undefined ||
+    end === undefined ||
+    !Number.isFinite(delta.x) ||
+    !Number.isFinite(delta.y)
+  )
+    throw new FusedSessionError('edit/invalid-request', 'Invalid wire segment drag');
+  const normal = start.y === end.y ? { x: 0, y: delta.y } : { x: delta.x, y: 0 };
+  const first = points[0]!;
+  const last = points[points.length - 1]!;
+  const moved = planPolylineSegmentDrag(
+    points,
+    segment,
+    normal,
+    (point) =>
+      (point.x === first.x && point.y === first.y) || (point.x === last.x && point.y === last.y),
+  );
+  if (moved === undefined) return document;
+  const bends = orthogonalPath(moved).slice(1, -1);
+  return {
+    ...document,
+    wires: document.wires.map((value) => (value.id === wireId ? { ...value, bends } : value)),
+  };
+}
+
+/** A dragged pin-attached terminal gains its own anchor and an explicit connecting wire. */
+export function moveReference(
+  document: FusedDocument,
+  devices: WiringDevices,
+  referenceId: string,
+  position: Point2D,
+  createId: IdFactory,
+): FusedDocument {
+  const reference = document.references.find((value) => value.id === referenceId);
+  if (reference === undefined || !Number.isFinite(position.x) || !Number.isFinite(position.y))
+    throw new FusedSessionError('edit/invalid-request', 'Invalid terminal drag');
+  const origin = endpointPoint(document, devices, reference.target);
+  if (origin === undefined)
+    throw new FusedSessionError('edit/invalid-request', 'Unknown terminal anchor');
+  if (origin.x === position.x && origin.y === position.y) return document;
+  const target = reference.target;
+  if (target.kind === 'node') {
+    const node = document.nodes.find((value) => value.id === target.node);
+    const shared =
+      node?.kind === 'junction' ||
+      document.references.some(
+        (value) =>
+          value.id !== referenceId &&
+          value.target.kind === 'node' &&
+          value.target.node === target.node,
+      ) ||
+      document.labels.some(
+        (value) => value.target.kind === 'node' && value.target.node === target.node,
+      ) ||
+      document.wires.filter(
+        (value) =>
+          (value.from.kind === 'node' && value.from.node === target.node) ||
+          (value.to.kind === 'node' && value.to.node === target.node),
+      ).length > 1;
+    if (!shared) {
+      return routeDocumentWires(
+        {
+          ...document,
+          nodes: document.nodes.map((value) =>
+            value.id === target.node ? { ...value, ...position } : value,
+          ),
+        },
+        devices,
+        document,
+      );
+    }
+  }
+  const added = addNode(document, position, 'free', createId);
+  const endpoint: Endpoint = { kind: 'node', node: added.nodeId };
+  const moved: FusedDocument = {
+    ...added.document,
+    references: added.document.references.map((value) =>
+      value.id === referenceId ? { ...value, target: endpoint } : value,
+    ),
+  };
+  return addWire(
+    moved,
+    reference.target,
+    endpoint,
+    routeWireBends(moved, devices, reference.target, endpoint, []),
+    createId,
+  ).document;
 }
 
 /**

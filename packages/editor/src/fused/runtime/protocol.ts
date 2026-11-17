@@ -13,6 +13,8 @@
 import { defineRpcService } from '@mica-js/core/rpc';
 import type { TimePs } from '@mica-js/core';
 import type { Event } from '@mica-js/core/lifecycle';
+import type { WidgetAudioMountInfo, WidgetAudioState } from '@mica-js/widget/audio-guest';
+import type { IFusedAudio } from './audio';
 import type {
   DeviceLock,
   FusedDocument,
@@ -22,8 +24,11 @@ import type {
   Value,
 } from '@mica-js/document/fused';
 import type {
-  FirmwareArtifact,
-  FirmwareProject,
+  ProgramArtifact,
+  ProgramFile,
+  ProgramTarget,
+  MemoryProgram,
+  ProgramFiles,
   ModelEvent,
   ResourceRequest,
   RuntimeDiagnostic,
@@ -49,6 +54,11 @@ export interface IFusedFirmwareSnapshot {
   readonly segments: readonly IFusedFirmwareSegment[];
 }
 
+export interface IFusedProgramFilesSnapshot {
+  readonly kind: 'filesystem';
+  readonly files: readonly ProgramFile[];
+}
+
 /**
  * One resolved property value a presentation may read.
  *
@@ -57,7 +67,17 @@ export interface IFusedFirmwareSnapshot {
  * worker, so an unresolved property rejects the presentation instead of shrinking its props.
  */
 export type FusedPresentationValue =
-  string | number | boolean | null | Uint8Array | IFusedFirmwareSnapshot;
+  | string
+  | number
+  | boolean
+  | null
+  | Uint8Array
+  | IFusedFirmwareSnapshot
+  | IFusedProgramFilesSnapshot;
+
+export type FusedResolvedPresentationProps = Readonly<
+  Record<string, string | number | boolean | null | Uint8Array | MemoryProgram | ProgramFiles>
+>;
 
 /** Read-only plain property snapshot handed to a 2D presentation. */
 export type FusedPresentationProps = Readonly<Record<string, FusedPresentationValue>>;
@@ -159,11 +179,13 @@ export interface IFusedViewInput {
 /** Context a `view2d.entry` factory receives (RFC 0022). */
 export interface IFusedView2DContext {
   readonly mode: FusedDisplayMode;
-  readonly props: FusedPresentationProps;
+  readonly props: FusedResolvedPresentationProps;
   readonly geometry: Geometry2D;
   /** Proxy of the owning instance; `undefined` in edit mode and for devices without a model. */
   readonly model: IFusedModelClient | undefined;
   readonly assets: IFusedViewAssets;
+  /** Instance audio, independent of overlay rendering and HTML panels. */
+  readonly audio: IFusedAudio;
   /** Marks the overlay stale; the host decides when to repaint. */
   invalidate(): void;
 }
@@ -213,8 +235,7 @@ export interface IFusedHostPackageService {
 /** Host resources the simulation guest reaches during preparation (RFC 0020 / RFC 0026). */
 export interface IFusedHostResourceService {
   readResource(request: ResourceRequest): Promise<Uint8Array>;
-  listProjects(): Promise<readonly FirmwareProject[]>;
-  resolveProject(projectId: string): Promise<FirmwareArtifact>;
+  resolveProgramProject(projectId: string, target: ProgramTarget): Promise<ProgramArtifact>;
 }
 
 /** Model lane served by the simulation guest to the display guest over the direct port. */
@@ -266,6 +287,9 @@ export interface IFusedInvalidateEvent {
 
 /** Display guest, reached through {@link fusedDisplayService}. */
 export interface IFusedDisplayService {
+  /** Direct display guest to audio worklet lane, transferred by the host. */
+  attachAudio(port: MessagePort): void;
+  setAudioState(state: WidgetAudioState): void;
   /**
    * Creates the presentation factories of one mode; nothing is initialized yet.
    *
@@ -308,3 +332,11 @@ export const fusedModelChannelService =
 
 /** Wire name of the model sink the display guest serves. */
 export const fusedModelSinkService = defineRpcService<IFusedModelSinkService>('fused-model-sink');
+
+/** Host opens and revokes instance generations; samples use the separate worklet port. */
+export interface IFusedHostAudioService {
+  open(instanceId: string): Promise<WidgetAudioMountInfo>;
+  close(instanceId: string, session: string): void;
+}
+
+export const fusedHostAudioService = defineRpcService<IFusedHostAudioService>('fused-host-audio');

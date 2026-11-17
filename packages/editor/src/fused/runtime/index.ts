@@ -22,6 +22,7 @@
  * ```
  */
 import type { IFusedWorkerFactories } from './host/types';
+export type * from './audio';
 
 export { createFusedRuntime } from './host/runtime';
 

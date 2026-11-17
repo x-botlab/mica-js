@@ -5,8 +5,11 @@ import type {
   PropertyValue,
   UnifiedDeviceManifest,
 } from '@mica-js/document/fused';
-import type { FirmwareProject, IFirmwareProjectProvider } from '../providers';
+import type { IAssetProvider } from '../providers';
 import { Icon } from '../parts/activity-bar-part';
+import { ResourceField } from './program';
+import type { ProgramSources, ProgramTarget } from '@mica-js/sdk/fused';
+import type { FusedPresentationProps } from '../runtime/protocol';
 
 interface IPropertyProps {
   readonly name: string;
@@ -17,10 +20,14 @@ interface IPropertyProps {
   readonly set: (value: PropertyValue) => void;
   readonly reset: () => void;
   readonly onError: (error: unknown) => void;
-  readonly onImport: (file: File) => Promise<void>;
-  readonly projects: readonly FirmwareProject[];
-  readonly createProject: (() => void) | undefined;
+  readonly assets: IAssetProvider | undefined;
+  readonly validate: (value: PropertyValue, signal: AbortSignal) => Promise<Uint8Array | undefined>;
+  readonly commitResource: (value: PropertyValue, signal: AbortSignal) => Promise<void>;
   readonly openProject: (id: string) => void;
+  readonly programSources: ProgramSources | undefined;
+  readonly programTarget: ProgramTarget;
+  readonly packagePaths: readonly string[];
+  readonly snapshot: FusedPresentationProps[string] | undefined;
 }
 
 function PropertyField(props: IPropertyProps) {
@@ -45,13 +52,30 @@ function PropertyField(props: IPropertyProps) {
       props.set(number);
     } else props.set(draft);
   };
-  const resource = typeof value === 'object' && value !== null ? value : undefined;
-  const projectId = resource?.mode === 'project' ? resource.projectId : undefined;
   return (
     <div className="mica-wb-property">
       <label title={descriptor.description}>{descriptor.title ?? props.name}</label>
       <div className="mica-wb-property-control">
-        {descriptor.type === 'boolean' ? (
+        {['program', 'image', 'binary', 'firmware'].includes(descriptor.type) ? (
+          <ResourceField
+            name={props.name}
+            descriptor={descriptor}
+            value={value}
+            target={props.programTarget}
+            sources={props.programSources}
+            packagePaths={props.packagePaths}
+            snapshot={props.snapshot}
+            disabled={props.disabled}
+            overridden={props.overridden}
+            assets={props.assets}
+            validate={props.validate}
+            commit={props.commitResource}
+            reset={props.reset}
+            set={props.set}
+            onOpenProject={props.openProject}
+            onError={props.onError}
+          />
+        ) : descriptor.type === 'boolean' ? (
           <input
             type="checkbox"
             aria-label={descriptor.title ?? props.name}
@@ -73,81 +97,6 @@ function PropertyField(props: IPropertyProps) {
               </option>
             ))}
           </select>
-        ) : descriptor.type === 'image' ||
-          descriptor.type === 'binary' ||
-          descriptor.type === 'firmware' ? (
-          <div className="mica-wb-resource-control">
-            {descriptor.type === 'firmware' && (
-              <select
-                aria-label="固件工程"
-                disabled={props.disabled}
-                value={projectId ?? ''}
-                onChange={(event) => {
-                  if (event.target.value)
-                    props.set({ mode: 'project', projectId: event.target.value });
-                }}
-              >
-                <option value="">
-                  {resource !== undefined && 'src' in resource
-                    ? resource.src
-                    : '选择工程或导入文件'}
-                </option>
-                {projectId !== undefined &&
-                  !props.projects.some((project) => project.id === projectId) && (
-                    <option value={projectId}>{projectId}（不可用）</option>
-                  )}
-                {props.projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.title}
-                  </option>
-                ))}
-              </select>
-            )}
-            {descriptor.type !== 'firmware' && (
-              <span className="mica-wb-resource-name">
-                {resource !== undefined && 'src' in resource ? resource.src : '未设置'}
-              </span>
-            )}
-            <label className="mica-wb-file-button" title="导入文件">
-              <Icon name="folder-opened" />
-              <input
-                type="file"
-                disabled={props.disabled}
-                aria-label={`导入${descriptor.title ?? props.name}`}
-                accept={
-                  descriptor.type === 'firmware'
-                    ? '.bin,.hex,.ihx,.elf,.axf'
-                    : descriptor.type === 'image'
-                      ? 'image/png,image/svg+xml'
-                      : descriptor.extensions?.join(',')
-                }
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file !== undefined) void props.onImport(file).catch(props.onError);
-                  event.currentTarget.value = '';
-                }}
-              />
-            </label>
-            {props.createProject !== undefined && (
-              <button
-                title="新建固件工程"
-                aria-label="新建固件工程"
-                disabled={props.disabled}
-                onClick={props.createProject}
-              >
-                <Icon name="add" />
-              </button>
-            )}
-            {projectId !== undefined && (
-              <button
-                title="打开固件工程"
-                aria-label="打开固件工程"
-                onClick={() => props.openProject(projectId)}
-              >
-                <Icon name="go-to-file" />
-              </button>
-            )}
-          </div>
         ) : (
           <input
             aria-label={descriptor.title ?? props.name}
@@ -173,16 +122,17 @@ function PropertyField(props: IPropertyProps) {
             }}
           />
         )}
-        {props.overridden && (
-          <button
-            title="恢复默认值"
-            aria-label={`恢复 ${props.name} 的默认值`}
-            disabled={props.disabled}
-            onClick={props.reset}
-          >
-            <Icon name="discard" />
-          </button>
-        )}
+        {props.overridden &&
+          !['program', 'image', 'binary', 'firmware'].includes(descriptor.type) && (
+            <button
+              title="恢复默认值"
+              aria-label={`恢复 ${props.name} 的默认值`}
+              disabled={props.disabled}
+              onClick={props.reset}
+            >
+              <Icon name="discard" />
+            </button>
+          )}
       </div>
     </div>
   );
@@ -193,11 +143,18 @@ export function InspectorView(props: {
   readonly manifest: UnifiedDeviceManifest | undefined;
   readonly selectionCount: number;
   readonly disabled: boolean;
-  readonly projectProvider: IFirmwareProjectProvider | undefined;
+  readonly assets?: IAssetProvider | undefined;
+  readonly programs?: ProgramSources | undefined;
+  readonly packagePaths?: readonly string[];
+  readonly snapshots?: FusedPresentationProps | undefined;
   readonly onSet: (key: string, value: PropertyValue) => void;
   readonly onReset: (key: string) => void;
-  readonly onImport: (key: string, file: File) => Promise<void>;
-  readonly onCreate: (key: string) => void;
+  readonly onValidate: (
+    key: string,
+    value: PropertyValue,
+    signal: AbortSignal,
+  ) => Promise<Uint8Array | undefined>;
+  readonly onCommit: (key: string, value: PropertyValue, signal: AbortSignal) => Promise<void>;
   readonly onOpenProject: (id: string) => void;
   readonly onError: (error: unknown) => void;
   readonly actions?: React.ReactNode;
@@ -207,27 +164,6 @@ export function InspectorView(props: {
   readonly height: number | undefined;
   readonly onToggle?: (collapsed: boolean) => void;
 }) {
-  const [projects, setProjects] = useState<readonly FirmwareProject[]>([]);
-  useEffect(() => {
-    let active = true;
-    if (props.projectProvider === undefined) return;
-    void props.projectProvider
-      .list()
-      .then((values) => {
-        if (
-          values.some((value) => !value.id.trim() || !value.title.trim()) ||
-          new Set(values.map((value) => value.id)).size !== values.length
-        )
-          throw new Error('固件工程列表无效');
-        if (active) setProjects(values);
-      })
-      .catch((error) => {
-        if (active) props.onError(error);
-      });
-    return () => {
-      active = false;
-    };
-  }, [props.projectProvider, props.instance]);
   const header = (
     <summary
       className="mica-wb-panel-title"
@@ -295,6 +231,14 @@ export function InspectorView(props: {
               key={`${props.instance?.id}:${name}`}
               name={name}
               descriptor={descriptor}
+              programSources={props.programs}
+              programTarget={{
+                deviceId: props.instance!.device,
+                property: name,
+                loader: descriptor.type === 'program' ? descriptor.loader! : 'memory',
+              }}
+              packagePaths={props.packagePaths ?? []}
+              snapshot={props.snapshots?.[name]}
               value={
                 Object.hasOwn(props.instance?.properties ?? {}, name)
                   ? props.instance?.properties?.[name]
@@ -305,13 +249,9 @@ export function InspectorView(props: {
               set={(value) => props.onSet(name, value)}
               reset={() => props.onReset(name)}
               onError={props.onError}
-              onImport={(file) => props.onImport(name, file)}
-              projects={projects}
-              createProject={
-                descriptor.type === 'firmware' && props.projectProvider?.create !== undefined
-                  ? () => props.onCreate(name)
-                  : undefined
-              }
+              assets={props.assets}
+              validate={(value, signal) => props.onValidate(name, value, signal)}
+              commitResource={(value, signal) => props.onCommit(name, value, signal)}
               openProject={props.onOpenProject}
             />
           ))}

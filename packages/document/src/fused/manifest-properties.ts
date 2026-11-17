@@ -8,6 +8,7 @@ import type {
   DevicePropertyType,
   FirmwareAddressSpace,
   PropertyOption,
+  ProgramFormat,
 } from './types/manifest';
 import type { PropertyValue } from './types/property';
 import { isExtensionFilter, isMemberKey, normalizeColor, packagePathProblem } from './rules';
@@ -34,6 +35,7 @@ const PROPERTY_TYPES: readonly DevicePropertyType[] = [
   'image',
   'binary',
   'firmware',
+  'program',
 ];
 
 const COMMON_FIELDS = ['type', 'title', 'description', 'default', 'nullable', 'group', 'order'];
@@ -48,6 +50,7 @@ const TYPE_FIELDS: Readonly<Record<DevicePropertyType, readonly string[]>> = {
   image: [...COMMON_FIELDS, 'maxBytes', 'maxPixels'],
   binary: [...COMMON_FIELDS, 'maxBytes', 'extensions'],
   firmware: [...COMMON_FIELDS, 'maxBytes', 'addressSpaces', 'addressSpace', 'loadAddress'],
+  program: [...COMMON_FIELDS, 'loader', 'formats', 'addressSpaces', 'defaults', 'templates'],
 };
 
 type DraftDescriptor = {
@@ -158,6 +161,10 @@ function readPropertyDescriptor(
   }
 
   switch (type) {
+    case 'program': {
+      if (!readProgramFields(value, path, diagnostics, draft)) failed = true;
+      break;
+    }
     case 'string': {
       const maxLength = readCount(value, 'maxLength', path, diagnostics);
       if (maxLength === 'invalid') {
@@ -451,6 +458,102 @@ function readExtensions(
   return failed ? 'invalid' : extensions;
 }
 
+function readProgramFields(
+  value: Record<string, unknown>,
+  path: readonly string[],
+  diagnostics: FusedDiagnostic[],
+  draft: DraftDescriptor,
+): boolean {
+  const fail = (message: string, field: string): false => {
+    report(diagnostics, 'package/invalid-manifest', message, [...path, field]);
+    return false;
+  };
+  let ok = true;
+  if (hasOwn(value, 'templates')) {
+    const templates = value['templates'];
+    if (
+      !Array.isArray(templates) ||
+      templates.some((item) => typeof item !== 'string' || item.length === 0) ||
+      new Set(templates).size !== templates.length
+    ) {
+      ok = fail('Templates must be unique non-empty string IDs.', 'templates');
+    } else {
+      draft.templates = templates;
+    }
+  }
+  const loader = value['loader'];
+  if (loader !== 'memory' && loader !== 'filesystem')
+    return fail('Program loader must be memory or filesystem.', 'loader');
+  draft.loader = loader;
+  if (loader === 'filesystem') {
+    for (const field of ['formats', 'addressSpaces', 'defaults']) {
+      if (hasOwn(value, field)) ok = fail(`Filesystem programs do not declare ${field}.`, field);
+    }
+    return ok;
+  }
+  const formats = value['formats'];
+  const isFormat = (item: unknown): item is ProgramFormat =>
+    item === 'bin' || item === 'hex' || item === 'elf';
+  if (
+    !Array.isArray(formats) ||
+    formats.length === 0 ||
+    !formats.every(isFormat) ||
+    new Set(formats).size !== formats.length
+  )
+    return fail('Memory formats must be a non-empty unique subset of bin, hex and elf.', 'formats');
+  draft.formats = formats;
+  const rawSpaces = readObjectField(value, 'addressSpaces', path, diagnostics);
+  if (rawSpaces === undefined || Object.keys(rawSpaces).length === 0)
+    return fail('Memory programs require address spaces.', 'addressSpaces');
+  const spaces: Record<string, FirmwareAddressSpace> = Object.create(null) as Record<
+    string,
+    FirmwareAddressSpace
+  >;
+  for (const [id, raw] of Object.entries(rawSpaces)) {
+    if (id.length === 0) {
+      ok = fail('Address space IDs must not be empty.', 'addressSpaces');
+      continue;
+    }
+    const space = readAddressSpace(raw, [...path, 'addressSpaces', id], diagnostics);
+    if (space === undefined) ok = false;
+    else spaces[id] = space;
+  }
+  draft.addressSpaces = spaces;
+  if (!formats.includes('bin') && !formats.includes('hex')) {
+    return hasOwn(value, 'defaults')
+      ? fail('ELF-only programs do not declare defaults.', 'defaults')
+      : ok;
+  }
+  const defaults = readObjectField(value, 'defaults', path, diagnostics);
+  if (defaults === undefined) return false;
+  const defaultsPath = [...path, 'defaults'];
+  forbidUnknownFields(defaults, ['addressSpace', 'loadAddress'], defaultsPath, diagnostics);
+  const addressSpace = readStringField(defaults, 'addressSpace', defaultsPath, diagnostics, true, {
+    nonEmpty: true,
+  });
+  if (addressSpace === undefined || spaces[addressSpace] === undefined)
+    return fail('Default addressSpace must name a declared space.', 'defaults');
+  const loadAddress = readIntegerField(
+    defaults,
+    'loadAddress',
+    defaultsPath,
+    diagnostics,
+    formats.includes('bin'),
+  );
+  if (formats.includes('bin')) {
+    const space = spaces[addressSpace];
+    if (
+      loadAddress === undefined ||
+      loadAddress < space.start ||
+      loadAddress >= space.start + space.size
+    )
+      return fail('Default loadAddress must lie in its address space.', 'defaults');
+  } else if (hasOwn(defaults, 'loadAddress'))
+    return fail('Only BIN programs declare a default loadAddress.', 'defaults');
+  draft.defaults = { addressSpace, ...(loadAddress === undefined ? {} : { loadAddress }) };
+  return ok;
+}
+
 function readFirmwareFields(
   value: Record<string, unknown>,
   path: readonly string[],
@@ -673,12 +776,39 @@ function checkDefault(
       const reference = checkPackageReference(value, path, diagnostics);
       return reference === undefined ? undefined : { value: reference };
     }
-    case 'firmware': {
+    case 'firmware':
+    case 'program': {
       const reference = checkPackageReference(value, path, diagnostics);
       if (reference === undefined) {
         return undefined;
       }
-      const spaceId = reference.addressSpace;
+      if (descriptor.type === 'program') {
+        const format = reference.src.split('.').at(-1)?.toLowerCase();
+        const bin = format === 'bin';
+        const hex = format === 'hex' || format === 'ihx';
+        const decodedFormat = bin
+          ? 'bin'
+          : hex
+            ? 'hex'
+            : format === 'elf' || format === 'axf'
+              ? 'elf'
+              : undefined;
+        if (
+          descriptor.loader === 'memory' &&
+          (decodedFormat === undefined || !descriptor.formats?.includes(decodedFormat))
+        )
+          return fail('The default program file must use an accepted format.');
+        if (
+          (descriptor.loader === 'filesystem' || (!bin && !hex)) &&
+          (reference.addressSpace !== undefined || reference.loadAddress !== undefined)
+        )
+          return fail('This program default does not accept address overrides.');
+        if (!bin && reference.loadAddress !== undefined)
+          return fail('Only BIN defaults accept loadAddress.');
+      }
+      const spaceId =
+        reference.addressSpace ??
+        (descriptor.type === 'program' ? descriptor.defaults?.addressSpace : undefined);
       if (spaceId !== undefined) {
         const space = descriptor.addressSpaces?.[spaceId];
         if (space === undefined) {

@@ -6,6 +6,8 @@
 
 规定统一器件开发项目的 SDK 类型准备、固定类型名、全局声明与生成配置。本文为待实现合同；运行时方法与事件由 [RFC 0021](./0021-device-model-api.md) 规定。MUST / MUST NOT 表示强制要求，SHOULD 为推荐，MAY 为可选。
 
+修订（2026-11-17）：程序属性按 [RFC 0026](./0026-firmware-properties.md) 的 `loader` 投影为内存或文件集类型。
+
 ## 声明
 
 ### 项目与生成类型
@@ -28,7 +30,7 @@
 | `DevicePinId`        | 清单引脚 ID 的字符串字面量联合；无引脚时为 `never`             |
 
 - `integer` 与 `number` 生成 `number`，`color` 生成字符串，枚举生成选项值字面量联合；`nullable: true` 加入 `null`，已补全的属性键保持必需。
-- `image` / `binary` 的解析值使用核心 `ReadonlyBytes`，`firmware` 使用 [RFC 0026](./0026-firmware-properties.md) 的 `FirmwareImage`；文档资源引用不作为工厂属性值类型。
+- `image` / `binary` 的解析值使用核心 `ReadonlyBytes`；`program` 的 `loader: "memory"` 使用 [RFC 0026](./0026-firmware-properties.md) 的 `MemoryProgram`，`loader: "filesystem"` 使用 `ProgramFiles`；可空时分别加入 `null`，作者直接使用确定的装载结果类型，文档引用不投影为工厂属性。
 - `DeviceMethods` 保持同步签名，`DeviceClient.methods` 将同一参数与结果投影为 Promise 调用；无参数或结果按 [RFC 0021](./0021-device-model-api.md) 使用 `null`。
 - 模型事件出口按 `DeviceEvents` 生成 `.fire(value)` 与 `.fireTransferred(value, buffers)`；订阅端将同一载荷包装为含 `value`、`simTime`、`sequence` 的单个事件参数。
 
@@ -46,6 +48,7 @@
 ## 校验
 
 - 清单未知成员、类型引用错误、模型与清单属性不一致或引脚集合不一致时，准备 MUST 失败并报告原有清单或模型诊断。
+- 模型 IR 只对清单中的普通属性做类型一致性校验；IR 声明同名 `program` 属性时准备失败，程序复合值只投影给工厂与展示。
 - 缺少方法实现、参数或返回值错误、事件载荷错误及访问未知成员时，生成类型 MUST 使作者代码的 TypeScript 检查失败。
 - 编译后的公开类型与运行时载荷校验使用同一清单；通过 TypeScript 检查不替代运行时校验。
 
@@ -116,7 +119,7 @@ declare global {
 
 - 包清单、身份、属性及引脚声明由 [RFC 0020](./0020-unified-device-package.md) 规定。
 - 工厂、方法、事件及二进制所有权由 [RFC 0021](./0021-device-model-api.md) 规定。
-- 固件镜像和模型工厂装载由 [RFC 0026](./0026-firmware-properties.md) 规定。
+- 程序镜像、文件集和模型工厂装载由 [RFC 0026](./0026-firmware-properties.md) 规定。
 
 ## 关联
 

@@ -28,6 +28,48 @@ export interface IFusedDocumentTarget {
   readonly id: string;
 }
 
+export interface IFusedTextTarget {
+  readonly kind: 'designator' | 'label' | 'reference';
+  readonly id: string;
+}
+
+/** Changes only the position of the selected text, preserving its owning electrical object. */
+export function setTextOffset(
+  document: FusedDocument,
+  target: IFusedTextTarget,
+  offset: Point2D,
+): FusedDocument {
+  const point = { x: requireFinite(offset.x, 'offset.x'), y: requireFinite(offset.y, 'offset.y') };
+  if (target.kind === 'designator')
+    return mapInstances(document, [target.id], (instance) => ({
+      ...instance,
+      designatorOffset: point,
+    }));
+  if (target.kind === 'label') {
+    if (!document.labels.some((value) => value.id === target.id))
+      throw new FusedSessionError('edit/invalid-request', `Unknown label: ${target.id}`);
+    return {
+      ...document,
+      labels: document.labels.map((value) =>
+        value.id === target.id ? { ...value, offset: point } : value,
+      ),
+    };
+  }
+  const reference = document.references.find((value) => value.id === target.id);
+  const label = reference?.label;
+  if (reference === undefined || label === undefined)
+    throw new FusedSessionError(
+      'edit/invalid-request',
+      `Reference has no movable net label: ${target.id}`,
+    );
+  return {
+    ...document,
+    references: document.references.map((value) =>
+      value === reference ? { ...value, label: { ...label, offset: point } } : value,
+    ),
+  };
+}
+
 /** Allocates one element id; the session defaults to `crypto.randomUUID`. */
 export type IdFactory = () => string;
 
@@ -243,6 +285,36 @@ export function rotateInstances(
       rotation: normalizeDegrees(instance.placement.rotation + delta),
     },
   }));
+}
+
+/** Rotates selected devices and reference symbols around their own electrical anchors. */
+export function rotateTargets(
+  document: FusedDocument,
+  targets: readonly IFusedDocumentTarget[],
+  degrees: number,
+): FusedDocument {
+  const delta = requireFinite(degrees, 'degrees');
+  const rotated = rotateInstances(
+    document,
+    targets.filter((value) => value.kind === 'instance').map((value) => value.id),
+    delta,
+  );
+  const ids = new Set(
+    targets.filter((value) => value.kind === 'reference').map((value) => value.id),
+  );
+  for (const id of ids) {
+    if (!document.references.some((value) => value.id === id))
+      throw new FusedSessionError('edit/invalid-request', `Unknown reference: ${id}`);
+  }
+  if (ids.size === 0) return rotated;
+  return {
+    ...rotated,
+    references: rotated.references.map((value) =>
+      ids.has(value.id)
+        ? { ...value, rotation: normalizeDegrees((value.rotation ?? 0) + delta) }
+        : value,
+    ),
+  };
 }
 
 /**
@@ -631,7 +703,7 @@ function touchesNode(wire: ConnectionWire, nodeId: string): boolean {
   );
 }
 
-function sameEndpoint(a: Endpoint, b: Endpoint): boolean {
+export function sameEndpoint(a: Endpoint, b: Endpoint): boolean {
   if (a.kind === 'pin' && b.kind === 'pin') {
     return a.instance === b.instance && a.pin === b.pin;
   }

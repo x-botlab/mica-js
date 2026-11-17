@@ -7,6 +7,8 @@
  * repaint.
  */
 import type { Geometry2D } from '@mica-js/document/fused';
+import { createWidgetAudioRuntime } from '@mica-js/widget/audio-guest';
+import { fusedAudio, type IFusedAudio } from '../audio';
 import type {
   FusedDisplayMode,
   IFusedInstancePresentation,
@@ -17,7 +19,7 @@ import type {
   IFusedViewAssets,
   IFusedViewInput,
 } from '../protocol';
-import { byteBuffer, decodeSource, isThenable } from '../values';
+import { byteBuffer, decodeSource, isThenable, reconstructPresentationProps } from '../values';
 import { FusedBridgeError, messageOf } from '../wire';
 
 /** Canvas one overlay is painted into; injectable so the guest runs off-browser in tests. */
@@ -35,6 +37,7 @@ export interface IFusedViewSessionOptions {
   readonly instance: IFusedInstancePresentation;
   readonly mode: FusedDisplayMode;
   readonly model: IFusedModelClient | undefined;
+  readonly audio?: IFusedAudio;
   readonly readAsset: (path: string) => Promise<Uint8Array>;
   readonly importModule: (code: string) => Promise<unknown>;
   readonly createSurface: FusedSurfaceFactory;
@@ -84,6 +87,7 @@ export async function createViewSession(
   }
 
   let disposed = false;
+  const localAudio = options.audio === undefined ? createWidgetAudioRuntime({}) : undefined;
   let surface: IFusedOverlaySurface | undefined;
   const assets: IFusedViewAssets = {
     read: (path: string) => options.readAsset(path),
@@ -92,10 +96,11 @@ export async function createViewSession(
   };
   const context: IFusedView2DContext = {
     mode: options.mode,
-    props: instance.props,
+    props: reconstructPresentationProps(instance.props),
     geometry: instance.geometry,
     model: options.model,
     assets,
+    audio: options.audio ?? fusedAudio(localAudio!.api(instance.instanceId)),
     invalidate: () => {
       if (!disposed) options.invalidate();
     },
@@ -180,6 +185,7 @@ export async function createViewSession(
     dispose() {
       if (disposed) return;
       disposed = true;
+      localAudio?.dispose();
       try {
         view.dispose?.();
       } catch (cause) {

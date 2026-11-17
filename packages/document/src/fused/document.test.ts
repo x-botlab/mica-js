@@ -24,9 +24,10 @@ describe('parseFusedDocument', () => {
     expect(Object.keys(value.dependencies)).toEqual(['example:button', 'example:label']);
     expect(value.instances).toHaveLength(2);
     expect(value.instances[0]?.designator).toBe('S1');
-    expect(value.instances[0]?.properties?.['firmware']).toEqual({
+    expect(value.instances[0]?.properties?.['program']).toEqual({
       mode: 'project',
       projectId: 'controller',
+      name: 'Controller',
       addressSpace: 'code',
       loadAddress: 256,
     });
@@ -77,6 +78,25 @@ describe('parseFusedDocument', () => {
     expect(codesOf(error)).toEqual(['schema/unknown-field']);
     expect(pointersOf(error)).toEqual(['/sheet']);
   });
+
+  it('preserves the independent device-local designator position', () => {
+    const value = parseFusedDocument(
+      documentValue({ instances: [instance({ designatorOffset: { x: -2, y: 3.5 } })] }),
+    );
+    expect(parseFusedDocument(JSON.stringify(value)).instances[0]?.designatorOffset).toEqual({
+      x: -2,
+      y: 3.5,
+    });
+  });
+
+  it.each([null, { x: 1 }, { x: Infinity, y: 0 }])(
+    'rejects an invalid designator position %j',
+    (designatorOffset) => {
+      expect(() =>
+        parseFusedDocument(documentValue({ instances: [instance({ designatorOffset })] })),
+      ).toThrow();
+    },
+  );
 
   it('rejects an instance id that is used twice', () => {
     const error = parseError(
@@ -300,10 +320,10 @@ describe('parseFusedDocument', () => {
     expect(pointersOf(error)).toEqual(['/instances/0/properties/icon/mode']);
   });
 
-  it('rejects a file resource that escapes the project root', () => {
+  it('rejects a package resource that escapes the package root', () => {
     const error = parseError(
       documentValue({
-        instances: [instance({ properties: { icon: { src: '../a.png', mode: 'file' } } })],
+        instances: [instance({ properties: { icon: { src: '../a.png', mode: 'package' } } })],
       }),
     );
 
@@ -326,7 +346,7 @@ describe('parseFusedDocument', () => {
       documentValue({
         instances: [
           instance({
-            properties: { firmware: { mode: 'file', src: 'main.bin', loadAddress: -1 } },
+            properties: { firmware: { mode: 'package', src: 'main.bin', loadAddress: -1 } },
           }),
         ],
       }),
@@ -347,7 +367,7 @@ describe('parseFusedDocument', () => {
       }),
     );
 
-    expect(codesOf(error)).toEqual(['schema/unknown-field']);
-    expect(pointersOf(error)).toEqual(['/instances/0/properties/firmware/addressSpace']);
+    expect(codesOf(error)).toEqual(['schema/invalid-value']);
+    expect(pointersOf(error)).toEqual(['/instances/0/properties/firmware/mode']);
   });
 });

@@ -11,7 +11,9 @@ import type {
   FirmwareAddressSpace,
   FirmwareFileReference,
   FirmwareImage,
-  FirmwareProjectReference,
+  ProgramProjectReference,
+  MemoryProgram,
+  ProgramFiles,
   PropertyValue,
   ResourceReference,
 } from '@mica-js/document/fused';
@@ -24,21 +26,32 @@ import {
   isDecodedFormat,
   readonlyBytes,
   type FirmwareFormat,
-  type FirmwareProjectSource,
 } from './firmware.js';
 import { isPackagePath, type VerifiedPackage } from './package.js';
+import {
+  checkProgramPath,
+  createProgramFiles,
+  readProgramArchive,
+  PROGRAM_LIMITS,
+  ProgramError,
+  type ProgramArtifact,
+  type ProgramFile,
+  type ProgramSources,
+  type ProgramTarget,
+} from './program.js';
+import { decodeMemoryProgram } from './program-memory.js';
 
 /** Property value handed to the simulator board; IR properties only. */
 export type BoardPropertyValue = number | boolean | string | null | Uint8Array;
 
-/** One external resource read the host must answer (RFC 0020 `file` and `store` modes). */
+/** One external asset read the host must answer. */
 export interface ResourceRequest {
   readonly instanceId: string;
   readonly property: string;
   readonly reference: ResourceReference;
 }
 
-/** Explicit resolver of `file` and `store` property resources. */
+/** Explicit resolver of asset-library property resources. */
 export type ResourceResolver = (request: ResourceRequest) => Promise<Uint8Array>;
 
 export interface PropertyResolution {
@@ -57,7 +70,8 @@ export interface PropertyResolutionInput {
   /** Property declarations of the model IR, keyed by name. */
   readonly irProperties: ReadonlyMap<string, ValueTypeIR>;
   readonly resolveResource?: ResourceResolver;
-  readonly projects?: FirmwareProjectSource;
+  readonly programs?: ProgramSources;
+  readonly signal?: AbortSignal;
   /** JSON Pointer of the instance properties, used for preparational diagnostics. */
   readonly pointer: readonly string[];
 }
@@ -117,6 +131,11 @@ export async function resolveInstanceProperties(
       props[name] = null;
       continue;
     }
+    if (descriptor.type === 'program') {
+      const program = await resolveProgram(input, name, descriptor, raw, problems, pointer);
+      if (program !== undefined) props[name] = program;
+      continue;
+    }
     if (descriptor.type === 'firmware') {
       const image = await resolveFirmware(input, name, descriptor, raw, problems, pointer);
       if (image !== undefined) {
@@ -152,11 +171,11 @@ export async function resolveInstanceProperties(
       );
       continue;
     }
-    if (descriptor.type === 'firmware') {
+    if (descriptor.type === 'firmware' || descriptor.type === 'program') {
       problems.push(
         problem(
           'model/invalid-interface',
-          `Property "${name}" is a firmware property and must not be declared by the model IR.`,
+          `Property "${name}" is a ${descriptor.type} property and must not be declared by the model IR.`,
           pointer,
         ),
       );
@@ -339,15 +358,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isResourceReference(value: unknown): value is ResourceReference {
   return (
     isRecord(value) &&
-    typeof value['src'] === 'string' &&
-    typeof value['mode'] === 'string' &&
-    ['file', 'package', 'inline', 'store'].includes(value['mode'])
+    ((value['mode'] === 'package' && typeof value['src'] === 'string') ||
+      (value['mode'] === 'asset' &&
+        typeof value['assetId'] === 'string' &&
+        typeof value['name'] === 'string'))
   );
 }
 
 function isFirmwareReference(
   value: unknown,
-): value is FirmwareFileReference | FirmwareProjectReference {
+): value is FirmwareFileReference | ProgramProjectReference {
   if (!isRecord(value)) {
     return false;
   }
@@ -355,10 +375,7 @@ function isFirmwareReference(
   if (mode === 'project') {
     return typeof value['projectId'] === 'string';
   }
-  if (mode === 'file' || mode === 'package') {
-    return typeof value['src'] === 'string';
-  }
-  return false;
+  return isResourceReference(value);
 }
 
 function fileNameOf(src: string): string | undefined {
@@ -396,19 +413,7 @@ async function readResourceBytes(
       }
       break;
     }
-    case 'inline': {
-      try {
-        bytes = decodeBase64(reference.src);
-      } catch (cause) {
-        return fail(
-          'schema/invalid-value',
-          `Property "${name}" is not valid base64: ${messageOf(cause)}`,
-        );
-      }
-      break;
-    }
-    case 'file':
-    case 'store': {
+    case 'asset': {
       const resolver = input.resolveResource;
       if (resolver === undefined) {
         return fail(
@@ -426,7 +431,7 @@ async function readResourceBytes(
       } catch (cause) {
         return fail(
           'package/not-found',
-          `Property "${name}" could not read "${reference.src}": ${messageOf(cause)}`,
+          `Property "${name}" could not read asset "${reference.assetId}": ${messageOf(cause)}`,
         );
       }
       if (!(resolved instanceof Uint8Array)) {
@@ -439,10 +444,7 @@ async function readResourceBytes(
       break;
     }
     default:
-      return fail(
-        'schema/invalid-value',
-        `Property "${name}" uses the unknown resource mode "${String(reference.mode)}".`,
-      );
+      return fail('schema/invalid-value', `Property "${name}" uses an unknown resource mode.`);
   }
   if (maxBytes !== undefined && bytes.length > maxBytes) {
     return fail(
@@ -474,6 +476,176 @@ async function resolveBytes(
   return undefined;
 }
 
+async function resolveProgram(
+  input: PropertyResolutionInput,
+  name: string,
+  descriptor: DevicePropertyDescriptor,
+  raw: PropertyValue,
+  problems: PreparationProblem[],
+  pointer: string,
+): Promise<MemoryProgram | ProgramFiles | undefined> {
+  const fail = (code: string, message: string): undefined => {
+    problems.push(problem(code, message, pointer));
+    return undefined;
+  };
+  if (
+    !isFirmwareReference(raw) ||
+    (descriptor.loader !== 'memory' && descriptor.loader !== 'filesystem')
+  )
+    return fail('schema/invalid-value', 'A program requires a valid reference and loader.');
+  const target: ProgramTarget = {
+    deviceId: input.package.lock.id,
+    property: name,
+    loader: descriptor.loader,
+  };
+  const sourceFailure = (cause: unknown, fallback: string): undefined => {
+    const code =
+      isRecord(cause) &&
+      typeof cause['code'] === 'string' &&
+      ['program/resource-limit', 'program/invalid-path'].includes(cause['code'])
+        ? cause['code']
+        : fallback;
+    return fail(code, messageOf(cause));
+  };
+  let artifact: ProgramArtifact;
+  try {
+    if (raw.mode === 'project') {
+      const projects = input.programs?.projects;
+      if (projects === undefined)
+        return fail('program/project-resolve-failed', 'No program project provider is configured.');
+      let resolved: unknown;
+      try {
+        resolved =
+          input.signal === undefined
+            ? await projects.resolve(raw.projectId, target)
+            : await projects.resolve(raw.projectId, target, input.signal);
+      } catch (cause) {
+        return sourceFailure(cause, 'program/project-resolve-failed');
+      }
+      if (
+        !isRecord(resolved) ||
+        (resolved['kind'] !== 'memory' && resolved['kind'] !== 'filesystem')
+      )
+        return fail(
+          'program/project-resolve-failed',
+          'The program project returned no valid artifact.',
+        );
+      if (resolved['kind'] !== descriptor.loader)
+        return fail(
+          'program/loader-mismatch',
+          'The project artifact does not match the program loader.',
+        );
+      if (resolved['kind'] === 'filesystem') {
+        if (!Array.isArray(resolved['files']))
+          return fail(
+            'program/project-resolve-failed',
+            'The program project returned no file set.',
+          );
+        artifact = { kind: 'filesystem', files: resolved['files'] };
+      } else {
+        const format = resolved['format'];
+        const data = resolved['data'];
+        if (
+          (format !== 'bin' && format !== 'hex' && format !== 'elf') ||
+          !(data instanceof Uint8Array)
+        )
+          return fail(
+            'program/project-resolve-failed',
+            'The program project returned an invalid memory artifact.',
+          );
+        artifact = { kind: 'memory', format, data };
+      }
+    } else {
+      if (descriptor.loader === 'filesystem') {
+        let files: readonly ProgramFile[];
+        if (raw.mode === 'package') {
+          checkProgramPath(raw.src);
+          const prefix = `${raw.src}/`;
+          const entries = Object.entries(input.package.files).filter(([path]) =>
+            path.startsWith(prefix),
+          );
+          if (entries.length === 0)
+            return fail(
+              'package/not-found',
+              `Package program directory ${raw.src} does not exist.`,
+            );
+          if (entries.length > PROGRAM_LIMITS.maxFiles)
+            throw new ProgramError(
+              'program/resource-limit',
+              'Program file count exceeds the fixed limit.',
+            );
+          let total = 0;
+          for (const [path, record] of entries) {
+            checkProgramPath(path.slice(prefix.length));
+            total += record.size;
+            if (record.size > PROGRAM_LIMITS.maxFileBytes || total > PROGRAM_LIMITS.maxTotalBytes)
+              throw new ProgramError(
+                'program/resource-limit',
+                'Package program bytes exceed the fixed limits.',
+              );
+          }
+          const captured: ProgramFile[] = [];
+          for (const [path] of entries)
+            captured.push({
+              path: path.slice(prefix.length),
+              data: await input.package.read(path, PROGRAM_LIMITS.maxFileBytes),
+            });
+          files = captured;
+        } else {
+          const bytes = await readResourceBytes(input, name, descriptor, raw, problems, pointer);
+          if (bytes === undefined) return undefined;
+          files = readProgramArchive(bytes);
+        }
+        artifact = { kind: 'filesystem', files };
+      } else {
+        const sourceName = raw.mode === 'package' ? raw.src : raw.name;
+        const format = firmwareFormatOf(sourceName);
+        if (format === undefined)
+          return fail('program/unknown-format', `Unknown program file format: ${sourceName}.`);
+        if (!descriptor.formats?.includes(format))
+          return fail(
+            'program/unsupported-format',
+            `The program property does not accept ${format}.`,
+          );
+        const data = await readResourceBytes(input, name, descriptor, raw, problems, pointer);
+        if (data === undefined) return undefined;
+        if (!(data instanceof Uint8Array))
+          return fail(
+            'program/source-resolve-failed',
+            'The program file resolver returned no bytes.',
+          );
+        artifact = { kind: 'memory', format, data };
+      }
+    }
+    if (artifact.kind === 'filesystem') {
+      if (raw.addressSpace !== undefined || raw.loadAddress !== undefined)
+        return fail('schema/invalid-value', 'Filesystem programs do not accept address overrides.');
+      return createProgramFiles(artifact.files);
+    }
+    return decodeMemoryProgram(artifact.format, artifact.data, descriptor, raw);
+  } catch (cause) {
+    if (cause instanceof ProgramError) {
+      const code =
+        raw.mode === 'project' && cause.code === 'program/source-resolve-failed'
+          ? 'program/project-resolve-failed'
+          : cause.code;
+      return fail(code, cause.message);
+    }
+    if (cause instanceof PreparationError) {
+      for (const item of cause.problems)
+        problems.push(
+          problem(
+            item.code === 'package/resource-limit' ? 'program/resource-limit' : item.code,
+            item.message,
+            pointer,
+          ),
+        );
+      return undefined;
+    }
+    throw cause;
+  }
+}
+
 async function resolveFirmware(
   input: PropertyResolutionInput,
   name: string,
@@ -486,7 +658,7 @@ async function resolveFirmware(
     problems.push(problem(code, message, pointer));
     return undefined;
   };
-  if (!isFirmwareReference(raw)) {
+  if (!isFirmwareReference(raw) || raw.mode === 'project') {
     return fail(
       'schema/invalid-type',
       `Property "${name}" of ${input.instanceId} must be a firmware reference.`,
@@ -494,96 +666,15 @@ async function resolveFirmware(
   }
   const maxBytes = descriptor.maxBytes;
   const spaces = descriptor.addressSpaces ?? {};
-  const formatOverride =
-    raw.mode === 'project' ? undefined : firmwareFormatOf(fileNameOf(raw.src) ?? '');
-  let bytes: Uint8Array | undefined;
-  let format: FirmwareFormat | undefined = formatOverride;
-
-  if (raw.mode === 'project') {
-    const projects = input.projects;
-    if (projects === undefined) {
-      return fail(
-        'runtime/prepare-failed',
-        `Property "${name}" references project "${raw.projectId}" but the runtime was created without a firmware project source.`,
-      );
-    }
-    let artifact: { format?: unknown; data?: unknown };
-    try {
-      artifact = await projects.resolve(raw.projectId);
-    } catch (cause) {
-      return fail(
-        'firmware/project-resolve-failed',
-        `Cannot resolve firmware project "${raw.projectId}": ${messageOf(cause)}`,
-      );
-    }
-    if (artifact.format !== 'bin' && artifact.format !== 'hex' && artifact.format !== 'elf') {
-      return fail(
-        'firmware/project-resolve-failed',
-        `Firmware project "${raw.projectId}" returned the unknown format ${JSON.stringify(artifact.format)}.`,
-      );
-    }
-    if (!(artifact.data instanceof Uint8Array)) {
-      return fail(
-        'firmware/project-resolve-failed',
-        `Firmware project "${raw.projectId}" returned no artifact bytes.`,
-      );
-    }
-    format = artifact.format;
-    bytes = artifact.data.slice();
-  } else if (raw.mode === 'file' || raw.mode === 'package') {
-    if (formatOverride === undefined) {
-      return fail(
-        'firmware/unknown-format',
-        `Property "${name}" names "${raw.src}" whose extension is not a known firmware format.`,
-      );
-    }
-    if (raw.mode === 'package' && !isPackagePath(raw.src)) {
-      return fail(
-        'package/invalid-path',
-        `Property "${name}" references the non-normalized package path "${raw.src}".`,
-      );
-    }
-    if (raw.mode === 'package') {
-      try {
-        bytes = await input.package.read(raw.src, maxBytes);
-      } catch (cause) {
-        problems.push(...asProblems(cause, 'package/not-found'));
-        return undefined;
-      }
-    } else {
-      const resolver = input.resolveResource;
-      if (resolver === undefined) {
-        return fail(
-          'runtime/prepare-failed',
-          `Property "${name}" uses a "file" firmware but the runtime was created without a resolveResource function.`,
-        );
-      }
-      try {
-        const resolved = await resolver({
-          instanceId: input.instanceId,
-          property: name,
-          reference: { src: raw.src, mode: 'file' },
-        });
-        if (!(resolved instanceof Uint8Array)) {
-          return fail(
-            'package/not-found',
-            `The resolveResource function returned no bytes for firmware "${raw.src}".`,
-          );
-        }
-        bytes = resolved.slice();
-      } catch (cause) {
-        return fail(
-          'package/not-found',
-          `Firmware "${raw.src}" could not be read: ${messageOf(cause)}`,
-        );
-      }
-    }
-  } else {
+  const sourceName = raw.mode === 'package' ? raw.src : raw.name;
+  const format: FirmwareFormat | undefined = firmwareFormatOf(fileNameOf(sourceName) ?? '');
+  if (format === undefined) {
     return fail(
       'firmware/unknown-format',
-      `Property "${name}" uses "${String(raw.mode)}" firmware, which has no reliable file name.`,
+      `Property "${name}" names "${sourceName}" whose extension is not a known firmware format.`,
     );
   }
+  const bytes = await readResourceBytes(input, name, descriptor, raw, problems, pointer);
 
   if (bytes === undefined || format === undefined) {
     return undefined;
@@ -645,16 +736,4 @@ function asProblems(cause: unknown, fallbackCode: string): PreparationProblem[] 
 
 function messageOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
-}
-
-function decodeBase64(text: string): Uint8Array {
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0) {
-    throw new TypeError('not base64 text');
-  }
-  const binary = atob(text);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
 }

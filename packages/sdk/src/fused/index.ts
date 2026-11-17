@@ -41,13 +41,27 @@ export { ModelBinding, ModelDisconnectedError, ModelFault } from './models.js';
 export type { DiagnosticSink, PreparationProblem, RuntimeDiagnostic } from './diagnostics.js';
 export { FusedPreparationError, PreparationError } from './diagnostics.js';
 
-export type {
-  FirmwareArtifact,
-  FirmwareFormat,
-  FirmwareProject,
-  FirmwareProjectSource,
-} from './firmware.js';
+export type { FirmwareFormat } from './firmware.js';
 export { isDecodedFormat, readonlyBytes } from './firmware.js';
+export type {
+  MemoryProgram,
+  ProgramFiles,
+  ProgramSegment,
+  ProgramLoader,
+  ProgramFormat,
+  ProgramReference,
+} from '@mica-js/document/fused';
+export type {
+  ProgramArtifact,
+  ProgramFile,
+  ProgramTarget,
+  ProgramProject,
+  ProgramProjectProvider,
+  ProgramProjectSelectionRequest,
+  ProgramSources,
+} from './program.js';
+export { PROGRAM_LIMITS, ProgramError, checkProgramPath, createProgramFiles } from './program.js';
+export { decodeMemoryProgram } from './program-memory.js';
 
 export type {
   BoardPropertyValue,

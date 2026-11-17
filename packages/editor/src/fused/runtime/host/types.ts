@@ -1,12 +1,9 @@
 /** Host-facing contracts of the fused editor runtime (RFC 0022 / RFC 0025). */
 import type { TimePs } from '@mica-js/core';
 import type { Event } from '@mica-js/core/lifecycle';
+import type { IFusedAudioOptions, IFusedAudioControls } from '../audio';
 import type { DeviceRegistry, FusedDocument } from '@mica-js/document/fused';
-import type {
-  FirmwareProjectSource,
-  ResourceResolver,
-  RuntimeDiagnostic,
-} from '@mica-js/sdk/fused';
+import type { ProgramSources, ResourceResolver, RuntimeDiagnostic } from '@mica-js/sdk/fused';
 import type {
   FusedDisplayMode,
   IFusedDisplayLayout,
@@ -70,6 +67,8 @@ export interface IFusedDisplay {
 }
 
 export interface IFusedRuntimeOptions {
+  /** Caller-owned browser context; resume it directly within a user gesture for autoplay. */
+  readonly audio?: IFusedAudioOptions;
   /** Fused `.sch` version 2 document; the simulation guest snapshots it. */
   readonly document: FusedDocument;
   /** Resolves the locked packages of the document in the editor. */
@@ -81,7 +80,7 @@ export interface IFusedRuntimeOptions {
   /** Explicit resolver of `file` and `store` property resources (RFC 0020). */
   readonly resolveResource?: ResourceResolver;
   /** Firmware project service of the editor (RFC 0026). */
-  readonly projects?: FirmwareProjectSource;
+  readonly programs?: ProgramSources;
   /** Receives every freshly rendered overlay, already keyed by instance. */
   readonly onOverlay?: (frame: IFusedOverlayFrame) => void;
   /** Receives preparation and runtime diagnostics of both guests. */
@@ -101,6 +100,7 @@ export interface IFusedRuntimeOptions {
  * in the display worker. This surface only schedules, mirrors state and hands bitmaps back.
  */
 export interface IFusedRuntime {
+  readonly audio: IFusedAudioControls;
   getState(): IFusedSessionState;
   readonly onDidChangeState: Event<IFusedSessionState>;
   readonly onDidReportDiagnostic: Event<RuntimeDiagnostic>;

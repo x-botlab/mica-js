@@ -30,8 +30,9 @@ import {
   resolveInstanceProperties,
 } from '@mica-js/sdk/fused';
 import type {
-  FirmwareArtifact,
-  FirmwareProjectSource,
+  ProgramSources,
+  ProgramArtifact,
+  ProgramFile,
   HeadlessRuntime,
   ResourceResolver,
   RuntimeDiagnostic,
@@ -284,7 +285,7 @@ export function startFusedSimulationGuest(
         irProperties: new Map<string, never>(),
         pointer: ['instances', String(index), 'properties'],
         resolveResource: resources.resolveResource,
-        projects: resources.projects,
+        programs: resources.programs,
       });
       return resolution.props;
     } catch (cause) {
@@ -324,7 +325,7 @@ export function startFusedSimulationGuest(
         loadModule,
         step,
         resolveResource: resources.resolveResource,
-        projects: resources.projects,
+        programs: resources.programs,
         onModelEvent: (event) => {
           if (sessionToken === token) publishModelEvent(event);
           else if (!superseded()) pending.push(event);
@@ -499,14 +500,33 @@ async function mapGuestCall<T>(run: () => Promise<T>): Promise<T> {
 /** Host resources the runtime pulls while it resolves instance properties. */
 function createResourceGateway(endpoint: RpcEndpoint): {
   readonly resolveResource: ResourceResolver;
-  readonly projects: FirmwareProjectSource;
+  readonly programs: ProgramSources;
 } {
   const host = endpoint.getProxy(fusedHostResourceService);
   // The presentation snapshot and the model snapshot resolve the same properties; the cache keeps
   // one host round trip per resource and one artifact fetch per project, and hands out copies.
   const resources = new Map<string, Uint8Array>();
-  const artifacts = new Map<string, FirmwareArtifact>();
+  const programs = new Map<string, ProgramArtifact>();
+  const copyFiles = (files: readonly ProgramFile[]) =>
+    files.map((file) => ({ path: file.path, data: file.data.slice() }));
+  const copyArtifact = (artifact: ProgramArtifact): ProgramArtifact =>
+    artifact.kind === 'memory'
+      ? { ...artifact, data: artifact.data.slice() }
+      : { kind: 'filesystem', files: copyFiles(artifact.files) };
   return {
+    programs: {
+      projects: {
+        resolve: async (id, target) => {
+          const key = JSON.stringify([target.deviceId, target.property, target.loader, id]);
+          let artifact = programs.get(key);
+          if (!artifact) {
+            artifact = await host.resolveProgramProject(id, target);
+            programs.set(key, copyArtifact(artifact));
+          }
+          return copyArtifact(artifact);
+        },
+      },
+    },
     resolveResource: async (request) => {
       const key = `${request.instanceId}\u0000${request.property}`;
       const cached = resources.get(key);
@@ -514,16 +534,6 @@ function createResourceGateway(endpoint: RpcEndpoint): {
       const bytes = await host.readResource(request);
       resources.set(key, bytes.slice());
       return bytes;
-    },
-    projects: {
-      list: () => host.listProjects(),
-      resolve: async (projectId) => {
-        const cached = artifacts.get(projectId);
-        if (cached !== undefined) return { format: cached.format, data: cached.data.slice() };
-        const artifact = await host.resolveProject(projectId);
-        artifacts.set(projectId, { format: artifact.format, data: artifact.data.slice() });
-        return artifact;
-      },
     },
   };
 }

@@ -4,43 +4,43 @@
  */
 
 /** Where an `image` / `binary` / `firmware` value lives (RFC 0020). */
-export type ResourceMode = 'file' | 'package' | 'inline' | 'store';
+export type ResourceMode = 'asset' | 'package';
 
 /**
  * Reference to a resource instead of inline bytes (RFC 0024).
  *
- * `file` is a project-root relative POSIX path, `package` a package-root relative POSIX path,
- * `inline` is base64 text and `store` is a host resource-library identifier.
+ * `package` uses a package-root relative POSIX path; `asset` uses a host library identity.
  */
-export interface ResourceReference {
-  readonly src: string;
-  readonly mode: ResourceMode;
-}
+export type ResourceReference =
+  | { readonly mode: 'package'; readonly src: string }
+  | { readonly mode: 'asset'; readonly assetId: string; readonly name: string };
 
 /**
  * `firmware` value that names a fixed file (RFC 0026). `addressSpace` and `loadAddress` override
  * the attribute defaults for the address space and, for BIN, the load address.
  */
-export interface FirmwareFileReference extends ResourceReference {
-  readonly mode: 'file' | 'package';
+export type FirmwareFileReference = ResourceReference & {
   readonly addressSpace?: string;
   readonly loadAddress?: number;
-}
+};
 
-/** `firmware` value that names a host project; the artifact is resolved at run preparation. */
-export interface FirmwareProjectReference {
+/** Program project resolved by the host at run preparation; the name is display metadata. */
+export interface ProgramProjectReference {
   readonly mode: 'project';
   readonly projectId: string;
+  readonly name?: string;
   readonly addressSpace?: string;
   readonly loadAddress?: number;
 }
 
 /** Persistent `firmware` property value (RFC 0026). */
-export type FirmwareReference = FirmwareFileReference | FirmwareProjectReference;
+export type FirmwareReference = FirmwareFileReference;
+
+export type ProgramFileReference = FirmwareFileReference;
+export type ProgramReference = ProgramFileReference | ProgramProjectReference;
 
 /**
  * Instance property value stored in `FusedInstance.properties` (RFC 0024): a scalar, a resource
  * reference, a firmware reference, or `null` for an explicitly cleared nullable property.
  */
-export type PropertyValue =
-  string | number | boolean | null | ResourceReference | FirmwareReference;
+export type PropertyValue = string | number | boolean | null | ResourceReference | ProgramReference;

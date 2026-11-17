@@ -285,7 +285,16 @@ function readInstance(
   }
   forbidUnknownFields(
     raw,
-    ['id', 'device', 'designator', 'placement', 'properties', 'display', 'viewLayout'],
+    [
+      'id',
+      'device',
+      'designator',
+      'designatorOffset',
+      'placement',
+      'properties',
+      'display',
+      'viewLayout',
+    ],
     path,
     diagnostics,
   );
@@ -301,6 +310,9 @@ function readInstance(
   const designator = readStringField(raw, 'designator', path, diagnostics, false, {
     nonEmpty: true,
   });
+  const designatorOffset = hasOwn(raw, 'designatorOffset')
+    ? readPoint2D(raw['designatorOffset'], [...path, 'designatorOffset'], diagnostics)
+    : undefined;
   const placement = hasOwn(raw, 'placement')
     ? readPlacement(raw['placement'], [...path, 'placement'], diagnostics)
     : undefined;
@@ -328,6 +340,7 @@ function readInstance(
     (hasOwn(raw, 'properties') && properties === undefined) ||
     (hasOwn(raw, 'display') && bodyDisplay === undefined) ||
     (hasOwn(raw, 'viewLayout') && viewLayout === undefined) ||
+    (hasOwn(raw, 'designatorOffset') && designatorOffset === undefined) ||
     (hasOwn(raw, 'designator') && designator === undefined)
   ) {
     return undefined;
@@ -336,6 +349,7 @@ function readInstance(
     id,
     device,
     ...(designator === undefined ? {} : { designator }),
+    ...(designatorOffset === undefined ? {} : { designatorOffset }),
     placement,
     ...(properties === undefined ? {} : { properties }),
     ...(bodyDisplay === undefined ? {} : { display: bodyDisplay }),

@@ -5,13 +5,13 @@
 import type { FusedDiagnostic } from './diagnostics';
 import type {
   FirmwareFileReference,
-  FirmwareProjectReference,
+  ProgramProjectReference,
   FirmwareReference,
   PropertyValue,
   ResourceMode,
   ResourceReference,
 } from './types/property';
-import { packagePathProblem, projectPathProblem } from './rules';
+import { packagePathProblem } from './rules';
 import {
   forbidUnknownFields,
   hasOwn,
@@ -21,9 +21,7 @@ import {
   report,
 } from './read';
 
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
-
-const RESOURCE_MODES = ['file', 'package', 'inline', 'store'] as const;
+const RESOURCE_MODES = ['asset', 'package'] as const;
 
 /** Reads one instance property value; `undefined` when it does not match the contract. */
 export function readPropertyValue(
@@ -57,7 +55,7 @@ function readReference(
   value: Record<string, unknown>,
   path: readonly string[],
   diagnostics: FusedDiagnostic[],
-): ResourceReference | FirmwareReference | undefined {
+): ResourceReference | FirmwareReference | ProgramProjectReference | undefined {
   const mode = readStringField(value, 'mode', path, diagnostics, true, { nonEmpty: true });
   if (mode === undefined) {
     return undefined;
@@ -69,22 +67,22 @@ function readReference(
     report(
       diagnostics,
       'schema/invalid-value',
-      'Field "mode" must be "file", "package", "inline", "store" or "project".',
+      'Field "mode" must be "asset", "package" or "project".',
       [...path, 'mode'],
     );
     return undefined;
   }
-  return readFileOrStoredReference(value, mode as ResourceMode, path, diagnostics);
+  return readResourceReference(value, mode as ResourceMode, path, diagnostics);
 }
 
 function readProjectReference(
   value: Record<string, unknown>,
   path: readonly string[],
   diagnostics: FusedDiagnostic[],
-): FirmwareProjectReference | undefined {
+): ProgramProjectReference | undefined {
   forbidUnknownFields(
     value,
-    ['mode', 'projectId', 'addressSpace', 'loadAddress'],
+    ['mode', 'projectId', 'name', 'addressSpace', 'loadAddress'],
     path,
     diagnostics,
   );
@@ -95,24 +93,31 @@ function readProjectReference(
   if (projectId === undefined || overrides === undefined) {
     return undefined;
   }
-  return { mode: 'project', projectId, ...overrides };
+  const name = readStringField(value, 'name', path, diagnostics, false, { nonEmpty: true });
+  return { mode: 'project', projectId, ...(name === undefined ? {} : { name }), ...overrides };
 }
 
-function readFileOrStoredReference(
+function readResourceReference(
   value: Record<string, unknown>,
   mode: ResourceMode,
   path: readonly string[],
   diagnostics: FusedDiagnostic[],
 ): ResourceReference | FirmwareFileReference | undefined {
-  const firmwareOverrides = mode === 'file' || mode === 'package';
-  const hasOverrides =
-    firmwareOverrides && (hasOwn(value, 'addressSpace') || hasOwn(value, 'loadAddress'));
+  const hasOverrides = hasOwn(value, 'addressSpace') || hasOwn(value, 'loadAddress');
+  const fields = mode === 'asset' ? ['assetId', 'name', 'mode'] : ['src', 'mode'];
   forbidUnknownFields(
     value,
-    hasOverrides ? ['src', 'mode', 'addressSpace', 'loadAddress'] : ['src', 'mode'],
+    hasOverrides ? [...fields, 'addressSpace', 'loadAddress'] : fields,
     path,
     diagnostics,
   );
+  if (mode === 'asset') {
+    const assetId = readStringField(value, 'assetId', path, diagnostics, true, { nonEmpty: true });
+    const name = readStringField(value, 'name', path, diagnostics, true, { nonEmpty: true });
+    const overrides = readAddressOverrides(value, path, diagnostics);
+    if (assetId === undefined || name === undefined || overrides === undefined) return undefined;
+    return { mode, assetId, name, ...overrides };
+  }
   const src = readStringField(value, 'src', path, diagnostics, true, { nonEmpty: true });
   if (src === undefined) {
     return undefined;
@@ -129,7 +134,7 @@ function readFileOrStoredReference(
   if (overrides === undefined) {
     return undefined;
   }
-  return { src, mode: mode as FirmwareFileReference['mode'], ...overrides };
+  return { src, mode: 'package', ...overrides };
 }
 
 /** Reads optional `addressSpace` / `loadAddress` overrides of a firmware reference. */
@@ -166,13 +171,9 @@ function readAddressOverrides(
 /** Payload problem of a resource `src` for its mode, or `undefined` when it is well formed. */
 export function resourceSrcProblem(mode: ResourceMode, src: string): string | undefined {
   switch (mode) {
-    case 'file':
-      return projectPathProblem(src);
     case 'package':
       return packagePathProblem(src);
-    case 'inline':
-      return BASE64.test(src) ? undefined : 'must be base64 text';
-    case 'store':
+    case 'asset':
       return src.length === 0 ? 'must not be empty' : undefined;
   }
 }

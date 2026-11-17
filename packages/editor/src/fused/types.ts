@@ -1,5 +1,8 @@
 import type { Disposable, Event } from '@mica-js/core/lifecycle';
 import type { TimePs } from '@mica-js/core';
+import type { ProgramSources } from '@mica-js/sdk/fused';
+import type { IFusedAudioOptions } from './runtime/audio';
+import type { IFusedTextTarget } from './document/edits';
 import type {
   DeviceLock,
   Endpoint,
@@ -9,12 +12,7 @@ import type {
   Point2D,
   PropertyValue,
 } from '@mica-js/document/fused';
-import type {
-  IDeviceProvider,
-  IFileSystemProvider,
-  IFirmwareProjectProvider,
-  IWorkbenchAccessProvider,
-} from './providers';
+import type { IDeviceProvider, IAssetProvider, IWorkbenchAccessProvider } from './providers';
 import type { IContextKeyService } from './context';
 import type { IWorkbenchTheme, WorkbenchTheme } from './theme';
 
@@ -71,6 +69,14 @@ export interface IWorkbenchCommandMap {
   'device.move': IWorkbenchCommand<{ readonly instanceId: string; readonly position: Point2D }>;
   'device.rotate': IWorkbenchCommand<{ readonly instanceId: string; readonly degrees: number }>;
   'selection.delete': IWorkbenchCommand;
+  'selection.rotate': IWorkbenchCommand<{ readonly degrees: number }>;
+  'text.move': IWorkbenchCommand<{ readonly target: IFusedTextTarget; readonly offset: Point2D }>;
+  'reference.move': IWorkbenchCommand<{ readonly referenceId: string; readonly position: Point2D }>;
+  'wire.moveSegment': IWorkbenchCommand<{
+    readonly wireId: string;
+    readonly segment: number;
+    readonly delta: Point2D;
+  }>;
   'wire.add': IWorkbenchCommand<
     { readonly from: Endpoint; readonly to: Endpoint; readonly bends?: readonly Point2D[] },
     string
@@ -83,10 +89,6 @@ export interface IWorkbenchCommandMap {
   'document.undo': IWorkbenchCommand;
   'document.redo': IWorkbenchCommand;
   'document.save': IWorkbenchCommand;
-  'firmware.createProject': IWorkbenchCommand<{
-    readonly instanceId: string;
-    readonly propertyKey: string;
-  }>;
   'view.open': IWorkbenchCommand<{
     readonly instanceId: string;
     readonly viewId: string;
@@ -154,11 +156,14 @@ export interface IWorkbenchContributions {
 }
 
 export interface IWorkbenchOptions {
+  /** Caller-owned browser context, automatically resumed on document-wide user gestures. */
+  readonly audio?: IFusedAudioOptions;
   readonly container: HTMLElement;
-  readonly uri: string;
-  readonly fileSystemProvider: IFileSystemProvider;
+  readonly document: FusedDocument;
+  readonly saveDocument?: (document: FusedDocument) => Promise<void>;
+  readonly assetProvider?: IAssetProvider;
   readonly deviceProvider: IDeviceProvider;
-  readonly firmwareProjectProvider?: IFirmwareProjectProvider;
+  readonly programs?: ProgramSources;
   readonly accessProvider?: IWorkbenchAccessProvider;
   readonly viewBaseUrlTemplate: string;
   readonly theme?: WorkbenchTheme;
@@ -168,7 +173,6 @@ export interface IWorkbenchOptions {
 }
 
 export interface IWorkbench {
-  readonly uri: string;
   readonly contextKeys: IContextKeyService;
   readonly onDidChangeContent: Event<FusedDocument>;
   readonly onDidChangeSelection: Event<readonly IWorkbenchTarget[]>;

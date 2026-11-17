@@ -42,6 +42,21 @@ export async function verifyFusedDocument(
 ): Promise<IVerifiedFusedDocument> {
   let document = parseFusedDocument(value);
   const prepared = await devices.prepareDocument(document);
+  for (const instance of document.instances) {
+    const properties = prepared.get(instance.device)?.manifest.properties;
+    for (const [key, value] of Object.entries(instance.properties ?? {})) {
+      if (
+        value !== null &&
+        typeof value === 'object' &&
+        value.mode === 'project' &&
+        properties?.[key]?.type !== 'program'
+      )
+        throw new FusedSessionError(
+          'edit/invalid-document',
+          `Only program properties can reference a project: ${instance.id}/${key}.`,
+        );
+    }
+  }
   if (options.routeWires === true) {
     const routed = routeDocumentWires(document, prepared, options.previous);
     if (routed !== document) {

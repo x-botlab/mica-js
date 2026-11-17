@@ -11,6 +11,7 @@ import {
   type IWorkbenchAccessProvider,
 } from '@mica-js/editor/fused';
 import '@mica-js/editor/fused/style.css';
+import type { ProgramArtifact, ProgramProject, ProgramTarget } from '@mica-js/sdk/fused';
 import './workbench-demo.css';
 
 interface ICatalogEntry {
@@ -35,7 +36,7 @@ function parseCatalog(value: unknown): readonly ICatalogEntry[] {
       !record(item.lock) ||
       !record(item.files) ||
       typeof item.directory !== 'string' ||
-      !/^[a-z]+$/.test(item.directory)
+      !/^[a-z][a-z0-9-]*$/.test(item.directory)
     )
       throw new Error('Invalid catalog entry');
     const { id, version, integrity } = item.lock;
@@ -61,10 +62,50 @@ const status = element('#status', HTMLSpanElement);
 const error = element('#error', HTMLPreElement);
 const entitled = element('#entitled', HTMLInputElement);
 const storageKey = 'mica-fused-workbench-example-v1';
-const uri = 'memory://workbench/circuit.sch';
 const base = '/components/workbench/';
 const changes = new Emitter<void>();
-const files = new Map<string, Uint8Array>();
+const demoHex = new TextEncoder().encode(':0E0000007590FF75B0FFA2B29290929180F8B9\n:00000001FF\n');
+const assets = new Map([
+  [
+    'f985ad84-10b2-4478-8415-986e432081ef',
+    { name: '按键控制.hex', kind: 'program', data: demoHex },
+  ],
+  [
+    'f1a470c5-20a6-4083-ab90-822af27f91fc',
+    {
+      name: '面板.svg',
+      kind: 'image',
+      data: new TextEncoder().encode(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#4388cc"/></svg>',
+      ),
+    },
+  ],
+]);
+const programProjects = new Map<
+  string,
+  { project: ProgramProject; loader: ProgramTarget['loader']; artifact: ProgramArtifact }
+>([
+  [
+    'demo-memory',
+    {
+      project: { id: 'demo-memory', title: '内存项目示例' },
+      loader: 'memory',
+      artifact: { kind: 'memory', format: 'hex', data: demoHex },
+    },
+  ],
+  [
+    'demo-scripts',
+    {
+      project: { id: 'demo-scripts', title: '脚本项目示例' },
+      loader: 'filesystem',
+      artifact: {
+        kind: 'filesystem',
+        files: [{ path: 'main.py', data: new TextEncoder().encode('print("Hello")\n') }],
+      },
+    },
+  ],
+]);
+const audioContext = typeof AudioContext === 'undefined' ? undefined : new AudioContext();
 let workbench: IWorkbench | undefined;
 let catalog: readonly ICatalogEntry[] = [];
 const policy: IWorkbenchAccessProvider = {
@@ -116,25 +157,118 @@ function updateTheme(): void {
 theme.addEventListener('change', updateTheme);
 accent.addEventListener('input', updateTheme);
 
+function selectHostItem<T extends { readonly title: string }>(
+  title: string,
+  items: readonly T[],
+  signal: AbortSignal,
+): Promise<T | undefined> {
+  signal.throwIfAborted();
+  return new Promise((resolve) => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'workbench-host-picker';
+    dialog.setAttribute('aria-label', title);
+    const heading = document.createElement('h2');
+    heading.textContent = title;
+    dialog.append(heading);
+    let settled = false;
+    const finish = (value: T | undefined) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', cancel);
+      dialog.close();
+      dialog.remove();
+      resolve(value);
+    };
+    const cancel = () => finish(undefined);
+    for (const item of items) {
+      const button = document.createElement('button');
+      button.textContent = item.title;
+      button.addEventListener('click', () => finish(item));
+      dialog.append(button);
+    }
+    if (!items.length) {
+      const empty = document.createElement('p');
+      empty.textContent = '没有匹配的内容';
+      dialog.append(empty);
+    }
+    const close = document.createElement('button');
+    close.textContent = '取消';
+    close.addEventListener('click', cancel);
+    dialog.append(close);
+    dialog.addEventListener('cancel', cancel);
+    dialog.addEventListener('close', cancel);
+    signal.addEventListener('abort', cancel, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+  });
+}
+
 async function open(bytes: Uint8Array): Promise<void> {
   await workbench?.dispose();
   workbench = undefined;
-  files.set(uri, bytes.slice());
   error.hidden = true;
   const result = await createWorkbench({
+    ...(audioContext === undefined ? {} : { audio: { context: audioContext } }),
     container,
-    uri,
+    document: parseFusedDocument(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
+    saveDocument: async (value) => {
+      localStorage.setItem(storageKey, JSON.stringify(value));
+    },
+    assetProvider: {
+      async select(request) {
+        const available = [...assets]
+          .filter(
+            ([, asset]) =>
+              asset.kind === request.kind &&
+              (!request.formats?.length ||
+                request.formats.some((format) => asset.name.endsWith(`.${format}`))),
+          )
+          .map(([id, asset]) => ({ id, title: asset.name }));
+        const asset = await selectHostItem('资产库', available, request.signal);
+        return asset === undefined ? undefined : { id: asset.id, name: asset.title };
+      },
+      async read(id, signal) {
+        signal.throwIfAborted();
+        const asset = assets.get(id);
+        if (!asset) throw new Error(`Unavailable asset ${id}`);
+        return asset.data.slice();
+      },
+    },
     viewBaseUrlTemplate: `http://\${id}.localhost:${location.port}/components/workbench/environment/`,
     accessProvider: policy,
-    fileSystemProvider: {
-      async read(path) {
-        const value = files.get(path);
-        if (value === undefined) throw new Error(`Unknown host file ${path}`);
-        return value.slice();
-      },
-      async write(path, value) {
-        files.set(path, value.slice());
-        if (path === uri) localStorage.setItem(storageKey, new TextDecoder().decode(value));
+    programs: {
+      projects: {
+        async select(target, signal) {
+          const projects = [...programProjects.values()]
+            .filter((value) => value.loader === target.loader)
+            .map((value) => ({ ...value.project, template: false }));
+          const templates = target.templateIds.flatMap((id) => {
+            const value = programProjects.get(id);
+            return value?.loader === target.loader
+              ? [{ id, title: `从模板新建：${value.project.title}`, template: true }]
+              : [];
+          });
+          const selected = await selectHostItem('项目', [...projects, ...templates], signal);
+          if (selected === undefined) return undefined;
+          signal.throwIfAborted();
+          const value = programProjects.get(selected.id);
+          if (!value || value.loader !== target.loader)
+            throw new Error(`Unavailable project ${selected.id}`);
+          if (!selected.template) return value.project;
+          const project = { id: crypto.randomUUID(), title: `${value.project.title}（副本）` };
+          programProjects.set(project.id, {
+            project,
+            loader: value.loader,
+            artifact: value.artifact,
+          });
+          return project;
+        },
+        async resolve(id, target) {
+          const value = programProjects.get(id);
+          if (!value || value.loader !== target.loader)
+            throw new Error(`Unavailable program project ${id}`);
+          return value.artifact;
+        },
       },
     },
     deviceProvider: {
@@ -178,7 +312,13 @@ async function open(bytes: Uint8Array): Promise<void> {
                 entry.lock.id.includes(search.value.toLowerCase()),
               )) {
                 const button = document.createElement('button');
-                button.textContent = item.lock.id === 'workbench:led' ? 'LED（付费）' : '轻触开关';
+                button.textContent =
+                  {
+                    'workbench:led': 'LED（付费）',
+                    'workbench:button': '轻触开关',
+                    'workbench:at89c52': 'AT89C52',
+                    'workbench:buzzer': '有源蜂鸣器',
+                  }[item.lock.id] ?? item.lock.id;
                 button.className = 'demo-device';
                 button.addEventListener('click', () =>
                   run(context.workbench.executeCommand('device.place', { device: item.lock })),
@@ -222,6 +362,9 @@ async function open(bytes: Uint8Array): Promise<void> {
   result.onDidReportDiagnostic((diagnostic) => {
     if (diagnostic.severity === 'error') showError(`${diagnostic.code}: ${diagnostic.message}`);
   });
+  result.onDidRequestOpenProject(({ projectId }) => {
+    status.textContent = `打开项目：${programProjects.get(projectId)?.project.title ?? projectId}`;
+  });
   update();
   Object.assign(globalThis, {
     fusedDemo: { workbench: result, devices: catalog.map((entry) => entry.lock) },
@@ -244,10 +387,15 @@ element('#reset', HTMLButtonElement).addEventListener('click', () => {
   localStorage.removeItem(storageKey);
   run(fetchBytes(`${base}circuit.sch`).then(open));
 });
+element('#mcu', HTMLButtonElement).addEventListener('click', () =>
+  run(fetchBytes(`${base}mcu.sch`).then(open)),
+);
 element('#free', HTMLButtonElement).addEventListener('click', () =>
   run(
     (async () => {
-      const document = parseFusedDocument(await fetchBytes(`${base}circuit.sch`));
+      const document = parseFusedDocument(
+        new TextDecoder().decode(await fetchBytes(`${base}circuit.sch`)),
+      );
       const instance = document.instances.find((value) => value.device === 'workbench:button');
       if (instance === undefined) throw new Error('Missing example button');
       await open(

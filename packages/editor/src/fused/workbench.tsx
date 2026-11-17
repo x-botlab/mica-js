@@ -10,10 +10,18 @@ import type {
   Point2D,
 } from '@mica-js/document/fused';
 import { parseFusedDocument } from '@mica-js/document/fused';
+import { openDevicePackage, resolveInstanceProperties } from '@mica-js/sdk/fused';
 import { createContextKeyService } from './context';
 import { FusedDocumentSession } from './document';
-import { addLabel, addReference, addWire } from './document/edits';
-import { materializeAnchor, routeDocumentWires } from './wiring';
+import {
+  addLabel,
+  addReference,
+  addWire,
+  rotateTargets,
+  setTextOffset,
+  setInstanceProperty,
+} from './document/edits';
+import { materializeAnchor, moveReference, moveWireSegment, routeDocumentWires } from './wiring';
 import { ContributionRegistry } from './contributions/registry';
 import { findBodyOverlaps } from './canvas/geometry';
 import { createHtmlViewHost, type IHtmlViewHost } from './html';
@@ -65,6 +73,26 @@ function validateViewBase(template: string): void {
   }
 }
 
+async function decodeResourceImage(
+  bytes: Uint8Array,
+  name: string,
+): Promise<ImageBitmap | HTMLImageElement> {
+  const svg = name.toLowerCase().endsWith('.svg');
+  const blob = new Blob([bytes.slice().buffer], {
+    type: svg ? 'image/svg+xml' : 'application/octet-stream',
+  });
+  if (!svg) return createImageBitmap(blob);
+  const source = URL.createObjectURL(blob);
+  try {
+    const image = new Image();
+    image.src = source;
+    await image.decode();
+    return image;
+  } finally {
+    URL.revokeObjectURL(source);
+  }
+}
+
 export async function createWorkbench(options: IWorkbenchOptions): Promise<IWorkbench> {
   validateViewBase(options.viewBaseUrlTemplate);
   function validateTheme(value: WorkbenchTheme | undefined) {
@@ -75,7 +103,6 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     return result;
   }
   let theme = validateTheme(options.theme);
-  const uri = new URL(options.uri).href;
   const step = options.step ?? timePs(10_000_000);
   if (!Number.isSafeInteger(step) || step <= 0)
     throw new Error('Workbench step must be a positive integer number of picoseconds');
@@ -139,8 +166,8 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
   let documentSession: FusedDocumentSession;
   try {
     documentSession = await FusedDocumentSession.open({
-      uri,
-      files: options.fileSystemProvider,
+      document: options.document,
+      ...(options.saveDocument === undefined ? {} : { saveDocument: options.saveDocument }),
       devices: options.deviceProvider,
       access,
     });
@@ -158,8 +185,10 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
   let activeContainer: string | undefined;
   let selection: readonly IWorkbenchTarget[] = Object.freeze([]);
   let placement: DeviceLock | undefined;
+  let placementRotation = 0;
   let canvas: ICanvasHandle | undefined;
   let runtime: IFusedRuntime | undefined;
+  let runtimeDocument: FusedDocument | undefined;
   let runtimeGeneration = 0;
   let htmlViews: IHtmlViewHost | undefined;
   const transientLayouts = new Map<string, InstanceViewLayout | undefined>();
@@ -290,6 +319,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     htmlViews?.closeAll();
     runtimeGeneration++;
     const previous = runtime;
+    runtimeDocument = undefined;
     runtime = undefined;
     clearOverlays();
     await previous?.dispose();
@@ -303,21 +333,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
         continue;
       }
       const bytes = await device.files.read(path);
-      const svg = path.toLowerCase().endsWith('.svg');
-      const blob = new Blob([Uint8Array.from(bytes)], {
-        type: svg ? 'image/svg+xml' : 'application/octet-stream',
-      });
-      let image: ImageBitmap | HTMLImageElement;
-      if (svg) {
-        const source = URL.createObjectURL(blob);
-        try {
-          image = new Image();
-          image.src = source;
-          await image.decode();
-        } finally {
-          URL.revokeObjectURL(source);
-        }
-      } else image = await createImageBitmap(blob);
+      const image = await decodeResourceImage(bytes, path);
       if (disposed) {
         if (image instanceof ImageBitmap) image.close();
         return;
@@ -334,22 +350,28 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     const devices = documentSession.getDevices().getLoadedDevices();
     if (
       targetMode === 'edit' &&
-      !document.instances.some(
-        (instance) => devices.get(instance.device)?.manifest.view2d?.entry !== undefined,
-      )
+      !document.instances.some((instance) => {
+        const manifest = devices.get(instance.device)?.manifest;
+        return (
+          manifest?.view2d?.entry !== undefined ||
+          Object.values(manifest?.properties ?? {}).some((property) => property.type === 'program')
+        );
+      })
     )
       return undefined;
     const result = await createFusedRuntime({
+      ...(options.audio === undefined ? {} : { audio: options.audio }),
       document,
       registry: options.deviceProvider,
       step,
       mode: targetMode,
       container: environment,
-      ...(options.firmwareProjectProvider === undefined
-        ? {}
-        : { projects: options.firmwareProjectProvider }),
-      resolveResource: (request) =>
-        options.fileSystemProvider.read(new URL(request.reference.src, uri).href),
+      ...(options.programs === undefined ? {} : { programs: options.programs }),
+      resolveResource: (request) => {
+        if (request.reference.mode !== 'asset' || options.assetProvider === undefined)
+          throw new Error('No asset provider is configured');
+        return options.assetProvider.read(request.reference.assetId, abort.signal);
+      },
       onDiagnostic: (diagnostic) => {
         if (generation !== runtimeGeneration) return;
         report({
@@ -383,6 +405,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
       await result.dispose();
       throw new Error('Workbench was disposed during runtime preparation');
     }
+    runtimeDocument = document;
     return result;
   }
   function refreshPresentation(): void {
@@ -494,7 +517,6 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     )
       throw new Error(`A different release of ${device.id} is already locked by this document`);
     const decision = await access.canAddDevice({
-      uri,
       document: documentSession.getDocument(),
       device,
     });
@@ -503,53 +525,10 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     await loadImages();
     assertEditable();
     placement = { ...device };
+    placementRotation = 0;
     tool = 'select';
     if (options.container.clientWidth <= 720) activeContainer = undefined;
     update();
-  }
-  async function createFirmwareProject(instanceId: string, propertyKey: string): Promise<void> {
-    assertEditable();
-    const create = options.firmwareProjectProvider?.create;
-    if (create === undefined)
-      throw new Error('The host does not provide firmware project creation');
-    const instance = documentSession
-      .getDocument()
-      .instances.find((value) => value.id === instanceId);
-    const descriptor =
-      instance === undefined
-        ? undefined
-        : documentSession.getDevices().getLoaded(instance.device)?.manifest.properties?.[
-            propertyKey
-          ];
-    if (instance === undefined || descriptor?.type !== 'firmware')
-      throw new Error('Unknown firmware property');
-    const dependency = documentSession.getDocument().dependencies[instance.device];
-    if (dependency === undefined) throw new Error('Missing device lock');
-    const previous = instance.properties?.[propertyKey];
-    const project = await create.call(options.firmwareProjectProvider, {
-      documentUri: uri,
-      instanceId,
-      device: { id: instance.device, ...dependency },
-      propertyKey,
-      signal: abort.signal,
-    });
-    if (project === undefined) return;
-    assertEditable();
-    if (!project.id.trim() || !project.title.trim())
-      throw new Error('The host returned an invalid firmware project');
-    const current = documentSession
-      .getDocument()
-      .instances.find((value) => value.id === instanceId);
-    if (
-      current === undefined ||
-      current.device !== instance.device ||
-      JSON.stringify(current.properties?.[propertyKey]) !== JSON.stringify(previous)
-    )
-      throw new Error('Firmware target changed while creating the project');
-    await documentSession.setProperty(instanceId, propertyKey, {
-      mode: 'project',
-      projectId: project.id,
-    });
   }
   function viewLayout(instanceId: string): InstanceViewLayout {
     const instance = documentSession.getDocument().instances.find((item) => item.id === instanceId);
@@ -674,6 +653,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
         labelName = `NET${index}`;
       }
       placement = undefined;
+      placementRotation = 0;
       update();
     },
     'device.place': ({ device }) => placeDevice(device),
@@ -704,6 +684,44 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
       await documentSession.remove(selection);
       setSelection([]);
     },
+    'selection.rotate': async ({ degrees }) => {
+      assertEditable();
+      if (!Number.isFinite(degrees)) throw new Error('Rotation must be finite');
+      if (placement !== undefined || tool === 'power' || tool === 'ground') {
+        placementRotation = (((placementRotation + degrees) % 360) + 360) % 360;
+        update();
+        return;
+      }
+      await documentSession.transact((current) => rotateTargets(current, selection, degrees));
+    },
+    'wire.moveSegment': async ({ wireId, segment, delta }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        moveWireSegment(
+          current,
+          documentSession.getDevices().getLoadedDevices(),
+          wireId,
+          segment,
+          delta,
+        ),
+      );
+    },
+    'text.move': async ({ target, offset }) => {
+      assertEditable();
+      await documentSession.transact((current) => setTextOffset(current, target, offset));
+    },
+    'reference.move': async ({ referenceId, position }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        moveReference(
+          current,
+          documentSession.getDevices().getLoadedDevices(),
+          referenceId,
+          position,
+          () => crypto.randomUUID(),
+        ),
+      );
+    },
     'wire.add': ({ from, to, bends }) => {
       assertEditable();
       return documentSession.addWire(from, to, bends);
@@ -719,8 +737,6 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     'document.undo': () => documentSession.undo(),
     'document.redo': () => documentSession.redo(),
     'document.save': () => documentSession.save(),
-    'firmware.createProject': ({ instanceId, propertyKey }) =>
-      createFirmwareProject(instanceId, propertyKey),
     'view.open': ({ instanceId, viewId, location }) => openView(instanceId, viewId, location),
     'view.setLocation': ({ instanceId, viewId, location }) =>
       openView(instanceId, viewId, location),
@@ -741,7 +757,6 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     'view.setLayout': ({ instanceId, layout }) => changeViewLayout(instanceId, layout),
   };
   const workbench: IWorkbench = {
-    uri,
     contextKeys,
     onDidChangeContent: content.event,
     onDidChangeSelection: selectionChanged.event,
@@ -917,6 +932,9 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     get placement() {
       return placement;
     },
+    get placementRotation() {
+      return placementRotation;
+    },
     get version() {
       return version;
     },
@@ -955,6 +973,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     endpoint: async (target: Endpoint | Point2D) => {
       assertEditable();
       const activeTool = tool;
+      const rotation = placementRotation;
       const name = labelName.trim();
       if (activeTool !== 'power' && activeTool !== 'ground' && activeTool !== 'label')
         throw new Error('未选择端子或网标放置工具');
@@ -973,7 +992,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
               anchor.endpoint,
               activeTool === 'ground' ? 0 : 5,
               activeTool,
-              {},
+              { rotation },
               () => crypto.randomUUID(),
             ).document;
       });
@@ -984,6 +1003,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     },
     cancel: () => {
       placement = undefined;
+      placementRotation = 0;
       tool = 'select';
       update();
     },
@@ -993,8 +1013,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
       setSelection([{ kind: 'instance', id }]);
       canvas?.reveal(id);
     },
-    importResource: async (instanceId, key, file) => {
-      assertEditable();
+    validateResource: async (instanceId, key, value, signal) => {
       const instance = documentSession
         .getDocument()
         .instances.find((value) => value.id === instanceId);
@@ -1002,18 +1021,94 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
         instance === undefined
           ? undefined
           : documentSession.getDevices().getLoaded(instance.device)?.manifest.properties?.[key];
-      if (descriptor === undefined || !['image', 'binary', 'firmware'].includes(descriptor.type))
+      if (
+        descriptor === undefined ||
+        !['image', 'binary', 'firmware', 'program'].includes(descriptor.type)
+      )
         throw new Error('Unknown resource property');
-      if (descriptor.maxBytes !== undefined && file.size > descriptor.maxBytes)
-        throw new Error('Resource exceeds the property byte limit');
-      const name = `${crypto.randomUUID()}-${file.name.replace(/[^A-Za-z0-9._-]/g, '_')}`;
-      const src = `assets/${name}`;
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      assertEditable();
-      await options.fileSystemProvider.write(new URL(src, uri).href, bytes);
-      await documentSession.setProperty(instanceId, key, { mode: 'file', src });
+      if (instance === undefined) throw new Error('Unknown resource instance');
+      const device = documentSession.getDevices().requireLoaded(instance.device);
+      const verified = await openDevicePackage(options.deviceProvider, device.lock);
+      signal.throwIfAborted();
+      const resolved = await resolveInstanceProperties({
+        instanceId,
+        package: verified,
+        descriptors: { [key]: descriptor },
+        overrides: { [key]: value },
+        irProperties: new Map(),
+        pointer: ['properties'],
+        signal,
+        ...(options.programs === undefined ? {} : { programs: options.programs }),
+        resolveResource: (request) => {
+          if (request.reference.mode !== 'asset' || options.assetProvider === undefined)
+            throw new Error('No asset provider is configured');
+          return options.assetProvider.read(request.reference.assetId, signal);
+        },
+      });
+      signal.throwIfAborted();
+      const resource = resolved.props[key];
+      if (
+        resource &&
+        typeof resource === 'object' &&
+        'slice' in resource &&
+        typeof resource.slice === 'function'
+      ) {
+        const bytes: unknown = resource.slice();
+        if (!(bytes instanceof Uint8Array)) throw new Error('Resource did not resolve to bytes');
+        if (descriptor.type === 'image') {
+          const sourceName =
+            value !== null && typeof value === 'object'
+              ? value.mode === 'package'
+                ? value.src
+                : (value.name ?? '')
+              : '';
+          const bitmap = await decodeResourceImage(bytes, sourceName);
+          try {
+            if (
+              descriptor.maxPixels !== undefined &&
+              bitmap.width * bitmap.height > descriptor.maxPixels
+            )
+              throw new Error('Image exceeds the property pixel limit');
+          } finally {
+            if (bitmap instanceof ImageBitmap) bitmap.close();
+          }
+        }
+        signal.throwIfAborted();
+        return bytes;
+      }
+      return undefined;
+    },
+    commitResource: async (instanceId, key, expected, value, signal) => {
+      await documentSession.transact((current) => {
+        signal.throwIfAborted();
+        assertEditable();
+        const instance = current.instances.find((entry) => entry.id === instanceId);
+        if (
+          instance === undefined ||
+          JSON.stringify(instance.properties?.[key]) !== JSON.stringify(expected)
+        )
+          throw new Error('resource/target-changed: 属性已改变，请重新选择资源');
+        return setInstanceProperty(current, instanceId, key, value);
+      });
     },
     openProject: (projectId) => openProject.fire({ projectId }),
+    programPackagePaths: (deviceId) =>
+      Object.keys(documentSession.getDevices().getLoaded(deviceId)?.files.files ?? {}),
+    programSnapshot: (instanceId) => {
+      const prepared = runtimeDocument?.instances.find((instance) => instance.id === instanceId);
+      const current = documentSession
+        .getDocument()
+        .instances.find((instance) => instance.id === instanceId);
+      if (
+        !prepared ||
+        !current ||
+        prepared.device !== current.device ||
+        JSON.stringify(prepared.properties) !== JSON.stringify(current.properties)
+      )
+        return undefined;
+      return runtime?.display.instances.find((instance) => instance.instanceId === instanceId)
+        ?.props;
+    },
   };
   disposables.add(
     documentSession.onDidChangeContent((value) => {
@@ -1068,6 +1163,31 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
   );
   options.container.append(mount, environment);
   try {
+    const audio = options.audio?.context;
+    if (audio !== undefined) {
+      let resuming = false;
+      const unlockAudio = (event: Event) => {
+        if (!event.isTrusted || audio.state !== 'suspended' || resuming) return;
+        // Touch and pen activation is available on release rather than pointerdown.
+        if (event.type === 'pointerdown' && 'pointerType' in event && event.pointerType !== 'mouse')
+          return;
+        resuming = true;
+        void audio
+          .resume()
+          .catch((reason: unknown) => {
+            report({ code: 'audio/failed', message: errorMessage(reason), severity: 'error' });
+          })
+          .finally(() => {
+            resuming = false;
+          });
+      };
+      for (const type of ['pointerdown', 'pointerup', 'keydown']) {
+        options.container.ownerDocument.addEventListener(type, unlockAudio, {
+          capture: true,
+          signal: abort.signal,
+        });
+      }
+    }
     await loadImages();
     refreshLayoutDiagnostics();
     update();

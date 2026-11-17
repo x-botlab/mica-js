@@ -2,9 +2,15 @@ import { describe, expect, it } from 'vitest';
 import type { FusedDocument, FusedInstance, Geometry2D } from '@mica-js/document/fused';
 import {
   findBodyOverlaps,
+  designatorPosition,
   localToScene,
   pickInstance,
+  pickAnnotation,
   pickPins,
+  pickWireSegment,
+  pickText,
+  referenceBounds,
+  textDragOffset,
   sceneToLocal,
   type ICanvasDevice,
 } from './geometry';
@@ -97,5 +103,131 @@ describe('fused canvas geometry', () => {
         devices(narrow),
       ),
     ).toHaveLength(1);
+  });
+
+  it('picks a rotated terminal symbol and its label using its electrical anchor', () => {
+    const doc: FusedDocument = {
+      ...document(),
+      nodes: [{ id: 'anchor', kind: 'free', x: 10, y: 20 }],
+      references: [
+        {
+          id: 'power',
+          target: { kind: 'node', node: 'anchor' },
+          voltage: 5,
+          symbol: 'power',
+          rotation: 90,
+          label: { name: 'VCC', offset: { x: 3, y: -1 } },
+        },
+      ],
+    };
+    expect(pickAnnotation(doc, devices(), { x: 11, y: 20 }, 0.01)).toEqual({
+      kind: 'reference',
+      id: 'power',
+    });
+    expect(pickAnnotation(doc, devices(), { x: 11, y: 23.5 }, 0.01)).toEqual({
+      kind: 'reference',
+      id: 'power',
+    });
+    expect(pickAnnotation(doc, devices(), { x: 9, y: 19 }, 0.01)).toBeUndefined();
+    const labeled: FusedDocument = {
+      ...doc,
+      references: [],
+      labels: [{ id: 'net', target: { kind: 'node', node: 'anchor' }, name: 'SIGNAL' }],
+    };
+    expect(pickAnnotation(labeled, devices(), { x: 11, y: 19.5 }, 0.01)).toEqual({
+      kind: 'label',
+      id: 'net',
+    });
+  });
+
+  it('picks the closest nonzero wire leg with its persisted segment index', () => {
+    const doc: FusedDocument = {
+      ...document(),
+      nodes: [
+        { id: 'a', kind: 'free', x: 0, y: 0 },
+        { id: 'b', kind: 'free', x: 20, y: 10 },
+      ],
+      wires: [
+        {
+          id: 'wire',
+          from: { kind: 'node', node: 'a' },
+          to: { kind: 'node', node: 'b' },
+          bends: [
+            { x: 0, y: 0 },
+            { x: 10, y: 0 },
+            { x: 10, y: 10 },
+          ],
+        },
+      ],
+    };
+    expect(pickWireSegment(doc, devices(), { x: 10.1, y: 5 }, 0.2)).toMatchObject({
+      wireId: 'wire',
+      segment: 2,
+    });
+    expect(pickWireSegment(doc, devices(), { x: 5, y: 5 }, 0.2)).toBeUndefined();
+  });
+
+  it('picks and moves a designator independently in a rotated flexible device', () => {
+    const flexible: Geometry2D = { ...geometry, sizing: 'flexible' };
+    const placed: FusedInstance = {
+      ...instance('a', 10, 20, 90),
+      designator: 'U1',
+      placement: { x: 10, y: 20, rotation: 90, width: 20, height: 15 },
+    };
+    const doc = document(placed);
+    const target = { kind: 'designator' as const, id: 'a' };
+    const offset = textDragOffset(doc, devices(flexible), target, { x: -6, y: 4 });
+    expect(offset.x).toBeCloseTo(2);
+    expect(offset.y).toBeCloseTo(2);
+    const anchor = designatorPosition(placed, flexible);
+    expect(pickText(doc, devices(flexible), { x: anchor.x + 0.5, y: anchor.y - 1 }, 10)).toEqual(
+      target,
+    );
+    const moved = designatorPosition({ ...placed, designatorOffset: offset }, flexible);
+    expect(moved.x - anchor.x).toBeCloseTo(-6);
+    expect(moved.y - anchor.y).toBeCloseTo(4);
+  });
+
+  it('converts a rotated terminal net-name drag without moving its symbol', () => {
+    const doc: FusedDocument = {
+      ...document(),
+      nodes: [{ id: 'a', kind: 'free', x: 10, y: 20 }],
+      references: [
+        {
+          id: 'ref',
+          target: { kind: 'node', node: 'a' },
+          voltage: 5,
+          rotation: 90,
+          label: { name: 'VCC', offset: { x: 3, y: -1 } },
+        },
+      ],
+    };
+    const target = { kind: 'reference' as const, id: 'ref' };
+    expect(pickText(doc, devices(), { x: 11, y: 23.5 }, 10)).toEqual(target);
+    const offset = textDragOffset(doc, devices(), target, { x: 0, y: 2 });
+    expect(offset.x).toBeCloseTo(5);
+    expect(offset.y).toBeCloseTo(-1);
+  });
+
+  it('keeps ground picking confined to the symbol without an invisible label hit area', () => {
+    const ground = {
+      id: 'gnd',
+      target: { kind: 'node' as const, node: 'a' },
+      voltage: 0,
+      symbol: 'ground' as const,
+      label: { name: 'GND', offset: { x: 10, y: -1 } },
+    };
+    const doc: FusedDocument = {
+      ...document(),
+      nodes: [{ id: 'a', kind: 'free', x: 0, y: 0 }],
+      references: [ground],
+    };
+    expect(referenceBounds(ground)).toEqual({ x: -0.7, y: -1.8, width: 1.4, height: 1.8 });
+    expect(pickAnnotation(doc, devices(), { x: 0, y: -1 }, 0.01)).toEqual({
+      kind: 'reference',
+      id: 'gnd',
+    });
+    expect(pickText(doc, devices(), { x: 10.5, y: -1.2 }, 10)).toBeUndefined();
+    expect(pickAnnotation(doc, devices(), { x: 10.5, y: -1.2 }, 0.01)).toBeUndefined();
   });
 });

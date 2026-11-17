@@ -7,6 +7,8 @@ import type {
   FusedDocument,
   PackageFiles,
   UnifiedDeviceManifest,
+  MemoryProgram,
+  ProgramFiles,
 } from '@mica-js/document/fused';
 import { MethodError, createHeadlessRuntime, openDevicePackage, satisfiesRange } from '.';
 import type { HeadlessRuntime, RuntimeDiagnostic, RuntimeModelEvent, RuntimeState } from '.';
@@ -1059,6 +1061,105 @@ describe('headless fused runtime', () => {
     expect(satisfiesRange('1.0.0-beta.1', '>=1.0.0-beta.0 <1.0.0')).toBe(true);
     expect(satisfiesRange('1.4.2', 'not a range')).toBe(false);
     expect(satisfiesRange('1.4', '^1.0.0')).toBe(false);
+  });
+
+  it('captures targeted memory and filesystem projects once and reuses both on reset', async () => {
+    const manifest: UnifiedDeviceManifest = {
+      publisher: 'test',
+      name: 'probe',
+      version: '1.0.0',
+      engines: { mica: '^1.0.0' },
+      displayName: 'Program probe',
+      properties: {
+        limit: { type: 'number', default: 10 },
+        program: {
+          type: 'program',
+          loader: 'memory',
+          formats: ['bin'],
+          addressSpaces: { code: { start: 0, size: 256 } },
+          defaults: { addressSpace: 'code', loadAddress: 16 },
+        },
+        scripts: { type: 'program', loader: 'filesystem' },
+      },
+      model: {
+        entry: 'model.js',
+        methods: {
+          getPrograms: {
+            params: { type: 'null' },
+            returns: {
+              type: 'object',
+              properties: {
+                address: { type: 'number' },
+                bytes: { type: 'array', items: { type: 'number' } },
+                script: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    };
+    const binary = new Uint8Array([1, 2, 3]);
+    const script = new TextEncoder().encode('print(1)');
+    const resolve = vi.fn(async (_id: string, target: { property: string }) =>
+      target.property === 'program'
+        ? { kind: 'memory' as const, format: 'bin' as const, data: binary }
+        : { kind: 'filesystem' as const, files: [{ path: 'main.py', data: script }] },
+    );
+    const runtime = await createHeadlessRuntime({
+      document: {
+        version: 2,
+        dependencies: { [PROBE]: dependency(manifest) },
+        instances: [
+          {
+            id: PROBE_ID,
+            device: PROBE,
+            placement: { x: 0, y: 0, rotation: 0 },
+            properties: {
+              program: { mode: 'project', projectId: 'shared' },
+              scripts: { mode: 'project', projectId: 'shared' },
+            },
+          },
+        ],
+        nodes: [],
+        wires: [],
+        labels: [],
+        references: [],
+      },
+      registry: createRegistry({ [PROBE]: { manifest } }),
+      step: STEP,
+      programs: { projects: { select: async () => ({ id: 'shared', title: 'Shared' }), resolve } },
+      loadModule: async () => ({
+        model: PROBE_MODEL,
+        create(context: { props: Record<string, unknown> }) {
+          const program = context.props['program'] as MemoryProgram;
+          const scripts = context.props['scripts'] as ProgramFiles;
+          return {
+            methods: {
+              getPrograms: () => ({
+                address: program.segments[0]!.address,
+                bytes: [...program.segments[0]!.data],
+                script: new TextDecoder().decode(scripts.read('main.py').slice()),
+              }),
+            },
+            sync() {},
+            dispose() {},
+          };
+        },
+      }),
+    });
+    binary.fill(9);
+    script.fill(0);
+    const expected = { address: 16, bytes: [1, 2, 3], script: 'print(1)' };
+    expect(await runtime.getModel(PROBE_ID).methods['getPrograms']!(null)).toEqual(expected);
+    await runtime.reset();
+    expect(await runtime.getModel(PROBE_ID).methods['getPrograms']!(null)).toEqual(expected);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(resolve).toHaveBeenCalledWith('shared', {
+      deviceId: PROBE,
+      property: 'scripts',
+      loader: 'filesystem',
+    });
+    await runtime.dispose();
   });
 
   it('loads BIN firmware into a read-only image and rejects other formats explicitly', async () => {

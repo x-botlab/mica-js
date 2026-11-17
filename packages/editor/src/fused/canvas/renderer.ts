@@ -1,8 +1,17 @@
 import type { FusedDocument, Point2D } from '@mica-js/document/fused';
 import type { IWorkbenchTarget, WorkbenchMode } from '../types';
-import { endpointPosition, localToScene, type ICanvasDevice, type IViewport } from './geometry';
+import {
+  designatorPosition,
+  endpointPosition,
+  labelBounds,
+  localToScene,
+  referenceSymbolBounds,
+  type ICanvasDevice,
+  type IViewport,
+} from './geometry';
 import type { WorkbenchThemeColors } from '../theme';
-import { orthogonalPath, routeDocumentWires } from '../wiring';
+import { moveReference, moveWireSegment, orthogonalPath, routeDocumentWires } from '../wiring';
+import { setTextOffset, type IFusedTextTarget } from '../document/edits';
 
 export interface IRenderState {
   readonly document: FusedDocument;
@@ -18,11 +27,23 @@ export interface IRenderState {
     readonly to: Point2D;
   };
   readonly drag?: { readonly instanceId: string; readonly position: Point2D };
-  readonly ghost?: { readonly device: string; readonly position: Point2D };
+  readonly wireDrag?: {
+    readonly wireId: string;
+    readonly segment: number;
+    readonly delta: Point2D;
+  };
+  readonly textDrag?: { readonly target: IFusedTextTarget; readonly offset: Point2D };
+  readonly referenceDrag?: { readonly referenceId: string; readonly position: Point2D };
+  readonly ghost?: {
+    readonly device: string;
+    readonly position: Point2D;
+    readonly rotation: number;
+  };
   readonly annotation?: {
     readonly kind: 'power' | 'ground' | 'label';
     readonly position: Point2D;
     readonly name: string;
+    readonly rotation: number;
   };
   readonly colors: WorkbenchThemeColors;
 }
@@ -56,7 +77,7 @@ export function drawCanvas(
       for (let gy = Math.floor(-y / scale / grid) * grid; gy < (height - y) / scale; gy += grid)
         context.fillRect(gx, gy, 1 / scale, 1 / scale);
   }
-  const document =
+  let document =
     state.drag === undefined
       ? state.document
       : routeDocumentWires(
@@ -71,6 +92,26 @@ export function drawCanvas(
           state.devices,
           state.document,
         );
+  if (state.wireDrag !== undefined)
+    document = moveWireSegment(
+      document,
+      state.devices,
+      state.wireDrag.wireId,
+      state.wireDrag.segment,
+      state.wireDrag.delta,
+    );
+  if (state.textDrag !== undefined)
+    document = setTextOffset(document, state.textDrag.target, state.textDrag.offset);
+  if (state.referenceDrag !== undefined) {
+    let previewId = 0;
+    document = moveReference(
+      document,
+      state.devices,
+      state.referenceDrag.referenceId,
+      state.referenceDrag.position,
+      () => `__reference_drag_${previewId++}__`,
+    );
+  }
   const stroke = (points: readonly Point2D[]): void => {
     context.beginPath();
     points.forEach((point, index) => {
@@ -118,7 +159,7 @@ export function drawCanvas(
           {
             id: '__preview__',
             device: state.ghost.device,
-            placement: { ...state.ghost.position, rotation: 0 },
+            placement: { ...state.ghost.position, rotation: state.ghost.rotation },
           },
         ];
   for (const instance of instances) {
@@ -165,11 +206,7 @@ export function drawCanvas(
       (state.mode === 'edit' || (document.display?.designators ?? true)) &&
       instance.designator !== undefined
     ) {
-      const anchor = localToScene(
-        instance,
-        geometry,
-        geometry.designator ?? { x: geometry.bodyBounds.x, y: geometry.bodyBounds.y },
-      );
+      const anchor = designatorPosition(instance, geometry);
       context.font = `600 ${11 / scale}px system-ui`;
       context.fillStyle = ink;
       context.fillText(instance.designator, anchor.x, anchor.y - 5 / scale);
@@ -244,6 +281,7 @@ export function drawCanvas(
                       target: { kind: 'node', node: '__annotation__' },
                       symbol: state.annotation.kind,
                       voltage: state.annotation.kind === 'ground' ? 0 : 5,
+                      rotation: state.annotation.rotation,
                     },
                   ],
           };
@@ -255,6 +293,19 @@ export function drawCanvas(
       const point = endpointPosition(annotations, state.devices, label.target);
       context.save();
       if (label.id === '__annotation__') context.globalAlpha = 0.5;
+      if (state.selection.some((target) => target.kind === 'label' && target.id === label.id)) {
+        const bounds = labelBounds(label);
+        context.strokeStyle = state.colors['canvas.selection'];
+        context.lineWidth = 1.5 / scale;
+        context.setLineDash([4 / scale, 3 / scale]);
+        context.strokeRect(
+          point.x + bounds.x - 3 / scale,
+          point.y + bounds.y - 3 / scale,
+          bounds.width + 6 / scale,
+          bounds.height + 6 / scale,
+        );
+        context.setLineDash([]);
+      }
       context.fillText(
         label.name,
         point.x + (label.offset?.x ?? 0.3),
@@ -268,6 +319,23 @@ export function drawCanvas(
       if (reference.id === '__annotation__') context.globalAlpha = 0.5;
       context.translate(point.x, point.y);
       context.rotate(((reference.rotation ?? 0) * Math.PI) / 180);
+      if (
+        state.selection.some((target) => target.kind === 'reference' && target.id === reference.id)
+      ) {
+        const bounds = referenceSymbolBounds(reference);
+        context.strokeStyle = state.colors['canvas.selection'];
+        context.lineWidth = 1.5 / scale;
+        context.setLineDash([4 / scale, 3 / scale]);
+        context.strokeRect(
+          bounds.x - 3 / scale,
+          bounds.y - 3 / scale,
+          bounds.width + 6 / scale,
+          bounds.height + 6 / scale,
+        );
+        context.setLineDash([]);
+      }
+      context.strokeStyle = ink;
+      context.lineWidth = 0.1;
       const unit = 0.1;
       stroke([
         { x: 0, y: 0 },
@@ -286,11 +354,12 @@ export function drawCanvas(
           { x: 5 * unit, y: -8 * unit },
         ]);
       }
-      context.fillText(
-        reference.label?.name ?? `${reference.voltage} V`,
-        reference.label?.offset?.x ?? 7 * unit,
-        reference.label?.offset?.y ?? -14 * unit,
-      );
+      if (reference.symbol !== 'ground')
+        context.fillText(
+          reference.label?.name ?? `${reference.voltage} V`,
+          reference.label?.offset?.x ?? 7 * unit,
+          reference.label?.offset?.y ?? -14 * unit,
+        );
       context.restore();
     }
   }

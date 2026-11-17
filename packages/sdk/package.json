@@ -138,6 +138,7 @@
     "@mica-js/widget": "workspace:*",
     "@noble/hashes": "^2.4.0",
     "ajv": "^8.17.1",
+    "fflate": "^0.8.2",
     "rolldown": "catalog:",
     "semver": "^7.8.5",
     "vite": "catalog:"

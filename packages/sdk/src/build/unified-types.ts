@@ -205,6 +205,10 @@ function propertyType(property: DevicePropertyDescriptor, used: Set<string>): st
       used.add('FirmwareImage');
       type = 'FirmwareImage';
       break;
+    case 'program':
+      type = property.loader === 'filesystem' ? 'ProgramFiles' : 'MemoryProgram';
+      used.add(type);
+      break;
   }
   return property.nullable === true ? `${type} | null` : type;
 }

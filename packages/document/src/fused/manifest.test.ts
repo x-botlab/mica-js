@@ -38,15 +38,16 @@ describe('parseUnifiedManifest', () => {
       'mode',
       'icon',
       'profile',
-      'firmware',
+      'program',
+      'scripts',
     ]);
-    const firmware = value.properties?.['firmware'];
-    expect(firmware?.type).toBe('firmware');
+    const firmware = value.properties?.['program'];
+    expect(firmware?.type).toBe('program');
     expect(firmware?.addressSpaces).toEqual({
       code: { title: '程序存储器', start: 0, size: 8192 },
     });
-    expect(firmware?.addressSpace).toBe('code');
-    expect(firmware?.loadAddress).toBe(0);
+    expect(firmware?.defaults).toEqual({ addressSpace: 'code', loadAddress: 0 });
+    expect(value.properties?.['scripts']?.loader).toBe('filesystem');
     expect(value.properties?.['profile']?.extensions).toEqual(['.bin', '.hex']);
     expect(Object.keys(value.pins ?? {})).toEqual(['a1', 'a2', 'b1', 'b2']);
     expect(value.model?.entry).toBe('model.js');
@@ -79,6 +80,54 @@ describe('parseUnifiedManifest', () => {
     expect(value.publisher).toBe('example');
     expect(Object.isFrozen(value)).toBe(true);
     expect(Object.isFrozen(value.engines)).toBe(true);
+  });
+
+  it('accepts ELF-only programs without defaults and independent filesystem templates', () => {
+    const value = parseUnifiedManifest(
+      manifest({
+        properties: {
+          program: {
+            type: 'program',
+            loader: 'memory',
+            formats: ['elf'],
+            addressSpaces: { code: { start: 0, size: 8192 } },
+            nullable: true,
+            default: null,
+          },
+          scripts: {
+            type: 'program',
+            loader: 'filesystem',
+            templates: ['example:openmv'],
+            default: { mode: 'package', src: 'assets/program' },
+          },
+        },
+      }),
+    );
+    expect(value.properties?.['program']?.defaults).toBeUndefined();
+    expect(value.properties?.['scripts']?.templates).toEqual(['example:openmv']);
+  });
+
+  it.each([
+    { loader: 'filesystem', addressSpaces: { code: { start: 0, size: 8 } } },
+    { loader: 'filesystem', maxFiles: 10 },
+    { loader: 'filesystem', entry: 'main.py' },
+    { loader: 'filesystem', templates: ['duplicate', 'duplicate'] },
+    {
+      loader: 'memory',
+      formats: ['bin', 'bin'],
+      addressSpaces: { code: { start: 0, size: 8 } },
+      defaults: { addressSpace: 'code', loadAddress: 0 },
+    },
+    {
+      loader: 'memory',
+      formats: ['bin'],
+      addressSpaces: { code: { start: 0, size: 8 } },
+      defaults: { addressSpace: 'code', loadAddress: 8 },
+    },
+  ])('rejects invalid program declarations %j', (fields) => {
+    expect(() =>
+      parseUnifiedManifest(manifest({ properties: { program: { type: 'program', ...fields } } })),
+    ).toThrow();
   });
 
   it('tolerates package-manager fields without interpreting them', () => {

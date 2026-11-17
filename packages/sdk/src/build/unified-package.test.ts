@@ -111,6 +111,30 @@ function find(packageFiles: readonly { path: string; data: Uint8Array }[], path:
 }
 
 describe('collectDevicePackage', () => {
+  it('publishes filesystem program defaults recursively without treating the root as a file', async () => {
+    const { root, device } = await fixture(
+      { 'programs/openmv/main.py': 'import helper', 'programs/openmv/lib/helper.py': 'value = 42' },
+      {
+        properties: {
+          scripts: {
+            type: 'program',
+            loader: 'filesystem',
+            default: { mode: 'package', src: 'programs/openmv' },
+          },
+        },
+      },
+    );
+    const packageFiles = await collectDevicePackage({
+      root,
+      sourceDir: 'src',
+      device,
+      minify: false,
+    });
+    expect(find(packageFiles, 'programs/openmv/main.py')).toBe('import helper');
+    expect(find(packageFiles, 'programs/openmv/lib/helper.py')).toBe('value = 42');
+    expect(packageFiles.some((file) => file.path === 'programs/openmv')).toBe(false);
+  });
+
   it('emits the manifest, the module entries, HTML resources and assets', async () => {
     const { root, device } = await fixture();
     const packageFiles = await collectDevicePackage({

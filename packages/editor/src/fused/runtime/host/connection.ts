@@ -8,12 +8,7 @@
 import { createRpc } from '@mica-js/core/rpc';
 import type { RpcEndpoint, RpcProxy } from '@mica-js/core/rpc';
 import type { DeviceLock, DeviceRegistry, PackageFiles } from '@mica-js/document/fused';
-import type {
-  FirmwareArtifact,
-  FirmwareProjectSource,
-  ResourceResolver,
-  RuntimeDiagnostic,
-} from '@mica-js/sdk/fused';
+import type { ProgramSources, ResourceResolver, RuntimeDiagnostic } from '@mica-js/sdk/fused';
 import {
   fusedDisplayService,
   fusedHostPackageService,
@@ -22,22 +17,26 @@ import {
 } from '../protocol';
 import type { IFusedDisplayService, IFusedSimulationService } from '../protocol';
 import { packageLockKey } from '../packages';
-import { transferFirmwareArtifact, transferPackageBytes, transferResourceBytes } from '../wire';
+import { transferProgramArtifact, transferPackageBytes, transferResourceBytes } from '../wire';
 import type { IFusedWorkerFactories } from './types';
+import type { IFusedAudioOptions } from '../audio';
+import { connectFusedAudio } from './audio';
 
 export interface IFusedConnectionOptions {
+  readonly audio?: IFusedAudioOptions;
   readonly workers: IFusedWorkerFactories;
   /** Host package access both guests share. */
   readonly registry: DeviceRegistry;
   /** Element that hosts the two hidden sandbox iframes. */
   readonly container?: HTMLElement;
   readonly resolveResource?: ResourceResolver;
-  readonly projects?: FirmwareProjectSource;
+  readonly programs?: ProgramSources;
   readonly onDiagnostic?: (diagnostic: RuntimeDiagnostic) => void;
 }
 
 /** Two guests of one workbench plus the endpoints that reach them. */
 export interface IFusedConnection {
+  readonly audio: ReturnType<typeof connectFusedAudio>;
   readonly simulation: RpcProxy<IFusedSimulationService>;
   readonly display: RpcProxy<IFusedDisplayService>;
   dispose(): Promise<void>;
@@ -66,7 +65,12 @@ export async function connectFusedWorkbench(
     registerHostServices(simulationRpc, options);
     registerHostServices(displayRpc, options);
     const simulation = simulationRpc.getProxy(fusedSimulationService);
-    const display = displayRpc.getProxy(fusedDisplayService);
+    const display = displayRpc.getProxy(fusedDisplayService, {
+      transfer: (member, args) => (member === 'attachAudio' ? [args[0] as MessagePort] : []),
+    });
+    const audio = connectFusedAudio(displayRpc, display, options.audio, (diagnostic) =>
+      options.onDiagnostic?.(diagnostic),
+    );
     subscriptions.push(
       simulation.onDidReportDiagnostic((entry) => options.onDiagnostic?.(entry)),
       display.onDidReportDiagnostic((entry) => options.onDiagnostic?.(entry)),
@@ -75,10 +79,12 @@ export async function connectFusedWorkbench(
     const ownedDisplayRpc = displayRpc;
     let disposal: Promise<void> | undefined;
     return {
+      audio,
       simulation,
       display,
       dispose() {
         return (disposal ??= (async () => {
+          audio.dispose();
           for (const stop of subscriptions.splice(0)) {
             try {
               stop();
@@ -161,24 +167,21 @@ function registerHostServices(endpoint: RpcEndpoint, options: IFusedConnectionOp
         }
         return (await options.resolveResource(request)).slice();
       },
-      async listProjects() {
-        if (options.projects === undefined) {
-          throw new Error('No firmware project source is configured.');
-        }
-        return options.projects.list();
-      },
-      async resolveProject(projectId: string): Promise<FirmwareArtifact> {
-        if (options.projects === undefined) {
-          throw new Error('No firmware project source is configured.');
-        }
-        const artifact = await options.projects.resolve(projectId);
-        return { format: artifact.format, data: artifact.data.slice() };
+      async resolveProgramProject(id, target) {
+        if (!options.programs?.projects) throw new Error('No program project provider configured.');
+        const artifact = await options.programs.projects.resolve(id, target);
+        return artifact.kind === 'memory'
+          ? { kind: 'memory', format: artifact.format, data: artifact.data.slice() }
+          : {
+              kind: 'filesystem',
+              files: artifact.files.map((file) => ({ path: file.path, data: file.data.slice() })),
+            };
       },
     },
     {
       transfer: (member, value) =>
-        member === 'resolveProject'
-          ? transferFirmwareArtifact(member, value)
+        member === 'resolveProgramProject'
+          ? transferProgramArtifact(member, value)
           : transferResourceBytes(member, value),
     },
   );

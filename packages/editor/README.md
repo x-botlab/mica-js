@@ -12,10 +12,11 @@ import '@mica-js/editor/fused/style.css';
 
 const workbench = await createWorkbench({
   container,
-  uri,
-  fileSystemProvider,
+  document,
+  saveDocument: async (snapshot) => host.save(snapshot),
+  assetProvider,
   deviceProvider,
-  firmwareProjectProvider,
+  programs,
   accessProvider,
   viewBaseUrlTemplate: 'https://${id}.views.example.com/v1/',
   theme: {
@@ -32,7 +33,11 @@ await workbench.save();
 await workbench.dispose();
 ```
 
-文件系统 Provider 使用 `HostFs.read` 并提供 `write(uri, bytes)`；器件 Provider 返回锁定发布版本的 `PackageFiles`，工作台校验文件清单和摘要。固件项目 Provider 的 `list`、`resolve` 与可选 `create` 由宿主实现；创建向导、模板选择与导入属于宿主流程，取消创建返回 `undefined`。
+宿主直接传入 `FusedDocument`，自行维护项目身份和存储。`getDocument()` / `onDidChangeContent` 提供当前快照；可选的 `saveDocument(snapshot)` 完成后标记对应版本已保存，缺失时 `save()` 明确拒绝。器件 Provider 返回锁定发布版本的 `PackageFiles`，工作台校验文件清单和摘要。
+
+`assetProvider.select({ kind, formats, signal })` 打开宿主资产库 UI，返回 `{ id, name }` 或以 `undefined` 取消；`name` 包含文件扩展名。`read(id, signal)` 返回二进制，编辑器不枚举资产。普通资源仅支持 `asset` / `package`；`program` 另支持 `project`，使用 `programs.projects.select({ ...target, templateIds }, signal)` 选择项目、`resolve(id, target, signal?)` 取得程序产物。项目选择能力可省略，已有引用仍可解析；程序文件集资产使用 ZIP，校验解包后交给模型只读访问。
+
+属性字段以单行显示来源图标、引用名称和默认标记，通过同行图标打开来源菜单或内存装载设置浮层；新内容读取校验成功后才提交，取消和失败保留原值。项目选择的请求包含 `templateIds`，按属性的 `templates` 顺序传递，未声明时为空数组；宿主负责模板展示与项目创建，编辑器只保存返回的项目引用。内置资源从当前器件包选择，项目可独立打开。宿主接口合同见 [RFC 0028](../../docs/rfc/0028-workbench-host-resources.md)。
 
 `contributions.containers`、`views`、`toolbar` 为宿主扩展点，ID 使用宿主命名空间，`mica.*` 保留。视图的 `mount` 接收 DOM 容器与带取消信号的作用域，返回 Disposable。工具条按钮可以执行 `workbench.openContainer`，例如打开器件库并聚焦搜索；编辑器不要求特定的器件库角色。`when` 与 `enablement` 使用 Context Key 条件，宿主通过 `workbench.contextKeys` 注册自己的 Key；内置模式、编辑权限、撤销状态与选择 Key 由工作台维护。
 

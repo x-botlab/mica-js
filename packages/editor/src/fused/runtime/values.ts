@@ -1,8 +1,10 @@
 /** Small shared helpers of the fused sandbox bridge. */
 import type { DevicePropertyDescriptor } from '@mica-js/document/fused';
+import { createProgramFiles, readonlyBytes } from '@mica-js/sdk/fused';
 import type {
   FusedPresentationProps,
   FusedPresentationValue,
+  FusedResolvedPresentationProps,
   IFusedFirmwareSegment,
   IFusedFirmwareSnapshot,
 } from './protocol';
@@ -69,9 +71,33 @@ export function presentationProps(
         }
         props[name] = firmwareSnapshot(name, value);
         continue;
+      case 'program':
+        if (value === null && descriptor.nullable === true) {
+          props[name] = null;
+          continue;
+        }
+        if (descriptor.loader === 'memory') props[name] = firmwareSnapshot(name, value);
+        else {
+          const files = value as { readonly paths?: unknown; readonly read?: unknown };
+          if (!files || !Array.isArray(files.paths) || typeof files.read !== 'function')
+            throw unpresentable(name, 'program', 'is not a file snapshot');
+          props[name] = Object.freeze({
+            kind: 'filesystem',
+            files: Object.freeze(
+              files.paths.map((path: string) =>
+                Object.freeze({
+                  path,
+                  data: copyBytes(name, 'program', (files.read as (path: string) => unknown)(path)),
+                }),
+              ),
+            ),
+          });
+        }
+        continue;
       default:
         break;
     }
+
     if (value === null && descriptor.nullable === true) {
       props[name] = null;
       continue;
@@ -79,6 +105,35 @@ export function presentationProps(
     throw unpresentable(name, descriptor.type, `resolved to ${describeValue(value)}`);
   }
   return Object.freeze(props);
+}
+
+export function reconstructPresentationProps(
+  props: FusedPresentationProps,
+): FusedResolvedPresentationProps {
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(props).map(([name, value]) => {
+        if (value !== null && typeof value === 'object' && !(value instanceof Uint8Array)) {
+          if (value.kind === 'filesystem') return [name, createProgramFiles(value.files)];
+          return [
+            name,
+            Object.freeze({
+              segments: Object.freeze(
+                value.segments.map((segment) =>
+                  Object.freeze({
+                    addressSpace: segment.addressSpace,
+                    address: segment.address,
+                    data: readonlyBytes(segment.bytes),
+                  }),
+                ),
+              ),
+            }),
+          ];
+        }
+        return [name, value];
+      }),
+    ),
+  );
 }
 
 /** Copies one read-only byte snapshot; the SDK hands `ReadonlyBytes`, not raw arrays. */

@@ -20,6 +20,11 @@ import type {
 } from './protocol';
 import { startFusedSimulationGuest } from './simulation/guest';
 import { transferOverlayFrame, transferResourceBytes } from './wire';
+import {
+  createWorkletNode,
+  FakeAudioContext,
+  flush,
+} from '../../../../widget/src/host/audio/test-helpers';
 
 const DEVICE = 'test:lamp';
 const INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
@@ -57,6 +62,135 @@ const VIEW_CODE = 'view-entry';
 const MODEL_IR = { kind: 'device', name: 'Lamp', declarations: [] };
 
 const cleanups: Array<() => Promise<void> | void> = [];
+
+describe('instance audio integration', () => {
+  it.each([false, true])(
+    'keeps simulation available when audio is unavailable (loader failure: %s)',
+    async (failLoader) => {
+      const data = await fixture();
+      const host = workbench();
+      const diagnostics: string[] = [];
+      const runtime = await createFusedRuntime({
+        ...data,
+        step: STEP,
+        mode: 'run',
+        workers: host.workers,
+        onDiagnostic: (entry) => diagnostics.push(entry.code),
+        ...(failLoader
+          ? {
+              audio: {
+                context: new FakeAudioContext() as unknown as AudioContext,
+                getAudioWorklet: async () => {
+                  throw new Error('audio device unavailable');
+                },
+              },
+            }
+          : {}),
+      });
+      cleanups.push(() => runtime.dispose());
+      expect(runtime.getState().status).toBe('running');
+      const api = host.views[0]!.context.audio;
+      expect(api.state).toBe('unavailable');
+      const tone = api.tone({ frequency: 440 });
+      tone.stop();
+      await expect(tone.ended).resolves.toEqual({ reason: 'stopped' });
+      const stream = api.createStream({ sampleRate: 8000 });
+      await expect(stream.write(new Float32Array(8))).resolves.toBe(false);
+      stream.end();
+      await expect(stream.ended).resolves.toEqual({ reason: 'finished' });
+      expect(diagnostics.includes('audio/failed')).toBe(failLoader);
+    },
+  );
+
+  it('isolates instance volume and clears voices and PCM across pause, reset and disposal', async () => {
+    const data = await fixture();
+    const second = '22222222-2222-4222-8222-222222222222';
+    const document = {
+      ...data.document,
+      instances: [...data.document.instances, { ...data.document.instances[0]!, id: second }],
+    };
+    const host = workbench();
+    const context = new FakeAudioContext();
+    const worklet = createWorkletNode();
+    cleanups.push(() => worklet.dispose());
+    const runtime = await createFusedRuntime({
+      document,
+      registry: data.registry,
+      step: STEP,
+      mode: 'run',
+      workers: host.workers,
+      audio: {
+        context: context as unknown as AudioContext,
+        getAudioWorklet: async () => worklet.node as unknown as AudioWorkletNode,
+      },
+    });
+    cleanups.push(() => runtime.dispose());
+    const a = host.views[0]!.context.audio;
+    const b = host.views[1]!.context.audio;
+    expect(host.surfaces).toHaveLength(0);
+    const tone = a.tone({ frequency: 480, type: 'square' });
+    const stream = a.createStream({ sampleRate: 48000, bufferMs: 50, startMs: 0 });
+    const samples = new Float32Array(stream.capacityFrames).fill(0.25);
+    await expect(stream.write(samples)).resolves.toBe(true);
+    expect(samples.buffer.byteLength).toBeGreaterThan(0);
+    await expect(stream.write(new Float32Array(1))).resolves.toBe(false);
+    expect(stream.bufferedFrames).toBeLessThanOrEqual(stream.capacityFrames);
+    runtime.audio.setInstanceVolume(INSTANCE_ID, 0);
+    const other = b.tone({ frequency: 960, type: 'square' });
+    await flush();
+    expect(worklet.render().left.some((sample) => sample !== 0)).toBe(true);
+    other.stop();
+    await flush();
+    expect(worklet.render().left.every((sample) => sample === 0)).toBe(true);
+    runtime.audio.setInstanceVolume(INSTANCE_ID, 1);
+    runtime.pause();
+    await flush();
+    const before = stream.bufferedFrames;
+    expect(worklet.render().left.every((sample) => sample === 0)).toBe(true);
+    expect(stream.bufferedFrames).toBe(before);
+    await runtime.resume();
+    await flush();
+    expect(worklet.render().left.some((sample) => sample !== 0)).toBe(true);
+    await runtime.reset();
+    await expect(tone.ended).resolves.toEqual({ reason: 'disposed' });
+    await expect(stream.ended).resolves.toEqual({ reason: 'disposed' });
+    await flush();
+    expect(worklet.render().left.every((sample) => sample === 0)).toBe(true);
+    const last = host.views.at(-1)!.context.audio.tone({ frequency: 480 });
+    await runtime.dispose();
+    await expect(last.ended).resolves.toEqual({ reason: 'disposed' });
+    await flush();
+    expect(worklet.render().left.every((sample) => sample === 0)).toBe(true);
+  });
+
+  it('preserves browser suspension until the caller activates the context', async () => {
+    const data = await fixture();
+    const host = workbench();
+    const context = new FakeAudioContext({ state: 'suspended' });
+    const worklet = createWorkletNode();
+    cleanups.push(() => worklet.dispose());
+    const runtime = await createFusedRuntime({
+      ...data,
+      step: STEP,
+      mode: 'run',
+      workers: host.workers,
+      audio: {
+        context: context as unknown as AudioContext,
+        getAudioWorklet: async () => worklet.node as unknown as AudioWorkletNode,
+      },
+    });
+    cleanups.push(() => runtime.dispose());
+    const api = host.views[0]!.context.audio;
+    expect(api.state).toBe('suspended');
+    const states: string[] = [];
+    const subscription = api.onDidChangeState((state) => states.push(state));
+    context.setState('running');
+    await flush();
+    expect(api.state).toBe('running');
+    expect(states).toEqual(['running']);
+    subscription.dispose();
+  });
+});
 
 afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()!();
@@ -410,6 +544,32 @@ describe('fused wire hooks', () => {
   });
 });
 describe('fused runtime bridge', () => {
+  it.each(['edit', 'run'] as const)(
+    'keeps geometry-only devices available without a presentation error in %s mode',
+    async (mode) => {
+      const data = await fixture({ ...MANIFEST, view2d: { geometry: GEOMETRY } });
+      const bench = workbench();
+      const diagnostics: string[] = [];
+      const runtime = await createFusedRuntime({
+        ...data,
+        step: STEP,
+        mode,
+        workers: bench.workers,
+        onDiagnostic: (entry) => diagnostics.push(entry.code),
+      });
+      cleanups.push(() => runtime.dispose());
+
+      expect(runtime.display.instances[0]?.geometry).toEqual(GEOMETRY);
+      expect(bench.views).toHaveLength(0);
+      expect(diagnostics).toEqual([]);
+      if (mode === 'run') {
+        const model = runtime.getModel(INSTANCE_ID);
+        await model.methods['setOn']!(true);
+        expect(await model.methods['getOn']!(null)).toBe(true);
+      }
+    },
+  );
+
   it('prepares the edit presentation without any model', async () => {
     const { runtime, bench } = await start({ mode: 'edit' });
 

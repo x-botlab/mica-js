@@ -39,9 +39,10 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
   const connection = await connectFusedWorkbench({
     workers,
     registry: options.registry,
+    ...(options.audio === undefined ? {} : { audio: options.audio }),
     ...(options.container === undefined ? {} : { container: options.container }),
     ...(options.resolveResource === undefined ? {} : { resolveResource: options.resolveResource }),
-    ...(options.projects === undefined ? {} : { projects: options.projects }),
+    ...(options.programs === undefined ? {} : { programs: options.programs }),
     onDiagnostic: report,
   });
   const models = createHostModelRouter(connection.simulation);
@@ -66,6 +67,7 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
   const stopState = connection.simulation.onDidChangeState((next) => setState(next));
 
   const runtime: IFusedRuntime = {
+    audio: connection.audio,
     getState: () => state,
     onDidChangeState: states.event,
     onDidReportDiagnostic: diagnostics.event,
@@ -88,6 +90,8 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
   return runtime;
 
   function setState(next: IFusedSessionState): void {
+    if (next.status === 'running') connection.audio.resume();
+    else connection.audio.suspend();
     if (next.status === state.status && next.simTime === state.simTime) return;
     state = next;
     states.fire(next);
@@ -138,6 +142,8 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
   ): Promise<readonly IFusedInstancePresentation[]> {
     assertOpen();
     const attempt = ++preparation;
+    connection.audio.suspend();
+    connection.audio.clear();
     const current = (): boolean => !closed && attempt === preparation;
     const described = await mapWireFailure(() =>
       connection.simulation.prepare({ document: options.document, mode: input.mode }),
@@ -184,6 +190,7 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
 
   function pause(): void {
     if (closed || mode !== 'run') return;
+    connection.audio.suspend();
     void connection.simulation.pause().catch(() => undefined);
   }
 
@@ -195,6 +202,8 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
 
   async function reset(): Promise<void> {
     assertRun('reset');
+    connection.audio.suspend();
+    connection.audio.clear();
     const attempt = ++preparation;
     const current = (): boolean => !closed && attempt === preparation;
     const instances = prepared;
@@ -212,6 +221,7 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
   function dispose(): Promise<void> {
     if (disposal !== undefined) return disposal;
     closed = true;
+    connection.audio.dispose();
     disposal = (async () => {
       const problems: unknown[] = [];
       // Presentation first: input stops and views release before the models go away.

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 53.34">
+  <path d="M0 2.54h20M0 5.08h20M0 7.62h20M0 10.16h20M0 12.7h20M0 15.24h20M0 17.78h20M0 20.32h20M0 22.86h20M0 25.4h20M0 27.94h20M0 30.48h20M0 33.02h20M0 35.56h20M0 38.1h20M0 40.64h20M0 43.18h20M0 45.72h20M0 48.26h20M0 50.8h20" stroke="#aaaeb8" stroke-width="1"/>
+  <rect x="2" y="0.25" width="16" height="52.84" rx="1" fill="#252931" stroke="#747b8a" stroke-width="0.25"/>
+  <path d="M8 0.3a2 2 0 0 0 4 0" fill="#14171c" stroke="#747b8a" stroke-width="0.2"/>
+  <circle cx="4" cy="2.54" r="0.6" fill="#a9afba"/>
+  <text x="10" y="26" fill="#e1e4eb" font-size="2.2" font-family="sans-serif" text-anchor="middle" transform="rotate(-90 10 26)">AT89C52</text>
+</svg>

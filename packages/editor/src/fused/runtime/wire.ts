@@ -6,7 +6,12 @@
  * code: the main thread must never pull model execution into its own bundle.
  */
 import type { Value } from '@mica-js/document/fused';
-import type { IFusedFirmwareSnapshot, IFusedOverlayFrame, IFusedPrepareResult } from './protocol';
+import type {
+  IFusedFirmwareSnapshot,
+  IFusedProgramFilesSnapshot,
+  IFusedOverlayFrame,
+  IFusedPrepareResult,
+} from './protocol';
 
 /** `name` of a failure whose message carries a {@link IFusedFailurePayload}. */
 export const FUSED_WIRE_FAILURE = 'FusedSandboxFailure';
@@ -108,8 +113,13 @@ function collectPropBytes(value: unknown, buffers: Set<ArrayBuffer>): void {
     if (value.buffer instanceof ArrayBuffer) buffers.add(value.buffer);
     return;
   }
-  const snapshot = value as IFusedFirmwareSnapshot | null;
-  if (snapshot === null || typeof snapshot !== 'object' || snapshot.kind !== 'firmware') return;
+  const snapshot = value as IFusedFirmwareSnapshot | IFusedProgramFilesSnapshot | null;
+  if (snapshot === null || typeof snapshot !== 'object') return;
+  if (snapshot.kind === 'filesystem') {
+    for (const file of snapshot.files) collectPropBytes(file.data, buffers);
+    return;
+  }
+  if (snapshot.kind !== 'firmware') return;
   for (const segment of snapshot.segments) {
     if (segment.bytes instanceof Uint8Array && segment.bytes.buffer instanceof ArrayBuffer) {
       buffers.add(segment.bytes.buffer);
@@ -142,11 +152,19 @@ export function transferResourceBytes(member: string, value: unknown): readonly 
   return member === 'readResource' ? transferBytes(value) : [];
 }
 
-/** Transfer list of one firmware artifact result. */
-export function transferFirmwareArtifact(member: string, value: unknown): readonly Transferable[] {
-  if (member !== 'resolveProject') return [];
-  const artifact = value as { readonly data?: unknown } | undefined;
-  return transferBytes(artifact?.data);
+export function transferProgramArtifact(member: string, value: unknown): readonly Transferable[] {
+  if (member !== 'resolveProgramProject') return [];
+  const artifact = value as {
+    readonly kind?: string;
+    readonly data?: Uint8Array;
+    readonly files?: readonly { readonly data: Uint8Array }[];
+  };
+  const files = artifact.files;
+  return [
+    ...new Set(
+      files ? files.flatMap((file) => transferBytes(file.data)) : transferBytes(artifact.data),
+    ),
+  ];
 }
 
 function failurePayload(cause: unknown): IFusedFailurePayload {

@@ -12,24 +12,6 @@ import type {
   ReadonlyBytes,
 } from '@mica-js/document/fused';
 
-/** One host project that can supply a firmware artifact (RFC 0025). */
-export interface FirmwareProject {
-  readonly id: string;
-  readonly title: string;
-}
-
-/** Deterministic build artifact of one host project (RFC 0026). */
-export interface FirmwareArtifact {
-  readonly format: 'bin' | 'hex' | 'elf';
-  readonly data: Uint8Array;
-}
-
-/** Host-side firmware project source; the runtime only ever calls `resolve` (RFC 0025). */
-export interface FirmwareProjectSource {
-  list(): Promise<readonly FirmwareProject[]>;
-  resolve(projectId: string): Promise<FirmwareArtifact>;
-}
-
 export type FirmwareFormat = 'bin' | 'hex' | 'elf';
 
 const EXTENSIONS: ReadonlyMap<string, FirmwareFormat> = new Map([

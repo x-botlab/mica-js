@@ -26,6 +26,7 @@ import { ProblemsView } from '../views/problems';
 import { FloatingViewsPart, HtmlViewsPart, PanelResizer } from './html-views-part';
 import { Icon } from './activity-bar-part';
 import { readCanvasTheme, resolveTheme, themeStyle, type IWorkbenchTheme } from '../theme';
+import type { FusedPresentationProps } from '../runtime/protocol';
 
 export interface IWorkbenchUI {
   readonly workbench: IWorkbench;
@@ -45,6 +46,7 @@ export interface IWorkbenchUI {
   readonly overlays: ReadonlyMap<string, ImageBitmap>;
   readonly diagnostics: readonly IWorkbenchDiagnostic[];
   readonly placement: DeviceLock | undefined;
+  readonly placementRotation: number;
   readonly version: number;
   readonly setCanvas: (canvas: ICanvasHandle | undefined) => void;
   readonly report: (diagnostic: IWorkbenchDiagnostic) => void;
@@ -62,8 +64,22 @@ export interface IWorkbenchUI {
   readonly focus: (focused: boolean) => void;
   readonly viewport: () => void;
   readonly reveal: (instanceId: string) => void;
-  readonly importResource: (instanceId: string, key: string, file: File) => Promise<void>;
+  readonly validateResource: (
+    instanceId: string,
+    key: string,
+    value: PropertyValue,
+    signal: AbortSignal,
+  ) => Promise<Uint8Array | undefined>;
+  readonly commitResource: (
+    instanceId: string,
+    key: string,
+    expected: PropertyValue | undefined,
+    value: PropertyValue,
+    signal: AbortSignal,
+  ) => Promise<void>;
   readonly openProject: (projectId: string) => void;
+  readonly programPackagePaths: (deviceId: string) => readonly string[];
+  readonly programSnapshot: (instanceId: string) => FusedPresentationProps | undefined;
 }
 
 export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
@@ -215,6 +231,11 @@ export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
           (target.matches('input,textarea,select') || target.isContentEditable)
         )
           return;
+        if (event.code === 'Space' && state.mode === 'edit' && !state.readOnly && !state.busy) {
+          event.preventDefault();
+          if (!event.repeat) run(ui.workbench.executeCommand('selection.rotate', { degrees: 90 }));
+          return;
+        }
         if (!(event.ctrlKey || event.metaKey)) return;
         if (event.key.toLowerCase() === 's') {
           event.preventDefault();
@@ -238,6 +259,7 @@ export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
         state={state}
         selection={selection}
         placement={ui.placement}
+        placementRotation={ui.placementRotation}
         labelName={ui.labelName}
         theme={theme}
         frame={frame}
@@ -254,12 +276,24 @@ export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
         onPlace={async (device, position) => {
           await ui.workbench.executeCommand('device.add', {
             device,
-            placement: { ...position, rotation: 0 },
+            placement: { ...position, rotation: ui.placementRotation },
           });
           ui.cancel();
         }}
         onMove={async (instanceId, position) => {
           await ui.workbench.executeCommand('device.move', { instanceId, position });
+        }}
+        onMoveSegment={async (wireId, segment, delta) => {
+          await ui.workbench.executeCommand('wire.moveSegment', { wireId, segment, delta });
+        }}
+        onMoveText={async (target, offset) => {
+          await ui.workbench.executeCommand('text.move', { target, offset });
+        }}
+        onMoveReference={async (referenceId, position) => {
+          await ui.workbench.executeCommand('reference.move', { referenceId, position });
+        }}
+        onStartWire={async () => {
+          await ui.workbench.executeCommand('canvas.setTool', { tool: 'wire' });
         }}
         onConnect={ui.connect}
         onEndpoint={ui.endpoint}
@@ -290,7 +324,7 @@ export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
         )}
         {!state.busy && ui.placement !== undefined && (
           <div className="mica-wb-status" role="status">
-            单击放置 · Esc 取消
+            单击放置 · 空格旋转 · Esc 取消
           </div>
         )}
         {!state.busy &&
@@ -379,7 +413,10 @@ export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
                 }
                 selectionCount={selection.length}
                 disabled={state.readOnly || state.mode !== 'edit' || state.busy}
-                projectProvider={ui.options.firmwareProjectProvider}
+                assets={ui.options.assetProvider}
+                programs={ui.options.programs}
+                packagePaths={single === undefined ? [] : ui.programPackagePaths(single.device)}
+                snapshots={single === undefined ? undefined : ui.programSnapshot(single.id)}
                 onSet={setProperty}
                 onReset={(key) => {
                   if (single !== undefined)
@@ -390,17 +427,13 @@ export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
                       }),
                     );
                 }}
-                onImport={async (key, file) => {
-                  if (single !== undefined) await ui.importResource(single.id, key, file);
+                onValidate={async (key, value, signal) => {
+                  if (single === undefined) throw new Error('No device is selected');
+                  return ui.validateResource(single.id, key, value, signal);
                 }}
-                onCreate={(key) => {
-                  if (single !== undefined)
-                    run(
-                      ui.workbench.executeCommand('firmware.createProject', {
-                        instanceId: single.id,
-                        propertyKey: key,
-                      }),
-                    );
+                onCommit={async (key, value, signal) => {
+                  if (single === undefined) throw new Error('No device is selected');
+                  await ui.commitResource(single.id, key, single.properties?.[key], value, signal);
                 }}
                 onOpenProject={ui.openProject}
                 onError={ui.error}

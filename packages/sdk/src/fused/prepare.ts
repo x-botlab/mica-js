@@ -22,7 +22,7 @@ import { DiagnosticBatch, FusedPreparationError, problem } from './diagnostics.j
 import type { DiagnosticSink, RuntimeDiagnostic } from './diagnostics.js';
 import type { FusedModelFactory } from './models.js';
 import { openDevicePackage, type VerifiedPackage } from './package.js';
-import type { FirmwareProjectSource } from './firmware.js';
+import type { ProgramSources } from './program.js';
 import {
   resolveInstanceProperties,
   type BoardPropertyValue,
@@ -36,7 +36,7 @@ export interface PrepareInput {
   /** Loads one declared entry of a verified package; the module namespace is validated here. */
   readonly loadModule: (files: PackageFiles, path: string) => Promise<unknown>;
   readonly resolveResource?: ResourceResolver;
-  readonly projects?: FirmwareProjectSource;
+  readonly programs?: ProgramSources;
   readonly onDiagnostic?: DiagnosticSink;
   readonly hostApiVersion?: string;
 }
@@ -212,7 +212,7 @@ export async function prepareFusedSession(input: PrepareInput): Promise<Prepared
         irProperties: propertyDeclarations(model.ir),
         pointer: ['instances', String(index), 'properties'],
         ...(input.resolveResource === undefined ? {} : { resolveResource: input.resolveResource }),
-        ...(input.projects === undefined ? {} : { projects: input.projects }),
+        ...(input.programs === undefined ? {} : { programs: input.programs }),
       });
       instances.push({
         instanceId: instance.id,

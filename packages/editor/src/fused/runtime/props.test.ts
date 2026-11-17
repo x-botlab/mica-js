@@ -5,12 +5,16 @@ import type {
   PropertyValue,
   UnifiedDeviceManifest,
 } from '@mica-js/document/fused';
-import type { FirmwareProjectSource } from '@mica-js/sdk/fused';
+import type { MemoryProgram, ProgramFiles, ProgramSources } from '@mica-js/sdk/fused';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startFusedDisplayGuest } from './display/guest';
 import { createFusedRuntime } from './host/runtime';
 import type { IFusedRuntime, IFusedWorker, IFusedWorkerFactories } from './host/types';
-import type { FusedPresentationProps, IFusedFirmwareSnapshot } from './protocol';
+import type {
+  FusedPresentationProps,
+  FusedResolvedPresentationProps,
+  IFusedFirmwareSnapshot,
+} from './protocol';
 import { startFusedSimulationGuest } from './simulation/guest';
 
 const DEVICE = 'test:asset';
@@ -88,9 +92,10 @@ interface Fixture {
 
 async function fixture(
   overrides: Readonly<Record<string, Readonly<Record<string, PropertyValue>>>> = {},
+  manifest: UnifiedDeviceManifest = ASSET_MANIFEST,
 ): Promise<Fixture> {
   const files: Record<string, Uint8Array> = {
-    'package.json': new TextEncoder().encode(JSON.stringify(ASSET_MANIFEST, null, 2)),
+    'package.json': new TextEncoder().encode(JSON.stringify(manifest, null, 2)),
     'view.js': new TextEncoder().encode(VIEW_CODE),
     'model.js': new TextEncoder().encode(MODEL_CODE),
     'assets/body.png': new Uint8Array(BODY_BYTES),
@@ -147,7 +152,7 @@ async function fixture(
 
 interface CapturedView {
   readonly mode: 'edit' | 'run';
-  readonly props: FusedPresentationProps;
+  readonly props: FusedResolvedPresentationProps;
 }
 
 function isMessagePort(value: unknown): value is MessagePort {
@@ -193,7 +198,7 @@ function workbench(views: CapturedView[]): IFusedWorkerFactories {
           importModule: async () => ({
             default: (context: {
               readonly mode: 'edit' | 'run';
-              props: FusedPresentationProps;
+              props: FusedResolvedPresentationProps;
             }) => {
               views.push({ mode: context.mode, props: context.props });
               return { renderOverlay() {} };
@@ -234,7 +239,10 @@ function firmwareSnapshot(props: FusedPresentationProps, name: string): IFusedFi
   return value;
 }
 
-function bytesOf(props: FusedPresentationProps, name: string): number[] {
+function bytesOf(
+  props: FusedPresentationProps | FusedResolvedPresentationProps,
+  name: string,
+): number[] {
   const value = props[name];
   if (!(value instanceof Uint8Array)) throw new Error(`property "${name}" is not a byte snapshot`);
   return [...value];
@@ -244,28 +252,101 @@ async function start(
   mode: 'edit' | 'run',
   options: {
     readonly overrides?: Readonly<Record<string, Readonly<Record<string, PropertyValue>>>>;
-    readonly projects?: FirmwareProjectSource;
+    readonly programs?: ProgramSources;
+    readonly manifest?: UnifiedDeviceManifest;
     readonly diagnostics?: Array<{ code: string; message: string; instanceId?: string }>;
     readonly views?: CapturedView[];
   } = {},
 ): Promise<IFusedRuntime> {
-  const { document, registry } = await fixture(options.overrides);
+  const { document, registry } = await fixture(options.overrides, options.manifest);
+  const diagnostics = options.diagnostics ?? [];
   const runtime = await createFusedRuntime({
     document,
     registry,
     step: STEP,
     mode,
     workers: workbench(options.views ?? []),
-    ...(options.projects === undefined ? {} : { projects: options.projects }),
-    ...(options.diagnostics === undefined
-      ? {}
-      : { onDiagnostic: (entry) => options.diagnostics!.push(entry) }),
+    ...(options.programs === undefined ? {} : { programs: options.programs }),
+    onDiagnostic: (entry) => diagnostics.push(entry),
+  }).catch((cause) => {
+    throw new Error(`${String(cause)}: ${diagnostics.map((entry) => entry.message).join('; ')}`);
   });
   cleanups.push(() => runtime.dispose());
   return runtime;
 }
 
 describe('fused presentation props', () => {
+  it('passes targeted program sources over RPC and reconstructs independent filesystem snapshots', async () => {
+    const views: CapturedView[] = [];
+    const calls: unknown[] = [];
+    const original = new Uint8Array([65, 66]);
+    const manifest: UnifiedDeviceManifest = {
+      ...ASSET_MANIFEST,
+      properties: {
+        scripts: { type: 'program', loader: 'filesystem' },
+      },
+    };
+    const runtime = await start('edit', {
+      manifest,
+      views,
+      overrides: {
+        [INSTANCE_ID]: { scripts: { mode: 'project', projectId: 'scripts' } },
+        [OTHER_ID]: { scripts: { mode: 'project', projectId: 'code' } },
+      },
+      programs: {
+        projects: {
+          select: async () => undefined,
+          resolve: async (id, target) => {
+            calls.push([id, target]);
+            return {
+              kind: 'filesystem',
+              files:
+                id === 'scripts'
+                  ? [{ path: 'main.py', data: original }]
+                  : [{ path: 'boot.py', data: new Uint8Array() }],
+            };
+          },
+        },
+      },
+    });
+    expect(calls).toEqual([
+      ['scripts', { deviceId: DEVICE, property: 'scripts', loader: 'filesystem' }],
+      ['code', { deviceId: DEVICE, property: 'scripts', loader: 'filesystem' }],
+    ]);
+    expect(runtime.display.instances).toHaveLength(2);
+    const files = views[0]!.props['scripts'] as ProgramFiles;
+    expect(files.paths).toEqual(['main.py']);
+    original.fill(0);
+    const copy = files.read('main.py').slice();
+    copy.fill(0);
+    expect([...files.read('main.py')]).toEqual([65, 66]);
+    expect((views[1]!.props['scripts'] as ProgramFiles).read('boot.py').length).toBe(0);
+    expect(() => files.read('absent')).toThrow();
+  });
+
+  it('decodes memory program defaults and reconstructs read-only segments for presentations', async () => {
+    const views: CapturedView[] = [];
+    await start('edit', {
+      views,
+      manifest: {
+        ...ASSET_MANIFEST,
+        properties: {
+          program: {
+            type: 'program',
+            loader: 'memory',
+            formats: ['bin'],
+            addressSpaces: { flash: { start: 256, size: 1024 } },
+            defaults: { addressSpace: 'flash', loadAddress: 256 },
+            default: { mode: 'package', src: 'firmware.bin' },
+          },
+        },
+      },
+    });
+    const program = views[0]!.props['program'] as MemoryProgram;
+    expect(program.segments[0]!.address).toBe(256);
+    expect([...program.segments[0]!.data]).toEqual(PROGRAM_BYTES);
+  });
+
   it('exposes image and firmware snapshots instead of dropping them', async () => {
     const views: CapturedView[] = [];
     const runtime = await start('edit', { views });
@@ -284,7 +365,7 @@ describe('fused presentation props', () => {
     // The presentation worker received the same snapshot, not a stripped copy.
     const view = views.find((entry) => entry.mode === 'edit')!;
     expect(bytesOf(view.props, 'body')).toEqual(BODY_BYTES);
-    expect([...firmwareSnapshot(view.props, 'program').segments[0]!.bytes]).toEqual(PROGRAM_BYTES);
+    expect([...(view.props['program'] as MemoryProgram).segments[0]!.data]).toEqual(PROGRAM_BYTES);
 
     // The RPC transfer hands the guest buffers over; the host snapshot stays readable.
     await runtime.prepareDisplay({ mode: 'edit' });
@@ -295,18 +376,30 @@ describe('fused presentation props', () => {
 
   it('resolves a host firmware project once and keeps its artifact snapshot', async () => {
     let resolved = 0;
-    const projects: FirmwareProjectSource = {
-      async list() {
-        return [{ id: 'board', title: 'Board' }];
+    const projects: NonNullable<ProgramSources['projects']> = {
+      async select() {
+        return { id: 'board', title: 'Board' };
       },
       async resolve(projectId) {
         resolved += 1;
         expect(projectId).toBe('board');
-        return { format: 'bin', data: new Uint8Array(PROJECT_BYTES) };
+        return { kind: 'memory', format: 'bin', data: new Uint8Array(PROJECT_BYTES) };
       },
     };
     const runtime = await start('edit', {
-      projects,
+      manifest: {
+        ...ASSET_MANIFEST,
+        properties: {
+          program: {
+            type: 'program',
+            loader: 'memory',
+            formats: ['bin'],
+            addressSpaces: { flash: { start: 0, size: 4096 } },
+            defaults: { addressSpace: 'flash', loadAddress: 0 },
+          },
+        },
+      },
+      programs: { projects },
       overrides: { [INSTANCE_ID]: { program: { mode: 'project', projectId: 'board' } } },
     });
 
