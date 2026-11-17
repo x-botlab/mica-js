@@ -1,12 +1,8 @@
-import type { JitTranslateInput } from '@mica-js/sdk/device';
 import { decode } from './decode';
-import type { KnownRegs } from './decode';
+import type { CodeBytes, KnownRegs } from './decode';
 import { FLASH_BASE } from './layout';
+import type { CodeRegion } from './code-region';
 
-interface CodeBytes {
-  readonly byteLength: number;
-  readonly [index: number]: number | undefined;
-}
 
 const CODE_WINDOW = 0x20000;
 /** 线性扫描上限；36 条左右的轻量函数仍能完整建立入口常量事实。 */
@@ -88,6 +84,7 @@ function branchTarget32(
   }
 
   if ((h2 & 0xd000) === 0x8000) {
+    if (((h1 >> 6) & 0xf) >= 14) return undefined;
     const imm6 = h1 & 0x3f;
     const imm = signed((s << 20) | (j2 << 19) | (j1 << 18) | (imm6 << 12) | (imm11 << 1), 21);
 
@@ -160,7 +157,7 @@ function flowAt(
   if ((h1 & 0xfe00) === 0xb400) return { fallthrough: true };
   if ((h1 & 0xfe00) === 0xbc00) return { fallthrough: (h1 & 0x0100) === 0 };
   if ((h1 & 0xf000) === 0xc000) return { fallthrough: (h1 & 0x0800) === 0 || (h1 & 0x0100) === 0 };
-  if (h1 >= 0xb000 && h1 < 0xc000) return { fallthrough: true };
+  if (h1 >= 0xb000 && h1 < 0xc000) return { fallthrough: !endsBatch || boundaryAfter };
 
   return { fallthrough: !endsBatch || boundaryAfter };
 }
@@ -176,12 +173,19 @@ const clobberCallerSaved = (regs: KnownRegs): void => {
  * followed when the preceding block loaded a Thumb code pointer; an unresolved indirect call
  * simply ends that path instead of guessing a target.
  */
+interface Discovery {
+  readonly functions: readonly number[];
+  /** 所有出现过的分支目标；其入口常量不能在回边后继续沿用。 */
+  readonly targets: readonly number[];
+}
+
 function discoverFunctions(
   code: CodeBytes,
   firmwareLength: number,
   decodeAt: (pc: number, regs: KnownRegs) => ReturnType<typeof decode>,
-): readonly number[] {
+): Discovery {
   const functions = new Map<number, true>();
+  const targets = new Set<number>();
   const pending: number[] = [];
   const addFunction = (address: number): void => {
     const pc = normalize(address);
@@ -227,8 +231,11 @@ function discoverFunctions(
         );
 
         if (flow.target !== undefined) {
+          const target = normalize(flow.target);
+
+          targets.add(target);
           if (flow.kind === 'call') addFunction(flow.target);
-          else blocks.push({ pc: normalize(flow.target), regs: regs.slice() });
+          else blocks.push({ pc: target, regs: regs.slice() });
         }
         if (!flow.fallthrough) break;
         if (decoded.itCount > 0) break;
@@ -238,7 +245,10 @@ function discoverFunctions(
     }
   }
 
-  return [...functions.keys()].sort((left, right) => left - right);
+  return {
+    functions: [...functions.keys()].sort((left, right) => left - right),
+    targets: [...targets].sort((left, right) => left - right),
+  };
 }
 
 function mergeFacts(target: KnownRegs, source: KnownRegs): void {
@@ -251,7 +261,7 @@ export interface RegisterFacts {
   at(pc: number): KnownRegs | undefined;
 }
 
-const cachedFacts = new WeakMap<object, Map<number, RegisterFacts>>();
+const cachedFacts = new WeakMap<object, Map<string, RegisterFacts>>();
 
 /**
  * Build entry-register facts for the straight-line prefix of every discovered function.
@@ -261,17 +271,27 @@ const cachedFacts = new WeakMap<object, Map<number, RegisterFacts>>();
  * Restricting the analysis to a function's linear prefix keeps the result path-independent: the
  * scan stops at every branch, call, return or IT boundary.
  */
-export function createRegisterFacts(code: CodeBytes, firmwareLength: number): RegisterFacts {
+export function createRegisterFacts(
+  code: CodeBytes,
+  firmwareLength: number,
+  region?: CodeRegion,
+): RegisterFacts {
+  const cacheKey = `${region?.base ?? 'legacy'}:${firmwareLength}`;
   let byLength = cachedFacts.get(code);
-  const cached = byLength?.get(firmwareLength);
+  const cached = byLength?.get(cacheKey);
 
   if (cached !== undefined) return cached;
   const length = Math.min(firmwareLength, code.byteLength);
   const facts = new Map<number, KnownRegs>();
+  const base = region?.base ?? FLASH_BASE;
   const decodeAt = (pc: number, regs: KnownRegs): ReturnType<typeof decode> =>
-    decode(code as JitTranslateInput['code'], (FLASH_BASE + pc) >>> 0, regs, length, false);
+    decode(code, (base + pc) >>> 0, regs, length, false, region);
 
-  const entries = length > 0 ? discoverFunctions(code, length, decodeAt) : [];
+  const discovery =
+    length > 0
+      ? discoverFunctions(code, length, decodeAt)
+      : { functions: [], targets: [] };
+  const entries = discovery.functions;
 
   if (length > 0) {
     for (const start of entries) {
@@ -304,6 +324,10 @@ export function createRegisterFacts(code: CodeBytes, firmwareLength: number): Re
     }
   }
 
+  // 回边/分支目标可能从不同寄存器状态到达；线性前缀算出的常量不能继续沿用。
+  // 这是 post-index 循环（`ldrb r2,[r1],#2`）在 -O2 下重复首半字的根因。
+  for (const target of discovery.targets) facts.delete(normalize(target));
+
   const result: RegisterFacts = {
     at(pc: number): KnownRegs | undefined {
       const found = facts.get(normalize(pc));
@@ -316,7 +340,7 @@ export function createRegisterFacts(code: CodeBytes, firmwareLength: number): Re
     byLength = new Map();
     cachedFacts.set(code, byLength);
   }
-  byLength.set(firmwareLength, result);
+  byLength.set(cacheKey, result);
 
   return result;
 }

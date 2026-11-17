@@ -1,8 +1,8 @@
 import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
-import type { JitTranslateInput } from '@mica-js/sdk/device';
 import { APSR_C } from './layout';
 import type { AccessSize } from './layout';
+import type { CodeBytes } from './decode';
 import {
   addWithCarry,
   asBody,
@@ -26,9 +26,19 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { conditional, loadRegister, readAnyReg, storeRegister, writeAnyReg } from './cpu';
-import { atAddress, atCode, atAccessEffects, atSram, CODE_MASK, gpioReadsAsZero } from './memory';
+import { atAddress, atAccessEffects, atSram, gpioReadsAsZero } from './memory';
+import { codeLocalOffset } from './code-region';
+import type { CodeRegion } from './code-region';
 import type { AccessEffects } from './memory';
-import { exceptionReturn, isExceptionReturn } from './nvic';
+import {
+  enterSvc,
+  exceptionReturn,
+  isExceptionReturn,
+  writeFaultmask,
+  writePrimask,
+} from './nvic';
+import { multiplyLow32 } from './dsp';
+import { clearExclusiveMonitor } from './exclusive';
 import type { KnownRegs } from './decode';
 
 export interface Instruction16 {
@@ -38,10 +48,11 @@ export interface Instruction16 {
   readonly dynamicMemory?: boolean;
   /** 静态 GPIO 输出写之后必须收块，使电气边界看到脉冲。 */
   readonly boundaryAfter?: boolean;
+  /** 译码器确认该编码无法执行（会 halt），批处理/事实扫描必须就此停下。 */
+  readonly terminates?: boolean;
   readonly emit: (b: Body, pc: number) => void;
 }
 
-type CodeBytes = JitTranslateInput['code'];
 
 const signed8 = (value: number): number => (value & 0x80 ? value - 0x100 : value);
 const signed11 = (value: number): number => (value & 0x400 ? value - 0x800 : value);
@@ -79,12 +90,14 @@ const literalValue16 = (
   pc: number,
   instr: number,
   firmwareLength: number,
+  region?: CodeRegion,
 ): number | undefined => {
   if (code === undefined) return undefined;
 
-  const offset = (((((pc + 4) & ~3) + ((instr & 0xff) << 2)) >>> 0) & CODE_MASK) >>> 0;
+  const address = (((pc + 4) & ~3) + ((instr & 0xff) << 2)) >>> 0;
+  const offset = codeLocalOffset(region, address);
 
-  if (offset + 4 > Math.min(firmwareLength, code.byteLength)) return undefined;
+  if (offset === undefined || offset + 4 > Math.min(firmwareLength, code.byteLength)) return undefined;
 
   return (
     ((code[offset] ?? 0) |
@@ -124,6 +137,10 @@ const writeResult = (b: Body, index: number, value: Value<number>): void => {
 };
 
 export function halt(b: Body, pc: number, code: number): void {
+  // halt 后必须停在固定 PC。中央块在进入前已把 pc 写成 nextPC；这里写回
+  // faulting pc，避免下一次翻译继续把后续字节/数据当代码。中央对已 halted 的
+  // 缓存块还要在块入口把 pc 固定回 faultPc（见 halt guard 合同）。
+  b.writeState('pc', num(b, pc));
   b.send('fault', num(b, (pc << 8) | code));
   b.writeState('faultPc', num(b, pc));
   b.writeState('halted', b.constant(types.bool, true));
@@ -147,15 +164,10 @@ function reverse32(b: Body, value: Value<number>): Value<number> {
 function reverse16(b: Body, value: Value<number>): Value<number> {
   const v = u32(b, value);
 
+  // REV16：每个半字内部交换字节，不交换半字本身。
   return b.bitOr(
-    b.bitOr(
-      b.shiftLeft(b.bitAnd(v, num(b, 0x000000ff)), num(b, 8)),
-      b.bitAnd(v, num(b, 0x0000ff00)),
-    ),
-    b.bitOr(
-      b.shiftRightUnsigned(b.bitAnd(v, num(b, 0x00ff0000)), num(b, 8)),
-      b.shiftRightUnsigned(b.bitAnd(v, num(b, 0xff000000)), num(b, 24)),
-    ),
+    b.shiftLeft(b.bitAnd(v, num(b, 0x00ff00ff)), num(b, 8)),
+    b.shiftRightUnsigned(b.bitAnd(v, num(b, 0xff00ff00)), num(b, 8)),
   );
 }
 
@@ -166,6 +178,7 @@ function updateConstants16(
   firmwareLength: number,
   regs: KnownRegs | undefined,
   snapshot: KnownRegs | undefined,
+  region?: CodeRegion,
 ): void {
   if (regs === undefined) return;
 
@@ -283,7 +296,7 @@ function updateConstants16(
   }
 
   if (instr < 0x5000) {
-    remember(regs, (instr >> 8) & 7, literalValue16(code, pc, instr, firmwareLength));
+    remember(regs, (instr >> 8) & 7, literalValue16(code, pc, instr, firmwareLength, region));
 
     return;
   }
@@ -340,7 +353,7 @@ function updateConstants16(
       const imm = (instr & 0x7f) << 2;
 
       remember(regs, 13, sp === undefined ? undefined : (instr & 0x80) !== 0 ? sp - imm : sp + imm);
-    } else if ((instr & 0xff00) === 0xb200 || (instr & 0xff00) === 0xb300) {
+    } else if ((instr & 0xff00) === 0xb200 || (instr & 0xff00) === 0xba00) {
       remember(regs, instr & 7, undefined);
     } else if ((instr & 0xfe00) === 0xb400) {
       remember(regs, 13, undefined);
@@ -373,9 +386,25 @@ function updateConstants16(
   if (instr >= 0xf000) regs.fill(undefined);
 }
 
+/**
+ * 0xB0xx–0xBxxx 的已实现编码。其余编码必须 halt 并终止批次；不能像以前那样让
+ * `emitMisc16` 末尾静默穿过（REV 曾因此整体失效，CPSID f 也被吞掉）。
+ */
+function supportedMisc16(instr: number): boolean {
+  if ((instr & 0xff00) === 0xb000) return true; // ADD/SUB SP, #imm
+  if ((instr & 0xf500) === 0xb100) return true; // CBZ/CBNZ
+  if ((instr & 0xff00) === 0xb200) return true; // SXTH/SXTB/UXTH/UXTB
+  if ((instr & 0xff00) === 0xba00) return true; // REV/REV16/REVSH
+  if ((instr & 0xfe00) === 0xb400) return true; // PUSH
+  if ((instr & 0xfe00) === 0xbc00) return true; // POP
+  if ((instr & 0xffef) === 0xb662) return true; // CPSIE/CPSID i
+  if ((instr & 0xffef) === 0xb661) return true; // CPSIE/CPSID f
+
+  return false;
+}
+
 function mayService16(instr: number, regs: KnownRegs | undefined, effects: AccessEffects): boolean {
   if (instr < 0x5000) return false;
-
   if (instr < 0x6000) {
     const op = (instr >> 9) & 7;
     const rm = (instr >> 6) & 7;
@@ -404,7 +433,12 @@ function mayService16(instr: number, regs: KnownRegs | undefined, effects: Acces
     return atAccessEffects(at, load ? 'read' : 'write', size as AccessSize, effects);
   }
 
-  if (instr < 0xc000) return (instr & 0xfff7) === 0xb662 || (instr & 0xfff7) === 0xb672;
+  if (instr < 0xc000)
+    return (
+      (instr & 0xffef) === 0xb662 ||
+      (instr & 0xffef) === 0xb661 ||
+      !supportedMisc16(instr)
+    );
 
   if (instr < 0xd000) {
     const load = (instr & 0x0800) !== 0;
@@ -463,10 +497,11 @@ export function decode16(
   pc = 0,
   code?: CodeBytes,
   firmwareLength = code?.byteLength ?? 0,
+  region?: CodeRegion,
 ): Instruction16 {
   const snapshot = knownRegs?.slice();
 
-  updateConstants16(instr, pc, code, firmwareLength, knownRegs, snapshot);
+  updateConstants16(instr, pc, code, firmwareLength, knownRegs, snapshot, region);
 
   const effects: AccessEffects = { boundaryAfter: false };
 
@@ -476,7 +511,10 @@ export function decode16(
     mayService: mayService16(instr, snapshot, effects),
     dynamicMemory: dynamicMemory16(instr, snapshot),
     boundaryAfter: effects.boundaryAfter,
-    emit: (b, currentPc) => emit16(b, currentPc, instr, snapshot, code, firmwareLength),
+    ...(instr >= 0xb000 && instr < 0xc000 && !supportedMisc16(instr)
+      ? { terminates: true }
+      : {}),
+    emit: (b, currentPc) => emit16(b, currentPc, instr, snapshot, code, firmwareLength, region),
   };
 }
 
@@ -487,6 +525,7 @@ function emit16(
   knownRegs?: KnownRegs,
   code?: CodeBytes,
   firmwareLength = 0,
+  region?: CodeRegion,
 ): void {
   if (instr < 0x1800) {
     // LSL/LSR/ASR immediate.
@@ -626,7 +665,7 @@ function emit16(
         break;
       }
       case 13: {
-        const value = u32(b, b.multiply(left, right));
+        const value = multiplyLow32(b, left, right);
 
         writeNz(b, signIsSet(b, value), isZero(b, value));
         writeResult(b, rdn, value);
@@ -659,14 +698,14 @@ function emit16(
     if (op === 0) {
       const value = b.add(readAnyReg(b, rd, pc), readAnyReg(b, rm, pc));
 
-      writeAnyReg(b, rd, u32(b, value));
+      writeAnyReg(b, rd, u32(b, value), pc);
     } else if (op === 1) {
       const left = readAnyReg(b, rd, pc);
       const right = readAnyReg(b, rm, pc);
 
       subFlags(b, left, right);
     } else if (op === 2) {
-      writeAnyReg(b, rd, readAnyReg(b, rm, pc));
+      writeAnyReg(b, rd, readAnyReg(b, rm, pc), pc);
     } else {
       const target = readAnyReg(b, rm, pc);
 
@@ -674,7 +713,7 @@ function emit16(
         writeReg(b, 14, num(b, (pc + 2) | 1));
         b.if(
           isExceptionReturn(b, target),
-          (inner) => exceptionReturn(asBody(inner)),
+          (inner) => exceptionReturn(asBody(inner), undefined, pc),
           (normal) => {
             const body = asBody(normal);
             const low = body.bitAnd(target, body.constant(types.number, 1));
@@ -689,7 +728,7 @@ function emit16(
       } else {
         b.if(
           isExceptionReturn(b, target),
-          (inner) => exceptionReturn(asBody(inner)),
+          (inner) => exceptionReturn(asBody(inner), undefined, pc),
           (normal) => {
             const body = asBody(normal);
 
@@ -706,7 +745,7 @@ function emit16(
     // LDR literal.
     const rt = (instr >> 8) & 7;
     const address = (pc + 4 + ((instr & 0xff) << 2)) >>> 0;
-    const value = literalValue16(code, pc, instr, firmwareLength);
+    const value = literalValue16(code, pc, instr, firmwareLength, region);
 
     if (value !== undefined) {
       writeResult(b, rt, num(b, value));
@@ -714,7 +753,7 @@ function emit16(
       return;
     }
 
-    loadRegister(b, rt, num(b, address & ~3), 4, pc, false, atCode(address & ~3 & 0x1ffff));
+    loadRegister(b, rt, num(b, address & ~3), 4, pc, false, atAddress((address & ~3) >>> 0));
 
     return;
   }
@@ -774,7 +813,9 @@ function emit16(
     );
 
     if (load) loadRegister(b, rt, address, size, pc, false, at, true);
-    else storeRegister(b, rt, address, size, pc, at, true);
+    else {
+      storeRegister(b, rt, address, size, pc, at, true);
+    }
 
     return;
   }
@@ -849,9 +890,13 @@ function emit16(
     const offset = signed8(instr & 0xff);
 
     if (condition === 0xe) {
-      halt(b, pc, 0x03);
-    } else if (condition === 0xf) {
+      // 0xDE00-0xDEFF: UDF（永久未定义）。
       halt(b, pc, 0x04);
+    } else if (condition === 0xf) {
+      // 0xDF00-0xDFFF: SVC。同步异常走 nvic.enterSvc：优先级/掩蔽/同级升级 HardFault
+      // 与压栈规则都由 NVIC 维护，这里不复制第二份栈/PC 规则。
+      clearExclusiveMonitor(b);
+      enterSvc(b, (pc + 2) >>> 0);
     } else {
       const target = (pc + 4 + offset * 2) >>> 0;
 
@@ -883,7 +928,7 @@ function emitMisc16(b: Body, pc: number, instr: number): void {
     return;
   }
 
-  if ((instr & 0xff00) === 0xb100) {
+  if ((instr & 0xf500) === 0xb100) {
     const compareZero = (instr & 0x0800) === 0;
     const i = (instr >> 9) & 1;
     const imm5 = (instr >> 3) & 0x1f;
@@ -918,10 +963,23 @@ function emitMisc16(b: Body, pc: number, instr: number): void {
   }
 
   if ((instr & 0xff00) === 0xb300) {
+    // 合法的 B3xx CBZ/CBNZ 已由上面的 f500 掩码处理；剩余 B3xx 才是保留编码，
+    // 不能静默穿过，也不能把它当 REV（真正 REV 在 0xBAxx）。
+    halt(b, pc, 0x09);
+    return;
+  }
+
+  if ((instr & 0xff00) === 0xba00) {
     const op = (instr >> 6) & 3;
     const rm = (instr >> 3) & 7;
     const rd = instr & 7;
     const source = readReg(b, rm);
+
+    if (op === 2) {
+      halt(b, pc, 0x09);
+      return;
+    }
+
     const value =
       op === 0
         ? reverse32(b, source)
@@ -969,32 +1027,47 @@ function emitMisc16(b: Body, pc: number, instr: number): void {
     if (includePc) registers.push(15);
 
     const base = readSp(b);
+    const pcIndex = registers.indexOf(15);
 
-    registers.forEach((register, offset) => {
-      if (register === 15)
-        loadRegister(b, 15, b.add(base, num(b, offset * 4)), 4, pc, false, atSram());
-      else loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, false, atSram());
-    });
-    writeSp(b, b.add(base, num(b, registers.length * 4)));
+    if (pcIndex >= 0) {
+      // POP {..., pc} 的 SP 写回发生在分支之前；异常返回用写回后的 SP 弹帧，
+      // 因此先把非 PC 寄存器装完、写 SP，再装 PC。
+      registers.slice(0, pcIndex).forEach((register, offset) =>
+        loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, false, atSram()),
+      );
+      writeSp(b, b.add(base, num(b, registers.length * 4)));
+      loadRegister(b, 15, b.add(base, num(b, pcIndex * 4)), 4, pc, false, atSram());
+    } else {
+      registers.forEach((register, offset) =>
+        loadRegister(b, register, b.add(base, num(b, offset * 4)), 4, pc, false, atSram()),
+      );
+      writeSp(b, b.add(base, num(b, registers.length * 4)));
+    }
 
     return;
   }
 
-  if ((instr & 0xfff7) === 0xb662) {
-    b.writeState('primask', num(b, 0));
+  if ((instr & 0xffef) === 0xb662) {
+    const disable = (instr & 0x10) !== 0;
+
+    writePrimask(b, num(b, disable ? 1 : 0));
     syncIrqService(b);
 
     return;
   }
 
-  if ((instr & 0xfff7) === 0xb672) {
-    b.writeState('primask', num(b, 1));
-    syncIrqService(b);
+  if ((instr & 0xffef) === 0xb661) {
+    // CPSIE/CPSID f：FAULTMASK 由 nvic 的隐藏状态维护。
+    writeFaultmask(b, num(b, (instr & 0x10) !== 0 ? 1 : 0));
 
     return;
   }
 
   if ((instr & 0xff00) === 0xbe00) {
     halt(b, pc, 0x06);
+    return;
   }
+
+  // 其余 0xB0xx–0xBxxx（SETEND、保留编码等）一律显式 fault。
+  halt(b, pc, 0x09);
 }

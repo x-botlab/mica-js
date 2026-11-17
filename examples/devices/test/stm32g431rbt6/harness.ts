@@ -90,6 +90,8 @@ export interface Circuit {
   readonly inputs: Readonly<Record<string, SourceHandle>>;
   /** 模型内存中装载后的 code 快照，用于验证分段映射与空洞。 */
   readonly code: Uint8Array;
+  /** 按 DDL memory 名读取当前模型内存（只读快照）。 */
+  memory(name: string): Uint8Array;
   /** 统一模型实例方法；测试用清单形状读取串口历史与故障状态。 */
   readonly methods: unknown;
   /** 诊断：JIT 是否走直接路径、缓存块数与直接程序数。 */
@@ -337,6 +339,7 @@ export async function circuit(options: CircuitOptions = {}): Promise<Circuit> {
     get code() {
       return new Uint8Array(internal?.memories?.get('code') ?? []);
     },
+    memory: (name: string) => new Uint8Array(internal?.memories?.get(name) ?? []),
     methods,
     jit: () => {
       const jit = (board as unknown as { jits?: readonly unknown[] }).jits?.[0] as

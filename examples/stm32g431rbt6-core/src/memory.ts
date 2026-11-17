@@ -39,6 +39,7 @@ import {
   inlineStaticGpioWriteChangesPin,
 } from './gpio';
 import { readSystem, writeSystem } from './nvic';
+import { writeFlashMemory } from './flash';
 
 /**
  * 32 位地址空间的访存分派。
@@ -270,7 +271,9 @@ function writeAt(
 
   switch (region) {
     case 'code':
-      // Flash 写入未建模，保留固件映像。
+      // Guest store 只有通过已解锁的 Flash 控制器才会改变映像；写 `code` 同时触发
+      // 引擎的 code 版本失效。
+      writeFlashMemory(b, offset, size, value);
       return;
     case 'sram':
       storeWidth(b, SRAM, offset, size, value);
@@ -438,27 +441,56 @@ export function writeMemory(
       const body = asBody(other);
 
       body.if(
-        inRegion(body, address, CCM_BASE, CCM_SIZE),
-        (ccm) => {
-          const scope = asBody(ccm);
+        inRegion(body, address, FLASH_BASE, FLASH_SIZE),
+        (flash) => {
+          const scope = asBody(flash);
 
-          storeWidth(scope, CCM, offsetFrom(scope, address, CCM_BASE), size, value);
+          writeFlashMemory(scope, offsetFrom(scope, address, FLASH_BASE), size, value);
         },
-        (rest) => {
-          const inner = asBody(rest);
+        (notFlash) => {
+          const scope = asBody(notFlash);
 
-          inner.if(
-            inRegion(inner, address, PERIPHERAL_BASE, PERIPHERAL_END - PERIPHERAL_BASE),
-            (periph) => {
-              writePeripheral(asBody(periph), address, size, value, defer);
+          scope.if(
+            inRegion(scope, address, CCM_BASE, CCM_SIZE),
+            (ccm) => {
+              const inner = asBody(ccm);
+
+              storeWidth(inner, CCM, offsetFrom(inner, address, CCM_BASE), size, value);
             },
-            (next) => {
-              const scope = asBody(next);
+            (rest) => {
+              const inner = asBody(rest);
 
-              scope.if(
-                inRegion(scope, address, SYSTEM_BASE, SYSTEM_END - SYSTEM_BASE),
-                (system) => {
-                  writeSystem(asBody(system), address, size, value);
+              inner.if(
+                inRegion(inner, address, PERIPHERAL_BASE, PERIPHERAL_END - PERIPHERAL_BASE),
+                (periph) => {
+                  writePeripheral(asBody(periph), address, size, value, defer);
+                },
+                (next) => {
+                  const tail = asBody(next);
+
+                  tail.if(
+                    inRegion(tail, address, SYSTEM_BASE, SYSTEM_END - SYSTEM_BASE),
+                    (system) => {
+                      writeSystem(asBody(system), address, size, value);
+                    },
+                    (alias) => {
+                      const mirror = asBody(alias);
+
+                      mirror.if(
+                        inRegion(mirror, address, FLASH_ALIAS_BASE, FLASH_SIZE),
+                        (flashAlias) => {
+                          const scope2 = asBody(flashAlias);
+
+                          writeFlashMemory(
+                            scope2,
+                            scope2.bitAnd(address, num(scope2, CODE_MASK)),
+                            size,
+                            value,
+                          );
+                        },
+                      );
+                    },
+                  );
                 },
               );
             },
@@ -467,5 +499,4 @@ export function writeMemory(
       );
     },
   );
-  // Flash 写入（IAP/Flash 编程）未建模：忽略，保留固件映像。
 }

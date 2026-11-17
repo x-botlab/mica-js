@@ -1,0 +1,29 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { createSpiCircuit } from './spi-harness';
+
+const firmware = new Uint8Array(
+  readFileSync(join(import.meta.dirname, 'fixtures', 'spi-dma-e2e.bin')),
+);
+
+describe('STM32G431RBT6 SPI1 双通道 DMA 回环', () => {
+  it('CH1/CH2 mem↔DR、TC IRQ、DMAR 关闭负向均通过', async () => {
+    const circuit = await createSpiCircuit({ firmware, clockFrequency: 16_000_000 });
+
+    try {
+      for (let step = 0; step < 20; step += 1) circuit.run(1_000_000_000);
+
+      const sram = circuit.memory('sram');
+      const view = new DataView(sram!.buffer, sram!.byteOffset, sram!.byteLength);
+
+      expect(circuit.faults).toEqual([]);
+      expect(view.getUint32(0, true)).toBe(2);
+      expect(view.getUint32(0x08, true)).toBe(0);
+      expect(view.getUint32(0x0c, true) & 0x20).toBe(0x20);
+      expect([...sram!.subarray(0x20, 0x24)]).toEqual([0x5a, 0xa5, 0x3c, 0xc3]);
+    } finally {
+      circuit.dispose();
+    }
+  });
+});

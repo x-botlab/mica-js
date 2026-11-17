@@ -58,8 +58,9 @@ pnpm bench        # 构建并运行三轮基准
 
 ## 接线与运行设置
 
-- 外部只连接 **VDD1 = 3.3 V、VSS1 = 0 V**。LCD 的 VDD/VSS、RST 以及 MCU 与 LCD
-  之间的数据/控制线都在器件内部固定连接；RST 恒为高。
+- 外部只连接 **VDD1 = 3.3 V、VSS1 = 0 V**。`NRST` 引脚已声明并可在外部拉低复位
+  MCU；当前基线测试不接 NRST，保持内部/外部上拉的释放态。LCD 的 VDD/VSS、RST 以及
+  MCU 与 LCD 之间的数据/控制线都在器件内部固定连接；LCD RST 恒为高。
 - MCU 与 LCD 的固定接法：`D0–D15 = PC0–PC15`，`WR = PB5`，`RS = PB8`，
   `CS = PB9`，`RD = PA8`。
 - 单主机、理想数字总线；没有第二个总线主设备，也没有模拟竞争。
@@ -155,9 +156,14 @@ stdout 会输出 `CT117E_M4_PERF` 行和 `CT117E_M4_REPORT` 临时目录；`read
 - **不是完整 CT117E-M4 开发板**。不包含按键、LED、蜂鸣器、继电器、EEPROM、温度
   传感器等板载外设，也不模拟它们的接线。
 - **共享内核的 MCU 子集**：Cortex-M4 Thumb/Thumb-2 指令、GPIO、RCC、PWR（时钟配置
-  所需）、SysTick、NVIC、USART1–3 发送、128 KiB Flash、22 KiB SRAM、10 KiB CCM
-  SRAM；LCD 侧为 16 位 8080 并口、窗口寻址、GRAM 与 RGB565 帧发布。ADC、DAC、
-  比较器、运算放大器、SPI、I²C、CAN、USB、RTC、看门狗和通用定时器等未建模。
+  所需）、SysTick、NVIC、USART1–3 发送/接收、128 KiB Flash、22 KiB SRAM、10 KiB CCM
+  SRAM；LCD 侧为 16 位 8080 并口、窗口寻址、GRAM 与 RGB565 帧发布。
+- **fused profile 不启用新增外设模块**：ADC、TIM、I²C、SPI、EXTI、UART4/LPUART1、
+  FDCAN、UCPD 等只在独立 `example:stm32g431rbt6` 的 `PERIPHERALS` 中注册；USB/FPU
+  本轮不提供。
+  ct117e 的 `FUSED_PERIPHERALS` 为空，避免把需要独立引脚或模拟量的 IR 展开进只接受
+  `FUSED_WIRES` 数字电平的 fused 模型；这些外设在本示例中明确未接入，不是“寄存器
+  可写即已支持”。逐项状态见 `examples/devices/docs/stm32g431rbt6-status.md`。
 - 器件运行时只接收解析后的 `FirmwareImage`，不读取 HEX/BIN 文件；文件解析属于宿主或测试夹具。
 - 本示例不能用来证明任意 CT117E-M4 固件或任意外部接线都与真实硬件等价；它只覆盖
   上述固定接法和 MCU 子集。

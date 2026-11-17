@@ -1,5 +1,6 @@
 import type { Value } from '@mica-js/sdk/model';
 import type { Body } from './ir';
+import type { InterruptSource, PeripheralModule } from './peripheral';
 
 /** 一个 GPIO 端口的静态引脚表；不存在的位为 null。 */
 export interface PortPins {
@@ -124,13 +125,35 @@ export interface AlternateDriver {
   readonly pin: number;
   readonly af: number;
   readonly active: (b: Body) => Value<boolean>;
+  /** `true` 表示输出高；openDrain 时为释放。 */
   readonly level: (b: Body) => Value<boolean>;
+  /**
+   * 外设输出级是否开漏。true 时 level=true 释放到 PUPDR（保留内部上/下拉），
+   * level=false 拉低；false 时仍尊重 GPIOx_OTYPER。
+   */
+  readonly openDrain?: boolean;
 }
 
 export interface Machine {
   readonly clockFrequency: number;
   readonly cyclePs: number;
+  /** HSE 晶振频率；0/缺省表示未焊晶振，HSERDY 永远为 0。 */
+  readonly hseFrequency?: number;
+  /**
+   * 是否启用运行期 `cpuCyclePs` 状态。生产 adapter 为 true；只声明静态周期的小型
+   * rig 保持缺省，避免为每个 rig 增加 DDL state。
+   */
+  readonly dynamicClock?: boolean;
+  /** LSE/LSI 频率；缺省使用 clock-tree 的 32.768 kHz / 32 kHz。 */
+  readonly lseFrequency?: number;
+  readonly lsiFrequency?: number;
   readonly alternateDrivers: readonly AlternateDriver[];
+  /** 本 profile 启用的外设模块；fused 基线可以为空。 */
+  readonly peripherals: readonly PeripheralModule[];
+  /** 从已启用模块汇总的 NVIC 中断源，按注册顺序扫描。 */
+  readonly interruptSources: readonly InterruptSource[];
+  /** profile 名称，仅用于诊断/测试。 */
+  readonly profile: string;
 }
 
 let active: Machine | undefined;

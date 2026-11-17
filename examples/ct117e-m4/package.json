@@ -38,6 +38,17 @@
       "max": 170000000,
       "step": 1
     },
+    "hseFrequency": {
+      "type": "integer",
+      "title": "HSE 晶振频率 (Hz)",
+      "description": "0 表示未焊晶振，HSERDY 永远为 0；非 0 时必须在 1..50 MHz。",
+      "default": 0,
+      "nullable": false,
+      "min": 0,
+      "max": 50000000,
+      "step": 1,
+      "unit": "Hz"
+    },
     "refreshRate": {
       "type": "integer",
       "title": "合帧最大频率 (Hz)",
@@ -56,6 +67,10 @@
     "VSS1": {
       "label": "VSS",
       "description": "地"
+    },
+    "NRST": {
+      "label": "NRST",
+      "description": "外部复位输入；低电平保持 MCU halted，释放沿从向量表重启"
     }
   },
   "model": {

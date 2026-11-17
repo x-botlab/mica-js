@@ -2086,6 +2086,138 @@ test('a computed elapse duration advances by the runtime value', () => {
   assert.throws(() => program.run(huge, 1_000), /picoseconds/);
 });
 
+test('a dynamic duration stays live across later prefix values', () => {
+  // The duration is read before the body and only used by the emitter's `elapsed()` line,
+  // which is not part of the prefix/suffix arrays. Register compaction must keep its slot
+  // live through the prefix; otherwise a later prefix value reuses it and silently replaces
+  // the duration (the TIM IRQ54 BX LR case replayed after a zero-duration fallback).
+  const b = builder();
+  const duration = b.read('offset');
+  b.write('marker', b.binary('add', b.read('marker'), b.constant(1)));
+  const zero = b.read('x');
+  b.write('y', zero);
+  b.write('pc', b.constant(0x200));
+  b.operations.push({ kind: 'elapse', duration });
+  b.write('marker', b.binary('add', b.read('marker'), b.constant(1)));
+  const instructions = [b.instruction(0x100, 0x200)];
+  const modes = [
+    ['monolithic', {}],
+    ['split', { split: true, shardSlotLimit: 0, shardSize: 1 }],
+    [
+      'resident',
+      { split: true, shardSlotLimit: 0, shardSize: 1 },
+      compileDirectJit.createCache(),
+    ],
+  ];
+  for (const [mode, options, cache] of modes) {
+    const program = compileDirectJit(instructions, { ...binding, ...options }, cache);
+    assert(program, mode);
+    const f = frame(program, [0x100, 0, 0, true, 10, 0]);
+    assert.equal(program.run(f, 4), 'deadline', mode);
+    assert.equal(f.time, 4, mode);
+    assert.equal(f.due, 10, mode);
+    assert.equal(f.states[0], 0x200, mode);
+    assert.equal(f.states[5], 1, mode);
+    assert(f.resume > 0, mode);
+    f.stateDirty.fill(0);
+    f.memoryDirty.fill(0);
+    // External state changes during the suspension: the saved due time and the already
+    // completed PC write must win over the new duration/PC inputs.
+    f.states[1] = 7;
+    f.states[2] = 99;
+    f.states[4] = 20;
+    assert.equal(program.run(f, 10), 'deadline', mode);
+    assert.equal(f.states[5], 1, mode);
+    assert.equal(program.run(f, 11), 'fallback', mode);
+    assert.equal(f.time, 10, mode);
+    assert.equal(f.states[5], 2, mode);
+    assert.equal(f.states[2], 99, mode);
+    assert.equal(f.states[0], 0x200, mode);
+    assert.equal(f.resume, 0, mode);
+  }
+});
+
+test('dynamic elapse resumes a completed PC once with captured prefix values', () => {
+  const b = builder();
+  const duration = b.read('offset');
+  b.write('marker', b.binary('add', b.read('marker'), b.constant(1)));
+  const loaded = b.value({ kind: 'load8', memory: ram, offset: b.read('x') });
+  b.write('pc', b.constant(0x200));
+  b.write('y', b.read('x'));
+  b.operations.push({ kind: 'elapse', duration });
+  b.write('y', loaded);
+  b.write('marker', b.binary('add', b.read('marker'), b.constant(1)));
+  const instructions = [b.instruction(0x100, 0x200)];
+
+  for (const [label, cache] of [
+    ['split', undefined],
+    ['resident', compileDirectJit.createCache()],
+  ]) {
+    for (const durationValue of [10, 0]) {
+      const options = {
+        ...binding,
+        split: true,
+        shardSlotLimit: 0,
+        shardSize: 1,
+      };
+      const program = compileDirectJit(instructions, options, cache);
+      assert(program, `${label} ${durationValue}`);
+      const initial = [0x100, 0, 0, true, durationValue, 0];
+      const f = frame(program, initial, [7, 8, 9]);
+      const reference = generic(instructions, initial, [Uint8Array.from([7, 8, 9])]);
+      const compare = (deadline) => {
+        assert.equal(program.run(f, deadline), reference.run(deadline), label);
+        assert.deepEqual(f.states, reference.states, label);
+        assert.deepEqual(f.memories[0], reference.memories[0], label);
+        assert.equal(f.time, reference.time, label);
+      };
+
+      compare(4);
+      if (durationValue === 0) {
+        // A runtime zero takes the immediate path: prefix and suffix both execute once in
+        // the same batch, exactly like the generic `elapse` emitter.
+        assert.equal(f.time, 0, label);
+        assert.equal(f.states[5], 2, label);
+        assert.equal(f.states[2], 7, label);
+        assert.equal(f.resume, 0, label);
+        compare(8);
+        continue;
+      }
+      assert.equal(f.time, 4, label);
+      assert.equal(f.states[5], 1, label);
+      assert.equal(f.states[2], 0, label);
+      assert.equal(f.due, 10, label);
+      assert(f.resume > 0, label);
+
+      if (cache !== undefined) {
+        // Replacing the instruction while its old frame is suspended must not rebind the
+        // existing continuation or replay its completed prefix.
+        const replacement = builder();
+        replacement.write('marker', replacement.constant(1000));
+        replacement.delay(1);
+        assert(
+          compileDirectJit([replacement.instruction(0x100, 0x900)], options, cache),
+          label,
+        );
+      }
+      for (const side of [f, reference]) {
+        side.memories[0][0] = 200;
+        side.states[1] = 9;
+        side.states[4] = 20;
+      }
+      compare(10);
+      assert.equal(f.states[5], 1, label);
+      compare(11);
+      assert.equal(f.time, 10, label);
+      assert.equal(f.states[5], 2, label);
+      assert.equal(f.states[2], 7, label);
+      assert.equal(f.states[0], 0x200, label);
+      assert.equal(f.states[1], 9, label);
+      assert.equal(f.resume, 0, label);
+    }
+  }
+});
+
 test('refEqual compares names at compile time and declines parameter references', () => {
   const b = builder();
   b.write(

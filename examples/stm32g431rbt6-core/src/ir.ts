@@ -309,9 +309,10 @@ export function subtractWithCarry(
   const diff = b.subtract(b.subtract(left, right), borrowIn);
   const result = u32(b, diff);
   const carry = b.greaterThanOrEqual(left, b.add(right, borrowIn));
+  // 减法的有符号溢出：两个操作数符号不同，且结果符号与 left 不同。
   const overflow = b.notEqual(
     types.number,
-    b.bitAnd(b.bitAnd(b.bitXor(left, result), b.bitXor(right, result)), num(b, APSR_N)),
+    b.bitAnd(b.bitAnd(b.bitXor(left, right), b.bitXor(left, result)), num(b, APSR_N)),
     num(b, 0),
   );
 
@@ -367,11 +368,13 @@ export const when = (b: Body, condition: Value<boolean>, emit: (body: Body) => v
 };
 
 export const setPcConst = (b: Body, target: number): void => {
-  b.writeState('pc', num(b, target & 0xfffffffe));
+  b.writeState('pc', num(b, (target & 0xfffffffe) >>> 0));
 };
 
 export const setPc = (b: Body, target: Value<number>): void => {
-  b.writeState('pc', b.bitAnd(target, num(b, 0xfffffffe)));
+  // PC 是 32 位无符号地址；JS 位运算会把它变成有符号数，必须在写回前归一化，
+  // 否则直接后端/翻译边界会看到 -2 一类值与规范的 0xFFFFFFFE 不一致。
+  b.writeState('pc', b.bitAnd(u32(b, target), num(b, 0xfffffffe)));
 };
 
 /** 取指地址的 PC 读值：当前指令地址 + 4。 */

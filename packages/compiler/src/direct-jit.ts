@@ -1546,7 +1546,12 @@ class Instruction {
     // compaction is the identity. Constant-only bodies arrive here with no slots at all.
     if (total <= 1) return;
     const bound = this.prefix.length;
-    const lines = [...this.prefix, ...this.suffix];
+    // `elapsed()` reads the duration between the prefix and the suffix, so the slot stays
+    // live through the whole prefix even though the emitted use is not part of either block.
+    // Without this boundary use the slot looks dead after its definition and a later prefix
+    // value reuses it, silently replacing the duration (for example with zero).
+    const duration = this.duration === undefined ? [] : [this.duration];
+    const lines = [...this.prefix, ...duration, ...this.suffix];
     const lineCount = lines.length;
     const offsets = new Int32Array(lineCount + 1);
     const definitions = new Int32Array(lineCount).fill(-1);

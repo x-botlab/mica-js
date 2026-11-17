@@ -2,8 +2,10 @@
 
 ST 的 Arm Cortex-M4F 32 位 MCU（LQFP64，128 KiB Flash / 22 KiB SRAM + 10 KiB CCM SRAM）的
 Mica 统一器件工程。器件 ID 是 `example:stm32g431rbt6`：JIT 按 PC 翻译一段连续的
-Thumb/Thumb-2 指令（按复杂度预算合批，硬上限 36 条），GPIO、RCC、SysTick、NVIC 与
-USART1/2/3 发送器按寄存器建模。构建产物是
+Thumb/Thumb-2 指令（按复杂度预算合批，硬上限 36 条）。GPIO/RCC/PWR/SysTick/NVIC、
+USART1–3 与新增的 TIM/ADC/I2C/SPI/EXTI/SYSCFG/DMAMUX/CRC/UART4/LPUART1 按
+`PeripheralModule` 合同注册；每项能力的真实边界见
+[`stm32g431rbt6-status.md`](./stm32g431rbt6-status.md)。构建产物是
 `dist/stm32g431rbt6/{package.json, model.js}`；当前只提供无头仿真模型，暂无新视图或
 编辑器接入。
 
@@ -34,12 +36,21 @@ HAL_Delay 轮询分析都读取模型内存快照，装载后另做一次一致�
 | 成员 | 载荷 | 说明 |
 | ---- | ---- | ---- |
 | `onDidUart1Tx` / `onDidUart2Tx` / `onDidUart3Tx` | `SerialData` | 对应 USART 每批发送字节 |
+| `onDidUart4Tx` / `onDidLpuart1Tx` | `SerialData` | UART4 / LPUART1 每批发送字节 |
 | `onDidFault` | number | 未实现指令/非法访存的 PC |
 | `readSerial({ channel, cursor })` | `SerialChunk` | 读取游标之后的保留历史，返回独立副本 |
 | `getSerialStatus({ channel })` | `SerialStatus` | 容量、最旧/下一个游标与累计丢弃字节 |
 | `getLastFault(null)` | number | 最近一次故障 PC；无故障为 -1 |
 
-串口通道 ID 是 DDL 名：`uart1Tx`、`uart2Tx`、`uart3Tx`。每通道保留最近 4096 字节；
+本轮明确不提供 USB，也不提供完整 FPU 能力：不暴露 USB host 方法/输入通道；生产 decode
+只支持 `VMSR FPSCR, Rt` 的可支持子集（CPACR 权限/真实 NOCP、FPSCR 可写位、FPCCR
+ASPEN/LSPEN、ASPEN→CONTROL.FPCA）。FP context 仍不支持：LSPACT=1、FPCA=1 的异常
+入口、EXC_RETURN bit4=0 的扩展返回均显式 `0x21` halt；basic return 清 FPCA。VMRS、
+VFP 算术、lazy PreserveFPState、FP 扩展栈帧与 VSTM/VLDM 仍按未实现 fault。实验源码保留
+在独立边界，不计入本器件支持矩阵。
+
+串口通道 ID 是 DDL 名：`uart1Tx`、`uart2Tx`、`uart3Tx`、`uart4Tx`、`lpuart1Tx`。
+每通道保留最近 4096 字节；
 `SerialData.cursor` 是本批第一个字节的序号，`SerialChunk` 的 `start`/`end`/`dropped`
 明确给出返回范围与请求游标之后已丢弃的数量。事件与历史查询可能重叠，界面按游标去重；
 不维护无界数组。实现位于 `examples/devices/shared/serial.ts`，构建时打包进自包含的

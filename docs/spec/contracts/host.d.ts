@@ -47,10 +47,20 @@ export interface TopicBridge {
   publish(topic: string, payload: unknown): void;
 }
 
+/** 一段可执行代码区域；`base` 是逻辑 PC 基址，区域从对应 memory 的偏移 0 开始。 */
+export interface JitCodeRegion {
+  readonly memory: string;
+  readonly base: number;
+  readonly size: number;
+}
 export interface JitTranslateInput {
   readonly pc: number;
-  /** 仅在本次同步 translate 回调内有效。 */
+  /** 仅在本次同步 translate 回调内有效；长度最多为本 region 的 `size`。 */
   readonly code: BorrowedBytes;
+  /** 本次翻译所属 region 的逻辑基址；未命中 region 的服务 PC 回退主 code 时为 0。 */
+  readonly codeBase: number;
+  /** 按实例 memory 维护的代码代际；代码区域内的成功写入即时递增。 */
+  readonly codeVersion: number;
 }
 export type JitTranslate = (input: JitTranslateInput, builder: JitBlockBuilder) => BlockIR;
 export interface InstructionHook {
@@ -68,9 +78,46 @@ export interface JitPolling {
     readonly advance: string;
   };
 }
+/** 忙等延时环声明；`pending` 用于按累加器计时的外设。 */
+export interface JitDelay {
+  readonly counter: string;
+  readonly cycles: number;
+  readonly pending?: {
+    readonly state: string;
+    readonly period: string;
+    readonly active: string;
+  };
+}
+/** 按 region 传给 codeMetadata provider 的只读代码视图；仅在本次同步回调内有效。 */
+export interface JitCodeRegionView {
+  readonly memory: string;
+  readonly base: number;
+  readonly size: number;
+  readonly codeVersion: number;
+  readonly code: BorrowedBytes;
+}
+/** 自上次该 region metadata 成功刷新以来的实际写入范围，单位为 memory offset。首次调用表示整区 `[0,size]`；同字节非空写也包含。 */
+export interface JitCodeChange {
+  readonly memory: string;
+  readonly offset: number;
+  readonly length: number;
+}
+export interface JitCodeMetadata {
+  readonly polling: readonly JitPolling[];
+  readonly delays: ReadonlyMap<number, JitDelay>;
+}
+export interface JitCodeMetadataInput {
+  readonly region: JitCodeRegionView;
+  readonly changes: readonly JitCodeChange[];
+}
+export type JitCodeMetadataProvider = (input: JitCodeMetadataInput) => JitCodeMetadata;
 export interface JitOptions {
   readonly entry: string;
   readonly code: string;
+  /** 追加可执行区域；主 `code` 仍隐式提供 0 基址 region。静态 polling/delays 不随 codeVersion 重新声明。 */
+  readonly codeRegions?: readonly JitCodeRegion[];
+  /** 按 region/codeVersion 懒加载的 metadata；与静态 polling/delays 互斥。 */
+  readonly codeMetadata?: JitCodeMetadataProvider;
   readonly pc: string;
   readonly beforeInstruction?: InstructionHook;
   /** 有限且互异的 PC；predicate 绑定本实例无参 bool pure fn，声明循环头的等待语义。 */
@@ -79,7 +126,7 @@ export interface JitOptions {
    * 忙等延时环声明：键为环头 PC，`counter` 是每轮减一的 number 状态，`cycles` 是一轮消耗的 ps。
    * 环内除该递减外无可观察效果；运行时按时间窗折叠轮次，最后一轮仍正常执行。
    */
-  readonly delays?: ReadonlyMap<number, { readonly counter: string; readonly cycles: number }>;
+  readonly delays?: ReadonlyMap<number, JitDelay>;
   readonly translate: JitTranslate;
 }
 export interface JitHost {

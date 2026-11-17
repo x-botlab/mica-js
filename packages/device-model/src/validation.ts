@@ -147,13 +147,60 @@ function intersect(maps: Facts[]): Facts {
   for (const [k, v] of out) if (maps.some((map) => map.get(k) !== v)) out.delete(k);
   return out;
 }
+/**
+ * 派生值身份的规范驻留表。
+ *
+ * join 曾经把候选值的完整 key 拼进自己的 key，而候选值本身又可能是 join；同一个 local
+ * 顺序经过多层分支合流时，父 key 会在每一层被复制进两个子 key，字符串随合法 IR 的层数
+ * 指数增长。这里按结构驻留：每遇到一种新结构分配一个小整数身份，相同结构复用同一身份。
+ * 这是精确的结构相等，不是哈希、截断或关闭校验，因此 proof 别名与旧 key 语义一致。
+ */
+class Identities {
+  private next = 0;
+  private readonly byKey = new Map<string, number>();
+  private readonly joins = new Map<string, string>();
+  private readonly fields = new Map<string, Map<string, string>>();
+  private id(key: string): number {
+    let id = this.byKey.get(key);
+    if (id === undefined) {
+      id = this.byKey.size;
+      this.byKey.set(key, id);
+    }
+    return id;
+  }
+  private fresh(kind: 'join' | 'field'): string {
+    return `${kind}:${this.next++}`;
+  }
+  join(local: number, candidates: readonly string[]): string {
+    const cache = `${local}:${candidates.map((key) => this.id(key)).join(',')}`;
+    let key = this.joins.get(cache);
+    if (key === undefined) {
+      key = this.fresh('join');
+      this.joins.set(cache, key);
+    }
+    return key;
+  }
+  field(value: string, field: string): string {
+    let fields = this.fields.get(value);
+    if (!fields) {
+      fields = new Map();
+      this.fields.set(value, fields);
+    }
+    let key = fields.get(field);
+    if (key === undefined) {
+      key = this.fresh('field');
+      fields.set(field, key);
+    }
+    return key;
+  }
+}
 function lexical(flow: Flow, visible: Map<number, Slot>): Flow {
   for (const state of [flow.normal, ...flow.breaks, ...flow.continues, ...flow.yieldStates]) {
     if (state) for (const id of state.locals.keys()) if (!visible.has(id)) state.locals.delete(id);
   }
   return flow;
 }
-function merge(states: State[]): State | undefined {
+function merge(states: State[], identities: Identities): State | undefined {
   if (!states.length) return undefined;
   const out = copy(states[0]!);
   out.facts = intersect(states.map((s) => s.facts));
@@ -166,7 +213,10 @@ function merge(states: State[]): State | undefined {
     if (candidates.some((c) => c!.value.key !== slot.value.key)) {
       const info: Info = {
         type: slot.type,
-        key: `join:${id}:${candidates.map((c) => c!.value.key).join('|')}`,
+        key: identities.join(
+          id,
+          candidates.map((c) => c!.value.key),
+        ),
       };
       const facts = candidates.map((c, i) => states[i]!.facts.get(c!.value.key));
       if (facts.every((f) => f === true)) out.facts.set(info.key, true);
@@ -209,6 +259,7 @@ class Validator {
   readonly enums = new Map<string, readonly string[]>(Object.entries(builtins));
   readonly records = new Map<string, RecordDeclaration['fields']>();
   readonly functions = new Map<string, FunctionDeclaration>();
+  readonly identities = new Identities();
   readonly effectChecked = new Set<string>();
   readonly receiveOwners = new Map<string, string>();
   constructor(readonly device?: DeviceIR) {
@@ -614,7 +665,7 @@ class Validator {
             t = value.type;
           const fieldType =
             t.kind === 'record' && !this.device ? op.type : this.field(t, op.field, q);
-          result(fieldType, { key: `field:${value.key}:${op.field}` });
+          result(fieldType, { key: this.identities.field(value.key, op.field) });
           break;
         }
         case 'bytes':
@@ -806,7 +857,10 @@ class Validator {
               };
           accumulate(yes);
           accumulate(no);
-          state = merge([yes.normal, no.normal].filter((v): v is State => !!v));
+          state = merge(
+            [yes.normal, no.normal].filter((v): v is State => !!v),
+            this.identities,
+          );
           break;
         }
         case 'match': {
@@ -867,7 +921,7 @@ class Validator {
               q,
               op,
             );
-          state = merge(branches);
+          state = merge(branches, this.identities);
           break;
         }
         case 'while':
@@ -912,7 +966,9 @@ class Validator {
             for (const id of localIds) c.localIds.add(id);
             test =
               op.kind === 'while' ? valueRegion(op.test, boolType, loopState, 'test') : undefined;
-            const afterTest = test ? (merge(test.flow.yieldStates) ?? loopState) : loopState;
+            const afterTest = test
+              ? (merge(test.flow.yieldStates, this.identities) ?? loopState)
+              : loopState;
             const entry = test?.value ? this.conditioned(afterTest, test.value, true) : afterTest;
             f = child(op.body, entry, 'body', { loop: c.loop + 1, tail: false });
             const backedges = [f.normal, ...f.continues].filter((value): value is State => !!value);
@@ -928,10 +984,10 @@ class Validator {
           flow.yieldStates.push(...f.yieldStates);
           const exits = [...f.breaks];
           if (op.kind === 'while' && test?.value) {
-            const afterTest = merge(test.flow.yieldStates) ?? loopState;
+            const afterTest = merge(test.flow.yieldStates, this.identities) ?? loopState;
             exits.push(this.conditioned(afterTest, test.value, false));
           }
-          state = merge(exits);
+          state = merge(exits, this.identities);
           break;
         }
         case 'and':
@@ -948,7 +1004,10 @@ class Validator {
             ? intersect([left.no ?? new Map(), combine(left.yes, rightInfo?.no)])
             : combine(left.no, rightInfo?.no);
           result(boolType, { yes, no });
-          state = merge([this.conditioned(s, left, !isAnd), ...right.flow.yieldStates]);
+          state = merge(
+            [this.conditioned(s, left, !isAnd), ...right.flow.yieldStates],
+            this.identities,
+          );
           break;
         }
         case 'select': {
@@ -956,7 +1015,7 @@ class Validator {
           const yes = valueRegion(op.yes, op.type, this.conditioned(s, condition, true), 'yes');
           const no = valueRegion(op.no, op.type, this.conditioned(s, condition, false), 'no');
           result(op.type);
-          state = merge([...yes.flow.yieldStates, ...no.flow.yieldStates]);
+          state = merge([...yes.flow.yieldStates, ...no.flow.yieldStates], this.identities);
           break;
         }
         case 'assert': {

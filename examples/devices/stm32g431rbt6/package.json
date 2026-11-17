@@ -2,7 +2,7 @@
   "publisher": "example",
   "name": "stm32g431rbt6",
   "version": "0.1.0",
-  "description": "Arm Cortex-M4F 32 位 MCU（LQFP64，128 KiB Flash / 22 KiB SRAM + 10 KiB CCM）。JIT 执行 Thumb/Thumb-2，GPIO、RCC、SysTick、NVIC 与 USART1/2/3 均按寄存器建模。",
+  "description": "Arm Cortex-M4F 32 位 MCU（LQFP64，128 KiB Flash / 22 KiB SRAM + 10 KiB CCM）。JIT 执行 Thumb/Thumb-2，GPIO、RCC/PWR、SysTick、NVIC、USART1–3、UART4/LPUART1、TIM、ADC、I2C、SPI、EXTI/SYSCFG、CRC 与 DMAMUX 按模块注册；逐项能力见器件文档。",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -19,6 +19,17 @@
       "nullable": false,
       "min": 1000,
       "max": 170000000,
+      "step": 1,
+      "unit": "Hz"
+    },
+    "hseFrequency": {
+      "type": "integer",
+      "title": "HSE 晶振频率 (Hz)",
+      "description": "0 表示未焊晶振，HSERDY 永远为 0；非 0 时必须在 1..50 MHz。",
+      "default": 0,
+      "nullable": false,
+      "min": 0,
+      "max": 50000000,
       "step": 1,
       "unit": "Hz"
     },
@@ -402,6 +413,12 @@
         "ref": "SerialData"
       },
       "onDidUart3Tx": {
+        "ref": "SerialData"
+      },
+      "onDidUart4Tx": {
+        "ref": "SerialData"
+      },
+      "onDidLpuart1Tx": {
         "ref": "SerialData"
       },
       "onDidFault": {
