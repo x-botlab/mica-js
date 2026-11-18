@@ -1,5 +1,11 @@
 # @mica-js/compiler
 
+## 0.5.1
+
+### Patch Changes
+
+- 0ce5a52: 发布 `compileSynchronousBody` 导出，供 simulator 使用。
+
 ## 0.5.0
 
 ### Minor Changes
