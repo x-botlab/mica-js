@@ -43,6 +43,16 @@ JSON；依赖与资源全部内联，产物不含运行时模块导入、动态�
 
 生成目录和 DDL 类型声明均由仓库忽略，源码是唯一维护入口。
 
+## CT107D
+
+本 playground 不再提供旧 CT107D v1 widget 画布入口：它依赖 legacy `device.json/device.js`，而统一器件包只提供 `package.json/model.js`，不能直接复用。CT107D 的正式宿主是 `examples/ct107d`，在仓库根目录运行：
+
+```shell
+pnpm --dir examples/ct107d run workbench:dev
+```
+
+不要从统一器件包向本 playground 伪造 legacy 产物。
+
 ## 独立 device demo
 
 `pnpm --filter @mica-js/playground dev:workbench` 启动的 `/workbench.html` 展示融合编辑器。

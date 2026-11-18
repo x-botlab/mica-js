@@ -107,7 +107,7 @@ test('disabled recorder keeps callbacks off and refuses to start', () => {
 
 test('splits cold and steady on completed sim ticks and retains bounded raw lanes', async () => {
   const recorder = makeRecorderAt(1000);
-  recorder.setScenario({ documentId: 'ct107d-canvas', clockFrequencyHz: 11_059_200 });
+  recorder.setScenario({ documentId: 'ct107d-workbench', clockFrequencyHz: 11_059_200 });
   recorder.setArtifacts({
     status: 'ok',
     note: 'test artifacts',

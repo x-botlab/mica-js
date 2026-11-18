@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { cp, mkdir, rm } from 'node:fs/promises';
@@ -10,6 +11,33 @@ const repository = resolve(app, '..', '..');
 const components = resolve(repository, 'examples', 'playground-components');
 const cli = resolve(repository, 'packages', 'sdk', 'dist', 'build', 'cli.js');
 const mode = process.argv[2];
+
+/** Designators present in the historical CT107D widget canvas. */
+const CT107D_DEVICE_IDS = [
+  '74hc02',
+  '74hc138',
+  '74hc573',
+  '74hc14',
+  'at24c02',
+  'buzzer',
+  'cx20106a',
+  'ds1302',
+  'ds18b20',
+  'jumper',
+  'jumper-2x3',
+  'lm386',
+  'ne555',
+  'pcf8591',
+  'push-button',
+  'relay',
+  'uln2003',
+  'ultrasonic',
+  'uart-probe',
+  'vs1838',
+  'seg4',
+  'blue-led',
+  'iap15f2k61s2',
+];
 
 function run(command, args, options = {}) {
   const child = spawn(command, args, { cwd: repository, stdio: 'inherit', ...options });
@@ -47,44 +75,112 @@ function serverOptions(args) {
   return result;
 }
 
-/**
- * 把 `examples/devices` 的器件与 `examples/ct107d` 的 widget/原理图/画布复制到被忽略的
- * `public/components/ct107d`，让主页面能打开 `ct107d.cnv`。器件库统一提供整板用到的
- * 全部器件（含 IAP15F2K61S2、seg4 与 blue-led）；没有产物时只提示并跳过。
- */
-async function copyCt107d(artifacts) {
-  const source = resolve(repository, 'examples', 'ct107d');
-  if (!existsSync(resolve(source, 'ct107d.cnv'))) {
-    console.log('components: 未找到 examples/ct107d/ct107d.cnv，跳过 CT107D 画布预览');
-    return;
-  }
-  const devicesRoot = resolve(repository, 'examples', 'devices');
-  if (!existsSync(resolve(devicesRoot, 'dist', 'devices'))) {
-    console.log('components: 未找到 examples/devices/dist，请先构建器件库，跳过 CT107D 预览');
-    return;
-  }
-  const target = resolve(artifacts, 'ct107d');
-  await mkdir(target, { recursive: true });
-  for (const file of ['ct107d.cnv', 'ct107d.sch']) {
-    await cp(resolve(source, file), resolve(target, file));
-  }
-  // 预览使用独立文件名，避免浏览器继续命中旧画布/原理图缓存，也明确固定当前数码管动态显示固件工程。
-  const previewSchematic = 'ct107d-digital-display.sch';
-  const previewCanvas = 'ct107d-digital-display.cnv';
-  const schematic = JSON.parse(readFileSync(resolve(source, 'ct107d.sch'), 'utf8'));
-  writeFileSync(resolve(target, previewSchematic), `${JSON.stringify(schematic, null, 2)}\n`);
-  const canvas = JSON.parse(readFileSync(resolve(source, 'ct107d.cnv'), 'utf8'));
-  canvas.schematic = previewSchematic;
-  writeFileSync(resolve(target, previewCanvas), `${JSON.stringify(canvas, null, 2)}\n`);
-  await cp(resolve(source, 'assets'), resolve(target, 'assets'), { recursive: true });
-  await cp(resolve(devicesRoot, 'dist', 'devices'), resolve(target, 'devices'), {
-    recursive: true,
-  });
-  await cp(resolve(source, 'dist', 'widgets'), resolve(target, 'widgets'), { recursive: true });
-  console.log('components: 已复制 CT107D 的器件、widget、原理图与画布');
+function hasLegacyDevices(directory) {
+  return (
+    directory !== undefined &&
+    CT107D_DEVICE_IDS.every(
+      (id) =>
+        existsSync(resolve(directory, id, 'device.json')) &&
+        existsSync(resolve(directory, id, 'device.js')),
+    )
+  );
 }
 
-try {
+/**
+ * Resolves the historical widget/device inputs of the CT107D playground preview.
+ *
+ * The unified device packages (`examples/devices/dist/<id>/model.js`) are deliberately not
+ * accepted here: the old playground editor loads legacy `device.json` metadata and
+ * `device.js` factories, while a unified package exposes `package.json` and `model.js` with
+ * a different context/event contract. Copying those files into this directory would create
+ * a preview that cannot run.
+ */
+export function ct107dPreviewPlan(root = repository) {
+  const source = resolve(root, 'examples', 'ct107d');
+  const legacySource = resolve(source, 'legacy', 'source');
+  const widgets = resolve(source, 'dist', 'widgets');
+  const assets = resolve(source, 'assets');
+  const legacyDevices = [
+    resolve(source, 'dist', 'devices'),
+    resolve(root, 'examples', 'devices', 'dist', 'devices'),
+    resolve(root, 'examples', 'devices', 'dist'),
+  ].find(hasLegacyDevices);
+  const missing = [];
+  if (!existsSync(resolve(legacySource, 'ct107d.cnv'))) missing.push('legacy/source/ct107d.cnv');
+  if (!existsSync(resolve(legacySource, 'ct107d.sch'))) missing.push('legacy/source/ct107d.sch');
+  if (!existsSync(widgets)) missing.push('dist/widgets');
+  if (!existsSync(assets)) missing.push('assets');
+  if (legacyDevices === undefined)
+    missing.push(
+      'legacy device assets (`dist/devices/<id>/device.json` + `device.js`; ' +
+        '统一器件包的 `model.js` 不能替代)',
+    );
+
+  return {
+    source,
+    legacySource,
+    widgets,
+    assets,
+    legacyDevices,
+    available: missing.length === 0,
+    missing,
+    reason:
+      missing.length === 0
+        ? undefined
+        : `CT107D 旧 widget 预览不可用：${missing.join('、')}。` +
+          '统一器件包只提供 package.json/model.js，旧 playground 需要 legacy device.json/device.js。',
+  };
+}
+
+function unavailableNotice(plan) {
+  return `# CT107D 旧 widget 预览已停用
+
+${plan.reason}
+
+这是一个明确停用状态，不是“未找到就跳过”。请使用正式的新工作台：
+
+- 在仓库根目录运行 \`pnpm --dir examples/ct107d run workbench:dev\`，打开 CT107D v2 工作台；
+- 或在 \`apps/playground\` 运行 \`pnpm run dev:workbench\`，打开新的 workbench 演示。
+
+旧 playground 已不再列出 CT107D 文档入口；本目录的 README 只保留停用原因。不要再从统一器件包伪造 legacy 产物，也不要把它当作 CT107D 宿主。
+`;
+}
+
+/**
+ * Copies the CT107D preview assets into `public/components/ct107d`.
+ *
+ * Returns an explicit status. When the legacy device artifacts are absent the function
+ * writes a README that explains the migration instead of silently skipping (or copying
+ * incompatible unified packages) in the caller.
+ */
+export async function copyCt107d(artifacts, root = repository) {
+  const plan = ct107dPreviewPlan(root);
+  const target = resolve(artifacts, 'ct107d');
+  await rm(target, { recursive: true, force: true });
+  await mkdir(target, { recursive: true });
+
+  if (!plan.available) {
+    await writeFileSync(resolve(target, 'README.md'), unavailableNotice(plan), 'utf8');
+    return { status: 'unavailable', target, reason: plan.reason };
+  }
+
+  const previewSchematic = 'ct107d-digital-display.sch';
+  const previewCanvas = 'ct107d-digital-display.cnv';
+  for (const file of ['ct107d.cnv', 'ct107d.sch']) {
+    await cp(resolve(plan.legacySource, file), resolve(target, file));
+  }
+  const schematic = JSON.parse(readFileSync(resolve(plan.legacySource, 'ct107d.sch'), 'utf8'));
+  writeFileSync(resolve(target, previewSchematic), `${JSON.stringify(schematic, null, 2)}\n`);
+  const canvas = JSON.parse(readFileSync(resolve(plan.legacySource, 'ct107d.cnv'), 'utf8'));
+  canvas.schematic = previewSchematic;
+  writeFileSync(resolve(target, previewCanvas), `${JSON.stringify(canvas, null, 2)}\n`);
+  await cp(plan.assets, resolve(target, 'assets'), { recursive: true });
+  await cp(plan.legacyDevices, resolve(target, 'devices'), { recursive: true });
+  await cp(plan.widgets, resolve(target, 'widgets'), { recursive: true });
+  return { status: 'copied', target };
+}
+
+async function main() {
   if (mode !== 'build' && mode !== 'dev') throw new Error('Usage: components.mjs <dev|build>');
   await bootstrap();
   await run(process.execPath, [cli, 'build', '--root', components]);
@@ -98,7 +194,15 @@ try {
   const artifacts = resolve(app, 'public', 'components');
   await rm(artifacts, { recursive: true, force: true });
   await cp(resolve(components, 'dist'), artifacts, { recursive: true });
-  await copyCt107d(artifacts);
+  const preview = await copyCt107d(artifacts);
+  if (preview.status === 'unavailable') {
+    console.log(`components: ${preview.reason}`);
+    console.log(
+      'components: CT107D 旧预览已明确停用；请使用新工作台（见 public/components/ct107d/README.md）',
+    );
+  } else {
+    console.log('components: 已复制 CT107D 的器件、widget、原理图与画布');
+  }
   if (mode === 'dev') {
     const server = await createServer({ root: app, server: serverOptions(process.argv.slice(3)) });
     await server.listen();
@@ -107,7 +211,13 @@ try {
   } else {
     await build({ root: app });
   }
-} catch (error) {
-  console.error(error);
-  process.exitCode = 1;
+}
+
+const invoked =
+  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invoked) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

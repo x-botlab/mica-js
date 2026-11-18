@@ -20,10 +20,7 @@ export interface IDemoDocument {
   readonly kind: DemoDocumentKind;
   readonly label: string;
   readonly path: string;
-  /**
-   * 仿真步长与目标帧间隔（ms）。8051 扫描仍在仿真内逐指令执行；CT107D 的数码管会锁存
-   * 每一位扫描结果，因此无需每个扫描周期都跨 Worker 更新和重绘画布。
-   */
+  /** 仿真步长与目标帧间隔（ms）；按文档需要配置。 */
   readonly stepMs?: number;
   readonly execution?: 'throughput' | 'precise';
 }
@@ -41,14 +38,6 @@ export const DEMO_DOCUMENTS: readonly IDemoDocument[] = [
     label: '原理图 · example.sch',
     path: 'runtime-demo/example.sch',
   },
-  {
-    id: 'ct107d-canvas',
-    kind: 'canvas',
-    label: '画布 · CT107D 数码管动态显示',
-    path: 'components/ct107d/ct107d-digital-display.cnv',
-    stepMs: 64,
-    execution: 'throughput',
-  },
 ];
 
 export function demoDocument(id: string): IDemoDocument {
@@ -56,8 +45,11 @@ export function demoDocument(id: string): IDemoDocument {
 }
 
 const COMPONENT_ROOT = 'components';
-/** CT107D 示例包的产物由 `scripts/components.mjs` 复制到这里（目录被仓库忽略）。 */
-const CT107D_ROOT = `${COMPONENT_ROOT}/ct107d`;
+/**
+ * The old CT107D v1 widget canvas was removed from this playground. It depended on legacy
+ * `device.json/device.js` assets that the unified device packages do not provide; the
+ * formal CT107D host is `examples/ct107d` (`pnpm run workbench:dev`), not this app.
+ */
 
 interface IDemoAsset {
   readonly metadata: string;
@@ -82,54 +74,12 @@ function componentAssets(
   );
 }
 
-/** CT107D 工程使用自己的包 id `xbotlab`，与示例包 `demo` 并行解析。 */
-function ct107dAssets(
-  category: 'devices' | 'widgets',
-  ids: readonly string[],
-): Readonly<Record<string, IDemoAsset>> {
-  return componentAssets(category, ids, 'xbotlab', CT107D_ROOT);
-}
-
 const DEVICE_ASSETS = {
   ...componentAssets('devices', ['resistor', 'push-button', 'led', 'voltmeter']),
-  ...ct107dAssets('devices', [
-    '74hc02',
-    '74hc138',
-    '74hc573',
-    '74hc14',
-    'at24c02',
-    'buzzer',
-    'cx20106a',
-    'ds1302',
-    'ds18b20',
-    'jumper',
-    'jumper-2x3',
-    'lm386',
-    'ne555',
-    'pcf8591',
-    'push-button',
-    'relay',
-    'uln2003',
-    'ultrasonic',
-    'uart-probe',
-    'vs1838',
-    'seg4',
-    'blue-led',
-    'iap15f2k61s2',
-  ]),
 };
 
 const WIDGET_ASSETS = {
   ...componentAssets('widgets', ['button', 'led-indicator', 'voltmeter']),
-  ...ct107dAssets('widgets', [
-    'button',
-    'segment',
-    'image',
-    'led-indicator',
-    'buzzer',
-    'relay',
-    'jumper',
-  ]),
 };
 
 function assetUri(path: string): string {

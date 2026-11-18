@@ -7,6 +7,8 @@
  * HEAD 用 `git ls-tree` + `git show <commit>:<path>` 导出 `examples/devices` 的统一包根；
  * worktree 复制当前 `examples/devices`。两侧在独立临时目录里逐个单器件项目构建，再把
  * ct107d 的 verify-firmware 指向该构建产物；仅器件源码不同，每次测量是独立子进程。
+ * HEAD 与 worktree 可能处于迁移前后不同的 legacy 输入布局；prepareVariant 会按各自版本
+ * 复制根 schematic/netlist 或 `legacy/source/`，并补齐 `legacy/device-package.mjs`。
  * 该脚本只支持已迁移成 `<id>/package.json` 统一布局的提交；旧 `src/devices` 布局会明确失败。
  * 输出：原始 stdout/stderr、JSON 中位数与轨迹对比；metrics 核验固定固件的 sha/字节数、名与 faults，
  * 以及 execution/clock/tick/warmup/window、原理图摘要和 dist 器件模块摘要。
@@ -37,14 +39,52 @@ import { fileURLToPath } from 'node:url';
 const PROJECT = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
 const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
 const DEVICE_SOURCE = DEVICES_PROJECT;
-const SCHEMATIC = join(PROJECT, 'ct107d.sch');
+const LEGACY_SOURCE = join(PROJECT, 'legacy', 'source');
+const SCHEMATIC = join(LEGACY_SOURCE, 'ct107d.sch');
+const NETLIST = join(LEGACY_SOURCE, 'ct107d.netlist.json');
+const LEGACY_PACKAGE = join(PROJECT, 'legacy', 'device-package.mjs');
 const VERIFY_ENTRY = join(PROJECT, 'verify-firmware.mjs');
 const PROJECT_MODULES = join(DEVICES_PROJECT, 'node_modules');
 const DEVICE_PROJECT_FILES = [[join(DEVICES_PROJECT, 'package.json'), 'package.json']];
-const BOARD_PROJECT_FILES = [
-  [VERIFY_ENTRY, 'verify-firmware.mjs'],
-  [SCHEMATIC, 'ct107d.sch'],
-];
+
+/**
+ * The tracked HEAD may still use the pre-migration layout (root `ct107d.sch`) while the
+ * worktree already has the legacy inputs under `legacy/source/`. Each variant therefore
+ * gets the files its own `verify-firmware.mjs` expects, including `legacy/device-package.mjs`.
+ */
+export const HEAD_BOARD_LAYOUT = Object.freeze({
+  schematic: 'ct107d.sch',
+  boardFiles: [
+    ['examples/ct107d/verify-firmware.mjs', 'verify-firmware.mjs'],
+    ['examples/ct107d/ct107d.sch', 'ct107d.sch'],
+    ['examples/ct107d/ct107d.netlist.json', 'ct107d.netlist.json'],
+  ],
+  legacyTree: 'examples/ct107d/legacy',
+});
+
+export const WORKTREE_BOARD_LAYOUT = Object.freeze({
+  schematic: 'legacy/source/ct107d.sch',
+  boardFiles: [['verify-firmware.mjs', 'verify-firmware.mjs']],
+  legacyTree: 'legacy',
+});
+
+/**
+ * Resolves the board layout of the git baseline. A HEAD taken before the legacy-input
+ * migration has the root schematic/netlist and a `legacy/` helper tree; a later HEAD has
+ * the v1 inputs under `legacy/source/`. The paired bench must not assume either one.
+ */
+export function headBoardLayout(commit) {
+  if (!hasGitPath(commit, 'examples/ct107d/legacy/source/ct107d.sch')) return HEAD_BOARD_LAYOUT;
+  return {
+    schematic: 'legacy/source/ct107d.sch',
+    boardFiles: [
+      ['examples/ct107d/verify-firmware.mjs', 'verify-firmware.mjs'],
+      ['examples/ct107d/legacy/source/ct107d.sch', 'legacy/source/ct107d.sch'],
+      ['examples/ct107d/legacy/source/ct107d.netlist.json', 'legacy/source/ct107d.netlist.json'],
+    ],
+    legacyTree: 'examples/ct107d/legacy',
+  };
+}
 const MAX_BUFFER = 64 * 1024 * 1024;
 const EXECUTION = 'throughput';
 const CLOCK_FREQUENCY = 11_059_200;
@@ -99,8 +139,7 @@ function parseOptions(argv) {
 }
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
-const schematicDigestOf = (variant) =>
-  sha256(readFileSync(join(variant.boardDirectory, 'ct107d.sch')));
+const schematicDigestOf = (variant) => sha256(readFileSync(variant.schematic));
 const round = (value, digits = 3) => Number(value.toFixed(digits));
 const format = (value, digits = 3) => (Number.isFinite(value) ? value.toFixed(digits) : '-');
 
@@ -195,27 +234,69 @@ function exportHeadFile(commit, path, destination, replacements = []) {
   writeFileSync(destination, source);
 }
 
-function prepareVariant(kind, commit, tempRoot) {
+function hasGitPath(commit, path) {
+  try {
+    git(['cat-file', '-e', `${commit}:${path}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Exports one tracked directory from a commit, preserving its relative layout. */
+function exportHeadTree(commit, directory, destination) {
+  const prefix = `${directory}/`;
+  const files = git([
+    'ls-tree',
+    '-r',
+    '--name-only',
+    '--full-name',
+    '-z',
+    commit,
+    '--',
+    `:/${directory}`,
+  ])
+    .split('\0')
+    .filter((path) => path.startsWith(prefix));
+  if (files.length === 0) throw new Error(`提交 ${commit} 中没有目录：${directory}`);
+  for (const path of files) {
+    const target = join(destination, ...path.slice(prefix.length).split('/'));
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, git(['show', `${commit}:${path}`], 'buffer'));
+  }
+}
+
+export function prepareVariant(kind, commit, tempRoot) {
   const directory = join(tempRoot, kind);
   const devicesDirectory = join(directory, 'devices');
   const boardDirectory = join(directory, 'ct107d');
   const destination = devicesDirectory;
+  const layout = kind === 'head' ? headBoardLayout(commit) : WORKTREE_BOARD_LAYOUT;
   mkdirSync(destination, { recursive: true });
   mkdirSync(boardDirectory, { recursive: true });
   if (kind === 'head') {
     exportHeadDevices(commit, destination);
-    exportHeadFile(
-      commit,
-      'examples/ct107d/verify-firmware.mjs',
-      join(boardDirectory, 'verify-firmware.mjs'),
-    );
-    exportHeadFile(commit, 'examples/ct107d/ct107d.sch', join(boardDirectory, 'ct107d.sch'));
+    for (const [source, target] of layout.boardFiles) {
+      if (!hasGitPath(commit, source))
+        throw new Error(`提交 ${commit} 缺少 paired bench 输入：${source}`);
+      exportHeadFile(commit, source, join(boardDirectory, target));
+    }
+    exportHeadTree(commit, layout.legacyTree, join(boardDirectory, 'legacy'));
   } else {
     cpSync(DEVICE_SOURCE, destination, {
       recursive: true,
       filter: (source) => !excluded(basename(source)),
     });
-    for (const [from, to] of BOARD_PROJECT_FILES) cpSync(from, join(boardDirectory, to));
+    for (const [source, target] of layout.boardFiles) {
+      const from = join(PROJECT, source);
+      if (!existsSync(from)) throw new Error(`工作树缺少 paired bench 输入：${from}`);
+      const to = join(boardDirectory, target);
+      mkdirSync(dirname(to), { recursive: true });
+      cpSync(from, to);
+    }
+    const legacy = join(PROJECT, layout.legacyTree);
+    if (!existsSync(legacy)) throw new Error(`工作树缺少 paired bench legacy 目录：${legacy}`);
+    cpSync(legacy, join(boardDirectory, 'legacy'), { recursive: true });
   }
   for (const [from, to] of DEVICE_PROJECT_FILES) cpSync(from, join(devicesDirectory, to));
   cpSync(join(REPO_ROOT, 'tsconfig.base.json'), join(devicesDirectory, 'tsconfig.base.json'));
@@ -230,6 +311,7 @@ function prepareVariant(kind, commit, tempRoot) {
     directory,
     devicesDirectory,
     boardDirectory,
+    schematic: join(boardDirectory, layout.schematic),
   };
 }
 
@@ -508,6 +590,8 @@ function main() {
   const required = [
     DEVICE_SOURCE,
     SCHEMATIC,
+    NETLIST,
+    LEGACY_PACKAGE,
     VERIFY_ENTRY,
     PROJECT_MODULES,
     ...CASES.map((definition) => definition.firmwarePath),
@@ -614,9 +698,13 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (error) {
-  console.error(error instanceof Error ? (error.stack ?? error.message) : error);
-  process.exitCode = 1;
+const invoked =
+  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invoked) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error instanceof Error ? (error.stack ?? error.message) : error);
+    process.exitCode = 1;
+  }
 }
