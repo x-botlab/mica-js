@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>CT107D 控制台</title>
+    <link rel="stylesheet" href="./panel.css" />
+  </head>
+  <body>
+    <main id="app" class="panel" aria-busy="true">
+      <header class="topbar">
+        <div class="identity">
+          <span class="identity-mark" aria-hidden="true">CT</span>
+          <div class="identity-text">
+            <h1>CT107D 控制台</h1>
+            <p id="identity-line" class="identity-line">正在读取器件属性…</p>
+          </div>
+        </div>
+        <p id="connection-state" class="state" data-tone="pending" aria-live="polite">
+          <span class="state-dot" aria-hidden="true"></span>
+          <span id="connection-label">连接中</span>
+        </p>
+      </header>
+
+      <p id="notice" class="notice" role="status" hidden></p>
+
+      <div id="error-banner" class="alert" role="alert" hidden>
+        <span id="error-text"></span>
+        <button id="error-dismiss" class="text-button" type="button">关闭</button>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="控制面板分区">
+        <button
+          type="button"
+          role="tab"
+          id="tab-input"
+          aria-controls="panel-input"
+          aria-selected="true"
+          tabindex="0"
+        >
+          输入
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-assembly"
+          aria-controls="panel-assembly"
+          aria-selected="false"
+          tabindex="-1"
+        >
+          装配
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-serial"
+          aria-controls="panel-serial"
+          aria-selected="false"
+          tabindex="-1"
+        >
+          串口
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-status"
+          aria-controls="panel-status"
+          aria-selected="false"
+          tabindex="-1"
+        >
+          状态
+        </button>
+      </div>
+
+      <section
+        id="panel-input"
+        class="tabpanel"
+        role="tabpanel"
+        aria-labelledby="tab-input"
+        tabindex="0"
+      >
+        <p class="section-lead">
+          下发值、模型回读与实例属性分开显示。写入通过模型方法完成，读取只在初始化和手动刷新时发生。
+        </p>
+        <div id="input-groups"></div>
+      </section>
+
+      <section
+        id="panel-assembly"
+        class="tabpanel"
+        role="tabpanel"
+        aria-labelledby="tab-assembly"
+        tabindex="0"
+        hidden
+      >
+        <p class="section-lead">
+          按键为保持式组合；跳线按真实位置选择。照片热区与这里共用同一模型状态。
+        </p>
+        <div id="assembly-groups"></div>
+      </section>
+
+      <section
+        id="panel-serial"
+        class="tabpanel"
+        role="tabpanel"
+        aria-labelledby="tab-serial"
+        tabindex="0"
+        hidden
+      >
+        <p class="section-lead">
+          字节按模型游标去重：先订阅事件，再补读历史；重叠区段只显示一次。单次发送上限按编码后的 64
+          字节校验，不自动拆包。
+        </p>
+        <div id="serial-status"></div>
+        <div id="serial-send"></div>
+        <div id="serial-logs"></div>
+      </section>
+
+      <section
+        id="panel-status"
+        class="tabpanel"
+        role="tabpanel"
+        aria-labelledby="tab-status"
+        tabindex="0"
+        hidden
+      >
+        <p class="section-lead">
+          状态来自初始快照与后续事件；EEPROM 和 RTC 另有完整读取。没有运行时轮询。
+        </p>
+        <div class="toolbar status-toolbar">
+          <p id="query-time" class="meta">尚未查询</p>
+          <button id="refresh-status" class="button" type="button">重读全部</button>
+        </div>
+        <div id="status-readouts"></div>
+        <div id="eeprom-host"></div>
+        <div id="rtc-host"></div>
+      </section>
+    </main>
+
+    <section id="fatal" class="fatal" role="alert" hidden>
+      <h1>控制面板不可用</h1>
+      <p id="fatal-text">正在连接…</p>
+    </section>
+
+    <noscript>
+      <p class="fatal">控制面板需要启用 JavaScript。</p>
+    </noscript>
+
+    <script type="module" src="./panel.js"></script>
+  </body>
+</html>
