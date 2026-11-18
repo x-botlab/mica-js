@@ -31,7 +31,7 @@ import {
 
 const EXPECTED_FIRMWARE_BYTES = 2_421;
 const EXPECTED_FIRMWARE_SHA256 = 'b15a9f9f4232a70d88d080e2f6336359c701777951685a93177e3264b829bd25';
-const SCHEMATIC_PATH = join(import.meta.dirname, '..', 'ct107d.sch');
+const SCHEMATIC_PATH = join(import.meta.dirname, '..', 'legacy', 'source', 'ct107d.sch');
 /** 超过安全整数上限的预热毫秒值：乘以 1e9 后已无法精确表示。 */
 const UNSAFE_WARMUP_MS = Math.floor(Number.MAX_SAFE_INTEGER / 1_000_000_000) + 1;
 const DISPLAY_PORTS = new Set(['digit1', 'digit2', 'digit3', 'digit4']);

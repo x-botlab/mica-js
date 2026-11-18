@@ -1,5 +1,5 @@
 /**
- * 固件联调：把一个或多个 Intel HEX（或裸 `.bin`）装进 `ct107d.sch` 整板跑联合仿真，
+ * 固件联调：把一个或多个 Intel HEX（或裸 `.bin`）装进 legacy 整板跑联合仿真，
  * 打印板面可观测输出（LED 亮度、数码管段码、锁存器/译码器话题、串行器件话题）。
  *
  * 与 `verify-schematic.mjs` 一样装载 `examples/devices/dist/<id>/model.js`，因此先构建器件库。
@@ -60,6 +60,7 @@ import { TextEncoder } from 'node:util';
 import { loadLegacyDevice, legacyCreateWithFirmware } from './legacy/device-package.mjs';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
+const LEGACY_SOURCE = join(PROJECT, 'legacy', 'source');
 
 const options = {
   ms: 200,
@@ -149,7 +150,7 @@ function parseIntelHex(text) {
   return image;
 }
 
-const schematicText = readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8');
+const schematicText = readFileSync(join(LEGACY_SOURCE, 'ct107d.sch'), 'utf8');
 const schematic = parseSchematic(schematicText);
 
 const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
@@ -195,7 +196,7 @@ const round = (value, digits = 3) => {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
 };
-const netlist = JSON.parse(readFileSync(join(PROJECT, 'ct107d.netlist.json'), 'utf8'));
+const netlist = JSON.parse(readFileSync(join(LEGACY_SOURCE, 'ct107d.netlist.json'), 'utf8'));
 const components = schematic.sheet.symbols
   .filter((symbol) => symbol.designator && symbol.device.startsWith('xbotlab:'))
   .filter(

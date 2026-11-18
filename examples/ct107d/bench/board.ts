@@ -5,14 +5,14 @@ import { pathToFileURL } from 'node:url';
 import { parseSchematic } from '@mica-js/document/schematic';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { DeviceLibraryEntry } from '@mica-js/sdk';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
 import type { DeviceIR } from '@mica-js/sdk/model';
 import type { DeviceContext } from '@mica-js/simulator/device';
+import { adaptModelFactory, firmwareImage } from '../../devices/test/support/legacy-model-bridge.mjs';
 
 /**
  * Test-only discrete oracle: assemble the historical 54-device board plus the J5
  * selector (55 instances) from
- * `ct107d.sch` and `examples/devices/dist/<id>/model.js`.
+ * `legacy/source/ct107d.sch` and `examples/devices/dist/<id>/model.js`.
  *
  * This fixture is intentionally not used by the fused performance benchmark. It keeps
  * the legacy projection so correctness tests can compare the fused device against the
@@ -21,6 +21,9 @@ import type { DeviceContext } from '@mica-js/simulator/device';
 
 const PROJECT = join(import.meta.dirname, '..');
 const DEVICE_ROOT = join(PROJECT, '..', 'devices');
+const LEGACY_SOURCE = join(PROJECT, 'legacy', 'source');
+const SCHEMATIC = join(LEGACY_SOURCE, 'ct107d.sch');
+const NETLIST = join(LEGACY_SOURCE, 'ct107d.netlist.json');
 
 interface Manifest {
   readonly name: string;
@@ -28,7 +31,16 @@ interface Manifest {
   readonly properties?: Readonly<
     Record<
       string,
-      { readonly type?: string; readonly addressSpace?: string; readonly loadAddress?: number }
+      {
+        readonly type?: string;
+        readonly loader?: string;
+        readonly addressSpace?: string;
+        readonly loadAddress?: number;
+        readonly defaults?: {
+          readonly addressSpace?: string;
+          readonly loadAddress?: number;
+        };
+      }
     >
   >;
   readonly pins?: Readonly<Record<string, unknown>>;
@@ -135,6 +147,34 @@ function legacyInputs(manifest: Manifest): Record<string, string> {
   return result;
 }
 
+interface ProgramProperty {
+  readonly name: string;
+  readonly addressSpace: string;
+  readonly loadAddress: number;
+}
+
+/**
+ * Legacy boards only carry plain instance properties. Memory programs and legacy firmware
+ * properties are injected as `MemoryProgram`/`FirmwareImage` at the factory boundary instead.
+ */
+function programProperties(manifest: Manifest): readonly ProgramProperty[] {
+  const programs: ProgramProperty[] = [];
+  for (const [name, property] of Object.entries(manifest.properties ?? {})) {
+    const legacy = property.type === 'firmware';
+    const memoryProgram = property.type === 'program' && property.loader === 'memory';
+    if (!legacy && !memoryProgram) continue;
+    const addressSpace = property.defaults?.addressSpace ?? property.addressSpace;
+    if (addressSpace === undefined)
+      throw new Error(`${manifest.name}.${name}: memory program has no default address space`);
+    programs.push({
+      name,
+      addressSpace,
+      loadAddress: property.defaults?.loadAddress ?? property.loadAddress ?? 0,
+    });
+  }
+  return programs;
+}
+
 function loadDevice(id: string): Promise<DeviceModule> {
   const cached = modules.get(id);
 
@@ -151,28 +191,24 @@ function loadDevice(id: string): Promise<DeviceModule> {
       readonly model: DeviceIR;
       readonly create: (context: DeviceContext) => Adapter;
     };
-    const firmware = Object.entries(manifest.properties ?? {}).filter(
-      ([, property]) => property.type === 'firmware',
-    );
+    const firmware = programProperties(manifest)[0];
     const create = adaptModelFactory(module.create as never, {
       events: legacyEvents(manifest),
       inputs: legacyInputs(manifest),
-      ...(firmware.length === 0
+      ...(firmware === undefined
         ? {}
         : {
             props: (context: DeviceContext) => {
               const props = { ...context.props } as Record<string, unknown>;
-              for (const [name, property] of firmware) {
-                const value = props[name];
-                if (!(value instanceof Uint8Array)) continue;
-                props[name] = firmwareImage([
+              const value = props[firmware.name];
+              if (value instanceof Uint8Array)
+                props[firmware.name] = firmwareImage([
                   {
-                    addressSpace: property.addressSpace!,
-                    address: property.loadAddress!,
+                    addressSpace: firmware.addressSpace,
+                    address: firmware.loadAddress,
                     data: value,
                   },
                 ]);
-              }
               return props;
             },
           }),
@@ -210,13 +246,13 @@ function loadDevice(id: string): Promise<DeviceModule> {
         code: sha256(codeSource),
         definition: sha256(manifestSource),
       },
-      ...(firmware.length === 0
+      ...(firmware === undefined
         ? {}
         : {
             firmware: {
-              name: firmware[0]![0],
-              addressSpace: firmware[0]![1].addressSpace!,
-              loadAddress: firmware[0]![1].loadAddress!,
+              name: firmware.name,
+              addressSpace: firmware.addressSpace,
+              loadAddress: firmware.loadAddress,
             },
           }),
     };
@@ -304,10 +340,11 @@ function describeBoard(): Promise<Description> {
   if (described !== undefined) return described;
 
   described = (async (): Promise<Description> => {
-    const schematic = parseSchematic(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
-    const netlist = JSON.parse(
-      readFileSync(join(PROJECT, 'ct107d.netlist.json'), 'utf8'),
-    ) as Record<string, readonly string[]>;
+    const schematic = parseSchematic(readFileSync(SCHEMATIC, 'utf8'));
+    const netlist = JSON.parse(readFileSync(NETLIST, 'utf8')) as Record<
+      string,
+      readonly string[]
+    >;
     const symbols = schematic.sheet.symbols.filter(
       (symbol) => symbol.designator && symbol.device.startsWith('xbotlab:'),
     );
@@ -432,7 +469,7 @@ export async function createCt107dBoard(options: BoardOptions): Promise<BenchBoa
   );
   const fingerprints: BoardFingerprints = {
     source: 'dist',
-    schematic: sha256(readFileSync(join(PROJECT, 'ct107d.sch'))),
+    schematic: sha256(readFileSync(SCHEMATIC)),
     firmware: sha256(options.firmware),
     models: aggregate(fingerprintEntries.map(([id, item]) => [id, item.model] as const)),
     code: aggregate(fingerprintEntries.map(([id, item]) => [id, item.code] as const)),

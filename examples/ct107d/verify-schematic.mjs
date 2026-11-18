@@ -1,5 +1,5 @@
 /**
- * 校验 ct107d.sch：
+ * 校验 legacy/source/ct107d.sch：
  * 1. 解析 → 折网表 → 与 ct107d.netlist.json 逐网络对照；
  * 2. 按原理图建板跑 1 ms，确认所有器件能初始化；
  * 3. 装一段固件走完 `P2 → 74HC138 → 74HC02 → 74HC573 → LED` 链路，确认 D1 点亮、D2–D8 熄灭；
@@ -28,12 +28,13 @@ import { legacyDeviceSymbol, loadDevicePackage } from './legacy/schematic-metada
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
 const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
+const LEGACY_SOURCE = join(PROJECT, 'legacy', 'source');
 const MCU_REF = 'xbotlab:iap15f2k61s2';
 const LED_REF = 'xbotlab:blue-led';
 const DISPLAY_REF = 'xbotlab:seg4';
 const IR_EMITTER_REF = 'xbotlab:ir-emitter';
 
-const schematic = parseSchematic(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
+const schematic = parseSchematic(readFileSync(join(LEGACY_SOURCE, 'ct107d.sch'), 'utf8'));
 const components = schematic.sheet.symbols.filter((symbol) => symbol.designator);
 
 /** 原理图引用 → 统一器件包（清单 + 旧模型桥 + 合成符号）。 */
@@ -104,7 +105,7 @@ for (let left = 0; left < bodies.length; left += 1) {
 }
 
 const expected = new Map(
-  Object.entries(JSON.parse(readFileSync(join(PROJECT, 'ct107d.netlist.json'), 'utf8'))),
+  Object.entries(JSON.parse(readFileSync(join(LEGACY_SOURCE, 'ct107d.netlist.json'), 'utf8'))),
 );
 for (const [name, members] of expected) {
   const found = actual.get(name);

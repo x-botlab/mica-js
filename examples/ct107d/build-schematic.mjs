@@ -1,18 +1,19 @@
 /**
- * 从 PDF 网表生成 CT107D 原理图（只保留器件库已交付的引脚与内建电源/地/网标）。
+ * 从 PDF 网表生成 legacy v1 原理图（只保留器件库已交付的引脚与内建电源/地/网标）。
  * 器件来自 `examples/devices/dist/<id>/package.json`，旧 `.sch v1` 的符号按引脚集合合成。
- * 先运行 `pnpm --filter @mica-js/example-devices build`；产物是 ct107d.sch 与
- * ct107d.netlist.json。
+ * 先运行 `pnpm --filter @mica-js/example-devices build`；产物写入
+ * `legacy/source/ct107d.sch` 与 `legacy/source/ct107d.netlist.json`，不是正式 v2 文档。
  */
 import { createHash } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { legacyDeviceSymbol, loadDevicePackage } from './legacy/schematic-metadata.mjs';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
 const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
-const OUTPUT = join(PROJECT, 'ct107d.sch');
+const LEGACY_SOURCE = join(PROJECT, 'legacy', 'source');
+const OUTPUT = join(LEGACY_SOURCE, 'ct107d.sch');
 
 const MCU_REF = 'xbotlab:iap15f2k61s2';
 const LED_REF = 'xbotlab:blue-led';
@@ -668,6 +669,7 @@ for (const placement of PLACEMENTS) {
 }
 
 const document = { version: 1, sheet: { symbols: sheetSymbols, wires: sheetWires, junctions: [] } };
+mkdirSync(LEGACY_SOURCE, { recursive: true });
 writeFileSync(OUTPUT, `${JSON.stringify(document, null, 2)}\n`);
 
 const netlist = Object.fromEntries(
@@ -676,7 +678,10 @@ const netlist = Object.fromEntries(
     members.map(([designator, pin]) => `${designator}.${pin}`).sort(),
   ]),
 );
-writeFileSync(join(PROJECT, 'ct107d.netlist.json'), `${JSON.stringify(netlist, null, 2)}\n`);
+writeFileSync(
+  join(LEGACY_SOURCE, 'ct107d.netlist.json'),
+  `${JSON.stringify(netlist, null, 2)}\n`,
+);
 
 // ---- 自检 -------------------------------------------------------------------------------
 const unplaced = [];

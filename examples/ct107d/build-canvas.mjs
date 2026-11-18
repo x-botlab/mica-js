@@ -6,18 +6,20 @@
  * - 4 个独立按键（S7/S6/S5/S4）在 x≈143 的一列，3×4 矩阵键盘在 x≈202/261/320，
  *   行 y≈491/539/588/637，复位键 S1 在 (379, 540)。
  *
- * 每个按键/数码管的绑定端点按位号从 `ct107d.sch` 里查 symbol id，因此重新生成原理图后
- * 只要位号不变，画布仍然有效。产物只有 ct107d.cnv，脚本本身可重复执行。
+ * 每个按键/数码管的绑定端点按位号从 `legacy/source/ct107d.sch` 里查 symbol id，因此重新
+ * 生成原理图后只要位号不变，画布仍然有效。产物只有 `legacy/source/ct107d.cnv`，脚本本身
+ * 可重复执行。
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
-const OUTPUT = join(PROJECT, 'ct107d.cnv');
+const LEGACY_SOURCE = join(PROJECT, 'legacy', 'source');
+const OUTPUT = join(LEGACY_SOURCE, 'ct107d.cnv');
 const PACKAGE = 'xbotlab';
 const BOARD = { width: 1068, height: 768 };
-const IMAGE = 'assets/ct107d-board.webp';
+const IMAGE = '../../assets/ct107d-board.webp';
 
 /** 按键热区：位号 → 中心点（照片像素）。 */
 const KEYS = [
@@ -71,7 +73,7 @@ const RELAYS = [['K1', 806, 389, 88, 62]];
 const JUMPERS = [['J13', 310, 406, 42, 72]];
 const HEADERS = [['J2', 596, 168, 76, 64]];
 
-const schematic = JSON.parse(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
+const schematic = JSON.parse(readFileSync(join(LEGACY_SOURCE, 'ct107d.sch'), 'utf8'));
 const symbols = new Map(
   schematic.sheet.symbols
     .filter((symbol) => typeof symbol.designator === 'string')

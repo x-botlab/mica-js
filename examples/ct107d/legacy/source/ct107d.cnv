@@ -12,7 +12,7 @@
       "rotation": 0,
       "properties": {
         "image": {
-          "src": "assets/ct107d-board.webp",
+          "src": "../../assets/ct107d-board.webp",
           "mode": "file"
         }
       }

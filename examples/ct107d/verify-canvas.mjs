@@ -1,5 +1,5 @@
 /**
- * 校验 `ct107d.cnv`：
+ * 校验 `legacy/source/ct107d.cnv`：
  * 1. 画布能被 `parseCanvas` 解析，widget 定义通过 SDK 校验，绑定端点全部落在 `ct107d.sch` 上；
  * 2. 摆放与 `assets/ct107d-board.webp`（1068×768）对得上：背景图铺满整块板，17 个按键各自
  *    压在照片里的按键上且互不重叠，两片数码管盖住两个黑色窗口；
@@ -29,13 +29,14 @@ import {
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
 const DEVICES_PROJECT = join(PROJECT, '..', 'devices');
+const LEGACY_SOURCE = join(PROJECT, 'legacy', 'source');
 const BOARD_IMAGE = join(PROJECT, 'assets', 'ct107d-board.webp');
 const failures = [];
 const fail = (message) => failures.push(message);
 
 // ---- 1. 文档与定义 ----------------------------------------------------------------------
-const canvas = parseCanvas(readFileSync(join(PROJECT, 'ct107d.cnv'), 'utf8'));
-const schematic = parseSchematic(readFileSync(join(PROJECT, 'ct107d.sch'), 'utf8'));
+const canvas = parseCanvas(readFileSync(join(LEGACY_SOURCE, 'ct107d.cnv'), 'utf8'));
+const schematic = parseSchematic(readFileSync(join(LEGACY_SOURCE, 'ct107d.sch'), 'utf8'));
 
 /** 器件引用 → 统一器件包：清单、旧端口投影与合成符号。 */
 const devices = new Map();
@@ -141,7 +142,7 @@ if (size === undefined) fail('无法读取 ct107d-board.webp 的像素尺寸');
 if (image !== undefined) {
   const property = image.properties?.image;
   if (property?.mode !== 'file') fail('背景图应使用 file 模式的资源引用');
-  if (property?.src !== 'assets/ct107d-board.webp')
+  if (property?.src !== '../../assets/ct107d-board.webp')
     fail(`背景图 src ${property?.src} 不指向板面照片`);
   if (!existsSync(BOARD_IMAGE)) fail('缺少 assets/ct107d-board.webp');
   if (size && (image.width !== size.width || image.height !== size.height)) {
@@ -429,7 +430,7 @@ globalThis.createImageBitmap ??= async () => ({ width: 1068, height: 768, close(
 const imageMount = mount('xbotlab:image', {
   width: 1068,
   height: 768,
-  props: { image: { src: 'assets/ct107d-board.webp', mode: 'file' } },
+  props: { image: { src: '../../assets/ct107d-board.webp', mode: 'file' } },
 });
 await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
 const imageContext = createCanvas();
