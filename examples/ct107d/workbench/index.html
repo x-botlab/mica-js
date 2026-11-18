@@ -15,8 +15,18 @@
       </div>
       <div class="actions">
         <span id="status" class="status" role="status" aria-live="polite">正在准备…</span>
-        <button id="save" class="button primary" type="button">保存</button>
-        <button id="reopen" class="button" type="button">重新打开</button>
+        <button
+          id="save"
+          class="button primary"
+          type="button"
+          title="工作台尚未装载完成"
+          disabled
+        >
+          保存
+        </button>
+        <button id="reopen" class="button" type="button" title="请先保存当前文档" disabled>
+          重新打开
+        </button>
         <button id="restore" class="button" type="button">恢复演示</button>
       </div>
     </header>

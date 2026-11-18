@@ -12,6 +12,13 @@ export interface CatalogEntry {
 const INTEGRITY = /^sha256:[0-9a-f]{64}$/;
 const DIRECTORY = /^[a-z][a-z0-9-]*$/;
 const DEVICE_ID = /^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*$/;
+const HTML_HEAD = new TextDecoder();
+
+/** Detects Vite's HTML-entry fallback on a response that should have been JSON or a document. */
+export function looksLikeHtml(bytes: Uint8Array): boolean {
+  const head = HTML_HEAD.decode(bytes.subarray(0, 96)).trimStart().toLowerCase();
+  return head.startsWith('<!doctype html') || head.startsWith('<html');
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

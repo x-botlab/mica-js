@@ -42,8 +42,8 @@ pnpm --filter @mica-js/example-ct107d workbench:preview
 | `build:fused` | 构建 MCU、生成融合模型并 `mica build --root device`，输出 `device/dist` |
 | `build:workbench` | 复制锁定的器件包/文档/View 环境并 Vite 构建宿主到 `workbench/dist` |
 | `workbench:dev` | 先 `build:fused`，再启动 Vite 开发服务器（5180） |
-| `workbench:preview` | 重新准备静态产物并启动 Vite preview（5181） |
-| `workbench:prepare` | 只生成 `workbench/public/{device,environment,ct107d.sch,catalog.json}` |
+| `workbench:preview` | 只服务已构建的 `workbench/dist`（5181）；不改写 `public/` |
+| `workbench:prepare` | 原子同步 `workbench/public/{device,environment,ct107d.sch,catalog.json}` |
 | `check:document` | 校验正式 v2 文档的锁、实例、电源参考和固件资源；不写文件 |
 | `document:init` | 显式创建正式文档；已存在时拒绝覆盖 |
 | `document:lock` | 只刷新 `dependencies`，保留其它用户编辑（原子写） |
@@ -129,15 +129,28 @@ pnpm --filter @mica-js/example-ct107d workbench:preview
   状态报告为成功；
 - `pagehide` 捕获当前/进行中的文档并释放；bfcache 的 `pageshow` 会恢复同一文档，而不是
   留下一个 inert 页面；
-- 错误显示在宿主顶部错误条，同时工作台诊断事件也进入同一错误条。
+- 无 session 时 `保存`/`重新打开`禁用；无本地草稿时 `重新打开`保持禁用并显示“请先保存”，
+  初始状态显示“未修改 · 无本地保存”，不再冒充“已保存”；
+- 本地草稿可用性与文档 dirty 是两个独立状态；保存成功刷新可用态，`storage` 事件同步其它
+  tab 的清空/写入，读取失败显式报错且不会假启用；
+- 错误显示在宿主顶部错误条；缺少草稿/缺少 session 这类前置条件用正常状态提示，不伪装成
+  工作台故障。损坏草稿或读取异常仍显示错误。
 
 宿主只提供包内固件资源，不实现资产库或程序项目 Provider；需要这些来源时应补宿主
 Provider，而不是在模型或文档里绕过校验。视图布局、保存/重开属于宿主能力；HTML View 的
 容器、面板和 View2D 的交互分别由器件展示代码与编辑器负责。
 
-浏览器验收边界：当前自动化测试不启动浏览器，也不断言截图、缩放/旋转、bfcache 实际行为、
-多指按键或面板视觉效果；这些需要人工打开 dev/preview 验证。已验证的是文档/包校验、宿主
-session 状态机（mock create）、无头运行时与 legacy oracle。
+浏览器验收边界：默认 vitest 不启动浏览器；本次修复另用真实 headless Chromium 跑过空
+storage → 禁用 → 保存 → 可用 → 重开 → 单一 workbench → 跨 tab 清空 → 重新保存的状态链，
+但截图/缩放旋转/bfcache 实际行为、多指按键和面板视觉仍需人工打开 dev/preview 复核。
+自动化仓库测试覆盖文档/包校验、宿主 session 状态机（mock create）、无头运行时与 legacy
+oracle。
+
+`workbench:prepare` 不再删除整个 `workbench/public`：它只原子替换内容发生变化的生成文件，
+保留 public 根目录与未变化文件，因此并行运行的 Vite dev 不会在目录重建窗口把
+`/catalog.json`、`/ct107d.sch` 回退成 HTML。`workbench:preview` 只服务已构建的
+`workbench/dist`，不再改写 `public/`。宿主对 catalog 与 v2 文档会检测 HTML fallback 并给出
+带路径的诊断，不会把 HTML 首页当成 JSON/文档继续解析。
 
 ## 无头运行时
 

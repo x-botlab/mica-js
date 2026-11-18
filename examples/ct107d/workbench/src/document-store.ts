@@ -30,6 +30,11 @@ export class DocumentStore {
     this.#storage.setItem(this.#key, JSON.stringify(document));
   }
 
+  /** Whether a draft key exists; a corrupt value still counts and is reported by `load`. */
+  hasDraft(): boolean {
+    return this.#storage.getItem(this.#key) !== null;
+  }
+
   /** Returns the saved document, or `undefined` when no draft exists. */
   load(): FusedDocument | undefined {
     const text = this.#storage.getItem(this.#key);

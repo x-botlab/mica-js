@@ -115,6 +115,87 @@ describe('host session controller', () => {
     expect(first.save).toHaveBeenCalledTimes(2);
   });
 
+  it('does not cancel an in-flight initial open when reopen finds no draft', async () => {
+    const test = harness();
+    const source = document();
+    const gate = deferred<FakeSession>();
+    const started = deferred<void>();
+    let saveDocument: SessionCallback | undefined;
+    test.setHook((value, callback) => {
+      expect(value).toBe(source);
+      saveDocument = callback;
+      started.resolve(undefined);
+      return gate.promise;
+    });
+    const opening = test.controller.open(source, '演示');
+    await started.promise;
+    const reopening = test.controller.reopen(() => undefined);
+    const saving = test.controller.save();
+    const session = test.create(source, saveDocument!);
+    gate.resolve(session);
+    await opening;
+    await expect(reopening).rejects.toMatchObject({ code: 'host/no-draft' });
+    await saving;
+    expect(test.controller.current).toBe(session);
+    expect(session.dispose).not.toHaveBeenCalled();
+    expect(session.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cancel an in-flight initial open when the draft is corrupt', async () => {
+    const test = harness();
+    const source = document();
+    const gate = deferred<FakeSession>();
+    const started = deferred<void>();
+    let saveDocument: SessionCallback | undefined;
+    test.setHook((value, callback) => {
+      expect(value).toBe(source);
+      saveDocument = callback;
+      started.resolve(undefined);
+      return gate.promise;
+    });
+    const opening = test.controller.open(source, '演示');
+    await started.promise;
+    const reopening = test.controller.reopen(() => {
+      throw new Error('corrupt draft');
+    });
+    const saving = test.controller.save();
+    const session = test.create(source, saveDocument!);
+    gate.resolve(session);
+    await opening;
+    await expect(reopening).rejects.toThrow('corrupt draft');
+    await saving;
+    expect(test.controller.current).toBe(session);
+    expect(session.dispose).not.toHaveBeenCalled();
+  });
+
+  it('lets a later open win over a queued successful reopen', async () => {
+    const test = harness();
+    const a = document();
+    const b = document();
+    const c = document();
+    const gate = deferred<FakeSession>();
+    const started = deferred<void>();
+    let saveDocument: SessionCallback | undefined;
+    test.setHook((value, callback) => {
+      if (value !== a) return Promise.resolve(test.create(value, callback));
+      saveDocument = callback;
+      started.resolve(undefined);
+      return gate.promise;
+    });
+    const openingA = test.controller.open(a, 'A');
+    await started.promise;
+    const reopeningB = test.controller.reopen(() => b);
+    const openingC = test.controller.open(c, 'C');
+    const sessionA = test.create(a, saveDocument!);
+    gate.resolve(sessionA);
+    await openingA;
+    await reopeningB;
+    await openingC;
+    expect(sessionA.dispose).toHaveBeenCalledTimes(1);
+    expect(test.controller.current?.documentValue).toBe(c);
+    expect(test.sessions.some((session) => session.documentValue === b)).toBe(false);
+  });
+
   it('rejects saving through a replaced session and saves the new one', async () => {
     const test = harness();
     await test.controller.open(document(), '演示');

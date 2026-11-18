@@ -7,7 +7,8 @@
  * a catalog of locked package files. It never writes the tracked document; the browser draft lives
  * in localStorage and "恢复演示" reloads the tracked copy.
  */
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build as viteBuild, createServer, preview as vitePreview } from 'vite';
@@ -27,36 +28,101 @@ const USAGE = `Usage: node scripts/workbench.mjs <prepare|dev|build|preview>
   prepare   copy device/dist, ct107d.sch and the view environment into workbench/public
   dev       prepare, then start Vite at http://127.0.0.1:5180/
   build     prepare, then build the host into workbench/dist
-  preview   serve the built host at http://127.0.0.1:5181/`;
+  preview   serve the built host at http://127.0.0.1:5181/ (does not rewrite public)`;
+
+/** Relative POSIX paths of every regular file below `root`. */
+async function filesUnder(root, prefix = '') {
+  const entries = await readdir(join(root, prefix), { withFileTypes: true });
+  const files = [];
+  for (const entry of entries.sort((left, right) => (left.name < right.name ? -1 : 1))) {
+    const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) files.push(...(await filesUnder(root, path)));
+    else if (entry.isFile()) files.push(path);
+    else throw new Error(`Generated output contains a non-regular file: ${path}`);
+  }
+  return files;
+}
+
+/** Writes only changed bytes, through a same-directory temporary and an atomic rename. */
+async function writeIfChanged(path, bytes) {
+  let current;
+  try {
+    current = await readFile(path);
+  } catch (cause) {
+    if (cause?.code !== 'ENOENT') throw cause;
+  }
+  if (current !== undefined && current.equals(bytes)) return false;
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, bytes, { flag: 'wx' });
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+  return true;
+}
+
+/**
+ * Mirrors one generated directory without removing the watched public root.
+ *
+ * Keeping `public/` itself and unchanged files in place means a running Vite dev server never
+ * falls back from a momentarily missing `catalog.json`/`.sch` to its HTML entry.
+ */
+async function syncDirectory(source, target) {
+  const desired = new Set();
+  let written = 0;
+  for (const path of await filesUnder(source)) {
+    desired.add(path);
+    if (await writeIfChanged(join(target, ...path.split('/')), await readFile(join(source, ...path.split('/'))))) {
+      written += 1;
+    }
+  }
+  for (const path of await filesUnder(target).catch((cause) => {
+    if (cause?.code === 'ENOENT') return [];
+    throw cause;
+  })) {
+    if (!desired.has(path)) {
+      await rm(join(target, ...path.split('/')), { force: true });
+      written += 1;
+    }
+  }
+  return written;
+}
 
 async function prepare() {
   const release = await readRelease(DEVICE_DIST);
   const documentText = await readFile(DOCUMENT_PATH, 'utf8');
   const document = await verifyDocument(documentText, release);
 
-  await rm(PUBLIC, { recursive: true, force: true });
   await mkdir(PUBLIC, { recursive: true });
-  await cp(DEVICE_DIST, join(PUBLIC, 'device'), { recursive: true });
   try {
-    await cp(VIEW_ENVIRONMENT, join(PUBLIC, 'environment'), { recursive: true });
-  } catch (cause) {
+    await stat(join(VIEW_ENVIRONMENT, 'index.html'));
+  } catch {
     throw new Error(
-      `Cannot copy the HTML-view environment from ${VIEW_ENVIRONMENT}. ` +
-        `Build @mica-js/editor first.\n${cause instanceof Error ? cause.message : String(cause)}`,
+      `Cannot copy the HTML-view environment from ${VIEW_ENVIRONMENT}. Build @mica-js/editor first.`,
     );
   }
-  await writeFile(join(PUBLIC, 'ct107d.sch'), documentText);
-  await writeFile(
-    join(PUBLIC, 'catalog.json'),
-    `${JSON.stringify(
-      [{ lock: release.lock, files: release.files, directory: 'device' }],
-      null,
-      2,
-    )}\n`,
-  );
+  const written =
+    (await syncDirectory(DEVICE_DIST, join(PUBLIC, 'device'))) +
+    (await syncDirectory(VIEW_ENVIRONMENT, join(PUBLIC, 'environment'))) +
+    Number(await writeIfChanged(join(PUBLIC, 'ct107d.sch'), Buffer.from(documentText))) +
+    Number(
+      await writeIfChanged(
+        join(PUBLIC, 'catalog.json'),
+        Buffer.from(
+          `${JSON.stringify(
+            [{ lock: release.lock, files: release.files, directory: 'device' }],
+            null,
+            2,
+          )}\n`,
+        ),
+      ),
+    );
   console.log(
     `workbench: prepared ${release.lock.id}@${release.lock.version} ` +
-      `(${document.instances.length} instance, ${Object.keys(release.files).length} files)`,
+      `(${document.instances.length} instance, ${Object.keys(release.files).length} files, ` +
+      `${written} file${written === 1 ? '' : 's'} changed)`,
   );
 }
 
@@ -69,20 +135,25 @@ async function main(argv) {
   if (!['prepare', 'dev', 'build', 'preview'].includes(command)) {
     throw new Error(`Unknown command ${command}\n\n${USAGE}`);
   }
-  await prepare();
-  if (command === 'prepare') return 0;
-  if (command === 'build') {
-    await viteBuild({ root: APP, configFile: join(APP, 'vite.config.ts') });
-    console.log('workbench: built workbench/dist');
-    return 0;
-  }
   if (command === 'preview') {
+    try {
+      await stat(join(APP, 'dist', 'index.html'));
+    } catch {
+      throw new Error('workbench/dist is missing; run `node scripts/workbench.mjs build` first.');
+    }
     const server = await vitePreview({
       root: APP,
       configFile: join(APP, 'vite.config.ts'),
       preview: { host: '127.0.0.1', port: 5181, strictPort: true },
     });
     server.printUrls();
+    return 0;
+  }
+  await prepare();
+  if (command === 'prepare') return 0;
+  if (command === 'build') {
+    await viteBuild({ root: APP, configFile: join(APP, 'vite.config.ts') });
+    console.log('workbench: built workbench/dist');
     return 0;
   }
   const server = await createServer({

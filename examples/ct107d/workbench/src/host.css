@@ -115,9 +115,16 @@ body {
   cursor: pointer;
 }
 
-.button:hover {
+.button:hover:not(:disabled) {
   border-color: #3b5b63;
   background: #132025;
+}
+
+.button:disabled {
+  border-color: #1b2a30;
+  background: #0b1114;
+  color: #5c6f70;
+  cursor: not-allowed;
 }
 
 .button:focus-visible {

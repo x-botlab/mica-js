@@ -1,6 +1,6 @@
 import { parseFusedDocument } from '@mica-js/document/fused';
 import { describe, expect, it } from 'vitest';
-import { packageFileUrl, parseCatalog } from '../workbench/src/catalog';
+import { looksLikeHtml, packageFileUrl, parseCatalog } from '../workbench/src/catalog';
 import { DOCUMENT_STORAGE_KEY, DocumentStore } from '../workbench/src/document-store';
 import { WORKBENCH_STEP, WORKBENCH_STEP_MS } from '../workbench/src/runtime-config';
 import { SerialQueue } from '../workbench/src/serial-queue';
@@ -94,6 +94,16 @@ describe('workbench browser draft', () => {
       setItem: () => {},
     });
     expect(() => store.load()).toThrow();
+  });
+});
+
+describe('workbench response diagnostics', () => {
+  it('detects an HTML entry fallback before JSON/document parsing', () => {
+    const encoder = new TextEncoder();
+    expect(looksLikeHtml(encoder.encode('<!doctype html>\n<html>'))).toBe(true);
+    expect(looksLikeHtml(encoder.encode('\n  <html lang="zh-CN">'))).toBe(true);
+    expect(looksLikeHtml(encoder.encode('{"version":2}'))).toBe(false);
+    expect(looksLikeHtml(encoder.encode('{\n  "version": 2\n}'))).toBe(false);
   });
 });
 
