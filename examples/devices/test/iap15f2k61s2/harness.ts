@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import { adaptModelFactory, firmwareImage } from '../support/legacy-model-bridge.mjs';
 import { createDeviceBuilder, types, validateDeviceIR } from '@mica-js/sdk/model';
 import type { DeviceIR } from '@mica-js/sdk/model';
 

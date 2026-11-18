@@ -1,7 +1,8 @@
 {
   "extends": "./.mica/tsconfig.json",
   "compilerOptions": {
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
   },
   "include": ["src", "scripts", "test", "bench", "mica.config.ts", "vitest.config.ts"]
 }

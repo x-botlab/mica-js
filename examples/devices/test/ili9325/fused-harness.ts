@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import { adaptModelFactory, firmwareImage } from '../support/legacy-model-bridge.mjs';
 import type { DeviceContext, JitTranslate } from '@mica-js/sdk/device';
 import {
   assembleFrames,

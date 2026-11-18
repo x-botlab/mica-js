@@ -1,4 +1,4 @@
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 
 /**
  * 缓存滑臂位置与最近一次有效电压。公共方法同步校验位置并投递到 DDL；电压只在

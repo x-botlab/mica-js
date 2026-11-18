@@ -1,4 +1,4 @@
-import { firmwareImage } from '@mica-js/sdk/device';
+import { firmwareImage } from '../support/legacy-model-bridge.mjs';
 import { loadSourceDevice, type DeviceModule } from '../harness.ts';
 
 /**

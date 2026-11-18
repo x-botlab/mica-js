@@ -45,7 +45,7 @@ async function createProbeModule(): Promise<DeviceModule> {
     publisher: 'test',
     name: 'lm324-analog-probe',
     version: '0.0.0',
-    engines: { mica: '^0.3.0' },
+    engines: { mica: '^1.0.0' },
     displayName: 'LM324 测试模拟探针',
     model: { entry: 'model.js', types: {}, methods: {}, events: {} },
   };

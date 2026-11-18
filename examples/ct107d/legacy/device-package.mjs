@@ -10,7 +10,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import {
+  adaptModelFactory,
+  firmwareImage,
+} from '../../devices/test/support/legacy-model-bridge.mjs';
 
 /** 旧画布使用的输入端口名 -> 统一模型方法名。 */
 const INPUT_ALIASES = {
@@ -53,11 +56,34 @@ export function legacyInputs(manifest) {
   return inputs;
 }
 
-/** 旧板只接受字节属性；统一模型需要 FirmwareImage，按清单默认空间包装。 */
+/** 旧板只接受字节属性；统一模型需要 MemoryProgram，按清单默认空间包装。 */
 export function firmwareProperties(manifest) {
-  return Object.entries(manifest.properties ?? {}).filter(
-    ([, property]) => property?.type === 'firmware',
-  );
+  const programs = Object.entries(manifest.properties ?? {}).flatMap(([name, property]) => {
+    const legacy = property?.type === 'firmware';
+    const memory = property?.type === 'program' && property?.loader === 'memory';
+    if (!legacy && !memory) return [];
+    const addressSpace = property?.defaults?.addressSpace ?? property?.addressSpace;
+    if (addressSpace === undefined)
+      throw new Error(`${manifest.name}.${name}: memory program has no default address space`);
+    return [
+      [
+        name,
+        {
+          addressSpace,
+          loadAddress: property?.defaults?.loadAddress ?? property?.loadAddress ?? 0,
+        },
+      ],
+    ];
+  });
+  // The legacy factory injects exactly one firmware resource per instance. Reject rather than
+  // silently dropping additional memory programs.
+  if (programs.length > 1)
+    throw new Error(
+      `${manifest.name}: the legacy bridge supports one memory program, got [${programs
+        .map(([name]) => name)
+        .join(', ')}]`,
+    );
+  return programs;
 }
 
 function adaptProps(manifest) {
@@ -65,13 +91,13 @@ function adaptProps(manifest) {
   if (firmware.length === 0) return undefined;
   return (context) => {
     const props = { ...context.props };
-    for (const [name, property] of firmware) {
+    for (const [name, program] of firmware) {
       const value = props[name];
       if (!(value instanceof Uint8Array)) continue;
       props[name] = firmwareImage([
         {
-          addressSpace: property.addressSpace,
-          address: property.loadAddress,
+          addressSpace: program.addressSpace,
+          address: program.loadAddress,
           data: value,
         },
       ]);
@@ -131,12 +157,12 @@ export async function loadLegacyDevice(root, id) {
  * instance props are validated against the DDL and therefore cannot carry `firmware`.
  */
 export function legacyCreateWithFirmware(device, bytes) {
-  const [name, property] = firmwareProperties(device.manifest)[0] ?? [];
-  if (name === undefined || property === undefined) return device.module.create;
+  const [name, program] = firmwareProperties(device.manifest)[0] ?? [];
+  if (name === undefined || program === undefined) return device.module.create;
   const image = firmwareImage([
     {
-      addressSpace: property.addressSpace,
-      address: property.loadAddress,
+      addressSpace: program.addressSpace,
+      address: program.loadAddress,
       data: bytes,
     },
   ]);

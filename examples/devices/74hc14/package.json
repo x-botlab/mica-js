@@ -5,7 +5,7 @@
   "description": "六路独立施密特触发反相器，Y = !A。输入高于正向阈值判为高，低于负向阈值判为低；处于两者之间时保持上一次状态。零传播延迟、无毛刺、无电源电流；悬空输入按低处理。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "74HC14 六施密特触发反相器",
   "designatorPrefix": "U",

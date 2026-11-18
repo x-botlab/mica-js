@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
 import type { DeviceIR } from '@mica-js/sdk/model';
+import { adaptModelFactory, firmwareImage } from '../../devices/test/support/legacy-model-bridge.mjs';
 
 /**
  * Fused CT107D fixture. This is the formal `device/dist` artifact: one model, one
@@ -15,7 +15,7 @@ import type { DeviceIR } from '@mica-js/sdk/model';
 const PROJECT = join(import.meta.dirname, '..');
 const ARTIFACT = join(PROJECT, 'device', 'dist', 'model.js');
 const MANIFEST = join(PROJECT, 'device', 'dist', 'package.json');
-const SCHEMATIC = join(PROJECT, 'ct107d.sch');
+const SCHEMATIC = join(PROJECT, 'legacy', 'source', 'ct107d.sch');
 const GENERATED_MODEL = join(PROJECT, 'device', 'src', 'model.ddl');
 
 const sha256 = (bytes: string | Uint8Array): string =>
@@ -29,6 +29,21 @@ interface ArtifactModule {
     dispose(): void;
   };
 }
+
+interface ArtifactManifest {
+  readonly model?: {
+    readonly events?: Readonly<Record<string, unknown>>;
+  };
+}
+
+/** Legacy topics of every declared model event; a manifest drift must fail instead of no-op. */
+const EVENT_TOPICS = Object.freeze({
+  onDidSignal: 'signal',
+  onDidBytes: 'bytes',
+  onDidUart1Tx: 'uart1.tx',
+  onDidUart1Rx: 'uart1.rx',
+  onDidAmplifier: 'amplifier.event',
+});
 
 export interface FusedFingerprints {
   readonly source: 'dist';
@@ -80,6 +95,15 @@ let artifactPromise: Promise<ArtifactModule> | undefined;
 
 function loadArtifact(): Promise<ArtifactModule> {
   artifactPromise ??= (async () => {
+    const manifest = JSON.parse(readFileSync(MANIFEST, 'utf8')) as ArtifactManifest;
+    const declared = Object.keys(manifest.model?.events ?? {}).sort();
+    const mapped = Object.keys(EVENT_TOPICS).sort();
+    if (declared.join('\0') !== mapped.join('\0')) {
+      throw new Error(
+        `${MANIFEST}: bridge event drift; manifest declares [${declared.join(', ')}] ` +
+          `but the fixture maps [${mapped.join(', ')}]`,
+      );
+    }
     const imported = (await import(pathToFileURL(ARTIFACT).href)) as ArtifactModule;
     if (imported.model === undefined || imported.create === undefined)
       throw new Error(`${ARTIFACT} must export both \`model\` and \`create\``);
@@ -101,13 +125,7 @@ export async function createFusedCt107dBoard(options: FusedBoardOptions): Promis
         { addressSpace: 'code', address: 0, data: options.firmware.slice() },
       ]),
     }),
-    events: {
-      onDidSignal: 'signal',
-      onDidBytes: 'bytes',
-      onDidUart1Tx: 'uart1.tx',
-      onDidUart1Rx: 'uart1.rx',
-      onDidAmplifier: 'amplifier.event',
-    },
+    events: EVENT_TOPICS,
     inputs: {
       switch: { method: 'setSwitch' },
       jumper: { method: 'setJumper' },
@@ -165,7 +183,7 @@ export async function createFusedCt107dBoard(options: FusedBoardOptions): Promis
     jits,
     clockFrequency: Number(props.clockFrequency ?? 11_059_200),
     devices: instances,
-    nets: 2,
+    nets: description.nets.length,
     methods,
     fusedPins: () => new Uint8Array(memories?.get('fusedPins') ?? []),
     fusedMcuDrives: () => new Uint8Array(memories?.get('fusedMcuDrives') ?? []),

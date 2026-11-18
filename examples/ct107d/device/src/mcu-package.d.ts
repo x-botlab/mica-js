@@ -9,7 +9,7 @@ declare module '*/devices/dist/iap15f2k61s2/model.js' {
   import type {
     DeviceBatch,
     DeviceContext,
-    FirmwareImage,
+    MemoryProgram,
     ModelContext,
   } from '@mica-js/sdk/device';
   import type { DeviceIR } from '@mica-js/sdk/model';
@@ -21,7 +21,7 @@ declare module '*/devices/dist/iap15f2k61s2/model.js' {
 
   export interface McuProps {
     readonly clockFrequency: number;
-    readonly firmware: FirmwareImage | null;
+    readonly firmware: MemoryProgram | null;
   }
 
   export type McuEventMap = {

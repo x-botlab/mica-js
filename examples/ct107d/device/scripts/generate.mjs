@@ -8,6 +8,9 @@
  *
  * The output is checked in (`src/model.ddl`) so reviews can inspect the generated
  * wiring. Run with `--check` to verify it is current.
+ *
+ * Historical schematic and netlist inputs live under `legacy/source/`; the v2 board
+ * document is not an input of this generator.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -21,6 +24,7 @@ const PROJECT = join(HERE, '..');
 const CT107D = join(PROJECT, '..');
 const REPO = join(CT107D, '..', '..');
 const DEVICES = join(CT107D, '..', 'devices');
+const LEGACY_SOURCE = join(CT107D, 'legacy', 'source');
 const OUTPUT = join(PROJECT, 'src', 'model.ddl');
 const NETS_OUTPUT = join(PROJECT, 'src', 'nets.ts');
 const CHANNELS_OUTPUT = join(PROJECT, 'src', 'channels.ts');
@@ -113,8 +117,12 @@ const KEYS = [
   'S19',
 ];
 
-const schematic = JSON.parse(readFileSync(join(CT107D, 'ct107d.sch'), 'utf8'));
-const netlist = JSON.parse(readFileSync(join(CT107D, 'ct107d.netlist.json'), 'utf8'));
+const schematic = JSON.parse(
+  readFileSync(join(LEGACY_SOURCE, 'ct107d.sch'), 'utf8'),
+);
+const netlist = JSON.parse(
+  readFileSync(join(LEGACY_SOURCE, 'ct107d.netlist.json'), 'utf8'),
+);
 
 const symbols = schematic.sheet.symbols.filter((symbol) => symbol.designator);
 const symbolByDesignator = new Map(symbols.map((symbol) => [symbol.designator, symbol]));

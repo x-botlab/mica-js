@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { firmwareImage } from '@mica-js/sdk/device';
+import { firmwareImage } from '../support/legacy-model-bridge.mjs';
 import { createSourceHarness } from './source-harness.ts';
 
 /**

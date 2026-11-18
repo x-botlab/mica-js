@@ -6,7 +6,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "CT107D 融合式可调放大器（LM324 模拟前端）",
   "designatorPrefix": "U",

@@ -5,7 +5,7 @@
   "description": "2×3 跳线排针：两路跳线。通道 1 固定短接 1-3（P1.0 到红外发送链）；通道 2 由 vs1838 初值选择 4-6（VS1838）或 2-4（CX20106A），运行期可通过 control2 切换并由 closedState2 回传。CT107D 的 J2。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "2×3 跳线排针",
   "designatorPrefix": "J",

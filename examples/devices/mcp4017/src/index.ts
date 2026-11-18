@@ -1,4 +1,4 @@
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 
 /**
  * 缓存 wiper 码、W–B 电阻与最近一次有效滑臂电压。尚未得到有效采样时

@@ -6,7 +6,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "CT107D 整板",
   "designatorPrefix": "U",
@@ -44,12 +44,13 @@
       "unit": "baud"
     },
     "firmware": {
-      "type": "firmware",
+      "type": "program",
       "title": "固件",
-      "description": "BIN/HEX/ELF 固件：按 code 地址空间的绝对地址装载 8051 程序存储器。",
+      "description": "BIN/HEX 固件：按 code 地址空间的绝对地址装载 8051 程序存储器。",
       "default": null,
       "nullable": true,
-      "maxBytes": 61440,
+      "loader": "memory",
+      "formats": ["bin", "hex"],
       "addressSpaces": {
         "code": {
           "title": "程序存储器",
@@ -57,8 +58,10 @@
           "size": 61440
         }
       },
-      "addressSpace": "code",
-      "loadAddress": 0,
+      "defaults": {
+        "addressSpace": "code",
+        "loadAddress": 0
+      },
       "group": "固件",
       "order": 0
     }
@@ -644,6 +647,18 @@
       "onDidAmplifier": {
         "ref": "AmplifierSignal"
       }
+    }
+  },
+  "view2d": {
+    "geometry": "geometry.json",
+    "entry": "view2d.js"
+  },
+  "view": {
+    "control": {
+      "title": "CT107D 控制台",
+      "entry": "panel/index.html",
+      "defaultLocation": "sidebar",
+      "icon": "dashboard"
     }
   }
 }

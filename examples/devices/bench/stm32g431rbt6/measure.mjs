@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import { adaptModelFactory, firmwareImage } from '../../test/support/legacy-model-bridge.mjs';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import { model, create as unifiedCreate } from '../../dist/stm32g431rbt6/model.js';
 

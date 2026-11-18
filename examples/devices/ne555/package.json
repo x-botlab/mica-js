@@ -5,7 +5,7 @@
   "description": "无稳态多谐振荡器：创建期把 rA/rB/c 折叠为 tHigh = 0.693×(rA+rB)×c 与 tLow = 0.693×rB×c 两个整数皮秒半周期，OUT 与开漏 DISCH 在两相之间自续翻转。RST# 低电平立刻停振并把 OUT、DISCH 拉低，高电平从充电相重启；frequency 与 dutyCycle 端口在启动时按参数发布一次。理想化：RC 斜坡、1/3·VCC 与 2/3·VCC 比较器、CTRL 输入、DISCH 饱和压降与电源敏感性均不模拟，半周期取整到整皮秒且输出无传播延迟。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "NE555 定时器（无稳态振荡）",
   "designatorPrefix": "U",

@@ -1,7 +1,7 @@
 import { createJitBlockBuilder } from '@mica-js/sdk/model';
 import type { BlockIR } from '@mica-js/sdk/model';
 import type { JitTranslate, JitTranslateInput } from '@mica-js/sdk/device';
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 import {
   CODE,
   SFR_IE,

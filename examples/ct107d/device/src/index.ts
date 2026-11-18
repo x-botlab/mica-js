@@ -1,4 +1,4 @@
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 import { createMcu } from './mcu';
 import type { McuContext } from './mcu';
 import { fuseBlock } from './fuse';

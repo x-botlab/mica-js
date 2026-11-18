@@ -1,7 +1,7 @@
 import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
 import type { BlockIR, Local, Value } from '@mica-js/sdk/model';
 import type { JitTranslate, JitTranslateInput } from '@mica-js/sdk/device';
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 import type { JitDelay, JitPolling } from '@mica-js/sdk/device';
 import {
   CODE,
