@@ -314,24 +314,51 @@ importers:
 
   examples/ct107d:
     devDependencies:
+      '@mica-js/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@mica-js/document':
         specifier: workspace:*
         version: link:../../packages/document
+      '@mica-js/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
       '@mica-js/example-devices':
         specifier: workspace:*
         version: link:../devices
+      '@mica-js/sandbox':
+        specifier: workspace:*
+        version: link:../../packages/sandbox
       '@mica-js/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
       '@mica-js/simulator':
         specifier: workspace:*
         version: link:../../packages/simulator
+      '@mica-js/widget':
+        specifier: workspace:*
+        version: link:../../packages/widget
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
+      '@types/react':
+        specifier: ^19.2.2
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.2.1
+        version: 19.3.0(@types/react@19.3.0)
+      react:
+        specifier: ^19.2.0
+        version: 19.3.1
+      react-dom:
+        specifier: ^19.2.0
+        version: 19.3.1(react@19.3.1)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
       vitest:
         specifier: 'catalog:'
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
