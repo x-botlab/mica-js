@@ -108,6 +108,15 @@ const BOARD_LEVEL = new Set([
   'U26',
 ]);
 
+/**
+ * 窄候选：只把 U7/U8（74HC573）的八路 Q 输出压成一个打包 drive state。
+ * -1 表示全部释放，0..255 是 publishAll 捕获的 stored 字节。其余 573（U6/U9）
+ * 保持逐脚 state/driver，避免扩大改动面。生成时会校验器件、初始 release 与
+ * helper 结构，并断言打包 state 不进入 MCU mirror 或显式 dirty observable。
+ */
+const PACKED_LATCHES = new Set(['U7', 'U8']);
+const LATCH_OUTPUTS = ['q0', 'q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7'];
+
 /** Matrix keys in board order; index 0 is S1, then independent S4-S7, then S8-S19. */
 const KEYS = [
   'S1',
@@ -510,6 +519,67 @@ function renameTopLevel(source, names, prefix, designator) {
   return output;
 }
 
+/**
+ * Source-merged 74HC573 `driveBit`/`publishAll` pair that the packed variant replaces.
+ * Only these two helpers change; `start`, `follow`, `latchEdge`, `enableChanged` and the
+ * `latch.send` calls stay verbatim. Any change to the per-pin branch rules must fail
+ * closed so a new chip behavior is never silently packed.
+ */
+function unpackedLatchHelpers(prefix) {
+  const pinBranch = (level) =>
+    LATCH_OUTPUTS.map((pin, bit) =>
+      bit === LATCH_OUTPUTS.length - 1
+        ? `        _ => { ${prefix}_${pin}_setDrive(${level}); }`
+        : `        ${bit} => { ${prefix}_${pin}_setDrive(${level}); }`,
+    );
+  return [
+    `  fn ${prefix}_driveBit(index: number, level: number) {`,
+    `    if !${prefix}_outputsEnabled {`,
+    '      match index {',
+    ...pinBranch(4),
+    '      }',
+    '    } else if level == 1 {',
+    '      match index {',
+    ...pinBranch(1),
+    '      }',
+    '    } else {',
+    '      match index {',
+    ...pinBranch(0),
+    '      }',
+    '    }',
+    '  }',
+    '',
+    `  fn ${prefix}_publishAll() {`,
+    ...LATCH_OUTPUTS.map(
+      (pin, bit) => `    ${prefix}_driveBit(${bit}, (${prefix}_stored >> ${bit}) & 1);`,
+    ),
+    '  }',
+  ].join('\n');
+}
+
+/** Replace the per-pin 573 helpers with one packed, release-initialised drive state. */
+function packLatchOutput(body, designator, prefix) {
+  const expected = unpackedLatchHelpers(prefix);
+  if (!body.includes(expected))
+    throw new Error(
+      `${designator}: 74hc573 driveBit/publishAll layout changed; refusing packed drive state`,
+    );
+  const replacement =
+    `  fn ${prefix}_publishAll() {\n` +
+    `    if ${prefix}_outputsEnabled {\n` +
+    `      ${prefix}_drive_setDrive(${prefix}_stored);\n` +
+    `    } else {\n` +
+    `      ${prefix}_drive_setDrive(-1);\n` +
+    `    }\n` +
+    `  }`;
+  const packed = body.replace(expected, replacement);
+  if (new RegExp(`\\b${prefix}_driveBit\\b`).test(packed))
+    throw new Error(`${designator}: driveBit helper survived the packed drive replacement`);
+  if (new RegExp(`\\b${prefix}_q[0-7]_setDrive\\b`).test(packed))
+    throw new Error(`${designator}: per-pin Q setter survived the packed drive replacement`);
+  return packed;
+}
+
 /** Source-merge one digital instance. */
 async function fuseInstance(designator) {
   const device = deviceOf(designator);
@@ -519,6 +589,9 @@ async function fuseInstance(designator) {
   let body = stripPinDeclarations(bodyOf(source, device));
   const pins = model.declarations.filter((declaration) => declaration.kind === 'pin');
   const properties = propertiesOf(designator);
+  const packedLatch = PACKED_LATCHES.has(designator);
+  if (packedLatch && device !== '74hc573')
+    throw new Error(`${designator}: packed latch drive requires 74hc573 (got ${device})`);
 
   // Replace property references with this instance's board values (or a board-level
   // property such as ultrasonicDistanceCm / uartBaud). Other probe/counter defaults
@@ -540,6 +613,8 @@ async function fuseInstance(designator) {
   const setters = [];
   const pinNets = new Map();
   const resetDrives = new Map();
+  const packedDrives = new Map();
+  const packedPins = [];
   for (const pin of pins) {
     const power =
       pin.name === 'vcc' || pin.name === 'vcc1' ? 'vcc' : pin.name === 'gnd' ? 'gnd' : undefined;
@@ -566,6 +641,15 @@ async function fuseInstance(designator) {
     const rewritten = rewritePin(body, designator, prefix, pin.name, power);
     body = rewritten.source;
     pinNets.set(pin.name, rewritten.net);
+    if (packedLatch && LATCH_OUTPUTS.includes(pin.name)) {
+      const release = initial ?? 4;
+      if (release !== 4)
+        throw new Error(
+          `${designator}.${pin.name}: packed 74hc573 output must start released (4), got ${release}`,
+        );
+      packedPins.push(pin.name);
+      continue;
+    }
     if (!hasIntent && initial === undefined) continue;
     if (power !== undefined)
       throw new Error(`${designator}.${pin.name}: power pin intent is not supported`);
@@ -575,6 +659,24 @@ async function fuseInstance(designator) {
     // pin mirrors this drive can reach. Keeping the metadata here avoids a second
     // pass over the source-merged device bodies.
     setters.push({ prefix, pin: pin.name, state: stateName });
+  }
+
+  if (packedLatch) {
+    if (packedPins.length !== LATCH_OUTPUTS.length)
+      throw new Error(
+        `${designator}: packed 74hc573 must expose ${LATCH_OUTPUTS.join(', ')} ` +
+          `(got [${packedPins.join(', ')}])`,
+      );
+    for (let bit = 0; bit < LATCH_OUTPUTS.length; bit += 1) {
+      const pin = LATCH_OUTPUTS[bit];
+      if (!packedPins.includes(pin))
+        throw new Error(`${designator}: packed 74hc573 is missing ${pin}`);
+      packedDrives.set(pin, { state: `${prefix}_drive`, bit });
+    }
+    // -1 is the release sentinel: every Q driver unpacks it to drive code 4 until
+    // publishAll captures the stored byte or re-releases the outputs.
+    driveStates.push(`  state ${prefix}_drive: number = -1;`);
+    setters.push({ prefix, pin: 'drive', state: `${prefix}_drive` });
   }
 
   // Rename every top-level declaration except the special `start` process.
@@ -601,6 +703,8 @@ async function fuseInstance(designator) {
     driveStates.push(`  state ${prefix}_started: bool = false;`);
   }
 
+  if (packedLatch) body = packLatchOutput(body, designator, prefix);
+
   if (/\.intent\s*<-/.test(body)) throw new Error(`${designator}: unhandled intent access`);
   if (/\.sample\.(?:level|voltage)/.test(body))
     throw new Error(`${designator}: unhandled sample access`);
@@ -614,6 +718,8 @@ async function fuseInstance(designator) {
     pinNets,
     driveStates,
     setters,
+    packedDrives,
+    packedState: packedLatch ? `${prefix}_drive` : undefined,
     resetDrives,
     hasStart,
     outputs: model.declarations
@@ -665,17 +771,27 @@ function dirtyMarkLines(drives, indent) {
   ];
 }
 
-/** Render one source-merged pin setter with the dirty marks for its reachable pins. */
+/**
+ * Render one source-merged pin setter with the dirty marks for its reachable pins.
+ *
+ * `fusedSeq` exists only to run the MCU mirror refresh, which walks the pin/group dirty
+ * flags, and the observable dirty flags checked by `fusedRefresh`. Derived board
+ * observations (display scans) depend on the drive state itself and are recomputed by
+ * the declaration dependency graph. When a drive reaches no MCU pin and no observable,
+ * the state write is the whole effect, so bumping the sequence would only schedule a
+ * no-op refresh.
+ */
 function renderDriveSetter(setter, drives, states) {
   const marks = dirtyMarkLines(drives, '      ');
   const flags = states.map((state) => `      ${state} = true;`);
+  const needsRefresh = marks.length > 0 || flags.length > 0;
   return (
     `  fn ${setter.prefix}_${setter.pin}_setDrive(level: number) {\n` +
     `    if level != ${setter.state} {\n` +
     `      ${setter.state} = level;\n` +
     (marks.length > 0 ? `${marks.join('\n')}\n` : '') +
     (flags.length > 0 ? `${flags.join('\n')}\n` : '') +
-    `      fusedSeq = fusedSeq + 1;\n` +
+    (needsRefresh ? `      fusedSeq = fusedSeq + 1;\n` : '') +
     `    }\n` +
     `  }`
   );
@@ -756,6 +872,11 @@ function indexSelector(indices, total, variable) {
   return indices.map((value) => `${variable} == ${value}`).join(' || ');
 }
 
+/** -1 releases the eight outputs; 0..255 unpacks the stored byte captured by publishAll. */
+function packedDriveDriver(state, bit) {
+  return `(${state} >= 0 ? ((${state} >> ${bit}) & 1) : 4)`;
+}
+
 function generateNets(instances, template) {
   const drivers = new Map();
   const add = (net, expression) => {
@@ -781,13 +902,20 @@ function generateNets(instances, template) {
   if (new Set(mcuPins.map((pin) => pin.drive)).size !== 40)
     throw new Error('MCU pin drives are not unique');
 
+  // Packed 573 outputs unpack one stored byte per pin so `collectNetInputs` still sees
+  // the single `*_drive` state as a static dependency. Other devices keep the per-pin
+  // driver expression unchanged.
   for (const instance of instances)
-    for (const pin of instance.pins)
-      if (
-        instance.pinNets.has(pin) &&
-        instance.driveStates.some((line) => line.includes(`_${pin}_drive:`))
-      )
+    for (const pin of instance.pins) {
+      if (!instance.pinNets.has(pin)) continue;
+      const packed = instance.packedDrives.get(pin);
+      if (packed !== undefined) {
+        add(instance.pinNets.get(pin), packedDriveDriver(packed.state, packed.bit));
+        continue;
+      }
+      if (instance.driveStates.some((line) => line.includes(`_${pin}_drive:`)))
         add(instance.pinNets.get(pin), `${instance.prefix}_${pin}_drive`);
+    }
 
   // Derive the key matrix from netlist endpoints instead of trusting a hand-written
   // row order. S4-S19 are all row/column keys; J5 selects whether the first column is
@@ -1185,6 +1313,25 @@ function boardReplacements(instances, nets) {
   const mcu = instances.find((instance) => instance.designator === 'U1');
 
   if (mcu === undefined) throw new Error('Missing source-merged MCU instance');
+
+  // Packed latches are only read by display deriveds. They must stay outside the
+  // explicit dirty protocol: no MCU pin mirror and no button/LED/actuator observable
+  // may consume them, otherwise one state would silently lose the per-pin marks.
+  for (const instance of instances) {
+    if (instance.packedState === undefined) continue;
+    const mirrors = nets.stateMark(instance.packedState);
+    if (mirrors.length > 0)
+      throw new Error(
+        `${instance.designator}: packed state ${instance.packedState} ` +
+          `reaches MCU mirrors [${mirrors.join(', ')}]`,
+      );
+    const observables = nets.stateDirtyTriggers.get(instance.packedState) ?? [];
+    if (observables.length > 0)
+      throw new Error(
+        `${instance.designator}: packed state ${instance.packedState} ` +
+          `triggers explicit dirty observables [${observables.join(', ')}]`,
+      );
+  }
 
   const resetDrives = nets.mcuPins
     .map(({ pin, drive }) => {

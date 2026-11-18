@@ -1438,52 +1438,12 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     ? { transparent: true, value: u7_dataByte() }
     : { transparent: false, value: 0 };
 
-  fn u7_driveBit(index: number, level: number) {
-    if !u7_outputsEnabled {
-      match index {
-        0 => { u7_q0_setDrive(4); }
-        1 => { u7_q1_setDrive(4); }
-        2 => { u7_q2_setDrive(4); }
-        3 => { u7_q3_setDrive(4); }
-        4 => { u7_q4_setDrive(4); }
-        5 => { u7_q5_setDrive(4); }
-        6 => { u7_q6_setDrive(4); }
-        _ => { u7_q7_setDrive(4); }
-      }
-    } else if level == 1 {
-      match index {
-        0 => { u7_q0_setDrive(1); }
-        1 => { u7_q1_setDrive(1); }
-        2 => { u7_q2_setDrive(1); }
-        3 => { u7_q3_setDrive(1); }
-        4 => { u7_q4_setDrive(1); }
-        5 => { u7_q5_setDrive(1); }
-        6 => { u7_q6_setDrive(1); }
-        _ => { u7_q7_setDrive(1); }
-      }
-    } else {
-      match index {
-        0 => { u7_q0_setDrive(0); }
-        1 => { u7_q1_setDrive(0); }
-        2 => { u7_q2_setDrive(0); }
-        3 => { u7_q3_setDrive(0); }
-        4 => { u7_q4_setDrive(0); }
-        5 => { u7_q5_setDrive(0); }
-        6 => { u7_q6_setDrive(0); }
-        _ => { u7_q7_setDrive(0); }
-      }
-    }
-  }
-
   fn u7_publishAll() {
-    u7_driveBit(0, (u7_stored >> 0) & 1);
-    u7_driveBit(1, (u7_stored >> 1) & 1);
-    u7_driveBit(2, (u7_stored >> 2) & 1);
-    u7_driveBit(3, (u7_stored >> 3) & 1);
-    u7_driveBit(4, (u7_stored >> 4) & 1);
-    u7_driveBit(5, (u7_stored >> 5) & 1);
-    u7_driveBit(6, (u7_stored >> 6) & 1);
-    u7_driveBit(7, (u7_stored >> 7) & 1);
+    if u7_outputsEnabled {
+      u7_drive_setDrive(u7_stored);
+    } else {
+      u7_drive_setDrive(-1);
+    }
   }
 
   process u7_start on u7_started {
@@ -1575,52 +1535,12 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     ? { transparent: true, value: u8_dataByte() }
     : { transparent: false, value: 0 };
 
-  fn u8_driveBit(index: number, level: number) {
-    if !u8_outputsEnabled {
-      match index {
-        0 => { u8_q0_setDrive(4); }
-        1 => { u8_q1_setDrive(4); }
-        2 => { u8_q2_setDrive(4); }
-        3 => { u8_q3_setDrive(4); }
-        4 => { u8_q4_setDrive(4); }
-        5 => { u8_q5_setDrive(4); }
-        6 => { u8_q6_setDrive(4); }
-        _ => { u8_q7_setDrive(4); }
-      }
-    } else if level == 1 {
-      match index {
-        0 => { u8_q0_setDrive(1); }
-        1 => { u8_q1_setDrive(1); }
-        2 => { u8_q2_setDrive(1); }
-        3 => { u8_q3_setDrive(1); }
-        4 => { u8_q4_setDrive(1); }
-        5 => { u8_q5_setDrive(1); }
-        6 => { u8_q6_setDrive(1); }
-        _ => { u8_q7_setDrive(1); }
-      }
-    } else {
-      match index {
-        0 => { u8_q0_setDrive(0); }
-        1 => { u8_q1_setDrive(0); }
-        2 => { u8_q2_setDrive(0); }
-        3 => { u8_q3_setDrive(0); }
-        4 => { u8_q4_setDrive(0); }
-        5 => { u8_q5_setDrive(0); }
-        6 => { u8_q6_setDrive(0); }
-        _ => { u8_q7_setDrive(0); }
-      }
-    }
-  }
-
   fn u8_publishAll() {
-    u8_driveBit(0, (u8_stored >> 0) & 1);
-    u8_driveBit(1, (u8_stored >> 1) & 1);
-    u8_driveBit(2, (u8_stored >> 2) & 1);
-    u8_driveBit(3, (u8_stored >> 3) & 1);
-    u8_driveBit(4, (u8_stored >> 4) & 1);
-    u8_driveBit(5, (u8_stored >> 5) & 1);
-    u8_driveBit(6, (u8_stored >> 6) & 1);
-    u8_driveBit(7, (u8_stored >> 7) & 1);
+    if u8_outputsEnabled {
+      u8_drive_setDrive(u8_stored);
+    } else {
+      u8_drive_setDrive(-1);
+    }
   }
 
   process u8_start on u8_started {
@@ -3788,14 +3708,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   state ds2Digit2: number = 0;
   state ds2Digit3: number = 0;
   state ds2Digit4: number = 0;
-  state ds1Candidate1: number = 0;
-  state ds1Candidate2: number = 0;
-  state ds1Candidate3: number = 0;
-  state ds1Candidate4: number = 0;
-  state ds2Candidate1: number = 0;
-  state ds2Candidate2: number = 0;
-  state ds2Candidate3: number = 0;
-  state ds2Candidate4: number = 0;
+  /** Last time the matching scan candidate changed; the digit is stable when this ages by SEG_SETTLE_PS. */
   state ds1Since1: number = 0;
   state ds1Since2: number = 0;
   state ds1Since3: number = 0;
@@ -3804,14 +3717,6 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   state ds2Since2: number = 0;
   state ds2Since3: number = 0;
   state ds2Since4: number = 0;
-  state ds1Active1: bool = false;
-  state ds1Active2: bool = false;
-  state ds1Active3: bool = false;
-  state ds1Active4: bool = false;
-  state ds2Active1: bool = false;
-  state ds2Active2: bool = false;
-  state ds2Active3: bool = false;
-  state ds2Active4: bool = false;
 
   /** LM324 / RB4 folded analog front-end. */
   state lm324Wiper: number = 0;
@@ -3849,23 +3754,9 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   state u6_q6_drive: number = 4;
   state u6_q7_drive: number = 4;
   state u6_started: bool = false;
-  state u7_q0_drive: number = 4;
-  state u7_q1_drive: number = 4;
-  state u7_q2_drive: number = 4;
-  state u7_q3_drive: number = 4;
-  state u7_q4_drive: number = 4;
-  state u7_q5_drive: number = 4;
-  state u7_q6_drive: number = 4;
-  state u7_q7_drive: number = 4;
+  state u7_drive: number = -1;
   state u7_started: bool = false;
-  state u8_q0_drive: number = 4;
-  state u8_q1_drive: number = 4;
-  state u8_q2_drive: number = 4;
-  state u8_q3_drive: number = 4;
-  state u8_q4_drive: number = 4;
-  state u8_q5_drive: number = 4;
-  state u8_q6_drive: number = 4;
-  state u8_q7_drive: number = 4;
+  state u8_drive: number = -1;
   state u8_started: bool = false;
   state u9_q0_drive: number = 4;
   state u9_q1_drive: number = 4;
@@ -4056,172 +3947,74 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       fusedSeq = fusedSeq + 1;
     }
   }
-  fn u7_q0_setDrive(level: number) {
-    if level != u7_q0_drive {
-      u7_q0_drive = level;
-      fusedSeq = fusedSeq + 1;
+  fn u7_drive_setDrive(level: number) {
+    if level != u7_drive {
+      u7_drive = level;
     }
   }
-  fn u7_q1_setDrive(level: number) {
-    if level != u7_q1_drive {
-      u7_q1_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u7_q2_setDrive(level: number) {
-    if level != u7_q2_drive {
-      u7_q2_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u7_q3_setDrive(level: number) {
-    if level != u7_q3_drive {
-      u7_q3_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u7_q4_setDrive(level: number) {
-    if level != u7_q4_drive {
-      u7_q4_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u7_q5_setDrive(level: number) {
-    if level != u7_q5_drive {
-      u7_q5_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u7_q6_setDrive(level: number) {
-    if level != u7_q6_drive {
-      u7_q6_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u7_q7_setDrive(level: number) {
-    if level != u7_q7_drive {
-      u7_q7_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u8_q0_setDrive(level: number) {
-    if level != u8_q0_drive {
-      u8_q0_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u8_q1_setDrive(level: number) {
-    if level != u8_q1_drive {
-      u8_q1_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u8_q2_setDrive(level: number) {
-    if level != u8_q2_drive {
-      u8_q2_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u8_q3_setDrive(level: number) {
-    if level != u8_q3_drive {
-      u8_q3_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u8_q4_setDrive(level: number) {
-    if level != u8_q4_drive {
-      u8_q4_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u8_q5_setDrive(level: number) {
-    if level != u8_q5_drive {
-      u8_q5_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u8_q6_setDrive(level: number) {
-    if level != u8_q6_drive {
-      u8_q6_drive = level;
-      fusedSeq = fusedSeq + 1;
-    }
-  }
-  fn u8_q7_setDrive(level: number) {
-    if level != u8_q7_drive {
-      u8_q7_drive = level;
-      fusedSeq = fusedSeq + 1;
+  fn u8_drive_setDrive(level: number) {
+    if level != u8_drive {
+      u8_drive = level;
     }
   }
   fn u9_q0_setDrive(level: number) {
     if level != u9_q0_drive {
       u9_q0_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u9_q1_setDrive(level: number) {
     if level != u9_q1_drive {
       u9_q1_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u9_q2_setDrive(level: number) {
     if level != u9_q2_drive {
       u9_q2_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u9_q3_setDrive(level: number) {
     if level != u9_q3_drive {
       u9_q3_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u9_q4_setDrive(level: number) {
     if level != u9_q4_drive {
       u9_q4_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u9_q5_setDrive(level: number) {
     if level != u9_q5_drive {
       u9_q5_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u9_q6_setDrive(level: number) {
     if level != u9_q6_drive {
       u9_q6_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u9_q7_setDrive(level: number) {
     if level != u9_q7_drive {
       u9_q7_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u10_out1_setDrive(level: number) {
     if level != u10_out1_drive {
       u10_out1_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u10_out2_setDrive(level: number) {
     if level != u10_out2_drive {
       u10_out2_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u10_out3_setDrive(level: number) {
     if level != u10_out3_drive {
       u10_out3_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u10_out4_setDrive(level: number) {
     if level != u10_out4_drive {
       u10_out4_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u10_out5_setDrive(level: number) {
@@ -4234,7 +4027,6 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u10_out6_setDrive(level: number) {
     if level != u10_out6_drive {
       u10_out6_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u10_out7_setDrive(level: number) {
@@ -4255,7 +4047,6 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u14_out_setDrive(level: number) {
     if level != u14_out_drive {
       u14_out_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u15_out_setDrive(level: number) {
@@ -4270,7 +4061,6 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u15_disch_setDrive(level: number) {
     if level != u15_disch_drive {
       u15_disch_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u16_sda_setDrive(level: number) {
@@ -4292,37 +4082,31 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u18_y1_setDrive(level: number) {
     if level != u18_y1_drive {
       u18_y1_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u18_y2_setDrive(level: number) {
     if level != u18_y2_drive {
       u18_y2_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u18_y3_setDrive(level: number) {
     if level != u18_y3_drive {
       u18_y3_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u18_y4_setDrive(level: number) {
     if level != u18_y4_drive {
       u18_y4_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u18_y5_setDrive(level: number) {
     if level != u18_y5_drive {
       u18_y5_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u18_y6_setDrive(level: number) {
     if level != u18_y6_drive {
       u18_y6_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u19_io_setDrive(level: number) {
@@ -4344,7 +4128,6 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u21_out_setDrive(level: number) {
     if level != u21_out_drive {
       u21_out_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u22_echo_setDrive(level: number) {
@@ -4358,73 +4141,61 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u24_y0_setDrive(level: number) {
     if level != u24_y0_drive {
       u24_y0_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u24_y1_setDrive(level: number) {
     if level != u24_y1_drive {
       u24_y1_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u24_y2_setDrive(level: number) {
     if level != u24_y2_drive {
       u24_y2_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u24_y3_setDrive(level: number) {
     if level != u24_y3_drive {
       u24_y3_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u24_y4_setDrive(level: number) {
     if level != u24_y4_drive {
       u24_y4_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u24_y5_setDrive(level: number) {
     if level != u24_y5_drive {
       u24_y5_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u24_y6_setDrive(level: number) {
     if level != u24_y6_drive {
       u24_y6_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u24_y7_setDrive(level: number) {
     if level != u24_y7_drive {
       u24_y7_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u25_y1_setDrive(level: number) {
     if level != u25_y1_drive {
       u25_y1_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u25_y2_setDrive(level: number) {
     if level != u25_y2_drive {
       u25_y2_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u25_y3_setDrive(level: number) {
     if level != u25_y3_drive {
       u25_y3_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn u25_y4_setDrive(level: number) {
     if level != u25_y4_drive {
       u25_y4_drive = level;
-      fusedSeq = fusedSeq + 1;
     }
   }
   fn uart_probe_txd_setDrive(level: number) {
@@ -5459,10 +5230,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u7_q0_drive == 0 { strongLow = true; }
-    else if u7_q0_drive == 1 { strongHigh = true; }
-    else if u7_q0_drive == 2 { weakHigh = true; }
-    else if u7_q0_drive == 3 { weakLow = true; }
+    if (u7_drive >= 0 ? ((u7_drive >> 0) & 1) : 4) == 0 { strongLow = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 0) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 0) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 0) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5474,10 +5245,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u7_q1_drive == 0 { strongLow = true; }
-    else if u7_q1_drive == 1 { strongHigh = true; }
-    else if u7_q1_drive == 2 { weakHigh = true; }
-    else if u7_q1_drive == 3 { weakLow = true; }
+    if (u7_drive >= 0 ? ((u7_drive >> 1) & 1) : 4) == 0 { strongLow = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 1) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 1) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 1) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5489,10 +5260,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u7_q2_drive == 0 { strongLow = true; }
-    else if u7_q2_drive == 1 { strongHigh = true; }
-    else if u7_q2_drive == 2 { weakHigh = true; }
-    else if u7_q2_drive == 3 { weakLow = true; }
+    if (u7_drive >= 0 ? ((u7_drive >> 2) & 1) : 4) == 0 { strongLow = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 2) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 2) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 2) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5504,10 +5275,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u7_q3_drive == 0 { strongLow = true; }
-    else if u7_q3_drive == 1 { strongHigh = true; }
-    else if u7_q3_drive == 2 { weakHigh = true; }
-    else if u7_q3_drive == 3 { weakLow = true; }
+    if (u7_drive >= 0 ? ((u7_drive >> 3) & 1) : 4) == 0 { strongLow = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 3) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 3) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 3) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5519,10 +5290,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u7_q4_drive == 0 { strongLow = true; }
-    else if u7_q4_drive == 1 { strongHigh = true; }
-    else if u7_q4_drive == 2 { weakHigh = true; }
-    else if u7_q4_drive == 3 { weakLow = true; }
+    if (u7_drive >= 0 ? ((u7_drive >> 4) & 1) : 4) == 0 { strongLow = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 4) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 4) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 4) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5534,10 +5305,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u7_q5_drive == 0 { strongLow = true; }
-    else if u7_q5_drive == 1 { strongHigh = true; }
-    else if u7_q5_drive == 2 { weakHigh = true; }
-    else if u7_q5_drive == 3 { weakLow = true; }
+    if (u7_drive >= 0 ? ((u7_drive >> 5) & 1) : 4) == 0 { strongLow = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 5) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 5) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 5) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5549,10 +5320,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u7_q6_drive == 0 { strongLow = true; }
-    else if u7_q6_drive == 1 { strongHigh = true; }
-    else if u7_q6_drive == 2 { weakHigh = true; }
-    else if u7_q6_drive == 3 { weakLow = true; }
+    if (u7_drive >= 0 ? ((u7_drive >> 6) & 1) : 4) == 0 { strongLow = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 6) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 6) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 6) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5564,10 +5335,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u7_q7_drive == 0 { strongLow = true; }
-    else if u7_q7_drive == 1 { strongHigh = true; }
-    else if u7_q7_drive == 2 { weakHigh = true; }
-    else if u7_q7_drive == 3 { weakLow = true; }
+    if (u7_drive >= 0 ? ((u7_drive >> 7) & 1) : 4) == 0 { strongLow = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 7) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 7) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u7_drive >= 0 ? ((u7_drive >> 7) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5579,10 +5350,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u8_q0_drive == 0 { strongLow = true; }
-    else if u8_q0_drive == 1 { strongHigh = true; }
-    else if u8_q0_drive == 2 { weakHigh = true; }
-    else if u8_q0_drive == 3 { weakLow = true; }
+    if (u8_drive >= 0 ? ((u8_drive >> 0) & 1) : 4) == 0 { strongLow = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 0) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 0) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 0) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5594,10 +5365,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u8_q1_drive == 0 { strongLow = true; }
-    else if u8_q1_drive == 1 { strongHigh = true; }
-    else if u8_q1_drive == 2 { weakHigh = true; }
-    else if u8_q1_drive == 3 { weakLow = true; }
+    if (u8_drive >= 0 ? ((u8_drive >> 1) & 1) : 4) == 0 { strongLow = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 1) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 1) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 1) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5609,10 +5380,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u8_q2_drive == 0 { strongLow = true; }
-    else if u8_q2_drive == 1 { strongHigh = true; }
-    else if u8_q2_drive == 2 { weakHigh = true; }
-    else if u8_q2_drive == 3 { weakLow = true; }
+    if (u8_drive >= 0 ? ((u8_drive >> 2) & 1) : 4) == 0 { strongLow = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 2) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 2) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 2) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5624,10 +5395,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u8_q3_drive == 0 { strongLow = true; }
-    else if u8_q3_drive == 1 { strongHigh = true; }
-    else if u8_q3_drive == 2 { weakHigh = true; }
-    else if u8_q3_drive == 3 { weakLow = true; }
+    if (u8_drive >= 0 ? ((u8_drive >> 3) & 1) : 4) == 0 { strongLow = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 3) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 3) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 3) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5639,10 +5410,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u8_q4_drive == 0 { strongLow = true; }
-    else if u8_q4_drive == 1 { strongHigh = true; }
-    else if u8_q4_drive == 2 { weakHigh = true; }
-    else if u8_q4_drive == 3 { weakLow = true; }
+    if (u8_drive >= 0 ? ((u8_drive >> 4) & 1) : 4) == 0 { strongLow = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 4) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 4) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 4) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5654,10 +5425,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u8_q5_drive == 0 { strongLow = true; }
-    else if u8_q5_drive == 1 { strongHigh = true; }
-    else if u8_q5_drive == 2 { weakHigh = true; }
-    else if u8_q5_drive == 3 { weakLow = true; }
+    if (u8_drive >= 0 ? ((u8_drive >> 5) & 1) : 4) == 0 { strongLow = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 5) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 5) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 5) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5669,10 +5440,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u8_q6_drive == 0 { strongLow = true; }
-    else if u8_q6_drive == 1 { strongHigh = true; }
-    else if u8_q6_drive == 2 { weakHigh = true; }
-    else if u8_q6_drive == 3 { weakLow = true; }
+    if (u8_drive >= 0 ? ((u8_drive >> 6) & 1) : 4) == 0 { strongLow = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 6) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 6) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 6) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5684,10 +5455,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if u8_q7_drive == 0 { strongLow = true; }
-    else if u8_q7_drive == 1 { strongHigh = true; }
-    else if u8_q7_drive == 2 { weakHigh = true; }
-    else if u8_q7_drive == 3 { weakLow = true; }
+    if (u8_drive >= 0 ? ((u8_drive >> 7) & 1) : 4) == 0 { strongLow = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 7) & 1) : 4) == 1 { strongHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 7) & 1) : 4) == 2 { weakHigh = true; }
+    else if (u8_drive >= 0 ? ((u8_drive >> 7) & 1) : 4) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -6294,58 +6065,42 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     return mask;
   }
 
-  record Scan {
-    active: bool;
-    mask: number;
-  }
+  // DS1/DS2 share the same eight segment lines.
+  derived dsSegmentMask: number = segmentMask();
 
-  derived ds1Scan1: Scan = { active: fusedNet67() == 1, mask: segmentMask() };
-  derived ds1Scan2: Scan = { active: fusedNet68() == 1, mask: segmentMask() };
-  derived ds1Scan3: Scan = { active: fusedNet69() == 1, mask: segmentMask() };
-  derived ds1Scan4: Scan = { active: fusedNet70() == 1, mask: segmentMask() };
-  derived ds2Scan1: Scan = { active: fusedNet71() == 1, mask: segmentMask() };
-  derived ds2Scan2: Scan = { active: fusedNet72() == 1, mask: segmentMask() };
-  derived ds2Scan3: Scan = { active: fusedNet73() == 1, mask: segmentMask() };
-  derived ds2Scan4: Scan = { active: fusedNet74() == 1, mask: segmentMask() };
+  // Unselected digits keep the same candidate as segment data moves, so their reaction
+  // and process stay asleep. Zero is a valid blank mask, distinct from -1.
+  derived ds1Scan1: number = fusedNet67() == 1 ? dsSegmentMask : -1;
+  derived ds1Scan2: number = fusedNet68() == 1 ? dsSegmentMask : -1;
+  derived ds1Scan3: number = fusedNet69() == 1 ? dsSegmentMask : -1;
+  derived ds1Scan4: number = fusedNet70() == 1 ? dsSegmentMask : -1;
+  derived ds2Scan1: number = fusedNet71() == 1 ? dsSegmentMask : -1;
+  derived ds2Scan2: number = fusedNet72() == 1 ? dsSegmentMask : -1;
+  derived ds2Scan3: number = fusedNet73() == 1 ? dsSegmentMask : -1;
+  derived ds2Scan4: number = fusedNet74() == 1 ? dsSegmentMask : -1;
 
   reaction trackDs1Digit1 on ds1Scan1 as (previous, current) {
-    ds1Active1 = current.active;
-    ds1Candidate1 = current.mask;
     ds1Since1 = now();
   }
   reaction trackDs1Digit2 on ds1Scan2 as (previous, current) {
-    ds1Active2 = current.active;
-    ds1Candidate2 = current.mask;
     ds1Since2 = now();
   }
   reaction trackDs1Digit3 on ds1Scan3 as (previous, current) {
-    ds1Active3 = current.active;
-    ds1Candidate3 = current.mask;
     ds1Since3 = now();
   }
   reaction trackDs1Digit4 on ds1Scan4 as (previous, current) {
-    ds1Active4 = current.active;
-    ds1Candidate4 = current.mask;
     ds1Since4 = now();
   }
   reaction trackDs2Digit1 on ds2Scan1 as (previous, current) {
-    ds2Active1 = current.active;
-    ds2Candidate1 = current.mask;
     ds2Since1 = now();
   }
   reaction trackDs2Digit2 on ds2Scan2 as (previous, current) {
-    ds2Active2 = current.active;
-    ds2Candidate2 = current.mask;
     ds2Since2 = now();
   }
   reaction trackDs2Digit3 on ds2Scan3 as (previous, current) {
-    ds2Active3 = current.active;
-    ds2Candidate3 = current.mask;
     ds2Since3 = now();
   }
   reaction trackDs2Digit4 on ds2Scan4 as (previous, current) {
-    ds2Active4 = current.active;
-    ds2Candidate4 = current.mask;
     ds2Since4 = now();
   }
 
@@ -6357,81 +6112,81 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   process scanDs1Digit1 on ds1Scan1 {
-    if ds1Scan1.active {
+    if ds1Scan1 >= 0 {
       const stableAt = ds1Since1 + 50000000;
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds1Scan1.active && ds1Active1 && ds1Candidate1 == ds1Scan1.mask && now() - ds1Since1 >= 50000000 && ds1Digit1 != ds1Candidate1 {
-        ds1Digit1 = ds1Candidate1;
+      if ds1Scan1 >= 0 && now() - ds1Since1 >= 50000000 && ds1Digit1 != ds1Scan1 {
+        ds1Digit1 = ds1Scan1;
         emitDisplay1();
       }
     }
   }
   process scanDs1Digit2 on ds1Scan2 {
-    if ds1Scan2.active {
+    if ds1Scan2 >= 0 {
       const stableAt = ds1Since2 + 50000000;
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds1Scan2.active && ds1Active2 && ds1Candidate2 == ds1Scan2.mask && now() - ds1Since2 >= 50000000 && ds1Digit2 != ds1Candidate2 {
-        ds1Digit2 = ds1Candidate2;
+      if ds1Scan2 >= 0 && now() - ds1Since2 >= 50000000 && ds1Digit2 != ds1Scan2 {
+        ds1Digit2 = ds1Scan2;
         emitDisplay1();
       }
     }
   }
   process scanDs1Digit3 on ds1Scan3 {
-    if ds1Scan3.active {
+    if ds1Scan3 >= 0 {
       const stableAt = ds1Since3 + 50000000;
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds1Scan3.active && ds1Active3 && ds1Candidate3 == ds1Scan3.mask && now() - ds1Since3 >= 50000000 && ds1Digit3 != ds1Candidate3 {
-        ds1Digit3 = ds1Candidate3;
+      if ds1Scan3 >= 0 && now() - ds1Since3 >= 50000000 && ds1Digit3 != ds1Scan3 {
+        ds1Digit3 = ds1Scan3;
         emitDisplay1();
       }
     }
   }
   process scanDs1Digit4 on ds1Scan4 {
-    if ds1Scan4.active {
+    if ds1Scan4 >= 0 {
       const stableAt = ds1Since4 + 50000000;
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds1Scan4.active && ds1Active4 && ds1Candidate4 == ds1Scan4.mask && now() - ds1Since4 >= 50000000 && ds1Digit4 != ds1Candidate4 {
-        ds1Digit4 = ds1Candidate4;
+      if ds1Scan4 >= 0 && now() - ds1Since4 >= 50000000 && ds1Digit4 != ds1Scan4 {
+        ds1Digit4 = ds1Scan4;
         emitDisplay1();
       }
     }
   }
   process scanDs2Digit1 on ds2Scan1 {
-    if ds2Scan1.active {
+    if ds2Scan1 >= 0 {
       const stableAt = ds2Since1 + 50000000;
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds2Scan1.active && ds2Active1 && ds2Candidate1 == ds2Scan1.mask && now() - ds2Since1 >= 50000000 && ds2Digit1 != ds2Candidate1 {
-        ds2Digit1 = ds2Candidate1;
+      if ds2Scan1 >= 0 && now() - ds2Since1 >= 50000000 && ds2Digit1 != ds2Scan1 {
+        ds2Digit1 = ds2Scan1;
         emitDisplay2();
       }
     }
   }
   process scanDs2Digit2 on ds2Scan2 {
-    if ds2Scan2.active {
+    if ds2Scan2 >= 0 {
       const stableAt = ds2Since2 + 50000000;
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds2Scan2.active && ds2Active2 && ds2Candidate2 == ds2Scan2.mask && now() - ds2Since2 >= 50000000 && ds2Digit2 != ds2Candidate2 {
-        ds2Digit2 = ds2Candidate2;
+      if ds2Scan2 >= 0 && now() - ds2Since2 >= 50000000 && ds2Digit2 != ds2Scan2 {
+        ds2Digit2 = ds2Scan2;
         emitDisplay2();
       }
     }
   }
   process scanDs2Digit3 on ds2Scan3 {
-    if ds2Scan3.active {
+    if ds2Scan3 >= 0 {
       const stableAt = ds2Since3 + 50000000;
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds2Scan3.active && ds2Active3 && ds2Candidate3 == ds2Scan3.mask && now() - ds2Since3 >= 50000000 && ds2Digit3 != ds2Candidate3 {
-        ds2Digit3 = ds2Candidate3;
+      if ds2Scan3 >= 0 && now() - ds2Since3 >= 50000000 && ds2Digit3 != ds2Scan3 {
+        ds2Digit3 = ds2Scan3;
         emitDisplay2();
       }
     }
   }
   process scanDs2Digit4 on ds2Scan4 {
-    if ds2Scan4.active {
+    if ds2Scan4 >= 0 {
       const stableAt = ds2Since4 + 50000000;
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds2Scan4.active && ds2Active4 && ds2Candidate4 == ds2Scan4.mask && now() - ds2Since4 >= 50000000 && ds2Digit4 != ds2Candidate4 {
-        ds2Digit4 = ds2Candidate4;
+      if ds2Scan4 >= 0 && now() - ds2Since4 >= 50000000 && ds2Digit4 != ds2Scan4 {
+        ds2Digit4 = ds2Scan4;
         emitDisplay2();
       }
     }

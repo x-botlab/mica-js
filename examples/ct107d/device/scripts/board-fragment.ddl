@@ -84,14 +84,7 @@
   state ds2Digit2: number = 0;
   state ds2Digit3: number = 0;
   state ds2Digit4: number = 0;
-  state ds1Candidate1: number = 0;
-  state ds1Candidate2: number = 0;
-  state ds1Candidate3: number = 0;
-  state ds1Candidate4: number = 0;
-  state ds2Candidate1: number = 0;
-  state ds2Candidate2: number = 0;
-  state ds2Candidate3: number = 0;
-  state ds2Candidate4: number = 0;
+  /** Last time the matching scan candidate changed; the digit is stable when this ages by SEG_SETTLE_PS. */
   state ds1Since1: number = 0;
   state ds1Since2: number = 0;
   state ds1Since3: number = 0;
@@ -100,14 +93,6 @@
   state ds2Since2: number = 0;
   state ds2Since3: number = 0;
   state ds2Since4: number = 0;
-  state ds1Active1: bool = false;
-  state ds1Active2: bool = false;
-  state ds1Active3: bool = false;
-  state ds1Active4: bool = false;
-  state ds2Active1: bool = false;
-  state ds2Active2: bool = false;
-  state ds2Active3: bool = false;
-  state ds2Active4: bool = false;
 
   /** LM324 / RB4 folded analog front-end. */
   state lm324Wiper: number = {{LM324_WIPER}};
@@ -247,58 +232,42 @@
     return mask;
   }
 
-  record Scan {
-    active: bool;
-    mask: number;
-  }
+  // DS1/DS2 share the same eight segment lines.
+  derived dsSegmentMask: number = segmentMask();
 
-  derived ds1Scan1: Scan = { active: fusedNet{{NET_COM1}}() == {{SEG_SELECT_LEVEL}}, mask: segmentMask() };
-  derived ds1Scan2: Scan = { active: fusedNet{{NET_COM2}}() == {{SEG_SELECT_LEVEL}}, mask: segmentMask() };
-  derived ds1Scan3: Scan = { active: fusedNet{{NET_COM3}}() == {{SEG_SELECT_LEVEL}}, mask: segmentMask() };
-  derived ds1Scan4: Scan = { active: fusedNet{{NET_COM4}}() == {{SEG_SELECT_LEVEL}}, mask: segmentMask() };
-  derived ds2Scan1: Scan = { active: fusedNet{{NET_COM5}}() == {{SEG_SELECT_LEVEL}}, mask: segmentMask() };
-  derived ds2Scan2: Scan = { active: fusedNet{{NET_COM6}}() == {{SEG_SELECT_LEVEL}}, mask: segmentMask() };
-  derived ds2Scan3: Scan = { active: fusedNet{{NET_COM7}}() == {{SEG_SELECT_LEVEL}}, mask: segmentMask() };
-  derived ds2Scan4: Scan = { active: fusedNet{{NET_COM8}}() == {{SEG_SELECT_LEVEL}}, mask: segmentMask() };
+  // Unselected digits keep the same candidate as segment data moves, so their reaction
+  // and process stay asleep. Zero is a valid blank mask, distinct from -1.
+  derived ds1Scan1: number = fusedNet{{NET_COM1}}() == {{SEG_SELECT_LEVEL}} ? dsSegmentMask : -1;
+  derived ds1Scan2: number = fusedNet{{NET_COM2}}() == {{SEG_SELECT_LEVEL}} ? dsSegmentMask : -1;
+  derived ds1Scan3: number = fusedNet{{NET_COM3}}() == {{SEG_SELECT_LEVEL}} ? dsSegmentMask : -1;
+  derived ds1Scan4: number = fusedNet{{NET_COM4}}() == {{SEG_SELECT_LEVEL}} ? dsSegmentMask : -1;
+  derived ds2Scan1: number = fusedNet{{NET_COM5}}() == {{SEG_SELECT_LEVEL}} ? dsSegmentMask : -1;
+  derived ds2Scan2: number = fusedNet{{NET_COM6}}() == {{SEG_SELECT_LEVEL}} ? dsSegmentMask : -1;
+  derived ds2Scan3: number = fusedNet{{NET_COM7}}() == {{SEG_SELECT_LEVEL}} ? dsSegmentMask : -1;
+  derived ds2Scan4: number = fusedNet{{NET_COM8}}() == {{SEG_SELECT_LEVEL}} ? dsSegmentMask : -1;
 
   reaction trackDs1Digit1 on ds1Scan1 as (previous, current) {
-    ds1Active1 = current.active;
-    ds1Candidate1 = current.mask;
     ds1Since1 = now();
   }
   reaction trackDs1Digit2 on ds1Scan2 as (previous, current) {
-    ds1Active2 = current.active;
-    ds1Candidate2 = current.mask;
     ds1Since2 = now();
   }
   reaction trackDs1Digit3 on ds1Scan3 as (previous, current) {
-    ds1Active3 = current.active;
-    ds1Candidate3 = current.mask;
     ds1Since3 = now();
   }
   reaction trackDs1Digit4 on ds1Scan4 as (previous, current) {
-    ds1Active4 = current.active;
-    ds1Candidate4 = current.mask;
     ds1Since4 = now();
   }
   reaction trackDs2Digit1 on ds2Scan1 as (previous, current) {
-    ds2Active1 = current.active;
-    ds2Candidate1 = current.mask;
     ds2Since1 = now();
   }
   reaction trackDs2Digit2 on ds2Scan2 as (previous, current) {
-    ds2Active2 = current.active;
-    ds2Candidate2 = current.mask;
     ds2Since2 = now();
   }
   reaction trackDs2Digit3 on ds2Scan3 as (previous, current) {
-    ds2Active3 = current.active;
-    ds2Candidate3 = current.mask;
     ds2Since3 = now();
   }
   reaction trackDs2Digit4 on ds2Scan4 as (previous, current) {
-    ds2Active4 = current.active;
-    ds2Candidate4 = current.mask;
     ds2Since4 = now();
   }
 
@@ -310,81 +279,81 @@
   }
 
   process scanDs1Digit1 on ds1Scan1 {
-    if ds1Scan1.active {
+    if ds1Scan1 >= 0 {
       const stableAt = ds1Since1 + {{SEG_SETTLE_PS}};
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds1Scan1.active && ds1Active1 && ds1Candidate1 == ds1Scan1.mask && now() - ds1Since1 >= {{SEG_SETTLE_PS}} && ds1Digit1 != ds1Candidate1 {
-        ds1Digit1 = ds1Candidate1;
+      if ds1Scan1 >= 0 && now() - ds1Since1 >= {{SEG_SETTLE_PS}} && ds1Digit1 != ds1Scan1 {
+        ds1Digit1 = ds1Scan1;
         emitDisplay1();
       }
     }
   }
   process scanDs1Digit2 on ds1Scan2 {
-    if ds1Scan2.active {
+    if ds1Scan2 >= 0 {
       const stableAt = ds1Since2 + {{SEG_SETTLE_PS}};
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds1Scan2.active && ds1Active2 && ds1Candidate2 == ds1Scan2.mask && now() - ds1Since2 >= {{SEG_SETTLE_PS}} && ds1Digit2 != ds1Candidate2 {
-        ds1Digit2 = ds1Candidate2;
+      if ds1Scan2 >= 0 && now() - ds1Since2 >= {{SEG_SETTLE_PS}} && ds1Digit2 != ds1Scan2 {
+        ds1Digit2 = ds1Scan2;
         emitDisplay1();
       }
     }
   }
   process scanDs1Digit3 on ds1Scan3 {
-    if ds1Scan3.active {
+    if ds1Scan3 >= 0 {
       const stableAt = ds1Since3 + {{SEG_SETTLE_PS}};
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds1Scan3.active && ds1Active3 && ds1Candidate3 == ds1Scan3.mask && now() - ds1Since3 >= {{SEG_SETTLE_PS}} && ds1Digit3 != ds1Candidate3 {
-        ds1Digit3 = ds1Candidate3;
+      if ds1Scan3 >= 0 && now() - ds1Since3 >= {{SEG_SETTLE_PS}} && ds1Digit3 != ds1Scan3 {
+        ds1Digit3 = ds1Scan3;
         emitDisplay1();
       }
     }
   }
   process scanDs1Digit4 on ds1Scan4 {
-    if ds1Scan4.active {
+    if ds1Scan4 >= 0 {
       const stableAt = ds1Since4 + {{SEG_SETTLE_PS}};
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds1Scan4.active && ds1Active4 && ds1Candidate4 == ds1Scan4.mask && now() - ds1Since4 >= {{SEG_SETTLE_PS}} && ds1Digit4 != ds1Candidate4 {
-        ds1Digit4 = ds1Candidate4;
+      if ds1Scan4 >= 0 && now() - ds1Since4 >= {{SEG_SETTLE_PS}} && ds1Digit4 != ds1Scan4 {
+        ds1Digit4 = ds1Scan4;
         emitDisplay1();
       }
     }
   }
   process scanDs2Digit1 on ds2Scan1 {
-    if ds2Scan1.active {
+    if ds2Scan1 >= 0 {
       const stableAt = ds2Since1 + {{SEG_SETTLE_PS}};
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds2Scan1.active && ds2Active1 && ds2Candidate1 == ds2Scan1.mask && now() - ds2Since1 >= {{SEG_SETTLE_PS}} && ds2Digit1 != ds2Candidate1 {
-        ds2Digit1 = ds2Candidate1;
+      if ds2Scan1 >= 0 && now() - ds2Since1 >= {{SEG_SETTLE_PS}} && ds2Digit1 != ds2Scan1 {
+        ds2Digit1 = ds2Scan1;
         emitDisplay2();
       }
     }
   }
   process scanDs2Digit2 on ds2Scan2 {
-    if ds2Scan2.active {
+    if ds2Scan2 >= 0 {
       const stableAt = ds2Since2 + {{SEG_SETTLE_PS}};
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds2Scan2.active && ds2Active2 && ds2Candidate2 == ds2Scan2.mask && now() - ds2Since2 >= {{SEG_SETTLE_PS}} && ds2Digit2 != ds2Candidate2 {
-        ds2Digit2 = ds2Candidate2;
+      if ds2Scan2 >= 0 && now() - ds2Since2 >= {{SEG_SETTLE_PS}} && ds2Digit2 != ds2Scan2 {
+        ds2Digit2 = ds2Scan2;
         emitDisplay2();
       }
     }
   }
   process scanDs2Digit3 on ds2Scan3 {
-    if ds2Scan3.active {
+    if ds2Scan3 >= 0 {
       const stableAt = ds2Since3 + {{SEG_SETTLE_PS}};
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds2Scan3.active && ds2Active3 && ds2Candidate3 == ds2Scan3.mask && now() - ds2Since3 >= {{SEG_SETTLE_PS}} && ds2Digit3 != ds2Candidate3 {
-        ds2Digit3 = ds2Candidate3;
+      if ds2Scan3 >= 0 && now() - ds2Since3 >= {{SEG_SETTLE_PS}} && ds2Digit3 != ds2Scan3 {
+        ds2Digit3 = ds2Scan3;
         emitDisplay2();
       }
     }
   }
   process scanDs2Digit4 on ds2Scan4 {
-    if ds2Scan4.active {
+    if ds2Scan4 >= 0 {
       const stableAt = ds2Since4 + {{SEG_SETTLE_PS}};
       if now() < stableAt { await ticks(stableAt - now()); }
-      if ds2Scan4.active && ds2Active4 && ds2Candidate4 == ds2Scan4.mask && now() - ds2Since4 >= {{SEG_SETTLE_PS}} && ds2Digit4 != ds2Candidate4 {
-        ds2Digit4 = ds2Candidate4;
+      if ds2Scan4 >= 0 && now() - ds2Since4 >= {{SEG_SETTLE_PS}} && ds2Digit4 != ds2Scan4 {
+        ds2Digit4 = ds2Scan4;
         emitDisplay2();
       }
     }
