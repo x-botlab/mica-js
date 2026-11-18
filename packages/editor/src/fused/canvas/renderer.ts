@@ -10,7 +10,14 @@ import {
   type IViewport,
 } from './geometry';
 import type { WorkbenchThemeColors } from '../theme';
-import { moveReference, moveWireSegment, orthogonalPath, routeDocumentWires } from '../wiring';
+import {
+  labelAnchorNode,
+  moveLabel,
+  moveReference,
+  moveWireSegment,
+  orthogonalPath,
+  routeDocumentWires,
+} from '../wiring';
 import { setTextOffset, type IFusedTextTarget } from '../document/edits';
 
 export interface IRenderState {
@@ -34,6 +41,7 @@ export interface IRenderState {
   };
   readonly textDrag?: { readonly target: IFusedTextTarget; readonly offset: Point2D };
   readonly referenceDrag?: { readonly referenceId: string; readonly position: Point2D };
+  readonly labelDrag?: { readonly labelId: string; readonly position: Point2D };
   readonly ghost?: {
     readonly device: string;
     readonly position: Point2D;
@@ -112,6 +120,16 @@ export function drawCanvas(
       () => `__reference_drag_${previewId++}__`,
     );
   }
+  if (
+    state.labelDrag !== undefined &&
+    labelAnchorNode(document, state.labelDrag.labelId) !== undefined
+  )
+    document = moveLabel(
+      document,
+      state.devices,
+      state.labelDrag.labelId,
+      state.labelDrag.position,
+    );
   const stroke = (points: readonly Point2D[]): void => {
     context.beginPath();
     points.forEach((point, index) => {

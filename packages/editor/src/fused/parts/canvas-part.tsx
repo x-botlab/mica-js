@@ -25,7 +25,7 @@ import {
   type IViewport,
 } from '../canvas/geometry';
 import { drawCanvas } from '../canvas/renderer';
-import { hasWireConnection, orthogonalPath } from '../wiring';
+import { hasWireConnection, labelAnchorNode, orthogonalPath } from '../wiring';
 import { projectOnSegment } from '@mica-js/document/schematic';
 import { readCanvasTheme, type IResolvedWorkbenchTheme } from '../theme';
 import type { IFusedTextTarget } from '../document/edits';
@@ -64,6 +64,7 @@ export interface ICanvasPartProps {
   readonly onMoveSegment: (wireId: string, segment: number, delta: Point2D) => Promise<void>;
   readonly onMoveText: (target: IFusedTextTarget, offset: Point2D) => Promise<void>;
   readonly onMoveReference: (referenceId: string, position: Point2D) => Promise<void>;
+  readonly onMoveLabel: (labelId: string, position: Point2D) => Promise<void>;
   readonly onStartWire: () => Promise<void>;
   readonly onConnect: (
     from: Endpoint | Point2D,
@@ -107,6 +108,10 @@ export function CanvasPart(props: ICanvasPartProps) {
     readonly referenceId: string;
     readonly position: Point2D;
   }>();
+  const [labelDrag, setLabelDrag] = useState<{
+    readonly labelId: string;
+    readonly position: Point2D;
+  }>();
   const [candidates, setCandidates] = useState<readonly IPinHit[]>([]);
   const gesture = useRef<
     | {
@@ -135,6 +140,14 @@ export function CanvasPart(props: ICanvasPartProps) {
         readonly start: Point2D;
         readonly original: Point2D;
         readonly referenceId: string;
+        moved: boolean;
+      }
+    | {
+        readonly kind: 'label';
+        readonly pointerId: number;
+        readonly start: Point2D;
+        readonly original: Point2D;
+        readonly labelId: string;
         moved: boolean;
       }
     | undefined
@@ -201,6 +214,7 @@ export function CanvasPart(props: ICanvasPartProps) {
     setWireDrag(undefined);
     setTextDrag(undefined);
     setReferenceDrag(undefined);
+    setLabelDrag(undefined);
     if (active !== undefined)
       current.current.onInput(active.instanceId, {
         type: 'pointerup',
@@ -273,6 +287,7 @@ export function CanvasPart(props: ICanvasPartProps) {
           ...(wireDrag === undefined ? {} : { wireDrag }),
           ...(textDrag === undefined ? {} : { textDrag }),
           ...(referenceDrag === undefined ? {} : { referenceDrag }),
+          ...(labelDrag === undefined ? {} : { labelDrag }),
           ...(!hovered || props.placement === undefined
             ? {}
             : {
@@ -333,6 +348,7 @@ export function CanvasPart(props: ICanvasPartProps) {
     wireDrag,
     textDrag,
     referenceDrag,
+    labelDrag,
   ]);
 
   function local(
@@ -413,6 +429,11 @@ export function CanvasPart(props: ICanvasPartProps) {
         props.onCancel();
       });
     }
+  }
+  /** Wire starts only on the electrical anchor, not on the rest of the terminal symbol. */
+  function atAnchor(endpoint: Endpoint, point: Point2D): boolean {
+    const anchor = anchorPoint(endpoint);
+    return Math.hypot(anchor.x - point.x, anchor.y - point.y) <= 7 / viewport.scale;
   }
   function startWire(endpoint: Endpoint | Point2D): void {
     if (props.state.readOnly || props.state.mode !== 'edit') return;
@@ -610,12 +631,26 @@ export function CanvasPart(props: ICanvasPartProps) {
                 : [target],
             );
             if (!props.state.readOnly) {
-              gesture.current = {
-                kind: 'text',
-                pointerId: event.pointerId,
-                start: point,
-                target: text,
-              };
+              const anchor =
+                text.kind === 'label' ? labelAnchorNode(props.document, text.id) : undefined;
+              const node = props.document.nodes.find((value) => value.id === anchor);
+              if (anchor !== undefined && node !== undefined) {
+                gesture.current = {
+                  kind: 'label',
+                  pointerId: event.pointerId,
+                  start: point,
+                  original: { x: node.x, y: node.y },
+                  labelId: text.id,
+                  moved: false,
+                };
+              } else {
+                gesture.current = {
+                  kind: 'text',
+                  pointerId: event.pointerId,
+                  start: point,
+                  target: text,
+                };
+              }
               event.currentTarget.setPointerCapture(event.pointerId);
             }
             return;
@@ -767,6 +802,23 @@ export function CanvasPart(props: ICanvasPartProps) {
               target: active.target,
               offset: textDragOffset(props.document, props.devices, active.target, delta),
             });
+          } else if (active?.kind === 'label') {
+            if (
+              Math.hypot(point.x - active.start.x, point.y - active.start.y) * viewport.scale >=
+              3
+            )
+              active.moved = true;
+            if (active.moved)
+              setLabelDrag({
+                labelId: active.labelId,
+                position: snap(
+                  {
+                    x: active.original.x + point.x - active.start.x,
+                    y: active.original.y + point.y - active.start.y,
+                  },
+                  event.altKey,
+                ),
+              });
           } else if (active?.kind === 'reference') {
             if (
               Math.hypot(point.x - active.start.x, point.y - active.start.y) * viewport.scale >=
@@ -829,7 +881,21 @@ export function CanvasPart(props: ICanvasPartProps) {
               const reference = props.document.references.find(
                 (value) => value.id === active.target.id,
               );
-              if (reference !== undefined) startWire(reference.target);
+              if (reference !== undefined && atAnchor(reference.target, active.start))
+                startWire(reference.target);
+            }
+          } else if (active?.kind === 'label') {
+            if (active.moved) {
+              const point = toScene(local(event), viewport);
+              const position = snap(
+                {
+                  x: active.original.x + point.x - active.start.x,
+                  y: active.original.y + point.y - active.start.y,
+                },
+                event.altKey,
+              );
+              if (position.x !== active.original.x || position.y !== active.original.y)
+                commit(() => props.onMoveLabel(active.labelId, position));
             }
           } else if (active?.kind === 'reference') {
             if (active.moved) {
@@ -847,7 +913,8 @@ export function CanvasPart(props: ICanvasPartProps) {
               const reference = props.document.references.find(
                 (value) => value.id === active.referenceId,
               );
-              if (reference !== undefined) startWire(reference.target);
+              if (reference !== undefined && atAnchor(reference.target, active.start))
+                startWire(reference.target);
             }
           }
           gesture.current = undefined;
@@ -855,6 +922,7 @@ export function CanvasPart(props: ICanvasPartProps) {
           setWireDrag(undefined);
           setTextDrag(undefined);
           setReferenceDrag(undefined);
+          setLabelDrag(undefined);
           if (event.currentTarget.hasPointerCapture(event.pointerId))
             event.currentTarget.releasePointerCapture(event.pointerId);
         }}
