@@ -8,6 +8,7 @@ import { createBoardView, type BoardView, type BoardViewEvent } from '../device/
 import {
   J13,
   J2,
+  J2_TX,
   J3,
   J5,
   J6,
@@ -38,6 +39,7 @@ interface SwitchCall {
 interface JumperCall {
   readonly designator: string;
   readonly closed: boolean;
+  readonly channel?: number;
 }
 
 interface SnapshotOptions {
@@ -58,7 +60,7 @@ function snapshotOf(options: SnapshotOptions = {}): BoardSnapshot {
   ) as Record<KeyDesignator, boolean>;
   for (const designator of options.pressed ?? []) switches[designator] = true;
   const jumpers = Object.fromEntries(
-    JUMPER_DESIGNATORS.map((designator) => [designator, true]),
+    JUMPER_DESIGNATORS.map((designator) => [designator, designator !== 'J2Tx']),
   ) as Record<JumperDesignator, boolean>;
   Object.assign(jumpers, options.jumpers);
   return {
@@ -157,10 +159,15 @@ function harness(options: HarnessOptions = {}): ModelHarness {
         const record = parameterRecord(params, 'setJumper');
         const designator = record['designator'];
         const closed = record['closed'];
-        if (typeof designator !== 'string' || typeof closed !== 'boolean') {
-          throw new TypeError('setJumper expects { designator, closed }.');
+        const channel = record['channel'];
+        if (
+          typeof designator !== 'string' ||
+          typeof closed !== 'boolean' ||
+          (channel !== undefined && typeof channel !== 'number')
+        ) {
+          throw new TypeError('setJumper expects { designator, closed, channel? }.');
         }
-        jumperCalls.push({ designator, closed });
+        jumperCalls.push({ designator, closed, ...(channel === undefined ? {} : { channel }) });
         if (options.rejectJumper !== undefined) throw options.rejectJumper;
         return null;
       },
@@ -359,13 +366,13 @@ describe('CT107D View2D 绘制', () => {
     expect(canvas.strokes.some((stroke) => stroke.style.includes('234, 183, 96'))).toBe(true);
   });
 
-  it('五个跳线控件以局部不透明底座盖住照片，不再露出旧帽或金色桥线', async () => {
+  it('跳线控件以局部不透明底座盖住照片，不再露出旧帽或金色桥线', async () => {
     const model = harness();
     const { view } = mount(model.model);
     await view.initialize();
     const initial = paint(view);
-    expect(initial.rectangles).toHaveLength(5);
-    for (const layout of [J13, J5, J3, J2, J6]) {
+    expect(initial.rectangles).toHaveLength(6);
+    for (const layout of [J13, J5, J3, J2, J2_TX, J6]) {
       const point = center(layout.socket);
       expect(initial.rectangles.filter((rect) => contains(rect, point))).toHaveLength(1);
     }
@@ -553,7 +560,7 @@ describe('CT107D View2D 输入', () => {
     ]);
   });
 
-  it('J13/J5 选择真实的 1-2 或 2-3，J2 固定 1-3 不可切换，J6 左右两档', async () => {
+  it('J13/J5 选择真实档位，J2 上下排各自可切换，J6 左右两档', async () => {
     const model = harness();
     const { view } = mount(model.model);
     await view.initialize();
@@ -579,9 +586,12 @@ describe('CT107D View2D 输入', () => {
       { designator: 'J2', closed: true },
     ]);
 
-    const beforeFixed = model.jumperCalls.length;
-    await view.input(pointer('pointerdown', { x: 594, y: 181 }));
-    expect(model.jumperCalls).toHaveLength(beforeFixed);
+    await view.input(pointer('pointerdown', { x: 583, y: 181 }));
+    await view.input(pointer('pointerdown', { x: 605, y: 181 }));
+    expect(model.jumperCalls.slice(-2)).toEqual([
+      { designator: 'J2', channel: 1, closed: false },
+      { designator: 'J2', channel: 1, closed: true },
+    ]);
 
     await view.input(pointer('pointerdown', { x: 940, y: 468 }));
     model.emit({ designator: 'J3', port: 'closedState', value: 0 });
@@ -599,26 +609,28 @@ describe('CT107D View2D 输入', () => {
     ]);
   });
 
-  it('J3 开闭、J2 固定下排和 J6 左右档位使用同一滑块几何', async () => {
+  it('J3、J2 上下排和 J6 根据独立状态绘制滑块', async () => {
     const model = harness();
     const { view } = mount(model.model);
     await view.initialize();
     const initial = paint(view);
     expect(filledRoundRect(initial, jumperKnobRect(J3, true))).toBeDefined();
     expect(filledRoundRect(initial, jumperKnobRect(J2, true))).toBeDefined();
+    expect(filledRoundRect(initial, jumperKnobRect(J2_TX, false))).toBeDefined();
     expect(filledRoundRect(initial, jumperKnobRect(J6, true))).toBeDefined();
     expect(center(jumperKnobRect(J3, true)).y).toBeLessThan(center(jumperKnobRect(J3, false)).y);
     expect(center(jumperKnobRect(J2, false)).x).toBeLessThan(center(jumperKnobRect(J2, true)).x);
     expect(center(jumperKnobRect(J6, false)).x).toBeLessThan(center(jumperKnobRect(J6, true)).x);
 
-    // J2 下排固定短接不可点击。
-    const beforeFixed = model.jumperCalls.length;
-    await view.input(pointer('pointerdown', { x: 594, y: 181 }));
-    expect(model.jumperCalls).toHaveLength(beforeFixed);
+    await view.input(pointer('pointerdown', { x: 605, y: 181 }));
+    expect(filledRoundRect(paint(view), jumperKnobRect(J2_TX, true))).toBeUndefined();
 
     model.emit({ designator: 'J3', port: 'closedState', value: 0 });
     model.emit({ designator: 'J6', port: 'closedState', value: 0 });
+    model.emit({ designator: 'J2', port: 'closedState1', value: 1 });
     const changed = paint(view);
+    expect(filledRoundRect(changed, jumperKnobRect(J2_TX, true))).toBeDefined();
+    expect(filledRoundRect(changed, jumperKnobRect(J2, true))).toBeDefined();
     expect(filledRoundRect(changed, jumperKnobRect(J3, false))).toBeDefined();
     expect(filledRoundRect(changed, jumperKnobRect(J6, false))).toBeDefined();
   });
@@ -672,7 +684,8 @@ describe('CT107D View2D 生命周期', () => {
     const { view } = mount(undefined);
     await view.initialize();
     const canvas = paint(view);
-    expect(canvas.rectangles).toHaveLength(5);
+    expect(filledRoundRect(canvas, jumperKnobRect(J2, true))).toBeDefined();
+    expect(filledRoundRect(canvas, jumperKnobRect(J2_TX, false))).toBeDefined();
     expect(
       canvas.rounded.some(({ operation, style }) => operation === 'fill' && style === '#151a19'),
     ).toBe(true);

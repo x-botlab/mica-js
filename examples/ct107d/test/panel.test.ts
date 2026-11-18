@@ -230,7 +230,7 @@ function snapshot(
       S18: false,
       S19: false,
     },
-    jumpers: { J13: true, J3: true, J2: true, J5: true, J6: true },
+    jumpers: { J13: true, J3: true, J2: true, J2Tx: false, J5: true, J6: true },
     infrared: { LD1: false, U11: false, U20: false },
     ne555: { frequency: 0, dutyCycle: 0 },
     uln2003: { mask: 0, channels: '0000000' },
@@ -289,6 +289,18 @@ describe('panel bootstrap snapshot races', () => {
     expect(board.readback?.jumpers.J6).toBe(true);
     expect(board.applySignal({ designator: 'J6', port: 'closedState', value: 0 })).toBe(true);
     expect(board.readback?.jumpers.J6).toBe(false);
+  });
+
+  it('merges J2 row signals independently of a stale snapshot', () => {
+    const board = new BoardBootstrap();
+    board.applySnapshot(snapshot(), board.beginSnapshot());
+    const baseline = board.beginSnapshot();
+
+    expect(board.applySignal({ designator: 'J2', port: 'closedState1', value: 1 })).toBe(true);
+    expect(board.readback?.jumpers).toMatchObject({ J2: true, J2Tx: true });
+    expect(board.applySignal({ designator: 'J2', port: 'closedState2', value: 0 })).toBe(true);
+    expect(board.applySnapshot(snapshot(), baseline)).toBe(true);
+    expect(board.readback?.jumpers).toMatchObject({ J2: false, J2Tx: true });
   });
 
   it('drops buffered events and late replies after close', () => {

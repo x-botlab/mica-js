@@ -95,12 +95,18 @@
       },
       "JumperParams": {
         "type": "object",
+        "optional": [
+          "channel"
+        ],
         "properties": {
           "designator": {
             "type": "string"
           },
           "closed": {
             "type": "boolean"
+          },
+          "channel": {
+            "type": "number"
           }
         }
       },
@@ -363,6 +369,9 @@
                 "type": "boolean"
               },
               "J2": {
+                "type": "boolean"
+              },
+              "J2Tx": {
                 "type": "boolean"
               },
               "J5": {

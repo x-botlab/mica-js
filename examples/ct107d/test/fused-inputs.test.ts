@@ -60,7 +60,14 @@ describe('fused board input methods', () => {
       fused.board.runUntil(0);
       const initial = snapshot(fused);
       expect(initial.switches.S9).toBe(false);
-      expect(initial.jumpers).toEqual({ J13: true, J3: true, J2: true, J5: true, J6: true });
+      expect(initial.jumpers).toEqual({
+        J13: true,
+        J3: true,
+        J2: true,
+        J2Tx: false,
+        J5: true,
+        J6: true,
+      });
       expect(initial.infrared).toEqual({ LD1: false, U11: false, U20: false });
       expect(initial.ne555.frequency).toBeGreaterThan(0);
       expect(initial.ne555.dutyCycle).toBeGreaterThan(0);
@@ -101,7 +108,14 @@ describe('fused board input methods', () => {
       expect(signals.get('U11/receiving')).toBe(1);
       const routed = snapshot(fused);
       expect(routed.switches.S9).toBe(true);
-      expect(routed.jumpers).toEqual({ J13: false, J3: true, J2: true, J5: false, J6: false });
+      expect(routed.jumpers).toEqual({
+        J13: false,
+        J3: true,
+        J2: true,
+        J2Tx: false,
+        J5: false,
+        J6: false,
+      });
       expect(routed.infrared).toEqual({ LD1: true, U11: true, U20: false });
 
       // J6 没有 DDL 输入/网表；模型适配器同步发布自己的装配状态。
@@ -205,6 +219,69 @@ describe('fused board input methods', () => {
       fused.dispose();
     }
   }, 60_000);
+
+  it('routes MCU P1.0 to LD1 only in J2 3-5 without changing the receive row', async () => {
+    const firmware = assemble(`
+      ORG 0
+      CLR P1.0
+    CYCLE: CPL P1.0
+      MOV R7,#250
+    HOLD: DJNZ R7,HOLD
+      SJMP CYCLE
+    `);
+    const fused = await createFusedCt107dBoard({ firmware });
+    const carriers: number[] = [];
+    const rowSignals = new Map<string, number>();
+    const subscription = fused.board.topics.onDidReceive((message) => {
+      if (message.topic !== 'signal') return;
+      const { designator, port, value } = message.payload as {
+        designator: string;
+        port: string;
+        value: number;
+      };
+      if (designator === 'LD1' && port === 'carrier') carriers.push(value);
+      if (designator === 'J2') rowSignals.set(port, value);
+    });
+    let time = 0;
+    const advance = () => fused.board.runUntil((time += 2_000_000_000));
+
+    try {
+      advance();
+      expect(carriers).toEqual([0]);
+      expect(rowSignals).toEqual(
+        new Map([
+          ['closedState1', 0],
+          ['closedState2', 1],
+        ]),
+      );
+
+      fused.methods.setJumper!({ designator: 'J2', channel: 1, closed: true });
+      advance();
+      expect(rowSignals.get('closedState1')).toBe(1);
+      expect(snapshot(fused).jumpers).toMatchObject({ J2: true, J2Tx: true });
+      expect(carriers.slice(1)).toEqual(expect.arrayContaining([1, 0]));
+
+      fused.methods.setJumper!({ designator: 'J2', closed: false });
+      advance();
+      expect(rowSignals.get('closedState2')).toBe(0);
+      expect(snapshot(fused).jumpers).toMatchObject({ J2: false, J2Tx: true });
+
+      fused.methods.setJumper!({ designator: 'J2', channel: 1, closed: false });
+      advance();
+      expect(rowSignals.get('closedState1')).toBe(0);
+      expect(snapshot(fused).jumpers).toMatchObject({ J2: false, J2Tx: false });
+      expect(carriers.at(-1)).toBe(0);
+      const count = carriers.length;
+      advance();
+      expect(carriers).toHaveLength(count);
+      expect(() =>
+        fused.methods.setJumper!({ designator: 'J2', channel: 3, closed: false }),
+      ).toThrow(/channel must be 1 or 2/);
+    } finally {
+      subscription.dispose();
+      fused.dispose();
+    }
+  });
 
   it('queries are coherent inside events, late subscribers do not miss state, and results are copies', async () => {
     const firmware = assemble(

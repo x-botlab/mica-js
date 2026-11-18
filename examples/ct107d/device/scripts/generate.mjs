@@ -750,14 +750,14 @@ function collectNetInputs(body) {
     inputs.add(`mcu:${Number(match[1])}`);
   for (const match of body.matchAll(/load8\(fusedButtonLow,\s*(\d+)\)/g))
     inputs.add(`button:${Number(match[1])}`);
-  for (const match of body.matchAll(/\b(j13Closed|j3Closed|j2Vs1838|j5Closed)\b/g))
-    inputs.add(`jumper:${match[1]}`);
+  for (const state of JUMPER_STATES)
+    if (new RegExp(`\\b${state}\\b`).test(body)) inputs.add(`jumper:${state}`);
   for (const match of body.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*_drive)\b/g))
     inputs.add(`state:${match[1]}`);
   return inputs;
 }
 
-const JUMPER_STATES = ['j13Closed', 'j3Closed', 'j2Vs1838', 'j5Closed'];
+const JUMPER_STATES = ['j13Closed', 'j3Closed', 'j2Vs1838', 'j5Closed', 'j2TxToLd1'];
 
 /**
  * Every pin dirty mark also marks the summary byte of its 8-pin group, so the
@@ -973,9 +973,11 @@ function generateNets(instances, template) {
     let body;
     if (name === 'VCC') body = '    return 1;';
     else if (name === 'GND') body = '    return 0;';
-    else if (name === 'N_A1') body = `    return fusedNet${indexOfNet('P10')}();`;
-    else if (name === 'N_A2') body = '    return 2;';
-    else {
+    else if (name === 'N_A1' || name === 'N_A2') {
+      // J2's lower row routes P1.0 to U18 or LD1; the unselected input floats.
+      const selected = name === 'N_A1' ? '!j2TxToLd1' : 'j2TxToLd1';
+      body = `    if ${selected} { return fusedNet${indexOfNet('P10')}(); }\n    return 2;`;
+    } else {
       const lines = [];
       for (const driver of drivers.get(net) ?? []) {
         lines.push(`    if ${driver} == 0 { strongLow = true; }`);

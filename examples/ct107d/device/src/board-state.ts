@@ -9,7 +9,7 @@
 import {
   JUMPER_DEFAULT_STATES,
   JUMPER_DESIGNATORS,
-  JUMPER_SIGNAL_PORTS,
+  jumperKeyForSignal,
   type JumperDesignator,
 } from './jumper-map.js';
 
@@ -42,7 +42,6 @@ export type DisplayDesignator = (typeof DISPLAY_DESIGNATORS)[number];
 
 const KEY_SET: ReadonlySet<string> = new Set(KEY_DESIGNATORS);
 const DISPLAY_SET: ReadonlySet<string> = new Set(DISPLAY_DESIGNATORS);
-const JUMPER_SET: ReadonlySet<string> = new Set(JUMPER_DESIGNATORS);
 const LED_PATTERN = /^D([1-8])$/;
 const DIGIT_PATTERN = /^digit([1-4])$/;
 
@@ -201,9 +200,8 @@ export function createBoardStateStore(): BoardStateStore {
         return true;
       }
 
-      if (JUMPER_SET.has(signal.designator)) {
-        const designator = signal.designator as JumperDesignator;
-        if (signal.port !== JUMPER_SIGNAL_PORTS[designator]) return false;
+      const designator = jumperKeyForSignal(signal.designator, signal.port);
+      if (designator !== undefined) {
         const next = signal.value !== 0;
         markField(jumperField(designator));
         if (state.jumpers[designator] === next) return false;
@@ -243,7 +241,7 @@ function createInitialState(): BoardState {
       S18: false,
       S19: false,
     },
-    // 整板融合模型的装配默认值：J13/J5 为 2-3，J3 闭合，J2 选 VS1838；
+    // 整板融合模型的装配默认值：J13/J5 为 2-3，J3 闭合，J2 上排选 VS1838、下排接 U18；
     // J6 默认 ON 仅为板面装配状态，不进入融合电气。
     jumpers: { ...JUMPER_DEFAULT_STATES },
   };

@@ -7,8 +7,7 @@ import {
   ELECTRICAL_JUMPER_DESIGNATORS,
   JUMPER_DEFAULT_STATES,
   JUMPER_DESIGNATORS,
-  JUMPER_SIGNAL_PORTS,
-  type JumperDesignator,
+  jumperSignal,
 } from './jumper-map';
 
 const KEY_INDEX: ReadonlyMap<string, number> = new Map([
@@ -36,7 +35,7 @@ const KEY_NAME: ReadonlyMap<number, string> = new Map(
 const JUMPER_INDEX: ReadonlyMap<string, number> = new Map(
   JUMPER_DESIGNATORS.map((designator, index) => [designator, index]),
 );
-/** DDL jumper slot 0..3；J6 不在融合模型中，不能写入这条输入通道。 */
+/** J6 不在融合模型中，不能写入这条输入通道。 */
 const ELECTRICAL_JUMPER_INDEX: ReadonlyMap<string, number> = new Map(
   ELECTRICAL_JUMPER_DESIGNATORS.map((designator, index) => [designator, index]),
 );
@@ -157,6 +156,8 @@ export const create: DeviceFactory = (context) => {
         return BOARD_DEFAULTS.j3Closed;
       case 'J2':
         return BOARD_DEFAULTS.j2Vs1838;
+      case 'J2Tx':
+        return JUMPER_DEFAULT_STATES.J2Tx;
       case 'J5':
         return BOARD_DEFAULTS.j5Closed;
       case 'J6':
@@ -257,21 +258,26 @@ export const create: DeviceFactory = (context) => {
       return null;
     },
     setJumper: (params) => {
-      const index = JUMPER_INDEX.get(params.designator);
-      if (index === undefined)
+      const { designator, closed, channel } = params;
+      if (designator === 'J2Tx' || !JUMPER_INDEX.has(designator))
         throw new MethodError(
           'jumper/unknown-designator',
-          `Unknown jumper designator: ${params.designator}`,
-          { designator: params.designator },
+          `Unknown jumper designator: ${designator}`,
+          { designator },
         );
-      jumperStates[index] = params.closed;
-      const designator = params.designator as JumperDesignator;
-      const slot = ELECTRICAL_JUMPER_INDEX.get(designator);
+      if (channel !== undefined && (designator !== 'J2' || (channel !== 1 && channel !== 2)))
+        throw new MethodError('jumper/invalid-channel', 'J2 channel must be 1 or 2', {
+          designator,
+          channel,
+        });
+      const key = channel === 1 ? 'J2Tx' : designator;
+      jumperStates[JUMPER_INDEX.get(key)!] = closed;
+      const slot = ELECTRICAL_JUMPER_INDEX.get(key);
       if (slot === undefined) {
         // J6 只有装配状态，没有 DDL 输入或网表接线；在方法允许的同步阶段直接发事件。
-        signal(designator, JUMPER_SIGNAL_PORTS[designator], params.closed ? 1 : 0);
+        signal(designator, 'closedState', closed ? 1 : 0);
       } else {
-        context.inputs.jumperEvent.send({ index: slot, closed: params.closed });
+        context.inputs.jumperEvent.send({ index: slot, closed });
       }
       return null;
     },
@@ -517,7 +523,8 @@ export const create: DeviceFactory = (context) => {
         const value = message.value;
         const designator = ELECTRICAL_JUMPER_DESIGNATORS[value.index];
         if (designator === undefined) continue;
-        signal(designator, JUMPER_SIGNAL_PORTS[designator], value.closed ? 1 : 0);
+        const target = jumperSignal(designator);
+        signal(target.designator, target.port, value.closed ? 1 : 0);
       }
       for (const message of (outputs['amplifier'] ?? []) as readonly {
         value: AmplifierValue;

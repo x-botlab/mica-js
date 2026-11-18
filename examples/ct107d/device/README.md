@@ -46,6 +46,9 @@ pnpm --filter @mica-js/example-ct107d typecheck:fused
 - 输入：`setSwitch`、`setJumper`、`setHallField`、`setWiper`、
   `setAmplifierInputs`、`setIrCarrier`、`setTemperature`、`setAnalogInput`、
   `sendUart`；`setIrCarrier` 必须显式指定 `LD1`、`U11` 或 `U20`；
+  `setJumper({designator:'J2', channel:1, closed:true})` 选择下排 `3–5`（`P1.0 → LD1.mod`），
+  `false` 选择默认 `1–3`（`P1.0 → U18.a2`）；`channel:2` 或省略通道仍操作上排。
+  `jumpers.J2Tx` / `J2.closedState1` 表示下排，`jumpers.J2` / `J2.closedState2` 表示上排。
   `setJumper({designator:'J5', closed:false})` 选择 J5 1-2（S4–S7 接 P44 的 4×4
   矩阵），`closed:true` 是默认 2-3（S4–S7 独立接地）；J13 `closed:true` 是默认
   2-3（WR 接地），`closed:false` 是 1-2（WR 跟随 P42，不是悬空）；J6 仅保存

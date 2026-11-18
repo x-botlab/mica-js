@@ -29,9 +29,7 @@ import {
   jumperKnobRect,
   keyAt,
   keyLayout,
-  pinPosition,
   type JumperLayout,
-  type JumperPairLayout,
   type Point,
   type Rect,
 } from './board-layout.js';
@@ -43,6 +41,7 @@ import {
   type JumperDesignator,
   type KeyDesignator,
 } from './board-state.js';
+import { jumperParams } from './jumper-map.js';
 
 /** 宿主合同只声明三种指针事件；取消/移出按新版宿主的归一化约定也按抬起处理。 */
 export type BoardViewEvent =
@@ -79,7 +78,6 @@ const SLIDER_TRACK_STROKE = '#454c49';
 const SLIDER_KNOB_FILL = '#7f8f99';
 const SLIDER_KNOB_STROKE = '#c9ceca';
 const SLIDER_GRIP = '#d2d6d2';
-const SLIDER_FIXED_FILL = '#6f7e88';
 
 const DIGIT_ASPECT = 0.58;
 
@@ -175,9 +173,7 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
     const choice = jumperChoiceAt(event.position);
     if (choice !== undefined) {
       const closed = choice.closed ?? !store.state.jumpers[choice.designator];
-      return callModel('setJumper', { designator: choice.designator, closed }).then(
-        () => undefined,
-      );
+      return callModel('setJumper', jumperParams(choice.designator, closed)).then(() => undefined);
     }
 
     const key = keyAt(event.position);
@@ -514,7 +510,6 @@ function drawJumper(
   canvas.fillRect(x, y, width, height);
 
   drawSliderTrack(canvas, layout.slider.track);
-  for (const pair of layout.fixed) drawFixedPair(canvas, layout, pair);
   drawSliderKnob(canvas, layout, closed);
 
   if (interaction.hoveredJumper === layout.designator) {
@@ -568,36 +563,6 @@ function drawSliderKnob(
   canvas.strokeStyle = SLIDER_GRIP;
   canvas.lineWidth = Math.max(1.2, small * 0.16);
   canvas.lineCap = 'round';
-  canvas.stroke();
-}
-
-/** J2 的 1-3 固定短接：同样使用滑轨语言，但没有握条且不响应点击。 */
-function drawFixedPair(
-  canvas: OffscreenCanvasRenderingContext2D,
-  layout: JumperLayout,
-  pair: JumperPairLayout,
-): void {
-  const first = pinPosition(layout, pair.pins[0]);
-  const second = pinPosition(layout, pair.pins[1]);
-  const horizontal = Math.abs(second.x - first.x) >= Math.abs(second.y - first.y);
-  const cx = (first.x + second.x) / 2;
-  const cy = (first.y + second.y) / 2;
-  const length = Math.hypot(second.x - first.x, second.y - first.y) + 8;
-  const track = horizontal
-    ? { x: cx - length / 2, y: cy - 5, width: length, height: 10 }
-    : { x: cx - 5, y: cy - length / 2, width: 10, height: length };
-  drawSliderTrack(canvas, track);
-
-  const capLength = Math.max(10, length - 10);
-  const cap = horizontal
-    ? { x: cx - capLength / 2, y: cy - 3, width: capLength, height: 6 }
-    : { x: cx - 3, y: cy - capLength / 2, width: 6, height: capLength };
-  canvas.beginPath();
-  canvas.roundRect(cap.x, cap.y, cap.width, cap.height, 2.5);
-  canvas.fillStyle = SLIDER_FIXED_FILL;
-  canvas.fill();
-  canvas.strokeStyle = SLIDER_KNOB_STROKE;
-  canvas.lineWidth = 1;
   canvas.stroke();
 }
 

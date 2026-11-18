@@ -3684,6 +3684,8 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   state j5Closed: bool = true;
   state j3Closed: bool = true;
   state j2Vs1838: bool = true;
+  /** J2 lower row: false = 1-3 (U18, default), true = 3-5 (LD1). */
+  state j2TxToLd1: bool = false;
 
   input channel switchEvent: SwitchEvent(capacity: 32, overflow: Overflow.drop_oldest);
   input channel jumperEvent: JumperEvent(capacity: 16, overflow: Overflow.drop_oldest);
@@ -5747,9 +5749,11 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     return 2;
   }
   pure fn fusedNet94() -> number {
-    return fusedNet10();
+    if !j2TxToLd1 { return fusedNet10(); }
+    return 2;
   }
   pure fn fusedNet95() -> number {
+    if j2TxToLd1 { return fusedNet10(); }
     return 2;
   }
   pure fn fusedNet96() -> number {
@@ -6216,6 +6220,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       else if event.index == 1 { j3Closed = event.closed; }
       else if event.index == 2 { j2Vs1838 = event.closed; }
       else if event.index == 3 { j5Closed = event.closed; }
+      else if event.index == 4 { j2TxToLd1 = event.closed; }
       else { continue; }
       jumper.send({ index: event.index, closed: event.closed });
       fusedMarkJumperPins(event.index);
@@ -6341,6 +6346,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     jumper.send({ index: 1, closed: j3Closed });
     jumper.send({ index: 2, closed: j2Vs1838 });
     jumper.send({ index: 3, closed: j5Closed });
+    jumper.send({ index: 4, closed: j2TxToLd1 });
     amplifier.send({ position: lm324Position, gain: lm324Gain, outputVoltage: lm324Out });
   }
 

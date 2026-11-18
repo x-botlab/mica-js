@@ -24,7 +24,12 @@ import {
   parseHexPayload,
 } from './logic';
 import type { CallResult, NumberBounds, PayloadResult } from './logic';
-import { JUMPER_DESIGNATORS, JUMPER_SIGNAL_PORTS, type JumperDesignator } from '../jumper-map';
+import {
+  JUMPER_DESIGNATORS,
+  jumperKeyForSignal,
+  jumperParams,
+  type JumperDesignator,
+} from '../jumper-map';
 /* ------------------------------------------------------------------------------------------------
  * Host bridge (RFC 0023).
  *
@@ -98,10 +103,6 @@ type PendingAction =
 
 function isKeyName(value: string): value is KeyName {
   return (KEY_NAMES as readonly string[]).includes(value);
-}
-
-function isJumperName(value: string): value is JumperName {
-  return (JUMPER_NAMES as readonly string[]).includes(value);
 }
 
 /** Field-wise merge: only leaves whose revision is unchanged accept the reply. */
@@ -326,10 +327,12 @@ export class BoardBootstrap {
     else if (designator === 'LD1' && port === 'carrier') this.setIr('LD1', value !== 0);
     else if (designator === 'U11' && port === 'receiving') this.setIr('U11', value !== 0);
     else if (designator === 'U20' && port === 'receiving') this.setIr('U20', value !== 0);
-    else if (isJumperName(designator) && port === JUMPER_SIGNAL_PORTS[designator])
-      this.setJumper(designator, value !== 0);
     else if (isKeyName(designator) && (port === 'pressed' || port === 'press'))
       this.setSwitch(designator, value !== 0);
+    else {
+      const jumper = jumperKeyForSignal(designator, port);
+      if (jumper !== undefined) this.setJumper(jumper, value !== 0);
+    }
   }
 
   #applyBytes(signal: BytesPayload): void {
@@ -931,8 +934,8 @@ const JUMPER_SPECS: readonly JumperSpec[] = [
   },
   {
     name: 'J2',
-    title: 'J2 · 红外选择',
-    purpose: '2×3，1-3 固定短接',
+    title: 'J2 · 上排 · 接收',
+    purpose: '2–4 / 4–6',
     options: [
       {
         closed: true,
@@ -946,6 +949,15 @@ const JUMPER_SPECS: readonly JumperSpec[] = [
         title: 'CX20106A → P1.1',
         detail: '选择 U11 接收器',
       },
+    ],
+  },
+  {
+    name: 'J2Tx',
+    title: 'J2 · 下排 · 发送',
+    purpose: '1–3 / 3–5',
+    options: [
+      { closed: false, position: '1-3', title: 'P1.0 → U18', detail: '默认' },
+      { closed: true, position: '3-5', title: 'P1.0 → LD1', detail: '红外发射管调制' },
     ],
   },
   {
@@ -1203,7 +1215,7 @@ function buildAssemblyView(
   const pendingIr = new Set<IrName>();
   const irHint = el('p', 'hint');
   irHint.textContent =
-    'LD1 / U11 / U20 三个源独立；J2 只决定哪一路接收器进入 P1.1，不会同时驱动三个源。';
+    'LD1 / U11 / U20 可独立注入；J2 上排切换 P1.1 接收源，下排切换 P1.0 发送支路。';
   irGroup.append(irHint);
 
   const applyIrDisabled = (): void => {
@@ -1258,7 +1270,7 @@ function buildAssemblyView(
           irStates.set(spec.name, desired);
           paintIr(spec.name, desired);
           irHint.textContent =
-            'LD1 / U11 / U20 三个源独立；J2 只决定哪一路接收器进入 P1.1，不会同时驱动三个源。';
+            'LD1 / U11 / U20 可独立注入；J2 上排切换 P1.1 接收源，下排切换 P1.0 发送支路。';
           irHint.dataset['tone'] = 'idle';
         } else {
           paintIr(spec.name, irStates.get(spec.name));
@@ -2220,7 +2232,7 @@ function mountPanel(api: DeviceViewApi, elements: PanelElements): void {
         if (model === undefined) return { ok: false, message: '模型不可用' };
         const outcome = await writeOutcome(
           `切换跳线 ${name}`,
-          () => model.methods.setJumper({ designator: name, closed }),
+          () => model.methods.setJumper(jumperParams(name, closed)),
           `${name} ${closed ? '闭合' : '切换'}`,
         );
         if (outcome.ok) board.setJumper(name, closed);

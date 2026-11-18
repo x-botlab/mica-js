@@ -62,8 +62,6 @@ export interface JumperLayout {
   /** 照片上接插件和静态跳线帽的范围，不包含周围丝印。 */
   readonly socket: Rect;
   readonly pins: readonly JumperPinLayout[];
-  /** 固定短接，例如 J2 的 1-3。 */
-  readonly fixed: readonly JumperPairLayout[];
   /** 可选择的桥接位置；J13/J5 为 1-2 与 2-3。 */
   readonly options: readonly JumperPairLayout[];
   /** true 表示点击切换通断；false 表示点击直接选择最近的位置。 */
@@ -139,8 +137,8 @@ export const RELAY: ActuatorLayout = {
 
 /**
  * J13/J5 是真实的三脚选择器：中间脚为公共端，两个桥接位置分别是 1-2 与 2-3。
- * J3 是右侧扩展排针上 SIGNAL/P34 的两脚跳线；J2 是 2×3 排针，1-3 固定短接，
- * 4-6 为 VS1838（true）、2-4 为 CX20106A（false）。J6 是蜂鸣器下方的三针
+ * J3 是右侧扩展排针上 SIGNAL/P34 的两脚跳线；J2 是两路独立的 2×3 排针，
+ * 上排 2-4 / 4-6，下排 1-3 / 3-5。J6 是蜂鸣器下方的三针
  * 装配开关；网表与融合模型都没有它的电气连接，仅保存 OFF/ON 装配状态。
  */
 export const J13: JumperLayout = {
@@ -152,7 +150,6 @@ export const J13: JumperLayout = {
     { pin: 2, x: 307, y: 391 },
     { pin: 3, x: 307, y: 379 },
   ],
-  fixed: [],
   options: [
     { closed: false, pins: [1, 2] },
     { closed: true, pins: [2, 3] },
@@ -176,7 +173,6 @@ export const J5: JumperLayout = {
     { pin: 2, x: 371, y: 672 },
     { pin: 3, x: 385, y: 672 },
   ],
-  fixed: [],
   options: [
     { closed: false, pins: [1, 2] },
     { closed: true, pins: [2, 3] },
@@ -199,7 +195,6 @@ export const J3: JumperLayout = {
     { pin: 1, x: 940, y: 464 },
     { pin: 2, x: 940, y: 473 },
   ],
-  fixed: [],
   options: [{ closed: true, pins: [1, 2] }],
   toggle: true,
   slider: {
@@ -213,17 +208,13 @@ export const J3: JumperLayout = {
 
 export const J2: JumperLayout = {
   designator: 'J2',
-  hit: { x: 558, y: 136, width: 76, height: 64 },
-  socket: { x: 578, y: 154, width: 36, height: 32 },
+  hit: { x: 558, y: 136, width: 76, height: 33 },
+  socket: { x: 578, y: 154, width: 36, height: 15 },
   pins: [
-    { pin: 1, x: 582, y: 181 },
     { pin: 2, x: 582, y: 158 },
-    { pin: 3, x: 594, y: 181 },
     { pin: 4, x: 594, y: 158 },
-    { pin: 5, x: 606, y: 181 },
     { pin: 6, x: 606, y: 158 },
   ],
-  fixed: [{ closed: true, pins: [1, 3] }],
   options: [
     { closed: false, pins: [2, 4] },
     { closed: true, pins: [4, 6] },
@@ -238,6 +229,29 @@ export const J2: JumperLayout = {
   },
 };
 
+export const J2_TX: JumperLayout = {
+  designator: 'J2Tx',
+  hit: { x: 558, y: 169, width: 76, height: 31 },
+  socket: { x: 578, y: 169, width: 36, height: 17 },
+  pins: [
+    { pin: 1, x: 582, y: 181 },
+    { pin: 3, x: 594, y: 181 },
+    { pin: 5, x: 606, y: 181 },
+  ],
+  options: [
+    { closed: false, pins: [1, 3] },
+    { closed: true, pins: [3, 5] },
+  ],
+  toggle: false,
+  slider: {
+    orientation: 'horizontal',
+    track: { x: 579, y: 176, width: 34, height: 10 },
+    knob: { width: 12, height: 10 },
+    off: { x: 588, y: 181 },
+    on: { x: 600, y: 181 },
+  },
+};
+
 export const J6: JumperLayout = {
   designator: 'J6',
   hit: { x: 646, y: 418, width: 54, height: 32 },
@@ -248,7 +262,6 @@ export const J6: JumperLayout = {
     { pin: 2, x: 672, y: 430 },
     { pin: 3, x: 683, y: 430 },
   ],
-  fixed: [],
   options: [
     { closed: false, pins: [1, 2] },
     { closed: true, pins: [2, 3] },
@@ -263,7 +276,7 @@ export const J6: JumperLayout = {
   },
 };
 
-export const JUMPERS: readonly JumperLayout[] = [J13, J5, J3, J2, J6];
+export const JUMPERS: readonly JumperLayout[] = [J13, J5, J3, J2, J2_TX, J6];
 
 export interface JumperChoice {
   readonly designator: JumperDesignator;
@@ -336,16 +349,13 @@ function nearestOption(layout: JumperLayout, point: Point): JumperPairLayout | u
  * 把一次点击转换成模型选择。
  *
  * - J13/J5 选择离点击最近的 1-2 或 2-3，而不是把三脚选择器当成两脚开关；
- * - J2 只有上方第二路可切换，点击固定的 1-3 一侧不产生操作；
+ * - J2 按上排/下排的独立热区选择；
  * - J3 返回不带 `closed` 的选择，由调用者按当前状态切换通断。
  */
 export function jumperChoiceAt(point: Point): JumperChoice | undefined {
   const layout = jumperAt(point);
   if (layout === undefined) return undefined;
   if (layout.toggle) return { designator: layout.designator };
-  if (layout.designator === 'J2' && point.y > layout.hit.y + layout.hit.height / 2) {
-    return undefined;
-  }
   const option = nearestOption(layout, point);
   return option === undefined
     ? undefined
