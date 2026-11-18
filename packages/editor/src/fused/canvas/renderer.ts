@@ -18,7 +18,12 @@ import {
   orthogonalPath,
   routeDocumentWires,
 } from '../wiring';
-import { setTextOffset, type IFusedTextTarget } from '../document/edits';
+import {
+  setTextOffset,
+  type IFusedTextTarget,
+  DEFAULT_POWER_NET_NAME,
+  DEFAULT_POWER_VOLTAGE,
+} from '../document/edits';
 
 export interface IRenderState {
   readonly document: FusedDocument;
@@ -298,8 +303,11 @@ export function drawCanvas(
                       id: '__annotation__',
                       target: { kind: 'node', node: '__annotation__' },
                       symbol: state.annotation.kind,
-                      voltage: state.annotation.kind === 'ground' ? 0 : 5,
+                      voltage: state.annotation.kind === 'ground' ? 0 : DEFAULT_POWER_VOLTAGE,
                       rotation: state.annotation.rotation,
+                      ...(state.annotation.kind === 'power'
+                        ? { label: { name: DEFAULT_POWER_NET_NAME } }
+                        : {}),
                     },
                   ],
           };

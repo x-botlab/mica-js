@@ -2,6 +2,7 @@ import type { Disposable, Event } from '@mica-js/core/lifecycle';
 import type { TimePs } from '@mica-js/core';
 import type { ProgramSources } from '@mica-js/sdk/fused';
 import type { IFusedAudioOptions } from './runtime/audio';
+import type { FusedSessionStatus } from './runtime/protocol';
 import type { IFusedTextTarget } from './document/edits';
 import type {
   DeviceLock,
@@ -27,6 +28,8 @@ export interface IWorkbenchTarget {
 
 export interface IWorkbenchState {
   readonly mode: WorkbenchMode;
+  /** Status of the mounted run session; undefined when no run session is mounted (edit mode). */
+  readonly simulationStatus: FusedSessionStatus | undefined;
   readonly busy: boolean;
   readonly dirty: boolean;
   readonly readOnly: boolean;
@@ -52,6 +55,10 @@ export interface IWorkbenchCommandMap {
   'workbench.openContainer': IWorkbenchCommand<{ readonly id: string; readonly focus?: boolean }>;
   'workbench.closeContainer': IWorkbenchCommand;
   'workbench.setMode': IWorkbenchCommand<{ readonly mode: WorkbenchMode }>;
+  /** Host-only pause of the mounted run session; no-op when already paused. */
+  'simulation.pause': IWorkbenchCommand;
+  /** Host-only resume of the mounted run session; no-op when already running. */
+  'simulation.resume': IWorkbenchCommand;
   'canvas.fit': IWorkbenchCommand;
   'canvas.zoom': IWorkbenchCommand<{ readonly factor: number }>;
   'canvas.setTool': IWorkbenchCommand<{ readonly tool: WorkbenchTool }>;

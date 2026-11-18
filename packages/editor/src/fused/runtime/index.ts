@@ -17,7 +17,7 @@
  * });
  * runtime.display.input(instanceId, { type: 'pointerdown', position, button: 0, buttons: 1 });
  * const frame = await runtime.display.render(instanceId);
- * runtime.pause(); // step() requires the paused state
+ * await runtime.pause(); // step() requires the paused state
  * await runtime.dispose();
  * ```
  */

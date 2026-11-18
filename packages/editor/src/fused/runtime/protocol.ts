@@ -207,6 +207,7 @@ export interface IFusedSimulationService {
   load(request: IFusedLoadRequest): Promise<IFusedSessionState>;
   step(): Promise<IFusedSessionState>;
   resume(): Promise<void>;
+  /** Stops advancement synchronously; the RPC result acknowledges the paused state. */
   pause(): void;
   reset(): Promise<void>;
   /** Releases the models and keeps the captured package bytes for the next load. */
