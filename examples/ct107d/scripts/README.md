@@ -1,8 +1,8 @@
 # CT107D 全固件测试套件
 
 这是**opt-in**工具，不进入日常 `vitest`，因为输入是未跟踪的
-`dist/蓝桥杯单片机程序` 课程资料。工具只引用外部 HEX/源码，不复制它们，也不读取
-`verify-firmware.mjs` 的宽松 HEX 解析器。
+`dist/蓝桥杯单片机程序` 课程资料。工具只引用外部 HEX/源码，不复制它们；HEX 由
+`scripts/firmware-hex.mjs` 的严格解析器读取。
 
 ## 前置
 
@@ -13,7 +13,7 @@ pnpm --filter @mica-js/example-ct107d build:fused
 `build:fused` 会构建 `examples/devices/dist/iap15f2k61s2`、重新生成
 `device/src/{model.ddl,nets.ts,channels.ts}` 并产出正式
 `device/dist/{package.json,model.js}`。套件通过 `bench/fused.ts` 装载它，断言图中恰好
-1 个实例、1 个 JIT；不会退回旧 55 器件板（54 历史器件 + J5）或 `verify-firmware.mjs`。
+1 个实例、1 个 JIT。
 
 需要 Node.js 24（原生 TypeScript type stripping 用于直接导入 `bench/fused.ts`）。
 

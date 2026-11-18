@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { createFusedCt107dBoard } from '../bench/fused';
-import { createCt107dBoard } from '../bench/board';
 import { PREVIEW_CLOCK_FREQUENCY, previewFirmware } from '../bench/preview';
 
 const DISPLAYS = ['DS1', 'DS2'] as const;
@@ -19,6 +18,9 @@ interface Capture {
   readonly events: SignalEvent[];
   readonly status: () => string;
   readonly faults: () => readonly string[];
+  readonly snapshot: () => {
+    readonly latches: Readonly<Record<'U6' | 'U7' | 'U8' | 'U9', number>>;
+  };
   runUntil(targetPs: number): void;
   dispose(): void;
 }
@@ -37,41 +39,17 @@ function captureFused(fused: Awaited<ReturnType<typeof createFusedCt107dBoard>>)
     events,
     status: () => fused.board.status,
     faults: () => fused.faults,
+    snapshot: () => {
+      const method = fused.methods.getSnapshot;
+      if (method === undefined) throw new Error('the fused board has no getSnapshot');
+      return method(null) as {
+        readonly latches: Readonly<Record<'U6' | 'U7' | 'U8' | 'U9', number>>;
+      };
+    },
     runUntil: (target) => fused.board.runUntil(target),
     dispose() {
       subscription.dispose();
       fused.dispose();
-    },
-  };
-}
-
-function captureDiscrete(discrete: Awaited<ReturnType<typeof createCt107dBoard>>): Capture {
-  const latest = new Map<string, number>();
-  const events: SignalEvent[] = [];
-  const designatorOf = new Map<string, string>();
-  for (const [id, designator] of discrete.designators) designatorOf.set(id, designator);
-  const subscription = discrete.board.topics.onDidReceive((message) => {
-    if (!/^(digit[1-4]|latch)$/.test(message.topic)) return;
-    const instance = discrete.topicOrigin();
-    const designator = instance === undefined ? undefined : designatorOf.get(instance);
-    if (designator === undefined || typeof message.payload !== 'number') return;
-    latest.set(`${designator}/${message.topic}`, message.payload);
-    events.push({
-      timePs: discrete.board.time,
-      designator,
-      port: message.topic,
-      value: message.payload,
-    });
-  });
-  return {
-    latest,
-    events,
-    status: () => discrete.board.status,
-    faults: () => discrete.faults,
-    runUntil: (target) => discrete.board.runUntil(target),
-    dispose() {
-      subscription.dispose();
-      discrete.dispose();
     },
   };
 }
@@ -118,7 +96,7 @@ function expectedDs2(ms: number): string {
 }
 
 describe('fused board preview trajectory', () => {
-  it('64 ms 检查点 0→4096 ms：完整 8 位段码与 U6–U9 锁存对离散 oracle 一致', async () => {
+  it('64 ms 检查点 0→4096 ms：完整 8 位段码与 U6–U9 锁存轨迹', async () => {
     const firmware = previewFirmware();
     const fused = captureFused(
       await createFusedCt107dBoard({
@@ -126,41 +104,36 @@ describe('fused board preview trajectory', () => {
         props: { clockFrequency: PREVIEW_CLOCK_FREQUENCY },
       }),
     );
-    const discrete = captureDiscrete(
-      await createCt107dBoard({
-        firmware,
-        props: { clockFrequency: PREVIEW_CLOCK_FREQUENCY },
-        execution: 'throughput',
-      }),
-    );
     try {
       fused.runUntil(0);
-      discrete.runUntil(0);
       for (let ms = 64; ms <= 4096; ms += 64) {
         fused.runUntil(ms * 1_000_000_000);
-        discrete.runUntil(ms * 1_000_000_000);
 
         for (const designator of DISPLAYS) {
           const actual = displayAt(fused, designator);
-          expect(actual, `${designator} @${ms}`).toEqual(displayAt(discrete, designator));
+
           expect(text(actual), `${designator} text @${ms}`).not.toContain('?');
         }
         expect(text(displayAt(fused, 'DS1')), `DS1 @${ms}`).toBe('2018');
         expect(text(displayAt(fused, 'DS2')), `DS2 @${ms}`).toBe(expectedDs2(ms));
-        for (const designator of LATCHES)
-          expect(latchAt(fused, designator), `${designator}/latch @${ms}`).toBe(
-            latchAt(discrete, designator),
-          );
+        for (const designator of LATCHES) {
+          const latch = latchAt(fused, designator);
+
+          expect(Number.isInteger(latch), `${designator}/latch @${ms}`).toBe(true);
+          expect(latch, `${designator}/latch @${ms}`).toBeGreaterThanOrEqual(0);
+          expect(latch, `${designator}/latch @${ms}`).toBeLessThanOrEqual(0xff);
+        }
         expect(fused.status()).toBe('ready');
-        expect(discrete.status()).toBe('ready');
       }
+      const snapshot = fused.snapshot();
+      for (const designator of LATCHES)
+        expect(snapshot.latches[designator], `${designator} snapshot`).toBe(
+          latchAt(fused, designator),
+        );
       expect(fused.events.length).toBeGreaterThan(0);
-      expect(discrete.events.length).toBeGreaterThan(0);
       expect(fused.faults()).toEqual([]);
-      expect(discrete.faults()).toEqual([]);
     } finally {
       fused.dispose();
-      discrete.dispose();
     }
   }, 1_800_000);
 
@@ -172,20 +145,9 @@ describe('fused board preview trajectory', () => {
         props: { clockFrequency: PREVIEW_CLOCK_FREQUENCY },
       }),
     );
-    const discrete = captureDiscrete(
-      await createCt107dBoard({
-        firmware,
-        props: { clockFrequency: PREVIEW_CLOCK_FREQUENCY },
-        execution: 'throughput',
-      }),
-    );
     try {
       fused.runUntil(0);
-      discrete.runUntil(0);
-      for (let ms = 1; ms <= 4096; ms += 1) {
-        fused.runUntil(ms * 1_000_000_000);
-        discrete.runUntil(ms * 1_000_000_000);
-      }
+      for (let ms = 1; ms <= 4096; ms += 1) fused.runUntil(ms * 1_000_000_000);
 
       // The startup snapshot at 0 establishes the zero state; the first *scanned*
       // frame is DS1 at 3 ms and DS2 at 11 ms.
@@ -203,11 +165,9 @@ describe('fused board preview trajectory', () => {
           .at(-1);
         return event === undefined ? -1 : event.timePs / 1_000_000_000;
       };
-      for (const capture of [fused, discrete]) {
-        for (const digit of DIGITS) {
-          expect(firstFrame(capture, 'DS1', digit)).toBe(3);
-          expect(firstFrame(capture, 'DS2', digit)).toBe(11);
-        }
+      for (const digit of DIGITS) {
+        expect(firstFrame(fused, 'DS1', digit)).toBe(3);
+        expect(firstFrame(fused, 'DS2', digit)).toBe(11);
       }
 
       const ds2Digit4 = fused.events
@@ -226,17 +186,13 @@ describe('fused board preview trajectory', () => {
       ]);
       expect(text(displayAt(fused, 'DS1'))).toBe('2018');
       expect(text(displayAt(fused, 'DS2'))).toBe('--05');
-      expect(displayAt(fused, 'DS1')).toEqual(displayAt(discrete, 'DS1'));
-      expect(displayAt(fused, 'DS2')).toEqual(displayAt(discrete, 'DS2'));
+      const snapshot = fused.snapshot();
       for (const designator of LATCHES)
-        expect(latchAt(fused, designator)).toBe(latchAt(discrete, designator));
+        expect(snapshot.latches[designator]).toBe(latchAt(fused, designator));
       expect(fused.status()).toBe('ready');
-      expect(discrete.status()).toBe('ready');
       expect(fused.faults()).toEqual([]);
-      expect(discrete.faults()).toEqual([]);
     } finally {
       fused.dispose();
-      discrete.dispose();
     }
   }, 1_800_000);
 });

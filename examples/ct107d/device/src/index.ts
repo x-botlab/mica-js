@@ -484,7 +484,7 @@ export const create: DeviceFactory = (context) => {
       for (const index of displayDesignators) {
         const designator = index === 0 ? 'DS1' : 'DS2';
         const digits = displays[designator];
-        // The unified seg4 event is a whole-display snapshot. The legacy seg4 adapter
+        // The unified seg4 event is a whole-display snapshot. A per-digit adapter
         // read each digit's latest value once per sync; coalescing here is intentional
         // and keeps the preview trajectory identical.
         for (let digit = 0; digit < 4; digit += 1)

@@ -45,11 +45,6 @@ export function demoDocument(id: string): IDemoDocument {
 }
 
 const COMPONENT_ROOT = 'components';
-/**
- * The old CT107D v1 widget canvas was removed from this playground. It depended on legacy
- * `device.json/device.js` assets that the unified device packages do not provide; the
- * formal CT107D host is `examples/ct107d` (`pnpm run workbench:dev`), not this app.
- */
 
 interface IDemoAsset {
   readonly metadata: string;

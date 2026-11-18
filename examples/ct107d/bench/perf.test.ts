@@ -6,7 +6,7 @@ import { PREVIEW_CHECKPOINTS_MS, previewMeasureOptions } from './preview';
 
 /**
  * CT107D 融合整板基准：直接从正式 `device/dist` 装载 1 实例/1 JIT；固件是
- * `assets/ct107d-demo.bin`（12 MHz 8051，8 位数码管全亮 + 8 路 LED 走马灯），
+ * `device/src/assets/ct107d-demo.bin`（12 MHz 8051，8 位数码管全亮 + 8 路 LED 走马灯），
  * 读数取进程 CPU 时间。
  *
  * 断言只做下限与宽松区间：并行任务与 CI 都在抢 CPU，精确值没有意义，这里守住的是
@@ -37,9 +37,8 @@ describe('CT107D 整板基准', () => {
     expect(result.cpuMs).toBeGreaterThan(0);
     expect(result.elapsedWallMs).toBeGreaterThan(0);
     expect(result.realtimeRatio).toBeGreaterThan(0);
-    // 历史字段仍是 CPU 口径的别名，新字段才是墙钟/实时比。
-    expect(result.wallMs).toBe(result.cpuMs);
-    expect(result.rtf).toBeCloseTo(result.cpuMs / result.simMs, 2);
+    expect(result.coldCpuMs).toBeGreaterThan(0);
+    expect(result.coldRealtimeRatio).toBeGreaterThan(0);
 
     // 融合板没有板内电气网络；工作量为 JIT 指令、边界、话题与显示事件。
     expect(result.solves).toBe(0);
@@ -96,8 +95,8 @@ describe('CT107D 整板基准', () => {
 
     process.stdout.write(
       `PERF_COMPARE ${JSON.stringify({
-        throughput: { wallMs: throughput.wallMs, boundaryCalls: throughput.boundaryCalls },
-        precise: { wallMs: precise.wallMs, boundaryCalls: precise.boundaryCalls },
+        throughput: { cpuMs: throughput.cpuMs, boundaryCalls: throughput.boundaryCalls },
+        precise: { cpuMs: precise.cpuMs, boundaryCalls: precise.boundaryCalls },
       })}\n`,
     );
 
@@ -107,7 +106,7 @@ describe('CT107D 整板基准', () => {
     expect(throughput.topicDigestStable).toBe(true);
     expect(precise.topicDigestStable).toBe(true);
     expect(throughput.boundaryCalls).toBeLessThan(precise.boundaryCalls * 0.1);
-    expect(throughput.wallMs).toBeLessThan(precise.wallMs * 0.75);
+    expect(throughput.cpuMs).toBeLessThan(precise.cpuMs * 0.75);
   }, 1_800_000);
 
   it('preview firmware preserves outputs and accelerates in throughput mode', async () => {
@@ -131,14 +130,12 @@ describe('CT107D 整板基准', () => {
         precise: { cpuMs: precise.cpuMs, elapsedWallMs: precise.elapsedWallMs },
         coarse: { cpuMs: coarse.cpuMs, elapsedWallMs: coarse.elapsedWallMs },
         topicFinalDigest: throughput.topicFinalDigest,
-        topicFinalDigestByDevice: throughput.topicFinalDigestByDevice,
         checkpoints: PREVIEW_CHECKPOINTS_MS,
       })}\n`,
     );
 
     expect(throughput.faults).toEqual(precise.faults);
     expect(throughput.topicFinalDigest).toBe(precise.topicFinalDigest);
-    expect(throughput.topicFinalDigestByDevice).toBe(precise.topicFinalDigestByDevice);
     expect(throughput.topicFinalTopics).toEqual(precise.topicFinalTopics);
     expect(throughput.topicFinalTopics).toEqual(coarse.topicFinalTopics);
     expect(throughput.topicDigestStable).toBe(true);

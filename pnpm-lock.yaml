@@ -332,9 +332,6 @@ importers:
       '@mica-js/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
-      '@mica-js/simulator':
-        specifier: workspace:*
-        version: link:../../packages/simulator
       '@mica-js/widget':
         specifier: workspace:*
         version: link:../../packages/widget

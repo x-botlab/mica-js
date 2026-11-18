@@ -29,13 +29,13 @@ pnpm --filter @mica-js/playground dev
 
 ## 示例
 
-| 示例                                                               | 内容                                                                          |
-| ------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| 示例                                                               | 内容                                                                                 |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
 | [`examples/playground-components`](examples/playground-components) | Playground 用的 headless 统一器件子项目：电阻、按键、LED、电压表；旧 widget 测试保留 |
-| [`examples/ct107d`](examples/ct107d)                               | CT107D 竞赛板整板工程：legacy 板面 widget、v1 原理图/画布、8051 固件与仿真联调      |
-| [`examples/devices`](examples/devices)                             | 器件库：CT107D 板级芯片、IAP15F2K61S2、STM32G431RBT6、ILI9325、seg4、blue-led |
-| [`examples/ideal-led`](examples/ideal-led)                         | 测试夹具：理想 LED                                                            |
-| [`examples/led8`](examples/led8)                                   | IAP15F2K61S2 驱动 8 颗 LED 的最小板与无头验证                                 |
+| [`examples/ct107d`](examples/ct107d)                               | CT107D 竞赛板整板工程：v2 文档、融合器件、工作台宿主、8051 固件与性能基准            |
+| [`examples/devices`](examples/devices)                             | 器件库：CT107D 板级芯片、IAP15F2K61S2、STM32G431RBT6、ILI9325、seg4、blue-led        |
+| [`examples/ideal-led`](examples/ideal-led)                         | 测试夹具：理想 LED                                                                   |
+| [`examples/led8`](examples/led8)                                   | IAP15F2K61S2 驱动 8 颗 LED 的最小板与无头验证                                        |
 
 示例都是 private 包，按需构建或测试，例如：
 

@@ -9,8 +9,9 @@
  * The output is checked in (`src/model.ddl`) so reviews can inspect the generated
  * wiring. Run with `--check` to verify it is current.
  *
- * Historical schematic and netlist inputs live under `legacy/source/`; the v2 board
- * document is not an input of this generator.
+ * The only board inputs are `board-topology.json` (instance list, assembly properties
+ * and the internal netlist) and the unified device packages. The formal v2 document
+ * (`ct107d.sch`) is not an input of this generator.
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -35,7 +36,7 @@ const PROJECT = join(HERE, '..');
 const CT107D = join(PROJECT, '..');
 const REPO = join(CT107D, '..', '..');
 const DEVICES = join(CT107D, '..', 'devices');
-const LEGACY_SOURCE = join(CT107D, 'legacy', 'source');
+const TOPOLOGY = join(HERE, 'board-topology.json');
 const OUTPUT = join(PROJECT, 'src', 'model.ddl');
 const NETS_OUTPUT = join(PROJECT, 'src', 'nets.ts');
 const CHANNELS_OUTPUT = join(PROJECT, 'src', 'channels.ts');
@@ -138,28 +139,45 @@ const KEYS = [
   'S19',
 ];
 
-const schematic = JSON.parse(readFileSync(join(LEGACY_SOURCE, 'ct107d.sch'), 'utf8'));
-const netlist = JSON.parse(readFileSync(join(LEGACY_SOURCE, 'ct107d.netlist.json'), 'utf8'));
+const topology = JSON.parse(readFileSync(TOPOLOGY, 'utf8'));
 
-const symbols = schematic.sheet.symbols.filter((symbol) => symbol.designator);
-const symbolByDesignator = new Map(symbols.map((symbol) => [symbol.designator, symbol]));
-const deviceOf = (designator) => symbolByDesignator.get(designator).device.replace(/^xbotlab:/, '');
+if (!Array.isArray(topology.instances) || topology.instances.length === 0)
+  throw new Error(`${TOPOLOGY}: instances must be a nonempty array`);
+if (typeof topology.nets !== 'object' || topology.nets === null)
+  throw new Error(`${TOPOLOGY}: nets must be an object`);
+
+const netlist = topology.nets;
+const designators = topology.instances.map((instance) => {
+  if (typeof instance.designator !== 'string' || instance.designator.length === 0)
+    throw new Error(`${TOPOLOGY}: every instance needs a designator`);
+  if (typeof instance.device !== 'string' || instance.device.length === 0)
+    throw new Error(`${TOPOLOGY}: ${instance.designator} has no device`);
+  return instance.designator;
+});
+const instancesByDesignator = new Map(
+  topology.instances.map((instance) => [instance.designator, instance]),
+);
+const deviceOf = (designator) => instancesByDesignator.get(designator).device;
 
 {
   const covered = [...DIGITAL, ...BOARD_LEVEL];
   const duplicates = covered.filter((designator, index) => covered.indexOf(designator) !== index);
-  const unknown = covered.filter((designator) => !symbolByDesignator.has(designator));
-  const missing = symbols
-    .map((symbol) => symbol.designator)
-    .filter((designator) => !covered.includes(designator));
+  const unknown = covered.filter((designator) => !instancesByDesignator.has(designator));
+  const missing = designators.filter((designator) => !covered.includes(designator));
   // 54 个历史实例 + J5（独立/矩阵选择器）；两侧覆盖表必须与此计数一致。
-  if (symbols.length !== 55 || duplicates.length || unknown.length || missing.length)
+  if (
+    designators.length !== 55 ||
+    designators.length !== instancesByDesignator.size ||
+    duplicates.length ||
+    unknown.length ||
+    missing.length
+  )
     throw new Error(
-      `Schema coverage mismatch: instances=${symbols.length}, ` +
+      `Topology coverage mismatch: instances=${designators.length}, ` +
         `duplicates=[${duplicates}], unknown=[${unknown}], missing=[${missing}]`,
     );
 }
-const propsOf = (designator) => symbolByDesignator.get(designator).properties ?? {};
+const propsOf = (designator) => instancesByDesignator.get(designator).properties ?? {};
 
 const netNames = Object.keys(netlist);
 const netIndex = new Map(netNames.map((name, index) => [name, index]));
@@ -229,7 +247,7 @@ const literal = (value) => {
   throw new TypeError(`Unsupported default ${String(value)}`);
 };
 
-/** Instance properties: schematic overrides, then manifest defaults. */
+/** Instance properties: topology overrides, then manifest defaults. */
 function propertiesOf(designator) {
   const device = deviceOf(designator);
   const manifest = manifestOf(device);
@@ -595,7 +613,7 @@ async function fuseInstance(designator) {
 
   // Replace property references with this instance's board values (or a board-level
   // property such as ultrasonicDistanceCm / uartBaud). Other probe/counter defaults
-  // stay fixed because they are assembly properties in the schematic.
+  // stay fixed because they are assembly properties in the board topology.
   for (const declaration of model.declarations)
     if (declaration.kind === 'property' && declaration.name !== 'clockFrequency') {
       if (!(declaration.name in properties))
@@ -895,7 +913,7 @@ function generateNets(instances, template) {
       mcuPins.push({ pin, net, drive });
       add(net, `load8(${driveMemoryName(drive)}, 0)`);
     }
-  // Fail fast if one of the eight P4 pins is missing from the schematic netlist instead
+  // Fail fast if one of the eight P4 pins is missing from the board netlist instead
   // of silently letting only P4.2/P4.4 work. Drives also index the per-pin memories.
   if (mcuPins.length !== 40 || mcuPins.filter((pin) => pin.pin.startsWith('P4_')).length !== 8)
     throw new Error(`MCU pin map must contain 40 pins incl. P4_0..P4_7 (got ${mcuPins.length})`);
@@ -927,9 +945,8 @@ function generateNets(instances, template) {
     return net === undefined ? undefined : netNames[net];
   };
   const matrixKeys = [];
-  for (const symbol of symbols) {
-    const designator = symbol.designator;
-    if (designator === undefined || designator === 'S1') continue;
+  for (const designator of designators) {
+    if (designator === 'S1') continue;
     if (deviceOf(designator) !== 'push-button') continue;
     const a = keyNet(designator, 'a');
     const b = keyNet(designator, 'b');
@@ -1384,13 +1401,13 @@ function boardReplacements(instances, nets) {
     replacements[`PREFIX_${netSlotName(instance.designator)}`] = instance.prefix;
   for (const key of KEYS) replacements[`KEY_${key}`] = String(keyIndex(key));
 
-  // Fixed schematic properties used by board-level analog/display/interactive logic.
+  // Fixed topology properties used by board-level analog/display/interactive logic.
   const ledProps = ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7', 'D8'].map(propertiesOf);
   const segProps = ['DS1', 'DS2'].map(propertiesOf);
   const ledForward = ledProps[0]?.forwardResistance;
   const seg = segProps[0];
   if (ledForward === undefined || seg === undefined)
-    throw new Error('missing D/DS properties in schematic');
+    throw new Error('missing D/DS properties in the board topology');
   if (ledProps.some((item) => item.forwardResistance !== ledForward))
     throw new Error('D1-D8 forwardResistance values differ; board LED formula is shared');
   if (ledForward !== 1500)
@@ -1476,8 +1493,8 @@ async function main() {
     for (const member of members) {
       const separator = member.lastIndexOf('.');
       const designator = separator < 0 ? member : member.slice(0, separator);
-      if (!symbolByDesignator.has(designator))
-        throw new Error(`Netlist net ${net} references unknown symbol ${member}`);
+      if (!instancesByDesignator.has(designator))
+        throw new Error(`Netlist net ${net} references unknown instance ${member}`);
     }
   }
   const mcu = instances.find((instance) => instance.designator === 'U1');

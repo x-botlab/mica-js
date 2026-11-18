@@ -5,10 +5,8 @@ import { createHash } from 'node:crypto';
  *
  * This intentionally follows the validation level of
  * `examples/ct117e-m4/test/firmware.ts` (length, checksum, EOF, record order,
- * address range and overlap), generalized to the 8051 code space. It must not
- * be replaced by the permissive parser in `verify-firmware.mjs`, which silently
- * skips malformed lines, ignores records after EOF, accepts truncated records
- * and last-writer-wins overlaps.
+ * address range and overlap), generalized to the 8051 code space. Malformed or
+ * ambiguous input must fail instead of being silently skipped or merged.
  *
  * Supported record types: 00 (data), 01 (EOF), 02 (extended segment address),
  * 03 (start segment address), 04 (extended linear address), 05 (start linear

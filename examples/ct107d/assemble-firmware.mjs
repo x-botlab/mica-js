@@ -13,9 +13,10 @@
  *
  * 固件资源只有一个来源：本文件从 `firmware/demo.asm` 得到的同一份字节，同时写出
  *
- * - `assets/ct107d-demo.bin`：legacy oracle/预览夹具；
  * - `device/src/assets/ct107d-demo.bin`：正式器件包 BIN 资源；
  * - `device/src/assets/ct107d-demo.hex`：正式器件包确定性 Intel HEX 资源。
+ *
+ * 两份资源是同一份字节的 BIN/HEX 两种编码；运行时只从器件包加载。
  *
  * `--check` 只比较、不写文件；默认执行（`pnpm firmware`）才写资源。主 build 不隐式调用
  * 本脚本，避免静默重写用户源码。
@@ -26,7 +27,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const PROJECT = dirname(fileURLToPath(import.meta.url));
 const SOURCE = join(PROJECT, 'firmware', 'demo.asm');
-const LEGACY_BIN = join(PROJECT, 'assets', 'ct107d-demo.bin');
 const PACKAGE_BIN = join(PROJECT, 'device', 'src', 'assets', 'ct107d-demo.bin');
 const PACKAGE_HEX = join(PROJECT, 'device', 'src', 'assets', 'ct107d-demo.hex');
 
@@ -241,8 +241,7 @@ export function assembleFirmware(text) {
  * @returns {string}
  */
 export function encodeIntelHex(bytes) {
-  if (!(bytes instanceof Uint8Array))
-    throw new TypeError('Intel HEX input must be a Uint8Array');
+  if (!(bytes instanceof Uint8Array)) throw new TypeError('Intel HEX input must be a Uint8Array');
   if (bytes.length === 0) throw new RangeError('Intel HEX image must not be empty');
   if (bytes.length > 0x1_0000)
     throw new RangeError('Intel HEX image exceeds the 16-bit record address range');
@@ -267,7 +266,6 @@ export function encodeIntelHex(bytes) {
 function assetsFromBytes(bytes) {
   const hex = Buffer.from(encodeIntelHex(bytes), 'utf8');
   return Object.freeze([
-    Object.freeze({ path: LEGACY_BIN, data: bytes }),
     Object.freeze({ path: PACKAGE_BIN, data: bytes }),
     Object.freeze({ path: PACKAGE_HEX, data: hex }),
   ]);
@@ -305,7 +303,7 @@ function summary(bytes, labels) {
   const relative = (path) => path.slice(PROJECT.length + 1);
   const lines = [
     `firmware: ${bytes.length} 字节，校验和 0x${checksum.toString(16).padStart(2, '0')}`,
-    ...[LEGACY_BIN, PACKAGE_BIN, PACKAGE_HEX].map((path) => `  ${relative(path)}`),
+    ...[PACKAGE_BIN, PACKAGE_HEX].map((path) => `  ${relative(path)}`),
   ];
   for (const [name, address] of labels)
     lines.push(`  ${name} = 0x${address.toString(16).padStart(4, '0')}`);

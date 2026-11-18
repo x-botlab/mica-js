@@ -5,15 +5,13 @@
  * 不投影旧 `DeviceMetadata`、不生成旧符号，也不服务编辑器；它只把统一工厂接到旧
  * simulator：完整属性（含 `FirmwareImage`）、统一事件到旧话题、旧输入话题到统一方法。
  *
- * 旧 `.sch v1` / `.cnv v1` 不是 RFC 0024/0025 文档，本文件不提供文档迁移。
+ * 只服务于仍保留 v1 文档的示例（`examples/led8` 的无头验证）；不进入器件源码或发布
+ * 产物。
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import {
-  adaptModelFactory,
-  firmwareImage,
-} from '../../devices/test/support/legacy-model-bridge.mjs';
+import { adaptModelFactory, firmwareImage } from './legacy-model-bridge.mjs';
 
 /** 旧画布使用的输入端口名 -> 统一模型方法名。 */
 const INPUT_ALIASES = {

@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createFusedCt107dBoard } from '../bench/fused';
-import { createCt107dBoard } from '../bench/board';
 import { assemble } from './fixtures/8051/assemble';
 
 const FIXTURE_DIR = join(import.meta.dirname, 'fixtures', '8051');
@@ -54,62 +53,9 @@ function captureFused(fused: Awaited<ReturnType<typeof createFusedCt107dBoard>>)
   };
 }
 
-function captureDiscrete(discrete: Awaited<ReturnType<typeof createCt107dBoard>>): Captured {
-  const signals = new Map<string, number>();
-  const bytes = new Map<string, Uint8Array>();
-  const uartTx: number[] = [];
-  const probeTx: number[] = [];
-  const designatorOf = new Map<string, string>();
-  for (const [id, designator] of discrete.designators) designatorOf.set(id, designator);
-  const subscription = discrete.board.topics.onDidReceive((message) => {
-    const id = discrete.topicOrigin();
-    const designator = id === undefined ? undefined : designatorOf.get(id);
-    if (designator === undefined) return;
-    const key = `${designator}/${message.topic}`;
-    if (typeof message.payload === 'number') signals.set(key, message.payload);
-    else if (typeof message.payload === 'boolean') signals.set(key, message.payload ? 1 : 0);
-    else if (message.payload instanceof Uint8Array) {
-      bytes.set(key, new Uint8Array(message.payload));
-      if (designator === 'UART_PROBE' && message.topic === 'tx') probeTx.push(...message.payload);
-    } else if (
-      message.topic === 'uart1Tx' &&
-      message.payload !== null &&
-      typeof message.payload === 'object' &&
-      'data' in message.payload
-    ) {
-      const data = (message.payload as { readonly data: Uint8Array }).data;
-      uartTx.push(...data);
-    }
-  });
-  return {
-    signals,
-    bytes,
-    uartTx,
-    probeTx,
-    status: () => discrete.board.status,
-    faults: () => discrete.faults,
-    runUntil: (target) => discrete.board.runUntil(target),
-    dispose() {
-      subscription.dispose();
-      discrete.dispose();
-    },
-  };
-}
-
-async function boards(name: string) {
-  const image = firmware(name);
-  const fused = await createFusedCt107dBoard({ firmware: image });
-  const discrete = await createCt107dBoard({
-    firmware: image,
-    props: { clockFrequency: 11_059_200 },
-    execution: 'throughput',
-  });
-  return {
-    fused,
-    discrete,
-    actual: captureFused(fused),
-    oracle: captureDiscrete(discrete),
-  };
+async function board(name: string) {
+  const fused = await createFusedCt107dBoard({ firmware: firmware(name) });
+  return { fused, actual: captureFused(fused) };
 }
 
 function advance(captures: readonly Captured[], fromMs: number, toMs: number): void {
@@ -117,16 +63,12 @@ function advance(captures: readonly Captured[], fromMs: number, toMs: number): v
     for (const capture of captures) capture.runUntil(ms * 1_000_000_000);
 }
 
-function closeBoards(
+function closeBoard(
   fused: Awaited<ReturnType<typeof createFusedCt107dBoard>>,
-  discrete: Awaited<ReturnType<typeof createCt107dBoard>>,
   actual: Captured,
-  oracle: Captured,
 ): void {
   actual.dispose();
-  oracle.dispose();
   fused.dispose();
-  discrete.dispose();
 }
 
 function expectReady(captures: readonly Captured[]): void {
@@ -230,50 +172,40 @@ describe('fused board self-made firmware fixtures', () => {
   }, 60_000);
 
   it('I2C: AT24C02 write/read-back and independent PCF8591 AIN2', async () => {
-    const { fused, discrete, actual, oracle } = await boards('i2c-eeprom-pcf');
+    const { fused, actual } = await board('i2c-eeprom-pcf');
     try {
       // LM324 output must not implicitly drive PCF AIN2; the analog channel is independent.
       fused.methods.setAnalogInput!({ channel: 2, value: 0.5 });
       fused.methods.setAmplifierInputs!({ plus: 5, minus: 0 });
       fused.methods.setWiper!({ value: 0 });
-      expect(discrete.sendInput('U16', 'ain2', 0.5)).toBe(true);
 
       actual.runUntil(0);
-      oracle.runUntil(0);
-      advance([actual, oracle], 1, 100);
-      expectReady([actual, oracle]);
+      advance([actual], 1, 100);
+      expectReady([actual]);
 
-      const fusedDump = actual.bytes.get('U4/dump')!;
-      const discreteDump = oracle.bytes.get('U4/dump')!;
-      expect(fusedDump, 'EEPROM dump').toBeDefined();
-      expect(fusedDump![0x10]).toBe(0x5a);
-      expect(discreteDump![0x10]).toBe(0x5a);
+      const dump = actual.bytes.get('U4/dump')!;
+      expect(dump, 'EEPROM dump').toBeDefined();
+      expect(dump[0x10]).toBe(0x5a);
       expect(actual.signals.get('U6/latch'), 'EEPROM read-back').toBe(0x5a);
-      expect(oracle.signals.get('U6/latch')).toBe(0x5a);
       expect(actual.signals.get('U7/latch'), 'PCF AIN2').toBe(128);
-      expect(oracle.signals.get('U7/latch')).toBe(128);
       expect((fused.methods.getEeprom!(null) as Uint8Array)[0x10]).toBe(0x5a);
     } finally {
-      closeBoards(fused, discrete, actual, oracle);
+      closeBoard(fused, actual);
     }
   }, 120_000);
 
   it('UART: injects bytes and receives the exact echoed stream', async () => {
-    const { fused, discrete, actual, oracle } = await boards('uart-echo');
+    const { fused, actual } = await board('uart-echo');
     try {
       actual.runUntil(0);
-      oracle.runUntil(0);
-      advance([actual, oracle], 1, 5);
+      advance([actual], 1, 5);
       const input = Uint8Array.from([0x01, 0x23, 0x45, 0x00, 0xff]);
       fused.methods.sendUart!({ data: input });
-      expect(discrete.sendInput('UART_PROBE', 'send', input)).toBe(true);
-      advance([actual, oracle], 6, 100);
-      expectReady([actual, oracle]);
+      advance([actual], 6, 100);
+      expectReady([actual]);
 
       expect(actual.uartTx).toEqual([...input]);
-      expect(oracle.uartTx).toEqual([...input]);
       expect(actual.probeTx).toEqual([...input]);
-      expect(oracle.probeTx).toEqual([...input]);
       const chunk = fused.methods.readSerial!({ channel: 'uart1Tx', cursor: 0 }) as {
         readonly data: Uint8Array;
       };
@@ -283,50 +215,43 @@ describe('fused board self-made firmware fixtures', () => {
       };
       expect(status.droppedTotal).toBe(0);
     } finally {
-      closeBoards(fused, discrete, actual, oracle);
+      closeBoard(fused, actual);
     }
   }, 120_000);
 
   it('1-Wire: DS18B20 converts an injected temperature and reads it back', async () => {
-    const { fused, discrete, actual, oracle } = await boards('ds18b20-temp');
+    const { fused, actual } = await board('ds18b20-temp');
     try {
       fused.methods.setTemperature!({ value: 25.0625 });
-      expect(discrete.sendInput('U5', 'temperature', 25.0625)).toBe(true);
       actual.runUntil(0);
-      oracle.runUntil(0);
-      advance([actual, oracle], 1, 1600);
-      expectReady([actual, oracle]);
+      advance([actual], 1, 1600);
+      expectReady([actual]);
 
       expect(actual.signals.get('U5/temperatureOut')).toBeCloseTo(25.0625, 4);
-      expect(oracle.signals.get('U5/temperatureOut')).toBeCloseTo(25.0625, 4);
       expect(actual.signals.get('U6/latch')).toBe(0x91);
-      expect(oracle.signals.get('U6/latch')).toBe(0x91);
       expect(actual.signals.get('U7/latch')).toBe(0x01);
-      expect(oracle.signals.get('U7/latch')).toBe(0x01);
       const snapshot = fused.methods.getSnapshot!(null) as {
         readonly temperature: { readonly converted: boolean; readonly value: number };
       };
       expect(snapshot.temperature.converted).toBe(true);
       expect(snapshot.temperature.value).toBeCloseTo(25.0625, 4);
     } finally {
-      closeBoards(fused, discrete, actual, oracle);
+      closeBoard(fused, actual);
     }
   }, 240_000);
 
   it('DS1302: reads a nonzero seconds register after the RTC advances', async () => {
-    const { fused, discrete, actual, oracle } = await boards('ds1302-read');
+    const { fused, actual } = await board('ds1302-read');
     try {
       actual.runUntil(0);
-      oracle.runUntil(0);
-      advance([actual, oracle], 1, 3000);
-      expectReady([actual, oracle]);
+      advance([actual], 1, 3000);
+      expectReady([actual]);
 
       const seconds = actual.signals.get('U6/latch');
       expect(seconds).toBeDefined();
       expect(seconds).toBeGreaterThan(0);
       expect(seconds).toBeLessThanOrEqual(0x09);
-      expect(oracle.signals.get('U6/latch')).toBe(seconds);
-      expect(actual.bytes.get('U19/datetime')).toEqual(oracle.bytes.get('U19/datetime'));
+      expect(actual.bytes.get('U19/datetime')).toBeDefined();
       const rtc = fused.methods.getRtc!(null) as {
         readonly datetime: string;
         readonly running: boolean;
@@ -334,79 +259,67 @@ describe('fused board self-made firmware fixtures', () => {
       expect(rtc.running).toBe(true);
       expect(rtc.datetime).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
     } finally {
-      closeBoards(fused, discrete, actual, oracle);
+      closeBoard(fused, actual);
     }
   }, 240_000);
 
   it('ultrasonic: eight triggers produce an echo and the firmware latches it', async () => {
-    const { fused, discrete, actual, oracle } = await boards('ultrasonic-echo');
+    const { fused, actual } = await board('ultrasonic-echo');
     try {
       actual.runUntil(0);
-      oracle.runUntil(0);
-      advance([actual, oracle], 1, 50);
-      expectReady([actual, oracle]);
+      advance([actual], 1, 50);
+      expectReady([actual]);
       expect(actual.signals.get('U6/latch')).toBe(0xa5);
-      expect(oracle.signals.get('U6/latch')).toBe(0xa5);
     } finally {
-      closeBoards(fused, discrete, actual, oracle);
+      closeBoard(fused, actual);
     }
   }, 120_000);
 
   it('IR/J2: independent receivers and the 2×3 jumper select P1.1', async () => {
-    const { fused, discrete, actual, oracle } = await boards('ir-j2');
+    const { fused, actual } = await board('ir-j2');
     const setCarrier = (designator: 'U11' | 'U20', value: boolean): void => {
       fused.methods.setIrCarrier!({ designator, value });
-      expect(discrete.sendInput(designator, 'carrier', value)).toBe(true);
     };
     try {
       actual.runUntil(0);
-      oracle.runUntil(0);
-      advance([actual, oracle], 1, 5);
+      advance([actual], 1, 5);
       expect(actual.signals.get('U6/latch')! & 0x02).toBe(0x02);
 
       // J2 defaults to VS1838: only U20 can pull P1.1 low.
       setCarrier('U20', true);
       setCarrier('U11', true);
-      advance([actual, oracle], 6, 10);
+      advance([actual], 6, 10);
       expect(actual.signals.get('U6/latch')! & 0x02).toBe(0);
-      expect(oracle.signals.get('U6/latch')! & 0x02).toBe(0);
 
       // Switch J2 to CX20106A while both receivers still see a carrier.
       fused.methods.setJumper!({ designator: 'J2', closed: false });
-      expect(discrete.sendInput('J2', 'control2', false)).toBe(true);
       setCarrier('U20', false);
-      advance([actual, oracle], 11, 20);
+      advance([actual], 11, 20);
       expect(actual.signals.get('U6/latch')! & 0x02).toBe(0);
-      expect(oracle.signals.get('U6/latch')! & 0x02).toBe(0);
 
       // U11 no longer detects: P1.1 returns high even though J2 selects CX20106A.
       setCarrier('U11', false);
-      advance([actual, oracle], 21, 30);
+      advance([actual], 21, 30);
       expect(actual.signals.get('U6/latch')! & 0x02).toBe(0x02);
-      expect(oracle.signals.get('U6/latch')! & 0x02).toBe(0x02);
 
       // The unselected VS1838 must not reach P1.1.
       setCarrier('U20', true);
-      advance([actual, oracle], 31, 40);
+      advance([actual], 31, 40);
       expect(actual.signals.get('U6/latch')! & 0x02).toBe(0x02);
-      expect(oracle.signals.get('U6/latch')! & 0x02).toBe(0x02);
-      expectReady([actual, oracle]);
+      expectReady([actual]);
     } finally {
-      closeBoards(fused, discrete, actual, oracle);
+      closeBoard(fused, actual);
     }
   }, 120_000);
 
   it('actuators: ULN2003 channels drive the relay and buzzer observables', async () => {
-    const { fused, discrete, actual, oracle } = await boards('actuators');
+    const { fused, actual } = await board('actuators');
     try {
       actual.runUntil(0);
-      oracle.runUntil(0);
-      advance([actual, oracle], 1, 20);
-      expectReady([actual, oracle]);
+      advance([actual], 1, 20);
+      expectReady([actual]);
       expect(actual.signals.get('K1/energized')).toBe(1);
-      expect(oracle.signals.get('K1/energized')).toBe(1);
       expect(actual.signals.get('SP1/active')).toBe(1);
-      expect(oracle.signals.get('SP1/active')).toBe(1);
       const snapshot = fused.methods.getSnapshot!(null) as {
         readonly relay: boolean;
         readonly buzzer: boolean;
@@ -420,12 +333,12 @@ describe('fused board self-made firmware fixtures', () => {
       expect(snapshot.uln2003.channels[4]).toBe('1');
       expect(snapshot.uln2003.channels[6]).toBe('1');
     } finally {
-      closeBoards(fused, discrete, actual, oracle);
+      closeBoard(fused, actual);
     }
   }, 120_000);
 
   it('key matrix: all 16 scanned keys, independent keys and multi-key propagation', async () => {
-    const { fused, discrete, actual, oracle } = await boards('key-scan');
+    const { fused, actual } = await board('key-scan');
     const rows = ['P30', 'P31', 'P32', 'P33'];
     const keys = [
       ['S4', 3, 'ind'],
@@ -447,60 +360,45 @@ describe('fused board self-made firmware fixtures', () => {
     ] as const;
     try {
       actual.runUntil(0);
-      oracle.runUntil(0);
       let nowMs = 0;
       const runFor = (ms: number): void => {
         nowMs += ms;
-        for (const capture of [actual, oracle]) capture.runUntil(nowMs * 1_000_000_000);
+        actual.runUntil(nowMs * 1_000_000_000);
       };
       runFor(20);
 
-      // S1 is the reset button on this schematic: it has no MCU port net, so the shared
+      // S1 is the reset button on this board: it has no MCU port net, so the shared
       // observable is the switch channel itself. S4-S19 below are the 16 matrix/independent
       // keys that drive P30-P35.
       fused.methods.setSwitch!({ designator: 'S1', pressed: true });
-      expect(discrete.sendInput('S1', 'press', true)).toBe(true);
       runFor(10);
       expect(actual.signals.get('S1/pressed')).toBe(1);
-      expect(oracle.signals.get('S1/pressed')).toBe(1);
       fused.methods.setSwitch!({ designator: 'S1', pressed: false });
-      expect(discrete.sendInput('S1', 'press', false)).toBe(true);
       runFor(10);
       expect(actual.signals.get('S1/pressed')).toBe(0);
-      expect(oracle.signals.get('S1/pressed')).toBe(0);
 
       for (const [key, row, column] of keys) {
         fused.methods.setSwitch!({ designator: key, pressed: true });
-        expect(discrete.sendInput(key, 'press', true)).toBe(true);
         // The scan loop includes a debounce-sized delay; hold each key across at least
         // one complete U6/U8/U7 scan before sampling the latches.
         runFor(50);
-        const fusedLatch = actual.signals;
-        const discreteLatch = oracle.signals;
-        for (const designator of ['U6', 'U7', 'U8'])
-          expect(fusedLatch.get(`${designator}/latch`), `${key} ${designator}`).toBe(
-            discreteLatch.get(`${designator}/latch`),
-          );
         const snapshot = {
-          U6: fusedLatch.get('U6/latch')!,
-          U7: fusedLatch.get('U7/latch')!,
-          U8: fusedLatch.get('U8/latch')!,
+          U6: actual.signals.get('U6/latch')!,
+          U7: actual.signals.get('U7/latch')!,
+          U8: actual.signals.get('U8/latch')!,
         };
         const expectedScan = column === 'p35' ? 'U8' : column === 'p34' ? 'U7' : 'U6';
         expect(snapshot[expectedScan]!, `${key} row ${rows[row]} on ${expectedScan}`).toBe(
           snapshot[expectedScan]! & ~(1 << row),
         );
         fused.methods.setSwitch!({ designator: key, pressed: false });
-        expect(discrete.sendInput(key, 'press', false)).toBe(true);
         runFor(50);
       }
 
       // U6 drives P42 low: S4's independent GND column pulls P33 low and S9 pulls
       // P32 low through the real P42 column; S12 pulls P35 low in the U8 scan.
-      for (const key of ['S4', 'S9', 'S12']) {
+      for (const key of ['S4', 'S9', 'S12'])
         fused.methods.setSwitch!({ designator: key, pressed: true });
-        expect(discrete.sendInput(key, 'press', true)).toBe(true);
-      }
       runFor(50);
       const u6 = actual.signals.get('U6/latch')!;
       const u8 = actual.signals.get('U8/latch')!;
@@ -508,13 +406,9 @@ describe('fused board self-made firmware fixtures', () => {
       expect(u6 & (1 << 2)).toBe(0); // S9 row P32 via the driven P42 column
       expect(u6 & (1 << 5)).toBe(0); // S12 pulls P35 low through S4
       expect(u8 & (1 << 3)).toBe(0); // S12 row P33 via the driven P35 column
-      for (const designator of ['U6', 'U7', 'U8'])
-        expect(actual.signals.get(`${designator}/latch`)).toBe(
-          oracle.signals.get(`${designator}/latch`),
-        );
-      expectReady([actual, oracle]);
+      expectReady([actual]);
     } finally {
-      closeBoards(fused, discrete, actual, oracle);
+      closeBoard(fused, actual);
     }
   }, 180_000);
 

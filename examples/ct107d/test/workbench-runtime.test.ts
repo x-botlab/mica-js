@@ -2,12 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { toTimePs } from '@mica-js/core';
 import { parseFusedDocument } from '@mica-js/document/fused';
-import type {
-  DeviceRegistry,
-  FusedDocument,
-  PackageFiles,
-  Value,
-} from '@mica-js/document/fused';
+import type { DeviceRegistry, FusedDocument, PackageFiles, Value } from '@mica-js/document/fused';
 import {
   FusedPreparationError,
   createHeadlessRuntime,
@@ -17,7 +12,6 @@ import {
 } from '@mica-js/sdk/fused';
 import { createDirectoryRegistry, readDirectoryPackage } from '@mica-js/sdk/fused/node';
 import { describe, expect, it } from 'vitest';
-import { createCt107dBoard } from '../bench/board';
 
 const PROJECT = join(import.meta.dirname, '..');
 const DEVICE_DIST = join(PROJECT, 'device', 'dist');
@@ -123,7 +117,9 @@ async function snapshot(runtime: HeadlessRuntime): Promise<SnapshotView> {
   return snapshotOf(await method(null));
 }
 
-function documentWithFirmware(source: 'assets/ct107d-demo.hex' | 'assets/ct107d-demo.bin'): FusedDocument {
+function documentWithFirmware(
+  source: 'assets/ct107d-demo.hex' | 'assets/ct107d-demo.bin',
+): FusedDocument {
   const raw = JSON.parse(readFileSync(DOCUMENT_PATH, 'utf8')) as unknown;
   if (!record(raw) || !Array.isArray(raw['instances']) || raw['instances'].length !== 1) {
     throw new Error('The formal document does not contain one instance');
@@ -165,26 +161,10 @@ async function start(document: FusedDocument): Promise<Harness> {
   return { runtime, signals, events, diagnostics };
 }
 
-function oracleSignals(board: Awaited<ReturnType<typeof createCt107dBoard>>): {
-  readonly signals: Map<string, number>;
-  dispose(): void;
-} {
-  const signals = new Map<string, number>();
-  const designatorOf = new Map<string, string>();
-  for (const [id, designator] of board.designators) designatorOf.set(id, designator);
-  const subscription = board.board.topics.onDidReceive((message) => {
-    if (typeof message.payload !== 'number') return;
-    const instance = board.topicOrigin();
-    const designator = instance === undefined ? undefined : designatorOf.get(instance);
-    if (designator !== undefined) signals.set(`${designator}/${message.topic}`, message.payload);
-  });
-  return { signals, dispose: () => subscription.dispose() };
-}
-
 /**
- * Focused equivalence subset against the discrete oracle: both displays, the four latches and the
- * eight LEDs' brightness/voltage. Other model signals are intentionally outside this assertion;
- * the fused-* suites remain responsible for the full behavioral baseline.
+ * Signals the headless runtime must expose for a running board: both displays, the four latches
+ * and the eight LEDs' brightness/voltage. The fused-* suites own the behavioral baseline; this
+ * harness only checks that the real release publishes these channels consistently.
  */
 const COMPARED = [
   'DS1/digit1',
@@ -203,34 +183,9 @@ const COMPARED = [
   ...Array.from({ length: 8 }, (_unused, index) => `D${String(index + 1)}/voltage`),
 ] as const;
 
-function compareFocusedSignals(
-  actual: Map<string, number>,
-  oracle: Map<string, number>,
-  label: string,
-  requireAll: boolean,
-): void {
-  let compared = 0;
-  for (const key of COMPARED) {
-    const expected = oracle.get(key);
-    if (expected === undefined) {
-      if (requireAll) throw new Error(`${label}: oracle has no ${key}`);
-      continue;
-    }
-    compared += 1;
-    expect(actual.get(key), `${label}: ${key}`).toBe(expected);
-  }
-  expect(compared, `${label}: no comparable signal`).toBeGreaterThan(0);
-}
-
 describe('CT107D v2 headless runtime on the real device release', () => {
-  it('prepares the official document, starts paused at zero and matches a focused oracle subset', async () => {
+  it('prepares the official document, starts paused at zero and keeps the snapshot consistent with signals', async () => {
     const hex = await start(documentWithFirmware('assets/ct107d-demo.hex'));
-    const oracle = await createCt107dBoard({
-      firmware: new Uint8Array(readFileSync(join(PROJECT, 'assets', 'ct107d-demo.bin'))),
-      props: { clockFrequency: CLOCK_FREQUENCY },
-      execution: 'throughput',
-    });
-    const captured = oracleSignals(oracle);
     try {
       expect(hex.runtime.getState()).toEqual({ status: 'paused', simTime: 0 });
       expect(hex.diagnostics).toEqual([]);
@@ -239,13 +194,11 @@ describe('CT107D v2 headless runtime on the real device release', () => {
       expect(initial.displays.DS1).toHaveLength(4);
       expect(initial.displays.DS2).toHaveLength(4);
 
-      oracle.board.runUntil(0);
       for (let ms = 1; ms <= 64; ms += 1) {
         await hex.runtime.step();
-        oracle.board.runUntil(ms * 1_000_000_000);
-        compareFocusedSignals(hex.signals, captured.signals, `t=${String(ms)}ms`, ms === 64);
         if (ms === 1) expect(hex.events.length).toBeGreaterThan(0);
       }
+      for (const key of COMPARED) expect(hex.signals.has(key), `${key} signal`).toBe(true);
       expect(hex.runtime.getState()).toEqual({ status: 'paused', simTime: 64_000_000_000 });
       expect(hex.diagnostics).toEqual([]);
 
@@ -264,9 +217,7 @@ describe('CT107D v2 headless runtime on the real device release', () => {
         expect(final.latches[latch]).toBe(hex.signals.get(`${latch}/latch`));
       }
     } finally {
-      captured.dispose();
       await hex.runtime.dispose();
-      oracle.dispose();
     }
   }, 900_000);
 
@@ -393,6 +344,8 @@ describe('CT107D v2 headless runtime on the real device release', () => {
     // digest detail stays in the message so the actual cause is not hidden.
     expect((corrupted as FusedPreparationError).code).toBe('model/execution-failed');
     expect((corrupted as Error).message).toContain('does not match the released digest');
-    expect(diagnostics.some((entry) => entry.message.includes('does not match the released digest'))).toBe(true);
+    expect(
+      diagnostics.some((entry) => entry.message.includes('does not match the released digest')),
+    ).toBe(true);
   }, 900_000);
 });

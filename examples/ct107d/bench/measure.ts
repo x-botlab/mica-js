@@ -122,13 +122,8 @@ interface ProbeSnapshot {
   readonly direct: boolean;
   readonly digest: string;
   readonly finalDigest: string;
-  readonly finalDigestLegacy: string;
   /** 每个「位号/端口」的最新值，包含预热期；窗口结束时的完全可观测状态。 */
   readonly finalTopics: Readonly<Record<string, string>>;
-  /** 旧口径：窗口内按裸端口名的最后值（后写覆盖前写）；仅为兼容保留。 */
-  readonly finalPorts: Readonly<Record<string, string>>;
-  /** 兼容字段：融合器件只有一个真实实例，位号已进入事件键。 */
-  readonly instanceDesignators: Readonly<Record<string, string>>;
 }
 
 interface Probe {
@@ -226,18 +221,15 @@ function createProbe(board: unknown): Probe {
   const identityOf = (message: {
     topic: string;
     payload: unknown;
-  }): { key: string; port: string; value: unknown } | undefined => {
+  }): { key: string; value: unknown } | undefined => {
     if (message.topic === 'signal') {
       const payload = message.payload as {
         readonly designator: string;
         readonly port: string;
         readonly value: number;
       };
-      return {
-        key: `${payload.designator}/${payload.port}`,
-        port: payload.port,
-        value: payload.value,
-      };
+
+      return { key: `${payload.designator}/${payload.port}`, value: payload.value };
     }
     if (message.topic === 'bytes') {
       const payload = message.payload as {
@@ -245,27 +237,21 @@ function createProbe(board: unknown): Probe {
         readonly port: string;
         readonly data: Uint8Array;
       };
-      return {
-        key: `${payload.designator}/${payload.port}`,
-        port: payload.port,
-        value: payload.data,
-      };
+
+      return { key: `${payload.designator}/${payload.port}`, value: payload.data };
     }
     if (message.topic === 'uart1.tx' || message.topic === 'uart1.rx') {
       const port = message.topic === 'uart1.tx' ? 'uart1Tx' : 'uart1Rx';
-      return { key: `U1/${port}`, port, value: message.payload };
+
+      return { key: `U1/${port}`, value: message.payload };
     }
     return undefined;
   };
 
-  /** Designators are payload data; the board remains one real instance. */
-  const instanceDesignators: Readonly<Record<string, string>> = Object.freeze({});
   /** 全量最新值（含预热期），供窗口检查点读取完整可观测状态。 */
   const latest = new Map<string, string>();
   /** 窗口内按「位号/端口」的最后值。 */
   const windowFinals = new Map<string, string>();
-  /** 旧口径：窗口内按裸端口名的最后值（后写覆盖前写）。 */
-  const legacyFinals = new Map<string, string>();
   const stream: string[] = [];
   const subscription = (board as { topics: TopicBridge }).topics.onDidReceive((message) => {
     const identity = identityOf(message);
@@ -277,7 +263,6 @@ function createProbe(board: unknown): Probe {
     counters.topicMessages++;
     hasher.update(`${runtime.time}|${identity.key}|${text}\n`);
     windowFinals.set(identity.key, text);
-    legacyFinals.set(identity.port, text);
     if (process.env['MICA_PERF_STREAM']) stream.push(`${runtime.time}|${identity.key}|${text}`);
   });
 
@@ -412,10 +397,7 @@ function createProbe(board: unknown): Probe {
         direct: directJits().length > 0 && counters.directCalls > 0,
         digest: `sha256:${hasher.digest('hex').slice(0, 16)}`,
         finalDigest: digestTopics(windowFinals),
-        finalDigestLegacy: digestTopics(legacyFinals),
         finalTopics: sortedTopics(latest),
-        finalPorts: sortedTopics(legacyFinals),
-        instanceDesignators,
       };
     },
     dispose() {
@@ -431,7 +413,7 @@ function createProbe(board: unknown): Probe {
 }
 
 export interface MeasureOptions {
-  /** 固件镜像；默认 `assets/ct107d-demo.bin`（12 MHz 8051 演示固件）。 */
+  /** 固件镜像；默认 `device/src/assets/ct107d-demo.bin`（12 MHz 8051 演示固件）。 */
   readonly firmware?: Uint8Array;
   /** 固件名（写进结果与产物指纹）；默认 `ct107d-demo`。 */
   readonly firmwareName?: string;
@@ -466,13 +448,8 @@ export interface MeasureResult {
   readonly firmwareBytes: number;
   /** 固件镜像的完整 SHA-256（十六进制），用于复现实验产物。 */
   readonly firmwareSha256: string;
-  /** 构建产物、生成模型、原理图与固件的哈希清单。 */
+  /** 构建产物、生成模型、板级拓扑与固件的哈希清单。 */
   readonly fingerprints: FusedFingerprints;
-  /**
-   * @deprecated 融合器件只有一个真实实例；位号已经包含在话题键的前半段。
-   * 保留该字段仅为兼容历史结果文件。
-   */
-  readonly instanceDesignators: Readonly<Record<string, string>>;
   /** 实际使用的执行后端。 */
   readonly execution: 'throughput' | 'precise';
   readonly clockFrequency: number;
@@ -504,18 +481,6 @@ export interface MeasureResult {
   readonly coldElapsedWallMs: number;
   /** `warmUpMs / coldElapsedWallMs`；预热为 0 时记为 0。 */
   readonly coldRealtimeRatio: number;
-  /**
-   * @deprecated 历史 CPU 指标：等价于 `cpuMs`（进程 CPU 时间），不是墙钟。
-   * 新代码请读 `cpuMs` / `elapsedWallMs` / `realtimeRatio`。
-   */
-  readonly wallMs: number;
-  /**
-   * @deprecated 历史 CPU 指标：`cpuMs / simMs`（CPU 时间 / 仿真时间），不是 `simMs / wall`。
-   * 实时比请读 `realtimeRatio`。
-   */
-  readonly rtf: number;
-  /** @deprecated 历史 CPU 指标：等价于 `coldCpuMs`。 */
-  readonly coldMs: number;
   readonly usPerSolve: number;
   readonly solves: number;
   /** Whole-graph topology rebuilds; a transition-bucket hit restores instead. */
@@ -562,24 +527,13 @@ export interface MeasureResult {
   readonly checkpointsStable: boolean;
   /** 最佳轮在共同仿真时间检查点上的完整状态。 */
   readonly checkpoints: readonly TopicCheckpoint[];
-  /**
-   * 旧口径：窗口内按裸端口名取最后载荷后计算的摘要（后写覆盖前写）。
-   * 新代码请读 `topicFinalDigestByDevice`（位号 + 端口）。
-   */
-  readonly topicFinalDigest: string;
   /** 窗口内按「位号/端口」最后载荷计算的摘要。 */
-  readonly topicFinalDigestByDevice: string;
+  readonly topicFinalDigest: string;
   /**
    * 窗口结束时的完整状态，键为「位号/端口」（含预热期最后已知值）。
    * 同名端口（U7/U8 的 `latch`、DS1/DS2 的 `digit1`…）不会再互相覆盖。
-   * 位号只作辅助映射，见 `instanceDesignators`，可能重复。
    */
   readonly topicFinalTopics: Readonly<Record<string, string>>;
-  /**
-   * @deprecated 旧口径：窗口内按裸端口名的最后值（后写覆盖前写）。
-   * 仅为兼容历史调用保留；需要区分同名器件请读 `topicFinalTopics`。
-   */
-  readonly topicFinalPorts: Readonly<Record<string, string>>;
   readonly unavailable: Readonly<Record<string, string>>;
   readonly faults: readonly string[];
 }
@@ -647,7 +601,6 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
   const samples: RoundSample[] = [];
   const digests: string[] = [];
   const finalDigests: string[] = [];
-  const finalDigestsLegacy: string[] = [];
   const faults: string[] = [];
   const unavailable: Record<string, string> = {};
   let devices = 0;
@@ -761,7 +714,6 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
       });
       digests.push(snapshot.digest);
       finalDigests.push(snapshot.finalDigest);
-      finalDigestsLegacy.push(snapshot.finalDigestLegacy);
 
       if (solves === 0)
         unavailable.solves =
@@ -797,7 +749,6 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     firmwareBytes: firmware.length,
     firmwareSha256,
     fingerprints: fingerprints!,
-    instanceDesignators: best.snapshot.instanceDesignators,
     execution,
     clockFrequency,
     devices,
@@ -817,10 +768,6 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     coldElapsedWallMs,
     coldRealtimeRatio:
       warmUpMs === 0 || best.coldWallMs === 0 ? 0 : Number((warmUpMs / best.coldWallMs).toFixed(3)),
-    // 兼容历史字段：这两个值仍然是 CPU 时间口径，不是墙钟。
-    wallMs: cpuMs,
-    rtf: Number((cpuMs / measureMs).toFixed(3)),
-    coldMs: coldCpuMs,
     usPerSolve: Number(usPerSolve.toFixed(2)),
     solves: best.solves,
     prepareTopology: best.topologyPrepares,
@@ -858,10 +805,8 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     checkpointsStable:
       new Set(samples.map((sample) => JSON.stringify(sample.checkpoints))).size === 1,
     checkpoints: best.checkpoints,
-    topicFinalDigest: finalDigestsLegacy[0] ?? '',
-    topicFinalDigestByDevice: finalDigests[0] ?? '',
+    topicFinalDigest: finalDigests[0] ?? '',
     topicFinalTopics: best.snapshot.finalTopics,
-    topicFinalPorts: best.snapshot.finalPorts,
     unavailable,
     faults,
   };

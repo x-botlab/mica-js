@@ -72,10 +72,9 @@ function artifactPath(uri: string): string {
 }
 
 function packageArtifacts(id: string, kind: 'devices' | 'widgets'): string[] {
-  const [prefix, name] = id.split(':');
-  const root = prefix === 'xbotlab' ? 'components/ct107d' : 'components';
+  const name = id.split(':').at(-1) ?? id;
   const file = kind === 'devices' ? 'device' : 'widget';
-  return [`${root}/${kind}/${name}/${file}.json`, `${root}/${kind}/${name}/${file}.js`];
+  return [`components/${kind}/${name}/${file}.json`, `components/${kind}/${name}/${file}.js`];
 }
 
 async function hashArtifacts(
@@ -197,7 +196,7 @@ export function App() {
   const prepareState = useSyncExternalStore(prepare.subscribe, prepare.get);
   const prepareStatus = prepareText(prepareState);
   const [documentId, setDocumentId] = useState(() => {
-    // 深链接：`?doc=ct107d-canvas` 直接打开指定文档，方便分享预览。
+    // 深链接：`?doc=<id>` 直接打开指定文档，方便分享预览。
     const requested = new URLSearchParams(globalThis.location.search).get('doc');
     return demoDocument(requested ?? 'example-canvas').id;
   });

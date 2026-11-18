@@ -5,7 +5,6 @@ import { defineConfig } from 'vitest/config';
  *
  * 基准必须独占 CPU 才能读数稳定，因此串行执行、超时时间放宽到基准量级。
  * 基准从正式 `device/dist` 装载融合器件；运行前需先构建 MCU 与融合器件。
- * 离散 `bench/board.ts` 只做 correctness oracle，不进入性能窗口。
  */
 export default defineConfig({
   resolve: { conditions: ['source', 'module', 'browser', 'development|production'] },

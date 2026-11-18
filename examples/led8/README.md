@@ -13,9 +13,9 @@ led8/
 ```
 
 `led8.sch` 仍是 v1 文档；`verify.mjs` 通过
-`../ct107d/legacy/device-package.mjs` 把 `examples/devices` 的统一器件包投影成旧
-`DeviceMetadata` / `DeviceFactory`，并把 `Project.bin` 包装成 `FirmwareImage`。
-这是旧消费适配，不是融合运行时或 RFC 0024 文档迁移。
+`../devices/test/support/legacy-device-package.mjs` 把 `examples/devices` 的统一器件包
+投影成旧 `DeviceFactory`，并把 `Project.bin` 包装成 `FirmwareImage`。这是测试侧旧消费
+适配，不是融合运行时或 RFC 0024 文档迁移。
 
 ## 电路
 

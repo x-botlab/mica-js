@@ -78,7 +78,7 @@ test('stale detection reports changed and missing assets without writing', () =>
     [],
   );
 
-  const changed = assets[2].path;
+  const changed = assets.at(-1).path;
   assert.deepEqual(
     staleFirmwareAssets(assets, (path) =>
       path === changed ? Buffer.from('stale') : expected.get(path),

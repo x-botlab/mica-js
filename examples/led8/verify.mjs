@@ -14,7 +14,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { loadLegacyDevice, legacyCreateWithFirmware } from '../ct107d/legacy/device-package.mjs';
+import {
+  loadLegacyDevice,
+  legacyCreateWithFirmware,
+} from '../devices/test/support/legacy-device-package.mjs';
 
 const HERE = import.meta.dirname;
 const DEVICES_PROJECT = join(HERE, '..', 'devices');
@@ -157,7 +160,10 @@ const nets = [
   {
     id: 'vcc',
     voltage: SUPPLY,
-    pins: [pin('U1', 'VCC'), ...ledSymbols.map((symbol) => ({ instance: symbol.id, pin: 'anode' }))],
+    pins: [
+      pin('U1', 'VCC'),
+      ...ledSymbols.map((symbol) => ({ instance: symbol.id, pin: 'anode' })),
+    ],
   },
   { id: 'gnd', voltage: 0, pins: [pin('U1', 'GND')] },
   ...Array.from({ length: 8 }, (_, bit) => ({
@@ -173,7 +179,10 @@ for (const net of nets)
 for (let bit = 0; bit < 8; bit += 1) {
   const cathode = netOfPin.get(`${pin(`D${bit + 1}`, 'cathode').instance}/cathode`);
   check(cathode === `P2_${bit}`, `D${bit + 1} 阴极应在 P2_${bit}，实际 ${cathode ?? '悬空'}`);
-  check(netOfPin.get(`${pin('U1', `P2_${bit}`).instance}/P2_${bit}`) === `P2_${bit}`, `P2.${bit} 未接线`);
+  check(
+    netOfPin.get(`${pin('U1', `P2_${bit}`).instance}/P2_${bit}`) === `P2_${bit}`,
+    `P2.${bit} 未接线`,
+  );
   const anode = byDesignator.get(`D${bit + 1}`);
   check(anode !== undefined && netOfPin.has(`${anode.id}/anode`), `D${bit + 1} 阳极未接 VCC`);
 }

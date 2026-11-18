@@ -13,14 +13,15 @@ import { driveMemoryName, pinMemoryName } from '../device/shared/dirty-protocol.
 
 /**
  * Fused CT107D fixture. This is the formal `device/dist` artifact: one model, one
- * instance and one JIT. The legacy adapter only bridges `createBoard` prop validation
+ * instance and one JIT. The test-only bridge only adapts `createBoard` prop validation
  * and firmware resources; it does not assemble any discrete device or net.
  */
 
 const PROJECT = join(import.meta.dirname, '..');
 const ARTIFACT = join(PROJECT, 'device', 'dist', 'model.js');
 const MANIFEST = join(PROJECT, 'device', 'dist', 'package.json');
-const SCHEMATIC = join(PROJECT, 'legacy', 'source', 'ct107d.sch');
+const TOPOLOGY = join(PROJECT, 'device', 'scripts', 'board-topology.json');
+const DOCUMENT = join(PROJECT, 'ct107d.sch');
 const GENERATED_MODEL = join(PROJECT, 'device', 'src', 'model.ddl');
 
 const sha256 = (bytes: string | Uint8Array): string =>
@@ -41,7 +42,7 @@ interface ArtifactManifest {
   };
 }
 
-/** Legacy topics of every declared model event; a manifest drift must fail instead of no-op. */
+/** Bridge topics of every declared model event; a manifest drift must fail instead of no-op. */
 const EVENT_TOPICS = Object.freeze({
   onDidSignal: 'signal',
   onDidBytes: 'bytes',
@@ -57,7 +58,7 @@ const MCU_DRIVES = Object.freeze(
     .sort((left, right) => left - right),
 );
 
-/** Assemble the per-drive resources into the legacy flat test view. */
+/** Assemble the per-drive resources into one flat test view. */
 function readDriveMemories(
   memories: ReadonlyMap<string, Uint8Array> | undefined,
   name: (drive: number) => string,
@@ -73,7 +74,10 @@ export interface FusedFingerprints {
   readonly model: string;
   readonly manifest: string;
   readonly generatedModel: string;
-  readonly schematic: string;
+  /** 板级拓扑输入（实例、装配属性与内部网表）；生成器唯一非器件包输入。 */
+  readonly topology: string;
+  /** 正式 v2 文档；只作为宿主入口指纹，不参与模型生成。 */
+  readonly document: string;
   readonly firmware: string;
 }
 
@@ -136,7 +140,7 @@ function loadArtifact(): Promise<ArtifactModule> {
 }
 
 export function demoFirmware(): Uint8Array {
-  return new Uint8Array(readFileSync(join(PROJECT, 'assets', 'ct107d-demo.bin')));
+  return new Uint8Array(readFileSync(join(PROJECT, 'device', 'src', 'assets', 'ct107d-demo.bin')));
 }
 
 export async function createFusedCt107dBoard(options: FusedBoardOptions): Promise<FusedBenchBoard> {
@@ -215,7 +219,8 @@ export async function createFusedCt107dBoard(options: FusedBoardOptions): Promis
       model: sha256(readFileSync(ARTIFACT)),
       manifest: sha256(readFileSync(MANIFEST)),
       generatedModel: sha256(readFileSync(GENERATED_MODEL)),
-      schematic: sha256(readFileSync(SCHEMATIC)),
+      topology: sha256(readFileSync(TOPOLOGY)),
+      document: sha256(readFileSync(DOCUMENT)),
       firmware: sha256(options.firmware),
     },
     dispose() {

@@ -15,8 +15,8 @@ pnpm --filter @mica-js/example-ct107d check:fused
 pnpm --filter @mica-js/example-ct107d typecheck:fused
 ```
 
-`scripts/generate.mjs` 读取 `examples/devices/*/src/model.ddl`、`ct107d.sch` 与
-`ct107d.netlist.json`，生成：
+`scripts/generate.mjs` 读取 `examples/devices/*/src/model.ddl` 与
+`scripts/board-topology.json`，生成：
 
 - `src/model.ddl`：单 DeviceIR；
 - `src/nets.ts`：历史网络编号与 MCU 引脚槽；
@@ -89,10 +89,10 @@ pnpm --filter @mica-js/example-ct107d typecheck:fused
 只按网表连通关系生效；P4 的复位弱上拉与外部强 low 覆盖由 MCU 端口层统一处理。
 LED 亮度、seg4 扫描稳定窗口、继电器/蜂鸣器、LM324 的 position/gain/outputVoltage 按
 原器件公式计算；初始 wiper=0 时 gain=21，position/gain 变化即使输出仍为 0 也发事件。
-固定属性取自 `ct107d.sch`。PCF8591 的 AIN2 仍由 `setAnalogInput(2, …)`
+固定属性取自 `scripts/board-topology.json`。PCF8591 的 AIN2 仍由 `setAnalogInput(2, …)`
 独立注入，不自动耦合 LM324 输出。它不模拟模拟竞争、驱动强度、任意外部
 接线或完整电气网络。
 
-正确性由 `test/fused-preview.test.ts`（0→4096 ms 预览轨迹对离散 oracle）、
+正确性由 `test/fused-preview.test.ts`（0→4096 ms 预览轨迹）、
 `test/fused-firmware.test.ts`（仓库内自制 8051 fixtures）与 `bench/`（正式 dist、
 单实例/单 JIT、fallbackRate（PC 集合不可用时明确 null）与真实工作量断言）覆盖。

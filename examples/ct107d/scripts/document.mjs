@@ -35,7 +35,6 @@ export const INSTANCE_ID = '7d9e3a1c-5b2f-4c8d-9e01-2a3b4c5d6e7f';
 export const VCC_REFERENCE_ID = '8b3a2f10-6c4d-4e9a-b7f2-1d5c9e0a3b48';
 export const GND_REFERENCE_ID = 'c4d5e6f7-1a2b-4c3d-9e8f-0a1b2c3d4e5f';
 export const PROGRAM_SOURCE = 'assets/seg7-dynamic.hex';
-export const PROGRAM_BIN_SOURCE = 'assets/ct107d-demo.bin';
 
 const USAGE = `Usage: node scripts/document.mjs [--check | --write | --refresh-lock | --print] [options]
 
