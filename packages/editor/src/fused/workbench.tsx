@@ -18,10 +18,20 @@ import {
   addReference,
   addWire,
   rotateTargets,
+  setLabelName,
+  setReferenceLabelName,
+  setReferenceRotation,
+  setReferenceVoltage,
   setTextOffset,
   setInstanceProperty,
 } from './document/edits';
-import { materializeAnchor, moveReference, moveWireSegment, routeDocumentWires } from './wiring';
+import {
+  materializeAnchor,
+  moveLabel,
+  moveReference,
+  moveWireSegment,
+  routeDocumentWires,
+} from './wiring';
 import { ContributionRegistry } from './contributions/registry';
 import { findBodyOverlaps } from './canvas/geometry';
 import { createHtmlViewHost, type IHtmlViewHost } from './html';
@@ -720,6 +730,34 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
           position,
           () => crypto.randomUUID(),
         ),
+      );
+    },
+    'label.move': async ({ labelId, position }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        moveLabel(current, documentSession.getDevices().getLoadedDevices(), labelId, position),
+      );
+    },
+    'label.setName': async ({ labelId, name }) => {
+      assertEditable();
+      await documentSession.transact((current) => setLabelName(current, labelId, name));
+    },
+    'reference.setVoltage': async ({ referenceId, voltage }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        setReferenceVoltage(current, referenceId, voltage),
+      );
+    },
+    'reference.setName': async ({ referenceId, name }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        setReferenceLabelName(current, referenceId, name),
+      );
+    },
+    'reference.setRotation': async ({ referenceId, rotation }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        setReferenceRotation(current, referenceId, rotation),
       );
     },
     'wire.add': ({ from, to, bends }) => {

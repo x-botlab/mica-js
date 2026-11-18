@@ -5,7 +5,9 @@ import {
   endpointPoint,
   hasWireConnection,
   isOrthogonalPolyline,
+  labelAnchorNode,
   materializeAnchor,
+  moveLabel,
   moveWireSegment,
   moveReference,
   orthogonalPath,
@@ -172,6 +174,87 @@ describe('orthogonalPath', () => {
         expect(moveReference(document, new Map(), referenceId, { x: 0, y: 0 }, idFactory())).toBe(
           document,
         );
+      });
+    });
+
+    describe('moveLabel', () => {
+      function standalone(): FusedDocument {
+        return {
+          ...documentWith({
+            id: WIRE_ID,
+            from: { kind: 'node', node: 'anchor' },
+            to: { kind: 'node', node: 'far' },
+            bends: [],
+          }),
+          nodes: [
+            { id: 'anchor', kind: 'free', x: 0, y: 0 },
+            { id: 'far', kind: 'free', x: 20, y: 0 },
+          ],
+          wires: [],
+          labels: [
+            {
+              id: 'net',
+              target: { kind: 'node', node: 'anchor' },
+              name: 'SIGNAL',
+              offset: { x: 0.3, y: -0.35 },
+            },
+          ],
+        };
+      }
+
+      it('drags a standalone label together with the connection point it owns', () => {
+        const document = standalone();
+        const moved = moveLabel(document, new Map(), 'net', { x: 4, y: 7 });
+        expect(moved.nodes.find((value) => value.id === 'anchor')).toMatchObject({ x: 4, y: 7 });
+        expect(moved.labels[0]).toBe(document.labels[0]);
+        expect(moved.labels[0]!.offset).toEqual({ x: 0.3, y: -0.35 });
+        expect(moveLabel(document, new Map(), 'net', { x: 0, y: 0 })).toBe(document);
+      });
+
+      it('keeps a single attached wire connected while the label moves', () => {
+        const document: FusedDocument = {
+          ...standalone(),
+          wires: [
+            {
+              id: WIRE_ID,
+              from: { kind: 'node', node: 'anchor' },
+              to: { kind: 'node', node: 'far' },
+              bends: [],
+            },
+          ],
+        };
+        const moved = moveLabel(document, new Map(), 'net', { x: 0, y: 6 });
+        expect(moved.nodes.find((value) => value.id === 'anchor')).toMatchObject({ x: 0, y: 6 });
+        expect(wirePolyline(moved, new Map(), moved.wires[0]!)).toEqual([
+          { x: 0, y: 6 },
+          { x: 20, y: 6 },
+          { x: 20, y: 0 },
+        ]);
+      });
+
+      it('leaves labels on pins, branches and shared nodes with their anchor in place', () => {
+        const base = standalone();
+        const pinned: FusedDocument = {
+          ...base,
+          labels: [
+            { id: 'net', target: { kind: 'pin', instance: LED_ID, pin: 'anode' }, name: 'SIGNAL' },
+          ],
+        };
+        expect(labelAnchorNode(pinned, 'net')).toBeUndefined();
+        expect(() => moveLabel(pinned, new Map(), 'net', { x: 4, y: 7 })).toThrow(
+          'Invalid net label',
+        );
+        const junction: FusedDocument = {
+          ...base,
+          nodes: [{ id: 'anchor', kind: 'junction', x: 0, y: 0 }],
+        };
+        expect(labelAnchorNode(junction, 'net')).toBeUndefined();
+        const shared: FusedDocument = {
+          ...base,
+          labels: [...base.labels, { id: 'other', target: base.labels[0]!.target, name: 'OTHER' }],
+        };
+        expect(labelAnchorNode(shared, 'net')).toBeUndefined();
+        expect(labelAnchorNode(base, 'missing')).toBeUndefined();
       });
     });
 

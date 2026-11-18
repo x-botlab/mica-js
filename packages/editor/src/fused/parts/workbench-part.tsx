@@ -21,7 +21,7 @@ import { CanvasPart, type ICanvasHandle, type IViewInput } from './canvas-part';
 import { SidebarPart } from './sidebar-part';
 import { ToolbarPart } from './toolbar-part';
 import { InstancesView } from '../views/instances';
-import { InspectorView } from '../views/inspector';
+import { InspectorView, type IInspectorAnnotation } from '../views/inspector';
 import { ProblemsView } from '../views/problems';
 import { FloatingViewsPart, HtmlViewsPart, PanelResizer } from './html-views-part';
 import { Icon } from './activity-bar-part';
@@ -113,6 +113,44 @@ export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
       ? document.instances.find((instance) => instance.id === selection[0]?.id)
       : undefined;
   const manifest = single === undefined ? undefined : ui.devices.get(single.device)?.manifest;
+  const describeEndpoint = (endpoint: Endpoint): string => {
+    if (endpoint.kind === 'node') return '连接节点';
+    const instance = document.instances.find((value) => value.id === endpoint.instance);
+    const label =
+      instance === undefined
+        ? undefined
+        : (ui.devices.get(instance.device)?.manifest.pins?.[endpoint.pin]?.label ?? endpoint.pin);
+    return `${instance?.designator ?? endpoint.instance} · ${label ?? endpoint.pin}`;
+  };
+  const annotation: IInspectorAnnotation | undefined = (() => {
+    const target = selection.length === 1 ? selection[0] : undefined;
+    if (target === undefined || target.kind === 'instance') return undefined;
+    if (target.kind === 'reference') {
+      const reference = document.references.find((value) => value.id === target.id);
+      return reference === undefined
+        ? undefined
+        : { kind: 'reference', reference, endpoint: describeEndpoint(reference.target) };
+    }
+    if (target.kind === 'label') {
+      const label = document.labels.find((value) => value.id === target.id);
+      return label === undefined
+        ? undefined
+        : { kind: 'label', label, endpoint: describeEndpoint(label.target) };
+    }
+    if (target.kind === 'wire') {
+      const wire = document.wires.find((value) => value.id === target.id);
+      return wire === undefined
+        ? undefined
+        : {
+            kind: 'wire',
+            wire,
+            from: describeEndpoint(wire.from),
+            to: describeEndpoint(wire.to),
+          };
+    }
+    const node = document.nodes.find((value) => value.id === target.id);
+    return node === undefined ? undefined : { kind: 'node', node };
+  })();
   const layout =
     single === undefined || manifest === undefined ? undefined : ui.viewLayout(single.id);
   const run = (task: Promise<unknown>) => {
@@ -292,6 +330,9 @@ export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
         onMoveReference={async (referenceId, position) => {
           await ui.workbench.executeCommand('reference.move', { referenceId, position });
         }}
+        onMoveLabel={async (labelId, position) => {
+          await ui.workbench.executeCommand('label.move', { labelId, position });
+        }}
         onStartWire={async () => {
           await ui.workbench.executeCommand('canvas.setTool', { tool: 'wire' });
         }}
@@ -410,6 +451,21 @@ export function WorkbenchPart({ ui }: { readonly ui: IWorkbenchUI }) {
                 instance={single}
                 manifest={
                   single === undefined ? undefined : ui.devices.get(single.device)?.manifest
+                }
+                annotation={annotation}
+                onRenameLabel={(labelId, name) =>
+                  run(ui.workbench.executeCommand('label.setName', { labelId, name }))
+                }
+                onSetVoltage={(referenceId, voltage) =>
+                  run(ui.workbench.executeCommand('reference.setVoltage', { referenceId, voltage }))
+                }
+                onSetReferenceName={(referenceId, name) =>
+                  run(ui.workbench.executeCommand('reference.setName', { referenceId, name }))
+                }
+                onSetRotation={(referenceId, rotation) =>
+                  run(
+                    ui.workbench.executeCommand('reference.setRotation', { referenceId, rotation }),
+                  )
                 }
                 selectionCount={selection.length}
                 disabled={state.readOnly || state.mode !== 'edit' || state.busy}

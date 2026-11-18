@@ -72,6 +72,20 @@ export interface IWorkbenchCommandMap {
   'selection.rotate': IWorkbenchCommand<{ readonly degrees: number }>;
   'text.move': IWorkbenchCommand<{ readonly target: IFusedTextTarget; readonly offset: Point2D }>;
   'reference.move': IWorkbenchCommand<{ readonly referenceId: string; readonly position: Point2D }>;
+  'label.move': IWorkbenchCommand<{ readonly labelId: string; readonly position: Point2D }>;
+  'label.setName': IWorkbenchCommand<{ readonly labelId: string; readonly name: string }>;
+  'reference.setVoltage': IWorkbenchCommand<{
+    readonly referenceId: string;
+    readonly voltage: number;
+  }>;
+  'reference.setName': IWorkbenchCommand<{
+    readonly referenceId: string;
+    readonly name: string | undefined;
+  }>;
+  'reference.setRotation': IWorkbenchCommand<{
+    readonly referenceId: string;
+    readonly rotation: number;
+  }>;
   'wire.moveSegment': IWorkbenchCommand<{
     readonly wireId: string;
     readonly segment: number;

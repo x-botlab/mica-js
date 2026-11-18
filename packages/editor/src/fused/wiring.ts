@@ -216,6 +216,61 @@ export function moveReference(
 }
 
 /**
+ * The free node a standalone net label owns, when dragging the label should carry its anchor.
+ *
+ * A label dropped on empty canvas owns the node it created: nothing else names that node, it is
+ * not a branch and at most one wire hangs on it. A label naming a pin, a junction or a shared node
+ * only owns its text, so its name may sit anywhere without dragging the connection with it.
+ */
+export function labelAnchorNode(document: FusedDocument, labelId: string): string | undefined {
+  const label = document.labels.find((value) => value.id === labelId);
+  const target = label?.target;
+  if (target?.kind !== 'node') return undefined;
+  const node = document.nodes.find((value) => value.id === target.node);
+  if (node === undefined || node.kind === 'junction') return undefined;
+  const shared =
+    document.labels.some(
+      (value) =>
+        value.id !== labelId && value.target.kind === 'node' && value.target.node === node.id,
+    ) ||
+    document.references.some(
+      (value) => value.target.kind === 'node' && value.target.node === node.id,
+    ) ||
+    document.wires.filter(
+      (value) =>
+        (value.from.kind === 'node' && value.from.node === node.id) ||
+        (value.to.kind === 'node' && value.to.node === node.id),
+    ).length > 1;
+  return shared ? undefined : node.id;
+}
+
+/** Moves a standalone net label as one object: the connection point and the name travel together. */
+export function moveLabel(
+  document: FusedDocument,
+  devices: WiringDevices,
+  labelId: string,
+  position: Point2D,
+): FusedDocument {
+  const nodeId = labelAnchorNode(document, labelId);
+  if (nodeId === undefined || !Number.isFinite(position.x) || !Number.isFinite(position.y))
+    throw new FusedSessionError('edit/invalid-request', 'Invalid net label drag');
+  const node = document.nodes.find((value) => value.id === nodeId);
+  if (node === undefined)
+    throw new FusedSessionError('edit/invalid-request', 'Unknown net label anchor');
+  if (node.x === position.x && node.y === position.y) return document;
+  return routeDocumentWires(
+    {
+      ...document,
+      nodes: document.nodes.map((value) =>
+        value.id === nodeId ? { ...value, x: position.x, y: position.y } : value,
+      ),
+    },
+    devices,
+    document,
+  );
+}
+
+/**
  * Bends for a new wire from `from` to `to` through the requested waypoints.
  *
  * The waypoints stay in the order the caller picked them; only the legs between them are

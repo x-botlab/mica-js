@@ -5,6 +5,12 @@ import { FusedDocumentSession, serializeFusedDocument } from './session';
 import type { IFusedDocumentSessionOptions } from './session';
 import type { FusedSessionError } from './errors';
 import { moveInstances, rotateTargets, setTextOffset } from './edits';
+import {
+  setLabelName,
+  setReferenceLabelName,
+  setReferenceRotation,
+  setReferenceVoltage,
+} from './edits';
 import { addWire as addWirePure } from './edits';
 import { materializeAnchor, moveReference, moveWireSegment, wirePolyline } from '../wiring';
 import {
@@ -194,6 +200,69 @@ describe('fused canvas editing transactions', () => {
       name: 'VCC',
       offset: { x: -2, y: -3 },
     });
+  });
+
+  it('renames net labels and terminal voltages without touching geometry or anchors', async () => {
+    const { bench, session } = await openConnected();
+    const terminalNode = await session.addNode({ x: 50, y: 50 }, 'free');
+    const netNode = await session.addNode({ x: 70, y: 50 }, 'free');
+    const target = { kind: 'node' as const, node: terminalNode };
+    const reference = await session.addReference(target, 5, 'power', {
+      label: { name: 'VCC', offset: { x: 1, y: -1 } },
+    });
+    const label = await session.addLabel({ kind: 'node', node: netNode }, 'VCC');
+    const before = session.getDocument();
+    await session.transact((current) =>
+      setReferenceLabelName(setReferenceVoltage(current, reference, 3.3), reference, 'VBUS'),
+    );
+    await session.transact((current) => setReferenceRotation(current, reference, 450));
+    await session.transact((current) => setLabelName(current, label, 'SIGNAL'));
+    const after = session.getDocument();
+    expect(after.references.find((value) => value.id === reference)).toMatchObject({
+      target,
+      voltage: 3.3,
+      rotation: 90,
+      label: { name: 'VBUS', offset: { x: 1, y: -1 } },
+    });
+    expect(after.labels.find((value) => value.id === label)).toMatchObject({
+      target: { kind: 'node', node: netNode },
+      name: 'SIGNAL',
+    });
+    expect(after.nodes).toEqual(before.nodes);
+    expect(after.wires).toEqual(before.wires);
+    await session.save();
+    expect(
+      parseFusedDocument(bench.files.text(URI)).labels.find((value) => value.id === label)?.name,
+    ).toBe('SIGNAL');
+    await session.undo();
+    await session.undo();
+    await session.undo();
+    expect(session.getDocument()).toEqual(before);
+  });
+
+  it('rejects blank net names and a ground symbol above 0 V', async () => {
+    const { session } = await openConnected();
+    const first = await session.addNode({ x: 50, y: 50 }, 'free');
+    const second = await session.addNode({ x: 70, y: 50 }, 'free');
+    const third = await session.addNode({ x: 90, y: 50 }, 'free');
+    const label = await session.addLabel({ kind: 'node', node: first }, 'VCC');
+    const ground = await session.addReference({ kind: 'node', node: second }, 0, 'ground');
+    const reference = await session.addReference({ kind: 'node', node: third }, 5, 'power');
+    await expect(
+      session.transact((current) => setLabelName(current, label, '  ')),
+    ).rejects.toMatchObject({ code: 'edit/invalid-request' });
+    await expect(
+      session.transact((current) => setReferenceVoltage(current, ground, 5)),
+    ).rejects.toMatchObject({ code: 'edit/invalid-request' });
+    await expect(
+      session.transact((current) => setReferenceLabelName(current, ground, 'GND')),
+    ).rejects.toMatchObject({ code: 'edit/invalid-request' });
+    await expect(
+      session.transact((current) => setReferenceLabelName(current, reference, '')),
+    ).rejects.toMatchObject({ code: 'edit/invalid-request' });
+    await expect(
+      session.transact((current) => setReferenceRotation(current, reference, Number.NaN)),
+    ).rejects.toMatchObject({ code: 'edit/invalid-request' });
   });
 
   it('rotates mixed device and reference selections atomically without moving anchors', async () => {
