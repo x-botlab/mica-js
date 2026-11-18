@@ -549,6 +549,11 @@ export function addLabel(
   return { document: { ...document, labels: [...document.labels, label] }, labelId };
 }
 
+/** Ideal voltage of a power symbol placed from the editor toolbar. */
+export const DEFAULT_POWER_VOLTAGE = 3.3;
+/** Net name embedded in a power symbol placed from the editor toolbar. */
+export const DEFAULT_POWER_NET_NAME = 'VCC';
+
 /** Attaches an ideal voltage reference, optionally with the built-in power or ground symbol. */
 export function addReference(
   document: FusedDocument,
@@ -590,6 +595,27 @@ export function addReference(
     document: { ...document, references: [...document.references, reference] },
     referenceId,
   };
+}
+
+/**
+ * Adds the reference a toolbar-placed power or ground symbol creates. A power symbol starts on an
+ * explicit `VCC` net at 3.3 V; a ground symbol stays at 0 V and owns no net name.
+ */
+export function addPlacedReference(
+  document: FusedDocument,
+  target: Endpoint,
+  symbol: 'power' | 'ground',
+  rotation: number,
+  createId: IdFactory,
+): { readonly document: FusedDocument; readonly referenceId: string } {
+  return addReference(
+    document,
+    target,
+    symbol === 'ground' ? 0 : DEFAULT_POWER_VOLTAGE,
+    symbol,
+    symbol === 'power' ? { rotation, label: { name: DEFAULT_POWER_NET_NAME } } : { rotation },
+    createId,
+  );
 }
 
 /** Stores the per-instance sidebar and HTML view layout; `undefined` restores the defaults. */

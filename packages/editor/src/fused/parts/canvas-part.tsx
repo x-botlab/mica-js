@@ -14,6 +14,7 @@ import {
   fitViewport,
   pickInstance,
   pickAnnotation,
+  pickDoubleClickTarget,
   pickPins,
   pickWireSegment,
   pickText,
@@ -739,18 +740,19 @@ export function CanvasPart(props: ICanvasPartProps) {
         onDoubleClick={(event) => {
           if (props.state.mode !== 'edit' || props.state.busy || props.placement !== undefined)
             return;
+          const point = toScene(local(event), viewport);
           if (props.state.tool === 'wire') {
-            if (connection !== undefined)
-              useEndpoint(snappedAnchor(toScene(local(event), viewport), event.altKey));
+            if (connection !== undefined) useEndpoint(snappedAnchor(point, event.altKey));
             return;
           }
-          const instance = pickInstance(
+          const target = pickDoubleClickTarget(
             props.document,
             props.devices,
-            toScene(local(event), viewport),
+            point,
+            viewport.scale,
           );
-          if (instance === undefined) return;
-          props.onSelection([{ kind: 'instance', id: instance.id }]);
+          if (target === undefined) return;
+          props.onSelection([target]);
           props.onOpenProperties();
         }}
         onPointerMove={(event) => {

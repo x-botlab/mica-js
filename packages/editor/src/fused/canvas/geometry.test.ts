@@ -6,6 +6,7 @@ import {
   localToScene,
   pickInstance,
   pickAnnotation,
+  pickDoubleClickTarget,
   pickPins,
   pickWireSegment,
   pickText,
@@ -229,5 +230,77 @@ describe('fused canvas geometry', () => {
     });
     expect(pickText(doc, devices(), { x: 10.5, y: -1.2 }, 10)).toBeUndefined();
     expect(pickAnnotation(doc, devices(), { x: 10.5, y: -1.2 }, 0.01)).toBeUndefined();
+  });
+
+  it('picks the same power, ground, label and device objects a double click configures', () => {
+    const doc: FusedDocument = {
+      ...document({ ...instance('body', 40, 40), designator: 'U1' }),
+      nodes: [
+        { id: 'power-node', kind: 'free', x: 10, y: 20 },
+        { id: 'ground-node', kind: 'free', x: 30, y: 20 },
+        { id: 'label-node', kind: 'free', x: 10, y: 5 },
+      ],
+      references: [
+        {
+          id: 'power',
+          target: { kind: 'node', node: 'power-node' },
+          voltage: 3.3,
+          symbol: 'power',
+          rotation: 90,
+          label: { name: 'VCC', offset: { x: 3, y: -1 } },
+        },
+        {
+          id: 'ground',
+          target: { kind: 'node', node: 'ground-node' },
+          voltage: 0,
+          symbol: 'ground',
+        },
+      ],
+      labels: [{ id: 'net', target: { kind: 'node', node: 'label-node' }, name: 'SIGNAL' }],
+    };
+    expect(pickDoubleClickTarget(doc, devices(), { x: 11, y: 20 }, 10)).toEqual({
+      kind: 'reference',
+      id: 'power',
+    });
+    expect(pickDoubleClickTarget(doc, devices(), { x: 11, y: 23.5 }, 10)).toEqual({
+      kind: 'reference',
+      id: 'power',
+    });
+    expect(pickDoubleClickTarget(doc, devices(), { x: 30, y: 19 }, 10)).toEqual({
+      kind: 'reference',
+      id: 'ground',
+    });
+    expect(pickDoubleClickTarget(doc, devices(), { x: 11, y: 4.4 }, 10)).toEqual({
+      kind: 'label',
+      id: 'net',
+    });
+    expect(pickDoubleClickTarget(doc, devices(), { x: 40.5, y: 39 }, 10)).toEqual({
+      kind: 'instance',
+      id: 'body',
+    });
+    expect(pickDoubleClickTarget(doc, devices(), { x: 43, y: 41 }, 10)).toEqual({
+      kind: 'instance',
+      id: 'body',
+    });
+    expect(pickDoubleClickTarget(doc, devices(), { x: 100, y: 100 }, 10)).toBeUndefined();
+  });
+
+  it('lets an annotation symbol win over the device body it overlaps on double click', () => {
+    const doc: FusedDocument = {
+      ...document(instance('body')),
+      nodes: [{ id: 'anchor', kind: 'free', x: 3, y: 1 }],
+      references: [
+        {
+          id: 'power',
+          target: { kind: 'node', node: 'anchor' },
+          voltage: 3.3,
+          symbol: 'power',
+        },
+      ],
+    };
+    expect(pickDoubleClickTarget(doc, devices(), { x: 3, y: 1 }, 10)).toEqual({
+      kind: 'reference',
+      id: 'power',
+    });
   });
 });

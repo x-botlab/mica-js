@@ -188,10 +188,9 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
     await mapWireFailure(() => connection.simulation.resume());
   }
 
-  function pause(): void {
+  async function pause(): Promise<void> {
     if (closed || mode !== 'run') return;
-    connection.audio.suspend();
-    void connection.simulation.pause().catch(() => undefined);
+    await mapWireFailure(() => connection.simulation.pause());
   }
 
   async function step(): Promise<void> {
