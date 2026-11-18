@@ -24,6 +24,7 @@ import {
   parseHexPayload,
 } from './logic';
 import type { CallResult, NumberBounds, PayloadResult } from './logic';
+import { JUMPER_DESIGNATORS, JUMPER_SIGNAL_PORTS, type JumperDesignator } from '../jumper-map';
 /* ------------------------------------------------------------------------------------------------
  * Host bridge (RFC 0023).
  *
@@ -79,8 +80,8 @@ export const KEY_NAMES = [
 ] as const;
 export type KeyName = (typeof KEY_NAMES)[number];
 
-export const JUMPER_NAMES = ['J13', 'J5', 'J3', 'J2'] as const;
-export type JumperName = (typeof JUMPER_NAMES)[number];
+export const JUMPER_NAMES = JUMPER_DESIGNATORS;
+export type JumperName = JumperDesignator;
 
 export const IR_NAMES = ['LD1', 'U11', 'U20'] as const;
 export type IrName = (typeof IR_NAMES)[number];
@@ -97,6 +98,10 @@ type PendingAction =
 
 function isKeyName(value: string): value is KeyName {
   return (KEY_NAMES as readonly string[]).includes(value);
+}
+
+function isJumperName(value: string): value is JumperName {
+  return (JUMPER_NAMES as readonly string[]).includes(value);
 }
 
 /** Field-wise merge: only leaves whose revision is unchanged accept the reply. */
@@ -321,10 +326,8 @@ export class BoardBootstrap {
     else if (designator === 'LD1' && port === 'carrier') this.setIr('LD1', value !== 0);
     else if (designator === 'U11' && port === 'receiving') this.setIr('U11', value !== 0);
     else if (designator === 'U20' && port === 'receiving') this.setIr('U20', value !== 0);
-    else if (designator === 'J13' && port === 'closedState') this.setJumper('J13', value !== 0);
-    else if (designator === 'J5' && port === 'closedState') this.setJumper('J5', value !== 0);
-    else if (designator === 'J3' && port === 'closedState') this.setJumper('J3', value !== 0);
-    else if (designator === 'J2' && port === 'closedState2') this.setJumper('J2', value !== 0);
+    else if (isJumperName(designator) && port === JUMPER_SIGNAL_PORTS[designator])
+      this.setJumper(designator, value !== 0);
     else if (isKeyName(designator) && (port === 'pressed' || port === 'press'))
       this.setSwitch(designator, value !== 0);
   }
@@ -945,6 +948,25 @@ const JUMPER_SPECS: readonly JumperSpec[] = [
       },
     ],
   },
+  {
+    name: 'J6',
+    title: 'J6 · 蜂鸣器旁三针',
+    purpose: '装配状态，默认 ON',
+    options: [
+      {
+        closed: false,
+        position: 'OFF',
+        title: '左侧未短接',
+        detail: '仅装配状态；未确认电气接线',
+      },
+      {
+        closed: true,
+        position: 'ON',
+        title: '右侧短接',
+        detail: '仅装配状态；默认；不改变供电/蜂鸣器/继电器',
+      },
+    ],
+  },
 ] as const;
 
 const IR_SPECS: readonly { name: IrName; title: string; detail: string; output: string }[] = [
@@ -1161,7 +1183,10 @@ function buildAssemblyView(
     if (outcome.ok) {
       jumperStates.set(name, closed);
       paintJumper(name, closed);
-      jumperMessage.textContent = `${name} 已切换到 ${closed ? '闭合位置' : '另一位置'}`;
+      jumperMessage.textContent =
+        name === 'J6'
+          ? `J6 已切换到 ${closed ? 'ON' : 'OFF'}（仅装配状态）`
+          : `${name} 已切换到 ${closed ? '闭合位置' : '另一位置'}`;
       jumperMessage.dataset['tone'] = 'ok';
     } else {
       paintJumper(name, jumperStates.get(name));
@@ -1275,7 +1300,7 @@ function buildAssemblyView(
           irStates.set(name, active);
           paintIr(name, active);
         }
-        jumperMessage.textContent = '位置变更立即重算当前按住的键。';
+        jumperMessage.textContent = 'J6 仅记录装配状态；其他跳线位置变更立即重算当前按住的键。';
         jumperMessage.dataset['tone'] = 'idle';
       }
       applyKeyDisabled();

@@ -3,7 +3,8 @@
  *
  * - 红色：DS1/DS2 段码与 D1–D8 亮度；
  * - 青绿：按键按下/悬停与跳线悬停；
- * - 金色：SP1/K1 执行器提示与真实跳线帽位置。
+ * - 金色：SP1/K1 执行器提示；
+ * - 深色滑轨与灰蓝滑块：J13/J5/J3/J2/J6 的受控档位。
  *
  * 所有可见状态都来自模型事件或 `getSnapshot(null)`；指针状态只用于按下瞬间的反馈。
  * 模型方法失败时返回的 Promise 会继续拒绝，交给展示宿主的诊断通道，不在视图里吞掉。
@@ -22,8 +23,10 @@ import {
   KEYS,
   LEDS,
   RELAY,
+  contains,
   jumperAt,
   jumperChoiceAt,
+  jumperKnobRect,
   keyAt,
   keyLayout,
   pinPosition,
@@ -71,7 +74,12 @@ const RED_OFF = 'rgba(124, 32, 27, 0.24)';
 const TEAL = 'rgba(49, 210, 192, 1)';
 const TEAL_SOFT = 'rgba(49, 210, 192, 0.55)';
 const GOLD = 'rgba(234, 183, 96, 0.96)';
-const GOLD_DIM = 'rgba(234, 183, 96, 0.2)';
+const SLIDER_TRACK_FILL = '#151a19';
+const SLIDER_TRACK_STROKE = '#454c49';
+const SLIDER_KNOB_FILL = '#7f8f99';
+const SLIDER_KNOB_STROKE = '#c9ceca';
+const SLIDER_GRIP = '#d2d6d2';
+const SLIDER_FIXED_FILL = '#6f7e88';
 
 const DIGIT_ASPECT = 0.58;
 
@@ -308,9 +316,8 @@ function drawKeys(
     const hovered = interaction.hoveredKey === layout.designator;
     if (!active && !hovered) continue;
 
-    const rect = insetRect(layout, 2);
     canvas.beginPath();
-    canvas.roundRect(rect.x, rect.y, rect.width, rect.height, 8);
+    canvas.arc(layout.x + layout.width / 2, layout.y + layout.height / 2, 11.5, 0, Math.PI * 2);
     if (active) {
       canvas.fillStyle = 'rgba(49, 210, 192, 0.18)';
       canvas.fill();
@@ -440,19 +447,26 @@ function drawLeds(canvas: OffscreenCanvasRenderingContext2D, state: BoardState):
     const level = state.leds[index] ?? 0;
     if (level <= 0) continue;
     const led = LEDS[index]!;
-    const halo = 7 + level * 7;
+    // 提升低、中亮度的可见性；0 保留原照片，不改变模型亮度。
+    const light = Math.pow(level, 0.42);
+    const halo = 8 + 6 * light;
     const gradient = canvas.createRadialGradient(led.x, led.y, 0, led.x, led.y, halo);
-    gradient.addColorStop(0, `rgba(255, 82, 68, ${0.42 + level * 0.42})`);
-    gradient.addColorStop(0.45, `rgba(255, 59, 48, ${0.16 + level * 0.22})`);
+    gradient.addColorStop(0, `rgba(255, 72, 52, ${0.95 * light})`);
+    gradient.addColorStop(0.5, `rgba(255, 59, 48, ${0.58 * light})`);
     gradient.addColorStop(1, 'rgba(255, 59, 48, 0)');
     canvas.fillStyle = gradient;
     canvas.beginPath();
     canvas.arc(led.x, led.y, halo, 0, Math.PI * 2);
     canvas.fill();
 
-    canvas.fillStyle = `rgba(255, 196, 184, ${0.35 + level * 0.55})`;
+    canvas.fillStyle = `rgba(255, 62, 41, ${Math.min(1, 1.25 * light)})`;
     canvas.beginPath();
-    canvas.ellipse(led.x, led.y, 2.1, 3.6 + level * 1.8, 0, 0, Math.PI * 2);
+    canvas.ellipse(led.x, led.y, 4.4, 6.5, 0, 0, Math.PI * 2);
+    canvas.fill();
+
+    canvas.fillStyle = `rgba(255, 239, 196, ${0.98 * light})`;
+    canvas.beginPath();
+    canvas.ellipse(led.x, led.y, 2.7, 4.6, 0, 0, Math.PI * 2);
     canvas.fill();
   }
 }
@@ -494,61 +508,97 @@ function drawJumper(
   closed: boolean,
   interaction: Interaction,
 ): void {
-  for (const pin of layout.pins) {
-    canvas.fillStyle = 'rgba(234, 183, 96, 0.82)';
-    canvas.beginPath();
-    canvas.arc(pin.x, pin.y, 2.2, 0, Math.PI * 2);
-    canvas.fill();
-  }
+  // 先完全遮住底图上的旧跳线帽，再按模型状态画滑轨和所选档位。
+  const { x, y, width, height } = layout.socket;
+  canvas.fillStyle = '#26312f';
+  canvas.fillRect(x, y, width, height);
 
-  const selected = layout.options.find((option) => option.closed === closed);
-  for (const pair of layout.fixed) drawBridge(canvas, layout, pair, true);
-  if (selected !== undefined) drawBridge(canvas, layout, selected, true);
-  for (const option of layout.options) {
-    if (option === selected) continue;
-    drawBridge(canvas, layout, option, false);
-  }
+  drawSliderTrack(canvas, layout.slider.track);
+  for (const pair of layout.fixed) drawFixedPair(canvas, layout, pair);
+  drawSliderKnob(canvas, layout, closed);
 
   if (interaction.hoveredJumper === layout.designator) {
-    const rect = insetRect(layout.hit, 1);
+    const track = layout.slider.track;
     canvas.beginPath();
-    canvas.roundRect(rect.x, rect.y, rect.width, rect.height, 6);
+    canvas.roundRect(track.x - 2, track.y - 2, track.width + 4, track.height + 4, 4);
     canvas.strokeStyle = TEAL_SOFT;
     canvas.lineWidth = 1.2;
     canvas.stroke();
   }
 }
 
-function drawBridge(
+function drawSliderTrack(canvas: OffscreenCanvasRenderingContext2D, track: Rect): void {
+  const radius = Math.min(track.width, track.height) / 2;
+  canvas.beginPath();
+  canvas.roundRect(track.x, track.y, track.width, track.height, radius);
+  canvas.fillStyle = SLIDER_TRACK_FILL;
+  canvas.fill();
+  canvas.strokeStyle = SLIDER_TRACK_STROKE;
+  canvas.lineWidth = 1;
+  canvas.stroke();
+}
+
+function drawSliderKnob(
+  canvas: OffscreenCanvasRenderingContext2D,
+  layout: JumperLayout,
+  closed: boolean,
+): void {
+  const knob = jumperKnobRect(layout, closed);
+  const radius = Math.max(2, Math.min(knob.width, knob.height) * 0.28);
+  canvas.beginPath();
+  canvas.roundRect(knob.x, knob.y, knob.width, knob.height, radius);
+  canvas.fillStyle = SLIDER_KNOB_FILL;
+  canvas.fill();
+  canvas.strokeStyle = SLIDER_KNOB_STROKE;
+  canvas.lineWidth = 1;
+  canvas.stroke();
+
+  const cx = knob.x + knob.width / 2;
+  const cy = knob.y + knob.height / 2;
+  const small = Math.min(knob.width, knob.height);
+  const half = Math.max(1.5, small * 0.3);
+  canvas.beginPath();
+  if (layout.slider.orientation === 'horizontal') {
+    canvas.moveTo(cx, cy - half);
+    canvas.lineTo(cx, cy + half);
+  } else {
+    canvas.moveTo(cx - half, cy);
+    canvas.lineTo(cx + half, cy);
+  }
+  canvas.strokeStyle = SLIDER_GRIP;
+  canvas.lineWidth = Math.max(1.2, small * 0.16);
+  canvas.lineCap = 'round';
+  canvas.stroke();
+}
+
+/** J2 的 1-3 固定短接：同样使用滑轨语言，但没有握条且不响应点击。 */
+function drawFixedPair(
   canvas: OffscreenCanvasRenderingContext2D,
   layout: JumperLayout,
   pair: JumperPairLayout,
-  active: boolean,
 ): void {
   const first = pinPosition(layout, pair.pins[0]);
   const second = pinPosition(layout, pair.pins[1]);
-  canvas.lineCap = 'round';
-  if (active) {
-    canvas.strokeStyle = 'rgba(36, 27, 12, 0.62)';
-    canvas.lineWidth = 6.4;
-    bridgePath(canvas, first, second);
-    canvas.stroke();
-    canvas.strokeStyle = GOLD;
-    canvas.lineWidth = 3.8;
-    bridgePath(canvas, first, second);
-    canvas.stroke();
-  } else {
-    canvas.strokeStyle = GOLD_DIM;
-    canvas.lineWidth = 1.3;
-    bridgePath(canvas, first, second);
-    canvas.stroke();
-  }
-}
+  const horizontal = Math.abs(second.x - first.x) >= Math.abs(second.y - first.y);
+  const cx = (first.x + second.x) / 2;
+  const cy = (first.y + second.y) / 2;
+  const length = Math.hypot(second.x - first.x, second.y - first.y) + 8;
+  const track = horizontal
+    ? { x: cx - length / 2, y: cy - 5, width: length, height: 10 }
+    : { x: cx - 5, y: cy - length / 2, width: 10, height: length };
+  drawSliderTrack(canvas, track);
 
-function bridgePath(canvas: OffscreenCanvasRenderingContext2D, first: Point, second: Point): void {
+  const capLength = Math.max(10, length - 10);
+  const cap = horizontal
+    ? { x: cx - capLength / 2, y: cy - 3, width: capLength, height: 6 }
+    : { x: cx - 3, y: cy - capLength / 2, width: 6, height: capLength };
   canvas.beginPath();
-  canvas.moveTo(first.x, first.y);
-  canvas.lineTo(second.x, second.y);
+  canvas.roundRect(cap.x, cap.y, cap.width, cap.height, 2.5);
+  canvas.fillStyle = SLIDER_FIXED_FILL;
+  canvas.fill();
+  canvas.strokeStyle = SLIDER_KNOB_STROKE;
+  canvas.lineWidth = 1;
+  canvas.stroke();
 }
 
 function insetRect(rect: Rect, inset: number): Rect {
@@ -558,13 +608,4 @@ function insetRect(rect: Rect, inset: number): Rect {
     width: Math.max(0, rect.width - inset * 2),
     height: Math.max(0, rect.height - inset * 2),
   };
-}
-
-function contains(rect: Rect, point: Point): boolean {
-  return (
-    point.x >= rect.x &&
-    point.y >= rect.y &&
-    point.x <= rect.x + rect.width &&
-    point.y <= rect.y + rect.height
-  );
 }

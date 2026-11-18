@@ -3,6 +3,13 @@ import { createMcu } from './mcu';
 import type { McuContext } from './mcu';
 import { fuseBlock } from './fuse';
 import { BOARD_DEFAULTS, CHANNELS } from './channels';
+import {
+  ELECTRICAL_JUMPER_DESIGNATORS,
+  JUMPER_DEFAULT_STATES,
+  JUMPER_DESIGNATORS,
+  JUMPER_SIGNAL_PORTS,
+  type JumperDesignator,
+} from './jumper-map';
 
 const KEY_INDEX: ReadonlyMap<string, number> = new Map([
   ['S1', 0],
@@ -26,12 +33,13 @@ const KEY_INDEX: ReadonlyMap<string, number> = new Map([
 const KEY_NAME: ReadonlyMap<number, string> = new Map(
   [...KEY_INDEX].map(([name, index]) => [index, name]),
 );
-const JUMPER_INDEX: ReadonlyMap<string, number> = new Map([
-  ['J13', 0],
-  ['J3', 1],
-  ['J2', 2],
-  ['J5', 3],
-]);
+const JUMPER_INDEX: ReadonlyMap<string, number> = new Map(
+  JUMPER_DESIGNATORS.map((designator, index) => [designator, index]),
+);
+/** DDL jumper slot 0..3；J6 不在融合模型中，不能写入这条输入通道。 */
+const ELECTRICAL_JUMPER_INDEX: ReadonlyMap<string, number> = new Map(
+  ELECTRICAL_JUMPER_DESIGNATORS.map((designator, index) => [designator, index]),
+);
 
 type Batch = Parameters<ReturnType<DeviceFactory>['sync']>[0];
 type Outputs = Readonly<Record<string, readonly { readonly value: unknown }[]>>;
@@ -141,12 +149,20 @@ export const create: DeviceFactory = (context) => {
   let eeprom = new Uint8Array(0);
   let rtc = { datetime: '', running: false };
   const switchStates = Array.from({ length: 17 }, () => false);
-  const jumperStates: boolean[] = [
-    BOARD_DEFAULTS.j13Closed,
-    BOARD_DEFAULTS.j3Closed,
-    BOARD_DEFAULTS.j2Vs1838,
-    BOARD_DEFAULTS.j5Closed,
-  ];
+  const jumperStates: boolean[] = JUMPER_DESIGNATORS.map((designator) => {
+    switch (designator) {
+      case 'J13':
+        return BOARD_DEFAULTS.j13Closed;
+      case 'J3':
+        return BOARD_DEFAULTS.j3Closed;
+      case 'J2':
+        return BOARD_DEFAULTS.j2Vs1838;
+      case 'J5':
+        return BOARD_DEFAULTS.j5Closed;
+      case 'J6':
+        return JUMPER_DEFAULT_STATES.J6;
+    }
+  });
   const infrared: InfraredValue = { LD1: false, U11: false, U20: false };
   const ne555: Ne555Value = { frequency: 0, dutyCycle: 0 };
   const uln2003: Uln2003Value = { mask: 0, channels: '0000000' };
@@ -218,6 +234,15 @@ export const create: DeviceFactory = (context) => {
   const statusString = (data: Uint8Array): string =>
     Array.from(data, (value) => String.fromCharCode(value)).join('');
 
+  type JumperSnapshot = ReturnType<DeviceMethods['getSnapshot']>['jumpers'];
+  const jumperSnapshot = (): JumperSnapshot =>
+    Object.fromEntries(
+      JUMPER_DESIGNATORS.map((designator) => [
+        designator,
+        jumperStates[JUMPER_INDEX.get(designator)!]!,
+      ]),
+    ) as JumperSnapshot;
+
   const methods: DeviceMethods = {
     setSwitch: (params) => {
       const index = KEY_INDEX.get(params.designator);
@@ -240,7 +265,14 @@ export const create: DeviceFactory = (context) => {
           { designator: params.designator },
         );
       jumperStates[index] = params.closed;
-      context.inputs.jumperEvent.send({ index, closed: params.closed });
+      const designator = params.designator as JumperDesignator;
+      const slot = ELECTRICAL_JUMPER_INDEX.get(designator);
+      if (slot === undefined) {
+        // J6 只有装配状态，没有 DDL 输入或网表接线；在方法允许的同步阶段直接发事件。
+        signal(designator, JUMPER_SIGNAL_PORTS[designator], params.closed ? 1 : 0);
+      } else {
+        context.inputs.jumperEvent.send({ index: slot, closed: params.closed });
+      }
       return null;
     },
     setHallField: (params) => {
@@ -350,12 +382,7 @@ export const create: DeviceFactory = (context) => {
         S18: switchStates[15]!,
         S19: switchStates[16]!,
       },
-      jumpers: {
-        J13: jumperStates[0]!,
-        J3: jumperStates[1]!,
-        J2: jumperStates[2]!,
-        J5: jumperStates[3]!,
-      },
+      jumpers: jumperSnapshot(),
       infrared: { ...infrared },
       ne555: { ...ne555 },
       uln2003: { ...uln2003 },
@@ -423,7 +450,9 @@ export const create: DeviceFactory = (context) => {
         switchStates[message.value.index] = message.value.pressed;
       }
       for (const message of (outputs['jumper'] ?? []) as readonly { value: JumperValue }[]) {
-        jumperStates[message.value.index] = message.value.closed;
+        const designator = ELECTRICAL_JUMPER_DESIGNATORS[message.value.index];
+        if (designator === undefined) continue;
+        jumperStates[JUMPER_INDEX.get(designator)!] = message.value.closed;
       }
 
       // MCU UART events are part of the same coherent snapshot.
@@ -486,13 +515,9 @@ export const create: DeviceFactory = (context) => {
       }
       for (const message of (outputs['jumper'] ?? []) as readonly { value: JumperValue }[]) {
         const value = message.value;
-        const designator =
-          value.index === 0 ? 'J13' : value.index === 1 ? 'J3' : value.index === 2 ? 'J2' : 'J5';
-        signal(
-          designator,
-          value.index === 2 ? 'closedState2' : 'closedState',
-          value.closed ? 1 : 0,
-        );
+        const designator = ELECTRICAL_JUMPER_DESIGNATORS[value.index];
+        if (designator === undefined) continue;
+        signal(designator, JUMPER_SIGNAL_PORTS[designator], value.closed ? 1 : 0);
       }
       for (const message of (outputs['amplifier'] ?? []) as readonly {
         value: AmplifierValue;

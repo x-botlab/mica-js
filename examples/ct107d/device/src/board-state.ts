@@ -6,6 +6,15 @@
  * 工具函数不依赖编辑器或 SDK 运行时，可直接在单测里构造。
  */
 
+import {
+  JUMPER_DEFAULT_STATES,
+  JUMPER_DESIGNATORS,
+  JUMPER_SIGNAL_PORTS,
+  type JumperDesignator,
+} from './jumper-map.js';
+
+export { JUMPER_DESIGNATORS, type JumperDesignator } from './jumper-map.js';
+
 /** 17 个独立/矩阵按键的位号，顺序与模型快照一致。 */
 export const KEY_DESIGNATORS = [
   'S1',
@@ -30,9 +39,6 @@ export type KeyDesignator = (typeof KEY_DESIGNATORS)[number];
 
 export const DISPLAY_DESIGNATORS = ['DS1', 'DS2'] as const;
 export type DisplayDesignator = (typeof DISPLAY_DESIGNATORS)[number];
-
-export const JUMPER_DESIGNATORS = ['J13', 'J3', 'J2', 'J5'] as const;
-export type JumperDesignator = (typeof JUMPER_DESIGNATORS)[number];
 
 const KEY_SET: ReadonlySet<string> = new Set(KEY_DESIGNATORS);
 const DISPLAY_SET: ReadonlySet<string> = new Set(DISPLAY_DESIGNATORS);
@@ -197,8 +203,7 @@ export function createBoardStateStore(): BoardStateStore {
 
       if (JUMPER_SET.has(signal.designator)) {
         const designator = signal.designator as JumperDesignator;
-        const expected = designator === 'J2' ? 'closedState2' : 'closedState';
-        if (signal.port !== expected) return false;
+        if (signal.port !== JUMPER_SIGNAL_PORTS[designator]) return false;
         const next = signal.value !== 0;
         markField(jumperField(designator));
         if (state.jumpers[designator] === next) return false;
@@ -238,8 +243,9 @@ function createInitialState(): BoardState {
       S18: false,
       S19: false,
     },
-    // 整板融合模型的装配默认值：J13/J5 为 2-3，J3 闭合，J2 选 VS1838。
-    jumpers: { J13: true, J3: true, J2: true, J5: true },
+    // 整板融合模型的装配默认值：J13/J5 为 2-3，J3 闭合，J2 选 VS1838；
+    // J6 默认 ON 仅为板面装配状态，不进入融合电气。
+    jumpers: { ...JUMPER_DEFAULT_STATES },
   };
 }
 
@@ -324,12 +330,12 @@ export function readBoardSnapshot(value: unknown): BoardSnapshot {
       S18: readBoolean(switches['S18'], 'CT107D snapshot.switches.S18'),
       S19: readBoolean(switches['S19'], 'CT107D snapshot.switches.S19'),
     },
-    jumpers: {
-      J13: readBoolean(jumpers['J13'], 'CT107D snapshot.jumpers.J13'),
-      J3: readBoolean(jumpers['J3'], 'CT107D snapshot.jumpers.J3'),
-      J2: readBoolean(jumpers['J2'], 'CT107D snapshot.jumpers.J2'),
-      J5: readBoolean(jumpers['J5'], 'CT107D snapshot.jumpers.J5'),
-    },
+    jumpers: Object.fromEntries(
+      JUMPER_DESIGNATORS.map((designator) => [
+        designator,
+        readBoolean(jumpers[designator], `CT107D snapshot.jumpers.${designator}`),
+      ]),
+    ) as Record<JumperDesignator, boolean>,
   };
 }
 

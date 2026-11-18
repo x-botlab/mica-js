@@ -5,7 +5,16 @@ import type { Value } from '@mica-js/document/fused';
 import type { IFusedModelClient } from '@mica-js/editor/fused/runtime';
 import type { ModelEvent } from '@mica-js/sdk/fused';
 import { createBoardView, type BoardView, type BoardViewEvent } from '../device/src/view2d.js';
-import { J13, J2, J3, J5, keyLayout } from '../device/src/board-layout.js';
+import {
+  J13,
+  J2,
+  J3,
+  J5,
+  J6,
+  contains,
+  jumperKnobRect,
+  keyLayout,
+} from '../device/src/board-layout.js';
 import {
   JUMPER_DESIGNATORS,
   KEY_DESIGNATORS,
@@ -192,6 +201,22 @@ interface StrokeRecord {
   readonly points: readonly PaintPoint[];
 }
 
+interface EllipseRecord extends PaintPoint {
+  readonly radiusX: number;
+  readonly radiusY: number;
+  readonly style: string;
+}
+
+interface FillRectRecord extends PaintPoint {
+  readonly width: number;
+  readonly height: number;
+  readonly style: string;
+}
+
+interface RoundRectRecord extends FillRectRecord {
+  readonly operation: 'fill' | 'stroke';
+}
+
 class FakeGradient {
   readonly stops: string[] = [];
 
@@ -208,13 +233,17 @@ class FakeCanvas {
   readonly fills: string[] = [];
   readonly strokes: StrokeRecord[] = [];
   readonly gradients: FakeGradient[] = [];
-  fillRectCalls = 0;
+  readonly ellipses: EllipseRecord[] = [];
+  readonly rectangles: FillRectRecord[] = [];
+  readonly rounded: RoundRectRecord[] = [];
   private points: PaintPoint[] = [];
+  private pendingRound: FillRectRecord | undefined;
 
   save(): void {}
   restore(): void {}
   beginPath(): void {
     this.points = [];
+    this.pendingRound = undefined;
   }
   closePath(): void {}
   moveTo(x: number, y: number): void {
@@ -223,17 +252,31 @@ class FakeCanvas {
   lineTo(x: number, y: number): void {
     this.points.push({ x, y });
   }
-  arc(): void {}
-  ellipse(): void {}
-  roundRect(): void {}
+  arc(x: number, y: number): void {
+    this.points.push({ x, y });
+  }
+  ellipse(x: number, y: number, radiusX: number, radiusY: number): void {
+    this.ellipses.push({ x, y, radiusX, radiusY, style: String(this.fillStyle) });
+  }
+  roundRect(x: number, y: number, width: number, height: number): void {
+    this.pendingRound = { x, y, width, height, style: '' };
+  }
   fill(): void {
     this.fills.push(String(this.fillStyle));
+    if (this.pendingRound !== undefined)
+      this.rounded.push({ ...this.pendingRound, style: String(this.fillStyle), operation: 'fill' });
   }
   stroke(): void {
     this.strokes.push({ style: String(this.strokeStyle), points: [...this.points] });
+    if (this.pendingRound !== undefined)
+      this.rounded.push({
+        ...this.pendingRound,
+        style: String(this.strokeStyle),
+        operation: 'stroke',
+      });
   }
-  fillRect(): void {
-    this.fillRectCalls += 1;
+  fillRect(x: number, y: number, width: number, height: number): void {
+    this.rectangles.push({ x, y, width, height, style: String(this.fillStyle) });
   }
   createRadialGradient(): CanvasGradient {
     const gradient = new FakeGradient();
@@ -263,23 +306,41 @@ function pointer(type: BoardViewEvent['type'], position: PaintPoint, button = 0)
   return { type, position, button, buttons: type === 'pointerup' ? 0 : 1 };
 }
 
-function activeVerticalSegment(
+function keyCenter(designator: KeyDesignator): PaintPoint {
+  const { x, y, width, height } = keyLayout(designator);
+  return { x: x + width / 2, y: y + height / 2 };
+}
+
+function center(rect: {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}): PaintPoint {
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+}
+
+function filledRoundRect(
   canvas: FakeCanvas,
-  x: number,
-): { from: number; to: number } | undefined {
-  for (const stroke of canvas.strokes) {
-    if (!stroke.style.includes('234, 183, 96, 0.96')) continue;
-    const first = stroke.points[0];
-    const second = stroke.points[1];
-    if (first === undefined || second === undefined || stroke.points.length !== 2) continue;
-    if (first.x !== x || second.x !== x) continue;
-    return { from: Math.min(first.y, second.y), to: Math.max(first.y, second.y) };
-  }
-  return undefined;
+  rect: {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  },
+): RoundRectRecord | undefined {
+  return canvas.rounded.find(
+    (entry) =>
+      entry.operation === 'fill' &&
+      entry.x === rect.x &&
+      entry.y === rect.y &&
+      entry.width === rect.width &&
+      entry.height === rect.height,
+  );
 }
 
 describe('CT107D View2D 绘制', () => {
-  it('绘制段码、LED 与执行器提示，不铺满整板的覆盖卡片', async () => {
+  it('绘制段码、LED 与执行器提示', async () => {
     const model = harness({
       snapshot: snapshotOf({
         displays: { DS1: [0x3f, 0x06, 0x5b, 0x4f], DS2: [0, 0, 0, 0] },
@@ -296,7 +357,62 @@ describe('CT107D View2D 绘制', () => {
     expect(canvas.gradients).toHaveLength(1);
     expect(canvas.gradients[0]?.stops.some((stop) => stop.includes('255, 59, 48'))).toBe(true);
     expect(canvas.strokes.some((stroke) => stroke.style.includes('234, 183, 96'))).toBe(true);
-    expect(canvas.fillRectCalls).toBe(0);
+  });
+
+  it('五个跳线控件以局部不透明底座盖住照片，不再露出旧帽或金色桥线', async () => {
+    const model = harness();
+    const { view } = mount(model.model);
+    await view.initialize();
+    const initial = paint(view);
+    expect(initial.rectangles).toHaveLength(5);
+    for (const layout of [J13, J5, J3, J2, J6]) {
+      const point = center(layout.socket);
+      expect(initial.rectangles.filter((rect) => contains(rect, point))).toHaveLength(1);
+    }
+    // J6 的位号和 OFF/ON 丝印不在遮盖矩形内。
+    for (const point of [
+      { x: 647, y: 429 },
+      { x: 660, y: 440 },
+      { x: 680, y: 440 },
+    ]) {
+      expect(initial.rectangles.filter((rect) => contains(rect, point))).toHaveLength(0);
+    }
+    for (const rect of initial.rectangles) {
+      expect(rect.style).toMatch(/^#[\da-f]{6}$/i);
+      expect(rect.width * rect.height).toBeLessThan(1500);
+    }
+    // 执行器未动作时，跳线不使用旧的金色桥线。
+    expect(initial.strokes.some(({ style }) => style.includes('234, 183, 96'))).toBe(false);
+
+    model.emit({ designator: 'J5', port: 'closedState', value: 0 });
+    model.emit({ designator: 'J3', port: 'closedState', value: 0 });
+    model.emit({ designator: 'J2', port: 'closedState2', value: 0 });
+    model.emit({ designator: 'J6', port: 'closedState', value: 0 });
+    const changed = paint(view);
+    expect(changed.rectangles).toEqual(initial.rectangles);
+  });
+
+  it('灭灯不覆盖照片，低亮与全亮均覆盖发光面且保留等级差异', async () => {
+    const model = harness({ snapshot: snapshotOf({ leds: [0, 0.1, 1, 0, 0, 0, 0, 0] }) });
+    const { view } = mount(model.model);
+    await view.initialize();
+    const lit = paint(view);
+    expect(lit.gradients).toHaveLength(2);
+    const lenses = lit.ellipses.filter(({ radiusX, radiusY }) => radiusX >= 4 && radiusY >= 6);
+    expect(lenses.map(({ x, y }) => ({ x, y }))).toEqual([
+      { x: 358.5, y: 319 },
+      { x: 378, y: 319 },
+    ]);
+    const opacity = (style: string) => Number.parseFloat(style.slice(style.lastIndexOf(',') + 1));
+    const low = opacity(lenses[0]!.style);
+    expect(low).toBeGreaterThan(0.4);
+    expect(opacity(lenses[1]!.style)).toBeGreaterThan(low);
+
+    model.emit({ designator: 'D2', port: 'brightness', value: 0 });
+    model.emit({ designator: 'D3', port: 'brightness', value: 0 });
+    const off = paint(view);
+    expect(off.gradients).toHaveLength(0);
+    expect(off.ellipses).toHaveLength(0);
   });
 
   it('事件通过 event.value 更新缓存并触发重绘，未知信号被忽略', async () => {
@@ -366,26 +482,61 @@ describe('CT107D View2D 绘制', () => {
 });
 
 describe('CT107D View2D 输入', () => {
+  it('17 个实拍键帽各自命中正确按键，并在键帽中心高亮', async () => {
+    const model = harness();
+    const { view } = mount(model.model);
+    await view.initialize();
+    // 直接用 body.png 的测量点，避免布局和测试一起偏移。
+    const centers = {
+      S7: [145, 485],
+      S6: [145, 535],
+      S5: [145, 584],
+      S4: [145, 633],
+      S11: [204, 485],
+      S10: [204, 535],
+      S9: [204, 583],
+      S8: [205, 633],
+      S15: [263, 485],
+      S14: [262, 534],
+      S13: [262, 583],
+      S12: [263, 632],
+      S19: [321, 484],
+      S18: [321, 534],
+      S17: [321, 583],
+      S16: [321, 632],
+      S1: [378, 536],
+    } satisfies Record<KeyDesignator, [number, number]>;
+    for (const [designator, [x, y]] of Object.entries(centers)) {
+      const point = { x, y };
+      await view.input(pointer('pointerdown', point));
+      expect(model.switchCalls.at(-1)).toEqual({ designator, pressed: true });
+      const highlight = paint(view).strokes.filter(({ style }) => style.includes('49, 210, 192'));
+      expect(highlight.map(({ points }) => points)).toEqual([[point]]);
+      await view.input(pointer('pointerup', point));
+      expect(model.switchCalls.at(-1)).toEqual({ designator, pressed: false });
+    }
+  });
+
   it('按下具体按键，移出热区或抬起时只释放该按键', async () => {
     const model = harness();
     const { view } = mount(model.model);
     await view.initialize();
-    const s1 = keyLayout('S1');
-    const s16 = keyLayout('S16');
+    const s1 = keyCenter('S1');
+    const s16 = keyCenter('S16');
 
-    await view.input(pointer('pointerdown', { x: s1.x + 20, y: s1.y + 20 }));
+    await view.input(pointer('pointerdown', s1));
     expect(model.switchCalls).toEqual([{ designator: 'S1', pressed: true }]);
 
     await view.input(pointer('pointermove', { x: 0, y: 0 }));
     expect(model.switchCalls.at(-1)).toEqual({ designator: 'S1', pressed: false });
 
-    await view.input(pointer('pointerdown', { x: s16.x + 20, y: s16.y + 20 }));
+    await view.input(pointer('pointerdown', s16));
     await view.input(pointer('pointerup', { x: 900, y: 700 }));
     expect(model.switchCalls.at(-1)).toEqual({ designator: 'S16', pressed: false });
 
     const calls = model.switchCalls.length;
     await view.input(pointer('pointerdown', { x: 100, y: 300 }));
-    await view.input(pointer('pointerdown', { x: s1.x + 20, y: s1.y + 20 }, 2));
+    await view.input(pointer('pointerdown', s1, 2));
     expect(model.switchCalls).toHaveLength(calls);
   });
 
@@ -393,17 +544,16 @@ describe('CT107D View2D 输入', () => {
     const model = harness();
     const { view } = mount(model.model);
     await view.initialize();
-    const s7 = keyLayout('S7');
-
-    await view.input(pointer('pointerdown', { x: s7.x + 20, y: s7.y + 20 }));
-    await view.input(pointer('pointercancel', { x: s7.x + 20, y: s7.y + 20 }));
+    const point = keyCenter('S7');
+    await view.input(pointer('pointerdown', point));
+    await view.input(pointer('pointercancel', point));
     expect(model.switchCalls).toEqual([
       { designator: 'S7', pressed: true },
       { designator: 'S7', pressed: false },
     ]);
   });
 
-  it('J13/J5 选择真实的 1-2 或 2-3，J2 固定 1-3 不可切换', async () => {
+  it('J13/J5 选择真实的 1-2 或 2-3，J2 固定 1-3 不可切换，J6 左右两档', async () => {
     const model = harness();
     const { view } = mount(model.model);
     await view.initialize();
@@ -440,22 +590,80 @@ describe('CT107D View2D 输入', () => {
       { designator: 'J3', closed: false },
       { designator: 'J3', closed: true },
     ]);
+
+    await view.input(pointer('pointerdown', { x: 660, y: 430 }));
+    await view.input(pointer('pointerdown', { x: 686, y: 430 }));
+    expect(model.jumperCalls.slice(-2)).toEqual([
+      { designator: 'J6', closed: false },
+      { designator: 'J6', closed: true },
+    ]);
   });
 
-  it('跳线位置只由模型事件推进，点击本身不乐观改写状态', async () => {
+  it('J3 开闭、J2 固定下排和 J6 左右档位使用同一滑块几何', async () => {
+    const model = harness();
+    const { view } = mount(model.model);
+    await view.initialize();
+    const initial = paint(view);
+    expect(filledRoundRect(initial, jumperKnobRect(J3, true))).toBeDefined();
+    expect(filledRoundRect(initial, jumperKnobRect(J2, true))).toBeDefined();
+    expect(filledRoundRect(initial, jumperKnobRect(J6, true))).toBeDefined();
+    expect(center(jumperKnobRect(J3, true)).y).toBeLessThan(center(jumperKnobRect(J3, false)).y);
+    expect(center(jumperKnobRect(J2, false)).x).toBeLessThan(center(jumperKnobRect(J2, true)).x);
+    expect(center(jumperKnobRect(J6, false)).x).toBeLessThan(center(jumperKnobRect(J6, true)).x);
+
+    // J2 下排固定短接不可点击。
+    const beforeFixed = model.jumperCalls.length;
+    await view.input(pointer('pointerdown', { x: 594, y: 181 }));
+    expect(model.jumperCalls).toHaveLength(beforeFixed);
+
+    model.emit({ designator: 'J3', port: 'closedState', value: 0 });
+    model.emit({ designator: 'J6', port: 'closedState', value: 0 });
+    const changed = paint(view);
+    expect(filledRoundRect(changed, jumperKnobRect(J3, false))).toBeDefined();
+    expect(filledRoundRect(changed, jumperKnobRect(J6, false))).toBeDefined();
+  });
+
+  it('J6 滑块位置只由模型事件推进，点击本身不乐观改写状态', async () => {
     const model = harness();
     const { view } = mount(model.model);
     await view.initialize();
 
-    const initial = activeVerticalSegment(paint(view), J13.pins[1]!.x);
-    expect(initial).toEqual({ from: 379, to: 391 });
+    const initial = paint(view);
+    expect(filledRoundRect(initial, jumperKnobRect(J6, true))).toBeDefined();
+    expect(filledRoundRect(initial, jumperKnobRect(J6, false))).toBeUndefined();
+
+    await view.input(pointer('pointerdown', { x: 660, y: 430 }));
+    expect(model.jumperCalls.at(-1)).toEqual({ designator: 'J6', closed: false });
+    const pending = paint(view);
+    expect(filledRoundRect(pending, jumperKnobRect(J6, true))).toBeDefined();
+
+    model.emit({ designator: 'J6', port: 'closedState', value: 0 });
+    const off = paint(view);
+    expect(filledRoundRect(off, jumperKnobRect(J6, false))).toBeDefined();
+    expect(filledRoundRect(off, jumperKnobRect(J6, true))).toBeUndefined();
+  });
+
+  it('J13/J3 滑块位置只由模型事件推进，点击本身不乐观改写状态', async () => {
+    const model = harness();
+    const { view } = mount(model.model);
+    await view.initialize();
 
     await view.input(pointer('pointerdown', { x: 307, y: 409 }));
     expect(model.jumperCalls.at(-1)).toEqual({ designator: 'J13', closed: false });
-    expect(activeVerticalSegment(paint(view), J13.pins[1]!.x)).toEqual({ from: 379, to: 391 });
+    const pending = paint(view);
+    expect(filledRoundRect(pending, jumperKnobRect(J13, true))).toBeDefined();
+    expect(filledRoundRect(pending, jumperKnobRect(J13, false))).toBeUndefined();
 
     model.emit({ designator: 'J13', port: 'closedState', value: 0 });
-    expect(activeVerticalSegment(paint(view), J13.pins[1]!.x)).toEqual({ from: 391, to: 403 });
+    const changed = paint(view);
+    expect(filledRoundRect(changed, jumperKnobRect(J13, false))).toBeDefined();
+
+    await view.input(pointer('pointerdown', { x: 940, y: 468 }));
+    expect(model.jumperCalls.at(-1)).toEqual({ designator: 'J3', closed: false });
+    const j3Pending = paint(view);
+    expect(filledRoundRect(j3Pending, jumperKnobRect(J3, true))).toBeDefined();
+    model.emit({ designator: 'J3', port: 'closedState', value: 0 });
+    expect(filledRoundRect(paint(view), jumperKnobRect(J3, false))).toBeDefined();
   });
 });
 
@@ -464,9 +672,11 @@ describe('CT107D View2D 生命周期', () => {
     const { view } = mount(undefined);
     await view.initialize();
     const canvas = paint(view);
-    expect(canvas.fillRectCalls).toBe(0);
-    expect(canvas.strokes.some((stroke) => stroke.style.includes('234, 183, 96'))).toBe(true);
-    await view.input(pointer('pointerdown', { x: 379, y: 540 }));
+    expect(canvas.rectangles).toHaveLength(5);
+    expect(
+      canvas.rounded.some(({ operation, style }) => operation === 'fill' && style === '#151a19'),
+    ).toBe(true);
+    await view.input(pointer('pointerdown', keyCenter('S1')));
 
     const afterPress = paint(view);
     expect(afterPress.fills.some((style) => style.includes('49, 210, 192'))).toBe(false);
@@ -490,7 +700,7 @@ describe('CT107D View2D 生命周期', () => {
     model.emit({ designator: 'D2', port: 'brightness', value: 1 });
     expect(invalidations()).toBe(beforeDispose);
 
-    await view.input(pointer('pointerdown', { x: 379, y: 540 }));
+    await view.input(pointer('pointerdown', keyCenter('S1')));
     expect(model.switchCalls).toHaveLength(0);
     expect(paint(view).fills).toHaveLength(0);
   });
@@ -499,9 +709,7 @@ describe('CT107D View2D 生命周期', () => {
     const model = harness();
     const { view } = mount(model.model);
     await view.initialize();
-    const s1 = keyLayout('S1');
-
-    await view.input(pointer('pointerdown', { x: s1.x + 20, y: s1.y + 20 }));
+    await view.input(pointer('pointerdown', keyCenter('S1')));
     expect(model.switchCalls).toEqual([{ designator: 'S1', pressed: true }]);
 
     view.dispose();
@@ -513,14 +721,13 @@ describe('CT107D View2D 生命周期', () => {
     const model = harness({ rejectSwitch: new Error('switch failed') });
     const { view } = mount(model.model);
     await view.initialize();
-    const s1 = keyLayout('S1');
-
-    await expect(
-      Promise.resolve(view.input(pointer('pointerdown', { x: s1.x + 20, y: s1.y + 20 }))),
-    ).rejects.toThrow('switch failed');
+    const point = keyCenter('S1');
+    await expect(Promise.resolve(view.input(pointer('pointerdown', point)))).rejects.toThrow(
+      'switch failed',
+    );
     expect(model.switchCalls).toHaveLength(1);
 
-    await view.input(pointer('pointerup', { x: s1.x + 20, y: s1.y + 20 }));
+    await view.input(pointer('pointerup', point));
     expect(model.switchCalls).toHaveLength(1);
   });
 

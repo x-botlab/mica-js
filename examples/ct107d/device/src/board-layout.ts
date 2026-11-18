@@ -1,9 +1,8 @@
 /**
- * CT107D 板面几何：坐标全部取自 `build-canvas.mjs` 的实测照片像素，
- * 未在旧画布中使用的 J3/J5 由 `assets/ct107d-board.webp` 放大比对得到。
+ * CT107D 板面几何：坐标对应 View2D 使用的 `body.png` 照片像素。
  *
  * View2D 的 flexible geometry 以 1068×768 为局部坐标；编辑器在缩放、旋转和自由
- * 尺寸变化时把指针反变换回同一坐标，因此绘制和命中测试共用这里的矩形。
+ * 尺寸变化时把指针反变换回同一坐标，因此绘制和命中测试共用这里的坐标。
  */
 import type { JumperDesignator, KeyDesignator } from './board-state.js';
 
@@ -45,9 +44,23 @@ export interface JumperPairLayout {
   readonly pins: readonly [number, number];
 }
 
+export interface JumperSliderLayout {
+  /** 排针方向；竖向排针的滑块与握条旋转 90°。 */
+  readonly orientation: 'horizontal' | 'vertical';
+  /** 滑块行程所在的圆角轨道。 */
+  readonly track: Rect;
+  readonly knob: { readonly width: number; readonly height: number };
+  /** false/OFF 端滑块中心。 */
+  readonly off: Point;
+  /** true/ON 端滑块中心。 */
+  readonly on: Point;
+}
+
 export interface JumperLayout {
   readonly designator: JumperDesignator;
   readonly hit: Rect;
+  /** 照片上接插件和静态跳线帽的范围，不包含周围丝印。 */
+  readonly socket: Rect;
   readonly pins: readonly JumperPinLayout[];
   /** 固定短接，例如 J2 的 1-3。 */
   readonly fixed: readonly JumperPairLayout[];
@@ -55,39 +68,40 @@ export interface JumperLayout {
   readonly options: readonly JumperPairLayout[];
   /** true 表示点击切换通断；false 表示点击直接选择最近的位置。 */
   readonly toggle: boolean;
+  readonly slider: JumperSliderLayout;
 }
 
-const KEY_SIZE = 40;
+const KEY_HIT_SIZE = 36;
 
 function key(designator: KeyDesignator, centerX: number, centerY: number): KeyLayout {
   return {
     designator,
-    x: centerX - KEY_SIZE / 2,
-    y: centerY - KEY_SIZE / 2,
-    width: KEY_SIZE,
-    height: KEY_SIZE,
+    x: centerX - KEY_HIT_SIZE / 2,
+    y: centerY - KEY_HIT_SIZE / 2,
+    width: KEY_HIT_SIZE,
+    height: KEY_HIT_SIZE,
   };
 }
 
-/** 键位中心点与 `build-canvas.mjs` 完全一致。 */
+/** 逐个对齐照片里的黑色键帽中心，热区比键帽稍宽。 */
 export const KEYS: readonly KeyLayout[] = [
-  key('S7', 143, 491),
-  key('S6', 143, 540),
-  key('S5', 143, 588),
-  key('S4', 143, 637),
-  key('S11', 202, 491),
-  key('S10', 202, 539),
-  key('S9', 202, 588),
-  key('S8', 203, 637),
-  key('S15', 261, 491),
-  key('S14', 261, 539),
-  key('S13', 261, 588),
-  key('S12', 261, 637),
-  key('S19', 320, 491),
-  key('S18', 320, 539),
-  key('S17', 320, 588),
-  key('S16', 320, 637),
-  key('S1', 379, 540),
+  key('S7', 145, 485),
+  key('S6', 145, 535),
+  key('S5', 145, 584),
+  key('S4', 145, 633),
+  key('S11', 204, 485),
+  key('S10', 204, 535),
+  key('S9', 204, 583),
+  key('S8', 205, 633),
+  key('S15', 263, 485),
+  key('S14', 262, 534),
+  key('S13', 262, 583),
+  key('S12', 263, 632),
+  key('S19', 321, 484),
+  key('S18', 321, 534),
+  key('S17', 321, 583),
+  key('S16', 321, 632),
+  key('S1', 378, 536),
 ];
 
 export const DISPLAYS: readonly DisplayLayout[] = [
@@ -126,11 +140,13 @@ export const RELAY: ActuatorLayout = {
 /**
  * J13/J5 是真实的三脚选择器：中间脚为公共端，两个桥接位置分别是 1-2 与 2-3。
  * J3 是右侧扩展排针上 SIGNAL/P34 的两脚跳线；J2 是 2×3 排针，1-3 固定短接，
- * 4-6 为 VS1838（true）、2-4 为 CX20106A（false）。
+ * 4-6 为 VS1838（true）、2-4 为 CX20106A（false）。J6 是蜂鸣器下方的三针
+ * 装配开关；网表与融合模型都没有它的电气连接，仅保存 OFF/ON 装配状态。
  */
 export const J13: JumperLayout = {
   designator: 'J13',
   hit: { x: 289, y: 370, width: 42, height: 72 },
+  socket: { x: 298, y: 374, width: 18, height: 40 },
   pins: [
     { pin: 1, x: 307, y: 403 },
     { pin: 2, x: 307, y: 391 },
@@ -142,11 +158,19 @@ export const J13: JumperLayout = {
     { closed: true, pins: [2, 3] },
   ],
   toggle: false,
+  slider: {
+    orientation: 'vertical',
+    track: { x: 302, y: 376, width: 10, height: 36 },
+    knob: { width: 12, height: 10 },
+    off: { x: 307, y: 397 },
+    on: { x: 307, y: 385 },
+  },
 };
 
 export const J5: JumperLayout = {
   designator: 'J5',
   hit: { x: 350, y: 660, width: 44, height: 24 },
+  socket: { x: 352, y: 661, width: 42, height: 22 },
   pins: [
     { pin: 1, x: 357, y: 672 },
     { pin: 2, x: 371, y: 672 },
@@ -158,11 +182,19 @@ export const J5: JumperLayout = {
     { closed: true, pins: [2, 3] },
   ],
   toggle: false,
+  slider: {
+    orientation: 'horizontal',
+    track: { x: 354, y: 667, width: 38, height: 10 },
+    knob: { width: 13, height: 11 },
+    off: { x: 364, y: 672 },
+    on: { x: 378, y: 672 },
+  },
 };
 
 export const J3: JumperLayout = {
   designator: 'J3',
   hit: { x: 926, y: 454, width: 28, height: 30 },
+  socket: { x: 933, y: 459, width: 14, height: 19 },
   pins: [
     { pin: 1, x: 940, y: 464 },
     { pin: 2, x: 940, y: 473 },
@@ -170,11 +202,19 @@ export const J3: JumperLayout = {
   fixed: [],
   options: [{ closed: true, pins: [1, 2] }],
   toggle: true,
+  slider: {
+    orientation: 'vertical',
+    track: { x: 936, y: 461, width: 8, height: 16 },
+    knob: { width: 10, height: 7 },
+    off: { x: 940, y: 474 },
+    on: { x: 940, y: 465 },
+  },
 };
 
 export const J2: JumperLayout = {
   designator: 'J2',
   hit: { x: 558, y: 136, width: 76, height: 64 },
+  socket: { x: 578, y: 154, width: 36, height: 32 },
   pins: [
     { pin: 1, x: 582, y: 181 },
     { pin: 2, x: 582, y: 158 },
@@ -189,9 +229,41 @@ export const J2: JumperLayout = {
     { closed: true, pins: [4, 6] },
   ],
   toggle: false,
+  slider: {
+    orientation: 'horizontal',
+    track: { x: 579, y: 154, width: 34, height: 10 },
+    knob: { width: 12, height: 10 },
+    off: { x: 588, y: 159 },
+    on: { x: 600, y: 159 },
+  },
 };
 
-export const JUMPERS: readonly JumperLayout[] = [J13, J5, J3, J2];
+export const J6: JumperLayout = {
+  designator: 'J6',
+  hit: { x: 646, y: 418, width: 54, height: 32 },
+  // 只盖住黑色三针本体，保留上方 SP1、左侧 J6 和下方 OFF/ON 丝印。
+  socket: { x: 652, y: 422, width: 43, height: 16 },
+  pins: [
+    { pin: 1, x: 661, y: 430 },
+    { pin: 2, x: 672, y: 430 },
+    { pin: 3, x: 683, y: 430 },
+  ],
+  fixed: [],
+  options: [
+    { closed: false, pins: [1, 2] },
+    { closed: true, pins: [2, 3] },
+  ],
+  toggle: false,
+  slider: {
+    orientation: 'horizontal',
+    track: { x: 654, y: 425, width: 39, height: 9 },
+    knob: { width: 14, height: 10 },
+    off: { x: 662, y: 429.5 },
+    on: { x: 684, y: 429.5 },
+  },
+};
+
+export const JUMPERS: readonly JumperLayout[] = [J13, J5, J3, J2, J6];
 
 export interface JumperChoice {
   readonly designator: JumperDesignator;
@@ -232,6 +304,18 @@ function pairCenter(layout: JumperLayout, pair: JumperPairLayout): Point {
   const first = pinPosition(layout, pair.pins[0]);
   const second = pinPosition(layout, pair.pins[1]);
   return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+}
+
+/** 滑块矩形；绘制和档位回归共用同一几何。 */
+export function jumperKnobRect(layout: JumperLayout, closed: boolean): Rect {
+  const { knob, off, on } = layout.slider;
+  const center = closed ? on : off;
+  return {
+    x: center.x - knob.width / 2,
+    y: center.y - knob.height / 2,
+    width: knob.width,
+    height: knob.height,
+  };
 }
 
 function nearestOption(layout: JumperLayout, point: Point): JumperPairLayout | undefined {

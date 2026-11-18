@@ -230,7 +230,7 @@ function snapshot(
       S18: false,
       S19: false,
     },
-    jumpers: { J13: true, J3: true, J2: true, J5: true },
+    jumpers: { J13: true, J3: true, J2: true, J5: true, J6: true },
     infrared: { LD1: false, U11: false, U20: false },
     ne555: { frequency: 0, dutyCycle: 0 },
     uln2003: { mask: 0, channels: '0000000' },
@@ -281,6 +281,14 @@ describe('panel bootstrap snapshot races', () => {
     const baseline = board.beginSnapshot();
     expect(board.applySnapshot(snapshot({ s9: true }), baseline)).toBe(true);
     expect(board.readback).toMatchObject({ relay: false, switches: { S9: true } });
+  });
+
+  it('tracks the J6 assembly state from its closedState signal', () => {
+    const board = new BoardBootstrap();
+    board.applySnapshot(snapshot(), board.beginSnapshot());
+    expect(board.readback?.jumpers.J6).toBe(true);
+    expect(board.applySignal({ designator: 'J6', port: 'closedState', value: 0 })).toBe(true);
+    expect(board.readback?.jumpers.J6).toBe(false);
   });
 
   it('drops buffered events and late replies after close', () => {

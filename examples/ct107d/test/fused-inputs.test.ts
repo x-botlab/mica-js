@@ -60,7 +60,7 @@ describe('fused board input methods', () => {
       fused.board.runUntil(0);
       const initial = snapshot(fused);
       expect(initial.switches.S9).toBe(false);
-      expect(initial.jumpers).toEqual({ J13: true, J3: true, J2: true, J5: true });
+      expect(initial.jumpers).toEqual({ J13: true, J3: true, J2: true, J5: true, J6: true });
       expect(initial.infrared).toEqual({ LD1: false, U11: false, U20: false });
       expect(initial.ne555.frequency).toBeGreaterThan(0);
       expect(initial.ne555.dutyCycle).toBeGreaterThan(0);
@@ -83,6 +83,7 @@ describe('fused board input methods', () => {
       fused.methods.setJumper!({ designator: 'J13', closed: false });
       fused.methods.setJumper!({ designator: 'J2', closed: true });
       fused.methods.setJumper!({ designator: 'J5', closed: false });
+      fused.methods.setJumper!({ designator: 'J6', closed: false });
       fused.methods.setHallField!({ value: 20 });
       fused.methods.setIrCarrier!({ designator: 'LD1', value: true });
       fused.methods.setIrCarrier!({ designator: 'U11', value: true });
@@ -94,13 +95,20 @@ describe('fused board input methods', () => {
       expect(signals.get('S9/pressed')).toBe(1);
       expect(signals.get('J13/closedState')).toBe(0);
       expect(signals.get('J5/closedState')).toBe(0);
+      expect(signals.get('J6/closedState')).toBe(0);
       expect(signals.get('U21/active')).toBe(1);
       expect(signals.get('LD1/carrier')).toBe(1);
       expect(signals.get('U11/receiving')).toBe(1);
       const routed = snapshot(fused);
       expect(routed.switches.S9).toBe(true);
-      expect(routed.jumpers).toEqual({ J13: false, J3: true, J2: true, J5: false });
+      expect(routed.jumpers).toEqual({ J13: false, J3: true, J2: true, J5: false, J6: false });
       expect(routed.infrared).toEqual({ LD1: true, U11: true, U20: false });
+
+      // J6 没有 DDL 输入/网表；模型适配器同步发布自己的装配状态。
+      fused.methods.setJumper!({ designator: 'J6', closed: true });
+      fused.board.runUntil(11_000_000_000);
+      expect(signals.get('J6/closedState')).toBe(1);
+      expect(snapshot(fused).jumpers.J6).toBe(true);
       expect(routed.pcf8591.analog).toEqual([0, 0, 0.5, 0]);
       expect(routed.hall).toBe(true);
       expect(routed.amplifier.position).toBe(0);

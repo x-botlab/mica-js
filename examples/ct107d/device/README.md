@@ -48,9 +48,11 @@ pnpm --filter @mica-js/example-ct107d typecheck:fused
   `sendUart`；`setIrCarrier` 必须显式指定 `LD1`、`U11` 或 `U20`；
   `setJumper({designator:'J5', closed:false})` 选择 J5 1-2（S4–S7 接 P44 的 4×4
   矩阵），`closed:true` 是默认 2-3（S4–S7 独立接地）；J13 `closed:true` 是默认
-  2-3（WR 接地），`closed:false` 是 1-2（WR 跟随 P42，不是悬空）；
+  2-3（WR 接地），`closed:false` 是 1-2（WR 跟随 P42，不是悬空）；J6 仅保存
+  蜂鸣器旁三针的 OFF/ON 装配状态（默认 ON），网表与融合模型都没有它的电气
+  接线，因此不改变供电、蜂鸣器或继电器；
 - 查询：`getSnapshot`、`getAmplifier`、`getEeprom`、`getRtc`、`readSerial`、`getSerialStatus`；
-  `getSnapshot` 包含 17 键、J13/J5/J3/J2、LD1/U11/U20、NE555、ULN2003、74HC138、
+  `getSnapshot` 包含 17 键、J13/J5/J3/J2/J6、LD1/U11/U20、NE555、ULN2003、74HC138、
   PCF8591、温度（converted/value）、LM386 active 与 LED brightness/current/voltage
   （`leds` 仍保留亮度数组兼容）；`setAnalogInput` 以 0..1 钳位值送入并缓存；
 - 事件：`onDidSignal({designator, port, value})`、`onDidBytes({designator, port, data})`、

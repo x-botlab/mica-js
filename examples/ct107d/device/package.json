@@ -50,7 +50,10 @@
       "default": null,
       "nullable": true,
       "loader": "memory",
-      "formats": ["bin", "hex"],
+      "formats": [
+        "bin",
+        "hex"
+      ],
       "addressSpaces": {
         "code": {
           "title": "程序存储器",
@@ -363,6 +366,9 @@
                 "type": "boolean"
               },
               "J5": {
+                "type": "boolean"
+              },
+              "J6": {
                 "type": "boolean"
               }
             }
