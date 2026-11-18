@@ -15,6 +15,7 @@
       "id": "11111111-1111-4111-8111-111111111111",
       "device": "example:button",
       "designator": "S1",
+      "designatorOffset": { "x": -1, "y": -2 },
       "placement": { "x": 20, "y": 15, "rotation": 0 },
       "properties": {
         "label": "启动",
@@ -24,13 +25,23 @@
         "normallyClosed": false,
         "capColor": "#33AA55FF",
         "mode": "momentary",
-        "icon": { "src": "assets/button-icon.png", "mode": "file" },
+        "icon": {
+          "assetId": "33333333-3333-4333-8333-333333333333",
+          "name": "button-icon.png",
+          "mode": "asset"
+        },
         "profile": null,
-        "firmware": {
+        "program": {
           "mode": "project",
           "projectId": "controller",
+          "name": "Controller",
           "addressSpace": "code",
           "loadAddress": 256
+        },
+        "scripts": {
+          "mode": "asset",
+          "assetId": "44444444-4444-4444-8444-444444444444",
+          "name": "openmv.zip"
         }
       },
       "display": { "body": true },

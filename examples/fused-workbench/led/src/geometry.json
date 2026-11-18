@@ -1,0 +1,10 @@
+{
+  "sizing": "physical",
+  "bounds": { "x": 0, "y": 0, "width": 10, "height": 8 },
+  "bodyBounds": { "x": 2, "y": 1, "width": 6, "height": 6 },
+  "bodyImage": "body.svg",
+  "pins": {
+    "anode": { "position": { "x": 0, "y": 4 }, "outward": { "x": -1, "y": 0 } },
+    "cathode": { "position": { "x": 10, "y": 4 }, "outward": { "x": 1, "y": 0 } }
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/editor",
-  "version": "0.3.3",
+  "version": "0.4.1",
   "description": "Mica editors: independent composition roots, commands and scoped services",
   "license": "MIT",
   "repository": {
@@ -17,6 +17,45 @@
       "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./fused": {
+      "source": "./src/fused/index.ts",
+      "types": "./dist/fused.d.ts",
+      "import": "./dist/fused.js"
+    },
+    "./fused/style.css": {
+      "source": "./src/fused/styles/workbench.css",
+      "default": "./dist/style.css"
+    },
+    "./fused/runtime": {
+      "source": "./src/fused/runtime/index.ts",
+      "types": "./dist/fused-runtime.d.ts",
+      "import": "./dist/fused-runtime.js"
+    },
+    "./fused/html": {
+      "source": "./src/fused/html/index.ts",
+      "types": "./dist/fused-html.d.ts",
+      "import": "./dist/fused-html.js"
+    },
+    "./fused/view-environment/index.html": {
+      "source": "./src/fused/html/environment/index.html",
+      "default": "./dist/view-environment/index.html"
+    },
+    "./fused/view-environment/environment.js": {
+      "source": "./src/fused/html/environment/entry.ts",
+      "default": "./dist/view-environment/environment.js"
+    },
+    "./fused/view-environment/environment-sw.js": {
+      "source": "./src/fused/html/environment/service-worker.ts",
+      "default": "./dist/view-environment/environment-sw.js"
+    },
+    "./fused/view-environment/content.html": {
+      "source": "./src/fused/html/environment/content.html",
+      "default": "./dist/view-environment/content.html"
+    },
+    "./fused/view-environment/content.js": {
+      "source": "./src/fused/html/environment/content.ts",
+      "default": "./dist/view-environment/content.js"
     },
     "./style.css": {
       "source": "./src/styles.css",
@@ -39,6 +78,24 @@
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
       },
+      "./fused": {
+        "types": "./dist/fused.d.ts",
+        "import": "./dist/fused.js"
+      },
+      "./fused/style.css": "./dist/style.css",
+      "./fused/runtime": {
+        "types": "./dist/fused-runtime.d.ts",
+        "import": "./dist/fused-runtime.js"
+      },
+      "./fused/html": {
+        "types": "./dist/fused-html.d.ts",
+        "import": "./dist/fused-html.js"
+      },
+      "./fused/view-environment/index.html": "./dist/view-environment/index.html",
+      "./fused/view-environment/environment.js": "./dist/view-environment/environment.js",
+      "./fused/view-environment/environment-sw.js": "./dist/view-environment/environment-sw.js",
+      "./fused/view-environment/content.html": "./dist/view-environment/content.html",
+      "./fused/view-environment/content.js": "./dist/view-environment/content.js",
       "./style.css": "./dist/style.css"
     }
   },
@@ -47,9 +104,27 @@
     "@mica-js/simulator": "workspace:*",
     "@mica-js/sdk": "workspace:*",
     "@mica-js/widget": "workspace:*",
-    "@mica-js/document": "workspace:*"
+    "@mica-js/document": "workspace:*",
+    "@mica-js/sandbox": "workspace:*",
+    "@vscode/codicons": "^0.0.45"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   },
   "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plugin-dts": "catalog:",

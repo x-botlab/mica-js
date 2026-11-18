@@ -1,23 +1,47 @@
 {
   "bin": {
-    "mode": "file",
-    "src": "firmware/main.bin",
+    "mode": "asset",
+    "assetId": "11111111-1111-4111-8111-111111111111",
+    "name": "main.bin",
     "addressSpace": "code",
     "loadAddress": 256
   },
   "hex": {
-    "mode": "file",
-    "src": "firmware/main.hex",
+    "mode": "asset",
+    "assetId": "22222222-2222-4222-8222-222222222222",
+    "name": "main.hex",
     "addressSpace": "code"
   },
   "elf": {
-    "mode": "file",
-    "src": "firmware/main.elf"
+    "mode": "asset",
+    "assetId": "33333333-3333-4333-8333-333333333333",
+    "name": "main.elf"
   },
-  "project": {
+  "memoryProject": {
     "mode": "project",
     "projectId": "controller",
+    "name": "Controller",
     "addressSpace": "code",
     "loadAddress": 256
+  },
+  "memoryPackage": {
+    "mode": "package",
+    "src": "assets/programs/main.bin",
+    "addressSpace": "code",
+    "loadAddress": 256
+  },
+  "filesystemProject": {
+    "mode": "project",
+    "projectId": "openmv",
+    "name": "OpenMV"
+  },
+  "filesystemDirectory": {
+    "mode": "asset",
+    "assetId": "44444444-4444-4444-8444-444444444444",
+    "name": "openmv.zip"
+  },
+  "filesystemPackage": {
+    "mode": "package",
+    "src": "assets/programs/openmv"
   }
 }

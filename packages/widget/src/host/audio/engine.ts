@@ -33,7 +33,7 @@ export interface AudioContextLike {
    * policy, hidden page, a caller calling `suspend()` / `resume()`). Used as a fallback when the
    * context lacks `addEventListener`; fakes may leave it `null`.
    */
-  onstatechange?: ((event?: unknown) => void) | null;
+  onstatechange?: ((event: Event) => void) | null;
   /** Preferred over `onstatechange`: subscribing must not clobber the caller's own handler. */
   addEventListener?(type: 'statechange', listener: () => void): void;
   removeEventListener?(type: 'statechange', listener: () => void): void;
@@ -105,6 +105,11 @@ export class WidgetAudioEngine {
   /** Context state moved without an engine call; guests get the same ordered notification. */
   readonly #onContextStateChange = (): void => {
     if (this.#disposed) return;
+    if (this.#context.state === 'closed') {
+      for (const instanceId of this.#instances.keys()) {
+        this.#report('widget/audio-failed', instanceId, 'The host AudioContext was closed.');
+      }
+    }
     this.#syncState();
   };
 
@@ -152,7 +157,8 @@ export class WidgetAudioEngine {
    * `AudioWorklet`, or the worklet module failed to load.
    */
   get state(): WidgetAudioState {
-    if (this.#disposed || this.#available === false) return 'unavailable';
+    if (this.#disposed || this.#available === false || this.#context.state === 'closed')
+      return 'unavailable';
     if (this.#available !== true || this.#suspended) return 'suspended';
     return this.#context.state === 'running' ? 'running' : 'suspended';
   }

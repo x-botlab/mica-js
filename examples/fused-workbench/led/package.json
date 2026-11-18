@@ -1,0 +1,49 @@
+{
+  "publisher": "workbench",
+  "name": "led",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "displayName": "LED（付费示例）",
+  "designatorPrefix": "D",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "pins": {
+    "anode": {
+      "label": "A"
+    },
+    "cathode": {
+      "label": "K"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "methods": {
+      "getBrightness": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      }
+    },
+    "events": {
+      "onDidBrightnessChange": {
+        "type": "number"
+      }
+    }
+  },
+  "view2d": {
+    "geometry": "geometry.json",
+    "entry": "view.js"
+  },
+  "view": {
+    "monitor": {
+      "title": "LED 监视器",
+      "entry": "monitor/index.html",
+      "icon": "dashboard"
+    }
+  }
+}

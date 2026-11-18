@@ -34,6 +34,8 @@ export default defineConfig({
     lib: {
       entry: {
         index: 'src/index.ts',
+        'audio-host': 'src/audio-host.ts',
+        'audio-guest': 'src/audio-guest.ts',
         author: 'src/author.ts',
         vite: 'src/build/vite.ts',
       },

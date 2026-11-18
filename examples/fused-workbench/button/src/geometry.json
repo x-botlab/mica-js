@@ -1,0 +1,12 @@
+{
+  "sizing": "physical",
+  "bounds": { "x": -2, "y": 0, "width": 14, "height": 10 },
+  "bodyBounds": { "x": 0, "y": 0, "width": 10, "height": 10 },
+  "bodyImage": "body.svg",
+  "pins": {
+    "a1": { "position": { "x": -2, "y": 2 }, "outward": { "x": -1, "y": 0 } },
+    "a2": { "position": { "x": -2, "y": 8 }, "outward": { "x": -1, "y": 0 } },
+    "b1": { "position": { "x": 12, "y": 2 }, "outward": { "x": 1, "y": 0 } },
+    "b2": { "position": { "x": 12, "y": 8 }, "outward": { "x": 1, "y": 0 } }
+  }
+}

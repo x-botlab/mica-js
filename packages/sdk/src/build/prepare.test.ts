@@ -2,7 +2,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runCli, type CliStreams } from './cli';
@@ -111,15 +111,29 @@ async function buildCliEntry(): Promise<string> {
     module: typescript.ModuleKind.ESNext,
     verbatimModuleSyntax: true,
   };
-  for (const name of ['prepare', 'config', 'cli']) {
-    const source = await readFile(join(packageRoot, 'src', 'build', `${name}.ts`), 'utf8');
+  // Mirror the source tree so relative imports between build and fused modules resolve.
+  for (const name of [
+    'build/prepare',
+    'build/config',
+    'build/cli',
+    'build/unified-defaults',
+    'build/unified-manifest',
+    'build/unified-paths',
+    'build/unified-prepare',
+    'build/unified-types',
+    'fused/agreement',
+    'fused/diagnostics',
+  ]) {
+    const source = await readFile(join(packageRoot, 'src', `${name}.ts`), 'utf8');
     const { outputText } = typescript.transpileModule(source, {
       compilerOptions,
       fileName: `${name}.ts`,
     });
-    await writeFile(join(directory, `${name}.js`), outputText, 'utf8');
+    const target = join(directory, `${name}.js`);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, outputText, 'utf8');
   }
-  return join(directory, 'cli.js');
+  return join(directory, 'build', 'cli.js');
 }
 
 function runExecutable(

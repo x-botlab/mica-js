@@ -1,5 +1,11 @@
 # @mica-js/sandbox
 
+## 0.5.1
+
+### Patch Changes
+
+- 99b33c1: 新增融合原理图工作台、统一器件包与程序资源 API，补齐编辑交互和实例音频，修复 Worker 热更新缓存。
+
 ## 0.5.0
 
 ### Minor Changes

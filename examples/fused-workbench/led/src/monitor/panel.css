@@ -1,0 +1,37 @@
+/*
+ * The environment injects the workbench theme tokens into the document root before this stylesheet
+ * runs and keeps them current, so the monitor follows the workbench appearance without loading
+ * anything else.
+ */
+body {
+  margin: 12px;
+  color: var(--mica-text);
+  /* Same generic view token the environment paints before this stylesheet exists. */
+  background: var(--mica-panel);
+  font:
+    13px system-ui,
+    sans-serif;
+}
+output {
+  font-variant-numeric: tabular-nums;
+  color: var(--mica-accent);
+}
+label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--mica-muted);
+}
+input {
+  min-width: 0;
+  flex: 1;
+  padding: 6px;
+  color: var(--mica-text);
+  background: var(--mica-panel);
+  border: 1px solid var(--mica-border);
+  border-radius: 4px;
+}
+input:focus-visible {
+  outline: none;
+  border-color: var(--mica-focus);
+}

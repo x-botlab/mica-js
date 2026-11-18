@@ -1,10 +1,12 @@
 # 统一器件包
 
 - Start Date: 2026-11-15
-- Reference Issues: —（尚未实现）
+- Reference Issues: [x-botlab/mica-js#284](https://github.com/x-botlab/mica-js/issues/284)、[x-botlab/xbotlab#1113](https://github.com/x-botlab/xbotlab/issues/1113)
 - Implementation PR: —（尚未实现）
 
 规定单器件发布包的清单、入口、资源与不可变发布身份，以及 ZIP、本地目录和 Web 逐文件加载之间的一致性。本文为待实现的合同草案；融合运行的装配入口见 [RFC 0025](./0025-fused-runtime.md)。本文中的 MUST / MUST NOT 表示强制要求，SHOULD 表示推荐，MAY 表示可选能力。
+
+修订（2026-11-17）：程序属性与工厂快照按 [RFC 0026](./0026-firmware-properties.md) 增加 `program` 的内存及文件集装载，既有 `firmware` 声明保留兼容装载。
 
 ## 声明
 
@@ -28,7 +30,7 @@
 | `description`、`license` | string | 否   | 说明                                                                                                      |
 | `engines.mica`           | string | 是   | 宿主 API 的 SemVer 兼容范围                                                                               |
 | `displayName`            | string | 是   | 展示名称                                                                                                  |
-| `icon`                   | string | 否   | 器件图标的包根相对 PNG 或自包含静态 SVG 路径，须列入发布文件清单                                          |
+| `icon`                   | string | 否   | 器件图标的包根相对 PNG 或自包含静态 SVG 路径；有效图标须列入发布文件清单，缺失或无效时使用通用图标        |
 | `designatorPrefix`       | string | 否   | 非空位号前缀；缺省 `U`                                                                                    |
 | `entries`                | object | 否   | 预留 `view3d` 到包内 `.js` 的映射                                                                         |
 | `properties`             | object | 否   | 属性描述映射，缺省空；基础值与约束见 [RFC 0009](./0009-device-properties.md)                              |
@@ -54,7 +56,10 @@
 - 属性键、方法键、公共类型键和视图 ID 匹配 `[A-Za-z][A-Za-z0-9]*`；事件键采用 `onDidXxx` 形式。
 - 视图 ID 是布局引用的稳定身份；HTML 视图初始顺序采用视图 ID 的 ASCII 升序，实例布局可覆盖顺序。
 - 根 `icon` 用于器件库、对象列表与属性面板中的器件标识；宿主保持图片比例缩放到方形区域，画布外观仍由 `view2d` 声明。
-- 根 `icon` 省略时显示编辑器内置的通用器件图标；显式声明的路径和资源沿用包文件校验规则，格式或图片解码失败时报告 `package/invalid-icon` 并显示资源错误，不按省略图标处理。
+- 根 `icon` 省略时显示宿主内置的通用器件图标；声明的图标缺失、未列入发布文件清单、格式无效或图片解码失败时，报告非阻断的 `package/invalid-icon` 诊断并显示通用图标，发布与装载继续。
+- 图标路径仍遵守包路径规则，读取仍校验长度、摘要与资源额度；非法路径、内容校验失败和额度超限按对应包错误拒绝，不由图标容错豁免。
+- 宿主 MAY 为有效图标生成包外的 WebP 展示副本，最大尺寸为 `256 × 256`，保持比例、保留透明度且不裁剪；派生副本采用按发布摘要确定的统一路径，生成失败时报告非阻断诊断并显示通用图标。
+- 派生图标独立于发布内容，包内原始字节、清单路径、ZIP 与发布摘要保持不变，SDK 继续按包清单读取原图。
 - `view.*.icon` 的图标资源由编辑器统一提供，其值 MUST 是编辑器支持的 Codicons 图标名，非法名称按清单错误报告；根 `icon` 则引用器件包内图片。
 - 引脚 ID 是合法、区分大小写的模型引脚名，与模型声明同名绑定；显示文字和封装脚号通过 `label` 或 `description` 表达。
 - 清单 `pins` 与模型 IR 的引脚集合 MUST 完全一致；省略 `pins` 视为空集合，电气资源和内部连接由 [RFC 0021](./0021-device-model-api.md) 规定。
@@ -68,18 +73,21 @@
 - HTML 与 CSS 的相对引用先归一化，解析结果 MUST 留在包根且对应 `files` 中的记录；清单路径和 `read` 参数使用规范化的包根相对形式。
 - 清单表中的字段直接位于根对象，模型字段位于 `model`，HTML 视图条目位于 `view.<视图 ID>`；各结构对象拒绝未知字段，`engines.mica` 中的 `mica` 是宿主引擎名。
 - 根字段以器件合同解释；其他包管理字段可保留，但不得覆盖器件字段的含义，加载器 MUST NOT 执行安装脚本。
+- 器件说明按优先级读取包根 `README.md`、`README.txt`、`README`，文件名按 ASCII 忽略大小写匹配；同一优先级有多个候选时拒绝发布并报告 `package/invalid-manifest`，没有候选时展示清单 `description`。
+- 说明采用 UTF-8，Markdown 经安全渲染展示，TXT 与无扩展名 README 按纯文本展示；说明文件保留原始字节并列入发布文件清单，读取及展示遵守资源额度。
+- 说明随所选发布版本切换，图片和链接的包内相对引用按说明文件目录解析并保持在包根内，资源读取沿用该发布的权限；说明展示不执行 HTML 或脚本。
 
 ### 属性资源
 
 - 文档只保存属性覆盖值，缺省键使用清单默认值；同一实例只有一个属性命名空间。
 - `image` / `binary` 沿用 `{ src, mode }`；在 [RFC 0009](./0009-device-properties.md) 的模式之外增加 `mode: "package"`，其 `src` 为包根相对路径。
-- `firmware` 表达 MCU 的程序来源，复用资源属性的通用描述字段与 `maxBytes`；属性内地址空间、引用与选择交互见 [RFC 0026](./0026-firmware-properties.md)。
+- `program` 表达程序来源，按 `loader` 选择内存镜像或文件集；格式、地址空间、默认装载配置、推荐模板、统一固定限制及选择交互见 [RFC 0026](./0026-firmware-properties.md)。
 - 包中声明的文件型默认资源 MUST 使用 `package` 模式；实例的 `file` 引用以宿主明确提供的工程根为基准。
 - 必需属性由默认值或实例覆盖提供；既无默认值又无覆盖值时拒绝创建实例，显式 `null` 仅在属性允许时有效。
 - 属性可额外声明 `group: string`、`order: number`；`order` 为非负整数，仅影响面板排序。
 - 本合同对非法属性描述和默认值采用拒绝装载策略，而非忽略字段后继续。
-- 模型和展示获得相同取值的独立只读属性快照；`image` / `binary` 在工厂执行前解析为只读字节快照，`firmware` 解析为 [RFC 0026](./0026-firmware-properties.md) 的 `FirmwareImage`，文档仍保留资源引用。
-- DDL 使用的属性，其类型、可空性和默认值 MUST 与清单一致；展示专用属性由清单管理。
+- 模型和展示获得相同取值的独立只读属性快照；`image` / `binary` 解析为只读字节，`program` 按装载方式解析为 `MemoryProgram` / `ProgramFiles`，文档仍保留来源引用。
+- DDL 使用的普通属性，其类型、可空性和默认值 MUST 与清单一致；`program` 复合属性由 JS 工厂消费，模型 IR 禁止声明同名属性；展示专用属性由清单管理。
 
 ### 资源选择器
 
@@ -89,10 +97,10 @@
 
 - `extensions` 声明时为非空数组，每项匹配 `\.[A-Za-z0-9]+`，按忽略 ASCII 大小写后的值去重；非法声明按 `package/invalid-manifest` 拒绝装载。
 - 选择器使用文件名最后一个 `.` 起的扩展名忽略 ASCII 大小写匹配，多个值表示任选其一；无扩展名文件仅在未声明过滤器时显示。
-- 过滤器同时用于工程文件选择和包内资源浏览，仅筛选候选项；不参与默认值、已保存引用或 `inline` / `store` 资源的有效性判断。
-- 编辑器为资源属性提供工程文件和本器件内置资源两个来源；内置资源从当前锁定包的发布文件清单中递归列出 `assets/` 下的文件，目录名匹配区分大小写。
+- 过滤器传给宿主资产选择器并用于包内资源浏览，仅筛选候选项；已保存引用仍执行内容与额度校验。
+- 编辑器为 `image` / `binary` 提供资产库和本器件内置资源两个来源；资产选择由宿主界面完成，内置资源从锁定包发布清单列出 `assets/` 下的文件，目录名区分大小写，接口见 [RFC 0028](./0028-workbench-host-resources.md)。
 - `image` 选择器仅展示可识别的图片并提供预览；`binary` 选择器按 `extensions` 筛选文件。无候选文件时显示“无内置资源”。
-- 选择内置资源保存 `{ src, mode: "package" }`，`src` 保留包根相对路径；选择工程文件保存 `file` 引用。包内文件保持只读，选择操作不复制文件。
+- 选择内置资源保存 `{ src, mode: "package" }`，`src` 为包根相对路径；资产保存 `{ mode: "asset", assetId, name }`，内容由宿主按身份读取，选择成功前先校验内容，取消保留原引用。
 - 读取仍校验文件存在、访问范围、发布摘要及 `maxBytes`；图片另外校验解码与 `maxPixels`，二进制内容由器件解析并明确报告错误。
 - `assets/` 仅限定选择器的列举范围；底图、HTML 及其依赖、默认值和已保存包引用继续使用各自的包内路径规则。
 
@@ -113,6 +121,13 @@
 - ZIP 压缩参数不影响发布身份；下载索引 MAY 另外记录 ZIP 原始字节摘要。
 - ZIP、解包文件服务与本地安装 MUST 对应同一份发布文件清单，禁止分别重建同版本产物。
 - 文档锁定发布身份；索引地址、镜像地址和 ZIP 下载地址由宿主解析。
+
+### 发布版本下架
+
+- 下架以器件发布版本为单位；发布者在首次发布起不超过 72 小时的真实经过时间内 MAY 自助下架，超过该期限的版本只允许管理员因违规强制下架。
+- 下架版本从可用版本和标签指向中移除，版本定位、发布清单、逐文件读取与 ZIP 下载均拒绝访问；公开存储地址和服务端分发缓存 MUST 遵守相同状态。
+- 下架保留器件 ID、版本与发布摘要记录，同一器件版本 MUST NOT 重新发布不同内容；重新上传相同内容不重置首次发布时间。
+- 已锁定文档保留依赖与实例，读取下架版本时明确报告不可用，不自动切换版本；已下载的客户端副本不因注册表下架而被收回。
 
 ### 读取接口
 
@@ -153,20 +168,20 @@ interface DeviceRegistry {
 
 ## 校验
 
-| 诊断码                       | 条件                                              |
-| ---------------------------- | ------------------------------------------------- |
-| `package/invalid-manifest`   | 清单结构、身份、SemVer 或属性非法                 |
-| `package/unsupported-engine` | 宿主 API 不满足兼容范围                           |
-| `package/invalid-path`       | 路径越界、重复、非法文件种类                      |
-| `package/missing-entry`      | 所声明入口或静态资源未列入发布清单                |
-| `package/invalid-icon`       | 器件图标不是 PNG 或自包含静态 SVG，或图片解码失败 |
-| `package/integrity-mismatch` | 发布清单或文件摘要、长度不符                      |
-| `package/not-found`          | 锁定的发行物或文件缺失                            |
-| `package/resource-limit`     | 包或文件超过宿主额度                              |
+| 诊断码                       | 条件                                                                         |
+| ---------------------------- | ---------------------------------------------------------------------------- |
+| `package/invalid-manifest`   | 清单结构、身份、SemVer 或属性非法                                            |
+| `package/unsupported-engine` | 宿主 API 不满足兼容范围                                                      |
+| `package/invalid-path`       | 路径越界、重复、非法文件种类                                                 |
+| `package/missing-entry`      | 所声明入口或静态资源未列入发布清单；根图标缺失按 `package/invalid-icon` 处理 |
+| `package/invalid-icon`       | 根图标缺失、格式无效、解码或派生失败；非阻断诊断，显示通用图标               |
+| `package/integrity-mismatch` | 发布清单或文件摘要、长度不符                                                 |
+| `package/not-found`          | 锁定的发行物或文件缺失，或发布版本已下架                                     |
+| `package/resource-limit`     | 包或文件超过宿主额度                                                         |
 
 ## 示例
 
-完整器件清单见 [全字段 package.json 示例](./examples/0020-device-package.json)，覆盖全部清单字段、属性描述和载荷类型结构，根 `icon` 引用器件图片，`view.monitor.icon` 使用 Codicons 名称，固件属性包含地址空间及默认基址；项目引用示例见 [完整文档](./examples/0024-fused-schematic.json)，BIN 地址覆盖见 [RFC 0026](./0026-firmware-properties.md)。数值属性的 `min` 与 `exclusiveMin` 分别展示在不同属性中。几何文件的全字段示例见 [RFC 0022](./0022-device-2d-presentation.md)。名称和版本用于说明结构，不代表已发布的发行物。
+完整器件清单见 [全字段 package.json 示例](./examples/0020-device-package.json)，覆盖全部清单字段、属性描述和载荷类型结构，根 `icon` 引用器件图片，`view.monitor.icon` 使用 Codicons 名称；`program` 与 `scripts` 分别展示内存及文件集程序属性。项目引用见 [完整文档](./examples/0024-fused-schematic.json)，来源与 BIN 地址覆盖见 [RFC 0026](./0026-firmware-properties.md)。数值属性的 `min` 与 `exclusiveMin` 分别展示在不同属性中。几何文件见 [RFC 0022](./0022-device-2d-presentation.md)。名称和版本用于说明结构，不代表已发布的发行物。
 
 对应的发布文件清单如下。大小与摘要均为占位示意，实际发布时按构建文件的原始字节填写。
 
@@ -225,7 +240,7 @@ interface DeviceRegistry {
 - 2D 几何与绘制由 [RFC 0022](./0022-device-2d-presentation.md) 规定。
 - HTML 容器与桥接由 [RFC 0023](./0023-device-html-ui.md) 规定。
 - 文档依赖锁定由 [RFC 0024](./0024-fused-schematic-format.md) 规定。
-- 固件属性、地址空间与装载配置交互由 [RFC 0026](./0026-firmware-properties.md) 规定。
+- 程序属性、地址空间、文件集与装载交互由 [RFC 0026](./0026-firmware-properties.md) 规定。
 
 ## 关联
 

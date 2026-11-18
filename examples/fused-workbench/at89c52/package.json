@@ -1,0 +1,174 @@
+{
+  "publisher": "workbench",
+  "name": "at89c52",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "displayName": "AT89C52",
+  "designatorPrefix": "U",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "properties": {
+    "program": {
+      "type": "program",
+      "title": "程序",
+      "loader": "memory",
+      "formats": [
+        "bin",
+        "hex",
+        "elf"
+      ],
+      "addressSpaces": {
+        "flash": {
+          "title": "Flash",
+          "start": 0,
+          "size": 8192
+        }
+      },
+      "defaults": {
+        "addressSpace": "flash",
+        "loadAddress": 0
+      },
+      "default": {
+        "mode": "package",
+        "src": "assets/key-led-buzzer.hex"
+      }
+    },
+    "clockFrequency": {
+      "type": "integer",
+      "title": "晶振频率（Hz）",
+      "min": 1000000,
+      "max": 24000000,
+      "default": 12000000
+    }
+  },
+  "pins": {
+    "P1_0": {
+      "label": "1 P1.0"
+    },
+    "P1_1": {
+      "label": "2 P1.1"
+    },
+    "P1_2": {
+      "label": "3 P1.2"
+    },
+    "P1_3": {
+      "label": "4 P1.3"
+    },
+    "P1_4": {
+      "label": "5 P1.4"
+    },
+    "P1_5": {
+      "label": "6 P1.5"
+    },
+    "P1_6": {
+      "label": "7 P1.6"
+    },
+    "P1_7": {
+      "label": "8 P1.7"
+    },
+    "RST": {
+      "label": "9 RST"
+    },
+    "P3_0": {
+      "label": "10 P3.0"
+    },
+    "P3_1": {
+      "label": "11 P3.1"
+    },
+    "P3_2": {
+      "label": "12 P3.2"
+    },
+    "P3_3": {
+      "label": "13 P3.3"
+    },
+    "P3_4": {
+      "label": "14 P3.4"
+    },
+    "P3_5": {
+      "label": "15 P3.5"
+    },
+    "P3_6": {
+      "label": "16 P3.6"
+    },
+    "P3_7": {
+      "label": "17 P3.7"
+    },
+    "XTAL2": {
+      "label": "18 XTAL2"
+    },
+    "XTAL1": {
+      "label": "19 XTAL1"
+    },
+    "GND": {
+      "label": "20 GND"
+    },
+    "P2_0": {
+      "label": "21 P2.0"
+    },
+    "P2_1": {
+      "label": "22 P2.1"
+    },
+    "P2_2": {
+      "label": "23 P2.2"
+    },
+    "P2_3": {
+      "label": "24 P2.3"
+    },
+    "P2_4": {
+      "label": "25 P2.4"
+    },
+    "P2_5": {
+      "label": "26 P2.5"
+    },
+    "P2_6": {
+      "label": "27 P2.6"
+    },
+    "P2_7": {
+      "label": "28 P2.7"
+    },
+    "PSEN": {
+      "label": "29 PSEN"
+    },
+    "ALE": {
+      "label": "30 ALE"
+    },
+    "EA": {
+      "label": "31 EA"
+    },
+    "P0_7": {
+      "label": "32 P0.7"
+    },
+    "P0_6": {
+      "label": "33 P0.6"
+    },
+    "P0_5": {
+      "label": "34 P0.5"
+    },
+    "P0_4": {
+      "label": "35 P0.4"
+    },
+    "P0_3": {
+      "label": "36 P0.3"
+    },
+    "P0_2": {
+      "label": "37 P0.2"
+    },
+    "P0_1": {
+      "label": "38 P0.1"
+    },
+    "P0_0": {
+      "label": "39 P0.0"
+    },
+    "VCC": {
+      "label": "40 VCC"
+    }
+  },
+  "model": {
+    "entry": "model.js"
+  },
+  "view2d": {
+    "geometry": "geometry.json"
+  }
+}

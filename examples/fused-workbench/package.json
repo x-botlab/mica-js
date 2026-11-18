@@ -1,0 +1,14 @@
+{
+  "name": "@mica-js/example-fused-workbench",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "node ../../apps/playground/scripts/workbench.mjs prepare && tsc -p at89c52/.mica/tsconfig.json && tsc -p buzzer/.mica/tsconfig.json && tsc -p button/.mica/tsconfig.json && tsc -p led/.mica/tsconfig.json"
+  },
+  "devDependencies": {
+    "@mica-js/editor": "workspace:*",
+    "@mica-js/sdk": "workspace:*",
+    "typescript": "catalog:"
+  }
+}

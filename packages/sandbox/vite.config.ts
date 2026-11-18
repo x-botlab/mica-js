@@ -40,7 +40,7 @@ export default defineConfig({
     sourcemap: true,
     rollupOptions: {
       // The Vite plugins run in the consumer's Node build config, so Node built-ins stay imports.
-      external: ['rolldown', /^node:/],
+      external: ['rolldown', 'vite', /^node:/],
     },
     minify: false,
   },

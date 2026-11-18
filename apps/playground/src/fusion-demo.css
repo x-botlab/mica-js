@@ -1,0 +1,1216 @@
+:root {
+  font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  color: #2d3b51;
+  background: #f7f8fa;
+  font-synthesis: none;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+select,
+input {
+  font: inherit;
+}
+button {
+  cursor: pointer;
+  color: inherit;
+}
+button:focus-visible,
+a:focus-visible,
+input:focus-visible {
+  outline: 2px solid #6386dc;
+  outline-offset: 3px;
+}
+button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.fusion-app {
+  height: 100dvh;
+  min-height: 720px;
+  display: flex;
+  flex-direction: column;
+}
+.fusion-header {
+  height: 60px;
+  flex-shrink: 0;
+  background: #fff;
+  border-bottom: 1px solid #e5e9ef;
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  gap: 40px;
+}
+.fusion-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 24px;
+  font-weight: 700;
+  text-decoration: none;
+  color: #26364d;
+  letter-spacing: -1px;
+}
+.fusion-brand > span {
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  color: white;
+  border-radius: 7px;
+  background: #587ed4;
+  font-size: 25px;
+  line-height: 1;
+}
+.fusion-brand small {
+  margin-left: 12px;
+  padding-left: 15px;
+  border-left: 1px solid #dde3ed;
+  font-size: 11px;
+  font-weight: 400;
+  color: #8a95a5;
+  letter-spacing: 1px;
+}
+.project-title {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  font-size: 11px;
+}
+.project-title > span {
+  color: #9ca6b5;
+  margin-left: 6px;
+}
+.quiet-button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  background: white;
+  border: 1px solid #e0e5ed;
+  padding: 8px 11px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+.fusion-header > button {
+  margin-left: auto;
+}
+.fusion-workspace {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) 256px;
+  flex: 1;
+  min-height: 0;
+}
+.fusion-sidebar {
+  background: #fbfcfd;
+  border-right: 1px solid #e5e9ef;
+  padding: 25px 13px 18px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.fusion-sidebar h2 {
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  margin: 0 0 16px;
+  font-weight: 600;
+}
+.fusion-sidebar h2 > span {
+  margin-left: auto;
+  font: 10px monospace;
+  color: #9ba7b9;
+}
+.device-list {
+  display: grid;
+  gap: 5px;
+}
+.device-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  background: none;
+  padding: 11px 7px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 10px;
+}
+.device-list button > svg:first-child {
+  color: #8fa1ba;
+  flex-shrink: 0;
+}
+.device-list button > svg:last-child {
+  margin-left: auto;
+  color: #a1afc1;
+}
+.device-list small {
+  display: block;
+  font-size: 9px;
+  color: #96a1b2;
+  margin-top: 4px;
+}
+.device-list button.selected {
+  background: #edf2fc;
+  border-color: #e1e8f8;
+}
+.device-list button:hover {
+  background: #f0f3f8;
+}
+.fusion-sidebar .network-heading {
+  margin-top: 31px;
+  margin-bottom: 10px;
+}
+.net-list {
+  display: grid;
+  gap: 1px;
+}
+.net-list button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  padding: 8px 7px;
+  text-align: left;
+  font-size: 10px;
+}
+.net-list button.selected,
+.net-list button:hover {
+  background: #eef2f8;
+}
+.net-list button > i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+.net-list small {
+  margin-left: auto;
+  font: 9px monospace;
+  color: #97a6ba;
+}
+.sidebar-note {
+  margin-top: auto;
+  padding: 27px 7px 0;
+}
+.sidebar-note > span {
+  color: #95a6bd;
+  letter-spacing: 1.5px;
+  font-size: 8px;
+}
+.sidebar-note p {
+  color: #7f8da1;
+  font-size: 10px;
+  line-height: 1.9;
+}
+.sidebar-note small {
+  color: #adb6c3;
+  font-size: 9px;
+}
+.fusion-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: #f8f9fb;
+  position: relative;
+}
+.canvas-toolbar {
+  height: 57px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 22px;
+  background: #fff;
+  border-bottom: 1px solid #e9ecf2;
+}
+.mode-switch {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: #f2f4f8;
+  border-radius: 6px;
+}
+.mode-switch button {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: #8d97a8;
+  padding: 7px 14px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.mode-switch .active {
+  color: #567ccd;
+  background: #fff;
+  box-shadow: 0 1px 4px #16295512;
+}
+.canvas-tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.canvas-tools button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  font-size: 11px;
+  color: #8c99ad;
+  padding: 5px;
+  min-width: 20px;
+}
+.canvas-tools button:hover {
+  background: #f1f4fa;
+}
+.canvas-context {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 23px 27px 13px;
+}
+.eyebrow {
+  letter-spacing: 2px;
+  font-size: 8px;
+  color: #8d9bb1;
+  font-weight: 600;
+}
+.canvas-context h1 {
+  font-size: 21px;
+  margin: 9px 0 7px;
+  font-weight: 600;
+  letter-spacing: -0.4px;
+}
+.canvas-context p {
+  font-size: 10px;
+  color: #919dad;
+  margin: 0;
+}
+.mode-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+  color: #8091ac;
+  border: 1px solid #e0e6ef;
+  border-radius: 20px;
+  padding: 6px 10px;
+  margin-top: 20px;
+  white-space: nowrap;
+}
+.mode-badge i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #829fc7;
+}
+.mode-badge.running {
+  color: #3b9384;
+  border-color: #d6e7e0;
+  background: #eff8f3;
+}
+.mode-badge.running i {
+  background: #399a80;
+}
+.scene-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 370px;
+  overflow: hidden;
+  background-image: radial-gradient(#dde3ec 0.6px, transparent 0.6px);
+  background-size: 16px 16px;
+  touch-action: none;
+}
+.scene-viewport.pan-ready,
+.scene-viewport.pan-ready button {
+  cursor: grab;
+}
+.scene-viewport.panning,
+.scene-viewport.panning button {
+  cursor: grabbing;
+}
+.scene-stage {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: top left;
+}
+/* ---- wiring layer: the interaction overlay ---- */
+.wire-layer {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+.wire {
+  fill: none;
+  stroke-width: 0.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.wire.highlight {
+  stroke-width: 1.8;
+}
+.wire.low {
+  stroke-width: 1.4;
+}
+.wire-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 8;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+.wire,
+.wire-hit,
+.rail-label path {
+  vector-effect: non-scaling-stroke;
+}
+.rail-label {
+  pointer-events: auto;
+  cursor: pointer;
+}
+.rail-label path {
+  fill: none;
+  stroke-width: 0.9;
+}
+.rail-label text {
+  font-family: 'Consolas', monospace;
+  paint-order: stroke;
+  stroke: #f8f9fb;
+  stroke-width: 2px;
+  stroke-linejoin: round;
+}
+/* Run mode hides wiring and pins; the checkbox brings them back. */
+.scene-stage[data-wiring='off'] .wire-layer,
+.scene-stage[data-wiring='off'] .device-pin {
+  display: none;
+}
+/* 位号可单独隐藏，封装与状态保持可见 */
+.scene-stage[data-designators='off'] .designator {
+  display: none;
+}
+/* ---- device layers: grab / body / state / pins ---- */
+.scene-device {
+  position: absolute;
+  pointer-events: none;
+}
+.device-grab {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  padding: 0;
+  border: 0;
+  background: none;
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+.device-grab:active {
+  cursor: grabbing;
+}
+.device-body {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+.device-state {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.device-state button {
+  pointer-events: auto;
+}
+.scene-device.selected::after {
+  content: '';
+  position: absolute;
+  inset: calc(-4px * var(--inverse-scale));
+  border: 0.5px dashed #94a9d6;
+  border-radius: 0.5px;
+  pointer-events: none;
+  z-index: 3;
+}
+.scene-stage[data-bodies='off'] .device-body,
+.scene-device.body-hidden .device-body {
+  display: none;
+}
+/* ---- MCU package art ---- */
+.device-mcu .device-body {
+  left: 6px;
+  right: 6px;
+  background: #2f3742;
+  border: 0.4px solid #232a34;
+  border-radius: 0.8px;
+}
+.mcu-notch {
+  position: absolute;
+  left: 50%;
+  top: -0.4px;
+  width: 8px;
+  height: 4px;
+  margin-left: -4px;
+  border: 0.4px solid #232a34;
+  border-top: 0;
+  border-radius: 0 0 6px 6px;
+  background: #f8f9fb;
+}
+.mcu-text {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) rotate(-90deg);
+  white-space: nowrap;
+  font-family: 'Consolas', monospace;
+  font-size: max(5.4px, calc(6.5px * var(--inverse-scale)));
+  letter-spacing: 1.1px;
+  color: #c3ccd8;
+}
+.mcu-text.sub {
+  margin-top: 9px;
+  font-size: 2.4px;
+  letter-spacing: 0.35px;
+  color: #93a1b4;
+}
+.device-caption {
+  position: absolute;
+  font-size: 7px;
+  color: #8d9bad;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.mcu-caption {
+  top: -10px;
+  left: 0;
+  width: 100%;
+  text-align: center;
+  font:
+    max(5px, calc(6px * var(--inverse-scale))) 'Consolas',
+    monospace;
+}
+/* ---- tact switch: 6 mm SMD part, pads and body are base ---- */
+.device-switch .device-body {
+  inset: 0;
+}
+.switch-body {
+  position: absolute;
+  inset: 1.5px;
+  background: #333b46;
+  border: 0.4px solid #232a34;
+  border-radius: 0.8px;
+}
+.switch-pad {
+  position: absolute;
+  width: 8px;
+  height: 6px;
+  background: #d6dbe2;
+  border: 0.4px solid #a9b2bf;
+  border-radius: 0.5px;
+}
+.switch-pad.pad-tl {
+  left: 0;
+  top: 0;
+}
+.switch-pad.pad-bl {
+  left: 0;
+  bottom: 0;
+}
+.switch-pad.pad-tr {
+  right: 0;
+  top: 0;
+}
+.switch-pad.pad-br {
+  right: 0;
+  bottom: 0;
+}
+/* 1–2 and 3–4 are the same contact inside the switch. */
+.switch-tie {
+  position: absolute;
+  width: 0.6px;
+  background: #8b95a4;
+  top: 6px;
+  bottom: 6px;
+}
+.switch-tie.tie-left {
+  left: 3.7px;
+}
+.switch-tie.tie-right {
+  right: 3.7px;
+}
+.switch-plunger {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 17.5px;
+  height: 17.5px;
+  margin: -8.75px 0 0 -8.75px;
+  border-radius: 50%;
+  border: 0.4px solid #262d36;
+  background: #4a5361;
+}
+.switch-key {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font:
+    max(5px, calc(6px * var(--inverse-scale))) 'Consolas',
+    monospace;
+  color: #c9d3e0;
+  pointer-events: none;
+}
+.switch-hit {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.switch-hit.held .switch-plunger {
+  transform: translateY(0.8px) scale(0.95);
+  background: #3a424f;
+}
+.switch-hit.held::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border: 1px solid #5d81cf;
+  border-radius: 2px;
+}
+.switch-hit.scanning::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 0.5px dashed #c79a6c;
+  border-radius: 1px;
+}
+.switch-caption {
+  top: -13px;
+  left: 0;
+  width: 100%;
+  text-align: center;
+  font:
+    max(5px, calc(6px * var(--inverse-scale))) 'Consolas',
+    monospace;
+}
+/* ---- SMD parts: footprint is base, light point is state ---- */
+.smd-pad {
+  position: absolute;
+  left: 0;
+  width: 8px;
+  height: 3.2px;
+  background: #c8d0db;
+  border: 0.3px solid #aab5c3;
+  border-radius: 0.4px;
+}
+.pad-top {
+  top: 0;
+}
+.pad-bottom {
+  bottom: 0;
+}
+.smd-case {
+  position: absolute;
+  left: 0;
+  top: 3.2px;
+  width: 8px;
+  height: 9.6px;
+  background: #f1e7d6;
+  border-left: 0.3px solid #d8cbb4;
+  border-right: 0.3px solid #d8cbb4;
+}
+.led-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: #b8c2ce;
+  border: 0.25px solid #9aa6b5;
+}
+.led-glow {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 30px;
+  height: 30px;
+  margin: -15px 0 0 -15px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ff6a4d73 0%, #ff6a4d26 45%, transparent 72%);
+  opacity: 0;
+  pointer-events: none;
+}
+.device-state.lit .led-dot {
+  background: #ff6a4d;
+  border-color: #e4523a;
+}
+.device-state.lit .led-glow {
+  opacity: 1;
+  animation: led-breathe 1.6s ease-in-out infinite;
+}
+@keyframes led-breathe {
+  50% {
+    opacity: 0.62;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .device-state.lit .led-glow {
+    animation: none;
+  }
+}
+.smd-label {
+  position: absolute;
+  left: calc(100% + 5px * var(--inverse-scale));
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: calc(3px * var(--inverse-scale));
+  align-items: center;
+  font-family: 'Consolas', monospace;
+  font-size: max(6px, calc(7px * var(--inverse-scale)));
+  line-height: 1;
+  color: #8593a8;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.smd-label small,
+.smd-label strong {
+  font-family: 'Consolas', monospace;
+  font-size: max(5px, calc(5.5px * var(--inverse-scale)));
+  line-height: 1;
+  font-weight: 400;
+  letter-spacing: 0.2px;
+  color: #a6b1c0;
+}
+.led-label strong {
+  color: #b08179;
+}
+.scene-stage[data-detail='compact'] .device-mcu .pin-name,
+.scene-stage[data-detail='compact'] .pin-level {
+  display: none;
+}
+/* ---- pins ---- */
+.device-pin {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: var(--pin-hit);
+  height: var(--pin-hit);
+  padding: 0;
+  border: 0;
+  background: none;
+  pointer-events: auto;
+  z-index: 3;
+}
+.device-pin > i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.6px;
+  height: 1.6px;
+  margin: -0.8px 0 0 -0.8px;
+  border: 0.3px solid currentColor;
+  background: #f8f9fb;
+  border-radius: 50%;
+}
+.device-pin.connected > i {
+  background: currentColor;
+}
+.device-pin:hover > i,
+.device-pin.pending > i {
+  outline: 0.4px solid #6388d6;
+  outline-offset: 1px;
+}
+.device-mcu .device-pin::after {
+  position: absolute;
+  top: calc(50% - 0.2px);
+  content: '';
+  width: 6px;
+  height: 0.4px;
+  background: currentColor;
+  pointer-events: none;
+}
+.device-mcu .side-left::after {
+  right: 50%;
+}
+.device-mcu .side-right::after {
+  left: 50%;
+}
+.pin-name,
+.pin-number {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  font:
+    5.6px/6px 'Consolas',
+    monospace;
+  pointer-events: none;
+}
+.device-mcu .pin-name {
+  color: #bcc6d4;
+}
+.device-mcu .pin-name small {
+  margin-left: 1.5px;
+  font-size: 3.4px;
+  color: #8593a6;
+}
+/* Numbers sit against the body edge, names one step inward: "1 P1.0". */
+.device-mcu .side-left .pin-name {
+  left: 15px;
+}
+.device-mcu .side-right .pin-name {
+  right: 15px;
+}
+.device-mcu .side-left .pin-number {
+  left: 5px;
+}
+.device-mcu .side-right .pin-number {
+  right: 5px;
+}
+.pin-number {
+  font-size: max(4.4px, calc(5px * var(--inverse-scale)));
+  color: #8f9cad;
+}
+.device-switch .pin-name,
+.device-led .pin-name,
+.device-resistor .pin-name {
+  display: none;
+}
+.pin-level {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font:
+    4.4px 'Consolas',
+    monospace;
+  background: #f8f9fb;
+  padding: 0 1px;
+  pointer-events: none;
+}
+.side-left .pin-level {
+  right: 22px;
+}
+.side-right .pin-level {
+  left: 22px;
+}
+.side-top .pin-level,
+.side-bottom .pin-level {
+  left: -14px;
+}
+.level-0 {
+  color: #597abd !important;
+}
+.level-1 {
+  color: #b48764 !important;
+}
+.level-X {
+  color: #d35a55 !important;
+}
+.level-Z {
+  color: #a6b0bf !important;
+}
+.view-hint {
+  position: absolute;
+  left: 18px;
+  bottom: 32px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(248, 249, 251, 0.94);
+  color: #8d9bb0;
+  font-size: 10px;
+  pointer-events: none;
+}
+.scene-legend {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 22px;
+  color: #9aa6b8;
+  font-size: 9px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.scene-legend > span {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.scene-legend i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+.row-dot {
+  background: #bd8457;
+}
+.col-dot {
+  background: #428d89;
+}
+.led-dot {
+  background: #6280cf;
+}
+.canvas-bottom {
+  min-height: 43px;
+  padding: 10px 20px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  border-top: 1px solid #e6eaf1;
+  background: #fff;
+  font-size: 10px;
+  color: #8090a7;
+  line-height: 1.6;
+}
+.canvas-toggles {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.canvas-bottom label,
+.body-toggle {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  white-space: nowrap;
+  font-size: 9px;
+  color: #7f8ea3;
+}
+.canvas-bottom label.muted {
+  opacity: 0.45;
+}
+.canvas-bottom input,
+.inspector-section input,
+.body-toggle input {
+  accent-color: #6483c9;
+  width: 11px;
+  height: 11px;
+  margin: 0;
+}
+.body-toggle {
+  margin-top: 12px;
+  cursor: pointer;
+}
+.canvas-footer {
+  height: 28px;
+  padding: 0 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #a1adbd;
+  font-size: 8px;
+  border-top: 1px solid #e9edf3;
+}
+.fusion-inspector {
+  background: #fff;
+  border-left: 1px solid #e5e9ef;
+  padding: 24px 18px;
+  overflow-y: auto;
+}
+.inspector-heading {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+}
+.inspector-heading > span {
+  font-size: 7px;
+  color: #adb8c7;
+  letter-spacing: 1px;
+  font-weight: 400;
+}
+.inspector-device {
+  padding: 26px 0 22px;
+}
+.inspector-device > span {
+  color: #8d9eb7;
+  font:
+    10px 'Consolas',
+    monospace;
+}
+.inspector-device h2 {
+  margin: 7px 0;
+  font-size: 20px;
+  font-weight: 500;
+}
+.inspector-device > small {
+  color: #9ca8b9;
+  font-size: 10px;
+  display: block;
+  line-height: 1.7;
+}
+.focus-device {
+  display: block;
+  margin-top: 15px;
+  border: 1px solid #dce4f2;
+  background: #f5f8fd;
+  color: #6b86b6;
+  border-radius: 5px;
+  padding: 7px 10px;
+  font-size: 10px;
+}
+.inspector-section {
+  padding: 20px 0;
+  border-top: 1px solid #edf0f5;
+}
+.inspector-section h3 {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 10px;
+  margin: 0 0 16px;
+  font-weight: 600;
+}
+.inspector-section h3 > span {
+  margin-left: auto;
+  color: #9cacbf;
+  font-size: 7px;
+  letter-spacing: 1px;
+  font-weight: 400;
+}
+.runtime-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  margin: 11px 0;
+}
+.runtime-row > span {
+  color: #9ba7b8;
+}
+.runtime-row > strong {
+  font:
+    10px 'Consolas',
+    monospace;
+  font-weight: 400;
+  color: #687c9c;
+}
+.inspector-tip {
+  color: #9aa6b7;
+  font-size: 9px;
+  line-height: 1.9;
+  margin: 12px 0 0;
+}
+.binding-summary {
+  color: #8899b0;
+  font-size: 9px;
+  line-height: 1.9;
+}
+.binding-summary code {
+  display: block;
+  font:
+    10px/1.9 'Consolas',
+    monospace;
+  color: #647eaa;
+  margin-bottom: 5px;
+}
+.binding-valid {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  color: #619c8e;
+  font-size: 8px;
+  margin-top: 12px;
+}
+.inspector-section h3 label {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: auto;
+  font-size: 8px;
+  color: #a1adbe;
+  font-weight: 400;
+}
+.inspector-pins {
+  max-height: 235px;
+  overflow-y: auto;
+}
+.inspector-pins > button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  background: #f8f9fc;
+  border-radius: 4px;
+  padding: 9px 6px;
+  margin-bottom: 4px;
+  font-size: 9px;
+  text-align: left;
+}
+.inspector-pins > button.selected {
+  background: #edf2fb;
+}
+.inspector-pins small {
+  color: #a5b1c1;
+  font: 8px monospace;
+  width: 14px;
+}
+.inspector-pins em {
+  margin-left: auto;
+  font-size: 8px;
+  color: #9aa9be;
+  font-style: normal;
+}
+.inspector-pins i {
+  font: 8px monospace;
+}
+.pin-count {
+  font-size: 8px;
+  color: #a5b1c3;
+  margin: 11px 0 0;
+}
+.net-detail {
+  background: #f6f8fc;
+  border: 1px solid #e4eaf5;
+  border-radius: 5px;
+  padding: 10px;
+  margin-top: 14px;
+}
+.net-detail > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  margin-bottom: 7px;
+}
+.net-detail > div > button {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #9ba9be;
+}
+.net-detail > span {
+  display: block;
+  font:
+    10px/1.9 'Consolas',
+    monospace;
+  color: #8293ac;
+}
+.disconnect-button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  color: #c28274;
+  margin-top: 12px;
+  padding: 0;
+  font-size: 9px;
+}
+.prototype-note {
+  border-top: 1px solid #edf0f5;
+  padding-top: 17px;
+}
+.prototype-note > span {
+  font-size: 7px;
+  color: #a6b1c2;
+  letter-spacing: 1px;
+}
+.prototype-note p {
+  font-size: 9px;
+  color: #a5afbe;
+  line-height: 1.9;
+  margin-top: 9px;
+}
+@media (max-width: 1180px) {
+  .fusion-workspace {
+    grid-template-columns: 155px minmax(0, 1fr) 225px;
+  }
+  .fusion-sidebar {
+    padding-left: 9px;
+    padding-right: 9px;
+  }
+  .fusion-inspector {
+    padding-left: 13px;
+    padding-right: 13px;
+  }
+  .canvas-context {
+    padding-left: 20px;
+  }
+  .canvas-context h1 {
+    font-size: 18px;
+  }
+  .canvas-context p {
+    font-size: 9px;
+  }
+  .mode-badge {
+    display: none;
+  }
+}
+@media (max-width: 980px) {
+  .fusion-workspace {
+    grid-template-columns: minmax(0, 1fr) 225px;
+  }
+  .fusion-sidebar {
+    display: none;
+  }
+  .fusion-header {
+    gap: 22px;
+  }
+  .canvas-context {
+    padding-bottom: 6px;
+  }
+}
+@media (max-width: 650px) {
+  .fusion-app {
+    height: auto;
+    min-height: 100dvh;
+  }
+  .fusion-workspace {
+    display: flex;
+    flex-direction: column;
+  }
+  .fusion-main {
+    min-height: 660px;
+  }
+  .fusion-inspector {
+    border-left: 0;
+    border-top: 1px solid #e5e9ef;
+    overflow: visible;
+  }
+  .fusion-header {
+    padding: 0 16px;
+  }
+  .project-title {
+    display: none;
+  }
+  .canvas-toolbar {
+    padding: 0 12px;
+  }
+  .canvas-tools {
+    gap: 2px;
+  }
+  .canvas-context h1 {
+    font-size: 17px;
+  }
+  .canvas-context p {
+    font-size: 8px;
+  }
+  .canvas-footer > span:last-child {
+    display: none;
+  }
+  .canvas-toggles {
+    gap: 10px;
+  }
+}

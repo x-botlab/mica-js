@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev:workbench": "node scripts/workbench.mjs",
+    "build:workbench": "node scripts/workbench.mjs build",
     "dev": "node scripts/components.mjs dev",
     "build": "node scripts/components.mjs build",
     "preview": "vite preview",
