@@ -1,15 +1,25 @@
 import type { BlockIR, OperationIR, RegionIR } from '@mica-js/sdk/model';
 import { driveCode } from '../shared/drive-code.mjs';
-import { MCU_PIN } from './nets';
+import {
+  DIRTY_GROUP_MEMORY,
+  PIN_DIRTY_MEMORY,
+  dirtyGroup,
+  driveMemoryName,
+  pinMemoryName,
+} from '../shared/dirty-protocol.mjs';
+import { MCU_DIRTY_TRIGGERS, MCU_IMPACT, MCU_PIN } from './nets';
 
 /**
  * Lower MCU pin accesses into the fused board's internal net storage.
  *
  * The 8051 translator is reused unchanged. Its blocks still speak in `readSample` /
  * `writeIntent` / `resistor`; this pass replaces those with:
- * - `load8(fusedPins, drive)` for digital levels and voltages,
- * - `store8(fusedMcuDrives, pin, level)` for pin intents,
- * - one `fusedSeq` increment per block that changed a pin.
+ * - `load8(fusedPinN, 0)` for digital levels and voltages,
+ * - `store8(fusedDriveN, 0, level)` for pin intents,
+ * - one `fusedSeq` increment per instruction that changed a pin.
+ *
+ * Every pin owns its mirror and drive resource, so changing one pin cannot
+ * invalidate derived observers of unrelated pins.
  *
  * The original translator's block cache stays authoritative; fused blocks are cached
  * separately by object identity so the standalone MCU device is not polluted.
@@ -60,15 +70,15 @@ export function fuseBlock(block: BlockIR): BlockIR {
     type: { kind: 'number' },
     constant: { kind: 'number', value },
   });
-  const loadPin = (result: number, net: number): OperationIR[] => {
+  const loadPin = (result: number, drive: number): OperationIR[] => {
     const offset = id();
     return [
-      constant(offset, net),
+      constant(offset, 0),
       {
         kind: 'load8',
         result,
         type: { kind: 'number' },
-        memory: { kind: 'memory', name: 'fusedPins' },
+        memory: { kind: 'memory', name: pinMemoryName(drive) },
         offset,
       },
     ];
@@ -77,6 +87,42 @@ export function fuseBlock(block: BlockIR): BlockIR {
   let wroteDrive = false;
   let dirtyLocal: number | undefined;
   let dirtyPrefix: OperationIR[] = [];
+  interface DirtyMarker {
+    readonly local: number;
+    readonly emit: () => OperationIR[];
+  }
+  let markers = new Map<string, DirtyMarker>();
+  let markerTruth: number | undefined;
+  let markerOne: number | undefined;
+  const truthValue = (): number => {
+    if (markerTruth === undefined) {
+      markerTruth = id();
+      dirtyPrefix.push(boolConstant(markerTruth, true));
+    }
+    return markerTruth;
+  };
+  const dirtyFlagValue = (): number => {
+    if (markerOne === undefined) {
+      markerOne = id();
+      dirtyPrefix.push(constant(markerOne, 1));
+    }
+    return markerOne;
+  };
+  const markerFor = (key: string, emit: () => OperationIR[]): DirtyMarker => {
+    const cached = markers.get(key);
+    if (cached !== undefined) return cached;
+    const local = nextLocal++;
+    const initial = id();
+    dirtyPrefix.push(boolConstant(initial, false), {
+      kind: 'local',
+      local,
+      type: { kind: 'bool' },
+      initial,
+    });
+    const marker = { local, emit };
+    markers.set(key, marker);
+    return marker;
+  };
   const voltageResults = new Set<number>();
   const boolConstant = (result: number, value: boolean): OperationIR => ({
     kind: 'constant',
@@ -177,17 +223,66 @@ export function fuseBlock(block: BlockIR): BlockIR {
           { kind: 'local', local: dirtyLocal, type: { kind: 'bool' }, initial },
         ];
       }
+      // A drive change can move its own net and every alias that consumes it. The
+      // generator resolves those edges statically; only the mirrored MCU pins are
+      // marked, so the next fusedSeq refresh does not rescan all 40 nets.
+      const drive = mcuPin(op.pin.name).drive;
+      const impact = MCU_IMPACT[op.pin.name];
+      if (impact === undefined || impact.length === 0)
+        throw new Error(`Fused MCU has no pin impact for ${op.pin.name}`);
       const offset = id();
       const old = id();
       const condition = id();
-      const truth = id();
+      // One instruction can write several pins. Merge their markers through
+      // per-instruction locals so the commit stores each dirty bit, group summary and
+      // observable flag once even when the pins overlap.
+      const marks: OperationIR[] = [];
+      const mark = (key: string, emit: () => OperationIR[]): void => {
+        const marker = markerFor(key, emit);
+        marks.push({ kind: 'localWrite', local: marker.local, value: truthValue() });
+      };
+      for (const target of impact)
+        mark(`drive:${target}`, () => {
+          const markOffset = id();
+          return [
+            constant(markOffset, target),
+            {
+              kind: 'store8',
+              memory: { kind: 'memory', name: PIN_DIRTY_MEMORY },
+              offset: markOffset,
+              value: dirtyFlagValue(),
+            },
+          ];
+        });
+      // The generated model gates its refresh on the same summary bytes, so a JIT
+      // drive change must always raise the group of every pin it marks.
+      for (const group of [...new Set(impact.map(dirtyGroup))].sort((left, right) => left - right))
+        mark(`group:${group}`, () => {
+          const markOffset = id();
+          return [
+            constant(markOffset, group),
+            {
+              kind: 'store8',
+              memory: { kind: 'memory', name: DIRTY_GROUP_MEMORY },
+              offset: markOffset,
+              value: dirtyFlagValue(),
+            },
+          ];
+        });
+      // A row/column pin can move the button closure without changing a mirror that
+      // the generated diff would notice first. The generator resolves the observable
+      // edges statically, so the same instruction raises exactly those flags once.
+      for (const state of MCU_DIRTY_TRIGGERS[op.pin.name] ?? [])
+        mark(`state:${state}`, () => [
+          { kind: 'write', resource: 'state', name: state, value: truthValue() },
+        ]);
       return [
-        constant(offset, mcuPin(op.pin.name).drive),
+        constant(offset, 0),
         {
           kind: 'load8',
           result: old,
           type: { kind: 'number' },
-          memory: { kind: 'memory', name: 'fusedMcuDrives' },
+          memory: { kind: 'memory', name: driveMemoryName(drive) },
           offset,
         },
         {
@@ -205,15 +300,15 @@ export function fuseBlock(block: BlockIR): BlockIR {
             operations: [
               {
                 kind: 'store8',
-                memory: { kind: 'memory', name: 'fusedMcuDrives' },
+                memory: { kind: 'memory', name: driveMemoryName(drive) },
                 offset,
                 value: op.value,
               },
-              boolConstant(truth, true),
+              ...marks,
               {
                 kind: 'localWrite',
                 local: dirtyLocal,
-                value: truth,
+                value: truthValue(),
               },
             ],
           },
@@ -263,6 +358,9 @@ export function fuseBlock(block: BlockIR): BlockIR {
     wroteDrive = false;
     dirtyLocal = undefined;
     dirtyPrefix = [];
+    markers = new Map();
+    markerTruth = undefined;
+    markerOne = undefined;
     const body = transform(entry.body, new Map()) as RegionIR;
     if (!wroteDrive || dirtyLocal === undefined) return { ...entry, body };
 
@@ -282,8 +380,32 @@ export function fuseBlock(block: BlockIR): BlockIR {
       const one = id();
       const sum = id();
       const clean = id();
+      const markerOps: OperationIR[] = [];
+
+      // Publish the merged dirty markers before the sequence bump: the refresh
+      // process reads them after `fusedSeq` changes. Clearing each local keeps a
+      // later write in the same instruction visible, while one path marks once.
+      for (const marker of markers.values()) {
+        const pending = id();
+        const marked = id();
+        markerOps.push(
+          { kind: 'localRead', local: marker.local, result: pending, type: { kind: 'bool' } },
+          {
+            kind: 'if',
+            condition: pending,
+            yes: {
+              operations: [
+                ...marker.emit(),
+                boolConstant(marked, false),
+                { kind: 'localWrite', local: marker.local, value: marked },
+              ],
+            },
+          },
+        );
+      }
 
       return [
+        ...markerOps,
         { kind: 'localRead', local: dirtyLocalId, result: dirty, type: { kind: 'bool' } },
         {
           kind: 'if',

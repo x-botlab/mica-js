@@ -2,6 +2,11 @@ import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
 import type { BlockIR, JitInstructionBuilder, OperationIR, RegionIR } from '@mica-js/sdk/model';
 import { describe, expect, it } from 'vitest';
 import { fuseBlock } from '../device/src/fuse.ts';
+import {
+  DIRTY_GROUP_MEMORY,
+  PIN_DIRTY_MEMORY,
+  dirtyGroup,
+} from '../device/shared/dirty-protocol.mjs';
 
 /**
  * Fused pin-write barrier regressions.
@@ -69,6 +74,41 @@ function onlyInstruction(block: BlockIR): RegionIR {
   expect(block.instructions).toHaveLength(1);
 
   return block.instructions[0]!.body;
+}
+
+/** Resolve dirty store offsets for one memory back to indices. */
+function dirtyOffsets(region: RegionIR, memory: string): number[] {
+  const constants = new Map<number, number>();
+  const offsets: number[] = [];
+  const walk = (current: RegionIR): void => {
+    for (const operation of current.operations) {
+      if (operation.kind === 'constant' && operation.constant.kind === 'number')
+        constants.set(operation.result, operation.constant.value);
+      if (
+        operation.kind === 'store8' &&
+        operation.memory.kind === 'memory' &&
+        operation.memory.name === memory
+      ) {
+        const offset = constants.get(operation.offset);
+        if (offset !== undefined) offsets.push(offset);
+      }
+      if (operation.kind === 'if') {
+        walk(operation.yes);
+        if (operation.no !== undefined) walk(operation.no);
+      } else if (operation.kind === 'match') {
+        for (const arm of operation.arms) walk(arm.body);
+        if (operation.otherwise !== undefined) walk(operation.otherwise);
+      } else if (operation.kind === 'while' || operation.kind === 'loop') {
+        walk(operation.body);
+      }
+    }
+  };
+  walk(region);
+  return offsets;
+}
+
+function dirtyDrives(region: RegionIR): number[] {
+  return dirtyOffsets(region, PIN_DIRTY_MEMORY);
 }
 
 describe('fused pin drive commit barriers', () => {
@@ -147,5 +187,30 @@ describe('fused pin drive commit barriers', () => {
     expect(guard?.kind).toBe('if');
     if (guard?.kind === 'if')
       expect(guard.yes.operations.some((operation) => operation.kind === 'localWrite')).toBe(true);
+  });
+
+  it('marks the changed MCU pin dirty from the generator impact map', () => {
+    const fused = fuseBlock(
+      makeBlock((b) => {
+        drive(b);
+        b.elapse(b.constant(types.number, 7));
+      }),
+    );
+
+    // P3_1 is drive 25. The generated map currently contains only itself, but the
+    // assertion is on the resolved storage so aliases added by the netlist generator
+    // are covered without changing this test.
+    expect(dirtyDrives(onlyInstruction(fused))).toEqual([25]);
+  });
+
+  it('marks the dirty group of every pin marked by a drive change', () => {
+    const fused = fuseBlock(
+      makeBlock((b) => {
+        drive(b);
+        b.elapse(b.constant(types.number, 7));
+      }),
+    );
+
+    expect(dirtyOffsets(onlyInstruction(fused), DIRTY_GROUP_MEMORY)).toEqual([dirtyGroup(25)]);
   });
 });

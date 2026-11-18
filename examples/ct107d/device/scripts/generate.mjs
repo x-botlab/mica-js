@@ -18,6 +18,17 @@ import { fileURLToPath } from 'node:url';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import { MCU_ARTIFACT, mcuArtifactHash, mcuSourceHash, readMcuStamp } from './mcu-source.mjs';
 import { driveCode } from '../shared/drive-code.mjs';
+import {
+  ACTUATOR_DIRTY_STATE,
+  BUTTON_DIRTY_STATE,
+  DIRTY_GROUP_MEMORY,
+  LED_DIRTY_STATE,
+  PIN_DIRTY_MEMORY,
+  dirtyGroup,
+  dirtyGroupCount,
+  driveMemoryName,
+  pinMemoryName,
+} from '../shared/dirty-protocol.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROJECT = join(HERE, '..');
@@ -29,6 +40,7 @@ const OUTPUT = join(PROJECT, 'src', 'model.ddl');
 const NETS_OUTPUT = join(PROJECT, 'src', 'nets.ts');
 const CHANNELS_OUTPUT = join(PROJECT, 'src', 'channels.ts');
 const BOARD_FRAGMENT = join(HERE, 'board-fragment.ddl');
+const BOARD_TEMPLATE = readFileSync(BOARD_FRAGMENT, 'utf8');
 
 /**
  * Digital device instances included by source merge. Analog, display, actuator and
@@ -117,12 +129,8 @@ const KEYS = [
   'S19',
 ];
 
-const schematic = JSON.parse(
-  readFileSync(join(LEGACY_SOURCE, 'ct107d.sch'), 'utf8'),
-);
-const netlist = JSON.parse(
-  readFileSync(join(LEGACY_SOURCE, 'ct107d.netlist.json'), 'utf8'),
-);
+const schematic = JSON.parse(readFileSync(join(LEGACY_SOURCE, 'ct107d.sch'), 'utf8'));
+const netlist = JSON.parse(readFileSync(join(LEGACY_SOURCE, 'ct107d.netlist.json'), 'utf8'));
 
 const symbols = schematic.sheet.symbols.filter((symbol) => symbol.designator);
 const symbolByDesignator = new Map(symbols.map((symbol) => [symbol.designator, symbol]));
@@ -146,6 +154,8 @@ const propsOf = (designator) => symbolByDesignator.get(designator).properties ??
 
 const netNames = Object.keys(netlist);
 const netIndex = new Map(netNames.map((name, index) => [name, index]));
+const netSlotName = (name) => name.replace(/[^A-Za-z0-9]/g, '_').toUpperCase();
+const netSlotIndex = new Map(netNames.map((name, index) => [`NET_${netSlotName(name)}`, index]));
 const indexOfNet = (name) => {
   const index = netIndex.get(name);
   if (index === undefined) throw new Error(`Unknown net ${name}`);
@@ -535,7 +545,8 @@ async function fuseInstance(designator) {
       pin.name === 'vcc' || pin.name === 'vcc1' ? 'vcc' : pin.name === 'gnd' ? 'gnd' : undefined;
     const hasIntent = new RegExp(`\\b${pin.name}\\.intent\\s*<-`).test(body);
     // U1 is the MCU itself. Its reset pin intents are materialised once in the board
-    // start (`fusedMcuDrives`), not by a second source-merged `u1_Px_y_drive` state. A
+    // start (per-pin `fusedDriveN` resources), not by a second source-merged
+    // `u1_Px_y_drive` state. A
     // duplicate weak-high driver would mask open-drain release and input-only modes.
     // Read the actual initial intents from the MCU DDL so the fused reset cannot drift
     // from the standalone package; the current contract is 10 kΩ weak-high (code 2).
@@ -558,15 +569,12 @@ async function fuseInstance(designator) {
     if (!hasIntent && initial === undefined) continue;
     if (power !== undefined)
       throw new Error(`${designator}.${pin.name}: power pin intent is not supported`);
-    driveStates.push(`  state ${prefix}_${pin.name}_drive: number = ${initial ?? 4};`);
-    setters.push(
-      `  fn ${prefix}_${pin.name}_setDrive(level: number) {\n` +
-        `    if level != ${prefix}_${pin.name}_drive {\n` +
-        `      ${prefix}_${pin.name}_drive = level;\n` +
-        `      fusedSeq = fusedSeq + 1;\n` +
-        `    }\n` +
-        `  }`,
-    );
+    const stateName = `${prefix}_${pin.name}_drive`;
+    driveStates.push(`  state ${stateName}: number = ${initial ?? 4};`);
+    // The body is rendered after net dependency analysis, which decides which MCU
+    // pin mirrors this drive can reach. Keeping the metadata here avoids a second
+    // pass over the source-merged device bodies.
+    setters.push({ prefix, pin: pin.name, state: stateName });
   }
 
   // Rename every top-level declaration except the special `start` process.
@@ -624,7 +632,131 @@ function keyIndex(designator) {
   return index;
 }
 
-function generateNets(instances) {
+/**
+ * Inputs read by one generated `fusedNetN()` body. The generator emits these bodies
+ * itself, so a lexical scan is the single source of truth for dependency edges and
+ * cannot drift from the wiring it describes.
+ */
+function collectNetInputs(body) {
+  const inputs = new Set();
+  for (const match of body.matchAll(/\bfusedNet(\d+)\(\)/g)) inputs.add(`net:${Number(match[1])}`);
+  for (const match of body.matchAll(/load8\(\s*fusedDrive(\d+)\s*,\s*0\s*\)/g))
+    inputs.add(`mcu:${Number(match[1])}`);
+  for (const match of body.matchAll(/load8\(fusedButtonLow,\s*(\d+)\)/g))
+    inputs.add(`button:${Number(match[1])}`);
+  for (const match of body.matchAll(/\b(j13Closed|j3Closed|j2Vs1838|j5Closed)\b/g))
+    inputs.add(`jumper:${match[1]}`);
+  for (const match of body.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*_drive)\b/g))
+    inputs.add(`state:${match[1]}`);
+  return inputs;
+}
+
+const JUMPER_STATES = ['j13Closed', 'j3Closed', 'j2Vs1838', 'j5Closed'];
+
+/**
+ * Every pin dirty mark also marks the summary byte of its 8-pin group, so the
+ * refresh can skip a whole group without checking its bits.
+ */
+function dirtyMarkLines(drives, indent) {
+  const groups = [...new Set(drives.map(dirtyGroup))];
+  return [
+    ...drives.map((drive) => `${indent}store8(${PIN_DIRTY_MEMORY}, ${drive}, 1);`),
+    ...groups.map((group) => `${indent}store8(${DIRTY_GROUP_MEMORY}, ${group}, 1);`),
+  ];
+}
+
+/** Render one source-merged pin setter with the dirty marks for its reachable pins. */
+function renderDriveSetter(setter, drives, states) {
+  const marks = dirtyMarkLines(drives, '      ');
+  const flags = states.map((state) => `      ${state} = true;`);
+  return (
+    `  fn ${setter.prefix}_${setter.pin}_setDrive(level: number) {\n` +
+    `    if level != ${setter.state} {\n` +
+    `      ${setter.state} = level;\n` +
+    (marks.length > 0 ? `${marks.join('\n')}\n` : '') +
+    (flags.length > 0 ? `${flags.join('\n')}\n` : '') +
+    `      fusedSeq = fusedSeq + 1;\n` +
+    `    }\n` +
+    `  }`
+  );
+}
+
+/** Net slots referenced by one board-fragment function body. */
+function templateNetRefs(template, name) {
+  const start = template.search(new RegExp(`^\\s*fn\\s+${name}\\s*\\(`, 'm'));
+  if (start < 0) throw new Error(`Missing template function ${name}`);
+  const open = template.indexOf('{', start);
+  const close = template.indexOf('\n  }', open);
+  if (open < 0 || close < 0) throw new Error(`Unterminated template function ${name}`);
+  const refs = new Set();
+  for (const match of template.slice(open, close).matchAll(/\{\{NET_([A-Z0-9_]+)\}\}/g)) {
+    const index = netSlotIndex.get(`NET_${match[1]}`);
+    if (index === undefined) throw new Error(`${name}: unknown net slot ${match[1]}`);
+    refs.add(index);
+  }
+  if (refs.size === 0) throw new Error(`${name}: no net references`);
+  return [...refs];
+}
+
+/** Expand direct net inputs through the generated cross-net dependency graph. */
+function transitiveInputs(direct, inputsOfNet) {
+  const inputs = new Set();
+  for (const input of direct) {
+    if (!input.startsWith('net:')) {
+      inputs.add(input);
+      continue;
+    }
+    for (const nested of inputsOfNet(Number(input.slice(4)))) inputs.add(nested);
+  }
+  return inputs;
+}
+
+/** Split the transitive inputs of one board observable by source kind. */
+function observableSources(state, direct, inputsOfNet) {
+  const inputs = transitiveInputs(direct, inputsOfNet);
+  const values = (prefix) =>
+    [
+      ...new Set(
+        [...inputs]
+          .filter((input) => input.startsWith(prefix))
+          .map((input) => input.slice(prefix.length)),
+      ),
+    ].sort();
+  const drives = values('mcu:').map(Number);
+  if (drives.some((drive) => !Number.isInteger(drive) || drive < 0))
+    throw new Error(`${state}: invalid MCU drive dependency`);
+  const buttons = values('button:')
+    .map(Number)
+    .sort((left, right) => left - right);
+  if (buttons.some((bit) => !Number.isInteger(bit) || bit < 0 || bit > 7))
+    throw new Error(`${state}: invalid button bit dependency`);
+  const source = {
+    state,
+    drives: drives.sort((left, right) => left - right),
+    states: values('state:'),
+    jumpers: values('jumper:'),
+    buttons,
+  };
+  if (
+    source.drives.length === 0 &&
+    source.states.length === 0 &&
+    source.jumpers.length === 0 &&
+    source.buttons.length === 0
+  )
+    throw new Error(`${state}: no source dependency found`);
+  return source;
+}
+
+/** Compact `event.index` selector for the indices that can change one observable. */
+function indexSelector(indices, total, variable) {
+  if (indices.length === total) return 'true';
+  const contiguous =
+    indices.length > 2 && indices.every((value, offset) => value === indices[0] + offset);
+  if (contiguous) return `${variable} >= ${indices[0]} && ${variable} <= ${indices.at(-1)}`;
+  return indices.map((value) => `${variable} == ${value}`).join(' || ');
+}
+
+function generateNets(instances, template) {
   const drivers = new Map();
   const add = (net, expression) => {
     const list = drivers.get(net) ?? [];
@@ -632,7 +764,7 @@ function generateNets(instances) {
     drivers.set(net, list);
   };
 
-  // MCU pins are written through `fusedMcuDrives` by the JIT fusion transform.
+  // MCU pins are written through per-pin drive resources by the JIT fusion transform.
   const mcuPins = [];
   for (const port of [0, 1, 2, 3, 4])
     for (let bit = 0; bit < 8; bit += 1) {
@@ -640,10 +772,10 @@ function generateNets(instances) {
       const drive = port * 8 + bit;
       const net = netForPin('U1', pin);
       mcuPins.push({ pin, net, drive });
-      add(net, `load8(fusedMcuDrives, ${drive})`);
+      add(net, `load8(${driveMemoryName(drive)}, 0)`);
     }
   // Fail fast if one of the eight P4 pins is missing from the schematic netlist instead
-  // of silently letting only P4.2/P4.4 work. Drives are also the fusedPins indices.
+  // of silently letting only P4.2/P4.4 work. Drives also index the per-pin memories.
   if (mcuPins.length !== 40 || mcuPins.filter((pin) => pin.pin.startsWith('P4_')).length !== 8)
     throw new Error(`MCU pin map must contain 40 pins incl. P4_0..P4_7 (got ${mcuPins.length})`);
   if (new Set(mcuPins.map((pin) => pin.drive)).size !== 40)
@@ -704,38 +836,10 @@ function generateNets(instances) {
     return lows;
   });
 
-  const buttonLines = [
-    '  memory fusedButtonLow[8];',
-    '  fn fusedComputeButtons() {',
-    ...Array.from({ length: 8 }, (_, index) => `    store8(fusedButtonLow, ${index}, 0);`),
-  ];
-  for (let row = 0; row < BUTTON_ROWS.length; row += 1) {
-    const lows = rowLow[row];
-    if (lows.length > 0)
-      buttonLines.push(`    if (${lows.join(' || ')}) { store8(fusedButtonLow, ${row}, 1); }`);
-  }
-  for (let col = 0; col < BUTTON_COLS.length; col += 1) {
-    const lows = colLow[col];
-    if (lows.length > 0)
-      buttonLines.push(`    if (${lows.join(' || ')}) { store8(fusedButtonLow, ${4 + col}, 1); }`);
-  }
-  buttonLines.push('    let iteration = 0;', '    while iteration < 8 {');
-  // Only the keys that actually exist may merge a row and a column. Treating every
-  // row/column pair as connected would ground the whole matrix whenever one column is
-  // held low (J5 grounds the first column in independent mode).
-  for (const entry of matrixKeys) {
-    const connected = `load8(fusedButtonLow, ${entry.row}) == 1 || load8(fusedButtonLow, ${4 + entry.col}) == 1`;
-    buttonLines.push(
-      `      if load8(keyStates, ${keyIndex(entry.key)}) == 1 && (${connected}) {`,
-      `        store8(fusedButtonLow, ${entry.row}, 1);`,
-      `        store8(fusedButtonLow, ${4 + entry.col}, 1);`,
-      '      }',
-    );
-  }
-  buttonLines.push('      iteration = iteration + 1;', '    }', '  }');
-  const buttonFunction = buttonLines.join('\n');
-
+  // Button closure is generated below, after net dependency analysis, because the
+  // changed-bit diff has to know which MCU pins read `fusedButtonLow`.
   const functions = [];
+  const netInputs = [];
   for (let net = 0; net < netNames.length; net += 1) {
     const name = netNames[net];
     let body;
@@ -810,19 +914,271 @@ function generateNets(instances) {
       ].join('\n');
     }
     functions.push(`  pure fn fusedNet${net}() -> number {\n${body}\n  }`);
+    netInputs.push(collectNetInputs(body));
   }
-  // Only the 40 MCU pin levels are materialised for the JIT. Board devices and the
-  // hand-written glue read the pure net functions directly; this keeps the refresh
-  // proportional to the MCU pins instead of all historical nets.
-  const refresh = mcuPins
-    .map((pin) => {
-      return (
-        `    const next${pin.drive} = fusedNet${pin.net}();\n` +
-        `    if load8(fusedPins, ${pin.drive}) != next${pin.drive} { store8(fusedPins, ${pin.drive}, next${pin.drive}); }`
+
+  // Resolve the transitive inputs of every net, then invert them into the set of MCU
+  // pin mirrors that a drive, button bit or jumper can change. This is a static
+  // closure over the generated wiring: aliases such as N_A1->P10, P34->NET_SIG and
+  // KCOL0->P44 are ordinary edges, so no hand-written impact table can drift.
+  const inputCache = new Map();
+  const inputsOfNet = (net, visiting = new Set()) => {
+    const cached = inputCache.get(net);
+    if (cached !== undefined) return cached;
+    if (visiting.has(net)) throw new Error(`Cyclic fused net dependency at net ${net}`);
+    visiting.add(net);
+    const inputs = new Set(netInputs[net]);
+    for (const input of [...inputs]) {
+      if (!input.startsWith('net:')) continue;
+      const dependency = Number(input.slice(4));
+      if (!Number.isInteger(dependency) || dependency < 0 || dependency >= netNames.length)
+        throw new Error(`Invalid fused net dependency ${input}`);
+      for (const nested of inputsOfNet(dependency, visiting)) inputs.add(nested);
+    }
+    visiting.delete(net);
+    inputCache.set(net, inputs);
+    return inputs;
+  };
+
+  // Board observables are gated by the actual sources of the generated nets they read.
+  // The LED/actuator roots come from the template's own `{{NET_*}}` references, while
+  // the button closure roots are the same row/column expressions emitted into
+  // `fusedComputeButtons` below. Expanding either through `inputsOfNet` covers aliases
+  // and cross-net dependencies, so no second hand-written netlist can drift.
+  const buttonDirect = new Set(
+    [...rowLow.flat(), ...colLow.flat()].flatMap((body) => [...collectNetInputs(body)]),
+  );
+  // The closure fixpoint reads the current row and column bits for every existing key,
+  // so those bits are sources even though the initial row/column drive expressions only
+  // read MCU drives. Key events are gated by this bit set through the matrix below.
+  for (const entry of matrixKeys) {
+    buttonDirect.add(`button:${entry.row}`);
+    buttonDirect.add(`button:${4 + entry.col}`);
+  }
+  const netRoots = (name) => new Set(templateNetRefs(template, name).map((net) => `net:${net}`));
+  const observables = {
+    button: observableSources(BUTTON_DIRTY_STATE, buttonDirect, inputsOfNet),
+    led: observableSources(LED_DIRTY_STATE, netRoots('publishLeds'), inputsOfNet),
+    actuator: observableSources(ACTUATOR_DIRTY_STATE, netRoots('publishActuators'), inputsOfNet),
+  };
+
+  // MCU pin writes raise only the observables whose net closure reads that drive.
+  const mcuDirtyTriggers = {};
+  for (const pin of mcuPins) {
+    const states = Object.values(observables)
+      .filter((observable) => observable.drives.includes(pin.drive))
+      .map((observable) => observable.state);
+    if (states.length > 0) mcuDirtyTriggers[pin.pin] = states;
+  }
+
+  // A board-internal drive setter raises every observable that consumes its state.
+  const stateDirtyTriggers = new Map();
+  for (const observable of Object.values(observables))
+    for (const state of observable.states) {
+      const states = stateDirtyTriggers.get(state) ?? [];
+      states.push(observable.state);
+      stateDirtyTriggers.set(state, states);
+    }
+
+  const impactByInput = new Map();
+  const impactedPins = (input) => {
+    const drives = impactByInput.get(input);
+    return drives === undefined ? [] : [...drives].sort((left, right) => left - right);
+  };
+  for (const pin of mcuPins) {
+    const inputs = inputsOfNet(pin.net);
+    if (!inputs.has(`mcu:${pin.drive}`))
+      throw new Error(`MCU pin ${pin.pin} net ${pin.net} does not read its own drive`);
+    for (const input of inputs) {
+      if (input.startsWith('net:')) continue;
+      const drives = impactByInput.get(input) ?? new Set();
+      drives.add(pin.drive);
+      impactByInput.set(input, drives);
+    }
+  }
+  const mcuImpact = Object.fromEntries(
+    mcuPins.map((pin) => [pin.pin, impactedPins(`mcu:${pin.drive}`)]),
+  );
+  const stateMark = (state) => impactedPins(`state:${state}`);
+  const buttonPins = Array.from({ length: 8 }, (_, bit) => impactedPins(`button:${bit}`));
+  const jumperPins = JUMPER_STATES.map((state) => impactedPins(`jumper:${state}`));
+  const buttonObservables = Object.values(observables).filter(
+    (observable) => observable.state !== BUTTON_DIRTY_STATE && observable.buttons.length > 0,
+  );
+  const buttonConsumers =
+    buttonPins.some((pins) => pins.length > 0) || buttonObservables.length > 0;
+  const markFunctions = [];
+  const markStores = (drives, indent) => dirtyMarkLines(drives, indent).join('\n');
+  if (buttonPins.some((pins) => pins.length > 0)) {
+    const lines = ['  fn fusedMarkButtonPins(changed: number) {'];
+    for (let bit = 0; bit < 8; bit += 1) {
+      const pins = buttonPins[bit];
+      if (pins.length === 0) continue;
+      lines.push(`    if (changed & ${1 << bit}) != 0 {`, markStores(pins, '      '), '    }');
+    }
+    lines.push('  }');
+    markFunctions.push(lines.join('\n'));
+  }
+  if (jumperPins.some((pins) => pins.length > 0)) {
+    const lines = ['  fn fusedMarkJumperPins(index: number) {'];
+    jumperPins.forEach((pins, index) => {
+      if (pins.length === 0) return;
+      lines.push(`    if index == ${index} {`, markStores(pins, '      '), '    }');
+    });
+    lines.push('  }');
+    markFunctions.push(lines.join('\n'));
+  }
+
+  // Jumper events raise the observables whose closure reads that jumper, while the pin
+  // marks below are emitted per event index. A jumper only ever dirties the pins that
+  // are reachable from its own state instead of the union of every jumper.
+  const jumperMark = [];
+  if (jumperPins.some((pins) => pins.length > 0))
+    jumperMark.push('fusedMarkJumperPins(event.index);');
+  for (const observable of Object.values(observables)) {
+    const indices = observable.jumpers
+      .map((state) => JUMPER_STATES.indexOf(state))
+      .filter((index) => index >= 0)
+      .sort((left, right) => left - right);
+    if (indices.length === 0) continue;
+    const condition = indexSelector(indices, JUMPER_STATES.length, 'event.index');
+    jumperMark.push(
+      condition === 'true'
+        ? `${observable.state} = true;`
+        : `if ${condition} { ${observable.state} = true; }`,
+    );
+  }
+
+  // A key event only enters through the button closure. The matrix gates the event
+  // index to the row/column bits that closure reads, and the closure diff below raises
+  // other button-dependent observables only when their own bit flips.
+  const switchMark = [];
+  for (const observable of Object.values(observables)) {
+    if (observable.state !== BUTTON_DIRTY_STATE || observable.buttons.length === 0) continue;
+    const indices = [
+      ...new Set(
+        matrixKeys
+          .filter(
+            (entry) =>
+              observable.buttons.includes(entry.row) || observable.buttons.includes(4 + entry.col),
+          )
+          .map((entry) => keyIndex(entry.key)),
+      ),
+    ].sort((left, right) => left - right);
+    if (indices.length === 0) continue;
+    const condition = indexSelector(indices, KEYS.length, 'event.index');
+    switchMark.push(
+      condition === 'true'
+        ? `${observable.state} = true;`
+        : `if ${condition} { ${observable.state} = true; }`,
+    );
+  }
+
+  // The button closure reads the current drives and key states. Capturing the previous
+  // low bits before recomputation lets one refresh raise only the row/column pins whose
+  // own closure bit changed, whether the cause was an MCU drive, a device drive or a
+  // key event. The matrix is recomputed to a fixpoint here, so the diff uses the final
+  // bits, not an intermediate iteration.
+  const buttonLines = ['  memory fusedButtonLow[8];', '  fn fusedComputeButtons() {'];
+  if (buttonConsumers)
+    buttonLines.push(
+      ...Array.from(
+        { length: 8 },
+        (_, index) => `    const previousButtonLow${index} = load8(fusedButtonLow, ${index});`,
+      ),
+    );
+  buttonLines.push(
+    ...Array.from({ length: 8 }, (_, index) => `    store8(fusedButtonLow, ${index}, 0);`),
+  );
+  for (let row = 0; row < BUTTON_ROWS.length; row += 1) {
+    const lows = rowLow[row];
+    if (lows.length > 0)
+      buttonLines.push(`    if (${lows.join(' || ')}) { store8(fusedButtonLow, ${row}, 1); }`);
+  }
+  for (let col = 0; col < BUTTON_COLS.length; col += 1) {
+    const lows = colLow[col];
+    if (lows.length > 0)
+      buttonLines.push(`    if (${lows.join(' || ')}) { store8(fusedButtonLow, ${4 + col}, 1); }`);
+  }
+  buttonLines.push('    let iteration = 0;', '    while iteration < 8 {');
+  // Only the keys that actually exist may merge a row and a column. Treating every
+  // row/column pair as connected would ground the whole matrix whenever one column is
+  // held low (J5 grounds the first column in independent mode).
+  for (const entry of matrixKeys) {
+    const connected = `load8(fusedButtonLow, ${entry.row}) == 1 || load8(fusedButtonLow, ${4 + entry.col}) == 1`;
+    buttonLines.push(
+      `      if load8(keyStates, ${keyIndex(entry.key)}) == 1 && (${connected}) {`,
+      `        store8(fusedButtonLow, ${entry.row}, 1);`,
+      `        store8(fusedButtonLow, ${4 + entry.col}, 1);`,
+      '      }',
+    );
+  }
+  buttonLines.push('      iteration = iteration + 1;', '    }');
+  if (buttonConsumers) {
+    buttonLines.push('    let buttonChanged = 0;');
+    for (let index = 0; index < 8; index += 1)
+      buttonLines.push(
+        `    if previousButtonLow${index} != load8(fusedButtonLow, ${index}) { buttonChanged = buttonChanged | ${1 << index}; }`,
       );
-    })
-    .join('\n');
-  return { functions, mcuPins, refresh, buttonFunction };
+    if (buttonPins.some((pins) => pins.length > 0))
+      buttonLines.push('    if buttonChanged != 0 { fusedMarkButtonPins(buttonChanged); }');
+    for (const observable of buttonObservables) {
+      const mask = observable.buttons.reduce((value, bit) => value | (1 << bit), 0);
+      buttonLines.push(`    if (buttonChanged & ${mask}) != 0 { ${observable.state} = true; }`);
+    }
+  }
+  buttonLines.push('  }');
+  const buttonFunction = buttonLines.join('\n');
+
+  // Power-up still materialises every MCU pin once so the JIT sees the reset levels
+  // before the first firmware instruction. Later fusedSeq refreshes clear the group
+  // summary first and then visit the dirty bits inside it in ascending order. A group
+  // with no mark at all is skipped without reading any of its pins.
+  const groupCount = dirtyGroupCount(mcuPins.length);
+  const refresh = Array.from({ length: groupCount }, (_, group) => {
+    const pins = mcuPins.filter((pin) => dirtyGroup(pin.drive) === group);
+    return [
+      `    if load8(${DIRTY_GROUP_MEMORY}, ${group}) == 1 {`,
+      `      store8(${DIRTY_GROUP_MEMORY}, ${group}, 0);`,
+      ...pins.map((pin) =>
+        [
+          `      if load8(${PIN_DIRTY_MEMORY}, ${pin.drive}) == 1 {`,
+          `        store8(${PIN_DIRTY_MEMORY}, ${pin.drive}, 0);`,
+          `        const next${pin.drive} = fusedNet${pin.net}();`,
+          `        if load8(${pinMemoryName(pin.drive)}, 0) != next${pin.drive} { store8(${pinMemoryName(pin.drive)}, 0, next${pin.drive}); }`,
+          `      }`,
+        ].join('\n'),
+      ),
+      `    }`,
+    ].join('\n');
+  }).join('\n');
+  const initialRefresh = [
+    ...mcuPins.map(
+      (pin) =>
+        `    const next${pin.drive} = fusedNet${pin.net}();\n` +
+        `    if load8(${pinMemoryName(pin.drive)}, 0) != next${pin.drive} { store8(${pinMemoryName(pin.drive)}, 0, next${pin.drive}); }`,
+    ),
+    ...mcuPins.map((pin) => `    store8(${PIN_DIRTY_MEMORY}, ${pin.drive}, 0);`),
+    ...Array.from(
+      { length: groupCount },
+      (_, group) => `    store8(${DIRTY_GROUP_MEMORY}, ${group}, 0);`,
+    ),
+  ].join('\n');
+  return {
+    functions,
+    mcuPins,
+    mcuImpact,
+    mcuDirtyTriggers,
+    groupCount,
+    refresh,
+    initialRefresh,
+    buttonFunction,
+    markFunctions: markFunctions.join('\n'),
+    stateMark,
+    stateDirtyTriggers,
+    jumperMark: jumperMark.join('\n'),
+    switchMark: switchMark.join('\n'),
+  };
 }
 
 function boardReplacements(instances, nets) {
@@ -835,25 +1191,48 @@ function boardReplacements(instances, nets) {
       const code = mcu.resetDrives.get(pin);
 
       if (code === undefined) throw new Error(`Missing reset drive for ${pin}`);
-      return `    store8(fusedMcuDrives, ${drive}, ${code});`;
+      return `    store8(${driveMemoryName(drive)}, 0, ${code});`;
     })
     .join('\n');
   const replacements = {
     NET_FUNCTIONS: nets.functions.join('\n'),
     FUSED_REFRESH_BODY: nets.refresh,
+    FUSED_INITIAL_REFRESH_BODY: nets.initialRefresh,
     BUTTON_FUNCTION: nets.buttonFunction,
+    MARK_FUNCTIONS: nets.markFunctions,
+    JUMPER_MARK: nets.jumperMark
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => `      ${line}`)
+      .join('\n'),
+    SWITCH_MARK: nets.switchMark
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => `      ${line}`)
+      .join('\n'),
+    BUTTON_DIRTY_STATE,
+    LED_DIRTY_STATE,
+    ACTUATOR_DIRTY_STATE,
     MCU_RESET_DRIVES: resetDrives,
     DRIVE_STATES: instances.flatMap((instance) => instance.driveStates).join('\n'),
-    DRIVE_SETTERS: instances.flatMap((instance) => instance.setters).join('\n'),
+    DRIVE_SETTERS: instances
+      .flatMap((instance) => instance.setters)
+      .map((setter) =>
+        renderDriveSetter(
+          setter,
+          nets.stateMark(setter.state),
+          nets.stateDirtyTriggers.get(setter.state) ?? [],
+        ),
+      )
+      .join('\n'),
     START_FLAGS: instances
       .filter((instance) => instance.hasStart)
       .map((instance) => `    ${instance.prefix}_started = true;`)
       .join('\n'),
   };
-  const netName = (name) => name.replace(/[^A-Za-z0-9]/g, '_').toUpperCase();
-  for (const name of netNames) replacements[`NET_${netName(name)}`] = String(indexOfNet(name));
+  for (const name of netNames) replacements[`NET_${netSlotName(name)}`] = String(indexOfNet(name));
   for (const instance of instances)
-    replacements[`PREFIX_${netName(instance.designator)}`] = instance.prefix;
+    replacements[`PREFIX_${netSlotName(instance.designator)}`] = instance.prefix;
   for (const key of KEYS) replacements[`KEY_${key}`] = String(keyIndex(key));
 
   // Fixed schematic properties used by board-level analog/display/interactive logic.
@@ -954,15 +1333,12 @@ async function main() {
   }
   const mcu = instances.find((instance) => instance.designator === 'U1');
   const merged = [mcu, ...instances.filter((instance) => instance !== mcu)];
-  const nets = generateNets(instances);
-  const fragment = applyReplacements(
-    readFileSync(BOARD_FRAGMENT, 'utf8'),
-    boardReplacements(merged, nets),
-  );
+  const nets = generateNets(instances, BOARD_TEMPLATE);
+  const fragment = applyReplacements(BOARD_TEMPLATE, boardReplacements(merged, nets));
 
   const netMap = Object.fromEntries(netNames.map((name, index) => [name, index]));
   const mcuMap = Object.fromEntries(nets.mcuPins.map((pin) => [pin.pin, pin]));
-  const netsSource = `// Generated by scripts/generate.mjs; do not edit.\n// prettier-ignore\nexport const NET = ${JSON.stringify(netMap, null, 2)} as const;\n// prettier-ignore\nexport const MCU_PIN = ${JSON.stringify(mcuMap, null, 2)} as const;\nexport const NET_COUNT = ${netNames.length};\n`;
+  const netsSource = `// Generated by scripts/generate.mjs; do not edit.\n// prettier-ignore\nexport const NET = ${JSON.stringify(netMap, null, 2)} as const;\n// prettier-ignore\nexport const MCU_PIN = ${JSON.stringify(mcuMap, null, 2)} as const;\n// prettier-ignore\nexport const MCU_IMPACT: Readonly<Record<string, readonly number[]>> = ${JSON.stringify(nets.mcuImpact, null, 2)};\n// prettier-ignore\nexport const MCU_DIRTY_TRIGGERS: Readonly<Record<string, readonly string[]>> = ${JSON.stringify(nets.mcuDirtyTriggers, null, 2)};\nexport const NET_COUNT = ${netNames.length};\n`;
   const channels = {};
   for (const instance of merged) {
     if (instance.designator === 'U1') continue;
@@ -1014,19 +1390,34 @@ export const BOARD_DEFAULTS = ${JSON.stringify(boardDefaults, null, 2)} as const
     '  pin GND;',
     '',
     '  /**',
-    '   * MCU pin levels mirrored for fast JIT loads: 0 = low, 1 = high, 2 = unknown.',
-    '   * Board devices read the pure `fusedNetN()` functions directly.',
+    '   * One level mirror per MCU pin drive for fast JIT loads: 0 = low, 1 = high,',
+    '   * 2 = unknown. Board devices read the pure `fusedNetN()` functions directly.',
     '   */',
-    '  memory fusedPins[40];',
-    '  /** MCU pin drive codes: 0 strong low, 1 strong high, 2 weak high, 3 weak low, 4 release. */',
-    '  memory fusedMcuDrives[40];',
+    ...nets.mcuPins
+      .slice()
+      .sort((left, right) => left.drive - right.drive)
+      .map((pin) => `  memory ${pinMemoryName(pin.drive)}[1];`),
+    '  /** One drive code per MCU pin drive: 0 strong low, 1 strong high, 2 weak high, 3 weak low, 4 release. */',
+    ...nets.mcuPins
+      .slice()
+      .sort((left, right) => left.drive - right.drive)
+      .map((pin) => `  memory ${driveMemoryName(pin.drive)}[1];`),
+    '  /** MCU pin indices whose level mirror must be recomputed on the next refresh. */',
+    `  memory ${PIN_DIRTY_MEMORY}[40];`,
+    '  /** Summary byte per 8-pin group; any dirty pin marks its group for the refresh. */',
+    `  memory ${DIRTY_GROUP_MEMORY}[${nets.groupCount}];`,
+    '  /** Observables that must be recomputed on the next fused refresh. */',
+    `  state ${BUTTON_DIRTY_STATE}: bool = false;`,
+    `  state ${LED_DIRTY_STATE}: bool = false;`,
+    `  state ${ACTUATOR_DIRTY_STATE}: bool = false;`,
     '  /** Monotonic trigger for the MCU pin-level refresh process. */',
     '  state fusedSeq: number = 0;',
     '  state fusedStarted: bool = false;',
     '',
     ...netNames.map((name, net) => {
       const mcu = nets.mcuPins.find((pin) => pin.net === net);
-      const source = mcu === undefined ? `fusedNet${net}()` : `load8(fusedPins, ${mcu.drive})`;
+      const source =
+        mcu === undefined ? `fusedNet${net}()` : `load8(${pinMemoryName(mcu.drive)}, 0)`;
       return (
         `  derived fusedCode${net}: number = ${source};` +
         `\n  derived fusedWire${net}: Logic = fusedCode${net} == 1 ? Logic.high : fusedCode${net} == 0 ? Logic.low : Logic.unknown;` +

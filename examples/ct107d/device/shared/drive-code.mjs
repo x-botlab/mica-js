@@ -19,7 +19,7 @@ export function driveStrength(resistance, where = 'resistance') {
   );
 }
 
-/** Drive code used by fusedMcuDrives / source-merged pin setters. */
+/** Drive code used by per-pin fusedDriveN resources / source-merged pin setters. */
 export function driveCode(resistance, rail, where = 'resistance') {
   const strength = driveStrength(resistance, where);
 

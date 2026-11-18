@@ -15,6 +15,7 @@
 import { readFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { TextDecoder } from 'node:util';
 import {
   deriveFusedTopology,
   parseFusedDocument,
@@ -33,7 +34,7 @@ export const DEVICE_ID = 'example:ct107d-board';
 export const INSTANCE_ID = '7d9e3a1c-5b2f-4c8d-9e01-2a3b4c5d6e7f';
 export const VCC_REFERENCE_ID = '8b3a2f10-6c4d-4e9a-b7f2-1d5c9e0a3b48';
 export const GND_REFERENCE_ID = 'c4d5e6f7-1a2b-4c3d-9e8f-0a1b2c3d4e5f';
-export const PROGRAM_SOURCE = 'assets/ct107d-demo.hex';
+export const PROGRAM_SOURCE = 'assets/seg7-dynamic.hex';
 export const PROGRAM_BIN_SOURCE = 'assets/ct107d-demo.bin';
 
 const USAGE = `Usage: node scripts/document.mjs [--check | --write | --refresh-lock | --print] [options]
@@ -65,7 +66,12 @@ function parseJsonText(text, label) {
   try {
     return parseStrictJson(text);
   } catch (cause) {
-    throw new Error(`${label} is not valid JSON: ${cause instanceof Error ? cause.message : cause}`);
+    throw new Error(
+      `${label} is not valid JSON: ${cause instanceof Error ? cause.message : cause}`,
+      {
+        cause,
+      },
+    );
   }
 }
 
@@ -82,7 +88,12 @@ function parseArgs(argv) {
       options.force = true;
       continue;
     }
-    if (argument === '--check' || argument === '--write' || argument === '--refresh-lock' || argument === '--print') {
+    if (
+      argument === '--check' ||
+      argument === '--write' ||
+      argument === '--refresh-lock' ||
+      argument === '--print'
+    ) {
       const next = argument.slice(2);
       if (mode !== undefined && mode !== next) fail('Choose exactly one document mode');
       mode = next;
@@ -110,6 +121,7 @@ export async function readRelease(directory = DEVICE_DIST) {
     throw new Error(
       `Cannot read ${directory}: ${cause instanceof Error ? cause.message : cause}\n` +
         'Run `pnpm run build:fused` first.',
+      { cause },
     );
   }
   const verified = await openDevicePackage({ open: async () => raw }, raw.lock);
@@ -134,11 +146,15 @@ export async function readRelease(directory = DEVICE_DIST) {
 function checkDeviceContract(release) {
   const pins = Object.keys(release.manifest.pins ?? {}).sort();
   if (pins.length !== 2 || pins[0] !== 'GND' || pins[1] !== 'VCC') {
-    fail(`The fused device must declare exactly VCC and GND pins, got ${pins.join(', ') || 'none'}`);
+    fail(
+      `The fused device must declare exactly VCC and GND pins, got ${pins.join(', ') || 'none'}`,
+    );
   }
   const geometryPins = Object.keys(release.geometry.pins).sort();
   if (geometryPins.join('\0') !== pins.join('\0')) {
-    fail(`Geometry pins (${geometryPins.join(', ')}) differ from manifest pins (${pins.join(', ')})`);
+    fail(
+      `Geometry pins (${geometryPins.join(', ')}) differ from manifest pins (${pins.join(', ')})`,
+    );
   }
   if (release.geometry.bodyImage !== undefined) {
     if (!Object.hasOwn(release.files, release.geometry.bodyImage)) {
@@ -257,11 +273,7 @@ export async function verifyDocument(document, release) {
   findReference(parsed, 'GND', 0, 'ground');
 
   const firmware = instance.properties?.firmware;
-  if (
-    !record(firmware) ||
-    firmware.mode !== 'package' ||
-    typeof firmware.src !== 'string'
-  ) {
+  if (!record(firmware) || firmware.mode !== 'package' || typeof firmware.src !== 'string') {
     fail('The board instance must reference its firmware as a package resource');
   }
   if (!Object.hasOwn(release.files, firmware.src)) {
@@ -272,10 +284,7 @@ export async function verifyDocument(document, release) {
   if (parsed.nodes.length > 0 || parsed.wires.length > 0 || parsed.labels.length > 0) {
     fail('The formal single-board document must not add nodes, wires or labels');
   }
-  const topology = deriveFusedTopology(
-    parsed,
-    new Map([[DEVICE_ID, release.manifest]]),
-  );
+  const topology = deriveFusedTopology(parsed, new Map([[DEVICE_ID, release.manifest]]));
   if (topology.nets.length !== 2) {
     fail(`The formal document must derive exactly two nets, got ${String(topology.nets.length)}`);
   }
@@ -298,7 +307,7 @@ export async function refreshDocumentLock(raw, release) {
   if (keys.length !== 1 || keys[0] !== DEVICE_ID) {
     fail(`The document must lock exactly ${DEVICE_ID}, got ${keys.join(', ') || 'none'}`);
   }
-  const next = structuredClone(raw);
+  const next = globalThis.structuredClone(raw);
   next.dependencies = {
     [DEVICE_ID]: {
       version: release.lock.version,

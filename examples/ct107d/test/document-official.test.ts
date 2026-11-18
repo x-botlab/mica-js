@@ -18,7 +18,11 @@ const DEVICE_DIST = join(PROJECT, 'device', 'dist');
 const DEVICE_ID = 'example:ct107d-board';
 const INSTANCE_ID = '7d9e3a1c-5b2f-4c8d-9e01-2a3b4c5d6e7f';
 
-function runDocument(args: readonly string[]): { status: number | null; stdout: string; stderr: string } {
+function runDocument(args: readonly string[]): {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+} {
   const result = spawnSync(process.execPath, [join(PROJECT, 'scripts', 'document.mjs'), ...args], {
     cwd: PROJECT,
     encoding: 'utf8',
@@ -44,7 +48,7 @@ describe('formal CT107D v2 document', () => {
 
     const verified = await openDevicePackage({ open: async () => released }, released.lock);
     const firmware = instance.properties?.['firmware'];
-    expect(firmware).toMatchObject({ mode: 'package', src: expect.stringMatching(/\.(hex|bin)$/) });
+    expect(firmware).toEqual({ mode: 'package', src: 'assets/seg7-dynamic.hex' });
     if (typeof firmware !== 'object' || firmware === null || !('src' in firmware)) {
       throw new Error('The board instance must reference firmware bytes from the package');
     }
@@ -75,10 +79,7 @@ describe('formal CT107D v2 document', () => {
     expect(gnd).toHaveLength(1);
     expect(gnd[0]).toMatchObject({ voltage: 0, symbol: 'ground' });
 
-    const topology = deriveFusedTopology(
-      document,
-      new Map([[DEVICE_ID, verified.manifest]]),
-    );
+    const topology = deriveFusedTopology(document, new Map([[DEVICE_ID, verified.manifest]]));
     expect(topology.nets).toHaveLength(2);
     const railOf = (pin: string): number | undefined =>
       topology.nets.find((net) =>
@@ -95,6 +96,10 @@ describe('formal CT107D v2 document', () => {
       const written = runDocument(['--write', '--out', target]);
       expect(written.status, written.stderr).toBe(0);
       const generated = parseFusedDocument(readFileSync(target, 'utf8'));
+      const official = parseFusedDocument(readFileSync(DOCUMENT_PATH, 'utf8'));
+      expect(generated.instances[0]?.properties?.['firmware']).toEqual(
+        official.instances[0]?.properties?.['firmware'],
+      );
       const edited = {
         ...generated,
         dependencies: {

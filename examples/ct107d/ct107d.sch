@@ -3,7 +3,7 @@
   "dependencies": {
     "example:ct107d-board": {
       "version": "0.1.0",
-      "integrity": "sha256:0a9709f20cd81dd5693d3bdda986004beae8039425a5535538d2347129e86f95"
+      "integrity": "sha256:ddcea3f90723cc2acf39abe59bfc83b774228bd2cd99335b148ec68caa8bceec"
     }
   },
   "instances": [
@@ -20,7 +20,7 @@
         "clockFrequency": 12000000,
         "firmware": {
           "mode": "package",
-          "src": "assets/ct107d-demo.hex"
+          "src": "assets/seg7-dynamic.hex"
         }
       }
     }

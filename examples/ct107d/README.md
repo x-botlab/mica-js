@@ -36,46 +36,46 @@ pnpm --filter @mica-js/example-ct107d workbench:preview
 
 ## 命令
 
-| 命令 | 作用 |
-| --- | --- |
-| `build` | `build:fused` → `check:document` → `build:workbench`；默认交付模型、View2D/几何、v2 文档和宿主 |
-| `build:fused` | 构建 MCU、生成融合模型并 `mica build --root device`，输出 `device/dist` |
-| `build:workbench` | 复制锁定的器件包/文档/View 环境并 Vite 构建宿主到 `workbench/dist` |
-| `workbench:dev` | 先 `build:fused`，再启动 Vite 开发服务器（5180） |
-| `workbench:preview` | 只服务已构建的 `workbench/dist`（5181）；不改写 `public/` |
-| `workbench:prepare` | 原子同步 `workbench/public/{device,environment,ct107d.sch,catalog.json}` |
-| `check:document` | 校验正式 v2 文档的锁、实例、电源参考和固件资源；不写文件 |
-| `document:init` | 显式创建正式文档；已存在时拒绝覆盖 |
-| `document:lock` | 只刷新 `dependencies`，保留其它用户编辑（原子写） |
-| `test` | 构建器件与融合模型后运行全部 vitest |
-| `test:workbench` | 构建后只运行文档、宿主逻辑和 `createHeadlessRuntime` 用例 |
-| `typecheck` | `mica prepare` 后检查 device、legacy、宿主与测试 |
-| `bench` | 融合整板性能基准；需要先构建器件 |
-| `build:devices` | 构建 `examples/devices` 全部统一器件包（离散 oracle 与 MCU 源） |
-| `build:mcu` | 只构建 `examples/devices/iap15f2k61s2` 并写入内容身份 |
-| `prepare:fused` / `check:fused` | 生成 device 类型环境 / 校验 MCU 与生成的 DDL 产物 |
-| `build:legacy` | 显式构建 legacy widget、v1 原理图与画布（写入 `legacy/source`） |
-| `build:widgets` | 只构建 legacy 板面 widget 到 `dist/widgets` |
-| `check:legacy` | 校验 legacy v1 原理图/画布；需先完成 legacy 构建 |
-| `schematic` / `canvas` | 单独校验 legacy 原理图/画布（会先构建器件与 widget） |
-| `firmware` | 从 `firmware/demo.asm` 同源写出根 `assets/*.bin` 与 `device/src/assets/*.{bin,hex}` |
-| `firmware:check` | 只比较三份固件资源，缺失或 stale 时退出 1；不写文件 |
-| `check:fused` | 先 `firmware:check`，再校验 MCU 内容身份与生成的 DDL 产物 |
-| `firmware:sim -- <hex>` | 把外部 HEX/BIN 装进 legacy 分立板联调 |
-| `firmware:suite -- --list` | 可选的课程固件套件，不进入日常测试 |
+| 命令                            | 作用                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `build`                         | `build:fused` → `check:document` → `build:workbench`；默认交付模型、View2D/几何、v2 文档和宿主 |
+| `build:fused`                   | 构建 MCU、生成融合模型并 `mica build --root device`，输出 `device/dist`                        |
+| `build:workbench`               | 复制锁定的器件包/文档/View 环境并 Vite 构建宿主到 `workbench/dist`                             |
+| `workbench:dev`                 | 先 `build:fused`，再启动 Vite 开发服务器（5180）                                               |
+| `workbench:preview`             | 只服务已构建的 `workbench/dist`（5181）；不改写 `public/`                                      |
+| `workbench:prepare`             | 原子同步 `workbench/public/{device,environment,ct107d.sch,catalog.json}`                       |
+| `check:document`                | 校验正式 v2 文档的锁、实例、电源参考和固件资源；不写文件                                       |
+| `document:init`                 | 显式创建正式文档；已存在时拒绝覆盖                                                             |
+| `document:lock`                 | 只刷新 `dependencies`，保留其它用户编辑（原子写）                                              |
+| `test`                          | 构建器件与融合模型后运行全部 vitest                                                            |
+| `test:workbench`                | 构建后只运行文档、宿主逻辑和 `createHeadlessRuntime` 用例                                      |
+| `typecheck`                     | `mica prepare` 后检查 device、legacy、宿主与测试                                               |
+| `bench`                         | 融合整板性能基准；需要先构建器件                                                               |
+| `build:devices`                 | 构建 `examples/devices` 全部统一器件包（离散 oracle 与 MCU 源）                                |
+| `build:mcu`                     | 只构建 `examples/devices/iap15f2k61s2` 并写入内容身份                                          |
+| `prepare:fused` / `check:fused` | 生成 device 类型环境 / 校验 MCU 与生成的 DDL 产物                                              |
+| `build:legacy`                  | 显式构建 legacy widget、v1 原理图与画布（写入 `legacy/source`）                                |
+| `build:widgets`                 | 只构建 legacy 板面 widget 到 `dist/widgets`                                                    |
+| `check:legacy`                  | 校验 legacy v1 原理图/画布；需先完成 legacy 构建                                               |
+| `schematic` / `canvas`          | 单独校验 legacy 原理图/画布（会先构建器件与 widget）                                           |
+| `firmware`                      | 从 `firmware/demo.asm` 同源写出根 `assets/*.bin` 与 `device/src/assets/*.{bin,hex}`            |
+| `firmware:check`                | 只比较三份固件资源，缺失或 stale 时退出 1；不写文件                                            |
+| `check:fused`                   | 先 `firmware:check`，再校验 MCU 内容身份与生成的 DDL 产物                                      |
+| `firmware:sim -- <hex>`         | 把外部 HEX/BIN 装进 legacy 分立板联调                                                          |
+| `firmware:suite -- --list`      | 可选的课程固件套件，不进入日常测试                                                             |
 
 ## 构建产物与责任
 
-| 路径 | 责任 |
-| --- | --- |
-| `device/package.json`、`device/src/**` | 统一器件清单、DDL/工厂、`geometry.json`、`body.png`、`view2d`、HTML 面板与固件资源；由器件/展示代理维护 |
-| `ct107d.sch` | 正式 v2 文档，跟踪在仓库；只由 `document:init` 创建、由 `document:lock` 刷新依赖锁 |
-| `workbench/index.html`、`workbench/src/**`、`workbench/vite.config.ts` | 宿主源码，跟踪在仓库 |
-| `scripts/document.mjs`、`scripts/workbench.mjs` | 文档锁生成与宿主准备，不手拼摘要 |
-| `device/dist/**` | 统一器件构建产物，已忽略；干净重建可复现 |
-| `workbench/public/**` | 宿主准备产物（器件包、文档副本、环境、catalog），已忽略 |
-| `workbench/dist/**` | 宿主生产构建，已忽略 |
-| `legacy/source/{ct107d.sch,ct107d.cnv,ct107d.netlist.json}` | legacy v1 生成输入与 oracle；不是正式入口 |
+| 路径                                                                   | 责任                                                                                                    |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `device/package.json`、`device/src/**`                                 | 统一器件清单、DDL/工厂、`geometry.json`、`body.png`、`view2d`、HTML 面板与固件资源；由器件/展示代理维护 |
+| `ct107d.sch`                                                           | 正式 v2 文档，跟踪在仓库；只由 `document:init` 创建、由 `document:lock` 刷新依赖锁                      |
+| `workbench/index.html`、`workbench/src/**`、`workbench/vite.config.ts` | 宿主源码，跟踪在仓库                                                                                    |
+| `scripts/document.mjs`、`scripts/workbench.mjs`                        | 文档锁生成与宿主准备，不手拼摘要                                                                        |
+| `device/dist/**`                                                       | 统一器件构建产物，已忽略；干净重建可复现                                                                |
+| `workbench/public/**`                                                  | 宿主准备产物（器件包、文档副本、环境、catalog），已忽略                                                 |
+| `workbench/dist/**`                                                    | 宿主生产构建，已忽略                                                                                    |
+| `legacy/source/{ct107d.sch,ct107d.cnv,ct107d.netlist.json}`            | legacy v1 生成输入与 oracle；不是正式入口                                                               |
 
 `scripts/document.mjs` 的签名模式：
 
@@ -96,8 +96,8 @@ pnpm --filter @mica-js/example-ct107d workbench:preview
 - `dependencies` 由 `@mica-js/sdk/fused/node` 的 `readDirectoryPackage` 读取
   `device/dist/release.json` 生成真实版本与 `sha256:...` 发布摘要，不手写摘要；
 - `VCC` 接 5 V `power` 参考、`GND` 接 0 V `ground` 参考；
-- 实例 `properties.firmware = { mode: "package", src: "assets/ct107d-demo.hex" }`；
-  默认时钟显式设为 12 MHz，与演示固件一致；
+- 默认固件是 `assets/seg7-dynamic.hex`（来自 `dist/数码管动态显示.hex`），以
+  `mode: "package"` 引用；默认时钟为 12 MHz。原 `ct107d-demo.{hex,bin}` 保留供回归测试；
 - 不包含额外 nodes/wires/labels，正式板只通过两个外部电源引脚连接。
 
 `document:init` 生成的文档只包含一个稳定实例；后续器件包发布变化后运行
@@ -276,7 +276,7 @@ examples/ct107d/
     src/body.png                板面照片（PNG）
     src/view2d.ts               板面叠层与交互
     src/panel/                  HTML 控制面板
-    src/assets/                 ct107d-demo.{hex,bin}
+    src/assets/                 seg7-dynamic.hex、ct107d-demo.{hex,bin}
     dist/                       构建产物（忽略）
   workbench/                    浏览器宿主
     index.html

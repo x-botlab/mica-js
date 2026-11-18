@@ -11,12 +11,98 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   pin GND;
 
   /**
-   * MCU pin levels mirrored for fast JIT loads: 0 = low, 1 = high, 2 = unknown.
-   * Board devices read the pure `fusedNetN()` functions directly.
+   * One level mirror per MCU pin drive for fast JIT loads: 0 = low, 1 = high,
+   * 2 = unknown. Board devices read the pure `fusedNetN()` functions directly.
    */
-  memory fusedPins[40];
-  /** MCU pin drive codes: 0 strong low, 1 strong high, 2 weak high, 3 weak low, 4 release. */
-  memory fusedMcuDrives[40];
+  memory fusedPin0[1];
+  memory fusedPin1[1];
+  memory fusedPin2[1];
+  memory fusedPin3[1];
+  memory fusedPin4[1];
+  memory fusedPin5[1];
+  memory fusedPin6[1];
+  memory fusedPin7[1];
+  memory fusedPin8[1];
+  memory fusedPin9[1];
+  memory fusedPin10[1];
+  memory fusedPin11[1];
+  memory fusedPin12[1];
+  memory fusedPin13[1];
+  memory fusedPin14[1];
+  memory fusedPin15[1];
+  memory fusedPin16[1];
+  memory fusedPin17[1];
+  memory fusedPin18[1];
+  memory fusedPin19[1];
+  memory fusedPin20[1];
+  memory fusedPin21[1];
+  memory fusedPin22[1];
+  memory fusedPin23[1];
+  memory fusedPin24[1];
+  memory fusedPin25[1];
+  memory fusedPin26[1];
+  memory fusedPin27[1];
+  memory fusedPin28[1];
+  memory fusedPin29[1];
+  memory fusedPin30[1];
+  memory fusedPin31[1];
+  memory fusedPin32[1];
+  memory fusedPin33[1];
+  memory fusedPin34[1];
+  memory fusedPin35[1];
+  memory fusedPin36[1];
+  memory fusedPin37[1];
+  memory fusedPin38[1];
+  memory fusedPin39[1];
+  /** One drive code per MCU pin drive: 0 strong low, 1 strong high, 2 weak high, 3 weak low, 4 release. */
+  memory fusedDrive0[1];
+  memory fusedDrive1[1];
+  memory fusedDrive2[1];
+  memory fusedDrive3[1];
+  memory fusedDrive4[1];
+  memory fusedDrive5[1];
+  memory fusedDrive6[1];
+  memory fusedDrive7[1];
+  memory fusedDrive8[1];
+  memory fusedDrive9[1];
+  memory fusedDrive10[1];
+  memory fusedDrive11[1];
+  memory fusedDrive12[1];
+  memory fusedDrive13[1];
+  memory fusedDrive14[1];
+  memory fusedDrive15[1];
+  memory fusedDrive16[1];
+  memory fusedDrive17[1];
+  memory fusedDrive18[1];
+  memory fusedDrive19[1];
+  memory fusedDrive20[1];
+  memory fusedDrive21[1];
+  memory fusedDrive22[1];
+  memory fusedDrive23[1];
+  memory fusedDrive24[1];
+  memory fusedDrive25[1];
+  memory fusedDrive26[1];
+  memory fusedDrive27[1];
+  memory fusedDrive28[1];
+  memory fusedDrive29[1];
+  memory fusedDrive30[1];
+  memory fusedDrive31[1];
+  memory fusedDrive32[1];
+  memory fusedDrive33[1];
+  memory fusedDrive34[1];
+  memory fusedDrive35[1];
+  memory fusedDrive36[1];
+  memory fusedDrive37[1];
+  memory fusedDrive38[1];
+  memory fusedDrive39[1];
+  /** MCU pin indices whose level mirror must be recomputed on the next refresh. */
+  memory fusedPinDirty[40];
+  /** Summary byte per 8-pin group; any dirty pin marks its group for the refresh. */
+  memory fusedDirtyGroups[5];
+  /** Observables that must be recomputed on the next fused refresh. */
+  state fusedButtonDirty: bool = false;
+  state fusedLedDirty: bool = false;
+  state fusedActuatorDirty: bool = false;
   /** Monotonic trigger for the MCU pin-level refresh process. */
   state fusedSeq: number = 0;
   state fusedStarted: bool = false;
@@ -27,124 +113,124 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   derived fusedCode1: number = fusedNet1();
   derived fusedWire1: Logic = fusedCode1 == 1 ? Logic.high : fusedCode1 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage1: number = fusedCode1 == 1 ? 5 : 0;
-  derived fusedCode2: number = load8(fusedPins, 0);
+  derived fusedCode2: number = load8(fusedPin0, 0);
   derived fusedWire2: Logic = fusedCode2 == 1 ? Logic.high : fusedCode2 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage2: number = fusedCode2 == 1 ? 5 : 0;
-  derived fusedCode3: number = load8(fusedPins, 1);
+  derived fusedCode3: number = load8(fusedPin1, 0);
   derived fusedWire3: Logic = fusedCode3 == 1 ? Logic.high : fusedCode3 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage3: number = fusedCode3 == 1 ? 5 : 0;
-  derived fusedCode4: number = load8(fusedPins, 2);
+  derived fusedCode4: number = load8(fusedPin2, 0);
   derived fusedWire4: Logic = fusedCode4 == 1 ? Logic.high : fusedCode4 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage4: number = fusedCode4 == 1 ? 5 : 0;
-  derived fusedCode5: number = load8(fusedPins, 3);
+  derived fusedCode5: number = load8(fusedPin3, 0);
   derived fusedWire5: Logic = fusedCode5 == 1 ? Logic.high : fusedCode5 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage5: number = fusedCode5 == 1 ? 5 : 0;
-  derived fusedCode6: number = load8(fusedPins, 4);
+  derived fusedCode6: number = load8(fusedPin4, 0);
   derived fusedWire6: Logic = fusedCode6 == 1 ? Logic.high : fusedCode6 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage6: number = fusedCode6 == 1 ? 5 : 0;
-  derived fusedCode7: number = load8(fusedPins, 5);
+  derived fusedCode7: number = load8(fusedPin5, 0);
   derived fusedWire7: Logic = fusedCode7 == 1 ? Logic.high : fusedCode7 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage7: number = fusedCode7 == 1 ? 5 : 0;
-  derived fusedCode8: number = load8(fusedPins, 6);
+  derived fusedCode8: number = load8(fusedPin6, 0);
   derived fusedWire8: Logic = fusedCode8 == 1 ? Logic.high : fusedCode8 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage8: number = fusedCode8 == 1 ? 5 : 0;
-  derived fusedCode9: number = load8(fusedPins, 7);
+  derived fusedCode9: number = load8(fusedPin7, 0);
   derived fusedWire9: Logic = fusedCode9 == 1 ? Logic.high : fusedCode9 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage9: number = fusedCode9 == 1 ? 5 : 0;
-  derived fusedCode10: number = load8(fusedPins, 8);
+  derived fusedCode10: number = load8(fusedPin8, 0);
   derived fusedWire10: Logic = fusedCode10 == 1 ? Logic.high : fusedCode10 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage10: number = fusedCode10 == 1 ? 5 : 0;
-  derived fusedCode11: number = load8(fusedPins, 9);
+  derived fusedCode11: number = load8(fusedPin9, 0);
   derived fusedWire11: Logic = fusedCode11 == 1 ? Logic.high : fusedCode11 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage11: number = fusedCode11 == 1 ? 5 : 0;
-  derived fusedCode12: number = load8(fusedPins, 10);
+  derived fusedCode12: number = load8(fusedPin10, 0);
   derived fusedWire12: Logic = fusedCode12 == 1 ? Logic.high : fusedCode12 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage12: number = fusedCode12 == 1 ? 5 : 0;
-  derived fusedCode13: number = load8(fusedPins, 11);
+  derived fusedCode13: number = load8(fusedPin11, 0);
   derived fusedWire13: Logic = fusedCode13 == 1 ? Logic.high : fusedCode13 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage13: number = fusedCode13 == 1 ? 5 : 0;
-  derived fusedCode14: number = load8(fusedPins, 12);
+  derived fusedCode14: number = load8(fusedPin12, 0);
   derived fusedWire14: Logic = fusedCode14 == 1 ? Logic.high : fusedCode14 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage14: number = fusedCode14 == 1 ? 5 : 0;
-  derived fusedCode15: number = load8(fusedPins, 13);
+  derived fusedCode15: number = load8(fusedPin13, 0);
   derived fusedWire15: Logic = fusedCode15 == 1 ? Logic.high : fusedCode15 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage15: number = fusedCode15 == 1 ? 5 : 0;
-  derived fusedCode16: number = load8(fusedPins, 14);
+  derived fusedCode16: number = load8(fusedPin14, 0);
   derived fusedWire16: Logic = fusedCode16 == 1 ? Logic.high : fusedCode16 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage16: number = fusedCode16 == 1 ? 5 : 0;
-  derived fusedCode17: number = load8(fusedPins, 15);
+  derived fusedCode17: number = load8(fusedPin15, 0);
   derived fusedWire17: Logic = fusedCode17 == 1 ? Logic.high : fusedCode17 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage17: number = fusedCode17 == 1 ? 5 : 0;
-  derived fusedCode18: number = load8(fusedPins, 16);
+  derived fusedCode18: number = load8(fusedPin16, 0);
   derived fusedWire18: Logic = fusedCode18 == 1 ? Logic.high : fusedCode18 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage18: number = fusedCode18 == 1 ? 5 : 0;
-  derived fusedCode19: number = load8(fusedPins, 17);
+  derived fusedCode19: number = load8(fusedPin17, 0);
   derived fusedWire19: Logic = fusedCode19 == 1 ? Logic.high : fusedCode19 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage19: number = fusedCode19 == 1 ? 5 : 0;
-  derived fusedCode20: number = load8(fusedPins, 18);
+  derived fusedCode20: number = load8(fusedPin18, 0);
   derived fusedWire20: Logic = fusedCode20 == 1 ? Logic.high : fusedCode20 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage20: number = fusedCode20 == 1 ? 5 : 0;
-  derived fusedCode21: number = load8(fusedPins, 19);
+  derived fusedCode21: number = load8(fusedPin19, 0);
   derived fusedWire21: Logic = fusedCode21 == 1 ? Logic.high : fusedCode21 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage21: number = fusedCode21 == 1 ? 5 : 0;
-  derived fusedCode22: number = load8(fusedPins, 20);
+  derived fusedCode22: number = load8(fusedPin20, 0);
   derived fusedWire22: Logic = fusedCode22 == 1 ? Logic.high : fusedCode22 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage22: number = fusedCode22 == 1 ? 5 : 0;
-  derived fusedCode23: number = load8(fusedPins, 21);
+  derived fusedCode23: number = load8(fusedPin21, 0);
   derived fusedWire23: Logic = fusedCode23 == 1 ? Logic.high : fusedCode23 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage23: number = fusedCode23 == 1 ? 5 : 0;
-  derived fusedCode24: number = load8(fusedPins, 22);
+  derived fusedCode24: number = load8(fusedPin22, 0);
   derived fusedWire24: Logic = fusedCode24 == 1 ? Logic.high : fusedCode24 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage24: number = fusedCode24 == 1 ? 5 : 0;
-  derived fusedCode25: number = load8(fusedPins, 23);
+  derived fusedCode25: number = load8(fusedPin23, 0);
   derived fusedWire25: Logic = fusedCode25 == 1 ? Logic.high : fusedCode25 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage25: number = fusedCode25 == 1 ? 5 : 0;
-  derived fusedCode26: number = load8(fusedPins, 24);
+  derived fusedCode26: number = load8(fusedPin24, 0);
   derived fusedWire26: Logic = fusedCode26 == 1 ? Logic.high : fusedCode26 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage26: number = fusedCode26 == 1 ? 5 : 0;
-  derived fusedCode27: number = load8(fusedPins, 25);
+  derived fusedCode27: number = load8(fusedPin25, 0);
   derived fusedWire27: Logic = fusedCode27 == 1 ? Logic.high : fusedCode27 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage27: number = fusedCode27 == 1 ? 5 : 0;
-  derived fusedCode28: number = load8(fusedPins, 26);
+  derived fusedCode28: number = load8(fusedPin26, 0);
   derived fusedWire28: Logic = fusedCode28 == 1 ? Logic.high : fusedCode28 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage28: number = fusedCode28 == 1 ? 5 : 0;
-  derived fusedCode29: number = load8(fusedPins, 27);
+  derived fusedCode29: number = load8(fusedPin27, 0);
   derived fusedWire29: Logic = fusedCode29 == 1 ? Logic.high : fusedCode29 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage29: number = fusedCode29 == 1 ? 5 : 0;
-  derived fusedCode30: number = load8(fusedPins, 28);
+  derived fusedCode30: number = load8(fusedPin28, 0);
   derived fusedWire30: Logic = fusedCode30 == 1 ? Logic.high : fusedCode30 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage30: number = fusedCode30 == 1 ? 5 : 0;
-  derived fusedCode31: number = load8(fusedPins, 29);
+  derived fusedCode31: number = load8(fusedPin29, 0);
   derived fusedWire31: Logic = fusedCode31 == 1 ? Logic.high : fusedCode31 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage31: number = fusedCode31 == 1 ? 5 : 0;
-  derived fusedCode32: number = load8(fusedPins, 30);
+  derived fusedCode32: number = load8(fusedPin30, 0);
   derived fusedWire32: Logic = fusedCode32 == 1 ? Logic.high : fusedCode32 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage32: number = fusedCode32 == 1 ? 5 : 0;
-  derived fusedCode33: number = load8(fusedPins, 31);
+  derived fusedCode33: number = load8(fusedPin31, 0);
   derived fusedWire33: Logic = fusedCode33 == 1 ? Logic.high : fusedCode33 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage33: number = fusedCode33 == 1 ? 5 : 0;
-  derived fusedCode34: number = load8(fusedPins, 32);
+  derived fusedCode34: number = load8(fusedPin32, 0);
   derived fusedWire34: Logic = fusedCode34 == 1 ? Logic.high : fusedCode34 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage34: number = fusedCode34 == 1 ? 5 : 0;
-  derived fusedCode35: number = load8(fusedPins, 33);
+  derived fusedCode35: number = load8(fusedPin33, 0);
   derived fusedWire35: Logic = fusedCode35 == 1 ? Logic.high : fusedCode35 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage35: number = fusedCode35 == 1 ? 5 : 0;
-  derived fusedCode36: number = load8(fusedPins, 34);
+  derived fusedCode36: number = load8(fusedPin34, 0);
   derived fusedWire36: Logic = fusedCode36 == 1 ? Logic.high : fusedCode36 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage36: number = fusedCode36 == 1 ? 5 : 0;
-  derived fusedCode37: number = load8(fusedPins, 35);
+  derived fusedCode37: number = load8(fusedPin35, 0);
   derived fusedWire37: Logic = fusedCode37 == 1 ? Logic.high : fusedCode37 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage37: number = fusedCode37 == 1 ? 5 : 0;
-  derived fusedCode38: number = load8(fusedPins, 36);
+  derived fusedCode38: number = load8(fusedPin36, 0);
   derived fusedWire38: Logic = fusedCode38 == 1 ? Logic.high : fusedCode38 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage38: number = fusedCode38 == 1 ? 5 : 0;
-  derived fusedCode39: number = load8(fusedPins, 37);
+  derived fusedCode39: number = load8(fusedPin37, 0);
   derived fusedWire39: Logic = fusedCode39 == 1 ? Logic.high : fusedCode39 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage39: number = fusedCode39 == 1 ? 5 : 0;
-  derived fusedCode40: number = load8(fusedPins, 38);
+  derived fusedCode40: number = load8(fusedPin38, 0);
   derived fusedWire40: Logic = fusedCode40 == 1 ? Logic.high : fusedCode40 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage40: number = fusedCode40 == 1 ? 5 : 0;
-  derived fusedCode41: number = load8(fusedPins, 39);
+  derived fusedCode41: number = load8(fusedPin39, 0);
   derived fusedWire41: Logic = fusedCode41 == 1 ? Logic.high : fusedCode41 == 0 ? Logic.low : Logic.unknown;
   derived fusedVoltage41: number = fusedCode41 == 1 ? 5 : 0;
   derived fusedCode42: number = fusedNet42();
@@ -3841,69 +3927,132 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   state uart_probe_started: bool = false;
   state ld1_started: bool = false;
 
+  fn fusedMarkButtonPins(changed: number) {
+    if (changed & 1) != 0 {
+      store8(fusedPinDirty, 24, 1);
+      store8(fusedDirtyGroups, 3, 1);
+    }
+    if (changed & 2) != 0 {
+      store8(fusedPinDirty, 25, 1);
+      store8(fusedDirtyGroups, 3, 1);
+    }
+    if (changed & 4) != 0 {
+      store8(fusedPinDirty, 26, 1);
+      store8(fusedDirtyGroups, 3, 1);
+    }
+    if (changed & 8) != 0 {
+      store8(fusedPinDirty, 27, 1);
+      store8(fusedDirtyGroups, 3, 1);
+    }
+    if (changed & 16) != 0 {
+      store8(fusedPinDirty, 36, 1);
+      store8(fusedDirtyGroups, 4, 1);
+    }
+    if (changed & 32) != 0 {
+      store8(fusedPinDirty, 34, 1);
+      store8(fusedDirtyGroups, 4, 1);
+    }
+    if (changed & 64) != 0 {
+      store8(fusedPinDirty, 29, 1);
+      store8(fusedDirtyGroups, 3, 1);
+    }
+    if (changed & 128) != 0 {
+      store8(fusedPinDirty, 28, 1);
+      store8(fusedDirtyGroups, 3, 1);
+    }
+  }
+  fn fusedMarkJumperPins(index: number) {
+    if index == 1 {
+      store8(fusedPinDirty, 28, 1);
+      store8(fusedDirtyGroups, 3, 1);
+    }
+    if index == 2 {
+      store8(fusedPinDirty, 9, 1);
+      store8(fusedDirtyGroups, 1, 1);
+    }
+    if index == 3 {
+      store8(fusedPinDirty, 36, 1);
+      store8(fusedDirtyGroups, 4, 1);
+    }
+  }
+
   fn u4_sda_setDrive(level: number) {
     if level != u4_sda_drive {
       u4_sda_drive = level;
+      store8(fusedPinDirty, 17, 1);
+      store8(fusedDirtyGroups, 2, 1);
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u4_scl_setDrive(level: number) {
     if level != u4_scl_drive {
       u4_scl_drive = level;
+      store8(fusedPinDirty, 16, 1);
+      store8(fusedDirtyGroups, 2, 1);
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u5_dq_setDrive(level: number) {
     if level != u5_dq_drive {
       u5_dq_drive = level;
+      store8(fusedPinDirty, 12, 1);
+      store8(fusedDirtyGroups, 1, 1);
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u6_q0_setDrive(level: number) {
     if level != u6_q0_drive {
       u6_q0_drive = level;
+      fusedLedDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u6_q1_setDrive(level: number) {
     if level != u6_q1_drive {
       u6_q1_drive = level;
+      fusedLedDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u6_q2_setDrive(level: number) {
     if level != u6_q2_drive {
       u6_q2_drive = level;
+      fusedLedDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u6_q3_setDrive(level: number) {
     if level != u6_q3_drive {
       u6_q3_drive = level;
+      fusedLedDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u6_q4_setDrive(level: number) {
     if level != u6_q4_drive {
       u6_q4_drive = level;
+      fusedLedDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u6_q5_setDrive(level: number) {
     if level != u6_q5_drive {
       u6_q5_drive = level;
+      fusedLedDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u6_q6_setDrive(level: number) {
     if level != u6_q6_drive {
       u6_q6_drive = level;
+      fusedLedDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u6_q7_setDrive(level: number) {
     if level != u6_q7_drive {
       u6_q7_drive = level;
+      fusedLedDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -4078,6 +4227,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u10_out5_setDrive(level: number) {
     if level != u10_out5_drive {
       u10_out5_drive = level;
+      fusedActuatorDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -4090,12 +4240,15 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u10_out7_setDrive(level: number) {
     if level != u10_out7_drive {
       u10_out7_drive = level;
+      fusedActuatorDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u11_out_setDrive(level: number) {
     if level != u11_out_drive {
       u11_out_drive = level;
+      store8(fusedPinDirty, 9, 1);
+      store8(fusedDirtyGroups, 1, 1);
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -4108,6 +4261,9 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u15_out_setDrive(level: number) {
     if level != u15_out_drive {
       u15_out_drive = level;
+      store8(fusedPinDirty, 28, 1);
+      store8(fusedDirtyGroups, 3, 1);
+      fusedButtonDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -4120,12 +4276,16 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u16_sda_setDrive(level: number) {
     if level != u16_sda_drive {
       u16_sda_drive = level;
+      store8(fusedPinDirty, 17, 1);
+      store8(fusedDirtyGroups, 2, 1);
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u16_scl_setDrive(level: number) {
     if level != u16_scl_drive {
       u16_scl_drive = level;
+      store8(fusedPinDirty, 16, 1);
+      store8(fusedDirtyGroups, 2, 1);
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -4168,12 +4328,16 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u19_io_setDrive(level: number) {
     if level != u19_io_drive {
       u19_io_drive = level;
+      store8(fusedPinDirty, 19, 1);
+      store8(fusedDirtyGroups, 2, 1);
       fusedSeq = fusedSeq + 1;
     }
   }
   fn u20_out_setDrive(level: number) {
     if level != u20_out_drive {
       u20_out_drive = level;
+      store8(fusedPinDirty, 9, 1);
+      store8(fusedDirtyGroups, 1, 1);
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -4186,6 +4350,8 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn u22_echo_setDrive(level: number) {
     if level != u22_echo_drive {
       u22_echo_drive = level;
+      store8(fusedPinDirty, 9, 1);
+      store8(fusedDirtyGroups, 1, 1);
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -4264,12 +4430,23 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   fn uart_probe_txd_setDrive(level: number) {
     if level != uart_probe_txd_drive {
       uart_probe_txd_drive = level;
+      store8(fusedPinDirty, 24, 1);
+      store8(fusedDirtyGroups, 3, 1);
+      fusedButtonDirty = true;
       fusedSeq = fusedSeq + 1;
     }
   }
 
   memory fusedButtonLow[8];
   fn fusedComputeButtons() {
+    const previousButtonLow0 = load8(fusedButtonLow, 0);
+    const previousButtonLow1 = load8(fusedButtonLow, 1);
+    const previousButtonLow2 = load8(fusedButtonLow, 2);
+    const previousButtonLow3 = load8(fusedButtonLow, 3);
+    const previousButtonLow4 = load8(fusedButtonLow, 4);
+    const previousButtonLow5 = load8(fusedButtonLow, 5);
+    const previousButtonLow6 = load8(fusedButtonLow, 6);
+    const previousButtonLow7 = load8(fusedButtonLow, 7);
     store8(fusedButtonLow, 0, 0);
     store8(fusedButtonLow, 1, 0);
     store8(fusedButtonLow, 2, 0);
@@ -4278,14 +4455,14 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     store8(fusedButtonLow, 5, 0);
     store8(fusedButtonLow, 6, 0);
     store8(fusedButtonLow, 7, 0);
-    if (load8(fusedMcuDrives, 24) == 0 || uart_probe_txd_drive == 0) { store8(fusedButtonLow, 0, 1); }
-    if (load8(fusedMcuDrives, 25) == 0) { store8(fusedButtonLow, 1, 1); }
-    if (load8(fusedMcuDrives, 26) == 0) { store8(fusedButtonLow, 2, 1); }
-    if (load8(fusedMcuDrives, 27) == 0) { store8(fusedButtonLow, 3, 1); }
+    if (load8(fusedDrive24, 0) == 0 || uart_probe_txd_drive == 0) { store8(fusedButtonLow, 0, 1); }
+    if (load8(fusedDrive25, 0) == 0) { store8(fusedButtonLow, 1, 1); }
+    if (load8(fusedDrive26, 0) == 0) { store8(fusedButtonLow, 2, 1); }
+    if (load8(fusedDrive27, 0) == 0) { store8(fusedButtonLow, 3, 1); }
     if (fusedNet75() == 0) { store8(fusedButtonLow, 4, 1); }
-    if (load8(fusedMcuDrives, 34) == 0) { store8(fusedButtonLow, 5, 1); }
-    if (load8(fusedMcuDrives, 29) == 0) { store8(fusedButtonLow, 6, 1); }
-    if (load8(fusedMcuDrives, 28) == 0 || j3Closed && u15_out_drive == 0) { store8(fusedButtonLow, 7, 1); }
+    if (load8(fusedDrive34, 0) == 0) { store8(fusedButtonLow, 5, 1); }
+    if (load8(fusedDrive29, 0) == 0) { store8(fusedButtonLow, 6, 1); }
+    if (load8(fusedDrive28, 0) == 0 || j3Closed && u15_out_drive == 0) { store8(fusedButtonLow, 7, 1); }
     let iteration = 0;
     while iteration < 8 {
       if load8(keyStates, 1) == 1 && (load8(fusedButtonLow, 3) == 1 || load8(fusedButtonLow, 4) == 1) {
@@ -4354,6 +4531,16 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       }
       iteration = iteration + 1;
     }
+    let buttonChanged = 0;
+    if previousButtonLow0 != load8(fusedButtonLow, 0) { buttonChanged = buttonChanged | 1; }
+    if previousButtonLow1 != load8(fusedButtonLow, 1) { buttonChanged = buttonChanged | 2; }
+    if previousButtonLow2 != load8(fusedButtonLow, 2) { buttonChanged = buttonChanged | 4; }
+    if previousButtonLow3 != load8(fusedButtonLow, 3) { buttonChanged = buttonChanged | 8; }
+    if previousButtonLow4 != load8(fusedButtonLow, 4) { buttonChanged = buttonChanged | 16; }
+    if previousButtonLow5 != load8(fusedButtonLow, 5) { buttonChanged = buttonChanged | 32; }
+    if previousButtonLow6 != load8(fusedButtonLow, 6) { buttonChanged = buttonChanged | 64; }
+    if previousButtonLow7 != load8(fusedButtonLow, 7) { buttonChanged = buttonChanged | 128; }
+    if buttonChanged != 0 { fusedMarkButtonPins(buttonChanged); }
   }
 
   pure fn fusedNet0() -> number {
@@ -4367,10 +4554,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 0) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 0) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 0) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 0) == 3 { weakLow = true; }
+    if load8(fusedDrive0, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive0, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive0, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive0, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4382,10 +4569,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 1) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 1) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 1) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 1) == 3 { weakLow = true; }
+    if load8(fusedDrive1, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive1, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive1, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive1, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4397,10 +4584,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 2) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 2) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 2) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 2) == 3 { weakLow = true; }
+    if load8(fusedDrive2, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive2, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive2, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive2, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4412,10 +4599,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 3) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 3) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 3) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 3) == 3 { weakLow = true; }
+    if load8(fusedDrive3, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive3, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive3, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive3, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4427,10 +4614,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 4) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 4) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 4) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 4) == 3 { weakLow = true; }
+    if load8(fusedDrive4, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive4, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive4, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive4, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4442,10 +4629,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 5) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 5) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 5) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 5) == 3 { weakLow = true; }
+    if load8(fusedDrive5, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive5, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive5, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive5, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4457,10 +4644,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 6) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 6) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 6) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 6) == 3 { weakLow = true; }
+    if load8(fusedDrive6, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive6, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive6, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive6, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4472,10 +4659,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 7) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 7) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 7) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 7) == 3 { weakLow = true; }
+    if load8(fusedDrive7, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive7, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive7, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive7, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4487,10 +4674,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 8) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 8) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 8) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 8) == 3 { weakLow = true; }
+    if load8(fusedDrive8, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive8, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive8, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive8, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4502,10 +4689,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 9) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 9) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 9) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 9) == 3 { weakLow = true; }
+    if load8(fusedDrive9, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive9, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive9, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive9, 0) == 3 { weakLow = true; }
     if u22_echo_drive == 0 { strongLow = true; }
     else if u22_echo_drive == 1 { strongHigh = true; }
     else if u22_echo_drive == 2 { weakHigh = true; }
@@ -4526,10 +4713,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 10) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 10) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 10) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 10) == 3 { weakLow = true; }
+    if load8(fusedDrive10, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive10, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive10, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive10, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4541,10 +4728,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 11) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 11) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 11) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 11) == 3 { weakLow = true; }
+    if load8(fusedDrive11, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive11, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive11, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive11, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4556,10 +4743,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 12) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 12) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 12) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 12) == 3 { weakLow = true; }
+    if load8(fusedDrive12, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive12, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive12, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive12, 0) == 3 { weakLow = true; }
     if u5_dq_drive == 0 { strongLow = true; }
     else if u5_dq_drive == 1 { strongHigh = true; }
     else if u5_dq_drive == 2 { weakHigh = true; }
@@ -4575,10 +4762,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 13) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 13) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 13) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 13) == 3 { weakLow = true; }
+    if load8(fusedDrive13, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive13, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive13, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive13, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4590,10 +4777,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 14) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 14) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 14) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 14) == 3 { weakLow = true; }
+    if load8(fusedDrive14, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive14, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive14, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive14, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4605,10 +4792,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 15) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 15) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 15) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 15) == 3 { weakLow = true; }
+    if load8(fusedDrive15, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive15, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive15, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive15, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4620,10 +4807,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 16) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 16) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 16) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 16) == 3 { weakLow = true; }
+    if load8(fusedDrive16, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive16, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive16, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive16, 0) == 3 { weakLow = true; }
     if u4_scl_drive == 0 { strongLow = true; }
     else if u4_scl_drive == 1 { strongHigh = true; }
     else if u4_scl_drive == 2 { weakHigh = true; }
@@ -4643,10 +4830,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 17) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 17) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 17) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 17) == 3 { weakLow = true; }
+    if load8(fusedDrive17, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive17, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive17, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive17, 0) == 3 { weakLow = true; }
     if u4_sda_drive == 0 { strongLow = true; }
     else if u4_sda_drive == 1 { strongHigh = true; }
     else if u4_sda_drive == 2 { weakHigh = true; }
@@ -4666,10 +4853,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 18) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 18) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 18) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 18) == 3 { weakLow = true; }
+    if load8(fusedDrive18, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive18, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive18, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive18, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4681,10 +4868,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 19) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 19) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 19) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 19) == 3 { weakLow = true; }
+    if load8(fusedDrive19, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive19, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive19, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive19, 0) == 3 { weakLow = true; }
     if u19_io_drive == 0 { strongLow = true; }
     else if u19_io_drive == 1 { strongHigh = true; }
     else if u19_io_drive == 2 { weakHigh = true; }
@@ -4700,10 +4887,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 20) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 20) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 20) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 20) == 3 { weakLow = true; }
+    if load8(fusedDrive20, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive20, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive20, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive20, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4715,10 +4902,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 21) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 21) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 21) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 21) == 3 { weakLow = true; }
+    if load8(fusedDrive21, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive21, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive21, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive21, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4730,10 +4917,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 22) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 22) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 22) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 22) == 3 { weakLow = true; }
+    if load8(fusedDrive22, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive22, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive22, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive22, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4745,10 +4932,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 23) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 23) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 23) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 23) == 3 { weakLow = true; }
+    if load8(fusedDrive23, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive23, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive23, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive23, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4760,10 +4947,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 24) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 24) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 24) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 24) == 3 { weakLow = true; }
+    if load8(fusedDrive24, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive24, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive24, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive24, 0) == 3 { weakLow = true; }
     if uart_probe_txd_drive == 0 { strongLow = true; }
     else if uart_probe_txd_drive == 1 { strongHigh = true; }
     else if uart_probe_txd_drive == 2 { weakHigh = true; }
@@ -4780,10 +4967,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 25) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 25) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 25) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 25) == 3 { weakLow = true; }
+    if load8(fusedDrive25, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive25, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive25, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive25, 0) == 3 { weakLow = true; }
     if load8(fusedButtonLow, 1) == 1 { strongLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
@@ -4796,10 +4983,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 26) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 26) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 26) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 26) == 3 { weakLow = true; }
+    if load8(fusedDrive26, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive26, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive26, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive26, 0) == 3 { weakLow = true; }
     if load8(fusedButtonLow, 2) == 1 { strongLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
@@ -4812,10 +4999,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 27) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 27) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 27) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 27) == 3 { weakLow = true; }
+    if load8(fusedDrive27, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive27, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive27, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive27, 0) == 3 { weakLow = true; }
     if load8(fusedButtonLow, 3) == 1 { strongLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
@@ -4828,10 +5015,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 28) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 28) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 28) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 28) == 3 { weakLow = true; }
+    if load8(fusedDrive28, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive28, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive28, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive28, 0) == 3 { weakLow = true; }
     if j3Closed {
       if fusedNet102() == 0 { strongLow = true; }
       else if fusedNet102() == 1 { strongHigh = true; }
@@ -4848,10 +5035,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 29) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 29) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 29) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 29) == 3 { weakLow = true; }
+    if load8(fusedDrive29, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive29, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive29, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive29, 0) == 3 { weakLow = true; }
     if load8(fusedButtonLow, 6) == 1 { strongLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
@@ -4864,10 +5051,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 30) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 30) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 30) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 30) == 3 { weakLow = true; }
+    if load8(fusedDrive30, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive30, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive30, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive30, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4879,10 +5066,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 31) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 31) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 31) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 31) == 3 { weakLow = true; }
+    if load8(fusedDrive31, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive31, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive31, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive31, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4894,10 +5081,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 32) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 32) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 32) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 32) == 3 { weakLow = true; }
+    if load8(fusedDrive32, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive32, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive32, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive32, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4909,10 +5096,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 33) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 33) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 33) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 33) == 3 { weakLow = true; }
+    if load8(fusedDrive33, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive33, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive33, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive33, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4924,10 +5111,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 34) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 34) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 34) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 34) == 3 { weakLow = true; }
+    if load8(fusedDrive34, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive34, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive34, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive34, 0) == 3 { weakLow = true; }
     if load8(fusedButtonLow, 5) == 1 { strongLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
@@ -4940,10 +5127,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 35) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 35) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 35) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 35) == 3 { weakLow = true; }
+    if load8(fusedDrive35, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive35, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive35, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive35, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4955,10 +5142,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 36) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 36) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 36) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 36) == 3 { weakLow = true; }
+    if load8(fusedDrive36, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive36, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive36, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive36, 0) == 3 { weakLow = true; }
     if !j5Closed && load8(fusedButtonLow, 4) == 1 { strongLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
@@ -4971,10 +5158,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 37) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 37) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 37) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 37) == 3 { weakLow = true; }
+    if load8(fusedDrive37, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive37, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive37, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive37, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -4986,10 +5173,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 38) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 38) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 38) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 38) == 3 { weakLow = true; }
+    if load8(fusedDrive38, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive38, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive38, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive38, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -5001,10 +5188,10 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     let strongHigh = false;
     let weakHigh = false;
     let weakLow = false;
-    if load8(fusedMcuDrives, 39) == 0 { strongLow = true; }
-    else if load8(fusedMcuDrives, 39) == 1 { strongHigh = true; }
-    else if load8(fusedMcuDrives, 39) == 2 { weakHigh = true; }
-    else if load8(fusedMcuDrives, 39) == 3 { weakLow = true; }
+    if load8(fusedDrive39, 0) == 0 { strongLow = true; }
+    else if load8(fusedDrive39, 0) == 1 { strongHigh = true; }
+    else if load8(fusedDrive39, 0) == 2 { weakHigh = true; }
+    else if load8(fusedDrive39, 0) == 3 { weakLow = true; }
     if strongLow { return 0; }
     if strongHigh { return 1; }
     if weakHigh { return 1; }
@@ -6001,8 +6188,25 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   fn fusedRefresh() {
-    fusedComputeButtons();
+    if fusedButtonDirty {
+      fusedButtonDirty = false;
+      fusedComputeButtons();
+    }
     fusedRefreshBody();
+    if fusedLedDirty {
+      fusedLedDirty = false;
+      publishLeds();
+    }
+    if fusedActuatorDirty {
+      fusedActuatorDirty = false;
+      publishActuators();
+    }
+  }
+
+  /** Power-up only: materialise every MCU pin before the first firmware instruction. */
+  fn fusedRefreshInitial() {
+    fusedComputeButtons();
+    fusedRefreshAllBody();
     publishLeds();
     publishActuators();
   }
@@ -6245,6 +6449,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       if load8(keyStates, event.index) == level { continue; }
       store8(keyStates, event.index, level);
       switch.send({ index: event.index, pressed: event.pressed });
+      if event.index >= 1 && event.index <= 16 { fusedButtonDirty = true; }
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -6258,6 +6463,8 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
       else if event.index == 3 { j5Closed = event.closed; }
       else { continue; }
       jumper.send({ index: event.index, closed: event.closed });
+      fusedMarkJumperPins(event.index);
+      if event.index == 1 || event.index == 3 { fusedButtonDirty = true; }
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -6305,46 +6512,46 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     // list once here, so the fused reset cannot drift from the source package. A first
     // `MOV A,P3` / `MOV A,P4` sees the real reset level; a strong external low still wins
     // in fusedNet. Release (4) is only for later open-drain/input modes.
-    store8(fusedMcuDrives, 0, 2);
-    store8(fusedMcuDrives, 1, 2);
-    store8(fusedMcuDrives, 2, 2);
-    store8(fusedMcuDrives, 3, 2);
-    store8(fusedMcuDrives, 4, 2);
-    store8(fusedMcuDrives, 5, 2);
-    store8(fusedMcuDrives, 6, 2);
-    store8(fusedMcuDrives, 7, 2);
-    store8(fusedMcuDrives, 8, 2);
-    store8(fusedMcuDrives, 9, 2);
-    store8(fusedMcuDrives, 10, 2);
-    store8(fusedMcuDrives, 11, 2);
-    store8(fusedMcuDrives, 12, 2);
-    store8(fusedMcuDrives, 13, 2);
-    store8(fusedMcuDrives, 14, 2);
-    store8(fusedMcuDrives, 15, 2);
-    store8(fusedMcuDrives, 16, 2);
-    store8(fusedMcuDrives, 17, 2);
-    store8(fusedMcuDrives, 18, 2);
-    store8(fusedMcuDrives, 19, 2);
-    store8(fusedMcuDrives, 20, 2);
-    store8(fusedMcuDrives, 21, 2);
-    store8(fusedMcuDrives, 22, 2);
-    store8(fusedMcuDrives, 23, 2);
-    store8(fusedMcuDrives, 24, 2);
-    store8(fusedMcuDrives, 25, 2);
-    store8(fusedMcuDrives, 26, 2);
-    store8(fusedMcuDrives, 27, 2);
-    store8(fusedMcuDrives, 28, 2);
-    store8(fusedMcuDrives, 29, 2);
-    store8(fusedMcuDrives, 30, 2);
-    store8(fusedMcuDrives, 31, 2);
-    store8(fusedMcuDrives, 32, 2);
-    store8(fusedMcuDrives, 33, 2);
-    store8(fusedMcuDrives, 34, 2);
-    store8(fusedMcuDrives, 35, 2);
-    store8(fusedMcuDrives, 36, 2);
-    store8(fusedMcuDrives, 37, 2);
-    store8(fusedMcuDrives, 38, 2);
-    store8(fusedMcuDrives, 39, 2);
+    store8(fusedDrive0, 0, 2);
+    store8(fusedDrive1, 0, 2);
+    store8(fusedDrive2, 0, 2);
+    store8(fusedDrive3, 0, 2);
+    store8(fusedDrive4, 0, 2);
+    store8(fusedDrive5, 0, 2);
+    store8(fusedDrive6, 0, 2);
+    store8(fusedDrive7, 0, 2);
+    store8(fusedDrive8, 0, 2);
+    store8(fusedDrive9, 0, 2);
+    store8(fusedDrive10, 0, 2);
+    store8(fusedDrive11, 0, 2);
+    store8(fusedDrive12, 0, 2);
+    store8(fusedDrive13, 0, 2);
+    store8(fusedDrive14, 0, 2);
+    store8(fusedDrive15, 0, 2);
+    store8(fusedDrive16, 0, 2);
+    store8(fusedDrive17, 0, 2);
+    store8(fusedDrive18, 0, 2);
+    store8(fusedDrive19, 0, 2);
+    store8(fusedDrive20, 0, 2);
+    store8(fusedDrive21, 0, 2);
+    store8(fusedDrive22, 0, 2);
+    store8(fusedDrive23, 0, 2);
+    store8(fusedDrive24, 0, 2);
+    store8(fusedDrive25, 0, 2);
+    store8(fusedDrive26, 0, 2);
+    store8(fusedDrive27, 0, 2);
+    store8(fusedDrive28, 0, 2);
+    store8(fusedDrive29, 0, 2);
+    store8(fusedDrive30, 0, 2);
+    store8(fusedDrive31, 0, 2);
+    store8(fusedDrive32, 0, 2);
+    store8(fusedDrive33, 0, 2);
+    store8(fusedDrive34, 0, 2);
+    store8(fusedDrive35, 0, 2);
+    store8(fusedDrive36, 0, 2);
+    store8(fusedDrive37, 0, 2);
+    store8(fusedDrive38, 0, 2);
+    store8(fusedDrive39, 0, 2);
         u1_started = true;
     u4_started = true;
     u5_started = true;
@@ -6366,7 +6573,7 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     u25_started = true;
     uart_probe_started = true;
     ld1_started = true;
-    fusedRefresh();
+    fusedRefreshInitial();
     emitDisplay1();
     emitDisplay2();
     // Publish the same initial idle state as the discrete board devices.
@@ -6383,86 +6590,350 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
   }
 
   fn fusedRefreshBody() {
+    if load8(fusedDirtyGroups, 0) == 1 {
+      store8(fusedDirtyGroups, 0, 0);
+      if load8(fusedPinDirty, 0) == 1 {
+        store8(fusedPinDirty, 0, 0);
+        const next0 = fusedNet2();
+        if load8(fusedPin0, 0) != next0 { store8(fusedPin0, 0, next0); }
+      }
+      if load8(fusedPinDirty, 1) == 1 {
+        store8(fusedPinDirty, 1, 0);
+        const next1 = fusedNet3();
+        if load8(fusedPin1, 0) != next1 { store8(fusedPin1, 0, next1); }
+      }
+      if load8(fusedPinDirty, 2) == 1 {
+        store8(fusedPinDirty, 2, 0);
+        const next2 = fusedNet4();
+        if load8(fusedPin2, 0) != next2 { store8(fusedPin2, 0, next2); }
+      }
+      if load8(fusedPinDirty, 3) == 1 {
+        store8(fusedPinDirty, 3, 0);
+        const next3 = fusedNet5();
+        if load8(fusedPin3, 0) != next3 { store8(fusedPin3, 0, next3); }
+      }
+      if load8(fusedPinDirty, 4) == 1 {
+        store8(fusedPinDirty, 4, 0);
+        const next4 = fusedNet6();
+        if load8(fusedPin4, 0) != next4 { store8(fusedPin4, 0, next4); }
+      }
+      if load8(fusedPinDirty, 5) == 1 {
+        store8(fusedPinDirty, 5, 0);
+        const next5 = fusedNet7();
+        if load8(fusedPin5, 0) != next5 { store8(fusedPin5, 0, next5); }
+      }
+      if load8(fusedPinDirty, 6) == 1 {
+        store8(fusedPinDirty, 6, 0);
+        const next6 = fusedNet8();
+        if load8(fusedPin6, 0) != next6 { store8(fusedPin6, 0, next6); }
+      }
+      if load8(fusedPinDirty, 7) == 1 {
+        store8(fusedPinDirty, 7, 0);
+        const next7 = fusedNet9();
+        if load8(fusedPin7, 0) != next7 { store8(fusedPin7, 0, next7); }
+      }
+    }
+    if load8(fusedDirtyGroups, 1) == 1 {
+      store8(fusedDirtyGroups, 1, 0);
+      if load8(fusedPinDirty, 8) == 1 {
+        store8(fusedPinDirty, 8, 0);
+        const next8 = fusedNet10();
+        if load8(fusedPin8, 0) != next8 { store8(fusedPin8, 0, next8); }
+      }
+      if load8(fusedPinDirty, 9) == 1 {
+        store8(fusedPinDirty, 9, 0);
+        const next9 = fusedNet11();
+        if load8(fusedPin9, 0) != next9 { store8(fusedPin9, 0, next9); }
+      }
+      if load8(fusedPinDirty, 10) == 1 {
+        store8(fusedPinDirty, 10, 0);
+        const next10 = fusedNet12();
+        if load8(fusedPin10, 0) != next10 { store8(fusedPin10, 0, next10); }
+      }
+      if load8(fusedPinDirty, 11) == 1 {
+        store8(fusedPinDirty, 11, 0);
+        const next11 = fusedNet13();
+        if load8(fusedPin11, 0) != next11 { store8(fusedPin11, 0, next11); }
+      }
+      if load8(fusedPinDirty, 12) == 1 {
+        store8(fusedPinDirty, 12, 0);
+        const next12 = fusedNet14();
+        if load8(fusedPin12, 0) != next12 { store8(fusedPin12, 0, next12); }
+      }
+      if load8(fusedPinDirty, 13) == 1 {
+        store8(fusedPinDirty, 13, 0);
+        const next13 = fusedNet15();
+        if load8(fusedPin13, 0) != next13 { store8(fusedPin13, 0, next13); }
+      }
+      if load8(fusedPinDirty, 14) == 1 {
+        store8(fusedPinDirty, 14, 0);
+        const next14 = fusedNet16();
+        if load8(fusedPin14, 0) != next14 { store8(fusedPin14, 0, next14); }
+      }
+      if load8(fusedPinDirty, 15) == 1 {
+        store8(fusedPinDirty, 15, 0);
+        const next15 = fusedNet17();
+        if load8(fusedPin15, 0) != next15 { store8(fusedPin15, 0, next15); }
+      }
+    }
+    if load8(fusedDirtyGroups, 2) == 1 {
+      store8(fusedDirtyGroups, 2, 0);
+      if load8(fusedPinDirty, 16) == 1 {
+        store8(fusedPinDirty, 16, 0);
+        const next16 = fusedNet18();
+        if load8(fusedPin16, 0) != next16 { store8(fusedPin16, 0, next16); }
+      }
+      if load8(fusedPinDirty, 17) == 1 {
+        store8(fusedPinDirty, 17, 0);
+        const next17 = fusedNet19();
+        if load8(fusedPin17, 0) != next17 { store8(fusedPin17, 0, next17); }
+      }
+      if load8(fusedPinDirty, 18) == 1 {
+        store8(fusedPinDirty, 18, 0);
+        const next18 = fusedNet20();
+        if load8(fusedPin18, 0) != next18 { store8(fusedPin18, 0, next18); }
+      }
+      if load8(fusedPinDirty, 19) == 1 {
+        store8(fusedPinDirty, 19, 0);
+        const next19 = fusedNet21();
+        if load8(fusedPin19, 0) != next19 { store8(fusedPin19, 0, next19); }
+      }
+      if load8(fusedPinDirty, 20) == 1 {
+        store8(fusedPinDirty, 20, 0);
+        const next20 = fusedNet22();
+        if load8(fusedPin20, 0) != next20 { store8(fusedPin20, 0, next20); }
+      }
+      if load8(fusedPinDirty, 21) == 1 {
+        store8(fusedPinDirty, 21, 0);
+        const next21 = fusedNet23();
+        if load8(fusedPin21, 0) != next21 { store8(fusedPin21, 0, next21); }
+      }
+      if load8(fusedPinDirty, 22) == 1 {
+        store8(fusedPinDirty, 22, 0);
+        const next22 = fusedNet24();
+        if load8(fusedPin22, 0) != next22 { store8(fusedPin22, 0, next22); }
+      }
+      if load8(fusedPinDirty, 23) == 1 {
+        store8(fusedPinDirty, 23, 0);
+        const next23 = fusedNet25();
+        if load8(fusedPin23, 0) != next23 { store8(fusedPin23, 0, next23); }
+      }
+    }
+    if load8(fusedDirtyGroups, 3) == 1 {
+      store8(fusedDirtyGroups, 3, 0);
+      if load8(fusedPinDirty, 24) == 1 {
+        store8(fusedPinDirty, 24, 0);
+        const next24 = fusedNet26();
+        if load8(fusedPin24, 0) != next24 { store8(fusedPin24, 0, next24); }
+      }
+      if load8(fusedPinDirty, 25) == 1 {
+        store8(fusedPinDirty, 25, 0);
+        const next25 = fusedNet27();
+        if load8(fusedPin25, 0) != next25 { store8(fusedPin25, 0, next25); }
+      }
+      if load8(fusedPinDirty, 26) == 1 {
+        store8(fusedPinDirty, 26, 0);
+        const next26 = fusedNet28();
+        if load8(fusedPin26, 0) != next26 { store8(fusedPin26, 0, next26); }
+      }
+      if load8(fusedPinDirty, 27) == 1 {
+        store8(fusedPinDirty, 27, 0);
+        const next27 = fusedNet29();
+        if load8(fusedPin27, 0) != next27 { store8(fusedPin27, 0, next27); }
+      }
+      if load8(fusedPinDirty, 28) == 1 {
+        store8(fusedPinDirty, 28, 0);
+        const next28 = fusedNet30();
+        if load8(fusedPin28, 0) != next28 { store8(fusedPin28, 0, next28); }
+      }
+      if load8(fusedPinDirty, 29) == 1 {
+        store8(fusedPinDirty, 29, 0);
+        const next29 = fusedNet31();
+        if load8(fusedPin29, 0) != next29 { store8(fusedPin29, 0, next29); }
+      }
+      if load8(fusedPinDirty, 30) == 1 {
+        store8(fusedPinDirty, 30, 0);
+        const next30 = fusedNet32();
+        if load8(fusedPin30, 0) != next30 { store8(fusedPin30, 0, next30); }
+      }
+      if load8(fusedPinDirty, 31) == 1 {
+        store8(fusedPinDirty, 31, 0);
+        const next31 = fusedNet33();
+        if load8(fusedPin31, 0) != next31 { store8(fusedPin31, 0, next31); }
+      }
+    }
+    if load8(fusedDirtyGroups, 4) == 1 {
+      store8(fusedDirtyGroups, 4, 0);
+      if load8(fusedPinDirty, 32) == 1 {
+        store8(fusedPinDirty, 32, 0);
+        const next32 = fusedNet34();
+        if load8(fusedPin32, 0) != next32 { store8(fusedPin32, 0, next32); }
+      }
+      if load8(fusedPinDirty, 33) == 1 {
+        store8(fusedPinDirty, 33, 0);
+        const next33 = fusedNet35();
+        if load8(fusedPin33, 0) != next33 { store8(fusedPin33, 0, next33); }
+      }
+      if load8(fusedPinDirty, 34) == 1 {
+        store8(fusedPinDirty, 34, 0);
+        const next34 = fusedNet36();
+        if load8(fusedPin34, 0) != next34 { store8(fusedPin34, 0, next34); }
+      }
+      if load8(fusedPinDirty, 35) == 1 {
+        store8(fusedPinDirty, 35, 0);
+        const next35 = fusedNet37();
+        if load8(fusedPin35, 0) != next35 { store8(fusedPin35, 0, next35); }
+      }
+      if load8(fusedPinDirty, 36) == 1 {
+        store8(fusedPinDirty, 36, 0);
+        const next36 = fusedNet38();
+        if load8(fusedPin36, 0) != next36 { store8(fusedPin36, 0, next36); }
+      }
+      if load8(fusedPinDirty, 37) == 1 {
+        store8(fusedPinDirty, 37, 0);
+        const next37 = fusedNet39();
+        if load8(fusedPin37, 0) != next37 { store8(fusedPin37, 0, next37); }
+      }
+      if load8(fusedPinDirty, 38) == 1 {
+        store8(fusedPinDirty, 38, 0);
+        const next38 = fusedNet40();
+        if load8(fusedPin38, 0) != next38 { store8(fusedPin38, 0, next38); }
+      }
+      if load8(fusedPinDirty, 39) == 1 {
+        store8(fusedPinDirty, 39, 0);
+        const next39 = fusedNet41();
+        if load8(fusedPin39, 0) != next39 { store8(fusedPin39, 0, next39); }
+      }
+    }
+  }
+
+  /** Full power-up mirror initialization; clears marks left by the initial button diff. */
+  fn fusedRefreshAllBody() {
     const next0 = fusedNet2();
-    if load8(fusedPins, 0) != next0 { store8(fusedPins, 0, next0); }
+    if load8(fusedPin0, 0) != next0 { store8(fusedPin0, 0, next0); }
     const next1 = fusedNet3();
-    if load8(fusedPins, 1) != next1 { store8(fusedPins, 1, next1); }
+    if load8(fusedPin1, 0) != next1 { store8(fusedPin1, 0, next1); }
     const next2 = fusedNet4();
-    if load8(fusedPins, 2) != next2 { store8(fusedPins, 2, next2); }
+    if load8(fusedPin2, 0) != next2 { store8(fusedPin2, 0, next2); }
     const next3 = fusedNet5();
-    if load8(fusedPins, 3) != next3 { store8(fusedPins, 3, next3); }
+    if load8(fusedPin3, 0) != next3 { store8(fusedPin3, 0, next3); }
     const next4 = fusedNet6();
-    if load8(fusedPins, 4) != next4 { store8(fusedPins, 4, next4); }
+    if load8(fusedPin4, 0) != next4 { store8(fusedPin4, 0, next4); }
     const next5 = fusedNet7();
-    if load8(fusedPins, 5) != next5 { store8(fusedPins, 5, next5); }
+    if load8(fusedPin5, 0) != next5 { store8(fusedPin5, 0, next5); }
     const next6 = fusedNet8();
-    if load8(fusedPins, 6) != next6 { store8(fusedPins, 6, next6); }
+    if load8(fusedPin6, 0) != next6 { store8(fusedPin6, 0, next6); }
     const next7 = fusedNet9();
-    if load8(fusedPins, 7) != next7 { store8(fusedPins, 7, next7); }
+    if load8(fusedPin7, 0) != next7 { store8(fusedPin7, 0, next7); }
     const next8 = fusedNet10();
-    if load8(fusedPins, 8) != next8 { store8(fusedPins, 8, next8); }
+    if load8(fusedPin8, 0) != next8 { store8(fusedPin8, 0, next8); }
     const next9 = fusedNet11();
-    if load8(fusedPins, 9) != next9 { store8(fusedPins, 9, next9); }
+    if load8(fusedPin9, 0) != next9 { store8(fusedPin9, 0, next9); }
     const next10 = fusedNet12();
-    if load8(fusedPins, 10) != next10 { store8(fusedPins, 10, next10); }
+    if load8(fusedPin10, 0) != next10 { store8(fusedPin10, 0, next10); }
     const next11 = fusedNet13();
-    if load8(fusedPins, 11) != next11 { store8(fusedPins, 11, next11); }
+    if load8(fusedPin11, 0) != next11 { store8(fusedPin11, 0, next11); }
     const next12 = fusedNet14();
-    if load8(fusedPins, 12) != next12 { store8(fusedPins, 12, next12); }
+    if load8(fusedPin12, 0) != next12 { store8(fusedPin12, 0, next12); }
     const next13 = fusedNet15();
-    if load8(fusedPins, 13) != next13 { store8(fusedPins, 13, next13); }
+    if load8(fusedPin13, 0) != next13 { store8(fusedPin13, 0, next13); }
     const next14 = fusedNet16();
-    if load8(fusedPins, 14) != next14 { store8(fusedPins, 14, next14); }
+    if load8(fusedPin14, 0) != next14 { store8(fusedPin14, 0, next14); }
     const next15 = fusedNet17();
-    if load8(fusedPins, 15) != next15 { store8(fusedPins, 15, next15); }
+    if load8(fusedPin15, 0) != next15 { store8(fusedPin15, 0, next15); }
     const next16 = fusedNet18();
-    if load8(fusedPins, 16) != next16 { store8(fusedPins, 16, next16); }
+    if load8(fusedPin16, 0) != next16 { store8(fusedPin16, 0, next16); }
     const next17 = fusedNet19();
-    if load8(fusedPins, 17) != next17 { store8(fusedPins, 17, next17); }
+    if load8(fusedPin17, 0) != next17 { store8(fusedPin17, 0, next17); }
     const next18 = fusedNet20();
-    if load8(fusedPins, 18) != next18 { store8(fusedPins, 18, next18); }
+    if load8(fusedPin18, 0) != next18 { store8(fusedPin18, 0, next18); }
     const next19 = fusedNet21();
-    if load8(fusedPins, 19) != next19 { store8(fusedPins, 19, next19); }
+    if load8(fusedPin19, 0) != next19 { store8(fusedPin19, 0, next19); }
     const next20 = fusedNet22();
-    if load8(fusedPins, 20) != next20 { store8(fusedPins, 20, next20); }
+    if load8(fusedPin20, 0) != next20 { store8(fusedPin20, 0, next20); }
     const next21 = fusedNet23();
-    if load8(fusedPins, 21) != next21 { store8(fusedPins, 21, next21); }
+    if load8(fusedPin21, 0) != next21 { store8(fusedPin21, 0, next21); }
     const next22 = fusedNet24();
-    if load8(fusedPins, 22) != next22 { store8(fusedPins, 22, next22); }
+    if load8(fusedPin22, 0) != next22 { store8(fusedPin22, 0, next22); }
     const next23 = fusedNet25();
-    if load8(fusedPins, 23) != next23 { store8(fusedPins, 23, next23); }
+    if load8(fusedPin23, 0) != next23 { store8(fusedPin23, 0, next23); }
     const next24 = fusedNet26();
-    if load8(fusedPins, 24) != next24 { store8(fusedPins, 24, next24); }
+    if load8(fusedPin24, 0) != next24 { store8(fusedPin24, 0, next24); }
     const next25 = fusedNet27();
-    if load8(fusedPins, 25) != next25 { store8(fusedPins, 25, next25); }
+    if load8(fusedPin25, 0) != next25 { store8(fusedPin25, 0, next25); }
     const next26 = fusedNet28();
-    if load8(fusedPins, 26) != next26 { store8(fusedPins, 26, next26); }
+    if load8(fusedPin26, 0) != next26 { store8(fusedPin26, 0, next26); }
     const next27 = fusedNet29();
-    if load8(fusedPins, 27) != next27 { store8(fusedPins, 27, next27); }
+    if load8(fusedPin27, 0) != next27 { store8(fusedPin27, 0, next27); }
     const next28 = fusedNet30();
-    if load8(fusedPins, 28) != next28 { store8(fusedPins, 28, next28); }
+    if load8(fusedPin28, 0) != next28 { store8(fusedPin28, 0, next28); }
     const next29 = fusedNet31();
-    if load8(fusedPins, 29) != next29 { store8(fusedPins, 29, next29); }
+    if load8(fusedPin29, 0) != next29 { store8(fusedPin29, 0, next29); }
     const next30 = fusedNet32();
-    if load8(fusedPins, 30) != next30 { store8(fusedPins, 30, next30); }
+    if load8(fusedPin30, 0) != next30 { store8(fusedPin30, 0, next30); }
     const next31 = fusedNet33();
-    if load8(fusedPins, 31) != next31 { store8(fusedPins, 31, next31); }
+    if load8(fusedPin31, 0) != next31 { store8(fusedPin31, 0, next31); }
     const next32 = fusedNet34();
-    if load8(fusedPins, 32) != next32 { store8(fusedPins, 32, next32); }
+    if load8(fusedPin32, 0) != next32 { store8(fusedPin32, 0, next32); }
     const next33 = fusedNet35();
-    if load8(fusedPins, 33) != next33 { store8(fusedPins, 33, next33); }
+    if load8(fusedPin33, 0) != next33 { store8(fusedPin33, 0, next33); }
     const next34 = fusedNet36();
-    if load8(fusedPins, 34) != next34 { store8(fusedPins, 34, next34); }
+    if load8(fusedPin34, 0) != next34 { store8(fusedPin34, 0, next34); }
     const next35 = fusedNet37();
-    if load8(fusedPins, 35) != next35 { store8(fusedPins, 35, next35); }
+    if load8(fusedPin35, 0) != next35 { store8(fusedPin35, 0, next35); }
     const next36 = fusedNet38();
-    if load8(fusedPins, 36) != next36 { store8(fusedPins, 36, next36); }
+    if load8(fusedPin36, 0) != next36 { store8(fusedPin36, 0, next36); }
     const next37 = fusedNet39();
-    if load8(fusedPins, 37) != next37 { store8(fusedPins, 37, next37); }
+    if load8(fusedPin37, 0) != next37 { store8(fusedPin37, 0, next37); }
     const next38 = fusedNet40();
-    if load8(fusedPins, 38) != next38 { store8(fusedPins, 38, next38); }
+    if load8(fusedPin38, 0) != next38 { store8(fusedPin38, 0, next38); }
     const next39 = fusedNet41();
-    if load8(fusedPins, 39) != next39 { store8(fusedPins, 39, next39); }
+    if load8(fusedPin39, 0) != next39 { store8(fusedPin39, 0, next39); }
+    store8(fusedPinDirty, 0, 0);
+    store8(fusedPinDirty, 1, 0);
+    store8(fusedPinDirty, 2, 0);
+    store8(fusedPinDirty, 3, 0);
+    store8(fusedPinDirty, 4, 0);
+    store8(fusedPinDirty, 5, 0);
+    store8(fusedPinDirty, 6, 0);
+    store8(fusedPinDirty, 7, 0);
+    store8(fusedPinDirty, 8, 0);
+    store8(fusedPinDirty, 9, 0);
+    store8(fusedPinDirty, 10, 0);
+    store8(fusedPinDirty, 11, 0);
+    store8(fusedPinDirty, 12, 0);
+    store8(fusedPinDirty, 13, 0);
+    store8(fusedPinDirty, 14, 0);
+    store8(fusedPinDirty, 15, 0);
+    store8(fusedPinDirty, 16, 0);
+    store8(fusedPinDirty, 17, 0);
+    store8(fusedPinDirty, 18, 0);
+    store8(fusedPinDirty, 19, 0);
+    store8(fusedPinDirty, 20, 0);
+    store8(fusedPinDirty, 21, 0);
+    store8(fusedPinDirty, 22, 0);
+    store8(fusedPinDirty, 23, 0);
+    store8(fusedPinDirty, 24, 0);
+    store8(fusedPinDirty, 25, 0);
+    store8(fusedPinDirty, 26, 0);
+    store8(fusedPinDirty, 27, 0);
+    store8(fusedPinDirty, 28, 0);
+    store8(fusedPinDirty, 29, 0);
+    store8(fusedPinDirty, 30, 0);
+    store8(fusedPinDirty, 31, 0);
+    store8(fusedPinDirty, 32, 0);
+    store8(fusedPinDirty, 33, 0);
+    store8(fusedPinDirty, 34, 0);
+    store8(fusedPinDirty, 35, 0);
+    store8(fusedPinDirty, 36, 0);
+    store8(fusedPinDirty, 37, 0);
+    store8(fusedPinDirty, 38, 0);
+    store8(fusedPinDirty, 39, 0);
+    store8(fusedDirtyGroups, 0, 0);
+    store8(fusedDirtyGroups, 1, 0);
+    store8(fusedDirtyGroups, 2, 0);
+    store8(fusedDirtyGroups, 3, 0);
+    store8(fusedDirtyGroups, 4, 0);
   }
 
 }

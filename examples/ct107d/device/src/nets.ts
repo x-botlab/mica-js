@@ -316,4 +316,154 @@ export const MCU_PIN = {
     "drive": 39
   }
 } as const;
+// prettier-ignore
+export const MCU_IMPACT: Readonly<Record<string, readonly number[]>> = {
+  "P0_0": [
+    0
+  ],
+  "P0_1": [
+    1
+  ],
+  "P0_2": [
+    2
+  ],
+  "P0_3": [
+    3
+  ],
+  "P0_4": [
+    4
+  ],
+  "P0_5": [
+    5
+  ],
+  "P0_6": [
+    6
+  ],
+  "P0_7": [
+    7
+  ],
+  "P1_0": [
+    8
+  ],
+  "P1_1": [
+    9
+  ],
+  "P1_2": [
+    10
+  ],
+  "P1_3": [
+    11
+  ],
+  "P1_4": [
+    12
+  ],
+  "P1_5": [
+    13
+  ],
+  "P1_6": [
+    14
+  ],
+  "P1_7": [
+    15
+  ],
+  "P2_0": [
+    16
+  ],
+  "P2_1": [
+    17
+  ],
+  "P2_2": [
+    18
+  ],
+  "P2_3": [
+    19
+  ],
+  "P2_4": [
+    20
+  ],
+  "P2_5": [
+    21
+  ],
+  "P2_6": [
+    22
+  ],
+  "P2_7": [
+    23
+  ],
+  "P3_0": [
+    24
+  ],
+  "P3_1": [
+    25
+  ],
+  "P3_2": [
+    26
+  ],
+  "P3_3": [
+    27
+  ],
+  "P3_4": [
+    28
+  ],
+  "P3_5": [
+    29
+  ],
+  "P3_6": [
+    30
+  ],
+  "P3_7": [
+    31
+  ],
+  "P4_0": [
+    32
+  ],
+  "P4_1": [
+    33
+  ],
+  "P4_2": [
+    34
+  ],
+  "P4_3": [
+    35
+  ],
+  "P4_4": [
+    36
+  ],
+  "P4_5": [
+    37
+  ],
+  "P4_6": [
+    38
+  ],
+  "P4_7": [
+    39
+  ]
+};
+// prettier-ignore
+export const MCU_DIRTY_TRIGGERS: Readonly<Record<string, readonly string[]>> = {
+  "P3_0": [
+    "fusedButtonDirty"
+  ],
+  "P3_1": [
+    "fusedButtonDirty"
+  ],
+  "P3_2": [
+    "fusedButtonDirty"
+  ],
+  "P3_3": [
+    "fusedButtonDirty"
+  ],
+  "P3_4": [
+    "fusedButtonDirty"
+  ],
+  "P3_5": [
+    "fusedButtonDirty"
+  ],
+  "P4_2": [
+    "fusedButtonDirty"
+  ],
+  "P4_4": [
+    "fusedButtonDirty"
+  ]
+};
 export const NET_COUNT = 111;

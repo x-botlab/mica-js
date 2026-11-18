@@ -64,8 +64,9 @@ pnpm --filter @mica-js/example-ct107d typecheck:fused
 - `src/index.ts` 从 `examples/devices/dist/iap15f2k61s2/model.js` 复用 MCU 工厂，
   不复制 kernel/peripherals。
 - `src/fuse.ts` 在原始 translator 返回后把 `readSample`/`writeIntent`/`resistor`
-  降为内部 `fusedPins`/`fusedMcuDrives` 槽；融合块按对象身份单独缓存，不污染
-  独立 MCU 器件的 `cyclePs:pc:bytes` 缓存。MCU 资源名保持不变。
+  降为每 pin 独立的 `fusedPinN`/`fusedDriveN` 单字节槽；融合块按对象身份单独缓存，
+  不污染独立 MCU 器件的 `cyclePs:pc:bytes` 缓存。资源名由
+  `shared/dirty-protocol.mjs` 的 `pinMemoryName`/`driveMemoryName` 统一生成。
 - 图内只有 40 个 MCU 引脚电平需要 materialize；数字器件和板级 glue 直接读纯
   `fusedNetN()` 函数。融合后没有板内电气网络，`solves` 为 0，外部只有
   `VCC`/`GND` 两条网。

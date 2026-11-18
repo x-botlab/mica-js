@@ -1,0 +1,10 @@
+export declare const PIN_DIRTY_MEMORY: string;
+export declare const DIRTY_GROUP_MEMORY: string;
+export declare const BUTTON_DIRTY_STATE: string;
+export declare const LED_DIRTY_STATE: string;
+export declare const ACTUATOR_DIRTY_STATE: string;
+export declare const DIRTY_GROUP_SIZE: number;
+export declare function dirtyGroup(drive: number): number;
+export declare function dirtyGroupCount(pinCount: number): number;
+export declare function pinMemoryName(drive: number): string;
+export declare function driveMemoryName(drive: number): string;

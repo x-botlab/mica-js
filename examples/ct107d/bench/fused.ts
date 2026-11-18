@@ -4,7 +4,12 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { DeviceIR } from '@mica-js/sdk/model';
-import { adaptModelFactory, firmwareImage } from '../../devices/test/support/legacy-model-bridge.mjs';
+import {
+  adaptModelFactory,
+  firmwareImage,
+} from '../../devices/test/support/legacy-model-bridge.mjs';
+import { MCU_PIN } from '../device/src/nets';
+import { driveMemoryName, pinMemoryName } from '../device/shared/dirty-protocol.mjs';
 
 /**
  * Fused CT107D fixture. This is the formal `device/dist` artifact: one model, one
@@ -44,6 +49,24 @@ const EVENT_TOPICS = Object.freeze({
   onDidUart1Rx: 'uart1.rx',
   onDidAmplifier: 'amplifier.event',
 });
+
+/** MCU drives in ascending order; each drive owns one single-byte memory resource. */
+const MCU_DRIVES = Object.freeze(
+  Object.values(MCU_PIN)
+    .map((pin) => pin.drive)
+    .sort((left, right) => left - right),
+);
+
+/** Assemble the per-drive resources into the legacy flat test view. */
+function readDriveMemories(
+  memories: ReadonlyMap<string, Uint8Array> | undefined,
+  name: (drive: number) => string,
+): Uint8Array {
+  const values = new Uint8Array(MCU_DRIVES.length);
+
+  for (const drive of MCU_DRIVES) values[drive] = memories?.get(name(drive))?.[0] ?? 0;
+  return values;
+}
 
 export interface FusedFingerprints {
   readonly source: 'dist';
@@ -185,8 +208,8 @@ export async function createFusedCt107dBoard(options: FusedBoardOptions): Promis
     devices: instances,
     nets: description.nets.length,
     methods,
-    fusedPins: () => new Uint8Array(memories?.get('fusedPins') ?? []),
-    fusedMcuDrives: () => new Uint8Array(memories?.get('fusedMcuDrives') ?? []),
+    fusedPins: () => readDriveMemories(memories, pinMemoryName),
+    fusedMcuDrives: () => readDriveMemories(memories, driveMemoryName),
     fingerprints: {
       source: 'dist',
       model: sha256(readFileSync(ARTIFACT)),

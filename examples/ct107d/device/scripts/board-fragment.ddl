@@ -132,6 +132,8 @@
 
 {{DRIVE_STATES}}
 
+{{MARK_FUNCTIONS}}
+
 {{DRIVE_SETTERS}}
 
 {{BUTTON_FUNCTION}}
@@ -139,8 +141,25 @@
 {{NET_FUNCTIONS}}
 
   fn fusedRefresh() {
-    fusedComputeButtons();
+    if {{BUTTON_DIRTY_STATE}} {
+      {{BUTTON_DIRTY_STATE}} = false;
+      fusedComputeButtons();
+    }
     fusedRefreshBody();
+    if {{LED_DIRTY_STATE}} {
+      {{LED_DIRTY_STATE}} = false;
+      publishLeds();
+    }
+    if {{ACTUATOR_DIRTY_STATE}} {
+      {{ACTUATOR_DIRTY_STATE}} = false;
+      publishActuators();
+    }
+  }
+
+  /** Power-up only: materialise every MCU pin before the first firmware instruction. */
+  fn fusedRefreshInitial() {
+    fusedComputeButtons();
+    fusedRefreshAllBody();
     publishLeds();
     publishActuators();
   }
@@ -383,6 +402,7 @@
       if load8(keyStates, event.index) == level { continue; }
       store8(keyStates, event.index, level);
       switch.send({ index: event.index, pressed: event.pressed });
+{{SWITCH_MARK}}
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -396,6 +416,7 @@
       else if event.index == 3 { j5Closed = event.closed; }
       else { continue; }
       jumper.send({ index: event.index, closed: event.closed });
+{{JUMPER_MARK}}
       fusedSeq = fusedSeq + 1;
     }
   }
@@ -445,7 +466,7 @@
     // in fusedNet. Release (4) is only for later open-drain/input modes.
 {{MCU_RESET_DRIVES}}
     {{START_FLAGS}}
-    fusedRefresh();
+    fusedRefreshInitial();
     emitDisplay1();
     emitDisplay2();
     // Publish the same initial idle state as the discrete board devices.
@@ -463,4 +484,9 @@
 
   fn fusedRefreshBody() {
 {{FUSED_REFRESH_BODY}}
+  }
+
+  /** Full power-up mirror initialization; clears marks left by the initial button diff. */
+  fn fusedRefreshAllBody() {
+{{FUSED_INITIAL_REFRESH_BODY}}
   }
