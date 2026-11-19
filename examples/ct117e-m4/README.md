@@ -224,6 +224,42 @@ Intel Core i7-12700K、Node 24.20.0，CPU 亲和性 `8,10,12,14`。五个暖轮�
 降至 69.982 ms，但两边都只有 4/10 达标。窗口仍有约 70 ms 的慢轮，暂不保留候选，
 先区分模拟执行和 V8 分层产生的开销。
 
+### V8 分层诊断
+
+用 Node 24.20.0 在同一构建产物上分记模拟执行线程 CPU、进程 CPU 和墙钟。诊断不参与
+正式性能验收；不设置 `MICA_CT117E_M4_THREAD_CPU` 时，基准不采执行线程 CPU。
+
+```bash
+env -u NODE_OPTIONS MICA_CT117E_M4_THREAD_CPU=1 taskset -c 8,10,12,14 \
+  node node_modules/vitest/vitest.mjs run --config vitest.perf.config.ts \
+  --no-cache --reporter=verbose --disableConsoleIntercept bench/ct117e-m4-perf.test.ts
+```
+
+在 `run` 后分别加 `--execArgv=--no-maglev`（保留 TurboFan）或 `--execArgv=--max-opt=1`
+（最高只到 Sparkplug），再回到默认配置。`CT117E_CLEAR_CPU` 的 `otherThreadsMs`
+是进程 CPU 减执行线程 CPU，包含其他线程的所有活动，不能全算成编译。
+`wallMinusForegroundMs` 近似反映执行线程未占用 CPU 的时间，不能区分被抢占和阻塞。
+
+同机、同固件和同一 `dist/model.js` 的四组六轮工作量一致。下表只统计末五个暖轮，
+默认两组按清屏墙钟 45 ms 分开汇报；单位为 ms：
+
+| 配置           | 暖轮 |           墙钟中位（范围） | 执行线程 CPU 中位 | 其他线程 CPU 中位 |
+| -------------- | ---: | -------------------------: | ----------------: | ----------------: |
+| 默认，<45 ms   |    6 |    30.335（29.472–42.321） |            30.436 |            13.380 |
+| 默认，≥45 ms   |    4 |    81.129（78.243–87.317） |            79.864 |           100.824 |
+| 关闭 Maglev    |    5 |   43.055（31.298–111.747） |            43.164 |            23.923 |
+| 最高 Sparkplug |    5 | 380.436（376.699–386.126） |           379.816 |             2.933 |
+
+默认慢轮多花的约 50 ms 主要消耗在**执行线程**，不是它等待后台线程。关闭 Maglev
+没有消除长尾，只保留 Sparkplug 则远超预算。另开 `--trace-opt --trace-deopt
+--trace-gc-nvp` 复核：最慢暖轮执行线程用 79.327 ms，窗口内启动 16 次优化、去优化
+9 次，包括三个热点分片和外层 `run`；本次六个窗口均未记录 GC 暂停。约 30 ms 的
+三个暖轮没有去优化。trace 只用于定位，不与无 trace 的墙钟混用。
+
+首要瓶颈是热点生成代码在清屏窗口尚不能稳定保持优化层级。慢轮额外的执行线程时间
+不能全算成去优化开销；它也包括在较低层级执行同一工作量的时间。即使没有记录到
+去优化，快轮也要约 29–30 ms，几乎没有预算余量；后续仍需降低分片和派发的执行成本。
+
 ### 历史整程读数（2026-11-15，Node 24.20.0）
 
 | 轮次 | 冷启动 CPU / ms | active CPU / ms | post CPU / ms | 总 CPU / ms | 总墙钟 / ms |

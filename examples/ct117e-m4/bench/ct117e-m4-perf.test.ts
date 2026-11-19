@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, writeSync } from 'node:fs';
 import { cpus, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
@@ -30,6 +30,7 @@ const ACTIVE_MS = (CT117E_M4_MID_TIME_PS - COLD_END_PS) / PS_PER_MS;
 const POST_MS = (CT117E_M4_END_TIME_PS - CT117E_M4_MID_TIME_PS) / PS_PER_MS;
 const TOTAL_MS = CT117E_M4_END_TIME_PS / PS_PER_MS;
 const CLEAR_MS = (CT117E_M4_CLEAR_END_PS - CT117E_M4_CLEAR_START_PS) / PS_PER_MS;
+const TRACE_CLEAR_CPU = process.env.MICA_CT117E_M4_THREAD_CPU === '1';
 
 const cpuMs = (start: NodeJS.CpuUsage): number => {
   const usage = process.cpuUsage(start);
@@ -44,6 +45,29 @@ const timed = (advance: () => void) => {
   const wall = performance.now();
   advance();
   return { wallMs: performance.now() - wall, cpuMs: cpuMs(cpu) };
+};
+
+const timedClear = (iteration: number, advance: () => void) => {
+  if (!TRACE_CLEAR_CPU) return timed(advance);
+
+  // This is the Vitest worker's simulation thread, not the entire Node process.
+  writeSync(1, `CT117E_TIER_BEGIN ${iteration}\n`);
+  const start = process.threadCpuUsage();
+  const clear = timed(advance);
+  const thread = process.threadCpuUsage(start);
+  writeSync(1, `CT117E_TIER_END ${iteration}\n`);
+  const foregroundMs = (thread.user + thread.system) / 1_000;
+  process.stdout.write(
+    `CT117E_CLEAR_CPU ${JSON.stringify({
+      round: iteration,
+      wallMs: round(clear.wallMs),
+      foregroundMs: round(foregroundMs),
+      processMs: round(clear.cpuMs),
+      otherThreadsMs: round(clear.cpuMs - foregroundMs),
+      wallMinusForegroundMs: round(clear.wallMs - foregroundMs),
+    })}\n`,
+  );
+  return clear;
 };
 
 interface Reading {
@@ -91,7 +115,7 @@ it('dist 单实例 HAL_06_LCD.hex：360–390 ms 稳态清屏 CPU/墙钟', async
       const active = timed(() => advance(CT117E_M4_MID_TIME_PS));
       const entry = timed(() => advance(CT117E_M4_CLEAR_START_PS));
       const before = harness.workload();
-      const clear = timed(() => advance(CT117E_M4_CLEAR_END_PS));
+      const clear = timedClear(index + 1, () => advance(CT117E_M4_CLEAR_END_PS));
       const clearWork = lcdWorkDelta(before, harness.workload());
       const exit = timed(() => advance(CT117E_M4_END_TIME_PS));
       const postCpuMs = entry.cpuMs + clear.cpuMs + exit.cpuMs;
