@@ -534,6 +534,68 @@ test('numeric dirty slots match a one-element batch through replay and topology 
   assert.equal(single.sender.sample.status, 'floating');
 });
 
+test('a second driver coupling to a warm leaf forces a general solve on its next switch', () => {
+  const { network, sender, receiver, fresh, freshReceiver, senderHigh, senderLow, slots } =
+    publishFixture();
+  network.solve();
+  for (const intent of [senderHigh, senderLow, senderHigh]) {
+    sender.intent = intent;
+    assert.deepEqual(network.solveSlots(slots.sender), [slots.sender, slots.sender + 1]);
+  }
+  const replays = network.stats.leafPropagations;
+  assert.ok(replays >= 2);
+
+  // Only the other driver changes here. It creates a path from the original leaf to
+  // ground without touching the leaf's intent or its existing edge to the high rail.
+  fresh.intent = [senderLow[0], { to: sender, resistance }];
+  assert.deepEqual(network.solveSlots(slots.fresh), [2, 3, 4, 5]);
+  assert.ok(Math.abs(receiver.sample.voltage - 2.2) < 1e-9);
+  assert.ok(Math.abs(freshReceiver.sample.voltage - 1.1) < 1e-9);
+
+  sender.intent = senderLow;
+  assert.deepEqual(network.solveSlots(slots.sender), [2, 3, 4, 5]);
+  assert.equal(receiver.sample.voltage, 0);
+  assert.equal(freshReceiver.sample.voltage, 0);
+  assert.equal(network.stats.leafPropagations, replays);
+
+  fresh.intent = senderLow;
+  assert.deepEqual(network.solveSlots(slots.fresh), []);
+  sender.intent = senderHigh;
+  assert.deepEqual(network.solveSlots(slots.sender), [2, 3]);
+  assert.equal(receiver.sample.voltage, 3.3);
+  assert.equal(freshReceiver.sample.voltage, 0);
+  assert.equal(network.stats.leafPropagations, replays + 1);
+});
+
+test('a warm single slot replays after a batch and still matches a new intent identity', () => {
+  const { network, sender, receiver, fresh, freshReceiver, senderHigh, senderLow, slots } =
+    publishFixture();
+  network.solve();
+  sender.intent = senderHigh;
+  fresh.intent = senderHigh;
+  network.solveSlots([slots.sender, slots.fresh]);
+  sender.intent = senderLow;
+  network.solveSlots(slots.sender);
+  const before = network.stats;
+
+  sender.intent = senderHigh;
+  fresh.intent = senderLow;
+  assert.deepEqual(network.solveSlots([slots.fresh, slots.sender]), [2, 3, 4, 5]);
+  assert.equal(receiver.sample.voltage, 3.3);
+  assert.equal(freshReceiver.sample.voltage, 0);
+
+  // Same shape as the old low intent, but not the cached object.
+  sender.intent = Object.freeze([Object.freeze({ ...senderLow[0] })]);
+  assert.deepEqual(network.solveSlots(slots.sender), [2, 3]);
+  assert.equal(receiver.sample.voltage, 0);
+  sender.intent = senderHigh;
+  assert.deepEqual(network.solveSlots(slots.sender), [2, 3]);
+  assert.equal(receiver.sample.voltage, 3.3);
+  assert.equal(freshReceiver.sample.voltage, 0);
+  assert.equal(network.stats.leafPropagations, before.leafPropagations + 3);
+  assert.equal(network.stats.topologyPrepares, before.topologyPrepares);
+});
+
 test('a one-shot iterable is consumed once, so no dirty slot is dropped', () => {
   const fixture = publishFixture();
   const { network, sender, receiver, fresh, freshReceiver, senderHigh, slots } = fixture;

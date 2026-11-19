@@ -104,6 +104,8 @@ export interface ElectricalNetwork {
    * solve call, so consumers must publish from it immediately.
    */
   solveSlots(changedSlots?: number | Iterable<number>): readonly number[];
+  /** Hot entry for a complete single-slot dirty batch. Same contract as `solveSlots(slot)`. */
+  solveSlot(slot: number): readonly number[];
   readonly stats: ElectricalStats;
 }
 
@@ -828,6 +830,9 @@ export function createElectricalNetwork(
   const changedSlots: number[] = [];
   /** Admitted leaf shapes per pin slot; a pin normally alternates between two references. */
   const leafPlans: (LeafPropagation[] | undefined)[] = new Array(pins.length);
+  /** Last topology check for the single-slot entry, independent of intent identity. */
+  const leafEpochs = new Int32Array(pins.length);
+  let leafEpoch = 1;
   const leafSlots: number[] = [];
   const leafIntents: (readonly ResistorBranch[])[] = [];
   const leafEdges: (readonly Edge[])[] = [];
@@ -1144,6 +1149,28 @@ export function createElectricalNetwork(
     finishLeaf();
   };
 
+  function solveSlot(slot: number): readonly number[] {
+    const plans = leafPlans[slot];
+    if (plans !== undefined) {
+      const intent = pins[slot]!.intent;
+      if (intent !== intents[slot]) {
+        if (leafEpochs[slot] === leafEpoch) {
+          const first = plans[0]!;
+          const plan = first.intent === intent ? first : plans[1];
+          if (plan?.intent === intent) return applySingleLeaf(slot, intent, plan);
+        }
+        const plan = matchLeaf(slot, intent);
+        if (plan !== undefined) {
+          leafEpochs[slot] = leafEpoch;
+          return applySingleLeaf(slot, intent, plan);
+        }
+      }
+    }
+    inputSlots[0] = slot;
+    inputSlots.length = 1;
+    return runSolve(inputSlots);
+  }
+
   return {
     get stats(): ElectricalStats {
       return Object.freeze({ ...statistics });
@@ -1156,20 +1183,9 @@ export function createElectricalNetwork(
         published.push(pins[changed[position]!]!);
       return Object.freeze(published);
     },
+    solveSlot,
     solveSlots(changedSlotNumbers?: number | Iterable<number>): readonly number[] {
-      if (typeof changedSlotNumbers === 'number') {
-        const slot = changedSlotNumbers;
-        if (prepared !== undefined) {
-          const intent = pins[slot]!.intent;
-          if (intent !== intents[slot]) {
-            const plan = matchLeaf(slot, intent);
-            if (plan !== undefined) return applySingleLeaf(slot, intent, plan);
-          }
-        }
-        inputSlots[0] = slot;
-        inputSlots.length = 1;
-        return runSolve(inputSlots);
-      }
+      if (typeof changedSlotNumbers === 'number') return solveSlot(changedSlotNumbers);
       // An iterable batch of admitted leaf shapes can also bypass generic bookkeeping.
       // Anything else re-enters the full solver, which repeats the match and keeps every
       // guard on the slow path.
@@ -1241,6 +1257,13 @@ export function createElectricalNetwork(
    * every pin. Returns the changed slots in ascending board order.
    */
   function runSolve(input: readonly number[] | undefined): readonly number[] {
+    // The general solver may add an edge to a previously admitted leaf or change its
+    // driver. An admitted replay only moves an existing leaf's edge between fixed
+    // references, leaving all unknown-node degrees and every leaf's eligibility intact.
+    if (++leafEpoch === 0x7fffffff) {
+      leafEpochs.fill(0);
+      leafEpoch = 1;
+    }
     const initial = prepared === undefined;
     pendingAdmissions.length = 0;
     if (prepared !== undefined && !blocksStale && input !== undefined && input.length === 0) {

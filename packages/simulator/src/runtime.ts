@@ -612,7 +612,10 @@ class BoardRuntime implements Board {
     if (pending === -1) return;
     // Fused publish: dirty slots go straight into the local solve and the changed slots
     // resolve their pre-bound sample slot, so no pin object or map hop is involved.
-    const changed = this.network.solveSlots(pending >= 0 ? pending : this.dirtyElectricalSlots);
+    const changed =
+      pending >= 0
+        ? this.network.solveSlot(pending)
+        : this.network.solveSlots(this.dirtyElectricalSlots);
     if (pending === -2) this.dirtyElectricalSlots.clear();
     this.pendingElectricalSlot = -1;
     for (let index = 0; index < changed.length; index++)
