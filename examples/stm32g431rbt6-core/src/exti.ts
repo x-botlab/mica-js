@@ -26,7 +26,7 @@ import {
 import type { Body } from './ir';
 import { PORTS } from './machine';
 import { SYS } from './layout';
-import type { PeripheralModule } from './peripheral';
+import type { InterruptSource, PeripheralModule } from './peripheral';
 import { readSyscfgExtiPort } from './syscfg';
 
 /**
@@ -158,8 +158,9 @@ export const EXTI_PENDING_RANGES: readonly {
 
 const ACKNOWLEDGE_NONE = (): void => {};
 
-const INTERRUPTS = EXTI_PENDING_RANGES.map((range) => ({
+const INTERRUPTS = EXTI_PENDING_RANGES.map<InterruptSource>((range) => ({
   exception: exceptionOf(range.irq),
+  pendingIsPure: true,
   pending: (b: Body) => extiIrqPending(b, range.first, range.last),
   acknowledge: ACKNOWLEDGE_NONE,
 }));

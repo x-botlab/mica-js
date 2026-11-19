@@ -99,6 +99,7 @@ const usartExtModule: PeripheralModule = {
   },
   interrupts: EXT_USARTS.map((config) => ({
     exception: 16 + config.irq,
+    pendingIsPure: true,
     pending: (b: Body) => usartPending(b, config),
     acknowledge: () => {},
   })),
@@ -175,4 +176,3 @@ registerResetHook(resetModuleStates);
 
 /** 供诊断/文档读取当前 profile 的时间外设数量。 */
 export const peripheralCount = (): number => PERIPHERALS.length;
-

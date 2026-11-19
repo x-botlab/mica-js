@@ -1792,44 +1792,58 @@ export function dispatchExceptions(b: Body, returnPc: number | Value<number>): V
               const sourceWords = [0, 1, 2, 3].map(() =>
                 inner.local(types.number, 0),
               );
+              const sources = machine().interruptSources;
+              const eligibleWord = (bank: number) =>
+                inner.bitAnd(
+                  bankWord(inner, ENABLED, bank),
+                  inner.bitNot(bankWord(inner, ACTIVE, bank)),
+                );
+              // 只有所有回调都只读时，才能在执行它们之前读取 NVIC bank。
+              const eligibleWords = sources.every((source) => source.pendingIsPure)
+                ? sourceWords.map((_, bank) => eligibleWord(bank))
+                : undefined;
 
               const addSource = (
                 body: Body,
                 irq: number,
-                pending: Value<boolean>,
+                pending: (scope: Body) => Value<boolean>,
               ): void => {
-                if (irq < 0 || irq > G431_IRQ_MAX) return;
+                if (irq < 0 || irq > G431_IRQ_MAX) {
+                  if (eligibleWords === undefined) pending(body);
+                  return;
+                }
                 const bank = bankOf(irq);
                 const bit = 1 << bitOf(irq);
+                const poll = (scope: Body) => {
+                  scope.if(pending(scope), (hit) => {
+                    const target = asBody(hit);
 
-                body.if(
-                  pending,
-                  (hit) => {
-                    const scope = asBody(hit);
-
-                    scope.setLocal(
+                    target.setLocal(
                       sourceWords[bank]!,
-                      scope.bitOr(scope.getLocal(sourceWords[bank]!), num(scope, bit)),
+                      target.bitOr(target.getLocal(sourceWords[bank]!), num(target, bit)),
                     );
-                  },
-                  () => {},
-                );
+                  });
+                };
+                if (eligibleWords === undefined) {
+                  poll(body);
+                } else {
+                  // 只提前排除未启用或已 active 的线路。不能抢占的线路仍参与 ICSR 仲裁。
+                  body.if(boolBit(body, eligibleWords[bank]!, bit), (hit) => poll(asBody(hit)));
+                }
               };
 
-              for (const source of machine().interruptSources)
-                addSource(inner, source.exception - 16, source.pending(inner));
+              for (const source of sources)
+                addSource(inner, source.exception - 16, (scope) => source.pending(scope));
+              // 内建 USART 的电平读取也无副作用。
               for (const config of USARTS)
-                addSource(inner, config.irq, usartPending(inner, config));
+                addSource(inner, config.irq, (scope) => usartPending(scope, config));
 
               // 先逐 bank 排除不可能入选的 IRQ；组优先级和屏蔽仍在候选比较中处理，
               // 因为即使不能抢占，候选也参与 ICSR.VECTPENDING 的选择。
               sourceWords.forEach((source, bank) => {
                 const eligible = inner.bitAnd(
                   inner.bitOr(bankWord(inner, PENDING, bank), inner.getLocal(source)),
-                  inner.bitAnd(
-                    bankWord(inner, ENABLED, bank),
-                    inner.bitNot(bankWord(inner, ACTIVE, bank)),
-                  ),
+                  eligibleWords?.[bank] ?? eligibleWord(bank),
                 );
                 const candidates = inner.local(
                   types.number,

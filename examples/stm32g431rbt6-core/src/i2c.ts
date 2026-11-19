@@ -2189,11 +2189,13 @@ function writeI2cAddress(
 const i2cInterrupts: readonly InterruptSource[] = I2C_CONFIGS.flatMap((config) => [
   {
     exception: 16 + config.evIrq,
+    pendingIsPure: true,
     pending: (b: Body) => i2cEventPending(b, config),
     acknowledge: () => {},
   },
   {
     exception: 16 + config.erIrq,
+    pendingIsPure: true,
     pending: (b: Body) => i2cErrorPending(b, config),
     acknowledge: () => {},
   },

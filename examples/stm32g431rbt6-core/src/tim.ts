@@ -2289,6 +2289,7 @@ export function timerInterrupts(): readonly InterruptSource[] {
     .sort((left, right) => left - right)
     .map((irq) => ({
       exception: irq + 16,
+      pendingIsPure: true,
       pending: (b: Body) => timerIrqPending(b, irq),
       acknowledge: () => {},
     }));

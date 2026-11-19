@@ -403,6 +403,7 @@ export const dmamuxModule: PeripheralModule = {
   interrupts: [
     {
       exception: DMAMUX_IRQ + 16,
+      pendingIsPure: true,
       pending: dmamuxPending,
       acknowledge: () => {},
     },

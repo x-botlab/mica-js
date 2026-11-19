@@ -1605,11 +1605,13 @@ export function fdcanPendingAny(b: Body): Value<boolean> {
 const fdcanInterrupts: readonly InterruptSource[] = [
   {
     exception: 16 + FDCAN1_IT0_IRQ,
+    pendingIsPure: true,
     pending: (b) => fdcanPending(b, 0),
     acknowledge: () => {},
   },
   {
     exception: 16 + FDCAN1_IT1_IRQ,
+    pendingIsPure: true,
     pending: (b) => fdcanPending(b, 1),
     acknowledge: () => {},
   },

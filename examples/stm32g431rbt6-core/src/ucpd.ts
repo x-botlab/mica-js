@@ -725,6 +725,7 @@ export function ucpdPending(b: Body): Value<boolean> {
 
 const ucpdInterrupt: InterruptSource = {
   exception: 16 + UCPD1_IRQ,
+  pendingIsPure: true,
   pending: (b) => ucpdPending(b),
   acknowledge: () => {},
 };

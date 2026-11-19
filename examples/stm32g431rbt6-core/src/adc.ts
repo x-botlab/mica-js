@@ -1418,6 +1418,7 @@ export function createAdcModule(): PeripheralModule {
     interrupts: [
       {
         exception: ADC12_EXCEPTION,
+        pendingIsPure: true,
         pending: adcIrqPending,
         acknowledge: () => {},
       },

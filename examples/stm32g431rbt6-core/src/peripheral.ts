@@ -28,6 +28,8 @@ export interface PeripheralRange {
 /** 一个外设对 NVIC 暴露的中断源；异常号是 16 + CMSIS IRQn。 */
 export interface InterruptSource {
   readonly exception: number;
+  /** `pending` 只读取状态或内部寄存器，无副作用，结果可在该 IRQ 不参与仲裁时省略。 */
+  readonly pendingIsPure?: true;
   readonly pending: (b: Body) => Value<boolean>;
   readonly acknowledge: (b: Body) => void;
 }

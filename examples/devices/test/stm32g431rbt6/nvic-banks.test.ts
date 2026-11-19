@@ -1,4 +1,16 @@
+import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import type { DeviceContext } from '@mica-js/sdk/device';
+import { types } from '@mica-js/sdk/model';
+import { bool, num } from '@mica-js/stm32g431rbt6-core/ir';
+import { activateMachine } from '@mica-js/stm32g431rbt6-core/machine';
+import {
+  dispatchExceptions,
+  readScb,
+  writeBasepri,
+  writeNvic,
+} from '@mica-js/stm32g431rbt6-core/nvic';
 import { describe, expect, it } from 'vitest';
+import { captureFifoModel } from './capture-fifo-rig';
 import { systemBoard } from './system-harness';
 import { SystemThumb, vectorOf } from './system-thumb';
 
@@ -12,6 +24,7 @@ import { SystemThumb, vectorOf } from './system-thumb';
  */
 
 const SRAM_BASE = 0x2000_0000;
+const NVIC_ISER0 = 0xe000_e100;
 const NVIC_ISER1 = 0xe000_e104;
 const NVIC_ISPR1 = 0xe000_e204;
 const NVIC_ICPR1 = 0xe000_e284;
@@ -20,6 +33,7 @@ const NVIC_ISPR2 = 0xe000_e208;
 const NVIC_ICPR2 = 0xe000_e288;
 const NVIC_IPR = 0xe000_e400;
 const SCB_ICSR = 0xe000_ed04;
+const ICSR_PENDING = (1 << 22) | (0x1ff << 12); // ISRPENDING + VECTPENDING
 
 function address(t: SystemThumb, register: number, value: number): void {
   t.movw(register, value & 0xffff).movt(register, value >>> 16);
@@ -190,6 +204,132 @@ describe('STM32G431RBT6 NVIC 多 bank 与优先级', () => {
       expect(board.sramWord(0x108)).toBe(1);
       expect(board.sramWord(0x100)).toBe(1);
     } finally {
+      board.dispose();
+    }
+  });
+
+  it('TIM2 电平在 NVIC 启用后可见，BASEPRI 不隐藏 ICSR pending，active 时不自我挂起', async () => {
+    const t = new SystemThumb();
+    const tim2Irq = 28;
+    const exception = vectorOf(tim2Irq);
+    const result = SRAM_BASE + 0x240;
+    const captureIcsr = (offset: number) => {
+      address(t, 0, SCB_ICSR);
+      address(t, 2, result);
+      t.ldrWord(1, 0, 0).strWord(1, 2, offset);
+    };
+    const enableTim2Irq = () => {
+      address(t, 0, NVIC_ISER0);
+      t.movw(1, 0).movt(1, 0x1000).strWord(1, 0, 0);
+    };
+
+    t.vector(exception, 'tim2').mark('start');
+    address(t, 0, 0x4002_1000); // RCC
+    t.movs(1, 1).strWord(1, 0, 0x58); // TIM2EN
+    address(t, 0, NVIC_IPR + tim2Irq);
+    t.movs(1, 0x80).strByte(1, 0, 0);
+    t.movs(1, 0x40).msr(1, 17); // BASEPRI
+    address(t, 0, 0x4000_0000); // TIM2
+    t.movs(1, 1).strWord(1, 0, 0x0c).strWord(1, 0, 0x14); // UIE + UG, counter stays off
+    captureIcsr(0);
+    enableTim2Irq();
+    captureIcsr(4);
+    t.movs(1, 0).msr(1, 17).spin();
+
+    t.mark('tim2');
+    increment(t, result + 12);
+    enableTim2Irq(); // 触发新一轮仲裁，UIF 仍置位。
+    captureIcsr(8);
+    address(t, 0, 0x4000_0000);
+    t.movs(1, 0).strWord(1, 0, 0x10).bx(14); // UIF 清零
+
+    const board = await systemBoard({ firmware: t.build(), clockFrequency: 16_000_000 });
+    const pending = (icsr: number) => icsr & ICSR_PENDING;
+
+    try {
+      board.run(1_000_000_000);
+      expect(board.faults).toEqual([]);
+      expect(board.cpuFaults).toEqual([]);
+      expect(pending(board.sramWord(0x240))).toBe(0);
+      expect(pending(board.sramWord(0x244))).toBe((1 << 22) | (exception << 12));
+      expect(board.sramWord(0x248) & 0x1ff).toBe(exception);
+      expect(pending(board.sramWord(0x248))).toBe(0);
+      expect(board.sramWord(0x24c)).toBe(1);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('未声明纯读取的回调仍执行，仲裁使用回调结束后的 NVIC 使能位', async () => {
+    const model = await captureFifoModel();
+    const targetIrq = 28;
+    const library = createDeviceLibrary([
+      {
+        id: 'nvic',
+        model,
+        create(context: DeviceContext) {
+          const registration = context.attachJit({
+            entry: 'nvic',
+            code: 'code',
+            pc: 'pc',
+            translate({ pc }, block) {
+              block.instruction({ pc, nextPc: pc }, (b) => {
+                writeNvic(b, num(b, 0x300 + targetIrq), 1, num(b, 0x80));
+                writeBasepri(b, num(b, 0x40)); // 只观察 ICSR，不进入异常。
+                activateMachine(
+                  {
+                    profile: 'nvic-test',
+                    clockFrequency: 16_000_000,
+                    cyclePs: 62_500,
+                    alternateDrivers: [],
+                    peripherals: [],
+                    interruptSources: [
+                      {
+                        exception: vectorOf(targetIrq),
+                        pendingIsPure: true,
+                        pending: (scope) => bool(scope, true),
+                        acknowledge: () => {},
+                      },
+                      {
+                        exception: vectorOf(37), // 此回调对应的 IRQ 始终禁用。
+                        pending(scope) {
+                          writeNvic(scope, num(scope, 0), 4, num(scope, 1 << targetIrq));
+                          return bool(scope, false);
+                        },
+                        acknowledge: () => {},
+                      },
+                    ],
+                  },
+                  () => dispatchExceptions(b, pc),
+                );
+                b.store32le('sram', num(b, 0x100), readScb(b, num(b, 4), 4));
+                b.stop();
+              });
+              return block.finish();
+            },
+          });
+          context.loadBytes('code', new Uint8Array(8));
+          return { sync() {}, dispose: () => registration.dispose() };
+        },
+      },
+    ]);
+    const board = createBoard(library, { instances: [{ id: 'mcu', type: 'nvic' }], nets: [] });
+    const faults: string[] = [];
+    const subscription = board.onDidError((fault) => faults.push(fault.message));
+
+    try {
+      board.runUntil(1);
+      expect(faults).toEqual([]);
+      const [instance] = (
+        board as unknown as {
+          instances: readonly { memories: ReadonlyMap<string, Uint8Array> }[];
+        }
+      ).instances;
+      const sram = instance!.memories.get('sram')!;
+      const icsr = new DataView(sram.buffer, sram.byteOffset).getUint32(0x100, true);
+      expect(icsr & ICSR_PENDING).toBe((1 << 22) | (vectorOf(targetIrq) << 12));
+    } finally {
+      subscription.dispose();
       board.dispose();
     }
   });
