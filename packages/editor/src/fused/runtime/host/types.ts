@@ -113,8 +113,11 @@ export interface IFusedRuntime {
   prepareDisplay(input: IFusedDisplayPrepareInput): Promise<readonly IFusedInstancePresentation[]>;
   /** Restarts continuous fixed-step advancement after pause; requires a run session. */
   resume(): Promise<void>;
-  /** Stops advancement, keeping models, listeners and presentation state. */
-  pause(): void;
+  /**
+   * Stops advancement after the simulation guest acknowledged it, keeping models, listeners and
+   * presentation state. Resolves without a session outside run mode.
+   */
+  pause(): Promise<void>;
   /** Advances exactly one fixed step; requires a paused run session. */
   step(): Promise<void>;
   /** Rebuilds models and presentation of the run session from the same captured bytes, then advances. */

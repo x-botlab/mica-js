@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
 import type {
+  ConnectionNode,
+  ConnectionWire,
   DevicePropertyDescriptor,
   FusedInstance,
+  NetLabel,
   PropertyValue,
   UnifiedDeviceManifest,
+  VoltageReference,
 } from '@mica-js/document/fused';
 import type { IAssetProvider } from '../providers';
 import { Icon } from '../parts/activity-bar-part';
@@ -138,9 +142,211 @@ function PropertyField(props: IPropertyProps) {
   );
 }
 
+/** Everything a selection can describe when it is not a device instance. */
+export type IInspectorAnnotation =
+  | {
+      readonly kind: 'reference';
+      readonly reference: VoltageReference;
+      readonly endpoint: string;
+    }
+  | { readonly kind: 'label'; readonly label: NetLabel; readonly endpoint: string }
+  | {
+      readonly kind: 'wire';
+      readonly wire: ConnectionWire;
+      readonly from: string;
+      readonly to: string;
+    }
+  | { readonly kind: 'node'; readonly node: ConnectionNode };
+
+/** Text or number cell that commits on blur and Enter, restoring `Escape`. */
+function CommitInput(props: {
+  readonly label: string;
+  readonly value: string;
+  readonly numeric: boolean;
+  readonly placeholder?: string;
+  readonly disabled: boolean;
+  readonly commit: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(props.value);
+  useEffect(() => setDraft(props.value), [props.value]);
+  const commit = () => {
+    if (props.disabled || draft === props.value) return;
+    props.commit(draft);
+  };
+  return (
+    <input
+      aria-label={props.label}
+      type={props.numeric ? 'number' : 'text'}
+      value={draft}
+      placeholder={props.placeholder}
+      disabled={props.disabled}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          commit();
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          setDraft(props.value);
+        }
+      }}
+    />
+  );
+}
+
+function AnnotationField(props: { readonly label: string; readonly children: React.ReactNode }) {
+  return (
+    <div className="mica-wb-property">
+      <label>{props.label}</label>
+      <div className="mica-wb-property-control">{props.children}</div>
+    </div>
+  );
+}
+
+const REFERENCE_TITLES: Readonly<Record<'power' | 'ground' | 'constraint', string>> = {
+  power: '电源端',
+  ground: '接地端',
+  constraint: '电压参考',
+};
+
+function AnnotationFields(props: {
+  readonly annotation: IInspectorAnnotation;
+  readonly disabled: boolean;
+  readonly onRenameLabel: (labelId: string, name: string) => void;
+  readonly onSetVoltage: (referenceId: string, voltage: number) => void;
+  readonly onSetReferenceName: (referenceId: string, name: string | undefined) => void;
+  readonly onSetRotation: (referenceId: string, rotation: number) => void;
+  readonly onError: (error: unknown) => void;
+}) {
+  const annotation = props.annotation;
+  if (annotation.kind === 'node')
+    return (
+      <dl className="mica-wb-identity">
+        <dt>对象</dt>
+        <dd>连接节点</dd>
+        <dt>类型</dt>
+        <dd>{annotation.node.kind === 'junction' ? '分支点' : '自由端点'}</dd>
+        <dt>坐标</dt>
+        <dd>{`${String(annotation.node.x)}, ${String(annotation.node.y)} mm`}</dd>
+      </dl>
+    );
+  if (annotation.kind === 'wire')
+    return (
+      <dl className="mica-wb-identity">
+        <dt>对象</dt>
+        <dd>导线</dd>
+        <dt>起点</dt>
+        <dd>{annotation.from}</dd>
+        <dt>终点</dt>
+        <dd>{annotation.to}</dd>
+        <dt>折点</dt>
+        <dd>{String(annotation.wire.bends.length)}</dd>
+      </dl>
+    );
+  if (annotation.kind === 'label')
+    return (
+      <>
+        <dl className="mica-wb-identity">
+          <dt>对象</dt>
+          <dd>网标</dd>
+          <dt>连接端</dt>
+          <dd>{annotation.endpoint}</dd>
+        </dl>
+        <AnnotationField label="网名">
+          <CommitInput
+            label="网名"
+            numeric={false}
+            value={annotation.label.name}
+            disabled={props.disabled}
+            commit={(draft) => {
+              const name = draft.trim();
+              if (name.length === 0) {
+                props.onError(new Error('网名不能为空'));
+                return;
+              }
+              props.onRenameLabel(annotation.label.id, name);
+            }}
+          />
+        </AnnotationField>
+      </>
+    );
+  const reference = annotation.reference;
+  const ground = reference.symbol === 'ground';
+  return (
+    <>
+      <dl className="mica-wb-identity">
+        <dt>对象</dt>
+        <dd>{REFERENCE_TITLES[reference.symbol ?? 'constraint']}</dd>
+        <dt>连接端</dt>
+        <dd>{annotation.endpoint}</dd>
+        {ground ? (
+          <>
+            <dt>电压</dt>
+            <dd>0 V</dd>
+          </>
+        ) : undefined}
+      </dl>
+      {reference.symbol === undefined ? undefined : (
+        <AnnotationField label="角度（°）">
+          <CommitInput
+            label="角度"
+            numeric
+            value={String(reference.rotation ?? 0)}
+            disabled={props.disabled}
+            commit={(draft) => {
+              const rotation = Number(draft);
+              if (draft.trim() === '' || !Number.isFinite(rotation)) {
+                props.onError(new Error('角度需要有效数值'));
+                return;
+              }
+              props.onSetRotation(reference.id, rotation);
+            }}
+          />
+        </AnnotationField>
+      )}
+      {ground ? undefined : (
+        <AnnotationField label="电压（V）">
+          <CommitInput
+            label="电压"
+            numeric
+            value={String(reference.voltage)}
+            disabled={props.disabled}
+            commit={(draft) => {
+              const voltage = Number(draft);
+              if (draft.trim() === '' || !Number.isFinite(voltage)) {
+                props.onError(new Error('电压需要有效数值'));
+                return;
+              }
+              props.onSetVoltage(reference.id, voltage);
+            }}
+          />
+        </AnnotationField>
+      )}
+      {reference.symbol === 'power' ? (
+        <AnnotationField label="网名">
+          <CommitInput
+            label="网名"
+            numeric={false}
+            value={reference.label?.name ?? ''}
+            placeholder="未命名"
+            disabled={props.disabled}
+            commit={(draft) => {
+              const name = draft.trim();
+              props.onSetReferenceName(reference.id, name.length === 0 ? undefined : name);
+            }}
+          />
+        </AnnotationField>
+      ) : undefined}
+    </>
+  );
+}
+
 export function InspectorView(props: {
   readonly instance: FusedInstance | undefined;
   readonly manifest: UnifiedDeviceManifest | undefined;
+  /** Selected terminal, net label, wire or node when no device instance is selected. */
+  readonly annotation?: IInspectorAnnotation | undefined;
   readonly selectionCount: number;
   readonly disabled: boolean;
   readonly assets?: IAssetProvider | undefined;
@@ -149,6 +355,10 @@ export function InspectorView(props: {
   readonly snapshots?: FusedPresentationProps | undefined;
   readonly onSet: (key: string, value: PropertyValue) => void;
   readonly onReset: (key: string) => void;
+  readonly onRenameLabel: (labelId: string, name: string) => void;
+  readonly onSetVoltage: (referenceId: string, voltage: number) => void;
+  readonly onSetReferenceName: (referenceId: string, name: string | undefined) => void;
+  readonly onSetRotation: (referenceId: string, rotation: number) => void;
   readonly onValidate: (
     key: string,
     value: PropertyValue,
@@ -197,11 +407,28 @@ export function InspectorView(props: {
       >
         <details open={props.hideHeader || !props.collapsed} onToggle={toggled}>
           {header}
-          <p className="mica-wb-empty">
-            {props.selectionCount > 1
-              ? `已选择 ${props.selectionCount} 个对象`
-              : '选择器件以查看其属性'}
-          </p>
+          {props.annotation === undefined ? (
+            <p className="mica-wb-empty">
+              {props.selectionCount > 1
+                ? `已选择 ${props.selectionCount} 个对象`
+                : '选择器件以查看其属性'}
+            </p>
+          ) : (
+            <div
+              className="mica-wb-property-fields"
+              style={{ height: props.fill ? undefined : props.height }}
+            >
+              <AnnotationFields
+                annotation={props.annotation}
+                disabled={props.disabled}
+                onRenameLabel={props.onRenameLabel}
+                onSetVoltage={props.onSetVoltage}
+                onSetReferenceName={props.onSetReferenceName}
+                onSetRotation={props.onSetRotation}
+                onError={props.onError}
+              />
+            </div>
+          )}
         </details>
       </section>
     );

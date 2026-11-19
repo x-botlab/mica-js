@@ -10,6 +10,7 @@ import type {
   VoltageReference,
 } from '@mica-js/document/fused';
 import type { IFusedTextTarget } from '../document/edits';
+import type { IWorkbenchTarget } from '../types';
 
 export interface ICanvasDevice {
   readonly manifest: UnifiedDeviceManifest;
@@ -308,6 +309,28 @@ export function pickAnnotation(
       return { kind: 'label', id: label.id };
   }
   return undefined;
+}
+
+/**
+ * Object a double click configures: text (an embedded net name or designator) wins over an
+ * annotation symbol, which wins over a device body, matching the click-selection order.
+ */
+export function pickDoubleClickTarget(
+  document: FusedDocument,
+  devices: ReadonlyMap<string, ICanvasDevice>,
+  point: Point2D,
+  scale: number,
+): IWorkbenchTarget | undefined {
+  const text = pickText(document, devices, point, scale);
+  if (text !== undefined) {
+    return text.kind === 'designator'
+      ? { kind: 'instance', id: text.id }
+      : { kind: text.kind, id: text.id };
+  }
+  const annotation = pickAnnotation(document, devices, point, 3 / scale);
+  if (annotation !== undefined) return annotation;
+  const instance = pickInstance(document, devices, point);
+  return instance === undefined ? undefined : { kind: 'instance', id: instance.id };
 }
 
 function containsExpanded(bounds: Rect2D, point: Point2D, tolerance: number): boolean {

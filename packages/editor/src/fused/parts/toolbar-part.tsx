@@ -146,7 +146,7 @@ export function ToolbarPart(props: {
             </div>
           )}
           {overflow.length > 0 && (
-            <>
+            <span className="mica-wb-more">
               <button
                 className="mica-wb-more-button"
                 aria-label="更多工具"
@@ -161,7 +161,7 @@ export function ToolbarPart(props: {
                   {overflow.map(itemButton)}
                 </div>
               )}
-            </>
+            </span>
           )}
         </>
       )}

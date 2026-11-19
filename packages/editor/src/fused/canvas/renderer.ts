@@ -10,8 +10,20 @@ import {
   type IViewport,
 } from './geometry';
 import type { WorkbenchThemeColors } from '../theme';
-import { moveReference, moveWireSegment, orthogonalPath, routeDocumentWires } from '../wiring';
-import { setTextOffset, type IFusedTextTarget } from '../document/edits';
+import {
+  labelAnchorNode,
+  moveLabel,
+  moveReference,
+  moveWireSegment,
+  orthogonalPath,
+  routeDocumentWires,
+} from '../wiring';
+import {
+  setTextOffset,
+  type IFusedTextTarget,
+  DEFAULT_POWER_NET_NAME,
+  DEFAULT_POWER_VOLTAGE,
+} from '../document/edits';
 
 export interface IRenderState {
   readonly document: FusedDocument;
@@ -34,6 +46,7 @@ export interface IRenderState {
   };
   readonly textDrag?: { readonly target: IFusedTextTarget; readonly offset: Point2D };
   readonly referenceDrag?: { readonly referenceId: string; readonly position: Point2D };
+  readonly labelDrag?: { readonly labelId: string; readonly position: Point2D };
   readonly ghost?: {
     readonly device: string;
     readonly position: Point2D;
@@ -112,6 +125,16 @@ export function drawCanvas(
       () => `__reference_drag_${previewId++}__`,
     );
   }
+  if (
+    state.labelDrag !== undefined &&
+    labelAnchorNode(document, state.labelDrag.labelId) !== undefined
+  )
+    document = moveLabel(
+      document,
+      state.devices,
+      state.labelDrag.labelId,
+      state.labelDrag.position,
+    );
   const stroke = (points: readonly Point2D[]): void => {
     context.beginPath();
     points.forEach((point, index) => {
@@ -280,8 +303,11 @@ export function drawCanvas(
                       id: '__annotation__',
                       target: { kind: 'node', node: '__annotation__' },
                       symbol: state.annotation.kind,
-                      voltage: state.annotation.kind === 'ground' ? 0 : 5,
+                      voltage: state.annotation.kind === 'ground' ? 0 : DEFAULT_POWER_VOLTAGE,
                       rotation: state.annotation.rotation,
+                      ...(state.annotation.kind === 'power'
+                        ? { label: { name: DEFAULT_POWER_NET_NAME } }
+                        : {}),
                     },
                   ],
           };

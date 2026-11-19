@@ -15,18 +15,29 @@ import { createContextKeyService } from './context';
 import { FusedDocumentSession } from './document';
 import {
   addLabel,
-  addReference,
+  addPlacedReference,
   addWire,
   rotateTargets,
+  setLabelName,
+  setReferenceLabelName,
+  setReferenceRotation,
+  setReferenceVoltage,
   setTextOffset,
   setInstanceProperty,
 } from './document/edits';
-import { materializeAnchor, moveReference, moveWireSegment, routeDocumentWires } from './wiring';
+import {
+  materializeAnchor,
+  moveLabel,
+  moveReference,
+  moveWireSegment,
+  routeDocumentWires,
+} from './wiring';
 import { ContributionRegistry } from './contributions/registry';
 import { findBodyOverlaps } from './canvas/geometry';
 import { createHtmlViewHost, type IHtmlViewHost } from './html';
 import { resolveViewLayout } from './views/layout';
 import { normalizeTheme, type WorkbenchTheme } from './theme';
+import { createSimulationControl } from './simulation';
 import { createFusedRuntime, type IFusedRuntime } from './runtime';
 import type { IWorkbenchAccessProvider } from './providers';
 import type {
@@ -196,6 +207,11 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
   let presentation = Promise.resolve();
   let presentationSignature = '';
   let version = 0;
+  const simulation = disposables.add(
+    createSimulationControl(() => {
+      if (mode === 'run') update();
+    }),
+  );
   const images = new Map<string, ImageBitmap | HTMLImageElement>();
   const imageLocks = new Map<string, string>();
   const overlays = new Map<string, ImageBitmap>();
@@ -215,6 +231,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
     const value = documentSession.getState();
     return Object.freeze({
       mode,
+      simulationStatus: mode === 'run' ? simulation.status : undefined,
       busy,
       dirty: value.dirty,
       readOnly: value.readOnly,
@@ -318,6 +335,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
   async function releaseRuntime(): Promise<void> {
     htmlViews?.closeAll();
     runtimeGeneration++;
+    simulation.detach();
     const previous = runtime;
     runtimeDocument = undefined;
     runtime = undefined;
@@ -437,11 +455,26 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
       })
       .catch(error);
   }
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const task = transition.then(operation);
+    transition = task.then(
+      () => undefined,
+      () => undefined,
+    );
+    return task;
+  }
+  function controlSimulation(operation: 'pause' | 'resume'): Promise<void> {
+    return enqueue(async () => {
+      assertReady();
+      if (mode !== 'run') throw new Error(`simulation.${operation} requires Run mode`);
+      await simulation[operation]();
+    });
+  }
   async function setMode(next: WorkbenchMode): Promise<void> {
     assertReady();
     if (next !== 'edit' && next !== 'run')
       throw new Error(`Invalid workbench mode: ${String(next)}`);
-    const task = transition.then(async () => {
+    return enqueue(async () => {
       assertReady();
       if (next === mode) return;
       busy = true;
@@ -454,6 +487,8 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
           await documentSession.setRunning(true);
           await releaseRuntime();
           runtime = await createRuntime('run');
+          if (runtime === undefined) throw new Error('Run mode requires a mounted runtime');
+          simulation.attach(runtime);
           await documentSession.refreshAccess();
           const permission = documentSession.getAccess().run;
           if (!permission.allowed) throw new Error(permission.message);
@@ -495,11 +530,6 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
         if (mode === 'edit') refreshPresentation();
       }
     });
-    transition = task.then(
-      () => undefined,
-      () => undefined,
-    );
-    return task;
   }
   function assertEditable(): void {
     assertReady();
@@ -633,6 +663,8 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
       update();
     },
     'workbench.setMode': ({ mode }) => setMode(mode),
+    'simulation.pause': () => controlSimulation('pause'),
+    'simulation.resume': () => controlSimulation('resume'),
     'canvas.fit': async () => {
       canvas?.fit();
     },
@@ -720,6 +752,34 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
           position,
           () => crypto.randomUUID(),
         ),
+      );
+    },
+    'label.move': async ({ labelId, position }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        moveLabel(current, documentSession.getDevices().getLoadedDevices(), labelId, position),
+      );
+    },
+    'label.setName': async ({ labelId, name }) => {
+      assertEditable();
+      await documentSession.transact((current) => setLabelName(current, labelId, name));
+    },
+    'reference.setVoltage': async ({ referenceId, voltage }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        setReferenceVoltage(current, referenceId, voltage),
+      );
+    },
+    'reference.setName': async ({ referenceId, name }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        setReferenceLabelName(current, referenceId, name),
+      );
+    },
+    'reference.setRotation': async ({ referenceId, rotation }) => {
+      assertEditable();
+      await documentSession.transact((current) =>
+        setReferenceRotation(current, referenceId, rotation),
       );
     },
     'wire.add': ({ from, to, bends }) => {
@@ -987,13 +1047,8 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
         );
         return activeTool === 'label'
           ? addLabel(anchor.document, anchor.endpoint, name, {}, () => crypto.randomUUID()).document
-          : addReference(
-              anchor.document,
-              anchor.endpoint,
-              activeTool === 'ground' ? 0 : 5,
-              activeTool,
-              { rotation },
-              () => crypto.randomUUID(),
+          : addPlacedReference(anchor.document, anchor.endpoint, activeTool, rotation, () =>
+              crypto.randomUUID(),
             ).document;
       });
       if (tool === activeTool) {

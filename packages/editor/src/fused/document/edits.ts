@@ -70,9 +70,80 @@ export function setTextOffset(
   };
 }
 
+/** Renames the net one label declares; the anchor and display offset stay as they are. */
+export function setLabelName(
+  document: FusedDocument,
+  labelId: string,
+  name: string,
+): FusedDocument {
+  const label = document.labels.find((value) => value.id === labelId);
+  if (label === undefined)
+    throw new FusedSessionError('edit/unknown-target', `Unknown label ${JSON.stringify(labelId)}.`);
+  const next = requireNetName(name);
+  if (next === label.name) return document;
+  return {
+    ...document,
+    labels: document.labels.map((value) =>
+      value.id === labelId ? { ...value, name: next } : value,
+    ),
+  };
+}
+
+/** Sets the ideal voltage of one reference; a ground symbol stays at 0 V. */
+export function setReferenceVoltage(
+  document: FusedDocument,
+  referenceId: string,
+  voltage: number,
+): FusedDocument {
+  const reference = requireReference(document, referenceId);
+  const next = requireFinite(voltage, 'voltage');
+  if (reference.symbol === 'ground' && next !== 0)
+    throw new FusedSessionError('edit/invalid-request', 'A ground symbol keeps 0 V.');
+  if (next === reference.voltage) return document;
+  return {
+    ...document,
+    references: document.references.map((value) =>
+      value.id === referenceId ? { ...value, voltage: next } : value,
+    ),
+  };
+}
+
+/** Renames or removes the net name a power symbol owns. */
+export function setReferenceLabelName(
+  document: FusedDocument,
+  referenceId: string,
+  name: string | undefined,
+): FusedDocument {
+  const reference = requireReference(document, referenceId);
+  if (reference.symbol === undefined)
+    throw new FusedSessionError('edit/invalid-request', 'Only a reference symbol owns a net name.');
+  if (reference.symbol === 'ground')
+    throw new FusedSessionError('edit/invalid-request', 'A ground symbol is always GND.');
+  const label =
+    name === undefined
+      ? undefined
+      : {
+          name: requireNetName(name),
+          ...(reference.label?.offset === undefined ? {} : { offset: reference.label.offset }),
+        };
+  if (label?.name === reference.label?.name) return document;
+  const { id, target, voltage, symbol, rotation } = reference;
+  const next: VoltageReference = {
+    id,
+    target,
+    voltage,
+    ...(symbol === undefined ? {} : { symbol }),
+    ...(rotation === undefined ? {} : { rotation }),
+    ...(label === undefined ? {} : { label }),
+  };
+  return {
+    ...document,
+    references: document.references.map((value) => (value.id === referenceId ? next : value)),
+  };
+}
+
 /** Allocates one element id; the session defaults to `crypto.randomUUID`. */
 export type IdFactory = () => string;
-
 export interface IAddInstanceResult {
   readonly document: FusedDocument;
   readonly instanceId: string;
@@ -287,8 +358,24 @@ export function rotateInstances(
   }));
 }
 
-/** Rotates selected devices and reference symbols around their own electrical anchors. */
-export function rotateTargets(
+/** Sets the clockwise rotation of one reference symbol around its anchor. */
+export function setReferenceRotation(
+  document: FusedDocument,
+  referenceId: string,
+  rotation: number,
+): FusedDocument {
+  const reference = requireReference(document, referenceId);
+  const next = normalizeDegrees(requireFinite(rotation, 'rotation'));
+  if (next === (reference.rotation ?? 0)) return document;
+  return {
+    ...document,
+    references: document.references.map((value) =>
+      value.id === referenceId ? { ...value, rotation: next } : value,
+    ),
+  };
+}
+
+/** Rotates selected devices and reference symbols around their own electrical anchors. */ export function rotateTargets(
   document: FusedDocument,
   targets: readonly IFusedDocumentTarget[],
   degrees: number,
@@ -462,6 +549,11 @@ export function addLabel(
   return { document: { ...document, labels: [...document.labels, label] }, labelId };
 }
 
+/** Ideal voltage of a power symbol placed from the editor toolbar. */
+export const DEFAULT_POWER_VOLTAGE = 3.3;
+/** Net name embedded in a power symbol placed from the editor toolbar. */
+export const DEFAULT_POWER_NET_NAME = 'VCC';
+
 /** Attaches an ideal voltage reference, optionally with the built-in power or ground symbol. */
 export function addReference(
   document: FusedDocument,
@@ -503,6 +595,27 @@ export function addReference(
     document: { ...document, references: [...document.references, reference] },
     referenceId,
   };
+}
+
+/**
+ * Adds the reference a toolbar-placed power or ground symbol creates. A power symbol starts on an
+ * explicit `VCC` net at 3.3 V; a ground symbol stays at 0 V and owns no net name.
+ */
+export function addPlacedReference(
+  document: FusedDocument,
+  target: Endpoint,
+  symbol: 'power' | 'ground',
+  rotation: number,
+  createId: IdFactory,
+): { readonly document: FusedDocument; readonly referenceId: string } {
+  return addReference(
+    document,
+    target,
+    symbol === 'ground' ? 0 : DEFAULT_POWER_VOLTAGE,
+    symbol,
+    symbol === 'power' ? { rotation, label: { name: DEFAULT_POWER_NET_NAME } } : { rotation },
+    createId,
+  );
 }
 
 /** Stores the per-instance sidebar and HTML view layout; `undefined` restores the defaults. */
@@ -680,6 +793,25 @@ function requireInstance(document: FusedDocument, instanceId: string): FusedInst
     );
   }
   return instance;
+}
+
+function requireReference(document: FusedDocument, referenceId: string): VoltageReference {
+  const reference = document.references.find((value) => value.id === referenceId);
+  if (reference === undefined) {
+    throw new FusedSessionError(
+      'edit/unknown-target',
+      `Unknown reference ${JSON.stringify(referenceId)}.`,
+    );
+  }
+  return reference;
+}
+
+function requireNetName(name: string): string {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (trimmed.length === 0) {
+    throw new FusedSessionError('edit/invalid-request', 'A net name must be a non-empty string.');
+  }
+  return trimmed;
 }
 
 function requireEntry<T extends { readonly id: string }>(

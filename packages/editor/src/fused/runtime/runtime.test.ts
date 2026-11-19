@@ -143,7 +143,7 @@ describe('instance audio integration', () => {
     await flush();
     expect(worklet.render().left.every((sample) => sample === 0)).toBe(true);
     runtime.audio.setInstanceVolume(INSTANCE_ID, 1);
-    runtime.pause();
+    await runtime.pause();
     await flush();
     const before = stream.bufferedFrames;
     expect(worklet.render().left.every((sample) => sample === 0)).toBe(true);
@@ -657,10 +657,50 @@ describe('fused runtime bridge', () => {
     await waitFor(() => hostEvents.includes(true));
     expect(await hostModel.methods['getOn']!(null)).toBe(true);
 
-    runtime.pause();
-    await waitFor(() => runtime.getState().status === 'paused');
+    await runtime.pause();
+    expect(runtime.getState().status).toBe('paused');
     await runtime.step();
     expect(runtime.getState().status).toBe('paused');
+  });
+
+  it('pauses and resumes the same run session after the guest acknowledged it', async () => {
+    const { runtime, bench } = await start({ mode: 'run' });
+    const model = runtime.getModel(INSTANCE_ID);
+    await model.methods['setOn']!(true);
+    const views = bench.views.length;
+
+    await runtime.pause();
+    expect(runtime.getState().status).toBe('paused');
+    const pausedAt = runtime.getState().simTime;
+    // A running session advances on its own; a paused one must not.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(runtime.getState()).toEqual({ status: 'paused', simTime: pausedAt });
+
+    // Pausing keeps the session mounted: no worker, model or presentation is rebuilt.
+    expect(bench.terminated).toEqual({ simulation: 0, display: 0 });
+    expect(bench.views).toHaveLength(views);
+    expect(bench.views[0]!.disposed).toBe(false);
+    expect(await runtime.getModel(INSTANCE_ID).methods['getOn']!(null)).toBe(true);
+
+    await runtime.step();
+    expect(runtime.getState()).toEqual({ status: 'paused', simTime: pausedAt + STEP });
+
+    await runtime.resume();
+    expect(runtime.getState().status).toBe('running');
+    await waitFor(() => runtime.getState().simTime > pausedAt + STEP);
+    expect(bench.views).toHaveLength(views);
+    expect(bench.views[0]!.disposed).toBe(false);
+    expect(runtime.display.instances.map((entry) => entry.instanceId)).toEqual([INSTANCE_ID]);
+
+    await runtime.dispose();
+    expect(bench.terminated).toEqual({ simulation: 1, display: 1 });
+    expect(bench.views.every((entry) => entry.disposed)).toBe(true);
+  });
+
+  it('keeps pause a no-op outside a run session', async () => {
+    const { runtime } = await start({ mode: 'edit' });
+    await expect(runtime.pause()).resolves.toBeUndefined();
+    expect(runtime.getState()).toEqual({ status: 'idle', simTime: 0 });
   });
 
   it('renders overlays in edit mode without a model', async () => {
