@@ -16,9 +16,9 @@ import { circuit, firmware } from './harness';
  * 3. code 代际失效：覆盖初始映像内 PC 后，adapter 的 registerFacts/blockCache/polling
  *    不得复用旧固件事实（见 /tmp/opencode/stm32g431-flash-generation-followup.md）；
  * 4. clock-tree/nvic 的并行 IR_SCOPE 修复。
- * 控制器语义已由 flash-controller.test.ts 在真实 IR 中覆盖；此用例保留为目标验收，
- * 额外边界：该固件把 IAP 例程复制到 SRAM 后从 0x20000000 执行；当前 JIT 只在 `code`
- * Flash 取指，SRAM 执行尚未建模，因此启用前仍需中央/引擎决定执行区合同。
+ * 控制器语义目前没有真实 IR 覆盖用例（`flash-controller.test.ts` 已移除）；此用例保留为
+ * 目标验收，额外边界：该固件把 IAP 例程复制到 SRAM 后从 0x20000000 执行；当前 JIT
+ * 只在 `code` Flash 取指，SRAM 执行尚未建模，因此启用前仍需中央/引擎决定执行区合同。
  * 条件满足后把 `describe.skip` 改为 `describe`。
  */
 describe.skip('STM32G431RBT6 Flash IAP', () => {

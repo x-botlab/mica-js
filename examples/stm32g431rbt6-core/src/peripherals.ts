@@ -1,6 +1,6 @@
 import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
-import { asBody, bool, boolAnd, num, u32 } from './ir';
+import { asBody, bool, num, u32 } from './ir';
 import type { Body } from './ir';
 import type { AlternateDriver } from './machine';
 import type { PeripheralModule } from './peripheral';
@@ -35,7 +35,7 @@ import { registerResetHook } from './reset';
  * 每个代理只交付自己的 `PeripheralModule`；这里显式列出 profile 启用的模块。
  * 独立 `stm32g431rbt6` 使用冻结的 `PERIPHERALS`，包含 TIM/ADC/DAC/COMP/OPAMP/I2C/
  * SPI/USART 扩展/SYSCFG/EXTI/DMAMUX/DMA/CRC/RNG/RTC/看门狗/FDCAN/UCPD/Flash。
- * USB/FPU 本轮不提供，模块源码保留在实验边界，但不进入本注册表。
+ * USB 本轮不提供，模块源码保留在实验边界，但不进入本注册表。
  * ct117e 的 fused 基线只启用 `FUSED_PERIPHERALS`，避免把需要独立引脚或模拟量的
  * 外设 IR 展开进只支持数字 fused 引脚的模型。注册表冻结用于阻止测试通过 cast 注入
  * 第二套 profile；真实配置必须走本文件。

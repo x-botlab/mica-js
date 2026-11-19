@@ -6,15 +6,11 @@ import {
   addRaw,
   addWithCarry,
   asBody,
-  boolAnd,
-  boolBit,
-  boolOr,
   flag,
   isZero,
   maskWidth,
   num,
   readReg,
-  readWordAt,
   setPc,
   setPcConst,
   shiftRaw,
@@ -29,7 +25,6 @@ import {
   writeNz,
   writeReg,
   writeSp,
-  writeWordAt,
   readSp,
 } from './ir';
 import type { Body } from './ir';
@@ -55,112 +50,6 @@ import { halt } from './thumb16';
 import type { CodeBytes } from './decode';
 import { classifyDsp, dspConstant, dspWrittenRegisters, emitDsp32 } from './dsp';
 import { emitBarrier, emitMrs, emitMsr, isSystemRegisterSupported } from './system';
-import {
-  FPCCR_ASPEN,
-  FPCCR_LSPACT,
-  FPSCR_WRITE_MASK,
-  FPU_FPSCR,
-  FPU_MEMORY,
-} from './fpu-layout';
-import {
-  isPrivileged,
-  readCpacr,
-  readFpca,
-  readFpccr,
-  requestUsageFault,
-  setFpca,
-  unsupportedFpContext,
-} from './nvic';
-/** VFP/协处理器编码空间；除窄 VMSR FPSCR 外统一显式 unsupported fault。 */
-const isVfpEncoding = (h1: number, h2: number): boolean => {
-  void h2;
-
-  return (h1 & 0xfc00) === 0xec00;
-};
-
-/**
- * 唯一实现的 FP 指令：`VMSR FPSCR, Rt`。
- *
- * ARMv7-M VMSR 规定 Rt=13（SP）与 Rt=15（PC）为 UNPREDICTABLE；这里把这两种
- * 编码留在 unsupported 路径，避免把不可预测行为当成合法寄存器读写。
- */
-const isVmsrFpscr = (h1: number, h2: number): boolean => {
-  if (h1 !== 0xeee1 || (h2 & 0x0fff) !== 0x0a10) return false;
-
-  const rt = (h2 >>> 12) & 0xf;
-
-  return rt !== 13 && rt !== 15;
-};
-
-/**
- * VMSR 的 ExecuteFPCheck 可支持子集：
- * - CPACR 00 / 01+非特权 -> 真实 NOCP；
- * - CPACR 10/10、mismatch 是 UNPREDICTABLE，按模型 0x20 显式拒绝，不伪造 NOCP；
- * - CPACR 允许但 LSPACT=1 -> PreserveFPState 未实现，0x21 显式停止；
- * - LSPACT=0 时按 ASPEN 置 FPCA，然后写 FPSCR。
- */
-function emitVmsrFpscr(b: Body, pc: number, h2: number): void {
-  const rt = (h2 >>> 12) & 0xf;
-  const cpacr = readCpacr(b);
-  const cp10 = b.bitAnd(b.shiftRightUnsigned(cpacr, num(b, 20)), num(b, 3));
-  const cp11 = b.bitAnd(b.shiftRightUnsigned(cpacr, num(b, 22)), num(b, 3));
-  const same = b.equal(types.number, cp10, cp11);
-  const privileged = isPrivileged(b);
-  const enabled = boolAnd(
-    b,
-    same,
-    boolOr(
-      b,
-      b.equal(types.number, cp10, num(b, 3)),
-      boolAnd(b, b.equal(types.number, cp10, num(b, 1)), privileged),
-    ),
-  );
-  const unsupported = boolOr(
-    b,
-    b.not(same),
-    boolAnd(b, same, b.equal(types.number, cp10, num(b, 2))),
-  );
-
-  b.if(unsupported, (bad) => {
-    // UNPREDICTABLE 编码：保持现有 0x20，不写 CFSR/FPSCR/FPCA。
-    halt(asBody(bad), pc, 0x20);
-  }, (defined) => {
-    const body = asBody(defined);
-
-    body.if(enabled, (allowed) => {
-      const scope = asBody(allowed);
-
-      scope.if(boolBit(scope, readFpccr(scope), FPCCR_LSPACT), (active) => {
-        // 不执行 PreserveFPState、不清 LSPACT，也不改 FPSCR/FPCA。
-        unsupportedFpContext(asBody(active), pc);
-      }, (usable) => {
-        const ok = asBody(usable);
-
-        ok.if(
-          boolAnd(
-            ok,
-            boolBit(ok, readFpccr(ok), FPCCR_ASPEN),
-            ok.not(readFpca(ok)),
-          ),
-          (activate) => setFpca(asBody(activate)),
-          () => {},
-        );
-        writeWordAt(
-          ok,
-          FPU_MEMORY,
-          FPU_FPSCR,
-          ok.bitAnd(u32(ok, readReg(ok, rt)), num(ok, FPSCR_WRITE_MASK)),
-        );
-      });
-    }, (denied) => {
-      const scope = asBody(denied);
-
-      // NOCP 是同步 UsageFault：栈帧返回地址必须指回本条 VMSR，后继不能执行。
-      scope.writeState('pc', num(scope, pc));
-      requestUsageFault(scope, true);
-    });
-  });
-}
 import type { KnownRegs } from './decode';
 
 /** 32 位 Thumb-2 指令的子集；未覆盖的编码在 `decode32` 中报告故障。 */
@@ -615,10 +504,8 @@ function updateConstants32(
     return;
   }
 
-  // VMSR 只读通用寄存器、不写回，不能清空调用方已经证明的 GPR 常量。
-  if (isVmsrFpscr(h1, h2)) return;
-
-  if (isVfpEncoding(h1, h2)) {
+  // VFP/协处理器编码不在模型内：不写回 GPR，保持调用方已证明的常量。
+  if ((h1 & 0xfc00) === 0xec00) {
     regs.fill(undefined);
     return;
   }
@@ -917,9 +804,6 @@ function mayService32(
   effects: AccessEffects,
 ): boolean {
   if (classifyDsp(h1, h2) !== undefined) return false;
-  // VMSR 可能因 CPACR 权限触发同步 NOCP，必须让批末结算 service。
-  if (isVmsrFpscr(h1, h2)) return true;
-  if (isVfpEncoding(h1, h2)) return false;
 
   const pure =
     isBranch32(h1, h2) ||
@@ -1216,7 +1100,6 @@ function terminatesSystemInstruction(h1: number, h2: number): boolean {
 /** 是否命中 `emit32` 的任一处理分支；未命中的编码会 halt，必须终止批处理/事实扫描。 */
 function isSupported32(h1: number, h2: number): boolean {
   if (isBranch32(h1, h2)) return true;
-  if (isVfpEncoding(h1, h2)) return true;
   if (classifyDsp(h1, h2) !== undefined) return true;
 
   const group = h1 & 0xfff0;
@@ -1292,17 +1175,14 @@ export function decode32(
   updateConstants32(h1, h2, pc, code, firmwareLength, knownRegs, snapshot, region);
 
   const effects: AccessEffects = { boundaryAfter: false };
-  const vmsr = isVmsrFpscr(h1, h2);
 
   return {
     size: 4,
     cycles: 2,
     mayService: mayService32(h1, h2, pc, snapshot, effects),
     dynamicMemory: dynamicMemory32(h1, h2, pc, snapshot),
-    // 合法 VMSR 不是终止指令；收块只为让可能的同步 NOCP 及时进入 service。
-    boundaryAfter: vmsr || effects.boundaryAfter,
-    ...((isVfpEncoding(h1, h2) && !vmsr) ||
-    terminatesSystemInstruction(h1, h2) ||
+    boundaryAfter: effects.boundaryAfter,
+    ...(terminatesSystemInstruction(h1, h2) ||
     !isSupported32(h1, h2)
       ? { terminates: true }
       : {}),
@@ -1321,17 +1201,6 @@ function emit32(
   region?: CodeRegion,
 ): void {
   if ((h1 & 0xf800) === 0xf000 && branchAndMisc(b, pc, h1, h2)) return;
-
-  if (isVmsrFpscr(h1, h2)) {
-    emitVmsrFpscr(b, pc, h2);
-    return;
-  }
-
-  if (isVfpEncoding(h1, h2)) {
-    // 其余 FPU/VFP 未实现；0x20 是模型 unsupported fault，不等同于架构 NOCP。
-    halt(b, pc, 0x20);
-    return;
-  }
 
   if (emitDsp32(b, h1, h2)) return;
 

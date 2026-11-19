@@ -30,7 +30,6 @@ import {
   I2C,
   I2C_SIZE,
   IRQ_DIRTY,
-  NOW_PS,
   PENDING_PS,
   PERIPH,
   PERIPH_ACTIVE,
@@ -86,7 +85,6 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { SERVICE_IRQ } from './layout';
-import { FPCCR_RESET, FPU_FPCCR } from './fpu-layout';
 import { syncPort } from './gpio';
 import { RCC_RESET_FLAGS_CLEARED_STATE, RCC_RESET_FLAGS_STATE, recordRccResetFlags } from './rcc';
 import { machine } from './machine';
@@ -251,8 +249,6 @@ export function applyReset(b: Body): void {
   // 由 flash.ts 的 ensureInitialized 重置 ACR/SR/CR/ECCR，不动 OPTR/WRP/PCROP/SEC1R。
   writeWordAt(b, FLASH_STATE_MEMORY, 0xfc, num(b, FLASH_RESET_MARKER));
   writeWordAt(b, PERIPH, 0x90, backupDomain);
-  // FPU 扩展未启用，但 FPCCR 的 ASPEN/LSPEN 复位值必须真实；FPSCR 随 periph 清零。
-  writeWordAt(b, PERIPH, FPU_FPCCR, num(b, FPCCR_RESET));
   clearMemory(b, GENERIC, GENERIC_SIZE);
   clearMemory(b, USB, 0x800);
   if (machine().dynamicClock === true) clearMemory(b, CAPTURE, CAPTURE_SIZE);

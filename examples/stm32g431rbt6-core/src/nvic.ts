@@ -45,14 +45,6 @@ import {
   writeWordAt,
 } from './ir';
 import type { Body } from './ir';
-import {
-  FP_CONTEXT_UNSUPPORTED,
-  FPCCR_LSPACT,
-  FPCCR_WRITE_MASK,
-  FPU_FPCCR,
-  FPU_FPCCR_ADDRESS,
-  FPU_MEMORY,
-} from './fpu-layout';
 import { machine } from './machine';
 import { SYSTICK_EXCEPTION, acknowledgeSystick, readSystick, systickPending, writeSystick } from './systick';
 import { USARTS, usartPending } from './usart';
@@ -85,8 +77,8 @@ import {
  *
  * 支持范围：NMI/HardFault/SVCall/PendSV/SysTick 与外部 IRQ 的入口、8 字基本栈帧、
  * MSP/PSP、EXC_RETURN、4 位优先级/PRIGROUP/PRIMASK/BASEPRI/FAULTMASK 仲裁、基本嵌套。
- * FPU 扩展栈帧、MemManage/BusFault/UsageFault 独立入口与 lockup 不在范围内；相关故障
- * 统一升级为 HardFault。
+ * MemManage/BusFault/UsageFault 独立入口与 lockup 不在范围内；相关故障统一升级为
+ * HardFault。
  */
 
 export const NVIC_BANK_COUNT = 4;
@@ -149,7 +141,6 @@ const DFSR = SCB_STATE + 0x30;
 const MMFAR = SCB_STATE + 0x34;
 const BFAR = SCB_STATE + 0x38;
 const AFSR = SCB_STATE + 0x3c;
-const CPACR = SCB_STATE + 0x88;
 
 /* 隐藏状态（SYS 内存；不会被固件通过 SCB 偏移看到）。 */
 const H_CONTROL = SCB_STATE + 0x90;
@@ -168,7 +159,7 @@ const H_ACTIVE_GROUP = SCB_STATE + 0xd8;
 const H_VECTPENDING = 0x00;
 const H_ISRPENDING = 0x04;
 
-/** 异常入口清理钩子（CPU 独占监视器、FPU 上下文等模块注册；不建立第二套异常栈）。 */
+/** 异常入口清理钩子（CPU 独占监视器等模块注册；不建立第二套异常栈）。 */
 export type ExceptionEntryHook = (b: Body) => void;
 
 const exceptionEntryHooks: ExceptionEntryHook[] = [];
@@ -180,22 +171,6 @@ export function registerExceptionEntryHook(hook: ExceptionEntryHook): void {
 // 所有异常入口统一清 local exclusive monitor（SVC/PendSV/NMI/HardFault/IRQ 均经过
 // enterException 的 hook 链，不只 SVC）。
 registerExceptionEntryHook(clearExclusiveOnException);
-
-/** FPU 扩展栈帧钩子；由 fpu.ts 注册，异常栈仍只有一套。 */
-export interface FpuContextHooks {
-  /** 当前异常入口是否要保存 FP 扩展帧（CONTROL.FPCA / 惰性 FP 活动）。 */
-  readonly active: (b: Body) => Value<boolean>;
-  /** 保存 S0–S15/FPSCR 到 frame+0x20；48 字节。 */
-  readonly save: (b: Body, address: Value<number>) => void;
-  /** 从 frame+0x20 恢复。 */
-  readonly restore: (b: Body, address: Value<number>) => void;
-}
-
-let fpuHooks: FpuContextHooks | undefined;
-
-export function registerFpuContextHooks(hooks: FpuContextHooks): void {
-  fpuHooks = hooks;
-}
 
 const ACTIVE_SLOTS = 8;
 const EXC_RETURN_HANDLER_MSP = 0xfffffff1;
@@ -645,26 +620,6 @@ function setPendingDynamic(b: Body, channel: Value<number>): void {
 
 /* ---------------- 挂起来源 ---------------- */
 
-function sourcePending(b: Body, irq: number): Value<boolean> | undefined {
-  let pending: Value<boolean> | undefined;
-
-  for (const source of machine().interruptSources) {
-    if (source.exception !== irq + 16) continue;
-    const value = source.pending(b);
-
-    pending = pending === undefined ? value : boolOr(b, pending, value);
-  }
-
-  for (const config of USARTS) {
-    if (config.irq !== irq) continue;
-    const value = usartPending(b, config);
-
-    pending = pending === undefined ? value : boolOr(b, pending, value);
-  }
-
-  return pending;
-}
-
 function acknowledgeIrqSources(b: Body, irq: number): void {
   for (const source of machine().interruptSources)
     if (source.exception === irq + 16) source.acknowledge(b);
@@ -741,11 +696,6 @@ export function writeBasepri(b: Body, value: Value<number>): void {
   markService(b, SERVICE_IRQ);
 }
 
-export const readCpacr = (b: Body): Value<number> => load(b, CPACR);
-export function writeCpacr(b: Body, value: Value<number>): void {
-  store(b, CPACR, u32(b, value));
-}
-
 export const readFaultmask = (b: Body): Value<number> => readHidden(b, H_FAULTMASK);
 export function writeFaultmask(b: Body, value: Value<number>): void {
   writeHidden(b, H_FAULTMASK, b.bitAnd(u32(b, value), num(b, 1)));
@@ -762,52 +712,6 @@ export const isPrivileged = (b: Body): Value<boolean> =>
     b.equal(types.number, readHidden(b, H_MODE), num(b, 1)),
     b.equal(types.number, b.bitAnd(readHidden(b, H_CONTROL), num(b, 1)), num(b, 0)),
   );
-
-/** FPCCR 的模型存储只实现 ASPEN/LSPEN 可写与 LSPACT 只读位。 */
-export const readFpccr = (b: Body): Value<number> =>
-  b.bitAnd(
-    readWordAt(b, FPU_MEMORY, FPU_FPCCR),
-    num(b, FPCCR_WRITE_MASK | FPCCR_LSPACT),
-  );
-
-export function writeFpccr(b: Body, value: Value<number>): void {
-  // LSPACT 由硬件维护，普通固件写入不能伪造 lazy state。
-  const next = b.bitOr(
-    b.bitAnd(readFpccr(b), num(b, FPCCR_LSPACT)),
-    b.bitAnd(u32(b, value), num(b, FPCCR_WRITE_MASK)),
-  );
-
-  writeWordAt(b, FPU_MEMORY, FPU_FPCCR, next);
-}
-
-/** CONTROL.FPCA 是 bit2；不要用 writeControl 传孤立的 bit2，否则会清 nPRIV/SPSEL。 */
-export const readFpca = (b: Body): Value<boolean> => boolBit(b, readHidden(b, H_CONTROL), 4);
-export function setFpca(b: Body): void {
-  writeHidden(b, H_CONTROL, b.bitOr(readHidden(b, H_CONTROL), num(b, 4)));
-}
-export function clearFpca(b: Body): void {
-  writeHidden(b, H_CONTROL, b.bitAnd(readHidden(b, H_CONTROL), num(b, ~4)));
-}
-
-/**
- * 模型明确拒绝需要 FP 扩展栈帧 / PreserveFPState 的路径。
- *
- * `pc` 是异常边界或 VMSR 指令的运行期地址；fault payload 与普通 unsupported
- * 指令共用 `(pc << 8) | code`，但 code 0x21 表示 FP context unsupported，不是
- * guest opcode 的 0x20 unsupported。
- */
-export function unsupportedFpContext(b: Body, pc: number | Value<number>): void {
-  const address = typeof pc === 'number' ? num(b, pc) : pc;
-  const value = u32(b, address);
-
-  b.writeState('pc', value);
-  b.send(
-    'fault',
-    b.bitOr(b.shiftLeft(value, num(b, 8)), num(b, FP_CONTEXT_UNSUPPORTED)),
-  );
-  b.writeState('faultPc', value);
-  b.writeState('halted', bool(b, true));
-}
 
 export function writeControl(b: Body, value: Value<number>): void {
   const next = b.bitAnd(u32(b, value), num(b, 0x7));
@@ -896,13 +800,6 @@ function priorityByteOfSystem(b: Body, exception: number): Value<number> {
   );
 }
 
-function priorityByteOfIrq(b: Body, irq: number): Value<number> {
-  const at = PRIORITY + (irq >>> 2) * 4;
-  const shift = (irq & 3) * 8;
-
-  return b.bitAnd(b.shiftRightUnsigned(load(b, at), num(b, shift)), num(b, 0xf0));
-}
-
 function priorityByteOfIrqDynamic(b: Body, irq: Value<number>): Value<number> {
   const at = b.add(
     num(b, PRIORITY),
@@ -911,14 +808,6 @@ function priorityByteOfIrqDynamic(b: Body, irq: Value<number>): Value<number> {
   const shift = b.multiply(b.bitAnd(irq, num(b, 3)), num(b, 8));
 
   return b.bitAnd(b.shiftRightUnsigned(loadAt(b, at), shift), num(b, 0xf0));
-}
-
-function priorityByte(b: Body, exception: number): Value<number> {
-  if (exception === EXCEPTION_NMI) return num(b, 0);
-  if (exception === EXCEPTION_HARDFAULT) return num(b, 0);
-  if (exception >= 16) return priorityByteOfIrq(b, exception - 16);
-
-  return priorityByteOfSystem(b, exception);
 }
 
 function prigroup(b: Body): Value<number> {
@@ -1105,33 +994,12 @@ function vectorHandler(b: Body, exception: Value<number>): Value<number> {
 }
 
 /**
- * 异常入口策略：生产环境没有正式 FP context hooks 时，CONTROL.FPCA=1 的异常
- * 必须在任何栈/active/vector 写之前显式停止；否则 basic frame 会静默覆盖 FP
- * 扩展帧语义。实验 hooks 存在时仍走原有路径，不在此改动其帧布局。
+ * 异常入口：压 8 字基本帧并转向向量。
+ *
+ * `group` 是已经按当前 PRIGROUP 折算的抢占优先级（NMI=-2、HardFault=-1、可配置异常
+ * ≥0）。`returnPc` 是异常返回后恢复的 PC。
  */
 export function enterException(
-  b: Body,
-  exception: Value<number> | number,
-  returnPc: number | Value<number>,
-  group: Value<number> | number,
-): void {
-  if (fpuHooks !== undefined) {
-    enterExceptionBody(b, exception, returnPc, group);
-    return;
-  }
-
-  b.if(
-    readFpca(b),
-    (active) => unsupportedFpContext(asBody(active), returnPc),
-    (basic) => enterExceptionBody(asBody(basic), exception, returnPc, group),
-  );
-}
-
-/**
- * 压 8 字异常帧并转向向量。`group` 是已经按当前 PRIGROUP 折算的抢占优先级
- * （NMI=-2、HardFault=-1、可配置异常 ≥0）。`returnPc` 是异常返回后恢复的 PC。
- */
-function enterExceptionBody(
   b: Body,
   exception: Value<number> | number,
   returnPc: number | Value<number>,
@@ -1144,14 +1012,8 @@ function enterExceptionBody(
   const fromThread = b.equal(types.number, mode, num(b, 0));
   const usePsp = boolAnd(b, fromThread, spsel);
   const sp = b.bitAnd(readSp(b), num(b, 0xfffffff8));
-  const fp = fpuHooks === undefined ? bool(b, false) : fpuHooks.active(b);
-  const frameSize = b.select(
-    types.number,
-    fp,
-    (inner) => inner.constant(types.number, 0x68),
-    (inner) => inner.constant(types.number, 32),
-  );
-  const frame = b.subtract(sp, frameSize);
+  const frameSize = 32;
+  const frame = b.subtract(sp, num(b, frameSize));
   const xpsr = b.bitOr(readApsr(b), num(b, APSR_T));
   const storedLr = readLr(b);
   const returnValue = typeof returnPc === 'number' ? num(b, returnPc) : returnPc;
@@ -1164,11 +1026,6 @@ function enterExceptionBody(
   stackStore(b, b.add(frame, num(b, 20)), storedLr);
   stackStore(b, b.add(frame, num(b, 24)), returnValue);
   stackStore(b, b.add(frame, num(b, 28)), xpsr);
-  if (fpuHooks !== undefined) {
-    const fpFrame = b.add(frame, num(b, 32));
-
-    b.if(fp, (active) => fpuHooks!.save(asBody(active), fpFrame), () => {});
-  }
 
   // Thread+PSP 时栈帧仍在 PSP 上；handler 改用 MSP（隐藏值）。
   b.if(
@@ -1195,16 +1052,7 @@ function enterExceptionBody(
     (handler) => handler.constant(types.number, EXC_RETURN_HANDLER_MSP),
   );
 
-  // EXC_RETURN bit4：1=基本帧，0=FP 扩展帧（E1/E9/ED）。
-  writeLr(
-    b,
-    b.select(
-      types.number,
-      fp,
-      (inner) => inner.bitAnd(excReturn, inner.constant(types.number, ~0x10)),
-      () => excReturn,
-    ),
-  );
+  writeLr(b, excReturn);
 
   // 取走异常时清除对应的软件挂起/隐藏 pending；PR/外设电平条件由驱动者自行保持。
   b.if(b.equal(types.number, exc, num(b, EXCEPTION_NMI)), (nmi) => {
@@ -1255,43 +1103,12 @@ export function isExceptionReturn(b: Body, target: Value<number>): Value<boolean
   return boolAnd(b, high, valid);
 }
 
-/**
- * 异常返回策略：生产环境没有正式 FP hooks 时，EXC_RETURN bit4=0 的扩展帧
- * 必须在任何 pop/restore 之前显式停止，不能静默按 basic frame 弹栈。
- * basic return 仍走原 8 字帧，并清 CONTROL.FPCA。
- */
-export function exceptionReturn(
-  b: Body,
-  target?: Value<number>,
-  boundaryPc?: number,
-): void {
+/** 异常返回：弹出 8 字基本帧并恢复 MSP/PSP/模式。 */
+export function exceptionReturn(b: Body, target?: Value<number>): void {
   const excReturn = target ?? readLr(b);
 
-  if (fpuHooks !== undefined) {
-    exceptionReturnBody(b, excReturn, true, false);
-    return;
-  }
-
-  const haltPc =
-    boundaryPc === undefined ? b.readState('pc', types.number) : num(b, boundaryPc);
-
-  b.if(
-    b.not(boolBit(b, excReturn, 0x10)),
-    (extended) => unsupportedFpContext(asBody(extended), haltPc),
-    (basic) => exceptionReturnBody(asBody(basic), excReturn, false, true),
-  );
-}
-
-/** 从已确认的 EXC_RETURN 弹出帧并恢复 MSP/PSP/模式。 */
-function exceptionReturnBody(
-  b: Body,
-  excReturn: Value<number>,
-  restoreHooks: boolean,
-  clearFpcaOnReturn: boolean,
-): void {
   const thread = boolBit(b, excReturn, 8);
   const psp = boolBit(b, excReturn, 4);
-  const fp = restoreHooks ? b.not(boolBit(b, excReturn, 0x10)) : bool(b, false);
   const usePsp = boolAnd(b, thread, psp);
   const stack = b.select(
     types.number,
@@ -1299,18 +1116,13 @@ function exceptionReturnBody(
     (inner) => readHidden(asBody(inner), H_PSP),
     (inner) => readSp(asBody(inner)),
   );
-  const frameSize = b.select(
-    types.number,
-    fp,
-    (inner) => inner.constant(types.number, 0x68),
-    (inner) => inner.constant(types.number, 32),
-  );
+  const frameSize = 32;
   const frame = b.select(
     types.number,
     usePsp,
     (inner) =>
       inner.bitAnd(
-        inner.subtract(stack, frameSize),
+        inner.subtract(stack, inner.constant(types.number, frameSize)),
         inner.constant(types.number, 0xfffffff8),
       ),
     (inner) => inner.bitAnd(stack, inner.constant(types.number, 0xfffffff8)),
@@ -1323,13 +1135,7 @@ function exceptionReturnBody(
   const lr = stackLoad(b, b.add(frame, num(b, 20)));
   const pc = stackLoad(b, b.add(frame, num(b, 24)));
   const xpsr = stackLoad(b, b.add(frame, num(b, 28)));
-
-  if (restoreHooks) {
-    const fpFrame = b.add(frame, num(b, 32));
-
-    b.if(fp, (active) => fpuHooks!.restore(asBody(active), fpFrame), () => {});
-  }
-  const next = b.add(frame, frameSize);
+  const next = b.add(frame, num(b, frameSize));
 
   writeReg(b, 0, r0);
   writeReg(b, 1, r1);
@@ -1367,8 +1173,6 @@ function exceptionReturnBody(
   );
   // 异常返回置 CPU 私有 event，供紧接着的一次 WFE 立即通过（消费在 WFE 执行处）。
   writeWordAt(b, SYS, CPU_HIDDEN_EVENT, num(b, 1));
-  // 本轮只支持 basic frame；返回时显式清 FPCA，保留 nPRIV/SPSEL 等其它位。
-  if (clearFpcaOnReturn) clearFpca(b);
   b.writeState('pc', b.bitAnd(u32(b, pc), num(b, 0xfffffffe)));
 }
 
@@ -1401,7 +1205,7 @@ export function requestHardFault(b: Body, reason: 'svc' | 'fault' | 'vector' = '
 }
 
 /**
- * FPU/UsageFault 请求。NOCP 等 UsageFault 在 SHCSR.USGFAULTENA=1 时进入异常 6；
+ * UsageFault 请求（如 NOCP）。在 SHCSR.USGFAULTENA=1 时进入异常 6；
  * 否则按 ARM 规则升级为 HardFault（HFSR.FORCED）。
  */
 export function requestUsageFault(b: Body, nocp = true): void {
@@ -2168,7 +1972,7 @@ export function writeScb(b: Body, offset: Value<number>, size: number, value: Va
   b.if(b.equal(types.number, wordOffset, num(b, 0x88)), (cpacr) => {
     const body = asBody(cpacr);
 
-    store(body, CPACR, raw);
+    store(body, SCB_STATE + 0x88, raw);
   });
 }
 
@@ -2232,28 +2036,6 @@ export function readSystem(b: Body, address: Value<number>, size: number): Value
                   readScb(body2, body2.subtract(address, num(body2, SCB_BASE)), size),
                 );
               });
-              // FPCCR 在 SCB_BASE+0x234，不在现有 SCB 窗口内。PPB BusFault 未建模：
-              // 非特权访问按 RAZ 处理，不回落到无关的 NOCP。
-              inner.if(
-                inRegion(inner, address, FPU_FPCCR_ADDRESS, FPU_FPCCR_ADDRESS + 4),
-                (fpccr) => {
-                  const body2 = asBody(fpccr);
-
-                  body2.if(isPrivileged(body2), (allowed) => {
-                    const scope2 = asBody(allowed);
-
-                    scope2.setLocal(
-                      result,
-                      extract(
-                        scope2,
-                        readFpccr(scope2),
-                        scope2.subtract(address, num(scope2, FPU_FPCCR_ADDRESS)),
-                        size,
-                      ),
-                    );
-                  });
-                },
-              );
             },
           );
         },
@@ -2262,10 +2044,6 @@ export function readSystem(b: Body, address: Value<number>, size: number): Value
   );
 
   return b.getLocal(result);
-}
-
-function readSystickValue(b: Body, offset: Value<number>, size: number): Value<number> {
-  return readSystick(b, offset, size);
 }
 
 export function writeSystem(
@@ -2309,28 +2087,6 @@ export function writeSystem(
 
                 writeScb(body2, body2.subtract(address, num(body2, SCB_BASE)), size, value);
               });
-              // FPCCR 是 privileged-only；PPB BusFault 未建模，非特权写入直接忽略。
-              inner.if(
-                inRegion(inner, address, FPU_FPCCR_ADDRESS, FPU_FPCCR_ADDRESS + 4),
-                (fpccr) => {
-                  const body2 = asBody(fpccr);
-
-                  body2.if(isPrivileged(body2), (allowed) => {
-                    const scope2 = asBody(allowed);
-
-                    writeFpccr(
-                      scope2,
-                      merge(
-                        scope2,
-                        readFpccr(scope2),
-                        value,
-                        scope2.subtract(address, num(scope2, FPU_FPCCR_ADDRESS)),
-                        size,
-                      ),
-                    );
-                  });
-                },
-              );
             },
           );
         },

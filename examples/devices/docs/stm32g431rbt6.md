@@ -42,12 +42,9 @@ HAL_Delay 轮询分析都读取模型内存快照，装载后另做一次一致�
 | `getSerialStatus({ channel })` | `SerialStatus` | 容量、最旧/下一个游标与累计丢弃字节 |
 | `getLastFault(null)` | number | 最近一次故障 PC；无故障为 -1 |
 
-本轮明确不提供 USB，也不提供完整 FPU 能力：不暴露 USB host 方法/输入通道；生产 decode
-只支持 `VMSR FPSCR, Rt` 的可支持子集（CPACR 权限/真实 NOCP、FPSCR 可写位、FPCCR
-ASPEN/LSPEN、ASPEN→CONTROL.FPCA）。FP context 仍不支持：LSPACT=1、FPCA=1 的异常
-入口、EXC_RETURN bit4=0 的扩展返回均显式 `0x21` halt；basic return 清 FPCA。VMRS、
-VFP 算术、lazy PreserveFPState、FP 扩展栈帧与 VSTM/VLDM 仍按未实现 fault。实验源码保留
-在独立边界，不计入本器件支持矩阵。
+本轮明确不提供 USB，也不提供 FPU：不暴露 USB host 方法/输入通道；生产 decode 把
+`0xEC00` VFP/协处理器编码空间按 unsupported 指令 fault，`VMSR`/`VMRS`、VFP 算术、
+VSTM/VLDM 与 FP 扩展栈帧都不执行。硬浮点固件在首个 VFP 指令处停止。
 
 串口通道 ID 是 DDL 名：`uart1Tx`、`uart2Tx`、`uart3Tx`、`uart4Tx`、`lpuart1Tx`。
 每通道保留最近 4096 字节；

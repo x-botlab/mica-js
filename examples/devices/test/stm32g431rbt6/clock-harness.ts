@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { Board } from '@mica-js/sdk';
 import { compileDDL } from '@mica-js/sdk/ddl';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import { adaptModelFactory, firmwareImage } from '../support/legacy-model-bridge.mjs';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
 /**

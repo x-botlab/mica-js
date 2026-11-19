@@ -713,7 +713,7 @@ function emit16(
         writeReg(b, 14, num(b, (pc + 2) | 1));
         b.if(
           isExceptionReturn(b, target),
-          (inner) => exceptionReturn(asBody(inner), undefined, pc),
+          (inner) => exceptionReturn(asBody(inner), undefined),
           (normal) => {
             const body = asBody(normal);
             const low = body.bitAnd(target, body.constant(types.number, 1));
@@ -728,7 +728,7 @@ function emit16(
       } else {
         b.if(
           isExceptionReturn(b, target),
-          (inner) => exceptionReturn(asBody(inner), undefined, pc),
+          (inner) => exceptionReturn(asBody(inner), undefined),
           (normal) => {
             const body = asBody(normal);
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { firmwareImage } from '@mica-js/sdk/device';
+import { firmwareImage } from '../support/legacy-model-bridge.mjs';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import type { DeviceIR } from '@mica-js/sdk/model';
 import { createBoardWith, loadSourceDevice } from '../harness';

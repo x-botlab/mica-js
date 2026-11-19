@@ -1,4 +1,4 @@
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 
 /**
  * §2 板载 I²C 的宿主适配器。

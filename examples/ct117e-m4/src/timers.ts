@@ -1,4 +1,4 @@
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 
 type Batch = Parameters<ReturnType<DeviceFactory>['sync']>[0];
 

@@ -22,11 +22,6 @@ export default defineConfig({
         rtc: 'src/rtc.ts',
         rng: 'src/rng.ts',
         opamp: 'src/opamp.ts',
-        // experimental FPU/softfloat 源码保留独立构建入口；生产 MCU decode 不 import，
-        // 支持矩阵明确“未支持 FPU 指令/上下文”。
-        fpu: 'src/fpu.ts',
-        'fpu-layout': 'src/fpu-layout.ts',
-        softfloat: 'src/softfloat.ts',
         'fdcan-layout': 'src/fdcan-layout.ts',
         fdcan: 'src/fdcan.ts',
         dac: 'src/dac.ts',

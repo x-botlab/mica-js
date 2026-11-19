@@ -23,7 +23,7 @@
       "unit": "Hz"
     },
     "hseFrequency": {
-      "type": "integer",
+      "type": "number",
       "title": "HSE 晶振频率 (Hz)",
       "description": "0 表示未焊晶振，HSERDY 永远为 0；非 0 时必须在 1..50 MHz。",
       "default": 0,

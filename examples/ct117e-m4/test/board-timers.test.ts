@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import { adaptModelFactory, firmwareImage } from '../../devices/test/support/legacy-model-bridge.mjs';
 import type { DeviceIR } from '@mica-js/sdk/model';
 import { loadFirmware } from './firmware';
 import { createHarness } from './harness';

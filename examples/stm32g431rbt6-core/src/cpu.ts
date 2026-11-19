@@ -34,11 +34,12 @@ export const writeAnyReg = (
   value: Value<number>,
   pc?: number,
 ): void => {
+  // `pc` 仍由调用点按统一寄存器写入协议传入；FP 上下文边界移除后写入路径不再需要它。
+  void pc;
   if (index === 15) {
     b.if(
       isExceptionReturn(b, value),
-      // 扩展帧 unsupported halt 需要当前 guest 指令地址；内部调用方都传入 pc。
-      (inner) => exceptionReturn(asBody(inner), value, pc),
+      (inner) => exceptionReturn(asBody(inner), value),
       (normal) => setPc(asBody(normal), value),
     );
   } else writeReg(b, index, value);

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import { adaptModelFactory, firmwareImage } from '../../devices/test/support/legacy-model-bridge.mjs';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
 /**

@@ -2,7 +2,7 @@ import { createDeviceBuilder, createJitBlockBuilder, types } from '@mica-js/sdk/
 import type { BlockIR, DeviceIR } from '@mica-js/sdk/model';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { Board } from '@mica-js/sdk';
-import { adaptModelFactory } from '@mica-js/sdk/device';
+import { adaptModelFactory } from '../support/legacy-model-bridge.mjs';
 import type { DeviceFactory } from '@mica-js/sdk/device';
 import { activateMachine } from '../../../stm32g431rbt6-core/src/machine';
 import type { Machine } from '../../../stm32g431rbt6-core/src/machine';
