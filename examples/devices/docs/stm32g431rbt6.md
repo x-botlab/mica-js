@@ -198,3 +198,20 @@ node bench/stm32g431rbt6/measure.mjs
 `gpio-blink`（PA5 推挽翻转）、`gpio-input`（IDR 镜像到 ODR）、`arith`（32 位逻辑/位段/条件分支）、
 `uart2-tx`（USART2 发送 `OK`）、`systick`（1 ms SysTick 中断翻转 PA5）。用例覆盖复位取向量、
 推挽输出、IDR 采样、Thumb-2 数据处理、USART 字节发送与 SysTick 异常入口/返回。
+
+### 80 MHz 完整外设配置的稳态实时验收
+
+`bench/stm32g431rbt6/full-peripheral-steady.test.ts` 使用独立 MCU 的完整外设配置，
+固件实际驱动 SysTick、TIM2/NVIC、PA5 和 USART2，并使用动态 SRAM 读写。仿真预热
+4 ms 后，`throughput` 连跑 220 个 2 ms 仿真窗，逐窗校验主循环、中断计数、GPIO 边沿和
+串口字节。`G431_STEADY_RESULT` 报告最后 40 窗的墙钟中位数和达实时的窗数，前 40 窗和
+全程的中位数单独报告，不计入稳态验收。
+
+在受控性能机上，从 `examples/devices` 运行以下命令；末 40 窗的墙钟中位数超过 2 ms
+即失败。不设 `STEADY_REQUIRE_REALTIME` 时只报告耗时，不因宿主负载而失败。
+如需同固件正确性对照，改用 `STEADY_MODE=precise` 并去掉实时门槛，仍只跑 5 窗。
+
+```bash
+STEADY_REQUIRE_REALTIME=1 pnpm exec vitest run --config vitest.perf.config.ts --no-cache \
+  bench/stm32g431rbt6/full-peripheral-steady.test.ts
+```

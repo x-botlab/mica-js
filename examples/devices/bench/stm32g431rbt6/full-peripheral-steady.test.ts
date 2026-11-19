@@ -11,7 +11,9 @@ const CLOCK_HZ = 80_000_000;
 const UART_BAUD = 115_200;
 const WARM_MS = 4;
 const WINDOW_MS = 2;
-const WINDOWS = 5;
+const REPORT_WINDOWS = 40;
+const THROUGHPUT_WINDOWS = 220;
+const PRECISE_WINDOWS = 5;
 const PS_PER_MS = 1_000_000_000;
 const RAM = 0x2000_0100;
 const TIM2 = 0x4000_0000;
@@ -83,6 +85,9 @@ interface JitView {
 it('measures active steady state on the full STM32G431 peripheral profile', async () => {
   const execution = process.env.STEADY_MODE ?? 'throughput';
   if (execution !== 'precise' && execution !== 'throughput') throw new Error(`mode: ${execution}`);
+  const windows = execution === 'throughput' ? THROUGHPUT_WINDOWS : PRECISE_WINDOWS;
+  const reportWindows = Math.min(REPORT_WINDOWS, windows);
+  const requireRealtime = process.env.STEADY_REQUIRE_REALTIME === '1';
   const addressing = process.env.STEADY_SRAM ?? 'dynamic';
   if (addressing !== 'dynamic' && addressing !== 'static')
     throw new Error(`SRAM addressing: ${addressing}`);
@@ -96,7 +101,8 @@ it('measures active steady state on the full STM32G431 peripheral profile', asyn
     clockHz: CLOCK_HZ,
     warmMs: WARM_MS,
     windowMs: WINDOW_MS,
-    windows: WINDOWS,
+    windows,
+    reportWindows,
     modules: PERIPHERALS.map(({ id }) => id),
     firmwareSha256: createHash('sha256').update(image).digest('hex'),
   });
@@ -161,7 +167,7 @@ it('measures active steady state on the full STM32G431 peripheral profile', asyn
 
     const wallSamples: number[] = [];
     const cpuSamples: number[] = [];
-    for (let window = 1; window <= WINDOWS; window += 1) {
+    for (let window = 1; window <= windows; window += 1) {
       const timings = advance(WINDOW_MS);
       const after = observe();
       const delta = {
@@ -203,16 +209,25 @@ it('measures active steady state on the full STM32G431 peripheral profile', asyn
       before = after;
     }
     const median = (samples: number[]) =>
-      samples.toSorted((a, b) => a - b)[Math.floor(WINDOWS / 2)]!;
-    const medianWallMs = median(wallSamples);
+      samples.toSorted((a, b) => a - b)[Math.floor(samples.length / 2)]!;
+    // Guest translation is already warm after WARM_MS, but the host may still be optimizing
+    // the generated code. Keep validating work across all windows and report the tail separately.
+    const tail = wallSamples.slice(-reportWindows);
+    const medianWallMs = median(tail);
     log('RESULT', {
       execution,
-      windows: WINDOWS,
+      windows,
+      reportWindows,
       medianWallMs,
-      medianCpuMs: median(cpuSamples),
+      medianCpuMs: median(cpuSamples.slice(-reportWindows)),
       realtimeFactor: WINDOW_MS / medianWallMs,
       slowdown: medianWallMs / WINDOW_MS,
+      windowsAtRealtime: tail.filter((wallMs) => wallMs <= WINDOW_MS).length,
+      firstMedianWallMs: median(wallSamples.slice(0, reportWindows)),
+      overallMedianWallMs: median(wallSamples),
     });
+    // Wall time depends on host load; enable the gate only on a controlled performance runner.
+    if (requireRealtime) expect(medianWallMs).toBeLessThanOrEqual(WINDOW_MS);
   } finally {
     subscription.dispose();
     rig.dispose();
