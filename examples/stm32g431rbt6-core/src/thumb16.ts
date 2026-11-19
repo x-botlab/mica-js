@@ -712,8 +712,7 @@ function emit16(
       if (instr & 0x80) {
         writeReg(b, 14, num(b, (pc + 2) | 1));
         b.if(
-          isExceptionReturn(b, target),
-          (inner) => exceptionReturn(asBody(inner), undefined, pc),
+          b.lessThan(u32(b, target), num(b, 0xffffffe0)),
           (normal) => {
             const body = asBody(normal);
             const low = body.bitAnd(target, body.constant(types.number, 1));
@@ -724,15 +723,37 @@ function emit16(
               (valid) => setPc(asBody(valid), target),
             );
           },
+          (maybeExc) => {
+            const scope = asBody(maybeExc);
+
+            scope.if(
+              isExceptionReturn(scope, target),
+              (inner) => exceptionReturn(asBody(inner), undefined, pc),
+              (normal) => {
+                const body = asBody(normal);
+                const low = body.bitAnd(target, body.constant(types.number, 1));
+
+                body.if(
+                  body.equal(types.number, low, body.constant(types.number, 0)),
+                  (broken) => halt(asBody(broken), pc, 0x02),
+                  (valid) => setPc(asBody(valid), target),
+                );
+              },
+            );
+          },
         );
       } else {
         b.if(
-          isExceptionReturn(b, target),
-          (inner) => exceptionReturn(asBody(inner), undefined, pc),
-          (normal) => {
-            const body = asBody(normal);
+          b.lessThan(u32(b, target), num(b, 0xffffffe0)),
+          (normal) => setPc(asBody(normal), target),
+          (maybeExc) => {
+            const scope = asBody(maybeExc);
 
-            setPc(body, target);
+            scope.if(
+              isExceptionReturn(scope, target),
+              (inner) => exceptionReturn(asBody(inner), undefined, pc),
+              (normal) => setPc(asBody(normal), target),
+            );
           },
         );
       }

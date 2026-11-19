@@ -32,7 +32,7 @@ import type {
 import { bytesView, finite } from '../values';
 
 /** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
-const DIRECT_SHARD_SIZE = 8;
+const DIRECT_SHARD_SIZE = 32;
 /**
  * Program size above which whole-program rebuilds are amortized instead of immediate.
  *
@@ -71,8 +71,8 @@ type CountedJit = Jit & { directStats?: DirectJitStats };
 
 /** Word masks the compiled blocks test at entry; mutated in place, so programs stay valid. */
 interface DirectBarriers {
-  readonly stateMask: number[];
-  readonly memoryMask: number[];
+  stateMask: Int32Array;
+  memoryMask: Int32Array;
   /** Bank layout of the current program; absent until one has been compiled. */
   stateIndex?: ReadonlyMap<string, number>;
   memoryIndex?: ReadonlyMap<string, number>;
@@ -80,8 +80,8 @@ interface DirectBarriers {
 
 /** Frame fields `compileDirectJit` reads but `DirectJitFrame` does not declare. */
 interface BarrierFrame extends DirectJitFrame {
-  blockedStates?: number[];
-  blockedMemories?: number[];
+  blockedStates?: Int32Array;
+  blockedMemories?: Int32Array;
 }
 
 const barriers = new WeakMap<Jit, DirectBarriers>();
@@ -89,7 +89,7 @@ const barriers = new WeakMap<Jit, DirectBarriers>();
 function directBarriers(jit: Jit): DirectBarriers {
   let entry = barriers.get(jit);
   if (entry === undefined) {
-    entry = { stateMask: [], memoryMask: [] };
+    entry = { stateMask: new Int32Array(0), memoryMask: new Int32Array(0) };
     barriers.set(jit, entry);
   }
   return entry;
@@ -269,7 +269,7 @@ function syncDirectBarriers(jit: Jit): void {
   const { stateIndex, memoryIndex } = entry;
   if (stateIndex === undefined || memoryIndex === undefined) return;
   const fill = (
-    mask: number[],
+    mask: Int32Array,
     index: ReadonlyMap<string, number>,
     guards: ReadonlySet<string>,
   ): void => {
@@ -400,12 +400,22 @@ function directLayout(jit: Jit): DirectJitLayout {
   const memoryViews = memoryBanks.map(
     (memory) => new DataView(memory.buffer, memory.byteOffset, memory.byteLength),
   );
+  const pinNames = [...instance.pins.keys()];
+  const pins = new Map(pinNames.map((name, index) => [name, index]));
+  const pinObjects = pinNames.map((name) => instance.pin(name));
+  const pinElectricalSlots = Int32Array.from(pinObjects, (pin) =>
+    instance.board.electricalSlot(pin),
+  );
   jit.directLayout = {
     ...bank,
     memoryNames: Object.freeze(memoryNames),
     memories,
     memoryBanks: Object.freeze(memoryBanks),
     memoryViews: Object.freeze(memoryViews),
+    pinNames: Object.freeze(pinNames),
+    pins,
+    pinObjects: Object.freeze(pinObjects),
+    pinElectricalSlots,
   };
   return jit.directLayout;
 }
@@ -446,17 +456,32 @@ function createDirectFrame(
   barrier: DirectBarriers,
 ): RuntimeDirectFrame {
   const instance = jit.instance;
+  const { pinObjects, pinNames, pinElectricalSlots } = layout;
   const frame: RuntimeDirectFrame = {
     states: layout.stateValues,
     memories: [...layout.memoryBanks],
     memoryViews: layout.memoryViews,
+    pins: pinObjects,
+    resistors: [],
     locals: new Array(program.localCount),
-    stateDirty: new Array(Math.ceil(layout.stateNames.length / 32)).fill(0),
-    memoryDirty: new Array(Math.ceil(layout.memoryNames.length / 32)).fill(0),
+    stateDirty: new Int32Array(Math.ceil(layout.stateNames.length / 32)),
+    memoryDirty: new Int32Array(Math.ceil(layout.memoryNames.length / 32)),
     time: board.time,
     due: board.time,
     resume: 0,
     boundarySettled: false,
+  };
+  frame.writePinIntent = (pinIndex: number, value: unknown): void => {
+    if (!Object.hasOwn(instance, 'writeIntent')) {
+      const pin = pinObjects[pinIndex]!;
+      if (pin.intent === value) return;
+      pin.intent = value as never;
+      instance.board.markElectricalDirty(pinElectricalSlots[pinIndex]!);
+      frame.publishPending = true;
+      return;
+    }
+    board.time = frame.time;
+    if (instance.writeIntent(pinNames[pinIndex]!, value)) frame.publishPending = true;
   };
   (frame as { host?: DirectJitHost }).host = directHost(board, instance, frame);
   if (jit.metadata === undefined) {
@@ -497,7 +522,7 @@ function createDirectFrame(
         }
         // Program membership excludes polling/secondary-code PCs. Barriers may still
         // have changed during reactions; the next generated block checks the refreshed masks.
-        refreshDirectGuards(jit);
+        if (jit.directObserverRevision !== instance.observerRevision) refreshDirectGuards(jit);
         frame.stopAfterInstruction = false;
         board.current = instance;
         return true;
@@ -606,13 +631,14 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
           jit.direct = cached;
           jit.directRevision = jit.revision;
         } else {
-          const { states, memories } = layout;
+          const { states, memories, pins } = layout;
           const cache = (jit.directCache ??= compileDirectJit.createCache());
           const program = compileDirectJit(
             instructions,
             {
               states,
               memories,
+              pins,
               pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
               host: true,
               split: true,
@@ -630,8 +656,12 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
           const barrier = directBarriers(jit);
           barrier.stateIndex = states;
           barrier.memoryIndex = memories;
-          barrier.stateMask.length = Math.ceil(layout.stateNames.length / 32);
-          barrier.memoryMask.length = Math.ceil(layout.memoryNames.length / 32);
+          const stateMaskWords = Math.ceil(layout.stateNames.length / 32);
+          const memoryMaskWords = Math.ceil(layout.memoryNames.length / 32);
+          if (barrier.stateMask.length !== stateMaskWords)
+            barrier.stateMask = new Int32Array(stateMaskWords);
+          if (barrier.memoryMask.length !== memoryMaskWords)
+            barrier.memoryMask = new Int32Array(memoryMaskWords);
           syncDirectBarriers(jit);
           jit.direct = program
             ? {

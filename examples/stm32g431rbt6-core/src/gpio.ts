@@ -174,34 +174,6 @@ function portRegisters(b: Body, portIndex: number): PortRegisters {
 }
 
 /**
- * 单个候选脚只读取 intent 实际会用到的寄存器。候选位跨 7/8 边界时两侧 AFR 都要读，
- * 否则未涉及的一半保持常量 0，避免每次稳态翻转都多读一个 state。
- */
-function candidateRegisters(
-  b: Body,
-  portIndex: number,
-  candidateMask: number,
-  odr: Value<number>,
-  supplied: Value<boolean>,
-): PortRegisters {
-  return {
-    moder: b.readState(gpioModerState(portIndex), types.number),
-    otyper: b.readState(gpioOtyperState(portIndex), types.number),
-    pupdr: b.readState(gpioPupdrState(portIndex), types.number),
-    odr,
-    afr0:
-      (candidateMask & 0xff) === 0
-        ? num(b, 0)
-        : b.readState(gpioAfr0State(portIndex), types.number),
-    afr1:
-      (candidateMask & 0xff00) === 0
-        ? num(b, 0)
-        : b.readState(gpioAfr1State(portIndex), types.number),
-    supplied,
-  };
-}
-
-/**
  * 一根脚在给定电阻下的意图。意图只在所在分支真正被选中时才求值：一次 GPIO 输出写只需要
  * 一个电阻意图，不必把上拉/下拉/空意图也解析一遍。
  */
@@ -1128,16 +1100,91 @@ function odrTransition(
   return { current, next: mergeWord(b, current, value, num(b, offset), size) };
 }
 
-/** 稳态快路径：外层已确认 changed 非零，只对候选脚中真正变化的位重发 intent。 */
+/**
+ * 静态 ODR/BSRR/BRR 写对应的单根引脚意图刷新。
+ *
+ * 调用方已确认 `isPowered === wasPowered`（供电稳定）且 `isPowered === true`，同时本次写
+ * 只改变了 `ODR`。仅当该引脚处于普通输出模式（`mode === 1`）时，其意图才取决于 `ODR`：
+ * - 推挽输出（`openDrain === 0`）直接按新 `ODR` 位选择 25 Ω 上拉到 `VDD1` 或下拉到 `VSS1`，
+ *   无需读取 `PUPDR`、`AFR0/AFR1` 或展开外设复用驱动树；
+ * - 开漏输出（`openDrain === 1`）在输出高电平时才读取 `PUPDR`。
+ */
+function emitStaticOutputPinIntent(
+  b: Body,
+  portIndex: number,
+  bit: number,
+  moder: Value<number>,
+  otyper: Value<number>,
+  nextOdr: Value<number>,
+): void {
+  const pin = PORTS[portIndex]?.pins[bit];
+
+  if (pin === undefined || pin === null) return;
+
+  const mode = bits(b, moder, bit * 2, 2);
+
+  b.if(b.equal(types.number, mode, num(b, 1)), (out) => {
+    const scope = asBody(out);
+    const outputHigh = boolBit(scope, nextOdr, 1 << bit);
+    const openDrain = boolBit(scope, otyper, 1 << bit);
+
+    scope.if(
+      openDrain,
+      (open) => {
+        const openBody = asBody(open);
+        const pupdr = openBody.readState(gpioPupdrState(portIndex), types.number);
+        const pull = bits(openBody, pupdr, bit * 2, 2);
+        const pullIsUp = openBody.equal(types.number, pull, num(openBody, 1));
+        const pullIsDown = openBody.equal(types.number, pull, num(openBody, 2));
+        const intent = openBody.select(
+          types.intent,
+          outputHigh,
+          (high) =>
+            asBody(high).select(
+              types.intent,
+              pullIsUp,
+              (up) => resistorIntent(asBody(up), true, PULL_RESISTANCE),
+              (other) =>
+                asBody(other).select(
+                  types.intent,
+                  pullIsDown,
+                  (down) => resistorIntent(asBody(down), false, PULL_RESISTANCE),
+                  (none) => asBody(none).combineIntents(),
+                ),
+            ),
+          (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+        );
+
+        openBody.writeIntent(pin, intent);
+      },
+      (pushPull) => {
+        const ppBody = asBody(pushPull);
+        const intent = ppBody.select(
+          types.intent,
+          outputHigh,
+          (high) => resistorIntent(asBody(high), true, DRIVE_RESISTANCE),
+          (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+        );
+
+        ppBody.writeIntent(pin, intent);
+      },
+    );
+  });
+}
+
+/** 稳态快路径：外层已确认 changed 非零且供电稳定为真，只对候选脚中真正变化的位重发输出 intent。 */
 function emitStaticCandidateIntents(
   b: Body,
   portIndex: number,
   candidateMask: number,
   changed: Value<number>,
-  registers: PortRegisters,
+  nextOdr: Value<number>,
 ): void {
+  const moder = b.readState(gpioModerState(portIndex), types.number);
+  const otyper = b.readState(gpioOtyperState(portIndex), types.number);
+
   if (countSetBits(candidateMask) === 1) {
-    emitPinIntent(b, portIndex, 31 - Math.clz32(candidateMask), registers);
+    emitStaticOutputPinIntent(b, portIndex, 31 - Math.clz32(candidateMask), moder, otyper, nextOdr);
 
     return;
   }
@@ -1148,7 +1195,7 @@ function emitStaticCandidateIntents(
     if ((candidateMask & bitMask) === 0 || PORTS[portIndex]?.pins[bit] === null) continue;
 
     b.if(boolBit(b, changed, bitMask), (selected) => {
-      emitPinIntent(asBody(selected), portIndex, bit, registers);
+      emitStaticOutputPinIntent(asBody(selected), portIndex, bit, moder, otyper, nextOdr);
     });
   }
 }
@@ -1186,9 +1233,10 @@ function inlineStaticGpioWrite(b: Body, portIndex: number, masks: StaticPinMasks
       (onPowerChange) => markPowerChange(asBody(onPowerChange)),
       (onStablePower) => {
         const stable = asBody(onStablePower);
-        const registers = candidateRegisters(stable, portIndex, candidateMask, next, isPowered);
 
-        emitStaticCandidateIntents(stable, portIndex, candidateMask, changed, registers);
+        stable.if(wasPowered, (poweredBody) => {
+          emitStaticCandidateIntents(asBody(poweredBody), portIndex, candidateMask, changed, next);
+        });
       },
     );
   });

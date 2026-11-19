@@ -152,10 +152,12 @@ export interface DirectJitDelay {
   };
 }
 
-/** Static numeric bank layout; the runtime guards ownership/observers before entry. */
+  /** Static numeric bank layout; the runtime guards ownership/observers before entry. */
 export interface DirectJitBinding {
   readonly states: ReadonlyMap<string, number>;
   readonly memories: ReadonlyMap<string, number>;
+  /** Optional pin name → slot index table for direct sample reads and intent writes. */
+  readonly pins?: ReadonlyMap<string, number>;
   readonly pc: { readonly name: string; readonly index: number };
   /** Compile-time write barriers; recompile when membership changes. */
   readonly blockedStates?: ReadonlySet<string>;
@@ -201,9 +203,15 @@ export interface DirectJitFrame {
   memories: Uint8Array[];
   /** Optional per-bank wrappers prepared once by the runtime; absent in compiler-only frames. */
   readonly memoryViews?: readonly DataView[];
+  /** Optional prebound pin objects indexed by `DirectJitBinding.pins`. */
+  readonly pins?: readonly { readonly sample: unknown }[];
+  /** Optional per-frame cache for constant resistor intents. */
+  resistors?: unknown[];
+  /** Optional prebound pin-intent writer indexed by `DirectJitBinding.pins`. */
+  writePinIntent?: (pinIndex: number, value: unknown) => void;
   /** Reusable bit words indexed by bank index >>> 5; clear before each invocation. */
-  stateDirty: number[];
-  memoryDirty: number[];
+  stateDirty: number[] | Int32Array;
+  memoryDirty: number[] | Int32Array;
   time: number;
   /** Absolute wake time when resume is nonzero. */
   due: number;

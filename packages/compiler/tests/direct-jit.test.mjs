@@ -1434,7 +1434,7 @@ test('compact keeps redefined locals and a dynamic duration slot consistent', ()
   const program = compileDirectJit(instructions, binding);
   assert(program);
   const source = generated(program);
-  assert.match(source, /F\.due = F\.time \+ H\.checkDuration\(v\d+\);/);
+  assert.match(source, /F\.due = F\.time \+ .*H\.checkDuration\(v\d+\)/);
   const indices = [...source.matchAll(/\bv(\d+)\b/g)].map((match) => Number(match[1]));
   assert(
     Math.max(...indices) < program.localCount,
@@ -2126,6 +2126,46 @@ test('readSample, field and match read host samples without leaking names', () =
   assert.deepEqual(log.entries, reference.log);
 });
 
+test('outlined resident arms keep access to bound pin samples and resistor slots', () => {
+  const b = builder();
+  const takeShortArm = b.read('flag', 'bool');
+  const resistance = b.constant(100);
+  const pin = { kind: 'pin', name: 'p1' };
+  const cold = [];
+  const sample = b.value({ kind: 'readSample', pin }, 'sample', cold);
+  const voltage = b.value({ kind: 'field', value: sample, field: 'voltage' }, 'number', cold);
+  for (let i = 0; i < 2_000; i++)
+    cold.push({ kind: 'write', name: 'marker', value: voltage });
+  const intent = b.value({ kind: 'resistor', to: pin, resistance }, 'intent', cold);
+  cold.push({ kind: 'writeIntent', pin, value: intent });
+  b.operations.push({
+    kind: 'if',
+    condition: takeShortArm,
+    yes: { operations: [{ kind: 'write', name: 'marker', value: resistance }] },
+    no: { operations: cold },
+  });
+  b.delay(1);
+
+  const settings = { ...hostBinding, pins: new Map([['p1', 0]]), split: true, shardSlotLimit: 0 };
+  let program;
+  const sources = captureFactories(() => {
+    program = compileDirectJit([b.instruction(0, 99)], settings, compileDirectJit.createCache());
+  });
+  assert(program);
+  assert.match(sources.join('\n'), /function outlined\d+\(/);
+  const f = frame(program, [0, 0, 0, false, 0, 0]);
+  const electricalIntent = [];
+  const writes = [];
+  f.pins = [{ sample: { voltage: 3.3 } }];
+  f.resistors = [];
+  f.host = { resistor: () => electricalIntent };
+  f.writePinIntent = (slot, value) => writes.push([slot, value]);
+  assert.equal(program.run(f, 5), 'fallback');
+  assert.equal(f.states[5], 3.3);
+  assert.deepEqual(f.resistors, [electricalIntent]);
+  assert.deepEqual(writes, [[0, electricalIntent]]);
+});
+
 test('resistor, combineIntents and writeIntent record in program order', () => {
   const b = builder();
   const first = b.value(
@@ -2343,7 +2383,6 @@ test('a computed elapse duration advances by the runtime value', () => {
   const instruction = b.instruction(0, 99);
   const program = compileDirectJit([instruction], binding);
   assert(program);
-  assert.match(generated(program), /F\.due = F\.time \+ H\.checkDuration\(v\d+\);/);
 
   const whole = frame(program, [0, 30, 0, false, 0, 0]);
   assert.equal(program.run(whole, 1_000), 'fallback');
@@ -2358,10 +2397,14 @@ test('a computed elapse duration advances by the runtime value', () => {
   assert.equal(program.run(zero, 1_000), 'fallback');
   assert.equal(zero.time, 0);
 
-  const bad = frame(program, [0, 1.5, 0, false, 0, 0]);
-  assert.throws(() => program.run(bad, 1_000), /finite integer/);
-  const huge = frame(program, [0, 7_200_000_000_000_001, 0, false, 0, 0]);
-  assert.throws(() => program.run(huge, 1_000), /picoseconds/);
+  for (const value of [1.5, NaN, Infinity, '30']) {
+    const bad = frame(program, [0, value, 0, false, 0, 0]);
+    assert.throws(() => program.run(bad, 1_000), /finite integer/);
+  }
+  for (const value of [-1, 7_200_000_000_000_001]) {
+    const bad = frame(program, [0, value, 0, false, 0, 0]);
+    assert.throws(() => program.run(bad, 1_000), /picoseconds/);
+  }
 });
 
 test('a dynamic duration stays live across later prefix values', () => {

@@ -1251,16 +1251,14 @@ function enterExceptionBody(
 
 export function isExceptionReturn(b: Body, target: Value<number>): Value<boolean> {
   const value = u32(b, target);
-  const high = b.equal(
-    types.number,
-    u32(b, b.bitAnd(value, num(b, 0xffffffe0))),
-    num(b, 0xffffffe0),
-  );
+  const high = b.greaterThanOrEqual(value, num(b, 0xffffffe0));
   const low = b.bitAnd(value, num(b, 0x1f));
-  let valid = b.equal(types.number, low, num(b, 0x01));
-
-  for (const pattern of [0x09, 0x0d, 0x11, 0x19, 0x1d])
-    valid = boolOr(b, valid, b.equal(types.number, low, num(b, pattern)));
+  // Valid EXC_RETURN low 5-bit patterns: 0x01, 0x09, 0x0d, 0x11, 0x19, 0x1d -> mask 0x22022202.
+  const valid = b.notEqual(
+    types.number,
+    b.bitAnd(b.shiftRightUnsigned(num(b, 0x22022202), low), num(b, 1)),
+    num(b, 0),
+  );
 
   return boolAnd(b, high, valid);
 }

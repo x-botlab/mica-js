@@ -109,11 +109,88 @@ function createContext(owner: Instance, board: InstanceBoard): DeviceContext {
   });
 }
 
+/**
+ * State map whose scalar direct-bank writes are synced lazily on read.
+ *
+ * Direct JIT writes update `stateValues` and invalidate `stateSlots` at every boundary,
+ * while no observer or host reads `instance.states` until a reaction, observation,
+ * fallback or external query accesses it. Deferring the string-keyed `Map.set` calls
+ * until an actual read removes redundant map updates across resident GPIO edges while
+ * keeping `instance.states` an exact `Map<string, unknown>` at every read site.
+ */
+class StateMirrorMap extends Map<string, unknown> {
+  private names: readonly string[] = [];
+  private bankValues: unknown[] = [];
+  private dirty = new Int32Array(0);
+  private pending = false;
+
+  bindDirectBank(names: readonly string[], values: unknown[]): void {
+    this.names = names;
+    this.bankValues = values;
+    this.dirty = new Int32Array(Math.ceil(names.length / 32));
+  }
+
+  markDirectDirty(word: number, bits: number): void {
+    this.dirty[word]! |= bits;
+    this.pending = true;
+  }
+
+  private flush(): void {
+    if (!this.pending) return;
+    this.pending = false;
+    const { names, bankValues, dirty } = this;
+    for (let word = 0; word < dirty.length; word++) {
+      let bits = dirty[word]!;
+      if (bits === 0) continue;
+      dirty[word] = 0;
+      const base = word << 5;
+      while (bits !== 0) {
+        const index = base + 31 - Math.clz32(bits & -bits);
+        super.set(names[index]!, bankValues[index]);
+        bits &= bits - 1;
+      }
+    }
+  }
+
+  override get(key: string): unknown {
+    if (this.pending) this.flush();
+    return super.get(key);
+  }
+
+  override set(key: string, value: unknown): this {
+    if (this.pending) this.flush();
+    return super.set(key, value);
+  }
+
+  override entries(): MapIterator<[string, unknown]> {
+    if (this.pending) this.flush();
+    return super.entries();
+  }
+
+  override values(): MapIterator<unknown> {
+    if (this.pending) this.flush();
+    return super.values();
+  }
+
+  override forEach(
+    callbackfn: (value: unknown, key: string, map: Map<string, unknown>) => void,
+    thisArg?: unknown,
+  ): void {
+    if (this.pending) this.flush();
+    super.forEach(callbackfn, thisArg);
+  }
+
+  override [Symbol.iterator](): MapIterator<[string, unknown]> {
+    if (this.pending) this.flush();
+    return super[Symbol.iterator]();
+  }
+}
+
 export class Instance {
   readonly declarations = new Map<string, DeclarationIR>();
   readonly props = new Map<string, unknown>();
   readonly constants = new Map<string, unknown>();
-  readonly states = new Map<string, unknown>();
+  readonly states = new StateMirrorMap();
   private directBank?: Pick<
     DirectJitLayout,
     'stateNames' | 'stateSlots' | 'states' | 'stateValues'
@@ -499,28 +576,36 @@ export class Instance {
         const declaration = this.declarations.get(name) as Decl<'state'>;
         return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
       });
+      const frozenNames = Object.freeze(stateNames);
+      const stateValues = stateNames.map((name) => this.states.get(name));
+      this.states.bindDirectBank(frozenNames, stateValues);
       this.directBank = {
-        stateNames: Object.freeze(stateNames),
+        stateNames: frozenNames,
         stateSlots: Object.freeze(stateNames.map((name) => this.stateResources.get(name)!)),
         states: new Map(stateNames.map((name, index) => [name, index])),
-        stateValues: stateNames.map((name) => this.states.get(name)),
+        stateValues,
       };
     }
     return this.directBank;
   }
   /** Direct scalar writes are already in the numeric bank. Commit the mirror and version. */
-  commitDirectStates(dirty: number[]): boolean {
-    const { stateNames, stateSlots, stateValues } = this.directBank!;
+  commitDirectStates(dirty: number[] | Int32Array): boolean {
+    const { stateSlots } = this.directBank!;
+    const states = this.states;
+    const board = this.board;
     let wrote = false;
     for (let word = 0; word < dirty.length; word++) {
       let bits = dirty[word]!;
       if (bits === 0) continue;
       dirty[word] = 0;
       wrote = true;
+      states.markDirectDirty(word, bits);
+      const base = word << 5;
       while (bits !== 0) {
-        const index = word * 32 + 31 - Math.clz32(bits & -bits);
-        this.states.set(stateNames[index]!, stateValues[index]);
-        this.board.invalidate(stateSlots[index]!);
+        const index = base + 31 - Math.clz32(bits & -bits);
+        const slot = stateSlots[index]!;
+        if (slot.subscribers.size === 0) slot.version++;
+        else board.invalidate(slot);
         bits &= bits - 1;
       }
     }

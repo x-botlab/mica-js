@@ -35,11 +35,21 @@ export const writeAnyReg = (
   pc?: number,
 ): void => {
   if (index === 15) {
+    // EXC_RETURN 高 27 位全为 1（>= 0xFFFFFFE0）。普通跳转/返回先走单次无符号比较快路径，
+    // 避免每次 `bx lr` / `pop {pc}` 都求值完整的 6 路低位模式匹配。
     b.if(
-      isExceptionReturn(b, value),
-      // 扩展帧 unsupported halt 需要当前 guest 指令地址；内部调用方都传入 pc。
-      (inner) => exceptionReturn(asBody(inner), value, pc),
+      b.lessThan(u32(b, value), num(b, 0xffffffe0)),
       (normal) => setPc(asBody(normal), value),
+      (maybeExc) => {
+        const scope = asBody(maybeExc);
+
+        scope.if(
+          isExceptionReturn(scope, value),
+          // 扩展帧 unsupported halt 需要当前 guest 指令地址；内部调用方都传入 pc。
+          (inner) => exceptionReturn(asBody(inner), value, pc),
+          (normal) => setPc(asBody(normal), value),
+        );
+      },
     );
   } else writeReg(b, index, value);
 };

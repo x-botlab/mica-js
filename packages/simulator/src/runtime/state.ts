@@ -126,6 +126,10 @@ export interface DirectJitLayout {
   readonly memories: ReadonlyMap<string, number>;
   readonly memoryBanks: readonly Uint8Array[];
   readonly memoryViews: readonly DataView[];
+  readonly pinNames: readonly string[];
+  readonly pins: ReadonlyMap<string, number>;
+  readonly pinObjects: readonly import('../electrical').ElectricalPin[];
+  readonly pinElectricalSlots: Int32Array;
 }
 export type DirectJitCache = ReturnType<
   typeof import('@mica-js/compiler').compileDirectJit.createCache

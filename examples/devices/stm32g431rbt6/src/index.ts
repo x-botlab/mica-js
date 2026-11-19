@@ -260,14 +260,15 @@ function tickValue(
         b.greaterThanOrEqual(pending, b.readState(TICK_PS, types.number)),
         b.readState(TICK_ACTIVE, types.bool),
       );
-  const deferred = b.notEqual(types.number, b.bitAnd(mask, num(b, SERVICE_ALL)), num(b, 0));
-  const capturePending = b.notEqual(
+  const deferred = b.notEqual(
     types.number,
-    b.readState(CAPTURE_PENDING, types.number),
+    b.bitOr(
+      b.bitAnd(mask, num(b, SERVICE_ALL)),
+      b.readState(CAPTURE_PENDING, types.number),
+    ),
     num(b, 0),
   );
-  const normal = due === undefined ? deferred : boolOr(b, due, deferred);
-  const need = boolOr(b, normal, capturePending);
+  const need = due === undefined ? deferred : boolOr(b, due, deferred);
 
   b.if(need, (service) => {
     const body = asBody(service);
@@ -1274,10 +1275,17 @@ const createTranslate =
 
       builder.instruction({ pc, nextPc: batchNextPc }, (body) => {
         const cyclePs = body.readState(CPU_CYCLE_PS, types.number);
+        const onlyTailChecks = segments.every(
+          (segment, index) =>
+            index === segments.length - 1 ||
+            (!segment.instruction.mayService && !segment.instruction.endsBatch),
+        );
 
-        if (segments.length === 1) {
-          const cycles = body.multiply(num(body, head.cycles), cyclePs);
-          const spins = selfBranchAt(input.code, fetchPc, pc, head.size);
+        if (onlyTailChecks) {
+          const totalCycles = segments.reduce((sum, segment) => sum + segment.cycles, 0);
+          const cycles = body.multiply(num(body, totalCycles), cyclePs);
+          const spins =
+            segments.length === 1 && selfBranchAt(input.code, fetchPc, pc, head.size);
           const total = spins ? body.local(types.number, cycles) : undefined;
 
           body.if(
@@ -1290,9 +1298,20 @@ const createTranslate =
             (run) => {
               const scope = asBody(run);
 
-              head.instruction.emit(scope, head.pc);
+              for (let index = 0; index < segments.length; index += 1) {
+                const segment = segments[index]!;
+
+                segment.instruction.emit(scope, segment.pc);
+              }
               if (total !== undefined) foldSpin(scope, cycles, total);
               tick(machine, scope, cycles);
+              if (segments.length > 1) {
+                scope.if(scope.readState('halted', types.bool), (stopped) => {
+                  const inner = asBody(stopped);
+
+                  inner.writeState('pc', inner.readState('faultPc', types.number));
+                });
+              }
             },
           );
           body.elapse(total === undefined ? cycles : body.getLocal(total));
@@ -1300,53 +1319,61 @@ const createTranslate =
           return;
         }
 
-        // 每条指令前把 pc 复位成它的顺序后继：指令若分支/异常返回，pc 会变成目标；
-        // 若服务块接手，pc 会变成服务 PC。两种情况都让守卫停掉后续指令，而 `tick`
-        // 继续把当前 pc 当作服务返回位置，与单条指令块的语义完全一致。
+        // 每段有服务判定的连续指令合进同一个 running 分支：前置纯寄存器/静态 SRAM 指令
+        // 既不改变控制流也不会触发服务，只需在该段末尾那条 mustCheck 指令前设置一次 pc 与耗时。
         const running = body.local(types.bool, body.not(body.readState('halted', types.bool)));
         const total = body.local(types.number, num(body, 0));
         const pending = body.local(types.number, body.readState(PENDING_PS, types.number));
         let cumulative = 0;
-        let deferredCycles = 0;
+        let groupStart = 0;
 
-        for (let index = 0; index < segments.length; index += 1) {
-          const segment = segments[index]!;
-          const last = index === segments.length - 1;
-          const cycleCount = segment.cycles;
-          const mayService = segment.instruction.mayService;
-          // 批次末条始终检查 serviceMask：静态内联 GPIO 写在极端电源跳变时留下的
-          // SERVICE_GPIO_SYNC 即使前面没有 mayService 指令，也会在这里被结算。
-          const mustCheck = last || mayService || segment.instruction.endsBatch;
+        while (groupStart < segments.length) {
+          let groupEnd = groupStart;
+          let groupCycles = 0;
 
-          cumulative += cycleCount;
-          deferredCycles += cycleCount;
-          const nextPc = (segment.pc + segment.size) >>> 0;
+          while (groupEnd < segments.length) {
+            const segment = segments[groupEnd]!;
+            const last = groupEnd === segments.length - 1;
+            const mustCheck =
+              last || segment.instruction.mayService || segment.instruction.endsBatch;
+
+            groupCycles += segment.cycles;
+            if (mustCheck) break;
+            groupEnd += 1;
+          }
+
+          cumulative += groupCycles;
+          const start = groupStart;
+          const end = groupEnd;
+          const last = end === segments.length - 1;
+          const tailSegment = segments[end]!;
+          const nextPc = (tailSegment.pc + tailSegment.size) >>> 0;
           const step = cumulative;
-          const tickCycles = deferredCycles;
+          const tickCycles = groupCycles;
 
-          if (mustCheck) deferredCycles = 0;
+          groupStart = end + 1;
 
           body.if(body.getLocal(running), (run) => {
             const scope = asBody(run);
 
             scope.setLocal(total, scope.multiply(num(scope, step), cyclePs));
             scope.writeState('pc', num(scope, nextPc));
-            segment.instruction.emit(scope, segment.pc);
-            if (mustCheck) {
-              scope.setLocal(
-                pending,
-                tickValue(
-                  machine,
-                  scope,
-                  scope.getLocal(pending),
-                  scope.multiply(num(scope, tickCycles), cyclePs),
-                  last,
-                ),
-              );
+            for (let index = start; index <= end; index += 1) {
+              const segment = segments[index]!;
+
+              segment.instruction.emit(scope, segment.pc);
             }
-            // 纯寄存器/静态 SRAM 指令既不改变控制流也不会触发服务，下一条无需重新
-            // 检查 halted 与 pc；只有可能进入服务块或批次结束的指令才更新守卫。
-            if (!last && mustCheck)
+            scope.setLocal(
+              pending,
+              tickValue(
+                machine,
+                scope,
+                scope.getLocal(pending),
+                scope.multiply(num(scope, tickCycles), cyclePs),
+                last,
+              ),
+            );
+            if (!last)
               scope.setLocal(
                 running,
                 boolAnd(

@@ -230,6 +230,9 @@ pnpm exec vitest run --config vitest.perf.config.ts bench/stm32g431rbt6
 不要把三个轮次的最小值拼成一次运行。`throughput` 应启用 direct JIT，且仅要求
 360–390 ms 稳定清屏窗没有新翻译、编译或回退。
 
+稳态清屏的基线、瓶颈和工作树复测见 [LCD 稳态清屏诊断](stm32g431rbt6-lcd-bottleneck.md)；
+裸板清屏窗口与下文的完整外设稳态负载是不同的验收项目。
+
 两个 HAL 基准必须**分开进程**运行：器件的翻译缓存是模块级的，同进程里先跑完一种模式会把
 缓存焐热，另一种模式的冷启动读数就不可信了。
 
