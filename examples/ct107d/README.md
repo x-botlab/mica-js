@@ -1,330 +1,315 @@
-# CT107D 整板示例
+# CT107D 整板示例（v2 文档 + 融合器件 + 工作台宿主）
 
-CT107D 竞赛板的 Mica 示例工程：4 个板面 widget（背景图 / 按键 / 四位数码管 / 指示灯）、
-整板原理图 `ct107d.sch`、板面画布 `ct107d.cnv` 与一段 8051 演示固件。
-整板使用的器件全部来自 [`examples/devices`](../devices/README.md) 器件库。
+CT107D 竞赛板的 Mica 示例工程。正式运行模型是 `device/` 下的统一融合器件：一个
+`DeviceIR`、一个实例、一个 8051 JIT。历史 54 个器件加 J5 独立/矩阵选择器（共 55 个实例）
+和 111 条网络折叠为器件内部槽，外部只保留 `VCC`/`GND`。
 
-工程位于仓库的 `examples/ct107d`，纳入 pnpm workspace（包名 `@mica-js/example-ct107d`）：
+正式入口是仓库内的 v2 文档 [`ct107d.sch`](ct107d.sch) 和浏览器宿主
+[`workbench/`](workbench/)；旧 `.sch v1`、`.cnv v1` 与板面 widget 移到
+`legacy/source`/`src/widgets`，只承担生成输入、回归 oracle 和显式 legacy 命令。
+
+本文件明确区分已验证内容与边界：自动化测试覆盖文档、宿主纯逻辑和无头运行时；浏览器
+交互与视觉验收需要手动执行，未写入自动测试。
+
+## 快速开始
+
+需要 Node.js 24。工作区依赖的商品包（`@mica-js/editor` 的 `dist/view-environment`、
+`@mica-js/sdk` 的 CLI、`examples/devices` 的器件构建）先构建一次：
 
 ```bash
-pnpm --filter @mica-js/example-devices build      # 先构建器件库（原理图/画布/固件联调依赖它）
-pnpm --filter @mica-js/example-ct107d build       # 输出 dist/widgets
-pnpm --filter @mica-js/example-ct107d test        # widget 与板级集成用例
-pnpm --filter @mica-js/example-ct107d bench       # 整板性能基准（不进 test）
-pnpm --filter @mica-js/example-ct107d typecheck
-pnpm --filter @mica-js/example-ct107d schematic   # 原理图校验
-pnpm --filter @mica-js/example-ct107d canvas      # 画布校验
-pnpm --filter @mica-js/example-ct107d firmware    # 重新汇编固件
-pnpm --filter @mica-js/example-ct107d firmware:sim -- <hex> [选项]
-                                                  # 外部固件整板联调
+pnpm --filter @mica-js/editor build
+pnpm --filter @mica-js/example-devices build   # oracle、MCU 与课程固件联调需要
+pnpm --filter @mica-js/example-ct107d build    # 模型 + 展示 + 文档校验 + 宿主构建
+pnpm --filter @mica-js/example-ct107d workbench:dev
 ```
 
-整板用到的器件全部来自 [`examples/devices`](../devices/README.md) 器件库，本包不再复制
-器件源码。`mica build` 只输出板面 legacy widget；统一器件包由器件库逐项目构建到
-`examples/devices/dist/<id>/{package.json, model.js}`。
+`workbench:dev` 在 `http://127.0.0.1:5180/` 启动宿主；HTML View 使用
+`http://<view-id>.localhost:5180/environment/` 的独立 origin。生产构建后：
 
-本轮迁移只覆盖仿真消费者：`bench/board.ts`、`verify-firmware.mjs` 与 `seg4-preview.test.ts`
-通过 `legacy/device-package.mjs` 把统一工厂、完整属性和事件接到旧 simulator。旧
-`src/widgets/`、`ct107d.sch`、`ct107d.cnv`、`build-schematic.mjs`、`build-canvas.mjs`、
-`verify-schematic.mjs` 与 `verify-canvas.mjs` 保持迁移前实现，**不**在本轮适配统一器件包，
-也不代表已经实现融合编辑器或 RFC 0024 文档迁移。
-
-## 旧格式边界
-
-`ct107d.sch` 与 `ct107d.cnv` 仍是 **v1** 文档，不是 RFC 0024/0025 的融合文档。旧编辑器的
-widget、原理图/画布验证脚本仍按旧 `device.json` / `device.js` 路径工作，未做统一包适配；
-运行它们需要迁移前的器件产物。仿真联调改用 `verify-firmware.mjs`，它读取
-`ct107d.netlist.json` 和统一 `model.js`，不需要旧符号或器件元数据。
-
-`legacy/device-package.mjs` 只做引擎桥接：从 `<id>/package.json` 与 `model.js` 加载统一工厂，
-用 SDK `adaptModelFactory` 交付完整属性（含 `FirmwareImage`）、把统一事件映射回旧话题、
-把旧输入话题映射到统一方法。它不生成 `DeviceMetadata`、不生成符号，也不把旧文档伪装成
-新格式。
-
-## 与旧实现的对应
-
-| 旧路径                               | 新路径                                     |
-| ------------------------------------ | ------------------------------------------ |
-| `dist/public/<id>/devices/<id>.json` | `examples/devices/<id>/package.json`       |
-| `dist/public/<id>/devices/<id>.js`   | `examples/devices/<id>/model.js`           |
-| `dist/public/<id>/devices/<id>.md`   | `examples/devices/docs/<id>.md`            |
-| `dist/public/<id>/widgets/<id>.json` | `src/widgets/<id>/widget.json`（legacy）   |
-| `dist/public/<id>/widgets/<id>.js`   | `src/widgets/<id>/index.ts`（legacy）      |
-| `dist/public/<id>/canvases/*.cnv`    | `ct107d.cnv`（legacy，单块板面画布）       |
-
-器件统一放在器件库的 `<id>/src/`，器件库逐项目构建输出独立 `package.json` / `model.js`。
-旧 `.js` 的 `@mica-js/device` IR API 在当前运行时已不工作；DDL 行为已迁移，旧编辑器的
-widget 与文档适配留待后续独立工作。
-
-## 目录
-
-```
-examples/ct107d/
-  mica.config.ts                  Mica 工程标志（读取 src/，输出 dist/）
-  package.json                    build = mica build，typecheck = mica prepare && tsc --noEmit
-  tsconfig.json
-  vitest.config.ts
-  vitest.perf.config.ts           基准专用配置：只装 bench/，串行、超时放宽
-  bench/
-    board.ts                      整板夹具：按 ct107d.netlist.json 装配 51 颗器件（装载统一 dist 包）
-    measure.ts                    测量核心：进程 CPU 时间读数、电气/运行时/JIT 指标、topicDigest
-    perf.test.ts                  基准用例：只断言下限，并追加一行到 bench/results.jsonl
-  src/widgets/                   板面 legacy widget（器件源码在 ../devices/<id>/src/）
-  src/widgets/<id>/
-    widget.json                   元数据：属性、端口
-    index.ts                      widget 实现（render / input / dispose）
-  src/widgets/drawing.ts          颜色、裁剪、文字等共用绘制工具
-  legacy/device-package.mjs       旧 simulator 引擎兼容桥（非编辑器元数据投影）
-  test/
-    widgets.test.ts               四个板面 widget 的元数据与绘制/交互
-    seg4-preview.test.ts          真实预览固件的数码管轨迹回归
-  ../devices/<id>/src/
-    model.ddl                     器件行为：引脚、状态、通道、进程与反应
-    index.ts                      统一适配器：同步 methods 与 ctx.events
-  ../devices/test/<id>.test.ts    各器件行为用例（含 manifest 与 DDL/元数据一致性）
-  ../devices/docs/<id>.md         器件说明：引脚、行为、端口、理想化
-  assets/ct107d-board.webp        板面照片（画布背景图，1068×768）
-  assets/ct107d-demo.bin          演示固件（70 字节，assemble-firmware.mjs 生成）
-  firmware/demo.asm               8051 汇编源
-  ct107d.sch                      整板原理图（生成物）
-  ct107d.netlist.json             同一网表的可读形式（生成物）
-  ct107d.cnv                      板面画布：背景图 + 按键热区 + 数码管（生成物）
-  assemble-firmware.mjs           极简 8051 汇编器：firmware/demo.asm → assets/*.bin
-  build-schematic.mjs             原理图生成器：PDF 逐网络对照表与布局
-  build-canvas.mjs                画布生成器：照片像素坐标 → 实例摆放与绑定
-  verify-schematic.mjs            原理图校验：网表、建板、锁存链路、数码管扫描
-  verify-canvas.mjs               画布校验：解析、绑定、对位、widget 渲染、按键网络
-  verify-firmware.mjs             固件联调：把外部 HEX/bin（如 dist/代码）装进整板看输出
+```bash
+pnpm --filter @mica-js/example-ct107d build:workbench
+pnpm --filter @mica-js/example-ct107d workbench:preview
 ```
 
-## 器件
+预览地址是 `http://127.0.0.1:5181/`。两种模式都需要 `packages/editor/dist/view-environment`
+中的五个环境文件；`scripts/workbench.mjs` 会把它们复制到 `workbench/public/environment`。
 
-| id            | 型号                       | 类别           | 端口（方向）                     |
-| ------------- | -------------------------- | -------------- | -------------------------------- |
-| `74hc02`      | 四路 2 输入或非门          | 组合逻辑       | —                                |
-| `74hc14`      | 六施密特触发反相器         | 组合逻辑       | —                                |
-| `74hc138`     | 3-8 译码器（低有效）       | 组合逻辑       | `select`、`enabled`、`code`      |
-| `74hc573`     | 八路透明 D 锁存器          | 时序逻辑       | `latch`                          |
-| `uln2003`     | 七路达林顿驱动             | 驱动           | `mask`、`channels`               |
-| `lm386`       | 音频功放（数字跟随）       | 模拟（数字化） | `active`                         |
-| `at24c02`     | 2 Kb I²C EEPROM            | 串行存储       | `dump`                           |
-| `pcf8591`     | 8 位 ADC + DAC（I²C）      | 混合信号       | `ain0`–`ain3`、`aout`、`channel` |
-| `ds1302`      | 三线实时时钟               | 串行时钟       | `datetime`、`running`            |
-| `ds18b20`     | 1-Wire 温度传感器          | 串行传感器     | `temperature`、`temperatureOut`  |
-| `ne555`       | 无稳态定时器               | 定时           | `frequency`、`dutyCycle`         |
-| `cx20106a`    | 红外前置放大/整形          | 红外接收       | `carrier`、`receiving`           |
-| `vs1838`      | 一体化 38 kHz 红外接收头   | 红外接收       | `carrier`、`receiving`           |
-| `push-button` | 轻触按键（S1、S4–S19）     | 机电           | `press`                          |
-| `buzzer`      | 有源蜂鸣器（SP1）          | 执行器         | `active`                         |
-| `relay`       | 电磁继电器（K1，双极常开） | 执行器         | `energized`                      |
-| `jumper`      | 两脚跳线（J13）            | 装配配置       | —                                |
-| `jumper-2x3`  | 2×3 跳线排针（J2）         | 装配配置       | —                                |
+## 命令
 
-每个器件的引脚表、行为、端口编码与理想化见 [`examples/devices/docs/<id>.md`](../devices/docs/)。
+| 命令                            | 作用                                                                                           |
+| ------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `build`                         | `build:fused` → `check:document` → `build:workbench`；默认交付模型、View2D/几何、v2 文档和宿主 |
+| `build:fused`                   | 构建 MCU、生成融合模型并 `mica build --root device`，输出 `device/dist`                        |
+| `build:workbench`               | 复制锁定的器件包/文档/View 环境并 Vite 构建宿主到 `workbench/dist`                             |
+| `workbench:dev`                 | 先 `build:fused`，再启动 Vite 开发服务器（5180）                                               |
+| `workbench:preview`             | 只服务已构建的 `workbench/dist`（5181）；不改写 `public/`                                      |
+| `workbench:prepare`             | 原子同步 `workbench/public/{device,environment,ct107d.sch,catalog.json}`                       |
+| `check:document`                | 校验正式 v2 文档的锁、实例、电源参考和固件资源；不写文件                                       |
+| `document:init`                 | 显式创建正式文档；已存在时拒绝覆盖                                                             |
+| `document:lock`                 | 只刷新 `dependencies`，保留其它用户编辑（原子写）                                              |
+| `test`                          | 构建器件与融合模型后运行全部 vitest                                                            |
+| `test:workbench`                | 构建后只运行文档、宿主逻辑和 `createHeadlessRuntime` 用例                                      |
+| `typecheck`                     | `mica prepare` 后检查 device、legacy、宿主与测试                                               |
+| `bench`                         | 融合整板性能基准；需要先构建器件                                                               |
+| `build:devices`                 | 构建 `examples/devices` 全部统一器件包（离散 oracle 与 MCU 源）                                |
+| `build:mcu`                     | 只构建 `examples/devices/iap15f2k61s2` 并写入内容身份                                          |
+| `prepare:fused` / `check:fused` | 生成 device 类型环境 / 校验 MCU 与生成的 DDL 产物                                              |
+| `build:legacy`                  | 显式构建 legacy widget、v1 原理图与画布（写入 `legacy/source`）                                |
+| `build:widgets`                 | 只构建 legacy 板面 widget 到 `dist/widgets`                                                    |
+| `check:legacy`                  | 校验 legacy v1 原理图/画布；需先完成 legacy 构建                                               |
+| `schematic` / `canvas`          | 单独校验 legacy 原理图/画布（会先构建器件与 widget）                                           |
+| `firmware`                      | 从 `firmware/demo.asm` 同源写出根 `assets/*.bin` 与 `device/src/assets/*.{bin,hex}`            |
+| `firmware:check`                | 只比较三份固件资源，缺失或 stale 时退出 1；不写文件                                            |
+| `check:fused`                   | 先 `firmware:check`，再校验 MCU 内容身份与生成的 DDL 产物                                      |
+| `firmware:sim -- <hex>`         | 把外部 HEX/BIN 装进 legacy 分立板联调                                                          |
+| `firmware:suite -- --list`      | 可选的课程固件套件，不进入日常测试                                                             |
 
-## 端口负载编码
+## 构建产物与责任
 
-DDL 通道没有 `string` 负载，旧版的字符串端口改为固定编码的 `bytes`：
+| 路径                                                                   | 责任                                                                                                    |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `device/package.json`、`device/src/**`                                 | 统一器件清单、DDL/工厂、`geometry.json`、`body.png`、`view2d`、HTML 面板与固件资源；由器件/展示代理维护 |
+| `ct107d.sch`                                                           | 正式 v2 文档，跟踪在仓库；只由 `document:init` 创建、由 `document:lock` 刷新依赖锁                      |
+| `workbench/index.html`、`workbench/src/**`、`workbench/vite.config.ts` | 宿主源码，跟踪在仓库                                                                                    |
+| `scripts/document.mjs`、`scripts/workbench.mjs`                        | 文档锁生成与宿主准备，不手拼摘要                                                                        |
+| `device/dist/**`                                                       | 统一器件构建产物，已忽略；干净重建可复现                                                                |
+| `workbench/public/**`                                                  | 宿主准备产物（器件包、文档副本、环境、catalog），已忽略                                                 |
+| `workbench/dist/**`                                                    | 宿主生产构建，已忽略                                                                                    |
+| `legacy/source/{ct107d.sch,ct107d.cnv,ct107d.netlist.json}`            | legacy v1 生成输入与 oracle；不是正式入口                                                               |
 
-| 器件      | 端口       | 编码                                                     |
-| --------- | ---------- | -------------------------------------------------------- |
-| `74hc138` | `code`     | 2 字节 ASCII：`"Y0"`–`"Y7"`；禁用时 `"--"`               |
-| `uln2003` | `channels` | 7 字节 ASCII，IN1→IN7 对应 `'0'`/`'1'`（如 `"1010000"`） |
-| `ds1302`  | `datetime` | 19 字节 ASCII：`YYYY-MM-DD HH:MM:SS`                     |
-| `at24c02` | `dump`     | 256 字节原始内容                                         |
+`scripts/document.mjs` 的签名模式：
 
-其余端口都是 `number` 或 `bool`。`pcf8591` 的模拟输入输出只有端口，没有电气语义，因此物理
-引脚用 `vin0`–`vin3` / `dac` 命名（`label` 保留 `AIN0`–`AIN3` / `AOUT`）。
+- `--check`：默认；验证当前 `ct107d.sch` 与 `device/dist/release.json` 一致，并推导拓扑。
+- `--write`：生成新文档；目标已存在时拒绝，必须显式 `--force` 才会覆盖。
+- `--refresh-lock`：只替换 `dependencies`，保留实例摆放、`viewLayout`、属性等用户编辑。
 
-## 引脚命名
+浏览器中的“保存”只写 `localStorage`（键 `mica-ct107d-workbench-document-v1`），“恢复演示”
+重新读取仓库内 `ct107d.sch` 的构建副本；两者都不会覆盖跟踪文档。
 
-DDL 标识符不能以数字开头，也不能含 `#`，因此旧引脚名做了机械改名，`package.json` 的 `pins.*.label`
-保留数据手册名称：`D0`–`D7` → `d0`–`d7`、`OE#` → `oe`、`E1#`/`E2#` → `e1`/`e2`、
-`Y0#`–`Y7#` → `y0`–`y7`、`RST#` → `rst`、`IN1`–`IN7` → `in1`–`in7` 等。
+## 正式 v2 文档
 
-## 建模约定
+`ct107d.sch` 的结构：
 
-- **电气**：每颗芯片声明 `vcc` / `gnd` 引脚（ULN2003 只有 `gnd` 与被动 `com`），推挽输出用
-  `resistor(to: vcc|gnd, resistance: outputResistance)`，释放用 `[]`；开漏输出只拉低或释放。
-  输入引脚不带内部上拉，I²C/1-Wire 总线需要装配侧提供外部上拉。
-- **电平**：`pin.sample.level == Logic.high` 为高，其余（低与未知）按低处理。输入阈值由
-  `lowThreshold` / `highThreshold` 属性给出（默认 0.8 V / 2.0 V）。
-- **组合逻辑**用 `derived` + `process ... on <derived>`；**边沿**用 `reaction` 配合
-  `capture`；**定时/超时**用 `now()` + `await ticks(remaining)`，进程源变化即取消旧定时。
-- **通道负载**只能是 `number`、`bool`、`bytes`、扁平 `record`。旧版的 `string` 端口改为
-  `bytes`（ASCII）或 `number`，见各器件文档与 `package.json` 的 `properties.*.description`。
-- **器件状态**（协议位计数、移位寄存器、暂存器）放在 `state` 里；批量数据（EEPROM、RTC RAM）
-  放在 `memory` 里。
+- `version: 2`，恰好一个实例；
+- 实例 UUID 固定为 `7d9e3a1c-5b2f-4c8d-9e01-2a3b4c5d6e7f`，器件为
+  `example:ct107d-board`；
+- `dependencies` 由 `@mica-js/sdk/fused/node` 的 `readDirectoryPackage` 读取
+  `device/dist/release.json` 生成真实版本与 `sha256:...` 发布摘要，不手写摘要；
+- `VCC` 接 5 V `power` 参考、`GND` 接 0 V `ground` 参考；
+- 默认固件是 `assets/seg7-dynamic.hex`（来自 `dist/数码管动态显示.hex`），以
+  `mode: "package"` 引用；默认时钟为 12 MHz。原 `ct107d-demo.{hex,bin}` 保留供回归测试；
+- 不包含额外 nodes/wires/labels，正式板只通过两个外部电源引脚连接。
 
-## 理想化
+`document:init` 生成的文档只包含一个稳定实例；后续器件包发布变化后运行
+`document:lock`，不要重新生成整个文档，以免覆盖用户在编辑器里调整的摆放或视图布局。
+`readDirectoryPackage` 与 `openDevicePackage` 会先验证清单、文件摘要、发布身份和宿主 API
+范围，再读取固件字节。
 
-统一约定：零传播延迟（NE555 的振荡周期除外）、不模拟驱动强度、电源电流、结温与电磁兼容。
-每个器件文档另列该型号的具体简化（例如 AT24C02 无写周期、DS1302 晶振不建模、DS18B20
-无寄生供电、ULN2003 导通压降按 0 V、LM386 只有逻辑电平输出）。
+## 工作台宿主
 
-## 原理图 `ct107d.sch`
+`workbench/src/main.ts` 使用 `@mica-js/editor/fused` 的 `createWorkbench`，沿用了
+`examples/fused-workbench` 与 `apps/playground/src/workbench-demo.ts` 的宿主模式：
 
-按 CT107D 原理图（仓库根的 `SCH_硬件原理图V30.pdf`）逐网络还原竞赛板，包含器件库中的
-20 个芯片/按键/执行器/跳线器件，以及 `iap15f2k61s2` MCU、`blue-led` LED 与 `seg4` 四位数码管
-（DS1/DS2 两片）；器件源码统一维护在 [`examples/devices`](../devices/README.md)。未实现器件——电阻、电容、晶振、LCD、拨码开关、其余排针与跳线（J3/J5/J7/JS1/JS2）、CH340C、霍尔、
-运放、电机、红外发射管——暂时忽略。
+- 宿主构建 `DeviceRegistry`，从 `catalog.json` 找到与文档锁定完全一致的发布，再按包路径
+  fetch 字节；编辑器自己执行摘要与清单校验；
+- 独立 origin 的 HTML View 环境由 `workbench/public/environment` 提供；
+- 主题为深石墨 + 青绿强调，薄工具栏只放保存、重开、恢复演示，不覆盖工作台自身工具条；
+- 运行/编辑、侧栏和浮动视图仍由工作台自己的 UI 管理；
+- 显式传入固定 `step: toTimePs(16, 'ms')`。编辑器默认的 10 µs 步长在宿主每次让出后只推进
+  极少虚拟时间，无法呈现可见的动态扫描；16 ms 与预览基准的 16/64 ms 共同检查点一致，控制
+  响应也可接受。这是宿主选择，不修改 `packages/**` 的默认值。
 
-| 文件                   | 说明                                                                |
-| ---------------------- | ------------------------------------------------------------------- |
-| `ct107d.sch`           | 原理图；器件引用为 `xbotlab:<器件ID>`，跨器件网络用 `builtin:label` |
-| `ct107d.netlist.json`  | 同一网表的可读形式：网络名 → `位号.引脚` 列表                       |
-| `build-schematic.mjs`  | 生成器：内含 PDF 逐网络对照表与布局，重新生成两个产物               |
-| `verify-schematic.mjs` | 校验：解析网表并对照、建板、跑通锁存链路与数码管扫描                |
+生命周期与并发（`workbench/src/session-controller.ts`）：
 
-器件引用由宿主解析到器件库的 `examples/devices/dist/<ID>/`（共 25 个器件，由器件库一次构建）。
+- 打开、重开、保存都进入同一个串行队列；在 replace 已排队时，保存不会落在旧模型上；
+- 最新的打开请求胜出；较早请求在创建完成后立即 dispose，不产生第二个会话；
+- `reopen` 先验证/读取草稿，成功后才推进 session token；没有草稿或 draft 损坏时旧会话
+  仍然可保存，不会被新 token 误判为过期；
+- 释放失败会 latch `host/dispose-failed`，停止创建新会话并保留错误可见性，不把半释放
+  状态报告为成功；
+- `pagehide` 捕获当前/进行中的文档并释放；bfcache 的 `pageshow` 会恢复同一文档，而不是
+  留下一个 inert 页面；
+- 无 session 时 `保存`/`重新打开`禁用；无本地草稿时 `重新打开`保持禁用并显示“请先保存”，
+  初始状态显示“未修改 · 无本地保存”，不再冒充“已保存”；
+- 本地草稿可用性与文档 dirty 是两个独立状态；保存成功刷新可用态，`storage` 事件同步其它
+  tab 的清空/写入，读取失败显式报错且不会假启用；
+- 错误显示在宿主顶部错误条；缺少草稿/缺少 session 这类前置条件用正常状态提示，不伪装成
+  工作台故障。损坏草稿或读取异常仍显示错误。
 
-已实现的连接：
+宿主只提供包内固件资源，不实现资产库或程序项目 Provider；需要这些来源时应补宿主
+Provider，而不是在模型或文档里绕过校验。视图布局、保存/重开属于宿主能力；HTML View 的
+容器、面板和 View2D 的交互分别由器件展示代码与编辑器负责。
 
-- **数据/片选**：P00–P07 → U6–U9 的 D0–D7；P25/P26/P27 → U24（A/B/C）；Y4–Y7 与 WR 经
-  U25 得到 Y4C–Y7C，分别接 U6/U9/U8/U7 的 LE。
-- **负载**：U6 Q0–Q7 → `L1`–`L8` → D1–D8 阴极（阳极接 VCC）；U7 Q0–Q7 → `a`–`dp`；
-  U8 Q0–Q7 → `com1`–`com8`；U9 Q0–Q6 → U10 IN1–IN7（网名 `U9Q0`–`U9Q6`）→ `STEPA`–`STEPD`/`N_RELAY`/`N_MOTOR`/
-  `N_BUZZ`，Q7 → `N_SPK` → U14 IN1+ → `SPK`。
-- **数码管**：DS1 的 `a`–`dp` 并到段总线、`com1`–`com4` 接 `com1`–`com4`；DS2 同样并段总线、
-  `com1`–`com4` 接 `com5`–`com8`。两片都是**共阳**管（`seg4.commonAnode = true`）：U8 的位选
-  高电平选中该位，U7 的段码低电平点亮该段，`digit1`–`digit4` 仍按「点亮的段」编码。
-- **按键**：S4–S7 一端接地（J5 的 2-3 短接）、另一端接 `P30/TXD`–`P33`；S8–S19 构成 3×4
-  矩阵，行同上四根、列接 `P42/WR`/`P35`/`P34`；S1 接在 `VCC` 与 `RST` 之间。详见
-  [`docs/push-button.md`](../devices/docs/push-button.md)。
-- **串行**：`P20/SCL`/`P21/SDA` → U4（地址脚与 WP 接地）与 U16（A0–A2/EXT 接地）；
-  `P13`/`P23`/`P17/SCK` → U19；`P14` → U5；U16 模拟端为 `AIN0`–`AIN3` 与 `OUT` 网标。
-- **执行器**：U10 OUT5 → `N_RELAY` → K1 线圈（另一端接 VCC），K1 的 `com`（引脚 3）接
-  `m2` 端子、`no`（引脚 6）与第二组触点公共端 `com2`（引脚 1）接 GND；U10 OUT7 →
-  `N_BUZZ` → SP1 负端（正端接 VCC）。详见 [`docs/relay.md`](../devices/docs/relay.md)、
-  [`docs/buzzer.md`](../devices/docs/buzzer.md)。
-- **定时/红外**：U15 OUT → `NET_SIG`，RST 与 VCC 接高；CX20106A 输出 `N_B1`、VS1838 输出
-  `N_B2` 接到 J2 的 2/6 脚，J2 的 1-3 固定短接（`P10` → U18 整形/驱动链 `N_A1`），接收端
-  公共脚 4（`P11`）由实例属性 `vs1838` 选择短接 4-6 或 2-4；J2 的 5 脚是红外发射管支路
-  `N_A2`。详见 [`docs/jumper-2x3.md`](../devices/docs/jumper-2x3.md)。
-- **跳线**：J13 的 `a` 接 `P42/WR`、`b` 接 GND，`closed` 属性模拟「WR 接 0 V」的装配位置。
+浏览器验收边界：默认 vitest 不启动浏览器；本次修复另用真实 headless Chromium 跑过空
+storage → 禁用 → 保存 → 可用 → 重开 → 单一 workbench → 跨 tab 清空 → 重新保存的状态链，
+但截图/缩放旋转/bfcache 实际行为、多指按键和面板视觉仍需人工打开 dev/preview 复核。
+自动化仓库测试覆盖文档/包校验、宿主 session 状态机（mock create）、无头运行时与 legacy
+oracle。
 
-忽略器件后的替代约定：
+`workbench:prepare` 不再删除整个 `workbench/public`：它只原子替换内容发生变化的生成文件，
+保留 public 根目录与未变化文件，因此并行运行的 Vite dev 不会在目录重建窗口把
+`/catalog.json`、`/ct107d.sch` 回退成 HTML。`workbench:preview` 只服务已构建的
+`workbench/dist`，不再改写 `public/`。宿主对 catalog 与 v2 文档会检测 HTML fallback 并给出
+带路径的诊断，不会把 HTML 首页当成 JSON/文档继续解析。
 
-- 74HC573 的 OE#、74HC138 的 E1#/E2#、ULN2003 的 E、AT24C02 的 A0–A2/WP、PCF8591 的
-  A0–A2/EXT、LM386 的 IN1- 直接接 GND；74HC138 的 E3、各芯片 VCC 接 VCC。
-- LED 阳极经 1 kΩ 限流电阻接 VCC；电阻不建模，改为每颗 LED 的 `forwardResistance = 1500 Ω`
-  （500 Ω 器件等效 + 1 kΩ 外部），5 V 时亮度约 0.164。数码管的段阳极同样按
-  `seg4.forwardResistance = 1500 Ω` 并入 1 kΩ 排阻。
-- `P42/WR` 除了 74HC02 的四个 B 输入，还接矩阵键盘的第二列；MCU 模型没有 P4 端口，
-  J13 的 WR 源侧不建模，原理图里 J13 只把 `P42/WR` 短接到 GND（`closed = true`）。
-- `RST` 只连 S1 与网标：MCU 模型没有复位引脚，复位电路里的 CR1/R3 不建模。
-- 执行器输出 `STEPA`–`STEPD`/`N_MOTOR`、`SPK`、`AIN0`–`AIN3`、`OUT`、`m2`、
-  `NET_SIG` 等只保留驱动侧网标，作为未实现器件的接口桩；74HC138 的 Y0–Y3、NE555 的 RC 脚、
-  CX20106A 的 C1/C2/C3/f0、DS1302 的 X1/X2/VCC1、LM386 的 GAIN/BYPASS、PCF8591 的 OSC
-  按 NC 处理。
+## 无头运行时
 
-```powershell
-cd dist\ct107d
-pnpm run schematic        # node verify-schematic.mjs
-node build-schematic.mjs  # 修改网表/布局后重新生成
+`test/workbench-runtime.test.ts` 直接读取正式 `device/dist`，通过
+`createDirectoryRegistry` 和 `createHeadlessRuntime` 验证：
+
+- 准备阶段：真实发布锁定、包摘要、文档拓扑；缺包/锁不符/文件摘要不符可见失败；
+- 启动与首帧：创建后暂停在 0 ps，查询 `getSnapshot`；首次 `step` 后产生模型事件；
+- 固定步进：以 1 ms 步长推进到 64 ms，与 `bench/board.ts` 的 55 器件离散 oracle 比较
+  **聚焦子集**：DS1/DS2 段码、U6–U9 锁存、D1–D8 亮度与电压；该断言不声称所有模型信号
+  等价，完整行为基线仍由 `test/fused-*` 负责；
+- BIN 与 HEX：同一包内两种格式产生相同信号轨迹；
+- reset：重建会话、回零、旧客户端失效；
+- resume/pause/step 状态约束。
+
+“一个实例、一个 JIT”由 `bench/` 的正式 dist 夹具断言，不在无头运行时里重复读取私有
+实现。`test/document-official.test.ts` 验证正式文档与真实发布锁；`test/workbench-host.test.ts`
+覆盖 catalog 校验、浏览器草稿序列化和串行队列；`test/workbench-session.test.ts` 用 fake
+create 覆盖 reopen 失败保留旧会话、旧 session 保存拒绝、stale open 清理、保存排队、
+suspend/resume、释放失败 latch 与关闭顺序。
+
+## 器件与模型
+
+`device/` 是统一器件包：
+
+- 清单：`publisher: example`、`name: ct107d-board`、`engines.mica: ^1.0.0`；
+- 属性：`firmware`（`program`，memory loader，`bin`/`hex`，`code` 地址空间
+  `[0, 61440)`、默认装载地址 0、可空）、`clockFrequency`、`ultrasonicDistanceCm`、
+  `uartBaud`；
+- 引脚只有 `VCC`/`GND`，与 `geometry.json`、`model.ddl` 完全一致；
+- 构建：`device/scripts/generate.mjs` 从 `legacy/source/ct107d.sch` 与
+  `legacy/source/ct107d.netlist.json` 生成 `src/{model.ddl,nets.ts,channels.ts}`，
+  `mica build --root device` 输出自包含 `device/dist`；
+- 执行：复用 `examples/devices/iap15f2k61s2` 的 8051 translator，整板只有一个 JIT；
+- 展示：`View2D` 在照片上绘制数码管、LED、按键/跳线反馈；HTML 面板提供传感器、装配、
+  串口与状态查询。
+
+统一接口：
+
+- 事件：`onDidSignal`（`{designator, port, value}`）、`onDidBytes`
+  （`{designator, port, data}`）、`onDidAmplifier`（`{position, gain, outputVoltage}`）
+  以及 MCU 的 `onDidUart1Tx`/`onDidUart1Rx`；
+- 方法：`setSwitch`、`setJumper`、`setHallField`、`setWiper`、`setAmplifierInputs`、
+  `setIrCarrier`、`setTemperature`、`setAnalogInput`、`sendUart`、`getSnapshot`、
+  `getAmplifier`、`getEeprom`、`getRtc`、`readSerial`、`getSerialStatus`。
+
+边界：
+
+- J13/J5 是三针选择器。`setJumper({closed:true})` 为默认 2-3 位置：J13 `WR` 接地
+  （IO），J5 S4–S7 独立接地；`false` 为 1-2，分别让 `WR` 跟随 P42、让 S4–S7 接 P44
+  矩阵。切换立即重算当前按住的键。
+- J2 两排独立：上排 `2–4` / `4–6` 在 CX20106A 和 VS1838 之间切换；下排
+  `1–3` / `3–5` 将 `P1.0` 分别接到 `U18.a2` 和 `LD1.mod`。板面丝印的超声组合为
+  `1–3` + `2–4`，红外组合为 `3–5` + `4–6`；原有默认位置 `1–3` + `4–6` 保持不变。
+  切换不会改变 `U22` 的直连接线，`setIrCarrier` 仍可独立注入 `LD1`、`U11` 或 `U20`。
+- PCF8591 AIN2 仍是独立输入，不隐式绑定 LM324 输出；LM324 的滑臂/增益/输出按
+  `RB4` 公式计算并钳到 0–5 V。
+- UART 探针默认 9600 baud，观察队列容量为 4096 条单字节消息；单批溢出显式
+  `CHANNEL_OVERFLOW`，跨批历史仍按 cursor/`droppedTotal` 裁剪。
+- 板内网络是理想数字融合，不模拟任意外部模拟接线、电气竞争、电源电流或电磁兼容。
+  `VCC`/`GND` 是唯一外接引脚。
+
+## Legacy 边界与 oracle
+
+`legacy/source/ct107d.sch`、`legacy/source/ct107d.netlist.json` 与
+`legacy/source/ct107d.cnv` 仍是 **v1** 文档，不是 RFC 0024/0025 的融合文档：
+
+- `build-schematic.mjs` 用统一器件包清单合成 v1 符号，输出 `.sch` 与网表；
+- `build-canvas.mjs` 用照片像素坐标生成背景图、17 个按键、2 片数码管、8 个 LED、
+  蜂鸣器、继电器与 J13/J2 热区；
+- `verify-schematic.mjs` 通过 `legacy/device-package.mjs` 把统一工厂接到旧 simulator；
+- `verify-canvas.mjs` 校验绑定、对位、widget 绘制和按键网络；
+- `bench/board.ts` 是 55 器件 correctness oracle，不进入性能计时；
+- `src/widgets` 是旧板面 widget，仅由显式 `build:widgets`/`build:legacy` 构建。
+
+默认 `build`/`test` 不构建 legacy widget；需要旧画布/host 校验时：
+
+```bash
+pnpm --filter @mica-js/example-ct107d build:legacy
+pnpm --filter @mica-js/example-ct107d check:legacy
 ```
 
-`verify-schematic.mjs` 依次做四件事：解析 `ct107d.sch` 折出网表并与 `ct107d.netlist.json`
-逐网络对照（同时检查悬空导线端点与器件本体重叠）；用全部 48 个器件建板跑 1 ms 确认没有
-装配故障；装一段固件走 `P2 → 74HC138 → 74HC02 → 74HC573 → LED`，确认 D1 亮度 0.1639、其余
-熄灭；同一段固件再按 `Y7 → U7（段码）`、`Y6 → U8（位选）` 逐位扫描，确认 DS1/DS2 八位分别
-锁存到写入的段码。
-
-## 板面画布 `ct107d.cnv`
-
-把 `assets/ct107d-board.webp`（1068×768 的板面照片）当背景，在上面覆盖 17 个按键热区与
-2 片四位数码管；每个实例都按照片像素定位，再通过 `bindings` 接到 `ct107d.sch` 的器件端口。
-
-| widget            | 数量 | 位置                                                                                                  | 绑定                                          |
-| ----------------- | ---- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `xbotlab:image`   | 1    | (0, 0) 1068×768                                                                                       | —                                             |
-| `xbotlab:button`  | 17   | 独立按键一列 x≈143、矩阵三列 x≈202/261/320、行 y≈491/539/588/637，热区 40×40；复位键 S1 在 (379, 540) | `press` → 对应 `S*.press`                     |
-| `xbotlab:segment` | 2    | DS1 (502, 206) 126×60、DS2 (636, 206) 127×60                                                          | `digit1`–`digit4` → `DS1/DS2.digit1`–`digit4` |
-
-- **按键**：半透明圆角热区，`pointerdown` 落在热区内即输出 `press=true`，`pointerup` /
-  `pointercancel` 回到 `false`；指针被捕获后拖出热区再松手同样会松开。
-- **数码管**：四个输入端口各接 8 位段码（`bit0=a` … `bit6=g`、`bit7=dp`），与 `seg4` 的
-  输出一一对应；不做亮度积分，端口给什么就画什么。
-- **背景图**：`image` 属性用 `{ src, mode: "file" }` 资源引用，`src` 相对 `.cnv` 所在目录；
-  读数来自宿主预取的字节，widget 自身没有网络访问。
-- 数码管默认红色、按键默认青色高亮，都可在 `.cnv` 的实例 `properties` 里覆盖。
-
-```powershell
-cd dist\ct107d
-pnpm run canvas           # node verify-canvas.mjs（需要先 mica build / pnpm run test）
-node build-canvas.mjs     # 修改坐标或位号后重新生成 ct107d.cnv
-```
-
-`verify-canvas.mjs` 做四件事：用 `parseCanvas` 解析画布并按 `ct107d.sch` 的 symbol/端口
-校验全部绑定；按照片尺寸检查对位（背景图铺满整块板、17 个热区互不重叠且不出界、两片数码管
-盖住两个黑色窗口）；用假 2D 上下文跑三个 widget 的实现（位图绘制、按下/松开发布、段码点亮
-段数）；最后用 `ct107d.sch` 的按键网表建一块只含按键与辅助器件的板，逐个按下 17 个键，
-确认矩阵行/列与 `RST` 的电平按 PDF 的接法变化。
-
-## 基准
-
-`bench/` 是整板性能基准，与 `examples/devices/bench` 里的器件基准同构，差别只有两处：
-
-- 读数用**进程 CPU 时间**（`process.cpuUsage`）而不是挂钟，避免并行任务抢 CPU 时读数抖动；
-- 器件从器件库 `examples/devices/` 装载：`bench/board.ts` 按 `ct107d.sch` 折出网表，
-  现场编译 `model.ddl` 并导入适配器，因此 `bench` 不依赖器件库的 `mica build`。
-
-```powershell
-pnpm --filter @mica-js/example-ct107d bench     # vitest run --config vitest.perf.config.ts
-```
-
-口径：装配整板 → `runUntil(0)` → 预热 20 ms → 测量窗口 500 ms，重复 3 轮；`wallMs` / `rtf`
-取 CPU 时间最小的一轮，`usPerSolve` 取各轮最小值。固件是 `assets/ct107d-demo.bin`（12 MHz 8051，
-8 位数码管全亮 + 8 路 LED 走马灯），板子按 `ct107d.sch` 装配 48 颗器件、99 条网络，
-电气求解、通道与执行引擎都走真实运行时。
-
-**行为对照必须用 `execution: 'precise'`。** 默认的 `throughput` 模式按
-[吞吐合同](../../docs/spec/jit/throughput.rst)允许错过 GPIO 中间态、合并受保护执行段内的检查，
-因此同一份固件在两种模式下 `topicDigest` 本来就会不同。演示固件把每个锁存的 LE 高电平相位
-保持一整个 `DELAY`（实测约 4 ms，长于预览的 2 ms 推进步长），并且两次刷新之间 `P0` 一直等于
-LED 图案，所以两种模式都能稳定锁存；差异只能来自其它引脚中间态，跨模式比较仍按合同允许的
-可见性差异判定，见 [conformance](../../docs/spec/conformance.rst)；
-`MICA_PERF_STREAM=<path>` 可导出原始 `(simTime, topic, payload)` 流做差分。
-
-| 字段                                          | 含义                                                                                                     |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `rtf`                                         | 墙钟（CPU 时间）/ 仿真时间，1 表示实时；越小越快                                                         |
-| `wallMs` / `simMs`                            | 测量窗口的 CPU 时间与仿真时间（毫秒）                                                                    |
-| `coldMs`                                      | 装配 + `runUntil(0)` + 预热的 CPU 时间（不含测量窗口）                                                   |
-| `usPerSolve`                                  | 每次电气求解摊到的时钟时间：`network.solveSlots` 内用 `hrtime` 累计 / 调用次数                           |
-| `solves`                                      | 窗口内 `ElectricalStats.solves` 的增量                                                                   |
-| `prepareTopology`                             | 整图重建次数；迁移桶命中时走恢复而不是重建                                                               |
-| `components` / `factorizations` / `leafPlans` | 同一次求解统计里的分量数、矩阵分解次数、叶计划（复用形状）数，用来观察拓扑重建频率                       |
-| `boundaryCalls`                               | 窗口内运行时 `boundary()` 的调用次数（每次块边界都会经过它）                                             |
-| `publishCalls` / `electricalPublishes`        | 窗口内 `publish()` 的调用次数 / 其中真正推进了电气求解的次数                                             |
-| `topicMessages`                               | 窗口内话题消息条数，也就是参与 `topicDigest` 的消息数                                                    |
-| `dirtySlots`                                  | 每次电气发布前脏槽数量的峰值                                                                             |
-| `direct` / `directCalls`                      | 直接 JIT 是否接管 MCU / 直接程序的调用次数                                                               |
-| `directPrograms` / `compileDirectJit`         | 直接程序缓存条数 / 成功编译次数（整轮累计，含预热；预热期间就会编译完，只统计窗口内会恒为 0）            |
-| `fallbackRate`                                | 直接程序返回 `fallback` 的比例                                                                           |
-| `topicDigest`                                 | 窗口内每条消息按 `(simTime, topic, payload)` 规范化后取 SHA-256 的前 16 位，作为「行为不变」的统一对照值 |
-| `topicDigestStable`                           | 同一次测量的多轮摘要是否完全一致                                                                         |
-| `unavailable`                                 | 拿不到或退化了的指标及原因                                                                               |
-
-每次运行把整份结果追加到 `bench/results.jsonl`（gitignore 已忽略），`vitest` 只在用例失败时
-回显 `console`，所以基线用 `process.stdout.write` 打印 `PERF {...}`。
-
-`topicDigest` 是跨改动比对的锚点：改引擎或编译器之后摘要不变，说明话题层面的行为没变；
-它只覆盖话题消息、不覆盖引脚电平，电气层面的等价性仍由 `test/` 的用例负责。用例里另有一轮
-`SJMP $` 空转固件，确认摘要对行为敏感（两次摘要必须不同）。`prepareTopology` 这类拿不到的
-指标列在 `unavailable` 里，需要精确计数时给 `ElectricalStats` 补计数器，而不是在基准里猜。
+`verify-firmware.mjs` 仍可把外部 HEX/BIN 装进 55 器件 oracle 做联调；它不替代正式
+`ct107d.sch` 的无头运行验证。
 
 ## 验证
 
-```powershell
-cd dist\ct107d
-pnpm run typecheck        # mica prepare && tsc --noEmit
-pnpm run test             # mica build + vitest
-pnpm run schematic        # node verify-schematic.mjs
-pnpm run canvas           # node verify-canvas.mjs
+```bash
+pnpm --filter @mica-js/example-ct107d typecheck
+pnpm --filter @mica-js/example-ct107d test:workbench
+pnpm --filter @mica-js/example-ct107d test
+pnpm --filter @mica-js/example-ct107d bench
 ```
 
-器件行为用例和板级夹具随器件源码迁到 `examples/devices/test/`；本包保留
-`widgets.test.ts` 与 `seg4-preview.test.ts`。`test/seg4-preview.test.ts` 使用
-`bench/board.ts` 装配整板，覆盖真实预览固件的数码管轨迹；`widgets.test.ts` 用最小
-widget API 与假 2D 上下文覆盖四个板面 widget 的元数据与行为。
+`test/fused-preview.test.ts`、`test/fused-firmware.test.ts`、`test/fused-inputs.test.ts`、
+`test/fused-startup.test.ts`、`test/fused-resistance.test.ts`、`test/seg4-preview.test.ts`
+继续用离散 oracle 覆盖融合模型行为；`test/widgets.test.ts` 覆盖 legacy widget 源码。
+`test/view2d.test.ts` 与 `test/panel.test.ts` 由展示代理维护。
+
+## 基准
+
+`bench/` 只对正式 `device/dist` 计时，`bench/board.ts` 只做 correctness 对照：
+
+```bash
+pnpm --filter @mica-js/example-ct107d bench
+```
+
+口径为装配 → `runUntil(0)` → 预热 → 固定测量窗口，读取进程 CPU 时间；断言
+`instances === 1`、`jits === 1`、`devices === 1`、`nets === 2`，并保留
+`topicDigest`/检查点稳定性作为行为不变锚点。融合后没有板内电气网络，`solves` 与
+`electricalPublishes` 为 0 是设计结果；工作量由 JIT、边界、事件、直接调用与检查点共同
+约束。绝对读数以每次 `PERF` 输出为准，不在 README 中固化。
+
+## 目录
+
+```text
+examples/ct107d/
+  ct107d.sch                    正式 v2 单一实例文档（跟踪）
+  device/                       统一融合器件工程
+    package.json                清单：program firmware、时钟、串口、View2D、HTML view
+    mica.config.ts              统一器件构建：manifest + model
+    src/model.ddl               生成的单 DeviceIR
+    src/model.ts / index.ts     模型入口与工厂
+    src/geometry.json           flexible 1068×768 几何与 VCC/GND 锚点
+    src/body.png                板面照片（PNG）
+    src/view2d.ts               板面叠层与交互
+    src/panel/                  HTML 控制面板
+    src/assets/                 seg7-dynamic.hex、ct107d-demo.{hex,bin}
+    dist/                       构建产物（忽略）
+  workbench/                    浏览器宿主
+    index.html
+    vite.config.ts              sandbox/widget worker 插件
+    src/main.ts                 串行 open/save/reopen、错误与清理
+    src/catalog.ts              catalog 解析与包文件 URL
+    src/document-store.ts       localStorage 草稿
+    src/serial-queue.ts         宿主操作串行化
+    src/session-controller.ts   open/save/reopen 与 pagehide/pageshow 状态机
+    src/host.css                实验仪表风格
+    public/                     生成产物（忽略）
+    dist/                       Vite 构建（忽略）
+  scripts/document.mjs          正式文档生成/锁刷新/校验
+  scripts/workbench.mjs         宿主准备、dev、build、preview
+  legacy/source/ct107d.sch      legacy v1 原理图（生成输入/oracle）
+  legacy/source/ct107d.netlist.json
+  legacy/source/ct107d.cnv      legacy v1 画布
+  src/widgets/                  legacy 板面 widget
+  bench/board.ts                55 器件离散 oracle
+  bench/fused.ts                正式 dist 融合夹具（1 实例/1 JIT）
+  test/workbench-runtime.test.ts 真实 dist 无头运行时
+  test/document-official.test.ts 正式文档与锁
+  test/workbench-host.test.ts   catalog/草稿/串行队列
+  test/workbench-session.test.ts 宿主 open/save/reopen 状态机（fake create）
+```
+
+## 与基准原理图的差距
+
+- J3/J7 排针未完整建模；`hall`/`lm324` 的板外端口仍以网标表示。
+- `ultrasonic` 实例位号沿用 `U22`，与基准中数码管扩展排针的位号存在冲突。
+- LED 位号沿用生成器的 `D1`–`D8`，基准丝印为 `L1`–`L8`。
+- 复位电路的 CR1/R3、74HC138 的 Y0–Y3、NE555 RC 脚等按 NC/理想化处理。
+- 照片上的多指同时按键不在单条 View2D 输入合同内；需要多键组合时使用 HTML 面板的
+  保持状态。

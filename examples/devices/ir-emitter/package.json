@@ -5,7 +5,7 @@
   "description": "红外发射端的数据通信逻辑模型：mod 是数字调制输入，高电平表示载波存在；宿主也可用 setCarrier 提交同一逻辑请求。载波状态经 carrier 输出通道与 onDidCarrier 事件交付，可由测试夹具桥接到 vs1838/cx20106a 的 setCarrier。供电由真实 VCC/GND 网络采样决定，掉电时载波为假。不模拟红外 LED、正向电流、发光强度、38 kHz 波形、光路或任何具体红外协议。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "红外发射数据调制端",
   "designatorPrefix": "U",

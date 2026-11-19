@@ -1,4 +1,4 @@
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 
 /** 磁场输入由公共方法提交并缓存；吸合状态由模型输出并缓存。 */
 const MIN_FIELD = 0;

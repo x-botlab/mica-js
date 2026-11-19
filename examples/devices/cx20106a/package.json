@@ -5,7 +5,7 @@
   "description": "红外接收前置放大与整形：照明经布尔输入通道 carrier 注入，载波出现 100 µs 后把开漏 OUT 拉低，消失 150 µs 后释放；输入翻转会取消相反相位的挂起定时，重复电平不重臂。receiving 端口跟随解调状态，只在变化时发布。f0KHz 仅作元数据。理想化：放大、f0 带通滤波、检波积分、脉冲整形与 inhibit/AGC 均不模拟，载波检出是布尔阈值而非波形。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "CX20106A 红外接收前置放大/整形",
   "designatorPrefix": "U",

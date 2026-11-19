@@ -94,8 +94,9 @@ interface SpiPinGroup {
 /**
  * SPI 引脚组，索引等于 SPI_S1:SPI_S0。
  *
- * 手册第三组是 [P5.4/SS_3, P4.0/MOSI_3, P4.1/MISO_3, P4.3/SCLK_3]，本器件模型只声明 P0–P3，
- * 因此 10 没有对应引脚；11 按手册是无效组合。
+ * 手册第三组是 [P5.4/SS_3, P4.0/MOSI_3, P4.1/MISO_3, P4.3/SCLK_3]。P4.0/P4.1/P4.3 已在
+ * 端口模型中声明，但 P5.4 仍未建模，且本模型没有实现该组的 SS 路由；在补上 P5 与 SS
+ * 语义之前不声明第三组，避免把“部分引脚存在”当成完整支持。11 按手册是无效组合。
  */
 const PIN_GROUPS: readonly SpiPinGroup[] = [
   { sclk: { port: 1, bit: 5 }, mosi: { port: 1, bit: 3 }, miso: { port: 1, bit: 4 } },

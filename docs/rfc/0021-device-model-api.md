@@ -6,6 +6,8 @@
 
 规定统一器件的模型入口、类型化方法与事件、调用顺序及所有权。模型维护权威仿真状态，展示通过本实例接口交互；本合同中的签名为待实现的作者 API 草案。MUST / MUST NOT 为强制要求，SHOULD 为推荐，MAY 为可选。
 
+修订（2026-11-17）：模型属性按 [RFC 0026](./0026-firmware-properties.md) 接收程序镜像或文件集，DDL 继续接收普通属性。
+
 ## 声明
 
 ### 公共类型
@@ -125,7 +127,7 @@ interface ModelClient<M extends Methods, E extends Readonly<Record<string, Value
 ```
 
 - 清单 `model.entry` 指定的模块具名导出 `model` 和同步 `create`，共同符合 `ModelModule`；DDL 编译产物和适配器交付在同一入口。
-- 工厂 `props` 是清单属性的独立只读初值，核心只消费模型 IR 声明的普通属性；固件镜像由工厂按 [RFC 0026](./0026-firmware-properties.md) 装载，模型用输入通道提交交互，用 `sync` 消费按仿真时间有序的 DDL 输出。
+- 工厂 `props` 是清单属性的独立只读初值，核心只消费模型 IR 声明且类型兼容的普通属性；`program` 按 [RFC 0026](./0026-firmware-properties.md) 的 `loader` 提供 `MemoryProgram` 或 `ProgramFiles`，在模型侧仅由 JS 工厂消费，IR 禁止同名属性；模型用输入通道提交交互，用 `sync` 消费按仿真时间有序的 DDL 输出。
 - 实例方法集合 MUST 与清单 `model.methods` 完全一致；事件由上下文按 `model.events` 声明的出口产生。
 - 模型使用 `ctx.events.onDidXxx.fire(value)` 发出对应载荷；事件出口由宿主创建，仅提供发出接口，事件派发复用核心 `Emitter` 机制。
 - 工厂返回后方法集合固定，拒绝动态增删和访问器形式的方法入口。

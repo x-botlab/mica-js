@@ -5,7 +5,7 @@
   "description": "两脚抽象常开轻触开关：press 为 true 时 a–b 建立 1 Ω 支路，false 时移除支路保持悬空；CT107D 的 S1 与 S4–S19。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "轻触按键",
   "designatorPrefix": "S",

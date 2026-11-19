@@ -5,7 +5,7 @@
   "description": "电磁继电器：线圈由开集输出拉低时吸合，两组常开触点随之闭合；isEnergized 查询吸合状态并发出 onDidEnergized。CT107D 的 K1（值 RELAY-SPDT）：线圈接 N_RELAY 与继电器电源，触点把 m2 接到 GND。释放时两组触点都移除支路。不模拟吸合延时、弹跳、线圈电感与反激电压。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "电磁继电器（双极常开）",
   "designatorPrefix": "K",

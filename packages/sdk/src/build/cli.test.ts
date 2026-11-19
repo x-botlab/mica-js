@@ -39,6 +39,7 @@ describe('project CLI', () => {
     expect(() => parseCliArguments(['dev'])).toThrow('Unknown command');
     expect(() => parseCliArguments(['build', '--watch'])).toThrow('prepare');
     expect(() => parseCliArguments(['build', '--config'])).toThrow('Missing value');
+    expect(() => parseCliArguments(['prepare', '--update-lock'])).toThrow('Unknown argument');
   });
 
   it('requires a project marker even for prepare', async () => {

@@ -6,7 +6,7 @@
  *   tLow  = 0.693 × rB × c          （OUT 低、DISCH 拉低，定时电容放电）
  * 一个自续定时过程在两相之间翻转，每个相位只等待当前半周期。RST# 低电平立刻停振并把
  * OUT、DISCH 拉低，高电平从充电相（高相）重启；THRES/TRIG/CTRL 是不参与行为的被动输入。
- * `frequency` 与 `dutyCycle` 端口在启动时按折叠后的常量发布一次。
+ * `frequency` 与 `dutyCycle` 在启动和定时参数改变时发布。
  *
  * 理想化：RC 斜坡、1/3·VCC 与 2/3·VCC 比较器阈值、CTRL 输入、DISCH 饱和压降与电源
  * 敏感性均不模拟；半周期取整到整皮秒，输出没有传播延迟。
@@ -21,17 +21,17 @@ device Ne555(
 ) {
   const maxTime = 7_200_000_000_000_000;
   // 事件期限必须是整数皮秒，因此两个半周期在创建期各取整一次。
-  const tHigh = round(0.693 * (rA + rB) * c * 1e12);
-  const tLow = round(0.693 * rB * c * 1e12);
+  const initialHigh = round(0.693 * (rA + rB) * c * 1e12);
+  const initialLow = round(0.693 * rB * c * 1e12);
 
   assert isFinite(rA) && rA >= 1, "rA must be a finite resistance of at least 1 ohm";
   assert isFinite(rB) && rB >= 1, "rB must be a finite resistance of at least 1 ohm";
   assert isFinite(c) && c >= 1e-12, "c must be a finite capacitance of at least 1 pF";
-  assert isSafeInteger(tHigh) && tHigh > 0,
+  assert isSafeInteger(initialHigh) && initialHigh > 0,
     "the charging half period must be a positive integer picosecond duration";
-  assert isSafeInteger(tLow) && tLow > 0,
+  assert isSafeInteger(initialLow) && initialLow > 0,
     "the discharging half period must be a positive integer picosecond duration";
-  assert tHigh + tLow <= maxTime, "the oscillation period exceeds the supported time range";
+  assert initialHigh + initialLow <= maxTime, "the oscillation period exceeds the supported time range";
   assert outputResistance >= 0.001 && outputResistance <= 1_000_000_000,
     "outputResistance must be within the supported range";
 
@@ -44,9 +44,13 @@ device Ne555(
   pin vcc;
   pin gnd;
 
+  input channel timingScale: number(capacity: 8, overflow: Overflow.drop_oldest);
   output channel frequency: number(capacity: 4, overflow: Overflow.drop_oldest);
   output channel dutyCycle: number(capacity: 4, overflow: Overflow.drop_oldest);
 
+  state tHigh: number = initialHigh;
+  state tLow: number = initialLow;
+  state timingStarted: bool = false;
   /** 是否在振荡；RST# 低电平时为 false。 */
   state running: bool = false;
   /** 当前相位：true 为高相（充电、OUT 高、DISCH 释放），false 为低相。 */
@@ -94,15 +98,41 @@ device Ne555(
     }
   }
 
+  fn publishTiming() {
+    frequency.send(1e12 / (tHigh + tLow));
+    dutyCycle.send(tHigh / (tHigh + tLow) * 100);
+  }
+
+  fn updateTiming(scale: number) {
+    const resistance = rB * scale;
+    if !isFinite(resistance) || resistance < 1 { return; }
+    const nextHigh = round(0.693 * (rA + resistance) * c * 1e12);
+    const nextLow = round(0.693 * resistance * c * 1e12);
+    if !isSafeInteger(nextHigh) || !isSafeInteger(nextLow) || nextHigh <= 0 ||
+        nextLow <= 0 || nextHigh + nextLow > maxTime { return; }
+    if tHigh == nextHigh && tLow == nextLow { return; }
+    // 不改已安排的边沿；下一相使用新时长，避免拖动时截断当前脉冲。
+    tHigh = nextHigh;
+    tLow = nextLow;
+    publishTiming();
+  }
+
+  process consumeTiming on timingStarted {
+    loop {
+      const scale = await timingScale.receive();
+      updateTiming(scale);
+    }
+  }
+
   process start {
+    timingStarted = true;
     // 未知电平按低处理：只有确定为高才起振。
     if rst.sample.level == Logic.high {
       startCharging();
     } else {
       stopOscillation();
     }
-    frequency.send(1e12 / (tHigh + tLow));
-    dutyCycle.send(tHigh / (tHigh + tLow) * 100);
+    publishTiming();
   }
 
   process oscillate on running {

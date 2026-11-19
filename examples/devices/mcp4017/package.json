@@ -5,7 +5,7 @@
   "description": "MCP4017T-104ELT 7 位单路 I²C 数字电位器（100 kΩ rheostat）。固定从机地址 0101111（写 0x5E、读 0x5F），无地址引脚；W–B 之间为 128 级可变电阻 RWB = RAB×code/127 + RW，code 0 为 W=B 零刻度，127 为满刻度。仅 W/B 是电阻端，芯片没有可用的 A 端，也不存在 W–VCC 支路；VDD/VSS 只供数字接口。上电默认 midscale 0x3F；每个写数据字节在应答位期间更新 7 位 wiper（MSB 忽略），支持连续写、重复 START 与连续读，地址/数据 NACK 按 I²C 语义释放 SDA。理想化：无 wiper 非线性/温度漂移、无电源门控、无总线超时/毛刺滤波与多主仲裁。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "MCP4017 7 位 I²C 数字电位器",
   "designatorPrefix": "U",

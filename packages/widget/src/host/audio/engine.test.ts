@@ -50,6 +50,23 @@ async function mountGuest(
 }
 
 describe('WidgetAudioEngine', () => {
+  it('reports a caller-closed audio device as unavailable for its mounted instances', async () => {
+    const harness = createHarness();
+    await harness.engine.open('i1');
+    harness.context.setState('closed');
+    expect(harness.engine.state).toBe('unavailable');
+    expect(harness.states.at(-1)).toBe('unavailable');
+    expect(harness.reports).toEqual([
+      {
+        code: 'widget/audio-failed',
+        instanceId: 'i1',
+        message: 'The host AudioContext was closed.',
+      },
+    ]);
+    harness.engine.dispose();
+    harness.worklet.dispose();
+  });
+
   it('boots the worklet and hands the guest port over', async () => {
     const harness = createHarness();
     const info = await harness.engine.open('i1');

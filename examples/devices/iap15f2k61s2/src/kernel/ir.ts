@@ -53,6 +53,8 @@ export const SFR_P2 = 0xa0;
 export const SFR_BUS_SPEED = 0xa1;
 export const SFR_P_SW1 = 0xa2;
 export const SFR_IE = 0xa8;
+/** IE2：ES2/ET2/ESPI 等扩展中断允许位。 */
+export const SFR_IE2 = 0xaf;
 export const SFR_SADDR = 0xa9;
 export const SFR_WKTCL = 0xaa;
 export const SFR_WKTCH = 0xab;
@@ -408,15 +410,27 @@ export const writeIndirect = (b: Body, register: number, value: Value<number>): 
   b.store8(IRAM, indirectIndex(b, register), byte(b, value));
 };
 
-const PORT_LATCH_ADDRESSES: ReadonlySet<number> = new Set([0x80, 0x90, 0xa0, 0xb0]);
+/**
+ * 端口锁存器地址 → 端口序号。
+ *
+ * P4 的 SFR 在 C0H，不能再用 `(address >> 4) & 3` 从地址推序号：那个公式只对
+ * 80H–B0H 成立。位寻址、直接读取和读-改-写都从这里取端口身份，避免 P4 被误当成 P0。
+ */
+const PORT_INDEX_BY_LATCH: ReadonlyMap<number, number> = new Map([
+  [SFR_P0, 0],
+  [SFR_P1, 1],
+  [SFR_P2, 2],
+  [SFR_P3, 3],
+  [SFR_P4, 4],
+]);
 
-/** 直接地址读：低于 80H 读内部 RAM；P0–P3 读引脚电平；其余读 SFR 锁存器。 */
+/** 直接地址读：低于 80H 读内部 RAM；P0–P4 读引脚电平；其余读 SFR 锁存器。 */
 export const readDirect = (b: Body, address: number): Value<number> => {
   if (address < LOW_RAM_SIZE) return b.load8(IRAM, number(b, address));
 
-  return PORT_LATCH_ADDRESSES.has(address)
-    ? machine().ports.readPort(b, (address >> 4) & 0x03)
-    : readSfr(b, address);
+  const port = PORT_INDEX_BY_LATCH.get(address);
+
+  return port === undefined ? readSfr(b, address) : machine().ports.readPort(b, port);
 };
 
 /** 写直接地址：内部 RAM 或 SFR；SFR 写入后触发对应外设钩子。 */
@@ -442,8 +456,9 @@ export const readBit = (b: Body, address: number): Value<number> => {
   const byteAddress = bitByteAddress(address);
   const bit = address & 0x07;
 
-  if (PORT_LATCH_ADDRESSES.has(byteAddress))
-    return machine().ports.readPin(b, (byteAddress >> 4) & 0x03, bit);
+  const port = PORT_INDEX_BY_LATCH.get(byteAddress);
+
+  if (port !== undefined) return machine().ports.readPin(b, port, bit);
 
   return b.bitAnd(b.shiftRightUnsigned(readDirect(b, byteAddress), number(b, bit)), number(b, 1));
 };

@@ -133,9 +133,14 @@ device Latch74hc573(
   }
 
   process start {
-    const current = inputs;
-    stored = current;
-    latch.send(current);
+    // 573 只在 LE 为高时透明跟随 D。上电时 LE 已低的口不应伪造一次「锁存」；
+    // 保持 stored=0 的确定性初始值，等第一个透明相位或下降沿再更新。latch 仍发布
+    // 这个确定初始值，便于观察端不需要区分「尚未发布」与「锁存为 0」。
+    if le.sample.level == Logic.high {
+      const current = inputs;
+      stored = current;
+    }
+    latch.send(stored);
     publishAll();
   }
 

@@ -1,0 +1,17 @@
+{
+  "sizing": "flexible",
+  "bounds": { "x": 0, "y": 0, "width": 1068, "height": 768 },
+  "bodyBounds": { "x": 0, "y": 0, "width": 1068, "height": 768 },
+  "bodyImage": "body.png",
+  "pins": {
+    "VCC": {
+      "position": { "x": 105, "y": 75 },
+      "outward": { "x": -1, "y": 0 }
+    },
+    "GND": {
+      "position": { "x": 109, "y": 687 },
+      "outward": { "x": -1, "y": 0 }
+    }
+  },
+  "designator": { "x": 14, "y": 24 }
+}

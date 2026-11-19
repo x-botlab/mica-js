@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import { adaptModelFactory, firmwareImage } from '../support/legacy-model-bridge.mjs';
 import { createDeviceBuilder, types, validateDeviceIR } from '@mica-js/sdk/model';
 import type { DeviceIR } from '@mica-js/sdk/model';
 
@@ -106,9 +106,7 @@ export function readMetadata(deviceId: string): {
     readonly events?: Readonly<Record<string, unknown>>;
   };
 } {
-  return JSON.parse(
-    readFileSync(join(PACKAGE_DIR, 'dist', deviceId, 'package.json'), 'utf8'),
-  );
+  return JSON.parse(readFileSync(join(PACKAGE_DIR, 'dist', deviceId, 'package.json'), 'utf8'));
 }
 
 /** 探针：把 `Y` 的电平按 50 µs 周期摊成 0/1 输出消息，队列满时保留最新一条。 */
@@ -188,9 +186,38 @@ function pullUp(resistance: number): DeviceIR {
   return model;
 }
 
+/** 外部下拉：`B` 经指定电阻接到 `A`，测试把 `A` 接到 0 V 参考网络。 */
+function pullDownModel(resistance: number): DeviceIR {
+  const builder = createDeviceBuilder({ name: `PullDown${resistance}` });
+
+  builder.pin({ name: 'A', initial: (body) => body.returnValue(body.combineIntents()) });
+  builder.pin({
+    name: 'B',
+    initial: (body) =>
+      body.returnValue(body.resistor('A', body.constant(types.number, resistance))),
+  });
+
+  return validateDeviceIR(builder.finish());
+}
+
 export interface HarnessOptions {
   /** `P1_1` 上的上拉电阻，用于区分「释放」与「驱动低」。 */
   readonly pullUpOhm?: number;
+  /**
+   * 在指定 MCU 引脚与地之间接一个外部下拉。
+   *
+   * 复位/弱上拉用例必须不依赖 `pullUpOhm`：这里可以验证外部强 low 会覆盖内部
+   * 10 kΩ 弱上拉，而不是被测试夹具的上拉掩盖。
+   */
+  readonly pullDown?: {
+    readonly pin: string;
+    readonly resistance: number;
+  };
+  /** 在指定 MCU 引脚与 VCC 之间接一个外部上拉（不影响固定的 P1_1 上拉）。 */
+  readonly pullUp?: {
+    readonly pin: string;
+    readonly resistance: number;
+  };
   /** 是否把理想 LED 接在 `P1_1` 与地之间。 */
   readonly led?: boolean;
   /** 是否额外观察 `P3`（结果与 PSW 一起读回时才需要）。 */
@@ -338,10 +365,93 @@ async function createFixture(
     signalPins.push({ instance: 'probesignal', pin: 'Y' });
   }
 
+  if (options.pullDown !== undefined) {
+    const match = /^P([0-7])_([0-7])$/.exec(options.pullDown.pin);
+    const port = match?.[1];
+    const bit = match?.[2];
+
+    if (port === undefined || bit === undefined)
+      throw new Error(`Invalid pull-down pin ${options.pullDown.pin}`);
+
+    entries.push({
+      id: 'pulldown',
+      model: pullDownModel(options.pullDown.resistance),
+      create: () => ({ sync() {}, dispose() {} }),
+    });
+    instances.push({ id: 'pulldown', type: 'pulldown' });
+    const gnd = nets.find((net) => net.id === 'gnd');
+    const netId = `p${port}_${bit}`;
+    const target = nets.find((net) => net.id === netId);
+
+    if (gnd === undefined) throw new Error('Missing GND net');
+
+    const gndIndex = nets.indexOf(gnd);
+
+    nets[gndIndex] = { ...gnd, pins: [...gnd.pins, { instance: 'pulldown', pin: 'B' }] };
+    if (target === undefined) {
+      nets.push({
+        id: netId,
+        pins: [
+          { instance: 'mcu', pin: options.pullDown.pin },
+          { instance: 'pulldown', pin: 'A' },
+        ],
+      });
+    } else {
+      const targetIndex = nets.indexOf(target);
+
+      nets[targetIndex] = {
+        ...target,
+        pins: [...target.pins, { instance: 'pulldown', pin: 'A' }],
+      };
+    }
+  }
+
+  if (options.pullUp !== undefined) {
+    const match = /^P([0-7])_([0-7])$/.exec(options.pullUp.pin);
+    const port = match?.[1];
+    const bit = match?.[2];
+
+    if (port === undefined || bit === undefined)
+      throw new Error(`Invalid pull-up pin ${options.pullUp.pin}`);
+
+    entries.push({
+      id: 'pullup_pin',
+      model: pullUpModel(options.pullUp.resistance),
+      create: () => ({ sync() {}, dispose() {} }),
+    });
+    instances.push({ id: 'pullup_pin', type: 'pullup_pin' });
+    const vcc = nets.find((net) => net.id === 'vcc');
+    const netId = `p${port}_${bit}`;
+    const target = nets.find((net) => net.id === netId);
+
+    if (vcc === undefined) throw new Error('Missing VCC net');
+
+    const vccIndex = nets.indexOf(vcc);
+
+    nets[vccIndex] = { ...vcc, pins: [...vcc.pins, { instance: 'pullup_pin', pin: 'A' }] };
+    if (target === undefined) {
+      nets.push({
+        id: netId,
+        pins: [
+          { instance: 'mcu', pin: options.pullUp.pin },
+          { instance: 'pullup_pin', pin: 'B' },
+        ],
+      });
+    } else {
+      const targetIndex = nets.indexOf(target);
+
+      nets[targetIndex] = {
+        ...target,
+        pins: [...target.pins, { instance: 'pullup_pin', pin: 'B' }],
+      };
+    }
+  }
+
   if (options.led === true) {
-    const led = (await import(
-      pathToFileURL(join(SIBLING_DEVICES, 'dist', 'model.js')).href
-    )) as { readonly model: DeviceIR; readonly create: unknown };
+    const led = (await import(pathToFileURL(join(SIBLING_DEVICES, 'dist', 'model.js')).href)) as {
+      readonly model: DeviceIR;
+      readonly create: unknown;
+    };
     const create = adaptModelFactory(led.create as never, {
       events: { onDidBrightness: 'brightness' },
     }) as unknown as (context: DeviceContext) => DeviceAdapter;

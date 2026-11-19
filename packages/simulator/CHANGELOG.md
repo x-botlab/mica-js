@@ -1,5 +1,20 @@
 # @mica-js/simulator
 
+## 2.5.2
+
+### Patch Changes
+
+- Updated dependencies [0ce5a52]
+  - @mica-js/compiler@0.5.1
+
+## 2.5.1
+
+### Patch Changes
+
+- Updated dependencies [99b33c1]
+  - @mica-js/document@0.3.0
+  - @mica-js/sandbox@0.5.1
+
 ## 2.5.0
 
 ### Minor Changes

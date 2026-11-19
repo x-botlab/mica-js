@@ -314,24 +314,48 @@ importers:
 
   examples/ct107d:
     devDependencies:
+      '@mica-js/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@mica-js/document':
         specifier: workspace:*
         version: link:../../packages/document
+      '@mica-js/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
       '@mica-js/example-devices':
         specifier: workspace:*
         version: link:../devices
+      '@mica-js/sandbox':
+        specifier: workspace:*
+        version: link:../../packages/sandbox
       '@mica-js/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
-      '@mica-js/simulator':
+      '@mica-js/widget':
         specifier: workspace:*
-        version: link:../../packages/simulator
+        version: link:../../packages/widget
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
+      '@types/react':
+        specifier: ^19.2.2
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.2.1
+        version: 19.3.0(@types/react@19.3.0)
+      react:
+        specifier: ^19.2.0
+        version: 19.3.1
+      react-dom:
+        specifier: ^19.2.0
+        version: 19.3.1(react@19.3.1)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
       vitest:
         specifier: 'catalog:'
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
@@ -383,6 +407,18 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  examples/fused-workbench:
+    devDependencies:
+      '@mica-js/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
+      '@mica-js/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
 
   examples/ideal-led:
     devDependencies:
@@ -540,6 +576,9 @@ importers:
       '@mica-js/document':
         specifier: workspace:*
         version: link:../document
+      '@mica-js/sandbox':
+        specifier: workspace:*
+        version: link:../sandbox
       '@mica-js/sdk':
         specifier: workspace:*
         version: link:../sdk
@@ -549,7 +588,22 @@ importers:
       '@mica-js/widget':
         specifier: workspace:*
         version: link:../widget
+      '@vscode/codicons':
+        specifier: ^0.0.45
+        version: 0.0.45
     devDependencies:
+      '@types/react':
+        specifier: ^19.2.2
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.2.1
+        version: 19.3.0(@types/react@19.3.0)
+      react:
+        specifier: ^19.2.0
+        version: 19.3.1
+      react-dom:
+        specifier: ^19.2.0
+        version: 19.3.1(react@19.3.1)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -630,15 +684,24 @@ importers:
       '@mica-js/device-model':
         specifier: workspace:*
         version: link:../device-model
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../document
       '@mica-js/simulator':
         specifier: workspace:*
         version: link:../simulator
       '@mica-js/widget':
         specifier: workspace:*
         version: link:../widget
+      '@noble/hashes':
+        specifier: ^2.4.0
+        version: 2.4.0
       ajv:
         specifier: ^8.17.1
         version: 8.20.0
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.3
       rolldown:
         specifier: 'catalog:'
         version: 1.2.14
@@ -652,6 +715,9 @@ importers:
       '@types/node':
         specifier: ^24.19.2
         version: 24.19.2
+      '@types/semver':
+        specifier: ^7.7.0
+        version: 7.8.0
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -686,6 +752,34 @@ importers:
       vite:
         specifier: 'catalog:'
         version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
+      vite-plugin-dts:
+        specifier: 'catalog:'
+        version: 5.1.2(@microsoft/api-extractor@7.59.4(@types/node@24.19.2))(rolldown@1.2.14)(supports-color@8.1.1)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.5(@types/node@24.19.2)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
+
+  packages/testing:
+    dependencies:
+      '@mica-js/core':
+        specifier: workspace:*
+        version: link:../core
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../document
+      '@mica-js/sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1)
+    devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
       vite-plugin-dts:
         specifier: 'catalog:'
         version: 5.1.2(@microsoft/api-extractor@7.59.4(@types/node@24.19.2))(rolldown@1.2.14)(supports-color@8.1.1)(typescript@6.0.3)(vite@8.3.4(@types/node@24.19.2)(jiti@2.7.0)(yaml@2.9.1))
@@ -1032,6 +1126,10 @@ packages:
   '@microsoft/tsdoc@0.17.1':
     resolution: {integrity: sha512-VHyYyyoH63jFoO3shpw9Zfijk5v/9p/VrClW35z0/q6ooK7sSmxpzOkS4iZPxs3vO4XtBW4H38HRAKkAMIK7DA==}
 
+  '@noble/hashes@2.4.0':
+    resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
+    engines: {node: '>= 20.19.0'}
+
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
 
@@ -1360,6 +1458,9 @@ packages:
   '@types/react@19.3.0':
     resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
 
+  '@types/semver@7.8.0':
+    resolution: {integrity: sha512-1mAINjtQCXXeLkJ9ehXkwOcBpqtLxiVtKhpUf83DdRNdQKV0iXZpaHYqRr7nj+wvxuJzoAmAwXI+sCNMv1CzLQ==}
+
   '@types/stats.js@0.17.4':
     resolution: {integrity: sha512-jIBvWWShCvlBqBNIZt0KAshWpvSjhkwkEu4ZUcASoAvhmrgAUI2t1dXrjSL4xXVLB4FznPrIsX3nKXFl/Dt4vA==}
 
@@ -1464,6 +1565,9 @@ packages:
     peerDependenciesMeta:
       typescript:
         optional: true
+
+  '@vscode/codicons@0.0.45':
+    resolution: {integrity: sha512-1KAZ7XCMagp5Gdrlr4bbbcAqgcIL623iO1wW6rfcSVGAVUQvR0WP7bQx1SbJ11gmV3fdQTSEFIJQ/5C+HuVasw==}
 
   acorn-jsx@5.3.2:
     resolution: {integrity: sha512-rq9s+JNhf0IChjtDXxllJ7g41oZk5SlXtp0LHwyA5cejwn7vKmKp4pPri6YEePv2PU65sAsegbXtIinmDFDXgQ==}
@@ -3208,6 +3312,8 @@ snapshots:
 
   '@microsoft/tsdoc@0.17.1': {}
 
+  '@noble/hashes@2.4.0': {}
+
   '@oxc-project/types@0.154.0': {}
 
   '@pnpm/deps.graph-sequencer@1100.0.1': {}
@@ -3455,6 +3561,8 @@ snapshots:
     dependencies:
       csstype: 3.2.3
 
+  '@types/semver@7.8.0': {}
+
   '@types/stats.js@0.17.4': {}
 
   '@types/three@0.186.0':
@@ -3597,6 +3705,8 @@ snapshots:
       vscode-uri: 3.2.0
     optionalDependencies:
       typescript: 6.0.3
+
+  '@vscode/codicons@0.0.45': {}
 
   acorn-jsx@5.3.2(acorn@8.19.0):
     dependencies:

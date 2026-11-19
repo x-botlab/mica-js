@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
-import { adaptModelFactory, firmwareImage } from '@mica-js/sdk/device';
+import { adaptModelFactory, firmwareImage } from '../support/legacy-model-bridge.mjs';
 import type { FirmwareImage } from '@mica-js/sdk/device';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import { createDeviceBuilder, types, validateDeviceIR } from '@mica-js/sdk/model';
@@ -41,11 +41,11 @@ function loadCreate(): Promise<unknown> {
 function serialEvents() {
   return {
     onDidUart1Tx: {
-      topic:  'uart1Tx',
+      topic: 'uart1Tx',
       transform: (value: unknown) => (value as { data: Uint8Array }).data,
     },
     onDidUart1Rx: {
-      topic:  'uart1Rx',
+      topic: 'uart1Rx',
       transform: (value: unknown) => (value as { data: Uint8Array }).data,
     },
   };
@@ -144,6 +144,8 @@ export interface SourceHarnessOptions {
   readonly pullUp?: Readonly<Record<string, number>>;
   readonly samplePeriodPs?: number;
   readonly cpuQuantum?: number;
+  /** 执行后端；省略时沿用 createBoard 的默认值。 */
+  readonly execution?: 'throughput' | 'precise';
 }
 
 export interface SourceHarness {
@@ -305,7 +307,10 @@ export async function createSourceHarness(
       ),
       nets,
     },
-    { cpuQuantum: options.cpuQuantum ?? 1_000_000 },
+    {
+      cpuQuantum: options.cpuQuantum ?? 1_000_000,
+      ...(options.execution === undefined ? {} : { execution: options.execution }),
+    },
   );
 
   board.onDidError((event) => faults.push(event.message));

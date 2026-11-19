@@ -86,7 +86,7 @@ function loadThresholdProbe(): Promise<DeviceModule> {
       publisher: 'test',
       name: 'threshold-probe',
       version: '0.0.0',
-      engines: { mica: '^0.3.0' },
+      engines: { mica: '^1.0.0' },
       displayName: 'Threshold Probe',
       model: { entry: 'model.js', types: {}, methods: {}, events: {} },
     },

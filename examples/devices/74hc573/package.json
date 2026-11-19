@@ -5,7 +5,7 @@
   "description": "八路 D 型透明锁存器：LE 高电平时 Q 跟随 D，LE 下降沿锁存当前字节；OE# 高电平时八路输出全部释放为高阻。零传播延迟，不含驱动强度与电源电流。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "74HC573 八路透明锁存器",
   "designatorPrefix": "U",

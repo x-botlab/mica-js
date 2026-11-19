@@ -5,7 +5,7 @@
   "description": "蓝色 LED：阳极–阴极按等效串联电阻导通，亮度取正向电流相对额定电流的比值（钳到 0..1）。平台电气合同只支持线性电阻，因此不含正向压降、反向截止与发光效率。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "蓝色 LED",
   "designatorPrefix": "D",

@@ -5,7 +5,7 @@
   "description": "三脚开关型霍尔传感器：VCC/GND 供电，OUT 为低有效开漏输出。外加磁场达到 operatePoint 时吸合（OUT 拉低），降到 releasePoint 及以下释放，两点之间保持迟滞；setField 提交磁场，供电由真实 VCC/GND 网络采样决定，掉电释放输出并清除内部锁存。不模拟线性磁场、磁极方向、温度漂移、输出边沿与电源电流。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "三脚开关型霍尔传感器",
   "designatorPrefix": "U",

@@ -1,5 +1,47 @@
 # @mica-js/editor
 
+## 0.6.0
+
+### Minor Changes
+
+- 61639d9: 融合工作台新建电源符号默认接入 `VCC` 网络，电压为 `3.3 V`，放置预览使用同一默认值。双击电源符号或其网名、接地符号和普通网标会打开对应的属性面板。
+
+  宿主可用 `simulation.pause` 和 `simulation.resume` 在同一运行会话中暂停和继续仿真，并通过 `simulationStatus` 观察状态。工作台界面不新增控件。底层融合运行时的 `pause()` 现在返回 Promise，可等待仿真端确认。
+
+## 0.5.1
+
+### Patch Changes
+
+- 408a624: 修复融合工作台工具栏「更多」下拉菜单出现在工具栏左端的问题，菜单改为在「更多」按钮下方右对齐展开。
+
+## 0.5.0
+
+### Minor Changes
+
+- 08e2836: 修复融合工作台拖动独立网标时连接点不动，接线改为只在端子锚点启动；属性面板可查看并修改电源端、接地端、网标与电压参考的角度、电压和网名。
+
+## 0.4.1
+
+### Patch Changes
+
+- @mica-js/simulator@2.5.2
+  - @mica-js/sdk@0.4.1
+
+## 0.4.0
+
+### Minor Changes
+
+- 99b33c1: 新增融合原理图工作台、统一器件包与程序资源 API，补齐编辑交互和实例音频，修复 Worker 热更新缓存。
+
+### Patch Changes
+
+- Updated dependencies [99b33c1]
+  - @mica-js/document@0.3.0
+  - @mica-js/sdk@0.4.0
+  - @mica-js/widget@0.5.0
+  - @mica-js/sandbox@0.5.1
+  - @mica-js/simulator@2.5.1
+
 ## 0.3.3
 
 ### Patch Changes

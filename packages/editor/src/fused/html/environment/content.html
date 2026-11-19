@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      Inner author document of one device HTML view environment (RFC 0023). Deploy this file next to
+      index.html, environment.js, environment-sw.js and content.js.
+
+      This is a real same-origin document of the environment deployment directory, so both frames
+      compare exact origins and the environment reaches this document through `contentDocument`.
+      Nothing is rendered before the environment writes the author document into it: content.js
+      installs `acquireDeviceViewApi`, authorizes this client in the package worker and only then
+      announces that the document may be written, which keeps the API available before any author
+      script runs.
+
+      The inline policy mirrors HTML_VIEW_CONTENT_POLICY in paths.ts: no further frames, no other
+      origin and no form targets.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' blob:; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'self'"
+    />
+    <title>Mica device view document</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+      }
+    </style>
+    <script type="module" src="./content.js"></script>
+  </head>
+  <body></body>
+</html>

@@ -5,7 +5,7 @@
   "description": "有源蜂鸣器：两端之间是负载电阻，正端为高、负端非高时发声；端口 active 报告是否发声。CT107D 的 SP1，正端接 VCC、负端接 ULN2003 OUT7。不模拟发声频率、声压与机械共振。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "有源蜂鸣器",
   "designatorPrefix": "SP",

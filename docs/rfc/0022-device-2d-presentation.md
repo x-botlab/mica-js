@@ -1,10 +1,10 @@
 # 器件二维展示
 
 - Start Date: 2026-11-15
-- Reference Issues: —（尚未实现）
-- Implementation PR: —（尚未实现）
+- Reference Issues: —（尚未关联 issue）
+- Implementation PR: —（二维展示与实例音频已在本地实现；尚未关联 PR）
 
-规定统一器件的静态二维几何、底图资源、可选 Canvas2D 动态展示入口和局部输入。模型接口由 [RFC 0021](./0021-device-model-api.md) 提供；本文为待实现的合同草案。MUST / MUST NOT 为强制要求，SHOULD 为推荐，MAY 为可选。
+规定统一器件的静态二维几何、底图资源、可选 Canvas2D 动态展示入口、局部输入和实例音频。模型接口由 [RFC 0021](./0021-device-model-api.md) 提供。实例音频复用 [RFC 0016](./0016-widget-audio-api.md)，将其订阅适配为生命周期事件；该扩展随融合运行时在本地实现。MUST / MUST NOT 为强制要求，SHOULD 为推荐，MAY 为可选。
 
 ## 声明
 
@@ -61,6 +61,14 @@ interface ViewAssets {
   read(path: string): Promise<Uint8Array>;
   loadImage(path: string): Promise<ImageBitmap>;
 }
+interface ViewAudioStream extends Omit<WidgetAudioStream, 'onDrain' | 'onStatus'> {
+  readonly onDidDrain: Event<void>;
+  readonly onDidChangeStatus: Event<WidgetAudioStreamStatus>;
+}
+interface ViewAudio extends Omit<WidgetAudioApi, 'onStateChange' | 'createStream'> {
+  readonly onDidChangeState: Event<WidgetAudioState>;
+  createStream(options: WidgetAudioStreamOptions): ViewAudioStream;
+}
 interface ViewInput {
   readonly type: 'pointerdown' | 'pointerup' | 'pointermove';
   readonly position: Point2D;
@@ -73,6 +81,7 @@ interface View2DContext<P, M extends Methods, E extends Readonly<Record<string, 
   readonly geometry: Geometry2D;
   readonly model: ModelClient<M, E> | undefined;
   readonly assets: ViewAssets;
+  readonly audio: ViewAudio;
   invalidate(): void;
 }
 interface View2D {
@@ -89,6 +98,7 @@ type View2DFactory<P, M extends Methods, E extends Readonly<Record<string, Value
 - `view2d.entry` 可选；仅需固定外观的器件由宿主按几何和底图显示，编辑选择、摆放与接线由宿主处理。
 - 声明 `view2d.entry` 时，其默认导出同步 `View2DFactory`；工厂注册监听、建立局部数据并发起资源准备。
 - 模型存在时，运行上下文提供绑定到所属实例的代理；编辑态及无模型器件的 `model` 为 `undefined`。
+- `ViewAudio` 引用的 `WidgetAudio*` 类型见 [RFC 0016](./0016-widget-audio-api.md)；事件订阅返回 `Disposable`。
 - `initialize` 在模型就绪后执行；编辑态同样可执行此回调准备纯展示资源。
 - `input` 接收指针按下、松开和移动；`position` 为局部坐标，`button` 与 `buttons` 沿用 DOM 的按钮编号和当前按下按钮位掩码。
 - `renderOverlay` 绘制发光点、按帽及屏幕内容等运行可见部分，并叠加在底图之上。
@@ -111,6 +121,14 @@ type View2DFactory<P, M extends Methods, E extends Readonly<Record<string, Value
 - 完全隐藏的器件不保留空白命中框，仍可通过对象列表选择并打开 HTML 视图。
 
 ## 运行时
+
+### 实例音频
+
+- 运行态 `audio` 属于实例及其当前挂载代次，宿主配置决定可用性；编辑态为 `unavailable`。
+- 宿主持有并激活浏览器音频上下文；等待用户手势或浏览器挂起时为 `suspended`，运行时为 `running`，缺省配置或初始化失败时为 `unavailable`。
+- 隐藏底图、动态覆盖或关闭 HTML 视图保持音频会话；仿真暂停冻结声音和 PCM 消费并保留缓冲，恢复后继续。
+- 重置、替换展示或销毁实例清空旧会话，旧句柄以 `disposed` 结束；音频播放及背压不控制仿真步进。
+- 音频桥接失败以 `audio/failed` 报告，同一桥接操作首次失败上报；销毁后到达的失败作为过期结果清理。
 
 ### 绘制与尺寸
 
@@ -194,6 +212,7 @@ type View2DFactory<P, M extends Methods, E extends Readonly<Record<string, Value
 - 属性、入口与包资源由 [RFC 0020](./0020-unified-device-package.md) 规定。
 - 摆放、运行显示配置与电气连接由 [RFC 0024](./0024-fused-schematic-format.md) 规定。
 - 运行初始化、生命周期和故障由 [RFC 0025](./0025-fused-runtime.md) 规定。
+- 振荡器、PCM 缓冲、数据传输与音频参数校验由 [RFC 0016](./0016-widget-audio-api.md) 规定。
 
 ## 关联
 

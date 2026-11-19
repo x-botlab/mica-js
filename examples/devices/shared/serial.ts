@@ -7,6 +7,8 @@
  * 无界数组。公开载荷形状由清单生成的 `DeviceMethods` 在工厂处校验。
  */
 
+export const SERIAL_CAPACITY = 4096;
+
 export class SerialLog {
   readonly capacity: number;
 
@@ -16,7 +18,7 @@ export class SerialLog {
   private nextCursor = 0;
   private droppedTotal = 0;
 
-  constructor(capacity = 4096) {
+  constructor(capacity = SERIAL_CAPACITY) {
     if (!Number.isSafeInteger(capacity) || capacity <= 0)
       throw new RangeError('Serial capacity must be a positive safe integer');
 

@@ -5,7 +5,7 @@
   "description": "理想数字跟随器：INP 为高且 INN 为低时 OUT 推挽到 VCC，否则推挽到 GND；INN 接地时 OUT 跟随 INP，INP/INN 同电平则输出被抑制。端口 active 报告 OUT 是否为高。不建模电压增益（gain 仅元数据）、偏置、GAIN/BYPASS 网络与模拟波形。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "LM386 音频功率放大器",
   "designatorPrefix": "U",

@@ -1,0 +1,42 @@
+{
+  "publisher": "workbench",
+  "name": "buzzer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "displayName": "有源蜂鸣器",
+  "designatorPrefix": "BZ",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "pins": {
+    "positive": {
+      "label": "+"
+    },
+    "negative": {
+      "label": "−"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "methods": {
+      "getActive": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "boolean"
+        }
+      }
+    },
+    "events": {
+      "onDidActiveChange": {
+        "type": "boolean"
+      }
+    }
+  },
+  "view2d": {
+    "geometry": "geometry.json",
+    "entry": "view.js"
+  }
+}

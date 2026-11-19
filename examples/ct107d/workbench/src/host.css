@@ -1,0 +1,235 @@
+:root {
+  color-scheme: dark;
+  --ct-bg: #0b1114;
+  --ct-panel: #10181c;
+  --ct-line: #22323a;
+  --ct-text: #d7e4e2;
+  --ct-muted: #8ca3a1;
+  --ct-accent: #2dd4bf;
+  --ct-accent-soft: #143b37;
+  --ct-error: #fb7185;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  min-width: 320px;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--ct-bg);
+  color: var(--ct-text);
+  font:
+    12px/1.45 system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+}
+
+.app-bar {
+  display: flex;
+  min-height: 38px;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--ct-line);
+  background: var(--ct-panel);
+}
+
+.brand {
+  display: inline-flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.brand-mark {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ct-accent);
+  box-shadow: 0 0 0 3px var(--ct-accent-soft);
+}
+
+.brand-title {
+  font:
+    600 12px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  letter-spacing: 0.08em;
+}
+
+.brand-sub {
+  overflow: hidden;
+  color: var(--ct-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.actions {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.status {
+  overflow: hidden;
+  min-width: 0;
+  margin-right: 4px;
+  color: var(--ct-muted);
+  font:
+    11px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.button {
+  flex: none;
+  padding: 4px 9px;
+  border: 1px solid var(--ct-line);
+  border-radius: 3px;
+  background: #0d1417;
+  color: var(--ct-text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  border-color: #3b5b63;
+  background: #132025;
+}
+
+.button:disabled {
+  border-color: #1b2a30;
+  background: #0b1114;
+  color: #5c6f70;
+  cursor: not-allowed;
+}
+
+.button:focus-visible {
+  outline: 1px solid var(--ct-accent);
+  outline-offset: 1px;
+}
+
+.button.primary {
+  border-color: #2a7f75;
+  color: var(--ct-accent);
+}
+
+.stage {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+}
+
+.error-banner {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #5a2733;
+  border-radius: 3px;
+  background: #1c1014;
+  color: var(--ct-error);
+}
+
+.error-banner[hidden] {
+  display: none;
+}
+
+.error {
+  overflow: auto;
+  max-height: 104px;
+  flex: 1 1 auto;
+  margin: 0;
+  color: inherit;
+  font:
+    11px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+}
+
+.error-dismiss {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid #5a2733;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.workbench {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border: 1px solid var(--ct-line);
+  border-radius: 4px;
+  background: #090e11;
+}
+
+@media (max-width: 720px) {
+  .app-bar {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 6px 8px;
+  }
+
+  .brand-sub {
+    display: none;
+  }
+
+  .actions {
+    flex: 1 1 100%;
+    justify-content: flex-start;
+    order: 2;
+  }
+
+  .status {
+    flex: 1 1 100%;
+    margin: 0;
+    order: 3;
+  }
+
+  .stage {
+    gap: 0;
+    padding: 0;
+  }
+
+  .workbench {
+    border: 0;
+    border-radius: 0;
+  }
+}

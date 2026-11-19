@@ -50,10 +50,11 @@ device Pcf8591(
   pin osc;
   pin ext;
 
-  input channel ain0: number(capacity: 8, overflow: Overflow.error);
-  input channel ain1: number(capacity: 8, overflow: Overflow.error);
-  input channel ain2: number(capacity: 8, overflow: Overflow.error);
-  input channel ain3: number(capacity: 8, overflow: Overflow.error);
+  // Each input is a voltage level; a newer pending update supersedes the older one.
+  input channel ain0: number(capacity: 1, overflow: Overflow.drop_oldest);
+  input channel ain1: number(capacity: 1, overflow: Overflow.drop_oldest);
+  input channel ain2: number(capacity: 1, overflow: Overflow.drop_oldest);
+  input channel ain3: number(capacity: 1, overflow: Overflow.drop_oldest);
 
   output channel aout: number(capacity: 16, overflow: Overflow.drop_oldest);
   output channel channel: number(capacity: 16, overflow: Overflow.drop_oldest);

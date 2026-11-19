@@ -1,10 +1,12 @@
 # 融合器件运行时
 
 - Start Date: 2026-11-15
-- Reference Issues: —（尚未实现）
+- Reference Issues: [x-botlab/xbotlab#1113](https://github.com/x-botlab/xbotlab/issues/1113)
 - Implementation PR: —（尚未实现）
 
 规定统一器件在 2D 编辑、运行和无头执行中的装配、时间推进、事件派发与生命周期。本文是融合合同组的阅读入口，接口为本轮待评审草案；实现状态以头部为准。MUST / MUST NOT 为强制要求，SHOULD 为推荐，MAY 为可选。
+
+修订（2026-11-18）：项目选择传递目标与推荐模板 ID，模板展示和创建归宿主，编辑器仅接收项目引用与产物；程序输入在运行准备时捕获，相关实现见 [#285](https://github.com/x-botlab/mica-js/pull/285)。
 
 ## 声明
 
@@ -17,7 +19,7 @@
 | [RFC 0022](./0022-device-2d-presentation.md) | 静态几何、2D 分层绘制与输入            |
 | [RFC 0023](./0023-device-html-ui.md)         | 通用 HTML 视图、侧栏与浮动容器         |
 | [RFC 0024](./0024-fused-schematic-format.md) | `.sch v2`、显式连接与依赖锁定          |
-| [RFC 0026](./0026-firmware-properties.md)    | 固件来源、属性内地址空间与装载配置     |
+| [RFC 0026](./0026-firmware-properties.md)    | 程序来源、内存与文件集装载及固定限制   |
 | [RFC 0027](./0027-device-type-generation.md) | SDK 类型准备、全局声明与生成配置       |
 
 - 声明模型的器件实例拥有唯一权威模型；当前运行配置选择 `2d` 或 `headless`，模型存活期间保持该选择。
@@ -30,41 +32,57 @@
 ### 编辑器集成
 
 - 融合编辑器内置属性面板、场景视图、对象列表、HTML 视图侧栏与浮动面板，统一管理选择、聚焦、停靠和布局。
+- 属性面板按选择显示对象：器件实例显示清单属性，电压参考显示类型与连接端并可编辑角度、电压和网名，普通网标显示连接端与可编辑网名，导线和连接节点显示只读身份；接地符号固定 `0 V`，不提供电压和网名编辑。
 - 接入应用创建编辑器时提供 `viewBaseUrlTemplate` HTML 环境资源 URL 模板；隔离环境、资源代理与视图容器由编辑器内部装配，配置合同见 [RFC 0023](./0023-device-html-ui.md)。
 - 一个融合编辑器拥有一份文档快照、一个命令写入口、一套撤销历史、选择与视口，原子修改语义见 [RFC 0024](./0024-fused-schematic-format.md)。
 - 文档提交统一驱动几何、连接诊断、对象列表和分层合成；运行时事件只更新展示，不写回持久文档。
 - 元件侧栏按实例恢复 `viewLayout`，属性 View 置顶、浮动视图使用属性标题栏 Codicons 按钮；选择与视图切换规则见 [RFC 0023](./0023-device-html-ui.md)。
 - 视图布局由编辑器命令写回文档，运行与暂停期间同样允许；布局修改及其撤销只更新容器，不重建模型。
 - 编辑属性后重建相关展示；位置、旋转和显示配置只改变合成，模型重建仅发生在明确的运行生命周期边界。
-- 保存由宿主消费已提交快照完成；临时拖动预览、位图和模型输出不作为已保存文档内容。
+- 编辑器直接接收 `document`，可选 `saveDocument` 接受保存快照；宿主维护存储与身份，保存完成仅标记对应版本；资产接口与保存合同见 [RFC 0028](./0028-workbench-host-resources.md)。
 
-### 固件项目集成
+### 程序来源集成
 
-`FirmwareArtifact` 见 [RFC 0026](./0026-firmware-properties.md)，仅包含产物格式和字节。
+`ProgramArtifact`、`ProgramFile` 及装载结果见 [RFC 0026](./0026-firmware-properties.md)。下列接口用于宿主选择项目和解析产物，无头运行只需提供解析能力。
 
 ```ts
-interface FirmwareProject {
+interface ProgramTarget {
+  readonly deviceId: string;
+  readonly property: string;
+  readonly loader: 'memory' | 'filesystem';
+}
+interface ProgramProject {
   readonly id: string;
   readonly title: string;
 }
-interface FirmwareProjectSource {
-  list(): Promise<readonly FirmwareProject[]>;
-  resolve(projectId: string): Promise<FirmwareArtifact>;
+interface ProgramProjectProvider {
+  select?(
+    request: ProgramProjectSelectionRequest,
+    signal: AbortSignal,
+  ): Promise<ProgramProject | undefined>;
+  resolve(projectId: string, target: ProgramTarget, signal?: AbortSignal): Promise<ProgramArtifact>;
 }
-interface FirmwareEditorOptions {
-  readonly projects?: FirmwareProjectSource;
+interface ProgramProjectSelectionRequest extends ProgramTarget {
+  readonly templateIds: readonly string[];
 }
-interface FirmwareEditorEvents {
+interface ProgramSources {
+  readonly projects?: ProgramProjectProvider;
+}
+interface ProgramEditorEvents {
   readonly onDidRequestOpenProject: Event<{ readonly projectId: string }>;
 }
 ```
 
-- 创建编辑器时可传入 `FirmwareEditorOptions.projects`，项目列表项的 `id` 为非空、区分大小写且唯一的稳定身份，`title` 为非空展示名称；读取失败或列表非法时报告 `firmware/project-list-failed` 并保留已保存引用。
-- 固件下拉框按 [RFC 0026](./0026-firmware-properties.md) 列举项目与文件；宿主负责项目数据，编辑器负责选择器、图标按钮与展开的装载配置。
-- 打开项目的装载配置或准备新运行时，通过 `resolve(projectId)` 获取一个确定产物；构建与产物选择由宿主负责，框架捕获字节并统一解析；复位复用运行快照，不再次请求产物。
-- 获取产物失败、项目缺失、返回值格式枚举或字节类型非法时报告 `firmware/project-resolve-failed`，保留引用；解析内容的错误由 [RFC 0026](./0026-firmware-properties.md) 报告，BIN 的空间与基址由编辑器确定。
+- `ProgramTarget.deviceId` 为清单完整器件 ID，`property` 为属性键，`loader` 取自锁定清单；框架构造目标并传给项目 Provider，宿主据此筛选和构建。
+- 创建编辑器或无头运行时可提供 `ProgramSources`；可选成员省略时隐藏相应来源操作，已有引用若需要缺失能力则按对应的 `program/*-resolve-failed` 保留并报错。
+- 点击“从项目选择”调用 `select(request, signal)` 打开宿主 UI；`request.templateIds` 按声明顺序复制属性的 `templates`，省略时传空数组；返回项目或以 `undefined` 表示取消，非法选择报告 `program/project-selection-failed`。
+- 打开程序详情或准备新运行时，通过 `projects.resolve(projectId, target)` 取得确定产物，框架捕获快照并校验 `kind` 与目标装载方式一致；复位复用快照，不再次构建。
+- 项目缺失、获取失败或返回结构非法报告 `program/project-resolve-failed`；装载类型、格式、路径和范围错误由 [RFC 0026](./0026-firmware-properties.md) 分类。
+- 项目列表属于宿主 UI；编辑器按已选 `projectId` 解析产物，缺少 `select` 时保留已有引用的解析和打开能力，选择入口不可用。
+- 包目录由锁定发布清单读取，资产由宿主提供二进制，文件集 ZIP 的校验与解包见 [RFC 0026](./0026-firmware-properties.md)。
 - `onDidRequestOpenProject` 使用核心 `Event`，订阅返回 Disposable；每次点击按当前值发送一次 `projectId`，宿主订阅并负责打开项目。
-- 项目打开请求独立于构建、固件装载和仿真推进，不提交文档修改；编辑、运行和暂停期间均可触发。
+- 项目打开请求独立于构建、程序装载和仿真推进，不提交文档修改；编辑、运行和暂停期间均可触发。
+- 模板 ID 仅为宿主选择 UI 的推荐元数据，宿主决定展示、授权、创建及取消行为；宿主返回的项目由 `projects.resolve` 解析，实例只保存项目引用，撤销引用保留宿主项目。
 
 ### 会话与推进
 
@@ -95,7 +113,7 @@ interface FusedRuntime {
 
 ### 准备与启动
 
-1. 校验文档、锁定包、接口、几何与显式拓扑，准备模型属性资源；2D 同时准备几何声明的底图图片。
+1. 校验文档、锁定包、接口、几何与显式拓扑，准备模型属性资源和程序快照；2D 同时准备几何声明的底图图片。
 2. 创建隔离执行环境与新的展示上下文；2D 解析 `view2d.geometry` 并装配宿主绘制的底图，按可选 `view2d.entry` 创建脚本展示、准备事件监听，模型代理暂不接受调用。
 3. 对声明模型的实例加载 `model.entry`，按 `model.methods`、`model.events` 及 `model.types` 校验公共接口，校验 IR 与引脚，创建模型并完成初始求解；无模型实例保持纯展示。
 4. 按序交付初始化产生的事件；此时模型已可处理安全边界中的方法。
@@ -148,15 +166,16 @@ interface FusedRuntime {
 
 ## 校验
 
-| 诊断码                            | 行为                                                         |
-| --------------------------------- | ------------------------------------------------------------ |
-| `runtime/invalid-time`            | 拒绝非法步长，推进越界时停止并报告                           |
-| `runtime/prepare-failed`          | 保留原文档和原会话，报告准备失败                             |
-| `runtime/unavailable-state`       | 当前状态不允许请求的推进操作                                 |
-| `runtime/model-failed`            | 模型故障，停止推进并等待复位                                 |
-| `runtime/presentation-failed`     | 标记界面故障、停输入、释放监听和展示资源；其他界面和模型继续 |
-| `firmware/project-list-failed`    | 宿主项目列表读取失败或列表非法，保留引用并显示错误           |
-| `firmware/project-resolve-failed` | 项目产物无法获取或返回结构非法，保留引用并阻止运行准备       |
+| 诊断码                           | 行为                                                         |
+| -------------------------------- | ------------------------------------------------------------ |
+| `runtime/invalid-time`           | 拒绝非法步长，推进越界时停止并报告                           |
+| `runtime/prepare-failed`         | 保留原文档和原会话，报告准备失败                             |
+| `runtime/unavailable-state`      | 当前状态不允许请求的推进操作                                 |
+| `runtime/model-failed`           | 模型故障，停止推进并等待复位                                 |
+| `runtime/presentation-failed`    | 标记界面故障、停输入、释放监听和展示资源；其他界面和模型继续 |
+| `program/source-resolve-failed`  | 工程目录不可读或返回文件集结构非法，保留引用并阻止准备       |
+| `program/project-list-failed`    | 宿主项目列表读取失败或列表非法，保留引用并显示错误           |
+| `program/project-resolve-failed` | 项目产物无法获取或返回结构非法，保留引用并阻止运行准备       |
 
 ### 验收条件
 
@@ -169,9 +188,10 @@ interface FusedRuntime {
 - [ ] 编辑器按 `viewBaseUrlTemplate` 创建独立 HTML 环境，使用 `DeviceViewApi` 桥接；`view` 声明的视图可在内置侧栏与浮动面板间切换，并保留页面状态和模型绑定。
 - [ ] 相同器件类型的两个实例独立保存 `viewLayout`；调整其中一个实例不改变另一个，切换选择及保存重开后分别恢复侧栏顺序、折叠、高度、停靠位置与浮动矩形，重开不自动创建浮动页面。
 - [ ] 运行期间调整和撤销视图布局不重建模型；复位重建已打开 HTML 视图并保留布局，退出运行后布局仍保存在文档中。
-- [ ] 固件只使用一个混合来源下拉框；选中项目时显示打开按钮，点击仅通知宿主；文件值隐藏打开项目按钮，项目列表失败或项目缺失保留引用并显示错误。
-- [ ] 宿主项目服务只返回确定产物的格式和字节；BIN 在编辑器配置空间与基址，HEX 可选空间且保留数值地址，ELF 按装载段唯一匹配空间，展开不修改文档。
-- [ ] 固件解析成只读分段镜像后交付模型工厂，DDL 不接收复合固件属性；运行面板展示当前会话镜像，后续构建不替换它，复位沿用相同内容。
+- [ ] 程序使用一个混合来源下拉框；内存选择文件、文件集选择目录，项目值提供打开按钮；项目列表或来源解析失败保留引用并显示错误。
+- [ ] 项目选择按属性顺序透传 `templateIds`，省略声明时为空数组；宿主返回最终项目，取消或失败保留原值，撤销选择保留宿主项目。
+- [ ] 项目返回明确的内存或文件集产物，错误 `kind` 拒绝；BIN 配置空间与基址，HEX 保留数值地址，ELF 唯一匹配空间；文件集校验路径及固定额度。
+- [ ] 程序只读镜像或文件集交付 JS 工厂，DDL 只接收兼容普通属性；模型同步读取文件无需宿主 I/O，后续构建不替换快照，复位沿用相同内容。
 - [ ] 先注册的监听在查询前生效，查询之后的状态事件不会被旧快照覆盖；二进制快照互不影响。
 - [ ] `mica prepare` 生成 `.mica` 全局类型环境，监听和构建复用准备流程；模型按事件名 `.fire`，客户端使用核心 `Event<ModelEvent<T>>`，载荷与方法签名由清单生成。
 - [ ] 异步事件回调可等待模型方法响应；历史记录查询与实时事件按业务游标去重。
@@ -206,7 +226,7 @@ sequenceDiagram
 
 ## 范围
 
-- 本组合同按 [RFC 0020](./0020-unified-device-package.md) 与 [RFC 0024](./0024-fused-schematic-format.md) 的身份和版本规则加载新资产；旧格式自动转换另行安排，不属于首版能力。
+- 本组合同按 [RFC 0020](./0020-unified-device-package.md) 与 [RFC 0024](./0024-fused-schematic-format.md) 的融合器件身份、包结构和文档版本规则加载资产。
 - 器件工厂、方法和事件由 [RFC 0021](./0021-device-model-api.md) 规定，场景与 HTML 外观分别由 [RFC 0022](./0022-device-2d-presentation.md)、[RFC 0023](./0023-device-html-ui.md) 规定。
 
 ## 关联

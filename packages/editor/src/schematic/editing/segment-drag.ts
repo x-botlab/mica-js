@@ -39,7 +39,18 @@ function planWireSegmentDrag(
   delta: Point,
   options: ISegmentDragOptions,
 ): readonly Point[] | undefined {
-  const points = wire.points;
+  return planPolylineSegmentDrag(wire.points, segment, delta, (point) =>
+    isConnectedVertex(document, point, wire.id, options),
+  );
+}
+
+/** Slides a polyline segment, keeping connected vertices fixed with doglegs. */
+export function planPolylineSegmentDrag(
+  points: readonly Point[],
+  segment: number,
+  delta: Point,
+  connected: (point: Point) => boolean,
+): readonly Point[] | undefined {
   const start = points[segment];
   const end = points[segment + 1];
   if (start === undefined || end === undefined || (delta.x === 0 && delta.y === 0)) {
@@ -53,8 +64,6 @@ function planWireSegmentDrag(
   const horizontal = start.y === end.y;
   const isParallel = (from: Point, to: Point): boolean =>
     horizontal ? from.y === to.y : from.x === to.x;
-  const connected = (point: Point): boolean => isConnectedVertex(document, point, wire.id, options);
-
   let first = segment;
   while (first > 0) {
     const previous = points[first - 1];

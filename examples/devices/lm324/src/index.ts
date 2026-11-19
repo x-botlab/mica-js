@@ -1,4 +1,4 @@
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 
 /**
  * 缓存内部电位器位置与最近一次发布的增益。设置位置通过输入通道提交；公共方法

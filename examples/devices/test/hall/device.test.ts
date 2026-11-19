@@ -1,4 +1,4 @@
-import { MethodError } from '@mica-js/sdk/device';
+import { MethodError } from '@mica-js/sdk/fused';
 import { describe, expect, it } from 'vitest';
 import { createTestBoard, readMetadata, US } from '../harness.ts';
 import type { TestBoard } from '../harness.ts';

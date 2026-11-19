@@ -2,11 +2,11 @@
   "publisher": "example",
   "name": "iap15f2k61s2",
   "version": "0.2.0",
-  "description": "STC15F2K60S2 系列 8051 单片机：JIT 取指执行 8051 指令集与中断，P0–P3、定时器 T0/T1/T2、双串口、ADC、PCA/CCP、SPI、IAP/EEPROM 与看门狗均按手册建模。",
+  "description": "STC15F2K60S2 系列 8051 单片机：JIT 取指执行 8051 指令集与中断，P0–P4、定时器 T0/T1/T2、双串口、ADC、PCA/CCP、SPI、IAP/EEPROM 与看门狗均按手册建模。",
   "license": "MIT",
   "type": "module",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "IAP15F2K61S2",
   "designatorPrefix": "U",
@@ -23,12 +23,16 @@
       "unit": "Hz"
     },
     "firmware": {
-      "type": "firmware",
+      "type": "program",
       "title": "固件",
-      "description": "BIN/HEX/ELF 固件：按 code 地址空间的绝对地址装载程序存储器。空值保持零初始化的代码空间（PC=0，执行 NOP），不是错误。",
+      "description": "BIN/HEX 固件：按 code 地址空间的绝对地址装载程序存储器。空值保持零初始化的代码空间（PC=0，执行 NOP），不是错误。",
       "default": null,
       "nullable": true,
-      "maxBytes": 61440,
+      "loader": "memory",
+      "formats": [
+        "bin",
+        "hex"
+      ],
       "addressSpaces": {
         "code": {
           "title": "程序存储器",
@@ -36,8 +40,10 @@
           "size": 61440
         }
       },
-      "addressSpace": "code",
-      "loadAddress": 0,
+      "defaults": {
+        "addressSpace": "code",
+        "loadAddress": 0
+      },
       "group": "固件",
       "order": 0
     }
@@ -138,6 +144,30 @@
     },
     "P3_7": {
       "label": "P3_7"
+    },
+    "P4_0": {
+      "label": "P4_0"
+    },
+    "P4_1": {
+      "label": "P4_1"
+    },
+    "P4_2": {
+      "label": "P4_2/WR"
+    },
+    "P4_3": {
+      "label": "P4_3"
+    },
+    "P4_4": {
+      "label": "P4_4/RD"
+    },
+    "P4_5": {
+      "label": "P4_5"
+    },
+    "P4_6": {
+      "label": "P4_6"
+    },
+    "P4_7": {
+      "label": "P4_7"
     },
     "VCC": {
       "label": "VCC",

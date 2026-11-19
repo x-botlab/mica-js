@@ -1,6 +1,6 @@
+import { isAbsolute, resolve } from 'node:path';
 import { build } from 'rolldown';
 import type { Plugin, ResolvedConfig } from 'vite';
-import { isAbsolute, resolve } from 'node:path';
 
 const SANDBOX_QUERY = '?sandbox-worker';
 const SANDBOX_CODE_QUERY = '?sandbox-worker-code';
@@ -68,11 +68,16 @@ function sandboxWorkerPlugin(explicitAliases: readonly SandboxAlias[]): Plugin {
         });
         bundles.set(entry, bundled);
       }
-      const { code, dependencies } = await bundled;
+      let result: BundledWorker;
+      try {
+        result = await bundled;
+      } catch (error) {
+        if (bundles.get(entry) === bundled) bundles.delete(entry);
+        throw error;
+      }
+      const { code, dependencies } = result;
       const files = new Set(
-        dependencies
-          .map(normalizeFileId)
-          .filter((file): file is string => file !== undefined),
+        dependencies.map(normalizeFileId).filter((file): file is string => file !== undefined),
       );
       bundleDependencies.set(entry, files);
       for (const file of files) this.addWatchFile(file);

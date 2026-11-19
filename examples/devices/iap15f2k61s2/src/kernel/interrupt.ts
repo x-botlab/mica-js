@@ -1,8 +1,11 @@
 ﻿import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
 import {
+  CLOCK,
   PERIPH,
   SFR_IE,
+  SFR_IE2,
+  SFR_INT_CLKO,
   SFR_IP,
   SFR_IP2,
   SFR_IP2H,
@@ -33,6 +36,19 @@ import { machine } from './machine';
 export const IRQ_DIRTY = 0x00;
 export const IRQ_LEVEL = 0x01;
 export const IRQ_DEPTH = 0x02;
+/**
+ * 中断响应保护窗口计数。
+ *
+ * STC15 手册明确：RETI 或访问 IE/IP 后至少执行一条指令才会再次响应中断。本模型把
+ * 同一保护窗口统一用于所有含中断允许/优先级位的已建模 SFR（IE、IE2、INT_CLKO、IP、
+ * IP2、IPH、IP2H）；其中 IE/IP 为手册明确行为，IE2/INT_CLKO/IP2 系列是统一合同，
+ * 具体手册页仍待逐项核验。
+ *
+ * 写这些寄存器或 RETI 时设为 2：当前指令自己的 tail 减到 1（尚未保护完），下一条
+ * 真实固件指令的 tail 减到 0。SERVICE/SETTLE 虚拟块不调用递减，因此不会消费窗口。
+ * `dispatch` 在计数非零时保留 dirty，等待窗口关闭后重扫。
+ */
+const IRQ_HOLD = 0x03;
 export const IRQ_STACK = 0x04;
 const IRQ_STACK_MASK = 0x0f;
 
@@ -75,16 +91,50 @@ export function markIrqDirty(b: Body): void {
   b.store8(PERIPH, number(b, IRQ_DIRTY), number(b, 1));
 }
 
+/** 开始/延长中断响应保护窗口；详见 `IRQ_HOLD`。 */
+function holdInterrupts(b: Body): void {
+  b.store8(PERIPH, number(b, IRQ_HOLD), number(b, 2));
+}
+
+/**
+ * 真实固件指令结束时的窗口推进。
+ *
+ * 只允许从 `tick.ts` 的每指令 tail 调用；SERVICE/SETTLE 不是固件指令，不能调用。
+ * 返回本次指令结束后的可响应性：hold 为 0 或刚减到 0 时为 true。调用方复用这一
+ * 次 hold 读取，避免每指令再读中断/资源；hold 非零期间 dirty 保留，但不作为额外
+ * service 的唯一理由。
+ */
+export function interruptInstructionComplete(b: Body): Value<boolean> {
+  const hold = b.load8(PERIPH, number(b, IRQ_HOLD));
+  const zero = number(b, 0);
+  const one = number(b, 1);
+  const next = b.subtract(hold, one);
+
+  b.if(b.notEqual(types.number, hold, zero), (active) => {
+    const body = asBody(active);
+
+    body.store8(PERIPH, number(body, IRQ_HOLD), next);
+  });
+
+  return b.lessThanOrEqual(hold, one);
+}
+
 /** 中断允许/优先级寄存器写入后需要重新扫描：允许位本身也参与判定。 */
 export function watchInterruptEnables(b: Body, address: number): void {
   if (
     address === SFR_IE ||
+    address === SFR_IE2 ||
+    address === SFR_INT_CLKO ||
     address === SFR_IP ||
     address === SFR_IP2 ||
     address === SFR_IPH ||
     address === SFR_IP2H
-  )
+  ) {
+    // STC15 手册明确 IE/IP 写保护；IE2/INT_CLKO/IP2/IPH/IP2H 采用同一模型合同，
+    // 覆盖本模型含中断允许/优先级位的 SFR；其它控制寄存器不在此列。
+    holdInterrupts(b);
     markIrqDirty(b);
+  }
 }
 
 function priorityIsHigh(b: Body, priority: InterruptSource['priority']): Value<boolean> {
@@ -124,16 +174,24 @@ export class InterruptController {
     const dirty = b.load8(PERIPH, number(b, IRQ_DIRTY));
 
     b.if(b.notEqual(types.number, dirty, number(b, 0)), (outer) => {
-      outer.store8(PERIPH, number(outer, IRQ_DIRTY), number(outer, 0));
+      const pending = asBody(outer);
+      const hold = pending.load8(PERIPH, number(pending, IRQ_HOLD));
 
-      outer.if(sfrBitIsSet(outer, SFR_IE, 7), (enabled) => {
-        const level = enabled.load8(PERIPH, number(enabled, IRQ_LEVEL));
-        const highQueue = this.queue('high');
-        const lowQueue = this.queue('low');
+      // 保护窗口内保留 dirty，窗口结束后由下一次服务重扫；不能静默丢弃请求。
+      pending.if(pending.equal(types.number, hold, number(pending, 0)), (allowed) => {
+        const body = asBody(allowed);
 
-        this.scan(enabled, level, LEVEL_HIGH, highQueue, returnPc, (next) =>
-          this.scan(next, level, LEVEL_LOW, lowQueue, returnPc, () => {}),
-        );
+        body.store8(PERIPH, number(body, IRQ_DIRTY), number(body, 0));
+
+        body.if(sfrBitIsSet(body, SFR_IE, 7), (enabled) => {
+          const level = enabled.load8(PERIPH, number(enabled, IRQ_LEVEL));
+          const highQueue = this.queue('high');
+          const lowQueue = this.queue('low');
+
+          this.scan(enabled, level, LEVEL_HIGH, highQueue, returnPc, (next) =>
+            this.scan(next, level, LEVEL_LOW, lowQueue, returnPc, () => {}),
+          );
+        });
       });
     });
   }
@@ -214,7 +272,12 @@ export class InterruptController {
     );
     if (typeof returnPc === 'number') pushReturnAddress(b, returnPc);
     else pushAddressValue(b, returnPc);
-    b.redirect(source.vector, 2 * machine().cyclePs);
+    // 向量入口的 2 个周期既参与重定向延迟，也必须进入时间账本；否则定时器/串口
+    // 会按每次中断少记 2 个系统周期。两处使用同一个常量，避免延迟与账本漂移。
+    const latency = 2 * machine().cyclePs;
+
+    b.writeState(CLOCK, b.add(b.readState(CLOCK, types.number), number(b, latency)));
+    b.redirect(source.vector, latency);
   }
 }
 
@@ -229,6 +292,7 @@ export function reti(b: Body): void {
   const high = popByte(b);
   const low = popByte(b);
 
+  holdInterrupts(b);
   jumpToValue(b, b.bitOr(b.shiftLeft(high, number(b, 8)), low));
   markIrqDirty(b);
 }

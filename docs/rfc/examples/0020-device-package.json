@@ -114,13 +114,14 @@
       "group": "行为",
       "order": 8
     },
-    "firmware": {
-      "type": "firmware",
-      "title": "固件",
-      "description": "演示固定文件与宿主项目的固件来源选择",
+    "program": {
+      "type": "program",
+      "loader": "memory",
+      "title": "程序",
+      "description": "演示内存程序文件与宿主项目的来源选择",
       "default": null,
       "nullable": true,
-      "maxBytes": 65536,
+      "formats": ["bin", "hex", "elf"],
       "addressSpaces": {
         "code": {
           "title": "程序存储器",
@@ -128,10 +129,21 @@
           "size": 8192
         }
       },
-      "addressSpace": "code",
-      "loadAddress": 0,
+      "defaults": { "addressSpace": "code", "loadAddress": 0 },
+      "templates": ["example:controller"],
       "group": "行为",
       "order": 9
+    },
+    "scripts": {
+      "type": "program",
+      "loader": "filesystem",
+      "title": "脚本程序",
+      "description": "演示 OpenMV 类设备的只读程序文件集",
+      "default": null,
+      "nullable": true,
+      "templates": ["example:openmv"],
+      "group": "行为",
+      "order": 10
     }
   },
   "pins": {

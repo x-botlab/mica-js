@@ -1,0 +1,690 @@
+{
+  "publisher": "example",
+  "name": "ct107d-board",
+  "version": "0.1.0",
+  "description": "CT107D 整板融合器件：8051 内核、片选/锁存链、I²C/1-Wire/串行器件、显示与键盘共享一个模型与一个 JIT。",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "displayName": "CT107D 整板",
+  "designatorPrefix": "U",
+  "properties": {
+    "clockFrequency": {
+      "type": "number",
+      "title": "系统时钟 (Hz)",
+      "description": "STC15 1T 系统时钟；指令耗时、定时器与串口都按它换算。",
+      "default": 11059200,
+      "nullable": false,
+      "min": 1000000,
+      "max": 40000000,
+      "step": 1,
+      "unit": "Hz"
+    },
+    "ultrasonicDistanceCm": {
+      "type": "number",
+      "title": "超声波距离 (cm)",
+      "description": "超声波换能器的固定距离；与官方器件属性一致，改变后重建实例。",
+      "default": 100,
+      "nullable": false,
+      "min": 0,
+      "step": 0.1,
+      "unit": "cm"
+    },
+    "uartBaud": {
+      "type": "number",
+      "title": "UART 探针波特率",
+      "description": "板内 UART 探针的 8N1 位时间基准；应与固件实际波特率一致，默认 9600，课程常用 1200/4800/9600。",
+      "default": 9600,
+      "nullable": false,
+      "min": 1,
+      "max": 1000000000,
+      "step": 1,
+      "unit": "baud"
+    },
+    "firmware": {
+      "type": "program",
+      "title": "固件",
+      "description": "BIN/HEX 固件：按 code 地址空间的绝对地址装载 8051 程序存储器。",
+      "default": null,
+      "nullable": true,
+      "loader": "memory",
+      "formats": [
+        "bin",
+        "hex"
+      ],
+      "addressSpaces": {
+        "code": {
+          "title": "程序存储器",
+          "start": 0,
+          "size": 61440
+        }
+      },
+      "defaults": {
+        "addressSpace": "code",
+        "loadAddress": 0
+      },
+      "group": "固件",
+      "order": 0
+    }
+  },
+  "pins": {
+    "VCC": {
+      "label": "VCC",
+      "description": "5 V 供电；其余板内连接均为器件内部网络"
+    },
+    "GND": {
+      "label": "GND",
+      "description": "地"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {
+      "SwitchParams": {
+        "type": "object",
+        "properties": {
+          "designator": {
+            "type": "string"
+          },
+          "pressed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "JumperParams": {
+        "type": "object",
+        "optional": [
+          "channel"
+        ],
+        "properties": {
+          "designator": {
+            "type": "string"
+          },
+          "closed": {
+            "type": "boolean"
+          },
+          "channel": {
+            "type": "number"
+          }
+        }
+      },
+      "NumberParams": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "number"
+          }
+        }
+      },
+      "BooleanParams": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AnalogParams": {
+        "type": "object",
+        "properties": {
+          "plus": {
+            "type": "number"
+          },
+          "minus": {
+            "type": "number"
+          }
+        }
+      },
+      "ChannelValueParams": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "number"
+          },
+          "value": {
+            "type": "number"
+          }
+        }
+      },
+      "BinaryParams": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "binary"
+          }
+        }
+      },
+      "SerialData": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "number"
+          },
+          "data": {
+            "type": "binary"
+          }
+        }
+      },
+      "SerialChunk": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "number"
+          },
+          "end": {
+            "type": "number"
+          },
+          "dropped": {
+            "type": "number"
+          },
+          "data": {
+            "type": "binary"
+          }
+        }
+      },
+      "SerialStatus": {
+        "type": "object",
+        "properties": {
+          "capacity": {
+            "type": "number"
+          },
+          "oldest": {
+            "type": "number"
+          },
+          "next": {
+            "type": "number"
+          },
+          "droppedTotal": {
+            "type": "number"
+          }
+        }
+      },
+      "SerialReadParams": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "number"
+          }
+        }
+      },
+      "SerialChannelParams": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          }
+        }
+      },
+      "Signal": {
+        "type": "object",
+        "properties": {
+          "designator": {
+            "type": "string"
+          },
+          "port": {
+            "type": "string"
+          },
+          "value": {
+            "type": "number"
+          }
+        }
+      },
+      "BytesSignal": {
+        "type": "object",
+        "properties": {
+          "designator": {
+            "type": "string"
+          },
+          "port": {
+            "type": "string"
+          },
+          "data": {
+            "type": "binary"
+          }
+        }
+      },
+      "Snapshot": {
+        "type": "object",
+        "properties": {
+          "latches": {
+            "type": "object",
+            "properties": {
+              "U6": {
+                "type": "number"
+              },
+              "U7": {
+                "type": "number"
+              },
+              "U8": {
+                "type": "number"
+              },
+              "U9": {
+                "type": "number"
+              }
+            }
+          },
+          "displays": {
+            "type": "object",
+            "properties": {
+              "DS1": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "DS2": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "leds": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "relay": {
+            "type": "boolean"
+          },
+          "buzzer": {
+            "type": "boolean"
+          },
+          "hall": {
+            "type": "boolean"
+          },
+          "amplifier": {
+            "ref": "AmplifierSignal"
+          },
+          "switches": {
+            "type": "object",
+            "properties": {
+              "S1": {
+                "type": "boolean"
+              },
+              "S4": {
+                "type": "boolean"
+              },
+              "S5": {
+                "type": "boolean"
+              },
+              "S6": {
+                "type": "boolean"
+              },
+              "S7": {
+                "type": "boolean"
+              },
+              "S8": {
+                "type": "boolean"
+              },
+              "S9": {
+                "type": "boolean"
+              },
+              "S10": {
+                "type": "boolean"
+              },
+              "S11": {
+                "type": "boolean"
+              },
+              "S12": {
+                "type": "boolean"
+              },
+              "S13": {
+                "type": "boolean"
+              },
+              "S14": {
+                "type": "boolean"
+              },
+              "S15": {
+                "type": "boolean"
+              },
+              "S16": {
+                "type": "boolean"
+              },
+              "S17": {
+                "type": "boolean"
+              },
+              "S18": {
+                "type": "boolean"
+              },
+              "S19": {
+                "type": "boolean"
+              }
+            }
+          },
+          "jumpers": {
+            "type": "object",
+            "properties": {
+              "J13": {
+                "type": "boolean"
+              },
+              "J3": {
+                "type": "boolean"
+              },
+              "J2": {
+                "type": "boolean"
+              },
+              "J2Tx": {
+                "type": "boolean"
+              },
+              "J5": {
+                "type": "boolean"
+              },
+              "J6": {
+                "type": "boolean"
+              }
+            }
+          },
+          "infrared": {
+            "type": "object",
+            "properties": {
+              "LD1": {
+                "type": "boolean"
+              },
+              "U11": {
+                "type": "boolean"
+              },
+              "U20": {
+                "type": "boolean"
+              }
+            }
+          },
+          "ne555": {
+            "type": "object",
+            "properties": {
+              "position": {
+                "type": "number"
+              },
+              "frequency": {
+                "type": "number"
+              },
+              "dutyCycle": {
+                "type": "number"
+              }
+            }
+          },
+          "uln2003": {
+            "type": "object",
+            "properties": {
+              "mask": {
+                "type": "number"
+              },
+              "channels": {
+                "type": "string"
+              }
+            }
+          },
+          "decoder": {
+            "type": "object",
+            "properties": {
+              "select": {
+                "type": "number"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "code": {
+                "type": "string"
+              }
+            }
+          },
+          "pcf8591": {
+            "type": "object",
+            "properties": {
+              "channel": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "analog": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "ledStates": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "brightness": {
+                  "type": "number"
+                },
+                "current": {
+                  "type": "number"
+                },
+                "voltage": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "temperature": {
+            "type": "object",
+            "properties": {
+              "converted": {
+                "type": "boolean"
+              },
+              "value": {
+                "type": "number"
+              }
+            }
+          },
+          "lm386": {
+            "type": "object",
+            "properties": {
+              "active": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "RtcSnapshot": {
+        "type": "object",
+        "properties": {
+          "datetime": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AmplifierSignal": {
+        "type": "object",
+        "properties": {
+          "position": {
+            "type": "number"
+          },
+          "gain": {
+            "type": "number"
+          },
+          "outputVoltage": {
+            "type": "number"
+          }
+        }
+      },
+      "IrParams": {
+        "type": "object",
+        "properties": {
+          "designator": {
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "methods": {
+      "setSwitch": {
+        "params": {
+          "ref": "SwitchParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setJumper": {
+        "params": {
+          "ref": "JumperParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setHallField": {
+        "params": {
+          "ref": "NumberParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setWiper": {
+        "params": {
+          "ref": "NumberParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setFrequencyWiper": {
+        "params": {
+          "ref": "NumberParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setAmplifierInputs": {
+        "params": {
+          "ref": "AnalogParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setIrCarrier": {
+        "params": {
+          "ref": "IrParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setTemperature": {
+        "params": {
+          "ref": "NumberParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setAnalogInput": {
+        "params": {
+          "ref": "ChannelValueParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "sendUart": {
+        "params": {
+          "ref": "BinaryParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "getSnapshot": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "ref": "Snapshot"
+        }
+      },
+      "getEeprom": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "binary"
+        }
+      },
+      "getRtc": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "ref": "RtcSnapshot"
+        }
+      },
+      "readSerial": {
+        "params": {
+          "ref": "SerialReadParams"
+        },
+        "returns": {
+          "ref": "SerialChunk"
+        }
+      },
+      "getSerialStatus": {
+        "params": {
+          "ref": "SerialChannelParams"
+        },
+        "returns": {
+          "ref": "SerialStatus"
+        }
+      },
+      "getAmplifier": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "ref": "AmplifierSignal"
+        }
+      }
+    },
+    "events": {
+      "onDidSignal": {
+        "ref": "Signal"
+      },
+      "onDidBytes": {
+        "ref": "BytesSignal"
+      },
+      "onDidUart1Tx": {
+        "ref": "SerialData"
+      },
+      "onDidUart1Rx": {
+        "ref": "SerialData"
+      },
+      "onDidAmplifier": {
+        "ref": "AmplifierSignal"
+      }
+    }
+  },
+  "view2d": {
+    "geometry": "geometry.json",
+    "entry": "view2d.js"
+  },
+  "view": {
+    "control": {
+      "title": "CT107D 控制台",
+      "entry": "panel/index.html",
+      "defaultLocation": "sidebar",
+      "icon": "dashboard"
+    }
+  }
+}

@@ -5,7 +5,7 @@
   "description": "三线接口实时时钟：RST/SCLK/IO 上 LSB first 传命令与数据，命令 bit7 必须为 1、bit6 选 RAM 面、bit5..1 为地址（31 = 突发）、bit0 读写；时钟寄存器为 BCD 编码，WP = 1 时时钟与 RAM 写被忽略（WP 寄存器自身仍可写）。内部 1 s tick 驱动 BCD 进位级联（闰年至 2096、大小月），CH = 1 停振。datetime 端口发布 19 字节 ASCII `YYYY-MM-DD HH:MM:SS`（逐字节数字 = 0x30 + 数码），running 表示 CH = 0。理想化：晶振物理层不模拟、走时与供电解耦、涓流充电与 12 小时制不模拟、无效 BCD 原样存储、突发写超长回绕；IO 为开漏双向端，需外部上拉，未知电平按低处理。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "DS1302 涓流充电实时时钟",
   "designatorPrefix": "U",

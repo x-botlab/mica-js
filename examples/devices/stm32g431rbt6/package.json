@@ -6,7 +6,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "STM32G431RBT6",
   "designatorPrefix": "U",
@@ -34,12 +34,16 @@
       "unit": "Hz"
     },
     "firmware": {
-      "type": "firmware",
+      "type": "program",
       "title": "固件",
-      "description": "BIN/HEX/ELF 固件：装载到 0x08000000 起的 128 KiB Flash；前两个字是初始 SP 与复位入口。空值保持零初始化 Flash（SP=0、PC=0），不是错误。",
+      "description": "BIN/HEX 固件：装载到 0x08000000 起的 128 KiB Flash；前两个字是初始 SP 与复位入口。空值保持零初始化 Flash（SP=0、PC=0），不是错误。",
       "default": null,
       "nullable": true,
-      "maxBytes": 131072,
+      "loader": "memory",
+      "formats": [
+        "bin",
+        "hex"
+      ],
       "addressSpaces": {
         "code": {
           "title": "程序 Flash",
@@ -47,8 +51,10 @@
           "size": 131072
         }
       },
-      "addressSpace": "code",
-      "loadAddress": 134217728,
+      "defaults": {
+        "addressSpace": "code",
+        "loadAddress": 134217728
+      },
       "group": "固件",
       "order": 0
     }

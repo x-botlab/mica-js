@@ -66,17 +66,17 @@ function setRxd(board: TestBoard, level: number): void {
 }
 
 /** 从下降沿起逐位发送一个 8N1 帧；数据位按 LSB first。 */
-function receiveByte(board: TestBoard, value: number, stopLevel = 1): void {
+function receiveByte(board: TestBoard, value: number, stopLevel = 1, bitTime = BIT_TIME): void {
   setRxd(board, 0);
-  board.run(BIT_TIME);
+  board.run(bitTime);
 
   for (let bit = 0; bit < 8; bit += 1) {
     setRxd(board, (value >> bit) & 1);
-    board.run(BIT_TIME);
+    board.run(bitTime);
   }
 
   setRxd(board, stopLevel);
-  board.run(BIT_TIME);
+  board.run(bitTime);
 }
 
 function bytesOn(board: TestBoard, topic: 'tx' | 'rx'): number[][] {
@@ -245,6 +245,115 @@ describe('UART 探针', () => {
 
       // 旧 0x00 帧被取消，只有新 0x80 完成。
       expect(bytesOn(board, 'rx')).toEqual([[0x80]]);
+      expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('1200/4800/9600 都能连续复原 0x00、0xFF 与背靠背帧', async () => {
+    const payload = [0x00, 0xff, 0x55, 0xaa];
+
+    for (const baud of [1200, 4800, 9600]) {
+      const bitTime = Math.round(1e12 / baud);
+      const board = await fixture({ baud });
+
+      try {
+        for (const value of payload) receiveByte(board, value, 1, bitTime);
+
+        expect(bytesOn(board, 'tx'), `${baud} baud`).toEqual(payload.map((value) => [value]));
+        expect(board.faults).toEqual([]);
+      } finally {
+        board.dispose();
+      }
+    }
+  });
+
+  it('1200 波特率注入连续字节，停止位结束即发布下一帧', async () => {
+    const baud = 1200;
+    const bitTime = Math.round(1e12 / baud);
+    const board = await fixture({ baud });
+
+    try {
+      const start = board.time;
+      board.send('dut', 'send', new Uint8Array([0x00, 0xff]));
+      board.run(0);
+      expect(board.probe('txdProbe')).toBe(0);
+
+      board.runUntil(start + 10 * bitTime);
+      expect(bytesOn(board, 'rx')).toEqual([[0x00]]);
+      expect(board.probe('txdProbe')).toBe(0); // 第二帧起始位紧接停止位结束
+
+      board.runUntil(start + 20 * bitTime);
+      expect(bytesOn(board, 'rx')).toEqual([[0x00], [0xff]]);
+      expect(board.probe('txdProbe')).toBe(1);
+      expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('一次大步推进与逐位推进得到相同的注入结果', async () => {
+    const baud = 9600;
+    const bitTime = Math.round(1e12 / baud);
+    const payload = new Uint8Array([0x00, 0xff, 0x5a]);
+
+    const stepped = await fixture({ baud });
+    const jumped = await fixture({ baud });
+
+    try {
+      const started = stepped.time;
+      stepped.send('dut', 'send', payload);
+      for (let index = 1; index <= 10 * payload.length; index += 1)
+        stepped.runUntil(started + index * bitTime);
+
+      const jumpedStarted = jumped.time;
+      jumped.send('dut', 'send', payload);
+      jumped.runUntil(jumpedStarted + 10 * payload.length * bitTime);
+
+      expect(bytesOn(stepped, 'rx')).toEqual([...payload].map((value) => [value]));
+      expect(bytesOn(jumped, 'rx')).toEqual([...payload].map((value) => [value]));
+      expect(stepped.faults).toEqual([]);
+      expect(jumped.faults).toEqual([]);
+    } finally {
+      stepped.dispose();
+      jumped.dispose();
+    }
+  });
+
+  it('1200 波特率的假起始位被丢弃，随后仍能接收合法帧', async () => {
+    const baud = 1200;
+    const bitTime = Math.round(1e12 / baud);
+    const board = await fixture({ baud });
+
+    try {
+      const start = board.time;
+      setRxd(board, 0);
+      board.runUntil(start + Math.floor(bitTime / 2) - 1);
+      setRxd(board, 1); // 起始位中点采样前已回到高电平
+      board.runUntil(start + bitTime);
+
+      expect(bytesOn(board, 'tx')).toEqual([]);
+
+      receiveByte(board, 0xa5, 1, bitTime);
+      expect(bytesOn(board, 'tx')).toEqual([[0xa5]]);
+      expect(board.faults).toEqual([]);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('一次注入 40 字节超过旧 32 槽仍完整发布到 rx', async () => {
+    const board = await fixture();
+    const payload = Array.from({ length: 40 }, (_, index) => (index * 29 + 3) & 0xff);
+
+    try {
+      const start = board.time;
+      board.send('dut', 'send', new Uint8Array(payload));
+      board.runUntil(start + 10 * payload.length * BIT_TIME + 1);
+
+      expect(bytesOn(board, 'rx')).toEqual(payload.map((value) => [value]));
+      expect(board.probe('txdProbe')).toBe(1);
       expect(board.faults).toEqual([]);
     } finally {
       board.dispose();

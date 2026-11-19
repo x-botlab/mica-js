@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>CT107D 整板工作台</title>
+  </head>
+  <body>
+    <header class="app-bar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-title">CT107D</span>
+        <span class="brand-sub">整板融合工作台</span>
+      </div>
+      <div class="actions">
+        <span id="status" class="status" role="status" aria-live="polite">正在准备…</span>
+        <button
+          id="save"
+          class="button primary"
+          type="button"
+          title="工作台尚未装载完成"
+          disabled
+        >
+          保存
+        </button>
+        <button id="reopen" class="button" type="button" title="请先保存当前文档" disabled>
+          重新打开
+        </button>
+        <button id="restore" class="button" type="button">恢复演示</button>
+      </div>
+    </header>
+    <main class="stage">
+      <div id="error-banner" class="error-banner" hidden>
+        <pre id="error" class="error" role="alert"></pre>
+        <button id="dismiss" class="error-dismiss" type="button">关闭</button>
+      </div>
+      <div id="workbench" class="workbench"></div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

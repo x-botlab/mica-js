@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/widget",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Mica widget contract and runtime: author definitions, package loading, and sandboxed instance execution",
   "license": "MIT",
   "repository": {
@@ -11,6 +11,16 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
+    "./audio-host": {
+      "source": "./src/audio-host.ts",
+      "types": "./dist/audio-host.d.ts",
+      "import": "./dist/audio-host.js"
+    },
+    "./audio-guest": {
+      "source": "./src/audio-guest.ts",
+      "types": "./dist/audio-guest.d.ts",
+      "import": "./dist/audio-guest.js"
+    },
     ".": {
       "source": "./src/index.ts",
       "types": "./dist/index.d.ts",
@@ -39,6 +49,14 @@
   "publishConfig": {
     "access": "public",
     "exports": {
+      "./audio-host": {
+        "types": "./dist/audio-host.d.ts",
+        "import": "./dist/audio-host.js"
+      },
+      "./audio-guest": {
+        "types": "./dist/audio-guest.d.ts",
+        "import": "./dist/audio-guest.js"
+      },
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"

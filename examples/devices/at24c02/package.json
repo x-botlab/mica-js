@@ -5,7 +5,7 @@
   "description": "256 字节两线串行 EEPROM，从机地址 1010 A2 A1 A0 R/W#。SCL 高期间的 SDA 边沿识别 START/STOP，第 8 个下降沿拉低 SDA 应答、第 9 个下降沿释放；支持字节写、8 字节页内回绕、当前地址连续读与重复 START 随机读，读指针按 256 字节整阵列回绕。WP 高时数据丢弃但仍应答，且指针不前进。SDA 为开漏并需外部上拉。理想化：零传播延迟、无 setup/hold、无多主仲裁、无写周期 tWC（每字节在应答时落盘）、无电源电流。",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "AT24C02 2Kb I²C 串行 EEPROM",
   "designatorPrefix": "U",

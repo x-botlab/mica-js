@@ -6,6 +6,8 @@
 
 规定 `.sch` 第二版中的器件身份、二维摆放、显式连接、依赖锁定、运行显示和实例视图布局。本版把电气与展示保存为一份 2D 文档；3D 文档采用独立合同，当前不定义。本合同尚未实现。MUST / MUST NOT 为强制要求，SHOULD 为推荐，MAY 为可选。
 
+修订（2026-11-17）：按 [RFC 0026](./0026-firmware-properties.md) 增加程序引用，装载方式由锁定清单决定；既有固件引用继续有效。增加 `designatorOffset` 保存独立拖动的位号位置，相关交互已在本地实现，尚未关联实现 PR。
+
 ## 声明
 
 ### 根结构
@@ -22,7 +24,7 @@
 | `display`      | object  | 否   | 运行展示配置                                 |
 
 - 文件是 UTF-8 JSON 单对象，拒绝重复 JSON 键、未知结构字段和非有限数值。
-- 文档路径是宿主工程内的文档身份；文档内实例使用独立稳定 ID。
+- 宿主维护文档身份和存储位置；编辑器接收文档数据，文档内实例使用独立稳定 ID。
 - 实例、节点、导线、标签、参考源的 ID 为全篇唯一的 UUID v4；位号与网名独立保存。
 - 每个依赖键是由清单 `publisher` 与 `name` 派生的完整 `publisher:name`，锁定精确发行版本与发布文件清单摘要，语义见 [RFC 0020](./0020-unified-device-package.md)。
 - 同一 ID 在文档内解析为一个版本，实例 `device` 保存同一完整器件 ID，不拆分保存发布者、名称或下载地址。
@@ -31,24 +33,23 @@
 ### 实例与摆放
 
 ```ts
-interface ResourceReference {
-  readonly src: string;
-  readonly mode: 'file' | 'package' | 'inline' | 'store';
-}
-interface FirmwareFileReference extends ResourceReference {
-  readonly mode: 'file' | 'package';
+type ResourceReference =
+  | { readonly mode: 'package'; readonly src: string }
+  | { readonly mode: 'asset'; readonly assetId: string; readonly name: string };
+type ProgramFileReference = ResourceReference & {
   readonly addressSpace?: string;
   readonly loadAddress?: number;
-}
-type FirmwareReference =
-  | FirmwareFileReference
+};
+type ProgramReference =
+  | ProgramFileReference
   | {
       readonly mode: 'project';
       readonly projectId: string;
+      readonly name?: string;
       readonly addressSpace?: string;
       readonly loadAddress?: number;
     };
-type PropertyValue = string | number | boolean | null | ResourceReference | FirmwareReference;
+type PropertyValue = string | number | boolean | null | ResourceReference | ProgramReference;
 interface Point {
   readonly x: number;
   readonly y: number;
@@ -62,6 +63,7 @@ interface FusedInstance {
   readonly id: string;
   readonly device: string;
   readonly designator?: string;
+  readonly designatorOffset?: Point;
   readonly placement: Placement2D;
   readonly properties?: Readonly<Record<string, PropertyValue>>;
   readonly display?: { readonly body?: boolean };
@@ -69,16 +71,16 @@ interface FusedInstance {
 }
 ```
 
-- `PropertyValue` 使用 [RFC 0009](./0009-device-properties.md) 的持久属性值，包资源按 [RFC 0020](./0020-unified-device-package.md) 扩展，固件按 [RFC 0026](./0026-firmware-properties.md) 扩展。
-- `project` 引用及引用上的 `addressSpace` / `loadAddress` 仅适用于 `firmware`；BIN 允许空间与基址覆盖，HEX 允许空间覆盖且保留文件地址，ELF 按装载段唯一匹配空间；覆盖省略时使用属性声明值。
-- 固件项目保存非空 `projectId` 及当前格式允许的覆盖，解析失败时保持原引用；项目展示名称、构建产物及打开状态均不写入文档。
+- `PropertyValue` 使用 [RFC 0009](./0009-device-properties.md) 的持久属性值，包资源按 [RFC 0020](./0020-unified-device-package.md) 扩展，程序按 [RFC 0026](./0026-firmware-properties.md) 扩展。
+- `project` 仅用于 `program`；BIN 允许空间与基址覆盖，HEX 仅允许空间覆盖，省略覆盖使用属性 `defaults`；ELF 和文件集拒绝覆盖。装载方式来自属性声明，不写入引用。
+- `package` 指包内文件或程序根目录，`asset` 保存资产身份与带扩展名的名称，文件集资产为 ZIP；项目保存非空 `projectId` 与可选展示名称 `name`，解析失败保留引用，产物与打开状态属于会话。
 - 坐标单位是场景 mm，`x` 向右、`y` 向下，旋转为顺时针度数，绕器件局部原点。
 - 自由展示对象的区域同样使用场景单位表达布局，不推断其具有真实封装尺寸。
 - `physical` 器件省略 `width` / `height`，尺寸来自包几何；`flexible` 同时提供有限正数宽高。
 - 自由区域将几何 `bounds` 的左上角映射到摆放原点，先按宽高缩放再绕摆放原点旋转；同一变换用于锚点、绘制与输入。
 - 物理器件采用局部原点平移加旋转；原点约定见 [RFC 0022](./0022-device-2d-presentation.md)。
 - 位号省略时由编辑器在添加时按前缀分配最小未占用正整数，并保存结果；已有文档加载不自动补写。
-- 已保存位号在实例间唯一；缺省位号只按实例 ID 展示，不改变实例身份。
+- 已保存位号在实例间唯一；缺省位号只按实例 ID 展示，不改变实例身份；`designatorOffset` 为器件局部 mm 偏移，缺省 `{ x: 0, y: 0 }`，相对包几何位号锚点，跟随器件变换，独立拖动只修改该偏移。
 - 属性只保存覆盖值；运行与暂停期间保持只读。
 - 实例 `display.body` 覆盖全局 `display.body`；编辑态始终显示底图、引脚、导线和位号。
 - 标注、图片和独立仪表也使用实例记录，由其器件包决定是否具有模型。
@@ -192,9 +194,10 @@ interface FusedDocument {
 - 删除器件同时移除其标签、参考及附着导线；一次撤销完整恢复这批对象。
 - 复制所选子图分配新 ID 与位号，内部引用映射至副本，连接到未选中对象的边保持原对象不变且不复制。
 - 文档持久内容的修改作为原子事务，准备失败时不提交内容或历史。
-- 独立放置电源或地符号时，一次事务创建锚点节点和包含显式电压、符号与内嵌网名的参考记录；附着已有连接端时复用该端点，不按坐标重合自动连接。
-- 点击符号或其内嵌网名选择同一个参考对象；拖动网名只修改 `label.offset`，普通独立网标保持自己的身份。
-- 移动以节点为锚点的符号时移动该节点，所有附着对象随锚点移动；附着引脚的符号随器件移动，可独立调整符号角度和网名偏移。
+- 独立放置电源或地符号时，一次事务创建锚点节点和包含显式电压、符号与内嵌网名的参考记录；附着已有连接端时复用该端点，不按坐标重合自动连接；接地符号固定表示 GND，绘制与命中仅覆盖符号本身，省略电压和网名文字。
+- 点击符号或其内嵌网名选择同一个参考对象，虚线选中框仅包围符号本身；单击未连接导线的引脚或参考符号的接线锚点同时进入画线状态，以对应连接端为起点，已有导线连接时保持选择，点击符号其余部分与内嵌网名只选择对象，显式画线工具仍可连接；拖动命名引脚或共享节点的网名只修改 `label.offset`。
+- 独立网标由独占节点和网名构成：该节点不是分支节点，无其他网名或参考引用它，附着导线不超过一条；拖动独立网标整体平移节点与网名，`label.offset` 保持不变，附着导线随节点重新正交成形，撤销一次完整恢复原位置。
+- 拖动附着引脚或共享节点的符号时，一次事务创建独立自由节点和连接原锚点的导线，并改用新节点；后续拖动仅移动独占节点并调整附着导线，原引脚、共享节点和其他附着对象保持原位；符号角度与网名偏移独立保存。
 - 删除符号同时移除参考与内嵌网名；若锚点节点仍有导线、普通标签或其他参考则保留，否则一并移除；器件引脚与相邻导线保持原样。
 - 复制符号包含其内嵌网名；节点锚点复制为新节点，附着引脚在宿主器件也被复制时映射到副本引脚，否则在原锚点位置创建新自由节点，不隐式复制宿主器件或外部导线。
 - 副本使用新 ID，保留网名，继续参与同名合网；上述符号操作各提交一次原子事务，撤销完整恢复对象、锚点与关联。
@@ -230,7 +233,7 @@ interface FusedDocument {
 
 完整文档见 [全字段 .sch JSON 示例](./examples/0024-fused-schematic.json)，包含全部根字段、实例属性、显示覆盖、属性与 HTML 视图布局、普通网标、符号内嵌网名与偏移及显式连接端；电源符号示例旋转 `90` 度，接地符号为 `0` 度，后者独立放置且尚未接线。
 
-固件文件地址覆盖和项目引用的互斥示例见 [完整固件来源示例](./examples/0026-firmware-sources.json)。
+内存文件地址覆盖、文件集目录与项目引用的互斥示例见 [完整程序来源示例](./examples/0026-firmware-sources.json)。
 
 示例用物理按钮与自由尺寸标注分别展示两种摆放结构：物理器件省略宽高，自由尺寸实例包含 `width` / `height`。依赖名称和摘要为占位示意；实际文件写入发布文件清单的真实摘要。
 
@@ -240,7 +243,7 @@ interface FusedDocument {
 - 几何、绘制与命中由 [RFC 0022](./0022-device-2d-presentation.md) 规定。
 - 侧栏视图、浮动视图交互与布局应用由 [RFC 0023](./0023-device-html-ui.md) 规定。
 - 运行装配、时间推进和生命周期由 [RFC 0025](./0025-fused-runtime.md) 规定。
-- 固件来源、地址覆盖及装载配置由 [RFC 0026](./0026-firmware-properties.md) 规定。
+- 程序来源、地址覆盖、文件集与装载配置由 [RFC 0026](./0026-firmware-properties.md) 规定。
 
 ## 关联
 

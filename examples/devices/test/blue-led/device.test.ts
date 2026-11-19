@@ -15,7 +15,7 @@ describe('器件声明', () => {
     const manifest = readMetadata('blue-led');
 
     expect(`${manifest.publisher}:${manifest.name}`).toBe('example:blue-led');
-    expect(manifest.engines.mica).toBe('^0.3.0');
+    expect(manifest.engines.mica).toBe('^1.0.0');
   });
 
   it('声明阳极/阴极两根引脚、三个查询方法与两项属性', () => {

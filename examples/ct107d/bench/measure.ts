@@ -2,8 +2,8 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
-import { createCt107dBoard, demoFirmware } from './board';
-import type { BoardFingerprints } from './board';
+import { createFusedCt107dBoard, demoFirmware } from './fused';
+import type { FusedFingerprints } from './fused';
 
 /**
  * CT107D 整板基准的测量核心：与 `stm32g431rbt6/bench/measure.mjs` 同构，但读数用
@@ -24,6 +24,8 @@ import type { BoardFingerprints } from './board';
 const MS_PS = 1_000_000_000;
 
 export const WARM_UP_MS = 20;
+/** The demo firmware's schematic clock; preview firmware passes its own 11.0592 MHz props. */
+export const DEMO_CLOCK_FREQUENCY = 12_000_000;
 export const MEASURE_MS = 500;
 export const ROUNDS = 3;
 /** 兼容旧字段：默认固件名；实际固件可用 `firmwareName` 覆盖。 */
@@ -79,8 +81,6 @@ interface JitLike {
   readonly directPrograms: ReadonlyMap<string, unknown>;
   readonly directStats?: DirectStats;
   readonly cache: ReadonlyMap<number, { readonly polling: boolean }>;
-  readonly directFallbackPcs: ReadonlySet<number>;
-  readonly directFallbacksExhausted: boolean;
 }
 
 /** 运行时内部结构：`Board` 只公开 `runUntil`，其余字段按现有实现读取。 */
@@ -116,25 +116,20 @@ interface ProbeSnapshot {
   readonly directPrograms: number;
   readonly cachedInstructions: number;
   readonly pollingInstructions: number;
-  readonly directFallbackPcs: number;
+  readonly directFallbackPcs: readonly number[] | null;
   readonly directFallbacksExhausted: boolean;
   readonly emit: EmitStats & { readonly statementsPerNestedOperation: number };
   readonly direct: boolean;
   readonly digest: string;
   readonly finalDigest: string;
-  readonly finalDigestLegacy: string;
-  /** 每个「实例 ID/端口」的最新值，包含预热期；窗口结束时的完全可观测状态。 */
+  /** 每个「位号/端口」的最新值，包含预热期；窗口结束时的完全可观测状态。 */
   readonly finalTopics: Readonly<Record<string, string>>;
-  /** 旧口径：窗口内按裸端口名的最后值（后写覆盖前写）；仅为兼容保留。 */
-  readonly finalPorts: Readonly<Record<string, string>>;
-  /** 实例 ID → 板面位号；仅辅助人读，不参与话题唯一键。 */
-  readonly instanceDesignators: Readonly<Record<string, string>>;
 }
 
 interface Probe {
   begin(): void;
   end(): void;
-  /** 当前完整可观测状态（含预热期），键为「实例 ID/端口」。 */
+  /** 当前完整可观测状态（含预热期），键为「位号/端口」。 */
   checkpoint(): Readonly<Record<string, string>>;
   read(): ProbeSnapshot;
   dispose(): void;
@@ -191,7 +186,7 @@ interface TopicBridge {
   };
 }
 
-function createProbe(board: unknown, designators: ReadonlyMap<string, string>): Probe {
+function createProbe(board: unknown): Probe {
   const runtime = board as RuntimeLike;
   const hasher = createHash('sha256');
   const counters: WindowCounters = {
@@ -219,38 +214,56 @@ function createProbe(board: unknown, designators: ReadonlyMap<string, string>): 
     directJits().reduce((sum, jit) => sum + (jit.directStats?.[field] ?? 0), 0);
 
   /**
-   * 板级话题桥只传端口名；`runtime.current` 在同步/执行/发布期间指向发布者。
-   * 唯一键用「实例 ID / 端口」，避免 U7/U8 都发 `latch`、DS1/DS2 都发 `digit1`
-   * 时互相覆盖。位号只做辅助映射，可能重复，不能当唯一键。
+   * The fused device publishes board-level identities in the payload or in explicit
+   * compatibility topics (`uart1.tx`). There is no synthetic 55-instance namespace:
+   * `DS1/digit1` is a designator + port, not an instance ID.
    */
-  const topicKey = (topic: string): string => {
-    const current = runtime.current;
+  const identityOf = (message: {
+    topic: string;
+    payload: unknown;
+  }): { key: string; value: unknown } | undefined => {
+    if (message.topic === 'signal') {
+      const payload = message.payload as {
+        readonly designator: string;
+        readonly port: string;
+        readonly value: number;
+      };
 
-    if (current === undefined) return `@host/${topic}`;
+      return { key: `${payload.designator}/${payload.port}`, value: payload.value };
+    }
+    if (message.topic === 'bytes') {
+      const payload = message.payload as {
+        readonly designator: string;
+        readonly port: string;
+        readonly data: Uint8Array;
+      };
 
-    return `${current.id}/${topic}`;
+      return { key: `${payload.designator}/${payload.port}`, value: payload.data };
+    }
+    if (message.topic === 'uart1.tx' || message.topic === 'uart1.rx') {
+      const port = message.topic === 'uart1.tx' ? 'uart1Tx' : 'uart1Rx';
+
+      return { key: `U1/${port}`, value: message.payload };
+    }
+    return undefined;
   };
 
-  /** 实例 ID → 位号；仅用于结果展示和测试定位，不参与话题键。 */
-  const instanceDesignators = sortedTopics(designators);
   /** 全量最新值（含预热期），供窗口检查点读取完整可观测状态。 */
   const latest = new Map<string, string>();
-  /** 窗口内按「实例 ID/端口」的最后值。 */
+  /** 窗口内按「位号/端口」的最后值。 */
   const windowFinals = new Map<string, string>();
-  /** 旧口径：窗口内按裸端口名的最后值（后写覆盖前写）。 */
-  const legacyFinals = new Map<string, string>();
   const stream: string[] = [];
   const subscription = (board as { topics: TopicBridge }).topics.onDidReceive((message) => {
-    const text = canonical(message.payload);
-    const key = topicKey(message.topic);
+    const identity = identityOf(message);
+    if (identity === undefined) return;
+    const text = canonical(identity.value);
 
-    latest.set(key, text);
+    latest.set(identity.key, text);
     if (!active) return;
     counters.topicMessages++;
-    hasher.update(`${runtime.time}|${message.topic}|${text}\n`);
-    windowFinals.set(key, text);
-    legacyFinals.set(message.topic, text);
-    if (process.env['MICA_PERF_STREAM']) stream.push(`${runtime.time}|${message.topic}|${text}`);
+    hasher.update(`${runtime.time}|${identity.key}|${text}\n`);
+    windowFinals.set(identity.key, text);
+    if (process.env['MICA_PERF_STREAM']) stream.push(`${runtime.time}|${identity.key}|${text}`);
   });
 
   // `boundary()` / `publish()` 是原型方法，实例自有属性会遮蔽它们，内部 `this.boundary()` 同样命中。
@@ -323,8 +336,6 @@ function createProbe(board: unknown, designators: ReadonlyMap<string, string>): 
       let directPrograms = 0;
       let cachedInstructions = 0;
       let pollingInstructions = 0;
-      let directFallbackPcs = 0;
-      let directFallbacksExhausted = false;
       const emit = {
         blocks: 0,
         operations: 0,
@@ -339,8 +350,6 @@ function createProbe(board: unknown, designators: ReadonlyMap<string, string>): 
         directPrograms += jit.directPrograms.size;
         cachedInstructions += jit.cache.size;
         pollingInstructions += [...jit.cache.values()].filter((entry) => entry.polling).length;
-        directFallbackPcs += jit.directFallbackPcs.size;
-        directFallbacksExhausted ||= jit.directFallbacksExhausted;
         for (const execution of jit.directPrograms.values()) {
           const stats = (execution as { program?: { emitStats?: EmitStats } } | undefined)?.program
             ?.emitStats;
@@ -372,8 +381,9 @@ function createProbe(board: unknown, designators: ReadonlyMap<string, string>): 
         directPrograms,
         cachedInstructions,
         pollingInstructions,
-        directFallbackPcs,
-        directFallbacksExhausted,
+        directFallbackPcs: null,
+        directFallbacksExhausted:
+          counters.directCalls > 0 && counters.directCalls === counters.directFallbacks,
         emit: {
           ...emit,
           worst,
@@ -387,10 +397,7 @@ function createProbe(board: unknown, designators: ReadonlyMap<string, string>): 
         direct: directJits().length > 0 && counters.directCalls > 0,
         digest: `sha256:${hasher.digest('hex').slice(0, 16)}`,
         finalDigest: digestTopics(windowFinals),
-        finalDigestLegacy: digestTopics(legacyFinals),
         finalTopics: sortedTopics(latest),
-        finalPorts: sortedTopics(legacyFinals),
-        instanceDesignators,
       };
     },
     dispose() {
@@ -406,11 +413,11 @@ function createProbe(board: unknown, designators: ReadonlyMap<string, string>): 
 }
 
 export interface MeasureOptions {
-  /** 固件镜像；默认 `assets/ct107d-demo.bin`（8051 演示固件）。 */
+  /** 固件镜像；默认 `device/src/assets/ct107d-demo.bin`（12 MHz 8051 演示固件）。 */
   readonly firmware?: Uint8Array;
   /** 固件名（写进结果与产物指纹）；默认 `ct107d-demo`。 */
   readonly firmwareName?: string;
-  /** 覆盖 MCU 属性，例如 `clockFrequency`。 */
+  /** 覆盖 MCU 属性；默认 demo 为 12 MHz，preview 显式传 11.0592 MHz。 */
   readonly props?: Readonly<Record<string, unknown>>;
   /** 执行后端；`precise` 走解释器，用于与直接后端做差分对照。 */
   readonly execution?: 'throughput' | 'precise';
@@ -427,7 +434,7 @@ export interface MeasureOptions {
   readonly checkpointMs?: readonly number[];
 }
 
-/** 共同仿真时间检查点上的完整可观测状态，键为「实例 ID/端口」。 */
+/** 共同仿真时间检查点上的完整可观测状态，键为「位号/端口」。 */
 export interface TopicCheckpoint {
   readonly simMs: number;
   readonly topics: Readonly<Record<string, string>>;
@@ -441,15 +448,19 @@ export interface MeasureResult {
   readonly firmwareBytes: number;
   /** 固件镜像的完整 SHA-256（十六进制），用于复现实验产物。 */
   readonly firmwareSha256: string;
-  /** 原理图、固件与器件产物的哈希清单；`source` 标明基准读取的是 `src`。 */
-  readonly fingerprints: BoardFingerprints;
-  /** 实例 ID → 位号；仅辅助人读，话题唯一键仍为「实例 ID/端口」。 */
-  readonly instanceDesignators: Readonly<Record<string, string>>;
+  /** 构建产物、生成模型、板级拓扑与固件的哈希清单。 */
+  readonly fingerprints: FusedFingerprints;
   /** 实际使用的执行后端。 */
   readonly execution: 'throughput' | 'precise';
   readonly clockFrequency: number;
+  /** 图内器件实例数；融合产物必须为 1。 */
   readonly devices: number;
+  /** 图内网络数；融合产物只有外部 VCC/GND 两条。 */
   readonly nets: number;
+  /** 独立实例数；与 `devices` 相同，供基准断言。 */
+  readonly instances: number;
+  /** JIT 数量；融合产物必须为 1。 */
+  readonly jits: number;
   /** 测量窗口的仿真时长（毫秒）。 */
   readonly simMs: number;
   readonly warmUpMs: number;
@@ -470,18 +481,6 @@ export interface MeasureResult {
   readonly coldElapsedWallMs: number;
   /** `warmUpMs / coldElapsedWallMs`；预热为 0 时记为 0。 */
   readonly coldRealtimeRatio: number;
-  /**
-   * @deprecated 历史 CPU 指标：等价于 `cpuMs`（进程 CPU 时间），不是墙钟。
-   * 新代码请读 `cpuMs` / `elapsedWallMs` / `realtimeRatio`。
-   */
-  readonly wallMs: number;
-  /**
-   * @deprecated 历史 CPU 指标：`cpuMs / simMs`（CPU 时间 / 仿真时间），不是 `simMs / wall`。
-   * 实时比请读 `realtimeRatio`。
-   */
-  readonly rtf: number;
-  /** @deprecated 历史 CPU 指标：等价于 `coldCpuMs`。 */
-  readonly coldMs: number;
   readonly usPerSolve: number;
   readonly solves: number;
   /** Whole-graph topology rebuilds; a transition-bucket hit restores instead. */
@@ -499,7 +498,7 @@ export interface MeasureResult {
   readonly compileDirectJit: number;
   readonly cachedInstructions: number;
   readonly pollingInstructions: number;
-  readonly directFallbackPcs: number;
+  readonly directFallbackPcs: readonly number[] | null;
   readonly directFallbacksExhausted: boolean;
   readonly directCalls: number;
   readonly fallbackRate: number;
@@ -528,24 +527,13 @@ export interface MeasureResult {
   readonly checkpointsStable: boolean;
   /** 最佳轮在共同仿真时间检查点上的完整状态。 */
   readonly checkpoints: readonly TopicCheckpoint[];
-  /**
-   * 旧口径：窗口内按裸端口名取最后载荷后计算的摘要（后写覆盖前写）。
-   * 新代码请读 `topicFinalDigestByDevice`（实例 ID + 端口）。
-   */
+  /** 窗口内按「位号/端口」最后载荷计算的摘要。 */
   readonly topicFinalDigest: string;
-  /** 窗口内按「实例 ID/端口」最后载荷计算的摘要。 */
-  readonly topicFinalDigestByDevice: string;
   /**
-   * 窗口结束时的完整状态，键为「实例 ID/端口」（含预热期最后已知值）。
+   * 窗口结束时的完整状态，键为「位号/端口」（含预热期最后已知值）。
    * 同名端口（U7/U8 的 `latch`、DS1/DS2 的 `digit1`…）不会再互相覆盖。
-   * 位号只作辅助映射，见 `instanceDesignators`，可能重复。
    */
   readonly topicFinalTopics: Readonly<Record<string, string>>;
-  /**
-   * @deprecated 旧口径：窗口内按裸端口名的最后值（后写覆盖前写）。
-   * 仅为兼容历史调用保留；需要区分同名器件请读 `topicFinalTopics`。
-   */
-  readonly topicFinalPorts: Readonly<Record<string, string>>;
   readonly unavailable: Readonly<Record<string, string>>;
   readonly faults: readonly string[];
 }
@@ -608,30 +596,31 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
         'checkpointMs must represent a non-negative safe integer number of picoseconds.',
       );
   }
+  const props: Record<string, unknown> = { ...(options.props ?? {}) };
+  if (props.clockFrequency === undefined) props.clockFrequency = DEMO_CLOCK_FREQUENCY;
   const samples: RoundSample[] = [];
   const digests: string[] = [];
   const finalDigests: string[] = [];
-  const finalDigestsLegacy: string[] = [];
   const faults: string[] = [];
   const unavailable: Record<string, string> = {};
   let devices = 0;
   let nets = 0;
+  let instances = 0;
+  let jits = 0;
   let clockFrequency = 0;
-  let fingerprints: BoardFingerprints | undefined;
+  let fingerprints: FusedFingerprints | undefined;
 
   for (let round = 0; round < rounds; round += 1) {
     const coldCpuBefore = process.cpuUsage();
     const coldWallBefore = performance.now();
-    const assembled = await createCt107dBoard({
-      firmware,
-      ...(options.props === undefined ? {} : { props: options.props }),
-      execution,
-    });
-    const probe = createProbe(assembled.board, assembled.designators);
+    const assembled = await createFusedCt107dBoard({ firmware, props, execution });
+    const probe = createProbe(assembled.board);
 
     try {
       devices = assembled.devices;
       nets = assembled.nets;
+      instances = assembled.instances;
+      jits = assembled.jits;
       clockFrequency = assembled.clockFrequency;
       fingerprints = assembled.fingerprints;
 
@@ -725,17 +714,19 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
       });
       digests.push(snapshot.digest);
       finalDigests.push(snapshot.finalDigest);
-      finalDigestsLegacy.push(snapshot.finalDigestLegacy);
 
-      if (statistics === undefined)
+      if (solves === 0)
         unavailable.solves =
-          '运行时没有暴露 `network.stats`，`solves` / `components` / `factorizations` 记为 0。';
+          '融合器件已把历史板内网络折叠为内部槽，只剩外部 VCC/GND；窗口内电气求解计数为 0 是设计结果，不代表没有执行。';
       if (snapshot.counters.solveCalls === 0)
         unavailable.usPerSolve =
-          '`network.solveSlots` 不可写，无法单独计时；`usPerSolve` 退化为整窗 CPU / `solves`。';
+          '融合器件没有板内电气求解；`usPerSolve` 为 0，工作量以 JIT、话题和显示/执行事件计数。';
       if (!snapshot.direct)
         unavailable.directCalls =
           '直接 JIT 没有接管 MCU，`directCalls` 为 0（函数走翻译后解释执行）。';
+      if (snapshot.directFallbackPcs === null)
+        unavailable.directFallbackPcs =
+          '运行时只公开 directCalls/directFallbacks，不公开 fallback PC 集合；`directFallbackPcs` 明确为 null，不伪造 0。';
     } finally {
       for (const fault of assembled.faults) if (!faults.includes(fault)) faults.push(fault);
       probe.dispose();
@@ -758,11 +749,12 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     firmwareBytes: firmware.length,
     firmwareSha256,
     fingerprints: fingerprints!,
-    instanceDesignators: best.snapshot.instanceDesignators,
     execution,
     clockFrequency,
     devices,
     nets,
+    instances,
+    jits,
     simMs: measureMs,
     warmUpMs,
     tickMs,
@@ -776,10 +768,6 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     coldElapsedWallMs,
     coldRealtimeRatio:
       warmUpMs === 0 || best.coldWallMs === 0 ? 0 : Number((warmUpMs / best.coldWallMs).toFixed(3)),
-    // 兼容历史字段：这两个值仍然是 CPU 时间口径，不是墙钟。
-    wallMs: cpuMs,
-    rtf: Number((cpuMs / measureMs).toFixed(3)),
-    coldMs: coldCpuMs,
     usPerSolve: Number(usPerSolve.toFixed(2)),
     solves: best.solves,
     prepareTopology: best.topologyPrepares,
@@ -817,10 +805,8 @@ export async function measureCt107d(options: MeasureOptions = {}): Promise<Measu
     checkpointsStable:
       new Set(samples.map((sample) => JSON.stringify(sample.checkpoints))).size === 1,
     checkpoints: best.checkpoints,
-    topicFinalDigest: finalDigestsLegacy[0] ?? '',
-    topicFinalDigestByDevice: finalDigests[0] ?? '',
+    topicFinalDigest: finalDigests[0] ?? '',
     topicFinalTopics: best.snapshot.finalTopics,
-    topicFinalPorts: best.snapshot.finalPorts,
     unavailable,
     faults,
   };

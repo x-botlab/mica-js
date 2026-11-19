@@ -53,7 +53,7 @@ describe.each(SIMPLE_DEVICE_IDS)('统一器件 %s', (id) => {
     expect(raw.id).toBeUndefined();
     expect(manifest.publisher).toBe('example');
     expect(manifest.name).toBe(id);
-    expect(manifest.engines.mica).toBe('^0.3.0');
+    expect(manifest.engines.mica).toBe('^1.0.0');
     expect(manifest.model.entry).toBe('model.js');
 
     const modelPins = irDeclarations(device.model)

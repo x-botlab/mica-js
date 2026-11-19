@@ -178,11 +178,15 @@ export const decode = (code: JitTranslateInput['code'], pc: number): Instruction
       });
 
     case 0x10:
-      // JBC：位为 1 时清位并跳转；清位是读-改-写。
+      // JBC：位为 1 时清位并跳转；清位是读-改-写。测试与清除都必须看锁存器，
+      // 不能看引脚：P4/P0-P3 的外部强 low 不应把 latch=1 的 JBC 判成未置位。
+      // 只有 taken 分支才写回 0，避免 latch 已为 0 时产生额外写钩子副作用。
       return step(3, (b) => {
-        const set = bitIsSet(b, immediate);
+        const set = latchedBitIsSet(b, immediate);
 
-        writeBit(b, immediate, boolean(b, false));
+        b.if(set, (taken) => {
+          writeBit(taken, immediate, boolean(taken, false));
+        });
         jumpWhen(b, set, (pc + 3 + signedOffset(second)) & CODE_MASK);
       });
 
@@ -538,8 +542,11 @@ export const decode = (code: JitTranslateInput['code'], pc: number): Instruction
       });
 
     case 0xc5:
+      // XCH A,direct 不在 8051 的端口读-改-写指令列表里：源字节按普通直接读
+      // （端口取引脚电平），交换结果写回锁存器。XCH A,ACC 等普通 SFR 仍保持
+      // 读当前值；timed SFR 的读会像 MOV A,direct 一样进入访问探针/结算。
       return step(2, (b) => {
-        const other = readLatch(b, immediate);
+        const other = readDirect(b, immediate);
         const acc = readAcc(b);
 
         writeAcc(b, other);

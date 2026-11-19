@@ -22,7 +22,7 @@ import {
  * （手册 5.2 的 STC15 1T 列）。闪烁用例的周期因此由固件的时钟总数直接算出，而不是写死。
  */
 
-const GPIO_PINS = Array.from({ length: 4 }, (_, port) =>
+const GPIO_PINS = Array.from({ length: 5 }, (_, port) =>
   Array.from({ length: 8 }, (_, bit) => `P${port}_${bit}`),
 ).flat();
 
@@ -58,7 +58,7 @@ const HALT = [0x80, 0xfe]; // SJMP $
 const P2 = PUSH_PULL_P2;
 
 describe('器件声明与产物', () => {
-  it('声明 32 根 GPIO、两根供电引脚，模型公开串口收发事件', async () => {
+  it('声明 40 根 GPIO、两根供电引脚，模型公开串口收发事件', async () => {
     const metadata = readMetadata('iap15f2k61s2');
     const module = await loadDevice('iap15f2k61s2');
 
@@ -129,7 +129,8 @@ describe('固件装载与取指', () => {
 
     for (const result of [skipped, empty]) {
       expect(result.faults).toEqual([]);
-      expect(result.p2).toBe(0);
+      // 复位后 P2 是准双向 weak-high；空固件不写锁存，探针应看到 0xFF，而不是 unknown→0。
+      expect(result.p2).toBe(0xff);
     }
   });
 });
@@ -190,11 +191,225 @@ describe('GPIO 四模式', () => {
     expect(pulled.signal).toBe(0);
   });
 
-  it('复位时 P0–P3 锁存为 1，准双向口处于释放状态', async () => {
-    const result = await run({ firmware: Uint8Array.from(HALT), pullUpOhm: 10_000 });
+  it('复位时 P0–P4 锁存为 1，P3/P4 无外部上拉时第一条读口即为高', async () => {
+    // 不使用 `pullUpOhm`：读口之前也没有 MOV Px,#FFH，确保验证的是复位期引脚意图。
+    const p3 = await run({
+      firmware: Uint8Array.from([0xe5, 0xb0, 0xf5, 0xa0, ...HALT]), // MOV A,P3; MOV P2,A
+      observeP3: true,
+    });
+    const p4 = await run({
+      firmware: Uint8Array.from([0xe5, 0xc0, 0xf5, 0xa0, ...HALT]), // MOV A,P4; MOV P2,A
+    });
 
-    expect(result.signal).toBe(1);
-    expect(result.p2).toBe(0);
+    expect(p3.p3).toBe(0xff);
+    expect(p3.p2).toBe(0xff);
+    expect(p4.p2).toBe(0xff);
+  });
+
+  it('复位弱上拉可被外部 1 kΩ 强下拉覆盖，不需要先写端口', async () => {
+    const result = await run({
+      firmware: Uint8Array.from([0xe5, 0xb0, 0xf5, 0xa0, ...HALT]), // MOV A,P3; MOV P2,A
+      observeP3: true,
+      pullDown: { pin: 'P3_0', resistance: 1_000 },
+    });
+
+    expect(result.p3).toBe(0xfe);
+    expect(result.p2).toBe(0xfe);
+  });
+
+  it('P4 读引脚、锁存 RMW 与外部 low 覆盖', async () => {
+    const read = await run({
+      firmware: Uint8Array.from([0xe5, 0xc0, 0xf5, 0xa0, ...HALT]), // MOV A,P4; MOV P2,A
+    });
+    const complement = await run({
+      firmware: Uint8Array.from([0xb2, 0xc4, 0xe5, 0xc0, 0xf5, 0xa0, ...HALT]), // CPL P4.4; read
+    });
+    const pulled = await run({
+      firmware: Uint8Array.from([
+        0xc2,
+        0xc2, // CLR P4.2（锁存 0）
+        0xd2,
+        0xc2, // SETB P4.2（锁存 1，但外部仍拉低）
+        0xe5,
+        0xc0, // MOV A,P4
+        0xf5,
+        0xa0,
+        ...HALT,
+      ]),
+      pullDown: { pin: 'P4_2', resistance: 1_000 },
+    });
+
+    expect(read.p2).toBe(0xff);
+    expect(complement.p2).toBe(0xef);
+    expect(pulled.p2).toBe(0xfb);
+  });
+
+  it('P4M0/P4M1 模式位按真实地址生效：仅输入、开漏与推挽', async () => {
+    const inputOnly = await run({
+      firmware: Uint8Array.from([
+        0x75,
+        0xb3,
+        0x04, // MOV P4M1,#04H → P4.2 仅输入
+        0x75,
+        0xb4,
+        0x00, // MOV P4M0,#00H
+        0x75,
+        0xc0,
+        0x00, // MOV P4,#00H：锁存 0 但仅输入模式释放
+        0xe5,
+        0xc0, // MOV A,P4
+        0xf5,
+        0xa0,
+        ...HALT,
+      ]),
+      pullUp: { pin: 'P4_2', resistance: 10_000 },
+    });
+    const openReleased = await run({
+      firmware: Uint8Array.from([
+        0x75,
+        0xb3,
+        0x04, // MOV P4M1,#04H → P4.2 开漏
+        0x75,
+        0xb4,
+        0x04, // MOV P4M0,#04H
+        0x75,
+        0xc0,
+        0xff, // MOV P4,#FFH：锁存 1 释放
+        0xe5,
+        0xc0,
+        0xf5,
+        0xa0,
+        ...HALT,
+      ]),
+      pullUp: { pin: 'P4_2', resistance: 10_000 },
+    });
+    const openPulled = await run({
+      firmware: Uint8Array.from([
+        0x75,
+        0xb3,
+        0x04, // MOV P4M1,#04H
+        0x75,
+        0xb4,
+        0x04, // MOV P4M0,#04H
+        0x75,
+        0xc0,
+        0x00, // MOV P4,#00H：开漏锁存 0 下拉
+        0xe5,
+        0xc0,
+        0xf5,
+        0xa0,
+        ...HALT,
+      ]),
+      pullUp: { pin: 'P4_2', resistance: 10_000 },
+    });
+    const pushPullLow = await run({
+      firmware: Uint8Array.from([
+        0x75,
+        0xb3,
+        0x00, // MOV P4M1,#00H
+        0x75,
+        0xb4,
+        0x04, // MOV P4M0,#04H → P4.2 推挽
+        0x75,
+        0xc0,
+        0x00, // MOV P4,#00H
+        0xe5,
+        0xc0,
+        0xf5,
+        0xa0,
+        ...HALT,
+      ]),
+    });
+    const pushPullHigh = await run({
+      firmware: Uint8Array.from([
+        0x75,
+        0xb3,
+        0x00,
+        0x75,
+        0xb4,
+        0x04,
+        0x75,
+        0xc0,
+        0xff, // MOV P4,#FFH → 推挽高
+        0xe5,
+        0xc0,
+        0xf5,
+        0xa0,
+        ...HALT,
+      ]),
+    });
+
+    expect(inputOnly.p2).toBe(0x04);
+    expect(openReleased.p2 & 0x04).toBe(0x04); // 开漏锁存 1 释放，外部上拉拉高 P4.2
+    expect(openPulled.p2 & 0x04).toBe(0x00); // 开漏锁存 0 强下拉
+    expect(pushPullLow.p2 & 0x04).toBe(0x00);
+    expect(pushPullHigh.p2 & 0x04).toBe(0x04); // 推挽高
+    expect(pushPullHigh.p2).toBe(0xff);
+  });
+
+  it('JBC 读锁存器：latch=1 且 P4.2 被外部强 low 拉低时仍 taken 并清 latch', async () => {
+    // P2=AAH 表示第一次 JBC 读 latch 为 1（taken）且已清 latch（第二次不 taken）。
+    // P2=55H 是 pin 读的未 taken 路径；P2=ABH 是读了 latch 但未清位的路径。
+    const result = await run({
+      firmware: Uint8Array.from([
+        0x10,
+        0xc2,
+        0x05, // JBC P4.2,TAKEN (pc 0, target 8)
+        0x75,
+        0xa0,
+        0x55, // MOV P2,#55H（pin 低，未 taken）
+        0x80,
+        0x0b, // SJMP END (target 19)
+        0x10,
+        0xc2,
+        0x05, // TAKEN: JBC P4.2,STILL_SET (pc 8, target 16)
+        0x75,
+        0xa0,
+        0xaa, // cleared: MOV P2,#0AAH
+        0x80,
+        0x03, // SJMP END (target 19)
+        0x75,
+        0xa0,
+        0xab, // STILL_SET: MOV P2,#0ABH
+        0x80,
+        0xfe, // END: SJMP END
+      ]),
+      pullDown: { pin: 'P4_2', resistance: 1_000 },
+    });
+
+    expect(result.p2).toBe(0xaa);
+  });
+
+  it('XCH A,P4 取引脚值、写回锁存器', async () => {
+    const source = await run({
+      firmware: Uint8Array.from([
+        0x74,
+        0x00, // MOV A,#00H
+        0xc5,
+        0xc0, // XCH A,P4：源是引脚 0FBH，锁存写入 0
+        0xf5,
+        0xa0, // MOV P2,A
+        ...HALT,
+      ]),
+      pullDown: { pin: 'P4_2', resistance: 1_000 },
+    });
+    const latchWrite = await run({
+      firmware: Uint8Array.from([
+        0x74,
+        0x00, // MOV A,#00H
+        0xc5,
+        0xc0, // XCH A,P4：锁存 P4 变为 0
+        0xe5,
+        0xc0, // MOV A,P4：读回引脚 0
+        0xf5,
+        0xa0, // MOV P2,A
+        ...HALT,
+      ]),
+      pullDown: { pin: 'P4_2', resistance: 1_000 },
+    });
+
+    expect(source.p2).toBe(0xfb);
+    expect(latchWrite.p2).toBe(0x00);
   });
 });
 
