@@ -11,7 +11,7 @@ import {
 /**
  * MCU + LCD 联合仿真：跑 `HAL_06_LCD` 的真实 Keil 固件。
  *
- * 需要显式开启：`MICA_JOINT=1 pnpm exec vitest run test/joint.test.ts`。
+ * 需要显式开启：`MICA_JOINT=1 pnpm exec vitest run test/ili9325/joint.test.ts`。
  * 200 µs 用例证明 MCU 经真实 GPIO 把 BSP 初始化序列写进 LCD；440 ms 用例用独立
  * MCU intent 计数与 GRAM oracle 对账整条写路径，漏掉 WR 边沿会直接失败。
  */
@@ -21,9 +21,9 @@ import {
  * `HAL_Delay(200)`。
  */
 const INIT_PS = 200_000_000;
-/** 220 ms：先检查前半程的边沿与锁存，失败时能定位到窗口而不是只看最终快照。 */
+/** 220 ms：仍在 BSP 的延时序列内，检查初始化边沿，尚未写入 GRAM。 */
 const MID_PS = 220_000_000_000;
-/** 440 ms：覆盖三次整屏清屏、部分绘图与多帧发布。 */
+/** 440 ms：覆盖整屏清屏、后续绘图与多帧发布。 */
 const END_PS = 440_000_000_000;
 const CLEAR_COLOR = JOINT_440MS_EXPECTED.clearColor;
 const FULL_FRAME_PIXELS = JOINT_FULL_FRAME_PIXELS;
@@ -84,13 +84,15 @@ describe.skipIf(!process.env.MICA_JOINT)('MCU + LCD 联合仿真', () => {
       board.runUntil(0);
       joint.advanceTo(MID_PS);
 
-      // 前半程已经覆盖初始化后的持续绘图；先确认没有从窗口中间开始漏边沿。
+      // 初始化的命令已经到达 LCD，但 HAL_Delay 结束前不会写入像素。
       const midway = joint.readAccounting()!;
 
       expect(midway.wrLevelChanges).toBeGreaterThan(0);
       expect(midway.wrSamples).toBe(midway.wrLevelChanges);
-      expect(midway.pixelWrites).toBeGreaterThan(0);
-      expect(midway.gramStores).toBe(midway.pixelWrites);
+      expect(midway.pixelWrites).toBe(0);
+      expect(midway.gramStores).toBe(0);
+      expect(midway.oracleGramStores).toBe(0);
+      expect(frames).toHaveLength(0);
 
       joint.advanceTo(END_PS);
 
@@ -131,7 +133,7 @@ describe.skipIf(!process.env.MICA_JOINT)('MCU + LCD 联合仿真', () => {
 
       // 5. 发布帧必须等于模型在帧体发送时刻交给适配器的载荷；帧矩形合法。
       // 这里不再拿 runUntil 末尾的 GRAM 快照比较，避免同一量子内后续绘图让下游自比较失效。
-      expect(frames.length).toBeGreaterThan(0);
+      expect(frames).toHaveLength(JOINT_440MS_EXPECTED.frames);
       expect(joint.expectedFrames).toHaveLength(frames.length);
       expect(frames.every((frame, index) => sameBytes(frame, joint.expectedFrames[index]!))).toBe(
         true,

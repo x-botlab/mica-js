@@ -21,10 +21,11 @@ const CYCLE_PS = 10;
 const WARMUP_PS = 41;
 const TARGET_PS = 81;
 const EDGE_BYTES = 8;
+type PublicationEffect = 'process' | 'replaceCode' | 'fault';
 
 const translation =
   (stable: boolean): JitTranslate =>
-  ({ pc }, block) => {
+  ({ pc, code }, block) => {
     block.instruction({ pc, nextPc: pc === 0 ? 1 : 0 }, (b) => {
       const one = b.constant(types.number, 1);
       // 槽 31 的符号位和槽 32 的下一脏字都必须正确写回。
@@ -34,6 +35,7 @@ const translation =
       b.writeState('prefixes', b.add(b.readState('prefixes', types.number), one));
       b.writeState('seenProcess', b.readState('processValue', types.number));
       b.writeState('seenReaction', b.readState('reactionValue', types.number));
+      b.store8('scratch', b.constant(types.number, 0), b.readState('data', types.number));
       const intent =
         stable || pc === 0
           ? b.combineIntents(b.resistor(b.pin('mid'), b.constant(types.number, 1000)))
@@ -41,17 +43,21 @@ const translation =
       // 同一条指令写两个引脚：失效只能发生在两个 intent 都落定之后。
       b.writeIntent('drive', intent);
       b.writeIntent('gate', intent);
+      const suffixes = b.readState('suffixes', types.number);
       b.elapse(b.constant(types.number, CYCLE_PS));
-      // 只有恢复路径会执行到这里；计数用来说明 suffix 恰好一次。
-      b.writeState('suffixes', b.add(b.readState('suffixes', types.number), one));
+      // Keep a prefix local live across either continuation path. The increment must use
+      // the old decoded bytes even if publication replaces code.
+      const increment = b.constant(types.number, code[0] || 1);
+      b.writeState('suffixes', b.add(suffixes, increment));
     });
     return block.finish();
   };
 
-function electricalModel(wakeAtSuffix: boolean) {
+function electricalModel(wakeAtSuffix: boolean, effect?: PublicationEffect) {
   const builder = createDeviceBuilder({ name: 'DirectElectrical' });
   builder.memory({ name: 'code', length: 16 });
   builder.memory({ name: 'evidence', length: 256, public: true });
+  builder.memory({ name: 'scratch', length: 1 });
   builder.state({ name: 'pc', type: types.number, initial: 0 });
   builder.state({ name: 'data', type: types.number, initial: 0 });
   builder.state({ name: 'prefixes', type: types.number, initial: 0 });
@@ -84,6 +90,13 @@ function electricalModel(wakeAtSuffix: boolean) {
       );
     });
   });
+  if (effect === 'process') {
+    builder.on({ name: 'observeDrive', sourcePath: ['drive', 'sample', 'level'] }, (body) => {
+      body.if(body.equal(types.number, body.now(), body.constant(types.number, 50)), (atEdge) => {
+        atEdge.writeState('processValue', atEdge.readState('suffixes', types.number));
+      });
+    });
+  }
   builder.reaction(
     {
       name: 'watchDrive',
@@ -98,7 +111,7 @@ function electricalModel(wakeAtSuffix: boolean) {
       ],
     },
     {
-      savedData: (body) => body.returnValue(body.readState('data', types.number)),
+      savedData: (body) => body.returnValue(body.load8('scratch', body.constant(types.number, 0))),
       savedWr: (body) => body.returnValue(body.readState('wr', types.number)),
       gateHigh: (body) =>
         body.returnValue(
@@ -131,6 +144,21 @@ function electricalModel(wakeAtSuffix: boolean) {
       body.store32le('evidence', at(4), body.now());
       body.writeState('reactionValue', bindings.captures.savedData);
       body.writeState('cursor', at(EDGE_BYTES));
+      if (effect === 'replaceCode' || effect === 'fault') {
+        body.if(body.equal(types.number, body.now(), body.constant(types.number, 60)), (atEdge) => {
+          if (effect === 'replaceCode') {
+            atEdge.store8(
+              'code',
+              atEdge.constant(types.number, 0),
+              atEdge.constant(types.number, 2),
+            );
+          } else {
+            atEdge.assert(atEdge.constant(types.bool, false), (message) =>
+              message.constant(types.string, 'publication fault'),
+            );
+          }
+        });
+      }
     },
   );
   return builder.finish();
@@ -147,12 +175,13 @@ function createScenario(
   execution: 'throughput' | 'precise',
   stable = false,
   wakeAtSuffix = false,
+  effect?: PublicationEffect,
 ): Scenario {
   let evidence: Uint8Array | undefined;
   const library = createDeviceLibrary([
     {
       id: 'dut',
-      model: electricalModel(wakeAtSuffix),
+      model: electricalModel(wakeAtSuffix, effect),
       create: (context) => {
         const registration = context.attachJit({
           entry: 'dut',
@@ -192,6 +221,18 @@ function warmDirect(scenario: Scenario): void {
   const stats = directJitStats(scenario.jit);
   expect(stats?.directCalls ?? 0).toBeGreaterThan(0);
   expect((stats?.directCalls ?? 0) - (stats?.directFallbacks ?? 0)).toBeGreaterThan(0);
+}
+
+function recordCheckpoints(scenario: Scenario) {
+  const frame = scenario.jit.direct!.frame;
+  const checkpoint = frame.publishCheckpoint!;
+  const attempts: { due: number; resumed: boolean }[] = [];
+  frame.publishCheckpoint = () => {
+    const resumed = checkpoint();
+    attempts.push({ due: frame.due, resumed });
+    return resumed;
+  };
+  return attempts;
 }
 
 interface EdgeRecord {
@@ -286,11 +327,111 @@ describe('direct JIT electrical publication', () => {
     const scenario = createScenario('throughput', false, true);
     try {
       warmDirect(scenario);
+      const attempts = recordCheckpoints(scenario);
       scenario.board.runUntil(51);
 
+      // The event at due=50 prevents attempting the checkpoint in the first place.
+      expect(attempts).toEqual([]);
       expect(scenario.instance.states.get('processValue')).toBe(4);
       expect(scenario.instance.states.get('suffixes')).toBe(5);
       expect(edgeRecords(scenario).at(-1)?.time).toBe(50);
+    } finally {
+      scenario.board.dispose();
+    }
+  });
+
+  it('completes only admitted suffixes inside a direct run and keeps publication timing', () => {
+    const direct = createScenario('throughput', false, true);
+    const queued = createScenario('throughput', false, true);
+    try {
+      warmDirect(direct);
+      warmDirect(queued);
+      const frame = direct.jit.direct!.frame;
+      const attempts = recordCheckpoints(direct);
+      delete queued.jit.direct!.frame.publishCheckpoint;
+      const calls = (scenario: Scenario) => directJitStats(scenario.jit)!.directCalls;
+      const before = calls(direct) - calls(queued);
+
+      direct.board.runUntil(80);
+      queued.board.runUntil(80);
+
+      expect(attempts).toEqual([
+        { due: 60, resumed: true },
+        { due: 70, resumed: true },
+      ]);
+      expect(calls(direct) - calls(queued)).toBe(before - 2);
+      expect(edgeRecords(direct)).toEqual(edgeRecords(queued));
+      expect(direct.instance.states.get('processValue')).toBe(4);
+      expect(direct.instance.states.get('suffixes')).toBe(7);
+      expect(frame.due).toBe(80);
+      expect(frame.resume).not.toBe(0);
+    } finally {
+      direct.board.dispose();
+      queued.board.dispose();
+    }
+  });
+
+  it('lets a process queued by publication run before the rejected suffix', () => {
+    const scenario = createScenario('throughput', false, true, 'process');
+    try {
+      warmDirect(scenario);
+      const attempts = recordCheckpoints(scenario);
+      const prefixSlot = scenario.instance.stateResources.get('prefixes')!;
+      const scratchSlot = scenario.instance.memoryResources.get('scratch')!;
+      const stateVersion = prefixSlot.version;
+      const memoryVersion = scratchSlot.version;
+      scenario.board.runUntil(65);
+
+      expect(attempts).toEqual([{ due: 60, resumed: false }]);
+      expect(prefixSlot.version - stateVersion).toBe(2);
+      expect(scratchSlot.version - memoryVersion).toBe(2);
+      expect(scenario.instance.states.get('processValue')).toBe(5);
+      expect(scenario.instance.states.get('seenProcess')).toBe(5);
+      expect(scenario.instance.states.get('suffixes')).toBe(6);
+      expect(edgeRecords(scenario).map(({ time }) => time)).toEqual([0, 10, 20, 30, 40, 50, 60]);
+    } finally {
+      scenario.board.dispose();
+    }
+  });
+
+  it('rejects an inlined suffix when publication replaces its active code', () => {
+    const scenario = createScenario('throughput', false, true, 'replaceCode');
+    try {
+      warmDirect(scenario);
+      const attempts = recordCheckpoints(scenario);
+      const oldProgram = scenario.jit.direct!.program;
+      scenario.board.runUntil(81);
+
+      expect(attempts).toEqual([
+        { due: 60, resumed: true },
+        { due: 70, resumed: false },
+      ]);
+      expect(scenario.jit.direct?.program).not.toBe(oldProgram);
+      // Seven suffixes used the old bytes, including the active one at 70.
+      expect(scenario.instance.states.get('suffixes')).toBe(7 + 2);
+      expect(edgeRecords(scenario).map(({ time }) => time)).toEqual([
+        0, 10, 20, 30, 40, 50, 60, 70, 80,
+      ]);
+    } finally {
+      scenario.board.dispose();
+    }
+  });
+
+  it('keeps the prefix and stops at its publication time if a reaction faults', () => {
+    const scenario = createScenario('throughput', false, true, 'fault');
+    try {
+      warmDirect(scenario);
+      const errors: string[] = [];
+      scenario.board.onDidError(({ message }) => errors.push(message));
+      expect(() => scenario.board.runUntil(81)).toThrow('publication fault');
+
+      expect(scenario.board.status).toBe('faulted');
+      expect(scenario.board.time).toBe(60);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('publication fault');
+      expect(scenario.instance.states.get('prefixes')).toBe(7);
+      expect(scenario.instance.states.get('suffixes')).toBe(6);
+      expect(edgeRecords(scenario).at(-1)?.time).toBe(60);
     } finally {
       scenario.board.dispose();
     }

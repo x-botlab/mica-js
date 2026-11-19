@@ -408,14 +408,54 @@ function directLayout(jit: Jit): DirectJitLayout {
   return jit.directLayout;
 }
 
-function createDirectFrame(
+function flushDirect(
   board: JitRuntimeHost,
   instance: Instance,
   layout: DirectJitLayout,
+  frame: DirectJitFrame,
+): boolean {
+  board.time = frame.time;
+  frame.publishPending = false;
+  let wrote = false;
+  for (let word = 0; word < frame.stateDirty.length; word++) {
+    let bits = frame.stateDirty[word]!;
+    if (bits === 0) continue;
+    frame.stateDirty[word] = 0;
+    while (bits !== 0) {
+      const slot = word * 32 + 31 - Math.clz32(bits & -bits);
+      instance.host.write(layout.stateNames[slot]!, frame.states[slot]);
+      bits &= bits - 1;
+      wrote = true;
+    }
+  }
+  for (let word = 0; word < frame.memoryDirty.length; word++) {
+    let bits = frame.memoryDirty[word]!;
+    if (bits === 0) continue;
+    frame.memoryDirty[word] = 0;
+    while (bits !== 0) {
+      const slot = word * 32 + 31 - Math.clz32(bits & -bits);
+      instance.memoryChanged(layout.memoryNames[slot]!);
+      bits &= bits - 1;
+      wrote = true;
+    }
+  }
+  return wrote;
+}
+
+interface RuntimeDirectFrame extends DirectJitFrame {
+  /** The prefix was already flushed and published, but its suffix was not admitted. */
+  checkpointRejected: boolean;
+}
+
+function createDirectFrame(
+  board: JitRuntimeHost,
+  jit: Jit,
+  layout: DirectJitLayout,
   program: DirectJitProgram,
   barrier: DirectBarriers,
-): DirectJitFrame {
-  const frame: DirectJitFrame = {
+): RuntimeDirectFrame {
+  const instance = jit.instance;
+  const frame: RuntimeDirectFrame = {
     states: layout.stateValues,
     memories: [...layout.memoryBanks],
     memoryViews: layout.memoryViews,
@@ -425,8 +465,22 @@ function createDirectFrame(
     time: board.time,
     due: board.time,
     resume: 0,
+    checkpointRejected: false,
   };
   (frame as { host?: DirectJitHost }).host = directHost(board, instance, frame);
+  if (jit.metadata === undefined) {
+    frame.publishCheckpoint = () => {
+      flushDirect(board, instance, layout, frame);
+      board.boundary();
+      if (jit.directProgramRevision === -1 || !board.canContinueDirect(jit, frame.due)) {
+        frame.checkpointRejected = true;
+        return false;
+      }
+      // The boundary may have run reactions with their own current instance.
+      board.current = instance;
+      return true;
+    };
+  }
   // Both masks are shared with every frame of this JIT and refreshed in place on guard churn.
   (frame as BarrierFrame).blockedStates = barrier.stateMask;
   (frame as BarrierFrame).blockedMemories = barrier.memoryMask;
@@ -561,7 +615,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
             ? {
                 program,
                 pcs: new Set(program.pcs),
-                frame: createDirectFrame(board, instance, layout, program, barrier),
+                frame: createDirectFrame(board, jit, layout, program, barrier),
               }
             : undefined;
           // A declined program must not be cached, or the key would keep answering `undefined`.
@@ -575,7 +629,8 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     if (!jit.direct) return false;
   }
   const direct = jit.direct!;
-  const frame = direct.frame;
+  const frame = direct.frame as RuntimeDirectFrame;
+  const layout = jit.directLayout!;
   for (;;) {
     if (pending) frame.stopAfterInstruction = true;
     frame.time = board.time;
@@ -583,40 +638,21 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     frame.memoryDirty.fill(0);
     const start = board.time;
     let reason: ReturnType<DirectJitProgram['run']>;
-    let wrote = false;
+    let wrote: boolean;
     const stats = directStats(jit);
     stats.directCalls++;
     try {
       // Resource barriers exclude intermediate observers; real events retain exact deadlines.
       reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
     } finally {
-      board.time = frame.time;
-      frame.publishPending = false;
-      const layout = jit.directLayout!;
-      for (let word = 0; word < frame.stateDirty.length; word++) {
-        let bits = frame.stateDirty[word]!;
-        while (bits !== 0) {
-          const slot = word * 32 + 31 - Math.clz32(bits & -bits);
-          instance.host.write(layout.stateNames[slot]!, frame.states[slot]);
-          bits &= bits - 1;
-          wrote = true;
-        }
-      }
-      for (let word = 0; word < frame.memoryDirty.length; word++) {
-        let bits = frame.memoryDirty[word]!;
-        while (bits !== 0) {
-          const slot = word * 32 + 31 - Math.clz32(bits & -bits);
-          instance.memoryChanged(layout.memoryNames[slot]!);
-          bits &= bits - 1;
-          wrote = true;
-        }
-      }
+      wrote = flushDirect(board, instance, layout, frame);
     }
     // A fallback with no flushed slot and no elapsed time did not execute anything; the cached
     // entry PC can safely be interpreted. A zero-duration block can still write state/PC before
     // the dispatcher rejects the next uncompiled PC: `wrote` records that prefix, so the caller
     // must re-read the flushed PC instead of replaying the old one.
-    if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
+    if (frame.checkpointRejected) frame.checkpointRejected = false;
+    else if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
     if (reason === 'fallback') {
       const nextPc = finite(instance.states.get(jit.options.pc), 'pc');
       // Polling PCs are deliberately absent from direct programs. Reaching one is a normal

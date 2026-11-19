@@ -4,6 +4,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   resolve: { conditions: ['source'] },
+  ssr: { resolve: { conditions: ['source'] } },
   build: {
     lib: {
       entry: {
@@ -30,5 +31,10 @@ export default defineConfig({
       bundleTypes: true,
     }),
   ],
-  test: { include: ['src/simulation-runtime/**/*.test.ts'], environment: 'node' },
+  test: {
+    include: ['src/simulation-runtime/**/*.test.ts'],
+    environment: 'node',
+    // Test generated code from the compiler under development, not a stale build.
+    server: { deps: { inline: ['@mica-js/compiler'] } },
+  },
 });

@@ -215,6 +215,12 @@ export interface DirectJitFrame {
   stopAfterInstruction?: boolean;
   /** Publish host effects at the next nonzero elapse or instruction end before continuing. */
   publishPending?: boolean;
+  /**
+   * At a positive elapse strictly before the deadline, publish the suspended prefix
+   * at `time`. Return true only if this instruction's suffix may run at `due`
+   * without returning to the scheduler. On false the continuation is saved normally.
+   */
+  publishCheckpoint?: () => boolean;
   /** Present when the program was compiled with `DirectJitBinding.host`. */
   readonly host?: DirectJitHost;
 }

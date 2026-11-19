@@ -1163,7 +1163,7 @@ function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): 
       `S[${binding.pc.index}] = ${entry.nextPc};`,
       dirty('SD', binding.pc.index),
       ...entry.outlinePrefix(outlined),
-      ...(entry.duration === undefined ? [] : elapsed(entry, entry.resumeId)),
+      ...elapsed(entry, entry.resumeId, binding.host === true),
       ...entry.suffix,
       entry.isolated ? publish : residentStepFinish(entry.stop, stepInside, binding.pc.index),
       '}',
@@ -1322,8 +1322,8 @@ function residentProgram(
   return Object.freeze(program);
 }
 
-/** Elapse due time, resume save and deadline split shared by both emitters. */
-function elapsed(entry: Instruction, resumeId: number): string[] {
+/** Split at a deadline or publication; resident host code can keep an admitted suffix inline. */
+function elapsed(entry: Instruction, resumeId: number, checkpoint = false): string[] {
   if (entry.duration === undefined) return [];
   // A computed duration is validated where the generic host validates it, before it is used.
   const duration = entry.dynamicDuration ? `H.checkDuration(${entry.duration})` : entry.duration;
@@ -1331,11 +1331,24 @@ function elapsed(entry: Instruction, resumeId: number): string[] {
     `F.due = F.time + ${duration};`,
     'if (F.due > 7200000000000000) throw new RangeError("Time out of range");',
     'if ((F.publishPending && F.due > F.time) || F.due >= deadline) {',
-    ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
     `F.resume = ${resumeId};`,
-    'if (F.publishPending && F.due > F.time) return "invalidated";',
+    // Inside this split, due < deadline implies a publication. The callback may
+    // clear publishPending even when it rejects, so that case must still suspend.
+    ...(checkpoint
+      ? [
+          'if (F.due < deadline && F.publishCheckpoint?.()) {',
+          'F.resume = 0;',
+          'F.stopAfterInstruction = true;',
+          '} else {',
+        ]
+      : []),
+    ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
+    checkpoint
+      ? 'if (F.due < deadline || (F.publishPending && F.due > F.time)) return "invalidated";'
+      : 'if (F.publishPending && F.due > F.time) return "invalidated";',
     'F.time = deadline;',
     'return "deadline";',
+    ...(checkpoint ? ['}'] : []),
     '}',
     'F.time = F.due;',
   ];
