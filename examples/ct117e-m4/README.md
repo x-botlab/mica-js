@@ -6,8 +6,9 @@ R37/R38 电位器和两个 XL555 的固定接线合成一个器件模型：**一
 
 - 器件 ID：`example:ct117e-m4`
 - 源码：`src/`（融合电气行为在 `model.ddl`，装配与 MCU/LCD/板载器件适配在
-  `index.ts`/`board.ts`/`mcu.ts`/`lcd.ts`）
-- 构建产物：包根 `dist/{package.json,model.js}`
+  `index.ts`/`board.ts`/`mcu.ts`/`lcd.ts`；`model.ts` 是 `mica.config.ts` 声明的
+  模型入口，转发 `index.ts` 的 `create`）
+- 构建产物：包根 `dist/{package.json,model.js,release.json}`
 - 参考固件：`HAL_06_LCD.hex`（LCD 基线；测试夹具位于
   `examples/devices/bench/stm32g431rbt6`；统一模型从 `ctx.props.firmware` 接收
   `FirmwareImage`）

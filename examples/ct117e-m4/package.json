@@ -7,7 +7,7 @@
   "description": "CT117E-M4 单器件融合工程：STM32G431RBT6 与 ILI9325 固定数字总线",
   "license": "MIT",
   "engines": {
-    "mica": "^0.3.0"
+    "mica": "^1.0.0"
   },
   "displayName": "CT117E-M4 MCU + LCD",
   "designatorPrefix": "U",
