@@ -469,6 +469,8 @@ function createDirectFrame(
     time: board.time,
     due: board.time,
     resume: 0,
+    // First resumption must not add a property to a frame already seen by hot shards.
+    stopAfterInstruction: false,
     boundarySettled: false,
   };
   frame.writePinIntent = (pinIndex: number, value: unknown): void => {

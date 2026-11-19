@@ -139,6 +139,9 @@ stdout 输出 `CT117E_M4_PERF` 逐轮数据、`CT117E_M4_CLEAR` 暖轮汇总和
 `CT117E_M4_REPORT` 临时目录；`readings.json` 保存这些读数和固件身份。
 性能改动以同机、同工作量、无探针的正反序 A/B 判断。
 
+最新瓶颈结论、分片预算和最终 PC 回读的对照结果见
+[LCD 清屏性能阶段报告](docs/lcd-clear-performance.md)。
+
 ### 当前清屏基线（2026-11-19）
 
 Intel Core i7-12700K、Node 24.20.0，CPU 亲和性 `8,10,12,14`。五个暖轮墙钟中位
