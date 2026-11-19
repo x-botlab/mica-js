@@ -47,6 +47,7 @@ import {
   SERVICE_DEFER_READ,
   SERVICE_DEFER_WRITE,
   SERVICE_DISPATCH,
+  SERVICE_IRQ,
   SERVICE_FLASH_WRITE,
   SERVICE_SYSTEM_WRITE,
   SERVICE_GPIO_WRITE,
@@ -155,6 +156,8 @@ const SERVICE_SYNC = 0x20020;
 const SERVICE_READ = 0x20030;
 /** 非 GPIO 外设写的延迟执行服务块：寄存器读改写链只在这里翻译一次。 */
 const SERVICE_WRITE = 0x20040;
+/** 只有未屏蔽的待扫描中断才进入完整的 NVIC 扫描。 */
+const SERVICE_IRQ_SCAN = 0x20064;
 
 /**
  * 一个块的复杂度预算。纯 ALU/NOP/静态访存计 1，有静态地址的外设访问计 2，未知
@@ -179,6 +182,7 @@ const isServicePc = (pc: number): boolean =>
   pc === SERVICE_READ ||
   pc === SERVICE_WRITE ||
   pc === SERVICE_DISPATCH ||
+  pc === SERVICE_IRQ_SCAN ||
   pc === SERVICE_FLASH_WRITE ||
   pc === SERVICE_SYSTEM_WRITE ||
   (pc >= SERVICE_CORE_WRITE_BASE && pc < SERVICE_CORE_WRITE_BASE + 8) ||
@@ -213,6 +217,7 @@ function createMachine(frequency: number, hse: number): Machine {
     cyclePs: Math.max(1, Math.round(PICOSECONDS_PER_SECOND / frequency)),
     hseFrequency: hse,
     dynamicClock: true,
+    deferDynamicFlashStore: true,
     alternateDrivers: [...usartDrivers(), ...alternateDriversOf(PERIPHERALS)],
     peripherals: PERIPHERALS,
     interruptSources: PERIPHERALS.flatMap((peripheral) => peripheral.interrupts ?? []),
@@ -255,14 +260,15 @@ function tickValue(
         b.greaterThanOrEqual(pending, b.readState(TICK_PS, types.number)),
         b.readState(TICK_ACTIVE, types.bool),
       );
-  const deferred = b.notEqual(types.number, b.bitAnd(mask, num(b, SERVICE_ALL)), num(b, 0));
-  const capturePending = b.notEqual(
+  const deferred = b.notEqual(
     types.number,
-    b.readState(CAPTURE_PENDING, types.number),
+    b.bitOr(
+      b.bitAnd(mask, num(b, SERVICE_ALL)),
+      b.readState(CAPTURE_PENDING, types.number),
+    ),
     num(b, 0),
   );
-  const normal = due === undefined ? deferred : boolOr(b, due, deferred);
-  const need = boolOr(b, normal, capturePending);
+  const need = due === undefined ? deferred : boolOr(b, due, deferred);
 
   b.if(need, (service) => {
     const body = asBody(service);
@@ -350,26 +356,21 @@ function tick(machine: Machine, b: Body, cyclePs: Value<number>, withTime = true
  * - `SERVICE_READ`：为延迟的 GPIO IDR 读逐脚组包并写回目标寄存器；
  * - `SERVICE_WRITE`：执行延迟的非 GPIO 外设写。
  *
- * 每个服务块都是独立 PC，只有真正被跳转到时才会翻译。结尾是 `elapse(0)`，因此永远
- * 不会进入直接后端。
+ * 每个服务块都是独立 PC，只有真正被跳转到时才会翻译。`elapse(0)` 不推进时间。
  */
-function dispatchIrq(body: Body, taken: Local<boolean>, resume: Value<number>): void {
-  body.if(body.readState(IRQ_DIRTY, types.bool), (dirty) => {
-    const scope = asBody(dirty);
-
-    scope.if(
-      scope.equal(types.number, scope.readState('primask', types.number), num(scope, 0)),
-      (allowed) => {
-        const inner = asBody(allowed);
-
-        inner.setLocal(
-          taken,
-          dispatchExceptions(inner, waitExceptionReturnPc(inner, resume)),
-        );
-      },
-    );
-  });
-  syncIrqService(body);
+function dispatchIrq(body: Body, taken: Local<boolean>): void {
+  body.if(
+    boolAnd(
+      body,
+      body.readState(IRQ_DIRTY, types.bool),
+      body.equal(types.number, body.readState('primask', types.number), num(body, 0)),
+    ),
+    (ready) => {
+      ready.writeState('pc', num(asBody(ready), SERVICE_IRQ_SCAN));
+      ready.setLocal(taken, bool(asBody(ready), true));
+    },
+    (idle) => clearService(asBody(idle), SERVICE_IRQ),
+  );
 }
 
 /**
@@ -437,6 +438,26 @@ function buildCaptureService(body: Body): void {
   drainCapture(body);
 }
 
+/** 如有待消费边沿，先在当前时刻排空 FIFO 再重试本服务块。 */
+function withCaptureDrained(
+  body: Body,
+  pc: number,
+  taken: Local<boolean>,
+  run: (b: Body) => void,
+): void {
+  body.if(
+    body.notEqual(types.number, body.readState(CAPTURE_PENDING, types.number), num(body, 0)),
+    (pending) => {
+      const scope = asBody(pending);
+
+      scope.writeState(CAPTURE_RESUME, num(scope, pc));
+      scope.writeState('pc', num(scope, SERVICE_CAPTURE));
+      scope.setLocal(taken, bool(scope, true));
+    },
+    (ready) => run(asBody(ready)),
+  );
+}
+
 function buildService(machine: Machine, pc: number): BlockIR {
   const builder = createJitBlockBuilder();
 
@@ -451,47 +472,40 @@ function buildService(machine: Machine, pc: number): BlockIR {
       body.writeState('pc', captureResume);
       body.setLocal(taken, bool(body, true));
     } else if (pc === SERVICE_TICK) {
-      // 捕获边沿必须先于 TIM advance 消费；否则 TIM 已越过 edge，observe 会因
-      // timePs < LastPs 拒绝该边沿。
-      drainCapture(body);
-      const pending = body.readState(PENDING_PS, types.number);
+      withCaptureDrained(body, pc, taken, (body) => {
+        // 捕获边沿必须先于 TIM advance 消费，否则 observe 会拒绝已越过的边沿。
+        const pending = body.readState(PENDING_PS, types.number);
 
-      body.writeState(PENDING_PS, num(body, 0));
-      body.if(body.greaterThan(pending, num(body, 0)), (step) => {
-        const scope = asBody(step);
+        body.writeState(PENDING_PS, num(body, 0));
+        body.if(body.greaterThan(pending, num(body, 0)), (step) => {
+          const scope = asBody(step);
 
-        // 模块的输入捕获/RTC/超时读取绝对时间；必须在 advance 之前累计。
-        scope.writeState(
-          NOW_PS,
-          scope.add(scope.readState(NOW_PS, types.number), pending),
-        );
-        scope.if(scope.readState(SYSTICK_ON, types.bool), (running) => {
-          advanceSystick(asBody(running), pending);
+          // 模块的输入捕获/RTC/超时读取绝对时间；必须在 advance 之前累计。
+          scope.writeState(NOW_PS, scope.add(scope.readState(NOW_PS, types.number), pending));
+          scope.if(scope.readState(SYSTICK_ON, types.bool), (running) => {
+            advanceSystick(asBody(running), pending);
+          });
+          scope.if(
+            scope.notEqual(types.number, scope.readState(TX_MASK, types.number), num(scope, 0)),
+            (sending) => {
+              advanceUsart(asBody(sending), pending, USART_TX_CHANNELS);
+            },
+          );
+          scope.if(schedulePeripheralAdvances(scope, pending), (scheduled) => {
+            asBody(scheduled).setLocal(taken, bool(asBody(scheduled), true));
+          });
         });
-        scope.if(
-          scope.notEqual(types.number, scope.readState(TX_MASK, types.number), num(scope, 0)),
-          (sending) => {
-            advanceUsart(asBody(sending), pending, USART_TX_CHANNELS);
-          },
+        body.if(
+          body.getLocal(taken),
+          () => {},
+          (normal) => dispatchIrq(asBody(normal), taken),
         );
-        scope.if(schedulePeripheralAdvances(scope, pending), (scheduled) => {
-          asBody(scheduled).setLocal(taken, bool(asBody(scheduled), true));
-        });
       });
-      body.if(
-        body.getLocal(taken),
-        () => {},
-        (normal) => dispatchIrq(asBody(normal), taken, resume),
-      );
+    } else if (pc === SERVICE_IRQ_SCAN) {
+      body.setLocal(taken, dispatchExceptions(body, waitExceptionReturnPc(body, resume)));
+      syncIrqService(body);
     } else if (pc === SERVICE_DISPATCH) {
-      dispatchIrq(body, taken, resume);
-      body.if(
-        body.getLocal(taken),
-        () => {},
-        (back) => {
-          asBody(back).writeState('pc', resume);
-        },
-      );
+      dispatchIrq(body, taken);
     } else if (pc === SERVICE_SYNC) {
       syncMarkedPorts(body);
     } else if (pc === SERVICE_READ) {
@@ -577,9 +591,10 @@ function buildService(machine: Machine, pc: number): BlockIR {
         });
       });
     } else if (pc >= SERVICE_ADVANCE_BASE && pc < SERVICE_ADVANCE_BASE + 16) {
-      drainCapture(body);
-      advanceServiceSlot(body, pc, resume);
-      body.setLocal(taken, bool(body, true));
+      withCaptureDrained(body, pc, taken, (ready) => {
+        advanceServiceSlot(ready, pc, resume);
+        ready.setLocal(taken, bool(ready, true));
+      });
     } else if (pc >= SERVICE_CORE_WRITE_BASE && pc < SERVICE_CORE_WRITE_BASE + 8) {
       const kind = pc - SERVICE_CORE_WRITE_BASE;
 
@@ -1260,10 +1275,17 @@ const createTranslate =
 
       builder.instruction({ pc, nextPc: batchNextPc }, (body) => {
         const cyclePs = body.readState(CPU_CYCLE_PS, types.number);
+        const onlyTailChecks = segments.every(
+          (segment, index) =>
+            index === segments.length - 1 ||
+            (!segment.instruction.mayService && !segment.instruction.endsBatch),
+        );
 
-        if (segments.length === 1) {
-          const cycles = body.multiply(num(body, head.cycles), cyclePs);
-          const spins = selfBranchAt(input.code, fetchPc, pc, head.size);
+        if (onlyTailChecks) {
+          const totalCycles = segments.reduce((sum, segment) => sum + segment.cycles, 0);
+          const cycles = body.multiply(num(body, totalCycles), cyclePs);
+          const spins =
+            segments.length === 1 && selfBranchAt(input.code, fetchPc, pc, head.size);
           const total = spins ? body.local(types.number, cycles) : undefined;
 
           body.if(
@@ -1276,9 +1298,20 @@ const createTranslate =
             (run) => {
               const scope = asBody(run);
 
-              head.instruction.emit(scope, head.pc);
+              for (let index = 0; index < segments.length; index += 1) {
+                const segment = segments[index]!;
+
+                segment.instruction.emit(scope, segment.pc);
+              }
               if (total !== undefined) foldSpin(scope, cycles, total);
               tick(machine, scope, cycles);
+              if (segments.length > 1) {
+                scope.if(scope.readState('halted', types.bool), (stopped) => {
+                  const inner = asBody(stopped);
+
+                  inner.writeState('pc', inner.readState('faultPc', types.number));
+                });
+              }
             },
           );
           body.elapse(total === undefined ? cycles : body.getLocal(total));
@@ -1286,53 +1319,61 @@ const createTranslate =
           return;
         }
 
-        // 每条指令前把 pc 复位成它的顺序后继：指令若分支/异常返回，pc 会变成目标；
-        // 若服务块接手，pc 会变成服务 PC。两种情况都让守卫停掉后续指令，而 `tick`
-        // 继续把当前 pc 当作服务返回位置，与单条指令块的语义完全一致。
+        // 每段有服务判定的连续指令合进同一个 running 分支：前置纯寄存器/静态 SRAM 指令
+        // 既不改变控制流也不会触发服务，只需在该段末尾那条 mustCheck 指令前设置一次 pc 与耗时。
         const running = body.local(types.bool, body.not(body.readState('halted', types.bool)));
         const total = body.local(types.number, num(body, 0));
         const pending = body.local(types.number, body.readState(PENDING_PS, types.number));
         let cumulative = 0;
-        let deferredCycles = 0;
+        let groupStart = 0;
 
-        for (let index = 0; index < segments.length; index += 1) {
-          const segment = segments[index]!;
-          const last = index === segments.length - 1;
-          const cycleCount = segment.cycles;
-          const mayService = segment.instruction.mayService;
-          // 批次末条始终检查 serviceMask：静态内联 GPIO 写在极端电源跳变时留下的
-          // SERVICE_GPIO_SYNC 即使前面没有 mayService 指令，也会在这里被结算。
-          const mustCheck = last || mayService || segment.instruction.endsBatch;
+        while (groupStart < segments.length) {
+          let groupEnd = groupStart;
+          let groupCycles = 0;
 
-          cumulative += cycleCount;
-          deferredCycles += cycleCount;
-          const nextPc = (segment.pc + segment.size) >>> 0;
+          while (groupEnd < segments.length) {
+            const segment = segments[groupEnd]!;
+            const last = groupEnd === segments.length - 1;
+            const mustCheck =
+              last || segment.instruction.mayService || segment.instruction.endsBatch;
+
+            groupCycles += segment.cycles;
+            if (mustCheck) break;
+            groupEnd += 1;
+          }
+
+          cumulative += groupCycles;
+          const start = groupStart;
+          const end = groupEnd;
+          const last = end === segments.length - 1;
+          const tailSegment = segments[end]!;
+          const nextPc = (tailSegment.pc + tailSegment.size) >>> 0;
           const step = cumulative;
-          const tickCycles = deferredCycles;
+          const tickCycles = groupCycles;
 
-          if (mustCheck) deferredCycles = 0;
+          groupStart = end + 1;
 
           body.if(body.getLocal(running), (run) => {
             const scope = asBody(run);
 
             scope.setLocal(total, scope.multiply(num(scope, step), cyclePs));
             scope.writeState('pc', num(scope, nextPc));
-            segment.instruction.emit(scope, segment.pc);
-            if (mustCheck) {
-              scope.setLocal(
-                pending,
-                tickValue(
-                  machine,
-                  scope,
-                  scope.getLocal(pending),
-                  scope.multiply(num(scope, tickCycles), cyclePs),
-                  last,
-                ),
-              );
+            for (let index = start; index <= end; index += 1) {
+              const segment = segments[index]!;
+
+              segment.instruction.emit(scope, segment.pc);
             }
-            // 纯寄存器/静态 SRAM 指令既不改变控制流也不会触发服务，下一条无需重新
-            // 检查 halted 与 pc；只有可能进入服务块或批次结束的指令才更新守卫。
-            if (!last && mustCheck)
+            scope.setLocal(
+              pending,
+              tickValue(
+                machine,
+                scope,
+                scope.getLocal(pending),
+                scope.multiply(num(scope, tickCycles), cyclePs),
+                last,
+              ),
+            );
+            if (!last)
               scope.setLocal(
                 running,
                 boolAnd(

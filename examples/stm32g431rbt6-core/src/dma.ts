@@ -22,7 +22,7 @@ import {
   setPeripheralActive,
   setPeripheralDeadline,
 } from './peripheral';
-import type { PeripheralModule } from './peripheral';
+import type { InterruptSource, PeripheralModule } from './peripheral';
 
 /**
  * STM32G431 的 DMA1/DMA2（各 6 通道）。
@@ -1074,12 +1074,13 @@ export function dmaChannelIrq(controller: DmaController, channel: number): numbe
 }
 
 export function createDmaModule(runtime: DmaRuntime): PeripheralModule {
-  const interrupts = [];
+  const interrupts: InterruptSource[] = [];
 
   for (const controller of DMA_CONTROLLERS) {
     for (let channel = 1; channel <= DMA_CHANNELS; channel += 1) {
       interrupts.push({
         exception: dmaChannelIrq(controller, channel) + 16,
+        pendingIsPure: true,
         pending: (b: Body) => dmaChannelPending(b, controller, channel),
         acknowledge: () => {},
       });

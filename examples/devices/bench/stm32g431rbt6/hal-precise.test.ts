@@ -7,11 +7,18 @@ import { measureHal } from './hal-bench';
  * 单独成文件，避免被 throughput 那一轮焐热的翻译缓存抬高读数。
  */
 describe('HAL_06_LCD 裸 MCU、80 MHz、precise', () => {
-  it('0 → 200 µs 冷启动 + 200 µs → 220 ms 稳态 + 220 → 440 ms 无重建稳态', () => {
+  it('分开测初始化与绘图，连续运行到 440 ms', () => {
     const sample = measureHal('precise');
 
     console.log('HAL', JSON.stringify({ firmware: 'HAL_06_LCD', ...sample }));
-    expect(sample.direct).toBe(false);
-    expect(sample.blocks).toBeGreaterThan(0);
+    for (const round of sample.rounds) {
+      expect(round.direct).toBe(false);
+      expect(round.status).toBe('ready');
+      expect(round.halted).toBe(false);
+      expect(round.blocks).toBeGreaterThan(0);
+      expect(round.drawingExit.toMs).toBe(440);
+      expect(round.wrSamples).toBe(157_338);
+      expect(round.drawing.wrSamples).toBe(104_338);
+    }
   }, 900_000);
 });

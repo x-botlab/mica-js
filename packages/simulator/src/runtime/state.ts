@@ -114,11 +114,11 @@ export interface DirectExecution {
   readonly frame: DirectJitFrame;
   /** PCs the current program compiled; a PC outside it needs the interpreter. */
   readonly pcs: ReadonlySet<number>;
-  readonly revision: number;
 }
 /** Immutable bank layout shared by every direct program built for one JIT. */
 export interface DirectJitLayout {
   readonly stateNames: readonly string[];
+  readonly stateSlots: readonly ResourceSlot[];
   readonly memoryNames: readonly string[];
   readonly states: ReadonlyMap<string, number>;
   /** Instance-owned bank, mirrored by every interpreted/process/reaction state write. */
@@ -126,6 +126,10 @@ export interface DirectJitLayout {
   readonly memories: ReadonlyMap<string, number>;
   readonly memoryBanks: readonly Uint8Array[];
   readonly memoryViews: readonly DataView[];
+  readonly pinNames: readonly string[];
+  readonly pins: ReadonlyMap<string, number>;
+  readonly pinObjects: readonly import('../electrical').ElectricalPin[];
+  readonly pinElectricalSlots: Int32Array;
 }
 export type DirectJitCache = ReturnType<
   typeof import('@mica-js/compiler').compileDirectJit.createCache
@@ -173,8 +177,8 @@ export interface Jit {
   directLayout?: DirectJitLayout;
   direct: DirectExecution | undefined;
   directSkip: number | undefined;
-  /** Blocks translated since the last direct program build; bounds the rebuild frequency. */
-  directMisses: number;
+  /** Uncovered dispatches per translated PC since the last direct program build. */
+  readonly directMisses: Map<number, number>;
   pollReads: Dependencies | undefined;
   currentPc: number | undefined;
   automaticPolling: boolean;

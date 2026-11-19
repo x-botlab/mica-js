@@ -948,6 +948,7 @@ function writeSpiAddress(
 
 const spiInterrupts: readonly InterruptSource[] = SPI_CONFIGS.map((config) => ({
   exception: 16 + config.irq,
+  pendingIsPure: true,
   pending: (b: Body) => spiPending(b, config),
   acknowledge: () => {},
 }));

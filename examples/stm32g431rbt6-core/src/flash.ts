@@ -1203,6 +1203,7 @@ function flashPending(b: Body): Value<boolean> {
 
 const flashInterrupt: InterruptSource = {
   exception: FLASH_EXCEPTION,
+  pendingIsPure: true,
   pending: flashPending,
   // 标志保持到 ISR 自己 W1C；源保持有效时 NVIC 会再次进入，和真实电平中断一致。
   acknowledge: () => {},

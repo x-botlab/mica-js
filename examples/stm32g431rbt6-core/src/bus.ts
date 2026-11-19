@@ -392,7 +392,7 @@ function readStaticPeripheral(
   return num(b, 0);
 }
 
-function registerDeferredWrite(
+export function registerDeferredWrite(
   b: Body,
   address: Value<number>,
   size: number,

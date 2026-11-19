@@ -783,6 +783,7 @@ export const watchdogModule: PeripheralModule = {
   interrupts: [
     {
       exception: 0 + 16,
+      pendingIsPure: true,
       pending: wwdgPending,
       acknowledge: () => {},
     },

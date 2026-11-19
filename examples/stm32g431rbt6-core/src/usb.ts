@@ -769,9 +769,9 @@ export const USB_MODULE: PeripheralModule = {
   slot: USB_SLOT,
   advance: (b, elapsedPs) => advanceUsb(b, elapsedPs),
   interrupts: [
-    { exception: CORE_IRQ_HP, pending: (b) => usbHighPending(b), acknowledge: () => {} },
-    { exception: CORE_IRQ_LP, pending: (b) => usbLowPending(b), acknowledge: () => {} },
-    { exception: CORE_IRQ_WAKEUP, pending: (b) => usbWakePending(b), acknowledge: () => {} },
+    { exception: CORE_IRQ_HP, pendingIsPure: true, pending: usbHighPending, acknowledge: () => {} },
+    { exception: CORE_IRQ_LP, pendingIsPure: true, pending: usbLowPending, acknowledge: () => {} },
+    { exception: CORE_IRQ_WAKEUP, pendingIsPure: true, pending: usbWakePending, acknowledge: () => {} },
   ],
 };
 

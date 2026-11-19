@@ -42,7 +42,6 @@ import type {
   JitCodeRegion,
   JitDelay,
   JitOptions,
-  JitPolling,
   RuntimeDiagnosticCode,
   RuntimePhase,
   SimulationError,
@@ -54,8 +53,7 @@ export interface InstanceBoard {
   readonly time: number;
   readonly phase: string;
   readonly current: Instance | undefined;
-  electricalDirty: boolean;
-  readonly dirtyElectricalSlots: Set<number>;
+  markElectricalDirty(slot: number): void;
   readonly jits: Jit[];
   readonly waitingJits: Set<Jit>;
   assertAlive(instance?: Instance): void;
@@ -111,12 +109,92 @@ function createContext(owner: Instance, board: InstanceBoard): DeviceContext {
   });
 }
 
+/**
+ * State map whose scalar direct-bank writes are synced lazily on read.
+ *
+ * Direct JIT writes update `stateValues` and invalidate `stateSlots` at every boundary,
+ * while no observer or host reads `instance.states` until a reaction, observation,
+ * fallback or external query accesses it. Deferring the string-keyed `Map.set` calls
+ * until an actual read removes redundant map updates across resident GPIO edges while
+ * keeping `instance.states` an exact `Map<string, unknown>` at every read site.
+ */
+class StateMirrorMap extends Map<string, unknown> {
+  private names: readonly string[] = [];
+  private bankValues: unknown[] = [];
+  private dirty = new Int32Array(0);
+  private pending = false;
+
+  bindDirectBank(names: readonly string[], values: unknown[]): void {
+    this.names = names;
+    this.bankValues = values;
+    this.dirty = new Int32Array(Math.ceil(names.length / 32));
+  }
+
+  markDirectDirty(word: number, bits: number): void {
+    this.dirty[word]! |= bits;
+    this.pending = true;
+  }
+
+  private flush(): void {
+    if (!this.pending) return;
+    this.pending = false;
+    const { names, bankValues, dirty } = this;
+    for (let word = 0; word < dirty.length; word++) {
+      let bits = dirty[word]!;
+      if (bits === 0) continue;
+      dirty[word] = 0;
+      const base = word << 5;
+      while (bits !== 0) {
+        const index = base + 31 - Math.clz32(bits & -bits);
+        super.set(names[index]!, bankValues[index]);
+        bits &= bits - 1;
+      }
+    }
+  }
+
+  override get(key: string): unknown {
+    if (this.pending) this.flush();
+    return super.get(key);
+  }
+
+  override set(key: string, value: unknown): this {
+    if (this.pending) this.flush();
+    return super.set(key, value);
+  }
+
+  override entries(): MapIterator<[string, unknown]> {
+    if (this.pending) this.flush();
+    return super.entries();
+  }
+
+  override values(): MapIterator<unknown> {
+    if (this.pending) this.flush();
+    return super.values();
+  }
+
+  override forEach(
+    callbackfn: (value: unknown, key: string, map: Map<string, unknown>) => void,
+    thisArg?: unknown,
+  ): void {
+    if (this.pending) this.flush();
+    super.forEach(callbackfn, thisArg);
+  }
+
+  override [Symbol.iterator](): MapIterator<[string, unknown]> {
+    if (this.pending) this.flush();
+    return super[Symbol.iterator]();
+  }
+}
+
 export class Instance {
   readonly declarations = new Map<string, DeclarationIR>();
   readonly props = new Map<string, unknown>();
   readonly constants = new Map<string, unknown>();
-  readonly states = new Map<string, unknown>();
-  private directBank?: Pick<DirectJitLayout, 'stateNames' | 'states' | 'stateValues'>;
+  readonly states = new StateMirrorMap();
+  private directBank?: Pick<
+    DirectJitLayout,
+    'stateNames' | 'stateSlots' | 'states' | 'stateValues'
+  >;
   readonly memories = new Map<string, Uint8Array>();
   private readonly memoryViews = new Map<string, DataView>();
   private readonly memorySizes = new Map<string, number>();
@@ -143,6 +221,7 @@ export class Instance {
   private readonly staticObservations = new WeakMap<Observation, () => unknown>();
   private readonly resistorIntents = new Map<string, Map<number, readonly ResistorBranch[]>>();
   private readonly sampleEntries = new Map<string, { pin: ElectricalPin; slot: ResourceSlot }>();
+  private readonly intentEntries = new Map<string, { pin: ElectricalPin; slot: number }>();
   private readonly stateSlots = new Map<string, ResourceSlot>();
   /** Per-instance handles for the fixed resources a resumable process body binds. */
   private readonly resourceHandles = new Map<string, ResourceHandle>();
@@ -200,12 +279,7 @@ export class Instance {
         return this.readSample(ref);
       },
       intent: (pin, value) => {
-        const target = this.pin(pin);
-        // Reassigning the same immutable intent value is already the current contribution.
-        if (target.intent === value) return;
-        target.intent = value as readonly ResistorBranch[];
-        board.dirtyElectricalSlots.add(board.electricalSlot(target));
-        board.electricalDirty = true;
+        this.writeIntent(pin, value);
       },
       resistor: (pin, resistance) => {
         const r = electricalNumber(resistance);
@@ -439,6 +513,21 @@ export class Instance {
     if (!pin) throw new TypeError(`Unknown pin ${String(ref)}`);
     return pin;
   }
+  /** Shared by the generic host and direct JIT, which needs to know whether to publish. */
+  writeIntent(ref: unknown, value: unknown): boolean {
+    const name = typeof ref === 'string' ? ref : String(ref);
+    const board = this.board;
+    let entry = this.intentEntries.get(name);
+    if (entry === undefined) {
+      const pin = this.pin(name);
+      entry = { pin, slot: board.electricalSlot(pin) };
+      this.intentEntries.set(name, entry);
+    }
+    if (entry.pin.intent === value) return false;
+    entry.pin.intent = value as readonly ResistorBranch[];
+    board.markElectricalDirty(entry.slot);
+    return true;
+  }
   /**
    * One frozen, reusable intent value per (pin, resistance); intents are immutable. The
    * outer map is keyed by pin name and the inner one by resistance, so the hot path builds
@@ -481,19 +570,46 @@ export class Instance {
     return bytes;
   }
   /** Instance-owned numeric bank, mirrored by every non-direct state write. */
-  directStateBank(): Pick<DirectJitLayout, 'stateNames' | 'states' | 'stateValues'> {
+  directStateBank(): NonNullable<Instance['directBank']> {
     if (this.directBank === undefined) {
       const stateNames = [...this.states.keys()].filter((name) => {
         const declaration = this.declarations.get(name) as Decl<'state'>;
         return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
       });
+      const frozenNames = Object.freeze(stateNames);
+      const stateValues = stateNames.map((name) => this.states.get(name));
+      this.states.bindDirectBank(frozenNames, stateValues);
       this.directBank = {
-        stateNames: Object.freeze(stateNames),
+        stateNames: frozenNames,
+        stateSlots: Object.freeze(stateNames.map((name) => this.stateResources.get(name)!)),
         states: new Map(stateNames.map((name, index) => [name, index])),
-        stateValues: stateNames.map((name) => this.states.get(name)),
+        stateValues,
       };
     }
     return this.directBank;
+  }
+  /** Direct scalar writes are already in the numeric bank. Commit the mirror and version. */
+  commitDirectStates(dirty: number[] | Int32Array): boolean {
+    const { stateSlots } = this.directBank!;
+    const states = this.states;
+    const board = this.board;
+    let wrote = false;
+    for (let word = 0; word < dirty.length; word++) {
+      let bits = dirty[word]!;
+      if (bits === 0) continue;
+      dirty[word] = 0;
+      wrote = true;
+      states.markDirectDirty(word, bits);
+      const base = word << 5;
+      while (bits !== 0) {
+        const index = base + 31 - Math.clz32(bits & -bits);
+        const slot = stateSlots[index]!;
+        if (slot.subscribers.size === 0) slot.version++;
+        else board.invalidate(slot);
+        bits &= bits - 1;
+      }
+    }
+    return wrote;
   }
   private writeState(name: string, value: unknown, slot: ResourceSlot): void {
     const captured = snapshot(value);
@@ -629,7 +745,7 @@ export class Instance {
         jit.directPrograms.clear();
         jit.directProgramRevision = -1;
         jit.directSkip = undefined;
-        jit.directMisses = 0;
+        jit.directMisses.clear();
         if (jit.direct?.frame.resume) jit.direct.frame.stopAfterInstruction = true;
         else jit.direct = undefined;
       } else if (jit.cacheMemories.has(name)) {
@@ -690,8 +806,7 @@ export class Instance {
           const current = resolve();
           if (current.intent === value) return;
           current.intent = value as readonly ResistorBranch[];
-          this.board.dirtyElectricalSlots.add(slot);
-          this.board.electricalDirty = true;
+          this.board.markElectricalDirty(slot);
         },
         resistor: (resistance: unknown) => {
           const r = electricalNumber(resistance);
@@ -1212,7 +1327,7 @@ export class Instance {
       directProgramRevision: -1,
       direct: undefined,
       directSkip: undefined,
-      directMisses: 0,
+      directMisses: new Map(),
       pollReads: undefined,
       currentPc: undefined,
       automaticPolling: false,
@@ -1239,6 +1354,7 @@ export class Instance {
         jit.cacheMemories.clear();
         jit.directPrograms.clear();
         jit.direct = undefined;
+        jit.directMisses.clear();
         jit.pollReads = undefined;
       },
     };

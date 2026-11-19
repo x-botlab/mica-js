@@ -984,11 +984,13 @@ export const rtcModule: PeripheralModule = {
   interrupts: [
     {
       exception: 3 + 16,
+      pendingIsPure: true,
       pending: rtcWakePending,
       acknowledge: () => {},
     },
     {
       exception: 41 + 16,
+      pendingIsPure: true,
       pending: rtcAlarmPending,
       acknowledge: () => {},
     },

@@ -37,10 +37,20 @@ export const writeAnyReg = (
   // `pc` 仍由调用点按统一寄存器写入协议传入；FP 上下文边界移除后写入路径不再需要它。
   void pc;
   if (index === 15) {
+    // EXC_RETURN 高 27 位全为 1（>= 0xFFFFFFE0）。普通跳转/返回先走单次无符号比较快路径，
+    // 避免每次 `bx lr` / `pop {pc}` 都求值完整的 6 路低位模式匹配。
     b.if(
-      isExceptionReturn(b, value),
-      (inner) => exceptionReturn(asBody(inner), value),
+      b.lessThan(u32(b, value), num(b, 0xffffffe0)),
       (normal) => setPc(asBody(normal), value),
+      (maybeExc) => {
+        const scope = asBody(maybeExc);
+
+        scope.if(
+          isExceptionReturn(scope, value),
+          (inner) => exceptionReturn(asBody(inner), value),
+          (normal) => setPc(asBody(normal), value),
+        );
+      },
     );
   } else writeReg(b, index, value);
 };

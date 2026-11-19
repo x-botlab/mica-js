@@ -490,6 +490,7 @@ export const rngModule: PeripheralModule = {
   interrupts: [
     {
       exception: 90 + 16,
+      pendingIsPure: true,
       pending: rngPending,
       acknowledge: () => {},
     },

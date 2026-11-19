@@ -228,13 +228,23 @@ function bankMaskValue(b: Body, bank: Value<number>): Value<number> {
   return value;
 }
 
-/** 运行期 IRQ 号的 bank 位读取。 */
-function bankBitAtDynamic(b: Body, base: number, index: Value<number>): Value<boolean> {
-  const bank = b.shiftRightUnsigned(index, num(b, 5));
-  const bit = b.shiftLeft(num(b, 1), b.bitAnd(index, num(b, 31)));
-  const at = b.add(num(b, base), b.shiftLeft(bank, num(b, 2)));
+/** 非零 bank 位图的最低置位下标；无符号移位也能处理 bit 31。 */
+function firstIrqBit(b: Body, bits: Value<number>): Value<number> {
+  let word = bits;
+  let index = num(b, 0);
 
-  return b.notEqual(types.number, b.bitAnd(loadAt(b, at), bit), num(b, 0));
+  for (const width of [16, 8, 4, 2, 1]) {
+    const skip = b.select(
+      types.number,
+      b.equal(types.number, b.bitAnd(word, num(b, (1 << width) - 1)), num(b, 0)),
+      (high) => high.constant(types.number, width),
+      (low) => low.constant(types.number, 0),
+    );
+
+    index = b.add(index, skip);
+    word = b.shiftRightUnsigned(word, skip);
+  }
+  return index;
 }
 
 /** 静态 IRQ 是否使能。 */
@@ -1089,16 +1099,14 @@ export function enterException(
 
 export function isExceptionReturn(b: Body, target: Value<number>): Value<boolean> {
   const value = u32(b, target);
-  const high = b.equal(
-    types.number,
-    u32(b, b.bitAnd(value, num(b, 0xffffffe0))),
-    num(b, 0xffffffe0),
-  );
+  const high = b.greaterThanOrEqual(value, num(b, 0xffffffe0));
   const low = b.bitAnd(value, num(b, 0x1f));
-  let valid = b.equal(types.number, low, num(b, 0x01));
-
-  for (const pattern of [0x09, 0x0d, 0x11, 0x19, 0x1d])
-    valid = boolOr(b, valid, b.equal(types.number, low, num(b, pattern)));
+  // Valid EXC_RETURN low 5-bit patterns: 0x01, 0x09, 0x0d, 0x11, 0x19, 0x1d -> mask 0x22022202.
+  const valid = b.notEqual(
+    types.number,
+    b.bitAnd(b.shiftRightUnsigned(num(b, 0x22022202), low), num(b, 1)),
+    num(b, 0),
+  );
 
   return boolAnd(b, high, valid);
 }
@@ -1586,94 +1594,95 @@ export function dispatchExceptions(b: Body, returnPc: number | Value<number>): V
               const sourceWords = [0, 1, 2, 3].map(() =>
                 inner.local(types.number, 0),
               );
+              const sources = machine().interruptSources;
+              const eligibleWord = (bank: number) =>
+                inner.bitAnd(
+                  bankWord(inner, ENABLED, bank),
+                  inner.bitNot(bankWord(inner, ACTIVE, bank)),
+                );
+              // 只有所有回调都只读时，才能在执行它们之前读取 NVIC bank。
+              const eligibleWords = sources.every((source) => source.pendingIsPure)
+                ? sourceWords.map((_, bank) => eligibleWord(bank))
+                : undefined;
 
               const addSource = (
                 body: Body,
                 irq: number,
-                pending: Value<boolean>,
+                pending: (scope: Body) => Value<boolean>,
               ): void => {
-                if (irq < 0 || irq > G431_IRQ_MAX) return;
+                if (irq < 0 || irq > G431_IRQ_MAX) {
+                  if (eligibleWords === undefined) pending(body);
+                  return;
+                }
                 const bank = bankOf(irq);
                 const bit = 1 << bitOf(irq);
+                const poll = (scope: Body) => {
+                  scope.if(pending(scope), (hit) => {
+                    const target = asBody(hit);
 
-                body.if(
-                  pending,
-                  (hit) => {
-                    const scope = asBody(hit);
-
-                    scope.setLocal(
+                    target.setLocal(
                       sourceWords[bank]!,
-                      scope.bitOr(scope.getLocal(sourceWords[bank]!), num(scope, bit)),
+                      target.bitOr(target.getLocal(sourceWords[bank]!), num(target, bit)),
                     );
-                  },
-                  () => {},
-                );
+                  });
+                };
+                if (eligibleWords === undefined) {
+                  poll(body);
+                } else {
+                  // 只提前排除未启用或已 active 的线路。不能抢占的线路仍参与 ICSR 仲裁。
+                  body.if(boolBit(body, eligibleWords[bank]!, bit), (hit) => poll(asBody(hit)));
+                }
               };
 
-              for (const source of machine().interruptSources)
-                addSource(inner, source.exception - 16, source.pending(inner));
+              for (const source of sources)
+                addSource(inner, source.exception - 16, (scope) => source.pending(scope));
+              // 内建 USART 的电平读取也无副作用。
               for (const config of USARTS)
-                addSource(inner, config.irq, usartPending(inner, config));
+                addSource(inner, config.irq, (scope) => usartPending(scope, config));
 
-              const irq = inner.local(types.number, 0);
+              // 先逐 bank 排除不可能入选的 IRQ；组优先级和屏蔽仍在候选比较中处理，
+              // 因为即使不能抢占，候选也参与 ICSR.VECTPENDING 的选择。
+              sourceWords.forEach((source, bank) => {
+                const eligible = inner.bitAnd(
+                  inner.bitOr(bankWord(inner, PENDING, bank), inner.getLocal(source)),
+                  eligibleWords?.[bank] ?? eligibleWord(bank),
+                );
+                const candidates = inner.local(
+                  types.number,
+                  inner.bitAnd(eligible, num(inner, BANK_MASKS[bank]!)),
+                );
 
-              inner.while(
-                (test) =>
-                  test.lessThan(
-                    test.getLocal(irq),
-                    test.constant(types.number, G431_IRQ_MAX + 1),
-                  ),
-                (loopBody) => {
-                  const body = asBody(loopBody);
-                  const current = body.getLocal(irq);
-
-                  let sourceWord = body.getLocal(sourceWords[0]!);
-
-                  for (let bank = 1; bank < sourceWords.length; bank += 1)
-                    sourceWord = body.select(
+                inner.while(
+                  (test) =>
+                    test.notEqual(
                       types.number,
-                      body.equal(
-                        types.number,
-                        body.shiftRightUnsigned(current, num(body, 5)),
-                        num(body, bank),
-                      ),
-                      (inner) => inner.getLocal(sourceWords[bank]!),
-                      () => sourceWord,
-                    );
-
-                  const exception = body.add(current, num(body, 16));
-                  const priority = priorityByteOfIrqDynamic(body, current);
-                  const group = body.shiftRightUnsigned(priority, groupShiftValue);
-                  const stored = bankBitAtDynamic(body, PENDING, current);
-                  const sourceBit = body.notEqual(
-                    types.number,
-                    body.bitAnd(
-                      sourceWord,
-                      body.shiftLeft(num(body, 1), body.bitAnd(current, num(body, 31))),
+                      test.getLocal(candidates),
+                      test.constant(types.number, 0),
                     ),
-                    num(body, 0),
-                  );
-                  const pending = boolOr(body, stored, sourceBit);
+                  (loopBody) => {
+                    const body = asBody(loopBody);
+                    const bits = body.getLocal(candidates);
+                    const current = body.add(num(body, 32 * bank), firstIrqBit(body, bits));
+                    const exception = body.add(current, num(body, 16));
+                    const priority = priorityByteOfIrqDynamic(body, current);
+                    const group = body.shiftRightUnsigned(priority, groupShiftValue);
 
-                  considerValue(
-                    body,
-                    exception,
-                    pending,
-                    bankBitAtDynamic(body, ENABLED, current),
-                    boolOr(
+                    considerValue(
                       body,
-                      bankBitAtDynamic(body, ACTIVE, current),
+                      exception,
+                      bool(body, true),
+                      bool(body, true),
                       body.equal(types.number, active, exception),
-                    ),
-                    priority,
-                    group,
-                    configurableAllowed(body, group),
-                    true,
-                    selection,
-                  );
-                  body.setLocal(irq, body.add(current, num(body, 1)));
-                },
-              );
+                      priority,
+                      group,
+                      configurableAllowed(body, group),
+                      true,
+                      selection,
+                    );
+                    body.setLocal(candidates, body.bitAnd(bits, body.subtract(bits, num(body, 1))));
+                  },
+                );
+              });
 
               writeHidden(inner, H_VECTPENDING, inner.getLocal(selection.pending));
               writeHidden(

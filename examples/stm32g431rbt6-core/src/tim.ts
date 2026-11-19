@@ -675,7 +675,12 @@ function ensureTimer(b: Body, config: TimerConfig): void {
   });
 }
 
-function syncTimerAt(b: Body, config: TimerConfig, target: Value<number>): void {
+function syncTimerAt(
+  b: Body,
+  config: TimerConfig,
+  target: Value<number>,
+  refreshOnStop = true,
+): void {
   b.if(boolBitAt(b, loadReg(b, config, CR1), 0), (running) => {
     const body = asBody(running);
     const delta = body.subtract(target, readS(body, config, 'LastPs'));
@@ -694,7 +699,7 @@ function syncTimerAt(b: Body, config: TimerConfig, target: Value<number>): void 
           writeS(inner, config, 'AccumPs', inner.subtract(total, inner.multiply(cycles, clockPs)));
           writeS(inner, config, 'LastPs', target);
           inner.if(inner.greaterThan(cycles, num(inner, 0)), (tick) =>
-            advanceCounter(asBody(tick), config, cycles),
+            advanceCounter(asBody(tick), config, cycles, refreshOnStop),
           );
         },
         (stopped) => {
@@ -717,9 +722,13 @@ function isCenterAligned(b: Body, cr1: Value<number>): Value<boolean> {
  * ARR/PSC/CCR 会影响更新之后的余下时间；OPM 在第一次真正生效的更新处停止。
  * 中心对齐时在 ARR/0 两端翻转方向，每个端点都是一次潜在更新。
  */
-function advanceCounter(b: Body, config: TimerConfig, cycles: Value<number>): void {
+function advanceCounter(
+  b: Body,
+  config: TimerConfig,
+  cycles: Value<number>,
+  refreshOnStop: boolean,
+): void {
   const remaining = b.local(types.number, cycles);
-  const stopped = b.local(types.bool, false);
   const HUGE = 0x7fffffff;
 
   b.while(
@@ -912,9 +921,8 @@ function advanceCounter(b: Body, config: TimerConfig, cycles: Value<number>): vo
                       body5.bitAnd(loadReg(body5, config, CR1), num(body5, ~CR1_CEN & 0xffffffff)),
                     );
                     clearCenMask(body5, config);
-                    wakeTimer(body5);
+                    if (refreshOnStop) wakeTimer(body5);
                     body5.setLocal(remaining, num(body5, 0));
-                    body5.setLocal(stopped, bool(body5, true));
                   });
                 },
                 (noUpdate) => {
@@ -1251,12 +1259,28 @@ export function nextTimerDeadlinePs(b: Body): Value<number> {
             body2.setLocal(found, bool(body2, true));
           });
 
+          if (config.channels === 0) return;
+
+          let enableMask = 0;
+          for (let channel = 0; channel < config.channels; channel += 1)
+            enableMask |= 1 << (4 * channel);
+          const irqMask = ((1 << config.channels) - 1) << 1;
+          const ccer = loadReg(scope, config, CCER);
+          const dier = loadReg(scope, config, DIER);
+          const compares = scope.bitOr(
+            scope.bitAnd(ccer, num(scope, enableMask)),
+            scope.bitAnd(dier, num(scope, irqMask)),
+          );
           const channel = scope.local(types.number, num(scope, 1));
           scope.while(
             (test) =>
-              test.lessThanOrEqual(
-                test.getLocal(channel),
-                test.constant(types.number, config.channels),
+              boolAnd(
+                asBody(test),
+                test.notEqual(types.number, compares, test.constant(types.number, 0)),
+                test.lessThanOrEqual(
+                  test.getLocal(channel),
+                  test.constant(types.number, config.channels),
+                ),
               ),
             (loop) => {
               const body2 = asBody(loop);
@@ -1282,8 +1306,6 @@ export function nextTimerDeadlinePs(b: Body): Value<number> {
                 ),
                 num(body2, 3),
               );
-              const ccer = loadReg(body2, config, CCER);
-              const dier = loadReg(body2, config, DIER);
               const channelEnabled = boolOr(
                 body2,
                 body2.notEqual(
@@ -1810,7 +1832,8 @@ export function advanceTimers(b: Body, elapsedPs?: Value<number>): void {
           scope.bitAnd(scope.readState(TIM_CEN_MASK_STATE, types.number), num(scope, bit)),
           num(scope, 0),
         ),
-        (running) => syncTimerAt(asBody(running), config, now),
+        // OPM 停止只改本定时器；本块末尾统一刷新槽和节拍，期间没有发布。
+        (running) => syncTimerAt(asBody(running), config, now, false),
       );
     }
 
@@ -2266,6 +2289,7 @@ export function timerInterrupts(): readonly InterruptSource[] {
     .sort((left, right) => left - right)
     .map((irq) => ({
       exception: irq + 16,
+      pendingIsPure: true,
       pending: (b: Body) => timerIrqPending(b, irq),
       acknowledge: () => {},
     }));

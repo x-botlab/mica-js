@@ -241,6 +241,12 @@ resumed suffix must not republish a prefix write after an external event.
 Memory addressing and store values follow the
 generic host's safe-integer checks; `store8` uses Uint8Array wrapping semantics.
 
+For oversized resident instructions, a long statement-position `else` arm in the
+prefix can move into a separate generated function, leaving the short arm in the
+shard. The call remains synchronous within the instruction. It shares the banks
+and dirty masks, copies compact locals back on normal return, and does not change
+write barriers, deadlines, or resumption.
+
 The supported subset includes number/bool constants, state reads/writes, scalar
 unary/binary arithmetic, bitwise operations, comparisons, numeric builtins, mutable
 scalar locals, static-memory `load8`/`store8` with checked dynamic numeric offsets,
@@ -253,6 +259,13 @@ positive delay; the target PC is written before time advances. A terminal
 standalone stop is supported. Other control flow, resource parameters, non-state
 reads, multiple delays, calls, and other host operations fall
 back as complete instructions, never after partially running an unsupported body.
+
+Statement-position `while` loops are supported in zero-time instructions whose loop
+conditions and bodies use the supported operations without suspending or transferring
+control (`break`, `continue`, etc.). An admitted loop instruction runs in its own
+batch. The direct program returns `invalidated` to publish a preceding batch first
+(including after a resumed suffix), then again after the loop instruction completes.
+The normal entry write barriers apply to both the loop condition and its body.
 
 Before a body starts, PC is set to `nextPc`. A horizon can split any elapse without
 replaying prefix effects or rereading captured loads. At `time === deadline`, no

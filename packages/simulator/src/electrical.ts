@@ -99,10 +99,13 @@ export interface ElectricalNetwork {
   solve(changedPins?: Iterable<ElectricalPin>): readonly ElectricalPin[];
   /**
    * Slot-addressed form of :func:`solve` for callers that already know board pin slots.
+   * A number denotes a complete, single-slot dirty batch.
    * Returns the changed slots in ascending board order; the array is valid until the next
    * solve call, so consumers must publish from it immediately.
    */
-  solveSlots(changedSlots?: Iterable<number>): readonly number[];
+  solveSlots(changedSlots?: number | Iterable<number>): readonly number[];
+  /** Hot entry for a complete single-slot dirty batch. Same contract as `solveSlots(slot)`. */
+  solveSlot(slot: number): readonly number[];
   readonly stats: ElectricalStats;
 }
 
@@ -119,10 +122,12 @@ interface Node {
  * therefore needs no edge rebuild, no partition check and no matrix work.
  */
 interface LeafPropagation {
+  intent: readonly ResistorBranch[];
   readonly targetPin: ElectricalPin;
   readonly resistance: number;
   readonly target: number;
   readonly edges: readonly Edge[];
+  readonly edgeHash: number;
   /** Node of the switching pin and the sample every pin on it takes for this target. */
   readonly node: number;
   readonly voltage: number;
@@ -174,10 +179,6 @@ interface PreparedTopology {
   readonly edgeBlocks: readonly (readonly (number | undefined)[] | undefined)[];
   readonly components: number;
   readonly floatingComponents: number;
-  /** Component index per node; reference nodes never migrate, so it survives local updates. */
-  readonly nodeComponents: number[];
-  /** 1 when every fixed potential inside the node's component is the same value. */
-  readonly nodeUniform: number[];
 }
 
 /** Dirty pin edges indexed by slot; `undefined` means the pin kept its committed edges. */
@@ -293,26 +294,15 @@ function prepareTopology(
   let floatingComponents = 0;
   const blocks: PreparedBlock[] = [];
   const edgeBlocks: (number | undefined)[][] = [];
-  const nodeComponents: number[] = new Array<number>(nodes.length);
-  const nodeUniform: number[] = new Array<number>(nodes.length);
-  let componentIndex = 0;
   for (const component of groups.values()) {
-    let reference: number | undefined;
     let floating = true;
-    let uniform = 1;
     for (const node of component.nodes) {
-      const potential = nodes[node]!.reference;
-      if (potential === undefined) continue;
-      floating = false;
-      if (reference === undefined) reference = potential;
-      else if (potential !== reference) uniform = 0;
+      if (nodes[node]!.reference !== undefined) {
+        floating = false;
+        break;
+      }
     }
     if (floating) floatingComponents++;
-    for (const node of component.nodes) {
-      nodeComponents[node] = componentIndex;
-      nodeUniform[node] = uniform;
-    }
-    componentIndex++;
     for (const block of solveBlocks(component, nodes)) {
       const index = blocks.length;
       blocks.push(prepareBlock(block));
@@ -324,8 +314,6 @@ function prepareTopology(
     edgeBlocks,
     components: groups.size,
     floatingComponents,
-    nodeComponents,
-    nodeUniform,
   };
 }
 
@@ -810,9 +798,6 @@ export function createElectricalNetwork(
   let seenStamp = 0;
   /** Only the matrix partition is out of date; component arrays and buckets stay valid. */
   let blocksStale = false;
-  /** Component arrays are copied before a local update mutates them, because admitted
-   * topology snapshots keep referencing the arrays they were created with. */
-  let componentArraysOwned = false;
   const syncDegrees = (previous: readonly Edge[], next: readonly Edge[]): void => {
     for (const edge of previous) {
       if (next.indexOf(edge) === -1) {
@@ -845,6 +830,9 @@ export function createElectricalNetwork(
   const changedSlots: number[] = [];
   /** Admitted leaf shapes per pin slot; a pin normally alternates between two references. */
   const leafPlans: (LeafPropagation[] | undefined)[] = new Array(pins.length);
+  /** Last topology check for the single-slot entry, independent of intent identity. */
+  const leafEpochs = new Int32Array(pins.length);
+  let leafEpoch = 1;
   const leafSlots: number[] = [];
   const leafIntents: (readonly ResistorBranch[])[] = [];
   const leafEdges: (readonly Edge[])[] = [];
@@ -854,6 +842,7 @@ export function createElectricalNetwork(
   /** Shapes proven by the current solve; they are admitted only after it is accepted. */
   const pendingAdmissions: {
     readonly slot: number;
+    readonly intent: readonly ResistorBranch[];
     readonly branch: ResistorBranch;
     readonly target: number;
     readonly edges: readonly Edge[];
@@ -903,6 +892,7 @@ export function createElectricalNetwork(
    */
   const leafPlan = (
     slot: number,
+    intent: readonly ResistorBranch[],
     branch: ResistorBranch,
     target: number,
     edges: readonly Edge[],
@@ -920,25 +910,28 @@ export function createElectricalNetwork(
       planPins.push(pinned);
       samples.push(sampleFor(voltage, pinLevel(pinned, voltage)));
     }
-    return Object.freeze({
+    return {
+      intent,
       targetPin: branch.to,
       resistance: branch.resistance,
       target,
       edges,
+      edgeHash: hashEdges(slot, edges),
       node,
       voltage,
       slots: Object.freeze(slots),
       pins: Object.freeze(planPins),
       samples: Object.freeze(samples),
-    });
+    };
   };
   const admitLeaf = (
     slot: number,
+    intent: readonly ResistorBranch[],
     branch: ResistorBranch,
     target: number,
     edges: readonly Edge[],
   ): void => {
-    const plan = leafPlan(slot, branch, target, edges);
+    const plan = leafPlan(slot, intent, branch, target, edges);
     const plans = leafPlans[slot];
     if (plans === undefined) {
       leafPlans[slot] = [plan];
@@ -946,7 +939,10 @@ export function createElectricalNetwork(
       return;
     }
     for (const existing of plans)
-      if (existing.targetPin === branch.to && existing.resistance === branch.resistance) return;
+      if (existing.targetPin === branch.to && existing.resistance === branch.resistance) {
+        existing.intent = intent;
+        return;
+      }
     if (plans.length < 2) plans.push(plan);
     else plans[plans.length - 1] = plan;
     statistics.leafPlans++;
@@ -954,7 +950,13 @@ export function createElectricalNetwork(
   const flushAdmissions = (): void => {
     for (let index = 0; index < pendingAdmissions.length; index++) {
       const admission = pendingAdmissions[index]!;
-      admitLeaf(admission.slot, admission.branch, admission.target, admission.edges);
+      admitLeaf(
+        admission.slot,
+        admission.intent,
+        admission.branch,
+        admission.target,
+        admission.edges,
+      );
     }
     pendingAdmissions.length = 0;
   };
@@ -962,20 +964,27 @@ export function createElectricalNetwork(
     slot: number,
     intent: readonly ResistorBranch[],
   ): LeafPropagation | undefined => {
-    if (prepared === undefined || intent.length !== 1) return undefined;
+    if (prepared === undefined) return undefined;
     const plans = leafPlans[slot];
     if (plans === undefined) return undefined;
     const previous = pinEdges[slot]!;
     if (previous.length !== 1 || nodes[previous[0]!.to]!.reference === undefined) return undefined;
     const from = pinNodes[slot]!;
     if (nodeDegree[from] !== 1 || nodes[from]!.reference !== undefined) return undefined;
+    const p0 = plans[0]!;
+    if (p0.intent === intent) return nodes[p0.target]!.reference === undefined ? undefined : p0;
+    if (plans.length > 1) {
+      const p1 = plans[1]!;
+      if (p1.intent === intent) return nodes[p1.target]!.reference === undefined ? undefined : p1;
+    }
+    if (intent.length !== 1) return undefined;
     const branch = intent[0]!;
     for (let index = 0; index < plans.length; index++) {
       const plan = plans[index]!;
       if (plan.targetPin !== branch.to || plan.resistance !== branch.resistance) continue;
-      // The leaf node KCL pins its voltage to the target reference; whether that
-      // component also carries another rail is irrelevant to this pin.
-      return nodes[plan.target]!.reference === undefined ? undefined : plan;
+      if (nodes[plan.target]!.reference === undefined) return undefined;
+      plan.intent = intent;
+      return plan;
     }
     return undefined;
   };
@@ -991,30 +1000,95 @@ export function createElectricalNetwork(
     }
     list[position] = slot;
   };
+  const commitLeafEdges = (
+    slot: number,
+    target: number,
+    voltage: number,
+    intent: readonly ResistorBranch[],
+    edges: readonly Edge[],
+    precomputedHash?: number,
+  ): void => {
+    const previousTarget = pinEdges[slot]![0]!.to;
+    if (previousTarget !== target) {
+      nodeDegree[previousTarget] = nodeDegree[previousTarget]! - 1;
+      nodeDegree[target] = nodeDegree[target]! + 1;
+    }
+    publishedVoltages[pinNodes[slot]!] = voltage;
+    intents[slot] = intent;
+    pinEdges[slot] = edges;
+    if (precomputedHash !== undefined) {
+      const previous = pinHashes[slot]!;
+      if (precomputedHash !== previous) {
+        pinHashes[slot] = precomputedHash;
+        topologyHash += precomputedHash - previous;
+        topologySpread ^= previous ^ precomputedHash;
+      }
+    } else setPinHash(slot, edges);
+  };
+  const finishLeaf = (): void => {
+    // The general solver can rebuild the partition from the committed edges without
+    // discarding the admitted graphs or the numerical cache.
+    blocksStale = true;
+    statistics.solves++;
+    statistics.leafPropagations++;
+  };
+  /**
+   * Once the single dirty slot is admitted, the whole batch is known to be valid.
+   * The plan visits one node's pins in board order, so no staging or merging is needed.
+   */
+  const applySingleLeaf = (
+    slot: number,
+    intent: readonly ResistorBranch[],
+    plan: LeafPropagation,
+  ): readonly number[] => {
+    const { node, target, voltage } = plan;
+    let result = emptySlots;
+    if (publishedVoltages[node] !== voltage) {
+      const planPins = plan.pins;
+      const planSamples = plan.samples;
+      if (planPins.length === 1) {
+        const pin = planPins[0]!;
+        const sample = planSamples[0]!;
+        if (pin.sample !== sample) {
+          pin.sample = sample;
+          result = plan.slots;
+        }
+      } else {
+        let all = true;
+        let changed = 0;
+        for (let index = 0; index < planPins.length; index++) {
+          const pin = planPins[index]!;
+          const sample = planSamples[index]!;
+          if (pin.sample === sample) {
+            all = false;
+            continue;
+          }
+          pin.sample = sample;
+          changedSlots[changed++] = plan.slots[index]!;
+        }
+        if (all) result = plan.slots;
+        else if (changed !== 0) {
+          changedSlots.length = changed;
+          result = changedSlots;
+        }
+      }
+    }
+    commitLeafEdges(slot, target, voltage, intent, plan.edges, plan.edgeHash);
+    finishLeaf();
+    return result;
+  };
   /**
    * Publishes the accepted leaf batch: every pin on a touched node gets the reference
    * voltage, samples are committed as one batch, then intents, edges and degrees follow.
    * No pin, sample, intent or degree changes before the whole batch is accepted.
    */
   const applyLeaf = (count: number): void => {
-    if (!componentArraysOwned) {
-      prepared = {
-        ...prepared!,
-        nodeComponents: prepared!.nodeComponents.slice(),
-        nodeUniform: prepared!.nodeUniform.slice(),
-      };
-      componentArraysOwned = true;
-    }
-    const nodeComponents = prepared!.nodeComponents;
-    const nodeUniform = prepared!.nodeUniform;
     changedSlots.length = 0;
     pendingPins.length = 0;
     pendingSamples.length = 0;
     for (let position = 0; position < count; position++) {
       const node = pinNodes[leafSlots[position]!]!;
       const target = leafTargets[position]!;
-      nodeComponents[node] = nodeComponents[target]!;
-      nodeUniform[node] = nodeUniform[target]!;
       const plan = leafPayloads[position];
       if (plan !== undefined) {
         // Admitted shape: the target voltage, every pin on the node and each pin's
@@ -1063,24 +1137,39 @@ export function createElectricalNetwork(
     for (let position = 0; position < count; position++) {
       const slot = leafSlots[position]!;
       const target = leafTargets[position]!;
-      const previousTarget = pinEdges[slot]![0]!.to;
-      publishedVoltages[pinNodes[slot]!] = nodes[target]!.reference!;
-      if (previousTarget !== target) {
-        nodeDegree[previousTarget] = nodeDegree[previousTarget]! - 1;
-        nodeDegree[target] = nodeDegree[target]! + 1;
-      }
-      intents[slot] = leafIntents[position]!;
-      const edges = leafEdges[position]!;
-      pinEdges[slot] = edges;
-      setPinHash(slot, edges);
+      commitLeafEdges(
+        slot,
+        target,
+        nodes[target]!.reference!,
+        leafIntents[position]!,
+        leafEdges[position]!,
+        leafPayloads[position]?.edgeHash,
+      );
     }
-    // Only the matrix partition is bypassed. The component arrays above were updated in
-    // place and the buckets follow the committed edges, so the next general solve rebuilds
-    // blocks from pinEdges without discarding the admitted graphs or the numerical cache.
-    blocksStale = true;
-    statistics.solves++;
-    statistics.leafPropagations++;
+    finishLeaf();
   };
+
+  function solveSlot(slot: number): readonly number[] {
+    const plans = leafPlans[slot];
+    if (plans !== undefined) {
+      const intent = pins[slot]!.intent;
+      if (intent !== intents[slot]) {
+        if (leafEpochs[slot] === leafEpoch) {
+          const first = plans[0]!;
+          const plan = first.intent === intent ? first : plans[1];
+          if (plan?.intent === intent) return applySingleLeaf(slot, intent, plan);
+        }
+        const plan = matchLeaf(slot, intent);
+        if (plan !== undefined) {
+          leafEpochs[slot] = leafEpoch;
+          return applySingleLeaf(slot, intent, plan);
+        }
+      }
+    }
+    inputSlots[0] = slot;
+    inputSlots.length = 1;
+    return runSolve(inputSlots);
+  }
 
   return {
     get stats(): ElectricalStats {
@@ -1094,11 +1183,12 @@ export function createElectricalNetwork(
         published.push(pins[changed[position]!]!);
       return Object.freeze(published);
     },
-    solveSlots(changedSlotNumbers?: Iterable<number>): readonly number[] {
-      // Publish fast path: the dirty set is already deduplicated, so a complete batch of
-      // admitted leaf shapes needs neither a gathered array nor the generic solve
-      // bookkeeping. Anything else re-enters the full solver, which repeats the match and
-      // therefore keeps every guard on the slow path.
+    solveSlot,
+    solveSlots(changedSlotNumbers?: number | Iterable<number>): readonly number[] {
+      if (typeof changedSlotNumbers === 'number') return solveSlot(changedSlotNumbers);
+      // An iterable batch of admitted leaf shapes can also bypass generic bookkeeping.
+      // Anything else re-enters the full solver, which repeats the match and keeps every
+      // guard on the slow path.
       //
       // The signature stays `Iterable<number>`: only inputs that are known to iterate
       // repeatedly may be probed and then replayed. Any other iterable could be a
@@ -1167,6 +1257,13 @@ export function createElectricalNetwork(
    * every pin. Returns the changed slots in ascending board order.
    */
   function runSolve(input: readonly number[] | undefined): readonly number[] {
+    // The general solver may add an edge to a previously admitted leaf or change its
+    // driver. An admitted replay only moves an existing leaf's edge between fixed
+    // references, leaving all unknown-node degrees and every leaf's eligibility intact.
+    if (++leafEpoch === 0x7fffffff) {
+      leafEpochs.fill(0);
+      leafEpoch = 1;
+    }
     const initial = prepared === undefined;
     pendingAdmissions.length = 0;
     if (prepared !== undefined && !blocksStale && input !== undefined && input.length === 0) {
@@ -1262,7 +1359,13 @@ export function createElectricalNetwork(
       // One branch from a leaf node onto a fixed reference: remember the shape so that the
       // next switch between the same references replays it instead of rebuilding edges.
       if (leafShape && intent.length === 1 && edges[0] !== previous[0])
-        pendingAdmissions.push({ slot: index, branch: intent[0]!, target: edges[0]!.to, edges });
+        pendingAdmissions.push({
+          slot: index,
+          intent,
+          branch: intent[0]!,
+          target: edges[0]!.to,
+          edges,
+        });
       updatedSlots.push(index);
       updatedIntents.push(intent);
       updatedEdges.push(edges);
@@ -1523,7 +1626,6 @@ export function createElectricalNetwork(
       for (const [index, block] of dirtyBlocks) topology!.blocks[index] = block;
     }
     prepared = topology!;
-    componentArraysOwned = false;
     // A rejected solve leaves the stale flag set, so a retry rebuilds and revalidates the
     // partition instead of trusting blocks it never committed.
     blocksStale = false;

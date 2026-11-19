@@ -39,8 +39,8 @@ interface InternalPin {
 /** 运行时内部字段：只用于显式正确性/诊断用例，不构成 SDK API。 */
 interface InternalInstance {
   readonly pins: ReadonlyMap<string, InternalPin>;
+  writeIntent(pin: unknown, value: unknown): boolean;
   readonly host: {
-    intent(pin: unknown, value: unknown): void;
     send(name: string, value: unknown): void;
   };
   readonly memoryResources: ReadonlyMap<string, { readonly version: number }>;
@@ -137,7 +137,8 @@ export const JOINT_PANEL_HEIGHT = PANEL_HEIGHT;
 export const JOINT_FULL_FRAME_PIXELS = PANEL_WIDTH * PANEL_HEIGHT;
 
 /**
- * 完整 WR 边沿下 0 → 440 ms 的固定工作量。
+ * 当前 `HAL_06_LCD.bin` 在 0 → 440 ms 的固定工作量；以独立总线 oracle
+ * 在运行时优化前后的相同结果为准。
  *
  * 这些数字约束 MCU 实际发出的写周期，不是允许漏边沿的容差：
  * - `wrLevelChanges` 是 MCU WR intent 的全部电平变化；
@@ -147,11 +148,12 @@ export const JOINT_FULL_FRAME_PIXELS = PANEL_WIDTH * PANEL_HEIGHT;
  * - `nonZeroPixels` 是整屏清屏后每个面板像素都被写过的结果。
  */
 export const JOINT_440MS_EXPECTED = Object.freeze({
-  wrLevelChanges: 545_004,
-  selectedRises: 272_502,
-  pixelWrites: 272_007,
-  gramStores: 272_007,
+  wrLevelChanges: 157_338,
+  selectedRises: 78_669,
+  pixelWrites: 77_351,
+  gramStores: 77_351,
   nonZeroPixels: 76_800,
+  frames: 3,
   clearColor: 0x001f,
 } as const);
 const FULL_FRAME_PIXELS = JOINT_FULL_FRAME_PIXELS;
@@ -671,7 +673,7 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
       data: dataSampleVersion(internalLcd),
       gram: memoryVersion(internalLcd, 'gram'),
     };
-    const originalIntent = internalMcu.host.intent;
+    const originalIntent = internalMcu.writeIntent.bind(internalMcu);
     const originalSend = internalLcd.host.send;
     // publishFrames 在 frameInfo 与 frameRows 之间不挂起；此处 oracle 与全部行同刻。
     internalLcd.host.send = (name, value) => {
@@ -699,19 +701,18 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
       }
     };
 
-    internalMcu.host.intent = (ref, value) => {
+    // Both the interpreter and the direct JIT write through this entry point.
+    internalMcu.writeIntent = (ref, value) => {
       const name = String(ref);
       const pin = internalMcu.pins.get(name);
       const previous = intentLevel(pin);
-      const changed = pin?.intent !== value;
-
-      originalIntent(ref, value);
+      const changed = originalIntent(ref, value);
       counters.intentCalls += 1;
       if (changed) counters.intentChanges += 1;
 
       const next = intentLevel(pin);
 
-      if (previous === next) return;
+      if (previous === next) return changed;
       if (name === 'PB5') {
         counters.wrLevelChanges += 1;
         if (previous === 0 && next === 1) {
@@ -721,6 +722,7 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
       } else if (name === 'PB9') counters.csLevelChanges += 1;
       else if (name === 'PB8') counters.rsLevelChanges += 1;
       else if (/^PC(?:[0-9]|1[0-5])$/.test(name)) counters.dataBitLevelChanges += 1;
+      return changed;
     };
 
     accountingReadout = () => ({

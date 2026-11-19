@@ -11,6 +11,10 @@ const translate: JitTranslate = ({ pc, code }, block) => {
   block.instruction({ pc, nextPc: 1 }, (b) => {
     b.writeState('tick', b.add(b.readState('tick', types.number), b.constant(types.number, delta)));
     b.elapse(1);
+    b.writeState(
+      'tick',
+      b.add(b.readState('tick', types.number), b.constant(types.number, delta * 10)),
+    );
   });
   return block.finish();
 };
@@ -24,7 +28,7 @@ function model() {
 }
 
 describe('direct JIT incremental cache', () => {
-  it('clears compiled bodies when code memory changes and recompiles from the new bytes', () => {
+  it('finishes the active direct suffix before recompiling from changed code bytes', () => {
     const library = createDeviceLibrary([
       {
         id: 'cache',
@@ -56,17 +60,25 @@ describe('direct JIT incremental cache', () => {
       const instance = (board as unknown as { instances: readonly Instance[] }).instances[0]!;
       const jit = instance.jits[0] as Jit;
       const cache = jit.directCache;
+      const active = jit.direct!;
+      expect(active.frame.resume).not.toBe(0);
       expect(cache).toBeDefined();
       expect(compileDirectJit.cacheStats(cache!).entries).toBeGreaterThan(0);
       const initialCompiles = compileDirectJit.cacheStats(cache!).compiledBlocks;
       const before = instance.states.get('tick') as number;
 
       instance.loadBytes('code', new Uint8Array(16).fill(2), 0);
+      board.runUntil(board.time);
+      expect(jit.direct).toBe(active);
+      expect(instance.states.get('tick')).toBe(before);
+
       board.runUntil(board.time + 5);
 
       expect(compileDirectJit.cacheStats(cache!).clears).toBe(1);
       expect(compileDirectJit.cacheStats(cache!).compiledBlocks).toBe(initialCompiles + 1);
-      expect(instance.states.get('tick')).toBe(before + 10);
+      expect(jit.direct!.program).not.toBe(active.program);
+      // One old suffix, five new prefixes, four new suffixes. The last suffix waits at the cutoff.
+      expect(instance.states.get('tick')).toBe(before + 10 + 5 * 2 + 4 * 20);
     } finally {
       board.dispose();
     }

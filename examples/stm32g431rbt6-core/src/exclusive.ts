@@ -1,7 +1,7 @@
 import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
 import { SCB_STATE, SYS } from './layout';
-import { asBody, boolAnd, num, readWordAt, u32, writeWordAt } from './ir';
+import { asBody, boolAnd, num, readByte, readWordAt, u32, writeByte, writeWordAt } from './ir';
 import type { Body } from './ir';
 
 /**
@@ -29,15 +29,19 @@ const load = (b: Body, offset: number): Value<number> => readWordAt(b, SYS, offs
 const store = (b: Body, offset: number, value: Value<number>): void => {
   writeWordAt(b, SYS, offset, value);
 };
+const loadValid = (b: Body): Value<number> => readByte(b, SYS, num(b, EXCLUSIVE_VALID));
+const storeValid = (b: Body, value: number): void => {
+  writeByte(b, SYS, num(b, EXCLUSIVE_VALID), num(b, value));
+};
 
 export function recordExclusive(b: Body, address: Value<number>, size: 1 | 2 | 4): void {
   store(b, EXCLUSIVE_ADDR, u32(b, address));
   store(b, EXCLUSIVE_SIZE, num(b, size));
-  store(b, EXCLUSIVE_VALID, num(b, 1));
+  storeValid(b, 1);
 }
 
 export function clearExclusiveMonitor(b: Body): void {
-  store(b, EXCLUSIVE_VALID, num(b, 0));
+  storeValid(b, 0);
 }
 
 export function exclusiveMatch(
@@ -45,7 +49,7 @@ export function exclusiveMatch(
   address: Value<number>,
   size: 1 | 2 | 4,
 ): Value<boolean> {
-  const valid = b.notEqual(types.number, load(b, EXCLUSIVE_VALID), num(b, 0));
+  const valid = b.notEqual(types.number, loadValid(b), num(b, 0));
   const sameAddress = b.equal(types.number, load(b, EXCLUSIVE_ADDR), u32(b, address));
   const sameSize = b.equal(types.number, load(b, EXCLUSIVE_SIZE), num(b, size));
 
@@ -57,7 +61,7 @@ export function exclusiveMatch(
  * 宽度完全相等；跨宽度覆盖同一地址也会破坏独占。
  */
 export function noteGuestStore(b: Body, address: Value<number>, size: 1 | 2 | 4): void {
-  const valid = b.notEqual(types.number, load(b, EXCLUSIVE_VALID), num(b, 0));
+  const valid = b.notEqual(types.number, loadValid(b), num(b, 0));
 
   b.if(valid, (pending) => {
     const body = asBody(pending);
