@@ -48,7 +48,7 @@ const translation =
     return block.finish();
   };
 
-function electricalModel() {
+function electricalModel(wakeAtSuffix: boolean) {
   const builder = createDeviceBuilder({ name: 'DirectElectrical' });
   builder.memory({ name: 'code', length: 16 });
   builder.memory({ name: 'evidence', length: 256, public: true });
@@ -71,6 +71,11 @@ function electricalModel() {
   builder.pin({ name: 'drive', low: 0.8, high: 2.0 });
   builder.pin({ name: 'gate', low: 0.8, high: 2.0 });
   builder.start((body) => {
+    if (wakeAtSuffix) {
+      body.wait(50);
+      body.writeState('processValue', body.readState('suffixes', types.number));
+      return;
+    }
     body.loop((loop) => {
       loop.wait(15);
       loop.writeState(
@@ -138,12 +143,16 @@ interface Scenario {
   readonly evidence: Uint8Array;
 }
 
-function createScenario(execution: 'throughput' | 'precise', stable = false): Scenario {
+function createScenario(
+  execution: 'throughput' | 'precise',
+  stable = false,
+  wakeAtSuffix = false,
+): Scenario {
   let evidence: Uint8Array | undefined;
   const library = createDeviceLibrary([
     {
       id: 'dut',
-      model: electricalModel(),
+      model: electricalModel(wakeAtSuffix),
       create: (context) => {
         const registration = context.attachJit({
           entry: 'dut',
@@ -270,6 +279,20 @@ describe('direct JIT electrical publication', () => {
     } finally {
       direct.board.dispose();
       precise.board.dispose();
+    }
+  });
+
+  it('runs a process due at the same time before resuming the direct suffix', () => {
+    const scenario = createScenario('throughput', false, true);
+    try {
+      warmDirect(scenario);
+      scenario.board.runUntil(51);
+
+      expect(scenario.instance.states.get('processValue')).toBe(4);
+      expect(scenario.instance.states.get('suffixes')).toBe(5);
+      expect(edgeRecords(scenario).at(-1)?.time).toBe(50);
+    } finally {
+      scenario.board.dispose();
     }
   });
 

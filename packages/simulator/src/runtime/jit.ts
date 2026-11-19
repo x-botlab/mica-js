@@ -45,8 +45,8 @@ const DIRECT_SHARD_SIZE = 8;
 const DIRECT_REBUILD_LINEAR_LIMIT = 16;
 /** Stride floor once a program exceeds `DIRECT_REBUILD_LINEAR_LIMIT`. */
 const DIRECT_REBUILD_MIN_BLOCKS = 64;
-/** A PC that keeps falling back buys an early rebuild instead of waiting out a full stride. */
-const DIRECT_REBUILD_PATIENCE = 512;
+/** A repeatedly visited translated PC can force a rebuild before the append-only stride. */
+const DIRECT_REBUILD_PATIENCE = 4;
 
 /**
  * Deterministic direct-execution counters, kept on the `Jit` itself so `Board.jits` stays the
@@ -291,6 +291,7 @@ export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
   readonly waitingJits: Set<Jit>;
   readonly events: Pick<EventQueue<() => void>, 'time' | 'push'>;
   boundary(): void;
+  canContinueDirect(jit: Jit, horizon: number): boolean;
   queueJit(jit: Jit): void;
   wrap(
     cause: unknown,
@@ -433,7 +434,7 @@ function createDirectFrame(
 }
 function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): boolean {
   const instance = jit.instance;
-  const pending = Boolean(jit.direct?.frame.resume);
+  let pending = Boolean(jit.direct?.frame.resume);
   if (!pending) {
     const pc = finite(instance.states.get(jit.options.pc), 'pc');
     const region = codeRegionFor(jit, pc);
@@ -447,21 +448,19 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
       return false;
     refreshDirectGuards(jit, hookReads);
     if (jit.directSkip === pc) return false;
-    // A newer revision only adds cache entries: bodies of already compiled PCs never change,
-    // so the current program keeps running as long as it covers this PC. Rebuilds are
-    // amortized over a stride of new blocks, but a stride always catches up eventually:
-    // otherwise a PC that runs once would stay uncompiled and its neighbours would keep
-    // falling back on every visit.
+    // An append-only translation revision leaves compiled bodies valid. Reuse them as long
+    // as the current program covers this PC. Amortize rebuilds over a stride of new blocks,
+    // but count repeat dispatches per translated PC so a hot path catches up promptly
+    // without rebuilding for each PC visited once during initialization.
     if (jit.directRevision !== jit.revision) {
       const compiled = jit.direct?.pcs.size ?? 0;
       const stale = jit.revision - jit.directRevision;
       const stride =
         compiled < DIRECT_REBUILD_LINEAR_LIMIT ? 1 : Math.max(DIRECT_REBUILD_MIN_BLOCKS, compiled);
       const covered = jit.direct?.pcs.has(pc) === true;
+      const misses = covered ? 0 : (jit.directMisses.get(pc) ?? 0);
       const rebuild =
-        jit.direct === undefined ||
-        stale >= stride ||
-        (!covered && jit.directMisses >= DIRECT_REBUILD_PATIENCE);
+        jit.direct === undefined || stale >= stride || misses >= DIRECT_REBUILD_PATIENCE;
 
       if (!rebuild) {
         if (!covered) {
@@ -471,7 +470,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
           const stats = directStats(jit);
           stats.directCalls++;
           stats.directFallbacks++;
-          jit.directMisses += 1;
+          if (jit.cache.has(pc)) jit.directMisses.set(pc, misses + 1);
 
           return false;
         }
@@ -547,7 +546,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
             cache,
           );
           jit.directRevision = jit.revision;
-          jit.directMisses = 0;
+          jit.directMisses.clear();
           const stats = directStats(jit);
 
           stats.directShards = program?.shards ?? 0;
@@ -562,7 +561,6 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
             ? {
                 program,
                 pcs: new Set(program.pcs),
-                revision: jit.revision,
                 frame: createDirectFrame(board, instance, layout, program, barrier),
               }
             : undefined;
@@ -578,72 +576,91 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   }
   const direct = jit.direct!;
   const frame = direct.frame;
-  if (pending) frame.stopAfterInstruction = true;
-  frame.time = board.time;
-  frame.stateDirty.fill(0);
-  frame.memoryDirty.fill(0);
-  const start = board.time;
-  let reason: ReturnType<DirectJitProgram['run']>;
-  let wrote = false;
-  const stats = directStats(jit);
-  stats.directCalls++;
-  try {
-    // Resource barriers exclude intermediate observers; real events retain exact deadlines.
-    reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
-  } finally {
-    board.time = frame.time;
-    frame.publishPending = false;
-    const layout = jit.directLayout!;
-    for (let word = 0; word < frame.stateDirty.length; word++) {
-      let bits = frame.stateDirty[word]!;
-      while (bits !== 0) {
-        const slot = word * 32 + 31 - Math.clz32(bits & -bits);
-        instance.host.write(layout.stateNames[slot]!, frame.states[slot]);
-        bits &= bits - 1;
-        wrote = true;
+  for (;;) {
+    if (pending) frame.stopAfterInstruction = true;
+    frame.time = board.time;
+    frame.stateDirty.fill(0);
+    frame.memoryDirty.fill(0);
+    const start = board.time;
+    let reason: ReturnType<DirectJitProgram['run']>;
+    let wrote = false;
+    const stats = directStats(jit);
+    stats.directCalls++;
+    try {
+      // Resource barriers exclude intermediate observers; real events retain exact deadlines.
+      reason = direct.program.run(frame, Math.min(board.executionEnd, board.events.time));
+    } finally {
+      board.time = frame.time;
+      frame.publishPending = false;
+      const layout = jit.directLayout!;
+      for (let word = 0; word < frame.stateDirty.length; word++) {
+        let bits = frame.stateDirty[word]!;
+        while (bits !== 0) {
+          const slot = word * 32 + 31 - Math.clz32(bits & -bits);
+          instance.host.write(layout.stateNames[slot]!, frame.states[slot]);
+          bits &= bits - 1;
+          wrote = true;
+        }
+      }
+      for (let word = 0; word < frame.memoryDirty.length; word++) {
+        let bits = frame.memoryDirty[word]!;
+        while (bits !== 0) {
+          const slot = word * 32 + 31 - Math.clz32(bits & -bits);
+          instance.memoryChanged(layout.memoryNames[slot]!);
+          bits &= bits - 1;
+          wrote = true;
+        }
       }
     }
-    for (let word = 0; word < frame.memoryDirty.length; word++) {
-      let bits = frame.memoryDirty[word]!;
-      while (bits !== 0) {
-        const slot = word * 32 + 31 - Math.clz32(bits & -bits);
-        instance.memoryChanged(layout.memoryNames[slot]!);
-        bits &= bits - 1;
-        wrote = true;
+    // A fallback with no flushed slot and no elapsed time did not execute anything; the cached
+    // entry PC can safely be interpreted. A zero-duration block can still write state/PC before
+    // the dispatcher rejects the next uncompiled PC: `wrote` records that prefix, so the caller
+    // must re-read the flushed PC instead of replaying the old one.
+    if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
+    if (reason === 'fallback') {
+      const nextPc = finite(instance.states.get(jit.options.pc), 'pc');
+      // Polling PCs are deliberately absent from direct programs. Reaching one is a normal
+      // shard boundary, not a failed direct dispatch, so it must neither compound fallback
+      // statistics nor poison the next interpreter attempt for this PC.
+      const polling = effectivePolling(jit).has(nextPc) || jit.cache.get(nextPc)?.polling;
+      if (!polling) {
+        stats.directFallbacks++;
+        jit.directSkip = nextPc;
+      }
+      if (!wrote && board.time === start && board.time < board.executionEnd) return false;
+    } else if (reason === 'stopped') {
+      stats.directStopped++;
+      jit.stopped = true;
+      return true;
+    } else if (reason === 'invalidated') {
+      frame.stopAfterInstruction = false;
+      // An electrical publication or a resumed suffix can return "invalidated" without
+      // invalidating any code. An append-only revision must still honour the rebuild stride.
+      // Primary code writes / metadata changes explicitly reset the program revision.
+      if (jit.directProgramRevision === -1 && frame.resume === 0) {
+        jit.direct = undefined;
+        jit.directRevision = -1;
+      }
+    } else stats.directDeadlines++;
+    // Publish and settle the whole boundary first. Without intervening scheduler work,
+    // an already-started suffix can resume at its wake time without a queue round trip.
+    // A metadata provider must still be checked by runJit before resumption.
+    if (frame.resume) {
+      const wake = Math.max(frame.due, board.time);
+      if (jit.metadata === undefined && board.canContinueDirect(jit, wake)) {
+        board.time = wake;
+        board.current = instance;
+        pending = true;
+        continue;
+      }
+      if (wake > board.time) {
+        board.events.push(wake, () => board.queueJit(jit));
+        return true;
       }
     }
-  }
-  // A fallback with no flushed slot and no elapsed time did not execute anything; the cached
-  // entry PC can safely be interpreted. A zero-duration block can still write state/PC before
-  // the dispatcher rejects the next uncompiled PC: `wrote` records that prefix, so the caller
-  // must re-read the flushed PC instead of replaying the old one.
-  if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
-  if (reason === 'fallback') {
-    const nextPc = finite(instance.states.get(jit.options.pc), 'pc');
-    // Polling PCs are deliberately absent from direct programs. Reaching one is a normal
-    // shard boundary, not a failed direct dispatch, so it must neither compound fallback
-    // statistics nor poison the next interpreter attempt for this PC.
-    const polling = effectivePolling(jit).has(nextPc) || jit.cache.get(nextPc)?.polling;
-    if (!polling) {
-      stats.directFallbacks++;
-      jit.directSkip = nextPc;
-    }
-    if (!wrote && board.time === start && board.time < board.executionEnd) return false;
-  } else if (reason === 'stopped') {
-    stats.directStopped++;
-    jit.stopped = true;
+    board.queueJit(jit);
     return true;
-  } else if (reason === 'invalidated') {
-    frame.stopAfterInstruction = false;
-    if (direct.revision !== jit.revision) {
-      jit.direct = undefined;
-      jit.directRevision = -1;
-    }
-  } else stats.directDeadlines++;
-  if (frame.resume && frame.due > board.time)
-    board.events.push(frame.due, () => board.queueJit(jit));
-  else board.queueJit(jit);
-  return true;
+  }
 }
 function pollingDependencies(
   jit: Jit,
@@ -863,6 +880,12 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
             codeRegion: region,
           };
         });
+        // An overlapping translation can replace a covered body instead of just adding PCs.
+        // It runs only after any direct continuation has drained, so discard that program now.
+        if (instructions.some((entry) => jit.direct?.pcs.has(entry.pc))) {
+          jit.direct = undefined;
+          jit.directPrograms.clear();
+        }
         // Match the first instruction when a block contains a repeated PC.
         for (let index = instructions.length - 1; index >= 0; index--) {
           const entry = instructions[index]!;

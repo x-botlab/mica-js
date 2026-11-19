@@ -114,7 +114,6 @@ export interface DirectExecution {
   readonly frame: DirectJitFrame;
   /** PCs the current program compiled; a PC outside it needs the interpreter. */
   readonly pcs: ReadonlySet<number>;
-  readonly revision: number;
 }
 /** Immutable bank layout shared by every direct program built for one JIT. */
 export interface DirectJitLayout {
@@ -173,8 +172,8 @@ export interface Jit {
   directLayout?: DirectJitLayout;
   direct: DirectExecution | undefined;
   directSkip: number | undefined;
-  /** Blocks translated since the last direct program build; bounds the rebuild frequency. */
-  directMisses: number;
+  /** Uncovered dispatches per translated PC since the last direct program build. */
+  readonly directMisses: Map<number, number>;
   pollReads: Dependencies | undefined;
   currentPc: number | undefined;
   automaticPolling: boolean;

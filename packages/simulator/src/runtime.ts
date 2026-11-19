@@ -555,7 +555,7 @@ class BoardRuntime implements Board {
     }
   }
   /**
-   * Fail-closed admission for staying inside generated code after a publication checkpoint.
+   * Fail-closed admission for resuming generated code without a scheduler round trip.
    * The JIT must be the only direct owner, all same-time scheduler stages must be empty,
    * and no event may be due through the requested horizon. The target time is exclusive:
    * code must not resume at `executionEnd`.
