@@ -21,16 +21,17 @@ const CYCLE_PS = 10;
 const WARMUP_PS = 41;
 const TARGET_PS = 81;
 const EDGE_BYTES = 8;
-type PublicationEffect = 'process' | 'suffixProcess' | 'replaceCode' | 'fault';
+type PublicationEffect = 'process' | 'suffixProcess' | 'replaceCode' | 'fault' | 'coldTarget';
 
 const translation =
-  (stable: boolean, effect?: PublicationEffect): JitTranslate =>
+  (stable: boolean, effect?: PublicationEffect, emptySuffix = false): JitTranslate =>
   ({ pc, code }, block) => {
     block.instruction({ pc, nextPc: pc === 0 ? 1 : 0 }, (b) => {
       const one = b.constant(types.number, 1);
       // 槽 31 的符号位和槽 32 的下一脏字都必须正确写回。
       b.writeState('wr', b.constant(types.number, pc === 0 ? 1 : 0));
-      b.writeState('data', b.add(b.readState('data', types.number), one));
+      const dataStep = emptySuffix ? b.constant(types.number, code[0] || 1) : one;
+      b.writeState('data', b.add(b.readState('data', types.number), dataStep));
       b.writeState('wide', b.readState('data', types.number));
       b.writeState('prefixes', b.add(b.readState('prefixes', types.number), one));
       b.writeState('seenProcess', b.readState('processValue', types.number));
@@ -43,6 +44,23 @@ const translation =
       // 同一条指令写两个引脚：失效只能发生在两个 intent 都落定之后。
       b.writeIntent('drive', intent);
       b.writeIntent('gate', intent);
+      if (emptySuffix) {
+        const duration = b.constant(types.number, CYCLE_PS);
+        if (effect === 'coldTarget') {
+          const target = b.select(
+            types.number,
+            b.equal(
+              types.number,
+              b.readState('prefixes', types.number),
+              b.constant(types.number, 6),
+            ),
+            (yes) => yes.constant(types.number, 2),
+            (no) => no.constant(types.number, pc === 0 ? 1 : 0),
+          );
+          b.redirect(target, duration);
+        } else b.elapse(duration);
+        return;
+      }
       const suffixes = b.readState('suffixes', types.number);
       b.elapse(b.constant(types.number, CYCLE_PS));
       // Keep a prefix local live across either continuation path. The increment must use
@@ -54,7 +72,7 @@ const translation =
     return block.finish();
   };
 
-function electricalModel(wakeAtSuffix: boolean, effect?: PublicationEffect) {
+function electricalModel(wakeAtSuffix: boolean, effect?: PublicationEffect, emptySuffix = false) {
   const builder = createDeviceBuilder({ name: 'DirectElectrical' });
   builder.memory({ name: 'code', length: 16 });
   builder.memory({ name: 'evidence', length: 256, public: true });
@@ -91,7 +109,10 @@ function electricalModel(wakeAtSuffix: boolean, effect?: PublicationEffect) {
   builder.start((body) => {
     if (wakeAtSuffix) {
       body.wait(50);
-      body.writeState('processValue', body.readState('suffixes', types.number));
+      body.writeState(
+        'processValue',
+        body.readState(emptySuffix ? 'prefixes' : 'suffixes', types.number),
+      );
       return;
     }
     body.loop((loop) => {
@@ -105,7 +126,10 @@ function electricalModel(wakeAtSuffix: boolean, effect?: PublicationEffect) {
   if (effect === 'process') {
     builder.on({ name: 'observeDrive', sourcePath: ['drive', 'sample', 'level'] }, (body) => {
       body.if(body.equal(types.number, body.now(), body.constant(types.number, 50)), (atEdge) => {
-        atEdge.writeState('processValue', atEdge.readState('suffixes', types.number));
+        atEdge.writeState(
+          'processValue',
+          atEdge.readState(emptySuffix ? 'prefixes' : 'suffixes', types.number),
+        );
       });
     });
   }
@@ -188,18 +212,19 @@ function createScenario(
   stable = false,
   wakeAtSuffix = false,
   effect?: PublicationEffect,
+  emptySuffix = false,
 ): Scenario {
   let evidence: Uint8Array | undefined;
   const library = createDeviceLibrary([
     {
       id: 'dut',
-      model: electricalModel(wakeAtSuffix, effect),
+      model: electricalModel(wakeAtSuffix, effect, emptySuffix),
       create: (context) => {
         const registration = context.attachJit({
           entry: 'dut',
           code: 'code',
           pc: 'pc',
-          translate: translation(stable, effect),
+          translate: translation(stable, effect, emptySuffix),
         });
         try {
           context.loadBytes('code', new Uint8Array(16));
@@ -247,6 +272,25 @@ function recordCheckpoints(scenario: Scenario) {
   return attempts;
 }
 
+function recordEmptyCheckpoints(scenario: Scenario) {
+  const frame = scenario.jit.direct!.frame;
+  const attempts: [number, number, 'defer' | 'yield' | 'continue'][] = [];
+  const publish = frame.publishCheckpoint!;
+  const finish = frame.finishCheckpoint!;
+  frame.publishCheckpoint = () => {
+    const admitted = publish();
+    if (!admitted) attempts.push([frame.due, scenario.board.time, 'defer']);
+    return admitted;
+  };
+  frame.finishCheckpoint = (deadline, emptySuffix) => {
+    expect(emptySuffix).toBe(true);
+    const continued = finish(deadline, emptySuffix);
+    attempts.push([frame.due, scenario.board.time, continued ? 'continue' : 'yield']);
+    return continued;
+  };
+  return attempts;
+}
+
 interface EdgeRecord {
   readonly level: number;
   readonly gate: number;
@@ -273,6 +317,71 @@ function edgeRecords(scenario: Scenario): EdgeRecord[] {
 }
 
 describe('direct JIT electrical publication', () => {
+  it.each([
+    {
+      name: 'continues only strictly before the next event and deadline',
+      effect: undefined,
+      until: 80,
+      attempts: [
+        [60, 60, 'continue'],
+        [70, 70, 'continue'],
+      ],
+      processValue: 5,
+      data: [1, 2, 3, 4, 5, 6, 7, 8],
+    },
+    {
+      name: 'defers for a process queued by prefix publication',
+      effect: 'process',
+      until: 65,
+      attempts: [[60, 50, 'defer']],
+      processValue: 6,
+      data: [1, 2, 3, 4, 5, 6, 7],
+    },
+    {
+      name: 'defers when publication invalidates its active code',
+      effect: 'replaceCode',
+      until: 81,
+      attempts: [
+        [60, 60, 'continue'],
+        [70, 60, 'defer'],
+      ],
+      processValue: 5,
+      data: [1, 2, 3, 4, 5, 6, 7, 9, 11],
+    },
+    {
+      name: 'settles before yielding to an uncovered successor PC',
+      effect: 'coldTarget',
+      until: 65,
+      attempts: [[60, 60, 'yield']],
+      processValue: 5,
+      data: [1, 2, 3, 4, 5, 6],
+    },
+  ] as const)('empty suffix: $name', (test) => {
+    const direct = createScenario('throughput', false, true, test.effect, true);
+    const precise = createScenario('precise', false, true, test.effect, true);
+    try {
+      warmDirect(direct);
+      const attempts = recordEmptyCheckpoints(direct);
+      direct.board.runUntil(test.until);
+      precise.board.runUntil(test.until);
+      expect(attempts).toEqual(test.attempts);
+      const edges = edgeRecords(direct);
+      expect(edges).toEqual(edgeRecords(precise));
+      expect(edges.map(({ data }) => data)).toEqual(test.data);
+      expect(direct.instance.states.get('seenProcess')).toBe(test.processValue);
+      if (test.until === 80) {
+        // The same-time process prevented a checkpoint at due=50; the deadline
+        // leaves the last suffix pending without publishing the next edge.
+        const frame = direct.jit.direct!.frame;
+        expect(frame.due).toBe(80);
+        expect(frame.resume).not.toBe(0);
+      }
+    } finally {
+      direct.board.dispose();
+      precise.board.dispose();
+    }
+  });
+
   it('keeps identical intents inside a direct run without extra publication', () => {
     const scenario = createScenario('throughput', true);
     try {

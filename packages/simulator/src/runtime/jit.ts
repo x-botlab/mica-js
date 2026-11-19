@@ -474,7 +474,8 @@ function createDirectFrame(
     if (jit.options.beforeInstruction === undefined) {
       const pcIndex = layout.states.get(jit.options.pc)!;
       frame.finishCheckpoint = (deadline, emptySuffix) => {
-        // The prefix was flushed before elapsing. An empty suffix only advanced time.
+        // The prefix was flushed and admitted through due. An empty suffix only
+        // advances time, so that scheduler admission still holds after its boundary.
         if (emptySuffix) board.time = frame.time;
         else flushDirect(board, instance, layout, frame);
         board.boundary();
@@ -489,7 +490,7 @@ function createDirectFrame(
             jit.revision - jit.directRevision >= directRebuildStride(direct.pcs.size)) ||
           frame.time >= deadline ||
           board.events.time < deadline ||
-          !board.canContinueDirect(jit, frame.time)
+          (!emptySuffix && !board.canContinueDirect(jit, frame.time))
         ) {
           frame.boundarySettled = true;
           return false;
