@@ -471,6 +471,11 @@ export interface DirectJitEmitStats {
  * stops optimizing a function: measured blocks slow down sharply from ~35 KB of source.
  */
 const SHARD_CODE_BUDGET = 36_000;
+// Only outline a large, asymmetric branch: the extra call and slot copy should not
+// be paid by both arms of a common conditional.
+const OUTLINE_MIN_LINES = 512;
+const OUTLINE_MIN_RATIO = 8;
+const OUTLINE_MAX_SLOTS = 64;
 /**
  * Below this summed source size the monolithic form stays inside the range V8 optimizes, and
  * it avoids the dispatcher hop; larger programs split into shards.
@@ -1135,6 +1140,7 @@ function residentResumeFinish(stop: boolean, pcIndex: number): string {
 function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): string[] {
   const registers = Array.from({ length: shard.maxSlots }, (_, index) => `v${index}`);
   const stepInside = residentPcSpan(shard.entries);
+  const outlined: string[][] = [];
   const lines = [
     `function stepShard${shard.id}(F, deadline, pc) {`,
     ...prelude(registers),
@@ -1148,7 +1154,7 @@ function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): 
       ...entry.guard,
       `S[${binding.pc.index}] = ${entry.nextPc};`,
       dirty('SD', binding.pc.index),
-      ...entry.prefix,
+      ...entry.outlinePrefix(outlined),
       ...(entry.duration === undefined ? [] : elapsed(entry, entry.resumeId)),
       ...entry.suffix,
       entry.isolated ? publish : residentStepFinish(entry.stop, stepInside, binding.pc.index),
@@ -1177,6 +1183,7 @@ function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): 
     });
     lines.push('default: throw new TypeError("Unknown direct JIT continuation");', '}', '}');
   }
+  for (const helper of outlined) lines.push(...helper);
   return lines;
 }
 
@@ -1414,6 +1421,7 @@ class Instruction {
     return this.backedges !== undefined;
   }
   private backedges?: { lines: string[]; head: number; tail: number }[];
+  private outlineBranches?: { start: number; end: number }[];
   private readonly values = new Map<number, string>();
   private readonly locals = new Map<number, string>();
   /**
@@ -1569,6 +1577,46 @@ class Instruction {
 
   private get terminated(): boolean {
     return this.duration !== undefined || this.immediate;
+  }
+
+  /** Keep the short path in the resident step function, without changing shard placement. */
+  outlinePrefix(helpers: string[][]): readonly string[] {
+    if (
+      this.size <= SHARD_CODE_BUDGET ||
+      this.slots.length > OUTLINE_MAX_SLOTS ||
+      this.isolated ||
+      !this.outlineBranches
+    )
+      return this.prefix;
+
+    const lines: string[] = [];
+    const slots = this.slots.join(',');
+    const params = ['F', 'S', 'M', 'SD', 'MD', 'MV', ...this.slots].join(',');
+    let cursor = 0;
+    // Prefer the outer branch when candidates nest. Its whole body already moves off
+    // the short path, so there is no need to add calls inside that body.
+    for (const { start, end } of this.outlineBranches.sort((a, b) => a.start - b.start)) {
+      if (start < cursor) continue;
+      const name = `outlined${helpers.length}`;
+      lines.push(...this.prefix.slice(cursor, start));
+      const call = `${name}(${params});`;
+      if (slots) {
+        lines.push(`const result = ${call}`);
+        this.slots.forEach((slot, index) => lines.push(`${slot} = result[${index}];`));
+      } else lines.push(call);
+      // Compact slot names are already fixed. Pass them by value and copy them back
+      // on normal return. State and memory banks (including dirty masks) are shared
+      // directly, so completed writes remain visible if the helper throws.
+      helpers.push([
+        `function ${name}(${params}) {`,
+        ...this.prefix.slice(start, end),
+        ...(slots ? [`return [${slots}];`] : []),
+        '}',
+      ]);
+      cursor = end;
+    }
+    lines.push(...this.prefix.slice(cursor));
+    return lines;
   }
 
   /**
@@ -2271,15 +2319,31 @@ class Instruction {
         lines.push('}');
         break;
       }
-      case 'if':
+      case 'if': {
         lines.push(`if (${this.condition(operation.condition)}) {`);
+        const yesStart = lines.length;
         this.region(operation.yes, lines, output);
         if (operation.no) {
+          const yesLength = lines.length - yesStart;
           lines.push('} else {');
+          const noStart = lines.length;
           this.region(operation.no, lines, output);
+          const noLength = lines.length - noStart;
+          // Statement-position arms cannot yield to an enclosing label, and the
+          // region emitter declines suspension and instruction-level exits.
+          // Compaction rewrites each line in place, so these boundaries stay valid.
+          if (
+            !output &&
+            lines === this.prefix &&
+            yesLength > 0 &&
+            noLength >= OUTLINE_MIN_LINES &&
+            noLength >= yesLength * OUTLINE_MIN_RATIO
+          )
+            (this.outlineBranches ??= []).push({ start: noStart, end: lines.length });
         }
         lines.push('}');
         break;
+      }
       case 'while': {
         // Initially keep loops in statement position. A body cannot suspend, yield a
         // value, or transfer control: the normal region emitter declines those shapes.

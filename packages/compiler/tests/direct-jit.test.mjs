@@ -291,6 +291,119 @@ function scalarLoop() {
   return [alu.instruction(0, 2), memory.instruction(2, 0)];
 }
 
+test('large resident else arms execute synchronously and preserve compact slots and boundaries', () => {
+  const b = builder();
+  const x = b.read('x');
+  const flag = b.read('flag', 'bool');
+  const offset = b.read('offset');
+  const number = { kind: 'number' };
+  const seven = b.constant(7);
+  const zero = b.constant(0);
+  const fortyTwo = b.constant(42);
+  const duration = b.constant(3);
+  b.operations.push({ kind: 'local', local: 0, type: number, initial: duration });
+  const cold = Array.from({ length: 2000 }, () => ({
+    kind: 'write',
+    name: 'marker',
+    value: seven,
+  }));
+  const sum = b.value({ kind: 'binary', operator: 'add', left: x, right: seven }, 'number', cold);
+  cold.push(
+    { kind: 'store8', memory: ram, offset: zero, value: sum },
+    { kind: 'notify', notification: 'cold' },
+    { kind: 'store8', memory: ram, offset, value: seven },
+    { kind: 'localWrite', local: 0, value: sum },
+  );
+  b.operations.push({
+    kind: 'if',
+    condition: flag,
+    yes: { operations: [{ kind: 'write', name: 'marker', value: fortyTwo }] },
+    no: {
+      operations: [
+        {
+          kind: 'if',
+          condition: flag,
+          yes: { operations: [{ kind: 'write', name: 'marker', value: zero }] },
+          no: { operations: cold },
+        },
+      ],
+    },
+  });
+  const delay = b.value({ kind: 'localRead', local: 0 });
+  b.operations.push({ kind: 'elapse', duration: delay });
+  b.write('y', b.binary('add', x, delay));
+  const stop = builder();
+  stop.operations.push({ kind: 'stop' });
+  const instructions = [b.instruction(0, 2), stop.instruction(2, 4)];
+  const settings = { ...binding, split: true, host: true };
+  const factories = captureFactories(() =>
+    compileDirectJit(instructions, settings, compileDirectJit.createCache()),
+  );
+  const source = factories.find((source) => source.includes('function outlined'));
+  assert(source, 'the resident factory outlines the long arm');
+  assert.equal([...source.matchAll(/function outlined\d+\(/g)].length, 1);
+  assert(source.indexOf('F.host.notify') > source.indexOf('function outlined'));
+
+  for (const [flag, offset, publish] of [
+    [true, 1, false],
+    [false, 1, false],
+    [false, 1, true],
+    [false, 9, false],
+  ]) {
+    const pair = duet(instructions, {
+      binding: settings,
+      cache: compileDirectJit.createCache(),
+      states: [0, 4, 0, flag, offset, 0],
+      host: true,
+    });
+    if (!flag && publish) {
+      // Host effects can require publication before elapsed time advances.
+      for (const side of [pair.left, pair.right]) {
+        const notify = side.log.notify;
+        side.log.notify = (name) => {
+          notify(name);
+          side.frame.publishPending = true;
+        };
+      }
+    }
+    const f = pair.right.frame;
+    for (const [bank, mask] of [
+      ['blockedStates', 1 << binding.states.get('marker')],
+      ['blockedMemories', 1],
+    ]) {
+      f[bank] = pair.left.frame[bank] = [mask];
+      assert.equal(pair.run(2), 'fallback', `check ${bank} before the whole instruction`);
+      assert.equal(f.states[0], 0);
+      assert.deepEqual(f.stateDirty, [0]);
+      assert.deepEqual(f.memoryDirty, [0]);
+      assert.deepEqual(pair.right.log.entries, []);
+      f[bank][0] = 0;
+    }
+    if (offset === 9) {
+      assert(pair.run(2) instanceof RangeError);
+      assert.deepEqual(f.states, [2, 4, 0, false, 9, 7]);
+      assert.deepEqual([...f.memories[0]], [11, 8, 9]);
+      assert.deepEqual(f.stateDirty, [33]);
+      assert.deepEqual(f.memoryDirty, [1]);
+      assert.equal(f.resume, 0);
+      continue;
+    }
+    assert.equal(pair.run(2), publish ? 'invalidated' : 'deadline');
+    assert.equal(f.time, publish ? 0 : 2);
+    assert.equal(f.due, flag ? 3 : 11);
+    assert.notEqual(f.resume, 0);
+    assert.equal(f.states[2], 0, 'suffix has not executed');
+    assert.equal(f.states[5], flag ? 42 : 7);
+    assert.deepEqual([...f.memories[0]], flag ? [7, 8, 9] : [11, 7, 9]);
+    f.publishPending = pair.left.frame.publishPending = false;
+    assert.equal(pair.run(f.due), 'deadline', 'deadline equality does not start the suffix');
+    assert.equal(pair.run(f.due + 1), 'stopped');
+    assert.equal(f.states[2], flag ? 7 : 15);
+    assert.deepEqual(pair.right.log.entries, flag ? [] : [['notify', 'cold', 0]]);
+    assert.equal(f.resume, 0);
+  }
+});
+
 test('zero-time while loops keep outer values live and publish at both instruction boundaries', () => {
   const prefix = builder();
   prefix.delay(2);

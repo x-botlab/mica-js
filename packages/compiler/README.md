@@ -241,6 +241,12 @@ resumed suffix must not republish a prefix write after an external event.
 Memory addressing and store values follow the
 generic host's safe-integer checks; `store8` uses Uint8Array wrapping semantics.
 
+For oversized resident instructions, a long statement-position `else` arm in the
+prefix can move into a separate generated function, leaving the short arm in the
+shard. The call remains synchronous within the instruction. It shares the banks
+and dirty masks, copies compact locals back on normal return, and does not change
+write barriers, deadlines, or resumption.
+
 The supported subset includes number/bool constants, state reads/writes, scalar
 unary/binary arithmetic, bitwise operations, comparisons, numeric builtins, mutable
 scalar locals, static-memory `load8`/`store8` with checked dynamic numeric offsets,
