@@ -144,6 +144,8 @@ export interface Machine {
    * rig 保持缺省，避免为每个 rig 增加 DDL state。
    */
   readonly dynamicClock?: boolean;
+  /** The adapter services deferred Flash stores before the next guest instruction. */
+  readonly deferDynamicFlashStore?: boolean;
   /** LSE/LSI 频率；缺省使用 clock-tree 的 32.768 kHz / 32 kHz。 */
   readonly lseFrequency?: number;
   readonly lsiFrequency?: number;

@@ -1251,12 +1251,28 @@ export function nextTimerDeadlinePs(b: Body): Value<number> {
             body2.setLocal(found, bool(body2, true));
           });
 
+          if (config.channels === 0) return;
+
+          let enableMask = 0;
+          for (let channel = 0; channel < config.channels; channel += 1)
+            enableMask |= 1 << (4 * channel);
+          const irqMask = ((1 << config.channels) - 1) << 1;
+          const ccer = loadReg(scope, config, CCER);
+          const dier = loadReg(scope, config, DIER);
+          const compares = scope.bitOr(
+            scope.bitAnd(ccer, num(scope, enableMask)),
+            scope.bitAnd(dier, num(scope, irqMask)),
+          );
           const channel = scope.local(types.number, num(scope, 1));
           scope.while(
             (test) =>
-              test.lessThanOrEqual(
-                test.getLocal(channel),
-                test.constant(types.number, config.channels),
+              boolAnd(
+                asBody(test),
+                test.notEqual(types.number, compares, test.constant(types.number, 0)),
+                test.lessThanOrEqual(
+                  test.getLocal(channel),
+                  test.constant(types.number, config.channels),
+                ),
               ),
             (loop) => {
               const body2 = asBody(loop);
@@ -1282,8 +1298,6 @@ export function nextTimerDeadlinePs(b: Body): Value<number> {
                 ),
                 num(body2, 3),
               );
-              const ccer = loadReg(body2, config, CCER);
-              const dier = loadReg(body2, config, DIER);
               const channelEnabled = boolOr(
                 body2,
                 body2.notEqual(

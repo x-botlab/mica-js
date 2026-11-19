@@ -253,13 +253,23 @@ function bankMaskValue(b: Body, bank: Value<number>): Value<number> {
   return value;
 }
 
-/** 运行期 IRQ 号的 bank 位读取。 */
-function bankBitAtDynamic(b: Body, base: number, index: Value<number>): Value<boolean> {
-  const bank = b.shiftRightUnsigned(index, num(b, 5));
-  const bit = b.shiftLeft(num(b, 1), b.bitAnd(index, num(b, 31)));
-  const at = b.add(num(b, base), b.shiftLeft(bank, num(b, 2)));
+/** 非零 bank 位图的最低置位下标；无符号移位也能处理 bit 31。 */
+function firstIrqBit(b: Body, bits: Value<number>): Value<number> {
+  let word = bits;
+  let index = num(b, 0);
 
-  return b.notEqual(types.number, b.bitAnd(loadAt(b, at), bit), num(b, 0));
+  for (const width of [16, 8, 4, 2, 1]) {
+    const skip = b.select(
+      types.number,
+      b.equal(types.number, b.bitAnd(word, num(b, (1 << width) - 1)), num(b, 0)),
+      (high) => high.constant(types.number, width),
+      (low) => low.constant(types.number, 0),
+    );
+
+    index = b.add(index, skip);
+    word = b.shiftRightUnsigned(word, skip);
+  }
+  return index;
 }
 
 /** 静态 IRQ 是否使能。 */
@@ -1811,65 +1821,52 @@ export function dispatchExceptions(b: Body, returnPc: number | Value<number>): V
               for (const config of USARTS)
                 addSource(inner, config.irq, usartPending(inner, config));
 
-              const irq = inner.local(types.number, 0);
-
-              inner.while(
-                (test) =>
-                  test.lessThan(
-                    test.getLocal(irq),
-                    test.constant(types.number, G431_IRQ_MAX + 1),
+              // 先逐 bank 排除不可能入选的 IRQ；组优先级和屏蔽仍在候选比较中处理，
+              // 因为即使不能抢占，候选也参与 ICSR.VECTPENDING 的选择。
+              sourceWords.forEach((source, bank) => {
+                const eligible = inner.bitAnd(
+                  inner.bitOr(bankWord(inner, PENDING, bank), inner.getLocal(source)),
+                  inner.bitAnd(
+                    bankWord(inner, ENABLED, bank),
+                    inner.bitNot(bankWord(inner, ACTIVE, bank)),
                   ),
-                (loopBody) => {
-                  const body = asBody(loopBody);
-                  const current = body.getLocal(irq);
+                );
+                const candidates = inner.local(
+                  types.number,
+                  inner.bitAnd(eligible, num(inner, BANK_MASKS[bank]!)),
+                );
 
-                  let sourceWord = body.getLocal(sourceWords[0]!);
-
-                  for (let bank = 1; bank < sourceWords.length; bank += 1)
-                    sourceWord = body.select(
+                inner.while(
+                  (test) =>
+                    test.notEqual(
                       types.number,
-                      body.equal(
-                        types.number,
-                        body.shiftRightUnsigned(current, num(body, 5)),
-                        num(body, bank),
-                      ),
-                      (inner) => inner.getLocal(sourceWords[bank]!),
-                      () => sourceWord,
-                    );
-
-                  const exception = body.add(current, num(body, 16));
-                  const priority = priorityByteOfIrqDynamic(body, current);
-                  const group = body.shiftRightUnsigned(priority, groupShiftValue);
-                  const stored = bankBitAtDynamic(body, PENDING, current);
-                  const sourceBit = body.notEqual(
-                    types.number,
-                    body.bitAnd(
-                      sourceWord,
-                      body.shiftLeft(num(body, 1), body.bitAnd(current, num(body, 31))),
+                      test.getLocal(candidates),
+                      test.constant(types.number, 0),
                     ),
-                    num(body, 0),
-                  );
-                  const pending = boolOr(body, stored, sourceBit);
+                  (loopBody) => {
+                    const body = asBody(loopBody);
+                    const bits = body.getLocal(candidates);
+                    const current = body.add(num(body, 32 * bank), firstIrqBit(body, bits));
+                    const exception = body.add(current, num(body, 16));
+                    const priority = priorityByteOfIrqDynamic(body, current);
+                    const group = body.shiftRightUnsigned(priority, groupShiftValue);
 
-                  considerValue(
-                    body,
-                    exception,
-                    pending,
-                    bankBitAtDynamic(body, ENABLED, current),
-                    boolOr(
+                    considerValue(
                       body,
-                      bankBitAtDynamic(body, ACTIVE, current),
+                      exception,
+                      bool(body, true),
+                      bool(body, true),
                       body.equal(types.number, active, exception),
-                    ),
-                    priority,
-                    group,
-                    configurableAllowed(body, group),
-                    true,
-                    selection,
-                  );
-                  body.setLocal(irq, body.add(current, num(body, 1)));
-                },
-              );
+                      priority,
+                      group,
+                      configurableAllowed(body, group),
+                      true,
+                      selection,
+                    );
+                    body.setLocal(candidates, body.bitAnd(bits, body.subtract(bits, num(body, 1))));
+                  },
+                );
+              });
 
               writeHidden(inner, H_VECTPENDING, inner.getLocal(selection.pending));
               writeHidden(

@@ -47,6 +47,7 @@ import {
   SERVICE_DEFER_READ,
   SERVICE_DEFER_WRITE,
   SERVICE_DISPATCH,
+  SERVICE_IRQ,
   SERVICE_FLASH_WRITE,
   SERVICE_SYSTEM_WRITE,
   SERVICE_GPIO_WRITE,
@@ -155,6 +156,8 @@ const SERVICE_SYNC = 0x20020;
 const SERVICE_READ = 0x20030;
 /** 非 GPIO 外设写的延迟执行服务块：寄存器读改写链只在这里翻译一次。 */
 const SERVICE_WRITE = 0x20040;
+/** 只有未屏蔽的待扫描中断才进入完整的 NVIC 扫描。 */
+const SERVICE_IRQ_SCAN = 0x20064;
 
 /**
  * 一个块的复杂度预算。纯 ALU/NOP/静态访存计 1，有静态地址的外设访问计 2，未知
@@ -179,6 +182,7 @@ const isServicePc = (pc: number): boolean =>
   pc === SERVICE_READ ||
   pc === SERVICE_WRITE ||
   pc === SERVICE_DISPATCH ||
+  pc === SERVICE_IRQ_SCAN ||
   pc === SERVICE_FLASH_WRITE ||
   pc === SERVICE_SYSTEM_WRITE ||
   (pc >= SERVICE_CORE_WRITE_BASE && pc < SERVICE_CORE_WRITE_BASE + 8) ||
@@ -213,6 +217,7 @@ function createMachine(frequency: number, hse: number): Machine {
     cyclePs: Math.max(1, Math.round(PICOSECONDS_PER_SECOND / frequency)),
     hseFrequency: hse,
     dynamicClock: true,
+    deferDynamicFlashStore: true,
     alternateDrivers: [...usartDrivers(), ...alternateDriversOf(PERIPHERALS)],
     peripherals: PERIPHERALS,
     interruptSources: PERIPHERALS.flatMap((peripheral) => peripheral.interrupts ?? []),
@@ -350,26 +355,21 @@ function tick(machine: Machine, b: Body, cyclePs: Value<number>, withTime = true
  * - `SERVICE_READ`：为延迟的 GPIO IDR 读逐脚组包并写回目标寄存器；
  * - `SERVICE_WRITE`：执行延迟的非 GPIO 外设写。
  *
- * 每个服务块都是独立 PC，只有真正被跳转到时才会翻译。结尾是 `elapse(0)`，因此永远
- * 不会进入直接后端。
+ * 每个服务块都是独立 PC，只有真正被跳转到时才会翻译。`elapse(0)` 不推进时间。
  */
-function dispatchIrq(body: Body, taken: Local<boolean>, resume: Value<number>): void {
-  body.if(body.readState(IRQ_DIRTY, types.bool), (dirty) => {
-    const scope = asBody(dirty);
-
-    scope.if(
-      scope.equal(types.number, scope.readState('primask', types.number), num(scope, 0)),
-      (allowed) => {
-        const inner = asBody(allowed);
-
-        inner.setLocal(
-          taken,
-          dispatchExceptions(inner, waitExceptionReturnPc(inner, resume)),
-        );
-      },
-    );
-  });
-  syncIrqService(body);
+function dispatchIrq(body: Body, taken: Local<boolean>): void {
+  body.if(
+    boolAnd(
+      body,
+      body.readState(IRQ_DIRTY, types.bool),
+      body.equal(types.number, body.readState('primask', types.number), num(body, 0)),
+    ),
+    (ready) => {
+      ready.writeState('pc', num(asBody(ready), SERVICE_IRQ_SCAN));
+      ready.setLocal(taken, bool(asBody(ready), true));
+    },
+    (idle) => clearService(asBody(idle), SERVICE_IRQ),
+  );
 }
 
 /**
@@ -437,6 +437,26 @@ function buildCaptureService(body: Body): void {
   drainCapture(body);
 }
 
+/** 如有待消费边沿，先在当前时刻排空 FIFO 再重试本服务块。 */
+function withCaptureDrained(
+  body: Body,
+  pc: number,
+  taken: Local<boolean>,
+  run: (b: Body) => void,
+): void {
+  body.if(
+    body.notEqual(types.number, body.readState(CAPTURE_PENDING, types.number), num(body, 0)),
+    (pending) => {
+      const scope = asBody(pending);
+
+      scope.writeState(CAPTURE_RESUME, num(scope, pc));
+      scope.writeState('pc', num(scope, SERVICE_CAPTURE));
+      scope.setLocal(taken, bool(scope, true));
+    },
+    (ready) => run(asBody(ready)),
+  );
+}
+
 function buildService(machine: Machine, pc: number): BlockIR {
   const builder = createJitBlockBuilder();
 
@@ -451,47 +471,40 @@ function buildService(machine: Machine, pc: number): BlockIR {
       body.writeState('pc', captureResume);
       body.setLocal(taken, bool(body, true));
     } else if (pc === SERVICE_TICK) {
-      // 捕获边沿必须先于 TIM advance 消费；否则 TIM 已越过 edge，observe 会因
-      // timePs < LastPs 拒绝该边沿。
-      drainCapture(body);
-      const pending = body.readState(PENDING_PS, types.number);
+      withCaptureDrained(body, pc, taken, (body) => {
+        // 捕获边沿必须先于 TIM advance 消费，否则 observe 会拒绝已越过的边沿。
+        const pending = body.readState(PENDING_PS, types.number);
 
-      body.writeState(PENDING_PS, num(body, 0));
-      body.if(body.greaterThan(pending, num(body, 0)), (step) => {
-        const scope = asBody(step);
+        body.writeState(PENDING_PS, num(body, 0));
+        body.if(body.greaterThan(pending, num(body, 0)), (step) => {
+          const scope = asBody(step);
 
-        // 模块的输入捕获/RTC/超时读取绝对时间；必须在 advance 之前累计。
-        scope.writeState(
-          NOW_PS,
-          scope.add(scope.readState(NOW_PS, types.number), pending),
-        );
-        scope.if(scope.readState(SYSTICK_ON, types.bool), (running) => {
-          advanceSystick(asBody(running), pending);
+          // 模块的输入捕获/RTC/超时读取绝对时间；必须在 advance 之前累计。
+          scope.writeState(NOW_PS, scope.add(scope.readState(NOW_PS, types.number), pending));
+          scope.if(scope.readState(SYSTICK_ON, types.bool), (running) => {
+            advanceSystick(asBody(running), pending);
+          });
+          scope.if(
+            scope.notEqual(types.number, scope.readState(TX_MASK, types.number), num(scope, 0)),
+            (sending) => {
+              advanceUsart(asBody(sending), pending, USART_TX_CHANNELS);
+            },
+          );
+          scope.if(schedulePeripheralAdvances(scope, pending), (scheduled) => {
+            asBody(scheduled).setLocal(taken, bool(asBody(scheduled), true));
+          });
         });
-        scope.if(
-          scope.notEqual(types.number, scope.readState(TX_MASK, types.number), num(scope, 0)),
-          (sending) => {
-            advanceUsart(asBody(sending), pending, USART_TX_CHANNELS);
-          },
+        body.if(
+          body.getLocal(taken),
+          () => {},
+          (normal) => dispatchIrq(asBody(normal), taken),
         );
-        scope.if(schedulePeripheralAdvances(scope, pending), (scheduled) => {
-          asBody(scheduled).setLocal(taken, bool(asBody(scheduled), true));
-        });
       });
-      body.if(
-        body.getLocal(taken),
-        () => {},
-        (normal) => dispatchIrq(asBody(normal), taken, resume),
-      );
+    } else if (pc === SERVICE_IRQ_SCAN) {
+      body.setLocal(taken, dispatchExceptions(body, waitExceptionReturnPc(body, resume)));
+      syncIrqService(body);
     } else if (pc === SERVICE_DISPATCH) {
-      dispatchIrq(body, taken, resume);
-      body.if(
-        body.getLocal(taken),
-        () => {},
-        (back) => {
-          asBody(back).writeState('pc', resume);
-        },
-      );
+      dispatchIrq(body, taken);
     } else if (pc === SERVICE_SYNC) {
       syncMarkedPorts(body);
     } else if (pc === SERVICE_READ) {
@@ -577,9 +590,10 @@ function buildService(machine: Machine, pc: number): BlockIR {
         });
       });
     } else if (pc >= SERVICE_ADVANCE_BASE && pc < SERVICE_ADVANCE_BASE + 16) {
-      drainCapture(body);
-      advanceServiceSlot(body, pc, resume);
-      body.setLocal(taken, bool(body, true));
+      withCaptureDrained(body, pc, taken, (ready) => {
+        advanceServiceSlot(ready, pc, resume);
+        ready.setLocal(taken, bool(ready, true));
+      });
     } else if (pc >= SERVICE_CORE_WRITE_BASE && pc < SERVICE_CORE_WRITE_BASE + 8) {
       const kind = pc - SERVICE_CORE_WRITE_BASE;
 

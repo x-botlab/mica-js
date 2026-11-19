@@ -31,7 +31,7 @@ import {
   writeWord,
 } from './ir';
 import type { Body } from './ir';
-import { readPeripheral, writePeripheral } from './bus';
+import { readPeripheral, registerDeferredWrite, writePeripheral } from './bus';
 import {
   GPIO_BRR,
   GPIO_BSRR,
@@ -40,6 +40,7 @@ import {
 } from './gpio';
 import { readSystem, writeSystem } from './nvic';
 import { writeFlashMemory } from './flash';
+import { machine } from './machine';
 
 /**
  * 32 位地址空间的访存分派。
@@ -430,6 +431,10 @@ export function writeMemory(
     return;
   }
 
+  // Keep the possible code write out of the SRAM hot block. The Flash service still
+  // performs the actual write and triggers the normal code-version invalidation.
+  const deferFlash = defer && machine().deferDynamicFlashStore === true;
+
   b.if(
     inRegion(b, address, SRAM_BASE, SRAM_SIZE),
     (ram) => {
@@ -445,7 +450,8 @@ export function writeMemory(
         (flash) => {
           const scope = asBody(flash);
 
-          writeFlashMemory(scope, offsetFrom(scope, address, FLASH_BASE), size, value);
+          if (deferFlash) registerDeferredWrite(scope, address, size, value);
+          else writeFlashMemory(scope, offsetFrom(scope, address, FLASH_BASE), size, value);
         },
         (notFlash) => {
           const scope = asBody(notFlash);
@@ -481,12 +487,14 @@ export function writeMemory(
                         (flashAlias) => {
                           const scope2 = asBody(flashAlias);
 
-                          writeFlashMemory(
-                            scope2,
-                            scope2.bitAnd(address, num(scope2, CODE_MASK)),
-                            size,
-                            value,
-                          );
+                          if (deferFlash) registerDeferredWrite(scope2, address, size, value);
+                          else
+                            writeFlashMemory(
+                              scope2,
+                              scope2.bitAnd(address, num(scope2, CODE_MASK)),
+                              size,
+                              value,
+                            );
                         },
                       );
                     },
