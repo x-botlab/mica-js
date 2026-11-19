@@ -54,6 +54,14 @@ const unary: Partial<Record<UnaryOperator, string>> = {
   not: '!',
   bitNot: '~',
 };
+const comparisons = new Set<BinaryOperator>([
+  'lessThan',
+  'lessThanOrEqual',
+  'greaterThan',
+  'greaterThanOrEqual',
+  'equal',
+  'notEqual',
+]);
 const numeric = new Set([
   'isNaN',
   'isFinite',
@@ -1437,6 +1445,8 @@ class Instruction {
   private readonly writtenMemories = new Set<number>();
   /** Results whose type is an object value; identity comparison would change their meaning. */
   private readonly references = new Set<number>();
+  /** Results whose emitted operations guarantee booleans, not just declared bool types. */
+  private readonly booleanResults = new Set<number>();
   private labels = 0;
 
   constructor(
@@ -1884,12 +1894,13 @@ class Instruction {
   /**
    * A condition slot holds a boolean in every conforming program, so the type check is a
    * `typeof` test inlined at the use site; the host helper only runs on the failure path.
-   * A call per condition dominated small instruction blocks. A condition the analyzer proved
-   * boolean needs no test at all.
+   * A call per condition dominated small instruction blocks. Constants and operators that
+   * can only produce a boolean need no test at all.
    */
   private condition(id: number): string {
     const folded = this.folded.get(id);
     if (folded !== undefined && typeof folded.value === 'boolean') return folded.text;
+    if (this.booleanResults.has(id)) return this.value(id);
     return guard(this.value(id));
   }
 
@@ -2131,6 +2142,7 @@ class Instruction {
         const operator = unary[operation.operator];
         if (!operator) throw unsupported;
         assign(`(${operator}${this.value(operation.value)})`);
+        if (operation.operator === 'not') this.booleanResults.add(operation.result);
         break;
       }
       case 'binary': {
@@ -2138,6 +2150,7 @@ class Instruction {
         if (!operator) throw unsupported;
         const left = this.value(operation.left);
         const right = this.value(operation.right);
+        if (comparisons.has(operation.operator)) this.booleanResults.add(operation.result);
         // Byte sequences and intents compare by content in the generic host; `===` would
         // compare identity and silently change the result.
         if (
@@ -2152,6 +2165,7 @@ class Instruction {
       }
       case 'numeric':
         if (!numeric.has(operation.builtin)) throw unsupported;
+        if (predicates.has(operation.builtin)) this.booleanResults.add(operation.result);
         assign(
           `${predicates.has(operation.builtin) ? 'Number' : 'Math'}.${operation.builtin}(${operation.args.map((id) => this.value(id)).join(',')})`,
         );
@@ -2292,6 +2306,7 @@ class Instruction {
       case 'and':
       case 'or': {
         if (operation.right.body.operations.at(-1)?.kind !== 'yield') throw unsupported;
+        this.booleanResults.add(operation.result);
         const label = `${operation.kind}${this.labels++}`;
         lines.push(
           `${result} = ${this.condition(operation.left)};`,

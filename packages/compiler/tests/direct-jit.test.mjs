@@ -1538,6 +1538,57 @@ test('pure scalar select folds into one conditional expression', () => {
   }
 });
 
+test('direct conditions skip checks only for operations that produce booleans', () => {
+  for (const kind of ['and', 'or']) {
+    const b = builder();
+    const x = b.read('x');
+    const compare = b.binary('greaterThan', x, b.constant(0), 'bool');
+    const predicate = b.value({ kind: 'numeric', builtin: 'isInteger', args: [x] }, 'bool');
+    const inverted = b.value(
+      { kind: 'unary', operator: 'not', value: kind === 'and' ? compare : predicate },
+      'bool',
+    );
+    const flag = b.read('flag', 'bool');
+    const condition = b.value(
+      {
+        kind,
+        left: inverted,
+        right: { type: { kind: 'bool' }, body: { operations: [{ kind: 'yield', value: flag }] } },
+      },
+      'bool',
+    );
+    for (const [index, value] of [compare, predicate, condition].entries()) {
+      const result = b.constant(index + 1);
+      b.operations.push({
+        kind: 'if',
+        condition: value,
+        yes: { operations: [{ kind: 'write', name: 'marker', value: result }] },
+      });
+    }
+    b.delay(1);
+    const instructions = [b.instruction(0, 99)];
+    const program = compileDirectJit(instructions, binding);
+    const source = generated(program);
+    assert.equal([...source.matchAll(/H\.checkBoolean\(/g)].length, 1, kind);
+
+    for (const x of [-1, 0.5, 1]) {
+      for (const flag of [true, false, 'not a boolean']) {
+        const f = frame(program, [0, x, 0, flag, 0, 0]);
+        const reference = generic(instructions, f.states, f.memories);
+        const readsRight = kind === 'and' ? x <= 0 : Number.isInteger(x);
+        if (readsRight && typeof flag !== 'boolean') {
+          const error = { name: 'TypeError', message: 'Condition must be a boolean' };
+          assert.throws(() => reference.run(5), error);
+          assert.throws(() => program.run(f, 5), error);
+        } else {
+          assert.equal(program.run(f, 5), reference.run(5));
+          assert.deepEqual(f.states, reference.states);
+        }
+      }
+    }
+  }
+});
+
 test('select branches with effects or extra yields keep the labeled block', () => {
   const effectful = builder();
   const condition = effectful.read('flag', 'bool');
