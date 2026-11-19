@@ -102,9 +102,9 @@ class BoardRuntime implements Board {
   status: BoardStatus = 'ready';
   phase = 'assembly';
   current: Instance | undefined;
-  electricalDirty = true;
-  /** Dirty electrical slots: the publish plan maps them straight onto sample slots. */
-  readonly dirtyElectricalSlots = new Set<number>();
+  /** -1: clean; -2: initial solve or multiple dirty slots; otherwise the only dirty slot. */
+  private pendingElectricalSlot = -2;
+  private readonly dirtyElectricalSlots = new Set<number>();
   private readonly observations = new ActivationQueue<Observation>();
   private readonly reactionBatch: Reaction[] = [];
   private readonly changeObservations: Receiver[] = [];
@@ -589,13 +589,32 @@ class BoardRuntime implements Board {
   electricalSlot(pin: ElectricalPin): number {
     return this.electricalSlots.get(pin)!;
   }
+  markElectricalDirty(slot: number): void {
+    const pending = this.pendingElectricalSlot;
+    if (pending === slot) return;
+    if (pending === -1) {
+      this.pendingElectricalSlot = slot;
+      return;
+    }
+    if (pending >= 0) {
+      this.dirtyElectricalSlots.add(pending);
+      this.pendingElectricalSlot = -2;
+    }
+    this.dirtyElectricalSlots.add(slot);
+  }
+  /** Dirty slot count for diagnostics, not used by the publication path. */
+  get dirtyElectricalCount(): number {
+    const pending = this.pendingElectricalSlot;
+    return pending >= 0 ? 1 : this.dirtyElectricalSlots.size;
+  }
   private publish(): void {
-    if (!this.electricalDirty) return;
+    const pending = this.pendingElectricalSlot;
+    if (pending === -1) return;
     // Fused publish: dirty slots go straight into the local solve and the changed slots
     // resolve their pre-bound sample slot, so no pin object or map hop is involved.
-    const changed = this.network.solveSlots(this.dirtyElectricalSlots);
-    this.dirtyElectricalSlots.clear();
-    this.electricalDirty = false;
+    const changed = this.network.solveSlots(pending >= 0 ? pending : this.dirtyElectricalSlots);
+    if (pending === -2) this.dirtyElectricalSlots.clear();
+    this.pendingElectricalSlot = -1;
     for (let index = 0; index < changed.length; index++)
       this.invalidate(this.sampleSlotsBySlot[changed[index]!]!);
   }
@@ -775,7 +794,7 @@ class BoardRuntime implements Board {
   }
   boundary(): void {
     for (;;) {
-      if (this.electricalDirty) this.publish();
+      if (this.pendingElectricalSlot !== -1) this.publish();
       if (!this.observations.size) return;
       const reactions = this.reactionBatch;
       reactions.length = 0;

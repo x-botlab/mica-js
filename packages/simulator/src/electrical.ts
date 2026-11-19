@@ -99,10 +99,11 @@ export interface ElectricalNetwork {
   solve(changedPins?: Iterable<ElectricalPin>): readonly ElectricalPin[];
   /**
    * Slot-addressed form of :func:`solve` for callers that already know board pin slots.
+   * A number denotes a complete, single-slot dirty batch.
    * Returns the changed slots in ascending board order; the array is valid until the next
    * solve call, so consumers must publish from it immediately.
    */
-  solveSlots(changedSlots?: Iterable<number>): readonly number[];
+  solveSlots(changedSlots?: number | Iterable<number>): readonly number[];
   readonly stats: ElectricalStats;
 }
 
@@ -991,12 +992,7 @@ export function createElectricalNetwork(
     }
     list[position] = slot;
   };
-  /**
-   * Publishes the accepted leaf batch: every pin on a touched node gets the reference
-   * voltage, samples are committed as one batch, then intents, edges and degrees follow.
-   * No pin, sample, intent or degree changes before the whole batch is accepted.
-   */
-  const applyLeaf = (count: number): void => {
+  const ownComponentArrays = (): void => {
     if (!componentArraysOwned) {
       prepared = {
         ...prepared!,
@@ -1005,6 +1001,67 @@ export function createElectricalNetwork(
       };
       componentArraysOwned = true;
     }
+  };
+  const commitLeafEdges = (
+    slot: number,
+    target: number,
+    voltage: number,
+    intent: readonly ResistorBranch[],
+    edges: readonly Edge[],
+  ): void => {
+    const previousTarget = pinEdges[slot]![0]!.to;
+    if (previousTarget !== target) {
+      nodeDegree[previousTarget] = nodeDegree[previousTarget]! - 1;
+      nodeDegree[target] = nodeDegree[target]! + 1;
+    }
+    publishedVoltages[pinNodes[slot]!] = voltage;
+    intents[slot] = intent;
+    pinEdges[slot] = edges;
+    setPinHash(slot, edges);
+  };
+  const finishLeaf = (): void => {
+    // The general solver can rebuild the partition from the committed edges without
+    // discarding the admitted graphs or the numerical cache.
+    blocksStale = true;
+    statistics.solves++;
+    statistics.leafPropagations++;
+  };
+  /**
+   * Once the single dirty slot is admitted, the whole batch is known to be valid.
+   * The plan visits one node's pins in board order, so no staging or merging is needed.
+   */
+  const applySingleLeaf = (
+    slot: number,
+    intent: readonly ResistorBranch[],
+    plan: LeafPropagation,
+  ): readonly number[] => {
+    ownComponentArrays();
+    const { node, target, voltage } = plan;
+    const { nodeComponents, nodeUniform } = prepared!;
+    nodeComponents[node] = nodeComponents[target]!;
+    nodeUniform[node] = nodeUniform[target]!;
+    let changed = 0;
+    if (publishedVoltages[node] !== voltage) {
+      for (let index = 0; index < plan.slots.length; index++) {
+        const pin = plan.pins[index]!;
+        const sample = plan.samples[index]!;
+        if (pin.sample === sample) continue;
+        pin.sample = sample;
+        changedSlots[changed++] = plan.slots[index]!;
+      }
+    }
+    commitLeafEdges(slot, target, voltage, intent, plan.edges);
+    finishLeaf();
+    changedSlots.length = changed;
+    return changed === 0 ? emptySlots : changedSlots;
+  };
+  /**
+   * Publishes the accepted leaf batch: every pin on a touched node gets the reference
+   * voltage, samples are committed as one batch, then intents, edges and degrees follow.
+   * No pin, sample, intent or degree changes before the whole batch is accepted.
+   */
+  const applyLeaf = (count: number): void => {
+    ownComponentArrays();
     const nodeComponents = prepared!.nodeComponents;
     const nodeUniform = prepared!.nodeUniform;
     changedSlots.length = 0;
@@ -1063,23 +1120,15 @@ export function createElectricalNetwork(
     for (let position = 0; position < count; position++) {
       const slot = leafSlots[position]!;
       const target = leafTargets[position]!;
-      const previousTarget = pinEdges[slot]![0]!.to;
-      publishedVoltages[pinNodes[slot]!] = nodes[target]!.reference!;
-      if (previousTarget !== target) {
-        nodeDegree[previousTarget] = nodeDegree[previousTarget]! - 1;
-        nodeDegree[target] = nodeDegree[target]! + 1;
-      }
-      intents[slot] = leafIntents[position]!;
-      const edges = leafEdges[position]!;
-      pinEdges[slot] = edges;
-      setPinHash(slot, edges);
+      commitLeafEdges(
+        slot,
+        target,
+        nodes[target]!.reference!,
+        leafIntents[position]!,
+        leafEdges[position]!,
+      );
     }
-    // Only the matrix partition is bypassed. The component arrays above were updated in
-    // place and the buckets follow the committed edges, so the next general solve rebuilds
-    // blocks from pinEdges without discarding the admitted graphs or the numerical cache.
-    blocksStale = true;
-    statistics.solves++;
-    statistics.leafPropagations++;
+    finishLeaf();
   };
 
   return {
@@ -1094,11 +1143,23 @@ export function createElectricalNetwork(
         published.push(pins[changed[position]!]!);
       return Object.freeze(published);
     },
-    solveSlots(changedSlotNumbers?: Iterable<number>): readonly number[] {
-      // Publish fast path: the dirty set is already deduplicated, so a complete batch of
-      // admitted leaf shapes needs neither a gathered array nor the generic solve
-      // bookkeeping. Anything else re-enters the full solver, which repeats the match and
-      // therefore keeps every guard on the slow path.
+    solveSlots(changedSlotNumbers?: number | Iterable<number>): readonly number[] {
+      if (typeof changedSlotNumbers === 'number') {
+        const slot = changedSlotNumbers;
+        if (prepared !== undefined) {
+          const intent = pins[slot]!.intent;
+          if (intent !== intents[slot]) {
+            const plan = matchLeaf(slot, intent);
+            if (plan !== undefined) return applySingleLeaf(slot, intent, plan);
+          }
+        }
+        inputSlots[0] = slot;
+        inputSlots.length = 1;
+        return runSolve(inputSlots);
+      }
+      // An iterable batch of admitted leaf shapes can also bypass generic bookkeeping.
+      // Anything else re-enters the full solver, which repeats the match and keeps every
+      // guard on the slow path.
       //
       // The signature stays `Iterable<number>`: only inputs that are known to iterate
       // repeatedly may be probed and then replayed. Any other iterable could be a

@@ -53,8 +53,7 @@ export interface InstanceBoard {
   readonly time: number;
   readonly phase: string;
   readonly current: Instance | undefined;
-  electricalDirty: boolean;
-  readonly dirtyElectricalSlots: Set<number>;
+  markElectricalDirty(slot: number): void;
   readonly jits: Jit[];
   readonly waitingJits: Set<Jit>;
   assertAlive(instance?: Instance): void;
@@ -449,8 +448,7 @@ export class Instance {
     }
     if (entry.pin.intent === value) return false;
     entry.pin.intent = value as readonly ResistorBranch[];
-    board.dirtyElectricalSlots.add(entry.slot);
-    board.electricalDirty = true;
+    board.markElectricalDirty(entry.slot);
     return true;
   }
   /**
@@ -723,8 +721,7 @@ export class Instance {
           const current = resolve();
           if (current.intent === value) return;
           current.intent = value as readonly ResistorBranch[];
-          this.board.dirtyElectricalSlots.add(slot);
-          this.board.electricalDirty = true;
+          this.board.markElectricalDirty(slot);
         },
         resistor: (resistance: unknown) => {
           const r = electricalNumber(resistance);

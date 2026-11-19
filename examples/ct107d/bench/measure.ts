@@ -42,7 +42,7 @@ interface ElectricalStats {
 }
 
 interface ElectricalNetwork {
-  solveSlots(changedSlots?: Iterable<number>): readonly number[];
+  solveSlots(changedSlots?: number | Iterable<number>): readonly number[];
   readonly stats: ElectricalStats;
 }
 
@@ -91,7 +91,7 @@ interface RuntimeLike {
    * 用它把每条消息归属到 `Instance.id`，再由 `designators` 换成板面位号。
    */
   readonly current: { readonly id: string } | undefined;
-  readonly dirtyElectricalSlots: Set<number> | undefined;
+  readonly dirtyElectricalCount: number | undefined;
   readonly network: ElectricalNetwork | undefined;
   readonly jits: readonly JitLike[] | undefined;
   boundary(): void;
@@ -268,7 +268,7 @@ function createProbe(board: unknown, designators: ReadonlyMap<string, string>): 
   runtime.publish = function publishCounted(this: unknown) {
     // `publish()` 只在有脏槽时推进求解；这里同时记录调用数、真正求解的次数与脏槽峰值。
     if (active) {
-      const dirty = runtime.dirtyElectricalSlots?.size ?? 0;
+      const dirty = runtime.dirtyElectricalCount ?? 0;
 
       counters.publishCalls++;
       if (dirty > 0) counters.electricalPublishes++;
@@ -285,7 +285,7 @@ function createProbe(board: unknown, designators: ReadonlyMap<string, string>): 
 
   if (network !== undefined && typeof network.solveSlots === 'function') {
     const original = network.solveSlots.bind(network);
-    const counted = (slots?: Iterable<number>): readonly number[] => {
+    const counted = (slots?: number | Iterable<number>): readonly number[] => {
       if (!active) return original(slots);
 
       // `process.cpuUsage` 的粒度是 1 µs，单次求解只有几十微秒，改用单调时钟累计。

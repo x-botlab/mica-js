@@ -498,6 +498,42 @@ function publishFixture() {
   };
 }
 
+test('numeric dirty slots match a one-element batch through replay and topology fallback', () => {
+  const single = publishFixture();
+  const batch = publishFixture();
+  const compare = (drive, expected) => {
+    drive(single);
+    drive(batch);
+    assert.deepEqual(single.network.solveSlots(single.slots.sender), expected);
+    assert.deepEqual(batch.network.solveSlots([batch.slots.sender]), expected);
+    assert.deepEqual(single.network.stats, batch.network.stats);
+    for (const name of ['sender', 'receiver', 'fresh', 'freshReceiver'])
+      assert.deepEqual(single[name].sample, batch[name].sample);
+  };
+  const { sender } = single.slots;
+  const signal = [sender, sender + 1];
+  // The initial solve still sees the other dirty pin outside the hint.
+  compare(() => {}, [0, 1, ...signal, single.slots.fresh, single.slots.fresh + 1]);
+  assert.equal(single.freshReceiver.sample.voltage, 0);
+  // Admit high, then replay low/high without changing the circuit matrix.
+  compare((f) => (f.sender.intent = f.senderHigh), signal);
+  const before = single.network.stats;
+  compare((f) => (f.sender.intent = f.senderLow), signal);
+  compare((f) => (f.sender.intent = f.senderHigh), signal);
+  assert.equal(single.network.stats.leafPropagations, before.leafPropagations + 2);
+  assert.equal(single.network.stats.topologyPrepares, before.topologyPrepares);
+
+  const previous = single.sender.sample;
+  single.sender.intent = [{ to: single.senderHigh[0].to, resistance: Number.NaN }];
+  const settled = single.network.stats;
+  assert.throws(() => single.network.solveSlots(sender), { code: 'INVALID_ELECTRICAL_PARAMETER' });
+  assert.equal(single.sender.sample, previous);
+  assert.deepEqual(single.network.stats, settled);
+  // Detaching the branch needs the current topology, not the pre-replay topology.
+  compare((f) => (f.sender.intent = []), signal);
+  assert.equal(single.sender.sample.status, 'floating');
+});
+
 test('a one-shot iterable is consumed once, so no dirty slot is dropped', () => {
   const fixture = publishFixture();
   const { network, sender, receiver, fresh, freshReceiver, senderHigh, slots } = fixture;
