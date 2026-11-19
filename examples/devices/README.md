@@ -141,8 +141,11 @@ const legacyCreate = adaptModelFactory(module.create, {
 | `seg4`          | 共阴 / 共阳四位数码管                           | `examples/ct107d`                  |
 | `blue-led`      | 蓝色 LED                                        | `examples/ct107d`、`examples/led8` |
 
-本轮新补齐的 `hall`、`ir-emitter`、`mcp4017`、`potentiometer`、`lm324` 只交付器件库，
-尚未接入对应整板；“目标板”表示预期接线目标，不代表已完成整板实例化。
+本轮新补齐的 `hall`、`ir-emitter`、`mcp4017`、`potentiometer`、`lm324` 只交付器件库；
+“目标板”表示预期接线目标。`mcp4017` 与 `potentiometer` 的独立器件包未装配到对应
+整板，但 `examples/ct117e-m4` 的 fused 模型在自身 `model.ddl` 内自有实现，不复用
+这些包；`at24c02`、`ne555`、`74hc573`、`blue-led` 同样不被 ct117e fused 复用。
+ct117e 的 555 是输出反馈型无稳态，`DISCH` 悬空，与 `ne555` 的 rA/rB/DISCH 拓扑不同。
 
 `push-button` 是把真实四脚轻触开关抽象成 `a`/`b` 两端的业务模型，不声明四脚封装。
 按下在两端建立 1 Ω 支路，松开移除支路并保持悬空；旧模型的 1 GΩ “假断开”已删除。
