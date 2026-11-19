@@ -3215,6 +3215,78 @@ test('resident continuations keep the captured pre-elapse load', () => {
   assert.equal(pair.right.frame.resume, 0);
 });
 
+test('hosted resident checkpoint keeps the pre-publication capture on rejection or admission', () => {
+  const b = builder();
+  b.write('marker', b.constant(17));
+  const loaded = b.value({ kind: 'load8', memory: ram, offset: b.read('offset') });
+  b.delay(10);
+  b.write('x', loaded);
+  const program = compileDirectJit(
+    [b.instruction(0, 99)],
+    { ...binding, host: true, split: true },
+    compileDirectJit.createCache(),
+  );
+  assert(program);
+
+  // At an exact deadline the prefix still needs publication, but the generated
+  // checkpoint must not ask to continue inline or consume the captured suffix.
+  const exact = frame(program);
+  exact.publishPending = true;
+  exact.publishCheckpoint = () => assert.fail('cannot admit a suffix at deadline equality');
+  assert.equal(program.run(exact, 10), 'invalidated');
+  assert.equal(exact.time, 0);
+  assert.equal(exact.due, 10);
+  assert.equal(exact.states[1], 1);
+  assert.notEqual(exact.resume, 0);
+  assert(exact.locals.includes(7), 'suspend with the captured load');
+
+  for (const admitted of [false, true]) {
+    const f = frame(program);
+    const events = [];
+    f.locals.fill('unsaved');
+    f.publishPending = true;
+    f.publishCheckpoint = () => {
+      assert.equal(f.time, 0, 'publish the prefix before advancing time');
+      assert.equal(f.due, 10);
+      assert.notEqual(f.resume, 0);
+      assert.equal(f.states[5], 17);
+      assert.equal(f.states[1], 1, 'the suffix has not executed');
+      assert(f.locals.every((slot) => slot === 'unsaved'), 'publish before saving the slots');
+      f.memories[0][0] = 200;
+      f.publishPending = false;
+      events.push('publish');
+      return admitted;
+    };
+    f.finishCheckpoint = (deadline, emptySuffix) => {
+      assert.equal(deadline, 11);
+      assert.equal(emptySuffix, false);
+      assert.equal(f.time, 10);
+      assert.equal(f.resume, 0);
+      assert.equal(f.states[1], 7, 'use the value captured before publication');
+      events.push('finish');
+      return false;
+    };
+    assert.equal(program.run(f, 11), 'invalidated');
+    if (!admitted) {
+      assert.deepEqual(events, ['publish']);
+      assert.equal(f.time, 0, 'a rejected publication does not consume the delay');
+      assert(f.locals.includes(7), 'save the pre-publication load for later resume');
+      const resume = f.resume;
+      assert.notEqual(resume, 0);
+      assert.equal(program.run(f, 10), 'deadline');
+      assert.equal(f.resume, resume, 'deadline equality leaves the suffix pending');
+      assert.equal(f.states[1], 1);
+      assert.equal(program.run(f, 11), 'fallback');
+    } else {
+      assert(f.locals.every((slot) => slot === 'unsaved'), 'inline resume needs no saved slots');
+    }
+    assert.deepEqual(events, admitted ? ['publish', 'finish'] : ['publish']);
+    assert.equal(f.states[1], 7);
+    assert.equal(f.time, 10);
+    assert.equal(f.resume, 0);
+  }
+});
+
 test('resident shards rebuild only the open tail and keep closed functions reusable', () => {
   const cache = compileDirectJit.createCache();
   const hostedBinding = { ...binding, host: true, split: true, shardSize: 2 };
