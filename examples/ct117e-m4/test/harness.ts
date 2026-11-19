@@ -28,24 +28,31 @@ export const CT117E_M4_TIME_QUANTUM_PS = 200_000_000;
 export const CT117E_M4_MID_TIME_PS = 220_000_000_000;
 /** 440 ms：正式窗口，覆盖三次整屏清屏、局部绘图与 10 帧发布。 */
 export const CT117E_M4_END_TIME_PS = 440_000_000_000;
+export const CT117E_M4_CLEAR_START_PS = 360_000_000_000;
+export const CT117E_M4_CLEAR_END_PS = 390_000_000_000;
 
 /**
- * `HAL_06_LCD.hex` 在 0 → 220 ms / 440 ms 的固定工作量。
+ * `HAL_06_LCD.hex` 的固定工作量，与分立 LCD 总线 oracle 对账。
  *
  * 这些数字约束 MCU 实际发出的写周期，不是允许漏边沿的容差。`wrChanges` 是融合
  * 模型内部记录的 WR 电平变化，`gramStores` 是每个真正落进 GRAM 的像素写。
  */
 export const CT117E_M4_EXPECTED = Object.freeze({
   midpoint: Object.freeze({
-    wrChanges: 272_506,
-    gramStores: 136_008,
-    frames: 5,
-    nonZeroPixels: 76_800,
+    wrChanges: 80,
+    gramStores: 0,
+    frames: 0,
+    nonZeroPixels: 0,
+  }),
+  clear: Object.freeze({
+    wrChanges: 104_338,
+    gramStores: 52_169,
+    frames: 2,
   }),
   final: Object.freeze({
-    wrChanges: 545_004,
-    gramStores: 272_007,
-    frames: 10,
+    wrChanges: 157_338,
+    gramStores: 77_351,
+    frames: 3,
     nonZeroPixels: 76_800,
   }),
 });
@@ -91,6 +98,14 @@ export interface Workload {
   readonly nonZeroPixels: number;
 }
 
+export function lcdWorkDelta(before: Workload, after: Workload) {
+  return {
+    wrChanges: after.wrChanges - before.wrChanges,
+    gramStores: after.gramStores - before.gramStores,
+    frames: after.frames - before.frames,
+  };
+}
+
 export interface HarnessOptions {
   readonly firmware: Uint8Array;
   readonly clockFrequency?: number;
@@ -114,7 +129,7 @@ export interface Harness {
   memory(name: string): Uint8Array;
   workload(): Workload;
   /** 按固定步长推进到目标虚拟时间。 */
-  advanceTo(targetPs: number): void;
+  advanceTo(targetPs: number, quantumPs?: number): void;
   dispose(): void;
 }
 
@@ -436,15 +451,17 @@ export async function createHarness(options: HarnessOptions): Promise<Harness> {
         nonZeroPixels: countNonZeroPixels(memory('gram')),
       };
     },
-    advanceTo(targetPs) {
+    advanceTo(targetPs, quantumPs = CT117E_M4_TIME_QUANTUM_PS) {
       if (!Number.isSafeInteger(targetPs) || targetPs < board.time)
         throw new Error(`Invalid advance target ${targetPs} ps`);
+      if (!Number.isSafeInteger(quantumPs) || quantumPs <= 0)
+        throw new Error(`Invalid advance quantum ${quantumPs} ps`);
 
       while (board.time < targetPs) {
         const previous = board.time;
 
         try {
-          board.runUntil(Math.min(previous + CT117E_M4_TIME_QUANTUM_PS, targetPs));
+          board.runUntil(previous + Math.min(quantumPs, targetPs - previous));
         } catch (cause) {
           throw new Error(
             `ct117e-m4 failed at ${board.time} ps (pc=${String(instance.states.get('pc'))}, ` +

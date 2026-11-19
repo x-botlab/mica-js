@@ -1,11 +1,14 @@
 import { expect, it } from 'vitest';
 import { loadFirmware } from './firmware';
 import {
+  CT117E_M4_CLEAR_END_PS,
+  CT117E_M4_CLEAR_START_PS,
   CT117E_M4_END_TIME_PS,
   CT117E_M4_EXPECTED,
   CT117E_M4_MID_TIME_PS,
   createHarness,
   digest,
+  lcdWorkDelta,
   sameBytes,
   sameFrames,
 } from './harness';
@@ -21,7 +24,7 @@ interface JointAccounting {
   readonly rsSamples: number;
   readonly rsLevelChanges: number;
   readonly oracleFrames: readonly Uint8Array[];
-  readonly oracleGram: Uint8Array;
+  readonly oracleGram: Uint16Array;
   readonly fullScreenFills: readonly {
     readonly value: number;
     readonly pixels: number;
@@ -59,14 +62,11 @@ interface JointHarnessModule {
     readonly firmware: Uint8Array;
     readonly accounting?: boolean;
   }): Promise<JointOracle>;
-  gramMatchesOracle(left: Uint8Array, right: Uint8Array): boolean;
+  gramMatchesOracle(left: Uint8Array, right: Uint16Array): boolean;
 }
 
 // 通过变量说明符导入兄弟示例的 oracle，避免把未迁移的夹具源纳入本包类型检查。
-const jointSpecifier = new URL(
-  '../../devices/test/ili9325/joint-harness.ts',
-  import.meta.url,
-).href;
+const jointSpecifier = new URL('../../devices/test/ili9325/joint-harness.ts', import.meta.url).href;
 const { createJointBoard, gramMatchesOracle } = (await import(
   jointSpecifier as string
 )) as unknown as JointHarnessModule;
@@ -135,10 +135,28 @@ it('构建产物单实例运行 HAL_06_LCD.hex 440 ms，并与分立 oracle 逐�
 
     const midpoint = actual.workload();
 
-    expect(midpoint.wrChanges).toBe(CT117E_M4_EXPECTED.midpoint.wrChanges);
-    expect(midpoint.gramStores).toBe(CT117E_M4_EXPECTED.midpoint.gramStores);
-    expect(midpoint.frames).toBe(CT117E_M4_EXPECTED.midpoint.frames);
-    expect(midpoint.nonZeroPixels).toBe(CT117E_M4_EXPECTED.midpoint.nonZeroPixels);
+    expect(midpoint).toMatchObject(CT117E_M4_EXPECTED.midpoint);
+
+    const advanceClear = (timePs: number) => {
+      actual.advanceTo(timePs);
+      oracle.advanceTo(timePs);
+      const counts = oracle.readAccounting()!;
+      return {
+        actual: actual.workload(),
+        wrChanges: counts.wrLevelChanges,
+        gramStores: counts.oracleGramStores,
+        frames: counts.oracleFrames.length,
+      };
+    };
+    const before = advanceClear(CT117E_M4_CLEAR_START_PS);
+    const after = advanceClear(CT117E_M4_CLEAR_END_PS);
+    const clear = lcdWorkDelta(before.actual, after.actual);
+    expect(clear).toEqual(CT117E_M4_EXPECTED.clear);
+    expect(clear).toEqual({
+      wrChanges: after.wrChanges - before.wrChanges,
+      gramStores: after.gramStores - before.gramStores,
+      frames: after.frames - before.frames,
+    });
 
     actual.advanceTo(CT117E_M4_END_TIME_PS);
     oracle.advanceTo(CT117E_M4_END_TIME_PS);
@@ -183,16 +201,7 @@ it('构建产物单实例运行 HAL_06_LCD.hex 440 ms，并与分立 oracle 逐�
     expect(sameBytes(actual.memory('regs'), oracle.lcd.memories.get('regs')!)).toBe(true);
     expect(actual.state('index')).toBe(oracle.lcd.states.get('index'));
 
-    // 5. MCU 状态与 code/sram/ccm/periph/sys 内存摘要一致；融合新增的内部
-    //    状态不参与比较，但原 MCU 声明必须全部保留。
-    for (const [name, value] of oracle.mcu.states)
-      expect(actual.instance.states.get(name), `MCU state ${name}`).toEqual(value);
-    for (const name of ['code', 'sram', 'ccm', 'periph', 'sys'] as const)
-      expect(digest(actual.memory(name)), `MCU memory ${name}`).toBe(
-        digest(oracle.mcu.memories.get(name)!),
-      );
-
-    // 6. 独立总线 oracle 再核对一次：MCU intent 计数、像素写与最终图像。
+    // 5. 独立总线 oracle 再核对一次：MCU intent 计数、像素写与最终图像。
     const accounting = oracle.readAccounting();
 
     expect(accounting).toBeDefined();
@@ -212,6 +221,35 @@ it('构建产物单实例运行 HAL_06_LCD.hex 440 ms，并与分立 oracle 逐�
         (fill) => fill.value === 0x001f && fill.pixels === 76_800 && fill.uniform,
       ).length,
     ).toBeGreaterThan(0);
+
+    // 6. 核对 MCU 状态和内存；已完成的延迟读可以留下不同的地址暂存值。
+    const idleRead =
+      actual.state('deferRead') === false && oracle.mcu.states.get('deferRead') === false;
+    for (const [name, value] of oracle.mcu.states) {
+      if (name === 'deferReadAddress' && idleRead) continue;
+      expect.soft(actual.state(name), `MCU state ${name}`).toEqual(value);
+    }
+    for (const name of ['code', 'sram', 'ccm', 'sys'] as const)
+      expect
+        .soft(digest(actual.memory(name)), `MCU memory ${name}`)
+        .toBe(digest(oracle.mcu.memories.get(name)!));
+
+    // Fused uses the legacy periph slot for FLASH_ACR; the full MCU stores it
+    // in flashState and also models control bits beyond the firmware's latency setting.
+    const legacyAcr = 0x700;
+    const fusedPeriph = actual.memory('periph');
+    const jointPeriph = oracle.mcu.memories.get('periph')!;
+    const jointFlashState = oracle.mcu.memories.get('flashState')!;
+    const view = (bytes: Uint8Array) =>
+      new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect
+      .soft(sameBytes(fusedPeriph.subarray(0, legacyAcr), jointPeriph.subarray(0, legacyAcr)))
+      .toBe(true);
+    expect
+      .soft(sameBytes(fusedPeriph.subarray(legacyAcr + 4), jointPeriph.subarray(legacyAcr + 4)))
+      .toBe(true);
+    expect.soft(view(fusedPeriph).getUint32(legacyAcr, true), 'fused FLASH_ACR').toBe(3);
+    expect.soft(view(jointFlashState).getUint32(0, true) & 0xf, 'joint FLASH_ACR latency').toBe(3);
   } finally {
     actual.dispose();
     oracle.dispose();
