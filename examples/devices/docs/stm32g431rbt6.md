@@ -66,31 +66,35 @@ VFP 算术、lazy PreserveFPState、FP 扩展栈帧与 VSTM/VLDM 仍按未实现
 初始化（背光、寄存器序列、多次 `HAL_Delay`）。`HAL_Delay` 靠 SysTick 中断推进 `uwTick`，
 因此同一段窗口覆盖 GPIO、RCC、PWR、USART、SysTick、NVIC 与 Flash 取指。
 
-测量口径：裸 MCU 板（只接 VDD/VSS，去掉 LCD 与探针）、80 MHz（固件自己配置的主频）、
-进程 CPU 时间、三轮取最小值。三个窗口：**冷启动** 0 → 200 µs；**官方稳态** 200 µs → 220 ms；
-**无重建稳态** 220 ms → 440 ms。
+测量口径：裸 MCU 板（只接 VDD/VSS，不接 LCD 或探针）、80 MHz（固件自己配置的主频）。
+GPIO 仍按原边界发布。三轮分别记录墙钟与进程 CPU 时间，不把同一进程内复用翻译缓存的后两轮
+当成冷启动。实时倍率用仿真时间除以墙钟时间。
 
 ### 实测（`bench/stm32g431rbt6/hal-throughput.test.ts` / `bench/stm32g431rbt6/hal-precise.test.ts`）
 
-2026-11-14 当前快照（精确值随宿主和 V8 状态变化，以测试 stdout 为准）：
+| 仿真窗口   | 固件在做什么                                           |
+| ---------- | ------------------------------------------------------ |
+| 0–0.2 ms   | 建板、复位、时钟设置和 LCD 初始化的第一段              |
+| 0.2–220 ms | LCD 初始化；220 ms 时仍在 `HAL_Delay` 内轮询           |
+| 220–360 ms | 等待约 350 ms 时结束，开始清屏并首次翻译绘图路径       |
+| 360–390 ms | 稳定清屏：104,338 次 WR 采样变化，无新翻译、编译或回退 |
+| 390–440 ms | 清屏结束，执行后续绘图代码，再进入等待                 |
 
-| 指标                    | `throughput`（主路径，三次独立进程） |
-| ----------------------- | ------------------------------------ |
-| 0 → 200 µs 冷启动       | 约 236–243 ms CPU                    |
-| 200 µs → 220 ms 稳态    | 约 415–433 ms CPU                    |
-| 220 ms → 440 ms 无重建  | 约 161–179 ms CPU                    |
-| 官方稳态实时倍率        | 约 0.51–0.53×                        |
-| 无重建实时倍率          | 约 1.23–1.36×                        |
-| 整段 220 ms（含冷启动） | 约 658–670 ms                        |
-| 缓存指令块              | 311                                  |
-| resident shard          | 71                                   |
-| 程序编译次数 / fallback | 21 / 2873                            |
+2026-11-19 同固件、同裸板、无探针对照：GPIO 发布中断 direct 执行时，新增翻译并不使已有
+代码失效。只修正失效判断、仍用原重建阈值时，`throughput` 的 220–440 ms 直接程序编译
+从 59 次降为 3 次，暂时回退从 124 次增至 2,337 次；墙钟三轮由约 11.55 s / 985 ms / 760 ms 降至
+10.91 s / 863 ms / 697 ms。两边到 440 ms 均为 157,338 次 WR 采样变化。这些数字不与
+CT117E-M4 联合板的历史读数横比。
 
-`throughput` 已按 PC 缓存已编译 `Instruction`，并将已生成的 shard 函数常驻在 direct cache 中；
-每个程序修订只生成小的 PC dispatcher，新增块通常只重发开放尾 shard，并按容量回填相邻的
-稀疏 shard。220 ms 后 `directCompiles` 保持为 21，220 ms → 440 ms 没有新增编译或 fallback。
-剩余冷启动成本主要是首次设备 Thumb 翻译、IR builder 与校验，以及 V8 首次优化和 GC。
-`precise` 只作为同固件对照，精确值以 `bench/stm32g431rbt6/hal-precise.test.ts` 输出为准。
+最终策略仍只在 220–440 ms 编译 3 次，但按 PC 统计重复回退，避免新热路径迟迟得不到补编译，
+将该段回退降至 334 次。只测 360–390 ms 时，修复重编译判断的前后都有 417,472 次 direct 调用，
+墙钟没有稳定改善，说明重编译不是清屏稳态的瓶颈。
+
+另一组同进程交错对照只开关直接续跑：继续完成每次发布，但无其他调度工作时直接恢复指令，
+把 30 ms 清屏的墙钟中位数从 401 ms 降到 365 ms（约 9%，仍只有约 0.08× 实时）。
+计时轮次不记录逐边沿轨迹；单独的轨迹轮次中，WR 采样版本及其发布时间戳一致。
+`precise` 是同固件解释器对照，清屏窗的 WR 采样变化数相同，墙钟约 1.26–1.30 s。
+读数随宿主和 V8 状态变化，以测试输出为准。
 
 静态 BSRR/BRR 写会直接生成 ODR 与引脚 intent；若该写可能改变引脚，基本块在其后收束，让宿主
 电气边界看到完整脉冲。`0x08001104..0x08001152` 因此形成 8 个边沿块，而不是一个会吞掉 WR
@@ -143,21 +147,12 @@ VFP 算术、lazy PreserveFPState、FP 扩展栈帧与 VSTM/VLDM 仍按未实现
   发布与节拍边界对齐、指令块保持无 `send` 的均匀成本。直接后端已支持内联 `send`，这条
   仍保留是因为它让发布时机可预期，而不是后端限制。
 
-当前基准缓存 311 个块、71 个 resident shard。`0x08001104` 边沿块生成约 36.6 KB JS；
-8 个 LCD 边沿块合计约 251 KB。静态 GPIO 写不再经过 GPIOB service：220 ms → 440 ms 窗口
-中 GPIOB service 仅 54 次、GPIOC service 892 次，全部块入口 1,372,502 次。
-
 ### 直接后端的剩余成本
 
-- **冷启动**：首次设备 Thumb 翻译、IR builder 与校验占大头；直接程序的 shard 常驻已消除
-  每轮重拼完整源码和重新优化已封闭 shard。311 个块仍需要首次翻译和 21 次增量程序组装，
-  `0 → 200 µs` 约 0.24 s。
-- **GPIO 边沿块**：静态写已内联 ODR/intent，GPIOB service 基本消失；剩余成本集中在 intent
-  树、`sample('VDD1')` 与每边沿一次 ODR 状态提交。ODR 的全部宽度和地址路径统一从状态
-  读写，`periph` 不再保存重复副本。不能通过合块继续削减，否则会吞掉
-  WR 等外部可观察脉冲。
-- **shard/dispatcher**：最终程序 71 个 step shard。8 个 LCD 边沿块仍分散在多个 shard，
-  dispatcher 约占稳态 24.4% self samples；后续优先热 shard compaction / 下一 shard 句柄。
+- **首次执行**：Thumb 翻译、IR 构建与校验，以及宿主编译都发生在第一次走到新路径时，
+  不只发生在 `0–0.2 ms`。resident shard 可复用未改变的指令体和已封闭的 shard。
+- **稳定 GPIO 输出**：静态写已内联 ODR/intent。每次边沿仍需要提交状态、同步电气采样，
+  并按时序继续执行；不能用合并发布来减少调用，否则会吞掉 WR 等外部可观察脉冲。
 - **板上只能有一个 JIT 设备**：`runDirect` 在 `board.jits.length !== 1` 时关闭，多 MCU 板会
   静默退回解释器。
 
@@ -179,9 +174,9 @@ pnpm exec vitest run --config vitest.perf.config.ts bench/stm32g431rbt6
 
 `pnpm run bench` 会运行本包全部基准；与 STM32 相关的是 `bench/stm32g431rbt6/perf.test.ts`（`gpio-blink`，1 MHz，500 ms 仿真，结果
 **追加**到 `bench/stm32g431rbt6/results.jsonl`）、`bench/stm32g431rbt6/hal-throughput.test.ts` 与 `bench/stm32g431rbt6/hal-precise.test.ts`
-（`HAL_06_LCD`，80 MHz，冷启动 + 稳态，只把 `HAL {...}` 打到标准输出）。基准要求独占 CPU：
-每轮只跑一次、需要读数时连跑 3 次取最小值；`jit.direct` 应为 `true`、`programs` 为 1
-（`direct:false` + `programs:1` 说明整程序被直接后端拒绝并写了否定缓存）。
+（`HAL_06_LCD`，80 MHz，分段输出 `HAL {...}`）。读墙钟时避免与其他基准争抢 CPU；
+不要把三个轮次的最小值拼成一次运行。`throughput` 应启用 direct JIT，且仅要求
+360–390 ms 稳定清屏窗没有新翻译、编译或回退。
 
 两个 HAL 基准必须**分开进程**运行：器件的翻译缓存是模块级的，同进程里先跑完一种模式会把
 缓存焐热，另一种模式的冷启动读数就不可信了。
