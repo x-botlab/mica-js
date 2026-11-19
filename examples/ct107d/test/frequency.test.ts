@@ -29,13 +29,21 @@ const POLL_PS = 500_000_000;
 const LIMIT_PS = 1_050_000_000_000;
 
 interface FrequencySnapshot {
-  readonly ne555: { readonly frequency: number; readonly dutyCycle: number };
+  readonly ne555: {
+    readonly position: number;
+    readonly frequency: number;
+    readonly dutyCycle: number;
+  };
 }
 
-async function runFrequency(execution: 'throughput' | 'precise'): Promise<{
+async function runFrequency(
+  execution: 'throughput' | 'precise',
+  position?: number,
+): Promise<{
   readonly count: number;
   readonly captureMs: number;
   readonly frequency: number;
+  readonly position: number;
   readonly dutyCycle: number;
   readonly faults: readonly string[];
 }> {
@@ -59,6 +67,8 @@ async function runFrequency(execution: 'throughput' | 'precise'): Promise<{
     let capturePs = 0;
     for (let target = POLL_PS; target <= LIMIT_PS; target += POLL_PS) {
       fused.board.runUntil(target);
+      if (position !== undefined && target === LIMIT_PS - 1_000_000_000_000)
+        fused.methods.setFrequencyWiper!({ value: position });
       if (iram[0x32] === 1) {
         capturePs = fused.board.time;
         break;
@@ -72,6 +82,7 @@ async function runFrequency(execution: 'throughput' | 'precise'): Promise<{
       count: iram[0x33]! | (iram[0x34]! << 8),
       captureMs: capturePs / 1e9,
       frequency: snapshot.ne555.frequency,
+      position: snapshot.ne555.position,
       dutyCycle: snapshot.ne555.dutyCycle,
       faults: [...fused.faults],
     };
@@ -81,6 +92,17 @@ async function runFrequency(execution: 'throughput' | 'precise'): Promise<{
 }
 
 describe('CT107D 独立频率门控', () => {
+  it('运行中调节 RB3 会改变 J3 输入的实际脉冲计数和 NE555 回读', async () => {
+    const result = await runFrequency('throughput', 0.75);
+    const frequency = 1e12 / (0.693 * (10_000 + 2 * 5_500) * 1e-8 * 1e12);
+    const unsettledPrefix = 0.05 * (frequency - 4810.00481000481);
+
+    expect(result.faults).toEqual([]);
+    expect(result.position).toBe(0.75);
+    expect(result.frequency).toBeCloseTo(frequency, 8);
+    expect(Math.abs(result.count - (frequency - unsettledPrefix))).toBeLessThan(3);
+  });
+
   for (const execution of ['throughput', 'precise'] as const) {
     it(`${execution}：真实 NE555 1 s 门控计数为 4809/4810，完成时刻上界约 1 s`, async () => {
       const result = await runFrequency(execution);

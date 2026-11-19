@@ -4,9 +4,9 @@
  * - 红色：DS1/DS2 段码与 D1–D8 亮度；
  * - 青绿：按键按下/悬停与跳线悬停；
  * - 金色：SP1/K1 执行器提示；
- * - 深色滑轨与灰蓝滑块：J13/J5/J3/J2/J6 的受控档位。
+ * - 深色滑轨与灰蓝滑块：跳线档位，以及点击旋钮后展开的电位器浮层。
  *
- * 所有可见状态都来自模型事件或 `getSnapshot(null)`；指针状态只用于按下瞬间的反馈。
+ * 器件状态来自模型事件或 `getSnapshot(null)`；浮层开合是本地交互状态。
  * 模型方法失败时返回的 Promise 会继续拒绝，交给展示宿主的诊断通道，不在视图里吞掉。
  */
 import type { Value } from '@mica-js/document/fused';
@@ -29,8 +29,13 @@ import {
   jumperKnobRect,
   keyAt,
   keyLayout,
+  potentiometerAt,
+  potentiometerSlider,
+  potentiometerSliderKnob,
+  potentiometerSliderPosition,
   type JumperLayout,
   type Point,
+  type PotentiometerSliderLayout,
   type Rect,
 } from './board-layout.js';
 import {
@@ -42,6 +47,7 @@ import {
   type KeyDesignator,
 } from './board-state.js';
 import { jumperParams } from './jumper-map.js';
+import { RB2_ADC_CHANNEL } from './potentiometer-map.js';
 
 /** 宿主合同只声明三种指针事件；取消/移出按新版宿主的归一化约定也按抬起处理。 */
 export type BoardViewEvent =
@@ -50,8 +56,10 @@ export type BoardViewEvent =
       readonly type: 'pointercancel' | 'pointerleave';
     });
 
-/** 正式入口只依赖 View2D 上下文中的模型代理与重绘回调。 */
-export type BoardViewDependencies = Pick<IFusedView2DContext, 'model' | 'invalidate'>;
+/** 正式入口只依赖模型代理、可选音频与重绘回调。 */
+export type BoardViewDependencies = Pick<IFusedView2DContext, 'model' | 'invalidate'> & {
+  readonly audio?: Pick<IFusedView2DContext['audio'], 'tone'>;
+};
 
 /** View2D 工厂返回的对象，收紧为总是实现四个钩子。 */
 export interface BoardView extends IFusedView2D {
@@ -64,8 +72,14 @@ export interface BoardView extends IFusedView2D {
 interface Interaction {
   hoveredKey: KeyDesignator | undefined;
   hoveredJumper: JumperDesignator | undefined;
+  openPotentiometer: PotentiometerSliderLayout | undefined;
   /** 当前按住的具体按键；抬起、移出或取消时释放它。 */
   pointerKey: KeyDesignator | undefined;
+}
+
+interface PotentiometerDrag {
+  readonly slider: PotentiometerSliderLayout;
+  lastRequested: number;
 }
 
 const RED_ON = 'rgba(255, 59, 48, 0.94)';
@@ -86,10 +100,19 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
   const interaction: Interaction = {
     hoveredKey: undefined,
     hoveredJumper: undefined,
+    openPotentiometer: undefined,
     pointerKey: undefined,
   };
+  let drag: PotentiometerDrag | undefined;
   let disposed = false;
   let activated = false;
+
+  // 板载蜂鸣器只有开关量；用低音量方波近似有源蜂鸣器的声音。
+  const tone =
+    context.model === undefined
+      ? undefined
+      : context.audio?.tone({ frequency: 2000, type: 'square', volume: 0 });
+  let lastToneActive = false;
 
   const subscribe = context.model?.events['onDidSignal'];
   const subscription =
@@ -99,12 +122,20 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
           if (disposed) return;
           const signal = readBoardSignal(event.value);
           if (signal === undefined || !store.applySignal(signal)) return;
+          updateAudio();
           invalidate();
         });
 
   function invalidate(): void {
     if (disposed) return;
     context.invalidate();
+  }
+
+  function updateAudio(): void {
+    const active = store.state.buzzer;
+    if (tone === undefined || active === lastToneActive) return;
+    lastToneActive = active;
+    tone.set({ volume: active ? 0.06 : 0 }, { rampMs: 5 });
   }
 
   function callModel(name: string, params: Value): Promise<Value> {
@@ -165,10 +196,51 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
     );
   }
 
+  function movePotentiometer(active: PotentiometerDrag, point: Point): Promise<void> | undefined {
+    const value = potentiometerSliderPosition(active.slider, point.x);
+    if (active.lastRequested === value) return undefined;
+    active.lastRequested = value;
+    const designator = active.slider.designator;
+    const method =
+      designator === 'RB2'
+        ? 'setAnalogInput'
+        : designator === 'RB3'
+          ? 'setFrequencyWiper'
+          : 'setWiper';
+    const params: Value = designator === 'RB2' ? { channel: RB2_ADC_CHANNEL, value } : { value };
+    return callModel(method, params).then(() => undefined);
+  }
+
   function pointerDown(event: IFusedViewInput): Promise<void> | undefined {
     if (event.button !== 0) return undefined;
     refreshHover(event.position);
-    if (interaction.pointerKey !== undefined) return undefined;
+    if (interaction.pointerKey !== undefined || drag !== undefined) return undefined;
+
+    const open = interaction.openPotentiometer;
+    if (open !== undefined && contains(open.panel, event.position)) {
+      const current = store.state.potentiometers[open.designator];
+      const onTrack = contains(open.track, event.position);
+      const onKnob = contains(potentiometerSliderKnob(open, current), event.position);
+      if (!onTrack && !onKnob) return undefined;
+      drag = { slider: open, lastRequested: current };
+      return onKnob ? undefined : movePotentiometer(drag, event.position);
+    }
+
+    const potentiometer = potentiometerAt(event.position);
+    if (potentiometer !== undefined && context.model !== undefined) {
+      interaction.openPotentiometer =
+        open?.designator === potentiometer.designator
+          ? undefined
+          : potentiometerSlider(potentiometer);
+      invalidate();
+      return undefined;
+    }
+
+    if (open !== undefined) {
+      // 点外部时收起，但照常分派给原有的按键或跳线。
+      interaction.openPotentiometer = undefined;
+      invalidate();
+    }
 
     const choice = jumperChoiceAt(event.position);
     if (choice !== undefined) {
@@ -183,6 +255,10 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
 
   function pointerMove(event: IFusedViewInput): void | Promise<void> {
     refreshHover(event.position);
+    if (drag !== undefined) {
+      if ((event.buttons & 1) !== 0) return movePotentiometer(drag, event.position);
+      drag = undefined;
+    }
     const pressed = interaction.pointerKey;
     if (pressed === undefined) return undefined;
     if (contains(keyLayout(pressed), event.position)) return undefined;
@@ -192,6 +268,7 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
 
   function pointerUp(event: IFusedViewInput): void | Promise<void> {
     refreshHover(event.position);
+    drag = undefined;
     return releasePointerKey();
   }
 
@@ -233,6 +310,7 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
       if (disposed) return;
       const snapshot = readBoardSnapshot(raw);
       store.applySnapshot(snapshot, baseRevision);
+      updateAudio();
       invalidate();
     },
 
@@ -252,6 +330,7 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
           return pointerUp(event);
         case 'pointercancel':
         case 'pointerleave':
+          drag = undefined;
           interaction.hoveredKey = undefined;
           interaction.hoveredJumper = undefined;
           invalidate();
@@ -266,6 +345,9 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
       const held = interaction.pointerKey;
       disposed = true;
       subscription?.dispose();
+      tone?.stop();
+      drag = undefined;
+      interaction.openPotentiometer = undefined;
       interaction.pointerKey = undefined;
       interaction.hoveredKey = undefined;
       interaction.hoveredJumper = undefined;
@@ -296,6 +378,9 @@ export function drawBoard(
       drawJumper(canvas, jumper, state.jumpers[jumper.designator], interaction);
     }
     drawKeys(canvas, state, interaction);
+    const slider = interaction.openPotentiometer;
+    if (slider !== undefined)
+      drawPotentiometerSlider(canvas, slider, state.potentiometers[slider.designator]);
   } finally {
     canvas.restore();
   }
@@ -538,7 +623,49 @@ function drawSliderKnob(
   layout: JumperLayout,
   closed: boolean,
 ): void {
-  const knob = jumperKnobRect(layout, closed);
+  drawKnob(canvas, jumperKnobRect(layout, closed), layout.slider.orientation);
+}
+
+function drawPotentiometerSlider(
+  canvas: OffscreenCanvasRenderingContext2D,
+  slider: PotentiometerSliderLayout,
+  position: number,
+): void {
+  const { panel, track } = slider;
+  canvas.beginPath();
+  canvas.roundRect(panel.x, panel.y, panel.width, panel.height, 6);
+  canvas.fillStyle = '#101615';
+  canvas.fill();
+  canvas.strokeStyle = SLIDER_TRACK_STROKE;
+  canvas.lineWidth = 1;
+  canvas.stroke();
+
+  drawSliderTrack(canvas, track);
+  const knob = potentiometerSliderKnob(slider, position);
+  const levelWidth = Math.min(track.width - 6, knob.x + knob.width / 2 - track.x - 3);
+  if (levelWidth > 0) {
+    canvas.beginPath();
+    canvas.roundRect(track.x + 3, track.y + 4, levelWidth, 8, 3);
+    canvas.fillStyle = TEAL_SOFT;
+    canvas.fill();
+  }
+  drawKnob(canvas, knob, 'horizontal');
+
+  canvas.font = '600 11px system-ui, sans-serif';
+  canvas.textBaseline = 'middle';
+  canvas.textAlign = 'left';
+  canvas.fillStyle = TEAL;
+  canvas.fillText(slider.designator, panel.x + 8, panel.y + 16);
+  canvas.textAlign = 'right';
+  canvas.fillStyle = SLIDER_KNOB_STROKE;
+  canvas.fillText(`${Math.round(position * 100)}%`, panel.x + panel.width - 8, panel.y + 16);
+}
+
+function drawKnob(
+  canvas: OffscreenCanvasRenderingContext2D,
+  knob: Rect,
+  orientation: 'horizontal' | 'vertical',
+): void {
   const radius = Math.max(2, Math.min(knob.width, knob.height) * 0.28);
   canvas.beginPath();
   canvas.roundRect(knob.x, knob.y, knob.width, knob.height, radius);
@@ -553,7 +680,7 @@ function drawSliderKnob(
   const small = Math.min(knob.width, knob.height);
   const half = Math.max(1.5, small * 0.3);
   canvas.beginPath();
-  if (layout.slider.orientation === 'horizontal') {
+  if (orientation === 'horizontal') {
     canvas.moveTo(cx, cy - half);
     canvas.lineTo(cx, cy + half);
   } else {

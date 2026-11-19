@@ -192,14 +192,17 @@ describe('PCF8591', () => {
     }
   });
 
-  it('自动递增模式每读一字节通道 +1，并在 3 后回绕到 0', async () => {
+  it('自动递增读取各通道最新电平，并在 3 后回绕到 0', async () => {
     const { board, bus } = await fixture();
 
     try {
-      inject(board, 'ain0', 0);
-      inject(board, 'ain1', 0.25);
-      inject(board, 'ain2', 0.5);
-      inject(board, 'ain3', 1);
+      const inputs = { setAin0: 0, setAin1: 0.25, setAin2: 0.5, setAin3: 1 };
+      // Interleave updates without advancing simulated time; the inputs must not share a slot.
+      for (let i = 0; i < 64; i += 1) {
+        for (const method of Object.keys(inputs)) board.send('dut', method, i / 64);
+      }
+      for (const [method, value] of Object.entries(inputs)) board.send('dut', method, value);
+      board.run(STEP);
 
       bus.start();
       expect(bus.writeByte(0x90)).toBe(0);

@@ -5,6 +5,7 @@
  * 尺寸变化时把指针反变换回同一坐标，因此绘制和命中测试共用这里的坐标。
  */
 import type { JumperDesignator, KeyDesignator } from './board-state.js';
+import type { PotentiometerDesignator } from './potentiometer-map.js';
 
 export interface Point {
   readonly x: number;
@@ -277,6 +278,51 @@ export const J6: JumperLayout = {
 };
 
 export const JUMPERS: readonly JumperLayout[] = [J13, J5, J3, J2, J2_TX, J6];
+
+export interface PotentiometerLayout extends Rect {
+  readonly designator: PotentiometerDesignator;
+}
+
+/** 照片上的旋钮，仅作为点击热区和浮层锚点。 */
+export const POTENTIOMETERS: readonly PotentiometerLayout[] = [
+  { designator: 'RB2', x: 733, y: 518, width: 49, height: 43 },
+  { designator: 'RB4', x: 801, y: 518, width: 52, height: 43 },
+  { designator: 'RB3', x: 869, y: 518, width: 53, height: 43 },
+];
+
+export function potentiometerAt(point: Point): PotentiometerLayout | undefined {
+  return POTENTIOMETERS.find((layout) => contains(layout, point));
+}
+
+export interface PotentiometerSliderLayout {
+  readonly designator: PotentiometerDesignator;
+  readonly panel: Rect;
+  readonly track: Rect;
+}
+
+export function potentiometerSlider(layout: PotentiometerLayout): PotentiometerSliderLayout {
+  const width = 136;
+  const centered = layout.x + (layout.width - width) / 2;
+  // 浮层在旋钮下方丝印之外，向左让出右侧接插件。
+  const panel: Rect = { x: Math.min(centered, 924 - width), y: 590, width, height: 54 };
+  const track: Rect = { x: panel.x + 8, y: panel.y + 28, width: width - 16, height: 16 };
+  return { designator: layout.designator, panel, track };
+}
+
+export function potentiometerSliderPosition(slider: PotentiometerSliderLayout, x: number): number {
+  const position = (x - slider.track.x) / slider.track.width;
+  return Math.round(Math.min(1, Math.max(0, position)) * 1000) / 1000;
+}
+
+export function potentiometerSliderKnob(slider: PotentiometerSliderLayout, position: number): Rect {
+  const { track } = slider;
+  return {
+    x: track.x + position * track.width - 6,
+    y: track.y + (track.height - 20) / 2,
+    width: 12,
+    height: 20,
+  };
+}
 
 export interface JumperChoice {
   readonly designator: JumperDesignator;

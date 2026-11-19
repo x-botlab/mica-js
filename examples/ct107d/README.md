@@ -5,9 +5,8 @@ CT107D 竞赛板的 Mica 示例工程。正式运行模型是 `device/` 下的�
 和 111 条网络折叠为器件内部槽，外部只保留 `VCC`/`GND`。
 
 正式入口是仓库内的 v2 文档 [`ct107d.sch`](ct107d.sch) 和浏览器宿主
-[`workbench/`](workbench/)。旧 `.sch v1`、`.cnv v1`、板面 widget 与分立板 oracle 已
-删除；板内实例、装配属性与网络来自 `device/scripts/board-topology.json`，只作为融合
-模型的生成输入。
+[`workbench/`](workbench/)；旧 `.sch v1`、`.cnv v1` 与板面 widget 移到
+`legacy/source`/`src/widgets`，只承担生成输入、回归 oracle 和显式 legacy 命令。
 
 本文件明确区分已验证内容与边界：自动化测试覆盖文档、宿主纯逻辑和无头运行时；浏览器
 交互与视觉验收需要手动执行，未写入自动测试。
@@ -19,7 +18,7 @@ CT107D 竞赛板的 Mica 示例工程。正式运行模型是 `device/` 下的�
 
 ```bash
 pnpm --filter @mica-js/editor build
-pnpm --filter @mica-js/example-devices build   # MCU 与课程固件联调需要
+pnpm --filter @mica-js/example-devices build   # oracle、MCU 与课程固件联调需要
 pnpm --filter @mica-js/example-ct107d build    # 模型 + 展示 + 文档校验 + 宿主构建
 pnpm --filter @mica-js/example-ct107d workbench:dev
 ```
@@ -50,13 +49,19 @@ pnpm --filter @mica-js/example-ct107d workbench:preview
 | `document:lock`                 | 只刷新 `dependencies`，保留其它用户编辑（原子写）                                              |
 | `test`                          | 构建器件与融合模型后运行全部 vitest                                                            |
 | `test:workbench`                | 构建后只运行文档、宿主逻辑和 `createHeadlessRuntime` 用例                                      |
-| `typecheck`                     | `mica prepare --root device` 后检查 device、宿主与测试                                         |
+| `typecheck`                     | `mica prepare` 后检查 device、legacy、宿主与测试                                               |
 | `bench`                         | 融合整板性能基准；需要先构建器件                                                               |
-| `build:devices`                 | 构建 `examples/devices` 全部统一器件包（MCU 源与器件包）                                       |
+| `build:devices`                 | 构建 `examples/devices` 全部统一器件包（离散 oracle 与 MCU 源）                                |
 | `build:mcu`                     | 只构建 `examples/devices/iap15f2k61s2` 并写入内容身份                                          |
-| `prepare:fused` / `check:fused` | 生成 device 类型环境 / 校验 MCU、固件资源与生成的 DDL 产物                                     |
-| `firmware`                      | 从 `firmware/demo.asm` 同源写出 `device/src/assets/*.{bin,hex}`                                |
-| `firmware:check`                | 只比较两份固件资源，缺失或 stale 时退出 1；不写文件                                            |
+| `prepare:fused` / `check:fused` | 生成 device 类型环境 / 校验 MCU 与生成的 DDL 产物                                              |
+| `build:legacy`                  | 显式构建 legacy widget、v1 原理图与画布（写入 `legacy/source`）                                |
+| `build:widgets`                 | 只构建 legacy 板面 widget 到 `dist/widgets`                                                    |
+| `check:legacy`                  | 校验 legacy v1 原理图/画布；需先完成 legacy 构建                                               |
+| `schematic` / `canvas`          | 单独校验 legacy 原理图/画布（会先构建器件与 widget）                                           |
+| `firmware`                      | 从 `firmware/demo.asm` 同源写出根 `assets/*.bin` 与 `device/src/assets/*.{bin,hex}`            |
+| `firmware:check`                | 只比较三份固件资源，缺失或 stale 时退出 1；不写文件                                            |
+| `check:fused`                   | 先 `firmware:check`，再校验 MCU 内容身份与生成的 DDL 产物                                      |
+| `firmware:sim -- <hex>`         | 把外部 HEX/BIN 装进 legacy 分立板联调                                                          |
 | `firmware:suite -- --list`      | 可选的课程固件套件，不进入日常测试                                                             |
 
 ## 构建产物与责任
@@ -67,10 +72,10 @@ pnpm --filter @mica-js/example-ct107d workbench:preview
 | `ct107d.sch`                                                           | 正式 v2 文档，跟踪在仓库；只由 `document:init` 创建、由 `document:lock` 刷新依赖锁                      |
 | `workbench/index.html`、`workbench/src/**`、`workbench/vite.config.ts` | 宿主源码，跟踪在仓库                                                                                    |
 | `scripts/document.mjs`、`scripts/workbench.mjs`                        | 文档锁生成与宿主准备，不手拼摘要                                                                        |
-| `device/scripts/board-topology.json`                                   | 板级实例、装配属性与内部网表；融合模型生成器的唯一板级输入                                              |
 | `device/dist/**`                                                       | 统一器件构建产物，已忽略；干净重建可复现                                                                |
 | `workbench/public/**`                                                  | 宿主准备产物（器件包、文档副本、环境、catalog），已忽略                                                 |
 | `workbench/dist/**`                                                    | 宿主生产构建，已忽略                                                                                    |
+| `legacy/source/{ct107d.sch,ct107d.cnv,ct107d.netlist.json}`            | legacy v1 生成输入与 oracle；不是正式入口                                                               |
 
 `scripts/document.mjs` 的签名模式：
 
@@ -138,7 +143,8 @@ Provider，而不是在模型或文档里绕过校验。视图布局、保存/�
 浏览器验收边界：默认 vitest 不启动浏览器；本次修复另用真实 headless Chromium 跑过空
 storage → 禁用 → 保存 → 可用 → 重开 → 单一 workbench → 跨 tab 清空 → 重新保存的状态链，
 但截图/缩放旋转/bfcache 实际行为、多指按键和面板视觉仍需人工打开 dev/preview 复核。
-自动化仓库测试覆盖文档/包校验、宿主 session 状态机（mock create）与无头运行时。
+自动化仓库测试覆盖文档/包校验、宿主 session 状态机（mock create）、无头运行时与 legacy
+oracle。
 
 `workbench:prepare` 不再删除整个 `workbench/public`：它只原子替换内容发生变化的生成文件，
 保留 public 根目录与未变化文件，因此并行运行的 Vite dev 不会在目录重建窗口把
@@ -153,8 +159,9 @@ storage → 禁用 → 保存 → 可用 → 重开 → 单一 workbench → 跨
 
 - 准备阶段：真实发布锁定、包摘要、文档拓扑；缺包/锁不符/文件摘要不符可见失败；
 - 启动与首帧：创建后暂停在 0 ps，查询 `getSnapshot`；首次 `step` 后产生模型事件；
-- 固定步进：以 1 ms 步长推进到 64 ms，检查 DS1/DS2 段码、U6–U9 锁存与 D1–D8 亮度/
-  电压通道都有发布，且最终快照与信号一致；完整行为基线仍由 `test/fused-*` 负责；
+- 固定步进：以 1 ms 步长推进到 64 ms，与 `bench/board.ts` 的 55 器件离散 oracle 比较
+  **聚焦子集**：DS1/DS2 段码、U6–U9 锁存、D1–D8 亮度与电压；该断言不声称所有模型信号
+  等价，完整行为基线仍由 `test/fused-*` 负责；
 - BIN 与 HEX：同一包内两种格式产生相同信号轨迹；
 - reset：重建会话、回零、旧客户端失效；
 - resume/pause/step 状态约束。
@@ -174,8 +181,8 @@ suspend/resume、释放失败 latch 与关闭顺序。
   `[0, 61440)`、默认装载地址 0、可空）、`clockFrequency`、`ultrasonicDistanceCm`、
   `uartBaud`；
 - 引脚只有 `VCC`/`GND`，与 `geometry.json`、`model.ddl` 完全一致；
-- 构建：`device/scripts/generate.mjs` 从 `device/scripts/board-topology.json` 与
-  `examples/devices` 的器件包生成 `src/{model.ddl,nets.ts,channels.ts}`，
+- 构建：`device/scripts/generate.mjs` 从 `legacy/source/ct107d.sch` 与
+  `legacy/source/ct107d.netlist.json` 生成 `src/{model.ddl,nets.ts,channels.ts}`，
   `mica build --root device` 输出自包含 `device/dist`；
 - 执行：复用 `examples/devices/iap15f2k61s2` 的 8051 translator，整板只有一个 JIT；
 - 展示：`View2D` 在照片上绘制数码管、LED、按键/跳线反馈；HTML 面板提供传感器、装配、
@@ -206,16 +213,28 @@ suspend/resume、释放失败 latch 与关闭顺序。
 - 板内网络是理想数字融合，不模拟任意外部模拟接线、电气竞争、电源电流或电磁兼容。
   `VCC`/`GND` 是唯一外接引脚。
 
-## 板级拓扑输入
+## Legacy 边界与 oracle
 
-`device/scripts/board-topology.json` 是融合模型唯一的板级输入：
+`legacy/source/ct107d.sch`、`legacy/source/ct107d.netlist.json` 与
+`legacy/source/ct107d.cnv` 仍是 **v1** 文档，不是 RFC 0024/0025 的融合文档：
 
-- `instances`：55 个历史实例（54 个器件 + J5 独立/矩阵选择器）的位号、器件包名与装配
-  属性；MCU 的 `firmware` 资源不在此处，而由器件属性声明。
-- `nets`：111 条内部网络到「位号.引脚」成员的映射；`VCC`/`GND` 仍保留为内部理想轨。
+- `build-schematic.mjs` 用统一器件包清单合成 v1 符号，输出 `.sch` 与网表；
+- `build-canvas.mjs` 用照片像素坐标生成背景图、17 个按键、2 片数码管、8 个 LED、
+  蜂鸣器、继电器与 J13/J2 热区；
+- `verify-schematic.mjs` 通过 `legacy/device-package.mjs` 把统一工厂接到旧 simulator；
+- `verify-canvas.mjs` 校验绑定、对位、widget 绘制和按键网络；
+- `bench/board.ts` 是 55 器件 correctness oracle，不进入性能计时；
+- `src/widgets` 是旧板面 widget，仅由显式 `build:widgets`/`build:legacy` 构建。
 
-生成器会校验实例覆盖、重复位号、网络成员与未连接引脚白名单；`--check` 比较已提交的
-`src/{model.ddl,nets.ts,channels.ts}`，因此拓扑或器件包变化都会显式失败。
+默认 `build`/`test` 不构建 legacy widget；需要旧画布/host 校验时：
+
+```bash
+pnpm --filter @mica-js/example-ct107d build:legacy
+pnpm --filter @mica-js/example-ct107d check:legacy
+```
+
+`verify-firmware.mjs` 仍可把外部 HEX/BIN 装进 55 器件 oracle 做联调；它不替代正式
+`ct107d.sch` 的无头运行验证。
 
 ## 验证
 
@@ -227,12 +246,13 @@ pnpm --filter @mica-js/example-ct107d bench
 ```
 
 `test/fused-preview.test.ts`、`test/fused-firmware.test.ts`、`test/fused-inputs.test.ts`、
-`test/fused-startup.test.ts`、`test/fused-resistance.test.ts` 覆盖融合模型的绝对行为
-基线。`test/view2d.test.ts` 与 `test/panel.test.ts` 由展示代理维护。
+`test/fused-startup.test.ts`、`test/fused-resistance.test.ts`、`test/seg4-preview.test.ts`
+继续用离散 oracle 覆盖融合模型行为；`test/widgets.test.ts` 覆盖 legacy widget 源码。
+`test/view2d.test.ts` 与 `test/panel.test.ts` 由展示代理维护。
 
 ## 基准
 
-`bench/` 只对正式 `device/dist` 计时：
+`bench/` 只对正式 `device/dist` 计时，`bench/board.ts` 只做 correctness 对照：
 
 ```bash
 pnpm --filter @mica-js/example-ct107d bench
@@ -259,7 +279,6 @@ examples/ct107d/
     src/view2d.ts               板面叠层与交互
     src/panel/                  HTML 控制面板
     src/assets/                 seg7-dynamic.hex、ct107d-demo.{hex,bin}
-    scripts/board-topology.json 板级实例、装配属性与内部网表
     dist/                       构建产物（忽略）
   workbench/                    浏览器宿主
     index.html
@@ -274,6 +293,11 @@ examples/ct107d/
     dist/                       Vite 构建（忽略）
   scripts/document.mjs          正式文档生成/锁刷新/校验
   scripts/workbench.mjs         宿主准备、dev、build、preview
+  legacy/source/ct107d.sch      legacy v1 原理图（生成输入/oracle）
+  legacy/source/ct107d.netlist.json
+  legacy/source/ct107d.cnv      legacy v1 画布
+  src/widgets/                  legacy 板面 widget
+  bench/board.ts                55 器件离散 oracle
   bench/fused.ts                正式 dist 融合夹具（1 实例/1 JIT）
   test/workbench-runtime.test.ts 真实 dist 无头运行时
   test/document-official.test.ts 正式文档与锁

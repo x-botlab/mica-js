@@ -1951,24 +1951,28 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
 
   const u15_maxTime = 7_200_000_000_000_000;
   // 事件期限必须是整数皮秒，因此两个半周期在创建期各取整一次。
-  const u15_tHigh = round(0.693 * (10000 + 10000) * 1e-8 * 1e12);
-  const u15_tLow = round(0.693 * 10000 * 1e-8 * 1e12);
+  const u15_initialHigh = round(0.693 * (10000 + 10000) * 1e-8 * 1e12);
+  const u15_initialLow = round(0.693 * 10000 * 1e-8 * 1e12);
 
   assert isFinite(10000) && 10000 >= 1, "10000 must be a finite resistance of at least 1 ohm";
   assert isFinite(10000) && 10000 >= 1, "10000 must be a finite resistance of at least 1 ohm";
   assert isFinite(1e-8) && 1e-8 >= 1e-12, "1e-8 must be a finite capacitance of at least 1 pF";
-  assert isSafeInteger(u15_tHigh) && u15_tHigh > 0,
+  assert isSafeInteger(u15_initialHigh) && u15_initialHigh > 0,
     "the charging half period must be a positive integer picosecond duration";
-  assert isSafeInteger(u15_tLow) && u15_tLow > 0,
+  assert isSafeInteger(u15_initialLow) && u15_initialLow > 0,
     "the discharging half period must be a positive integer picosecond duration";
-  assert u15_tHigh + u15_tLow <= u15_maxTime, "the oscillation period exceeds the supported time range";
+  assert u15_initialHigh + u15_initialLow <= u15_maxTime, "the oscillation period exceeds the supported time range";
   assert 25 >= 0.001 && 25 <= 1_000_000_000,
     "25 must be within the supported range";
 
 
+  input channel u15_timingScale: number(capacity: 8, overflow: Overflow.drop_oldest);
   output channel u15_frequency: number(capacity: 4, overflow: Overflow.drop_oldest);
   output channel u15_dutyCycle: number(capacity: 4, overflow: Overflow.drop_oldest);
 
+  state u15_tHigh: number = u15_initialHigh;
+  state u15_tLow: number = u15_initialLow;
+  state u15_timingStarted: bool = false;
   /** 是否在振荡；RST# 低电平时为 false。 */
   state u15_running: bool = false;
   /** 当前相位：true 为高相（充电、OUT 高、DISCH 释放），false 为低相。 */
@@ -2016,15 +2020,41 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
     }
   }
 
+  fn u15_publishTiming() {
+    u15_frequency.send(1e12 / (u15_tHigh + u15_tLow));
+    u15_dutyCycle.send(u15_tHigh / (u15_tHigh + u15_tLow) * 100);
+  }
+
+  fn u15_updateTiming(scale: number) {
+    const resistance = 10000 * scale;
+    if !isFinite(resistance) || resistance < 1 { return; }
+    const nextHigh = round(0.693 * (10000 + resistance) * 1e-8 * 1e12);
+    const nextLow = round(0.693 * resistance * 1e-8 * 1e12);
+    if !isSafeInteger(nextHigh) || !isSafeInteger(nextLow) || nextHigh <= 0 ||
+        nextLow <= 0 || nextHigh + nextLow > u15_maxTime { return; }
+    if u15_tHigh == nextHigh && u15_tLow == nextLow { return; }
+    // 不改已安排的边沿；下一相使用新时长，避免拖动时截断当前脉冲。
+    u15_tHigh = nextHigh;
+    u15_tLow = nextLow;
+    u15_publishTiming();
+  }
+
+  process u15_consumeTiming on u15_timingStarted {
+    loop {
+      const scale = await u15_timingScale.receive();
+      u15_updateTiming(scale);
+    }
+  }
+
   process u15_start on u15_started {
+    u15_timingStarted = true;
     // 未知电平按低处理：只有确定为高才起振。
     if fusedWire0 == Logic.high {
       u15_startCharging();
     } else {
       u15_stopOscillation();
     }
-    u15_frequency.send(1e12 / (u15_tHigh + u15_tLow));
-    u15_dutyCycle.send(u15_tHigh / (u15_tHigh + u15_tLow) * 100);
+    u15_publishTiming();
   }
 
   process u15_oscillate on u15_running {
@@ -2059,10 +2089,11 @@ device Ct107dBoard(clockFrequency: number default 11059200, ultrasonicDistanceCm
 
   // 模拟引脚不在电气域建模；真实名称由 device.json 的 label 保留。
 
-  input channel u16_ain0: number(capacity: 8, overflow: Overflow.error);
-  input channel u16_ain1: number(capacity: 8, overflow: Overflow.error);
-  input channel u16_ain2: number(capacity: 8, overflow: Overflow.error);
-  input channel u16_ain3: number(capacity: 8, overflow: Overflow.error);
+  // Each input is a voltage level; a newer pending update supersedes the older one.
+  input channel u16_ain0: number(capacity: 1, overflow: Overflow.drop_oldest);
+  input channel u16_ain1: number(capacity: 1, overflow: Overflow.drop_oldest);
+  input channel u16_ain2: number(capacity: 1, overflow: Overflow.drop_oldest);
+  input channel u16_ain3: number(capacity: 1, overflow: Overflow.drop_oldest);
 
   output channel u16_aout: number(capacity: 16, overflow: Overflow.drop_oldest);
   output channel u16_channel: number(capacity: 16, overflow: Overflow.drop_oldest);

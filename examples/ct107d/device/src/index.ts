@@ -9,6 +9,7 @@ import {
   JUMPER_DESIGNATORS,
   jumperSignal,
 } from './jumper-map';
+import { RB2_ADC_CHANNEL, RB3_DEFAULT_POSITION, rb3TimingScale } from './potentiometer-map';
 
 const KEY_INDEX: ReadonlyMap<string, number> = new Map([
   ['S1', 0],
@@ -84,6 +85,7 @@ interface InfraredValue {
   U20: boolean;
 }
 interface Ne555Value {
+  position: number;
   frequency: number;
   dutyCycle: number;
 }
@@ -165,7 +167,7 @@ export const create: DeviceFactory = (context) => {
     }
   });
   const infrared: InfraredValue = { LD1: false, U11: false, U20: false };
-  const ne555: Ne555Value = { frequency: 0, dutyCycle: 0 };
+  const ne555: Ne555Value = { position: RB3_DEFAULT_POSITION, frequency: 0, dutyCycle: 0 };
   const uln2003: Uln2003Value = { mask: 0, channels: '0000000' };
   const decoder: DecoderValue = { select: 0, enabled: true, code: '00' };
   const pcf8591: Pcf8591Value = { channel: 0, output: 0, analog: [0, 0, 0, 0] };
@@ -300,6 +302,15 @@ export const create: DeviceFactory = (context) => {
       });
       return null;
     },
+    setFrequencyWiper: (params) => {
+      if (!Number.isFinite(params.value))
+        throw new MethodError('frequency/invalid-wiper', 'Wiper position must be finite', null);
+      const position = Math.min(1, Math.max(0, params.value));
+      context.inputs.u15_timingScale.send(rb3TimingScale(position));
+      ne555.position = position;
+      signal('RB3', 'position', position);
+      return null;
+    },
     setAmplifierInputs: (params) => {
       if (!Number.isFinite(params.plus) || !Number.isFinite(params.minus))
         throw new MethodError('amplifier/invalid-input', 'Amplifier inputs must be finite', null);
@@ -344,6 +355,7 @@ export const create: DeviceFactory = (context) => {
       const value = Math.min(1, Math.max(0, params.value));
       analog.send(value);
       pcf8591.analog[channel] = value;
+      if (channel === RB2_ADC_CHANNEL) signal('RB2', 'position', value);
       return null;
     },
     sendUart: (params) => {
@@ -484,7 +496,7 @@ export const create: DeviceFactory = (context) => {
       for (const index of displayDesignators) {
         const designator = index === 0 ? 'DS1' : 'DS2';
         const digits = displays[designator];
-        // The unified seg4 event is a whole-display snapshot. A per-digit adapter
+        // The unified seg4 event is a whole-display snapshot. The legacy seg4 adapter
         // read each digit's latest value once per sync; coalescing here is intentional
         // and keeps the preview trajectory identical.
         for (let digit = 0; digit < 4; digit += 1)
@@ -531,6 +543,7 @@ export const create: DeviceFactory = (context) => {
       }[]) {
         context.events.onDidAmplifier.fire({ ...message.value });
       }
+      if (outputs['amplifier']?.length) signal('RB4', 'position', amplifier.position);
     },
     dispose() {
       mcu.dispose();

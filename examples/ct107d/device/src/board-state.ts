@@ -12,6 +12,12 @@ import {
   jumperKeyForSignal,
   type JumperDesignator,
 } from './jumper-map.js';
+import {
+  POTENTIOMETER_DESIGNATORS,
+  RB2_ADC_CHANNEL,
+  RB3_DEFAULT_POSITION,
+  type PotentiometerDesignator,
+} from './potentiometer-map.js';
 
 export { JUMPER_DESIGNATORS, type JumperDesignator } from './jumper-map.js';
 
@@ -42,6 +48,7 @@ export type DisplayDesignator = (typeof DISPLAY_DESIGNATORS)[number];
 
 const KEY_SET: ReadonlySet<string> = new Set(KEY_DESIGNATORS);
 const DISPLAY_SET: ReadonlySet<string> = new Set(DISPLAY_DESIGNATORS);
+const POTENTIOMETER_SET: ReadonlySet<string> = new Set(POTENTIOMETER_DESIGNATORS);
 const LED_PATTERN = /^D([1-8])$/;
 const DIGIT_PATTERN = /^digit([1-4])$/;
 
@@ -60,6 +67,7 @@ export interface BoardSnapshot {
   readonly buzzer: boolean;
   readonly switches: Readonly<Record<KeyDesignator, boolean>>;
   readonly jumpers: Readonly<Record<JumperDesignator, boolean>>;
+  readonly potentiometers: Readonly<Record<PotentiometerDesignator, number>>;
 }
 
 /** 可变的展示缓存；只允许状态仓库修改，绘制代码只读。 */
@@ -70,6 +78,7 @@ export interface BoardState {
   buzzer: boolean;
   switches: Record<KeyDesignator, boolean>;
   jumpers: Record<JumperDesignator, boolean>;
+  potentiometers: Record<PotentiometerDesignator, number>;
 }
 
 export interface BoardStateStore {
@@ -146,10 +155,27 @@ export function createBoardStateStore(): BoardStateStore {
         changed = true;
       }
 
+      for (const designator of POTENTIOMETER_DESIGNATORS) {
+        if (!acceptsField(`potentiometer:${designator}`, baseRevision)) continue;
+        const next = clampLevel(snapshot.potentiometers[designator]);
+        if (state.potentiometers[designator] === next) continue;
+        state.potentiometers[designator] = next;
+        changed = true;
+      }
+
       return changed;
     },
     applySignal(signal) {
       if (!Number.isFinite(signal.value)) return false;
+
+      if (signal.port === 'position' && POTENTIOMETER_SET.has(signal.designator)) {
+        const designator = signal.designator as PotentiometerDesignator;
+        const next = clampLevel(signal.value);
+        markField(`potentiometer:${designator}`);
+        if (state.potentiometers[designator] === next) return false;
+        state.potentiometers[designator] = next;
+        return true;
+      }
 
       if (DISPLAY_SET.has(signal.designator)) {
         const designator = signal.designator as DisplayDesignator;
@@ -244,6 +270,7 @@ function createInitialState(): BoardState {
     // 整板融合模型的装配默认值：J13/J5 为 2-3，J3 闭合，J2 上排选 VS1838、下排接 U18；
     // J6 默认 ON 仅为板面装配状态，不进入融合电气。
     jumpers: { ...JUMPER_DEFAULT_STATES },
+    potentiometers: { RB2: 0, RB3: RB3_DEFAULT_POSITION, RB4: 0 },
   };
 }
 
@@ -300,6 +327,10 @@ export function readBoardSnapshot(value: unknown): BoardSnapshot {
   const displays = readRecord(record['displays'], 'CT107D snapshot.displays');
   const switches = readRecord(record['switches'], 'CT107D snapshot.switches');
   const jumpers = readRecord(record['jumpers'], 'CT107D snapshot.jumpers');
+  const pcf8591 = readRecord(record['pcf8591'], 'CT107D snapshot.pcf8591');
+  const analog = readNumberArray(pcf8591['analog'], 'CT107D snapshot.pcf8591.analog', 4);
+  const ne555 = readRecord(record['ne555'], 'CT107D snapshot.ne555');
+  const amplifier = readRecord(record['amplifier'], 'CT107D snapshot.amplifier');
 
   return {
     displays: {
@@ -334,6 +365,11 @@ export function readBoardSnapshot(value: unknown): BoardSnapshot {
         readBoolean(jumpers[designator], `CT107D snapshot.jumpers.${designator}`),
       ]),
     ) as Record<JumperDesignator, boolean>,
+    potentiometers: {
+      RB2: analog[RB2_ADC_CHANNEL]!,
+      RB3: readNumber(ne555['position'], 'CT107D snapshot.ne555.position'),
+      RB4: readNumber(amplifier['position'], 'CT107D snapshot.amplifier.position'),
+    },
   };
 }
 
@@ -354,10 +390,12 @@ function readNumberArray(value: unknown, label: string, minimum: number): number
     throw new TypeError(`${label} must contain at least ${minimum} numbers.`);
   }
   const items: readonly unknown[] = value;
-  return items.map((item, index) => {
-    if (typeof item !== 'number' || !Number.isFinite(item)) {
-      throw new TypeError(`${label}[${index}] must be a finite number.`);
-    }
-    return item;
-  });
+  return items.map((item, index) => readNumber(item, `${label}[${index}]`));
+}
+
+function readNumber(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new TypeError(`${label} must be a finite number.`);
+  }
+  return value;
 }

@@ -1,20 +1,28 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { timePs } from '@mica-js/core';
 import type { Event } from '@mica-js/core/lifecycle';
 import type { Value } from '@mica-js/document/fused';
-import type { IFusedModelClient } from '@mica-js/editor/fused/runtime';
+import type { IFusedAudio, IFusedModelClient } from '@mica-js/editor/fused/runtime';
 import type { ModelEvent } from '@mica-js/sdk/fused';
 import { createBoardView, type BoardView, type BoardViewEvent } from '../device/src/view2d.js';
 import {
+  BOARD_BOUNDS,
+  JUMPERS,
   J13,
   J2,
   J2_TX,
   J3,
   J5,
   J6,
+  KEYS,
+  POTENTIOMETERS,
   contains,
   jumperKnobRect,
   keyLayout,
+  potentiometerSlider,
+  potentiometerSliderKnob,
+  type PotentiometerSliderLayout,
+  type Rect,
 } from '../device/src/board-layout.js';
 import {
   JUMPER_DESIGNATORS,
@@ -52,6 +60,7 @@ interface SnapshotOptions {
   readonly buzzer?: boolean;
   readonly pressed?: readonly KeyDesignator[];
   readonly jumpers?: Partial<Record<JumperDesignator, boolean>>;
+  readonly potentiometers?: Partial<BoardSnapshot['potentiometers']>;
 }
 
 function snapshotOf(options: SnapshotOptions = {}): BoardSnapshot {
@@ -73,6 +82,7 @@ function snapshotOf(options: SnapshotOptions = {}): BoardSnapshot {
     buzzer: options.buzzer ?? false,
     switches,
     jumpers,
+    potentiometers: { RB2: 0, RB3: 0.5, RB4: 0, ...options.potentiometers },
   };
 }
 
@@ -100,6 +110,9 @@ function snapshotValue(snapshot: BoardSnapshot): Value {
     buzzer: snapshot.buzzer,
     switches: booleanRecordValue(snapshot.switches),
     jumpers: booleanRecordValue(snapshot.jumpers),
+    pcf8591: { analog: [0, 0, 0, snapshot.potentiometers.RB2] },
+    ne555: { position: snapshot.potentiometers.RB3 },
+    amplifier: { position: snapshot.potentiometers.RB4 },
   };
 }
 
@@ -107,6 +120,7 @@ interface ModelHarness {
   readonly model: IFusedModelClient;
   readonly switchCalls: SwitchCall[];
   readonly jumperCalls: JumperCall[];
+  readonly potentiometerCalls: [method: string, params: Value][];
   emit(signal: BoardSignal): void;
   listenerCount(): number;
   subscriptionDisposals(): number;
@@ -128,6 +142,7 @@ function harness(options: HarnessOptions = {}): ModelHarness {
   const snapshot = options.snapshot ?? snapshotOf();
   const switchCalls: SwitchCall[] = [];
   const jumperCalls: JumperCall[] = [];
+  const potentiometerCalls: ModelHarness['potentiometerCalls'] = [];
   const listeners = new Set<(event: ModelEvent<Value>) => void>();
   let disposals = 0;
   let sequence = 0;
@@ -176,6 +191,18 @@ function harness(options: HarnessOptions = {}): ModelHarness {
           ? snapshotValue(snapshot)
           : await options.getSnapshot();
       },
+      async setAnalogInput(params) {
+        potentiometerCalls.push(['setAnalogInput', params]);
+        return null;
+      },
+      async setWiper(params) {
+        potentiometerCalls.push(['setWiper', params]);
+        return null;
+      },
+      async setFrequencyWiper(params) {
+        potentiometerCalls.push(['setFrequencyWiper', params]);
+        return null;
+      },
     },
     events: { onDidSignal },
   };
@@ -184,6 +211,7 @@ function harness(options: HarnessOptions = {}): ModelHarness {
     model,
     switchCalls,
     jumperCalls,
+    potentiometerCalls,
     emit(signal) {
       sequence += 1;
       const event: ModelEvent<Value> = {
@@ -243,6 +271,7 @@ class FakeCanvas {
   readonly ellipses: EllipseRecord[] = [];
   readonly rectangles: FillRectRecord[] = [];
   readonly rounded: RoundRectRecord[] = [];
+  readonly texts: string[] = [];
   private points: PaintPoint[] = [];
   private pendingRound: FillRectRecord | undefined;
 
@@ -285,6 +314,9 @@ class FakeCanvas {
   fillRect(x: number, y: number, width: number, height: number): void {
     this.rectangles.push({ x, y, width, height, style: String(this.fillStyle) });
   }
+  fillText(text: string): void {
+    this.texts.push(text);
+  }
   createRadialGradient(): CanvasGradient {
     const gradient = new FakeGradient();
     this.gradients.push(gradient);
@@ -292,10 +324,22 @@ class FakeCanvas {
   }
 }
 
-function mount(model?: IFusedModelClient) {
+type AudioTone = ReturnType<IFusedAudio['tone']>;
+
+function audioHarness() {
+  const set = vi.fn<AudioTone['set']>();
+  const stop = vi.fn<AudioTone['stop']>();
+  const ended: AudioTone['ended'] = Promise.resolve({ reason: 'disposed' });
+  const tone: AudioTone = { id: 'tone', ended, set, stop };
+  const createTone = vi.fn<IFusedAudio['tone']>(() => tone);
+  return { audio: { tone: createTone }, createTone, set, stop };
+}
+
+function mount(model?: IFusedModelClient, audio?: Pick<IFusedAudio, 'tone'>) {
   let invalidations = 0;
   const view = createBoardView({
     model,
+    ...(audio === undefined ? {} : { audio }),
     invalidate() {
       invalidations += 1;
     },
@@ -346,6 +390,30 @@ function filledRoundRect(
   );
 }
 
+function intersects(left: Rect, right: Rect): boolean {
+  return (
+    left.x < right.x + right.width &&
+    right.x < left.x + left.width &&
+    left.y < right.y + right.height &&
+    right.y < left.y + left.height
+  );
+}
+
+function sliderFor(designator: PotentiometerSliderLayout['designator']) {
+  const layout = POTENTIOMETERS.find((entry) => entry.designator === designator);
+  if (layout === undefined) throw new Error(`Missing potentiometer layout: ${designator}`);
+  return potentiometerSlider(layout);
+}
+
+function sliderPoint(slider: PotentiometerSliderLayout, position: number): PaintPoint {
+  return { x: slider.track.x + position * slider.track.width, y: center(slider.track).y };
+}
+
+async function click(view: BoardView, point: PaintPoint): Promise<void> {
+  await view.input(pointer('pointerdown', point));
+  await view.input(pointer('pointerup', point));
+}
+
 describe('CT107D View2D 绘制', () => {
   it('绘制段码、LED 与执行器提示', async () => {
     const model = harness({
@@ -371,7 +439,8 @@ describe('CT107D View2D 绘制', () => {
     const { view } = mount(model.model);
     await view.initialize();
     const initial = paint(view);
-    expect(initial.rectangles).toHaveLength(6);
+    const sockets = initial.rectangles.filter((rect) => rect.style === '#26312f');
+    expect(sockets).toHaveLength(6);
     for (const layout of [J13, J5, J3, J2, J2_TX, J6]) {
       const point = center(layout.socket);
       expect(initial.rectangles.filter((rect) => contains(rect, point))).toHaveLength(1);
@@ -384,7 +453,7 @@ describe('CT107D View2D 绘制', () => {
     ]) {
       expect(initial.rectangles.filter((rect) => contains(rect, point))).toHaveLength(0);
     }
-    for (const rect of initial.rectangles) {
+    for (const rect of sockets) {
       expect(rect.style).toMatch(/^#[\da-f]{6}$/i);
       expect(rect.width * rect.height).toBeLessThan(1500);
     }
@@ -397,6 +466,42 @@ describe('CT107D View2D 绘制', () => {
     model.emit({ designator: 'J6', port: 'closedState', value: 0 });
     const changed = paint(view);
     expect(changed.rectangles).toEqual(initial.rectangles);
+  });
+
+  it('电位器浮层留在板内，不覆盖旋钮、按键或跳线热区', () => {
+    const controls = [...POTENTIOMETERS, ...KEYS, ...JUMPERS.map(({ hit }) => hit)];
+    for (const layout of POTENTIOMETERS) {
+      const { panel, track } = potentiometerSlider(layout);
+      expect(track.width).toBeGreaterThanOrEqual(115);
+      expect(panel.y).toBeGreaterThan(layout.y + layout.height);
+      expect(contains(BOARD_BOUNDS, panel)).toBe(true);
+      expect(contains(BOARD_BOUNDS, { x: panel.x + panel.width, y: panel.y + panel.height })).toBe(
+        true,
+      );
+      expect(controls.some((control) => intersects(panel, control))).toBe(false);
+    }
+  });
+
+  it('初始、悬停和展开均不覆盖实拍旋钮', async () => {
+    const { view } = mount(harness().model);
+    await view.initialize();
+    const initial = paint(view);
+    const point = { x: 757, y: 540 };
+    await view.input({ ...pointer('pointermove', point), buttons: 0 });
+    expect(paint(view)).toEqual(initial);
+    expect(initial.texts).toEqual([]);
+
+    await click(view, point);
+    const open = paint(view);
+    expect(open.texts).toEqual(['RB2', '0%']);
+    for (const layout of POTENTIOMETERS) {
+      expect(
+        [...initial.rectangles, ...initial.rounded].some((rect) => intersects(rect, layout)),
+      ).toBe(false);
+      expect([...open.rectangles, ...open.rounded].some((rect) => intersects(rect, layout))).toBe(
+        false,
+      );
+    }
   });
 
   it('灭灯不覆盖照片，低亮与全亮均覆盖发光面且保留等级差异', async () => {
@@ -489,6 +594,131 @@ describe('CT107D View2D 绘制', () => {
 });
 
 describe('CT107D View2D 输入', () => {
+  it('点击原图旋钮只展开或收起，一次只显示一个浮层', async () => {
+    const model = harness();
+    const { view } = mount(model.model);
+    await view.initialize();
+
+    const rb2 = { x: 757, y: 540 };
+    const rb4 = { x: 827, y: 540 };
+    await view.input(pointer('pointerdown', rb2, 2));
+    expect(paint(view).texts).toEqual([]);
+    await view.input(pointer('pointerdown', rb2));
+    const track = sliderPoint(sliderFor('RB2'), 1);
+    await view.input(pointer('pointermove', track));
+    await view.input(pointer('pointerup', track));
+    expect(paint(view).texts).toEqual(['RB2', '0%']);
+    await click(view, rb4);
+    expect(paint(view).texts).toEqual(['RB4', '0%']);
+    await click(view, rb4);
+    expect(paint(view).texts).toEqual([]);
+    await click(view, track);
+    expect(model.potentiometerCalls).toEqual([]);
+  });
+
+  it('浮层标题和空白不写值，点板面其他控件时关闭并正常分派', async () => {
+    const model = harness();
+    const { view } = mount(model.model);
+    await view.initialize();
+    const rb2 = { x: 757, y: 540 };
+    const { panel, track } = sliderFor('RB2');
+    await click(view, rb2);
+    await click(view, { x: panel.x + 20, y: panel.y + 16 });
+    await click(view, { x: track.x + track.width + 3, y: center(track).y });
+    expect(model.potentiometerCalls).toEqual([]);
+    expect(paint(view).texts).toEqual(['RB2', '0%']);
+
+    await click(view, { x: 510, y: 420 });
+    expect(paint(view).texts).toEqual([]);
+    await click(view, rb2);
+    await click(view, keyCenter('S1'));
+    expect(paint(view).texts).toEqual([]);
+    expect(model.switchCalls).toEqual([
+      { designator: 'S1', pressed: true },
+      { designator: 'S1', pressed: false },
+    ]);
+    await click(view, rb2);
+    await click(view, { x: 940, y: 468 });
+    expect(paint(view).texts).toEqual([]);
+    expect(model.jumperCalls).toEqual([{ designator: 'J3', closed: false }]);
+    expect(model.potentiometerCalls).toEqual([]);
+  });
+
+  it('浮层轨道分别写入 RB2 的 AIN3、RB4 的滑臂和 RB3 的定时', async () => {
+    const model = harness();
+    const { view } = mount(model.model);
+    await view.initialize();
+    await click(view, { x: 757, y: 540 });
+    await click(view, sliderPoint(sliderFor('RB2'), 0.5));
+    await click(view, { x: 827, y: 540 });
+    await click(view, sliderPoint(sliderFor('RB4'), 0.25));
+    await click(view, { x: 896, y: 540 });
+    await click(view, sliderPoint(sliderFor('RB3'), 0.75));
+    expect(model.potentiometerCalls).toEqual([
+      ['setAnalogInput', { channel: 3, value: 0.5 }],
+      ['setWiper', { value: 0.25 }],
+      ['setFrequencyWiper', { value: 0.75 }],
+    ]);
+    expect(model.switchCalls).toEqual([]);
+    expect(model.jumperCalls).toEqual([]);
+  });
+
+  it.each(['pointerup', 'pointercancel', 'pointerleave'] as const)(
+    '拖动越界钳位，%s 结束手势但保留浮层',
+    async (end) => {
+      const model = harness();
+      const { view } = mount(model.model);
+      await view.initialize();
+      await click(view, { x: 827, y: 540 });
+      const slider = sliderFor('RB4');
+      const handle = potentiometerSliderKnob(slider, 0);
+      await view.input(pointer('pointerdown', { x: handle.x + 2, y: handle.y + 1 }));
+      expect(model.potentiometerCalls).toEqual([]);
+      await view.input(pointer('pointermove', sliderPoint(slider, 0.25)));
+      await view.input(pointer('pointermove', { x: 1000, y: 700 }));
+      await view.input(pointer('pointermove', { x: 1001, y: 700 }));
+      await view.input(pointer('pointermove', { x: 0, y: 700 }));
+      await view.input(pointer(end, { x: 900, y: 700 }));
+      await view.input(pointer('pointermove', sliderPoint(slider, 0.8)));
+      expect(model.potentiometerCalls).toEqual([
+        ['setWiper', { value: 0.25 }],
+        ['setWiper', { value: 1 }],
+        ['setWiper', { value: 0 }],
+      ]);
+      expect(paint(view).texts).toEqual(['RB4', '0%']);
+    },
+  );
+
+  it('滑块显示快照和模型事件，迟到的快照不覆盖新位置，点击不乐观改写', async () => {
+    let resolveSnapshot!: (value: Value) => void;
+    const model = harness({
+      getSnapshot: () => new Promise((resolve) => (resolveSnapshot = resolve)),
+    });
+    const { view } = mount(model.model);
+    const initialization = view.initialize();
+    model.emit({ designator: 'RB2', port: 'position', value: 0.8 });
+    resolveSnapshot(
+      snapshotValue(snapshotOf({ potentiometers: { RB2: 0.25, RB3: 0.75, RB4: 0.5 } })),
+    );
+    await initialization;
+
+    await click(view, { x: 827, y: 540 });
+    expect(paint(view).texts).toEqual(['RB4', '50%']);
+    await click(view, { x: 896, y: 540 });
+    expect(paint(view).texts).toEqual(['RB3', '75%']);
+    await click(view, { x: 757, y: 540 });
+    const slider = sliderFor('RB2');
+    await click(view, sliderPoint(slider, 0.2));
+    const pending = paint(view);
+    expect(pending.texts).toEqual(['RB2', '80%']);
+    expect(filledRoundRect(pending, potentiometerSliderKnob(slider, 0.8))).toBeDefined();
+    expect(model.potentiometerCalls).toEqual([['setAnalogInput', { channel: 3, value: 0.2 }]]);
+    model.emit({ designator: 'RB2', port: 'position', value: 0.2 });
+    const confirmed = paint(view);
+    expect(confirmed.texts).toEqual(['RB2', '20%']);
+    expect(filledRoundRect(confirmed, potentiometerSliderKnob(slider, 0.2))).toBeDefined();
+  });
+
   it('17 个实拍键帽各自命中正确按键，并在键帽中心高亮', async () => {
     const model = harness();
     const { view } = mount(model.model);
@@ -690,9 +920,11 @@ describe('CT107D View2D 生命周期', () => {
       canvas.rounded.some(({ operation, style }) => operation === 'fill' && style === '#151a19'),
     ).toBe(true);
     await view.input(pointer('pointerdown', keyCenter('S1')));
+    await click(view, { x: 757, y: 540 });
 
     const afterPress = paint(view);
-    expect(afterPress.fills.some((style) => style.includes('49, 210, 192'))).toBe(false);
+    expect(afterPress.texts).toEqual([]);
+    expect(afterPress.fills).toEqual(canvas.fills);
     expect(afterPress.strokes.every((stroke) => !stroke.style.includes('49, 210, 192, 1'))).toBe(
       true,
     );
@@ -748,5 +980,76 @@ describe('CT107D View2D 生命周期', () => {
     const model = harness({ getSnapshot: async () => ({ displays: {} }) });
     const { view } = mount(model.model);
     await expect(view.initialize()).rejects.toThrow(/snapshot/i);
+  });
+});
+
+describe('CT107D View2D 声音', () => {
+  it('只创建一个静音音调，仅 SP1 状态变化时调整音量', async () => {
+    const model = harness();
+    const { audio, createTone, set } = audioHarness();
+    const { view } = mount(model.model, audio);
+    await view.initialize();
+    expect(createTone).toHaveBeenCalledExactlyOnceWith({
+      frequency: 2000,
+      type: 'square',
+      volume: 0,
+    });
+    expect(set).not.toHaveBeenCalled();
+
+    model.emit({ designator: 'SP1', port: 'active', value: 1 });
+    model.emit({ designator: 'SP1', port: 'active', value: 1 });
+    model.emit({ designator: 'K1', port: 'energized', value: 1 });
+    model.emit({ designator: 'SP1', port: 'active', value: 0 });
+    model.emit({ designator: 'SP1', port: 'active', value: 0 });
+    expect(set.mock.calls).toEqual([
+      [{ volume: 0.06 }, { rampMs: 5 }],
+      [{ volume: 0 }, { rampMs: 5 }],
+    ]);
+  });
+
+  it('快照中的蜂鸣器状态驱动音调', async () => {
+    const model = harness({ snapshot: snapshotOf({ buzzer: true }) });
+    const { audio, set } = audioHarness();
+    const { view } = mount(model.model, audio);
+    await view.initialize();
+    expect(set).toHaveBeenCalledExactlyOnceWith({ volume: 0.06 }, { rampMs: 5 });
+  });
+
+  it('迟到的快照不会覆盖已激活的音调', async () => {
+    let resolveSnapshot!: (value: Value) => void;
+    const model = harness({
+      getSnapshot: () =>
+        new Promise<Value>((resolve) => {
+          resolveSnapshot = resolve;
+        }),
+    });
+    const { audio, set } = audioHarness();
+    const { view } = mount(model.model, audio);
+    const initialization = view.initialize();
+    model.emit({ designator: 'SP1', port: 'active', value: 1 });
+    resolveSnapshot(snapshotValue(snapshotOf({ buzzer: false })));
+    await initialization;
+    expect(set).toHaveBeenCalledExactlyOnceWith({ volume: 0.06 }, { rampMs: 5 });
+  });
+
+  it('dispose 释放订阅并停止音调一次', async () => {
+    const model = harness();
+    const { audio, set, stop } = audioHarness();
+    const { view } = mount(model.model, audio);
+    await view.initialize();
+    model.emit({ designator: 'SP1', port: 'active', value: 1 });
+    view.dispose();
+    view.dispose();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(model.listenerCount()).toBe(0);
+    model.emit({ designator: 'SP1', port: 'active', value: 0 });
+    expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it('编辑态不申请音调句柄', async () => {
+    const { audio, createTone } = audioHarness();
+    const { view } = mount(undefined, audio);
+    await view.initialize();
+    expect(createTone).not.toHaveBeenCalled();
   });
 });

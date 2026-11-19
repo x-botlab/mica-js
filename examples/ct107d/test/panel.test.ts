@@ -1,4 +1,4 @@
-/// <reference path="../device/.mica/device.d.ts" />
+import type {} from '../device/.mica/device.d.ts';
 import { describe, expect, it } from 'vitest';
 import {
   FieldVersions,
@@ -232,7 +232,7 @@ function snapshot(
     },
     jumpers: { J13: true, J3: true, J2: true, J2Tx: false, J5: true, J6: true },
     infrared: { LD1: false, U11: false, U20: false },
-    ne555: { frequency: 0, dutyCycle: 0 },
+    ne555: { position: 0.5, frequency: 0, dutyCycle: 0 },
     uln2003: { mask: 0, channels: '0000000' },
     decoder: { select: -1, enabled: false, code: '--' },
     pcf8591: { channel: 0, output: 0, analog: [0, 0, 0, 0] },

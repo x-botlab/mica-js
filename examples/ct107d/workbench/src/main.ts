@@ -74,6 +74,8 @@ let subscriptions: DisposableStore | undefined;
 let sourceLabel = '演示';
 let draftAvailable = false;
 let lastState: IWorkbenchState | undefined;
+let audioContext: AudioContext | undefined;
+let audioUnavailable = false;
 
 function describe(reason: unknown): string {
   if (reason instanceof Error) {
@@ -165,6 +167,18 @@ function entryFor(lock: DeviceLock): CatalogEntry {
   return entry;
 }
 
+/** 页面自持一个音频上下文；不支持音频时仍可运行仿真。 */
+function pageAudio(): AudioContext | undefined {
+  if (audioContext !== undefined || audioUnavailable) return audioContext;
+  try {
+    audioContext = new AudioContext();
+  } catch (cause) {
+    audioUnavailable = true;
+    console.warn('CT107D workbench: audio unavailable.', cause);
+  }
+  return audioContext;
+}
+
 const deviceProvider = {
   async open(lock: DeviceLock): Promise<PackageFiles> {
     const entry = entryFor(lock);
@@ -179,8 +193,9 @@ const deviceProvider = {
 };
 
 const controller = new HostSessionController<IWorkbench>({
-  create: async (document: FusedDocument, saveDocument: (snapshot: FusedDocument) => Promise<void>) =>
-    createWorkbench({
+  create: async (document, saveDocument) => {
+    const audio = pageAudio();
+    return createWorkbench({
       container,
       document,
       saveDocument,
@@ -188,7 +203,9 @@ const controller = new HostSessionController<IWorkbench>({
       viewBaseUrlTemplate: viewBaseUrl,
       theme: HOST_THEME,
       step: WORKBENCH_STEP,
-    }),
+      ...(audio === undefined ? {} : { audio: { context: audio } }),
+    });
+  },
   saveDocument: (snapshot) => store.save(snapshot),
   savedLabel: '本地',
   draftLabel: '本地',
@@ -289,17 +306,19 @@ function reopen(): Promise<void> {
   }
   status.textContent = '正在读取本地草稿…';
   clearError();
-  return controller.reopen(() => store.load()).catch((reason: unknown) => {
-    if (reason instanceof HostSessionError && reason.code === 'host/no-draft') {
-      refreshDraftAvailability();
-      if (lastState === undefined) status.textContent = '无本地保存（请先保存）';
-      else renderStatus();
-      return;
-    }
-    status.textContent = '装载失败';
-    refreshControls();
-    throw reason;
-  });
+  return controller
+    .reopen(() => store.load())
+    .catch((reason: unknown) => {
+      if (reason instanceof HostSessionError && reason.code === 'host/no-draft') {
+        refreshDraftAvailability();
+        if (lastState === undefined) status.textContent = '无本地保存（请先保存）';
+        else renderStatus();
+        return;
+      }
+      status.textContent = '装载失败';
+      refreshControls();
+      throw reason;
+    });
 }
 
 function handled(task: () => Promise<void>): void {
@@ -321,7 +340,13 @@ window.addEventListener('pagehide', () => {
   // `pageshow` can restore the same document instead of leaving the page inert.
   saveButton.disabled = true;
   reopenButton.disabled = true;
-  void controller.suspend().catch(() => undefined);
+  // Capture before a bfcache return can create a new context.
+  const oldAudio = audioContext;
+  audioContext = undefined;
+  void controller
+    .suspend()
+    .finally(() => oldAudio?.close())
+    .catch(() => undefined);
 });
 
 window.addEventListener('pageshow', () => {

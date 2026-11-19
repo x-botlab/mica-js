@@ -399,6 +399,9 @@
           "ne555": {
             "type": "object",
             "properties": {
+              "position": {
+                "type": "number"
+              },
               "frequency": {
                 "type": "number"
               },
@@ -550,6 +553,14 @@
         }
       },
       "setWiper": {
+        "params": {
+          "ref": "NumberParams"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setFrequencyWiper": {
         "params": {
           "ref": "NumberParams"
         },

@@ -3,7 +3,7 @@
   "dependencies": {
     "example:ct107d-board": {
       "version": "0.1.0",
-      "integrity": "sha256:1fa736d1b33b1b197e207c67571c9429c469b67fe9299aab5c0a2adbc1499aea"
+      "integrity": "sha256:8411ac9f28d9d3b705944a60d0197b72054552ce6564de8fd608fd52f925c4e5"
     }
   },
   "instances": [

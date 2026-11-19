@@ -30,6 +30,7 @@ import {
   jumperParams,
   type JumperDesignator,
 } from '../jumper-map';
+import { RB2_ADC_CHANNEL } from '../potentiometer-map';
 /* ------------------------------------------------------------------------------------------------
  * Host bridge (RFC 0023).
  *
@@ -299,6 +300,7 @@ export class BoardBootstrap {
       this.#update(['buzzer'], (snapshot) => ({ ...snapshot, buzzer: value !== 0 }));
     else if (designator === 'U21' && port === 'active')
       this.#update(['hall'], (snapshot) => ({ ...snapshot, hall: value !== 0 }));
+    else if (designator === 'RB2' && port === 'position') this.setAnalog(RB2_ADC_CHANNEL, value);
     else if (designator === 'U14' && port === 'active')
       this.#update(['lm386.active'], (snapshot) => ({
         ...snapshot,
@@ -648,7 +650,7 @@ function buildInputView(
   const analogControls = ANALOG_LABELS.map((label, channel) =>
     numberControl(analogGroup, {
       id: `ain${channel}`,
-      label,
+      label: channel === RB2_ADC_CHANNEL ? `${label} · RB2` : label,
       unit: 'FS',
       min: 0,
       max: 1,
@@ -1058,9 +1060,9 @@ function buildAssemblyView(
 
   const keyStates = new Map<KeyName, boolean>();
   const pendingKeys = new Set<KeyName>();
-  let keysAvailable = capabilities.keys;
-  let jumpersAvailable = capabilities.jumpers;
-  let irAvailable = capabilities.ir;
+  const keysAvailable = capabilities.keys;
+  const jumpersAvailable = capabilities.jumpers;
+  const irAvailable = capabilities.ir;
   let stateKnown = false;
   let destroyed = false;
 
@@ -2177,7 +2179,7 @@ function mountPanel(api: DeviceViewApi, elements: PanelElements): void {
           () => model.methods.setAnalogInput({ channel, value }),
           `已下发 AIN${channel} = ${value.toFixed(3)}`,
         );
-        if (outcome.ok) board.setAnalog(channel, value);
+        if (outcome.ok && channel !== RB2_ADC_CHANNEL) board.setAnalog(channel, value);
         return outcome;
       },
       async writeHall(value) {
@@ -2520,7 +2522,7 @@ function mountPanel(api: DeviceViewApi, elements: PanelElements): void {
     tablist?.addEventListener('keydown', (event) => {
       const index = tabs.findIndex((tab) => tab.getAttribute('aria-selected') === 'true');
       if (index < 0) return;
-      let next = index;
+      let next: number;
       if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
       else if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
       else if (event.key === 'Home') next = 0;

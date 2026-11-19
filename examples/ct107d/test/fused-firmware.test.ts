@@ -171,7 +171,7 @@ describe('fused board self-made firmware fixtures', () => {
     }
   }, 60_000);
 
-  it('I2C: AT24C02 write/read-back and independent PCF8591 AIN2', async () => {
+  it('I2C: EEPROM read-back and independent ADC channels during an RB2 input burst', async () => {
     const { fused, actual } = await board('i2c-eeprom-pcf');
     try {
       // LM324 output must not implicitly drive PCF AIN2; the analog channel is independent.
@@ -180,6 +180,10 @@ describe('fused board self-made firmware fixtures', () => {
       fused.methods.setWiper!({ value: 0 });
 
       actual.runUntil(0);
+      // Simulate a slider burst before the simulator can consume any of the writes.
+      for (let i = 0; i < 64; i += 1)
+        fused.methods.setAnalogInput!({ channel: 3, value: (63 - i) / 64 });
+      fused.methods.setAnalogInput!({ channel: 3, value: 0.75 });
       advance([actual], 1, 100);
       expectReady([actual]);
 
@@ -188,6 +192,8 @@ describe('fused board self-made firmware fixtures', () => {
       expect(dump[0x10]).toBe(0x5a);
       expect(actual.signals.get('U6/latch'), 'EEPROM read-back').toBe(0x5a);
       expect(actual.signals.get('U7/latch'), 'PCF AIN2').toBe(128);
+      expect(actual.signals.get('U8/latch'), 'PCF AIN3').toBe(191);
+      expect(actual.signals.get('RB2/position')).toBe(0.75);
       expect((fused.methods.getEeprom!(null) as Uint8Array)[0x10]).toBe(0x5a);
     } finally {
       closeBoard(fused, actual);

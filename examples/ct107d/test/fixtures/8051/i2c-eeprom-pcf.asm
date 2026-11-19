@@ -1,5 +1,5 @@
 ; Self-made CT107D I2C regression: AT24C02 write 0x5A to 0x10, read it back,
-; then read PCF8591 AIN2. Results are latched into U6 and U7 for port-level checks.
+; then read PCF8591 AIN2 and AIN3. Results are latched into U6, U7 and U8.
 ; P2.0 = SCL, P2.1 = SDA. The models are edge-driven; no physical bus delay is needed.
         ORG 0
         MOV P2,#0xFF
@@ -38,6 +38,20 @@
         ACALL RECV
         MOV P0,A
         MOV P2,#0xE0
+        ACALL DELAY
+        MOV P2,#0x00
+
+        ACALL START
+        MOV A,#0x90
+        ACALL SEND
+        MOV A,#0x03
+        ACALL SEND
+        ACALL START
+        MOV A,#0x91
+        ACALL SEND
+        ACALL RECV
+        MOV P0,A
+        MOV P2,#0xC0
         ACALL DELAY
         MOV P2,#0x00
 
