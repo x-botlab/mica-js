@@ -1079,6 +1079,41 @@ describe('STM32G431 TIM core', () => {
     }
   });
 
+  it('OPM 停止后重算仍在运行的定时器节拍，最后一个停止后清除活动槽', async () => {
+    const init = (body: Body): void => {
+      timerWrite(body, TIM2, ARR, 124);
+      timerWrite(body, TIM3, ARR, 99);
+      timerWrite(body, TIM2, CR1, CR1_CEN | CR1_OPM);
+      timerWrite(body, TIM3, CR1, CR1_CEN | CR1_OPM);
+      body.redirect(2, 100_000_000);
+    };
+    const firstStop = (body: Body): void => {
+      advanceTimers(body);
+      body.redirect(4, 25_000_000);
+    };
+    const lastStop = (body: Body): void => {
+      advanceTimers(body);
+      body.stop();
+    };
+    const rig = await createTimRig({ steps: [init, firstStop, lastStop] });
+
+    try {
+      rig.runUntil(100_000_001);
+      expect(rig.state('timCenMask')).toBe(1 << 1); // TIM2 only
+      expect(rig.state('periphActive')).toBe(1);
+      expect(rig.state('periphDeadline0')).toBe(25_000_000);
+      expect(rig.state('tickPs')).toBe(25_000_000);
+      expect(rig.state('tickActive')).toBe(true);
+
+      rig.runUntil(125_000_001);
+      expect(rig.state('timCenMask')).toBe(0);
+      expect(rig.state('periphActive')).toBe(0);
+      expect(rig.state('tickActive')).toBe(false);
+    } finally {
+      rig.dispose();
+    }
+  });
+
   it('CMS=1 基本中心对齐：0→ARR 后翻转 DIR，再回到 0 翻转', async () => {
     const init: (body: Body) => void = (body) => {
       timerWrite(body, TIM2, ARR, 3);
