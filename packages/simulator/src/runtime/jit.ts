@@ -48,6 +48,10 @@ const DIRECT_REBUILD_MIN_BLOCKS = 64;
 /** A repeatedly visited translated PC can force a rebuild before the append-only stride. */
 const DIRECT_REBUILD_PATIENCE = 4;
 
+function directRebuildStride(compiled: number): number {
+  return compiled < DIRECT_REBUILD_LINEAR_LIMIT ? 1 : Math.max(DIRECT_REBUILD_MIN_BLOCKS, compiled);
+}
+
 /**
  * Deterministic direct-execution counters, kept on the `Jit` itself so `Board.jits` stays the
  * only diagnostic surface: the benchmark reads them instead of patching runtime internals.
@@ -360,9 +364,7 @@ function directHost(
     },
     intent: (pin, value) => {
       publishTime();
-      const changed = instance.pin(pin).intent !== value;
-      instance.host.intent(pin, value);
-      if (changed) frame.publishPending = true;
+      if (instance.writeIntent(pin, value)) frame.publishPending = true;
     },
     resistor: (pin, resistance) => {
       publishTime();
@@ -416,18 +418,7 @@ function flushDirect(
 ): boolean {
   board.time = frame.time;
   frame.publishPending = false;
-  let wrote = false;
-  for (let word = 0; word < frame.stateDirty.length; word++) {
-    let bits = frame.stateDirty[word]!;
-    if (bits === 0) continue;
-    frame.stateDirty[word] = 0;
-    while (bits !== 0) {
-      const slot = word * 32 + 31 - Math.clz32(bits & -bits);
-      instance.host.write(layout.stateNames[slot]!, frame.states[slot]);
-      bits &= bits - 1;
-      wrote = true;
-    }
-  }
+  let wrote = instance.commitDirectStates(frame.stateDirty);
   for (let word = 0; word < frame.memoryDirty.length; word++) {
     let bits = frame.memoryDirty[word]!;
     if (bits === 0) continue;
@@ -443,8 +434,8 @@ function flushDirect(
 }
 
 interface RuntimeDirectFrame extends DirectJitFrame {
-  /** The prefix was already flushed and published, but its suffix was not admitted. */
-  checkpointRejected: boolean;
+  /** The checkpoint already published the exit boundary before returning to the scheduler. */
+  boundarySettled: boolean;
 }
 
 function createDirectFrame(
@@ -465,7 +456,7 @@ function createDirectFrame(
     time: board.time,
     due: board.time,
     resume: 0,
-    checkpointRejected: false,
+    boundarySettled: false,
   };
   (frame as { host?: DirectJitHost }).host = directHost(board, instance, frame);
   if (jit.metadata === undefined) {
@@ -473,13 +464,44 @@ function createDirectFrame(
       flushDirect(board, instance, layout, frame);
       board.boundary();
       if (jit.directProgramRevision === -1 || !board.canContinueDirect(jit, frame.due)) {
-        frame.checkpointRejected = true;
+        frame.boundarySettled = true;
         return false;
       }
       // The boundary may have run reactions with their own current instance.
       board.current = instance;
       return true;
     };
+    if (jit.options.beforeInstruction === undefined) {
+      const pcIndex = layout.states.get(jit.options.pc)!;
+      frame.finishCheckpoint = (deadline, emptySuffix) => {
+        // The prefix was flushed before elapsing. An empty suffix only advanced time.
+        if (emptySuffix) board.time = frame.time;
+        else flushDirect(board, instance, layout, frame);
+        board.boundary();
+        const direct = jit.direct;
+        const nextPc = frame.states[pcIndex] as number;
+        if (
+          jit.directProgramRevision === -1 ||
+          direct?.frame !== frame ||
+          !direct.pcs.has(nextPc) ||
+          jit.directSkip === nextPc ||
+          (jit.directRevision !== jit.revision &&
+            jit.revision - jit.directRevision >= directRebuildStride(direct.pcs.size)) ||
+          frame.time >= deadline ||
+          board.events.time < deadline ||
+          !board.canContinueDirect(jit, frame.time)
+        ) {
+          frame.boundarySettled = true;
+          return false;
+        }
+        // Program membership excludes polling/secondary-code PCs. Barriers may still
+        // have changed during reactions; the next generated block checks the refreshed masks.
+        refreshDirectGuards(jit);
+        frame.stopAfterInstruction = false;
+        board.current = instance;
+        return true;
+      };
+    }
   }
   // Both masks are shared with every frame of this JIT and refreshed in place on guard churn.
   (frame as BarrierFrame).blockedStates = barrier.stateMask;
@@ -509,8 +531,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     if (jit.directRevision !== jit.revision) {
       const compiled = jit.direct?.pcs.size ?? 0;
       const stale = jit.revision - jit.directRevision;
-      const stride =
-        compiled < DIRECT_REBUILD_LINEAR_LIMIT ? 1 : Math.max(DIRECT_REBUILD_MIN_BLOCKS, compiled);
+      const stride = directRebuildStride(compiled);
       const covered = jit.direct?.pcs.has(pc) === true;
       const misses = covered ? 0 : (jit.directMisses.get(pc) ?? 0);
       const rebuild =
@@ -634,8 +655,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
   for (;;) {
     if (pending) frame.stopAfterInstruction = true;
     frame.time = board.time;
-    frame.stateDirty.fill(0);
-    frame.memoryDirty.fill(0);
+    // The frame starts clean and flushDirect clears both banks, including the fault path.
     const start = board.time;
     let reason: ReturnType<DirectJitProgram['run']>;
     let wrote: boolean;
@@ -651,7 +671,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     // entry PC can safely be interpreted. A zero-duration block can still write state/PC before
     // the dispatcher rejects the next uncompiled PC: `wrote` records that prefix, so the caller
     // must re-read the flushed PC instead of replaying the old one.
-    if (frame.checkpointRejected) frame.checkpointRejected = false;
+    if (frame.boundarySettled) frame.boundarySettled = false;
     else if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
     if (reason === 'fallback') {
       const nextPc = finite(instance.states.get(jit.options.pc), 'pc');

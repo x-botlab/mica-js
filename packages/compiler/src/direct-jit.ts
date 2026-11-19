@@ -1134,9 +1134,13 @@ function residentPcSpan(entries: readonly Instruction[]): string {
   return `pc >= ${first.pc} && pc <= ${last.pc}`;
 }
 
-function residentStepFinish(stop: boolean, inside: string, pcIndex: number): string {
-  if (stop) return 'return "stopped";';
-  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
+function residentStepFinish(entry: Instruction, inside: string, binding: DirectJitBinding): string {
+  if (entry.stop) return 'return "stopped";';
+  const checkpoint =
+    binding.host && entry.duration !== undefined
+      ? `if (F.stopAfterInstruction && !F.finishCheckpoint?.(deadline, ${entry.suffix.length === 0})) return "invalidated"; if (F.publishPending) return "invalidated";`
+      : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated";';
+  return `${checkpoint} pc = S[${binding.pc.index}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
 }
 
 function residentResumeFinish(stop: boolean, pcIndex: number): string {
@@ -1165,7 +1169,7 @@ function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): 
       ...entry.outlinePrefix(outlined),
       ...elapsed(entry, entry.resumeId, binding.host === true),
       ...entry.suffix,
-      entry.isolated ? publish : residentStepFinish(entry.stop, stepInside, binding.pc.index),
+      entry.isolated ? publish : residentStepFinish(entry, stepInside, binding),
       '}',
     );
   });

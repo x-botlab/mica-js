@@ -221,6 +221,12 @@ export interface DirectJitFrame {
    * without returning to the scheduler. On false the continuation is saved normally.
    */
   publishCheckpoint?: () => boolean;
+  /**
+   * Finish an admitted inline suffix at `time` and settle its boundary. Return true
+   * only if the next instruction may run in this same program with the same deadline.
+   * An empty suffix cannot have produced dirty bank slots or host effects.
+   */
+  finishCheckpoint?: (deadline: number, emptySuffix: boolean) => boolean;
   /** Present when the program was compiled with `DirectJitBinding.host`. */
   readonly host?: DirectJitHost;
 }

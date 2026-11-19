@@ -39,8 +39,8 @@ interface InternalPin {
 /** 运行时内部字段：只用于显式正确性/诊断用例，不构成 SDK API。 */
 interface InternalInstance {
   readonly pins: ReadonlyMap<string, InternalPin>;
+  writeIntent(pin: unknown, value: unknown): boolean;
   readonly host: {
-    intent(pin: unknown, value: unknown): void;
     send(name: string, value: unknown): void;
   };
   readonly memoryResources: ReadonlyMap<string, { readonly version: number }>;
@@ -673,7 +673,7 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
       data: dataSampleVersion(internalLcd),
       gram: memoryVersion(internalLcd, 'gram'),
     };
-    const originalIntent = internalMcu.host.intent;
+    const originalIntent = internalMcu.writeIntent.bind(internalMcu);
     const originalSend = internalLcd.host.send;
     // publishFrames 在 frameInfo 与 frameRows 之间不挂起；此处 oracle 与全部行同刻。
     internalLcd.host.send = (name, value) => {
@@ -701,19 +701,18 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
       }
     };
 
-    internalMcu.host.intent = (ref, value) => {
+    // Both the interpreter and the direct JIT write through this entry point.
+    internalMcu.writeIntent = (ref, value) => {
       const name = String(ref);
       const pin = internalMcu.pins.get(name);
       const previous = intentLevel(pin);
-      const changed = pin?.intent !== value;
-
-      originalIntent(ref, value);
+      const changed = originalIntent(ref, value);
       counters.intentCalls += 1;
       if (changed) counters.intentChanges += 1;
 
       const next = intentLevel(pin);
 
-      if (previous === next) return;
+      if (previous === next) return changed;
       if (name === 'PB5') {
         counters.wrLevelChanges += 1;
         if (previous === 0 && next === 1) {
@@ -723,6 +722,7 @@ export async function createJointBoard(options: JointBoardOptions = {}): Promise
       } else if (name === 'PB9') counters.csLevelChanges += 1;
       else if (name === 'PB8') counters.rsLevelChanges += 1;
       else if (/^PC(?:[0-9]|1[0-5])$/.test(name)) counters.dataBitLevelChanges += 1;
+      return changed;
     };
 
     accountingReadout = () => ({

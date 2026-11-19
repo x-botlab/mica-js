@@ -775,7 +775,7 @@ class BoardRuntime implements Board {
   }
   boundary(): void {
     for (;;) {
-      this.publish();
+      if (this.electricalDirty) this.publish();
       if (!this.observations.size) return;
       const reactions = this.reactionBatch;
       reactions.length = 0;

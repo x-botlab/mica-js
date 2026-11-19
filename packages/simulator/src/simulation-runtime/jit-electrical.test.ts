@@ -21,10 +21,10 @@ const CYCLE_PS = 10;
 const WARMUP_PS = 41;
 const TARGET_PS = 81;
 const EDGE_BYTES = 8;
-type PublicationEffect = 'process' | 'replaceCode' | 'fault';
+type PublicationEffect = 'process' | 'suffixProcess' | 'replaceCode' | 'fault';
 
 const translation =
-  (stable: boolean): JitTranslate =>
+  (stable: boolean, effect?: PublicationEffect): JitTranslate =>
   ({ pc, code }, block) => {
     block.instruction({ pc, nextPc: pc === 0 ? 1 : 0 }, (b) => {
       const one = b.constant(types.number, 1);
@@ -49,6 +49,7 @@ const translation =
       // the old decoded bytes even if publication replaces code.
       const increment = b.constant(types.number, code[0] || 1);
       b.writeState('suffixes', b.add(suffixes, increment));
+      if (effect === 'suffixProcess') b.writeIntent('suffixSignal', intent);
     });
     return block.finish();
   };
@@ -76,6 +77,17 @@ function electricalModel(wakeAtSuffix: boolean, effect?: PublicationEffect) {
   builder.pin({ name: 'gnd' });
   builder.pin({ name: 'drive', low: 0.8, high: 2.0 });
   builder.pin({ name: 'gate', low: 0.8, high: 2.0 });
+  if (effect === 'suffixProcess') {
+    builder.pin({ name: 'suffixSignal', low: 0.8, high: 2.0 });
+    builder.on(
+      { name: 'observeSuffix', sourcePath: ['suffixSignal', 'sample', 'level'] },
+      (body) => {
+        body.if(body.equal(types.number, body.now(), body.constant(types.number, 60)), (atEdge) => {
+          atEdge.writeState('processValue', atEdge.readState('suffixes', types.number));
+        });
+      },
+    );
+  }
   builder.start((body) => {
     if (wakeAtSuffix) {
       body.wait(50);
@@ -187,7 +199,7 @@ function createScenario(
           entry: 'dut',
           code: 'code',
           pc: 'pc',
-          translate: translation(stable),
+          translate: translation(stable, effect),
         });
         try {
           context.loadBytes('code', new Uint8Array(16));
@@ -340,7 +352,7 @@ describe('direct JIT electrical publication', () => {
     }
   });
 
-  it('completes only admitted suffixes inside a direct run and keeps publication timing', () => {
+  it('continues from admitted suffixes without redispatch and still stops at the deadline', () => {
     const direct = createScenario('throughput', false, true);
     const queued = createScenario('throughput', false, true);
     try {
@@ -359,7 +371,8 @@ describe('direct JIT electrical publication', () => {
         { due: 60, resumed: true },
         { due: 70, resumed: true },
       ]);
-      expect(calls(direct) - calls(queued)).toBe(before - 2);
+      // Each admitted checkpoint avoids two calls: one to resume and one to redispatch.
+      expect(calls(direct) - calls(queued)).toBe(before - 4);
       expect(edgeRecords(direct)).toEqual(edgeRecords(queued));
       expect(direct.instance.states.get('processValue')).toBe(4);
       expect(direct.instance.states.get('suffixes')).toBe(7);
@@ -368,6 +381,31 @@ describe('direct JIT electrical publication', () => {
     } finally {
       direct.board.dispose();
       queued.board.dispose();
+    }
+  });
+
+  it('runs a process queued by an inline suffix before starting the next instruction', () => {
+    const scenario = createScenario('throughput', false, true, 'suffixProcess');
+    const precise = createScenario('precise', false, true, 'suffixProcess');
+    try {
+      warmDirect(scenario);
+      const frame = scenario.jit.direct!.frame;
+      const finish = frame.finishCheckpoint!;
+      const attempts: [number, boolean][] = [];
+      frame.finishCheckpoint = (deadline, emptySuffix) => {
+        const continued = finish(deadline, emptySuffix);
+        attempts.push([frame.time, continued]);
+        return continued;
+      };
+      scenario.board.runUntil(65);
+      precise.board.runUntil(65);
+      expect(attempts).toEqual([[60, false]]);
+      expect(edgeRecords(scenario)).toEqual(edgeRecords(precise));
+      expect(scenario.instance.states.get('seenProcess')).toBe(6);
+      expect(scenario.instance.states.get('processValue')).toBe(6);
+    } finally {
+      scenario.board.dispose();
+      precise.board.dispose();
     }
   });
 

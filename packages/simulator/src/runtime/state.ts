@@ -118,6 +118,7 @@ export interface DirectExecution {
 /** Immutable bank layout shared by every direct program built for one JIT. */
 export interface DirectJitLayout {
   readonly stateNames: readonly string[];
+  readonly stateSlots: readonly ResourceSlot[];
   readonly memoryNames: readonly string[];
   readonly states: ReadonlyMap<string, number>;
   /** Instance-owned bank, mirrored by every interpreted/process/reaction state write. */

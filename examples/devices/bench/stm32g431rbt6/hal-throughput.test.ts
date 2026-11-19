@@ -28,6 +28,9 @@ describe('HAL_06_LCD 裸 MCU、80 MHz、throughput', () => {
         fallbacks: 0,
       });
       expect(round.drawing.calls).toBeGreaterThan(0);
+      // The steady GPIO loop should stay in the direct program across publication.
+      // Allow exits for service/deadline handling, not a host dispatch per edge.
+      expect(round.drawing.calls).toBeLessThan(1_000);
     }
   }, 900_000);
 });
