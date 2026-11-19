@@ -291,6 +291,120 @@ function scalarLoop() {
   return [alu.instruction(0, 2), memory.instruction(2, 0)];
 }
 
+test('zero-time while loops keep outer values live and publish at both instruction boundaries', () => {
+  const prefix = builder();
+  prefix.delay(2);
+  prefix.write('marker', prefix.constant(9));
+  const b = builder();
+  const limit = b.read('x');
+  const base = b.read('marker');
+  const zero = b.constant(0);
+  const one = b.constant(1);
+  const two = b.constant(2);
+  const three = b.constant(3);
+  const local = (target, id) =>
+    target.push({ kind: 'local', local: id, type: { kind: 'number' }, initial: zero });
+  const get = (target, id) => b.value({ kind: 'localRead', local: id }, 'number', target);
+  const set = (target, id, value) => target.push({ kind: 'localWrite', local: id, value });
+  const op = (target, operator, left, right, type = 'number') =>
+    b.value({ kind: 'binary', operator, left, right }, type, target);
+  const condition = (id, end) => {
+    const operations = [];
+    const value = op(operations, 'lessThan', get(operations, id), end, 'bool');
+    operations.push({ kind: 'yield', value });
+    return { body: { operations } };
+  };
+  local(b.operations, 0); // outer cursor
+  local(b.operations, 1); // accumulator
+  const outer = [];
+  local(outer, 2); // reset the inner cursor on each outer iteration
+  const inner = [];
+  set(inner, 1, op(inner, 'add', get(inner, 1), base));
+  set(inner, 2, op(inner, 'add', get(inner, 2), one));
+  outer.push({ kind: 'while', test: condition(2, two), body: { operations: inner } });
+  const cursor = get(outer, 0);
+  const accumulator = get(outer, 1);
+  outer.push(
+    { kind: 'store8', memory: ram, offset: cursor, value: accumulator },
+    { kind: 'write', name: 'y', value: accumulator },
+  );
+  set(outer, 0, op(outer, 'add', cursor, one));
+  b.operations.push({ kind: 'while', test: condition(0, limit), body: { operations: outer } });
+  b.delay(0);
+  b.write('marker', three);
+  const done = builder();
+  done.operations.push({ kind: 'stop' });
+  const instructions = [prefix.instruction(0, 2), b.instruction(2, 4), done.instruction(4, 6)];
+  const split = { ...binding, split: true, shardSlotLimit: 0, shardSize: 4 };
+  for (const [settings, cache] of [[binding], [split], [split, compileDirectJit.createCache()]]) {
+    const program = compileDirectJit(instructions, settings, cache);
+    assert.deepEqual([...program.pcs], [0, 2, 4]);
+    for (const x of [0, 3]) {
+      const f = frame(program, [0, x, 0, true, 0, 0]);
+      const reference = generic(instructions, f.states, f.memories);
+      assert.equal(program.run(f, 1), 'deadline');
+      assert.notEqual(f.resume, 0);
+      f.stateDirty.fill(0);
+      assert.equal(program.run(f, 3), 'invalidated', 'publish the resumed prefix before the loop');
+      assert.equal(f.states[0], 2);
+      assert.equal(f.states[5], 9);
+      assert.equal(f.resume, 0);
+      for (const bank of ['blockedStates', 'blockedMemories']) {
+        f.stateDirty.fill(0);
+        f[bank] = [bank === 'blockedStates' ? 1 << binding.states.get('y') : 1];
+        assert.equal(program.run(f, 3), 'fallback', `entry barrier for ${bank}`);
+        assert.deepEqual(f.states, [2, x, 0, true, 0, 9]);
+        assert.deepEqual(f.stateDirty, [0]);
+        assert.deepEqual(f.memoryDirty, [0]);
+        delete f[bank];
+      }
+      assert.equal(
+        program.run(f, 3),
+        'invalidated',
+        'publish the loop before the next instruction',
+      );
+      assert.equal(f.states[0], 4);
+      assert.equal(f.time, 2);
+      assert.equal(f.resume, 0);
+      assert.equal(f.states[2], x * 18);
+      assert.deepEqual([...f.memories[0]], x ? [18, 36, 54] : [7, 8, 9]);
+      assert.equal(program.run(f, 3), 'stopped');
+      assert.equal(reference.run(3), 'stopped');
+      assert.deepEqual(f.states, reference.states);
+      assert.deepEqual(f.memories, reference.memories);
+    }
+    const f = frame(program);
+    assert.equal(program.run(f, 3), 'invalidated', 'publish an unsuspended prefix before the loop');
+    assert.equal(f.states[0], 2);
+    assert.equal(f.states[2], 0);
+    assert.deepEqual(f.memoryDirty, [0]);
+  }
+});
+
+test('while blocks with suspension or a control transfer keep the generic execution path', () => {
+  for (const kind of ['elapse', 'break', 'continue']) {
+    const b = builder();
+    const yes = b.constant(true);
+    const duration = b.constant(1);
+    b.operations.push({
+      kind: 'while',
+      test: { body: { operations: [{ kind: 'yield', value: yes }] } },
+      body: { operations: [kind === 'elapse' ? { kind, duration } : { kind }] },
+    });
+    b.delay(0);
+    assert.equal(compileDirectJit([b.instruction(0, 2)], binding), undefined);
+  }
+  const b = builder();
+  const no = b.constant(false);
+  b.operations.push({
+    kind: 'while',
+    test: { body: { operations: [{ kind: 'yield', value: no }] } },
+    body: { operations: [] },
+  });
+  b.delay(1);
+  assert.equal(compileDirectJit([b.instruction(0, 2)], binding), undefined);
+});
+
 test('whole cached-PC loop matches compileBody and segment/monolithic execution', () => {
   const instructions = scalarLoop();
   const program = compileDirectJit(instructions, binding);

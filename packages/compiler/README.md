@@ -254,6 +254,13 @@ standalone stop is supported. Other control flow, resource parameters, non-state
 reads, multiple delays, calls, and other host operations fall
 back as complete instructions, never after partially running an unsupported body.
 
+Statement-position `while` loops are supported in zero-time instructions whose loop
+conditions and bodies use the supported operations without suspending or transferring
+control (`break`, `continue`, etc.). An admitted loop instruction runs in its own
+batch. The direct program returns `invalidated` to publish a preceding batch first
+(including after a resumed suffix), then again after the loop instruction completes.
+The normal entry write barriers apply to both the loop condition and its body.
+
 Before a body starts, PC is set to `nextPc`. A horizon can split any elapse without
 replaying prefix effects or rereading captured loads. At `time === deadline`, no
 instruction starts and no continuation or post-elapse suffix executes. Absolute

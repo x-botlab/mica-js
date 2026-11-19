@@ -727,6 +727,9 @@ function countOperations(region: RegionIR): number {
       case 'or':
         total += countOperations(operation.right.body);
         break;
+      case 'while':
+        total += countOperations(operation.test.body) + countOperations(operation.body);
+        break;
       case 'assert':
         if (operation.message) total += countOperations(operation.message.body);
         break;
@@ -808,12 +811,21 @@ const prelude = (slots: readonly string[]): string[] => [
   ...(slots.length ? [`let ${slots.join(',')};`] : []),
 ];
 
+const publish = 'return "invalidated";';
+
+/** The implicit PC write may have been flushed in an earlier batch when resuming. */
+function fenceAfterResume(entries: readonly Instruction[], pc: string): string[] {
+  const tests = entries.filter((entry) => entry.isolated).map((entry) => `${pc} === ${entry.pc}`);
+  return tests.length ? [`if (${tests.join(' || ')}) ${publish}`] : [];
+}
+
 /** One function holds the dispatcher, every continuation and every instruction body. */
 function monolithicProgram(
   entries: readonly Instruction[],
   binding: DirectJitBinding,
   registers: readonly string[],
 ): string[] {
+  const fence = fenceAfterResume(entries, `S[${binding.pc.index}]`);
   const lines = [
     'function run(F, deadline) {',
     ...prelude(registers),
@@ -827,7 +839,13 @@ function monolithicProgram(
   entries.forEach((entry, index) => {
     lines.push(`case ${index + 1}: {`);
     entry.slots.forEach((slot, slotIndex) => lines.push(`${slot} = L[${slotIndex}];`));
-    lines.push('F.resume = 0;', ...entry.suffix, finish(entry.stop), '}');
+    lines.push(
+      'F.resume = 0;',
+      ...entry.suffix,
+      ...(entry.stop ? [] : fence),
+      finish(entry.stop),
+      '}',
+    );
   });
   lines.push(
     'default: throw new TypeError("Unknown direct JIT continuation");',
@@ -846,7 +864,7 @@ function monolithicProgram(
       ...entry.prefix,
     );
     if (entry.duration !== undefined) lines.push(...elapsed(entry, index + 1));
-    lines.push(...entry.suffix, finish(entry.stop), '}');
+    lines.push(...entry.suffix, entry.isolated ? publish : finish(entry.stop), '}');
   });
   lines.push('default: return "fallback";', '}', '}', '}');
   return lines;
@@ -858,6 +876,7 @@ function shardProgram(
   binding: DirectJitBinding,
   shardSize: number,
 ): string[] {
+  const fence = fenceAfterResume(entries, `S[${binding.pc.index}]`);
   const sorted = [...entries].sort((left, right) => left.pcValue - right.pcValue);
   // Generated function size follows the emitted source, so group by a code budget instead of
   // a fixed count: one oversized block then gets a shard of its own.
@@ -911,7 +930,7 @@ function shardProgram(
         ...entry.prefix,
         ...elapsed(entry, shard.start + offset + 1),
         ...entry.suffix,
-        stepFinish(entry.stop, lower, shard.lastPc, binding.pc.index),
+        entry.isolated ? publish : stepFinish(entry.stop, lower, shard.lastPc, binding.pc.index),
         '}',
       );
     });
@@ -928,7 +947,13 @@ function shardProgram(
       if (entry.duration === undefined) return;
       lines.push(`case ${shard.start + offset + 1}: {`);
       entry.slots.forEach((slot, slotIndex) => lines.push(`${slot} = L[${slotIndex}];`));
-      lines.push('F.resume = 0;', ...entry.suffix, splitFinish(entry.stop), '}');
+      lines.push(
+        'F.resume = 0;',
+        ...entry.suffix,
+        ...(entry.stop ? [] : fence),
+        splitFinish(entry.stop),
+        '}',
+      );
     });
     lines.push('default: throw new TypeError("Unknown direct JIT continuation");', '}', '}');
   });
@@ -1126,7 +1151,7 @@ function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): 
       ...entry.prefix,
       ...(entry.duration === undefined ? [] : elapsed(entry, entry.resumeId)),
       ...entry.suffix,
-      residentStepFinish(entry.stop, stepInside, binding.pc.index),
+      entry.isolated ? publish : residentStepFinish(entry.stop, stepInside, binding.pc.index),
       '}',
     );
   });
@@ -1202,6 +1227,7 @@ function residentDispatcherProgram(
     'if (resumed === undefined) throw new TypeError("Unknown direct JIT continuation");',
     'const next = resumed(F, resume);',
     'if (typeof next !== "number") return next;',
+    ...fenceAfterResume(entries, 'next'),
     'pc = next;',
     '} else {',
     'if (F.stopAfterInstruction) return "invalidated";',
@@ -1383,6 +1409,11 @@ class Instruction {
   /** Zero-duration terminator: no due time, no continuation, prefix and suffix stay inline. */
   immediate = false;
   stop = false;
+  /** Publish before and after a synchronous loop instruction. */
+  get isolated(): boolean {
+    return this.backedges !== undefined;
+  }
+  private backedges?: { lines: string[]; head: number; tail: number }[];
   private readonly values = new Map<number, string>();
   private readonly locals = new Map<number, string>();
   /**
@@ -1487,6 +1518,9 @@ class Instruction {
       }
     }
     if (!this.terminated && !this.stop) throw unsupported;
+    // Admit synchronous, zero-time instructions only; no continuation or delay folding
+    // may cross the loop's publication boundary.
+    if (this.isolated && (!this.immediate || this.stop || this.guard.length)) throw unsupported;
     this.compact();
     this.barrier = this.emitBarrier();
     let size = 0;
@@ -1514,6 +1548,12 @@ class Instruction {
    */
   private emitBarrier(): string[] {
     const lines: string[] = [];
+    // The implicit PC write marks any instruction already executed in this batch. Publish
+    // that prefix first, then enter the loop in a fresh batch with fresh observer masks.
+    if (this.isolated) {
+      const pc = this.binding.pc.index;
+      lines.push(`if (SD[${pc >>> 5}] & ${(1 << (pc & 31)) >>> 0}) ${publish}`);
+    }
     const emit = (bank: 'BS' | 'BM', indices: ReadonlySet<number>): void => {
       if (!indices.size) return;
       const words = new Map<number, number>();
@@ -1635,6 +1675,30 @@ class Instruction {
       if (lastDefinition[virtual]! >= 0)
         end[virtual] = Math.max(lastDefinition[virtual]!, lastUse[virtual]!);
 
+    // A slot defined before a loop and touched in it must keep its physical register
+    // across the backedge, even if its last textual use is near the top of the loop.
+    // This also covers writes to outer locals and values captured by nested loops.
+    const backedgeEnds = this.backedges && new Map<number, number[]>();
+    for (const edge of this.backedges ?? []) {
+      const offset = edge.lines === this.prefix ? 0 : bound + duration.length;
+      const head = offset + edge.head;
+      const tail = offset + edge.tail;
+      const release: number[] = [];
+      const extend = (slot: number): void => {
+        if (firstDefinition[slot]! < head && end[slot]! < tail) {
+          end[slot] = tail;
+          release.push(slot);
+        }
+      };
+      for (let index = head; index < tail; index++) {
+        const definition = definitions[index]!;
+        if (definition >= 0) extend(definition);
+        for (let token = offsets[index]!; token < offsets[index + 1]!; token++)
+          extend(tokens[token]!);
+      }
+      if (release.length) backedgeEnds!.set(tail, release);
+    }
+
     const physical = new Int32Array(total).fill(-1);
     const free: number[] = [];
     let count = 0;
@@ -1652,6 +1716,13 @@ class Instruction {
         end[virtual] = -1;
         free.push(physical[virtual]!);
       }
+      const release = backedgeEnds?.get(index);
+      if (release)
+        for (const virtual of release) {
+          if (end[virtual] !== index) continue;
+          end[virtual] = -1;
+          free.push(physical[virtual]!);
+        }
     }
 
     const names = Array.from({ length: count }, (_, index) => `v${index}`);
@@ -2209,6 +2280,21 @@ class Instruction {
         }
         lines.push('}');
         break;
+      case 'while': {
+        // Initially keep loops in statement position. A body cannot suspend, yield a
+        // value, or transfer control: the normal region emitter declines those shapes.
+        if (output || operation.test.body.operations.at(-1)?.kind !== 'yield') throw unsupported;
+        const head = lines.length;
+        const condition = this.slot();
+        const label = `loopTest${this.labels++}`;
+        lines.push('while (true) {', `${label}: {`);
+        this.region(operation.test.body, lines, { slot: condition, label });
+        lines.push('}', `if (!${guard(condition)}) break;`);
+        this.region(operation.body, lines);
+        (this.backedges ??= []).push({ lines, head, tail: lines.length });
+        lines.push('}');
+        break;
+      }
       case 'select': {
         const condition = this.condition(operation.condition);
         const yes = this.expression(operation.yes);
