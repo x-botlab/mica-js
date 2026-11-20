@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { cp, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,15 +49,13 @@ function serverOptions(args) {
 
 async function main() {
   if (mode !== 'build' && mode !== 'dev') throw new Error('Usage: components.mjs <dev|build>');
-  await bootstrap();
+  // Workspace builds already build the SDK in dependency order. Rebuilding it here can
+  // remove dist files while another workspace package is using the SDK CLI.
+  if (mode === 'dev') await bootstrap();
   await run(process.execPath, [cli, 'build', '--root', components]);
-  const componentCli = resolve(repository, 'packages', 'sdk', 'dist', 'build', 'cli.js');
-  const devicesRoot = resolve(repository, 'examples', 'devices');
-  if (existsSync(resolve(devicesRoot, 'mica.config.ts')))
-    await run(process.execPath, [componentCli, 'build', '--root', devicesRoot]);
   const artifacts = resolve(app, 'public', 'components');
   await rm(artifacts, { recursive: true, force: true });
-  await cp(resolve(components, 'dist'), artifacts, { recursive: true });
+  await cp(resolve(components, 'dist', 'runtime-demo'), artifacts, { recursive: true });
   if (mode === 'dev') {
     const server = await createServer({ root: app, server: serverOptions(process.argv.slice(3)) });
     await server.listen();

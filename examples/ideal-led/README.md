@@ -23,7 +23,7 @@ examples/ideal-led/
   mica.config.ts                  Mica 工程标志
   tsconfig.json                   继承 .mica/tsconfig.json
   src/model.ddl                   0.5 ms 采样阳极电平 → 亮度 0/1
-  src/index.ts                    同步 create / methods / ctx.events
+  src/model.ts                    同步 create / methods / ctx.events
 ```
 
 构建产物是包根 `dist/`：

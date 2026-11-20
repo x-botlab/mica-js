@@ -33,7 +33,8 @@ JSON；依赖与资源全部内联，产物不含运行时模块导入、动态�
 
 ## SDK CLI 集成
 
-`dev` / `build` 首先构建 SDK 及其依赖，保证干净工作区中 CLI 入口可用。
+`dev` 会先构建 SDK 及其依赖。生产构建由工作区统一按依赖顺序执行；如只构建本站，
+在仓库根目录运行 `pnpm --filter @mica-js/playground... build`。
 
 - 开发：先执行一次 `mica build`，将组件产物复制到忽略提交的 `public/components`，再启动普通 Vite
   开发服务。可传 `--host`、`--port`、`--strictPort`、`--open`。

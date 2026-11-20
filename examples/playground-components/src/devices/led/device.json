@@ -1,0 +1,55 @@
+{
+  "kind": "device",
+  "id": "led",
+  "version": "1.0.0",
+  "displayName": "LED",
+  "designatorPrefix": "D",
+  "description": "Linear bidirectional 100 ohm electrical load, not a diode. Only forward current lights the indicator: brightness is signed current / 20 mA, clamped to [0, 1]. Voltage and current are signed anode to cathode. Reverse conduction is not blocked, but reverse brightness is zero. No forward drop, thermal model or breakdown.",
+  "pins": { "anode": { "label": "A" }, "cathode": { "label": "K" } },
+  "ports": {
+    "brightness": { "direction": "output", "type": "number", "delivery": "level" },
+    "current": { "direction": "output", "type": "number", "delivery": "level" },
+    "voltage": { "direction": "output", "type": "number", "delivery": "level" }
+  },
+  "symbol": {
+    "bounds": { "x": -40, "y": -30, "width": 80, "height": 54 },
+    "graphics": [
+      { "type": "line", "from": [-40, 0], "to": [-12, 0] },
+      {
+        "type": "polyline",
+        "points": [
+          [-12, -12],
+          [12, 0],
+          [-12, 12]
+        ],
+        "closed": true,
+        "fill": "none"
+      },
+      { "type": "line", "from": [12, -12], "to": [12, 12] },
+      { "type": "line", "from": [12, 0], "to": [40, 0] },
+      { "type": "line", "from": [4, -16], "to": [14, -26] },
+      {
+        "type": "polyline",
+        "points": [
+          [8, -26],
+          [14, -26],
+          [14, -20]
+        ]
+      },
+      { "type": "line", "from": [16, -14], "to": [26, -24] },
+      {
+        "type": "polyline",
+        "points": [
+          [20, -24],
+          [26, -24],
+          [26, -18]
+        ]
+      }
+    ],
+    "pins": {
+      "anode": { "position": [-40, 0], "direction": "left", "label": { "visible": false } },
+      "cathode": { "position": [40, 0], "direction": "right", "label": { "visible": false } }
+    },
+    "annotations": { "designator": { "position": [0, 20], "align": "center" } }
+  }
+}

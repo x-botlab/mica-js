@@ -5,8 +5,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createBoard, createDeviceLibrary } from '@mica-js/simulator';
 import type { Board, DeviceLibraryEntry, TopicMessage } from '@mica-js/simulator';
 import { compileDDL } from '@mica-js/sdk/ddl';
-import { adaptModelFactory } from '@mica-js/sdk/device';
 import type { DeviceIR } from '@mica-js/sdk/model';
+import { adaptModelFactory } from '../../devices/test/support/legacy-model-bridge.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const ids = ['resistor', 'push-button', 'led', 'voltmeter'] as const;
@@ -37,19 +37,16 @@ beforeAll(async () => {
     const directory = resolve(root, id);
     const source = await readFile(resolve(directory, 'src', 'model.ddl'), 'utf8');
     const model = await compileDDL(source, { uri: `mica:${id}/model.ddl` });
-    const module = (await import(`../${id}/src/index.ts`)) as {
+    const module = (await import(`../${id}/src/model.ts`)) as {
       create: Parameters<typeof adaptModelFactory>[0];
     };
-    modules.set(
-      id,
-      {
-        model,
-        create: adaptModelFactory(module.create, {
-          ...(id in events ? { events: events[id as keyof typeof events] } : {}),
-          ...(id in inputs ? { inputs: inputs[id as keyof typeof inputs] } : {}),
-        }),
-      },
-    );
+    modules.set(id, {
+      model,
+      create: adaptModelFactory(module.create, {
+        ...(id in events ? { events: events[id as keyof typeof events] } : {}),
+        ...(id in inputs ? { inputs: inputs[id as keyof typeof inputs] } : {}),
+      }),
+    });
   }
 }, 30_000);
 
@@ -221,7 +218,7 @@ describe('unified linear DC devices', () => {
   });
 
   it('rejects nonboolean params before submitting the input channel', async () => {
-    const { create } = (await import('../push-button/src/index.ts')) as {
+    const { create } = (await import('../push-button/src/model.ts')) as {
       create: (context: never) => {
         methods: { press: (params: unknown) => unknown };
         dispose(): void;
