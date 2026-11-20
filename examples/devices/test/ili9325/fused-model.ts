@@ -36,9 +36,7 @@ function body(source: string): string {
 
 /** Assemble source, rather than copying the evolving CPU/LCD implementations. */
 export function fusedSource(): string {
-  const mcu = body(
-    readFileSync(resolve(ROOT, 'stm32g431rbt6', 'src', 'model.ddl'), 'utf8'),
-  );
+  const mcu = body(readFileSync(resolve(ROOT, 'stm32g431rbt6', 'src', 'model.ddl'), 'utf8'));
   let lcd = body(readFileSync(resolve(ROOT, 'ili9325', 'src', 'model.ddl'), 'utf8'));
   // LCD pins become internal wires. Keep its register/GRAM/address/frame code unchanged.
   lcd = lcd.replace(/^ {2}pin \w+(?:\([^;]*\))?;$/gm, '');
@@ -94,7 +92,8 @@ export function fusedSource(): string {
       `wire == ${bit} ? ${bit < 16 ? `(fusedReading ? (fusedReadValue >> ${bit}) & 1 : fusedWire${bit})` : `fusedWire${bit}`} :`,
   ).join('\n');
   return `device Stm32Lcd(firmware: bytes default bytes[],
-    clockFrequency: number default 80000000, refreshRate: number default 60) {
+    clockFrequency: number default 80000000, hseFrequency: number default 0,
+    refreshRate: number default 60) {
     ${mcu.replace('process start {', 'process start { reset(false);')}
     ${lcd}
     ${states}
@@ -270,20 +269,10 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
         });
       if (touched.has(18) || touched.has(19))
         suffix.push({ kind: 'call', name: 'fusedReadWindow', pure: false, args: [] });
-      const duration = transformed.operations.find(
-        (op) => 'result' in op && op.result === last.duration,
-      );
-      if (!duration || !['constant', 'localRead'].includes(duration.kind))
-        throw new Error('Unexpected MCU duration shape');
       const expanded = inlineFusedCalls(
         {
-          operations: [
-            ...prefix,
-            ...transformed.operations.slice(0, -1).filter((op) => op !== duration),
-            ...suffix,
-            duration,
-            last,
-          ],
+          // Keep the MCU's duration calculation in its original position: it may read state.
+          operations: [...prefix, ...transformed.operations.slice(0, -1), ...suffix, last],
         },
         model,
       );

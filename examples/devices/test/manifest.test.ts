@@ -7,7 +7,7 @@ import type { DeviceIR } from '@mica-js/sdk/model';
  * 简单统一器件的清单、DDL 与适配器接口一致性。
  *
  * 本轮只交付仿真内核：不要求 `view2d`、几何或展示入口。这里不重新实现 SDK 校验，
- * 只覆盖跨文件合同：清单引脚 == 模型 IR 引脚，每个输入通道有该器件显式声明的公共
+ * 只覆盖跨文件合同：清单引脚 == 模型 IR 引脚，每个外部输入通道有该器件显式声明的公共
  * 方法，每个输出通道有 `onDidXxx` 事件，且旧的 `ports` / `symbol` 不再出现在清单中。
  *
  * 器件发现与专项排除规则集中在 `test/device-projects.ts`，新增简单器件会自动纳入。
@@ -65,7 +65,7 @@ describe.each(SIMPLE_DEVICE_IDS)('统一器件 %s', (id) => {
     expect(manifestPins).toEqual(modelPins);
   });
 
-  it('每个输入通道有公共方法，每个输出通道有 onDidXxx 事件', async () => {
+  it('每个外部输入通道有公共方法，每个输出通道有 onDidXxx 事件', async () => {
     const manifest = readMetadata(id);
     const device = await loadSourceDevice(id);
     const channels = irDeclarations(device.model).filter(
@@ -74,6 +74,8 @@ describe.each(SIMPLE_DEVICE_IDS)('统一器件 %s', (id) => {
 
     for (const channel of channels) {
       if (channel.direction === 'input') {
+        // CT107D 融合板直接把 RB3 的调节写入该通道；独立 NE555 不公开调速方法。
+        if (id === 'ne555' && channel.name === 'timingScale') continue;
         const method = INPUT_METHODS[id]?.[channel.name];
         expect(
           method,
