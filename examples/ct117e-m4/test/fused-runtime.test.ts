@@ -6,9 +6,9 @@ import { createHarness, CT117E_M4_END_TIME_PS, CT117E_M4_EXPECTED, digest } from
 const ORACLE_FRAME_HASHES = [
   'c47632a24e3c5582d6f26b39769606e406ebf64f3553f90bfa24579a20e7db82',
   '3c3fc9b585c72a29beaf0a4a562c281fe20d9609e9680e00adfa4a92cda9ca0a',
-  '401bb2e1ce41d7215cf2bf48de38144dc67c3e84fec37162cc3775a54b7eb4e5',
+  'a347ab017013ff00be77945cf5263ffdcd859d761a55b2e5127165ee8eb49cb7',
 ];
-const ORACLE_GRAM_HASH = 'e8cb56f35732035d57b4cb7f9c6cea84371351b478ab38c68053c8ae7303964d';
+const ORACLE_GRAM_HASH = '0de1cda765da66060420faed78e9359a841f6123948f12090e2bb134d729f1da';
 
 it('融合宿主用原始 HEX 一步运行到 440 ms，按序交付三帧及整屏快照', async () => {
   const { hex } = loadFirmware();

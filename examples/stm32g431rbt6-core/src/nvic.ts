@@ -1021,10 +1021,12 @@ export function enterException(
   const spsel = boolBit(b, readHidden(b, H_CONTROL), 2);
   const fromThread = b.equal(types.number, mode, num(b, 0));
   const usePsp = boolAnd(b, fromThread, spsel);
-  const sp = b.bitAnd(readSp(b), num(b, 0xfffffff8));
+  const sp = readSp(b);
   const frameSize = 32;
-  const frame = b.subtract(sp, num(b, frameSize));
-  const xpsr = b.bitOr(readApsr(b), num(b, APSR_T));
+  const frame = b.subtract(b.bitAnd(sp, num(b, 0xfffffff8)), num(b, frameSize));
+  // CCR.STKALIGN is fixed at 1. Stacked xPSR[9] records the optional word above the frame.
+  const padding = b.shiftLeft(b.bitAnd(sp, num(b, 4)), num(b, 7));
+  const xpsr = b.bitOr(b.bitOr(readApsr(b), num(b, APSR_T)), padding);
   const storedLr = readLr(b);
   const returnValue = typeof returnPc === 'number' ? num(b, returnPc) : returnPc;
 
@@ -1040,7 +1042,12 @@ export function enterException(
   // Thread+PSP 时栈帧仍在 PSP 上；handler 改用 MSP（隐藏值）。
   b.if(
     usePsp,
-    (psp) => writeSp(asBody(psp), readHidden(asBody(psp), H_MSP)),
+    (psp) => {
+      const body = asBody(psp);
+
+      writeHidden(body, H_PSP, frame);
+      writeSp(body, readHidden(body, H_MSP));
+    },
     (msp) => writeSp(asBody(msp), frame),
   );
 
@@ -1118,22 +1125,11 @@ export function exceptionReturn(b: Body, target?: Value<number>): void {
   const thread = boolBit(b, excReturn, 8);
   const psp = boolBit(b, excReturn, 4);
   const usePsp = boolAnd(b, thread, psp);
-  const stack = b.select(
+  const frame = b.select(
     types.number,
     usePsp,
     (inner) => readHidden(asBody(inner), H_PSP),
     (inner) => readSp(asBody(inner)),
-  );
-  const frameSize = 32;
-  const frame = b.select(
-    types.number,
-    usePsp,
-    (inner) =>
-      inner.bitAnd(
-        inner.subtract(stack, inner.constant(types.number, frameSize)),
-        inner.constant(types.number, 0xfffffff8),
-      ),
-    (inner) => inner.bitAnd(stack, inner.constant(types.number, 0xfffffff8)),
   );
   const r0 = stackLoad(b, frame);
   const r1 = stackLoad(b, b.add(frame, num(b, 4)));
@@ -1143,7 +1139,8 @@ export function exceptionReturn(b: Body, target?: Value<number>): void {
   const lr = stackLoad(b, b.add(frame, num(b, 20)));
   const pc = stackLoad(b, b.add(frame, num(b, 24)));
   const xpsr = stackLoad(b, b.add(frame, num(b, 28)));
-  const next = b.add(frame, num(b, frameSize));
+  const padding = b.shiftRightUnsigned(b.bitAnd(xpsr, num(b, 0x200)), num(b, 7));
+  const next = b.add(b.add(frame, num(b, 32)), padding);
 
   writeReg(b, 0, r0);
   writeReg(b, 1, r1);

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createCt117eCircuit } from '../scripts/workbench-circuits.mjs';
 import assets from '../workbench-assets.json' with { type: 'json' };
 
-test('CT117E-M4 clear-screen demo uses one locked board and the LCD HEX asset', () => {
+test('CT117E-M4 LCD demo uses one locked board and the LCD HEX asset', () => {
   const lock = {
     id: 'example:ct117e-m4',
     version: '0.1.0',

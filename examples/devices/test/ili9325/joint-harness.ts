@@ -137,8 +137,8 @@ export const JOINT_PANEL_HEIGHT = PANEL_HEIGHT;
 export const JOINT_FULL_FRAME_PIXELS = PANEL_WIDTH * PANEL_HEIGHT;
 
 /**
- * 当前 `HAL_06_LCD.bin` 在 0 → 440 ms 的固定工作量；以独立总线 oracle
- * 在运行时优化前后的相同结果为准。
+ * 当前 `HAL_06_LCD.bin` 在 0 → 440 ms 的固定工作量，覆盖清屏和完整十字，
+ * 由独立总线 oracle 核对。
  *
  * 这些数字约束 MCU 实际发出的写周期，不是允许漏边沿的容差：
  * - `wrLevelChanges` 是 MCU WR intent 的全部电平变化；
@@ -148,10 +148,10 @@ export const JOINT_FULL_FRAME_PIXELS = PANEL_WIDTH * PANEL_HEIGHT;
  * - `nonZeroPixels` 是整屏清屏后每个面板像素都被写过的结果。
  */
 export const JOINT_440MS_EXPECTED = Object.freeze({
-  wrLevelChanges: 157_338,
-  selectedRises: 78_669,
-  pixelWrites: 77_351,
-  gramStores: 77_351,
+  wrLevelChanges: 157_378,
+  selectedRises: 78_689,
+  pixelWrites: 77_360,
+  gramStores: 77_360,
   nonZeroPixels: 76_800,
   frames: 3,
   clearColor: 0x001f,

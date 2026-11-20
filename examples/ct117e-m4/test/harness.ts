@@ -24,8 +24,8 @@ export const CT117E_M4_EXPECTED = Object.freeze({
   midpoint: Object.freeze({ wrChanges: 80, gramStores: 0, frames: 0, nonZeroPixels: 0 }),
   clear: Object.freeze({ wrChanges: 104_338, gramStores: 52_169, frames: 2 }),
   final: Object.freeze({
-    wrChanges: 157_338,
-    gramStores: 77_351,
+    wrChanges: 157_378,
+    gramStores: 77_360,
     frames: 3,
     nonZeroPixels: 76_800,
   }),

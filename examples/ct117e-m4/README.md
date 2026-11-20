@@ -44,7 +44,7 @@ pnpm bench        # 构建并运行六轮基准
 
 预览可在仓库根目录运行 `pnpm --filter @mica-js/playground dev:workbench`，打开
 `http://127.0.0.1:5193/workbench.html?demo=ct117e-m4` 后点击运行。预览默认加载
-[`assets/HAL_06_LCD.hex`](assets/HAL_06_LCD.hex) 清屏固件；首次构建依赖见
+[`assets/HAL_06_LCD.hex`](assets/HAL_06_LCD.hex) 演示固件；首次构建依赖见
 [Playground README](../../apps/playground/README.md)。
 
 在工作台放置 `example:ct117e-m4`，即可看到发布包内的 SVG 板图。进入仿真后：
@@ -130,8 +130,8 @@ pnpm bench        # 构建并运行六轮基准
 - 校验 `dist/` 发布包并创建**单个**实例、一个 JIT；
 - 严格解析 `examples/devices/bench/stm32g431rbt6/HAL_06_LCD.hex`，按 80 MHz 从复位推进到 220 ms / 440 ms；
 - 固定工作量：220 ms 为 80 次 WR 电平变化，未写 GRAM 或发帧；360–390 ms 为
-  **104,338 次 WR 变化、52,169 次 GRAM 写入、2 帧**。到 440 ms 共 157,338 次 WR 变化、
-  77,351 次 GRAM 写入、3 帧、76,800 个非零像素；
+  **104,338 次 WR 变化、52,169 次 GRAM 写入、2 帧**。到 440 ms 共 157,378 次 WR 变化、
+  77,360 次 GRAM 写入（清屏 76,800 次，十字 560 次）、3 帧、76,800 个非零像素；
 - 宿主停在预期步进终点，且无诊断或 fault；
 - 最终 GRAM、寄存器文件、逐帧内容、精确 `frameInfo` 时间以及 MCU 状态/内存摘要
   与分立 `examples/devices/test/ili9325/joint-harness.ts` oracle 对账；宿主事件时间另按步进终点校验；
@@ -144,6 +144,8 @@ oracle 只在正确性用例中运行，不进入任何性能计时。它依赖�
 `test/firmware.test.ts` 覆盖 HEX 解析器的记录格式、校验和、地址范围、EOF、重叠冲突
 和不支持的记录类型。
 `test/fused-runtime.test.ts` 另检查一步推进到 440 ms 时的事件交付与整屏查询。
+`test/lcd-demo.test.ts` 使用 Playground 的同一份 HEX 和 16 ms 步长，核对十字、矩形、圆、
+文字、十条色带的合帧与快照，并验证最终画面保持不变。
 `test/board-io.test.ts` 用板载 I/O 固件在发布包上验证按键、共享 LCD 总线锁存、
 软件 I²C、ADC、双路捕获/调频，以及共享复位时的状态保留。
 

@@ -17,7 +17,7 @@ describe('HAL_06_LCD 裸 MCU、80 MHz、throughput', () => {
       expect(round.direct).toBe(true);
       expect(round.programs).toBeGreaterThan(0);
       expect(round.drawingExit.toMs).toBe(440);
-      expect(round.wrSamples).toBe(157_338);
+      expect(round.wrSamples).toBe(157_378);
       expect(round.drawing).toMatchObject({
         fromMs: 360,
         toMs: 390,

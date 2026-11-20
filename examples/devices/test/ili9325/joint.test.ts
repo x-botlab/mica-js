@@ -76,7 +76,7 @@ describe.skipIf(!process.env.MICA_JOINT)('MCU + LCD 联合仿真', () => {
     }
   });
 
-  it('440 ms 默认路径逐边沿对账，并得到整屏蓝色参考图像', async () => {
+  it('440 ms 默认路径逐边沿对账，覆盖蓝底清屏和白色十字', async () => {
     const joint = await createJointBoard({ accounting: true });
     const { board, frames, faults, errors, lcd } = joint;
 
