@@ -30,7 +30,7 @@ export const PACKAGE_ROOT = resolve(SCRIPT_ROOT, '..');
 export const DEVICE_DIST = join(PACKAGE_ROOT, 'device', 'dist');
 export const DOCUMENT_PATH = join(PACKAGE_ROOT, 'ct107d.sch');
 
-export const DEVICE_ID = 'example:ct107d-board';
+export const DEVICE_ID = 'zerobit-lab:ct107d';
 export const INSTANCE_ID = '7d9e3a1c-5b2f-4c8d-9e01-2a3b4c5d6e7f';
 export const VCC_REFERENCE_ID = '8b3a2f10-6c4d-4e9a-b7f2-1d5c9e0a3b48';
 export const GND_REFERENCE_ID = 'c4d5e6f7-1a2b-4c3d-9e8f-0a1b2c3d4e5f';

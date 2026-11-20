@@ -16,7 +16,7 @@ import { BOARD_SIZE_MM, contains } from '../device/src/board-layout.js';
 const PROJECT = join(import.meta.dirname, '..');
 const DOCUMENT_PATH = join(PROJECT, 'ct107d.sch');
 const DEVICE_DIST = join(PROJECT, 'device', 'dist');
-const DEVICE_ID = 'example:ct107d-board';
+const DEVICE_ID = 'zerobit-lab:ct107d';
 const INSTANCE_ID = '7d9e3a1c-5b2f-4c8d-9e01-2a3b4c5d6e7f';
 
 function runDocument(args: readonly string[]): {

@@ -8,7 +8,7 @@ import { createHeadlessRuntime } from '@mica-js/sdk/fused';
 import { createDirectoryRegistry, readDirectoryPackage } from '@mica-js/sdk/fused/node';
 import type { RuntimeDiagnostic } from '@mica-js/sdk/fused';
 
-export const CT117E_M4_DEVICE_ID = 'example:ct117e-m4';
+export const CT117E_M4_DEVICE_ID = 'zerobit-lab:ct117e-m4';
 const INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
 const PROJECT_ID = 'lcd-test';
 const ARTIFACT = new URL('../dist/', import.meta.url);

@@ -1,15 +1,15 @@
 {
   "version": 2,
   "dependencies": {
-    "example:ct107d-board": {
+    "zerobit-lab:ct107d": {
       "version": "0.1.0",
-      "integrity": "sha256:12d6e51fbdd46a51d7b6d891eaca5b848040fc2023163e3b235a41ccb3898a2f"
+      "integrity": "sha256:5048ae6cee3a803a59d784b23468aec3290914b618e057899f08ea23eb979cdb"
     }
   },
   "instances": [
     {
       "id": "7d9e3a1c-5b2f-4c8d-9e01-2a3b4c5d6e7f",
-      "device": "example:ct107d-board",
+      "device": "zerobit-lab:ct107d",
       "designator": "U1",
       "placement": {
         "x": 0,

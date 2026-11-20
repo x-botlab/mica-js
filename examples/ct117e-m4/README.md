@@ -4,7 +4,7 @@
 内部接线以 [`ct117e-m4.netlist.json`](ct117e-m4.netlist.json) 的引脚列表为准，不需要在
 宿主中装配分立器件。
 
-- 器件 ID：`example:ct117e-m4`
+- 器件 ID：`zerobit-lab:ct117e-m4`
 - 源码：`src/{model.ddl,model.ts,mcu.ts,lcd.ts,geometry.json,view2d.ts,view2d-lcd.ts}`
 - 构建产物：`dist/` 发布包，含 `model.js`、`view2d.js`、`geometry.json` 和 SVG 底图
 - 参考固件：`HAL_06_LCD.hex`（测试夹具位于 `examples/devices/bench/stm32g431rbt6`；
@@ -47,7 +47,7 @@ pnpm bench        # 构建并运行六轮基准
 [`assets/HAL_06_LCD.hex`](assets/HAL_06_LCD.hex) 演示固件；首次构建依赖见
 [Playground README](../../apps/playground/README.md)。
 
-在工作台放置 `example:ct117e-m4`，即可看到发布包内的 SVG 板图。器件按
+在工作台放置 `zerobit-lab:ct117e-m4`，即可看到发布包内的 SVG 板图。器件按
 [RFC 0022](../../docs/rfc/0022-device-2d-presentation.md) 声明 `sizing: "physical"`：底图从
 照片的 `(31, 24)` 裁剪为 941 × 712 px，按 10 px/mm 换算（2.4" 320×240 LCD 有效宽
 48.96 mm，对应照片约 491 px），`bounds` 为 94.1 × 71.2 mm，板边 `bodyBounds` 为
