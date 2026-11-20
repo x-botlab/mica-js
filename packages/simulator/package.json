@@ -1,6 +1,6 @@
 {
   "name": "@mica-js/simulator",
-  "version": "2.5.2",
+  "version": "2.6.0",
   "description": "Synchronous compiled device simulation runtime",
   "license": "MIT",
   "repository": {
