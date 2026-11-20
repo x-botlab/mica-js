@@ -253,17 +253,32 @@ function walk(
       op.arms.forEach((a, j) => walk(a.body, visit, [...p, 'arms', j, 'body']));
   });
 }
-class Validator {
+class DeclarationIndex {
   readonly declarations = new Map<string, DeclarationIR>();
   readonly paths = new Map<string, InputPath>();
   readonly enums = new Map<string, readonly string[]>(Object.entries(builtins));
   readonly records = new Map<string, RecordDeclaration['fields']>();
   readonly functions = new Map<string, FunctionDeclaration>();
+}
+// Only canonical, successfully validated device snapshots can share their declaration index.
+const deviceIndexes = new WeakMap<DeviceIR, DeclarationIndex>();
+
+export function indexedDeclarations(
+  device: DeviceIR,
+): ReadonlyMap<string, DeclarationIR> | undefined {
+  return deviceIndexes.get(device)?.declarations;
+}
+
+class Validator {
+  readonly index: DeclarationIndex;
   readonly identities = new Identities();
   readonly effectChecked = new Set<string>();
   readonly receiveOwners = new Map<string, string>();
   constructor(readonly device?: DeviceIR) {
-    if (!device) return;
+    const cached = device && deviceIndexes.get(device);
+    this.index = cached ?? new DeclarationIndex();
+    if (!device || cached) return;
+    const { declarations, paths, enums, records, functions } = this.index;
     this.name(device.name, ['name']);
     let starts = 0;
     device.declarations.forEach((d, i) => {
@@ -274,24 +289,39 @@ class Validator {
       }
       if (d.kind === 'assert') return;
       this.name(d.name, [...p, 'name']);
-      if (this.declarations.has(d.name))
+      if (declarations.has(d.name))
         this.error('IR_REFERENCE', `Duplicate declaration ${d.name}.`, p);
-      this.declarations.set(d.name, d);
-      this.paths.set(d.name, p);
+      declarations.set(d.name, d);
+      paths.set(d.name, p);
       if (d.kind === 'enum') {
         this.uniqueNames(d.members, [...p, 'members']);
         if (!d.members.length) this.error('IR_TYPE', 'An enum must have at least one member.', p);
-        this.enums.set(d.name, d.members);
+        enums.set(d.name, d.members);
       }
       if (d.kind === 'record') {
         this.uniqueNames(
           d.fields.map((f) => f.name),
           [...p, 'fields'],
         );
-        this.records.set(d.name, d.fields);
+        records.set(d.name, d.fields);
       }
-      if (d.kind === 'function') this.functions.set(d.name, d);
+      if (d.kind === 'function') functions.set(d.name, d);
     });
+  }
+  get declarations(): ReadonlyMap<string, DeclarationIR> {
+    return this.index.declarations;
+  }
+  get paths(): ReadonlyMap<string, InputPath> {
+    return this.index.paths;
+  }
+  get enums(): ReadonlyMap<string, readonly string[]> {
+    return this.index.enums;
+  }
+  get records(): ReadonlyMap<string, RecordDeclaration['fields']> {
+    return this.index.records;
+  }
+  get functions(): ReadonlyMap<string, FunctionDeclaration> {
+    return this.index.functions;
   }
   error(code: Parameters<typeof fail>[0], message: string, path: InputPath, node?: object): never {
     return fail(code, message, path, 'finalize', (node as Located | undefined)?.source);
@@ -1448,8 +1478,10 @@ export function validateDeviceIR(input: unknown): DeviceIR {
   const captured = snapshot(input);
   try {
     deviceSchema(captured);
-    new Validator(captured).validateDevice();
+    const validator = new Validator(captured);
+    validator.validateDevice();
     const result = captured as unknown as DeviceIR;
+    deviceIndexes.set(result, validator.index);
     remember(validatedDevices, input, result);
     return result;
   } catch (error) {

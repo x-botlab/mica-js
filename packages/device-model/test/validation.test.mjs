@@ -1,12 +1,45 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateBlockIR, validateBoundBlockIR, validateDeviceIR } from '../dist/index.js';
+import {
+  createDeviceBuilder,
+  createJitBlockBuilder,
+  types,
+  validateBlockIR,
+  validateBoundBlockIR,
+  validateDeviceIR,
+} from '../dist/index.js';
 
 /** 最小的合法 IR：只需满足 schema，不含任何声明。 */
 const device = () => ({ kind: 'device', name: 'Node', declarations: [] });
 const block = (operations = []) => ({
   kind: 'block',
   instructions: [{ pc: 0, nextPc: 0, body: { operations } }],
+});
+
+test('Builder 在嵌套指令发射时保留构造诊断', () => {
+  const builder = createJitBlockBuilder();
+  assert.throws(
+    () =>
+      builder.instruction({ pc: 0, nextPc: 1 }, (body) => {
+        body.if(true, (branch) => branch.notify(42));
+      }),
+    ({ diagnostics: [diagnostic] }) =>
+      diagnostic.phase === 'construct' &&
+      diagnostic.code === 'IR_SCHEMA' &&
+      diagnostic.path.join('.') === 'notification',
+  );
+});
+
+test('外部 IR 的嵌套操作仍完整检查 schema', () => {
+  const input = block([
+    { kind: 'if', condition: 0, yes: { operations: [{ kind: 'stop', extra: true }] } },
+  ]);
+  assert.throws(
+    () => validateBlockIR(input),
+    ({ diagnostics: [diagnostic] }) =>
+      diagnostic.code === 'IR_SCHEMA' &&
+      diagnostic.path.join('.') === 'instructions.0.body.operations.0.yes.operations.0.extra',
+  );
 });
 
 /**
@@ -330,6 +363,26 @@ test('validateBlockIR 与 validateBoundBlockIR 复用已校验的块与器件', 
   assert.equal(validateBlockIR(instructions), first);
   assert.equal(second, first);
   assert.ok(Object.isFrozen(first));
+});
+
+test('声明索引只供对应器件复用，不跨器件共享绑定结果', () => {
+  const buildDevice = (type, initial) => {
+    const builder = createDeviceBuilder({ name: 'Node' });
+    builder.state({ name: 'cell', type, initial });
+    return builder.finish();
+  };
+  const numeric = buildDevice(types.number, 0);
+  const boolean = buildDevice(types.bool, false);
+  const builder = createJitBlockBuilder({ device: numeric });
+  builder.instruction({ pc: 0, nextPc: 1 }, (body) => {
+    body.writeState('cell', 1);
+  });
+  const compiled = builder.finish();
+
+  assert.equal(validateBoundBlockIR(compiled, numeric), compiled);
+  const incompatible = diagnostic(() => validateBoundBlockIR(compiled, boolean));
+  assert.equal(incompatible.code, 'IR_TYPE');
+  assert.equal(incompatible.phase, 'bind');
 });
 
 test('非法 IR 每次校验都抛出相同诊断', () => {
