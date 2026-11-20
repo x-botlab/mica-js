@@ -6,8 +6,21 @@ import { mapChildRegions, rewriteRegion, walkOperations } from './regions';
 
 const VREFP = -3;
 const VDDA = -2;
+/** 板载焊死的电源轨；负索引与 VREFP/VDDA 一样不进入内部网络表。 */
+const VDD = -4;
+const VSS = -5;
+/** 板级 3.3 V 电源轨电压。 */
+const BOARD_SUPPLY_VOLTAGE = 3.3;
 const sampleWire = (name: string) =>
-  name === 'VREFP' ? VREFP : name === 'VDDA' ? VDDA : FUSED_WIRES.indexOf(name);
+  name === 'VREFP'
+    ? VREFP
+    : name === 'VDDA'
+      ? VDDA
+      : name === 'VDD1'
+        ? VDD
+        : name === 'VSS1'
+          ? VSS
+          : FUSED_WIRES.indexOf(name);
 export const FUSED_FRAME_PC = 0x20050;
 const frameBuilder = createJitBlockBuilder();
 frameBuilder.instruction({ pc: FUSED_FRAME_PC, nextPc: FUSED_FRAME_PC }, (b) => {
@@ -34,8 +47,9 @@ function lowerType(type: ValueTypeIR): ValueTypeIR {
 
 /**
  * GPIO's actual mode/pull/open-drain selection stays in the original translator. Only the
- * final resistor-to-rail intent is lowered to an ideal internal digital level. This device
- * has fixed 3.3 V power and one bus master; analog contention is outside its contract.
+ * final resistor-to-rail intent and the supply-rail samples are lowered. This device has
+ * fixed 3.3 V power and one bus master; analog contention is outside its contract, so GPIO
+ * power never depends on the document's ideal voltage references.
  */
 export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
   const cached = fusedBlocks.get(block);
@@ -44,10 +58,7 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
   let needsFusion = false;
   for (const { body } of block.instructions) {
     walkOperations(body, (op) => {
-      if (
-        op.kind === 'writeIntent' ||
-        (op.kind === 'readSample' && op.pin.kind === 'pin' && op.pin.name !== 'VDD1')
-      )
+      if (op.kind === 'writeIntent' || (op.kind === 'readSample' && op.pin.kind === 'pin'))
         needsFusion = true;
       if ('result' in op) next = Math.max(next, op.result + 1);
     });
@@ -60,8 +71,43 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
     const samples = new Map<number, number>();
     const sampleLocals = new Map<number, number>();
     const region = (body: RegionIR): RegionIR => rewriteRegion(body, lower);
+
+    /** 电源轨样本：电平、状态与电压都是板级常量，与文档接线无关。 */
+    function railField(
+      op: Extract<OperationIR, { kind: 'field' }>,
+      high: boolean,
+    ): OperationIR | OperationIR[] {
+      if (op.field === 'status')
+        return {
+          kind: 'constant',
+          result: op.result,
+          type: op.type,
+          constant: { kind: 'enum', name: 'SampleStatus', member: 'valid' },
+        };
+      if (op.field === 'level')
+        return {
+          kind: 'constant',
+          result: op.result,
+          type: { kind: 'number' },
+          constant: { kind: 'number', value: high ? 1 : 0 },
+        };
+      if (op.field === 'voltage') {
+        const value = next++;
+
+        return [
+          {
+            kind: 'constant',
+            result: value,
+            type: { kind: 'number' },
+            constant: { kind: 'number', value: high ? BOARD_SUPPLY_VOLTAGE : 0 },
+          },
+          { kind: 'optional', result: op.result, type: op.type, value },
+        ];
+      }
+      throw new Error(`Unsupported fused supply field ${op.field}`);
+    }
     function lower(op: OperationIR): OperationIR | OperationIR[] | undefined {
-      if (op.kind === 'readSample' && op.pin.kind === 'pin' && op.pin.name !== 'VDD1') {
+      if (op.kind === 'readSample' && op.pin.kind === 'pin') {
         samples.set(op.result, sampleWire(op.pin.name));
         return undefined;
       }
@@ -77,6 +123,7 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
         throw new Error('Fused sample locals must be immutable');
       if (op.kind === 'field' && samples.has(op.value)) {
         const wire = samples.get(op.value)!;
+        if (wire === VDD || wire === VSS) return railField(op, wire === VDD);
         const lcdLevel = op.field === 'level' && wire >= 0 && wire < LCD_WIRE_COUNT;
         const result = op.field === 'voltage' ? next++ : op.result;
         const name =
