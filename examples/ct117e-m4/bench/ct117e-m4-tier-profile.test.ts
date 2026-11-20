@@ -23,8 +23,9 @@ const QUANTUM_PS = 10_000_000_000;
 interface EntryJit {
   readonly revision: number;
   readonly directRevision: number;
-  readonly directStats?: { readonly directCompiles: number };
+  readonly directStats?: Readonly<Record<string, number>>;
   readonly direct?: {
+    readonly pcs: ReadonlySet<number>;
     readonly program: object;
     readonly frame: { readonly states: object };
   };
@@ -34,7 +35,12 @@ it.skipIf(process.env.MICA_CT117E_M4_TIER_PROFILE !== '1')(
   'samples the execution tier of generated code during the LCD clear',
   async () => {
     const { hex, imageSha256 } = loadFirmware();
-    const options = { hex, stepPs: QUANTUM_PS };
+    const packageDirectory = process.env.MICA_CT117E_M4_PACKAGE;
+    const options = {
+      hex,
+      stepPs: QUANTUM_PS,
+      ...(packageDirectory === undefined ? {} : { packageDirectory }),
+    };
     const trackEntry = process.env.MICA_CT117E_M4_PROFILE_ENTRY === '1';
     await (await createHarness(options)).dispose();
 
@@ -60,6 +66,8 @@ it.skipIf(process.env.MICA_CT117E_M4_TIER_PROFILE !== '1')(
           revision: jit.revision,
           directRevision: jit.directRevision,
           directCompiles: jit.directStats?.directCompiles,
+          directStats: { ...jit.directStats },
+          covered: direct?.pcs.size,
           program: identity(direct?.program),
           frame: identity(direct?.frame),
           states: identity(direct?.frame.states),

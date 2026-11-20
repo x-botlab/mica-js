@@ -1,5 +1,5 @@
 import { types } from '@mica-js/sdk/model';
-import type { Value } from '@mica-js/sdk/model';
+import type { JitFunctionBuilder, Value } from '@mica-js/sdk/model';
 import {
   CCM,
   CCM_BASE,
@@ -216,6 +216,24 @@ const inFlash = (b: Body, address: Value<number>): Value<boolean> =>
     inRegion(b, address, FLASH_ALIAS_BASE, FLASH_SIZE),
   );
 
+const systemReadName = (size: number): string => `mcuReadSystem${size}`;
+const systemWriteName = (size: AccessSize): string => `mcuWriteSystem${size}`;
+
+/** Reuse NVIC/SCB/SysTick emitters with the same active Machine as translation. */
+export function buildSystemAccessFunctions(builder: JitFunctionBuilder): void {
+  const address = { name: 'systemAddress', type: types.number } as const;
+  const value = { name: 'systemValue', type: types.number } as const;
+  for (const size of [1, 2, 4] as const) {
+    builder.fn(
+      { name: systemReadName(size), params: [address], returns: types.number },
+      (body, args) => body.returnValue(readSystem(asBody(body), args.systemAddress, size)),
+    );
+    builder.fn({ name: systemWriteName(size), params: [address, value] }, (body, args) => {
+      writeSystem(asBody(body), args.systemAddress, size, args.systemValue);
+    });
+  }
+}
+
 /** 静态区间内的偏移：常量偏移直接发射，否则按区间基址换算。 */
 function regionOffset(b: Body, address: Value<number>, at: At): Value<number> {
   if (at.offset !== undefined) return num(b, at.offset);
@@ -346,6 +364,8 @@ export function readMemory(
 
   if (at !== undefined) return readAt(b, address, size, at, deferred)!;
 
+  const sharedSystem =
+    (size === 1 || size === 2 || size === 4) && machine().shareDynamicSystemAccess === true;
   const result = b.local(types.number, 0);
 
   b.if(
@@ -395,7 +415,12 @@ export function readMemory(
                   tail.if(
                     inRegion(tail, address, SYSTEM_BASE, SYSTEM_END - SYSTEM_BASE),
                     (system) => {
-                      system.setLocal(result, readSystem(asBody(system), address, size));
+                      system.setLocal(
+                        result,
+                        sharedSystem
+                          ? system.callValue(systemReadName(size), types.number, address)
+                          : readSystem(asBody(system), address, size),
+                      );
                     },
                   );
                 },
@@ -470,7 +495,9 @@ export function writeMemory(
                   tail.if(
                     inRegion(tail, address, SYSTEM_BASE, SYSTEM_END - SYSTEM_BASE),
                     (system) => {
-                      writeSystem(asBody(system), address, size, value);
+                      if (machine().shareDynamicSystemAccess)
+                        system.call(systemWriteName(size), address, value);
+                      else writeSystem(asBody(system), address, size, value);
                     },
                   );
                 },

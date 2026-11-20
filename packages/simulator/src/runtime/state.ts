@@ -4,6 +4,7 @@ import type {
   DirectJitFrame,
   DirectJitProgram,
   ExecutionSignal,
+  ExecutionHost,
   ReactionFrame,
   ResumableFrame,
   ResumableProgram,
@@ -153,6 +154,9 @@ export interface JitMetadataState {
 export interface Jit {
   readonly instance: Instance;
   readonly options: JitOptions;
+  readonly model: DeviceIR;
+  readonly host: ExecutionHost;
+  readonly functions?: ReadonlyMap<string, Decl<'function'>>;
   /** 规范化后的不可变 region 列表；第一项永远是主 `code` 的隐式 0 基址 region。 */
   readonly codeRegions: readonly JitCodeRegion[];
   readonly cache: Map<number, JitInstruction>;

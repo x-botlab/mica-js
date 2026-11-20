@@ -1,10 +1,10 @@
 import type { Disposable } from '@mica-js/core/lifecycle';
-import type { DeclarationIR } from '@mica-js/device-model';
+import { type DeclarationIR, type DeviceIR, validateDeviceIR } from '@mica-js/device-model';
 import type { ExecutionHost, ResourceHandle } from '@mica-js/compiler';
 import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
 import { body, computation, resumable, synchronousBody } from './execution';
-import { electricalNumber, ElectricalParameterError } from './errors';
+import { acceptSync, electricalNumber, ElectricalParameterError } from './errors';
 import type {
   Channel,
   Decl,
@@ -76,6 +76,25 @@ export interface InstanceBoard {
 }
 
 const EMPTY_MESSAGES: readonly never[] = Object.freeze([]);
+type JitFunctions = readonly Decl<'function'>[];
+const jitModels = new WeakMap<DeviceIR, WeakMap<JitFunctions, DeviceIR>>();
+
+/** Retain the binding identity when adapters reuse the same immutable function table. */
+function bindJitFunctions(base: DeviceIR, functions: JitFunctions): DeviceIR {
+  if (functions.length === 0) return base;
+  let models = jitModels.get(base);
+  const cached = models?.get(functions);
+  if (cached !== undefined) return cached;
+  const model = validateDeviceIR({ ...base, declarations: base.declarations.concat(functions) });
+  for (const declaration of model.declarations.slice(base.declarations.length))
+    if (declaration.kind !== 'function') throw new TypeError('Expected JIT function declaration');
+  if (models === undefined) {
+    models = new WeakMap();
+    jitModels.set(base, models);
+  }
+  models.set(functions, model);
+  return model;
+}
 
 /** Membership test without allocating: every key of `next` is already in `previous`. */
 function hasEvery(
@@ -1234,6 +1253,7 @@ export class Instance {
       'codeRegions',
       'codeMetadata',
       'pc',
+      'functions',
       'beforeInstruction',
       'polling',
       'delays',
@@ -1302,8 +1322,35 @@ export class Instance {
           delays: new Map<number, JitDelay>(),
         }
       : undefined;
+    const base = this.entry.model;
+    const emit = options.functions;
+    if (Object.hasOwn(options, 'functions') && typeof emit !== 'function')
+      throw new TypeError('functions must be a JIT function builder callback');
+    let model = base;
+    let functions: Map<string, Decl<'function'>> | undefined;
+    let host = this.host;
+    if (emit) {
+      const declarations = emit(base);
+      acceptSync(declarations);
+      if (!Array.isArray(declarations)) throw new TypeError('Expected JIT function declarations');
+      model = bindJitFunctions(base, declarations);
+      const local = new Map<string, Decl<'function'>>();
+      for (const declaration of model.declarations.slice(base.declarations.length))
+        if (declaration.kind === 'function') local.set(declaration.name, declaration);
+      functions = local;
+      host = {
+        ...this.host,
+        call: (name, args) => {
+          const fn = local.get(name);
+          return fn ? body(fn.body)(host, args) : this.invoke(name, args);
+        },
+      };
+    }
     const jit: Jit = {
       instance: this,
+      model,
+      host,
+      ...(functions === undefined ? {} : { functions }),
       options: Object.freeze({
         ...options,
         ...(options.codeRegions === undefined ? {} : { codeRegions: codeRegions.additional }),

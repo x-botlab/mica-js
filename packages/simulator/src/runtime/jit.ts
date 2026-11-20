@@ -33,6 +33,12 @@ import { bytesView, finite } from '../values';
 
 /** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
 const DIRECT_SHARD_SIZE = 32;
+
+export function syncJitCall(jit: Jit, name: string): unknown {
+  const step = jit.host.call(name, []).next();
+  if (!step.done) throw new TypeError('Unexpected suspension in synchronous function');
+  return step.value;
+}
 /**
  * Program size above which whole-program rebuilds are amortized instead of immediate.
  *
@@ -643,6 +649,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
               pins,
               pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
               host: true,
+              ...(jit.functions === undefined ? {} : { functions: jit.functions }),
               split: true,
               shardSize: DIRECT_SHARD_SIZE,
               delayLoops,
@@ -817,7 +824,7 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
     return true;
   }
   if (signal.kind === 'waitUntil') {
-    const checked = jit.instance.evaluate(() => jit.instance.syncCall(signal.predicate));
+    const checked = jit.instance.evaluate(() => syncJitCall(jit, signal.predicate));
     if (checked.value === true) return false;
     jit.predicate = signal.predicate;
     jit.pollingWait = false;
@@ -952,10 +959,10 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
             codeBase: codeRegion?.base ?? 0,
             codeVersion: jit.instance.codeVersion(codeMemory),
           }),
-          createJitBlockBuilder({ device: jit.instance.entry.model }),
+          createJitBlockBuilder({ device: jit.model }),
         );
         acceptSync(result);
-        const block = validateBoundBlockIR(result, jit.instance.entry.model);
+        const block = validateBoundBlockIR(result, jit.model);
         if (block.instructions[0]?.pc !== pc)
           throw new TypeError('Translated first pc does not match');
         const instructions = block.instructions.map((instruction) => {
@@ -1009,7 +1016,7 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       (!hook || hookReads !== undefined);
     jit.pollReads = hookReads;
     jit.instance.host.write(jit.options.pc, instruction.nextPc);
-    jit.execution = instruction.execute(jit.instance.host);
+    jit.execution = instruction.execute(jit.host);
   }
   for (;;) {
     const step = jit.automaticPolling

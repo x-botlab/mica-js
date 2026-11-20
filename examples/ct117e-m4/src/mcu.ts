@@ -1,5 +1,5 @@
-import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
-import type { BlockIR, Local, Value } from '@mica-js/sdk/model';
+import { buildJitFunctions, createJitBlockBuilder, types } from '@mica-js/sdk/model';
+import type { BlockIR, DeviceIR, Local, Value } from '@mica-js/sdk/model';
 import type { JitTranslate, JitTranslateInput } from '@mica-js/sdk/device';
 import type { JitDelay, JitPolling } from '@mica-js/sdk/device';
 import {
@@ -81,6 +81,7 @@ import {
 } from '@mica-js/stm32g431rbt6-core/gpio';
 import { writeFlashMemory } from '@mica-js/stm32g431rbt6-core/flash';
 import { clockConfigKey } from '@mica-js/stm32g431rbt6-core/clock-tree';
+import { buildSystemAccessFunctions } from '@mica-js/stm32g431rbt6-core/memory';
 import { writeSystem } from '@mica-js/stm32g431rbt6-core/nvic';
 import {
   deferModuleWrite,
@@ -223,6 +224,7 @@ function createMachine(frequency: number, hse: number): Machine {
     cyclePs: Math.max(1, Math.round(PICOSECONDS_PER_SECOND / frequency)),
     hseFrequency: hse,
     dynamicClock: true,
+    shareDynamicSystemAccess: true,
     alternateDrivers: [...usartDrivers(), ...alternateDriversOf(BOARD_PERIPHERALS)],
     peripherals: BOARD_PERIPHERALS,
     interruptSources: BOARD_PERIPHERALS.flatMap((peripheral) => peripheral.interrupts ?? []),
@@ -1324,6 +1326,29 @@ const createTranslate =
     return block;
   };
 
+const systemFunctionsByModel = new WeakMap<
+  DeviceIR,
+  Map<string, ReturnType<typeof buildJitFunctions>>
+>();
+
+function systemFunctions(device: DeviceIR, machine: Machine): ReturnType<typeof buildJitFunctions> {
+  return activateMachine(machine, () => {
+    let byConfig = systemFunctionsByModel.get(device);
+    if (byConfig === undefined) {
+      byConfig = new Map();
+      systemFunctionsByModel.set(device, byConfig);
+    }
+    const key = clockConfigKey();
+    let functions = byConfig.get(key);
+    if (functions === undefined) {
+      functions = buildJitFunctions(device, buildSystemAccessFunctions);
+      if (byConfig.size >= 8) byConfig.delete(byConfig.keys().next().value!);
+      byConfig.set(key, functions);
+    }
+    return functions;
+  });
+}
+
 export default function createMcu(context: DeviceModelContext): {
   sync(batch: Batch): void;
   dispose(): void;
@@ -1345,6 +1370,7 @@ export default function createMcu(context: DeviceModelContext): {
     entry: 'cpu',
     code: CODE,
     pc: 'pc',
+    functions: (device) => systemFunctions(device, machine),
     polling: [
       ...halDelayPolling(executable),
       ...cpuWaitPolling(executable, firmwareLength, [FLASH_BASE, FLASH_ALIAS_BASE]),

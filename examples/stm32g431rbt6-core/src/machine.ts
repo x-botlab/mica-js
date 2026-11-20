@@ -146,6 +146,8 @@ export interface Machine {
   readonly dynamicClock?: boolean;
   /** The adapter services deferred Flash stores before the next guest instruction. */
   readonly deferDynamicFlashStore?: boolean;
+  /** Adapter installs the synchronous system-access functions on this JIT entry. */
+  readonly shareDynamicSystemAccess?: boolean;
   /** LSE/LSI 频率；缺省使用 clock-tree 的 32.768 kHz / 32 kHz。 */
   readonly lseFrequency?: number;
   readonly lsiFrequency?: number;

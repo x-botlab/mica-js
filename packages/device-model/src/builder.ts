@@ -1,6 +1,7 @@
 import type {
   DeviceBuilder,
   JitBlockBuilder,
+  JitFunctionBuilder,
   NamedOptions,
   InstructionBoundary,
   Parameter,
@@ -236,10 +237,12 @@ class Root {
   ) {
     if (options.source !== undefined) this.source = snapshot(options.source);
     const indexed = device && indexedDeclarations(device);
-    if (device && !indexed)
+    if (device && (!indexed || !jit))
       for (const declaration of device.declarations)
         if ('name' in declaration) this.ownNames.set(declaration.name, declaration);
-    this.names = indexed ?? this.ownNames;
+    this.names = (jit ? indexed : undefined) ?? this.ownNames;
+    if (device && !jit)
+      for (const declaration of device.declarations) this.declarations.push(declaration);
   }
   error(code: DiagnosticCode, message: string, path: InputPath = []): never {
     this.closed = true;
@@ -1647,6 +1650,27 @@ export function createDeviceBuilder(options: NamedOptions): DeviceBuilder {
       ...(options.source ? { source: snapshot(options.source) } : {}),
     }),
   );
+}
+/** Emit functions in the adapter's own Builder realm; attachJit validates the resulting IR. */
+export function buildJitFunctions(
+  device: DeviceIR,
+  emit: (builder: JitFunctionBuilder) => void,
+): readonly Extract<DeclarationIR, { kind: 'function' }>[] {
+  const root = new Root(device, device);
+  const builder = deviceView(root);
+  try {
+    emit(Object.freeze({ fn: builder.fn, pureFn: builder.pureFn }));
+    root.check();
+    root.resolve();
+    return snapshot(
+      root.declarations.slice(device.declarations.length) as Extract<
+        DeclarationIR,
+        { kind: 'function' }
+      >[],
+    );
+  } finally {
+    root.closed = true;
+  }
 }
 export interface JitBuilderOptions {
   readonly device?: DeviceIR;

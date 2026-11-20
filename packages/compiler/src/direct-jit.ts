@@ -1,5 +1,6 @@
 import type {
   BinaryOperator,
+  DeclarationIR,
   MatchPatternIR,
   MemoryRefIR,
   OperationIR,
@@ -270,7 +271,15 @@ interface BindingFingerprint {
   readonly host: boolean;
   readonly blockedStates: readonly string[] | undefined;
   readonly blockedMemories: readonly string[] | undefined;
+  readonly functions: readonly (readonly [string, DirectFunctionIR])[] | undefined;
 }
+
+type DirectFunctionIR = Extract<DeclarationIR, { kind: 'function' }>;
+type ResolveFunction = (name: string) => {
+  readonly target: string;
+  readonly run: unknown;
+  readonly body: Instruction;
+};
 
 interface CachedInstruction {
   readonly body: RegionIR;
@@ -306,6 +315,7 @@ interface DirectJitCacheState {
   readonly entries: Map<number, CachedInstruction>;
   readonly constants: unknown[];
   readonly resistorSlots: Map<string, number>;
+  readonly functions: Map<string, ReturnType<ResolveFunction> | null>;
   readonly shards: ResidentShard[];
   nextResume: number;
   nextShard: number;
@@ -328,6 +338,7 @@ function createDirectJitCache(): DirectJitCache {
     entries: new Map(),
     constants: [],
     resistorSlots: new Map(),
+    functions: new Map(),
     shards: [],
     nextResume: 1,
     nextShard: 1,
@@ -358,6 +369,7 @@ function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
     pcName: binding.pc.name,
     pcIndex: binding.pc.index,
     host: binding.host === true,
+    functions: binding.functions === undefined ? undefined : [...binding.functions],
     blockedStates:
       binding.blockedStates === undefined ? undefined : [...binding.blockedStates].sort(),
     blockedMemories:
@@ -365,9 +377,9 @@ function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
   };
 }
 
-function samePairs(
-  left: readonly (readonly [string, number])[],
-  right: readonly (readonly [string, number])[],
+function samePairs<T>(
+  left: readonly (readonly [string, T])[],
+  right: readonly (readonly [string, T])[],
 ): boolean {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index++) {
@@ -378,9 +390,9 @@ function samePairs(
   return true;
 }
 
-function sameOptionalPairs(
-  left: readonly (readonly [string, number])[] | undefined,
-  right: readonly (readonly [string, number])[] | undefined,
+function sameOptionalPairs<T>(
+  left: readonly (readonly [string, T])[] | undefined,
+  right: readonly (readonly [string, T])[] | undefined,
 ): boolean {
   if (left === right) return true;
   if (left === undefined || right === undefined) return false;
@@ -401,6 +413,7 @@ function sameBinding(left: BindingFingerprint, right: BindingFingerprint): boole
     left.pcName === right.pcName &&
     left.pcIndex === right.pcIndex &&
     left.host === right.host &&
+    sameOptionalPairs(left.functions, right.functions) &&
     samePairs(left.states, right.states) &&
     samePairs(left.memories, right.memories) &&
     sameOptionalPairs(left.pins, right.pins) &&
@@ -437,6 +450,7 @@ function clearCacheState(state: DirectJitCacheState): void {
   state.entries.clear();
   state.constants.length = 0;
   state.resistorSlots.clear();
+  state.functions.clear();
   state.shards.length = 0;
   state.nextResume = 1;
   state.nextShard = 1;
@@ -568,6 +582,7 @@ function compileDirectJitProgram(
     state.entries.clear();
     state.constants.length = 0;
     state.resistorSlots.clear();
+    state.functions.clear();
     state.shards.length = 0;
     state.nextResume = 1;
     state.nextShard = 1;
@@ -582,6 +597,31 @@ function compileDirectJitProgram(
       state.resistorSlots.set(key, slot);
     }
     return slot;
+  };
+  const resolveFunction: ResolveFunction = (name) => {
+    const cached = state.functions.get(name);
+    if (cached === null) throw unsupported;
+    if (cached !== undefined) return cached;
+    // A rejected or cyclic callee rejects its caller before any instruction executes.
+    state.functions.set(name, null);
+    const fn = binding.functions?.get(name);
+    if (fn === undefined) throw unsupported;
+    const constants: unknown[] = [];
+    const captureLocal = (value: unknown): string => `C[${constants.push(value) - 1}]`;
+    const body = new Instruction(
+      binding,
+      captureLocal,
+      resistorSlot,
+      (callee) => {
+        const nested = resolveFunction(callee);
+        return { ...nested, target: captureLocal(nested.run) };
+      },
+      fn,
+    );
+    const run = body.compileFunction(constants);
+    const compiled = { target: capture(run), run, body };
+    state.functions.set(name, compiled);
+    return compiled;
   };
   const entries: Instruction[] = [];
   const active = new Map<number, Instruction>();
@@ -610,7 +650,9 @@ function compileDirectJitProgram(
     } else {
       if (cached !== undefined) state.stats.invalidatedBlocks++;
       try {
-        compiled = new Instruction(binding, capture, resistorSlot).compile(instruction);
+        compiled = new Instruction(binding, capture, resistorSlot, resolveFunction).compile(
+          instruction,
+        );
       } catch (error) {
         if (error !== unsupported) throw error;
         compiled = undefined;
@@ -1617,7 +1659,29 @@ class Instruction {
     private readonly binding: DirectJitBinding,
     private readonly capture: (value: unknown) => string,
     private readonly resistorSlot?: (pin: string, resistance: number) => number,
+    private readonly resolveFunction?: ResolveFunction,
+    private readonly fn?: DirectFunctionIR,
   ) {}
+
+  compileFunction(constants: readonly unknown[]): unknown {
+    const fn = this.fn!;
+    const scalar = (type: { readonly kind: string }): boolean =>
+      type.kind === 'number' || type.kind === 'bool';
+    if (fn.params.some(({ type }) => !scalar(type)) || (fn.returns && !scalar(fn.returns)))
+      throw unsupported;
+    this.constants = constantsOf(fn.body);
+    this.region(fn.body, this.prefix);
+    // Loops in instructions use special publication fences; decline them in helpers.
+    if (this.isolated) throw unsupported;
+    this.compact();
+    const params = fn.params.map((_, index) => `a${index}`);
+    const lines = [...prelude(this.slots), ...this.prefix];
+    return new Function(
+      'C',
+      'H',
+      `"use strict"; return function(F${params.map((param) => `,${param}`).join('')}) {\n${lines.join('\n')}\n};`,
+    )(Object.freeze([...constants]), helpers);
+  }
 
   compile(instruction: { pc: number; nextPc: number; body: RegionIR }): this {
     this.pcValue = instruction.pc;
@@ -2295,6 +2359,38 @@ class Instruction {
       lines.push(`${result!} = ${expression};`);
     };
     switch (operation.kind) {
+      case 'parameter':
+        if (!this.fn?.params[operation.index]) throw unsupported;
+        assign(`a${operation.index}`);
+        break;
+      case 'return':
+      case 'returnValue':
+        if (!this.fn) throw unsupported;
+        lines.push(
+          operation.kind === 'returnValue' ? `return ${this.value(operation.value)};` : 'return;',
+        );
+        break;
+      case 'call':
+      case 'callValue': {
+        const compiled = this.resolveFunction?.(operation.name);
+        if (!compiled) throw unsupported;
+        const args = operation.args.map((arg) => {
+          if (arg.kind !== 'value') throw unsupported;
+          return this.value(arg.value);
+        });
+        // The helper sees the same state/memory banks and dirty bits. Its effects must also
+        // participate in the caller's observer barrier before any part of the instruction runs.
+        for (const name of compiled.body.readStates) this.state(name, false);
+        for (const name of compiled.body.writeStates) this.state(name, true);
+        for (const name of compiled.body.readMemories)
+          this.memory({ kind: 'load8', memory: { kind: 'memory', name } });
+        for (const name of compiled.body.writeMemories)
+          this.memory({ kind: 'store8', memory: { kind: 'memory', name } });
+        const call = `${compiled.target}(F${args.map((arg) => `, ${arg}`).join('')})`;
+        if (operation.kind === 'callValue') assign(call);
+        else lines.push(`${call};`);
+        break;
+      }
       case 'constant': {
         // Numbers, booleans, strings and enum members folded above; only a byte literal still
         // materialises a fresh value at every evaluation.
@@ -2410,10 +2506,7 @@ class Instruction {
         assign(`H.combineIntents([${operation.values.map((id) => this.value(id)).join(',')}])`);
         break;
       case 'field':
-        if (
-          this.binding.pins !== undefined &&
-          /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(operation.field)
-        ) {
+        if (this.binding.pins !== undefined && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(operation.field)) {
           assign(`${this.value(operation.value)}.${operation.field}`);
           break;
         }

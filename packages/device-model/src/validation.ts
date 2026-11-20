@@ -1218,7 +1218,9 @@ class Validator {
               p,
               op,
             );
-          if (fn) {
+          // Bound JIT calls target an already validated device. All sync/pure function
+          // effects are legal in JIT code; other modes can impose additional restrictions.
+          if (fn && mode !== 'jit') {
             const key = `${mode}:${name}`;
             if (!this.effectChecked.has(key)) {
               this.effectChecked.add(key);

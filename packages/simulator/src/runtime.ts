@@ -11,7 +11,7 @@ import { ActivationQueue, EventQueue, Fifo } from './queue';
 import { compileObservation } from './observations';
 import { Instance } from './runtime/instance';
 import { registerPublishGate } from './runtime/publish-gate';
-import { runJit } from './runtime/jit';
+import { runJit, syncJitCall } from './runtime/jit';
 import { body, computation, frame, MAX_TIME, synchronousBody, time } from './runtime/execution';
 import {
   acceptSync,
@@ -1071,7 +1071,7 @@ class BoardRuntime implements Board {
                 );
               else this.queueJit(jit);
             } else if (jit.predicate) {
-              const checked = jit.instance.evaluate(() => jit.instance.syncCall(jit.predicate!));
+              const checked = jit.instance.evaluate(() => syncJitCall(jit, jit.predicate!));
               jit.dependencies = checked.dependencies;
               if (checked.value === true) {
                 delete jit.predicate;

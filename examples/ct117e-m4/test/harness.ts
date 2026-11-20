@@ -1,7 +1,8 @@
 // Register the test-only board observer before importing the fused runtime.
 import { observeBoard } from './board-observer';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { timePs } from '@mica-js/core';
 import { createHeadlessRuntime } from '@mica-js/sdk/fused';
 import { createDirectoryRegistry, readDirectoryPackage } from '@mica-js/sdk/fused/node';
@@ -68,17 +69,27 @@ interface HarnessOptions {
   readonly stepPs?: number;
   /** 额外读取模型原始 frameInfo 时间，仅用于与分立 oracle 对账。 */
   readonly captureFrameTimes?: boolean;
+  /** Use a saved release for paired performance runs. */
+  readonly packageDirectory?: string;
 }
 
-let artifactPromise: ReturnType<typeof readDirectoryPackage> | undefined;
+const packages = new Map<string, ReturnType<typeof readDirectoryPackage>>();
 
 /** 通过正式 registry、program loader、模型客户端和事件运行发布包。 */
 export async function createHarness({
   hex,
   stepPs = CT117E_M4_TIME_QUANTUM_PS,
   captureFrameTimes = false,
+  packageDirectory,
 }: HarnessOptions) {
-  const { lock } = await (artifactPromise ??= readDirectoryPackage(ROOT));
+  const root = packageDirectory === undefined ? ROOT : resolve(packageDirectory);
+  const artifact = pathToFileURL(resolve(root, 'package.json'));
+  let loaded = packages.get(root);
+  if (loaded === undefined) {
+    loaded = readDirectoryPackage(root);
+    packages.set(root, loaded);
+  }
+  const { lock } = await loaded;
   if (lock.id !== CT117E_M4_DEVICE_ID) throw new Error(`Unexpected package ${lock.id}`);
 
   const frames: Uint8Array[] = [];
@@ -118,8 +129,8 @@ export async function createHarness({
           },
         ],
       },
-      registry: createDirectoryRegistry({ [lock.id]: ROOT }),
-      loadModule: async (_files, path) => import(new URL(path, ARTIFACT).href),
+      registry: createDirectoryRegistry({ [lock.id]: root }),
+      loadModule: async (_files, path) => import(new URL(path, artifact).href),
       step: timePs(stepPs),
       programs: {
         projects: {

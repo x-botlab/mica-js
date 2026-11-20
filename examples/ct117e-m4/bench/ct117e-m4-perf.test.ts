@@ -90,7 +90,12 @@ interface Reading {
 
 it('融合宿主运行 HAL_06_LCD.hex：360–390 ms 稳态清屏 CPU/墙钟', async () => {
   const image = loadFirmware();
-  const options = { hex: image.hex, stepPs: QUANTUM_PS };
+  const packageDirectory = process.env.MICA_CT117E_M4_PACKAGE;
+  const options = {
+    hex: image.hex,
+    stepPs: QUANTUM_PS,
+    ...(packageDirectory === undefined ? {} : { packageDirectory }),
+  };
 
   // 预热动态导入与库校验，但不预热固件翻译；首轮冷启动仍包含真实的首次翻译。
   await (await createHarness(options)).dispose();

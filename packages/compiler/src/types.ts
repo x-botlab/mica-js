@@ -1,4 +1,4 @@
-import type { InputPath, OperationIR, SourceInfo } from '@mica-js/device-model';
+import type { DeclarationIR, InputPath, OperationIR, SourceInfo } from '@mica-js/device-model';
 
 export type ExecutionSignal =
   | { readonly kind: 'ticks' | 'elapse'; readonly duration: number }
@@ -152,13 +152,15 @@ export interface DirectJitDelay {
   };
 }
 
-  /** Static numeric bank layout; the runtime guards ownership/observers before entry. */
+/** Static numeric bank layout; the runtime guards ownership/observers before entry. */
 export interface DirectJitBinding {
   readonly states: ReadonlyMap<string, number>;
   readonly memories: ReadonlyMap<string, number>;
   /** Optional pin name → slot index table for direct sample reads and intent writes. */
   readonly pins?: ReadonlyMap<string, number>;
   readonly pc: { readonly name: string; readonly index: number };
+  /** Validated synchronous functions eligible for same-frame direct calls. */
+  readonly functions?: ReadonlyMap<string, Extract<DeclarationIR, { kind: 'function' }>>;
   /** Compile-time write barriers; recompile when membership changes. */
   readonly blockedStates?: ReadonlySet<string>;
   readonly blockedMemories?: ReadonlySet<string>;

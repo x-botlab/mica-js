@@ -2,6 +2,7 @@
 import type { Disposable, Event } from '@mica-js/core/lifecycle';
 import type {
   BlockIR,
+  DeclarationIR,
   DeviceIR,
   InputPath,
   SourceInfo,
@@ -151,6 +152,10 @@ export interface JitOptions {
    */
   readonly codeMetadata?: JitCodeMetadataProvider;
   readonly pc: string;
+  /** Return immutable synchronous function IR scoped to this JIT. Reuse its array to reuse binding. */
+  readonly functions?: (
+    device: DeviceIR,
+  ) => readonly Extract<DeclarationIR, { kind: 'function' }>[];
   readonly beforeInstruction?: InstructionHook;
   readonly polling?: readonly JitPolling[];
   readonly delays?: ReadonlyMap<number, JitDelay>;
