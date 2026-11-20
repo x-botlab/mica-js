@@ -195,6 +195,10 @@
       }
     }
   },
+  "view2d": {
+    "geometry": "geometry.json",
+    "entry": "view2d.js"
+  },
   "scripts": {
     "prepare:types": "node scripts/prepare-model.mjs && mica prepare",
     "build": "node scripts/prepare-model.mjs && mica build",
@@ -204,6 +208,8 @@
   },
   "devDependencies": {
     "@mica-js/core": "workspace:*",
+    "@mica-js/document": "workspace:*",
+    "@mica-js/editor": "workspace:*",
     "@mica-js/example-devices": "workspace:*",
     "@mica-js/sdk": "workspace:*",
     "@mica-js/simulator": "workspace:*",

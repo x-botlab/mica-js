@@ -6,7 +6,7 @@
 
 - 器件 ID：`example:ct117e-m4`
 - 源码：`src/{model.ddl,model.ts,mcu.ts,lcd.ts}`
-- 构建产物：包根 `dist/{package.json,model.js,release.json}`
+- 构建产物：`dist/` 发布包，含 `model.js`、`view2d.js`、`geometry.json` 和 SVG 底图
 - 参考固件：`HAL_06_LCD.hex`（测试夹具位于 `examples/devices/bench/stm32g431rbt6`；
   统一模型从 `ctx.props.firmware` 接收 `MemoryProgram`）
 
@@ -39,6 +39,18 @@ pnpm bench        # 构建并运行六轮基准
 滑臂电阻公式和 74HC573 的数据解码融合进本地 DDL。锁存时机、固定接线和模拟输入
 由板级 DDL 实现。生成的 `board-model.ddl`、`board-wires.ts`、`hot-model.ts`
 不提交；`mica build` 将模型和共享 MCU 内核打包进自包含的 `model.js`，运行时不加载器件库。
+
+## View2D 整板遮罩
+
+在工作台放置 `example:ct117e-m4`，即可看到发布包内的 SVG 板图。进入仿真后：
+
+- B1–B4 自上而下排列；按下键帽向同一板实例发送按下，抬起或拖出键帽时释放。上方
+  `RESET` 不在本遮罩范围内。
+- LCD 先读取整屏快照，再按序合成 RGB565 脏矩形。显示区域沿底图照片的玻璃内缘裁切。
+- LD1–LD8 从右往左编号，点亮时覆盖发光面，熄灭时露出原图。
+- 点击 R37–R40 的旋钮打开滑条，点击或拖动滑条调节位置。R37/R38 调 ADC 输入，
+  R39/R40 调 555 频率。再次点击同一旋钮或点击滑条外即可收起。滑块显示本视图最近
+  成功写入的位置，初值为板模型默认的 50%。
 
 ## 统一模型接口
 

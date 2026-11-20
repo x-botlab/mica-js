@@ -365,6 +365,12 @@ importers:
       '@mica-js/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@mica-js/document':
+        specifier: workspace:*
+        version: link:../../packages/document
+      '@mica-js/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
       '@mica-js/example-devices':
         specifier: workspace:*
         version: link:../devices
