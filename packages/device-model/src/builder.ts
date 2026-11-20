@@ -1,6 +1,7 @@
 import type {
   DeviceBuilder,
   JitBlockBuilder,
+  JitFunctionBuilder,
   NamedOptions,
   InstructionBoundary,
   Parameter,
@@ -27,7 +28,13 @@ import type {
 import { BuildError, fail, snapshot } from './errors.js';
 import { builtins, binary, loads, numeric, operation, stores, unary } from './schema.js';
 import type { Node } from './schema.js';
-import { sameType, validateBlockIR, validateBoundBlockIR, validateDeviceIR } from './validation.js';
+import {
+  indexedDeclarations,
+  sameType,
+  validateBlockIR,
+  validateBoundBlockIR,
+  validateDeviceIR,
+} from './validation.js';
 
 type Mode = 'creation' | 'initial' | 'pure' | 'sync' | 'process' | 'reaction' | 'jit';
 type BodyView = Record<string, (...args: unknown[]) => unknown> & {
@@ -217,16 +224,25 @@ class Root {
   active: Body | undefined;
   source: SourceInfo | undefined;
   readonly declarations: DeclarationIR[] = [];
-  readonly names = new Map<string, DeclarationIR>();
+  private readonly ownNames = new Map<string, DeclarationIR>();
+  readonly names: ReadonlyMap<string, DeclarationIR>;
   readonly expectedTypes = new Set<TypeData>();
   readonly pending: Pending[] = [];
   readonly instructions: InstructionIR[] = [];
+  readonly checkedRegions = new WeakSet<RegionIR>();
   constructor(
     readonly options: NamedOptions,
     readonly device?: DeviceIR,
     readonly jit = false,
   ) {
     if (options.source !== undefined) this.source = snapshot(options.source);
+    const indexed = device && indexedDeclarations(device);
+    if (device && (!indexed || !jit))
+      for (const declaration of device.declarations)
+        if ('name' in declaration) this.ownNames.set(declaration.name, declaration);
+    this.names = (jit ? indexed : undefined) ?? this.ownNames;
+    if (device && !jit)
+      for (const declaration of device.declarations) this.declarations.push(declaration);
   }
   error(code: DiagnosticCode, message: string, path: InputPath = []): never {
     this.closed = true;
@@ -317,7 +333,7 @@ class Root {
     if (declaration.name !== undefined) {
       if (this.names.has(declaration.name as string))
         this.error('IR_REFERENCE', `Duplicate declaration ${declaration.name}.`);
-      this.names.set(declaration.name as string, declaration as unknown as DeclarationIR);
+      this.ownNames.set(declaration.name as string, declaration as unknown as DeclarationIR);
     }
     if (declaration.kind === 'start' && this.declarations.some((d) => d.kind === 'start'))
       this.error('IR_REFERENCE', 'Only one start process is allowed.');
@@ -459,7 +475,7 @@ class Body {
         ? { source: snapshot(this.source) }
         : {}),
     };
-    operation(withSource, []);
+    operation(withSource, [], this.root.checkedRegions);
     this.operations.push(withSource);
   }
   result(type: ValueTypeIR, node: Node, extra: Partial<Handle> = {}): object {
@@ -691,14 +707,12 @@ class Body {
       this.root.active = previous;
     }
     this.root.check();
-    return {
-      body: {
-        operations: body.operations,
-        ...(body.source ? { source: snapshot(body.source) } : {}),
-      },
-      builder: body,
-      returned,
+    const region: RegionIR = {
+      operations: body.operations,
+      ...(body.source ? { source: snapshot(body.source) } : {}),
     };
+    this.root.checkedRegions.add(region);
+    return { body: region, builder: body, returned };
   }
   merge(branches: Body[]): void {
     const live = branches.filter((branch) => !branch.ended);
@@ -1117,6 +1131,7 @@ class Body {
                 : this.constantData(inferred, value),
               ...(this.source ? { source: snapshot(this.source) } : {}),
             };
+            operation(node, []);
             this.operations.push(node as unknown as OperationIR);
             this.root.pending.push({
               node,
@@ -1636,6 +1651,27 @@ export function createDeviceBuilder(options: NamedOptions): DeviceBuilder {
     }),
   );
 }
+/** Emit functions in the adapter's own Builder realm; attachJit validates the resulting IR. */
+export function buildJitFunctions(
+  device: DeviceIR,
+  emit: (builder: JitFunctionBuilder) => void,
+): readonly Extract<DeclarationIR, { kind: 'function' }>[] {
+  const root = new Root(device, device);
+  const builder = deviceView(root);
+  try {
+    emit(Object.freeze({ fn: builder.fn, pureFn: builder.pureFn }));
+    root.check();
+    root.resolve();
+    return snapshot(
+      root.declarations.slice(device.declarations.length) as Extract<
+        DeclarationIR,
+        { kind: 'function' }
+      >[],
+    );
+  } finally {
+    root.closed = true;
+  }
+}
 export interface JitBuilderOptions {
   readonly device?: DeviceIR;
   readonly source?: SourceInfo;
@@ -1647,9 +1683,6 @@ export function createJitBlockBuilder(options: JitBuilderOptions = {}): JitBlock
     options.device,
     true,
   );
-  if (options.device)
-    for (const declaration of options.device.declarations)
-      if ('name' in declaration) root.names.set(declaration.name, declaration);
   const view = (state = { closed: false }): JitBlockBuilder =>
     new Proxy(Object.create(null), {
       get: (_target, method) =>

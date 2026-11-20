@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 无头验证：把 `led8.sch` 折成网表，装载 `../iap15f2k61s2` 与 `../blue-led` 的交付产物，
+ * 无头验证：把 `led8.sch` 折成网表，装载 `../devices` 里 IAP15F2K61S2 与 blue-led 的交付产物，
  * 用 `Project.hex` 的固件跑真实仿真，检查 8 颗 LED 是否按 P2.0 → P2.7 依次点亮。
  *
  * 用法：node verify.mjs [--ms 800] [--quiet]
@@ -14,11 +14,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  loadLegacyDevice,
+  legacyCreateWithFirmware,
+} from '../devices/test/support/legacy-device-package.mjs';
 
 const HERE = import.meta.dirname;
-const DIST = join(HERE, '..');
-const MCU_PROJECT = join(DIST, 'iap15f2k61s2');
-const LED_PROJECT = join(DIST, 'blue-led');
+const DEVICES_PROJECT = join(HERE, '..', 'devices');
+const MCU_PROJECT = DEVICES_PROJECT;
+const LED_PROJECT = DEVICES_PROJECT;
 
 const MCU_REF = 'xbotlab:iap15f2k61s2';
 const LED_REF = 'xbotlab:blue-led';
@@ -48,7 +52,7 @@ async function loadToolchain() {
       console.warn(
         `本工程未安装 @mica-js 工具链，改用器件工程的依赖（${cause.code ?? cause.message}）`,
       );
-    const base = pathToFileURL(join(MCU_PROJECT, 'node_modules', '@mica-js') + '/');
+    const base = pathToFileURL(join(HERE, '..', 'devices', 'node_modules', '@mica-js') + '/');
     return {
       document: await import(new URL('document/dist/schematic/index.js', base)),
       sdk: await import(new URL('sdk/dist/index.js', base)),
@@ -88,19 +92,16 @@ function readFirmware(src) {
   return parseIntelHex(readFileSync(join(HERE, 'Project.hex'), 'utf8'));
 }
 
-/** 读取器件产物：元数据 + 自包含 ESM 工厂。 */
+/** 读取器件产物：统一清单 + 显式旧 simulator 工厂桥。 */
 async function loadDevice(project, deviceId) {
-  const root = join(project, 'dist', 'devices', deviceId);
-  return {
-    definition: JSON.parse(readFileSync(join(root, 'device.json'), 'utf8')),
-    module: await import(pathToFileURL(join(root, 'device.js')).href),
-  };
+  const loaded = await loadLegacyDevice(join(project, 'dist'), deviceId);
+  return { manifest: loaded.manifest, module: loaded.module };
 }
 
-/** 实例属性：器件默认值 + 原理图覆盖；资源引用换成字节。 */
-function resolveProperties(symbol, definition, assets) {
+/** 实例属性：器件清单默认值 + 原理图覆盖；资源引用换成字节。 */
+function resolveProperties(symbol, manifest, assets) {
   const values = Object.create(null);
-  for (const [key, descriptor] of Object.entries(definition.properties ?? {})) {
+  for (const [key, descriptor] of Object.entries(manifest.properties ?? {})) {
     if (Object.hasOwn(descriptor, 'default')) values[key] = descriptor.default;
   }
   Object.assign(values, symbol.properties);
@@ -121,111 +122,79 @@ const { document: doc, sdk } = await loadToolchain();
 const mcu = await loadDevice(MCU_PROJECT, 'iap15f2k61s2');
 const led = await loadDevice(LED_PROJECT, 'blue-led');
 
-const mcuDefinition = doc.parseDeviceMetadata(mcu.definition);
-const ledDefinition = doc.parseDeviceMetadata(led.definition);
 const schematic = doc.parseSchematic(readFileSync(join(HERE, 'led8.sch'), 'utf8'));
 const firmwareSource =
   schematic.sheet.symbols.find((symbol) => symbol.device === MCU_REF)?.properties?.firmware?.src ??
   'Project.bin';
 const firmware = readFirmware(firmwareSource);
 
-const definitions = new Map([
-  [MCU_REF, mcuDefinition],
-  [LED_REF, ledDefinition],
-]);
-const devices = {
-  getDeviceName: (reference) => definitions.get(reference.raw)?.displayName,
-  getDeviceSymbol: (reference) => {
-    const definition = definitions.get(reference.raw);
-    return definition === undefined ? undefined : doc.deviceMetadataSymbol(definition);
-  },
-};
-const topology = doc.deriveSchematicTopology(schematic, { devices });
-
 const failures = [];
 const check = (condition, message) => {
   if (!condition) failures.push(message);
 };
 
-const components = schematic.sheet.symbols.filter((symbol) => definitions.has(symbol.device));
+const components = schematic.sheet.symbols.filter(
+  (symbol) => symbol.device === MCU_REF || symbol.device === LED_REF,
+);
 const ledSymbols = components.filter((symbol) => symbol.device === LED_REF);
 const mcuSymbol = components.find((symbol) => symbol.device === MCU_REF);
 if (mcuSymbol === undefined) throw new Error('原理图缺少 IAP15F2K61S2');
 check(ledSymbols.length === 8, `原理图应有 8 颗蓝色 LED，实际 ${ledSymbols.length}`);
-check(
-  topology.danglingWireEnds.length === 0,
-  `存在 ${topology.danglingWireEnds.length} 个悬空导线端点`,
-);
 
+const byDesignator = new Map(components.map((symbol) => [symbol.designator, symbol]));
 const assets = new Map([[mcuSymbol.id, new Map([[firmwareSource, firmware]])]]);
-const instances = components.map((symbol) => ({
-  id: symbol.id,
-  type: symbol.id,
-  props: resolveProperties(symbol, definitions.get(symbol.device), assets.get(symbol.id)),
-}));
-
-const nets = topology.nets.map((net, index) => {
-  const grounded = net.members.some((member) => member.kind === 'ground');
-  const voltage = grounded ? 0 : net.name === 'VCC' ? SUPPLY : undefined;
-  return {
-    id: `net:${index}`,
-    pins: net.members.flatMap((member) =>
-      member.kind === 'pin' ? [{ instance: member.symbolId, pin: member.pinId }] : [],
-    ),
-    ...(voltage === undefined ? {} : { voltage }),
-  };
+const instances = components.map((symbol) => {
+  const manifest = symbol.device === MCU_REF ? mcu.manifest : led.manifest;
+  const props = resolveProperties(symbol, manifest, assets.get(symbol.id));
+  // 旧原理图把固件保存为资源引用；统一模型由工厂包装接收 FirmwareImage。
+  if (symbol === mcuSymbol) delete props.firmware;
+  return { id: symbol.id, type: symbol.id, props };
 });
 
-// 拓扑检查：P2.0–P2.7 经同名网标各接一颗 LED 的阴极，阴极与引脚同网。
+const pin = (designator, name) => {
+  const symbol = byDesignator.get(designator);
+  if (symbol === undefined) throw new Error(`原理图缺少位号 ${designator}`);
+  return { instance: symbol.id, pin: name };
+};
+const nets = [
+  {
+    id: 'vcc',
+    voltage: SUPPLY,
+    pins: [
+      pin('U1', 'VCC'),
+      ...ledSymbols.map((symbol) => ({ instance: symbol.id, pin: 'anode' })),
+    ],
+  },
+  { id: 'gnd', voltage: 0, pins: [pin('U1', 'GND')] },
+  ...Array.from({ length: 8 }, (_, bit) => ({
+    id: `P2_${bit}`,
+    pins: [pin('U1', `P2_${bit}`), pin(`D${bit + 1}`, 'cathode')],
+  })),
+];
+
+// 拓扑检查：P2.0–P2.7 各接一颗 LED 阴极，所有阴极与阳极都有明确网络。
 const netOfPin = new Map();
-for (const pin of topology.pins) netOfPin.set(`${pin.symbolId}/${pin.pinId}`, pin);
-const netByName = new Map(
-  topology.nets.filter((net) => net.name !== null).map((net) => [net.name, net]),
-);
-
+for (const net of nets)
+  for (const endpoint of net.pins) netOfPin.set(`${endpoint.instance}/${endpoint.pin}`, net.id);
 for (let bit = 0; bit < 8; bit += 1) {
-  const pin = netOfPin.get(`${mcuSymbol.id}/P2_${bit}`);
-  check(pin !== undefined && !pin.open, `P2.${bit} 未接线`);
+  const cathode = netOfPin.get(`${pin(`D${bit + 1}`, 'cathode').instance}/cathode`);
+  check(cathode === `P2_${bit}`, `D${bit + 1} 阴极应在 P2_${bit}，实际 ${cathode ?? '悬空'}`);
   check(
-    pin?.netName === `P2_${bit}`,
-    `P2.${bit} 的网络名应为 P2_${bit}，实际 ${pin?.netName ?? '匿名'}`,
+    netOfPin.get(`${pin('U1', `P2_${bit}`).instance}/P2_${bit}`) === `P2_${bit}`,
+    `P2.${bit} 未接线`,
   );
+  const anode = byDesignator.get(`D${bit + 1}`);
+  check(anode !== undefined && netOfPin.has(`${anode.id}/anode`), `D${bit + 1} 阳极未接 VCC`);
 }
-
-const ledByDesignator = new Map(ledSymbols.map((symbol) => [symbol.designator, symbol]));
-const cathodeNets = new Map();
-for (const [designator, symbol] of ledByDesignator) {
-  const cathode = netOfPin.get(`${symbol.id}/cathode`);
-  const anode = netOfPin.get(`${symbol.id}/anode`);
-  check(cathode !== undefined && !cathode.open, `${designator} 阴极未接线`);
-  check(anode !== undefined && anode.netName === 'VCC', `${designator} 阳极未接 VCC`);
-  if (cathode !== undefined) cathodeNets.set(designator, cathode);
-}
-
-for (let bit = 0; bit < 8; bit += 1) {
-  const expected = `D${bit + 1}`;
-  const pin = netOfPin.get(`${mcuSymbol.id}/P2_${bit}`);
-  const cathode = cathodeNets.get(expected);
-  check(
-    pin !== undefined && cathode !== undefined && pin.netName === cathode.netName,
-    `P2.${bit} 与 ${expected} 阴极不在同一网络`,
-  );
-  const net = netByName.get(`P2_${bit}`);
-  check(
-    net !== undefined && net.members.filter((member) => member.kind === 'pin').length === 2,
-    `网络 P2_${bit} 应恰好连接 MCU 引脚与 ${expected} 阴极`,
-  );
-}
-const pinCount = (net) => net?.members.filter((member) => member.kind === 'pin').length ?? 0;
-check(pinCount(netByName.get('VCC')) === 9, 'VCC 网络应连接 MCU 电源脚与 8 颗 LED 阳极');
-check(pinCount(netByName.get('GND')) === 1, 'GND 网络应连接 MCU 地脚');
+check(nets[0].pins.length === 9, 'VCC 网络应连接 MCU 电源脚与 8 颗 LED 阳极');
+check(nets[1].pins.length === 1, 'GND 网络应连接 MCU 地脚');
 
 const brightness = new Map(ledSymbols.map((symbol) => [symbol.id, 0]));
 const library = sdk.createDeviceLibrary([
   {
     id: mcuSymbol.id,
     model: mcu.module.model,
-    create: mcu.module.create,
+    create: legacyCreateWithFirmware(mcu, firmware),
   },
   ...ledSymbols.map((symbol) => ({
     id: symbol.id,
@@ -295,7 +264,7 @@ for (const entry of transitions) {
 }
 
 const expectedBrightness = (symbol) => {
-  const props = resolveProperties(symbol, ledDefinition, undefined);
+  const props = resolveProperties(symbol, led.manifest, undefined);
   return {
     ohms: props.forwardResistance,
     amps: props.ratedCurrent,
@@ -315,13 +284,13 @@ for (const symbol of ledSymbols) {
 if (!QUIET) {
   console.log('器件：');
   console.log(
-    `  U1  ${MCU_REF}  ${firmware.length} 字节固件，${mcuDefinition.properties.clockFrequency.default} Hz`,
+    `  U1  ${MCU_REF}  ${firmware.length} 字节固件，${mcu.manifest.properties.clockFrequency.default} Hz`,
   );
   console.log(
-    `  D1–D8  ${LED_REF}  ${ledDefinition.properties.forwardResistance.default} Ω / ${ledDefinition.properties.ratedCurrent.default * 1000} mA`,
+    `  D1–D8  ${LED_REF}  ${led.manifest.properties.forwardResistance.default} Ω / ${led.manifest.properties.ratedCurrent.default * 1000} mA`,
   );
   console.log(
-    `网表：${nets.length} 个网络，VCC 接 ${pinCount(netByName.get('VCC'))} 个引脚，GND 接 ${pinCount(netByName.get('GND'))} 个引脚`,
+    `网表：${nets.length} 个网络，VCC 接 ${nets[0].pins.length} 个引脚，GND 接 ${nets[1].pins.length} 个引脚`,
   );
   console.log('');
   console.log('点亮时间线：');

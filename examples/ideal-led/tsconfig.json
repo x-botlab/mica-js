@@ -1,15 +1,11 @@
 {
+  "extends": "./.mica/tsconfig.json",
+  "include": [
+    "src",
+    "views",
+    "mica.config.ts"
+  ],
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "lib": ["ES2023", "DOM"],
-    "strict": true,
-    "noEmit": true,
-    "skipLibCheck": true,
-    "allowArbitraryExtensions": true,
-    "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true
-  },
-  "include": ["src", "test", "mica.config.ts", "vitest.config.ts"]
+  }
 }

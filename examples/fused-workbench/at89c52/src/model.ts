@@ -1,15 +1,15 @@
 import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
-import { decode } from '../../../iap15f2k61s2/src/devices/iap15f2k61s2/kernel/decode';
-import { InterruptController } from '../../../iap15f2k61s2/src/devices/iap15f2k61s2/kernel/interrupt';
+import { decode } from '../../../devices/iap15f2k61s2/src/kernel/decode';
+import { InterruptController } from '../../../devices/iap15f2k61s2/src/kernel/interrupt';
 import {
   activateMachine,
   type Machine,
-} from '../../../iap15f2k61s2/src/devices/iap15f2k61s2/kernel/machine';
-import { SfrHooks } from '../../../iap15f2k61s2/src/devices/iap15f2k61s2/kernel/sfr-hooks';
+} from '../../../devices/iap15f2k61s2/src/kernel/machine';
+import { SfrHooks } from '../../../devices/iap15f2k61s2/src/kernel/sfr-hooks';
 import {
   readPin,
   readPort,
-} from '../../../iap15f2k61s2/src/devices/iap15f2k61s2/peripherals/ports';
+} from '../../../devices/iap15f2k61s2/src/peripherals/ports';
 
 const twoCycle = new Set([
   0x02, 0x10, 0x12, 0x20, 0x22, 0x30, 0x32, 0x40, 0x43, 0x50, 0x53, 0x60, 0x63, 0x70, 0x72, 0x73,

@@ -43,7 +43,7 @@
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --test bench/*.test.mjs bench/stm32g431/*.test.mjs bench/stm32g431/firmware/*.test.mjs",
+    "test": "pnpm run build && node --test bench/*.test.mjs bench/stm32g431/*.test.mjs bench/stm32g431/firmware/*.test.mjs",
     "test:mcu:stm32": "node --test bench/stm32g431.test.mjs bench/stm32g431/*.test.mjs bench/stm32g431/firmware/*.test.mjs",
     "test:runtime": "vitest run",
     "bench": "node bench/runtime.mjs",

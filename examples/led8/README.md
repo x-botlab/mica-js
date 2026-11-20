@@ -1,6 +1,6 @@
 # led8：IAP15F2K61S2 驱动 8 颗蓝色 LED
 
-用 [`iap15f2k61s2`](../iap15f2k61s2/README.md) 与 [`blue-led`](../blue-led/README.md) 两个器件工程的交付产物搭一块最小板：
+用器件库 [`iap15f2k61s2`](../devices/docs/iap15f2k61s2.md) 与 [`blue-led`](../devices/docs/blue-led.md) 的交付产物搭一块最小板：
 P2.0–P2.7 各接一颗蓝色 LED，用 `Project.hex` 固件跑走马灯。
 
 ```
@@ -11,6 +11,11 @@ led8/
   verify.mjs      无头验证：折网表、装载产物、跑固件、检查点亮顺序
   package.json    验证脚本的依赖声明
 ```
+
+`led8.sch` 仍是 v1 文档；`verify.mjs` 通过
+`../devices/test/support/legacy-device-package.mjs` 把 `examples/devices` 的统一器件包
+投影成旧 `DeviceFactory`，并把 `Project.bin` 包装成 `FirmwareImage`。这是测试侧旧消费
+适配，不是融合运行时或 RFC 0024 文档迁移。
 
 ## 电路
 
@@ -30,7 +35,7 @@ led8/
 
 ## 固件
 
-`Project.hex` 是 Intel HEX；器件属性 `firmware` 是**裸二进制**，所以 `Project.bin` 是去掉
+`Project.hex` 是 Intel HEX；统一模型属性 `firmware` 是 **FirmwareImage**（由宿主解析 BIN/HEX/ELF）；旧原理图里的资源引用由兼容脚本包装，所以 `Project.bin` 是去掉
 记录头/校验和后的字节映像（79 字节）。反汇编要点：
 
 | 地址    | 内容                                                                          |
@@ -58,9 +63,10 @@ node verify.mjs --quiet      # 只输出结论
 1. `parseSchematic` 读取 `led8.sch`，`deriveSchematicTopology` 用两个器件的符号几何折出网表；
    检查悬空端点、P2 引脚网络名、每颗 LED 阴极与对应引脚同网、VCC/GND 成员数。
 2. 读取 `Project.bin`（缺失时就地转换同目录的 `Project.hex`）作为 `firmware` 资源。
-3. 用 `createDeviceLibrary` / `createBoard` 装载 `../iap15f2k61s2/dist/devices/iap15f2k61s2/device.js`
-   与 `../blue-led/dist/devices/blue-led/device.js`，按原理图实例属性与网表建板。
-4. 以 10 ms 为步长推进，记录 `brightness` 话题，断言：同一时刻只有一颗亮、顺序为
+3. 用 `createDeviceLibrary` / `createBoard` 装载 `../devices/dist/iap15f2k61s2/model.js`
+   与 `../devices/dist/blue-led/model.js`；兼容投影把统一事件映射回旧话题，并把固件
+   包装成 `FirmwareImage`，再按原理图实例属性与网表建板。
+4. 以 10 ms 为步长推进，记录兼容话题 `brightness`，断言：同一时刻只有一颗亮、顺序为
    D1 → D8、8 颗都亮过、点亮亮度 ≈ 5 V / (500 Ω + 25 Ω) / 20 mA。
 
 实测输出：
@@ -92,7 +98,7 @@ node verify.mjs --quiet      # 只输出结论
 ## 依赖
 
 `verify.mjs` 优先使用本目录安装的 `@mica-js/document` / `@mica-js/sdk`；未安装时回退到
-`../iap15f2k61s2/node_modules` 里的同一套依赖（两个器件工程已装好）。要建立本地副本：
+`../devices/node_modules` 里的同一套依赖（器件库已装好）。要建立本地副本：
 
 ```powershell
 cd dist\led8
@@ -104,5 +110,5 @@ pnpm install
 - `blue-led` 是线性等效电阻：没有正向压降、反向截止与发光效率，反向电流为负但亮度恒为 0。
 - 准双向口释放时只建模为高阻，不建模弱上拉；因此未点亮的 LED 阴极为浮空，亮度读数 0。
 - 原理图只使用这两个器件与内建电源/地/网标；没有限流电阻、晶振、复位电路与去耦电容。
-- 器件引用使用 `xbotlab:` 包 ID，宿主需要把该包映射到两个 `dist/devices/<器件ID>/` 目录。
+- 器件引用使用 `xbotlab:` 包 ID，宿主需要把该包映射到两个 `dist/<器件ID>/` 目录。
   仓库的 playground 目前只注册 `demo:` 器件，所以不能直接在主页面打开本原理图。

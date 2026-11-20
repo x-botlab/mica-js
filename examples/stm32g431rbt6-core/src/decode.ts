@@ -1,10 +1,21 @@
 import { types } from '@mica-js/sdk/model';
-import type { JitTranslateInput } from '@mica-js/sdk/device';
+import { codeLocalOffset } from './code-region';
+import type { CodeRegion } from './code-region';
 import type { Body } from './ir';
-import { asBody, num } from './ir';
+import { asBody, boolOr, num } from './ir';
 import { conditionValue } from './cpu';
 import { decode16 } from './thumb16';
-import { decode32 } from './thumb32';
+import { decode32, isBranch32 } from './thumb32';
+import { emitSendEvent, emitWaitForEvent, emitWaitForInterrupt, emitYield } from './system';
+
+/**
+ * 译码只读取有限字节窗口；不要求 `BorrowedBytes` 的品牌字段。
+ * `Uint8Array`、`BorrowedBytes` 与 DDL 的 code memory 都满足该结构。
+ */
+export interface CodeBytes {
+  readonly byteLength: number;
+  readonly [index: number]: number | undefined;
+}
 
 /** r0–r15 的块内编译期常量表；`undefined` 表示不可证明。 */
 export type KnownRegs = (number | undefined)[];
@@ -29,8 +40,11 @@ export interface Instruction {
   readonly emit: (b: Body, pc: number) => void;
 }
 
-const byteAt = (code: JitTranslateInput['code'], offset: number): number =>
-  code[offset & 0x1ffff] ?? 0;
+const byteAt = (code: CodeBytes, offset: number, region?: CodeRegion): number => {
+  const local = codeLocalOffset(region, offset);
+
+  return local === undefined ? 0 : (code[local] ?? 0);
+};
 
 /** 16 位指令里真正会改写 pc 的形式。 */
 function writesPc16(instr: number): boolean {
@@ -50,6 +64,8 @@ function writesPc16(instr: number): boolean {
     if ((instr & 0xf500) === 0xb100) return true; // CBZ / CBNZ
     if ((instr & 0xfe00) === 0xbc00) return (instr & 0x0100) !== 0; // POP {..., pc}
     if ((instr & 0xff00) === 0xbe00) return true; // BKPT
+    // WFI/WFE 停在当前 PC，直到异常或 pending 请求出现。
+    if (instr === 0xbf20 || instr === 0xbf30) return true;
 
     return false;
   }
@@ -65,10 +81,10 @@ function writesPc16(instr: number): boolean {
  * 目标寄存器为 pc 的数据处理指令。`B<cond>.W` 的 h2 bit15 与数据处理立即数天然区分。
  */
 function writesPc32(h1: number, h2: number): boolean {
-  if ((h1 & 0xf800) === 0xf000 && (h2 & 0x8000) !== 0) return true;
+  if (isBranch32(h1, h2)) return true;
   if (h1 === 0xe8bd) return (h2 & 0x8000) !== 0;
   if ((h1 & 0xffd0) === 0xe890) return (h2 & 0x8000) !== 0;
-  if (h1 >= 0xe8d0 && h1 <= 0xe8d7) return true;
+  if (h1 >= 0xe8d0 && h1 <= 0xe8d7) return (h2 & 0xffe0) === 0xf000;
 
   const kind = h1 & 0xfff0;
   const load =
@@ -81,7 +97,14 @@ function writesPc32(h1: number, h2: number): boolean {
     kind === 0xf810 ||
     kind === 0xf830;
 
-  if (load && ((h2 >> 12) & 0xf) === 15) return true;
+  const rt = (h2 >> 12) & 0xf;
+  if (
+    load &&
+    rt === 15 &&
+    (kind === 0xf890 || kind === 0xf810 || kind === 0xf990)
+  )
+    return false;
+  if (load && rt === 15) return true;
 
   const rd = (h2 >> 8) & 0xf;
   if ((h1 & 0xfe00) === 0xea00 && rd === 15) return true;
@@ -114,17 +137,16 @@ export function guard(instruction: Instruction): Instruction {
     emit: (b, pc) => {
       const state = b.readState('itState', types.number);
       const active = b.notEqual(types.number, b.bitAnd(state, num(b, 0xf)), num(b, 0));
-      // 条件成立与否写进 local，指令体只发射一次：否则每个块都会带两份数据通路，
-      // 直接程序的体积与执行成本翻倍。
-      const holds = b.local(types.bool, true);
 
-      b.if(active, (inner) => {
-        const body = asBody(inner);
-        const condition = body.bitAnd(body.shiftRightUnsigned(state, num(body, 4)), num(body, 0xf));
+      const condition = b.bitAnd(
+        b.shiftRightUnsigned(state, num(b, 4)),
+        num(b, 0xf),
+      );
+      // 条件在顶层计算；不要放进嵌套 if/select 回调。嵌套 builder 里读取 APSR
+      // 会丢失外部状态，导致 movne 无条件执行。IT 指令很少，不做 local 合并优化。
+      const holds = boolOr(b, b.not(active), conditionValue(b, condition));
 
-        body.setLocal(holds, conditionValue(body, condition));
-      });
-      b.if(b.getLocal(holds), (yes) => instruction.emit(asBody(yes), pc));
+      b.if(holds, (yes) => instruction.emit(asBody(yes), pc));
       b.if(active, (inner) => {
         const body = asBody(inner);
         const next = body.bitOr(
@@ -138,14 +160,23 @@ export function guard(instruction: Instruction): Instruction {
   };
 }
 
-const hint = (): Instruction => ({
-  size: 2,
-  cycles: 1,
-  endsBatch: false,
-  mayService: false,
-  itCount: 0,
-  emit: () => {},
-});
+const hint = (instr: number): Instruction => {
+  const waits = instr === 0xbf20 || instr === 0xbf30;
+
+  return {
+    size: 2,
+    cycles: 1,
+    endsBatch: waits,
+    mayService: false,
+    itCount: 0,
+    emit: (b, pc) => {
+      if (instr === 0xbf30) emitWaitForInterrupt(b, pc, (pc + 2) >>> 0);
+      else if (instr === 0xbf20) emitWaitForEvent(b, pc, (pc + 2) >>> 0);
+      else if (instr === 0xbf40) emitSendEvent(b);
+      else if (instr === 0xbf10) emitYield(b);
+    },
+  };
+};
 
 /**
  * `it` 指令：`1111 1011 cond mask`。掩码每左移一位消耗一条被控指令，左移到低 4 位全 0
@@ -171,37 +202,40 @@ const itInstruction = (h1: number): Instruction => {
   };
 };
 export function decode(
-  code: JitTranslateInput['code'],
+  code: CodeBytes,
   pc: number,
   knownRegs?: KnownRegs,
   firmwareLength = code.byteLength,
   conditional = false,
+  region?: CodeRegion,
 ): Instruction {
-  const h1 = byteAt(code, pc) | (byteAt(code, pc + 1) << 8);
+  const h1 = byteAt(code, pc, region) | (byteAt(code, pc + 1, region) << 8);
   let instruction: Instruction;
 
   // Thumb 的 32 位前缀是 0xE800–0xFFFF（0b11101 / 11110 / 11111）；只判
   // 0xE800 与 0xF000 两档会漏掉 0xF800–0xFFFF（`ldr.w`/`str.w` 等），把它们
   // 当成 16 位指令解码后 PC 只会前进 2 字节，落到半条指令上继续执行垃圾。
   if (h1 >= 0xe800) {
-    const h2 = byteAt(code, pc + 2) | (byteAt(code, pc + 3) << 8);
+    const h2 = byteAt(code, pc + 2, region) | (byteAt(code, pc + 3, region) << 8);
 
-    const decoded = decode32(h1, h2, knownRegs, pc, code, firmwareLength);
+    const decoded = decode32(h1, h2, knownRegs, pc, code, firmwareLength, region);
 
     instruction = {
       ...decoded,
-      endsBatch: writesPc32(h1, h2) || decoded.boundaryAfter === true,
+      endsBatch:
+        writesPc32(h1, h2) || decoded.terminates === true || decoded.boundaryAfter === true,
       itCount: 0,
     };
   } else if ((h1 & 0xff00) === 0xbf00) {
-    if ((h1 & 0x0f) === 0 || ((h1 >> 4) & 0xf) === 0xf) instruction = hint();
+    if ((h1 & 0x0f) === 0 || ((h1 >> 4) & 0xf) === 0xf) instruction = hint(h1);
     else instruction = itInstruction(h1);
   } else {
-    const decoded = decode16(h1, knownRegs, pc, code, firmwareLength);
+    const decoded = decode16(h1, knownRegs, pc, code, firmwareLength, region);
 
     instruction = {
       ...decoded,
-      endsBatch: writesPc16(h1) || decoded.boundaryAfter === true,
+      endsBatch:
+        writesPc16(h1) || decoded.terminates === true || decoded.boundaryAfter === true,
       itCount: 0,
     };
   }

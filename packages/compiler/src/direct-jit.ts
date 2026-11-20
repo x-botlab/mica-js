@@ -1,5 +1,6 @@
 import type {
   BinaryOperator,
+  DeclarationIR,
   MatchPatternIR,
   MemoryRefIR,
   OperationIR,
@@ -54,6 +55,14 @@ const unary: Partial<Record<UnaryOperator, string>> = {
   not: '!',
   bitNot: '~',
 };
+const comparisons = new Set<BinaryOperator>([
+  'lessThan',
+  'lessThanOrEqual',
+  'greaterThan',
+  'greaterThanOrEqual',
+  'equal',
+  'notEqual',
+]);
 const numeric = new Set([
   'isNaN',
   'isFinite',
@@ -256,12 +265,21 @@ interface DelayFingerprint {
 interface BindingFingerprint {
   readonly states: readonly (readonly [string, number])[];
   readonly memories: readonly (readonly [string, number])[];
+  readonly pins: readonly (readonly [string, number])[] | undefined;
   readonly pcName: string;
   readonly pcIndex: number;
   readonly host: boolean;
   readonly blockedStates: readonly string[] | undefined;
   readonly blockedMemories: readonly string[] | undefined;
+  readonly functions: readonly (readonly [string, DirectFunctionIR])[] | undefined;
 }
+
+type DirectFunctionIR = Extract<DeclarationIR, { kind: 'function' }>;
+type ResolveFunction = (name: string) => {
+  readonly target: string;
+  readonly run: unknown;
+  readonly body: Instruction;
+};
 
 interface CachedInstruction {
   readonly body: RegionIR;
@@ -296,6 +314,8 @@ interface ResidentShard {
 interface DirectJitCacheState {
   readonly entries: Map<number, CachedInstruction>;
   readonly constants: unknown[];
+  readonly resistorSlots: Map<string, number>;
+  readonly functions: Map<string, ReturnType<ResolveFunction> | null>;
   readonly shards: ResidentShard[];
   nextResume: number;
   nextShard: number;
@@ -317,6 +337,8 @@ function createDirectJitCache(): DirectJitCache {
   directJitCaches.set(cache, {
     entries: new Map(),
     constants: [],
+    resistorSlots: new Map(),
+    functions: new Map(),
     shards: [],
     nextResume: 1,
     nextShard: 1,
@@ -343,9 +365,11 @@ function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
   return {
     states: [...binding.states],
     memories: [...binding.memories],
+    pins: binding.pins === undefined ? undefined : [...binding.pins],
     pcName: binding.pc.name,
     pcIndex: binding.pc.index,
     host: binding.host === true,
+    functions: binding.functions === undefined ? undefined : [...binding.functions],
     blockedStates:
       binding.blockedStates === undefined ? undefined : [...binding.blockedStates].sort(),
     blockedMemories:
@@ -353,9 +377,9 @@ function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
   };
 }
 
-function samePairs(
-  left: readonly (readonly [string, number])[],
-  right: readonly (readonly [string, number])[],
+function samePairs<T>(
+  left: readonly (readonly [string, T])[],
+  right: readonly (readonly [string, T])[],
 ): boolean {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index++) {
@@ -364,6 +388,15 @@ function samePairs(
     if (a[0] !== b[0] || a[1] !== b[1]) return false;
   }
   return true;
+}
+
+function sameOptionalPairs<T>(
+  left: readonly (readonly [string, T])[] | undefined,
+  right: readonly (readonly [string, T])[] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return false;
+  return samePairs(left, right);
 }
 
 function sameNames(
@@ -380,8 +413,10 @@ function sameBinding(left: BindingFingerprint, right: BindingFingerprint): boole
     left.pcName === right.pcName &&
     left.pcIndex === right.pcIndex &&
     left.host === right.host &&
+    sameOptionalPairs(left.functions, right.functions) &&
     samePairs(left.states, right.states) &&
     samePairs(left.memories, right.memories) &&
+    sameOptionalPairs(left.pins, right.pins) &&
     sameNames(left.blockedStates, right.blockedStates) &&
     sameNames(left.blockedMemories, right.blockedMemories)
   );
@@ -414,6 +449,8 @@ function sameDelay(
 function clearCacheState(state: DirectJitCacheState): void {
   state.entries.clear();
   state.constants.length = 0;
+  state.resistorSlots.clear();
+  state.functions.clear();
   state.shards.length = 0;
   state.nextResume = 1;
   state.nextShard = 1;
@@ -471,6 +508,11 @@ export interface DirectJitEmitStats {
  * stops optimizing a function: measured blocks slow down sharply from ~35 KB of source.
  */
 const SHARD_CODE_BUDGET = 36_000;
+// Only outline a large, asymmetric branch: the extra call and slot copy should not
+// be paid by both arms of a common conditional.
+const OUTLINE_MIN_LINES = 512;
+const OUTLINE_MIN_RATIO = 8;
+const OUTLINE_MAX_SLOTS = 64;
 /**
  * Below this summed source size the monolithic form stays inside the range V8 optimizes, and
  * it avoids the dispatcher hop; larger programs split into shards.
@@ -539,12 +581,48 @@ function compileDirectJitProgram(
     state.stats.invalidatedBlocks += state.entries.size;
     state.entries.clear();
     state.constants.length = 0;
+    state.resistorSlots.clear();
+    state.functions.clear();
     state.shards.length = 0;
     state.nextResume = 1;
     state.nextShard = 1;
   }
   state.binding = fingerprint;
   const capture = (value: unknown): string => `C[${state.constants.push(value) - 1}]`;
+  const resistorSlot = (pin: string, resistance: number): number => {
+    const key = `${pin}\0${resistance}`;
+    let slot = state.resistorSlots.get(key);
+    if (slot === undefined) {
+      slot = state.resistorSlots.size;
+      state.resistorSlots.set(key, slot);
+    }
+    return slot;
+  };
+  const resolveFunction: ResolveFunction = (name) => {
+    const cached = state.functions.get(name);
+    if (cached === null) throw unsupported;
+    if (cached !== undefined) return cached;
+    // A rejected or cyclic callee rejects its caller before any instruction executes.
+    state.functions.set(name, null);
+    const fn = binding.functions?.get(name);
+    if (fn === undefined) throw unsupported;
+    const constants: unknown[] = [];
+    const captureLocal = (value: unknown): string => `C[${constants.push(value) - 1}]`;
+    const body = new Instruction(
+      binding,
+      captureLocal,
+      resistorSlot,
+      (callee) => {
+        const nested = resolveFunction(callee);
+        return { ...nested, target: captureLocal(nested.run) };
+      },
+      fn,
+    );
+    const run = body.compileFunction(constants);
+    const compiled = { target: capture(run), run, body };
+    state.functions.set(name, compiled);
+    return compiled;
+  };
   const entries: Instruction[] = [];
   const active = new Map<number, Instruction>();
   const seen = new Set<number>();
@@ -572,7 +650,9 @@ function compileDirectJitProgram(
     } else {
       if (cached !== undefined) state.stats.invalidatedBlocks++;
       try {
-        compiled = new Instruction(binding, capture).compile(instruction);
+        compiled = new Instruction(binding, capture, resistorSlot, resolveFunction).compile(
+          instruction,
+        );
       } catch (error) {
         if (error !== unsupported) throw error;
         compiled = undefined;
@@ -727,6 +807,9 @@ function countOperations(region: RegionIR): number {
       case 'or':
         total += countOperations(operation.right.body);
         break;
+      case 'while':
+        total += countOperations(operation.test.body) + countOperations(operation.body);
+        break;
       case 'assert':
         if (operation.message) total += countOperations(operation.message.body);
         break;
@@ -803,10 +886,18 @@ function resourceNames(
  * built without them (compiler tests) yields an empty mask and never blocks.
  */
 const prelude = (slots: readonly string[]): string[] => [
-  'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty, MV = F.memoryViews ?? [];',
+  'const S = F.states, M = F.memories, L = F.locals, SD = F.stateDirty, MD = F.memoryDirty, MV = F.memoryViews ?? [], P = F.pins, R = F.resistors;',
   'const BS = F.blockedStates ?? [], BM = F.blockedMemories ?? [];',
   ...(slots.length ? [`let ${slots.join(',')};`] : []),
 ];
+
+const publish = 'return "invalidated";';
+
+/** The implicit PC write may have been flushed in an earlier batch when resuming. */
+function fenceAfterResume(entries: readonly Instruction[], pc: string): string[] {
+  const tests = entries.filter((entry) => entry.isolated).map((entry) => `${pc} === ${entry.pc}`);
+  return tests.length ? [`if (${tests.join(' || ')}) ${publish}`] : [];
+}
 
 /** One function holds the dispatcher, every continuation and every instruction body. */
 function monolithicProgram(
@@ -814,6 +905,7 @@ function monolithicProgram(
   binding: DirectJitBinding,
   registers: readonly string[],
 ): string[] {
+  const fence = fenceAfterResume(entries, `S[${binding.pc.index}]`);
   const lines = [
     'function run(F, deadline) {',
     ...prelude(registers),
@@ -827,7 +919,13 @@ function monolithicProgram(
   entries.forEach((entry, index) => {
     lines.push(`case ${index + 1}: {`);
     entry.slots.forEach((slot, slotIndex) => lines.push(`${slot} = L[${slotIndex}];`));
-    lines.push('F.resume = 0;', ...entry.suffix, finish(entry.stop), '}');
+    lines.push(
+      'F.resume = 0;',
+      ...entry.suffix,
+      ...(entry.stop ? [] : fence),
+      finish(entry.stop),
+      '}',
+    );
   });
   lines.push(
     'default: throw new TypeError("Unknown direct JIT continuation");',
@@ -846,7 +944,7 @@ function monolithicProgram(
       ...entry.prefix,
     );
     if (entry.duration !== undefined) lines.push(...elapsed(entry, index + 1));
-    lines.push(...entry.suffix, finish(entry.stop), '}');
+    lines.push(...entry.suffix, entry.isolated ? publish : finish(entry.stop), '}');
   });
   lines.push('default: return "fallback";', '}', '}', '}');
   return lines;
@@ -858,6 +956,7 @@ function shardProgram(
   binding: DirectJitBinding,
   shardSize: number,
 ): string[] {
+  const fence = fenceAfterResume(entries, `S[${binding.pc.index}]`);
   const sorted = [...entries].sort((left, right) => left.pcValue - right.pcValue);
   // Generated function size follows the emitted source, so group by a code budget instead of
   // a fixed count: one oversized block then gets a shard of its own.
@@ -911,7 +1010,7 @@ function shardProgram(
         ...entry.prefix,
         ...elapsed(entry, shard.start + offset + 1),
         ...entry.suffix,
-        stepFinish(entry.stop, lower, shard.lastPc, binding.pc.index),
+        entry.isolated ? publish : stepFinish(entry.stop, lower, shard.lastPc, binding.pc.index),
         '}',
       );
     });
@@ -928,7 +1027,13 @@ function shardProgram(
       if (entry.duration === undefined) return;
       lines.push(`case ${shard.start + offset + 1}: {`);
       entry.slots.forEach((slot, slotIndex) => lines.push(`${slot} = L[${slotIndex}];`));
-      lines.push('F.resume = 0;', ...entry.suffix, splitFinish(entry.stop), '}');
+      lines.push(
+        'F.resume = 0;',
+        ...entry.suffix,
+        ...(entry.stop ? [] : fence),
+        splitFinish(entry.stop),
+        '}',
+      );
     });
     lines.push('default: throw new TypeError("Unknown direct JIT continuation");', '}', '}');
   });
@@ -992,46 +1097,93 @@ function shardCanAccept(shard: ResidentShard, entry: Instruction, shardSize: num
   return shard.entries.length < shardSize && shard.sourceSize + entry.size <= SHARD_CODE_BUDGET;
 }
 
-/** Distance from an entry to the closest PC already resident in a shard. */
-function shardDistance(shard: ResidentShard, entry: Instruction): number {
-  let closest = Infinity;
-  for (const resident of shard.entries)
-    closest = Math.min(closest, Math.abs(resident.pcValue - entry.pcValue));
-  return closest;
-}
-
-/** Prefer the nearest shard, then the least populated one to backfill sparse fragments. */
-function closestAcceptingShard(
-  shards: readonly ResidentShard[],
-  entry: Instruction,
-  shardSize: number,
-): ResidentShard | undefined {
-  let selected: ResidentShard | undefined;
-  let selectedDistance = Infinity;
-  for (const shard of shards) {
-    if (!shardCanAccept(shard, entry, shardSize)) continue;
-    const distance = shardDistance(shard, entry);
-    if (
-      distance < selectedDistance ||
-      (distance === selectedDistance &&
-        (selected === undefined || shard.entries.length < selected.entries.length))
-    ) {
-      selected = shard;
-      selectedDistance = distance;
+/**
+ * Group instructions into control-flow chains (loop backedges, local calls and sequential
+ * fallthroughs) so related hot blocks stay in the same shard and fall through across `case`s.
+ */
+function buildEntryChains(
+  entries: readonly Instruction[],
+  pcIndex: number,
+): readonly (readonly Instruction[])[] {
+  if (entries.length <= 1) return entries.length ? [entries] : [];
+  const byPc = new Map<number, Instruction>();
+  for (const entry of entries) byPc.set(entry.pcValue, entry);
+  const pcAssignPrefix = `S[${pcIndex}] = `;
+  const succ = new Map<Instruction, Instruction>();
+  for (const entry of entries) {
+    const target = preferredSuccessor(entry, byPc, pcAssignPrefix);
+    if (target !== undefined) succ.set(entry, target);
+  }
+  const pred = new Map<Instruction, Instruction>();
+  const selectedSucc = new Map<Instruction, Instruction>();
+  const rankEdge = (u: Instruction, v: Instruction): number => {
+    if (u.pcValue > v.pcValue) return 3;
+    if (u.nextPcValue === v.pcValue) return 2;
+    return 1;
+  };
+  const betterPred = (
+    candidate: Instruction,
+    current: Instruction,
+    target: Instruction,
+  ): boolean => {
+    const rCand = rankEdge(candidate, target);
+    const rCurr = rankEdge(current, target);
+    if (rCand !== rCurr) return rCand > rCurr;
+    if (rCand === 2) return candidate.pcValue < current.pcValue;
+    return candidate.pcValue > current.pcValue;
+  };
+  for (const [u, v] of succ) {
+    const current = pred.get(v);
+    if (current === undefined || betterPred(u, current, v)) {
+      if (current !== undefined) selectedSucc.delete(current);
+      pred.set(v, u);
+      selectedSucc.set(u, v);
     }
   }
-  return selected;
+  const chains: Instruction[][] = [];
+  const emitted = new Set<Instruction>();
+  for (const entry of entries) {
+    if (emitted.has(entry) || pred.has(entry)) continue;
+    const chain: Instruction[] = [];
+    let cursor: Instruction | undefined = entry;
+    while (cursor !== undefined && !emitted.has(cursor)) {
+      emitted.add(cursor);
+      chain.push(cursor);
+      cursor = selectedSucc.get(cursor);
+    }
+    chains.push(chain);
+  }
+  for (const entry of entries) {
+    if (emitted.has(entry)) continue;
+    const chain: Instruction[] = [];
+    let cursor: Instruction | undefined = entry;
+    while (cursor !== undefined && !emitted.has(cursor)) {
+      emitted.add(cursor);
+      chain.push(cursor);
+      cursor = selectedSucc.get(cursor);
+    }
+    chains.push(chain);
+  }
+  return chains;
+}
+
+function orderShardEntries(
+  entries: readonly Instruction[],
+  pcIndex: number,
+): readonly Instruction[] {
+  if (entries.length <= 2) return entries;
+  return buildEntryChains(entries, pcIndex).flat();
 }
 
 /**
- * Reconcile resident shard generations with the current compiled instruction set. Any shard
- * with capacity can absorb a later nearby block, so out-of-order translation can backfill the
- * fragments it left behind. Only touched shards recompile; unchanged functions stay reusable.
+ * Reconcile resident shard generations with the current compiled instruction set. The open
+ * tail shard can absorb later blocks while closed shards stay immutable and reusable.
  */
 function syncResidentShards(
   state: DirectJitCacheState,
   entries: readonly Instruction[],
   shardSize: number,
+  pcIndex: number,
 ): void {
   const active = new Map(entries.map((entry) => [entry.pcValue, entry]));
   const owners = new Map<number, ResidentShard>();
@@ -1064,10 +1216,20 @@ function syncResidentShards(
   const pending = [...active.values()]
     .filter((entry) => !owners.has(entry.pcValue))
     .sort((left, right) => left.pcValue - right.pcValue);
-  for (const entry of pending) {
-    let shard = closestAcceptingShard(state.shards, entry, shardSize);
-    if (shard === undefined) {
-      shard = {
+  const chains = buildEntryChains(pending, pcIndex);
+  for (const chain of chains) {
+    const chainSize = chain.reduce((sum, entry) => sum + entry.size, 0);
+    let tail = state.shards[state.shards.length - 1];
+    // Keep a connected control-flow chain together when it fits in one fresh shard budget
+    // but would be split across the remaining byte budget of the current tail shard.
+    if (
+      tail !== undefined &&
+      tail.entries.length > 0 &&
+      chain.length <= shardSize &&
+      chainSize <= SHARD_CODE_BUDGET &&
+      tail.sourceSize + chainSize > SHARD_CODE_BUDGET
+    ) {
+      tail = {
         id: state.nextShard++,
         entries: [],
         sourceSize: 0,
@@ -1077,12 +1239,28 @@ function syncResidentShards(
         signature: undefined,
         dirty: true,
       };
-      state.shards.push(shard);
+      state.shards.push(tail);
     }
-    shard.entries.push(entry);
-    shard.dirty = true;
-    refreshShard(shard);
-    owners.set(entry.pcValue, shard);
+    for (const entry of chain) {
+      let shard = state.shards[state.shards.length - 1];
+      if (shard === undefined || !shardCanAccept(shard, entry, shardSize)) {
+        shard = {
+          id: state.nextShard++,
+          entries: [],
+          sourceSize: 0,
+          maxSlots: 0,
+          resumable: false,
+          functions: undefined,
+          signature: undefined,
+          dirty: true,
+        };
+        state.shards.push(shard);
+      }
+      shard.entries.push(entry);
+      shard.dirty = true;
+      refreshShard(shard);
+      owners.set(entry.pcValue, shard);
+    }
   }
 }
 
@@ -1096,9 +1274,51 @@ function residentPcSpan(entries: readonly Instruction[]): string {
   return `pc >= ${first.pc} && pc <= ${last.pc}`;
 }
 
-function residentStepFinish(stop: boolean, inside: string, pcIndex: number): string {
-  if (stop) return 'return "stopped";';
-  return `if (F.stopAfterInstruction || F.publishPending) return "invalidated"; pc = S[${pcIndex}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
+function preferredSuccessor(
+  entry: Instruction,
+  byPc: ReadonlyMap<number, Instruction>,
+  pcAssignPrefix: string,
+): Instruction | undefined {
+  let backward: Instruction | undefined;
+  let lastTarget: Instruction | undefined;
+  for (const line of entry.prefix) {
+    if (!line.startsWith(pcAssignPrefix) || !line.endsWith(';')) continue;
+    const targetPc = Number(line.slice(pcAssignPrefix.length, -1));
+    if (!Number.isSafeInteger(targetPc) || targetPc === entry.nextPcValue) continue;
+    const target = byPc.get(targetPc);
+    if (target === undefined || target === entry) continue;
+    if (targetPc < entry.pcValue) backward = target;
+    lastTarget = target;
+  }
+  if (backward !== undefined) return backward;
+  if (lastTarget !== undefined) return lastTarget;
+  const sequential = byPc.get(entry.nextPcValue);
+  return sequential !== undefined && sequential !== entry ? sequential : undefined;
+}
+
+function residentStepFinish(
+  entry: Instruction,
+  inside: string,
+  binding: DirectJitBinding,
+  fallthrough?: Instruction,
+): string {
+  if (entry.stop) return 'return "stopped";';
+  const emptyInline =
+    binding.host === true &&
+    entry.duration !== undefined &&
+    entry.suffix.length === 0 &&
+    !entry.isolated;
+  const checkpoint = emptyInline
+    ? entry.dynamicDuration
+      ? 'if (F.publishPending) return "invalidated"; '
+      : ''
+    : binding.host && entry.duration !== undefined
+      ? `if (F.stopAfterInstruction && !F.finishCheckpoint?.(deadline, ${entry.suffix.length === 0})) return "invalidated"; if (F.publishPending) return "invalidated"; `
+      : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; ';
+  if (fallthrough !== undefined) {
+    return `${checkpoint}pc = S[${binding.pc.index}]; if (pc !== ${fallthrough.pc}) { if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc; }`;
+  }
+  return `${checkpoint}pc = S[${binding.pc.index}]; if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc;`;
 }
 
 function residentResumeFinish(stop: boolean, pcIndex: number): string {
@@ -1110,23 +1330,26 @@ function residentResumeFinish(stop: boolean, pcIndex: number): string {
 function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): string[] {
   const registers = Array.from({ length: shard.maxSlots }, (_, index) => `v${index}`);
   const stepInside = residentPcSpan(shard.entries);
+  const orderedEntries = orderShardEntries(shard.entries, binding.pc.index);
+  const outlined: string[][] = [];
   const lines = [
     `function stepShard${shard.id}(F, deadline, pc) {`,
     ...prelude(registers),
     'while (true) {',
     'switch (pc) {',
   ];
-  shard.entries.forEach((entry) => {
+  orderedEntries.forEach((entry, index) => {
+    const fallthrough = orderedEntries[index + 1];
     lines.push(
       `case ${entry.pc}: {`,
       ...entry.barrier,
       ...entry.guard,
       `S[${binding.pc.index}] = ${entry.nextPc};`,
       dirty('SD', binding.pc.index),
-      ...entry.prefix,
-      ...(entry.duration === undefined ? [] : elapsed(entry, entry.resumeId)),
+      ...entry.outlinePrefix(outlined),
+      ...elapsed(entry, entry.resumeId, binding.host === true),
       ...entry.suffix,
-      residentStepFinish(entry.stop, stepInside, binding.pc.index),
+      entry.isolated ? publish : residentStepFinish(entry, stepInside, binding, fallthrough),
       '}',
     );
   });
@@ -1152,7 +1375,47 @@ function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): 
     });
     lines.push('default: throw new TypeError("Unknown direct JIT continuation");', '}', '}');
   }
+  for (const helper of outlined) lines.push(...helper);
   return lines;
+}
+
+type ResidentShardFactory = (
+  constants: readonly unknown[],
+  runtimeHelpers: typeof helpers,
+) => [ResidentStep, ResidentResume | undefined];
+
+// Share only the unbound factory. Neither the source key nor the factory captures a JIT cache,
+// and every caller binds its own constants when it creates the step and resume functions.
+const residentFactories = new Map<string, ResidentShardFactory>();
+const maxResidentFactories = 128;
+const maxResidentFactorySourceUnits = 4 * 1024 * 1024;
+// Oversized sources bypass the cache instead of evicting a group of smaller factories.
+const maxCachedShardSourceUnits = 64 * 1024;
+let residentFactorySourceUnits = 0;
+
+function residentShardFactory(source: string): ResidentShardFactory {
+  // The parameter list is fixed for every factory in this cache.
+  const cacheable = source.length <= maxCachedShardSourceUnits;
+  const previous = cacheable ? residentFactories.get(source) : undefined;
+  if (previous !== undefined) {
+    residentFactories.delete(source);
+    residentFactories.set(source, previous);
+    return previous;
+  }
+
+  const factory = new Function('C', 'H', source) as ResidentShardFactory;
+  if (!cacheable) return factory;
+  while (
+    residentFactories.size >= maxResidentFactories ||
+    residentFactorySourceUnits + source.length > maxResidentFactorySourceUnits
+  ) {
+    const oldest = residentFactories.keys().next().value!;
+    residentFactories.delete(oldest);
+    residentFactorySourceUnits -= oldest.length;
+  }
+  residentFactories.set(source, factory);
+  residentFactorySourceUnits += source.length;
+  return factory;
 }
 
 function compileResidentShard(
@@ -1162,14 +1425,9 @@ function compileResidentShard(
 ): void {
   const lines = residentShardProgram(shard, binding);
   const resume = shard.resumable ? `resumeShard${shard.id}` : 'undefined';
-  const factory = new Function(
-    'C',
-    'H',
+  const factory = residentShardFactory(
     `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`,
-  ) as (
-    constants: readonly unknown[],
-    runtimeHelpers: typeof helpers,
-  ) => [ResidentStep, ResidentResume | undefined];
+  );
   const [step, resumeFunction] = factory(Object.freeze([...state.constants]), helpers);
   shard.functions = { step, resume: resumeFunction };
   shard.signature = Object.freeze([...shard.entries]);
@@ -1202,6 +1460,7 @@ function residentDispatcherProgram(
     'if (resumed === undefined) throw new TypeError("Unknown direct JIT continuation");',
     'const next = resumed(F, resume);',
     'if (typeof next !== "number") return next;',
+    ...fenceAfterResume(entries, 'next'),
     'pc = next;',
     '} else {',
     'if (F.stopAfterInstruction) return "invalidated";',
@@ -1238,7 +1497,7 @@ function residentProgram(
   binding: DirectJitBinding,
   shardSize: number,
 ): DirectJitProgram | undefined {
-  syncResidentShards(state, entries, shardSize);
+  syncResidentShards(state, entries, shardSize, binding.pc.index);
   if (!state.shards.length) return undefined;
   for (const shard of state.shards) {
     if (
@@ -1281,22 +1540,43 @@ function residentProgram(
   return Object.freeze(program);
 }
 
-/** Elapse due time, resume save and deadline split shared by both emitters. */
-function elapsed(entry: Instruction, resumeId: number): string[] {
+/** Split at a deadline or publication; resident host code can keep an admitted suffix inline. */
+function elapsed(entry: Instruction, resumeId: number, checkpoint = false): string[] {
   if (entry.duration === undefined) return [];
   // A computed duration is validated where the generic host validates it, before it is used.
-  const duration = entry.dynamicDuration ? `H.checkDuration(${entry.duration})` : entry.duration;
+  const duration = entry.dynamicDuration
+    ? `(Number.isInteger(${entry.duration}) && ${entry.duration} >= 0 && ${entry.duration} <= 7200000000000000 ? ${entry.duration} : H.checkDuration(${entry.duration}))`
+    : entry.duration;
+  const emptyInline = checkpoint && entry.suffix.length === 0 && !entry.stop && !entry.isolated;
   return [
     `F.due = F.time + ${duration};`,
     'if (F.due > 7200000000000000) throw new RangeError("Time out of range");',
     'if ((F.publishPending && F.due > F.time) || F.due >= deadline) {',
-    ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
     `F.resume = ${resumeId};`,
-    'if (F.publishPending && F.due > F.time) return "invalidated";',
+    // Inside this split, due < deadline implies a publication. The callback may
+    // clear publishPending even when it rejects, so that case must still suspend.
+    ...(checkpoint
+      ? [
+          'if (F.due < deadline && F.publishCheckpoint?.()) {',
+          'F.resume = 0;',
+          ...(emptyInline
+            ? [
+                'F.time = F.due;',
+                'F.stopAfterInstruction = true;',
+                'if (!F.finishCheckpoint?.(deadline, true)) return "invalidated";',
+              ]
+            : ['F.stopAfterInstruction = true;']),
+          '} else {',
+        ]
+      : []),
+    ...entry.slots.map((slot, slotIndex) => `L[${slotIndex}] = ${slot};`),
+    checkpoint
+      ? 'if (F.due < deadline || (F.publishPending && F.due > F.time)) return "invalidated";'
+      : 'if (F.publishPending && F.due > F.time) return "invalidated";',
     'F.time = deadline;',
     'return "deadline";',
-    '}',
-    'F.time = F.due;',
+    ...(checkpoint ? ['}'] : []),
+    ...(emptyInline ? ['} else F.time = F.due;'] : ['}', 'F.time = F.due;']),
   ];
 }
 
@@ -1373,6 +1653,7 @@ class Instruction {
   suffix: string[] = [];
   /** Numeric instruction key; shards sort by it while `pc` holds the emitted literal. */
   pcValue = 0;
+  nextPcValue = 0;
   pc = '';
   nextPc = '';
   /** Cache-stable continuation key used by resident shards; zero when none is needed. */
@@ -1383,6 +1664,12 @@ class Instruction {
   /** Zero-duration terminator: no due time, no continuation, prefix and suffix stay inline. */
   immediate = false;
   stop = false;
+  /** Publish before and after a synchronous loop instruction. */
+  get isolated(): boolean {
+    return this.backedges !== undefined;
+  }
+  private backedges?: { lines: string[]; head: number; tail: number }[];
+  private outlineBranches?: { start: number; end: number }[];
   private readonly values = new Map<number, string>();
   private readonly locals = new Map<number, string>();
   /**
@@ -1398,15 +1685,41 @@ class Instruction {
   private readonly writtenMemories = new Set<number>();
   /** Results whose type is an object value; identity comparison would change their meaning. */
   private readonly references = new Set<number>();
+  /** Results whose emitted operations guarantee booleans, not just declared bool types. */
+  private readonly booleanResults = new Set<number>();
   private labels = 0;
 
   constructor(
     private readonly binding: DirectJitBinding,
     private readonly capture: (value: unknown) => string,
+    private readonly resistorSlot?: (pin: string, resistance: number) => number,
+    private readonly resolveFunction?: ResolveFunction,
+    private readonly fn?: DirectFunctionIR,
   ) {}
+
+  compileFunction(constants: readonly unknown[]): unknown {
+    const fn = this.fn!;
+    const scalar = (type: { readonly kind: string }): boolean =>
+      type.kind === 'number' || type.kind === 'bool';
+    if (fn.params.some(({ type }) => !scalar(type)) || (fn.returns && !scalar(fn.returns)))
+      throw unsupported;
+    this.constants = constantsOf(fn.body);
+    this.region(fn.body, this.prefix);
+    // Loops in instructions use special publication fences; decline them in helpers.
+    if (this.isolated) throw unsupported;
+    this.compact();
+    const params = fn.params.map((_, index) => `a${index}`);
+    const lines = [...prelude(this.slots), ...this.prefix];
+    return new Function(
+      'C',
+      'H',
+      `"use strict"; return function(F${params.map((param) => `,${param}`).join('')}) {\n${lines.join('\n')}\n};`,
+    )(Object.freeze([...constants]), helpers);
+  }
 
   compile(instruction: { pc: number; nextPc: number; body: RegionIR }): this {
     this.pcValue = instruction.pc;
+    this.nextPcValue = instruction.nextPc;
     this.constants = constantsOf(instruction.body);
     const shape = shapeOf(instruction.body);
     this.operations = shape.operations;
@@ -1487,6 +1800,9 @@ class Instruction {
       }
     }
     if (!this.terminated && !this.stop) throw unsupported;
+    // Admit synchronous, zero-time instructions only; no continuation or delay folding
+    // may cross the loop's publication boundary.
+    if (this.isolated && (!this.immediate || this.stop || this.guard.length)) throw unsupported;
     this.compact();
     this.barrier = this.emitBarrier();
     let size = 0;
@@ -1514,6 +1830,12 @@ class Instruction {
    */
   private emitBarrier(): string[] {
     const lines: string[] = [];
+    // The implicit PC write marks any instruction already executed in this batch. Publish
+    // that prefix first, then enter the loop in a fresh batch with fresh observer masks.
+    if (this.isolated) {
+      const pc = this.binding.pc.index;
+      lines.push(`if (SD[${pc >>> 5}] & ${(1 << (pc & 31)) >>> 0}) ${publish}`);
+    }
     const emit = (bank: 'BS' | 'BM', indices: ReadonlySet<number>): void => {
       if (!indices.size) return;
       const words = new Map<number, number>();
@@ -1531,6 +1853,46 @@ class Instruction {
     return this.duration !== undefined || this.immediate;
   }
 
+  /** Keep the short path in the resident step function, without changing shard placement. */
+  outlinePrefix(helpers: string[][]): readonly string[] {
+    if (
+      this.size <= SHARD_CODE_BUDGET ||
+      this.slots.length > OUTLINE_MAX_SLOTS ||
+      this.isolated ||
+      !this.outlineBranches
+    )
+      return this.prefix;
+
+    const lines: string[] = [];
+    const slots = this.slots.join(',');
+    const params = ['F', 'S', 'M', 'SD', 'MD', 'MV', 'P', 'R', ...this.slots].join(',');
+    let cursor = 0;
+    // Prefer the outer branch when candidates nest. Its whole body already moves off
+    // the short path, so there is no need to add calls inside that body.
+    for (const { start, end } of this.outlineBranches.sort((a, b) => a.start - b.start)) {
+      if (start < cursor) continue;
+      const name = `outlined${helpers.length}`;
+      lines.push(...this.prefix.slice(cursor, start));
+      const call = `${name}(${params});`;
+      if (slots) {
+        lines.push(`const result = ${call}`);
+        this.slots.forEach((slot, index) => lines.push(`${slot} = result[${index}];`));
+      } else lines.push(call);
+      // Compact slot names are already fixed. Pass them by value and copy them back
+      // on normal return. State and memory banks (including dirty masks) are shared
+      // directly, so completed writes remain visible if the helper throws.
+      helpers.push([
+        `function ${name}(${params}) {`,
+        ...this.prefix.slice(start, end),
+        ...(slots ? [`return [${slots}];`] : []),
+        '}',
+      ]);
+      cursor = end;
+    }
+    lines.push(...this.prefix.slice(cursor));
+    return lines;
+  }
+
   /**
    * Register reuse. Every IR result takes its own virtual slot, and a fully decoded Thumb
    * instruction produces well over a thousand of them: the generated function then carries
@@ -1546,7 +1908,12 @@ class Instruction {
     // compaction is the identity. Constant-only bodies arrive here with no slots at all.
     if (total <= 1) return;
     const bound = this.prefix.length;
-    const lines = [...this.prefix, ...this.suffix];
+    // `elapsed()` reads the duration between the prefix and the suffix, so the slot stays
+    // live through the whole prefix even though the emitted use is not part of either block.
+    // Without this boundary use the slot looks dead after its definition and a later prefix
+    // value reuses it, silently replacing the duration (for example with zero).
+    const duration = this.duration === undefined ? [] : [this.duration];
+    const lines = [...this.prefix, ...duration, ...this.suffix];
     const lineCount = lines.length;
     const offsets = new Int32Array(lineCount + 1);
     const definitions = new Int32Array(lineCount).fill(-1);
@@ -1630,6 +1997,30 @@ class Instruction {
       if (lastDefinition[virtual]! >= 0)
         end[virtual] = Math.max(lastDefinition[virtual]!, lastUse[virtual]!);
 
+    // A slot defined before a loop and touched in it must keep its physical register
+    // across the backedge, even if its last textual use is near the top of the loop.
+    // This also covers writes to outer locals and values captured by nested loops.
+    const backedgeEnds = this.backedges && new Map<number, number[]>();
+    for (const edge of this.backedges ?? []) {
+      const offset = edge.lines === this.prefix ? 0 : bound + duration.length;
+      const head = offset + edge.head;
+      const tail = offset + edge.tail;
+      const release: number[] = [];
+      const extend = (slot: number): void => {
+        if (firstDefinition[slot]! < head && end[slot]! < tail) {
+          end[slot] = tail;
+          release.push(slot);
+        }
+      };
+      for (let index = head; index < tail; index++) {
+        const definition = definitions[index]!;
+        if (definition >= 0) extend(definition);
+        for (let token = offsets[index]!; token < offsets[index + 1]!; token++)
+          extend(tokens[token]!);
+      }
+      if (release.length) backedgeEnds!.set(tail, release);
+    }
+
     const physical = new Int32Array(total).fill(-1);
     const free: number[] = [];
     let count = 0;
@@ -1647,6 +2038,13 @@ class Instruction {
         end[virtual] = -1;
         free.push(physical[virtual]!);
       }
+      const release = backedgeEnds?.get(index);
+      if (release)
+        for (const virtual of release) {
+          if (end[virtual] !== index) continue;
+          end[virtual] = -1;
+          free.push(physical[virtual]!);
+        }
     }
 
     const names = Array.from({ length: count }, (_, index) => `v${index}`);
@@ -1760,13 +2158,20 @@ class Instruction {
   /**
    * A condition slot holds a boolean in every conforming program, so the type check is a
    * `typeof` test inlined at the use site; the host helper only runs on the failure path.
-   * A call per condition dominated small instruction blocks. A condition the analyzer proved
-   * boolean needs no test at all.
+   * A call per condition dominated small instruction blocks. Constants and operators that
+   * can only produce a boolean need no test at all.
    */
   private condition(id: number): string {
     const folded = this.folded.get(id);
     if (folded !== undefined && typeof folded.value === 'boolean') return folded.text;
+    if (this.booleanResults.has(id)) return this.value(id);
     return guard(this.value(id));
+  }
+
+  private isGuaranteedBoolean(id: number): boolean {
+    if (this.booleanResults.has(id)) return true;
+    const folded = this.folded.get(id);
+    return folded !== undefined && typeof folded.value === 'boolean';
   }
 
   /**
@@ -1855,6 +2260,7 @@ class Instruction {
       case 'constant': {
         if (operation.constant.kind !== 'number' && operation.constant.kind !== 'bool')
           return false;
+        if (operation.constant.kind === 'bool') this.booleanResults.add(operation.result);
         values.set(operation.result, this.literal(operation.constant.value));
         return true;
       }
@@ -1873,6 +2279,7 @@ class Instruction {
         const operator = unary[operation.operator];
         const value = operand(operation.value);
         if (!operator || value === undefined) return false;
+        if (operation.operator === 'not') this.booleanResults.add(operation.result);
         values.set(operation.result, `(${operator}${value})`);
         return true;
       }
@@ -1881,6 +2288,7 @@ class Instruction {
         const left = operand(operation.left);
         const right = operand(operation.right);
         if (!operator || left === undefined || right === undefined) return false;
+        if (comparisons.has(operation.operator)) this.booleanResults.add(operation.result);
         values.set(operation.result, `(${left} ${operator} ${right})`);
         return true;
       }
@@ -1892,8 +2300,15 @@ class Instruction {
           if (value === undefined) return false;
           args.push(value);
         }
+        if (predicates.has(operation.builtin)) this.booleanResults.add(operation.result);
         const owner = predicates.has(operation.builtin) ? 'Number' : 'Math';
         values.set(operation.result, `${owner}.${operation.builtin}(${args.join(',')})`);
+        return true;
+      }
+      case 'nonNull': {
+        const value = operand(operation.value);
+        if (value === undefined) return false;
+        values.set(operation.result, `H.nonNull(${value})`);
         return true;
       }
       default:
@@ -1978,6 +2393,38 @@ class Instruction {
       lines.push(`${result!} = ${expression};`);
     };
     switch (operation.kind) {
+      case 'parameter':
+        if (!this.fn?.params[operation.index]) throw unsupported;
+        assign(`a${operation.index}`);
+        break;
+      case 'return':
+      case 'returnValue':
+        if (!this.fn) throw unsupported;
+        lines.push(
+          operation.kind === 'returnValue' ? `return ${this.value(operation.value)};` : 'return;',
+        );
+        break;
+      case 'call':
+      case 'callValue': {
+        const compiled = this.resolveFunction?.(operation.name);
+        if (!compiled) throw unsupported;
+        const args = operation.args.map((arg) => {
+          if (arg.kind !== 'value') throw unsupported;
+          return this.value(arg.value);
+        });
+        // The helper sees the same state/memory banks and dirty bits. Its effects must also
+        // participate in the caller's observer barrier before any part of the instruction runs.
+        for (const name of compiled.body.readStates) this.state(name, false);
+        for (const name of compiled.body.writeStates) this.state(name, true);
+        for (const name of compiled.body.readMemories)
+          this.memory({ kind: 'load8', memory: { kind: 'memory', name } });
+        for (const name of compiled.body.writeMemories)
+          this.memory({ kind: 'store8', memory: { kind: 'memory', name } });
+        const call = `${compiled.target}(F${args.map((arg) => `, ${arg}`).join('')})`;
+        if (operation.kind === 'callValue') assign(call);
+        else lines.push(`${call};`);
+        break;
+      }
       case 'constant': {
         // Numbers, booleans, strings and enum members folded above; only a byte literal still
         // materialises a fresh value at every evaluation.
@@ -2007,6 +2454,7 @@ class Instruction {
         const operator = unary[operation.operator];
         if (!operator) throw unsupported;
         assign(`(${operator}${this.value(operation.value)})`);
+        if (operation.operator === 'not') this.booleanResults.add(operation.result);
         break;
       }
       case 'binary': {
@@ -2014,6 +2462,7 @@ class Instruction {
         if (!operator) throw unsupported;
         const left = this.value(operation.left);
         const right = this.value(operation.right);
+        if (comparisons.has(operation.operator)) this.booleanResults.add(operation.result);
         // Byte sequences and intents compare by content in the generic host; `===` would
         // compare identity and silently change the result.
         if (
@@ -2028,6 +2477,7 @@ class Instruction {
       }
       case 'numeric':
         if (!numeric.has(operation.builtin)) throw unsupported;
+        if (predicates.has(operation.builtin)) this.booleanResults.add(operation.result);
         assign(
           `${predicates.has(operation.builtin) ? 'Number' : 'Math'}.${operation.builtin}(${operation.args.map((id) => this.value(id)).join(',')})`,
         );
@@ -2040,26 +2490,60 @@ class Instruction {
       case 'notify':
         lines.push(`F.host.notify(${this.capture(operation.notification)});`);
         break;
-      case 'readSample':
+      case 'readSample': {
         if (operation.pin.kind !== 'pin') throw unsupported;
+        const pinIndex = this.binding.pins?.get(operation.pin.name);
+        if (validIndex(pinIndex)) {
+          assign(`P[${pinIndex}].sample`);
+          break;
+        }
         assign(`F.host.sample(${this.capture(operation.pin.name)})`);
         break;
-      case 'writeIntent':
+      }
+      case 'writeIntent': {
         if (operation.pin.kind !== 'pin') throw unsupported;
+        const pinIndex = this.binding.pins?.get(operation.pin.name);
+        if (validIndex(pinIndex)) {
+          lines.push(`F.writePinIntent(${pinIndex}, ${this.value(operation.value)});`);
+          break;
+        }
         lines.push(
           `F.host.intent(${this.capture(operation.pin.name)}, ${this.value(operation.value)});`,
         );
         break;
-      case 'resistor':
+      }
+      case 'resistor': {
         if (operation.to.kind !== 'pin') throw unsupported;
+        const pinIndex = this.binding.pins?.get(operation.to.name);
+        const folded = this.folded.get(operation.resistance);
+        if (
+          validIndex(pinIndex) &&
+          this.resistorSlot !== undefined &&
+          folded !== undefined &&
+          typeof folded.value === 'number' &&
+          Number.isFinite(folded.value) &&
+          folded.value >= 0.001 &&
+          folded.value <= 1_000_000_000
+        ) {
+          const rSlot = this.resistorSlot(operation.to.name, folded.value);
+          assign(
+            `(R[${rSlot}] ?? (R[${rSlot}] = F.host.resistor(${this.capture(operation.to.name)}, ${folded.text})))`,
+          );
+          break;
+        }
         assign(
           `F.host.resistor(${this.capture(operation.to.name)}, ${this.value(operation.resistance)})`,
         );
         break;
+      }
       case 'combineIntents':
         assign(`H.combineIntents([${operation.values.map((id) => this.value(id)).join(',')}])`);
         break;
       case 'field':
+        if (this.binding.pins !== undefined && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(operation.field)) {
+          assign(`${this.value(operation.value)}.${operation.field}`);
+          break;
+        }
         assign(`${this.value(operation.value)}[${this.capture(operation.field)}]`);
         break;
       case 'bytes':
@@ -2071,6 +2555,7 @@ class Instruction {
       case 'refEqual':
         if (operation.left.kind === 'parameter' || operation.right.kind === 'parameter')
           throw unsupported;
+        this.booleanResults.add(operation.result);
         assign(operation.left.name === operation.right.name ? 'true' : 'false');
         break;
       case 'length':
@@ -2080,6 +2565,7 @@ class Instruction {
         assign(this.value(operation.value));
         break;
       case 'isNone':
+        this.booleanResults.add(operation.result);
         assign(`(${this.value(operation.value)} === null)`);
         break;
       case 'nonNull':
@@ -2121,6 +2607,18 @@ class Instruction {
       }
       case 'load8': {
         const memory = `M[${this.memory(operation)}]`;
+        const foldedOffset = this.folded.get(operation.offset);
+        if (
+          foldedOffset !== undefined &&
+          typeof foldedOffset.value === 'number' &&
+          Number.isSafeInteger(foldedOffset.value) &&
+          foldedOffset.value >= 0
+        ) {
+          assign(
+            `(${foldedOffset.text} < ${memory}.length ? ${memory}[${foldedOffset.text}] : H.offset(${memory},${foldedOffset.text}))`,
+          );
+          break;
+        }
         assign(`${memory}[H.offset(${memory},${this.value(operation.offset)})]`);
         break;
       }
@@ -2168,6 +2666,7 @@ class Instruction {
       case 'and':
       case 'or': {
         if (operation.right.body.operations.at(-1)?.kind !== 'yield') throw unsupported;
+        this.booleanResults.add(operation.result);
         const label = `${operation.kind}${this.labels++}`;
         lines.push(
           `${result} = ${this.condition(operation.left)};`,
@@ -2195,21 +2694,66 @@ class Instruction {
         lines.push('}');
         break;
       }
-      case 'if':
+      case 'if': {
         lines.push(`if (${this.condition(operation.condition)}) {`);
+        const yesStart = lines.length;
         this.region(operation.yes, lines, output);
         if (operation.no) {
+          const yesLength = lines.length - yesStart;
           lines.push('} else {');
+          const noStart = lines.length;
           this.region(operation.no, lines, output);
+          const noLength = lines.length - noStart;
+          // Statement-position arms cannot yield to an enclosing label, and the
+          // region emitter declines suspension and instruction-level exits.
+          // Compaction rewrites each line in place, so these boundaries stay valid.
+          if (
+            !output &&
+            lines === this.prefix &&
+            yesLength > 0 &&
+            noLength >= OUTLINE_MIN_LINES &&
+            noLength >= yesLength * OUTLINE_MIN_RATIO
+          )
+            (this.outlineBranches ??= []).push({ start: noStart, end: lines.length });
         }
         lines.push('}');
         break;
+      }
+      case 'while': {
+        // Initially keep loops in statement position. A body cannot suspend, yield a
+        // value, or transfer control: the normal region emitter declines those shapes.
+        if (output || operation.test.body.operations.at(-1)?.kind !== 'yield') throw unsupported;
+        const head = lines.length;
+        const condition = this.slot();
+        const label = `loopTest${this.labels++}`;
+        lines.push('while (true) {', `${label}: {`);
+        this.region(operation.test.body, lines, { slot: condition, label });
+        lines.push('}', `if (!${guard(condition)}) break;`);
+        this.region(operation.body, lines);
+        (this.backedges ??= []).push({ lines, head, tail: lines.length });
+        lines.push('}');
+        break;
+      }
       case 'select': {
         const condition = this.condition(operation.condition);
         const yes = this.expression(operation.yes);
         const no = yes === undefined ? undefined : this.expression(operation.no);
+        const markBoolean = (): void => {
+          if (operation.type.kind !== 'bool') return;
+          const yesLast = operation.yes.body.operations.at(-1);
+          const noLast = operation.no.body.operations.at(-1);
+          if (
+            yesLast?.kind === 'yield' &&
+            noLast?.kind === 'yield' &&
+            this.isGuaranteedBoolean(yesLast.value) &&
+            this.isGuaranteedBoolean(noLast.value)
+          ) {
+            this.booleanResults.add(operation.result);
+          }
+        };
         if (yes !== undefined && no !== undefined) {
           lines.push(`${result} = ${condition} ? ${yes} : ${no};`);
+          markBoolean();
           break;
         }
         const label = `select${this.labels++}`;
@@ -2218,6 +2762,7 @@ class Instruction {
         lines.push('} else {');
         this.region(operation.no.body, lines, { slot: result!, label });
         lines.push('}', '}');
+        markBoolean();
         break;
       }
       default:

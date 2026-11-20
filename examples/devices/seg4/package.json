@@ -1,0 +1,131 @@
+{
+  "publisher": "example",
+  "name": "seg4",
+  "version": "1.0.0",
+  "description": "四位七段数码管：8 段阳极与 4 位公共端之间各是一段等效串联电阻；扫描选中某一位并稳定 settleUs 后锁存该时刻点亮的段码。",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "displayName": "四位数码管",
+  "designatorPrefix": "DS",
+  "properties": {
+    "forwardResistance": {
+      "type": "number",
+      "title": "段等效电阻",
+      "description": "段阳极到公共端之间的等效串联电阻。与 blue-led 相同，线性模型不含正向压降；板级限流电阻可并入本值（例如 1 kΩ 串联时取 1500）。",
+      "default": 500,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "commonAnode": {
+      "type": "boolean",
+      "title": "共阳",
+      "description": "false = 共阴（公共端低电平选中、段脚高电平点亮）；true = 共阳（公共端高电平选中、段脚低电平点亮）。两种极性下 digit1–digit4 都按「点亮的段」编码。",
+      "default": false,
+      "nullable": false
+    },
+    "settleUs": {
+      "type": "number",
+      "title": "稳定窗口",
+      "description": "位选中后等待该时长再锁存段码，滤除先选位、后写段码造成的中间电平；必须大于 0。",
+      "default": 50,
+      "nullable": false,
+      "unit": "µs",
+      "min": 1,
+      "max": 10000,
+      "step": 1
+    }
+  },
+  "pins": {
+    "a": {
+      "label": "A",
+      "description": "A 段阳极"
+    },
+    "b": {
+      "label": "B",
+      "description": "B 段阳极"
+    },
+    "c": {
+      "label": "C",
+      "description": "C 段阳极"
+    },
+    "d": {
+      "label": "D",
+      "description": "D 段阳极"
+    },
+    "e": {
+      "label": "E",
+      "description": "E 段阳极"
+    },
+    "f": {
+      "label": "F",
+      "description": "F 段阳极"
+    },
+    "g": {
+      "label": "G",
+      "description": "G 段阳极"
+    },
+    "dp": {
+      "label": "DP",
+      "description": "DP 段阳极"
+    },
+    "com1": {
+      "label": "COM1",
+      "description": "第 1 位公共端：共阴低电平选中，共阳高电平选中"
+    },
+    "com2": {
+      "label": "COM2",
+      "description": "第 2 位公共端：共阴低电平选中，共阳高电平选中"
+    },
+    "com3": {
+      "label": "COM3",
+      "description": "第 3 位公共端：共阴低电平选中，共阳高电平选中"
+    },
+    "com4": {
+      "label": "COM4",
+      "description": "第 4 位公共端：共阴低电平选中，共阳高电平选中"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {
+      "DisplayState": {
+        "type": "object",
+        "properties": {
+          "digit1": {
+            "type": "number"
+          },
+          "digit2": {
+            "type": "number"
+          },
+          "digit3": {
+            "type": "number"
+          },
+          "digit4": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "methods": {
+      "getDisplay": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "ref": "DisplayState"
+        }
+      }
+    },
+    "events": {
+      "onDidDisplayChange": {
+        "ref": "DisplayState"
+      }
+    }
+  }
+}

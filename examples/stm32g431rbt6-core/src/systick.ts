@@ -12,8 +12,7 @@ import {
 } from './layout';
 import { asBody, bool, boolBitAt, markService, num, u32 } from './ir';
 import type { Body } from './ir';
-import { machine } from './machine';
-import { refreshTick } from './tick';
+import { cpuCyclePs, refreshTick } from './tick';
 
 /**
  * Cortex-M SysTick。
@@ -158,7 +157,7 @@ export function writeSystick(
  * 让一个 1 ms 周期产生两次中断。
  */
 export function advanceSystick(b: Body, elapsedPs: Value<number>): void {
-  const cycles = b.floor(b.divide(elapsedPs, num(b, machine().cyclePs)));
+  const cycles = b.floor(b.divide(elapsedPs, cpuCyclePs(b)));
 
   b.if(b.greaterThan(cycles, num(b, 0)), (inner) => {
     const body = asBody(inner);

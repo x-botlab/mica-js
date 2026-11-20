@@ -1,0 +1,155 @@
+{
+  "publisher": "example",
+  "name": "74hc138",
+  "version": "1.0.0",
+  "description": "3-8 译码器，输出低有效：E1#=0、E2#=0、E3=1 时仅选中的 Yn# 拉低，否则八路输出全高。端口 select 给出 0–7（禁用 -1），enabled 给出使能状态，code 以 ASCII 字节给出 \"Y0\"..\"Y7\" 或 \"--\"。零传播延迟、无毛刺、无电源电流。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "displayName": "74HC138 3-8 译码器",
+  "designatorPrefix": "U",
+  "properties": {
+    "outputResistance": {
+      "type": "number",
+      "title": "输出电阻",
+      "description": "推挽输出的等效串联电阻，决定高/低电平的负载能力。",
+      "default": 25,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "lowThreshold": {
+      "type": "number",
+      "title": "低电平上限",
+      "description": "采样电压低于该值判为逻辑低。",
+      "default": 0.8,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    },
+    "highThreshold": {
+      "type": "number",
+      "title": "高电平下限",
+      "description": "采样电压高于该值判为逻辑高。",
+      "default": 2,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    }
+  },
+  "pins": {
+    "a": {
+      "label": "A",
+      "description": "选择位 LSB"
+    },
+    "b": {
+      "label": "B",
+      "description": "选择位"
+    },
+    "c": {
+      "label": "C",
+      "description": "选择位 MSB"
+    },
+    "e1": {
+      "label": "E1#",
+      "description": "使能 1，低有效"
+    },
+    "e2": {
+      "label": "E2#",
+      "description": "使能 2，低有效"
+    },
+    "e3": {
+      "label": "E3",
+      "description": "使能 3，高有效"
+    },
+    "y0": {
+      "label": "Y0#",
+      "description": "译码输出 0，低有效"
+    },
+    "y1": {
+      "label": "Y1#",
+      "description": "译码输出 1，低有效"
+    },
+    "y2": {
+      "label": "Y2#",
+      "description": "译码输出 2，低有效"
+    },
+    "y3": {
+      "label": "Y3#",
+      "description": "译码输出 3，低有效"
+    },
+    "y4": {
+      "label": "Y4#",
+      "description": "译码输出 4，低有效"
+    },
+    "y5": {
+      "label": "Y5#",
+      "description": "译码输出 5，低有效"
+    },
+    "y6": {
+      "label": "Y6#",
+      "description": "译码输出 6，低有效"
+    },
+    "y7": {
+      "label": "Y7#",
+      "description": "译码输出 7，低有效"
+    },
+    "vcc": {
+      "label": "VCC",
+      "description": "5 V 逻辑电源"
+    },
+    "gnd": {
+      "label": "GND",
+      "description": "地"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {
+      "getSelect": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      },
+      "isEnabled": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "boolean"
+        }
+      },
+      "getCode": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "binary"
+        }
+      }
+    },
+    "events": {
+      "onDidSelect": {
+        "type": "number"
+      },
+      "onDidEnabled": {
+        "type": "boolean"
+      },
+      "onDidCode": {
+        "type": "binary"
+      }
+    }
+  },
+  "type": "module"
+}

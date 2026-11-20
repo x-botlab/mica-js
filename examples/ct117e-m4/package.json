@@ -1,9 +1,204 @@
 {
-  "name": "@mica-js/example-ct117e-m4",
-  "version": "0.0.0",
+  "name": "ct117e-m4",
+  "publisher": "example",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CT117E-M4 单器件融合工程：STM32G431RBT6 与 ILI9325 固定数字总线",
+  "description": "CT117E-M4 单器件融合板：STM32G431RBT6、ILI9325 与板载器件",
+  "license": "MIT",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "displayName": "CT117E-M4",
+  "designatorPrefix": "U",
+  "properties": {
+    "firmware": {
+      "type": "program",
+      "title": "Flash 固件映像",
+      "description": "从 0x08000000 开始的 BIN / Intel HEX / ELF 固件来源。",
+      "default": null,
+      "nullable": true,
+      "addressSpaces": {
+        "flash": {
+          "title": "STM32G431RBT6 Flash",
+          "start": 134217728,
+          "size": 131072
+        }
+      },
+      "loader": "memory",
+      "formats": [
+        "bin",
+        "hex",
+        "elf"
+      ],
+      "defaults": {
+        "addressSpace": "flash",
+        "loadAddress": 134217728
+      }
+    },
+    "clockFrequency": {
+      "type": "integer",
+      "title": "主频 (Hz)",
+      "default": 80000000,
+      "nullable": false,
+      "min": 1000,
+      "max": 170000000,
+      "step": 1
+    },
+    "hseFrequency": {
+      "type": "integer",
+      "title": "HSE 晶振频率 (Hz)",
+      "description": "0 表示未焊晶振，HSERDY 永远为 0；非 0 时必须在 1..50 MHz。",
+      "default": 0,
+      "nullable": false,
+      "min": 0,
+      "max": 50000000,
+      "step": 1
+    },
+    "refreshRate": {
+      "type": "integer",
+      "title": "合帧最大频率 (Hz)",
+      "default": 60,
+      "nullable": false,
+      "min": 1,
+      "max": 240,
+      "step": 1
+    }
+  },
+  "pins": {
+    "VDD1": {
+      "label": "VDD",
+      "description": "固定 3.3 V 供电"
+    },
+    "VSS1": {
+      "label": "VSS",
+      "description": "地"
+    },
+    "NRST": {
+      "label": "NRST",
+      "description": "板载 RESET 与 MCU/LCD 共用的低有效复位线"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {
+      "Button": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "pressed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Position": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "position": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "methods": {
+      "getFramebuffer": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "binary"
+        }
+      },
+      "getLedState": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      },
+      "setButton": {
+        "params": {
+          "ref": "Button"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setReset": {
+        "params": {
+          "type": "boolean"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setPotentiometer": {
+        "params": {
+          "ref": "Position"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setTimerPotentiometer": {
+        "params": {
+          "ref": "Position"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "readEeprom": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "binary"
+        }
+      },
+      "getWiper": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      }
+    },
+    "events": {
+      "onDidLed": {
+        "type": "number"
+      },
+      "onDidWiper": {
+        "type": "number"
+      },
+      "onDidFramebuffer": {
+        "type": "binary"
+      },
+      "onDidFault": {
+        "type": "number"
+      },
+      "onDidSerial1Tx": {
+        "type": "number"
+      },
+      "onDidSerial2Tx": {
+        "type": "number"
+      },
+      "onDidSerial3Tx": {
+        "type": "number"
+      }
+    }
+  },
+  "view2d": {
+    "geometry": "geometry.json",
+    "entry": "view2d.js"
+  },
   "scripts": {
     "prepare:types": "node scripts/prepare-model.mjs && mica prepare",
     "build": "node scripts/prepare-model.mjs && mica build",
@@ -12,6 +207,10 @@
     "bench": "pnpm build && vitest run --config vitest.perf.config.ts"
   },
   "devDependencies": {
+    "@mica-js/core": "workspace:*",
+    "@mica-js/document": "workspace:*",
+    "@mica-js/editor": "workspace:*",
+    "@mica-js/example-devices": "workspace:*",
     "@mica-js/sdk": "workspace:*",
     "@mica-js/simulator": "workspace:*",
     "@mica-js/stm32g431rbt6-core": "workspace:*",

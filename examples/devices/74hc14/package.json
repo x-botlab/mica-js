@@ -1,0 +1,112 @@
+{
+  "publisher": "example",
+  "name": "74hc14",
+  "version": "1.0.0",
+  "description": "六路独立施密特触发反相器，Y = !A。输入高于正向阈值判为高，低于负向阈值判为低；处于两者之间时保持上一次状态。零传播延迟、无毛刺、无电源电流；悬空输入按低处理。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "displayName": "74HC14 六施密特触发反相器",
+  "designatorPrefix": "U",
+  "properties": {
+    "outputResistance": {
+      "type": "number",
+      "title": "输出电阻",
+      "description": "推挽输出的等效串联电阻，决定高/低电平的负载能力。",
+      "default": 25,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "lowThreshold": {
+      "type": "number",
+      "title": "负向阈值 VT-",
+      "description": "输入电压低于该值时判为逻辑低；与高阈值之间构成迟滞带。",
+      "default": 1.5,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    },
+    "highThreshold": {
+      "type": "number",
+      "title": "正向阈值 VT+",
+      "description": "输入电压高于该值时判为逻辑高；与低阈值之间构成迟滞带。",
+      "default": 2.8,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    }
+  },
+  "pins": {
+    "a1": {
+      "label": "1A",
+      "description": "第 1 路输入"
+    },
+    "y1": {
+      "label": "1Y",
+      "description": "第 1 路输出"
+    },
+    "a2": {
+      "label": "2A",
+      "description": "第 2 路输入"
+    },
+    "y2": {
+      "label": "2Y",
+      "description": "第 2 路输出"
+    },
+    "a3": {
+      "label": "3A",
+      "description": "第 3 路输入"
+    },
+    "y3": {
+      "label": "3Y",
+      "description": "第 3 路输出"
+    },
+    "a4": {
+      "label": "4A",
+      "description": "第 4 路输入"
+    },
+    "y4": {
+      "label": "4Y",
+      "description": "第 4 路输出"
+    },
+    "a5": {
+      "label": "5A",
+      "description": "第 5 路输入"
+    },
+    "y5": {
+      "label": "5Y",
+      "description": "第 5 路输出"
+    },
+    "a6": {
+      "label": "6A",
+      "description": "第 6 路输入"
+    },
+    "y6": {
+      "label": "6Y",
+      "description": "第 6 路输出"
+    },
+    "vcc": {
+      "label": "VCC",
+      "description": "5 V 逻辑电源"
+    },
+    "gnd": {
+      "label": "GND",
+      "description": "地"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {},
+    "events": {}
+  },
+  "type": "module"
+}

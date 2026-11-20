@@ -1,0 +1,3871 @@
+{
+  "version": 1,
+  "description": "CT107D full-firmware suite manifest. Executable entries cover the 26 projects with an Objects/*.hex under dist/蓝桥杯单片机程序; the 11th national objective-exam document is not a program and is recorded as not-applicable. Scenarios are explicit: behavior entries contain source-derived assertions; smoke entries only check boot/ready/no-fault and bounded observation and are reported separately.",
+  "projects": [
+    {
+      "id": "ct107s-ad-da-eeprom",
+      "category": "CT107S实验程序",
+      "name": "AD、DA、EEROM",
+      "programDir": "CT107S实验程序/AD、DA，EEROM",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer2Init comments @12.000MHz; Timer2 reload 0xD120",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 420,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 1,
+            "value": 0.5
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.25
+          },
+          {
+            "atMs": 170,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 230,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 300,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": true
+          },
+          {
+            "atMs": 360,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "initial-price",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 150,
+            "text": "234 "
+          },
+          {
+            "id": "initial-adc",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 150,
+            "text": " 128"
+          },
+          {
+            "id": "eeprom-234",
+            "type": "eeprom",
+            "address": 0,
+            "atMs": 150,
+            "equals": 234
+          },
+          {
+            "id": "dac-153",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 150,
+            "closeTo": 0.6,
+            "tolerance": 0.005
+          },
+          {
+            "id": "s4-channel3",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 250,
+            "text": " 064"
+          },
+          {
+            "id": "s4-channel3-query",
+            "type": "snapshot",
+            "path": "pcf8591.channel",
+            "atMs": 250,
+            "equals": 3
+          },
+          {
+            "id": "s5-channel1",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 400,
+            "text": " 128"
+          },
+          {
+            "id": "s5-channel1-query",
+            "type": "snapshot",
+            "path": "pcf8591.channel",
+            "atMs": 400,
+            "equals": 1
+          }
+        ],
+        "notes": [
+          "S4 is P3.3 (switch code 0x07) and selects AIN3; S5 is P3.2 (0x0B) and selects AIN1. The PCF8591 query cache is normalized 0..1, so DAC 153 is 0.6.",
+          "PCF8591 first-read pipeline difference is not asserted because the model intentionally returns the current conversion.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:94-123", "iic.c:107-167"]
+    },
+    {
+      "id": "ct107s-ds1302",
+      "category": "CT107S实验程序",
+      "name": "DS1302",
+      "programDir": "CT107S实验程序/DS1302",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer2Init comments @12.000MHz; Timer2 reload 0xD120",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 2400,
+        "events": [],
+        "assertions": [
+          {
+            "id": "clock-50",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 100,
+            "text": "08-5"
+          },
+          {
+            "id": "clock-50-dp",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 100,
+            "masks": [111, 64, 237, 63]
+          },
+          {
+            "id": "rtc-50",
+            "type": "rtc",
+            "atMs": 100,
+            "running": true,
+            "datetimeMatches": "08:59:50$"
+          },
+          {
+            "id": "clock-51",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1200,
+            "masks": [111, 64, 237, 6]
+          },
+          {
+            "id": "rtc-51",
+            "type": "rtc",
+            "atMs": 1200,
+            "running": true,
+            "datetimeMatches": "08:59:51$"
+          },
+          {
+            "id": "clock-52",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2200,
+            "masks": [111, 64, 237, 91]
+          },
+          {
+            "id": "rtc-52",
+            "type": "rtc",
+            "atMs": 2200,
+            "running": true,
+            "datetimeMatches": "08:59:52$"
+          }
+        ],
+        "notes": [
+          "DS2 masks include the decimal point on the seconds-tens digit (smg_cnt==6 clears bit7 of the common-anode code)."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["ds1302.c:15,61-76", "main.c:91-110"]
+    },
+    {
+      "id": "ct107s-ds18b20",
+      "category": "CT107S实验程序",
+      "name": "DS18B20读取温度",
+      "programDir": "CT107S实验程序/DS18B20读取温度",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer2Init comments @12.000MHz; uvproj is 0 bytes, so source is authoritative",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 1300,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setTemperature",
+            "value": 30.5
+          },
+          {
+            "atMs": 1100,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 1160,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "old-25.0",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 100,
+            "masks": [64, 91, 237, 63]
+          },
+          {
+            "id": "converted",
+            "type": "snapshot",
+            "path": "temperature.converted",
+            "atMs": 1000,
+            "equals": true
+          },
+          {
+            "id": "temperature-value",
+            "type": "snapshot",
+            "path": "temperature.value",
+            "atMs": 1000,
+            "closeTo": 30.5,
+            "tolerance": 0.07
+          },
+          {
+            "id": "new-30.5",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1000,
+            "masks": [64, 79, 191, 109]
+          },
+          {
+            "id": "s4-key-view",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1250,
+            "masks": [102, 64, 0, 0]
+          }
+        ],
+        "notes": [
+          "The source issues Convert T and immediately reads the scratchpad; the first 750 ms may legitimately show the power-on 25.0 value, so the old value is asserted at 100 ms and the converted 30.5 value at 1000 ms.",
+          "The observed external HEX instead shows a constant -95.9 and does not follow the injected temperature; this is recorded as a failure, not relaxed."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:81-106", "onewire.c:17-38"]
+    },
+    {
+      "id": "ct107s-uart",
+      "category": "CT107S实验程序",
+      "name": "串口通信",
+      "programDir": "CT107S实验程序/串口通信",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c UartInit comment 9600bps@12.000MHz; TL1=0xC7 TH1=0xFE with 1T timer1",
+      "mode": "behavior",
+      "scenario": {
+        "props": {
+          "uartBaud": 9600
+        },
+        "runMs": 380,
+        "events": [
+          {
+            "atMs": 20,
+            "action": "sendUart",
+            "ascii": "ABC#"
+          },
+          {
+            "atMs": 60,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": true
+          },
+          {
+            "atMs": 140,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": false
+          },
+          {
+            "atMs": 180,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 260,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "rx-buffer",
+            "type": "uart",
+            "channel": "uart1Rx",
+            "atMs": 45,
+            "ascii": "ABC#"
+          },
+          {
+            "id": "probe-rx-buffer",
+            "type": "uart",
+            "channel": "probeRx",
+            "atMs": 45,
+            "ascii": "ABC#"
+          },
+          {
+            "id": "tx-buffer",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 180,
+            "ascii": "ABC\r\n"
+          },
+          {
+            "id": "probe-tx-buffer",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 180,
+            "ascii": "ABC\r\n"
+          },
+          {
+            "id": "append-str",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 300,
+            "ascii": "ABC\r\n987654321\r\n"
+          },
+          {
+            "id": "probe-append-str",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 300,
+            "ascii": "ABC\r\n987654321\r\n"
+          }
+        ],
+        "notes": [
+          "12 MHz UART1, TL1=0xC7/TH1=0xFE, AUXR.T1x12=1; actual bit period is 9585 baud, close enough for the 9600-baud probe. S5 sends the terminated buffer and S4 appends the fixed string; S6/S7 are not used because they share P3.0/P3.1 with UART."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:9,36-46,72-139"]
+    },
+    {
+      "id": "ct107s-btn",
+      "category": "CT107S实验程序",
+      "name": "模板（独立按键BTN）",
+      "programDir": "CT107S实验程序/模板（独立按键BTN）",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer2Init comments @12.000MHz; uvproj is 0 bytes, so source is authoritative",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 540,
+        "events": [
+          {
+            "atMs": 40,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 100,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 140,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": true
+          },
+          {
+            "atMs": 200,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": false
+          },
+          {
+            "atMs": 240,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 300,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          },
+          {
+            "atMs": 340,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 400,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "baseline-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 20,
+            "text": "1234"
+          },
+          {
+            "id": "baseline-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 20,
+            "text": "5678"
+          },
+          {
+            "id": "s4",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 130,
+            "text": "4-34"
+          },
+          {
+            "id": "s5",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 230,
+            "text": "5-34"
+          },
+          {
+            "id": "s6",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 330,
+            "text": "6-34"
+          },
+          {
+            "id": "s7",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 430,
+            "text": "7-34"
+          },
+          {
+            "id": "relay-off",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 480,
+            "equals": false
+          },
+          {
+            "id": "buzzer-off",
+            "type": "snapshot",
+            "path": "buzzer",
+            "atMs": 480,
+            "equals": false
+          },
+          {
+            "id": "leds-off",
+            "type": "snapshot",
+            "path": "leds",
+            "atMs": 480,
+            "equals": [0, 0, 0, 0, 0, 0, 0, 0]
+          }
+        ],
+        "notes": ["S4..S7 are P3.3..P3.0; only disbuf[1..2] change, so digits 3/4 remain 3/4."],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:6-7,39-95"]
+    },
+    {
+      "id": "ct107s-kbd",
+      "category": "CT107S实验程序",
+      "name": "模板（矩阵键盘KBD）",
+      "programDir": "CT107S实验程序/模板（矩阵键盘KBD）",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer2Init comments @12.000MHz; uvproj is 0 bytes, so source is authoritative",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 3000,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J5",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 100,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 160,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 280,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": true
+          },
+          {
+            "atMs": 340,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": false
+          },
+          {
+            "atMs": 460,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 520,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          },
+          {
+            "atMs": 640,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 700,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          },
+          {
+            "atMs": 820,
+            "action": "setSwitch",
+            "designator": "S8",
+            "pressed": true
+          },
+          {
+            "atMs": 880,
+            "action": "setSwitch",
+            "designator": "S8",
+            "pressed": false
+          },
+          {
+            "atMs": 1000,
+            "action": "setSwitch",
+            "designator": "S9",
+            "pressed": true
+          },
+          {
+            "atMs": 1060,
+            "action": "setSwitch",
+            "designator": "S9",
+            "pressed": false
+          },
+          {
+            "atMs": 1180,
+            "action": "setSwitch",
+            "designator": "S10",
+            "pressed": true
+          },
+          {
+            "atMs": 1240,
+            "action": "setSwitch",
+            "designator": "S10",
+            "pressed": false
+          },
+          {
+            "atMs": 1360,
+            "action": "setSwitch",
+            "designator": "S11",
+            "pressed": true
+          },
+          {
+            "atMs": 1420,
+            "action": "setSwitch",
+            "designator": "S11",
+            "pressed": false
+          },
+          {
+            "atMs": 1540,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": true
+          },
+          {
+            "atMs": 1600,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": false
+          },
+          {
+            "atMs": 1720,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": true
+          },
+          {
+            "atMs": 1780,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": false
+          },
+          {
+            "atMs": 1900,
+            "action": "setSwitch",
+            "designator": "S14",
+            "pressed": true
+          },
+          {
+            "atMs": 1960,
+            "action": "setSwitch",
+            "designator": "S14",
+            "pressed": false
+          },
+          {
+            "atMs": 2080,
+            "action": "setSwitch",
+            "designator": "S15",
+            "pressed": true
+          },
+          {
+            "atMs": 2140,
+            "action": "setSwitch",
+            "designator": "S15",
+            "pressed": false
+          },
+          {
+            "atMs": 2260,
+            "action": "setSwitch",
+            "designator": "S16",
+            "pressed": true
+          },
+          {
+            "atMs": 2320,
+            "action": "setSwitch",
+            "designator": "S16",
+            "pressed": false
+          },
+          {
+            "atMs": 2440,
+            "action": "setSwitch",
+            "designator": "S17",
+            "pressed": true
+          },
+          {
+            "atMs": 2500,
+            "action": "setSwitch",
+            "designator": "S17",
+            "pressed": false
+          },
+          {
+            "atMs": 2620,
+            "action": "setSwitch",
+            "designator": "S18",
+            "pressed": true
+          },
+          {
+            "atMs": 2680,
+            "action": "setSwitch",
+            "designator": "S18",
+            "pressed": false
+          },
+          {
+            "atMs": 2800,
+            "action": "setSwitch",
+            "designator": "S19",
+            "pressed": true
+          },
+          {
+            "atMs": 2860,
+            "action": "setSwitch",
+            "designator": "S19",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "baseline-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 20,
+            "text": "1234"
+          },
+          {
+            "id": "baseline-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 20,
+            "text": "5678"
+          },
+          {
+            "id": "s4-p44",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 200,
+            "text": "4--4"
+          },
+          {
+            "id": "s5-p44",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 380,
+            "text": "5--4"
+          },
+          {
+            "id": "s6-p44",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 560,
+            "text": "6--4"
+          },
+          {
+            "id": "s7-p44",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 740,
+            "text": "7--4"
+          },
+          {
+            "id": "s8-p42",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 920,
+            "text": "08-4"
+          },
+          {
+            "id": "s9-p42",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1100,
+            "text": "09-4"
+          },
+          {
+            "id": "s10-p42",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1280,
+            "text": "10-4"
+          },
+          {
+            "id": "s11-p42",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1460,
+            "text": "11-4"
+          },
+          {
+            "id": "s12-p35-p34",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1640,
+            "text": "12-4"
+          },
+          {
+            "id": "s13-p35-p34",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1820,
+            "text": "13-4"
+          },
+          {
+            "id": "s14-p35-p34",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2000,
+            "text": "14-4"
+          },
+          {
+            "id": "s15-p35-p34",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2180,
+            "text": "15-4"
+          },
+          {
+            "id": "s16-p35-p34",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2360,
+            "text": "16-4"
+          },
+          {
+            "id": "s17-p35-p34",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2540,
+            "text": "17-4"
+          },
+          {
+            "id": "s18-p35-p34",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2720,
+            "text": "18-4"
+          },
+          {
+            "id": "s19-p35-p34",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2900,
+            "text": "19-4"
+          }
+        ],
+        "notes": [
+          "Matrix source: rows P30-P33; columns P44 (S4-S7), P42 (S8-S11), P35 (S12-S15), P34 (S16-S19). J3 is open so the NE555 does not drive P34. J13 default true (2-3 IO) grounds only the 74HC02 WR side; it must not ground P42. J5 is set at 0 ms with closed:false (1-2 matrix) so S4-S7 common reaches P44.",
+          "Every key is held 60 ms; each display assertion is 40 ms after release, leaving one 5 ms debounce scan plus display refresh. S8-S11 and the added S4-S7 checks are strict source expectations, not limited."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:41-124"]
+    },
+    {
+      "id": "ct107s-ultrasonic",
+      "category": "CT107S实验程序",
+      "name": "超声波测距",
+      "programDir": "CT107S实验程序/超声波测距",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay10us, Timer2Init (0xD120) and Timer1Init comments @12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {
+          "ultrasonicDistanceCm": 100
+        },
+        "runMs": 600,
+        "events": [],
+        "assertions": [
+          {
+            "id": "before-measure-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 100,
+            "text": "1234"
+          },
+          {
+            "id": "before-measure-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 100,
+            "text": "5678"
+          },
+          {
+            "id": "after-measure",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 300,
+            "masks": [64, 63, 111, 111]
+          },
+          {
+            "id": "after-measure-late",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 500,
+            "masks": [64, 63, 111, 111]
+          }
+        ],
+        "notes": [
+          "T2 sets wave_flag every 200 ms; at 100 cm the source measures 99 because the receive window starts after the eighth pulse plus firmware overhead. A 98/100 value is a failure to diagnose, not an acceptable range."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:43-124"]
+    },
+    {
+      "id": "provincial-7-fan",
+      "category": "初赛",
+      "name": "第七届初赛-模拟风扇控制系统",
+      "programDir": "初赛/第七届初赛-模拟风扇控制系统",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 11059200,
+      "clockEvidence": "main.c Timer0Init comment 100us@11.0592MHz; reload 0xFBAE with 1T timer0",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 3800,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setTemperature",
+            "value": 25
+          },
+          {
+            "atMs": 200,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": true
+          },
+          {
+            "atMs": 260,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": false
+          },
+          {
+            "atMs": 2600,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 2660,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 2800,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 2860,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 3000,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 3060,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 3200,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 3260,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          },
+          {
+            "atMs": 3400,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 3460,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "initial-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 100,
+            "text": "-1- "
+          },
+          {
+            "id": "initial-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 100,
+            "text": "0000"
+          },
+          {
+            "id": "start-led",
+            "type": "snapshot",
+            "path": "leds.0",
+            "atMs": 300,
+            "min": 0.1
+          },
+          {
+            "id": "countdown",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2400,
+            "text": ["0057", "0058", "0059"]
+          },
+          {
+            "id": "mode1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2700,
+            "text": "-2- "
+          },
+          {
+            "id": "mode2",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2900,
+            "text": "-3- "
+          },
+          {
+            "id": "mode0",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 3100,
+            "text": "-1- "
+          },
+          {
+            "id": "stopped",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 3350,
+            "text": "0000"
+          },
+          {
+            "id": "stopped-led",
+            "type": "snapshot",
+            "path": "leds.0",
+            "atMs": 3350,
+            "max": 0.01
+          },
+          {
+            "id": "temp-mode",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 3700,
+            "text": "-4- "
+          }
+        ],
+        "notes": [
+          "Source key mapping: S5 (P3.2/0x0B) starts the 60 s countdown, S6 (P3.1/0x0D) stops it, S4 (P3.3/0x07) cycles mode, S7 (P3.0/0x0E) shows temperature. J3 is opened for the P34 PWM output. The temperature page keeps the old timer unit digit, so only DS1 is asserted."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:48-201"]
+    },
+    {
+      "id": "provincial-3-water",
+      "category": "初赛",
+      "name": "第三届：自动售水机",
+      "programDir": "初赛/第三届：自动售水机/程序",
+      "hex": "Objects/MyMain.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 11059200,
+      "clockEvidence": "main.c Timer0Init comment 1ms@11.0592MHz; reload 0xD4CD with 1T timer0",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 3900,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 1,
+            "value": 0.25
+          },
+          {
+            "atMs": 500,
+            "action": "setAnalogInput",
+            "channel": 1,
+            "value": 0.26
+          },
+          {
+            "atMs": 700,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 800,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          },
+          {
+            "atMs": 2800,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 2900,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "price",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 300,
+            "masks": [0, 191, 109, 63]
+          },
+          {
+            "id": "quantity",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 300,
+            "masks": [63, 134, 63, 63]
+          },
+          {
+            "id": "adc-low-led",
+            "type": "snapshot",
+            "path": "leds.0",
+            "atMs": 300,
+            "min": 0.1
+          },
+          {
+            "id": "adc-high-led",
+            "type": "snapshot",
+            "path": "leds.0",
+            "atMs": 600,
+            "max": 0.01
+          },
+          {
+            "id": "running-relay",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 2300,
+            "equals": true
+          },
+          {
+            "id": "half-quantity",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 3300,
+            "masks": [63, 191, 6, 63]
+          },
+          {
+            "id": "half-holds",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 3700,
+            "masks": [63, 191, 6, 63]
+          }
+        ],
+        "notes": [
+          "Masks include the source decimal points: price DS1 [00,BF,6D,3F], initial quantity DS2 [3F,86,3F,3F], stopped quantity DS2 [3F,BF,06,3F]. AIN1<=64/255 lights D1; 0.26*255=66 is above the source threshold.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:28-178"]
+    },
+    {
+      "id": "provincial-9-lights",
+      "category": "初赛",
+      "name": "第九届初赛-彩灯控制器",
+      "programDir": "初赛/第九届初赛-彩灯控制器",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 11059200,
+      "clockEvidence": "main.c Timer0Init comment 100us@11.0592MHz; reload 0xFBAE with 1T timer0",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 1600,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0
+          },
+          {
+            "atMs": 800,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.9
+          },
+          {
+            "atMs": 1250,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 1450,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "blank-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 100,
+            "text": "    "
+          },
+          {
+            "id": "blank-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 100,
+            "text": "    "
+          },
+          {
+            "id": "eeprom-123",
+            "type": "eeprom",
+            "address": 1,
+            "atMs": 300,
+            "equals": 123
+          },
+          {
+            "id": "d1-pwm-changes",
+            "type": "changes",
+            "key": "D1/brightness",
+            "atMs": 1200,
+            "min": 10
+          },
+          {
+            "id": "d2-pwm-changes",
+            "type": "changes",
+            "key": "D2/brightness",
+            "atMs": 1200,
+            "min": 5
+          },
+          {
+            "id": "brightness-key",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1350,
+            "masks": [0, 0, 64, 102]
+          }
+        ],
+        "notes": [
+          "T0 100 us at 11.0592 MHz, LED shift every 4000 ticks = 400 ms. AIN3=0 sets 10% PWM, 0.9 sets 90%. While S4 is held, the brightness page must show DS2 [00,00,40,66] (\"  -4\"); this is a required interaction, not a startup-only pass.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
+        ],
+        "limitations": ["The S6/S5/S7 setting and pause branches are not covered."],
+        "notCovered": [
+          "S6/S5/S7 setting and pause branches",
+          "high-PWM brightness integration: cumulative change count cannot distinguish 10% from 90% duty"
+        ]
+      },
+      "sourceEvidence": ["main.c:18-285"]
+    },
+    {
+      "id": "provincial-5-temperature",
+      "category": "初赛",
+      "name": "第五届：简易温度与采集装置",
+      "programDir": "初赛/第五届：简易温度与采集装置/程序",
+      "hex": "Objects/MyMain.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 11059200,
+      "clockEvidence": "main.c Timer0Init comment 1ms@11.0592MHz; reload 0xD4CD with 1T timer0",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 4500,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J5",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setTemperature",
+            "value": 19
+          },
+          {
+            "atMs": 1400,
+            "action": "setTemperature",
+            "value": 25.0625
+          },
+          {
+            "atMs": 2800,
+            "action": "setTemperature",
+            "value": 31
+          },
+          {
+            "atMs": 4200,
+            "action": "setSwitch",
+            "designator": "S8",
+            "pressed": true
+          },
+          {
+            "atMs": 4260,
+            "action": "setSwitch",
+            "designator": "S8",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "low-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1300,
+            "text": "-0- "
+          },
+          {
+            "id": "low-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1300,
+            "text": "  19"
+          },
+          {
+            "id": "low-relay",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 1300,
+            "equals": false
+          },
+          {
+            "id": "low-blink",
+            "type": "changes",
+            "key": "D1/brightness",
+            "atMs": 1700,
+            "min": 2
+          },
+          {
+            "id": "normal-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2700,
+            "text": "-1- "
+          },
+          {
+            "id": "normal-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2700,
+            "text": "  25"
+          },
+          {
+            "id": "normal-relay",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 2700,
+            "equals": false
+          },
+          {
+            "id": "high-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 4100,
+            "text": "-2- "
+          },
+          {
+            "id": "high-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 4100,
+            "text": "  31"
+          },
+          {
+            "id": "high-relay",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 4100,
+            "equals": true
+          },
+          {
+            "id": "setting-key",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 4400,
+            "masks": [64, 0, 0, 0]
+          },
+          {
+            "id": "setting-page-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 4400,
+            "masks": [0, 64, 0, 0]
+          }
+        ],
+        "notes": [
+          "J5 is set at 0 ms with closed:false (1-2 matrix) and J3 is open; S8 is the P42 setting key.",
+          "Each temperature is held for at least 1.3 s to cover the 750 ms DS18B20 conversion. Source thresholds are Tmin=20/Tmax=30, so 19/25.0625/31 select low/normal/high.",
+          "S8 is the P42 setting key; the setting page is asserted with its real source layout (DS1 [40,00,00,00], DS2 [00,40,00,00]). If S8 is unreachable, that is a functional failure, a required failure, not a pass.",
+          "Relay diagnostic (f07, /tmp/opencode/ct107d-provincial5-relay-diagnostic.md sha256 dfb6b292f0bcfd98e4e078060e264ff613c23d895ae4e649c01feb2393af86d7): source/HEX relay_open sets P2=0xA0 (LE high) before P0=0x10, so U9 briefly transparently latches the previous segment value; that real short transient is retained and is not erased by the fix. U9/ULN/relayEnergized reach true and the finished 4100 ms snapshot must report relay=true through the complete actuatorState channel. high-relay is a required source expectation, not a latch relaxation."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:93-284"]
+    },
+    {
+      "id": "provincial-8-clock",
+      "category": "初赛",
+      "name": "第八届初赛-电子钟",
+      "programDir": "初赛/第八届初赛-电子钟",
+      "hex": "Objects/main.hex",
+      "mainSource": "nain.c",
+      "clockFrequency": 11059200,
+      "clockEvidence": "nain.c Timer0Init comment 100us@11.0592MHz; reload 0xFBAE with 1T timer0",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 2600,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setTemperature",
+            "value": 25
+          },
+          {
+            "atMs": 350,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 550,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "clock-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 100,
+            "text": "23-5"
+          },
+          {
+            "id": "clock-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 100,
+            "text": "9-50"
+          },
+          {
+            "id": "rtc-50",
+            "type": "rtc",
+            "atMs": 100,
+            "running": true,
+            "datetimeMatches": "23:59:50$"
+          },
+          {
+            "id": "clock-51",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1200,
+            "text": "9-51"
+          },
+          {
+            "id": "clock-52",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2200,
+            "text": "9-52"
+          },
+          {
+            "id": "temperature-page",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 450,
+            "masks": [0, 91, 109, 57]
+          }
+        ],
+        "notes": [
+          "RTC starts at 23:59:50. S4 holds the 25 C page (DS2 masks [0,91,109,57] = \" 25C\") via temperature_flag; the release returns to the clock. The temperature check is at 450 ms while S4 is held (350..550 ms). Setting/alarm long branches are not covered in this window.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
+        ],
+        "limitations": [
+          "The S7 hour/minute/second setting chain and the ~10.6 s 00:00:00 alarm branch are not covered; they are listed as notCovered rather than passed."
+        ],
+        "notCovered": ["S7 hour/minute/second setting chain", "00:00:00 alarm blink branch"]
+      },
+      "sourceEvidence": ["nain.c:42-322"]
+    },
+    {
+      "id": "provincial-6-recorder",
+      "category": "初赛",
+      "name": "第六届省赛-温度记录器",
+      "programDir": "初赛/第六届省赛-温度记录器",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer1Init comments @12.000MHz; Timer1 reload 0xFB50 with 1T timer1",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 2600,
+        "events": [
+          {
+            "atMs": 300,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 360,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 700,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 760,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 1100,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 1160,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 1500,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 1560,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 1900,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": true
+          },
+          {
+            "atMs": 1960,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "initial-setting",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 150,
+            "text": " -01"
+          },
+          {
+            "id": "rtc-start",
+            "type": "rtc",
+            "atMs": 150,
+            "running": true,
+            "datetimeMatches": "23:59:50$"
+          },
+          {
+            "id": "interval-5",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 500,
+            "text": " -05"
+          },
+          {
+            "id": "interval-30",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 900,
+            "text": " -30"
+          },
+          {
+            "id": "interval-60",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1300,
+            "text": " -60"
+          },
+          {
+            "id": "started-clock",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2300,
+            "text": ["23-5", "23 5"]
+          }
+        ],
+        "notes": [
+          "S4 cycles the record interval 1/5/30/60/1. S5 starts acquisition; the full 10 samples + 1 s completion window is about 12 s and is not covered in this fail-fast run.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks.",
+          "The source toggles the hour/minute and minute/second separators between \"-\" and blank from TIME[0] % 2. At 2300 ms the complete display is either \"23-5\" or \"23 5\"; both are accepted, but a fully blank display or the old setting page is not. RTC running/time is separately asserted by rtc-start."
+        ],
+        "limitations": [
+          "The ~12 s acquisition completion, LED 500 ms blink and S6/S7 record navigation are not covered."
+        ],
+        "notCovered": [
+          "return-to-1 after 5/30/60 is not covered",
+          "~12 s acquisition completion",
+          "S6/S7 record navigation"
+        ]
+      },
+      "sourceEvidence": ["main.c:39-322"]
+    },
+    {
+      "id": "provincial-11-first-half",
+      "category": "初赛",
+      "name": "第十一届初赛-上半年",
+      "programDir": "初赛/第十一届初赛-上半年",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer0Init comments @12.000MHz; Timer0 reload 0xFB50 with 1T timer0",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 2300,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J5",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.5
+          },
+          {
+            "atMs": 1100,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.8
+          },
+          {
+            "atMs": 1200,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.2
+          },
+          {
+            "atMs": 1300,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.8
+          },
+          {
+            "atMs": 1400,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.2
+          },
+          {
+            "atMs": 1600,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": true
+          },
+          {
+            "atMs": 1660,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "voltage-prefix",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1000,
+            "text": "U1  "
+          },
+          {
+            "id": "voltage-digits",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1000,
+            "masks": [0, 219, 109, 6]
+          },
+          {
+            "id": "mode-switch",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1900,
+            "text": "P1  "
+          },
+          {
+            "id": "setting-page-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1900,
+            "masks": [0, 191, 63, 63]
+          }
+        ],
+        "notes": [
+          "The source displays U1 + 2.51 V. S12 is a matrix key; its checks are strict source expectations. J5 is set at 0 ms with closed:false (1-2 matrix) and J3 is open. The external HEX displays 1234/5678 and repeatedly transmits 0x2A, none of which are in the source, so the project remains hash-bound blocked; the strict checks are evidence, not a pass.",
+          "The count page/EEPROM[0]=15 and count edge detection remain notCovered."
+        ],
+        "limitations": [
+          "Count edge detection and the EEPROM[0]=15 save are not covered.",
+          "Blocked by source/HEX mismatch; checks are retained as evidence but the project is not counted as a functional pass."
+        ],
+        "notCovered": ["S12 count page/EEPROM[0]=15", "count edge detection"]
+      },
+      "sourceEvidence": ["main.c:52-279"],
+      "overrideStatus": {
+        "status": "blocked",
+        "reason": "Source/HEX mismatch: main.c implements voltage/count with U1/2.51 and PCF8591, while Objects/main.hex repeatedly transmits 0x2A and shows 1234/5678 (none of these are in the source). The HEX is a stale/other build, so source-derived behavior cannot be judged against it; not counted as a model failure.",
+        "expectedHexSha256": "9dfe2e2896e4e000e4e2872df8657566e3eb559ba0028f7b78807458ca0088fe",
+        "expectedSourceAggregateSha256": "db1a07eb2d94cf559837960e0fb47ca45e7cb27a3702ec858fea3947e719820a"
+      }
+    },
+    {
+      "id": "provincial-12-first",
+      "category": "初赛",
+      "name": "第十二届初赛-第一场",
+      "programDir": "初赛/第十二届初赛-第一场/程序",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer2Init comments @12.000MHz; Timer2 reload 0xD120",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 5200,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J5",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setTemperature",
+            "value": 25.0625
+          },
+          {
+            "atMs": 1300,
+            "action": "setTemperature",
+            "value": 24
+          },
+          {
+            "atMs": 2500,
+            "action": "setTemperature",
+            "value": 30
+          },
+          {
+            "atMs": 3700,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 3780,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 3900,
+            "action": "setSwitch",
+            "designator": "S9",
+            "pressed": true
+          },
+          {
+            "atMs": 3980,
+            "action": "setSwitch",
+            "designator": "S9",
+            "pressed": false
+          },
+          {
+            "atMs": 4100,
+            "action": "setSwitch",
+            "designator": "S8",
+            "pressed": true
+          },
+          {
+            "atMs": 4180,
+            "action": "setSwitch",
+            "designator": "S8",
+            "pressed": false
+          },
+          {
+            "atMs": 4300,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 4380,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 4500,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 4580,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 4700,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": true
+          },
+          {
+            "atMs": 4780,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "temp-prefix",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1200,
+            "text": "C   "
+          },
+          {
+            "id": "temp-25.02",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1200,
+            "masks": [91, 237, 63, 91]
+          },
+          {
+            "id": "dac-high",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 1200,
+            "closeTo": 1,
+            "tolerance": 0.01
+          },
+          {
+            "id": "d1-on",
+            "type": "snapshot",
+            "path": "leds.0",
+            "atMs": 1200,
+            "min": 0.1
+          },
+          {
+            "id": "d2-on",
+            "type": "snapshot",
+            "path": "leds.1",
+            "atMs": 1200,
+            "min": 0.1
+          },
+          {
+            "id": "temp-24.02",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2400,
+            "masks": [91, 230, 63, 91]
+          },
+          {
+            "id": "dac-low",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 2400,
+            "closeTo": 0,
+            "tolerance": 0.01
+          },
+          {
+            "id": "temp-30.03",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 3600,
+            "masks": [79, 191, 63, 79]
+          },
+          {
+            "id": "dac-threshold-30",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 3600,
+            "closeTo": 1,
+            "tolerance": 0.01
+          },
+          {
+            "id": "setting-page-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 3850,
+            "text": "P   "
+          },
+          {
+            "id": "setting-page-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 3850,
+            "text": "  25"
+          },
+          {
+            "id": "setting-plus",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 4050,
+            "text": "  26"
+          },
+          {
+            "id": "setting-minus",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 4250,
+            "text": "  25"
+          },
+          {
+            "id": "dac-page-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 4450,
+            "text": "A   "
+          },
+          {
+            "id": "dac-page-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 4450,
+            "masks": [0, 207, 91, 109]
+          },
+          {
+            "id": "temp-return-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 4650,
+            "text": "C   "
+          },
+          {
+            "id": "temp-return-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 4650,
+            "masks": [79, 191, 63, 79]
+          },
+          {
+            "id": "dac-linear",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 5000,
+            "closeTo": 0.4980392156862745,
+            "tolerance": 0.001
+          }
+        ],
+        "notes": [
+          "Source display bug (main.c:70-73): disbuf[8] is temperature*100/1000%10, so 25.0625 shows 25.02, 24 shows 24.02, and 30 shows 30.03. The source bug is retained; it is not a source/HEX mismatch.",
+          "DAC mode 0 is a threshold: 25.0625/30 >= 25 write 255 (1.0), 24 < 25 writes 0 (0.0). S5 switches to the linear mode: (6/40*30-2)/5*255 = 127.5, truncated to the unsigned char 127, i.e. 127/255 = 0.498039. Mode 0/1 and the exact truncation are asserted; no coarse 0.5 tolerance.",
+          "The source case 0x77 cycles TEMP -> SETTING -> DAC -> TEMP; key code 0x77 is physical S4 (P44/P33), not S6 even though the source comment says s6. S6 is 0x7d and has no case in this program. S9 (P42) increments and S8 (P42) decrements the setting value. The DAC page keeps source smg_proc line 193 DP on DS2 digit2, so it is asserted with masks [0,207,91,109], not plain text. J5 is set at 0 ms with closed:false (1-2 matrix); J13 stays default true (2-3 IO) and does not ground P42."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:62-96,111-181,206-223"]
+    },
+    {
+      "id": "provincial-10-voltage-frequency",
+      "category": "初赛",
+      "name": "第十届初赛-电压频率采集装置",
+      "programDir": "初赛/第十届初赛-电压频率采集装置",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer1Init comments @12.000MHz; Timer1 reload 0xFB50 with 1T timer1",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 4400,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": true
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.5
+          },
+          {
+            "atMs": 2300,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 2380,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 3500,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "voltage-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1000,
+            "text": "U   "
+          },
+          {
+            "id": "voltage-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1000,
+            "masks": [0, 219, 109, 63]
+          },
+          {
+            "id": "dac-half",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 1000,
+            "closeTo": 0.49019607843137253,
+            "tolerance": 0.01
+          },
+          {
+            "id": "d1-on",
+            "type": "snapshot",
+            "path": "leds.0",
+            "atMs": 1000,
+            "min": 0.1
+          },
+          {
+            "id": "d5-on",
+            "type": "snapshot",
+            "path": "leds.4",
+            "atMs": 1000,
+            "min": 0.1
+          },
+          {
+            "id": "freq-page-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 3400,
+            "text": "F   "
+          },
+          {
+            "id": "freq-page-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 3400,
+            "text": ["4809", "4810"]
+          }
+        ],
+        "notes": [
+          "The source writes DAC=volt/2 after each ADC sample; AIN3=.5 gives 125/255. D1 (mode) and D5 (!s5_flag) are on. The frequency page is selected by S4 and needs a full 1 s T0 counting window; J3 opened removes the NE555 source.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
+        ],
+        "limitations": [],
+        "notCovered": [
+          "J3-open fre display: source display_mode1 has no <100 branch, so no observable 0000; internal fre cannot be queried",
+          "S5 DAC hold / S6 LED off / S7 blank branches"
+        ]
+      },
+      "sourceEvidence": ["main.c:54-268"]
+    },
+    {
+      "id": "provincial-4-irrigation",
+      "category": "初赛",
+      "name": "第四届：智能灌溉系统",
+      "programDir": "初赛/第四届：智能灌溉系统/程序",
+      "hex": "Objects/MyMain.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "No timer comments; delay loops use the standard 845 count for 12MHz STC-ISP timing, matching the rest of the 12MHz examples",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 1900,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.5
+          },
+          {
+            "atMs": 800,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.6
+          },
+          {
+            "atMs": 1000,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 1100,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          },
+          {
+            "atMs": 1200,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": true
+          },
+          {
+            "atMs": 1300,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": false
+          },
+          {
+            "atMs": 1400,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 1500,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "rtc-start",
+            "type": "rtc",
+            "atMs": 100,
+            "running": true,
+            "datetime": "2000-00-00 08:30:00"
+          },
+          {
+            "id": "clock-humidity-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 300,
+            "text": "08-3"
+          },
+          {
+            "id": "clock-humidity-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 300,
+            "text": "0 49"
+          },
+          {
+            "id": "auto-d1",
+            "type": "snapshot",
+            "path": "leds.0",
+            "atMs": 300,
+            "min": 0.1
+          },
+          {
+            "id": "humidity-relay",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 300,
+            "equals": true
+          },
+          {
+            "id": "dry-humidity-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 950,
+            "text": "0 59"
+          },
+          {
+            "id": "dry-relay",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 950,
+            "equals": false
+          },
+          {
+            "id": "threshold-save",
+            "type": "eeprom",
+            "address": 10,
+            "atMs": 1800,
+            "equals": 123
+          }
+        ],
+        "notes": [
+          "RTC 08:30:00; AIN3=.5 is 49% RH and AIN3=.6 is 59%. The auto-mode relay closes below the 50% threshold and opens above it. The AIN3=.6 stimulus is applied at 800 ms and the dry checks are at 950 ms, before the S6 event at 1000 ms, allowing the source ADC loop to update. S6 enters/leaves setting, S5 increments and S4 decrements; the EEPROM 0x0A=123 save is a required independent-key check.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
+        ],
+        "limitations": [],
+        "notCovered": ["manual-mode relay/buzzer branches", "remaining threshold-setting branches"]
+      },
+      "sourceEvidence": ["main.c:98-248", "ds1302.c:71-92"]
+    },
+    {
+      "id": "national-7-voltage-frequency",
+      "category": "国赛",
+      "name": "第七届：电压、频率采集设备",
+      "programDir": "国赛/第七届：电压、频率采集设备/程序",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer2Init/Timer0Init comments @12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 5200,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J5",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.5
+          },
+          {
+            "atMs": 150,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": true
+          },
+          {
+            "atMs": 700,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": true
+          },
+          {
+            "atMs": 800,
+            "action": "setSwitch",
+            "designator": "S5",
+            "pressed": false
+          },
+          {
+            "atMs": 3000,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "voltage-page",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 500,
+            "text": "-1- "
+          },
+          {
+            "id": "voltage-digits",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 500,
+            "text": ["2508", "2499"]
+          },
+          {
+            "id": "dac-153",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 500,
+            "closeTo": 0.6,
+            "tolerance": 0.005
+          },
+          {
+            "id": "frequency-page",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2900,
+            "text": "-2-0"
+          },
+          {
+            "id": "frequency-off",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 5100,
+            "text": "0000"
+          },
+          {
+            "id": "frequency-digits",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2900,
+            "text": ["4809", "4810"]
+          }
+        ],
+        "notes": [
+          "J5 is set at 0 ms with closed:false (1-2 matrix). J3 is opened at 0 ms, reconnected true at 150 ms for the NE555 frequency page, and opened again at 3000 ms after the second complete gate.",
+          "Gate timing is source-asynchronous, not a 1 s warmup: main.c:242-249 starts TR0 from the main loop on S5 release, while the Timer2 1 ms global tick is already running; the ISR at main.c:439-447 samples every 1000 ticks. Actual TR0 start is ~827.70 ms and the first Timer2 tick ~828.25 ms, so the first window is 999.55 ms (±50 us sampling) and yields 4808. The second window is a full 1000 ms and yields 4810. The 2900 ms check is therefore the first complete steady window; 4809/4810 is not widened and 4808 is not accepted.",
+          "J3 opens at 3000 ms, after the second gate closes at ~2827 ms. The 2827-3827 ms window is mixed and must not be judged as zero; the first fully zero window is 3827-4827 ms, so 0000 is checked at 5100 ms. runMs is 5200 ms."
+        ],
+        "limitations": [],
+        "notCovered": ["S11/S10/S9 threshold/event branches"]
+      },
+      "sourceEvidence": ["main.c:73-508", "main.c:242-249,439-447"]
+    },
+    {
+      "id": "national-3-access",
+      "category": "国赛",
+      "name": "第三届：门禁系统",
+      "programDir": "国赛/第三届：门禁系统/程序",
+      "hex": "Objects/MyMain.hex",
+      "mainSource": "MyMain.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "MyMain.c Timer1Init/Timer0Init comments @12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 6200,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J5",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 100,
+            "action": "setSwitch",
+            "designator": "S14",
+            "pressed": true
+          },
+          {
+            "atMs": 160,
+            "action": "setSwitch",
+            "designator": "S14",
+            "pressed": false
+          },
+          {
+            "atMs": 220,
+            "action": "setSwitch",
+            "designator": "S10",
+            "pressed": true
+          },
+          {
+            "atMs": 280,
+            "action": "setSwitch",
+            "designator": "S10",
+            "pressed": false
+          },
+          {
+            "atMs": 340,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 400,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          },
+          {
+            "atMs": 460,
+            "action": "setSwitch",
+            "designator": "S19",
+            "pressed": true
+          },
+          {
+            "atMs": 520,
+            "action": "setSwitch",
+            "designator": "S19",
+            "pressed": false
+          },
+          {
+            "atMs": 580,
+            "action": "setSwitch",
+            "designator": "S15",
+            "pressed": true
+          },
+          {
+            "atMs": 640,
+            "action": "setSwitch",
+            "designator": "S15",
+            "pressed": false
+          },
+          {
+            "atMs": 700,
+            "action": "setSwitch",
+            "designator": "S11",
+            "pressed": true
+          },
+          {
+            "atMs": 760,
+            "action": "setSwitch",
+            "designator": "S11",
+            "pressed": false
+          },
+          {
+            "atMs": 820,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": true
+          },
+          {
+            "atMs": 880,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "password-65",
+            "type": "eeprom",
+            "address": 0,
+            "atMs": 100,
+            "equals": 65
+          },
+          {
+            "id": "password-43",
+            "type": "eeprom",
+            "address": 1,
+            "atMs": 100,
+            "equals": 43
+          },
+          {
+            "id": "password-21",
+            "type": "eeprom",
+            "address": 2,
+            "atMs": 100,
+            "equals": 21
+          },
+          {
+            "id": "rtc-start",
+            "type": "rtc",
+            "atMs": 100,
+            "running": true,
+            "datetimeMatches": "06:59:00$"
+          },
+          {
+            "id": "empty-prompt",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 100,
+            "text": "--  "
+          },
+          {
+            "id": "password-relay",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 1100,
+            "equals": true
+          },
+          {
+            "id": "password-relay-hold",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 5400,
+            "equals": true
+          },
+          {
+            "id": "password-relay-release",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 6100,
+            "equals": false
+          }
+        ],
+        "notes": [
+          "Password 654321 maps to S14,S10,S6,S19,S15,S11 and confirm S12. Keys are 60 ms held and 120 ms apart from 100 ms; the confirm S12 releases at 880 ms. Source delay_ms(5) debounce leaves >5 ms margin. Timer1 relay_tt >= 50000 at 100 us is 5 s from unlock: relay true at 1.1 s, held true at 5.4 s, and false at 6.1 s, so the full 5 s release is still verified. J5 is set at 0 ms with closed:false (1-2 matrix). J3 is open so P34 (S19) is not driven by the NE555; J13 stays default true (2-3 IO) and does not ground P42.",
+          "The 07:00 automatic mode is not run because it would require roughly 61 s."
+        ],
+        "limitations": ["The 07:00 automatic mode needs about 61 s and is not covered."],
+        "notCovered": ["07:00 automatic mode"]
+      },
+      "sourceEvidence": ["MyMain.c:87-390", "ds1302.c:15,61-76"]
+    },
+    {
+      "id": "national-9-multimeter",
+      "category": "国赛",
+      "name": "第九届：多功能测量仪表",
+      "programDir": "国赛/第九届：多功能测量仪表/程序",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms and Timer2Init/Timer0Init comments @12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {},
+        "runMs": 4400,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setTemperature",
+            "value": 25
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.5
+          },
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": true
+          },
+          {
+            "atMs": 1400,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 1500,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 2050,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 2130,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 2600,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "temperature-prefix",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1200,
+            "text": "C   "
+          },
+          {
+            "id": "temperature-digits",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1200,
+            "masks": [91, 237, 63, 63]
+          },
+          {
+            "id": "led8-threshold-blink",
+            "type": "changes",
+            "key": "D8/brightness",
+            "atMs": 2000,
+            "min": 2
+          },
+          {
+            "id": "voltage-prefix",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2000,
+            "text": "U   "
+          },
+          {
+            "id": "voltage-digits",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2000,
+            "masks": [0, 0, 219, 109]
+          },
+          {
+            "id": "frequency-mode-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2250,
+            "text": "F   "
+          },
+          {
+            "id": "frequency-mode-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2250,
+            "text": ["4809", "4810"]
+          },
+          {
+            "id": "frequency-zero-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 4200,
+            "text": "F  1"
+          },
+          {
+            "id": "frequency-zero-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 4200,
+            "text": "   0"
+          }
+        ],
+        "notes": [
+          "Mode 0 displays C + 25.00 with DP on the hundreds digit. AIN3=.5 gives Vo=250; S4 switches to the voltage page U + 2.5 with DP. Both pages are required; an old temperature page is not accepted as the voltage page. A second S4 at 2050 ms enters mode 2 (frequency).",
+          "Timer2 is 1 ms and fre_tt>=1000 is a 1 s gate; TR0 starts at 0, so the ~1.0 s gate only starts counting and the ~2.0 s gate is the first complete count. J3 is explicitly closed at 0 ms; the 2250 ms frequency page must show 4809/4810. J3 opens at 2600 ms; after the next complete zero window ending at ~4.0 s, the source displays DS1 'F  1' and DS2 '   0' (the source writes digit 1 for zero frequency, not 0000). Assertion at 4200 ms.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:68-444", "main.c:94-117,225-326,327-399"]
+    },
+    {
+      "id": "national-5-event-recorder",
+      "category": "国赛",
+      "name": "第五届：多功能事件记录器",
+      "programDir": "国赛/第五届：多功能事件记录器/程序",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms, Timer2Init and UartInit 1200bps@12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {
+          "uartBaud": 1200
+        },
+        "runMs": 6000,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setTemperature",
+            "value": 25
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 1,
+            "value": 0.5
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.5
+          },
+          {
+            "atMs": 2000,
+            "action": "setAnalogInput",
+            "channel": 1,
+            "value": 0
+          },
+          {
+            "atMs": 3000,
+            "action": "setAnalogInput",
+            "channel": 1,
+            "value": 1
+          },
+          {
+            "atMs": 3507,
+            "action": "sendUart",
+            "ascii": "AAASSS"
+          }
+        ],
+        "assertions": [
+          {
+            "id": "dac-153",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 500,
+            "closeTo": 0.6,
+            "tolerance": 0.005
+          },
+          {
+            "id": "temperature-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1500,
+            "text": "25C "
+          },
+          {
+            "id": "humidity-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1500,
+            "text": " 49H"
+          },
+          {
+            "id": "record-temp",
+            "type": "eeprom",
+            "address": 0,
+            "atMs": 2500,
+            "equals": 25
+          },
+          {
+            "id": "record-humidity",
+            "type": "eeprom",
+            "address": 1,
+            "atMs": 2500,
+            "equals": 49
+          },
+          {
+            "id": "record-hour",
+            "type": "eeprom",
+            "address": 2,
+            "atMs": 2500,
+            "equals": 23,
+            "bcd": true
+          },
+          {
+            "id": "record-minute",
+            "type": "eeprom",
+            "address": 3,
+            "atMs": 2500,
+            "equals": 59,
+            "bcd": true
+          },
+          {
+            "id": "record-second",
+            "type": "eeprom",
+            "address": 4,
+            "atMs": 2500,
+            "min": 55,
+            "max": 59,
+            "bcd": true
+          },
+          {
+            "id": "led3-on",
+            "type": "snapshot",
+            "path": "leds.2",
+            "atMs": 2500,
+            "min": 0.1
+          },
+          {
+            "id": "led3-off",
+            "type": "snapshot",
+            "path": "leds.2",
+            "atMs": 3500,
+            "max": 0.01
+          },
+          {
+            "id": "national5-command-rx",
+            "type": "uart",
+            "channel": "uart1Rx",
+            "atMs": 3900,
+            "ascii": "AAASSS"
+          },
+          {
+            "id": "national5-command-probe-rx",
+            "type": "uart",
+            "channel": "probeRx",
+            "atMs": 3900,
+            "ascii": "AAASSS"
+          },
+          {
+            "id": "national5-frame1-mcu",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 4900,
+            "ascii": "{25-49%}{23-59-59}{0}\r\n"
+          },
+          {
+            "id": "national5-frame1-probe",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 4900,
+            "equalsChannel": "uart1Tx"
+          },
+          {
+            "id": "national5-frame2-mcu",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 5900,
+            "ascii": "{25-49%}{23-59-59}{0}\r\n{25-49%}{00-00-00}{0}\r\n"
+          },
+          {
+            "id": "national5-frame2-probe",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 5900,
+            "equalsChannel": "uart1Tx"
+          }
+        ],
+        "notes": [
+          "12 MHz, DAC 153/255=.6. AIN3=.5 gives H=49; AIN1=.5 is ambient light. Dropping AIN1 to 0 records temperature/humidity/RTC BCD; raising it records the duration and turns LED3 off. Existing events contain no S5/0x0b press, so work_mode stays 0; after the 3000 ms AIN1 rise coming_flag=0. UART is 1200 baud on both MCU and probe.",
+          "Command AAASSS is injected at 3507 ms. uartrec_tt is cleared only on the first byte ISR, not every byte; the sixth byte is received at about 3557 ms and immediately opens uartsend_open. The 50 ms timeout only resets the receiver counter, not the response. The 1 s uartsend_tt gate then emits at about 4557 and 5557 ms; assertions at 4900/5900 ms stay away from both boundaries.",
+          "The output literal is str1 (19 bytes) + SendData(coming_flag+'0') (1 byte) + str2 '}\\r\\n' (3 bytes): {25-49%}{23-59-59}{0}\\r\\n, 23 bytes; the double-frame assertion is 46 bytes. RTC samples at the send windows are 23:59:59 and 00:00:00. Probe bytes must equal uart1Tx exactly via equalsChannel; no prefix/length-only pass."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:11-12,91-429", "main.c:158-201,254-339,350-367"]
+    },
+    {
+      "id": "national-8-ultrasonic",
+      "category": "国赛",
+      "name": "第八届：超声波测距机",
+      "programDir": "国赛/第八届：超声波测距机/程序",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms, Timer2Init and Timer1Init comments @12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {
+          "ultrasonicDistanceCm": 100
+        },
+        "runMs": 1600,
+        "events": [
+          {
+            "atMs": 200,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 300,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          },
+          {
+            "atMs": 900,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 1000,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "startup-res",
+            "type": "eeprom",
+            "address": 0,
+            "atMs": 100,
+            "equals": 222
+          },
+          {
+            "id": "measure-one",
+            "type": "eeprom",
+            "address": 0,
+            "atMs": 600,
+            "equals": 100
+          },
+          {
+            "id": "dac-after-measure",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 600,
+            "closeTo": 0.3137254901960784,
+            "tolerance": 0.01
+          },
+          {
+            "id": "distance-prefix",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 600,
+            "text": "C 10"
+          },
+          {
+            "id": "measure-two",
+            "type": "eeprom",
+            "address": 1,
+            "atMs": 1300,
+            "equals": 99
+          },
+          {
+            "id": "distance-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 600,
+            "text": "0000"
+          },
+          {
+            "id": "startup-distance-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 100,
+            "text": "C 00"
+          },
+          {
+            "id": "startup-distance-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 100,
+            "text": "0000"
+          }
+        ],
+        "notes": [
+          "Startup writes 222 to EEPROM[0] and shows C 00 / 0000. Manual S4 starts two measurements. The first real measurement is 100: wave_send sends five 12 us pulses, F=305291.446 us; Timer1 restarts at 305303.946 us (PC 0x28); ECHO low is at F+5882=311173.446 us; Timer2 ISR enters at 311172.672 us and returns to PC 0x2A at 311196.172 us, so JNB observes RX low only then and CLR TR1 executes at 311196.506 us. The T1 count is 0x1704=5892 (periph and R4/R5 agree), 5892*0.017=100.164 -> 100; display is C 10 with distance_last 0 -> 0000. The second measurement has no ISR overlap: T1 count 0x16EF=5871, 5871*0.017=99.807 -> 99 and remains the measure-two expectation. The old 99 for the first slot was only the 8-pulse-threshold timeout fallback (HEX 0x35-0x3D sets distance=99), not a real echo measurement. The three first-measurement expectations are exact source/timing-derived values, not actual backfill.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
+        ],
+        "limitations": [],
+        "notCovered": ["setting/threshold pages are not covered"]
+      },
+      "sourceEvidence": ["main.c:65-312"]
+    },
+    {
+      "id": "national-6-material",
+      "category": "国赛",
+      "name": "第六届：智能物料传送系统",
+      "programDir": "国赛/第六届：智能物料传送系统/程序",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms, Timer2Init and Timer1Init comments @12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {
+          "ultrasonicDistanceCm": 100
+        },
+        "runMs": 3800,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.5
+          },
+          {
+            "atMs": 600,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 700,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          },
+          {
+            "atMs": 800,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 900,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          },
+          {
+            "atMs": 1000,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 1100,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          },
+          {
+            "atMs": 1200,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 1300,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          },
+          {
+            "atMs": 1400,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 1500,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          },
+          {
+            "atMs": 1600,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 1700,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          },
+          {
+            "atMs": 1800,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 1900,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          },
+          {
+            "atMs": 2000,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 2100,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          },
+          {
+            "atMs": 2200,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": true
+          },
+          {
+            "atMs": 2300,
+            "action": "setSwitch",
+            "designator": "S6",
+            "pressed": false
+          },
+          {
+            "atMs": 2400,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": true
+          },
+          {
+            "atMs": 2500,
+            "action": "setSwitch",
+            "designator": "S4",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "vo-half",
+            "type": "snapshot",
+            "path": "pcf8591.analog.3",
+            "atMs": 500,
+            "closeTo": 0.5,
+            "tolerance": 0.02
+          },
+          {
+            "id": "distance-page",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 500,
+            "text": "9  2"
+          },
+          {
+            "id": "new-interval-i",
+            "type": "eeprom",
+            "address": 0,
+            "atMs": 2350,
+            "equals": 2
+          },
+          {
+            "id": "new-interval-ii",
+            "type": "eeprom",
+            "address": 1,
+            "atMs": 2350,
+            "equals": 4
+          },
+          {
+            "id": "relay-start",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 2700,
+            "equals": true
+          },
+          {
+            "id": "countdown-page",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2700,
+            "text": "2   "
+          }
+        ],
+        "notes": [
+          "Source key semantics: S6 next page, S7 increment current item, S4 start transport. I=2/II=4 are configured after EEPROM defaults of 0; the source has no default fallback, so starting without configuration underflows remain_sec and is explicitly not treated as a model failure. The 4 s transport completion is notCovered, not passed.",
+          "All key paths are independent P3 scans; failures are behavior-fail, not limited passes.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks.",
+          "The S6 key is released at 2300 ms; the source then performs BTN Delay5, writes EEPROM[0]=I_time, Delay5, and writes EEPROM[1]=II_time. The interval checks at 2350 ms are after both writes and before the S4 event at 2400 ms."
+        ],
+        "limitations": [
+          "The source default EEPROM 0/0 underflow is a source behavior, not a model assertion."
+        ],
+        "notCovered": ["4 s transport completion after a successful start"]
+      },
+      "sourceEvidence": ["main.c:75-396"]
+    },
+    {
+      "id": "national-10",
+      "category": "国赛",
+      "name": "第十届",
+      "programDir": "国赛/第十届/程序",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms, Timer2Init/Timer0Init and UartInit 4800bps@12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {
+          "ultrasonicDistanceCm": 100,
+          "uartBaud": 4800
+        },
+        "runMs": 5400,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setTemperature",
+            "value": 25
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.5
+          },
+          {
+            "atMs": 1400,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": true
+          },
+          {
+            "atMs": 1500,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": false
+          },
+          {
+            "atMs": 2000,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": true
+          },
+          {
+            "atMs": 2100,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": false
+          },
+          {
+            "atMs": 2600,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": true
+          },
+          {
+            "atMs": 3800,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": false
+          },
+          {
+            "atMs": 4407,
+            "action": "sendUart",
+            "ascii": "PARA\r\n"
+          },
+          {
+            "atMs": 4707,
+            "action": "sendUart",
+            "ascii": "ST\r\n"
+          },
+          {
+            "atMs": 5007,
+            "action": "sendUart",
+            "ascii": "BAD\r\n"
+          }
+        ],
+        "assertions": [
+          {
+            "id": "marker",
+            "type": "eeprom",
+            "address": 31,
+            "atMs": 200,
+            "equals": 123
+          },
+          {
+            "id": "temperature-prefix",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1200,
+            "text": "C   "
+          },
+          {
+            "id": "temperature-digits",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1200,
+            "masks": [91, 237, 63, 63]
+          },
+          {
+            "id": "dac-204",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 1200,
+            "closeTo": 0.8,
+            "tolerance": 0.005
+          },
+          {
+            "id": "distance-prefix",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1800,
+            "text": "L   "
+          },
+          {
+            "id": "distance-digits",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1800,
+            "text": "  99"
+          },
+          {
+            "id": "count-page-prefix",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2400,
+            "text": "U   "
+          },
+          {
+            "id": "dac-disabled",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 4100,
+            "closeTo": 0.08235294117647059,
+            "tolerance": 0.01
+          },
+          {
+            "id": "led3-off",
+            "type": "snapshot",
+            "path": "leds.2",
+            "atMs": 4100,
+            "max": 0.01
+          },
+          {
+            "id": "national10-para-mcu",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 4570,
+            "ascii": "$35,30\r\n"
+          },
+          {
+            "id": "national10-st-mcu",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 4870,
+            "ascii": "$35,30\r\n$99,25.0\r\n"
+          },
+          {
+            "id": "national10-error-mcu",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 5170,
+            "includesAscii": "ERROR\r\n"
+          },
+          {
+            "id": "national10-command-rx-mcu",
+            "type": "uart",
+            "channel": "uart1Rx",
+            "atMs": 5250,
+            "ascii": "PARA\r\nST\r\nBAD\r\n"
+          },
+          {
+            "id": "national10-command-rx-probe",
+            "type": "uart",
+            "channel": "probeRx",
+            "atMs": 5250,
+            "ascii": "PARA\r\nST\r\nBAD\r\n"
+          },
+          {
+            "id": "national10-uart-parity",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 5170,
+            "equalsChannel": "uart1Tx"
+          }
+        ],
+        "notes": [
+          "All original temperature/distance/DAC/EEPROM checks and their 1200/2600/3800 ms events remain unchanged through 4300 ms. UART commands are injected only after that: PARA at 4407 ms, ST at 4707 ms, BAD at 5007 ms; the 4800-baud probe and MCU uart1Tx are asserted after each response. PARA replies exactly $35,30; ST replies exactly $99,25.0\\r\\n: temperature=(u16)(rd_temperature()*100)=2500, distance=99, and the source sprintf($%d,%d.%d) prints 25 and 0 without a second decimal zero. BAD replies ERROR. probeTx must equal uart1Tx byte-for-byte at 5170 ms.",
+          "UART RX uses the source's 50 ms receive timeout; request times are intentionally non-round and assertions stay after last-byte+50 ms. Temperature/distance/DAC and EEPROM marker are required; S12 page changes and long-S13 DAC disable are required P35/P34 key paths.",
+          "The source displays distance 99 for 100 cm; DAC=204 for distance above the 35 cm threshold and 21 when the DAC is disabled.",
+          "1-Wire timing: at 12 MHz the host read slots are 57.833/58.083 us (694/697 cycles) and write-0 low is 56.250 us. The relaxed functional model releases read-0 at +15 us while keeping +15 us write sampling, so the original HEX reads sensor raw 0x0190 and the source float*100/cast yields 2500. This is model compatibility, not datasheet compliance; expected temperature remains source-derived 25.00 (masks [91,237,63,63]) and no source/HEX mismatch is present."
+        ],
+        "limitations": [],
+        "notCovered": []
+      },
+      "sourceEvidence": ["main.c:88-525", "main.c:218-231,380-400,454-472"]
+    },
+    {
+      "id": "national-4-ultrasonic-alarm",
+      "category": "国赛",
+      "name": "第四届：超声波测距报警",
+      "programDir": "国赛/第四届：超声波测距报警/程序",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Timer2Init (0xD120) and Timer0Init comments @12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {
+          "ultrasonicDistanceCm": 20
+        },
+        "runMs": 2600,
+        "events": [
+          {
+            "atMs": 1700,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": true
+          },
+          {
+            "atMs": 1800,
+            "action": "setSwitch",
+            "designator": "S7",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "startup-led",
+            "type": "snapshot",
+            "path": "leds.0",
+            "atMs": 500,
+            "min": 0.1
+          },
+          {
+            "id": "startup-buzzer",
+            "type": "snapshot",
+            "path": "buzzer",
+            "atMs": 500,
+            "equals": true
+          },
+          {
+            "id": "after-init-led",
+            "type": "snapshot",
+            "path": "leds.0",
+            "atMs": 1600,
+            "max": 0.01
+          },
+          {
+            "id": "after-init-buzzer",
+            "type": "snapshot",
+            "path": "buzzer",
+            "atMs": 1600,
+            "equals": false
+          },
+          {
+            "id": "rtc-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 1600,
+            "text": "11-5"
+          },
+          {
+            "id": "rtc-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 1600,
+            "text": "0-59"
+          },
+          {
+            "id": "distance-019",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2400,
+            "text": " 019"
+          },
+          {
+            "id": "alarm-relay",
+            "type": "snapshot",
+            "path": "relay",
+            "atMs": 2400,
+            "equals": true
+          }
+        ],
+        "notes": [
+          "Startup actively drives LEDs on and the buzzer for 1 s, then allinit turns them off. S7 opens the ultrasonic page; 20 cm is measured as 19, below the 30 cm alarm threshold. The S7 toggle is a strict independent-key path.",
+          "wave_rec flips TX 10 times with the Timer0 12T/12 us reload, i.e. five complete 12 us pulses; the last falling edge is F=120 us. With distanceCm=20, D=round(2*0.20/340*1e6)=1176 us; Timer0 restarts at 0 with 1 us counts, so count~1176 and dis=count*0.017=19.992 -> 19. The old 255 was the previous model's 8-pulse threshold timeout, not a timer/formula error; 019 and relay=true remain exact source expectations.",
+          "The 100 cm non-alarm case is not covered in this run.",
+          "Historical P3 reset limitation removed: P3 reset is now modeled as quasi-bidirectional weak-high; this project's functional assertions remain strict source checks."
+        ],
+        "limitations": [
+          "The 100 cm non-alarm case and the S6/S5/S4 threshold/time-set branches are not covered."
+        ],
+        "notCovered": ["100 cm non-alarm case", "S6/S5/S4 threshold/time-set branches"]
+      },
+      "sourceEvidence": ["main.c:65-398"]
+    },
+    {
+      "id": "practice",
+      "category": "练手",
+      "name": "练手",
+      "programDir": "练手",
+      "hex": "Objects/main.hex",
+      "mainSource": "main.c",
+      "clockFrequency": 12000000,
+      "clockEvidence": "main.c Delay5ms/Delay10us, Timer2Init/Timer0Init and UartInit 1200bps@12.000MHz",
+      "mode": "behavior",
+      "scenario": {
+        "props": {
+          "ultrasonicDistanceCm": 100,
+          "uartBaud": 1200
+        },
+        "runMs": 6600,
+        "events": [
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J5",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 0,
+            "action": "setTemperature",
+            "value": 30.5
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 1,
+            "value": 0.5
+          },
+          {
+            "atMs": 0,
+            "action": "setAnalogInput",
+            "channel": 3,
+            "value": 0.25
+          },
+          {
+            "atMs": 200,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": true
+          },
+          {
+            "atMs": 2350,
+            "action": "setJumper",
+            "designator": "J3",
+            "closed": false
+          },
+          {
+            "atMs": 2400,
+            "action": "setSwitch",
+            "designator": "S8",
+            "pressed": true
+          },
+          {
+            "atMs": 2480,
+            "action": "setSwitch",
+            "designator": "S8",
+            "pressed": false
+          },
+          {
+            "atMs": 3600,
+            "action": "setSwitch",
+            "designator": "S9",
+            "pressed": true
+          },
+          {
+            "atMs": 3680,
+            "action": "setSwitch",
+            "designator": "S9",
+            "pressed": false
+          },
+          {
+            "atMs": 4000,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": true
+          },
+          {
+            "atMs": 4080,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": false
+          },
+          {
+            "atMs": 4300,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": true
+          },
+          {
+            "atMs": 4380,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": false
+          },
+          {
+            "atMs": 4600,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": true
+          },
+          {
+            "atMs": 4680,
+            "action": "setSwitch",
+            "designator": "S13",
+            "pressed": false
+          },
+          {
+            "atMs": 4800,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": true
+          },
+          {
+            "atMs": 4880,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": false
+          },
+          {
+            "atMs": 5000,
+            "action": "sendUart",
+            "ascii": "XYZ#"
+          },
+          {
+            "atMs": 5300,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": true
+          },
+          {
+            "atMs": 6100,
+            "action": "setSwitch",
+            "designator": "S12",
+            "pressed": false
+          }
+        ],
+        "assertions": [
+          {
+            "id": "startup-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 50,
+            "text": "  -0"
+          },
+          {
+            "id": "startup-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 50,
+            "text": "0000"
+          },
+          {
+            "id": "eeprom-ea",
+            "type": "eeprom",
+            "address": 0,
+            "atMs": 200,
+            "equals": 234
+          },
+          {
+            "id": "frequency-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2300,
+            "text": "  -0"
+          },
+          {
+            "id": "frequency-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2300,
+            "text": ["4809", "4810"]
+          },
+          {
+            "id": "temperature-old-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 2600,
+            "text": "    "
+          },
+          {
+            "id": "temperature-old-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 2600,
+            "masks": [91, 237, 63, 63]
+          },
+          {
+            "id": "temperature-new-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 3500,
+            "text": "    "
+          },
+          {
+            "id": "temperature-new-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 3500,
+            "masks": [79, 191, 109, 63]
+          },
+          {
+            "id": "rtc-page",
+            "type": "rtc",
+            "atMs": 3850,
+            "running": true,
+            "datetimeMatches": " 08:59:53$"
+          },
+          {
+            "id": "rtc-ds1",
+            "type": "display",
+            "designator": "DS1",
+            "atMs": 3850,
+            "text": ["08 5", "08-5"]
+          },
+          {
+            "id": "rtc-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 3850,
+            "text": ["9 53", "9-53"]
+          },
+          {
+            "id": "adc-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 4200,
+            "text": "-064"
+          },
+          {
+            "id": "adc2-ds2",
+            "type": "display",
+            "designator": "DS2",
+            "atMs": 4500,
+            "text": "-128"
+          },
+          {
+            "id": "practice-rx-mcu",
+            "type": "uart",
+            "channel": "uart1Rx",
+            "atMs": 5250,
+            "ascii": "XYZ#"
+          },
+          {
+            "id": "practice-rx-probe",
+            "type": "uart",
+            "channel": "probeRx",
+            "atMs": 5250,
+            "ascii": "XYZ#"
+          },
+          {
+            "id": "practice-echo-mcu",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 5400,
+            "includesAscii": "XYZ#\r\n"
+          },
+          {
+            "id": "practice-echo-probe",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 5400,
+            "includesAscii": "XYZ#\r\n"
+          },
+          {
+            "id": "short-s12-tx",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 5700,
+            "includesAscii": "ok!!!\r\n"
+          },
+          {
+            "id": "short-s12-probe",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 5700,
+            "includesAscii": "ok!!!\r\n"
+          },
+          {
+            "id": "long-s12-time-mcu",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 6500,
+            "includesAscii": "08:59:"
+          },
+          {
+            "id": "long-s12-state-mcu",
+            "type": "uart",
+            "channel": "uart1Tx",
+            "atMs": 6500,
+            "length": 49,
+            "includesAscii": "wd:3050,rb2:64,guang:128\r\n"
+          },
+          {
+            "id": "long-s12-time-probe",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 6500,
+            "includesAscii": "08:59:"
+          },
+          {
+            "id": "long-s12-state-probe",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 6500,
+            "includesAscii": "wd:3050,rb2:64,guang:128\r\n"
+          },
+          {
+            "id": "long-s12-full-probe",
+            "type": "uart",
+            "channel": "probeTx",
+            "atMs": 6500,
+            "equalsChannel": "uart1Tx"
+          },
+          {
+            "id": "dac-written",
+            "type": "snapshot",
+            "path": "pcf8591.output",
+            "atMs": 5700,
+            "closeTo": 0.25098039215686274,
+            "tolerance": 0.001
+          }
+        ],
+        "notes": [
+          "Option A keeps display_mode=1 from reset through 2.3 s. The Timer2 gate is source line 318: fre_tt increments only while display_mode==1 and only inside the 1 ms smg block; TR0 is initially 0, so the ~1.0 s gate only starts counting and the ~2.0 s gate is the first complete 1 s window. The 2.3 s display check therefore uses a valid 4809/4810 count, not an inferred NE555 value. The 4818 regression is the approved CLOCK/interrupt-entry root cause; the expectation is not widened. J3 is opened at 0 ms for matrix isolation, reconnected at 200 ms before the first gate, and opened at 2.35 s after the complete gate.",
+          "S8 (P42) enters mode4 at 2.4 s. The DS18B20 power-on value is 25.00 at 2.6 s; the 30.50 conversion is checked at 3.5 s, about 1.0 s after mode4 starts, so it is after the fixed 750 ms conversion. Both are strict source expectations.",
+          "S9 (P42) enters mode3 at 3.68 s; the RTC absolute time is checked at 3.85 s as 08:59:53, with only the source blink space/hyphen alternatives. S13 (P35) at 4.0/4.3/4.6 s toggles read_mode for -064/-128 and restores read_mode=1; short S12 at 4.8 s writes DAC64 (64/255) and sends ok!!!. UART RX XYZ# at 5.0 s is echoed as XYZ#\\r\\n at 1200 baud on both MCU and probe. Short and long S12 are asserted on both channels; the first-char-only failure is the approved UART TX/RETI issue, not a baud or key-timing limitation.",
+          "S12/S13 are P35 keys held 80 ms. The Timer2 base tick is 100 us but key_down_tt increments only once per 1 ms smg block, so key_down_tt>=500 is 500 ms; 80 ms release clearing a pending long action is the source contract. Long S12 is held 800 ms (5300-6100 ms), below 1000 ms so it triggers once, and no command follows before release debounce. The RTC report uses %2x space padding, not zero padding; the deterministic second line is wd:3050,rb2:64,guang:128 and long S12 RTC report is covered. At 6500 ms, uart1Tx must be exactly length 49 (ok!!! plus XYZ# echo plus the 36-byte RTC report), and probeTx must equal uart1Tx byte-for-byte at the same time; no expectation is adjusted to a shorter actual. Only the J3-open zero page remains notCovered."
+        ],
+        "limitations": [],
+        "notCovered": ["J3-open zero frequency page (source display_mode1 has no <100 branch)"]
+      },
+      "sourceEvidence": [
+        "main.c:55-467",
+        "main.c:180-266,318-391",
+        "ds1302.c:15,61-76",
+        "onewire.c:17-80",
+        "iic.c:100-200"
+      ]
+    },
+    {
+      "id": "national-11-materials",
+      "category": "国赛",
+      "name": "第十一届客观试题资料",
+      "programDir": "国赛/第十一届",
+      "status": "not-applicable",
+      "reason": "Contains only 11F_单片机_客观试题_unlocked.pdf; no source, uvproj or HEX. This is exam material, not a program project, so it is excluded from the 26 executable projects and is not counted as blocked."
+    }
+  ]
+}

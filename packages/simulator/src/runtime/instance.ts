@@ -1,10 +1,10 @@
 import type { Disposable } from '@mica-js/core/lifecycle';
-import type { DeclarationIR } from '@mica-js/device-model';
+import { type DeclarationIR, type DeviceIR, validateDeviceIR } from '@mica-js/device-model';
 import type { ExecutionHost, ResourceHandle } from '@mica-js/compiler';
 import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
 import { body, computation, resumable, synchronousBody } from './execution';
-import { electricalNumber, ElectricalParameterError } from './errors';
+import { acceptSync, electricalNumber, ElectricalParameterError } from './errors';
 import type {
   Channel,
   Decl,
@@ -13,6 +13,7 @@ import type {
   Entry,
   Execution,
   Jit,
+  JitMetadataRegion,
   JitPollingBinding,
   Observation,
   Process,
@@ -37,6 +38,9 @@ import type {
   DeviceAdapter,
   DeviceBatch,
   DeviceContext,
+  JitCodeChange,
+  JitCodeRegion,
+  JitDelay,
   JitOptions,
   RuntimeDiagnosticCode,
   RuntimePhase,
@@ -49,8 +53,7 @@ export interface InstanceBoard {
   readonly time: number;
   readonly phase: string;
   readonly current: Instance | undefined;
-  electricalDirty: boolean;
-  readonly dirtyElectricalSlots: Set<number>;
+  markElectricalDirty(slot: number): void;
   readonly jits: Jit[];
   readonly waitingJits: Set<Jit>;
   assertAlive(instance?: Instance): void;
@@ -73,6 +76,25 @@ export interface InstanceBoard {
 }
 
 const EMPTY_MESSAGES: readonly never[] = Object.freeze([]);
+type JitFunctions = readonly Decl<'function'>[];
+const jitModels = new WeakMap<DeviceIR, WeakMap<JitFunctions, DeviceIR>>();
+
+/** Retain the binding identity when adapters reuse the same immutable function table. */
+function bindJitFunctions(base: DeviceIR, functions: JitFunctions): DeviceIR {
+  if (functions.length === 0) return base;
+  let models = jitModels.get(base);
+  const cached = models?.get(functions);
+  if (cached !== undefined) return cached;
+  const model = validateDeviceIR({ ...base, declarations: base.declarations.concat(functions) });
+  for (const declaration of model.declarations.slice(base.declarations.length))
+    if (declaration.kind !== 'function') throw new TypeError('Expected JIT function declaration');
+  if (models === undefined) {
+    models = new WeakMap();
+    jitModels.set(base, models);
+  }
+  models.set(functions, model);
+  return model;
+}
 
 /** Membership test without allocating: every key of `next` is already in `previous`. */
 function hasEvery(
@@ -106,12 +128,92 @@ function createContext(owner: Instance, board: InstanceBoard): DeviceContext {
   });
 }
 
+/**
+ * State map whose scalar direct-bank writes are synced lazily on read.
+ *
+ * Direct JIT writes update `stateValues` and invalidate `stateSlots` at every boundary,
+ * while no observer or host reads `instance.states` until a reaction, observation,
+ * fallback or external query accesses it. Deferring the string-keyed `Map.set` calls
+ * until an actual read removes redundant map updates across resident GPIO edges while
+ * keeping `instance.states` an exact `Map<string, unknown>` at every read site.
+ */
+class StateMirrorMap extends Map<string, unknown> {
+  private names: readonly string[] = [];
+  private bankValues: unknown[] = [];
+  private dirty = new Int32Array(0);
+  private pending = false;
+
+  bindDirectBank(names: readonly string[], values: unknown[]): void {
+    this.names = names;
+    this.bankValues = values;
+    this.dirty = new Int32Array(Math.ceil(names.length / 32));
+  }
+
+  markDirectDirty(word: number, bits: number): void {
+    this.dirty[word]! |= bits;
+    this.pending = true;
+  }
+
+  private flush(): void {
+    if (!this.pending) return;
+    this.pending = false;
+    const { names, bankValues, dirty } = this;
+    for (let word = 0; word < dirty.length; word++) {
+      let bits = dirty[word]!;
+      if (bits === 0) continue;
+      dirty[word] = 0;
+      const base = word << 5;
+      while (bits !== 0) {
+        const index = base + 31 - Math.clz32(bits & -bits);
+        super.set(names[index]!, bankValues[index]);
+        bits &= bits - 1;
+      }
+    }
+  }
+
+  override get(key: string): unknown {
+    if (this.pending) this.flush();
+    return super.get(key);
+  }
+
+  override set(key: string, value: unknown): this {
+    if (this.pending) this.flush();
+    return super.set(key, value);
+  }
+
+  override entries(): MapIterator<[string, unknown]> {
+    if (this.pending) this.flush();
+    return super.entries();
+  }
+
+  override values(): MapIterator<unknown> {
+    if (this.pending) this.flush();
+    return super.values();
+  }
+
+  override forEach(
+    callbackfn: (value: unknown, key: string, map: Map<string, unknown>) => void,
+    thisArg?: unknown,
+  ): void {
+    if (this.pending) this.flush();
+    super.forEach(callbackfn, thisArg);
+  }
+
+  override [Symbol.iterator](): MapIterator<[string, unknown]> {
+    if (this.pending) this.flush();
+    return super[Symbol.iterator]();
+  }
+}
+
 export class Instance {
   readonly declarations = new Map<string, DeclarationIR>();
   readonly props = new Map<string, unknown>();
   readonly constants = new Map<string, unknown>();
-  readonly states = new Map<string, unknown>();
-  private directBank?: Pick<DirectJitLayout, 'stateNames' | 'states' | 'stateValues'>;
+  readonly states = new StateMirrorMap();
+  private directBank?: Pick<
+    DirectJitLayout,
+    'stateNames' | 'stateSlots' | 'states' | 'stateValues'
+  >;
   readonly memories = new Map<string, Uint8Array>();
   private readonly memoryViews = new Map<string, DataView>();
   private readonly memorySizes = new Map<string, number>();
@@ -138,6 +240,7 @@ export class Instance {
   private readonly staticObservations = new WeakMap<Observation, () => unknown>();
   private readonly resistorIntents = new Map<string, Map<number, readonly ResistorBranch[]>>();
   private readonly sampleEntries = new Map<string, { pin: ElectricalPin; slot: ResourceSlot }>();
+  private readonly intentEntries = new Map<string, { pin: ElectricalPin; slot: number }>();
   private readonly stateSlots = new Map<string, ResourceSlot>();
   /** Per-instance handles for the fixed resources a resumable process body binds. */
   private readonly resourceHandles = new Map<string, ResourceHandle>();
@@ -145,6 +248,8 @@ export class Instance {
     string,
     { name: string; bytes: Uint8Array; view: DataView; slot: ResourceSlot }
   >();
+  /** 按 memory 维护的代码代际；只有 code region 内写入才递增。 */
+  private readonly codeVersions = new Map<string, number>();
   private readonly observationFrames = new WeakMap<
     Observation,
     { first: Map<ResourceSlot, number>; second: Map<ResourceSlot, number>; alternate: boolean }
@@ -193,12 +298,7 @@ export class Instance {
         return this.readSample(ref);
       },
       intent: (pin, value) => {
-        const target = this.pin(pin);
-        // Reassigning the same immutable intent value is already the current contribution.
-        if (target.intent === value) return;
-        target.intent = value as readonly ResistorBranch[];
-        board.dirtyElectricalSlots.add(board.electricalSlot(target));
-        board.electricalDirty = true;
+        this.writeIntent(pin, value);
       },
       resistor: (pin, resistance) => {
         const r = electricalNumber(resistance);
@@ -226,7 +326,7 @@ export class Instance {
         if (size === 1) plan.bytes[at] = n;
         else if (size === 2) plan.view.setUint16(at, n, kind.endsWith('le'));
         else plan.view.setUint32(at, n, kind.endsWith('le'));
-        this.memoryChangedPlan(plan);
+        this.memoryChangedPlan(plan, at, size);
       },
       copyBytes: (memory, offset, length) => {
         this.track(this.memoryResources, String(memory));
@@ -432,6 +532,21 @@ export class Instance {
     if (!pin) throw new TypeError(`Unknown pin ${String(ref)}`);
     return pin;
   }
+  /** Shared by the generic host and direct JIT, which needs to know whether to publish. */
+  writeIntent(ref: unknown, value: unknown): boolean {
+    const name = typeof ref === 'string' ? ref : String(ref);
+    const board = this.board;
+    let entry = this.intentEntries.get(name);
+    if (entry === undefined) {
+      const pin = this.pin(name);
+      entry = { pin, slot: board.electricalSlot(pin) };
+      this.intentEntries.set(name, entry);
+    }
+    if (entry.pin.intent === value) return false;
+    entry.pin.intent = value as readonly ResistorBranch[];
+    board.markElectricalDirty(entry.slot);
+    return true;
+  }
   /**
    * One frozen, reusable intent value per (pin, resistance); intents are immutable. The
    * outer map is keyed by pin name and the inner one by resistance, so the hot path builds
@@ -474,19 +589,46 @@ export class Instance {
     return bytes;
   }
   /** Instance-owned numeric bank, mirrored by every non-direct state write. */
-  directStateBank(): Pick<DirectJitLayout, 'stateNames' | 'states' | 'stateValues'> {
+  directStateBank(): NonNullable<Instance['directBank']> {
     if (this.directBank === undefined) {
       const stateNames = [...this.states.keys()].filter((name) => {
         const declaration = this.declarations.get(name) as Decl<'state'>;
         return declaration.type.kind === 'number' || declaration.type.kind === 'bool';
       });
+      const frozenNames = Object.freeze(stateNames);
+      const stateValues = stateNames.map((name) => this.states.get(name));
+      this.states.bindDirectBank(frozenNames, stateValues);
       this.directBank = {
-        stateNames: Object.freeze(stateNames),
+        stateNames: frozenNames,
+        stateSlots: Object.freeze(stateNames.map((name) => this.stateResources.get(name)!)),
         states: new Map(stateNames.map((name, index) => [name, index])),
-        stateValues: stateNames.map((name) => this.states.get(name)),
+        stateValues,
       };
     }
     return this.directBank;
+  }
+  /** Direct scalar writes are already in the numeric bank. Commit the mirror and version. */
+  commitDirectStates(dirty: number[] | Int32Array): boolean {
+    const { stateSlots } = this.directBank!;
+    const states = this.states;
+    const board = this.board;
+    let wrote = false;
+    for (let word = 0; word < dirty.length; word++) {
+      let bits = dirty[word]!;
+      if (bits === 0) continue;
+      dirty[word] = 0;
+      wrote = true;
+      states.markDirectDirty(word, bits);
+      const base = word << 5;
+      while (bits !== 0) {
+        const index = base + 31 - Math.clz32(bits & -bits);
+        const slot = stateSlots[index]!;
+        if (slot.subscribers.size === 0) slot.version++;
+        else board.invalidate(slot);
+        bits &= bits - 1;
+      }
+    }
+    return wrote;
   }
   private writeState(name: string, value: unknown, slot: ResourceSlot): void {
     const captured = snapshot(value);
@@ -525,25 +667,114 @@ export class Instance {
     }
     return plan;
   }
-  memoryChanged(name: string): void {
-    this.memoryChangedSlot(name, this.memoryPlan(name).slot);
+  codeVersion(name: string): number {
+    return this.codeVersions.get(name) ?? 0;
   }
-  private memoryChangedPlan(plan: { name: string; slot: ResourceSlot }): void {
-    this.memoryChangedSlot(plan.name, plan.slot);
+  private intersectsCodeRegion(
+    region: JitCodeRegion,
+    offset: number | undefined,
+    size: number | undefined,
+  ): boolean {
+    if (offset === undefined || size === undefined) return true;
+    return offset < region.size && offset + size > 0;
   }
-  private memoryChangedSlot(name: string, slot: ResourceSlot): void {
+  private hasCodeRegion(name: string, offset?: number, size?: number): boolean {
+    for (const jit of this.jits) {
+      if (!jit.active) continue;
+      for (const region of jit.codeRegions)
+        if (region.memory === name && this.intersectsCodeRegion(region, offset, size)) return true;
+    }
+    return false;
+  }
+  private addMetadataChange(state: JitMetadataRegion, change: JitCodeChange): void {
+    const pending = state.pending;
+    let end = change.offset + change.length;
+    let start = change.offset;
+    for (let index = 0; index < pending.length;) {
+      const current = pending[index]!;
+      const currentEnd = current.offset + current.length;
+      if (change.offset <= currentEnd && current.offset <= end) {
+        start = Math.min(start, current.offset);
+        end = Math.max(end, currentEnd);
+        pending.splice(index, 1);
+      } else index++;
+    }
+    pending.push({ memory: change.memory, offset: start, length: end - start });
+  }
+  private markMetadataChanged(
+    jit: Jit,
+    name: string,
+    offset: number | undefined,
+    size: number | undefined,
+  ): void {
+    if (!jit.metadata) return;
+    for (const state of jit.metadata.regions.values()) {
+      const region = state.region;
+      if (region.memory !== name) continue;
+      // The first successful callback receives the whole region; no pending range is
+      // needed before that (and none is available to merge into).
+      if (state.appliedVersion === -1) continue;
+      if (name === jit.options.code) {
+        // Primary aliases may jump to each other in one direct program. Every primary
+        // alias is revalidated before a direct build, even if the write did not intersect
+        // that alias's logical window; changes still carry only the actual write range.
+        state.dirty = true;
+      }
+      if (!this.intersectsCodeRegion(region, offset, size)) continue;
+      state.dirty = true;
+      const start = offset === undefined ? 0 : Math.max(0, offset);
+      const end = offset === undefined ? region.size : Math.min(region.size, offset + (size ?? 0));
+      if (end > start)
+        this.addMetadataChange(state, { memory: name, offset: start, length: end - start });
+    }
+  }
+  memoryChanged(name: string, offset?: number, size?: number): void {
+    this.memoryChangedSlot(name, this.memoryPlan(name).slot, offset, size);
+  }
+  private memoryChangedPlan(
+    plan: { name: string; slot: ResourceSlot },
+    offset?: number,
+    size?: number,
+  ): void {
+    this.memoryChangedSlot(plan.name, plan.slot, offset, size);
+  }
+  private memoryChangedSlot(
+    name: string,
+    slot: ResourceSlot,
+    offset?: number,
+    size?: number,
+  ): void {
     this.board.invalidate(slot);
-    for (const jit of this.jits)
+    if (this.hasCodeRegion(name, offset, size))
+      this.codeVersions.set(name, this.codeVersion(name) + 1);
+    for (const jit of this.jits) {
+      let affected = false;
+      for (const region of jit.codeRegions)
+        if (region.memory === name && this.intersectsCodeRegion(region, offset, size)) {
+          affected = true;
+          break;
+        }
+      if (!affected) continue;
+      this.markMetadataChanged(jit, name, offset, size);
       if (jit.options.code === name) {
+        // Primary code keeps the exact legacy invalidation and active-instruction contract.
         jit.cache.clear();
+        jit.cacheMemories.clear();
         jit.revision++;
         jit.directPrograms.clear();
         jit.directProgramRevision = -1;
         jit.directSkip = undefined;
-        jit.directMisses = 0;
+        jit.directMisses.clear();
         if (jit.direct?.frame.resume) jit.direct.frame.stopAfterInstruction = true;
         else jit.direct = undefined;
+      } else if (jit.cacheMemories.has(name)) {
+        // Additional regions are conservatively invalidated as a whole. They never feed the
+        // direct program, so Flash cache/direct/revision and the active frame stay untouched.
+        for (const [pc, instruction] of jit.cache)
+          if (instruction.codeRegion?.memory === name) jit.cache.delete(pc);
+        jit.cacheMemories.delete(name);
       }
+    }
   }
   /**
    * Handles for the fixed names a resumable process body uses. They live on the instance,
@@ -594,8 +825,7 @@ export class Instance {
           const current = resolve();
           if (current.intent === value) return;
           current.intent = value as readonly ResistorBranch[];
-          this.board.dirtyElectricalSlots.add(slot);
-          this.board.electricalDirty = true;
+          this.board.markElectricalDirty(slot);
         },
         resistor: (resistance: unknown) => {
           const r = electricalNumber(resistance);
@@ -642,7 +872,7 @@ export class Instance {
       if (size === 1) current.bytes[at] = n;
       else if (size === 2) current.view.setUint16(at, n, little);
       else current.view.setUint32(at, n, little);
-      this.memoryChangedSlot(name, current.slot);
+      this.memoryChangedSlot(name, current.slot, at, size);
     };
     return Object.freeze({
       load8: (offset: unknown) => read(1, false, offset),
@@ -865,6 +1095,154 @@ export class Instance {
     }
     queue.push({ time: this.board.time, value: captured });
   }
+  private captureCodeRegions(options: JitOptions): {
+    readonly all: readonly JitCodeRegion[];
+    readonly additional: readonly JitCodeRegion[];
+  } {
+    const primaryMemory = this.memories.get(options.code)!;
+    const primary = Object.freeze({
+      memory: options.code,
+      base: 0,
+      size: primaryMemory.length,
+    });
+    const additional: JitCodeRegion[] = [];
+    if (Object.hasOwn(options, 'codeRegions')) {
+      if (!Array.isArray(options.codeRegions)) throw new TypeError('codeRegions must be an array');
+      for (const item of options.codeRegions) {
+        dataObject(item, ['memory', 'base', 'size']);
+        const memory = identity(item.memory);
+        const base = nonnegative(item.base, 'code region base');
+        const size = nonnegative(item.size, 'code region size');
+        if (size === 0) throw new RangeError('Code region size must be positive');
+        const length = this.memories.get(memory)?.length;
+        if (length === undefined)
+          throw this.board.error('INVALID_BINDING', 'Unknown code region memory', this);
+        if (size > length)
+          throw this.board.error('INVALID_BINDING', 'Code region exceeds memory', this);
+        if (base > Number.MAX_SAFE_INTEGER - size)
+          throw this.board.error(
+            'INVALID_BINDING',
+            'Code region range is not a safe integer',
+            this,
+          );
+        const region = Object.freeze({ memory, base, size });
+        for (const existing of [primary, ...additional]) {
+          if (
+            region.base < existing.base + existing.size &&
+            existing.base < region.base + region.size
+          )
+            throw this.board.error('INVALID_BINDING', 'Code regions overlap', this);
+        }
+        additional.push(region);
+      }
+    }
+    return {
+      all: Object.freeze([primary, ...additional]),
+      additional: Object.freeze(additional),
+    };
+  }
+  private capturePolling(items: unknown, region?: JitCodeRegion): Map<number, JitPollingBinding> {
+    const polling = new Map<number, JitPollingBinding>();
+    if (!Array.isArray(items)) throw new TypeError('polling must be an array');
+    for (const item of items) {
+      dataObject(item, ['pc', 'predicate', 'consume', 'wait']);
+      const pc = finite(item.pc, 'polling pc');
+      if (region !== undefined && (pc < region.base || pc >= region.base + region.size))
+        throw this.board.error('INVALID_BINDING', 'Polling pc is outside its code region', this);
+      const predicate = identity(item.predicate);
+      const declaration = this.declarations.get(predicate);
+      if (
+        polling.has(pc) ||
+        declaration?.kind !== 'function' ||
+        !declaration.pure ||
+        declaration.params.length ||
+        declaration.returns?.kind !== 'bool'
+      )
+        throw this.board.error('INVALID_BINDING', 'Invalid polling declaration', this);
+      let consume: string | undefined;
+      if (Object.hasOwn(item, 'consume')) {
+        consume = identity(item.consume);
+        const fn = this.declarations.get(consume);
+        if (fn?.kind !== 'function' || fn.params.length !== 0 || fn.returns !== undefined)
+          throw this.board.error('INVALID_BINDING', 'Invalid polling consume function', this);
+      }
+      let wait: JitPollingBinding['wait'];
+      if (Object.hasOwn(item, 'wait')) {
+        dataObject(item.wait, ['delay', 'advance']);
+        const delay = identity(item.wait.delay);
+        const advance = identity(item.wait.advance);
+        const delayFn = this.declarations.get(delay);
+        const advanceFn = this.declarations.get(advance);
+        if (
+          delayFn?.kind !== 'function' ||
+          !delayFn.pure ||
+          delayFn.params.length !== 0 ||
+          delayFn.returns?.kind !== 'number' ||
+          advanceFn?.kind !== 'function' ||
+          advanceFn.params.length !== 1 ||
+          advanceFn.params[0]!.type.kind !== 'number' ||
+          advanceFn.returns !== undefined
+        )
+          throw this.board.error('INVALID_BINDING', 'Invalid polling wait functions', this);
+        wait = Object.freeze({ delay, advance });
+      }
+      polling.set(
+        pc,
+        Object.freeze({
+          predicate,
+          ...(consume === undefined ? {} : { consume }),
+          ...(wait === undefined ? {} : { wait }),
+        }),
+      );
+    }
+    return polling;
+  }
+  private captureMetadataDelays(value: unknown, region: JitCodeRegion): Map<number, JitDelay> {
+    if (!(value instanceof Map)) throw new TypeError('codeMetadata delays must be a Map');
+    const delays = new Map<number, JitDelay>();
+    for (const [key, item] of value) {
+      const pc = finite(key, 'delay pc');
+      if (pc < region.base || pc >= region.base + region.size)
+        throw this.board.error('INVALID_BINDING', 'Delay pc is outside its code region', this);
+      dataObject(item, ['counter', 'cycles', 'pending']);
+      const counter = identity(item.counter);
+      const cycles = integer(item.cycles, 'delay cycles');
+      if (cycles <= 0) throw new RangeError('Delay cycles must be positive');
+      let pending:
+        | {
+            readonly state: string;
+            readonly period: string;
+            readonly active: string;
+          }
+        | undefined;
+      if (Object.hasOwn(item, 'pending')) {
+        dataObject(item.pending, ['state', 'period', 'active']);
+        pending = Object.freeze({
+          state: identity(item.pending.state),
+          period: identity(item.pending.period),
+          active: identity(item.pending.active),
+        });
+      }
+      delays.set(pc, Object.freeze({ counter, cycles, ...(pending ? { pending } : {}) }));
+    }
+    return delays;
+  }
+  /** Validate and copy provider output; caller applies it atomically. */
+  captureCodeMetadata(
+    region: JitCodeRegion,
+    value: unknown,
+  ): {
+    readonly polling: Map<number, JitPollingBinding>;
+    readonly delays: Map<number, JitDelay>;
+  } {
+    dataObject(value, ['polling', 'delays']);
+    if (!Object.hasOwn(value, 'polling') || !Object.hasOwn(value, 'delays'))
+      throw new TypeError('codeMetadata must contain polling and delays');
+    return {
+      polling: this.capturePolling(value.polling, region),
+      delays: this.captureMetadataDelays(value.delays, region),
+    };
+  }
   attach(options: JitOptions): Disposable {
     this.assertCallAllowed();
     if (this.board.phase !== 'initialize' || this.board.current !== this)
@@ -872,7 +1250,10 @@ export class Instance {
     dataObject(options, [
       'entry',
       'code',
+      'codeRegions',
+      'codeMetadata',
       'pc',
+      'functions',
       'beforeInstruction',
       'polling',
       'delays',
@@ -890,6 +1271,17 @@ export class Instance {
       typeof options.translate !== 'function'
     )
       throw this.board.error('INVALID_BINDING', 'Invalid JIT binding', this);
+    const codeRegions = this.captureCodeRegions(options);
+    if (Object.hasOwn(options, 'codeMetadata')) {
+      if (typeof options.codeMetadata !== 'function')
+        throw this.board.error('INVALID_BINDING', 'Invalid codeMetadata provider', this);
+      if (Object.hasOwn(options, 'polling') || Object.hasOwn(options, 'delays'))
+        throw this.board.error(
+          'INVALID_BINDING',
+          'codeMetadata is mutually exclusive with static polling/delays',
+          this,
+        );
+    }
     if (options.beforeInstruction !== undefined) {
       dataObject(options.beforeInstruction, ['when', 'call']);
       const condition = this.declarations.get(options.beforeInstruction.when),
@@ -906,70 +1298,70 @@ export class Instance {
         throw this.board.error('INVALID_BINDING', 'Invalid instruction hook', this);
     } else if (Object.hasOwn(options, 'beforeInstruction'))
       throw new TypeError('Invalid beforeInstruction');
-    const polling = new Map<number, JitPollingBinding>();
-    if (Object.hasOwn(options, 'polling')) {
-      if (!Array.isArray(options.polling)) throw new TypeError('polling must be an array');
-      for (const item of options.polling) {
-        dataObject(item, ['pc', 'predicate', 'consume', 'wait']);
-        const pc = finite(item.pc, 'polling pc');
-        const predicate = identity(item.predicate);
-        const declaration = this.declarations.get(predicate);
-        if (
-          polling.has(pc) ||
-          declaration?.kind !== 'function' ||
-          !declaration.pure ||
-          declaration.params.length ||
-          declaration.returns?.kind !== 'bool'
-        )
-          throw this.board.error('INVALID_BINDING', 'Invalid polling declaration', this);
-        let consume: string | undefined;
-        if (Object.hasOwn(item, 'consume')) {
-          consume = identity(item.consume);
-          const fn = this.declarations.get(consume);
-          if (fn?.kind !== 'function' || fn.params.length !== 0 || fn.returns !== undefined)
-            throw this.board.error('INVALID_BINDING', 'Invalid polling consume function', this);
-        }
-        let wait: JitPollingBinding['wait'];
-        if (Object.hasOwn(item, 'wait')) {
-          dataObject(item.wait, ['delay', 'advance']);
-          const delay = identity(item.wait.delay);
-          const advance = identity(item.wait.advance);
-          const delayFn = this.declarations.get(delay);
-          const advanceFn = this.declarations.get(advance);
-          if (
-            delayFn?.kind !== 'function' ||
-            !delayFn.pure ||
-            delayFn.params.length !== 0 ||
-            delayFn.returns?.kind !== 'number' ||
-            advanceFn?.kind !== 'function' ||
-            advanceFn.params.length !== 1 ||
-            advanceFn.params[0]!.type.kind !== 'number' ||
-            advanceFn.returns !== undefined
-          )
-            throw this.board.error('INVALID_BINDING', 'Invalid polling wait functions', this);
-          wait = Object.freeze({ delay, advance });
-        }
-        polling.set(
-          pc,
-          Object.freeze({
-            predicate,
-            ...(consume === undefined ? {} : { consume }),
-            ...(wait === undefined ? {} : { wait }),
-          }),
-        );
-      }
-    }
+    const polling = Object.hasOwn(options, 'polling')
+      ? this.capturePolling(options.polling)
+      : new Map<number, JitPollingBinding>();
     if (Object.hasOwn(options, 'delays') && !(options.delays instanceof Map))
       throw new TypeError('delays must be a Map');
+    const metadata = Object.hasOwn(options, 'codeMetadata')
+      ? {
+          regions: new Map(
+            codeRegions.all.map((region) => [
+              region,
+              {
+                region,
+                appliedVersion: -1,
+                dirty: false,
+                pending: [] as JitCodeChange[],
+                polling: new Map<number, JitPollingBinding>(),
+                delays: new Map<number, JitDelay>(),
+              },
+            ]),
+          ),
+          polling: new Map<number, JitPollingBinding>(),
+          delays: new Map<number, JitDelay>(),
+        }
+      : undefined;
+    const base = this.entry.model;
+    const emit = options.functions;
+    if (Object.hasOwn(options, 'functions') && typeof emit !== 'function')
+      throw new TypeError('functions must be a JIT function builder callback');
+    let model = base;
+    let functions: Map<string, Decl<'function'>> | undefined;
+    let host = this.host;
+    if (emit) {
+      const declarations = emit(base);
+      acceptSync(declarations);
+      if (!Array.isArray(declarations)) throw new TypeError('Expected JIT function declarations');
+      model = bindJitFunctions(base, declarations);
+      const local = new Map<string, Decl<'function'>>();
+      for (const declaration of model.declarations.slice(base.declarations.length))
+        if (declaration.kind === 'function') local.set(declaration.name, declaration);
+      functions = local;
+      host = {
+        ...this.host,
+        call: (name, args) => {
+          const fn = local.get(name);
+          return fn ? body(fn.body)(host, args) : this.invoke(name, args);
+        },
+      };
+    }
     const jit: Jit = {
       instance: this,
+      model,
+      host,
+      ...(functions === undefined ? {} : { functions }),
       options: Object.freeze({
         ...options,
+        ...(options.codeRegions === undefined ? {} : { codeRegions: codeRegions.additional }),
         ...(options.beforeInstruction
           ? { beforeInstruction: Object.freeze({ ...options.beforeInstruction }) }
           : {}),
       }),
+      codeRegions: codeRegions.all,
       cache: new Map(),
+      cacheMemories: new Set(),
+      metadata,
       polling,
       delays: options.delays ?? new Map(),
       revision: 0,
@@ -982,7 +1374,7 @@ export class Instance {
       directProgramRevision: -1,
       direct: undefined,
       directSkip: undefined,
-      directMisses: 0,
+      directMisses: new Map(),
       pollReads: undefined,
       currentPc: undefined,
       automaticPolling: false,
@@ -1006,8 +1398,10 @@ export class Instance {
         jit.pollingToken++;
         this.board.waitingJits.delete(jit);
         jit.cache.clear();
+        jit.cacheMemories.clear();
         jit.directPrograms.clear();
         jit.direct = undefined;
+        jit.directMisses.clear();
         jit.pollReads = undefined;
       },
     };
@@ -1027,7 +1421,9 @@ export class Instance {
       );
     if (
       typeof name !== 'string' ||
-      !this.jits.some((jit) => jit.active && jit.options.code === name)
+      !this.jits.some(
+        (jit) => jit.active && jit.codeRegions.some((region) => region.memory === name),
+      )
     )
       throw this.board.error('INVALID_BINDING', 'Memory is not bound as code', this);
     if (!(bytes instanceof Uint8Array)) throw new TypeError('Code must be Uint8Array');
@@ -1035,7 +1431,7 @@ export class Instance {
       at = range(memory, offset, bytes.length);
     if (bytes.length) {
       memory.set(bytes.slice(), at);
-      this.memoryChanged(name);
+      this.memoryChanged(name, at, bytes.length);
     }
   }
   source(path: readonly string[]): unknown {

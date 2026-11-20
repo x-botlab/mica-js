@@ -544,3 +544,5 @@ export interface JitBlockBuilder extends SourceScope<JitBlockBuilder> {
   instruction(boundary: InstructionBoundary, emit: (body: JitInstructionBuilder) => void): void;
   finish(): BlockIR;
 }
+/** Functions scoped to one JIT entry; no new device resources can be declared. */
+export type JitFunctionBuilder = Pick<DeviceBuilder, 'fn' | 'pureFn'>;

@@ -14,6 +14,9 @@ import {
   type DeviceFactory,
   type InputChannel,
   type InputNotification,
+  type JitCodeRegion,
+  type JitCodeMetadataInput,
+  type JitCodeMetadataProvider,
   type Notification,
   type ReadonlyBytes,
   type RuntimeDiagnostic,
@@ -35,6 +38,8 @@ type NodeBatch = DeviceBatch<{
   readonly copies: readonly ChannelMessage<ReadonlyBytes>[];
 }>;
 
+const additionalCode: JitCodeRegion = { memory: 'code', base: 0x08000000, size: 4 };
+
 const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
   context.inputs.request.send(context.props.count);
   context.inputs.refresh.notify();
@@ -42,6 +47,7 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
   const jit = context.attachJit({
     entry: 'step',
     code: 'code',
+    codeRegions: [additionalCode],
     pc: 'position',
     polling: [
       {
@@ -53,7 +59,27 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
     ],
     translate(input, builder) {
       const byte: number | undefined = input.code[0];
-      void byte;
+      const base: number = input.codeBase;
+      const version: number = input.codeVersion;
+      void [byte, base, version];
+      builder.instruction({ pc: input.pc, nextPc: input.pc + 1 }, (body) => body.stop());
+      return builder.finish();
+    },
+  });
+  const metadataProvider: JitCodeMetadataProvider = ({ region, changes }: JitCodeMetadataInput) => {
+    const base: number = region.base;
+    const version: number = region.codeVersion;
+    const first: number = changes[0]?.offset ?? 0;
+    void [base, version, first];
+    return { polling: [], delays: new Map() };
+  };
+  context.attachJit({
+    entry: 'metadata',
+    code: 'code',
+    codeRegions: [additionalCode],
+    codeMetadata: metadataProvider,
+    pc: 'position',
+    translate(input, builder) {
       builder.instruction({ pc: input.pc, nextPc: input.pc + 1 }, (body) => body.stop());
       return builder.finish();
     },

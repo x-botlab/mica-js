@@ -1,0 +1,88 @@
+
+usb-pma-multi-strh.elf:     file format elf32-littlearm
+
+
+Disassembly of section .text:
+
+08000008 <pmaWrite>:
+ 8000008:	b480      	push	{r7}
+ 800000a:	b085      	sub	sp, #20
+ 800000c:	af00      	add	r7, sp, #0
+ 800000e:	4603      	mov	r3, r0
+ 8000010:	6039      	str	r1, [r7, #0]
+ 8000012:	80fb      	strh	r3, [r7, #6]
+ 8000014:	4613      	mov	r3, r2
+ 8000016:	80bb      	strh	r3, [r7, #4]
+ 8000018:	88fb      	ldrh	r3, [r7, #6]
+ 800001a:	f103 4380 	add.w	r3, r3, #1073741824	@ 0x40000000
+ 800001e:	f503 43c0 	add.w	r3, r3, #24576	@ 0x6000
+ 8000022:	60bb      	str	r3, [r7, #8]
+ 8000024:	2300      	movs	r3, #0
+ 8000026:	81fb      	strh	r3, [r7, #14]
+ 8000028:	e021      	b.n	800006e <pmaWrite+0x66>
+ 800002a:	89fb      	ldrh	r3, [r7, #14]
+ 800002c:	683a      	ldr	r2, [r7, #0]
+ 800002e:	4413      	add	r3, r2
+ 8000030:	781b      	ldrb	r3, [r3, #0]
+ 8000032:	81bb      	strh	r3, [r7, #12]
+ 8000034:	89fb      	ldrh	r3, [r7, #14]
+ 8000036:	1c5a      	adds	r2, r3, #1
+ 8000038:	88bb      	ldrh	r3, [r7, #4]
+ 800003a:	429a      	cmp	r2, r3
+ 800003c:	da0c      	bge.n	8000058 <pmaWrite+0x50>
+ 800003e:	89fb      	ldrh	r3, [r7, #14]
+ 8000040:	3301      	adds	r3, #1
+ 8000042:	683a      	ldr	r2, [r7, #0]
+ 8000044:	4413      	add	r3, r2
+ 8000046:	781b      	ldrb	r3, [r3, #0]
+ 8000048:	b21b      	sxth	r3, r3
+ 800004a:	021b      	lsls	r3, r3, #8
+ 800004c:	b21a      	sxth	r2, r3
+ 800004e:	f9b7 300c 	ldrsh.w	r3, [r7, #12]
+ 8000052:	4313      	orrs	r3, r2
+ 8000054:	b21b      	sxth	r3, r3
+ 8000056:	81bb      	strh	r3, [r7, #12]
+ 8000058:	89fb      	ldrh	r3, [r7, #14]
+ 800005a:	085b      	lsrs	r3, r3, #1
+ 800005c:	b29b      	uxth	r3, r3
+ 800005e:	005b      	lsls	r3, r3, #1
+ 8000060:	68ba      	ldr	r2, [r7, #8]
+ 8000062:	4413      	add	r3, r2
+ 8000064:	89ba      	ldrh	r2, [r7, #12]
+ 8000066:	801a      	strh	r2, [r3, #0]
+ 8000068:	89fb      	ldrh	r3, [r7, #14]
+ 800006a:	3302      	adds	r3, #2
+ 800006c:	81fb      	strh	r3, [r7, #14]
+ 800006e:	89fa      	ldrh	r2, [r7, #14]
+ 8000070:	88bb      	ldrh	r3, [r7, #4]
+ 8000072:	429a      	cmp	r2, r3
+ 8000074:	d3d9      	bcc.n	800002a <pmaWrite+0x22>
+ 8000076:	bf00      	nop
+ 8000078:	bf00      	nop
+ 800007a:	3714      	adds	r7, #20
+ 800007c:	46bd      	mov	sp, r7
+ 800007e:	bc80      	pop	{r7}
+ 8000080:	4770      	bx	lr
+
+08000082 <reset>:
+ 8000082:	b580      	push	{r7, lr}
+ 8000084:	af00      	add	r7, sp, #0
+ 8000086:	4b06      	ldr	r3, [pc, #24]	@ (80000a0 <reset+0x1e>)
+ 8000088:	4a06      	ldr	r2, [pc, #24]	@ (80000a4 <reset+0x22>)
+ 800008a:	601a      	str	r2, [r3, #0]
+ 800008c:	2208      	movs	r2, #8
+ 800008e:	4906      	ldr	r1, [pc, #24]	@ (80000a8 <reset+0x26>)
+ 8000090:	2040      	movs	r0, #64	@ 0x40
+ 8000092:	f7ff ffb9 	bl	8000008 <pmaWrite>
+ 8000096:	4b05      	ldr	r3, [pc, #20]	@ (80000ac <reset+0x2a>)
+ 8000098:	225a      	movs	r2, #90	@ 0x5a
+ 800009a:	701a      	strb	r2, [r3, #0]
+ 800009c:	e7fe      	b.n	800009c <reset+0x1a>
+ 800009e:	bf00      	nop
+ 80000a0:	20005000 	.word	0x20005000
+ 80000a4:	31415926 	.word	0x31415926
+ 80000a8:	080000b0 	.word	0x080000b0
+ 80000ac:	400061f8 	.word	0x400061f8
+
+080000b0 <descriptor>:
+ 80000b0:	78563412 f0debc9a                       .4Vx....

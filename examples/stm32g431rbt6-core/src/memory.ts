@@ -1,5 +1,5 @@
 import { types } from '@mica-js/sdk/model';
-import type { Value } from '@mica-js/sdk/model';
+import type { JitFunctionBuilder, Value } from '@mica-js/sdk/model';
 import {
   CCM,
   CCM_BASE,
@@ -21,6 +21,7 @@ import {
 import type { AccessSize } from './layout';
 import {
   asBody,
+  boolOr,
   num,
   readByte,
   readHalf,
@@ -31,7 +32,7 @@ import {
   writeWord,
 } from './ir';
 import type { Body } from './ir';
-import { readPeripheral, writePeripheral } from './bus';
+import { readPeripheral, registerDeferredWrite, writePeripheral } from './bus';
 import {
   GPIO_BRR,
   GPIO_BSRR,
@@ -39,6 +40,8 @@ import {
   inlineStaticGpioWriteChangesPin,
 } from './gpio';
 import { readSystem, writeSystem } from './nvic';
+import { writeFlashMemory } from './flash';
+import { machine } from './machine';
 
 /**
  * 32 位地址空间的访存分派。
@@ -204,6 +207,33 @@ export function gpioReadsAsZero(address: number): boolean {
 const inRegion = (b: Body, address: Value<number>, base: number, size: number): Value<boolean> =>
   b.lessThan(u32(b, b.subtract(address, num(b, base))), num(b, size));
 
+// Keep both window bounds, but lower the shared Flash operation only once. Both
+// bases are aligned to FLASH_SIZE, so the low bits are the same bank offset.
+const inFlash = (b: Body, address: Value<number>): Value<boolean> =>
+  boolOr(
+    b,
+    inRegion(b, address, FLASH_BASE, FLASH_SIZE),
+    inRegion(b, address, FLASH_ALIAS_BASE, FLASH_SIZE),
+  );
+
+const systemReadName = (size: number): string => `mcuReadSystem${size}`;
+const systemWriteName = (size: AccessSize): string => `mcuWriteSystem${size}`;
+
+/** Reuse NVIC/SCB/SysTick emitters with the same active Machine as translation. */
+export function buildSystemAccessFunctions(builder: JitFunctionBuilder): void {
+  const address = { name: 'systemAddress', type: types.number } as const;
+  const value = { name: 'systemValue', type: types.number } as const;
+  for (const size of [1, 2, 4] as const) {
+    builder.fn(
+      { name: systemReadName(size), params: [address], returns: types.number },
+      (body, args) => body.returnValue(readSystem(asBody(body), args.systemAddress, size)),
+    );
+    builder.fn({ name: systemWriteName(size), params: [address, value] }, (body, args) => {
+      writeSystem(asBody(body), args.systemAddress, size, args.systemValue);
+    });
+  }
+}
+
 /** 静态区间内的偏移：常量偏移直接发射，否则按区间基址换算。 */
 function regionOffset(b: Body, address: Value<number>, at: At): Value<number> {
   if (at.offset !== undefined) return num(b, at.offset);
@@ -270,7 +300,9 @@ function writeAt(
 
   switch (region) {
     case 'code':
-      // Flash 写入未建模，保留固件映像。
+      // Guest store 只有通过已解锁的 Flash 控制器才会改变映像；写 `code` 同时触发
+      // 引擎的 code 版本失效。
+      writeFlashMemory(b, offset, size, value);
       return;
     case 'sram':
       storeWidth(b, SRAM, offset, size, value);
@@ -332,6 +364,8 @@ export function readMemory(
 
   if (at !== undefined) return readAt(b, address, size, at, deferred)!;
 
+  const sharedSystem =
+    (size === 1 || size === 2 || size === 4) && machine().shareDynamicSystemAccess === true;
   const result = b.local(types.number, 0);
 
   b.if(
@@ -345,13 +379,13 @@ export function readMemory(
       const body = asBody(other);
 
       body.if(
-        inRegion(body, address, FLASH_BASE, FLASH_SIZE),
+        inFlash(body, address),
         (flash) => {
           const inner = asBody(flash);
 
           inner.setLocal(
             result,
-            loadWidth(inner, CODE, offsetFrom(inner, address, FLASH_BASE), size),
+            loadWidth(inner, CODE, inner.bitAnd(address, num(inner, CODE_MASK)), size),
           );
         },
         (rest) => {
@@ -381,24 +415,12 @@ export function readMemory(
                   tail.if(
                     inRegion(tail, address, SYSTEM_BASE, SYSTEM_END - SYSTEM_BASE),
                     (system) => {
-                      system.setLocal(result, readSystem(asBody(system), address, size));
-                    },
-                    (alias) => {
-                      const last = asBody(alias);
-
-                      last.if(inRegion(last, address, FLASH_ALIAS_BASE, FLASH_SIZE), (mirror) => {
-                        const scope = asBody(mirror);
-
-                        scope.setLocal(
-                          result,
-                          loadWidth(
-                            scope,
-                            CODE,
-                            offsetFrom(scope, address, FLASH_ALIAS_BASE),
-                            size,
-                          ),
-                        );
-                      });
+                      system.setLocal(
+                        result,
+                        sharedSystem
+                          ? system.callValue(systemReadName(size), types.number, address)
+                          : readSystem(asBody(system), address, size),
+                      );
                     },
                   );
                 },
@@ -427,6 +449,10 @@ export function writeMemory(
     return;
   }
 
+  // Keep the possible code write out of the SRAM hot block. The Flash service still
+  // performs the actual write and triggers the normal code-version invalidation.
+  const deferFlash = defer && machine().deferDynamicFlashStore === true;
+
   b.if(
     inRegion(b, address, SRAM_BASE, SRAM_SIZE),
     (ram) => {
@@ -438,27 +464,42 @@ export function writeMemory(
       const body = asBody(other);
 
       body.if(
-        inRegion(body, address, CCM_BASE, CCM_SIZE),
-        (ccm) => {
-          const scope = asBody(ccm);
+        inFlash(body, address),
+        (flash) => {
+          const scope = asBody(flash);
 
-          storeWidth(scope, CCM, offsetFrom(scope, address, CCM_BASE), size, value);
+          if (deferFlash) registerDeferredWrite(scope, address, size, value);
+          else writeFlashMemory(scope, scope.bitAnd(address, num(scope, CODE_MASK)), size, value);
         },
-        (rest) => {
-          const inner = asBody(rest);
+        (notFlash) => {
+          const scope = asBody(notFlash);
 
-          inner.if(
-            inRegion(inner, address, PERIPHERAL_BASE, PERIPHERAL_END - PERIPHERAL_BASE),
-            (periph) => {
-              writePeripheral(asBody(periph), address, size, value, defer);
+          scope.if(
+            inRegion(scope, address, CCM_BASE, CCM_SIZE),
+            (ccm) => {
+              const inner = asBody(ccm);
+
+              storeWidth(inner, CCM, offsetFrom(inner, address, CCM_BASE), size, value);
             },
-            (next) => {
-              const scope = asBody(next);
+            (rest) => {
+              const inner = asBody(rest);
 
-              scope.if(
-                inRegion(scope, address, SYSTEM_BASE, SYSTEM_END - SYSTEM_BASE),
-                (system) => {
-                  writeSystem(asBody(system), address, size, value);
+              inner.if(
+                inRegion(inner, address, PERIPHERAL_BASE, PERIPHERAL_END - PERIPHERAL_BASE),
+                (periph) => {
+                  writePeripheral(asBody(periph), address, size, value, defer);
+                },
+                (next) => {
+                  const tail = asBody(next);
+
+                  tail.if(
+                    inRegion(tail, address, SYSTEM_BASE, SYSTEM_END - SYSTEM_BASE),
+                    (system) => {
+                      if (machine().shareDynamicSystemAccess)
+                        system.call(systemWriteName(size), address, value);
+                      else writeSystem(asBody(system), address, size, value);
+                    },
+                  );
                 },
               );
             },
@@ -467,5 +508,4 @@ export function writeMemory(
       );
     },
   );
-  // Flash 写入（IAP/Flash 编程）未建模：忽略，保留固件映像。
 }

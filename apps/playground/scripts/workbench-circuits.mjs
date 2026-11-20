@@ -1,3 +1,40 @@
+import assets from '../workbench-assets.json' with { type: 'json' };
+
+export function createCt117eCircuit({ id, version, integrity }) {
+  const instance = 'b5aacca4-8e87-4167-bb49-db65034823ea';
+  return {
+    version: 2,
+    dependencies: { [id]: { version, integrity } },
+    instances: [
+      {
+        id: instance,
+        device: id,
+        designator: 'U1',
+        placement: { x: 0, y: 0, rotation: 0 },
+        properties: { clockFrequency: 80_000_000, firmware: assets.ct117eFirmware },
+      },
+    ],
+    nodes: [],
+    wires: [],
+    labels: [],
+    references: [
+      {
+        id: '719f105c-c646-44e8-9a38-de5da7180aa3',
+        target: { kind: 'pin', instance, pin: 'VDD1' },
+        voltage: 3.3,
+        symbol: 'power',
+      },
+      {
+        id: '7dc18e20-2ba7-4661-a342-7b99a98d3aa8',
+        target: { kind: 'pin', instance, pin: 'VSS1' },
+        voltage: 0,
+        symbol: 'ground',
+      },
+    ],
+    display: { body: true, designators: false },
+  };
+}
+
 export function createMcuCircuit(devices) {
   const button = '11111111-1111-4111-8111-111111111111';
   const led = '22222222-2222-4222-8222-222222222222';

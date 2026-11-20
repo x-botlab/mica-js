@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@mica-js/document": "workspace:*",
+    "@mica-js/example-devices": "workspace:*",
     "@mica-js/sdk": "workspace:*"
   }
 }

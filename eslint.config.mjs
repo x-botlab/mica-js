@@ -7,6 +7,8 @@ export default defineConfig([
     '**/dist/**',
     '**/coverage/**',
     '**/node_modules/**',
+    // mica prepare 生成的 .mica 类型环境
+    '**/.mica/**',
     'apps/playground/public/draco/**',
     // mica prepare 生成的 DDL 类型投影，已由 .gitignore 排除
     '**/*.d.ddl.ts',

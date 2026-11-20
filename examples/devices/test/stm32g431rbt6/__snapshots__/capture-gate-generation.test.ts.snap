@@ -1,0 +1,31 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`TIM capture gate renderer > renders the checked-in DDL fragment 1`] = `
+"  // BEGIN GENERATED TIM CAPTURE GATES (render-capture-gates.ts)
+  pure fn captureArmed(pinId: number) -> bool {
+    if pinId == 0 {
+      return (load32le(periph, 0x4c) & 1) != 0
+        && (load32le(periph, 0x2c) & 1) == 0
+        && (load32le(periph, 0x58) & 1) != 0
+        && (load32le(periph, 0x38) & 1) == 0
+        && (load32le(tim, 0x48 + 0x00) & 1) != 0
+        && ((load32le(tim, 0x48 + 0x18) >> 0) & 3) == 1
+        && (load32le(tim, 0x48 + 0x20) & 1) != 0
+        && ((gpioModer0 >> 30) & 3) == 2
+        && ((gpioAfr10 >> 28) & 0xf) == 1;
+    } else if pinId == 1 {
+      return (load32le(periph, 0x4c) & 2) != 0
+        && (load32le(periph, 0x2c) & 2) == 0
+        && (load32le(periph, 0x58) & 2) != 0
+        && (load32le(periph, 0x38) & 2) == 0
+        && (load32le(tim, 0x90 + 0x00) & 1) != 0
+        && ((load32le(tim, 0x90 + 0x18) >> 0) & 3) == 1
+        && (load32le(tim, 0x90 + 0x20) & 1) != 0
+        && ((gpioModer1 >> 8) & 3) == 2
+        && ((gpioAfr01 >> 16) & 0xf) == 2;
+    } else {
+      return false;
+    }
+  }
+  // END GENERATED TIM CAPTURE GATES"
+`;

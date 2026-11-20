@@ -1,11 +1,8 @@
 import { types } from '@mica-js/sdk/model';
 import type { Value } from '@mica-js/sdk/model';
-import { APSR_C, APSR_N, APSR_V, APSR_Z } from './layout';
 import type { AccessSize } from './layout';
 import {
   asBody,
-  boolAnd,
-  boolBit,
   conditionHolds,
   num,
   readReg,
@@ -17,15 +14,45 @@ import {
 import type { Body } from './ir';
 import { readMemory, writeMemory } from './memory';
 import type { At } from './memory';
+import { exceptionReturn, isExceptionReturn } from './nvic';
+import { noteGuestStore } from './exclusive';
 
 /** 读取通用寄存器；R15 返回当前指令地址 + 4（Thumb 约定）。 */
 export const readAnyReg = (b: Body, index: number, pc: number): Value<number> =>
   index === 15 ? num(b, (pc + 4) >>> 0) : readReg(b, index);
 
-/** 写通用寄存器；写 R15 等价于跳转。 */
-export const writeAnyReg = (b: Body, index: number, value: Value<number>): void => {
-  if (index === 15) setPc(b, value);
-  else writeReg(b, index, value);
+/**
+ * 写通用寄存器；写 R15 等价于跳转。
+ *
+ * 任何写 PC 的指令（BX、POP {pc}、LDM {pc}、LDR pc、MOV pc, ...）都可能携带
+ * EXC_RETURN：异常返回规则统一由 nvic 的 exceptionReturn 维护，这里不能只 setPc，
+ * 否则 `pop {pc}` 会把 0xFFFFFFF9 当成代码地址。
+ */
+export const writeAnyReg = (
+  b: Body,
+  index: number,
+  value: Value<number>,
+  pc?: number,
+): void => {
+  // `pc` 仍由调用点按统一寄存器写入协议传入；FP 上下文边界移除后写入路径不再需要它。
+  void pc;
+  if (index === 15) {
+    // EXC_RETURN 高 27 位全为 1（>= 0xFFFFFFE0）。普通跳转/返回先走单次无符号比较快路径，
+    // 避免每次 `bx lr` / `pop {pc}` 都求值完整的 6 路低位模式匹配。
+    b.if(
+      b.lessThan(u32(b, value), num(b, 0xffffffe0)),
+      (normal) => setPc(asBody(normal), value),
+      (maybeExc) => {
+        const scope = asBody(maybeExc);
+
+        scope.if(
+          isExceptionReturn(scope, value),
+          (inner) => exceptionReturn(asBody(inner), value),
+          (normal) => setPc(asBody(normal), value),
+        );
+      },
+    );
+  } else writeReg(b, index, value);
 };
 
 /**
@@ -51,7 +78,7 @@ export function loadRegister(
   );
   const value = signed ? signExtend(b, raw, size * 8) : raw;
 
-  writeAnyReg(b, target, value);
+  writeAnyReg(b, target, value, pc);
 }
 
 export function storeRegister(
@@ -63,6 +90,8 @@ export function storeRegister(
   at?: At,
   defer = false,
 ): void {
+  // normal store 与 local exclusive monitor 的区间重叠时清除监视器。
+  noteGuestStore(b, address, size);
   writeMemory(b, address, size, readAnyReg(b, source, pc), defer, at);
 }
 
@@ -85,46 +114,27 @@ export const conditional = (b: Body, condition: number, emit: (body: Body) => vo
 /**
  * 动态条件（IT 块）：把条件号映射为当前标志的组合。
  *
- * 条件码的 `bit0` 表示取反、`bit3..1` 选中 8 个基条件之一，因此只需要一条 7 深的条件
- * 选择链加一次取反，而不是 14 个逐值比较——后者会给每个 IT 条件展开 14 个 `select`
- * 块，是指令块 IR 体积的主要来源。`cond = 14/15`（AL/NV）不能编码进 IT 块，不处理。
+ * 条件在 `guard` 顶层通过 `conditionHolds` 生成，再组合成 select 链；不要把
+ * `conditionValue` 放进嵌套 builder/if 回调，否则 APSR 读取会丢失外部状态。
+ * `cond = 14/15`（AL/NV）由默认 true 覆盖。
  */
 export function conditionValue(b: Body, condition: Value<number>): Value<boolean> {
-  const apsr = b.readState('apsr', types.number);
-  const z = boolBit(b, apsr, APSR_Z);
-  const c = boolBit(b, apsr, APSR_C);
-  const n = boolBit(b, apsr, APSR_N);
-  const v = boolBit(b, apsr, APSR_V);
-  const nEqualsV = b.equal(types.bool, n, v);
-  const notZ = b.not(z);
-  // 下标是条件码的 bit3..1：EQ / CS / MI / VS / HI / GE / GT / 未使用。
-  const bases: readonly Value<boolean>[] = [
-    z,
-    c,
-    n,
-    v,
-    boolAnd(b, c, notZ),
-    nEqualsV,
-    boolAnd(b, notZ, nEqualsV),
-    b.constant(types.bool, true),
-  ];
-  const base = b.bitAnd(b.shiftRightUnsigned(condition, num(b, 1)), num(b, 7));
-  let selected = bases[7]!;
+  let selected = b.constant(types.bool, true);
 
-  for (let index = 6; index >= 0; index -= 1)
+  // 逐条件比较。动态 IT 条件的 bit 展开在嵌套 select 里容易丢状态；这里每个
+  // 条件分支都用顶层 conditionHolds 生成，最后只组合 select，避免嵌套 builder。
+  for (let code = 13; code >= 0; code -= 1) {
+    const holds = conditionHolds(b, code);
+
     selected = b.select(
       types.bool,
-      b.equal(types.number, base, num(b, index)),
-      () => bases[index]!,
+      b.equal(types.number, condition, num(b, code)),
+      () => holds,
       () => selected,
     );
+  }
 
-  return b.select(
-    types.bool,
-    boolBit(b, condition, 1),
-    (inner) => inner.not(selected),
-    () => selected,
-  );
+  return selected;
 }
 
 /** 32 位值的二进制补码取负。 */

@@ -1,5 +1,13 @@
 import { fail } from './errors.js';
-import type { BlockIR, DeviceIR, InputPath, OperationIR, SourceRange, ValueTypeIR } from './ir.js';
+import type {
+  BlockIR,
+  DeviceIR,
+  InputPath,
+  OperationIR,
+  RegionIR,
+  SourceRange,
+  ValueTypeIR,
+} from './ir.js';
 
 // Schema nodes are untrusted until this pass has checked every field.
 export type Node = Record<string, unknown>;
@@ -63,7 +71,7 @@ export function fields(
   for (const key of required)
     if (!Object.hasOwn(n, key)) fail('IR_SCHEMA', `Missing field ${key}.`, [...p, key]);
   for (const key of Object.keys(n))
-    if (![...required, ...optional, ...(located ? ['source'] : [])].includes(key))
+    if (!(located && key === 'source') && !required.includes(key) && !optional.includes(key))
       fail('IR_SCHEMA', `Unexpected field ${key}.`, [...p, key]);
   if (Object.hasOwn(n, 'source')) source(n.source, [...p, 'source']);
 }
@@ -135,8 +143,9 @@ export function valueType(v: unknown, p: InputPath, optional = true): asserts v 
     valueType(v.inner, [...p, 'inner'], false);
   } else {
     choice(v.kind, valueKinds, [...p, 'kind']);
-    fields(v, ['kind', ...(['enum', 'record'].includes(v.kind) ? ['name'] : [])], [], p);
-    if (['enum', 'record'].includes(v.kind)) text(v.name, [...p, 'name']);
+    const named = v.kind === 'enum' || v.kind === 'record';
+    fields(v, named ? ['kind', 'name'] : ['kind'], [], p);
+    if (named) text(v.name, [...p, 'name']);
   }
   if (Object.hasOwn(v, 'source'))
     fail('IR_SCHEMA', 'Type descriptors cannot carry source information.', p);
@@ -204,18 +213,27 @@ function constant(v: unknown, p: InputPath, pattern = false): void {
       else text(v.value, [...p, 'value']);
   }
 }
-export function region(v: unknown, p: InputPath): void {
+type BuiltRegions = WeakSet<RegionIR>;
+
+export function region(v: unknown, p: InputPath, built?: BuiltRegions): void {
   object(v, p);
   fields(v, ['operations'], [], p);
+  // Only the Builder passes its private set here. Each operation in such a region
+  // was checked when emitted; finalization still walks the entire captured IR.
+  if (built?.has(v as unknown as RegionIR)) return;
   list(v.operations, [...p, 'operations'], operation);
 }
-function computation(v: unknown, p: InputPath): void {
+function computation(v: unknown, p: InputPath, built?: BuiltRegions): void {
   object(v, p);
   fields(v, ['type', 'body'], [], p);
   valueType(v.type, [...p, 'type']);
-  region(v.body, [...p, 'body']);
+  region(v.body, [...p, 'body'], built);
 }
-export function operation(v: unknown, p: InputPath): asserts v is OperationIR {
+export function operation(
+  v: unknown,
+  p: InputPath,
+  built?: BuiltRegions,
+): asserts v is OperationIR {
   object(v, p);
   text(v.kind, [...p, 'kind']);
   let required: string[] = [],
@@ -380,8 +398,8 @@ export function operation(v: unknown, p: InputPath): asserts v is OperationIR {
     case 'if':
       required = ['condition', 'yes'];
       optional = ['no'];
-      region(v.yes, [...p, 'yes']);
-      if (Object.hasOwn(v, 'no')) region(v.no, [...p, 'no']);
+      region(v.yes, [...p, 'yes'], built);
+      if (Object.hasOwn(v, 'no')) region(v.no, [...p, 'no'], built);
       break;
     case 'match':
       required = ['value', 'arms'];
@@ -390,33 +408,33 @@ export function operation(v: unknown, p: InputPath): asserts v is OperationIR {
         object(a, q);
         fields(a, ['pattern', 'body'], [], q);
         constant(a.pattern, [...q, 'pattern'], true);
-        region(a.body, [...q, 'body']);
+        region(a.body, [...q, 'body'], built);
       });
-      if (Object.hasOwn(v, 'otherwise')) region(v.otherwise, [...p, 'otherwise']);
+      if (Object.hasOwn(v, 'otherwise')) region(v.otherwise, [...p, 'otherwise'], built);
       break;
     case 'while':
       required = ['test', 'body'];
-      computation(v.test, [...p, 'test']);
-      region(v.body, [...p, 'body']);
+      computation(v.test, [...p, 'test'], built);
+      region(v.body, [...p, 'body'], built);
       break;
     case 'loop':
       required = ['body'];
-      region(v.body, [...p, 'body']);
+      region(v.body, [...p, 'body'], built);
       break;
     case 'and':
     case 'or':
       resultFields(['left', 'right']);
-      computation(v.right, [...p, 'right']);
+      computation(v.right, [...p, 'right'], built);
       break;
     case 'select':
       resultFields(['condition', 'yes', 'no']);
-      computation(v.yes, [...p, 'yes']);
-      computation(v.no, [...p, 'no']);
+      computation(v.yes, [...p, 'yes'], built);
+      computation(v.no, [...p, 'no'], built);
       break;
     case 'assert':
       required = ['condition'];
       optional = ['message'];
-      if (Object.hasOwn(v, 'message')) computation(v.message, [...p, 'message']);
+      if (Object.hasOwn(v, 'message')) computation(v.message, [...p, 'message'], built);
       break;
     case 'wait':
     case 'elapse':

@@ -1,0 +1,42 @@
+{
+  "name": "voltmeter",
+  "publisher": "demo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "10 MΩ 输入阻抗的差分电压表，输出正端减负端的电压。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^0.3.0"
+  },
+  "displayName": "Voltmeter",
+  "designatorPrefix": "VM",
+  "properties": {},
+  "pins": {
+    "positive": {
+      "label": "+"
+    },
+    "negative": {
+      "label": "-"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {
+      "getVoltage": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      }
+    },
+    "events": {
+      "onDidVoltage": {
+        "type": "number"
+      }
+    }
+  }
+}

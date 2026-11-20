@@ -1,0 +1,231 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
+import type { DeviceIR } from '@mica-js/sdk/model';
+import {
+  adaptModelFactory,
+  firmwareImage,
+} from '../../devices/test/support/legacy-model-bridge.mjs';
+import { MCU_PIN } from '../device/src/nets';
+import { driveMemoryName, pinMemoryName } from '../device/shared/dirty-protocol.mjs';
+
+/**
+ * Fused CT107D fixture. This is the formal `device/dist` artifact: one model, one
+ * instance and one JIT. The test-only bridge only adapts `createBoard` prop validation
+ * and firmware resources; it does not assemble any discrete device or net.
+ */
+
+const PROJECT = join(import.meta.dirname, '..');
+const ARTIFACT = join(PROJECT, 'device', 'dist', 'model.js');
+const MANIFEST = join(PROJECT, 'device', 'dist', 'package.json');
+const TOPOLOGY = join(PROJECT, 'device', 'scripts', 'board-topology.json');
+const DOCUMENT = join(PROJECT, 'ct107d.sch');
+const GENERATED_MODEL = join(PROJECT, 'device', 'src', 'model.ddl');
+
+const sha256 = (bytes: string | Uint8Array): string =>
+  createHash('sha256').update(bytes).digest('hex');
+
+interface ArtifactModule {
+  readonly model: DeviceIR;
+  readonly create: (context: never) => {
+    readonly methods?: Readonly<Record<string, (params: unknown) => unknown>>;
+    sync(batch: unknown): void;
+    dispose(): void;
+  };
+}
+
+interface ArtifactManifest {
+  readonly model?: {
+    readonly events?: Readonly<Record<string, unknown>>;
+  };
+}
+
+/** Bridge topics of every declared model event; a manifest drift must fail instead of no-op. */
+const EVENT_TOPICS = Object.freeze({
+  onDidSignal: 'signal',
+  onDidBytes: 'bytes',
+  onDidUart1Tx: 'uart1.tx',
+  onDidUart1Rx: 'uart1.rx',
+  onDidAmplifier: 'amplifier.event',
+});
+
+/** MCU drives in ascending order; each drive owns one single-byte memory resource. */
+const MCU_DRIVES = Object.freeze(
+  Object.values(MCU_PIN)
+    .map((pin) => pin.drive)
+    .sort((left, right) => left - right),
+);
+
+/** Assemble the per-drive resources into one flat test view. */
+function readDriveMemories(
+  memories: ReadonlyMap<string, Uint8Array> | undefined,
+  name: (drive: number) => string,
+): Uint8Array {
+  const values = new Uint8Array(MCU_DRIVES.length);
+
+  for (const drive of MCU_DRIVES) values[drive] = memories?.get(name(drive))?.[0] ?? 0;
+  return values;
+}
+
+export interface FusedFingerprints {
+  readonly source: 'dist';
+  readonly model: string;
+  readonly manifest: string;
+  readonly generatedModel: string;
+  /** 板级拓扑输入（实例、装配属性与内部网表）；生成器唯一非器件包输入。 */
+  readonly topology: string;
+  /** 正式 v2 文档；只作为宿主入口指纹，不参与模型生成。 */
+  readonly document: string;
+  readonly firmware: string;
+}
+
+export interface FusedBoardOptions {
+  readonly firmware: Uint8Array;
+  readonly props?: Readonly<Record<string, unknown>>;
+  readonly execution?: 'throughput' | 'precise';
+}
+
+export interface FusedBenchBoard {
+  readonly board: {
+    readonly time: number;
+    readonly status: string;
+    readonly topics: {
+      onDidReceive(listener: (message: { topic: string; payload: unknown }) => unknown): {
+        dispose(): void;
+      };
+      publish(topic: string, payload: unknown): void;
+    };
+    runUntil(target: number): void;
+    dispose(): void;
+  };
+  readonly faults: readonly string[];
+  /** Exactly one device instance in the artifact graph. */
+  readonly instances: number;
+  /** Exactly one JIT (the 8051 core) in the artifact graph. */
+  readonly jits: number;
+  readonly clockFrequency: number;
+  readonly devices: number;
+  readonly nets: number;
+  readonly fingerprints: FusedFingerprints;
+  /** Adapter methods exposed for correctness tests (not used in timing). */
+  readonly methods: Readonly<Record<string, (params: unknown) => unknown>>;
+  /** Test-only view of the fused MCU pin levels (0 low, 1 high, 2 unknown). */
+  fusedPins(): Uint8Array;
+  /** Test-only view of the fused MCU pin drive codes (0/1/2/3/4). */
+  fusedMcuDrives(): Uint8Array;
+  dispose(): void;
+}
+
+let artifactPromise: Promise<ArtifactModule> | undefined;
+
+function loadArtifact(): Promise<ArtifactModule> {
+  artifactPromise ??= (async () => {
+    const manifest = JSON.parse(readFileSync(MANIFEST, 'utf8')) as ArtifactManifest;
+    const declared = Object.keys(manifest.model?.events ?? {}).sort();
+    const mapped = Object.keys(EVENT_TOPICS).sort();
+    if (declared.join('\0') !== mapped.join('\0')) {
+      throw new Error(
+        `${MANIFEST}: bridge event drift; manifest declares [${declared.join(', ')}] ` +
+          `but the fixture maps [${mapped.join(', ')}]`,
+      );
+    }
+    const imported = (await import(pathToFileURL(ARTIFACT).href)) as ArtifactModule;
+    if (imported.model === undefined || imported.create === undefined)
+      throw new Error(`${ARTIFACT} must export both \`model\` and \`create\``);
+    return imported;
+  })();
+  return artifactPromise;
+}
+
+export function demoFirmware(): Uint8Array {
+  return new Uint8Array(readFileSync(join(PROJECT, 'device', 'src', 'assets', 'ct107d-demo.bin')));
+}
+
+export async function createFusedCt107dBoard(options: FusedBoardOptions): Promise<FusedBenchBoard> {
+  const artifact = await loadArtifact();
+  const create = adaptModelFactory(artifact.create as never, {
+    props: (context) => ({
+      ...(context.props as Readonly<Record<string, unknown>>),
+      firmware: firmwareImage([
+        { addressSpace: 'code', address: 0, data: options.firmware.slice() },
+      ]),
+    }),
+    events: EVENT_TOPICS,
+    inputs: {
+      switch: { method: 'setSwitch' },
+      jumper: { method: 'setJumper' },
+      hall: { method: 'setHallField', params: (value) => ({ value }) },
+      wiper: { method: 'setWiper', params: (value) => ({ value }) },
+      amplifier: { method: 'setAmplifierInputs' },
+      ir: { method: 'setIrCarrier' },
+      temperature: { method: 'setTemperature', params: (value) => ({ value }) },
+      analog: { method: 'setAnalogInput' },
+      uart: { method: 'sendUart', params: (value) => ({ data: value }) },
+    },
+  });
+  const props = {
+    ...(options.props ?? {}),
+    ...(options.props?.['clockFrequency'] === undefined ? { clockFrequency: 11_059_200 } : {}),
+  };
+  const description = {
+    instances: [{ id: 'board', type: 'board', props } as never],
+    nets: [
+      { id: 'vcc', voltage: 5, pins: [{ instance: 'board', pin: 'VCC' }] },
+      { id: 'gnd', voltage: 0, pins: [{ instance: 'board', pin: 'GND' }] },
+    ],
+  };
+  const board =
+    options.execution === undefined
+      ? createBoard(
+          createDeviceLibrary([{ id: 'board', model: artifact.model, create: create as never }]),
+          description,
+        )
+      : createBoard(
+          createDeviceLibrary([{ id: 'board', model: artifact.model, create: create as never }]),
+          description,
+          { execution: options.execution },
+        );
+  const faults: string[] = [];
+  const subscription = board.onDidError((event) => faults.push(`${event.code}: ${event.message}`));
+  const runtime = board as unknown as {
+    readonly instances: readonly {
+      readonly jits: readonly unknown[];
+      readonly adapter?: {
+        readonly methods?: Readonly<Record<string, (params: unknown) => unknown>>;
+      };
+      readonly memories?: ReadonlyMap<string, Uint8Array>;
+    }[];
+  };
+  const instances = runtime.instances.length;
+  const jits = runtime.instances.reduce((sum, instance) => sum + instance.jits.length, 0);
+  const methods = runtime.instances[0]?.adapter?.methods ?? {};
+  const memories = runtime.instances[0]?.memories;
+
+  return {
+    board: board as unknown as FusedBenchBoard['board'],
+    faults,
+    instances,
+    jits,
+    clockFrequency: Number(props.clockFrequency ?? 11_059_200),
+    devices: instances,
+    nets: description.nets.length,
+    methods,
+    fusedPins: () => readDriveMemories(memories, pinMemoryName),
+    fusedMcuDrives: () => readDriveMemories(memories, driveMemoryName),
+    fingerprints: {
+      source: 'dist',
+      model: sha256(readFileSync(ARTIFACT)),
+      manifest: sha256(readFileSync(MANIFEST)),
+      generatedModel: sha256(readFileSync(GENERATED_MODEL)),
+      topology: sha256(readFileSync(TOPOLOGY)),
+      document: sha256(readFileSync(DOCUMENT)),
+      firmware: sha256(options.firmware),
+    },
+    dispose() {
+      subscription.dispose();
+      board.dispose();
+    },
+  };
+}

@@ -1,0 +1,11 @@
+{
+  "extends": "./.mica/tsconfig.json",
+  "include": [
+    "src",
+    "views",
+    "mica.config.ts"
+  ],
+  "compilerOptions": {
+    "allowImportingTsExtensions": true
+  }
+}

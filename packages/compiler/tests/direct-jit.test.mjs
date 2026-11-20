@@ -291,6 +291,233 @@ function scalarLoop() {
   return [alu.instruction(0, 2), memory.instruction(2, 0)];
 }
 
+test('large resident else arms execute synchronously and preserve compact slots and boundaries', () => {
+  const b = builder();
+  const x = b.read('x');
+  const flag = b.read('flag', 'bool');
+  const offset = b.read('offset');
+  const number = { kind: 'number' };
+  const seven = b.constant(7);
+  const zero = b.constant(0);
+  const fortyTwo = b.constant(42);
+  const duration = b.constant(3);
+  b.operations.push({ kind: 'local', local: 0, type: number, initial: duration });
+  const cold = Array.from({ length: 2000 }, () => ({
+    kind: 'write',
+    name: 'marker',
+    value: seven,
+  }));
+  const sum = b.value({ kind: 'binary', operator: 'add', left: x, right: seven }, 'number', cold);
+  cold.push(
+    { kind: 'store8', memory: ram, offset: zero, value: sum },
+    { kind: 'notify', notification: 'cold' },
+    { kind: 'store8', memory: ram, offset, value: seven },
+    { kind: 'localWrite', local: 0, value: sum },
+  );
+  b.operations.push({
+    kind: 'if',
+    condition: flag,
+    yes: { operations: [{ kind: 'write', name: 'marker', value: fortyTwo }] },
+    no: {
+      operations: [
+        {
+          kind: 'if',
+          condition: flag,
+          yes: { operations: [{ kind: 'write', name: 'marker', value: zero }] },
+          no: { operations: cold },
+        },
+      ],
+    },
+  });
+  const delay = b.value({ kind: 'localRead', local: 0 });
+  b.operations.push({ kind: 'elapse', duration: delay });
+  b.write('y', b.binary('add', x, delay));
+  const stop = builder();
+  stop.operations.push({ kind: 'stop' });
+  const instructions = [b.instruction(0, 2), stop.instruction(2, 4)];
+  const settings = { ...binding, split: true, host: true };
+  const factories = captureFactories(() =>
+    compileDirectJit(instructions, settings, compileDirectJit.createCache()),
+  );
+  const source = factories.find((source) => source.includes('function outlined'));
+  assert(source, 'the resident factory outlines the long arm');
+  assert.equal([...source.matchAll(/function outlined\d+\(/g)].length, 1);
+  assert(source.indexOf('F.host.notify') > source.indexOf('function outlined'));
+
+  for (const [flag, offset, publish] of [
+    [true, 1, false],
+    [false, 1, false],
+    [false, 1, true],
+    [false, 9, false],
+  ]) {
+    const pair = duet(instructions, {
+      binding: settings,
+      cache: compileDirectJit.createCache(),
+      states: [0, 4, 0, flag, offset, 0],
+      host: true,
+    });
+    if (!flag && publish) {
+      // Host effects can require publication before elapsed time advances.
+      for (const side of [pair.left, pair.right]) {
+        const notify = side.log.notify;
+        side.log.notify = (name) => {
+          notify(name);
+          side.frame.publishPending = true;
+        };
+      }
+    }
+    const f = pair.right.frame;
+    for (const [bank, mask] of [
+      ['blockedStates', 1 << binding.states.get('marker')],
+      ['blockedMemories', 1],
+    ]) {
+      f[bank] = pair.left.frame[bank] = [mask];
+      assert.equal(pair.run(2), 'fallback', `check ${bank} before the whole instruction`);
+      assert.equal(f.states[0], 0);
+      assert.deepEqual(f.stateDirty, [0]);
+      assert.deepEqual(f.memoryDirty, [0]);
+      assert.deepEqual(pair.right.log.entries, []);
+      f[bank][0] = 0;
+    }
+    if (offset === 9) {
+      assert(pair.run(2) instanceof RangeError);
+      assert.deepEqual(f.states, [2, 4, 0, false, 9, 7]);
+      assert.deepEqual([...f.memories[0]], [11, 8, 9]);
+      assert.deepEqual(f.stateDirty, [33]);
+      assert.deepEqual(f.memoryDirty, [1]);
+      assert.equal(f.resume, 0);
+      continue;
+    }
+    assert.equal(pair.run(2), publish ? 'invalidated' : 'deadline');
+    assert.equal(f.time, publish ? 0 : 2);
+    assert.equal(f.due, flag ? 3 : 11);
+    assert.notEqual(f.resume, 0);
+    assert.equal(f.states[2], 0, 'suffix has not executed');
+    assert.equal(f.states[5], flag ? 42 : 7);
+    assert.deepEqual([...f.memories[0]], flag ? [7, 8, 9] : [11, 7, 9]);
+    f.publishPending = pair.left.frame.publishPending = false;
+    assert.equal(pair.run(f.due), 'deadline', 'deadline equality does not start the suffix');
+    assert.equal(pair.run(f.due + 1), 'stopped');
+    assert.equal(f.states[2], flag ? 7 : 15);
+    assert.deepEqual(pair.right.log.entries, flag ? [] : [['notify', 'cold', 0]]);
+    assert.equal(f.resume, 0);
+  }
+});
+
+test('zero-time while loops keep outer values live and publish at both instruction boundaries', () => {
+  const prefix = builder();
+  prefix.delay(2);
+  prefix.write('marker', prefix.constant(9));
+  const b = builder();
+  const limit = b.read('x');
+  const base = b.read('marker');
+  const zero = b.constant(0);
+  const one = b.constant(1);
+  const two = b.constant(2);
+  const three = b.constant(3);
+  const local = (target, id) =>
+    target.push({ kind: 'local', local: id, type: { kind: 'number' }, initial: zero });
+  const get = (target, id) => b.value({ kind: 'localRead', local: id }, 'number', target);
+  const set = (target, id, value) => target.push({ kind: 'localWrite', local: id, value });
+  const op = (target, operator, left, right, type = 'number') =>
+    b.value({ kind: 'binary', operator, left, right }, type, target);
+  const condition = (id, end) => {
+    const operations = [];
+    const value = op(operations, 'lessThan', get(operations, id), end, 'bool');
+    operations.push({ kind: 'yield', value });
+    return { body: { operations } };
+  };
+  local(b.operations, 0); // outer cursor
+  local(b.operations, 1); // accumulator
+  const outer = [];
+  local(outer, 2); // reset the inner cursor on each outer iteration
+  const inner = [];
+  set(inner, 1, op(inner, 'add', get(inner, 1), base));
+  set(inner, 2, op(inner, 'add', get(inner, 2), one));
+  outer.push({ kind: 'while', test: condition(2, two), body: { operations: inner } });
+  const cursor = get(outer, 0);
+  const accumulator = get(outer, 1);
+  outer.push(
+    { kind: 'store8', memory: ram, offset: cursor, value: accumulator },
+    { kind: 'write', name: 'y', value: accumulator },
+  );
+  set(outer, 0, op(outer, 'add', cursor, one));
+  b.operations.push({ kind: 'while', test: condition(0, limit), body: { operations: outer } });
+  b.delay(0);
+  b.write('marker', three);
+  const done = builder();
+  done.operations.push({ kind: 'stop' });
+  const instructions = [prefix.instruction(0, 2), b.instruction(2, 4), done.instruction(4, 6)];
+  const split = { ...binding, split: true, shardSlotLimit: 0, shardSize: 4 };
+  for (const [settings, cache] of [[binding], [split], [split, compileDirectJit.createCache()]]) {
+    const program = compileDirectJit(instructions, settings, cache);
+    assert.deepEqual([...program.pcs], [0, 2, 4]);
+    for (const x of [0, 3]) {
+      const f = frame(program, [0, x, 0, true, 0, 0]);
+      const reference = generic(instructions, f.states, f.memories);
+      assert.equal(program.run(f, 1), 'deadline');
+      assert.notEqual(f.resume, 0);
+      f.stateDirty.fill(0);
+      assert.equal(program.run(f, 3), 'invalidated', 'publish the resumed prefix before the loop');
+      assert.equal(f.states[0], 2);
+      assert.equal(f.states[5], 9);
+      assert.equal(f.resume, 0);
+      for (const bank of ['blockedStates', 'blockedMemories']) {
+        f.stateDirty.fill(0);
+        f[bank] = [bank === 'blockedStates' ? 1 << binding.states.get('y') : 1];
+        assert.equal(program.run(f, 3), 'fallback', `entry barrier for ${bank}`);
+        assert.deepEqual(f.states, [2, x, 0, true, 0, 9]);
+        assert.deepEqual(f.stateDirty, [0]);
+        assert.deepEqual(f.memoryDirty, [0]);
+        delete f[bank];
+      }
+      assert.equal(
+        program.run(f, 3),
+        'invalidated',
+        'publish the loop before the next instruction',
+      );
+      assert.equal(f.states[0], 4);
+      assert.equal(f.time, 2);
+      assert.equal(f.resume, 0);
+      assert.equal(f.states[2], x * 18);
+      assert.deepEqual([...f.memories[0]], x ? [18, 36, 54] : [7, 8, 9]);
+      assert.equal(program.run(f, 3), 'stopped');
+      assert.equal(reference.run(3), 'stopped');
+      assert.deepEqual(f.states, reference.states);
+      assert.deepEqual(f.memories, reference.memories);
+    }
+    const f = frame(program);
+    assert.equal(program.run(f, 3), 'invalidated', 'publish an unsuspended prefix before the loop');
+    assert.equal(f.states[0], 2);
+    assert.equal(f.states[2], 0);
+    assert.deepEqual(f.memoryDirty, [0]);
+  }
+});
+
+test('while blocks with suspension or a control transfer keep the generic execution path', () => {
+  for (const kind of ['elapse', 'break', 'continue']) {
+    const b = builder();
+    const yes = b.constant(true);
+    const duration = b.constant(1);
+    b.operations.push({
+      kind: 'while',
+      test: { body: { operations: [{ kind: 'yield', value: yes }] } },
+      body: { operations: [kind === 'elapse' ? { kind, duration } : { kind }] },
+    });
+    b.delay(0);
+    assert.equal(compileDirectJit([b.instruction(0, 2)], binding), undefined);
+  }
+  const b = builder();
+  const no = b.constant(false);
+  b.operations.push({
+    kind: 'while',
+    test: { body: { operations: [{ kind: 'yield', value: no }] } },
+    body: { operations: [] },
+  });
+  b.delay(1);
+  assert.equal(compileDirectJit([b.instruction(0, 2)], binding), undefined);
+});
+
 test('whole cached-PC loop matches compileBody and segment/monolithic execution', () => {
   const instructions = scalarLoop();
   const program = compileDirectJit(instructions, binding);
@@ -1207,7 +1434,7 @@ test('compact keeps redefined locals and a dynamic duration slot consistent', ()
   const program = compileDirectJit(instructions, binding);
   assert(program);
   const source = generated(program);
-  assert.match(source, /F\.due = F\.time \+ H\.checkDuration\(v\d+\);/);
+  assert.match(source, /F\.due = F\.time \+ .*H\.checkDuration\(v\d+\)/);
   const indices = [...source.matchAll(/\bv(\d+)\b/g)].map((match) => Number(match[1]));
   assert(
     Math.max(...indices) < program.localCount,
@@ -1308,6 +1535,57 @@ test('pure scalar select folds into one conditional expression', () => {
     assert.equal(program.run(f, 5), reference.run(5));
     assert.deepEqual(f.states, reference.states);
     assert.equal(f.states[1], flag ? 7 : 42);
+  }
+});
+
+test('direct conditions skip checks only for operations that produce booleans', () => {
+  for (const kind of ['and', 'or']) {
+    const b = builder();
+    const x = b.read('x');
+    const compare = b.binary('greaterThan', x, b.constant(0), 'bool');
+    const predicate = b.value({ kind: 'numeric', builtin: 'isInteger', args: [x] }, 'bool');
+    const inverted = b.value(
+      { kind: 'unary', operator: 'not', value: kind === 'and' ? compare : predicate },
+      'bool',
+    );
+    const flag = b.read('flag', 'bool');
+    const condition = b.value(
+      {
+        kind,
+        left: inverted,
+        right: { type: { kind: 'bool' }, body: { operations: [{ kind: 'yield', value: flag }] } },
+      },
+      'bool',
+    );
+    for (const [index, value] of [compare, predicate, condition].entries()) {
+      const result = b.constant(index + 1);
+      b.operations.push({
+        kind: 'if',
+        condition: value,
+        yes: { operations: [{ kind: 'write', name: 'marker', value: result }] },
+      });
+    }
+    b.delay(1);
+    const instructions = [b.instruction(0, 99)];
+    const program = compileDirectJit(instructions, binding);
+    const source = generated(program);
+    assert.equal([...source.matchAll(/H\.checkBoolean\(/g)].length, 1, kind);
+
+    for (const x of [-1, 0.5, 1]) {
+      for (const flag of [true, false, 'not a boolean']) {
+        const f = frame(program, [0, x, 0, flag, 0, 0]);
+        const reference = generic(instructions, f.states, f.memories);
+        const readsRight = kind === 'and' ? x <= 0 : Number.isInteger(x);
+        if (readsRight && typeof flag !== 'boolean') {
+          const error = { name: 'TypeError', message: 'Condition must be a boolean' };
+          assert.throws(() => reference.run(5), error);
+          assert.throws(() => program.run(f, 5), error);
+        } else {
+          assert.equal(program.run(f, 5), reference.run(5));
+          assert.deepEqual(f.states, reference.states);
+        }
+      }
+    }
   }
 });
 
@@ -1848,6 +2126,45 @@ test('readSample, field and match read host samples without leaking names', () =
   assert.deepEqual(log.entries, reference.log);
 });
 
+test('outlined resident arms keep access to bound pin samples and resistor slots', () => {
+  const b = builder();
+  const takeShortArm = b.read('flag', 'bool');
+  const resistance = b.constant(100);
+  const pin = { kind: 'pin', name: 'p1' };
+  const cold = [];
+  const sample = b.value({ kind: 'readSample', pin }, 'sample', cold);
+  const voltage = b.value({ kind: 'field', value: sample, field: 'voltage' }, 'number', cold);
+  for (let i = 0; i < 2_000; i++) cold.push({ kind: 'write', name: 'marker', value: voltage });
+  const intent = b.value({ kind: 'resistor', to: pin, resistance }, 'intent', cold);
+  cold.push({ kind: 'writeIntent', pin, value: intent });
+  b.operations.push({
+    kind: 'if',
+    condition: takeShortArm,
+    yes: { operations: [{ kind: 'write', name: 'marker', value: resistance }] },
+    no: { operations: cold },
+  });
+  b.delay(1);
+
+  const settings = { ...hostBinding, pins: new Map([['p1', 0]]), split: true, shardSlotLimit: 0 };
+  let program;
+  const sources = captureFactories(() => {
+    program = compileDirectJit([b.instruction(0, 99)], settings, compileDirectJit.createCache());
+  });
+  assert(program);
+  assert.match(sources.join('\n'), /function outlined\d+\(/);
+  const f = frame(program, [0, 0, 0, false, 0, 0]);
+  const electricalIntent = [];
+  const writes = [];
+  f.pins = [{ sample: { voltage: 3.3 } }];
+  f.resistors = [];
+  f.host = { resistor: () => electricalIntent };
+  f.writePinIntent = (slot, value) => writes.push([slot, value]);
+  assert.equal(program.run(f, 5), 'fallback');
+  assert.equal(f.states[5], 3.3);
+  assert.deepEqual(f.resistors, [electricalIntent]);
+  assert.deepEqual(writes, [[0, electricalIntent]]);
+});
+
 test('resistor, combineIntents and writeIntent record in program order', () => {
   const b = builder();
   const first = b.value(
@@ -2065,7 +2382,6 @@ test('a computed elapse duration advances by the runtime value', () => {
   const instruction = b.instruction(0, 99);
   const program = compileDirectJit([instruction], binding);
   assert(program);
-  assert.match(generated(program), /F\.due = F\.time \+ H\.checkDuration\(v\d+\);/);
 
   const whole = frame(program, [0, 30, 0, false, 0, 0]);
   assert.equal(program.run(whole, 1_000), 'fallback');
@@ -2080,10 +2396,139 @@ test('a computed elapse duration advances by the runtime value', () => {
   assert.equal(program.run(zero, 1_000), 'fallback');
   assert.equal(zero.time, 0);
 
-  const bad = frame(program, [0, 1.5, 0, false, 0, 0]);
-  assert.throws(() => program.run(bad, 1_000), /finite integer/);
-  const huge = frame(program, [0, 7_200_000_000_000_001, 0, false, 0, 0]);
-  assert.throws(() => program.run(huge, 1_000), /picoseconds/);
+  for (const value of [1.5, NaN, Infinity, '30']) {
+    const bad = frame(program, [0, value, 0, false, 0, 0]);
+    assert.throws(() => program.run(bad, 1_000), /finite integer/);
+  }
+  for (const value of [-1, 7_200_000_000_000_001]) {
+    const bad = frame(program, [0, value, 0, false, 0, 0]);
+    assert.throws(() => program.run(bad, 1_000), /picoseconds/);
+  }
+});
+
+test('a dynamic duration stays live across later prefix values', () => {
+  // The duration is read before the body and only used by the emitter's `elapsed()` line,
+  // which is not part of the prefix/suffix arrays. Register compaction must keep its slot
+  // live through the prefix; otherwise a later prefix value reuses it and silently replaces
+  // the duration (the TIM IRQ54 BX LR case replayed after a zero-duration fallback).
+  const b = builder();
+  const duration = b.read('offset');
+  b.write('marker', b.binary('add', b.read('marker'), b.constant(1)));
+  const zero = b.read('x');
+  b.write('y', zero);
+  b.write('pc', b.constant(0x200));
+  b.operations.push({ kind: 'elapse', duration });
+  b.write('marker', b.binary('add', b.read('marker'), b.constant(1)));
+  const instructions = [b.instruction(0x100, 0x200)];
+  const modes = [
+    ['monolithic', {}],
+    ['split', { split: true, shardSlotLimit: 0, shardSize: 1 }],
+    ['resident', { split: true, shardSlotLimit: 0, shardSize: 1 }, compileDirectJit.createCache()],
+  ];
+  for (const [mode, options, cache] of modes) {
+    const program = compileDirectJit(instructions, { ...binding, ...options }, cache);
+    assert(program, mode);
+    const f = frame(program, [0x100, 0, 0, true, 10, 0]);
+    assert.equal(program.run(f, 4), 'deadline', mode);
+    assert.equal(f.time, 4, mode);
+    assert.equal(f.due, 10, mode);
+    assert.equal(f.states[0], 0x200, mode);
+    assert.equal(f.states[5], 1, mode);
+    assert(f.resume > 0, mode);
+    f.stateDirty.fill(0);
+    f.memoryDirty.fill(0);
+    // External state changes during the suspension: the saved due time and the already
+    // completed PC write must win over the new duration/PC inputs.
+    f.states[1] = 7;
+    f.states[2] = 99;
+    f.states[4] = 20;
+    assert.equal(program.run(f, 10), 'deadline', mode);
+    assert.equal(f.states[5], 1, mode);
+    assert.equal(program.run(f, 11), 'fallback', mode);
+    assert.equal(f.time, 10, mode);
+    assert.equal(f.states[5], 2, mode);
+    assert.equal(f.states[2], 99, mode);
+    assert.equal(f.states[0], 0x200, mode);
+    assert.equal(f.resume, 0, mode);
+  }
+});
+
+test('dynamic elapse resumes a completed PC once with captured prefix values', () => {
+  const b = builder();
+  const duration = b.read('offset');
+  b.write('marker', b.binary('add', b.read('marker'), b.constant(1)));
+  const loaded = b.value({ kind: 'load8', memory: ram, offset: b.read('x') });
+  b.write('pc', b.constant(0x200));
+  b.write('y', b.read('x'));
+  b.operations.push({ kind: 'elapse', duration });
+  b.write('y', loaded);
+  b.write('marker', b.binary('add', b.read('marker'), b.constant(1)));
+  const instructions = [b.instruction(0x100, 0x200)];
+
+  for (const [label, cache] of [
+    ['split', undefined],
+    ['resident', compileDirectJit.createCache()],
+  ]) {
+    for (const durationValue of [10, 0]) {
+      const options = {
+        ...binding,
+        split: true,
+        shardSlotLimit: 0,
+        shardSize: 1,
+      };
+      const program = compileDirectJit(instructions, options, cache);
+      assert(program, `${label} ${durationValue}`);
+      const initial = [0x100, 0, 0, true, durationValue, 0];
+      const f = frame(program, initial, [7, 8, 9]);
+      const reference = generic(instructions, initial, [Uint8Array.from([7, 8, 9])]);
+      const compare = (deadline) => {
+        assert.equal(program.run(f, deadline), reference.run(deadline), label);
+        assert.deepEqual(f.states, reference.states, label);
+        assert.deepEqual(f.memories[0], reference.memories[0], label);
+        assert.equal(f.time, reference.time, label);
+      };
+
+      compare(4);
+      if (durationValue === 0) {
+        // A runtime zero takes the immediate path: prefix and suffix both execute once in
+        // the same batch, exactly like the generic `elapse` emitter.
+        assert.equal(f.time, 0, label);
+        assert.equal(f.states[5], 2, label);
+        assert.equal(f.states[2], 7, label);
+        assert.equal(f.resume, 0, label);
+        compare(8);
+        continue;
+      }
+      assert.equal(f.time, 4, label);
+      assert.equal(f.states[5], 1, label);
+      assert.equal(f.states[2], 0, label);
+      assert.equal(f.due, 10, label);
+      assert(f.resume > 0, label);
+
+      if (cache !== undefined) {
+        // Replacing the instruction while its old frame is suspended must not rebind the
+        // existing continuation or replay its completed prefix.
+        const replacement = builder();
+        replacement.write('marker', replacement.constant(1000));
+        replacement.delay(1);
+        assert(compileDirectJit([replacement.instruction(0x100, 0x900)], options, cache), label);
+      }
+      for (const side of [f, reference]) {
+        side.memories[0][0] = 200;
+        side.states[1] = 9;
+        side.states[4] = 20;
+      }
+      compare(10);
+      assert.equal(f.states[5], 1, label);
+      compare(11);
+      assert.equal(f.time, 10, label);
+      assert.equal(f.states[5], 2, label);
+      assert.equal(f.states[2], 7, label);
+      assert.equal(f.states[0], 0x200, label);
+      assert.equal(f.states[1], 9, label);
+      assert.equal(f.resume, 0, label);
+    }
+  }
 });
 
 test('refEqual compares names at compile time and declines parameter references', () => {
@@ -2760,6 +3205,159 @@ test('resident continuations keep the captured pre-elapse load', () => {
   assert.equal(pair.run(11), 'fallback');
   assert.equal(pair.right.frame.states[1], 7);
   assert.equal(pair.right.frame.resume, 0);
+});
+
+test('hosted resident checkpoint keeps the pre-publication capture on rejection or admission', () => {
+  const b = builder();
+  b.write('marker', b.constant(17));
+  const loaded = b.value({ kind: 'load8', memory: ram, offset: b.read('offset') });
+  b.delay(10);
+  b.write('x', loaded);
+  const program = compileDirectJit(
+    [b.instruction(0, 99)],
+    { ...binding, host: true, split: true },
+    compileDirectJit.createCache(),
+  );
+  assert(program);
+
+  // At an exact deadline the prefix still needs publication, but the generated
+  // checkpoint must not ask to continue inline or consume the captured suffix.
+  const exact = frame(program);
+  exact.publishPending = true;
+  exact.publishCheckpoint = () => assert.fail('cannot admit a suffix at deadline equality');
+  assert.equal(program.run(exact, 10), 'invalidated');
+  assert.equal(exact.time, 0);
+  assert.equal(exact.due, 10);
+  assert.equal(exact.states[1], 1);
+  assert.notEqual(exact.resume, 0);
+  assert(exact.locals.includes(7), 'suspend with the captured load');
+
+  for (const admitted of [false, true]) {
+    const f = frame(program);
+    const events = [];
+    f.locals.fill('unsaved');
+    f.publishPending = true;
+    f.publishCheckpoint = () => {
+      assert.equal(f.time, 0, 'publish the prefix before advancing time');
+      assert.equal(f.due, 10);
+      assert.notEqual(f.resume, 0);
+      assert.equal(f.states[5], 17);
+      assert.equal(f.states[1], 1, 'the suffix has not executed');
+      assert(
+        f.locals.every((slot) => slot === 'unsaved'),
+        'publish before saving the slots',
+      );
+      f.memories[0][0] = 200;
+      f.publishPending = false;
+      events.push('publish');
+      return admitted;
+    };
+    f.finishCheckpoint = (deadline, emptySuffix) => {
+      assert.equal(deadline, 11);
+      assert.equal(emptySuffix, false);
+      assert.equal(f.time, 10);
+      assert.equal(f.resume, 0);
+      assert.equal(f.states[1], 7, 'use the value captured before publication');
+      events.push('finish');
+      return false;
+    };
+    assert.equal(program.run(f, 11), 'invalidated');
+    if (!admitted) {
+      assert.deepEqual(events, ['publish']);
+      assert.equal(f.time, 0, 'a rejected publication does not consume the delay');
+      assert(f.locals.includes(7), 'save the pre-publication load for later resume');
+      const resume = f.resume;
+      assert.notEqual(resume, 0);
+      assert.equal(program.run(f, 10), 'deadline');
+      assert.equal(f.resume, resume, 'deadline equality leaves the suffix pending');
+      assert.equal(f.states[1], 1);
+      assert.equal(program.run(f, 11), 'fallback');
+    } else {
+      assert(
+        f.locals.every((slot) => slot === 'unsaved'),
+        'inline resume needs no saved slots',
+      );
+    }
+    assert.deepEqual(events, admitted ? ['publish', 'finish'] : ['publish']);
+    assert.equal(f.states[1], 7);
+    assert.equal(f.time, 10);
+    assert.equal(f.resume, 0);
+  }
+});
+
+test('resident factory reuse across caches binds each shard to its own constants and frame', () => {
+  const pc = 0x12340;
+  const hosted = { ...binding, host: true, split: true };
+  const compile = (channel, nextPc) => {
+    const b = builder();
+    const value = b.read('x');
+    b.delay(5);
+    b.operations.push({ kind: 'send', channel, value });
+    let program;
+    const sources = captureFactories(() => {
+      program = compileDirectJit(
+        [b.instruction(pc, nextPc)],
+        hosted,
+        compileDirectJit.createCache(),
+      );
+    });
+    assert(program);
+    return {
+      program,
+      shards: sources.filter((source) => source.includes('function stepShard')),
+      routers: sources.filter((source) => source.includes('function run')),
+    };
+  };
+  const first = compile('first', pc + 2);
+  const second = compile('second', pc + 2);
+  const changed = compile('third', pc + 4);
+  assert.equal(first.shards.length, 1);
+  assert.equal(second.shards.length, 0, 'channel name changes only the constants');
+  assert.equal(changed.shards.length, 1, 'a different next PC changes the exact source');
+  assert.notEqual(changed.shards[0], first.shards[0]);
+
+  const a = frame(first.program, [pc, 17, 0, true, 0, 0]);
+  const b = frame(second.program, [pc, 42, 0, true, 0, 0]);
+  a.host = hostRecorder(() => a.time);
+  b.host = hostRecorder(() => b.time);
+  for (const [candidate, f] of [
+    [first, a],
+    [second, b],
+  ]) {
+    assert.equal(candidate.routers.length, 1, 'build a fresh dispatcher');
+    assert.equal(candidate.program.run(f, 5), 'deadline');
+    assert.notEqual(f.resume, 0);
+    assert.deepEqual(f.host.entries, []);
+    f.states[1] = -1;
+  }
+  assert.equal(second.program.run(b, 6), 'fallback');
+  assert.equal(first.program.run(a, 6), 'fallback');
+  assert.deepEqual(b.host.entries, [['send', 'second', 42, 5]]);
+  assert.deepEqual(a.host.entries, [['send', 'first', 17, 5]]);
+});
+
+test('resident factory cache evicts the least recently used source at its entry limit', () => {
+  const compile = (index) => {
+    const pc = 0x240000 + 2 * index;
+    const b = builder();
+    b.write('marker', b.constant(7));
+    b.delay(5);
+    const sources = captureFactories(() => {
+      assert(
+        compileDirectJit(
+          [b.instruction(pc, pc + 2)],
+          { ...binding, host: true, split: true },
+          compileDirectJit.createCache(),
+        ),
+      );
+    });
+    return sources.some((source) => source.includes('function stepShard'));
+  };
+  for (let i = 0; i < 128; i++) assert.equal(compile(i), true);
+  assert.equal(compile(0), false, 'a hit refreshes the oldest source');
+  assert.equal(compile(128), true, 'adding another source evicts index 1');
+  assert.equal(compile(0), false, 'a recently used source survives');
+  assert.equal(compile(1), true, 'an evicted source is compiled again');
 });
 
 test('resident shards rebuild only the open tail and keep closed functions reusable', () => {

@@ -1,3 +1,4 @@
+import { toTimePs } from '@mica-js/core';
 import { Emitter } from '@mica-js/core/lifecycle';
 import {
   parseFusedDocument,
@@ -12,6 +13,7 @@ import {
 } from '@mica-js/editor/fused';
 import '@mica-js/editor/fused/style.css';
 import type { ProgramArtifact, ProgramProject, ProgramTarget } from '@mica-js/sdk/fused';
+import { ct117eFirmware } from '../workbench-assets.json';
 import './workbench-demo.css';
 
 interface ICatalogEntry {
@@ -51,8 +53,8 @@ function parseCatalog(value: unknown): readonly ICatalogEntry[] {
     return { lock: { id, version, integrity }, directory: item.directory, files };
   });
 }
-async function fetchBytes(url: string): Promise<Uint8Array> {
-  const response = await fetch(url);
+async function fetchBytes(url: string, signal?: AbortSignal): Promise<Uint8Array> {
+  const response = await fetch(url, { signal: signal ?? null });
   if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
   return new Uint8Array(await response.arrayBuffer());
 }
@@ -62,10 +64,11 @@ const status = element('#status', HTMLSpanElement);
 const error = element('#error', HTMLPreElement);
 const entitled = element('#entitled', HTMLInputElement);
 const storageKey = 'mica-fused-workbench-example-v1';
-const base = '/components/workbench/';
+const base = `${import.meta.env.BASE_URL}components/workbench/`;
+const ct117eDemo = `${base}ct117e-m4.sch`;
 const changes = new Emitter<void>();
 const demoHex = new TextEncoder().encode(':0E0000007590FF75B0FFA2B29290929180F8B9\n:00000001FF\n');
-const assets = new Map([
+const assets = new Map<string, { name: string; kind: string; data: Uint8Array | string }>([
   [
     'f985ad84-10b2-4478-8415-986e432081ef',
     { name: '按键控制.hex', kind: 'program', data: demoHex },
@@ -78,6 +81,14 @@ const assets = new Map([
       data: new TextEncoder().encode(
         '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#4388cc"/></svg>',
       ),
+    },
+  ],
+  [
+    ct117eFirmware.assetId,
+    {
+      name: ct117eFirmware.name,
+      kind: 'program',
+      data: `${base}firmware/${ct117eFirmware.name}`,
     },
   ],
 ]);
@@ -207,10 +218,14 @@ async function open(bytes: Uint8Array): Promise<void> {
   await workbench?.dispose();
   workbench = undefined;
   error.hidden = true;
+  const circuit = parseFusedDocument(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  const hasCt117e = circuit.instances.some((instance) => instance.device === 'example:ct117e-m4');
   const result = await createWorkbench({
     ...(audioContext === undefined ? {} : { audio: { context: audioContext } }),
+    // As in CT107D, advance a visible amount of sim time on each host yield.
+    ...(hasCt117e ? { step: toTimePs(16, 'ms') } : {}),
     container,
-    document: parseFusedDocument(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
+    document: circuit,
     saveDocument: async (value) => {
       localStorage.setItem(storageKey, JSON.stringify(value));
     },
@@ -231,10 +246,10 @@ async function open(bytes: Uint8Array): Promise<void> {
         signal.throwIfAborted();
         const asset = assets.get(id);
         if (!asset) throw new Error(`Unavailable asset ${id}`);
-        return asset.data.slice();
+        return typeof asset.data === 'string' ? fetchBytes(asset.data, signal) : asset.data.slice();
       },
     },
-    viewBaseUrlTemplate: `http://\${id}.localhost:${location.port}/components/workbench/environment/`,
+    viewBaseUrlTemplate: `${location.protocol}//\${id}.localhost${location.port ? `:${location.port}` : ''}${base}environment/`,
     accessProvider: policy,
     programs: {
       projects: {
@@ -318,6 +333,7 @@ async function open(bytes: Uint8Array): Promise<void> {
                     'workbench:button': '轻触开关',
                     'workbench:at89c52': 'AT89C52',
                     'workbench:buzzer': '有源蜂鸣器',
+                    'example:ct117e-m4': 'CT117E-M4',
                   }[item.lock.id] ?? item.lock.id;
                 button.className = 'demo-device';
                 button.addEventListener('click', () =>
@@ -390,6 +406,9 @@ element('#reset', HTMLButtonElement).addEventListener('click', () => {
 element('#mcu', HTMLButtonElement).addEventListener('click', () =>
   run(fetchBytes(`${base}mcu.sch`).then(open)),
 );
+element('#ct117e-m4', HTMLButtonElement).addEventListener('click', () =>
+  run(fetchBytes(ct117eDemo).then(open)),
+);
 element('#free', HTMLButtonElement).addEventListener('click', () =>
   run(
     (async () => {
@@ -411,9 +430,13 @@ run(
     catalog = parseCatalog(
       JSON.parse(new TextDecoder().decode(await fetchBytes(`${base}catalog.json`))),
     );
-    const saved = localStorage.getItem(storageKey);
-    await open(
-      saved === null ? await fetchBytes(`${base}circuit.sch`) : new TextEncoder().encode(saved),
-    );
+    if (new URLSearchParams(location.search).get('demo') === 'ct117e-m4') {
+      await open(await fetchBytes(ct117eDemo));
+    } else {
+      const saved = localStorage.getItem(storageKey);
+      await open(
+        saved === null ? await fetchBytes(`${base}circuit.sch`) : new TextEncoder().encode(saved),
+      );
+    }
   })(),
 );

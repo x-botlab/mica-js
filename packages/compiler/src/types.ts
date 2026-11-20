@@ -1,4 +1,4 @@
-import type { InputPath, OperationIR, SourceInfo } from '@mica-js/device-model';
+import type { DeclarationIR, InputPath, OperationIR, SourceInfo } from '@mica-js/device-model';
 
 export type ExecutionSignal =
   | { readonly kind: 'ticks' | 'elapse'; readonly duration: number }
@@ -156,7 +156,11 @@ export interface DirectJitDelay {
 export interface DirectJitBinding {
   readonly states: ReadonlyMap<string, number>;
   readonly memories: ReadonlyMap<string, number>;
+  /** Optional pin name → slot index table for direct sample reads and intent writes. */
+  readonly pins?: ReadonlyMap<string, number>;
   readonly pc: { readonly name: string; readonly index: number };
+  /** Validated synchronous functions eligible for same-frame direct calls. */
+  readonly functions?: ReadonlyMap<string, Extract<DeclarationIR, { kind: 'function' }>>;
   /** Compile-time write barriers; recompile when membership changes. */
   readonly blockedStates?: ReadonlySet<string>;
   readonly blockedMemories?: ReadonlySet<string>;
@@ -201,9 +205,15 @@ export interface DirectJitFrame {
   memories: Uint8Array[];
   /** Optional per-bank wrappers prepared once by the runtime; absent in compiler-only frames. */
   readonly memoryViews?: readonly DataView[];
+  /** Optional prebound pin objects indexed by `DirectJitBinding.pins`. */
+  readonly pins?: readonly { readonly sample: unknown }[];
+  /** Optional per-frame cache for constant resistor intents. */
+  resistors?: unknown[];
+  /** Optional prebound pin-intent writer indexed by `DirectJitBinding.pins`. */
+  writePinIntent?: (pinIndex: number, value: unknown) => void;
   /** Reusable bit words indexed by bank index >>> 5; clear before each invocation. */
-  stateDirty: number[];
-  memoryDirty: number[];
+  stateDirty: number[] | Int32Array;
+  memoryDirty: number[] | Int32Array;
   time: number;
   /** Absolute wake time when resume is nonzero. */
   due: number;
@@ -215,6 +225,18 @@ export interface DirectJitFrame {
   stopAfterInstruction?: boolean;
   /** Publish host effects at the next nonzero elapse or instruction end before continuing. */
   publishPending?: boolean;
+  /**
+   * At a positive elapse strictly before the deadline, publish the suspended prefix
+   * at `time`. Return true only if this instruction's suffix may run at `due`
+   * without returning to the scheduler. On false the continuation is saved normally.
+   */
+  publishCheckpoint?: () => boolean;
+  /**
+   * Finish an admitted inline suffix at `time` and settle its boundary. Return true
+   * only if the next instruction may run in this same program with the same deadline.
+   * An empty suffix cannot have produced dirty bank slots or host effects.
+   */
+  finishCheckpoint?: (deadline: number, emptySuffix: boolean) => boolean;
   /** Present when the program was compiled with `DirectJitBinding.host`. */
   readonly host?: DirectJitHost;
 }

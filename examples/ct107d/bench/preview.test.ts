@@ -31,7 +31,8 @@ import {
 
 const EXPECTED_FIRMWARE_BYTES = 2_421;
 const EXPECTED_FIRMWARE_SHA256 = 'b15a9f9f4232a70d88d080e2f6336359c701777951685a93177e3264b829bd25';
-const SCHEMATIC_PATH = join(import.meta.dirname, '..', 'ct107d.sch');
+const TOPOLOGY_PATH = join(import.meta.dirname, '..', 'device', 'scripts', 'board-topology.json');
+const DOCUMENT_PATH = join(import.meta.dirname, '..', 'ct107d.sch');
 /** 超过安全整数上限的预热毫秒值：乘以 1e9 后已无法精确表示。 */
 const UNSAFE_WARMUP_MS = Math.floor(Number.MAX_SAFE_INTEGER / 1_000_000_000) + 1;
 const DISPLAY_PORTS = new Set(['digit1', 'digit2', 'digit3', 'digit4']);
@@ -70,62 +71,35 @@ function glyph(mask: number): string {
   return (mask & 0x80) === 0 ? base : `${base}.`;
 }
 
-function displayText(
-  topics: Readonly<Record<string, string>>,
-  result: Pick<MeasureResult, 'instanceDesignators'>,
-  designator: string,
-): string {
+function displayText(topics: Readonly<Record<string, string>>, designator: string): string {
   return `${[1, 2, 3, 4]
-    .map((index) =>
-      glyph(Number(topicValue(topics, result, designator, `digit${index}`) ?? Number.NaN)),
-    )
+    .map((index) => glyph(Number(topicValue(topics, designator, `digit${index}`) ?? Number.NaN)))
     .join('')}`;
 }
 
-/** 位号只是辅助标签；按它找实例 ID，再拼「实例 ID/端口」唯一键。 */
-function instanceIdsByDesignator(
-  result: Pick<MeasureResult, 'instanceDesignators'>,
-  designator: string,
-): readonly string[] {
-  return Object.entries(result.instanceDesignators)
-    .filter(([, value]) => value === designator)
-    .map(([instanceId]) => instanceId)
-    .sort();
-}
-
+/** The fused device publishes `designator/port` directly; there is no fake instance ID. */
 function topicValue(
   topics: Readonly<Record<string, string>>,
-  result: Pick<MeasureResult, 'instanceDesignators'>,
   designator: string,
   port: string,
 ): string | undefined {
-  for (const instanceId of instanceIdsByDesignator(result, designator)) {
-    const value = topics[`${instanceId}/${port}`];
-
-    if (value !== undefined) return value;
-  }
-
-  return undefined;
+  return topics[`${designator}/${port}`];
 }
 
 function topicKeysForDesignator(
   topics: Readonly<Record<string, string>>,
-  result: Pick<MeasureResult, 'instanceDesignators'>,
   designator: string,
   port: string,
 ): readonly string[] {
-  return instanceIdsByDesignator(result, designator)
-    .map((instanceId) => `${instanceId}/${port}`)
-    .filter((key) => Object.hasOwn(topics, key));
+  const key = `${designator}/${port}`;
+
+  return Object.hasOwn(topics, key) ? [key] : [];
 }
 
 /** 八位数码管：两块 seg4 的 4 位字形。 */
-function displaySummary(
-  topics: Readonly<Record<string, string>>,
-  result: Pick<MeasureResult, 'instanceDesignators'>,
-): Record<string, string> {
+function displaySummary(topics: Readonly<Record<string, string>>): Record<string, string> {
   return Object.fromEntries(
-    DISPLAYS.map((designator) => [designator, displayText(topics, result, designator)]),
+    DISPLAYS.map((designator) => [designator, displayText(topics, designator)]),
   );
 }
 
@@ -178,6 +152,8 @@ function baselineSummary(result: MeasureResult): Record<string, unknown> {
     clockFrequency: result.clockFrequency,
     devices: result.devices,
     nets: result.nets,
+    instances: result.instances,
+    jits: result.jits,
     warmUpMs: result.warmUpMs,
     simMs: result.simMs,
     tickMs: result.tickMs,
@@ -185,22 +161,14 @@ function baselineSummary(result: MeasureResult): Record<string, unknown> {
     windowStartMs: result.windowStartMs,
     windowEndMs: result.windowEndMs,
     timing: latencySummary(result),
-    legacyCpuFields: {
-      wallMs: result.wallMs,
-      rtf: result.rtf,
-      coldMs: result.coldMs,
-    },
     checkpointMs: result.checkpoints.map((checkpoint) => checkpoint.simMs),
     checkpointsStable: result.checkpointsStable,
     fingerprints: result.fingerprints,
-    instanceDesignators: result.instanceDesignators,
-    display: displaySummary(result.topicFinalTopics, result),
+    display: displaySummary(result.topicFinalTopics),
     latches: latchSeries({ simMs: result.windowEndMs, topics: result.topicFinalTopics }),
     topicDigest: result.topicDigest,
     topicFinalDigest: result.topicFinalDigest,
-    topicFinalDigestByDevice: result.topicFinalDigestByDevice,
     topicFinalKeys: Object.keys(result.topicFinalTopics),
-    topicFinalPortKeys: Object.keys(result.topicFinalPorts),
     faults: result.faults,
   };
 }
@@ -271,65 +239,67 @@ describe('CT107D 实际预览固件基准', () => {
     expect(result.coldRealtimeRatio).toBeCloseTo(result.warmUpMs / result.coldElapsedWallMs, 2);
 
     // 历史字段必须仍然可读，但明确仍是 CPU 口径的别名。
-    expect(result.wallMs).toBe(result.cpuMs);
-    expect(result.rtf).toBeCloseTo(result.cpuMs / result.simMs, 2);
-    expect(result.coldMs).toBe(result.coldCpuMs);
+    expect(result.coldCpuMs).toBeGreaterThan(0);
 
     // 同名端口不再互相覆盖：四个 573、两个 seg4、138 的译码端口都要能同时看到。
     // 唯一键是「实例 ID/端口」；位号只用来定位实例，不作为键。
     for (const designator of ['U6', 'U7', 'U8', 'U9'])
       expect(
-        topicKeysForDesignator(result.topicFinalTopics, result, designator, 'latch').length,
+        topicKeysForDesignator(result.topicFinalTopics, designator, 'latch').length,
       ).toBeGreaterThan(0);
     for (const designator of DISPLAYS)
       for (let index = 1; index <= 4; index += 1)
         expect(
-          topicKeysForDesignator(result.topicFinalTopics, result, designator, `digit${index}`)
-            .length,
+          topicKeysForDesignator(result.topicFinalTopics, designator, `digit${index}`).length,
         ).toBeGreaterThan(0);
+    expect(topicKeysForDesignator(result.topicFinalTopics, 'U24', 'select').length).toBeGreaterThan(
+      0,
+    );
+    expect(topicKeysForDesignator(result.topicFinalTopics, 'U24', 'code').length).toBeGreaterThan(
+      0,
+    );
     expect(
-      topicKeysForDesignator(result.topicFinalTopics, result, 'U24', 'select').length,
-    ).toBeGreaterThan(0);
-    expect(
-      topicKeysForDesignator(result.topicFinalTopics, result, 'U24', 'code').length,
-    ).toBeGreaterThan(0);
-    expect(
-      topicKeysForDesignator(result.topicFinalTopics, result, 'U24', 'enabled').length,
+      topicKeysForDesignator(result.topicFinalTopics, 'U24', 'enabled').length,
     ).toBeGreaterThan(0);
 
-    // 每个话题键的实例段都必须是真实实例 ID；位号（DS1/U7…）不能当唯一键。
+    // 融合器件的身份是板块 payload 里的位号，不是伪造的 55 个实例 ID。
     for (const key of Object.keys(result.topicFinalTopics)) {
-      const instanceId = key.slice(0, key.lastIndexOf('/'));
+      const designator = key.slice(0, key.lastIndexOf('/'));
 
-      expect(instanceId).not.toBe('');
-      expect(instanceId).not.toBe('DS1');
-      expect(instanceId).not.toBe('U7');
-      if (instanceId === '@host') continue;
-      expect(result.instanceDesignators[instanceId]).toBeDefined();
+      expect(designator).not.toBe('');
+      expect(designator).not.toContain('/');
     }
 
-    // 旧键只有裸端口名，会覆盖同名器件；新键用「实例 ID/端口」。
+    // 话题键一律是「位号/端口」；不存在裸端口键。
     expect(Object.hasOwn(result.topicFinalTopics, 'latch')).toBe(false);
     expect(Object.hasOwn(result.topicFinalTopics, 'digit1')).toBe(false);
-    expect(Object.hasOwn(result.topicFinalTopics, 'DS1/digit1')).toBe(false);
-    expect(Object.hasOwn(result.topicFinalPorts, 'latch')).toBe(true);
+    expect(Object.hasOwn(result.topicFinalTopics, 'DS1/digit1')).toBe(true);
 
-    // 基准夹具读的是 src，不是 dist；浏览器核对的是 dist，两者不能直接比原始哈希。
-    expect(result.fingerprints.source).toBe('src');
+    // 基准夹具与浏览器核对同一批构建产物。
+    expect(result.fingerprints.source).toBe('dist');
     expect(result.fingerprints.firmware).toBe(result.firmwareSha256);
-    expect(result.fingerprints.schematic).toBe(
-      createHash('sha256').update(readFileSync(SCHEMATIC_PATH)).digest('hex'),
+    expect(result.fingerprints.topology).toBe(
+      createHash('sha256').update(readFileSync(TOPOLOGY_PATH)).digest('hex'),
+    );
+    expect(result.fingerprints.document).toBe(
+      createHash('sha256').update(readFileSync(DOCUMENT_PATH)).digest('hex'),
     );
     for (const digest of [
-      result.fingerprints.models,
-      result.fingerprints.code,
-      result.fingerprints.definitions,
+      result.fingerprints.model,
+      result.fingerprints.manifest,
+      result.fingerprints.generatedModel,
     ])
       expect(digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.devices).toBe(1);
+    expect(result.nets).toBe(2);
+    expect(result.instances).toBe(1);
+    expect(result.jits).toBe(1);
+    expect(result.solves).toBe(0);
+    expect(result.topicMessages).toBeGreaterThan(0);
 
     // 八位显示（两块 4 位）在窗口内可观测，且字形全部可解码。
     for (const designator of DISPLAYS) {
-      const text = displayText(result.topicFinalTopics, result, designator);
+      const text = displayText(result.topicFinalTopics, designator);
       expect(text).toHaveLength(4);
       expect(text).not.toContain('?');
     }
@@ -362,9 +332,7 @@ describe('CT107D 实际预览固件基准', () => {
           display: Object.fromEntries(
             DISPLAYS.map((designator) => [
               designator,
-              fine.checkpoints.map((checkpoint) =>
-                displayText(checkpoint.topics, fine, designator),
-              ),
+              fine.checkpoints.map((checkpoint) => displayText(checkpoint.topics, designator)),
             ]),
           ),
           latches: fine.checkpoints.map((checkpoint) => latchSeries(checkpoint)),
@@ -375,9 +343,7 @@ describe('CT107D 实际预览固件基准', () => {
           display: Object.fromEntries(
             DISPLAYS.map((designator) => [
               designator,
-              coarse.checkpoints.map((checkpoint) =>
-                displayText(checkpoint.topics, coarse, designator),
-              ),
+              coarse.checkpoints.map((checkpoint) => displayText(checkpoint.topics, designator)),
             ]),
           ),
           latches: coarse.checkpoints.map((checkpoint) => latchSeries(checkpoint)),
@@ -398,15 +364,15 @@ describe('CT107D 实际预览固件基准', () => {
     // 八位显示在 1024 ms 窗口内会动态进位（DS2 由 --02 变 --03），因此不要求
     // 整窗恒定；要求每个共同检查点 16/64 ms 看到同一文本，且每个字形可解码。
     const fineDisplayTexts = DISPLAYS.flatMap((designator) =>
-      fine.checkpoints.map((checkpoint) => displayText(checkpoint.topics, fine, designator)),
+      fine.checkpoints.map((checkpoint) => displayText(checkpoint.topics, designator)),
     );
 
     for (const designator of DISPLAYS) {
       const fineTexts = fine.checkpoints.map((checkpoint) =>
-        displayText(checkpoint.topics, fine, designator),
+        displayText(checkpoint.topics, designator),
       );
       const coarseTexts = coarse.checkpoints.map((checkpoint) =>
-        displayText(checkpoint.topics, coarse, designator),
+        displayText(checkpoint.topics, designator),
       );
 
       expect(coarseTexts).toEqual(fineTexts);
@@ -429,19 +395,18 @@ describe('CT107D 实际预览固件基准', () => {
     for (const result of [fine, coarse]) {
       for (const designator of ['U6', 'U7', 'U8', 'U9'])
         expect(
-          topicKeysForDesignator(result.topicFinalTopics, result, designator, 'latch').length,
+          topicKeysForDesignator(result.topicFinalTopics, designator, 'latch').length,
         ).toBeGreaterThan(0);
       expect(
-        topicKeysForDesignator(result.topicFinalTopics, result, 'DS1', 'digit1').length,
+        topicKeysForDesignator(result.topicFinalTopics, 'DS1', 'digit1').length,
       ).toBeGreaterThan(0);
       expect(
-        topicKeysForDesignator(result.topicFinalTopics, result, 'DS2', 'digit4').length,
+        topicKeysForDesignator(result.topicFinalTopics, 'DS2', 'digit4').length,
       ).toBeGreaterThan(0);
-      expect(result.topicFinalTopics['DS1/digit1']).toBeUndefined();
+      expect(result.topicFinalTopics['DS1/digit1']).toBeDefined();
       expect(result.topicFinalTopics['latch']).toBeUndefined();
-      expect(result.fingerprints.source).toBe('src');
+      expect(result.fingerprints.source).toBe('dist');
     }
-    expect(fine.instanceDesignators).toEqual(coarse.instanceDesignators);
     expect(fine.fingerprints).toEqual(coarse.fingerprints);
   }, 1_800_000);
 });

@@ -1,0 +1,77 @@
+{
+  "publisher": "example",
+  "name": "buzzer",
+  "version": "1.0.0",
+  "description": "有源蜂鸣器：两端之间是负载电阻，正端为高、负端非高时发声；端口 active 报告是否发声。CT107D 的 SP1，正端接 VCC、负端接 ULN2003 OUT7。不模拟发声频率、声压与机械共振。",
+  "license": "MIT",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "displayName": "有源蜂鸣器",
+  "designatorPrefix": "SP",
+  "properties": {
+    "loadResistance": {
+      "type": "number",
+      "title": "负载电阻",
+      "description": "两端的等效串联电阻，决定开集驱动拉低时的电流。",
+      "default": 100,
+      "nullable": false,
+      "unit": "ohm",
+      "min": 0.001,
+      "max": 1000000000,
+      "step": 1
+    },
+    "lowThreshold": {
+      "type": "number",
+      "title": "低电平上限",
+      "description": "采样电压低于该值判为逻辑低。",
+      "default": 0.8,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    },
+    "highThreshold": {
+      "type": "number",
+      "title": "高电平下限",
+      "description": "采样电压高于该值判为逻辑高。",
+      "default": 2,
+      "nullable": false,
+      "unit": "V",
+      "min": 0,
+      "max": 5,
+      "step": 0.1
+    }
+  },
+  "pins": {
+    "p": {
+      "label": "+",
+      "description": "正端，板上接 VCC"
+    },
+    "n": {
+      "label": "-",
+      "description": "负端，板上接 ULN2003 OUT7（N_BUZZ）"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {},
+    "methods": {
+      "isActive": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "boolean"
+        }
+      }
+    },
+    "events": {
+      "onDidActive": {
+        "type": "boolean"
+      }
+    }
+  },
+  "type": "module"
+}

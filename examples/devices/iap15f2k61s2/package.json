@@ -1,0 +1,276 @@
+{
+  "publisher": "example",
+  "name": "iap15f2k61s2",
+  "version": "0.2.0",
+  "description": "STC15F2K60S2 系列 8051 单片机：JIT 取指执行 8051 指令集与中断，P0–P4、定时器 T0/T1/T2、双串口、ADC、PCA/CCP、SPI、IAP/EEPROM 与看门狗均按手册建模。",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "mica": "^1.0.0"
+  },
+  "displayName": "IAP15F2K61S2",
+  "designatorPrefix": "U",
+  "properties": {
+    "clockFrequency": {
+      "type": "number",
+      "title": "系统时钟 (Hz)",
+      "description": "STC15 的 1T 系统时钟：指令耗时、定时器计数与串口波特率都按它换算。",
+      "default": 11059200,
+      "nullable": false,
+      "min": 1000000,
+      "max": 40000000,
+      "step": 1,
+      "unit": "Hz"
+    },
+    "firmware": {
+      "type": "program",
+      "title": "固件",
+      "description": "BIN/HEX 固件：按 code 地址空间的绝对地址装载程序存储器。空值保持零初始化的代码空间（PC=0，执行 NOP），不是错误。",
+      "default": null,
+      "nullable": true,
+      "loader": "memory",
+      "formats": [
+        "bin",
+        "hex"
+      ],
+      "addressSpaces": {
+        "code": {
+          "title": "程序存储器",
+          "start": 0,
+          "size": 61440
+        }
+      },
+      "defaults": {
+        "addressSpace": "code",
+        "loadAddress": 0
+      },
+      "group": "固件",
+      "order": 0
+    }
+  },
+  "pins": {
+    "P0_0": {
+      "label": "P0_0"
+    },
+    "P0_1": {
+      "label": "P0_1"
+    },
+    "P0_2": {
+      "label": "P0_2"
+    },
+    "P0_3": {
+      "label": "P0_3"
+    },
+    "P0_4": {
+      "label": "P0_4"
+    },
+    "P0_5": {
+      "label": "P0_5"
+    },
+    "P0_6": {
+      "label": "P0_6"
+    },
+    "P0_7": {
+      "label": "P0_7"
+    },
+    "P1_0": {
+      "label": "P1_0"
+    },
+    "P1_1": {
+      "label": "P1_1"
+    },
+    "P1_2": {
+      "label": "P1_2"
+    },
+    "P1_3": {
+      "label": "P1_3"
+    },
+    "P1_4": {
+      "label": "P1_4"
+    },
+    "P1_5": {
+      "label": "P1_5"
+    },
+    "P1_6": {
+      "label": "P1_6"
+    },
+    "P1_7": {
+      "label": "P1_7"
+    },
+    "P2_0": {
+      "label": "P2_0"
+    },
+    "P2_1": {
+      "label": "P2_1"
+    },
+    "P2_2": {
+      "label": "P2_2"
+    },
+    "P2_3": {
+      "label": "P2_3"
+    },
+    "P2_4": {
+      "label": "P2_4"
+    },
+    "P2_5": {
+      "label": "P2_5"
+    },
+    "P2_6": {
+      "label": "P2_6"
+    },
+    "P2_7": {
+      "label": "P2_7"
+    },
+    "P3_0": {
+      "label": "P3_0"
+    },
+    "P3_1": {
+      "label": "P3_1"
+    },
+    "P3_2": {
+      "label": "P3_2"
+    },
+    "P3_3": {
+      "label": "P3_3"
+    },
+    "P3_4": {
+      "label": "P3_4"
+    },
+    "P3_5": {
+      "label": "P3_5"
+    },
+    "P3_6": {
+      "label": "P3_6"
+    },
+    "P3_7": {
+      "label": "P3_7"
+    },
+    "P4_0": {
+      "label": "P4_0"
+    },
+    "P4_1": {
+      "label": "P4_1"
+    },
+    "P4_2": {
+      "label": "P4_2/WR"
+    },
+    "P4_3": {
+      "label": "P4_3"
+    },
+    "P4_4": {
+      "label": "P4_4/RD"
+    },
+    "P4_5": {
+      "label": "P4_5"
+    },
+    "P4_6": {
+      "label": "P4_6"
+    },
+    "P4_7": {
+      "label": "P4_7"
+    },
+    "VCC": {
+      "label": "VCC",
+      "description": "供电，接固定电位网络"
+    },
+    "GND": {
+      "label": "GND",
+      "description": "地，接 0 V 网络"
+    }
+  },
+  "model": {
+    "entry": "model.js",
+    "types": {
+      "SerialData": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "number"
+          },
+          "data": {
+            "type": "binary"
+          }
+        }
+      },
+      "SerialChunk": {
+        "type": "object",
+        "properties": {
+          "start": {
+            "type": "number"
+          },
+          "end": {
+            "type": "number"
+          },
+          "dropped": {
+            "type": "number"
+          },
+          "data": {
+            "type": "binary"
+          }
+        }
+      },
+      "SerialStatus": {
+        "type": "object",
+        "properties": {
+          "capacity": {
+            "type": "number"
+          },
+          "oldest": {
+            "type": "number"
+          },
+          "next": {
+            "type": "number"
+          },
+          "droppedTotal": {
+            "type": "number"
+          }
+        }
+      },
+      "SerialReadParams": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "number"
+          }
+        }
+      },
+      "SerialChannelParams": {
+        "type": "object",
+        "properties": {
+          "channel": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "methods": {
+      "readSerial": {
+        "params": {
+          "ref": "SerialReadParams"
+        },
+        "returns": {
+          "ref": "SerialChunk"
+        }
+      },
+      "getSerialStatus": {
+        "params": {
+          "ref": "SerialChannelParams"
+        },
+        "returns": {
+          "ref": "SerialStatus"
+        }
+      }
+    },
+    "events": {
+      "onDidUart1Tx": {
+        "ref": "SerialData"
+      },
+      "onDidUart1Rx": {
+        "ref": "SerialData"
+      }
+    }
+  }
+}

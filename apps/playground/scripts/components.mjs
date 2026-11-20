@@ -1,6 +1,6 @@
+#!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, rm } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, createServer } from 'vite';
@@ -47,52 +47,15 @@ function serverOptions(args) {
   return result;
 }
 
-/**
- * 把 `examples/ct107d` 的交付物复制到被忽略的 `public/components/ct107d`，让主页面能
- * 打开 `ct107d.cnv`。该示例包已包含整板用到的全部器件（含 IAP15F2K61S2、seg4 与
- * blue-led），因此不需要再从别的工程取器件；没有产物时只提示并跳过。
- */
-async function copyCt107d(artifacts) {
-  const source = resolve(repository, 'examples', 'ct107d');
-  if (!existsSync(resolve(source, 'ct107d.cnv'))) {
-    console.log('components: 未找到 examples/ct107d/ct107d.cnv，跳过 CT107D 画布预览');
-    return;
-  }
-  if (!existsSync(resolve(source, 'dist', 'devices'))) {
-    console.log('components: 未找到 examples/ct107d/dist，请先构建该示例包，跳过 CT107D 预览');
-    return;
-  }
-  const target = resolve(artifacts, 'ct107d');
-  await mkdir(target, { recursive: true });
-  for (const file of ['ct107d.cnv', 'ct107d.sch']) {
-    await cp(resolve(source, file), resolve(target, file));
-  }
-  // 预览使用独立文件名，避免浏览器继续命中旧画布/原理图缓存，也明确固定当前数码管动态显示固件工程。
-  const previewSchematic = 'ct107d-digital-display.sch';
-  const previewCanvas = 'ct107d-digital-display.cnv';
-  const schematic = JSON.parse(readFileSync(resolve(source, 'ct107d.sch'), 'utf8'));
-  writeFileSync(resolve(target, previewSchematic), `${JSON.stringify(schematic, null, 2)}\n`);
-  const canvas = JSON.parse(readFileSync(resolve(source, 'ct107d.cnv'), 'utf8'));
-  canvas.schematic = previewSchematic;
-  writeFileSync(resolve(target, previewCanvas), `${JSON.stringify(canvas, null, 2)}\n`);
-  await cp(resolve(source, 'assets'), resolve(target, 'assets'), { recursive: true });
-  await cp(resolve(source, 'dist', 'devices'), resolve(target, 'devices'), { recursive: true });
-  await cp(resolve(source, 'dist', 'widgets'), resolve(target, 'widgets'), { recursive: true });
-  console.log('components: 已复制 CT107D 的器件、widget、原理图与画布');
-}
-
-try {
+async function main() {
   if (mode !== 'build' && mode !== 'dev') throw new Error('Usage: components.mjs <dev|build>');
-  await bootstrap();
+  // Workspace builds already build the SDK in dependency order. Rebuilding it here can
+  // remove dist files while another workspace package is using the SDK CLI.
+  if (mode === 'dev') await bootstrap();
   await run(process.execPath, [cli, 'build', '--root', components]);
-  const ct107dCli = resolve(repository, 'packages', 'sdk', 'dist', 'build', 'cli.js');
-  const ct107dRoot = resolve(repository, 'examples', 'ct107d');
-  if (existsSync(resolve(ct107dRoot, 'mica.config.ts')))
-    await run(process.execPath, [ct107dCli, 'build', '--root', ct107dRoot]);
   const artifacts = resolve(app, 'public', 'components');
   await rm(artifacts, { recursive: true, force: true });
-  await cp(resolve(components, 'dist'), artifacts, { recursive: true });
-  await copyCt107d(artifacts);
+  await cp(resolve(components, 'dist', 'runtime-demo'), artifacts, { recursive: true });
   if (mode === 'dev') {
     const server = await createServer({ root: app, server: serverOptions(process.argv.slice(3)) });
     await server.listen();
@@ -101,7 +64,13 @@ try {
   } else {
     await build({ root: app });
   }
-} catch (error) {
-  console.error(error);
-  process.exitCode = 1;
+}
+
+const invoked =
+  process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invoked) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

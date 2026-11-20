@@ -6,6 +6,7 @@ import {
   DEFER_READ_PORT,
   DEFER_READ_SIGNED,
   DEFER_READ_SIZE,
+  DEFER_READ_MODULE,
   DEFER_READ_TARGET,
   GPIO_BASE,
   GPIO_PIN_MASK,
@@ -23,6 +24,8 @@ import {
   SERVICE_PIN_SYNC,
   gpioAfr0State,
   gpioAfr1State,
+  gpioLockState,
+  gpioLockStepState,
   gpioModerState,
   gpioOdrState,
   gpioOtyperState,
@@ -171,34 +174,6 @@ function portRegisters(b: Body, portIndex: number): PortRegisters {
 }
 
 /**
- * 单个候选脚只读取 intent 实际会用到的寄存器。候选位跨 7/8 边界时两侧 AFR 都要读，
- * 否则未涉及的一半保持常量 0，避免每次稳态翻转都多读一个 state。
- */
-function candidateRegisters(
-  b: Body,
-  portIndex: number,
-  candidateMask: number,
-  odr: Value<number>,
-  supplied: Value<boolean>,
-): PortRegisters {
-  return {
-    moder: b.readState(gpioModerState(portIndex), types.number),
-    otyper: b.readState(gpioOtyperState(portIndex), types.number),
-    pupdr: b.readState(gpioPupdrState(portIndex), types.number),
-    odr,
-    afr0:
-      (candidateMask & 0xff) === 0
-        ? num(b, 0)
-        : b.readState(gpioAfr0State(portIndex), types.number),
-    afr1:
-      (candidateMask & 0xff00) === 0
-        ? num(b, 0)
-        : b.readState(gpioAfr1State(portIndex), types.number),
-    supplied,
-  };
-}
-
-/**
  * 一根脚在给定电阻下的意图。意图只在所在分支真正被选中时才求值：一次 GPIO 输出写只需要
  * 一个电阻意图，不必把上拉/下拉/空意图也解析一遍。
  */
@@ -272,12 +247,30 @@ function emitPinIntent(b: Body, portIndex: number, bit: number, registers: PortR
         selected,
         (level) => {
           const inner = asBody(level);
+          // 开漏输出的高电平不是推挽驱动，而是释放到 PUPDR 定义的上/下拉。
+          const openDrainOutput = boolOr(
+            inner,
+            inner.notEqual(types.number, openDrain, num(inner, 0)),
+            bool(inner, driver.openDrain === true),
+          );
 
           return inner.select(
             types.intent,
-            driver.level(inner),
-            (high) => resistorIntent(asBody(high), true, DRIVE_RESISTANCE),
-            (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+            openDrainOutput,
+            (open) =>
+              asBody(open).select(
+                types.intent,
+                driver.level(asBody(open)),
+                (high) => pullAt(asBody(high)),
+                (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+              ),
+            (pushPull) =>
+              asBody(pushPull).select(
+                types.intent,
+                driver.level(asBody(pushPull)),
+                (high) => resistorIntent(asBody(high), true, DRIVE_RESISTANCE),
+                (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+              ),
           );
         },
         () => intent,
@@ -380,62 +373,21 @@ function isWriteOnly(b: Body, wordOffset: Value<number>): Value<boolean> {
   );
 }
 
-function readRegister(
+function queueIdrRead(
   b: Body,
-  portIndex: number,
+  port: Value<number>,
   offset: Value<number>,
   size: number,
-  defer?: DeferRead,
-): Value<number> {
-  const port = PORTS[portIndex];
-
-  if (port === undefined) return num(b, 0);
-
-  const wordOffset = b.bitAnd(offset, num(b, 0x3c));
-  const result = b.local(types.number, 0);
-
-  b.if(
-    b.equal(types.number, wordOffset, num(b, GPIO_IDR)),
-    (idr) => {
-      if (defer === undefined) {
-        idr.setLocal(result, readIdr(asBody(idr), port));
-
-        return;
-      }
-
-      // 逐脚组包树只属于服务块：指令块只记下目标寄存器与访问形状，值稍后写回。
-      const scope = asBody(idr);
-
-      scope.writeState(DEFER_READ, bool(scope, true));
-      scope.writeState(DEFER_READ_PORT, num(scope, portIndex));
-      scope.writeState(DEFER_READ_OFFSET, offset);
-      scope.writeState(DEFER_READ_TARGET, num(scope, defer.target));
-      scope.writeState(DEFER_READ_SIZE, num(scope, size));
-      scope.writeState(DEFER_READ_SIGNED, bool(scope, defer.signed));
-      markService(scope, SERVICE_DEFER_READ);
-      idr.setLocal(result, num(scope, 0));
-    },
-    (other) => {
-      const body = asBody(other);
-
-      body.if(
-        isWriteOnly(body, wordOffset),
-        (zero) => zero.setLocal(result, num(zero, 0)),
-        (stored) => {
-          const scope = asBody(stored);
-
-          scope.if(
-            scope.equal(types.number, wordOffset, num(scope, GPIO_ODR)),
-            (odr) => odr.setLocal(result, odr.readState(gpioOdrState(portIndex), types.number)),
-            (register) =>
-              register.setLocal(result, loadWord(asBody(register), portIndex, wordOffset)),
-          );
-        },
-      );
-    },
-  );
-
-  return extract(b, b.getLocal(result), offset, size);
+  defer: DeferRead,
+): void {
+  b.writeState(DEFER_READ, bool(b, true));
+  b.writeState(DEFER_READ_PORT, port);
+  b.writeState(DEFER_READ_OFFSET, offset);
+  b.writeState(DEFER_READ_TARGET, num(b, defer.target));
+  b.writeState(DEFER_READ_SIZE, num(b, size));
+  b.writeState(DEFER_READ_SIGNED, bool(b, defer.signed));
+  b.writeState(DEFER_READ_MODULE, num(b, -1));
+  markService(b, SERVICE_DEFER_READ);
 }
 
 /** 静态端口/偏移版本的寄存器读；不生成端口或寄存器偏移的运行时判定。 */
@@ -455,18 +407,13 @@ function readRegisterStatic(
   if (wordOffset === GPIO_IDR) {
     if (defer === undefined) return extractAt(b, readIdr(b, port), offset, size);
 
-    b.writeState(DEFER_READ, bool(b, true));
-    b.writeState(DEFER_READ_PORT, num(b, portIndex));
-    b.writeState(DEFER_READ_OFFSET, num(b, offset));
-    b.writeState(DEFER_READ_TARGET, num(b, defer.target));
-    b.writeState(DEFER_READ_SIZE, num(b, size));
-    b.writeState(DEFER_READ_SIGNED, bool(b, defer.signed));
-    markService(b, SERVICE_DEFER_READ);
+    queueIdrRead(b, num(b, portIndex), num(b, offset), size, defer);
 
     return num(b, 0);
   }
 
   if (wordOffset === GPIO_BSRR || wordOffset === GPIO_BRR) return num(b, 0);
+  if (wordOffset === GPIO_LCKR) return readLckr(b, portIndex, num(b, offset), size);
 
   const stored =
     wordOffset === GPIO_ODR
@@ -635,6 +582,194 @@ function mergeWord(
   return u32(b, b.bitOr(b.bitAnd(current, b.bitNot(mask)), placed));
 }
 
+/** 把 16 位引脚掩码的每一位展开到 2 位字段的起始位（bit i → bit 2i）。 */
+function spreadPairs(b: Body, mask: Value<number>): Value<number> {
+  let spread = b.bitAnd(mask, num(b, 0xffff));
+
+  spread = b.bitAnd(b.bitOr(spread, b.shiftLeft(spread, num(b, 8))), num(b, 0x00ff00ff));
+  spread = b.bitAnd(b.bitOr(spread, b.shiftLeft(spread, num(b, 4))), num(b, 0x0f0f0f0f));
+  spread = b.bitAnd(b.bitOr(spread, b.shiftLeft(spread, num(b, 2))), num(b, 0x33333333));
+
+  return b.bitAnd(b.bitOr(spread, b.shiftLeft(spread, num(b, 1))), num(b, 0x55555555));
+}
+
+/** 把 8 位引脚掩码的每一位展开到 4 位字段（bit i → bit 4i）。 */
+function spreadNibbles(b: Body, mask: Value<number>): Value<number> {
+  let spread = b.bitAnd(mask, num(b, 0xff));
+
+  spread = b.bitAnd(b.bitOr(spread, b.shiftLeft(spread, num(b, 12))), num(b, 0x000f000f));
+  spread = b.bitAnd(b.bitOr(spread, b.shiftLeft(spread, num(b, 6))), num(b, 0x03030303));
+  spread = b.bitAnd(b.bitOr(spread, b.shiftLeft(spread, num(b, 3))), num(b, 0x11111111));
+
+  return b.multiply(spread, num(b, 0xf));
+}
+
+function lockedFieldMask(b: Body, portIndex: number, wordOffset: number): Value<number> {
+  const locked = b.readState(gpioLockState(portIndex), types.number);
+
+  if (wordOffset === GPIO_OTYPER) return b.bitAnd(locked, num(b, 0xffff));
+
+  if (wordOffset === GPIO_MODER || wordOffset === GPIO_PUPDR) {
+    const starts = spreadPairs(b, locked);
+
+    return b.bitOr(starts, b.shiftLeft(starts, num(b, 1)));
+  }
+
+  if (wordOffset === GPIO_AFR0) return spreadNibbles(b, b.bitAnd(locked, num(b, 0xff)));
+  if (wordOffset === GPIO_AFR1) return spreadNibbles(b, b.shiftRightUnsigned(locked, num(b, 8)));
+
+  return num(b, 0);
+}
+
+/** 锁定的引脚字段不可改；ODR/BSRR/BRR 不走这里。 */
+function lockedFieldMaskDynamic(
+  b: Body,
+  portIndex: number,
+  wordOffset: Value<number>,
+): Value<number> {
+  let mask = num(b, 0);
+
+  for (const offsetOf of [GPIO_OTYPER, GPIO_MODER, GPIO_PUPDR, GPIO_AFR0, GPIO_AFR1]) {
+    const candidate = lockedFieldMask(b, portIndex, offsetOf);
+
+    mask = b.select(
+      types.number,
+      b.equal(types.number, wordOffset, num(b, offsetOf)),
+      () => candidate,
+      () => mask,
+    );
+  }
+
+  return mask;
+}
+
+function writeLockState(b: Body, portIndex: number, step: number, candidate: Value<number>): void {
+  b.writeState(
+    gpioLockStepState(portIndex),
+    b.bitOr(num(b, step), b.shiftLeft(candidate, num(b, 4))),
+  );
+}
+
+/** LCKK 三步写序列：1 → 0 → 1，全部携带同一引脚掩码；随后读 LCKR 完成锁定。 */
+function writeLckr(
+  b: Body,
+  portIndex: number,
+  offset: Value<number>,
+  size: number,
+  value: Value<number>,
+): void {
+  const placed = placeWord(b, value, offset, size);
+  const raw = b.bitAnd(placed, num(b, 0x1ffff));
+  const lckk = boolBit(b, raw, 1 << 16);
+  const pins = b.bitAnd(raw, num(b, 0xffff));
+  const state = b.readState(gpioLockStepState(portIndex), types.number);
+  const step = b.bitAnd(state, num(b, 0xf));
+  const candidate = b.shiftRightUnsigned(state, num(b, 4));
+
+  const store = (body: Body, next: number, pinsValue: Value<number>) =>
+    writeLockState(body, portIndex, next, pinsValue);
+
+  b.if(
+    b.equal(types.number, step, num(b, 0)),
+    (s0) => {
+      const body = asBody(s0);
+
+      body.if(
+        lckk,
+        (yes) => store(asBody(yes), 1, pins),
+        (no) => store(asBody(no), 0, num(asBody(no), 0)),
+      );
+    },
+    (after0) => {
+      const branch1 = asBody(after0);
+
+      branch1.if(
+        branch1.equal(types.number, step, num(branch1, 1)),
+        (s1) => {
+          const body = asBody(s1);
+
+          body.if(
+            boolAnd(body, body.not(lckk), body.equal(types.number, pins, candidate)),
+            (yes) => store(asBody(yes), 2, candidate),
+            (no) => {
+              const body2 = asBody(no);
+
+              body2.if(
+                lckk,
+                (restart) => store(asBody(restart), 1, pins),
+                (idle) => store(asBody(idle), 0, num(asBody(idle), 0)),
+              );
+            },
+          );
+        },
+        (after1) => {
+          const branch2 = asBody(after1);
+
+          branch2.if(
+            branch2.equal(types.number, step, num(branch2, 2)),
+            (s2) => {
+              const body = asBody(s2);
+
+              body.if(
+                boolAnd(body, lckk, body.equal(types.number, pins, candidate)),
+                (yes) => store(asBody(yes), 3, candidate),
+                (no) => {
+                  const body2 = asBody(no);
+
+                  body2.if(
+                    lckk,
+                    (restart) => store(asBody(restart), 1, pins),
+                    (idle) => store(asBody(idle), 0, num(asBody(idle), 0)),
+                  );
+                },
+              );
+            },
+            (locked) => {
+              const body = asBody(locked);
+
+              body.if(
+                lckk,
+                (restart) => store(asBody(restart), 1, pins),
+                (idle) => store(asBody(idle), 4, num(asBody(idle), 0)),
+              );
+            },
+          );
+        },
+      );
+    },
+  );
+}
+
+/**
+ * 读 LCKR：step=3 表示三步写已完成，读确认后把候选位并入锁定掩码；LCKK 读回 1。
+ * 这一步不可省略，否则 HAL_GPIO_LockPin 之后的读回语义不正确。
+ */
+function readLckr(b: Body, portIndex: number, offset: Value<number>, size: number): Value<number> {
+  const lock = b.local(types.number, b.readState(gpioLockState(portIndex), types.number));
+  const state = b.local(types.number, b.readState(gpioLockStepState(portIndex), types.number));
+  const step = b.bitAnd(b.getLocal(state), num(b, 0xf));
+
+  b.if(b.equal(types.number, step, num(b, 3)), (confirm) => {
+    const body = asBody(confirm);
+    const candidate = body.shiftRightUnsigned(body.getLocal(state), num(body, 4));
+
+    body.setLocal(lock, body.bitOr(body.getLocal(lock), candidate));
+    body.writeState(gpioLockState(portIndex), body.getLocal(lock));
+    body.setLocal(state, num(body, 4));
+    body.writeState(gpioLockStepState(portIndex), num(body, 4));
+  });
+
+  const lckk = b.select(
+    types.number,
+    b.greaterThanOrEqual(b.bitAnd(b.getLocal(state), num(b, 0xf)), num(b, 3)),
+    (set) => set.constant(types.number, 1 << 16),
+    (clear) => clear.constant(types.number, 0),
+  );
+  const value = b.bitOr(b.getLocal(lock), lckk);
+
+  return extract(b, value, offset, size);
+}
+
 /**
  * MODER/PUPDR 的差值是每脚 2 位。先算“字段内至少一位变化”，再用并行移位把 16 个
  * even-bit 标志压到低 16 位，避免逐脚生成比较与 select。
@@ -766,32 +901,48 @@ function writeRegister(
         () => {},
         (stored) => {
           const body2 = asBody(stored);
-          const current = loadWord(body2, portIndex, wordOffset);
-          const merged = mergeWord(body2, current, value, offset, size);
-          const diff = body2.bitXor(current, merged);
 
-          storeWord(body2, portIndex, wordOffset, merged);
-          // 引脚意图读的是影子 state，这里写穿：存储器仍是固件可见的寄存器映像。
-          for (const [offsetOf, stateOf] of [
-            [GPIO_MODER, gpioModerState],
-            [GPIO_OTYPER, gpioOtyperState],
-            [GPIO_PUPDR, gpioPupdrState],
-            [GPIO_AFR0, gpioAfr0State],
-            [GPIO_AFR1, gpioAfr1State],
-          ] as const)
-            body2.if(body2.equal(types.number, wordOffset, num(body2, offsetOf)), (hit) => {
-              const scope = asBody(hit);
+          body2.if(
+            body2.equal(types.number, wordOffset, num(body2, GPIO_LCKR)),
+            (lckr) => writeLckr(asBody(lckr), portIndex, offset, size, value),
+            (config) => {
+              const body3 = asBody(config);
+              const current = loadWord(body3, portIndex, wordOffset);
+              const mergedRaw = mergeWord(body3, current, value, offset, size);
+              const locked = lockedFieldMaskDynamic(body3, portIndex, wordOffset);
+              const merged = u32(
+                body3,
+                body3.bitOr(
+                  body3.bitAnd(mergedRaw, body3.bitNot(locked)),
+                  body3.bitAnd(current, locked),
+                ),
+              );
+              const diff = body3.bitXor(current, merged);
 
-              scope.writeState(stateOf(portIndex), merged);
+              storeWord(body3, portIndex, wordOffset, merged);
+              // 引脚意图读的是影子 state，这里写穿：存储器仍是固件可见的寄存器映像。
+              for (const [offsetOf, stateOf] of [
+                [GPIO_MODER, gpioModerState],
+                [GPIO_OTYPER, gpioOtyperState],
+                [GPIO_PUPDR, gpioPupdrState],
+                [GPIO_AFR0, gpioAfr0State],
+                [GPIO_AFR1, gpioAfr1State],
+              ] as const)
+                body3.if(body3.equal(types.number, wordOffset, num(body3, offsetOf)), (hit) => {
+                  const scope = asBody(hit);
 
-              if (offsetOf === GPIO_OTYPER)
-                scope.setLocal(changed, scope.bitAnd(diff, num(scope, 0xffff)));
-              else if (offsetOf === GPIO_MODER || offsetOf === GPIO_PUPDR)
-                scope.setLocal(changed, changedPairPins(scope, diff));
-              else if (offsetOf === GPIO_AFR0)
-                scope.setLocal(changed, changedNibblePins(scope, diff, 0));
-              else scope.setLocal(changed, changedNibblePins(scope, diff, 8));
-            });
+                  scope.writeState(stateOf(portIndex), merged);
+
+                  if (offsetOf === GPIO_OTYPER)
+                    scope.setLocal(changed, scope.bitAnd(diff, num(scope, 0xffff)));
+                  else if (offsetOf === GPIO_MODER || offsetOf === GPIO_PUPDR)
+                    scope.setLocal(changed, changedPairPins(scope, diff));
+                  else if (offsetOf === GPIO_AFR0)
+                    scope.setLocal(changed, changedNibblePins(scope, diff, 0));
+                  else scope.setLocal(changed, changedNibblePins(scope, diff, 8));
+                });
+            },
+          );
         },
       );
     },
@@ -842,16 +993,91 @@ function odrTransition(
   return { current, next: mergeWord(b, current, value, num(b, offset), size) };
 }
 
-/** 稳态快路径：外层已确认 changed 非零，只对候选脚中真正变化的位重发 intent。 */
+/**
+ * 静态 ODR/BSRR/BRR 写对应的单根引脚意图刷新。
+ *
+ * 调用方已确认 `isPowered === wasPowered`（供电稳定）且 `isPowered === true`，同时本次写
+ * 只改变了 `ODR`。仅当该引脚处于普通输出模式（`mode === 1`）时，其意图才取决于 `ODR`：
+ * - 推挽输出（`openDrain === 0`）直接按新 `ODR` 位选择 25 Ω 上拉到 `VDD1` 或下拉到 `VSS1`，
+ *   无需读取 `PUPDR`、`AFR0/AFR1` 或展开外设复用驱动树；
+ * - 开漏输出（`openDrain === 1`）在输出高电平时才读取 `PUPDR`。
+ */
+function emitStaticOutputPinIntent(
+  b: Body,
+  portIndex: number,
+  bit: number,
+  moder: Value<number>,
+  otyper: Value<number>,
+  nextOdr: Value<number>,
+): void {
+  const pin = PORTS[portIndex]?.pins[bit];
+
+  if (pin === undefined || pin === null) return;
+
+  const mode = bits(b, moder, bit * 2, 2);
+
+  b.if(b.equal(types.number, mode, num(b, 1)), (out) => {
+    const scope = asBody(out);
+    const outputHigh = boolBit(scope, nextOdr, 1 << bit);
+    const openDrain = boolBit(scope, otyper, 1 << bit);
+
+    scope.if(
+      openDrain,
+      (open) => {
+        const openBody = asBody(open);
+        const pupdr = openBody.readState(gpioPupdrState(portIndex), types.number);
+        const pull = bits(openBody, pupdr, bit * 2, 2);
+        const pullIsUp = openBody.equal(types.number, pull, num(openBody, 1));
+        const pullIsDown = openBody.equal(types.number, pull, num(openBody, 2));
+        const intent = openBody.select(
+          types.intent,
+          outputHigh,
+          (high) =>
+            asBody(high).select(
+              types.intent,
+              pullIsUp,
+              (up) => resistorIntent(asBody(up), true, PULL_RESISTANCE),
+              (other) =>
+                asBody(other).select(
+                  types.intent,
+                  pullIsDown,
+                  (down) => resistorIntent(asBody(down), false, PULL_RESISTANCE),
+                  (none) => asBody(none).combineIntents(),
+                ),
+            ),
+          (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+        );
+
+        openBody.writeIntent(pin, intent);
+      },
+      (pushPull) => {
+        const ppBody = asBody(pushPull);
+        const intent = ppBody.select(
+          types.intent,
+          outputHigh,
+          (high) => resistorIntent(asBody(high), true, DRIVE_RESISTANCE),
+          (low) => resistorIntent(asBody(low), false, DRIVE_RESISTANCE),
+        );
+
+        ppBody.writeIntent(pin, intent);
+      },
+    );
+  });
+}
+
+/** 稳态快路径：外层已确认 changed 非零且供电稳定为真，只对候选脚中真正变化的位重发输出 intent。 */
 function emitStaticCandidateIntents(
   b: Body,
   portIndex: number,
   candidateMask: number,
   changed: Value<number>,
-  registers: PortRegisters,
+  nextOdr: Value<number>,
 ): void {
+  const moder = b.readState(gpioModerState(portIndex), types.number);
+  const otyper = b.readState(gpioOtyperState(portIndex), types.number);
+
   if (countSetBits(candidateMask) === 1) {
-    emitPinIntent(b, portIndex, 31 - Math.clz32(candidateMask), registers);
+    emitStaticOutputPinIntent(b, portIndex, 31 - Math.clz32(candidateMask), moder, otyper, nextOdr);
 
     return;
   }
@@ -862,7 +1088,7 @@ function emitStaticCandidateIntents(
     if ((candidateMask & bitMask) === 0 || PORTS[portIndex]?.pins[bit] === null) continue;
 
     b.if(boolBit(b, changed, bitMask), (selected) => {
-      emitPinIntent(asBody(selected), portIndex, bit, registers);
+      emitStaticOutputPinIntent(asBody(selected), portIndex, bit, moder, otyper, nextOdr);
     });
   }
 }
@@ -900,9 +1126,10 @@ function inlineStaticGpioWrite(b: Body, portIndex: number, masks: StaticPinMasks
       (onPowerChange) => markPowerChange(asBody(onPowerChange)),
       (onStablePower) => {
         const stable = asBody(onStablePower);
-        const registers = candidateRegisters(stable, portIndex, candidateMask, next, isPowered);
 
-        emitStaticCandidateIntents(stable, portIndex, candidateMask, changed, registers);
+        stable.if(wasPowered, (poweredBody) => {
+          emitStaticCandidateIntents(asBody(poweredBody), portIndex, candidateMask, changed, next);
+        });
       },
     );
   });
@@ -1020,6 +1247,27 @@ export function deferGpioWrite(
   });
 }
 
+/** 动态 GPIO 写服务块：端口在运行期选择，变化位精确同步。 */
+export function writeGpioDynamic(
+  b: Body,
+  address: Value<number>,
+  size: AccessSize,
+  value: Value<number>,
+): void {
+  const portValue = gpioPortIndex(b, address);
+  const offset = b.bitAnd(b.subtract(address, num(b, GPIO_BASE)), num(b, 0x3ff));
+  const changed = b.local(types.number, num(b, 0));
+
+  selectPort(b, portValue, 0, (body, port) => {
+    body.setLocal(changed, writeRegister(body, port, offset, size, value));
+    body.if(body.notEqual(types.number, body.getLocal(changed), num(body, 0)), (sync) => {
+      const scope = asBody(sync);
+
+      syncPort(scope, port, scope.getLocal(changed));
+    });
+  });
+}
+
 function selectPort(
   b: Body,
   portValue: Value<number>,
@@ -1044,14 +1292,69 @@ export function readGpio(
   defer?: DeferRead,
 ): Value<number> {
   const portValue = gpioPortIndex(b, address);
-  const offset = b.bitAnd(b.subtract(address, num(b, GPIO_BASE)), num(b, 0x3ff));
+  const offset = gpioOffsetOf(b, address);
   const result = b.local(types.number, 0);
 
-  selectPort(b, portValue, 0, (body, port) => {
-    body.setLocal(result, readRegister(body, port, offset, size, defer));
+  // Decode the register once. Only pin sampling and per-port shadow states need
+  // an explicit port selection. Ports that don't exist must not queue a read.
+  b.if(b.lessThan(portValue, num(b, PORTS.length)), (valid) => {
+    const body = asBody(valid);
+    const wordOffset = body.bitAnd(offset, num(body, 0x3c));
+
+    body.if(
+      body.equal(types.number, wordOffset, num(body, GPIO_IDR)),
+      (idr) => {
+        const scope = asBody(idr);
+
+        if (defer !== undefined) queueIdrRead(scope, portValue, offset, size, defer);
+        else {
+          selectPort(scope, portValue, 0, (portBody, port) => {
+            portBody.setLocal(result, readIdr(portBody, PORTS[port]!));
+          });
+        }
+      },
+      (other) => {
+        const scope = asBody(other);
+
+        scope.if(
+          scope.equal(types.number, wordOffset, num(scope, GPIO_ODR)),
+          (odr) => {
+            selectPort(asBody(odr), portValue, 0, (portBody, port) => {
+              portBody.setLocal(result, portBody.readState(gpioOdrState(port), types.number));
+            });
+          },
+          (notOdr) => {
+            const tail = asBody(notOdr);
+
+            tail.if(
+              tail.equal(types.number, wordOffset, num(tail, GPIO_LCKR)),
+              (lckr) => {
+                selectPort(asBody(lckr), portValue, 0, (portBody, port) => {
+                  // Preserve the existing dynamic LCKR lane extraction.
+                  portBody.setLocal(result, readLckr(portBody, port, offset, size));
+                });
+              },
+              (plain) => {
+                const inner = asBody(plain);
+
+                inner.if(inner.not(isWriteOnly(inner, wordOffset)), (stored) => {
+                  const reg = asBody(stored);
+                  const base = reg.add(
+                    num(reg, GPIO_STATE),
+                    reg.multiply(portValue, num(reg, GPIO_STATE_STRIDE)),
+                  );
+
+                  reg.setLocal(result, readWord(reg, PERIPH, reg.add(base, wordOffset)));
+                });
+              },
+            );
+          },
+        );
+      },
+    );
   });
 
-  return b.getLocal(result);
+  return extract(b, b.getLocal(result), offset, size);
 }
 
 /**
