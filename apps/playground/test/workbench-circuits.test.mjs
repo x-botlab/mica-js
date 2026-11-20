@@ -5,7 +5,7 @@ import assets from '../workbench-assets.json' with { type: 'json' };
 
 test('CT117E-M4 LCD demo uses one locked board and the LCD HEX asset', () => {
   const lock = {
-    id: 'example:ct117e-m4',
+    id: 'zerobit-lab:ct117e-m4',
     version: '0.1.0',
     integrity: `sha256:${'ab'.repeat(32)}`,
   };

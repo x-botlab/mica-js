@@ -92,7 +92,7 @@ pnpm --filter @mica-js/example-ct107d workbench:preview
 
 - `version: 2`，恰好一个实例；
 - 实例 UUID 固定为 `7d9e3a1c-5b2f-4c8d-9e01-2a3b4c5d6e7f`，器件为
-  `example:ct107d-board`；
+  `zerobit-lab:ct107d`；
 - `dependencies` 由 `@mica-js/sdk/fused/node` 的 `readDirectoryPackage` 读取
   `device/dist/release.json` 生成真实版本与 `sha256:...` 发布摘要，不手写摘要；
 - `VCC` 接 5 V `power` 参考、`GND` 接 0 V `ground` 参考；
@@ -176,7 +176,7 @@ suspend/resume、释放失败 latch 与关闭顺序。
 
 `device/` 是统一器件包：
 
-- 清单：`publisher: example`、`name: ct107d-board`、`engines.mica: ^1.0.0`；
+- 清单：`publisher: zerobit-lab`、`name: ct107d`、`engines.mica: ^1.0.0`；
 - 属性：`firmware`（`program`，memory loader，`bin`/`hex`，`code` 地址空间
   `[0, 61440)`、默认装载地址 0、可空）、`clockFrequency`、`ultrasonicDistanceCm`、
   `uartBaud`；

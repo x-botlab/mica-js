@@ -12,7 +12,7 @@ import { SerialQueue } from '../workbench/src/serial-queue';
 const DEVICE_SRC = join(import.meta.dirname, '..', 'device', 'src');
 
 const LOCK = {
-  id: 'example:ct107d-board',
+  id: 'zerobit-lab:ct107d',
   version: '0.1.0',
   integrity: `sha256:${'a'.repeat(64)}`,
 };

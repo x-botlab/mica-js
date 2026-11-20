@@ -1,6 +1,6 @@
 {
-  "publisher": "example",
-  "name": "ct107d-board",
+  "publisher": "zerobit-lab",
+  "name": "ct107d",
   "version": "0.1.0",
   "description": "CT107D 整板融合器件：8051 内核、片选/锁存链、I²C/1-Wire/串行器件、显示与键盘共享一个模型与一个 JIT。",
   "license": "MIT",

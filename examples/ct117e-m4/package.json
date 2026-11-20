@@ -1,7 +1,7 @@
 {
   "name": "ct117e-m4",
-  "publisher": "example",
-  "version": "0.1.0",
+  "publisher": "zerobit-lab",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "CT117E-M4 单器件融合板：STM32G431RBT6、ILI9325 与板载器件",

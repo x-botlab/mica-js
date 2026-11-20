@@ -219,7 +219,9 @@ async function open(bytes: Uint8Array): Promise<void> {
   workbench = undefined;
   error.hidden = true;
   const circuit = parseFusedDocument(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-  const hasCt117e = circuit.instances.some((instance) => instance.device === 'example:ct117e-m4');
+  const hasCt117e = circuit.instances.some(
+    (instance) => instance.device === 'zerobit-lab:ct117e-m4',
+  );
   const result = await createWorkbench({
     ...(audioContext === undefined ? {} : { audio: { context: audioContext } }),
     // As in CT107D, advance a visible amount of sim time on each host yield.
@@ -333,7 +335,7 @@ async function open(bytes: Uint8Array): Promise<void> {
                     'workbench:button': '轻触开关',
                     'workbench:at89c52': 'AT89C52',
                     'workbench:buzzer': '有源蜂鸣器',
-                    'example:ct117e-m4': 'CT117E-M4',
+                    'zerobit-lab:ct117e-m4': 'CT117E-M4',
                   }[item.lock.id] ?? item.lock.id;
                 button.className = 'demo-device';
                 button.addEventListener('click', () =>
