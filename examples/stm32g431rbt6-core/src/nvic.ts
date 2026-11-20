@@ -511,124 +511,62 @@ export function writeNvic(
 ): void {
   const wordOffset = b.bitAnd(offset, num(b, 0xfff));
 
-  const applyBank = (
-    body: Body,
-    base: number,
-    innerOffset: Value<number>,
-    op: 'set' | 'clear',
-  ): void => {
-    const bank = body.shiftRightUnsigned(innerOffset, num(body, 2));
-    const mask = bankMaskValue(body, bank);
-    const bits = body.bitAnd(placed(body, value, offset, size), mask);
-    const at = body.add(num(body, base), body.shiftLeft(bank, num(body, 2)));
-    const current = loadAt(body, at);
-
-    storeAt(
-      body,
-      at,
-      op === 'set' ? body.bitOr(current, bits) : body.bitAnd(current, body.bitNot(bits)),
-    );
-    body.writeState(IRQ_DIRTY, bool(body, true));
-    markService(body, SERVICE_IRQ);
-  };
-
   b.if(
-    b.lessThan(wordOffset, num(b, 0x20)),
-    (enable) => applyBank(asBody(enable), ENABLED, wordOffset, 'set'),
+    // ISER/ICER/ISPR/ICPR have identical 0x20-byte windows. Bits 7 and 8
+    // select clear and pending respectively; all other high bits must be zero.
+    b.equal(types.number, b.bitAnd(wordOffset, num(b, 0xe60)), num(b, 0)),
+    (bankWrite) => {
+      const body = asBody(bankWrite);
+      const bank = body.shiftRightUnsigned(body.bitAnd(wordOffset, num(body, 0x1f)), num(body, 2));
+      const group = body.shiftRightUnsigned(
+        body.bitAnd(wordOffset, num(body, 0x100)),
+        num(body, 4),
+      );
+      const at = body.add(num(body, ENABLED), body.add(group, body.shiftLeft(bank, num(body, 2))));
+      const bits = body.bitAnd(placed(body, value, offset, size), bankMaskValue(body, bank));
+      const current = loadAt(body, at);
+      const next = body.select(
+        types.number,
+        bitValue(body, wordOffset, 7),
+        (clear) => clear.bitAnd(current, clear.bitNot(bits)),
+        (set) => set.bitOr(current, bits),
+      );
+
+      storeAt(body, at, next);
+      body.writeState(IRQ_DIRTY, bool(body, true));
+      markService(body, SERVICE_IRQ);
+    },
     (other) => {
       const body = asBody(other);
+      const index = body.shiftRightUnsigned(
+        body.subtract(wordOffset, num(body, 0x300)),
+        num(body, 2),
+      );
 
       body.if(
-        inRegion(body, wordOffset, 0x80, 0xa0),
-        (disable) => {
-          const inner = asBody(disable);
+        body.lessThan(index, num(body, PRIORITY_WORDS)),
+        (priority) => {
+          const scope = asBody(priority);
+          const at = scope.add(num(scope, PRIORITY), scope.multiply(index, num(scope, 4)));
 
-          applyBank(inner, ENABLED, inner.subtract(wordOffset, num(inner, 0x80)), 'clear');
+          storeAt(scope, at, priorityMerge(scope, loadAt(scope, at), value, offset, size));
+          scope.writeState(IRQ_DIRTY, bool(scope, true));
+          markService(scope, SERVICE_IRQ);
         },
-        (next) => {
-          const scope = asBody(next);
+        (tail) => {
+          const last = asBody(tail);
 
-          scope.if(
-            inRegion(scope, wordOffset, 0x100, 0x120),
-            (pending) => {
-              const inner = asBody(pending);
+          last.if(last.equal(types.number, wordOffset, num(last, 0xe00)), (stir) => {
+            const scope = asBody(stir);
+            const channel = scope.bitAnd(u32(scope, value), num(scope, 0x1ff));
+            const bank = scope.shiftRightUnsigned(channel, num(scope, 5));
+            const mask = bankMaskValue(scope, bank);
+            const bit = scope.shiftLeft(num(scope, 1), scope.bitAnd(channel, num(scope, 31)));
 
-              applyBank(inner, PENDING, inner.subtract(wordOffset, num(inner, 0x100)), 'set');
-            },
-            (afterPending) => {
-              const inner = asBody(afterPending);
-
-              inner.if(
-                inRegion(inner, wordOffset, 0x180, 0x1a0),
-                (clearPending) => {
-                  const scope2 = asBody(clearPending);
-
-                  applyBank(
-                    scope2,
-                    PENDING,
-                    scope2.subtract(wordOffset, num(scope2, 0x180)),
-                    'clear',
-                  );
-                },
-                (afterClear) => {
-                  const scope2 = asBody(afterClear);
-                  const index = scope2.shiftRightUnsigned(
-                    scope2.subtract(wordOffset, num(scope2, 0x300)),
-                    num(scope2, 2),
-                  );
-
-                  scope2.if(
-                    boolAnd(
-                      scope2,
-                      scope2.greaterThanOrEqual(wordOffset, num(scope2, 0x300)),
-                      scope2.lessThan(index, num(scope2, PRIORITY_WORDS)),
-                    ),
-                    (priority) => {
-                      const body2 = asBody(priority);
-                      const at = body2.add(
-                        num(body2, PRIORITY),
-                        body2.multiply(index, num(body2, 4)),
-                      );
-
-                      storeAt(
-                        body2,
-                        at,
-                        priorityMerge(body2, loadAt(body2, at), value, offset, size),
-                      );
-                      body2.writeState(IRQ_DIRTY, bool(body2, true));
-                      markService(body2, SERVICE_IRQ);
-                    },
-                    (tail) => {
-                      const last = asBody(tail);
-                      const channel = last.bitAnd(u32(last, value), num(last, 0x1ff));
-                      const bank = last.shiftRightUnsigned(channel, num(last, 5));
-                      const mask = bankMaskValue(last, bank);
-                      const bit = last.shiftLeft(num(last, 1), last.bitAnd(channel, num(last, 31)));
-                      const valid = last.notEqual(
-                        types.number,
-                        last.bitAnd(mask, bit),
-                        num(last, 0),
-                      );
-
-                      last.if(
-                        boolAnd(
-                          last,
-                          last.equal(types.number, wordOffset, num(last, 0xe00)),
-                          valid,
-                        ),
-                        (stir) => {
-                          const inner2 = asBody(stir);
-
-                          setPendingDynamic(inner2, channel);
-                        },
-                        () => {},
-                      );
-                    },
-                  );
-                },
-              );
-            },
-          );
+            scope.if(scope.notEqual(types.number, scope.bitAnd(mask, bit), num(scope, 0)), (hit) =>
+              setPendingDynamic(asBody(hit), channel),
+            );
+          });
         },
       );
     },
@@ -1924,22 +1862,18 @@ export function writeScb(b: Body, offset: Value<number>, size: number, value: Va
     );
   });
 
-  for (const [register, offsetOf] of [
-    [SHPR1, 0x18],
-    [SHPR2, 0x1c],
-    [SHPR3, 0x20],
-  ] as const)
-    b.if(b.equal(types.number, wordOffset, num(b, offsetOf)), (hit) => {
-      const body = asBody(hit);
+  b.if(inRegion(b, wordOffset, 0x18, 0x24), (hit) => {
+    const body = asBody(hit);
+    const at = body.add(num(body, SCB_STATE), wordOffset);
 
-      store(
-        body,
-        register,
-        body.bitAnd(merge(body, load(body, register), value, offset, size), num(body, 0xf0f0f0f0)),
-      );
-      body.writeState(IRQ_DIRTY, bool(body, true));
-      markService(body, SERVICE_IRQ);
-    });
+    storeAt(
+      body,
+      at,
+      body.bitAnd(merge(body, loadAt(body, at), value, offset, size), num(body, 0xf0f0f0f0)),
+    );
+    body.writeState(IRQ_DIRTY, bool(body, true));
+    markService(body, SERVICE_IRQ);
+  });
 
   b.if(b.equal(types.number, wordOffset, num(b, 0x24)), (shcsr) => {
     const body = asBody(shcsr);

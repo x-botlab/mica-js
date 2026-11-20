@@ -6,7 +6,14 @@ import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { Board } from '@mica-js/sdk';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import { adaptDevice } from './harness';
-import { GPIO_ODR } from '@mica-js/stm32g431rbt6-core/gpio';
+import {
+  GPIO_BSRR,
+  GPIO_IDR,
+  GPIO_LCKR,
+  GPIO_ODR,
+  GPIO_OSPEEDR,
+  GPIO_OTYPER,
+} from '@mica-js/stm32g431rbt6-core/gpio';
 import { GPIO_STATE } from '@mica-js/stm32g431rbt6-core/layout';
 
 /**
@@ -33,7 +40,7 @@ const [module, model] = await Promise.all([
   }),
 ]);
 
-const VDD = ['VDD1', 'VDD2', 'VDD3', 'VDD4', 'VDDA', 'VREFP', 'VBAT'] as const;
+const VDD = ['VDD1', 'VDD2', 'VDD3', 'VDD4', 'VDDA', 'VREFP', 'VBAT', 'PB7'] as const;
 const VSS = ['VSS1', 'VSS2', 'VSS3', 'VSS4', 'VSSA'] as const;
 
 type Execution = 'precise' | 'throughput';
@@ -51,9 +58,7 @@ interface Snapshot {
 
 function mcuBoard(firmware: Uint8Array, execution: Execution): Board {
   return createBoard(
-    createDeviceLibrary([
-      { id: 'mcu', model, create: adaptDevice(module, { firmware }) as never },
-    ]),
+    createDeviceLibrary([{ id: 'mcu', model, create: adaptDevice(module, { firmware }) as never }]),
     {
       instances: [{ id: 'mcu', type: 'mcu', props: { clockFrequency: 1_000_000 } }],
       nets: [
@@ -189,6 +194,14 @@ class Thumb {
 
   ldrbAt(rt: number, rn: number): this {
     return this.#half(0x7800 | (rn << 3) | rt);
+  }
+
+  ldrsbReg(rt: number, rn: number, rm: number): this {
+    return this.#half(0x5600 | (rm << 6) | (rn << 3) | rt);
+  }
+
+  ldmia(rn: number, list: number): this {
+    return this.#half(0xc800 | (rn << 8) | list);
   }
 
   strSp(rt: number, offset: number): this {
@@ -437,4 +450,61 @@ describe('GPIO ODR 影子 state', () => {
       { offset: 0x14, width: 'word', value: 0x100 },
     ]);
   });
+});
+
+it('动态 GPIOB 读覆盖延迟 IDR 符号扩展、内联 LDM、锁定副作用和空端口', () => {
+  const firmware = new Thumb()
+    .movw(0, 0x400)
+    .movt(0, 0x4800)
+    .movs(1, 0x80)
+    .strWord(1, 0, GPIO_OSPEEDR)
+    .strWord(1, 0, GPIO_ODR)
+    .strSp(0, 0x20)
+    .ldrSp(4, 0x20)
+    .movs(5, GPIO_IDR)
+    .ldrsbReg(2, 4, 5)
+    .strSp(2, 0)
+    .adds(4, GPIO_OSPEEDR)
+    .ldrbAt(2, 4)
+    .strSp(2, 4)
+    .adds(4, GPIO_IDR - GPIO_OSPEEDR)
+    .ldmia(4, (1 << 2) | (1 << 3))
+    .strSp(2, 8)
+    .strSp(3, 12)
+    .ldrSp(4, 0x20)
+    .adds(4, GPIO_BSRR)
+    .ldrAt(2, 4)
+    .strSp(2, 16)
+    .movw(1, 1)
+    .movt(1, 1)
+    .strWord(1, 0, GPIO_LCKR)
+    .movs(1, 1)
+    .strWord(1, 0, GPIO_LCKR)
+    .movt(1, 1)
+    .strWord(1, 0, GPIO_LCKR)
+    .adds(4, GPIO_LCKR - GPIO_BSRR)
+    .ldrAt(2, 4)
+    .strSp(2, 20)
+    .movs(1, 3)
+    .strWord(1, 0, GPIO_OTYPER)
+    .ldrWord(2, 0, GPIO_OTYPER)
+    .strSp(2, 24)
+    .movw(0, 0x1400 + GPIO_IDR)
+    .movt(0, 0x4800)
+    .strSp(0, 0x20)
+    .ldrSp(4, 0x20)
+    .ldrAt(2, 4)
+    .strSp(2, 28)
+    .spin()
+    .build();
+
+  expectModesAgree(
+    firmware,
+    0,
+    [0xffff_ff80, 0x80, 0x80, 0x80, 0, 0x1_0001, 2, 0].map((value, index) => ({
+      offset: 4 * index,
+      width: 'word',
+      value,
+    })),
+  );
 });

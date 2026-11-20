@@ -117,6 +117,48 @@ describe('STM32G431RBT6 NVIC 多 bank 与优先级', () => {
     }
   });
 
+  it('动态窄写保留 NVIC bank 的字节位置、窗口边界和各 SHPR 字', async () => {
+    const t = new SystemThumb().mark('start');
+    const dynamicAddress = (value: number) => {
+      address(t, 0, value);
+      t.strWord(0, 2, 0x20).ldrWord(0, 2, 0x20);
+    };
+    const shpr1 = 0xe000_ed18;
+
+    address(t, 2, SRAM_BASE + 0x160);
+    dynamicAddress(NVIC_ISER1);
+    t.movw(1, 0x0120).strHalf(1, 0, 0);
+    dynamicAddress(NVIC_ISER1 + 0x80); // ICER1
+    t.movs(1, 1).strByte(1, 0, 1); // Clear IRQ40 but not IRQ37.
+    dynamicAddress(NVIC_ISER0);
+    t.movs(1, 0x20).strByte(1, 0, 0);
+    dynamicAddress(NVIC_ISER0 + 0xa0); // Just outside the ICER window.
+    t.movs(1, 0x20).strByte(1, 0, 0);
+    dynamicAddress(NVIC_ISER0);
+    t.ldrWord(1, 0, 0).strWord(1, 2, 4);
+    dynamicAddress(NVIC_ISER1);
+    t.ldrWord(1, 0, 0).strWord(1, 2, 0);
+    for (let index = 0; index < 3; index++) {
+      dynamicAddress(shpr1 + 4 * index);
+      t.movs(1, 0x3f + 0x10 * index).strByte(1, 0, index);
+      t.ldrWord(1, 0, 0).strWord(1, 2, 4 * (index + 2));
+    }
+    t.spin();
+
+    const board = await systemBoard({ firmware: t.build(), clockFrequency: 16_000_000 });
+
+    try {
+      board.run(1_000_000_000);
+      expect(board.faults).toEqual([]);
+      expect(board.cpuFaults).toEqual([]);
+      expect([0, 4, 8, 12, 16].map((offset) => board.sramWord(0x160 + offset))).toEqual([
+        0x20, 0x20, 0x30, 0x4000, 0x500000,
+      ]);
+    } finally {
+      board.dispose();
+    }
+  });
+
   it('ISPR1 bit31（IRQ63 软件 pending）跨 bank 派发', async () => {
     const t = new SystemThumb();
 
