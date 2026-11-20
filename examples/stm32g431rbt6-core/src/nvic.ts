@@ -46,7 +46,13 @@ import {
 } from './ir';
 import type { Body } from './ir';
 import { machine } from './machine';
-import { SYSTICK_EXCEPTION, acknowledgeSystick, readSystick, systickPending, writeSystick } from './systick';
+import {
+  SYSTICK_EXCEPTION,
+  acknowledgeSystick,
+  readSystick,
+  systickPending,
+  writeSystick,
+} from './systick';
 import { USARTS, usartPending } from './usart';
 import { extiOn, sampleExti } from './exti';
 import { CPU_HIDDEN_EVENT, clearExclusiveOnException } from './exclusive';
@@ -115,7 +121,8 @@ function range(first: number, last: number): number[] {
 const BANK_MASKS: readonly number[] = (() => {
   const masks = [0, 0, 0, 0];
 
-  for (const irq of G431_VALID_IRQS) masks[irq >>> 5] = (masks[irq >>> 5]! | (1 << (irq & 31))) >>> 0;
+  for (const irq of G431_VALID_IRQS)
+    masks[irq >>> 5] = (masks[irq >>> 5]! | (1 << (irq & 31))) >>> 0;
   return masks;
 })();
 
@@ -325,12 +332,7 @@ function extract(
   return b.bitAnd(b.shiftRightUnsigned(value, shift), num(b, size === 2 ? 0xffff : 0xff));
 }
 
-function placed(
-  b: Body,
-  value: Value<number>,
-  offset: Value<number>,
-  size: number,
-): Value<number> {
+function placed(b: Body, value: Value<number>, offset: Value<number>, size: number): Value<number> {
   if (size === 4) return u32(b, value);
   const width = size === 2 ? 0xffff : 0xff;
   const shift = b.multiply(b.bitAnd(offset, num(b, 3)), num(b, 8));
@@ -387,7 +389,11 @@ export function readNvic(b: Body, offset: Value<number>, size: number): Value<nu
         inner.setLocal(
           result,
           inner.bitAnd(
-            readWord(inner, SYS, inner.add(num(inner, ENABLED), inner.shiftLeft(bank, num(inner, 2)))),
+            readWord(
+              inner,
+              SYS,
+              inner.add(num(inner, ENABLED), inner.shiftLeft(bank, num(inner, 2))),
+            ),
             bankMaskValue(inner, bank),
           ),
         );
@@ -465,7 +471,10 @@ export function readNvic(b: Body, offset: Value<number>, size: number): Value<nu
                             readWord(
                               inner2,
                               SYS,
-                              inner2.add(num(inner2, PRIORITY), inner2.multiply(index, num(inner2, 4))),
+                              inner2.add(
+                                num(inner2, PRIORITY),
+                                inner2.multiply(index, num(inner2, 4)),
+                              ),
                             ),
                           );
                         },
@@ -514,7 +523,11 @@ export function writeNvic(
     const at = body.add(num(body, base), body.shiftLeft(bank, num(body, 2)));
     const current = loadAt(body, at);
 
-    storeAt(body, at, op === 'set' ? body.bitOr(current, bits) : body.bitAnd(current, body.bitNot(bits)));
+    storeAt(
+      body,
+      at,
+      op === 'set' ? body.bitOr(current, bits) : body.bitAnd(current, body.bitNot(bits)),
+    );
     body.writeState(IRQ_DIRTY, bool(body, true));
     markService(body, SERVICE_IRQ);
   };
@@ -598,7 +611,11 @@ export function writeNvic(
                       );
 
                       last.if(
-                        boolAnd(last, last.equal(types.number, wordOffset, num(last, 0xe00)), valid),
+                        boolAnd(
+                          last,
+                          last.equal(types.number, wordOffset, num(last, 0xe00)),
+                          valid,
+                        ),
                         (stir) => {
                           const inner2 = asBody(stir);
 
@@ -730,24 +747,18 @@ export function writeControl(b: Body, value: Value<number>): void {
   const newSpsel = boolBit(b, next, 2);
   const thread = b.equal(types.number, readHidden(b, H_MODE), num(b, 0));
 
-  b.if(
-    boolAnd(b, thread, boolAnd(b, b.not(oldSpsel), newSpsel)),
-    (toPsp) => {
-      const body = asBody(toPsp);
+  b.if(boolAnd(b, thread, boolAnd(b, b.not(oldSpsel), newSpsel)), (toPsp) => {
+    const body = asBody(toPsp);
 
-      writeHidden(body, H_MSP, readSp(body));
-      writeSp(body, readHidden(body, H_PSP));
-    },
-  );
-  b.if(
-    boolAnd(b, thread, boolAnd(b, oldSpsel, b.not(newSpsel))),
-    (toMsp) => {
-      const body = asBody(toMsp);
+    writeHidden(body, H_MSP, readSp(body));
+    writeSp(body, readHidden(body, H_PSP));
+  });
+  b.if(boolAnd(b, thread, boolAnd(b, oldSpsel, b.not(newSpsel))), (toMsp) => {
+    const body = asBody(toMsp);
 
-      writeHidden(body, H_PSP, readSp(body));
-      writeSp(body, readHidden(body, H_MSP));
-    },
-  );
+    writeHidden(body, H_PSP, readSp(body));
+    writeSp(body, readHidden(body, H_MSP));
+  });
   writeHidden(b, H_CONTROL, next);
 }
 
@@ -804,17 +815,11 @@ function priorityByteOfSystem(b: Body, exception: number): Value<number> {
       num(b, 0xf0),
     );
 
-  return b.bitAnd(
-    b.shiftRightUnsigned(load(b, SHPR3), num(b, (exception - 12) * 8)),
-    num(b, 0xf0),
-  );
+  return b.bitAnd(b.shiftRightUnsigned(load(b, SHPR3), num(b, (exception - 12) * 8)), num(b, 0xf0));
 }
 
 function priorityByteOfIrqDynamic(b: Body, irq: Value<number>): Value<number> {
-  const at = b.add(
-    num(b, PRIORITY),
-    b.shiftLeft(b.shiftRightUnsigned(irq, num(b, 2)), num(b, 2)),
-  );
+  const at = b.add(num(b, PRIORITY), b.shiftLeft(b.shiftRightUnsigned(irq, num(b, 2)), num(b, 2)));
   const shift = b.multiply(b.bitAnd(irq, num(b, 3)), num(b, 8));
 
   return b.bitAnd(b.shiftRightUnsigned(loadAt(b, at), shift), num(b, 0xf0));
@@ -873,13 +878,14 @@ function currentGroup(b: Body): Value<number> {
   return b.getLocal(result);
 }
 
-function pushActive(
-  b: Body,
-  exception: Value<number>,
-  group: Value<number>,
-): void {
+function pushActive(b: Body, exception: Value<number>, group: Value<number>): void {
   for (let index = ACTIVE_SLOTS - 1; index >= 1; index -= 1) {
-    writeWordAt(b, SYS, H_ACTIVE_EXC + index * 4, readWordAt(b, SYS, H_ACTIVE_EXC + (index - 1) * 4));
+    writeWordAt(
+      b,
+      SYS,
+      H_ACTIVE_EXC + index * 4,
+      readWordAt(b, SYS, H_ACTIVE_EXC + (index - 1) * 4),
+    );
     writeWordAt(
       b,
       SYS,
@@ -969,10 +975,7 @@ function vectorHandler(b: Body, exception: Value<number>): Value<number> {
     (flash) => {
       const body = asBody(flash);
 
-      body.setLocal(
-        result,
-        readWord(body, CODE, body.subtract(vector, num(body, FLASH_BASE))),
-      );
+      body.setLocal(result, readWord(body, CODE, body.subtract(vector, num(body, FLASH_BASE))));
     },
     (other) => {
       const body = asBody(other);
@@ -991,10 +994,7 @@ function vectorHandler(b: Body, exception: Value<number>): Value<number> {
         (ram) => {
           const inner = asBody(ram);
 
-          inner.setLocal(
-            result,
-            stackLoad(inner, inner.bitAnd(vector, num(inner, 0xfffffffc))),
-          );
+          inner.setLocal(result, stackLoad(inner, inner.bitAnd(vector, num(inner, 0xfffffffc))));
         },
       );
     },
@@ -1251,11 +1251,7 @@ export function enterSvc(b: Body, returnPc: number | Value<number>): Value<boole
   const allowed = boolAnd(
     b,
     b.equal(types.number, readHidden(b, H_FAULTMASK), num(b, 0)),
-    boolAnd(
-      b,
-      allowedByBasepri(b, group),
-      b.lessThan(group, currentGroup(b)),
-    ),
+    boolAnd(b, allowedByBasepri(b, group), b.lessThan(group, currentGroup(b))),
   );
   const taken = b.local(types.bool, false);
 
@@ -1300,7 +1296,12 @@ export function enterHardFault(b: Body, returnPc: number | Value<number>): void 
 
 /** 显式进入 PendSV。 */
 export function enterPendSv(b: Body, returnPc: number | Value<number>): void {
-  enterException(b, num(b, EXCEPTION_PENDSV), returnPc, groupOf(b, priorityByteOfSystem(b, EXCEPTION_PENDSV)));
+  enterException(
+    b,
+    num(b, EXCEPTION_PENDSV),
+    returnPc,
+    groupOf(b, priorityByteOfSystem(b, EXCEPTION_PENDSV)),
+  );
 }
 
 /* ---------------- 派发 ---------------- */
@@ -1333,11 +1334,7 @@ function better(
   return boolOr(
     b,
     groupBetter,
-    boolAnd(
-      b,
-      sameGroup,
-      boolOr(b, priorityBetter, boolAnd(b, samePriority, indexBetter)),
-    ),
+    boolAnd(b, sameGroup, boolOr(b, priorityBetter, boolAnd(b, samePriority, indexBetter))),
   );
 }
 
@@ -1502,12 +1499,7 @@ export function dispatchExceptions(b: Body, returnPc: number | Value<number>): V
             (fault) => {
               const inner = asBody(fault);
 
-              enterException(
-                inner,
-                num(inner, EXCEPTION_HARDFAULT),
-                returnPc,
-                num(inner, -1),
-              );
+              enterException(inner, num(inner, EXCEPTION_HARDFAULT), returnPc, num(inner, -1));
               inner.setLocal(taken, bool(inner, true));
               inner.writeState(IRQ_DIRTY, bool(inner, true));
               markService(inner, SERVICE_IRQ);
@@ -1528,7 +1520,11 @@ export function dispatchExceptions(b: Body, returnPc: number | Value<number>): V
                 inner.notEqual(types.number, faultmask, num(inner, 0)),
               );
               const configurableAllowed = (b: Body, group: Value<number>): Value<boolean> =>
-                boolAnd(b, b.not(masked), boolAnd(b, b.lessThan(group, baseGroup), b.lessThan(group, activeGroup)));
+                boolAnd(
+                  b,
+                  b.not(masked),
+                  boolAnd(b, b.lessThan(group, baseGroup), b.lessThan(group, activeGroup)),
+                );
 
               const usagePriority = priorityByteOfSystem(inner, EXCEPTION_USAGEFAULT);
               const usageGroup = inner.shiftRightUnsigned(usagePriority, groupShiftValue);
@@ -1588,9 +1584,7 @@ export function dispatchExceptions(b: Body, returnPc: number | Value<number>): V
                 selection,
               );
 
-              const sourceWords = [0, 1, 2, 3].map(() =>
-                inner.local(types.number, 0),
-              );
+              const sourceWords = [0, 1, 2, 3].map(() => inner.local(types.number, 0));
               const sources = machine().interruptSources;
               const eligibleWord = (bank: number) =>
                 inner.bitAnd(
@@ -1821,11 +1815,7 @@ export function readScb(b: Body, offset: Value<number>, size: number): Value<num
 
                           inner.setLocal(
                             result,
-                            readWord(
-                              inner,
-                              SYS,
-                              inner.add(num(inner, SCB_STATE), wordOffset),
-                            ),
+                            readWord(inner, SYS, inner.add(num(inner, SCB_STATE), wordOffset)),
                           );
                         },
                       );
@@ -1843,7 +1833,6 @@ export function readScb(b: Body, offset: Value<number>, size: number): Value<num
   return extract(b, b.getLocal(result), offset, size);
 }
 
-
 export function writeScb(b: Body, offset: Value<number>, size: number, value: Value<number>): void {
   const wordOffset = b.bitAnd(offset, num(b, 0xffc));
   const raw = u32(b, value);
@@ -1856,14 +1845,19 @@ export function writeScb(b: Body, offset: Value<number>, size: number, value: Va
       (set) => writeHidden(asBody(set), H_NMI, num(asBody(set), 1)),
       (clear) => writeHidden(asBody(clear), H_NMI, num(asBody(clear), 0)),
     );
-    body.if(bitValue(body, raw, 28), (hit) => writeHidden(asBody(hit), H_PENDSV, num(asBody(hit), 1)));
-    body.if(bitValue(body, raw, 27), (hit) => writeHidden(asBody(hit), H_PENDSV, num(asBody(hit), 0)));
+    body.if(bitValue(body, raw, 28), (hit) =>
+      writeHidden(asBody(hit), H_PENDSV, num(asBody(hit), 1)),
+    );
+    body.if(bitValue(body, raw, 27), (hit) =>
+      writeHidden(asBody(hit), H_PENDSV, num(asBody(hit), 0)),
+    );
     body.if(bitValue(body, raw, 26), (hit) =>
       asBody(hit).writeState(SYSTICK_PENDING, num(asBody(hit), 1)),
     );
     body.if(bitValue(body, raw, 25), (hit) =>
       asBody(hit).writeState(SYSTICK_PENDING, num(asBody(hit), 0)),
-    );    body.writeState(IRQ_DIRTY, bool(body, true));
+    );
+    body.writeState(IRQ_DIRTY, bool(body, true));
     markService(body, SERVICE_IRQ);
   });
 
@@ -1880,31 +1874,34 @@ export function writeScb(b: Body, offset: Value<number>, size: number, value: Va
   b.if(b.equal(types.number, wordOffset, num(b, 0x0c)), (aircr) => {
     const body = asBody(aircr);
 
-    body.if(body.equal(types.number, body.shiftRightUnsigned(raw, num(body, 16)), num(body, 0x05fa)), (valid) => {
-      const scope = asBody(valid);
+    body.if(
+      body.equal(types.number, body.shiftRightUnsigned(raw, num(body, 16)), num(body, 0x05fa)),
+      (valid) => {
+        const scope = asBody(valid);
 
-      store(
-        scope,
-        AIRCR,
-        scope.bitOr(
-          scope.bitAnd(load(scope, AIRCR), num(scope, ~0x700)),
-          scope.bitAnd(raw, num(scope, 0x700)),
-        ),
-      );
-      scope.if(bitValue(scope, raw, 2), (reset) => {
-        const inner = asBody(reset);
+        store(
+          scope,
+          AIRCR,
+          scope.bitOr(
+            scope.bitAnd(load(scope, AIRCR), num(scope, ~0x700)),
+            scope.bitAnd(raw, num(scope, 0x700)),
+          ),
+        );
+        scope.if(bitValue(scope, raw, 2), (reset) => {
+          const inner = asBody(reset);
 
-        // PRIMASK 不屏蔽复位；放开现有服务门控，下一次边界执行统一的 applyReset。
-        inner.writeState('primask', num(inner, 0));
-        requestReset(inner, RESET_CAUSE_SYSRESETREQ);
-      });
-      scope.if(bitValue(scope, raw, 0), (reset) => {
-        const inner = asBody(reset);
+          // PRIMASK 不屏蔽复位；放开现有服务门控，下一次边界执行统一的 applyReset。
+          inner.writeState('primask', num(inner, 0));
+          requestReset(inner, RESET_CAUSE_SYSRESETREQ);
+        });
+        scope.if(bitValue(scope, raw, 0), (reset) => {
+          const inner = asBody(reset);
 
-        inner.writeState('primask', num(inner, 0));
-        requestReset(inner, RESET_CAUSE_VECTRESET);
-      });
-    });
+          inner.writeState('primask', num(inner, 0));
+          requestReset(inner, RESET_CAUSE_VECTRESET);
+        });
+      },
+    );
   });
 
   b.if(b.equal(types.number, wordOffset, num(b, 0x10)), (scr) => {
@@ -1938,10 +1935,7 @@ export function writeScb(b: Body, offset: Value<number>, size: number, value: Va
       store(
         body,
         register,
-        body.bitAnd(
-          merge(body, load(body, register), value, offset, size),
-          num(body, 0xf0f0f0f0),
-        ),
+        body.bitAnd(merge(body, load(body, register), value, offset, size), num(body, 0xf0f0f0f0)),
       );
       body.writeState(IRQ_DIRTY, bool(body, true));
       markService(body, SERVICE_IRQ);
@@ -1983,11 +1977,7 @@ export function writeScb(b: Body, offset: Value<number>, size: number, value: Va
 }
 
 function bitValue(b: Body, value: Value<number>, index: number): Value<boolean> {
-  return b.notEqual(
-    types.number,
-    b.bitAnd(value, num(b, 1 << index)),
-    num(b, 0),
-  );
+  return b.notEqual(types.number, b.bitAnd(value, num(b, 1 << index)), num(b, 0));
 }
 
 /* ---------------- 系统区入口 ---------------- */
@@ -2021,29 +2011,16 @@ export function readSystem(b: Body, address: Value<number>, size: number): Value
         (next) => {
           const scope = asBody(next);
 
-          scope.if(
-            inRegion(scope, address, NVIC_BASE + 0xe00, NVIC_BASE + 0xe04),
-            (stir) => {
-              const inner = asBody(stir);
+          // STIR is write-only and lies outside the SCB window. The default zero
+          // also covers its four byte lanes; no second NVIC read tree is needed.
+          scope.if(inRegion(scope, address, SCB_BASE, SCB_BASE + 0x100), (scb) => {
+            const body2 = asBody(scb);
 
-              inner.setLocal(
-                result,
-                readNvic(inner, inner.subtract(address, num(inner, NVIC_BASE)), size),
-              );
-            },
-            (afterStir) => {
-              const inner = asBody(afterStir);
-
-              inner.if(inRegion(inner, address, SCB_BASE, SCB_BASE + 0x100), (scb) => {
-                const body2 = asBody(scb);
-
-                scb.setLocal(
-                  result,
-                  readScb(body2, body2.subtract(address, num(body2, SCB_BASE)), size),
-                );
-              });
-            },
-          );
+            scb.setLocal(
+              result,
+              readScb(body2, body2.subtract(address, num(body2, SCB_BASE)), size),
+            );
+          });
         },
       );
     },
@@ -2069,7 +2046,11 @@ export function writeSystem(
       const body = asBody(other);
 
       body.if(
-        inRegion(body, address, NVIC_BASE, NVIC_BASE + 0x400),
+        boolOr(
+          body,
+          inRegion(body, address, NVIC_BASE, NVIC_BASE + 0x400),
+          inRegion(body, address, NVIC_BASE + 0xe00, NVIC_BASE + 0xe04),
+        ),
         (nvic) => {
           const scope = asBody(nvic);
 
@@ -2078,23 +2059,11 @@ export function writeSystem(
         (next) => {
           const scope = asBody(next);
 
-          scope.if(
-            inRegion(scope, address, NVIC_BASE + 0xe00, NVIC_BASE + 0xe04),
-            (stir) => {
-              const inner = asBody(stir);
+          scope.if(inRegion(scope, address, SCB_BASE, SCB_BASE + 0x100), (scb) => {
+            const body2 = asBody(scb);
 
-              writeNvic(inner, inner.subtract(address, num(inner, NVIC_BASE)), size, value);
-            },
-            (afterStir) => {
-              const inner = asBody(afterStir);
-
-              inner.if(inRegion(inner, address, SCB_BASE, SCB_BASE + 0x100), (scb) => {
-                const body2 = asBody(scb);
-
-                writeScb(body2, body2.subtract(address, num(body2, SCB_BASE)), size, value);
-              });
-            },
-          );
+            writeScb(body2, body2.subtract(address, num(body2, SCB_BASE)), size, value);
+          });
         },
       );
     },

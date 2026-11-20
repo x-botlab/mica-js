@@ -57,6 +57,7 @@ interface Context {
   valueRegion?: VType;
   loop: number;
   results: Map<number, Info>;
+  visibleResults: number[];
   resultIds: Set<number>;
   localIds: Set<number>;
   reaction?: ReactionDeclaration;
@@ -463,6 +464,7 @@ class Validator {
       ...(returns ? { returns } : {}),
       loop: 0,
       results: new Map(),
+      visibleResults: [],
       resultIds: new Set(),
       localIds: new Set(),
       tail: true,
@@ -497,8 +499,10 @@ class Validator {
   region(body: RegionIR, c: Context, initial: State, p: InputPath): Flow {
     let state: State | undefined = copy(initial);
     const flow: Flow = { breaks: [], continues: [], yielded: [], yieldStates: [] };
-    const results = new Map(c.results);
-    c = { ...c, results };
+    // Result IDs cannot shadow each other. Keep inherited definitions in place and
+    // roll back only this region's additions when returning to its parent.
+    const { results, visibleResults } = c;
+    const resultStart = visibleResults.length;
     for (let i = 0; i < body.operations.length; i++) {
       const op = body.operations[i]!,
         q = [...p, 'operations', i];
@@ -522,6 +526,7 @@ class Validator {
         this.expect(output.type, t, [...q, 'type'], op);
         const value: Info = { type: output.type, key: `v:${output.result}`, ...details };
         results.set(output.result, value);
+        visibleResults.push(output.result);
         return value;
       };
       if ('result' in op) {
@@ -1148,6 +1153,7 @@ class Validator {
       }
     }
     if (state) flow.normal = state;
+    while (visibleResults.length > resultStart) results.delete(visibleResults.pop()!);
     return flow;
   }
   effects(body: RegionIR, mode: Mode, path: InputPath): void {

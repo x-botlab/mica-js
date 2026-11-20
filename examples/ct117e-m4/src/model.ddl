@@ -1060,26 +1060,27 @@ device Ct117eM4(
       else { writeData(dataBus()); }
     }
   }
-  fn fusedLevel(wire: number) -> number {
-    return wire == 0 ? (fusedReading ? (fusedReadValue >> 0) & 1 : fusedWire0) :
-      wire == 1 ? (fusedReading ? (fusedReadValue >> 1) & 1 : fusedWire1) :
-      wire == 2 ? (fusedReading ? (fusedReadValue >> 2) & 1 : fusedWire2) :
-      wire == 3 ? (fusedReading ? (fusedReadValue >> 3) & 1 : fusedWire3) :
-      wire == 4 ? (fusedReading ? (fusedReadValue >> 4) & 1 : fusedWire4) :
-      wire == 5 ? (fusedReading ? (fusedReadValue >> 5) & 1 : fusedWire5) :
-      wire == 6 ? (fusedReading ? (fusedReadValue >> 6) & 1 : fusedWire6) :
-      wire == 7 ? (fusedReading ? (fusedReadValue >> 7) & 1 : fusedWire7) :
-      wire == 8 ? (fusedReading ? (fusedReadValue >> 8) & 1 : fusedWire8) :
-      wire == 9 ? (fusedReading ? (fusedReadValue >> 9) & 1 : fusedWire9) :
-      wire == 10 ? (fusedReading ? (fusedReadValue >> 10) & 1 : fusedWire10) :
-      wire == 11 ? (fusedReading ? (fusedReadValue >> 11) & 1 : fusedWire11) :
-      wire == 12 ? (fusedReading ? (fusedReadValue >> 12) & 1 : fusedWire12) :
-      wire == 13 ? (fusedReading ? (fusedReadValue >> 13) & 1 : fusedWire13) :
-      wire == 14 ? (fusedReading ? (fusedReadValue >> 14) & 1 : fusedWire14) :
-      wire == 15 ? (fusedReading ? (fusedReadValue >> 15) & 1 : fusedWire15) :
-      wire == 16 ? fusedWire16 : wire == 17 ? (fusedWire17 == 1 ? 1 : 0) :
-      wire == 18 ? fusedWire18 : wire == 19 ? fusedWire19 : -1;
-  }
+  // Fusion knows the LCD wire at each sample site. Inline only that wire.
+  fn fusedLevel0() -> number { return fusedReading ? fusedReadValue & 1 : fusedWire0; }
+  fn fusedLevel1() -> number { return fusedReading ? (fusedReadValue >> 1) & 1 : fusedWire1; }
+  fn fusedLevel2() -> number { return fusedReading ? (fusedReadValue >> 2) & 1 : fusedWire2; }
+  fn fusedLevel3() -> number { return fusedReading ? (fusedReadValue >> 3) & 1 : fusedWire3; }
+  fn fusedLevel4() -> number { return fusedReading ? (fusedReadValue >> 4) & 1 : fusedWire4; }
+  fn fusedLevel5() -> number { return fusedReading ? (fusedReadValue >> 5) & 1 : fusedWire5; }
+  fn fusedLevel6() -> number { return fusedReading ? (fusedReadValue >> 6) & 1 : fusedWire6; }
+  fn fusedLevel7() -> number { return fusedReading ? (fusedReadValue >> 7) & 1 : fusedWire7; }
+  fn fusedLevel8() -> number { return fusedReading ? (fusedReadValue >> 8) & 1 : fusedWire8; }
+  fn fusedLevel9() -> number { return fusedReading ? (fusedReadValue >> 9) & 1 : fusedWire9; }
+  fn fusedLevel10() -> number { return fusedReading ? (fusedReadValue >> 10) & 1 : fusedWire10; }
+  fn fusedLevel11() -> number { return fusedReading ? (fusedReadValue >> 11) & 1 : fusedWire11; }
+  fn fusedLevel12() -> number { return fusedReading ? (fusedReadValue >> 12) & 1 : fusedWire12; }
+  fn fusedLevel13() -> number { return fusedReading ? (fusedReadValue >> 13) & 1 : fusedWire13; }
+  fn fusedLevel14() -> number { return fusedReading ? (fusedReadValue >> 14) & 1 : fusedWire14; }
+  fn fusedLevel15() -> number { return fusedReading ? (fusedReadValue >> 15) & 1 : fusedWire15; }
+  fn fusedLevel16() -> number { return fusedWire16; }
+  fn fusedLevel17() -> number { return fusedWire17 == 1 ? 1 : 0; }
+  fn fusedLevel18() -> number { return fusedWire18; }
+  fn fusedLevel19() -> number { return fusedWire19; }
   fn fusedReadWindow() {
     const active = fusedWire18 == 0 && fusedWire19 == 0;
     if active && !fusedReading { driveData(readValue()); }

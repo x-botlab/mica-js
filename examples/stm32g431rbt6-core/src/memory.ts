@@ -21,6 +21,7 @@ import {
 import type { AccessSize } from './layout';
 import {
   asBody,
+  boolOr,
   num,
   readByte,
   readHalf,
@@ -206,6 +207,15 @@ export function gpioReadsAsZero(address: number): boolean {
 const inRegion = (b: Body, address: Value<number>, base: number, size: number): Value<boolean> =>
   b.lessThan(u32(b, b.subtract(address, num(b, base))), num(b, size));
 
+// Keep both window bounds, but lower the shared Flash operation only once. Both
+// bases are aligned to FLASH_SIZE, so the low bits are the same bank offset.
+const inFlash = (b: Body, address: Value<number>): Value<boolean> =>
+  boolOr(
+    b,
+    inRegion(b, address, FLASH_BASE, FLASH_SIZE),
+    inRegion(b, address, FLASH_ALIAS_BASE, FLASH_SIZE),
+  );
+
 /** 静态区间内的偏移：常量偏移直接发射，否则按区间基址换算。 */
 function regionOffset(b: Body, address: Value<number>, at: At): Value<number> {
   if (at.offset !== undefined) return num(b, at.offset);
@@ -349,13 +359,13 @@ export function readMemory(
       const body = asBody(other);
 
       body.if(
-        inRegion(body, address, FLASH_BASE, FLASH_SIZE),
+        inFlash(body, address),
         (flash) => {
           const inner = asBody(flash);
 
           inner.setLocal(
             result,
-            loadWidth(inner, CODE, offsetFrom(inner, address, FLASH_BASE), size),
+            loadWidth(inner, CODE, inner.bitAnd(address, num(inner, CODE_MASK)), size),
           );
         },
         (rest) => {
@@ -386,23 +396,6 @@ export function readMemory(
                     inRegion(tail, address, SYSTEM_BASE, SYSTEM_END - SYSTEM_BASE),
                     (system) => {
                       system.setLocal(result, readSystem(asBody(system), address, size));
-                    },
-                    (alias) => {
-                      const last = asBody(alias);
-
-                      last.if(inRegion(last, address, FLASH_ALIAS_BASE, FLASH_SIZE), (mirror) => {
-                        const scope = asBody(mirror);
-
-                        scope.setLocal(
-                          result,
-                          loadWidth(
-                            scope,
-                            CODE,
-                            offsetFrom(scope, address, FLASH_ALIAS_BASE),
-                            size,
-                          ),
-                        );
-                      });
                     },
                   );
                 },
@@ -446,12 +439,12 @@ export function writeMemory(
       const body = asBody(other);
 
       body.if(
-        inRegion(body, address, FLASH_BASE, FLASH_SIZE),
+        inFlash(body, address),
         (flash) => {
           const scope = asBody(flash);
 
           if (deferFlash) registerDeferredWrite(scope, address, size, value);
-          else writeFlashMemory(scope, offsetFrom(scope, address, FLASH_BASE), size, value);
+          else writeFlashMemory(scope, scope.bitAnd(address, num(scope, CODE_MASK)), size, value);
         },
         (notFlash) => {
           const scope = asBody(notFlash);
@@ -478,25 +471,6 @@ export function writeMemory(
                     inRegion(tail, address, SYSTEM_BASE, SYSTEM_END - SYSTEM_BASE),
                     (system) => {
                       writeSystem(asBody(system), address, size, value);
-                    },
-                    (alias) => {
-                      const mirror = asBody(alias);
-
-                      mirror.if(
-                        inRegion(mirror, address, FLASH_ALIAS_BASE, FLASH_SIZE),
-                        (flashAlias) => {
-                          const scope2 = asBody(flashAlias);
-
-                          if (deferFlash) registerDeferredWrite(scope2, address, size, value);
-                          else
-                            writeFlashMemory(
-                              scope2,
-                              scope2.bitAnd(address, num(scope2, CODE_MASK)),
-                              size,
-                              value,
-                            );
-                        },
-                      );
                     },
                   );
                 },

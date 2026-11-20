@@ -1,6 +1,5 @@
 import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import type { DeviceContext } from '@mica-js/sdk/device';
-import { types } from '@mica-js/sdk/model';
 import { bool, num } from '@mica-js/stm32g431rbt6-core/ir';
 import { activateMachine } from '@mica-js/stm32g431rbt6-core/machine';
 import {
@@ -32,6 +31,7 @@ const NVIC_ISER2 = 0xe000_e108;
 const NVIC_ISPR2 = 0xe000_e208;
 const NVIC_ICPR2 = 0xe000_e288;
 const NVIC_IPR = 0xe000_e400;
+const NVIC_STIR = 0xe000_ef00;
 const SCB_ICSR = 0xe000_ed04;
 const ICSR_PENDING = (1 << 22) | (0x1ff << 12); // ISRPENDING + VECTPENDING
 
@@ -82,15 +82,22 @@ describe('STM32G431RBT6 NVIC 多 bank 与优先级', () => {
     }
   });
 
-  it('bank1 bit31（IRQ63）通过 STIR 挂起并派发', async () => {
+  it('STIR 写入挂起 IRQ63，字/半字/字节均读回零', async () => {
     const t = new SystemThumb();
 
     t.vector(79, 'irq63'); // 63 + 16 = 79
     t.mark('start');
     address(t, 0, NVIC_ISER1);
     t.movw(1, 0x0000).movt(1, 0x8000).strWord(1, 0, 0);
-    address(t, 0, 0xe000_ef00); // NVIC->STIR
+    address(t, 0, NVIC_STIR);
     t.movs(1, 63).strWord(1, 0, 0);
+    address(t, 2, SRAM_BASE + 0x140);
+    for (let index = 0; index < 7; index++) t.strWord(1, 2, 4 * index);
+    t.ldrWord(1, 0, 0).strWord(1, 2, 0);
+    for (let offset = 0; offset < 4; offset += 2)
+      t.ldrHalf(1, 0, offset).strWord(1, 2, 4 + 2 * offset);
+    for (let offset = 0; offset < 4; offset++)
+      t.ldrByte(1, 0, offset).strWord(1, 2, 12 + 4 * offset);
     t.spin();
 
     t.mark('irq63');
@@ -104,6 +111,7 @@ describe('STM32G431RBT6 NVIC 多 bank 与优先级', () => {
       board.run(1_000_000_000);
       expect(board.faults).toEqual([]);
       expect(board.sramWord(0x130)).toBe(1);
+      for (let offset = 0x140; offset <= 0x158; offset += 4) expect(board.sramWord(offset)).toBe(0);
     } finally {
       board.dispose();
     }

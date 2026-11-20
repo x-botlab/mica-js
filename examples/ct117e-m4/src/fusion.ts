@@ -1,6 +1,6 @@
 import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
 import type { BlockIR, DeviceIR, OperationIR, RegionIR } from '@mica-js/sdk/model';
-import { inlineCalls } from './inline';
+import { inlineCalls, LCD_WIRE_COUNT, lcdLevelFunction } from './inline';
 import { BOARD_WIRES, FUSED_WIRES } from './board-wires';
 
 const VREFP = -3;
@@ -74,12 +74,12 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
       throw new Error('Fused sample locals must be immutable');
     if (op.kind === 'field' && samples.has(op.value)) {
       const wire = samples.get(op.value)!;
-      const pin = next++;
+      const lcdLevel = op.field === 'level' && wire >= 0 && wire < LCD_WIRE_COUNT;
       const result = op.field === 'voltage' ? next++ : op.result;
       const name =
         op.field === 'level'
-          ? wire >= 0 && wire < 20
-            ? 'fusedLevel'
+          ? lcdLevel
+            ? lcdLevelFunction(wire)
             : 'boardLevel'
           : op.field === 'voltage'
             ? 'boardAnalog'
@@ -87,22 +87,26 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
               ? 'boardAnalogStatus'
               : undefined;
       if (name === undefined) throw new Error(`Unsupported fused sample field ${op.field}`);
-      const field: OperationIR[] = [
-        {
+      const field: OperationIR[] = [];
+      const args = [];
+      if (!lcdLevel) {
+        const pin = next++;
+        field.push({
           kind: 'constant',
           result: pin,
           type: { kind: 'number' },
           constant: { kind: 'number', value: wire },
-        },
-        {
-          kind: 'callValue',
-          name,
-          pure: name === 'boardAnalogStatus',
-          result,
-          type: op.field === 'status' ? op.type : { kind: 'number' },
-          args: [{ kind: 'value', value: pin }],
-        },
-      ];
+        });
+        args.push({ kind: 'value' as const, value: pin });
+      }
+      field.push({
+        kind: 'callValue',
+        name,
+        pure: name === 'boardAnalogStatus',
+        result,
+        type: op.field === 'status' ? op.type : { kind: 'number' },
+        args,
+      });
       if (op.field === 'voltage')
         field.push({ kind: 'optional', result: op.result, type: op.type, value: result });
       return field;

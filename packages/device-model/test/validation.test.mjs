@@ -42,6 +42,35 @@ test('外部 IR 的嵌套操作仍完整检查 schema', () => {
   );
 });
 
+test('结果可在子区域读取，但不能逃逸到父区域或兄弟分支', () => {
+  const constant = (result, kind, value) => ({
+    kind: 'constant',
+    result,
+    type: { kind },
+    constant: { kind, value },
+  });
+  const elapse = (duration) => ({ kind: 'elapse', duration });
+  const branch = (no) => ({
+    kind: 'if',
+    condition: 0,
+    yes: { operations: [constant(2, 'number', 2), elapse(1)] },
+    no: { operations: [no] },
+  });
+  const prefix = [constant(0, 'bool', true), constant(1, 'number', 1)];
+  assert.doesNotThrow(() => validateBlockIR(block([...prefix, branch(elapse(1)), elapse(1)])));
+  for (const [body, message] of [
+    [block([...prefix, branch(elapse(2))]), /not visible/],
+    [block([...prefix, branch(elapse(1)), elapse(2)]), /not visible/],
+    [block([...prefix, branch(constant(2, 'number', 3))]), /Duplicate result/],
+  ]) {
+    assert.throws(
+      () => validateBlockIR(body),
+      ({ diagnostics: [diagnostic] }) =>
+        diagnostic.code === 'IR_SCOPE' && message.test(diagnostic.message),
+    );
+  }
+});
+
 /**
  * 顺序合并同一个 local：每轮的两个分支各自带着上一轮的 local 身份再做一次条件合并，
  * 外层再把两个分支合流。旧 key 实现会在这里把父 join 的完整字符串复制两份。

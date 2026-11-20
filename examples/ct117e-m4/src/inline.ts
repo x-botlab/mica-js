@@ -1,9 +1,12 @@
 import type { DeviceIR, OperationIR, RegionIR } from '@mica-js/sdk/model';
 
+export const LCD_WIRE_COUNT = 20;
+export const lcdLevelFunction = (wire: number): string => `fusedLevel${wire}`;
+
 const HOT = new Set([
   'fusedWr',
   'fusedReadWindow',
-  'fusedLevel',
+  ...Array.from({ length: LCD_WIRE_COUNT }, (_, wire) => lcdLevelFunction(wire)),
   'writeCommand',
   'writeData',
   'dataBus',
@@ -16,6 +19,7 @@ const HOT = new Set([
   'u1_dataByte',
   'u1_bit',
 ]);
+
 const OPERANDS = new Set([
   'value',
   'condition',
