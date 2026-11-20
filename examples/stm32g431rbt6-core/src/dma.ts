@@ -64,8 +64,6 @@ const CNDTR = 0x04;
 const CPAR = 0x08;
 const CMAR = 0x0c;
 const BASE_COUNT = 0x80;
-const BASE_PAR = 0x84;
-const BASE_MAR = 0x88;
 
 const CCR_MASK = 0x7fff;
 const CNDTR_MASK = 0xffff;

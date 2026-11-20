@@ -14,7 +14,6 @@ import {
 } from './analog';
 import {
   asBody,
-  bool,
   boolAnd,
   boolBitAt,
   boolOr,

@@ -4,7 +4,6 @@ import { DMA } from './layout';
 import type { PeripheralModule } from './peripheral';
 import {
   asBody,
-  bool,
   boolAnd,
   boolBitAt,
   boolOr,

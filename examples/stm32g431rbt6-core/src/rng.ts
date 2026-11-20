@@ -46,8 +46,6 @@ const META = 0x18;
 const STATE = 0x1c;
 
 const CR_MASK = 0x2c;
-const RNGEN = 0x04;
-const IE = 0x08;
 
 const FAULT_CECS = 0x01;
 const FAULT_SECS = 0x02;

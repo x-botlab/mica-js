@@ -54,14 +54,11 @@ const WPR = 0x24;
 const CALR = 0x28;
 const SHIFTR = 0x2c;
 const ALRMAR = 0x40;
-const ALRMASSR = 0x44;
 const ALRMBR = 0x48;
-const ALRMBSSR = 0x4c;
 const SR = 0x50;
 const MISR = 0x54;
 const SCR = 0x5c;
 
-const HIDDEN = 0x80;
 const KEY = 0x80;
 const INIT = 0x84;
 const ENABLED = 0x88;
@@ -85,9 +82,6 @@ const LSI_HZ = 32_768;
 const SR_ALRAF = 0x01;
 const SR_ALRBF = 0x02;
 const SR_WUTF = 0x04;
-const SR_TSF = 0x08;
-const SR_TSOVF = 0x10;
-const SR_ITSF = 0x20;
 
 const read = (b: Body, offset: number): Value<number> => readWord(b, RTC, num(b, offset));
 const store = (b: Body, offset: number, value: Value<number>): void => {
@@ -124,18 +118,6 @@ function merge(
 
   return u32(b, b.bitOr(b.bitAnd(current, b.bitNot(mask)), placed));
 }
-
-const bcd = (b: Body, value: Value<number>): Value<number> =>
-  b.add(
-    b.multiply(b.shiftRightUnsigned(value, num(b, 4)), num(b, 10)),
-    b.bitAnd(value, num(b, 0xf)),
-  );
-
-const fromBcd = (b: Body, value: Value<number>): Value<number> =>
-  b.bitOr(
-    b.shiftLeft(b.floor(b.divide(value, num(b, 10))), num(b, 4)),
-    b.remainder(value, num(b, 10)),
-  );
 
 function ensureInit(b: Body): void {
   b.if(b.equal(types.number, read(b, INITIALIZED), num(b, 0)), (first) => {
@@ -919,7 +901,6 @@ export function advanceRtc(b: Body, elapsedPs: Value<number>): void {
     advanceCalendar(body, seconds);
 
     const elapsedMs = body.floor(body.divide(elapsedPs, num(body, 1_000_000)));
-    const wutr = body.bitAnd(read(body, WUTR), num(body, 0xffff));
     const remain = body.subtract(
       body.max(read(body, WAKE_REMAIN), num(body, 1)),
       elapsedMs,

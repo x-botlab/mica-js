@@ -9,8 +9,6 @@ import {
   extractAt,
   loadStateAt,
   merge,
-  readRegisterAt,
-  writeRegisterAt,
 } from './analog';
 import { asBody, bool, boolAnd, boolBitAt, boolOr, num, u32 } from './ir';
 import type { Body } from './ir';

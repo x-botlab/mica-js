@@ -556,7 +556,7 @@ function buildService(machine: Machine, pc: number): BlockIR {
       });
     } else if (pc >= SERVICE_ADVANCE_BASE && pc < SERVICE_ADVANCE_BASE + 16) {
       drainCapture(body);
-      advanceServiceSlot(body, pc, resume);
+      advanceServiceSlot(body, pc);
       body.setLocal(taken, bool(body, true));
     } else if (pc >= SERVICE_CORE_WRITE_BASE && pc < SERVICE_CORE_WRITE_BASE + 8) {
       const kind = pc - SERVICE_CORE_WRITE_BASE;

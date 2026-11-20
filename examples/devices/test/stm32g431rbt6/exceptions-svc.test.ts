@@ -9,7 +9,6 @@ import { SystemThumb } from './system-thumb';
 
 const SRAM_BASE = 0x2000_0000;
 const SCB_SHPR2 = 0xe000_ed1c;
-const SCB_AIRCR = 0xe000_ed0c;
 
 function address(t: SystemThumb, register: number, value: number): void {
   t.movw(register, value & 0xffff).movt(register, value >>> 16);

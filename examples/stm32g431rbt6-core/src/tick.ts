@@ -187,9 +187,9 @@ export function schedulePeripheralAdvances(
 
 /**
  * 一个模块推进服务块：只展开当前槽的 `advance`，然后根据剩余活动槽转到下一个块，
- * 全部完成后回到 `resume`。这样 SERVICE_TICK 不必内联所有外设的时间代码。
+ * 全部完成后回到 `SERVICE_DISPATCH`。这样 SERVICE_TICK 不必内联所有外设的时间代码。
  */
-export function advanceServiceSlot(b: Body, pc: number, resume: Value<number>): void {
+export function advanceServiceSlot(b: Body, pc: number): void {
   const slot = pc - SERVICE_ADVANCE_BASE;
   const module = machine().peripherals.find(
     (peripheral) => peripheral.slot === slot && peripheral.advance !== undefined,

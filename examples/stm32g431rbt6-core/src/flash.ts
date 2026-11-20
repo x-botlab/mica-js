@@ -730,8 +730,6 @@ function writeCr(b: Body, value: Value<number>): void {
 }
 
 function handleErase(b: Body, cr: Value<number>): void {
-  const per = b.notEqual(types.number, b.bitAnd(cr, num(b, FLASH_CR_PER)), num(b, 0));
-  const mer = b.notEqual(types.number, b.bitAnd(cr, num(b, FLASH_CR_MER1)), num(b, 0));
   const mode = b.bitAnd(cr, num(b, FLASH_CR_PG | FLASH_CR_FSTPG | FLASH_CR_PER | FLASH_CR_MER1));
   const page = b.bitAnd(b.shiftRightUnsigned(cr, num(b, FLASH_CR_PNB_SHIFT)), num(b, 0x7f));
   const validPageMode = b.equal(types.number, mode, num(b, FLASH_CR_PER));

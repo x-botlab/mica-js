@@ -49,7 +49,7 @@ function readManifest(directory: string): JsonObject {
     source = readFileSync(path, 'utf8');
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`无法读取器件项目 ${path} 的 package.json：${reason}`);
+    throw new Error(`无法读取器件项目 ${path} 的 package.json：${reason}`, { cause: error });
   }
 
   let parsed: unknown;
@@ -58,7 +58,7 @@ function readManifest(directory: string): JsonObject {
     parsed = JSON.parse(source);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`无法解析器件项目 ${path} 的 package.json：${reason}`);
+    throw new Error(`无法解析器件项目 ${path} 的 package.json：${reason}`, { cause: error });
   }
 
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {

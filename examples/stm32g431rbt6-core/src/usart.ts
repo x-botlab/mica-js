@@ -207,17 +207,6 @@ const PICOSECONDS_PER_SECOND = 1_000_000_000_000;
 /** JS 安全整数上限；低时钟 + 极大 BRR 的位时长截到这个上限。 */
 const MAX_SAFE_TIME_PS = Number.MAX_SAFE_INTEGER;
 
-const CR1_UE = 1 << 0;
-const CR1_RE = 1 << 2;
-const CR1_TE = 1 << 3;
-const CR1_IDLEIE = 1 << 4;
-const CR1_RXNEIE = 1 << 5;
-const CR1_OVER8 = 1 << 15;
-const CR3_EIE = 1 << 0;
-const CR3_DMAR = 1 << 6;
-const CR3_DMAT = 1 << 7;
-const CR3_OVRDIS = 1 << 12;
-
 const ISR_FE = 1 << 1;
 const ISR_NE = 1 << 2;
 const ISR_ORE = 1 << 3;

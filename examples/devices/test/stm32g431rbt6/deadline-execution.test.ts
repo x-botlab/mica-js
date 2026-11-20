@@ -2,24 +2,9 @@ import { createBoard, createDeviceLibrary } from '@mica-js/sdk';
 import { createDeviceBuilder, createJitBlockBuilder, types } from '@mica-js/sdk/model';
 import type { BlockIR, DeviceIR } from '@mica-js/sdk/model';
 import { describe, expect, it } from 'vitest';
-import { activateMachine } from '@mica-js/stm32g431rbt6-core/machine';
-import type { Machine } from '@mica-js/stm32g431rbt6-core/machine';
-import {
-  activatePeripheralSlot,
-  readPeripheralDeadline,
-  setPeripheralDeadline,
-} from '@mica-js/stm32g431rbt6-core/peripheral';
+import { activatePeripheralSlot } from '@mica-js/stm32g431rbt6-core/peripheral';
 import { asBody } from '@mica-js/stm32g431rbt6-core/ir';
 import { periphDeadlineState } from '@mica-js/stm32g431rbt6-core/layout';
-
-const MACHINE: Machine = {
-  clockFrequency: 16_000_000,
-  cyclePs: 62_500,
-  alternateDrivers: [],
-  peripherals: [],
-  interruptSources: [],
-  profile: 'deadline-rig',
-};
 
 function model(): DeviceIR {
   const builder = createDeviceBuilder({ name: 'DeadlineRig' });

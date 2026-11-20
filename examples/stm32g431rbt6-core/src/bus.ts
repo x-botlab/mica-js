@@ -20,7 +20,6 @@ import {
   FLASH_BASE_REGISTER,
   FLASH_SIZE,
   GENERIC,
-  GENERIC_SIZE,
   GPIO_BASE,
   PERIPHERAL_BASE,
   PERIPHERAL_END,
@@ -32,7 +31,6 @@ import {
   SERVICE_CORE_WRITE_BASE,
   SERVICE_FLASH_WRITE,
   SERVICE_SYSTEM_WRITE,
-  SERVICE_MODULE_READ_BASE,
   SERVICE_MODULE_WRITE_BASE,
   USART1_BASE,
   USART2_BASE,
@@ -144,83 +142,6 @@ function writeRegisteredStatic(
   hit.module.write(b, num(b, staticAddress), size, value);
 
   return true;
-}
-
-interface DynamicRange {
-  readonly module: PeripheralModule;
-  readonly base: number;
-  readonly size: number;
-}
-
-function registeredRanges(): readonly DynamicRange[] {
-  const ranges: DynamicRange[] = [];
-
-  for (const module of machine().peripherals)
-    for (const range of module.ranges) ranges.push({ module, base: range.base, size: range.size });
-
-  return ranges;
-}
-
-/** 动态读的外设模块分派；所有模块都不命中时落到 `fallback`。 */
-function readRegisteredDynamic(
-  b: Body,
-  address: Value<number>,
-  size: number,
-  result: Local<number>,
-  fallback: (body: Body) => void,
-): void {
-  const ranges = registeredRanges();
-  const step = (body: Body, index: number): void => {
-    const range = ranges[index];
-
-    if (range === undefined) {
-      fallback(body);
-
-      return;
-    }
-
-    body.if(
-      inRegion(body, address, range.base, range.size),
-      (hit) => {
-        const scope = asBody(hit);
-
-        scope.setLocal(result, range.module.read(scope, address, size));
-      },
-      (next) => step(asBody(next), index + 1),
-    );
-  };
-
-  step(b, 0);
-}
-
-/** 动态写的外设模块分派；所有模块都不命中时落到 `fallback`。 */
-function writeRegisteredDynamic(
-  b: Body,
-  address: Value<number>,
-  size: AccessSize,
-  value: Value<number>,
-  fallback: (body: Body) => void,
-): void {
-  const ranges = registeredRanges();
-  const step = (body: Body, index: number): void => {
-    const range = ranges[index];
-
-    if (range === undefined) {
-      fallback(body);
-
-      return;
-    }
-
-    body.if(
-      inRegion(body, address, range.base, range.size),
-      (hit) => {
-        range.module.write(asBody(hit), address, size, value);
-      },
-      (next) => step(asBody(next), index + 1),
-    );
-  };
-
-  step(b, 0);
 }
 
 function readGenericStatic(b: Body, size: number, staticAddress: number): Value<number> {

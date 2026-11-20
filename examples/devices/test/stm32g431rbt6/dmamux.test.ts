@@ -1,4 +1,3 @@
-import { types } from '@mica-js/sdk/model';
 import { describe, expect, it } from 'vitest';
 import { num } from '@mica-js/stm32g431rbt6-core/ir';
 import { DMA } from '@mica-js/stm32g431rbt6-core/layout';

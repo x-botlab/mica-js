@@ -296,7 +296,7 @@ function sampleTimeCode(b: Body, config: AdcConfig, channel: Value<number>): Val
   const index = b.select(
     types.number,
     low,
-    (inner) => channel,
+    () => channel,
     (inner) => inner.subtract(channel, inner.constant(types.number, 10)),
   );
 

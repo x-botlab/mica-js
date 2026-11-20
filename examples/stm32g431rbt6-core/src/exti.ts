@@ -5,7 +5,6 @@ import {
   EXTI_BASE,
   EXTI_SIZE,
   IRQ_DIRTY,
-  PERIPHERAL_END,
   SERVICE_IRQ,
   exceptionOf,
 } from './layout';

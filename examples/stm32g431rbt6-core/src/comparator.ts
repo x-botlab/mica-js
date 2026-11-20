@@ -7,11 +7,9 @@ import {
   extractAt,
   loadStateAt,
   merge,
-  readRegister,
-  readRegisterAt,
   writeRegisterAt,
 } from './analog';
-import { asBody, bool, boolAnd, boolBitAt, num, u32 } from './ir';
+import { asBody, bool, boolAnd, boolBitAt, num } from './ir';
 import type { Body } from './ir';
 import type { PeripheralModule } from './peripheral';
 
@@ -39,9 +37,6 @@ const COMP_CSR = 0x00;
 
 const COMP_CSR_EN = 1 << 0;
 const COMP_CSR_INMSEL_SHIFT = 4;
-const COMP_CSR_INMSEL_MASK = 0xf << COMP_CSR_INMSEL_SHIFT;
-const COMP_CSR_INPSEL = 1 << 8;
-const COMP_CSR_POLARITY = 1 << 15;
 const COMP_CSR_VALUE = 1 << 30;
 const COMP_CSR_LOCK = 1 << 31;
 
