@@ -1,8 +1,8 @@
-# CT117E-M4 单器件工程（STM32G431RBT6 + ILI9325）
+# CT117E-M4 单器件融合板
 
-`ct117e-m4` 把 CT117E-M4 上 MCU 与 ILI9325 的固定接线合成一个器件模型：
-**一个 instance、一个 JIT**。它用于验证单器件融合路径和真实 Keil 固件的运行行为，
-不是完整 CT117E-M4 开发板仿真。
+`ct117e-m4` 将 STM32G431RBT6、ILI9325 和板载输入输出器件合成**一个实例、一个 MCU JIT**。
+内部接线以 [`ct117e-m4.netlist.json`](ct117e-m4.netlist.json) 的引脚列表为准，不需要在
+宿主中装配分立器件。
 
 - 器件 ID：`example:ct117e-m4`
 - 源码：`src/{model.ddl,model.ts,mcu.ts,lcd.ts}`
@@ -34,17 +34,27 @@ pnpm bench        # 构建并运行六轮基准
 `/memory`、`/systick`、`/usart`、`/nvic`、`/register-facts` 引用内核，只保留本器件的
 属性、复位值与 JIT 编排。
 
-`scripts/prepare-model.mjs` 在构建期编译本地 `model.ddl`，生成忽略提交的
-`hot-model.ts`，供运行时展开 BlockIR 热函数；SDK 同时把完整模型编进最终产物。
-`mica build` 在构建期把共享内核打包进产物，构建与运行不引用兄弟 example 的源码或
-测试文件。`model.js` 是单个自包含模块，导出 `model` 和同步 `create`，运行时不加载共享包。
+`scripts/prepare-model.mjs` 在构建期校核网表端点、分配内部线号，将
+[`examples/devices`](../devices) 中 AT24C02 / MCP4017 的 I²C 状态机、MCP4017 的
+滑臂电阻公式和 74HC573 的数据解码融合进本地 DDL。锁存时机、固定接线和模拟输入
+由板级 DDL 实现。生成的 `board-model.ddl`、`board-wires.ts`、`hot-model.ts`
+不提交；`mica build` 将模型和共享 MCU 内核打包进自包含的 `model.js`，运行时不加载器件库。
 
 ## 统一模型接口
 
-`src/model.ts` 使用 `.mica/device.d.ts` 生成的 `DeviceFactory`、`DeviceMethods` 和
-`DeviceEvents`：模型方法固定为 `getFramebuffer`，事件固定为 `onDidFramebuffer`、
-`onDidFault` 与 `onDidSerial1Tx`–`onDidSerial3Tx`。`create` 返回的实例同步执行并公开
-`methods`；内部 MCU/LCD 只通过 `ctx.events` 发事件，不再使用旧话题。
+| 方法                    | 参数 / 结果                                    |
+| ----------------------- | ---------------------------------------------- |
+| `setButton`             | `{ id, pressed }`，`1–4` 对应 B1–B4            |
+| `setReset`              | `true` 按下板载 RESET，`false` 释放            |
+| `setPotentiometer`      | `{ id, position }`，`1 = R37`、`2 = R38`       |
+| `setTimerPotentiometer` | `{ id, position }`，`1 = R39/U7`、`2 = R40/U8` |
+| `getLedState(null)`     | 点亮位掩码，bit 0 为 LD1，bit 7 为 LD8         |
+| `readEeprom(null)`      | AT24C02 的 256 字节独立快照；固件通过 I²C 写入 |
+| `getWiper(null)`        | MCP4017 的滑臂码 `0–127`                       |
+| `getFramebuffer(null)`  | 最近合成的整屏快照                             |
+
+控制方法将输入排入模型，随仿真推进生效。`position` 从低端到高端取 `[0, 1]`，默认 `0.5`。
+调频位置在下一半周期生效。
 
 `firmware` 属性由清单声明为 `program`（`loader: memory`），工厂拿到的是按 `flash`
 地址空间解析后的只读 `MemoryProgram`；模型 IR 不声明同名 DDL 属性。`mcu.ts` 在初始化时把镜像段映射到
@@ -58,12 +68,23 @@ pnpm bench        # 构建并运行六轮基准
 
 ## 接线与运行设置
 
-- 外部只连接 **VDD1 = 3.3 V、VSS1 = 0 V**。`NRST` 引脚已声明并可在外部拉低复位
-  MCU；当前基线测试不接 NRST，保持内部/外部上拉的释放态。LCD 的 VDD/VSS、RST 以及
-  MCU 与 LCD 之间的数据/控制线都在器件内部固定连接；LCD RST 恒为高。
+- 外部供电接 **VDD1 = 3.3 V、VSS1 = 0 V**。外部 `NRST` 与板载 RESET 共用低有效
+  `LCD_RST`：按下时 CPU 停止，释放时 MCU 从向量表重启、LCD 清屏；锁存器、
+  EEPROM、MCP4017 和 555 不随 MCU 断电或复位。
 - MCU 与 LCD 的固定接法：`D0–D15 = PC0–PC15`，`WR = PB5`，`RS = PB8`，
   `CS = PB9`，`RD = PA8`。
-- 单主机、理想数字总线；没有第二个总线主设备，也没有模拟竞争。
+- PD2 驱动 U1 的 LE，`LCD_D8–D15` 共用为 U1 数据输入，`OE# = GND`；
+  LD1–LD8 由 Q 端灌电流，低电平点亮。B1–B4 依次接 PB0、PB1、PB2、PA0，按下为低。
+- U2（`0x50`）与 U3（`0x2F`）共用 PB6/PB7 的软件 I²C（SCL/SDA）。
+  PB6 不是 STM32G431 的硬件 I²C1 SCL。模型使用理想上拉、开漏下拉和即时 EEPROM
+  写入，不模拟竞争、传播延迟或写周期等待。
+- R37 经 J11 接 PB15/ADC2_IN15，R38 经 J12 接 PB12/ADC1_IN11。U3.W 经 J15 接
+  PB14/ADC1_IN5，与 R17（10 kΩ 上拉）和 J16 接地的 U3.B 构成分压。
+- U7/R39 经 J9 接 PB4/TIM3_CH1，U8/R40 经 J10 接 PA15/TIM2_CH1。两路使用
+  OUT 经电阻回到 TRIG/THRES 的拓扑，DISCH 不参与；各自融合为理想方波振荡器，
+  半周期为 `ln(2) × (100 Ω + position × 10 kΩ) × 100 nF`，不模拟模拟斜坡或上电瞬态。
+- J9、J10、J11、J12、J15、J16、J17 按闭合建模。无跳线操作、电源瞬态、LED
+  电流或亮度求解。
 - `clockFrequency` 是模型的时间基准，必须与固件实际配置的主频一致；本固件为
   80 MHz。它不是自动从 RCC 寄存器反推的值。
 - `refreshRate` 默认 60 Hz，控制脏矩形合帧发布的最大频率。
@@ -80,6 +101,7 @@ pnpm bench        # 构建并运行六轮基准
 - `onDidFault`：`number`。MCU 模型报告的故障通知；载荷语义沿用 MCU 子集。
 - `onDidSerial1Tx`、`onDidSerial2Tx`、`onDidSerial3Tx`：`number`。从 MCU 子集继承的
   USART 发送字节；没有发送活动时不会发布。
+- `onDidLed`、`onDidWiper`：`number`，分别发布变化后的点亮位掩码和滑臂码。
 
 `onDidFramebuffer` 的矩形可能重叠或只覆盖局部区域，消费方应按顺序合成；没有脏像素时不会
 发布空帧。
@@ -105,6 +127,8 @@ oracle 只在正确性用例中运行，不进入任何性能计时。它依赖�
 `test/firmware.test.ts` 覆盖 HEX 解析器的记录格式、校验和、地址范围、EOF、重叠冲突
 和不支持的记录类型。
 `test/fused-runtime.test.ts` 另检查一步推进到 440 ms 时的事件交付与整屏查询。
+`test/board-io.test.ts` 用板载 I/O 固件在发布包上验证按键、共享 LCD 总线锁存、
+软件 I²C、ADC、双路捕获/调频，以及共享复位时的状态保留。
 
 测试默认读取 `examples/devices/bench/stm32g431rbt6/HAL_06_LCD.hex`（与器件库的 STM32
 基准共用同一份夹具）；如果夹具放在别处，可设置：

@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "CT117E-M4 单器件融合工程：STM32G431RBT6 与 ILI9325 固定数字总线",
+  "description": "CT117E-M4 单器件融合板：STM32G431RBT6、ILI9325 与板载器件",
   "license": "MIT",
   "engines": {
     "mica": "^1.0.0"
   },
-  "displayName": "CT117E-M4 MCU + LCD",
+  "displayName": "CT117E-M4",
   "designatorPrefix": "U",
   "properties": {
     "firmware": {
@@ -76,12 +76,35 @@
     },
     "NRST": {
       "label": "NRST",
-      "description": "外部复位输入；低电平保持 MCU halted，释放沿从向量表重启"
+      "description": "板载 RESET 与 MCU/LCD 共用的低有效复位线"
     }
   },
   "model": {
     "entry": "model.js",
-    "types": {},
+    "types": {
+      "Button": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "pressed": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Position": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number"
+          },
+          "position": {
+            "type": "number"
+          }
+        }
+      }
+    },
     "methods": {
       "getFramebuffer": {
         "params": {
@@ -90,9 +113,71 @@
         "returns": {
           "type": "binary"
         }
+      },
+      "getLedState": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
+      },
+      "setButton": {
+        "params": {
+          "ref": "Button"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setReset": {
+        "params": {
+          "type": "boolean"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setPotentiometer": {
+        "params": {
+          "ref": "Position"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "setTimerPotentiometer": {
+        "params": {
+          "ref": "Position"
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "readEeprom": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "binary"
+        }
+      },
+      "getWiper": {
+        "params": {
+          "type": "null"
+        },
+        "returns": {
+          "type": "number"
+        }
       }
     },
     "events": {
+      "onDidLed": {
+        "type": "number"
+      },
+      "onDidWiper": {
+        "type": "number"
+      },
       "onDidFramebuffer": {
         "type": "binary"
       },

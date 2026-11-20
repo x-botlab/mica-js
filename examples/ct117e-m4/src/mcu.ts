@@ -6,7 +6,6 @@ import {
   CAPTURE,
   CAPTURE_ENTRY_SIZE,
   CAPTURE_HEAD,
-  CAPTURE_PENDING,
   CAPTURE_RESUME,
   CAPTURE_SLOTS,
   CAPTURE_TAIL,
@@ -37,7 +36,6 @@ import {
   PENDING_PS,
   SERVICE_ADVANCE_BASE,
   SERVICE_CAPTURE,
-  SERVICE_CAPTURE_BIT,
   SERVICE_CORE_WRITE_BASE,
   SERVICE_ALL,
   SERVICE_MODULE_READ_BASE,
@@ -95,12 +93,10 @@ import {
 } from '@mica-js/stm32g431rbt6-core/bus';
 import { advanceSystick } from '@mica-js/stm32g431rbt6-core/systick';
 import { advanceUsart, usartDrivers } from '@mica-js/stm32g431rbt6-core/usart';
-import { observeTimerInputByPin } from '@mica-js/stm32g431rbt6-core/tim';
-import {
-  advanceServiceSlot,
-  schedulePeripheralAdvances,
-} from '@mica-js/stm32g431rbt6-core/tick';
-import { FUSED_PERIPHERALS, alternateDriversOf } from '@mica-js/stm32g431rbt6-core/peripherals';
+import { observeTimerInputByPin, TIMER_MODULE } from '@mica-js/stm32g431rbt6-core/tim';
+import { createAdcModule } from '@mica-js/stm32g431rbt6-core/adc';
+import { advanceServiceSlot, schedulePeripheralAdvances } from '@mica-js/stm32g431rbt6-core/tick';
+import { alternateDriversOf } from '@mica-js/stm32g431rbt6-core/peripherals';
 import { validatePeripheralModules } from '@mica-js/stm32g431rbt6-core/peripheral';
 import { dispatchExceptions } from '@mica-js/stm32g431rbt6-core/nvic';
 import { createRegisterFacts } from '@mica-js/stm32g431rbt6-core/register-facts';
@@ -217,17 +213,19 @@ function hseFrequency(value: unknown): number {
     : 0;
 }
 
+const BOARD_PERIPHERALS = Object.freeze([TIMER_MODULE, createAdcModule()]);
+
 function createMachine(frequency: number, hse: number): Machine {
-  validatePeripheralModules(FUSED_PERIPHERALS);
+  validatePeripheralModules(BOARD_PERIPHERALS);
 
   return {
     clockFrequency: frequency,
     cyclePs: Math.max(1, Math.round(PICOSECONDS_PER_SECOND / frequency)),
     hseFrequency: hse,
     dynamicClock: true,
-    alternateDrivers: [...usartDrivers(), ...alternateDriversOf(FUSED_PERIPHERALS)],
-    peripherals: FUSED_PERIPHERALS,
-    interruptSources: FUSED_PERIPHERALS.flatMap((peripheral) => peripheral.interrupts ?? []),
+    alternateDrivers: [...usartDrivers(), ...alternateDriversOf(BOARD_PERIPHERALS)],
+    peripherals: BOARD_PERIPHERALS,
+    interruptSources: BOARD_PERIPHERALS.flatMap((peripheral) => peripheral.interrupts ?? []),
     profile: 'fused-lcd',
   };
 }
@@ -266,13 +264,7 @@ function tickValue(
         b.readState(TICK_ACTIVE, types.bool),
       );
   const deferred = b.notEqual(types.number, b.bitAnd(mask, num(b, SERVICE_ALL)), num(b, 0));
-  const capturePending = b.notEqual(
-    types.number,
-    b.readState(CAPTURE_PENDING, types.number),
-    num(b, 0),
-  );
-  const normal = due === undefined ? deferred : boolOr(b, due, deferred);
-  const need = boolOr(b, normal, capturePending);
+  const need = due === undefined ? deferred : boolOr(b, due, deferred);
 
   b.if(need, (service) => {
     const body = asBody(service);
@@ -320,19 +312,7 @@ function tickValue(
                   (pins) => {
                     asBody(pins).writeState('pc', num(asBody(pins), SERVICE_SYNC));
                   },
-                  (tickUp) => {
-                    const dispatch = asBody(tickUp);
-
-                    dispatch.if(
-                      boolBit(dispatch, mask, SERVICE_CAPTURE_BIT),
-                      (capture) => {
-                        asBody(capture).writeState('pc', num(asBody(capture), SERVICE_CAPTURE));
-                      },
-                      (tick) => {
-                        asBody(tick).writeState('pc', num(asBody(tick), SERVICE_TICK));
-                      },
-                    );
-                  },
+                  (tick) => asBody(tick).writeState('pc', num(asBody(tick), SERVICE_TICK)),
                 );
               },
             );
@@ -371,10 +351,7 @@ function dispatchIrq(body: Body, taken: Local<boolean>, resume: Value<number>): 
       (allowed) => {
         const inner = asBody(allowed);
 
-        inner.setLocal(
-          taken,
-          dispatchExceptions(inner, waitExceptionReturnPc(inner, resume)),
-        );
+        inner.setLocal(taken, dispatchExceptions(inner, waitExceptionReturnPc(inner, resume)));
       },
     );
   });
@@ -386,21 +363,14 @@ function drainCapture(body: Body): void {
 
   body.while(
     (test) =>
-      test.notEqual(
-        types.number,
-        test.getLocal(head),
-        test.readState(CAPTURE_TAIL, types.number),
-      ),
+      test.notEqual(types.number, test.getLocal(head), test.readState(CAPTURE_TAIL, types.number)),
     (loop) => {
       const scope = asBody(loop);
       const slot = scope.bitAnd(scope.getLocal(head), num(scope, CAPTURE_SLOTS - 1));
       const base = scope.multiply(slot, num(scope, CAPTURE_ENTRY_SIZE));
       const timeLo = scope.load32le(CAPTURE, base);
       const timeHi = scope.load32le(CAPTURE, scope.add(base, num(scope, 4)));
-      const timePs = scope.add(
-        timeLo,
-        scope.multiply(timeHi, num(scope, 4294967296)),
-      );
+      const timePs = scope.add(timeLo, scope.multiply(timeHi, num(scope, 4294967296)));
       const pinId = scope.load8(CAPTURE, scope.add(base, num(scope, 8)));
       const level = scope.notEqual(
         types.number,
@@ -432,13 +402,6 @@ function drainCapture(body: Body): void {
       scope.writeState(CAPTURE_HEAD, next);
     },
   );
-
-  body.writeState(CAPTURE_PENDING, num(body, 0));
-  clearService(body, SERVICE_CAPTURE_BIT);
-}
-
-function buildCaptureService(body: Body): void {
-  drainCapture(body);
 }
 
 function buildService(machine: Machine, pc: number): BlockIR {
@@ -449,24 +412,34 @@ function buildService(machine: Machine, pc: number): BlockIR {
     const taken = body.local(types.bool, false);
 
     if (pc === SERVICE_CAPTURE) {
-      const captureResume = body.readState(CAPTURE_RESUME, types.number);
-
-      buildCaptureService(body);
-      body.writeState('pc', captureResume);
+      drainCapture(body);
+      const target = body.readState(CAPTURE_RESUME, types.number);
+      // An interrupted service chain owns serviceResume. Only deliver an
+      // exception here if the saved PC is a firmware address.
+      body.if(
+        boolOr(
+          body,
+          body.lessThan(target, num(body, FLASH_SIZE)),
+          boolAnd(
+            body,
+            body.greaterThanOrEqual(target, num(body, FLASH_START)),
+            body.lessThan(target, num(body, FLASH_START + FLASH_SIZE)),
+          ),
+        ),
+        (firmware) => dispatchIrq(asBody(firmware), taken, target),
+      );
+      body.if(body.not(body.getLocal(taken)), (back) => {
+        asBody(back).writeState('pc', target);
+      });
       body.setLocal(taken, bool(body, true));
     } else if (pc === SERVICE_TICK) {
-      drainCapture(body);
       const pending = body.readState(PENDING_PS, types.number);
 
       body.writeState(PENDING_PS, num(body, 0));
       body.if(body.greaterThan(pending, num(body, 0)), (step) => {
         const scope = asBody(step);
 
-        // fused profile 默认没有扩展模块；这里保留统一钩子，但只展开实际启用的模块。
-        scope.writeState(
-          NOW_PS,
-          scope.add(scope.readState(NOW_PS, types.number), pending),
-        );
+        scope.writeState(NOW_PS, scope.add(scope.readState(NOW_PS, types.number), pending));
         scope.if(scope.readState(SYSTICK_ON, types.bool), (running) => {
           advanceSystick(asBody(running), pending);
         });
@@ -507,10 +480,7 @@ function buildService(machine: Machine, pc: number): BlockIR {
           (registered) => {
             const inner = asBody(registered);
 
-            inner.writeState(
-              'pc',
-              inner.add(num(inner, SERVICE_MODULE_READ_BASE), module),
-            );
+            inner.writeState('pc', inner.add(num(inner, SERVICE_MODULE_READ_BASE), module));
             inner.setLocal(taken, bool(inner, true));
           },
           (gpio) => {
@@ -538,45 +508,49 @@ function buildService(machine: Machine, pc: number): BlockIR {
         const diverted = scope.local(types.bool, false);
 
         deferModuleWrite(scope, address, diverted);
-        scope.if(scope.getLocal(diverted), (registered) => {
-          asBody(registered).setLocal(taken, bool(asBody(registered), true));
-        }, (normal) => {
-          const inner = asBody(normal);
+        scope.if(
+          scope.getLocal(diverted),
+          (registered) => {
+            asBody(registered).setLocal(taken, bool(asBody(registered), true));
+          },
+          (normal) => {
+            const inner = asBody(normal);
 
-          const writeAtWidth = (body: Body, accessSize: 1 | 2 | 4): void => {
-            const flash = body.local(types.bool, false);
+            const writeAtWidth = (body: Body, accessSize: 1 | 2 | 4): void => {
+              const flash = body.local(types.bool, false);
 
-            writeServiceMemory(body, address, accessSize, value, flash);
-            body.if(
-              body.getLocal(flash),
-              (flashHit) => {
-                asBody(flashHit).setLocal(taken, bool(asBody(flashHit), true));
-              },
-              (clear) => {
-                const scope = asBody(clear);
+              writeServiceMemory(body, address, accessSize, value, flash);
+              body.if(
+                body.getLocal(flash),
+                (flashHit) => {
+                  asBody(flashHit).setLocal(taken, bool(asBody(flashHit), true));
+                },
+                (clear) => {
+                  const scope = asBody(clear);
 
-                scope.writeState(DEFER_WRITE, bool(scope, false));
-                scope.writeState(DEFER_WRITE_MODULE, num(scope, -1));
-                clearService(scope, SERVICE_DEFER_WRITE);
+                  scope.writeState(DEFER_WRITE, bool(scope, false));
+                  scope.writeState(DEFER_WRITE_MODULE, num(scope, -1));
+                  clearService(scope, SERVICE_DEFER_WRITE);
+                },
+              );
+            };
+
+            // 宽度是运行期值，按 1/2/4 各展开一条写路径；Flash 代码写再转独立服务块。
+            inner.if(
+              inner.equal(types.number, size, num(inner, 1)),
+              (byte) => writeAtWidth(asBody(byte), 1),
+              (wide) => {
+                const next = asBody(wide);
+
+                next.if(
+                  next.equal(types.number, size, num(next, 2)),
+                  (half) => writeAtWidth(asBody(half), 2),
+                  (word) => writeAtWidth(asBody(word), 4),
+                );
               },
             );
-          };
-
-          // 宽度是运行期值，按 1/2/4 各展开一条写路径；Flash 代码写再转独立服务块。
-          inner.if(
-            inner.equal(types.number, size, num(inner, 1)),
-            (byte) => writeAtWidth(asBody(byte), 1),
-            (wide) => {
-              const next = asBody(wide);
-
-              next.if(
-                next.equal(types.number, size, num(next, 2)),
-                (half) => writeAtWidth(asBody(half), 2),
-                (word) => writeAtWidth(asBody(word), 4),
-              );
-            },
-          );
-        });
+          },
+        );
       });
     } else if (pc >= SERVICE_ADVANCE_BASE && pc < SERVICE_ADVANCE_BASE + 16) {
       drainCapture(body);
@@ -679,10 +653,7 @@ function buildService(machine: Machine, pc: number): BlockIR {
           },
         );
       });
-    } else if (
-      pc >= SERVICE_MODULE_WRITE_BASE &&
-      pc < SERVICE_MODULE_WRITE_BASE + 32
-    ) {
+    } else if (pc >= SERVICE_MODULE_WRITE_BASE && pc < SERVICE_MODULE_WRITE_BASE + 32) {
       const module = machine.peripherals[pc - SERVICE_MODULE_WRITE_BASE];
 
       if (module !== undefined)
@@ -709,10 +680,7 @@ function buildService(machine: Machine, pc: number): BlockIR {
             },
           );
         });
-    } else if (
-      pc >= SERVICE_MODULE_READ_BASE &&
-      pc < SERVICE_MODULE_READ_BASE + 32
-    ) {
+    } else if (pc >= SERVICE_MODULE_READ_BASE && pc < SERVICE_MODULE_READ_BASE + 32) {
       const module = machine.peripherals[pc - SERVICE_MODULE_READ_BASE];
 
       if (module !== undefined)
@@ -743,11 +711,7 @@ function buildService(machine: Machine, pc: number): BlockIR {
             types.number,
             signed,
             (yes) =>
-              signExtendDynamic(
-                asBody(yes),
-                raw,
-                asBody(yes).multiply(size, num(asBody(yes), 8)),
-              ),
+              signExtendDynamic(asBody(yes), raw, asBody(yes).multiply(size, num(asBody(yes), 8))),
             () => raw,
           );
 

@@ -30,7 +30,7 @@ device Ct117eM4(
   memory watchdog[0x40];
   memory flashState[0x100];
   memory usb[0x800];
-  /** 捕获 FIFO 保留布局；fused profile 暂无 TIM 引脚反应。 */
+  /** FIFO for the two on-board oscillator capture inputs. */
   memory captureFifo[0x400];
   memory can[0x800];
   memory ucpd[0x100];
@@ -80,6 +80,7 @@ device Ct117eM4(
   state serviceMask: number = 0;
   state captureHead: number = 0;
   state captureTail: number = 0;
+  // Retained for the shared MCU reset layout.
   state capturePending: number = 0;
   state captureOverflow: number = 0;
   state captureResume: number = 0;
@@ -398,7 +399,7 @@ device Ct117eM4(
       }
     }
   }
-  /** 外部 NRST 释放时的 MCU 复位；LCD 侧由独立 RST 与自身状态维护。 */
+  /** Shared LCD_RST / NRST release resets the MCU; board peripherals retain power. */
   fn mcuReset() {
     const resetCount = load32le(sys, 0x1fc);
     // RCC_BDCR 属备份域：NRST 与 SYSRESETREQ 一样保留 LSE/RTC 选择与 RTCEN。
@@ -774,6 +775,7 @@ device Ct117eM4(
     lr = 0xffffffff;
     pc = load32le(code, 4) & 0xfffffffe;
     cpuCyclePs = round(1000000000000 / clockFrequency);
+    boardReady = true;
   }
 
   assert isFinite(refreshRate) && refreshRate >= 1 && refreshRate <= 240,
@@ -805,7 +807,6 @@ device Ct117eM4(
   output channel frameInfo: FrameRect(capacity: 4096, overflow: Overflow.error);
   output channel frameRows: bytes(maxLength: MAX_BODY_BYTES, capacity: 4096,
                                   overflow: Overflow.error);
-  derived readActive: bool = fusedWire19 == 0 && fusedWire18 == 0 && 1 != 0;
   fn dataBus() -> number {
     return (fusedWire0 == 1 ? 1 : 0) +
       2 * (fusedWire1 == 1 ? 1 : 0) +
@@ -995,7 +996,7 @@ device Ct117eM4(
       dirtyY1 = PANEL_HEIGHT - 1;
       if !scheduled {
         scheduled = true;
-        fusedFramePending = true;
+        frameSeq = frameSeq + 1;
       }
     }
   }
@@ -1055,7 +1056,7 @@ device Ct117eM4(
     if previous != next { fusedWrChanges = fusedWrChanges + 1; }
     if previous == 0 && next == 1 && fusedWire18 == 0 {
       fusedWrites = fusedWrites + 1;
-      if fusedWire17 == 0 { writeCommand(dataBus()); }
+      if fusedWire17 != 1 { writeCommand(dataBus()); }
       else { writeData(dataBus()); }
     }
   }
@@ -1076,7 +1077,7 @@ device Ct117eM4(
       wire == 13 ? (fusedReading ? (fusedReadValue >> 13) & 1 : fusedWire13) :
       wire == 14 ? (fusedReading ? (fusedReadValue >> 14) & 1 : fusedWire14) :
       wire == 15 ? (fusedReading ? (fusedReadValue >> 15) & 1 : fusedWire15) :
-      wire == 16 ? fusedWire16 : wire == 17 ? fusedWire17 :
+      wire == 16 ? fusedWire16 : wire == 17 ? (fusedWire17 == 1 ? 1 : 0) :
       wire == 18 ? fusedWire18 : wire == 19 ? fusedWire19 : -1;
   }
   fn fusedReadWindow() {
@@ -1085,12 +1086,15 @@ device Ct117eM4(
     else if !active && fusedReading { releaseData(); }
   }
 
-  /** 外部 NRST 低电平保持 halted；释放沿只复位 MCU，不破坏 LCD 侧独立状态。 */
-  reaction nrstRelease on NRST.sample.level as (previous, next) {
-    if next == Logic.low {
+  // @BOARD@
+
+  reaction nrstRelease on boardReset as (previous, next) {
+    if next {
       halted = true;
-    } else if previous == Logic.low && next != Logic.low {
+      releaseData();
+    } else if previous {
       mcuReset();
+      reset(true);
     }
   }
 }

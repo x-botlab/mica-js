@@ -170,6 +170,7 @@ export async function createHarness({
 
   return {
     runtime,
+    model: runtime.getModel(INSTANCE_ID),
     instance,
     frames,
     frameTimes,

@@ -1,15 +1,12 @@
 import { createJitBlockBuilder, types } from '@mica-js/sdk/model';
 import type { BlockIR, DeviceIR, OperationIR, RegionIR } from '@mica-js/sdk/model';
 import { inlineCalls } from './inline';
+import { BOARD_WIRES, FUSED_WIRES } from './board-wires';
 
-/** Fixed CT117E wiring, internal to one device; no inter-device electrical nets. */
-export const FUSED_WIRES = [
-  ...Array.from({ length: 16 }, (_, bit) => `PC${bit}`),
-  'PB5',
-  'PB8',
-  'PB9',
-  'PA8',
-] as const;
+const VREFP = -3;
+const VDDA = -2;
+const sampleWire = (name: string) =>
+  name === 'VREFP' ? VREFP : name === 'VDDA' ? VDDA : FUSED_WIRES.indexOf(name);
 export const FUSED_FRAME_PC = 0x20050;
 const frameBuilder = createJitBlockBuilder();
 frameBuilder.instruction({ pc: FUSED_FRAME_PC, nextPc: FUSED_FRAME_PC }, (b) => {
@@ -52,7 +49,8 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
     return block;
   }
   let touched = new Set<number>();
-  const transform = (value: unknown, samples: Map<number, string>): unknown => {
+  let sampleLocals = new Map<number, number>();
+  const transform = (value: unknown, samples: Map<number, number>): unknown => {
     if (value === null || typeof value !== 'object') return value;
     if (Array.isArray(value))
       return value.flatMap((entry) => {
@@ -61,28 +59,53 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
       });
     const op = value as OperationIR;
     if (op.kind === 'readSample' && op.pin.kind === 'pin' && op.pin.name !== 'VDD1') {
-      samples.set(op.result, op.pin.name);
+      samples.set(op.result, sampleWire(op.pin.name));
       return undefined;
     }
+    if (op.kind === 'local' && op.type.kind === 'sample' && samples.has(op.initial)) {
+      sampleLocals.set(op.local, samples.get(op.initial)!);
+      return undefined;
+    }
+    if (op.kind === 'localRead' && sampleLocals.has(op.local)) {
+      samples.set(op.result, sampleLocals.get(op.local)!);
+      return undefined;
+    }
+    if (op.kind === 'localWrite' && sampleLocals.has(op.local))
+      throw new Error('Fused sample locals must be immutable');
     if (op.kind === 'field' && samples.has(op.value)) {
-      if (op.field !== 'level') throw new Error('Fused GPIO only supports digital samples');
+      const wire = samples.get(op.value)!;
       const pin = next++;
-      return [
+      const result = op.field === 'voltage' ? next++ : op.result;
+      const name =
+        op.field === 'level'
+          ? wire >= 0 && wire < 20
+            ? 'fusedLevel'
+            : 'boardLevel'
+          : op.field === 'voltage'
+            ? 'boardAnalog'
+            : op.field === 'status'
+              ? 'boardAnalogStatus'
+              : undefined;
+      if (name === undefined) throw new Error(`Unsupported fused sample field ${op.field}`);
+      const field: OperationIR[] = [
         {
           kind: 'constant',
           result: pin,
           type: { kind: 'number' },
-          constant: { kind: 'number', value: FUSED_WIRES.indexOf(samples.get(op.value)!) },
+          constant: { kind: 'number', value: wire },
         },
         {
           kind: 'callValue',
-          name: 'fusedLevel',
-          pure: false,
-          result: op.result,
-          type: { kind: 'number' },
+          name,
+          pure: name === 'boardAnalogStatus',
+          result,
+          type: op.field === 'status' ? op.type : { kind: 'number' },
           args: [{ kind: 'value', value: pin }],
         },
       ];
+      if (op.field === 'voltage')
+        field.push({ kind: 'optional', result: op.result, type: op.type, value: result });
+      return field;
     }
     if (op.kind === 'resistor') {
       if (op.to.kind !== 'pin' || !['VDD1', 'VSS1'].includes(op.to.name))
@@ -137,6 +160,7 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
     ...block,
     instructions: block.instructions.map((instruction) => {
       touched = new Set();
+      sampleLocals = new Map();
       const transformed = transform(instruction.body, new Map()) as RegionIR;
       const last = transformed.operations.at(-1);
       if (last?.kind !== 'elapse') throw new Error('Fused MCU must end in elapse');
@@ -162,20 +186,33 @@ export function fuseBlock(block: BlockIR, model: DeviceIR): BlockIR {
         });
       if (touched.has(18) || touched.has(19))
         suffix.push({ kind: 'call', name: 'fusedReadWindow', pure: false, args: [] });
-      const duration = transformed.operations.find(
-        (op) => 'result' in op && op.result === last.duration,
-      );
-      if (!duration || !['constant', 'localRead'].includes(duration.kind))
-        throw new Error('Unexpected MCU duration shape');
+      if (touched.has(BOARD_WIRES.I2C_SCL) || touched.has(BOARD_WIRES.I2C_SDA)) {
+        suffix.push({ kind: 'call', name: 'boardI2c', pure: false, args: [] });
+      }
+      if (
+        touched.has(BOARD_WIRES.LED_LE) ||
+        BOARD_WIRES.LED_DATA.some((wire) => touched.has(wire)) ||
+        touched.has(18) ||
+        touched.has(19)
+      ) {
+        const oldLe = next++;
+        prefix.push({
+          kind: 'read',
+          resource: 'state',
+          name: `fusedWire${BOARD_WIRES.LED_LE}`,
+          result: oldLe,
+          type: { kind: 'number' },
+        });
+        suffix.push({
+          kind: 'call',
+          name: 'boardLatch',
+          pure: false,
+          args: [{ kind: 'value', value: oldLe }],
+        });
+      }
       const expanded = inlineCalls(
         {
-          operations: [
-            ...prefix,
-            ...transformed.operations.slice(0, -1).filter((op) => op !== duration),
-            ...suffix,
-            duration,
-            last,
-          ],
+          operations: [...prefix, ...transformed.operations.slice(0, -1), ...suffix, last],
         },
         model,
       );

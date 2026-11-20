@@ -11,6 +11,10 @@ const HOT = new Set([
   'advanceAddress',
   'driveData',
   'releaseData',
+  'boardLatch',
+  'boardUpdateLeds',
+  'u1_dataByte',
+  'u1_bit',
 ]);
 const OPERANDS = new Set([
   'value',
