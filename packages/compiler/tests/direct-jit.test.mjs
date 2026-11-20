@@ -2134,8 +2134,7 @@ test('outlined resident arms keep access to bound pin samples and resistor slots
   const cold = [];
   const sample = b.value({ kind: 'readSample', pin }, 'sample', cold);
   const voltage = b.value({ kind: 'field', value: sample, field: 'voltage' }, 'number', cold);
-  for (let i = 0; i < 2_000; i++)
-    cold.push({ kind: 'write', name: 'marker', value: voltage });
+  for (let i = 0; i < 2_000; i++) cold.push({ kind: 'write', name: 'marker', value: voltage });
   const intent = b.value({ kind: 'resistor', to: pin, resistance }, 'intent', cold);
   cold.push({ kind: 'writeIntent', pin, value: intent });
   b.operations.push({
@@ -2424,11 +2423,7 @@ test('a dynamic duration stays live across later prefix values', () => {
   const modes = [
     ['monolithic', {}],
     ['split', { split: true, shardSlotLimit: 0, shardSize: 1 }],
-    [
-      'resident',
-      { split: true, shardSlotLimit: 0, shardSize: 1 },
-      compileDirectJit.createCache(),
-    ],
+    ['resident', { split: true, shardSlotLimit: 0, shardSize: 1 }, compileDirectJit.createCache()],
   ];
   for (const [mode, options, cache] of modes) {
     const program = compileDirectJit(instructions, { ...binding, ...options }, cache);
@@ -2516,10 +2511,7 @@ test('dynamic elapse resumes a completed PC once with captured prefix values', (
         const replacement = builder();
         replacement.write('marker', replacement.constant(1000));
         replacement.delay(1);
-        assert(
-          compileDirectJit([replacement.instruction(0x100, 0x900)], options, cache),
-          label,
-        );
+        assert(compileDirectJit([replacement.instruction(0x100, 0x900)], options, cache), label);
       }
       for (const side of [f, reference]) {
         side.memories[0][0] = 200;
@@ -3251,7 +3243,10 @@ test('hosted resident checkpoint keeps the pre-publication capture on rejection 
       assert.notEqual(f.resume, 0);
       assert.equal(f.states[5], 17);
       assert.equal(f.states[1], 1, 'the suffix has not executed');
-      assert(f.locals.every((slot) => slot === 'unsaved'), 'publish before saving the slots');
+      assert(
+        f.locals.every((slot) => slot === 'unsaved'),
+        'publish before saving the slots',
+      );
       f.memories[0][0] = 200;
       f.publishPending = false;
       events.push('publish');
@@ -3278,13 +3273,91 @@ test('hosted resident checkpoint keeps the pre-publication capture on rejection 
       assert.equal(f.states[1], 1);
       assert.equal(program.run(f, 11), 'fallback');
     } else {
-      assert(f.locals.every((slot) => slot === 'unsaved'), 'inline resume needs no saved slots');
+      assert(
+        f.locals.every((slot) => slot === 'unsaved'),
+        'inline resume needs no saved slots',
+      );
     }
     assert.deepEqual(events, admitted ? ['publish', 'finish'] : ['publish']);
     assert.equal(f.states[1], 7);
     assert.equal(f.time, 10);
     assert.equal(f.resume, 0);
   }
+});
+
+test('resident factory reuse across caches binds each shard to its own constants and frame', () => {
+  const pc = 0x12340;
+  const hosted = { ...binding, host: true, split: true };
+  const compile = (channel, nextPc) => {
+    const b = builder();
+    const value = b.read('x');
+    b.delay(5);
+    b.operations.push({ kind: 'send', channel, value });
+    let program;
+    const sources = captureFactories(() => {
+      program = compileDirectJit(
+        [b.instruction(pc, nextPc)],
+        hosted,
+        compileDirectJit.createCache(),
+      );
+    });
+    assert(program);
+    return {
+      program,
+      shards: sources.filter((source) => source.includes('function stepShard')),
+      routers: sources.filter((source) => source.includes('function run')),
+    };
+  };
+  const first = compile('first', pc + 2);
+  const second = compile('second', pc + 2);
+  const changed = compile('third', pc + 4);
+  assert.equal(first.shards.length, 1);
+  assert.equal(second.shards.length, 0, 'channel name changes only the constants');
+  assert.equal(changed.shards.length, 1, 'a different next PC changes the exact source');
+  assert.notEqual(changed.shards[0], first.shards[0]);
+
+  const a = frame(first.program, [pc, 17, 0, true, 0, 0]);
+  const b = frame(second.program, [pc, 42, 0, true, 0, 0]);
+  a.host = hostRecorder(() => a.time);
+  b.host = hostRecorder(() => b.time);
+  for (const [candidate, f] of [
+    [first, a],
+    [second, b],
+  ]) {
+    assert.equal(candidate.routers.length, 1, 'build a fresh dispatcher');
+    assert.equal(candidate.program.run(f, 5), 'deadline');
+    assert.notEqual(f.resume, 0);
+    assert.deepEqual(f.host.entries, []);
+    f.states[1] = -1;
+  }
+  assert.equal(second.program.run(b, 6), 'fallback');
+  assert.equal(first.program.run(a, 6), 'fallback');
+  assert.deepEqual(b.host.entries, [['send', 'second', 42, 5]]);
+  assert.deepEqual(a.host.entries, [['send', 'first', 17, 5]]);
+});
+
+test('resident factory cache evicts the least recently used source at its entry limit', () => {
+  const compile = (index) => {
+    const pc = 0x240000 + 2 * index;
+    const b = builder();
+    b.write('marker', b.constant(7));
+    b.delay(5);
+    const sources = captureFactories(() => {
+      assert(
+        compileDirectJit(
+          [b.instruction(pc, pc + 2)],
+          { ...binding, host: true, split: true },
+          compileDirectJit.createCache(),
+        ),
+      );
+    });
+    return sources.some((source) => source.includes('function stepShard'));
+  };
+  for (let i = 0; i < 128; i++) assert.equal(compile(i), true);
+  assert.equal(compile(0), false, 'a hit refreshes the oldest source');
+  assert.equal(compile(128), true, 'adding another source evicts index 1');
+  assert.equal(compile(0), false, 'a recently used source survives');
+  assert.equal(compile(1), true, 'an evicted source is compiled again');
 });
 
 test('resident shards rebuild only the open tail and keep closed functions reusable', () => {

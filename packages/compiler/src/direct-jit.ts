@@ -1379,6 +1379,45 @@ function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): 
   return lines;
 }
 
+type ResidentShardFactory = (
+  constants: readonly unknown[],
+  runtimeHelpers: typeof helpers,
+) => [ResidentStep, ResidentResume | undefined];
+
+// Share only the unbound factory. Neither the source key nor the factory captures a JIT cache,
+// and every caller binds its own constants when it creates the step and resume functions.
+const residentFactories = new Map<string, ResidentShardFactory>();
+const maxResidentFactories = 128;
+const maxResidentFactorySourceUnits = 4 * 1024 * 1024;
+// Oversized sources bypass the cache instead of evicting a group of smaller factories.
+const maxCachedShardSourceUnits = 64 * 1024;
+let residentFactorySourceUnits = 0;
+
+function residentShardFactory(source: string): ResidentShardFactory {
+  // The parameter list is fixed for every factory in this cache.
+  const cacheable = source.length <= maxCachedShardSourceUnits;
+  const previous = cacheable ? residentFactories.get(source) : undefined;
+  if (previous !== undefined) {
+    residentFactories.delete(source);
+    residentFactories.set(source, previous);
+    return previous;
+  }
+
+  const factory = new Function('C', 'H', source) as ResidentShardFactory;
+  if (!cacheable) return factory;
+  while (
+    residentFactories.size >= maxResidentFactories ||
+    residentFactorySourceUnits + source.length > maxResidentFactorySourceUnits
+  ) {
+    const oldest = residentFactories.keys().next().value!;
+    residentFactories.delete(oldest);
+    residentFactorySourceUnits -= oldest.length;
+  }
+  residentFactories.set(source, factory);
+  residentFactorySourceUnits += source.length;
+  return factory;
+}
+
 function compileResidentShard(
   state: DirectJitCacheState,
   shard: ResidentShard,
@@ -1386,14 +1425,9 @@ function compileResidentShard(
 ): void {
   const lines = residentShardProgram(shard, binding);
   const resume = shard.resumable ? `resumeShard${shard.id}` : 'undefined';
-  const factory = new Function(
-    'C',
-    'H',
+  const factory = residentShardFactory(
     `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`,
-  ) as (
-    constants: readonly unknown[],
-    runtimeHelpers: typeof helpers,
-  ) => [ResidentStep, ResidentResume | undefined];
+  );
   const [step, resumeFunction] = factory(Object.freeze([...state.constants]), helpers);
   shard.functions = { step, resume: resumeFunction };
   shard.signature = Object.freeze([...shard.entries]);
