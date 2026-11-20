@@ -1,8 +1,10 @@
 /**
- * CT107D 板面几何：坐标对应 View2D 使用的 `body.png` 照片像素。
+ * CT107D 板面几何：坐标对应原始板面照片（裁剪前 1068×768）的像素。
  *
- * View2D 的 flexible geometry 以 1068×768 为局部坐标；编辑器在缩放、旋转和自由
- * 尺寸变化时把指针反变换回同一坐标，因此绘制和命中测试共用这里的坐标。
+ * 器件是 `physical` 器件：几何以 mm 表达，板外形 199.27×142.47 mm 由照片按
+ * 11 px / 0.1″ 排针实测换算（4.3307 px/mm）。`body.png` 是同一张照片按板外形裁出的
+ * 863×617 图，裁剪原点 `PHOTO_ORIGIN`；布局表继续用照片像素撰写，绘制与指针输入在
+ * 边界处换算，测试与照片测量点共用同一坐标系。
  */
 import type { JumperDesignator, KeyDesignator } from './board-state.js';
 import type { PotentiometerDesignator } from './potentiometer-map.js';
@@ -17,7 +19,51 @@ export interface Rect extends Point {
   readonly height: number;
 }
 
-export const BOARD_BOUNDS: Rect = { x: 0, y: 0, width: 1068, height: 768 };
+/** 照片坐标原点偏移：`body.png` 从原始照片的该像素开始裁剪。 */
+export const PHOTO_ORIGIN: Point = { x: 93, y: 69 };
+
+/** 板外形在裁剪后照片里的像素尺寸。 */
+const BOARD_PIXELS = { width: 863, height: 617 } as const;
+
+/** 照片上与板边实测的排针为 0.1"，两针间距 11 px，由此得到像素密度。 */
+const HEADER_PITCH_PX = 11;
+const HEADER_PITCH_MM = 2.54;
+
+/** 照片分辨率：11 px / 2.54 mm ≈ 4.3307 px/mm。 */
+export const PX_PER_MM = HEADER_PITCH_PX / HEADER_PITCH_MM;
+
+/** 照片像素换毫米的系数，供几何与指针输入共用。 */
+export const MM_PER_PX = 1 / PX_PER_MM;
+
+/** 原始照片（裁剪前）的范围；布局表与命中测试都在这个坐标系里。 */
+export const PHOTO_BOUNDS: Rect = { x: 0, y: 0, width: 1068, height: 768 };
+
+/** 六位小数取整，使常量与 `geometry.json` 的撰写值逐位相等。 */
+function roundMm(value: number): number {
+  return Math.round(value * 1e6) / 1e6;
+}
+
+/** 板外形尺寸，与 `geometry.json` 的 `bounds` 一致，单位 mm。 */
+export const BOARD_SIZE_MM = {
+  width: roundMm(BOARD_PIXELS.width * MM_PER_PX),
+  height: roundMm(BOARD_PIXELS.height * MM_PER_PX),
+} as const;
+
+/** 照片像素 → 器件局部 mm（相对板外形左上角）。 */
+export function toLocalPoint(point: Point): Point {
+  return {
+    x: (point.x - PHOTO_ORIGIN.x) * MM_PER_PX,
+    y: (point.y - PHOTO_ORIGIN.y) * MM_PER_PX,
+  };
+}
+
+/** 器件局部 mm → 照片像素；与 `toLocalPoint` 互逆。 */
+export function toPhotoPoint(point: Point): Point {
+  return {
+    x: point.x * PX_PER_MM + PHOTO_ORIGIN.x,
+    y: point.y * PX_PER_MM + PHOTO_ORIGIN.y,
+  };
+}
 
 export interface KeyLayout extends Rect {
   readonly designator: KeyDesignator;

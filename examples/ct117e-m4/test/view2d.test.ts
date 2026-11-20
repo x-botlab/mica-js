@@ -5,6 +5,7 @@ import type { Value } from '@mica-js/document/fused';
 import type { ModelEvent } from '@mica-js/sdk/fused';
 import { readDirectoryPackage } from '@mica-js/sdk/fused/node';
 import { afterEach, expect, it, vi } from 'vitest';
+import { BOARD_SIZE_MM, MM_PER_PX, PHOTO_ORIGIN, toLocalPoint } from '../src/presentation';
 import { createBoardView } from '../src/view2d';
 
 function framebuffer(x: number, y: number, width: number, height: number, ...colors: number[]) {
@@ -47,6 +48,8 @@ function paint(view: ReturnType<typeof createBoardView>) {
   const canvas = {
     save: vi.fn(),
     restore: vi.fn(),
+    scale: vi.fn(),
+    translate: vi.fn(),
     beginPath: vi.fn(),
     roundRect: vi.fn(),
     clip: vi.fn(),
@@ -69,9 +72,19 @@ it('releases view2d, its geometry and the original SVG with the fused package', 
   const manifest = JSON.parse(await text('package.json'));
   expect(manifest.view2d).toEqual({ entry: 'view2d.js', geometry: 'geometry.json' });
   const geometry = JSON.parse(await text(manifest.view2d.geometry));
-  expect(geometry.bodyBounds).toEqual({ x: 0, y: 0, width: 1024, height: 768 });
+  expect(geometry.sizing).toBe('physical');
+  expect({ width: geometry.bounds.width, height: geometry.bounds.height }).toEqual(BOARD_SIZE_MM);
+  expect(geometry.bounds).toEqual({ x: 0, y: 0, ...BOARD_SIZE_MM });
+  expect(geometry.bodyBounds).toEqual({ x: 1.2, y: 1.6, width: 89.2, height: 68.3 });
+  expect(geometry.pins.VDD1.position).toEqual({ x: 2.5, y: 4.2 });
+  for (const pin of Object.values<{ position: { x: number; y: number } }>(geometry.pins)) {
+    expect(pin.position.x).toBeGreaterThanOrEqual(geometry.bodyBounds.x);
+    expect(pin.position.y).toBeGreaterThanOrEqual(geometry.bodyBounds.y);
+    expect(pin.position.x).toBeLessThanOrEqual(geometry.bodyBounds.x + geometry.bodyBounds.width);
+    expect(pin.position.y).toBeLessThanOrEqual(geometry.bodyBounds.y + geometry.bodyBounds.height);
+  }
   expect(geometry.bodyImage).toBe('assets/ct117e-m4.svg');
-  expect(await text(geometry.bodyImage)).toContain('viewBox="0 0 1024 768"');
+  expect(await text(geometry.bodyImage)).toContain('viewBox="31 24 941 712"');
   const code = Buffer.from(await files.read(manifest.view2d.entry)).toString('base64');
   const { default: factory } = await import(
     /* @vite-ignore */ `data:text/javascript;base64,${code}`
@@ -118,6 +131,8 @@ it('draws initial and dirty RGB565 frames in order, and maps LED mask bits to th
   expect(dirty?.slice(1)).toEqual([319, 239]);
   expect(dirty?.[0].data).toEqual(new Uint8ClampedArray([255, 0, 0, 255]));
   const dark = paint(view);
+  expect(dark.scale.mock.calls).toEqual([[MM_PER_PX, MM_PER_PX]]);
+  expect(dark.translate.mock.calls).toEqual([[-PHOTO_ORIGIN.x, -PHOTO_ORIGIN.y]]);
   expect(dark.roundRect.mock.calls).toEqual([[220, 90, 491, 398, 5]]);
   expect(dark.clip).toHaveBeenCalledOnce();
   expect(dark.drawImage.mock.calls[0]?.slice(1)).toEqual([220, 90, 491, 398]);
@@ -152,7 +167,13 @@ it('draws initial and dirty RGB565 frames in order, and maps LED mask bits to th
 
 function pointer(view: ReturnType<typeof createBoardView>) {
   return (type: Parameters<typeof view.input>[0]['type'], x: number, y: number, button = 0) =>
-    view.input({ type, position: { x, y }, button, buttons: type === 'pointerup' ? 0 : 1 });
+    // 测试沿用照片像素测量点；宿主交给 View2D 的是器件局部 mm。
+    view.input({
+      type,
+      position: toLocalPoint({ x, y }),
+      button,
+      buttons: type === 'pointerup' ? 0 : 1,
+    });
 }
 
 it('hits B1–B4 at their photographed caps and releases on up, drag-out, cancel and dispose', async () => {

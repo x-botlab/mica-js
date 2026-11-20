@@ -1,3 +1,5 @@
+import { LCD_SCREEN } from './presentation.js';
+
 const WIDTH = 320;
 const HEIGHT = 240;
 const HEADER_BYTES = 8;
@@ -53,14 +55,19 @@ export function createLcdOverlay() {
       pixels.putImageData(image, x, y);
     },
     draw(canvas: OffscreenCanvasRenderingContext2D) {
-      // 对齐 SVG 内嵌照片的玻璃内缘，保留黑色边框。
-      const screen = [220, 90, 491, 398] as const;
+      // 对齐 SVG 内嵌照片的玻璃内缘；调用方已把画布换成照片坐标。
       canvas.save();
       canvas.beginPath();
-      canvas.roundRect(...screen, 5);
+      canvas.roundRect(
+        LCD_SCREEN.x,
+        LCD_SCREEN.y,
+        LCD_SCREEN.width,
+        LCD_SCREEN.height,
+        LCD_SCREEN.radius,
+      );
       canvas.clip();
       canvas.imageSmoothingEnabled = false;
-      canvas.drawImage(surface, ...screen);
+      canvas.drawImage(surface, LCD_SCREEN.x, LCD_SCREEN.y, LCD_SCREEN.width, LCD_SCREEN.height);
       canvas.restore();
     },
   };

@@ -5,7 +5,7 @@
 宿主中装配分立器件。
 
 - 器件 ID：`example:ct117e-m4`
-- 源码：`src/{model.ddl,model.ts,mcu.ts,lcd.ts}`
+- 源码：`src/{model.ddl,model.ts,mcu.ts,lcd.ts,geometry.json,view2d.ts,view2d-lcd.ts}`
 - 构建产物：`dist/` 发布包，含 `model.js`、`view2d.js`、`geometry.json` 和 SVG 底图
 - 参考固件：`HAL_06_LCD.hex`（测试夹具位于 `examples/devices/bench/stm32g431rbt6`；
   统一模型从 `ctx.props.firmware` 接收 `MemoryProgram`）
@@ -47,7 +47,13 @@ pnpm bench        # 构建并运行六轮基准
 [`assets/HAL_06_LCD.hex`](assets/HAL_06_LCD.hex) 演示固件；首次构建依赖见
 [Playground README](../../apps/playground/README.md)。
 
-在工作台放置 `example:ct117e-m4`，即可看到发布包内的 SVG 板图。进入仿真后：
+在工作台放置 `example:ct117e-m4`，即可看到发布包内的 SVG 板图。器件按
+[RFC 0022](../../docs/rfc/0022-device-2d-presentation.md) 声明 `sizing: "physical"`：底图从
+照片的 `(31, 24)` 裁剪为 941 × 712 px，按 10 px/mm 换算（2.4" 320×240 LCD 有效宽
+48.96 mm，对应照片约 491 px），`bounds` 为 94.1 × 71.2 mm，板边 `bodyBounds` 为
+89.2 × 68.3 mm。`VDD1`/`VSS1`/`NRST` 锚点位于板边内；覆盖层仍按照片像素撰写，
+`renderOverlay` 先按 `MM_PER_PX` 缩放并平移到照片坐标，`input` 再把局部 mm 指针换回
+照片像素。编辑器只保存位置与旋转，相机缩放不改变板卡尺寸。进入仿真后：
 
 - B1–B4 自上而下排列；按下键帽向同一板实例发送按下，抬起或拖出键帽时释放。上方
   `RESET` 不在本遮罩范围内。

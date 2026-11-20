@@ -2,7 +2,11 @@ import type { Disposable, Event } from '@mica-js/core/lifecycle';
 import type { TimePs } from '@mica-js/core';
 import type { ProgramSources } from '@mica-js/sdk/fused';
 import type { IFusedAudioOptions } from './runtime/audio';
-import type { FusedSessionStatus } from './runtime/protocol';
+import type {
+  FusedSessionStatus,
+  IFusedDisplayLayout,
+  IFusedInstancePresentation,
+} from './runtime/protocol';
 import type { IFusedTextTarget } from './document/edits';
 import type {
   DeviceLock,
@@ -190,6 +194,13 @@ export interface IWorkbenchOptions {
   readonly theme?: WorkbenchTheme;
   readonly readOnly?: boolean;
   readonly step?: TimePs;
+  /**
+   * Overlay extent of one instance; defaults to its geometry bounds at one pixel per local unit.
+   *
+   * Physical devices express geometry in millimetres, so a board-sized package needs a higher
+   * density than the default to stay legible.
+   */
+  readonly measure?: (instance: IFusedInstancePresentation) => IFusedDisplayLayout;
   readonly contributions?: IWorkbenchContributions;
 }
 

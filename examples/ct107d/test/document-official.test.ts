@@ -11,6 +11,7 @@ import {
 import { openDevicePackage } from '@mica-js/sdk/fused';
 import { readDirectoryPackage } from '@mica-js/sdk/fused/node';
 import { describe, expect, it } from 'vitest';
+import { BOARD_SIZE_MM, contains } from '../device/src/board-layout.js';
 
 const PROJECT = join(import.meta.dirname, '..');
 const DOCUMENT_PATH = join(PROJECT, 'ct107d.sch');
@@ -67,6 +68,12 @@ describe('formal CT107D v2 document', () => {
         : parseGeometry2D(geometryValue, Object.keys(verified.manifest.pins ?? {}));
     expect(Object.keys(geometry.pins).sort()).toEqual(['GND', 'VCC']);
     expect(Object.keys(verified.manifest.pins ?? {}).sort()).toEqual(['GND', 'VCC']);
+    // 整板是物理器件：几何以 mm 表达，板外形与 View2D 的照片换算一致。
+    expect(geometry.sizing).toBe('physical');
+    expect({ width: geometry.bounds.width, height: geometry.bounds.height }).toEqual(BOARD_SIZE_MM);
+    for (const pin of Object.values(geometry.pins)) {
+      expect(contains(geometry.bodyBounds, pin.position)).toBe(true);
+    }
 
     const vcc = document.references.filter(
       (reference) => reference.target.kind === 'pin' && reference.target.pin === 'VCC',

@@ -6,6 +6,9 @@
  * - 金色：SP1/K1 执行器提示；
  * - 深色滑轨与灰蓝滑块：跳线档位，以及点击旋钮后展开的电位器浮层。
  *
+ * 器件是 `physical` 器件，几何单位是 mm；叠层仍按照片像素撰写，`renderOverlay` 在绘制
+ * 前把画布换成照片坐标，`input` 把局部 mm 指针换回照片像素再做命中测试。
+ *
  * 器件状态来自模型事件或 `getSnapshot(null)`；浮层开合是本地交互状态。
  * 模型方法失败时返回的 Promise 会继续拒绝，交给展示宿主的诊断通道，不在视图里吞掉。
  */
@@ -22,6 +25,8 @@ import {
   JUMPERS,
   KEYS,
   LEDS,
+  MM_PER_PX,
+  PHOTO_ORIGIN,
   RELAY,
   contains,
   jumperAt,
@@ -33,6 +38,7 @@ import {
   potentiometerSlider,
   potentiometerSliderKnob,
   potentiometerSliderPosition,
+  toPhotoPoint,
   type JumperLayout,
   type Point,
   type PotentiometerSliderLayout,
@@ -316,18 +322,28 @@ export function createBoardView(context: BoardViewDependencies): BoardView {
 
     renderOverlay(canvas) {
       if (disposed) return;
-      drawBoard(canvas, store.state, interaction);
+      // 板面布局用照片像素撰写，宿主画布是器件局部 mm；绘制前换成照片坐标。
+      canvas.save();
+      try {
+        canvas.scale(MM_PER_PX, MM_PER_PX);
+        canvas.translate(-PHOTO_ORIGIN.x, -PHOTO_ORIGIN.y);
+        drawBoard(canvas, store.state, interaction);
+      } finally {
+        canvas.restore();
+      }
     },
 
     input(event) {
       if (disposed) return undefined;
-      switch (event.type) {
+      // 指针来自器件局部 mm，命中表用照片像素。
+      const local: BoardViewEvent = { ...event, position: toPhotoPoint(event.position) };
+      switch (local.type) {
         case 'pointerdown':
-          return pointerDown(event);
+          return pointerDown(local);
         case 'pointermove':
-          return pointerMove(event);
+          return pointerMove(local);
         case 'pointerup':
-          return pointerUp(event);
+          return pointerUp(local);
         case 'pointercancel':
         case 'pointerleave':
           drag = undefined;
@@ -362,7 +378,7 @@ export const createView: FusedView2DFactory = (context) => createBoardView(conte
 
 export default createView;
 
-/** 绘制整板叠层；导出给单测，不读取任何全局或宿主状态。 */
+/** 绘制整板叠层；导出给单测，不读取任何全局或宿主状态。画布需已换成照片像素坐标。 */
 export function drawBoard(
   canvas: OffscreenCanvasRenderingContext2D,
   state: BoardState,

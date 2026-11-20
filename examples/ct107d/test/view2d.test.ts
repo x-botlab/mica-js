@@ -6,7 +6,7 @@ import type { IFusedAudio, IFusedModelClient } from '@mica-js/editor/fused/runti
 import type { ModelEvent } from '@mica-js/sdk/fused';
 import { createBoardView, type BoardView, type BoardViewEvent } from '../device/src/view2d.js';
 import {
-  BOARD_BOUNDS,
+  BOARD_SIZE_MM,
   JUMPERS,
   J13,
   J2,
@@ -15,12 +15,17 @@ import {
   J5,
   J6,
   KEYS,
+  MM_PER_PX,
+  PHOTO_BOUNDS,
+  PHOTO_ORIGIN,
   POTENTIOMETERS,
   contains,
   jumperKnobRect,
   keyLayout,
   potentiometerSlider,
   potentiometerSliderKnob,
+  toLocalPoint,
+  toPhotoPoint,
   type PotentiometerSliderLayout,
   type Rect,
 } from '../device/src/board-layout.js';
@@ -272,11 +277,20 @@ class FakeCanvas {
   readonly rectangles: FillRectRecord[] = [];
   readonly rounded: RoundRectRecord[] = [];
   readonly texts: string[] = [];
+  /** 宿主把器件局部 mm 映射到照片像素；断言仍按照片坐标，变换只做记录。 */
+  readonly scaleCalls: [number, number][] = [];
+  readonly translateCalls: [number, number][] = [];
   private points: PaintPoint[] = [];
   private pendingRound: FillRectRecord | undefined;
 
   save(): void {}
   restore(): void {}
+  scale(x: number, y: number): void {
+    this.scaleCalls.push([x, y]);
+  }
+  translate(x: number, y: number): void {
+    this.translateCalls.push([x, y]);
+  }
   beginPath(): void {
     this.points = [];
     this.pendingRound = undefined;
@@ -354,7 +368,13 @@ function paint(view: BoardView): FakeCanvas {
 }
 
 function pointer(type: BoardViewEvent['type'], position: PaintPoint, button = 0): BoardViewEvent {
-  return { type, position, button, buttons: type === 'pointerup' ? 0 : 1 };
+  // 测试沿用照片像素测量点；宿主交给 View2D 的是器件局部 mm。
+  return {
+    type,
+    position: toLocalPoint(position),
+    button,
+    buttons: type === 'pointerup' ? 0 : 1,
+  };
 }
 
 function keyCenter(designator: KeyDesignator): PaintPoint {
@@ -415,6 +435,22 @@ async function click(view: BoardView, point: PaintPoint): Promise<void> {
 }
 
 describe('CT107D View2D 绘制', () => {
+  it('绘制前把器件局部 mm 换成照片像素', async () => {
+    const model = harness();
+    const { view } = mount(model.model);
+    await view.initialize();
+    const canvas = paint(view);
+    // 宿主画布是局部 mm；叠层按照片像素绘制，照片与物理板外形保持同一比例。
+    expect(canvas.scaleCalls).toEqual([[MM_PER_PX, MM_PER_PX]]);
+    expect(canvas.translateCalls).toEqual([[-PHOTO_ORIGIN.x, -PHOTO_ORIGIN.y]]);
+    expect(toLocalPoint(toPhotoPoint({ x: 41.5, y: 12.25 }))).toEqual({ x: 41.5, y: 12.25 });
+    // 照片左上角就是板外形原点，右下角就是几何声明的板尺寸。
+    expect(toLocalPoint(PHOTO_ORIGIN)).toEqual({ x: 0, y: 0 });
+    const corner = toLocalPoint({ x: PHOTO_ORIGIN.x + 863, y: PHOTO_ORIGIN.y + 617 });
+    expect(corner.x).toBeCloseTo(BOARD_SIZE_MM.width, 5);
+    expect(corner.y).toBeCloseTo(BOARD_SIZE_MM.height, 5);
+  });
+
   it('绘制段码、LED 与执行器提示', async () => {
     const model = harness({
       snapshot: snapshotOf({
@@ -474,8 +510,8 @@ describe('CT107D View2D 绘制', () => {
       const { panel, track } = potentiometerSlider(layout);
       expect(track.width).toBeGreaterThanOrEqual(115);
       expect(panel.y).toBeGreaterThan(layout.y + layout.height);
-      expect(contains(BOARD_BOUNDS, panel)).toBe(true);
-      expect(contains(BOARD_BOUNDS, { x: panel.x + panel.width, y: panel.y + panel.height })).toBe(
+      expect(contains(PHOTO_BOUNDS, panel)).toBe(true);
+      expect(contains(PHOTO_BOUNDS, { x: panel.x + panel.width, y: panel.y + panel.height })).toBe(
         true,
       );
       expect(controls.some((control) => intersects(panel, control))).toBe(false);

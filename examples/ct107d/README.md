@@ -181,6 +181,10 @@ suspend/resume、释放失败 latch 与关闭顺序。
   `[0, 61440)`、默认装载地址 0、可空）、`clockFrequency`、`ultrasonicDistanceCm`、
   `uartBaud`；
 - 引脚只有 `VCC`/`GND`，与 `geometry.json`、`model.ddl` 完全一致；
+- 尺寸：`view2d.geometry` 声明为 `physical`，板外形 199.27×142.47 mm，文档实例因此不写
+  `width`/`height`；`src/body.png` 已裁到板外形（863×617 px），照片按 0.1″ 排针实测
+  11 px = 2.54 mm 定标为 4.3307 px/mm，`View2D` 在绘制与指针输入处换算，毫米坐标与照片
+  始终对位；
 - 构建：`device/scripts/generate.mjs` 从 `legacy/source/ct107d.sch` 与
   `legacy/source/ct107d.netlist.json` 生成 `src/{model.ddl,nets.ts,channels.ts}`，
   `mica build --root device` 输出自包含 `device/dist`；
@@ -274,8 +278,8 @@ examples/ct107d/
     mica.config.ts              统一器件构建：manifest + model
     src/model.ddl               生成的单 DeviceIR
     src/model.ts / index.ts     模型入口与工厂
-    src/geometry.json           flexible 1068×768 几何与 VCC/GND 锚点
-    src/body.png                板面照片（PNG）
+    src/geometry.json           physical 199.27×142.47 mm 几何与 VCC/GND 锚点
+    src/body.png                板面照片（裁到板外形，863×617 px）
     src/view2d.ts               板面叠层与交互
     src/panel/                  HTML 控制面板
     src/assets/                 seg7-dynamic.hex、ct107d-demo.{hex,bin}

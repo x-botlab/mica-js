@@ -155,6 +155,17 @@ function checkDeviceContract(release) {
       `Geometry pins (${geometryPins.join(', ')}) differ from manifest pins (${pins.join(', ')})`,
     );
   }
+  // 整板是有真实外形尺寸的物理器件，实例因此省略 width/height。
+  if (release.geometry.sizing !== 'physical') {
+    fail(`The board geometry must be physical, got "${release.geometry.sizing}"`);
+  }
+  for (const [id, pin] of Object.entries(release.geometry.pins)) {
+    const { x, y } = pin.position;
+    const { x: bx, y: by, width, height } = release.geometry.bodyBounds;
+    if (x < bx || y < by || x > bx + width || y > by + height) {
+      fail(`Geometry pin ${id} at (${x}, ${y}) lies outside the board body`);
+    }
+  }
   if (release.geometry.bodyImage !== undefined) {
     if (!Object.hasOwn(release.files, release.geometry.bodyImage)) {
       fail(`The device package does not declare bodyImage ${release.geometry.bodyImage}`);

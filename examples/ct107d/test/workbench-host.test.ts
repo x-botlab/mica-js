@@ -1,9 +1,15 @@
-import { parseFusedDocument } from '@mica-js/document/fused';
+import { parseFusedDocument, parseGeometry2D } from '@mica-js/document/fused';
+import type { IFusedInstancePresentation } from '@mica-js/editor/fused/runtime';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { looksLikeHtml, packageFileUrl, parseCatalog } from '../workbench/src/catalog';
 import { DOCUMENT_STORAGE_KEY, DocumentStore } from '../workbench/src/document-store';
+import { OVERLAY_PX_PER_MM, measureOverlay } from '../workbench/src/overlay-density';
 import { WORKBENCH_STEP, WORKBENCH_STEP_MS } from '../workbench/src/runtime-config';
 import { SerialQueue } from '../workbench/src/serial-queue';
+
+const DEVICE_SRC = join(import.meta.dirname, '..', 'device', 'src');
 
 const LOCK = {
   id: 'example:ct107d-board',
@@ -47,9 +53,9 @@ describe('workbench catalog', () => {
 
   it('rejects malformed catalogs instead of trusting build artifacts', () => {
     expect(() => parseCatalog({})).toThrow(/array/);
-    expect(() =>
-      parseCatalog([{ ...catalogEntry(), directory: '../escape' }]),
-    ).toThrow(/directory/);
+    expect(() => parseCatalog([{ ...catalogEntry(), directory: '../escape' }])).toThrow(
+      /directory/,
+    );
     expect(() =>
       parseCatalog([{ ...catalogEntry(), lock: { ...LOCK, integrity: 'sha256:abc' } }]),
     ).toThrow(/integrity/);
@@ -111,6 +117,21 @@ describe('workbench runtime configuration', () => {
   it('uses an explicit 16 ms fixed step instead of the editor 10 µs default', () => {
     expect(WORKBENCH_STEP_MS).toBe(16);
     expect(WORKBENCH_STEP).toBe(16_000_000_000);
+  });
+
+  it('reserves the overlay at the board photo density, not one pixel per millimetre', () => {
+    const geometry = parseGeometry2D(
+      JSON.parse(readFileSync(join(DEVICE_SRC, 'geometry.json'), 'utf8')) as unknown,
+      ['VCC', 'GND'],
+    );
+    expect(geometry.sizing).toBe('physical');
+    const layout = measureOverlay({ geometry } as unknown as IFusedInstancePresentation);
+    // 板外形 199.27×142.47 mm 在 4 px/mm 下为 797×570，与 863×617 的板面照片同量级；
+    // 默认密度（1 px/mm）只有 199×142，段码与指示灯会被拉花。
+    expect(layout).toEqual({ width: 797, height: 570, scale: OVERLAY_PX_PER_MM });
+    expect(layout.width).toBeGreaterThan(geometry.bounds.width * 3);
+    // 与照片的 4.3307 px/mm 相比略低，保证叠层位图小于照片本身的 863×617。
+    expect(layout.width).toBeLessThan(863);
   });
 });
 

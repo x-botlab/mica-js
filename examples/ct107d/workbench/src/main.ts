@@ -16,6 +16,7 @@ import {
   type CatalogEntry,
 } from './catalog';
 import { DocumentStore } from './document-store';
+import { measureOverlay } from './overlay-density';
 import { WORKBENCH_STEP } from './runtime-config';
 import { HostSessionController, HostSessionError } from './session-controller';
 import './host.css';
@@ -203,6 +204,8 @@ const controller = new HostSessionController<IWorkbench>({
       viewBaseUrlTemplate: viewBaseUrl,
       theme: HOST_THEME,
       step: WORKBENCH_STEP,
+      // 板是物理器件（mm 几何）；按照片的 4 px/mm 预留叠层位图，保持段码与指示灯清晰。
+      measure: measureOverlay,
       ...(audio === undefined ? {} : { audio: { context: audio } }),
     });
   },

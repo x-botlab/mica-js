@@ -4,6 +4,7 @@ import type {
   IFusedView2DContext,
   IFusedViewInput,
 } from '@mica-js/editor/fused/runtime';
+import { MM_PER_PX, PHOTO_ORIGIN, toPhotoPoint } from './presentation.js';
 import { createLcdOverlay, readFrame } from './view2d-lcd.js';
 
 type Point = IFusedViewInput['position'];
@@ -140,6 +141,9 @@ export function createBoardView({
       if (disposed || !model) return;
       canvas.save();
       try {
+        // 布局用照片像素撰写，宿主画布是器件局部 mm；绘制前换成照片坐标。
+        canvas.scale(MM_PER_PX, MM_PER_PX);
+        canvas.translate(-PHOTO_ORIGIN.x, -PHOTO_ORIGIN.y);
         lcd?.draw(canvas);
         for (const [bit, x] of LED_X.entries()) {
           if ((leds & (1 << bit)) === 0) continue;
@@ -167,8 +171,13 @@ export function createBoardView({
       }
     },
 
-    async input({ type, position, button, buttons }: Input) {
+    async input(event: Input) {
       if (disposed || !model) return;
+      // 指针来自器件局部 mm，命中表用照片像素。
+      const { type, position, button, buttons } = {
+        ...event,
+        position: toPhotoPoint(event.position),
+      };
       if (
         type === 'pointercancel' ||
         type === 'pointerleave' ||

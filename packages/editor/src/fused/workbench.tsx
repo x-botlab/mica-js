@@ -385,6 +385,7 @@ export async function createWorkbench(options: IWorkbenchOptions): Promise<IWork
       mode: targetMode,
       container: environment,
       ...(options.programs === undefined ? {} : { programs: options.programs }),
+      ...(options.measure === undefined ? {} : { measure: options.measure }),
       resolveResource: (request) => {
         if (request.reference.mode !== 'asset' || options.assetProvider === undefined)
           throw new Error('No asset provider is configured');
