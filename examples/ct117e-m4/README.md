@@ -42,6 +42,11 @@ pnpm bench        # 构建并运行六轮基准
 
 ## View2D 整板遮罩
 
+预览可在仓库根目录运行 `pnpm --filter @mica-js/playground dev:workbench`，打开
+`http://127.0.0.1:5193/workbench.html?demo=ct117e-m4` 后点击运行。预览默认加载
+[`assets/HAL_06_LCD.hex`](assets/HAL_06_LCD.hex) 清屏固件；首次构建依赖见
+[Playground README](../../apps/playground/README.md)。
+
 在工作台放置 `example:ct117e-m4`，即可看到发布包内的 SVG 板图。进入仿真后：
 
 - B1–B4 自上而下排列；按下键帽向同一板实例发送按下，抬起或拖出键帽时释放。上方

@@ -1,24 +1,45 @@
+import { execFileSync } from 'node:child_process';
 import { cp, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDevice } from '@mica-js/sdk/device-build';
 import { readDirectoryPackage } from '@mica-js/sdk/fused/node';
 import { build, createServer } from 'vite';
-import { createMcuCircuit } from './workbench-circuits.mjs';
+import { createCt117eCircuit, createMcuCircuit } from './workbench-circuits.mjs';
+import assets from '../workbench-assets.json' with { type: 'json' };
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const source = resolve(app, '..', '..', 'examples', 'fused-workbench');
+const examples = resolve(app, '..', '..', 'examples');
+const source = resolve(examples, 'fused-workbench');
 const artifacts = resolve(app, 'public', 'components', 'workbench');
+
+async function publishPackage(outDir, directory) {
+  const { lock, files } = await readDirectoryPackage(outDir);
+  const target = resolve(artifacts, directory);
+  await mkdir(target, { recursive: true });
+  await cp(outDir, target, { recursive: true });
+  return { lock, files, directory };
+}
+
 const devices = [];
 for (const name of ['button', 'led', 'at89c52', 'buzzer']) {
   const root = resolve(source, name);
   const outDir = resolve(root, 'dist');
   await buildDevice({ root, manifest: 'package.json', model: 'src/model.ddl', outDir });
-  const files = await readDirectoryPackage(outDir);
-  devices.push({ lock: files.lock, files: files.files, directory: name });
-  await mkdir(resolve(artifacts, name), { recursive: true });
-  await cp(outDir, resolve(artifacts, name), { recursive: true });
+  devices.push(await publishPackage(outDir, name));
 }
+const board = resolve(examples, 'ct117e-m4');
+const pnpm = process.env.npm_execpath ?? 'pnpm';
+const args = ['--dir', board, 'build'];
+if (/\.[cm]?js$/i.test(pnpm)) execFileSync(process.execPath, [pnpm, ...args], { stdio: 'inherit' });
+else execFileSync(pnpm, args, { stdio: 'inherit' });
+const ct117e = await publishPackage(resolve(board, 'dist'), 'ct117e-m4');
+const firmwareDirectory = resolve(artifacts, 'firmware');
+await mkdir(firmwareDirectory, { recursive: true });
+await cp(
+  resolve(board, 'assets', assets.ct117eFirmware.name),
+  resolve(firmwareDirectory, assets.ct117eFirmware.name),
+);
 const button = '11111111-1111-4111-8111-111111111111';
 const led = '22222222-2222-4222-8222-222222222222';
 const document = {
@@ -63,9 +84,13 @@ const document = {
     },
   ],
 };
-await writeFile(resolve(artifacts, 'catalog.json'), JSON.stringify(devices));
+await writeFile(resolve(artifacts, 'catalog.json'), JSON.stringify([...devices, ct117e]));
 await writeFile(resolve(artifacts, 'circuit.sch'), JSON.stringify(document, null, 2));
 await writeFile(resolve(artifacts, 'mcu.sch'), JSON.stringify(createMcuCircuit(devices), null, 2));
+await writeFile(
+  resolve(artifacts, 'ct117e-m4.sch'),
+  JSON.stringify(createCt117eCircuit(ct117e.lock), null, 2),
+);
 await cp(
   resolve(app, '..', '..', 'packages', 'editor', 'dist', 'view-environment'),
   resolve(artifacts, 'environment'),
