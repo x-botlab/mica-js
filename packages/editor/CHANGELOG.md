@@ -1,5 +1,18 @@
 # @mica-js/editor
 
+## 0.7.0
+
+### Minor Changes
+
+- 42ac451: 融合工作台新增可选的 `measure` 回调，宿主可为每个实例指定覆盖层尺寸，让使用毫米几何的板卡有合适的显示密度；未传回调时保持原默认尺寸。
+
+### Patch Changes
+
+- Updated dependencies [42ac451]
+- Updated dependencies [42ac451]
+  - @mica-js/sdk@0.5.0
+  - @mica-js/simulator@2.6.0
+
 ## 0.6.0
 
 ### Minor Changes

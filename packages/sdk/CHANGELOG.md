@@ -1,5 +1,19 @@
 # @mica-js/sdk
 
+## 0.5.0
+
+### Minor Changes
+
+- 42ac451: `@mica-js/sdk/device` 导出 JIT 可执行区域、代码版本变更和元数据提供器的类型，器件可通过 SDK 声明这些选项，而不必直接从 simulator 导入类型。
+
+### Patch Changes
+
+- Updated dependencies [42ac451]
+- Updated dependencies [42ac451]
+  - @mica-js/device-model@0.7.0
+  - @mica-js/simulator@2.6.0
+  - @mica-js/ddl@0.3.1
+
 ## 0.4.1
 
 ### Patch Changes
