@@ -759,6 +759,8 @@ device Stm32g431rbt6(
     let at = 0;
     while at < 0x1000 { store8(periph, at, 0); at = at + 1; }
     store32le(periph, 0x90, backupDomain);
+    // FPCCR reset: ASPEN=1, LSPEN=1; FP context storage is core-private (0xf88).
+    store32le(periph, 0xf88, 0xc0000000);
     at = 0;
     while at < 0x200 { store8(sys, at, 0); at = at + 1; }
     at = 0;
@@ -850,6 +852,8 @@ device Stm32g431rbt6(
    * 前清掉；固件为空时 PC=0，执行全零的 `lsls r0,r0,#0` 直到第一个有效映像写入。
    */
   process start {
+    // FPCCR reset: ASPEN=1, LSPEN=1; core-private storage offset 0xf88.
+    store32le(periph, 0xf88, 0xc0000000);
     sp = load32le(code, 0);
     lr = 0xffffffff;
     pc = load32le(code, 4) & 0xfffffffe;

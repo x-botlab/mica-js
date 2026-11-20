@@ -95,12 +95,13 @@ import {
 } from '@mica-js/stm32g431rbt6-core/bus';
 import { advanceSystick } from '@mica-js/stm32g431rbt6-core/systick';
 import { advanceUsart, usartDrivers } from '@mica-js/stm32g431rbt6-core/usart';
-import { observeTimerInputByPin, TIMER_MODULE } from '@mica-js/stm32g431rbt6-core/tim';
-import { advanceServiceSlot, schedulePeripheralAdvances } from '@mica-js/stm32g431rbt6-core/tick';
-import { createAdcModule } from '@mica-js/stm32g431rbt6-core/adc';
-import { alternateDriversOf } from '@mica-js/stm32g431rbt6-core/peripherals';
+import { observeTimerInputByPin } from '@mica-js/stm32g431rbt6-core/tim';
+import {
+  advanceServiceSlot,
+  schedulePeripheralAdvances,
+} from '@mica-js/stm32g431rbt6-core/tick';
+import { FUSED_PERIPHERALS, alternateDriversOf } from '@mica-js/stm32g431rbt6-core/peripherals';
 import { validatePeripheralModules } from '@mica-js/stm32g431rbt6-core/peripheral';
-import type { PeripheralModule } from '@mica-js/stm32g431rbt6-core/peripheral';
 import { dispatchExceptions } from '@mica-js/stm32g431rbt6-core/nvic';
 import { createRegisterFacts } from '@mica-js/stm32g431rbt6-core/register-facts';
 import { cpuWaitPolling, waitExceptionReturnPc } from '@mica-js/stm32g431rbt6-core/wait';
@@ -216,27 +217,17 @@ function hseFrequency(value: unknown): number {
     : 0;
 }
 
-/**
- * ct117e 的 fused profile 只在本示例内启用 ADC 与 TIM；核心导出的
- * `FUSED_PERIPHERALS` 仍保持空表，其他 fused 工程不会意外获得这些外设。ADC 的
- * `readSample` 由 `fusion.ts` 映射到内部线/参考，不经过板级电气网络。
- */
-const CT117E_PERIPHERALS: readonly PeripheralModule[] = Object.freeze([
-  TIMER_MODULE,
-  createAdcModule(),
-]);
-
 function createMachine(frequency: number, hse: number): Machine {
-  validatePeripheralModules(CT117E_PERIPHERALS);
+  validatePeripheralModules(FUSED_PERIPHERALS);
 
   return {
     clockFrequency: frequency,
     cyclePs: Math.max(1, Math.round(PICOSECONDS_PER_SECOND / frequency)),
     hseFrequency: hse,
     dynamicClock: true,
-    alternateDrivers: [...usartDrivers(), ...alternateDriversOf(CT117E_PERIPHERALS)],
-    peripherals: CT117E_PERIPHERALS,
-    interruptSources: CT117E_PERIPHERALS.flatMap((peripheral) => peripheral.interrupts ?? []),
+    alternateDrivers: [...usartDrivers(), ...alternateDriversOf(FUSED_PERIPHERALS)],
+    peripherals: FUSED_PERIPHERALS,
+    interruptSources: FUSED_PERIPHERALS.flatMap((peripheral) => peripheral.interrupts ?? []),
     profile: 'fused-lcd',
   };
 }
@@ -380,7 +371,10 @@ function dispatchIrq(body: Body, taken: Local<boolean>, resume: Value<number>): 
       (allowed) => {
         const inner = asBody(allowed);
 
-        inner.setLocal(taken, dispatchExceptions(inner, waitExceptionReturnPc(inner, resume)));
+        inner.setLocal(
+          taken,
+          dispatchExceptions(inner, waitExceptionReturnPc(inner, resume)),
+        );
       },
     );
   });
@@ -392,14 +386,21 @@ function drainCapture(body: Body): void {
 
   body.while(
     (test) =>
-      test.notEqual(types.number, test.getLocal(head), test.readState(CAPTURE_TAIL, types.number)),
+      test.notEqual(
+        types.number,
+        test.getLocal(head),
+        test.readState(CAPTURE_TAIL, types.number),
+      ),
     (loop) => {
       const scope = asBody(loop);
       const slot = scope.bitAnd(scope.getLocal(head), num(scope, CAPTURE_SLOTS - 1));
       const base = scope.multiply(slot, num(scope, CAPTURE_ENTRY_SIZE));
       const timeLo = scope.load32le(CAPTURE, base);
       const timeHi = scope.load32le(CAPTURE, scope.add(base, num(scope, 4)));
-      const timePs = scope.add(timeLo, scope.multiply(timeHi, num(scope, 4294967296)));
+      const timePs = scope.add(
+        timeLo,
+        scope.multiply(timeHi, num(scope, 4294967296)),
+      );
       const pinId = scope.load8(CAPTURE, scope.add(base, num(scope, 8)));
       const level = scope.notEqual(
         types.number,
@@ -462,7 +463,10 @@ function buildService(machine: Machine, pc: number): BlockIR {
         const scope = asBody(step);
 
         // fused profile 默认没有扩展模块；这里保留统一钩子，但只展开实际启用的模块。
-        scope.writeState(NOW_PS, scope.add(scope.readState(NOW_PS, types.number), pending));
+        scope.writeState(
+          NOW_PS,
+          scope.add(scope.readState(NOW_PS, types.number), pending),
+        );
         scope.if(scope.readState(SYSTICK_ON, types.bool), (running) => {
           advanceSystick(asBody(running), pending);
         });
@@ -503,7 +507,10 @@ function buildService(machine: Machine, pc: number): BlockIR {
           (registered) => {
             const inner = asBody(registered);
 
-            inner.writeState('pc', inner.add(num(inner, SERVICE_MODULE_READ_BASE), module));
+            inner.writeState(
+              'pc',
+              inner.add(num(inner, SERVICE_MODULE_READ_BASE), module),
+            );
             inner.setLocal(taken, bool(inner, true));
           },
           (gpio) => {
@@ -531,49 +538,45 @@ function buildService(machine: Machine, pc: number): BlockIR {
         const diverted = scope.local(types.bool, false);
 
         deferModuleWrite(scope, address, diverted);
-        scope.if(
-          scope.getLocal(diverted),
-          (registered) => {
-            asBody(registered).setLocal(taken, bool(asBody(registered), true));
-          },
-          (normal) => {
-            const inner = asBody(normal);
+        scope.if(scope.getLocal(diverted), (registered) => {
+          asBody(registered).setLocal(taken, bool(asBody(registered), true));
+        }, (normal) => {
+          const inner = asBody(normal);
 
-            const writeAtWidth = (body: Body, accessSize: 1 | 2 | 4): void => {
-              const flash = body.local(types.bool, false);
+          const writeAtWidth = (body: Body, accessSize: 1 | 2 | 4): void => {
+            const flash = body.local(types.bool, false);
 
-              writeServiceMemory(body, address, accessSize, value, flash);
-              body.if(
-                body.getLocal(flash),
-                (flashHit) => {
-                  asBody(flashHit).setLocal(taken, bool(asBody(flashHit), true));
-                },
-                (clear) => {
-                  const scope = asBody(clear);
+            writeServiceMemory(body, address, accessSize, value, flash);
+            body.if(
+              body.getLocal(flash),
+              (flashHit) => {
+                asBody(flashHit).setLocal(taken, bool(asBody(flashHit), true));
+              },
+              (clear) => {
+                const scope = asBody(clear);
 
-                  scope.writeState(DEFER_WRITE, bool(scope, false));
-                  scope.writeState(DEFER_WRITE_MODULE, num(scope, -1));
-                  clearService(scope, SERVICE_DEFER_WRITE);
-                },
-              );
-            };
-
-            // 宽度是运行期值，按 1/2/4 各展开一条写路径；Flash 代码写再转独立服务块。
-            inner.if(
-              inner.equal(types.number, size, num(inner, 1)),
-              (byte) => writeAtWidth(asBody(byte), 1),
-              (wide) => {
-                const next = asBody(wide);
-
-                next.if(
-                  next.equal(types.number, size, num(next, 2)),
-                  (half) => writeAtWidth(asBody(half), 2),
-                  (word) => writeAtWidth(asBody(word), 4),
-                );
+                scope.writeState(DEFER_WRITE, bool(scope, false));
+                scope.writeState(DEFER_WRITE_MODULE, num(scope, -1));
+                clearService(scope, SERVICE_DEFER_WRITE);
               },
             );
-          },
-        );
+          };
+
+          // 宽度是运行期值，按 1/2/4 各展开一条写路径；Flash 代码写再转独立服务块。
+          inner.if(
+            inner.equal(types.number, size, num(inner, 1)),
+            (byte) => writeAtWidth(asBody(byte), 1),
+            (wide) => {
+              const next = asBody(wide);
+
+              next.if(
+                next.equal(types.number, size, num(next, 2)),
+                (half) => writeAtWidth(asBody(half), 2),
+                (word) => writeAtWidth(asBody(word), 4),
+              );
+            },
+          );
+        });
       });
     } else if (pc >= SERVICE_ADVANCE_BASE && pc < SERVICE_ADVANCE_BASE + 16) {
       drainCapture(body);
@@ -676,7 +679,10 @@ function buildService(machine: Machine, pc: number): BlockIR {
           },
         );
       });
-    } else if (pc >= SERVICE_MODULE_WRITE_BASE && pc < SERVICE_MODULE_WRITE_BASE + 32) {
+    } else if (
+      pc >= SERVICE_MODULE_WRITE_BASE &&
+      pc < SERVICE_MODULE_WRITE_BASE + 32
+    ) {
       const module = machine.peripherals[pc - SERVICE_MODULE_WRITE_BASE];
 
       if (module !== undefined)
@@ -703,7 +709,10 @@ function buildService(machine: Machine, pc: number): BlockIR {
             },
           );
         });
-    } else if (pc >= SERVICE_MODULE_READ_BASE && pc < SERVICE_MODULE_READ_BASE + 32) {
+    } else if (
+      pc >= SERVICE_MODULE_READ_BASE &&
+      pc < SERVICE_MODULE_READ_BASE + 32
+    ) {
       const module = machine.peripherals[pc - SERVICE_MODULE_READ_BASE];
 
       if (module !== undefined)
@@ -734,7 +743,11 @@ function buildService(machine: Machine, pc: number): BlockIR {
             types.number,
             signed,
             (yes) =>
-              signExtendDynamic(asBody(yes), raw, asBody(yes).multiply(size, num(asBody(yes), 8))),
+              signExtendDynamic(
+                asBody(yes),
+                raw,
+                asBody(yes).multiply(size, num(asBody(yes), 8)),
+              ),
             () => raw,
           );
 

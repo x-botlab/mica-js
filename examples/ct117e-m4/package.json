@@ -13,12 +13,11 @@
   "designatorPrefix": "U",
   "properties": {
     "firmware": {
-      "type": "firmware",
+      "type": "program",
       "title": "Flash 固件映像",
       "description": "从 0x08000000 开始的 BIN / Intel HEX / ELF 固件来源。",
       "default": null,
       "nullable": true,
-      "maxBytes": 131072,
       "addressSpaces": {
         "flash": {
           "title": "STM32G431RBT6 Flash",
@@ -26,8 +25,16 @@
           "size": 131072
         }
       },
-      "addressSpace": "flash",
-      "loadAddress": 134217728
+      "loader": "memory",
+      "formats": [
+        "bin",
+        "hex",
+        "elf"
+      ],
+      "defaults": {
+        "addressSpace": "flash",
+        "loadAddress": 134217728
+      }
     },
     "clockFrequency": {
       "type": "integer",
@@ -39,15 +46,14 @@
       "step": 1
     },
     "hseFrequency": {
-      "type": "number",
+      "type": "integer",
       "title": "HSE 晶振频率 (Hz)",
       "description": "0 表示未焊晶振，HSERDY 永远为 0；非 0 时必须在 1..50 MHz。",
       "default": 0,
       "nullable": false,
       "min": 0,
       "max": 50000000,
-      "step": 1,
-      "unit": "Hz"
+      "step": 1
     },
     "refreshRate": {
       "type": "integer",
@@ -75,55 +81,7 @@
   },
   "model": {
     "entry": "model.js",
-    "types": {
-      "EepromWrite": {
-        "type": "object",
-        "properties": {
-          "address": {
-            "type": "number"
-          },
-          "value": {
-            "type": "number"
-          }
-        }
-      },
-      "WriteEepromParams": {
-        "type": "object",
-        "properties": {
-          "address": {
-            "type": "number"
-          },
-          "data": {
-            "type": "binary"
-          }
-        }
-      },
-      "TimerEdgeEvent": {
-        "type": "object",
-        "properties": {
-          "time": {
-            "type": "number"
-          },
-          "level": {
-            "type": "boolean"
-          },
-          "id": {
-            "type": "number"
-          }
-        }
-      },
-      "TimerPotState": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "number"
-          },
-          "position": {
-            "type": "number"
-          }
-        }
-      }
-    },
+    "types": {},
     "methods": {
       "getFramebuffer": {
         "params": {
@@ -131,146 +89,6 @@
         },
         "returns": {
           "type": "binary"
-        }
-      },
-      "getLedState": {
-        "params": {
-          "type": "null"
-        },
-        "returns": {
-          "type": "number"
-        }
-      },
-      "setButton": {
-        "params": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "number"
-            },
-            "pressed": {
-              "type": "boolean"
-            }
-          }
-        },
-        "returns": {
-          "type": "null"
-        }
-      },
-      "getButton": {
-        "params": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "number"
-            }
-          }
-        },
-        "returns": {
-          "type": "boolean"
-        }
-      },
-      "setPotentiometer": {
-        "params": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "number"
-            },
-            "position": {
-              "type": "number"
-            }
-          }
-        },
-        "returns": {
-          "type": "null"
-        }
-      },
-      "getPotentiometer": {
-        "params": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "number"
-            }
-          }
-        },
-        "returns": {
-          "type": "number"
-        }
-      },
-      "readEeprom": {
-        "params": {
-          "type": "null"
-        },
-        "returns": {
-          "type": "binary"
-        }
-      },
-      "writeEeprom": {
-        "params": {
-          "ref": "WriteEepromParams"
-        },
-        "returns": {
-          "type": "null"
-        }
-      },
-      "getWiper": {
-        "params": {
-          "type": "null"
-        },
-        "returns": {
-          "type": "number"
-        }
-      },
-      "setWiper": {
-        "params": {
-          "type": "number"
-        },
-        "returns": {
-          "type": "null"
-        }
-      },
-      "setTimerPotentiometer": {
-        "params": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "number"
-            },
-            "position": {
-              "type": "number"
-            }
-          }
-        },
-        "returns": {
-          "type": "null"
-        }
-      },
-      "getTimerPotentiometer": {
-        "params": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "number"
-            }
-          }
-        },
-        "returns": {
-          "type": "number"
-        }
-      },
-      "getTimerFrequency": {
-        "params": {
-          "type": "object",
-          "properties": {
-            "id": {
-              "type": "number"
-            }
-          }
-        },
-        "returns": {
-          "type": "number"
         }
       }
     },
@@ -289,43 +107,6 @@
       },
       "onDidSerial3Tx": {
         "type": "number"
-      },
-      "onDidLed": {
-        "type": "number"
-      },
-      "onDidPress": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "number"
-          },
-          "pressed": {
-            "type": "boolean"
-          }
-        }
-      },
-      "onDidPotentiometer": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "number"
-          },
-          "position": {
-            "type": "number"
-          }
-        }
-      },
-      "onDidEepromWrite": {
-        "ref": "EepromWrite"
-      },
-      "onDidWiper": {
-        "type": "number"
-      },
-      "onDidTimerEdge": {
-        "ref": "TimerEdgeEvent"
-      },
-      "onDidTimerPotentiometer": {
-        "ref": "TimerPotState"
       }
     }
   },
@@ -337,6 +118,7 @@
     "bench": "pnpm build && vitest run --config vitest.perf.config.ts"
   },
   "devDependencies": {
+    "@mica-js/core": "workspace:*",
     "@mica-js/example-devices": "workspace:*",
     "@mica-js/sdk": "workspace:*",
     "@mica-js/simulator": "workspace:*",

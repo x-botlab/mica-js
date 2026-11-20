@@ -362,6 +362,9 @@ importers:
 
   examples/ct117e-m4:
     devDependencies:
+      '@mica-js/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@mica-js/example-devices':
         specifier: workspace:*
         version: link:../devices

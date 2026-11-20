@@ -18,14 +18,14 @@ import {
 /**
  * 正式构建产物的单实例基准。
  *
- * 保留冷启动、active（200 µs → 220 ms）和 post（220 → 440 ms），
+ * 冷启动含首个融合宿主步进，active（10 → 220 ms）和 post（220 → 440 ms），
  * 在 post 单独计时 360 → 390 ms 稳态清屏。每轮重新建板；工作量校验不计时。
  */
 
 const ROUNDS = 6;
 const PS_PER_MS = 1_000_000_000;
 const QUANTUM_PS = 10 * PS_PER_MS;
-const COLD_END_PS = 200_000_000;
+const COLD_END_PS = QUANTUM_PS;
 const ACTIVE_MS = (CT117E_M4_MID_TIME_PS - COLD_END_PS) / PS_PER_MS;
 const POST_MS = (CT117E_M4_END_TIME_PS - CT117E_M4_MID_TIME_PS) / PS_PER_MS;
 const TOTAL_MS = CT117E_M4_END_TIME_PS / PS_PER_MS;
@@ -40,20 +40,20 @@ const cpuMs = (start: NodeJS.CpuUsage): number => {
 
 const round = (value: number): number => Number(value.toFixed(3));
 
-const timed = (advance: () => void) => {
+const timed = async (advance: () => Promise<void>) => {
   const cpu = process.cpuUsage();
   const wall = performance.now();
-  advance();
+  await advance();
   return { wallMs: performance.now() - wall, cpuMs: cpuMs(cpu) };
 };
 
-const timedClear = (iteration: number, advance: () => void) => {
+const timedClear = async (iteration: number, advance: () => Promise<void>) => {
   if (!TRACE_CLEAR_CPU) return timed(advance);
 
   // This is the Vitest worker's simulation thread, not the entire Node process.
   writeSync(1, `CT117E_TIER_BEGIN ${iteration}\n`);
   const start = process.threadCpuUsage();
-  const clear = timed(advance);
+  const clear = await timed(advance);
   const thread = process.threadCpuUsage(start);
   writeSync(1, `CT117E_TIER_END ${iteration}\n`);
   const foregroundMs = (thread.user + thread.system) / 1_000;
@@ -88,11 +88,12 @@ interface Reading {
   readonly workload: Workload;
 }
 
-it('dist 单实例 HAL_06_LCD.hex：360–390 ms 稳态清屏 CPU/墙钟', async () => {
+it('融合宿主运行 HAL_06_LCD.hex：360–390 ms 稳态清屏 CPU/墙钟', async () => {
   const image = loadFirmware();
+  const options = { hex: image.hex, stepPs: QUANTUM_PS };
 
   // 预热动态导入与库校验，但不预热固件翻译；首轮冷启动仍包含真实的首次翻译。
-  (await createHarness({ firmware: image.bytes, captureExpectedFrames: false })).dispose();
+  await (await createHarness(options)).dispose();
 
   const readings: Reading[] = [];
   const clearWalls: number[] = [];
@@ -100,30 +101,29 @@ it('dist 单实例 HAL_06_LCD.hex：360–390 ms 稳态清屏 CPU/墙钟', async
   for (let index = 0; index < ROUNDS; index += 1) {
     const coldCpu = process.cpuUsage();
     const coldWall = performance.now();
-    const harness = await createHarness({
-      firmware: image.bytes,
-      captureExpectedFrames: false,
-    });
+    const harness = await createHarness(options);
 
-    const advance = (endPs: number) => harness.advanceTo(endPs, QUANTUM_PS);
+    const { advanceTo: advance } = harness;
     try {
-      harness.board.runUntil(0);
-      advance(COLD_END_PS);
+      await advance(COLD_END_PS);
       const coldWallMs = performance.now() - coldWall;
       const coldCpuMs = cpuMs(coldCpu);
 
-      const active = timed(() => advance(CT117E_M4_MID_TIME_PS));
-      const entry = timed(() => advance(CT117E_M4_CLEAR_START_PS));
+      const active = await timed(() => advance(CT117E_M4_MID_TIME_PS));
+      const entry = await timed(() => advance(CT117E_M4_CLEAR_START_PS));
       const before = harness.workload();
-      const clear = timedClear(index + 1, () => advance(CT117E_M4_CLEAR_END_PS));
+      const clear = await timedClear(index + 1, () => advance(CT117E_M4_CLEAR_END_PS));
       const clearWork = lcdWorkDelta(before, harness.workload());
-      const exit = timed(() => advance(CT117E_M4_END_TIME_PS));
+      const exit = await timed(() => advance(CT117E_M4_END_TIME_PS));
       const postCpuMs = entry.cpuMs + clear.cpuMs + exit.cpuMs;
       const postWallMs = entry.wallMs + clear.wallMs + exit.wallMs;
 
       const workload = harness.workload();
-      expect(harness.board.time).toBe(CT117E_M4_END_TIME_PS);
-      expect(harness.board.status).toBe('ready');
+      expect(harness.runtime.getState()).toEqual({
+        status: 'paused',
+        simTime: CT117E_M4_END_TIME_PS,
+      });
+      expect(harness.diagnostics).toEqual([]);
       expect(harness.errors).toEqual([]);
       expect(harness.faults).toEqual([]);
       expect(clearWork).toEqual(CT117E_M4_EXPECTED.clear);
@@ -153,7 +153,7 @@ it('dist 单实例 HAL_06_LCD.hex：360–390 ms 稳态清屏 CPU/墙钟', async
       readings.push(reading);
       process.stdout.write(`CT117E_M4_PERF ${JSON.stringify(reading)}\n`);
     } finally {
-      harness.dispose();
+      await harness.dispose();
     }
   }
 
@@ -175,10 +175,12 @@ it('dist 单实例 HAL_06_LCD.hex：360–390 ms 稳态清屏 CPU/墙钟', async
     JSON.stringify(
       {
         device: CT117E_M4_DEVICE_ID,
+        host: 'fused',
         node: process.version,
         cpu: cpus()[0]?.model,
         firmware: {
           path: image.path,
+          sourceSha256: image.sourceSha256,
           imageSha256: image.imageSha256,
           length: image.length,
           dataBytes: image.dataBytes,
