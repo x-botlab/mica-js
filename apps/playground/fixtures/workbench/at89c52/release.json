@@ -1,0 +1,30 @@
+{
+  "id": "workbench:at89c52",
+  "version": "1.0.0",
+  "files": {
+    "assets/key-led-buzzer.asm": {
+      "size": 231,
+      "integrity": "sha256:c6673dc73289aa6ad0256583aea8c7f92bf2e8171cfc847ad1e70aeda0fed503"
+    },
+    "assets/key-led-buzzer.hex": {
+      "size": 52,
+      "integrity": "sha256:2675c2ab33335d91a0ed2eb1b86334aad17050d50f61fbb417739ba6b8085997"
+    },
+    "body.svg": {
+      "size": 725,
+      "integrity": "sha256:75944ddf0e9aa21156d79bed6c0f97ad2e25195cabaa754d873fb9a827edee81"
+    },
+    "geometry.json": {
+      "size": 3540,
+      "integrity": "sha256:7a37bb0a010b29e3784610f3dd928d2c9c7746249f6a81b64f5a85b185f4296e"
+    },
+    "model.js": {
+      "size": 149173,
+      "integrity": "sha256:62d318685cd2195082318586f7c6b1be08fe312a0901a930a3f9e9b8dc7945bd"
+    },
+    "package.json": {
+      "size": 2821,
+      "integrity": "sha256:058d02b8200788f6e7b85bb8d4d2b1e67c501c33b6be65fa9c67a454d66e9500"
+    }
+  }
+}

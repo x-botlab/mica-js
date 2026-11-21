@@ -1,8 +1,0 @@
-node_modules/
-dist/
-.mica/
-**/*.d.ddl.ts
-/src/hot-model.ts
-/src/board-model.ddl
-/src/board-wires.ts
-dist.release.json

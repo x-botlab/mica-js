@@ -1,0 +1,26 @@
+{
+  "id": "zerobit-lab:ct117e-m4",
+  "version": "1.0.0",
+  "files": {
+    "assets/ct117e-m4.svg": {
+      "size": 1020920,
+      "integrity": "sha256:8d566f0c7bb2cb428052913bd0494a1be9b7708e969255a84fc93c6314f548e6"
+    },
+    "geometry.json": {
+      "size": 357,
+      "integrity": "sha256:003c4e993d10e952a4a37de38fc138bc154c5b23a25fc6f0bd6329705593a2a9"
+    },
+    "model.js": {
+      "size": 1798930,
+      "integrity": "sha256:09db1ce5b071303f3821c2beaa46dff2503f7ffd0c58c81b0738cf690e68f34c"
+    },
+    "package.json": {
+      "size": 4657,
+      "integrity": "sha256:b578d5cc16a882dd4bdc44fe39290dcc1ea526315aa7219983299dd2a1d93145"
+    },
+    "view2d.js": {
+      "size": 6282,
+      "integrity": "sha256:c48ae04ea4e1ac95ba01d2dd961906748b08f6632749aabdc5a41066924f7a60"
+    }
+  }
+}

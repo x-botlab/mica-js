@@ -1,6 +1,0 @@
-src/hot-model.ts
-src/board-model.ddl
-src/board-wires.ts
-.mica/
-dist/
-dist.release.json

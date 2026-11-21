@@ -1,0 +1,26 @@
+{
+  "id": "workbench:buzzer",
+  "version": "1.0.0",
+  "files": {
+    "body.svg": {
+      "size": 363,
+      "integrity": "sha256:00b7623eae958e13d5aebaa9e7a1e59d920484ee622cd76238e865ee7355e591"
+    },
+    "geometry.json": {
+      "size": 361,
+      "integrity": "sha256:2705d8cdbe14a699d33461a088892d03363ae56a6529d28b074bf2f5ce31f9ca"
+    },
+    "model.js": {
+      "size": 6050,
+      "integrity": "sha256:ed4d54739609d3ee6496c6f299fd2a7b905fc2e7d86275e42a58f7b1c69937b7"
+    },
+    "package.json": {
+      "size": 694,
+      "integrity": "sha256:9ab191a0da66f711dc13007bb108ba3d74ff1b5cb9274f6f616144660b257df9"
+    },
+    "view.js": {
+      "size": 579,
+      "integrity": "sha256:52367150a2af91c562aae58438213a39d056ad47a51abd93cb4e944e64b28442"
+    }
+  }
+}

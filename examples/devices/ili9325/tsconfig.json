@@ -1,7 +1,0 @@
-{
-  "extends": "./.mica/tsconfig.json",
-  "compilerOptions": {
-    "customConditions": ["source"],
-    "allowImportingTsExtensions": true
-  }
-}

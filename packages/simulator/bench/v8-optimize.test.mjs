@@ -101,7 +101,7 @@ describe('v8-optimize 基准', () => {
     });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /ct107d-demo is not supported/);
-    assert.match(result.stderr, /examples\/ct107d\/dist/);
+    assert.match(result.stderr, /mica-devices/);
   });
 });
 

@@ -1,0 +1,38 @@
+{
+  "id": "workbench:led",
+  "version": "1.0.0",
+  "files": {
+    "body.svg": {
+      "size": 232,
+      "integrity": "sha256:d7b6e1a91bee59619ba2499327f27e3de39f003c02c5678995806e77de6eaa62"
+    },
+    "geometry.json": {
+      "size": 353,
+      "integrity": "sha256:110e3a6b821536593ef578c8f9c2296062672aa4077105bf276d183becafa74c"
+    },
+    "model.js": {
+      "size": 6296,
+      "integrity": "sha256:314852d1a437ce23ae6f58e173e469f71ec366797aff7d9c3e81a6d18d349da1"
+    },
+    "monitor/index.html": {
+      "size": 466,
+      "integrity": "sha256:d3e7e528b7145850c6525e16c9af1693a948d7c7cd28d5ca93e91f3156a9b026"
+    },
+    "monitor/panel.css": {
+      "size": 855,
+      "integrity": "sha256:7aba48b15c226930fc6d6ace83899402ce72cb712445bb07c47e988dbce26a6d"
+    },
+    "monitor/panel.js": {
+      "size": 312,
+      "integrity": "sha256:0afa59130ad73fb0fc415c4301136c1a73135e2e4b0dd78b6d0ba678114c4c2a"
+    },
+    "package.json": {
+      "size": 831,
+      "integrity": "sha256:bb2a729228e6c76d8cc797f7d5f7beb0e41712dabb4f2eab7aac488b54574b6c"
+    },
+    "view.js": {
+      "size": 543,
+      "integrity": "sha256:462aa963950e5a42bb68225aced8f04da001a4c8c2d3cb59192398bc7df8d40b"
+    }
+  }
+}

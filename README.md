@@ -13,7 +13,7 @@ Mica 是一套基于 TypeScript 的电路仿真与可视化编辑工具集，把
 - **隔离运行扩展脚本**：提供沙箱与跨边界通信能力，供宿主隔离运行器件和 widget 脚本。
 - **按需组合的包结构**：编辑器、仿真器、文档模型和运行基础设施分别提供，应用自行掌握界面集成、器件来源与文档持久化。
 
-当前电气模型以线性电阻网络为主，尚不覆盖完整 SPICE 模拟器的非线性器件与储能元件瞬态分析。仿真包不内置具体器件库，示例器件由 [`examples/devices`](examples/devices) 提供。
+当前电气模型以线性电阻网络为主，尚不覆盖完整 SPICE 模拟器的非线性器件与储能元件瞬态分析。仿真包不内置具体器件库；器件库与两块融合板的源码在独立私有仓库 [`x-botlab/mica-devices`](https://github.com/x-botlab/mica-devices)。
 
 ## 本地体验
 
@@ -32,16 +32,11 @@ pnpm --filter @mica-js/playground dev
 | 示例                                                               | 内容                                                                                 |
 | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
 | [`examples/playground-components`](examples/playground-components) | Playground 用的 headless 统一器件子项目：电阻、按键、LED、电压表；旧 widget 测试保留 |
-| [`examples/ct107d`](examples/ct107d)                               | CT107D 竞赛板整板工程：v2 文档、融合器件、工作台宿主、8051 固件与性能基准            |
-| [`examples/devices`](examples/devices)                             | 器件库：CT107D 板级芯片、IAP15F2K61S2、STM32G431RBT6、ILI9325、seg4、blue-led        |
-| [`examples/ideal-led`](examples/ideal-led)                         | 测试夹具：理想 LED                                                                   |
-| [`examples/led8`](examples/led8)                                   | IAP15F2K61S2 驱动 8 颗 LED 的最小板与无头验证                                        |
 
 示例都是 private 包，按需构建或测试，例如：
 
 ```bash
-pnpm --filter @mica-js/example-ct107d build
-pnpm --filter @mica-js/example-devices test
+pnpm --filter @mica-js/playground-components test
 ```
 
 ## 包

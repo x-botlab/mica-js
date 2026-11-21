@@ -6,7 +6,7 @@ import { createBoard, createDeviceLibrary } from '@mica-js/simulator';
 import type { Board, DeviceLibraryEntry, TopicMessage } from '@mica-js/simulator';
 import { compileDDL } from '@mica-js/sdk/ddl';
 import type { DeviceIR } from '@mica-js/sdk/model';
-import { adaptModelFactory } from '../../devices/test/support/legacy-model-bridge.mjs';
+import { adaptModelFactory } from './support/legacy-model-bridge.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const ids = ['resistor', 'push-button', 'led', 'voltmeter'] as const;

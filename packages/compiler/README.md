@@ -184,8 +184,8 @@ uses them, never by `bind` for a name in an unexecuted branch.
 
 Focused tests: build this package, then run
 `node --test packages/compiler/tests/synchronous.test.mjs` from the repository root.
-The real ILI9325 integration test lives in the example package:
-`cd examples/devices && ./node_modules/.bin/vitest run --config vitest.config.ts test/ili9325/synchronous.test.ts`.
+The real ILI9325 integration test lives in the separate `x-botlab/mica-devices` repository:
+`cd devices && pnpm exec vitest run test/ili9325/synchronous.test.ts`.
 
 ## Bounded Direct JIT
 
