@@ -1,0 +1,13 @@
+{
+  "sizing": "physical",
+  "bounds": { "x": 0, "y": 0, "width": 94.1, "height": 71.2 },
+  "bodyBounds": { "x": 1.2, "y": 1.6, "width": 89.2, "height": 68.3 },
+  "bodyImage": "assets/ct117e-m4.svg",
+  "pins": {
+    "NRST": {
+      "position": { "x": 2.5, "y": 30.2 },
+      "outward": { "x": -1, "y": 0 }
+    }
+  },
+  "designator": { "x": 2.5, "y": 0.6 }
+}

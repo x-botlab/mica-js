@@ -1,0 +1,50 @@
+{
+  "id": "zerobit-lab:ct107d",
+  "version": "1.0.0",
+  "files": {
+    "assets/ct107d-demo.bin": {
+      "size": 70,
+      "integrity": "sha256:65fba4167f30ee4379451078ca71313db721dadaecb309fcb412b2e556d66ded"
+    },
+    "assets/ct107d-demo.hex": {
+      "size": 212,
+      "integrity": "sha256:08830247e439ea58ba49a297e3ea9563ecc4d932bedac60a3cc205db1f475905"
+    },
+    "assets/seg7-dynamic.hex": {
+      "size": 1136,
+      "integrity": "sha256:c1985f34f57c25b88ff7c21da83a9cf6482906535feb76d3fe0a15daaef920be"
+    },
+    "body.png": {
+      "size": 1020488,
+      "integrity": "sha256:4c7bc80c64b66ff5ace83c892e64b961bb0cacebf41c5bcf8041d7d847749839"
+    },
+    "geometry.json": {
+      "size": 258,
+      "integrity": "sha256:4050563e6a39f12a08dbbe8dc2782f1eba36a2ecdc7251c26a6502e0c2dc2be3"
+    },
+    "model.js": {
+      "size": 3128811,
+      "integrity": "sha256:e9687fd35b18f2a61364822f48cdc79da68315a1096fd72aaf9a28baa6c282d3"
+    },
+    "package.json": {
+      "size": 16530,
+      "integrity": "sha256:e35bcb7e2f96d8ce51f2471a0808c0766028c331af87290f4654dc2b4cd05e61"
+    },
+    "panel/index.html": {
+      "size": 4506,
+      "integrity": "sha256:02f857d568b4bde4ab19fbc8e2ee8c3c19e5c7a74bb4223d6b6f3f494c3c048c"
+    },
+    "panel/panel.css": {
+      "size": 19034,
+      "integrity": "sha256:d4e344b766d7b7354b1bbedc1f93719437a1111298d4f1cf21e67011b5ff5bca"
+    },
+    "panel/panel.js": {
+      "size": 55484,
+      "integrity": "sha256:c1aefc63931402f2340fe6e8f811aa669d06c32f02ee1aa1ea81fb73c1308c30"
+    },
+    "view2d.js": {
+      "size": 24655,
+      "integrity": "sha256:92cb2c343908a66f9b78c10d666cd83562de0da740f0407fd417e63b13369bfd"
+    }
+  }
+}

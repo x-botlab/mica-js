@@ -1,43 +1,34 @@
-import { execFileSync } from 'node:child_process';
-import { cp, mkdir, writeFile } from 'node:fs/promises';
+import { cp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildDevice } from '@mica-js/sdk/device-build';
 import { readDirectoryPackage } from '@mica-js/sdk/fused/node';
 import { build, createServer } from 'vite';
 import { createCt117eCircuit, createMcuCircuit } from './workbench-circuits.mjs';
 import assets from '../workbench-assets.json' with { type: 'json' };
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const examples = resolve(app, '..', '..', 'examples');
-const source = resolve(examples, 'fused-workbench');
+const fixtures = resolve(app, 'fixtures', 'workbench');
 const artifacts = resolve(app, 'public', 'components', 'workbench');
 
-async function publishPackage(outDir, directory) {
-  const { lock, files } = await readDirectoryPackage(outDir);
+await rm(artifacts, { recursive: true, force: true });
+
+/** 预置器件包在 mica-devices 仓库发布后提交，这里只发布到静态目录，不重新编译。 */
+async function publishPackage(directory) {
+  const source = resolve(fixtures, directory);
+  const { lock, files } = await readDirectoryPackage(source);
   const target = resolve(artifacts, directory);
   await mkdir(target, { recursive: true });
-  await cp(outDir, target, { recursive: true });
+  await cp(source, target, { recursive: true });
   return { lock, files, directory };
 }
 
 const devices = [];
-for (const name of ['button', 'led', 'at89c52', 'buzzer']) {
-  const root = resolve(source, name);
-  const outDir = resolve(root, 'dist');
-  await buildDevice({ root, manifest: 'package.json', model: 'src/model.ddl', outDir });
-  devices.push(await publishPackage(outDir, name));
-}
-const board = resolve(examples, 'ct117e-m4');
-const pnpm = process.env.npm_execpath ?? 'pnpm';
-const args = ['--dir', board, 'build'];
-if (/\.[cm]?js$/i.test(pnpm)) execFileSync(process.execPath, [pnpm, ...args], { stdio: 'inherit' });
-else execFileSync(pnpm, args, { stdio: 'inherit' });
-const ct117e = await publishPackage(resolve(board, 'dist'), 'ct117e-m4');
+for (const name of ['button', 'led', 'at89c52', 'buzzer']) devices.push(await publishPackage(name));
+const ct117e = await publishPackage('ct117e-m4');
 const firmwareDirectory = resolve(artifacts, 'firmware');
 await mkdir(firmwareDirectory, { recursive: true });
 await cp(
-  resolve(board, 'assets', assets.ct117eFirmware.name),
+  resolve(fixtures, 'firmware', assets.ct117eFirmware.name),
   resolve(firmwareDirectory, assets.ct117eFirmware.name),
 );
 const button = '11111111-1111-4111-8111-111111111111';

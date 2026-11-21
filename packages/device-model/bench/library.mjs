@@ -7,8 +7,8 @@
  *   pnpm --filter @mica-js/device-model build
  *   node packages/device-model/bench/library.mjs
  *
- * 数据来源是统一器件包产物：`examples/devices/dist/<id>/model.js` 与
- * `examples/playground-components/dist/<id>/model.js`。每个目录是一份完整器件包，
+ * 数据来源是统一器件包产物：`examples/playground-components/dist/<id>/model.js` 与
+ * `apps/playground/fixtures/workbench/<id>/model.js`。每个目录是一份完整器件包，
  * 清单和资源不在这里导入，只测量 `model.js` 的冷启动与模型校验缓存。
  *
  * 断言只做方向性判断（第二次远快于第一次）与身份判断（缓存命中后模型还是同一份冻结
@@ -24,8 +24,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const sources = [
-  { label: 'devices', directory: join(root, 'examples/devices/dist') },
   { label: 'playground', directory: join(root, 'examples/playground-components/dist') },
+  { label: 'fixtures', directory: join(root, 'apps/playground/fixtures/workbench') },
 ];
 
 const importModule = (specifier) => import(pathToFileURL(specifier).href);
@@ -45,7 +45,13 @@ for (const source of sources) {
   const ids = [];
   for (const id of directories) {
     const model = join(source.directory, id, 'model.js');
-    if (await access(model).then(() => true, () => false)) ids.push(id);
+    if (
+      await access(model).then(
+        () => true,
+        () => false,
+      )
+    )
+      ids.push(id);
   }
   for (const id of ids) {
     const module = await importModule(join(source.directory, id, 'model.js'));

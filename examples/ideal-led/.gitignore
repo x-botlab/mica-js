@@ -1,5 +1,0 @@
-node_modules/
-dist/
-.mica/
-**/*.d.ddl.ts
-dist.release.json

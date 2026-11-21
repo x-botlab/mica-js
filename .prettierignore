@@ -9,4 +9,4 @@ playwright-report
 tests/**/*.md
 **/*.d.ddl.ts
 **/.mica/**
-examples/ct117e-m4/src/hot-model.ts
+apps/playground/fixtures

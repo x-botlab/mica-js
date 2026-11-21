@@ -1,0 +1,8 @@
+{
+  "sizing": "physical",
+  "bounds": { "x": 0, "y": 0, "width": 199.274545, "height": 142.470909 },
+  "bodyBounds": { "x": 0, "y": 0, "width": 199.274545, "height": 142.470909 },
+  "bodyImage": "body.png",
+  "pins": {},
+  "designator": { "x": 2, "y": 6 }
+}

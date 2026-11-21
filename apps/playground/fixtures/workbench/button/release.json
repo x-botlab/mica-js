@@ -1,0 +1,26 @@
+{
+  "id": "workbench:button",
+  "version": "1.0.0",
+  "files": {
+    "body.svg": {
+      "size": 314,
+      "integrity": "sha256:10b99cfd39ffa4584f542cbdf856a452c1dfa8a587f364ce900fb480d7b83b55"
+    },
+    "geometry.json": {
+      "size": 507,
+      "integrity": "sha256:7c7a1e20934f1725fc6184ff5063b50c6cba4f2022b82268fdc1f0d7167744ce"
+    },
+    "model.js": {
+      "size": 3802,
+      "integrity": "sha256:d03198edf4d6c8ce75eb0e4cceb53d79a11834d8f590ca15a45e142e0cf9425d"
+    },
+    "package.json": {
+      "size": 1742,
+      "integrity": "sha256:88910931a08c203d3478db375921136eb65d0a6e8c91cb3aaea153ed73098513"
+    },
+    "view.js": {
+      "size": 743,
+      "integrity": "sha256:4c3cab1bd9a8b9a21fbe015481b93b61864c3d291306f03bd240e4062414b11c"
+    }
+  }
+}

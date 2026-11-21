@@ -44,7 +44,7 @@ export const DEFAULT_WORKLOADS = Object.freeze(['stress', 'gpio-blink']);
 /** 交叉包负载本轮未纳入；入口处直接拒绝，避免给出无法与旧数字比较的读数。 */
 const UNSUPPORTED = Object.freeze({
   'ct107d-demo':
-    'CT107D 的器件源码用无扩展名相对引用，只有打包器产出的 examples/ct107d/dist 才能加载，裸 node 跑不起来；' +
+    'CT107D 的器件源码用无扩展名相对引用，只有打包器产出的 mica-devices 发布包才能加载，裸 node 跑不起来；' +
     '接入需要先依赖别的包的构建产物（整板基准见 #274），本轮只保留包内的 stm32 负载',
 });
 

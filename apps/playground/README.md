@@ -44,13 +44,11 @@ JSON；依赖与资源全部内联，产物不含运行时模块导入、动态�
 
 生成目录和 DDL 类型声明均由仓库忽略，源码是唯一维护入口。
 
-## CT107D
+## 预置器件包
 
-本 playground 不提供 CT107D 入口；CT107D 的正式宿主是 `examples/ct107d`，在仓库根目录运行：
-
-```shell
-pnpm --dir examples/ct107d run workbench:dev
-```
+工作台演示使用 `apps/playground/fixtures/workbench/` 中提交的发布包（button、led、at89c52、
+buzzer、ct117e-m4），它们由独立仓库 `x-botlab/mica-devices` 构建后拷入；本仓库不再构建
+器件源码。更新器件时，从该仓库重新导出对应 `dist/` 与 `release.json` 覆盖此目录。
 
 ## 独立 device demo
 
@@ -72,11 +70,12 @@ S1 将 P3.2 拉低，固件读取引脚后将 P1.0、P1.1 拉低，分别点亮 
 
 点击「CT117E-M4 LCD 演示」或直接打开
 `http://127.0.0.1:5193/workbench.html?demo=ct117e-m4`，再点击工作台的运行按钮。示例只放置
-一个融合板实例，以 80 MHz 运行 [`HAL_06_LCD.hex`](../../examples/ct117e-m4/assets/HAL_06_LCD.hex)；
+一个融合板实例，以 80 MHz 运行 [`HAL_06_LCD.hex`](fixtures/workbench/firmware/HAL_06_LCD.hex)；
 LCD 初始化后清为蓝底，依次显示白色十字、矩形、圆和 `Hello,world.`，最后停在十条色带。
 退出仿真后再次运行可重播。按键和电位器仍可操作，但这份固件不是板载 I/O 演示。
 
-`dev:workbench` 和 `build:workbench` 都会准备 CT117E-M4 的真实发布包与固件。首次运行前先
+`dev:workbench` 和 `build:workbench` 会把预置器件包与固件发布到
+`public/components/workbench/`。首次运行前先
 构建 SDK 和编辑器环境：`pnpm --filter @mica-js/editor... build`。
 
 编辑态可拖动导线中的某一段，邻接折点随动、连接锚点保持不变；空格将幽灵预览或选中的器件、电源和接地符号顺时针旋转 90°，中键拖动画布。位号、独立网标和符号内嵌网名可独立拖动，位置随文档保存；电源和接地符号用虚线框选中，可旋转或删除。单击尚未连接导线的引脚或端子自动开始画线，已连接时保持选择，手动接线工具仍可追加连接；拖开附着引脚的端子会创建独立锚点和连接导线，后续拖动保持连接。内容修改支持撤销、重做，运行态和只读态保持锁定。
