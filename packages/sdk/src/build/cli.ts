@@ -4,6 +4,7 @@ import { loadProjectConfig, type MicaConfig } from './config.js';
 import { relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepare, watchDevices, type PrepareWatcher } from './prepare.js';
+import type { BuildDeviceOptions } from './unified-build.js';
 import { prepareDevice, watchDevice, type PrepareDeviceOptions } from './unified-prepare.js';
 
 /** Writable half of `process.stdout` / `process.stderr`, so tests can capture CLI output. */
@@ -41,7 +42,7 @@ Options:
   --config <file>     explicit mica.config.ts, relative to --root
   --root <dir>        discovery directory (default: current directory)
   --source-dir <dir>  override the configured source directory
-  --watch            watch prepare inputs (prepare only)
+  --watch            rebuild device projects on change, or watch prepare inputs (prepare)
   -h, --help         show this help`;
 
 /** Parses SDK commands without reading or executing project configuration. */
@@ -104,7 +105,6 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
     }
   }
 
-  if (watch && command !== 'prepare') throw new Error('--watch is only supported by mica prepare.');
   return {
     command,
     help,
@@ -147,7 +147,14 @@ export async function runCli(
   try {
     const project = await load();
     if (options.command === 'build') {
-      const { buildProject } = await import('./project.js');
+      const { buildProject, resolveDeviceBuildOptions } = await import('./project.js');
+      if (options.watch) {
+        if (project.config.device === undefined)
+          throw new Error('--watch requires a unified device project (device in mica.config.ts).');
+        const loadBuild = async (): Promise<BuildDeviceOptions> =>
+          resolveDeviceBuildOptions(await load());
+        return await watchBuildLoop(project, loadBuild, streams);
+      }
       await buildProject(project);
       streams.out.write('mica build: complete\n');
       return 0;
@@ -206,7 +213,7 @@ function watchLoop(options: PrepareOptions, streams: CliStreams): Promise<number
       settle(1);
       return;
     }
-    awaitWatch(watcher, streams, settle, () => resolve(options.root, options.sourceDir));
+    awaitWatch(watcher, streams, settle, 'prepare', () => resolve(options.root, options.sourceDir));
   });
 }
 
@@ -245,7 +252,7 @@ function watchDeviceLoop(
       settle(1);
       return;
     }
-    awaitWatch(watcher, streams, settle, () =>
+    awaitWatch(watcher, streams, settle, 'prepare', () =>
       [initial.manifest, initial.model, initial.configFile]
         .filter((file): file is string => file !== undefined)
         .map((file) => relative(process.cwd(), resolve(initial.root, file)))
@@ -254,11 +261,36 @@ function watchDeviceLoop(
   });
 }
 
+async function watchBuildLoop(
+  project: Project,
+  load: () => Promise<BuildDeviceOptions>,
+  streams: CliStreams,
+): Promise<number> {
+  const { watchDeviceBuild } = await import('./unified-build.js');
+  const sourceDir = resolve(project.root, project.config.sourceDir ?? 'src');
+  return new Promise<number>((settle) => {
+    let watcher: PrepareWatcher;
+    try {
+      watcher = watchDeviceBuild({
+        load,
+        onBuild: (summary) => streams.out.write(`mica build: complete ${summary}\n`),
+        onError: (error) => streams.err.write(`mica build: ${messageOf(error)}\n`),
+      });
+    } catch (error) {
+      streams.err.write(`mica build: ${messageOf(error)}\n`);
+      settle(1);
+      return;
+    }
+    awaitWatch(watcher, streams, settle, 'build', () => relative(process.cwd(), sourceDir) || '.');
+  });
+}
+
 /** Reports readiness and stops the watcher on the first termination signal. */
 function awaitWatch(
   watcher: PrepareWatcher,
   streams: CliStreams,
   settle: (code: number) => void,
+  command: CliArguments['command'],
   watching: () => string,
 ): void {
   let closing = false;
@@ -271,7 +303,7 @@ function awaitWatch(
     void watcher.dispose().then(
       () => settle(0),
       (error: unknown) => {
-        streams.err.write(`mica prepare: ${messageOf(error)}\n`);
+        streams.err.write(`mica ${command}: ${messageOf(error)}\n`);
         settle(1);
       },
     );
@@ -281,7 +313,7 @@ function awaitWatch(
 
   void watcher.ready.then(() => {
     if (closing) return;
-    streams.out.write(`mica prepare: watching ${watching()} for changes\n`);
+    streams.out.write(`mica ${command}: watching ${watching()} for changes\n`);
   });
 }
 
