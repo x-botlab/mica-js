@@ -3,6 +3,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { unzipSync } from 'fflate';
 import typescript from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runCli } from './cli.js';
@@ -807,5 +808,90 @@ describe('unified device build watch', () => {
     } finally {
       await watcher.dispose();
     }
+  }, 30_000);
+});
+
+describe('unified device pack', () => {
+  it('packs the existing build without rebuilding and matches the release file table', async () => {
+    const { root, outDir } = await project();
+    await buildDevice({
+      root,
+      manifest: './package.json',
+      model: './src/model.ddl',
+      outDir,
+      minify: false,
+    });
+    const packed = await readFile(join(outDir, 'views', '2d', 'index.js'), 'utf8');
+    await writeFile(
+      join(root, 'src', 'views', '2d', 'index.ts'),
+      `export default () => ({ renderOverlay() { document.title = 'not built'; } });`,
+    );
+
+    const { streams, out } = capture();
+    expect(await runCli(['pack', '--root', root], streams)).toBe(0);
+    const archiveFile = join(root, 'example-button-1.0.0.zip');
+    expect(out.join('')).toBe(`mica pack: ${archiveFile}\n`);
+    expect(await readFile(join(outDir, 'views', '2d', 'index.js'), 'utf8')).toBe(packed);
+
+    const release = JSON.parse(await readFile(join(outDir, 'release.json'), 'utf8')) as {
+      files: Record<string, { size: number; integrity: string }>;
+    };
+    const archive = await readFile(archiveFile);
+    const entries = unzipSync(new Uint8Array(archive));
+    expect(Object.keys(entries).sort()).toEqual(
+      [...Object.keys(release.files), 'release.json'].sort(),
+    );
+    for (const path of [...Object.keys(release.files), 'release.json'])
+      expect(
+        Buffer.from(entries[path]!).equals(await readFile(join(outDir, ...path.split('/')))),
+      ).toBe(true);
+    // Store-only entries: the first local header declares compression method 0.
+    expect(new DataView(archive.buffer, archive.byteOffset).getUint16(8, true)).toBe(0);
+  }, 30_000);
+
+  it('writes identical archives for the same build and honors --out', async () => {
+    const { root, outDir } = await project();
+    await buildDevice({ root, manifest: './package.json', model: './src/model.ddl', outDir });
+
+    const first = capture();
+    expect(await runCli(['pack', '--root', root], first.streams)).toBe(0);
+    const custom = join(root, 'artifacts', 'led.zip');
+    const second = capture();
+    expect(await runCli(['pack', '--root', root, '--out', custom], second.streams)).toBe(0);
+    expect(second.out.join('')).toBe(`mica pack: ${custom}\n`);
+
+    const defaultArchive = await readFile(join(root, 'example-button-1.0.0.zip'));
+    const customArchive = await readFile(custom);
+    expect(customArchive.equals(defaultArchive)).toBe(true);
+    const digest = (data: Buffer): string => createHash('sha256').update(data).digest('hex');
+    expect(digest(customArchive)).toBe(digest(defaultArchive));
+  }, 30_000);
+
+  it('rejects a missing or stale build without writing a ZIP', async () => {
+    const empty = await project();
+    const missing = capture();
+    expect(await runCli(['pack', '--root', empty.root], missing.streams)).toBe(1);
+    expect(missing.err.join('')).toContain('release.json');
+    expect(await exists(join(empty.root, 'example-button-1.0.0.zip'))).toBe(false);
+
+    const { root, outDir } = await project();
+    const build = () =>
+      buildDevice({ root, manifest: './package.json', model: './src/model.ddl', outDir });
+    await build();
+    const archiveFile = join(root, 'example-button-1.0.0.zip');
+
+    await writeFile(join(outDir, 'model.js'), 'export const model = tampered;');
+    const changed = capture();
+    expect(await runCli(['pack', '--root', root], changed.streams)).toBe(1);
+    expect(changed.err.join('')).toContain('model.js');
+    expect(changed.err.join('')).toContain('release.json');
+    expect(await exists(archiveFile)).toBe(false);
+
+    await build();
+    await rm(join(outDir, 'assets', 'icon.png'));
+    const incomplete = capture();
+    expect(await runCli(['pack', '--root', root], incomplete.streams)).toBe(1);
+    expect(incomplete.err.join('')).toContain('assets/icon.png');
+    expect(await exists(archiveFile)).toBe(false);
   }, 30_000);
 });

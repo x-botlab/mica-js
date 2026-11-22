@@ -14,12 +14,13 @@ export interface CliStreams {
 }
 
 export interface CliArguments {
-  readonly command: 'prepare' | 'build';
+  readonly command: 'prepare' | 'build' | 'pack';
   readonly help: boolean;
   readonly watch: boolean;
   readonly root: string;
   readonly config?: string;
   readonly sourceDir?: string;
+  readonly out?: string;
 }
 
 type PrepareOptions = { readonly root: string; readonly sourceDir: string };
@@ -33,6 +34,7 @@ const USAGE = `Usage: mica <command> [options]
 
 Commands:
   build              build one unified device package or standalone component artifacts
+  pack               archive the existing unified device build into a ZIP, without rebuilding
   prepare            generate the type environment of the configured project
 
 A mica.config.ts file identifies the project; it is discovered upwards from --root.
@@ -42,6 +44,7 @@ Options:
   --config <file>     explicit mica.config.ts, relative to --root
   --root <dir>        discovery directory (default: current directory)
   --source-dir <dir>  override the configured source directory
+  --out <file>        ZIP output path (pack; default: <root>/<publisher>-<name>-<version>.zip)
   --watch            rebuild device projects on change, or watch prepare inputs (prepare)
   -h, --help         show this help`;
 
@@ -53,12 +56,14 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
   let root = process.cwd();
   let sourceDir: string | undefined;
   let config: string | undefined;
+  let out: string | undefined;
   let command: CliArguments['command'] = 'prepare';
   let index = 0;
 
   const first = argv[0];
   if (first !== undefined && !first.startsWith('-')) {
-    if (first !== 'prepare' && first !== 'build') throw new Error(`Unknown command '${first}'.`);
+    if (first !== 'prepare' && first !== 'build' && first !== 'pack')
+      throw new Error(`Unknown command '${first}'.`);
     command = first;
     index = 1;
   }
@@ -100,11 +105,15 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
       case '--config':
         config = flagValue();
         break;
+      case '--out':
+        out = flagValue();
+        break;
       default:
         throw new Error(`Unknown argument '${argument}'.`);
     }
   }
 
+  if (watch && command === 'pack') throw new Error('--watch is not supported by mica pack.');
   return {
     command,
     help,
@@ -112,6 +121,7 @@ export function parseCliArguments(argv: readonly string[]): CliArguments {
     root: resolve(root),
     ...(sourceDir === undefined ? {} : { sourceDir }),
     ...(config === undefined ? {} : { config }),
+    ...(out === undefined ? {} : { out }),
   };
 }
 
@@ -157,6 +167,15 @@ export async function runCli(
       }
       await buildProject(project);
       streams.out.write('mica build: complete\n');
+      return 0;
+    }
+    if (options.command === 'pack') {
+      const { packDeviceProject } = await import('./pack.js');
+      const packed = await packDeviceProject(
+        project,
+        options.out === undefined ? {} : { outFile: resolve(options.out) },
+      );
+      streams.out.write(`mica pack: ${packed.outFile}\n`);
       return 0;
     }
     if (project.config.device !== undefined) {

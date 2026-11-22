@@ -39,15 +39,21 @@ describe('project CLI', () => {
     expect(parseCliArguments(['build', '--watch']).watch).toBe(true);
     expect(parseCliArguments(['prepare', '--watch']).watch).toBe(true);
     expect(() => parseCliArguments(['build', '--watch=now'])).toThrow('does not take a value');
+    expect(parseCliArguments(['pack']).command).toBe('pack');
+    expect(parseCliArguments(['pack', '--out', 'led.zip']).out).toBe('led.zip');
+    expect(() => parseCliArguments(['pack', '--watch'])).toThrow('mica pack');
+    expect(() => parseCliArguments(['pack', '--out'])).toThrow('Missing value');
     expect(() => parseCliArguments(['dev'])).toThrow('Unknown command');
     expect(() => parseCliArguments(['build', '--config'])).toThrow('Missing value');
     expect(() => parseCliArguments(['prepare', '--update-lock'])).toThrow('Unknown argument');
   });
 
-  it('documents the build watch mode in the help text', async () => {
+  it('documents the build watch mode and pack command in the help text', async () => {
     const { streams, out } = capture();
     expect(await runCli(['--help'], streams)).toBe(0);
     expect(out.join('')).toContain('rebuild device projects on change');
+    expect(out.join('')).toContain('without rebuilding');
+    expect(out.join('')).toContain('--out <file>');
   });
 
   it('requires a project marker even for prepare', async () => {
@@ -80,6 +86,13 @@ describe('project CLI', () => {
     const { streams, err } = capture();
     expect(await runCli(['build', '--watch', '--root', root], streams)).toBe(1);
     expect(err.join('')).toContain('unified device project');
+  });
+
+  it('rejects packing a project without a unified device build', async () => {
+    const root = await fixture();
+    const { streams, err } = capture();
+    expect(await runCli(['pack', '--root', root], streams)).toBe(1);
+    expect(err.join('')).toContain('unified device build');
   });
 
   it('rejects output directories that could destroy source files', async () => {

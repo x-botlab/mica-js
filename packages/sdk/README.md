@@ -121,29 +121,34 @@ dist/
 | -------------------------------- | --------------------------------------------------- |
 | `pnpm exec mica build`           | 构建组件产物，或构建配置了 `device` 的统一器件包    |
 | `pnpm exec mica build --watch`   | 持续构建统一器件包；整体替换 `outDir`，失败继续监听 |
+| `pnpm exec mica pack`            | 把已有统一器件包打成 ZIP，不重新构建                |
 | `pnpm exec mica prepare`         | 只生成类型环境，不构建产物                          |
 | `pnpm exec mica prepare --watch` | 监听类型输入，适合与编辑器或 `tsc --watch` 同时使用 |
 | `pnpm exec mica --help`          | 查看命令和参数；仅输入 `mica` 也会显示帮助          |
 
 常用参数：
 
-| 参数                 | 含义                                                       |
-| -------------------- | ---------------------------------------------------------- |
-| `--root <dir>`       | 从指定目录开始查找工程，默认当前目录                       |
-| `--config <file>`    | 显式指定 `mica.config.ts`；相对路径基于查找起点            |
-| `--source-dir <dir>` | 覆盖配置中的源码目录                                       |
-| `--watch`            | 持续构建统一器件包（`build`），或监听类型输入（`prepare`） |
+| 参数                 | 含义                                                                          |
+| -------------------- | ----------------------------------------------------------------------------- |
+| `--root <dir>`       | 从指定目录开始查找工程，默认当前目录                                          |
+| `--config <file>`    | 显式指定 `mica.config.ts`；相对路径基于查找起点                               |
+| `--source-dir <dir>` | 覆盖配置中的源码目录                                                          |
+| `--out <file>`       | ZIP 输出路径，仅用于 `pack`；默认为 `<root>/<publisher>-<name>-<version>.zip` |
+| `--watch`            | 持续构建统一器件包（`build`），或监听类型输入（`prepare`）                    |
 
 ```shell
 pnpm exec mica build --root components
 pnpm exec mica build --config mica.config.ts
 pnpm exec mica build --watch
+pnpm exec mica pack --out ./led.zip
 pnpm exec mica prepare --source-dir content
 ```
 
 默认从当前目录向上寻找最近的 `mica.config.ts`，其所在目录作为工程根目录。因此，在工程子目录中也能运行命令。`--root` 是查找起点，不一定是最终工程根目录。显式配置文件也必须命名为 `mica.config.ts`。
 
 `prepare --watch` 只更新类型环境，不会持续构建 JS。持续构建统一器件包使用 `mica build --watch`；当前 CLI 不提供开发服务器。
+
+目录直连的场景不需要 ZIP：侧载工具直接消费 `outDir`（例如 `zerobit device sideload ./dist`），配合 `mica build --watch` 就能随源码更新。手动导入或上传需要 ZIP 时再运行 `mica pack`，由 mica 按 `release.json` 生成权威归档，避免自行打包把 `release.json` 算进发布身份或产生不一致字节。
 
 配置了 `device` 的工程按[统一器件包](#统一器件包device-模式)构建；其余工程仍按下面的组件流程构建，两种模式的命令和参数完全相同。
 
@@ -404,6 +409,12 @@ dist/
 `release.json` 记录 `id`（`publisher:name`）、`version` 与每个包内文件的 `size`、`integrity`（`sha256:` 加 64 位小写十六进制）。它自身与 ZIP 不属于 `files`，避免自引用。同一路径若被两个来源声明，构建直接报错而不是静默覆盖。
 
 `outDir` 在删除前校验：它不能是文件系统根目录、主目录或其上级目录，也不能等于或包含工程根、`sourceDir`、清单文件、DDL 源文件或 `.mica`。`buildDevice()` 在准备前和写出前各校验一次，因此任何校验失败都不会删除已有内容。
+
+### 打包已有产物
+
+`mica pack` 不构建，只把 `outDir` 里已有的统一器件包打成 ZIP。归档内容严格等于 `release.json` 的 `files` 表加上根目录的 `release.json`：`release.json` 描述发布身份，本身不计入该身份。条目按包根相对路径排序并以 store-only（`level: 0`）写入，时间戳固定，因此同一份产物重复打包字节完全一致。
+
+任一文件与 `release.json` 记录的大小或 `sha256` 不符、文件缺失，或 `outDir` 没有 `release.json` 时，命令直接失败且不写出 ZIP。默认输出到工程根目录的 `<publisher>-<name>-<version>.zip`，可用 `--out` 改路径；成功时输出一行 `mica pack: <绝对路径>`。
 
 ## 统一器件无头运行
 
