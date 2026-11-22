@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { unzipSync } from 'fflate';
 import typescript from 'typescript';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runCli } from './cli.js';
-import { buildDevice } from './unified-build.js';
+import { loadProjectConfig } from './config.js';
+import { resolveDeviceBuildOptions } from './project.js';
+import { buildDevice, watchDeviceBuild } from './unified-build.js';
 import { watchDevice } from './unified-prepare.js';
 
 const roots: string[] = [];
@@ -296,6 +299,14 @@ async function exists(path: string): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+async function waitFor(condition: () => boolean, timeout = 15_000): Promise<void> {
+  const deadline = Date.now() + timeout;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for the watch loop');
+    await new Promise((settle) => setTimeout(settle, 25));
   }
 }
 
@@ -607,4 +618,280 @@ describe('unified device CLI', () => {
     ).toContain('model');
     expect(out.join('')).toContain('mica build: complete');
   });
+});
+
+describe('unified device build watch', () => {
+  it('rebuilds when a source file changes and reports a new package summary', async () => {
+    const { root, outDir } = await project();
+    const options = {
+      root,
+      outDir,
+      manifest: './package.json',
+      model: './src/model.ddl',
+      configFile: join(root, 'mica.config.ts'),
+    };
+    const builds: string[] = [];
+    const errors: unknown[] = [];
+    const watcher = watchDeviceBuild({
+      load: async () => options,
+      debounceMs: 10,
+      onBuild: (summary) => builds.push(summary),
+      onError: (error) => errors.push(error),
+    });
+    try {
+      await watcher.ready;
+      expect(errors).toEqual([]);
+      expect(builds).toHaveLength(1);
+      expect(builds[0]).toContain('example:button@1.0.0');
+      expect(builds[0]).toMatch(/ sha256:[0-9a-f]{64}$/);
+      const before = JSON.parse(await readFile(join(outDir, 'release.json'), 'utf8')) as {
+        files: Record<string, { integrity: string }>;
+      };
+
+      await writeFile(
+        join(root, 'src', 'views', '2d', 'index.ts'),
+        `export default () => ({ renderOverlay() { document.title = 'updated'; } });`,
+      );
+      await waitFor(() => builds.length >= 2);
+      expect(errors).toEqual([]);
+      expect(builds[1]).not.toBe(builds[0]);
+      const after = JSON.parse(await readFile(join(outDir, 'release.json'), 'utf8')) as {
+        files: Record<string, { integrity: string }>;
+      };
+      expect(after.files['views/2d/index.js']?.integrity).not.toBe(
+        before.files['views/2d/index.js']?.integrity,
+      );
+    } finally {
+      await watcher.dispose();
+    }
+  }, 30_000);
+
+  it('keeps the last complete package when a rebuild fails and resumes afterwards', async () => {
+    const { root, outDir } = await project();
+    const options = {
+      root,
+      outDir,
+      manifest: './package.json',
+      model: './src/model.ddl',
+      configFile: join(root, 'mica.config.ts'),
+    };
+    const builds: string[] = [];
+    const errors: unknown[] = [];
+    const watcher = watchDeviceBuild({
+      load: async () => options,
+      debounceMs: 10,
+      onBuild: (summary) => builds.push(summary),
+      onError: (error) => errors.push(error),
+    });
+    try {
+      await watcher.ready;
+      const releaseFile = join(outDir, 'release.json');
+      const before = await readFile(releaseFile, 'utf8');
+      const entries = (await readdir(outDir)).sort();
+
+      await writeFile(join(root, 'src', 'model.ts'), 'export const missingCreate = true;');
+      await waitFor(() => errors.length >= 1);
+      expect(String(errors[0])).toContain('create');
+      expect(await readFile(releaseFile, 'utf8')).toBe(before);
+      expect((await readdir(outDir)).sort()).toEqual(entries);
+      expect(await exists(join(root, '.mica', 'build-watch'))).toBe(false);
+
+      await writeFile(
+        join(root, 'src', 'model.ts'),
+        `export const create = () => ({
+  methods: { press: () => null, getStatus: () => ({ pressed: true }) },
+  sync() {},
+  dispose() {},
+});`,
+      );
+      await waitFor(() => builds.length >= 2);
+      expect(builds[1]).not.toBe(builds[0]);
+      expect(await exists(join(outDir, 'release.json'))).toBe(true);
+    } finally {
+      await watcher.dispose();
+    }
+  }, 30_000);
+
+  it('keeps watching after the initial build fails', async () => {
+    const { root, outDir } = await project({ manifest: { ...MANIFEST, pins: { a1: {} } } });
+    const options = {
+      root,
+      outDir,
+      manifest: './package.json',
+      model: './src/model.ddl',
+      configFile: join(root, 'mica.config.ts'),
+    };
+    const builds: string[] = [];
+    const errors: unknown[] = [];
+    const watcher = watchDeviceBuild({
+      load: async () => options,
+      debounceMs: 10,
+      onBuild: (summary) => builds.push(summary),
+      onError: (error) => errors.push(error),
+    });
+    try {
+      await watcher.ready;
+      expect(builds).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(await exists(outDir)).toBe(false);
+
+      await writeFile(join(root, 'package.json'), JSON.stringify(MANIFEST, null, 2));
+      await waitFor(() => builds.length === 1);
+      expect(await exists(join(outDir, 'release.json'))).toBe(true);
+    } finally {
+      await watcher.dispose();
+    }
+  }, 30_000);
+
+  it('retargets the source directory when the config changes', async () => {
+    const { root, outDir } = await project();
+    const load = async () => resolveDeviceBuildOptions(await loadProjectConfig({ root }));
+    const builds: string[] = [];
+    const errors: unknown[] = [];
+    const watcher = watchDeviceBuild({
+      load,
+      debounceMs: 10,
+      onBuild: (summary) => builds.push(summary),
+      onError: (error) => errors.push(error),
+    });
+    try {
+      await watcher.ready;
+      expect(builds).toHaveLength(1);
+
+      await cp(join(root, 'src'), join(root, 'content'), { recursive: true });
+      await writeFile(
+        join(root, 'mica.config.ts'),
+        "export default { sourceDir: 'content', device: { manifest: './package.json', model: './src/model.ddl' } };",
+      );
+      await waitFor(() => builds.length >= 2);
+
+      await writeFile(
+        join(root, 'content', 'views', '2d', 'index.ts'),
+        `export default () => ({ renderOverlay() { document.title = 'retargeted'; } });`,
+      );
+      await waitFor(() => builds.length >= 3);
+      expect(errors).toEqual([]);
+      expect(outDir).toBe(join(root, 'dist'));
+    } finally {
+      await watcher.dispose();
+    }
+  }, 30_000);
+
+  it('ignores writes below outDir', async () => {
+    const { root, outDir } = await project();
+    await cp(join(root, 'src'), root, { recursive: true });
+    const options = {
+      root,
+      outDir,
+      manifest: './package.json',
+      sourceDir: '.',
+      model: './src/model.ddl',
+      configFile: join(root, 'mica.config.ts'),
+    };
+    const builds: string[] = [];
+    const errors: unknown[] = [];
+    const watcher = watchDeviceBuild({
+      load: async () => options,
+      debounceMs: 10,
+      onBuild: (summary) => builds.push(summary),
+      onError: (error) => errors.push(error),
+    });
+    try {
+      await watcher.ready;
+      expect(errors).toEqual([]);
+      expect(builds).toHaveLength(1);
+
+      await writeFile(join(outDir, 'consumer.txt'), 'read');
+      await new Promise((settle) => setTimeout(settle, 400));
+      expect(builds).toHaveLength(1);
+      expect(errors).toEqual([]);
+    } finally {
+      await watcher.dispose();
+    }
+  }, 30_000);
+});
+
+describe('unified device pack', () => {
+  it('packs the existing build without rebuilding and matches the release file table', async () => {
+    const { root, outDir } = await project();
+    await buildDevice({
+      root,
+      manifest: './package.json',
+      model: './src/model.ddl',
+      outDir,
+      minify: false,
+    });
+    const packed = await readFile(join(outDir, 'views', '2d', 'index.js'), 'utf8');
+    await writeFile(
+      join(root, 'src', 'views', '2d', 'index.ts'),
+      `export default () => ({ renderOverlay() { document.title = 'not built'; } });`,
+    );
+
+    const { streams, out } = capture();
+    expect(await runCli(['pack', '--root', root], streams)).toBe(0);
+    const archiveFile = join(root, 'example-button-1.0.0.zip');
+    expect(out.join('')).toBe(`mica pack: ${archiveFile}\n`);
+    expect(await readFile(join(outDir, 'views', '2d', 'index.js'), 'utf8')).toBe(packed);
+
+    const release = JSON.parse(await readFile(join(outDir, 'release.json'), 'utf8')) as {
+      files: Record<string, { size: number; integrity: string }>;
+    };
+    const archive = await readFile(archiveFile);
+    const entries = unzipSync(new Uint8Array(archive));
+    expect(Object.keys(entries).sort()).toEqual(
+      [...Object.keys(release.files), 'release.json'].sort(),
+    );
+    for (const path of [...Object.keys(release.files), 'release.json'])
+      expect(
+        Buffer.from(entries[path]!).equals(await readFile(join(outDir, ...path.split('/')))),
+      ).toBe(true);
+    // Store-only entries: the first local header declares compression method 0.
+    expect(new DataView(archive.buffer, archive.byteOffset).getUint16(8, true)).toBe(0);
+  }, 30_000);
+
+  it('writes identical archives for the same build and honors --out', async () => {
+    const { root, outDir } = await project();
+    await buildDevice({ root, manifest: './package.json', model: './src/model.ddl', outDir });
+
+    const first = capture();
+    expect(await runCli(['pack', '--root', root], first.streams)).toBe(0);
+    const custom = join(root, 'artifacts', 'led.zip');
+    const second = capture();
+    expect(await runCli(['pack', '--root', root, '--out', custom], second.streams)).toBe(0);
+    expect(second.out.join('')).toBe(`mica pack: ${custom}\n`);
+
+    const defaultArchive = await readFile(join(root, 'example-button-1.0.0.zip'));
+    const customArchive = await readFile(custom);
+    expect(customArchive.equals(defaultArchive)).toBe(true);
+    const digest = (data: Buffer): string => createHash('sha256').update(data).digest('hex');
+    expect(digest(customArchive)).toBe(digest(defaultArchive));
+  }, 30_000);
+
+  it('rejects a missing or stale build without writing a ZIP', async () => {
+    const empty = await project();
+    const missing = capture();
+    expect(await runCli(['pack', '--root', empty.root], missing.streams)).toBe(1);
+    expect(missing.err.join('')).toContain('release.json');
+    expect(await exists(join(empty.root, 'example-button-1.0.0.zip'))).toBe(false);
+
+    const { root, outDir } = await project();
+    const build = () =>
+      buildDevice({ root, manifest: './package.json', model: './src/model.ddl', outDir });
+    await build();
+    const archiveFile = join(root, 'example-button-1.0.0.zip');
+
+    await writeFile(join(outDir, 'model.js'), 'export const model = tampered;');
+    const changed = capture();
+    expect(await runCli(['pack', '--root', root], changed.streams)).toBe(1);
+    expect(changed.err.join('')).toContain('model.js');
+    expect(changed.err.join('')).toContain('release.json');
+    expect(await exists(archiveFile)).toBe(false);
+
+    await build();
+    await rm(join(outDir, 'assets', 'icon.png'));
+    const incomplete = capture();
+    expect(await runCli(['pack', '--root', root], incomplete.streams)).toBe(1);
+    expect(incomplete.err.join('')).toContain('assets/icon.png');
+    expect(await exists(archiveFile)).toBe(false);
+  }, 30_000);
 });

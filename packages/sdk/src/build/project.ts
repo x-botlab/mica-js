@@ -1,7 +1,7 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 import { build, type InlineConfig } from 'vite';
 import type { loadProjectConfig } from './config.js';
-import { buildDeviceProject } from './unified-build.js';
+import { buildDevice, type BuildDeviceOptions } from './unified-build.js';
 import { micaSdk } from './vite.js';
 
 type Project = Awaited<ReturnType<typeof loadProjectConfig>>;
@@ -47,6 +47,23 @@ function viteConfig(project: Project, directories: Directories): InlineConfig {
   };
 }
 
+/** Resolves the unified device build of a project, including its validated output directory. */
+export function resolveDeviceBuildOptions(project: Project): BuildDeviceOptions {
+  const directories = resolveDirectories(project);
+  const device = project.config.device;
+  if (device === undefined)
+    throw new Error('The project does not configure a unified device build.');
+  return {
+    root: project.root,
+    manifest: device.manifest,
+    outDir: directories.output,
+    sourceDir: project.config.sourceDir ?? 'src',
+    ...(device.model === undefined ? {} : { model: device.model }),
+    configFile: project.configFile,
+    ...(project.config.alias === undefined ? {} : { alias: project.config.alias }),
+  };
+}
+
 /**
  * Builds the project.
  *
@@ -54,10 +71,9 @@ function viteConfig(project: Project, directories: Directories): InlineConfig {
  * standalone Device and Widget artifacts.
  */
 export async function buildProject(project: Project): Promise<void> {
-  const directories = resolveDirectories(project);
   if (project.config.device !== undefined) {
-    await buildDeviceProject(project, directories.output);
+    await buildDevice(resolveDeviceBuildOptions(project));
     return;
   }
-  await build(viteConfig(project, directories));
+  await build(viteConfig(project, resolveDirectories(project)));
 }

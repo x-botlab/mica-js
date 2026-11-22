@@ -251,6 +251,11 @@ export function renderRelease(release: ReleaseManifest): string {
   return `${JSON.stringify(release, null, 2)}\n`;
 }
 
+/** SHA-256 fingerprint of a rendered release file, identifying one published package build. */
+export function releaseIntegrity(release: ReleaseManifest): string {
+  return `sha256:${createHash('sha256').update(renderRelease(release)).digest('hex')}`;
+}
+
 export interface WriteDeviceOptions {
   /** Output directory that is reset before the package files are written. */
   readonly outDir: string;

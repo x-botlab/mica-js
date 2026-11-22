@@ -1,7 +1,8 @@
-import { existsSync, watch, type FSWatcher } from 'node:fs';
+import { existsSync, statSync, watch, type FSWatcher } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { PrepareWatcher } from './prepare.js';
+import { isContained } from './unified-paths.js';
 import { loadDevicePackage, type LoadedDevicePackage } from './unified-manifest.js';
 import { renderDeviceDeclaration, renderDeviceTypeScriptConfig } from './unified-types.js';
 
@@ -94,11 +95,27 @@ export function watchDevice(options: WatchDeviceOptions): PrepareWatcher {
 
 export interface WatchPreparationOptions<T> {
   readonly load: () => Promise<T>;
+  /** Files whose changes trigger a run; each parent directory is watched non-recursively. */
   readonly inputs: (loaded: T) => readonly string[];
+  /** Directories whose subtree triggers a run; watched recursively. */
+  readonly directories?: (loaded: T) => readonly string[];
+  /** Files or directories that never trigger a run, such as build outputs. */
+  readonly ignored?: (loaded: T) => readonly string[];
   readonly prepare: (loaded: T) => Promise<readonly string[]>;
   readonly debounceMs?: number;
   readonly onPrepare?: (files: readonly string[]) => void;
   readonly onError?: (error: unknown) => void;
+}
+
+interface WatchTargets {
+  readonly files: ReadonlySet<string>;
+  readonly directories: ReadonlySet<string>;
+  readonly ignored: readonly string[];
+}
+
+interface WatchedDirectory {
+  readonly watcher: FSWatcher;
+  readonly recursive: boolean;
 }
 
 export function watchPreparation<T>(options: WatchPreparationOptions<T>): PrepareWatcher {
@@ -107,8 +124,8 @@ export function watchPreparation<T>(options: WatchPreparationOptions<T>): Prepar
   let queued = false;
   let timer: NodeJS.Timeout | undefined;
   let current: Promise<readonly string[]> | undefined;
-  let targets = new Set<string>();
-  const watchers = new Map<string, FSWatcher>();
+  let targets: WatchTargets = { files: new Set(), directories: new Set(), ignored: [] };
+  const watchers = new Map<string, WatchedDirectory>();
 
   const report = (error: unknown): void => {
     if (options.onError === undefined) {
@@ -123,33 +140,46 @@ export function watchPreparation<T>(options: WatchPreparationOptions<T>): Prepar
     }
   };
 
-  const syncWatchers = (files: readonly string[]): void => {
-    const next = new Set(files.map((file) => resolve(file)));
+  const relevant = (changed: string): boolean => {
+    if (targets.ignored.some((path) => isContained(path, changed))) return false;
+    for (const file of targets.files)
+      if (isContained(changed, file) || isContained(file, changed)) return true;
+    for (const directory of targets.directories)
+      if (isContained(changed, directory) || isContained(directory, changed)) return true;
+    return false;
+  };
+
+  const syncWatchers = (loaded: T): void => {
+    const files = new Set(options.inputs(loaded).map((file) => resolve(file)));
     const directories = new Set(
-      [...next].map((file) => {
-        let directory = dirname(file);
-        while (!existsSync(directory) && dirname(directory) !== directory)
-          directory = dirname(directory);
-        return directory;
-      }),
+      (options.directories?.(loaded) ?? []).map((directory) => resolve(directory)),
     );
-    for (const [directory, watcher] of watchers) {
-      if (directories.has(directory)) continue;
-      watcher.close();
-      watchers.delete(directory);
+    const ignored = (options.ignored?.(loaded) ?? []).map((path) => resolve(path));
+
+    const roots = new Map<string, boolean>();
+    const require = (path: string, recursive: boolean): void => {
+      roots.set(path, recursive || roots.get(path) === true);
+    };
+    for (const file of files) require(nearestExistingDirectory(dirname(file)), false);
+    for (const directory of directories) require(nearestExistingDirectory(directory), true);
+
+    for (const [root, watched] of watchers) {
+      if (roots.get(root) === watched.recursive) continue;
+      watched.watcher.close();
+      watchers.delete(root);
     }
-    targets = next;
-    for (const directory of directories) {
-      if (watchers.has(directory)) continue;
+    targets = { files, directories, ignored };
+    for (const [root, recursive] of roots) {
+      if (watchers.has(root)) continue;
       let watcher: FSWatcher;
       try {
-        watcher = watch(directory, (_event, filename) => {
+        watcher = watch(root, { recursive }, (event, filename) => {
           if (disposed) return;
           if (filename === null) schedule();
           else {
-            const changed = resolve(directory, filename.toString());
-            if ([...targets].some((file) => file === changed || file.startsWith(changed + sep)))
-              schedule();
+            const changed = resolve(root, filename.toString());
+            if (isDirectoryChange(event, changed)) return;
+            if (relevant(changed)) schedule();
           }
         });
       } catch (error) {
@@ -159,7 +189,7 @@ export function watchPreparation<T>(options: WatchPreparationOptions<T>): Prepar
       watcher.on('error', (error) => {
         if (!disposed) report(error);
       });
-      watchers.set(directory, watcher);
+      watchers.set(root, { watcher, recursive });
     }
   };
 
@@ -172,7 +202,7 @@ export function watchPreparation<T>(options: WatchPreparationOptions<T>): Prepar
       return [];
     }
     try {
-      syncWatchers(options.inputs(loaded));
+      syncWatchers(loaded);
       const files = await options.prepare(loaded);
       options.onPrepare?.(files);
       return files;
@@ -226,11 +256,32 @@ export function watchPreparation<T>(options: WatchPreparationOptions<T>): Prepar
         clearTimeout(timer);
         timer = undefined;
       }
-      for (const watcher of watchers.values()) watcher.close();
+      for (const watched of watchers.values()) watched.watcher.close();
       watchers.clear();
       await current;
     },
   };
+}
+
+/**
+ * Windows can deliver a `change` event for a directory whose metadata was updated before watching
+ * started. A real edit inside the directory also events on the edited file, so a directory-level
+ * change alone never needs to trigger a run.
+ */
+function isDirectoryChange(event: string, path: string): boolean {
+  if (event !== 'change') return false;
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Nearest existing ancestor directory, so a missing input can still be watched for creation. */
+function nearestExistingDirectory(path: string): string {
+  let directory = path;
+  while (!existsSync(directory) && dirname(directory) !== directory) directory = dirname(directory);
+  return directory;
 }
 
 async function writeIfChanged(file: string, content: string): Promise<void> {
