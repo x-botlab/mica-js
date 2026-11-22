@@ -1,5 +1,13 @@
 # @mica-js/editor
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [c138283]
+- Updated dependencies [7109908]
+  - @mica-js/sdk@0.6.0
+
 ## 0.7.0
 
 ### Minor Changes
