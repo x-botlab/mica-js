@@ -6,10 +6,12 @@ import {
   ElectricalError,
   type ElectricalPin,
   type ElectricalNetwork,
+  type ElectricalTopology,
 } from './electrical';
 import { ActivationQueue, EventQueue, Fifo } from './queue';
 import { compileObservation } from './observations';
 import { Instance } from './runtime/instance';
+import type { BusEndpointHost } from './runtime/bus';
 import { registerPublishGate } from './runtime/publish-gate';
 import { runJit, syncJitCall } from './runtime/jit';
 import { body, computation, frame, MAX_TIME, synchronousBody, time } from './runtime/execution';
@@ -49,6 +51,8 @@ import {
 
 const OBSERVATION_PROBE = Symbol.for('mica-js.simulator/observations');
 const PROCESS_PROBE = Symbol.for('mica-js.simulator/processes');
+/** PROTOTYPE: 只供传输旁路守卫测试注入第三方订阅者。 */
+const BUS_PROBE = Symbol.for('mica-js.simulator/bus-probe');
 const EMPTY_QUEUE_ENTRY = Object.freeze({}) as unknown as Observation;
 const libraries = new WeakMap<object, readonly Entry[]>();
 
@@ -127,6 +131,8 @@ class BoardRuntime implements Board {
   private readonly errors = new Emitter<RuntimeDiagnostic>();
   private readonly diagnostics = new Emitter<RuntimeDiagnostic>();
   private readonly listeners = new Set<TopicListener>();
+  /** PROTOTYPE: 传输级旁路端点登记表；未登记时所有既有路径不变。 */
+  private readonly busRegistry = new Set<BusEndpointHost>();
   /** Owner-less listeners of the shared set: the host's direct subscriptions on `topics`. */
   private hostListeners = 0;
   private readonly models = new Fifo<Process>();
@@ -306,6 +312,14 @@ class BoardRuntime implements Board {
       });
       Object.defineProperty(this, PROCESS_PROBE, {
         value: () => this.processReport(),
+        enumerable: false,
+      });
+      Object.defineProperty(this, BUS_PROBE, {
+        value: () =>
+          Object.freeze({
+            slot: (instanceId: string, pinName: string) =>
+              this.byId.get(instanceId)?.sampleResources.get(pinName),
+          }),
         enumerable: false,
       });
     } catch (cause) {
@@ -674,6 +688,38 @@ class BoardRuntime implements Board {
   /** Pin slot of an electrical endpoint; bound once because the board order is fixed. */
   electricalSlot(pin: ElectricalPin): number {
     return this.electricalSlots.get(pin)!;
+  }
+  // PROTOTYPE: 传输级旁路（见 runtime/bus.ts）。
+  busTopology(): ElectricalTopology {
+    return this.network.topology;
+  }
+  /** 宿主驱动时没有执行窗口；`executionEnd` 只在 execute 阶段有意义。 */
+  busHorizon(): number {
+    return this.phase === 'execute' ? this.executionEnd : Number.POSITIVE_INFINITY;
+  }
+  busAdvance(to: number): void {
+    if (!Number.isSafeInteger(to) || to < this.time)
+      throw new RangeError('Bus advance must be a monotonic safe integer');
+    this.time = to;
+  }
+  busEndpoints(): Iterable<BusEndpointHost> {
+    return this.busRegistry;
+  }
+  registerBus(endpoint: BusEndpointHost): void {
+    this.busRegistry.add(endpoint);
+  }
+  unregisterBus(endpoint: BusEndpointHost): void {
+    this.busRegistry.delete(endpoint);
+  }
+  assertBusEffectAllowed(instance: Instance): void {
+    this.assertAlive(instance);
+    if (this.status !== 'ready') throw this.error('BOARD_FAULTED', 'Board is faulted', instance);
+    if (this.phase !== 'idle' && this.phase !== 'sync')
+      throw this.error(
+        'INVALID_CALL_STATE',
+        'Bus effects are only allowed while the board is idle',
+        instance,
+      );
   }
   markElectricalDirty(slot: number): void {
     const pending = this.pendingElectricalSlot;
@@ -1308,6 +1354,7 @@ class BoardRuntime implements Board {
     this.changePrevious.length = 0;
     this.changeCurrent.length = 0;
     this.sampleSlots.clear();
+    this.busRegistry.clear();
     this.listeners.clear();
     this.hostListeners = 0;
     this.errors.dispose();

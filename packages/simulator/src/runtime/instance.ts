@@ -1,10 +1,12 @@
 import type { Disposable } from '@mica-js/core/lifecycle';
 import { type DeclarationIR, type DeviceIR, validateDeviceIR } from '@mica-js/device-model';
 import type { ExecutionHost, ResourceHandle } from '@mica-js/compiler';
-import type { ElectricalPin, ResistorBranch } from '../electrical';
+import type { ElectricalPin, ElectricalTopology, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
 import { body, computation, resumable, synchronousBody } from './execution';
 import { acceptSync, electricalNumber, ElectricalParameterError } from './errors';
+import { attachBus } from './bus';
+import type { BusEndpointHost } from './bus';
 import type {
   Channel,
   Decl,
@@ -36,6 +38,7 @@ import {
   snapshot,
 } from '../values';
 import type {
+  BusAttachOptions,
   DeviceAdapter,
   DeviceBatch,
   DeviceContext,
@@ -53,7 +56,9 @@ import type {
 export interface InstanceBoard {
   readonly time: number;
   readonly phase: string;
+  readonly status: 'ready' | 'faulted' | 'disposed';
   readonly current: Instance | undefined;
+  readonly execution: 'throughput' | 'precise';
   /** Monotonic count of resource-version mutations on the whole board. */
   readonly resourceEpoch: number;
   noteResourceVersion(slot: ResourceSlot): void;
@@ -79,6 +84,16 @@ export interface InstanceBoard {
   topicBridge(owner?: Instance): TopicBridge;
   electricalSlot(pin: ElectricalPin): number;
   invalidate(slot: ResourceSlot): void;
+  // PROTOTYPE: 传输级旁路（见 runtime/bus.ts）。未登记的板行为完全不变。
+  readonly events: { readonly time: number };
+  busTopology(): ElectricalTopology;
+  /** 当前允许推进到的上界；宿主驱动时无执行窗口，返回 Infinity。 */
+  busHorizon(): number;
+  busAdvance(to: number): void;
+  busEndpoints(): Iterable<BusEndpointHost>;
+  registerBus(endpoint: BusEndpointHost): void;
+  unregisterBus(endpoint: BusEndpointHost): void;
+  assertBusEffectAllowed(instance: Instance): void;
 }
 
 const EMPTY_MESSAGES: readonly never[] = Object.freeze([]);
@@ -129,6 +144,8 @@ function createContext(owner: Instance, board: InstanceBoard): DeviceContext {
     topics: board.topicBridge(owner),
     reportError: (error: unknown) => board.report(owner, error),
     attachJit: (options: JitOptions) => owner.attach(options),
+    // PROTOTYPE: 传输级旁路端点；未调用者行为完全不变。
+    attachBus: (options: BusAttachOptions) => attachBus(owner, options),
     loadBytes: (name: string, bytes: Uint8Array, ...offset: unknown[]) =>
       owner.loadBytes(name, bytes, offset.length ? offset[0] : 0),
   });
@@ -696,6 +713,32 @@ export class Instance {
       this.stateSlots.set(name, slot);
     }
     return slot;
+  }
+  // PROTOTYPE: 传输旁路切片对模型的同步效果；只新增入口，既有校验保持不变。
+  busWriteState(name: string, value: unknown): void {
+    this.board.assertBusEffectAllowed(this);
+    const declaration = this.declarations.get(name);
+    if (declaration?.kind !== 'state') throw new TypeError(`Unknown state ${name}`);
+    if (declaration.type.kind === 'number') {
+      if (typeof value !== 'number' || !Number.isFinite(value))
+        throw new TypeError(`State ${name} expects a finite number`);
+    } else if (declaration.type.kind === 'bool') {
+      if (typeof value !== 'boolean') throw new TypeError(`State ${name} expects a boolean`);
+    } else throw new TypeError(`State ${name} is not a scalar`);
+    this.writeState(name, value, this.stateSlot(name));
+  }
+  busWriteMemory(name: string, offset: unknown, bytes: Uint8Array): void {
+    this.board.assertBusEffectAllowed(this);
+    if (!(bytes instanceof Uint8Array)) throw new TypeError('bytes must be a Uint8Array');
+    const memory = this.memory(name);
+    const at = range(memory, offset, bytes.length);
+    if (bytes.length === 0) return;
+    memory.set(bytes, at);
+    this.memoryChanged(name, at, bytes.length);
+  }
+  busEmit(channel: string, value: unknown): void {
+    this.board.assertBusEffectAllowed(this);
+    this.send(channel, value, false);
   }
   memoryPlan(ref: unknown): {
     name: string;
