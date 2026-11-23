@@ -72,18 +72,6 @@ export function validateResistance(
   }
 }
 
-/**
- * PROTOTYPE: 只读拓扑视图，供传输级旁路守卫使用。`leafEpoch` 是电气叶方案纪元：
- * 每次通用求解递增，旁路事务期间必须保持不变。
- */
-export interface ElectricalTopology {
-  readonly leafEpoch: number;
-  /** 端点所属电气节点；-1 表示不属于本板。 */
-  node(pin: ElectricalPin): number;
-  /** 节点上的板级引脚；节点越界返回空数组。 */
-  pins(node: number): readonly ElectricalPin[];
-}
-
 export interface ElectricalStats {
   /** Successful, atomically published solves, including the initial baseline. */
   readonly solves: number;
@@ -134,8 +122,6 @@ export interface ElectricalNetwork {
     count: number,
     publish?: (slot: number) => void,
   ): void;
-  /** PROTOTYPE: 传输旁路守卫使用的只读拓扑。 */
-  readonly topology: ElectricalTopology;
   readonly stats: ElectricalStats;
 }
 
@@ -847,8 +833,6 @@ export function createElectricalNetwork(
     topologyPrepares: 0,
   };
   const emptySlots: readonly number[] = Object.freeze([]);
-  /** PROTOTYPE: 拓扑视图的越界回退，避免每次查询分配。 */
-  const emptyTopologyPins: readonly ElectricalPin[] = Object.freeze([]);
   /** Dirty slots supplied by the caller, deduplicated in place without an iterator per pin. */
   const inputSlots: number[] = [];
   /**
@@ -1272,19 +1256,6 @@ export function createElectricalNetwork(
     get stats(): ElectricalStats {
       return Object.freeze({ ...statistics });
     },
-    // PROTOTYPE: 传输级旁路守卫使用的只读拓扑视图。
-    topology: Object.freeze({
-      get leafEpoch(): number {
-        return leafEpoch;
-      },
-      node(pin: ElectricalPin): number {
-        const slot = pinSlots.get(pin);
-        return slot === undefined ? -1 : pinNodes[slot]!;
-      },
-      pins(node: number): readonly ElectricalPin[] {
-        return nodes[node]?.pins ?? emptyTopologyPins;
-      },
-    }),
     solve(changedPins?: Iterable<ElectricalPin>): readonly ElectricalPin[] {
       runSolve(gatherPins(changedPins));
       if (changedCount === 0) return unchangedPins;

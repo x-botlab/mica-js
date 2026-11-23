@@ -166,50 +166,6 @@ export interface JitHost {
   loadBytes(memory: string, bytes: Uint8Array, offset?: number): void;
 }
 
-/** PROTOTYPE: 传输级旁路的一个时间切片。`tx` 只在本次同步回调内有效。 */
-export interface BusSlice {
-  readonly count: number;
-  readonly tx: Uint8Array;
-  readonly startTimePs: number;
-  readonly endTimePs: number;
-}
-/** PROTOTYPE: 端点声明的引脚映射与传输参数；两侧关键项必须一致才走旁路。 */
-export interface BusBinding {
-  readonly pins: Readonly<Record<string, string | readonly string[]>>;
-  readonly config: Readonly<Record<string, string | number | boolean>>;
-  /** target 侧：同步接收一个切片。 */
-  readonly onSlice?: (slice: BusSlice) => void;
-}
-/** PROTOTYPE: initiator 发起的有界突发；每个单位一个字节。 */
-export interface BusTransferRequest {
-  readonly totalUnits: number;
-  readonly unitDurationPs: number;
-  readonly tx?: Uint8Array;
-  readonly fill?: (buffer: Uint8Array) => void;
-}
-/**
- * PROTOTYPE: 旁路回调里对模型的同步效果。只在板空闲或同步阶段可用，
- * 等价于 JIT 宿主效果，但不放宽任何既有校验。
- */
-export interface BusEffects {
-  readonly time: number;
-  writeState(name: string, value: number | boolean): void;
-  writeMemory(name: string, offset: number, bytes: Uint8Array): void;
-  emit(channel: string, value: unknown): void;
-}
-/** PROTOTYPE: initiator 侧发起有界突发；返回 false 表示调用方必须走逐引脚。 */
-export interface BusEndpoint {
-  transfer(request: BusTransferRequest): boolean;
-  dispose(): void;
-  readonly effects: BusEffects;
-}
-/** PROTOTYPE: 声明传输端点；未调用 `attachBus` 的器件行为完全不变。 */
-export interface BusAttachOptions {
-  readonly profile: 'spi' | 'parallel-sync';
-  readonly role: 'initiator' | 'target';
-  readonly resolve: () => BusBinding | undefined;
-}
-
 /** 具体字段由生成模块或工厂泛型注解投影；这里不重复声明资源名称。 */
 export interface DeviceContext<
   Props extends object = object,
@@ -221,8 +177,6 @@ export interface DeviceContext<
   readonly memory: Readonly<Memory>;
   readonly topics: TopicBridge;
   reportError(error: unknown): void;
-  /** PROTOTYPE: 声明一个传输端点。未调用者行为完全不变。 */
-  attachBus?(options: BusAttachOptions): BusEndpoint;
 }
 export interface DeviceBatch<Outputs extends object = object> {
   readonly from: number;
