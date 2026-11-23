@@ -47,6 +47,8 @@ export interface Node {
   inputs: readonly number[];
   effects: OperationEffects;
   children: Map<string, Region>;
+  /** Post-order summary: this operation or any node in its child regions may suspend. */
+  suspends: boolean;
   definitionBlock: number;
   resumeBlock?: number;
   completionBlock?: number;
@@ -440,6 +442,20 @@ class Analyzer {
     this.throwExit = this.block(0, 'throw');
     this.stopExit = this.block(0, 'stop');
     this.redirectExit = this.block(0, 'redirect');
+    this.resolveSuspends();
+  }
+  /**
+   * Nodes are appended parents first, so reverse order is bottom-up: every child summary
+   * is final before its parent reads it.
+   */
+  private resolveSuspends(): void {
+    for (let index = this.nodes.length - 1; index >= 0; index--) {
+      const node = this.nodes[index]!;
+      let suspends = node.effects.maySuspend;
+      for (const region of node.children.values())
+        for (const child of region.nodes) if (child.suspends) suspends = true;
+      node.suspends = suspends;
+    }
   }
   private block(region: number, role: BasicBlock['role'], position: number | null = null): number {
     const id = this.blockSpecs.length;
@@ -498,6 +514,7 @@ class Analyzer {
           return (effectSummary ??= effects(operation));
         },
         children: new Map(),
+        suspends: false,
         ...(source ? { source: sourceSnapshot(source) } : {}),
       };
       region.nodes.push(node);

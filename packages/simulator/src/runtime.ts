@@ -360,14 +360,18 @@ class BoardRuntime implements Board {
   private processReport(): unknown {
     const resumable: string[] = [];
     const generic: string[] = [];
+    const programs: { readonly key: string; readonly blocks: number }[] = [];
     for (const instance of this.instances)
       for (const process of instance.processes) {
         const key = `${instance.id}/${process.declaration.kind === 'on' ? process.declaration.name : 'start'}`;
         (process.resumable ? resumable : generic).push(key);
+        // Blocks stay zero for generator bodies: they have no machine to measure.
+        programs.push(Object.freeze({ key, blocks: process.resumable?.blocks ?? 0 }));
       }
     return Object.freeze({
       resumable: Object.freeze(resumable),
       generic: Object.freeze(generic),
+      programs: Object.freeze(programs),
       bindings: Object.freeze(this.instances.map((instance) => instance.bindingReport())),
     });
   }

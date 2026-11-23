@@ -105,6 +105,8 @@ export type ResumableBody = (
 export interface ResumableProgram {
   readonly run: ResumableBody;
   readonly slotCount: number;
+  /** Generated machine blocks; a read-only measure of how much of the body was fused. */
+  readonly blocks: number;
   /** Initial `pc` of a fresh activation; always zero so a frame needs no setup. */
   readonly start: number;
 }
