@@ -75,7 +75,7 @@ export interface DirectJitStats {
 
 type CountedJit = Jit & { directStats?: DirectJitStats };
 
-/** Word masks the compiled blocks test at entry; mutated in place, so programs stay valid. */
+/** Word masks written by compiled blocks to trigger instruction-boundary publication. */
 interface DirectBarriers {
   stateMask: Int32Array;
   memoryMask: Int32Array;
@@ -269,7 +269,7 @@ function ensureMetadataForPc(board: JitRuntimeHost, jit: Jit, pc: number): void 
   ensureMetadata(board, jit, needed);
 }
 
-/** Publish the current guard sets into the masks the compiled blocks test at entry. */
+/** Publish the current subscriber sets into the masks the compiled blocks test on writes. */
 function syncDirectBarriers(jit: Jit): void {
   const entry = directBarriers(jit);
   const { stateIndex, memoryIndex } = entry;
@@ -315,40 +315,81 @@ export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
   ): SimulationError;
 }
 
+/** Reverse-map the hook's resource slots; slot values are not bank indices. */
+function entryBlockedNames(jit: Jit): {
+  readonly states: ReadonlySet<string>;
+  readonly memories: ReadonlySet<string>;
+} {
+  const states = new Set<string>();
+  const memories = new Set<string>([jit.options.code]);
+  const instance = jit.instance;
+  for (const [name, slot] of instance.stateResources)
+    if (jit.directHookReads.has(slot)) states.add(name);
+  for (const [name, slot] of instance.memoryResources)
+    if (jit.directHookReads.has(slot)) memories.add(name);
+  return { states, memories };
+}
+
 function refreshDirectGuards(jit: Jit, hookReads?: Dependencies): void {
-  let changed = false;
+  let observersChanged = false;
+  let entryChanged = false;
   const instance = jit.instance;
   const hookCount = jit.directHookReads.size;
-  // IRQ masking and short-circuit reads must not churn the compiled barrier set.
-  if (hookReads) for (const slot of hookReads.keys()) jit.directHookReads.add(slot);
+  if (hookReads) {
+    for (const slot of hookReads.keys()) {
+      if (jit.directHookReads.has(slot)) continue;
+      jit.directHookReads.add(slot);
+      // Entry blocks are compiled against the hook's current state/memory dependencies.
+      // A newly discovered dependency must rebuild instead of running an old block, while
+      // pin/sample reads need no entry change.
+      let resource = false;
+      for (const candidate of instance.stateResources.values())
+        if (candidate === slot) {
+          resource = true;
+          break;
+        }
+      if (!resource)
+        for (const candidate of instance.memoryResources.values())
+          if (candidate === slot) {
+            resource = true;
+            break;
+          }
+      if (resource) entryChanged = true;
+    }
+  }
   if (
     jit.directObserverRevision === instance.observerRevision &&
-    hookCount === jit.directHookReads.size
+    hookCount === jit.directHookReads.size &&
+    !entryChanged
   )
     return;
   jit.directObserverRevision = instance.observerRevision;
   for (const [name, slot] of instance.stateResources) {
-    const blocked = slot.subscribers.size > 0 || jit.directHookReads.has(slot);
+    // Hook reads are entry barriers; only ordinary subscribers publish dynamically.
+    const blocked = slot.subscribers.size > 0;
     if (jit.directStateGuards.has(name) === blocked) continue;
     if (blocked) jit.directStateGuards.add(name);
     else jit.directStateGuards.delete(name);
-    changed = true;
+    observersChanged = true;
   }
   for (const [name, slot] of instance.memoryResources) {
-    const blocked =
-      slot.subscribers.size > 0 || jit.directHookReads.has(slot) || name === jit.options.code;
+    const blocked = slot.subscribers.size > 0;
     if (jit.directMemoryGuards.has(name) === blocked) continue;
     if (blocked) jit.directMemoryGuards.add(name);
     else jit.directMemoryGuards.delete(name);
-    changed = true;
+    observersChanged = true;
   }
-  if (changed) {
-    // Guards no longer invalidate the program: the compiled blocks test these masks at entry,
-    // so a membership change only flips individual blocks between direct and interpreted.
+  if (entryChanged && jit.direct !== undefined) {
+    // Entry masks are compile-time facts, so an old resident program cannot be patched.
+    jit.direct = undefined;
+    jit.directPrograms.clear();
+    jit.directRevision = -1;
+  }
+  if (observersChanged) {
+    // Subscriber masks are shared in place: one program survives observer churn.
     syncDirectBarriers(jit);
-    // A block that fell back while it was blocked may be eligible again.
-    jit.directSkip = undefined;
   }
+  if (observersChanged || entryChanged) jit.directSkip = undefined;
 }
 /**
  * Direct programs advance `frame.time` between host calls, while the board only adopts the
@@ -634,9 +675,10 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
               : { counter, cycles: delay.cycles },
           );
         }
-        // Guards stay out of the key: blocks test the barriers at entry, so one program serves
-        // every observer set. The full delay descriptor participates because it changes the
-        // emitted guard; translation revision changes still clear the program cache.
+        // Observer guards stay out of the key: blocks test them only when writing, so one
+        // program serves every observer set. Entry guards participate in the binding
+        // fingerprint because they change compile-time admission. The full delay descriptor
+        // also participates because it changes the emitted guard.
         const key = JSON.stringify([...delayLoops].sort(([left], [right]) => left - right));
         const cached = jit.directPrograms.get(key);
         if (cached) {
@@ -644,22 +686,24 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
           jit.directRevision = jit.revision;
         } else {
           const { states, memories, pins } = layout;
+          const entry = entryBlockedNames(jit);
           const cache = (jit.directCache ??= compileDirectJit.createCache());
-          const program = compileDirectJit(
-            instructions,
-            {
-              states,
-              memories,
-              pins,
-              pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
-              host: true,
-              ...(jit.functions === undefined ? {} : { functions: jit.functions }),
-              split: true,
-              shardSize: DIRECT_SHARD_SIZE,
-              delayLoops,
-            },
-            cache,
-          );
+          const binding = {
+            states,
+            memories,
+            pins,
+            pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
+            host: true,
+            ...(jit.functions === undefined ? {} : { functions: jit.functions }),
+            split: true,
+            shardSize: DIRECT_SHARD_SIZE,
+            delayLoops,
+            entryBlockedStates: entry.states,
+            entryBlockedMemories: entry.memories,
+            blockedStates: jit.directStateGuards,
+            blockedMemories: jit.directMemoryGuards,
+          };
+          const program = compileDirectJit(instructions, binding, cache);
           jit.directRevision = jit.revision;
           jit.directMisses.clear();
           const stats = directStats(jit);
@@ -685,8 +729,8 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
             : undefined;
           // A declined program must not be cached, or the key would keep answering `undefined`.
           if (!jit.direct) jit.directPrograms.delete(key);
-          // The key no longer carries the guard set, so one program covers every observer set:
-          // the eight-slot cap (and its eviction churn) has nothing left to bound.
+          // One program covers every subscriber set because its write masks are shared and
+          // refreshed in place; entry-hook changes clear this map above.
           else jit.directPrograms.set(key, jit.direct);
         }
       }

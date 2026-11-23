@@ -271,6 +271,8 @@ interface BindingFingerprint {
   readonly host: boolean;
   readonly blockedStates: readonly string[] | undefined;
   readonly blockedMemories: readonly string[] | undefined;
+  readonly entryBlockedStates: readonly string[] | undefined;
+  readonly entryBlockedMemories: readonly string[] | undefined;
   readonly functions: readonly (readonly [string, DirectFunctionIR])[] | undefined;
 }
 
@@ -374,6 +376,12 @@ function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
       binding.blockedStates === undefined ? undefined : [...binding.blockedStates].sort(),
     blockedMemories:
       binding.blockedMemories === undefined ? undefined : [...binding.blockedMemories].sort(),
+    entryBlockedStates:
+      binding.entryBlockedStates === undefined ? undefined : [...binding.entryBlockedStates].sort(),
+    entryBlockedMemories:
+      binding.entryBlockedMemories === undefined
+        ? undefined
+        : [...binding.entryBlockedMemories].sort(),
   };
 }
 
@@ -418,7 +426,9 @@ function sameBinding(left: BindingFingerprint, right: BindingFingerprint): boole
     samePairs(left.memories, right.memories) &&
     sameOptionalPairs(left.pins, right.pins) &&
     sameNames(left.blockedStates, right.blockedStates) &&
-    sameNames(left.blockedMemories, right.blockedMemories)
+    sameNames(left.blockedMemories, right.blockedMemories) &&
+    sameNames(left.entryBlockedStates, right.entryBlockedStates) &&
+    sameNames(left.entryBlockedMemories, right.entryBlockedMemories)
   );
 }
 
@@ -1308,13 +1318,23 @@ function residentStepFinish(
     entry.duration !== undefined &&
     entry.suffix.length === 0 &&
     !entry.isolated;
-  const checkpoint = emptyInline
-    ? entry.dynamicDuration
-      ? 'if (F.publishPending) return "invalidated"; '
-      : ''
-    : binding.host && entry.duration !== undefined
-      ? `if (F.stopAfterInstruction && !F.finishCheckpoint?.(deadline, ${entry.suffix.length === 0})) return "invalidated"; if (F.publishPending) return "invalidated"; `
-      : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; ';
+  let checkpoint: string;
+  if (entry.duration === undefined) {
+    // Zero-time blocks have no `elapsed()` site to checkpoint a dynamic publication. Settle
+    // the instruction boundary here so a resident shard can continue without a scheduler hop.
+    checkpoint =
+      binding.host === true
+        ? 'if (F.stopAfterInstruction) return "invalidated"; if (F.publishPending && F.finishCheckpoint?.(deadline, false) !== true) return "invalidated"; '
+        : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; ';
+  } else {
+    checkpoint = emptyInline
+      ? entry.dynamicDuration
+        ? 'if (F.publishPending) return "invalidated"; '
+        : ''
+      : binding.host
+        ? `if (F.stopAfterInstruction && !F.finishCheckpoint?.(deadline, ${entry.suffix.length === 0})) return "invalidated"; if (F.publishPending) return "invalidated"; `
+        : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; ';
+  }
   if (fallthrough !== undefined) {
     return `${checkpoint}pc = S[${binding.pc.index}]; if (pc !== ${fallthrough.pc}) { if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc; }`;
   }
@@ -1922,22 +1942,31 @@ class Instruction {
   }
 
   /**
-   * Runtime write barrier. A block that may write a state or memory the runtime currently
-   * observes returns `fallback` before it touches any slot, so the interpreter performs that
-   * instruction and observers still see every write. Testing the masks at entry — instead of
-   * declining the block at compile time — keeps one program valid across observer changes.
-   * Resumed instructions keep their old behaviour: a continuation always completes its
-   * suffix, because the interpreter can no longer replay it from that PC.
+   * Entry write barrier. Only slots read by `beforeInstruction` (and the code memory) are
+   * checked before an instruction starts; ordinary observer slots publish dynamically at a
+   * write site and are checkpointed at the next instruction boundary. Keeping this split means
+   * a block can stay resident while observers move, without weakening hook-prefix semantics.
    */
   private emitBarrier(): string[] {
     const lines: string[] = [];
     // The implicit PC write marks any instruction already executed in this batch. Publish
-    // that prefix first, then enter the loop in a fresh batch with fresh observer masks.
+    // that prefix first, then enter the loop in a fresh batch with fresh entry masks.
     if (this.isolated) {
       const pc = this.binding.pc.index;
       lines.push(`if (SD[${pc >>> 5}] & ${(1 << (pc & 31)) >>> 0}) ${publish}`);
     }
-    const emit = (bank: 'BS' | 'BM', indices: ReadonlySet<number>): void => {
+    const emit = (
+      bank: 'BS' | 'BM',
+      written: ReadonlySet<number>,
+      names: ReadonlySet<string> | undefined,
+      slots: ReadonlyMap<string, number>,
+    ): void => {
+      if (!names?.size || !written.size) return;
+      const indices = new Set<number>();
+      for (const name of names) {
+        const index = slots.get(name);
+        if (validIndex(index) && written.has(index)) indices.add(index);
+      }
       if (!indices.size) return;
       const words = new Map<number, number>();
       for (const index of indices)
@@ -1945,8 +1974,8 @@ class Instruction {
       for (const [word, mask] of [...words].sort(([left], [right]) => left - right))
         lines.push(`if (${bank}[${word}] & ${mask >>> 0}) return "fallback";`);
     };
-    emit('BS', this.writtenStates);
-    emit('BM', this.writtenMemories);
+    emit('BS', this.writtenStates, this.binding.entryBlockedStates, this.binding.states);
+    emit('BM', this.writtenMemories, this.binding.entryBlockedMemories, this.binding.memories);
     return lines;
   }
 
@@ -1969,7 +1998,7 @@ class Instruction {
 
     const lines: string[] = [];
     const slots = this.slots.join(',');
-    const params = ['F', 'S', 'M', 'SD', 'MD', 'MV', 'P', 'R', ...this.slots].join(',');
+    const params = ['F', 'S', 'M', 'SD', 'MD', 'MV', 'P', 'R', 'BS', 'BM', ...this.slots].join(',');
     let cursor = 0;
     // Prefer the outer branch when candidates nest. Its whole body already moves off
     // the short path, so there is no need to add calls inside that body.
@@ -2321,7 +2350,9 @@ class Instruction {
 
   private state(name: string, write: boolean): number {
     const index = this.binding.states.get(name);
-    if (!validIndex(index) || (write && this.binding.blockedStates?.has(name))) throw unsupported;
+    // Ordinary observer slots stay compilable; their writes publish at the instruction boundary.
+    if (!validIndex(index) || (write && this.binding.entryBlockedStates?.has(name)))
+      throw unsupported;
     (write ? this.writeStates : this.readStates).add(name);
     if (write) this.writtenStates.add(index);
     return index;
@@ -2332,8 +2363,10 @@ class Instruction {
     const name = operation.memory.name;
     const index = this.binding.memories.get(name);
     const write = operation.kind.startsWith('store');
-    // Only stores are write barriers; every load kind, including the wide ones, stays eligible.
-    if (!validIndex(index) || (write && this.binding.blockedMemories?.has(name))) throw unsupported;
+    // Only entry-blocked stores and self-modifying code remain compile-time barriers. Every
+    // load kind, including the wide ones, stays eligible.
+    if (!validIndex(index) || (write && this.binding.entryBlockedMemories?.has(name)))
+      throw unsupported;
     (write ? this.writeMemories : this.readMemories).add(name);
     if (write) this.writtenMemories.add(index);
     return index;
@@ -2567,7 +2600,13 @@ class Instruction {
         break;
       case 'write': {
         const index = this.state(operation.name, true);
-        lines.push(`S[${index}] = ${this.value(operation.value)};`, dirty('SD', index));
+        const word = index >>> 5;
+        const mask = (1 << (index & 31)) >>> 0;
+        lines.push(
+          `S[${index}] = ${this.value(operation.value)};`,
+          dirty('SD', index),
+          `if (BS[${word}] & ${mask}) F.publishPending = true;`,
+        );
         break;
       }
       case 'unary': {
@@ -2749,6 +2788,7 @@ class Instruction {
         lines.push(
           `${memory}[H.offset(${memory},${this.value(operation.offset)})] = H.byte(${this.value(operation.value)});`,
           dirty('MD', index),
+          `if (BM[${index >>> 5}] & ${(1 << (index & 31)) >>> 0}) F.publishPending = true;`,
         );
         break;
       }
@@ -2780,6 +2820,7 @@ class Instruction {
         lines.push(
           `H.${store}(${memory},MV[${index}],${this.value(operation.offset)},${this.value(operation.value)},${little});`,
           dirty('MD', index),
+          `if (BM[${index >>> 5}] & ${(1 << (index & 31)) >>> 0}) F.publishPending = true;`,
         );
         break;
       }
