@@ -104,7 +104,11 @@ class BoardRuntime implements Board {
   current: Instance | undefined;
   /** -1: clean; -2: initial solve or multiple dirty slots; otherwise the only dirty slot. */
   private pendingElectricalSlot = -2;
-  private readonly dirtyElectricalSlots = new Set<number>();
+  /** Flat dirty batch for the multi-slot publication path, stamped to drop repetitions. */
+  private dirtyElectricalSlots = new Int32Array(0);
+  private dirtyElectricalStamps = new Int32Array(0);
+  private dirtyElectricalLength = 0;
+  private dirtyElectricalEpoch = 1;
   private readonly observations = new ActivationQueue<Observation>();
   private readonly reactionBatch: Reaction[] = [];
   private readonly changeObservations: Receiver[] = [];
@@ -128,7 +132,27 @@ class BoardRuntime implements Board {
   private readonly models = new Fifo<Process>();
   readonly events = new EventQueue<() => void>();
   private readonly readyJits = new Fifo<Jit>();
+  /**
+   * Bumped on every resource-version mutation board wide. The value is bare arithmetic: a
+   * difference proves *some* resource moved, never which one, so it only ever guards
+   * "nothing changed at all" conclusions.
+   *
+   * Mutations cluster inside `publish()` while derived reads spread across the gaps
+   * between publications, so a checkpoint compared against this counter hits far more
+   * often than the raw mutation-to-read ratio suggests: `camera-mcu` sees 8514 bumps and
+   * 5638 derived reads per frame, yet 99.93% of those reads find the epoch unchanged.
+   */
+  private versionEpoch = 0;
   readonly waitingJits = new Set<Jit>();
+  /**
+   * Advances whenever a parked JIT is flagged or parks. The global `versionEpoch` cannot
+   * gate the scan: every electrical publish bumps it even when no JIT waits on the slot.
+   */
+  private waiterEpoch = 0;
+  /** `waiterEpoch` at the last parked-JIT scan; equal means no parked JIT can have woken. */
+  private waitingScanEpoch = 0;
+  /** Parked JITs whose `pollingWait` is set: their polling boundary needs every round. */
+  private pollingWaiterCount = 0;
   readonly jits: Jit[] = [];
   readonly instances: Instance[] = [];
   private network!: ElectricalNetwork;
@@ -257,6 +281,9 @@ class BoardRuntime implements Board {
           this.sampleSlotsBySlot.push(slot);
         }
       this.network = createElectricalNetwork(pins, nets);
+      // One dirty list and one stamp per board pin: publication never allocates.
+      this.dirtyElectricalSlots = new Int32Array(pins.length);
+      this.dirtyElectricalStamps = new Int32Array(pins.length);
       this.phase = 'initialize';
       for (const instance of this.instances) {
         this.current = instance;
@@ -348,14 +375,18 @@ class BoardRuntime implements Board {
   private processReport(): unknown {
     const resumable: string[] = [];
     const generic: string[] = [];
+    const programs: { readonly key: string; readonly blocks: number }[] = [];
     for (const instance of this.instances)
       for (const process of instance.processes) {
         const key = `${instance.id}/${process.declaration.kind === 'on' ? process.declaration.name : 'start'}`;
         (process.resumable ? resumable : generic).push(key);
+        // Blocks stay zero for generator bodies: they have no machine to measure.
+        programs.push(Object.freeze({ key, blocks: process.resumable?.blocks ?? 0 }));
       }
     return Object.freeze({
       resumable: Object.freeze(resumable),
       generic: Object.freeze(generic),
+      programs: Object.freeze(programs),
       bindings: Object.freeze(this.instances.map((instance) => instance.bindingReport())),
     });
   }
@@ -582,8 +613,73 @@ class BoardRuntime implements Board {
   }
   invalidate(slot: ResourceSlot): void {
     slot.version++;
+    this.versionEpoch++;
+    this.flagWaiters(slot);
     if (slot.subscribers.size === 0) return;
     for (const observation of slot.subscribers) this.observations.add(observation.order!);
+  }
+  /** Records a resource version bumped outside :func:`invalidate` (direct JIT writes). */
+  noteResourceVersion(slot: ResourceSlot): void {
+    this.versionEpoch++;
+    this.flagWaiters(slot);
+  }
+  /** Flags every parked JIT that recorded `slot`, so the next round rescans it exactly once. */
+  private flagWaiters(slot: ResourceSlot): void {
+    const waiters = slot.waiters;
+    if (waiters === undefined || waiters.size === 0) return;
+    for (const jit of waiters) jit.dependencyDirty = true;
+    this.waiterEpoch++;
+  }
+  /**
+   * Registers a parked JIT on the slots its predicate recorded. A later version bump then
+   * flags that JIT directly, so a scheduler round rescans dependencies only when the
+   * evidence it would read has actually moved.
+   */
+  private watchWaiter(jit: Jit): void {
+    const dependencies = jit.dependencies;
+    if (jit.waiterSlots === dependencies) return;
+    const previous = jit.waiterSlots;
+    if (previous !== undefined) for (const slot of previous.keys()) slot.waiters?.delete(jit);
+    if (dependencies !== undefined)
+      for (const slot of dependencies.keys()) (slot.waiters ??= new Set()).add(jit);
+    jit.waiterSlots = dependencies;
+    // The recorded versions are only proven current by a scan after this registration, so
+    // a write in the same round cannot be missed.
+    jit.dependencyDirty = true;
+  }
+  /**
+   * Parks a JIT on the versions it just recorded. Registering here instead of in the scan
+   * makes `waiterEpoch` a complete wake source: the scan can then be skipped whenever no
+   * parked JIT was flagged or registered since the last scan, and no poll is due.
+   */
+  parkWaiter(jit: Jit): void {
+    if (!this.waitingJits.has(jit)) {
+      this.waitingJits.add(jit);
+      if (jit.pollingWait) this.pollingWaiterCount++;
+    }
+    this.watchWaiter(jit);
+    jit.dependencyDirty = true;
+    this.waiterEpoch++;
+  }
+  /** Wakes or drops a parked JIT and removes the registrations that would flag it later. */
+  unparkWaiter(jit: Jit): void {
+    if (this.waitingJits.delete(jit) && jit.pollingWait) {
+      jit.pollingWait = false;
+      this.pollingWaiterCount--;
+    }
+    const slots = jit.waiterSlots;
+    if (slots !== undefined) {
+      for (const slot of slots.keys()) slot.waiters?.delete(jit);
+      jit.waiterSlots = undefined;
+    }
+  }
+  /**
+   * Checkpoint source for cached dependency evidence. An unchanged value since a previous
+   * checkpoint proves no resource version moved in between, which is enough to reuse that
+   * evidence without scanning it.
+   */
+  get resourceEpoch(): number {
+    return this.versionEpoch;
   }
   /** Pin slot of an electrical endpoint; bound once because the board order is fixed. */
   electricalSlot(pin: ElectricalPin): number {
@@ -592,35 +688,55 @@ class BoardRuntime implements Board {
   markElectricalDirty(slot: number): void {
     const pending = this.pendingElectricalSlot;
     if (pending === slot) return;
+    const stamps = this.dirtyElectricalStamps;
+    if (slot >= stamps.length) throw new RangeError('Electrical slot is outside the board');
+    const epoch = this.dirtyElectricalEpoch;
+    if (stamps[slot] === epoch) return;
+    stamps[slot] = epoch;
+    if (pending >= 0) {
+      // The promoted batch holds the single pending slot first, then this one.
+      const list = this.dirtyElectricalSlots;
+      list[0] = pending;
+      list[1] = slot;
+      stamps[pending] = epoch;
+      this.dirtyElectricalLength = 2;
+      this.pendingElectricalSlot = -2;
+      return;
+    }
     if (pending === -1) {
       this.pendingElectricalSlot = slot;
       return;
     }
-    if (pending >= 0) {
-      this.dirtyElectricalSlots.add(pending);
-      this.pendingElectricalSlot = -2;
-    }
-    this.dirtyElectricalSlots.add(slot);
+    this.dirtyElectricalSlots[this.dirtyElectricalLength++] = slot;
   }
   /** Dirty slot count for diagnostics, not used by the publication path. */
   get dirtyElectricalCount(): number {
-    const pending = this.pendingElectricalSlot;
-    return pending >= 0 ? 1 : this.dirtyElectricalSlots.size;
+    return this.pendingElectricalSlot >= 0 ? 1 : this.dirtyElectricalLength;
   }
   private publish(): void {
     const pending = this.pendingElectricalSlot;
     if (pending === -1) return;
-    // Fused publish: dirty slots go straight into the local solve and the changed slots
-    // resolve their pre-bound sample slot, so no pin object or map hop is involved.
-    const changed =
-      pending >= 0
-        ? this.network.solveSlot(pending)
-        : this.network.solveSlots(this.dirtyElectricalSlots);
-    if (pending === -2) this.dirtyElectricalSlots.clear();
+    // Fused publish: the solver hands every changed slot straight to `publishSlot`, which
+    // resolves the pre-bound sample slot without any intermediate result array.
+    if (pending >= 0) this.network.solveSlotInto(pending, this.publishSlot);
+    else
+      this.network.solveSlotBatchInto(
+        this.dirtyElectricalSlots,
+        this.dirtyElectricalLength,
+        this.publishSlot,
+      );
+    if (pending === -2) this.dirtyElectricalLength = 0;
+    // A new epoch retires every stamp, including the single pending slot's own mark.
+    if (++this.dirtyElectricalEpoch === 0x7fffffff) {
+      this.dirtyElectricalStamps.fill(0);
+      this.dirtyElectricalEpoch = 1;
+    }
     this.pendingElectricalSlot = -1;
-    for (let index = 0; index < changed.length; index++)
-      this.invalidate(this.sampleSlotsBySlot[changed[index]!]!);
   }
+  /** Publication sink: enter the observation queue for one published board slot. */
+  private readonly publishSlot = (slot: number): void => {
+    this.invalidate(this.sampleSlotsBySlot[slot]!);
+  };
   private bindObservation(observation: Receiver, path: readonly string[]): void {
     const instance = observation.instance;
     observation.previous = instance.observe(observation, path);
@@ -679,7 +795,7 @@ class BoardRuntime implements Board {
         instance: entry.instance,
         members: [],
         dependencies: new Map(),
-        entry: { dependencies: new Map<ResourceSlot, number>(), value: undefined },
+        entry: { dependencies: new Map<ResourceSlot, number>(), value: undefined, epoch: -1 },
         order: 0,
         previous: undefined,
         bound: false,
@@ -721,13 +837,17 @@ class BoardRuntime implements Board {
   private commitChain(chain: ObservationChain, value: unknown): void {
     const path = chain.plan.path;
     if (path.length !== 1) return;
-    for (const slot of chain.plan.slots as readonly ResourceSlot[])
-      chain.dependencies.set(slot, slot.version);
+    const slots = chain.plan.slots as readonly ResourceSlot[];
+    const dependencies = chain.dependencies;
+    for (let index = 0; index < slots.length; index++) {
+      const slot = slots[index]!;
+      dependencies.set(slot, slot.version);
+    }
     const entry = chain.entry;
     if (entry.value !== value) entry.value = value;
-    entry.dependencies = chain.dependencies;
-    const cached = chain.instance.derived.get(path[0]!);
-    if (cached !== entry) chain.instance.derived.set(path[0]!, entry);
+    entry.dependencies = dependencies;
+    entry.epoch = this.versionEpoch;
+    chain.instance.setDerived(path[0]!, entry);
   }
   private collectChain(chain: ObservationChain): void {
     const value = chain.plan.evaluate();
@@ -799,28 +919,15 @@ class BoardRuntime implements Board {
     for (;;) {
       if (this.pendingElectricalSlot !== -1) this.publish();
       if (!this.observations.size) return;
+      // Truncating a non-empty array clears its elements; an already-empty buffer needs
+      // no store at all, which is the common case for the ordering tables.
       const reactions = this.reactionBatch;
-      reactions.length = 0;
+      if (reactions.length) reactions.length = 0;
       const changes = this.changeObservations;
-      changes.length = 0;
-      this.changePrevious.length = 0;
-      this.changeCurrent.length = 0;
-      const batch = this.observations.take();
-      for (let index = 0; index < batch.length; index++) {
-        const observation = batch[index]!;
-        if ('plan' in observation) {
-          this.collectChain(observation);
-          continue;
-        }
-        const current = observation.readSource!();
-        if (same(observation.previous, current)) continue;
-        const previous = observation.previous;
-        observation.previous = current;
-        // Once a collapsed chain buffered its receivers, later effects must wait for
-        // the ordered table; otherwise the original inline application is kept.
-        if (changes.length) this.recordChange(observation, previous, current);
-        else this.applyChange(observation, previous, current);
-      }
+      if (changes.length) changes.length = 0;
+      if (this.changePrevious.length) this.changePrevious.length = 0;
+      if (this.changeCurrent.length) this.changeCurrent.length = 0;
+      this.observations.drain(this.consumeObservation);
       const count = changes.length;
       if (count) {
         for (let index = 0; index < count; index++)
@@ -833,6 +940,21 @@ class BoardRuntime implements Board {
       else return;
     }
   }
+  /** One due receiver: chains collapse their members, plain sources apply inline. */
+  private readonly consumeObservation = (observation: Observation): void => {
+    if ('plan' in observation) {
+      this.collectChain(observation);
+      return;
+    }
+    const current = observation.readSource!();
+    if (same(observation.previous, current)) return;
+    const previous = observation.previous;
+    observation.previous = current;
+    // Once a collapsed chain buffered its receivers, later effects must wait for the
+    // ordered table; otherwise the original inline application is kept.
+    if (this.changeObservations.length) this.recordChange(observation, previous, current);
+    else this.applyChange(observation, previous, current);
+  };
   /** Shared capture barrier and ordered body runner for generic and static boundaries. */
   private runBoundaryReactions(reactions: Reaction[]): void {
     try {
@@ -944,13 +1066,15 @@ class BoardRuntime implements Board {
    * the body reports ticks/receive through the frame and returns whether it suspended.
    */
   private driveResumable(process: Process, program: ResumableProgram, value?: unknown): void {
-    this.current = process.instance;
+    const instance = process.instance;
+    this.current = instance;
     process.state = 'running';
     const state = (process.frame ??= frame(program));
+    const host = instance.host;
     let input = value;
     for (;;) {
       state.value = input;
-      if (!program.run(process.instance.host, undefined, undefined, state)) {
+      if (!program.run(host, undefined, undefined, state)) {
         this.boundary();
         process.state = 'idle';
         if (process.pending) {
@@ -960,7 +1084,7 @@ class BoardRuntime implements Board {
         return;
       }
       if (state.kind === RESUMABLE_RECEIVE) {
-        const channel = process.instance.channels.get(state.channel)!;
+        const channel = instance.channels.get(state.channel)!;
         if (channel.incoming.length) {
           input = channel.incoming.shift().value;
           continue;
@@ -1028,6 +1152,11 @@ class BoardRuntime implements Board {
             if (process.source?.[0] === notification) this.enqueue(process);
         instance.notificationInputs.clear();
       }
+      // A parked JIT records the versions it read, so it can only become runnable once one
+      // of those slots is invalidated; the wait set binds exactly that dependency set, and a
+      // periodic poll still needs its boundary recomputed on every round. Both facts are
+      // counted in `waiterEpoch` / `pollingWaiterCount`, so a round where neither moved
+      // skips the scan entirely with `pollingBoundary` left at Infinity.
       for (;;) {
         while (this.events.time === this.time) this.events.pop()();
         if (this.models.length) {
@@ -1039,30 +1168,36 @@ class BoardRuntime implements Board {
           continue;
         }
         let pollingBoundary = Infinity;
-        if (this.waitingJits.size)
+        if (
+          this.waitingJits.size &&
+          (this.waiterEpoch !== this.waitingScanEpoch || this.pollingWaiterCount !== 0)
+        ) {
+          this.waitingScanEpoch = this.waiterEpoch;
           for (let index = 0; index < this.jits.length; index++) {
             const jit = this.jits[index]!;
             if (!jit.active || jit.stopped || !this.waitingJits.has(jit)) continue;
+            this.watchWaiter(jit);
+            if (!jit.dependencyDirty && !jit.pollingWait) continue;
             if (jit.instance.dependenciesCurrent(jit.dependencies)) {
+              jit.dependencyDirty = false;
               if (jit.pollingWait && jit.pollingPeriod > 0) {
                 const lastStart = MAX_TIME - ((MAX_TIME - jit.pollingOrigin) % jit.pollingPeriod);
                 if (lastStart < MAX_TIME && lastStart < end) {
                   if (lastStart === this.time) {
-                    jit.pollingWait = false;
                     jit.pollingToken++;
                     delete jit.dependencies;
-                    this.waitingJits.delete(jit);
+                    this.unparkWaiter(jit);
                     this.queueJit(jit);
                   } else pollingBoundary = Math.min(pollingBoundary, lastStart);
                 }
               }
               continue;
             }
+            jit.dependencyDirty = false;
             if (jit.pollingWait) {
-              jit.pollingWait = false;
               jit.pollingToken++;
               delete jit.dependencies;
-              this.waitingJits.delete(jit);
+              this.unparkWaiter(jit);
               const remainder =
                 jit.pollingPeriod > 0 ? (this.time - jit.pollingOrigin) % jit.pollingPeriod : 0;
               if (remainder)
@@ -1076,11 +1211,16 @@ class BoardRuntime implements Board {
               if (checked.value === true) {
                 delete jit.predicate;
                 delete jit.dependencies;
-                this.waitingJits.delete(jit);
+                this.unparkWaiter(jit);
                 this.queueJit(jit);
+              } else {
+                // The replaced dependency set is re-registered and needs its own scan.
+                this.watchWaiter(jit);
+                this.waiterEpoch++;
               }
             }
           }
+        }
         if (this.time < end && this.readyJits.length) {
           runJit(this, this.readyJits.shift());
           if (this.isFaulted) throw this.primary!;
@@ -1090,8 +1230,13 @@ class BoardRuntime implements Board {
           this.time = pollingBoundary;
           continue;
         }
-        if (this.events.time <= end) {
-          this.time = this.events.time;
+        const next = this.events.time;
+        if (next <= end) {
+          this.time = next;
+          // The next round would only drain these events at the top of the loop; doing it
+          // here saves one scheduler round per due event and observes the same order
+          // (callbacks still run before the model queue is served).
+          while (this.events.time === this.time) this.events.pop()();
           continue;
         }
         this.time = end;

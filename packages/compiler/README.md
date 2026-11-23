@@ -71,7 +71,7 @@ No asynchronous execution, scheduling or electrical solving is implemented here.
 
 `compileResumableBody(region)` is the optional non-generator form of the same body.
 It compiles the region into one plain function with an explicit program counter and a
-reused frame, and returns `{ run, slotCount, start }`:
+reused frame, and returns `{ run, slotCount, blocks, start }`:
 
 ```ts
 import { compileResumableBody, RESUMABLE_RECEIVE, RESUMABLE_TICKS } from '@mica-js/compiler';
@@ -86,9 +86,27 @@ reused, so a suspension allocates no new signal or frame object; host calls and 
 generated `args = []` default still allocate as before. `resumeMap`/`exitMap` metadata
 is not produced for this form; use `compileBodyArtifact` when the map is needed.
 
-Control flow becomes a block graph: `if`, `match`, `while`, `loop`, `break`,
-`continue`, `return` and `returnValue` are lowered to explicit block transitions, and
-`wait`/`receive` end a block. Value slots and locals live in the function scope; only
+Control flow becomes a block graph only where a block boundary is observable: a
+suspension is the one thing that ends a fragment, so a control-flow subtree without a
+suspension point stays inside the enclosing block as the same structured JavaScript the
+generator form emits.
+
+- `if` and `match` fuse whole when nothing in the subtree suspends and no `break`,
+  `continue`, `return` or `returnValue` appears anywhere below them.
+- `while` and `loop` fuse when the subtree suspends nowhere and holds no `return`; a
+  `break`/`continue` may target the fused loop itself, which is emitted as
+  `while (true)`, but the loops stay in blocks when an `if`/`match` sits between the
+  jump and its loop or when any nested control flow cannot fuse.
+- Standalone `break`, `continue`, `return`, `returnValue`, `wait` and `receive` never
+  fuse. Everything that refuses fusion keeps the original per-block lowering, so
+  fusion cannot change admission.
+
+The dispatch loop holds the program counter in a local (`switch (pc)`) and writes
+`frame.pc` only when the body suspends or completes; intermediate transitions are not
+observable because the driver reads `frame.pc` only after the body returns. `blocks`
+reports how many machine blocks the body compiled into.
+
+Value slots and locals live in the function scope; only
 the slots the analysis reports live at the resume point are copied into `frame.slots`
 before returning and restored on resume, so a local keeps its pre-suspension value
 while a later `read` observes current state. Straight-line operations are emitted by

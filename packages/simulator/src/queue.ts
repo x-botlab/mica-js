@@ -1,57 +1,94 @@
-export interface TimedTask<T> {
-  readonly time: number;
-  readonly order: number;
-  readonly value: T;
-}
+/**
+ * Binary min-heap over parallel arrays. Every push/pop used to allocate a `{ time, order,
+ * value }` record; a timed board pushes one continuation per suspension, so the flat form
+ * keeps the scheduler loop allocation-free.
+ */
 export class EventQueue<T> {
-  private readonly heap: TimedTask<T>[] = [];
+  private readonly times: number[] = [];
+  private readonly orders: number[] = [];
+  private readonly values: (T | undefined)[] = [];
+  private size = 0;
   private sequence = 0;
   get time(): number {
-    return this.heap[0]?.time ?? Infinity;
+    return this.size === 0 ? Infinity : this.times[0]!;
   }
   push(time: number, value: T): void {
-    const task = { time, order: this.sequence++, value };
-    let at = this.heap.length;
-    this.heap.push(task);
-    while (at > 0) {
-      const parent = (at - 1) >>> 1;
-      if (!this.before(task, this.heap[parent]!)) break;
-      this.heap[at] = this.heap[parent]!;
-      at = parent;
-    }
-    this.heap[at] = task;
+    const at = this.size++;
+    this.times[at] = time;
+    this.orders[at] = this.sequence++;
+    this.values[at] = value;
+    this.siftUp(at);
   }
   pop(): T {
-    const first = this.heap[0]!;
-    const last = this.heap.pop()!;
-    if (this.heap.length) {
-      let at = 0;
-      while (at * 2 + 1 < this.heap.length) {
-        let child = at * 2 + 1;
-        if (child + 1 < this.heap.length && this.before(this.heap[child + 1]!, this.heap[child]!))
-          child++;
-        if (!this.before(this.heap[child]!, last)) break;
-        this.heap[at] = this.heap[child]!;
-        at = child;
-      }
-      this.heap[at] = last;
+    const value = this.values[0]!;
+    const last = --this.size;
+    if (last >= 0) {
+      this.times[0] = this.times[last]!;
+      this.orders[0] = this.orders[last]!;
+      this.values[0] = this.values[last]!;
+      this.times[last] = 0;
+      this.orders[last] = 0;
+      this.values[last] = undefined;
+      this.siftDown();
     }
-    return first.value;
+    return value;
   }
   clear(): void {
-    this.heap.length = 0;
+    this.size = 0;
   }
-  private before(a: TimedTask<T>, b: TimedTask<T>): boolean {
-    return a.time < b.time || (a.time === b.time && a.order < b.order);
+  private before(first: number, second: number): boolean {
+    const times = this.times;
+    const a = times[first]!;
+    const b = times[second]!;
+    return a < b || (a === b && this.orders[first]! < this.orders[second]!);
+  }
+  private swap(first: number, second: number): void {
+    const times = this.times;
+    const orders = this.orders;
+    const values = this.values;
+    const time = times[first]!;
+    const order = orders[first]!;
+    const value = values[first]!;
+    times[first] = times[second]!;
+    orders[first] = orders[second]!;
+    values[first] = values[second];
+    times[second] = time;
+    orders[second] = order;
+    values[second] = value;
+  }
+  private siftUp(at: number): void {
+    while (at > 0) {
+      const parent = (at - 1) >>> 1;
+      if (!this.before(at, parent)) break;
+      this.swap(at, parent);
+      at = parent;
+    }
+  }
+  private siftDown(): void {
+    const size = this.size;
+    let at = 0;
+    for (;;) {
+      const left = at * 2 + 1;
+      if (left >= size) break;
+      const right = left + 1;
+      const child = right < size && this.before(right, left) ? right : left;
+      if (!this.before(child, at)) break;
+      this.swap(at, child);
+      at = child;
+    }
   }
 }
 export class ActivationQueue<T> {
   private readonly entries: T[] = [];
   private readonly words: number[] = [];
+  /**
+   * Active word indices in `[0, activeCount)`. The array keeps its high-water length:
+   * truncating it would right-trim the backing store on every boundary.
+   */
   private readonly activeWords: number[] = [];
-  private readonly batch: T[] = [];
+  private activeCount = 0;
   get size(): number {
-    return this.activeWords.length;
+    return this.activeCount;
   }
   register(entry: T): number {
     return this.entries.push(entry) - 1;
@@ -59,54 +96,83 @@ export class ActivationQueue<T> {
   add(slot: number): void {
     const word = slot >>> 5;
     const previous = this.words[word] ?? 0;
-    if (previous === 0) this.activeWords.push(word);
+    if (previous === 0) this.activeWords[this.activeCount++] = word;
     this.words[word] = previous | (1 << (slot & 31));
   }
-  take(): readonly T[] {
-    const batch = this.batch;
-    batch.length = 0;
-    if (this.activeWords.length > 1) this.activeWords.sort((a, b) => a - b);
-    for (const word of this.activeWords) {
+  /**
+   * Visits every active entry in board order without materialising a batch. Entries added
+   * by the visitor land past the visited range and survive.
+   */
+  drain(visit: (entry: T) => void): void {
+    const active = this.activeWords;
+    const visited = this.activeCount;
+    if (visited === 0) return;
+    if (visited > 1) {
+      // Word indices arrive in insertion order; a handful of words sort faster in place
+      // than through a comparator call, and the stale tail must not be reordered.
+      for (let index = 1; index < visited; index++) {
+        const word = active[index]!;
+        let position = index;
+        while (position > 0 && active[position - 1]! > word) {
+          active[position] = active[position - 1]!;
+          position--;
+        }
+        active[position] = word;
+      }
+    }
+    for (let index = 0; index < visited; index++) {
+      const word = active[index]!;
       let bits = this.words[word]!;
       this.words[word] = 0;
+      const base = word * 32;
       while (bits !== 0) {
-        const bit = 31 - Math.clz32(bits & -bits);
-        batch.push(this.entries[word * 32 + bit]!);
+        visit(this.entries[base + 31 - Math.clz32(bits & -bits)]!);
         bits &= bits - 1;
       }
     }
-    this.activeWords.length = 0;
-    return batch;
+    if (this.activeCount === visited) this.activeCount = 0;
+    else {
+      // A word re-added during the drain was appended past `visited`; shift it down.
+      for (let index = visited; index < this.activeCount; index++)
+        active[index - visited] = active[index]!;
+      this.activeCount -= visited;
+    }
   }
   clear(): void {
     this.entries.length = 0;
     this.words.length = 0;
     this.activeWords.length = 0;
-    this.batch.length = 0;
+    this.activeCount = 0;
   }
 }
 
 export class Fifo<T> {
-  private values: (T | undefined)[] = [];
+  private readonly values: (T | undefined)[] = [];
   private head = 0;
+  private tail = 0;
   get length(): number {
-    return this.values.length - this.head;
+    return this.tail - this.head;
   }
   push(value: T): void {
-    this.values.push(value);
+    // The backing array keeps its high-water length, so a push never clears elements.
+    this.values[this.tail++] = value;
   }
   shift(): T {
     const value = this.values[this.head]!;
     this.values[this.head++] = undefined;
-    if (this.head === this.values.length) this.clear();
+    if (this.head === this.tail) {
+      this.head = 0;
+      this.tail = 0;
+    }
     return value;
   }
   clear(): void {
     this.values.length = 0;
     this.head = 0;
+    this.tail = 0;
   }
   drain(): T[] {
-    const result = this.values.slice(this.head) as T[];
+    const result = this.values.slice(this.head, this.tail) as T[];
     this.clear();
     return result;
   }

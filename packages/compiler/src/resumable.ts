@@ -97,8 +97,9 @@ class ResumableEmitter extends Emitter {
             )});`,
           ]
         : []),
+      'let pc = F.pc;',
       'for (;;) {',
-      'switch (F.pc) {',
+      'switch (pc) {',
     ];
     for (const block of this.blocks) {
       lines.push(`case ${block.id}: {`);
@@ -117,6 +118,7 @@ class ResumableEmitter extends Emitter {
     return Object.freeze({
       run: factory(constants, runtimeHelpers),
       slotCount: this.slots.size,
+      blocks: this.blocks.length,
       start: 0,
     });
   }
@@ -149,7 +151,7 @@ class ResumableEmitter extends Emitter {
     for (let index = region.operations.length - 1; index >= 0; index--) {
       const operation = region.operations[index]!;
       const operationPath: InputPath = [...path, 'operations', index];
-      if (straight(operation)) {
+      if (inlineable(operation, this.analysis)) {
         chunks.unshift(this.emitStraight(operation, operationPath));
         continue;
       }
@@ -357,9 +359,7 @@ class ResumableEmitter extends Emitter {
   }
 
   private link(resume: number, cont: number): void {
-    const block = this.blocks[resume]!;
-    block.code.push(`F.pc = ${cont};`);
-    block.term = { kind: 'jump', to: cont };
+    this.blocks[resume]!.term = { kind: 'jump', to: cont };
   }
 
   private save(operation: OperationIR): string[] {
@@ -432,10 +432,11 @@ function terminator(block: Block): string[] {
   if (!term) throw unsupported;
   switch (term.kind) {
     case 'jump':
-      return [`F.pc = ${term.to};`, 'break;'];
+      return [`pc = ${term.to};`, 'break;'];
     case 'branch':
-      return [`if (${term.test}) F.pc = ${term.yes};`, `else F.pc = ${term.no};`, 'break;'];
+      return [`if (${term.test}) pc = ${term.yes};`, `else pc = ${term.no};`, 'break;'];
     case 'suspend':
+      // The suspending block already recorded its own resume pc in `F.pc`.
       return ['return true;'];
     case 'done':
       return ['F.pc = 0;', 'return false;'];
@@ -468,8 +469,71 @@ const rejected = new Set<OperationIR['kind']>([
   'yield',
 ]);
 
-function straight(operation: OperationIR): boolean {
-  return !control.has(operation.kind) && !rejected.has(operation.kind);
+/**
+ * Whether one machine block can carry this statement as plain JavaScript.
+ *
+ * Only control flow whose subtree has no suspension point fuses, because a suspension is
+ * what actually ends an inline fragment; without one both forms are observably equal.
+ */
+function inlineable(operation: OperationIR, analysis: BodyAnalysis): boolean {
+  switch (operation.kind) {
+    case 'if':
+    case 'match':
+    case 'while':
+    case 'loop':
+      return fusable(operation, analysis, false);
+    default:
+      // `break`, `continue`, `return` and `returnValue` keep their own machine blocks.
+      return !control.has(operation.kind) && !rejected.has(operation.kind);
+  }
+}
+
+/**
+ * Fused control-flow shapes. `guarded` marks a position under a fused `if`/`match`,
+ * where a source `break`/`continue` would leave the structured statement rather than the
+ * machine switch, so it must stay in blocks.
+ */
+function fusable(operation: OperationIR, analysis: BodyAnalysis, guarded: boolean): boolean {
+  if (!control.has(operation.kind)) return !rejected.has(operation.kind);
+  switch (operation.kind) {
+    case 'if':
+    case 'match':
+    case 'while':
+    case 'loop': {
+      if (analysis.byOperation.get(operation)!.suspends) return false;
+      switch (operation.kind) {
+        case 'if':
+          return (
+            fusableRegion(operation.yes, analysis, true) &&
+            (operation.no === undefined || fusableRegion(operation.no, analysis, true))
+          );
+        case 'match':
+          return (
+            operation.arms.every((arm) => fusableRegion(arm.body, analysis, true)) &&
+            (operation.otherwise === undefined ||
+              fusableRegion(operation.otherwise, analysis, true))
+          );
+        case 'while':
+          return (
+            fusableRegion(operation.test.body, analysis, true) &&
+            fusableRegion(operation.body, analysis, guarded)
+          );
+        default:
+          return fusableRegion(operation.body, analysis, guarded);
+      }
+    }
+    case 'break':
+    case 'continue':
+      // The nearest enclosing fused loop is the generated `while (true)`.
+      return !guarded;
+    default:
+      // `wait`/`receive` never fuse; `return`/`returnValue` end through the done block.
+      return false;
+  }
+}
+
+function fusableRegion(region: RegionIR, analysis: BodyAnalysis, guarded: boolean): boolean {
+  return region.operations.every((operation) => fusable(operation, analysis, guarded));
 }
 
 /** Whole-body admission also requires suspension-free value regions. */

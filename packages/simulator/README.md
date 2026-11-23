@@ -251,7 +251,7 @@ node --test packages\simulator\bench\camera-mcu.test.mjs
 
 - **准入是整份 body 的**：`if`/`match`/`while`/`loop`/`break`/`continue`/`return`/`returnValue` 与全部纯值操作都下沉为显式块转移；`wait`/`receive` 结束一个块并把 `pc`、活动槽与 `duration`/`channel` 写进帧。含 `call`/`callValue`（生成器委派）、`elapse`、`waitUntil`、`redirect`、`stop`、语句级 `yield`，或任一值区域含挂起的 body 一律返回 `undefined`，该过程**整体**留在生成器路径；不存在“先按块跑一段、再回通用路径”。
 - **跨挂起语义不变**：只有分析给出的恢复点活跃槽在挂起时写入帧、恢复时读回，因此跨 `await ticks` 的局部变量保持旧值，而挂起后的 `read` 看到 current；`ticks(0)` 仍在片段末结束、由边界重新排队；`busy`/单 `pending` 非重入、同一时刻按声明顺序、片段末全板 sample 与 capture 先于任何 body、body 失败保留前缀并停后缀，都沿用 `boundary` 原顺序（本轮未改 `boundary`）。接收仍是非空不挂起、空才挂起，已接收局部跨批次保留。
-- **诊断**：`board[Symbol.for('mica-js.simulator/processes')]()` 只读返回 `resumable` 与 `generic` 两份过程清单。摄像头负载实测 `camera/start`、`mcu/frameSync`、`mcu/dma`、`mcu/captureSnapshot` 四个过程全部准入，`generic` 为空；同一份 body 在会话内探针里以真实宿主桩驱动 6000 次挂起（69006 次 host 调用，含行边界）与生成器**逐操作一致**。
+- **诊断**：`board[Symbol.for('mica-js.simulator/processes')]()` 只读返回 `resumable` 与 `generic` 两份过程清单，另加 `programs`（每个过程的机器块数，生成器路径为 0）与 `bindings`。摄像头负载实测 `camera/start`、`mcu/frameSync`、`mcu/dma`、`mcu/captureSnapshot` 四个过程全部准入，`generic` 为空；同一份 body 在会话内探针里以真实宿主桩驱动 6000 次挂起（69006 次 host 调用，含行边界）与生成器**逐操作一致**。
 - **回归**：`process-resumable.test.mjs`（公开 SDK + DDL）覆盖准入与整份回退（含 `call` 的 body 仍在 `generic` 且输出不变）、跨挂起局部旧值/新读取、嵌套 `while`+`continue`+`match`+`break`、`ticks(0)` 同刻排队顺序、过程自我重触发只置 `pending`、空/非空 `receive` 与跨批次局部、断言失败保留公开 memory 前缀、`runUntil` 端点重复与到期；切片与 `precise` 输出逐条相同。另有一条参数化组合回归：6 个 `seed`/等待（0/1/2 ps）变体把嵌套循环 + `continue`、跨挂起的 bytes 与 number 局部、另一过程修改共享 state、reaction capture 组合起来，与“只多加一个无副作用 `noOp()` 调用、整份 body 回退”的同构模型逐条对照消息、仿真时间与 public RAM，并断言两者的准入清单。变异实验把恢复点活跃槽里的 `local:` 去掉后，其中 4 个用例立即失败。
 - **收益（逐帧配对，计时只用 `stepFrame().wallSeconds`，逐帧 raw/binary/count/time oracle 在计时外）**：同一构建内把准入强制回退做闭环对照，五次独立运行分别为 **1.145×**（P25 1.029 / P75 1.357，40.53 → 31.24 ms，`ab-r5-resumable-ablation-final.json`）、**1.179×**（1.032 / 1.259，33.99 → 30.47 ms）、**1.108×**（1.044 / 1.174，27.36 → 23.69 ms）、**1.133×**（1.029 / 1.25，31.53 → 28.02 ms）与 **1.108×**（1.013 / 1.206，36.13 → 32.46 ms）；第 4 轮最终 dist → 本轮 4 块 × 16 对为 **1.185×**（P25 1.093 / P75 1.25，23.13 → 20.00 ms）与 **1.157×**（1.049 / 1.25，23.68 → 21.23 ms，`ab-r5-baseline-vs-final.json`），主机争用更强的另一次同配置为 1.063×（0.943 / 1.223）。闭环对照把收益限定在挂起协议本身，而不是无关构建差异。所有运行的逐帧 raw/binary 摘要、黑色计数、DMA/结果时刻与 `verify()` 摘要两侧完全一致。
 - **限制**：只覆盖**过程**；reaction、`compileComputation`、JIT 指令路径仍用原协议。挂起次数、每次挂起的 `boundary`（电气发布 + 观察批次）与调度开销不变，因此这是**过程执行块**的收益，不是完整的跨器件融合——没有把电气求解、观察求值或跨器件序列并入同一次生成调用。
@@ -282,6 +282,19 @@ node --test packages\simulator\bench\camera-mcu.test.mjs
 
 - **已尝试并移除：电气发布 → 观察队列融合**。本轮还实现过“发布时不进 `ActivationQueue`、按预绑定唤醒表直接求值观察链”的路径，单机制闭环消融只有 1.01×（P25 0.94 / P75 1.08），落在此环境的噪声分辨率内，没有可证明的净收益；更重要的是它绕过了 `slot.version++`，导致**未订阅但已有缓存**的 derived 与 JIT 依赖守卫读到旧值（公开回归 `(0,0)→(0,1)→(1,0)`，应为 `(1,33)`）。该路径连同其成员版本守卫、混合回退与专属探针已全部删除，没有保留禁用开关；`sampleSlotsBySlot` 直接寻址、`solveSlots` 快速路径、预绑定叶载荷与资源绑定保留。
 - **限制**：绑定只覆盖可恢复过程体；reaction、`compileComputation`、JIT 指令路径与资源形参仍走通用路径。挂起次数、每次挂起的 `boundary`、反应体与过程体的执行次数都没有改变，本轮不包含跨器件函数融合，也不包含电气→观察队列融合。
+
+### 挂起感知的块融合与 pc 局部化
+
+机器块形态把任何 `if` 都拆成独立块，即使子树里根本没有挂起点；摄像头像素体每像素 10 个 `drive()`（每个展开成 `if`/`else`）因此贡献约 30 块。本轮把「不含挂起点的控制流子树」留在一个块里，并把块间分派从 `frame.pc` 收回局部变量。
+
+- **判定**：`analysis` 的 `Node` 增加后序聚合的 `suspends`（自身 `effects.maySuspend` 或任一 child region 内的 `suspends`），在建完所有 node 之后自底向上填一次。只有 `suspends` 为假的 `if`/`match`/`while`/`loop` 子树才融合，融合与回退都复用基类 `Emitter` 的结构化生成（`if (...) {}`、`else if` 链、`while (true) { ... }`、`valueRegion` 的带标签 `break`），与生成器形态同源。
+- **保守排除**：`if`/`match` 子树内出现 `break`/`continue`/`return`/`returnValue` 就不融合——未融合块里的 JS `break` 只会跳出 `switch`，而源语义要求跳出外层循环。`while`/`loop` 允许 `break`/`continue` 指向自己（生成为 `while (true)`），但只要它和跳转之间隔着一个 `if`/`match`，或体内还有不能融合的嵌套控制流，整条循环都留在块里。独立 `break`/`continue`/`return`/`returnValue`/`wait`/`receive` 一律不融合。不能融合的构造原样回退到按块下降，因此**准入集合不变**：含 `call` 等被拒构造的 body 仍整份走生成器路径。
+- **分派收敛**：函数入口 `let pc = F.pc;`，块终结符只写局部 `pc`（`pc = N; break;`、`if (test) pc = yes; else pc = no; break;`），`frame.pc` 只在 `suspend` 与 `done` 写回（挂起块自己写恢复点，完成写 0）。`driveResumable` 与 `frame()` 只在 body 返回后读 `frame.pc`，中间态没有观察点；恢复块里多余的第二次 `F.pc = cont` 写也一并去掉。
+- **诊断**：`ResumableProgram` 新增 `blocks`，过程探针新增 `programs: [{ key, blocks }]`；`resumable`/`generic`/`bindings` 字段名不变，生成器路径的过程块数为 0。
+- **硬指标（块数，与主机噪声无关）**：摄像头负载 `camera/start` **83 → 27**、`mcu/dma` **39 → 10**、`mcu/frameSync` **5 → 3**、`mcu/captureSnapshot` 3 → 3；四个过程仍全部准入、`generic` 为空。
+- **收益**：`--samples 30 --warmup-frames 5`（默认 throughput）交替 A/B 各 10 次的 `hostTiming.processCpuUserSeconds`：A 1.297/1.125/1.156/1.344/1.016/0.937/1.078/0.875/0.969/0.938，B 1.188/1.172/1.203/1.046/1.031/1.063/0.750/0.953/0.922/0.860，均值 1.074 → 1.019 s（**1.054×**）；该口径把不计时的逐帧 oracle 校验也算进同一进程，所以只反映整体。用 `--cpu-prof` 只看生成体：`resumableBody` 自身样本 136.2/128.7/123.0 ms → 92.2/86.0/63.0 ms，均值 **1.61×**，占全部样本 12.4–13.8% → 9.7–10.2%。
+- **等价性**：`--samples 3 --warmup-frames 1 --execution precise` 的逐帧 oracle mismatch 全 0，`lastFrameBinaryDigest` 仍为 `947bd848b781f562153e1bd90307fc54f3c9a0c7d6af2b52eba1ca52223117d2`、`lastFrameRawDigest` 仍为 `7ef8208c25064b0a9dd71bb1fb380d7cd3045ffde1c16f912fa502380bb5f148`；所有 A/B 运行（每轮 36 帧）的 raw/binary 摘要两侧逐字节相同。验证：compiler `test` 102、simulator `node --test` 241、`test:runtime` 84 全通过。
+- **限制**：融合只消除块间分派与块边界，操作、host 调用、挂起次数与 `boundary` 都没有减少，收益上限就是原机器块分派本身的开销。
 
 ### 板内 UART 与 10–20 ms 宿主步进
 
