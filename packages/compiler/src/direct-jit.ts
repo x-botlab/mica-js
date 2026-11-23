@@ -923,7 +923,7 @@ function monolithicProgram(
       'F.resume = 0;',
       ...entry.suffix,
       ...(entry.stop ? [] : fence),
-      finish(entry.stop),
+      entry.isolated ? publish : finish(entry.stop),
       '}',
     );
   });
@@ -1031,7 +1031,7 @@ function shardProgram(
         'F.resume = 0;',
         ...entry.suffix,
         ...(entry.stop ? [] : fence),
-        splitFinish(entry.stop),
+        entry.isolated ? publish : splitFinish(entry.stop),
         '}',
       );
     });
@@ -1369,7 +1369,7 @@ function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): 
       lines.push(
         'F.resume = 0;',
         ...entry.suffix,
-        residentResumeFinish(entry.stop, binding.pc.index),
+        entry.isolated ? publish : residentResumeFinish(entry.stop, binding.pc.index),
         '}',
       );
     });
@@ -1627,6 +1627,49 @@ function validIndex(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+/** Whether a redirect sits inside a nested statement branch rather than at the top level. */
+function hasBranchRedirect(region: RegionIR): boolean {
+  return region.operations.some(redirectInOperation);
+}
+
+/** A redirect anywhere in this region, including its own operation list. */
+function regionHasRedirect(region: RegionIR): boolean {
+  return region.operations.some(
+    (operation) => operation.kind === 'redirect' || redirectInOperation(operation),
+  );
+}
+
+function redirectInOperation(operation: OperationIR): boolean {
+  switch (operation.kind) {
+    case 'redirect':
+      // A top-level redirect keeps the original linear terminal path.
+      return false;
+    case 'if':
+      return (
+        regionHasRedirect(operation.yes) ||
+        (operation.no !== undefined && regionHasRedirect(operation.no))
+      );
+    case 'match':
+      return (
+        operation.arms.some((arm) => regionHasRedirect(arm.body)) ||
+        (operation.otherwise !== undefined && regionHasRedirect(operation.otherwise))
+      );
+    case 'while':
+      return regionHasRedirect(operation.test.body) || regionHasRedirect(operation.body);
+    case 'loop':
+      return regionHasRedirect(operation.body);
+    case 'and':
+    case 'or':
+      return regionHasRedirect(operation.right.body);
+    case 'select':
+      return regionHasRedirect(operation.yes.body) || regionHasRedirect(operation.no.body);
+    case 'assert':
+      return operation.message !== undefined && regionHasRedirect(operation.message.body);
+    default:
+      return false;
+  }
+}
+
 class Instruction {
   readonly readStates = new Set<string>();
   readonly writeStates = new Set<string>();
@@ -1687,6 +1730,10 @@ class Instruction {
   private readonly references = new Set<number>();
   /** Results whose emitted operations guarantee booleans, not just declared bool types. */
   private readonly booleanResults = new Set<number>();
+  /** Label of the block that wraps conditional exits; undefined for linear bodies. */
+  private exitLabel: string | undefined;
+  /** Slot holding the duration of whichever exit path ran. */
+  private exitDuration: string | undefined;
   private labels = 0;
 
   constructor(
@@ -1768,41 +1815,56 @@ class Instruction {
     }
     let output = this.prefix;
     let terminal = false;
-    for (const operation of instruction.body.operations) {
-      if (terminal) throw unsupported;
-      if (operation.kind === 'elapse') {
-        if (this.terminated) throw unsupported;
-        this.terminate(this.delay(operation.duration));
-        output = this.suffix;
-      } else if (operation.kind === 'redirect') {
-        if (this.terminated) throw unsupported;
-        const delay = this.delay(operation.delay);
-        output.push(
-          `S[${this.binding.pc.index}] = H.checkPc(${this.value(operation.target)});`,
-          dirty('SD', this.binding.pc.index),
-        );
-        this.terminate(delay);
-        output = this.suffix;
-        terminal = true;
-      } else if (operation.kind === 'stop') {
-        this.stop = true;
-        terminal = true;
-      } else if (operation.kind === 'yield') {
-        // A bare yield carries no result. Model validation rejects it today, so only the
-        // tail-of-body shape is admitted: any later operation is dead code and declines the
-        // whole block. Treating it as a zero-duration exit reuses the `elapse 0` path, which
-        // advances no time and needs no continuation slot.
-        if (this.terminated) throw unsupported;
-        this.terminate({ value: '0', zero: true, dynamic: false });
-        terminal = true;
-      } else {
-        this.operation(operation, output);
+    if (hasBranchRedirect(instruction.body)) {
+      // A redirect inside a branch terminates the instruction from a nested position, while
+      // the linear operations after that branch and the tail `elapse` still belong to every
+      // path that did not redirect. One labeled body plus a shared duration slot turns the
+      // conditional redirects and the tail elapse into a single continuation.
+      this.compileConditional(instruction.body.operations);
+    } else {
+      for (const operation of instruction.body.operations) {
+        if (terminal) throw unsupported;
+        if (operation.kind === 'elapse') {
+          if (this.terminated) throw unsupported;
+          this.terminate(this.delay(operation.duration));
+          output = this.suffix;
+        } else if (operation.kind === 'redirect') {
+          if (this.terminated) throw unsupported;
+          const delay = this.delay(operation.delay);
+          output.push(
+            `S[${this.binding.pc.index}] = H.checkPc(${this.value(operation.target)});`,
+            dirty('SD', this.binding.pc.index),
+          );
+          this.terminate(delay);
+          output = this.suffix;
+          terminal = true;
+        } else if (operation.kind === 'stop') {
+          this.stop = true;
+          terminal = true;
+        } else if (operation.kind === 'yield') {
+          // A bare yield carries no result. Model validation rejects it today, so only the
+          // tail-of-body shape is admitted: any later operation is dead code and declines the
+          // whole block. Treating it as a zero-duration exit reuses the `elapse 0` path, which
+          // advances no time and needs no continuation slot.
+          if (this.terminated) throw unsupported;
+          this.terminate({ value: '0', zero: true, dynamic: false });
+          terminal = true;
+        } else {
+          this.operation(operation, output);
+        }
       }
     }
     if (!this.terminated && !this.stop) throw unsupported;
     // Admit synchronous, zero-time instructions only; no continuation or delay folding
-    // may cross the loop's publication boundary.
-    if (this.isolated && (!this.immediate || this.stop || this.guard.length)) throw unsupported;
+    // may cross the loop's publication boundary. A conditional-exit body is the exception:
+    // its loop runs entirely inside the prefix, the conditional redirects break out after
+    // the loop, and the empty suffix publishes on resume (see the assembly sites).
+    if (
+      this.isolated &&
+      this.exitLabel === undefined &&
+      (!this.immediate || this.stop || this.guard.length)
+    )
+      throw unsupported;
     this.compact();
     this.barrier = this.emitBarrier();
     let size = 0;
@@ -1818,6 +1880,45 @@ class Instruction {
     this.statements = statements;
     this.selects = selects;
     return this;
+  }
+
+  /**
+   * Compile a body whose redirects live inside conditional branches and whose tail is an
+   * `elapse`. Each redirect writes the shared exit duration slot, writes the destination PC
+   * and breaks out of the labeled body, so the linear operations that follow the branch only
+   * run when no redirect fired. The tail `elapse` writes the same slot with its own duration;
+   * the assembler then emits one `elapsed` site and one continuation for both exit classes.
+   */
+  private compileConditional(operations: readonly OperationIR[]): void {
+    const tail = operations[operations.length - 1];
+    // The tail elapse supplies the duration for every path that did not redirect.
+    if (tail?.kind !== 'elapse' || this.guard.length) throw unsupported;
+    const label = `exit${this.labels++}`;
+    const duration = this.slot();
+    this.exitDuration = duration;
+    this.exitLabel = label;
+    this.prefix.push(`${label}: {`);
+    for (let index = 0; index < operations.length; index++) {
+      const operation = operations[index]!;
+      if (operation.kind === 'elapse') {
+        // Only the tail elapse is admitted: an earlier one would terminate the instruction on
+        // a path that then never reaches the conditional branch.
+        if (index !== operations.length - 1) throw unsupported;
+        this.prefix.push(`${duration} = ${this.delay(operation.duration).value};`);
+      } else if (
+        operation.kind === 'redirect' ||
+        operation.kind === 'stop' ||
+        operation.kind === 'yield'
+      ) {
+        // A top-level exit while a conditional exit exists has no unified duration slot.
+        throw unsupported;
+      } else {
+        this.operation(operation, this.prefix);
+      }
+    }
+    this.prefix.push('}');
+    this.duration = duration;
+    this.dynamicDuration = true;
   }
 
   /**
@@ -1856,6 +1957,9 @@ class Instruction {
   /** Keep the short path in the resident step function, without changing shard placement. */
   outlinePrefix(helpers: string[][]): readonly string[] {
     if (
+      // A labeled body makes `break exit` visible to this function; outlining would move it
+      // into a nested function where that label is out of scope.
+      this.exitLabel !== undefined ||
       this.size <= SHARD_CODE_BUDGET ||
       this.slots.length > OUTLINE_MAX_SLOTS ||
       this.isolated ||
@@ -2357,10 +2461,26 @@ class Instruction {
     lines: string[],
     output?: { slot: string; label: string },
   ): void {
+    let exited = false;
     for (const operation of region.operations) {
+      // Anything after a branch-level redirect on the same path is unreachable.
+      if (exited) throw unsupported;
       if (operation.kind === 'yield') {
         if (!output) throw unsupported;
         lines.push(`${output.slot} = ${this.value(operation.value)}; break ${output.label};`);
+      } else if (operation.kind === 'redirect') {
+        // A conditional exit belongs to the labeled body installed by compileConditional.
+        // Value regions cannot break to it, and a linear body has no label at all.
+        if (output !== undefined || this.exitLabel === undefined || this.exitDuration === undefined)
+          throw unsupported;
+        const delay = this.delay(operation.delay);
+        lines.push(
+          `S[${this.binding.pc.index}] = H.checkPc(${this.value(operation.target)});`,
+          dirty('SD', this.binding.pc.index),
+          `${this.exitDuration} = ${delay.value};`,
+          `break ${this.exitLabel};`,
+        );
+        exited = true;
       } else {
         this.operation(operation, lines, output);
       }

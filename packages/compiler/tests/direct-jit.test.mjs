@@ -3772,3 +3772,40 @@ test('same-PC body changes and cache clears force recompilation without invalida
   assert.equal(first.run(old, 10), 'fallback');
   assert.equal(old.states[1], 3);
 });
+
+test('a conditional redirect and the tail elapse share one duration slot', () => {
+  const instruction = () => {
+    const b = builder();
+    const flag = b.read('flag', 'bool');
+    const target = b.constant(1);
+    const delay = b.constant(5);
+    b.operations.push({
+      kind: 'if',
+      condition: flag,
+      yes: { operations: [{ kind: 'redirect', target, delay }] },
+    });
+    b.delay(0);
+    return b.instruction(0, 1);
+  };
+
+  const split = { ...binding, split: true, shardSlotLimit: 0, shardSize: 4 };
+  for (const settings of [binding, split]) {
+    const program = compileDirectJit([instruction()], settings);
+    assert(program);
+    assert.deepEqual([...program.pcs], [0]);
+
+    // The branch redirect wins and contributes its own five-picosecond delay.
+    const taken = frame(program, [0, 1, 0, true, 0, 0]);
+    assert.equal(program.run(taken, 5), 'deadline');
+    assert.equal(taken.time, 5);
+    assert.equal(taken.states[0], 1);
+    assert.notEqual(taken.resume, 0);
+
+    // The tail elapse supplies zero when the branch stays on the linear path.
+    const skipped = frame(program, [0, 1, 0, false, 0, 0]);
+    assert.equal(program.run(skipped, 5), 'fallback');
+    assert.equal(skipped.time, 0);
+    assert.equal(skipped.states[0], 1);
+    assert.equal(skipped.resume, 0);
+  }
+});
