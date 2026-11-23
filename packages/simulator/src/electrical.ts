@@ -100,12 +100,26 @@ export interface ElectricalNetwork {
   /**
    * Slot-addressed form of :func:`solve` for callers that already know board pin slots.
    * A number denotes a complete, single-slot dirty batch.
-   * Returns the changed slots in ascending board order; the array is valid until the next
-   * solve call, so consumers must publish from it immediately.
+   * Returns a fresh ascending array of the changed slots.
    */
   solveSlots(changedSlots?: number | Iterable<number>): readonly number[];
-  /** Hot entry for a complete single-slot dirty batch. Same contract as `solveSlots(slot)`. */
+  /** One complete single-slot dirty batch; same contract as `solveSlots(slot)`. */
   solveSlot(slot: number): readonly number[];
+  /**
+   * Board-facing single-slot entry: solves the batch and hands each changed slot to
+   * `publish` in ascending board order, so no result array is materialised.
+   */
+  solveSlotInto(slot: number, publish?: (slot: number) => void): void;
+  /**
+   * Board-facing batch entry for a complete multi-slot dirty batch. `slots[0, count)` must
+   * hold board pin slots; repetitions are ignored. Same atomicity as `solveSlots`, which it
+   * shares every guard with.
+   */
+  solveSlotBatchInto(
+    slots: ArrayLike<number>,
+    count: number,
+    publish?: (slot: number) => void,
+  ): void;
   readonly stats: ElectricalStats;
 }
 
@@ -562,11 +576,6 @@ interface ReferenceProgram {
   ): { anchors: Float64Array; right: Float64Array };
 }
 
-/** Changed pins publish in ascending board slot order; slots are already that order. */
-function ascendingSlot(first: number, second: number): number {
-  return first - second;
-}
-
 function sumPair(first: number, second: number): number {
   first = 0 + first;
   const total = first + second;
@@ -792,8 +801,6 @@ export function createElectricalNetwork(
   const updatedEdgeLists: (readonly Edge[] | undefined)[] = new Array(pins.length);
   const updatedEdgeSlots: number[] = [];
   const replacedEdges: Edge[] = [];
-  const pendingPins: ElectricalPin[] = [];
-  const pendingSamples: PinSample[] = [];
   const seenSlots = new Int32Array(pins.length);
   let seenStamp = 0;
   /** Only the matrix partition is out of date; component arrays and buckets stay valid. */
@@ -826,8 +833,13 @@ export function createElectricalNetwork(
   const emptySlots: readonly number[] = Object.freeze([]);
   /** Dirty slots supplied by the caller, deduplicated in place without an iterator per pin. */
   const inputSlots: number[] = [];
-  /** Changed pin slots of the last solve in ascending board order. */
+  /**
+   * Changed pin slots of the last solve in ascending board order, valid in
+   * `[0, changedCount)`. The array keeps its high-water length so a new batch never pays
+   * for clearing it.
+   */
   const changedSlots: number[] = [];
+  let changedCount = 0;
   /** Admitted leaf shapes per pin slot; a pin normally alternates between two references. */
   const leafPlans: (LeafPropagation[] | undefined)[] = new Array(pins.length);
   /** Last topology check for the single-slot entry, independent of intent identity. */
@@ -989,16 +1001,29 @@ export function createElectricalNetwork(
     return undefined;
   };
   /**
-   * Inserts into an ascending list. A touched batch holds a handful of pins, so an
-   * in-place insertion beats a comparator sort of the published slot order.
+   * Inserts the slot into the ascending publication buffer. A touched batch holds a handful
+   * of pins, so an in-place insertion beats a comparator sort of the published slot order.
+   * The buffer keeps its high-water length, so starting a batch never clears elements.
    */
-  const pushOrdered = (list: number[], slot: number): void => {
-    let position = list.length;
-    while (position > 0 && list[position - 1]! > slot) {
-      list[position] = list[position - 1]!;
+  const pushOrdered = (slot: number): void => {
+    let position = changedCount;
+    while (position > 0 && changedSlots[position - 1]! > slot) {
+      changedSlots[position] = changedSlots[position - 1]!;
       position--;
     }
-    list[position] = slot;
+    changedSlots[position] = slot;
+    changedCount++;
+  };
+  /** Hands every published slot to the board in ascending board order. */
+  const emitChanged = (publish: (slot: number) => void): void => {
+    for (let index = 0; index < changedCount; index++) publish(changedSlots[index]!);
+  };
+  /** A fresh ascending copy for the public solve entries; the buffer is reused. */
+  const copyChanged = (): readonly number[] => {
+    if (changedCount === 0) return emptySlots;
+    const result = new Array<number>(changedCount);
+    for (let index = 0; index < changedCount; index++) result[index] = changedSlots[index]!;
+    return result;
   };
   const commitLeafEdges = (
     slot: number,
@@ -1040,72 +1065,52 @@ export function createElectricalNetwork(
     slot: number,
     intent: readonly ResistorBranch[],
     plan: LeafPropagation,
-  ): readonly number[] => {
+  ): void => {
     const { node, target, voltage } = plan;
-    let result = emptySlots;
+    changedCount = 0;
     if (publishedVoltages[node] !== voltage) {
       const planPins = plan.pins;
       const planSamples = plan.samples;
-      if (planPins.length === 1) {
-        const pin = planPins[0]!;
-        const sample = planSamples[0]!;
-        if (pin.sample !== sample) {
-          pin.sample = sample;
-          result = plan.slots;
-        }
-      } else {
-        let all = true;
-        let changed = 0;
-        for (let index = 0; index < planPins.length; index++) {
-          const pin = planPins[index]!;
-          const sample = planSamples[index]!;
-          if (pin.sample === sample) {
-            all = false;
-            continue;
-          }
-          pin.sample = sample;
-          changedSlots[changed++] = plan.slots[index]!;
-        }
-        if (all) result = plan.slots;
-        else if (changed !== 0) {
-          changedSlots.length = changed;
-          result = changedSlots;
-        }
+      const planSlots = plan.slots;
+      for (let index = 0; index < planPins.length; index++) {
+        const pin = planPins[index]!;
+        const sample = planSamples[index]!;
+        if (pin.sample === sample) continue;
+        pin.sample = sample;
+        changedSlots[changedCount++] = planSlots[index]!;
       }
     }
     commitLeafEdges(slot, target, voltage, intent, plan.edges, plan.edgeHash);
     finishLeaf();
-    return result;
   };
   /**
-   * Publishes the accepted leaf batch: every pin on a touched node gets the reference
-   * voltage, samples are committed as one batch, then intents, edges and degrees follow.
-   * No pin, sample, intent or degree changes before the whole batch is accepted.
+   * Publishes the accepted leaf batch. The caller has already matched every dirty slot to
+   * an admitted shape (or proven the shapes below through the general solver), so each
+   * pin's sample is an independent function of its node's fixed reference: committing them
+   * in place is atomic, and only the ordering of the published slot list needs staging.
    */
   const applyLeaf = (count: number): void => {
-    changedSlots.length = 0;
-    pendingPins.length = 0;
-    pendingSamples.length = 0;
+    changedCount = 0;
     for (let position = 0; position < count; position++) {
       const node = pinNodes[leafSlots[position]!]!;
-      const target = leafTargets[position]!;
       const plan = leafPayloads[position];
       if (plan !== undefined) {
         // Admitted shape: the target voltage, every pin on the node and each pin's
         // immutable sample were bound once, so only the current sample identity is checked.
         if (publishedVoltages[node] === plan.voltage) continue;
         const planSlots = plan.slots;
+        const planPins = plan.pins;
+        const planSamples = plan.samples;
         for (let at = 0; at < planSlots.length; at++) {
-          const pinned = plan.pins[at]!;
-          const sample = plan.samples[at]!;
+          const pinned = planPins[at]!;
+          const sample = planSamples[at]!;
           if (pinned.sample === sample) continue;
-          pushOrdered(changedSlots, planSlots[at]!);
-          pendingPins.push(pinned);
-          pendingSamples.push(sample);
+          pinned.sample = sample;
+          pushOrdered(planSlots[at]!);
         }
         continue;
       }
-      const voltage = nodes[target]!.reference!;
+      const voltage = nodes[leafTargets[position]!]!.reference!;
       if (publishedVoltages[node] === voltage) continue;
       const slots = nodeSlots[node]!;
       for (let at = 0; at < slots.length; at++) {
@@ -1120,20 +1125,12 @@ export function createElectricalNetwork(
                 ? 'high'
                 : 'unknown';
         const previous = pin.sample;
-        if (
-          previous.voltage !== voltage ||
-          previous.level !== level ||
-          previous.status !== 'valid'
-        ) {
-          pushOrdered(changedSlots, slot);
-          pendingPins.push(pin);
-          pendingSamples.push(sampleFor(voltage, level));
-        }
+        if (previous.voltage === voltage && previous.level === level && previous.status === 'valid')
+          continue;
+        pin.sample = sampleFor(voltage, level);
+        pushOrdered(slot);
       }
     }
-    // No pin sample changes before the whole batch is accepted.
-    for (let position = 0; position < pendingPins.length; position++)
-      pendingPins[position]!.sample = pendingSamples[position]!;
     for (let position = 0; position < count; position++) {
       const slot = leafSlots[position]!;
       const target = leafTargets[position]!;
@@ -1149,7 +1146,8 @@ export function createElectricalNetwork(
     finishLeaf();
   };
 
-  function solveSlot(slot: number): readonly number[] {
+  /** One complete single-slot dirty batch; leaves the publication buffer filled. */
+  function solveSingleSlot(slot: number): void {
     const plans = leafPlans[slot];
     if (plans !== undefined) {
       const intent = pins[slot]!.intent;
@@ -1157,18 +1155,91 @@ export function createElectricalNetwork(
         if (leafEpochs[slot] === leafEpoch) {
           const first = plans[0]!;
           const plan = first.intent === intent ? first : plans[1];
-          if (plan?.intent === intent) return applySingleLeaf(slot, intent, plan);
+          if (plan?.intent === intent) {
+            applySingleLeaf(slot, intent, plan);
+            return;
+          }
         }
         const plan = matchLeaf(slot, intent);
         if (plan !== undefined) {
           leafEpochs[slot] = leafEpoch;
-          return applySingleLeaf(slot, intent, plan);
+          applySingleLeaf(slot, intent, plan);
+          return;
         }
       }
     }
     inputSlots[0] = slot;
     inputSlots.length = 1;
-    return runSolve(inputSlots);
+    runSolve(inputSlots);
+  }
+
+  /**
+   * One admitted-shape probe over `slots[0, length)`. A slot whose shape this epoch already
+   * proved resolves through the same two-plan pointer comparison as `solveSingleSlot`; only
+   * the first switch of a shape pays for `matchLeaf`. Any slot without an admitted shape
+   * hands the whole batch to the general solver, which repeats the match.
+   */
+  function solveBatch(slots: ArrayLike<number>, length: number): void {
+    if (prepared !== undefined) {
+      const stamp = nextStamp();
+      let count = 0;
+      let complete = true;
+      for (let position = 0; position < length; position++) {
+        const slot = slots[position]!;
+        if (seenSlots[slot] === stamp) continue;
+        seenSlots[slot] = stamp;
+        const intent = pins[slot]!.intent;
+        if (intent === intents[slot]) continue;
+        let plan: LeafPropagation | undefined;
+        if (leafEpochs[slot] === leafEpoch) {
+          const plans = leafPlans[slot]!;
+          const first = plans[0]!;
+          const cached = first.intent === intent ? first : plans[1];
+          if (cached?.intent === intent) plan = cached;
+        }
+        if (plan === undefined) {
+          plan = matchLeaf(slot, intent);
+          if (plan === undefined) {
+            complete = false;
+            break;
+          }
+          leafEpochs[slot] = leafEpoch;
+        }
+        leafSlots[count] = slot;
+        leafIntents[count] = intent;
+        leafEdges[count] = plan.edges;
+        leafTargets[count] = plan.target;
+        leafPayloads[count] = plan;
+        count++;
+      }
+      if (complete) {
+        if (count === 0) {
+          fillInput(slots, length);
+          runSolve(inputSlots);
+          return;
+        }
+        applyLeaf(count);
+        return;
+      }
+    }
+    fillInput(slots, length);
+    runSolve(inputSlots);
+  }
+
+  /** Board-facing single-slot entry: solves and publishes without an intermediate array. */
+  function solveSlotInto(slot: number, publish?: (slot: number) => void): void {
+    solveSingleSlot(slot);
+    if (publish !== undefined && changedCount !== 0) emitChanged(publish);
+  }
+
+  /** Board-facing batch entry: solves and publishes without an intermediate array. */
+  function solveSlotBatchInto(
+    slots: ArrayLike<number>,
+    count: number,
+    publish?: (slot: number) => void,
+  ): void {
+    solveBatch(slots, count);
+    if (publish !== undefined && changedCount !== 0) emitChanged(publish);
   }
 
   return {
@@ -1176,67 +1247,42 @@ export function createElectricalNetwork(
       return Object.freeze({ ...statistics });
     },
     solve(changedPins?: Iterable<ElectricalPin>): readonly ElectricalPin[] {
-      const changed = runSolve(gatherPins(changedPins));
-      if (changed.length === 0) return unchangedPins;
+      runSolve(gatherPins(changedPins));
+      if (changedCount === 0) return unchangedPins;
       const published: ElectricalPin[] = [];
-      for (let position = 0; position < changed.length; position++)
-        published.push(pins[changed[position]!]!);
+      for (let position = 0; position < changedCount; position++)
+        published.push(pins[changedSlots[position]!]!);
       return Object.freeze(published);
     },
-    solveSlot,
+    solveSlot(slot: number): readonly number[] {
+      solveSingleSlot(slot);
+      return copyChanged();
+    },
+    solveSlotInto,
+    solveSlotBatchInto,
     solveSlots(changedSlotNumbers?: number | Iterable<number>): readonly number[] {
-      if (typeof changedSlotNumbers === 'number') return solveSlot(changedSlotNumbers);
-      // An iterable batch of admitted leaf shapes can also bypass generic bookkeeping.
-      // Anything else re-enters the full solver, which repeats the match and keeps every
-      // guard on the slow path.
-      //
-      // The signature stays `Iterable<number>`: only inputs that are known to iterate
-      // repeatedly may be probed and then replayed. Any other iterable could be a
-      // one-shot generator, so it is materialised exactly once and both the probe and the
-      // fallback read that owned array; probing first would consume the caller's iterator
-      // and silently drop the remaining dirty slots.
-      if (changedSlotNumbers === undefined) return runSolve(undefined);
-      const reusable =
-        changedSlotNumbers instanceof Set ||
+      if (typeof changedSlotNumbers === 'number') {
+        solveSingleSlot(changedSlotNumbers);
+        return copyChanged();
+      }
+      if (changedSlotNumbers === undefined) {
+        runSolve(undefined);
+        return copyChanged();
+      }
+      // The batch is materialised exactly once into the solver's own input buffer, so a
+      // one-shot generator is neither probed twice nor silently truncated: the probe and
+      // any fallback both read that owned array.
+      inputSlots.length = 0;
+      if (
         Array.isArray(changedSlotNumbers) ||
-        (ArrayBuffer.isView(changedSlotNumbers) && Symbol.iterator in changedSlotNumbers);
-      if (!reusable) {
-        inputSlots.length = 0;
-        for (const slot of changedSlotNumbers) inputSlots.push(slot);
-      }
-      const probe: Iterable<number> = reusable ? changedSlotNumbers : inputSlots;
-      // A reusable input is gathered again for the solver; a materialised one is already
-      // the solver's input.
-      const gathered = (): readonly number[] | undefined =>
-        reusable ? gatherSlots(changedSlotNumbers) : inputSlots;
-      if (prepared !== undefined) {
-        const stamp = nextStamp();
-        let count = 0;
-        let complete = true;
-        for (const slot of probe) {
-          if (seenSlots[slot] === stamp) continue;
-          seenSlots[slot] = stamp;
-          const intent = pins[slot]!.intent;
-          if (intent === intents[slot]) continue;
-          const plan = matchLeaf(slot, intent);
-          if (plan === undefined) {
-            complete = false;
-            break;
-          }
-          leafSlots[count] = slot;
-          leafIntents[count] = intent;
-          leafEdges[count] = plan.edges;
-          leafTargets[count] = plan.target;
-          leafPayloads[count] = plan;
-          count++;
-        }
-        if (complete) {
-          if (count === 0) return runSolve(gathered());
-          applyLeaf(count);
-          return changedSlots.length === 0 ? emptySlots : changedSlots;
-        }
-      }
-      return runSolve(gathered());
+        (ArrayBuffer.isView(changedSlotNumbers) && Symbol.iterator in changedSlotNumbers)
+      ) {
+        const indexed = changedSlotNumbers as ArrayLike<number>;
+        for (let position = 0; position < indexed.length; position++)
+          inputSlots.push(indexed[position]!);
+      } else for (const slot of changedSlotNumbers) inputSlots.push(slot);
+      solveBatch(inputSlots, inputSlots.length);
+      return copyChanged();
     },
   };
 
@@ -1246,17 +1292,16 @@ export function createElectricalNetwork(
     for (const pin of changedPins) inputSlots.push(requirePin(pin));
     return inputSlots;
   }
-  function gatherSlots(changedSlotNumbers: Iterable<number> | undefined): number[] | undefined {
-    if (changedSlotNumbers === undefined) return undefined;
-    inputSlots.length = 0;
-    for (const slot of changedSlotNumbers) inputSlots.push(slot);
-    return inputSlots;
+  /** Places a caller-supplied batch into the solver input buffer without allocating. */
+  function fillInput(slots: ArrayLike<number>, length: number): void {
+    inputSlots.length = length;
+    for (let position = 0; position < length; position++) inputSlots[position] = slots[position]!;
   }
   /**
    * One atomically published solve over `input` (dirty slots) or, when it is omitted, over
-   * every pin. Returns the changed slots in ascending board order.
+   * every pin. The published slots end up in the ascending buffer.
    */
-  function runSolve(input: readonly number[] | undefined): readonly number[] {
+  function runSolve(input: readonly number[] | undefined): void {
     // The general solver may add an edge to a previously admitted leaf or change its
     // driver. An admitted replay only moves an existing leaf's edge between fixed
     // references, leaving all unknown-node degrees and every leaf's eligibility intact.
@@ -1266,10 +1311,11 @@ export function createElectricalNetwork(
     }
     const initial = prepared === undefined;
     pendingAdmissions.length = 0;
+    changedCount = 0;
     if (prepared !== undefined && !blocksStale && input !== undefined && input.length === 0) {
       statistics.solves++;
       statistics.cacheHits += prepared.blocks.length;
-      return emptySlots;
+      return;
     }
     updatedSlots.length = 0;
     updatedIntents.length = 0;
@@ -1302,7 +1348,7 @@ export function createElectricalNetwork(
       }
       if (count > 0) {
         applyLeaf(count);
-        return changedSlots.length === 0 ? emptySlots : changedSlots;
+        return;
       }
       // The general path re-deduplicates, so it needs its own marks.
       stamp = nextStamp();
@@ -1380,7 +1426,7 @@ export function createElectricalNetwork(
       }
       flushAdmissions();
       applyLeaf(updatedSlots.length);
-      return changedSlots.length === 0 ? emptySlots : changedSlots;
+      return;
     }
     if (blocksStale) {
       // The partition is rebuilt from pinEdges, but neither the buckets nor the numerical
@@ -1399,7 +1445,7 @@ export function createElectricalNetwork(
       statistics.solves++;
       statistics.cacheHits += prepared.blocks.length;
       flushAdmissions();
-      return emptySlots;
+      return;
     }
     let topology = prepared;
     let bucket: string | undefined;
@@ -1576,7 +1622,7 @@ export function createElectricalNetwork(
       }
     }
     const pending = new Map<ElectricalPin, PinSample>();
-    changedSlots.length = 0;
+    changedCount = 0;
     for (const [node, voltage] of pendingVoltages) {
       const slots = nodeSlots[node]!;
       for (let at = 0; at < slots.length; at++) {
@@ -1594,7 +1640,7 @@ export function createElectricalNetwork(
         const previous = pin.sample;
         const dirty =
           previous.voltage !== voltage || previous.level !== level || previous.status !== status;
-        if (dirty) changedSlots.push(slot);
+        if (dirty) changedSlots[changedCount++] = slot;
         if (dirty || statistics.solves === 0) {
           pending.set(
             pin,
@@ -1607,7 +1653,17 @@ export function createElectricalNetwork(
         }
       }
     }
-    if (changedSlots.length > 1) changedSlots.sort(ascendingSlot);
+    // The buffer is trimmed to `changedCount`, so ordering is an in-place insertion sort
+    // of the written prefix.
+    for (let index = 1; index < changedCount; index++) {
+      const slot = changedSlots[index]!;
+      let position = index;
+      while (position > 0 && changedSlots[position - 1]! > slot) {
+        changedSlots[position] = changedSlots[position - 1]!;
+        position--;
+      }
+      changedSlots[position] = slot;
+    }
     // No pin, intent snapshot, adjacency or factorization cache changes before acceptance.
     for (const [pin, sample] of pending) pin.sample = sample;
     for (const [node, voltage] of pendingVoltages) publishedVoltages[node] = voltage;
@@ -1651,6 +1707,5 @@ export function createElectricalNetwork(
     statistics.cacheHits += cacheHits;
     statistics.topologyPrepares += topologyPrepares;
     flushAdmissions();
-    return changedSlots.length === 0 ? emptySlots : changedSlots;
   }
 }

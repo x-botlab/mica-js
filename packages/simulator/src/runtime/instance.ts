@@ -230,6 +230,9 @@ export class Instance {
   readonly processes: Process[] = [];
   readonly reactions: Reaction[] = [];
   readonly derived = new Map<string, { dependencies: Dependencies; value: unknown }>();
+  /** One-entry memo for repeated `read('derived', name)` calls inside a body. */
+  private derivedName: string | undefined;
+  private derivedEntry: { dependencies: Dependencies; value: unknown } | undefined;
   private readonly derivedBuffers = new Map<string, Map<ResourceSlot, number>>();
   readonly stateResources = new Map<string, ResourceSlot>();
   readonly memoryResources = new Map<string, ResourceSlot>();
@@ -250,6 +253,11 @@ export class Instance {
   >();
   /** 按 memory 维护的代码代际；只有 code region 内写入才递增。 */
   private readonly codeVersions = new Map<string, number>();
+  /**
+   * Every memory name any attached JIT binds as a code region. A write outside this set
+   * cannot affect a JIT, so the store path skips the region scans entirely.
+   */
+  private readonly codeMemories = new Set<string>();
   private readonly observationFrames = new WeakMap<
     Observation,
     { first: Map<ResourceSlot, number>; second: Map<ResourceSlot, number>; alternate: boolean }
@@ -311,7 +319,7 @@ export class Instance {
         const plan = this.memoryPlan(memory);
         const size = kind.startsWith('load8') ? 1 : kind.startsWith('load16') ? 2 : 4;
         const at = range(plan.bytes, offset, size);
-        const dependencies = this.dependencyStack.at(-1);
+        const dependencies = this.dependencies();
         if (dependencies) dependencies.set(plan.slot, plan.slot.version);
         if (size === 1) return plan.bytes[at]!;
         return size === 2
@@ -354,8 +362,13 @@ export class Instance {
   private track(resources: ReadonlyMap<string, ResourceSlot>, name: string): void {
     this.trackSlot(resources.get(name)!);
   }
+  /** Innermost dependency sink, or `undefined` outside an evaluation. */
+  private dependencies(): Map<ResourceSlot, number> | undefined {
+    const stack = this.dependencyStack;
+    return stack.length === 0 ? undefined : stack[stack.length - 1];
+  }
   private trackSlot(slot: ResourceSlot): void {
-    const dependencies = this.dependencyStack.at(-1);
+    const dependencies = this.dependencies();
     if (dependencies) dependencies.set(slot, slot.version);
   }
   /** Read-only evidence that a process frame bound per-instance resource handles. */
@@ -379,6 +392,12 @@ export class Instance {
     for (const [slot, version] of dependencies) if (slot.version !== version) return false;
     return true;
   }
+  /** Publishes a derived cache entry; the memo must follow every table write. */
+  setDerived(name: string, entry: { dependencies: Dependencies; value: unknown }): void {
+    this.derived.set(name, entry);
+    this.derivedName = name;
+    this.derivedEntry = entry;
+  }
   evaluate<T>(
     compute: () => T,
     target?: Map<ResourceSlot, number>,
@@ -389,7 +408,7 @@ export class Instance {
       return { value: compute(), dependencies };
     } finally {
       this.dependencyStack.pop();
-      const parent = this.dependencyStack.at(-1);
+      const parent = this.dependencies();
       if (parent) for (const [key, version] of dependencies) parent.set(key, version);
     }
   }
@@ -403,7 +422,7 @@ export class Instance {
       return snapshot(this.source(path));
     } finally {
       this.dependencyStack.pop();
-      const parent = this.dependencyStack.at(-1);
+      const parent = this.dependencies();
       if (parent) for (const [key, version] of dependencies) parent.set(key, version);
     }
   }
@@ -472,7 +491,10 @@ export class Instance {
       return this.states.get(name);
     }
     if (kind === 'derived') {
-      let cached = this.derived.get(name);
+      // A body re-reads the same derived value between boundaries; one memoized name
+      // saves the string-keyed lookup. Every writer of `derived` goes through `setDerived`,
+      // so the memo can never disagree with the table.
+      let cached = name === this.derivedName ? this.derivedEntry : this.derived.get(name);
       if (!cached || !this.dependenciesCurrent(cached.dependencies)) {
         const declaration = this.declarations.get(name);
         if (declaration?.kind !== 'derived') throw new TypeError(`Unknown derived ${name}`);
@@ -484,9 +506,9 @@ export class Instance {
           this.derivedBuffers.set(name, buffer);
         } else buffer.clear();
         cached = this.evaluate(() => computation(declaration.value, this.host), buffer);
-        this.derived.set(name, cached);
+        this.setDerived(name, cached);
       }
-      const parent = this.dependencyStack.at(-1);
+      const parent = this.dependencies();
       if (parent) for (const [key, version] of cached.dependencies) parent.set(key, version);
       return cached.value;
     }
@@ -579,7 +601,7 @@ export class Instance {
       if (this.sampleEntries.size >= 512) this.sampleEntries.clear();
       this.sampleEntries.set(name, entry);
     }
-    const dependencies = this.dependencyStack.at(-1);
+    const dependencies = this.dependencies();
     if (dependencies) dependencies.set(entry.slot, entry.slot.version);
     return entry.pin.sample;
   }
@@ -745,6 +767,8 @@ export class Instance {
     size?: number,
   ): void {
     this.board.invalidate(slot);
+    // Data memories are never bound as code, so no JIT region, cache or metadata can care.
+    if (!this.codeMemories.has(name)) return;
     if (this.hasCodeRegion(name, offset, size))
       this.codeVersions.set(name, this.codeVersion(name) + 1);
     for (const jit of this.jits) {
@@ -806,6 +830,9 @@ export class Instance {
       let pin: ElectricalPin | undefined;
       let slot = -1;
       let sample: ResourceSlot | undefined;
+      // One-entry cache for the constant resistance a body repeats on every execution.
+      let lastResistance: unknown;
+      let lastIntent: readonly ResistorBranch[] | undefined;
       const resolve = (): ElectricalPin => {
         if (pin === undefined) {
           pin = this.pin(name);
@@ -817,7 +844,7 @@ export class Instance {
       return Object.freeze({
         sample: () => {
           const current = resolve();
-          const dependencies = this.dependencyStack.at(-1);
+          const dependencies = this.dependencies();
           if (dependencies) dependencies.set(sample!, sample!.version);
           return current.sample;
         },
@@ -828,10 +855,18 @@ export class Instance {
           this.board.markElectricalDirty(slot);
         },
         resistor: (resistance: unknown) => {
+          // Device bodies pass a pinned resistance on every execution; repeating the same
+          // argument reuses the frozen intent instead of resolving `(pin, resistance)` again.
+          // The intent is checked as well: an empty cache starts at `undefined`, which must
+          // still reach `electricalNumber` and fail like the generic host path.
+          if (lastIntent !== undefined && resistance === lastResistance) return lastIntent;
           const r = electricalNumber(resistance);
           if (r < 0.001 || r > 1e9)
             throw new ElectricalParameterError('Resistance outside [0.001, 1e9]');
-          return this.resistorIntent(name, r);
+          const intent = this.resistorIntent(name, r);
+          lastResistance = resistance;
+          lastIntent = intent;
+          return intent;
         },
       });
     }
@@ -842,7 +877,7 @@ export class Instance {
       return Object.freeze({
         read: () => {
           const current = resolve();
-          const dependencies = this.dependencyStack.at(-1);
+          const dependencies = this.dependencies();
           if (dependencies) dependencies.set(current, current.version);
           return states.get(name);
         },
@@ -857,7 +892,7 @@ export class Instance {
     const read = (size: number, little: boolean, offset: unknown): number => {
       const current = resolve();
       const at = range(current.bytes, offset, size);
-      const dependencies = this.dependencyStack.at(-1);
+      const dependencies = this.dependencies();
       if (dependencies) dependencies.set(current.slot, current.slot.version);
       return size === 1
         ? current.bytes[at]!
@@ -1389,6 +1424,7 @@ export class Instance {
     };
     this.jits.push(jit);
     this.board.jits.push(jit);
+    for (const region of jit.codeRegions) this.codeMemories.add(region.memory);
     const disposable = {
       dispose: () => {
         if (!jit.active) return;

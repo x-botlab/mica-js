@@ -104,7 +104,11 @@ class BoardRuntime implements Board {
   current: Instance | undefined;
   /** -1: clean; -2: initial solve or multiple dirty slots; otherwise the only dirty slot. */
   private pendingElectricalSlot = -2;
-  private readonly dirtyElectricalSlots = new Set<number>();
+  /** Flat dirty batch for the multi-slot publication path, stamped to drop repetitions. */
+  private dirtyElectricalSlots = new Int32Array(0);
+  private dirtyElectricalStamps = new Int32Array(0);
+  private dirtyElectricalLength = 0;
+  private dirtyElectricalEpoch = 1;
   private readonly observations = new ActivationQueue<Observation>();
   private readonly reactionBatch: Reaction[] = [];
   private readonly changeObservations: Receiver[] = [];
@@ -257,6 +261,9 @@ class BoardRuntime implements Board {
           this.sampleSlotsBySlot.push(slot);
         }
       this.network = createElectricalNetwork(pins, nets);
+      // One dirty list and one stamp per board pin: publication never allocates.
+      this.dirtyElectricalSlots = new Int32Array(pins.length);
+      this.dirtyElectricalStamps = new Int32Array(pins.length);
       this.phase = 'initialize';
       for (const instance of this.instances) {
         this.current = instance;
@@ -592,35 +599,55 @@ class BoardRuntime implements Board {
   markElectricalDirty(slot: number): void {
     const pending = this.pendingElectricalSlot;
     if (pending === slot) return;
+    const stamps = this.dirtyElectricalStamps;
+    if (slot >= stamps.length) throw new RangeError('Electrical slot is outside the board');
+    const epoch = this.dirtyElectricalEpoch;
+    if (stamps[slot] === epoch) return;
+    stamps[slot] = epoch;
+    if (pending >= 0) {
+      // The promoted batch holds the single pending slot first, then this one.
+      const list = this.dirtyElectricalSlots;
+      list[0] = pending;
+      list[1] = slot;
+      stamps[pending] = epoch;
+      this.dirtyElectricalLength = 2;
+      this.pendingElectricalSlot = -2;
+      return;
+    }
     if (pending === -1) {
       this.pendingElectricalSlot = slot;
       return;
     }
-    if (pending >= 0) {
-      this.dirtyElectricalSlots.add(pending);
-      this.pendingElectricalSlot = -2;
-    }
-    this.dirtyElectricalSlots.add(slot);
+    this.dirtyElectricalSlots[this.dirtyElectricalLength++] = slot;
   }
   /** Dirty slot count for diagnostics, not used by the publication path. */
   get dirtyElectricalCount(): number {
-    const pending = this.pendingElectricalSlot;
-    return pending >= 0 ? 1 : this.dirtyElectricalSlots.size;
+    return this.pendingElectricalSlot >= 0 ? 1 : this.dirtyElectricalLength;
   }
   private publish(): void {
     const pending = this.pendingElectricalSlot;
     if (pending === -1) return;
-    // Fused publish: dirty slots go straight into the local solve and the changed slots
-    // resolve their pre-bound sample slot, so no pin object or map hop is involved.
-    const changed =
-      pending >= 0
-        ? this.network.solveSlot(pending)
-        : this.network.solveSlots(this.dirtyElectricalSlots);
-    if (pending === -2) this.dirtyElectricalSlots.clear();
+    // Fused publish: the solver hands every changed slot straight to `publishSlot`, which
+    // resolves the pre-bound sample slot without any intermediate result array.
+    if (pending >= 0) this.network.solveSlotInto(pending, this.publishSlot);
+    else
+      this.network.solveSlotBatchInto(
+        this.dirtyElectricalSlots,
+        this.dirtyElectricalLength,
+        this.publishSlot,
+      );
+    if (pending === -2) this.dirtyElectricalLength = 0;
+    // A new epoch retires every stamp, including the single pending slot's own mark.
+    if (++this.dirtyElectricalEpoch === 0x7fffffff) {
+      this.dirtyElectricalStamps.fill(0);
+      this.dirtyElectricalEpoch = 1;
+    }
     this.pendingElectricalSlot = -1;
-    for (let index = 0; index < changed.length; index++)
-      this.invalidate(this.sampleSlotsBySlot[changed[index]!]!);
   }
+  /** Publication sink: enter the observation queue for one published board slot. */
+  private readonly publishSlot = (slot: number): void => {
+    this.invalidate(this.sampleSlotsBySlot[slot]!);
+  };
   private bindObservation(observation: Receiver, path: readonly string[]): void {
     const instance = observation.instance;
     observation.previous = instance.observe(observation, path);
@@ -727,7 +754,7 @@ class BoardRuntime implements Board {
     if (entry.value !== value) entry.value = value;
     entry.dependencies = chain.dependencies;
     const cached = chain.instance.derived.get(path[0]!);
-    if (cached !== entry) chain.instance.derived.set(path[0]!, entry);
+    if (cached !== entry) chain.instance.setDerived(path[0]!, entry);
   }
   private collectChain(chain: ObservationChain): void {
     const value = chain.plan.evaluate();
@@ -799,28 +826,15 @@ class BoardRuntime implements Board {
     for (;;) {
       if (this.pendingElectricalSlot !== -1) this.publish();
       if (!this.observations.size) return;
+      // Truncating a non-empty array clears its elements; an already-empty buffer needs
+      // no store at all, which is the common case for the ordering tables.
       const reactions = this.reactionBatch;
-      reactions.length = 0;
+      if (reactions.length) reactions.length = 0;
       const changes = this.changeObservations;
-      changes.length = 0;
-      this.changePrevious.length = 0;
-      this.changeCurrent.length = 0;
-      const batch = this.observations.take();
-      for (let index = 0; index < batch.length; index++) {
-        const observation = batch[index]!;
-        if ('plan' in observation) {
-          this.collectChain(observation);
-          continue;
-        }
-        const current = observation.readSource!();
-        if (same(observation.previous, current)) continue;
-        const previous = observation.previous;
-        observation.previous = current;
-        // Once a collapsed chain buffered its receivers, later effects must wait for
-        // the ordered table; otherwise the original inline application is kept.
-        if (changes.length) this.recordChange(observation, previous, current);
-        else this.applyChange(observation, previous, current);
-      }
+      if (changes.length) changes.length = 0;
+      if (this.changePrevious.length) this.changePrevious.length = 0;
+      if (this.changeCurrent.length) this.changeCurrent.length = 0;
+      this.observations.drain(this.consumeObservation);
       const count = changes.length;
       if (count) {
         for (let index = 0; index < count; index++)
@@ -833,6 +847,21 @@ class BoardRuntime implements Board {
       else return;
     }
   }
+  /** One due receiver: chains collapse their members, plain sources apply inline. */
+  private readonly consumeObservation = (observation: Observation): void => {
+    if ('plan' in observation) {
+      this.collectChain(observation);
+      return;
+    }
+    const current = observation.readSource!();
+    if (same(observation.previous, current)) return;
+    const previous = observation.previous;
+    observation.previous = current;
+    // Once a collapsed chain buffered its receivers, later effects must wait for the
+    // ordered table; otherwise the original inline application is kept.
+    if (this.changeObservations.length) this.recordChange(observation, previous, current);
+    else this.applyChange(observation, previous, current);
+  };
   /** Shared capture barrier and ordered body runner for generic and static boundaries. */
   private runBoundaryReactions(reactions: Reaction[]): void {
     try {
@@ -1090,8 +1119,13 @@ class BoardRuntime implements Board {
           this.time = pollingBoundary;
           continue;
         }
-        if (this.events.time <= end) {
-          this.time = this.events.time;
+        const next = this.events.time;
+        if (next <= end) {
+          this.time = next;
+          // The next round would only drain these events at the top of the loop; doing it
+          // here saves one scheduler round per due event and observes the same order
+          // (callbacks still run before the model queue is served).
+          while (this.events.time === this.time) this.events.pop()();
           continue;
         }
         this.time = end;
