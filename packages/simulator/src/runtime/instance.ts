@@ -9,6 +9,7 @@ import type {
   Channel,
   Decl,
   Dependencies,
+  DerivedEntry,
   DirectJitLayout,
   Entry,
   Execution,
@@ -53,6 +54,9 @@ export interface InstanceBoard {
   readonly time: number;
   readonly phase: string;
   readonly current: Instance | undefined;
+  /** Monotonic count of resource-version mutations on the whole board. */
+  readonly resourceEpoch: number;
+  noteResourceVersion(slot: ResourceSlot): void;
   markElectricalDirty(slot: number): void;
   readonly jits: Jit[];
   readonly waitingJits: Set<Jit>;
@@ -229,10 +233,10 @@ export class Instance {
   readonly jits: Jit[] = [];
   readonly processes: Process[] = [];
   readonly reactions: Reaction[] = [];
-  readonly derived = new Map<string, { dependencies: Dependencies; value: unknown }>();
+  readonly derived = new Map<string, DerivedEntry>();
   /** One-entry memo for repeated `read('derived', name)` calls inside a body. */
   private derivedName: string | undefined;
-  private derivedEntry: { dependencies: Dependencies; value: unknown } | undefined;
+  private derivedEntry: DerivedEntry | undefined;
   private readonly derivedBuffers = new Map<string, Map<ResourceSlot, number>>();
   readonly stateResources = new Map<string, ResourceSlot>();
   readonly memoryResources = new Map<string, ResourceSlot>();
@@ -290,7 +294,11 @@ export class Instance {
             : declaration.kind === 'memory'
               ? this.memoryResources
               : this.sampleResources;
-        resources.set(declaration.name, { version: 0, subscribers: new Set() });
+        resources.set(declaration.name, {
+          version: 0,
+          subscribers: new Set(),
+          waiters: undefined,
+        });
       }
     }
     dataObject(props);
@@ -393,7 +401,11 @@ export class Instance {
     return true;
   }
   /** Publishes a derived cache entry; the memo must follow every table write. */
-  setDerived(name: string, entry: { dependencies: Dependencies; value: unknown }): void {
+  setDerived(name: string, entry: DerivedEntry): void {
+    // Observation chains republish the same entry on every boundary they observe; the
+    // memo already proves `derived` maps this name to this entry, so the map write is
+    // skipped. Every other writer still replaces the map entry below.
+    if (this.derivedName === name && this.derivedEntry === entry) return;
     this.derived.set(name, entry);
     this.derivedName = name;
     this.derivedEntry = entry;
@@ -495,7 +507,11 @@ export class Instance {
       // saves the string-keyed lookup. Every writer of `derived` goes through `setDerived`,
       // so the memo can never disagree with the table.
       let cached = name === this.derivedName ? this.derivedEntry : this.derived.get(name);
-      if (!cached || !this.dependenciesCurrent(cached.dependencies)) {
+      const epoch = this.board.resourceEpoch;
+      if (
+        cached === undefined ||
+        (cached.epoch !== epoch && !this.dependenciesCurrent(cached.dependencies))
+      ) {
         const declaration = this.declarations.get(name);
         if (declaration?.kind !== 'derived') throw new TypeError(`Unknown derived ${name}`);
         // The previous dependency set is only used by the staleness check above, so this
@@ -505,8 +521,17 @@ export class Instance {
           buffer = new Map();
           this.derivedBuffers.set(name, buffer);
         } else buffer.clear();
-        cached = this.evaluate(() => computation(declaration.value, this.host), buffer);
+        const evaluated = this.evaluate(() => computation(declaration.value, this.host), buffer);
+        cached = {
+          value: evaluated.value,
+          dependencies: evaluated.dependencies,
+          epoch: this.board.resourceEpoch,
+        };
         this.setDerived(name, cached);
+      } else if (cached.epoch !== epoch) {
+        // The versions still match, so the value holds while later mutations keep
+        // advancing the epoch: record the checkpoint and skip the scan until then.
+        cached.epoch = epoch;
       }
       const parent = this.dependencies();
       if (parent) for (const [key, version] of cached.dependencies) parent.set(key, version);
@@ -645,8 +670,10 @@ export class Instance {
       while (bits !== 0) {
         const index = base + 31 - Math.clz32(bits & -bits);
         const slot = stateSlots[index]!;
-        if (slot.subscribers.size === 0) slot.version++;
-        else board.invalidate(slot);
+        if (slot.subscribers.size === 0) {
+          slot.version++;
+          board.noteResourceVersion(slot);
+        } else board.invalidate(slot);
         bits &= bits - 1;
       }
     }
@@ -820,16 +847,17 @@ export class Instance {
     return handles;
   }
   /**
-   * Each method repeats the generic host operation exactly: name resolution stays lazy so
-   * an invalid name still fails at the same operation, dependency slots are still
+   * Each method repeats the generic host operation exactly: dependency slots are still
    * recorded, state writes still snapshot, and memory stores still run the code-memory
-   * invalidation that clears JIT caches.
+   * invalidation that clears JIT caches. Every resource a declaration already provides is
+   * resolved here, at bind time; a name that does not exist yet keeps resolving lazily so
+   * it still fails at its first real use, not while binding.
    */
   private resourceHandle(kind: string, name: string): ResourceHandle {
     if (kind === 'pin') {
-      let pin: ElectricalPin | undefined;
-      let slot = -1;
-      let sample: ResourceSlot | undefined;
+      let pin = this.pins.get(name);
+      let slot = pin === undefined ? -1 : this.board.electricalSlot(pin);
+      let sample = pin === undefined ? undefined : this.sampleResources.get(name)!;
       // One-entry cache for the constant resistance a body repeats on every execution.
       let lastResistance: unknown;
       let lastIntent: readonly ResistorBranch[] | undefined;
@@ -871,7 +899,12 @@ export class Instance {
       });
     }
     if (kind === 'state') {
-      let slot: ResourceSlot | undefined;
+      let slot: ResourceSlot | undefined = this.states.has(name)
+        ? this.stateResources.get(name)!
+        : undefined;
+      // Direct-bank index of this state: -2 not probed yet (the bank appears with the first
+      // direct program), -1 outside the scalar bank, otherwise the live value's index.
+      let banked = slot === undefined ? -1 : (this.directBank?.states.get(name) ?? -2);
       const resolve = (): ResourceSlot => (slot ??= this.stateSlot(name));
       const states = this.states;
       return Object.freeze({
@@ -879,7 +912,8 @@ export class Instance {
           const current = resolve();
           const dependencies = this.dependencies();
           if (dependencies) dependencies.set(current, current.version);
-          return states.get(name);
+          if (banked === -2) banked = this.directBank?.states.get(name) ?? -1;
+          return banked < 0 ? states.get(name) : this.directBank!.stateValues[banked];
         },
         write: (value: unknown) => {
           const current = resolve();
@@ -887,7 +921,8 @@ export class Instance {
         },
       });
     }
-    let plan: { name: string; bytes: Uint8Array; view: DataView; slot: ResourceSlot } | undefined;
+    let plan: { name: string; bytes: Uint8Array; view: DataView; slot: ResourceSlot } | undefined =
+      this.memories.has(name) ? this.memoryPlan(name) : undefined;
     const resolve = (): NonNullable<typeof plan> => (plan ??= this.memoryPlan(name));
     const read = (size: number, little: boolean, offset: unknown): number => {
       const current = resolve();
@@ -1417,6 +1452,8 @@ export class Instance {
       pollingPeriod: 0,
       pollingOrigin: 0,
       pollingToken: 0,
+      dependencyDirty: true,
+      waiterSlots: undefined,
       active: true,
       stopped: false,
       queued: false,

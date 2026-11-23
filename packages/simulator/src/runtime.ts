@@ -132,6 +132,11 @@ class BoardRuntime implements Board {
   private readonly models = new Fifo<Process>();
   readonly events = new EventQueue<() => void>();
   private readonly readyJits = new Fifo<Jit>();
+  /**
+   * Advances on every resource-version mutation, so cached dependency evidence can be
+   * reused while no resource changed at all.
+   */
+  private versionEpoch = 0;
   readonly waitingJits = new Set<Jit>();
   readonly jits: Jit[] = [];
   readonly instances: Instance[] = [];
@@ -589,8 +594,38 @@ class BoardRuntime implements Board {
   }
   invalidate(slot: ResourceSlot): void {
     slot.version++;
+    this.versionEpoch++;
+    const waiters = slot.waiters;
+    if (waiters !== undefined) for (const jit of waiters) jit.dependencyDirty = true;
     if (slot.subscribers.size === 0) return;
     for (const observation of slot.subscribers) this.observations.add(observation.order!);
+  }
+  /** Records a resource version bumped outside :func:`invalidate` (direct JIT writes). */
+  noteResourceVersion(slot: ResourceSlot): void {
+    this.versionEpoch++;
+    const waiters = slot.waiters;
+    if (waiters !== undefined) for (const jit of waiters) jit.dependencyDirty = true;
+  }
+  /**
+   * Registers a parked JIT on the slots its predicate recorded. A later version bump then
+   * flags that JIT directly, so a scheduler round rescans dependencies only when the
+   * evidence it would read has actually moved.
+   */
+  private watchWaiter(jit: Jit): void {
+    const dependencies = jit.dependencies;
+    if (jit.waiterSlots === dependencies) return;
+    const previous = jit.waiterSlots;
+    if (previous !== undefined) for (const slot of previous.keys()) slot.waiters?.delete(jit);
+    if (dependencies !== undefined)
+      for (const slot of dependencies.keys()) (slot.waiters ??= new Set()).add(jit);
+    jit.waiterSlots = dependencies;
+    // The recorded versions are only proven current by a scan after this registration, so
+    // a write in the same round cannot be missed.
+    jit.dependencyDirty = true;
+  }
+  /** Monotonic evidence that no resource version changed since a previous observation. */
+  get resourceEpoch(): number {
+    return this.versionEpoch;
   }
   /** Pin slot of an electrical endpoint; bound once because the board order is fixed. */
   electricalSlot(pin: ElectricalPin): number {
@@ -706,7 +741,7 @@ class BoardRuntime implements Board {
         instance: entry.instance,
         members: [],
         dependencies: new Map(),
-        entry: { dependencies: new Map<ResourceSlot, number>(), value: undefined },
+        entry: { dependencies: new Map<ResourceSlot, number>(), value: undefined, epoch: -1 },
         order: 0,
         previous: undefined,
         bound: false,
@@ -748,13 +783,17 @@ class BoardRuntime implements Board {
   private commitChain(chain: ObservationChain, value: unknown): void {
     const path = chain.plan.path;
     if (path.length !== 1) return;
-    for (const slot of chain.plan.slots as readonly ResourceSlot[])
-      chain.dependencies.set(slot, slot.version);
+    const slots = chain.plan.slots as readonly ResourceSlot[];
+    const dependencies = chain.dependencies;
+    for (let index = 0; index < slots.length; index++) {
+      const slot = slots[index]!;
+      dependencies.set(slot, slot.version);
+    }
     const entry = chain.entry;
     if (entry.value !== value) entry.value = value;
-    entry.dependencies = chain.dependencies;
-    const cached = chain.instance.derived.get(path[0]!);
-    if (cached !== entry) chain.instance.setDerived(path[0]!, entry);
+    entry.dependencies = dependencies;
+    entry.epoch = this.versionEpoch;
+    chain.instance.setDerived(path[0]!, entry);
   }
   private collectChain(chain: ObservationChain): void {
     const value = chain.plan.evaluate();
@@ -973,13 +1012,15 @@ class BoardRuntime implements Board {
    * the body reports ticks/receive through the frame and returns whether it suspended.
    */
   private driveResumable(process: Process, program: ResumableProgram, value?: unknown): void {
-    this.current = process.instance;
+    const instance = process.instance;
+    this.current = instance;
     process.state = 'running';
     const state = (process.frame ??= frame(program));
+    const host = instance.host;
     let input = value;
     for (;;) {
       state.value = input;
-      if (!program.run(process.instance.host, undefined, undefined, state)) {
+      if (!program.run(host, undefined, undefined, state)) {
         this.boundary();
         process.state = 'idle';
         if (process.pending) {
@@ -989,7 +1030,7 @@ class BoardRuntime implements Board {
         return;
       }
       if (state.kind === RESUMABLE_RECEIVE) {
-        const channel = process.instance.channels.get(state.channel)!;
+        const channel = instance.channels.get(state.channel)!;
         if (channel.incoming.length) {
           input = channel.incoming.shift().value;
           continue;
@@ -1057,6 +1098,9 @@ class BoardRuntime implements Board {
             if (process.source?.[0] === notification) this.enqueue(process);
         instance.notificationInputs.clear();
       }
+      // A parked JIT records the versions it read, so it can only become runnable once one
+      // of those slots is invalidated; the wait set binds exactly that dependency set, and a
+      // periodic poll still needs its boundary recomputed on every round.
       for (;;) {
         while (this.events.time === this.time) this.events.pop()();
         if (this.models.length) {
@@ -1072,7 +1116,10 @@ class BoardRuntime implements Board {
           for (let index = 0; index < this.jits.length; index++) {
             const jit = this.jits[index]!;
             if (!jit.active || jit.stopped || !this.waitingJits.has(jit)) continue;
+            this.watchWaiter(jit);
+            if (!jit.dependencyDirty && !jit.pollingWait) continue;
             if (jit.instance.dependenciesCurrent(jit.dependencies)) {
+              jit.dependencyDirty = false;
               if (jit.pollingWait && jit.pollingPeriod > 0) {
                 const lastStart = MAX_TIME - ((MAX_TIME - jit.pollingOrigin) % jit.pollingPeriod);
                 if (lastStart < MAX_TIME && lastStart < end) {
@@ -1087,6 +1134,7 @@ class BoardRuntime implements Board {
               }
               continue;
             }
+            jit.dependencyDirty = false;
             if (jit.pollingWait) {
               jit.pollingWait = false;
               jit.pollingToken++;
@@ -1102,6 +1150,7 @@ class BoardRuntime implements Board {
             } else if (jit.predicate) {
               const checked = jit.instance.evaluate(() => syncJitCall(jit, jit.predicate!));
               jit.dependencies = checked.dependencies;
+              jit.dependencyDirty = true;
               if (checked.value === true) {
                 delete jit.predicate;
                 delete jit.dependencies;

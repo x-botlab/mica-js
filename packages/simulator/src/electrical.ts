@@ -107,13 +107,15 @@ export interface ElectricalNetwork {
   solveSlot(slot: number): readonly number[];
   /**
    * Board-facing single-slot entry: solves the batch and hands each changed slot to
-   * `publish` in ascending board order, so no result array is materialised.
+   * `publish` in visit order, so no result array is materialised. The sink is the board's
+   * slot bitmap, which ignores the order; callers that need an ascending array use
+   * `solveSlot`.
    */
   solveSlotInto(slot: number, publish?: (slot: number) => void): void;
   /**
    * Board-facing batch entry for a complete multi-slot dirty batch. `slots[0, count)` must
    * hold board pin slots; repetitions are ignored. Same atomicity as `solveSlots`, which it
-   * shares every guard with.
+   * shares every guard with, and the same order-free publication as `solveSlotInto`.
    */
   solveSlotBatchInto(
     slots: ArrayLike<number>,
@@ -834,9 +836,10 @@ export function createElectricalNetwork(
   /** Dirty slots supplied by the caller, deduplicated in place without an iterator per pin. */
   const inputSlots: number[] = [];
   /**
-   * Changed pin slots of the last solve in ascending board order, valid in
-   * `[0, changedCount)`. The array keeps its high-water length so a new batch never pays
-   * for clearing it.
+   * Changed pin slots of the last solve, valid in `[0, changedCount)`. The leaf path
+   * collects them in visit order and orders them only for the entries that return an
+   * array; the board publication sink is a slot bitmap. The array keeps its high-water
+   * length so a new batch never pays for clearing it.
    */
   const changedSlots: number[] = [];
   let changedCount = 0;
@@ -1001,26 +1004,32 @@ export function createElectricalNetwork(
     return undefined;
   };
   /**
-   * Inserts the slot into the ascending publication buffer. A touched batch holds a handful
-   * of pins, so an in-place insertion beats a comparator sort of the published slot order.
-   * The buffer keeps its high-water length, so starting a batch never clears elements.
+   * Appends one changed slot. A whole corrected batch is ordered once, after collecting,
+   * so each leaf contributes its pins without paying for an insertion pass per pin.
    */
-  const pushOrdered = (slot: number): void => {
-    let position = changedCount;
-    while (position > 0 && changedSlots[position - 1]! > slot) {
-      changedSlots[position] = changedSlots[position - 1]!;
-      position--;
-    }
-    changedSlots[position] = slot;
-    changedCount++;
+  const pushChanged = (slot: number): void => {
+    changedSlots[changedCount++] = slot;
   };
-  /** Hands every published slot to the board in ascending board order. */
+  /** Restores the ascending board order the public entries promise; callers opt in. */
+  const sortChanged = (): void => {
+    for (let index = 1; index < changedCount; index++) {
+      const slot = changedSlots[index]!;
+      let position = index;
+      while (position > 0 && changedSlots[position - 1]! > slot) {
+        changedSlots[position] = changedSlots[position - 1]!;
+        position--;
+      }
+      changedSlots[position] = slot;
+    }
+  };
+  /** Hands every published slot to the board. The consumer is a slot bitmap. */
   const emitChanged = (publish: (slot: number) => void): void => {
     for (let index = 0; index < changedCount; index++) publish(changedSlots[index]!);
   };
   /** A fresh ascending copy for the public solve entries; the buffer is reused. */
   const copyChanged = (): readonly number[] => {
     if (changedCount === 0) return emptySlots;
+    sortChanged();
     const result = new Array<number>(changedCount);
     for (let index = 0; index < changedCount; index++) result[index] = changedSlots[index]!;
     return result;
@@ -1087,7 +1096,8 @@ export function createElectricalNetwork(
    * Publishes the accepted leaf batch. The caller has already matched every dirty slot to
    * an admitted shape (or proven the shapes below through the general solver), so each
    * pin's sample is an independent function of its node's fixed reference: committing them
-   * in place is atomic, and only the ordering of the published slot list needs staging.
+   * in place is atomic. Slots are collected in visit order and ordered only when a public
+   * entry asks for the ascending array.
    */
   const applyLeaf = (count: number): void => {
     changedCount = 0;
@@ -1106,7 +1116,7 @@ export function createElectricalNetwork(
           const sample = planSamples[at]!;
           if (pinned.sample === sample) continue;
           pinned.sample = sample;
-          pushOrdered(planSlots[at]!);
+          pushChanged(planSlots[at]!);
         }
         continue;
       }
@@ -1128,7 +1138,7 @@ export function createElectricalNetwork(
         if (previous.voltage === voltage && previous.level === level && previous.status === 'valid')
           continue;
         pin.sample = sampleFor(voltage, level);
-        pushOrdered(slot);
+        pushChanged(slot);
       }
     }
     for (let position = 0; position < count; position++) {
@@ -1249,6 +1259,7 @@ export function createElectricalNetwork(
     solve(changedPins?: Iterable<ElectricalPin>): readonly ElectricalPin[] {
       runSolve(gatherPins(changedPins));
       if (changedCount === 0) return unchangedPins;
+      sortChanged();
       const published: ElectricalPin[] = [];
       for (let position = 0; position < changedCount; position++)
         published.push(pins[changedSlots[position]!]!);
