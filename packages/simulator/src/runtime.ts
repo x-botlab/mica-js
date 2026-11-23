@@ -138,6 +138,15 @@ class BoardRuntime implements Board {
    */
   private versionEpoch = 0;
   readonly waitingJits = new Set<Jit>();
+  /**
+   * Advances whenever a parked JIT is flagged or parks. The global `versionEpoch` cannot
+   * gate the scan: every electrical publish bumps it even when no JIT waits on the slot.
+   */
+  private waiterEpoch = 0;
+  /** `waiterEpoch` at the last parked-JIT scan; equal means no parked JIT can have woken. */
+  private waitingScanEpoch = 0;
+  /** Parked JITs whose `pollingWait` is set: their polling boundary needs every round. */
+  private pollingWaiterCount = 0;
   readonly jits: Jit[] = [];
   readonly instances: Instance[] = [];
   private network!: ElectricalNetwork;
@@ -599,16 +608,21 @@ class BoardRuntime implements Board {
   invalidate(slot: ResourceSlot): void {
     slot.version++;
     this.versionEpoch++;
-    const waiters = slot.waiters;
-    if (waiters !== undefined) for (const jit of waiters) jit.dependencyDirty = true;
+    this.flagWaiters(slot);
     if (slot.subscribers.size === 0) return;
     for (const observation of slot.subscribers) this.observations.add(observation.order!);
   }
   /** Records a resource version bumped outside :func:`invalidate` (direct JIT writes). */
   noteResourceVersion(slot: ResourceSlot): void {
     this.versionEpoch++;
+    this.flagWaiters(slot);
+  }
+  /** Flags every parked JIT that recorded `slot`, so the next round rescans it exactly once. */
+  private flagWaiters(slot: ResourceSlot): void {
     const waiters = slot.waiters;
-    if (waiters !== undefined) for (const jit of waiters) jit.dependencyDirty = true;
+    if (waiters === undefined || waiters.size === 0) return;
+    for (const jit of waiters) jit.dependencyDirty = true;
+    this.waiterEpoch++;
   }
   /**
    * Registers a parked JIT on the slots its predicate recorded. A later version bump then
@@ -626,6 +640,32 @@ class BoardRuntime implements Board {
     // The recorded versions are only proven current by a scan after this registration, so
     // a write in the same round cannot be missed.
     jit.dependencyDirty = true;
+  }
+  /**
+   * Parks a JIT on the versions it just recorded. Registering here instead of in the scan
+   * makes `waiterEpoch` a complete wake source: the scan can then be skipped whenever no
+   * parked JIT was flagged or registered since the last scan, and no poll is due.
+   */
+  parkWaiter(jit: Jit): void {
+    if (!this.waitingJits.has(jit)) {
+      this.waitingJits.add(jit);
+      if (jit.pollingWait) this.pollingWaiterCount++;
+    }
+    this.watchWaiter(jit);
+    jit.dependencyDirty = true;
+    this.waiterEpoch++;
+  }
+  /** Wakes or drops a parked JIT and removes the registrations that would flag it later. */
+  unparkWaiter(jit: Jit): void {
+    if (this.waitingJits.delete(jit) && jit.pollingWait) {
+      jit.pollingWait = false;
+      this.pollingWaiterCount--;
+    }
+    const slots = jit.waiterSlots;
+    if (slots !== undefined) {
+      for (const slot of slots.keys()) slot.waiters?.delete(jit);
+      jit.waiterSlots = undefined;
+    }
   }
   /** Monotonic evidence that no resource version changed since a previous observation. */
   get resourceEpoch(): number {
@@ -1104,7 +1144,9 @@ class BoardRuntime implements Board {
       }
       // A parked JIT records the versions it read, so it can only become runnable once one
       // of those slots is invalidated; the wait set binds exactly that dependency set, and a
-      // periodic poll still needs its boundary recomputed on every round.
+      // periodic poll still needs its boundary recomputed on every round. Both facts are
+      // counted in `waiterEpoch` / `pollingWaiterCount`, so a round where neither moved
+      // skips the scan entirely with `pollingBoundary` left at Infinity.
       for (;;) {
         while (this.events.time === this.time) this.events.pop()();
         if (this.models.length) {
@@ -1116,7 +1158,11 @@ class BoardRuntime implements Board {
           continue;
         }
         let pollingBoundary = Infinity;
-        if (this.waitingJits.size)
+        if (
+          this.waitingJits.size &&
+          (this.waiterEpoch !== this.waitingScanEpoch || this.pollingWaiterCount !== 0)
+        ) {
+          this.waitingScanEpoch = this.waiterEpoch;
           for (let index = 0; index < this.jits.length; index++) {
             const jit = this.jits[index]!;
             if (!jit.active || jit.stopped || !this.waitingJits.has(jit)) continue;
@@ -1128,10 +1174,9 @@ class BoardRuntime implements Board {
                 const lastStart = MAX_TIME - ((MAX_TIME - jit.pollingOrigin) % jit.pollingPeriod);
                 if (lastStart < MAX_TIME && lastStart < end) {
                   if (lastStart === this.time) {
-                    jit.pollingWait = false;
                     jit.pollingToken++;
                     delete jit.dependencies;
-                    this.waitingJits.delete(jit);
+                    this.unparkWaiter(jit);
                     this.queueJit(jit);
                   } else pollingBoundary = Math.min(pollingBoundary, lastStart);
                 }
@@ -1140,10 +1185,9 @@ class BoardRuntime implements Board {
             }
             jit.dependencyDirty = false;
             if (jit.pollingWait) {
-              jit.pollingWait = false;
               jit.pollingToken++;
               delete jit.dependencies;
-              this.waitingJits.delete(jit);
+              this.unparkWaiter(jit);
               const remainder =
                 jit.pollingPeriod > 0 ? (this.time - jit.pollingOrigin) % jit.pollingPeriod : 0;
               if (remainder)
@@ -1154,15 +1198,19 @@ class BoardRuntime implements Board {
             } else if (jit.predicate) {
               const checked = jit.instance.evaluate(() => syncJitCall(jit, jit.predicate!));
               jit.dependencies = checked.dependencies;
-              jit.dependencyDirty = true;
               if (checked.value === true) {
                 delete jit.predicate;
                 delete jit.dependencies;
-                this.waitingJits.delete(jit);
+                this.unparkWaiter(jit);
                 this.queueJit(jit);
+              } else {
+                // The replaced dependency set is re-registered and needs its own scan.
+                this.watchWaiter(jit);
+                this.waiterEpoch++;
               }
             }
           }
+        }
         if (this.time < end && this.readyJits.length) {
           runJit(this, this.readyJits.shift());
           if (this.isFaulted) throw this.primary!;

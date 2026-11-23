@@ -60,6 +60,8 @@ export interface InstanceBoard {
   markElectricalDirty(slot: number): void;
   readonly jits: Jit[];
   readonly waitingJits: Set<Jit>;
+  /** Wakes or drops a parked JIT and removes its dependency registrations. */
+  unparkWaiter(jit: Jit): void;
   assertAlive(instance?: Instance): void;
   /** Admission for a call that may change board state or is visible to a device. */
   assertCallAllowed(instance?: Instance): void;
@@ -1469,7 +1471,7 @@ export class Instance {
         jit.execution = undefined;
         delete jit.predicate;
         jit.pollingToken++;
-        this.board.waitingJits.delete(jit);
+        this.board.unparkWaiter(jit);
         jit.cache.clear();
         jit.cacheMemories.clear();
         jit.directPrograms.clear();

@@ -299,6 +299,10 @@ export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
   readonly executionEnd: number;
   readonly jits: readonly Jit[];
   readonly waitingJits: Set<Jit>;
+  /** Parks a JIT on its recorded dependency versions; the next round scans it once. */
+  parkWaiter(jit: Jit): void;
+  /** Wakes or drops a parked JIT and removes its dependency registrations. */
+  unparkWaiter(jit: Jit): void;
   readonly events: Pick<EventQueue<() => void>, 'time' | 'push'>;
   boundary(): void;
   canContinueDirect(jit: Jit, horizon: number): boolean;
@@ -785,7 +789,7 @@ function waitForPolling(
   jit.dependencies = dependencies;
   jit.pollingWait = true;
   jit.pollingPeriod = 0;
-  board.waitingJits.add(jit);
+  board.parkWaiter(jit);
   const token = ++jit.pollingToken;
 
   board.boundary();
@@ -797,9 +801,8 @@ function waitForPolling(
       return;
     const pending = jit.dependencies;
 
-    jit.pollingWait = false;
     delete jit.dependencies;
-    board.waitingJits.delete(jit);
+    board.unparkWaiter(jit);
     jit.pollingToken++;
     board.current = jit.instance;
     // An external event won the race at the same timestamp. Re-evaluate the guest rather
@@ -829,7 +832,7 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
     jit.predicate = signal.predicate;
     jit.pollingWait = false;
     jit.dependencies = checked.dependencies;
-    board.waitingJits.add(jit);
+    board.parkWaiter(jit);
     board.boundary();
     return true;
   }
@@ -859,7 +862,7 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
           jit.pollingWait = true;
           jit.pollingPeriod = duration;
           jit.pollingOrigin = board.time;
-          board.waitingJits.add(jit);
+          board.parkWaiter(jit);
         } else board.queueJit(jit);
       });
     return true;
