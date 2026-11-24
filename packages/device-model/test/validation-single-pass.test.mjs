@@ -91,6 +91,59 @@ test('枚举 match 无默认分支仍由独立校验拒绝，绑定校验不因�
   assert.equal(bound.phase, 'bind');
 });
 
+test('内置枚举在 JIT 块中仍可无默认分支穷尽', () => {
+  const model = validateDeviceIR(device());
+  const logicType = { kind: 'enum', name: 'Logic' };
+  const input = block([
+    {
+      kind: 'constant',
+      result: 0,
+      type: logicType,
+      constant: { kind: 'enum', name: 'Logic', member: 'low' },
+    },
+    {
+      kind: 'match',
+      value: 0,
+      arms: ['low', 'high', 'unknown'].map((member) => ({
+        pattern: { kind: 'enum', name: 'Logic', member },
+        body: { operations: [] },
+      })),
+    },
+  ]);
+  assert.doesNotThrow(() => validateBlockIR(globalThis.structuredClone(input)));
+  assert.doesNotThrow(() => validateBoundBlockIR(globalThis.structuredClone(input), model));
+});
+
+test('非 JIT 器件上下文仍使用声明枚举完成 match 穷尽', () => {
+  const input = {
+    kind: 'device',
+    name: 'Node',
+    declarations: [
+      { kind: 'enum', name: 'E', members: ['a', 'b'] },
+      {
+        kind: 'function',
+        name: 'h',
+        pure: false,
+        params: [{ name: 'e', type: { kind: 'enum', name: 'E' } }],
+        body: {
+          operations: [
+            { kind: 'parameter', index: 0, result: 0, type: { kind: 'enum', name: 'E' } },
+            {
+              kind: 'match',
+              value: 0,
+              arms: [
+                { pattern: { kind: 'enum', name: 'E', member: 'a' }, body: { operations: [] } },
+                { pattern: { kind: 'enum', name: 'E', member: 'b' }, body: { operations: [] } },
+              ],
+            },
+          ],
+        },
+      },
+    ],
+  };
+  assert.doesNotThrow(() => validateDeviceIR(input));
+});
+
 test('枚举 match 有默认分支通过并复用块身份，后续独立校验命中同一快照', () => {
   const model = validateDeviceIR(device());
   const input = block([enumConstant(0, 'a'), enumMatch(0, true)]);
@@ -204,9 +257,47 @@ test('非法器件与非法块同时失败时块诊断保持优先', () => {
   assert.equal(diagnosticEntry.phase, 'bind');
 });
 
+test('结构无效块失败前不校验或缓存未命中器件', () => {
+  const raw = device();
+  let reads = 0;
+  const proxied = new Proxy(raw, {
+    get(target, key, receiver) {
+      reads++;
+      return Reflect.get(target, key, receiver);
+    },
+    ownKeys(target) {
+      reads++;
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, key) {
+      reads++;
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+    getPrototypeOf(target) {
+      reads++;
+      return Reflect.getPrototypeOf(target);
+    },
+  });
+  const invalid = block([{ kind: 'localRead', result: 0, type: numberType, local: 9 }]);
+  const blockError = diagnostic(() => validateBoundBlockIR(invalid, proxied));
+  assert.equal(blockError.code, 'IR_SCOPE');
+  assert.equal(reads, 0, '结构无效块不得读取未缓存器件');
+
+  const before = reads;
+  const model = validateDeviceIR(proxied);
+  assert.ok(reads > before, '器件必须尚未被失败调用缓存');
+  assert.equal(validateDeviceIR(proxied), model);
+  const afterLookup = reads;
+  assert.deepEqual(
+    diagnostic(() => validateBoundBlockIR(invalid, proxied)),
+    blockError,
+  );
+  assert.equal(reads, afterLookup, '命中缓存后不得再次读取原始器件');
+});
+
 /**
  * 每个形状都有一个“补上 otherwise 即合法”的闭包版本。闭包版本必须通过绑定校验，
- * 而开放版本必须在绑定校验中仍被独立结构遍历拒绝；否则说明嵌套扫描漏掉了该路径。
+ * 而开放版本必须被绑定校验拒绝，且诊断与独立校验保持一致。
  */
 const matchShapes = {
   if: (closed) => ({
@@ -369,7 +460,7 @@ const matchShapes = {
 };
 
 for (const [name, shape] of Object.entries(matchShapes)) {
-  test(`嵌套 ${name} 中的无默认枚举 match 仍走独立校验`, () => {
+  test(`嵌套 ${name} 中的无默认枚举 match 仍与独立校验一致`, () => {
     const model = validateDeviceIR(device());
     const closed = block(shape(true).operations);
     assert.doesNotThrow(() => validateBlockIR(globalThis.structuredClone(closed)), name);
