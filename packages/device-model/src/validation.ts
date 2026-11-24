@@ -1496,33 +1496,123 @@ export function validateDeviceIR(input: unknown): DeviceIR {
     return locateError(error, captured);
   }
 }
-export function validateBlockIR(input: unknown): BlockIR {
-  const cached = remembered(validatedBlocks, input);
-  if (cached !== undefined) return cached;
+function capturedBlock(input: unknown): BlockIR {
   const captured = snapshot(input);
   try {
     blockSchema(captured);
-    new Validator().validateBlock(captured);
-    const result = captured as unknown as BlockIR;
-    remember(validatedBlocks, input, result);
-    return result;
+    return captured as unknown as BlockIR;
   } catch (error) {
     return locateError(error, captured);
   }
 }
+function validateStructure(captured: BlockIR): void {
+  try {
+    new Validator().validateBlock(captured);
+  } catch (error) {
+    return locateError(error, captured);
+  }
+}
+/**
+ * The standalone validator has no device index, so it always requires a default branch for
+ * enum matches. The device-bound validator can prove enum exhaustiveness from declarations.
+ * That is the only check the bound pass can accept without the standalone pass accepting it.
+ * Blocks containing such a match keep the original two-pass order; all others let the bound
+ * pass be the single structural walk.
+ *
+ * This switch must mirror `walk`'s region traversal. Extend it whenever an operation gains a
+ * nested region: the open-match fallback is a semantic boundary, not an optimization detail.
+ */
+function containsOpenMatch(block: BlockIR): boolean {
+  return block.instructions.some((instruction) => regionContainsOpenMatch(instruction.body));
+}
+function regionContainsOpenMatch(region: RegionIR): boolean {
+  for (const op of region.operations) {
+    switch (op.kind) {
+      case 'if':
+        if (regionContainsOpenMatch(op.yes) || (op.no && regionContainsOpenMatch(op.no)))
+          return true;
+        break;
+      case 'while':
+        if (regionContainsOpenMatch(op.body) || regionContainsOpenMatch(op.test.body)) return true;
+        break;
+      case 'loop':
+        if (regionContainsOpenMatch(op.body)) return true;
+        break;
+      case 'select':
+        if (regionContainsOpenMatch(op.yes.body) || regionContainsOpenMatch(op.no.body))
+          return true;
+        break;
+      case 'assert':
+        if (op.message && regionContainsOpenMatch(op.message.body)) return true;
+        break;
+      case 'and':
+      case 'or':
+        if (regionContainsOpenMatch(op.right.body)) return true;
+        break;
+      case 'match':
+        if (!op.otherwise) return true;
+        if (regionContainsOpenMatch(op.otherwise)) return true;
+        for (const arm of op.arms) if (regionContainsOpenMatch(arm.body)) return true;
+        break;
+    }
+  }
+  return false;
+}
+function rememberBound(captured: BlockIR, definition: DeviceIR): void {
+  let definitions = boundBlocks.get(captured);
+  if (!definitions) {
+    definitions = new WeakSet<DeviceIR>();
+    boundBlocks.set(captured, definitions);
+  }
+  definitions.add(definition);
+}
+export function validateBlockIR(input: unknown): BlockIR {
+  const cached = remembered(validatedBlocks, input);
+  if (cached !== undefined) return cached;
+  const captured = capturedBlock(input);
+  validateStructure(captured);
+  remember(validatedBlocks, input, captured);
+  return captured;
+}
 /** Adds instance-definition reference and function-signature checks to a structurally valid block. */
 export function validateBoundBlockIR(input: unknown, device: DeviceIR): BlockIR {
   try {
-    const captured = validateBlockIR(input);
-    const definition = validateDeviceIR(device);
-    if (boundBlocks.get(captured)?.has(definition)) return captured;
-    new Validator(definition).validateBlock(captured);
-    let definitions = boundBlocks.get(captured);
-    if (!definitions) {
-      definitions = new WeakSet<DeviceIR>();
-      boundBlocks.set(captured, definitions);
+    const cached = remembered(validatedBlocks, input);
+    const captured = cached ?? capturedBlock(input);
+    if (cached === undefined && containsOpenMatch(captured)) {
+      // Original order: standalone structural validation, device validation, then binding.
+      validateStructure(captured);
+      remember(validatedBlocks, input, captured);
+      const definition = validateDeviceIR(device);
+      if (boundBlocks.get(captured)?.has(definition)) return captured;
+      new Validator(definition).validateBlock(captured);
+      rememberBound(captured, definition);
+      return captured;
     }
-    definitions.add(definition);
+    let definition: DeviceIR;
+    try {
+      definition = validateDeviceIR(device);
+    } catch (error) {
+      if (cached === undefined) {
+        // The standalone pass used to run first; preserve its diagnostic if it also rejects.
+        validateStructure(captured);
+        remember(validatedBlocks, input, captured);
+      }
+      throw error;
+    }
+    if (boundBlocks.get(captured)?.has(definition)) return captured;
+    try {
+      new Validator(definition).validateBlock(captured);
+    } catch (error) {
+      if (cached === undefined) {
+        // Preserve the original diagnostic precedence: standalone errors win over bound errors.
+        validateStructure(captured);
+        remember(validatedBlocks, input, captured);
+      }
+      throw error;
+    }
+    if (cached === undefined) remember(validatedBlocks, input, captured);
+    rememberBound(captured, definition);
     return captured;
   } catch (error) {
     if (error instanceof BuildError) {
