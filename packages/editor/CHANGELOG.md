@@ -1,5 +1,12 @@
 # @mica-js/editor
 
+## 0.7.3
+
+### Patch Changes
+
+- @mica-js/sdk@0.6.2
+  - @mica-js/simulator@2.7.1
+
 ## 0.7.2
 
 ### Patch Changes

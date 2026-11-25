@@ -1,5 +1,12 @@
 # @mica-js/ddl
 
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [ee48660]
+  - @mica-js/device-model@0.7.1
+
 ## 0.3.1
 
 ### Patch Changes
