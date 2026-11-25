@@ -934,11 +934,16 @@ class Validator {
             accumulate(f);
             if (f.normal) branches.push(f.normal);
           }
+          // The standalone block validator only knows built-in enum members. JIT block
+          // validation must keep that rule even when a device index is present; otherwise
+          // validateBoundBlockIR would accept a block validateBlockIR rejects. Non-JIT
+          // device computations may continue to use declared members.
           const exhaustive =
             base.kind === 'bool'
               ? seen.has('bool:true') && seen.has('bool:false')
               : base.kind === 'enum'
-                ? this.enums.get(base.name)?.every((m) => seen.has(`${base.name}.${m}`))
+                ? this.enums.get(base.name)?.every((m) => seen.has(`${base.name}.${m}`)) &&
+                  (c.mode !== 'jit' || Object.hasOwn(builtins, base.name))
                 : false;
           const complete =
             exhaustive && (value.type.kind !== 'optional' || seen.has('none:undefined'));
@@ -1496,33 +1501,72 @@ export function validateDeviceIR(input: unknown): DeviceIR {
     return locateError(error, captured);
   }
 }
-export function validateBlockIR(input: unknown): BlockIR {
-  const cached = remembered(validatedBlocks, input);
-  if (cached !== undefined) return cached;
+function capturedBlock(input: unknown): BlockIR {
   const captured = snapshot(input);
   try {
     blockSchema(captured);
-    new Validator().validateBlock(captured);
-    const result = captured as unknown as BlockIR;
-    remember(validatedBlocks, input, result);
-    return result;
+    return captured as unknown as BlockIR;
   } catch (error) {
     return locateError(error, captured);
   }
 }
+function validateStructure(captured: BlockIR): void {
+  try {
+    new Validator().validateBlock(captured);
+  } catch (error) {
+    return locateError(error, captured);
+  }
+}
+function rememberBound(captured: BlockIR, definition: DeviceIR): void {
+  let definitions = boundBlocks.get(captured);
+  if (!definitions) {
+    definitions = new WeakSet<DeviceIR>();
+    boundBlocks.set(captured, definitions);
+  }
+  definitions.add(definition);
+}
+export function validateBlockIR(input: unknown): BlockIR {
+  const cached = remembered(validatedBlocks, input);
+  if (cached !== undefined) return cached;
+  const captured = capturedBlock(input);
+  validateStructure(captured);
+  remember(validatedBlocks, input, captured);
+  return captured;
+}
 /** Adds instance-definition reference and function-signature checks to a structurally valid block. */
 export function validateBoundBlockIR(input: unknown, device: DeviceIR): BlockIR {
   try {
-    const captured = validateBlockIR(input);
-    const definition = validateDeviceIR(device);
-    if (boundBlocks.get(captured)?.has(definition)) return captured;
-    new Validator(definition).validateBlock(captured);
-    let definitions = boundBlocks.get(captured);
-    if (!definitions) {
-      definitions = new WeakSet<DeviceIR>();
-      boundBlocks.set(captured, definitions);
+    const cachedBlock = remembered(validatedBlocks, input);
+    const captured = cachedBlock ?? capturedBlock(input);
+    const definition = remembered(validatedDevices, device);
+    if (definition === undefined) {
+      // Original order: standalone structure, device validation, then binding. Never inspect an
+      // uncached device before the standalone pass; a structurally invalid block must not
+      // validate or cache the device.
+      if (cachedBlock === undefined) {
+        validateStructure(captured);
+        remember(validatedBlocks, input, captured);
+      }
+      const validated = validateDeviceIR(device);
+      if (boundBlocks.get(captured)?.has(validated)) return captured;
+      new Validator(validated).validateBlock(captured);
+      rememberBound(captured, validated);
+      return captured;
     }
-    definitions.add(definition);
+    // Only a canonical, already validated device may run ahead of the standalone pass.
+    if (boundBlocks.get(captured)?.has(definition)) return captured;
+    try {
+      new Validator(definition).validateBlock(captured);
+    } catch (error) {
+      // Preserve the original diagnostic precedence and location on failure.
+      if (cachedBlock === undefined) {
+        validateStructure(captured);
+        remember(validatedBlocks, input, captured);
+      }
+      throw error;
+    }
+    if (cachedBlock === undefined) remember(validatedBlocks, input, captured);
+    rememberBound(captured, definition);
     return captured;
   } catch (error) {
     if (error instanceof BuildError) {
