@@ -367,18 +367,6 @@ test('large resident else arms execute synchronously and preserve compact slots 
       }
     }
     const f = pair.right.frame;
-    for (const [bank, mask] of [
-      ['blockedStates', 1 << binding.states.get('marker')],
-      ['blockedMemories', 1],
-    ]) {
-      f[bank] = pair.left.frame[bank] = [mask];
-      assert.equal(pair.run(2), 'fallback', `check ${bank} before the whole instruction`);
-      assert.equal(f.states[0], 0);
-      assert.deepEqual(f.stateDirty, [0]);
-      assert.deepEqual(f.memoryDirty, [0]);
-      assert.deepEqual(pair.right.log.entries, []);
-      f[bank][0] = 0;
-    }
     if (offset === 9) {
       assert(pair.run(2) instanceof RangeError);
       assert.deepEqual(f.states, [2, 4, 0, false, 9, 7]);
@@ -462,15 +450,6 @@ test('zero-time while loops keep outer values live and publish at both instructi
       assert.equal(f.states[0], 2);
       assert.equal(f.states[5], 9);
       assert.equal(f.resume, 0);
-      for (const bank of ['blockedStates', 'blockedMemories']) {
-        f.stateDirty.fill(0);
-        f[bank] = [bank === 'blockedStates' ? 1 << binding.states.get('y') : 1];
-        assert.equal(program.run(f, 3), 'fallback', `entry barrier for ${bank}`);
-        assert.deepEqual(f.states, [2, x, 0, true, 0, 9]);
-        assert.deepEqual(f.stateDirty, [0]);
-        assert.deepEqual(f.memoryDirty, [0]);
-        delete f[bank];
-      }
       assert.equal(
         program.run(f, 3),
         'invalidated',
@@ -1075,7 +1054,7 @@ test('dirty words track only selected branch writes and no unsupported entry eff
   }
 });
 
-test('blocked ISR state writes do not disable a cached dynamic-RAM hot loop', () => {
+test('entry-blocked ISR state writes do not disable a cached dynamic-RAM hot loop', () => {
   const hot = builder();
   const count = hot.binary('add', hot.read('x'), hot.constant(1));
   const offset = hot.binary('bitAnd', count, hot.constant(3));
@@ -1103,7 +1082,7 @@ test('blocked ISR state writes do not disable a cached dynamic-RAM hot loop', ()
   const instructions = [hot.instruction(2, 3), isr.instruction(128, 129)];
   const program = compileDirectJit(instructions, {
     ...binding,
-    blockedStates: new Set(['marker']),
+    entryBlockedStates: new Set(['marker']),
   });
   assert(program);
   assert.deepEqual(new Set(program.writeStates), new Set(['pc', 'x', 'offset']));
@@ -1127,7 +1106,7 @@ test('blocked ISR state writes do not disable a cached dynamic-RAM hot loop', ()
   assert.deepEqual(f.memoryDirty, [0]);
 });
 
-test('blocked memory writes in unselected branches are complete-instruction barriers, not read barriers', () => {
+test('entry-blocked memory writes in unselected branches stay complete-instruction barriers', () => {
   const load = builder();
   const value = load.value({ kind: 'load8', memory: ram, offset: load.read('offset') });
   load.delay(1);
@@ -1145,7 +1124,7 @@ test('blocked memory writes in unselected branches are complete-instruction barr
   store.delay(3);
   const program = compileDirectJit([load.instruction(0, 128), store.instruction(128, 129)], {
     ...binding,
-    blockedMemories: new Set(['ram']),
+    entryBlockedMemories: new Set(['ram']),
   });
   assert(program);
   assert.deepEqual(program.readMemories, ['ram']);
@@ -1164,7 +1143,7 @@ test('blocked memory writes in unselected branches are complete-instruction barr
   assert.deepEqual(f.stateDirty, [0]);
 });
 
-test('nested select state barriers preserve first-PC ownership and are fixed at compilation', () => {
+test('nested select entry barriers preserve first-PC ownership and are fixed at compilation', () => {
   const blocked = builder();
   blocked.write('y', blocked.constant(999));
   const condition = blocked.constant(false);
@@ -1192,7 +1171,7 @@ test('nested select state barriers preserve first-PC ownership and are fixed at 
   const accepted = builder();
   accepted.delay(1);
   const blockedStates = new Set(['marker']);
-  const filtered = { ...binding, blockedStates };
+  const filtered = { ...binding, entryBlockedStates: blockedStates };
   const instructions = [
     blocked.instruction(0, 9),
     accepted.instruction(0, 10),
@@ -1214,7 +1193,7 @@ test('nested select state barriers preserve first-PC ownership and are fixed at 
   assert.equal(f.states[0], 9);
   assert.equal(f.states[2], 999);
   assert.equal(
-    compileDirectJit(instructions, { ...binding, blockedStates: new Set(['pc']) }),
+    compileDirectJit(instructions, { ...binding, entryBlockedStates: new Set(['pc']) }),
     undefined,
   );
 });
@@ -1756,7 +1735,7 @@ test('wide accesses keep host addressing order and error messages', () => {
   }
 });
 
-test('blocked memories keep every load kind eligible and exclude stores', () => {
+test('entry-blocked memories keep every load kind eligible and exclude stores', () => {
   const loads = builder();
   const le = loads.value({ kind: 'load16le', memory: ram, offset: loads.constant(0) });
   const be = loads.value({ kind: 'load32be', memory: ram, offset: loads.constant(0) });
@@ -1771,7 +1750,7 @@ test('blocked memories keep every load kind eligible and exclude stores', () => 
     value: stores.constant(1),
   });
   stores.delay(1);
-  const blocked = { ...binding, blockedMemories: new Set(['ram']) };
+  const blocked = { ...binding, entryBlockedMemories: new Set(['ram']) };
   const program = compileDirectJit([loads.instruction(0, 2), stores.instruction(2, 3)], blocked);
   assert(program);
   assert.deepEqual(program.readMemories, ['ram']);
@@ -3591,7 +3570,7 @@ test('a statement-position yield at the body tail terminates the instruction', (
   assert.equal(compileDirectJit([afterElapse.instruction(0, 99)], binding), undefined);
 });
 
-test('runtime write barriers keep one program valid while the observed slots move', () => {
+test('observer writes publish dynamically while entry-blocked slots stay compile barriers', () => {
   const b = builder();
   b.write('x', b.constant(5));
   b.operations.push({
@@ -3602,40 +3581,134 @@ test('runtime write barriers keep one program valid while the observed slots mov
   });
   b.delay(1);
   const instructions = [b.instruction(0, 1)];
-  // 写成块入口的一条位掩码测试；没有运行期栅栏字段的帧填入空掩码，行为与从前一致。
-  const monolithic = compileDirectJit(instructions, binding);
-  assert(monolithic);
-  assert.match(generated(monolithic), /if \(BS\[0\] & 3\) return "fallback";/);
-  for (const options of [binding, { ...binding, split: true, shardSlotLimit: 0, shardSize: 4 }]) {
+  for (const options of [
+    { ...binding, blockedStates: new Set(['x']), blockedMemories: new Set(['ram']) },
+    {
+      ...binding,
+      blockedStates: new Set(['x']),
+      blockedMemories: new Set(['ram']),
+      split: true,
+      shardSlotLimit: 0,
+      shardSize: 4,
+    },
+  ]) {
     const program = compileDirectJit(instructions, options);
     assert(program);
-    // 编译期不再丢弃块：被观察的写入留在程序里，由块入口的运行期判定拦截。
+    // 普通观察者写入保留在直接程序里，写入点置发布标志而不是块入口回退。
     assert.deepEqual(new Set(program.writeStates), new Set(['pc', 'x']));
     assert.deepEqual(program.writeMemories, ['ram']);
+    const source = generated(program);
+    assert.match(source, /if \(BS\[0\] & 2\) F\.publishPending = true;/);
+    assert.match(source, /if \(BM\[0\] & 1\) F\.publishPending = true;/);
+    assert.doesNotMatch(source, /if \(BS\[[^\n]+return "fallback"/);
+    assert.doesNotMatch(source, /if \(BM\[[^\n]+return "fallback"/);
+
     const f = frame(program);
     f.blockedStates = [1 << 1];
     f.blockedMemories = [0];
-    assert.equal(program.run(f, 10), 'fallback');
-    assert.equal(f.states[0], 0, 'a blocked block leaves the PC untouched');
-    assert.equal(f.states[1], 1, 'and does not write the observed state');
-    assert.equal(f.time, 0, 'nor advance time');
-    assert.deepEqual(f.stateDirty, [0]);
-    assert.deepEqual(f.memoryDirty, [0]);
-    // 被观察的 memory 同样是块入口条件，而不是整块被拒。
-    f.blockedStates = [0];
-    f.blockedMemories = [1];
-    assert.equal(program.run(f, 10), 'fallback');
-    assert.equal(f.states[0], 0);
-    assert.deepEqual(f.memoryDirty, [0]);
-    // 观察者集合清空后同一份程序继续执行：没有任何重新编译。
-    f.blockedMemories = [0];
-    assert.equal(program.run(f, 10), 'fallback');
-    assert.equal(f.states[0], 1);
+    assert.equal(program.run(f, 10), 'invalidated');
+    assert.equal(f.states[0], 1, 'the instruction completes its prefix');
     assert.equal(f.states[1], 5);
-    assert.equal(f.time, 1);
-    assert.deepEqual(f.memoryDirty, [1]);
     assert.equal(f.memories[0][0], 9);
+    assert.equal(f.time, 0, 'publication suspends before elapsed time advances');
+    assert.equal(f.due, 1);
+    assert.notEqual(f.resume, 0);
+    assert.deepEqual(f.stateDirty, [(1 << 0) | (1 << 1)]);
+    assert.deepEqual(f.memoryDirty, [1]);
+    f.stateDirty.fill(0);
+    f.memoryDirty.fill(0);
+    f.publishPending = false;
+    assert.equal(program.run(f, 10), 'fallback');
+    assert.equal(f.time, 1);
+    assert.equal(f.resume, 0);
   }
+
+  // 入口槽位仍按编译期事实拒绝：hook 读取/自修改代码不能沿用旧前缀。
+  assert.equal(
+    compileDirectJit(instructions, { ...binding, entryBlockedStates: new Set(['x']) }),
+    undefined,
+  );
+  assert.equal(
+    compileDirectJit(instructions, { ...binding, entryBlockedMemories: new Set(['ram']) }),
+    undefined,
+  );
+});
+
+test('binding fingerprints include dynamic and entry barrier sets', () => {
+  const b = builder();
+  b.write('x', b.constant(5));
+  b.delay(1);
+  const instructions = [b.instruction(0, 1)];
+  const cache = compileDirectJit.createCache();
+  assert(compileDirectJit(instructions, { ...binding, blockedStates: new Set(['x']) }, cache));
+  assert.equal(compileDirectJit.cacheStats(cache).compiledBlocks, 1);
+  assert(
+    compileDirectJit(
+      instructions,
+      {
+        ...binding,
+        blockedStates: new Set(['y']),
+        entryBlockedStates: new Set(['marker']),
+      },
+      cache,
+    ),
+  );
+  const changed = compileDirectJit.cacheStats(cache);
+  assert.equal(changed.compiledBlocks, 2);
+  assert.equal(changed.invalidatedBlocks, 1);
+  assert(
+    compileDirectJit(
+      instructions,
+      {
+        ...binding,
+        blockedStates: new Set(['y']),
+        entryBlockedStates: new Set(['marker']),
+        entryBlockedMemories: new Set(['ram']),
+      },
+      cache,
+    ),
+  );
+  const entryChanged = compileDirectJit.cacheStats(cache);
+  assert.equal(entryChanged.compiledBlocks, 3);
+  assert.equal(entryChanged.invalidatedBlocks, 2);
+});
+
+test('resident immediate blocks checkpoint repeated observer writes exactly once', () => {
+  const b = builder();
+  b.write('x', b.constant(5));
+  b.write('x', b.constant(5));
+  b.delay(0);
+  const stop = builder();
+  stop.operations.push({ kind: 'stop' });
+  const instructions = [b.instruction(0, 2), stop.instruction(2, 4)];
+  const program = compileDirectJit(
+    instructions,
+    {
+      ...binding,
+      host: true,
+      split: true,
+      shardSize: 2,
+      blockedStates: new Set(['x']),
+    },
+    compileDirectJit.createCache(),
+  );
+  assert(program);
+  const f = frame(program);
+  f.blockedStates = [1 << 1];
+  let checkpoints = 0;
+  f.finishCheckpoint = (deadline, emptySuffix) => {
+    checkpoints++;
+    assert.equal(deadline, 10);
+    assert.equal(emptySuffix, false);
+    f.publishPending = false;
+    f.stateDirty.fill(0);
+    f.memoryDirty.fill(0);
+    return true;
+  };
+  assert.equal(program.run(f, 10), 'stopped');
+  assert.equal(checkpoints, 1, 'two same-value writes share one instruction boundary');
+  assert.equal(f.states[1], 5);
+  assert.equal(f.states[0], 4, 'the following stop block still runs');
 });
 
 test('incremental cache reuses old blocks and keeps constant indices stable', () => {
@@ -3771,4 +3844,41 @@ test('same-PC body changes and cache clears force recompilation without invalida
   const old = frame(first);
   assert.equal(first.run(old, 10), 'fallback');
   assert.equal(old.states[1], 3);
+});
+
+test('a conditional redirect and the tail elapse share one duration slot', () => {
+  const instruction = () => {
+    const b = builder();
+    const flag = b.read('flag', 'bool');
+    const target = b.constant(1);
+    const delay = b.constant(5);
+    b.operations.push({
+      kind: 'if',
+      condition: flag,
+      yes: { operations: [{ kind: 'redirect', target, delay }] },
+    });
+    b.delay(0);
+    return b.instruction(0, 1);
+  };
+
+  const split = { ...binding, split: true, shardSlotLimit: 0, shardSize: 4 };
+  for (const settings of [binding, split]) {
+    const program = compileDirectJit([instruction()], settings);
+    assert(program);
+    assert.deepEqual([...program.pcs], [0]);
+
+    // The branch redirect wins and contributes its own five-picosecond delay.
+    const taken = frame(program, [0, 1, 0, true, 0, 0]);
+    assert.equal(program.run(taken, 5), 'deadline');
+    assert.equal(taken.time, 5);
+    assert.equal(taken.states[0], 1);
+    assert.notEqual(taken.resume, 0);
+
+    // The tail elapse supplies zero when the branch stays on the linear path.
+    const skipped = frame(program, [0, 1, 0, false, 0, 0]);
+    assert.equal(program.run(skipped, 5), 'fallback');
+    assert.equal(skipped.time, 0);
+    assert.equal(skipped.states[0], 1);
+    assert.equal(skipped.resume, 0);
+  }
 });

@@ -11,7 +11,7 @@ import { ActivationQueue, EventQueue, Fifo } from './queue';
 import { compileObservation } from './observations';
 import { Instance } from './runtime/instance';
 import { registerPublishGate } from './runtime/publish-gate';
-import { runJit, syncJitCall } from './runtime/jit';
+import { readDirectCheckpointStats, runJit, syncJitCall, type BoundarySource } from './runtime/jit';
 import { body, computation, frame, MAX_TIME, synchronousBody, time } from './runtime/execution';
 import {
   acceptSync,
@@ -49,6 +49,66 @@ import {
 
 const OBSERVATION_PROBE = Symbol.for('mica-js.simulator/observations');
 const PROCESS_PROBE = Symbol.for('mica-js.simulator/processes');
+const CHECKPOINT_PROBE = Symbol.for('mica-js.simulator/checkpoints');
+/**
+ * Internal diagnostics opt-in. It stays a `globalThis` symbol so the runtime remains
+ * browser-compatible and the public SDK surface does not grow:
+ *
+ * `globalThis[Symbol.for('mica-js.simulator/checkpoint-experiment')]?.diagnostics`
+ *
+ * Counters default to off; they classify boundary sources without changing runtime behavior.
+ */
+const CHECKPOINT_EXPERIMENT = Symbol.for('mica-js.simulator/checkpoint-experiment');
+
+const EMPTY_BOUNDARY_SOURCES: Readonly<Record<BoundarySource, number>> = Object.freeze({
+  checkpointPublish: 0,
+  checkpointFinish: 0,
+  jitSignal: 0,
+  runJit: 0,
+  runDirect: 0,
+  polling: 0,
+  process: 0,
+  other: 0,
+});
+
+interface BoundaryStats {
+  /** Every boundary() entry. */
+  calls: number;
+  /** Calls that neither published an electrical change nor drained observations. */
+  empty: number;
+  /** Electrical publish passes driven by a boundary. */
+  publishes: number;
+  /** Observation batches drained by a boundary. */
+  batches: number;
+  /** Reaction bodies executed by boundaries. */
+  reactions: number;
+  /** Capture values frozen by the reaction capture barrier. */
+  captures: number;
+  /** Boundary entries grouped by the call site that requested the settlement. */
+  sources: Record<BoundarySource, number>;
+}
+
+function createBoundaryStats(): BoundaryStats {
+  return {
+    calls: 0,
+    empty: 0,
+    publishes: 0,
+    batches: 0,
+    reactions: 0,
+    captures: 0,
+    sources: { ...EMPTY_BOUNDARY_SOURCES },
+  };
+}
+
+function checkpointDiagnosticsEnabled(): boolean {
+  const value = (globalThis as unknown as Record<PropertyKey, unknown>)[CHECKPOINT_EXPERIMENT];
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { diagnostics?: unknown }).diagnostics === true
+  );
+}
+
 const EMPTY_QUEUE_ENTRY = Object.freeze({}) as unknown as Observation;
 const libraries = new WeakMap<object, readonly Entry[]>();
 
@@ -155,6 +215,9 @@ class BoardRuntime implements Board {
   private pollingWaiterCount = 0;
   readonly jits: Jit[] = [];
   readonly instances: Instance[] = [];
+  /** Aggregate counters are disabled by default so formal runs avoid per-checkpoint writes. */
+  readonly checkpointDiagnostics: boolean;
+  private readonly boundaryStats: BoundaryStats | undefined;
   private network!: ElectricalNetwork;
   private primary: SimulationError | undefined;
   readonly execution: 'throughput' | 'precise';
@@ -188,6 +251,8 @@ class BoardRuntime implements Board {
     try {
       dataObject(description, ['instances', 'nets']);
       dataObject(options, ['seed', 'execution', 'cpuQuantum']);
+      this.checkpointDiagnostics = checkpointDiagnosticsEnabled();
+      this.boundaryStats = this.checkpointDiagnostics ? createBoundaryStats() : undefined;
       const execution = Object.hasOwn(options, 'execution') ? options.execution : 'throughput';
       if (execution !== 'throughput' && execution !== 'precise')
         throw new TypeError('Invalid execution mode');
@@ -314,6 +379,10 @@ class BoardRuntime implements Board {
         value: () => this.processReport(),
         enumerable: false,
       });
+      Object.defineProperty(this, CHECKPOINT_PROBE, {
+        value: () => this.checkpointReport(),
+        enumerable: false,
+      });
     } catch (cause) {
       const error =
         cause instanceof SimulationError
@@ -388,6 +457,41 @@ class BoardRuntime implements Board {
       generic: Object.freeze(generic),
       programs: Object.freeze(programs),
       bindings: Object.freeze(this.instances.map((instance) => instance.bindingReport())),
+    });
+  }
+  /**
+   * Read-only diagnostic view of boundary and Direct-checkpoint counters. Reachable only via
+   * `Symbol.for('mica-js.simulator/checkpoints')`; zero counters mean diagnostics were off.
+   */
+  private checkpointReport(): unknown {
+    const boundary = this.boundaryStats;
+    return Object.freeze({
+      diagnostics: this.checkpointDiagnostics,
+      boundary: Object.freeze({
+        calls: boundary?.calls ?? 0,
+        empty: boundary?.empty ?? 0,
+        publishes: boundary?.publishes ?? 0,
+        batches: boundary?.batches ?? 0,
+        reactions: boundary?.reactions ?? 0,
+        captures: boundary?.captures ?? 0,
+        sources: Object.freeze({ ...(boundary?.sources ?? EMPTY_BOUNDARY_SOURCES) }),
+      }),
+      checkpoints: Object.freeze(
+        this.instances.flatMap((instance) =>
+          instance.jits.map((jit) => {
+            const stats = readDirectCheckpointStats(jit);
+            return Object.freeze({
+              instance: instance.id,
+              publications: stats?.publications ?? 0,
+              finishes: stats?.finishes ?? 0,
+              emptySuffixes: stats?.emptySuffixes ?? 0,
+              boundaryCalls: stats?.boundaryCalls ?? 0,
+              continues: stats?.continues ?? 0,
+              exits: stats?.exits ?? 0,
+            });
+          }),
+        ),
+      ),
     });
   }
   assertAlive(instance?: Instance): void {
@@ -915,10 +1019,25 @@ class BoardRuntime implements Board {
       current.splice(at, 0, after);
     }
   }
-  boundary(): void {
+  boundary(source: BoundarySource = 'other'): void {
+    const stats = this.boundaryStats;
+    if (stats !== undefined) {
+      stats.calls++;
+      stats.sources[source]++;
+    }
+    let worked = false;
     for (;;) {
-      if (this.pendingElectricalSlot !== -1) this.publish();
-      if (!this.observations.size) return;
+      if (this.pendingElectricalSlot !== -1) {
+        if (stats !== undefined) stats.publishes++;
+        this.publish();
+        worked = true;
+      }
+      if (!this.observations.size) {
+        if (stats !== undefined && !worked) stats.empty++;
+        return;
+      }
+      if (stats !== undefined) stats.batches++;
+      worked = true;
       // Truncating a non-empty array clears its elements; an already-empty buffer needs
       // no store at all, which is the common case for the ordering tables.
       const reactions = this.reactionBatch;
@@ -936,8 +1055,10 @@ class BoardRuntime implements Board {
         this.changePrevious.length = 0;
         this.changeCurrent.length = 0;
       }
-      if (reactions.length) this.runBoundaryReactions(reactions);
-      else return;
+      if (reactions.length) {
+        if (stats !== undefined) stats.reactions += reactions.length;
+        this.runBoundaryReactions(reactions);
+      } else return;
     }
   }
   /** One due receiver: chains collapse their members, plain sources apply inline. */
@@ -958,9 +1079,11 @@ class BoardRuntime implements Board {
   /** Shared capture barrier and ordered body runner for generic and static boundaries. */
   private runBoundaryReactions(reactions: Reaction[]): void {
     try {
+      const stats = this.boundaryStats;
       // Every instance completes observation and capture before any reaction body runs.
       for (const reaction of reactions)
         if (reaction.declaration.captures.length) {
+          if (stats !== undefined) stats.captures += reaction.declaration.captures.length;
           const frame = reaction.frame as MutableReactionFrame;
           frame.captures = reaction.declaration.captures.map((capture) =>
             snapshot(computation(capture.value, reaction.instance.host)),
@@ -1021,7 +1144,7 @@ class BoardRuntime implements Board {
     for (;;) {
       const step = process.execution.next(value);
       if (step.done) {
-        this.boundary();
+        this.boundary('process');
         process.execution = undefined;
         process.state = 'idle';
         if (process.pending) {
@@ -1039,14 +1162,14 @@ class BoardRuntime implements Board {
         }
         process.state = 'waiting';
         channel.receiver = process;
-        this.boundary();
+        this.boundary('process');
         return;
       }
       if (signal.kind !== 'ticks') throw new TypeError('Invalid process suspension');
       const duration = time(signal.duration),
         due = time(this.time + duration);
       process.state = 'waiting';
-      this.boundary();
+      this.boundary('process');
       if (duration === 0) {
         process.state = 'queued';
         this.models.push(process);
@@ -1075,7 +1198,7 @@ class BoardRuntime implements Board {
     for (;;) {
       state.value = input;
       if (!program.run(host, undefined, undefined, state)) {
-        this.boundary();
+        this.boundary('process');
         process.state = 'idle';
         if (process.pending) {
           process.pending = false;
@@ -1091,7 +1214,7 @@ class BoardRuntime implements Board {
         }
         process.state = 'waiting';
         channel.receiver = process;
-        this.boundary();
+        this.boundary('process');
         return;
       }
       // The body already validated the duration with H.checkDuration; only the sum needs
@@ -1099,7 +1222,7 @@ class BoardRuntime implements Board {
       const duration = state.duration,
         due = time(this.time + duration);
       process.state = 'waiting';
-      this.boundary();
+      this.boundary('process');
       if (duration === 0) {
         process.state = 'queued';
         this.models.push(process);

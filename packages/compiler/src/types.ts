@@ -154,7 +154,7 @@ export interface DirectJitDelay {
   };
 }
 
-/** Static numeric bank layout; the runtime guards ownership/observers before entry. */
+/** Static numeric bank layout plus runtime entry and write-publication guards. */
 export interface DirectJitBinding {
   readonly states: ReadonlyMap<string, number>;
   readonly memories: ReadonlyMap<string, number>;
@@ -163,8 +163,13 @@ export interface DirectJitBinding {
   readonly pc: { readonly name: string; readonly index: number };
   /** Validated synchronous functions eligible for same-frame direct calls. */
   readonly functions?: ReadonlyMap<string, Extract<DeclarationIR, { kind: 'function' }>>;
-  /** Compile-time write barriers; recompile when membership changes. */
+  /** Entry-blocked state slots: `beforeInstruction` hook reads. */
+  readonly entryBlockedStates?: ReadonlySet<string>;
+  /** Entry-blocked memory slots: self-modifying code and `beforeInstruction` hook reads. */
+  readonly entryBlockedMemories?: ReadonlySet<string>;
+  /** Observed state slots: writes publish dynamically at the next instruction boundary. */
   readonly blockedStates?: ReadonlySet<string>;
+  /** Observed memory slots: stores publish dynamically at the next instruction boundary. */
   readonly blockedMemories?: ReadonlySet<string>;
   /** Set when the runtime supplies `DirectJitFrame.host` for side-effecting operations. */
   readonly host?: boolean;

@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { compileDDL } from '@mica-js/ddl';
+import { types } from '../../device-model/dist/index.js';
 import * as sdk from '../dist/index.js';
 
 // Everything here runs through the public SDK only. The models observe published
 // samples, reaction order, capture values and reported errors; no runtime internals
-// are inspected.
+// are inspected. The checkpoint diagnostics opt-in and report use the symbol-keyed
+// surfaces that the simulator already exposes for experiments.
+const CHECKPOINT_EXPERIMENT = Symbol.for('mica-js.simulator/checkpoint-experiment');
+const CHECKPOINTS = Symbol.for('mica-js.simulator/checkpoints');
 
 // A derived source whose dependency branch follows `sel`: while `sel` is high the
 // derived reads only `a`, otherwise only `b`. Two reactions share `active`, and a
@@ -133,6 +137,122 @@ const faultModels = await Promise.all(
 }`),
   ),
 );
+
+// Each instruction writes one pin intent and then only advances time, so the compiler emits
+// an inline empty suffix. Publication happens inside the prefix checkpoint; the second,
+// empty-suffix checkpoint is the one the experiment skips when nothing is pending.
+const checkpointModel = await compileDDL(`device Checkpoint {
+  public memory code[4];
+  pin supply;
+  pin reference;
+  pin drive(low: 0.8, high: 2.0) = [resistor(to: reference, resistance: 1000)];
+
+  state pc: number = 0;
+  state steps: number = 0;
+  state hits: number = 0;
+  state mirror: number = 0;
+  output channel out: number(capacity: 512);
+
+  derived high: bool = drive.sample.level == Logic.high;
+  derived mirrorHigh: bool = mirror == 1;
+
+  reaction lead on high as (previous, current) capture before = hits {
+    hits = hits + 1;
+    if current { mirror = 1; } else { mirror = 2; }
+    out.send(100 + before);
+  }
+  reaction peer on high as (previous, current) capture before = hits {
+    hits = hits + 1;
+    out.send(200 + before);
+  }
+  reaction follow on mirrorHigh as (previous, current) {
+    out.send(300 + (current ? 1 : 2));
+  }
+
+  process start {
+    await ticks(100);
+    out.send(999);
+  }
+}`);
+
+function checkpointBoard() {
+  const messages = [];
+  const library = sdk.createDeviceLibrary([
+    {
+      id: 'checkpoint',
+      model: checkpointModel,
+      create(context) {
+        const registration = context.attachJit({
+          entry: 'checkpoint',
+          code: 'code',
+          pc: 'pc',
+          translate: ({ pc }, block) => {
+            block.instruction({ pc, nextPc: pc === 0 ? 1 : 0 }, (body) => {
+              const one = body.constant(types.number, 1);
+              body.writeState('steps', body.add(body.readState('steps', types.number), one));
+              body.writeIntent(
+                'drive',
+                body.combineIntents(
+                  body.resistor(
+                    body.pin(pc === 0 ? 'supply' : 'reference'),
+                    body.constant(types.number, 1000),
+                  ),
+                ),
+              );
+              body.elapse(body.constant(types.number, 10));
+            });
+            return block.finish();
+          },
+        });
+        try {
+          context.loadBytes('code', new Uint8Array(4));
+        } catch (cause) {
+          registration.dispose();
+          throw cause;
+        }
+        return {
+          sync(batch) {
+            for (const message of batch.outputs.out ?? [])
+              messages.push({ time: message.time, value: message.value });
+          },
+          dispose: () => registration.dispose(),
+        };
+      },
+    },
+  ]);
+  const board = sdk.createBoard(library, {
+    instances: [{ id: 'checkpoint', type: 'checkpoint' }],
+    nets: [
+      { id: 'supply', voltage: 3.3, pins: [{ instance: 'checkpoint', pin: 'supply' }] },
+      { id: 'reference', voltage: 0, pins: [{ instance: 'checkpoint', pin: 'reference' }] },
+      { id: 'drive', pins: [{ instance: 'checkpoint', pin: 'drive' }] },
+    ],
+  });
+  return { board, messages };
+}
+
+function runCheckpoints(until, diagnostics = true) {
+  const previous = Object.hasOwn(globalThis, CHECKPOINT_EXPERIMENT)
+    ? globalThis[CHECKPOINT_EXPERIMENT]
+    : undefined;
+  if (diagnostics) globalThis[CHECKPOINT_EXPERIMENT] = { diagnostics: true };
+  else delete globalThis[CHECKPOINT_EXPERIMENT];
+  let board;
+  let messages;
+  try {
+    ({ board, messages } = checkpointBoard());
+  } finally {
+    if (previous === undefined) delete globalThis[CHECKPOINT_EXPERIMENT];
+    else globalThis[CHECKPOINT_EXPERIMENT] = previous;
+  }
+  try {
+    board.runUntil(until);
+    assert.equal(board.status, 'ready');
+    return { messages: [...messages], time: board.time, report: board[CHECKPOINTS]() };
+  } finally {
+    board.dispose();
+  }
+}
 
 function observationBoard() {
   const messages = [];
@@ -262,4 +382,82 @@ test('invalid resistances report the documented error before and after eviction'
   }
   assert.equal(messages.length, 2);
   assert.equal(messages[0], messages[1], 'eviction does not change parameter diagnostics');
+});
+
+function directCheckpointStats(result) {
+  const [stats] = result.report.checkpoints;
+  assert.ok(stats, 'the direct JIT exposed checkpoint counters');
+  return stats;
+}
+
+test('checkpoint counters classify publication, finish and empty suffix', () => {
+  const observed = runCheckpoints(90);
+  const quiet = runCheckpoints(90, false);
+  assert.deepEqual(quiet.messages, observed.messages, 'diagnostics do not change the event stream');
+  assert.equal(quiet.time, observed.time);
+  assert.equal(quiet.report.diagnostics, false);
+  assert.equal(quiet.report.boundary.calls, 0);
+  assert.equal(quiet.report.boundary.sources.checkpointPublish, 0);
+  assert.deepEqual(quiet.report.checkpoints[0], {
+    instance: 'checkpoint',
+    publications: 0,
+    finishes: 0,
+    emptySuffixes: 0,
+    boundaryCalls: 0,
+    continues: 0,
+    exits: 0,
+  });
+
+  const stats = directCheckpointStats(observed);
+  assert.ok(stats.publications > 0);
+  assert.ok(stats.finishes > 0);
+  assert.ok(stats.emptySuffixes > 0, 'the workload exercises empty suffixes');
+  assert.ok(stats.emptySuffixes <= stats.finishes);
+  assert.equal(stats.boundaryCalls, stats.publications + stats.finishes);
+  assert.equal(stats.continues, stats.boundaryCalls);
+  assert.equal(stats.exits, 0);
+
+  const boundary = observed.report.boundary;
+  assert.equal(boundary.sources.checkpointPublish, stats.publications);
+  assert.equal(boundary.sources.checkpointFinish, stats.finishes);
+  assert.equal(
+    Object.values(boundary.sources).reduce((sum, count) => sum + count, 0),
+    boundary.calls,
+  );
+  assert.ok(boundary.publishes > 0);
+  assert.ok(boundary.batches > 0);
+  assert.ok(boundary.reactions > 0);
+  assert.ok(boundary.captures > 0);
+  assert.ok(boundary.empty > 0);
+});
+
+test('same-tick wake keeps capture order and feedback batches exact', () => {
+  const result = runCheckpoints(250);
+  assert.equal(result.time, 250);
+  assert.deepEqual(
+    result.messages.filter(({ value }) => value === 999),
+    [{ time: 100, value: 999 }],
+    'the process keeps its same-tick wake',
+  );
+  // Capture barrier: both `high` reactions read the same pre-boundary `hits`, and the
+  // follow-up reaction on `mirror` runs after both bodies in the next observation batch.
+  assert.deepEqual(
+    result.messages.slice(0, 6).map(({ value }) => value),
+    [100, 200, 301, 102, 202, 302],
+  );
+  const stats = directCheckpointStats(result);
+  const boundary = result.report.boundary;
+  assert.ok(stats.continues > 0);
+  assert.equal(boundary.sources.checkpointPublish, stats.publications);
+  assert.equal(boundary.sources.checkpointFinish, stats.finishes);
+  assert.equal(
+    Object.values(boundary.sources).reduce((sum, count) => sum + count, 0),
+    boundary.calls,
+  );
+  assert.ok(boundary.sources.process > 0, 'process suspension and wake are attributed');
+  assert.ok(boundary.sources.jitSignal > 0, 'interpreter suspension is attributed');
+  assert.ok(
+    boundary.sources.runJit > 0 || boundary.sources.runDirect > 0,
+    'instruction or direct completion is attributed',
+  );
 });

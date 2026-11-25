@@ -7,7 +7,8 @@ import type { Jit } from '../runtime/state';
 import type { JitTranslate } from '../types';
 
 /**
- * #273 的验收：直接程序的写入栅栏在**块入口**判定，观察者集合变化不再让整程序重编译。
+ * #273/P0-1 的验收：观察者集合变化不再让整程序重编译；普通观察写入在写入点标记
+ * `publishPending`，并在指令边界发布，而入口屏障只保留 hook/self-modifying-code 槽位。
  *
  * 板上每个 pc 写一个被观察的状态（`sel`），最后一条块只写无人观察的 `tick`。`sel` 决定
  * 观察源 `watched` 读到哪个 probe，于是每跑一块，被观察的资源集合就在十个组合之间移动。
@@ -17,8 +18,7 @@ import type { JitTranslate } from '../types';
  * 断言是两条独立性质：
  * - 十个组合轮流出现、`observerRevision` 持续推进时，`directCompiles` 不再增长，且
  *   `directPrograms` 只有一份程序；
- * - 同一份程序里，被观察写入的块在入口回退（`directFallbacks` 增长），无人观察的块照常
- *   直接执行（`directCalls - directFallbacks` 增长），观察者仍然按块顺序收到每次更新。
+ * - 同一份程序里，被观察写入的块也直接执行，观察者仍按指令边界收到每次更新。
  */
 
 const PROBES = 10;
@@ -99,8 +99,8 @@ function churnModel(probes: number) {
   return builder.finish();
 }
 
-describe('direct JIT block-entry write barriers', () => {
-  it('observer churn keeps one program and only falls back on the observed blocks', () => {
+describe('direct JIT dynamic write publication', () => {
+  it('observer churn keeps one program and executes observed writes directly', () => {
     let evidence: Uint8Array | undefined;
     const library = createDeviceLibrary([
       {
@@ -162,13 +162,209 @@ describe('direct JIT block-entry write barriers', () => {
       // 而程序没有被重编译：写入栅栏是运行期判定的。
       expect(stats!.directCompiles).toBe(compiles);
       expect(jit.directPrograms.size).toBe(1);
-      // 被观察的块在入口回退，无人观察的块仍然走直接程序。
-      expect(stats!.directFallbacks).toBeGreaterThan(fallbacks);
+      // 观察者只影响写入点的动态发布，不再让被观察的块在入口回退。
+      expect(stats!.directFallbacks).toBe(fallbacks);
+      expect(stats!.directCalls).toBeGreaterThan(calls);
       expect(stats!.directCalls - stats!.directFallbacks).toBeGreaterThan(calls - fallbacks);
       // 观察者仍然按块顺序收到每次更新。
       expect(instance.states.get('fires') as number).toBeGreaterThan(delivered);
       expect(evidence).toBeDefined();
       for (let probe = 0; probe < PROBES; probe += 1) expect(evidence![probe]).toBe(probe + 1);
+    } finally {
+      board.dispose();
+    }
+  });
+});
+
+describe('direct JIT instruction-boundary publication', () => {
+  it('makes subscriber writes visible before the next instruction and coalesces duplicate writes', () => {
+    const builder = createDeviceBuilder({ name: 'BoundaryPublication' });
+    builder.memory({ name: 'code', length: 16 });
+    builder.state({ name: 'pc', type: types.number, initial: 0 });
+    builder.state({ name: 'level', type: types.number, initial: 0 });
+    builder.state({ name: 'watched', type: types.number, initial: 0 });
+    builder.state({ name: 'flow', type: types.number, initial: 0 });
+    builder.state({ name: 'fires', type: types.number, initial: 0 });
+    builder.state({ name: 'rounds', type: types.number, initial: 0 });
+    builder.state({ name: 'mismatches', type: types.number, initial: 0 });
+    builder.reaction(
+      {
+        name: 'watchBoundary',
+        sourcePath: ['watched'],
+        sourceType: types.number,
+        previous: 'previous',
+        current: 'current',
+        captures: [],
+      },
+      {},
+      (body) => {
+        body.writeState('flow', body.readState('watched', types.number));
+        body.writeState(
+          'fires',
+          body.add(body.readState('fires', types.number), body.constant(types.number, 1)),
+        );
+      },
+    );
+
+    const translate: JitTranslate = (_input, block) => {
+      block.instruction({ pc: 0, nextPc: 0 }, (body) => {
+        const one = body.constant(types.number, 1);
+        const next = body.subtract(one, body.readState('level', types.number));
+        // 同一指令写两次同值：发布标志只应在块尾结算一次。
+        body.writeState('watched', next);
+        body.writeState('watched', next);
+        body.elapse(one);
+        body.writeState('level', next);
+        body.if(
+          body.notEqual(types.number, body.readState('flow', types.number), next),
+          (drift) => {
+            drift.writeState(
+              'mismatches',
+              drift.add(
+                drift.readState('mismatches', types.number),
+                drift.constant(types.number, 1),
+              ),
+            );
+          },
+        );
+        body.writeState(
+          'rounds',
+          body.add(body.readState('rounds', types.number), body.constant(types.number, 1)),
+        );
+      });
+      return block.finish();
+    };
+
+    const library = createDeviceLibrary([
+      {
+        id: 'boundary',
+        model: builder.finish(),
+        create: (context) => {
+          const registration = context.attachJit({
+            entry: 'boundary',
+            code: 'code',
+            pc: 'pc',
+            translate,
+          });
+          try {
+            context.loadBytes('code', new Uint8Array(16));
+          } catch (cause) {
+            registration.dispose();
+            throw cause;
+          }
+          return { sync() {}, dispose: () => registration.dispose() };
+        },
+      },
+    ]);
+    const board = createBoard(library, {
+      instances: [{ id: 'boundary', type: 'boundary' }],
+      nets: [],
+    });
+    try {
+      board.runUntil(20);
+      const instance = (board as unknown as { instances: readonly Instance[] }).instances[0]!;
+      const jit = instance.jits[0] as Jit;
+      const stats = directJitStats(jit)!;
+      expect(stats.directCalls).toBeGreaterThan(stats.directFallbacks);
+      const fallbacks = stats.directFallbacks;
+      const initialFires = instance.states.get('fires') as number;
+      const initialRounds = instance.states.get('rounds') as number;
+
+      board.runUntil(1_000);
+      const fires = instance.states.get('fires') as number;
+      const rounds = instance.states.get('rounds') as number;
+      expect(rounds).toBeGreaterThan(100);
+      expect(instance.states.get('mismatches')).toBe(0);
+      // 每次指令边界写一个观察值只触发一次 reaction，重复同值写不产生额外边界。
+      expect(fires - initialFires).toBe(rounds - initialRounds);
+      expect(stats.directFallbacks).toBe(fallbacks);
+    } finally {
+      board.dispose();
+    }
+  });
+
+  it('flushes a stop block before the resident direct path exits', () => {
+    const builder = createDeviceBuilder({ name: 'StopPublication' });
+    builder.memory({ name: 'code', length: 16 });
+    builder.state({ name: 'pc', type: types.number, initial: 0 });
+    builder.state({ name: 'rounds', type: types.number, initial: 0 });
+    builder.state({ name: 'watched', type: types.number, initial: 0 });
+    builder.state({ name: 'fires', type: types.number, initial: 0 });
+    builder.reaction(
+      {
+        name: 'watchStop',
+        sourcePath: ['watched'],
+        sourceType: types.number,
+        previous: 'previous',
+        current: 'current',
+        captures: [],
+      },
+      {},
+      (body) => {
+        body.writeState(
+          'fires',
+          body.add(body.readState('fires', types.number), body.constant(types.number, 1)),
+        );
+      },
+    );
+
+    const translate: JitTranslate = (_input, block) => {
+      block.instruction({ pc: 0, nextPc: 1 }, (body) => {
+        const next = body.add(
+          body.readState('rounds', types.number),
+          body.constant(types.number, 1),
+        );
+        body.writeState('rounds', next);
+        const stop = body.greaterThanOrEqual(next, body.constant(types.number, 4));
+        const target = body.select(
+          types.number,
+          stop,
+          (yes) => yes.constant(types.number, 1),
+          (no) => no.constant(types.number, 0),
+        );
+        body.redirect(target, body.constant(types.number, 1));
+      });
+      block.instruction({ pc: 1, nextPc: 2 }, (body) => {
+        body.writeState('watched', body.constant(types.number, 7));
+        body.stop();
+      });
+      return block.finish();
+    };
+
+    const library = createDeviceLibrary([
+      {
+        id: 'stop',
+        model: builder.finish(),
+        create: (context) => {
+          const registration = context.attachJit({
+            entry: 'stop',
+            code: 'code',
+            pc: 'pc',
+            translate,
+          });
+          try {
+            context.loadBytes('code', new Uint8Array(16));
+          } catch (cause) {
+            registration.dispose();
+            throw cause;
+          }
+          return { sync() {}, dispose: () => registration.dispose() };
+        },
+      },
+    ]);
+    const board = createBoard(library, {
+      instances: [{ id: 'stop', type: 'stop' }],
+      nets: [],
+    });
+    try {
+      board.runUntil(20);
+      const instance = (board as unknown as { instances: readonly Instance[] }).instances[0]!;
+      const jit = instance.jits[0] as Jit;
+      const stats = directJitStats(jit)!;
+      expect(instance.states.get('pc')).toBe(2);
+      expect(instance.states.get('watched')).toBe(7);
+      expect(instance.states.get('fires')).toBe(1);
+      expect(stats.directStopped).toBe(1);
     } finally {
       board.dispose();
     }

@@ -24,8 +24,11 @@ export function profileInstructions(instructions, model) {
     states: new Map(states.map((name, index) => [name, index])),
     memories: new Map(memories.map((name, index) => [name, index])),
     pc: { name: 'pc', index: states.indexOf('pc') },
-    blockedStates: new Set(['irqPending', 'primask', 'ipsr']),
-    blockedMemories: new Set(['code']),
+    // IRQ hooks read these at instruction entry, so writes to them cannot be compiled
+    // into direct blocks. Ordinary subscribers publish dynamically at the next
+    // boundary instead, which keeps their instructions compilable.
+    entryBlockedStates: new Set(['irqPending', 'primask', 'ipsr']),
+    entryBlockedMemories: new Set(['code']),
     host: true,
   };
   const started = performance.now();
@@ -39,7 +42,7 @@ export function profileInstructions(instructions, model) {
       byKind[operation.kind] = (byKind[operation.kind] ?? 0) + 1;
       if ('type' in operation && !['number', 'bool'].includes(operation.type.kind))
         nonScalarTypes.add(operation.type.kind);
-      if (operation.kind === 'write' && binding.blockedStates.has(operation.name))
+      if (operation.kind === 'write' && binding.entryBlockedStates.has(operation.name))
         blockedStateWrites.add(operation.name);
     });
     const program = compileDirectJit([instruction], binding);

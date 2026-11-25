@@ -271,6 +271,8 @@ interface BindingFingerprint {
   readonly host: boolean;
   readonly blockedStates: readonly string[] | undefined;
   readonly blockedMemories: readonly string[] | undefined;
+  readonly entryBlockedStates: readonly string[] | undefined;
+  readonly entryBlockedMemories: readonly string[] | undefined;
   readonly functions: readonly (readonly [string, DirectFunctionIR])[] | undefined;
 }
 
@@ -374,6 +376,12 @@ function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
       binding.blockedStates === undefined ? undefined : [...binding.blockedStates].sort(),
     blockedMemories:
       binding.blockedMemories === undefined ? undefined : [...binding.blockedMemories].sort(),
+    entryBlockedStates:
+      binding.entryBlockedStates === undefined ? undefined : [...binding.entryBlockedStates].sort(),
+    entryBlockedMemories:
+      binding.entryBlockedMemories === undefined
+        ? undefined
+        : [...binding.entryBlockedMemories].sort(),
   };
 }
 
@@ -418,7 +426,9 @@ function sameBinding(left: BindingFingerprint, right: BindingFingerprint): boole
     samePairs(left.memories, right.memories) &&
     sameOptionalPairs(left.pins, right.pins) &&
     sameNames(left.blockedStates, right.blockedStates) &&
-    sameNames(left.blockedMemories, right.blockedMemories)
+    sameNames(left.blockedMemories, right.blockedMemories) &&
+    sameNames(left.entryBlockedStates, right.entryBlockedStates) &&
+    sameNames(left.entryBlockedMemories, right.entryBlockedMemories)
   );
 }
 
@@ -923,7 +933,7 @@ function monolithicProgram(
       'F.resume = 0;',
       ...entry.suffix,
       ...(entry.stop ? [] : fence),
-      finish(entry.stop),
+      entry.isolated ? publish : finish(entry.stop),
       '}',
     );
   });
@@ -1031,7 +1041,7 @@ function shardProgram(
         'F.resume = 0;',
         ...entry.suffix,
         ...(entry.stop ? [] : fence),
-        splitFinish(entry.stop),
+        entry.isolated ? publish : splitFinish(entry.stop),
         '}',
       );
     });
@@ -1308,13 +1318,23 @@ function residentStepFinish(
     entry.duration !== undefined &&
     entry.suffix.length === 0 &&
     !entry.isolated;
-  const checkpoint = emptyInline
-    ? entry.dynamicDuration
-      ? 'if (F.publishPending) return "invalidated"; '
-      : ''
-    : binding.host && entry.duration !== undefined
-      ? `if (F.stopAfterInstruction && !F.finishCheckpoint?.(deadline, ${entry.suffix.length === 0})) return "invalidated"; if (F.publishPending) return "invalidated"; `
-      : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; ';
+  let checkpoint: string;
+  if (entry.duration === undefined) {
+    // Zero-time blocks have no `elapsed()` site to checkpoint a dynamic publication. Settle
+    // the instruction boundary here so a resident shard can continue without a scheduler hop.
+    checkpoint =
+      binding.host === true
+        ? 'if (F.stopAfterInstruction) return "invalidated"; if (F.publishPending && F.finishCheckpoint?.(deadline, false) !== true) return "invalidated"; '
+        : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; ';
+  } else {
+    checkpoint = emptyInline
+      ? entry.dynamicDuration
+        ? 'if (F.publishPending) return "invalidated"; '
+        : ''
+      : binding.host
+        ? `if (F.stopAfterInstruction && !F.finishCheckpoint?.(deadline, ${entry.suffix.length === 0})) return "invalidated"; if (F.publishPending) return "invalidated"; `
+        : 'if (F.stopAfterInstruction || F.publishPending) return "invalidated"; ';
+  }
   if (fallthrough !== undefined) {
     return `${checkpoint}pc = S[${binding.pc.index}]; if (pc !== ${fallthrough.pc}) { if (!(typeof pc === "number" && pc < Infinity && pc > -Infinity)) H.checkPc(pc); if (${inside}) continue; return pc; }`;
   }
@@ -1369,7 +1389,7 @@ function residentShardProgram(shard: ResidentShard, binding: DirectJitBinding): 
       lines.push(
         'F.resume = 0;',
         ...entry.suffix,
-        residentResumeFinish(entry.stop, binding.pc.index),
+        entry.isolated ? publish : residentResumeFinish(entry.stop, binding.pc.index),
         '}',
       );
     });
@@ -1627,6 +1647,49 @@ function validIndex(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+/** Whether a redirect sits inside a nested statement branch rather than at the top level. */
+function hasBranchRedirect(region: RegionIR): boolean {
+  return region.operations.some(redirectInOperation);
+}
+
+/** A redirect anywhere in this region, including its own operation list. */
+function regionHasRedirect(region: RegionIR): boolean {
+  return region.operations.some(
+    (operation) => operation.kind === 'redirect' || redirectInOperation(operation),
+  );
+}
+
+function redirectInOperation(operation: OperationIR): boolean {
+  switch (operation.kind) {
+    case 'redirect':
+      // A top-level redirect keeps the original linear terminal path.
+      return false;
+    case 'if':
+      return (
+        regionHasRedirect(operation.yes) ||
+        (operation.no !== undefined && regionHasRedirect(operation.no))
+      );
+    case 'match':
+      return (
+        operation.arms.some((arm) => regionHasRedirect(arm.body)) ||
+        (operation.otherwise !== undefined && regionHasRedirect(operation.otherwise))
+      );
+    case 'while':
+      return regionHasRedirect(operation.test.body) || regionHasRedirect(operation.body);
+    case 'loop':
+      return regionHasRedirect(operation.body);
+    case 'and':
+    case 'or':
+      return regionHasRedirect(operation.right.body);
+    case 'select':
+      return regionHasRedirect(operation.yes.body) || regionHasRedirect(operation.no.body);
+    case 'assert':
+      return operation.message !== undefined && regionHasRedirect(operation.message.body);
+    default:
+      return false;
+  }
+}
+
 class Instruction {
   readonly readStates = new Set<string>();
   readonly writeStates = new Set<string>();
@@ -1687,6 +1750,10 @@ class Instruction {
   private readonly references = new Set<number>();
   /** Results whose emitted operations guarantee booleans, not just declared bool types. */
   private readonly booleanResults = new Set<number>();
+  /** Label of the block that wraps conditional exits; undefined for linear bodies. */
+  private exitLabel: string | undefined;
+  /** Slot holding the duration of whichever exit path ran. */
+  private exitDuration: string | undefined;
   private labels = 0;
 
   constructor(
@@ -1768,41 +1835,56 @@ class Instruction {
     }
     let output = this.prefix;
     let terminal = false;
-    for (const operation of instruction.body.operations) {
-      if (terminal) throw unsupported;
-      if (operation.kind === 'elapse') {
-        if (this.terminated) throw unsupported;
-        this.terminate(this.delay(operation.duration));
-        output = this.suffix;
-      } else if (operation.kind === 'redirect') {
-        if (this.terminated) throw unsupported;
-        const delay = this.delay(operation.delay);
-        output.push(
-          `S[${this.binding.pc.index}] = H.checkPc(${this.value(operation.target)});`,
-          dirty('SD', this.binding.pc.index),
-        );
-        this.terminate(delay);
-        output = this.suffix;
-        terminal = true;
-      } else if (operation.kind === 'stop') {
-        this.stop = true;
-        terminal = true;
-      } else if (operation.kind === 'yield') {
-        // A bare yield carries no result. Model validation rejects it today, so only the
-        // tail-of-body shape is admitted: any later operation is dead code and declines the
-        // whole block. Treating it as a zero-duration exit reuses the `elapse 0` path, which
-        // advances no time and needs no continuation slot.
-        if (this.terminated) throw unsupported;
-        this.terminate({ value: '0', zero: true, dynamic: false });
-        terminal = true;
-      } else {
-        this.operation(operation, output);
+    if (hasBranchRedirect(instruction.body)) {
+      // A redirect inside a branch terminates the instruction from a nested position, while
+      // the linear operations after that branch and the tail `elapse` still belong to every
+      // path that did not redirect. One labeled body plus a shared duration slot turns the
+      // conditional redirects and the tail elapse into a single continuation.
+      this.compileConditional(instruction.body.operations);
+    } else {
+      for (const operation of instruction.body.operations) {
+        if (terminal) throw unsupported;
+        if (operation.kind === 'elapse') {
+          if (this.terminated) throw unsupported;
+          this.terminate(this.delay(operation.duration));
+          output = this.suffix;
+        } else if (operation.kind === 'redirect') {
+          if (this.terminated) throw unsupported;
+          const delay = this.delay(operation.delay);
+          output.push(
+            `S[${this.binding.pc.index}] = H.checkPc(${this.value(operation.target)});`,
+            dirty('SD', this.binding.pc.index),
+          );
+          this.terminate(delay);
+          output = this.suffix;
+          terminal = true;
+        } else if (operation.kind === 'stop') {
+          this.stop = true;
+          terminal = true;
+        } else if (operation.kind === 'yield') {
+          // A bare yield carries no result. Model validation rejects it today, so only the
+          // tail-of-body shape is admitted: any later operation is dead code and declines the
+          // whole block. Treating it as a zero-duration exit reuses the `elapse 0` path, which
+          // advances no time and needs no continuation slot.
+          if (this.terminated) throw unsupported;
+          this.terminate({ value: '0', zero: true, dynamic: false });
+          terminal = true;
+        } else {
+          this.operation(operation, output);
+        }
       }
     }
     if (!this.terminated && !this.stop) throw unsupported;
     // Admit synchronous, zero-time instructions only; no continuation or delay folding
-    // may cross the loop's publication boundary.
-    if (this.isolated && (!this.immediate || this.stop || this.guard.length)) throw unsupported;
+    // may cross the loop's publication boundary. A conditional-exit body is the exception:
+    // its loop runs entirely inside the prefix, the conditional redirects break out after
+    // the loop, and the empty suffix publishes on resume (see the assembly sites).
+    if (
+      this.isolated &&
+      this.exitLabel === undefined &&
+      (!this.immediate || this.stop || this.guard.length)
+    )
+      throw unsupported;
     this.compact();
     this.barrier = this.emitBarrier();
     let size = 0;
@@ -1821,22 +1903,70 @@ class Instruction {
   }
 
   /**
-   * Runtime write barrier. A block that may write a state or memory the runtime currently
-   * observes returns `fallback` before it touches any slot, so the interpreter performs that
-   * instruction and observers still see every write. Testing the masks at entry — instead of
-   * declining the block at compile time — keeps one program valid across observer changes.
-   * Resumed instructions keep their old behaviour: a continuation always completes its
-   * suffix, because the interpreter can no longer replay it from that PC.
+   * Compile a body whose redirects live inside conditional branches and whose tail is an
+   * `elapse`. Each redirect writes the shared exit duration slot, writes the destination PC
+   * and breaks out of the labeled body, so the linear operations that follow the branch only
+   * run when no redirect fired. The tail `elapse` writes the same slot with its own duration;
+   * the assembler then emits one `elapsed` site and one continuation for both exit classes.
+   */
+  private compileConditional(operations: readonly OperationIR[]): void {
+    const tail = operations[operations.length - 1];
+    // The tail elapse supplies the duration for every path that did not redirect.
+    if (tail?.kind !== 'elapse' || this.guard.length) throw unsupported;
+    const label = `exit${this.labels++}`;
+    const duration = this.slot();
+    this.exitDuration = duration;
+    this.exitLabel = label;
+    this.prefix.push(`${label}: {`);
+    for (let index = 0; index < operations.length; index++) {
+      const operation = operations[index]!;
+      if (operation.kind === 'elapse') {
+        // Only the tail elapse is admitted: an earlier one would terminate the instruction on
+        // a path that then never reaches the conditional branch.
+        if (index !== operations.length - 1) throw unsupported;
+        this.prefix.push(`${duration} = ${this.delay(operation.duration).value};`);
+      } else if (
+        operation.kind === 'redirect' ||
+        operation.kind === 'stop' ||
+        operation.kind === 'yield'
+      ) {
+        // A top-level exit while a conditional exit exists has no unified duration slot.
+        throw unsupported;
+      } else {
+        this.operation(operation, this.prefix);
+      }
+    }
+    this.prefix.push('}');
+    this.duration = duration;
+    this.dynamicDuration = true;
+  }
+
+  /**
+   * Entry write barrier. Only slots read by `beforeInstruction` (and the code memory) are
+   * checked before an instruction starts; ordinary observer slots publish dynamically at a
+   * write site and are checkpointed at the next instruction boundary. Keeping this split means
+   * a block can stay resident while observers move, without weakening hook-prefix semantics.
    */
   private emitBarrier(): string[] {
     const lines: string[] = [];
     // The implicit PC write marks any instruction already executed in this batch. Publish
-    // that prefix first, then enter the loop in a fresh batch with fresh observer masks.
+    // that prefix first, then enter the loop in a fresh batch with fresh entry masks.
     if (this.isolated) {
       const pc = this.binding.pc.index;
       lines.push(`if (SD[${pc >>> 5}] & ${(1 << (pc & 31)) >>> 0}) ${publish}`);
     }
-    const emit = (bank: 'BS' | 'BM', indices: ReadonlySet<number>): void => {
+    const emit = (
+      bank: 'BS' | 'BM',
+      written: ReadonlySet<number>,
+      names: ReadonlySet<string> | undefined,
+      slots: ReadonlyMap<string, number>,
+    ): void => {
+      if (!names?.size || !written.size) return;
+      const indices = new Set<number>();
+      for (const name of names) {
+        const index = slots.get(name);
+        if (validIndex(index) && written.has(index)) indices.add(index);
+      }
       if (!indices.size) return;
       const words = new Map<number, number>();
       for (const index of indices)
@@ -1844,8 +1974,8 @@ class Instruction {
       for (const [word, mask] of [...words].sort(([left], [right]) => left - right))
         lines.push(`if (${bank}[${word}] & ${mask >>> 0}) return "fallback";`);
     };
-    emit('BS', this.writtenStates);
-    emit('BM', this.writtenMemories);
+    emit('BS', this.writtenStates, this.binding.entryBlockedStates, this.binding.states);
+    emit('BM', this.writtenMemories, this.binding.entryBlockedMemories, this.binding.memories);
     return lines;
   }
 
@@ -1856,6 +1986,9 @@ class Instruction {
   /** Keep the short path in the resident step function, without changing shard placement. */
   outlinePrefix(helpers: string[][]): readonly string[] {
     if (
+      // A labeled body makes `break exit` visible to this function; outlining would move it
+      // into a nested function where that label is out of scope.
+      this.exitLabel !== undefined ||
       this.size <= SHARD_CODE_BUDGET ||
       this.slots.length > OUTLINE_MAX_SLOTS ||
       this.isolated ||
@@ -1865,7 +1998,7 @@ class Instruction {
 
     const lines: string[] = [];
     const slots = this.slots.join(',');
-    const params = ['F', 'S', 'M', 'SD', 'MD', 'MV', 'P', 'R', ...this.slots].join(',');
+    const params = ['F', 'S', 'M', 'SD', 'MD', 'MV', 'P', 'R', 'BS', 'BM', ...this.slots].join(',');
     let cursor = 0;
     // Prefer the outer branch when candidates nest. Its whole body already moves off
     // the short path, so there is no need to add calls inside that body.
@@ -2217,7 +2350,9 @@ class Instruction {
 
   private state(name: string, write: boolean): number {
     const index = this.binding.states.get(name);
-    if (!validIndex(index) || (write && this.binding.blockedStates?.has(name))) throw unsupported;
+    // Ordinary observer slots stay compilable; their writes publish at the instruction boundary.
+    if (!validIndex(index) || (write && this.binding.entryBlockedStates?.has(name)))
+      throw unsupported;
     (write ? this.writeStates : this.readStates).add(name);
     if (write) this.writtenStates.add(index);
     return index;
@@ -2228,8 +2363,10 @@ class Instruction {
     const name = operation.memory.name;
     const index = this.binding.memories.get(name);
     const write = operation.kind.startsWith('store');
-    // Only stores are write barriers; every load kind, including the wide ones, stays eligible.
-    if (!validIndex(index) || (write && this.binding.blockedMemories?.has(name))) throw unsupported;
+    // Only entry-blocked stores and self-modifying code remain compile-time barriers. Every
+    // load kind, including the wide ones, stays eligible.
+    if (!validIndex(index) || (write && this.binding.entryBlockedMemories?.has(name)))
+      throw unsupported;
     (write ? this.writeMemories : this.readMemories).add(name);
     if (write) this.writtenMemories.add(index);
     return index;
@@ -2357,10 +2494,26 @@ class Instruction {
     lines: string[],
     output?: { slot: string; label: string },
   ): void {
+    let exited = false;
     for (const operation of region.operations) {
+      // Anything after a branch-level redirect on the same path is unreachable.
+      if (exited) throw unsupported;
       if (operation.kind === 'yield') {
         if (!output) throw unsupported;
         lines.push(`${output.slot} = ${this.value(operation.value)}; break ${output.label};`);
+      } else if (operation.kind === 'redirect') {
+        // A conditional exit belongs to the labeled body installed by compileConditional.
+        // Value regions cannot break to it, and a linear body has no label at all.
+        if (output !== undefined || this.exitLabel === undefined || this.exitDuration === undefined)
+          throw unsupported;
+        const delay = this.delay(operation.delay);
+        lines.push(
+          `S[${this.binding.pc.index}] = H.checkPc(${this.value(operation.target)});`,
+          dirty('SD', this.binding.pc.index),
+          `${this.exitDuration} = ${delay.value};`,
+          `break ${this.exitLabel};`,
+        );
+        exited = true;
       } else {
         this.operation(operation, lines, output);
       }
@@ -2447,7 +2600,13 @@ class Instruction {
         break;
       case 'write': {
         const index = this.state(operation.name, true);
-        lines.push(`S[${index}] = ${this.value(operation.value)};`, dirty('SD', index));
+        const word = index >>> 5;
+        const mask = (1 << (index & 31)) >>> 0;
+        lines.push(
+          `S[${index}] = ${this.value(operation.value)};`,
+          dirty('SD', index),
+          `if (BS[${word}] & ${mask}) F.publishPending = true;`,
+        );
         break;
       }
       case 'unary': {
@@ -2629,6 +2788,7 @@ class Instruction {
         lines.push(
           `${memory}[H.offset(${memory},${this.value(operation.offset)})] = H.byte(${this.value(operation.value)});`,
           dirty('MD', index),
+          `if (BM[${index >>> 5}] & ${(1 << (index & 31)) >>> 0}) F.publishPending = true;`,
         );
         break;
       }
@@ -2660,6 +2820,7 @@ class Instruction {
         lines.push(
           `H.${store}(${memory},MV[${index}],${this.value(operation.offset)},${this.value(operation.value)},${little});`,
           dirty('MD', index),
+          `if (BM[${index >>> 5}] & ${(1 << (index & 31)) >>> 0}) F.publishPending = true;`,
         );
         break;
       }
