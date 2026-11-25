@@ -58,6 +58,17 @@ function directRebuildStride(compiled: number): number {
   return compiled < DIRECT_REBUILD_LINEAR_LIMIT ? 1 : Math.max(DIRECT_REBUILD_MIN_BLOCKS, compiled);
 }
 
+/** Call sites that settle a publication boundary; used only by opt-in diagnostics. */
+export type BoundarySource =
+  | 'checkpointPublish'
+  | 'checkpointFinish'
+  | 'jitSignal'
+  | 'runJit'
+  | 'runDirect'
+  | 'polling'
+  | 'process'
+  | 'other';
+
 /**
  * Deterministic direct-execution counters, kept on the `Jit` itself so `Board.jits` stays the
  * only diagnostic surface: the benchmark reads them instead of patching runtime internals.
@@ -71,6 +82,49 @@ export interface DirectJitStats {
   directFallbacks: number;
   directDeadlines: number;
   directStopped: number;
+}
+
+/**
+ * Opt-in checkpoint counters. They live beside `directStats` so diagnostic hosts that
+ * pre-install the legacy `directStats` shape keep paying nothing for these measurements.
+ */
+export interface DirectCheckpointStats {
+  /** `publishCheckpoint` entries. */
+  publications: number;
+  /** `finishCheckpoint` entries. */
+  finishes: number;
+  /** Finish entries whose suffix only advanced time. */
+  emptySuffixes: number;
+  /** Boundary settlements requested by either checkpoint. */
+  boundaryCalls: number;
+  /** Checkpoints that returned true and stayed in Direct execution. */
+  continues: number;
+  /** Checkpoints that returned false and handed control back to the scheduler. */
+  exits: number;
+}
+
+const checkpointStatsByJit = new WeakMap<Jit, DirectCheckpointStats>();
+
+/** Create the opt-in checkpoint counters once, on the first instrumented Direct frame. */
+export function directCheckpointStats(jit: Jit): DirectCheckpointStats {
+  let stats = checkpointStatsByJit.get(jit);
+  if (stats === undefined) {
+    stats = {
+      publications: 0,
+      finishes: 0,
+      emptySuffixes: 0,
+      boundaryCalls: 0,
+      continues: 0,
+      exits: 0,
+    };
+    checkpointStatsByJit.set(jit, stats);
+  }
+  return stats;
+}
+
+/** Read counters without creating them; undefined means diagnostics stayed off. */
+export function readDirectCheckpointStats(jit: Jit): DirectCheckpointStats | undefined {
+  return checkpointStatsByJit.get(jit);
 }
 
 type CountedJit = Jit & { directStats?: DirectJitStats };
@@ -304,7 +358,8 @@ export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
   /** Wakes or drops a parked JIT and removes its dependency registrations. */
   unparkWaiter(jit: Jit): void;
   readonly events: Pick<EventQueue<() => void>, 'time' | 'push'>;
-  boundary(): void;
+  readonly checkpointDiagnostics: boolean;
+  boundary(source?: BoundarySource): void;
   canContinueDirect(jit: Jit, horizon: number): boolean;
   queueJit(jit: Jit): void;
   wrap(
@@ -313,6 +368,16 @@ export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
     phase: RuntimePhase,
     instance?: Instance,
   ): SimulationError;
+}
+
+/** Settle one checkpoint boundary and attribute it to its source when diagnostics are on. */
+function checkpointBoundary(
+  board: JitRuntimeHost,
+  stats: DirectCheckpointStats | undefined,
+  source: 'checkpointPublish' | 'checkpointFinish',
+): void {
+  if (stats !== undefined) stats.boundaryCalls++;
+  board.boundary(source);
 }
 
 /** Reverse-map the hook's resource slots; slot values are not bank indices. */
@@ -508,6 +573,8 @@ function createDirectFrame(
 ): RuntimeDirectFrame {
   const instance = jit.instance;
   const { pinObjects, pinNames, pinElectricalSlots } = layout;
+  // Counters are created once, only when the benchmark opted in; legacy directStats is untouched.
+  const checkpointStats = board.checkpointDiagnostics ? directCheckpointStats(jit) : undefined;
   const frame: RuntimeDirectFrame = {
     states: layout.stateValues,
     memories: [...layout.memoryBanks],
@@ -539,24 +606,32 @@ function createDirectFrame(
   (frame as { host?: DirectJitHost }).host = directHost(board, instance, frame);
   if (jit.metadata === undefined) {
     frame.publishCheckpoint = () => {
+      if (checkpointStats !== undefined) checkpointStats.publications++;
       flushDirect(board, instance, layout, frame);
-      board.boundary();
+      // Writeback has completed before the boundary observes the published state.
+      checkpointBoundary(board, checkpointStats, 'checkpointPublish');
       if (jit.directProgramRevision === -1 || !board.canContinueDirect(jit, frame.due)) {
         frame.boundarySettled = true;
+        if (checkpointStats !== undefined) checkpointStats.exits++;
         return false;
       }
       // The boundary may have run reactions with their own current instance.
       board.current = instance;
+      if (checkpointStats !== undefined) checkpointStats.continues++;
       return true;
     };
     if (jit.options.beforeInstruction === undefined) {
       const pcIndex = layout.states.get(jit.options.pc)!;
       frame.finishCheckpoint = (deadline, emptySuffix) => {
+        if (checkpointStats !== undefined) {
+          checkpointStats.finishes++;
+          if (emptySuffix) checkpointStats.emptySuffixes++;
+        }
         // The prefix was flushed and admitted through due. An empty suffix only
         // advances time, so that scheduler admission still holds after its boundary.
         if (emptySuffix) board.time = frame.time;
         else flushDirect(board, instance, layout, frame);
-        board.boundary();
+        checkpointBoundary(board, checkpointStats, 'checkpointFinish');
         const direct = jit.direct;
         const nextPc = frame.states[pcIndex] as number;
         if (
@@ -571,6 +646,7 @@ function createDirectFrame(
           (!emptySuffix && !board.canContinueDirect(jit, frame.time))
         ) {
           frame.boundarySettled = true;
+          if (checkpointStats !== undefined) checkpointStats.exits++;
           return false;
         }
         // Program membership excludes polling/secondary-code PCs. Barriers may still
@@ -578,6 +654,7 @@ function createDirectFrame(
         if (jit.directObserverRevision !== instance.observerRevision) refreshDirectGuards(jit);
         frame.stopAfterInstruction = false;
         board.current = instance;
+        if (checkpointStats !== undefined) checkpointStats.continues++;
         return true;
       };
     }
@@ -760,7 +837,7 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): b
     // the dispatcher rejects the next uncompiled PC: `wrote` records that prefix, so the caller
     // must re-read the flushed PC instead of replaying the old one.
     if (frame.boundarySettled) frame.boundarySettled = false;
-    else if (reason !== 'fallback' || wrote || board.time !== start) board.boundary();
+    else if (reason !== 'fallback' || wrote || board.time !== start) board.boundary('runDirect');
     if (reason === 'fallback') {
       const nextPc = finite(instance.states.get(jit.options.pc), 'pc');
       // Polling PCs are deliberately absent from direct programs. Reaching one is a normal
@@ -836,7 +913,7 @@ function waitForPolling(
   board.parkWaiter(jit);
   const token = ++jit.pollingToken;
 
-  board.boundary();
+  board.boundary('polling');
   if (duration === 0 || advance === undefined) return;
   const due = time(board.time + duration);
 
@@ -856,7 +933,7 @@ function waitForPolling(
       return;
     }
     jit.instance.syncCall(advance, [duration]);
-    board.boundary();
+    board.boundary('polling');
     board.queueJit(jit);
   });
 }
@@ -867,7 +944,7 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
     if (duration === 0) return false;
     const due = time(board.time + duration);
     board.events.push(due, () => board.queueJit(jit));
-    board.boundary();
+    board.boundary('jitSignal');
     return true;
   }
   if (signal.kind === 'waitUntil') {
@@ -877,13 +954,13 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
     jit.pollingWait = false;
     jit.dependencies = checked.dependencies;
     board.parkWaiter(jit);
-    board.boundary();
+    board.boundary('jitSignal');
     return true;
   }
   if (signal.kind === 'stop') {
     jit.stopped = true;
     jit.execution = undefined;
-    board.boundary();
+    board.boundary('jitSignal');
     return true;
   }
   if (signal.kind === 'redirect') {
@@ -896,7 +973,7 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
     const dependencies = polling ? pollingDependencies(jit, polling, jit.currentPc) : undefined;
     jit.automaticPolling = false;
     jit.pollReads = undefined;
-    board.boundary();
+    board.boundary('jitSignal');
     if (duration === 0) board.queueJit(jit);
     else
       board.events.push(time(board.time + duration), () => {
@@ -1075,7 +1152,7 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       : jit.execution.next();
     if (step.done) {
       jit.execution = undefined;
-      board.boundary();
+      board.boundary('runJit');
       board.queueJit(jit);
       return;
     }
