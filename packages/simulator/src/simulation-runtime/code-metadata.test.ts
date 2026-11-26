@@ -1,6 +1,7 @@
 import { createDeviceBuilder, types, type JitBlockBuilder } from '@mica-js/device-model';
 import { describe, expect, it } from 'vitest';
 import { createBoard, createDeviceLibrary } from '../runtime';
+import type { Instance } from '../runtime/instance';
 import type {
   JitCodeMetadata,
   JitCodeMetadataInput,
@@ -212,6 +213,99 @@ it('discovers a new WFI in SRAM when execution actually enters that region', () 
   }
   expect(output).toEqual([1]);
   expect(calls.some((call) => call.memory === 'sram' && call.base === 0x20000000)).toBe(true);
+});
+
+it('refreshes metadata for the final region after a beforeInstruction redirect', () => {
+  const alias = 0x20000000;
+  const builder = createDeviceBuilder({ name: 'MetadataHookRedirect' });
+  builder.memory({ name: 'code', length: 4 });
+  builder.memory({ name: 'sram', length: 4 });
+  builder.state({ name: 'pc', type: types.number, initial: 0 });
+  builder.state({ name: 'gate', type: types.bool, initial: true });
+  builder.state({ name: 'hooked', type: types.bool, initial: false });
+  builder.channel({ name: 'out', direction: 'output', type: types.number, capacity: 8 });
+  builder.fn({ name: 'redirectFromHook', params: [] }, (body) => {
+    body.writeState('hooked', body.constant(types.bool, true));
+    body.writeState('pc', body.constant(types.number, alias));
+  });
+  const calls: { memory: string; base: number; version: number; hooked: unknown }[] = [];
+  const translations: { pc: number; base: number; version: number; byte: number }[] = [];
+  const output: number[] = [];
+  let hooked: (() => unknown) | undefined;
+  const provider = (input: JitCodeMetadataInput): JitCodeMetadata => {
+    calls.push({
+      memory: input.region.memory,
+      base: input.region.base,
+      version: input.region.codeVersion,
+      hooked: input.region.memory === 'sram' ? hooked?.() : undefined,
+    });
+    return { polling: [], delays: new Map() };
+  };
+  const translate: JitTranslate = (input: JitTranslateInput, block: JitBlockBuilder) => {
+    const byte = input.code[input.pc - input.codeBase] ?? 0;
+    translations.push({
+      pc: input.pc,
+      base: input.codeBase,
+      version: input.codeVersion,
+      byte,
+    });
+    block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => {
+      body.send('out', body.constant(types.number, byte));
+      body.stop();
+    });
+    return block.finish();
+  };
+  const library = createDeviceLibrary([
+    {
+      id: 'metadata-hook-redirect',
+      model: builder.finish(),
+      create: (context) => {
+        const registration = context.attachJit({
+          entry: 'cpu',
+          code: 'code',
+          codeRegions: [{ memory: 'sram', base: alias, size: 4 }],
+          codeMetadata: provider,
+          pc: 'pc',
+          beforeInstruction: { when: 'gate', call: 'redirectFromHook' },
+          translate,
+        });
+        try {
+          context.loadBytes('code', new Uint8Array([9]));
+          context.loadBytes('sram', new Uint8Array([2]));
+        } catch (cause) {
+          registration.dispose();
+          throw cause;
+        }
+        return {
+          sync(batch) {
+            for (const message of batch.outputs.out ?? []) output.push(message.value as number);
+          },
+          dispose: () => registration.dispose(),
+        };
+      },
+    },
+  ]);
+  const board = createBoard(library, {
+    instances: [{ id: 'metadata-hook-redirect', type: 'metadata-hook-redirect' }],
+    nets: [],
+  });
+  try {
+    const instance = (board as unknown as { instances: Instance[] }).instances[0]!;
+    hooked = () => instance.states.get('hooked');
+    board.runUntil(1);
+  } finally {
+    board.dispose();
+  }
+  // The hook redirects before translation, so only the alias PC is translated and its
+  // metadata refresh must observe the hook already having run.
+  expect(translations.map((entry) => entry.pc)).toEqual([alias]);
+  expect(output).toEqual([2]);
+  const sram = calls.find((call) => call.memory === 'sram');
+  expect(sram).toBeDefined();
+  expect(sram!.base).toBe(alias);
+  expect(sram!.hooked).toBe(true);
+  expect(translations[0]!.base).toBe(alias);
+  expect(translations[0]!.version).toBe(sram!.version);
 });
 
 it('does not refresh SRAM metadata on a Flash stack write', () => {

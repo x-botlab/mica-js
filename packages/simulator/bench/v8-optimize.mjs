@@ -79,9 +79,11 @@ async function child([kind, workload, cyclesText, reportPath]) {
       if (!program) return factory;
       programs.push(program);
       return (...callArgs) => {
-        const run = factory(...callArgs);
-        program.run ??= run;
-        return run;
+        const result = factory(...callArgs);
+        // A fixed session dispatcher returns its `run`; an incremental shard factory returns
+        // its `[step, resume]` pair and has no single function to optimize.
+        if (typeof result === 'function') program.run ??= result;
+        return result;
       };
     },
     apply(target, thisArg, args) {
@@ -99,12 +101,12 @@ async function child([kind, workload, cyclesText, reportPath]) {
   try {
     bench.step(cycles);
     const wallMs = performance.now() - started;
-    for (const jit of bench.board.jits ?? []) {
-      for (const [key, execution] of jit.directPrograms ?? []) {
-        const program = programs.find((entry) => entry.run === execution?.program?.run);
-        if (program) program.key = key.slice(0, 120);
-      }
-    }
+    // Incremental sessions do not expose their generated dispatcher function. Label every
+    // dispatcher by session order instead of restoring the removed `directPrograms` map.
+    let session = 0;
+    for (const program of programs)
+      if (program.sessionDispatcher) program.key = `session:${session++}`;
+    const direct = (bench.board.jits ?? []).map((jit) => jit.directStats ?? null);
     programs.forEach((program, index) => {
       program.index = index;
       program.status = typeof program.run === 'function' ? optimizationStatus(program.run) : null;
@@ -115,7 +117,7 @@ async function child([kind, workload, cyclesText, reportPath]) {
       }
       program.run = undefined;
     });
-    writeFileSync(reportPath, JSON.stringify({ kind, workload, cycles, wallMs, programs }));
+    writeFileSync(reportPath, JSON.stringify({ kind, workload, cycles, wallMs, direct, programs }));
   } finally {
     bench.dispose();
   }
@@ -134,6 +136,7 @@ function parseProgram(source) {
     functions,
     cases: (source.match(/^case /gm) ?? []).length,
     residentDispatcher: /const D\d+ = SH\[/.test(source),
+    sessionDispatcher: /const step = ROUTES\.get\(pc\)/.test(source),
   };
 }
 
@@ -417,7 +420,7 @@ export function summarize(input) {
         index: program.index,
         characters: program.characters,
         shards: program.functions.filter((fn) => fn.kind !== 'dispatcher').length,
-        resident: program.residentDispatcher === true,
+        resident: program.residentDispatcher === true || program.sessionDispatcher === true,
         bytecode: measured?.length ?? null,
       };
     })
@@ -429,12 +432,15 @@ export function summarize(input) {
     (program) =>
       program.functions.some((fn) => fn.kind === 'dispatcher') &&
       !program.functions.some((fn) => fn.kind === 'step') &&
-      program.residentDispatcher !== true,
+      program.residentDispatcher !== true &&
+      program.sessionDispatcher !== true,
   );
   const largestMonolith = monoliths.sort((left, right) => right.characters - left.characters)[0];
   const sharded = programs.filter(
     (program) =>
-      program.functions.some((fn) => fn.kind === 'step') || program.residentDispatcher === true,
+      program.functions.some((fn) => fn.kind === 'step') ||
+      program.residentDispatcher === true ||
+      program.sessionDispatcher === true,
   );
   const allShards = allFunctions.filter((fn) => fn.kind === 'step' || fn.kind === 'resume');
   const largestFunction = [...allFunctions].sort(
@@ -517,6 +523,7 @@ export function summarize(input) {
         bytecode: bytecode.byName.get(fn.name) ?? null,
       })),
       bytecodeBudget: BYTECODE_BUDGET,
+      sessionDispatchers: programs.filter((program) => program.sessionDispatcher === true).length,
       measuredShards: shardBytecode.length,
       shardBytecodeCoverage: `${shardBytecode.length}/${allShards.length}`,
       maxShardBytecode: maxShardBytecode || null,
@@ -527,6 +534,7 @@ export function summarize(input) {
       maxMonolithDispatcherBytecode: maxMonolithDispatcherBytecode || null,
       bytecodeOverBudget: overBudget,
     },
+    direct: input.trace.report.direct ?? null,
     optimizationEvents: {
       count: {
         marking: events.marking.length,

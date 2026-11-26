@@ -546,14 +546,15 @@ describe('direct JIT electrical publication', () => {
     try {
       warmDirect(scenario);
       const attempts = recordCheckpoints(scenario);
-      const oldProgram = scenario.jit.direct!.program;
+      const oldSession = scenario.jit.direct!.session;
       scenario.board.runUntil(81);
 
       expect(attempts).toEqual([
         { due: 60, resumed: true },
         { due: 70, resumed: false },
       ]);
-      expect(scenario.jit.direct?.program).not.toBe(oldProgram);
+      expect(scenario.jit.direct?.session).not.toBe(oldSession);
+      expect(oldSession.routeCount).toBe(0);
       // Seven suffixes used the old bytes, including the active one at 70.
       expect(scenario.instance.states.get('suffixes')).toBe(7 + 2);
       expect(edgeRecords(scenario).map(({ time }) => time)).toEqual([

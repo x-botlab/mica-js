@@ -61,6 +61,7 @@ describe('direct JIT incremental cache', () => {
       const jit = instance.jits[0] as Jit;
       const cache = jit.directCache;
       const active = jit.direct!;
+      const activeSession = active.session;
       expect(active.frame.resume).not.toBe(0);
       expect(cache).toBeDefined();
       expect(compileDirectJit.cacheStats(cache!).entries).toBeGreaterThan(0);
@@ -76,7 +77,8 @@ describe('direct JIT incremental cache', () => {
 
       expect(compileDirectJit.cacheStats(cache!).clears).toBe(1);
       expect(compileDirectJit.cacheStats(cache!).compiledBlocks).toBe(initialCompiles + 1);
-      expect(jit.direct!.program).not.toBe(active.program);
+      expect(jit.direct!.session).not.toBe(activeSession);
+      expect(activeSession.routeCount).toBe(0);
       // One old suffix, five new prefixes, four new suffixes. The last suffix waits at the cutoff.
       expect(instance.states.get('tick')).toBe(before + 10 + 5 * 2 + 4 * 20);
     } finally {

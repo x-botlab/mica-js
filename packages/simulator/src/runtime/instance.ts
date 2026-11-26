@@ -5,6 +5,7 @@ import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
 import { body, computation, resumable, synchronousBody } from './execution';
 import { acceptSync, electricalNumber, ElectricalParameterError } from './errors';
+import { disposeDirect, invalidateDirect } from './jit';
 import type {
   Channel,
   Decl,
@@ -814,18 +815,17 @@ export class Instance {
         jit.cache.clear();
         jit.cacheMemories.clear();
         jit.revision++;
-        jit.directPrograms.clear();
-        jit.directProgramRevision = -1;
-        jit.directSkip = undefined;
-        jit.directMisses.clear();
-        if (jit.direct?.frame.resume) jit.direct.frame.stopAfterInstruction = true;
-        else jit.direct = undefined;
+        // Bodies in the shared compiler cache were emitted from the replaced bytes.
+        invalidateDirect(jit, true);
       } else if (jit.cacheMemories.has(name)) {
-        // Additional regions are conservatively invalidated as a whole. They never feed the
-        // direct program, so Flash cache/direct/revision and the active frame stay untouched.
+        // Additional regions are conservatively invalidated as a whole. Direct admission
+        // only covers the primary memory today; a future admitted entry from here still
+        // invalidates the session instead of leaving a route over replaced bytes.
         for (const [pc, instruction] of jit.cache)
           if (instruction.codeRegion?.memory === name) jit.cache.delete(pc);
         jit.cacheMemories.delete(name);
+        if (jit.directMemories.has(name)) invalidateDirect(jit, false);
+        jit.directMemories.delete(name);
       }
     }
   }
@@ -1437,16 +1437,15 @@ export class Instance {
       polling,
       delays: options.delays ?? new Map(),
       revision: 0,
-      directRevision: -1,
       directObserverRevision: -1,
       directStateGuards: new Set(),
       directMemoryGuards: new Set(),
       directHookReads: new Set(),
-      directPrograms: new Map(),
-      directProgramRevision: -1,
+      directMemories: new Set(),
       direct: undefined,
       directSkip: undefined,
-      directMisses: new Map(),
+      directStale: false,
+      directCacheInvalid: false,
       pollReads: undefined,
       currentPc: undefined,
       automaticPolling: false,
@@ -1474,9 +1473,7 @@ export class Instance {
         this.board.unparkWaiter(jit);
         jit.cache.clear();
         jit.cacheMemories.clear();
-        jit.directPrograms.clear();
-        jit.direct = undefined;
-        jit.directMisses.clear();
+        disposeDirect(jit);
         jit.pollReads = undefined;
       },
     };

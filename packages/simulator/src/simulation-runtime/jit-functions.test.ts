@@ -85,9 +85,11 @@ it.each(['precise', 'throughput'] as const)(
       if (execution === 'throughput') {
         const stats = directJitStats(jit)!;
         expect(stats.directCalls - stats.directFallbacks).toBeGreaterThan(0);
-        expect(stats.directFallbacks).toBeGreaterThan(0);
-        expect(jit.direct?.program.writeStates).toContain('guarded');
-        expect(jit.direct?.program.writeMemories).toContain('scratch');
+        expect(stats.directDispatchMisses).toBeGreaterThan(0);
+        expect(jit.direct?.session.has(0)).toBe(true);
+        expect(jit.direct?.session.has(1)).toBe(true);
+        expect(stats.directRoutes).toBe(2);
+        expect(stats.directShards).toBeGreaterThan(0);
       }
       const second = create();
       try {

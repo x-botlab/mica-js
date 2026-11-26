@@ -72,10 +72,10 @@ function scenario(replace: boolean, repeat = false) {
   );
 }
 
-describe('direct JIT rebuilds at electrical publication boundaries', () => {
+describe('direct JIT incremental routing at electrical publication boundaries', () => {
   for (const [replace, description] of [
-    [false, 'keeps covered bodies across an append-only revision'],
-    [true, 'rebuilds when a new translation replaces an existing PC'],
+    [false, 'keeps the session across an append-only revision'],
+    [true, 'replaces one route without rebuilding the session'],
   ] as const) {
     it(description, () => {
       const board = scenario(replace);
@@ -83,9 +83,10 @@ describe('direct JIT rebuilds at electrical publication boundaries', () => {
         board.runUntil(3);
         const [instance] = (board as unknown as { instances: readonly Instance[] }).instances;
         const jit = instance!.jits[0]!;
-        const original = jit.direct!.program;
+        const original = jit.direct!.session;
         const revision = jit.revision;
         const compiles = directJitStats(jit)!.directCompiles;
+        const routes = directJitStats(jit)!.directRoutes;
         const samples = instance!.sampleResources.get('signal')!;
         const before = samples.version;
 
@@ -93,26 +94,30 @@ describe('direct JIT rebuilds at electrical publication boundaries', () => {
         expect(jit.revision).toBe(revision + 1);
         expect(samples.version - before).toBeGreaterThan(10);
         expect(instance!.states.get('marker')).toBe(replace ? 2 : 1);
-        expect(directJitStats(jit)!.directCompiles - compiles).toBe(replace ? 1 : 0);
-        if (replace) expect(jit.direct!.program).not.toBe(original);
-        else expect(jit.direct!.program).toBe(original);
+        expect(directJitStats(jit)!.directCompiles).toBe(compiles);
+        expect(jit.direct!.session).toBe(original);
+        expect(jit.direct!.session.has(16)).toBe(true);
+        expect(directJitStats(jit)!.directRoutes).toBeGreaterThan(routes);
       } finally {
         board.dispose();
       }
     });
   }
 
-  it('rebuilds promptly if a translated but uncovered PC keeps executing', () => {
+  it('adds a route on demand instead of rebuilding the fixed dispatcher', () => {
     const board = scenario(false, true);
     try {
       board.runUntil(3);
       const [instance] = (board as unknown as { instances: readonly Instance[] }).instances;
       const jit = instance!.jits[0]!;
       const compiles = directJitStats(jit)!.directCompiles;
+      const session = jit.direct!.session;
 
       board.runUntil(30);
-      expect(jit.direct!.pcs.has(16)).toBe(true);
-      expect(directJitStats(jit)!.directCompiles).toBe(compiles + 1);
+      expect(jit.direct!.session).toBe(session);
+      expect(jit.direct!.session.has(16)).toBe(true);
+      expect(directJitStats(jit)!.directCompiles).toBe(compiles);
+      expect(directJitStats(jit)!.directRoutes).toBeGreaterThan(16);
     } finally {
       board.dispose();
     }
