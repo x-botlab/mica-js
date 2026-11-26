@@ -1,6 +1,6 @@
 # CT107D Direct JIT 时间准入与跨实例缓存：实现与验收记录
 
-对应计划：[ct107d-jit-timing-and-cache-plan.md](./ct107d-jit-timing-and-cache-plan.md)（基线 `6c76ee3`）。本记录覆盖本仓库 `6512a79..8756a6d` 的 #309/#310 实现；板侧 `mica-devices` 的接入与固件测量不在本仓库范围。
+对应计划：[ct107d-jit-timing-and-cache-plan.md](./ct107d-jit-timing-and-cache-plan.md)（基线 `6c76ee3`）。本记录覆盖基线 `6c76ee3` 之后的 #309/#310 实现；板侧 `mica-devices` 的接入与固件测量不在本仓库范围。
 
 ## #309 Direct 时间准入
 
@@ -23,7 +23,7 @@
 ### 运行时绑定、掩码与统计
 
 - `DirectJitBinding` 增加惰性绑定字段 `memoryLengths` 与 `codeMemories`，供编译器做静态地址和代码写证明；不在翻译前预编译通用体。
-- 运行时生成观察者与入口屏障掩码：`blockedStates`/`blockedMemories`、`entryBlockedStates`/`entryBlockedMemories`。观察者掩码原位刷新，不因订阅变化重建会话；入口屏障变化才使会话失效。span 前缀共用一组写集合屏障，终结成员保留自身 guard/barrier。
+- 运行时生成观察者与入口屏障掩码：`blockedStates`/`blockedMemories`、`entryBlockedStates`/`entryBlockedMemories`。观察者掩码原位刷新，不因订阅变化重建会话；入口屏障变化才使会话失效。span 前缀共用一组写集合屏障；终结成员的非空 guard、`isolated` 或 `stop` 会被编译器拒绝，融合路径只保留终结成员的 barrier 和普通路由。
 - `DirectJitFrame.directMetrics` 提供 `spanRuns` 与 `loopRounds`，由运行时聚合到 `directSpans`、`directSpanRuns`、`directSpanRejected`、`directLoops`、`directLoopRounds`、`directLoopRejected`，以及回调/候选/分类拒绝计数。
 - 失效或动态失配只执行该逻辑 PC 的原指令：普通 Direct 可用时优先使用它，否则使用通用体。已执行前缀/轮次不重放，不设置 `directSkip`，也不把入口加入永久拒绝集；同一 PC 的 span 与 loop 标记互斥，后续翻译替换时撤销旧计划。
 
