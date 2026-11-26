@@ -195,6 +195,47 @@ export interface DirectJitBinding {
    * time to the accumulator, so skipping rounds cannot starve those peripherals.
    */
   readonly delayLoops?: ReadonlyMap<number, DirectJitDelay>;
+  /** Numeric slots and optional pure guard for device timing admission. */
+  readonly directTiming?: DirectJitTiming;
+  /** Physical length of each memory bank, used to prove static address ranges. */
+  readonly memoryLengths?: ReadonlyMap<string, number>;
+  /** Memories that contain executable code; prefix stores there are rejected. */
+  readonly codeMemories?: ReadonlySet<string>;
+}
+
+/** Compile-time address of one counter byte below a direct loop candidate. */
+export type DirectJitMemoryAddress =
+  | { readonly kind: 'constant'; readonly offset: number }
+  | {
+      readonly kind: 'maskedByte';
+      readonly memory: string;
+      readonly offset: number;
+      readonly mask: number;
+      readonly bits: number;
+    };
+
+/** A self-jumping direct instruction the compiler may fold into many rounds. */
+export type DirectJitLoopCandidate =
+  | { readonly kind: 'spin' }
+  | {
+      readonly kind: 'decrement8';
+      readonly memory: string;
+      readonly address: DirectJitMemoryAddress;
+    };
+
+/** Resolved contiguous instruction PCs of a marked span; first entry is the marked PC. */
+export interface DirectJitSpanCandidate {
+  readonly pcs: readonly number[];
+}
+
+/** Device timing admission for marked spans and loops. */
+export interface DirectJitTiming {
+  /** Number-state slot holding the device service elapsed time (ps). */
+  readonly elapsed: number;
+  /** Number-state slot holding the device service deadline (ps), 0 = no service. */
+  readonly deadline: number;
+  /** Name of a validated pure zero-argument bool function; true forces the normal path. */
+  readonly blocked?: string;
 }
 
 /**
@@ -252,6 +293,8 @@ export interface DirectJitFrame {
   finishCheckpoint?: (deadline: number, emptySuffix: boolean) => boolean;
   /** Present when the program was compiled with `DirectJitBinding.host`. */
   readonly host?: DirectJitHost;
+  /** Optional mutable counters for span/loop execution; the runtime aggregates them. */
+  readonly directMetrics?: { spanRuns: number; loopRounds: number };
 }
 
 export type DirectJitReason = 'deadline' | 'fallback' | 'stopped' | 'invalidated';
@@ -326,6 +369,10 @@ export interface DirectJitInstruction {
   readonly body: RegionIR;
   /** Explicit opt-in to function-body sharing; unmarked entries always stay independent. */
   readonly share?: DirectJitShareCandidate;
+  /** Marked contiguous instructions fused when every prefix member is provably pure. */
+  readonly span?: DirectJitSpanCandidate;
+  /** Marked self-jump folded into as many complete rounds as the horizon allows. */
+  readonly loop?: DirectJitLoopCandidate;
 }
 
 /**
@@ -402,6 +449,18 @@ export interface DirectJitSessionStats {
   readonly sharedBodies: number;
   /** Cumulative generated source characters of emitted shared bodies. */
   readonly sharedBytes: number;
+  /** Marked spans that became a fused step route. */
+  readonly spansInstalled: number;
+  /** Marked spans rejected by structural or timing proof. */
+  readonly spansRejected: number;
+  /** Fused span routes that actually executed the fused path. */
+  readonly spanRuns: number;
+  /** Marked loops that became a folding route. */
+  readonly loopsInstalled: number;
+  /** Marked loops rejected by structural or timing proof. */
+  readonly loopsRejected: number;
+  /** Total rounds folded by installed loop routes. */
+  readonly loopRounds: number;
 }
 
 /**

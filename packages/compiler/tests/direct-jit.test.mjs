@@ -2297,17 +2297,29 @@ test('a paced busy-wait head folds into the service accumulator and stops at its
   const program = compileDirectJit([instruction], paced);
   assert(program);
   const source = generated(program);
-  // The fold stops on the first round that reaches the service boundary and records it.
-  assert.match(source, /if \(S\[3\]\) rounds = Math\.min\(rounds,/);
+  // A zero remaining budget fits no complete round; the real tail activates the service.
+  assert.match(source, /if \(S\[3\]\) \{/);
+  assert.match(
+    source,
+    /const remaining = Math\.max\(0, S\[2\] - S\[4\]\);\nrounds = Math\.min\(rounds, remaining > 0 \? Math\.floor\(\(remaining - 1\) \/ 1000\) : 0\);/,
+  );
   assert.match(source, /S\[4\] \+= rounds \* 1000;/);
 
-  // Paced: one round crosses the boundary, then the real body runs once.
+  // Active with no remaining budget: nothing folds, the real body runs exactly once.
   const crossing = frame(program, [0, 11, 0, true, 0, 0]);
   assert.equal(program.run(crossing, 60_000), 'fallback');
-  assert.equal(crossing.states[1], 10);
-  assert.equal(crossing.states[4], 1000);
-  assert.equal(crossing.time, 1000 + 2);
+  assert.equal(crossing.states[1], 11);
+  assert.equal(crossing.states[4], 0);
+  assert.equal(crossing.time, 2);
   assert.equal(crossing.states[5], 1);
+
+  // A positive budget folds only rounds that end strictly before the service boundary.
+  const pacedBudget = frame(program, [0, 11, 5000, true, 0, 0]);
+  assert.equal(program.run(pacedBudget, 60_000), 'fallback');
+  assert.equal(pacedBudget.states[1], 7);
+  assert.equal(pacedBudget.states[4], 4000);
+  assert.equal(pacedBudget.time, 4002);
+  assert.equal(pacedBudget.states[5], 1);
 
   // Unpaced: no boundary clamp, so every allowed round folds; the accumulator still tracks
   // elapsed time (the device resets it when a paced peripheral activates).
@@ -4726,4 +4738,590 @@ test('incremental sharing leaves unrelated physical groups untouched', () => {
   const b = frame(session, [6, 0, 0, true, 0, 0]);
   assert.equal(session.run(b, 1), 'deadline');
   assert.equal(b.states[2], 22);
+});
+
+/** Multiple memory banks plus optional directMetrics for optimized route tests. */
+function bankFrame(program, states, banks, metrics = false) {
+  const memories = banks.map((bytes) => Uint8Array.from(bytes));
+  const f = {
+    states: [...states],
+    memories,
+    memoryViews: memories.map(
+      (bank) => new DataView(bank.buffer, bank.byteOffset, bank.byteLength),
+    ),
+    stateDirty: new Array(Math.ceil(states.length / 32)).fill(0),
+    memoryDirty: new Array(Math.ceil(memories.length / 32)).fill(0),
+    time: 0,
+    due: 0,
+    resume: 0,
+    locals: new Array(program.localCount),
+  };
+  if (metrics) f.directMetrics = { spanRuns: 0, loopRounds: 0 };
+  return f;
+}
+
+/** Register-clean instruction: a fixed positive elapse and no other effect. */
+function nopInstruction(pc, nextPc, duration) {
+  const b = builder();
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+/** Prefix instruction that publishes one scalar before its fixed elapse. */
+function markerInstruction(pc, nextPc, value, duration) {
+  const b = builder();
+  b.write('marker', b.constant(value));
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+/** Terminal instruction with a normal store at its own start time. */
+function storeInstruction(pc, nextPc, value, duration) {
+  const b = builder();
+  b.write('x', b.constant(value));
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+function spanMarked(instruction, pcs) {
+  return { ...instruction, span: { pcs } };
+}
+
+/** Minimal memory/length binding used by the span and loop proofs. */
+function optimizedBinding(overrides = {}) {
+  return {
+    ...binding,
+    memories: new Map([
+      ['ram', 0],
+      ['iram', 1],
+      ['psw', 2],
+    ]),
+    memoryLengths: new Map([
+      ['ram', 16],
+      ['iram', 256],
+      ['psw', 1],
+    ]),
+    ...overrides,
+  };
+}
+
+function sessionWith(instructions, settings, cache = compileDirectJit.createCache()) {
+  const session = compileDirectJit.createSession(settings, cache);
+  session.add(instructions);
+  return session;
+}
+
+function sameObservable(left, right) {
+  assert.deepEqual(left.states, right.states);
+  assert.deepEqual(
+    left.memories.map((bank) => [...bank]),
+    right.memories.map((bank) => [...bank]),
+  );
+  assert.deepEqual(left.stateDirty, right.stateDirty);
+  assert.deepEqual(left.memoryDirty, right.memoryDirty);
+  assert.equal(left.time, right.time);
+  assert.equal(left.due, right.due);
+  assert.equal(left.resume, right.resume);
+}
+
+test('a marked span fuses a pure prefix before the terminal write and falls back at its start', () => {
+  const settings = optimizedBinding();
+  const members = [nopInstruction(0, 2, 2), nopInstruction(2, 4, 2), storeInstruction(4, 6, 42, 5)];
+  const marked = [spanMarked(members[0], [0, 2, 4]), members[1], members[2]];
+  const session = sessionWith(marked, settings);
+  assert.equal(session.stats().spansInstalled, 1);
+  assert.equal(session.stats().spansRejected, 0);
+
+  const fused = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(session.run(fused, 5), 'deadline');
+  assert.equal(fused.states[1], 42, 'terminal prefix is visible before its elapse');
+  assert.equal(fused.time, 5);
+  assert.equal(fused.directMetrics.spanRuns, 1);
+  assert.equal(session.stats().spanRuns, 1);
+
+  const plain = sessionWith(members, settings);
+  const reference = bankFrame(plain, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(plain.run(reference, 5), 'deadline');
+  sameObservable(fused, reference);
+
+  // The terminal starts exactly at the deadline: the fused route must not run it.
+  const boundary = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(session.run(boundary, 4), 'deadline');
+  assert.equal(boundary.states[1], 1, 'the terminal write did not run');
+  assert.equal(boundary.time, 4);
+  assert.equal(boundary.directMetrics.spanRuns, 0);
+  const boundaryReference = bankFrame(plain, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(plain.run(boundaryReference, 4), 'deadline');
+  sameObservable(boundary, boundaryReference);
+  assert.equal(session.stats().spanRuns, 1);
+});
+
+test('a deadline in the middle of a span prefix leaves the terminal unwritten', () => {
+  const settings = optimizedBinding();
+  const members = [nopInstruction(0, 2, 2), nopInstruction(2, 4, 2), storeInstruction(4, 6, 42, 5)];
+  const session = sessionWith(
+    [spanMarked(members[0], [0, 2, 4]), members[1], members[2]],
+    settings,
+  );
+  const plain = sessionWith(members, settings);
+
+  for (const deadline of [1, 2, 3, 4]) {
+    const fused = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+    const reference = bankFrame(plain, [0, 1, 0, true, 0, 0], [[0]], true);
+    assert.equal(session.run(fused, deadline), 'deadline');
+    assert.equal(plain.run(reference, deadline), 'deadline');
+    assert.equal(fused.states[1], 1, `terminal stays unwritten at ${deadline}`);
+    sameObservable(fused, reference);
+  }
+  assert.equal(session.stats().spanRuns, 0);
+});
+
+test('a dynamic observer on a prefix write falls back to the normal start step', () => {
+  const settings = optimizedBinding();
+  const members = [markerInstruction(0, 2, 7, 2), storeInstruction(2, 4, 42, 5)];
+  const session = sessionWith([spanMarked(members[0], [0, 2]), members[1]], settings);
+  const plain = sessionWith(members, settings);
+
+  const fused = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+  const reference = bankFrame(plain, [0, 1, 0, true, 0, 0], [[0]], true);
+  const observer = 1 << 5; // marker slot
+  fused.blockedStates = [observer];
+  reference.blockedStates = [observer];
+  assert.equal(session.run(fused, 10), 'invalidated');
+  assert.equal(plain.run(reference, 10), 'invalidated');
+  assert.equal(fused.states[5], 7, 'the prefix write still happened normally');
+  assert.equal(fused.directMetrics.spanRuns, 0);
+  sameObservable(fused, reference);
+});
+
+test('a service horizon shorter than the host deadline bounds span admission strictly', () => {
+  const settings = optimizedBinding({ directTiming: { elapsed: 4, deadline: 5 } });
+  const members = [nopInstruction(0, 2, 2), nopInstruction(2, 4, 2), storeInstruction(4, 6, 42, 5)];
+  const session = sessionWith(
+    [spanMarked(members[0], [0, 2, 4]), members[1], members[2]],
+    settings,
+  );
+
+  // Elapsed 0 / deadline 4: terminal start equals H, so the strict comparison rejects.
+  const short = bankFrame(session, [0, 1, 0, true, 0, 4], [[0]], true);
+  assert.equal(session.run(short, 6), 'deadline');
+  assert.equal(short.directMetrics.spanRuns, 0);
+  assert.equal(short.states[1], 42, 'the unfused host path still reaches the terminal');
+
+  // Elapsed 0 / deadline 5: prefix end (4) is strictly below the service horizon.
+  const admitted = bankFrame(session, [0, 1, 0, true, 0, 5], [[0]], true);
+  assert.equal(session.run(admitted, 6), 'deadline');
+  assert.equal(admitted.directMetrics.spanRuns, 1);
+  assert.equal(admitted.states[1], 42);
+  assert.equal(admitted.time, 6);
+  assert.equal(session.stats().spanRuns, 1);
+
+  // Elapsed 2 / deadline 5 leaves 3 ps from the current time, below the 4 ps prefix.
+  const tighter = bankFrame(session, [0, 1, 0, true, 2, 5], [[0]], true);
+  assert.equal(session.run(tighter, 6), 'deadline');
+  assert.equal(tighter.directMetrics.spanRuns, 0);
+
+  // Malformed timing state disables admission and keeps the normal path exact.
+  const invalid = bankFrame(session, [0, 1, 0, true, -1, 5], [[0]], true);
+  assert.equal(session.run(invalid, 6), 'deadline');
+  assert.equal(invalid.directMetrics.spanRuns, 0);
+  assert.equal(invalid.states[1], 42);
+});
+
+/** DJNZ-shaped body: load counter, (r - 1) & 255, store, conditional self jump, elapse. */
+function decrementInstruction(pc, nextPc, memory, address, duration) {
+  const b = builder();
+  let offset;
+  if (address.kind === 'constant') {
+    offset = b.constant(address.offset);
+  } else {
+    const selector = b.value({
+      kind: 'load8',
+      memory: { kind: 'memory', name: address.memory },
+      offset: b.constant(address.offset),
+    });
+    offset = b.binary('bitAnd', selector, b.constant(address.mask));
+    offset = b.binary('bitOr', offset, b.constant(address.bits));
+  }
+  const counter = b.value({ kind: 'load8', memory: { kind: 'memory', name: memory }, offset });
+  const decremented = b.binary('subtract', counter, b.constant(1));
+  const next = b.binary('bitAnd', decremented, b.constant(255));
+  b.operations.push({
+    kind: 'store8',
+    memory: { kind: 'memory', name: memory },
+    offset,
+    value: next,
+  });
+  const test = b.binary('notEqual', next, b.constant(0));
+  b.operations.push({
+    kind: 'if',
+    condition: test,
+    yes: {
+      operations: [
+        {
+          kind: 'redirect',
+          target: b.constant(pc),
+          delay: b.constant(duration),
+        },
+      ],
+    },
+  });
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+function loopMarked(instruction, loop) {
+  return { ...instruction, loop };
+}
+
+/** SJMP $-shaped body: an unconditional self redirect with a fixed duration. */
+function spinInstruction(pc, nextPc, duration) {
+  const b = builder();
+  b.operations.push({
+    kind: 'redirect',
+    target: b.constant(pc),
+    delay: b.constant(duration),
+  });
+  return b.instruction(pc, nextPc);
+}
+
+test('decrement8 folding reaches the boundary round for every counter value', () => {
+  const settings = optimizedBinding();
+  const instruction = decrementInstruction(0, 2, 'iram', { kind: 'constant', offset: 5 }, 10);
+  const session = sessionWith(
+    [
+      loopMarked(instruction, {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    settings,
+  );
+  assert.equal(session.stats().loopsInstalled, 1);
+  assert.equal(session.stats().loopsRejected, 0);
+  let folded = 0;
+  for (const [counter, rounds] of [
+    [0, 255],
+    [1, 0],
+    [2, 1],
+    [255, 254],
+  ]) {
+    const iram = new Array(256).fill(0);
+    iram[5] = counter;
+    const f = bankFrame(session, [0, 1, 0, true, 0, 0], [[0], iram, [0]], true);
+    assert.equal(session.run(f, 1_000_000), 'untranslated');
+    assert.equal(f.memories[1][5], 0, `counter ${counter} exits at zero`);
+    assert.equal(f.states[0], 2, `counter ${counter} reaches the fallthrough PC`);
+    assert.equal(f.time, (rounds + 1) * 10, `counter ${counter} executes every round`);
+    assert.equal(f.directMetrics.loopRounds, rounds);
+    assert.equal(f.due, f.time);
+    folded += rounds;
+  }
+  assert.equal(session.stats().loopRounds, folded);
+});
+
+test('maskedByte decrement8 addresses follow the selector byte across register groups', () => {
+  const settings = optimizedBinding();
+  const address = { kind: 'maskedByte', memory: 'psw', offset: 0, mask: 0x18, bits: 3 };
+  const instruction = decrementInstruction(0, 2, 'iram', address, 7);
+  const session = sessionWith(
+    [loopMarked(instruction, { kind: 'decrement8', memory: 'iram', address })],
+    settings,
+  );
+  let folded = 0;
+  for (const [selector, counter, rounds] of [
+    [0x00, 0, 255],
+    [0x08, 2, 1],
+    [0x10, 1, 0],
+    [0x18, 255, 254],
+  ]) {
+    const target = (selector & 0x18) | 3;
+    const iram = new Array(256).fill(0);
+    iram[target] = counter;
+    const f = bankFrame(session, [0, 1, 0, true, 0, 0], [[0], iram, [selector]], true);
+    assert.equal(session.run(f, 1_000_000), 'untranslated');
+    assert.equal(f.memories[1][target], 0, `selector ${selector} exits at zero`);
+    assert.equal(f.states[0], 2);
+    assert.equal(f.time, (rounds + 1) * 7);
+    assert.equal(f.directMetrics.loopRounds, rounds);
+    folded += rounds;
+  }
+  assert.equal(session.stats().loopRounds, folded);
+});
+
+test('spin folding stops one picosecond before the deadline with a normal boundary round', () => {
+  const instruction = spinInstruction(0, 1, 10);
+  const session = sessionWith([loopMarked(instruction, { kind: 'spin' })], binding);
+  assert.equal(session.stats().loopsInstalled, 1);
+
+  const exact = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]], true);
+  assert.equal(session.run(exact, 10), 'deadline');
+  assert.equal(exact.time, 10);
+  assert.equal(exact.states[0], 0);
+  assert.equal(exact.directMetrics.loopRounds, 0);
+
+  const almost = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]], true);
+  assert.equal(session.run(almost, 11), 'deadline');
+  assert.equal(almost.time, 11);
+  assert.equal(almost.states[0], 0);
+  assert.equal(almost.directMetrics.loopRounds, 1);
+
+  const long = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]], true);
+  assert.equal(session.run(long, 100), 'deadline');
+  assert.equal(long.time, 100);
+  assert.equal(long.directMetrics.loopRounds, 9);
+  assert.equal(session.stats().loopRounds, 10);
+});
+
+/** Zero-argument pure bool guard reading the `flag` state. */
+function blockedGuard() {
+  return {
+    kind: 'function',
+    name: 'blocked',
+    pure: true,
+    params: [],
+    returns: { kind: 'bool' },
+    body: {
+      operations: [
+        {
+          kind: 'read',
+          result: 0,
+          type: { kind: 'bool' },
+          resource: 'state',
+          name: 'flag',
+        },
+        { kind: 'returnValue', value: 0 },
+      ],
+    },
+  };
+}
+
+test('loop folding maintains the service accumulator and honours the blocked guard', () => {
+  const b = builder();
+  const offset = b.constant(5);
+  const counter = b.value({ kind: 'load8', memory: { kind: 'memory', name: 'iram' }, offset });
+  const next = b.binary('bitAnd', b.binary('subtract', counter, b.constant(1)), b.constant(255));
+  b.operations.push({
+    kind: 'store8',
+    memory: { kind: 'memory', name: 'iram' },
+    offset,
+    value: next,
+  });
+  const test = b.binary('notEqual', next, b.constant(0));
+  b.operations.push({
+    kind: 'if',
+    condition: test,
+    yes: {
+      operations: [{ kind: 'write', resource: 'state', name: 'pc', value: b.constant(0) }],
+    },
+  });
+  b.delay(7);
+  // Device tick tail: account one round in the service accumulator after the elapse.
+  const elapsed = b.binary('add', b.read('offset'), b.constant(7));
+  b.write('offset', elapsed);
+  const instruction = b.instruction(0, 2);
+  const settings = optimizedBinding({
+    functions: new Map([['blocked', blockedGuard()]]),
+    directTiming: { elapsed: 4, deadline: 5, blocked: 'blocked' },
+  });
+  const session = sessionWith(
+    [
+      loopMarked(instruction, {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    settings,
+  );
+  assert.equal(session.stats().loopsInstalled, 1);
+
+  const iram = new Array(256).fill(0);
+  iram[5] = 2;
+  const folded = bankFrame(session, [0, 1, 0, false, 100, 10_000], [[0], iram, [0]], true);
+  assert.equal(session.run(folded, 1_000_000), 'untranslated');
+  assert.equal(folded.states[4], 114, 'folded rounds and the boundary tail both accrue');
+  assert.equal(folded.time, 14);
+  assert.equal(folded.directMetrics.loopRounds, 1);
+
+  iram[5] = 2;
+  const blocked = bankFrame(session, [0, 1, 0, true, 100, 10_000], [[0], iram, [0]], true);
+  assert.equal(session.run(blocked, 1_000_000), 'untranslated');
+  assert.equal(blocked.states[4], 114, 'the normal path reaches the same accumulator value');
+  assert.equal(blocked.time, 14);
+  assert.equal(blocked.directMetrics.loopRounds, 0);
+});
+
+test('optimized routes never require frame metrics and retire when a marker disappears', () => {
+  const spin = spinInstruction(0, 1, 10);
+  const session = sessionWith([loopMarked(spin, { kind: 'spin' })], binding);
+  const first = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]]);
+  assert.equal(session.run(first, 100), 'deadline');
+  assert.equal(session.stats().loopRounds, 9);
+
+  // Re-submitting the start without the loop marker retires the wrapper but keeps the body.
+  session.add([spin]);
+  const second = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]]);
+  assert.equal(session.run(second, 11), 'deadline');
+  assert.equal(second.time, 11, 'the ordinary one-round instruction reached the deadline');
+  assert.equal(session.stats().loopRounds, 9, 'no rounds were folded after removal');
+});
+
+test('replacing a span member rebuilds the fused route over the new terminal body', () => {
+  const settings = optimizedBinding({ shardSize: 1 });
+  const session = sessionWith(
+    [spanMarked(nopInstruction(0, 2, 2), [0, 2]), storeInstruction(2, 4, 42, 5)],
+    settings,
+  );
+  assert.equal(session.stats().spansInstalled, 1);
+  session.add([storeInstruction(2, 4, 99, 5)]);
+  const f = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(session.run(f, 3), 'deadline');
+  assert.equal(f.states[1], 99, 'the replacement terminal body ran');
+  assert.equal(f.directMetrics.spanRuns, 1);
+  assert.equal(session.stats().spansInstalled, 1);
+  assert.equal(session.stats().spanRuns, 1);
+});
+
+test('a shared route or a loop marker prevents the conflicting optimization', () => {
+  const share = shareKey();
+  const shared = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  shared.add([
+    { ...sharedIncrement(0, 2, share), span: { pcs: [0, 2] } },
+    sharedIncrement(2, 4, share),
+  ]);
+  const stats = shared.stats();
+  assert.equal(stats.spansInstalled, 0);
+  assert(stats.spansRejected >= 1);
+  assert(stats.shareGroups >= 1);
+});
+
+test('malformed and unprovable markers keep normal execution and count rejections', () => {
+  const settings = optimizedBinding();
+
+  const malformedSpan = sessionWith(
+    [{ ...nopInstruction(0, 2, 2), span: { pcs: [0, 0] } }, storeInstruction(2, 4, 5, 1)],
+    settings,
+  );
+  assert.equal(malformedSpan.stats().spansInstalled, 0);
+  assert.equal(malformedSpan.stats().spansRejected, 1);
+  const malformedFrame = bankFrame(malformedSpan, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(malformedSpan.run(malformedFrame, 10), 'untranslated');
+  assert.equal(malformedFrame.states[1], 5);
+  assert.equal(malformedFrame.directMetrics.spanRuns, 0);
+
+  const nonContiguous = sessionWith(
+    [spanMarked(nopInstruction(0, 4, 2), [0, 2]), nopInstruction(2, 6, 2)],
+    settings,
+  );
+  assert.equal(nonContiguous.stats().spansRejected, 1);
+  assert.equal(nonContiguous.stats().spansInstalled, 0);
+
+  const missingMember = sessionWith([spanMarked(nopInstruction(0, 2, 2), [0, 2])], settings);
+  assert.equal(missingMember.stats().spansRejected, 1);
+  // Adding the missing terminal member re-evaluates the persisted marker.
+  missingMember.add([storeInstruction(2, 4, 9, 1)]);
+  assert.equal(missingMember.stats().spansInstalled, 1);
+
+  const codeWriteSettings = optimizedBinding({ codeMemories: new Set(['iram']) });
+  const codeWrite = builder();
+  codeWrite.operations.push({
+    kind: 'store8',
+    memory: { kind: 'memory', name: 'iram' },
+    offset: codeWrite.constant(1),
+    value: codeWrite.constant(9),
+  });
+  codeWrite.delay(2);
+  const codeWriteSpan = sessionWith(
+    [spanMarked(codeWrite.instruction(0, 2), [0, 2]), storeInstruction(2, 4, 8, 1)],
+    codeWriteSettings,
+  );
+  assert.equal(codeWriteSpan.stats().spansRejected, 1);
+  assert.equal(codeWriteSpan.stats().spansInstalled, 0);
+
+  const delayed = optimizedBinding({
+    delayLoops: new Map([[0, { counter: 1, cycles: 5 }]]),
+  });
+  const loopInstruction = decrementInstruction(0, 2, 'iram', { kind: 'constant', offset: 5 }, 10);
+  const loopWithDelay = sessionWith(
+    [
+      loopMarked(loopInstruction, {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    delayed,
+  );
+  assert.equal(loopWithDelay.stats().loopsInstalled, 0);
+  assert.equal(loopWithDelay.stats().loopsRejected, 1);
+
+  const codeCounter = sessionWith(
+    [
+      loopMarked(loopInstruction, {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    codeWriteSettings,
+  );
+  assert.equal(codeCounter.stats().loopsRejected, 1);
+
+  const dynamic = builder();
+  const dynamicOffset = dynamic.read('x');
+  const dynamicLoad = dynamic.value({
+    kind: 'load8',
+    memory: { kind: 'memory', name: 'iram' },
+    offset: dynamicOffset,
+  });
+  const dynamicNext = dynamic.binary(
+    'bitAnd',
+    dynamic.binary('subtract', dynamicLoad, dynamic.constant(1)),
+    dynamic.constant(255),
+  );
+  dynamic.operations.push({
+    kind: 'store8',
+    memory: { kind: 'memory', name: 'iram' },
+    offset: dynamicOffset,
+    value: dynamicNext,
+  });
+  const dynamicTest = dynamic.binary('notEqual', dynamicNext, dynamic.constant(0));
+  dynamic.operations.push({
+    kind: 'if',
+    condition: dynamicTest,
+    yes: {
+      operations: [{ kind: 'redirect', target: dynamic.constant(0), delay: dynamic.constant(10) }],
+    },
+  });
+  dynamic.delay(10);
+  const dynamicLoop = sessionWith(
+    [
+      loopMarked(dynamic.instruction(0, 2), {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    settings,
+  );
+  assert.equal(dynamicLoop.stats().loopsRejected, 1);
+
+  const both = sessionWith(
+    [
+      {
+        ...nopInstruction(0, 2, 2),
+        span: { pcs: [0, 2] },
+        loop: { kind: 'spin' },
+      },
+      storeInstruction(2, 4, 1, 1),
+    ],
+    settings,
+  );
+  assert.equal(both.stats().spansRejected, 1);
+  assert.equal(both.stats().loopsRejected, 1);
 });
