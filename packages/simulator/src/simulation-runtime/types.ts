@@ -24,6 +24,11 @@ export interface IPreparedSimulation {
   readonly devices: readonly IPreparedSimulationDevice[];
   /** Board CPU execution mode; omitted to retain the Board default. */
   readonly execution?: BoardOptions['execution'];
+  /**
+   * Board batch-execution switch, validated during preparation and captured for reset.
+   * Omitted means `false`; when present it must be a boolean and is forwarded to the Board.
+   */
+  readonly batchExecution?: boolean;
   /** Fixed board voltages by exact schematic net name; ignored for empty sheets. Ground stays zero. */
   readonly voltageReferences?: Readonly<Record<string, number>>;
   /** assets[symbolId][src]; required for every effective image/binary resource reference. */

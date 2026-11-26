@@ -37,6 +37,7 @@ function setup(
     readonly onAdvanceStart?: () => void;
     readonly onAdvanceSettled?: () => void;
   },
+  batchExecution?: boolean,
 ) {
   const pairs: ReturnType<typeof pair>[] = [];
   const factory = {
@@ -53,6 +54,7 @@ function setup(
       container,
       ...(stepMs === undefined ? {} : { stepMs }),
       ...(execution === undefined ? {} : { execution }),
+      ...(batchExecution === undefined ? {} : { batchExecution }),
       ...(observer === undefined ? {} : { observer }),
       ...(hooks?.onAdvanceStart === undefined ? {} : { onAdvanceStart: hooks.onAdvanceStart }),
       ...(hooks?.onAdvanceSettled === undefined
@@ -83,6 +85,18 @@ describe('editor-owned canvas runtime session', () => {
       await session.synchronize(document);
       expect(pairs[0]!.simulation.load).toHaveBeenCalledWith(
         expect.objectContaining({ execution: 'precise' }),
+      );
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  it('passes the batch-execution switch through the typed runtime load', async () => {
+    const { session, pairs } = setup(undefined, undefined, undefined, undefined, true);
+    try {
+      await session.synchronize(document);
+      expect(pairs[0]!.simulation.load).toHaveBeenCalledWith(
+        expect.objectContaining({ batchExecution: true }),
       );
     } finally {
       await session.dispose();

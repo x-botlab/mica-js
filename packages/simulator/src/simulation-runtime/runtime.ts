@@ -244,7 +244,14 @@ function buildLoadedRuntime(
   const board = createBoard(
     library,
     description,
-    prepared.execution === undefined ? {} : { execution: prepared.execution },
+    prepared.execution === undefined && prepared.batchExecution === undefined
+      ? {}
+      : {
+          ...(prepared.execution === undefined ? {} : { execution: prepared.execution }),
+          ...(prepared.batchExecution === undefined
+            ? {}
+            : { batchExecution: prepared.batchExecution }),
+        },
   );
   const project = (diagnostic: RuntimeDiagnostic, fatal: boolean): void => {
     found.push({

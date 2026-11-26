@@ -60,6 +60,8 @@ export interface ICanvasConfiguration {
   readonly projectRoot?: string;
   readonly stepMs?: number;
   readonly execution?: 'throughput' | 'precise';
+  /** Forwarded to the prepared simulation; omitted uses the board default. */
+  readonly batchExecution?: boolean;
   readonly voltageReferences?: Readonly<Record<string, number>>;
   readonly container: HTMLElement;
   /** Optional timing sink; omitted means no samples are built. */
@@ -330,6 +332,9 @@ export class CanvasSession {
         ...(this.configuration.execution === undefined
           ? {}
           : { execution: this.configuration.execution }),
+        ...(this.configuration.batchExecution === undefined
+          ? {}
+          : { batchExecution: this.configuration.batchExecution }),
         ...(this.configuration.voltageReferences === undefined
           ? {}
           : { voltageReferences: this.configuration.voltageReferences }),

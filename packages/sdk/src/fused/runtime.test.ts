@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { toTimePs } from '@mica-js/core';
+import { timePs, toTimePs } from '@mica-js/core';
 import { compileDDL } from '@mica-js/ddl';
 import { describe, expect, it, vi } from 'vitest';
 import type {
@@ -11,7 +11,13 @@ import type {
   ProgramFiles,
 } from '@mica-js/document/fused';
 import { MethodError, createHeadlessRuntime, openDevicePackage, satisfiesRange } from '.';
-import type { HeadlessRuntime, RuntimeDiagnostic, RuntimeModelEvent, RuntimeState } from '.';
+import type {
+  HeadlessRuntime,
+  HeadlessRuntimeOptions,
+  RuntimeDiagnostic,
+  RuntimeModelEvent,
+  RuntimeState,
+} from '.';
 
 const SWITCH = 'test:tactile';
 const LED = 'test:led';
@@ -354,7 +360,7 @@ interface Harness {
 async function start(
   document: FusedDocument,
   modules: Readonly<Record<string, unknown>>,
-  options: { observe?: boolean } = {},
+  options: { observe?: boolean; batchExecution?: boolean } = {},
 ): Promise<Harness> {
   const events: RuntimeModelEvent[] = [];
   const diagnostics: RuntimeDiagnostic[] = [];
@@ -380,6 +386,7 @@ async function start(
     },
     step: STEP,
     onDiagnostic: (entry) => diagnostics.push(entry),
+    ...(options.batchExecution === undefined ? {} : { batchExecution: options.batchExecution }),
     ...(options.observe === false
       ? {}
       : { onModelEvent: (event: RuntimeModelEvent) => events.push(event) }),
@@ -548,6 +555,50 @@ function probeModule(state: { limit: number; disposed: number; failDispose?: boo
 }
 
 describe('headless fused runtime', () => {
+  it('rejects an invalid batch-execution switch before preparing any module', async () => {
+    const loadModule = vi.fn(async () => ({}));
+    const diagnostics: RuntimeDiagnostic[] = [];
+    for (const batchExecution of [undefined, null, 'on', 1, {}]) {
+      const options = {
+        document: probeDocument(3),
+        registry: createRegistry({ [PROBE]: { manifest: PROBE_MANIFEST } }),
+        loadModule,
+        step: STEP,
+        batchExecution,
+        onDiagnostic: (entry: RuntimeDiagnostic) => diagnostics.push(entry),
+      } as unknown as HeadlessRuntimeOptions;
+      await expect(createHeadlessRuntime(options)).rejects.toMatchObject({
+        code: 'INVALID_CONFIGURATION',
+      });
+    }
+    expect(loadModule).not.toHaveBeenCalled();
+    expect(diagnostics.map((entry) => entry.code)).toEqual(
+      Array.from({ length: 5 }, () => 'INVALID_CONFIGURATION'),
+    );
+  });
+
+  it('accepts the batch-execution switch and keeps it across reset', async () => {
+    const state = { limit: 0, disposed: 0 };
+    const harness = await start(
+      probeDocument(3),
+      { [`${PROBE}/model.js`]: probeModule(state) },
+      { batchExecution: true },
+    );
+    const { runtime, diagnostics } = harness;
+    try {
+      await runtime.step();
+      expect(runtime.getState()).toEqual({ status: 'paused', simTime: STEP });
+      await runtime.reset();
+      expect(runtime.getState()).toEqual({ status: 'paused', simTime: timePs(0) });
+      await runtime.step();
+      expect(runtime.getState()).toEqual({ status: 'paused', simTime: STEP });
+      expect(state.limit).toBe(3);
+      expect(diagnostics).toEqual([]);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it('drives a real button and LED through the production simulator', async () => {
     const created = { count: 0 };
     const harness = await start(circuitDocument(), {

@@ -45,6 +45,7 @@ export interface IResolvedSimulation {
   readonly instances: readonly IPreparedInstance[];
   readonly description: BoardDescription;
   readonly execution?: IPreparedSimulation['execution'];
+  readonly batchExecution?: boolean;
 }
 
 /** Imports only referenced SDK modules and captures all inputs before any factory runs. */
@@ -56,6 +57,7 @@ export async function prepareSimulation(
   if (!isRecord(input) || !Array.isArray(input.devices)) {
     throw new SimulationRuntimeError('invalid-input', 'Expected schematic and devices');
   }
+  const batchExecution = readBatchExecution(input);
   const schematic = parseSchematic(input.schematic);
   const assets = readAssets(input.assets);
   const voltageReferences = readVoltageReferences(input.voltageReferences);
@@ -185,6 +187,7 @@ export async function prepareSimulation(
       device: devices.get(symbol.device)!,
     })),
     ...(input.execution === undefined ? {} : { execution: input.execution }),
+    ...(batchExecution === undefined ? {} : { batchExecution }),
     description: {
       instances: symbols.map((symbol) => ({
         id: symbol.id,
@@ -254,6 +257,15 @@ function resolveProperties(
       );
   }
   return props;
+}
+
+function readBatchExecution(input: IPreparedSimulation): boolean | undefined {
+  if (!Object.hasOwn(input, 'batchExecution')) return undefined;
+  const value = input.batchExecution;
+  if (typeof value !== 'boolean') {
+    throw new SimulationRuntimeError('invalid-input', 'Expected batchExecution to be a boolean');
+  }
+  return value;
 }
 
 function readVoltageReferences(value: unknown): ReadonlyMap<string, number> {
