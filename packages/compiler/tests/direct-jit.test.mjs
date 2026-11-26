@@ -4346,7 +4346,8 @@ test('structural IR, delay and key differences never join a shared body', () => 
     assert.equal(stats.shareGroups, 0);
     assert.equal(stats.sharedBodies, 0);
     assert.equal(stats.shareCandidates, 2);
-    assert(stats.shareRejected.context >= 2, 'different physical identity');
+    assert.equal(stats.shareRejected.single, 2, 'each physical identity has one candidate');
+    assert.equal(stats.shareRejected.context, 0);
   }
 });
 
@@ -4367,6 +4368,18 @@ test('single, invalid, isolated and missing markers stay on independent routes',
   assert.equal(stats.shareRejected.invalid, 1);
   assert.equal(stats.shareGroups, 0);
   assert.equal(invalid.routeCount, 1);
+
+  const unsupported = builder();
+  unsupported.write('marker', unsupported.constant(7));
+  unsupported.value({ kind: 'random' });
+  unsupported.delay(1);
+  const context = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  context.add([withShare(unsupported.instruction(0, 0), shareKey({ offset: 0x52 }))]);
+  stats = context.stats();
+  assert.equal(stats.shareCandidates, 1);
+  assert.equal(stats.shareRejected.context, 1);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(context.routeCount, 0);
 
   const looping = (pc) => {
     const b = builder();
@@ -4607,4 +4620,53 @@ test('a third equivalent route reuses the body and adds only its own route', () 
   assert.equal(stats.shareReusedBodies, reused + 1);
   assert(stats.sharedBytes > 0);
   assert(stats.shardBytes === 0);
+});
+
+test('session emitStats aggregates valid bodies after commits and not during run', () => {
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  assert.equal(session.emitStats.blocks, 0);
+  assert.equal(session.emitStats.worst, null);
+
+  const share = shareKey({ offset: 0x94 });
+  const first = sharedIncrement(0, 0, share);
+  const second = sharedIncrement(2, 2, share);
+  const plain = directBlock(4, 4, 10);
+  const reference = compileDirectJit([first, second, plain], binding);
+  assert(reference);
+  session.add([first, second, plain]);
+  const expected = reference.emitStats;
+  let stats = session.emitStats;
+  assert.equal(stats.blocks, 3, 'shared entries still contribute their bodies');
+  assert.equal(stats.operations, expected.operations);
+  assert.equal(stats.nestedOperations, expected.nestedOperations);
+  assert.equal(stats.statements, expected.statements);
+  assert.equal(stats.worst?.pc, expected.worst?.pc);
+
+  const f = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(f, 2), 'deadline');
+  assert.equal(session.emitStats, stats, 'run reuses the last commit snapshot');
+
+  const unsupported = builder();
+  unsupported.write('marker', unsupported.constant(7));
+  unsupported.value({ kind: 'random' });
+  unsupported.delay(1);
+  session.add([unsupported.instruction(6, 0)]);
+  stats = session.emitStats;
+  assert.equal(stats.blocks, 3, 'a rejected body has no instruction to aggregate');
+  assert.equal(stats.operations, expected.operations);
+
+  session.remove([2]);
+  stats = session.emitStats;
+  assert.equal(stats.blocks, 2);
+  assert(stats.operations < expected.operations);
+
+  session.updateDelays(new Map([[0, { counter: 1, cycles: 20 }]]));
+  assert.equal(session.emitStats.blocks, 2);
+
+  session.clear();
+  assert.equal(session.emitStats.blocks, 0);
+  assert.equal(session.emitStats.worst, null);
 });

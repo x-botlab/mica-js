@@ -13,6 +13,7 @@ import type {
   DirectJitCache,
   DirectJitCacheStats,
   DirectJitDelay,
+  DirectJitEmitStats,
   DirectJitFrame,
   DirectJitInstruction,
   DirectJitProgram,
@@ -659,30 +660,6 @@ export interface DirectJitCompiler {
 interface Folded {
   readonly value: Primitive;
   readonly text: string;
-}
-
-/** Development-only code shape: how many host statements one IR operation costs. */
-export interface DirectJitEmitStats {
-  readonly blocks: number;
-  /** Top-level IR operations, the denominator #256 quotes for one instruction block. */
-  readonly operations: number;
-  /** IR operations including nested value and statement regions. */
-  readonly nestedOperations: number;
-  readonly statements: number;
-  readonly statementsPerOperation: number;
-  readonly statementsPerNestedOperation: number;
-  /** Operations that cost no statement because they folded; adds back the pre-folding count. */
-  readonly foldedOperations: number;
-  readonly selectBlocks: number;
-  /** Worst block by statements per operation; `null` for an empty program. */
-  readonly worst: {
-    readonly pc: number;
-    readonly operations: number;
-    readonly statements: number;
-    readonly statementsPerOperation: number;
-    readonly foldedOperations: number;
-    readonly selectBlocks: number;
-  } | null;
 }
 
 /**
@@ -3271,6 +3248,7 @@ class DirectJitSessionImpl implements DirectJitSession {
   private compileBinding: DirectJitBinding;
   private localSlots = 0;
   private sessionPcs: readonly number[] = Object.freeze([]);
+  private emitStatsValue: DirectJitEmitStats = emitStats([]);
   private closed = false;
   private readonly runFunction: SessionDispatcher;
 
@@ -3292,6 +3270,7 @@ class DirectJitSessionImpl implements DirectJitSession {
       this.counters.helperBytes += this.state.helperBytes - helperBefore;
     }
     this.rebuildAll();
+    this.refreshEmitStats();
   }
 
   get sessionFingerprint(): BindingFingerprint {
@@ -3316,6 +3295,10 @@ class DirectJitSessionImpl implements DirectJitSession {
 
   get pcs(): readonly number[] {
     return this.sessionPcs;
+  }
+
+  get emitStats(): DirectJitEmitStats {
+    return this.emitStatsValue;
   }
 
   has(pc: number): boolean {
@@ -3464,6 +3447,7 @@ class DirectJitSessionImpl implements DirectJitSession {
     // reused identifier pointing at a different body after a clear.
     this.state.stats.clears++;
     this.refreshPcs();
+    this.refreshEmitStats();
   }
 
   stats(): DirectJitSessionStats {
@@ -3691,6 +3675,7 @@ class DirectJitSessionImpl implements DirectJitSession {
     this.applyEntryChanges(staged);
     if (sharing) this.reconcileSharedLayout();
     else this.applyShardChanges(staged);
+    this.refreshEmitStats();
   }
 
   /**
@@ -3704,12 +3689,10 @@ class DirectJitSessionImpl implements DirectJitSession {
       number,
       { variant: SharedVariant | undefined; shared: boolean; category: ShareCategory }
     >();
-    const valid = new Map<number, ShareKey>();
     const groups = new Map<string, ShareCandidateEntry[]>();
 
     for (const [pc, record] of this.state.entries) {
       if (record.share === undefined) continue;
-      valid.set(pc, record.share);
       const instruction = record.instruction;
       if (instruction === undefined) {
         assignment.set(pc, { variant: undefined, shared: false, category: 'context' });
@@ -3793,7 +3776,7 @@ class DirectJitSessionImpl implements DirectJitSession {
             assignment.set(candidate.pc, {
               variant,
               shared: false,
-              category: valid.size > 1 ? 'context' : 'single',
+              category: 'single',
             });
             continue;
           }
@@ -4109,6 +4092,14 @@ class DirectJitSessionImpl implements DirectJitSession {
 
   private refreshPcs(): void {
     this.sessionPcs = Object.freeze([...this.routes.keys()].sort((a, b) => a - b));
+  }
+
+  /** One aggregate pass over valid bodies; shared entries count once, rejected entries not. */
+  private refreshEmitStats(): void {
+    const entries: Instruction[] = [];
+    for (const record of this.state.entries.values())
+      if (record.instruction !== undefined) entries.push(record.instruction);
+    this.emitStatsValue = emitStats(entries);
   }
 
   private get shardSize(): number {
