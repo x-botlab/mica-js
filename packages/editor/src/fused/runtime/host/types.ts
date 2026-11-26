@@ -75,6 +75,8 @@ export interface IFusedRuntimeOptions {
   readonly registry: DeviceRegistry;
   /** Fixed positive step of every advance, in picoseconds. */
   readonly step: TimePs;
+  /** Explicit simulator batch-execution switch; omitted uses the board default and is kept across reset. */
+  readonly batchExecution?: boolean;
   /** Presentation mode prepared on creation; defaults to `edit`. */
   readonly mode?: FusedDisplayMode;
   /** Explicit resolver of `file` and `store` property resources (RFC 0020). */

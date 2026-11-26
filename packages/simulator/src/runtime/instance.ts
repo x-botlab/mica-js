@@ -3,7 +3,8 @@ import { type DeclarationIR, type DeviceIR, validateDeviceIR } from '@mica-js/de
 import type { ExecutionHost, ResourceHandle } from '@mica-js/compiler';
 import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
-import { body, computation, resumable, synchronousBody } from './execution';
+import { bindBatch, type BoundBatch, type ProcessBatchRegistration } from './batch';
+import { body, computation, resumable, resumableBatch, synchronousBody } from './execution';
 import { acceptSync, electricalNumber, ElectricalParameterError } from './errors';
 import {
   clearPromotions,
@@ -60,6 +61,8 @@ export interface InstanceBoard {
   readonly time: number;
   readonly phase: string;
   readonly current: Instance | undefined;
+  /** Effective batch admission: option enabled and execution mode is throughput. */
+  readonly batchExecution: boolean;
   /** Monotonic count of resource-version mutations on the whole board. */
   readonly resourceEpoch: number;
   noteResourceVersion(slot: ResourceSlot): void;
@@ -135,6 +138,8 @@ function createContext(owner: Instance, board: InstanceBoard): DeviceContext {
     topics: board.topicBridge(owner),
     reportError: (error: unknown) => board.report(owner, error),
     attachJit: (options: JitOptions) => owner.attach(options),
+    registerProcessBatch: (registration: ProcessBatchRegistration) =>
+      owner.registerProcessBatch(registration),
     loadBytes: (name: string, bytes: Uint8Array, ...offset: unknown[]) =>
       owner.loadBytes(name, bytes, offset.length ? offset[0] : 0),
   });
@@ -259,6 +264,9 @@ export class Instance {
   private readonly stateSlots = new Map<string, ResourceSlot>();
   /** Per-instance handles for the fixed resources a resumable process body binds. */
   private readonly resourceHandles = new Map<string, ResourceHandle>();
+  /** Active process batch registrations, allocated on the first real registration. */
+  private processBatchRegistrations:
+    Map<Process, Map<number, { readonly bound: BoundBatch | undefined }>> | undefined;
   private readonly memoryPlans = new Map<
     string,
     { name: string; bytes: Uint8Array; view: DataView; slot: ResourceSlot }
@@ -402,6 +410,147 @@ export class Instance {
         ),
       ),
     });
+  }
+  /** Whether any attached JIT owns this memory as code, including retired regions. */
+  isCodeMemory(name: string): boolean {
+    return this.codeMemories.has(name);
+  }
+  /**
+   * Active JIT registrations that read or write `name` as their PC state. Process batches
+   * reject any write to such a state; JIT batches accept only their own unshared PC.
+   */
+  activeJitPcCount(name: string): number {
+    let count = 0;
+    for (const jit of this.jits) if (jit.active && !jit.stopped && jit.options.pc === name) count++;
+    return count;
+  }
+  private syncProcessBatches(process: Process): void {
+    const registrations = this.processBatchRegistrations?.get(process);
+    if (registrations === undefined || registrations.size === 0) {
+      process.batch = undefined;
+      return;
+    }
+    const bounds: BoundBatch[] = [];
+    for (const registration of registrations.values())
+      if (registration.bound !== undefined) bounds.push(registration.bound);
+    process.batch = bounds.length === 0 ? undefined : bounds;
+  }
+  private invalidBatchBinding(message: string, cause?: unknown): SimulationError {
+    return this.board.error('INVALID_BINDING', message, this, cause);
+  }
+  /**
+   * Register one compiler-proven process loop for this instance. The registration is a
+   * synchronous factory-time action; its configuration is snapshotted, and only the
+   * optional binding attached to the process object is consulted per dispatch.
+   */
+  registerProcessBatch(registration: ProcessBatchRegistration): Disposable {
+    this.assertCallAllowed();
+    const board = this.board;
+    if (board.phase !== 'initialize' || board.current !== this)
+      throw board.error(
+        'INVALID_CALL_STATE',
+        'Process batch registration is initialization-only',
+        this,
+      );
+    let input: Record<string, unknown>;
+    try {
+      dataObject(registration, ['process', 'loop', 'stopBefore']);
+      input = registration as unknown as Record<string, unknown>;
+    } catch (cause) {
+      throw this.invalidBatchBinding('Invalid process batch registration', cause);
+    }
+    if (Object.hasOwn(input, 'stopBefore') && input.stopBefore === undefined)
+      throw this.invalidBatchBinding('Explicit undefined stopBefore');
+
+    let selector: Record<string, unknown>;
+    try {
+      dataObject(input.process, ['kind', 'index', 'name']);
+      selector = input.process as Record<string, unknown>;
+    } catch (cause) {
+      throw this.invalidBatchBinding('Invalid process batch selector', cause);
+    }
+    let process: Process | undefined;
+    if (selector.kind === 'start') {
+      if (Object.hasOwn(selector, 'name'))
+        throw this.invalidBatchBinding('Invalid process batch selector');
+      const index = selector.index;
+      if (!Number.isSafeInteger(index) || (index as number) < 0)
+        throw this.invalidBatchBinding('Invalid process batch index');
+      process = this.processes.filter((entry) => entry.declaration.kind === 'start')[
+        index as number
+      ];
+    } else if (selector.kind === 'on') {
+      if (Object.hasOwn(selector, 'index'))
+        throw this.invalidBatchBinding('Invalid process batch selector');
+      const name = selector.name;
+      if (typeof name !== 'string' || name.length === 0)
+        throw this.invalidBatchBinding('Invalid process batch name');
+      process = this.processes.find(
+        (entry) => entry.declaration.kind === 'on' && entry.declaration.name === name,
+      );
+    } else throw this.invalidBatchBinding('Invalid process batch selector');
+    if (process === undefined) throw this.invalidBatchBinding('Unknown process batch target');
+
+    const loop = input.loop;
+    if (!Number.isSafeInteger(loop) || (loop as number) < 0)
+      throw this.invalidBatchBinding('Invalid process batch loop');
+    const loopCount = process.declaration.body.operations.filter(
+      (operation) => operation.kind === 'while',
+    ).length;
+    if ((loop as number) >= loopCount)
+      throw this.invalidBatchBinding('Process batch loop is not declared');
+
+    let stopBefore: string | undefined;
+    if (Object.hasOwn(input, 'stopBefore')) {
+      const name = input.stopBefore;
+      if (typeof name !== 'string' || name.length === 0)
+        throw this.invalidBatchBinding('Invalid process batch stopBefore');
+      const declaration = this.declarations.get(name);
+      if (declaration?.kind !== 'state' || declaration.type.kind !== 'number')
+        throw this.invalidBatchBinding('stopBefore must name a number state');
+      stopBefore = name;
+    }
+
+    const registrations =
+      this.processBatchRegistrations?.get(process) ??
+      new Map<number, { readonly bound: BoundBatch | undefined }>();
+    if (registrations.has(loop as number))
+      throw this.invalidBatchBinding('Duplicate process batch registration');
+
+    let bound: BoundBatch | undefined;
+    if (board.batchExecution && process.resumable !== undefined) {
+      const compilation = resumableBatch(process.declaration.body);
+      if (compilation !== undefined) {
+        const plan = compilation.loops[loop as number];
+        if (plan !== undefined) {
+          bound = bindBatch(this, plan, stopBefore);
+          if (bound !== undefined) {
+            // The plans must describe the exact machine that runs. Adopt the opt-in
+            // program only after a real admission; every other process keeps its ordinary
+            // compiled program and the baseline dispatch shape.
+            process.resumable = compilation.program;
+          }
+        }
+      }
+    }
+    registrations.set(loop as number, { bound });
+    (this.processBatchRegistrations ??= new Map()).set(process, registrations);
+    this.syncProcessBatches(process);
+
+    let active = true;
+    const disposable: Disposable = {
+      dispose: () => {
+        if (!active) return;
+        active = false;
+        const current = this.processBatchRegistrations?.get(process);
+        if (current?.delete(loop as number) && current.size === 0)
+          this.processBatchRegistrations!.delete(process);
+        if (this.processBatchRegistrations?.size === 0) this.processBatchRegistrations = undefined;
+        this.syncProcessBatches(process);
+      },
+    };
+    this.resources.push(disposable);
+    return disposable;
   }
   dependenciesCurrent(dependencies: Dependencies | undefined): boolean {
     if (!dependencies) return false;
@@ -1041,6 +1190,7 @@ export class Instance {
             instance: this,
             declaration,
             resumable: resumable(declaration.body),
+            batch: undefined,
             ...(declaration.kind === 'on' ? { source: declaration.sourcePath } : {}),
             state: 'idle',
             pending: false,

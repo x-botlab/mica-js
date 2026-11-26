@@ -41,7 +41,7 @@
 
 所有 ``time``、``from``、``to`` 的数值表示、单位、范围与目标时间语义均以 :doc:`/execution/index` 为单一来源。
 
-context 由 ``props``、``inputs``、``memory``、``topics``、``reportError`` 与 ``JitHost`` 组成，不是任意访问 DDL ``state`` 的 SDK。``faulted`` 或失效 context 拒绝输入、发布和装载等新增副作用；旧 ``reportError`` 只作诊断，销毁后使用 ``console.error`` 兜底且正常返回。错误与诊断主定义见 :doc:`/errors` 和 :doc:`host`。
+context 由 ``props``、``inputs``、``memory``、``topics``、``reportError``、``registerProcessBatch`` 与 ``JitHost`` 组成，不是任意访问 DDL ``state`` 的 SDK。``faulted`` 或失效 context 拒绝输入、发布和装载等新增副作用；旧 ``reportError`` 只作诊断，销毁后使用 ``console.error`` 兜底且正常返回。错误与诊断主定义见 :doc:`/errors` 和 :doc:`host`。``registerProcessBatch`` 只接受同步工厂初始化期间的调用，登记与释放规则见 :doc:`host`。
 
 端点投影
 ------------------------------------------------

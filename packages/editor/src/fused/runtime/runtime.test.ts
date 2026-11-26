@@ -508,6 +508,7 @@ async function start(
     readonly bench?: Workbench;
     readonly frames?: IFusedOverlayFrame[];
     readonly diagnostics?: unknown[];
+    readonly batchExecution?: boolean;
   } = {},
 ): Promise<{ runtime: IFusedRuntime; bench: Workbench }> {
   const bench = options.bench ?? workbench();
@@ -518,6 +519,7 @@ async function start(
     step: STEP,
     mode: options.mode ?? 'edit',
     workers: bench.workers,
+    ...(options.batchExecution === undefined ? {} : { batchExecution: options.batchExecution }),
     onOverlay: (frame) => options.frames?.push(frame),
     onDiagnostic: (entry) => options.diagnostics?.push(entry),
   });
@@ -577,6 +579,29 @@ describe('fused runtime bridge', () => {
       }
     },
   );
+
+  it('loads the batch-execution switch through the typed simulation RPC and keeps it across reset', async () => {
+    const { runtime } = await start({ mode: 'run', batchExecution: true });
+    expect(runtime.getState().status).toBe('running');
+    await runtime.reset();
+    expect(runtime.getState().status).toBe('running');
+  });
+
+  it('rejects an invalid batch-execution switch before mounting models', async () => {
+    const bench = workbench();
+    const { document, registry } = await fixture();
+    await expect(
+      createFusedRuntime({
+        document,
+        registry,
+        step: STEP,
+        mode: 'run',
+        workers: bench.workers,
+        batchExecution: 'on' as unknown as boolean,
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_CONFIGURATION' });
+    expect(bench.terminated).toEqual({ simulation: 1, display: 1 });
+  });
 
   it('prepares the edit presentation without any model', async () => {
     const { runtime, bench } = await start({ mode: 'edit' });

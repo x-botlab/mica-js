@@ -129,6 +129,8 @@ export interface IFusedLoadRequest {
   readonly document: FusedDocument;
   /** Fixed positive step of every advance, in picoseconds. */
   readonly step: TimePs;
+  /** Explicit simulator batch-execution switch; omitted uses the board default. */
+  readonly batchExecution?: boolean;
 }
 
 /** One model event as it crosses the sandbox boundary. */

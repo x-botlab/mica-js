@@ -5,6 +5,7 @@ import type {
   RegionIR,
   SourceInfo,
 } from '@mica-js/device-model';
+import type { ProcessBatchPlan } from './batch.js';
 
 export type ExecutionSignal =
   | { readonly kind: 'ticks' | 'elapse'; readonly duration: number }
@@ -115,6 +116,17 @@ export interface ResumableProgram {
   readonly blocks: number;
   /** Initial `pc` of a fresh activation; always zero so a frame needs no setup. */
   readonly start: number;
+  /**
+   * Opt-in proof per top-level `while`, indexed by source order. `undefined` entries keep
+   * the ordinary path; the property is absent unless `batchLoops` was requested.
+   */
+  readonly batchLoops?: readonly (ProcessBatchPlan | undefined)[];
+}
+
+/** `CompileOptions` plus the resumable-only process-batch proof request. */
+export interface ResumableCompileOptions extends CompileOptions {
+  /** Prove eligible top-level loops and expose `ResumableProgram.batchLoops`. */
+  readonly batchLoops?: boolean;
 }
 
 export type CompiledComputation = (host: ExecutionHost) => unknown;

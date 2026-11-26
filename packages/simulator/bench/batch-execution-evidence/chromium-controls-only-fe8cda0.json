@@ -1,0 +1,813 @@
+{
+  "kind": "batch-execution-benchmark-browser",
+  "mode": "controls-only",
+  "controlsOnly": true,
+  "speedOrWakeChecked": false,
+  "environment": {
+    "collectedAt": "2026-11-26T17:10:14.783Z",
+    "node": "v24.20.0",
+    "v8": "13.6.233.17-node.53",
+    "platform": "linux",
+    "arch": "x64",
+    "release": "6.8.0-149-generic",
+    "cpuModel": "12th Gen Intel(R) Core(TM) i7-12700K",
+    "cpuCount": 20,
+    "totalMemoryBytes": 134826033152,
+    "command": [
+      "/home/ll/.nvm/versions/node/v24.20.0/bin/node",
+      "/home/ll/mica-js/packages/simulator/bench/batch-execution-browser.mjs",
+      "--controls-only",
+      "--baseline-sdk=/tmp/opencode/issue313-bench-baseline-8a36ed4/packages/simulator/dist/index.js",
+      "--baseline-sha=8a36ed4",
+      "--require-batch",
+      "--require-targets"
+    ],
+    "cwd": "/home/ll/mica-js",
+    "baselineSha": "8a36ed4",
+    "execution": "throughput",
+    "warmup": 5,
+    "samples": 25,
+    "mode": "controls-only",
+    "controlsOnly": true,
+    "requireBaseline": false,
+    "chromium": "/home/ll/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome",
+    "browserVersion": {
+      "Browser": "Chrome/153.0.8010.12",
+      "Protocol-Version": "1.3",
+      "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+      "V8-Version": "15.3.76.4",
+      "WebKit-Version": "537.36 (@971a7443b0c9b0a9b2860529b33331b76077ec62)",
+      "webSocketDebuggerUrl": "ws://127.0.0.1:35449/devtools/browser/ead4cca2-0f76-459e-b6e8-ad591a7dd7dc"
+    },
+    "sdk": {
+      "path": "/home/ll/mica-js/packages/simulator/dist/index.js",
+      "sha256": "122aff8b47af63ca77d551c323b2676cc95e3c53247befa1fe766992933be9d3"
+    },
+    "baselineSdk": {
+      "path": "/tmp/opencode/issue313-bench-baseline-8a36ed4/packages/simulator/dist/index.js",
+      "sha256": "bfb59482c4006ebae2d948f76ce737ec921c26ef338d3370121a32ba16dca0c3"
+    },
+    "probePolicy": "Correctness, real EventQueue push/pop counts and prepareBatch admissions use one untimed run per variant; new-board create-to-complete and warmed timings run without probes; the cold label does not represent process or browser startup."
+  },
+  "fixture": {
+    "source": "device BatchFill {\n  state cursor: number = 0;\n  public memory video[65536];\n  output channel done: number(capacity: 1);\n  process start {\n    while cursor < 65536 {\n      store8(video, cursor, 42);\n      cursor = cursor + 1;\n      await ticks(10);\n    }\n    done.send(cursor);\n  }\n}",
+    "iterations": 65536,
+    "tickPs": 10,
+    "fillValue": 42,
+    "memory": "video",
+    "channel": "done",
+    "donePs": 655360,
+    "runUntilPs": 655370
+  },
+  "bundle": {
+    "entry": "controller.mjs",
+    "files": [
+      {
+        "path": "batch-execution-fixture.mjs",
+        "bytes": 24292
+      },
+      {
+        "path": "bundle-baseline/baseline.js",
+        "bytes": 484514
+      },
+      {
+        "path": "bundle-candidate/candidate.js",
+        "bytes": 509161
+      },
+      {
+        "path": "controller.mjs",
+        "bytes": 1244
+      },
+      {
+        "path": "index.html",
+        "bytes": 597
+      },
+      {
+        "path": "model.mjs",
+        "bytes": 6240
+      }
+    ],
+    "totalBytes": 1026048,
+    "candidate": {
+      "name": "candidate",
+      "sdk": "/home/ll/mica-js/packages/simulator/dist/index.js",
+      "workspaceRoot": "/home/ll/mica-js",
+      "entry": "bundle-candidate/candidate.js",
+      "files": [
+        {
+          "path": "candidate.js",
+          "bytes": 509161
+        }
+      ],
+      "bytes": 509161,
+      "resolvedPackages": [
+        "packages/compiler/dist/index.js",
+        "packages/core/dist/index.js",
+        "packages/core/dist/lifecycle/index.js",
+        "packages/core/dist/rpc/index.js",
+        "packages/device-model/dist/index.js",
+        "packages/document/dist/canvas/index.js",
+        "packages/document/dist/index.js",
+        "packages/document/dist/schematic/index.js"
+      ]
+    },
+    "baseline": {
+      "name": "baseline",
+      "sdk": "/tmp/opencode/issue313-bench-baseline-8a36ed4/packages/simulator/dist/index.js",
+      "workspaceRoot": "/tmp/opencode/issue313-bench-baseline-8a36ed4",
+      "entry": "bundle-baseline/baseline.js",
+      "files": [
+        {
+          "path": "baseline.js",
+          "bytes": 484514
+        }
+      ],
+      "bytes": 484514,
+      "resolvedPackages": [
+        "packages/compiler/dist/index.js",
+        "packages/core/dist/index.js",
+        "packages/core/dist/lifecycle/index.js",
+        "packages/core/dist/rpc/index.js",
+        "packages/device-model/dist/index.js",
+        "packages/document/dist/canvas/index.js",
+        "packages/document/dist/index.js",
+        "packages/document/dist/schematic/index.js"
+      ]
+    },
+    "sdk": "/home/ll/mica-js/packages/simulator/dist/index.js",
+    "baselineSdk": "/tmp/opencode/issue313-bench-baseline-8a36ed4/packages/simulator/dist/index.js"
+  },
+  "support": {
+    "option": true,
+    "registration": true,
+    "error": null
+  },
+  "browser": {
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+    "hardwareConcurrency": 20,
+    "deviceMemory": 32,
+    "crossOriginIsolated": true
+  },
+  "variants": {
+    "disabled": {
+      "name": "disabled",
+      "options": {
+        "execution": "throughput",
+        "batchExecution": false
+      },
+      "registration": true,
+      "correctness": {
+        "status": "ready",
+        "boardTime": 655370,
+        "cursor": 65536,
+        "doneTime": 655360,
+        "messageCount": 1,
+        "memoryLength": 65536,
+        "expectedByte": 42,
+        "allBytes": true,
+        "checksum": 3314851269
+      },
+      "scheduling": {
+        "pushes": 65536,
+        "pops": 65536,
+        "instrumented": true
+      },
+      "batchAdmission": {
+        "available": true,
+        "basis": "board.prepareBatch wrapper in the untimed correctness run only; prepared results are committed by that verified run, real queue counts remain the main assertion",
+        "attempts": 0,
+        "admissions": 0,
+        "declines": 0
+      },
+      "probes": {
+        "processes": {
+          "resumable": [
+            "fill/start"
+          ],
+          "generic": [],
+          "programs": [
+            {
+              "key": "fill/start",
+              "blocks": 7
+            }
+          ],
+          "bindings": [
+            {
+              "instance": "fill",
+              "handles": 2,
+              "bound": [
+                "memory\u0000video",
+                "state\u0000cursor"
+              ],
+              "processes": [
+                {
+                  "name": "start",
+                  "bound": 2
+                }
+              ]
+            }
+          ]
+        },
+        "checkpoints": {
+          "diagnostics": true,
+          "boundary": {
+            "calls": 65537,
+            "empty": 65537,
+            "publishes": 0,
+            "batches": 0,
+            "reactions": 0,
+            "captures": 0,
+            "sources": {
+              "checkpointPublish": 0,
+              "checkpointFinish": 0,
+              "jitSignal": 0,
+              "runJit": 0,
+              "runDirect": 0,
+              "polling": 0,
+              "process": 65537,
+              "other": 0
+            }
+          },
+          "checkpoints": []
+        }
+      },
+      "cold": {
+        "label": "new board / pre-sampled create-to-complete",
+        "createMs": 0.25999999791383743,
+        "runMs": 11.969999998807907,
+        "totalMs": 12.244999997317791
+      },
+      "warm": {
+        "samples": 25,
+        "medianMs": 7.159999996423721,
+        "p95Ms": 7.41499999910593,
+        "p99Ms": 7.445000000298023,
+        "minMs": 6.904999993741512,
+        "maxMs": 7.445000000298023,
+        "meanMs": 7.163000000715256
+      }
+    },
+    "enabled-no-registration": {
+      "name": "enabled-no-registration",
+      "options": {
+        "execution": "throughput",
+        "batchExecution": true
+      },
+      "registration": false,
+      "correctness": {
+        "status": "ready",
+        "boardTime": 655370,
+        "cursor": 65536,
+        "doneTime": 655360,
+        "messageCount": 1,
+        "memoryLength": 65536,
+        "expectedByte": 42,
+        "allBytes": true,
+        "checksum": 3314851269
+      },
+      "scheduling": {
+        "pushes": 65536,
+        "pops": 65536,
+        "instrumented": true
+      },
+      "batchAdmission": {
+        "available": true,
+        "basis": "board.prepareBatch wrapper in the untimed correctness run only; prepared results are committed by that verified run, real queue counts remain the main assertion",
+        "attempts": 0,
+        "admissions": 0,
+        "declines": 0
+      },
+      "probes": {
+        "processes": {
+          "resumable": [
+            "fill/start"
+          ],
+          "generic": [],
+          "programs": [
+            {
+              "key": "fill/start",
+              "blocks": 7
+            }
+          ],
+          "bindings": [
+            {
+              "instance": "fill",
+              "handles": 2,
+              "bound": [
+                "memory\u0000video",
+                "state\u0000cursor"
+              ],
+              "processes": [
+                {
+                  "name": "start",
+                  "bound": 2
+                }
+              ]
+            }
+          ]
+        },
+        "checkpoints": {
+          "diagnostics": true,
+          "boundary": {
+            "calls": 65537,
+            "empty": 65537,
+            "publishes": 0,
+            "batches": 0,
+            "reactions": 0,
+            "captures": 0,
+            "sources": {
+              "checkpointPublish": 0,
+              "checkpointFinish": 0,
+              "jitSignal": 0,
+              "runJit": 0,
+              "runDirect": 0,
+              "polling": 0,
+              "process": 65537,
+              "other": 0
+            }
+          },
+          "checkpoints": []
+        }
+      },
+      "cold": {
+        "label": "new board / pre-sampled create-to-complete",
+        "createMs": 0.2199999988079071,
+        "runMs": 8.769999995827675,
+        "totalMs": 9
+      },
+      "warm": {
+        "samples": 25,
+        "medianMs": 7.149999998509884,
+        "p95Ms": 7.475000001490116,
+        "p99Ms": 7.53999999910593,
+        "minMs": 6.899999998509884,
+        "maxMs": 7.53999999910593,
+        "meanMs": 7.1851999998092655
+      }
+    },
+    "baseline-disabled": {
+      "name": "baseline-disabled",
+      "options": {
+        "execution": "throughput"
+      },
+      "registration": false,
+      "correctness": {
+        "status": "ready",
+        "boardTime": 655370,
+        "cursor": 65536,
+        "doneTime": 655360,
+        "messageCount": 1,
+        "memoryLength": 65536,
+        "expectedByte": 42,
+        "allBytes": true,
+        "checksum": 3314851269
+      },
+      "scheduling": {
+        "pushes": 65536,
+        "pops": 65536,
+        "instrumented": true
+      },
+      "batchAdmission": null,
+      "probes": {
+        "processes": {
+          "resumable": [
+            "fill/start"
+          ],
+          "generic": [],
+          "programs": [
+            {
+              "key": "fill/start",
+              "blocks": 7
+            }
+          ],
+          "bindings": [
+            {
+              "instance": "fill",
+              "handles": 2,
+              "bound": [
+                "memory\u0000video",
+                "state\u0000cursor"
+              ],
+              "processes": [
+                {
+                  "name": "start",
+                  "bound": 2
+                }
+              ]
+            }
+          ]
+        },
+        "checkpoints": {
+          "diagnostics": true,
+          "boundary": {
+            "calls": 65537,
+            "empty": 65537,
+            "publishes": 0,
+            "batches": 0,
+            "reactions": 0,
+            "captures": 0,
+            "sources": {
+              "checkpointPublish": 0,
+              "checkpointFinish": 0,
+              "jitSignal": 0,
+              "runJit": 0,
+              "runDirect": 0,
+              "polling": 0,
+              "process": 65537,
+              "other": 0
+            }
+          },
+          "checkpoints": []
+        }
+      },
+      "cold": {
+        "label": "new board / pre-sampled create-to-complete",
+        "createMs": 0.35999999940395355,
+        "runMs": 10.024999998509884,
+        "totalMs": 10.384999997913837
+      },
+      "warm": {
+        "samples": 25,
+        "medianMs": 7.125,
+        "p95Ms": 7.5,
+        "p99Ms": 7.5,
+        "minMs": 6.804999999701977,
+        "maxMs": 7.5,
+        "meanMs": 7.1496000000834465
+      }
+    }
+  },
+  "samples": [
+    {
+      "index": 0,
+      "order": [
+        "baseline-disabled",
+        "disabled",
+        "enabled-no-registration"
+      ],
+      "ms": {
+        "baseline-disabled": 6.919999994337559,
+        "disabled": 7.0150000005960464,
+        "enabled-no-registration": 7.149999998509884
+      }
+    },
+    {
+      "index": 1,
+      "order": [
+        "disabled",
+        "enabled-no-registration",
+        "baseline-disabled"
+      ],
+      "ms": {
+        "disabled": 7.095000006258488,
+        "enabled-no-registration": 7.384999997913837,
+        "baseline-disabled": 7.425000004470348
+      }
+    },
+    {
+      "index": 2,
+      "order": [
+        "enabled-no-registration",
+        "baseline-disabled",
+        "disabled"
+      ],
+      "ms": {
+        "enabled-no-registration": 7.475000001490116,
+        "baseline-disabled": 7.5,
+        "disabled": 7.245000004768372
+      }
+    },
+    {
+      "index": 3,
+      "order": [
+        "baseline-disabled",
+        "disabled",
+        "enabled-no-registration"
+      ],
+      "ms": {
+        "baseline-disabled": 6.8900000005960464,
+        "disabled": 7.195000000298023,
+        "enabled-no-registration": 7.154999993741512
+      }
+    },
+    {
+      "index": 4,
+      "order": [
+        "disabled",
+        "enabled-no-registration",
+        "baseline-disabled"
+      ],
+      "ms": {
+        "disabled": 7.295000001788139,
+        "enabled-no-registration": 7.339999996125698,
+        "baseline-disabled": 7.125
+      }
+    },
+    {
+      "index": 5,
+      "order": [
+        "enabled-no-registration",
+        "baseline-disabled",
+        "disabled"
+      ],
+      "ms": {
+        "enabled-no-registration": 7.049999997019768,
+        "baseline-disabled": 6.804999999701977,
+        "disabled": 6.909999996423721
+      }
+    },
+    {
+      "index": 6,
+      "order": [
+        "baseline-disabled",
+        "disabled",
+        "enabled-no-registration"
+      ],
+      "ms": {
+        "baseline-disabled": 6.880000002682209,
+        "disabled": 7.170000001788139,
+        "enabled-no-registration": 7.2349999994039536
+      }
+    },
+    {
+      "index": 7,
+      "order": [
+        "disabled",
+        "enabled-no-registration",
+        "baseline-disabled"
+      ],
+      "ms": {
+        "disabled": 7.445000000298023,
+        "enabled-no-registration": 7.465000003576279,
+        "baseline-disabled": 7.064999997615814
+      }
+    },
+    {
+      "index": 8,
+      "order": [
+        "enabled-no-registration",
+        "baseline-disabled",
+        "disabled"
+      ],
+      "ms": {
+        "enabled-no-registration": 7.125,
+        "baseline-disabled": 6.865000002086163,
+        "disabled": 7.205000005662441
+      }
+    },
+    {
+      "index": 9,
+      "order": [
+        "baseline-disabled",
+        "disabled",
+        "enabled-no-registration"
+      ],
+      "ms": {
+        "baseline-disabled": 6.875,
+        "disabled": 7.3549999967217445,
+        "enabled-no-registration": 7.53999999910593
+      }
+    },
+    {
+      "index": 10,
+      "order": [
+        "disabled",
+        "enabled-no-registration",
+        "baseline-disabled"
+      ],
+      "ms": {
+        "disabled": 7.405000001192093,
+        "enabled-no-registration": 7.195000000298023,
+        "baseline-disabled": 6.894999995827675
+      }
+    },
+    {
+      "index": 11,
+      "order": [
+        "enabled-no-registration",
+        "baseline-disabled",
+        "disabled"
+      ],
+      "ms": {
+        "enabled-no-registration": 7.169999994337559,
+        "baseline-disabled": 7.070000000298023,
+        "disabled": 7.365000002086163
+      }
+    },
+    {
+      "index": 12,
+      "order": [
+        "baseline-disabled",
+        "disabled",
+        "enabled-no-registration"
+      ],
+      "ms": {
+        "baseline-disabled": 7.429999999701977,
+        "disabled": 7.314999997615814,
+        "enabled-no-registration": 7.375
+      }
+    },
+    {
+      "index": 13,
+      "order": [
+        "disabled",
+        "enabled-no-registration",
+        "baseline-disabled"
+      ],
+      "ms": {
+        "disabled": 7.115000002086163,
+        "enabled-no-registration": 7.049999997019768,
+        "baseline-disabled": 7.280000001192093
+      }
+    },
+    {
+      "index": 14,
+      "order": [
+        "enabled-no-registration",
+        "baseline-disabled",
+        "disabled"
+      ],
+      "ms": {
+        "enabled-no-registration": 7.369999997317791,
+        "baseline-disabled": 7.08500000089407,
+        "disabled": 7.299999997019768
+      }
+    },
+    {
+      "index": 15,
+      "order": [
+        "baseline-disabled",
+        "disabled",
+        "enabled-no-registration"
+      ],
+      "ms": {
+        "baseline-disabled": 7.115000002086163,
+        "disabled": 7.41499999910593,
+        "enabled-no-registration": 7.259999997913837
+      }
+    },
+    {
+      "index": 16,
+      "order": [
+        "disabled",
+        "enabled-no-registration",
+        "baseline-disabled"
+      ],
+      "ms": {
+        "disabled": 7.005000002682209,
+        "enabled-no-registration": 7.08500000089407,
+        "baseline-disabled": 7.350000001490116
+      }
+    },
+    {
+      "index": 17,
+      "order": [
+        "enabled-no-registration",
+        "baseline-disabled",
+        "disabled"
+      ],
+      "ms": {
+        "enabled-no-registration": 6.915000006556511,
+        "baseline-disabled": 7.429999999701977,
+        "disabled": 6.904999993741512
+      }
+    },
+    {
+      "index": 18,
+      "order": [
+        "baseline-disabled",
+        "disabled",
+        "enabled-no-registration"
+      ],
+      "ms": {
+        "baseline-disabled": 7.134999997913837,
+        "disabled": 6.954999998211861,
+        "enabled-no-registration": 6.899999998509884
+      }
+    },
+    {
+      "index": 19,
+      "order": [
+        "disabled",
+        "enabled-no-registration",
+        "baseline-disabled"
+      ],
+      "ms": {
+        "disabled": 6.969999998807907,
+        "enabled-no-registration": 7.1400000005960464,
+        "baseline-disabled": 6.939999997615814
+      }
+    },
+    {
+      "index": 20,
+      "order": [
+        "enabled-no-registration",
+        "baseline-disabled",
+        "disabled"
+      ],
+      "ms": {
+        "enabled-no-registration": 7.065000005066395,
+        "baseline-disabled": 7.16499999910593,
+        "disabled": 7.065000005066395
+      }
+    },
+    {
+      "index": 21,
+      "order": [
+        "baseline-disabled",
+        "disabled",
+        "enabled-no-registration"
+      ],
+      "ms": {
+        "baseline-disabled": 7.375,
+        "disabled": 7.0150000005960464,
+        "enabled-no-registration": 7.0150000005960464
+      }
+    },
+    {
+      "index": 22,
+      "order": [
+        "disabled",
+        "enabled-no-registration",
+        "baseline-disabled"
+      ],
+      "ms": {
+        "disabled": 7.0250000059604645,
+        "enabled-no-registration": 7.080000005662441,
+        "baseline-disabled": 7.190000005066395
+      }
+    },
+    {
+      "index": 23,
+      "order": [
+        "enabled-no-registration",
+        "baseline-disabled",
+        "disabled"
+      ],
+      "ms": {
+        "enabled-no-registration": 7.045000001788139,
+        "baseline-disabled": 7.429999999701977,
+        "disabled": 7.159999996423721
+      }
+    },
+    {
+      "index": 24,
+      "order": [
+        "baseline-disabled",
+        "disabled",
+        "enabled-no-registration"
+      ],
+      "ms": {
+        "baseline-disabled": 7.5,
+        "disabled": 7.130000002682209,
+        "enabled-no-registration": 7.045000001788139
+      }
+    }
+  ],
+  "acceptance": {
+    "mode": "controls-only",
+    "speedOrWakeChecked": false,
+    "note": "Active speed and wake reduction are not measured in controls-only mode; only the disabled and enabled-no-registration overhead controls are gated.",
+    "thresholdBasis": "ratioOfMedians across steady-state samples; medianPairedRatio is retained as a pairing/noise diagnostic",
+    "schedule": null,
+    "comparisons": {
+      "disabledVsBaseline": {
+        "candidate": "disabled",
+        "reference": "baseline-disabled",
+        "ratioOfMedians": 1.0049122801998205,
+        "medianPairedRatio": 1.0043227667438615,
+        "p95PairedRatio": 1.0698181813413448,
+        "pairs": 25
+      },
+      "enabledNoRegistrationVsBaseline": {
+        "candidate": "enabled-no-registration",
+        "reference": "baseline-disabled",
+        "ratioOfMedians": 1.0035087717206854,
+        "medianPairedRatio": 1.0141442707263537,
+        "p95PairedRatio": 1.056617127543588,
+        "pairs": 25
+      },
+      "enabledNoRegistrationVsDisabled": {
+        "candidate": "enabled-no-registration",
+        "reference": "disabled",
+        "ratioOfMedians": 0.9986033522459732,
+        "medianPairedRatio": 1.0026863671292754,
+        "p95PairedRatio": 1.0317460312726525,
+        "pairs": 25
+      }
+    },
+    "thresholds": {
+      "maxNoCandidateOverhead": 0.03
+    },
+    "gates": [
+      "disabledVsBaseline",
+      "enabledNoRegistrationVsBaseline"
+    ],
+    "checks": {
+      "disabledOverheadVsBaseline": true,
+      "noRegistrationOverheadVsBaseline": true
+    },
+    "passed": true
+  },
+  "failures": []
+}

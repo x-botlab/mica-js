@@ -46,6 +46,11 @@ export interface HeadlessRuntimeOptions {
   readonly onModelEvent?: (event: RuntimeModelEvent) => void;
   /** Receives preparation and runtime diagnostics that have no event subscriber yet. */
   readonly onDiagnostic?: DiagnosticSink;
+  /**
+   * Explicit simulator batch-execution switch; omitted uses the board default.
+   * Validated before preparation, forwarded to every board this session creates and kept across reset.
+   */
+  readonly batchExecution?: boolean;
 }
 
 export interface RuntimeState {
@@ -153,7 +158,11 @@ class Session {
         ...(net.voltage === undefined ? {} : { voltage: net.voltage }),
       })),
     };
-    this.board = createBoard(createDeviceLibrary(entries), description);
+    this.board = createBoard(
+      createDeviceLibrary(entries),
+      description,
+      hooks.batchExecution === undefined ? {} : { batchExecution: hooks.batchExecution },
+    );
   }
 
   binding(instanceId: string): ModelBinding | undefined {
@@ -173,11 +182,13 @@ interface SessionHooks {
   readonly report: (entry: RuntimeDiagnostic) => void;
   readonly blocked: () => string | undefined;
   readonly now: () => TimePs;
+  readonly batchExecution?: boolean;
 }
 
 class HeadlessRuntimeImpl implements HeadlessRuntime {
   readonly #prepared: PreparedSession;
   readonly #step: number;
+  readonly #batchExecution: boolean | undefined;
   readonly #onModelEvent: ((event: RuntimeModelEvent) => void) | undefined;
   readonly #onDiagnostic: DiagnosticSink | undefined;
   readonly #stateEmitter = new Emitter<RuntimeState>();
@@ -192,9 +203,15 @@ class HeadlessRuntimeImpl implements HeadlessRuntime {
   readonly onDidChangeState: Event<RuntimeState> = this.#stateEmitter.event;
   readonly onDidReportDiagnostic: Event<RuntimeDiagnostic> = this.#diagnosticEmitter.event;
 
-  constructor(prepared: PreparedSession, options: HeadlessRuntimeOptions, step: number) {
+  constructor(
+    prepared: PreparedSession,
+    options: HeadlessRuntimeOptions,
+    step: number,
+    batchExecution: boolean | undefined,
+  ) {
     this.#prepared = prepared;
     this.#step = step;
+    this.#batchExecution = batchExecution;
     this.#onModelEvent = options.onModelEvent;
     this.#onDiagnostic = options.onDiagnostic;
     this.#session = this.#createSession();
@@ -333,6 +350,7 @@ class HeadlessRuntimeImpl implements HeadlessRuntime {
             ? undefined
             : 'model input is only allowed during initialization, method calls, sync and advance',
         now: () => timePs(this.#session?.board.time ?? 0),
+        ...(this.#batchExecution === undefined ? {} : { batchExecution: this.#batchExecution }),
         ...(this.#onModelEvent === undefined ? {} : { observer: this.#onModelEvent }),
       });
     } finally {
@@ -677,6 +695,13 @@ export async function createHeadlessRuntime(
   if (options === null || typeof options !== 'object') {
     throw new TypeError('createHeadlessRuntime expects an options object');
   }
+  const hasBatchExecution = Object.hasOwn(options, 'batchExecution');
+  const batchExecution = hasBatchExecution ? options.batchExecution : undefined;
+  if (hasBatchExecution && typeof batchExecution !== 'boolean') {
+    const entry = diagnostic('INVALID_CONFIGURATION', 'options.batchExecution must be a boolean');
+    options.onDiagnostic?.(entry);
+    throw new FusedRuntimeError(entry.code, entry.message);
+  }
   if (typeof options.loadModule !== 'function') {
     throw new TypeError('options.loadModule must be a function');
   }
@@ -709,5 +734,5 @@ export async function createHeadlessRuntime(
     ...(options.programs === undefined ? {} : { programs: options.programs }),
     ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
   });
-  return new HeadlessRuntimeImpl(prepared, options, step);
+  return new HeadlessRuntimeImpl(prepared, options, step, batchExecution);
 }

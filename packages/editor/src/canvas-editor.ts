@@ -88,6 +88,8 @@ export interface ICanvasEditorOptions {
   readonly stepMs?: number;
   /** CPU execution mode; defaults to the simulator's throughput mode. */
   readonly execution?: 'throughput' | 'precise';
+  /** Explicit simulator batch-execution switch; omitted uses the board default and is validated by the runtime. */
+  readonly batchExecution?: boolean;
   readonly readOnly?: boolean;
   /** Fixed board voltages by exact schematic net name; ignored without a schematic. Ground stays zero. */
   readonly voltageReferences?: Readonly<Record<string, number>>;
@@ -236,6 +238,7 @@ export async function createCanvasEditor(options: ICanvasEditorOptions): Promise
     container: options.container,
     ...(options.stepMs === undefined ? {} : { stepMs: options.stepMs }),
     ...(options.execution === undefined ? {} : { execution: options.execution }),
+    ...(options.batchExecution === undefined ? {} : { batchExecution: options.batchExecution }),
     ...(options.voltageReferences === undefined
       ? {}
       : { voltageReferences: Object.freeze(structuredClone(options.voltageReferences)) }),

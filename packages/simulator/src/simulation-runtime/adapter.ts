@@ -88,7 +88,8 @@ export async function createSimulationRuntimeFromWorker(
   };
 }
 
-function copyPreparedSimulation(input: IPreparedSimulation): IPreparedSimulation {
+/** Exported for the prepared-copy regression test; not part of the package entry. */
+export function copyPreparedSimulation(input: IPreparedSimulation): IPreparedSimulation {
   if (input.assets === undefined) return input;
   const assets: Record<string, Record<string, Uint8Array>> = {};
   for (const [symbolId, entries] of Object.entries(input.assets)) {

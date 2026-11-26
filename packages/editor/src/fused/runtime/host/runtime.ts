@@ -160,7 +160,13 @@ export async function createFusedRuntime(options: IFusedRuntimeOptions): Promise
     if (input.mode === 'run') {
       try {
         const loaded = await mapWireFailure(() =>
-          connection.simulation.load({ document: options.document, step: options.step }),
+          connection.simulation.load({
+            document: options.document,
+            step: options.step,
+            ...(options.batchExecution === undefined
+              ? {}
+              : { batchExecution: options.batchExecution }),
+          }),
         );
         if (!current()) return prepared;
         setState(loaded);

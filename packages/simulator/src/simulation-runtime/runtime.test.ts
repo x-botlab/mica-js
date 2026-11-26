@@ -52,6 +52,47 @@ describe('prepared SDK Board runtime', () => {
     expect(prepared.execution).toBe('precise');
   });
 
+  it('validates and captures the Board batch-execution switch during preparation', async () => {
+    const prepared = await prepareSimulation(
+      { ...toggleSimulation(), batchExecution: true },
+      importer,
+      () => {},
+    );
+    expect(prepared.batchExecution).toBe(true);
+    for (const batchExecution of [undefined, null, 'on', 1, {}]) {
+      await expect(
+        prepareSimulation(
+          { ...toggleSimulation(), batchExecution } as unknown as IPreparedSimulation,
+          importer,
+          () => {},
+        ),
+      ).rejects.toMatchObject({ code: 'invalid-input' });
+    }
+  });
+
+  it('keeps the active board when a prepared batch configuration is rejected', async () => {
+    const api = runtime();
+    const publishes = collect(api);
+    await api.load(toggleSimulation());
+    await api.deliver(message(SYMBOL, 'lamp', true));
+    await expect(
+      api.load({
+        ...toggleSimulation(),
+        batchExecution: 'on',
+      } as unknown as IPreparedSimulation),
+    ).rejects.toMatchObject({ code: 'invalid-input' });
+    await api.tick(timePs(1));
+    expect(publishes[0]!.payload).toBe(true);
+  });
+
+  it('keeps the prepared batch-execution switch across reset', async () => {
+    const api = runtime();
+    await api.load({ ...toggleSimulation(), batchExecution: true });
+    expect(await api.tick(timePs(1))).toEqual({ simTime: 1, executed: 1 });
+    await api.reset();
+    expect(await api.tick(timePs(1))).toEqual({ simTime: 1, executed: 1 });
+  });
+
   it('runs real DDL channels, queues inputs, coalesces levels, preserves messages and resets', async () => {
     const api = runtime();
     const publishes = collect(api);

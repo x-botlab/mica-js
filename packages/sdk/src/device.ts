@@ -1,6 +1,9 @@
 export type {
   BorrowedBytes,
   ReadonlyBytes,
+  ProcessBatchTarget,
+  ProcessBatchRegistration,
+  JitBatchMark,
   ChannelMessage,
   Notification,
   DeviceAdapter,

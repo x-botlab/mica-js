@@ -383,6 +383,7 @@ export class ModelBinding {
         return base.memory;
       },
       reportError: (error: unknown) => base.reportError(error),
+      registerProcessBatch: (registration) => base.registerProcessBatch(registration),
       attachJit: (options: JitOptions) => base.attachJit(options),
       loadBytes: (memory: string, bytes: Uint8Array, offset?: number) =>
         offset === undefined

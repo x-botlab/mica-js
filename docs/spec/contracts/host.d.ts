@@ -54,6 +54,30 @@ export interface JitCodeRegion {
   readonly size: number;
 }
 /**
+ * 过程合批候选：本模型声明的 `start` 序号，或按名称匹配的已声明 `on` 过程。
+ */
+export type ProcessBatchTarget =
+  | { readonly kind: 'start'; readonly index: number }
+  | { readonly kind: 'on'; readonly name: string };
+/**
+ * 一个实例的过程循环合批声明，由同步工厂初始化期间调用 `registerProcessBatch` 登记。
+ * `loop` 是该过程体直接包含的 `while` 按源码顺序从 0 起的序号。
+ */
+export interface ProcessBatchRegistration {
+  readonly process: ProcessBatchTarget;
+  readonly loop: number;
+  /** 可选的本实例 number 状态名；其当前值作为绝对仿真时间上限，只收紧调度预算。 */
+  readonly stopBefore?: string;
+}
+/**
+ * JIT 循环头合批标记，仅在本次同步 `translate` 回调内有效。
+ * `pc` 必须是返回块中唯一的有限数值指令入口；非法或重复标记只取消该入口的优化。
+ */
+export interface JitBatchMark {
+  readonly pc: number;
+  readonly stopBefore?: string;
+}
+/**
  * Direct 时间准入声明；`service` 引用已声明的 number 状态，`blocked` 引用已声明、
  * 无参且返回 bool 的 pure fn。`blocked` 仅在同时声明 `service` 时有效。
  */
@@ -136,6 +160,11 @@ export interface JitTranslateInput extends JitDirectTimingInput {
    * 字节无关的虚拟入口。
    */
   readonly markTranslationDependencies?: (ranges: readonly JitTranslationDependency[]) => void;
+  /**
+   * 标记返回块中的通用合批循环头；仅在启用 `batchExecution` 的吞吐板同步翻译时提供。
+   * 每次翻译都必须重新提交标记，即使复用已缓存块；非法或重复标记只取消该入口的优化。
+   */
+  readonly markBatchLoop?: (mark: JitBatchMark) => void;
 }
 export type JitTranslate = (input: JitTranslateInput, builder: JitBlockBuilder) => BlockIR;
 export interface InstructionHook {
@@ -251,6 +280,12 @@ export interface DeviceContext<
   readonly memory: Readonly<Memory>;
   readonly topics: TopicBridge;
   reportError(error: unknown): void;
+  /**
+   * 登记本实例过程循环的合批候选；仅在该器件的同步工厂初始化期间调用。
+   * 返回现有 `Disposable`，重复释放安全；释放后下一次调度走普通路径。同一实例的同一
+   * 过程与循环序号至多有一个活动注册。关闭合批的板仍校验配置形状与绑定。
+   */
+  registerProcessBatch(registration: ProcessBatchRegistration): Disposable;
 }
 export interface DeviceBatch<Outputs extends object = object> {
   readonly from: number;
@@ -308,6 +343,11 @@ export interface BoardOptions {
   readonly execution?: 'throughput' | 'precise';
   /** 整数 ps，范围 1..10_000_000，省略为 10_000_000；precise 仍校验但不使用。 */
   readonly cpuQuantum?: number;
+  /**
+   * 显式启用受调度边界约束的合批执行；省略为 `false`，存在时必须为布尔值。
+   * 仅在 `execution: 'throughput'` 时生效，创建期配置错误使用 `INVALID_CONFIGURATION`。
+   */
+  readonly batchExecution?: boolean;
 }
 export type BoardStatus = 'ready' | 'faulted' | 'disposed';
 export type RuntimePhase =

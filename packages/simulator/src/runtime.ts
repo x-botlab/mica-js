@@ -1,6 +1,6 @@
 import { Emitter, type Event, type Disposable } from '@mica-js/core/lifecycle';
 import { BuildError, validateDeviceIR, type DeviceIR } from '@mica-js/device-model';
-import { RESUMABLE_RECEIVE, type ResumableProgram } from '@mica-js/compiler';
+import { RESUMABLE_RECEIVE, RESUMABLE_TICKS, type ResumableProgram } from '@mica-js/compiler';
 import {
   createElectricalNetwork,
   ElectricalError,
@@ -11,6 +11,7 @@ import { ActivationQueue, EventQueue, Fifo } from './queue';
 import { compileObservation } from './observations';
 import { Instance } from './runtime/instance';
 import { registerPublishGate } from './runtime/publish-gate';
+import type { BoundBatch, PreparedBatch } from './runtime/batch';
 import { readDirectCheckpointStats, runJit, syncJitCall, type BoundarySource } from './runtime/jit';
 import { body, computation, frame, MAX_TIME, synchronousBody, time } from './runtime/execution';
 import {
@@ -221,6 +222,10 @@ class BoardRuntime implements Board {
   private network!: ElectricalNetwork;
   private primary: SimulationError | undefined;
   readonly execution: 'throughput' | 'precise';
+  /** Effective process/JIT batch admission; false in precise mode even if requested. */
+  readonly batchExecution: boolean;
+  /** CPU execution quantum in integer picoseconds, also used as a JIT batch ceiling. */
+  readonly cpuQuantum: number;
   executionEnd = 0;
   readonly onDidError: Event<RuntimeDiagnostic> = (listener, thisArgs, disposables) =>
     this.errors.event(
@@ -250,18 +255,25 @@ class BoardRuntime implements Board {
   constructor(entries: readonly Entry[], description: BoardDescription, options: BoardOptions) {
     try {
       dataObject(description, ['instances', 'nets']);
-      dataObject(options, ['seed', 'execution', 'cpuQuantum']);
+      dataObject(options, ['seed', 'execution', 'cpuQuantum', 'batchExecution']);
       this.checkpointDiagnostics = checkpointDiagnosticsEnabled();
       this.boundaryStats = this.checkpointDiagnostics ? createBoundaryStats() : undefined;
       const execution = Object.hasOwn(options, 'execution') ? options.execution : 'throughput';
       if (execution !== 'throughput' && execution !== 'precise')
         throw new TypeError('Invalid execution mode');
       this.execution = execution;
+      const requestedBatchExecution = Object.hasOwn(options, 'batchExecution')
+        ? options.batchExecution
+        : false;
+      if (typeof requestedBatchExecution !== 'boolean')
+        throw new TypeError('batchExecution must be a boolean');
+      this.batchExecution = requestedBatchExecution && execution === 'throughput';
       const cpuQuantum = Object.hasOwn(options, 'cpuQuantum')
         ? integer(options.cpuQuantum, 'cpuQuantum')
         : 10_000_000;
       if (cpuQuantum < 1 || cpuQuantum > 10_000_000)
         throw new RangeError('cpuQuantum outside [1, 10000000]');
+      this.cpuQuantum = cpuQuantum;
       if (!Array.isArray(description.instances) || !Array.isArray(description.nets))
         throw new TypeError('instances and nets are required arrays');
       const seed = Object.hasOwn(options, 'seed') ? integer(options.seed, 'seed') : 0;
@@ -715,6 +727,40 @@ class BoardRuntime implements Board {
       this.events.time > horizon
     );
   }
+  /**
+   * Scheduler admission for one already-bound batch. This is a pure gate: every check is
+   * performed before the prepared commit may write, and any decline leaves the caller's
+   * original position untouched.
+   */
+  prepareBatch(batch: BoundBatch, schedulerYieldAt?: number): PreparedBatch | undefined {
+    if (
+      !this.batchExecution ||
+      this.status !== 'ready' ||
+      this.phase !== 'execute' ||
+      this.dispatchDepth !== 0 ||
+      this.current !== batch.instance ||
+      !batch.instance.valid
+    )
+      return undefined;
+    // Only the entry being dispatched may fold. Any remaining model, JIT or parked waiter
+    // keeps its original relative position.
+    if (this.models.length !== 0 || this.readyJits.length !== 0 || this.waitingJits.size !== 0)
+      return undefined;
+    // The publication closure must be completely settled before a commit reads resources.
+    // `reactionBatch` is scratch space: `boundary()` leaves its last settled entries in
+    // place until the next observation drain, so its length does not indicate pending work.
+    if (this.pendingElectricalSlot !== -1 || this.observations.size !== 0) return undefined;
+    if (
+      schedulerYieldAt !== undefined &&
+      schedulerYieldAt !== Infinity &&
+      !Number.isSafeInteger(schedulerYieldAt)
+    )
+      return undefined;
+    const nextEventAt = this.events.time;
+    // A same-time event still waiting at the head belongs to this round.
+    if (!(nextEventAt > this.time)) return undefined;
+    return batch.prepare(this.time, this.executionEnd, nextEventAt, schedulerYieldAt);
+  }
   invalidate(slot: ResourceSlot): void {
     slot.version++;
     this.versionEpoch++;
@@ -1135,6 +1181,13 @@ class BoardRuntime implements Board {
   private drive(process: Process, value?: unknown): void {
     const program = process.resumable;
     if (program) {
+      const batch = process.batch;
+      if (batch !== undefined) {
+        // Set the current instance at the same point the ordinary resumable path does,
+        // so a decline can fall through without restoring any scheduler state.
+        this.current = process.instance;
+        if (this.tryProcessBatch(process, program, batch)) return;
+      }
       this.driveResumable(process, program, value);
       return;
     }
@@ -1183,6 +1236,41 @@ class BoardRuntime implements Board {
       }
       return;
     }
+  }
+  /**
+   * Try the optional per-process binding before running the machine. A process without a
+   * registration only pays one missing-property check; a decline never touches its frame,
+   * pc, time or queues.
+   */
+  private tryProcessBatch(
+    process: Process,
+    program: ResumableProgram,
+    bindings: readonly BoundBatch[],
+  ): boolean {
+    const frame = process.frame;
+    if (frame === undefined || frame.pc === program.start || frame.kind !== RESUMABLE_TICKS)
+      return false;
+    let prepared: PreparedBatch | undefined;
+    for (const batch of bindings) {
+      if (batch.resumeBlock !== frame.pc) continue;
+      prepared = this.prepareBatch(batch);
+      if (prepared !== undefined) break;
+    }
+    if (prepared === undefined) return false;
+    // Allocate the one wake closure before any write, then commit bytes and the counter.
+    const wake = (process.wake ??= () => {
+      process.state = 'queued';
+      this.models.push(process);
+    });
+    this.time = prepared.lastAt;
+    prepared.apply();
+    // A folded ticks resume behaves like the ordinary path's transient frame state; live
+    // slots stay exact because the resume block reloads them itself.
+    frame.value = undefined;
+    process.state = 'waiting';
+    this.boundary('process');
+    this.events.push(prepared.due, wake);
+    return true;
   }
   /**
    * Same suspension contract as `drive`, driven by the body's own pc and reused frame:

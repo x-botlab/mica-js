@@ -324,6 +324,7 @@ export function startFusedSimulationGuest(
         registry: packages,
         loadModule,
         step,
+        ...(request.batchExecution === undefined ? {} : { batchExecution: request.batchExecution }),
         resolveResource: resources.resolveResource,
         programs: resources.programs,
         onModelEvent: (event) => {

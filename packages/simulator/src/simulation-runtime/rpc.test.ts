@@ -2,10 +2,10 @@ import { timePs } from '@mica-js/core';
 import { createRpc } from '@mica-js/core/rpc';
 import type { SandboxWorker } from '@mica-js/sandbox';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSimulationRuntimeFromWorker } from './adapter';
+import { createSimulationRuntimeFromWorker, copyPreparedSimulation } from './adapter';
 import { startSimulationRuntimeGuest } from './guest';
 import { simulationRuntimeService, simulationRuntimeTopicService } from './rpc';
-import type { ISimulationMessage } from './types';
+import type { IPreparedSimulation, ISimulationMessage } from './types';
 import { SYMBOL, PANEL_BYTES, importer, message, toggleSimulation } from './test-helpers';
 
 const cleanups: Array<() => Promise<void> | void> = [];
@@ -77,9 +77,7 @@ describe('simulation runtime RPC guest', () => {
     topicPublishes.length = 0;
     await api.tick(timePs(10_000));
     await topicApi.flushPublishes();
-    await waitFor(
-      () => primaryPublishes.some((publish) => publish.target.port === 'state'),
-    );
+    await waitFor(() => primaryPublishes.some((publish) => publish.target.port === 'state'));
     expect(primaryPublishes.find((publish) => publish.target.port === 'state')?.payload).toBe(true);
     expect(topicPublishes.some((publish) => publish.target.port === 'state')).toBe(true);
 
@@ -163,6 +161,43 @@ describe('createSimulationRuntimeFromWorker', () => {
     } as unknown as SandboxWorker;
     return { worker, terminate };
   }
+
+  it('keeps an own batch-execution switch and explicit undefined through the prepared copy', () => {
+    const enabled = { ...toggleSimulation(), batchExecution: true };
+    const copied = copyPreparedSimulation(enabled);
+    expect(copied).not.toBe(enabled);
+    expect(Object.hasOwn(copied, 'batchExecution')).toBe(true);
+    expect(copied.batchExecution).toBe(true);
+
+    const explicitUndefined = {
+      ...toggleSimulation(),
+      batchExecution: undefined,
+    } as unknown as IPreparedSimulation;
+    const undefinedCopy = copyPreparedSimulation(explicitUndefined);
+    expect(Object.hasOwn(undefinedCopy, 'batchExecution')).toBe(true);
+    expect(undefinedCopy.batchExecution).toBeUndefined();
+
+    const withoutAssets = {
+      ...toggleSimulation(),
+      assets: undefined,
+      batchExecution: true,
+    } as unknown as IPreparedSimulation;
+    expect(copyPreparedSimulation(withoutAssets)).toBe(withoutAssets);
+  });
+
+  it('rejects an explicit undefined batch switch without replacing the worker board', async () => {
+    const fake = createFakeWorker();
+    const runtime = await createSimulationRuntimeFromWorker(fake.worker);
+    cleanups.push(() => runtime.dispose());
+    await runtime.load(toggleSimulation());
+    await expect(
+      runtime.load({
+        ...toggleSimulation(),
+        batchExecution: undefined,
+      } as unknown as IPreparedSimulation),
+    ).rejects.toThrow('Expected batchExecution to be a boolean');
+    expect(await runtime.tick(timePs(10))).toEqual({ simTime: 10, executed: 1 });
+  });
 
   it('drives the worker guest and terminates it on dispose', async () => {
     const fake = createFakeWorker();
