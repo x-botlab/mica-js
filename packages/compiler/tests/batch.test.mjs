@@ -553,6 +553,22 @@ test('a loop-local value that escapes the body declines', () => {
   assert.equal(program.batchLoops[0], undefined);
 });
 
+test('a localWrite in a copy step declines even when the local is loop-scoped', () => {
+  reset();
+  const body = [];
+  localCopyStep(body, { localId: 17 });
+  const load = body.find((operation) => operation.kind === 'load8');
+  const writes = [];
+  localWrite(writes, 17, load.result);
+  const storeIndex = body.findIndex((operation) => operation.kind === 'store8');
+  body.splice(storeIndex, 0, ...writes);
+  const program = compileResumableBody(regionOf(whileLoop(loopTest(4), body)), {
+    batchLoops: true,
+  });
+  assert.ok(program);
+  assert.equal(program.batchLoops[0], undefined);
+});
+
 test('top-level while ordinals ignore nested loops and keep source order', () => {
   reset();
   const innerBody = [];

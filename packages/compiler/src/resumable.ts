@@ -61,7 +61,7 @@ class ResumableEmitter extends Emitter {
   private readonly resourceIndex = new Map<string, number>();
   private current: Block | undefined;
   private graph: InternalGraph | undefined;
-  private batchRoot: RegionIR | undefined;
+  private batchOrdinals: Map<OperationIR, number> | undefined;
   private batchLoops: (ProcessBatchPlan | undefined)[] | undefined;
   private resumeBlocks: Map<OperationIR, number> | undefined;
   private readonly batchEnabled: boolean;
@@ -87,9 +87,10 @@ class ResumableEmitter extends Emitter {
     // block; the liveness of those resume blocks is the frame contract used below.
     this.graph = this.analysis.graph;
     if (this.batchEnabled) {
-      const loops = region.operations.filter((operation) => operation.kind === 'while').length;
-      this.batchRoot = region;
-      this.batchLoops = new Array<ProcessBatchPlan | undefined>(loops);
+      this.batchOrdinals = new Map();
+      for (const operation of region.operations)
+        if (operation.kind === 'while') this.batchOrdinals.set(operation, this.batchOrdinals.size);
+      this.batchLoops = new Array<ProcessBatchPlan | undefined>(this.batchOrdinals.size);
       this.resumeBlocks = new Map();
     }
     for (const node of this.analysis.nodes)
@@ -261,7 +262,7 @@ class ResumableEmitter extends Emitter {
         return target;
       }
       case 'while': {
-        const ordinal = this.batchLoops === undefined ? undefined : this.topLevelOrdinal(path);
+        const ordinal = this.batchOrdinals?.get(operation);
         const proof =
           ordinal === undefined ? undefined : proveProcessBatchLoop(this.analysis, operation);
         const test = this.reserve();
@@ -382,19 +383,6 @@ class ResumableEmitter extends Emitter {
     }
     if (result) block.code.push(`${result} = F.value;`);
     return id;
-  }
-
-  /** Source-order ordinal of a `while` directly in the process root, if this is one. */
-  private topLevelOrdinal(path: InputPath): number | undefined {
-    if (this.batchRoot === undefined || path.length !== 2 || path[0] !== 'operations') {
-      return undefined;
-    }
-    const index = path[1];
-    if (typeof index !== 'number' || !Number.isSafeInteger(index)) return undefined;
-    let ordinal = 0;
-    for (let offset = 0; offset < index; offset++)
-      if (this.batchRoot.operations[offset]?.kind === 'while') ordinal++;
-    return ordinal;
   }
 
   private link(resume: number, cont: number): void {

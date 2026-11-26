@@ -52,7 +52,6 @@ export type ProcessBatchPlan = BatchPlan & { readonly resumeBlock: number };
 export interface ProcessBatchProof {
   readonly plan: BatchPlan;
   readonly wait: Extract<OperationIR, { readonly kind: 'wait' }>;
-  readonly local: number | undefined;
 }
 
 interface Entry {
@@ -532,7 +531,7 @@ export function proveProcessBatchLoop(
     }
 
     const plan = createPlan(test.cursor, test.limit, step.stepPs, step.effect);
-    return Object.freeze({ plan, wait, local: step.local });
+    return Object.freeze({ plan, wait });
   } catch {
     return undefined;
   }
