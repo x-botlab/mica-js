@@ -6,6 +6,11 @@
  * `0`, `NaN` equals itself), array order is preserved and object keys are sorted so a
  * structurally equal object with a different property insertion order has the same digest.
  * Cycles, functions and symbols cannot be digested and return undefined.
+ *
+ * The walker reads own enumerable plain data directly instead of building Reflect descriptors:
+ * artifact keys run on the compilation path, and validated IR contains no accessors or symbol
+ * keys. Arrays with holes or extra properties decline the digest so a caller falls back to an
+ * identity key.
  */
 
 export function structuralDigest(input: unknown): string | undefined {
@@ -87,26 +92,27 @@ class StructuralDigest {
     }
     if (ancestors.has(value)) return false;
     ancestors.add(value);
-    const array = Array.isArray(value);
-    this.code(array ? 0x15 : 0x16);
-    if (array) this.length(value.length);
-    const keys: string[] = [];
-    let valid = true;
-    for (const key of Reflect.ownKeys(value)) {
-      if (typeof key !== 'string') {
-        valid = false;
-        break;
+    let valid: boolean;
+    if (Array.isArray(value)) {
+      this.code(0x15);
+      this.length(value.length);
+      // Dense arrays are the common IR shape. A hole or extra property declines the digest
+      // instead of silently hashing a different structure.
+      const keys = Object.keys(value);
+      valid = keys.length === value.length;
+      for (let index = 0; valid && index < value.length; index++) {
+        if (!(index in value) || !this.visit(value[index], ancestors)) valid = false;
       }
-      if (array && key === 'length') continue;
-      keys.push(key);
-    }
-    if (valid) {
+    } else {
+      this.code(0x16);
+      const keys = Object.keys(value);
       keys.sort();
       this.length(keys.length);
-      for (const key of keys) {
+      valid = true;
+      for (let index = 0; index < keys.length; index++) {
+        const key = keys[index]!;
         this.text(key);
-        const descriptor = Object.getOwnPropertyDescriptor(value, key);
-        if (!descriptor || !('value' in descriptor) || !this.visit(descriptor.value, ancestors)) {
+        if (!this.visit((value as Readonly<Record<string, unknown>>)[key], ancestors)) {
           valid = false;
           break;
         }

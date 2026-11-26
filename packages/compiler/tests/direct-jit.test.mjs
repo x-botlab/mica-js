@@ -3276,71 +3276,74 @@ test('hosted resident checkpoint keeps the pre-publication capture on rejection 
   }
 });
 
-test('resident factory reuse across caches binds each shard to its own constants and frame', () => {
+test('resident factory reuse across artifact caches binds each shard to its own frame', () => {
   const pc = 0x12340;
   const hosted = { ...binding, host: true, split: true };
+  const artifact = compileDirectJit.createArtifactCache();
   const compile = (channel, nextPc) => {
     const b = builder();
     const value = b.read('x');
     b.delay(5);
     b.operations.push({ kind: 'send', channel, value });
-    let program;
+    let session;
     const sources = captureFactories(() => {
-      program = compileDirectJit(
-        [b.instruction(pc, nextPc)],
-        hosted,
-        compileDirectJit.createCache(),
-      );
+      session = compileDirectJit.createSession(hosted, compileDirectJit.createCache(), artifact);
+      session.add([b.instruction(pc, nextPc)]);
     });
-    assert(program);
+    assert(session);
     return {
-      program,
+      session,
       shards: sources.filter((source) => source.includes('function stepShard')),
       routers: sources.filter((source) => source.includes('function run')),
     };
   };
   const first = compile('first', pc + 2);
-  const second = compile('second', pc + 2);
+  const second = compile('first', pc + 2);
   const changed = compile('third', pc + 4);
   assert.equal(first.shards.length, 1);
-  assert.equal(second.shards.length, 0, 'channel name changes only the constants');
-  assert.equal(changed.shards.length, 1, 'a different next PC changes the exact source');
+  assert.equal(second.shards.length, 0, 'identical bodies share the cached shard source');
+  assert.equal(changed.shards.length, 1, 'a different channel/next PC changes the source key');
   assert.notEqual(changed.shards[0], first.shards[0]);
 
-  const a = frame(first.program, [pc, 17, 0, true, 0, 0]);
-  const b = frame(second.program, [pc, 42, 0, true, 0, 0]);
+  const a = frame(first.session, [pc, 17, 0, true, 0, 0]);
+  const b = frame(second.session, [pc, 42, 0, true, 0, 0]);
+  const c = frame(changed.session, [pc, 43, 0, true, 0, 0]);
   a.host = hostRecorder(() => a.time);
   b.host = hostRecorder(() => b.time);
+  c.host = hostRecorder(() => c.time);
   for (const [candidate, f] of [
     [first, a],
     [second, b],
+    [changed, c],
   ]) {
     assert.equal(candidate.routers.length, 1, 'build a fresh dispatcher');
-    assert.equal(candidate.program.run(f, 5), 'deadline');
+    assert.equal(candidate.session.run(f, 5), 'deadline');
     assert.notEqual(f.resume, 0);
     assert.deepEqual(f.host.entries, []);
     f.states[1] = -1;
   }
-  assert.equal(second.program.run(b, 6), 'fallback');
-  assert.equal(first.program.run(a, 6), 'fallback');
-  assert.deepEqual(b.host.entries, [['send', 'second', 42, 5]]);
+  assert.equal(second.session.run(b, 6), 'untranslated');
+  assert.equal(first.session.run(a, 6), 'untranslated');
+  assert.equal(changed.session.run(c, 6), 'untranslated');
+  assert.deepEqual(b.host.entries, [['send', 'first', 42, 5]]);
   assert.deepEqual(a.host.entries, [['send', 'first', 17, 5]]);
+  assert.deepEqual(c.host.entries, [['send', 'third', 43, 5]]);
 });
 
 test('resident factory cache evicts the least recently used source at its entry limit', () => {
+  const artifact = compileDirectJit.createArtifactCache();
   const compile = (index) => {
     const pc = 0x240000 + 2 * index;
     const b = builder();
     b.write('marker', b.constant(7));
     b.delay(5);
     const sources = captureFactories(() => {
-      assert(
-        compileDirectJit(
-          [b.instruction(pc, pc + 2)],
-          { ...binding, host: true, split: true },
-          compileDirectJit.createCache(),
-        ),
+      const session = compileDirectJit.createSession(
+        { ...binding, host: true, split: true },
+        compileDirectJit.createCache(),
+        artifact,
       );
+      session.add([b.instruction(pc, pc + 2)]);
     });
     return sources.some((source) => source.includes('function stepShard'));
   };

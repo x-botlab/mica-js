@@ -836,6 +836,11 @@ function instructionArtifactKey(
   ].join('|');
 }
 
+/** Private compilations get unique identities because their constant pools are not shared. */
+function privateArtifactKey(instruction: Instruction): string {
+  return `identity:${structuralIdentity(instruction)}`;
+}
+
 function sameFunctionIR(left: DirectFunctionIR, right: DirectFunctionIR): boolean {
   return left === right || sameIrValue(left, right, new WeakMap());
 }
@@ -922,17 +927,27 @@ function insertArtifactInstruction(
   instruction: DirectJitInstruction,
   delay: DelayFingerprint | undefined,
   compiled: Instruction,
-): void {
+): string | undefined {
   const artifact = artifactUsable(state);
-  if (artifact === undefined) return;
+  if (artifact === undefined) return undefined;
   if (!syncConstants(state, artifact) || state.constants.length !== artifact.constants.length) {
     state.artifactGeneration = -1;
-    return;
+    return undefined;
   }
   const key = instructionArtifactKey(context, instruction, delay);
+  let candidates = artifact.instructions.get(key);
+  if (candidates === undefined) {
+    candidates = [];
+    artifact.instructions.set(key, candidates);
+  } else {
+    artifact.instructions.delete(key);
+    artifact.instructions.set(key, candidates);
+  }
+  const artifactKey = `${key}#${candidates.length}`;
+  compiled.artifactKey = artifactKey;
   const template = Object.freeze(compiled.emissionClone()) as Instruction;
   const entry: ArtifactInstructionEntry = {
-    key,
+    key: artifactKey,
     binding: context.descriptor,
     body: instruction.body,
     pc: instruction.pc,
@@ -942,14 +957,6 @@ function insertArtifactInstruction(
     constantCount: state.constants.length,
     sourceUnits: template.size + key.length,
   };
-  let candidates = artifact.instructions.get(key);
-  if (candidates === undefined) {
-    candidates = [];
-    artifact.instructions.set(key, candidates);
-  } else {
-    artifact.instructions.delete(key);
-    artifact.instructions.set(key, candidates);
-  }
   candidates.push(entry);
   artifact.instructionCount++;
   artifact.instructionSourceUnits += entry.sourceUnits;
@@ -968,6 +975,7 @@ function insertArtifactInstruction(
       artifact.stats.evictions++;
     }
   }
+  return artifactKey;
 }
 
 function shardSourceKey(
@@ -978,7 +986,7 @@ function shardSourceKey(
   extra = '',
 ): string {
   const parts = [context.digest, kind, String(id), extra];
-  for (const entry of entries) parts.push(entry.emissionKey, String(entry.resumeId));
+  for (const entry of entries) parts.push(entry.artifactKey, String(entry.resumeId));
   return parts.join('|');
 }
 
@@ -1603,6 +1611,10 @@ function compileDirectJitProgram(
       });
       state.stats.compiledBlocks++;
     }
+    // A full build owns a private constant pool. Its instructions get unique identities so a
+    // cached shard source can never bind constants from a different private pool.
+    if (compiled !== undefined && compiled.artifactKey === '')
+      compiled.artifactKey = privateArtifactKey(compiled);
     if (compiled !== undefined) {
       entries.push(compiled);
       active.set(compiled.pcValue, compiled);
@@ -2708,8 +2720,12 @@ class Instruction {
   nextPcValue = 0;
   pc = '';
   nextPc = '';
-  /** Stable digest of every emission field that can change generated shard source. */
-  emissionKey = '';
+  /**
+   * Stable artifact identity assigned once after compilation. It covers the binding, PC,
+   * body and delay identity (or a process-unique private identity) and lets shard sources
+   * reuse without hashing every emitted line.
+   */
+  artifactKey = '';
   /** Cache-stable continuation key used by resident shards; zero when none is needed. */
   resumeId = 0;
   duration?: string;
@@ -2893,33 +2909,6 @@ class Instruction {
     this.size = size;
     this.statements = statements;
     this.selects = selects;
-    // The source key covers every field the shard emitters read after compilation. Values,
-    // locals and per-session continuations are deliberately absent: they never change source.
-    this.emissionKey =
-      structuralDigest({
-        pc: this.pc,
-        nextPc: this.nextPc,
-        pcValue: this.pcValue,
-        nextPcValue: this.nextPcValue,
-        duration: this.duration,
-        dynamicDuration: this.dynamicDuration,
-        immediate: this.immediate,
-        stop: this.stop,
-        isolated: this.backedges !== undefined,
-        exitLabel: this.exitLabel,
-        exitDuration: this.exitDuration,
-        outlineBranches: this.outlineBranches,
-        slots: this.slots,
-        size: this.size,
-        guard: this.guard,
-        barrier: this.barrier,
-        prefix: this.prefix,
-        suffix: this.suffix,
-        readStates: [...this.readStates],
-        writeStates: [...this.writeStates],
-        readMemories: [...this.readMemories],
-        writeMemories: [...this.writeMemories],
-      }) ?? `identity:${structuralIdentity(this)}`;
     return this;
   }
 
@@ -2951,7 +2940,7 @@ class Instruction {
       nextPcValue: this.nextPcValue,
       pc: this.pc,
       nextPc: this.nextPc,
-      emissionKey: this.emissionKey,
+      artifactKey: this.artifactKey,
       resumeId: 0,
       duration: this.duration,
       dynamicDuration: this.dynamicDuration,
@@ -5824,7 +5813,9 @@ class DirectJitSessionImpl implements DirectJitSession {
         resistorSlot,
         resolveFunction,
       ).compile(instruction);
-      insertArtifactInstruction(this.state, this.artifactBinding, instruction, delay, compiled);
+      compiled.artifactKey =
+        insertArtifactInstruction(this.state, this.artifactBinding, instruction, delay, compiled) ??
+        privateArtifactKey(compiled);
       return { instruction: compiled, artifactHit: false };
     } catch (error) {
       if (error !== unsupported) throw error;
@@ -6271,7 +6262,7 @@ class DirectJitSessionImpl implements DirectJitSession {
       String(variant.id),
       String(variant.resumeId),
       this.binding.host === true ? 'h' : '-',
-      instruction.emissionKey,
+      instruction.artifactKey,
     ].join('|');
     const compiled = artifactShardFactory(this.artifact, key, () => {
       const lines = sharedBodyProgram(variant, this.compileBinding, this.binding.pc.index);
