@@ -134,7 +134,7 @@ input notification 使用相同的排队合并机制，不积累触发计数。�
 
 启用 ``batchExecution`` 的吞吐板可以在当前入口已经派发、即将执行模型代码时尝试合批。准入 MUST 同时满足：执行阶段可用；当前入口有效；模型 FIFO 与 JIT FIFO 为空；电气与观察队列已经完成发布闭包；当前入口是本轮唯一就绪入口。存在停驻的 JIT 等待者时，本次按普通路径执行。其它实例的未来事件、宿主推进目标与模型 ``stopBefore`` 共同限制窗口；多个实例可以在各自安静窗口内分别合批。
 
-令 ``t`` 为当前板时间，候选轮步长为正整数 ``d``，计数为 ``cursor``，上限为 ``limit``：
+令 ``t`` 为当前板时间，``cursor`` 为某个本实例声明的 ``number`` 状态，``limit`` 为非负安全整数字面量或另一个本实例 ``number`` 状态，候选轮步长 ``d`` 为正整数 ps。准入时 ``cursor`` 与 ``limit`` 的当前值均为非负安全整数且 ``limit > cursor``：
 
 .. code-block:: typescript
 
@@ -145,6 +145,29 @@ input notification 使用相同的排队合并机制，不积累触发计数。�
      const due = t + n * d;
      const lastAt = due - d;
    }
+
+候选轮操作限定为以下三种共享形状，过程和 JIT 使用同一提交语义：
+
+.. list-table:: 可合批轮操作
+   :header-rows: 1
+   :widths: 18 56 26
+
+   * - 效果
+     - 一轮操作
+     - 提交
+   * - 重复状态推进
+     - ``cursor = cursor + 1``。
+     - 以一次 state 写入提交 ``cursor + n``。
+   * - 连续字节填充
+     - ``store8(dst, dstBase + cursor, value)``，随后 ``cursor = cursor + 1``。
+     - 对 ``dst`` 的 ``[dstBase + cursor, dstBase + cursor + n)`` 执行一次 ``fill``，随后提交 ``cursor + n``。
+   * - 连续字节搬运
+     - 读取 ``load8(src, srcBase + cursor)``，写入 ``store8(dst, dstBase + cursor, byte)``，随后 ``cursor = cursor + 1``。
+     - 预备源视图后执行一次 ``set``，随后提交 ``cursor + n``；同一底层缓冲区内的范围重叠时本次回退，逐字节保留原地址方向与读后写语义。
+
+``srcBase`` 与 ``dstBase`` 为非负安全整数字面量，省略加法表示基址 ``0``；``value`` 为安全整数字面量并按 ``store8`` 的低八位转换；``src`` 与 ``dst`` 绑定到本实例直接声明的固定字节区。
+
+过程候选固定为顶层 ``while cursor < limit``：真分支执行一轮上表操作并以 ``await ticks(d)`` 结束。循环前后可以有任意合法代码；首轮和循环退出都由原程序执行。运行时只在已知循环尾部的 ``ticks`` 续体入口尝试合批；恢复块 MUST 直接跳到原循环测试，循环体的临时值 MUST 在恢复时全部重算，外层局部值由原 frame 跨挂起保存。
 
 ``nextEventAt`` 读取当前事件出队后的 ``EventQueue.time``，空队列使用内部 ``Infinity``；同刻事件仍按现有优先级处理。``schedulerYieldAt`` 收纳其它必须让出的时间点：JIT 通用合批使用 ``min(MAX_TIME_PS, t + cpuQuantum)``，过程使用已验证的事件与宿主目标窗口。新增内建调度边界 MUST 先接入该检查，或使对应入口回到普通路径。``modelStopBefore`` 省略时使用内部 ``Infinity``；状态已经到期时不产生可合批轮次。存在 ``beforeInstruction`` 的 JIT、带逐步探针的入口以及 ``execution: 'precise'`` 均走既有执行路径。
 
