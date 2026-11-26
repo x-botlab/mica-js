@@ -232,6 +232,12 @@ export interface JitOptions {
    */
   readonly shareDirectBodies?: boolean;
   /**
+   * 启用跨实例 Direct 编译工件共享：显式 `true` 时，同进程中的注册共享有界的指令模板与
+   * 分片工厂缓存。省略或 `false` 时，每个注册使用独立工件缓存，只在本注册内复用，
+   * 保持原生产默认。
+   */
+  readonly shareDirectArtifacts?: boolean;
+  /**
    * 跨实例翻译工件身份：`abi` 标识生成器与融合规则，`configuration` 标识时钟及特化配置。
    * 省略时翻译结果只用于当前实例。
    */

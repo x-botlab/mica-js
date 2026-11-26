@@ -1,6 +1,7 @@
 import type { DeclarationIR, DeviceIR, RegionIR } from '@mica-js/device-model';
 import type {
   CompiledBody,
+  DirectJitArtifactCache,
   DirectJitFrame,
   DirectJitSession,
   DirectJitShareCandidate,
@@ -224,6 +225,8 @@ export interface Jit {
   readonly directHookReads: Set<ResourceSlot>;
   /** Memories that currently supply at least one direct-admitted instruction. */
   readonly directMemories: Set<string>;
+  /** 本注册选择的 Direct 编译器工件缓存；默认独立，显式共享时指向进程级缓存。 */
+  readonly artifactCache: DirectJitArtifactCache;
   /** Opaque compiler-owned incremental body cache; initialized on the first build. */
   directCache?: DirectJitCache;
   /** Bank names and maps are stable for the lifetime of a JIT. */

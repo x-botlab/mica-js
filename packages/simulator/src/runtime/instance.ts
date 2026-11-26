@@ -5,7 +5,12 @@ import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
 import { body, computation, resumable, synchronousBody } from './execution';
 import { acceptSync, electricalNumber, ElectricalParameterError } from './errors';
-import { clearPromotions, disposeDirect, invalidateDirect } from './jit';
+import {
+  clearPromotions,
+  disposeDirect,
+  invalidateDirect,
+  resolveDirectArtifactCache,
+} from './jit';
 import type {
   Channel,
   Decl,
@@ -1430,6 +1435,7 @@ export class Instance {
       'delays',
       'directTiming',
       'shareDirectBodies',
+      'shareDirectArtifacts',
       'translationIdentity',
       'directTier',
       'translate',
@@ -1483,6 +1489,11 @@ export class Instance {
       typeof options.shareDirectBodies !== 'boolean'
     )
       throw new TypeError('shareDirectBodies must be a boolean');
+    if (
+      Object.hasOwn(options, 'shareDirectArtifacts') &&
+      typeof options.shareDirectArtifacts !== 'boolean'
+    )
+      throw new TypeError('shareDirectArtifacts must be a boolean');
     const metadata = Object.hasOwn(options, 'codeMetadata')
       ? {
           regions: new Map(
@@ -1535,6 +1546,7 @@ export class Instance {
     const directTier = Object.hasOwn(options, 'directTier')
       ? this.captureDirectTier(options.directTier)
       : undefined;
+    const artifactCache = resolveDirectArtifactCache(options.shareDirectArtifacts);
     const jit: Jit = {
       instance: this,
       model,
@@ -1563,6 +1575,7 @@ export class Instance {
       directMemoryGuards: new Set(),
       directHookReads: new Set(),
       directMemories: new Set(),
+      artifactCache,
       direct: undefined,
       directSkip: undefined,
       directStale: false,

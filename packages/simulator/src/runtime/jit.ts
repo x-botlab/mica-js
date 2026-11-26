@@ -1,6 +1,7 @@
 import {
   compileDirectJit,
   type CompiledBody,
+  type DirectJitArtifactCache,
   type DirectJitArtifactCacheStats,
   type DirectJitBinding,
   type DirectJitFrame,
@@ -44,14 +45,23 @@ import { bytesView, dataObject, finite } from '../values';
 /** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
 const DIRECT_SHARD_SIZE = 32;
 /**
- * One process/module-wide compiler artifact cache. Every session in this module instance
- * reuses instruction templates and shard factories across boards with equal bindings.
+ * Process-wide compiler artifact cache for registrations that opt in with
+ * `shareDirectArtifacts: true`. The default gives every registration its own cache.
  */
 const sharedDirectArtifacts = compileDirectJit.createArtifactCache();
-/** Last process-wide artifact counters observed by each JIT after a session commit. */
+/** Last artifact counters observed by each JIT from its selected cache. */
 const directArtifactSnapshots = new WeakMap<Jit, DirectJitArtifactCacheStats>();
 /** False when a declared quiet guard cannot be resolved; marked routes must not enroll. */
 const directTimingEligible = new WeakMap<Jit, boolean>();
+
+/** Resolve one registration's artifact cache; omission keeps the original private default. */
+export function resolveDirectArtifactCache(
+  shareDirectArtifacts: boolean | undefined,
+): DirectJitArtifactCache {
+  return shareDirectArtifacts === true
+    ? sharedDirectArtifacts
+    : compileDirectJit.createArtifactCache();
+}
 
 export function syncJitCall(jit: Jit, name: string): unknown {
   const step = jit.host.call(name, []).next();
@@ -172,17 +182,17 @@ export interface DirectJitStats {
   directPromotionResets: number;
   /** Cumulative generated characters of emitted instruction bodies. */
   directBodyBytes: number;
-  /** Instruction templates reused from the shared artifact cache by this JIT's sessions. */
+  /** Instruction templates reused from this JIT's artifact cache by its sessions. */
   directArtifactInstructionHits: number;
   /** Instruction templates this JIT's sessions had to emit after an artifact miss. */
   directArtifactInstructionMisses: number;
-  /** Process-wide shard sources reused from the artifact cache, observed as JIT deltas. */
+  /** Shard sources reused from this JIT's selected artifact cache, observed as JIT deltas. */
   directArtifactShardSourceHits: number;
-  /** Process-wide shard factories compiled after an artifact miss, observed as JIT deltas. */
+  /** Shard factories compiled after an artifact miss, observed as JIT deltas. */
   directArtifactFactoryCompiles: number;
-  /** Process-wide shard factories reused from the artifact cache, observed as JIT deltas. */
+  /** Shard factories reused from this JIT's selected artifact cache, observed as JIT deltas. */
   directArtifactFactoryReuses: number;
-  /** Current instruction + shard entries in the process-wide artifact cache. */
+  /** Current instruction + shard entries in this JIT's selected artifact cache. */
   directArtifactEntries: number;
   /** Cumulative generated characters of emitted shard functions. */
   directShardBytes: number;
@@ -454,9 +464,9 @@ function syncDirectSessionStats(jit: Jit, session: DirectJitSession): void {
   stats.directSpanRejected += next.spansRejected - (base?.spansRejected ?? 0);
   stats.directLoops += next.loopsInstalled - (base?.loopsInstalled ?? 0);
   stats.directLoopRejected += next.loopsRejected - (base?.loopsRejected ?? 0);
-  // Shard/factory counters are process-wide. Attribute the delta since this JIT last
-  // observed the shared cache; `directArtifactEntries` publishes the current gauge.
-  const artifacts = compileDirectJit.artifactCacheStats(sharedDirectArtifacts);
+  // Shard/factory counters cover one artifact cache. Attribute the delta since this JIT
+  // last observed its selected cache; `directArtifactEntries` publishes the current gauge.
+  const artifacts = compileDirectJit.artifactCacheStats(jit.artifactCache);
   const artifactsBase = directArtifactSnapshots.get(jit);
   stats.directArtifactShardSourceHits +=
     artifacts.reusedShardSources - (artifactsBase?.reusedShardSources ?? 0);
@@ -1660,17 +1670,13 @@ function ensureDirectSession(board: JitRuntimeHost, jit: Jit): DirectExecution |
     jit.directCacheInvalid = false;
   }
   const cache = (jit.directCache ??= compileDirectJit.createCache());
-  // Seed the process-wide artifact baseline before this session's first compile so the
-  // JIT's counters only include work performed after it started observing the cache.
+  // Seed this JIT's artifact baseline before the session's first compile so its counters only
+  // include work performed after it started observing its selected artifact cache.
   if (!directArtifactSnapshots.has(jit))
-    directArtifactSnapshots.set(jit, compileDirectJit.artifactCacheStats(sharedDirectArtifacts));
+    directArtifactSnapshots.set(jit, compileDirectJit.artifactCacheStats(jit.artifactCache));
   let session: DirectJitSession | undefined;
   try {
-    session = compileDirectJit.createSession(
-      directBinding(jit, layout),
-      cache,
-      sharedDirectArtifacts,
-    );
+    session = compileDirectJit.createSession(directBinding(jit, layout), cache, jit.artifactCache);
     if (admitted.length)
       session.add(admitted.map((instruction) => directInstruction(jit, instruction)));
     session.updateDelays(directDelayLoops(jit, layout));

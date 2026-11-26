@@ -38,6 +38,7 @@ interface HarnessOptions {
   readonly translationIdentity?: JitOptions['translationIdentity'];
   readonly directTier?: JitOptions['directTier'];
   readonly shareDirectBodies?: boolean;
+  readonly shareDirectArtifacts?: boolean;
   readonly delays?: ReadonlyMap<number, JitDelay>;
   readonly polling?: JitOptions['polling'];
   readonly beforeInstruction?: JitOptions['beforeInstruction'];
@@ -90,6 +91,9 @@ function createHarness(options: HarnessOptions): Harness {
           ...(options.shareDirectBodies === undefined
             ? {}
             : { shareDirectBodies: options.shareDirectBodies }),
+          ...(options.shareDirectArtifacts === undefined
+            ? {}
+            : { shareDirectArtifacts: options.shareDirectArtifacts }),
           ...(options.delays === undefined ? {} : { delays: options.delays }),
           ...(options.polling === undefined ? {} : { polling: options.polling }),
           ...(options.beforeInstruction === undefined
@@ -944,6 +948,14 @@ describe('direct timing attach validation', () => {
       expectAttachFailure({ directTier: { promoteAfter } }, `promoteAfter ${promoteAfter}`);
   });
 
+  it('rejects a non-boolean shareDirectArtifacts', () => {
+    for (const value of ['yes', 1, null, undefined]) {
+      const error = attachFailure({ shareDirectArtifacts: value });
+      expect(error, String(value)).toBeInstanceOf(SimulationError);
+      expect(error?.message, String(value)).toBe('shareDirectArtifacts must be a boolean');
+    }
+  });
+
   it('rejects a blocked guard without service and registers no JIT', () => {
     const model = validationModel();
     let failure: unknown;
@@ -995,6 +1007,7 @@ describe('direct timing attach validation', () => {
             directTiming: { service: { elapsed: 'pc', deadline: 'pc' }, blocked: 'pureBool' },
             translationIdentity: { abi: 'abi-1', configuration: 'clock-1' },
             directTier: { promoteAfter: 3 },
+            shareDirectArtifacts: true,
             translate: noopTranslate,
           });
           return { sync() {}, dispose: () => registration.dispose() };
@@ -1018,6 +1031,8 @@ describe('direct timing attach validation', () => {
       expect(Object.isFrozen(options.translationIdentity)).toBe(true);
       expect(options.directTier).toEqual({ promoteAfter: 3 });
       expect(Object.isFrozen(options.directTier)).toBe(true);
+      expect(options.shareDirectArtifacts).toBe(true);
+      expect(Object.isFrozen(options)).toBe(true);
     } finally {
       board.dispose();
     }
@@ -1104,19 +1119,43 @@ describe('lazy generic bodies', () => {
   });
 });
 describe('direct artifact reuse', () => {
-  it('reuses instruction artifacts across structurally equal boards', () => {
-    const translate: JitTranslate = ({ pc }, block) => {
-      block.instruction({ pc, nextPc: 0 }, (body) => {
-        body.writeState(
-          'prefix',
-          body.add(body.readState('prefix', types.number), body.constant(types.number, 1)),
-        );
-        body.elapse(1);
-      });
-      return block.finish();
-    };
-    const first = createHarness({ name: 'ArtifactReuse', translate });
-    const second = createHarness({ name: 'ArtifactReuse', translate });
+  const translate: JitTranslate = ({ pc }, block) => {
+    block.instruction({ pc, nextPc: 0 }, (body) => {
+      body.writeState(
+        'prefix',
+        body.add(body.readState('prefix', types.number), body.constant(types.number, 1)),
+      );
+      body.elapse(1);
+    });
+    return block.finish();
+  };
+
+  it('keeps a private artifact cache per registration by default', () => {
+    const first = createHarness({ name: 'ArtifactLocal', translate });
+    const second = createHarness({ name: 'ArtifactLocal', translate });
+    try {
+      first.board.runUntil(10);
+      const firstStats = directJitStats(first.jit)!;
+      second.board.runUntil(10);
+      const secondStats = directJitStats(second.jit)!;
+
+      expect(second.instance.states.get('prefix')).toBe(first.instance.states.get('prefix'));
+      expect(second.board.time).toBe(first.board.time);
+      expect(firstStats.directArtifactInstructionMisses).toBeGreaterThan(0);
+      // The second registration starts from its own empty artifact cache, so it cannot report
+      // a hit against the first board and must emit its own instruction body.
+      expect(secondStats.directArtifactInstructionHits).toBe(0);
+      expect(secondStats.directArtifactInstructionMisses).toBeGreaterThan(0);
+      expect(secondStats.directBodyBytes).toBeGreaterThan(0);
+    } finally {
+      second.dispose();
+      first.dispose();
+    }
+  });
+
+  it('reuses instruction artifacts across structurally equal boards when opted in', () => {
+    const first = createHarness({ name: 'ArtifactReuse', translate, shareDirectArtifacts: true });
+    const second = createHarness({ name: 'ArtifactReuse', translate, shareDirectArtifacts: true });
     try {
       const beforeSecond = directJitStats(second.jit);
       expect(beforeSecond).toBeUndefined();
@@ -1140,6 +1179,30 @@ describe('direct artifact reuse', () => {
     } finally {
       second.dispose();
       first.dispose();
+    }
+  });
+
+  it('reuses the private artifact cache across translation batches in one registration', () => {
+    const harness = createHarness({ name: 'ArtifactLocalBatches', translate });
+    try {
+      harness.board.runUntil(5);
+      const firstStats = directJitStats(harness.jit)!;
+      const firstSessions = firstStats.directSessions;
+      const firstMisses = firstStats.directArtifactInstructionMisses;
+      expect(firstSessions).toBe(1);
+      expect(firstMisses).toBeGreaterThan(0);
+      expect(firstStats.directArtifactInstructionHits).toBe(0);
+
+      // Replacing primary code clears the local compiler cache but not this JIT's artifacts.
+      harness.instance.loadBytes('code', new Uint8Array([1]), 0);
+      harness.board.runUntil(10);
+      const secondStats = directJitStats(harness.jit)!;
+      expect(secondStats.directSessions).toBeGreaterThan(firstSessions);
+      expect(secondStats.directArtifactInstructionHits).toBeGreaterThan(0);
+      expect(secondStats.directArtifactInstructionMisses).toBe(firstMisses);
+      expect(harness.instance.states.get('prefix')).toBe(10);
+    } finally {
+      harness.dispose();
     }
   });
 });
