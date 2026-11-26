@@ -4670,3 +4670,60 @@ test('session emitStats aggregates valid bodies after commits and not during run
   assert.equal(session.emitStats.blocks, 0);
   assert.equal(session.emitStats.worst, null);
 });
+
+test('incremental sharing leaves unrelated physical groups untouched', () => {
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  const keyA = shareKey({ offset: 0xa0 });
+  const keyB = shareKey({ offset: 0xa2 });
+  const block = (pc, state, value, share) => {
+    const b = builder();
+    b.write(state, b.constant(value));
+    b.delay(1);
+    return withShare(b.instruction(pc, pc), share);
+  };
+
+  const firstSources = captureFactories(() =>
+    session.add([block(0, 'x', 11, keyA), block(2, 'x', 11, keyA), block(4, 'y', 22, keyB)]),
+  );
+  const sharedSources = firstSources.filter((source) => /function stepShared\d+/.test(source));
+  assert.equal(sharedSources.length, 1, 'only the complete A group emits a body');
+  const groupA = /function (stepShared\d+)/.exec(sharedSources[0])[1];
+  let stats = session.stats();
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.sharedRoutes, 2);
+  assert.equal(stats.shards, 1);
+  assert.equal(stats.shareRejected.single, 1, 'the lone B candidate is still single');
+
+  const secondSources = captureFactories(() => session.add([block(6, 'y', 22, keyB)]));
+  const newSharedSources = secondSources.filter((source) => /function stepShared\d+/.test(source));
+  assert.equal(newSharedSources.length, 1, 'only B emits a newly completed body');
+  const groupB = /function (stepShared\d+)/.exec(newSharedSources[0])[1];
+  assert.notEqual(groupB, groupA, 'group A was not re-emitted');
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 2);
+  assert.equal(stats.sharedRoutes, 4);
+  assert.equal(stats.shards, 0);
+  assert.equal(stats.shareGroups, 2);
+
+  const thirdSources = captureFactories(() => session.add([block(8, 'x', 11, keyA)]));
+  assert.equal(
+    thirdSources.filter((source) => /function stepShared\d+/.test(source)).length,
+    0,
+    'a later A route reuses both existing shared groups',
+  );
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 2);
+  assert.equal(stats.sharedRoutes, 5);
+  assert.equal(stats.shareGroups, 2);
+  assert.equal(stats.shareRejected.single, 1, 'unaffected rejection history stays intact');
+
+  const a = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(a, 1), 'deadline');
+  assert.equal(a.states[1], 11);
+  const b = frame(session, [6, 0, 0, true, 0, 0]);
+  assert.equal(session.run(b, 1), 'deadline');
+  assert.equal(b.states[2], 22);
+});
