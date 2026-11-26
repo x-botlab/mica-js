@@ -42,7 +42,7 @@
 
 - `compileDirectJit` 新增 `createArtifactCache()`、`createSession(binding, cache?, artifactCache?)`、`clearArtifactCache(cache)` 与 `artifactCacheStats(cache)`。工件缓存保存不可变指令模板、共享常量池、稳定电阻槽，以及按完整入口源码排序的分片源/未绑定工厂 LRU。
 - 指令模板键包含规范 IR、逻辑 `pc`/`nextPc`、延时、代码依赖及规范化绑定描述（状态/内存/引脚表排序、辅助函数、`directTiming`、`memoryLengths`/`codeMemories`、split/分片策略）。常量池只追加，达到 `64 Ki` 值或 `4 Mi` 字符上限时整体重置并推进 generation；分片源缓存随 generation 失效。
-- 限制沿用并明确：指令模板 `256` 项/`4 Mi` 源码字符，分片源/工厂 `128` 项/`4 Mi` 字符、单项 `64 Ki` 字符。活动会话与续体在淘汰后仍持有已编译函数。
+- 限制按真实冷固件规模确定：指令模板 `2048` 项/`16 Mi` 源码字符，分片源/工厂 `512` 项/`16 Mi` 字符、单项 `64 Ki` 字符；常量池仍为 `64 Ki` 值/`4 Mi` 字符并在超限时整体重置。活动会话与续体在淘汰后仍持有已编译函数。
 - 统计覆盖 `compiledInstructions`、`reusedInstructions`、`reusedShardSources`、`createdFactories`、`reusedFactories`、`evictions`、`clears`、当前指令/分片条目数与源码字符数。运行时会话还暴露 `directArtifactInstructionHits`、`directArtifactInstructionMisses`、`directArtifactShardSourceHits`、`directArtifactFactoryCompiles`、`directArtifactFactoryReuses`、`directArtifactEntries`。
 - `JitOptions.shareDirectArtifacts` 仅在显式 `true` 时让同进程注册共享模块级工件缓存；省略或 `false` 时每个注册创建独立缓存，只在本注册内复用，保持原生产默认。
 
@@ -76,7 +76,7 @@ pnpm test:generated:unit
 pnpm --filter @mica-js/simulator build
 ```
 
-- 编译器：typecheck 通过，`148/148` 项测试通过。
+- 编译器：typecheck 通过，`150/150` 项测试通过。
 - 器件模型：typecheck 通过，`43/43` 项测试通过。
 - 模拟器：typecheck 通过；运行时 vitest `128/128` 项通过；完整 `test`（含 V8 基准解析）`243/243` 项通过。
 - 工作区：`pnpm typecheck` 全部包通过；`typecheck:conformance` 与 `typecheck:implementation` 通过；生成用例 `30/30` 项通过。
