@@ -467,6 +467,214 @@ describe('process batch execution', () => {
     expect(on.pops).toBeLessThan(off.pops / 2);
   });
 
+  it('keeps overlapping same-buffer copies byte-by-byte and folds disjoint ranges', () => {
+    interface SameMemoryResult {
+      readonly outputs: readonly Collected[];
+      readonly bytes: Uint8Array | undefined;
+      readonly pushes: number;
+      readonly pops: number;
+    }
+    function sameMemoryCopy(overlap: boolean, batch: boolean): SameMemoryResult {
+      const id = `ProcessBatchSameMemory${serial++}`;
+      const builder = createDeviceBuilder({ name: id });
+      const outputs: Collected[] = [];
+      const destinationBase = overlap ? 1 : 16;
+      builder.memory({ name: 'mem', length: 32 });
+      builder.state({ name: 'cursor', type: types.number, initial: 0 });
+      builder.channel({ name: 'done', direction: 'output', type: types.number, capacity: 4 });
+      builder.start((body) => {
+        body.while(
+          (test) =>
+            test.lessThan(test.readState('cursor', types.number), test.constant(types.number, 8)),
+          (step) => {
+            const cursor = step.readState('cursor', types.number);
+            step.store8(
+              'mem',
+              step.add(cursor, step.constant(types.number, destinationBase)),
+              step.load8('mem', cursor),
+            );
+            step.writeState('cursor', step.add(cursor, step.constant(types.number, 1)));
+            step.wait(step.constant(types.number, STEP));
+          },
+        );
+        body.send('done', body.readState('cursor', types.number));
+      });
+      const library = createDeviceLibrary([
+        {
+          id,
+          model: builder.finish(),
+          create: (context) => {
+            context.registerProcessBatch({ process: { kind: 'start', index: 0 }, loop: 0 });
+            return {
+              sync(value) {
+                for (const [name, messages] of Object.entries(value.outputs))
+                  for (const entry of messages as readonly { time: number; value: unknown }[])
+                    outputs.push({ name, time: entry.time, value: entry.value });
+              },
+              dispose() {},
+            };
+          },
+        },
+      ]);
+      const board = createBoard(
+        library,
+        { instances: [{ id: 'dev', type: id }], nets: [] },
+        batch ? { batchExecution: true } : {},
+      );
+      const instance = (board as unknown as { instances: readonly Instance[] }).instances[0]!;
+      const memory = instance.memories.get('mem')!;
+      memory.set([1, 2, 3, 4, 5, 6, 7, 8, 0, 0]);
+      const read = countEvents(board);
+      board.runUntil(80);
+      const counters = read();
+      const result = {
+        outputs,
+        bytes: memory.slice(),
+        pushes: counters.pushes,
+        pops: counters.pops,
+      };
+      board.dispose();
+      return result;
+    }
+
+    const overlapOff = sameMemoryCopy(true, false);
+    const overlapOn = sameMemoryCopy(true, true);
+    expect(overlapOn.outputs).toEqual(overlapOff.outputs);
+    expect(overlapOn.bytes).toEqual(overlapOff.bytes);
+    // Ordinary forward semantics cascade: every later read sees the previous write.
+    expect(overlapOn.bytes!.slice(0, 9)).toEqual(new Uint8Array(9).fill(1));
+    // The live overlap declines the fold, so real queue activity is unchanged.
+    expect(overlapOn.pushes).toBe(overlapOff.pushes);
+    expect(overlapOn.pops).toBe(overlapOff.pops);
+    expect(overlapOn.pushes).toBeGreaterThan(0);
+
+    const disjointOff = sameMemoryCopy(false, false);
+    const disjointOn = sameMemoryCopy(false, true);
+    expect(disjointOn.outputs).toEqual(disjointOff.outputs);
+    expect(disjointOn.bytes).toEqual(disjointOff.bytes);
+    expect(disjointOn.bytes!.slice(16, 24)).toEqual(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]));
+    // Disjoint ranges in the same buffer stay foldable and really reduce queue traffic.
+    expect(disjointOn.pushes).toBeLessThan(disjointOff.pushes / 2);
+    expect(disjointOn.pops).toBeLessThan(disjointOff.pops / 2);
+  });
+
+  it('pauses folding for a parked JIT waiter and resumes after it resolves', () => {
+    interface WaiterResult {
+      readonly outputs: readonly Collected[];
+      readonly cursor: unknown;
+      readonly before: Counters;
+      readonly after: Counters;
+      readonly parkedBefore: number;
+      readonly parkedAfter: number;
+    }
+    function waitingProcess(batch: boolean, jit: boolean): WaiterResult {
+      const id = `ProcessBatchWaiter${serial++}`;
+      const builder = createDeviceBuilder({ name: id });
+      const outputs: Collected[] = [];
+      builder.memory({ name: 'dst', length: 64 });
+      builder.state({ name: 'cursor', type: types.number, initial: 0 });
+      builder.state({ name: 'gate', type: types.number, initial: 0 });
+      builder.channel({ name: 'done', direction: 'output', type: types.number, capacity: 4 });
+      if (jit) {
+        builder.memory({ name: 'code', length: 2 });
+        builder.state({ name: 'pc', type: types.number, initial: 0 });
+        builder.pureFn({ name: 'ready', params: [], returns: types.bool }, (body) =>
+          body.returnValue(
+            body.equal(
+              types.number,
+              body.readState('gate', types.number),
+              body.constant(types.number, 1),
+            ),
+          ),
+        );
+      }
+      builder.start((body) => {
+        body.while(
+          (test) =>
+            test.lessThan(test.readState('cursor', types.number), test.constant(types.number, 32)),
+          (step) => {
+            const cursor = step.readState('cursor', types.number);
+            step.store8('dst', cursor, step.constant(types.number, 7));
+            step.writeState('cursor', step.add(cursor, step.constant(types.number, 1)));
+            step.wait(step.constant(types.number, STEP));
+          },
+        );
+        body.send('done', body.readState('cursor', types.number));
+      });
+      const library = createDeviceLibrary([
+        {
+          id,
+          model: builder.finish(),
+          create: (context) => {
+            context.registerProcessBatch({ process: { kind: 'start', index: 0 }, loop: 0 });
+            let registration: { dispose(): void } | undefined;
+            if (jit) {
+              registration = context.attachJit({
+                entry: 'cpu',
+                code: 'code',
+                pc: 'pc',
+                translate: (input: JitTranslateInput, block: JitBlockBuilder) => {
+                  if (input.pc === 0) {
+                    block.instruction({ pc: 0, nextPc: 1 }, (body) => body.waitUntil('ready'));
+                  } else {
+                    block.instruction({ pc: input.pc, nextPc: input.pc }, (body) => body.stop());
+                  }
+                  return block.finish();
+                },
+              });
+              context.loadBytes('code', new Uint8Array([1, 0]));
+            }
+            return {
+              sync(value) {
+                for (const [name, messages] of Object.entries(value.outputs))
+                  for (const entry of messages as readonly { time: number; value: unknown }[])
+                    outputs.push({ name, time: entry.time, value: entry.value });
+              },
+              dispose: () => registration?.dispose(),
+            };
+          },
+        },
+      ]);
+      const board = createBoard(
+        library,
+        { instances: [{ id: 'dev', type: id }], nets: [] },
+        batch ? { batchExecution: true } : {},
+      );
+      const instance = (board as unknown as { instances: readonly Instance[] }).instances[0]!;
+      const internal = board as unknown as { waitingJits: Set<unknown> };
+      const read = countEvents(board);
+      board.runUntil(50);
+      const before = read();
+      const parkedBefore = internal.waitingJits.size;
+      if (jit) instance.host.write('gate', 1);
+      board.runUntil(320);
+      const total = read();
+      const result = {
+        outputs,
+        cursor: instance.states.get('cursor'),
+        before,
+        after: { pushes: total.pushes - before.pushes, pops: total.pops - before.pops },
+        parkedBefore,
+        parkedAfter: internal.waitingJits.size,
+      };
+      board.dispose();
+      return result;
+    }
+
+    const control = waitingProcess(false, false);
+    const parked = waitingProcess(true, true);
+    expect(parked.before.pushes).toBe(control.before.pushes);
+    expect(parked.before.pushes).toBeGreaterThan(0);
+    expect(parked.parkedBefore).toBe(1);
+    expect(control.parkedBefore).toBe(0);
+    expect(parked.after.pushes).toBeLessThan(control.after.pushes / 2);
+    expect(parked.after.pops).toBeLessThan(control.after.pops / 2);
+    expect(parked.parkedAfter).toBe(0);
+    expect(parked.outputs).toEqual(control.outputs);
+    expect(parked.outputs).toEqual([{ name: 'done', time: 320, value: 32 }]);
+    expect(parked.cursor).toBe(32);
+  });
+
   it('rechecks dynamic code ownership after registration', () => {
     function codeOwned(batch: boolean): {
       outputs: readonly Collected[];
