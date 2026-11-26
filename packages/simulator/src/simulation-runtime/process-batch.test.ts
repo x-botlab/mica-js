@@ -1033,9 +1033,26 @@ describe('process batch registration', () => {
     try {
       expect(failure).toBeUndefined();
       expect(processBatches(instance)).toHaveLength(1);
+      const read = countEvents(board);
+      // Reach a live ticks continuation on the opt-in machine, then retire the binding.
+      board.runUntil(10);
+      const suspended = read();
+      expect(instance.states.get('cursor')).toBe(2);
+      expect(instance.memories.get('dst')!.slice(0, 4)).toEqual(
+        new Uint8Array([42, 42, 0, 0]),
+      );
       second!.dispose();
       second!.dispose();
       expect(processBatches(instance)).toHaveLength(0);
+      // Continue the same suspended frame on the ordinary machine through real wakes.
+      board.runUntil(40);
+      const finished = read();
+      expect(instance.states.get('cursor')).toBe(4);
+      expect(instance.memories.get('dst')!.slice(0, 4)).toEqual(
+        new Uint8Array([42, 42, 42, 42]),
+      );
+      expect(finished.pushes - suspended.pushes).toBe(2);
+      expect(finished.pops - suspended.pops).toBe(3);
     } finally {
       board.dispose();
     }
