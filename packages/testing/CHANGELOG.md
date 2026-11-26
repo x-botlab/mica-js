@@ -1,5 +1,12 @@
 # @mica-js/testing
 
+## 0.1.10
+
+### Patch Changes
+
+- Updated dependencies [794f541]
+  - @mica-js/sdk@0.7.0
+
 ## 0.1.9
 
 ### Patch Changes
