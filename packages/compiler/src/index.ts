@@ -37,6 +37,8 @@ export type {
   BaselinePosition,
   BasicBlock,
   CompileOptions,
+  DirectJitArtifactCache,
+  DirectJitArtifactCacheStats,
   DirectJitBinding,
   DirectJitFrame,
   DirectJitHost,

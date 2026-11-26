@@ -9,6 +9,8 @@ import type {
   ValueRegionIR,
 } from '@mica-js/device-model';
 import type {
+  DirectJitArtifactCache,
+  DirectJitArtifactCacheStats,
   DirectJitBinding,
   DirectJitCache,
   DirectJitCacheStats,
@@ -36,6 +38,7 @@ import {
   nonNull,
   readIndex,
 } from './values.js';
+import { structuralDigest } from './structure.js';
 
 const binary: Partial<Record<BinaryOperator, string>> = {
   add: '+',
@@ -306,6 +309,86 @@ interface BindingFingerprint {
   readonly codeMemories: readonly string[] | undefined;
 }
 
+/**
+ * Canonical artifact identity of a binding. Unlike `BindingFingerprint`, map-like tables are
+ * sorted by name and the split options are included, so two structurally equal bindings with
+ * different map insertion order share an artifact while a different shard policy does not.
+ */
+interface ArtifactBindingDescriptor {
+  readonly states: readonly (readonly [string, number])[];
+  readonly memories: readonly (readonly [string, number])[];
+  readonly pins: readonly (readonly [string, number])[] | undefined;
+  readonly pcName: string;
+  readonly pcIndex: number;
+  readonly host: boolean;
+  readonly blockedStates: readonly string[] | undefined;
+  readonly blockedMemories: readonly string[] | undefined;
+  readonly entryBlockedStates: readonly string[] | undefined;
+  readonly entryBlockedMemories: readonly string[] | undefined;
+  readonly functions: readonly (readonly [string, DirectFunctionIR])[] | undefined;
+  readonly directTiming:
+    | {
+        readonly elapsed: number;
+        readonly deadline: number;
+        readonly blocked: string | undefined;
+      }
+    | undefined;
+  readonly memoryLengths: readonly (readonly [string, number])[] | undefined;
+  readonly codeMemories: readonly string[] | undefined;
+  readonly split: boolean;
+  readonly shardSize: number | undefined;
+  readonly shardSlotLimit: number | undefined;
+}
+
+interface ArtifactBindingContext {
+  readonly descriptor: ArtifactBindingDescriptor;
+  readonly digest: string;
+}
+
+interface ArtifactInstructionEntry {
+  readonly key: string;
+  readonly binding: ArtifactBindingDescriptor;
+  readonly body: RegionIR;
+  readonly pc: number;
+  readonly nextPc: number;
+  readonly delay: DelayFingerprint | undefined;
+  readonly template: Instruction;
+  /** Prefix length of the artifact constant pool this template may reference. */
+  readonly constantCount: number;
+  readonly sourceUnits: number;
+}
+
+interface ArtifactShardEntry {
+  readonly source: string;
+  readonly factory: ResidentShardFactory;
+}
+
+interface ArtifactCacheState {
+  /** Append-only values referenced by `C[index]`; replaced only when the cap is exceeded. */
+  constants: unknown[];
+  constantUnits: number;
+  /** Stable per pin/resistance slots; never rewritten, so `R[slot]` stays valid. */
+  readonly resistorSlots: Map<string, number>;
+  /** Incremented when the constant pool is replaced; older local pools then stay private. */
+  generation: number;
+  /** Key → colliding candidates in LRU order. */
+  readonly instructions: Map<string, ArtifactInstructionEntry[]>;
+  instructionCount: number;
+  instructionSourceUnits: number;
+  /** Exact source key → unbound factory in LRU order. */
+  readonly shards: Map<string, ArtifactShardEntry>;
+  shardSourceUnits: number;
+  stats: {
+    compiledInstructions: number;
+    reusedInstructions: number;
+    reusedShardSources: number;
+    createdFactories: number;
+    reusedFactories: number;
+    evictions: number;
+    clears: number;
+  };
+}
+
 type DirectFunctionIR = Extract<DeclarationIR, { kind: 'function' }>;
 type ResolveFunction = (name: string) => {
   readonly target: string;
@@ -318,6 +401,8 @@ interface CachedInstruction {
   readonly nextPc: number;
   readonly delay: DelayFingerprint | undefined;
   readonly instruction: Instruction | undefined;
+  /** True when the body came from the shared instruction-template artifact cache. */
+  readonly artifactHit: boolean;
   /** Stable continuation ID once this body has ever emitted an elapse. */
   readonly resumeId: number | undefined;
   /** Explicit physical identity, or undefined when the entry never opted into sharing. */
@@ -410,7 +495,7 @@ interface ResidentShard {
 interface DirectJitCacheState {
   readonly entries: Map<number, CachedInstruction>;
   readonly constants: unknown[];
-  readonly resistorSlots: Map<string, number>;
+  resistorSlots: Map<string, number>;
   readonly functions: Map<string, ReturnType<ResolveFunction> | null>;
   readonly shards: ResidentShard[];
   nextResume: number;
@@ -426,6 +511,10 @@ interface DirectJitCacheState {
     clears: number;
   };
   binding: BindingFingerprint | undefined;
+  /** Explicit artifact binding chosen for this local cache, when one is attached. */
+  artifact: ArtifactCacheState | undefined;
+  /** Artifact generation whose constant indices this local pool mirrors; -1 when detached. */
+  artifactGeneration: number;
 }
 
 const directJitCaches = new WeakMap<DirectJitCache, DirectJitCacheState>();
@@ -452,6 +541,8 @@ function createDirectJitCache(): DirectJitCache {
       clears: 0,
     },
     binding: undefined,
+    artifact: undefined,
+    artifactGeneration: -1,
   });
   return cache;
 }
@@ -460,6 +551,475 @@ function cacheState(cache: DirectJitCache): DirectJitCacheState {
   const state = directJitCaches.get(cache);
   if (state === undefined) throw new TypeError('Invalid direct JIT cache');
   return state;
+}
+
+/**
+ * Artifact limits. The instruction cache is bounded by entries and emitted source characters;
+ * the shard cache keeps the historical 128 entries / 4 Mi characters / 64 Ki per source.
+ * Constants are append-only and are replaced wholesale at 64 Ki values / 4 Mi retained
+ * characters. Replacing the pool advances a generation so older local pools stay private and
+ * no template index is reused against a different value.
+ */
+const MAX_ARTIFACT_INSTRUCTIONS = 256;
+const MAX_ARTIFACT_INSTRUCTION_SOURCE_UNITS = 4 * 1024 * 1024;
+const MAX_ARTIFACT_CONSTANTS = 64 * 1024;
+const MAX_ARTIFACT_CONSTANT_UNITS = 4 * 1024 * 1024;
+const MAX_ARTIFACT_SHARDS = 128;
+const MAX_ARTIFACT_SHARD_SOURCE_UNITS = 4 * 1024 * 1024;
+const MAX_CACHED_SHARD_SOURCE_UNITS = 64 * 1024;
+
+const directJitArtifacts = new WeakMap<DirectJitArtifactCache, ArtifactCacheState>();
+
+function createArtifactCacheState(): ArtifactCacheState {
+  return {
+    constants: [],
+    constantUnits: 0,
+    resistorSlots: new Map(),
+    generation: 0,
+    instructions: new Map(),
+    instructionCount: 0,
+    instructionSourceUnits: 0,
+    shards: new Map(),
+    shardSourceUnits: 0,
+    stats: {
+      compiledInstructions: 0,
+      reusedInstructions: 0,
+      reusedShardSources: 0,
+      createdFactories: 0,
+      reusedFactories: 0,
+      evictions: 0,
+      clears: 0,
+    },
+  };
+}
+
+function createDirectJitArtifactCache(): DirectJitArtifactCache {
+  const cache = Object.freeze({}) as unknown as DirectJitArtifactCache;
+  directJitArtifacts.set(cache, createArtifactCacheState());
+  return cache;
+}
+
+function artifactState(cache: DirectJitArtifactCache): ArtifactCacheState {
+  const state = directJitArtifacts.get(cache);
+  if (state === undefined) throw new TypeError('Invalid direct JIT artifact cache');
+  return state;
+}
+
+/** Module default keeps the old cross-session factory reuse when no artifact is supplied. */
+const defaultArtifactCache = createDirectJitArtifactCache();
+
+function attachArtifact(state: DirectJitCacheState, artifact: ArtifactCacheState): void {
+  if (state.artifact === artifact) return;
+  if (
+    state.artifact === undefined &&
+    (state.entries.size !== 0 ||
+      state.constants.length !== 0 ||
+      state.functions.size !== 0 ||
+      state.shards.length !== 0)
+  ) {
+    // A full build may have populated this cache before its first session. Keep that local
+    // snapshot exactly as it was; the artifact still supplies shard-source reuse, while
+    // instruction templates stay private until a fresh cache starts from the shared pool.
+    state.artifact = artifact;
+    state.artifactGeneration = -1;
+    return;
+  }
+  // Constants and resistor slots from another pool are not interchangeable. Drop the local
+  // records so this cache never mixes indices from two artifact owners.
+  state.entries.clear();
+  state.constants.length = 0;
+  state.functions.clear();
+  state.shards.length = 0;
+  state.nextShard = 1;
+  state.artifact = artifact;
+  state.artifactGeneration = artifact.generation;
+  state.resistorSlots = artifact.resistorSlots;
+}
+
+/** Shared resistor slots must survive local clears; a private fallback map is cleared. */
+function clearResistorSlots(state: DirectJitCacheState): void {
+  if (state.artifact === undefined || state.resistorSlots !== state.artifact.resistorSlots)
+    state.resistorSlots.clear();
+}
+
+function artifactUsable(state: DirectJitCacheState): ArtifactCacheState | undefined {
+  const artifact = state.artifact;
+  if (artifact === undefined || state.artifactGeneration !== artifact.generation) return undefined;
+  return artifact;
+}
+
+/**
+ * Mirror the artifact constant prefix into this local pool. A local pool may be shorter after
+ * a session clear; it is never longer than the artifact pool while the generation matches.
+ */
+function syncConstants(
+  state: DirectJitCacheState,
+  artifact: ArtifactCacheState,
+  limit = artifact.constants.length,
+): boolean {
+  if (state.constants.length > artifact.constants.length) return false;
+  const end = Math.min(limit, artifact.constants.length);
+  while (state.constants.length < end)
+    state.constants.push(artifact.constants[state.constants.length]);
+  return true;
+}
+
+function constantUnits(value: unknown): number {
+  switch (typeof value) {
+    case 'string':
+      return value.length;
+    case 'number':
+    case 'bigint':
+      return 8;
+    case 'boolean':
+    case 'undefined':
+      return 4;
+    case 'function':
+      return 128;
+    default:
+      break;
+  }
+  if (value === null) return 4;
+  try {
+    return JSON.stringify(value)?.length ?? 32;
+  } catch {
+    return 32;
+  }
+}
+
+function resetArtifactConstants(artifact: ArtifactCacheState): void {
+  artifact.stats.evictions += artifact.instructionCount + artifact.shards.size;
+  artifact.constants = [];
+  artifact.constantUnits = 0;
+  artifact.generation++;
+  artifact.instructions.clear();
+  artifact.instructionCount = 0;
+  artifact.instructionSourceUnits = 0;
+  // A shard source embeds the constant indices of the pool that produced it. Replacing the
+  // pool makes every cached source stale even though its key describes the same instruction
+  // emission, so drop the source/factory cache with the generation that produced it.
+  artifact.shards.clear();
+  artifact.shardSourceUnits = 0;
+}
+
+/**
+ * Capture one emitted constant index. Artifact-bound sessions append to their local prefix and
+ * the shared pool together, so a template's `C[index]` stays valid for every session. When the
+ * pool cap would be exceeded the whole pool is replaced and this local cache detaches.
+ */
+function artifactCapture(state: DirectJitCacheState): (value: unknown) => string {
+  return (value: unknown): string => {
+    const artifact = artifactUsable(state);
+    if (artifact !== undefined) {
+      if (!syncConstants(state, artifact) || state.constants.length !== artifact.constants.length) {
+        state.artifactGeneration = -1;
+      } else {
+        const units = constantUnits(value);
+        if (
+          artifact.constants.length >= MAX_ARTIFACT_CONSTANTS ||
+          artifact.constantUnits + units > MAX_ARTIFACT_CONSTANT_UNITS
+        ) {
+          resetArtifactConstants(artifact);
+          state.artifactGeneration = -1;
+        } else {
+          const index = state.constants.push(value) - 1;
+          artifact.constants.push(value);
+          artifact.constantUnits += units;
+          return `C[${index}]`;
+        }
+      }
+    }
+    return `C[${state.constants.push(value) - 1}]`;
+  };
+}
+
+interface ArtifactBindingCache {
+  readonly context: ArtifactBindingContext;
+}
+
+const artifactBindings = new WeakMap<DirectJitBinding, ArtifactBindingCache>();
+let nextStructuralIdentity = 1;
+const structuralIdentities = new WeakMap<object, number>();
+
+function structuralIdentity(value: object): number {
+  let identity = structuralIdentities.get(value);
+  if (identity === undefined) {
+    identity = nextStructuralIdentity++;
+    structuralIdentities.set(value, identity);
+  }
+  return identity;
+}
+
+function comparePairs(left: readonly [string, unknown], right: readonly [string, unknown]): number {
+  return left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0;
+}
+
+function sortedPairs<T>(
+  values: readonly (readonly [string, T])[] | undefined,
+): readonly (readonly [string, T])[] | undefined {
+  if (values === undefined) return undefined;
+  return [...values].sort(comparePairs) as readonly (readonly [string, T])[];
+}
+
+function sortedNames(values: readonly string[] | undefined): readonly string[] | undefined {
+  return values === undefined ? undefined : [...values].sort();
+}
+
+function artifactBindingContext(
+  binding: DirectJitBinding,
+  fingerprint: BindingFingerprint,
+): ArtifactBindingContext {
+  const cached = artifactBindings.get(binding);
+  if (cached !== undefined) return cached.context;
+  const descriptor: ArtifactBindingDescriptor = {
+    states: sortedPairs(fingerprint.states)!,
+    memories: sortedPairs(fingerprint.memories)!,
+    pins: sortedPairs(fingerprint.pins),
+    pcName: fingerprint.pcName,
+    pcIndex: fingerprint.pcIndex,
+    host: fingerprint.host,
+    blockedStates: sortedNames(fingerprint.blockedStates),
+    blockedMemories: sortedNames(fingerprint.blockedMemories),
+    entryBlockedStates: sortedNames(fingerprint.entryBlockedStates),
+    entryBlockedMemories: sortedNames(fingerprint.entryBlockedMemories),
+    functions: sortedPairs(fingerprint.functions),
+    directTiming: fingerprint.directTiming,
+    memoryLengths: sortedPairs(fingerprint.memoryLengths),
+    codeMemories: sortedNames(fingerprint.codeMemories),
+    split: binding.split === true,
+    shardSize: binding.shardSize,
+    shardSlotLimit: binding.shardSlotLimit,
+  };
+  const digest =
+    structuralDigest(descriptor) ??
+    `identity:${structuralIdentity(binding)}:${descriptor.split ? 1 : 0}:${descriptor.shardSize ?? '-'}:${descriptor.shardSlotLimit ?? '-'}`;
+  const context = { descriptor, digest };
+  artifactBindings.set(binding, { context });
+  return context;
+}
+
+const bodyDigests = new WeakMap<RegionIR, string>();
+
+function bodyDigest(body: RegionIR): string {
+  let digest = bodyDigests.get(body);
+  if (digest === undefined) {
+    digest = structuralDigest(body) ?? `identity:${structuralIdentity(body)}`;
+    bodyDigests.set(body, digest);
+  }
+  return digest;
+}
+
+function numberText(value: number): string {
+  return Object.is(value, -0) ? '-0' : String(value);
+}
+
+function delayText(delay: DelayFingerprint | undefined): string {
+  if (delay === undefined) return '-';
+  const pending =
+    delay.pending === undefined
+      ? '-'
+      : `${numberText(delay.pending.state)}/${numberText(delay.pending.period)}/${numberText(delay.pending.active)}`;
+  return `${numberText(delay.counter)}/${numberText(delay.cycles)}/${pending}`;
+}
+
+function instructionArtifactKey(
+  context: ArtifactBindingContext,
+  instruction: DirectJitInstruction,
+  delay: DelayFingerprint | undefined,
+): string {
+  return [
+    context.digest,
+    numberText(instruction.pc),
+    numberText(instruction.nextPc),
+    bodyDigest(instruction.body),
+    delayText(delay),
+  ].join('|');
+}
+
+function sameFunctionIR(left: DirectFunctionIR, right: DirectFunctionIR): boolean {
+  return left === right || sameIrValue(left, right, new WeakMap());
+}
+
+function sameFunctionPairs(
+  left: readonly (readonly [string, DirectFunctionIR])[] | undefined,
+  right: readonly (readonly [string, DirectFunctionIR])[] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (a[0] !== b[0] || !sameFunctionIR(a[1], b[1])) return false;
+  }
+  return true;
+}
+
+function sameArtifactBinding(
+  left: ArtifactBindingDescriptor,
+  right: ArtifactBindingDescriptor,
+): boolean {
+  return (
+    left === right ||
+    (left.pcName === right.pcName &&
+      Object.is(left.pcIndex, right.pcIndex) &&
+      left.host === right.host &&
+      left.split === right.split &&
+      Object.is(left.shardSize, right.shardSize) &&
+      Object.is(left.shardSlotLimit, right.shardSlotLimit) &&
+      samePairs(left.states, right.states) &&
+      samePairs(left.memories, right.memories) &&
+      sameOptionalPairs(left.pins, right.pins) &&
+      sameNames(left.blockedStates, right.blockedStates) &&
+      sameNames(left.blockedMemories, right.blockedMemories) &&
+      sameNames(left.entryBlockedStates, right.entryBlockedStates) &&
+      sameNames(left.entryBlockedMemories, right.entryBlockedMemories) &&
+      sameFunctionPairs(left.functions, right.functions) &&
+      sameTiming(left.directTiming, right.directTiming) &&
+      sameOptionalPairs(left.memoryLengths, right.memoryLengths) &&
+      sameNames(left.codeMemories, right.codeMemories))
+  );
+}
+
+/**
+ * Return a fresh clone for an instruction emission cached under an equal binding and body.
+ * The stored template is never mutated; arrays and sets are shared, while `resumeId` starts
+ * at zero so the session can assign its own continuation id.
+ */
+function reuseArtifactInstruction(
+  state: DirectJitCacheState,
+  context: ArtifactBindingContext,
+  instruction: DirectJitInstruction,
+  delay: DelayFingerprint | undefined,
+): Instruction | undefined {
+  const artifact = artifactUsable(state);
+  if (artifact === undefined) return undefined;
+  const key = instructionArtifactKey(context, instruction, delay);
+  const candidates = artifact.instructions.get(key);
+  if (candidates === undefined) return undefined;
+  // Refresh the whole key on a lookup, matching a simple insertion-order LRU.
+  artifact.instructions.delete(key);
+  artifact.instructions.set(key, candidates);
+  for (const entry of candidates) {
+    if (
+      !Object.is(entry.pc, instruction.pc) ||
+      !Object.is(entry.nextPc, instruction.nextPc) ||
+      !sameDelay(entry.delay, delay) ||
+      !sameArtifactBinding(entry.binding, context.descriptor) ||
+      (entry.body !== instruction.body && !sameRegion(entry.body, instruction.body))
+    )
+      continue;
+    if (!syncConstants(state, artifact, entry.constantCount)) return undefined;
+    const clone = entry.template.emissionClone();
+    artifact.stats.reusedInstructions++;
+    return clone;
+  }
+  return undefined;
+}
+
+function insertArtifactInstruction(
+  state: DirectJitCacheState,
+  context: ArtifactBindingContext,
+  instruction: DirectJitInstruction,
+  delay: DelayFingerprint | undefined,
+  compiled: Instruction,
+): void {
+  const artifact = artifactUsable(state);
+  if (artifact === undefined) return;
+  if (!syncConstants(state, artifact) || state.constants.length !== artifact.constants.length) {
+    state.artifactGeneration = -1;
+    return;
+  }
+  const key = instructionArtifactKey(context, instruction, delay);
+  const template = Object.freeze(compiled.emissionClone()) as Instruction;
+  const entry: ArtifactInstructionEntry = {
+    key,
+    binding: context.descriptor,
+    body: instruction.body,
+    pc: instruction.pc,
+    nextPc: instruction.nextPc,
+    delay,
+    template,
+    constantCount: state.constants.length,
+    sourceUnits: template.size + key.length,
+  };
+  let candidates = artifact.instructions.get(key);
+  if (candidates === undefined) {
+    candidates = [];
+    artifact.instructions.set(key, candidates);
+  } else {
+    artifact.instructions.delete(key);
+    artifact.instructions.set(key, candidates);
+  }
+  candidates.push(entry);
+  artifact.instructionCount++;
+  artifact.instructionSourceUnits += entry.sourceUnits;
+  artifact.stats.compiledInstructions++;
+  while (
+    artifact.instructionCount > MAX_ARTIFACT_INSTRUCTIONS ||
+    artifact.instructionSourceUnits > MAX_ARTIFACT_INSTRUCTION_SOURCE_UNITS
+  ) {
+    const oldestKey = artifact.instructions.keys().next().value;
+    if (oldestKey === undefined) break;
+    const evicted = artifact.instructions.get(oldestKey)!;
+    artifact.instructions.delete(oldestKey);
+    for (const candidate of evicted) {
+      artifact.instructionCount--;
+      artifact.instructionSourceUnits -= candidate.sourceUnits;
+      artifact.stats.evictions++;
+    }
+  }
+}
+
+function shardSourceKey(
+  context: ArtifactBindingContext,
+  kind: 'shard' | 'shared',
+  id: number,
+  entries: readonly Instruction[],
+  extra = '',
+): string {
+  const parts = [context.digest, kind, String(id), extra];
+  for (const entry of entries) parts.push(entry.emissionKey, String(entry.resumeId));
+  return parts.join('|');
+}
+
+interface ArtifactShardFactoryResult {
+  readonly source: string;
+  readonly factory: ResidentShardFactory;
+  readonly reused: boolean;
+}
+
+function artifactShardFactory(
+  artifact: ArtifactCacheState,
+  key: string,
+  generateSource: () => string,
+): ArtifactShardFactoryResult {
+  const previous = artifact.shards.get(key);
+  if (previous !== undefined) {
+    artifact.shards.delete(key);
+    artifact.shards.set(key, previous);
+    artifact.stats.reusedShardSources++;
+    artifact.stats.reusedFactories++;
+    return { source: previous.source, factory: previous.factory, reused: true };
+  }
+  const source = generateSource();
+  const factory = new Function('C', 'H', source) as ResidentShardFactory;
+  artifact.stats.createdFactories++;
+  if (source.length <= MAX_CACHED_SHARD_SOURCE_UNITS) {
+    while (
+      artifact.shards.size >= MAX_ARTIFACT_SHARDS ||
+      artifact.shardSourceUnits + source.length > MAX_ARTIFACT_SHARD_SOURCE_UNITS
+    ) {
+      const oldestKey = artifact.shards.keys().next().value;
+      if (oldestKey === undefined) break;
+      const evicted = artifact.shards.get(oldestKey)!;
+      artifact.shards.delete(oldestKey);
+      artifact.shardSourceUnits -= evicted.source.length;
+      artifact.stats.evictions++;
+    }
+    artifact.shards.set(key, { source, factory });
+    artifact.shardSourceUnits += source.length;
+  }
+  return { source, factory, reused: false };
 }
 
 function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
@@ -811,7 +1371,7 @@ function sameLoop(left: LoopStamp | undefined, right: LoopStamp | undefined): bo
 function clearCacheState(state: DirectJitCacheState): void {
   state.entries.clear();
   state.constants.length = 0;
-  state.resistorSlots.clear();
+  clearResistorSlots(state);
   state.functions.clear();
   state.shards.length = 0;
   state.nextResume = 1;
@@ -827,10 +1387,19 @@ export interface DirectJitCompiler {
     cache?: DirectJitCache,
   ): DirectJitProgram | undefined;
   createCache(): DirectJitCache;
+  /** Create a bounded artifact cache shared by sessions and boards. */
+  createArtifactCache(): DirectJitArtifactCache;
   /** Create or replace the single incremental session attached to a cache. */
-  createSession(binding: DirectJitBinding, cache?: DirectJitCache): DirectJitSession;
+  createSession(
+    binding: DirectJitBinding,
+    cache?: DirectJitCache,
+    artifactCache?: DirectJitArtifactCache,
+  ): DirectJitSession;
   clearCache(cache: DirectJitCache): void;
   cacheStats(cache: DirectJitCache): DirectJitCacheStats;
+  /** Drop artifact reuse without touching live sessions or their compiled functions. */
+  clearArtifactCache(cache: DirectJitArtifactCache): void;
+  artifactCacheStats(cache: DirectJitArtifactCache): DirectJitArtifactCacheStats;
 }
 
 /** One compile-time value and the literal source text that reproduces it exactly. */
@@ -920,14 +1489,14 @@ function compileDirectJitProgram(
     state.stats.invalidatedBlocks += state.entries.size;
     state.entries.clear();
     state.constants.length = 0;
-    state.resistorSlots.clear();
+    clearResistorSlots(state);
     state.functions.clear();
     state.shards.length = 0;
     state.nextResume = 1;
     state.nextShard = 1;
   }
   state.binding = fingerprint;
-  const capture = (value: unknown): string => `C[${state.constants.push(value) - 1}]`;
+  const capture = artifactCapture(state);
   const resistorSlot = (pin: string, resistance: number): number => {
     const key = `${pin}\0${resistance}`;
     let slot = state.resistorSlots.get(key);
@@ -1023,6 +1592,7 @@ function compileDirectJitProgram(
         nextPc: instruction.nextPc,
         delay,
         instruction: compiled,
+        artifactHit: false,
         resumeId,
         share: undefined,
         shareInvalid: false,
@@ -1052,7 +1622,14 @@ function compileDirectJitProgram(
   // A supplied cache makes the split form resident: instruction bodies and shard functions stay
   // alive while each build only assembles a fresh dispatcher over the current shard set.
   if (options.split === true && suppliedCache !== undefined)
-    return residentProgram(state, entries, binding, shardSize);
+    return residentProgram(
+      state,
+      entries,
+      binding,
+      shardSize,
+      state.artifact ?? artifactState(defaultArtifactCache),
+      artifactBindingContext(binding, fingerprint),
+    );
   // An explicit slot limit keeps the historical slot-based switch; otherwise the emitted
   // source size decides, because register reuse makes slot counts wildly optimistic.
   const slotLimit = validIndex(options.shardSlotLimit) ? options.shardSlotLimit : undefined;
@@ -1099,8 +1676,13 @@ function compileDirectJitProgram(
 
 export const compileDirectJit: DirectJitCompiler = Object.assign(compileDirectJitProgram, {
   createCache: createDirectJitCache,
-  createSession(binding: DirectJitBinding, cache?: DirectJitCache): DirectJitSession {
-    return createDirectJitSession(binding, cache);
+  createArtifactCache: createDirectJitArtifactCache,
+  createSession(
+    binding: DirectJitBinding,
+    cache?: DirectJitCache,
+    artifactCache?: DirectJitArtifactCache,
+  ): DirectJitSession {
+    return createDirectJitSession(binding, cache, artifactCache);
   },
   clearCache(cache: DirectJitCache): void {
     directJitSessions.get(cache)?.dispose();
@@ -1109,6 +1691,24 @@ export const compileDirectJit: DirectJitCompiler = Object.assign(compileDirectJi
   cacheStats(cache: DirectJitCache): DirectJitCacheStats {
     const state = cacheState(cache);
     return Object.freeze({ ...state.stats, entries: state.entries.size });
+  },
+  clearArtifactCache(cache: DirectJitArtifactCache): void {
+    const artifact = artifactState(cache);
+    artifact.instructions.clear();
+    artifact.instructionCount = 0;
+    artifact.instructionSourceUnits = 0;
+    artifact.shards.clear();
+    artifact.shardSourceUnits = 0;
+    artifact.stats.clears++;
+  },
+  artifactCacheStats(cache: DirectJitArtifactCache): DirectJitArtifactCacheStats {
+    const artifact = artifactState(cache);
+    return Object.freeze({
+      ...artifact.stats,
+      instructionEntries: artifact.instructionCount,
+      shardEntries: artifact.shards.size,
+      sourceUnits: artifact.shardSourceUnits,
+    });
   },
 });
 
@@ -1812,55 +2412,32 @@ function sharedBodyProgram(
   return lines;
 }
 
-// Share only the unbound factory. Neither the source key nor the factory captures a JIT cache,
-// and every caller binds its own constants when it creates the step and resume functions.
-const residentFactories = new Map<string, ResidentShardFactory>();
-const maxResidentFactories = 128;
-const maxResidentFactorySourceUnits = 4 * 1024 * 1024;
-// Oversized sources bypass the cache instead of evicting a group of smaller factories.
-const maxCachedShardSourceUnits = 64 * 1024;
-let residentFactorySourceUnits = 0;
-
-function residentShardFactory(source: string): ResidentShardFactory {
-  // The parameter list is fixed for every factory in this cache.
-  const cacheable = source.length <= maxCachedShardSourceUnits;
-  const previous = cacheable ? residentFactories.get(source) : undefined;
-  if (previous !== undefined) {
-    residentFactories.delete(source);
-    residentFactories.set(source, previous);
-    return previous;
-  }
-
-  const factory = new Function('C', 'H', source) as ResidentShardFactory;
-  if (!cacheable) return factory;
-  while (
-    residentFactories.size >= maxResidentFactories ||
-    residentFactorySourceUnits + source.length > maxResidentFactorySourceUnits
-  ) {
-    const oldest = residentFactories.keys().next().value!;
-    residentFactories.delete(oldest);
-    residentFactorySourceUnits -= oldest.length;
-  }
-  residentFactories.set(source, factory);
-  residentFactorySourceUnits += source.length;
-  return factory;
-}
-
 function compileResidentShard(
   state: DirectJitCacheState,
   shard: ResidentShard,
   binding: DirectJitBinding,
+  artifact: ArtifactCacheState,
+  context: ArtifactBindingContext,
 ): number {
-  const lines = residentShardProgram(shard, binding);
-  const resume = shard.resumable ? `resumeShard${shard.id}` : 'undefined';
-  const source = `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`;
-  const factory = residentShardFactory(source);
-  const [step, resumeFunction] = factory(Object.freeze([...state.constants]), helpers);
+  const key = shardSourceKey(
+    context,
+    'shard',
+    shard.id,
+    shard.entries,
+    binding.host === true ? 'h' : '-',
+  );
+  const compiled = artifactShardFactory(artifact, key, () => {
+    const lines = residentShardProgram(shard, binding);
+    const resume = shard.resumable ? `resumeShard${shard.id}` : 'undefined';
+    return `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`;
+  });
+  const [step, resumeFunction] = compiled.factory(Object.freeze([...state.constants]), helpers);
   shard.functions = { step, resume: resumeFunction };
   shard.signature = Object.freeze([...shard.entries]);
   shard.dirty = false;
+  // Legacy counters describe shard build sites; artifact stats distinguish source reuse.
   state.stats.compiledShards++;
-  return source.length;
+  return compiled.reused ? 0 : compiled.source.length;
 }
 
 /** Tiny generated router over resident functions; only this source is rebuilt per program. */
@@ -1924,6 +2501,8 @@ function residentProgram(
   entries: readonly Instruction[],
   binding: DirectJitBinding,
   shardSize: number,
+  artifact: ArtifactCacheState,
+  context: ArtifactBindingContext,
 ): DirectJitProgram | undefined {
   syncResidentShards(state, entries, shardSize, binding.pc.index);
   if (!state.shards.length) return undefined;
@@ -1936,7 +2515,7 @@ function residentProgram(
       state.stats.reusedShards++;
       continue;
     }
-    compileResidentShard(state, shard, binding);
+    compileResidentShard(state, shard, binding, artifact, context);
   }
 
   const lines = residentDispatcherProgram(state.shards, entries, binding);
@@ -2129,6 +2708,8 @@ class Instruction {
   nextPcValue = 0;
   pc = '';
   nextPc = '';
+  /** Stable digest of every emission field that can change generated shard source. */
+  emissionKey = '';
   /** Cache-stable continuation key used by resident shards; zero when none is needed. */
   resumeId = 0;
   duration?: string;
@@ -2312,7 +2893,77 @@ class Instruction {
     this.size = size;
     this.statements = statements;
     this.selects = selects;
+    // The source key covers every field the shard emitters read after compilation. Values,
+    // locals and per-session continuations are deliberately absent: they never change source.
+    this.emissionKey =
+      structuralDigest({
+        pc: this.pc,
+        nextPc: this.nextPc,
+        pcValue: this.pcValue,
+        nextPcValue: this.nextPcValue,
+        duration: this.duration,
+        dynamicDuration: this.dynamicDuration,
+        immediate: this.immediate,
+        stop: this.stop,
+        isolated: this.backedges !== undefined,
+        exitLabel: this.exitLabel,
+        exitDuration: this.exitDuration,
+        outlineBranches: this.outlineBranches,
+        slots: this.slots,
+        size: this.size,
+        guard: this.guard,
+        barrier: this.barrier,
+        prefix: this.prefix,
+        suffix: this.suffix,
+        readStates: [...this.readStates],
+        writeStates: [...this.writeStates],
+        readMemories: [...this.readMemories],
+        writeMemories: [...this.writeMemories],
+      }) ?? `identity:${structuralIdentity(this)}`;
     return this;
+  }
+
+  /**
+   * Copy an immutable emission for reuse by another session. The stored template itself is
+   * never mutated: line arrays and sets are shared, while the mutable continuation id starts
+   * at zero and branch metadata that the shard emitter sorts gets a fresh array.
+   */
+  emissionClone(): Instruction {
+    const clone = Object.create(Instruction.prototype) as Instruction;
+    Object.assign(clone, {
+      readStates: this.readStates,
+      writeStates: this.writeStates,
+      readMemories: this.readMemories,
+      writeMemories: this.writeMemories,
+      slots: this.slots,
+      size: this.size,
+      statements: this.statements,
+      operations: this.operations,
+      selects: this.selects,
+      functionSourceSize: this.functionSourceSize,
+      foldedOperations: this.foldedOperations,
+      nestedOperations: this.nestedOperations,
+      guard: this.guard,
+      barrier: this.barrier,
+      prefix: this.prefix,
+      suffix: this.suffix,
+      pcValue: this.pcValue,
+      nextPcValue: this.nextPcValue,
+      pc: this.pc,
+      nextPc: this.nextPc,
+      emissionKey: this.emissionKey,
+      resumeId: 0,
+      duration: this.duration,
+      dynamicDuration: this.dynamicDuration,
+      immediate: this.immediate,
+      stop: this.stop,
+      backedges: this.backedges,
+      outlineBranches: this.outlineBranches?.map((branch) => ({ ...branch })),
+      exitLabel: this.exitLabel,
+      exitDuration: this.exitDuration,
+      labels: this.labels,
+    });
+    return clone;
   }
 
   /**
@@ -4328,6 +4979,8 @@ interface SessionCounters {
   reusedShards: number;
   compiledBlocks: number;
   reusedBlocks: number;
+  artifactInstructionHits: number;
+  artifactInstructionMisses: number;
   invalidatedBlocks: number;
   bodyBytes: number;
   shardBytes: number;
@@ -4404,6 +5057,8 @@ class DirectJitSessionImpl implements DirectJitSession {
     reusedShards: 0,
     compiledBlocks: 0,
     reusedBlocks: 0,
+    artifactInstructionHits: 0,
+    artifactInstructionMisses: 0,
     invalidatedBlocks: 0,
     bodyBytes: 0,
     shardBytes: 0,
@@ -4440,6 +5095,9 @@ class DirectJitSessionImpl implements DirectJitSession {
     private readonly state: DirectJitCacheState,
     private readonly binding: DirectJitBinding,
     private readonly fingerprint: BindingFingerprint,
+    private readonly artifactCache: DirectJitArtifactCache,
+    private readonly artifact: ArtifactCacheState,
+    private readonly artifactBinding: ArtifactBindingContext,
   ) {
     this.delays = binding.delayLoops;
     this.compileBinding = bindingWithDelays(binding, this.delays);
@@ -4457,6 +5115,10 @@ class DirectJitSessionImpl implements DirectJitSession {
 
   get sessionFingerprint(): BindingFingerprint {
     return this.fingerprint;
+  }
+
+  get sessionArtifactCache(): DirectJitArtifactCache {
+    return this.artifactCache;
   }
 
   get isDisposed(): boolean {
@@ -4648,7 +5310,7 @@ class DirectJitSessionImpl implements DirectJitSession {
     this.nextSharedVariant = 1;
     this.state.entries.clear();
     this.state.constants.length = 0;
-    this.state.resistorSlots.clear();
+    clearResistorSlots(this.state);
     this.state.functions.clear();
     this.state.shards.length = 0;
     this.state.nextShard = 1;
@@ -4680,6 +5342,8 @@ class DirectJitSessionImpl implements DirectJitSession {
       reusedShards: this.counters.reusedShards,
       compiledBlocks: this.counters.compiledBlocks,
       reusedBlocks: this.counters.reusedBlocks,
+      artifactInstructionHits: this.counters.artifactInstructionHits,
+      artifactInstructionMisses: this.counters.artifactInstructionMisses,
       invalidatedBlocks: this.counters.invalidatedBlocks,
       routes: this.routes.size,
       shards: this.closed ? 0 : this.state.shards.length,
@@ -5097,17 +5761,18 @@ class DirectJitSessionImpl implements DirectJitSession {
     span: SpanStampResult,
     loop: LoopStampResult,
   ): CachedInstruction {
-    const compiled = this.compileInstruction(instruction);
+    const compiled = this.compileInstruction(instruction, delay);
     // A recompiled body always receives a fresh continuation id. Reusing the previous id
     // would retarget frames suspended in the old body at the new suffix.
     let resumeId: number | undefined;
-    if (compiled?.duration !== undefined) resumeId = this.state.nextResume++;
-    if (compiled !== undefined) compiled.resumeId = resumeId ?? 0;
+    if (compiled.instruction?.duration !== undefined) resumeId = this.state.nextResume++;
+    if (compiled.instruction !== undefined) compiled.instruction.resumeId = resumeId ?? 0;
     return {
       body: instruction.body,
       nextPc: instruction.nextPc,
       delay,
-      instruction: compiled,
+      instruction: compiled.instruction,
+      artifactHit: compiled.artifactHit,
       resumeId,
       share: share.share,
       shareInvalid: share.invalid,
@@ -5118,8 +5783,19 @@ class DirectJitSessionImpl implements DirectJitSession {
     };
   }
 
-  private compileInstruction(instruction: DirectJitInstruction): Instruction | undefined {
-    const capture = (value: unknown): string => `C[${this.state.constants.push(value) - 1}]`;
+  private compileInstruction(
+    instruction: DirectJitInstruction,
+    delay: DelayFingerprint | undefined,
+  ): { instruction: Instruction | undefined; artifactHit: boolean } {
+    // Enabling the artifact cache is an explicit compiler-side opt-in. A local cache hit is
+    // handled before this point, so every lookup here is a genuine cross-session attempt.
+    const reused = reuseArtifactInstruction(this.state, this.artifactBinding, instruction, delay);
+    if (reused !== undefined) {
+      this.counters.artifactInstructionHits++;
+      return { instruction: reused, artifactHit: true };
+    }
+    if (artifactUsable(this.state) !== undefined) this.counters.artifactInstructionMisses++;
+    const capture = artifactCapture(this.state);
     const resistorSlot = (pin: string, resistance: number): number => {
       const key = `${pin}\0${resistance}`;
       let slot = this.state.resistorSlots.get(key);
@@ -5131,12 +5807,17 @@ class DirectJitSessionImpl implements DirectJitSession {
     };
     const resolveFunction: ResolveFunction = (name) => this.resolveFunction(name, resistorSlot);
     try {
-      return new Instruction(this.compileBinding, capture, resistorSlot, resolveFunction).compile(
-        instruction,
-      );
+      const compiled = new Instruction(
+        this.compileBinding,
+        capture,
+        resistorSlot,
+        resolveFunction,
+      ).compile(instruction);
+      insertArtifactInstruction(this.state, this.artifactBinding, instruction, delay, compiled);
+      return { instruction: compiled, artifactHit: false };
     } catch (error) {
       if (error !== unsupported) throw error;
-      return undefined;
+      return { instruction: undefined, artifactHit: false };
     }
   }
 
@@ -5165,7 +5846,7 @@ class DirectJitSessionImpl implements DirectJitSession {
     );
     const run = body.compileFunction(constants);
     this.state.helperBytes += body.functionSourceSize;
-    const capture = (value: unknown): string => `C[${this.state.constants.push(value) - 1}]`;
+    const capture = artifactCapture(this.state);
     const compiled = { target: capture(run), run, body };
     this.state.functions.set(name, compiled);
     return compiled;
@@ -5188,9 +5869,16 @@ class DirectJitSessionImpl implements DirectJitSession {
           this.counters.invalidatedBlocks++;
         }
         this.state.entries.set(change.pc, record);
-        this.state.stats.compiledBlocks++;
-        this.counters.compiledBlocks++;
-        if (record.instruction !== undefined) this.counters.bodyBytes += record.instruction.size;
+        // A template hit installs a new local record but emits no body. Keep `compiledBlocks`
+        // and `bodyBytes` emission-only so a cross-session reuse is not counted twice.
+        if (record.artifactHit) {
+          this.state.stats.reusedBlocks++;
+          this.counters.reusedBlocks++;
+        } else {
+          this.state.stats.compiledBlocks++;
+          this.counters.compiledBlocks++;
+          if (record.instruction !== undefined) this.counters.bodyBytes += record.instruction.size;
+        }
         this.indexShareCandidate(change.pc);
       } else {
         this.state.stats.reusedBlocks++;
@@ -5566,15 +6254,27 @@ class DirectJitSessionImpl implements DirectJitSession {
   private compileSharedVariant(variant: SharedVariant): void {
     const instruction = variant.instruction;
     if (instruction.duration !== undefined) variant.resumeId = this.state.nextResume++;
-    const lines = sharedBodyProgram(variant, this.compileBinding, this.binding.pc.index);
-    const resume = instruction.duration === undefined ? 'undefined' : `resumeShared${variant.id}`;
-    const source = `"use strict";\n${lines.join('\n')}\nreturn [stepShared${variant.id}, ${resume}];`;
-    const factory = residentShardFactory(source);
-    const [step, resumeFunction] = factory(Object.freeze([...this.state.constants]), helpers);
+    const key = [
+      this.artifactBinding.digest,
+      'shared',
+      String(variant.id),
+      String(variant.resumeId),
+      this.binding.host === true ? 'h' : '-',
+      instruction.emissionKey,
+    ].join('|');
+    const compiled = artifactShardFactory(this.artifact, key, () => {
+      const lines = sharedBodyProgram(variant, this.compileBinding, this.binding.pc.index);
+      const resume = instruction.duration === undefined ? 'undefined' : `resumeShared${variant.id}`;
+      return `"use strict";\n${lines.join('\n')}\nreturn [stepShared${variant.id}, ${resume}];`;
+    });
+    const [step, resumeFunction] = compiled.factory(
+      Object.freeze([...this.state.constants]),
+      helpers,
+    );
     variant.functions = { step, resume: resumeFunction };
-    variant.sourceSize = source.length;
+    variant.sourceSize = compiled.source.length;
     this.counters.sharedBodies++;
-    this.counters.sharedBytes += source.length;
+    if (!compiled.reused) this.counters.sharedBytes += compiled.source.length;
   }
 
   /**
@@ -5754,7 +6454,13 @@ class DirectJitSessionImpl implements DirectJitSession {
         this.counters.reusedShards++;
         continue;
       }
-      this.counters.shardBytes += compileResidentShard(this.state, shard, this.compileBinding);
+      this.counters.shardBytes += compileResidentShard(
+        this.state,
+        shard,
+        this.compileBinding,
+        this.artifact,
+        this.artifactBinding,
+      );
       this.counters.compiledShards++;
       compiled.add(shard);
     }
@@ -5844,32 +6550,48 @@ class DirectJitSessionImpl implements DirectJitSession {
 function createDirectJitSession(
   binding: DirectJitBinding,
   suppliedCache?: DirectJitCache,
+  suppliedArtifactCache?: DirectJitArtifactCache,
 ): DirectJitSession {
   if (!validIndex(binding.pc.index) || binding.states.get(binding.pc.name) !== binding.pc.index)
     throw new TypeError('Invalid direct JIT binding');
   const cache = suppliedCache ?? createDirectJitCache();
+  const artifactCache = suppliedArtifactCache ?? defaultArtifactCache;
+  const artifact = artifactState(artifactCache);
   const state = cacheState(cache);
   const fingerprint = bindingFingerprint(binding);
   const existing = directJitSessions.get(cache);
   if (existing !== undefined) {
-    if (!existing.isDisposed && sameBinding(existing.sessionFingerprint, fingerprint))
+    if (
+      !existing.isDisposed &&
+      existing.sessionArtifactCache === artifactCache &&
+      sameBinding(existing.sessionFingerprint, fingerprint)
+    )
       return existing;
     existing.dispose();
   }
+  attachArtifact(state, artifact);
   if (state.binding !== undefined && !sameBinding(state.binding, fingerprint)) {
     // Slot indices are embedded in every emitted body; a layout change invalidates all of
     // them. Programs and disposed sessions keep their own frozen constant snapshots.
     state.stats.invalidatedBlocks += state.entries.size;
     state.entries.clear();
     state.constants.length = 0;
-    state.resistorSlots.clear();
+    clearResistorSlots(state);
     state.functions.clear();
     state.shards.length = 0;
     state.nextResume = 1;
     state.nextShard = 1;
   }
   state.binding = fingerprint;
-  const session = new DirectJitSessionImpl(cache, state, binding, fingerprint);
+  const session = new DirectJitSessionImpl(
+    cache,
+    state,
+    binding,
+    fingerprint,
+    artifactCache,
+    artifact,
+    artifactBindingContext(binding, fingerprint),
+  );
   directJitSessions.set(cache, session);
   return session;
 }

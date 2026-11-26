@@ -150,6 +150,44 @@ export interface DirectJitCacheStats {
   readonly clears: number;
 }
 
+declare const directJitArtifactOpaque: unique symbol;
+
+/**
+ * Opaque, bounded compiler artifact cache shared by sessions and boards.
+ *
+ * The cache owns immutable instruction templates, their compatible append-only constant pool,
+ * stable resistor slots and resident shard source factories. It never owns a frame, route
+ * table, continuation id, capture slot or other instance state. Obtain one from
+ * `compileDirectJit.createArtifactCache()`; sessions keep their compiled functions alive
+ * after eviction.
+ */
+export interface DirectJitArtifactCache {
+  readonly [directJitArtifactOpaque]: true;
+}
+
+/** Deterministic cross-session artifact counters; no value depends on wall-clock time. */
+export interface DirectJitArtifactCacheStats {
+  /** Instruction templates emitted after a miss. */
+  readonly compiledInstructions: number;
+  /** Instruction templates reused from the artifact cache. */
+  readonly reusedInstructions: number;
+  /** Resident shard sources reused before regeneration. */
+  readonly reusedShardSources: number;
+  /** Unbound shard factories created with new Function. */
+  readonly createdFactories: number;
+  /** Unbound shard factories reused. */
+  readonly reusedFactories: number;
+  /** Current entries in the instruction LRU. */
+  readonly instructionEntries: number;
+  /** Current entries in the shard factory LRU. */
+  readonly shardEntries: number;
+  /** Current cumulative source characters retained by the shard cache. */
+  readonly sourceUnits: number;
+  /** LRU evictions from either cache. */
+  readonly evictions: number;
+  readonly clears: number;
+}
+
 export interface DirectJitDelay {
   readonly counter: number;
   readonly cycles: number;
@@ -419,6 +457,10 @@ export interface DirectJitSessionStats {
   readonly compiledBlocks: number;
   /** Instruction bodies reused from the cache by this session. */
   readonly reusedBlocks: number;
+  /** Instruction templates reused from the artifact cache by this session. */
+  readonly artifactInstructionHits: number;
+  /** Instruction templates this session had to emit after an artifact lookup miss. */
+  readonly artifactInstructionMisses: number;
   /** Cached instruction records replaced or deleted by this session. */
   readonly invalidatedBlocks: number;
   /** Currently dispatchable PCs. */

@@ -4150,7 +4150,9 @@ test('session updateDelays recompiles only entries whose delay snapshot changed'
   const restored = captureFactories(() => session.updateDelays());
   assert.equal(restored.length, 1, 'omitting the map restores binding.delayLoops');
   assert.match(restored[0], /\/ 10\)/);
-  assert.equal(session.stats().compiledBlocks, before.compiledBlocks + 2);
+  const restoredStats = session.stats();
+  assert.equal(restoredStats.compiledBlocks, before.compiledBlocks + 1);
+  assert.equal(restoredStats.reusedBlocks, before.reusedBlocks + 1, 'the artifact hit is a reuse');
   const f = frame(session, [0, 3, 0, false, 0, 0]);
   assert.equal(session.run(f, 100), 'deadline');
   assert.equal(f.time, 100);
@@ -5324,4 +5326,361 @@ test('malformed and unprovable markers keep normal execution and count rejection
   );
   assert.equal(both.stats().spansRejected, 1);
   assert.equal(both.stats().loopsRejected, 1);
+});
+
+/** A pure zero-argument scalar helper whose constant changes the emitted function body. */
+function numberHelper(delta) {
+  return {
+    kind: 'function',
+    name: 'helper',
+    pure: true,
+    params: [],
+    returns: { kind: 'number' },
+    body: {
+      operations: [
+        {
+          kind: 'constant',
+          result: 0,
+          type: { kind: 'number' },
+          constant: { kind: 'number', value: delta },
+        },
+        { kind: 'returnValue', value: 0 },
+      ],
+    },
+  };
+}
+
+function callHelperBlock() {
+  const b = builder();
+  const value = b.value({ kind: 'callValue', name: 'helper', pure: true, args: [] });
+  b.write('x', value);
+  b.delay(1);
+  return b.instruction(0, 2);
+}
+
+test('artifact cache reuses structurally equal instruction templates across sessions', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const settings = { ...binding, shardSize: 4 };
+  const reordered = {
+    ...settings,
+    states: new Map([...binding.states].reverse()),
+  };
+  const first = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  first.add([directBlock(0, 2, 11), directBlock(2, 0, 22)]);
+  let stats = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(stats.compiledInstructions, 2);
+  assert.equal(stats.reusedInstructions, 0);
+
+  const second = compileDirectJit.createSession(
+    reordered,
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  const beforeSecond = second.stats();
+  second.add([directBlock(0, 2, 11), directBlock(2, 0, 22)]);
+  const reused = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(reused.compiledInstructions, 2, 'no second emission for equal templates');
+  assert.equal(reused.reusedInstructions, 2);
+  const secondStats = second.stats();
+  assert.equal(secondStats.artifactInstructionHits, 2);
+  assert.equal(secondStats.artifactInstructionMisses, 0);
+  assert.equal(secondStats.compiledBlocks, beforeSecond.compiledBlocks, 'hits emit no body');
+  assert.equal(secondStats.bodyBytes, beforeSecond.bodyBytes, 'hits add no source characters');
+  assert.equal(secondStats.reusedBlocks, beforeSecond.reusedBlocks + 2);
+
+  const a = frame(first, [0, 0, 0, true, 0, 0]);
+  const b = frame(second, [0, 0, 0, true, 0, 0]);
+  assert.equal(first.run(a, 1), 'deadline');
+  assert.equal(second.run(b, 1), 'deadline');
+  assert.deepEqual(a.states, b.states);
+  assert.deepEqual(
+    a.memories.map((bank) => [...bank]),
+    b.memories.map((bank) => [...bank]),
+  );
+  assert.equal(a.time, b.time);
+  assert.notEqual(a.states, b.states, 'frames are never shared');
+  assert.notEqual(a.stateDirty, b.stateDirty);
+
+  const helperArtifact = compileDirectJit.createArtifactCache();
+  const helperOne = compileDirectJit.createSession(
+    { ...binding, functions: new Map([['helper', numberHelper(3)]]) },
+    compileDirectJit.createCache(),
+    helperArtifact,
+  );
+  helperOne.add([callHelperBlock()]);
+  const helperTwo = compileDirectJit.createSession(
+    { ...binding, functions: new Map([['helper', numberHelper(3)]]) },
+    compileDirectJit.createCache(),
+    helperArtifact,
+  );
+  helperTwo.add([callHelperBlock()]);
+  assert.equal(helperTwo.stats().artifactInstructionHits, 1);
+  const helperFrame = frame(helperTwo, [0, 0, 0, true, 0, 0]);
+  assert.equal(helperTwo.run(helperFrame, 1), 'deadline');
+  assert.equal(helperFrame.states[1], 3, 'the shared pure helper keeps its captured IR');
+});
+
+test('artifact instruction keys reject every slot, IR, delay, value and mask difference', () => {
+  const probe = (
+    label,
+    baseInstruction,
+    baseSettings,
+    candidate,
+    candidateSettings = baseSettings,
+  ) => {
+    const artifact = compileDirectJit.createArtifactCache();
+    const warm = compileDirectJit.createSession(
+      baseSettings,
+      compileDirectJit.createCache(),
+      artifact,
+    );
+    warm.add([baseInstruction]);
+    const before = compileDirectJit.artifactCacheStats(artifact);
+    assert(before.compiledInstructions > 0, `${label}: base emitted a template`);
+    const session = compileDirectJit.createSession(
+      candidateSettings,
+      compileDirectJit.createCache(),
+      artifact,
+    );
+    session.add([candidate]);
+    const after = compileDirectJit.artifactCacheStats(artifact);
+    assert.equal(after.reusedInstructions, before.reusedInstructions, `${label}: no hit`);
+    assert.equal(session.stats().artifactInstructionHits, 0, `${label}: session miss`);
+    assert.equal(after.compiledInstructions, before.compiledInstructions + 1, `${label}: emitted`);
+  };
+
+  probe('binding slot', directBlock(0, 2, 7), binding, directBlock(0, 2, 7), {
+    ...binding,
+    states: new Map([...binding.states, ['x', 8]]),
+  });
+  probe(
+    'function body',
+    callHelperBlock(),
+    { ...binding, functions: new Map([['helper', numberHelper(1)]]) },
+    callHelperBlock(),
+    { ...binding, functions: new Map([['helper', numberHelper(2)]]) },
+  );
+  probe('body constant', directBlock(0, 2, 7), binding, directBlock(0, 2, 8));
+  probe(
+    'delay fingerprint',
+    directBlock(0, 2, 7),
+    { ...binding, delayLoops: new Map([[0, { counter: 1, cycles: 5 }]]) },
+    directBlock(0, 2, 7),
+    { ...binding, delayLoops: new Map([[0, { counter: 1, cycles: 6 }]]) },
+  );
+  probe('signed zero', directBlock(0, 2, 0), binding, directBlock(0, 2, -0));
+  probe('observer mask', directBlock(0, 2, 7), binding, directBlock(0, 2, 7), {
+    ...binding,
+    blockedStates: new Set(['x']),
+  });
+  probe('entry mask', directBlock(0, 2, 7), binding, directBlock(0, 2, 7), {
+    ...binding,
+    entryBlockedStates: new Set(['y']),
+  });
+});
+
+test('a suspended artifact-backed session keeps its own continuation after a peer compiles', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const settings = { ...binding, shardSize: 4 };
+  const first = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  first.add([directBlock(0, 2, 11), directBlock(2, 0, 22)]);
+  const a = frame(first, [0, 0, 0, true, 0, 0]);
+  assert.equal(first.run(a, 1), 'deadline');
+  const firstResume = a.resume;
+  assert.notEqual(firstResume, 0);
+  assert.equal(a.states[1], 11);
+
+  const second = compileDirectJit.createSession(
+    { ...binding, shardSize: 4 },
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  second.add([directBlock(0, 2, 11), directBlock(2, 0, 22)]);
+  assert.equal(second.stats().artifactInstructionHits, 2);
+  const b = frame(second, [0, 0, 0, true, 0, 0]);
+  assert.equal(second.run(b, 1), 'deadline');
+
+  assert.equal(a.resume, firstResume, 'the peer did not retarget the suspended frame');
+  assert.equal(first.run(a, 2), 'deadline');
+  assert.equal(a.states[1], 22, 'the resumed suffix reached the next route');
+  assert.equal(a.states[2], 0);
+  assert.equal(a.time, 2);
+  assert.notEqual(a.resume, 0);
+  assert.notEqual(a.resume, firstResume, 'the next suspension gets a fresh local id');
+  assert.equal(b.states[1], 11);
+  assert.equal(b.states[2], 0, 'the peer frame stayed independent');
+  assert.notEqual(a.states, b.states);
+});
+
+test('artifact cache reuses shard sources and factories and stays bounded under overflow', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const batch = () => [
+    directBlock(0, 2, 1),
+    directBlock(2, 4, 2),
+    directBlock(4, 6, 3),
+    directBlock(6, 0, 4),
+  ];
+  const first = compileDirectJit.createSession(
+    { ...binding, shardSize: 2 },
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  first.add(batch());
+  const before = compileDirectJit.artifactCacheStats(artifact);
+  assert(before.createdFactories > 0);
+  assert.equal(before.reusedShardSources, 0);
+
+  const second = compileDirectJit.createSession(
+    { ...binding, shardSize: 2, states: new Map([...binding.states].reverse()) },
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  second.add(batch());
+  const after = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(after.createdFactories, before.createdFactories, 'no new Function on source hit');
+  assert(after.reusedShardSources > before.reusedShardSources);
+  assert.equal(
+    after.reusedFactories - before.reusedFactories,
+    after.reusedShardSources - before.reusedShardSources,
+  );
+  assert.equal(second.stats().artifactInstructionHits, 4);
+
+  const a = frame(first, [0, 0, 0, true, 0, 0]);
+  const b = frame(second, [0, 0, 0, true, 0, 0]);
+  assert.equal(first.run(a, 1), 'deadline');
+  assert.equal(second.run(b, 1), 'deadline');
+  assert.deepEqual(a.states, b.states);
+
+  const overflow = compileDirectJit.createArtifactCache();
+  for (let index = 0; index < 130; index++) {
+    const session = compileDirectJit.createSession(
+      { ...binding, shardSize: 1 },
+      compileDirectJit.createCache(),
+      overflow,
+    );
+    session.add([directBlock(0x400000 + 2 * index, 0, index)]);
+  }
+  const bounded = compileDirectJit.artifactCacheStats(overflow);
+  assert.equal(bounded.shardEntries, 128);
+  assert(bounded.sourceUnits > 0);
+  assert(bounded.evictions > 0);
+  const factories = bounded.createdFactories;
+  const reopened = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+    overflow,
+  );
+  reopened.add([directBlock(0x400000, 0, 0)]);
+  assert(
+    compileDirectJit.artifactCacheStats(overflow).createdFactories > factories,
+    'the evicted source compiles again',
+  );
+  const evicted = frame(reopened, [0x400000, 0, 0, true, 0, 0]);
+  assert.equal(reopened.run(evicted, 1), 'deadline');
+  assert.equal(evicted.states[1], 0);
+});
+
+test('artifact templates never share frames, dirty bits or memories between sessions', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const body = () => {
+    const b = builder();
+    b.write('x', b.constant(5));
+    b.operations.push({
+      kind: 'store8',
+      memory: ram,
+      offset: b.constant(0),
+      value: b.constant(9),
+    });
+    b.delay(1);
+    return b.instruction(0, 2);
+  };
+  const first = compileDirectJit.createSession(binding, compileDirectJit.createCache(), artifact);
+  const second = compileDirectJit.createSession(binding, compileDirectJit.createCache(), artifact);
+  first.add([body()]);
+  second.add([body()]);
+  assert.equal(second.stats().artifactInstructionHits, 1);
+  const a = frame(first);
+  const b = frame(second, [0, -1, 0, true, 0, 0], [1, 2, 3]);
+  assert.equal(first.run(a, 1), 'deadline');
+  assert.equal(a.states[1], 5);
+  assert.equal(a.memories[0][0], 9);
+  assert.equal(b.states[1], -1, 'the peer frame did not run');
+  assert.notEqual(a.states, b.states);
+  assert.notEqual(a.stateDirty, b.stateDirty);
+  assert.notEqual(a.memories, b.memories);
+  assert.notEqual(a.memories[0], b.memories[0]);
+
+  assert.equal(second.run(b, 1), 'deadline');
+  assert.equal(b.states[1], 5);
+  assert.equal(b.memories[0][0], 9);
+  a.states[1] = 77;
+  a.stateDirty = [0];
+  b.memories[0][0] = 1;
+  assert.equal(first.run(a, 2), 'untranslated');
+  assert.equal(a.states[1], 77, 'resuming one frame cannot replace its own snapshot');
+  assert.equal(a.memories[0][0], 9);
+  assert.equal(b.states[1], 5);
+  assert.equal(b.memories[0][0], 1);
+  assert.notEqual(b.resume, 0, 'the peer remains suspended');
+});
+
+test('clearArtifactCache invalidates reuse while live sessions keep running', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const first = compileDirectJit.createSession(binding, compileDirectJit.createCache(), artifact);
+  first.add([directBlock(0, 2, 33)]);
+  const before = compileDirectJit.artifactCacheStats(artifact);
+  const a = frame(first, [0, 0, 0, true, 0, 0]);
+  assert.equal(first.run(a, 1), 'deadline');
+  const resume = a.resume;
+
+  compileDirectJit.clearArtifactCache(artifact);
+  const cleared = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(cleared.clears, before.clears + 1);
+  assert.equal(cleared.instructionEntries, 0);
+  assert.equal(cleared.shardEntries, 0);
+  assert.equal(cleared.sourceUnits, 0);
+
+  const second = compileDirectJit.createSession(binding, compileDirectJit.createCache(), artifact);
+  second.add([directBlock(0, 2, 33)]);
+  const after = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(after.reusedInstructions, before.reusedInstructions, 'no reuse after clear');
+  assert.equal(second.stats().artifactInstructionHits, 0);
+  assert.equal(after.compiledInstructions, before.compiledInstructions + 1);
+  assert(after.createdFactories > before.createdFactories, 'shard factories were dropped too');
+  const b = frame(second, [0, 0, 0, true, 0, 0]);
+  assert.equal(second.run(b, 1), 'deadline');
+  assert.equal(b.states[1], 33);
+
+  assert.equal(a.resume, resume);
+  assert.equal(first.run(a, 2), 'untranslated');
+  assert.equal(a.states[1], 33, 'the live session still owns its compiled body');
+});
+
+test('marked spans and loops install and resume with the artifact cache', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const settings = optimizedBinding();
+  const members = [nopInstruction(0, 2, 2), nopInstruction(2, 4, 2), storeInstruction(4, 6, 42, 5)];
+  const span = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  span.add([spanMarked(members[0], [0, 2, 4]), members[1], members[2]]);
+  assert.equal(span.stats().spansInstalled, 1);
+
+  const frame = bankFrame(span, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(span.run(frame, 5), 'deadline');
+  assert.equal(frame.states[1], 42, 'the fused terminal write is visible');
+  assert.notEqual(frame.resume, 0, 'the terminal suffix suspended');
+  assert.equal(frame.time, 5);
+  assert.equal(frame.directMetrics.spanRuns, 1);
+
+  assert.equal(span.run(frame, 10), 'untranslated');
+  assert.equal(frame.states[1], 42);
+  assert.equal(frame.resume, 0, 'the resumed terminal suffix completed');
+  assert.equal(frame.time, 9);
+
+  const loop = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  loop.add([loopMarked(spinInstruction(0, 1, 10), { kind: 'spin' })]);
+  assert.equal(loop.stats().loopsInstalled, 1);
+  const folded = bankFrame(loop, [0, 0, 0, true, 0, 0], [[0, 0, 0]], true);
+  assert.equal(loop.run(folded, 100), 'deadline');
+  assert.equal(folded.time, 100);
+  assert.equal(folded.directMetrics.loopRounds, 9);
 });
