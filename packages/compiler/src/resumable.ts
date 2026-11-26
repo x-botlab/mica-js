@@ -2,10 +2,12 @@ import type { InputPath, OperationIR, RegionIR, ValueRegionIR } from '@mica-js/d
 import { analyzeBody } from './analysis.js';
 import type { BodyAnalysis } from './analysis.js';
 import type { Node } from './analysis.js';
+import { proveProcessBatchLoop } from './batch.js';
+import type { ProcessBatchPlan } from './batch.js';
 import { Emitter, local, value } from './compiler.js';
 import { createEnum, runtimeHelpers } from './values.js';
 import { RESUMABLE_RECEIVE, RESUMABLE_TICKS } from './types.js';
-import type { CompileOptions, InternalGraph, ResumableProgram } from './types.js';
+import type { InternalGraph, ResumableCompileOptions, ResumableProgram } from './types.js';
 
 const unsupported = Symbol('unsupported resumable body');
 
@@ -38,7 +40,7 @@ const declaredSlot = /^(\s*)(?:const|let) (v\d+|l\d+)( = |;)/;
  */
 export function compileResumableBody(
   region: RegionIR,
-  options: CompileOptions = {},
+  options: ResumableCompileOptions = {},
 ): ResumableProgram | undefined {
   if (!pureValueRegions(region)) return undefined;
   try {
@@ -59,9 +61,14 @@ class ResumableEmitter extends Emitter {
   private readonly resourceIndex = new Map<string, number>();
   private current: Block | undefined;
   private graph: InternalGraph | undefined;
+  private batchRoot: RegionIR | undefined;
+  private batchLoops: (ProcessBatchPlan | undefined)[] | undefined;
+  private resumeBlocks: Map<OperationIR, number> | undefined;
+  private readonly batchEnabled: boolean;
 
-  constructor(analysis: BodyAnalysis, options: CompileOptions, captureMetadata: boolean) {
+  constructor(analysis: BodyAnalysis, options: ResumableCompileOptions, captureMetadata: boolean) {
     super(analysis, options, captureMetadata);
+    this.batchEnabled = options.batchLoops === true;
     if (options.bindResources) this.bindingFor = (kind, name) => this.bindResource(kind, name);
   }
 
@@ -79,6 +86,12 @@ class ResumableEmitter extends Emitter {
     // The graph getter builds the control-flow graph and assigns every node's resume
     // block; the liveness of those resume blocks is the frame contract used below.
     this.graph = this.analysis.graph;
+    if (this.batchEnabled) {
+      const loops = region.operations.filter((operation) => operation.kind === 'while').length;
+      this.batchRoot = region;
+      this.batchLoops = new Array<ProcessBatchPlan | undefined>(loops);
+      this.resumeBlocks = new Map();
+    }
     for (const node of this.analysis.nodes)
       if ('result' in node.operation) this.types.set(node.operation.result, node.operation.type);
     const entry = this.reserve();
@@ -120,6 +133,7 @@ class ResumableEmitter extends Emitter {
       slotCount: this.slots.size,
       blocks: this.blocks.length,
       start: 0,
+      ...(this.batchLoops !== undefined ? { batchLoops: Object.freeze([...this.batchLoops]) } : {}),
     });
   }
 
@@ -247,6 +261,9 @@ class ResumableEmitter extends Emitter {
         return target;
       }
       case 'while': {
+        const ordinal = this.batchLoops === undefined ? undefined : this.topLevelOrdinal(path);
+        const proof =
+          ordinal === undefined ? undefined : proveProcessBatchLoop(this.analysis, operation);
         const test = this.reserve();
         const body = this.buildRegion(operation.body, test, { breakTo: cont, continueTo: test }, [
           ...path,
@@ -258,6 +275,14 @@ class ResumableEmitter extends Emitter {
           yes: body,
           no: cont,
         }));
+        if (ordinal !== undefined) {
+          const resume = proof === undefined ? undefined : this.resumeBlocks?.get(proof.wait);
+          const term = resume === undefined ? undefined : this.blocks[resume]?.term;
+          this.batchLoops![ordinal] =
+            proof !== undefined && resume !== undefined && term?.kind === 'jump' && term.to === test
+              ? Object.freeze({ ...proof.plan, resumeBlock: resume })
+              : undefined;
+        }
         return test;
       }
       case 'loop': {
@@ -347,6 +372,7 @@ class ResumableEmitter extends Emitter {
   /** First block after a suspension: restore live slots, then continue. */
   private resumeBlock(operation: OperationIR): number {
     const id = this.reserve();
+    this.resumeBlocks?.set(operation, id);
     const block = this.blocks[id]!;
     const node = this.analysis.byOperation.get(operation)!;
     const result = 'result' in operation ? value(operation.result) : undefined;
@@ -356,6 +382,19 @@ class ResumableEmitter extends Emitter {
     }
     if (result) block.code.push(`${result} = F.value;`);
     return id;
+  }
+
+  /** Source-order ordinal of a `while` directly in the process root, if this is one. */
+  private topLevelOrdinal(path: InputPath): number | undefined {
+    if (this.batchRoot === undefined || path.length !== 2 || path[0] !== 'operations') {
+      return undefined;
+    }
+    const index = path[1];
+    if (typeof index !== 'number' || !Number.isSafeInteger(index)) return undefined;
+    let ordinal = 0;
+    for (let offset = 0; offset < index; offset++)
+      if (this.batchRoot.operations[offset]?.kind === 'while') ordinal++;
+    return ordinal;
   }
 
   private link(resume: number, cont: number): void {

@@ -14,6 +14,8 @@ export {
   type SynchronousRunner,
 } from './synchronous.js';
 export { compileResumableBody } from './resumable.js';
+export { proveJitBatch } from './batch.js';
+export type { BatchEffect, BatchLimit, BatchPlan, ProcessBatchPlan } from './batch.js';
 export { RESUMABLE_RECEIVE, RESUMABLE_TICKS } from './types.js';
 export {
   checkBoolean,
@@ -84,6 +86,7 @@ export type {
   ReactionFrame,
   ResumePoint,
   ResumableBody,
+  ResumableCompileOptions,
   ResumableFrame,
   ResumableProgram,
   ResourceHandle,
