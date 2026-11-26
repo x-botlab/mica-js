@@ -1,5 +1,14 @@
 # @mica-js/sdk
 
+## 0.6.5
+
+### Patch Changes
+
+- Updated dependencies [37fb24a]
+  - @mica-js/simulator@2.10.0
+  - @mica-js/device-model@0.7.2
+  - @mica-js/ddl@0.3.3
+
 ## 0.6.4
 
 ### Patch Changes
