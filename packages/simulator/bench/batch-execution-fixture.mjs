@@ -410,8 +410,17 @@ export function runSeries({
   if (!Number.isSafeInteger(samples) || samples < 1) fail('samples must be positive');
   const config = normalizeConfig(configInput);
   const evidence = Object.create(null);
+  const timers = new Map();
   for (const variant of variants) {
     if (evidence[variant.name] !== undefined) fail(`duplicate variant ${variant.name}`);
+    // A per-variant closure keeps the timed `runUntil` call site monomorphic. Sharing one
+    // call site across candidate and baseline BoardRuntime classes would make the harness
+    // pay a polymorphic dispatch that production does not.
+    timers.set(variant.name, (exercise) => {
+      const start = now();
+      exercise.board.runUntil(config.runUntilPs);
+      return now() - start;
+    });
     evidence[variant.name] = {
       name: variant.name,
       options: machineOptions(variant),
@@ -464,13 +473,13 @@ export function runSeries({
       const createStart = now();
       exercise = createExercise(variant.sdk, model, config, variant);
       const createEnd = now();
-      exercise.board.runUntil(config.runUntilPs);
+      const runMs = timers.get(variant.name)(exercise);
       const runEnd = now();
       verifyExercise(exercise);
       evidence[variant.name].cold = Object.freeze({
         label: 'new board / pre-sampled create-to-complete',
         createMs: createEnd - createStart,
-        runMs: runEnd - createEnd,
+        runMs,
         totalMs: runEnd - createStart,
       });
     } finally {
@@ -487,11 +496,8 @@ export function runSeries({
       let exercise;
       try {
         exercise = createExercise(variant.sdk, model, config, variant);
-        const start = now();
-        exercise.board.runUntil(config.runUntilPs);
-        const end = now();
+        measured[variant.name] = timers.get(variant.name)(exercise);
         verifyExercise(exercise);
-        measured[variant.name] = end - start;
       } finally {
         exercise?.dispose();
       }

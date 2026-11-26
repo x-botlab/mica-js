@@ -228,6 +228,10 @@ async function serveDirectory(directory) {
       response.writeHead(200, {
         'cache-control': 'no-store',
         'content-type': contentType(path),
+        // Cross-origin isolation enables Chrome's high-resolution performance.now()
+        // (5 us instead of the default 100 us clamping) for sub-3% paired ratios.
+        'cross-origin-opener-policy': 'same-origin',
+        'cross-origin-embedder-policy': 'require-corp',
       });
       response.end(body);
     } catch {
@@ -372,6 +376,7 @@ const execute = async () => {
       userAgent: navigator.userAgent,
       hardwareConcurrency: navigator.hardwareConcurrency ?? null,
       deviceMemory: navigator.deviceMemory ?? null,
+      crossOriginIsolated: globalThis.crossOriginIsolated ?? null,
     },
   };
 };
@@ -667,9 +672,9 @@ async function hostEnvironment(options, chromium, browserVersion) {
         ? null
         : { path: options.baselineSdk, sha256: await sha256(options.baselineSdk) },
     probePolicy:
-      'Correctness and real EventQueue push/pop counts use one untimed run per variant; ' +
-      'new-board create-to-complete and warmed timings run without probes; the cold label ' +
-      'does not represent process or browser startup.',
+      'Correctness, real EventQueue push/pop counts and prepareBatch admissions use one ' +
+      'untimed run per variant; new-board create-to-complete and warmed timings run without ' +
+      'probes; the cold label does not represent process or browser startup.',
   });
 }
 
