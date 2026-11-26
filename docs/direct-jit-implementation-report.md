@@ -31,6 +31,17 @@
 - 运行时校验标记（未知 PC、重复、长度、region/view、service、Direct 准入），非法标记只取消共享资格；统计候选、组、共享体、共享路由和拒绝分类。
 - CT117E-M4 增加默认关闭的 `directBodySharing` 属性；关闭时不向旧模拟器写出未知字段。
 
+## mica-devices 变更
+
+独立仓库 `mica-devices` 的分支 `perf/direct-jit-flash-sharing` 汇总以下提交：
+
+- `7ed7846`：CT117E-M4 将 `0x08000000` 映射为同一 Flash 的附加 code region，取指/IT/literal/轮询/延时改为 region-aware。
+- `7ff8353`：CT107D/CT117E-M4/ILI9325/STM32G431 探针迁移到增量会话结构，并兼容已发布 2.8.0。
+- `ffd5f90`：CT117E-M4 增加默认关闭的 `directBodySharing` 属性并调用 `markDirectBodyShareable`。
+- `28be4f9`：region 外异常 PC 恢复 legacy `pc & 0x1ffff` 翻译回退，避免空块 `JIT_FAILED`。
+
+CT117E-M4 typecheck 和 15 个测试文件 / 55 项测试通过；默认属性关闭时仍可直接运行已发布 `@mica-js/simulator@2.8.0`。
+
 ## 正确性验证
 
 ```bash
