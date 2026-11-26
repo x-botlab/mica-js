@@ -1038,9 +1038,7 @@ describe('process batch registration', () => {
       board.runUntil(10);
       const suspended = read();
       expect(instance.states.get('cursor')).toBe(2);
-      expect(instance.memories.get('dst')!.slice(0, 4)).toEqual(
-        new Uint8Array([42, 42, 0, 0]),
-      );
+      expect(instance.memories.get('dst')!.slice(0, 4)).toEqual(new Uint8Array([42, 42, 0, 0]));
       second!.dispose();
       second!.dispose();
       expect(processBatches(instance)).toHaveLength(0);
@@ -1048,9 +1046,7 @@ describe('process batch registration', () => {
       board.runUntil(40);
       const finished = read();
       expect(instance.states.get('cursor')).toBe(4);
-      expect(instance.memories.get('dst')!.slice(0, 4)).toEqual(
-        new Uint8Array([42, 42, 42, 42]),
-      );
+      expect(instance.memories.get('dst')!.slice(0, 4)).toEqual(new Uint8Array([42, 42, 42, 42]));
       expect(finished.pushes - suspended.pushes).toBe(2);
       expect(finished.pops - suspended.pops).toBe(3);
     } finally {
