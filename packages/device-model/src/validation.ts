@@ -1,5 +1,6 @@
 import { BuildError, fail, snapshot } from './errors.js';
 import { blockSchema, builtins, deviceSchema, loads, numeric, stores } from './schema.js';
+import { sameIR, structuralDigest } from './structure.js';
 import type {
   BlockIR,
   ComputationIR,
@@ -1476,6 +1477,17 @@ function locateError(error: unknown, input: unknown): never {
 const validatedDevices = new WeakMap<object, DeviceIR>();
 const validatedBlocks = new WeakMap<object, BlockIR>();
 const boundBlocks = new WeakMap<BlockIR, WeakSet<DeviceIR>>();
+/** Internal: resolve a validated input to the frozen canonical snapshot used as cache identity. */
+export function canonicalDeviceIR(device: DeviceIR): DeviceIR {
+  return validatedDevices.get(device) ?? device;
+}
+/**
+ * 绑定块的结构回退缓存。对象身份仍是首选键；未命中时用结构摘要筛选候选，再以完整
+ * 结构相等确认。每个器件最多保留 32 个摘要桶、64 个已绑定块，按插入顺序淘汰最旧项。
+ */
+const BLOCK_DIGEST_BUCKETS = 32;
+const BLOCK_DIGEST_BLOCKS = 64;
+const boundBlockDigests = new WeakMap<DeviceIR, Map<string, BlockIR[]>>();
 
 function remembered<T>(cache: WeakMap<object, T>, input: unknown): T | undefined {
   return typeof input === 'object' && input !== null ? cache.get(input) : undefined;
@@ -1483,6 +1495,50 @@ function remembered<T>(cache: WeakMap<object, T>, input: unknown): T | undefined
 function remember<T extends object>(cache: WeakMap<object, T>, input: unknown, result: T): void {
   if (typeof input === 'object' && input !== null) cache.set(input, result);
   cache.set(result, result);
+}
+function reusedBoundBlock(
+  definition: DeviceIR,
+  input: unknown,
+  digest: string,
+): BlockIR | undefined {
+  const blocks = boundBlockDigests.get(definition)?.get(digest);
+  if (blocks === undefined) return undefined;
+  // A digest is only a filter; collisions must fall through to full validation.
+  for (const block of blocks) if (sameIR(input, block)) return block;
+  return undefined;
+}
+function rememberBoundDigest(
+  definition: DeviceIR,
+  block: BlockIR,
+  digest: string | undefined,
+): void {
+  if (digest === undefined) return;
+  let buckets = boundBlockDigests.get(definition);
+  if (buckets === undefined) {
+    buckets = new Map();
+    boundBlockDigests.set(definition, buckets);
+  }
+  let blocks = buckets.get(digest);
+  if (blocks === undefined) {
+    if (buckets.size >= BLOCK_DIGEST_BUCKETS) {
+      const oldest = buckets.keys().next();
+      if (!oldest.done) buckets.delete(oldest.value);
+    }
+    blocks = [];
+    buckets.set(digest, blocks);
+  }
+  if (blocks.includes(block)) return;
+  blocks.push(block);
+  let total = 0;
+  for (const entries of buckets.values()) total += entries.length;
+  while (total > BLOCK_DIGEST_BLOCKS) {
+    const oldest = buckets.entries().next();
+    if (oldest.done) break;
+    const [key, entries] = oldest.value;
+    entries.shift();
+    total--;
+    if (!entries.length) buckets.delete(key);
+  }
 }
 
 export function validateDeviceIR(input: unknown): DeviceIR {
@@ -1537,8 +1593,18 @@ export function validateBlockIR(input: unknown): BlockIR {
 export function validateBoundBlockIR(input: unknown, device: DeviceIR): BlockIR {
   try {
     const cachedBlock = remembered(validatedBlocks, input);
-    const captured = cachedBlock ?? capturedBlock(input);
     const definition = remembered(validatedDevices, device);
+    // Compute the digest before validation so malformed or cyclic input can fall through
+    // without touching the cache; structuralDigest never throws.
+    const digest = cachedBlock === undefined ? structuralDigest(input) : undefined;
+    if (cachedBlock === undefined && definition !== undefined && digest !== undefined) {
+      const reused = reusedBoundBlock(definition, input, digest);
+      if (reused !== undefined) {
+        remember(validatedBlocks, input, reused);
+        return reused;
+      }
+    }
+    const captured = cachedBlock ?? capturedBlock(input);
     if (definition === undefined) {
       // Original order: standalone structure, device validation, then binding. Never inspect an
       // uncached device before the standalone pass; a structurally invalid block must not
@@ -1548,13 +1614,20 @@ export function validateBoundBlockIR(input: unknown, device: DeviceIR): BlockIR 
         remember(validatedBlocks, input, captured);
       }
       const validated = validateDeviceIR(device);
-      if (boundBlocks.get(captured)?.has(validated)) return captured;
+      if (boundBlocks.get(captured)?.has(validated)) {
+        rememberBoundDigest(validated, captured, digest ?? structuralDigest(captured));
+        return captured;
+      }
       new Validator(validated).validateBlock(captured);
       rememberBound(captured, validated);
+      rememberBoundDigest(validated, captured, digest ?? structuralDigest(captured));
       return captured;
     }
     // Only a canonical, already validated device may run ahead of the standalone pass.
-    if (boundBlocks.get(captured)?.has(definition)) return captured;
+    if (boundBlocks.get(captured)?.has(definition)) {
+      rememberBoundDigest(definition, captured, digest ?? structuralDigest(captured));
+      return captured;
+    }
     try {
       new Validator(definition).validateBlock(captured);
     } catch (error) {
@@ -1567,6 +1640,7 @@ export function validateBoundBlockIR(input: unknown, device: DeviceIR): BlockIR 
     }
     if (cachedBlock === undefined) remember(validatedBlocks, input, captured);
     rememberBound(captured, definition);
+    rememberBoundDigest(definition, captured, digest ?? structuralDigest(captured));
     return captured;
   } catch (error) {
     if (error instanceof BuildError) {
