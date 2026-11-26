@@ -245,6 +245,26 @@ function virtualFixtureData(model, settings) {
   };
 }
 
+function distResolutionRecorder(resolvedPackages) {
+  return {
+    name: 'batch-execution-dist-resolution',
+    enforce: 'pre',
+    async resolveId(source, importer, options) {
+      if (!source.startsWith('@mica-js/')) return null;
+      const resolved = await this.resolve(source, importer, {
+        ...options,
+        skipSelf: true,
+      });
+      if (resolved === null) return null;
+      const id = resolved.id.split('?')[0];
+      if (id.includes('/src/') || id.endsWith('.ts'))
+        throw new Error(`browser bundle resolved source instead of dist: ${source} -> ${id}`);
+      resolvedPackages.add(id);
+      return resolved;
+    },
+  };
+}
+
 async function buildBundle({ model, settings, sdk, root }) {
   const vite = await import('vite');
   const entry = `entry.mjs`;
@@ -313,6 +333,7 @@ globalThis.__BATCH_EXECUTION_PROMISE__ = execute().then(
     'utf8',
   );
   const outDir = join(root, 'bundle');
+  const resolvedPackages = new Set();
   await vite.build({
     root,
     configFile: false,
@@ -325,7 +346,7 @@ globalThis.__BATCH_EXECUTION_PROMISE__ = execute().then(
       ],
       conditions: ['import', 'module', 'browser', 'default'],
     },
-    plugins: [virtualFixtureData(model, settings)],
+    plugins: [distResolutionRecorder(resolvedPackages), virtualFixtureData(model, settings)],
     build: {
       outDir,
       emptyOutDir: true,
@@ -345,7 +366,17 @@ globalThis.__BATCH_EXECUTION_PROMISE__ = execute().then(
   }
   await visit(outDir);
   files.sort((left, right) => left.path.localeCompare(right.path));
-  return { outDir, files, entry };
+  return {
+    outDir,
+    files,
+    entry,
+    resolvedPackages: [...resolvedPackages]
+      .filter((id) => !id.startsWith('\0'))
+      .map((id) =>
+        id.startsWith(`${process.cwd()}${sep}`) ? id.slice(process.cwd().length + 1) : id,
+      )
+      .sort(),
+  };
 }
 
 class CdpSession {
@@ -512,6 +543,7 @@ async function runBrowser(options, config, model) {
         entry: bundle.entry,
         files: bundle.files,
         totalBytes: bundle.files.reduce((sum, file) => sum + file.bytes, 0),
+        resolvedPackages: bundle.resolvedPackages,
         sdk: options.sdk,
       },
       browser: version,
