@@ -133,6 +133,19 @@ test('结构相等的不同块对象返回同一个规范绑定块并记录两�
   assert.ok(Object.isFrozen(first));
 });
 
+test('廉价形状键转换后相同块复用、不同块保持独立', () => {
+  const definition = model();
+  const firstInput = block([constant(0, 1)]);
+  const secondInput = block([constant(0, 2)]);
+  const first = validateBoundBlockIR(firstInput, definition);
+  const second = validateBoundBlockIR(secondInput, definition);
+
+  assert.notEqual(second, first);
+  assert.equal(validateBoundBlockIR(block([constant(0, 1)]), definition), first);
+  assert.equal(validateBoundBlockIR(block([constant(0, 2)]), definition), second);
+  assert.notEqual(validateBoundBlockIR(block([constant(0, 3)]), definition), first);
+});
+
 test('不同块即使结构摘要相同也不共享结果', () => {
   const definition = model();
   const firstInput = block([constant(0, 1)]);

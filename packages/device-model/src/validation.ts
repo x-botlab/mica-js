@@ -1482,11 +1482,21 @@ export function canonicalDeviceIR(device: DeviceIR): DeviceIR {
   return validatedDevices.get(device) ?? device;
 }
 /**
- * 绑定块的结构回退缓存。对象身份仍是首选键；未命中时用结构摘要筛选候选，再以完整
- * 结构相等确认。每个器件最多保留 32 个摘要桶、64 个已绑定块，按插入顺序淘汰最旧项。
+ * 绑定块的结构回退缓存。对象身份仍是首选键；身份未命中时先用 O(1) 形状键筛选，
+ * 只有同一形状已经出现过才计算完整结构摘要，再以完整结构相等确认。每个器件最多
+ * 保留 64 个形状桶、64 个规范块（单桶 8 个），以及 32 个摘要桶、64 个已绑定块；
+ * 均按插入顺序淘汰最旧项。形状桶只保存已校验的规范块，不保留调用方原始输入。
  */
+const BLOCK_SHAPE_BUCKETS = 64;
+const BLOCK_SHAPE_BLOCKS = 64;
+const BLOCK_SHAPE_PER_BUCKET = 8;
 const BLOCK_DIGEST_BUCKETS = 32;
 const BLOCK_DIGEST_BLOCKS = 64;
+interface BlockShapeCache {
+  readonly buckets: Map<string, BlockIR[]>;
+  count: number;
+}
+const boundBlockShapes = new WeakMap<DeviceIR, BlockShapeCache>();
 const boundBlockDigests = new WeakMap<DeviceIR, Map<string, BlockIR[]>>();
 
 function remembered<T>(cache: WeakMap<object, T>, input: unknown): T | undefined {
@@ -1495,6 +1505,78 @@ function remembered<T>(cache: WeakMap<object, T>, input: unknown): T | undefined
 function remember<T extends object>(cache: WeakMap<object, T>, input: unknown, result: T): void {
   if (typeof input === 'object' && input !== null) cache.set(input, result);
   cache.set(result, result);
+}
+/** O(1) 形状键：指令数、首末 pc/nextPc 与首条指令的操作数；异常输入返回 undefined。 */
+function cheapShapeKey(input: unknown): string | undefined {
+  try {
+    if (input === null || typeof input !== 'object') return undefined;
+    const block = input as { readonly kind?: unknown; readonly instructions?: unknown };
+    if (block.kind !== 'block' || !Array.isArray(block.instructions)) return undefined;
+    const count = block.instructions.length;
+    if (count === 0) return undefined;
+    const first = block.instructions[0] as
+      { readonly pc?: unknown; readonly body?: unknown } | undefined;
+    const last = block.instructions[count - 1] as
+      { readonly pc?: unknown; readonly nextPc?: unknown } | undefined;
+    if (!first || !last || typeof first !== 'object' || typeof last !== 'object') return undefined;
+    const body = first.body;
+    if (!body || typeof body !== 'object') return undefined;
+    const operations = (body as { readonly operations?: unknown }).operations;
+    if (!Array.isArray(operations)) return undefined;
+    const firstPc = first.pc,
+      lastPc = last.pc,
+      lastNextPc = last.nextPc;
+    if (
+      typeof firstPc !== 'number' ||
+      !Number.isFinite(firstPc) ||
+      typeof lastPc !== 'number' ||
+      !Number.isFinite(lastPc) ||
+      typeof lastNextPc !== 'number' ||
+      !Number.isFinite(lastNextPc)
+    )
+      return undefined;
+    return `${count}:${shapeNumber(firstPc)}:${shapeNumber(lastPc)}:${shapeNumber(lastNextPc)}:${operations.length}`;
+  } catch {
+    return undefined;
+  }
+}
+function shapeNumber(value: number): string {
+  return Object.is(value, -0) ? '-0' : String(value);
+}
+function rememberBoundShape(definition: DeviceIR, block: BlockIR, shape: string | undefined): void {
+  if (shape === undefined) return;
+  let cache = boundBlockShapes.get(definition);
+  if (cache === undefined) {
+    cache = { buckets: new Map(), count: 0 };
+    boundBlockShapes.set(definition, cache);
+  }
+  let blocks = cache.buckets.get(shape);
+  if (blocks === undefined) {
+    if (cache.buckets.size >= BLOCK_SHAPE_BUCKETS) {
+      const oldest = cache.buckets.entries().next();
+      if (!oldest.done) {
+        cache.count -= oldest.value[1].length;
+        cache.buckets.delete(oldest.value[0]);
+      }
+    }
+    blocks = [];
+    cache.buckets.set(shape, blocks);
+  }
+  if (blocks.includes(block)) return;
+  blocks.push(block);
+  cache.count++;
+  while (blocks.length > BLOCK_SHAPE_PER_BUCKET) {
+    blocks.shift();
+    cache.count--;
+  }
+  while (cache.count > BLOCK_SHAPE_BLOCKS) {
+    const oldest = cache.buckets.entries().next();
+    if (oldest.done) break;
+    const [key, entries] = oldest.value;
+    entries.shift();
+    cache.count--;
+    if (!entries.length) cache.buckets.delete(key);
+  }
 }
 function reusedBoundBlock(
   definition: DeviceIR,
@@ -1594,17 +1676,34 @@ export function validateBoundBlockIR(input: unknown, device: DeviceIR): BlockIR 
   try {
     const cachedBlock = remembered(validatedBlocks, input);
     const definition = remembered(validatedDevices, device);
-    // Compute the digest before validation so malformed or cyclic input can fall through
-    // without touching the cache; structuralDigest never throws.
-    const digest = cachedBlock === undefined ? structuralDigest(input) : undefined;
-    if (cachedBlock === undefined && definition !== undefined && digest !== undefined) {
-      const reused = reusedBoundBlock(definition, input, digest);
-      if (reused !== undefined) {
-        remember(validatedBlocks, input, reused);
-        return reused;
+    const shape = cachedBlock === undefined ? cheapShapeKey(input) : undefined;
+    let digest: string | undefined;
+    let candidates: readonly BlockIR[] | undefined;
+    if (cachedBlock === undefined && definition !== undefined && shape !== undefined) {
+      candidates = boundBlockShapes.get(definition)?.buckets.get(shape);
+      // A first-seen shape validates without paying for a full structural digest. Only a
+      // repeated shape computes the digest and tries the existing digest/confirmation path.
+      if (candidates !== undefined && candidates.length) {
+        digest = structuralDigest(input);
+        if (digest !== undefined) {
+          const reused = reusedBoundBlock(definition, input, digest);
+          if (reused !== undefined) {
+            remember(validatedBlocks, input, reused);
+            return reused;
+          }
+          // The first block under a new shape has no digest yet; confirm against the shape
+          // bucket so the first repeat still reuses it, then promote it into the digest cache.
+          for (const block of candidates)
+            if (sameIR(input, block)) {
+              remember(validatedBlocks, input, block);
+              rememberBoundDigest(definition, block, digest);
+              return block;
+            }
+        }
       }
     }
     const captured = cachedBlock ?? capturedBlock(input);
+    const key = shape ?? cheapShapeKey(captured);
     if (definition === undefined) {
       // Original order: standalone structure, device validation, then binding. Never inspect an
       // uncached device before the standalone pass; a structurally invalid block must not
@@ -1615,17 +1714,17 @@ export function validateBoundBlockIR(input: unknown, device: DeviceIR): BlockIR 
       }
       const validated = validateDeviceIR(device);
       if (boundBlocks.get(captured)?.has(validated)) {
-        rememberBoundDigest(validated, captured, digest ?? structuralDigest(captured));
+        rememberBoundShape(validated, captured, key);
         return captured;
       }
       new Validator(validated).validateBlock(captured);
       rememberBound(captured, validated);
-      rememberBoundDigest(validated, captured, digest ?? structuralDigest(captured));
+      rememberBoundShape(validated, captured, key);
       return captured;
     }
     // Only a canonical, already validated device may run ahead of the standalone pass.
     if (boundBlocks.get(captured)?.has(definition)) {
-      rememberBoundDigest(definition, captured, digest ?? structuralDigest(captured));
+      rememberBoundShape(definition, captured, key);
       return captured;
     }
     try {
@@ -1640,7 +1739,8 @@ export function validateBoundBlockIR(input: unknown, device: DeviceIR): BlockIR 
     }
     if (cachedBlock === undefined) remember(validatedBlocks, input, captured);
     rememberBound(captured, definition);
-    rememberBoundDigest(definition, captured, digest ?? structuralDigest(captured));
+    rememberBoundShape(definition, captured, key);
+    if (digest !== undefined) rememberBoundDigest(definition, captured, digest);
     return captured;
   } catch (error) {
     if (error instanceof BuildError) {
