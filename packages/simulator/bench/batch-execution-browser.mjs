@@ -557,6 +557,9 @@ async function runBrowser(options, config, model) {
   let child;
   let session;
   let stderr = '';
+  let primaryError;
+  let cleanupError;
+  let resultValue;
   try {
     const bundle = await buildSite({
       model,
@@ -648,7 +651,7 @@ async function runBrowser(options, config, model) {
     }
     if (result === undefined)
       throw new Error(`Browser benchmark timed out after ${options.timeoutMs} ms\n${stderr}`);
-    return {
+    resultValue = {
       result,
       chromium,
       bundle: {
@@ -662,12 +665,27 @@ async function runBrowser(options, config, model) {
       },
       browser: version,
     };
+  } catch (cause) {
+    primaryError = cause;
   } finally {
     session?.close();
     if (child) await stopChild(child);
     if (server) await server.close();
-    await rm(root, { recursive: true, force: true });
+    try {
+      // Chromium can still be removing profile files while the process exits. Retry the
+      // transient ENOTEMPTY/EBUSY window without extending the benchmark itself.
+      await rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    } catch (cause) {
+      cleanupError = cause;
+    }
   }
+  if (primaryError !== undefined) {
+    if (cleanupError !== undefined && primaryError instanceof Error)
+      primaryError.message += ` (browser cleanup also failed: ${cleanupError?.message ?? cleanupError})`;
+    throw primaryError;
+  }
+  if (cleanupError !== undefined) throw cleanupError;
+  return resultValue;
 }
 
 async function hostEnvironment(options, chromium, browserVersion) {
