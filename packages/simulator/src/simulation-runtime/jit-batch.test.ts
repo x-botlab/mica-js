@@ -473,6 +473,7 @@ describe('JIT batch translation invalidation', () => {
           mark({ pc: 0, stopBefore: 3 } as never);
           mark({ pc: 0, stopBefore: '' } as never);
           mark({ pc: 0, stopBefore: 'missing' } as never);
+          mark({ pc: 0, extra: true } as never);
           mark({ pc: 0 });
           mark({ pc: 0 });
         }
