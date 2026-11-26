@@ -165,6 +165,11 @@ export interface JitOptions {
   readonly beforeInstruction?: InstructionHook;
   readonly polling?: readonly JitPolling[];
   readonly delays?: ReadonlyMap<number, JitDelay>;
+  /**
+   * 启用 Direct 指令体共享：同步翻译期间提供 `markDirectBodyShareable`，并只把通过
+   * 运行时校验的等价候选交给 Direct 会话。仅省略时为 false；关闭时所有入口独立执行。
+   */
+  readonly shareDirectBodies?: boolean;
   readonly translate: JitTranslate;
 }
 export interface JitHost {

@@ -133,6 +133,11 @@ export interface JitOptions {
    * 环内除该递减外无可观察效果；运行时按时间窗折叠轮次，最后一轮仍正常执行。
    */
   readonly delays?: ReadonlyMap<number, JitDelay>;
+  /**
+   * 启用 Direct 指令体共享：同步翻译期间提供 `markDirectBodyShareable`，并只把通过
+   * 运行时校验的等价候选交给 Direct 会话。仅省略时为 false；关闭时所有入口独立执行。
+   */
+  readonly shareDirectBodies?: boolean;
   readonly translate: JitTranslate;
 }
 export interface JitHost {

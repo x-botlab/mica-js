@@ -18,11 +18,11 @@
 Direct 指令体标记
 ------------------------------------------------
 
-仅在启用候选诊断或复用时，运行时在 ``JitTranslateInput`` 上提供可选 ``markDirectBodyShareable``。翻译器只在本次同步 ``translate`` 回调期间调用它，每次报告返回块中一个指令入口的连续取指字节范围。
+仅在注册启用 ``shareDirectBodies`` 时，运行时在 ``JitTranslateInput`` 上提供可选 ``markDirectBodyShareable``。翻译器只在本次同步 ``translate`` 回调期间调用它，每次报告返回块中一个指令入口的连续取指字节范围；翻译回调返回后该标记函数失效。
 
-``pc`` MUST 对应返回块中的指令入口。``byteLength`` MUST 是正安全整数，且 ``[pc, pc + byteLength)`` MUST 完全位于本次借用的代码 region 内。多次调用 MUST 分别对应不同指令入口。
+``pc`` MUST 对应本次返回块中的一个指令入口，且同一入口在本块内 MUST 最多标记一次。``byteLength`` MUST 是正安全整数，且 ``[pc - codeBase, pc - codeBase + byteLength)`` MUST 完全位于本次借用的代码 region 与借用视图内。入口 MUST 与起始 PC 使用同一逻辑窗口，排除 service PC、跨窗口取指、轮询入口和未获 Direct 准入的入口。
 
-缺少标记，或任一调用不满足上述条件时，该入口按普通入口执行，不参与 Direct 指令体复用。
+缺少标记，或任一调用不满足上述条件时，该入口按普通入口执行，不参与 Direct 指令体复用，翻译本身仍成功。运行时按 ``unknownPc``、``duplicate``、``invalidPc``、``invalidLength``、``outsideRegion``、``crossView``、``service``、``notAdmitted`` 分类记录拒绝；编译器按等价 IR、延时、重复键及编译上下文继续分类有效候选。
 
 代码变化
 ------------------------------------------------
