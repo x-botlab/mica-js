@@ -40,6 +40,7 @@ export type {
   DirectJitBinding,
   DirectJitFrame,
   DirectJitHost,
+  DirectJitEmitStats,
   DirectJitInstruction,
   DirectJitProgram,
   DirectJitReason,

@@ -271,6 +271,34 @@ export interface DirectJitProgram {
 }
 
 /**
+ * Development-only code shape: how many host statements one IR operation costs. The full
+ * program exposes the latest build's value, and an incremental session exposes the union of
+ * its currently valid instruction bodies.
+ */
+export interface DirectJitEmitStats {
+  readonly blocks: number;
+  /** Top-level IR operations, the denominator #256 quotes for one instruction block. */
+  readonly operations: number;
+  /** IR operations including nested value and statement regions. */
+  readonly nestedOperations: number;
+  readonly statements: number;
+  readonly statementsPerOperation: number;
+  readonly statementsPerNestedOperation: number;
+  /** Operations that cost no statement because they folded; adds back the pre-folding count. */
+  readonly foldedOperations: number;
+  readonly selectBlocks: number;
+  /** Worst block by statements per operation; `null` for an empty program. */
+  readonly worst: {
+    readonly pc: number;
+    readonly operations: number;
+    readonly statements: number;
+    readonly statementsPerOperation: number;
+    readonly foldedOperations: number;
+    readonly selectBlocks: number;
+  } | null;
+}
+
+/**
  * Physical identity of one translated instruction body. Two logical PCs may name the same
  * bytes of one storage generation; they are only considered for sharing when every field
  * matches.
@@ -316,7 +344,7 @@ export interface DirectJitShareRejectedStats {
   readonly missing: number;
   /** The marker was present but not a valid storage/version/offset/byteLength tuple. */
   readonly invalid: number;
-  /** The entry is the only candidate for its physical identity. */
+  /** The entry is the only candidate for its physical identity or equivalence partition. */
   readonly single: number;
   /** A same-key candidate has the same delay but a different validated IR. */
   readonly ir: number;
@@ -324,7 +352,7 @@ export interface DirectJitShareRejectedStats {
   readonly delay: number;
   /** Loop-publishing entries never share in this revision. */
   readonly isolated: number;
-  /** Different physical identity or another unsupported compilation context. */
+  /** The body could not be emitted in this session's compilation context. */
   readonly context: number;
 }
 
@@ -400,6 +428,11 @@ export interface DirectJitSession {
   readonly routeCount: number;
   /** Sorted PCs the session can dispatch; bodies the direct emitter declined are excluded. */
   readonly pcs: readonly number[];
+  /**
+   * Development-only code shape over every currently valid instruction body. Updated by
+   * session commits (`add`/`remove`/`updateDelays`/`clear`), never during `run`.
+   */
+  readonly emitStats: DirectJitEmitStats;
   stats(): DirectJitSessionStats;
   /** Detach from the cache. Other programs/sessions keep their own compiled snapshots. */
   dispose(): void;
