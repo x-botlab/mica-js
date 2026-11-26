@@ -42,7 +42,7 @@ pnpm --filter @mica-js/simulator test
 pnpm typecheck:conformance
 ```
 
-- 编译器：127 项通过。
+- 编译器：128 项通过。
 - 模拟器运行时：98 项通过；完整模拟器测试（含 V8 基准解析）243 项通过。
 - 符合性类型检查通过。
 
