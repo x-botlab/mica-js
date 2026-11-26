@@ -59,7 +59,7 @@ export interface JitCodeRegion {
   readonly base: number;
   readonly size: number;
 }
-/** Direct 时间准入声明；`service` 引用本实例 number 状态，`blocked` 引用安静的 pure fn。 */
+/** Direct 时间准入声明；`service` 引用本实例 number 状态，`blocked` 引用安静的 pure fn 且依赖 `service`。 */
 export interface JitDirectTiming {
   /**
    * 定时服务状态名：`elapsed` 是自同一上次结算点起的已累计量，`deadline` 是该时点的期限，
@@ -223,7 +223,8 @@ export interface JitOptions {
   readonly delays?: ReadonlyMap<number, JitDelay>;
   /**
    * Direct 时间准入：`service` 指向本实例的定时服务 number 状态，`blocked` 指向安静条件。
-   * 省略时不检查服务期限与安静条件，仅按宿主上限和其余准入条件优化。
+   * 省略时同步翻译不提供 `markDirectSpan`/`markDirectLoop`，不做时间候选登记；普通 Direct
+   * 仍按宿主上限和其余准入条件执行。
    */
   readonly directTiming?: JitDirectTiming;
   /**
