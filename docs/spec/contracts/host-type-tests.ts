@@ -17,6 +17,7 @@ import {
   type JitCodeRegion,
   type JitCodeMetadataInput,
   type JitCodeMetadataProvider,
+  type JitBatchMark,
   type JitDirectTiming,
   type JitLoopAddress,
   type JitLoopCandidate,
@@ -24,6 +25,7 @@ import {
   type JitTranslateInput,
   type JitTranslationDependency,
   type Notification,
+  type ProcessBatchRegistration,
   type ReadonlyBytes,
   type RuntimeDiagnostic,
 } from './host';
@@ -54,6 +56,12 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
     service: { elapsed: 'clockPs', deadline: 'serviceDeadline' },
     blocked: 'quiet',
   };
+  const batchRegistration: ProcessBatchRegistration = {
+    process: { kind: 'start', index: 0 },
+    loop: 0,
+    stopBefore: 'deadline',
+  };
+  const batchSubscription = context.registerProcessBatch(batchRegistration);
   const jit = context.attachJit({
     entry: 'step',
     code: 'code',
@@ -90,11 +98,13 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
         address: loopAddress,
       };
       const dependencies: readonly JitTranslationDependency[] = [{ offset: 0, length: 1 }];
+      const batchMark: JitBatchMark = { pc: 0, stopBefore: 'deadline' };
       mark?.(input.pc, input.code.length);
       input.markDirectSpan?.(input.pc, 2);
       input.markDirectLoop?.(input.pc, loopCandidate);
       input.markTranslationDependencies?.(dependencies);
-      void [byte, base, version, mark, loopAddress, loopCandidate, dependencies];
+      input.markBatchLoop?.(batchMark);
+      void [byte, base, version, mark, loopAddress, loopCandidate, dependencies, batchMark];
       builder.instruction({ pc: input.pc, nextPc: input.pc + 1 }, (body) => body.stop());
       return builder.finish();
     },
@@ -132,6 +142,7 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
     },
     dispose() {
       subscription.dispose();
+      batchSubscription.dispose();
       jit.dispose();
     },
   };
@@ -175,8 +186,18 @@ const description: BoardDescription = {
   ],
   nets: [{ id: 'ground', voltage: 0, pins: [{ instance: 'node', pin: 'reference' }] }],
 };
-const validOptions: BoardOptions = { seed: 0, execution: 'throughput', cpuQuantum: 10_000_000 };
-const onlyOption: Record<keyof BoardOptions, number> = { seed: 0, execution: 0, cpuQuantum: 0 };
+const validOptions: BoardOptions = {
+  seed: 0,
+  execution: 'throughput',
+  cpuQuantum: 10_000_000,
+  batchExecution: true,
+};
+const onlyOption: Record<keyof BoardOptions, number> = {
+  seed: 0,
+  execution: 0,
+  cpuQuantum: 0,
+  batchExecution: 0,
+};
 void onlyOption;
 const board: Board = createBoard(library, description, validOptions);
 void board;
@@ -233,7 +254,35 @@ function rejectsWrongShapes(
   const undefinedQuantum: BoardOptions = { cpuQuantum: undefined };
   // @ts-expect-error Quantum uses integer picoseconds, not a duration string.
   const badQuantum: BoardOptions = { cpuQuantum: '10us' };
+  // @ts-expect-error Explicit undefined is not omission.
+  const undefinedBatch: BoardOptions = { batchExecution: undefined };
+  // @ts-expect-error Batch execution is a boolean switch.
+  const nullBatch: BoardOptions = { batchExecution: null };
+  // @ts-expect-error Batch execution is not a mode name.
+  const stringBatch: BoardOptions = { batchExecution: 'on' };
+  // @ts-expect-error A start target requires its declared index.
+  const badBatchTarget: ProcessBatchRegistration = { process: { kind: 'start' }, loop: 0 };
+  const nullStopBefore: ProcessBatchRegistration = {
+    process: { kind: 'on', name: 'tick' },
+    loop: 0,
+    // @ts-expect-error stopBefore is a state name, not null.
+    stopBefore: null,
+  };
+  // @ts-expect-error An explicit undefined stopBefore must be omitted.
+  const undefinedStopBefore: ProcessBatchRegistration = {
+    process: { kind: 'on', name: 'tick' },
+    loop: 0,
+    stopBefore: undefined,
+  };
   void [badExecution, undefinedExecution, undefinedQuantum, badQuantum];
+  void [
+    undefinedBatch,
+    nullBatch,
+    stringBatch,
+    badBatchTarget,
+    nullStopBefore,
+    undefinedStopBefore,
+  ];
   // @ts-expect-error Context properties are fixed values.
   context.props.count = 3;
   // @ts-expect-error Input channel payloads keep their generated types.

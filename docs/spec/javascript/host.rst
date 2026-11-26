@@ -51,12 +51,36 @@
 
 ``seed`` 是 uint32，省略为 0。``instances[].randomState`` 可覆盖对应实例的四字初始状态；数值检查、派生算法及参考向量见 :doc:`/execution/random`。种子不读取宿主时间或随机源。
 
-``options`` 接受 ``seed``、``execution`` 与 ``cpuQuantum``；未知字段按配置错误拒绝。``execution`` 仅接受 ``'throughput'`` 或 ``'precise'``，省略时使用 ``'throughput'``。``cpuQuantum`` 是整数 ps，合法范围为 1 到 10_000_000，省略时使用 10_000_000，即 10 μs。它限定吞吐模式引入的 CPU 可见性预算；精确模式仍校验此字段，但不使用其值。两字段均只有省略才采用默认，显式 ``undefined`` 或 ``null`` 均拒绝。模式、时间预算和轮询声明见 :doc:`/jit/throughput`。
+``options`` 接受 ``seed``、``execution``、``cpuQuantum`` 与 ``batchExecution``；未知字段按配置错误拒绝。``execution`` 仅接受 ``'throughput'`` 或 ``'precise'``，省略时使用 ``'throughput'``。``cpuQuantum`` 是整数 ps，合法范围为 1 到 10_000_000，省略时使用 10_000_000，即 10 μs。它限定吞吐模式引入的 CPU 可见性预算；精确模式仍校验此字段，但不使用其值。``batchExecution`` 是显式布尔开关，省略为 ``false``；``true`` 仅在吞吐模式生效，精确模式保留逐指令路径。四个字段均只有省略才采用默认，显式 ``undefined`` 或 ``null`` 均拒绝。类型、范围与开关错误使用 ``INVALID_CONFIGURATION``。模式、时间预算和轮询声明见 :doc:`/jit/throughput`。
 
 声明数值合法不等于宿主能够分配；已知配置与资源建立错误在工厂前拒绝，建立失败报告 ``RESOURCE_ALLOCATION_FAILED``。运行中输出快照、编译缓存等资源分配失败属于框架故障，保留已发生效果，见 :doc:`/errors`。非终止调用及容器外墙钟终止的边界见 :doc:`/execution/scheduling`，它们不新增核心超时接口。
 
-推进、故障与销毁
+合批执行声明
 ------------------------------------------------
+
+``batchExecution`` 是宿主显式启用的优化开关。启用后，过程与 JIT 入口可在同一个调度准入点提交多个无观察交错的轮次；关闭或未提供候选时保持原执行路径。调度窗口、提交顺序与可观察等价性由 :doc:`/execution/scheduling` 定义，JIT 标记与候选限制由 :doc:`/jit/throughput` 定义。
+
+器件在同步工厂初始化期间通过上下文登记过程候选：
+
+.. code-block:: typescript
+
+   const registration = context.registerProcessBatch({
+     process: { kind: 'start', index: 0 },
+     loop: 0,
+     stopBefore: 'deadline',
+   });
+   // 释放后下一次调度回到普通路径。
+   registration.dispose();
+
+``process`` 选择本模型声明中的过程：``start.index`` 是该声明从 0 起的序号，``on.name`` 匹配已声明的过程名。``loop`` 是该过程体直接包含的 ``while`` 按源码顺序从 0 起的序号。``stopBefore`` 可省略；存在时引用本实例的非负整数 ps ``number`` 状态，其当前值作为绝对仿真时间上限，只能收紧调度预算。省略 ``stopBefore`` 表示不增加模型时间上限。运行期读取到非法时间或越出合法范围时，本次合批尝试回退普通路径，注册保持活动。
+
+``registerProcessBatch`` 返回 ``@mica-js/core/lifecycle`` 的 ``Disposable``，重复释放安全；释放后该实例下一次调度走普通路径。同一实例的同一过程与循环序号至多有一个活动注册。过程目标、循环序号与 ``stopBefore`` 绑定在登记时校验：未知过程、越界循环、未知或非 number 状态使用 ``INVALID_BINDING``；在同步工厂初始化之外调用使用 ``INVALID_CALL_STATE``。关闭 ``batchExecution`` 的板仍执行相同的形状与绑定校验，只是不产生合批候选。
+
+JIT 候选通过同步翻译的 ``JitTranslateInput.markBatchLoop`` 报告，仅当板启用合批且处于吞吐模式时提供。每项标记包含返回块中的循环头 ``pc`` 与可选 ``stopBefore``。每次翻译都必须重新提交标记，包括器件复用已缓存块时；非法、重复或无法证明的标记只取消该入口的优化，原 ``BlockIR`` 仍通过现有翻译校验。
+
+``IPreparedSimulation`` 与 SDK 的 ``HeadlessRuntimeOptions`` 接受同名 ``batchExecution`` 标量。准备阶段校验该字段，建板时转发，复位重建沿用同一捕获值；失败装载保留当前可用板及待处理输入。编辑器运行 guest 通过现有 typed RPC 的装载请求传递同一开关。
+
+
 
 板公开只读 ``time``、``status``，以及 ``runUntil(target): void`` 和 ``dispose(): void``。成功创建时 ``time`` 为 0、``status`` 为 ready；创建过程不执行模型启动过程，首次推进的初始求解见 :doc:`/execution/scheduling`。推进成功时 ``time`` 等于目标值，消息通过适配对象 ``sync`` 交付；不重复返回批次对象。
 
@@ -150,7 +174,9 @@ SDK 与生成类型
    * - @mica-js/simulator
      - createDeviceLibrary、createBoard、SimulationError，以及板、装配、运行时诊断类型。
    * - @mica-js/simulator/device
-     - DeviceContext、DeviceBatch、DeviceFactory、DeviceAdapter、端点、话题、字节视图与 JIT 宿主接口。
+     - DeviceContext、DeviceBatch、DeviceFactory、DeviceAdapter、过程合批声明、端点、话题、字节视图与 JIT 宿主接口。
+   * - @mica-js/sdk/device
+     - 面向器件作者重导出同一组通用 context、批次、合批声明与 JIT 类型。
    * - @mica-js/simulator/model
      - DeviceIR、BlockIR、SourceInfo、IR 校验、BuildError、类型描述及 Builder。
    * - @mica-js/simulator/ddl
