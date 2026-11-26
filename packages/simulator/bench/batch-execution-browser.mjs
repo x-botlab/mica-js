@@ -607,12 +607,22 @@ async function runBrowser(options, config, model) {
     const deadline = Date.now() + options.timeoutMs;
     let result;
     while (Date.now() < deadline) {
-      const evaluated = await session.send('Runtime.evaluate', {
-        expression:
-          '({ result: globalThis.__BATCH_EXECUTION_RESULT__ ?? null, ' +
-          'error: globalThis.__BATCH_EXECUTION_ERROR__ ?? null, ready: document.readyState })',
-        returnByValue: true,
-      });
+      let evaluated;
+      try {
+        evaluated = await session.send('Runtime.evaluate', {
+          expression:
+            '({ result: globalThis.__BATCH_EXECUTION_RESULT__ ?? null, ' +
+            'error: globalThis.__BATCH_EXECUTION_ERROR__ ?? null, ready: document.readyState })',
+          returnByValue: true,
+        });
+      } catch (cause) {
+        // The page context can be replaced while the document finishes loading.
+        if (/execution context|Cannot find context|context was destroyed/i.test(String(cause))) {
+          await sleep(100);
+          continue;
+        }
+        throw cause;
+      }
       const value = evaluated?.result?.value;
       if (value?.error !== undefined && value.error !== null)
         throw new Error(`Browser benchmark failed: ${value.error}`);
