@@ -1,4 +1,10 @@
-import type { DeclarationIR, InputPath, OperationIR, SourceInfo } from '@mica-js/device-model';
+import type {
+  DeclarationIR,
+  InputPath,
+  OperationIR,
+  RegionIR,
+  SourceInfo,
+} from '@mica-js/device-model';
 
 export type ExecutionSignal =
   | { readonly kind: 'ticks' | 'elapse'; readonly duration: number }
@@ -262,6 +268,86 @@ export interface DirectJitProgram {
   readonly writeStates: readonly string[];
   readonly readMemories: readonly string[];
   readonly writeMemories: readonly string[];
+}
+
+/**
+ * One translated instruction submitted to an incremental direct JIT session.
+ *
+ * The entry is committed atomically with the rest of its `add` batch. The body stays opaque
+ * so a later revision can attach sharing metadata without changing this contract.
+ */
+export interface DirectJitInstruction {
+  readonly pc: number;
+  readonly nextPc: number;
+  readonly body: RegionIR;
+}
+
+/**
+ * A direct execution result. `untranslated` asks the caller to translate the current PC and
+ * call `add`; `pending` is reserved for a future asynchronous translation path and is not
+ * returned by the synchronous session today.
+ */
+export type DirectJitRunResult = DirectJitReason | 'untranslated' | 'pending';
+
+/** Deterministic per-session counters; no value depends on wall-clock time. */
+export interface DirectJitSessionStats {
+  /** Completed `add` calls, including batches that only reused cached instructions. */
+  readonly batches: number;
+  /** Route entries written after an instruction body or shard function changed. */
+  readonly routeInstalls: number;
+  /** Route entries deleted because their PC was removed or rejected. */
+  readonly routeRemovals: number;
+  /** Shard functions emitted by this session. */
+  readonly compiledShards: number;
+  /** Existing shard functions retained across a session commit. */
+  readonly reusedShards: number;
+  /** Instruction bodies emitted by this session. */
+  readonly compiledBlocks: number;
+  /** Instruction bodies reused from the cache by this session. */
+  readonly reusedBlocks: number;
+  /** Cached instruction records replaced or deleted by this session. */
+  readonly invalidatedBlocks: number;
+  /** Currently dispatchable PCs. */
+  readonly routes: number;
+  /** Currently resident shard functions. */
+  readonly shards: number;
+  /** Cumulative generated source characters of emitted instruction bodies. */
+  readonly bodyBytes: number;
+  /** Cumulative generated source characters of emitted shard functions. */
+  readonly shardBytes: number;
+  /** Generated source characters of the one fixed dispatcher. */
+  readonly dispatcherBytes: number;
+  /** Cumulative generated source characters of separately compiled synchronous helpers. */
+  readonly helperBytes: number;
+}
+
+/**
+ * Incremental resident direct compiler for one JIT registration.
+ *
+ * The binding is fixed for the lifetime of the session. `add` commits translation batches,
+ * `remove` drops entries, and `updateDelays` reconciles busy-wait descriptions. The dispatch
+ * function is emitted once; later commits only install routes to new or rebuilt shards.
+ */
+export interface DirectJitSession {
+  run(frame: DirectJitFrame, deadline: number): DirectJitRunResult;
+  add(instructions: readonly DirectJitInstruction[]): void;
+  remove(pcs: readonly number[]): void;
+  updateDelays(delays?: ReadonlyMap<number, DirectJitDelay>): void;
+  clear(): void;
+  /** Whether a compiled route currently dispatches the PC. Rejected bodies report false. */
+  has(pc: number): boolean;
+  /**
+   * Locals required by every instruction ever compiled by this session. Only grows, so a
+   * runtime can expand `frame.locals` in place when a later batch needs more slots.
+   */
+  readonly localCount: number;
+  readonly shardCount: number;
+  readonly routeCount: number;
+  /** Sorted PCs the session can dispatch; bodies the direct emitter declined are excluded. */
+  readonly pcs: readonly number[];
+  stats(): DirectJitSessionStats;
+  /** Detach from the cache. Other programs/sessions keep their own compiled snapshots. */
+  dispose(): void;
 }
 
 /** Generated line and column are one-based, relative to Artifact.source. */
