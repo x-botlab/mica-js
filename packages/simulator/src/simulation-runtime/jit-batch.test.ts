@@ -757,7 +757,7 @@ describe('JIT batch falls back for conflicting execution modes', () => {
     }
   });
 
-  it('disables the feature in precise mode and with shared Direct artifacts', () => {
+  it('disables batching in precise mode while shared Direct artifacts still admit marked heads', () => {
     const precise = runPair({ execution: 'precise' }, 100);
     try {
       expect(precise.enabled).toEqual(precise.reference);
