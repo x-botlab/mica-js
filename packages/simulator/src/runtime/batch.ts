@@ -2,7 +2,6 @@ import type { BatchEffect, BatchLimit, BatchPlan, ProcessBatchPlan } from '@mica
 import type { Instance } from './instance';
 import type { ResourceSlot } from './state';
 import { MAX_TIME } from './execution';
-import type { ProcessBatchRegistration } from '../types';
 
 export type { ProcessBatchRegistration, ProcessBatchTarget } from '../types';
 export type { BatchEffect, BatchLimit, BatchPlan, ProcessBatchPlan } from '@mica-js/compiler';

@@ -665,7 +665,8 @@ describe('process batch registration', () => {
     [{ process: { kind: 'start' }, loop: 0 }, 'missing index'],
     [{ process: { kind: 'start', index: 0, name: 'x' }, loop: 0 }, 'foreign field'],
     [{ process: undefined, loop: 0 }, 'undefined process'],
-  ])('rejects %o (%s) with INVALID_BINDING', (registration, _label) => {
+  ])('rejects %o (%s) with INVALID_BINDING', (registration, label) => {
+    void label;
     const failure = registrationFailure(registration);
     expect(hasDiagnostic(failure, 'INVALID_BINDING')).toBe(true);
   });
