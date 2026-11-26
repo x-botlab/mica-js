@@ -63,6 +63,7 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
     translationIdentity: { abi: 'test-abi', configuration: 'clock=1' },
     directTier: { promoteAfter: 8 },
     shareDirectBodies: true,
+    shareDirectArtifacts: true,
     polling: [
       {
         pc: 0,
@@ -274,6 +275,17 @@ function rejectsWrongShapes(
     },
   };
   void undefinedSharing;
+  const badArtifactSharing: JitOptions = {
+    entry: 'artifacts',
+    code: 'code',
+    pc: 'position',
+    // @ts-expect-error A mode name is not the boolean switch.
+    shareDirectArtifacts: 'shared',
+    translate: () => {
+      throw new Error('unreachable');
+    },
+  };
+  void badArtifactSharing;
   // @ts-expect-error promoteAfter is a numeric threshold, not a duration string.
   const badPromoteAfter: JitOptions['directTier'] = { promoteAfter: '8' };
   // @ts-expect-error translationIdentity requires both abi and configuration.
