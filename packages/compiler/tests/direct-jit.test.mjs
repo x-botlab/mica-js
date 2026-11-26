@@ -4227,3 +4227,384 @@ test('createSession shares legacy cache stats without breaking program snapshots
     clears: 1,
   });
 });
+
+/** Physical identity helper for the #308 compiler-side body-sharing tests. */
+function shareKey(overrides = {}) {
+  return { storage: 'flash', codeVersion: 3, offset: 0x40, byteLength: 2, ...overrides };
+}
+
+/** Mark an instruction without changing its builder shape. */
+function withShare(instruction, share) {
+  return { ...instruction, share };
+}
+
+/** Register increment loop used to compare two equivalent logical windows. */
+function sharedIncrement(pc, nextPc, share) {
+  const b = builder();
+  const x = b.read('x');
+  b.write('x', b.binary('add', x, b.constant(1)));
+  b.delay(1);
+  return withShare(b.instruction(pc, nextPc), share);
+}
+
+test('equivalent share candidates emit one body and keep their own nextPc routes', () => {
+  const share = shareKey();
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  const sources = captureFactories(() =>
+    session.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]),
+  );
+  assert.equal(
+    sources.filter((source) => /function stepShared\d+/.test(source)).length,
+    1,
+    'one shared step/resume factory',
+  );
+  assert.equal(session.shardCount, 0, 'both entries left the independent shard set');
+
+  const stats = session.stats();
+  assert.equal(stats.shareCandidates, 2);
+  assert.equal(stats.shareGroups, 1);
+  assert.equal(stats.sharedRoutes, 2);
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.shareReusedBodies, 1, 'the second route reuses the emitted body');
+  assert(stats.shareReusedRoutes >= 2);
+  assert(stats.sharedBytes > 0);
+  assert.equal(stats.shardBytes, 0);
+  assert.equal(stats.shareRejected.ir + stats.shareRejected.delay, 0);
+
+  const independent = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  independent.add([sharedIncrement(0, 0), sharedIncrement(2, 2)]);
+  for (const pc of [0, 2]) {
+    const sharedFrame = frame(session, [pc, 0, 0, true, 0, 0]);
+    const plainFrame = frame(independent, [pc, 0, 0, true, 0, 0]);
+    for (const deadline of [1, 3, 7]) {
+      assert.equal(session.run(sharedFrame, deadline), 'deadline');
+      assert.equal(independent.run(plainFrame, deadline), 'deadline');
+      assert.deepEqual(sharedFrame.states, plainFrame.states, `pc ${pc} deadline ${deadline}`);
+      assert.equal(sharedFrame.time, plainFrame.time, `pc ${pc} deadline ${deadline}`);
+    }
+    assert.equal(sharedFrame.states[0], pc);
+  }
+});
+
+test('structural IR, delay and key differences never join a shared body', () => {
+  const share = shareKey();
+
+  const plain = compileDirectJit.createSession(
+    { ...binding, shardSize: 2 },
+    compileDirectJit.createCache(),
+  );
+  const first = sharedIncrement(0, 0, share);
+  const other = builder();
+  other.write('y', other.constant(9));
+  other.delay(1);
+  plain.add([first, withShare(other.instruction(2, 2), share)]);
+  let stats = plain.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedBodies, 0);
+  assert.equal(stats.routes, 2);
+  assert(stats.shareRejected.ir >= 1, 'same delay and key, different IR');
+
+  const redirectShare = shareKey({ offset: 0x44 });
+  const redirect = (pc, target) => {
+    const b = builder();
+    const destination = b.constant(target);
+    const delay = b.constant(1);
+    b.operations.push({ kind: 'redirect', target: destination, delay });
+    return withShare(b.instruction(pc, 0), redirectShare);
+  };
+  const redirected = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  redirected.add([redirect(0, 100), redirect(2, 200)]);
+  stats = redirected.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert(stats.shareRejected.ir >= 1, 'PC-relative redirect targets differ');
+
+  const delayedBinding = {
+    ...binding,
+    delayLoops: new Map([[0, { counter: 1, cycles: 10 }]]),
+  };
+  const delayed = compileDirectJit.createSession(delayedBinding, compileDirectJit.createCache());
+  delayed.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]);
+  stats = delayed.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert(stats.shareRejected.delay >= 1, 'delay fingerprints differ');
+
+  for (const [left, right] of [
+    [shareKey({ storage: 'flash-a' }), shareKey({ storage: 'flash-b' })],
+    [shareKey({ codeVersion: 4 }), shareKey({ codeVersion: 5 })],
+    [shareKey({ offset: 0x40 }), shareKey({ offset: 0x80 })],
+    [shareKey({ byteLength: 2 }), shareKey({ byteLength: 4 })],
+  ]) {
+    const session = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+    session.add([sharedIncrement(0, 0, left), sharedIncrement(2, 2, right)]);
+    stats = session.stats();
+    assert.equal(stats.shareGroups, 0);
+    assert.equal(stats.sharedBodies, 0);
+    assert.equal(stats.shareCandidates, 2);
+    assert(stats.shareRejected.context >= 2, 'different physical identity');
+  }
+});
+
+test('single, invalid, isolated and missing markers stay on independent routes', () => {
+  const share = shareKey({ offset: 0x50 });
+  const single = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  single.add([sharedIncrement(0, 0, share)]);
+  let stats = single.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedBodies, 0);
+  assert.equal(stats.shareRejected.single, 1);
+  assert.equal(single.routeCount, 1);
+
+  const invalid = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  invalid.add([sharedIncrement(0, 0, shareKey({ offset: -1 }))]);
+  stats = invalid.stats();
+  assert.equal(stats.shareCandidates, 0);
+  assert.equal(stats.shareRejected.invalid, 1);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(invalid.routeCount, 1);
+
+  const looping = (pc) => {
+    const b = builder();
+    const no = b.constant(false);
+    b.operations.push({
+      kind: 'while',
+      test: { body: { operations: [{ kind: 'yield', value: no }] } },
+      body: { operations: [] },
+    });
+    b.write('y', b.constant(1));
+    b.delay(0);
+    return withShare(b.instruction(pc, pc), shareKey({ offset: 0x54 }));
+  };
+  const isolated = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  isolated.add([looping(0), looping(2)]);
+  stats = isolated.stats();
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedBodies, 0);
+  assert(stats.shareRejected.isolated >= 1);
+
+  const missing = compileDirectJit.createSession(binding, compileDirectJit.createCache());
+  missing.add([sharedIncrement(0, 0, shareKey({ offset: 0x58 }))]);
+  missing.add([sharedIncrement(0, 0)]);
+  stats = missing.stats();
+  assert.equal(stats.shareCandidates, 0);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.shareRejected.missing, 1);
+  assert.equal(missing.routeCount, 1);
+});
+
+test('a shared elapse resumes through each route and completes the suffix once', () => {
+  const share = shareKey({ offset: 0x60 });
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 4 },
+    compileDirectJit.createCache(),
+  );
+  const suspending = (pc, nextPc) => {
+    const b = builder();
+    b.write('x', b.constant(1));
+    b.delay(5);
+    b.write('marker', b.constant(7));
+    return withShare(b.instruction(pc, nextPc), share);
+  };
+  const tail = (pc, value) => {
+    const b = builder();
+    b.write('y', b.constant(value));
+    b.operations.push({ kind: 'stop' });
+    return b.instruction(pc, 0);
+  };
+  session.add([suspending(0, 10), suspending(2, 12), tail(10, 100), tail(12, 200)]);
+  let stats = session.stats();
+  assert.equal(stats.shareGroups, 1);
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.sharedRoutes, 2);
+
+  for (const [pc, tailValue] of [
+    [0, 100],
+    [2, 200],
+  ]) {
+    const f = frame(session, [pc, 0, 0, true, 0, 0]);
+    assert.equal(session.run(f, 2), 'deadline');
+    assert.notEqual(f.resume, 0);
+    assert.equal(f.states[0], pc === 0 ? 10 : 12);
+    assert.equal(f.states[1], 1);
+    assert.equal(f.states[5], 0, 'suffix has not run yet');
+    assert.equal(session.run(f, 6), 'stopped');
+    assert.equal(f.states[5], 7, 'the suffix completed exactly once');
+    assert.equal(f.states[2], tailValue, 'the actual route nextPc selected the tail');
+    assert.equal(f.resume, 0);
+    assert.equal(f.time, 5);
+    assert.equal(session.run(f, 5), 'deadline', 'no time advances before another instruction');
+    assert.equal(f.states[5], 7);
+  }
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 1, 'both logical routes used one resume function');
+});
+
+test('replacing a shared entry retires only its route and preserves old continuations', () => {
+  const share = shareKey({ offset: 0x70 });
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  const suspending = (pc) => {
+    const b = builder();
+    b.write('x', b.constant(1));
+    b.delay(5);
+    b.write('marker', b.constant(7));
+    return withShare(b.instruction(pc, pc), share);
+  };
+  session.add([suspending(0), suspending(2)]);
+  assert.equal(session.stats().sharedBodies, 1);
+
+  const f = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(f, 2), 'deadline');
+  const oldResume = f.resume;
+  assert.notEqual(oldResume, 0);
+
+  const replacement = builder();
+  replacement.write('y', replacement.constant(9));
+  replacement.delay(1);
+  session.add([withShare(replacement.instruction(0, 0), share)]);
+  let stats = session.stats();
+  assert.equal(stats.sharedBodies, 1, 'replacement did not emit another equivalent body');
+  assert.equal(stats.sharedRoutes, 1, 'the unchanged peer still uses the shared body');
+  assert.equal(stats.shareGroups, 1, 'retained shared body with one route');
+  assert.equal(stats.routes, 2);
+  assert(stats.shareRejected.ir >= 1);
+
+  // The suspended frame keeps its old resume function and suffix.
+  f.stopAfterInstruction = true;
+  assert.equal(session.run(f, 6), 'invalidated');
+  assert.equal(f.states[5], 7, 'old shared suffix completed once');
+  assert.equal(f.states[2], 0, 'replacement body did not start');
+  assert.equal(f.resume, 0);
+
+  const fresh = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(fresh, 2), 'deadline');
+  assert.equal(fresh.states[2], 9, 'fresh PC 0 uses the independent replacement route');
+  assert.equal(fresh.states[1], 0);
+
+  const peer = frame(session, [2, 0, 0, true, 0, 0]);
+  assert.equal(session.run(peer, 6), 'deadline');
+  assert.equal(peer.states[1], 1, 'the peer route still shares the original body');
+  assert.equal(peer.states[5], 7);
+
+  // Restoring an equivalent body joins the retained shared body without re-emitting it.
+  session.add([suspending(0)]);
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.sharedRoutes, 2);
+  assert.equal(stats.shareGroups, 1);
+  const restored = frame(session, [0, 0, 0, true, 0, 0]);
+  assert.equal(session.run(restored, 6), 'deadline');
+  assert.equal(restored.states[1], 1);
+  assert.equal(restored.states[5], 7);
+});
+
+test('remove, clear and updateDelays reconcile shared groups, routes and counters', () => {
+  const share = shareKey({ offset: 0x80 });
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  session.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]);
+  let stats = session.stats();
+  const bodies = stats.sharedBodies;
+  const reused = stats.shareReusedBodies;
+  assert.equal(bodies, 1);
+
+  session.remove([0]);
+  stats = session.stats();
+  assert.equal(stats.shareCandidates, 1);
+  assert.equal(stats.shareGroups, 1, 'a retained shared body may serve one route');
+  assert.equal(stats.sharedRoutes, 1);
+  assert.equal(stats.routes, 1);
+  assert.equal(stats.sharedBodies, bodies);
+  const remaining = frame(session, [2, 0, 0, true, 0, 0]);
+  assert.equal(session.run(remaining, 2), 'deadline');
+  assert.equal(remaining.states[1], 2);
+
+  session.remove([2]);
+  stats = session.stats();
+  assert.equal(stats.shareCandidates, 0);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedRoutes, 0);
+  assert.equal(stats.routes, 0);
+  assert.equal(stats.shards, 0);
+  assert.equal(stats.sharedBodies, bodies);
+
+  // Re-adding the same equivalence class reuses the archived shared function.
+  session.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]);
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, bodies, 'no duplicate equivalent body');
+  assert(stats.shareReusedBodies > reused);
+  assert.equal(stats.sharedRoutes, 2);
+
+  session.clear();
+  stats = session.stats();
+  assert.equal(stats.shareCandidates, 0);
+  assert.equal(stats.shareGroups, 0);
+  assert.equal(stats.sharedRoutes, 0);
+  assert.equal(stats.routes, 0);
+  assert.equal(stats.sharedBodies, bodies, 'byte/body counters stay cumulative');
+
+  const delayed = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  delayed.add([sharedIncrement(0, 0, share), sharedIncrement(2, 2, share)]);
+  const before = delayed.stats();
+  delayed.updateDelays(new Map([[0, { counter: 1, cycles: 10 }]]));
+  stats = delayed.stats();
+  assert.equal(stats.routes, 2);
+  assert.equal(stats.sharedRoutes, 1, 'the changed-delay entry left the shared body');
+  assert.equal(stats.shareGroups, 1);
+  assert.equal(stats.shards, 1);
+  assert.equal(stats.sharedBodies, before.sharedBodies);
+  assert(stats.shareRejected.delay >= 1);
+
+  delayed.updateDelays();
+  stats = delayed.stats();
+  assert.equal(stats.sharedRoutes, 2);
+  assert.equal(stats.shareGroups, 1);
+  assert.equal(stats.shards, 0);
+  assert.equal(stats.sharedBodies, before.sharedBodies, 'restoring the delay reuses the body');
+  assert(stats.shareReusedBodies > before.shareReusedBodies);
+});
+
+test('a third equivalent route reuses the body and adds only its own route', () => {
+  const share = shareKey({ offset: 0x90 });
+  const session = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  // A distinct literal keeps the emitted source unique even if the factory cache is warm.
+  const unique = (pc) => {
+    const b = builder();
+    b.write('x', b.constant(12345));
+    b.delay(1);
+    return withShare(b.instruction(pc, pc), share);
+  };
+  const firstSources = captureFactories(() => session.add([unique(0), unique(2)]));
+  assert.equal(firstSources.filter((source) => /function stepShared\d+/.test(source)).length, 1);
+  let stats = session.stats();
+  assert.equal(stats.sharedBodies, 1);
+  const reused = stats.shareReusedBodies;
+
+  const laterSources = captureFactories(() => session.add([unique(4)]));
+  assert.equal(
+    laterSources.filter((source) => /function stepShared\d+/.test(source)).length,
+    0,
+    'no new shared body for an equivalent third route',
+  );
+  stats = session.stats();
+  assert.equal(stats.sharedBodies, 1);
+  assert.equal(stats.sharedRoutes, 3);
+  assert.equal(stats.shareReusedBodies, reused + 1);
+  assert(stats.sharedBytes > 0);
+  assert(stats.shardBytes === 0);
+});

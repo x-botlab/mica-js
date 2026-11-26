@@ -271,6 +271,22 @@ export interface DirectJitProgram {
 }
 
 /**
+ * Physical identity of one translated instruction body. Two logical PCs may name the same
+ * bytes of one storage generation; they are only considered for sharing when every field
+ * matches.
+ */
+export interface DirectJitShareCandidate {
+  /** Storage identity, for example the memory name. */
+  readonly storage: string;
+  /** Code version used for the translation. */
+  readonly codeVersion: number;
+  /** Physical offset of this entry in the borrowed view. */
+  readonly offset: number;
+  /** Actual bytes fetched consecutively from this entry. */
+  readonly byteLength: number;
+}
+
+/**
  * One translated instruction submitted to an incremental direct JIT session.
  *
  * The entry is committed atomically with the rest of its `add` batch. The body stays opaque
@@ -280,6 +296,8 @@ export interface DirectJitInstruction {
   readonly pc: number;
   readonly nextPc: number;
   readonly body: RegionIR;
+  /** Explicit opt-in to function-body sharing; unmarked entries always stay independent. */
+  readonly share?: DirectJitShareCandidate;
 }
 
 /**
@@ -288,6 +306,27 @@ export interface DirectJitInstruction {
  * returned by the synchronous session today.
  */
 export type DirectJitRunResult = DirectJitReason | 'untranslated' | 'pending';
+
+/**
+ * Why a marked entry did not join an equivalent shared body. Counters are cumulative and
+ * only advance when an entry's classification changes, so an unchanged commit adds nothing.
+ */
+export interface DirectJitShareRejectedStats {
+  /** No marker, or a previously marked PC was replaced by an unmarked entry. */
+  readonly missing: number;
+  /** The marker was present but not a valid storage/version/offset/byteLength tuple. */
+  readonly invalid: number;
+  /** The entry is the only candidate for its physical identity. */
+  readonly single: number;
+  /** A same-key candidate has the same delay but a different validated IR. */
+  readonly ir: number;
+  /** A same-key candidate has different IR and delay, or a different delay fingerprint. */
+  readonly delay: number;
+  /** Loop-publishing entries never share in this revision. */
+  readonly isolated: number;
+  /** Different physical identity or another unsupported compilation context. */
+  readonly context: number;
+}
 
 /** Deterministic per-session counters; no value depends on wall-clock time. */
 export interface DirectJitSessionStats {
@@ -319,6 +358,22 @@ export interface DirectJitSessionStats {
   readonly dispatcherBytes: number;
   /** Cumulative generated source characters of separately compiled synchronous helpers. */
   readonly helperBytes: number;
+  /** Valid share candidates currently owned by the session. */
+  readonly shareCandidates: number;
+  /** Equivalence groups currently backed by a shared body, including retained single routes. */
+  readonly shareGroups: number;
+  /** Current routes that point at a shared body. */
+  readonly sharedRoutes: number;
+  /** Entry attachments that reused an already emitted shared body instead of emitting one. */
+  readonly shareReusedBodies: number;
+  /** Shared-body route installs, including migrations from independent shard routes. */
+  readonly shareReusedRoutes: number;
+  /** Cumulative rejection reasons for marked entries. */
+  readonly shareRejected: DirectJitShareRejectedStats;
+  /** Shared step/resume factories emitted by this session. */
+  readonly sharedBodies: number;
+  /** Cumulative generated source characters of emitted shared bodies. */
+  readonly sharedBytes: number;
 }
 
 /**
