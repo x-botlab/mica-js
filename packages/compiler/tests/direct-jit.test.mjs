@@ -3347,9 +3347,9 @@ test('resident factory cache evicts the least recently used source at its entry 
     });
     return sources.some((source) => source.includes('function stepShard'));
   };
-  for (let i = 0; i < 128; i++) assert.equal(compile(i), true);
+  for (let i = 0; i < 512; i++) assert.equal(compile(i), true);
   assert.equal(compile(0), false, 'a hit refreshes the oldest source');
-  assert.equal(compile(128), true, 'adding another source evicts index 1');
+  assert.equal(compile(512), true, 'adding another source evicts index 1');
   assert.equal(compile(0), false, 'a recently used source survives');
   assert.equal(compile(1), true, 'an evicted source is compiled again');
 });
@@ -5605,7 +5605,7 @@ test('artifact cache reuses shard sources and factories and stays bounded under 
   assert.deepEqual(a.states, b.states);
 
   const overflow = compileDirectJit.createArtifactCache();
-  for (let index = 0; index < 130; index++) {
+  for (let index = 0; index < 514; index++) {
     const session = compileDirectJit.createSession(
       { ...binding, shardSize: 1 },
       compileDirectJit.createCache(),
@@ -5614,7 +5614,7 @@ test('artifact cache reuses shard sources and factories and stays bounded under 
     session.add([directBlock(0x400000 + 2 * index, 0, index)]);
   }
   const bounded = compileDirectJit.artifactCacheStats(overflow);
-  assert.equal(bounded.shardEntries, 128);
+  assert.equal(bounded.shardEntries, 512);
   assert(bounded.sourceUnits > 0);
   assert(bounded.evictions > 0);
   const factories = bounded.createdFactories;
@@ -5736,4 +5736,72 @@ test('marked spans and loops install and resume with the artifact cache', () => 
   assert.equal(loop.run(folded, 100), 'deadline');
   assert.equal(folded.time, 100);
   assert.equal(folded.directMetrics.loopRounds, 9);
+});
+
+/** Distinct CT107D-sized instruction body; the immediate keeps every template different. */
+function firmwareInstruction(index, count, duration = 1) {
+  const pc = 0x10000 + 2 * index;
+  const nextPc = index === count - 1 ? 0 : pc + 2;
+  const b = builder();
+  b.write('x', b.constant(index));
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+test('artifact limits retain a 700-route firmware across a second board', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const count = 700;
+  const settings = { ...binding, shardSize: 32 };
+  const first = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  const firmware = Array.from({ length: count }, (_, index) => firmwareInstruction(index, count));
+  first.add(firmware);
+
+  const populated = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(populated.compiledInstructions, count);
+  assert.equal(populated.instructionEntries, count);
+  assert.equal(populated.evictions, 0, 'the firmware set fits without eviction');
+  assert(populated.sourceUnits > 0);
+
+  const factories = populated.createdFactories;
+  const second = compileDirectJit.createSession(
+    { ...binding, shardSize: 32, states: new Map([...binding.states].reverse()) },
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  const sources = captureFactories(() =>
+    second.add(Array.from({ length: count }, (_, index) => firmwareInstruction(index, count))),
+  );
+  const reopened = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(second.stats().artifactInstructionHits, count);
+  assert.equal(second.stats().artifactInstructionMisses, 0);
+  assert.equal(reopened.compiledInstructions, count);
+  assert.equal(reopened.reusedInstructions, count);
+  assert.equal(reopened.createdFactories, factories, 'no shard factory reconstruction');
+  assert.equal(sources.length, 0, 'no new Function for reused firmware templates or shards');
+
+  const f = frame(second, [0x10000, -1, 0, true, 0, 0]);
+  assert.equal(second.run(f, 1), 'deadline');
+  assert.equal(f.states[1], 0, 'the first reused firmware body executed');
+});
+
+test('artifact instruction LRU still evicts beyond the firmware-sized cap', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const count = 2049;
+  const settings = { ...binding, shardSize: 64 };
+  const first = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  first.add(Array.from({ length: count }, (_, index) => firmwareInstruction(index, count, 0)));
+
+  const populated = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(populated.compiledInstructions, count);
+  assert.equal(populated.instructionEntries, 2048);
+  assert(populated.evictions > 0);
+
+  const oldest = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  oldest.add([firmwareInstruction(0, count, 0)]);
+  assert.equal(oldest.stats().artifactInstructionHits, 0, 'the oldest template was evicted');
+  assert.equal(oldest.stats().artifactInstructionMisses, 1);
+
+  const newest = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  newest.add([firmwareInstruction(count - 1, count, 0)]);
+  assert.equal(newest.stats().artifactInstructionHits, 1, 'the newest template remains resident');
 });

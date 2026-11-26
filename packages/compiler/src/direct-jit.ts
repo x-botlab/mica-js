@@ -554,18 +554,27 @@ function cacheState(cache: DirectJitCache): DirectJitCacheState {
 }
 
 /**
- * Artifact limits. The instruction cache is bounded by entries and emitted source characters;
- * the shard cache keeps the historical 128 entries / 4 Mi characters / 64 Ki per source.
- * Constants are append-only and are replaced wholesale at 64 Ki values / 4 Mi retained
- * characters. Replacing the pool advances a generation so older local pools stay private and
- * no template index is reused against a different value.
+ * Artifact limits sized from a real CT107D cold boot: `national-3-access` exposes 615 distinct
+ * direct instructions before the second board opens. The former 256-instruction cap evicted
+ * most of them and every cross-instance template lookup missed. The instruction cache therefore
+ * keeps 2048 templates / 16 Mi emitted source units, enough for that firmware plus its hot
+ * variants.
+ *
+ * The shard cache keeps 512 sources / 16 Mi retained source characters / 64 Ki per source:
+ * enough for the closed resident shards and the batch variants of a typical CT107D reopen,
+ * while still bounding a long-lived process.
+ *
+ * Constants stay append-only but are capped at 64 Ki values / 4 Mi retained characters and
+ * replaced wholesale when either cap would be exceeded. Replacing the pool advances a
+ * generation so older local pools stay private and no template index is reused against a
+ * different value.
  */
-const MAX_ARTIFACT_INSTRUCTIONS = 256;
-const MAX_ARTIFACT_INSTRUCTION_SOURCE_UNITS = 4 * 1024 * 1024;
+const MAX_ARTIFACT_INSTRUCTIONS = 2048;
+const MAX_ARTIFACT_INSTRUCTION_SOURCE_UNITS = 16 * 1024 * 1024;
 const MAX_ARTIFACT_CONSTANTS = 64 * 1024;
 const MAX_ARTIFACT_CONSTANT_UNITS = 4 * 1024 * 1024;
-const MAX_ARTIFACT_SHARDS = 128;
-const MAX_ARTIFACT_SHARD_SOURCE_UNITS = 4 * 1024 * 1024;
+const MAX_ARTIFACT_SHARDS = 512;
+const MAX_ARTIFACT_SHARD_SOURCE_UNITS = 16 * 1024 * 1024;
 const MAX_CACHED_SHARD_SOURCE_UNITS = 64 * 1024;
 
 const directJitArtifacts = new WeakMap<DirectJitArtifactCache, ArtifactCacheState>();
