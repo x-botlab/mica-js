@@ -4858,6 +4858,56 @@ test('a marked span fuses a pure prefix before the terminal write and falls back
   assert.equal(session.stats().spanRuns, 1);
 });
 
+test('a span terminal must be a non-isolated, non-stop ordinary write', () => {
+  const settings = optimizedBinding();
+
+  const looping = builder();
+  const no = looping.constant(false);
+  looping.operations.push({
+    kind: 'while',
+    test: { body: { operations: [{ kind: 'yield', value: no }] } },
+    body: { operations: [] },
+  });
+  looping.write('y', looping.constant(1));
+  looping.delay(0);
+  const isolatedTerminal = looping.instruction(2, 4);
+
+  const isolatedSpan = sessionWith(
+    [spanMarked(nopInstruction(0, 2, 2), [0, 2]), isolatedTerminal],
+    settings,
+  );
+  assert.equal(isolatedSpan.stats().spansInstalled, 0);
+  assert.equal(isolatedSpan.stats().spansRejected, 1, 'an isolated terminal is rejected');
+  const isolatedPlain = sessionWith([nopInstruction(0, 2, 2), isolatedTerminal], settings);
+  const isolatedFrame = bankFrame(isolatedSpan, [0, 1, 0, true, 0, 0], [[0]], true);
+  const isolatedReference = bankFrame(isolatedPlain, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(
+    isolatedSpan.run(isolatedFrame, 5),
+    isolatedPlain.run(isolatedReference, 5),
+    'the normal route still executes after rejection',
+  );
+  sameObservable(isolatedFrame, isolatedReference);
+  assert.equal(isolatedFrame.directMetrics.spanRuns, 0);
+
+  const readOnlySpan = sessionWith(
+    [spanMarked(nopInstruction(0, 2, 2), [0, 2]), nopInstruction(2, 4, 1)],
+    settings,
+  );
+  assert.equal(readOnlySpan.stats().spansInstalled, 0);
+  assert.equal(readOnlySpan.stats().spansRejected, 1, 'a read-only terminal is rejected');
+
+  const accepted = sessionWith(
+    [spanMarked(nopInstruction(0, 2, 2), [0, 2]), storeInstruction(2, 4, 42, 5)],
+    settings,
+  );
+  assert.equal(accepted.stats().spansInstalled, 1);
+  assert.equal(accepted.stats().spansRejected, 0);
+  const fused = bankFrame(accepted, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(accepted.run(fused, 3), 'deadline');
+  assert.equal(fused.states[1], 42, 'the terminal write ran on the fused path');
+  assert.equal(fused.directMetrics.spanRuns, 1);
+});
+
 test('a deadline in the middle of a span prefix leaves the terminal unwritten', () => {
   const settings = optimizedBinding();
   const members = [nopInstruction(0, 2, 2), nopInstruction(2, 4, 2), storeInstruction(4, 6, 42, 5)];

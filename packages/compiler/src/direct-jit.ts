@@ -5542,6 +5542,17 @@ class DirectJitSessionImpl implements DirectJitSession {
         if (!spanPrefixProof(memberRecord.body, this.binding, this.timing)) return undefined;
         if (!Number.isSafeInteger(duration + memberDuration)) return undefined;
         duration += memberDuration;
+      } else {
+        const writesState = [...instruction.writeStates].some(
+          (name) => name !== this.binding.pc.name,
+        );
+        if (
+          instruction.isolated ||
+          instruction.stop ||
+          instruction.guard.length !== 0 ||
+          (!writesState && instruction.writeMemories.size === 0)
+        )
+          return undefined;
       }
       members.push({ record: memberRecord, instruction });
     }
