@@ -577,6 +577,45 @@ describe('headless fused runtime', () => {
     );
   });
 
+  it('captures a valid batch-execution switch before asynchronous preparation', async () => {
+    const state = { limit: 0, disposed: 0 };
+    const options = {
+      document: probeDocument(3),
+      registry: createRegistry({ [PROBE]: { manifest: PROBE_MANIFEST } }),
+      step: STEP,
+      batchExecution: true,
+      loadModule: async () => {
+        (options as { batchExecution?: unknown }).batchExecution = 'mutated';
+        return probeModule(state);
+      },
+    } as HeadlessRuntimeOptions;
+    const runtime = await createHeadlessRuntime(options);
+    try {
+      await runtime.step();
+      expect(runtime.getState()).toEqual({ status: 'paused', simTime: STEP });
+      expect(state.limit).toBe(3);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
+  it('ignores an inherited batch-execution value', async () => {
+    const state = { limit: 0, disposed: 0 };
+    const options = Object.assign(Object.create({ batchExecution: 'inherited' }), {
+      document: probeDocument(3),
+      registry: createRegistry({ [PROBE]: { manifest: PROBE_MANIFEST } }),
+      step: STEP,
+      loadModule: async () => probeModule(state),
+    }) as HeadlessRuntimeOptions;
+    const runtime = await createHeadlessRuntime(options);
+    try {
+      await runtime.step();
+      expect(runtime.getState()).toEqual({ status: 'paused', simTime: STEP });
+    } finally {
+      await runtime.dispose();
+    }
+  });
+
   it('accepts the batch-execution switch and keeps it across reset', async () => {
     const state = { limit: 0, disposed: 0 };
     const harness = await start(

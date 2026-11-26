@@ -203,10 +203,15 @@ class HeadlessRuntimeImpl implements HeadlessRuntime {
   readonly onDidChangeState: Event<RuntimeState> = this.#stateEmitter.event;
   readonly onDidReportDiagnostic: Event<RuntimeDiagnostic> = this.#diagnosticEmitter.event;
 
-  constructor(prepared: PreparedSession, options: HeadlessRuntimeOptions, step: number) {
+  constructor(
+    prepared: PreparedSession,
+    options: HeadlessRuntimeOptions,
+    step: number,
+    batchExecution: boolean | undefined,
+  ) {
     this.#prepared = prepared;
     this.#step = step;
-    this.#batchExecution = options.batchExecution;
+    this.#batchExecution = batchExecution;
     this.#onModelEvent = options.onModelEvent;
     this.#onDiagnostic = options.onDiagnostic;
     this.#session = this.#createSession();
@@ -690,7 +695,9 @@ export async function createHeadlessRuntime(
   if (options === null || typeof options !== 'object') {
     throw new TypeError('createHeadlessRuntime expects an options object');
   }
-  if (Object.hasOwn(options, 'batchExecution') && typeof options.batchExecution !== 'boolean') {
+  const hasBatchExecution = Object.hasOwn(options, 'batchExecution');
+  const batchExecution = hasBatchExecution ? options.batchExecution : undefined;
+  if (hasBatchExecution && typeof batchExecution !== 'boolean') {
     const entry = diagnostic('INVALID_CONFIGURATION', 'options.batchExecution must be a boolean');
     options.onDiagnostic?.(entry);
     throw new FusedRuntimeError(entry.code, entry.message);
@@ -727,5 +734,5 @@ export async function createHeadlessRuntime(
     ...(options.programs === undefined ? {} : { programs: options.programs }),
     ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
   });
-  return new HeadlessRuntimeImpl(prepared, options, step);
+  return new HeadlessRuntimeImpl(prepared, options, step, batchExecution);
 }
