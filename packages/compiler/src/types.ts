@@ -150,6 +150,44 @@ export interface DirectJitCacheStats {
   readonly clears: number;
 }
 
+declare const directJitArtifactOpaque: unique symbol;
+
+/**
+ * Opaque, bounded compiler artifact cache shared by sessions and boards.
+ *
+ * The cache owns immutable instruction templates, their compatible append-only constant pool,
+ * stable resistor slots and resident shard source factories. It never owns a frame, route
+ * table, continuation id, capture slot or other instance state. Obtain one from
+ * `compileDirectJit.createArtifactCache()`; sessions keep their compiled functions alive
+ * after eviction.
+ */
+export interface DirectJitArtifactCache {
+  readonly [directJitArtifactOpaque]: true;
+}
+
+/** Deterministic cross-session artifact counters; no value depends on wall-clock time. */
+export interface DirectJitArtifactCacheStats {
+  /** Instruction templates emitted after a miss. */
+  readonly compiledInstructions: number;
+  /** Instruction templates reused from the artifact cache. */
+  readonly reusedInstructions: number;
+  /** Resident shard sources reused before regeneration. */
+  readonly reusedShardSources: number;
+  /** Unbound shard factories created with new Function. */
+  readonly createdFactories: number;
+  /** Unbound shard factories reused. */
+  readonly reusedFactories: number;
+  /** Current entries in the instruction LRU. */
+  readonly instructionEntries: number;
+  /** Current entries in the shard factory LRU. */
+  readonly shardEntries: number;
+  /** Current cumulative source characters retained by the shard cache. */
+  readonly sourceUnits: number;
+  /** LRU evictions from either cache. */
+  readonly evictions: number;
+  readonly clears: number;
+}
+
 export interface DirectJitDelay {
   readonly counter: number;
   readonly cycles: number;
@@ -195,6 +233,47 @@ export interface DirectJitBinding {
    * time to the accumulator, so skipping rounds cannot starve those peripherals.
    */
   readonly delayLoops?: ReadonlyMap<number, DirectJitDelay>;
+  /** Numeric slots and optional pure guard for device timing admission. */
+  readonly directTiming?: DirectJitTiming;
+  /** Physical length of each memory bank, used to prove static address ranges. */
+  readonly memoryLengths?: ReadonlyMap<string, number>;
+  /** Memories that contain executable code; prefix stores there are rejected. */
+  readonly codeMemories?: ReadonlySet<string>;
+}
+
+/** Compile-time address of one counter byte below a direct loop candidate. */
+export type DirectJitMemoryAddress =
+  | { readonly kind: 'constant'; readonly offset: number }
+  | {
+      readonly kind: 'maskedByte';
+      readonly memory: string;
+      readonly offset: number;
+      readonly mask: number;
+      readonly bits: number;
+    };
+
+/** A self-jumping direct instruction the compiler may fold into many rounds. */
+export type DirectJitLoopCandidate =
+  | { readonly kind: 'spin' }
+  | {
+      readonly kind: 'decrement8';
+      readonly memory: string;
+      readonly address: DirectJitMemoryAddress;
+    };
+
+/** Resolved contiguous instruction PCs of a marked span; first entry is the marked PC. */
+export interface DirectJitSpanCandidate {
+  readonly pcs: readonly number[];
+}
+
+/** Device timing admission for marked spans and loops. */
+export interface DirectJitTiming {
+  /** Number-state slot holding the device service elapsed time (ps). */
+  readonly elapsed: number;
+  /** Number-state slot holding the device service deadline (ps), 0 = no service. */
+  readonly deadline: number;
+  /** Name of a validated pure zero-argument bool function; true forces the normal path. */
+  readonly blocked?: string;
 }
 
 /**
@@ -252,6 +331,8 @@ export interface DirectJitFrame {
   finishCheckpoint?: (deadline: number, emptySuffix: boolean) => boolean;
   /** Present when the program was compiled with `DirectJitBinding.host`. */
   readonly host?: DirectJitHost;
+  /** Optional mutable counters for span/loop execution; the runtime aggregates them. */
+  readonly directMetrics?: { spanRuns: number; loopRounds: number };
 }
 
 export type DirectJitReason = 'deadline' | 'fallback' | 'stopped' | 'invalidated';
@@ -326,6 +407,10 @@ export interface DirectJitInstruction {
   readonly body: RegionIR;
   /** Explicit opt-in to function-body sharing; unmarked entries always stay independent. */
   readonly share?: DirectJitShareCandidate;
+  /** Marked contiguous instructions fused when every prefix member is provably pure. */
+  readonly span?: DirectJitSpanCandidate;
+  /** Marked self-jump folded into as many complete rounds as the horizon allows. */
+  readonly loop?: DirectJitLoopCandidate;
 }
 
 /**
@@ -372,6 +457,10 @@ export interface DirectJitSessionStats {
   readonly compiledBlocks: number;
   /** Instruction bodies reused from the cache by this session. */
   readonly reusedBlocks: number;
+  /** Instruction templates reused from the artifact cache by this session. */
+  readonly artifactInstructionHits: number;
+  /** Instruction templates this session had to emit after an artifact lookup miss. */
+  readonly artifactInstructionMisses: number;
   /** Cached instruction records replaced or deleted by this session. */
   readonly invalidatedBlocks: number;
   /** Currently dispatchable PCs. */
@@ -402,6 +491,18 @@ export interface DirectJitSessionStats {
   readonly sharedBodies: number;
   /** Cumulative generated source characters of emitted shared bodies. */
   readonly sharedBytes: number;
+  /** Marked spans that became a fused step route. */
+  readonly spansInstalled: number;
+  /** Marked spans rejected by structural or timing proof. */
+  readonly spansRejected: number;
+  /** Fused span routes that actually executed the fused path. */
+  readonly spanRuns: number;
+  /** Marked loops that became a folding route. */
+  readonly loopsInstalled: number;
+  /** Marked loops rejected by structural or timing proof. */
+  readonly loopsRejected: number;
+  /** Total rounds folded by installed loop routes. */
+  readonly loopRounds: number;
 }
 
 /**

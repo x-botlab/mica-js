@@ -1,5 +1,8 @@
 import {
   compileDirectJit,
+  type CompiledBody,
+  type DirectJitArtifactCache,
+  type DirectJitArtifactCacheStats,
   type DirectJitBinding,
   type DirectJitFrame,
   type DirectJitHost,
@@ -7,6 +10,7 @@ import {
   type DirectJitSession,
   type DirectJitSessionStats,
   type DirectJitShareRejectedStats,
+  type DirectJitTiming,
   type ExecutionSignal,
 } from '@mica-js/compiler';
 import { createJitBlockBuilder, validateBoundBlockIR } from '@mica-js/device-model';
@@ -30,14 +34,34 @@ import type {
   JitCodeRegion,
   JitCodeRegionView,
   JitDelay,
+  JitLoopCandidate,
+  JitTranslationDependency,
   RuntimeDiagnosticCode,
   RuntimePhase,
   SimulationError,
 } from '../types';
-import { bytesView, finite } from '../values';
+import { bytesView, dataObject, finite } from '../values';
 
 /** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
 const DIRECT_SHARD_SIZE = 32;
+/**
+ * Process-wide compiler artifact cache for registrations that opt in with
+ * `shareDirectArtifacts: true`. The default gives every registration its own cache.
+ */
+const sharedDirectArtifacts = compileDirectJit.createArtifactCache();
+/** Last artifact counters observed by each JIT from its selected cache. */
+const directArtifactSnapshots = new WeakMap<Jit, DirectJitArtifactCacheStats>();
+/** False when a declared quiet guard cannot be resolved; marked routes must not enroll. */
+const directTimingEligible = new WeakMap<Jit, boolean>();
+
+/** Resolve one registration's artifact cache; omission keeps the original private default. */
+export function resolveDirectArtifactCache(
+  shareDirectArtifacts: boolean | undefined,
+): DirectJitArtifactCache {
+  return shareDirectArtifacts === true
+    ? sharedDirectArtifacts
+    : compileDirectJit.createArtifactCache();
+}
 
 export function syncJitCall(jit: Jit, name: string): unknown {
   const step = jit.host.call(name, []).next();
@@ -74,6 +98,45 @@ export interface DirectShareMarkRejectedStats {
   /** The entry is polling or does not use the primary code memory. */
   notAdmitted: number;
 }
+/** Runtime-side classifications of a rejected `markDirectSpan` call. */
+export interface DirectSpanMarkRejectedStats {
+  /** The PC or instruction count is not a valid integer in range. */
+  invalid: number;
+  /** The marked PC is not an instruction entry of the returned block. */
+  unknownPc: number;
+  /** The same block marked one span head more than once. */
+  duplicate: number;
+  /** Members are missing, repeated or their `nextPc` does not join the next member. */
+  discontinuous: number;
+  /** A member is polling, belongs to another code memory or is a service fallback. */
+  notAdmitted: number;
+  /** A loop mark names the same entry. */
+  conflict: number;
+}
+/** Runtime-side classifications of a rejected `markDirectLoop` call. */
+export interface DirectLoopMarkRejectedStats {
+  /** The marker or candidate shape is not a plain supported object. */
+  invalid: number;
+  /** The marked PC is not an instruction entry of the returned block. */
+  unknownPc: number;
+  /** The same block marked one loop head more than once. */
+  duplicate: number;
+  /** The instruction is polling or belongs to another code memory. */
+  notAdmitted: number;
+  /** The loop head has an effective delay declaration. */
+  delayConflict: number;
+  /** A span mark names the same entry. */
+  conflict: number;
+  /** The counter memory or synthesized address is out of range. */
+  address: number;
+}
+/** Runtime-side classifications of a rejected `markTranslationDependencies` call. */
+export interface DirectDependencyMarkRejectedStats {
+  /** A range is not a pair of non-negative safe integers. */
+  invalidRange: number;
+  /** `offset + length` leaves the borrowed translation view. */
+  outsideView: number;
+}
 
 /** Mutable copy of the compiler's cumulative rejection counters. */
 export type DirectShareRejectedStats = {
@@ -107,8 +170,30 @@ export interface DirectJitStats {
   directDispatchMisses: number;
   /** Instructions the interpreter actually started executing. */
   directGenericInstructions: number;
+  /** Successfully completed generic instructions counted toward two-tier promotion. */
+  directPromotionGenericRuns: number;
+  /** PCs whose promotion counter reached `directTier.promoteAfter`. */
+  directPromotions: number;
+  /** Direct admission attempts that stayed generic because the PC was not promoted. */
+  directTierFallbacks: number;
+  /** Promoted PCs that currently own a dispatchable route in the active session. */
+  directPromotedRoutes: number;
+  /** Promotion records cleared by primary code writes or overlapping IR replacement. */
+  directPromotionResets: number;
   /** Cumulative generated characters of emitted instruction bodies. */
   directBodyBytes: number;
+  /** Instruction templates reused from this JIT's artifact cache by its sessions. */
+  directArtifactInstructionHits: number;
+  /** Instruction templates this JIT's sessions had to emit after an artifact miss. */
+  directArtifactInstructionMisses: number;
+  /** Shard sources reused from this JIT's selected artifact cache, observed as JIT deltas. */
+  directArtifactShardSourceHits: number;
+  /** Shard factories compiled after an artifact miss, observed as JIT deltas. */
+  directArtifactFactoryCompiles: number;
+  /** Shard factories reused from this JIT's selected artifact cache, observed as JIT deltas. */
+  directArtifactFactoryReuses: number;
+  /** Current instruction + shard entries in this JIT's selected artifact cache. */
+  directArtifactEntries: number;
   /** Cumulative generated characters of emitted shard functions. */
   directShardBytes: number;
   /** Cumulative generated characters of fixed dispatchers. */
@@ -135,6 +220,32 @@ export interface DirectJitStats {
   directShareRejected: DirectShareRejectedStats;
   /** Runtime-side classifications for rejected marks; the entry still executes normally. */
   directShareMarkRejected: DirectShareMarkRejectedStats;
+  /** Cumulative span routes installed by the compiler. */
+  directSpans: number;
+  /** Fused span executions observed through per-frame metrics. */
+  directSpanRuns: number;
+  /** Cumulative span markers rejected by structural or timing proof. */
+  directSpanRejected: number;
+  /** Cumulative loop routes installed by the compiler. */
+  directLoops: number;
+  /** Rounds folded by installed loop routes, observed through per-frame metrics. */
+  directLoopRounds: number;
+  /** Cumulative loop markers rejected by structural or timing proof. */
+  directLoopRejected: number;
+  /** `markDirectSpan` callbacks received while a translation is in progress. */
+  directSpanCallbacks: number;
+  /** Span marks that passed runtime validation across all translations. */
+  directSpanCandidates: number;
+  /** `markDirectLoop` callbacks received while a translation is in progress. */
+  directLoopCallbacks: number;
+  /** Loop marks that passed runtime validation across all translations. */
+  directLoopCandidates: number;
+  /** Runtime-side classifications for rejected span marks. */
+  directSpanMarkRejected: DirectSpanMarkRejectedStats;
+  /** Runtime-side classifications for rejected loop marks. */
+  directLoopMarkRejected: DirectLoopMarkRejectedStats;
+  /** Runtime-side classifications for rejected dependency ranges. */
+  directDependencyMarkRejected: DirectDependencyMarkRejectedStats;
 }
 
 /**
@@ -224,7 +335,18 @@ function directStats(jit: Jit): DirectJitStats {
     directRoutes: 0,
     directDispatchMisses: 0,
     directGenericInstructions: 0,
+    directPromotionGenericRuns: 0,
+    directPromotions: 0,
+    directTierFallbacks: 0,
+    directPromotedRoutes: 0,
+    directPromotionResets: 0,
     directBodyBytes: 0,
+    directArtifactInstructionHits: 0,
+    directArtifactInstructionMisses: 0,
+    directArtifactShardSourceHits: 0,
+    directArtifactFactoryCompiles: 0,
+    directArtifactFactoryReuses: 0,
+    directArtifactEntries: 0,
     directShardBytes: 0,
     directDispatcherBytes: 0,
     directHelperBytes: 0,
@@ -255,6 +377,37 @@ function directStats(jit: Jit): DirectJitStats {
       service: 0,
       notAdmitted: 0,
     },
+    directSpans: 0,
+    directSpanRuns: 0,
+    directSpanRejected: 0,
+    directLoops: 0,
+    directLoopRounds: 0,
+    directLoopRejected: 0,
+    directSpanCallbacks: 0,
+    directSpanCandidates: 0,
+    directLoopCallbacks: 0,
+    directLoopCandidates: 0,
+    directSpanMarkRejected: {
+      invalid: 0,
+      unknownPc: 0,
+      duplicate: 0,
+      discontinuous: 0,
+      notAdmitted: 0,
+      conflict: 0,
+    },
+    directLoopMarkRejected: {
+      invalid: 0,
+      unknownPc: 0,
+      duplicate: 0,
+      notAdmitted: 0,
+      delayConflict: 0,
+      conflict: 0,
+      address: 0,
+    },
+    directDependencyMarkRejected: {
+      invalidRange: 0,
+      outsideView: 0,
+    },
   });
 }
 
@@ -283,6 +436,10 @@ function syncDirectSessionStats(jit: Jit, session: DirectJitSession): void {
   stats.directRouteInstalls += next.routeInstalls - (base?.routeInstalls ?? 0);
   stats.directRouteRemovals += next.routeRemovals - (base?.routeRemovals ?? 0);
   stats.directBodyBytes += next.bodyBytes - (base?.bodyBytes ?? 0);
+  stats.directArtifactInstructionHits +=
+    next.artifactInstructionHits - (base?.artifactInstructionHits ?? 0);
+  stats.directArtifactInstructionMisses +=
+    next.artifactInstructionMisses - (base?.artifactInstructionMisses ?? 0);
   stats.directShardBytes += next.shardBytes - (base?.shardBytes ?? 0);
   stats.directDispatcherBytes += next.dispatcherBytes - (base?.dispatcherBytes ?? 0);
   stats.directHelperBytes += next.helperBytes - (base?.helperBytes ?? 0);
@@ -303,8 +460,28 @@ function syncDirectSessionStats(jit: Jit, session: DirectJitSession): void {
     next.shareRejected.isolated - (base?.shareRejected.isolated ?? 0);
   stats.directShareRejected.context +=
     next.shareRejected.context - (base?.shareRejected.context ?? 0);
+  stats.directSpans += next.spansInstalled - (base?.spansInstalled ?? 0);
+  stats.directSpanRejected += next.spansRejected - (base?.spansRejected ?? 0);
+  stats.directLoops += next.loopsInstalled - (base?.loopsInstalled ?? 0);
+  stats.directLoopRejected += next.loopsRejected - (base?.loopsRejected ?? 0);
+  // Shard/factory counters cover one artifact cache. Attribute the delta since this JIT
+  // last observed its selected cache; `directArtifactEntries` publishes the current gauge.
+  const artifacts = compileDirectJit.artifactCacheStats(jit.artifactCache);
+  const artifactsBase = directArtifactSnapshots.get(jit);
+  stats.directArtifactShardSourceHits +=
+    artifacts.reusedShardSources - (artifactsBase?.reusedShardSources ?? 0);
+  stats.directArtifactFactoryCompiles +=
+    artifacts.createdFactories - (artifactsBase?.createdFactories ?? 0);
+  stats.directArtifactFactoryReuses +=
+    artifacts.reusedFactories - (artifactsBase?.reusedFactories ?? 0);
+  stats.directArtifactEntries = artifacts.instructionEntries + artifacts.shardEntries;
+  directArtifactSnapshots.set(jit, artifacts);
   stats.directShards = next.shards;
   stats.directRoutes = next.routes;
+  let promotedRoutes = 0;
+  for (const [pc, promotion] of jit.promotions)
+    if (promotion.state === 'promoted' && session.has(pc)) promotedRoutes++;
+  stats.directPromotedRoutes = promotedRoutes;
   directSessionSnapshots.set(jit, { session, stats: next });
 }
 
@@ -322,6 +499,7 @@ function releaseDirectSession(jit: Jit): void {
   if (stats !== undefined) {
     stats.directShards = 0;
     stats.directRoutes = 0;
+    stats.directPromotedRoutes = 0;
     stats.directShareGroups = 0;
     stats.directSharedRoutes = 0;
   }
@@ -359,6 +537,7 @@ export function disposeDirect(jit: Jit): void {
   jit.directStale = false;
   jit.directSkip = undefined;
   jit.directMemories.clear();
+  clearPromotions(jit, false);
 }
 
 /** Region that supplies bytes for a logical PC; undefined means the service-PC fallback. */
@@ -383,7 +562,126 @@ function directAdmitted(jit: Jit, instruction: JitInstruction): boolean {
   );
 }
 
+/**
+ * Two-tier admission. Without `directTier` every admitted entry keeps the immediate-Direct
+ * policy; with a tier only a promoted entry whose exact translation identity still matches
+ * may enter a session.
+ */
+function directTierAdmitted(jit: Jit, instruction: JitInstruction | undefined): boolean {
+  if (jit.options.directTier === undefined) return true;
+  if (instruction === undefined) return false;
+  const promotion = jit.promotions.get(instruction.pc);
+  return (
+    promotion !== undefined &&
+    promotion.state === 'promoted' &&
+    promotion.body === instruction.body &&
+    promotion.nextPc === instruction.nextPc &&
+    promotion.codeVersion === instruction.codeVersion
+  );
+}
+
+/** Revoke one Direct route after its promotion identity changed; suspended suffixes finish. */
+function revokeDirectRoute(jit: Jit, pc: number): void {
+  const direct = jit.direct;
+  if (direct === undefined || jit.directStale || direct.frame.resume !== 0) return;
+  if (!direct.session.has(pc)) return;
+  direct.session.remove([pc]);
+  syncDirectSessionStats(jit, direct.session);
+}
+
+/**
+ * Clear every promotion record of this instance. `reset` counts the records as invalidated by
+ * primary code writes or IR replacement; explicit disposal clears them silently.
+ */
+export function clearPromotions(jit: Jit, reset = true): void {
+  if (jit.promotions.size === 0) return;
+  const stats = directJitStats(jit);
+  if (stats !== undefined) {
+    if (reset) stats.directPromotionResets += jit.promotions.size;
+    stats.directPromotedRoutes = 0;
+  }
+  jit.promotions.clear();
+}
+
+/**
+ * Count one successfully completed generic instruction. Only the shared generic body calls
+ * this, after its final suffix and after re-checking that the executed translation is still
+ * the cached one. Polling, rejected and stale paths never reach the threshold.
+ */
+function recordDirectPromotion(jit: Jit, pc: number, instruction: JitInstruction): void {
+  const tier = jit.options.directTier;
+  if (tier === undefined) return;
+  const current = jit.cache.get(pc);
+  if (
+    current === undefined ||
+    current.body !== instruction.body ||
+    current.nextPc !== instruction.nextPc ||
+    current.codeVersion !== instruction.codeVersion ||
+    !directAdmitted(jit, current)
+  )
+    return;
+  let promotion = jit.promotions.get(pc);
+  if (
+    promotion !== undefined &&
+    (promotion.body !== current.body ||
+      promotion.nextPc !== current.nextPc ||
+      promotion.codeVersion !== current.codeVersion)
+  ) {
+    // Defensive: translation-time reconciliation normally clears this before any completion.
+    jit.promotions.delete(pc);
+    revokeDirectRoute(jit, pc);
+    promotion = undefined;
+  }
+  const stats = directStats(jit);
+  if (promotion === undefined) {
+    promotion = {
+      count: 0,
+      state: 'generic',
+      body: current.body,
+      nextPc: current.nextPc,
+      codeVersion: current.codeVersion,
+    };
+    jit.promotions.set(pc, promotion);
+  } else if (promotion.state === 'promoted') return;
+  stats.directPromotionGenericRuns++;
+  if (promotion.count < tier.promoteAfter) {
+    promotion.count = Math.min(promotion.count + 1, Number.MAX_SAFE_INTEGER);
+    if (promotion.count >= tier.promoteAfter) {
+      promotion.state = 'promoted';
+      stats.directPromotions++;
+    }
+  }
+}
+
+/**
+ * Reconcile promotion state with an overlapping translation. Identical body/nextPc/version
+ * keeps the counter; any other replacement clears that PC and revokes its old route.
+ */
+function reconcilePromotions(
+  jit: Jit,
+  instructions: readonly JitInstruction[],
+  oldEntries: ReadonlyMap<number, JitInstruction>,
+): void {
+  if (jit.options.directTier === undefined || jit.promotions.size === 0) return;
+  const stats = directJitStats(jit);
+  for (const instruction of instructions) {
+    if (!oldEntries.has(instruction.pc)) continue;
+    const promotion = jit.promotions.get(instruction.pc);
+    if (promotion === undefined) continue;
+    if (
+      promotion.body === instruction.body &&
+      promotion.nextPc === instruction.nextPc &&
+      promotion.codeVersion === instruction.codeVersion
+    )
+      continue;
+    jit.promotions.delete(instruction.pc);
+    if (stats !== undefined) stats.directPromotionResets++;
+    revokeDirectRoute(jit, instruction.pc);
+  }
+}
+
 function directInstruction(jit: Jit, instruction: JitInstruction): DirectJitInstruction {
+  const timingEligible = directTimingEligible.get(jit) !== false;
   return {
     pc: instruction.pc,
     nextPc: instruction.nextPc,
@@ -393,6 +691,12 @@ function directInstruction(jit: Jit, instruction: JitInstruction): DirectJitInst
     ...(jit.options.shareDirectBodies === true && instruction.share !== undefined
       ? { share: instruction.share }
       : {}),
+    ...(!timingEligible
+      ? {}
+      : {
+          ...(instruction.span === undefined ? {} : { span: instruction.span }),
+          ...(instruction.loop === undefined ? {} : { loop: instruction.loop }),
+        }),
   };
 }
 
@@ -478,6 +782,308 @@ function applyDirectShareMarks(
       }),
     };
     stats.directShareCandidates++;
+  }
+}
+
+/** One `markDirectSpan` call collected during a synchronous translation. */
+interface DirectSpanMark {
+  readonly pc: number;
+  readonly instructionCount: number;
+}
+
+/** Normalised loop marker; address ranges are validated against the instance afterwards. */
+type CapturedLoopCandidate =
+  | { readonly kind: 'spin' }
+  | {
+      readonly kind: 'decrement8';
+      readonly memory: unknown;
+      readonly address:
+        | { readonly kind: 'constant'; readonly offset: unknown }
+        | {
+            readonly kind: 'maskedByte';
+            readonly memory: unknown;
+            readonly offset: unknown;
+            readonly mask: unknown;
+            readonly bits: unknown;
+          };
+    };
+
+/** One `markDirectLoop` call; `candidate` is undefined when its shape was rejected. */
+interface DirectLoopMark {
+  readonly pc: number;
+  readonly candidate: CapturedLoopCandidate | undefined;
+}
+
+/**
+ * Copy a loop candidate while the translate callback is on the stack. Later mutation of the
+ * caller's object cannot change what this translation validated.
+ */
+function captureLoopCandidate(value: unknown): CapturedLoopCandidate | undefined {
+  try {
+    dataObject(value);
+    const kind = (value as { readonly kind?: unknown }).kind;
+    if (kind === 'spin') return Object.freeze({ kind: 'spin' as const });
+    if (kind !== 'decrement8') return undefined;
+    dataObject(value, ['kind', 'memory', 'address']);
+    const record = value as { readonly memory: unknown; readonly address: unknown };
+    if (typeof record.memory !== 'string' || record.memory.length === 0) return undefined;
+    dataObject(record.address);
+    const address = record.address as { readonly kind?: unknown };
+    if (address.kind === 'constant') {
+      dataObject(address, ['kind', 'offset']);
+      const offset = (address as { readonly offset: unknown }).offset;
+      if (typeof offset !== 'number') return undefined;
+      return Object.freeze({
+        kind: 'decrement8' as const,
+        memory: record.memory,
+        address: Object.freeze({ kind: 'constant' as const, offset }),
+      });
+    }
+    if (address.kind !== 'maskedByte') return undefined;
+    dataObject(address, ['kind', 'memory', 'offset', 'mask', 'bits']);
+    const masked = address as {
+      readonly memory: unknown;
+      readonly offset: unknown;
+      readonly mask: unknown;
+      readonly bits: unknown;
+    };
+    if (
+      typeof masked.memory !== 'string' ||
+      masked.memory.length === 0 ||
+      typeof masked.offset !== 'number' ||
+      typeof masked.mask !== 'number' ||
+      typeof masked.bits !== 'number'
+    )
+      return undefined;
+    return Object.freeze({
+      kind: 'decrement8' as const,
+      memory: record.memory,
+      address: Object.freeze({
+        kind: 'maskedByte' as const,
+        memory: masked.memory,
+        offset: masked.offset,
+        mask: masked.mask,
+        bits: masked.bits,
+      }),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/** Primary memory and the ordinary Direct admission shared by span members. */
+function directPrimaryAdmitted(jit: Jit, instruction: JitInstruction): boolean {
+  const region = instruction.codeRegion;
+  return (
+    region !== undefined && region.memory === jit.options.code && directAdmitted(jit, instruction)
+  );
+}
+
+/** Validate a decrement8 address against the instance memories; undefined means rejected. */
+function directLoopCandidate(
+  jit: Jit,
+  candidate: CapturedLoopCandidate,
+): JitLoopCandidate | undefined {
+  if (candidate.kind === 'spin') return Object.freeze({ kind: 'spin' });
+  const memory = candidate.memory;
+  if (typeof memory !== 'string' || memory.length === 0) return undefined;
+  // A counter bank that is also executable would turn folding writes into code changes.
+  if (jit.codeRegions.some((region) => region.memory === memory)) return undefined;
+  const counter = jit.instance.memories.get(memory);
+  if (counter === undefined) return undefined;
+  const address = candidate.address;
+  if (address.kind === 'constant') {
+    const offset = address.offset;
+    if (
+      !Number.isSafeInteger(offset) ||
+      (offset as number) < 0 ||
+      (offset as number) >= counter.length
+    )
+      return undefined;
+    return Object.freeze({
+      kind: 'decrement8',
+      memory,
+      address: Object.freeze({ kind: 'constant', offset: offset as number }),
+    });
+  }
+  const selectorMemory = address.memory;
+  const offset = address.offset;
+  const mask = address.mask;
+  const bits = address.bits;
+  if (typeof selectorMemory !== 'string' || selectorMemory.length === 0) return undefined;
+  if (
+    !Number.isSafeInteger(offset) ||
+    (offset as number) < 0 ||
+    !Number.isSafeInteger(mask) ||
+    (mask as number) < 0 ||
+    (mask as number) > 255 ||
+    !Number.isSafeInteger(bits) ||
+    (bits as number) < 0 ||
+    (bits as number) > 255
+  )
+    return undefined;
+  const selector = jit.instance.memories.get(selectorMemory);
+  if (selector === undefined || (offset as number) >= selector.length) return undefined;
+  // A selector that is also executable would make the synthesized address generation-dependent.
+  if (jit.codeRegions.some((region) => region.memory === selectorMemory)) return undefined;
+  if (((mask as number) | (bits as number)) >= counter.length) return undefined;
+  for (let value = 0; value < 256; value++) {
+    const target = ((value & (mask as number)) | (bits as number)) >>> 0;
+    if (target >= counter.length) return undefined;
+  }
+  return Object.freeze({
+    kind: 'decrement8',
+    memory,
+    address: Object.freeze({
+      kind: 'maskedByte',
+      memory: selectorMemory,
+      offset: offset as number,
+      mask: mask as number,
+      bits: bits as number,
+    }),
+  });
+}
+
+/**
+ * Attach validated Direct timing marks to their translated entries. Rejections only drop the
+ * optimization: the block itself is already committed to the ordinary interpreter path.
+ */
+function applyDirectTimingMarks(
+  jit: Jit,
+  instructions: JitInstruction[],
+  spanMarks: readonly DirectSpanMark[],
+  loopMarks: readonly DirectLoopMark[],
+): void {
+  if (spanMarks.length === 0 && loopMarks.length === 0) return;
+  const stats = directStats(jit);
+  const indexByPc = new Map<number, number>();
+  for (let index = 0; index < instructions.length; index++) {
+    const pc = instructions[index]!.pc;
+    if (!indexByPc.has(pc)) indexByPc.set(pc, index);
+  }
+  const spanPcs = new Set<number>();
+  const loopPcs = new Set<number>();
+  for (const mark of spanMarks)
+    if (
+      Number.isSafeInteger(mark.pc) &&
+      mark.pc >= 0 &&
+      Number.isInteger(mark.instructionCount) &&
+      mark.instructionCount >= 2 &&
+      mark.instructionCount <= 8
+    )
+      spanPcs.add(mark.pc);
+  for (const mark of loopMarks)
+    if (Number.isSafeInteger(mark.pc) && mark.pc >= 0) loopPcs.add(mark.pc);
+
+  const spanRejected = stats.directSpanMarkRejected;
+  const seenSpans = new Set<number>();
+  for (const mark of spanMarks) {
+    const { pc, instructionCount } = mark;
+    if (
+      !Number.isSafeInteger(pc) ||
+      pc < 0 ||
+      !Number.isInteger(instructionCount) ||
+      instructionCount < 2 ||
+      instructionCount > 8
+    ) {
+      spanRejected.invalid++;
+      continue;
+    }
+    if (seenSpans.has(pc)) {
+      spanRejected.duplicate++;
+      continue;
+    }
+    seenSpans.add(pc);
+    if (loopPcs.has(pc)) {
+      spanRejected.conflict++;
+      continue;
+    }
+    const index = indexByPc.get(pc);
+    if (index === undefined) {
+      spanRejected.unknownPc++;
+      continue;
+    }
+    if (index + instructionCount > instructions.length) {
+      spanRejected.discontinuous++;
+      continue;
+    }
+    const members = instructions.slice(index, index + instructionCount);
+    const memberPcs = new Set<number>();
+    let continuous = true;
+    for (let member = 0; member < members.length; member++) {
+      const current = members[member]!;
+      if (memberPcs.has(current.pc)) {
+        continuous = false;
+        break;
+      }
+      memberPcs.add(current.pc);
+      const next = members[member + 1];
+      if (next !== undefined && current.nextPc !== next.pc) {
+        continuous = false;
+        break;
+      }
+    }
+    if (!continuous) {
+      spanRejected.discontinuous++;
+      continue;
+    }
+    if (members.some((member) => !directPrimaryAdmitted(jit, member))) {
+      spanRejected.notAdmitted++;
+      continue;
+    }
+    const pcs = Object.freeze(members.map((member) => member.pc));
+    instructions[index] = {
+      ...instructions[index]!,
+      span: Object.freeze({ pcs }),
+    };
+    stats.directSpanCandidates++;
+  }
+
+  const loopRejected = stats.directLoopMarkRejected;
+  const seenLoops = new Set<number>();
+  for (const mark of loopMarks) {
+    const { pc, candidate } = mark;
+    if (!Number.isSafeInteger(pc) || pc < 0) {
+      loopRejected.invalid++;
+      continue;
+    }
+    if (seenLoops.has(pc)) {
+      loopRejected.duplicate++;
+      continue;
+    }
+    seenLoops.add(pc);
+    if (spanPcs.has(pc)) {
+      loopRejected.conflict++;
+      continue;
+    }
+    const index = indexByPc.get(pc);
+    if (index === undefined) {
+      loopRejected.unknownPc++;
+      continue;
+    }
+    const instruction = instructions[index]!;
+    if (!directAdmitted(jit, instruction)) {
+      loopRejected.notAdmitted++;
+      continue;
+    }
+    if (effectiveDelays(jit).has(pc)) {
+      loopRejected.delayConflict++;
+      continue;
+    }
+    if (candidate === undefined) {
+      loopRejected.invalid++;
+      continue;
+    }
+    const loop = directLoopCandidate(jit, candidate);
+    if (loop === undefined) {
+      loopRejected.address++;
+      continue;
+    }
+    instructions[index] = {
+      ...instruction,
+      loop,
+    };
+    stats.directLoopCandidates++;
   }
 }
 
@@ -913,13 +1519,62 @@ function directDelayLoops(
 function directBinding(jit: Jit, layout: DirectJitLayout): DirectJitBinding {
   const { states, memories, pins } = layout;
   const entry = entryBlockedNames(jit);
+  let functions = jit.functions;
+  let directTiming: DirectJitTiming | undefined;
+  let timingEligible = true;
+  const option = jit.options.directTiming;
+  if (option !== undefined) {
+    let blocked = option.blocked;
+    if (blocked !== undefined) {
+      const declaration = functions?.get(blocked) ?? jit.instance.declarations.get(blocked);
+      if (
+        declaration?.kind !== 'function' ||
+        declaration.pure !== true ||
+        declaration.params.length !== 0 ||
+        declaration.returns?.kind !== 'bool'
+      ) {
+        // Attach validated the declaration; an appended function table may still disagree.
+        // Fail closed: keep marked spans/loops out of this session instead of dropping the guard.
+        blocked = undefined;
+        timingEligible = false;
+      } else if (functions?.get(blocked) === undefined) {
+        // `jit.functions` only owns appended JIT functions. Keep its identity untouched and
+        // add the base-model guard to a private map for this binding.
+        const extended = new Map(functions ?? []);
+        extended.set(blocked, declaration);
+        functions = extended;
+      }
+    }
+    const service = option.service;
+    if (service !== undefined) {
+      const elapsed = states.get(service.elapsed);
+      const deadline = states.get(service.deadline);
+      // A declared guard that cannot be resolved fails closed: omit `directTiming` entirely
+      // so marked spans/loops stay unenrolled instead of running without the quiet guard.
+      if (
+        (option.blocked === undefined || blocked !== undefined) &&
+        elapsed !== undefined &&
+        deadline !== undefined
+      ) {
+        directTiming = {
+          elapsed,
+          deadline,
+          ...(blocked === undefined ? {} : { blocked }),
+        };
+      }
+    }
+  }
+  const memoryLengths = new Map<string, number>();
+  for (const name of layout.memoryNames) memoryLengths.set(name, jit.instance.memory(name).length);
+  const codeMemories = new Set(jit.codeRegions.map((region) => region.memory));
+  directTimingEligible.set(jit, timingEligible);
   return {
     states,
     memories,
     pins,
     pc: { name: jit.options.pc, index: states.get(jit.options.pc)! },
     host: true,
-    ...(jit.functions === undefined ? {} : { functions: jit.functions }),
+    ...(functions === undefined ? {} : { functions }),
     split: true,
     shardSize: DIRECT_SHARD_SIZE,
     delayLoops: directDelayLoops(jit, layout),
@@ -927,6 +1582,9 @@ function directBinding(jit: Jit, layout: DirectJitLayout): DirectJitBinding {
     entryBlockedMemories: entry.memories,
     blockedStates: jit.directStateGuards,
     blockedMemories: jit.directMemoryGuards,
+    ...(directTiming === undefined ? {} : { directTiming }),
+    memoryLengths,
+    codeMemories,
   };
 }
 
@@ -951,7 +1609,11 @@ function addDirectInstructions(jit: Jit, instructions: readonly JitInstruction[]
   if (direct === undefined || jit.directStale || direct.frame.resume !== 0) return;
   const admitted: JitInstruction[] = [];
   for (const instruction of instructions)
-    if (directAdmitted(jit, instruction)) admitted.push(instruction);
+    if (
+      directAdmitted(jit, instruction) &&
+      (jit.options.directTier === undefined || directTierAdmitted(jit, instruction))
+    )
+      admitted.push(instruction);
   // Translation callbacks may append static delay declarations for this same batch.
   direct.session.updateDelays(directDelayLoops(jit, jit.directLayout!));
   if (admitted.length) {
@@ -989,6 +1651,16 @@ function commitDirectTranslation(
 function ensureDirectSession(board: JitRuntimeHost, jit: Jit): DirectExecution | undefined {
   if (jit.direct !== undefined) return jit.direct;
   if (jit.directStale) jit.directStale = false;
+  const admitted: JitInstruction[] = [];
+  for (const instruction of jit.cache.values())
+    if (
+      directAdmitted(jit, instruction) &&
+      (jit.options.directTier === undefined || directTierAdmitted(jit, instruction))
+    )
+      admitted.push(instruction);
+  // In two-tier mode a session without a promoted route could only report misses and would
+  // compile nothing; leave creation to the first actual promotion.
+  if (jit.options.directTier !== undefined && admitted.length === 0) return undefined;
   const layout = directLayout(jit);
   if (jit.directCacheInvalid) {
     // Bodies from the previous code generation must never resurface through `rebuildAll`.
@@ -998,12 +1670,13 @@ function ensureDirectSession(board: JitRuntimeHost, jit: Jit): DirectExecution |
     jit.directCacheInvalid = false;
   }
   const cache = (jit.directCache ??= compileDirectJit.createCache());
+  // Seed this JIT's artifact baseline before the session's first compile so its counters only
+  // include work performed after it started observing its selected artifact cache.
+  if (!directArtifactSnapshots.has(jit))
+    directArtifactSnapshots.set(jit, compileDirectJit.artifactCacheStats(jit.artifactCache));
   let session: DirectJitSession | undefined;
-  const admitted: JitInstruction[] = [];
   try {
-    session = compileDirectJit.createSession(directBinding(jit, layout), cache);
-    for (const instruction of jit.cache.values())
-      if (directAdmitted(jit, instruction)) admitted.push(instruction);
+    session = compileDirectJit.createSession(directBinding(jit, layout), cache, jit.artifactCache);
     if (admitted.length)
       session.add(admitted.map((instruction) => directInstruction(jit, instruction)));
     session.updateDelays(directDelayLoops(jit, layout));
@@ -1068,6 +1741,7 @@ function createDirectFrame(
     // First resumption must not add a property to a frame already seen by hot shards.
     stopAfterInstruction: false,
     boundarySettled: false,
+    directMetrics: { spanRuns: 0, loopRounds: 0 },
   };
   frame.writePinIntent = (pinIndex: number, value: unknown): void => {
     if (!Object.hasOwn(instance, 'writeIntent')) {
@@ -1177,6 +1851,13 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): D
       return 'declined';
     refreshDirectGuards(jit, hookReads);
     if (jit.directSkip === pc) return 'declined';
+    if (jit.options.directTier !== undefined && !directTierAdmitted(jit, jit.cache.get(pc))) {
+      // The PC has not reached its promotion threshold yet. Only a translated, admitted
+      // entry is an actual two-tier fallback; an untranslated PC still needs its first
+      // generic turn and a polling/declined entry never reaches this gate.
+      if (jit.cache.has(pc)) directStats(jit).directTierFallbacks++;
+      return 'declined';
+    }
     if (jit.direct === undefined && ensureDirectSession(board, jit) === undefined)
       return 'declined';
   }
@@ -1191,12 +1872,23 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): D
     let reason: ReturnType<DirectJitSession['run']>;
     let wrote: boolean;
     const stats = directStats(jit);
+    const metrics = frame.directMetrics;
+    const beforeSpanRuns = metrics?.spanRuns ?? 0;
+    const beforeLoopRounds = metrics?.loopRounds ?? 0;
     stats.directCalls++;
     try {
       // Resource barriers exclude intermediate observers; real events retain exact deadlines.
       reason = direct.session.run(frame, Math.min(board.executionEnd, board.events.time));
     } finally {
-      wrote = flushDirect(board, instance, layout, frame);
+      try {
+        wrote = flushDirect(board, instance, layout, frame);
+      } finally {
+        if (metrics !== undefined) {
+          // The compiler accumulates these counters; take a delta instead of resetting them.
+          stats.directSpanRuns += metrics.spanRuns - beforeSpanRuns;
+          stats.directLoopRounds += metrics.loopRounds - beforeLoopRounds;
+        }
+      }
     }
     const progressed = wrote || board.time !== start;
     // An assembly request that executed nothing is not a settled boundary; the scheduler
@@ -1294,6 +1986,7 @@ function assembleDirect(board: JitRuntimeHost, jit: Jit, pc: number): boolean {
     instruction = jit.cache.get(pc);
     return instruction !== undefined;
   }
+  if (jit.options.directTier !== undefined && !directTierAdmitted(jit, instruction)) return false;
   if (!direct.session.has(pc)) addDirectInstructions(jit, [instruction]);
   return true;
 }
@@ -1402,6 +2095,7 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
   if (signal.kind === 'stop') {
     jit.stopped = true;
     jit.execution = undefined;
+    if (jit.options.directTier !== undefined) jit.genericInstruction = undefined;
     board.boundary('jitSignal');
     return true;
   }
@@ -1410,6 +2104,7 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
     const duration = time(signal.delay);
     jit.instance.host.write(jit.options.pc, signal.pc);
     jit.execution = undefined;
+    if (jit.options.directTier !== undefined) jit.genericInstruction = undefined;
     const polling =
       jit.automaticPolling && duration > 0 && signal.pc === jit.currentPc && jit.pollReads;
     const dependencies = polling ? pollingDependencies(jit, polling, jit.currentPc) : undefined;
@@ -1456,7 +2151,16 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
     // A later call through a retained reference sees `marking === false` and is ignored.
     const shareMarks: DirectShareMark[] | undefined =
       jit.options.shareDirectBodies === true ? [] : undefined;
-    marking = shareMarks !== undefined;
+    const spanMarks: DirectSpanMark[] | undefined =
+      jit.options.directTiming !== undefined ? [] : undefined;
+    const loopMarks: DirectLoopMark[] | undefined =
+      jit.options.directTiming !== undefined ? [] : undefined;
+    const dependencyMarks = jit.options.translationIdentity !== undefined;
+    marking =
+      shareMarks !== undefined ||
+      spanMarks !== undefined ||
+      loopMarks !== undefined ||
+      dependencyMarks;
     const result = jit.options.translate(
       Object.freeze({
         pc,
@@ -1470,6 +2174,61 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
                 if (!marking) return;
                 directStats(jit).directShareCallbacks++;
                 shareMarks.push({ pc: markPc, byteLength });
+              },
+            }),
+        ...(spanMarks === undefined
+          ? {}
+          : {
+              markDirectSpan: (markPc: number, instructionCount: number): void => {
+                if (!marking) return;
+                directStats(jit).directSpanCallbacks++;
+                spanMarks.push({ pc: markPc, instructionCount });
+              },
+            }),
+        ...(loopMarks === undefined
+          ? {}
+          : {
+              markDirectLoop: (markPc: number, candidate: JitLoopCandidate): void => {
+                if (!marking) return;
+                directStats(jit).directLoopCallbacks++;
+                loopMarks.push({ pc: markPc, candidate: captureLoopCandidate(candidate) });
+              },
+            }),
+        ...(!dependencyMarks
+          ? {}
+          : {
+              markTranslationDependencies: (ranges: readonly JitTranslationDependency[]): void => {
+                if (!marking) return;
+                const rejected = directStats(jit).directDependencyMarkRejected;
+                if (!Array.isArray(ranges)) {
+                  rejected.invalidRange++;
+                  return;
+                }
+                for (const range of ranges) {
+                  try {
+                    dataObject(range, ['offset', 'length']);
+                  } catch {
+                    rejected.invalidRange++;
+                    continue;
+                  }
+                  const { offset, length } = range as {
+                    readonly offset: unknown;
+                    readonly length: unknown;
+                  };
+                  if (
+                    typeof offset !== 'number' ||
+                    !Number.isSafeInteger(offset) ||
+                    offset < 0 ||
+                    typeof length !== 'number' ||
+                    !Number.isSafeInteger(length) ||
+                    length < 0 ||
+                    !Number.isSafeInteger(offset + length)
+                  ) {
+                    rejected.invalidRange++;
+                    continue;
+                  }
+                  if (offset + length > code.length) rejected.outsideView++;
+                }
               },
             }),
       }),
@@ -1486,22 +2245,29 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
         nextPc: instruction.nextPc,
         body: instruction.body,
         polling: isPollingInstruction(instruction.body, instruction.pc, jit.options.pc),
-        execute: body(instruction.body),
         codeRegion: region,
         codeVersion: jit.instance.codeVersion(region?.memory ?? jit.options.code),
       };
     });
+    if (spanMarks !== undefined || loopMarks !== undefined)
+      applyDirectTimingMarks(jit, instructions, spanMarks ?? [], loopMarks ?? []);
     if (shareMarks !== undefined)
       applyDirectShareMarks(jit, codeRegion, code.length, instructions, shareMarks);
     // Check the old cache before publishing: an overlapping block can replace a routed body
-    // instead of only adding PCs.
-    const replaced = instructions.some((entry) => jit.cache.has(entry.pc));
+    // instead of only adding PCs. Promotion identity is reconciled from the same snapshot.
+    const oldEntries = new Map<number, JitInstruction>();
+    for (const entry of instructions) {
+      const previous = jit.cache.get(entry.pc);
+      if (previous !== undefined) oldEntries.set(entry.pc, previous);
+    }
+    const replaced = oldEntries.size !== 0;
     // Match the first instruction when a block contains a repeated PC.
     for (let index = instructions.length - 1; index >= 0; index--) {
       const entry = instructions[index]!;
       jit.cache.set(entry.pc, entry);
       jit.cacheMemories.add(entry.codeRegion?.memory ?? jit.options.code);
     }
+    if (jit.options.directTier !== undefined) reconcilePromotions(jit, instructions, oldEntries);
     // A block may legally span multiple PCs. Every entry gets its own logical region; direct
     // sessions only admit primary/fallback entries. The start region only supplies the
     // translate-time byte view and codeVersion.
@@ -1542,6 +2308,7 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
   if (!jit.execution) {
     jit.automaticPolling = false;
     jit.pollReads = undefined;
+    if (jit.options.directTier !== undefined) jit.genericInstruction = undefined;
     let hookReads: Dependencies | undefined;
     let hookPending = false;
     const hook = jit.options.beforeInstruction;
@@ -1623,8 +2390,20 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       !hookPending &&
       (!hook || hookReads !== undefined);
     jit.pollReads = hookReads;
+    // Compile a generic body only when this instruction actually falls back to it. The
+    // compiled body is cached on the translated entry so repeated generic executions pay
+    // only the generator call, not another cache lookup/statistic. The compile happens
+    // before the PC write or any resource effect, so a failure leaves the original
+    // PC/state intact and keeps the translate-phase diagnostic.
+    let execute: CompiledBody;
+    try {
+      execute = instruction.execute ??= body(instruction.body);
+    } catch (cause) {
+      throw board.wrap(cause, 'JIT_FAILED', 'translate', jit.instance);
+    }
     jit.instance.host.write(jit.options.pc, instruction.nextPc);
-    jit.execution = instruction.execute(jit.host);
+    if (jit.options.directTier !== undefined) jit.genericInstruction = instruction;
+    jit.execution = execute(jit.host);
   }
   for (;;) {
     const step = jit.automaticPolling
@@ -1636,6 +2415,17 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       : jit.execution.next();
     if (step.done) {
       jit.execution = undefined;
+      if (jit.options.directTier !== undefined) {
+        const instruction = jit.genericInstruction;
+        jit.genericInstruction = undefined;
+        if (
+          instruction !== undefined &&
+          !jit.automaticPolling &&
+          board.execution === 'throughput' &&
+          board.jits.length === 1
+        )
+          recordDirectPromotion(jit, instruction.pc, instruction);
+      }
       board.boundary('runJit');
       board.queueJit(jit);
       return;

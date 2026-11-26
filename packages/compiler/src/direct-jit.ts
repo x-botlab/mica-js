@@ -9,6 +9,8 @@ import type {
   ValueRegionIR,
 } from '@mica-js/device-model';
 import type {
+  DirectJitArtifactCache,
+  DirectJitArtifactCacheStats,
   DirectJitBinding,
   DirectJitCache,
   DirectJitCacheStats,
@@ -16,6 +18,7 @@ import type {
   DirectJitEmitStats,
   DirectJitFrame,
   DirectJitInstruction,
+  DirectJitLoopCandidate,
   DirectJitProgram,
   DirectJitReason,
   DirectJitRunResult,
@@ -35,6 +38,7 @@ import {
   nonNull,
   readIndex,
 } from './values.js';
+import { structuralDigest } from './structure.js';
 
 const binary: Partial<Record<BinaryOperator, string>> = {
   add: '+',
@@ -294,6 +298,95 @@ interface BindingFingerprint {
   readonly entryBlockedStates: readonly string[] | undefined;
   readonly entryBlockedMemories: readonly string[] | undefined;
   readonly functions: readonly (readonly [string, DirectFunctionIR])[] | undefined;
+  readonly directTiming:
+    | {
+        readonly elapsed: number;
+        readonly deadline: number;
+        readonly blocked: string | undefined;
+      }
+    | undefined;
+  readonly memoryLengths: readonly (readonly [string, number])[] | undefined;
+  readonly codeMemories: readonly string[] | undefined;
+}
+
+/**
+ * Canonical artifact identity of a binding. Unlike `BindingFingerprint`, map-like tables are
+ * sorted by name and the split options are included, so two structurally equal bindings with
+ * different map insertion order share an artifact while a different shard policy does not.
+ */
+interface ArtifactBindingDescriptor {
+  readonly states: readonly (readonly [string, number])[];
+  readonly memories: readonly (readonly [string, number])[];
+  readonly pins: readonly (readonly [string, number])[] | undefined;
+  readonly pcName: string;
+  readonly pcIndex: number;
+  readonly host: boolean;
+  readonly blockedStates: readonly string[] | undefined;
+  readonly blockedMemories: readonly string[] | undefined;
+  readonly entryBlockedStates: readonly string[] | undefined;
+  readonly entryBlockedMemories: readonly string[] | undefined;
+  readonly functions: readonly (readonly [string, DirectFunctionIR])[] | undefined;
+  readonly directTiming:
+    | {
+        readonly elapsed: number;
+        readonly deadline: number;
+        readonly blocked: string | undefined;
+      }
+    | undefined;
+  readonly memoryLengths: readonly (readonly [string, number])[] | undefined;
+  readonly codeMemories: readonly string[] | undefined;
+  readonly split: boolean;
+  readonly shardSize: number | undefined;
+  readonly shardSlotLimit: number | undefined;
+}
+
+interface ArtifactBindingContext {
+  readonly descriptor: ArtifactBindingDescriptor;
+  readonly digest: string;
+}
+
+interface ArtifactInstructionEntry {
+  readonly key: string;
+  readonly binding: ArtifactBindingDescriptor;
+  readonly body: RegionIR;
+  readonly pc: number;
+  readonly nextPc: number;
+  readonly delay: DelayFingerprint | undefined;
+  readonly template: Instruction;
+  /** Prefix length of the artifact constant pool this template may reference. */
+  readonly constantCount: number;
+  readonly sourceUnits: number;
+}
+
+interface ArtifactShardEntry {
+  readonly source: string;
+  readonly factory: ResidentShardFactory;
+}
+
+interface ArtifactCacheState {
+  /** Append-only values referenced by `C[index]`; replaced only when the cap is exceeded. */
+  constants: unknown[];
+  constantUnits: number;
+  /** Stable per pin/resistance slots; never rewritten, so `R[slot]` stays valid. */
+  readonly resistorSlots: Map<string, number>;
+  /** Incremented when the constant pool is replaced; older local pools then stay private. */
+  generation: number;
+  /** Key → colliding candidates in LRU order. */
+  readonly instructions: Map<string, ArtifactInstructionEntry[]>;
+  instructionCount: number;
+  instructionSourceUnits: number;
+  /** Exact source key → unbound factory in LRU order. */
+  readonly shards: Map<string, ArtifactShardEntry>;
+  shardSourceUnits: number;
+  stats: {
+    compiledInstructions: number;
+    reusedInstructions: number;
+    reusedShardSources: number;
+    createdFactories: number;
+    reusedFactories: number;
+    evictions: number;
+    clears: number;
+  };
 }
 
 type DirectFunctionIR = Extract<DeclarationIR, { kind: 'function' }>;
@@ -308,11 +401,18 @@ interface CachedInstruction {
   readonly nextPc: number;
   readonly delay: DelayFingerprint | undefined;
   readonly instruction: Instruction | undefined;
+  /** True when the body came from the shared instruction-template artifact cache. */
+  readonly artifactHit: boolean;
   /** Stable continuation ID once this body has ever emitted an elapse. */
   readonly resumeId: number | undefined;
   /** Explicit physical identity, or undefined when the entry never opted into sharing. */
   readonly share: ShareKey | undefined;
   readonly shareInvalid: boolean;
+  /** Marked span and loop candidates; invalid markers leave the normal body untouched. */
+  readonly span: SpanStamp | undefined;
+  readonly spanInvalid: boolean;
+  readonly loop: LoopStamp | undefined;
+  readonly loopInvalid: boolean;
 }
 
 type ResidentStatus = DirectJitReason | number;
@@ -395,7 +495,7 @@ interface ResidentShard {
 interface DirectJitCacheState {
   readonly entries: Map<number, CachedInstruction>;
   readonly constants: unknown[];
-  readonly resistorSlots: Map<string, number>;
+  resistorSlots: Map<string, number>;
   readonly functions: Map<string, ReturnType<ResolveFunction> | null>;
   readonly shards: ResidentShard[];
   nextResume: number;
@@ -411,6 +511,10 @@ interface DirectJitCacheState {
     clears: number;
   };
   binding: BindingFingerprint | undefined;
+  /** Explicit artifact binding chosen for this local cache, when one is attached. */
+  artifact: ArtifactCacheState | undefined;
+  /** Artifact generation whose constant indices this local pool mirrors; -1 when detached. */
+  artifactGeneration: number;
 }
 
 const directJitCaches = new WeakMap<DirectJitCache, DirectJitCacheState>();
@@ -437,6 +541,8 @@ function createDirectJitCache(): DirectJitCache {
       clears: 0,
     },
     binding: undefined,
+    artifact: undefined,
+    artifactGeneration: -1,
   });
   return cache;
 }
@@ -445,6 +551,492 @@ function cacheState(cache: DirectJitCache): DirectJitCacheState {
   const state = directJitCaches.get(cache);
   if (state === undefined) throw new TypeError('Invalid direct JIT cache');
   return state;
+}
+
+/**
+ * Artifact limits sized from a real CT107D cold boot: `national-3-access` exposes 615 distinct
+ * direct instructions before the second board opens. The former 256-instruction cap evicted
+ * most of them and every cross-instance template lookup missed. The instruction cache therefore
+ * keeps 2048 templates / 16 Mi emitted source units, enough for that firmware plus its hot
+ * variants.
+ *
+ * The shard cache keeps 512 sources / 16 Mi retained source characters / 64 Ki per source:
+ * enough for the closed resident shards and the batch variants of a typical CT107D reopen,
+ * while still bounding a long-lived process.
+ *
+ * Constants stay append-only but are capped at 64 Ki values / 4 Mi retained characters and
+ * replaced wholesale when either cap would be exceeded. Replacing the pool advances a
+ * generation so older local pools stay private and no template index is reused against a
+ * different value.
+ */
+const MAX_ARTIFACT_INSTRUCTIONS = 2048;
+const MAX_ARTIFACT_INSTRUCTION_SOURCE_UNITS = 16 * 1024 * 1024;
+const MAX_ARTIFACT_CONSTANTS = 64 * 1024;
+const MAX_ARTIFACT_CONSTANT_UNITS = 4 * 1024 * 1024;
+const MAX_ARTIFACT_SHARDS = 512;
+const MAX_ARTIFACT_SHARD_SOURCE_UNITS = 16 * 1024 * 1024;
+const MAX_CACHED_SHARD_SOURCE_UNITS = 64 * 1024;
+
+const directJitArtifacts = new WeakMap<DirectJitArtifactCache, ArtifactCacheState>();
+
+function createArtifactCacheState(): ArtifactCacheState {
+  return {
+    constants: [],
+    constantUnits: 0,
+    resistorSlots: new Map(),
+    generation: 0,
+    instructions: new Map(),
+    instructionCount: 0,
+    instructionSourceUnits: 0,
+    shards: new Map(),
+    shardSourceUnits: 0,
+    stats: {
+      compiledInstructions: 0,
+      reusedInstructions: 0,
+      reusedShardSources: 0,
+      createdFactories: 0,
+      reusedFactories: 0,
+      evictions: 0,
+      clears: 0,
+    },
+  };
+}
+
+function createDirectJitArtifactCache(): DirectJitArtifactCache {
+  const cache = Object.freeze({}) as unknown as DirectJitArtifactCache;
+  directJitArtifacts.set(cache, createArtifactCacheState());
+  return cache;
+}
+
+function artifactState(cache: DirectJitArtifactCache): ArtifactCacheState {
+  const state = directJitArtifacts.get(cache);
+  if (state === undefined) throw new TypeError('Invalid direct JIT artifact cache');
+  return state;
+}
+
+/** Module default keeps the old cross-session factory reuse when no artifact is supplied. */
+const defaultArtifactCache = createDirectJitArtifactCache();
+
+function attachArtifact(state: DirectJitCacheState, artifact: ArtifactCacheState): void {
+  if (state.artifact === artifact) return;
+  if (
+    state.artifact === undefined &&
+    (state.entries.size !== 0 ||
+      state.constants.length !== 0 ||
+      state.functions.size !== 0 ||
+      state.shards.length !== 0)
+  ) {
+    // A full build may have populated this cache before its first session. Keep that local
+    // snapshot exactly as it was; the artifact still supplies shard-source reuse, while
+    // instruction templates stay private until a fresh cache starts from the shared pool.
+    state.artifact = artifact;
+    state.artifactGeneration = -1;
+    return;
+  }
+  // Constants and resistor slots from another pool are not interchangeable. Drop the local
+  // records so this cache never mixes indices from two artifact owners.
+  state.entries.clear();
+  state.constants.length = 0;
+  state.functions.clear();
+  state.shards.length = 0;
+  state.nextShard = 1;
+  state.artifact = artifact;
+  state.artifactGeneration = artifact.generation;
+  state.resistorSlots = artifact.resistorSlots;
+}
+
+/** Shared resistor slots must survive local clears; a private fallback map is cleared. */
+function clearResistorSlots(state: DirectJitCacheState): void {
+  if (state.artifact === undefined || state.resistorSlots !== state.artifact.resistorSlots)
+    state.resistorSlots.clear();
+}
+
+function artifactUsable(state: DirectJitCacheState): ArtifactCacheState | undefined {
+  const artifact = state.artifact;
+  if (artifact === undefined || state.artifactGeneration !== artifact.generation) return undefined;
+  return artifact;
+}
+
+/**
+ * Mirror the artifact constant prefix into this local pool. A local pool may be shorter after
+ * a session clear; it is never longer than the artifact pool while the generation matches.
+ */
+function syncConstants(
+  state: DirectJitCacheState,
+  artifact: ArtifactCacheState,
+  limit = artifact.constants.length,
+): boolean {
+  if (state.constants.length > artifact.constants.length) return false;
+  const end = Math.min(limit, artifact.constants.length);
+  while (state.constants.length < end)
+    state.constants.push(artifact.constants[state.constants.length]);
+  return true;
+}
+
+function constantUnits(value: unknown): number {
+  switch (typeof value) {
+    case 'string':
+      return value.length;
+    case 'number':
+    case 'bigint':
+      return 8;
+    case 'boolean':
+    case 'undefined':
+      return 4;
+    case 'function':
+      return 128;
+    default:
+      break;
+  }
+  if (value === null) return 4;
+  try {
+    return JSON.stringify(value)?.length ?? 32;
+  } catch {
+    return 32;
+  }
+}
+
+function resetArtifactConstants(artifact: ArtifactCacheState): void {
+  artifact.stats.evictions += artifact.instructionCount + artifact.shards.size;
+  artifact.constants = [];
+  artifact.constantUnits = 0;
+  artifact.generation++;
+  artifact.instructions.clear();
+  artifact.instructionCount = 0;
+  artifact.instructionSourceUnits = 0;
+  // A shard source embeds the constant indices of the pool that produced it. Replacing the
+  // pool makes every cached source stale even though its key describes the same instruction
+  // emission, so drop the source/factory cache with the generation that produced it.
+  artifact.shards.clear();
+  artifact.shardSourceUnits = 0;
+}
+
+/**
+ * Capture one emitted constant index. Artifact-bound sessions append to their local prefix and
+ * the shared pool together, so a template's `C[index]` stays valid for every session. When the
+ * pool cap would be exceeded the whole pool is replaced and this local cache detaches.
+ */
+function artifactCapture(state: DirectJitCacheState): (value: unknown) => string {
+  return (value: unknown): string => {
+    const artifact = artifactUsable(state);
+    if (artifact !== undefined) {
+      if (!syncConstants(state, artifact) || state.constants.length !== artifact.constants.length) {
+        state.artifactGeneration = -1;
+      } else {
+        const units = constantUnits(value);
+        if (
+          artifact.constants.length >= MAX_ARTIFACT_CONSTANTS ||
+          artifact.constantUnits + units > MAX_ARTIFACT_CONSTANT_UNITS
+        ) {
+          resetArtifactConstants(artifact);
+          state.artifactGeneration = -1;
+        } else {
+          const index = state.constants.push(value) - 1;
+          artifact.constants.push(value);
+          artifact.constantUnits += units;
+          return `C[${index}]`;
+        }
+      }
+    }
+    return `C[${state.constants.push(value) - 1}]`;
+  };
+}
+
+interface ArtifactBindingCache {
+  readonly context: ArtifactBindingContext;
+}
+
+const artifactBindings = new WeakMap<DirectJitBinding, ArtifactBindingCache>();
+let nextStructuralIdentity = 1;
+const structuralIdentities = new WeakMap<object, number>();
+
+function structuralIdentity(value: object): number {
+  let identity = structuralIdentities.get(value);
+  if (identity === undefined) {
+    identity = nextStructuralIdentity++;
+    structuralIdentities.set(value, identity);
+  }
+  return identity;
+}
+
+function comparePairs(left: readonly [string, unknown], right: readonly [string, unknown]): number {
+  return left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0;
+}
+
+function sortedPairs<T>(
+  values: readonly (readonly [string, T])[] | undefined,
+): readonly (readonly [string, T])[] | undefined {
+  if (values === undefined) return undefined;
+  return [...values].sort(comparePairs) as readonly (readonly [string, T])[];
+}
+
+function sortedNames(values: readonly string[] | undefined): readonly string[] | undefined {
+  return values === undefined ? undefined : [...values].sort();
+}
+
+function artifactBindingContext(
+  binding: DirectJitBinding,
+  fingerprint: BindingFingerprint,
+): ArtifactBindingContext {
+  const cached = artifactBindings.get(binding);
+  if (cached !== undefined) return cached.context;
+  const descriptor: ArtifactBindingDescriptor = {
+    states: sortedPairs(fingerprint.states)!,
+    memories: sortedPairs(fingerprint.memories)!,
+    pins: sortedPairs(fingerprint.pins),
+    pcName: fingerprint.pcName,
+    pcIndex: fingerprint.pcIndex,
+    host: fingerprint.host,
+    blockedStates: sortedNames(fingerprint.blockedStates),
+    blockedMemories: sortedNames(fingerprint.blockedMemories),
+    entryBlockedStates: sortedNames(fingerprint.entryBlockedStates),
+    entryBlockedMemories: sortedNames(fingerprint.entryBlockedMemories),
+    functions: sortedPairs(fingerprint.functions),
+    directTiming: fingerprint.directTiming,
+    memoryLengths: sortedPairs(fingerprint.memoryLengths),
+    codeMemories: sortedNames(fingerprint.codeMemories),
+    split: binding.split === true,
+    shardSize: binding.shardSize,
+    shardSlotLimit: binding.shardSlotLimit,
+  };
+  const digest =
+    structuralDigest(descriptor) ??
+    `identity:${structuralIdentity(binding)}:${descriptor.split ? 1 : 0}:${descriptor.shardSize ?? '-'}:${descriptor.shardSlotLimit ?? '-'}`;
+  const context = { descriptor, digest };
+  artifactBindings.set(binding, { context });
+  return context;
+}
+
+const bodyDigests = new WeakMap<RegionIR, string>();
+
+function bodyDigest(body: RegionIR): string {
+  let digest = bodyDigests.get(body);
+  if (digest === undefined) {
+    digest = structuralDigest(body) ?? `identity:${structuralIdentity(body)}`;
+    bodyDigests.set(body, digest);
+  }
+  return digest;
+}
+
+function numberText(value: number): string {
+  return Object.is(value, -0) ? '-0' : String(value);
+}
+
+function delayText(delay: DelayFingerprint | undefined): string {
+  if (delay === undefined) return '-';
+  const pending =
+    delay.pending === undefined
+      ? '-'
+      : `${numberText(delay.pending.state)}/${numberText(delay.pending.period)}/${numberText(delay.pending.active)}`;
+  return `${numberText(delay.counter)}/${numberText(delay.cycles)}/${pending}`;
+}
+
+function instructionArtifactKey(
+  context: ArtifactBindingContext,
+  instruction: DirectJitInstruction,
+  delay: DelayFingerprint | undefined,
+): string {
+  return [
+    context.digest,
+    numberText(instruction.pc),
+    numberText(instruction.nextPc),
+    bodyDigest(instruction.body),
+    delayText(delay),
+  ].join('|');
+}
+
+/** Private compilations get unique identities because their constant pools are not shared. */
+function privateArtifactKey(instruction: Instruction): string {
+  return `identity:${structuralIdentity(instruction)}`;
+}
+
+function sameFunctionIR(left: DirectFunctionIR, right: DirectFunctionIR): boolean {
+  return left === right || sameIrValue(left, right, new WeakMap());
+}
+
+function sameFunctionPairs(
+  left: readonly (readonly [string, DirectFunctionIR])[] | undefined,
+  right: readonly (readonly [string, DirectFunctionIR])[] | undefined,
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined || left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const a = left[index]!;
+    const b = right[index]!;
+    if (a[0] !== b[0] || !sameFunctionIR(a[1], b[1])) return false;
+  }
+  return true;
+}
+
+function sameArtifactBinding(
+  left: ArtifactBindingDescriptor,
+  right: ArtifactBindingDescriptor,
+): boolean {
+  return (
+    left === right ||
+    (left.pcName === right.pcName &&
+      Object.is(left.pcIndex, right.pcIndex) &&
+      left.host === right.host &&
+      left.split === right.split &&
+      Object.is(left.shardSize, right.shardSize) &&
+      Object.is(left.shardSlotLimit, right.shardSlotLimit) &&
+      samePairs(left.states, right.states) &&
+      samePairs(left.memories, right.memories) &&
+      sameOptionalPairs(left.pins, right.pins) &&
+      sameNames(left.blockedStates, right.blockedStates) &&
+      sameNames(left.blockedMemories, right.blockedMemories) &&
+      sameNames(left.entryBlockedStates, right.entryBlockedStates) &&
+      sameNames(left.entryBlockedMemories, right.entryBlockedMemories) &&
+      sameFunctionPairs(left.functions, right.functions) &&
+      sameTiming(left.directTiming, right.directTiming) &&
+      sameOptionalPairs(left.memoryLengths, right.memoryLengths) &&
+      sameNames(left.codeMemories, right.codeMemories))
+  );
+}
+
+/**
+ * Return a fresh clone for an instruction emission cached under an equal binding and body.
+ * The stored template is never mutated; arrays and sets are shared, while `resumeId` starts
+ * at zero so the session can assign its own continuation id.
+ */
+function reuseArtifactInstruction(
+  state: DirectJitCacheState,
+  context: ArtifactBindingContext,
+  instruction: DirectJitInstruction,
+  delay: DelayFingerprint | undefined,
+): Instruction | undefined {
+  const artifact = artifactUsable(state);
+  if (artifact === undefined) return undefined;
+  const key = instructionArtifactKey(context, instruction, delay);
+  const candidates = artifact.instructions.get(key);
+  if (candidates === undefined) return undefined;
+  // Refresh the whole key on a lookup, matching a simple insertion-order LRU.
+  artifact.instructions.delete(key);
+  artifact.instructions.set(key, candidates);
+  for (const entry of candidates) {
+    if (
+      !Object.is(entry.pc, instruction.pc) ||
+      !Object.is(entry.nextPc, instruction.nextPc) ||
+      !sameDelay(entry.delay, delay) ||
+      !sameArtifactBinding(entry.binding, context.descriptor) ||
+      (entry.body !== instruction.body && !sameRegion(entry.body, instruction.body))
+    )
+      continue;
+    if (!syncConstants(state, artifact, entry.constantCount)) return undefined;
+    const clone = entry.template.emissionClone();
+    artifact.stats.reusedInstructions++;
+    return clone;
+  }
+  return undefined;
+}
+
+function insertArtifactInstruction(
+  state: DirectJitCacheState,
+  context: ArtifactBindingContext,
+  instruction: DirectJitInstruction,
+  delay: DelayFingerprint | undefined,
+  compiled: Instruction,
+): string | undefined {
+  const artifact = artifactUsable(state);
+  if (artifact === undefined) return undefined;
+  if (!syncConstants(state, artifact) || state.constants.length !== artifact.constants.length) {
+    state.artifactGeneration = -1;
+    return undefined;
+  }
+  const key = instructionArtifactKey(context, instruction, delay);
+  let candidates = artifact.instructions.get(key);
+  if (candidates === undefined) {
+    candidates = [];
+    artifact.instructions.set(key, candidates);
+  } else {
+    artifact.instructions.delete(key);
+    artifact.instructions.set(key, candidates);
+  }
+  const artifactKey = `${key}#${candidates.length}`;
+  compiled.artifactKey = artifactKey;
+  const template = Object.freeze(compiled.emissionClone()) as Instruction;
+  const entry: ArtifactInstructionEntry = {
+    key: artifactKey,
+    binding: context.descriptor,
+    body: instruction.body,
+    pc: instruction.pc,
+    nextPc: instruction.nextPc,
+    delay,
+    template,
+    constantCount: state.constants.length,
+    sourceUnits: template.size + key.length,
+  };
+  candidates.push(entry);
+  artifact.instructionCount++;
+  artifact.instructionSourceUnits += entry.sourceUnits;
+  artifact.stats.compiledInstructions++;
+  while (
+    artifact.instructionCount > MAX_ARTIFACT_INSTRUCTIONS ||
+    artifact.instructionSourceUnits > MAX_ARTIFACT_INSTRUCTION_SOURCE_UNITS
+  ) {
+    const oldestKey = artifact.instructions.keys().next().value;
+    if (oldestKey === undefined) break;
+    const evicted = artifact.instructions.get(oldestKey)!;
+    artifact.instructions.delete(oldestKey);
+    for (const candidate of evicted) {
+      artifact.instructionCount--;
+      artifact.instructionSourceUnits -= candidate.sourceUnits;
+      artifact.stats.evictions++;
+    }
+  }
+  return artifactKey;
+}
+
+function shardSourceKey(
+  context: ArtifactBindingContext,
+  kind: 'shard' | 'shared',
+  id: number,
+  entries: readonly Instruction[],
+  extra = '',
+): string {
+  const parts = [context.digest, kind, String(id), extra];
+  for (const entry of entries) parts.push(entry.artifactKey, String(entry.resumeId));
+  return parts.join('|');
+}
+
+interface ArtifactShardFactoryResult {
+  readonly source: string;
+  readonly factory: ResidentShardFactory;
+  readonly reused: boolean;
+}
+
+function artifactShardFactory(
+  artifact: ArtifactCacheState,
+  key: string,
+  generateSource: () => string,
+): ArtifactShardFactoryResult {
+  const previous = artifact.shards.get(key);
+  if (previous !== undefined) {
+    artifact.shards.delete(key);
+    artifact.shards.set(key, previous);
+    artifact.stats.reusedShardSources++;
+    artifact.stats.reusedFactories++;
+    return { source: previous.source, factory: previous.factory, reused: true };
+  }
+  const source = generateSource();
+  const factory = new Function('C', 'H', source) as ResidentShardFactory;
+  artifact.stats.createdFactories++;
+  if (source.length <= MAX_CACHED_SHARD_SOURCE_UNITS) {
+    while (
+      artifact.shards.size >= MAX_ARTIFACT_SHARDS ||
+      artifact.shardSourceUnits + source.length > MAX_ARTIFACT_SHARD_SOURCE_UNITS
+    ) {
+      const oldestKey = artifact.shards.keys().next().value;
+      if (oldestKey === undefined) break;
+      const evicted = artifact.shards.get(oldestKey)!;
+      artifact.shards.delete(oldestKey);
+      artifact.shardSourceUnits -= evicted.source.length;
+      artifact.stats.evictions++;
+    }
+    artifact.shards.set(key, { source, factory });
+    artifact.shardSourceUnits += source.length;
+  }
+  return { source, factory, reused: false };
 }
 
 function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
@@ -466,6 +1058,16 @@ function bindingFingerprint(binding: DirectJitBinding): BindingFingerprint {
       binding.entryBlockedMemories === undefined
         ? undefined
         : [...binding.entryBlockedMemories].sort(),
+    directTiming:
+      binding.directTiming === undefined
+        ? undefined
+        : {
+            elapsed: binding.directTiming.elapsed,
+            deadline: binding.directTiming.deadline,
+            blocked: binding.directTiming.blocked,
+          },
+    memoryLengths: binding.memoryLengths === undefined ? undefined : [...binding.memoryLengths],
+    codeMemories: binding.codeMemories === undefined ? undefined : [...binding.codeMemories].sort(),
   };
 }
 
@@ -500,6 +1102,19 @@ function sameNames(
   return left.every((name, index) => name === right[index]);
 }
 
+function sameTiming(
+  left: BindingFingerprint['directTiming'],
+  right: BindingFingerprint['directTiming'],
+): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined) return false;
+  return (
+    Object.is(left.elapsed, right.elapsed) &&
+    Object.is(left.deadline, right.deadline) &&
+    left.blocked === right.blocked
+  );
+}
+
 function sameBinding(left: BindingFingerprint, right: BindingFingerprint): boolean {
   return (
     left.pcName === right.pcName &&
@@ -512,7 +1127,10 @@ function sameBinding(left: BindingFingerprint, right: BindingFingerprint): boole
     sameNames(left.blockedStates, right.blockedStates) &&
     sameNames(left.blockedMemories, right.blockedMemories) &&
     sameNames(left.entryBlockedStates, right.entryBlockedStates) &&
-    sameNames(left.entryBlockedMemories, right.entryBlockedMemories)
+    sameNames(left.entryBlockedMemories, right.entryBlockedMemories) &&
+    sameTiming(left.directTiming, right.directTiming) &&
+    sameOptionalPairs(left.memoryLengths, right.memoryLengths) &&
+    sameNames(left.codeMemories, right.codeMemories)
   );
 }
 
@@ -627,10 +1245,150 @@ function sameShare(left: ShareKey | undefined, right: ShareKey | undefined): boo
   );
 }
 
+/** Normalised marked span; an invalid marker still keeps the normal instruction executable. */
+interface SpanStamp {
+  readonly pcs: readonly number[];
+}
+
+type LoopAddressStamp =
+  | { readonly kind: 'constant'; readonly offset: number }
+  | {
+      readonly kind: 'maskedByte';
+      readonly memory: string;
+      readonly offset: number;
+      readonly mask: number;
+      readonly bits: number;
+    };
+
+/** Normalised loop marker. */
+interface LoopStamp {
+  readonly kind: 'spin' | 'decrement8';
+  readonly memory: string | undefined;
+  readonly address: LoopAddressStamp | undefined;
+}
+
+interface SpanStampResult {
+  readonly span: SpanStamp | undefined;
+  readonly invalid: boolean;
+}
+
+interface LoopStampResult {
+  readonly loop: LoopStamp | undefined;
+  readonly invalid: boolean;
+}
+
+function readSpan(candidate: unknown, pc: number): SpanStampResult {
+  if (candidate === undefined) return { span: undefined, invalid: false };
+  if (typeof candidate !== 'object' || candidate === null)
+    return { span: undefined, invalid: true };
+  const pcs = (candidate as { readonly pcs?: unknown }).pcs;
+  if (!Array.isArray(pcs) || pcs.length < 2 || pcs.length > 8)
+    return { span: undefined, invalid: true };
+  const seen = new Set<number>();
+  for (const entry of pcs) {
+    if (!Number.isSafeInteger(entry) || entry < 0 || seen.has(entry))
+      return { span: undefined, invalid: true };
+    seen.add(entry);
+  }
+  if (pcs[0] !== pc) return { span: undefined, invalid: true };
+  return { span: Object.freeze({ pcs: Object.freeze([...pcs]) }), invalid: false };
+}
+
+function readLoop(candidate: DirectJitLoopCandidate | undefined): LoopStampResult {
+  if (candidate === undefined) return { loop: undefined, invalid: false };
+  if (typeof candidate !== 'object' || candidate === null)
+    return { loop: undefined, invalid: true };
+  const kind = (candidate as { readonly kind?: unknown }).kind;
+  if (kind === 'spin')
+    return { loop: Object.freeze({ kind, memory: undefined, address: undefined }), invalid: false };
+  if (kind !== 'decrement8') return { loop: undefined, invalid: true };
+  const memory = (candidate as { readonly memory?: unknown }).memory;
+  const address = (candidate as { readonly address?: unknown }).address;
+  if (
+    typeof memory !== 'string' ||
+    memory.length === 0 ||
+    typeof address !== 'object' ||
+    address === null
+  )
+    return { loop: undefined, invalid: true };
+  const addressKind = (address as { readonly kind?: unknown }).kind;
+  if (addressKind === 'constant') {
+    const offset = (address as { readonly offset?: unknown }).offset;
+    if (!Number.isSafeInteger(offset) || (offset as number) < 0)
+      return { loop: undefined, invalid: true };
+    return {
+      loop: Object.freeze({
+        kind,
+        memory,
+        address: Object.freeze({ kind: 'constant', offset: offset as number }),
+      }),
+      invalid: false,
+    };
+  }
+  if (addressKind !== 'maskedByte') return { loop: undefined, invalid: true };
+  const masked = address as {
+    readonly memory?: unknown;
+    readonly offset?: unknown;
+    readonly mask?: unknown;
+    readonly bits?: unknown;
+  };
+  if (
+    typeof masked.memory !== 'string' ||
+    masked.memory.length === 0 ||
+    !Number.isSafeInteger(masked.offset) ||
+    (masked.offset as number) < 0 ||
+    !Number.isSafeInteger(masked.mask) ||
+    (masked.mask as number) < 0 ||
+    (masked.mask as number) > 255 ||
+    !Number.isSafeInteger(masked.bits) ||
+    (masked.bits as number) < 0 ||
+    (masked.bits as number) > 255
+  )
+    return { loop: undefined, invalid: true };
+  return {
+    loop: Object.freeze({
+      kind,
+      memory,
+      address: Object.freeze({
+        kind: 'maskedByte',
+        memory: masked.memory,
+        offset: masked.offset as number,
+        mask: masked.mask as number,
+        bits: masked.bits as number,
+      }),
+    }),
+    invalid: false,
+  };
+}
+
+function sameSpan(left: SpanStamp | undefined, right: SpanStamp | undefined): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined || left.pcs.length !== right.pcs.length)
+    return false;
+  return left.pcs.every((pc, index) => pc === right.pcs[index]);
+}
+
+function sameLoop(left: LoopStamp | undefined, right: LoopStamp | undefined): boolean {
+  if (left === right) return true;
+  if (left === undefined || right === undefined || left.kind !== right.kind) return false;
+  if (left.address === undefined || right.address === undefined)
+    return left.address === right.address && left.memory === right.memory;
+  if (left.memory !== right.memory || left.address.kind !== right.address.kind) return false;
+  if (left.address.kind === 'constant')
+    return right.address.kind === 'constant' && left.address.offset === right.address.offset;
+  return (
+    right.address.kind === 'maskedByte' &&
+    left.address.memory === right.address.memory &&
+    left.address.offset === right.address.offset &&
+    left.address.mask === right.address.mask &&
+    left.address.bits === right.address.bits
+  );
+}
+
 function clearCacheState(state: DirectJitCacheState): void {
   state.entries.clear();
   state.constants.length = 0;
-  state.resistorSlots.clear();
+  clearResistorSlots(state);
   state.functions.clear();
   state.shards.length = 0;
   state.nextResume = 1;
@@ -641,19 +1399,24 @@ function clearCacheState(state: DirectJitCacheState): void {
 
 export interface DirectJitCompiler {
   (
-    instructions: readonly {
-      readonly pc: number;
-      readonly nextPc: number;
-      readonly body: RegionIR;
-    }[],
+    instructions: readonly DirectJitInstruction[],
     binding: DirectJitBinding,
     cache?: DirectJitCache,
   ): DirectJitProgram | undefined;
   createCache(): DirectJitCache;
+  /** Create a bounded artifact cache shared by sessions and boards. */
+  createArtifactCache(): DirectJitArtifactCache;
   /** Create or replace the single incremental session attached to a cache. */
-  createSession(binding: DirectJitBinding, cache?: DirectJitCache): DirectJitSession;
+  createSession(
+    binding: DirectJitBinding,
+    cache?: DirectJitCache,
+    artifactCache?: DirectJitArtifactCache,
+  ): DirectJitSession;
   clearCache(cache: DirectJitCache): void;
   cacheStats(cache: DirectJitCache): DirectJitCacheStats;
+  /** Drop artifact reuse without touching live sessions or their compiled functions. */
+  clearArtifactCache(cache: DirectJitArtifactCache): void;
+  artifactCacheStats(cache: DirectJitArtifactCache): DirectJitArtifactCacheStats;
 }
 
 /** One compile-time value and the literal source text that reproduces it exactly. */
@@ -681,6 +1444,8 @@ const OUTLINE_MAX_SLOTS = 64;
 const MONOLITH_CODE_LIMIT = 48_000;
 /** Above this many routes, a linear chain spends more time comparing bounds than dispatching. */
 const SHARD_ROUTE_TREE_MIN = 16;
+/** Largest representable wall-clock time in picoseconds, shared by every instruction emitter. */
+const MAX_TIME = 7_200_000_000_000_000;
 
 interface ShardRoute {
   readonly bound: string;
@@ -723,11 +1488,7 @@ function emitShardRoutes(
 
 /** Inputs have already passed model validation and contextual binding. */
 function compileDirectJitProgram(
-  instructions: readonly {
-    readonly pc: number;
-    readonly nextPc: number;
-    readonly body: RegionIR;
-  }[],
+  instructions: readonly DirectJitInstruction[],
   binding: DirectJitBinding,
   suppliedCache?: DirectJitCache,
 ): DirectJitProgram | undefined {
@@ -745,14 +1506,14 @@ function compileDirectJitProgram(
     state.stats.invalidatedBlocks += state.entries.size;
     state.entries.clear();
     state.constants.length = 0;
-    state.resistorSlots.clear();
+    clearResistorSlots(state);
     state.functions.clear();
     state.shards.length = 0;
     state.nextResume = 1;
     state.nextShard = 1;
   }
   state.binding = fingerprint;
-  const capture = (value: unknown): string => `C[${state.constants.push(value) - 1}]`;
+  const capture = artifactCapture(state);
   const resistorSlot = (pin: string, resistance: number): number => {
     const key = `${pin}\0${resistance}`;
     let slot = state.resistorSlots.get(key);
@@ -811,10 +1572,25 @@ function compileDirectJitProgram(
     ) {
       compiled = cached.instruction;
       if (compiled !== undefined) compiled.resumeId = resumeId ?? 0;
-      // A full build has no share markers: keep cached bodies but drop stale sharing metadata
-      // so a later session cannot route them through a shared body that this build never used.
-      if (cached.share !== undefined || cached.shareInvalid)
-        state.entries.set(instruction.pc, { ...cached, share: undefined, shareInvalid: false });
+      // A full build has no mark candidates: keep cached bodies but drop stale sharing and
+      // span/loop metadata so a later session cannot route through a plan this build lacks.
+      if (
+        cached.share !== undefined ||
+        cached.shareInvalid ||
+        cached.span !== undefined ||
+        cached.spanInvalid ||
+        cached.loop !== undefined ||
+        cached.loopInvalid
+      )
+        state.entries.set(instruction.pc, {
+          ...cached,
+          share: undefined,
+          shareInvalid: false,
+          span: undefined,
+          spanInvalid: false,
+          loop: undefined,
+          loopInvalid: false,
+        });
       state.stats.reusedBlocks++;
     } else {
       if (cached !== undefined) state.stats.invalidatedBlocks++;
@@ -833,12 +1609,21 @@ function compileDirectJitProgram(
         nextPc: instruction.nextPc,
         delay,
         instruction: compiled,
+        artifactHit: false,
         resumeId,
         share: undefined,
         shareInvalid: false,
+        span: undefined,
+        spanInvalid: false,
+        loop: undefined,
+        loopInvalid: false,
       });
       state.stats.compiledBlocks++;
     }
+    // A full build owns a private constant pool. Its instructions get unique identities so a
+    // cached shard source can never bind constants from a different private pool.
+    if (compiled !== undefined && compiled.artifactKey === '')
+      compiled.artifactKey = privateArtifactKey(compiled);
     if (compiled !== undefined) {
       entries.push(compiled);
       active.set(compiled.pcValue, compiled);
@@ -858,7 +1643,14 @@ function compileDirectJitProgram(
   // A supplied cache makes the split form resident: instruction bodies and shard functions stay
   // alive while each build only assembles a fresh dispatcher over the current shard set.
   if (options.split === true && suppliedCache !== undefined)
-    return residentProgram(state, entries, binding, shardSize);
+    return residentProgram(
+      state,
+      entries,
+      binding,
+      shardSize,
+      state.artifact ?? artifactState(defaultArtifactCache),
+      artifactBindingContext(binding, fingerprint),
+    );
   // An explicit slot limit keeps the historical slot-based switch; otherwise the emitted
   // source size decides, because register reuse makes slot counts wildly optimistic.
   const slotLimit = validIndex(options.shardSlotLimit) ? options.shardSlotLimit : undefined;
@@ -905,8 +1697,13 @@ function compileDirectJitProgram(
 
 export const compileDirectJit: DirectJitCompiler = Object.assign(compileDirectJitProgram, {
   createCache: createDirectJitCache,
-  createSession(binding: DirectJitBinding, cache?: DirectJitCache): DirectJitSession {
-    return createDirectJitSession(binding, cache);
+  createArtifactCache: createDirectJitArtifactCache,
+  createSession(
+    binding: DirectJitBinding,
+    cache?: DirectJitCache,
+    artifactCache?: DirectJitArtifactCache,
+  ): DirectJitSession {
+    return createDirectJitSession(binding, cache, artifactCache);
   },
   clearCache(cache: DirectJitCache): void {
     directJitSessions.get(cache)?.dispose();
@@ -915,6 +1712,24 @@ export const compileDirectJit: DirectJitCompiler = Object.assign(compileDirectJi
   cacheStats(cache: DirectJitCache): DirectJitCacheStats {
     const state = cacheState(cache);
     return Object.freeze({ ...state.stats, entries: state.entries.size });
+  },
+  clearArtifactCache(cache: DirectJitArtifactCache): void {
+    const artifact = artifactState(cache);
+    artifact.instructions.clear();
+    artifact.instructionCount = 0;
+    artifact.instructionSourceUnits = 0;
+    artifact.shards.clear();
+    artifact.shardSourceUnits = 0;
+    artifact.stats.clears++;
+  },
+  artifactCacheStats(cache: DirectJitArtifactCache): DirectJitArtifactCacheStats {
+    const artifact = artifactState(cache);
+    return Object.freeze({
+      ...artifact.stats,
+      instructionEntries: artifact.instructionCount,
+      shardEntries: artifact.shards.size,
+      sourceUnits: artifact.shardSourceUnits,
+    });
   },
 });
 
@@ -1618,55 +2433,32 @@ function sharedBodyProgram(
   return lines;
 }
 
-// Share only the unbound factory. Neither the source key nor the factory captures a JIT cache,
-// and every caller binds its own constants when it creates the step and resume functions.
-const residentFactories = new Map<string, ResidentShardFactory>();
-const maxResidentFactories = 128;
-const maxResidentFactorySourceUnits = 4 * 1024 * 1024;
-// Oversized sources bypass the cache instead of evicting a group of smaller factories.
-const maxCachedShardSourceUnits = 64 * 1024;
-let residentFactorySourceUnits = 0;
-
-function residentShardFactory(source: string): ResidentShardFactory {
-  // The parameter list is fixed for every factory in this cache.
-  const cacheable = source.length <= maxCachedShardSourceUnits;
-  const previous = cacheable ? residentFactories.get(source) : undefined;
-  if (previous !== undefined) {
-    residentFactories.delete(source);
-    residentFactories.set(source, previous);
-    return previous;
-  }
-
-  const factory = new Function('C', 'H', source) as ResidentShardFactory;
-  if (!cacheable) return factory;
-  while (
-    residentFactories.size >= maxResidentFactories ||
-    residentFactorySourceUnits + source.length > maxResidentFactorySourceUnits
-  ) {
-    const oldest = residentFactories.keys().next().value!;
-    residentFactories.delete(oldest);
-    residentFactorySourceUnits -= oldest.length;
-  }
-  residentFactories.set(source, factory);
-  residentFactorySourceUnits += source.length;
-  return factory;
-}
-
 function compileResidentShard(
   state: DirectJitCacheState,
   shard: ResidentShard,
   binding: DirectJitBinding,
+  artifact: ArtifactCacheState,
+  context: ArtifactBindingContext,
 ): number {
-  const lines = residentShardProgram(shard, binding);
-  const resume = shard.resumable ? `resumeShard${shard.id}` : 'undefined';
-  const source = `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`;
-  const factory = residentShardFactory(source);
-  const [step, resumeFunction] = factory(Object.freeze([...state.constants]), helpers);
+  const key = shardSourceKey(
+    context,
+    'shard',
+    shard.id,
+    shard.entries,
+    binding.host === true ? 'h' : '-',
+  );
+  const compiled = artifactShardFactory(artifact, key, () => {
+    const lines = residentShardProgram(shard, binding);
+    const resume = shard.resumable ? `resumeShard${shard.id}` : 'undefined';
+    return `"use strict";\n${lines.join('\n')}\nreturn [stepShard${shard.id}, ${resume}];`;
+  });
+  const [step, resumeFunction] = compiled.factory(Object.freeze([...state.constants]), helpers);
   shard.functions = { step, resume: resumeFunction };
   shard.signature = Object.freeze([...shard.entries]);
   shard.dirty = false;
+  // Legacy counters describe shard build sites; artifact stats distinguish source reuse.
   state.stats.compiledShards++;
-  return source.length;
+  return compiled.reused ? 0 : compiled.source.length;
 }
 
 /** Tiny generated router over resident functions; only this source is rebuilt per program. */
@@ -1730,6 +2522,8 @@ function residentProgram(
   entries: readonly Instruction[],
   binding: DirectJitBinding,
   shardSize: number,
+  artifact: ArtifactCacheState,
+  context: ArtifactBindingContext,
 ): DirectJitProgram | undefined {
   syncResidentShards(state, entries, shardSize, binding.pc.index);
   if (!state.shards.length) return undefined;
@@ -1742,7 +2536,7 @@ function residentProgram(
       state.stats.reusedShards++;
       continue;
     }
-    compileResidentShard(state, shard, binding);
+    compileResidentShard(state, shard, binding, artifact, context);
   }
 
   const lines = residentDispatcherProgram(state.shards, entries, binding);
@@ -1935,6 +2729,12 @@ class Instruction {
   nextPcValue = 0;
   pc = '';
   nextPc = '';
+  /**
+   * Stable artifact identity assigned once after compilation. It covers the binding, PC,
+   * body and delay identity (or a process-unique private identity) and lets shard sources
+   * reuse without hashing every emitted line.
+   */
+  artifactKey = '';
   /** Cache-stable continuation key used by resident shards; zero when none is needed. */
   resumeId = 0;
   duration?: string;
@@ -2028,10 +2828,15 @@ class Instruction {
       );
       if (paced !== undefined)
         this.guard.push(
-          // A paced device consumes time through its service accumulator; stop on the first
-          // round that reaches the next service boundary, so the following dispatch still
-          // advances SysTick / the UART bit clock by exactly the folded time.
-          `if (S[${paced.active}]) rounds = Math.min(rounds, Math.floor(Math.max(0, S[${paced.period}] - S[${paced.state}]) / ${delay.cycles}) + 1);`,
+          // A paced device consumes time through its service accumulator; stop before the
+          // round that would reach the next service boundary, so the following dispatch still
+          // advances SysTick / the UART bit clock exactly up to that boundary. A remaining
+          // budget of zero fits no complete round: fold nothing and let the real tail activate
+          // the service.
+          `if (S[${paced.active}]) {`,
+          `const remaining = Math.max(0, S[${paced.period}] - S[${paced.state}]);`,
+          `rounds = Math.min(rounds, remaining > 0 ? Math.floor((remaining - 1) / ${delay.cycles}) : 0);`,
+          '}',
         );
       this.guard.push(
         'if (rounds > 0) {',
@@ -2114,6 +2919,49 @@ class Instruction {
     this.statements = statements;
     this.selects = selects;
     return this;
+  }
+
+  /**
+   * Copy an immutable emission for reuse by another session. The stored template itself is
+   * never mutated: line arrays and sets are shared, while the mutable continuation id starts
+   * at zero and branch metadata that the shard emitter sorts gets a fresh array.
+   */
+  emissionClone(): Instruction {
+    const clone = Object.create(Instruction.prototype) as Instruction;
+    Object.assign(clone, {
+      readStates: this.readStates,
+      writeStates: this.writeStates,
+      readMemories: this.readMemories,
+      writeMemories: this.writeMemories,
+      slots: this.slots,
+      size: this.size,
+      statements: this.statements,
+      operations: this.operations,
+      selects: this.selects,
+      functionSourceSize: this.functionSourceSize,
+      foldedOperations: this.foldedOperations,
+      nestedOperations: this.nestedOperations,
+      guard: this.guard,
+      barrier: this.barrier,
+      prefix: this.prefix,
+      suffix: this.suffix,
+      pcValue: this.pcValue,
+      nextPcValue: this.nextPcValue,
+      pc: this.pc,
+      nextPc: this.nextPc,
+      artifactKey: this.artifactKey,
+      resumeId: 0,
+      duration: this.duration,
+      dynamicDuration: this.dynamicDuration,
+      immediate: this.immediate,
+      stop: this.stop,
+      backedges: this.backedges,
+      outlineBranches: this.outlineBranches?.map((branch) => ({ ...branch })),
+      exitLabel: this.exitLabel,
+      exitDuration: this.exitDuration,
+      labels: this.labels,
+    });
+    return clone;
   }
 
   /**
@@ -3146,6 +3994,969 @@ class Instruction {
   }
 }
 
+/** Session-fixed timing slots plus the compiled pure guard call target. */
+interface PreparedTiming {
+  readonly elapsed: number;
+  readonly deadline: number;
+  readonly blocked: string | undefined;
+}
+
+/** A proven self-jump; the session turns it into an entry guard wrapper. */
+interface LoopPlan {
+  readonly kind: 'spin' | 'decrement8';
+  readonly instruction: Instruction;
+  readonly duration: number;
+  readonly memoryIndex: number | undefined;
+  readonly addressExpression: string | undefined;
+  readonly timing: PreparedTiming | undefined;
+}
+
+/** A proven fused span; `prefix` excludes the terminal member. */
+interface SpanPlan {
+  readonly pcs: readonly number[];
+  readonly prefix: readonly Instruction[];
+  readonly terminal: Instruction;
+  readonly duration: number;
+  readonly timing: PreparedTiming | undefined;
+  readonly barrier: readonly string[];
+}
+
+interface InstalledWrapper {
+  readonly kind: 'loop' | 'span';
+  readonly plan: LoopPlan | SpanPlan;
+  readonly id: number;
+  readonly source: string;
+  readonly factory: OptimizedStepFactory;
+  normal: ResidentStep;
+  wrapper: ResidentStep;
+}
+
+type OptimizedStepFactory = (
+  constants: readonly unknown[],
+  runtimeHelpers: typeof helpers,
+  normal: ResidentStep,
+  counters: { spanRuns: number; loopRounds: number },
+) => ResidentStep;
+
+/** Word masks that make an entry write barrier from one instruction's IR writes. */
+function barrierWords(
+  entries: readonly Instruction[],
+  field: 'writeStates' | 'writeMemories',
+  slots: ReadonlyMap<string, number>,
+  bank: 'BS' | 'BM',
+): string[] {
+  const words = new Map<number, number>();
+  for (const entry of entries)
+    for (const name of entry[field]) {
+      const index = slots.get(name);
+      if (!validIndex(index)) continue;
+      words.set(index >>> 5, (words.get(index >>> 5) ?? 0) | (1 << (index & 31)));
+    }
+  return [...words]
+    .sort(([left], [right]) => left - right)
+    .map(([word, mask]) => `if (${bank}[${word}] & ${mask >>> 0}) return NORMAL(F, deadline, pc);`);
+}
+
+/**
+ * Label identifiers emitted by `Instruction` are function-scoped. A fused span joins several
+ * bodies into one function, so each member's labels receive a stable tag. String literals are
+ * data and stay untouched.
+ */
+function renameLabels(lines: readonly string[], tag: string): string[] {
+  return lines.map((line) => {
+    let output = '';
+    let cursor = 0;
+    let scan = 0;
+    while (scan < line.length) {
+      const code = line.charCodeAt(scan);
+      if (code === 34) {
+        scan = afterString(line, scan);
+        continue;
+      }
+      if (!isWordCode(code)) {
+        scan++;
+        continue;
+      }
+      let end = scan;
+      while (end < line.length && isWordCode(line.charCodeAt(end))) end++;
+      const token = line.slice(scan, end);
+      const replaced = token.replace(/^(exit|select|loopTest|and|or)(\d+)$/, `$1_${tag}_$2`);
+      if (replaced !== token) {
+        output += line.slice(cursor, scan) + replaced;
+        cursor = end;
+      }
+      scan = end;
+    }
+    return cursor === 0 ? line : output + line.slice(cursor);
+  });
+}
+
+function registersOf(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `v${index}`);
+}
+
+function maxSlots(entries: readonly Instruction[]): number {
+  let total = 0;
+  for (const entry of entries) if (entry.slots.length > total) total = entry.slots.length;
+  return total;
+}
+
+/** Generated span step: timing admission, one observer check, then fused members. */
+function spanStepSource(
+  plan: SpanPlan,
+  id: number,
+  binding: DirectJitBinding,
+  host: boolean,
+): string {
+  const pcIndex = binding.pc.index;
+  const slots = maxSlots([...plan.prefix, plan.terminal]);
+  const lines = [
+    `function stepSpan${id}(F, deadline, pc) {`,
+    ...prelude(registersOf(slots)),
+    'if (F.stopAfterInstruction || F.publishPending) return NORMAL(F, deadline, pc);',
+  ];
+  const timing = plan.timing;
+  if (timing !== undefined) {
+    lines.push(
+      `const spanElapsed = S[${timing.elapsed}], spanDeadline = S[${timing.deadline}];`,
+      'if (!(typeof spanElapsed === "number" && Number.isSafeInteger(spanElapsed) && spanElapsed >= 0 && typeof spanDeadline === "number" && Number.isSafeInteger(spanDeadline) && spanDeadline >= 0)) return NORMAL(F, deadline, pc);',
+    );
+    if (timing.blocked !== undefined)
+      lines.push(`if (${timing.blocked}(F)) return NORMAL(F, deadline, pc);`);
+    lines.push(
+      'let spanLimit = deadline;',
+      'if (spanDeadline > 0) {',
+      'const spanRemain = spanDeadline > spanElapsed ? spanDeadline - spanElapsed : 0;',
+      'const spanAbsolute = F.time + spanRemain;',
+      'if (!Number.isSafeInteger(spanAbsolute)) return NORMAL(F, deadline, pc);',
+      'if (spanAbsolute < spanLimit) spanLimit = spanAbsolute;',
+      '}',
+    );
+  } else {
+    lines.push('const spanLimit = deadline;');
+  }
+  lines.push(
+    ...plan.barrier,
+    `if (!(F.time + ${plan.duration} < spanLimit)) return NORMAL(F, deadline, pc);`,
+  );
+  lines.push('if (F.directMetrics) F.directMetrics.spanRuns++;', 'COUNT.spanRuns++;');
+  plan.prefix.forEach((member, index) => {
+    lines.push(
+      `S[${pcIndex}] = ${member.nextPc};`,
+      dirty('SD', pcIndex),
+      ...renameLabels(member.prefix, `s${id}_${index}`),
+      `F.due = F.time + ${member.duration};`,
+      `if (F.due > ${MAX_TIME}) throw new RangeError("Time out of range");`,
+      'F.time = F.due;',
+      ...renameLabels(member.suffix, `s${id}_${index}`),
+    );
+  });
+  const terminal = plan.terminal;
+  lines.push(
+    '{',
+    ...renameLabels(terminal.barrier, `s${id}_t`),
+    ...renameLabels(terminal.guard, `s${id}_t`),
+    `S[${pcIndex}] = ${terminal.nextPc};`,
+    dirty('SD', pcIndex),
+    ...renameLabels(terminal.prefix, `s${id}_t`),
+    ...elapsed(terminal, terminal.resumeId, host),
+    ...renameLabels(terminal.suffix, `s${id}_t`),
+    terminal.isolated ? publish : residentStepFinish(terminal, undefined, binding),
+    '}',
+    '}',
+  );
+  return lines.join('\n');
+}
+
+/** Generated loop head: the normal entry barrier, a fold, then exactly one real round. */
+function loopStepSource(plan: LoopPlan, id: number, blocking: readonly string[]): string {
+  const lines = [
+    `function stepLoop${id}(F, deadline, pc) {`,
+    ...prelude([]),
+    ...blocking,
+    ...loopFoldLines(plan),
+    'return NORMAL(F, deadline, pc);',
+    '}',
+  ];
+  return lines.join('\n');
+}
+
+/**
+ * Time budget shared by spans and loops. The fold is skipped (never approximated) when any
+ * timing slot is malformed or the service horizon cannot be represented exactly.
+ */
+function loopFoldLines(plan: LoopPlan): string[] {
+  const duration = plan.duration;
+  const lines: string[] = [];
+  const timing = plan.timing;
+  const decrement = plan.kind === 'decrement8';
+  const close: string[] = [];
+  if (timing !== undefined) {
+    lines.push(
+      'if (!F.stopAfterInstruction && !F.publishPending && Number.isSafeInteger(F.time)) {',
+      `const foldElapsed = S[${timing.elapsed}], foldDeadline = S[${timing.deadline}];`,
+      'if (typeof foldElapsed === "number" && Number.isSafeInteger(foldElapsed) && foldElapsed >= 0 && typeof foldDeadline === "number" && Number.isSafeInteger(foldDeadline) && foldDeadline >= 0) {',
+      'let foldLimit = deadline;',
+      'let foldTimingOk = Number.isSafeInteger(foldLimit);',
+      'if (foldTimingOk && foldDeadline > 0) {',
+      'const foldRemain = foldDeadline > foldElapsed ? foldDeadline - foldElapsed : 0;',
+      'const foldAbsolute = F.time + foldRemain;',
+      'if (Number.isSafeInteger(foldAbsolute)) { if (foldAbsolute < foldLimit) foldLimit = foldAbsolute; } else foldTimingOk = false;',
+      '}',
+    );
+    if (timing.blocked !== undefined) lines.push(`if (foldTimingOk && !${timing.blocked}(F)) {`);
+    else lines.push('if (foldTimingOk) {');
+    close.push('}', '}', '}');
+  } else {
+    lines.push(
+      'if (!F.stopAfterInstruction && !F.publishPending && Number.isSafeInteger(deadline) && Number.isSafeInteger(F.time)) {',
+    );
+    close.push('}');
+  }
+  const limit = timing === undefined ? 'deadline' : 'foldLimit';
+  lines.push(
+    `let rounds = ${limit} > F.time ? Math.floor((${limit} - F.time - 1) / ${duration}) : 0;`,
+  );
+  if (decrement) {
+    lines.push(
+      `const foldAt = ${plan.addressExpression};`,
+      `const foldTarget = ${plan.memoryIndex};`,
+      'let foldCounter = 0;',
+      'if (rounds > 0) {',
+      'foldCounter = M[foldTarget][foldAt];',
+      'const foldExit = (foldCounter === 0 ? 256 : foldCounter) - 1;',
+      'if (rounds > foldExit) rounds = foldExit;',
+      '}',
+    );
+  }
+  const delta = `rounds * ${duration}`;
+  const eligibility = [
+    'rounds > 0',
+    `Number.isSafeInteger(${delta})`,
+    `Number.isSafeInteger(F.time + ${delta})`,
+    `F.time + ${delta} <= ${MAX_TIME}`,
+  ];
+  if (decrement) {
+    const index = plan.memoryIndex!;
+    eligibility.push(`!(BM[${index >>> 5}] & ${(1 << (index & 31)) >>> 0})`);
+  }
+  if (timing !== undefined) {
+    const index = timing.elapsed;
+    eligibility.push(
+      `(!(foldElapsed > 0 && foldElapsed < foldDeadline) || Number.isSafeInteger(foldElapsed + ${delta}) && foldElapsed + ${delta} <= ${MAX_TIME})`,
+      `(!(foldElapsed > 0 && foldElapsed < foldDeadline) || !(BS[${index >>> 5}] & ${(1 << (index & 31)) >>> 0}))`,
+    );
+  }
+  lines.push(`if (${eligibility.join(' && ')}) {`, `const foldDelta = ${delta};`);
+  if (decrement) {
+    const index = plan.memoryIndex!;
+    lines.push(
+      'M[foldTarget][foldAt] = (foldCounter - rounds) & 255;',
+      `MD[${index >>> 5}] |= ${(1 << (index & 31)) >>> 0};`,
+    );
+  }
+  lines.push(
+    'F.time += foldDelta;',
+    'F.due = F.time;',
+    `if (F.time > ${MAX_TIME}) throw new RangeError("Time out of range");`,
+  );
+  if (timing !== undefined) {
+    const index = timing.elapsed;
+    lines.push(
+      'if (foldElapsed > 0 && foldElapsed < foldDeadline) {',
+      `S[${index}] = foldElapsed + foldDelta;`,
+      `SD[${index >>> 5}] |= ${(1 << (index & 31)) >>> 0};`,
+      '}',
+    );
+  }
+  lines.push(
+    'if (F.directMetrics) F.directMetrics.loopRounds += rounds;',
+    'COUNT.loopRounds += rounds;',
+    '}',
+    ...close,
+  );
+  return lines;
+}
+
+/** Constant integer value of a result after the reference analyzer's propagation. */
+function constantNumber(constants: ReadonlyMap<number, Primitive>, id: number): number | undefined {
+  const value = constants.get(id);
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined;
+}
+
+function operationMap(body: RegionIR): ReadonlyMap<number, OperationIR> {
+  const operations = new Map<number, OperationIR>();
+  for (const operation of body.operations)
+    if ('result' in operation) operations.set(operation.result, operation);
+  return operations;
+}
+
+function memoryWidth(kind: OperationIR['kind']): number {
+  if (kind === 'load8' || kind === 'store8') return 1;
+  if (kind === 'load16le' || kind === 'load16be' || kind === 'store16le' || kind === 'store16be')
+    return 2;
+  return 4;
+}
+
+function memoryName(memory: MemoryRefIR): string | undefined {
+  return memory.kind === 'memory' ? memory.name : undefined;
+}
+
+function memoryInRange(
+  binding: DirectJitBinding,
+  memory: string,
+  offset: number,
+  width: number,
+): boolean {
+  if (!Number.isSafeInteger(offset) || offset < 0) return false;
+  const length = binding.memoryLengths?.get(memory);
+  return validIndex(length) && width <= length && offset <= length - width;
+}
+
+/** Prefix operations a fused span may execute; control flow and host effects stay normal. */
+const spanPrefixKinds = new Set<OperationIR['kind']>([
+  'constant',
+  'read',
+  'unary',
+  'binary',
+  'numeric',
+  'optional',
+  'isNone',
+  'nonNull',
+  'refEqual',
+  'length',
+  'field',
+  'index',
+  'local',
+  'localRead',
+  'localWrite',
+  'write',
+  'load8',
+  'load16le',
+  'load16be',
+  'load32le',
+  'load32be',
+  'store8',
+  'store16le',
+  'store16be',
+  'store32le',
+  'store32be',
+  'elapse',
+]);
+
+/** The canonical IR proof for every non-terminal member of a span. */
+function spanPrefixProof(
+  body: RegionIR,
+  binding: DirectJitBinding,
+  timing: PreparedTiming | undefined,
+): boolean {
+  const constants = constantsOf(body);
+  const timingSlots =
+    timing === undefined ? undefined : new Set<number>([timing.elapsed, timing.deadline]);
+  let elapsed = 0;
+  for (const operation of body.operations) {
+    if (!spanPrefixKinds.has(operation.kind)) return false;
+    switch (operation.kind) {
+      case 'write': {
+        const index = binding.states.get(operation.name);
+        if (!validIndex(index)) return false;
+        if (operation.name === binding.pc.name) return false;
+        if (binding.entryBlockedStates?.has(operation.name)) return false;
+        if (binding.blockedStates?.has(operation.name)) return false;
+        if (timingSlots?.has(index)) return false;
+        break;
+      }
+      case 'load8':
+      case 'load16le':
+      case 'load16be':
+      case 'load32le':
+      case 'load32be':
+      case 'store8':
+      case 'store16le':
+      case 'store16be':
+      case 'store32le':
+      case 'store32be': {
+        const name = memoryName(operation.memory);
+        if (name === undefined || !binding.memories.has(name)) return false;
+        const offset = constantNumber(constants, operation.offset);
+        if (offset === undefined) return false;
+        if (!memoryInRange(binding, name, offset, memoryWidth(operation.kind))) return false;
+        if (operation.kind.startsWith('store')) {
+          if (binding.codeMemories?.has(name)) return false;
+          if (binding.entryBlockedMemories?.has(name)) return false;
+          if (binding.blockedMemories?.has(name)) return false;
+        }
+        break;
+      }
+      case 'elapse': {
+        elapsed++;
+        const duration = constantNumber(constants, operation.duration);
+        if (duration === undefined || duration <= 0) return false;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return elapsed === 1;
+}
+
+/** The tail after a loop's single elapse may only adjust the device timing accumulator. */
+function timingTailProof(
+  operations: readonly OperationIR[],
+  timing: PreparedTiming | undefined,
+  states: ReadonlyMap<string, number>,
+): boolean {
+  if (!operations.length) return true;
+  const tailKinds = new Set<OperationIR['kind']>([
+    'constant',
+    'read',
+    'unary',
+    'binary',
+    'numeric',
+    'optional',
+    'isNone',
+    'nonNull',
+    'local',
+    'localRead',
+    'localWrite',
+    'write',
+  ]);
+  for (const operation of operations) {
+    if (!tailKinds.has(operation.kind)) return false;
+    if (operation.kind === 'write') {
+      if (timing === undefined || states.get(operation.name) !== timing.elapsed) return false;
+    }
+  }
+  return true;
+}
+
+interface AddressParts {
+  readonly kind: 'constant' | 'maskedByte';
+  readonly memory?: string;
+  readonly offset: number;
+  readonly mask?: number;
+  readonly bits?: number;
+}
+
+function addressParts(
+  id: number,
+  constants: ReadonlyMap<number, Primitive>,
+  operations: ReadonlyMap<number, OperationIR>,
+): AddressParts | undefined {
+  const direct = constantNumber(constants, id);
+  if (direct !== undefined) return { kind: 'constant', offset: direct };
+  const operation = operations.get(id);
+  if (operation === undefined) return undefined;
+  if (operation.kind === 'unary' && operation.operator === 'positive')
+    return addressParts(operation.value, constants, operations);
+  if (operation.kind !== 'binary') return undefined;
+  if (operation.operator === 'bitOr') {
+    const masked = maskedAnd(operation.left, constants, operations);
+    const bits = constantNumber(constants, operation.right);
+    if (masked !== undefined && bits !== undefined && bits >= 0 && bits <= 255)
+      return { ...masked, kind: 'maskedByte', bits };
+    const reverse = maskedAnd(operation.right, constants, operations);
+    const reverseBits = constantNumber(constants, operation.left);
+    if (
+      reverse !== undefined &&
+      reverseBits !== undefined &&
+      reverseBits >= 0 &&
+      reverseBits <= 255
+    )
+      return { ...reverse, kind: 'maskedByte', bits: reverseBits };
+    return undefined;
+  }
+  if (operation.operator === 'bitAnd') {
+    const masked = maskedAnd(id, constants, operations);
+    return masked === undefined ? undefined : { ...masked, kind: 'maskedByte', bits: 0 };
+  }
+  return undefined;
+}
+
+function maskedAnd(
+  id: number,
+  constants: ReadonlyMap<number, Primitive>,
+  operations: ReadonlyMap<number, OperationIR>,
+): { readonly memory: string; readonly offset: number; readonly mask: number } | undefined {
+  const operation = operations.get(id);
+  if (operation === undefined) return undefined;
+  if (operation.kind === 'unary' && operation.operator === 'positive')
+    return maskedAnd(operation.value, constants, operations);
+  if (operation.kind !== 'binary' || operation.operator !== 'bitAnd') return undefined;
+  const leftMask = constantNumber(constants, operation.left);
+  const rightMask = constantNumber(constants, operation.right);
+  const loadId = leftMask === undefined ? operation.left : operation.right;
+  const mask = leftMask ?? rightMask;
+  if (mask === undefined || mask < 0 || mask > 255) return undefined;
+  const load = operations.get(loadId);
+  if (load?.kind !== 'load8') return undefined;
+  const memory = memoryName(load.memory);
+  const offset = constantNumber(constants, load.offset);
+  if (memory === undefined || offset === undefined || offset < 0) return undefined;
+  return { memory, offset, mask };
+}
+
+function sameAddress(left: AddressParts | undefined, right: AddressParts | undefined): boolean {
+  if (left === undefined || right === undefined || left.kind !== right.kind) return false;
+  if (left.kind === 'constant') return right.kind === 'constant' && left.offset === right.offset;
+  return (
+    right.kind === 'maskedByte' &&
+    left.memory === right.memory &&
+    left.offset === right.offset &&
+    left.mask === right.mask &&
+    left.bits === right.bits
+  );
+}
+
+function candidateAddress(candidate: LoopAddressStamp): AddressParts {
+  return candidate.kind === 'constant'
+    ? { kind: 'constant', offset: candidate.offset }
+    : {
+        kind: 'maskedByte',
+        memory: candidate.memory,
+        offset: candidate.offset,
+        mask: candidate.mask,
+        bits: candidate.bits,
+      };
+}
+
+/** `(base - 1) & 255` from the stored value's defining operations. */
+function minusOneBase(
+  id: number,
+  constants: ReadonlyMap<number, Primitive>,
+  operations: ReadonlyMap<number, OperationIR>,
+): number | undefined {
+  const operation = operations.get(id);
+  if (operation?.kind !== 'binary' || operation.operator !== 'bitAnd') return undefined;
+  const leftMask = constantNumber(constants, operation.left);
+  const rightMask = constantNumber(constants, operation.right);
+  const subtractId =
+    leftMask === 255 ? operation.right : rightMask === 255 ? operation.left : undefined;
+  if (subtractId === undefined) return undefined;
+  const subtract = operations.get(subtractId);
+  if (subtract?.kind !== 'binary' || subtract.operator !== 'subtract') return undefined;
+  if (constantNumber(constants, subtract.right) !== 1) return undefined;
+  if (constantNumber(constants, subtract.left) !== undefined) return undefined;
+  return subtract.left;
+}
+
+type ZeroTest = 'nonZero' | 'zero';
+
+function zeroTest(
+  id: number,
+  counter: number,
+  constants: ReadonlyMap<number, Primitive>,
+  operations: ReadonlyMap<number, OperationIR>,
+): ZeroTest | undefined {
+  const operation = operations.get(id);
+  if (operation === undefined) return undefined;
+  if (operation.kind === 'unary' && operation.operator === 'not') {
+    const inner = zeroTest(operation.value, counter, constants, operations);
+    return inner === undefined ? undefined : inner === 'zero' ? 'nonZero' : 'zero';
+  }
+  if (operation.kind !== 'binary') return undefined;
+  const left = constantNumber(constants, operation.left);
+  const right = constantNumber(constants, operation.right);
+  if (operation.left === counter && right === 0) {
+    if (operation.operator === 'notEqual' || operation.operator === 'greaterThan') return 'nonZero';
+    if (operation.operator === 'equal') return 'zero';
+    return undefined;
+  }
+  if (operation.right === counter && left === 0) {
+    if (operation.operator === 'notEqual' || operation.operator === 'lessThan') return 'nonZero';
+    if (operation.operator === 'equal') return 'zero';
+    return undefined;
+  }
+  return undefined;
+}
+
+type BranchAction = 'self' | 'fallthrough';
+
+/** One conditional arm may only write the logical PC and must not repeat the counter store. */
+function branchAction(
+  region: RegionIR,
+  pc: number,
+  nextPc: number,
+  duration: number,
+  pcName: string,
+  constants: ReadonlyMap<number, Primitive>,
+): BranchAction | undefined {
+  let action: BranchAction | undefined;
+  const pure = new Set<OperationIR['kind']>([
+    'constant',
+    'unary',
+    'binary',
+    'numeric',
+    'optional',
+    'isNone',
+    'nonNull',
+    'local',
+    'localRead',
+    'localWrite',
+  ]);
+  for (const operation of region.operations) {
+    if (operation.kind === 'write' && operation.name === pcName) {
+      const target = constantNumber(constants, operation.value);
+      if (target !== pc && target !== nextPc) return undefined;
+      const nextAction: BranchAction = target === pc ? 'self' : 'fallthrough';
+      if (action !== undefined && action !== nextAction) return undefined;
+      action = nextAction;
+      continue;
+    }
+    if (operation.kind === 'redirect') {
+      const target = constantNumber(constants, operation.target);
+      const delay = constantNumber(constants, operation.delay);
+      if (delay !== duration || (target !== pc && target !== nextPc)) return undefined;
+      const nextAction: BranchAction = target === pc ? 'self' : 'fallthrough';
+      if (action !== undefined && action !== nextAction) return undefined;
+      action = nextAction;
+      continue;
+    }
+    if (!pure.has(operation.kind)) return undefined;
+  }
+  return action ?? 'fallthrough';
+}
+
+function sameOptimizationPlan(left: LoopPlan | SpanPlan, right: LoopPlan | SpanPlan): boolean {
+  if (left === right) return true;
+  const leftSpan = 'pcs' in left;
+  const rightSpan = 'pcs' in right;
+  if (leftSpan !== rightSpan) return false;
+  if (leftSpan) {
+    const a = left as SpanPlan;
+    const b = right as SpanPlan;
+    return (
+      a.duration === b.duration &&
+      a.terminal === b.terminal &&
+      a.timing === b.timing &&
+      a.prefix.length === b.prefix.length &&
+      a.prefix.every((entry, index) => entry === b.prefix[index]) &&
+      a.pcs.length === b.pcs.length &&
+      a.pcs.every((entry, index) => entry === b.pcs[index]) &&
+      a.barrier.length === b.barrier.length &&
+      a.barrier.every((entry, index) => entry === b.barrier[index])
+    );
+  }
+  const a = left as LoopPlan;
+  const b = right as LoopPlan;
+  return (
+    a.kind === b.kind &&
+    a.instruction === b.instruction &&
+    a.duration === b.duration &&
+    a.memoryIndex === b.memoryIndex &&
+    a.addressExpression === b.addressExpression &&
+    a.timing === b.timing
+  );
+}
+
+/** Recursive pure-expression/read proof for the device blocking helper. */
+function guardRegion(
+  region: RegionIR,
+  binding: DirectJitBinding,
+  constants: ReadonlyMap<number, Primitive>,
+): boolean {
+  for (const operation of region.operations) {
+    switch (operation.kind) {
+      case 'constant':
+        if (operation.constant.kind === 'bytes' || operation.constant.kind === 'record')
+          return false;
+        break;
+      case 'read':
+        if (operation.resource !== 'state') return false;
+        break;
+      case 'unary':
+      case 'binary':
+      case 'numeric':
+      case 'optional':
+      case 'isNone':
+      case 'local':
+      case 'localRead':
+      case 'localWrite':
+      case 'yield':
+      case 'returnValue':
+        break;
+      case 'load8':
+      case 'load16le':
+      case 'load16be':
+      case 'load32le':
+      case 'load32be': {
+        const name = memoryName(operation.memory);
+        const offset = constantNumber(constants, operation.offset);
+        if (
+          name === undefined ||
+          offset === undefined ||
+          !memoryInRange(binding, name, offset, memoryWidth(operation.kind))
+        )
+          return false;
+        break;
+      }
+      case 'if':
+        if (!guardRegion(operation.yes, binding, constants)) return false;
+        if (operation.no !== undefined && !guardRegion(operation.no, binding, constants))
+          return false;
+        break;
+      case 'match':
+        for (const arm of operation.arms)
+          if (!guardRegion(arm.body, binding, constants)) return false;
+        if (operation.otherwise && !guardRegion(operation.otherwise, binding, constants))
+          return false;
+        break;
+      case 'select':
+        if (
+          !guardRegion(operation.yes.body, binding, constants) ||
+          !guardRegion(operation.no.body, binding, constants)
+        )
+          return false;
+        break;
+      case 'and':
+      case 'or':
+        if (!guardRegion(operation.right.body, binding, constants)) return false;
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
+/** Structural proof behind `DirectJitLoopCandidate`. */
+function loopProof(
+  pc: number,
+  body: RegionIR,
+  instruction: Instruction,
+  binding: DirectJitBinding,
+  candidate: LoopStamp,
+  timing: PreparedTiming | undefined,
+): LoopPlan | undefined {
+  if (instruction.isolated || instruction.stop || instruction.guard.length !== 0) return undefined;
+  if (candidate.address === undefined)
+    return candidate.kind === 'spin'
+      ? spinProof(pc, body, instruction, binding, timing)
+      : undefined;
+  return decrementProof(pc, body, instruction, binding, candidate, timing);
+}
+
+function spinProof(
+  pc: number,
+  body: RegionIR,
+  instruction: Instruction,
+  binding: DirectJitBinding,
+  timing: PreparedTiming | undefined,
+): LoopPlan | undefined {
+  const constants = constantsOf(body);
+  let duration: number | undefined;
+  let sawTarget = false;
+  let terminator = -1;
+  body.operations.forEach((operation, index) => {
+    if (terminator < 0 && (operation.kind === 'elapse' || operation.kind === 'redirect'))
+      terminator = index;
+  });
+  if (terminator < 0) return undefined;
+  const prefix = body.operations.slice(0, terminator);
+  const tail = body.operations.slice(terminator + 1);
+  const terminatorOperation = body.operations[terminator]!;
+  const pure = new Set<OperationIR['kind']>([
+    'constant',
+    'unary',
+    'binary',
+    'numeric',
+    'optional',
+    'isNone',
+    'nonNull',
+    'local',
+    'localRead',
+    'localWrite',
+    'read',
+  ]);
+  for (const operation of prefix) {
+    if (operation.kind === 'write' && operation.name === binding.pc.name) {
+      const target = constantNumber(constants, operation.value);
+      if (target !== pc) return undefined;
+      sawTarget = true;
+      continue;
+    }
+    if (!pure.has(operation.kind)) return undefined;
+  }
+  if (terminatorOperation.kind === 'elapse') {
+    const value = constantNumber(constants, terminatorOperation.duration);
+    if (value === undefined || value <= 0) return undefined;
+    duration = value;
+  } else {
+    if (terminatorOperation.kind !== 'redirect') return undefined;
+    const target = constantNumber(constants, terminatorOperation.target);
+    const delay = constantNumber(constants, terminatorOperation.delay);
+    if (target !== pc || delay === undefined || delay <= 0) return undefined;
+    duration = delay;
+    sawTarget = true;
+  }
+  if (!sawTarget || duration === undefined) return undefined;
+  if (!timingTailProof(tail, timing, binding.states)) return undefined;
+  return {
+    kind: 'spin',
+    instruction,
+    duration,
+    memoryIndex: undefined,
+    addressExpression: undefined,
+    timing,
+  };
+}
+
+function decrementProof(
+  pc: number,
+  body: RegionIR,
+  instruction: Instruction,
+  binding: DirectJitBinding,
+  candidate: LoopStamp,
+  timing: PreparedTiming | undefined,
+): LoopPlan | undefined {
+  const constants = constantsOf(body);
+  const operations = operationMap(body);
+  const lengths = binding.memoryLengths;
+  if (candidate.memory === undefined || candidate.address === undefined || lengths === undefined)
+    return undefined;
+  if (binding.codeMemories?.has(candidate.memory)) return undefined;
+  if (
+    binding.blockedMemories?.has(candidate.memory) ||
+    binding.entryBlockedMemories?.has(candidate.memory)
+  )
+    return undefined;
+  const memoryIndex = binding.memories.get(candidate.memory);
+  if (!validIndex(memoryIndex)) return undefined;
+  const address = candidateAddress(candidate.address);
+  if (address.kind === 'maskedByte') {
+    // The selector byte must not alias the counter store, or a folded write would change
+    // the address of later rounds.
+    if (address.memory === candidate.memory) return undefined;
+    const selectorLength = lengths.get(address.memory!);
+    if (!validIndex(selectorLength) || address.offset >= selectorLength) return undefined;
+    if (!validIndex(binding.memories.get(address.memory!))) return undefined;
+    const counterLength = lengths.get(candidate.memory);
+    const last = (address.mask! | address.bits!) >>> 0;
+    if (!validIndex(counterLength) || last >= counterLength) return undefined;
+  } else if (!memoryInRange(binding, candidate.memory, address.offset, 1)) {
+    return undefined;
+  }
+  let elapseIndex = -1;
+  body.operations.forEach((operation, index) => {
+    if (operation.kind === 'elapse') elapseIndex = index;
+  });
+  if (elapseIndex < 0) return undefined;
+  const elapse = body.operations[elapseIndex]!;
+  if (elapse.kind !== 'elapse') return undefined;
+  const duration = constantNumber(constants, elapse.duration);
+  if (duration === undefined || duration <= 0) return undefined;
+  const prefix = body.operations.slice(0, elapseIndex);
+  const tail = body.operations.slice(elapseIndex + 1);
+  let store = -1;
+  prefix.forEach((operation, index) => {
+    if (operation.kind === 'store8') store = index;
+  });
+  if (store < 0) return undefined;
+  const storeOperation = prefix[store]!;
+  if (storeOperation.kind !== 'store8') return undefined;
+  if (memoryName(storeOperation.memory) !== candidate.memory) return undefined;
+  const storeAddress = addressParts(storeOperation.offset, constants, operations);
+  if (!sameAddress(storeAddress, address)) return undefined;
+  const counter = minusOneBase(storeOperation.value, constants, operations);
+  if (counter === undefined) return undefined;
+  const load = operations.get(counter);
+  if (load?.kind !== 'load8' || memoryName(load.memory) !== candidate.memory) return undefined;
+  const loadAddress = addressParts(load.offset, constants, operations);
+  if (!sameAddress(loadAddress, address)) return undefined;
+
+  let conditional = false;
+  const pure = new Set<OperationIR['kind']>([
+    'constant',
+    'unary',
+    'binary',
+    'numeric',
+    'optional',
+    'isNone',
+    'nonNull',
+    'local',
+    'localRead',
+    'localWrite',
+    'read',
+    'load8',
+  ]);
+  for (let index = 0; index < prefix.length; index++) {
+    const operation = prefix[index]!;
+    if (index === store) continue;
+    if (
+      operation.kind === 'load8' ||
+      operation.kind === 'load16le' ||
+      operation.kind === 'load16be' ||
+      operation.kind === 'load32le' ||
+      operation.kind === 'load32be'
+    ) {
+      if (
+        operation.kind === 'load8' &&
+        sameAddress(addressParts(operation.offset, constants, operations), address)
+      )
+        continue;
+      const name = memoryName(operation.memory);
+      const offset = constantNumber(constants, operation.offset);
+      if (
+        name === undefined ||
+        offset === undefined ||
+        !memoryInRange(binding, name, offset, memoryWidth(operation.kind))
+      )
+        return undefined;
+      continue;
+    }
+    if (operation.kind === 'if') {
+      if (conditional) return undefined;
+      const test = zeroTest(operation.condition, storeOperation.value, constants, operations);
+      if (test === undefined) return undefined;
+      const yes = branchAction(
+        operation.yes,
+        pc,
+        instruction.nextPcValue,
+        duration,
+        binding.pc.name,
+        constants,
+      );
+      const no =
+        operation.no === undefined
+          ? 'fallthrough'
+          : branchAction(
+              operation.no,
+              pc,
+              instruction.nextPcValue,
+              duration,
+              binding.pc.name,
+              constants,
+            );
+      if (yes === undefined || no === undefined) return undefined;
+      if (
+        test === 'nonZero'
+          ? yes !== 'self' || no !== 'fallthrough'
+          : yes !== 'fallthrough' || no !== 'self'
+      )
+        return undefined;
+      conditional = true;
+      continue;
+    }
+    if (operation.kind === 'store8' || operation.kind === 'write' || operation.kind === 'redirect')
+      return undefined;
+    if (!pure.has(operation.kind)) return undefined;
+  }
+  if (!conditional) return undefined;
+  if (!timingTailProof(tail, timing, binding.states)) return undefined;
+  return {
+    kind: 'decrement8',
+    instruction,
+    duration,
+    memoryIndex,
+    addressExpression:
+      address.kind === 'constant'
+        ? String(address.offset)
+        : `(((M[${binding.memories.get(address.memory!)}][${address.offset}] & ${address.mask}) | ${address.bits}))`,
+    timing,
+  };
+}
+
 /** One instruction record staged by an incremental commit. */
 interface StagedChange {
   readonly pc: number;
@@ -3166,6 +4977,8 @@ interface SessionCounters {
   reusedShards: number;
   compiledBlocks: number;
   reusedBlocks: number;
+  artifactInstructionHits: number;
+  artifactInstructionMisses: number;
   invalidatedBlocks: number;
   bodyBytes: number;
   shardBytes: number;
@@ -3175,6 +4988,10 @@ interface SessionCounters {
   sharedBytes: number;
   shareReusedBodies: number;
   shareReusedRoutes: number;
+  spansInstalled: number;
+  spansRejected: number;
+  loopsInstalled: number;
+  loopsRejected: number;
 }
 
 /** Delay maps are not part of the binding fingerprint: entries carry their own snapshots. */
@@ -3238,6 +5055,8 @@ class DirectJitSessionImpl implements DirectJitSession {
     reusedShards: 0,
     compiledBlocks: 0,
     reusedBlocks: 0,
+    artifactInstructionHits: 0,
+    artifactInstructionMisses: 0,
     invalidatedBlocks: 0,
     bodyBytes: 0,
     shardBytes: 0,
@@ -3247,7 +5066,20 @@ class DirectJitSessionImpl implements DirectJitSession {
     sharedBytes: 0,
     shareReusedBodies: 0,
     shareReusedRoutes: 0,
+    spansInstalled: 0,
+    spansRejected: 0,
+    loopsInstalled: 0,
+    loopsRejected: 0,
   };
+  /** Mutable execution counters shared with generated span/loop routes. */
+  private readonly runtimeCounters = { spanRuns: 0, loopRounds: 0 };
+  /** One installed optimized route per logical PC; the normal step stays callable. */
+  private readonly wrappers = new Map<number, InstalledWrapper>();
+  private readonly spanStates = new Map<number, 'installed' | 'rejected'>();
+  private readonly loopStates = new Map<number, 'installed' | 'rejected'>();
+  private nextOptimizedId = 1;
+  private timing: PreparedTiming | undefined;
+  private timingValid = true;
   private delays: ReadonlyMap<number, DirectJitDelay> | undefined;
   private compileBinding: DirectJitBinding;
   private localSlots = 0;
@@ -3261,24 +5093,30 @@ class DirectJitSessionImpl implements DirectJitSession {
     private readonly state: DirectJitCacheState,
     private readonly binding: DirectJitBinding,
     private readonly fingerprint: BindingFingerprint,
+    private readonly artifactCache: DirectJitArtifactCache,
+    private readonly artifact: ArtifactCacheState,
+    private readonly artifactBinding: ArtifactBindingContext,
   ) {
     this.delays = binding.delayLoops;
     this.compileBinding = bindingWithDelays(binding, this.delays);
     this.runFunction = this.createDispatcher();
     const helperBefore = this.state.helperBytes;
+    this.prepareTiming();
     // A cache may have been populated by full builds under another delay map. Their bodies
     // carry a delay snapshot, so reconcile it before the first shard adopts the entries.
     const initial = this.reconcileDelays(this.delays);
-    if (initial.size) {
-      this.applyEntryChanges(initial);
-      this.counters.helperBytes += this.state.helperBytes - helperBefore;
-    }
+    if (initial.size) this.applyEntryChanges(initial);
+    this.counters.helperBytes += this.state.helperBytes - helperBefore;
     this.rebuildAll();
     this.refreshEmitStats();
   }
 
   get sessionFingerprint(): BindingFingerprint {
     return this.fingerprint;
+  }
+
+  get sessionArtifactCache(): DirectJitArtifactCache {
+    return this.artifactCache;
   }
 
   get isDisposed(): boolean {
@@ -3341,6 +5179,8 @@ class DirectJitSessionImpl implements DirectJitSession {
       }
       const delay = delayFingerprint(this.delays?.get(instruction.pc));
       const marker = readShare(instruction.share);
+      const span = readSpan(instruction.span, instruction.pc);
+      const loop = readLoop(instruction.loop);
       if (instruction.share !== undefined || marker.invalid) sharingTouched = true;
       if (
         cached !== undefined &&
@@ -3350,7 +5190,16 @@ class DirectJitSessionImpl implements DirectJitSession {
       ) {
         const compiled = cached.instruction;
         if (compiled !== undefined) compiled.resumeId = cached.resumeId ?? 0;
-        if (sameShare(cached.share, marker.share) && cached.shareInvalid === marker.invalid) {
+        const sameMarkers =
+          sameSpan(cached.span, span.span) &&
+          cached.spanInvalid === span.invalid &&
+          sameLoop(cached.loop, loop.loop) &&
+          cached.loopInvalid === loop.invalid;
+        if (
+          sameShare(cached.share, marker.share) &&
+          cached.shareInvalid === marker.invalid &&
+          sameMarkers
+        ) {
           staged.set(instruction.pc, {
             pc: instruction.pc,
             remove: false,
@@ -3364,7 +5213,7 @@ class DirectJitSessionImpl implements DirectJitSession {
           staged.set(instruction.pc, {
             pc: instruction.pc,
             remove: false,
-            record: this.compileRecord(instruction, delay, marker),
+            record: this.compileRecord(instruction, delay, marker, span, loop),
             changed: true,
             metadataOnly: false,
           });
@@ -3373,7 +5222,15 @@ class DirectJitSessionImpl implements DirectJitSession {
           staged.set(instruction.pc, {
             pc: instruction.pc,
             remove: false,
-            record: { ...cached, share: marker.share, shareInvalid: marker.invalid },
+            record: {
+              ...cached,
+              share: marker.share,
+              shareInvalid: marker.invalid,
+              span: span.span,
+              spanInvalid: span.invalid,
+              loop: loop.loop,
+              loopInvalid: loop.invalid,
+            },
             changed: false,
             metadataOnly: true,
           });
@@ -3383,7 +5240,7 @@ class DirectJitSessionImpl implements DirectJitSession {
       staged.set(instruction.pc, {
         pc: instruction.pc,
         remove: false,
-        record: this.compileRecord(instruction, delay, marker),
+        record: this.compileRecord(instruction, delay, marker, span, loop),
         changed: true,
         metadataOnly: false,
       });
@@ -3445,13 +5302,23 @@ class DirectJitSessionImpl implements DirectJitSession {
     this.shareStates.clear();
     this.candidateKeys.clear();
     this.candidatesByKey.clear();
+    this.wrappers.clear();
+    this.spanStates.clear();
+    this.loopStates.clear();
     this.nextSharedVariant = 1;
     this.state.entries.clear();
     this.state.constants.length = 0;
-    this.state.resistorSlots.clear();
+    clearResistorSlots(this.state);
     this.state.functions.clear();
     this.state.shards.length = 0;
     this.state.nextShard = 1;
+    // Timing helpers also live in the cache's constant/function tables; resolve them again
+    // against the cleared tables before the next commit can install an optimized route.
+    this.timing = undefined;
+    this.timingValid = true;
+    const helperBefore = this.state.helperBytes;
+    this.prepareTiming();
+    this.counters.helperBytes += this.state.helperBytes - helperBefore;
     // `nextResume` intentionally keeps growing: a suspended frame must never observe a
     // reused identifier pointing at a different body after a clear.
     this.state.stats.clears++;
@@ -3473,6 +5340,8 @@ class DirectJitSessionImpl implements DirectJitSession {
       reusedShards: this.counters.reusedShards,
       compiledBlocks: this.counters.compiledBlocks,
       reusedBlocks: this.counters.reusedBlocks,
+      artifactInstructionHits: this.counters.artifactInstructionHits,
+      artifactInstructionMisses: this.counters.artifactInstructionMisses,
       invalidatedBlocks: this.counters.invalidatedBlocks,
       routes: this.routes.size,
       shards: this.closed ? 0 : this.state.shards.length,
@@ -3488,6 +5357,12 @@ class DirectJitSessionImpl implements DirectJitSession {
       shareRejected: Object.freeze({ ...this.shareRejected }),
       sharedBodies: this.counters.sharedBodies,
       sharedBytes: this.counters.sharedBytes,
+      spansInstalled: this.counters.spansInstalled,
+      spansRejected: this.counters.spansRejected,
+      spanRuns: this.runtimeCounters.spanRuns,
+      loopsInstalled: this.counters.loopsInstalled,
+      loopsRejected: this.counters.loopsRejected,
+      loopRounds: this.runtimeCounters.loopRounds,
     });
   }
 
@@ -3505,12 +5380,317 @@ class DirectJitSessionImpl implements DirectJitSession {
     this.shareStates.clear();
     this.candidateKeys.clear();
     this.candidatesByKey.clear();
+    this.wrappers.clear();
+    this.spanStates.clear();
+    this.loopStates.clear();
     this.refreshPcs();
     if (directJitSessions.get(this.cache) === this) directJitSessions.delete(this.cache);
   }
 
   private assertActive(): void {
     if (this.closed) throw new TypeError('Direct JIT session has been disposed');
+  }
+
+  /**
+   * Resolve the device timing guard once. A malformed slot or an unprovable helper disables
+   * every span/loop admission for this session instead of weakening the normal path.
+   */
+  private prepareTiming(): void {
+    const timing = this.binding.directTiming;
+    if (timing === undefined) return;
+    if (!validIndex(timing.elapsed) || !validIndex(timing.deadline)) {
+      this.timingValid = false;
+      return;
+    }
+    let blocked: string | undefined;
+    if (timing.blocked !== undefined) {
+      blocked = this.guardTarget(timing.blocked);
+      if (blocked === undefined) {
+        this.timingValid = false;
+        return;
+      }
+    }
+    this.timing = {
+      elapsed: timing.elapsed,
+      deadline: timing.deadline,
+      blocked,
+    };
+  }
+
+  private resistorSlotFor(pin: string, resistance: number): number {
+    const key = `${pin}\0${resistance}`;
+    let slot = this.state.resistorSlots.get(key);
+    if (slot === undefined) {
+      slot = this.state.resistorSlots.size;
+      this.state.resistorSlots.set(key, slot);
+    }
+    return slot;
+  }
+
+  /** Compile a zero-argument pure bool function and return its captured call target. */
+  private guardTarget(name: string): string | undefined {
+    const fn = this.binding.functions?.get(name);
+    if (
+      fn === undefined ||
+      fn.pure !== true ||
+      fn.params.length !== 0 ||
+      fn.returns?.kind !== 'bool'
+    )
+      return undefined;
+    let analysis;
+    try {
+      analysis = analyzeBody(fn.body, {}, false);
+    } catch {
+      return undefined;
+    }
+    const effects = analysis.effects;
+    if (
+      effects.writes.length ||
+      effects.calls.length ||
+      effects.maySuspend ||
+      effects.mayStop ||
+      effects.mayRedirect ||
+      effects.timeDependent ||
+      effects.random
+    )
+      return undefined;
+    for (const read of effects.reads)
+      if (!read.startsWith('state:') && !read.startsWith('memory:')) return undefined;
+    if (!guardRegion(fn.body, this.binding, analysis.constants)) return undefined;
+    try {
+      const compiled = this.resolveFunction(name, this.resistorSlotFor.bind(this));
+      if (
+        compiled.body.writeStates.size ||
+        compiled.body.writeMemories.size ||
+        compiled.body.duration !== undefined ||
+        compiled.body.stop ||
+        compiled.body.isolated
+      )
+        return undefined;
+      return compiled.target;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private baseRoute(pc: number): ResidentStep | undefined {
+    const wrapper = this.wrappers.get(pc);
+    const current = this.routes.get(pc);
+    if (wrapper !== undefined && current === wrapper.wrapper) return wrapper.normal;
+    return typeof current === 'function' ? current : undefined;
+  }
+
+  private loopPlanFor(pc: number, record: CachedInstruction): LoopPlan | undefined {
+    if (!this.timingValid || record.loop === undefined || record.loopInvalid) return undefined;
+    if (record.span !== undefined || record.delay !== undefined) return undefined;
+    const instruction = record.instruction;
+    if (instruction === undefined || this.sharedRoutes.has(pc)) return undefined;
+    if (this.timing !== undefined) {
+      for (const [name, index] of this.binding.states) {
+        if (index !== this.timing.elapsed) continue;
+        if (this.binding.entryBlockedStates?.has(name) || this.binding.blockedStates?.has(name))
+          return undefined;
+      }
+    }
+    if (this.baseRoute(pc) === undefined) return undefined;
+    return loopProof(pc, record.body, instruction, this.binding, record.loop, this.timing);
+  }
+
+  private spanPlanFor(
+    pc: number,
+    record: CachedInstruction,
+    loops: ReadonlySet<number>,
+  ): SpanPlan | undefined {
+    if (!this.timingValid || record.span === undefined || record.spanInvalid) return undefined;
+    const start = record.instruction;
+    if (
+      start === undefined ||
+      record.loop !== undefined ||
+      start.isolated ||
+      record.delay !== undefined ||
+      this.sharedRoutes.has(pc) ||
+      loops.has(pc) ||
+      this.baseRoute(pc) === undefined
+    )
+      return undefined;
+    const pcs = record.span.pcs;
+    const members: { record: CachedInstruction; instruction: Instruction }[] = [];
+    let duration = 0;
+    for (let index = 0; index < pcs.length; index++) {
+      const memberPc = pcs[index]!;
+      const memberRecord = this.state.entries.get(memberPc);
+      const instruction = memberRecord?.instruction;
+      if (memberRecord === undefined || instruction === undefined) return undefined;
+      if (this.sharedRoutes.has(memberPc) || loops.has(memberPc)) return undefined;
+      if (this.baseRoute(memberPc) === undefined) return undefined;
+      if (memberPc !== pc && memberRecord.span !== undefined) return undefined;
+      if (index < pcs.length - 1) {
+        if (memberRecord.nextPc !== pcs[index + 1]) return undefined;
+        if (
+          instruction.isolated ||
+          instruction.stop ||
+          instruction.guard.length !== 0 ||
+          instruction.barrier.length !== 0 ||
+          instruction.duration === undefined ||
+          instruction.dynamicDuration
+        )
+          return undefined;
+        const memberDuration = Number(instruction.duration);
+        if (!Number.isSafeInteger(memberDuration) || memberDuration <= 0) return undefined;
+        if (!spanPrefixProof(memberRecord.body, this.binding, this.timing)) return undefined;
+        if (!Number.isSafeInteger(duration + memberDuration)) return undefined;
+        duration += memberDuration;
+      } else {
+        const writesState = [...instruction.writeStates].some(
+          (name) => name !== this.binding.pc.name,
+        );
+        if (
+          instruction.isolated ||
+          instruction.stop ||
+          instruction.guard.length !== 0 ||
+          (!writesState && instruction.writeMemories.size === 0)
+        )
+          return undefined;
+      }
+      members.push({ record: memberRecord, instruction });
+    }
+    const prefix = members.slice(0, -1).map((member) => member.instruction);
+    const terminal = members[members.length - 1]!.instruction;
+    return {
+      pcs,
+      prefix,
+      terminal,
+      duration,
+      timing: this.timing,
+      barrier: [
+        ...barrierWords(prefix, 'writeStates', this.binding.states, 'BS'),
+        ...barrierWords(prefix, 'writeMemories', this.binding.memories, 'BM'),
+      ],
+    };
+  }
+
+  private dropWrapper(pc: number): void {
+    const wrapper = this.wrappers.get(pc);
+    if (wrapper === undefined) return;
+    this.wrappers.delete(pc);
+    if (this.routes.get(pc) === wrapper.wrapper) {
+      this.routes.set(pc, wrapper.normal);
+      this.counters.routeInstalls++;
+    }
+  }
+
+  private installWrapper(
+    pc: number,
+    kind: 'loop' | 'span',
+    plan: LoopPlan | SpanPlan,
+    normal: ResidentStep,
+    source: (id: number) => string,
+  ): void {
+    const previous = this.wrappers.get(pc);
+    if (
+      previous !== undefined &&
+      previous.kind === kind &&
+      sameOptimizationPlan(previous.plan, plan)
+    ) {
+      if (previous.normal === normal) {
+        if (this.routes.get(pc) !== previous.wrapper) {
+          this.routes.set(pc, previous.wrapper);
+          this.counters.routeInstalls++;
+        }
+        return;
+      }
+      const wrapper = previous.factory(
+        Object.freeze([...this.state.constants]),
+        helpers,
+        normal,
+        this.runtimeCounters,
+      );
+      this.wrappers.set(pc, { ...previous, normal, wrapper });
+      this.routes.set(pc, wrapper);
+      this.counters.routeInstalls++;
+      return;
+    }
+    if (previous !== undefined) this.dropWrapper(pc);
+    const id = this.nextOptimizedId++;
+    const body = source(id);
+    const text = `"use strict"; return (${body});`;
+    const factory = new Function('C', 'H', 'NORMAL', 'COUNT', text) as OptimizedStepFactory;
+    const wrapper = factory(
+      Object.freeze([...this.state.constants]),
+      helpers,
+      normal,
+      this.runtimeCounters,
+    );
+    this.wrappers.set(pc, { kind, plan, id, source: text, factory, normal, wrapper });
+    this.routes.set(pc, wrapper);
+    this.counters.routeInstalls++;
+  }
+
+  private refreshOptimizations(): void {
+    const loops = new Map<number, LoopPlan>();
+    const loopStates = new Map<number, 'installed' | 'rejected'>();
+    for (const [pc, record] of this.state.entries) {
+      if (record.loop === undefined && !record.loopInvalid) continue;
+      const plan = this.loopPlanFor(pc, record);
+      if (plan === undefined) loopStates.set(pc, 'rejected');
+      else {
+        loops.set(pc, plan);
+        loopStates.set(pc, 'installed');
+      }
+    }
+    for (const [pc, wrapper] of [...this.wrappers])
+      if (wrapper.kind === 'loop' && !loops.has(pc)) this.dropWrapper(pc);
+    for (const [pc, plan] of loops) {
+      const normal = this.baseRoute(pc);
+      if (normal === undefined) continue;
+      this.installWrapper(pc, 'loop', plan, normal, (id) =>
+        loopStepSource(plan, id, plan.instruction.barrier),
+      );
+    }
+    this.applyLoopStates(loopStates);
+
+    const installedLoops = new Set(loops.keys());
+    const spans = new Map<number, SpanPlan>();
+    const spanStates = new Map<number, 'installed' | 'rejected'>();
+    for (const [pc, record] of this.state.entries) {
+      if (record.span === undefined && !record.spanInvalid) continue;
+      const plan = this.spanPlanFor(pc, record, installedLoops);
+      if (plan === undefined) spanStates.set(pc, 'rejected');
+      else {
+        spans.set(pc, plan);
+        spanStates.set(pc, 'installed');
+      }
+    }
+    for (const [pc, wrapper] of [...this.wrappers])
+      if (wrapper.kind === 'span' && !spans.has(pc)) this.dropWrapper(pc);
+    for (const [pc, plan] of spans) {
+      const normal = this.baseRoute(pc);
+      if (normal === undefined) continue;
+      this.installWrapper(pc, 'span', plan, normal, (id) =>
+        spanStepSource(plan, id, this.binding, this.binding.host === true),
+      );
+    }
+    this.applySpanStates(spanStates);
+  }
+
+  private applyLoopStates(next: ReadonlyMap<number, 'installed' | 'rejected'>): void {
+    for (const pc of [...this.loopStates.keys()]) if (!next.has(pc)) this.loopStates.delete(pc);
+    for (const [pc, state] of next) {
+      if (this.loopStates.get(pc) === state) continue;
+      if (state === 'installed') this.counters.loopsInstalled++;
+      else this.counters.loopsRejected++;
+      this.loopStates.set(pc, state);
+    }
+  }
+
+  private applySpanStates(next: ReadonlyMap<number, 'installed' | 'rejected'>): void {
+    for (const pc of [...this.spanStates.keys()]) if (!next.has(pc)) this.spanStates.delete(pc);
+    for (const [pc, state] of next) {
+      if (this.spanStates.get(pc) === state) continue;
+      if (state === 'installed') this.counters.spansInstalled++;
+      else this.counters.spansRejected++;
+      this.spanStates.set(pc, state);
+    }
   }
 
   private createDispatcher(): SessionDispatcher {
@@ -3565,10 +5745,13 @@ class DirectJitSessionImpl implements DirectJitSession {
     for (const [pc, cached] of this.state.entries) {
       const delay = delayFingerprint(delays?.get(pc));
       if (sameDelay(cached.delay, delay)) continue;
-      const record = this.compileRecord({ pc, nextPc: cached.nextPc, body: cached.body }, delay, {
-        share: cached.share,
-        invalid: cached.shareInvalid,
-      });
+      const record = this.compileRecord(
+        { pc, nextPc: cached.nextPc, body: cached.body },
+        delay,
+        { share: cached.share, invalid: cached.shareInvalid },
+        { span: cached.span, invalid: cached.spanInvalid },
+        { loop: cached.loop, invalid: cached.loopInvalid },
+      );
       staged.set(pc, {
         pc,
         remove: false,
@@ -3584,26 +5767,44 @@ class DirectJitSessionImpl implements DirectJitSession {
     instruction: DirectJitInstruction,
     delay: DelayFingerprint | undefined,
     share: ShareStamp,
+    span: SpanStampResult,
+    loop: LoopStampResult,
   ): CachedInstruction {
-    const compiled = this.compileInstruction(instruction);
+    const compiled = this.compileInstruction(instruction, delay);
     // A recompiled body always receives a fresh continuation id. Reusing the previous id
     // would retarget frames suspended in the old body at the new suffix.
     let resumeId: number | undefined;
-    if (compiled?.duration !== undefined) resumeId = this.state.nextResume++;
-    if (compiled !== undefined) compiled.resumeId = resumeId ?? 0;
+    if (compiled.instruction?.duration !== undefined) resumeId = this.state.nextResume++;
+    if (compiled.instruction !== undefined) compiled.instruction.resumeId = resumeId ?? 0;
     return {
       body: instruction.body,
       nextPc: instruction.nextPc,
       delay,
-      instruction: compiled,
+      instruction: compiled.instruction,
+      artifactHit: compiled.artifactHit,
       resumeId,
       share: share.share,
       shareInvalid: share.invalid,
+      span: span.span,
+      spanInvalid: span.invalid,
+      loop: loop.loop,
+      loopInvalid: loop.invalid,
     };
   }
 
-  private compileInstruction(instruction: DirectJitInstruction): Instruction | undefined {
-    const capture = (value: unknown): string => `C[${this.state.constants.push(value) - 1}]`;
+  private compileInstruction(
+    instruction: DirectJitInstruction,
+    delay: DelayFingerprint | undefined,
+  ): { instruction: Instruction | undefined; artifactHit: boolean } {
+    // Enabling the artifact cache is an explicit compiler-side opt-in. A local cache hit is
+    // handled before this point, so every lookup here is a genuine cross-session attempt.
+    const reused = reuseArtifactInstruction(this.state, this.artifactBinding, instruction, delay);
+    if (reused !== undefined) {
+      this.counters.artifactInstructionHits++;
+      return { instruction: reused, artifactHit: true };
+    }
+    if (artifactUsable(this.state) !== undefined) this.counters.artifactInstructionMisses++;
+    const capture = artifactCapture(this.state);
     const resistorSlot = (pin: string, resistance: number): number => {
       const key = `${pin}\0${resistance}`;
       let slot = this.state.resistorSlots.get(key);
@@ -3615,12 +5816,19 @@ class DirectJitSessionImpl implements DirectJitSession {
     };
     const resolveFunction: ResolveFunction = (name) => this.resolveFunction(name, resistorSlot);
     try {
-      return new Instruction(this.compileBinding, capture, resistorSlot, resolveFunction).compile(
-        instruction,
-      );
+      const compiled = new Instruction(
+        this.compileBinding,
+        capture,
+        resistorSlot,
+        resolveFunction,
+      ).compile(instruction);
+      compiled.artifactKey =
+        insertArtifactInstruction(this.state, this.artifactBinding, instruction, delay, compiled) ??
+        privateArtifactKey(compiled);
+      return { instruction: compiled, artifactHit: false };
     } catch (error) {
       if (error !== unsupported) throw error;
-      return undefined;
+      return { instruction: undefined, artifactHit: false };
     }
   }
 
@@ -3649,7 +5857,7 @@ class DirectJitSessionImpl implements DirectJitSession {
     );
     const run = body.compileFunction(constants);
     this.state.helperBytes += body.functionSourceSize;
-    const capture = (value: unknown): string => `C[${this.state.constants.push(value) - 1}]`;
+    const capture = artifactCapture(this.state);
     const compiled = { target: capture(run), run, body };
     this.state.functions.set(name, compiled);
     return compiled;
@@ -3672,9 +5880,16 @@ class DirectJitSessionImpl implements DirectJitSession {
           this.counters.invalidatedBlocks++;
         }
         this.state.entries.set(change.pc, record);
-        this.state.stats.compiledBlocks++;
-        this.counters.compiledBlocks++;
-        if (record.instruction !== undefined) this.counters.bodyBytes += record.instruction.size;
+        // A template hit installs a new local record but emits no body. Keep `compiledBlocks`
+        // and `bodyBytes` emission-only so a cross-session reuse is not counted twice.
+        if (record.artifactHit) {
+          this.state.stats.reusedBlocks++;
+          this.counters.reusedBlocks++;
+        } else {
+          this.state.stats.compiledBlocks++;
+          this.counters.compiledBlocks++;
+          if (record.instruction !== undefined) this.counters.bodyBytes += record.instruction.size;
+        }
         this.indexShareCandidate(change.pc);
       } else {
         this.state.stats.reusedBlocks++;
@@ -3737,6 +5952,7 @@ class DirectJitSessionImpl implements DirectJitSession {
       this.sharedRoutes.size > 0;
     if (!sharing) {
       this.applyShardChanges(staged);
+      this.refreshOptimizations();
       this.refreshEmitStats();
       return;
     }
@@ -3752,6 +5968,7 @@ class DirectJitSessionImpl implements DirectJitSession {
 
     this.reconcileSharedLayout(affectedKeys, new Set(staged.keys()));
     this.applyIncrementalSharedLayout(staged, layoutPcs, previousRoutes);
+    this.refreshOptimizations();
     this.refreshEmitStats();
   }
 
@@ -4048,15 +6265,27 @@ class DirectJitSessionImpl implements DirectJitSession {
   private compileSharedVariant(variant: SharedVariant): void {
     const instruction = variant.instruction;
     if (instruction.duration !== undefined) variant.resumeId = this.state.nextResume++;
-    const lines = sharedBodyProgram(variant, this.compileBinding, this.binding.pc.index);
-    const resume = instruction.duration === undefined ? 'undefined' : `resumeShared${variant.id}`;
-    const source = `"use strict";\n${lines.join('\n')}\nreturn [stepShared${variant.id}, ${resume}];`;
-    const factory = residentShardFactory(source);
-    const [step, resumeFunction] = factory(Object.freeze([...this.state.constants]), helpers);
+    const key = [
+      this.artifactBinding.digest,
+      'shared',
+      String(variant.id),
+      String(variant.resumeId),
+      this.binding.host === true ? 'h' : '-',
+      instruction.artifactKey,
+    ].join('|');
+    const compiled = artifactShardFactory(this.artifact, key, () => {
+      const lines = sharedBodyProgram(variant, this.compileBinding, this.binding.pc.index);
+      const resume = instruction.duration === undefined ? 'undefined' : `resumeShared${variant.id}`;
+      return `"use strict";\n${lines.join('\n')}\nreturn [stepShared${variant.id}, ${resume}];`;
+    });
+    const [step, resumeFunction] = compiled.factory(
+      Object.freeze([...this.state.constants]),
+      helpers,
+    );
     variant.functions = { step, resume: resumeFunction };
-    variant.sourceSize = source.length;
+    variant.sourceSize = compiled.source.length;
     this.counters.sharedBodies++;
-    this.counters.sharedBytes += source.length;
+    if (!compiled.reused) this.counters.sharedBytes += compiled.source.length;
   }
 
   /**
@@ -4236,7 +6465,13 @@ class DirectJitSessionImpl implements DirectJitSession {
         this.counters.reusedShards++;
         continue;
       }
-      this.counters.shardBytes += compileResidentShard(this.state, shard, this.compileBinding);
+      this.counters.shardBytes += compileResidentShard(
+        this.state,
+        shard,
+        this.compileBinding,
+        this.artifact,
+        this.artifactBinding,
+      );
       this.counters.compiledShards++;
       compiled.add(shard);
     }
@@ -4281,6 +6516,7 @@ class DirectJitSessionImpl implements DirectJitSession {
         new Set(this.state.entries.keys()),
       );
       this.reconcileResidentLayout();
+      this.refreshOptimizations();
       return;
     }
     const entries: Instruction[] = [];
@@ -4293,6 +6529,7 @@ class DirectJitSessionImpl implements DirectJitSession {
     this.rejected.clear();
     this.isolated.clear();
     this.owners.clear();
+    this.wrappers.clear();
     for (const shard of this.state.shards) this.installShard(shard);
     for (const [pc, record] of this.state.entries)
       if (record.instruction === undefined) this.rejected.add(pc);
@@ -4300,6 +6537,7 @@ class DirectJitSessionImpl implements DirectJitSession {
     for (const record of this.state.entries.values())
       if (record.instruction !== undefined && record.instruction.slots.length > this.localSlots)
         this.localSlots = record.instruction.slots.length;
+    this.refreshOptimizations();
     this.refreshPcs();
   }
 
@@ -4323,32 +6561,48 @@ class DirectJitSessionImpl implements DirectJitSession {
 function createDirectJitSession(
   binding: DirectJitBinding,
   suppliedCache?: DirectJitCache,
+  suppliedArtifactCache?: DirectJitArtifactCache,
 ): DirectJitSession {
   if (!validIndex(binding.pc.index) || binding.states.get(binding.pc.name) !== binding.pc.index)
     throw new TypeError('Invalid direct JIT binding');
   const cache = suppliedCache ?? createDirectJitCache();
+  const artifactCache = suppliedArtifactCache ?? defaultArtifactCache;
+  const artifact = artifactState(artifactCache);
   const state = cacheState(cache);
   const fingerprint = bindingFingerprint(binding);
   const existing = directJitSessions.get(cache);
   if (existing !== undefined) {
-    if (!existing.isDisposed && sameBinding(existing.sessionFingerprint, fingerprint))
+    if (
+      !existing.isDisposed &&
+      existing.sessionArtifactCache === artifactCache &&
+      sameBinding(existing.sessionFingerprint, fingerprint)
+    )
       return existing;
     existing.dispose();
   }
+  attachArtifact(state, artifact);
   if (state.binding !== undefined && !sameBinding(state.binding, fingerprint)) {
     // Slot indices are embedded in every emitted body; a layout change invalidates all of
     // them. Programs and disposed sessions keep their own frozen constant snapshots.
     state.stats.invalidatedBlocks += state.entries.size;
     state.entries.clear();
     state.constants.length = 0;
-    state.resistorSlots.clear();
+    clearResistorSlots(state);
     state.functions.clear();
     state.shards.length = 0;
     state.nextResume = 1;
     state.nextShard = 1;
   }
   state.binding = fingerprint;
-  const session = new DirectJitSessionImpl(cache, state, binding, fingerprint);
+  const session = new DirectJitSessionImpl(
+    cache,
+    state,
+    binding,
+    fingerprint,
+    artifactCache,
+    artifact,
+    artifactBindingContext(binding, fingerprint),
+  );
   directJitSessions.set(cache, session);
   return session;
 }

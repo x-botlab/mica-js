@@ -17,8 +17,12 @@ import {
   type JitCodeRegion,
   type JitCodeMetadataInput,
   type JitCodeMetadataProvider,
+  type JitDirectTiming,
+  type JitLoopAddress,
+  type JitLoopCandidate,
   type JitOptions,
   type JitTranslateInput,
+  type JitTranslationDependency,
   type Notification,
   type ReadonlyBytes,
   type RuntimeDiagnostic,
@@ -46,12 +50,20 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
   context.inputs.request.send(context.props.count);
   context.inputs.refresh.notify();
   context.inputs.bytes.send(context.props.image.slice());
+  const directTiming: JitDirectTiming = {
+    service: { elapsed: 'clockPs', deadline: 'serviceDeadline' },
+    blocked: 'quiet',
+  };
   const jit = context.attachJit({
     entry: 'step',
     code: 'code',
     codeRegions: [additionalCode],
     pc: 'position',
+    directTiming,
+    translationIdentity: { abi: 'test-abi', configuration: 'clock=1' },
+    directTier: { promoteAfter: 8 },
     shareDirectBodies: true,
+    shareDirectArtifacts: true,
     polling: [
       {
         pc: 0,
@@ -65,8 +77,24 @@ const createNode: DeviceFactory<NodeContext, NodeBatch> = (context) => {
       const base: number = input.codeBase;
       const version: number = input.codeVersion;
       const mark: JitTranslateInput['markDirectBodyShareable'] = input.markDirectBodyShareable;
+      const loopAddress: JitLoopAddress = {
+        kind: 'maskedByte',
+        memory: 'psw',
+        offset: 0,
+        mask: 0x18,
+        bits: 0,
+      };
+      const loopCandidate: JitLoopCandidate = {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: loopAddress,
+      };
+      const dependencies: readonly JitTranslationDependency[] = [{ offset: 0, length: 1 }];
       mark?.(input.pc, input.code.length);
-      void [byte, base, version, mark];
+      input.markDirectSpan?.(input.pc, 2);
+      input.markDirectLoop?.(input.pc, loopCandidate);
+      input.markTranslationDependencies?.(dependencies);
+      void [byte, base, version, mark, loopAddress, loopCandidate, dependencies];
       builder.instruction({ pc: input.pc, nextPc: input.pc + 1 }, (body) => body.stop());
       return builder.finish();
     },
@@ -247,6 +275,26 @@ function rejectsWrongShapes(
     },
   };
   void undefinedSharing;
+  const badArtifactSharing: JitOptions = {
+    entry: 'artifacts',
+    code: 'code',
+    pc: 'position',
+    // @ts-expect-error A mode name is not the boolean switch.
+    shareDirectArtifacts: 'shared',
+    translate: () => {
+      throw new Error('unreachable');
+    },
+  };
+  void badArtifactSharing;
+  // @ts-expect-error promoteAfter is a numeric threshold, not a duration string.
+  const badPromoteAfter: JitOptions['directTier'] = { promoteAfter: '8' };
+  // @ts-expect-error translationIdentity requires both abi and configuration.
+  const badIdentity: JitOptions['translationIdentity'] = { abi: 'test-abi' };
+  // @ts-expect-error A decrement8 candidate requires a counting address.
+  const badLoopCandidate: JitLoopCandidate = { kind: 'decrement8', memory: 'iram' };
+  // @ts-expect-error A timed service requires both elapsed and deadline.
+  const badService: JitDirectTiming['service'] = { elapsed: 'clockPs' };
+  void [badPromoteAfter, badIdentity, badLoopCandidate, badService];
   // @ts-expect-error The SDK does not expose an onDiagnostic callback option.
   createBoard(library, description, { ...options, onDiagnostic() {} });
   void [badNet, badGround, undefinedSeed, nullSeed, retained, live, undefinedMark];

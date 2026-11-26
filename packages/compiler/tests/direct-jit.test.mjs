@@ -2297,17 +2297,29 @@ test('a paced busy-wait head folds into the service accumulator and stops at its
   const program = compileDirectJit([instruction], paced);
   assert(program);
   const source = generated(program);
-  // The fold stops on the first round that reaches the service boundary and records it.
-  assert.match(source, /if \(S\[3\]\) rounds = Math\.min\(rounds,/);
+  // A zero remaining budget fits no complete round; the real tail activates the service.
+  assert.match(source, /if \(S\[3\]\) \{/);
+  assert.match(
+    source,
+    /const remaining = Math\.max\(0, S\[2\] - S\[4\]\);\nrounds = Math\.min\(rounds, remaining > 0 \? Math\.floor\(\(remaining - 1\) \/ 1000\) : 0\);/,
+  );
   assert.match(source, /S\[4\] \+= rounds \* 1000;/);
 
-  // Paced: one round crosses the boundary, then the real body runs once.
+  // Active with no remaining budget: nothing folds, the real body runs exactly once.
   const crossing = frame(program, [0, 11, 0, true, 0, 0]);
   assert.equal(program.run(crossing, 60_000), 'fallback');
-  assert.equal(crossing.states[1], 10);
-  assert.equal(crossing.states[4], 1000);
-  assert.equal(crossing.time, 1000 + 2);
+  assert.equal(crossing.states[1], 11);
+  assert.equal(crossing.states[4], 0);
+  assert.equal(crossing.time, 2);
   assert.equal(crossing.states[5], 1);
+
+  // A positive budget folds only rounds that end strictly before the service boundary.
+  const pacedBudget = frame(program, [0, 11, 5000, true, 0, 0]);
+  assert.equal(program.run(pacedBudget, 60_000), 'fallback');
+  assert.equal(pacedBudget.states[1], 7);
+  assert.equal(pacedBudget.states[4], 4000);
+  assert.equal(pacedBudget.time, 4002);
+  assert.equal(pacedBudget.states[5], 1);
 
   // Unpaced: no boundary clamp, so every allowed round folds; the accumulator still tracks
   // elapsed time (the device resets it when a paced peripheral activates).
@@ -3264,77 +3276,80 @@ test('hosted resident checkpoint keeps the pre-publication capture on rejection 
   }
 });
 
-test('resident factory reuse across caches binds each shard to its own constants and frame', () => {
+test('resident factory reuse across artifact caches binds each shard to its own frame', () => {
   const pc = 0x12340;
   const hosted = { ...binding, host: true, split: true };
+  const artifact = compileDirectJit.createArtifactCache();
   const compile = (channel, nextPc) => {
     const b = builder();
     const value = b.read('x');
     b.delay(5);
     b.operations.push({ kind: 'send', channel, value });
-    let program;
+    let session;
     const sources = captureFactories(() => {
-      program = compileDirectJit(
-        [b.instruction(pc, nextPc)],
-        hosted,
-        compileDirectJit.createCache(),
-      );
+      session = compileDirectJit.createSession(hosted, compileDirectJit.createCache(), artifact);
+      session.add([b.instruction(pc, nextPc)]);
     });
-    assert(program);
+    assert(session);
     return {
-      program,
+      session,
       shards: sources.filter((source) => source.includes('function stepShard')),
       routers: sources.filter((source) => source.includes('function run')),
     };
   };
   const first = compile('first', pc + 2);
-  const second = compile('second', pc + 2);
+  const second = compile('first', pc + 2);
   const changed = compile('third', pc + 4);
   assert.equal(first.shards.length, 1);
-  assert.equal(second.shards.length, 0, 'channel name changes only the constants');
-  assert.equal(changed.shards.length, 1, 'a different next PC changes the exact source');
+  assert.equal(second.shards.length, 0, 'identical bodies share the cached shard source');
+  assert.equal(changed.shards.length, 1, 'a different channel/next PC changes the source key');
   assert.notEqual(changed.shards[0], first.shards[0]);
 
-  const a = frame(first.program, [pc, 17, 0, true, 0, 0]);
-  const b = frame(second.program, [pc, 42, 0, true, 0, 0]);
+  const a = frame(first.session, [pc, 17, 0, true, 0, 0]);
+  const b = frame(second.session, [pc, 42, 0, true, 0, 0]);
+  const c = frame(changed.session, [pc, 43, 0, true, 0, 0]);
   a.host = hostRecorder(() => a.time);
   b.host = hostRecorder(() => b.time);
+  c.host = hostRecorder(() => c.time);
   for (const [candidate, f] of [
     [first, a],
     [second, b],
+    [changed, c],
   ]) {
     assert.equal(candidate.routers.length, 1, 'build a fresh dispatcher');
-    assert.equal(candidate.program.run(f, 5), 'deadline');
+    assert.equal(candidate.session.run(f, 5), 'deadline');
     assert.notEqual(f.resume, 0);
     assert.deepEqual(f.host.entries, []);
     f.states[1] = -1;
   }
-  assert.equal(second.program.run(b, 6), 'fallback');
-  assert.equal(first.program.run(a, 6), 'fallback');
-  assert.deepEqual(b.host.entries, [['send', 'second', 42, 5]]);
+  assert.equal(second.session.run(b, 6), 'untranslated');
+  assert.equal(first.session.run(a, 6), 'untranslated');
+  assert.equal(changed.session.run(c, 6), 'untranslated');
+  assert.deepEqual(b.host.entries, [['send', 'first', 42, 5]]);
   assert.deepEqual(a.host.entries, [['send', 'first', 17, 5]]);
+  assert.deepEqual(c.host.entries, [['send', 'third', 43, 5]]);
 });
 
 test('resident factory cache evicts the least recently used source at its entry limit', () => {
+  const artifact = compileDirectJit.createArtifactCache();
   const compile = (index) => {
     const pc = 0x240000 + 2 * index;
     const b = builder();
     b.write('marker', b.constant(7));
     b.delay(5);
     const sources = captureFactories(() => {
-      assert(
-        compileDirectJit(
-          [b.instruction(pc, pc + 2)],
-          { ...binding, host: true, split: true },
-          compileDirectJit.createCache(),
-        ),
+      const session = compileDirectJit.createSession(
+        { ...binding, host: true, split: true },
+        compileDirectJit.createCache(),
+        artifact,
       );
+      session.add([b.instruction(pc, pc + 2)]);
     });
     return sources.some((source) => source.includes('function stepShard'));
   };
-  for (let i = 0; i < 128; i++) assert.equal(compile(i), true);
+  for (let i = 0; i < 512; i++) assert.equal(compile(i), true);
   assert.equal(compile(0), false, 'a hit refreshes the oldest source');
-  assert.equal(compile(128), true, 'adding another source evicts index 1');
+  assert.equal(compile(512), true, 'adding another source evicts index 1');
   assert.equal(compile(0), false, 'a recently used source survives');
   assert.equal(compile(1), true, 'an evicted source is compiled again');
 });
@@ -4138,7 +4153,9 @@ test('session updateDelays recompiles only entries whose delay snapshot changed'
   const restored = captureFactories(() => session.updateDelays());
   assert.equal(restored.length, 1, 'omitting the map restores binding.delayLoops');
   assert.match(restored[0], /\/ 10\)/);
-  assert.equal(session.stats().compiledBlocks, before.compiledBlocks + 2);
+  const restoredStats = session.stats();
+  assert.equal(restoredStats.compiledBlocks, before.compiledBlocks + 1);
+  assert.equal(restoredStats.reusedBlocks, before.reusedBlocks + 1, 'the artifact hit is a reuse');
   const f = frame(session, [0, 3, 0, false, 0, 0]);
   assert.equal(session.run(f, 100), 'deadline');
   assert.equal(f.time, 100);
@@ -4726,4 +4743,1065 @@ test('incremental sharing leaves unrelated physical groups untouched', () => {
   const b = frame(session, [6, 0, 0, true, 0, 0]);
   assert.equal(session.run(b, 1), 'deadline');
   assert.equal(b.states[2], 22);
+});
+
+/** Multiple memory banks plus optional directMetrics for optimized route tests. */
+function bankFrame(program, states, banks, metrics = false) {
+  const memories = banks.map((bytes) => Uint8Array.from(bytes));
+  const f = {
+    states: [...states],
+    memories,
+    memoryViews: memories.map(
+      (bank) => new DataView(bank.buffer, bank.byteOffset, bank.byteLength),
+    ),
+    stateDirty: new Array(Math.ceil(states.length / 32)).fill(0),
+    memoryDirty: new Array(Math.ceil(memories.length / 32)).fill(0),
+    time: 0,
+    due: 0,
+    resume: 0,
+    locals: new Array(program.localCount),
+  };
+  if (metrics) f.directMetrics = { spanRuns: 0, loopRounds: 0 };
+  return f;
+}
+
+/** Register-clean instruction: a fixed positive elapse and no other effect. */
+function nopInstruction(pc, nextPc, duration) {
+  const b = builder();
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+/** Prefix instruction that publishes one scalar before its fixed elapse. */
+function markerInstruction(pc, nextPc, value, duration) {
+  const b = builder();
+  b.write('marker', b.constant(value));
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+/** Terminal instruction with a normal store at its own start time. */
+function storeInstruction(pc, nextPc, value, duration) {
+  const b = builder();
+  b.write('x', b.constant(value));
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+function spanMarked(instruction, pcs) {
+  return { ...instruction, span: { pcs } };
+}
+
+/** Minimal memory/length binding used by the span and loop proofs. */
+function optimizedBinding(overrides = {}) {
+  return {
+    ...binding,
+    memories: new Map([
+      ['ram', 0],
+      ['iram', 1],
+      ['psw', 2],
+    ]),
+    memoryLengths: new Map([
+      ['ram', 16],
+      ['iram', 256],
+      ['psw', 1],
+    ]),
+    ...overrides,
+  };
+}
+
+function sessionWith(instructions, settings, cache = compileDirectJit.createCache()) {
+  const session = compileDirectJit.createSession(settings, cache);
+  session.add(instructions);
+  return session;
+}
+
+function sameObservable(left, right) {
+  assert.deepEqual(left.states, right.states);
+  assert.deepEqual(
+    left.memories.map((bank) => [...bank]),
+    right.memories.map((bank) => [...bank]),
+  );
+  assert.deepEqual(left.stateDirty, right.stateDirty);
+  assert.deepEqual(left.memoryDirty, right.memoryDirty);
+  assert.equal(left.time, right.time);
+  assert.equal(left.due, right.due);
+  assert.equal(left.resume, right.resume);
+}
+
+test('a marked span fuses a pure prefix before the terminal write and falls back at its start', () => {
+  const settings = optimizedBinding();
+  const members = [nopInstruction(0, 2, 2), nopInstruction(2, 4, 2), storeInstruction(4, 6, 42, 5)];
+  const marked = [spanMarked(members[0], [0, 2, 4]), members[1], members[2]];
+  const session = sessionWith(marked, settings);
+  assert.equal(session.stats().spansInstalled, 1);
+  assert.equal(session.stats().spansRejected, 0);
+
+  const fused = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(session.run(fused, 5), 'deadline');
+  assert.equal(fused.states[1], 42, 'terminal prefix is visible before its elapse');
+  assert.equal(fused.time, 5);
+  assert.equal(fused.directMetrics.spanRuns, 1);
+  assert.equal(session.stats().spanRuns, 1);
+
+  const plain = sessionWith(members, settings);
+  const reference = bankFrame(plain, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(plain.run(reference, 5), 'deadline');
+  sameObservable(fused, reference);
+
+  // The terminal starts exactly at the deadline: the fused route must not run it.
+  const boundary = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(session.run(boundary, 4), 'deadline');
+  assert.equal(boundary.states[1], 1, 'the terminal write did not run');
+  assert.equal(boundary.time, 4);
+  assert.equal(boundary.directMetrics.spanRuns, 0);
+  const boundaryReference = bankFrame(plain, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(plain.run(boundaryReference, 4), 'deadline');
+  sameObservable(boundary, boundaryReference);
+  assert.equal(session.stats().spanRuns, 1);
+});
+
+test('a span terminal must be a non-isolated, non-stop ordinary write', () => {
+  const settings = optimizedBinding();
+
+  const looping = builder();
+  const no = looping.constant(false);
+  looping.operations.push({
+    kind: 'while',
+    test: { body: { operations: [{ kind: 'yield', value: no }] } },
+    body: { operations: [] },
+  });
+  looping.write('y', looping.constant(1));
+  looping.delay(0);
+  const isolatedTerminal = looping.instruction(2, 4);
+
+  const isolatedSpan = sessionWith(
+    [spanMarked(nopInstruction(0, 2, 2), [0, 2]), isolatedTerminal],
+    settings,
+  );
+  assert.equal(isolatedSpan.stats().spansInstalled, 0);
+  assert.equal(isolatedSpan.stats().spansRejected, 1, 'an isolated terminal is rejected');
+  const isolatedPlain = sessionWith([nopInstruction(0, 2, 2), isolatedTerminal], settings);
+  const isolatedFrame = bankFrame(isolatedSpan, [0, 1, 0, true, 0, 0], [[0]], true);
+  const isolatedReference = bankFrame(isolatedPlain, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(
+    isolatedSpan.run(isolatedFrame, 5),
+    isolatedPlain.run(isolatedReference, 5),
+    'the normal route still executes after rejection',
+  );
+  sameObservable(isolatedFrame, isolatedReference);
+  assert.equal(isolatedFrame.directMetrics.spanRuns, 0);
+
+  const readOnlySpan = sessionWith(
+    [spanMarked(nopInstruction(0, 2, 2), [0, 2]), nopInstruction(2, 4, 1)],
+    settings,
+  );
+  assert.equal(readOnlySpan.stats().spansInstalled, 0);
+  assert.equal(readOnlySpan.stats().spansRejected, 1, 'a read-only terminal is rejected');
+
+  const accepted = sessionWith(
+    [spanMarked(nopInstruction(0, 2, 2), [0, 2]), storeInstruction(2, 4, 42, 5)],
+    settings,
+  );
+  assert.equal(accepted.stats().spansInstalled, 1);
+  assert.equal(accepted.stats().spansRejected, 0);
+  const fused = bankFrame(accepted, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(accepted.run(fused, 3), 'deadline');
+  assert.equal(fused.states[1], 42, 'the terminal write ran on the fused path');
+  assert.equal(fused.directMetrics.spanRuns, 1);
+});
+
+test('a deadline in the middle of a span prefix leaves the terminal unwritten', () => {
+  const settings = optimizedBinding();
+  const members = [nopInstruction(0, 2, 2), nopInstruction(2, 4, 2), storeInstruction(4, 6, 42, 5)];
+  const session = sessionWith(
+    [spanMarked(members[0], [0, 2, 4]), members[1], members[2]],
+    settings,
+  );
+  const plain = sessionWith(members, settings);
+
+  for (const deadline of [1, 2, 3, 4]) {
+    const fused = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+    const reference = bankFrame(plain, [0, 1, 0, true, 0, 0], [[0]], true);
+    assert.equal(session.run(fused, deadline), 'deadline');
+    assert.equal(plain.run(reference, deadline), 'deadline');
+    assert.equal(fused.states[1], 1, `terminal stays unwritten at ${deadline}`);
+    sameObservable(fused, reference);
+  }
+  assert.equal(session.stats().spanRuns, 0);
+});
+
+test('a dynamic observer on a prefix write falls back to the normal start step', () => {
+  const settings = optimizedBinding();
+  const members = [markerInstruction(0, 2, 7, 2), storeInstruction(2, 4, 42, 5)];
+  const session = sessionWith([spanMarked(members[0], [0, 2]), members[1]], settings);
+  const plain = sessionWith(members, settings);
+
+  const fused = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+  const reference = bankFrame(plain, [0, 1, 0, true, 0, 0], [[0]], true);
+  const observer = 1 << 5; // marker slot
+  fused.blockedStates = [observer];
+  reference.blockedStates = [observer];
+  assert.equal(session.run(fused, 10), 'invalidated');
+  assert.equal(plain.run(reference, 10), 'invalidated');
+  assert.equal(fused.states[5], 7, 'the prefix write still happened normally');
+  assert.equal(fused.directMetrics.spanRuns, 0);
+  sameObservable(fused, reference);
+});
+
+test('a service horizon shorter than the host deadline bounds span admission strictly', () => {
+  const settings = optimizedBinding({ directTiming: { elapsed: 4, deadline: 5 } });
+  const members = [nopInstruction(0, 2, 2), nopInstruction(2, 4, 2), storeInstruction(4, 6, 42, 5)];
+  const session = sessionWith(
+    [spanMarked(members[0], [0, 2, 4]), members[1], members[2]],
+    settings,
+  );
+
+  // Elapsed 0 / deadline 4: terminal start equals H, so the strict comparison rejects.
+  const short = bankFrame(session, [0, 1, 0, true, 0, 4], [[0]], true);
+  assert.equal(session.run(short, 6), 'deadline');
+  assert.equal(short.directMetrics.spanRuns, 0);
+  assert.equal(short.states[1], 42, 'the unfused host path still reaches the terminal');
+
+  // Elapsed 0 / deadline 5: prefix end (4) is strictly below the service horizon.
+  const admitted = bankFrame(session, [0, 1, 0, true, 0, 5], [[0]], true);
+  assert.equal(session.run(admitted, 6), 'deadline');
+  assert.equal(admitted.directMetrics.spanRuns, 1);
+  assert.equal(admitted.states[1], 42);
+  assert.equal(admitted.time, 6);
+  assert.equal(session.stats().spanRuns, 1);
+
+  // Elapsed 2 / deadline 5 leaves 3 ps from the current time, below the 4 ps prefix.
+  const tighter = bankFrame(session, [0, 1, 0, true, 2, 5], [[0]], true);
+  assert.equal(session.run(tighter, 6), 'deadline');
+  assert.equal(tighter.directMetrics.spanRuns, 0);
+
+  // Malformed timing state disables admission and keeps the normal path exact.
+  const invalid = bankFrame(session, [0, 1, 0, true, -1, 5], [[0]], true);
+  assert.equal(session.run(invalid, 6), 'deadline');
+  assert.equal(invalid.directMetrics.spanRuns, 0);
+  assert.equal(invalid.states[1], 42);
+});
+
+/** DJNZ-shaped body: load counter, (r - 1) & 255, store, conditional self jump, elapse. */
+function decrementInstruction(pc, nextPc, memory, address, duration) {
+  const b = builder();
+  let offset;
+  if (address.kind === 'constant') {
+    offset = b.constant(address.offset);
+  } else {
+    const selector = b.value({
+      kind: 'load8',
+      memory: { kind: 'memory', name: address.memory },
+      offset: b.constant(address.offset),
+    });
+    offset = b.binary('bitAnd', selector, b.constant(address.mask));
+    offset = b.binary('bitOr', offset, b.constant(address.bits));
+  }
+  const counter = b.value({ kind: 'load8', memory: { kind: 'memory', name: memory }, offset });
+  const decremented = b.binary('subtract', counter, b.constant(1));
+  const next = b.binary('bitAnd', decremented, b.constant(255));
+  b.operations.push({
+    kind: 'store8',
+    memory: { kind: 'memory', name: memory },
+    offset,
+    value: next,
+  });
+  const test = b.binary('notEqual', next, b.constant(0));
+  b.operations.push({
+    kind: 'if',
+    condition: test,
+    yes: {
+      operations: [
+        {
+          kind: 'redirect',
+          target: b.constant(pc),
+          delay: b.constant(duration),
+        },
+      ],
+    },
+  });
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+function loopMarked(instruction, loop) {
+  return { ...instruction, loop };
+}
+
+/** SJMP $-shaped body: an unconditional self redirect with a fixed duration. */
+function spinInstruction(pc, nextPc, duration) {
+  const b = builder();
+  b.operations.push({
+    kind: 'redirect',
+    target: b.constant(pc),
+    delay: b.constant(duration),
+  });
+  return b.instruction(pc, nextPc);
+}
+
+test('decrement8 folding reaches the boundary round for every counter value', () => {
+  const settings = optimizedBinding();
+  const instruction = decrementInstruction(0, 2, 'iram', { kind: 'constant', offset: 5 }, 10);
+  const session = sessionWith(
+    [
+      loopMarked(instruction, {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    settings,
+  );
+  assert.equal(session.stats().loopsInstalled, 1);
+  assert.equal(session.stats().loopsRejected, 0);
+  let folded = 0;
+  for (const [counter, rounds] of [
+    [0, 255],
+    [1, 0],
+    [2, 1],
+    [255, 254],
+  ]) {
+    const iram = new Array(256).fill(0);
+    iram[5] = counter;
+    const f = bankFrame(session, [0, 1, 0, true, 0, 0], [[0], iram, [0]], true);
+    assert.equal(session.run(f, 1_000_000), 'untranslated');
+    assert.equal(f.memories[1][5], 0, `counter ${counter} exits at zero`);
+    assert.equal(f.states[0], 2, `counter ${counter} reaches the fallthrough PC`);
+    assert.equal(f.time, (rounds + 1) * 10, `counter ${counter} executes every round`);
+    assert.equal(f.directMetrics.loopRounds, rounds);
+    assert.equal(f.due, f.time);
+    folded += rounds;
+  }
+  assert.equal(session.stats().loopRounds, folded);
+});
+
+test('maskedByte decrement8 addresses follow the selector byte across register groups', () => {
+  const settings = optimizedBinding();
+  const address = { kind: 'maskedByte', memory: 'psw', offset: 0, mask: 0x18, bits: 3 };
+  const instruction = decrementInstruction(0, 2, 'iram', address, 7);
+  const session = sessionWith(
+    [loopMarked(instruction, { kind: 'decrement8', memory: 'iram', address })],
+    settings,
+  );
+  let folded = 0;
+  for (const [selector, counter, rounds] of [
+    [0x00, 0, 255],
+    [0x08, 2, 1],
+    [0x10, 1, 0],
+    [0x18, 255, 254],
+  ]) {
+    const target = (selector & 0x18) | 3;
+    const iram = new Array(256).fill(0);
+    iram[target] = counter;
+    const f = bankFrame(session, [0, 1, 0, true, 0, 0], [[0], iram, [selector]], true);
+    assert.equal(session.run(f, 1_000_000), 'untranslated');
+    assert.equal(f.memories[1][target], 0, `selector ${selector} exits at zero`);
+    assert.equal(f.states[0], 2);
+    assert.equal(f.time, (rounds + 1) * 7);
+    assert.equal(f.directMetrics.loopRounds, rounds);
+    folded += rounds;
+  }
+  assert.equal(session.stats().loopRounds, folded);
+});
+
+test('spin folding stops one picosecond before the deadline with a normal boundary round', () => {
+  const instruction = spinInstruction(0, 1, 10);
+  const session = sessionWith([loopMarked(instruction, { kind: 'spin' })], binding);
+  assert.equal(session.stats().loopsInstalled, 1);
+
+  const exact = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]], true);
+  assert.equal(session.run(exact, 10), 'deadline');
+  assert.equal(exact.time, 10);
+  assert.equal(exact.states[0], 0);
+  assert.equal(exact.directMetrics.loopRounds, 0);
+
+  const almost = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]], true);
+  assert.equal(session.run(almost, 11), 'deadline');
+  assert.equal(almost.time, 11);
+  assert.equal(almost.states[0], 0);
+  assert.equal(almost.directMetrics.loopRounds, 1);
+
+  const long = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]], true);
+  assert.equal(session.run(long, 100), 'deadline');
+  assert.equal(long.time, 100);
+  assert.equal(long.directMetrics.loopRounds, 9);
+  assert.equal(session.stats().loopRounds, 10);
+});
+
+/** Zero-argument pure bool guard reading the `flag` state. */
+function blockedGuard() {
+  return {
+    kind: 'function',
+    name: 'blocked',
+    pure: true,
+    params: [],
+    returns: { kind: 'bool' },
+    body: {
+      operations: [
+        {
+          kind: 'read',
+          result: 0,
+          type: { kind: 'bool' },
+          resource: 'state',
+          name: 'flag',
+        },
+        { kind: 'returnValue', value: 0 },
+      ],
+    },
+  };
+}
+
+test('loop folding maintains the service accumulator and honours the blocked guard', () => {
+  const b = builder();
+  const offset = b.constant(5);
+  const counter = b.value({ kind: 'load8', memory: { kind: 'memory', name: 'iram' }, offset });
+  const next = b.binary('bitAnd', b.binary('subtract', counter, b.constant(1)), b.constant(255));
+  b.operations.push({
+    kind: 'store8',
+    memory: { kind: 'memory', name: 'iram' },
+    offset,
+    value: next,
+  });
+  const test = b.binary('notEqual', next, b.constant(0));
+  b.operations.push({
+    kind: 'if',
+    condition: test,
+    yes: {
+      operations: [{ kind: 'write', resource: 'state', name: 'pc', value: b.constant(0) }],
+    },
+  });
+  b.delay(7);
+  // Device tick tail: account one round in the service accumulator after the elapse.
+  const elapsed = b.binary('add', b.read('offset'), b.constant(7));
+  b.write('offset', elapsed);
+  const instruction = b.instruction(0, 2);
+  const settings = optimizedBinding({
+    functions: new Map([['blocked', blockedGuard()]]),
+    directTiming: { elapsed: 4, deadline: 5, blocked: 'blocked' },
+  });
+  const session = sessionWith(
+    [
+      loopMarked(instruction, {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    settings,
+  );
+  assert.equal(session.stats().loopsInstalled, 1);
+
+  const iram = new Array(256).fill(0);
+  iram[5] = 2;
+  const folded = bankFrame(session, [0, 1, 0, false, 100, 10_000], [[0], iram, [0]], true);
+  assert.equal(session.run(folded, 1_000_000), 'untranslated');
+  assert.equal(folded.states[4], 114, 'folded rounds and the boundary tail both accrue');
+  assert.equal(folded.time, 14);
+  assert.equal(folded.directMetrics.loopRounds, 1);
+
+  iram[5] = 2;
+  const blocked = bankFrame(session, [0, 1, 0, true, 100, 10_000], [[0], iram, [0]], true);
+  assert.equal(session.run(blocked, 1_000_000), 'untranslated');
+  assert.equal(blocked.states[4], 114, 'the normal path reaches the same accumulator value');
+  assert.equal(blocked.time, 14);
+  assert.equal(blocked.directMetrics.loopRounds, 0);
+});
+
+test('optimized routes never require frame metrics and retire when a marker disappears', () => {
+  const spin = spinInstruction(0, 1, 10);
+  const session = sessionWith([loopMarked(spin, { kind: 'spin' })], binding);
+  const first = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]]);
+  assert.equal(session.run(first, 100), 'deadline');
+  assert.equal(session.stats().loopRounds, 9);
+
+  // Re-submitting the start without the loop marker retires the wrapper but keeps the body.
+  session.add([spin]);
+  const second = bankFrame(session, [0, 0, 0, true, 0, 0], [[0, 0, 0]]);
+  assert.equal(session.run(second, 11), 'deadline');
+  assert.equal(second.time, 11, 'the ordinary one-round instruction reached the deadline');
+  assert.equal(session.stats().loopRounds, 9, 'no rounds were folded after removal');
+});
+
+test('replacing a span member rebuilds the fused route over the new terminal body', () => {
+  const settings = optimizedBinding({ shardSize: 1 });
+  const session = sessionWith(
+    [spanMarked(nopInstruction(0, 2, 2), [0, 2]), storeInstruction(2, 4, 42, 5)],
+    settings,
+  );
+  assert.equal(session.stats().spansInstalled, 1);
+  session.add([storeInstruction(2, 4, 99, 5)]);
+  const f = bankFrame(session, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(session.run(f, 3), 'deadline');
+  assert.equal(f.states[1], 99, 'the replacement terminal body ran');
+  assert.equal(f.directMetrics.spanRuns, 1);
+  assert.equal(session.stats().spansInstalled, 1);
+  assert.equal(session.stats().spanRuns, 1);
+});
+
+test('a shared route or a loop marker prevents the conflicting optimization', () => {
+  const share = shareKey();
+  const shared = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+  );
+  shared.add([
+    { ...sharedIncrement(0, 2, share), span: { pcs: [0, 2] } },
+    sharedIncrement(2, 4, share),
+  ]);
+  const stats = shared.stats();
+  assert.equal(stats.spansInstalled, 0);
+  assert(stats.spansRejected >= 1);
+  assert(stats.shareGroups >= 1);
+});
+
+test('malformed and unprovable markers keep normal execution and count rejections', () => {
+  const settings = optimizedBinding();
+
+  const malformedSpan = sessionWith(
+    [{ ...nopInstruction(0, 2, 2), span: { pcs: [0, 0] } }, storeInstruction(2, 4, 5, 1)],
+    settings,
+  );
+  assert.equal(malformedSpan.stats().spansInstalled, 0);
+  assert.equal(malformedSpan.stats().spansRejected, 1);
+  const malformedFrame = bankFrame(malformedSpan, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(malformedSpan.run(malformedFrame, 10), 'untranslated');
+  assert.equal(malformedFrame.states[1], 5);
+  assert.equal(malformedFrame.directMetrics.spanRuns, 0);
+
+  const nonContiguous = sessionWith(
+    [spanMarked(nopInstruction(0, 4, 2), [0, 2]), nopInstruction(2, 6, 2)],
+    settings,
+  );
+  assert.equal(nonContiguous.stats().spansRejected, 1);
+  assert.equal(nonContiguous.stats().spansInstalled, 0);
+
+  const missingMember = sessionWith([spanMarked(nopInstruction(0, 2, 2), [0, 2])], settings);
+  assert.equal(missingMember.stats().spansRejected, 1);
+  // Adding the missing terminal member re-evaluates the persisted marker.
+  missingMember.add([storeInstruction(2, 4, 9, 1)]);
+  assert.equal(missingMember.stats().spansInstalled, 1);
+
+  const codeWriteSettings = optimizedBinding({ codeMemories: new Set(['iram']) });
+  const codeWrite = builder();
+  codeWrite.operations.push({
+    kind: 'store8',
+    memory: { kind: 'memory', name: 'iram' },
+    offset: codeWrite.constant(1),
+    value: codeWrite.constant(9),
+  });
+  codeWrite.delay(2);
+  const codeWriteSpan = sessionWith(
+    [spanMarked(codeWrite.instruction(0, 2), [0, 2]), storeInstruction(2, 4, 8, 1)],
+    codeWriteSettings,
+  );
+  assert.equal(codeWriteSpan.stats().spansRejected, 1);
+  assert.equal(codeWriteSpan.stats().spansInstalled, 0);
+
+  const delayed = optimizedBinding({
+    delayLoops: new Map([[0, { counter: 1, cycles: 5 }]]),
+  });
+  const loopInstruction = decrementInstruction(0, 2, 'iram', { kind: 'constant', offset: 5 }, 10);
+  const loopWithDelay = sessionWith(
+    [
+      loopMarked(loopInstruction, {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    delayed,
+  );
+  assert.equal(loopWithDelay.stats().loopsInstalled, 0);
+  assert.equal(loopWithDelay.stats().loopsRejected, 1);
+
+  const codeCounter = sessionWith(
+    [
+      loopMarked(loopInstruction, {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    codeWriteSettings,
+  );
+  assert.equal(codeCounter.stats().loopsRejected, 1);
+
+  const dynamic = builder();
+  const dynamicOffset = dynamic.read('x');
+  const dynamicLoad = dynamic.value({
+    kind: 'load8',
+    memory: { kind: 'memory', name: 'iram' },
+    offset: dynamicOffset,
+  });
+  const dynamicNext = dynamic.binary(
+    'bitAnd',
+    dynamic.binary('subtract', dynamicLoad, dynamic.constant(1)),
+    dynamic.constant(255),
+  );
+  dynamic.operations.push({
+    kind: 'store8',
+    memory: { kind: 'memory', name: 'iram' },
+    offset: dynamicOffset,
+    value: dynamicNext,
+  });
+  const dynamicTest = dynamic.binary('notEqual', dynamicNext, dynamic.constant(0));
+  dynamic.operations.push({
+    kind: 'if',
+    condition: dynamicTest,
+    yes: {
+      operations: [{ kind: 'redirect', target: dynamic.constant(0), delay: dynamic.constant(10) }],
+    },
+  });
+  dynamic.delay(10);
+  const dynamicLoop = sessionWith(
+    [
+      loopMarked(dynamic.instruction(0, 2), {
+        kind: 'decrement8',
+        memory: 'iram',
+        address: { kind: 'constant', offset: 5 },
+      }),
+    ],
+    settings,
+  );
+  assert.equal(dynamicLoop.stats().loopsRejected, 1);
+
+  const both = sessionWith(
+    [
+      {
+        ...nopInstruction(0, 2, 2),
+        span: { pcs: [0, 2] },
+        loop: { kind: 'spin' },
+      },
+      storeInstruction(2, 4, 1, 1),
+    ],
+    settings,
+  );
+  assert.equal(both.stats().spansRejected, 1);
+  assert.equal(both.stats().loopsRejected, 1);
+});
+
+/** A pure zero-argument scalar helper whose constant changes the emitted function body. */
+function numberHelper(delta) {
+  return {
+    kind: 'function',
+    name: 'helper',
+    pure: true,
+    params: [],
+    returns: { kind: 'number' },
+    body: {
+      operations: [
+        {
+          kind: 'constant',
+          result: 0,
+          type: { kind: 'number' },
+          constant: { kind: 'number', value: delta },
+        },
+        { kind: 'returnValue', value: 0 },
+      ],
+    },
+  };
+}
+
+function callHelperBlock() {
+  const b = builder();
+  const value = b.value({ kind: 'callValue', name: 'helper', pure: true, args: [] });
+  b.write('x', value);
+  b.delay(1);
+  return b.instruction(0, 2);
+}
+
+test('artifact cache reuses structurally equal instruction templates across sessions', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const settings = { ...binding, shardSize: 4 };
+  const reordered = {
+    ...settings,
+    states: new Map([...binding.states].reverse()),
+  };
+  const first = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  first.add([directBlock(0, 2, 11), directBlock(2, 0, 22)]);
+  let stats = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(stats.compiledInstructions, 2);
+  assert.equal(stats.reusedInstructions, 0);
+
+  const second = compileDirectJit.createSession(
+    reordered,
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  const beforeSecond = second.stats();
+  second.add([directBlock(0, 2, 11), directBlock(2, 0, 22)]);
+  const reused = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(reused.compiledInstructions, 2, 'no second emission for equal templates');
+  assert.equal(reused.reusedInstructions, 2);
+  const secondStats = second.stats();
+  assert.equal(secondStats.artifactInstructionHits, 2);
+  assert.equal(secondStats.artifactInstructionMisses, 0);
+  assert.equal(secondStats.compiledBlocks, beforeSecond.compiledBlocks, 'hits emit no body');
+  assert.equal(secondStats.bodyBytes, beforeSecond.bodyBytes, 'hits add no source characters');
+  assert.equal(secondStats.reusedBlocks, beforeSecond.reusedBlocks + 2);
+
+  const a = frame(first, [0, 0, 0, true, 0, 0]);
+  const b = frame(second, [0, 0, 0, true, 0, 0]);
+  assert.equal(first.run(a, 1), 'deadline');
+  assert.equal(second.run(b, 1), 'deadline');
+  assert.deepEqual(a.states, b.states);
+  assert.deepEqual(
+    a.memories.map((bank) => [...bank]),
+    b.memories.map((bank) => [...bank]),
+  );
+  assert.equal(a.time, b.time);
+  assert.notEqual(a.states, b.states, 'frames are never shared');
+  assert.notEqual(a.stateDirty, b.stateDirty);
+
+  const helperArtifact = compileDirectJit.createArtifactCache();
+  const helperOne = compileDirectJit.createSession(
+    { ...binding, functions: new Map([['helper', numberHelper(3)]]) },
+    compileDirectJit.createCache(),
+    helperArtifact,
+  );
+  helperOne.add([callHelperBlock()]);
+  const helperTwo = compileDirectJit.createSession(
+    { ...binding, functions: new Map([['helper', numberHelper(3)]]) },
+    compileDirectJit.createCache(),
+    helperArtifact,
+  );
+  helperTwo.add([callHelperBlock()]);
+  assert.equal(helperTwo.stats().artifactInstructionHits, 1);
+  const helperFrame = frame(helperTwo, [0, 0, 0, true, 0, 0]);
+  assert.equal(helperTwo.run(helperFrame, 1), 'deadline');
+  assert.equal(helperFrame.states[1], 3, 'the shared pure helper keeps its captured IR');
+});
+
+test('artifact instruction keys reject every slot, IR, delay, value and mask difference', () => {
+  const probe = (
+    label,
+    baseInstruction,
+    baseSettings,
+    candidate,
+    candidateSettings = baseSettings,
+  ) => {
+    const artifact = compileDirectJit.createArtifactCache();
+    const warm = compileDirectJit.createSession(
+      baseSettings,
+      compileDirectJit.createCache(),
+      artifact,
+    );
+    warm.add([baseInstruction]);
+    const before = compileDirectJit.artifactCacheStats(artifact);
+    assert(before.compiledInstructions > 0, `${label}: base emitted a template`);
+    const session = compileDirectJit.createSession(
+      candidateSettings,
+      compileDirectJit.createCache(),
+      artifact,
+    );
+    session.add([candidate]);
+    const after = compileDirectJit.artifactCacheStats(artifact);
+    assert.equal(after.reusedInstructions, before.reusedInstructions, `${label}: no hit`);
+    assert.equal(session.stats().artifactInstructionHits, 0, `${label}: session miss`);
+    assert.equal(after.compiledInstructions, before.compiledInstructions + 1, `${label}: emitted`);
+  };
+
+  probe('binding slot', directBlock(0, 2, 7), binding, directBlock(0, 2, 7), {
+    ...binding,
+    states: new Map([...binding.states, ['x', 8]]),
+  });
+  probe(
+    'function body',
+    callHelperBlock(),
+    { ...binding, functions: new Map([['helper', numberHelper(1)]]) },
+    callHelperBlock(),
+    { ...binding, functions: new Map([['helper', numberHelper(2)]]) },
+  );
+  probe('body constant', directBlock(0, 2, 7), binding, directBlock(0, 2, 8));
+  probe(
+    'delay fingerprint',
+    directBlock(0, 2, 7),
+    { ...binding, delayLoops: new Map([[0, { counter: 1, cycles: 5 }]]) },
+    directBlock(0, 2, 7),
+    { ...binding, delayLoops: new Map([[0, { counter: 1, cycles: 6 }]]) },
+  );
+  probe('signed zero', directBlock(0, 2, 0), binding, directBlock(0, 2, -0));
+  probe('observer mask', directBlock(0, 2, 7), binding, directBlock(0, 2, 7), {
+    ...binding,
+    blockedStates: new Set(['x']),
+  });
+  probe('entry mask', directBlock(0, 2, 7), binding, directBlock(0, 2, 7), {
+    ...binding,
+    entryBlockedStates: new Set(['y']),
+  });
+});
+
+test('a suspended artifact-backed session keeps its own continuation after a peer compiles', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const settings = { ...binding, shardSize: 4 };
+  const first = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  first.add([directBlock(0, 2, 11), directBlock(2, 0, 22)]);
+  const a = frame(first, [0, 0, 0, true, 0, 0]);
+  assert.equal(first.run(a, 1), 'deadline');
+  const firstResume = a.resume;
+  assert.notEqual(firstResume, 0);
+  assert.equal(a.states[1], 11);
+
+  const second = compileDirectJit.createSession(
+    { ...binding, shardSize: 4 },
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  second.add([directBlock(0, 2, 11), directBlock(2, 0, 22)]);
+  assert.equal(second.stats().artifactInstructionHits, 2);
+  const b = frame(second, [0, 0, 0, true, 0, 0]);
+  assert.equal(second.run(b, 1), 'deadline');
+
+  assert.equal(a.resume, firstResume, 'the peer did not retarget the suspended frame');
+  assert.equal(first.run(a, 2), 'deadline');
+  assert.equal(a.states[1], 22, 'the resumed suffix reached the next route');
+  assert.equal(a.states[2], 0);
+  assert.equal(a.time, 2);
+  assert.notEqual(a.resume, 0);
+  assert.notEqual(a.resume, firstResume, 'the next suspension gets a fresh local id');
+  assert.equal(b.states[1], 11);
+  assert.equal(b.states[2], 0, 'the peer frame stayed independent');
+  assert.notEqual(a.states, b.states);
+});
+
+test('artifact cache reuses shard sources and factories and stays bounded under overflow', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const batch = () => [
+    directBlock(0, 2, 1),
+    directBlock(2, 4, 2),
+    directBlock(4, 6, 3),
+    directBlock(6, 0, 4),
+  ];
+  const first = compileDirectJit.createSession(
+    { ...binding, shardSize: 2 },
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  first.add(batch());
+  const before = compileDirectJit.artifactCacheStats(artifact);
+  assert(before.createdFactories > 0);
+  assert.equal(before.reusedShardSources, 0);
+
+  const second = compileDirectJit.createSession(
+    { ...binding, shardSize: 2, states: new Map([...binding.states].reverse()) },
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  second.add(batch());
+  const after = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(after.createdFactories, before.createdFactories, 'no new Function on source hit');
+  assert(after.reusedShardSources > before.reusedShardSources);
+  assert.equal(
+    after.reusedFactories - before.reusedFactories,
+    after.reusedShardSources - before.reusedShardSources,
+  );
+  assert.equal(second.stats().artifactInstructionHits, 4);
+
+  const a = frame(first, [0, 0, 0, true, 0, 0]);
+  const b = frame(second, [0, 0, 0, true, 0, 0]);
+  assert.equal(first.run(a, 1), 'deadline');
+  assert.equal(second.run(b, 1), 'deadline');
+  assert.deepEqual(a.states, b.states);
+
+  const overflow = compileDirectJit.createArtifactCache();
+  for (let index = 0; index < 514; index++) {
+    const session = compileDirectJit.createSession(
+      { ...binding, shardSize: 1 },
+      compileDirectJit.createCache(),
+      overflow,
+    );
+    session.add([directBlock(0x400000 + 2 * index, 0, index)]);
+  }
+  const bounded = compileDirectJit.artifactCacheStats(overflow);
+  assert.equal(bounded.shardEntries, 512);
+  assert(bounded.sourceUnits > 0);
+  assert(bounded.evictions > 0);
+  const factories = bounded.createdFactories;
+  const reopened = compileDirectJit.createSession(
+    { ...binding, shardSize: 1 },
+    compileDirectJit.createCache(),
+    overflow,
+  );
+  reopened.add([directBlock(0x400000, 0, 0)]);
+  assert(
+    compileDirectJit.artifactCacheStats(overflow).createdFactories > factories,
+    'the evicted source compiles again',
+  );
+  const evicted = frame(reopened, [0x400000, 0, 0, true, 0, 0]);
+  assert.equal(reopened.run(evicted, 1), 'deadline');
+  assert.equal(evicted.states[1], 0);
+});
+
+test('artifact templates never share frames, dirty bits or memories between sessions', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const body = () => {
+    const b = builder();
+    b.write('x', b.constant(5));
+    b.operations.push({
+      kind: 'store8',
+      memory: ram,
+      offset: b.constant(0),
+      value: b.constant(9),
+    });
+    b.delay(1);
+    return b.instruction(0, 2);
+  };
+  const first = compileDirectJit.createSession(binding, compileDirectJit.createCache(), artifact);
+  const second = compileDirectJit.createSession(binding, compileDirectJit.createCache(), artifact);
+  first.add([body()]);
+  second.add([body()]);
+  assert.equal(second.stats().artifactInstructionHits, 1);
+  const a = frame(first);
+  const b = frame(second, [0, -1, 0, true, 0, 0], [1, 2, 3]);
+  assert.equal(first.run(a, 1), 'deadline');
+  assert.equal(a.states[1], 5);
+  assert.equal(a.memories[0][0], 9);
+  assert.equal(b.states[1], -1, 'the peer frame did not run');
+  assert.notEqual(a.states, b.states);
+  assert.notEqual(a.stateDirty, b.stateDirty);
+  assert.notEqual(a.memories, b.memories);
+  assert.notEqual(a.memories[0], b.memories[0]);
+
+  assert.equal(second.run(b, 1), 'deadline');
+  assert.equal(b.states[1], 5);
+  assert.equal(b.memories[0][0], 9);
+  a.states[1] = 77;
+  a.stateDirty = [0];
+  b.memories[0][0] = 1;
+  assert.equal(first.run(a, 2), 'untranslated');
+  assert.equal(a.states[1], 77, 'resuming one frame cannot replace its own snapshot');
+  assert.equal(a.memories[0][0], 9);
+  assert.equal(b.states[1], 5);
+  assert.equal(b.memories[0][0], 1);
+  assert.notEqual(b.resume, 0, 'the peer remains suspended');
+});
+
+test('clearArtifactCache invalidates reuse while live sessions keep running', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const first = compileDirectJit.createSession(binding, compileDirectJit.createCache(), artifact);
+  first.add([directBlock(0, 2, 33)]);
+  const before = compileDirectJit.artifactCacheStats(artifact);
+  const a = frame(first, [0, 0, 0, true, 0, 0]);
+  assert.equal(first.run(a, 1), 'deadline');
+  const resume = a.resume;
+
+  compileDirectJit.clearArtifactCache(artifact);
+  const cleared = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(cleared.clears, before.clears + 1);
+  assert.equal(cleared.instructionEntries, 0);
+  assert.equal(cleared.shardEntries, 0);
+  assert.equal(cleared.sourceUnits, 0);
+
+  const second = compileDirectJit.createSession(binding, compileDirectJit.createCache(), artifact);
+  second.add([directBlock(0, 2, 33)]);
+  const after = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(after.reusedInstructions, before.reusedInstructions, 'no reuse after clear');
+  assert.equal(second.stats().artifactInstructionHits, 0);
+  assert.equal(after.compiledInstructions, before.compiledInstructions + 1);
+  assert(after.createdFactories > before.createdFactories, 'shard factories were dropped too');
+  const b = frame(second, [0, 0, 0, true, 0, 0]);
+  assert.equal(second.run(b, 1), 'deadline');
+  assert.equal(b.states[1], 33);
+
+  assert.equal(a.resume, resume);
+  assert.equal(first.run(a, 2), 'untranslated');
+  assert.equal(a.states[1], 33, 'the live session still owns its compiled body');
+});
+
+test('marked spans and loops install and resume with the artifact cache', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const settings = optimizedBinding();
+  const members = [nopInstruction(0, 2, 2), nopInstruction(2, 4, 2), storeInstruction(4, 6, 42, 5)];
+  const span = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  span.add([spanMarked(members[0], [0, 2, 4]), members[1], members[2]]);
+  assert.equal(span.stats().spansInstalled, 1);
+
+  const frame = bankFrame(span, [0, 1, 0, true, 0, 0], [[0]], true);
+  assert.equal(span.run(frame, 5), 'deadline');
+  assert.equal(frame.states[1], 42, 'the fused terminal write is visible');
+  assert.notEqual(frame.resume, 0, 'the terminal suffix suspended');
+  assert.equal(frame.time, 5);
+  assert.equal(frame.directMetrics.spanRuns, 1);
+
+  assert.equal(span.run(frame, 10), 'untranslated');
+  assert.equal(frame.states[1], 42);
+  assert.equal(frame.resume, 0, 'the resumed terminal suffix completed');
+  assert.equal(frame.time, 9);
+
+  const loop = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  loop.add([loopMarked(spinInstruction(0, 1, 10), { kind: 'spin' })]);
+  assert.equal(loop.stats().loopsInstalled, 1);
+  const folded = bankFrame(loop, [0, 0, 0, true, 0, 0], [[0, 0, 0]], true);
+  assert.equal(loop.run(folded, 100), 'deadline');
+  assert.equal(folded.time, 100);
+  assert.equal(folded.directMetrics.loopRounds, 9);
+});
+
+/** Distinct CT107D-sized instruction body; the immediate keeps every template different. */
+function firmwareInstruction(index, count, duration = 1) {
+  const pc = 0x10000 + 2 * index;
+  const nextPc = index === count - 1 ? 0 : pc + 2;
+  const b = builder();
+  b.write('x', b.constant(index));
+  b.delay(duration);
+  return b.instruction(pc, nextPc);
+}
+
+test('artifact limits retain a 700-route firmware across a second board', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const count = 700;
+  const settings = { ...binding, shardSize: 32 };
+  const first = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  const firmware = Array.from({ length: count }, (_, index) => firmwareInstruction(index, count));
+  first.add(firmware);
+
+  const populated = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(populated.compiledInstructions, count);
+  assert.equal(populated.instructionEntries, count);
+  assert.equal(populated.evictions, 0, 'the firmware set fits without eviction');
+  assert(populated.sourceUnits > 0);
+
+  const factories = populated.createdFactories;
+  const second = compileDirectJit.createSession(
+    { ...binding, shardSize: 32, states: new Map([...binding.states].reverse()) },
+    compileDirectJit.createCache(),
+    artifact,
+  );
+  const sources = captureFactories(() =>
+    second.add(Array.from({ length: count }, (_, index) => firmwareInstruction(index, count))),
+  );
+  const reopened = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(second.stats().artifactInstructionHits, count);
+  assert.equal(second.stats().artifactInstructionMisses, 0);
+  assert.equal(reopened.compiledInstructions, count);
+  assert.equal(reopened.reusedInstructions, count);
+  assert.equal(reopened.createdFactories, factories, 'no shard factory reconstruction');
+  assert.equal(sources.length, 0, 'no new Function for reused firmware templates or shards');
+
+  const f = frame(second, [0x10000, -1, 0, true, 0, 0]);
+  assert.equal(second.run(f, 1), 'deadline');
+  assert.equal(f.states[1], 0, 'the first reused firmware body executed');
+});
+
+test('artifact instruction LRU still evicts beyond the firmware-sized cap', () => {
+  const artifact = compileDirectJit.createArtifactCache();
+  const count = 2049;
+  const settings = { ...binding, shardSize: 64 };
+  const first = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  first.add(Array.from({ length: count }, (_, index) => firmwareInstruction(index, count, 0)));
+
+  const populated = compileDirectJit.artifactCacheStats(artifact);
+  assert.equal(populated.compiledInstructions, count);
+  assert.equal(populated.instructionEntries, 2048);
+  assert(populated.evictions > 0);
+
+  const oldest = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  oldest.add([firmwareInstruction(0, count, 0)]);
+  assert.equal(oldest.stats().artifactInstructionHits, 0, 'the oldest template was evicted');
+  assert.equal(oldest.stats().artifactInstructionMisses, 1);
+
+  const newest = compileDirectJit.createSession(settings, compileDirectJit.createCache(), artifact);
+  newest.add([firmwareInstruction(count - 1, count, 0)]);
+  assert.equal(newest.stats().artifactInstructionHits, 1, 'the newest template remains resident');
 });

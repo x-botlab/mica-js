@@ -5,7 +5,12 @@ import type { ElectricalPin, ResistorBranch } from '../electrical';
 import { Fifo } from '../queue';
 import { body, computation, resumable, synchronousBody } from './execution';
 import { acceptSync, electricalNumber, ElectricalParameterError } from './errors';
-import { disposeDirect, invalidateDirect } from './jit';
+import {
+  clearPromotions,
+  disposeDirect,
+  invalidateDirect,
+  resolveDirectArtifactCache,
+} from './jit';
 import type {
   Channel,
   Decl,
@@ -815,6 +820,8 @@ export class Instance {
         jit.cache.clear();
         jit.cacheMemories.clear();
         jit.revision++;
+        // Promotion counts and routes belong to the replaced code generation.
+        clearPromotions(jit);
         // Bodies in the shared compiler cache were emitted from the replaced bytes.
         invalidateDirect(jit, true);
       } else if (jit.cacheMemories.has(name)) {
@@ -1167,6 +1174,103 @@ export class Instance {
     }
     queue.push({ time: this.board.time, value: captured });
   }
+  private bindingObject(
+    value: unknown,
+    fields: readonly string[],
+    message: string,
+  ): Record<string, unknown> {
+    try {
+      dataObject(value, fields);
+    } catch {
+      throw this.board.error('INVALID_BINDING', message, this);
+    }
+    return value as Record<string, unknown>;
+  }
+  private captureDirectTiming(
+    value: unknown,
+    functions?: ReadonlyMap<string, Decl<'function'>>,
+  ): NonNullable<JitOptions['directTiming']> {
+    const input = this.bindingObject(value, ['service', 'blocked'], 'Invalid directTiming');
+    let service: { readonly elapsed: string; readonly deadline: string } | undefined;
+    if (Object.hasOwn(input, 'service')) {
+      const raw = this.bindingObject(
+        input.service,
+        ['elapsed', 'deadline'],
+        'Invalid directTiming service',
+      );
+      if (!Object.hasOwn(raw, 'elapsed') || !Object.hasOwn(raw, 'deadline'))
+        throw this.board.error('INVALID_BINDING', 'directTiming service is incomplete', this);
+      const elapsed = raw.elapsed;
+      const deadline = raw.deadline;
+      if (
+        typeof elapsed !== 'string' ||
+        elapsed.length === 0 ||
+        typeof deadline !== 'string' ||
+        deadline.length === 0
+      )
+        throw this.board.error('INVALID_BINDING', 'Invalid directTiming service states', this);
+      for (const name of [elapsed, deadline]) {
+        const declaration = this.declarations.get(name);
+        if (declaration?.kind !== 'state' || declaration.type.kind !== 'number')
+          throw this.board.error(
+            'INVALID_BINDING',
+            'directTiming service must name number states',
+            this,
+          );
+      }
+      service = Object.freeze({ elapsed, deadline });
+    }
+    if (Object.hasOwn(input, 'blocked') && service === undefined)
+      throw this.board.error('INVALID_BINDING', 'directTiming blocked requires service', this);
+    let blocked: string | undefined;
+    if (Object.hasOwn(input, 'blocked')) {
+      const name = input.blocked;
+      if (typeof name !== 'string' || name.length === 0)
+        throw this.board.error('INVALID_BINDING', 'Invalid directTiming blocked function', this);
+      const declaration = functions?.get(name) ?? this.declarations.get(name);
+      if (
+        declaration?.kind !== 'function' ||
+        declaration.pure !== true ||
+        declaration.params.length !== 0 ||
+        declaration.returns?.kind !== 'bool'
+      )
+        throw this.board.error('INVALID_BINDING', 'Invalid directTiming blocked function', this);
+      blocked = name;
+    }
+    return Object.freeze({
+      ...(service === undefined ? {} : { service }),
+      ...(blocked === undefined ? {} : { blocked }),
+    });
+  }
+  private captureTranslationIdentity(
+    value: unknown,
+  ): NonNullable<JitOptions['translationIdentity']> {
+    const input = this.bindingObject(
+      value,
+      ['abi', 'configuration'],
+      'Invalid translationIdentity',
+    );
+    if (
+      !Object.hasOwn(input, 'abi') ||
+      !Object.hasOwn(input, 'configuration') ||
+      typeof input.abi !== 'string' ||
+      input.abi.length === 0 ||
+      typeof input.configuration !== 'string' ||
+      input.configuration.length === 0
+    )
+      throw this.board.error('INVALID_BINDING', 'Invalid translationIdentity', this);
+    return Object.freeze({ abi: input.abi, configuration: input.configuration });
+  }
+  private captureDirectTier(value: unknown): NonNullable<JitOptions['directTier']> {
+    const input = this.bindingObject(value, ['promoteAfter'], 'Invalid directTier');
+    if (
+      !Object.hasOwn(input, 'promoteAfter') ||
+      !Number.isSafeInteger(input.promoteAfter) ||
+      (input.promoteAfter as number) <= 0
+    )
+      throw this.board.error('INVALID_BINDING', 'Invalid directTier promoteAfter', this);
+    return Object.freeze({ promoteAfter: input.promoteAfter as number });
+  }
   private captureCodeRegions(options: JitOptions): {
     readonly all: readonly JitCodeRegion[];
     readonly additional: readonly JitCodeRegion[];
@@ -1329,7 +1433,11 @@ export class Instance {
       'beforeInstruction',
       'polling',
       'delays',
+      'directTiming',
       'shareDirectBodies',
+      'shareDirectArtifacts',
+      'translationIdentity',
+      'directTier',
       'translate',
     ]);
     identity(options.entry);
@@ -1381,6 +1489,11 @@ export class Instance {
       typeof options.shareDirectBodies !== 'boolean'
     )
       throw new TypeError('shareDirectBodies must be a boolean');
+    if (
+      Object.hasOwn(options, 'shareDirectArtifacts') &&
+      typeof options.shareDirectArtifacts !== 'boolean'
+    )
+      throw new TypeError('shareDirectArtifacts must be a boolean');
     const metadata = Object.hasOwn(options, 'codeMetadata')
       ? {
           regions: new Map(
@@ -1424,6 +1537,16 @@ export class Instance {
         },
       };
     }
+    const directTiming = Object.hasOwn(options, 'directTiming')
+      ? this.captureDirectTiming(options.directTiming, functions)
+      : undefined;
+    const translationIdentity = Object.hasOwn(options, 'translationIdentity')
+      ? this.captureTranslationIdentity(options.translationIdentity)
+      : undefined;
+    const directTier = Object.hasOwn(options, 'directTier')
+      ? this.captureDirectTier(options.directTier)
+      : undefined;
+    const artifactCache = resolveDirectArtifactCache(options.shareDirectArtifacts);
     const jit: Jit = {
       instance: this,
       model,
@@ -1435,10 +1558,14 @@ export class Instance {
         ...(options.beforeInstruction
           ? { beforeInstruction: Object.freeze({ ...options.beforeInstruction }) }
           : {}),
+        ...(directTiming === undefined ? {} : { directTiming }),
+        ...(translationIdentity === undefined ? {} : { translationIdentity }),
+        ...(directTier === undefined ? {} : { directTier }),
       }),
       codeRegions: codeRegions.all,
       cache: new Map(),
       cacheMemories: new Set(),
+      promotions: new Map(),
       metadata,
       polling,
       delays: options.delays ?? new Map(),
@@ -1448,6 +1575,7 @@ export class Instance {
       directMemoryGuards: new Set(),
       directHookReads: new Set(),
       directMemories: new Set(),
+      artifactCache,
       direct: undefined,
       directSkip: undefined,
       directStale: false,
@@ -1465,6 +1593,7 @@ export class Instance {
       stopped: false,
       queued: false,
       execution: undefined,
+      genericInstruction: undefined,
     };
     this.jits.push(jit);
     this.board.jits.push(jit);

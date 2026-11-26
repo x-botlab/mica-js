@@ -1,6 +1,7 @@
 import type { DeclarationIR, DeviceIR, RegionIR } from '@mica-js/device-model';
 import type {
   CompiledBody,
+  DirectJitArtifactCache,
   DirectJitFrame,
   DirectJitSession,
   DirectJitShareCandidate,
@@ -20,6 +21,7 @@ import type {
   JitCodeChange,
   JitCodeRegion,
   JitDelay,
+  JitLoopCandidate,
   JitOptions,
   JitPolling,
 } from '../types';
@@ -124,7 +126,6 @@ export interface JitInstruction {
   readonly pc: number;
   readonly nextPc: number;
   readonly body: RegionIR;
-  readonly execute: CompiledBody;
   readonly polling: boolean;
   /** 该 instruction 的代码 region；服务 PC 回退主 code 时为 undefined。 */
   readonly codeRegion: JitCodeRegion | undefined;
@@ -132,6 +133,25 @@ export interface JitInstruction {
   readonly codeVersion: number;
   /** 通过运行时校验的 Direct 指令体共享候选。 */
   readonly share?: DirectJitShareCandidate;
+  /** 通过运行时校验的 Direct 合块候选。 */
+  readonly span?: {
+    readonly pcs: readonly number[];
+  };
+  /** 通过运行时校验的 Direct 折叠循环候选。 */
+  readonly loop?: JitLoopCandidate;
+  /** 首次通用执行时编译并缓存的共享体；Direct 路径不读取。 */
+  execute?: CompiledBody;
+}
+/**
+ * Per-PC two-tier promotion record. It belongs to one JIT (and therefore one instance):
+ * counts only successful generic completions and remembers the exact translation identity.
+ */
+export interface DirectPromotion {
+  count: number;
+  state: 'generic' | 'promoted';
+  body: RegionIR;
+  nextPc: number;
+  codeVersion: number;
 }
 /** Validated polling declaration minus its PC key. */
 export type JitPollingBinding = Omit<JitPolling, 'pc'>;
@@ -188,6 +208,11 @@ export interface Jit {
   readonly cache: Map<number, JitInstruction>;
   /** 当前 cache 中拥有 instruction 的代码 memory；用于跳过无关数据写。 */
   readonly cacheMemories: Set<string>;
+  /**
+   * 两级 Direct 晋升记录，按逻辑 PC 保存；未设置 `directTier` 时始终为空。
+   * 计数和身份只在当前实例内有效，不进入共享工件缓存。
+   */
+  readonly promotions: Map<number, DirectPromotion>;
   readonly polling: ReadonlyMap<number, JitPollingBinding>;
   /** 仅 codeMetadata provider 模式存在；静态路径为 undefined。 */
   readonly metadata: JitMetadataState | undefined;
@@ -200,6 +225,8 @@ export interface Jit {
   readonly directHookReads: Set<ResourceSlot>;
   /** Memories that currently supply at least one direct-admitted instruction. */
   readonly directMemories: Set<string>;
+  /** 本注册选择的 Direct 编译器工件缓存；默认独立，显式共享时指向进程级缓存。 */
+  readonly artifactCache: DirectJitArtifactCache;
   /** Opaque compiler-owned incremental body cache; initialized on the first build. */
   directCache?: DirectJitCache;
   /** Bank names and maps are stable for the lifetime of a JIT. */
@@ -229,6 +256,8 @@ export interface Jit {
   stopped: boolean;
   queued: boolean;
   execution: Execution | undefined;
+  /** 拥有 `execution` 的通用指令；`beforeInstruction` 钩子执行时为 undefined。 */
+  genericInstruction: JitInstruction | undefined;
   predicate?: string;
   dependencies?: Dependencies;
 }

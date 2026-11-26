@@ -28,7 +28,9 @@ import type {
 import { BuildError, fail, snapshot } from './errors.js';
 import { builtins, binary, loads, numeric, operation, stores, unary } from './schema.js';
 import type { Node } from './schema.js';
+import { sameIR } from './structure.js';
 import {
+  canonicalDeviceIR,
   indexedDeclarations,
   sameType,
   validateBlockIR,
@@ -1651,22 +1653,48 @@ export function createDeviceBuilder(options: NamedOptions): DeviceBuilder {
     }),
   );
 }
+type JitFunctionTable = readonly Extract<DeclarationIR, { kind: 'function' }>[];
+/**
+ * 进程级规范函数表：同一器件上结构相同的表复用同一个冻结数组，供下游按数组身份
+ * 缓存绑定。每个器件最多保留 8 种结构变体，避免长寿命进程无限增长；空表保持
+ * 原有行为，每次返回新的冻结数组。
+ */
+const JIT_TABLE_LIMIT = 8;
+const canonicalJitTables = new WeakMap<DeviceIR, JitFunctionTable[]>();
+
+function canonicalJitFunctions(device: DeviceIR, table: JitFunctionTable): JitFunctionTable {
+  if (!table.length) return table;
+  const identity = canonicalDeviceIR(device);
+  let tables = canonicalJitTables.get(identity);
+  if (tables === undefined) {
+    tables = [];
+    canonicalJitTables.set(identity, tables);
+  }
+  for (const existing of tables) if (sameIR(existing, table)) return existing;
+  tables.push(table);
+  if (tables.length > JIT_TABLE_LIMIT) tables.shift();
+  return table;
+}
+
 /** Emit functions in the adapter's own Builder realm; attachJit validates the resulting IR. */
 export function buildJitFunctions(
   device: DeviceIR,
   emit: (builder: JitFunctionBuilder) => void,
-): readonly Extract<DeclarationIR, { kind: 'function' }>[] {
+): JitFunctionTable {
   const root = new Root(device, device);
   const builder = deviceView(root);
   try {
     emit(Object.freeze({ fn: builder.fn, pureFn: builder.pureFn }));
     root.check();
     root.resolve();
-    return snapshot(
-      root.declarations.slice(device.declarations.length) as Extract<
-        DeclarationIR,
-        { kind: 'function' }
-      >[],
+    return canonicalJitFunctions(
+      device,
+      snapshot(
+        root.declarations.slice(device.declarations.length) as Extract<
+          DeclarationIR,
+          { kind: 'function' }
+        >[],
+      ),
     );
   } finally {
     root.closed = true;

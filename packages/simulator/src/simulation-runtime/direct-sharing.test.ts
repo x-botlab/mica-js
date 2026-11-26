@@ -209,7 +209,7 @@ describe('direct JIT body sharing', () => {
       expect(stats.directShareReusedRoutes).toBe(0);
       expect(stats.directShareRejected).toEqual(zeroShareRejected());
       expect(stats.directShareMarkRejected).toEqual(zeroMarkRejected());
-      expect(stats.directBodyBytes).toBeGreaterThan(0);
+      expect(stats.directBodyBytes + stats.directArtifactInstructionHits).toBeGreaterThan(0);
       expect(log).toHaveLength(2);
       expect(log.every((item) => !item.marked)).toBe(true);
       for (const pc of [0, ALIAS]) expect(harness.jit.cache.get(pc)?.share).toBeUndefined();
