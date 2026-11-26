@@ -77,9 +77,7 @@ describe('simulation runtime RPC guest', () => {
     topicPublishes.length = 0;
     await api.tick(timePs(10_000));
     await topicApi.flushPublishes();
-    await waitFor(
-      () => primaryPublishes.some((publish) => publish.target.port === 'state'),
-    );
+    await waitFor(() => primaryPublishes.some((publish) => publish.target.port === 'state'));
     expect(primaryPublishes.find((publish) => publish.target.port === 'state')?.payload).toBe(true);
     expect(topicPublishes.some((publish) => publish.target.port === 'state')).toBe(true);
 
