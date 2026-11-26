@@ -2,7 +2,7 @@ import type { DeclarationIR, DeviceIR, RegionIR } from '@mica-js/device-model';
 import type {
   CompiledBody,
   DirectJitFrame,
-  DirectJitProgram,
+  DirectJitSession,
   ExecutionSignal,
   ExecutionHost,
   ReactionFrame,
@@ -131,9 +131,10 @@ export interface JitInstruction {
 /** Validated polling declaration minus its PC key. */
 export type JitPollingBinding = Omit<JitPolling, 'pc'>;
 export interface DirectExecution {
-  readonly program: DirectJitProgram;
+  /** Fixed dispatcher plus incrementally installed instruction routes. */
+  readonly session: DirectJitSession;
   readonly frame: DirectJitFrame;
-  /** PCs the current program compiled; a PC outside it needs the interpreter. */
+  /** Current session routes; rebuilt per access, so use it only for diagnostics. */
   readonly pcs: ReadonlySet<number>;
 }
 /** Immutable bank layout shared by every direct program built for one JIT. */
@@ -188,21 +189,25 @@ export interface Jit {
   /** Validated delay-loop descriptors, keyed by loop-head PC. */
   readonly delays: ReadonlyMap<number, JitDelay>;
   revision: number;
-  directRevision: number;
   directObserverRevision: number;
   readonly directStateGuards: Set<string>;
   readonly directMemoryGuards: Set<string>;
   readonly directHookReads: Set<ResourceSlot>;
-  readonly directPrograms: Map<string, DirectExecution | undefined>;
-  directProgramRevision: number;
+  /** Memories that currently supply at least one direct-admitted instruction. */
+  readonly directMemories: Set<string>;
   /** Opaque compiler-owned incremental body cache; initialized on the first build. */
   directCache?: DirectJitCache;
   /** Bank names and maps are stable for the lifetime of a JIT. */
   directLayout?: DirectJitLayout;
   direct: DirectExecution | undefined;
   directSkip: number | undefined;
-  /** Uncovered dispatches per translated PC since the last direct program build. */
-  readonly directMisses: Map<number, number>;
+  /**
+   * The active session must not accept new routes or start another instruction. A
+   * suspended old suffix still owns its frame until it completes once.
+   */
+  directStale: boolean;
+  /** The compiler body cache belongs to replaced code bytes and must be dropped first. */
+  directCacheInvalid: boolean;
   pollReads: Dependencies | undefined;
   currentPc: number | undefined;
   automaticPolling: boolean;

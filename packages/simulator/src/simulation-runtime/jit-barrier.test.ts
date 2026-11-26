@@ -17,7 +17,7 @@ import type { JitTranslate } from '../types';
  *
  * 断言是两条独立性质：
  * - 十个组合轮流出现、`observerRevision` 持续推进时，`directCompiles` 不再增长，且
- *   `directPrograms` 只有一份程序；
+ *   固定派发器只创建一次；
  * - 同一份程序里，被观察写入的块也直接执行，观察者仍按指令边界收到每次更新。
  */
 
@@ -140,8 +140,9 @@ describe('direct JIT dynamic write publication', () => {
       const compiles = stats!.directCompiles;
       const calls = stats!.directCalls;
       const fallbacks = stats!.directFallbacks;
-      expect(compiles).toBeGreaterThan(0);
-      expect(jit.directPrograms.size).toBe(1);
+      expect(compiles).toBe(1);
+      const session = jit.direct!.session;
+      expect(stats!.directSessions).toBe(1);
 
       const guards = (): string => [...jit.directStateGuards].sort().join(',');
       const observerBefore = instance.observerRevision;
@@ -161,7 +162,7 @@ describe('direct JIT dynamic write publication', () => {
       expect(instance.observerRevision).toBeGreaterThan(observerBefore);
       // 而程序没有被重编译：写入栅栏是运行期判定的。
       expect(stats!.directCompiles).toBe(compiles);
-      expect(jit.directPrograms.size).toBe(1);
+      expect(jit.direct!.session).toBe(session);
       // 观察者只影响写入点的动态发布，不再让被观察的块在入口回退。
       expect(stats!.directFallbacks).toBe(fallbacks);
       expect(stats!.directCalls).toBeGreaterThan(calls);

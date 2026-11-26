@@ -151,7 +151,7 @@ pnpm --filter @mica-js/simulator bench:mcu:stm32 --workload=mixed --execution=pr
 
 固件覆盖整数/条件分支、RAM 搬运、GPIO 翻转、SysTick 中断、混合执行和大循环压力；源码与已编译字节保存在 [firmware/](bench/stm32g431/firmware/)。运行基准使用仓库中的字节夹具，再生成固件使用 Clang/LLVM ARM 工具链。默认每周期 10,000 ps；简化周期表采用 ALU 1、访存 2、跳转成功 3、条件未成立 1、栈操作寄存器数加 1、异常进入与返回各 12 周期。由此得到的周期吞吐描述该模型的执行进度。
 
-`stress` 固件的主循环展开 314 条不同 PC 的真实 Thumb 指令，单体生成时 `run` 达到十余万字节码偏移，适用于评估单函数体积、常量数组和 keyed access 的影响。direct 程序超过 8 条指令时，运行时会生成 `stepShardN` 分片函数：分片按「局部槽预算」分组（默认 1536 个槽、最多 8 条一组），让单个生成函数保持在 V8 可优化的规模内，超大指令体单独成片；更小的程序继续使用单体函数。真实 `stress` 中 `run` 现已进入 TurboFan，分片函数保持 Maglev；同机多次测量中位数约为 200ms → 175–190ms 量级（每轮 4 次 20k 周期采样，宿主调度仍有波动）。V8 层验证可单独运行：
+`stress` 固件的主循环展开 314 条不同 PC 的真实 Thumb 指令，单体生成时 `run` 达到十余万字节码偏移，适用于评估单函数体积、常量数组和 keyed access 的影响。运行时为每个 JIT 安装一个固定派发器，再按翻译批次把准入指令追加到 `stepShardN` 分片：分片默认 32 条一组并受源码预算约束，超大指令体单独成片，封存分片在后续追加时复用。真实 `stress` 中分片函数均进入 TurboFan；同机多次测量中位数约为 200ms → 175–190ms 量级（每轮 4 次 20k 周期采样，宿主调度仍有波动）。V8 层验证可单独运行：
 
 ```powershell
 pnpm --filter @mica-js/simulator bench:mcu:stm32:v8 -- stress 200000
@@ -261,7 +261,7 @@ node --test packages\simulator\bench\camera-mcu.test.mjs
 第 5 轮把过程体变成显式 `pc` 的普通函数后，过程体内的每个资源操作仍按“名字 → Map → 槽位”解析；电气发布也仍要先收集脏槽、再由通用求解器重新匹配叶计划。本轮做两件互不依赖的事：把固定资源名预绑定为**每实例句柄**，以及给已准入的叶批次一条**发布快速路径**并预绑定每个叶形状的提交载荷。
 
 - **每实例资源绑定**：`compileResumableBody` 新增 `bindResources` 选项，`Instance` 实现 `ExecutionHost.bind(specs)`；生成的过程体在帧上第一次执行时调用一次 `host.bind([...])`，之后每个操作直接调用句柄方法（`state.read/write`、`pin.sample/intent/resistor`、`memory.load8/16le/16be/32le/32be`、`store*`、`length`、`copy`）。句柄缓存挂在 `Instance` 上，绑定表挂在每个过程的帧上，因此**同一份共享程序文本对每个实例各自绑定**，不会把一个实例的 RAM/pin/state 带进另一个实例。
-- **语义逐条等价**：句柄方法就是通用 host 操作的复刻，名字解析保持惰性（非法名仍在同一操作处报错）；state 读取仍记录依赖槽与版本、写入仍先校验再 `snapshot` 再 `invalidate`；`pin.sample()` 每次返回**当前**已发布样本，绝不缓存一次样本快照；`intent` 仍对同一不可变 intent 直接返回、只把改变过的槽标脏；`resistor` 仍做 [0.001, 1e9] 校验并复用同一 intent 缓存；`store*` 仍做整数校验、边界检查与端序写入，并仍走 `memoryChangedSlot`——代码内存写入照旧 `cache.clear()`、递增 `revision`、清空 `directPrograms` 并作废 direct 程序。资源实参（`pin`/`memory` 形参）不绑定，仍走通用 `host.load/store/sample`。
+- **语义逐条等价**：句柄方法就是通用 host 操作的复刻，名字解析保持惰性（非法名仍在同一操作处报错）；state 读取仍记录依赖槽与版本、写入仍先校验再 `snapshot` 再 `invalidate`；`pin.sample()` 每次返回**当前**已发布样本，绝不缓存一次样本快照；`intent` 仍对同一不可变 intent 直接返回、只把改变过的槽标脏；`resistor` 仍做 [0.001, 1e9] 校验并复用同一 intent 缓存；`store*` 仍做整数校验、边界检查与端序写入，并仍走 `memoryChangedSlot`——代码内存写入照旧 `cache.clear()`、递增 `revision`，并作废 Direct 会话；挂起中的旧后缀只完成一次，随后按新版本重建固定派发器。资源实参（`pin`/`memory` 形参）不绑定，仍走通用 `host.load/store/sample`。
 - **预绑定叶计划载荷**：叶形状被通用路径证明并准入时，同时绑定该引脚的节点、节点上的引脚列表与每个引脚在该目标电压下的不可变样本；复放一次切换只比较当前样本对象身份（守卫仍要求单支路、新旧目标均为固定参考、引脚节点仍是未知叶），不再逐次重算电压、电平或规范样本。
 - **`solveSlots` 发布快速路径**：单个脏槽以槽号保存，第二个不同槽才启用去重集合。单槽命中已准入叶计划后，直接按板序提交该节点上的样本，省去批次缓冲与排序；多槽仍先校验整批再原子提交。任一未命中回到原求解器重新匹配并校验。对于 `Iterable<number>` 入参，只有已知可重复迭代的输入（`Set`、数组、类型化数组）可以“先探测再回放”；其它 `Iterable`（例如一次性 generator）**只消费一次**并物化为数组，探测与回退都读这份数组。
 - **发布仍走原有 invalidate 语义**：电气求解提交样本后，每个变化的 sample 槽照旧 `version++` 并按订阅集合把接收者放入 `ActivationQueue`；没有绕过槽失效、直接唤醒观察的另一条路径。未订阅该槽的 derived 缓存和 JIT 依赖守卫都靠这个版本递增重新校验。
