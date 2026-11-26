@@ -3214,8 +3214,12 @@ class DirectJitSessionImpl implements DirectJitSession {
   private readonly owners = new Map<number, ResidentShard>();
   /** Shared bodies and their live route membership, reclassified only on commits. */
   private readonly sharedVariants: SharedVariant[] = [];
+  private readonly variantsByKey = new Map<string, SharedVariant[]>();
   private readonly sharedRoutes = new Map<number, SharedRoute>();
   private readonly shareStates = new Map<number, ShareCategory>();
+  /** Current valid share marker index, used to recompute only affected physical keys. */
+  private readonly candidateKeys = new Map<number, string>();
+  private readonly candidatesByKey = new Map<string, Set<number>>();
   private readonly shareRejected: { -readonly [K in keyof DirectJitShareRejectedStats]: number } = {
     missing: 0,
     invalid: 0,
@@ -3247,7 +3251,7 @@ class DirectJitSessionImpl implements DirectJitSession {
   private delays: ReadonlyMap<number, DirectJitDelay> | undefined;
   private compileBinding: DirectJitBinding;
   private localSlots = 0;
-  private sessionPcs: readonly number[] = Object.freeze([]);
+  private sessionPcs: readonly number[] | undefined = Object.freeze([]);
   private emitStatsValue: DirectJitEmitStats = emitStats([]);
   private closed = false;
   private readonly runFunction: SessionDispatcher;
@@ -3294,6 +3298,8 @@ class DirectJitSessionImpl implements DirectJitSession {
   }
 
   get pcs(): readonly number[] {
+    if (this.sessionPcs === undefined)
+      this.sessionPcs = Object.freeze([...this.routes.keys()].sort((a, b) => a - b));
     return this.sessionPcs;
   }
 
@@ -3434,8 +3440,11 @@ class DirectJitSessionImpl implements DirectJitSession {
     this.isolated.clear();
     this.owners.clear();
     this.sharedVariants.length = 0;
+    this.variantsByKey.clear();
     this.sharedRoutes.clear();
     this.shareStates.clear();
+    this.candidateKeys.clear();
+    this.candidatesByKey.clear();
     this.nextSharedVariant = 1;
     this.state.entries.clear();
     this.state.constants.length = 0;
@@ -3452,7 +3461,7 @@ class DirectJitSessionImpl implements DirectJitSession {
 
   stats(): DirectJitSessionStats {
     let candidates = 0;
-    for (const record of this.state.entries.values()) if (record.share !== undefined) candidates++;
+    for (const pcs of this.candidatesByKey.values()) candidates += pcs.size;
     let groups = 0;
     for (const variant of this.sharedVariants)
       if (variant.functions !== undefined && variant.entries.size > 0) groups++;
@@ -3491,8 +3500,11 @@ class DirectJitSessionImpl implements DirectJitSession {
     this.isolated.clear();
     this.owners.clear();
     this.sharedVariants.length = 0;
+    this.variantsByKey.clear();
     this.sharedRoutes.clear();
     this.shareStates.clear();
+    this.candidateKeys.clear();
+    this.candidatesByKey.clear();
     this.refreshPcs();
     if (directJitSessions.get(this.cache) === this) directJitSessions.delete(this.cache);
   }
@@ -3650,6 +3662,7 @@ class DirectJitSessionImpl implements DirectJitSession {
           this.state.stats.invalidatedBlocks++;
           this.counters.invalidatedBlocks++;
         }
+        this.indexShareCandidate(change.pc);
         continue;
       }
       const record = change.record!;
@@ -3662,65 +3675,140 @@ class DirectJitSessionImpl implements DirectJitSession {
         this.state.stats.compiledBlocks++;
         this.counters.compiledBlocks++;
         if (record.instruction !== undefined) this.counters.bodyBytes += record.instruction.size;
+        this.indexShareCandidate(change.pc);
       } else {
         this.state.stats.reusedBlocks++;
         this.counters.reusedBlocks++;
-        if (change.metadataOnly) this.state.entries.set(change.pc, record);
+        if (change.metadataOnly) {
+          this.state.entries.set(change.pc, record);
+          this.indexShareCandidate(change.pc);
+        }
       }
     }
   }
 
+  /** Keep the per-key candidate index in step with one cache record. */
+  private indexShareCandidate(pc: number): void {
+    const record = this.state.entries.get(pc);
+    const key = record?.share === undefined ? undefined : shareKeyText(record.share);
+    const previous = this.candidateKeys.get(pc);
+    if (previous === key) return;
+    if (previous !== undefined) {
+      const candidates = this.candidatesByKey.get(previous);
+      if (candidates !== undefined) {
+        candidates.delete(pc);
+        if (!candidates.size) this.candidatesByKey.delete(previous);
+      }
+      this.candidateKeys.delete(pc);
+    }
+    if (key !== undefined) {
+      let candidates = this.candidatesByKey.get(key);
+      if (candidates === undefined) {
+        candidates = new Set();
+        this.candidatesByKey.set(key, candidates);
+      }
+      candidates.add(pc);
+      this.candidateKeys.set(pc, key);
+    }
+  }
+
+  private rebuildCandidateIndex(): void {
+    this.candidateKeys.clear();
+    this.candidatesByKey.clear();
+    for (const pc of this.state.entries.keys()) this.indexShareCandidate(pc);
+  }
+
   private commitChanges(staged: ReadonlyMap<number, StagedChange>, sharingTouched: boolean): void {
-    const sharing = sharingTouched || this.shareStates.size > 0 || this.sharedRoutes.size > 0;
+    const affectedKeys = new Set<string>();
+    for (const pc of staged.keys()) {
+      const key = this.candidateKeys.get(pc);
+      if (key !== undefined) affectedKeys.add(key);
+    }
     this.applyEntryChanges(staged);
-    if (sharing) this.reconcileSharedLayout();
-    else this.applyShardChanges(staged);
+    for (const pc of staged.keys()) {
+      const key = this.candidateKeys.get(pc);
+      if (key !== undefined) affectedKeys.add(key);
+    }
+
+    const sharing =
+      sharingTouched ||
+      affectedKeys.size > 0 ||
+      this.shareStates.size > 0 ||
+      this.sharedRoutes.size > 0;
+    if (!sharing) {
+      this.applyShardChanges(staged);
+      this.refreshEmitStats();
+      return;
+    }
+
+    const layoutPcs = new Set<number>(staged.keys());
+    for (const key of affectedKeys) {
+      const candidates = this.candidatesByKey.get(key);
+      if (candidates === undefined) continue;
+      for (const pc of candidates) layoutPcs.add(pc);
+    }
+    const previousRoutes = new Map<number, SessionRoute | undefined>();
+    for (const pc of layoutPcs) previousRoutes.set(pc, this.routes.get(pc));
+
+    this.reconcileSharedLayout(affectedKeys, new Set(staged.keys()));
+    this.applyIncrementalSharedLayout(staged, layoutPcs, previousRoutes);
     this.refreshEmitStats();
   }
 
   /**
-   * Recompute equivalence groups over the current valid candidates. The comparison runs only
-   * here, on `add`/`remove`/`updateDelays`, never in `run`. Existing variants are matched by
-   * key, delay and structural IR so an equivalent body is emitted once for the lifetime of
-   * the session; archived variants keep their resume identifiers for suspended frames.
+   * Recompute equivalence groups for affected physical keys only. The comparison runs on
+   * `add`/`remove`/`updateDelays`, never in `run`. Unaffected variants keep their entries,
+   * routes and rejection state; archived variants keep resume identifiers for old frames.
    */
-  private reconcileSharedLayout(): void {
+  private reconcileSharedLayout(
+    affectedKeys: ReadonlySet<string>,
+    affectedPcs: ReadonlySet<number>,
+  ): void {
     const assignment = new Map<
       number,
       { variant: SharedVariant | undefined; shared: boolean; category: ShareCategory }
     >();
-    const groups = new Map<string, ShareCandidateEntry[]>();
-
-    for (const [pc, record] of this.state.entries) {
-      if (record.share === undefined) continue;
-      const instruction = record.instruction;
-      if (instruction === undefined) {
-        assignment.set(pc, { variant: undefined, shared: false, category: 'context' });
-        continue;
-      }
-      if (instruction.isolated) {
-        assignment.set(pc, { variant: undefined, shared: false, category: 'isolated' });
-        continue;
-      }
-      const key = shareKeyText(record.share);
-      let list = groups.get(key);
-      if (list === undefined) {
-        list = [];
-        groups.set(key, list);
-      }
-      list.push({
-        pc,
-        nextPc: record.nextPc,
-        record,
-        instruction,
-        share: record.share,
-      });
-    }
-
-    for (const variant of this.sharedVariants) variant.entries = new Map();
-
+    const touchedCandidates = new Set<number>();
     const emitted = new Set<SharedVariant>();
-    for (const [key, list] of groups) {
+    const previousShared = new Set<number>();
+
+    for (const key of affectedKeys) {
+      const candidatePcs = this.candidatesByKey.get(key);
+      const list: ShareCandidateEntry[] = [];
+      if (candidatePcs !== undefined) {
+        for (const pc of candidatePcs) {
+          const record = this.state.entries.get(pc);
+          if (record === undefined || record.share === undefined) continue;
+          if (shareKeyText(record.share) !== key) continue;
+          touchedCandidates.add(pc);
+          const instruction = record.instruction;
+          if (instruction === undefined) {
+            assignment.set(pc, { variant: undefined, shared: false, category: 'context' });
+            continue;
+          }
+          if (instruction.isolated) {
+            assignment.set(pc, { variant: undefined, shared: false, category: 'isolated' });
+            continue;
+          }
+          list.push({
+            pc,
+            nextPc: record.nextPc,
+            record,
+            instruction,
+            share: record.share,
+          });
+        }
+      }
+
+      let variants = this.variantsByKey.get(key);
+      if (variants !== undefined) {
+        for (const variant of variants) {
+          if (variant.functions !== undefined)
+            for (const pc of variant.entries.keys()) previousShared.add(pc);
+          variant.entries = new Map();
+        }
+      }
+
       list.sort((left, right) => left.pc - right.pc);
       const partitions: ShareCandidateEntry[][] = [];
       for (const candidate of list) {
@@ -3740,13 +3828,17 @@ class DirectJitSessionImpl implements DirectJitSession {
       }
       for (const partition of partitions) {
         const representative = partition[0]!;
-        let variant = this.sharedVariants.find(
-          (existing) =>
-            existing.key === key &&
-            sameDelay(existing.delay, representative.record.delay) &&
-            sameRegion(existing.body, representative.record.body),
-        );
+        let variant =
+          variants?.find(
+            (existing) =>
+              sameDelay(existing.delay, representative.record.delay) &&
+              sameRegion(existing.body, representative.record.body),
+          ) ?? undefined;
         if (variant === undefined) {
+          if (variants === undefined) {
+            variants = [];
+            this.variantsByKey.set(key, variants);
+          }
           variant = {
             id: this.nextSharedVariant++,
             key,
@@ -3761,6 +3853,7 @@ class DirectJitSessionImpl implements DirectJitSession {
             attributed: new Set(),
           };
           this.sharedVariants.push(variant);
+          variants.push(variant);
         }
         for (const candidate of partition) variant.entries.set(candidate.pc, candidate.nextPc);
         if (variant.functions === undefined && variant.entries.size >= 2) {
@@ -3793,49 +3886,163 @@ class DirectJitSessionImpl implements DirectJitSession {
       }
     }
 
-    this.sharedRoutes.clear();
-    for (const variant of this.sharedVariants) {
-      const functions = variant.functions;
-      if (functions === undefined || !variant.entries.size) continue;
-      for (const [pc, nextPc] of variant.entries)
-        this.sharedRoutes.set(pc, { step: functions.step, nextPc, variant });
+    // Only routes owned by the affected keys may change. Deleting every previous shared PC
+    // first also handles a key move without leaving a stale route behind.
+    for (const pc of previousShared) this.sharedRoutes.delete(pc);
+    for (const key of affectedKeys) {
+      const variants = this.variantsByKey.get(key);
+      if (variants === undefined) continue;
+      for (const variant of variants) {
+        const functions = variant.functions;
+        if (functions === undefined || !variant.entries.size) continue;
+        if (variant.resumeId !== 0 && functions.resume !== undefined)
+          this.resumes.set(variant.resumeId, functions.resume);
+        for (const [pc, nextPc] of variant.entries)
+          this.sharedRoutes.set(pc, { step: functions.step, nextPc, variant });
+      }
     }
 
-    for (const variant of this.sharedVariants) {
-      if (variant.functions === undefined) {
-        variant.attributed.clear();
+    for (const key of affectedKeys) {
+      const variants = this.variantsByKey.get(key);
+      if (variants === undefined) continue;
+      for (const variant of variants) {
+        if (variant.functions === undefined) {
+          variant.attributed.clear();
+          continue;
+        }
+        let reused = 0;
+        for (const pc of variant.entries.keys()) if (!variant.attributed.has(pc)) reused++;
+        if (emitted.has(variant)) reused = Math.max(0, reused - 1);
+        this.counters.shareReusedBodies += reused;
+        for (const pc of [...variant.attributed])
+          if (!variant.entries.has(pc)) variant.attributed.delete(pc);
+        for (const pc of variant.entries.keys()) variant.attributed.add(pc);
+      }
+    }
+
+    // Reclassify only PCs whose records changed or whose key was recomputed.
+    const statePcs = new Set<number>(affectedPcs);
+    for (const pc of touchedCandidates) statePcs.add(pc);
+    for (const pc of statePcs) {
+      const record = this.state.entries.get(pc);
+      let state: ShareCategory | undefined;
+      if (record !== undefined) {
+        if (record.share !== undefined) {
+          if (record.instruction === undefined) state = 'context';
+          else if (record.instruction.isolated) state = 'isolated';
+          else {
+            const info = assignment.get(pc);
+            if (info !== undefined) state = info.shared ? 'shared' : info.category;
+            else state = this.sharedRoutes.has(pc) ? 'shared' : 'single';
+          }
+        } else if (record.shareInvalid) state = 'invalid';
+        else if (this.shareStates.has(pc)) state = 'missing';
+      }
+      const previous = this.shareStates.get(pc);
+      if (state === undefined) {
+        this.shareStates.delete(pc);
         continue;
       }
-      let reused = 0;
-      for (const pc of variant.entries.keys()) if (!variant.attributed.has(pc)) reused++;
-      if (emitted.has(variant)) reused = Math.max(0, reused - 1);
-      this.counters.shareReusedBodies += reused;
-      for (const pc of [...variant.attributed])
-        if (!variant.entries.has(pc)) variant.attributed.delete(pc);
-      for (const pc of variant.entries.keys()) variant.attributed.add(pc);
+      if (state !== 'shared' && previous !== state) this.shareRejected[state]++;
+      this.shareStates.set(pc, state);
+    }
+  }
+
+  /**
+   * Apply only the shard/route consequences of the affected sharing keys. Unchanged shared
+   * variants and independent shards are left untouched, so a small batch never re-syncs all
+   * resident entries.
+   */
+  private applyIncrementalSharedLayout(
+    staged: ReadonlyMap<number, StagedChange>,
+    layoutPcs: ReadonlySet<number>,
+    previousRoutes: ReadonlyMap<number, SessionRoute | undefined>,
+  ): void {
+    const layout = new Map<number, StagedChange>();
+    const detached = new Set<number>();
+    const add = (pc: number): void => {
+      const record = this.state.entries.get(pc);
+      if (record === undefined) {
+        layout.set(pc, {
+          pc,
+          remove: true,
+          record: undefined,
+          changed: true,
+          metadataOnly: false,
+        });
+      } else {
+        layout.set(pc, {
+          pc,
+          remove: false,
+          record,
+          changed: true,
+          metadataOnly: false,
+        });
+      }
+    };
+
+    for (const pc of staged.keys()) {
+      const desired = this.sharedRoutes.get(pc);
+      const before = previousRoutes.get(pc);
+      if (desired !== undefined) {
+        if (!isSharedRoute(before)) detached.add(pc);
+        continue;
+      }
+      add(pc);
+    }
+    for (const pc of layoutPcs) {
+      if (staged.has(pc)) continue;
+      const desired = this.sharedRoutes.get(pc);
+      const before = previousRoutes.get(pc);
+      if (desired !== undefined) {
+        if (!isSharedRoute(before)) detached.add(pc);
+      } else if (isSharedRoute(before)) {
+        add(pc);
+      }
     }
 
-    const nextStates = new Map<number, ShareCategory>();
-    for (const [pc, record] of this.state.entries) {
-      if (record.share !== undefined) {
-        if (record.instruction === undefined) nextStates.set(pc, 'context');
-        else if (record.instruction.isolated) nextStates.set(pc, 'isolated');
-        else {
-          const info = assignment.get(pc);
-          if (info === undefined) nextStates.set(pc, 'single');
-          else nextStates.set(pc, info.shared ? 'shared' : info.category);
-        }
-      } else if (record.shareInvalid) nextStates.set(pc, 'invalid');
-      else if (this.shareStates.has(pc)) nextStates.set(pc, 'missing');
-    }
-    for (const [pc, state] of nextStates) {
-      if (state === 'shared' || this.shareStates.get(pc) === state) continue;
-      this.shareRejected[state]++;
-    }
-    this.shareStates.clear();
-    for (const [pc, state] of nextStates) this.shareStates.set(pc, state);
+    // Movement into a shared body only changes shard ownership; its old independent route is
+    // replaced below, so route-removal counters keep their "removed or rejected" meaning.
+    if (detached.size) this.detachFromShards(detached);
+    if (layout.size || detached.size) this.applyShardChanges(layout);
 
-    this.reconcileResidentLayout();
+    for (const pc of layoutPcs) {
+      const desired = this.sharedRoutes.get(pc);
+      const current = this.routes.get(pc);
+      if (desired !== undefined) {
+        if (sameSessionRoute(current, desired)) continue;
+        this.routes.set(pc, desired);
+        this.counters.routeInstalls++;
+        this.counters.shareReusedRoutes++;
+      } else if (isSharedRoute(current)) {
+        this.routes.delete(pc);
+        this.counters.routeRemovals++;
+      }
+    }
+    for (const pc of layoutPcs) {
+      const instruction = this.state.entries.get(pc)?.instruction;
+      if (instruction !== undefined && instruction.slots.length > this.localSlots)
+        this.localSlots = instruction.slots.length;
+    }
+    this.refreshPcs();
+  }
+
+  /** Remove entries from independent shards without touching their current routes. */
+  private detachFromShards(pcs: ReadonlySet<number>): void {
+    const touched = new Set<ResidentShard>();
+    for (const pc of pcs) {
+      const owner = this.owners.get(pc);
+      this.owners.delete(pc);
+      if (owner === undefined) continue;
+      const index = owner.entries.findIndex((entry) => entry.pcValue === pc);
+      if (index < 0) continue;
+      owner.entries.splice(index, 1);
+      owner.dirty = true;
+      touched.add(owner);
+    }
+    for (const shard of touched) refreshShard(shard);
+    for (let index = this.state.shards.length - 1; index >= 0; index--)
+      if (!this.state.shards[index]!.entries.length) this.state.shards.splice(index, 1);
   }
 
   private compileSharedVariant(variant: SharedVariant): void {
@@ -4059,15 +4266,21 @@ class DirectJitSessionImpl implements DirectJitSession {
   }
 
   private rebuildAll(): void {
-    let sharing = this.shareStates.size > 0 || this.sharedRoutes.size > 0;
+    this.rebuildCandidateIndex();
+    let sharing =
+      this.candidatesByKey.size > 0 || this.shareStates.size > 0 || this.sharedRoutes.size > 0;
     for (const record of this.state.entries.values()) {
-      if (record.share !== undefined || record.shareInvalid) {
+      if (record.shareInvalid) {
         sharing = true;
         break;
       }
     }
     if (sharing) {
-      this.reconcileSharedLayout();
+      this.reconcileSharedLayout(
+        new Set(this.candidatesByKey.keys()),
+        new Set(this.state.entries.keys()),
+      );
+      this.reconcileResidentLayout();
       return;
     }
     const entries: Instruction[] = [];
@@ -4091,7 +4304,7 @@ class DirectJitSessionImpl implements DirectJitSession {
   }
 
   private refreshPcs(): void {
-    this.sessionPcs = Object.freeze([...this.routes.keys()].sort((a, b) => a - b));
+    this.sessionPcs = undefined;
   }
 
   /** One aggregate pass over valid bodies; shared entries count once, rejected entries not. */
