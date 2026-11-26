@@ -5,7 +5,9 @@ import * as sdk from '../dist/index.js';
 import {
   acceptanceSummary,
   createExercise,
+  expectedProcessScheduling,
   fillDeviceSource,
+  instrumentBatchAdmission,
   instrumentEventQueue,
   normalizeConfig,
   probeBatchSupport,
@@ -40,15 +42,17 @@ test('CLI defaults and smoke overrides stay on the acceptance shape', () => {
   assert.equal(browser.warmup, 5);
   assert.equal(browser.iterations, 65_536);
   assert.equal(browser.sdk, defaultSdkPath);
+  assert.equal(browser.baselineSha, '8a36ed4');
   assert.ok(Number.isSafeInteger(browser.timeoutMs));
-  assert.throws(() => parseBrowserArgs(['--baseline-sdk=missing']), /Unknown/);
+  assert.ok(parseBrowserArgs(['--baseline-sdk=missing']).baselineSdk.endsWith('missing'));
+  assert.throws(() => parseBrowserArgs(['--baseline-sdk=a', '--baseline-sdk=b']), /Duplicate/);
   assert.equal(parseBrowserArgs(['--help']), null);
 });
 
 test('fixture checks all bytes, cursor, done time and real queue counts', () => {
   const support = probeBatchSupport(sdk, model, config);
   const variant = support.option
-    ? { name: 'disabled', batchExecution: false, register: false }
+    ? { name: 'disabled', batchExecution: false, register: support.registration }
     : { name: 'baseline-control', register: false };
   const exercise = createExercise(sdk, model, config, variant);
   try {
@@ -67,13 +71,27 @@ test('fixture checks all bytes, cursor, done time and real queue counts', () => 
   }
 });
 
+test('expected process scheduling handles short and default fold eligibility', () => {
+  const one = expectedProcessScheduling({ iterations: 1, tickPs: 10 });
+  assert.equal(one.runsBatch, false);
+  assert.equal(one.expectedPushes, 1);
+  const two = expectedProcessScheduling({ iterations: 2, tickPs: 10 });
+  assert.equal(two.runsBatch, false);
+  assert.equal(two.expectedPushes, 2);
+  const three = expectedProcessScheduling({ iterations: 3, tickPs: 10 });
+  assert.equal(three.runsBatch, true);
+  assert.equal(three.expectedPushes, 2);
+  const tickOne = expectedProcessScheduling({ iterations: 65_536, tickPs: 1 });
+  assert.equal(tickOne.expectedPushes, 2);
+});
+
 test('registered batch run keeps observable equivalence when admitted', () => {
   const support = probeBatchSupport(sdk, model, config);
   if (!support.option || !support.registration) return; // Baseline control runs the preceding test until the runtime API lands.
   const disabled = createExercise(sdk, model, config, {
     name: 'disabled',
     batchExecution: false,
-    register: false,
+    register: support.registration,
   });
   const active = createExercise(sdk, model, config, {
     name: 'active',
@@ -83,20 +101,30 @@ test('registered batch run keeps observable equivalence when admitted', () => {
   try {
     const disabledQueue = instrumentEventQueue(disabled.board);
     const activeQueue = instrumentEventQueue(active.board);
+    const admission = instrumentBatchAdmission(active.board);
     assert.ok(disabledQueue);
     assert.ok(activeQueue);
+    assert.ok(admission);
     disabled.board.runUntil(config.runUntilPs);
     active.board.runUntil(config.runUntilPs);
     assert.deepEqual(verifyExercise(active), verifyExercise(disabled));
     const idle = disabledQueue.read();
     const batched = activeQueue.read();
+    const expected = expectedProcessScheduling(config);
+    assert.equal(expected.runsBatch, true);
+    assert.equal(expected.expectedPushes, 2);
     assert.equal(idle.pushes, 256);
     assert.equal(idle.pops, 256);
+    assert.equal(batched.pushes, expected.expectedPushes);
+    assert.equal(batched.pops, expected.expectedPushes);
     assert.ok(
       batched.pushes < idle.pushes,
       `registered run should fold wakeups, got ${batched.pushes} pushes`,
     );
-    assert.equal(batched.pops, batched.pushes, 'every enqueued wakeup is popped');
+    const gate = admission.read();
+    assert.ok(gate.attempts >= 1);
+    assert.ok(gate.admissions >= 1);
+    assert.equal(gate.declines, gate.attempts - gate.admissions);
   } finally {
     disabled.dispose();
     active.dispose();
@@ -113,9 +141,14 @@ test('acceptance summary applies wakeup, speedup and overhead thresholds to pair
     },
   });
   const series = {
+    config: normalizeConfig({ iterations: 100, tickPs: 10 }),
     variants: {
       disabled: { scheduling: { pushes: 100, pops: 100 }, warm: { medianMs: 10 } },
-      active: { scheduling: { pushes: 1, pops: 1 }, warm: { medianMs: 5 } },
+      active: {
+        scheduling: { pushes: 2, pops: 2 },
+        batchAdmission: { attempts: 2, admissions: 1, declines: 1 },
+        warm: { medianMs: 5 },
+      },
       'enabled-no-registration': {
         scheduling: { pushes: 100, pops: 100 },
         warm: { medianMs: 10.2 },
@@ -130,12 +163,18 @@ test('acceptance summary applies wakeup, speedup and overhead thresholds to pair
     ],
   };
   const accepted = acceptanceSummary(series, { baseline: true });
-  assert.equal(accepted.schedule.wakeReduction, 0.99);
+  assert.equal(accepted.schedule.wakeReduction, 0.98);
+  assert.equal(accepted.schedule.admission.admissions, 1);
   assert.equal(accepted.checks.wakeReduction, true);
   assert.equal(accepted.checks.activeMedianSpeedup, true);
   assert.equal(accepted.checks.disabledOverheadVsBaseline, true);
   assert.equal(accepted.checks.noRegistrationOverheadVsBaseline, true);
   assert.equal(accepted.passed, true);
+
+  const withoutBaseline = acceptanceSummary(series, { baseline: false });
+  assert.equal(withoutBaseline.checks.disabledOverheadVsBaseline, null);
+  assert.equal(withoutBaseline.checks.noRegistrationOverheadVsDisabled, true);
+  assert.equal(withoutBaseline.passed, true, 'no-baseline required checks must not include null');
 
   series.variants.active.warm.medianMs = 9.5;
   series.samples = series.samples.map((entry) => ({
@@ -158,7 +197,15 @@ test('smoke benchmark records correctness before timing for every available vari
   if (result.support.option) {
     assert.ok(names.includes('disabled'));
     assert.ok(names.includes('enabled-no-registration'));
-    if (result.support.registration) assert.ok(names.includes('active'));
+    if (result.support.registration) {
+      assert.ok(names.includes('active'));
+      assert.equal(result.variants.disabled.registration, true);
+      const expected = expectedProcessScheduling(result.fixture);
+      assert.equal(result.variants.active.scheduling.pushes, expected.expectedPushes);
+      assert.equal(result.variants.active.scheduling.pops, expected.expectedPushes);
+      assert.ok(result.variants.active.batchAdmission.admissions >= 1);
+      assert.equal(result.acceptance.schedule.activeExpectedPushes, expected.expectedPushes);
+    }
   } else {
     assert.deepEqual(names, ['baseline-control']);
     assert.equal(result.acceptance, null);

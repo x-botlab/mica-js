@@ -117,7 +117,7 @@ pnpm --filter @mica-js/simulator bench:propagation
 
 ### 合批执行基准
 
-[合批执行基准](bench/batch-execution.mjs)通过发布配置构建后的 Node ESM 运行最小验收负载：一个无订阅过程连续执行 65,536 次 `store8`，每轮等待 10 ps，`done` 发送最终 `cursor`。默认一次 `runUntil(655370)` 到结束，期望公开内存全部为 42、`cursor = 65536`、完成消息时间为 655360 ps。脚本同时比较三组：`batchExecution: false`、`batchExecution: true` 且按 `{ process: { kind: 'start', index: 0 }, loop: 0 }` 注册、以及开启但无注册的对照。每组先核对字节、cursor 和完成时间，再参与计时；建板在计时外，仅 `runUntil` 进入稳态样本，默认 5 次预热和 25 对轮换顺序的配对样本，报告中位数、P95/P99、冷建板至完成、逐对比值和阈值判定。
+[合批执行基准](bench/batch-execution.mjs)通过发布配置构建后的 Node ESM 运行最小验收负载：一个无订阅过程连续执行 65,536 次 `store8`，每轮等待 10 ps，`done` 发送最终 `cursor`。默认一次 `runUntil(655370)` 到结束，期望公开内存全部为 42、`cursor = 65536`、完成消息时间为 655360 ps。脚本同时比较三组：`batchExecution: false` 且使用同一过程注册（验证关闭功能时的声明绑定和建板成本）、`batchExecution: true` 且按 `{ process: { kind: 'start', index: 0 }, loop: 0 }` 注册、以及开启但无注册的对照。基线 SHA 构建不能注册，保持无注册。每组先核对字节、cursor 和完成时间，再参与计时；建板在计时外，仅 `runUntil` 进入稳态样本，默认 5 次预热和 25 轮轮换顺序的配对样本，报告中位数、P95/P99、新板建板至完成、逐对比值和阈值判定。
 
 ```bash
 pnpm --filter @mica-js/simulator... build
@@ -127,19 +127,19 @@ node packages/simulator/bench/batch-execution.mjs --baseline-sdk=<baseline-workt
 node packages/simulator/bench/batch-execution.mjs --require-batch --require-targets
 ```
 
-与基线对照时，同一进程交替运行候选的关闭、开启但无候选和基线 SHA 构建（`--baseline-sdk`），因此关闭功能与开启但无候选相对基线的中位数、活动组相对关闭组的配对比值可在相同环境噪声下比较。基线构建可从 `8a36ed4` 的独立 worktree 按同一包级 build 生成。`--require-batch` 在发布构建不支持配置或缺少过程注册时失败；`--require-targets` 在唤醒数下降不足 90%、活动组中位数下降不足 10%，或关闭/无候选相对基线中位数增幅超过 3% 时返回非零。阈值用于评审复采，单次机器波动应重新采样并先定位热路径，不以阈值替代功能测试。
+与基线对照时，同一进程交替运行候选的关闭、开启但无候选和基线 SHA 构建（`--baseline-sdk`），因此关闭功能与开启但无候选相对基线的中位数、活动组相对关闭组的中位数可在相同环境噪声下比较。基线构建可从 `8a36ed4` 的独立 worktree 按同一包级 build 生成。判定使用稳态样本的中位数比值（`ratioOfMedians`）；逐对中位数比值和 P95 比值保留用于观察配对噪声。`--require-batch` 在发布构建不支持配置或缺少过程注册时失败；`--require-targets` 在活动组真实唤醒数下降不足 90%、活动组稳态中位数下降不足 10%，或关闭/无候选相对基线中位数增幅超过 3% 时返回非零；未提供基线时检查无候选相对关闭组的中位数增幅。阈值用于评审复采，单次机器波动应重新采样并先定位热路径，不以阈值替代功能测试。
 
-调度证据来自计时外的一次 instrumentation 运行：脚本只在该次运行中包装板已有的真实 `EventQueue` 实例并读取入队/出队次数，同时读取现有过程与检查点只读探针；正式计时运行不安装任何探针。关闭功能和无候选的纯净填充预期为 65,536 次入队/出队，合批命中后活动组预期为 1 次；输出同时保留实际 counts，避免仅用 `Σ(n−1)` 推算唤醒。未实现合批的构建会记录 `support.option = false` 并只运行基线对照，便于先采集 SHA 证据。
+调度证据来自计时外的一次 instrumentation 运行：脚本只在该次运行中包装板已有的真实 `EventQueue` 实例并读取入队/出队次数，同时包装已有的 `prepareBatch` 准入门，记录尝试、返回准备好的准入和回退次数，以及读取现有过程与检查点只读探针；正式计时运行不安装任何探针。该运行已被独立核验，准入返回准备好的轮次在其中完成提交；真实队列计数仍是主要断言，准入计数只作命中/回退归因。纯填充过程中首轮以普通路径执行并留下第一次唤醒，之后一次合批折叠余下轮次，因此默认 65,536 轮的活动组预期为 2 次入队/出队，而关闭和无候选为 65,536 次；少于 3 轮或目标不足时 `expected` 字段按实际可折叠条件报告普通唤醒数，不硬编码 2。输出同时保留实际 counts，避免仅用 `Σ(n−1)` 推算唤醒。未实现合批的构建会记录 `support.option = false` 并只运行基线对照，便于先采集 SHA 证据。
 
 浏览器使用相同构建的发布包生成生产页面：
 
 ```bash
 node packages/simulator/bench/batch-execution-browser.mjs
-node packages/simulator/bench/batch-execution-browser.mjs --require-batch --require-targets
+node packages/simulator/bench/batch-execution-browser.mjs --baseline-sdk=<baseline-worktree>/packages/simulator/dist/index.js --baseline-sha=8a36ed4 --require-batch --require-targets
 node packages/simulator/bench/batch-execution-browser.mjs --chromium=$HOME/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome
 ```
 
-脚本用 Vite 和 `import` 条件把 `@mica-js/simulator` 入口解析到 `dist/index.js`，不启用 `source` 条件，再在本地 HTTP 服务上由 headless Chromium 运行同一夹具模块。浏览器按 `~/.cache/ms-playwright/chromium-*/` 和 `chromium_headless_shell-*/` 自动发现可执行文件，也可用 `--chromium` 或 `CHROMIUM_BIN` 指定；输出包含浏览器版本、发布 bundle 文件与字节数、同一组正确性、真实队列计数及中位数/P95。`--smoke` 使用 256 轮、1 次预热和 3 个样本，只用于验证夹具和链路，不替代 65,536 轮验收。
+脚本用 Vite 和 `import` 条件把候选与可选的基线 `@mica-js/simulator` 入口分别解析到各自的 `dist/index.js`，不启用 `source` 条件；两个 SDK 使用独立的 Vite production chunk，避免不同 worktree 的同名编译器包被错误合并。构建后校验每个 chunk 的 `@mica-js/*` 依赖都落在各自 workspace 的 `dist`，并拒绝基线解析到候选 workspace。随后在本地 HTTP 服务上由 headless Chromium 运行同一夹具模块和同一交替采样循环。浏览器按 `~/.cache/ms-playwright/chromium-*/` 和 `chromium_headless_shell-*/` 自动发现可执行文件，也可用 `--chromium` 或 `CHROMIUM_BIN` 指定；输出包含浏览器版本、两个 bundle 的文件/字节数与解析路径、同一组正确性、真实队列与准入计数及中位数/P95。`cold` 字段统一标为“新板 / 预采样前建板至完成”，表示同一已预热 JS engine 中的新板，不代表进程或浏览器启动。`--smoke` 使用 256 轮、1 次预热和 3 个样本，只用于验证夹具和链路，不替代 65,536 轮验收。
 
 电气基准独立测量缓存复用、空脏引脚提示、参考变化、分量合并/拆分及共享电源下的支路隔离，并报告分解和缓存计数。额外的非计时 instrumentation 在 `cache_verification` 中记录拓扑、计算块、物理分组构建和拓扑恢复、对角分解次数，断言电阻更新不重建拓扑，以及参考切换恢复、32/33 节点路径切换、连接变化、失败重试和缓存发布的正确性；它不是公开 SDK 统计。`reference_assembly` 将专用组装与通用组装逐值对照，覆盖形状守卫、跨节点代码复用、8 槽上限、128 个独立区域及非有限结果/分解失败的原子重试。追加 `--verify-only` 可只运行这些断言，不采集性能。共享电源场景断言物理分量始终为 1，改变一条链时仅重新分解该链，另一条链命中缓存；分解与缓存计数以计算块为单位。测量不含 DDL、装配；方程程序按需生成，首次编译成本由首次运行或预热承担。编译器基准报告冷编译、稳态吞吐和生成代码大小。数值取决于 Node.js 版本、机器与工作负载，不作为通用性能保证。
 

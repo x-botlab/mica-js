@@ -214,7 +214,9 @@ export function candidateVariants(sdk, support) {
       name: 'disabled',
       sdk,
       batchExecution: false,
-      register: false,
+      // The plan validates the same declaration with the feature off; the opened board
+      // pays its cold binding cost. Only the baseline SHA build cannot register.
+      register: support.registration,
     });
     if (support.registration)
       variants.push({
@@ -241,10 +243,12 @@ export function candidateVariants(sdk, support) {
 
 /**
  * Candidate-only series used by the browser page. Node additionally mixes in an
- * isolated baseline SDK; the browser records one published bundle per run.
+ * isolated baseline SDK; the browser can pass the same baseline bundle through a
+ * separate module graph.
  */
 export function runCandidateAcceptance({
   sdk,
+  baselineSdk,
   model,
   configInput,
   warmup = 5,
@@ -265,8 +269,12 @@ export function runCandidateAcceptance({
       throw new Error('batchExecution is accepted but context.registerProcessBatch is unavailable');
   }
   const variants = candidateVariants(sdk, support);
+  if (baselineSdk !== undefined)
+    variants.push({ name: 'baseline-disabled', sdk: baselineSdk, register: false });
   const series = runSeries({ model, variants, configInput: config, warmup, samples, now });
-  const acceptance = support.option ? acceptanceSummary(series) : null;
+  const acceptance = support.option
+    ? acceptanceSummary(series, { baseline: baselineSdk !== undefined })
+    : null;
   return Object.freeze({
     config,
     support,
@@ -301,6 +309,33 @@ export function instrumentEventQueue(board) {
   return {
     read() {
       return { pushes, pops };
+    },
+  };
+}
+
+/** Untimed admission probe over the existing scheduler gate; absent on baseline. */
+export function instrumentBatchAdmission(board) {
+  const prepareBatch = board?.prepareBatch;
+  if (typeof prepareBatch !== 'function') return null;
+  let attempts = 0;
+  let admissions = 0;
+  board.prepareBatch = function prepareBatchProbe(...args) {
+    attempts++;
+    const prepared = prepareBatch.apply(this, args);
+    if (prepared !== undefined) admissions++;
+    return prepared;
+  };
+  return {
+    read() {
+      return {
+        available: true,
+        basis:
+          'board.prepareBatch wrapper in the untimed correctness run only; prepared results ' +
+          'are committed by that verified run, real queue counts remain the main assertion',
+        attempts,
+        admissions,
+        declines: attempts - admissions,
+      };
     },
   };
 }
@@ -383,24 +418,28 @@ export function runSeries({
       registration: variant.register === true,
       correctness: null,
       scheduling: null,
+      batchAdmission: null,
       probes: null,
       cold: null,
       warm: null,
     };
   }
 
-  // 1. Untimed correctness run with diagnostics and real queue counters.
+  // 1. Untimed correctness run with diagnostics, real queue counters and the existing
+  // scheduler admission gate.
   for (const variant of variants) {
     let exercise;
     try {
       const result = withCheckpointDiagnostics(() => {
         exercise = createExercise(variant.sdk, model, config, variant);
         const queue = instrumentEventQueue(exercise.board);
+        const admission = instrumentBatchAdmission(exercise.board);
         exercise.board.runUntil(config.runUntilPs);
         const verification = verifyExercise(exercise);
         return {
           verification,
           scheduling: queue ? Object.freeze({ ...queue.read(), instrumented: true }) : null,
+          batchAdmission: admission ? Object.freeze(admission.read()) : null,
           probes: Object.freeze({
             processes: readBoardProbe(exercise.board, PROCESS_PROBE),
             checkpoints: readBoardProbe(exercise.board, CHECKPOINT_PROBE),
@@ -409,13 +448,15 @@ export function runSeries({
       });
       evidence[variant.name].correctness = result.verification;
       evidence[variant.name].scheduling = result.scheduling;
+      evidence[variant.name].batchAdmission = result.batchAdmission;
       evidence[variant.name].probes = result.probes;
     } finally {
       exercise?.dispose();
     }
   }
 
-  // 2. Cold create-to-completion, kept separate from warmed runUntil samples.
+  // 2. A fresh board timed through completion. This shares the already-warmed JS engine
+  // with the correctness probes, so it is not process/browser startup or a cold VM.
   const coldOrder = rotate(variants, 0);
   for (const variant of coldOrder) {
     let exercise;
@@ -427,6 +468,7 @@ export function runSeries({
       const runEnd = now();
       verifyExercise(exercise);
       evidence[variant.name].cold = Object.freeze({
+        label: 'new board / pre-sampled create-to-complete',
         createMs: createEnd - createStart,
         runMs: runEnd - createEnd,
         totalMs: runEnd - createStart,
@@ -484,20 +526,47 @@ export function pairedComparison(series, candidate, reference) {
   });
 }
 
+export function expectedProcessScheduling(configInput) {
+  const { iterations } = normalizeConfig(configInput);
+  // The initial start round runs normally; the first wake at `tickPs` can then fold the
+  // remaining rounds into one wake at `donePs`. With fewer than three iterations there
+  // is no eligible fold, so each ordinary round leaves one real wake.
+  const runsBatch = iterations >= 3;
+  const expectedPushes = runsBatch ? 2 : iterations;
+  return Object.freeze({
+    runsBatch,
+    expectedPushes,
+    expectedPops: expectedPushes,
+    expectedWakeReduction: iterations > 0 ? 1 - expectedPushes / iterations : null,
+    basis:
+      'pure-fill process topology; first round stays ordinary, then one real fold wake ' +
+      'when at least three rounds fit before the end target',
+  });
+}
+
 export function schedulingSummary(series) {
   const disabled = series.variants.disabled?.scheduling;
   const active = series.variants.active?.scheduling;
   const noRegistration = series.variants['enabled-no-registration']?.scheduling;
   if (!disabled || !active || !noRegistration) return null;
+  const expected = expectedProcessScheduling(series.config);
   return Object.freeze({
+    measurement: 'real EventQueue push/pop counts',
+    topology: 'pure-fill process fixture',
+    note:
+      'Avoided wakeups are the measured disabled-minus-active push delta; folded rounds are ' +
+      'not directly instrumented.',
     disabledPushes: disabled.pushes,
     disabledPops: disabled.pops,
     activePushes: active.pushes,
     activePops: active.pops,
     enabledNoRegistrationPushes: noRegistration.pushes,
     enabledNoRegistrationPops: noRegistration.pops,
+    avoidedWakeups: disabled.pushes - active.pushes,
     wakeReduction: disabled.pushes > 0 ? 1 - active.pushes / disabled.pushes : null,
-    activeExpectedPushes: 1,
+    admission: series.variants.active.batchAdmission,
+    expected,
+    activeExpectedPushes: expected.expectedPushes,
   });
 }
 
@@ -522,27 +591,30 @@ export function acceptanceSummary(series, { baseline = false, thresholds } = {})
     activeMedianSpeedup:
       activeVsDisabled == null
         ? null
-        : 1 - activeVsDisabled.medianPairedRatio >= limits.minActiveMedianSpeedup,
+        : 1 - activeVsDisabled.ratioOfMedians >= limits.minActiveMedianSpeedup,
     disabledOverheadVsBaseline:
       baselineComparison == null
         ? null
-        : baselineComparison.medianPairedRatio - 1 <= limits.maxNoCandidateOverhead,
+        : baselineComparison.ratioOfMedians - 1 <= limits.maxNoCandidateOverhead,
     noRegistrationOverheadVsBaseline:
       noRegistrationVsBaseline == null
         ? null
-        : noRegistrationVsBaseline.medianPairedRatio - 1 <= limits.maxNoCandidateOverhead,
+        : noRegistrationVsBaseline.ratioOfMedians - 1 <= limits.maxNoCandidateOverhead,
     noRegistrationOverheadVsDisabled:
       noRegistrationVsDisabled == null
         ? null
-        : noRegistrationVsDisabled.medianPairedRatio - 1 <= limits.maxNoCandidateOverhead,
+        : noRegistrationVsDisabled.ratioOfMedians - 1 <= limits.maxNoCandidateOverhead,
   };
   const required = [
     checks.wakeReduction,
     checks.activeMedianSpeedup,
     baseline ? checks.disabledOverheadVsBaseline : checks.noRegistrationOverheadVsDisabled,
-    baseline ? checks.noRegistrationOverheadVsBaseline : null,
   ];
+  if (baseline) required.push(checks.noRegistrationOverheadVsBaseline);
   return Object.freeze({
+    thresholdBasis:
+      'ratioOfMedians across steady-state samples; medianPairedRatio is retained as a ' +
+      'pairing/noise diagnostic',
     schedule,
     comparisons: Object.freeze({
       activeVsDisabled,

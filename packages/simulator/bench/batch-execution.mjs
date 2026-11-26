@@ -153,8 +153,9 @@ function environment(options, sdkInfo, baselineSdkInfo) {
     sdk: sdkInfo,
     baselineSdk: baselineSdkInfo,
     probePolicy:
-      'Correctness and real EventQueue push/pop counts use one untimed run per variant; ' +
-      'cold and warmed timings run without probes.',
+      'Correctness, real EventQueue push/pop counts and prepareBatch admissions use one ' +
+      'untimed run per variant; new-board create-to-complete and warmed timings run without ' +
+      'probes; the cold label does not represent process startup.',
   });
 }
 

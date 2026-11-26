@@ -10,10 +10,19 @@
  */
 import { once } from 'node:events';
 import { createServer } from 'node:http';
-import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  access,
+  copyFile,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { arch, cpus, homedir, platform, release, totalmem } from 'node:os';
-import { extname, join, resolve, sep } from 'node:path';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { fillDeviceSource, normalizeConfig } from './batch-execution-fixture.mjs';
 
@@ -27,6 +36,8 @@ const defaults = {
   tickPs: 10,
   execution: 'throughput',
   sdk: defaultSdkPath,
+  baselineSdk: undefined,
+  baselineSha: '8a36ed4',
   chromium: undefined,
   requireBatch: false,
   requireTargets: false,
@@ -37,12 +48,13 @@ const defaults = {
 const usage =
   'Usage: node packages/simulator/bench/batch-execution-browser.mjs ' +
   '[--samples=25] [--warmup=5] [--iterations=65536] [--tick-ps=10] ' +
-  '[--sdk=packages/simulator/dist/index.js] [--chromium=<chrome>] ' +
+  '[--sdk=packages/simulator/dist/index.js] [--baseline-sdk=<dist/index.js>] ' +
+  '[--baseline-sha=8a36ed4] [--chromium=<chrome>] ' +
   '[--execution=throughput|precise] [--timeout-ms=180000] [--require-batch] ' +
   '[--require-targets] [--smoke]\n' +
-  'Bundles the published dist with Vite, runs the shared 65,536-byte fill fixture in ' +
-  'headless Chromium, and prints JSON. Only runUntil is timed and timed runs install ' +
-  'no probes.';
+  'Bundles the published dist with Vite, optionally in a second independent bundle for ' +
+  'the baseline SDK, runs the shared 65,536-byte fill fixture in headless Chromium, and ' +
+  'prints JSON. Only runUntil is timed and timed runs install no probes.';
 
 export function parseArgs(args) {
   const options = { ...defaults };
@@ -61,7 +73,7 @@ export function parseArgs(args) {
       continue;
     }
     const match =
-      /^--(samples|warmup|iterations|tick-ps|execution|sdk|chromium|timeout-ms)=(.+)$/.exec(
+      /^--(samples|warmup|iterations|tick-ps|execution|sdk|baseline-sdk|baseline-sha|chromium|timeout-ms)=(.+)$/.exec(
         argument,
       );
     if (!match) throw new Error(`Unknown or malformed argument: ${argument}`);
@@ -74,7 +86,13 @@ export function parseArgs(args) {
           : rawName.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
     if (seen.has(name)) throw new Error(`Duplicate option: --${rawName}`);
     seen.add(name);
-    if (name === 'sdk' || name === 'chromium' || name === 'execution') {
+    if (
+      name === 'sdk' ||
+      name === 'baselineSdk' ||
+      name === 'baselineSha' ||
+      name === 'chromium' ||
+      name === 'execution'
+    ) {
       if (value.length === 0) throw new Error(`Option --${rawName} requires a value`);
       options[name] = value;
       continue;
@@ -109,6 +127,7 @@ export function parseArgs(args) {
   )
     throw new RangeError('timeout-ms must be in [1000,900000]');
   options.sdk = resolve(options.sdk);
+  if (options.baselineSdk !== undefined) options.baselineSdk = resolve(options.baselineSdk);
   if (options.chromium !== undefined) options.chromium = resolve(options.chromium);
   return options;
 }
@@ -182,6 +201,7 @@ function contentType(path) {
     case '.html':
       return 'text/html; charset=utf-8';
     case '.js':
+    case '.mjs':
       return 'text/javascript; charset=utf-8';
     case '.css':
       return 'text/css; charset=utf-8';
@@ -227,24 +247,6 @@ async function serveDirectory(directory) {
   };
 }
 
-function virtualFixtureData(model, settings) {
-  const id = 'virtual:batch-execution-data';
-  const resolved = `\0${id}`;
-  return {
-    name: 'batch-execution-fixture-data',
-    resolveId(source) {
-      return source === id ? resolved : null;
-    },
-    load(source) {
-      if (source !== resolved) return null;
-      return (
-        `export const model = ${JSON.stringify(model)};\n` +
-        `export const settings = ${JSON.stringify(settings)};\n`
-      );
-    },
-  };
-}
-
 function distResolutionRecorder(resolvedPackages) {
   return {
     name: 'batch-execution-dist-resolution',
@@ -265,21 +267,98 @@ function distResolutionRecorder(resolvedPackages) {
   };
 }
 
-async function buildBundle({ model, settings, sdk, root }) {
-  const vite = await import('vite');
-  const entry = `entry.mjs`;
-  const entryPath = join(root, entry);
-  const fixtureAlias = 'batch-execution-fixture';
-  await writeFile(
-    entryPath,
-    `import { model, settings } from 'virtual:batch-execution-data';
-import * as sdk from '@mica-js/simulator';
-import { runCandidateAcceptance } from '${fixtureAlias}';
+async function collectFiles(directory) {
+  const files = [];
+  async function visit(current) {
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else if (entry.isFile()) {
+        const info = await stat(path);
+        files.push({ path: path.slice(directory.length + 1), bytes: info.size });
+      }
+    }
+  }
+  await visit(directory);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return files;
+}
 
+function workspaceRootForSdk(sdk) {
+  return resolve(dirname(sdk), '../../..');
+}
+
+async function buildSdkBundle({ sdk, name, root }) {
+  const vite = await import('vite');
+  const entryPath = join(root, `sdk-${name}.mjs`);
+  await writeFile(entryPath, `export * as sdk from '@mica-js/simulator';\n`, 'utf8');
+  const outDir = join(root, `bundle-${name}`);
+  const resolvedPackages = new Set();
+  await vite.build({
+    root,
+    configFile: false,
+    logLevel: 'error',
+    publicDir: false,
+    resolve: {
+      alias: [{ find: /^@mica-js\/simulator$/, replacement: sdk }],
+      conditions: ['import', 'module', 'browser', 'default'],
+    },
+    plugins: [distResolutionRecorder(resolvedPackages)],
+    build: {
+      outDir,
+      emptyOutDir: true,
+      target: 'es2022',
+      minify: true,
+      lib: {
+        entry: entryPath,
+        formats: ['es'],
+        fileName: () => `${name}.js`,
+      },
+    },
+  });
+  const workspaceRoot = workspaceRootForSdk(sdk);
+  const absolute = [...resolvedPackages]
+    .filter((id) => !id.startsWith('\0'))
+    .map((id) => id.split('?')[0]);
+  const outside = absolute.filter((id) => !id.startsWith(`${workspaceRoot}${sep}`));
+  if (outside.length !== 0)
+    throw new Error(
+      `bundle ${name} resolved packages outside its workspace ${workspaceRoot}:\n` +
+        outside.join('\n'),
+    );
+  const resolved = absolute.map((id) => id.slice(workspaceRoot.length + 1)).sort();
+  if (!resolved.includes('packages/compiler/dist/index.js'))
+    throw new Error(
+      `bundle ${name} did not resolve the workspace compiler dist under ${workspaceRoot}`,
+    );
+  const files = await collectFiles(outDir);
+  return Object.freeze({
+    name,
+    sdk,
+    workspaceRoot,
+    entry: `bundle-${name}/${name}.js`,
+    files,
+    bytes: files.reduce((sum, file) => sum + file.bytes, 0),
+    resolvedPackages: Object.freeze(resolved),
+  });
+}
+
+function controllerSource({ candidate, baseline }) {
+  const baselineImport = baseline
+    ? `import { sdk as baselineSdk } from './${baseline.entry}';\n`
+    : '';
+  const baselineArgument = baseline ? 'baselineSdk,\n    ' : '';
+  const modules = baseline
+    ? `{ candidate: '${candidate.entry}', baseline: '${baseline.entry}' }`
+    : `{ candidate: '${candidate.entry}' }`;
+  return `import { model, settings } from './model.mjs';
+import { runCandidateAcceptance } from './batch-execution-fixture.mjs';
+import { sdk as candidateSdk } from './${candidate.entry}';
+${baselineImport}
 const execute = async () => {
   const result = runCandidateAcceptance({
-    sdk,
-    model,
+    sdk: candidateSdk,
+    ${baselineArgument}model,
     configInput: settings.config,
     warmup: settings.warmup,
     samples: settings.samples,
@@ -288,6 +367,7 @@ const execute = async () => {
   });
   return {
     ...result,
+    modules: ${modules},
     browser: {
       userAgent: navigator.userAgent,
       hardwareConcurrency: navigator.hardwareConcurrency ?? null,
@@ -306,9 +386,24 @@ globalThis.__BATCH_EXECUTION_PROMISE__ = execute().then(
     throw cause;
   },
 );
-`,
+`;
+}
+
+async function buildSite({ model, settings, sdk, baselineSdk, root }) {
+  const candidate = await buildSdkBundle({ sdk, name: 'candidate', root });
+  const baseline =
+    baselineSdk === undefined
+      ? undefined
+      : await buildSdkBundle({ sdk: baselineSdk, name: 'baseline', root });
+  const controller = 'controller.mjs';
+  await copyFile(fixturePath, join(root, 'batch-execution-fixture.mjs'));
+  await writeFile(
+    join(root, 'model.mjs'),
+    `export const model = ${JSON.stringify(model)};\n` +
+      `export const settings = ${JSON.stringify(settings)};\n`,
     'utf8',
   );
+  await writeFile(join(root, controller), controllerSource({ candidate, baseline }), 'utf8');
   await writeFile(
     join(root, 'index.html'),
     `<!doctype html>
@@ -327,55 +422,35 @@ globalThis.__BATCH_EXECUTION_PROMISE__ = execute().then(
       });
     </script>
   </head>
-  <body><script type="module" src="/${entry}"></script></body>
+  <body><script type="module" src="/${controller}"></script></body>
 </html>
 `,
     'utf8',
   );
-  const outDir = join(root, 'bundle');
-  const resolvedPackages = new Set();
-  await vite.build({
-    root,
-    configFile: false,
-    logLevel: 'error',
-    publicDir: false,
-    resolve: {
-      alias: [
-        { find: /^@mica-js\/simulator$/, replacement: sdk },
-        { find: new RegExp(`^${fixtureAlias}$`), replacement: fixturePath },
-      ],
-      conditions: ['import', 'module', 'browser', 'default'],
+  const siteFiles = [
+    {
+      path: 'batch-execution-fixture.mjs',
+      bytes: (await stat(join(root, 'batch-execution-fixture.mjs'))).size,
     },
-    plugins: [distResolutionRecorder(resolvedPackages), virtualFixtureData(model, settings)],
-    build: {
-      outDir,
-      emptyOutDir: true,
-      target: 'es2022',
-    },
-  });
-  const files = [];
-  async function visit(directory) {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile()) {
-        const info = await stat(path);
-        files.push({ path: path.slice(outDir.length + 1), bytes: info.size });
-      }
-    }
-  }
-  await visit(outDir);
-  files.sort((left, right) => left.path.localeCompare(right.path));
+    { path: controller, bytes: (await stat(join(root, controller))).size },
+    { path: 'index.html', bytes: (await stat(join(root, 'index.html'))).size },
+    { path: 'model.mjs', bytes: (await stat(join(root, 'model.mjs'))).size },
+    ...candidate.files.map((file) => ({
+      path: `${candidate.entry.split('/')[0]}/${file.path}`,
+      bytes: file.bytes,
+    })),
+    ...(baseline?.files ?? []).map((file) => ({
+      path: `${baseline.entry.split('/')[0]}/${file.path}`,
+      bytes: file.bytes,
+    })),
+  ].sort((left, right) => left.path.localeCompare(right.path));
   return {
-    outDir,
-    files,
-    entry,
-    resolvedPackages: [...resolvedPackages]
-      .filter((id) => !id.startsWith('\0'))
-      .map((id) =>
-        id.startsWith(`${process.cwd()}${sep}`) ? id.slice(process.cwd().length + 1) : id,
-      )
-      .sort(),
+    outDir: root,
+    entry: controller,
+    candidate,
+    baseline,
+    files: siteFiles,
+    totalBytes: siteFiles.reduce((sum, file) => sum + file.bytes, 0),
   };
 }
 
@@ -447,6 +522,8 @@ async function stopChild(child) {
 
 async function runBrowser(options, config, model) {
   const { spawn } = await import('node:child_process');
+  if (options.baselineSdk !== undefined && options.baselineSdk === options.sdk)
+    throw new Error('--baseline-sdk must be an independent build, not the candidate SDK path');
   const chromium = await findChromium(options.chromium);
   const root = await mkdtemp(join('/tmp/opencode', 'issue313-batch-browser-'));
   const profile = join(root, 'profile');
@@ -462,7 +539,13 @@ async function runBrowser(options, config, model) {
   let session;
   let stderr = '';
   try {
-    const bundle = await buildBundle({ model, settings, sdk: options.sdk, root });
+    const bundle = await buildSite({
+      model,
+      settings,
+      sdk: options.sdk,
+      baselineSdk: options.baselineSdk,
+      root,
+    });
     server = await serveDirectory(bundle.outDir);
     const args = [
       '--no-sandbox',
@@ -542,9 +625,11 @@ async function runBrowser(options, config, model) {
       bundle: {
         entry: bundle.entry,
         files: bundle.files,
-        totalBytes: bundle.files.reduce((sum, file) => sum + file.bytes, 0),
-        resolvedPackages: bundle.resolvedPackages,
+        totalBytes: bundle.totalBytes,
+        candidate: bundle.candidate,
+        baseline: bundle.baseline ?? null,
         sdk: options.sdk,
+        baselineSdk: options.baselineSdk ?? null,
       },
       browser: version,
     };
@@ -570,16 +655,21 @@ async function hostEnvironment(options, chromium, browserVersion) {
     totalMemoryBytes: totalmem(),
     command: Object.freeze([...process.argv]),
     cwd: process.cwd(),
-    baselineSha: '8a36ed4',
+    baselineSha: options.baselineSha,
     execution: options.execution,
     warmup: options.warmup,
     samples: options.samples,
     chromium,
     browserVersion,
     sdk: { path: options.sdk, sha256: await sha256(options.sdk) },
+    baselineSdk:
+      options.baselineSdk === undefined
+        ? null
+        : { path: options.baselineSdk, sha256: await sha256(options.baselineSdk) },
     probePolicy:
       'Correctness and real EventQueue push/pop counts use one untimed run per variant; ' +
-      'cold and warmed timings run without probes.',
+      'new-board create-to-complete and warmed timings run without probes; the cold label ' +
+      'does not represent process or browser startup.',
   });
 }
 
