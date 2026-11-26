@@ -1,6 +1,7 @@
 import {
   compileDirectJit,
   type CompiledBody,
+  type DirectJitArtifactCacheStats,
   type DirectJitBinding,
   type DirectJitFrame,
   type DirectJitHost,
@@ -42,6 +43,15 @@ import { bytesView, dataObject, finite } from '../values';
 
 /** Large programs dispatch through shards; small ones stay on the faster monolithic form. */
 const DIRECT_SHARD_SIZE = 32;
+/**
+ * One process/module-wide compiler artifact cache. Every session in this module instance
+ * reuses instruction templates and shard factories across boards with equal bindings.
+ */
+const sharedDirectArtifacts = compileDirectJit.createArtifactCache();
+/** Last process-wide artifact counters observed by each JIT after a session commit. */
+const directArtifactSnapshots = new WeakMap<Jit, DirectJitArtifactCacheStats>();
+/** False when a declared quiet guard cannot be resolved; marked routes must not enroll. */
+const directTimingEligible = new WeakMap<Jit, boolean>();
 
 export function syncJitCall(jit: Jit, name: string): unknown {
   const step = jit.host.call(name, []).next();
@@ -152,6 +162,18 @@ export interface DirectJitStats {
   directGenericInstructions: number;
   /** Cumulative generated characters of emitted instruction bodies. */
   directBodyBytes: number;
+  /** Instruction templates reused from the shared artifact cache by this JIT's sessions. */
+  directArtifactInstructionHits: number;
+  /** Instruction templates this JIT's sessions had to emit after an artifact miss. */
+  directArtifactInstructionMisses: number;
+  /** Process-wide shard sources reused from the artifact cache, observed as JIT deltas. */
+  directArtifactShardSourceHits: number;
+  /** Process-wide shard factories compiled after an artifact miss, observed as JIT deltas. */
+  directArtifactFactoryCompiles: number;
+  /** Process-wide shard factories reused from the artifact cache, observed as JIT deltas. */
+  directArtifactFactoryReuses: number;
+  /** Current instruction + shard entries in the process-wide artifact cache. */
+  directArtifactEntries: number;
   /** Cumulative generated characters of emitted shard functions. */
   directShardBytes: number;
   /** Cumulative generated characters of fixed dispatchers. */
@@ -294,6 +316,12 @@ function directStats(jit: Jit): DirectJitStats {
     directDispatchMisses: 0,
     directGenericInstructions: 0,
     directBodyBytes: 0,
+    directArtifactInstructionHits: 0,
+    directArtifactInstructionMisses: 0,
+    directArtifactShardSourceHits: 0,
+    directArtifactFactoryCompiles: 0,
+    directArtifactFactoryReuses: 0,
+    directArtifactEntries: 0,
     directShardBytes: 0,
     directDispatcherBytes: 0,
     directHelperBytes: 0,
@@ -383,6 +411,10 @@ function syncDirectSessionStats(jit: Jit, session: DirectJitSession): void {
   stats.directRouteInstalls += next.routeInstalls - (base?.routeInstalls ?? 0);
   stats.directRouteRemovals += next.routeRemovals - (base?.routeRemovals ?? 0);
   stats.directBodyBytes += next.bodyBytes - (base?.bodyBytes ?? 0);
+  stats.directArtifactInstructionHits +=
+    next.artifactInstructionHits - (base?.artifactInstructionHits ?? 0);
+  stats.directArtifactInstructionMisses +=
+    next.artifactInstructionMisses - (base?.artifactInstructionMisses ?? 0);
   stats.directShardBytes += next.shardBytes - (base?.shardBytes ?? 0);
   stats.directDispatcherBytes += next.dispatcherBytes - (base?.dispatcherBytes ?? 0);
   stats.directHelperBytes += next.helperBytes - (base?.helperBytes ?? 0);
@@ -407,6 +439,18 @@ function syncDirectSessionStats(jit: Jit, session: DirectJitSession): void {
   stats.directSpanRejected += next.spansRejected - (base?.spansRejected ?? 0);
   stats.directLoops += next.loopsInstalled - (base?.loopsInstalled ?? 0);
   stats.directLoopRejected += next.loopsRejected - (base?.loopsRejected ?? 0);
+  // Shard/factory counters are process-wide. Attribute the delta since this JIT last
+  // observed the shared cache; `directArtifactEntries` publishes the current gauge.
+  const artifacts = compileDirectJit.artifactCacheStats(sharedDirectArtifacts);
+  const artifactsBase = directArtifactSnapshots.get(jit);
+  stats.directArtifactShardSourceHits +=
+    artifacts.reusedShardSources - (artifactsBase?.reusedShardSources ?? 0);
+  stats.directArtifactFactoryCompiles +=
+    artifacts.createdFactories - (artifactsBase?.createdFactories ?? 0);
+  stats.directArtifactFactoryReuses +=
+    artifacts.reusedFactories - (artifactsBase?.reusedFactories ?? 0);
+  stats.directArtifactEntries = artifacts.instructionEntries + artifacts.shardEntries;
+  directArtifactSnapshots.set(jit, artifacts);
   stats.directShards = next.shards;
   stats.directRoutes = next.routes;
   directSessionSnapshots.set(jit, { session, stats: next });
@@ -488,6 +532,7 @@ function directAdmitted(jit: Jit, instruction: JitInstruction): boolean {
 }
 
 function directInstruction(jit: Jit, instruction: JitInstruction): DirectJitInstruction {
+  const timingEligible = directTimingEligible.get(jit) !== false;
   return {
     pc: instruction.pc,
     nextPc: instruction.nextPc,
@@ -497,8 +542,12 @@ function directInstruction(jit: Jit, instruction: JitInstruction): DirectJitInst
     ...(jit.options.shareDirectBodies === true && instruction.share !== undefined
       ? { share: instruction.share }
       : {}),
-    ...(instruction.span === undefined ? {} : { span: instruction.span }),
-    ...(instruction.loop === undefined ? {} : { loop: instruction.loop }),
+    ...(!timingEligible
+      ? {}
+      : {
+          ...(instruction.span === undefined ? {} : { span: instruction.span }),
+          ...(instruction.loop === undefined ? {} : { loop: instruction.loop }),
+        }),
   };
 }
 
@@ -1323,6 +1372,7 @@ function directBinding(jit: Jit, layout: DirectJitLayout): DirectJitBinding {
   const entry = entryBlockedNames(jit);
   let functions = jit.functions;
   let directTiming: DirectJitTiming | undefined;
+  let timingEligible = true;
   const option = jit.options.directTiming;
   if (option !== undefined) {
     let blocked = option.blocked;
@@ -1335,7 +1385,9 @@ function directBinding(jit: Jit, layout: DirectJitLayout): DirectJitBinding {
         declaration.returns?.kind !== 'bool'
       ) {
         // Attach validated the declaration; an appended function table may still disagree.
+        // Fail closed: keep marked spans/loops out of this session instead of dropping the guard.
         blocked = undefined;
+        timingEligible = false;
       } else if (functions?.get(blocked) === undefined) {
         // `jit.functions` only owns appended JIT functions. Keep its identity untouched and
         // add the base-model guard to a private map for this binding.
@@ -1345,20 +1397,28 @@ function directBinding(jit: Jit, layout: DirectJitLayout): DirectJitBinding {
       }
     }
     const service = option.service;
-    if (service !== undefined && (option.blocked === undefined || blocked !== undefined)) {
+    if (service !== undefined) {
       const elapsed = states.get(service.elapsed);
       const deadline = states.get(service.deadline);
-      if (elapsed !== undefined && deadline !== undefined)
+      // A declared guard that cannot be resolved fails closed: omit `directTiming` entirely
+      // so marked spans/loops stay unenrolled instead of running without the quiet guard.
+      if (
+        (option.blocked === undefined || blocked !== undefined) &&
+        elapsed !== undefined &&
+        deadline !== undefined
+      ) {
         directTiming = {
           elapsed,
           deadline,
           ...(blocked === undefined ? {} : { blocked }),
         };
+      }
     }
   }
   const memoryLengths = new Map<string, number>();
   for (const name of layout.memoryNames) memoryLengths.set(name, jit.instance.memory(name).length);
   const codeMemories = new Set(jit.codeRegions.map((region) => region.memory));
+  directTimingEligible.set(jit, timingEligible);
   return {
     states,
     memories,
@@ -1447,10 +1507,18 @@ function ensureDirectSession(board: JitRuntimeHost, jit: Jit): DirectExecution |
     jit.directCacheInvalid = false;
   }
   const cache = (jit.directCache ??= compileDirectJit.createCache());
+  // Seed the process-wide artifact baseline before this session's first compile so the
+  // JIT's counters only include work performed after it started observing the cache.
+  if (!directArtifactSnapshots.has(jit))
+    directArtifactSnapshots.set(jit, compileDirectJit.artifactCacheStats(sharedDirectArtifacts));
   let session: DirectJitSession | undefined;
   const admitted: JitInstruction[] = [];
   try {
-    session = compileDirectJit.createSession(directBinding(jit, layout), cache);
+    session = compileDirectJit.createSession(
+      directBinding(jit, layout),
+      cache,
+      sharedDirectArtifacts,
+    );
     for (const instruction of jit.cache.values())
       if (directAdmitted(jit, instruction)) admitted.push(instruction);
     if (admitted.length)

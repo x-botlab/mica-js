@@ -41,6 +41,7 @@ interface HarnessOptions {
   readonly delays?: ReadonlyMap<number, JitDelay>;
   readonly polling?: JitOptions['polling'];
   readonly beforeInstruction?: JitOptions['beforeInstruction'];
+  readonly functions?: JitOptions['functions'];
   readonly codeLength?: number;
   readonly execution?: BoardOptions['execution'];
   readonly load?: Uint8Array;
@@ -94,6 +95,7 @@ function createHarness(options: HarnessOptions): Harness {
           ...(options.beforeInstruction === undefined
             ? {}
             : { beforeInstruction: options.beforeInstruction }),
+          ...(options.functions === undefined ? {} : { functions: options.functions }),
           translate: options.translate,
         });
         try {
@@ -772,6 +774,36 @@ describe('direct timing marker validation', () => {
     }
   });
 
+  it('fails closed when a declared quiet guard cannot be resolved at binding time', () => {
+    const harness = createHarness({
+      name: 'FailClosedGuard',
+      directTiming: { ...service(), blocked: 'blocked' },
+      configure: (builder) => {
+        builder.pureFn({ name: 'blocked', params: [], returns: types.bool }, (body) =>
+          body.returnValue(body.readState('blockedFlag', types.bool)),
+        );
+      },
+      translate: spanTranslate(true),
+    });
+    try {
+      const declaration = harness.instance.declarations.get('blocked')!;
+      harness.instance.declarations.set('blocked', {
+        ...declaration,
+        pure: false,
+      } as typeof declaration);
+      harness.board.runUntil(11);
+      const stats = directJitStats(harness.jit)!;
+      // The marker was collected, but the unresolvable guard kept it out of the session and
+      // omitted the compiler timing binding entirely.
+      expect(stats.directSpanCandidates).toBe(1);
+      expect(stats.directSpans).toBe(0);
+      expect(stats.directSpanRuns).toBe(0);
+      expect(harness.instance.states.get('terminal')).toBe(1);
+    } finally {
+      harness.dispose();
+    }
+  });
+
   it('does not expose timing or dependency callbacks without their options', () => {
     const seen: (boolean | undefined)[] = [];
     const translate: JitTranslate = (input, block) => {
@@ -1060,6 +1092,46 @@ describe('lazy generic bodies', () => {
     } finally {
       compilerState.failGenericBody = false;
       failing.dispose();
+    }
+  });
+});
+describe('direct artifact reuse', () => {
+  it('reuses instruction artifacts across structurally equal boards', () => {
+    const translate: JitTranslate = ({ pc }, block) => {
+      block.instruction({ pc, nextPc: 0 }, (body) => {
+        body.writeState(
+          'prefix',
+          body.add(body.readState('prefix', types.number), body.constant(types.number, 1)),
+        );
+        body.elapse(1);
+      });
+      return block.finish();
+    };
+    const first = createHarness({ name: 'ArtifactReuse', translate });
+    const second = createHarness({ name: 'ArtifactReuse', translate });
+    try {
+      const beforeSecond = directJitStats(second.jit);
+      expect(beforeSecond).toBeUndefined();
+      first.board.runUntil(10);
+      const firstStats = directJitStats(first.jit)!;
+      second.board.runUntil(10);
+      const secondStats = directJitStats(second.jit)!;
+
+      expect(second.instance.states.get('prefix')).toBe(first.instance.states.get('prefix'));
+      expect(second.board.time).toBe(first.board.time);
+      expect(firstStats.directBodyBytes + firstStats.directArtifactInstructionHits).toBeGreaterThan(
+        0,
+      );
+      // Deltas are per JIT, so prior process-wide artifact hits cannot satisfy this.
+      expect(
+        secondStats.directArtifactInstructionHits -
+          (beforeSecond?.directArtifactInstructionHits ?? 0),
+      ).toBeGreaterThan(0);
+      expect(secondStats.directArtifactInstructionMisses).toBe(0);
+      expect(secondStats.directBodyBytes).toBe(0);
+    } finally {
+      second.dispose();
+      first.dispose();
     }
   });
 });
