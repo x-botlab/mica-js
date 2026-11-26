@@ -14,6 +14,7 @@ import type {
   SynchronousRunner,
 } from '@mica-js/compiler';
 import type { Instance } from './instance';
+import type { BoundBatch } from './batch';
 import type { CompiledObservation } from '../observations';
 import type { Fifo } from '../queue';
 import type {
@@ -139,6 +140,11 @@ export interface JitInstruction {
   };
   /** 通过运行时校验的 Direct 折叠循环候选。 */
   readonly loop?: JitLoopCandidate;
+  /**
+   * 已证明且绑定到本实例的 JIT 合批路由。仅当本次翻译提交了有效标记且编译器证明
+   * 成功时存在；拥有该路由的入口不进入 Direct 会话。
+   */
+  readonly batch?: BoundBatch;
   /** 首次通用执行时编译并缓存的共享体；Direct 路径不读取。 */
   execute?: CompiledBody;
 }

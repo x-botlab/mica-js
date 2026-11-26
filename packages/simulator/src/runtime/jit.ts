@@ -1,5 +1,6 @@
 import {
   compileDirectJit,
+  proveJitBatch,
   type CompiledBody,
   type DirectJitArtifactCache,
   type DirectJitArtifactCacheStats,
@@ -13,11 +14,16 @@ import {
   type DirectJitTiming,
   type ExecutionSignal,
 } from '@mica-js/compiler';
-import { createJitBlockBuilder, validateBoundBlockIR } from '@mica-js/device-model';
+import {
+  createJitBlockBuilder,
+  validateBoundBlockIR,
+  type InstructionIR,
+} from '@mica-js/device-model';
 import { isPollingInstruction } from '../polling';
 import type { EventQueue } from '../queue';
+import { bindBatch, type BoundBatch, type PreparedBatch } from './batch';
 import { acceptSync } from './errors';
-import { body, time } from './execution';
+import { body, MAX_TIME, time } from './execution';
 import type { Instance, InstanceBoard } from './instance';
 import type {
   Dependencies,
@@ -416,6 +422,37 @@ export function directJitStats(jit: Jit): DirectJitStats | undefined {
   return (jit as CountedJit).directStats;
 }
 
+/**
+ * Internal JIT batch counters. They are allocated only after a marked route exists and
+ * the board actually enables batch execution, so unmarked workloads pay one map lookup.
+ */
+export interface JitBatchStats {
+  /** Marked entries reached by `runJit`, before the scheduler window is known. */
+  attempts: number;
+  /** Attempts that committed folded rounds. */
+  commits: number;
+  /** Rounds represented by committed batches. */
+  foldedRounds: number;
+  /** Attempts that stayed on the ordinary instruction path. */
+  declines: number;
+}
+
+const jitBatchStatsByJit = new WeakMap<Jit, JitBatchStats>();
+
+/** Read counters without creating them; `undefined` means no marked attempt happened. */
+export function readJitBatchStats(jit: Jit): JitBatchStats | undefined {
+  return jitBatchStatsByJit.get(jit);
+}
+
+function jitBatchStats(jit: Jit): JitBatchStats {
+  let stats = jitBatchStatsByJit.get(jit);
+  if (stats === undefined) {
+    stats = { attempts: 0, commits: 0, foldedRounds: 0, declines: 0 };
+    jitBatchStatsByJit.set(jit, stats);
+  }
+  return stats;
+}
+
 interface DirectSessionSnapshot {
   readonly session: DirectJitSession;
   readonly stats: DirectJitSessionStats;
@@ -556,6 +593,7 @@ function directCodeInstruction(jit: Jit, instruction: JitInstruction): boolean {
 /** One cache entry may join the direct session: primary code and no effective polling. */
 function directAdmitted(jit: Jit, instruction: JitInstruction): boolean {
   return (
+    instruction.batch === undefined &&
     !instruction.polling &&
     !effectivePolling(jit).has(instruction.pc) &&
     directCodeInstruction(jit, instruction)
@@ -944,6 +982,123 @@ function directLoopCandidate(
   });
 }
 
+/** One `markBatchLoop` call copied while the translate callback is on the stack. */
+interface CapturedBatchMark {
+  readonly pc: unknown;
+  readonly stopBefore: unknown;
+  readonly hasStopBefore: boolean;
+}
+
+function captureBatchMark(value: unknown): CapturedBatchMark {
+  try {
+    dataObject(value, ['pc', 'stopBefore']);
+    const record = value as { readonly pc?: unknown; readonly stopBefore?: unknown };
+    const hasStopBefore = Object.hasOwn(value, 'stopBefore');
+    return {
+      pc: record.pc,
+      stopBefore: hasStopBefore ? record.stopBefore : undefined,
+      hasStopBefore,
+    };
+  } catch {
+    return { pc: undefined, stopBefore: undefined, hasStopBefore: false };
+  }
+}
+
+/**
+ * Prove and bind JIT batch marks after the canonical block has passed translation validation.
+ * A rejected mark only leaves its entry on the ordinary path: it never fails the translation
+ * and cannot attach to an entry whose identity or code generation is ambiguous.
+ */
+function applyBatchMarks(
+  jit: Jit,
+  canonical: readonly InstructionIR[],
+  instructions: JitInstruction[],
+  marks: readonly CapturedBatchMark[],
+): void {
+  if (marks.length === 0) return;
+  // Both modes keep per-boundary ownership of the PC. The callback stays available on an
+  // enabled throughput board, but the marked site simply stays on the ordinary path.
+  if (jit.options.beforeInstruction !== undefined || jit.metadata !== undefined) return;
+  const indicesByPc = new Map<number, number[]>();
+  for (let index = 0; index < canonical.length; index++) {
+    const pc = canonical[index]!.pc;
+    const indices = indicesByPc.get(pc);
+    if (indices === undefined) indicesByPc.set(pc, [index]);
+    else indices.push(index);
+  }
+  const validPcs = new Map<number, number>();
+  for (const mark of marks) {
+    if (typeof mark.pc !== 'number' || !Number.isSafeInteger(mark.pc) || mark.pc < 0) continue;
+    validPcs.set(mark.pc, (validPcs.get(mark.pc) ?? 0) + 1);
+  }
+  for (const mark of marks) {
+    const { pc } = mark;
+    if (typeof pc !== 'number' || !Number.isSafeInteger(pc) || pc < 0) continue;
+    // A duplicated mark is ambiguous. Drop every copy instead of letting callback order
+    // decide which proof the cache entry keeps.
+    if ((validPcs.get(pc) ?? 0) !== 1) continue;
+    if (mark.hasStopBefore) {
+      if (typeof mark.stopBefore !== 'string' || mark.stopBefore.length === 0) continue;
+    }
+    const indices = indicesByPc.get(pc);
+    if (indices === undefined || indices.length !== 1) continue;
+    const index = indices[0]!;
+    const instruction = instructions[index]!;
+    // Only a physical entry from a bound code region may own a batch route.
+    if (instruction.codeRegion === undefined || instruction.batch !== undefined) continue;
+    let plan: ReturnType<typeof proveJitBatch>;
+    try {
+      plan = proveJitBatch(canonical[index]!);
+    } catch {
+      plan = undefined;
+    }
+    if (plan === undefined) continue;
+    let bound: BoundBatch | undefined;
+    try {
+      bound = bindBatch(
+        jit.instance,
+        plan,
+        mark.hasStopBefore ? (mark.stopBefore as string) : undefined,
+        jit.options.pc,
+      );
+    } catch {
+      bound = undefined;
+    }
+    // bindBatch already validates every name. These checks keep an accepted route bound
+    // to this instance, this PC and a JIT plan even if a future implementation drifts.
+    if (
+      bound === undefined ||
+      bound.instance !== jit.instance ||
+      bound.pc !== jit.options.pc ||
+      bound.resumeBlock !== undefined
+    )
+      continue;
+    instructions[index] = { ...instructions[index]!, batch: bound };
+  }
+}
+
+/**
+ * Retract Direct routes that a newly accepted batch head must never bypass. An idle
+ * session drops only the affected entries; a suspended suffix is retired as a whole so it
+ * can finish its current generated function once before the next scheduler turn.
+ */
+function retractBatchDirectRoutes(jit: Jit, instructions: readonly JitInstruction[]): void {
+  if (!instructions.some((instruction) => instruction.batch !== undefined)) return;
+  const direct = jit.direct;
+  if (direct === undefined || jit.directStale) return;
+  if (direct.frame.resume !== 0) {
+    staleDirectSession(jit, true);
+    return;
+  }
+  const pcs: number[] = [];
+  for (const instruction of instructions)
+    if (instruction.batch !== undefined && direct.session.has(instruction.pc))
+      pcs.push(instruction.pc);
+  if (pcs.length === 0) return;
+  direct.session.remove(pcs);
+  syncDirectSessionStats(jit, direct.session);
+}
+
 /**
  * Attach validated Direct timing marks to their translated entries. Rejections only drop the
  * optimization: the block itself is already committed to the ordinary interpreter path.
@@ -1252,6 +1407,10 @@ export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
   current: Instance | undefined;
   readonly execution: 'throughput' | 'precise';
   readonly executionEnd: number;
+  /** Effective batch admission; already false in precise mode. */
+  readonly batchExecution: boolean;
+  /** Per-entry CPU budget for one JIT dispatch, in integer picoseconds. */
+  readonly cpuQuantum: number;
   readonly jits: readonly Jit[];
   readonly waitingJits: Set<Jit>;
   /** Parks a JIT on its recorded dependency versions; the next round scans it once. */
@@ -1262,6 +1421,8 @@ export interface JitRuntimeHost extends Pick<InstanceBoard, 'error'> {
   readonly checkpointDiagnostics: boolean;
   boundary(source?: BoundarySource): void;
   canContinueDirect(jit: Jit, horizon: number): boolean;
+  /** Validate the scheduler window and reserve one one-shot batch commit. */
+  prepareBatch(batch: BoundBatch, schedulerYieldAt?: number): PreparedBatch | undefined;
   queueJit(jit: Jit): void;
   wrap(
     cause: unknown,
@@ -1793,6 +1954,7 @@ function createDirectFrame(
           jit.directStale ||
           jit.direct?.session !== session ||
           !session.has(nextPc) ||
+          jit.cache.get(nextPc)?.batch !== undefined ||
           jit.directSkip === nextPc ||
           frame.time >= deadline ||
           board.events.time < deadline ||
@@ -1841,12 +2003,16 @@ function runDirect(board: JitRuntimeHost, jit: Jit, hookReads?: Dependencies): D
     }
     const pc = finite(instance.states.get(jit.options.pc), 'pc');
     const region = codeRegionFor(jit, pc);
+    const current = jit.cache.get(pc);
     if (
       board.execution !== 'throughput' ||
       board.jits.length !== 1 ||
       (region !== undefined && region.memory !== jit.options.code) ||
       effectivePolling(jit).has(pc) ||
-      jit.cache.get(pc)?.polling
+      current?.polling ||
+      // A marked batch head must be dispatched by `runJit` so the batch admission runs
+      // before the implicit next-PC write, even when a compiled route would still exist.
+      current?.batch !== undefined
     )
       return 'declined';
     refreshDirectGuards(jit, hookReads);
@@ -1965,7 +2131,8 @@ function directPcAdmitted(jit: Jit, pc: number): boolean {
   const region = codeRegionFor(jit, pc);
   if (region !== undefined && region.memory !== jit.options.code) return false;
   if (effectivePolling(jit).has(pc)) return false;
-  return jit.cache.get(pc)?.polling !== true;
+  const instruction = jit.cache.get(pc);
+  return instruction?.polling !== true && instruction?.batch === undefined;
 }
 
 /**
@@ -2128,6 +2295,84 @@ function jitSignal(board: JitRuntimeHost, jit: Jit, signal: ExecutionSignal): bo
   throw new TypeError('Invalid JIT suspension');
 }
 /**
+ * Try the marked JIT batch head before the ordinary instruction writes its implicit next PC.
+ * The board owns scheduler gates and the bound resource slots; this function revalidates the
+ * route that the current local cache entry still owns, commits once and schedules one wake.
+ */
+function tryJitBatch(
+  board: JitRuntimeHost,
+  jit: Jit,
+  pc: number,
+  instruction: JitInstruction,
+): boolean {
+  const batch = instruction.batch;
+  if (batch === undefined) return false;
+  // Hook and metadata providers own per-boundary decisions; a marked site stays ordinary.
+  if (
+    !board.batchExecution ||
+    board.execution !== 'throughput' ||
+    jit.options.beforeInstruction !== undefined ||
+    jit.metadata !== undefined
+  )
+    return false;
+  if (!jit.active || jit.stopped) return false;
+  // A resumed continuation, a pending generic body or a different local entry owns this PC.
+  if (jit.execution !== undefined || jit.genericInstruction !== undefined) return false;
+  if (jit.direct !== undefined && jit.direct.frame.resume !== 0) return false;
+  if (jit.cache.get(pc) !== instruction) return false;
+  if (instruction.codeRegion === undefined) return false;
+  const memory = instruction.codeRegion.memory;
+  if (instruction.codeVersion !== jit.instance.codeVersion(memory)) return false;
+  if (instruction.polling || effectivePolling(jit).has(pc) || effectiveDelays(jit).has(pc))
+    return false;
+  const stats = jitBatchStats(jit);
+  stats.attempts++;
+  const start = board.time;
+  const yieldAt = Math.min(MAX_TIME, start + board.cpuQuantum);
+  const prepared = board.prepareBatch(batch, yieldAt);
+  if (prepared === undefined) {
+    stats.declines++;
+    return false;
+  }
+  const { due, lastAt } = prepared;
+  const rounds = (due - start) / batch.stepPs;
+  if (
+    !Number.isSafeInteger(due) ||
+    !Number.isSafeInteger(lastAt) ||
+    due <= lastAt ||
+    lastAt < start ||
+    due > yieldAt ||
+    due >= board.executionEnd ||
+    !Number.isSafeInteger(rounds) ||
+    rounds < 2
+  ) {
+    stats.declines++;
+    return false;
+  }
+  // Allocate the one-shot wake before the commit: no callback may observe a committed
+  // batch whose timer entry still needs to allocate.
+  const wake = () => board.queueJit(jit);
+  board.time = lastAt;
+  prepared.apply();
+  // The redirect target is the canonical instruction PC. It may be signed zero while the
+  // dispatch value used for the cache lookup is +0; numeric state observes the canonical
+  // value, and `currentPc` records the value that actually reached this dispatch.
+  jit.instance.host.write(jit.options.pc, instruction.pc);
+  jit.currentPc = pc;
+  // Mirrors the redirect signal: the batch consumes the instruction and leaves no
+  // continuation or polling scratch behind.
+  jit.execution = undefined;
+  jit.automaticPolling = false;
+  jit.pollReads = undefined;
+  if (jit.options.directTier !== undefined) jit.genericInstruction = undefined;
+  stats.commits++;
+  stats.foldedRounds += rounds;
+  board.boundary('runJit');
+  board.events.push(due, wake);
+  return true;
+}
+
+/**
  * Translate one PC, atomically publish the block's cache entries, and commit its admitted
  * entries to the active session. Reused by both the interpreter path and assembly retries.
  */
@@ -2155,11 +2400,14 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
       jit.options.directTiming !== undefined ? [] : undefined;
     const loopMarks: DirectLoopMark[] | undefined =
       jit.options.directTiming !== undefined ? [] : undefined;
+    const batchMarks: CapturedBatchMark[] | undefined =
+      board.batchExecution && board.execution === 'throughput' ? [] : undefined;
     const dependencyMarks = jit.options.translationIdentity !== undefined;
     marking =
       shareMarks !== undefined ||
       spanMarks !== undefined ||
       loopMarks !== undefined ||
+      batchMarks !== undefined ||
       dependencyMarks;
     const result = jit.options.translate(
       Object.freeze({
@@ -2192,6 +2440,14 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
                 if (!marking) return;
                 directStats(jit).directLoopCallbacks++;
                 loopMarks.push({ pc: markPc, candidate: captureLoopCandidate(candidate) });
+              },
+            }),
+        ...(batchMarks === undefined
+          ? {}
+          : {
+              markBatchLoop: (mark: import('../types').JitBatchMark): void => {
+                if (!marking) return;
+                batchMarks.push(captureBatchMark(mark));
               },
             }),
         ...(!dependencyMarks
@@ -2249,6 +2505,10 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
         codeVersion: jit.instance.codeVersion(region?.memory ?? jit.options.code),
       };
     });
+    // Attach batch routes first: Direct timing and sharing read `directAdmitted`, which
+    // excludes an accepted head, and a span containing it must fail as a whole.
+    if (batchMarks !== undefined)
+      applyBatchMarks(jit, block.instructions, instructions, batchMarks);
     if (spanMarks !== undefined || loopMarks !== undefined)
       applyDirectTimingMarks(jit, instructions, spanMarks ?? [], loopMarks ?? []);
     if (shareMarks !== undefined)
@@ -2278,6 +2538,9 @@ function translateBlock(board: JitRuntimeHost, jit: Jit, pc: number): readonly J
     )
       jit.revision++;
     jit.directSkip = undefined;
+    // Replacing a block can turn a previously Direct-admitted PC into a batch head. Remove
+    // those routes before the new translation can be dispatched.
+    retractBatchDirectRoutes(jit, instructions);
     commitDirectTranslation(jit, instructions, replaced);
     return instructions;
   } catch (cause) {
@@ -2367,7 +2630,7 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
         }
         if (declaration.consume) jit.instance.syncCall(declaration.consume);
       }
-      if (!hookPending && board.jits.length === 1) {
+      if (!hookPending && board.jits.length === 1 && jit.cache.get(pc)?.batch === undefined) {
         const outcome = runDirect(board, jit, hookReads);
         if (outcome === 'ran') return;
         if (outcome === 'assembly' || outcome === 'assembly-progressed') {
@@ -2380,6 +2643,9 @@ export function runJit(board: JitRuntimeHost, jit: Jit): void {
       const instructions = translateBlock(board, jit, pc);
       instruction = instructions[0]!;
     }
+    // Both a cache hit and a fresh translation reach the same admission. A decline keeps
+    // the ordinary instruction writer below untouched.
+    if (tryJitBatch(board, jit, pc, instruction)) return;
     jit.currentPc = pc;
     if (board.execution === 'throughput' && board.jits.length === 1)
       directStats(jit).directGenericInstructions++;
