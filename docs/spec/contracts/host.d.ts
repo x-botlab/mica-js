@@ -53,7 +53,65 @@ export interface JitCodeRegion {
   readonly base: number;
   readonly size: number;
 }
-export interface JitTranslateInput {
+/** Direct 时间准入声明；`service` 引用本实例 number 状态，`blocked` 引用安静的 pure fn。 */
+export interface JitDirectTiming {
+  /**
+   * 定时服务状态名：`elapsed` 是自同一上次结算点起的已累计量，`deadline` 是该时点的期限，
+   * 单位均为 ps；`deadline` 为 0 表示当前无定时服务。两项须在运行时为非负安全整数，
+   * 否则候选使用普通指令路径。
+   */
+  readonly service?: {
+    /** 自同一上次结算点起的已累计时间，单位 ps。 */
+    readonly elapsed: string;
+    /** 自同一上次结算点起的期限，单位 ps；0 表示无定时服务。 */
+    readonly deadline: string;
+  };
+  /**
+   * 同步、确定、不抛错且只读的无参 bool `pure fn`。求值为 true 时该逻辑 PC 使用普通
+   * 指令路径；注册校验签名、资源与形状，编译器沿调用图证明守卫。
+   */
+  readonly blocked?: string;
+}
+/** 循环计数地址：常量偏移，或由选择字节按 `(selectorByte & mask) | bits` 合成的字节偏移。 */
+export type JitLoopAddress =
+  | { readonly kind: 'constant'; readonly offset: number }
+  | {
+      readonly kind: 'maskedByte';
+      readonly memory: string;
+      readonly offset: number;
+      /** 选择字节的位掩码。 */
+      readonly mask: number;
+      /** 合成地址中置位的位。 */
+      readonly bits: number;
+    };
+/** 忙等循环候选：无计数器的自跳，或每轮递减一字节并按新值非零自跳。 */
+export type JitLoopCandidate =
+  | { readonly kind: 'spin' }
+  | {
+      readonly kind: 'decrement8';
+      readonly memory: string;
+      readonly address: JitLoopAddress;
+    };
+/** 同步翻译期提供的 Direct 时间候选标记；仅本次 `translate` 回调内有效。 */
+export interface JitDirectTimingInput {
+  /**
+   * 标记返回块中从 `pc` 起、共 `instructionCount`（2–8）条连续指令组成的合块：纯定长
+   * 前缀后接一条普通 GPIO/SFR 终结写。前缀各条 `nextPc` 须等于下一条成员 PC；终结写
+   * 及各后续 PC 保留普通路由。非法、重复或无法证明的标记只取消该优化。
+   */
+  readonly markDirectSpan?: (pc: number, instructionCount: number) => void;
+  /**
+   * 标记以 `pc` 为环头的自回跳循环。候选仅在吞吐模式、主代码内存与当前单 JIT Direct
+   * 准入条件下消费，并由规范 IR 证明轮时长、退出条件、读写集合与尾部时间账。
+   */
+  readonly markDirectLoop?: (pc: number, candidate: JitLoopCandidate) => void;
+}
+/** 影响本次翻译 IR 的借用代码字节区间，单位为所属 region 内的偏移。 */
+export interface JitTranslationDependency {
+  readonly offset: number;
+  readonly length: number;
+}
+export interface JitTranslateInput extends JitDirectTimingInput {
   readonly pc: number;
   /** 仅在本次同步 translate 回调内有效；长度最多为本 region 的 `size`。 */
   readonly code: BorrowedBytes;
@@ -67,6 +125,12 @@ export interface JitTranslateInput {
    * 必须各自对应返回块中不同的指令入口。
    */
   readonly markDirectBodyShareable?: (pc: number, byteLength: number) => void;
+  /**
+   * 报告影响本次翻译 IR 的借用视图物理代码区间。运行时须先确认偏移与长度均为非负安全
+   * 整数且落在视图内，并在缓存前快照或按内容比较这些字节；空区间只用于已证明与代码
+   * 字节无关的虚拟入口。
+   */
+  readonly markTranslationDependencies?: (ranges: readonly JitTranslationDependency[]) => void;
 }
 export type JitTranslate = (input: JitTranslateInput, builder: JitBlockBuilder) => BlockIR;
 export interface InstructionHook {
@@ -134,10 +198,28 @@ export interface JitOptions {
    */
   readonly delays?: ReadonlyMap<number, JitDelay>;
   /**
+   * Direct 时间准入：`service` 指向本实例的定时服务 number 状态，`blocked` 指向安静条件。
+   * 省略时不检查服务期限与安静条件，仅按宿主上限和其余准入条件优化；守卫为真、
+   * 定时状态非法或形状无法证明时使用普通指令路径。
+   */
+  readonly directTiming?: JitDirectTiming;
+  /**
    * 启用 Direct 指令体共享：同步翻译期间提供 `markDirectBodyShareable`，并只把通过
    * 运行时校验的等价候选交给 Direct 会话。仅省略时为 false；关闭时所有入口独立执行。
    */
   readonly shareDirectBodies?: boolean;
+  /**
+   * 跨实例翻译工件身份：`abi` 标识生成器与融合规则，`configuration` 标识时钟及特化配置。
+   * 省略时翻译结果只用于当前实例；依赖字节另由 `markTranslationDependencies` 报告。
+   */
+  readonly translationIdentity?: { readonly abi: string; readonly configuration: string };
+  /**
+   * 两级 Direct 执行。省略时保持即时 Direct；设置后每个本地路由从共享通用级开始，
+   * 成功完成的真实指令达到正安全整数 `promoteAfter` 后晋升。暂停或失效的后缀、
+   * 元数据刷新、轮询及折叠跳过的轮次不计数；字节写入、IR 重叠或编译上下文变化
+   * 先撤销旧路由与晋升状态。
+   */
+  readonly directTier?: { readonly promoteAfter: number };
   readonly translate: JitTranslate;
 }
 export interface JitHost {

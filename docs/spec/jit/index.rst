@@ -25,6 +25,10 @@ JIT 入口将实例中的代码字节按需转换为共享 IR，并通过仿真�
 
 ``shareDirectBodies`` 仅省略时为 ``false``。启用时，运行时在同步 ``translate`` 回调期间提供 ``markDirectBodyShareable``；通过校验的标记按代码存储身份、版本、物理偏移和长度参与 Direct 指令体复用。关闭时不提供该回调，所有入口独立执行。
 
+``directTiming`` 提供本实例的定时服务状态与安静条件；省略时只按宿主上限和其余准入条件消费标记。同步翻译期可通过 ``markDirectSpan`` 与 ``markDirectLoop`` 报告合块和循环候选；吞吐模式、主代码内存、单 JIT Direct 准入、定时状态与守卫的完整规则见 :doc:`throughput`。
+
+``translationIdentity`` 标识生成器/融合 ABI 与时钟、特化配置，配合 ``markTranslationDependencies`` 报告的依赖字节参与跨实例翻译工件身份；复用与实例隔离规则见 :doc:`/execution/sharing`。``directTier`` 在 ``throughput`` 与既有 Direct 准入条件内生效，仅在省略时保持即时 Direct；设置正安全整数 ``promoteAfter`` 后，每个本地路由先走共享通用体，只有成功完成的真实指令计入晋升，暂停或失效的后缀、元数据刷新、轮询及折叠跳过的轮次不计数。字节写入、IR 重叠或编译上下文变化先撤销旧路由与晋升状态。
+
 ``entry`` 是本实例唯一入口名，``code`` 是本实例 memory 名称，``pc`` 是本实例 number state 名称。
 
 名称以 ``string`` 传入，在绑定时校验存在性、资源类别和签名；执行时使用已经解析的引用。
